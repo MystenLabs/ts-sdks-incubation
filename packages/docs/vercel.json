@@ -1,0 +1,5 @@
+{
+	"installCommand": "cd ../.. && pnpm install --frozen-lockfile && pnpm turbo build --filter=@mysten-incubation/dev-wallet",
+	"buildCommand": "next build && pnpm run build:docs",
+	"framework": "nextjs"
+}
