@@ -14,7 +14,9 @@ function forceSideEffects(): Plugin {
 	return {
 		name: 'force-side-effects',
 		transform(_code, id) {
-			if (/\.[jt]sx?$/.test(id) && !id.includes('node_modules')) {
+			if (/\.[jt]sx?$/.test(id)) {
+				// Mark all JS/TS files as having side effects, including
+				// @mysten-incubation/dev-wallet which registers Lit custom elements
 				return { moduleSideEffects: true };
 			}
 		},
