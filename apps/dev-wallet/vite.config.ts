@@ -1,6 +1,7 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { Plugin } from 'vite';
 import { defineConfig } from 'vite';
@@ -23,10 +24,31 @@ function forceSideEffects(): Plugin {
 	};
 }
 
+/** Copy bookmarklet.js from dev-wallet package build output after build. */
+function copyBookmarklet(): Plugin {
+	const src = resolve(import.meta.dirname, '../../packages/dev-wallet/dist/standalone/bookmarklet.js');
+	return {
+		name: 'copy-bookmarklet',
+		closeBundle() {
+			if (existsSync(src)) {
+				const dest = resolve(import.meta.dirname, 'dist/bookmarklet.js');
+				mkdirSync(resolve(import.meta.dirname, 'dist'), { recursive: true });
+				copyFileSync(src, dest);
+			}
+		},
+	};
+}
+
 export default defineConfig({
-	plugins: [forceSideEffects()],
+	plugins: [forceSideEffects(), copyBookmarklet()],
 	build: {
 		outDir: 'dist',
+	},
+	server: {
+		// Serve bookmarklet.js with CORS for local dev
+		headers: {
+			'Access-Control-Allow-Origin': '*',
+		},
 	},
 	esbuild: {
 		tsconfigRaw: {

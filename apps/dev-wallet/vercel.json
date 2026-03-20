@@ -1,10 +1,20 @@
 {
 	"installCommand": "cd ../.. && pnpm install --frozen-lockfile && pnpm turbo build --filter=@mysten-incubation/dev-wallet",
-	"buildCommand": "vite build",
+	"buildCommand": "vite build && cp ../../packages/dev-wallet/dist/standalone/bookmarklet.js dist/bookmarklet.js",
 	"outputDirectory": "dist",
+	"headers": [
+		{
+			"source": "/bookmarklet.js",
+			"headers": [
+				{ "key": "Access-Control-Allow-Origin", "value": "*" },
+				{ "key": "Content-Type", "value": "application/javascript" },
+				{ "key": "Cache-Control", "value": "no-cache" }
+			]
+		}
+	],
 	"rewrites": [
 		{
-			"source": "/(.*)",
+			"source": "/((?!bookmarklet\\.js$).*)",
 			"destination": "/index.html"
 		}
 	]
