@@ -1,5 +1,5 @@
 {
-	"name": "@mysten-incubation/ts-incubation",
+	"name": "@mysten-incubation/ts-sdks-incubation",
 	"private": true,
 	"license": "Apache-2.0",
 	"scripts": {

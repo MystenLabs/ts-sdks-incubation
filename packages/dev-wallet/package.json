@@ -59,10 +59,10 @@
 	},
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/MystenLabs/ts-incubation.git"
+		"url": "git+https://github.com/MystenLabs/ts-sdks-incubation.git"
 	},
 	"bugs": {
-		"url": "https://github.com/MystenLabs/ts-incubation/issues"
+		"url": "https://github.com/MystenLabs/ts-sdks-incubation/issues"
 	},
 	"keywords": [
 		"sui",
@@ -73,7 +73,7 @@
 		"web3",
 		"wallet-standard"
 	],
-	"homepage": "https://github.com/MystenLabs/ts-incubation/tree/main/packages/dev-wallet#readme",
+	"homepage": "https://github.com/MystenLabs/ts-sdks-incubation/tree/main/packages/dev-wallet#readme",
 	"devDependencies": {
 		"@lit/react": "^1.0.8",
 		"@mysten/signers": "^1.0.1",
