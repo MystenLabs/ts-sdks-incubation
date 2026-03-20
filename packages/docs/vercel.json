@@ -1,5 +1,0 @@
-{
-	"buildCommand": "cd ../.. && pnpm turbo build --filter=@mysten-incubation/docs",
-	"installCommand": "cd ../.. && pnpm install --frozen-lockfile",
-	"framework": "nextjs"
-}
