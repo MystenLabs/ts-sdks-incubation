@@ -25,4 +25,7 @@ next-env.d.ts
 
 # Generated per-package LLM docs
 packages/*/docs/
+
+# Generated fumadocs source files
+.source/
 .vercel
