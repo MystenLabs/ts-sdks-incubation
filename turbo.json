@@ -1,0 +1,65 @@
+{
+	"$schema": "https://turbo.build/schema.json",
+	"tasks": {
+		"lint": {
+			"inputs": [
+				"src/**",
+				"test/**",
+				"tests/**",
+				"examples/**",
+				"*.ts",
+				"*.tsx",
+				"*.js",
+				"*.mjs",
+				"*.json"
+			]
+		},
+		"test": {
+			"dependsOn": ["^build", "build"],
+			"inputs": [
+				"src/**",
+				"test/**",
+				"tests/**",
+				"__tests__/**",
+				"*.ts",
+				"*.tsx",
+				"vitest.config.*",
+				"tsconfig.json"
+			]
+		},
+		"test:e2e": {
+			"dependsOn": ["^build", "build"],
+			"inputs": [
+				"src/**",
+				"test/**",
+				"tests/**",
+				"__tests__/**",
+				"*.ts",
+				"*.tsx",
+				"vitest.config.*",
+				"tsconfig.json"
+			],
+			"cache": false
+		},
+		"dev": {
+			"dependsOn": ["^build"],
+			"cache": false,
+			"persistent": true
+		},
+		"build": {
+			"dependsOn": ["^build"],
+			"inputs": [
+				"src/**",
+				"bin/**",
+				"scripts/**",
+				"templates/**",
+				"*.ts",
+				"*.mjs",
+				"tsconfig.json",
+				"tsdown.config.ts",
+				"package.json"
+			],
+			"outputs": ["build/**", "dist/**"]
+		}
+	}
+}

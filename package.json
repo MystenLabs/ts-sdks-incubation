@@ -1,0 +1,42 @@
+{
+	"name": "@mysten-incubation/ts-incubation",
+	"private": true,
+	"license": "Apache-2.0",
+	"scripts": {
+		"test": "turbo run test",
+		"test:e2e": "turbo run test:e2e --concurrency=1",
+		"changeset-version": "pnpm changeset version",
+		"prettier:check": "prettier -c --ignore-unknown .",
+		"prettier:fix": "prettier -w --ignore-unknown .",
+		"oxlint:check": "oxlint .",
+		"oxlint:fix": "oxlint --fix .",
+		"lint": "pnpm run oxlint:check && pnpm run prettier:check",
+		"lint:fix": "pnpm run oxlint:fix && pnpm run prettier:fix",
+		"build": "turbo run build",
+		"release": "pnpm turbo run build --filter \"./packages/*\" && pnpm changeset publish"
+	},
+	"packageManager": "pnpm@10.17.0",
+	"engines": {
+		"pnpm": ">=10.17.0"
+	},
+	"manypkg": {
+		"ignoredRules": [
+			"INTERNAL_MISMATCH",
+			"ROOT_HAS_DEV_DEPENDENCIES"
+		]
+	},
+	"devDependencies": {
+		"@arethetypeswrong/cli": "^0.18.1",
+		"@changesets/cli": "^2.29.8",
+		"@ianvs/prettier-plugin-sort-imports": "^4.7.0",
+		"@manypkg/cli": "^0.25.1",
+		"concurrently": "^9.2.1",
+		"oxlint": "1.39.0",
+		"prettier": "^3.7.4",
+		"prettier-plugin-tailwindcss": "^0.7.2",
+		"tsdown": "0.20.0-beta.1",
+		"tsx": "^4.21.0",
+		"turbo": "^2.7.4",
+		"typescript": "^5.9.3"
+	}
+}
