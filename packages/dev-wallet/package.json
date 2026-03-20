@@ -46,6 +46,7 @@
 	],
 	"scripts": {
 		"clean": "rm -rf tsconfig.tsbuildinfo ./dist",
+		"build:docs": "tsx ../docs/scripts/build-docs.ts",
 		"build": "rm -rf dist && tsc --noEmit && tsdown && vite build --config vite.standalone.config.ts && vite build --config vite.bookmarklet.config.ts",
 		"prettier:check": "prettier -c --ignore-unknown .",
 		"prettier:fix": "prettier -w --ignore-unknown .",

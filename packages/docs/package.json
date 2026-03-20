@@ -1,0 +1,45 @@
+{
+	"name": "@mysten-incubation/docs",
+	"version": "0.0.0",
+	"private": true,
+	"description": "Documentation for the @mysten-incubation TypeScript packages",
+	"license": "Apache-2.0",
+	"scripts": {
+		"build": "next build && pnpm run build:docs",
+		"build:docs": "tsx scripts/build-docs.ts --all",
+		"dev": "next dev",
+		"start": "next start",
+		"postinstall": "fumadocs-mdx",
+		"validate-docs": "tsx scripts/validate-llm-docs.ts",
+		"prettier:check": "prettier -c --ignore-unknown .",
+		"prettier:fix": "prettier -w --ignore-unknown .",
+		"oxlint:check": "oxlint  .",
+		"oxlint:fix": "oxlint --fix",
+		"lint": "pnpm run oxlint:check && pnpm run prettier:check",
+		"lint:fix": "pnpm run oxlint:fix && pnpm run prettier:fix"
+	},
+	"dependencies": {
+		"@mysten-incubation/dev-wallet": "workspace:*",
+		"@tanstack/react-query": "^5.90.16",
+		"fast-glob": "^3.3.3",
+		"fumadocs-core": "16.4.7",
+		"fumadocs-docgen": "3.0.5",
+		"fumadocs-mdx": "14.2.5",
+		"fumadocs-typescript": "5.0.1",
+		"fumadocs-ui": "16.4.7",
+		"gray-matter": "^4.0.3",
+		"next": "^16.1.6",
+		"react": "^19.2.3",
+		"react-dom": "^19.2.3"
+	},
+	"devDependencies": {
+		"@tailwindcss/postcss": "^4.1.18",
+		"@types/mdx": "^2.0.13",
+		"@types/node": "^25.0.8",
+		"@types/react": "^19.2.8",
+		"@types/react-dom": "^19.2.3",
+		"postcss": "^8.5.6",
+		"tailwindcss": "^4.1.18",
+		"typescript": "^5.9.3"
+	}
+}
