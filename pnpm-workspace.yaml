@@ -4,4 +4,5 @@ autoInstallPeers: false
 minimumReleaseAge: 2880
 packages:
   - 'packages/**'
+  - 'apps/**'
   - '!**/dist/**'
