@@ -55,6 +55,15 @@ pnpm changeset-version
 
 - **packages/** - All incubation packages
   - **dev-wallet/** - Development wallet for Sui dApp testing
+  - **docs/** - Documentation site (fumadocs + Next.js)
+
+### Documentation
+
+- Docs site: https://ts-sdks-incubation.vercel.app
+- Auto-deployed via Vercel on push to `main`
+- Content lives in `packages/docs/content/` as MDX files
+- Each package can generate LLM-friendly markdown docs via `build:docs` script
+- Run docs locally: `pnpm --filter @mysten-incubation/docs dev`
 
 ### Build System
 
