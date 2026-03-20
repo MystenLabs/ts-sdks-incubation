@@ -18,3 +18,4 @@ CHANGELOG.md
 package.json
 pnpm-lock.yaml
 packages/*/docs/
+packages/docs/.source/

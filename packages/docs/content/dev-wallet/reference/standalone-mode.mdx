@@ -153,11 +153,11 @@ dev accounts with a team, or when you can't modify a dApp's source to embed a wa
 
 ## Embedded vs Standalone
 
-|                 | Embedded                     | Standalone                     |
-| --------------- | ---------------------------- | ------------------------------ |
-| **Setup**       | `useDevWallet()` in your app | `npx @mysten-incubation/dev-wallet serve` |
-| **Import**      | `@mysten-incubation/dev-wallet/react`   | `@mysten-incubation/dev-wallet/client`    |
-| **UI Location** | In your app's DOM            | Separate popup windows         |
-| **Signing**     | In-process, same origin      | Cross-origin via PostMessage   |
-| **CLI Keys**    | Not available                | Available if `sui` on PATH     |
-| **Best For**    | Development, testing         | Teams sharing a wallet server  |
+|                 | Embedded                              | Standalone                                |
+| --------------- | ------------------------------------- | ----------------------------------------- |
+| **Setup**       | `useDevWallet()` in your app          | `npx @mysten-incubation/dev-wallet serve` |
+| **Import**      | `@mysten-incubation/dev-wallet/react` | `@mysten-incubation/dev-wallet/client`    |
+| **UI Location** | In your app's DOM                     | Separate popup windows                    |
+| **Signing**     | In-process, same origin               | Cross-origin via PostMessage              |
+| **CLI Keys**    | Not available                         | Available if `sui` on PATH                |
+| **Best For**    | Development, testing                  | Teams sharing a wallet server             |

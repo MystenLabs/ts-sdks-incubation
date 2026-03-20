@@ -4,8 +4,8 @@ Incubation TypeScript packages for the [Sui](https://sui.io) blockchain ecosyste
 
 ## Packages
 
-| Package | Description | npm |
-| --- | --- | --- |
+| Package                                                | Description                                               | npm                                                                                                                               |
+| ------------------------------------------------------ | --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
 | [`@mysten-incubation/dev-wallet`](packages/dev-wallet) | A modular dev wallet for Sui dApp development and testing | [![npm](https://img.shields.io/npm/v/@mysten-incubation/dev-wallet)](https://www.npmjs.com/package/@mysten-incubation/dev-wallet) |
 
 ## Documentation

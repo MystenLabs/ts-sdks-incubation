@@ -5,8 +5,9 @@ title: CLI Signer API
 HTTP API for signing transactions using the local `sui` CLI keystore. Private keys never leave the
 `sui` binary — only transaction bytes are sent for signing.
 
-This API is served by the dev wallet's standalone server (`npx @mysten-incubation/dev-wallet serve`). The
-endpoints are implemented as middleware that can be mounted on any HTTP server.
+This API is served by the dev wallet's standalone server
+(`npx @mysten-incubation/dev-wallet serve`). The endpoints are implemented as middleware that can be
+mounted on any HTTP server.
 
 ## Endpoints
 
@@ -110,8 +111,8 @@ The API uses a **token-in-URL** approach (same pattern as Jupyter notebooks):
 
 ## Client Integration
 
-The `RemoteCliAdapter` from `@mysten-incubation/dev-wallet/adapters` implements the browser-side client for
-this API. See [Remote CLI Adapter](/dev-wallet/reference/adapters/remote-cli) for usage.
+The `RemoteCliAdapter` from `@mysten-incubation/dev-wallet/adapters` implements the browser-side
+client for this API. See [Remote CLI Adapter](/dev-wallet/reference/adapters/remote-cli) for usage.
 
 ```typescript
 import { RemoteCliAdapter } from '@mysten-incubation/dev-wallet/adapters';

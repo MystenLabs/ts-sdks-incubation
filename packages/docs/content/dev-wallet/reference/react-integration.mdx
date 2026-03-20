@@ -139,7 +139,10 @@ plugin system. The wallet automatically uses dApp Kit's networks and clients:
 import { createDAppKit, DAppKitProvider } from '@mysten/dapp-kit-react';
 import { ConnectButton } from '@mysten/dapp-kit-react/ui';
 import { devWalletInitializer } from '@mysten-incubation/dev-wallet';
-import { InMemorySignerAdapter, WebCryptoSignerAdapter } from '@mysten-incubation/dev-wallet/adapters';
+import {
+	InMemorySignerAdapter,
+	WebCryptoSignerAdapter,
+} from '@mysten-incubation/dev-wallet/adapters';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 
 const dAppKit = createDAppKit({
@@ -203,7 +206,10 @@ wallet lifecycle within a component:
 
 ```tsx
 import { useDevWallet } from '@mysten-incubation/dev-wallet/react';
-import { InMemorySignerAdapter, WebCryptoSignerAdapter } from '@mysten-incubation/dev-wallet/adapters';
+import {
+	InMemorySignerAdapter,
+	WebCryptoSignerAdapter,
+} from '@mysten-incubation/dev-wallet/adapters';
 import { useMemo } from 'react';
 
 function App() {

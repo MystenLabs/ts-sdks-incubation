@@ -30,7 +30,10 @@ accounts.
 
 ```typescript
 import { DevWallet } from '@mysten-incubation/dev-wallet';
-import { InMemorySignerAdapter, WebCryptoSignerAdapter } from '@mysten-incubation/dev-wallet/adapters';
+import {
+	InMemorySignerAdapter,
+	WebCryptoSignerAdapter,
+} from '@mysten-incubation/dev-wallet/adapters';
 
 const adapters = [new InMemorySignerAdapter(), new WebCryptoSignerAdapter()];
 
