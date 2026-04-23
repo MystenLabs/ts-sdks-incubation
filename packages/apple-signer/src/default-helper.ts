@@ -37,26 +37,26 @@ export function __resetDefaultHelperForTesting(): void {
 	defaultHelperPromise = null;
 }
 
+/**
+ * Cleanup strategy: rely on the subprocess self-terminating when its stdin pipe
+ * gets EOF. That happens automatically during any normal Node teardown
+ * (`process.exit`, uncaught exception → Node's auto-exit, default SIGINT/SIGTERM
+ * handling) — Node closes child stdin as part of shutting down, the helper's
+ * Swift `readLine()` returns nil, the loop exits, the helper dies.
+ *
+ * We deliberately do NOT install `SIGINT`/`SIGTERM` listeners. Doing so would
+ * override Node's default signal behavior and conflict with app-owned shutdown
+ * coordinators (frameworks, graceful-shutdown libs, test runners, process
+ * managers). The `'exit'` handler below is belt-and-suspenders — `'exit'` is
+ * synchronous-only, so we can't await the helper's `close()`, but we flag the
+ * promise chain so any microtasks that manage to run see a closed state.
+ */
 function installProcessCleanup(): void {
 	if (installedCleanup) return;
 	installedCleanup = true;
 
-	const close = () => {
+	process.once('exit', () => {
 		if (!defaultHelperPromise) return;
-		defaultHelperPromise
-			.then((h) => h.close())
-			.catch(() => {
-				// helper may already be dead
-			});
-	};
-
-	process.once('exit', close);
-	process.once('SIGINT', () => {
-		close();
-		process.exit(130);
-	});
-	process.once('SIGTERM', () => {
-		close();
-		process.exit(143);
+		defaultHelperPromise.then((h) => h.close()).catch(() => {});
 	});
 }
