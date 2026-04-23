@@ -19,8 +19,8 @@
 		"lint:fix": "pnpm run oxlint:fix && pnpm run prettier:fix"
 	},
 	"dependencies": {
-		"@mysten-incubation/dev-wallet": "workspace:*",
 		"@mysten-incubation/apple-signer": "workspace:*",
+		"@mysten-incubation/dev-wallet": "workspace:*",
 		"@mysten-incubation/keyring-signer": "workspace:*",
 		"@tanstack/react-query": "^5.90.16",
 		"fast-glob": "^3.3.3",

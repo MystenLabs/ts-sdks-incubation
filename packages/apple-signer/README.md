@@ -129,18 +129,7 @@ type KeychainSeed =
 - **User presence**: optional per key. When enabled, requires Touch ID on first sign
   of each helper lifetime.
 
-For the detailed threat model, see the
-[security docs](../docs/content/apple-signer/security.mdx).
-
-## Running the end-to-end roundtrip
-
-```sh
-pnpm --filter @mysten-incubation/apple-signer roundtrip
-```
-
-Pass `--run=enclave` or `--run=keychain` to limit which modes run. Keychain mode is
-gracefully skipped when running against an ad-hoc helper (no Developer ID), which is
-the default for local dev builds.
+For the detailed threat model, see the [docs page](../docs/content/apple-signer/index.mdx).
 
 ## When to pick something else
 

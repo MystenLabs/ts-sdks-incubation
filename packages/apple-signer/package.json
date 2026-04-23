@@ -41,8 +41,7 @@
 		"oxlint:fix": "oxlint --fix",
 		"lint": "pnpm run oxlint:check && pnpm run prettier:check",
 		"lint:fix": "pnpm run oxlint:fix && pnpm run prettier:fix",
-		"test": "vitest run --config vitest.config.ts",
-		"roundtrip": "tsx examples/roundtrip.mts"
+		"test": "vitest run --config vitest.config.ts"
 	},
 	"repository": {
 		"type": "git",
