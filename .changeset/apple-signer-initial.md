@@ -36,5 +36,4 @@ and `signAndExecuteTransaction` work directly.
 
 Also exposes `keypairFromP12(bytes, password)` under the `/recover` subpath — a pure-JS
 decoder for PKCS#12 files exported via Keychain Access.app (or `openssl pkcs12 -export`).
-Returns a `Secp256r1Keypair` suitable for re-import into a new Keychain entry or for
-pasting into `sui.keystore`.
+Returns a `Secp256r1Keypair` suitable for re-import into a new Keychain entry.

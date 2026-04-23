@@ -14,6 +14,16 @@ export type SupportedScheme = 'ED25519' | 'Secp256r1';
 
 export const DEFAULT_SERVICE = 'sui-keyring-signer';
 
+/**
+ * Memoize the OS-keyring backend so repeated public-API calls don't re-import
+ * `@napi-rs/keyring` or instantiate new wrappers.
+ */
+let defaultBackendPromise: Promise<KeyringBackend> | null = null;
+function defaultBackend(): Promise<KeyringBackend> {
+	defaultBackendPromise ??= NapiKeyringBackend.load();
+	return defaultBackendPromise;
+}
+
 export interface KeyringSignerOptions {
 	/**
 	 * Which Sui signature scheme to use when generating a fresh key. If a key
@@ -59,7 +69,7 @@ export interface ImportKeyringSignerOptions {
  * afterward.
  */
 export async function createKeyringSigner(options: KeyringSignerOptions): Promise<Signer> {
-	return createKeyringSignerWithBackend({ ...options, backend: await NapiKeyringBackend.load() });
+	return createKeyringSignerWithBackend({ ...options, backend: await defaultBackend() });
 }
 
 /**
@@ -67,7 +77,7 @@ export async function createKeyringSigner(options: KeyringSignerOptions): Promis
  * stored key's flag byte.
  */
 export async function loadKeyringSigner(options: LoadKeyringSignerOptions): Promise<Signer | null> {
-	return loadKeyringSignerWithBackend({ ...options, backend: await NapiKeyringBackend.load() });
+	return loadKeyringSignerWithBackend({ ...options, backend: await defaultBackend() });
 }
 
 /**
@@ -77,7 +87,7 @@ export async function loadKeyringSigner(options: LoadKeyringSignerOptions): Prom
 export async function listKeyringSigners(
 	options: ListKeyringSignersOptions = {},
 ): Promise<string[]> {
-	return listKeyringSignersWithBackend({ ...options, backend: await NapiKeyringBackend.load() });
+	return listKeyringSignersWithBackend({ ...options, backend: await defaultBackend() });
 }
 
 /**
@@ -85,7 +95,7 @@ export async function listKeyringSigners(
  * refuses to overwrite an existing entry.
  */
 export async function importKeyringSigner(options: ImportKeyringSignerOptions): Promise<Signer> {
-	return importKeyringSignerWithBackend({ ...options, backend: await NapiKeyringBackend.load() });
+	return importKeyringSignerWithBackend({ ...options, backend: await defaultBackend() });
 }
 
 /**
@@ -93,7 +103,7 @@ export async function importKeyringSigner(options: ImportKeyringSignerOptions): 
  * actually deleted.
  */
 export async function deleteKeyringSigner(options: LoadKeyringSignerOptions): Promise<boolean> {
-	return deleteKeyringSignerWithBackend({ ...options, backend: await NapiKeyringBackend.load() });
+	return deleteKeyringSignerWithBackend({ ...options, backend: await defaultBackend() });
 }
 
 /**
@@ -107,7 +117,7 @@ export async function exportKeyringSignerSecret(
 ): Promise<string | null> {
 	return exportKeyringSignerSecretWithBackend({
 		...options,
-		backend: await NapiKeyringBackend.load(),
+		backend: await defaultBackend(),
 	});
 }
 
@@ -152,13 +162,17 @@ export async function importKeyringSignerWithBackend(
 	options: ImportKeyringSignerOptions & { backend: KeyringBackend },
 ): Promise<Signer> {
 	const service = options.service ?? DEFAULT_SERVICE;
+	// Validate the Bech32 decodes to a supported scheme BEFORE writing. Otherwise
+	// a malformed or Secp256k1 key would land in the keyring and only fail on
+	// the next load — leaving an unusable entry behind.
+	const signer = await signerFromBech32(options.secretKey);
 	if (!options.overwrite && (await options.backend.get(service, options.tag)) !== null) {
 		throw new Error(
 			`keyring-signer: entry already exists at ${service}/${options.tag}. Pass overwrite: true to replace.`,
 		);
 	}
 	await options.backend.set(service, options.tag, options.secretKey);
-	return signerFromBech32(options.secretKey);
+	return signer;
 }
 
 export async function deleteKeyringSignerWithBackend(

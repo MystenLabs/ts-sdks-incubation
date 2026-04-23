@@ -7,8 +7,7 @@ import { SubprocessHelper } from './helper.js';
 /**
  * A module-scoped promise for the shared helper. Lazily created on first use
  * so that consumers who never call a factory (or use a custom `helper`) don't
- * pay the subprocess-spawn cost, and so that cleanup hooks are only installed
- * once we have a process to clean up.
+ * pay the subprocess-spawn cost.
  */
 let defaultHelperPromise: Promise<AppleHelper> | null = null;
 let installedCleanup = false;
@@ -21,20 +20,41 @@ let installedCleanup = false;
  * signer type (enclave + keychain), which means **one biometric prompt per
  * process run** regardless of how many signers you create.
  *
+ * Self-healing: if the helper dies (subprocess crash, kill, Developer ID
+ * mismatch), the cached promise is cleared so the next caller respawns instead
+ * of getting a stuck "helper exited" error forever.
+ *
  * Users who need isolation (tests, multi-tenant scenarios) should construct
  * `new SubprocessHelper(...)` themselves and pass it via the `helper` option.
  */
 export async function getDefaultHelper(): Promise<AppleHelper> {
 	if (!defaultHelperPromise) {
-		defaultHelperPromise = SubprocessHelper.load();
+		const promise = SubprocessHelper.load().then((helper) => {
+			// When this helper dies, evict it from the cache so a future call
+			// spawns a fresh one instead of reusing the broken handle.
+			helper.onExit(() => {
+				if (defaultHelperPromise === promise) defaultHelperPromise = null;
+			});
+			return helper;
+		});
+		defaultHelperPromise = promise;
 		installProcessCleanup();
 	}
 	return defaultHelperPromise;
 }
 
-/** Exposed for tests — resets the default helper so new calls spawn a fresh one. */
-export function __resetDefaultHelperForTesting(): void {
+/** Exposed for tests — closes any running helper and resets the cache. */
+export async function __resetDefaultHelperForTesting(): Promise<void> {
+	const prev = defaultHelperPromise;
 	defaultHelperPromise = null;
+	if (prev) {
+		try {
+			const helper = await prev;
+			await helper.close();
+		} catch {
+			// already dead / never resolved — fine
+		}
+	}
 }
 
 /**
@@ -48,8 +68,8 @@ export function __resetDefaultHelperForTesting(): void {
  * override Node's default signal behavior and conflict with app-owned shutdown
  * coordinators (frameworks, graceful-shutdown libs, test runners, process
  * managers). The `'exit'` handler below is belt-and-suspenders — `'exit'` is
- * synchronous-only, so we can't await the helper's `close()`, but we flag the
- * promise chain so any microtasks that manage to run see a closed state.
+ * synchronous-only, so we can't await the helper's `close()`, but we queue a
+ * best-effort close for any microtasks that manage to run.
  */
 function installProcessCleanup(): void {
 	if (installedCleanup) return;

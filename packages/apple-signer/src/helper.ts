@@ -17,6 +17,12 @@ import { resolveBinaryPath } from './binary-resolver.js';
 export interface AppleHelper {
 	request<T = unknown>(op: string, args?: Record<string, unknown>): Promise<T>;
 	close(): Promise<void>;
+	/**
+	 * Register a callback that fires once when the helper exits (whether via
+	 * `close()`, subprocess crash, or parent teardown). Used by the default-
+	 * helper cache to self-heal after the subprocess dies.
+	 */
+	onExit(cb: () => void): void;
 }
 
 export interface SubprocessHelperOptions {
@@ -29,6 +35,27 @@ interface Response {
 	ok: boolean;
 	data?: unknown;
 	error?: string;
+	/**
+	 * Machine-readable error code when `ok: false`. Known values:
+	 * `not_found`, `already_exists`, `auth_failed`, `user_canceled`,
+	 * `missing_entitlement`, `unknown`. Absent for ad-hoc error messages
+	 * the helper doesn't classify.
+	 */
+	code?: string;
+}
+
+/**
+ * Error thrown by `SubprocessHelper.request` when the helper returns `ok: false`.
+ * Carries the machine-readable `code` (when the helper classified the error) and
+ * the raw message from Swift.
+ */
+export class HelperError extends Error {
+	readonly code: string | undefined;
+	constructor(message: string, code?: string) {
+		super(message);
+		this.name = 'HelperError';
+		this.code = code;
+	}
 }
 
 /**
@@ -43,6 +70,7 @@ export class SubprocessHelper implements AppleHelper {
 	#pending = new Map<string, (res: Response) => void>();
 	#nextId = 1;
 	#closed = false;
+	#exitCallbacks: Array<() => void> = [];
 
 	static async load(options: SubprocessHelperOptions = {}): Promise<SubprocessHelper> {
 		const binaryPath = options.binaryPath ?? (await resolveBinaryPath());
@@ -67,7 +95,7 @@ export class SubprocessHelper implements AppleHelper {
 		return new Promise<T>((resolve, reject) => {
 			this.#pending.set(id, (res) => {
 				if (res.ok) resolve(res.data as T);
-				else reject(new Error(res.error ?? 'apple-signer: unknown error'));
+				else reject(new HelperError(res.error ?? 'apple-signer: unknown error', res.code));
 			});
 			if (!this.#proc.stdin.write(payload)) {
 				this.#proc.stdin.once('drain', () => {});
@@ -117,12 +145,29 @@ export class SubprocessHelper implements AppleHelper {
 		}
 	}
 
+	onExit(cb: () => void): void {
+		if (this.#closed) {
+			queueMicrotask(cb);
+			return;
+		}
+		this.#exitCallbacks.push(cb);
+	}
+
 	#onExit(err?: Error): void {
+		if (this.#closed) return;
 		this.#closed = true;
 		const reason = err ?? new Error('apple-signer: helper exited');
 		for (const [id, cb] of this.#pending) {
 			cb({ id, ok: false, error: reason.message });
 		}
 		this.#pending.clear();
+		for (const cb of this.#exitCallbacks) {
+			try {
+				cb();
+			} catch {
+				// user callback errors shouldn't break the others
+			}
+		}
+		this.#exitCallbacks = [];
 	}
 }

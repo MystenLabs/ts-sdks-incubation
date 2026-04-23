@@ -119,7 +119,7 @@ console.log(keypair.getPublicKey().toSuiAddress());
 ```
 
 From there, pass the Bech32 into `createKeychainSigner({ tag: 'restored', seed: { source:
-'bech32', bech32 } })` to re-import on a new Mac, or drop it straight into `sui.keystore`.
+'bech32', bech32 } })` to re-import on a new Mac.
 
 This is for `.p12` files specifically — the macOS-produced recovery format. Enclave keys
 can never be exported, and OS keyrings on Linux/Windows don't produce `.p12` at all.

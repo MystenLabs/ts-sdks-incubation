@@ -8,6 +8,7 @@ import { wordlist as englishWordlist } from '@scure/bip39/wordlists/english.js';
 
 import { getDefaultHelper } from './default-helper.js';
 import type { AppleHelper } from './helper.js';
+import { HelperError } from './helper.js';
 import { KeychainSigner } from './signer.js';
 
 export type KeychainSeed =
@@ -102,6 +103,20 @@ export async function createKeychainSigner(
 			Uint8Array.from(Buffer.from(publicKey, 'base64')),
 		);
 		return mnemonic !== undefined ? { signer, mnemonic } : { signer };
+	} catch (err) {
+		// Concurrent caller won the race and created the key between our
+		// pubkey-check and our generate. Reload — but only for `seed: random`;
+		// for explicit seed modes the caller wanted this specific scalar in,
+		// and a silent fallback would surprise them.
+		if (
+			err instanceof HelperError &&
+			err.code === 'already_exists' &&
+			seed.source === 'random'
+		) {
+			const pubkey = await tryKeychainPubkey(helper, options.tag);
+			if (pubkey) return { signer: new KeychainSigner(helper, options.tag, pubkey) };
+		}
+		throw err;
 	} finally {
 		if (scalar) scalar.fill(0);
 	}
@@ -144,7 +159,7 @@ async function tryKeychainPubkey(
 		});
 		return Uint8Array.from(Buffer.from(publicKey, 'base64'));
 	} catch (err) {
-		if (/not found/i.test((err as Error).message)) return null;
+		if (err instanceof HelperError && err.code === 'not_found') return null;
 		throw err;
 	}
 }

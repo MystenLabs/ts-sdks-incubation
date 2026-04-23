@@ -24,7 +24,7 @@ next-env.d.ts
 .env
 
 # Swift Package Manager build dir (apple-signer native helper)
-.build/
+packages/apple-signer/native/.build/
 
 # Generated per-package LLM docs
 packages/*/docs/

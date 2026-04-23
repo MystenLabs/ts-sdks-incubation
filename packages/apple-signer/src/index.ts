@@ -3,7 +3,7 @@
 
 // Helper protocol (advanced users / tests)
 export type { AppleHelper, SubprocessHelperOptions } from './helper.js';
-export { SubprocessHelper } from './helper.js';
+export { HelperError, SubprocessHelper } from './helper.js';
 export { resolveBinaryPath } from './binary-resolver.js';
 
 // Signer classes

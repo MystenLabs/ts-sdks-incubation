@@ -3,6 +3,7 @@
 
 import { getDefaultHelper } from './default-helper.js';
 import type { AppleHelper } from './helper.js';
+import { HelperError } from './helper.js';
 import { SecureEnclaveSigner } from './signer.js';
 
 export interface CreateEnclaveSignerOptions {
@@ -48,11 +49,21 @@ export async function createEnclaveSigner(
 	if (existing) {
 		return new SecureEnclaveSigner(helper, options.tag, existing);
 	}
-	const { publicKey } = await helper.request<{ publicKey: string }>('enclave.generate', {
-		tag: options.tag,
-		requireBiometric: options.requireBiometric ?? true,
-	});
-	return new SecureEnclaveSigner(helper, options.tag, Buffer.from(publicKey, 'base64'));
+	try {
+		const { publicKey } = await helper.request<{ publicKey: string }>('enclave.generate', {
+			tag: options.tag,
+			requireBiometric: options.requireBiometric ?? true,
+		});
+		return new SecureEnclaveSigner(helper, options.tag, Buffer.from(publicKey, 'base64'));
+	} catch (err) {
+		// Concurrent caller won the race and created the key between our
+		// pubkey-check and our generate. Reload instead of failing.
+		if (err instanceof HelperError && err.code === 'already_exists') {
+			const pubkey = await tryEnclavePubkey(helper, options.tag);
+			if (pubkey) return new SecureEnclaveSigner(helper, options.tag, pubkey);
+		}
+		throw err;
+	}
 }
 
 export async function loadEnclaveSigner(
@@ -85,7 +96,7 @@ async function tryEnclavePubkey(helper: AppleHelper, tag: string): Promise<Uint8
 		const { publicKey } = await helper.request<{ publicKey: string }>('enclave.pubkey', { tag });
 		return Uint8Array.from(Buffer.from(publicKey, 'base64'));
 	} catch (err) {
-		if (/not found/i.test((err as Error).message)) return null;
+		if (err instanceof HelperError && err.code === 'not_found') return null;
 		throw err;
 	}
 }

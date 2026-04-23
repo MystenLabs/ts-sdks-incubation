@@ -50,7 +50,9 @@
 			"dependsOn": ["^build", "build:docs"],
 			"inputs": [
 				"src/**",
-				"bin/**",
+				"native/Package.swift",
+				"native/Sources/**",
+				"native/*.entitlements",
 				"scripts/**",
 				"templates/**",
 				"*.ts",
@@ -59,7 +61,7 @@
 				"tsdown.config.ts",
 				"package.json"
 			],
-			"outputs": ["build/**", "dist/**", "docs/**"]
+			"outputs": ["bin/**", "build/**", "dist/**", "docs/**"]
 		},
 		"build:docs": {
 			"inputs": ["../docs/content/**", "../docs/scripts/**"],

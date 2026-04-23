@@ -10,6 +10,7 @@ import { generateMnemonic } from '@scure/bip39';
 import { wordlist as englishWordlist } from '@scure/bip39/wordlists/english.js';
 
 import type { AppleHelper } from '../src/helper.js';
+import { HelperError } from '../src/helper.js';
 import {
 	createEnclaveSigner,
 	deleteEnclaveSigner,
@@ -59,24 +60,25 @@ function fakeHelper(): AppleHelper & {
 		enclaveKeys,
 		keychainKeys,
 		async close() {},
+		onExit() {},
 		async request(op, args = {}) {
 			const a = args as { tag?: string; digest?: string; scalar?: string };
 			switch (op) {
 				case 'enclave.generate': {
 					const tag = a.tag!;
-					if (enclaveKeys.has(tag)) throw new Error(`key with tag '${tag}' already exists`);
+					if (enclaveKeys.has(tag)) throw new HelperError(`key with tag '${tag}' already exists`, 'already_exists');
 					const scalar = p256.utils.randomSecretKey();
 					enclaveKeys.set(tag, scalar);
 					return { publicKey: compressedPub(scalar) };
 				}
 				case 'enclave.pubkey': {
 					const scalar = enclaveKeys.get(a.tag!);
-					if (!scalar) throw new Error(`key with tag '${a.tag}' not found`);
+					if (!scalar) throw new HelperError(`key with tag '${a.tag}' not found`, 'not_found');
 					return { publicKey: compressedPub(scalar) };
 				}
 				case 'enclave.sign': {
 					const scalar = enclaveKeys.get(a.tag!);
-					if (!scalar) throw new Error(`key with tag '${a.tag}' not found`);
+					if (!scalar) throw new HelperError(`key with tag '${a.tag}' not found`, 'not_found');
 					return { signature: derSignature(scalar, a.digest!) };
 				}
 				case 'enclave.list':
@@ -86,7 +88,7 @@ function fakeHelper(): AppleHelper & {
 
 				case 'keychain.generate': {
 					const tag = a.tag!;
-					if (keychainKeys.has(tag)) throw new Error(`key with tag '${tag}' already exists`);
+					if (keychainKeys.has(tag)) throw new HelperError(`key with tag '${tag}' already exists`, 'already_exists');
 					const scalar = a.scalar
 						? Uint8Array.from(Buffer.from(a.scalar, 'base64'))
 						: p256.utils.randomSecretKey();
@@ -95,12 +97,12 @@ function fakeHelper(): AppleHelper & {
 				}
 				case 'keychain.pubkey': {
 					const scalar = keychainKeys.get(a.tag!);
-					if (!scalar) throw new Error(`key with tag '${a.tag}' not found`);
+					if (!scalar) throw new HelperError(`key with tag '${a.tag}' not found`, 'not_found');
 					return { publicKey: compressedPub(scalar) };
 				}
 				case 'keychain.sign': {
 					const scalar = keychainKeys.get(a.tag!);
-					if (!scalar) throw new Error(`key with tag '${a.tag}' not found`);
+					if (!scalar) throw new HelperError(`key with tag '${a.tag}' not found`, 'not_found');
 					return { signature: derSignature(scalar, a.digest!) };
 				}
 				case 'keychain.list':

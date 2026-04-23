@@ -7,6 +7,9 @@
 	"type": "module",
 	"main": "./dist/index.mjs",
 	"types": "./dist/index.d.mts",
+	"engines": {
+		"node": ">=22"
+	},
 	"os": [
 		"darwin"
 	],

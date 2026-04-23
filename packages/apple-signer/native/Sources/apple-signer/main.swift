@@ -71,8 +71,41 @@ func success(_ id: String, _ data: [String: Any]) {
     emit(["id": id, "ok": true, "data": data])
 }
 
-func failure(_ id: String, _ error: String) {
-    emit(["id": id, "ok": false, "error": error])
+func failure(_ id: String, _ error: String, code: String? = nil) {
+    var payload: [String: Any] = ["id": id, "ok": false, "error": error]
+    if let code = code { payload["code"] = code }
+    emit(payload)
+}
+
+/// Extract a machine-readable `code` from an `NSError` we threw ourselves
+/// (carries `code` in `userInfo`). Returns `nil` for any other error.
+func codeFromError(_ error: Error) -> String? {
+    (error as NSError).userInfo["code"] as? String
+}
+
+/// Maps a `OSStatus` from Security.framework to a stable machine-readable code
+/// string plus a user-friendly message. Unknown codes fall through to `unknown`.
+func decodeOSStatus(_ status: OSStatus) -> (code: String, message: String) {
+    switch status {
+    case errSecItemNotFound:
+        return ("not_found", "Keychain item not found (errSecItemNotFound \(status))")
+    case errSecDuplicateItem:
+        return ("already_exists", "Keychain item already exists (errSecDuplicateItem \(status))")
+    case errSecAuthFailed:
+        return ("auth_failed", "Authentication failed (errSecAuthFailed \(status))")
+    case errSecUserCanceled:
+        return ("user_canceled", "User canceled the authentication prompt (errSecUserCanceled \(status))")
+    case errSecMissingEntitlement:
+        return (
+            "missing_entitlement",
+            "SecItemAdd failed with errSecMissingEntitlement (\(status)). Keychain mode " +
+                "requires the helper to be signed with a Developer ID certificate whose " +
+                "entitlements include a keychain-access-group. Ad-hoc signing (the default " +
+                "local build) does not satisfy this."
+        )
+    default:
+        return ("unknown", "Security framework error (OSStatus \(status))")
+    }
 }
 
 // MARK: - Shared crypto
@@ -151,7 +184,7 @@ func loadEnclaveKey(tag: String) throws -> SecureEnclave.P256.Signing.PrivateKey
 func handleEnclaveGenerate(id: String, tag: String, requireBiometric: Bool) {
     var store = loadEnclaveStore()
     if store[tag] != nil {
-        failure(id, "enclave key with tag '\(tag)' already exists; use pubkey or delete")
+        failure(id, "enclave key with tag '\(tag)' already exists; use pubkey or delete", code: "already_exists")
         return
     }
     do {
@@ -164,7 +197,7 @@ func handleEnclaveGenerate(id: String, tag: String, requireBiometric: Bool) {
         try saveEnclaveStore(store)
         success(id, ["publicKey": compressedPublicKey(key.publicKey).base64EncodedString()])
     } catch {
-        failure(id, error.localizedDescription)
+        failure(id, error.localizedDescription, code: codeFromError(error))
     }
 }
 
@@ -173,9 +206,9 @@ func handleEnclavePubkey(id: String, tag: String) {
         let key = try loadEnclaveKey(tag: tag)
         success(id, ["publicKey": compressedPublicKey(key.publicKey).base64EncodedString()])
     } catch KeyError.notFound {
-        failure(id, "enclave key with tag '\(tag)' not found")
+        failure(id, "enclave key with tag '\(tag)' not found", code: "not_found")
     } catch {
-        failure(id, error.localizedDescription)
+        failure(id, error.localizedDescription, code: codeFromError(error))
     }
 }
 
@@ -189,9 +222,9 @@ func handleEnclaveSign(id: String, tag: String, digestB64: String) {
         let sig = try key.signature(for: digest)
         success(id, ["signature": sig.derRepresentation.base64EncodedString()])
     } catch KeyError.notFound {
-        failure(id, "enclave key with tag '\(tag)' not found")
+        failure(id, "enclave key with tag '\(tag)' not found", code: "not_found")
     } catch {
-        failure(id, error.localizedDescription)
+        failure(id, error.localizedDescription, code: codeFromError(error))
     }
 }
 
@@ -207,7 +240,7 @@ func handleEnclaveDelete(id: String, tag: String) {
             try saveEnclaveStore(store)
             success(id, ["deleted": true])
         } catch {
-            failure(id, error.localizedDescription)
+            failure(id, error.localizedDescription, code: codeFromError(error))
         }
     } else {
         success(id, ["deleted": false])
@@ -269,22 +302,15 @@ func keychainAddKey(
         kSecAttrAccessControl as String: access,
     ]
     let status = SecItemAdd(attrs as CFDictionary, nil)
-    if status == errSecMissingEntitlement {
-        throw NSError(
-            domain: NSOSStatusErrorDomain,
-            code: Int(status),
-            userInfo: [NSLocalizedDescriptionKey:
-                "SecItemAdd failed with errSecMissingEntitlement (-34018). Keychain mode " +
-                "requires the helper to be signed with a Developer ID certificate and declare a " +
-                "matching keychain-access-groups entitlement. Ad-hoc signed builds work for " +
-                "enclave mode only. See docs on distribution for the proper signing pipeline."]
-        )
-    }
     if status != errSecSuccess {
+        let (code, message) = decodeOSStatus(status)
         throw NSError(
             domain: NSOSStatusErrorDomain,
             code: Int(status),
-            userInfo: [NSLocalizedDescriptionKey: "SecItemAdd failed with OSStatus \(status)"]
+            userInfo: [
+                NSLocalizedDescriptionKey: message,
+                "code": code,
+            ]
         )
     }
 }
@@ -298,7 +324,7 @@ func handleKeychainGenerate(
     scalarB64: String?
 ) {
     if keychainLoadKey(tag: tag) != nil {
-        failure(id, "keychain key with tag '\(tag)' already exists; use pubkey or delete")
+        failure(id, "keychain key with tag '\(tag)' already exists; use pubkey or delete", code: "already_exists")
         return
     }
     do {
@@ -348,13 +374,13 @@ func handleKeychainGenerate(
         }
         success(id, ["publicKey": compressedPublicKey(fromX963: uncompressed).base64EncodedString()])
     } catch {
-        failure(id, error.localizedDescription)
+        failure(id, error.localizedDescription, code: codeFromError(error))
     }
 }
 
 func handleKeychainPubkey(id: String, tag: String) {
     guard let priv = keychainLoadKey(tag: tag) else {
-        failure(id, "keychain key with tag '\(tag)' not found")
+        failure(id, "keychain key with tag '\(tag)' not found", code: "not_found")
         return
     }
     do {
@@ -367,13 +393,13 @@ func handleKeychainPubkey(id: String, tag: String) {
         }
         success(id, ["publicKey": compressedPublicKey(fromX963: uncompressed).base64EncodedString()])
     } catch {
-        failure(id, error.localizedDescription)
+        failure(id, error.localizedDescription, code: codeFromError(error))
     }
 }
 
 func handleKeychainSign(id: String, tag: String, digestB64: String) {
     guard let priv = keychainLoadKey(tag: tag) else {
-        failure(id, "keychain key with tag '\(tag)' not found")
+        failure(id, "keychain key with tag '\(tag)' not found", code: "not_found")
         return
     }
     guard let digest = Data(base64Encoded: digestB64) else {
@@ -410,7 +436,8 @@ func handleKeychainList(id: String) {
         return
     }
     guard status == errSecSuccess, let items = result as? [[String: Any]] else {
-        failure(id, "SecItemCopyMatching status \(status)")
+        let (code, message) = decodeOSStatus(status)
+        failure(id, message, code: code)
         return
     }
     // Only return items whose label matches our app namespace.
@@ -433,7 +460,8 @@ func handleKeychainDelete(id: String, tag: String) {
     } else if status == errSecItemNotFound {
         success(id, ["deleted": false])
     } else {
-        failure(id, "SecItemDelete status \(status)")
+        let (code, message) = decodeOSStatus(status)
+        failure(id, message, code: code)
     }
 }
 

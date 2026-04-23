@@ -24,7 +24,7 @@ const ID_PRIME256V1 = '1.2.840.10045.3.1.7';
  *
  * @example
  *   import { readFileSync } from 'node:fs';
- *   import { keypairFromP12 } from '@mysten-incubation/keyring-signer/recover';
+ *   import { keypairFromP12 } from '@mysten-incubation/apple-signer/recover';
  *
  *   const p12 = readFileSync('backup.p12');
  *   const keypair = keypairFromP12(p12, 'your-export-password');
