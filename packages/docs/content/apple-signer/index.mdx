@@ -1,0 +1,145 @@
+---
+title: Apple Signer
+description: Sui signer for macOS backed by Secure Enclave and Keychain via a signed Swift helper
+---
+
+<Callout type="error">
+	**Dev and testnet keys only.** Enclave keys are **non-recoverable** by design — no
+	mnemonic, no `.p12`, no cloud backup. Both modes may need regenerating when the helper
+	is re-signed with a Developer ID certificate. Do not put anything into this package
+	that you can't afford to lose.
+</Callout>
+
+```sh npm2yarn
+npm i @mysten-incubation/apple-signer
+```
+
+```typescript
+import { createEnclaveSigner } from '@mysten-incubation/apple-signer';
+
+const signer = await createEnclaveSigner({
+	tag: 'publisher', // stable identifier — reuse to reload the same key on future calls
+});
+
+// First sign in a fresh Node process triggers Touch ID; subsequent signs are silent
+// until the process exits. Standard @mysten/sui Signer.
+const { bytes, signature } = await signer.signTransaction(txBytes);
+```
+
+Private scalar never leaves the chip.
+
+## Keychain mode
+
+Key lives in the macOS Keychain as a **`SecKey` item with a custom `SecAccess` ACL**. Two
+things matter about that storage model:
+
+- **Signing never touches the raw key.** `SecKeyCreateSignature` takes a `SecKey` handle
+  and returns a signature; the underlying scalar stays in the Keychain. The helper
+  process — and anything else — operates on a reference, never the bytes. (Exception: if
+  you create the key via `seed: 'bech32'` or `seed: 'mnemonic'`, the scalar exists in the
+  helper's memory briefly during decode, then is zeroed once `SecItemAdd` completes.)
+- **The user can recover it.** Open Keychain Access.app, find the entry, right-click →
+  Export. macOS prompts for the user's login password, then writes a password-protected
+  `.p12` the user controls. Decode elsewhere with
+  [`keypairFromP12`](#recovery-from-a-p12-file).
+
+This is different from what [`@mysten-incubation/keyring-signer`](/keyring-signer) does on
+macOS. Keyring-signer also touches the Keychain, but via **generic password items** — a
+different Keychain API bucket with no ACL and no per-operation gating. Any same-user
+process can read those silently. Keychain mode here uses `SecKey` + `SecItemAdd` with an
+ACL; other processes can't use the key silently.
+
+```typescript
+import { createKeychainSigner } from '@mysten-incubation/apple-signer';
+
+// Helper generates entropy and returns the BIP39 mnemonic ONCE, for the caller to store.
+const { signer, mnemonic } = await createKeychainSigner({
+	tag: 'publisher',
+	seed: { source: 'generate-mnemonic', wordCount: 24 },
+});
+```
+
+Other seed sources:
+
+```typescript
+await createKeychainSigner({ tag: 'a', seed: { source: 'random' } });
+await createKeychainSigner({ tag: 'b', seed: { source: 'bech32', bech32: 'suiprivkey1...' } });
+await createKeychainSigner({ tag: 'c', seed: { source: 'mnemonic', mnemonic: '...' } });
+```
+
+<Callout type="warn">
+	Keychain mode requires a Developer ID–signed helper; ad-hoc local builds will throw
+	`errSecMissingEntitlement (-34018)` on creation. Enclave mode works with ad-hoc
+	signing.
+</Callout>
+
+## API
+
+```typescript
+createEnclaveSigner({ tag, requireBiometric?, helper? }): Promise<SecureEnclaveSigner>
+loadEnclaveSigner({ tag, helper? }):        Promise<SecureEnclaveSigner | null>
+listEnclaveSigners({ helper? }):            Promise<string[]>
+deleteEnclaveSigner({ tag, helper? }):      Promise<boolean>
+
+createKeychainSigner({ tag, seed?, requireBiometric?, helper? }):
+	Promise<{ signer: KeychainSigner; mnemonic?: string }>
+loadKeychainSigner({ tag, helper? }):       Promise<KeychainSigner | null>
+listKeychainSigners({ helper? }):           Promise<string[]>
+deleteKeychainSigner({ tag, helper? }):     Promise<boolean>
+```
+
+`requireBiometric` defaults to `true` — sign requires a Touch ID (or passcode) prompt. One
+`LAContext` is held for the helper process's lifetime, so only the **first** sign in a
+fresh Node process prompts; every subsequent sign is silent. `requireBiometric: false` at
+creation time skips the prompt entirely (ACL is fixed once generated).
+
+`helper` is an escape hatch for tests / isolation — omit it and a module-level singleton
+helper is used. Enclave and Keychain tags live in separate namespaces.
+
+## Storage
+
+- **Enclave**: opaque `dataRepresentation` blobs at
+  `~/Library/Application Support/mysten-incubation-apple-signer/enclave-keys.json` (`0600`).
+  Blob is useless without the matching binary and device.
+- **Keychain**: `SecKey` items in the user's login keychain with a custom `SecAccess` ACL.
+
+## Recovery from a `.p12` file
+
+When a user exports a Keychain-mode key via Keychain Access.app (right-click → Export),
+macOS writes a password-protected `.p12` (PKCS#12) file. The `/recover` subpath turns that
+`.p12` back into a `Secp256r1Keypair`:
+
+```typescript
+import { keypairFromP12 } from '@mysten-incubation/apple-signer/recover';
+import { readFileSync } from 'node:fs';
+
+const keypair = keypairFromP12(readFileSync('backup.p12'), 'export-password');
+console.log(keypair.getSecretKey());           // 'suiprivkey1...'
+console.log(keypair.getPublicKey().toSuiAddress());
+```
+
+From there, pass the Bech32 into `createKeychainSigner({ tag: 'restored', seed: { source:
+'bech32', bech32 } })` to re-import on a new Mac, or drop it straight into `sui.keystore`.
+
+This is for `.p12` files specifically — the macOS-produced recovery format. Enclave keys
+can never be exported, and OS keyrings on Linux/Windows don't produce `.p12` at all.
+
+## Supported curves
+
+P-256 only (Sui's `Secp256r1` scheme). Apple's hardware-backed APIs don't expose Ed25519
+or Secp256k1.
+
+## Caveats
+
+- **Enclave keys are non-recoverable.** If the Mac dies, if macOS invalidates the stored
+  blob across an OS upgrade, or if the helper binary's code signature changes, the key
+  is gone. No recovery path exists.
+- **Keys may break on helper re-sign.** The helper today is ad-hoc signed. The first
+  time it's re-signed with a Developer ID certificate, existing keys may become
+  unreadable. Plan to regenerate.
+- **macOS only.** `package.json` declares `"os": ["darwin"]`; npm refuses to install
+  elsewhere.
+
+<Callout type="warn">
+	**Pre-1.0** — minor versions may contain breaking changes until the API stabilizes at 1.0.
+</Callout>

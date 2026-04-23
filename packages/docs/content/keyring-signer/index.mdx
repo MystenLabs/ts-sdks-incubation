@@ -1,0 +1,87 @@
+---
+title: Keyring Signer
+description: Cross-platform Sui signer backed by the OS keyring
+---
+
+<Callout type="error">
+	**Dev and testnet keys only.** The OS keyring is not a strong security boundary — any
+	other process your OS user runs can read stored keys silently, with no prompt. Do not
+	put anything into this package that you can't afford to lose.
+</Callout>
+
+```sh npm2yarn
+npm i @mysten-incubation/keyring-signer
+```
+
+```typescript
+import { createKeyringSigner } from '@mysten-incubation/keyring-signer';
+
+const signer = await createKeyringSigner({
+	scheme: 'ED25519', // or 'Secp256r1'
+	tag: 'publisher',  // stable identifier — reuse to reload the same key on future calls
+});
+
+// Standard @mysten/sui Signer — signTransaction, signPersonalMessage, etc.
+const { bytes, signature } = await signer.signTransaction(txBytes);
+```
+
+First call generates a fresh key and stores it in the OS keyring as a Bech32 `suiprivkey...`
+string. Subsequent calls with the same `tag` reload it. Raw private bytes are decoded
+in-process only long enough to import them as a non-extractable WebCrypto `CryptoKey` —
+see [Caveats](#caveats) for what that boundary does and doesn't cover.
+
+<Callout type="warn">
+	**The OS keyring protects against plaintext-on-disk, not against other processes.** Any
+	other process your OS user runs — a rogue `npx` script, a compromised dev-dep, a
+	terminal window you left open — can read the stored Bech32 directly from the keyring
+	(no prompt, no confirmation on macOS/Linux/Windows) and sign with it. The `CryptoKey`
+	isolation applies only after load, within the current process.
+
+	**Different from `apple-signer`'s Keychain mode.** On macOS they both touch the same
+	Keychain file, but via different APIs:
+	- This package uses **generic password items** (`SecKeychainAddGenericPassword`) — opaque
+	  strings, no ACL, any same-user process reads silently.
+	- [`apple-signer`](/apple-signer) keychain mode uses **`SecKey` items with a custom
+	  `SecAccess` ACL** — signing is gated to the helper binary, export requires user auth
+	  via Keychain Access.app.
+
+	Same keychain file, different buckets, very different security properties. Use
+	apple-signer for per-process biometric gating + hardware isolation on macOS.
+</Callout>
+
+## API
+
+```typescript
+createKeyringSigner({ scheme, tag, service? }): Promise<Signer>
+loadKeyringSigner({ tag, service? }): Promise<Signer | null>
+listKeyringSigners({ service? }): Promise<string[]>
+importKeyringSigner({ secretKey, tag, service?, overwrite? }): Promise<Signer>
+deleteKeyringSigner({ tag, service? }): Promise<boolean>
+exportKeyringSignerSecret({ tag, service? }): Promise<string | null>
+```
+
+`service` namespaces keys per-app (default `"sui-keyring-signer"`); `tag` is the logical
+key name. `exportKeyringSignerSecret` reads the raw Bech32 back out of the keyring — it's
+the only path that exposes private bytes.
+
+## Supported schemes
+
+`ED25519` (default) and `Secp256r1`. Secp256k1 is not supported — Node's WebCrypto doesn't
+expose the curve.
+
+## Caveats
+
+- **Linux headless / CI**: the OS keyring requires a running `secret-service` daemon. If
+  that's not available, use a keypair from `@mysten/sui` directly
+  (`Ed25519Keypair.fromSecretKey(process.env.MY_KEY!)`) and skip the keyring entirely.
+- **The `CryptoKey` boundary is V8-level, not OS-level.** Holding the key as a
+  non-extractable `CryptoKey` stops other JS code in the same process from reading the
+  raw bytes (they can still call `signer.sign(...)` and get signatures). It does **not**
+  stop a debugger, a core dump, or a process-level attacker from inspecting the backing
+  memory.
+- **For `.p12` recovery** (apple-signer backups, OpenSSL-generated keys), see
+  [`@mysten-incubation/apple-signer/recover`](/apple-signer#recovery).
+
+<Callout type="warn">
+	**Pre-1.0** — minor versions may contain breaking changes until the API stabilizes at 1.0.
+</Callout>

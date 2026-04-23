@@ -1,0 +1,6 @@
+{
+	"root": true,
+	"title": "Apple Signer",
+	"description": "Sui signer for macOS backed by Secure Enclave and Keychain via a signed Swift helper",
+	"pages": ["index"]
+}

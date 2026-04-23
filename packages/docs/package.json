@@ -20,6 +20,8 @@
 	},
 	"dependencies": {
 		"@mysten-incubation/dev-wallet": "workspace:*",
+		"@mysten-incubation/apple-signer": "workspace:*",
+		"@mysten-incubation/keyring-signer": "workspace:*",
 		"@tanstack/react-query": "^5.90.16",
 		"fast-glob": "^3.3.3",
 		"fumadocs-core": "16.4.7",

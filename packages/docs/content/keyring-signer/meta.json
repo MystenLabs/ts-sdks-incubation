@@ -1,0 +1,6 @@
+{
+	"root": true,
+	"title": "Keyring Signer",
+	"description": "Cross-platform Sui signer backed by the OS keyring",
+	"pages": ["index"]
+}
