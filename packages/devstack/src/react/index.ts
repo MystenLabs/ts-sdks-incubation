@@ -22,3 +22,4 @@ export {
 	type CreateDevstackDappKitOptions,
 } from './create-devstack-dapp-kit.js';
 export { DevstackDebugPanel, type DevstackDebugPanelProps } from './debug-panel.js';
+export { createDevstackWalrusClient, type CreateDevstackWalrusClientOptions } from './walrus.js';

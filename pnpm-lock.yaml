@@ -211,6 +211,9 @@ importers:
       '@mysten/wallet-standard':
         specifier: 'catalog:'
         version: 0.20.1(@mysten/sui@2.16.0(typescript@5.9.3))
+      '@mysten/walrus':
+        specifier: ^1.1.4
+        version: 1.1.4(@mysten/sui@2.16.0(typescript@5.9.3))
       '@tanstack/react-query':
         specifier: 'catalog:'
         version: 5.100.6(react@19.2.5)
@@ -510,6 +513,9 @@ importers:
       '@mysten/sui':
         specifier: 'catalog:'
         version: 2.16.0(typescript@5.9.3)
+      '@mysten/walrus':
+        specifier: ^1.1.4
+        version: 1.1.4(@mysten/sui@2.16.0(typescript@5.9.3))
       chokidar:
         specifier: ^4.0.1
         version: 4.0.3
@@ -1702,6 +1708,14 @@ packages:
     resolution: {integrity: sha512-Q2GoXO1SPLayqunNIWI3VT8cyOVGTFAPUvaCzx7jYIEoZBfyCR5RCUS4/ehgAlApF88Y/1c/OfjBvEoeRi76jw==}
     peerDependencies:
       '@mysten/sui': '*'
+
+  '@mysten/walrus-wasm@0.2.0':
+    resolution: {integrity: sha512-QYZoS6CIoFnVxqYClXkwgeoUjnNUyPdXwoD1Re4Xo/TVdXXmpH46akodNJ+e6egUSrjzHgeiRgfAuq57sDXGNA==}
+
+  '@mysten/walrus@1.1.4':
+    resolution: {integrity: sha512-NRfMQL66ZI7qKsJk5T1UO16Nf+cQM8qZlpVNlx1BcNgA63eLboRNeMcmb9nn4Pfrq7eW+mT2WPL+OBmqvjSHuA==}
+    peerDependencies:
+      '@mysten/sui': ^2.16.0
 
   '@mysten/window-wallet-core@0.1.4':
     resolution: {integrity: sha512-LK1t5dJQZUJv0fF/Cj8HS8N9HHaa7cAOcdWfPAFuYvgVJMEr9K/p33ldqiflcn6p1d53uTtUH9kA5/lQlTmZ2A==}
@@ -3518,6 +3532,9 @@ packages:
   data-uri-to-buffer@4.0.1:
     resolution: {integrity: sha512-0R9ikRb668HB7QDxT1vkpuUBtqc53YyAwMwGeUFKRojY/NWKvdZ+9UYtRfGmhqNbRkTSVpMbmyhXipFFv2cb/A==}
     engines: {node: '>= 12'}
+
+  dataloader@2.2.3:
+    resolution: {integrity: sha512-y2krtASINtPFS1rSDjacrFgn1dcUuoREVabwlOGOe4SdxenREqwjwjElAdwvbGM7kgZz9a3KVicWR7vcz8rnzA==}
 
   debug@4.4.3:
     resolution: {integrity: sha512-RGwwWnwQvkVfavKVt22FGLw+xYSdzARwm0ru6DhTVA3umU5hZc28V3kO4stgYryrTlLpuvgI9GiijltAjNbcqA==}
@@ -6787,6 +6804,16 @@ snapshots:
       '@mysten/sui': 2.9.1(typescript@5.9.3)
       '@wallet-standard/core': 1.1.1
 
+  '@mysten/walrus-wasm@0.2.0': {}
+
+  '@mysten/walrus@1.1.4(@mysten/sui@2.16.0(typescript@5.9.3))':
+    dependencies:
+      '@mysten/bcs': 2.0.3
+      '@mysten/sui': 2.16.0(typescript@5.9.3)
+      '@mysten/utils': 0.3.1
+      '@mysten/walrus-wasm': 0.2.0
+      dataloader: 2.2.3
+
   '@mysten/window-wallet-core@0.1.4(typescript@5.9.3)':
     dependencies:
       '@mysten/utils': 0.3.1
@@ -8320,6 +8347,8 @@ snapshots:
   csstype@3.2.3: {}
 
   data-uri-to-buffer@4.0.1: {}
+
+  dataloader@2.2.3: {}
 
   debug@4.4.3:
     dependencies:

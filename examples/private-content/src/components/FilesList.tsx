@@ -5,6 +5,7 @@ import { deployment } from '../generated/deployment.js';
 import { bytesToString, labelFor, shortAddress } from '../lib/format.js';
 import { type VaultCap, useFile, useOwnedCaps } from '../lib/queries.js';
 import { decryptForFile } from '../lib/seal.js';
+import { readBlob } from '../lib/walrus.js';
 import { Card } from './Card.js';
 
 export function FilesList({ self }: { self: string }) {
@@ -52,12 +53,13 @@ function FileRow({ cap, self }: { cap: VaultCap; self: string }) {
 		setError(null);
 		setBusy(true);
 		try {
+			const encrypted = await readBlob({ suiClient: client, blobId: file.data.blobId });
 			const bytes = await decryptForFile({
 				suiClient: client,
 				address: self,
 				fileId: file.data.id,
 				sealIdHex: file.data.sealIdHex,
-				encrypted: file.data.encrypted,
+				encrypted,
 			});
 			setPlaintext(bytesToString(bytes));
 		} catch (e) {
@@ -90,7 +92,8 @@ function FileRow({ cap, self }: { cap: VaultCap; self: string }) {
 				<div>
 					<span className="text-sm font-medium">{f.name}</span>
 					<span className="ml-2 text-xs text-neutral-500">
-						owner: <span className="font-mono">{ownerLabel}</span> · {f.encrypted.length} bytes
+						owner: <span className="font-mono">{ownerLabel}</span> · walrus blob{' '}
+						<span className="font-mono">{shortAddress(f.blobId, 6, 4)}</span>
 					</span>
 				</div>
 				<button

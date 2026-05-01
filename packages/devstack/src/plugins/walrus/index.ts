@@ -27,9 +27,16 @@
 // stack) `<app>-<stack>-net` Docker network and the `sui-localnet` DNS
 // alias the sui plugin registers on it.
 
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+import { Transaction } from '@mysten/sui/transactions';
+
 import { buildImage } from '../../actions/build.js';
 import { register } from '../../actions/register.js';
+import { seed } from '../../actions/seed.js';
 import { service } from '../../actions/service.js';
+import { createLocalSuiClient } from '../../helpers/sui-client.js';
 import {
 	type Action,
 	type LocalnetActionRunContext,
@@ -71,7 +78,14 @@ export interface WalrusNode {
 	hostname: string;
 	ip: string;
 	metricsUrl: string;
+	/** Internal docker-network URL (HTTPS, self-signed) — what the on-chain
+	 * committee data points at and what nodes use to talk to each other. */
 	apiUrl: string;
+	/** Host-mapped URL for browser SDK access. The `walrus-node` container's
+	 * `9185` is published on `localhost:<nodeHostPortBase + idx>` so the
+	 * vite-proxy + SDK fetch override pair can reach it from a browser tab.
+	 * Same self-signed cert as `apiUrl`. */
+	hostApiUrl: string;
 }
 
 export interface WalrusNamespace {
@@ -84,12 +98,29 @@ export interface WalrusPluginOptions {
 	 * and bakes the deploy/run scripts into the resulting image (no host
 	 * filesystem cache). */
 	rev?: string;
+	/** Base host port for storage node REST APIs. Each node's `9185`
+	 * (HTTPS sliver/metadata API) is mapped to `nodeHostPortBase + nodeIdx`
+	 * — default 19185, so the four nodes land on 19185–19188.
+	 *
+	 * Browser apps can't reach the storage nodes' internal docker IPs
+	 * (`10.0.0.10–13`) directly. The host port mapping pairs with the
+	 * `_walrus/node-<idx>` proxy installed by `devstackVitePlugins()` so
+	 * the `@mysten/walrus` SDK can talk to the real storage protocol from
+	 * a browser tab — `createDevstackWalrusClient()` rewrites the
+	 * SDK's fetch URLs accordingly. */
+	nodeHostPortBase?: number;
 }
+
+const DEFAULT_NODE_HOST_PORT_BASE = 19185;
+const proxyContainerName = (appName: string, stack: string): string =>
+	`${appName}-${stack}-walrus-proxy`;
 
 export const walrus = (opts: WalrusPluginOptions = {}) => {
 	const rev = opts.rev ?? WALRUS_REV;
 	const imageTag = walrusImageTag(rev);
 	const platform = hostDockerPlatform();
+	const nodeHostPortBase = opts.nodeHostPortBase ?? DEFAULT_NODE_HOST_PORT_BASE;
+	const nodeHostPort = (idx: number): number => nodeHostPortBase + idx;
 
 	return definePlugin({
 		name: 'walrus',
@@ -254,6 +285,12 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 								hostname: nodeHostname(nodeIdx),
 								restart: 'unless-stopped',
 								env: { NODE_NAME: nodeHostname(nodeIdx) },
+								// No host port mapping — walrus-node binds HTTPS with a
+								// self-signed cert that browsers refuse to trust. The
+								// `walrus.proxy` action below runs an nginx sidecar that
+								// terminates the self-signed TLS and re-exposes each node
+								// as plain HTTP on a host port — that's what the browser
+								// SDK actually talks to.
 								labels: devstackContainerLabels({
 									appName: ctx.appName,
 									stack: ctx.stack,
@@ -283,23 +320,128 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 			}
 
 			actions.push(
+				service({
+					name: 'proxy',
+					needs: NODE_IPS.map((_, idx) => `node-${idx}`),
+					inputs: { ports: NODE_IPS.map((_, idx) => nodeHostPort(idx)) },
+					getStatus: async (ctx) => {
+						requireLocalnetCtx(ctx);
+						const containerName = proxyContainerName(ctx.appName, ctx.stack);
+						const info = await inspectContainer(containerName);
+						if (info?.running !== true) return { ok: false, detail: info?.state ?? 'absent' };
+						// Cheap probe: nginx returns 200 (proxied health endpoint of node-0).
+						const ok = await probeUrl(`http://localhost:${nodeHostPort(0)}/v1/api`);
+						return ok
+							? {
+									ok: true,
+									detail: `4 nodes on ${nodeHostPort(0)}-${nodeHostPort(NODE_COUNT - 1)}`,
+								}
+							: { ok: false, detail: 'nginx running but node-0 not responding' };
+					},
+					run: async (ctx) => {
+						requireLocalnetCtx(ctx);
+						const containerName = proxyContainerName(ctx.appName, ctx.stack);
+						const network = appNetworkName(ctx.appName, ctx.stack);
+						const configPath = writeProxyConfig({
+							appDir: ctx.appDir,
+							stack: ctx.stack,
+							ports: NODE_IPS.map((_, idx) => nodeHostPort(idx)),
+						});
+						ctx.onShutdown?.(async () => {
+							const live = await inspectContainer(containerName);
+							if (live?.running === true) await stopContainer(containerName);
+						});
+						const info = await inspectContainer(containerName);
+						if (info?.running === true) return;
+						if (info !== null) await removeContainer(containerName);
+						await runContainer({
+							name: containerName,
+							image: 'nginx:alpine',
+							platform,
+							network,
+							hostname: 'walrus-proxy',
+							restart: 'unless-stopped',
+							ports: NODE_IPS.map((_, idx) => ({
+								host: nodeHostPort(idx),
+								container: nodeHostPort(idx),
+							})),
+							labels: devstackContainerLabels({
+								appName: ctx.appName,
+								stack: ctx.stack,
+								service: 'walrus-proxy',
+							}),
+							volumes: [`${configPath}:/etc/nginx/nginx.conf:ro`],
+						});
+						await waitForReachable(`http://localhost:${nodeHostPort(0)}/v1/api`, 30_000);
+					},
+				}),
+			);
+
+			actions.push(
 				register({
 					name: 'register',
-					needs: ['deploy', 'node-0'],
+					needs: ['deploy', 'node-0', 'proxy'],
 					inputs: { image: imageTag, rev },
 					getStatus: async (ctx) => {
 						// Cheap path: registry already populated from a prior cycle.
+						// Validate the recent fields (`hostApiUrl` per node + the
+						// `exchangeObject` capture) — older manifests don't carry
+						// either, and we want a re-register in that case rather
+						// than silently using stale state.
 						const ns = ctx.registry.ns<WalrusNamespace>('walrus');
 						const pkg = ctx.registry.packages.find('walrus');
 						const wal = ctx.registry.tokens.find('wal');
-						if (pkg !== undefined && wal !== undefined && ns.nodes.list().length === NODE_COUNT) {
+						const nodes = ns.nodes.list();
+						if (
+							pkg !== undefined &&
+							wal !== undefined &&
+							nodes.length === NODE_COUNT &&
+							nodes.every((n) => typeof n.hostApiUrl === 'string') &&
+							typeof pkg.captured?.exchangeObject === 'string'
+						) {
 							return { ok: true, detail: pkg.packageId };
 						}
 						return { ok: false, detail: 'walrus registry not yet populated' };
 					},
 					run: async (ctx) => {
 						requireLocalnetCtx(ctx);
-						await registerWalrus(ctx);
+						await registerWalrus(ctx, nodeHostPort);
+					},
+				}),
+			);
+
+			actions.push(
+				seed({
+					name: 'seedWal',
+					needs: ['register'],
+					inputs: { amountSui: SEED_WAL_PAYMENT_SUI.toString() },
+					getStatus: async (ctx) => {
+						requireLocalnetCtx(ctx);
+						const walType = ctx.registry.tokens.find('wal')?.type;
+						if (walType === undefined) return { ok: false, detail: 'wal token not registered' };
+						const rpcUrl = ctx.registry.services.require('sui-rpc').url;
+						const client = createLocalSuiClient(rpcUrl);
+						const names = ctx.accounts.names();
+						for (const name of names) {
+							let signer;
+							try {
+								signer = ctx.accounts.get(name);
+							} catch {
+								continue;
+							}
+							const balance = await client.core.getBalance({
+								owner: signer.toSuiAddress(),
+								coinType: walType,
+							});
+							if (BigInt(balance.balance.balance) < SEED_WAL_THRESHOLD) {
+								return { ok: false, detail: `${name} below WAL threshold` };
+							}
+						}
+						return { ok: true, detail: `${names.length} accounts funded` };
+					},
+					run: async (ctx) => {
+						requireLocalnetCtx(ctx);
+						await seedWal(ctx);
 					},
 				}),
 			);
@@ -308,6 +450,9 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 		},
 	});
 };
+
+const SEED_WAL_PAYMENT_SUI = 1_000_000_000n; // 1 SUI per account → exchange rate determines WAL out
+const SEED_WAL_THRESHOLD = 1n; // any positive balance counts as "funded"
 
 interface DeployFileIds {
 	walrusPackageId: string;
@@ -343,7 +488,70 @@ function parseDeployFile(text: string): DeployFileIds {
 	};
 }
 
-async function registerWalrus(ctx: LocalnetActionRunContext): Promise<void> {
+/**
+ * Swap a small amount of SUI for WAL on each devstack-declared account so
+ * downstream blob uploads don't require manual `walrus get-wal` calls.
+ *
+ * The exchange contract address comes from the deployed Exchange object's
+ * type — it lives in a separate `wal_exchange` package, not the main
+ * walrus package, so we have to query the chain to discover it.
+ *
+ * Skips accounts whose resolver captured an error (live-net signer
+ * misconfigured, etc.) so a partial failure doesn't poison the rest.
+ */
+async function seedWal(ctx: LocalnetActionRunContext): Promise<void> {
+	const walrusPkg = ctx.registry.packages.require('walrus');
+	const exchangeId = walrusPkg.captured.exchangeObject;
+	if (exchangeId === undefined) {
+		throw new Error(
+			'walrus.seedWal: exchangeObject missing from captured walrus package state. ' +
+				'Did the deploy run with `--with-wal-exchange`?',
+		);
+	}
+	const rpcUrl = ctx.registry.services.require('sui-rpc').url;
+	const client = createLocalSuiClient(rpcUrl);
+	const objectInfo = await client.core.getObject({ objectId: exchangeId });
+	const exchangeType = objectInfo.object.type;
+	const exchangePkgId = exchangeType.split('::')[0];
+	if (exchangePkgId === undefined || !exchangePkgId.startsWith('0x')) {
+		throw new Error(`walrus.seedWal: unexpected exchange type ${exchangeType}`);
+	}
+
+	for (const name of ctx.accounts.names()) {
+		let signer;
+		try {
+			signer = ctx.accounts.get(name);
+		} catch {
+			continue;
+		}
+		const tx = new Transaction();
+		const [paymentCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(SEED_WAL_PAYMENT_SUI)]);
+		if (paymentCoin === undefined) {
+			throw new Error('walrus.seedWal: splitCoins returned no result');
+		}
+		const walCoin = tx.moveCall({
+			target: `${exchangePkgId}::wal_exchange::exchange_all_for_wal`,
+			arguments: [tx.object(exchangeId), paymentCoin],
+		});
+		tx.transferObjects([walCoin], tx.pure.address(signer.toSuiAddress()));
+		const result = await client.signAndExecuteTransaction({
+			signer,
+			transaction: tx,
+			options: { showEffects: true },
+		});
+		if (result.effects?.status.status !== 'success') {
+			throw new Error(
+				`walrus.seedWal: failed for ${name}: ${result.effects?.status.error ?? 'unknown'}`,
+			);
+		}
+		await client.waitForTransaction({ digest: result.digest });
+	}
+}
+
+async function registerWalrus(
+	ctx: LocalnetActionRunContext,
+	nodeHostPort: (idx: number) => number,
+): Promise<void> {
 	const deployText = await readContainerFile(
 		nodeContainerName(ctx.appName, ctx.stack, 0),
 		'/opt/walrus/outputs/deploy',
@@ -387,7 +595,8 @@ async function registerWalrus(ctx: LocalnetActionRunContext): Promise<void> {
 			hostname: nodeHostname(i),
 			ip,
 			metricsUrl: `http://${ip}:9184/metrics`,
-			apiUrl: `http://${ip}:9185`,
+			apiUrl: `https://${ip}:9185`,
+			hostApiUrl: `http://localhost:${nodeHostPort(i)}`,
 		});
 	}
 }
@@ -399,6 +608,68 @@ async function registerWalrus(ctx: LocalnetActionRunContext): Promise<void> {
  * so the treasury is the right anchor. Falls back to undefined (rather
  * than throwing) so a degraded chain doesn't take the whole register
  * action down — apps still get `packages.walrus` and node URLs. */
+/**
+ * Write an nginx config that terminates the storage nodes' self-signed
+ * HTTPS endpoints and re-exposes them as plain HTTP on per-node ports.
+ * Browser-side SDK consumers can then talk to `http://localhost:<port>`
+ * without TLS gymnastics.
+ *
+ * The config goes into the per-stack `<stackDir>/.generated/` so it
+ * tracks the stack lifecycle (new stack → new config; drop stack → file
+ * goes away with the rest).
+ */
+function writeProxyConfig(opts: { appDir: string; stack: string; ports: number[] }): string {
+	const generatedDir = resolve(opts.appDir, '.devstack', 'stacks', opts.stack, '.generated');
+	mkdirSync(generatedDir, { recursive: true });
+	const configPath = resolve(generatedDir, 'walrus-proxy.conf');
+	const servers = opts.ports
+		.map((port, idx) => {
+			const upstream = NODE_IPS[idx];
+			if (upstream === undefined) throw new Error(`writeProxyConfig: missing IP for node ${idx}`);
+			// `proxy_ssl_verify off` accepts the self-signed cert. SNI on so
+			// the upstream's certificate match doesn't depend on the IP.
+			return `
+server {
+	listen 0.0.0.0:${port};
+	location / {
+		proxy_pass https://${upstream}:9185;
+		proxy_ssl_verify off;
+		proxy_ssl_server_name on;
+		proxy_set_header Host $host;
+		proxy_request_buffering off;
+		proxy_buffering off;
+		client_max_body_size 0;
+	}
+}`;
+		})
+		.join('\n');
+	const config = `events {}
+http {
+${servers}
+}
+`;
+	writeFileSync(configPath, config, 'utf8');
+	return configPath;
+}
+
+async function probeUrl(url: string): Promise<boolean> {
+	try {
+		const res = await fetch(url, { method: 'GET', redirect: 'manual' });
+		return res.status > 0;
+	} catch {
+		return false;
+	}
+}
+
+async function waitForReachable(url: string, timeoutMs: number): Promise<void> {
+	const start = Date.now();
+	while (Date.now() - start < timeoutMs) {
+		if (await probeUrl(url)) return;
+		await new Promise((resolve) => setTimeout(resolve, 500));
+	}
+	throw new Error(`walrus.daemon: ${url} did not become reachable within ${timeoutMs}ms`);
+}
+
 async function fetchWalCoinType(rpcUrl: string, ids: DeployFileIds): Promise<string | undefined> {
 	if (ids.treasuryObject === undefined) return undefined;
 	const type = await fetchObjectType(rpcUrl, ids.treasuryObject);

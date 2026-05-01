@@ -1,10 +1,13 @@
 import { useDevstackPackage, useDevstackSignAndExecute } from '@mysten-incubation/devstack/react';
+import { CurrentAccountSigner } from '@mysten/dapp-kit-core';
 import { useCurrentClient } from '@mysten/dapp-kit-react';
 import { Transaction } from '@mysten/sui/transactions';
-import { useId, useState } from 'react';
+import { useId, useMemo, useState } from 'react';
 
+import { dAppKit } from '../dapp-kit.js';
 import { stringToBytes } from '../lib/format.js';
 import { encryptForSealId, freshSealId } from '../lib/seal.js';
+import { blobIdToBytes, storeBlob } from '../lib/walrus.js';
 import { Card } from './Card.js';
 
 export function UploadForm() {
@@ -13,6 +16,10 @@ export function UploadForm() {
 	const { mutateAsync, isPending } = useDevstackSignAndExecute({
 		invalidateKeys: [['vault']],
 	});
+	// One signer per app session — wraps the currently-connected dapp-kit
+	// account so the walrus SDK can register + certify blobs on chain
+	// using the user's wallet, the same way it would on testnet/mainnet.
+	const walrusSigner = useMemo(() => new CurrentAccountSigner(dAppKit), []);
 
 	const [name, setName] = useState('hello.txt');
 	const [content, setContent] = useState('Encrypted with Seal · stored on Sui');
@@ -32,9 +39,18 @@ export function UploadForm() {
 			const data = stringToBytes(content);
 			const encrypted = await encryptForSealId({ suiClient: client, sealIdHex, data });
 
+			// Push the ciphertext to walrus first; the on-chain tx only carries
+			// the resulting 32-byte blob id (plus seal_id + name + access list).
+			const { blobId } = await storeBlob({
+				suiClient: client,
+				signer: walrusSigner,
+				data: encrypted,
+			});
+			const blobIdBytes = blobIdToBytes(blobId);
+
 			const tx = new Transaction();
 			vault.uploadEntry({
-				arguments: [name, Array.from(encrypted), Array.from(sealIdBytes)],
+				arguments: [name, Array.from(blobIdBytes), Array.from(sealIdBytes)],
 			})(tx);
 			const result = await mutateAsync(tx);
 			const txResult = result as {
