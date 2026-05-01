@@ -18,7 +18,8 @@
 // `generatedKeypair` is the implicit fallback factory for accounts on
 // localnet — it loads-or-creates a per-stack Ed25519 key on disk so
 // addresses stay stable across `devstack up` cycles within a stack and
-// the dev wallet's `virtual:devstack-keys` plugin can pick them up.
+// the `walletServer()` plugin signs with the same identities the
+// dev-wallet's `DevstackSignerAdapter` exposes to the frontend.
 
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';

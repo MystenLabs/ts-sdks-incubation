@@ -7,11 +7,5 @@
 		"moduleResolution": "bundler",
 		"module": "ESNext"
 	},
-	"include": [
-		"vite.config.ts",
-		"devstack.config.ts",
-		"privateContentPlugin.ts",
-		"playwright.config.ts",
-		"vitest.config.ts"
-	]
+	"include": ["vite.config.ts", "playwright.config.ts", "vitest.config.ts"]
 }

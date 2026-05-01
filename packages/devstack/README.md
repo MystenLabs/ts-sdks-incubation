@@ -270,16 +270,30 @@ Subpath: `@mysten-incubation/devstack/react`.
 
 ```tsx
 // dapp-kit.ts
+import { devWalletInitializer } from '@mysten-incubation/dev-wallet';
+import { createDevstackAdapterFromManifest } from '@mysten-incubation/dev-wallet/adapters';
 import { createDevstackDappKit } from '@mysten-incubation/devstack/react';
-import { createDevWalletInitializer } from '@mysten-incubation/devstack-wallet';
-import { devKeys } from 'virtual:devstack-keys';
+import { configureDevstackPanels, devstackPanels } from '@mysten-incubation/devstack-wallet-panels';
+import { manifest } from 'virtual:devstack-manifest';
+
 import { deployment } from './generated/deployment';
+
+configureDevstackPanels(manifest);
+
+const devstackAdapter = createDevstackAdapterFromManifest(manifest);
 
 export const { dAppKit } = createDevstackDappKit({
 	defaultNetwork: 'localnet',
 	localnetRpcUrl: deployment.rpcUrl,
-	devKeys,
-	walletInitializerFactory: createDevWalletInitializer,
+	walletInitializers: [
+		devWalletInitializer({
+			adapters: devstackAdapter ? [devstackAdapter] : [],
+			panels: devstackPanels(),
+			autoConnect: true,
+			autoApprove: true,
+			mountUI: true,
+		}),
+	],
 });
 
 declare module '@mysten/dapp-kit-react' {
@@ -288,6 +302,20 @@ declare module '@mysten/dapp-kit-react' {
 	}
 }
 ```
+
+Pair this with the `walletServer()` plugin in your `devstack.config.ts` so the adapter has a server
+to talk to:
+
+```ts
+import { walletServer } from '@mysten-incubation/devstack';
+// ...
+plugins: [sui(), /* ... */, walletServer({ port: 9420 }), vite({ port: 5174 })],
+```
+
+`walletServer()` registers a Service action that spins up an in-process HTTP endpoint exposing every
+account devstack resolved (`cliSigner`, `envSigner`, `generatedKeypair`, anything that materialises
+a `Signer`). Keys never enter the frontend bundle — `DevstackSignerAdapter` signs by HTTPing the
+supervisor process.
 
 ```tsx
 // main.tsx
@@ -362,7 +390,7 @@ src/
   plugins/     — sui | walrus | seal | codegen | imports
   react/       — DevstackProvider | useDevstackPackage | useDevstackSignAndExecute |
                  DevstackDebugPanel | createDevstackDappKit | bindPackage
-  vite/        — virtual:devstack-manifest + virtual:devstack-keys plugins
+  vite/        — virtual:devstack-manifest plugin
   playwright/  — defineDevstackPlaywrightConfig (with manageStack) + helpers
   vitest/      — defineDevstackVitestConfig + AccountPool runtime
 ```

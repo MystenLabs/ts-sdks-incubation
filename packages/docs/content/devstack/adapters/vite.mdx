@@ -1,6 +1,6 @@
 ---
 title: Vite
-description: Virtual modules for the manifest and dev keys.
+description: Virtual module for the devstack manifest.
 ---
 
 ```ts
@@ -12,21 +12,23 @@ export default defineConfig({
 });
 ```
 
-The vite plugins synthesize two virtual modules:
+`devstackVitePlugins()` synthesizes one virtual module:
 
 - `virtual:devstack-manifest` — re-exports the parsed manifest. By default reads the active stack's
   manifest at `<root>/.devstack/stacks/<active>/manifest.json` (active stack is whatever
   `<root>/.devstack/active` says, falling back to `'main'`). Falls back to a typed empty manifest
   before first `up` so apps still boot and typecheck. The dev server watches `.devstack/active` so
   flipping the pointer (via `devstack stack use`) reloads the virtual module.
-- `virtual:devstack-keys` — reads `<stackDir>/.keys/*.key` and exposes `[{ label, secretKey }]`.
-  **Always empty in production builds** (SSR guard + `NODE_ENV` check).
+
+The companion `virtual:devstack-keys` module that previously inlined seeded keys into the bundle has
+been removed — see the [`walletServer()`](/devstack/plugins/wallet-server) plugin and
+[`DevstackSignerAdapter`](/dev-wallet/guides/devstack-integration) for the out-of-process
+replacement.
 
 ## Per-stack vs. pinned
 
-`devstackVitePlugins({ manifestPath, keysDir })` lets apps pin a specific manifest path or keys dir,
-useful for testing against a frozen stack. When unset (the default), both follow the active stack
-pointer.
+`devstackVitePlugins({ manifestPath })` lets apps pin a specific manifest path, useful for testing
+against a frozen stack. When unset (the default), it follows the active stack pointer.
 
 The `DEVSTACK_STACK=test` env var overrides the active-stack pointer — that's how the e2e test setup
 targets the `test` stack without flipping the developer's working `main` pointer.

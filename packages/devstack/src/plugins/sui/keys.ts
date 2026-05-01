@@ -1,6 +1,7 @@
 // Sui localnet faucet helper. Per-account key management lives in
-// `helpers/keystore.ts` (the dev-wallet's `virtual:devstack-keys` Vite
-// plugin reads from the same `<stackDir>/.keys/*.key` files this writes).
+// `helpers/keystore.ts`; the `walletServer()` plugin reads the same
+// `<stackDir>/.keys/*.key` files when it signs on the frontend's
+// behalf.
 
 export interface FaucetFundOptions {
 	faucetUrl: string;
