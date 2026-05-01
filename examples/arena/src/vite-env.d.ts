@@ -1,13 +1,5 @@
 /// <reference types="vite/client" />
 
-declare module 'virtual:devstack-keys' {
-	export interface DevKey {
-		label: string;
-		secretKey: string;
-	}
-	export const devKeys: readonly DevKey[];
-}
-
 declare module 'virtual:devstack-manifest' {
 	export interface ManifestPackage {
 		name: string;

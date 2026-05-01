@@ -16,4 +16,5 @@ export type {
 	ManagedAccount,
 	CreateAccountOptions,
 	ImportAccountOptions,
+	WalletPanelDescriptor,
 } from './types.js';

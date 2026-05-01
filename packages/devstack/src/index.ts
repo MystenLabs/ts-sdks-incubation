@@ -103,3 +103,8 @@ export {
 	type ImportsPluginOptions,
 } from './plugins/imports/index.js';
 export { vite, type VitePluginOptions } from './plugins/vite/index.js';
+export {
+	walletServer,
+	WALLET_SERVER_DEFAULT_PORT,
+	type WalletServerPluginOptions,
+} from './plugins/wallet-server/index.js';

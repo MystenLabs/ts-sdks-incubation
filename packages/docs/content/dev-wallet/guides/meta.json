@@ -1,4 +1,4 @@
 {
 	"title": "Guides",
-	"pages": ["e2e-testing", "cli-signing"]
+	"pages": ["e2e-testing", "cli-signing", "devstack-integration"]
 }

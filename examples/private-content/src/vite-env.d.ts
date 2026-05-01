@@ -1,13 +1,5 @@
 /// <reference types="vite/client" />
 
-declare module 'virtual:devstack-keys' {
-	export interface DevKey {
-		label: string;
-		secretKey: string;
-	}
-	export const devKeys: readonly DevKey[];
-}
-
 declare module 'virtual:devstack-manifest' {
 	// Inlined to avoid pulling devstack's TS source through the app's
 	// typecheck — see examples/wallet/src/vite-env.d.ts for the same pattern.

@@ -1,0 +1,48 @@
+{
+	"name": "@mysten-incubation/devstack-wallet-panels",
+	"version": "0.0.1",
+	"description": "Devstack-aware Lit panels (Faucet, Packages, Network) for @mysten-incubation/dev-wallet's panel API.",
+	"keywords": ["sui", "wallet", "devstack", "developer-experience"],
+	"license": "Apache-2.0",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/MystenLabs/ts-sdks-incubation.git",
+		"directory": "packages/devstack-wallet-panels"
+	},
+	"homepage": "https://github.com/MystenLabs/ts-sdks-incubation/tree/main/packages/devstack-wallet-panels#readme",
+	"bugs": {
+		"url": "https://github.com/MystenLabs/ts-sdks-incubation/issues"
+	},
+	"type": "module",
+	"main": "./dist/index.mjs",
+	"types": "./dist/index.d.mts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.mts",
+			"import": "./dist/index.mjs"
+		}
+	},
+	"sideEffects": ["dist/**/*.mjs"],
+	"files": ["dist", "README.md", "LICENSE"],
+	"scripts": {
+		"build": "tsdown",
+		"typecheck": "tsc --noEmit",
+		"prepublishOnly": "pnpm run build"
+	},
+	"dependencies": {
+		"@mysten-incubation/dev-wallet": "workspace:*",
+		"@mysten/sui": "catalog:",
+		"@mysten/wallet-standard": "catalog:",
+		"lit": "^3.3.2"
+	},
+	"devDependencies": {
+		"@mysten-incubation/devstack": "workspace:*",
+		"@mysten-incubation/tsconfig": "workspace:*",
+		"@types/node": "^22.10.0",
+		"tsdown": "0.20.0-beta.1",
+		"typescript": "catalog:"
+	},
+	"peerDependencies": {
+		"@mysten-incubation/devstack": "workspace:*"
+	}
+}

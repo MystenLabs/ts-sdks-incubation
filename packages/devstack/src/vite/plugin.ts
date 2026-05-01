@@ -11,7 +11,7 @@
 // explicitly. The dev-server config watches `.devstack/active` so flipping
 // the pointer (via `devstack stack use`) reloads the virtual modules.
 
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 
 import type { Plugin } from 'vite';
@@ -116,95 +116,14 @@ function readManifest(path: string): Manifest {
 	}
 }
 
-const DEV_KEYS_VIRTUAL_ID = 'virtual:devstack-keys';
-const DEV_KEYS_RESOLVED_ID = `\0${DEV_KEYS_VIRTUAL_ID}`;
-
-export interface DevKeysPluginOptions {
-	/** Path to the directory holding `<account>.key` files written by the
-	 * sui plugin's `accounts` action. Relative paths resolve against the
-	 * Vite project root. When unset, tracks the active stack and reads
-	 * `<root>/.devstack/stacks/<active>/.keys`. */
-	keysDir?: string;
-}
-
-/**
- * Synthesizes `import { devKeys } from 'virtual:devstack-keys'` from the active
- * stack's `.keys/*.key` files. Each `.key` file becomes one `{ label,
- * secretKey }` entry where `label` is the filename minus the `.key`
- * suffix.
- *
- * Production builds always resolve to an empty array — keys never land in
- * a deployed bundle.
- */
-export function devKeysPlugin(opts: DevKeysPluginOptions = {}): Plugin {
-	const overrideDir = opts.keysDir;
-	let resolvedRoot = '';
-	let activePath = '';
-
-	const currentKeysDir = (): string => {
-		if (overrideDir !== undefined) {
-			return isAbsolute(overrideDir) ? overrideDir : resolve(resolvedRoot, overrideDir);
-		}
-		const stack = envStackOverride() ?? readActiveStackFromRoot(resolvedRoot);
-		return resolve(resolvedRoot, '.devstack', 'stacks', stack, '.keys');
-	};
-
-	return {
-		name: '@mysten-incubation/devstack:dev-keys',
-		configResolved(config) {
-			resolvedRoot = config.root;
-			activePath = join(resolvedRoot, '.devstack', 'active');
-		},
-		resolveId(id) {
-			if (id === DEV_KEYS_VIRTUAL_ID) return DEV_KEYS_RESOLVED_ID;
-			return null;
-		},
-		load(id, opts) {
-			if (id !== DEV_KEYS_RESOLVED_ID) return null;
-			// Belt-and-suspenders: never inline keys into SSR or production
-			// bundles even if the keys dir somehow exists in CI.
-			if (opts?.ssr || process.env.NODE_ENV === 'production') {
-				return 'export const devKeys = [];';
-			}
-			const absPath = currentKeysDir();
-			if (!existsSync(absPath)) {
-				return 'export const devKeys = [];';
-			}
-			const entries = readdirSync(absPath)
-				.filter((name) => name.endsWith('.key'))
-				.map((file) => ({
-					label: file.replace(/\.key$/, ''),
-					secretKey: readFileSync(resolve(absPath, file), 'utf8').trim(),
-				}));
-			return `export const devKeys = ${JSON.stringify(entries)};`;
-		},
-		configureServer(server) {
-			server.watcher.add(currentKeysDir());
-			server.watcher.add(activePath);
-			const reload = (changed: string) => {
-				const dir = currentKeysDir();
-				if (!changed.startsWith(dir) && changed !== activePath) return;
-				server.watcher.add(currentKeysDir());
-				const mod = server.moduleGraph.getModuleById(DEV_KEYS_RESOLVED_ID);
-				if (mod) server.reloadModule(mod);
-			};
-			server.watcher.on('add', reload);
-			server.watcher.on('change', reload);
-			server.watcher.on('unlink', reload);
-		},
-	};
-}
-
 export interface DevstackVitePluginsOptions {
 	/** Override the manifest path passed to `devstackManifestPlugin`. */
 	manifestPath?: string;
-	/** Override the keys dir passed to `devKeysPlugin`. */
-	keysDir?: string;
 }
 
 /**
- * Composes the devstack-side Vite plugins (today: `devKeysPlugin` +
- * `devstackManifestPlugin`). Apps call this once in `vite.config.ts`:
+ * Composes the devstack-side Vite plugins. Apps call this once in
+ * `vite.config.ts`:
  *
  *   import { devstackVitePlugins } from '@mysten-incubation/devstack/vite';
  *   export default defineConfig({
@@ -212,8 +131,5 @@ export interface DevstackVitePluginsOptions {
  *   });
  */
 export function devstackVitePlugins(opts: DevstackVitePluginsOptions = {}): Plugin[] {
-	return [
-		devKeysPlugin({ keysDir: opts.keysDir }),
-		devstackManifestPlugin({ manifestPath: opts.manifestPath }),
-	];
+	return [devstackManifestPlugin({ manifestPath: opts.manifestPath })];
 }

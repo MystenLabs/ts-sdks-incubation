@@ -5,7 +5,13 @@
 // devstack resolver materializes a `Signer` per name and the sui
 // plugin's accounts action faucets each on localnet.
 
-import { codegen, defineDevstackConfig, sui, vite } from '@mysten-incubation/devstack';
+import {
+	codegen,
+	defineDevstackConfig,
+	sui,
+	vite,
+	walletServer,
+} from '@mysten-incubation/devstack';
 import { arenaPlugin } from './arenaPlugin.js';
 
 export default defineDevstackConfig({
@@ -15,5 +21,11 @@ export default defineDevstackConfig({
 		alice: {},
 		bob: {},
 	},
-	plugins: [sui({ version: 'devnet-v1.71.0' }), arenaPlugin(), codegen(), vite({ port: 5176 })],
+	plugins: [
+		sui({ version: 'devnet-v1.71.0' }),
+		arenaPlugin(),
+		codegen(),
+		walletServer({ port: 9421 }),
+		vite({ port: 5176 }),
+	],
 });

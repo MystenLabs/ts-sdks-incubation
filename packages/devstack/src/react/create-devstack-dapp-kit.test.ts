@@ -63,40 +63,20 @@ describe('createDevstackDappKit', () => {
 		expect(cfg.networks).toEqual(['localnet', 'testnet']);
 	});
 
-	it('skips wallet initializer when devKeys is empty', () => {
-		createDevstackDappKit({ localnetRpcUrl: 'http://x', devKeys: [] });
+	it('passes walletInitializers through to dapp-kit', () => {
+		const sentinel = { __init: 'devstack' };
+		createDevstackDappKit({
+			localnetRpcUrl: 'http://x',
+			walletInitializers: [sentinel],
+		});
+		const cfg = createDAppKitMock.mock.calls[0]?.[0] as { walletInitializers: unknown[] };
+		expect(cfg.walletInitializers).toEqual([sentinel]);
+	});
+
+	it('defaults walletInitializers to []', () => {
+		createDevstackDappKit({ localnetRpcUrl: 'http://x' });
 		const cfg = createDAppKitMock.mock.calls[0]?.[0] as { walletInitializers: unknown[] };
 		expect(cfg.walletInitializers).toEqual([]);
-	});
-
-	it('throws when devKeys is set but no factory provided', () => {
-		expect(() =>
-			createDevstackDappKit({
-				localnetRpcUrl: 'http://x',
-				devKeys: [{ label: 'alice', secretKey: 'suiprivkey1...' }],
-			}),
-		).toThrow(/no `walletInitializerFactory`/);
-	});
-
-	it('invokes the supplied walletInitializerFactory with normalized chain', () => {
-		const factory = vi.fn((args) => ({ __init: args }));
-		createDevstackDappKit({
-			defaultNetwork: 'localnet',
-			localnetRpcUrl: 'http://x',
-			devKeys: [
-				{ label: 'alice', secretKey: 'k1' },
-				{ label: 'bob', secretKey: 'k2' },
-			],
-			walletInitializerFactory: factory,
-		});
-		expect(factory).toHaveBeenCalledTimes(1);
-		expect(factory.mock.calls[0]?.[0]).toEqual({
-			wallets: [
-				{ label: 'alice', secretKey: 'k1' },
-				{ label: 'bob', secretKey: 'k2' },
-			],
-			chain: 'sui:localnet',
-		});
 	});
 
 	it('exposes dAppKit on globalThis.__devstackDAppKit__ for the sign hook', () => {

@@ -11,5 +11,12 @@ export { BaseSignerAdapter } from './base-adapter.js';
 export { buildManagedAccount } from './build-managed-account.js';
 export { InMemorySignerAdapter } from './in-memory-adapter.js';
 export { RemoteCliAdapter, CliProxySigner } from './remote-cli-adapter.js';
+export {
+	DevstackSignerAdapter,
+	DevstackProxySigner,
+	parseDevstackToken,
+	createDevstackAdapterFromManifest,
+	type DevstackSignerAdapterOptions,
+} from './devstack-adapter.js';
 export { WebCryptoSignerAdapter } from './webcrypto-adapter.js';
 export { PasskeySignerAdapter } from './passkey-adapter.js';

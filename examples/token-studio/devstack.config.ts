@@ -2,7 +2,13 @@
 // Alice doubles as publisher (holds the TreasuryCap so the UI's
 // "TreasuryCap holder" badge resolves); see `tokenStudioPlugin.ts`.
 
-import { codegen, defineDevstackConfig, sui, vite } from '@mysten-incubation/devstack';
+import {
+	codegen,
+	defineDevstackConfig,
+	sui,
+	vite,
+	walletServer,
+} from '@mysten-incubation/devstack';
 import { tokenStudioPlugin } from './tokenStudioPlugin.js';
 
 export default defineDevstackConfig({
@@ -23,6 +29,7 @@ export default defineDevstackConfig({
 		}),
 		tokenStudioPlugin(),
 		codegen(),
+		walletServer({ port: 9422 }),
 		vite({ port: 5173 }),
 	],
 });
