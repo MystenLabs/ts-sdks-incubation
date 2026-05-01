@@ -4,6 +4,10 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { deployment } from '../generated/deployment.js';
 import { MANAGED_COIN_TYPE } from './coin.js';
 
+// Polls so balance + supply stay current after txs that didn't go through
+// `useDevstackSignAndExecute` (e.g. the dev-wallet's Faucet panel mint).
+const COIN_POLL_MS = 2_000;
+
 export function useCoinMetadata() {
 	const client = useCurrentClient();
 	return useQuery({
@@ -29,6 +33,7 @@ export function useTotalSupply() {
 			const json = object.json as { total_supply?: { value?: string } } | undefined;
 			return BigInt(json?.total_supply?.value ?? '0');
 		},
+		refetchInterval: COIN_POLL_MS,
 	});
 }
 
@@ -45,6 +50,7 @@ export function useCoinBalance(address: string | undefined) {
 			return result.balance;
 		},
 		enabled: !!address,
+		refetchInterval: COIN_POLL_MS,
 	});
 }
 
