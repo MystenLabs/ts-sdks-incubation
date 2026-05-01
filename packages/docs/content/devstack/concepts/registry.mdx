@@ -1,0 +1,47 @@
+---
+title: Registry
+description: The typed in-memory store that plugins read and write.
+---
+
+The registry is the inter-plugin API. Plugins read and write four core kinds:
+
+```ts
+ctx.registry.tokens.list();
+ctx.registry.packages.find('connect_four');
+ctx.registry.accounts.require('alice');
+ctx.registry.services.list();
+```
+
+Each kind exposes:
+
+- `list()` — every entry, in insertion order.
+- `find(name)` — entry by name, or `undefined`.
+- `require(name)` — entry by name, throws when missing.
+- `register(item)` — insert / replace.
+
+## Plugin-namespaced kinds
+
+Plugins extend the registry with namespace-scoped kinds. The `ns<T>(namespace)` accessor returns a
+typed shape; consumers narrow on it:
+
+```ts
+interface WalrusNamespace {
+	nodes: RegistryQuery<WalrusNode>;
+}
+
+const ns = ctx.registry.ns<WalrusNamespace>('walrus');
+ns.nodes.list();
+```
+
+The namespace becomes a key in the serialized manifest under `registry.<namespace>.<kind>[]`.
+
+## Dirty tracking
+
+Every `register()` marks the kind dirty. The reconciler reads the dirty set after the topo walk and
+re-fires `Emit` actions whose `dependsOnKind` slice intersects it. That's how the codegen plugin
+re-runs whenever a Publish action registers a new package, without needing an explicit `needs:`
+edge.
+
+`registry.flushDirty()` clears the set; `registry.consumeDirty(kinds)` drops named kinds without
+clearing others. The reconciler uses `consumeDirty` per-Emit so a later action in the same cycle can
+still re-dirty a kind and the Emit re-fires again.

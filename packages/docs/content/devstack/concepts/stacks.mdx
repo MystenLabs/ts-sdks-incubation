@@ -1,0 +1,34 @@
+---
+title: Stacks
+description:
+  Named per-app environments — switch between main and scratch without trashing your working chain.
+---
+
+A **stack** is a per-app named environment. Each stack maps to an isolated set of docker containers,
+volumes, and host-side state under `<appDir>/.devstack/stacks/<stack>/`. Container names embed the
+stack (`<app>-<stack>-sui`), so multiple stacks for the same app can coexist on one host.
+
+The active stack is whatever `<appDir>/.devstack/active` says, falling back to `'main'`. Override
+with `DEVSTACK_STACK=other` env var, or pin via `--target <stack>` / `--target localnet:<stack>` on
+most CLI verbs.
+
+## Common workflows
+
+```sh
+pnpm exec devstack stack list                # See every stack, marked active
+pnpm exec devstack stack new scratch         # Create empty
+pnpm exec devstack stack use scratch         # Switch (stops the previous stack's containers)
+pnpm exec devstack up                        # Bring scratch up
+pnpm exec devstack stack use main            # Switch back
+pnpm exec devstack stack drop scratch --yes  # Delete scratch entirely
+```
+
+`drop` refuses to drop `main` and the active stack unless `--force` is passed. The `devstack reset`
+shortcut auto-passes `--force` against the active stack — wipe-and-restart in one command.
+
+## Live networks ignore stacks
+
+`devstack apply --target testnet` and `devstack deploy --network testnet` operate on a network-keyed
+manifest at `<appDir>/.devstack/manifests/testnet.json`. The `--stack` flag and active-stack pointer
+are ignored on live nets — there's only one `testnet` per app, so a stack dimension would be
+confusing.

@@ -1,0 +1,95 @@
+---
+title: definePlugin
+description: Construct plugins via the definePlugin helper.
+---
+
+```ts
+import { definePlugin, definePublishAction, seed } from '@mysten-incubation/devstack';
+
+export const arenaPlugin = () =>
+	definePlugin({
+		name: 'arena',
+		actions: () => [
+			definePublishAction({
+				name: 'connect_four',
+				needs: ['sui.accounts'],
+				sourcePath: './move/connect_four',
+				capture: { adminCap: '::admin::AdminCap' },
+			}),
+			seed({
+				name: 'openLobby',
+				needs: ['connect_four'],
+				inputs: {
+					/* hash inputs the file watcher sees */
+				},
+				getStatus: async (ctx) => {
+					const cached = ctx.registry.ns<ArenaNs>('arena').sharedObjects.find('openLobby');
+					if (cached === undefined) return { ok: false, detail: 'no cached lobby' };
+					return { ok: true, detail: cached.objectId };
+				},
+				run: async (ctx) => {
+					/* seed the shared object */
+				},
+			}),
+		],
+	});
+```
+
+## The contract
+
+```ts
+interface Plugin {
+	name: string; // /^[a-z][a-z0-9_-]*$/
+	actions: () => Action[];
+	vite?: () => VitePlugin[];
+}
+```
+
+`actions: () => Action[]` is invoked by `expandPluginActions` at config-load time. Bare action names
+get auto-prefixed with the plugin namespace; bare `needs:` entries resolve to the same plugin's
+actions; dotted `needs` pass through as cross-plugin references; suffixed `:before` / `:after`
+queries hit the [capability table](/docs/concepts/plugins#capabilities).
+
+## definePublishAction
+
+The common Publish shape — build, publish, register, optional post-publish hook — is wrapped in a
+higher-level factory:
+
+```ts
+definePublishAction({
+	name: 'connect_four',
+	needs: ['sui.accounts'],
+	sourcePath: './move/connect_four',
+	capture: { adminCap: '::admin::AdminCap' },
+	publisher: 'publisher', // defaults to 'publisher'; matches a key in config.accounts
+	registryAs: 'connect_four', // defaults to opts.name
+	onPublished: (ctx, result) => {
+		/* fired only on a fresh publish, not on cache hit */
+	},
+});
+```
+
+The factory auto-implements `getStatus` (chainId match + on-chain liveness probe) and `run` (build →
+`publishMovePackage` → register → `onPublished`). Use the lower-level `publish({ ... })` factory
+when you need full control over the run/getStatus bodies — that's the escape hatch the imports
+plugin uses.
+
+## Action context
+
+```ts
+type ActionRunContext = LocalnetActionRunContext | LiveNetActionRunContext;
+```
+
+Discriminated on `ctx.network`. The localnet variant carries `stack`; the live-net variant doesn't
+(live deploys ignore stacks). Plugin code that touches `ctx.stack` either narrows on
+`if (ctx.network === 'localnet') { ... }` or calls `requireLocalnetCtx(ctx)` to assert at runtime.
+
+```ts
+import { requireLocalnetCtx } from '@mysten-incubation/devstack';
+
+run: async (ctx) => {
+	requireLocalnetCtx(ctx);
+	const containerName = `${ctx.appName}-${ctx.stack}-my-thing`;
+	/* ... */
+};
+```

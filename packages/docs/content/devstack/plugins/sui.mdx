@@ -1,0 +1,25 @@
+---
+title: sui
+description: Sui localnet container with provisioned accounts and faucet.
+---
+
+`sui({ version?, ... })` contributes three actions:
+
+- `sui.build` — Build the `dev-examples/sui-localnet:<version>` Docker image.
+- `sui.localnet` — The running container (Service action; localnet-only).
+- `sui.accounts` — Iterates `ctx.accounts.names()`, funds each address via the faucet on first run,
+  registers each in `registry.accounts`.
+
+| Option                   | Default               | Notes                                                        |
+| ------------------------ | --------------------- | ------------------------------------------------------------ |
+| `version`                | `SUI_DEFAULT_VERSION` | sui-cli release tag, e.g. `'devnet-v1.71.0'`.                |
+| `rpcPort` / `faucetPort` | `9000` / `9123`       | Host ports. Override when running multiple apps on one host. |
+| `dockerContextDir`       | in-tree Dockerfile    | Override the Docker build-context dir.                       |
+| `minBalance`             | 50 SUI                | Per-account minimum funding (MIST).                          |
+
+Account names are declared at the top level of `defineDevstackConfig` as
+`accounts: { name: spec, ... }`, not on the sui plugin — see the
+[accounts page](/docs/authoring/accounts). The sui plugin reads from `ctx.accounts` so the same
+account names work across `pnpm exec devstack up`, `apply`, `deploy`, and `console`.
+
+Registers `sui-rpc`, `sui-grpc`, `sui-faucet` services plus each named account.

@@ -1,0 +1,97 @@
+---
+title: imports
+description: Recursive Move-package imports from git (DeepBook, Pyth, ...).
+---
+
+`imports({ packages })` materializes Build + Publish actions for upstream Move packages declared at
+config-load time. Mirrors the wallet example's prior hand-rolled DeepBook block — generalized so any
+Sui app can pull in curated packages by `(repo, rev, subdir)` without per-app boilerplate.
+
+```ts
+import { codegen, defineDevstackConfig, imports, sui } from '@mysten-incubation/devstack';
+
+export default defineDevstackConfig({
+	app: 'wallet',
+	accounts: { publisher: {}, alice: {}, bob: {} },
+	plugins: [
+		sui(),
+		imports({
+			packages: [
+				{
+					name: 'deepbook',
+					repo: 'MystenLabs/deepbookv3',
+					rev: 'v7.0.0',
+					subdir: 'packages/deepbook',
+					capture: {
+						registryId: '::registry::Registry',
+						adminCapId: '::registry::DeepbookAdminCap',
+					},
+					addresses: {
+						testnet: '0xdee9...',
+						mainnet: '0x158f...',
+					},
+				},
+			],
+		}),
+		walletPlugin(),
+		codegen(),
+	],
+});
+```
+
+Per package, the plugin emits two actions:
+
+- **`imports.<name>-source`** (`Build`) — Ensures the content-addressed
+  `dev-examples/upstream-source:<repo>-<rev>` image exists. No-op on live networks where
+  `addresses[network]` is set.
+- **`imports.<name>`** (`Publish`) — On localnet, runs `importMovePackage` (docker-cp the source
+  into the sui container, publish via `sui client test-publish --with-unpublished-dependencies`).
+  Provides capability `imports.<name>` so downstream actions can `needs: ['imports.<name>:before']`.
+
+## Curated live-network addresses
+
+When `addresses[network]` is set for the resolved network, the Publish action skips on-chain work
+entirely and registers the curated `packageId` directly. Useful for known-deployed packages
+(DeepBook v3, Pyth, ...). Without a curated address on a live net, the publish would fall through to
+`importMovePackage` — but that path requires a localnet container, so a live-net deploy of an
+uncurated import errors with `requireLocalnetCtx`. Add a curated address to fix.
+
+## Recursive Move.toml deps
+
+For multi-package upstreams (DeepBook depends on its own `deep` and `token` sub-packages, etc.), use
+`withRecursiveDeps` to walk the Move.toml dependency graph at config-load time:
+
+```ts
+import { withRecursiveDeps } from '@mysten-incubation/devstack';
+
+const packages = await withRecursiveDeps([
+	{ name: 'deepbook', repo: 'MystenLabs/deepbookv3', rev: 'v7.0.0', subdir: 'packages/deepbook' },
+]);
+
+export default defineDevstackConfig({
+	plugins: [sui(), imports({ packages }) /* ... */],
+});
+```
+
+`withRecursiveDeps` returns an expanded `ImportSpec[]` — one entry per transitively-required git
+package, with `dependsOn:` populated so `needs:` chains form correctly. Local (`{ local = "..." }`)
+deps stay inside the parent's source tree. Framework deps to `MystenLabs/sui` are skipped.
+
+The first call clones source images for every transitive dep — slow on cold cache, fast on warm
+(image cache by `(repo, rev)`).
+
+## Spec shape
+
+```ts
+interface ImportSpec {
+	name: string;
+	repo: string; // 'MystenLabs/deepbookv3'
+	rev: string; // 'v7.0.0' or commit sha or branch
+	subdir: string; // 'packages/deepbook'
+	capture?: Record<string, string>;
+	publisher?: string; // defaults to 'publisher'
+	env?: string; // sui --build-env value; default 'localnet'
+	addresses?: Partial<Record<Network, string>>;
+	dependsOn?: string[]; // populated by withRecursiveDeps; can also be set manually
+}
+```

@@ -1,0 +1,40 @@
+---
+title: Welcome
+description:
+  devstack is a declarative reconciler and plugin harness for fully-seeded Sui local development.
+---
+
+devstack brings up `sui-localnet` (plus optional Walrus storage nodes and Seal key servers),
+publishes Move packages, runs codegen, and writes a typed manifest that your frontend consumes via
+Vite.
+
+```sh
+pnpm add -D @mysten-incubation/devstack
+pnpm exec devstack up
+```
+
+## What you get
+
+- **Fast cold start.** A sui-only stack comes up in ~17 s; full sui+walrus+seal in ~76 s on Apple
+  Silicon. Warm cycles short-circuit through `getStatus` and run in 1–3 s.
+- **Declarative configuration.** Each app declares its services (sui, walrus, seal, codegen,
+  imports, ...) as plugins. The reconciler walks the action graph, rebuilds only what drifted, and
+  produces a manifest the UI imports as a virtual module.
+- **Stacks.** Named per-app environments with isolated containers, volumes, and host state. Switch
+  between `main` and a scratch stack without trashing your working chain.
+- **Publish + codegen built in.** Move packages publish via the in-container sui CLI (or host CLI on
+  live nets). `@mysten/codegen` regenerates typed bindings whenever a package id changes.
+- **Typed React bindings.** `useDevstackPackage('connect_four').createLobby({ ... })(tx)` — codegen
+  builders pre-bound to the live `packageId`. Built-in `<DevstackDebugPanel />` for SE-2-style
+  form-per-builder inspection.
+- **Live-network deploys.** The same plugin actions run against testnet/mainnet via
+  `devstack deploy --network <n>` or `devstack apply --target <n>`.
+- **`pnpm dev` starts everything.** With the [`vite()` plugin](/docs/plugins/vite) loaded, the Vite
+  dev server runs alongside sui localnet, walrus, seal, package publishes, and codegen — one
+  combined process, one log stream.
+
+## Where to next
+
+Start with [Getting started](/docs/getting-started) to bring up your first stack, then read about
+[actions](/docs/concepts/actions) and [plugins](/docs/concepts/plugins) to see how the reconciler is
+put together. The [React adapter](/docs/adapters/react) covers the typed package hooks.

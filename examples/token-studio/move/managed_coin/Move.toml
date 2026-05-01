@@ -1,0 +1,12 @@
+[package]
+name = "managed_coin"
+edition = "2024.beta"
+version = "0.0.1"
+
+# Sui, MoveStdlib, Bridge, DeepBook, SuiSystem are auto-added by sui-cli
+# (the 2024 edition behavior). No explicit deps needed.
+[dependencies]
+
+[addresses]
+token_studio = "0x0"
+

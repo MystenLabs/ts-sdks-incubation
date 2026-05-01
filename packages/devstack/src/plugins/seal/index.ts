@@ -1,0 +1,445 @@
+// Seal key-server plugin. Owns four actions:
+//
+//   seal.build       — Multi-arch build of `dev-examples/seal:<rev>` (image
+//                      bundles `key-server` + `seal-cli`).
+//   seal.publish     — Publish the upstream `move/seal` package against the
+//                      sui-localnet container (M8 source-digest + on-chain
+//                      liveness gate via `publishMovePackage`).
+//   seal.register    — One-shot bootstrap: cache a BLS12-381 master key on
+//                      disk, then register a `KeyServer` object on-chain via
+//                      `seal::key_server::create_and_transfer_v2_independent_server`.
+//                      `getStatus()` checks the cached object is still live on
+//                      chain so warm `up` cycles skip the ~12s re-registration.
+//   seal.key-server  — Long-running container in Open mode (single key
+//                      server, no committee). Healthcheck via
+//                      `/v1/service?service_id=<id>` + version validation
+//                      headers the upstream middleware demands. Joins the
+//                      per-app docker network so it can reach `sui-localnet`.
+//
+// Linear actions: publish → register → key-server, gated by the reconciler.
+// The frontend `SealClient` reads `keyServerObjectId` + `keyServerUrl` out
+// of the manifest's `seal.keyServer` namespace.
+
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { Transaction } from '@mysten/sui/transactions';
+
+import { buildImage } from '../../actions/build.js';
+import { definePublishAction } from '../../actions/publish.js';
+import { register } from '../../actions/register.js';
+import { service } from '../../actions/service.js';
+import {
+	type LocalnetActionRunContext,
+	type Registry,
+	type RegistryQuery,
+	requireLocalnetCtx,
+} from '../../core/types.js';
+import { createLocalSuiClient } from '../../helpers/sui-client.js';
+import { extractUpstreamSource } from '../../helpers/upstream-source.js';
+import { definePlugin } from '../../plugin.js';
+import { stackDir } from '../../runtime/active-stack.js';
+import {
+	devstackContainerLabels,
+	dockerRun,
+	imageExists,
+	inspectContainer,
+	removeContainer,
+	runContainer,
+	stopContainer,
+	waitForHealthy,
+} from '../sui/docker.js';
+import { appNetworkName } from '../sui/index.js';
+import {
+	SEAL_IMAGE_MOVE_PACKAGE_PATH,
+	SEAL_REV,
+	ensureSealImage,
+	hostDockerPlatform,
+	sealImageTag,
+} from './build.js';
+
+const KEY_SERVER_CONTAINER_PORT = 2024;
+const SEAL_KEY_SERVER_NAME = 'devstack-local';
+/** Boneh-Franklin BLS12-381 — the only `KEY_TYPE` accepted by upstream
+ * (`seal/move/seal/sources/key_server.move`). */
+const KEY_TYPE_BONEH_FRANKLIN_BLS12381 = 0;
+
+const keyServerContainerName = (appName: string, stack: string): string =>
+	`${appName}-${stack}-seal-key-server`;
+const masterKeyPath = (appDir: string, stack: string): string =>
+	join(stackDir(appDir, stack), '.keys', 'seal-master-key.json');
+const sealConfigPath = (appDir: string, stack: string): string =>
+	join(stackDir(appDir, stack), '.generated', 'seal-config.yaml');
+
+/** Frontend-facing `seal.keyServer` registry record. The manifest writer
+ * round-trips it under `seal.keyServer` so dapps can read it via the
+ * registry namespace. */
+export interface SealKeyServer {
+	name: string;
+	objectId: string;
+	url: string;
+	publicKey: string;
+	sealPackageId: string;
+}
+
+export interface SealNamespace {
+	keyServer: RegistryQuery<SealKeyServer>;
+}
+
+export interface SealPluginOptions {
+	/** Pinned seal revision. Defaults to the rev tracked in `build.ts`. */
+	rev?: string;
+	/** Host port the key-server's HTTP API binds on. Frontend `SealClient`
+	 * talks to this URL. Default `2024`. */
+	apiPort?: number;
+}
+
+export const seal = (opts: SealPluginOptions = {}) => {
+	const rev = opts.rev ?? SEAL_REV;
+	const apiPort = opts.apiPort ?? KEY_SERVER_CONTAINER_PORT;
+	const imageTag = sealImageTag(rev);
+	const platform = hostDockerPlatform();
+	const keyServerUrl = `http://127.0.0.1:${apiPort}`;
+
+	return definePlugin({
+		name: 'seal',
+		actions: () => [
+			buildImage({
+				name: 'build',
+				inputs: { image: imageTag, rev, platform },
+				getStatus: async () =>
+					(await imageExists(imageTag))
+						? { ok: true, detail: imageTag }
+						: { ok: false, detail: `image ${imageTag} missing` },
+				run: async () => {
+					await ensureSealImage({ rev });
+				},
+			}),
+
+			definePublishAction({
+				name: 'publish',
+				needs: ['build', 'sui.accounts'],
+				registryAs: 'seal',
+				// Move sources are baked into the seal image; sourcePath here
+				// is a stable label (the image tag) used for input hashing
+				// only — the actual directory comes from `prepareSource`.
+				sourcePath: imageTag,
+				prepareSource: async () => {
+					await ensureSealImage({ rev });
+					const tmpDir = mkdtempSync(join(tmpdir(), 'devstack-seal-publish-'));
+					await extractUpstreamSource({
+						imageTag,
+						srcPath: SEAL_IMAGE_MOVE_PACKAGE_PATH,
+						destDir: tmpDir,
+					});
+					return {
+						dir: tmpDir,
+						cleanup: () => rmSync(tmpDir, { recursive: true, force: true }),
+					};
+				},
+			}),
+
+			register({
+				name: 'register',
+				needs: ['publish', 'build'],
+				inputs: { url: keyServerUrl, keyServerName: SEAL_KEY_SERVER_NAME, rev },
+				getStatus: async (ctx) => {
+					const ns = ctx.registry.ns<SealNamespace>('seal');
+					const cached = ns.keyServer.find(SEAL_KEY_SERVER_NAME);
+					if (cached === undefined) return { ok: false, detail: 'no cached KeyServer' };
+					const sealPkg = ctx.registry.packages.find('seal');
+					if (sealPkg === undefined) return { ok: false, detail: 'seal package not registered' };
+					if (cached.sealPackageId !== sealPkg.packageId) {
+						return { ok: false, detail: 'cached KeyServer references a stale seal package' };
+					}
+					if (cached.url !== keyServerUrl) {
+						return { ok: false, detail: 'cached KeyServer URL differs from configured port' };
+					}
+					const client = createLocalSuiClient(ctx.registry.services.require('sui-rpc').url);
+					const live = await client.getObject({ id: cached.objectId });
+					if (live.data === null || live.data === undefined) {
+						return { ok: false, detail: `KeyServer ${cached.objectId} not on chain` };
+					}
+					// Re-register service on warm path so the registry stays populated
+					// even when the action skips its run (mirrors sui.localnet).
+					registerKeyServerService(ctx.registry, apiPort);
+					return { ok: true, detail: cached.objectId };
+				},
+				run: async (ctx) => {
+					requireLocalnetCtx(ctx);
+					await registerSealKeyServer({ ctx, imageTag, apiPort, keyServerUrl });
+				},
+			}),
+
+			service({
+				name: 'key-server',
+				needs: ['register'],
+				inputs: { image: imageTag, apiPort },
+				getStatus: async (ctx) => {
+					requireLocalnetCtx(ctx);
+					const containerName = keyServerContainerName(ctx.appName, ctx.stack);
+					const info = await inspectContainer(containerName);
+					if (info === null) return { ok: false, detail: 'not present' };
+					if (!info.running) return { ok: false, detail: info.state };
+					if (info.healthy === true) {
+						registerKeyServerService(ctx.registry, apiPort);
+						return { ok: true, detail: `healthy on :${apiPort}` };
+					}
+					return { ok: false, detail: `${info.state} (health: ${healthLabel(info.healthy)})` };
+				},
+				run: async (ctx) => {
+					requireLocalnetCtx(ctx);
+					const containerName = keyServerContainerName(ctx.appName, ctx.stack);
+					ctx.onShutdown?.(async () => {
+						const live = await inspectContainer(containerName);
+						if (live?.running === true) await stopContainer(containerName);
+					});
+					await runKeyServerContainer({ ctx, imageTag, platform, apiPort });
+					registerKeyServerService(ctx.registry, apiPort);
+				},
+			}),
+		],
+	});
+};
+
+interface RegisterSealOptions {
+	ctx: LocalnetActionRunContext;
+	imageTag: string;
+	apiPort: number;
+	keyServerUrl: string;
+}
+
+async function registerSealKeyServer({
+	ctx,
+	imageTag,
+	apiPort,
+	keyServerUrl,
+}: RegisterSealOptions): Promise<void> {
+	const sealPkg = ctx.registry.packages.require('seal');
+	const publisher = ctx.accounts.get('publisher');
+	const client = createLocalSuiClient(ctx.registry.services.require('sui-rpc').url);
+
+	const keys = await ensureSealMasterKey({ imageTag, appDir: ctx.appDir, stack: ctx.stack });
+	const pkBytes = decodePrefixedHex(keys.publicKey);
+
+	const tx = new Transaction();
+	tx.moveCall({
+		target: `${sealPkg.packageId}::key_server::create_and_transfer_v2_independent_server`,
+		arguments: [
+			tx.pure.string(SEAL_KEY_SERVER_NAME),
+			tx.pure.string(keyServerUrl),
+			tx.pure.u8(KEY_TYPE_BONEH_FRANKLIN_BLS12381),
+			tx.pure.vector('u8', Array.from(pkBytes)),
+		],
+	});
+
+	const result = await client.signAndExecuteTransaction({
+		signer: publisher,
+		transaction: tx,
+		options: { showObjectChanges: true, showEffects: true },
+	});
+
+	if (result.effects?.status.status !== 'success') {
+		throw new Error(
+			`seal.register: KeyServer publish failed: ${result.effects?.status.error ?? 'unknown'}`,
+		);
+	}
+	await client.waitForTransaction({ digest: result.digest });
+
+	const created = (result.objectChanges ?? []).find(
+		(c) =>
+			c.type === 'created' &&
+			typeof c.objectType === 'string' &&
+			c.objectType.endsWith('::key_server::KeyServer'),
+	);
+	const objectId = created && 'objectId' in created ? created.objectId : undefined;
+	if (objectId === undefined) {
+		throw new Error(
+			`seal.register: KeyServer object not in objectChanges: ${JSON.stringify(result.objectChanges)}`,
+		);
+	}
+
+	writeSealConfigYaml({
+		appDir: ctx.appDir,
+		stack: ctx.stack,
+		sealPackageId: sealPkg.packageId,
+		keyServerObjectId: objectId,
+	});
+
+	const ns = ctx.registry.ns<SealNamespace>('seal');
+	ns.keyServer.register({
+		name: SEAL_KEY_SERVER_NAME,
+		objectId,
+		url: keyServerUrl,
+		publicKey: keys.publicKey,
+		sealPackageId: sealPkg.packageId,
+	});
+	registerKeyServerService(ctx.registry, apiPort);
+}
+
+interface RunKeyServerOptions {
+	ctx: LocalnetActionRunContext;
+	imageTag: string;
+	platform: string;
+	apiPort: number;
+}
+
+async function runKeyServerContainer({
+	ctx,
+	imageTag,
+	platform,
+	apiPort,
+}: RunKeyServerOptions): Promise<void> {
+	const ns = ctx.registry.ns<SealNamespace>('seal');
+	const cached = ns.keyServer.require(SEAL_KEY_SERVER_NAME);
+	const containerName = keyServerContainerName(ctx.appName, ctx.stack);
+	const network = appNetworkName(ctx.appName, ctx.stack);
+	const configPath = sealConfigPath(ctx.appDir, ctx.stack);
+
+	const info = await inspectContainer(containerName);
+	if (info?.running === true && info.healthy === true) return;
+	if (info !== null) await removeContainer(containerName);
+
+	await runContainer({
+		name: containerName,
+		image: imageTag,
+		platform,
+		network,
+		hostname: 'seal-key-server',
+		restart: 'unless-stopped',
+		ports: [{ host: apiPort, container: KEY_SERVER_CONTAINER_PORT }],
+		labels: devstackContainerLabels({
+			appName: ctx.appName,
+			stack: ctx.stack,
+			service: 'seal-key-server',
+		}),
+		env: {
+			// CONFIG_PATH-based config (env-only mode silently routes at the public
+			// devnet fullnode — must use a file to point at our localnet).
+			CONFIG_PATH: '/etc/seal/key-server-config.yaml',
+			MASTER_KEY: readMasterKey(ctx.appDir, ctx.stack),
+			PORT: String(KEY_SERVER_CONTAINER_PORT),
+			RUST_LOG: 'info',
+		},
+		volumes: [`${configPath}:/etc/seal/key-server-config.yaml:ro`],
+		healthcheck: {
+			// `/v1/service?service_id=<id>` round-trips through the on-chain
+			// registration cache and returns 200 once the key-server has loaded
+			// our KeyServer object and minted a proof-of-possession. The
+			// version-validation middleware demands these headers — any other
+			// endpoint requires a signed session payload.
+			test: [
+				'CMD-SHELL',
+				[
+					"curl -sf -H 'Client-Sdk-Type: typescript'",
+					"-H 'Client-Sdk-Version: 0.4.18'",
+					'-H "Request-Id: $(cat /proc/sys/kernel/random/uuid)"',
+					`'http://localhost:${KEY_SERVER_CONTAINER_PORT}/v1/service?service_id=${cached.objectId}'`,
+					'> /dev/null || exit 1',
+				].join(' '),
+			],
+			intervalSeconds: 5,
+			timeoutSeconds: 5,
+			retries: 30,
+			startPeriodSeconds: 10,
+		},
+	});
+
+	await waitForHealthy(containerName, { timeoutMs: 3 * 60_000 });
+}
+
+interface CachedKeys {
+	masterKey: string;
+	publicKey: string;
+}
+
+async function ensureSealMasterKey(opts: {
+	imageTag: string;
+	appDir: string;
+	stack: string;
+}): Promise<CachedKeys> {
+	const path = masterKeyPath(opts.appDir, opts.stack);
+	const cached = readMasterKeyFile(path);
+	if (cached !== null) return cached;
+
+	const result = await dockerRun({
+		command: ['run', '--rm', '--entrypoint', 'seal-cli', opts.imageTag, 'genkey'],
+	});
+	if (result.code !== 0) {
+		throw new Error(`seal.register: seal-cli genkey failed:\n${result.stderr}`);
+	}
+	const masterMatch = result.stdout.match(/^Master key:\s*(\S+)/m);
+	const publicMatch = result.stdout.match(/^Public key:\s*(\S+)/m);
+	if (masterMatch?.[1] === undefined || publicMatch?.[1] === undefined) {
+		throw new Error(`seal.register: failed to parse seal-cli genkey output:\n${result.stdout}`);
+	}
+	const keys: CachedKeys = { masterKey: masterMatch[1], publicKey: publicMatch[1] };
+
+	mkdirSync(join(stackDir(opts.appDir, opts.stack), '.keys'), { recursive: true });
+	writeFileSync(path, `${JSON.stringify(keys, null, 2)}\n`);
+	return keys;
+}
+
+function readMasterKeyFile(path: string): CachedKeys | null {
+	if (!existsSync(path)) return null;
+	const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<CachedKeys>;
+	if (typeof parsed.masterKey !== 'string' || typeof parsed.publicKey !== 'string') return null;
+	return { masterKey: parsed.masterKey, publicKey: parsed.publicKey };
+}
+
+function readMasterKey(appDir: string, stack: string): string {
+	const parsed = JSON.parse(readFileSync(masterKeyPath(appDir, stack), 'utf8')) as CachedKeys;
+	return parsed.masterKey;
+}
+
+function writeSealConfigYaml(opts: {
+	appDir: string;
+	stack: string;
+	sealPackageId: string;
+	keyServerObjectId: string;
+}): void {
+	const path = sealConfigPath(opts.appDir, opts.stack);
+	const yaml = [
+		`# Generated by devstack seal plugin at ${new Date().toISOString()}.`,
+		'# CONFIG_PATH-based config — env-only mode silently ignores NODE_URL,',
+		'# which routes the key-server at the public devnet fullnode by default.',
+		'network: !Devnet',
+		`  seal_package: '${opts.sealPackageId}'`,
+		'node_url: http://sui-localnet:9000',
+		'server_mode: !Open',
+		`  key_server_object_id: '${opts.keyServerObjectId}'`,
+		`ts_sdk_version_requirement: '>=0.4.5'`,
+		'',
+	].join('\n');
+	mkdirSync(join(stackDir(opts.appDir, opts.stack), '.generated'), { recursive: true });
+	writeFileSync(path, yaml);
+}
+
+function registerKeyServerService(registry: Registry, apiPort: number): void {
+	registry.services.register({
+		name: 'seal-key-server',
+		kind: 'seal-key-server',
+		url: `http://127.0.0.1:${apiPort}`,
+		port: apiPort,
+		endpointLabel: 'Seal key-server (Open mode)',
+	});
+}
+
+function decodePrefixedHex(s: string): Uint8Array {
+	const hex = s.startsWith('0x') ? s.slice(2) : s;
+	if (hex.length % 2 !== 0) {
+		throw new Error(`seal.register: hex string has odd length: ${s.length}`);
+	}
+	const bytes = new Uint8Array(hex.length / 2);
+	for (let i = 0; i < bytes.length; i++) {
+		bytes[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+	}
+	return bytes;
+}
+
+function healthLabel(h: boolean | undefined): string {
+	if (h === true) return 'healthy';
+	if (h === false) return 'unhealthy';
+	return 'no probe';
+}

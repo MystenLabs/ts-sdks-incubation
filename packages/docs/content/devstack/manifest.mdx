@@ -1,0 +1,50 @@
+---
+title: Manifest format
+description: Per-stack JSON written by every devstack reconcile.
+---
+
+```jsonc
+{
+	"app": "arena",
+	"network": "localnet",
+	"version": 2,
+	"emittedAt": "2026-04-30T...",
+	"registry": {
+		"tokens": [...],
+		"packages": [{ "name": "connect_four", "packageId": "0x...", "captured": {...} }],
+		"accounts": [{ "name": "publisher", "address": "0x...", "funded": true }],
+		"services": [{ "name": "sui-rpc", "url": "http://127.0.0.1:9000", "kind": "sui-rpc", "port": 9000 }],
+		"arena": { "sharedObjects": [{ "name": "openLobby", "objectId": "0x..." }] }
+	}
+}
+```
+
+## Where it lives
+
+- **Localnet** (per-stack): `<appDir>/.devstack/stacks/<stack>/manifest.json`. Each stack maintains
+  its own manifest so multiple stacks coexist on disk.
+- **Live networks** (per-network only): `<appDir>/.devstack/manifests/<network>.json`. Live-net
+  deploys ignore the stack dimension — only one `testnet` per app.
+
+The Vite plugin (`@mysten-incubation/devstack/vite`) reads the active stack's manifest and
+re-exports it as `virtual:devstack-manifest`. Switching stacks via `devstack stack use <other>`
+flips the active pointer; the dev server's watcher picks that up and reloads the virtual module.
+
+## Versioning
+
+```ts
+type ManifestVersion = 1 | 2;
+```
+
+Current writers always emit `2`. The `version: 1` slot is reserved for any future schema migration.
+Consumers that need to handle older on-disk manifests use
+`readManifestWithMigration({ appDir, stack, network })` from `@mysten-incubation/devstack/runtime` —
+it runs the manifest through a registered migration table (empty today) and throws on unknown future
+versions with an actionable error.
+
+## Plugin-namespaced kinds
+
+Top-level keys other than the four core ones (`tokens`, `packages`, `accounts`, `services`) are
+plugin namespaces. The walrus plugin, for example, registers under `walrus.nodes`; the arena example
+registers under `arena.sharedObjects`. Plugins read and write their namespace via
+`ctx.registry.ns<NamespaceShape>('walrus').nodes`.

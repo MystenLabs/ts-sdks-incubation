@@ -53,17 +53,29 @@ pnpm changeset-version
 
 ### Repository Structure
 
-- **packages/** - All incubation packages
-  - **dev-wallet/** - Development wallet for Sui dApp testing
-  - **docs/** - Documentation site (fumadocs + Next.js)
+- **packages/** - Published incubation packages and shared internal config
+  - **dev-wallet/** - Development wallet for Sui dApp testing (Lit UI, multi-adapter, popup wallet)
+  - **devstack/** - Declarative reconciler + plugin harness for fully-seeded Sui local development
+  - **devstack-wallet/** - Thin wallet-standard wallet for example apps (transitional)
+  - **docs/** - Documentation site (fumadocs + Next.js); content under `content/<package>/`
+  - **tsconfig/** - Shared internal TypeScript configurations (not published)
+- **apps/** - First-party consumer apps (e.g. the hosted dev-wallet)
+- **examples/** - Worked example apps that exercise the packages end-to-end
+  - **arena**, **private-content**, **token-studio**, **wallet**
 
 ### Documentation
 
 - Docs site: https://ts-sdks-incubation.vercel.app
 - Auto-deployed via Vercel on push to `main`
-- Content lives in `packages/docs/content/` as MDX files
+- Content lives in `packages/docs/content/<package>/` as MDX files (one section per package)
 - Each package can generate LLM-friendly markdown docs via `build:docs` script
 - Run docs locally: `pnpm --filter @mysten-incubation/docs dev`
+
+### Package management
+
+- pnpm 10 workspaces with a catalog (`pnpm-workspace.yaml`) for `@mysten/*`, React, build tooling
+- `minimumReleaseAge: 2880` enforces a 2-day quarantine on newly-published packages
+- `pnpm.onlyBuiltDependencies` allows `esbuild` build scripts (used by tsup)
 
 ### Build System
 

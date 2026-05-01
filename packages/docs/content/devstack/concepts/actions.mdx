@@ -1,0 +1,44 @@
+---
+title: Actions
+description: The six action kinds the reconciler walks.
+---
+
+A plugin contributes named actions of one of six kinds:
+
+| Kind       | Purpose                                                                                                  |
+| ---------- | -------------------------------------------------------------------------------------------------------- |
+| `Build`    | Idempotent image / artifact build.                                                                       |
+| `Service`  | Long-running process (docker container). Localnet only.                                                  |
+| `Publish`  | Move package publish — captures `packageId` + named object IDs into the registry.                        |
+| `Register` | On-chain registration that produces registry entries (e.g. account funding, KeyServer publish).          |
+| `Seed`     | Post-deploy state seeding (mint balances, open lobbies, place orders). Default-skipped on live networks. |
+| `Emit`     | Side-effecting outputs derived from the registry (codegen, manifest writes).                             |
+
+## Edges
+
+- `needs: string[]` — direct ordering. Bare names auto-resolve to the same plugin's namespace;
+  dotted names cross plugins (`'sui.accounts'`); suffixed names (`'walrus.app-network:before'`,
+  `'walrus.app-network:after'`) query the capability provider table.
+- `provides: string[]` — declares this action provides a named capability. Other actions reference
+  capabilities via `:before` / `:after` queries instead of pinning to a specific action name.
+- `watches?: string[]` — extra paths the file watcher should treat as inputs. Resolved against
+  `appDir`. Useful for non-Move-package inputs (GraphQL schemas, JSON configs).
+
+## Skip predicate
+
+Each action provides `getStatus?(ctx) => { ok: boolean; detail?: string }`. The reconciler walks the
+topo order and asks each one whether it's converged. Only actions whose `getStatus` returns
+`{ ok: false }` (or whose input hash drifted) actually run.
+
+`Emit` actions also re-fire whenever a kind they declared via `dependsOnKind: ['packages']` (etc.)
+is dirtied during the cycle — that's how codegen runs again after a fresh publish without explicit
+ordering.
+
+## Status states
+
+Six authoritative reconciler states: `idle`, `queued`, `running`, `healthy`, `failed`, `skipped`.
+Two transient UI markers, set outside the reconciler and cleared by the next authoritative
+`update()`:
+
+- `stale` — file watcher saw an input drift; the action will rerun.
+- `dirty` — Emit's `dependsOnKind` matched a freshly-dirty kind; cascade pending.

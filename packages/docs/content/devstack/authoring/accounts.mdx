@@ -1,0 +1,84 @@
+---
+title: Accounts
+description: Declared signers — top-level config, factory-resolved per network.
+---
+
+Account names declared at the top level of `defineDevstackConfig` materialize into `Signer`
+instances available via `ctx.accounts.<name>` in plugin actions and `accounts.<name>` in the REPL.
+
+```ts
+import { cliSigner, defineDevstackConfig, envSigner } from '@mysten-incubation/devstack';
+
+export default defineDevstackConfig({
+	app: 'arena',
+	accounts: {
+		alice: {}, // implicit generatedKeypair() on localnet
+		bob: {},
+		publisher: {
+			testnet: cliSigner({ alias: 'deployer' }),
+			mainnet: envSigner({ name: 'PROD_KEY' }),
+			// localnet falls through to the implicit generatedKeypair()
+		},
+	},
+	plugins: [sui(), arenaPlugin(), codegen()],
+});
+```
+
+## Spec shapes
+
+```ts
+type AccountSpec = AccountNetworkSpec | Signer | AccountFactory;
+
+interface AccountNetworkSpec {
+	default?: Signer | AccountFactory;
+	localnet?: Signer | AccountFactory;
+	testnet?: Signer | AccountFactory;
+	mainnet?: Signer | AccountFactory;
+}
+```
+
+A bare `Signer` or `AccountFactory` is normalized as the `default` slot — used for every network
+unless an explicit per-network slot overrides it. Resolution precedence per (account, network):
+
+1. `spec[network]` if set.
+2. `spec.default` if set.
+3. On localnet: implicit `generatedKeypair()` factory — loads-or-creates a per-stack Ed25519 keypair
+   on disk.
+4. Otherwise, materialization fails. Failure is captured at resolve time and re-thrown on the first
+   `ctx.accounts.get(name)` call so the rest of the action graph keeps running.
+
+## Factories
+
+```ts
+type AccountFactory = (ctx: AccountFactoryContext) => Signer | Promise<Signer>;
+```
+
+Built-in factories:
+
+- `generatedKeypair()` — localnet only. Loads-or-creates `<stackDir>/.keys/<account>.key`. The Vite
+  plugin's `virtual:devstack-keys` reads the same path so the dev wallet picks up the seeded
+  keypair.
+- `cliSigner({ alias })` — reads from the user's `~/.sui/sui_config/sui.keystore` by alias. Useful
+  for live deploys where the host has a configured signer.
+- `envSigner({ name })` — reads a bech32 secret key from `process.env[name]`. Useful for CI.
+
+Custom factories can read keys from KMS, hardware wallets, etc. The factory receives
+`{ accountName, appDir, stack, network, rpcUrl }` so it can scope key material per-stack or
+per-network if needed.
+
+## Consuming
+
+```ts
+// In any plugin action:
+run: async (ctx) => {
+	const publisher = ctx.accounts.get('publisher');     // Signer
+	await client.signAndExecuteTransaction({ signer: publisher, transaction: tx });
+};
+
+// In the REPL:
+> accounts.alice.toSuiAddress()
+> await client.signAndExecuteTransaction({ signer: accounts.publisher, transaction })
+```
+
+`ctx.accounts` exposes `get(name): Signer`, `has(name): boolean`, `names(): string[]`. `get()`
+throws on miss with a list of declared accounts.

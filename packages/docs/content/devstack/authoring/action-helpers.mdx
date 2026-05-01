@@ -1,0 +1,40 @@
+---
+title: Action helpers
+description: Factories for the six action kinds.
+---
+
+| Helper                                           | Returns                                                                                                                                |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `buildImage({ name, run, getStatus?, ... })`     | `Build` action.                                                                                                                        |
+| `service({ name, run, getStatus?, ... })`        | `Service` action. Localnet only.                                                                                                       |
+| `publish({ name, run, getStatus?, ... })`        | `Publish` action — low-level escape hatch.                                                                                             |
+| `definePublishAction({ name, sourcePath, ... })` | `Publish` action with build + register + cache baked in.                                                                               |
+| `register({ name, run, getStatus?, ... })`       | `Register` action.                                                                                                                     |
+| `seed({ name, run, getStatus?, liveNetworks? })` | `Seed` action. Default-skipped on testnet/mainnet. Pass `liveNetworks: true` (every network) or `liveNetworks: ['testnet']` to opt in. |
+| `emit({ name, run, getStatus?, dependsOnKind })` | `Emit` action. Re-fires inline plus once per cycle when `dependsOnKind` is dirty.                                                      |
+
+Every action shape carries:
+
+- `needs?: string[]` — see [actions](/docs/concepts/actions#edges).
+- `provides?: string[]` — capability declarations.
+- `inputs?: Record<string, unknown>` — hashed for the source-digest gate.
+- `watches?: string[]` — extra file-watch paths beyond the inferred globs.
+
+## Helpers worth knowing
+
+Subpath: `@mysten-incubation/devstack/helpers`.
+
+- `publishMovePackage(opts)` — host-side or in-container `sui move build` + SDK publish. Caches by
+  source-digest. `buildEnv: 'host' | 'container'`. Used inside `definePublishAction`.
+- `importMovePackage(opts)` — git-pinned Move imports via in-container
+  `sui client test-publish --with-unpublished-dependencies`. Used inside the `imports` plugin's
+  localnet path.
+- `seedSharedObject(opts)` — common Seed pattern. Reads a captured shared-object id and checks it's
+  still live on-chain in `getStatus`.
+- `createLocalSuiClient(url, network?)` — minimal `SuiJsonRpcClient` constructor.
+- `cliSigner({ alias })` / `envSigner({ name })` / `generatedKeypair()` — produce `Signer` instances
+  for `config.accounts`. See the [accounts page](/docs/authoring/accounts).
+- `buildPriorCacheEntry(pkg)` — convert a registry `Package` to the `prior` cache shape
+  `publishMovePackage` accepts.
+- `ensureUpstreamSourceImage({ repo, rev })` / `extractUpstreamSource({ imageTag, destDir })` —
+  content-addressed source-image cache for git-pinned packages.

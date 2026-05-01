@@ -4,9 +4,22 @@ Incubation TypeScript packages for the [Sui](https://sui.io) blockchain ecosyste
 
 ## Packages
 
-| Package                                                | Description                                               | npm                                                                                                                               |
-| ------------------------------------------------------ | --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| [`@mysten-incubation/dev-wallet`](packages/dev-wallet) | A modular dev wallet for Sui dApp development and testing | [![npm](https://img.shields.io/npm/v/@mysten-incubation/dev-wallet)](https://www.npmjs.com/package/@mysten-incubation/dev-wallet) |
+| Package                                                          | Description                                                                                | npm                                                                                                                                         |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`@mysten-incubation/dev-wallet`](packages/dev-wallet)           | A modular dev wallet for Sui dApp development and testing                                  | [![npm](https://img.shields.io/npm/v/@mysten-incubation/dev-wallet)](https://www.npmjs.com/package/@mysten-incubation/dev-wallet)           |
+| [`@mysten-incubation/devstack`](packages/devstack)               | Declarative reconciler + plugin harness for fully-seeded Sui local development             | [![npm](https://img.shields.io/npm/v/@mysten-incubation/devstack)](https://www.npmjs.com/package/@mysten-incubation/devstack)               |
+| [`@mysten-incubation/devstack-wallet`](packages/devstack-wallet) | Programmatic wallet-standard wallet for example apps (transitional — see devstack roadmap) | [![npm](https://img.shields.io/npm/v/@mysten-incubation/devstack-wallet)](https://www.npmjs.com/package/@mysten-incubation/devstack-wallet) |
+
+## Examples
+
+Worked example apps live under [`examples/`](examples). Each example brings up its own local stack via `pnpm localnet:up`, publishes Move packages, and serves a Vite frontend.
+
+| Example                                       | Demonstrates                                                                              |
+| --------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| [`arena`](examples/arena)                     | Shared-object Connect Four — matchmaking via `Lobby` objects, gameplay via shared `Game`. |
+| [`private-content`](examples/private-content) | Walrus blob storage + Seal threshold-encryption + capability-gated decrypt.               |
+| [`token-studio`](examples/token-studio)       | Move `Coin` module, `TreasuryCap` management, mint / burn / transfer.                     |
+| [`wallet`](examples/wallet)                   | Multi-coin balances + send/receive, DeepBook v3 swap UI against locally-published pools.  |
 
 ## Documentation
 
