@@ -18,7 +18,11 @@ import type { ManagedAccount } from '../types.js';
 import { BaseSignerAdapter } from './base-adapter.js';
 import { buildManagedAccount } from './build-managed-account.js';
 
-const DEVSTACK_WALLET_FEATURES = ['sui:signTransaction', 'sui:signAndExecuteTransaction'] as const;
+const DEVSTACK_WALLET_FEATURES = [
+	'sui:signTransaction',
+	'sui:signAndExecuteTransaction',
+	'sui:signPersonalMessage',
+] as const;
 
 interface ServerAccountInfo {
 	name: string;
@@ -124,11 +128,33 @@ export class DevstackProxySigner extends Signer {
 		};
 	}
 
-	override async signPersonalMessage(_bytes: Uint8Array): Promise<never> {
-		throw new Error(
-			'Personal message signing is not supported by the devstack wallet-server. ' +
-				'The server signs BCS TransactionData only — same constraint as RemoteCliAdapter.',
-		);
+	override async signPersonalMessage(bytes: Uint8Array) {
+		const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+		if (this.#authToken !== null) {
+			headers['Authorization'] = `Bearer ${this.#authToken}`;
+		}
+		const res = await fetch(`${this.#serverOrigin}/api/v1/devstack/sign-personal-message`, {
+			method: 'POST',
+			headers,
+			body: JSON.stringify({
+				address: this.#address,
+				messageBytes: toBase64(bytes),
+			}),
+		});
+		if (!res.ok) {
+			const body = await res.json().catch(() => ({}));
+			const message = (body as { error?: unknown }).error;
+			throw new Error(
+				`Devstack personal-message signing failed: ${
+					typeof message === 'string' ? message : res.statusText
+				}`,
+			);
+		}
+		const { signature } = (await res.json()) as { signature?: string };
+		if (typeof signature !== 'string' || signature.length === 0) {
+			throw new Error('Devstack personal-message signing failed: server returned no signature');
+		}
+		return { bytes: toBase64(bytes), signature };
 	}
 }
 

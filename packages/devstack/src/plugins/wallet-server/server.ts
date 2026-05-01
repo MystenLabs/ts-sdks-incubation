@@ -4,8 +4,9 @@
 // loading private keys into JavaScript.
 //
 // Endpoints (all under `/api/v1/devstack`):
-//   GET  /accounts          → { accounts: [{ name, address, scheme, publicKey }] }
-//   POST /sign-transaction  → { suiSignature }
+//   GET  /accounts               → { accounts: [{ name, address, scheme, publicKey }] }
+//   POST /sign-transaction       → { suiSignature }
+//   POST /sign-personal-message  → { signature, bytes }
 //
 // Auth model mirrors `dev-wallet/src/server/cli-signing-middleware.ts`:
 // a 256-bit random token is generated at startup, printed to the
@@ -102,6 +103,14 @@ export function startWalletServer(opts: WalletServerOptions): WalletServerHandle
 			}
 			if (req.method === 'POST' && url.pathname === '/api/v1/devstack/sign-transaction') {
 				return await handleSign(req, res, snapshot.signersByAddress, maxBodyBytes);
+			}
+			if (req.method === 'POST' && url.pathname === '/api/v1/devstack/sign-personal-message') {
+				return await handleSignPersonalMessage(
+					req,
+					res,
+					snapshot.signersByAddress,
+					maxBodyBytes,
+				);
 			}
 			sendJson(res, 404, { error: `No route for ${req.method} ${url.pathname}` });
 		} catch (err) {
@@ -200,6 +209,43 @@ async function handleSign(
 	}
 	const { signature } = await signer.signTransaction(bytes);
 	sendJson(res, 200, { suiSignature: signature, txBytes: toBase64(bytes) });
+}
+
+async function handleSignPersonalMessage(
+	req: IncomingMessage,
+	res: ServerResponse,
+	signers: Map<string, Signer>,
+	maxBodyBytes: number,
+): Promise<void> {
+	let body: Record<string, unknown>;
+	try {
+		body = await readJsonBody(req, maxBodyBytes);
+	} catch (err) {
+		if (err instanceof RequestError) return sendJson(res, err.status, { error: err.message });
+		throw err;
+	}
+	const address = body['address'];
+	const messageBytes = body['messageBytes'];
+	if (typeof address !== 'string' || !isValidSuiAddress(address)) {
+		return sendJson(res, 400, { error: 'Invalid address; expected 0x-prefixed hex' });
+	}
+	if (typeof messageBytes !== 'string' || messageBytes.length === 0) {
+		return sendJson(res, 400, {
+			error: 'Invalid messageBytes; expected non-empty base64 string',
+		});
+	}
+	const signer = signers.get(address);
+	if (signer === undefined) {
+		return sendJson(res, 404, { error: `No signer for address ${address}` });
+	}
+	let bytes: Uint8Array;
+	try {
+		bytes = fromBase64(messageBytes);
+	} catch {
+		return sendJson(res, 400, { error: 'messageBytes is not valid base64' });
+	}
+	const { signature } = await signer.signPersonalMessage(bytes);
+	sendJson(res, 200, { signature, bytes: toBase64(bytes) });
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
