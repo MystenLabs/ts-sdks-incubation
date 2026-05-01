@@ -40,7 +40,18 @@ export class DevstackFaucetPanel extends LitElement {
 			return html`<div class="empty">Connect a wallet account to use the faucet.</div>`;
 		}
 		const faucetUrl = manifest.registry.services?.find((s) => s.name === 'sui-faucet')?.url;
-		const tokens = manifest.registry.tokens ?? [];
+		const packages = manifest.registry.packages ?? [];
+		const tokens = (manifest.registry.tokens ?? []).map((t) => {
+			if (t.treasuryCapId !== undefined) return t;
+			// Fallback: read the package's captured TreasuryCap object id by
+			// matching the token's package id against `manifest.registry.packages`.
+			// Lets the panel work with examples whose plugin registers tokens
+			// without explicitly forwarding `result.captured.treasuryCapId`.
+			const packageId = parseTokenPackage(t.type);
+			const pkg = packages.find((p) => p.packageId === packageId);
+			const treasuryCapId = pkg?.captured?.treasuryCapId;
+			return treasuryCapId !== undefined ? { ...t, treasuryCapId } : t;
+		});
 		const publisherAddr = manifest.registry.accounts?.find((a) => a.name === 'publisher')?.address;
 		return html`
 			<div class="section">
@@ -126,7 +137,25 @@ export class DevstackFaucetPanel extends LitElement {
 				const body = await res.text().catch(() => '');
 				throw new Error(`Faucet returned ${res.status}: ${body || res.statusText}`);
 			}
-			this.#setStatus({ target: 'sui', state: 'ok', message: 'Faucet requested 1 SUI' });
+			const body = (await res.json().catch(() => null)) as
+				| { status?: string; coins_sent?: unknown[]; error?: unknown }
+				| null;
+			const coinsSent = Array.isArray(body?.coins_sent) ? body.coins_sent.length : 0;
+			if (coinsSent === 0) {
+				this.#setStatus({
+					target: 'sui',
+					state: 'error',
+					message:
+						(typeof body?.error === 'string' && body.error) ||
+						'Faucet returned success but sent no coins (rate limited or recipient already funded).',
+				});
+				return;
+			}
+			this.#setStatus({
+				target: 'sui',
+				state: 'ok',
+				message: `Faucet sent ${coinsSent} coin${coinsSent === 1 ? '' : 's'}`,
+			});
 		} catch (err) {
 			this.#setStatus({
 				target: 'sui',
@@ -162,6 +191,7 @@ export class DevstackFaucetPanel extends LitElement {
 			const packageId = parseTokenPackage(token.type);
 			const amount = BigInt(10) ** BigInt(token.decimals);
 			const tx = new Transaction();
+			tx.setSender(publisherAddress);
 			tx.moveCall({
 				target: `${packageId}::${moduleName}::mint`,
 				arguments: [

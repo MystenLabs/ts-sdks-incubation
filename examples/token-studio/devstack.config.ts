@@ -9,7 +9,7 @@ import {
 	vite,
 	walletServer,
 } from '@mysten-incubation/devstack';
-import { tokenStudioPlugin } from './tokenStudioPlugin.js';
+import { tokenStudioPlugin } from './tokenStudioPlugin.ts';
 
 export default defineDevstackConfig({
 	app: 'token-studio',
