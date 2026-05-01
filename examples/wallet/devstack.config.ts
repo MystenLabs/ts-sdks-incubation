@@ -10,7 +10,7 @@ import {
 	vite,
 	walletServer,
 } from '@mysten-incubation/devstack';
-import { walletPlugin } from './walletPlugin.js';
+import { walletPlugin } from './walletPlugin.ts';
 
 export default defineDevstackConfig({
 	app: 'wallet',

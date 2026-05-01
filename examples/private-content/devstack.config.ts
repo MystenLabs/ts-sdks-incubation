@@ -15,7 +15,7 @@ import {
 	walletServer,
 	walrus,
 } from '@mysten-incubation/devstack';
-import { privateContentPlugin } from './privateContentPlugin.js';
+import { privateContentPlugin } from './privateContentPlugin.ts';
 
 export default defineDevstackConfig({
 	app: 'private-content',

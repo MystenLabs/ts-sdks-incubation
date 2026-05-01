@@ -12,7 +12,7 @@ import {
 	vite,
 	walletServer,
 } from '@mysten-incubation/devstack';
-import { arenaPlugin } from './arenaPlugin.js';
+import { arenaPlugin } from './arenaPlugin.ts';
 
 export default defineDevstackConfig({
 	app: 'arena',
