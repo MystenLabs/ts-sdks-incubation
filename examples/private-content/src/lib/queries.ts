@@ -4,12 +4,14 @@ import { useQuery } from '@tanstack/react-query';
 import { deployment } from '../generated/deployment.js';
 import { Cap as CapStruct, File as FileStruct } from '../generated/sui/vault/vault.js';
 import { bytesToHex } from './format.js';
+import { bytesToBlobId } from './walrus.js';
 
 export interface VaultFile {
 	id: string;
 	name: string;
 	owner: string;
-	encrypted: Uint8Array;
+	/** URL-safe base64 walrus blob id (the shape `walrus daemon` accepts). */
+	blobId: string;
 	sealIdHex: string;
 }
 
@@ -59,13 +61,13 @@ export function useFile(fileId: string | undefined) {
 				include: { content: true },
 			});
 			const parsed = FileStruct.parse(result.object.content);
-			const encrypted = new Uint8Array(parsed.encrypted);
+			const blobIdBytes = new Uint8Array(parsed.blob_id);
 			const sealId = new Uint8Array(parsed.seal_id);
 			return {
 				id: fileId,
 				name: parsed.name,
 				owner: parsed.owner,
-				encrypted,
+				blobId: bytesToBlobId(blobIdBytes),
 				sealIdHex: bytesToHex(sealId),
 			};
 		},

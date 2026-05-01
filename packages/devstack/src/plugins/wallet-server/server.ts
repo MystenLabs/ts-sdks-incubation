@@ -105,12 +105,7 @@ export function startWalletServer(opts: WalletServerOptions): WalletServerHandle
 				return await handleSign(req, res, snapshot.signersByAddress, maxBodyBytes);
 			}
 			if (req.method === 'POST' && url.pathname === '/api/v1/devstack/sign-personal-message') {
-				return await handleSignPersonalMessage(
-					req,
-					res,
-					snapshot.signersByAddress,
-					maxBodyBytes,
-				);
+				return await handleSignPersonalMessage(req, res, snapshot.signersByAddress, maxBodyBytes);
 			}
 			sendJson(res, 404, { error: `No route for ${req.method} ${url.pathname}` });
 		} catch (err) {

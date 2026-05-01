@@ -2,7 +2,15 @@
 	"name": "@mysten-incubation/devstack",
 	"version": "1.0.0",
 	"description": "Declarative reconciler + plugin harness for fully-seeded Sui local development. Brings up sui-localnet (+ optional walrus, seal), publishes Move packages, runs codegen, and writes a typed manifest the frontend consumes.",
-	"keywords": ["sui", "move", "localnet", "developer-experience", "walrus", "seal", "docker"],
+	"keywords": [
+		"sui",
+		"move",
+		"localnet",
+		"developer-experience",
+		"walrus",
+		"seal",
+		"docker"
+	],
 	"license": "Apache-2.0",
 	"repository": {
 		"type": "git",
@@ -59,7 +67,12 @@
 	"bin": {
 		"devstack": "./dist/cli/index.js"
 	},
-	"files": ["dist", "README.md", "CHANGELOG.md", "LICENSE"],
+	"files": [
+		"dist",
+		"README.md",
+		"CHANGELOG.md",
+		"LICENSE"
+	],
 	"engines": {
 		"node": ">=24.0.0"
 	},
@@ -74,6 +87,7 @@
 	"dependencies": {
 		"@mysten/codegen": "^0.10.0",
 		"@mysten/sui": "catalog:",
+		"@mysten/walrus": "^1.1.4",
 		"chokidar": "^4.0.1",
 		"zod": "catalog:"
 	},
@@ -102,13 +116,29 @@
 		"vitest": "catalog:"
 	},
 	"peerDependenciesMeta": {
-		"@mysten/dapp-kit-core": { "optional": true },
-		"@mysten/dapp-kit-react": { "optional": true },
-		"@playwright/test": { "optional": true },
-		"@tanstack/react-query": { "optional": true },
-		"react": { "optional": true },
-		"react-dom": { "optional": true },
-		"vite": { "optional": true },
-		"vitest": { "optional": true }
+		"@mysten/dapp-kit-core": {
+			"optional": true
+		},
+		"@mysten/dapp-kit-react": {
+			"optional": true
+		},
+		"@playwright/test": {
+			"optional": true
+		},
+		"@tanstack/react-query": {
+			"optional": true
+		},
+		"react": {
+			"optional": true
+		},
+		"react-dom": {
+			"optional": true
+		},
+		"vite": {
+			"optional": true
+		},
+		"vitest": {
+			"optional": true
+		}
 	}
 }

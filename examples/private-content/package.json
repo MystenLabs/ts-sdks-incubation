@@ -27,6 +27,7 @@
 		"@mysten/seal": "catalog:",
 		"@mysten/sui": "catalog:",
 		"@mysten/wallet-standard": "catalog:",
+		"@mysten/walrus": "^1.1.4",
 		"@tanstack/react-query": "catalog:",
 		"react": "catalog:",
 		"react-dom": "catalog:"

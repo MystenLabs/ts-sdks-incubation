@@ -49,6 +49,7 @@ const seal: SealView | undefined =
 export const deployment = {
 	rpcUrl: services.find((s) => s.name === 'sui-rpc')?.url ?? '',
 	faucetUrl: services.find((s) => s.name === 'sui-faucet')?.url,
+	walrusDaemonUrl: services.find((s) => s.name === 'walrus-daemon')?.url,
 	accounts: accountMap,
 	vaultPackageId: packages.find((p) => p.name === 'vault')?.packageId,
 	seal,
