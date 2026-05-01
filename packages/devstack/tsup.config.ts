@@ -30,7 +30,6 @@ export default defineConfig({
 	// `import('....js')` from the React adapter. Bundling them would force
 	// every devstack consumer to install them.
 	external: [
-		'@mysten-incubation/devstack-wallet',
 		'@mysten/dapp-kit-core',
 		'@mysten/dapp-kit-react',
 		'@tanstack/react-query',

@@ -18,6 +18,7 @@
 		"plugins/codegen",
 		"plugins/imports",
 		"plugins/vite",
+		"plugins/wallet-server",
 		"---Authoring---",
 		"authoring/define-plugin",
 		"authoring/action-helpers",

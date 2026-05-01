@@ -20,7 +20,5 @@ export type { CodegenModule, DevstackPackageRegistry, DevstackProviderState } fr
 export {
 	createDevstackDappKit,
 	type CreateDevstackDappKitOptions,
-	type DevKey,
-	type DevWalletInitializerFactory,
 } from './create-devstack-dapp-kit.js';
 export { DevstackDebugPanel, type DevstackDebugPanelProps } from './debug-panel.js';

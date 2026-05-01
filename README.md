@@ -4,11 +4,11 @@ Incubation TypeScript packages for the [Sui](https://sui.io) blockchain ecosyste
 
 ## Packages
 
-| Package                                                          | Description                                                                                | npm                                                                                                                                         |
-| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`@mysten-incubation/dev-wallet`](packages/dev-wallet)           | A modular dev wallet for Sui dApp development and testing                                  | [![npm](https://img.shields.io/npm/v/@mysten-incubation/dev-wallet)](https://www.npmjs.com/package/@mysten-incubation/dev-wallet)           |
-| [`@mysten-incubation/devstack`](packages/devstack)               | Declarative reconciler + plugin harness for fully-seeded Sui local development             | [![npm](https://img.shields.io/npm/v/@mysten-incubation/devstack)](https://www.npmjs.com/package/@mysten-incubation/devstack)               |
-| [`@mysten-incubation/devstack-wallet`](packages/devstack-wallet) | Programmatic wallet-standard wallet for example apps (transitional — see devstack roadmap) | [![npm](https://img.shields.io/npm/v/@mysten-incubation/devstack-wallet)](https://www.npmjs.com/package/@mysten-incubation/devstack-wallet) |
+| Package                                                                        | Description                                                                    | npm                                                                                                                                                       |
+| ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`@mysten-incubation/dev-wallet`](packages/dev-wallet)                         | Modular dev wallet for Sui dApp development and testing                        | [![npm](https://img.shields.io/npm/v/@mysten-incubation/dev-wallet)](https://www.npmjs.com/package/@mysten-incubation/dev-wallet)                         |
+| [`@mysten-incubation/devstack`](packages/devstack)                             | Declarative reconciler + plugin harness for fully-seeded Sui local development | [![npm](https://img.shields.io/npm/v/@mysten-incubation/devstack)](https://www.npmjs.com/package/@mysten-incubation/devstack)                             |
+| [`@mysten-incubation/devstack-wallet-panels`](packages/devstack-wallet-panels) | Devstack-aware Faucet / Packages / Network panels for the dev-wallet panel API | [![npm](https://img.shields.io/npm/v/@mysten-incubation/devstack-wallet-panels)](https://www.npmjs.com/package/@mysten-incubation/devstack-wallet-panels) |
 
 ## Examples
 

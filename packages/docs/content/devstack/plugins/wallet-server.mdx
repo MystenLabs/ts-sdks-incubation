@@ -1,0 +1,86 @@
+---
+title: walletServer
+description: In-supervisor HTTP server that exposes ctx.accounts to a browser-side signer adapter.
+---
+
+`walletServer()` adds an HTTP server to the supervisor that surfaces the resolved `ctx.accounts`
+over `/api/v1/devstack/*` so a browser app can sign transactions without ever loading private keys
+into the bundle.
+
+It pairs with [`DevstackSignerAdapter`](/dev-wallet/guides/devstack-integration) from
+`@mysten-incubation/dev-wallet` — the adapter reads the service URL from
+`manifest.registry.services` and signs over HTTP.
+
+## Use
+
+```ts
+import {
+	codegen,
+	defineDevstackConfig,
+	sui,
+	vite,
+	walletServer,
+} from '@mysten-incubation/devstack';
+
+export default defineDevstackConfig({
+	app: 'my-app',
+	accounts: {
+		publisher: {},
+		alice: {},
+		bob: {},
+	},
+	plugins: [
+		sui({ version: 'devnet-v1.71.0' }),
+		// ...app plugins
+		codegen(),
+		walletServer({ port: 9420 }),
+		vite({ port: 5173 }),
+	],
+});
+```
+
+## Lifecycle
+
+`walletServer()` registers one Service action:
+
+| Action                | Purpose                                                                                                                                                       |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `wallet-server.serve` | Spawn a Node `http` server on `port`. Register the URL + paired token in `manifest.registry.services` as the `wallet-server` entry. Close on supervisor stop. |
+
+The server holds an `address → Signer` map populated from `ctx.accounts.names()`. Every named
+account in `defineDevstackConfig({ accounts })` becomes signable — `cliSigner`, `envSigner`,
+`generatedKeypair`, anything that materializes a `Signer`.
+
+## Endpoints
+
+| Method | Path                                | Returns                                                                           |
+| ------ | ----------------------------------- | --------------------------------------------------------------------------------- |
+| `GET`  | `/health`                           | `{ ok: true }` — liveness probe, no auth required.                                |
+| `GET`  | `/api/v1/devstack/accounts`         | `{ accounts: [{ name, address, scheme, publicKey }] }` — full account snapshot.   |
+| `POST` | `/api/v1/devstack/sign-transaction` | `{ suiSignature, txBytes }` — signs the `txBytes` (base64 BCS `TransactionData`). |
+
+All `/api/*` requests require `Authorization: Bearer <token>` or a `?token=<hex>` query parameter.
+
+## Options
+
+```ts
+interface WalletServerPluginOptions {
+	/** TCP port for the wallet HTTP server. Default 9420. */
+	port?: number;
+	/** Override the printed origin (e.g. when proxying through a tunnel). */
+	publicOrigin?: string;
+	/** Names of actions that must run before the server starts. Default
+	 * `['sui.accounts']` so funded accounts are available before any sign
+	 * request can arrive. */
+	needs?: string[];
+}
+```
+
+## Constraints
+
+- Localnet-only. Calls `requireLocalnetCtx` — `devstack deploy --network testnet` skips this plugin
+  entirely.
+- The server signs BCS `TransactionData` only. `signPersonalMessage` is unsupported, mirroring
+  `RemoteCliAdapter`'s constraint with `sui keytool sign`.
+- The token is regenerated on every supervisor restart. The manifest is the source of truth — don't
+  persist it client-side.

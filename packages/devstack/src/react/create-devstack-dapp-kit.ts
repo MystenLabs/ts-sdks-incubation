@@ -1,53 +1,34 @@
 // `createDevstackDappKit({ defaultNetwork, ... })` — replaces the
-// per-app `dapp-kit.ts` boilerplate (createDAppKit + dev wallet
+// per-app `dapp-kit.ts` boilerplate (createDAppKit + dev-wallet
 // initializer + manifest-derived RPC URL).
 //
 // Synchronous. Peer deps `@mysten/dapp-kit-core` + `@mysten/sui/grpc`
-// are required at runtime. The dev-wallet initializer is plumbed via an
-// explicit `walletInitializerFactory` param — apps that want it import
-// `createDevWalletInitializer` from `@mysten-incubation/devstack-wallet`
-// themselves and pass it in. This keeps devstack from carrying a
-// magic-resolved peer dep that bundlers can't statically see.
+// are required at runtime. Wallet initializers are constructed by the
+// caller (typically `devWalletInitializer` from
+// `@mysten-incubation/dev-wallet`, configured with a
+// `DevstackSignerAdapter`) and passed in via `walletInitializers`. The
+// helper itself stays neutral about *how* signing is wired so apps can
+// mix in custom adapters or skip the in-app wallet entirely.
 
 import { createDAppKit } from '@mysten/dapp-kit-core';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 
 import type { Network } from '../core/types.js';
 
-export interface DevKey {
-	label: string;
-	secretKey: string;
-}
-
-/** Factory provided by `@mysten-incubation/devstack-wallet`. Re-typed
- * loosely to avoid a static dep on the package — apps pass the function
- * in via `walletInitializerFactory`. The wallets / chain shapes follow
- * devstack-wallet's narrower types at runtime. */
-export type DevWalletInitializerFactory = (args: {
-	wallets: ReadonlyArray<{ label: string; secretKey: string }>;
-	// biome-ignore lint/suspicious/noExplicitAny: opaque to avoid a static dep on devstack-wallet
-	chain?: any;
-}) => unknown;
-
 export interface CreateDevstackDappKitOptions {
 	defaultNetwork?: Network;
 	additionalNetworks?: Network[];
 	networks?: Partial<Record<Network, string>>;
 	localnetRpcUrl?: string;
-	devKeys?: ReadonlyArray<DevKey>;
-	/**
-	 * Pass `createDevWalletInitializer` from
-	 * `@mysten-incubation/devstack-wallet` to wire `devKeys` into
-	 * dapp-kit as a registered wallet. Omit to skip dev-wallet
-	 * registration (burner wallet still works).
-	 */
-	walletInitializerFactory?: DevWalletInitializerFactory;
+	/** Wallet initializers passed straight through to dapp-kit. The
+	 * idiomatic devstack flow: build a `DevstackSignerAdapter` from the
+	 * manifest's `wallet-server` service entry and wrap it with
+	 * `devWalletInitializer({ adapters: [adapter], panels: devstackPanels(), mountUI: true })`. */
+	walletInitializers?: unknown[];
 	enableBurnerWallet?: boolean;
 	/** Escape hatch — receives the constructed dapp-kit config and returns
 	 * a (possibly modified) replacement. Use to inject extra wallet
-	 * initializers, swap clients, etc. The shape is dapp-kit's
-	 * `CreateDAppKitOptions`; we keep it `unknown` here to avoid pinning
-	 * apps to a specific dapp-kit version's type surface. */
+	 * initializers, swap clients, etc. */
 	extend?: (config: unknown) => unknown;
 }
 
@@ -60,25 +41,6 @@ export function createDevstackDappKit(opts: CreateDevstackDappKitOptions): Devst
 	const networkList: Network[] = Array.from(
 		new Set<Network>([defaultNetwork, ...(opts.additionalNetworks ?? [])]),
 	);
-
-	const walletInitializers: unknown[] = [];
-	const devKeys = opts.devKeys ?? [];
-	if (devKeys.length > 0) {
-		if (opts.walletInitializerFactory === undefined) {
-			throw new Error(
-				'createDevstackDappKit: `devKeys` were provided but no `walletInitializerFactory`. ' +
-					'Pass `createDevWalletInitializer` from `@mysten-incubation/devstack-wallet` so the ' +
-					'seeded keypairs register as a usable wallet — without it, the panel falls back to ' +
-					"the burner wallet and your seeded `alice`/`bob`/etc. won't appear.",
-			);
-		}
-		walletInitializers.push(
-			opts.walletInitializerFactory({
-				wallets: devKeys.map((k) => ({ label: k.label, secretKey: k.secretKey })),
-				chain: `sui:${defaultNetwork}`,
-			}),
-		);
-	}
 
 	type DappKitConfig = Parameters<typeof createDAppKit>[0];
 	const config = {
@@ -95,7 +57,7 @@ export function createDevstackDappKit(opts: CreateDevstackDappKitOptions): Devst
 			return new SuiGrpcClient({ network, baseUrl: url });
 		},
 		enableBurnerWallet: opts.enableBurnerWallet ?? true,
-		walletInitializers,
+		walletInitializers: opts.walletInitializers ?? [],
 	} as unknown as DappKitConfig;
 
 	const finalConfig = (opts.extend !== undefined ? opts.extend(config) : config) as DappKitConfig;

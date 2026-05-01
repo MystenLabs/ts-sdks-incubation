@@ -12,6 +12,7 @@ import {
 	seal,
 	sui,
 	vite,
+	walletServer,
 	walrus,
 } from '@mysten-incubation/devstack';
 import { privateContentPlugin } from './privateContentPlugin.js';
@@ -36,6 +37,7 @@ export default defineDevstackConfig({
 		seal(),
 		privateContentPlugin(),
 		codegen(),
+		walletServer({ port: 9423 }),
 		vite({ port: 5175 }),
 	],
 });

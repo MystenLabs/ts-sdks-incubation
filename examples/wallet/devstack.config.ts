@@ -2,7 +2,14 @@
 // + pool/order seeds live in walletPlugin; deepbook is imported via the
 // shared `imports` plugin.
 
-import { codegen, defineDevstackConfig, imports, sui, vite } from '@mysten-incubation/devstack';
+import {
+	codegen,
+	defineDevstackConfig,
+	imports,
+	sui,
+	vite,
+	walletServer,
+} from '@mysten-incubation/devstack';
 import { walletPlugin } from './walletPlugin.js';
 
 export default defineDevstackConfig({
@@ -39,6 +46,7 @@ export default defineDevstackConfig({
 		}),
 		walletPlugin(),
 		codegen(),
+		walletServer({ port: 9420 }),
 		vite({ port: 5174 }),
 	],
 });
