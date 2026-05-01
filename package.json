@@ -25,6 +25,11 @@
 			"ROOT_HAS_DEV_DEPENDENCIES"
 		]
 	},
+	"pnpm": {
+		"onlyBuiltDependencies": [
+			"esbuild"
+		]
+	},
 	"devDependencies": {
 		"@arethetypeswrong/cli": "^0.18.1",
 		"@changesets/cli": "^2.29.8",

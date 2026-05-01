@@ -1,0 +1,42 @@
+---
+title: codegen
+description: Typed Move bindings via @mysten/codegen, regenerated on package id changes.
+---
+
+`codegen({ output? })` contributes one Emit action that runs `@mysten/codegen` against every package
+registered in `registry.packages.list()` whose `path` is set.
+
+| Option   | Default               | Notes                                  |
+| -------- | --------------------- | -------------------------------------- |
+| `output` | `'src/generated/sui'` | Output directory relative to `appDir`. |
+
+The Emit declares `dependsOnKind: ['packages']`, so it re-fires whenever a Publish action registers
+a fresh package — no explicit `needs:` edges from your plugins.
+
+## What it generates
+
+For each `<package>`, codegen writes typed builders under `<output>/<package>/<module>.ts`. Each
+Move function becomes a builder:
+
+```ts
+// In your generated bindings:
+export function createLobby(options: CreateLobbyOptions = {}) {
+	const packageAddress = options.package ?? '@local-pkg/connect_four';
+	return (tx: Transaction) =>
+		tx.moveCall({
+			/* ... */
+		});
+}
+```
+
+The default `'@local-pkg/<name>'` placeholder is what apps would otherwise have to override at the
+call site. The [React adapter's `useDevstackPackage(name)` hook](/docs/adapters/react) walks the
+codegen module's exports and curries the live `packageId` from the manifest, so call sites become
+`pkg.createLobby({ arguments: [...] })(tx)` — no `package: deployment.connectFourPackageId`
+boilerplate.
+
+## Pathless packages
+
+Imported packages whose source lives inside a docker image (deepbook, seal) have `path: undefined`
+on their registry entry. Codegen silently skips them. If you want generated bindings for an imported
+package, copy its source out of the image to a host path — see the imports plugin's escape hatches.

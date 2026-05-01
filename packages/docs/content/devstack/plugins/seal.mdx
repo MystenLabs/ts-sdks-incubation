@@ -1,0 +1,27 @@
+---
+title: seal
+description: Seal key server in Open mode for threshold-encryption development.
+---
+
+`seal({ rev?, apiPort? })` contributes four actions for a single-server Seal Open-mode deployment.
+
+| Action            | Kind                                                                                                                              |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `seal.build`      | Build (`dev-examples/seal:<rev>` image — bundles `key-server` + `seal-cli`).                                                      |
+| `seal.publish`    | Publish (the upstream `move/seal` package, sources baked into the seal image; uses `prepareSource` to extract before publishing). |
+| `seal.register`   | Register (caches a BLS12-381 master key on disk, registers a `KeyServer` object on chain).                                        |
+| `seal.key-server` | Service (long-running key-server container in Open mode).                                                                         |
+
+Frontend `SealClient` reads `keyServerObjectId` + `keyServerUrl` out of
+`manifest.registry.seal.keyServer`.
+
+```ts
+import { seal } from '@mysten-incubation/devstack';
+
+defineDevstackConfig({
+	plugins: [sui(), seal() /* ... */],
+});
+```
+
+The Seal image is heavy on first build (~30 s additional on top of sui+walrus). The master key is
+cached at `<stackDir>/.keys/seal-master-key.json` — re-using a stack reuses the key.

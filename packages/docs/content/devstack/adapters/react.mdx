@@ -1,0 +1,179 @@
+---
+title: React
+description: Typed package hooks, sign-and-execute mutation, dapp-kit factory, debug panel.
+---
+
+Subpath: `@mysten-incubation/devstack/react`.
+
+```sh
+pnpm add @mysten/dapp-kit-react @mysten/dapp-kit-core @mysten/sui @tanstack/react-query react react-dom
+pnpm add @mysten-incubation/devstack-wallet   # if you want seeded keys to register as a wallet
+```
+
+## Setup
+
+```tsx
+// dapp-kit.ts
+import { createDevstackDappKit } from '@mysten-incubation/devstack/react';
+import { createDevWalletInitializer } from '@mysten-incubation/devstack-wallet';
+import { devKeys } from 'virtual:devstack-keys';
+import { deployment } from './generated/deployment';
+
+export const { dAppKit } = createDevstackDappKit({
+	defaultNetwork: 'localnet',
+	localnetRpcUrl: deployment.rpcUrl,
+	devKeys,
+	walletInitializerFactory: createDevWalletInitializer,
+});
+
+declare module '@mysten/dapp-kit-react' {
+	interface Register {
+		dAppKit: typeof dAppKit;
+	}
+}
+```
+
+```tsx
+// main.tsx
+import { DevstackProvider, DevstackDebugPanel } from '@mysten-incubation/devstack/react';
+import { DAppKitProvider } from '@mysten/dapp-kit-react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { manifest } from 'virtual:devstack-manifest';
+import * as connectFour from './generated/sui/connect_four/game';
+import { dAppKit } from './dapp-kit';
+
+const queryClient = new QueryClient();
+
+createRoot(document.getElementById('root')!).render(
+	<QueryClientProvider client={queryClient}>
+		<DAppKitProvider dAppKit={dAppKit}>
+			<DevstackProvider manifest={manifest} packages={{ connect_four: connectFour }}>
+				<App />
+				{import.meta.env.DEV && <DevstackDebugPanel />}
+			</DevstackProvider>
+		</DAppKitProvider>
+	</QueryClientProvider>,
+);
+```
+
+## useDevstackPackage(name)
+
+Returns the codegen module's exports with each typed builder pre-bound to the live `packageId` from
+the manifest's `registry.packages` entry of the same name.
+
+```tsx
+import { useDevstackPackage, useDevstackSignAndExecute } from '@mysten-incubation/devstack/react';
+import { Transaction } from '@mysten/sui/transactions';
+
+function LobbyView({ lobbyId }: { lobbyId: string }) {
+	const connectFour = useDevstackPackage('connect_four');
+	const { mutateAsync, isPending } = useDevstackSignAndExecute();
+
+	async function onJoin() {
+		const tx = new Transaction();
+		connectFour.joinLobby({ arguments: [lobbyId] })(tx);
+		await mutateAsync(tx);
+	}
+
+	return (
+		<button onClick={onJoin} disabled={isPending}>
+			Join
+		</button>
+	);
+}
+```
+
+`useDevstackPackage('connect_four')` throws on first render when:
+
+- The package isn't in `<DevstackProvider packages={{ ... }}>`.
+- The manifest is missing (run `pnpm exec devstack up` first).
+- The package isn't deployed yet (run `pnpm exec devstack apply`).
+
+Use `useDevstackPackageOptional(name)` to gracefully gate UI on the pre-deploy state — returns
+`undefined` instead of throwing.
+
+### Typed packages
+
+By default `useDevstackPackage('name')` returns `CodegenModule = Record<string, unknown>` and call
+sites have to cast or narrow. Augment the `DevstackPackageRegistry` interface to make the hook
+return the actual codegen-module shape (mirrors the dapp-kit `Register` augmentation pattern):
+
+```ts
+// In your main.tsx, alongside the import:
+import * as connectFour from './generated/sui/connect_four/game';
+
+declare module '@mysten-incubation/devstack/react' {
+	interface DevstackPackageRegistry {
+		connect_four: typeof connectFour;
+	}
+}
+```
+
+After this, `useDevstackPackage('connect_four')` returns the typed module —
+`connectFour.joinLobby({ arguments: [...] })(tx)` typechecks end-to-end with no inline cast.
+
+## useDevstackDeployed(options?)
+
+Returns true when the manifest is loaded AND has at least one registered account AND every package
+in `options.requirePackages` (if set) is present. Replaces the per-app `isDeployed` constants.
+
+```tsx
+import { useDevstackDeployed } from '@mysten-incubation/devstack/react';
+
+function App() {
+	const deployed = useDevstackDeployed({ requirePackages: ['connect_four'] });
+	return deployed ? <DeployedView /> : <NotDeployedView />;
+}
+```
+
+Without `requirePackages`, returns true as long as the manifest has any account and any package — a
+coarse "stack is up at all" check.
+
+## useDevstackSignAndExecute(options?)
+
+The four-app `useSignAndExecute` pattern (sign → wait for digest → invalidate query keys) baked into
+one hook.
+
+```ts
+const { mutateAsync, isPending } = useDevstackSignAndExecute({
+	invalidateKeys: [['arena'], ['balance']],
+});
+await mutateAsync(transaction); // takes a Transaction; returns the dapp-kit result
+```
+
+Resolves the active wallet via `globalThis.__devstackDAppKit__` (set by `createDevstackDappKit`), so
+it stays decoupled from the app's specific dapp-kit instance.
+
+## DevstackDebugPanel
+
+Reflective form-per-builder UI. Lists every package registered with `<DevstackProvider>`, renders a
+JSON-textarea form for each builder's arguments, submits via `useDevstackSignAndExecute`, and
+displays the resulting tx effects inline.
+
+```tsx
+{
+	import.meta.env.DEV && <DevstackDebugPanel />;
+}
+```
+
+Mounts only under `import.meta.env.DEV` by default. Emits a console warning when mounted against a
+non-localnet network — submitting forms there sends real transactions.
+
+## createDevstackDappKit(options)
+
+Replaces the per-app `createDAppKit` + `createDevWalletInitializer` + manifest-derived RPC URL
+boilerplate.
+
+| Option                     | Notes                                                                                                                               |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `defaultNetwork`           | `'localnet'` by default.                                                                                                            |
+| `additionalNetworks`       | Extra networks beyond `defaultNetwork`.                                                                                             |
+| `networks`                 | Per-network RPC URL overrides (`{ testnet: 'https://...' }`).                                                                       |
+| `localnetRpcUrl`           | Manifest-derived RPC URL (typically `deployment.rpcUrl`).                                                                           |
+| `devKeys`                  | Seeded dev keypairs (typically `import { devKeys } from 'virtual:devstack-keys'`).                                                  |
+| `walletInitializerFactory` | Pass `createDevWalletInitializer` from `@mysten-incubation/devstack-wallet` to wire `devKeys` as a registered wallet. Skip to omit. |
+| `enableBurnerWallet`       | Default `true` — visitors without seeded keys still get a usable wallet.                                                            |
+| `extend`                   | Escape hatch — receives the constructed config and returns a modified copy.                                                         |
+
+Stashes the constructed `dAppKit` on `globalThis.__devstackDAppKit__` so `useDevstackSignAndExecute`
+can locate it.

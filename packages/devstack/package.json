@@ -1,0 +1,114 @@
+{
+	"name": "@mysten-incubation/devstack",
+	"version": "1.0.0",
+	"description": "Declarative reconciler + plugin harness for fully-seeded Sui local development. Brings up sui-localnet (+ optional walrus, seal), publishes Move packages, runs codegen, and writes a typed manifest the frontend consumes.",
+	"keywords": ["sui", "move", "localnet", "developer-experience", "walrus", "seal", "docker"],
+	"license": "Apache-2.0",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/mysten-incubation/devstack.git"
+	},
+	"homepage": "https://github.com/mysten-incubation/devstack#readme",
+	"bugs": {
+		"url": "https://github.com/mysten-incubation/devstack/issues"
+	},
+	"type": "module",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		},
+		"./cli": {
+			"types": "./dist/cli.d.ts",
+			"import": "./dist/cli.js"
+		},
+		"./helpers": {
+			"types": "./dist/helpers.d.ts",
+			"import": "./dist/helpers.js"
+		},
+		"./playwright": {
+			"types": "./dist/playwright/index.d.ts",
+			"import": "./dist/playwright/index.js"
+		},
+		"./react": {
+			"types": "./dist/react/index.d.ts",
+			"import": "./dist/react/index.js"
+		},
+		"./runtime": {
+			"types": "./dist/runtime.d.ts",
+			"import": "./dist/runtime.js"
+		},
+		"./vite": {
+			"types": "./dist/vite.d.ts",
+			"import": "./dist/vite.js"
+		},
+		"./vitest": {
+			"types": "./dist/vitest/index.d.ts",
+			"import": "./dist/vitest/index.js"
+		},
+		"./vitest/runtime": {
+			"types": "./dist/vitest/runtime.d.ts",
+			"import": "./dist/vitest/runtime.js"
+		}
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"bin": {
+		"devstack": "./dist/cli/index.js"
+	},
+	"files": ["dist", "README.md", "CHANGELOG.md", "LICENSE"],
+	"engines": {
+		"node": ">=24.0.0"
+	},
+	"scripts": {
+		"build": "tsup",
+		"build:watch": "tsup --watch",
+		"typecheck": "tsc --noEmit",
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"prepublishOnly": "pnpm run build"
+	},
+	"dependencies": {
+		"@mysten/codegen": "^0.10.0",
+		"@mysten/sui": "catalog:",
+		"chokidar": "^4.0.1",
+		"zod": "catalog:"
+	},
+	"devDependencies": {
+		"@mysten/dapp-kit-core": "catalog:",
+		"@mysten/dapp-kit-react": "catalog:",
+		"@playwright/test": "catalog:",
+		"@tanstack/react-query": "catalog:",
+		"@types/node": "^22.10.0",
+		"@types/react": "catalog:",
+		"react": "catalog:",
+		"react-dom": "catalog:",
+		"tsup": "^8.3.0",
+		"typescript": "catalog:",
+		"vite": "catalog:",
+		"vitest": "catalog:"
+	},
+	"peerDependencies": {
+		"@mysten/dapp-kit-core": "catalog:",
+		"@mysten/dapp-kit-react": "catalog:",
+		"@playwright/test": "catalog:",
+		"@tanstack/react-query": "catalog:",
+		"react": "catalog:",
+		"react-dom": "catalog:",
+		"vite": "catalog:",
+		"vitest": "catalog:"
+	},
+	"peerDependenciesMeta": {
+		"@mysten/dapp-kit-core": { "optional": true },
+		"@mysten/dapp-kit-react": { "optional": true },
+		"@playwright/test": { "optional": true },
+		"@tanstack/react-query": { "optional": true },
+		"react": { "optional": true },
+		"react-dom": { "optional": true },
+		"vite": { "optional": true },
+		"vitest": { "optional": true }
+	}
+}

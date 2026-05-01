@@ -1,0 +1,53 @@
+---
+title: Playwright
+description: e2e test config with optional self-managed stack lifecycle.
+---
+
+```ts
+// playwright.config.ts
+import { defineDevstackPlaywrightConfig } from '@mysten-incubation/devstack/playwright';
+
+export default defineDevstackPlaywrightConfig({
+	port: 5176,
+	manageStack: true,
+});
+```
+
+## Options
+
+| Option        | Default                  | Notes                                                                                                                                                                                                                                          |
+| ------------- | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `port`        | (required)               | Vite dev-server port.                                                                                                                                                                                                                          |
+| `command`     | `'pnpm dev'`             | Override the dev-server bring-up command.                                                                                                                                                                                                      |
+| `testDir`     | `'./e2e'`                | Override the test directory.                                                                                                                                                                                                                   |
+| `manageStack` | `false`                  | When true, wires `globalSetup` to bring the localnet stack up via `runUp({ once: true })`, and `globalTeardown` to tear it down via `runStack({ subcommand: 'down' })`. Hermetic `pnpm test:e2e` — no separate `:setup` / `:teardown` scripts. |
+| `configPath`  | `'./devstack.config.ts'` | Path to the devstack config (relative to the playwright config's cwd). Only used when `manageStack: true`.                                                                                                                                     |
+| `extend`      | `undefined`              | Arbitrary Playwright config overrides merged into the base.                                                                                                                                                                                    |
+
+## Stack lifecycle
+
+When `manageStack: true`:
+
+1. `globalSetup` calls
+   `runUp({ configPath, stack: process.env.DEVSTACK_STACK ?? 'test', once: true })`.
+2. Tests run normally.
+3. `globalTeardown` calls `runStack({ subcommand: 'down' })` against the same stack — preserves
+   volumes for resumability on the next run.
+
+Set `DEVSTACK_E2E_TEARDOWN=drop` to wipe volumes too (CI mode); `=none` to skip teardown entirely.
+
+## Helpers
+
+```ts
+import {
+	connectAs,
+	selectAccount,
+	waitForBalanceUpdate,
+} from '@mysten-incubation/devstack/playwright';
+```
+
+- `connectAs(page, accountName)` — opens the dev-wallet popover, picks the named seeded account,
+  confirms.
+- `selectAccount(page, accountName)` — switches between connected accounts mid-test.
+- `waitForBalanceUpdate(page, /* selector */)` — polls a balance display until it reflects an
+  expected change. Useful after a tx.

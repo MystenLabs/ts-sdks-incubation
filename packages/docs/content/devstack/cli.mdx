@@ -1,0 +1,113 @@
+---
+title: CLI reference
+description: Every devstack subcommand.
+---
+
+```text
+devstack <command> [options]
+
+Commands:
+  up [config]                  Bring the localnet stack up (one-shot reconciler).
+  watch [config]               Long-running supervisor; watches Move sources.
+  apply [config] [--target]    Single-cycle reconcile against active stack or --target.
+  deploy <config> --network    Live-network deploy slice (skip Service; keep Build).
+  codegen [config] [--target]  Re-emit codegen against the prior manifest (read-only).
+  down [config]                Stop the active stack's containers (volumes preserved).
+  reset [config] --yes         Wipe the active stack — containers, volumes, host state.
+  stack list|new|use|down|drop Manage named per-app stacks.
+  console [config] [--target]  REPL with manifest, client, accounts pre-bound.
+```
+
+## up
+
+```
+devstack up [config] [--target <network|stack|network:stack>] [--stack <name>]
+```
+
+Defaults to `./devstack.config.ts` and the active stack from `<appDir>/.devstack/active`. Reconciles
+toward the declared state and exits. The supervisor is localnet-only; live-network targets error
+with a hint pointing at `apply` or `deploy`.
+
+## watch
+
+Same as `up` minus the implicit `--once`. Long-running supervisor that watches Move sources and
+reconciles on change. Localnet-only.
+
+## apply
+
+```
+devstack apply [config] [--target <network|stack|network:stack>] [--actions a,b,c]
+```
+
+Single-cycle reconcile via `runOneShot`. Runs every action kind on localnet (Service+Build
+included); on live networks (testnet/mainnet) skips Service+Build and runs
+Publish/Register/Seed/Emit. Use `--actions` (alias `--scope`) to restrict the cycle to a
+comma-separated set of action FQNs (e.g. `wallet.usdc,imports.deepbook`); the runtime walks `needs`
+transitively to keep dependencies in the cycle and auto-includes every Emit action so the codegen
+cascade still fires.
+
+## deploy
+
+```
+devstack deploy <config> --network <testnet|mainnet>
+```
+
+Reads `config.networks[network]` for `rpcUrl`. Filters Service actions; keeps Build (so the Move
+build still happens via the host sui CLI). Useful for live deploys from CI. Pre-C1 default behavior
+is preserved; new code should prefer `apply --target <network>`.
+
+## codegen
+
+```
+devstack codegen [config] [--target <network|stack|network:stack>]
+```
+
+Re-emit typed bindings against the prior manifest, without running any other action. `readOnly` —
+does not write the manifest back. Useful when you've changed `@mysten/codegen` config or pulled new
+bindings without a fresh deploy.
+
+## down
+
+```
+devstack down [config]
+```
+
+Stops the active stack's containers; volumes persist (resumable on next `up`). Shortcut for
+`devstack stack down`.
+
+## reset
+
+```
+devstack reset [config] --yes
+```
+
+Wipes the active stack — containers, volumes, host state under `.devstack/stacks/<active>/`.
+Requires `--yes` (refuses without). Shortcut for `devstack stack drop --force --yes` against the
+active stack.
+
+## stack
+
+```
+devstack stack list|new <name>|use <name>|down [<name>]|drop <name> --yes [--force]
+```
+
+Manage named per-app stacks. Each stack maps to an isolated set of containers, volumes, and host
+state under `.devstack/stacks/<name>/`. `drop` refuses the active stack and `main` unless `--force`
+is passed; the `reset` shortcut auto-passes `--force`.
+
+## console
+
+```
+devstack console [config] [--target <network|stack|network:stack>]
+```
+
+REPL with `manifest`, `client`, `accounts.<name>`, `packages.<name>.<fn>()` pre-bound. Reads the
+active-stack manifest (or the `--target`'s manifest) and dynamically imports codegen-generated
+bindings.
+
+REPL commands:
+
+- `.deploy [pkg]` — Run `apply` against the resolved target. Without args, runs every action; with
+  `<pkg>`, scopes to that action's FQN + transitive deps + the codegen Emit cascade. `<pkg>` may be
+  a bare action name (the runtime resolves it against the loaded plugins), a dotted FQN
+  (`arena.connect_four`), or `imports/<name>`.

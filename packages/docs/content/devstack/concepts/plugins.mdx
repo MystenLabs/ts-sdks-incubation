@@ -1,0 +1,85 @@
+---
+title: Plugins
+description: Plugins compose actions; they are the unit of devstack extension.
+---
+
+A plugin is a `definePlugin({ name, actions })` call:
+
+```ts
+import { definePlugin, definePublishAction, seed } from '@mysten-incubation/devstack';
+
+export const arenaPlugin = () =>
+	definePlugin({
+		name: 'arena',
+		actions: () => [
+			definePublishAction({
+				name: 'connect_four',
+				needs: ['sui.accounts'],
+				sourcePath: './move/connect_four',
+				capture: { adminCap: '::admin::AdminCap' },
+			}),
+			seed({
+				name: 'openLobby',
+				needs: ['connect_four'],
+				/* ... */
+			}),
+		],
+	});
+```
+
+## Action naming
+
+Bare action names are auto-prefixed with the plugin namespace: `connect_four` becomes
+`arena.connect_four` after expansion. Names within a plugin must be unique; references in `needs`
+either resolve locally (bare) or as fully-qualified cross-plugin names (`'sui.accounts'`).
+
+Plugin names must match `/^[a-z][a-z0-9_-]*$/` — kebab-case or snake_case, no dots. Action names are
+unconstrained beyond non-empty.
+
+## Capabilities
+
+Use `provides: ['cap-name']` on one action and `needs: ['cap-name:before']` on another to express
+ordering across plugins without naming a specific action. Useful when the provider might or might
+not be loaded:
+
+```ts
+// In walrus plugin's network-setup action:
+buildImage({ name: 'network', provides: ['walrus.app-network'] /* ... */ });
+
+// In sui plugin's localnet action:
+service({ name: 'localnet', needs: ['walrus.app-network:before'] /* ... */ });
+```
+
+When walrus is loaded, `walrus.network` runs before `sui.localnet`. When walrus isn't loaded, the
+capability query silently drops — sui still runs without it. `:after` reverses the direction (the
+provider runs after the querier).
+
+**Capability names must be namespaced** — `<plugin>.<cap>`. Without the prefix, any other plugin can
+declare `provides: ['<cap>']` and intercept the ordering. The expander warns when you forget; v2
+escalates to an error.
+
+## Per-plugin types
+
+Plugins can extend the registry with namespace-scoped kinds. Declare a `Namespace` shape, then
+access it via `ctx.registry.ns<Namespace>('arena')`:
+
+```ts
+interface ArenaNamespace {
+	sharedObjects: RegistryQuery<{ name: string; objectId: string; objectType: string }>;
+}
+
+const ns = ctx.registry.ns<ArenaNamespace>('arena');
+ns.sharedObjects.register({ name: 'openLobby', objectId, objectType });
+```
+
+The namespace key (`'arena'`) becomes a top-level field in the serialized manifest under
+`registry.arena.sharedObjects`.
+
+## Built-in plugins
+
+- [`sui()`](/docs/plugins/sui) — Sui localnet container, faucet, account funding.
+- [`walrus()`](/docs/plugins/walrus) — 4-node Walrus testbed.
+- [`seal()`](/docs/plugins/seal) — Seal key server in Open mode.
+- [`codegen()`](/docs/plugins/codegen) — Typed bindings via `@mysten/codegen`.
+- [`imports()`](/docs/plugins/imports) — Recursive Move-package imports from git (DeepBook, Pyth,
+  ...).

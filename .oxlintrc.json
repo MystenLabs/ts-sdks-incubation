@@ -22,7 +22,14 @@
 		"vite-env.d.ts",
 		"vitest.config.*",
 		".git",
-		"packages/*/docs"
+		"packages/*/docs",
+		"**/.devstack/**",
+		"**/move/**/build/**",
+		"**/move/**/package_summaries/**",
+		"examples/*/*.config.js",
+		"examples/*/*.config.d.ts",
+		"examples/*/*Plugin.js",
+		"examples/*/*Plugin.d.ts"
 	],
 	"settings": {
 		"jsdoc": {

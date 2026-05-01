@@ -1,0 +1,45 @@
+// FRICTION: third copy — see examples/wallet/src/lib/format.ts. Extract to a
+// shared @mysten-incubation/ui-utils once a fourth copy lands.
+export function shortAddress(address: string, head = 6, tail = 4): string {
+	if (address.length <= head + tail + 2) return address;
+	return `${address.slice(0, head + 2)}…${address.slice(-tail)}`;
+}
+
+export function labelFor(address: string, accounts: Record<string, string>): string | null {
+	for (const [name, addr] of Object.entries(accounts)) {
+		if (addr === address) return name;
+	}
+	return null;
+}
+
+export function bytesToString(bytes: Uint8Array): string {
+	return new TextDecoder().decode(bytes);
+}
+
+export function stringToBytes(s: string): Uint8Array {
+	return new TextEncoder().encode(s);
+}
+
+export function bytesToHex(bytes: Uint8Array): string {
+	let s = '';
+	for (let i = 0; i < bytes.length; i++) {
+		s += (bytes[i] ?? 0).toString(16).padStart(2, '0');
+	}
+	return s;
+}
+
+export function hexToBytes(hex: string): Uint8Array {
+	const clean = hex.startsWith('0x') ? hex.slice(2) : hex;
+	if (clean.length % 2 !== 0) throw new Error(`hex string has odd length: ${clean.length}`);
+	const out = new Uint8Array(clean.length / 2);
+	for (let i = 0; i < out.length; i++) {
+		out[i] = Number.parseInt(clean.slice(i * 2, i * 2 + 2), 16);
+	}
+	return out;
+}
+
+export function arraysEqual(a: Uint8Array, b: Uint8Array): boolean {
+	if (a.length !== b.length) return false;
+	for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+	return true;
+}

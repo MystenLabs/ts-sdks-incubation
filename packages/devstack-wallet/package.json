@@ -1,0 +1,49 @@
+{
+	"name": "@mysten-incubation/devstack-wallet",
+	"version": "1.0.0-rc.1",
+	"description": "In-app dev wallet for Sui example apps. Wraps wallet-standard with a programmatic provider so devstack can pre-fund accounts and the frontend can connect without a browser extension.",
+	"keywords": ["sui", "wallet", "wallet-standard", "developer-experience"],
+	"license": "Apache-2.0",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/mysten-incubation/devstack.git",
+		"directory": "packages/devstack-wallet"
+	},
+	"homepage": "https://github.com/mysten-incubation/devstack/tree/main/packages/devstack-wallet#readme",
+	"bugs": {
+		"url": "https://github.com/mysten-incubation/devstack/issues"
+	},
+	"type": "module",
+	"main": "./src/index.ts",
+	"types": "./src/index.ts",
+	"exports": {
+		".": "./src/index.ts"
+	},
+	"publishConfig": {
+		"access": "public",
+		"main": "./dist/index.js",
+		"types": "./dist/index.d.ts",
+		"exports": {
+			".": {
+				"types": "./dist/index.d.ts",
+				"import": "./dist/index.js"
+			}
+		}
+	},
+	"files": ["dist", "README.md", "LICENSE"],
+	"scripts": {
+		"build": "tsup",
+		"typecheck": "tsc --noEmit",
+		"prepublishOnly": "pnpm run build"
+	},
+	"dependencies": {
+		"@mysten/sui": "catalog:",
+		"@mysten/wallet-standard": "catalog:",
+		"mitt": "^3.0.1"
+	},
+	"devDependencies": {
+		"@types/node": "^22.10.0",
+		"tsup": "^8.3.0",
+		"typescript": "catalog:"
+	}
+}

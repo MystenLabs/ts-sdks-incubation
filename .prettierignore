@@ -19,3 +19,15 @@ package.json
 pnpm-lock.yaml
 packages/*/docs/
 packages/docs/.source/
+
+# Devstack runtime state and codegen output
+**/.devstack/
+**/src/generated/sui/
+**/move/**/build/
+**/move/**/package_summaries/
+
+# tsc -b emits sibling .js/.d.ts in examples/ — not source
+examples/*/*.config.js
+examples/*/*.config.d.ts
+examples/*/*Plugin.js
+examples/*/*Plugin.d.ts

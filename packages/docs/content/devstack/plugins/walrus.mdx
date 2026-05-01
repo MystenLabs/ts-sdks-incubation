@@ -1,0 +1,26 @@
+---
+title: walrus
+description: 4-node Walrus testbed for blob storage development.
+---
+
+`walrus({ rev? })` contributes Build + Service actions for a 4-node Walrus testbed plus a Register
+action that hydrates the `walrus.nodes` registry namespace.
+
+| Action                     | Kind                                                                                                                                     |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `walrus.network`           | Build (also `provides: ['walrus.app-network']` so the docker network is created with the right subnet pin before sui.localnet attaches). |
+| `walrus.build`             | Build (`dev-examples/walrus:<rev>` image).                                                                                               |
+| `walrus.deploy`            | Service (one-shot deploy container).                                                                                                     |
+| `walrus.node-0` … `node-3` | Service (one container per node, fixed IPs on the pinned subnet).                                                                        |
+| `walrus.register`          | Register (parses deploy outputs, populates `walrus.nodes` namespace + `walrus` package + `wal` token).                                   |
+
+Frontends read `manifest.registry.walrus.nodes` for the four storage-node URLs. The Walrus image is
+heavy — first build is the long pole on a cold start (~60 s).
+
+```ts
+import { walrus } from '@mysten-incubation/devstack';
+
+defineDevstackConfig({
+	plugins: [sui(), walrus() /* ... */],
+});
+```
