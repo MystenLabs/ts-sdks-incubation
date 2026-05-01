@@ -34,12 +34,10 @@ test('faucet panel mints custom token via wallet-server', async ({ page }) => {
 	await faucet.getByRole('button', { name: /Mint .* musdc/i }).click();
 	await expect(faucet.locator('.success').getByText(/Minted/i)).toBeVisible({ timeout: 30_000 });
 
-	// The Faucet panel signs via the wallet's signAndExecuteTransaction, but
-	// doesn't invalidate the app's react-query keys (those live in the app's
-	// own data layer). Reload to rehydrate balances from chain — this still
-	// proves the mint landed; the UX gap of "panel doesn't auto-invalidate"
-	// is tracked separately.
-	await page.reload();
+	// The Faucet panel signs via the wallet directly (not through
+	// `useDevstackSignAndExecute`), so it doesn't invalidate the app's
+	// query keys. The wallet example polls balances every 2s, so the cell
+	// updates on its own — no reload needed.
 	await expect(publisherMusdc).not.toHaveText(before, { timeout: 15_000 });
 });
 

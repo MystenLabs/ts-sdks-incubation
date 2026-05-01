@@ -220,7 +220,12 @@ export const walletPlugin = () =>
 			}),
 			seed({
 				name: 'seedPools',
-				needs: ['imports.deepbook', 'usdc', 'weth'],
+				// `seedTokens` is a soft dependency: the reconciler runs
+				// independent actions in parallel (default concurrency 4) and
+				// both seeds sign with the publisher account, so without this
+				// edge they race on the publisher's gas object and one of them
+				// fails with "already locked by a different transaction".
+				needs: ['imports.deepbook', 'usdc', 'weth', 'seedTokens'],
 				inputs: { pools: POOLS.map((p) => p.name) },
 				getStatus: async (ctx) => {
 					const deepbook = ctx.registry.packages.find('deepbook');

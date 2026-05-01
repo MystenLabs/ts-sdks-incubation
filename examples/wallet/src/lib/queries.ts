@@ -8,6 +8,12 @@ export const SUI_COIN_TYPE = '0x2::sui::SUI';
 // examples/token-studio/src/lib/queries.ts. Phase 2 should ship `useCoinBalance`
 // and `useSignAndExecute` in a shared package — every coin-aware app will
 // write these.
+//
+// Polls every 2s so balances stay current after txs that didn't go through
+// `useDevstackSignAndExecute` (e.g. the dev-wallet's Faucet panel) and
+// therefore didn't invalidate the query keys.
+const BALANCE_POLL_MS = 2_000;
+
 export function useCoinBalance(address: string | undefined, coinType: string) {
 	const client = useCurrentClient();
 	return useQuery({
@@ -18,6 +24,7 @@ export function useCoinBalance(address: string | undefined, coinType: string) {
 			return result.balance;
 		},
 		enabled: !!address,
+		refetchInterval: BALANCE_POLL_MS,
 	});
 }
 
