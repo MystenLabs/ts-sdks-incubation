@@ -137,9 +137,11 @@ export class DevstackFaucetPanel extends LitElement {
 				const body = await res.text().catch(() => '');
 				throw new Error(`Faucet returned ${res.status}: ${body || res.statusText}`);
 			}
-			const body = (await res.json().catch(() => null)) as
-				| { status?: string; coins_sent?: unknown[]; error?: unknown }
-				| null;
+			const body = (await res.json().catch(() => null)) as {
+				status?: string;
+				coins_sent?: unknown[];
+				error?: unknown;
+			} | null;
 			const coinsSent = Array.isArray(body?.coins_sent) ? body.coins_sent.length : 0;
 			if (coinsSent === 0) {
 				this.#setStatus({

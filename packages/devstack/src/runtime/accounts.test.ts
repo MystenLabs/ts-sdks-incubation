@@ -60,8 +60,8 @@ describe('resolveAccounts — implicit generatedKeypair on localnet', () => {
 		expect(alice.toSuiAddress()).toMatch(/^0x[0-9a-f]+$/);
 		expect(bob.toSuiAddress()).toMatch(/^0x[0-9a-f]+$/);
 		expect(alice.toSuiAddress()).not.toBe(bob.toSuiAddress());
-		// Persisted bech32 file at the path the dev wallet's
-		// virtual:devstack-keys plugin reads.
+		// Persisted bech32 file at the path the walletServer plugin
+		// reads when signing on the frontend's behalf.
 		const keyFile = join(appDir, '.devstack', 'stacks', 'main', '.keys', 'alice.key');
 		const stat = statSync(keyFile);
 		expect(stat.isFile()).toBe(true);

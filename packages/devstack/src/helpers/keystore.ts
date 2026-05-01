@@ -1,11 +1,13 @@
 // Per-stack keystore. Manages on-disk Ed25519 keypairs at
 // `<appDir>/.devstack/stacks/<stack>/.keys/<account>.key`, written as a
-// single bech32 (`suiprivkey1...`) line. The Vite `virtual:devstack-keys`
-// plugin reads these directly so the dev wallet picks up the same
-// identities the supervisor faucets. `loadOrGenerateKeypair` is the
-// implementation behind `generatedKeypair()` (the implicit localnet
-// fallback factory in `helpers/signers.ts`) and is also called by the
-// sui plugin's accounts action via `ctx.accounts.get(name)`.
+// single bech32 (`suiprivkey1...`) line. The `walletServer()` plugin
+// signs with these in-process so the dev wallet's
+// `DevstackSignerAdapter` can route signatures over HTTP without ever
+// loading the bytes into the frontend bundle.
+// `loadOrGenerateKeypair` is the implementation behind
+// `generatedKeypair()` (the implicit localnet fallback factory in
+// `helpers/signers.ts`) and is also called by the sui plugin's
+// accounts action via `ctx.accounts.get(name)`.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';

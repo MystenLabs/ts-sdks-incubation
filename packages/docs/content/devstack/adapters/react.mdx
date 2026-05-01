@@ -7,23 +7,37 @@ Subpath: `@mysten-incubation/devstack/react`.
 
 ```sh
 pnpm add @mysten/dapp-kit-react @mysten/dapp-kit-core @mysten/sui @tanstack/react-query react react-dom
-pnpm add @mysten-incubation/devstack-wallet   # if you want seeded keys to register as a wallet
+pnpm add @mysten-incubation/dev-wallet @mysten-incubation/devstack-wallet-panels
 ```
 
 ## Setup
 
 ```tsx
 // dapp-kit.ts
+import { devWalletInitializer } from '@mysten-incubation/dev-wallet';
+import { createDevstackAdapterFromManifest } from '@mysten-incubation/dev-wallet/adapters';
 import { createDevstackDappKit } from '@mysten-incubation/devstack/react';
-import { createDevWalletInitializer } from '@mysten-incubation/devstack-wallet';
-import { devKeys } from 'virtual:devstack-keys';
+import { configureDevstackPanels, devstackPanels } from '@mysten-incubation/devstack-wallet-panels';
+import { manifest } from 'virtual:devstack-manifest';
+
 import { deployment } from './generated/deployment';
+
+configureDevstackPanels(manifest);
+
+const devstackAdapter = createDevstackAdapterFromManifest(manifest);
 
 export const { dAppKit } = createDevstackDappKit({
 	defaultNetwork: 'localnet',
 	localnetRpcUrl: deployment.rpcUrl,
-	devKeys,
-	walletInitializerFactory: createDevWalletInitializer,
+	walletInitializers: [
+		devWalletInitializer({
+			adapters: devstackAdapter ? [devstackAdapter] : [],
+			panels: devstackPanels(),
+			autoConnect: true,
+			autoApprove: true,
+			mountUI: true,
+		}),
+	],
 });
 
 declare module '@mysten/dapp-kit-react' {
@@ -32,6 +46,13 @@ declare module '@mysten/dapp-kit-react' {
 	}
 }
 ```
+
+`createDevstackAdapterFromManifest` reads the `wallet-server` entry from
+`manifest.registry.services` and returns a configured
+[`DevstackSignerAdapter`](/dev-wallet/guides/devstack-integration), or `null` when the manifest is
+empty (no `localnet:up` yet). Pair this with the [`walletServer()`](/devstack/plugins/wallet-server)
+plugin in your `devstack.config.ts` so the adapter has a server to talk to. Private keys never enter
+the frontend bundle — signing happens HTTP-side in the supervisor process.
 
 ```tsx
 // main.tsx
@@ -161,19 +182,17 @@ non-localnet network — submitting forms there sends real transactions.
 
 ## createDevstackDappKit(options)
 
-Replaces the per-app `createDAppKit` + `createDevWalletInitializer` + manifest-derived RPC URL
-boilerplate.
+Replaces the per-app `createDAppKit` + manifest-derived RPC URL boilerplate.
 
-| Option                     | Notes                                                                                                                               |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `defaultNetwork`           | `'localnet'` by default.                                                                                                            |
-| `additionalNetworks`       | Extra networks beyond `defaultNetwork`.                                                                                             |
-| `networks`                 | Per-network RPC URL overrides (`{ testnet: 'https://...' }`).                                                                       |
-| `localnetRpcUrl`           | Manifest-derived RPC URL (typically `deployment.rpcUrl`).                                                                           |
-| `devKeys`                  | Seeded dev keypairs (typically `import { devKeys } from 'virtual:devstack-keys'`).                                                  |
-| `walletInitializerFactory` | Pass `createDevWalletInitializer` from `@mysten-incubation/devstack-wallet` to wire `devKeys` as a registered wallet. Skip to omit. |
-| `enableBurnerWallet`       | Default `true` — visitors without seeded keys still get a usable wallet.                                                            |
-| `extend`                   | Escape hatch — receives the constructed config and returns a modified copy.                                                         |
+| Option               | Notes                                                                             |
+| -------------------- | --------------------------------------------------------------------------------- |
+| `defaultNetwork`     | `'localnet'` by default.                                                          |
+| `additionalNetworks` | Extra networks beyond `defaultNetwork`.                                           |
+| `networks`           | Per-network RPC URL overrides (`{ testnet: 'https://...' }`).                     |
+| `localnetRpcUrl`     | Manifest-derived RPC URL (typically `deployment.rpcUrl`).                         |
+| `walletInitializers` | Wallet-standard initializers — pass `devWalletInitializer({ adapters, panels })`. |
+| `enableBurnerWallet` | Default `true` — visitors without seeded keys still get a usable wallet.          |
+| `extend`             | Escape hatch — receives the constructed config and returns a modified copy.       |
 
 Stashes the constructed `dAppKit` on `globalThis.__devstackDAppKit__` so `useDevstackSignAndExecute`
 can locate it.

@@ -55,9 +55,10 @@ type AccountFactory = (ctx: AccountFactoryContext) => Signer | Promise<Signer>;
 
 Built-in factories:
 
-- `generatedKeypair()` — localnet only. Loads-or-creates `<stackDir>/.keys/<account>.key`. The Vite
-  plugin's `virtual:devstack-keys` reads the same path so the dev wallet picks up the seeded
-  keypair.
+- `generatedKeypair()` — localnet only. Loads-or-creates `<stackDir>/.keys/<account>.key`. The
+  [`walletServer()`](/devstack/plugins/wallet-server) plugin signs with these keys server-side; the
+  dev-wallet's `DevstackSignerAdapter` exposes them to the frontend without ever loading the private
+  key into the bundle.
 - `cliSigner({ alias })` — reads from the user's `~/.sui/sui_config/sui.keystore` by alias. Useful
   for live deploys where the host has a configured signer.
 - `envSigner({ name })` — reads a bech32 secret key from `process.env[name]`. Useful for CI.

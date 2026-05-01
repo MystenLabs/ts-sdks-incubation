@@ -56,7 +56,7 @@ pnpm changeset-version
 - **packages/** - Published incubation packages and shared internal config
   - **dev-wallet/** - Development wallet for Sui dApp testing (Lit UI, multi-adapter, popup wallet)
   - **devstack/** - Declarative reconciler + plugin harness for fully-seeded Sui local development
-  - **devstack-wallet/** - Thin wallet-standard wallet for example apps (transitional)
+  - **devstack-wallet-panels/** - Lit panels (Faucet/Packages/Network) for the dev-wallet panel API
   - **docs/** - Documentation site (fumadocs + Next.js); content under `content/<package>/`
   - **tsconfig/** - Shared internal TypeScript configurations (not published)
 - **apps/** - First-party consumer apps (e.g. the hosted dev-wallet)
