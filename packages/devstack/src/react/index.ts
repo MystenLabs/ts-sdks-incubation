@@ -19,13 +19,11 @@ export {
 export { useDevstackDeployed, type UseDevstackDeployedOptions } from './use-devstack-deployed.js';
 export type { DevstackProviderState } from './types.js';
 export {
-	defaultMvrName,
 	localnetDappKitConfig,
 	localnetMvrOverrides,
 	type LocalnetDappKitConfig,
 	type LocalnetDappKitConfigOptions,
 	type LocalnetMvrOverrides,
-	type LocalnetMvrOverridesOptions,
 } from './create-devstack-dapp-kit.js';
 export {
 	localnetWalrusOptions,

@@ -16,7 +16,9 @@ beforeEach(() => {
 describe('localnetDappKitConfig', () => {
 	const manifestWith = (
 		rpcUrl: string,
-		extras: { packages?: Array<{ name: string; packageId: string }> } = {},
+		extras: {
+			packages?: Array<{ name: string; packageId: string; mvrPlaceholder?: string }>;
+		} = {},
 	) => ({
 		registry: { services: [{ name: 'sui-rpc', url: rpcUrl }], ...extras },
 	});
@@ -37,8 +39,8 @@ describe('localnetDappKitConfig', () => {
 		const cfg = localnetDappKitConfig(
 			manifestWith('http://localhost:9000', {
 				packages: [
-					{ name: 'connect_four', packageId: '0xabc' },
-					{ name: 'mock_usdc', packageId: '0xdef' },
+					{ name: 'connect_four', packageId: '0xabc', mvrPlaceholder: '@local/connect-four' },
+					{ name: 'mock_usdc', packageId: '0xdef', mvrPlaceholder: '@local/mock-usdc' },
 				],
 			}),
 		);
@@ -60,7 +62,9 @@ describe('localnetDappKitConfig', () => {
 	it('does NOT apply MVR overrides on non-localnet networks', () => {
 		const cfg = localnetDappKitConfig(
 			manifestWith('http://localhost:9000', {
-				packages: [{ name: 'connect_four', packageId: '0xabc' }],
+				packages: [
+					{ name: 'connect_four', packageId: '0xabc', mvrPlaceholder: '@local/connect-four' },
+				],
 			}),
 			{
 				additionalNetworks: ['testnet'],
@@ -108,12 +112,12 @@ describe('localnetDappKitConfig', () => {
 });
 
 describe('localnetMvrOverrides', () => {
-	it('kebabizes manifest package names and prefixes @local/', () => {
+	it('reads each package\'s mvrPlaceholder from the manifest', () => {
 		const m = {
 			registry: {
 				packages: [
-					{ name: 'connect_four', packageId: '0xabc' },
-					{ name: 'mock_usdc', packageId: '0xdef' },
+					{ name: 'connect_four', packageId: '0xabc', mvrPlaceholder: '@local/connect-four' },
+					{ name: 'mock_usdc', packageId: '0xdef', mvrPlaceholder: '@local/mock-usdc' },
 				],
 			},
 		};
@@ -125,22 +129,35 @@ describe('localnetMvrOverrides', () => {
 		});
 	});
 
+	it('skips packages with no mvrPlaceholder', () => {
+		const m = {
+			registry: {
+				packages: [
+					{ name: 'walrus', packageId: '0x123' },
+					{ name: 'vault', packageId: '0xabc', mvrPlaceholder: '@local/vault' },
+				],
+			},
+		};
+		expect(localnetMvrOverrides(m)).toEqual({
+			packages: { '@local/vault': '0xabc' },
+		});
+	});
+
 	it('returns an empty packages map for an empty / missing manifest', () => {
 		expect(localnetMvrOverrides(undefined)).toEqual({ packages: {} });
 		expect(localnetMvrOverrides({})).toEqual({ packages: {} });
 		expect(localnetMvrOverrides({ registry: {} })).toEqual({ packages: {} });
 	});
 
-	it('honors a custom mvrName mapper', () => {
+	it('honors a custom placeholder shape published by the codegen plugin', () => {
 		const m = {
 			registry: {
-				packages: [{ name: 'connect_four', packageId: '0xabc' }],
+				packages: [
+					{ name: 'connect_four', packageId: '0xabc', mvrPlaceholder: '@arena/connect-four' },
+				],
 			},
 		};
-		const out = localnetMvrOverrides(m, {
-			mvrName: (n) => `@arena/${n.replace(/_/g, '-')}`,
-		});
-		expect(out).toEqual({
+		expect(localnetMvrOverrides(m)).toEqual({
 			packages: { '@arena/connect-four': '0xabc' },
 		});
 	});

@@ -310,6 +310,14 @@ export interface Package {
 	 * skipped.
 	 */
 	path?: string;
+	/**
+	 * MVR placeholder string the codegen plugin embedded in this
+	 * package's emitted builders (e.g. `@local/connect-four`). Apps
+	 * read this off the manifest via `localnetMvrOverrides(manifest)`
+	 * to build the SDK's MVR override map; without it the same shape
+	 * would have to be recomputed in two places.
+	 */
+	mvrPlaceholder?: string;
 }
 
 export interface Account {
