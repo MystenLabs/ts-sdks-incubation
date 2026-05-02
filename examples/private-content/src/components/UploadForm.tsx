@@ -58,9 +58,11 @@ export function UploadForm() {
 			const blobIdBytes = blobIdToBytes(blobId);
 
 			const tx = new Transaction();
-			vault.uploadEntry({
-				arguments: [name, Array.from(blobIdBytes), Array.from(sealIdBytes)],
-			})(tx);
+			tx.add(
+				vault.uploadEntry({
+					arguments: [name, Array.from(blobIdBytes), Array.from(sealIdBytes)],
+				}),
+			);
 			const result = await mutateAsync(tx);
 			setLastDigest(result.digest);
 		} catch (e) {

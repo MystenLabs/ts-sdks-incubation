@@ -23,7 +23,7 @@ export function MintForm() {
 			const raw = parseStudioAmount(amount);
 			if (raw <= 0n) throw new Error('Amount must be greater than zero');
 			const tx = new Transaction();
-			managedCoin.mint({ arguments: [TREASURY_CAP_ID, raw, recipient] })(tx);
+			tx.add(managedCoin.mint({ arguments: [TREASURY_CAP_ID, raw, recipient] }));
 			const result = await mutateAsync(tx);
 			invalidate();
 			setLastDigest(result.digest);

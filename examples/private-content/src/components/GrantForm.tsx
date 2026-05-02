@@ -35,7 +35,7 @@ export function GrantForm({ self }: { self: string }) {
 				throw new Error('Only the file owner can grant new caps');
 			}
 			const tx = new Transaction();
-			vault.grantEntry({ arguments: [selectedFileId, recipient] })(tx);
+			tx.add(vault.grantEntry({ arguments: [selectedFileId, recipient] }));
 			const result = await mutateAsync(tx);
 			setLastDigest(result.digest);
 		} catch (e) {
