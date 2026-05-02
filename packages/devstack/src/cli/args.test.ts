@@ -24,6 +24,26 @@ describe('parseConfigArg', () => {
 	it('--config takes precedence over positional when both set', () => {
 		expect(parseConfigArg(['./pos.ts', '--config', './flag.ts'])).toBe('./flag.ts');
 	});
+
+	it('ignores bare-token positionals that do not look like a path', () => {
+		// `devstack up scratch` (where `scratch` is a stack name) should NOT
+		// resolve `scratch` as the config — fall through to the default.
+		expect(parseConfigArg(['scratch'])).toBe('./devstack.config.ts');
+		expect(parseConfigArg(['main'])).toBe('./devstack.config.ts');
+	});
+
+	it('accepts paths that contain `/`', () => {
+		expect(parseConfigArg(['./custom/cfg.ts'])).toBe('./custom/cfg.ts');
+		expect(parseConfigArg(['/abs/path/cfg.ts'])).toBe('/abs/path/cfg.ts');
+		expect(parseConfigArg(['nested/dir/cfg'])).toBe('nested/dir/cfg');
+	});
+
+	it('accepts paths ending in known extensions', () => {
+		expect(parseConfigArg(['cfg.ts'])).toBe('cfg.ts');
+		expect(parseConfigArg(['cfg.js'])).toBe('cfg.js');
+		expect(parseConfigArg(['cfg.mts'])).toBe('cfg.mts');
+		expect(parseConfigArg(['cfg.mjs'])).toBe('cfg.mjs');
+	});
 });
 
 describe('parseNetworkArg', () => {

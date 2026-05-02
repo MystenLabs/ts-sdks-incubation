@@ -47,11 +47,26 @@ function runDocker(
 			stderr += s;
 			if (opts.stream === true) process.stderr.write(s);
 		});
-		child.on('error', reject);
+		child.on('error', (err) => {
+			if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+				reject(
+					new Error(
+						'docker CLI not found on PATH. Install Docker Desktop or Colima, ' +
+							'start the engine, then re-run `devstack up`.',
+					),
+				);
+				return;
+			}
+			reject(err);
+		});
 		child.on('close', (code) => resolve({ stdout, stderr, code: code ?? 0 }));
 	});
 }
 
+/** Returns true when the image tag is present in the local docker daemon.
+ * Lets `runDocker`'s ENOENT-aware error surface to callers when docker
+ * itself is missing — masking that as "image absent" would silently
+ * trigger a build action that's also doomed. */
 export async function imageExists(tag: string): Promise<boolean> {
 	const result = await dockerRun({
 		command: ['image', 'inspect', tag, '--format', '{{.Id}}'],
@@ -312,7 +327,13 @@ export async function runContainer(opts: RunContainerOptions): Promise<string> {
 	for (const { host, container } of opts.ports ?? []) {
 		args.push('--publish', `${host}:${container}`);
 	}
-	for (const v of opts.volumes ?? []) args.push('--volume', v);
+	// Pre-create any named volumes with the same `devstack.app` /
+	// `devstack.stack` labels as the container, so `stack drop` can filter
+	// them by label rather than by name prefix (cross-app collisions).
+	for (const v of opts.volumes ?? []) {
+		await ensureLabeledVolume(v, opts.labels);
+		args.push('--volume', v);
+	}
 	for (const [k, v] of Object.entries(opts.env ?? {})) args.push('--env', `${k}=${v}`);
 	for (const [k, v] of Object.entries(opts.labels ?? {})) args.push('--label', `${k}=${v}`);
 	args.push('--restart', opts.restart ?? 'unless-stopped');
@@ -343,6 +364,42 @@ export async function runContainer(opts: RunContainerOptions): Promise<string> {
 		throw new Error(`docker run failed (exit ${result.code}): ${result.stderr.trim()}`);
 	}
 	return result.stdout.trim();
+}
+
+/** Pre-create a named volume with the container's `devstack.*` labels so
+ * `docker volume ls --filter label=devstack.app=<app> --filter
+ * label=devstack.stack=<stack>` produces an unambiguous listing for
+ * `stack drop` (vs name-prefix matching, which collides on apps with
+ * overlapping prefixes). No-op if the volume is anonymous (no `:`),
+ * absolute-path bind-mount, or already exists. */
+async function ensureLabeledVolume(
+	volumeArg: string,
+	containerLabels: Record<string, string> | undefined,
+): Promise<void> {
+	// Volume args can be `name:/path`, `/host/path:/container/path`, or
+	// `/host/path:/container/path:ro`. Bind mounts (host path with `/`)
+	// don't need labels.
+	const colonIdx = volumeArg.indexOf(':');
+	if (colonIdx <= 0) return;
+	const source = volumeArg.slice(0, colonIdx);
+	if (source.startsWith('/') || source.startsWith('.')) return;
+	if (containerLabels === undefined) return;
+	const app = containerLabels['devstack.app'];
+	const stack = containerLabels['devstack.stack'];
+	if (app === undefined || stack === undefined) return;
+	const inspect = await dockerRun({ command: ['volume', 'inspect', source] });
+	if (inspect.code === 0) return;
+	await dockerRun({
+		command: [
+			'volume',
+			'create',
+			'--label',
+			`devstack.app=${app}`,
+			'--label',
+			`devstack.stack=${stack}`,
+			source,
+		],
+	}).catch(() => undefined);
 }
 
 /** Read a file out of a (possibly running) container by piping through
