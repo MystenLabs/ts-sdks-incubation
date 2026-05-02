@@ -2,12 +2,13 @@ import { Transaction } from '@mysten/sui/transactions';
 import { useId, useState } from 'react';
 
 import { deployment } from '../generated/deployment.js';
-import * as managedCoin from '../generated/sui/managed_coin/managed_coin.js';
+import * as managedCoinModule from '../generated/sui/managed_coin/managed_coin.js';
 import { TREASURY_CAP_ID, parseStudioAmount, shortAddress } from '../lib/coin.js';
-import { useInvalidateCoinReads, useSignAndExecute } from '../lib/queries.js';
+import { useInvalidateCoinReads, usePackage, useSignAndExecute } from '../lib/queries.js';
 import { Card } from './Card.js';
 
 export function MintForm() {
+	const managedCoin = usePackage(managedCoinModule, 'managed_coin');
 	const invalidate = useInvalidateCoinReads();
 	const { mutateAsync, isPending } = useSignAndExecute();
 

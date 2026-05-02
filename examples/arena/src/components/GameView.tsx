@@ -2,9 +2,16 @@ import { Transaction } from '@mysten/sui/transactions';
 import { useState } from 'react';
 
 import { deployment } from '../generated/deployment.js';
-import * as connectFour from '../generated/sui/connect_four/game.js';
+import * as connectFourModule from '../generated/sui/connect_four/game.js';
 import { labelFor, shortAddress } from '../lib/format.js';
-import { type ArenaGame, COLS, ROWS, useGame, useSignAndExecute } from '../lib/queries.js';
+import {
+	type ArenaGame,
+	COLS,
+	ROWS,
+	useGame,
+	usePackage,
+	useSignAndExecute,
+} from '../lib/queries.js';
 import { Board } from './Board.js';
 import { Card } from './Card.js';
 
@@ -15,6 +22,7 @@ interface GameViewProps {
 
 export function GameView({ gameId, self }: GameViewProps) {
 	const game = useGame(gameId);
+	const connectFour = usePackage(connectFourModule, 'connect_four');
 	const { mutateAsync, isPending } = useSignAndExecute({
 		invalidateKeys: [['arena']],
 	});

@@ -95,7 +95,15 @@ export function defineDevstackPlaywrightConfig(
 			command,
 			url: baseURL,
 			reuseExistingServer: !process.env.CI,
-			timeout: 60_000,
+			// Cold-cache builds (sui-localnet docker image, walrus+seal
+			// images for private-content) can take several minutes the
+			// first time. globalSetup with `manageStack: true` should
+			// already have the stack up by the time this fires, but the
+			// `pnpm dev` keepalive may still re-validate the stack —
+			// give it room. 5 min covers cold sui; private-content
+			// override with a higher value if walrus/seal images are
+			// also cold.
+			timeout: opts.manageStack === true ? 300_000 : 60_000,
 		},
 		...extend,
 	});

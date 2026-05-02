@@ -31,3 +31,9 @@ declare module '@mysten/dapp-kit-react' {
 		dAppKit: typeof dAppKit;
 	}
 }
+
+// Expose the kit for the playwright `connectAs` helper to drive
+// account switching from page.evaluate(). Useful only in dev/e2e —
+// no security concern beyond what the burner-wallet dev flow already
+// surfaces.
+(globalThis as { __devstackDAppKit__?: typeof dAppKit }).__devstackDAppKit__ = dAppKit;
