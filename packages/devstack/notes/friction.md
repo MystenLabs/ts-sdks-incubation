@@ -150,3 +150,24 @@ Workaround for now: don't run e2e while another stack of the same
 app is up on the conflicting port. Example clean-state sequence:
 `docker rm -f $(docker ps -aq --filter label=devstack.app=<app>)`,
 then `rm -rf .devstack/stacks` before `pnpm test:e2e`.
+
+## 2026-05-02 — Reconciler runs same-signer transactions in parallel
+
+The reconciler schedules independent actions concurrently up to its
+worker pool size (`packages/devstack/src/runtime/reconcile.ts:119`).
+Two `publishMove({ name: 'usdc', needs: ['sui.accounts'] })` and
+`publishMove({ name: 'weth', needs: ['sui.accounts'] })` actions both
+default to the `publisher` account, so they sign concurrent
+transactions that touch the same gas object — Sui's validator
+equivocation guard rejects the second one with
+"Object … already locked by a different transaction".
+
+Fix shape (deferred): the reconciler reads each Publish/Seed
+action's signer (already on the action surface for publish; would
+need to plumb through seed/runTransaction) and serializes actions
+that share a signer. Until then, app authors have to add explicit
+`needs:` between same-signer actions, which is non-obvious — the
+graph models data deps, not signer-account deps.
+
+Workaround in `examples/wallet/devstack.config.ts`: weth depends on
+usdc via `needs: ['usdc']`. Comment in-config flags the workaround.
