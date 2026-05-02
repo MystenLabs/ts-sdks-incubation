@@ -76,26 +76,7 @@ export function writeManifest(opts: WriteManifestOptions): string {
 }
 
 function serializeRegistry(reg: RegistryImpl): SerializedRegistry {
-	const out: SerializedRegistry = {
-		tokens: reg.tokens.list(),
-		packages: reg.packages.list(),
-		accounts: reg.accounts.list(),
-		services: reg.services.list(),
-	};
-	// Namespaced kinds are stored on the RegistryImpl's internal Map; we
-	// reach in via a typed accessor rather than a Proxy round-trip. Keep
-	// the cast scoped here.
-	const internalNamespaces = (
-		reg as unknown as { namespaces: Map<string, Record<string, { list(): unknown[] }>> }
-	).namespaces;
-	for (const [name, kinds] of internalNamespaces) {
-		const bag: Record<string, unknown[]> = {};
-		for (const [kindName, query] of Object.entries(kinds)) {
-			bag[kindName] = query.list();
-		}
-		out[name] = bag;
-	}
-	return out;
+	return reg.snapshot();
 }
 
 function jsonReplacer(_key: string, value: unknown): unknown {

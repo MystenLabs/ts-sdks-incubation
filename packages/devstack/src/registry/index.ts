@@ -8,6 +8,7 @@
 // '<plugin>/<kind>'` — flat string used throughout dirty tracking.
 
 import type { Account, Package, Registry, RegistryQuery, Service, Token } from '../core/types.js';
+import type { SerializedRegistry } from '../runtime/manifest-types.js';
 
 class RegistryQueryImpl<T extends { name: string }> implements RegistryQuery<T> {
 	private readonly items = new Map<string, T>();
@@ -36,6 +37,12 @@ class RegistryQueryImpl<T extends { name: string }> implements RegistryQuery<T> 
 	register(item: T): void {
 		this.items.set(item.name, item);
 		this.dirty.add(this.kindKey);
+	}
+
+	unregister(name: string): boolean {
+		const removed = this.items.delete(name);
+		if (removed) this.dirty.add(this.kindKey);
+		return removed;
 	}
 }
 
@@ -87,5 +94,28 @@ export class RegistryImpl implements Registry {
 
 	consumeDirty(kinds: string[]): void {
 		for (const k of kinds) this.dirtySet.delete(k);
+	}
+
+	/**
+	 * Serialize the entire registry to a `SerializedRegistry` snapshot
+	 * suitable for `Manifest.registry`. Used by manifest-writer (no
+	 * longer reaches into the private namespaces map). Pure read — does
+	 * NOT touch the dirty set.
+	 */
+	snapshot(): SerializedRegistry {
+		const out: SerializedRegistry = {
+			tokens: this.tokens.list(),
+			packages: this.packages.list(),
+			accounts: this.accounts.list(),
+			services: this.services.list(),
+		};
+		for (const [name, kinds] of this.namespaces) {
+			const bag: Record<string, unknown[]> = {};
+			for (const [kindName, query] of Object.entries(kinds)) {
+				bag[kindName] = query.list();
+			}
+			out[name] = bag;
+		}
+		return out;
 	}
 }

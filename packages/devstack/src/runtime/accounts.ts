@@ -15,7 +15,7 @@
 // re-thrown lazily on first `get()`. Missing-name lookups throw with a
 // listing of declared accounts so a typo is obvious.
 
-import { Signer } from '@mysten/sui/cryptography';
+import type { Signer } from '@mysten/sui/cryptography';
 import type {
 	AccountFactory,
 	AccountFactoryContext,
@@ -112,9 +112,20 @@ function materialize(
 	);
 }
 
+function isSignerLike(value: unknown): value is Signer {
+	// Duck-typed `Signer` check. The class is abstract so user-defined
+	// signer subclasses MAY not extend our imported `Signer` symbol if
+	// dual-bundle resolution causes `@mysten/sui/cryptography` to load
+	// twice (this has bitten us in published builds). Look for the
+	// methods that actually matter at runtime instead.
+	if (value === null || typeof value !== 'object') return false;
+	const v = value as { toSuiAddress?: unknown; signTransaction?: unknown };
+	return typeof v.toSuiAddress === 'function' && typeof v.signTransaction === 'function';
+}
+
 function pickSlot(spec: AccountSpec, network: Network): Signer | AccountFactory | undefined {
 	if (typeof spec === 'function') return spec;
-	if (spec instanceof Signer) return spec;
+	if (isSignerLike(spec)) return spec;
 	const map = spec as AccountNetworkSpec;
 	const slot = map[network];
 	if (slot !== undefined) return slot;
