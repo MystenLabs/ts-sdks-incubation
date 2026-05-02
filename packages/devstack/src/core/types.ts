@@ -361,9 +361,14 @@ export interface LocalnetActionRunContext extends ActionRunContextBase {
  * network only. Plugins that need the stack (container name building,
  * host-side state dirs) must narrow on `ctx.network === 'localnet'`
  * first; if they actually require localnet, throw with a clear message.
+ *
+ * `stack?: undefined` is explicit so the type narrows correctly on
+ * `ctx.network === 'localnet'`: code that reaches `ctx.stack` on a
+ * live-network ctx is a type error, not a quiet `'main'` placeholder.
  */
 export interface LiveNetActionRunContext extends ActionRunContextBase {
 	network: 'testnet' | 'mainnet';
+	stack?: undefined;
 }
 
 /**

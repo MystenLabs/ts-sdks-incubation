@@ -10,7 +10,7 @@
 // fields (app, network, version, emittedAt). Plugin-namespaced kinds are
 // written under `registry.<namespace>.<kind>`.
 
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import type { Network, Registry } from '../core/types.js';
 import type { RegistryImpl } from '../registry/index.js';
@@ -65,7 +65,13 @@ export function writeManifest(opts: WriteManifestOptions): string {
 	const path = manifestPath({ appDir: opts.appDir, stack: opts.stack, network: opts.network });
 	const manifest = buildManifest(opts);
 	mkdirSync(dirname(path), { recursive: true });
-	writeFileSync(path, `${JSON.stringify(manifest, jsonReplacer, '\t')}\n`, 'utf8');
+	// Atomic write: stage to `.tmp`, then `rename` (POSIX-atomic on the same
+	// filesystem). A `kill -9` between the two steps leaves the prior
+	// manifest intact rather than a half-written file. Stays simple so it
+	// stays correct.
+	const tmp = `${path}.tmp`;
+	writeFileSync(tmp, `${JSON.stringify(manifest, jsonReplacer, '\t')}\n`, 'utf8');
+	renameSync(tmp, path);
 	return path;
 }
 

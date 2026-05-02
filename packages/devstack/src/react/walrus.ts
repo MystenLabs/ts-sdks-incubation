@@ -40,10 +40,8 @@ export interface CreateDevstackWalrusClientOptions {
 	suiClient: ClientWithCoreApi;
 	/** Optional fetch override base, applied AFTER the host-URL rewrite. */
 	fetch?: typeof globalThis.fetch;
-	/** Walrus encoder WASM URL. Browser apps that include
-	 * `devstackVitePlugins()` get this auto-resolved from
-	 * `virtual:devstack-walrus-wasm-url` (vite serves the bundled wasm at
-	 * a stable path); pass an explicit value to override. */
+	/** Walrus encoder WASM URL — pass through to `WalrusClient`. Optional;
+	 * the SDK falls back to its own bundled wasm when omitted. */
 	wasmUrl?: string;
 }
 

@@ -142,7 +142,8 @@ export function definePublishAction(
 			}
 			try {
 				const isLocalnet = ctx.network === 'localnet';
-				const containerName = isLocalnet ? suiContainerName(ctx.appName, ctx.stack) : undefined;
+				const containerName =
+					ctx.network === 'localnet' ? suiContainerName(ctx.appName, ctx.stack) : undefined;
 				const publisher = ctx.accounts.get(publisherAccount);
 				const client = openSuiClient(ctx);
 				const chainId = await client.getChainIdentifier();
