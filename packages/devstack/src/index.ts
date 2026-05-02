@@ -119,6 +119,7 @@ export {
 	resolveCoinType,
 	SUI_COIN_TYPE,
 	type BuildSwapTxOptions,
+	type DeepbookMarketMakerSpec,
 	type DeepbookNamespace,
 	type DeepbookPluginOptions,
 	type DeepbookPool,
