@@ -77,6 +77,13 @@ because the action graph already covers the use cases:
   scope, needs); editing the build callback re-runs.
 - **Snapshot composition** — markers live in `<stackDir>` so
   `snapshot save` captures them; restore brings them back; setup skips.
+- **Same-signer serialization** — `runsAs:` (defaulted by
+  `publishMove`/`runTransaction` from `publisher`/`signer`; passed
+  explicitly on raw `seed()` whose body signs through
+  `ctx.accounts.get(...)`). The reconciler runs at most one inflight
+  action per distinct `runsAs` value so two same-account actions don't
+  equivocate on the gas object — apps don't need to thread synthetic
+  `needs:` edges between them.
 
 A separate hook system would either duplicate this or coordinate
 poorly with snapshots (re-running on every restore wastes work; not

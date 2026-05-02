@@ -111,6 +111,7 @@ export function deepbookMarketMakerAction(opts: DeepbookMarketMakerActionOptions
 	return hostProcess({
 		name: `market-maker-${maker.name}`,
 		needs: ['pools', ...(maker.needs ?? [])],
+		runsAs: maker.signer,
 		inputs: {
 			signer: maker.signer,
 			pools: maker.pools,

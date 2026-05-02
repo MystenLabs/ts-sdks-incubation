@@ -175,6 +175,18 @@ export class Reconciler {
 					if (other?.type === 'Emit') return false;
 				}
 			}
+			// Same-signer serialization: at most one inflight action per
+			// distinct `runsAs` value. Two Publish/Seed actions that
+			// default to `publisher` would otherwise sign concurrent txs
+			// touching the same gas object — Sui's validator-equivocation
+			// guard rejects the second one. Actions without `runsAs` are
+			// unconstrained.
+			if (a.runsAs !== undefined) {
+				for (const name of inflight) {
+					const other = sorted.find((x) => x.name === name);
+					if (other?.runsAs === a.runsAs) return false;
+				}
+			}
 			return true;
 		};
 

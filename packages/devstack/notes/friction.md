@@ -148,23 +148,22 @@ URL. PR 16 splits those out and shallow-merges them over the defaults
 stack's allocator picks 65218; all 7 wallet e2e tests pass without
 the prior workaround.
 
-## 2026-05-02 — Reconciler runs same-signer transactions in parallel
+## 2026-05-02 — Reconciler runs same-signer transactions in parallel [CLOSED — PR 17]
 
-The reconciler schedules independent actions concurrently up to its
-worker pool size (`packages/devstack/src/runtime/reconcile.ts:119`).
-Two `publishMove({ name: 'usdc', needs: ['sui.accounts'] })` and
-`publishMove({ name: 'weth', needs: ['sui.accounts'] })` actions both
-default to the `publisher` account, so they sign concurrent
-transactions that touch the same gas object — Sui's validator
-equivocation guard rejects the second one with
-"Object … already locked by a different transaction".
+The reconciler scheduled independent actions concurrently up to its
+worker pool size. Two `publishMove({ name: 'usdc' })` and
+`publishMove({ name: 'weth' })` actions both defaulted to the
+`publisher` account, so they signed concurrent transactions that
+touched the same gas object — Sui's validator equivocation guard
+rejected the second one.
 
-Fix shape (deferred): the reconciler reads each Publish/Seed
-action's signer (already on the action surface for publish; would
-need to plumb through seed/runTransaction) and serializes actions
-that share a signer. Until then, app authors have to add explicit
-`needs:` between same-signer actions, which is non-obvious — the
-graph models data deps, not signer-account deps.
-
-Workaround in `examples/wallet/devstack.config.ts`: weth depends on
-usdc via `needs: ['usdc']`. Comment in-config flags the workaround.
+**Closed by PR 17**: `ActionBase` gained a `runsAs?: string` field;
+the reconciler treats it as a soft constraint ("at most one inflight
+action per distinct `runsAs` value"). `publish`/`definePublishAction`/
+`publishMove` thread `publisher` → `runsAs` automatically;
+`runTransaction` does the same for `signer`; raw `seed()` accepts
+explicit `runsAs:` for action bodies that sign via
+`ctx.accounts.get(...)` directly. Wallet config dropped both manual
+edges (`weth needs ['usdc']`, `seedTokens needs ['deepbook.pools']`)
+and now declares `seedTokens.runsAs = 'publisher'` — cold + warm
+apply healthy; all 7 e2e tests pass.

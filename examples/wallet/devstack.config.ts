@@ -124,10 +124,7 @@ export default defineDevstackConfig({
 		}),
 		publishMove({
 			name: 'weth',
-			// Serialized after `usdc` so both publishes don't equivocate on the
-			// publisher's gas object. See notes/friction.md — same-signer
-			// transactions should serialize automatically at the reconciler.
-			needs: ['usdc'],
+			needs: ['sui.accounts'],
 			registryAs: 'mock_weth',
 			path: WETH_DIR,
 			capture: {
@@ -144,12 +141,11 @@ export default defineDevstackConfig({
 			},
 		}),
 		// publisher mints the initial USDC + WETH supply to alice/bob/
-		// carol per the configured distribution. Also depends on
-		// `deepbook.pools` so it doesn't equivocate on publisher's gas
-		// object — same-signer serialization (see notes/friction.md).
+		// carol per the configured distribution.
 		seed({
 			name: 'seedTokens',
-			needs: ['usdc', 'weth', 'deepbook.pools'],
+			needs: ['usdc', 'weth'],
+			runsAs: 'publisher',
 			inputs: {
 				usdc: USDC_DISTRIBUTION.map((d) => ({ ...d, amount: d.amount.toString() })),
 				weth: WETH_DISTRIBUTION.map((d) => ({ ...d, amount: d.amount.toString() })),

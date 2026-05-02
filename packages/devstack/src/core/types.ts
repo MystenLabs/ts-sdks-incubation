@@ -196,6 +196,19 @@ export interface ActionBase<TInputs = unknown, TResult = unknown> {
 	 * (Framework-internal plugin actions don't set this; they're scoped via
 	 * other mechanisms — `seed.liveNetworks`, `applyFilter`, etc.) */
 	scope?: SetupActionScope;
+	/** Account name this action signs transactions as. The reconciler
+	 * uses this as a soft scheduling constraint: at most one inflight
+	 * action per distinct `runsAs` value, so two `publishMove`s with
+	 * the same default `'publisher'` don't equivocate on the publisher's
+	 * gas object. Actions without `runsAs` are unconstrained.
+	 *
+	 * Set automatically by the action factories that own the signer
+	 * choice (`publish`, `seed` when `runsAs:` is provided,
+	 * `runTransaction` from its `signer:`). Plugin authors whose
+	 * `run:` callbacks call `ctx.accounts.get(...)` directly should
+	 * declare `runsAs:` on the factory call so the reconciler can
+	 * serialize them. */
+	runsAs?: string;
 	run?: (ctx: ActionRunContext) => Promise<TResult>;
 	getStatus?: (ctx: ActionRunContext) => Promise<{ ok: boolean; detail?: string }>;
 }
