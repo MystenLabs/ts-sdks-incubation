@@ -25,14 +25,10 @@ export default defineDevstackConfig({
 		carol: {},
 	},
 	plugins: [
-		sui({
-			version: 'devnet-v1.71.0',
-			// Keep port assignments off 9000/9123 so arena, token-studio, and
-			// wallet can coexist (each app's sui plugin default is 9000 — first
-			// to bind wins).
-			rpcPort: 9059,
-			faucetPort: 9984,
-		}),
+		// Plugin port options are hints to the per-stack port allocator;
+		// the allocator picks any free port if a sibling stack has the
+		// preferred port claimed.
+		sui({ version: 'devnet-v1.71.0', rpcPort: 9059, faucetPort: 9984 }),
 		codegen(),
 		walletServer({ port: 9422 }),
 		frontend({ port: 5173 }),
@@ -42,10 +38,6 @@ export default defineDevstackConfig({
 	// `address === accounts.alice`). Captures TreasuryCap +
 	// CoinMetadata + UpgradeCap so the UI can mint via the cap and
 	// link the metadata badge.
-	//
-	// Replaces the prior tokenStudioPlugin.ts wrapper — same behavior,
-	// declarative shape. Snapshots ride the published package via sui's
-	// container-layer commit + the captured IDs in the manifest.
 	setup: [
 		publishMove({
 			name: 'managedCoin',
