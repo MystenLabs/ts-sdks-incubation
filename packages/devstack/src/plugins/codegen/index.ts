@@ -20,7 +20,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
 import { emit } from '../../actions/emit.js';
 import type { ActionRunContext, Package } from '../../core/types.js';
@@ -114,8 +114,28 @@ async function runCodegenForPackage(opts: {
 	if (!existsSync(pkg.path)) {
 		throw new Error(`codegen: package path not found for ${pkg.name}: ${pkg.path}`);
 	}
-	const args = [SUI_TS_CODEGEN_BIN, 'generate', '-o', output, '--importExtension', '.js', pkg.path];
-	const result = await runShell({ cmd: 'node', args, cwd: ctx.appDir });
+	// `sui-ts-codegen` uses the package-arg string verbatim as the output
+	// subdirectory name. Passing an absolute path produces a deeply nested
+	// `<output>/Users/.../move/vault/` tree; passing a relative path
+	// produces `<output>/move/vault/`. Neither matches what the rest of the
+	// generator expects (`<output>/<pkg.name>/`). Run codegen from the
+	// parent dir of the package so the bare basename (which equals the
+	// package's directory name and the registry's `pkg.name`) becomes the
+	// output subdir. The output flag stays absolute so `<output>` lands in
+	// the app's `src/generated/sui` regardless of cwd.
+	const packageDir = pkg.path;
+	const packageBaseName = basename(packageDir);
+	const absoluteOutput = resolvedOutputDir(ctx.appDir, output);
+	const args = [
+		SUI_TS_CODEGEN_BIN,
+		'generate',
+		'-o',
+		absoluteOutput,
+		'--importExtension',
+		'.js',
+		packageBaseName,
+	];
+	const result = await runShell({ cmd: 'node', args, cwd: dirname(packageDir) });
 	if (result.code !== 0) {
 		throw new Error(
 			`codegen: sui-ts-codegen failed for ${pkg.name} (exit ${result.code})\n${result.stderr}`,
