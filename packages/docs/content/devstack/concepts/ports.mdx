@@ -1,0 +1,106 @@
+---
+title: Ports
+description: Per-stack port allocator. main and test stacks coexist without manual port-table maintenance.
+---
+
+Each plugin's `port` option is a **hint** to the per-stack port allocator, not a hard binding.
+The allocator persists the resolved port to `<stackDir>/ports.json` so it stays the same across
+`down` / `up` cycles, and reads sibling stacks' files so collisions never happen across stacks of
+the same app.
+
+```ts
+plugins: [
+	sui({ rpcPort: 9000, faucetPort: 9123 }),  // hints
+	walletServer({ port: 9420 }),
+	frontend({ port: 5173 }),
+],
+```
+
+If those ports are free when the stack first comes up, the allocator honors them. If a sibling
+stack of the same app has already claimed them, the allocator picks free ports near the kernel's
+ephemeral range. Either way the resolved port lands in the manifest's `services` entry and the
+frontend reads it from there.
+
+## How it resolves
+
+For each `ctx.ports.allocate({ slot, preferred?, count? })` call:
+
+1. **Cache hit?** If `<stackDir>/ports.json` already has `slot`, return it. (Idempotent —
+   re-running an action returns the same port without re-checking the OS.)
+2. **Sibling-aware "taken" set.** Read every `<appDir>/.devstack/stacks/*/ports.json` (excluding
+   the current stack). Collect every assigned port into a "taken" set even when those stacks
+   aren't currently running.
+3. **Try `preferred`.** If `preferred` is set and not in the taken set, bind a probe socket on
+   the unspecified interface (so Docker Desktop's `0.0.0.0:port` mappings count as taken). If the
+   bind succeeds, claim the port.
+4. **Fall back to kernel-chosen.** Bind to `:0`, read back the assigned port, close. Re-check
+   against the taken set; up to 16 attempts.
+5. **Persist.** Write the new `slot` → port mapping to the current stack's `ports.json` atomic-
+   rename style.
+
+## ports.json shape
+
+```jsonc
+{
+	"sui.rpc": 9059,
+	"sui.faucet": 9984,
+	"wallet-server.http": 9422,
+	"frontend.dev-server": 5173,
+	"walrus.node": [19185, 19186, 19187, 19188]
+}
+```
+
+Slot names are plugin-namespaced (`sui.rpc`, `walrus.node`, `frontend.dev-server`). Contiguous
+ranges (walrus's 4 storage nodes) serialize as arrays.
+
+## Why it lives in `<stackDir>`
+
+`<stackDir>/ports.json` is host state; it's part of the snapshot bundle (host capture) so
+`devstack snapshot save` + `restore` round-trips port assignments — the manifest's URLs stay
+valid post-restore.
+
+It's also what makes `down`/`up` cycles return to the same ports: the file persists across the
+container lifecycle, gets read on the next allocator construction, and the cache hits in step 1
+above.
+
+## Hardcoded ports anti-pattern
+
+Plugin authors who want a fixed port should still pass it as `preferred`, not bypass the
+allocator. The CLAUDE.md anti-pattern "hardcoded ports anywhere outside the port allocator" calls
+this out: bypass means a sibling stack of the same app can't run, and the manifest doesn't
+reflect what the container is actually bound to.
+
+The hint pattern is the right shape:
+
+```ts
+sui({ rpcPort: 9000 })   // ✓ — preferred port honored when free
+```
+
+```ts
+// ✗ — don't reach for the port directly:
+const url = 'http://localhost:9000';   // breaks when test stack lands on a different port
+```
+
+```ts
+// ✓ — read the resolved port from the manifest:
+const url = manifest.registry.services.find((s) => s.name === 'sui-rpc')?.url;
+```
+
+## CLI integration
+
+`defineDevstackPlaywrightConfig` allocates `frontend.dev-server` at config-eval time so
+Playwright's `webServer.url` polls the right port even when sibling stacks have the preferred
+port. That's why the helper is async:
+
+```ts
+// playwright.config.ts
+export default await defineDevstackPlaywrightConfig({ port: 5173, manageStack: true });
+//             ^^^^^                                         ^^^^^^^
+//             top-level await                               preferred port (the hint)
+```
+
+## See also
+
+- [State model](/docs/concepts/state-model) — `ports.json` lives in `<stackDir>` alongside the
+  manifest and keys.
+- [Stacks](/docs/concepts/stacks) — multiple stacks per app, parallel work without collisions.

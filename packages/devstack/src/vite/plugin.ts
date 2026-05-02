@@ -38,7 +38,6 @@ const RESOLVED_ID = `\0${VIRTUAL_ID}`;
 const EMPTY_MANIFEST: Manifest = {
 	app: '',
 	network: 'localnet',
-	version: 2,
 	emittedAt: '',
 	registry: { tokens: [], packages: [], accounts: [], services: [] },
 };

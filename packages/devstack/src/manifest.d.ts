@@ -46,7 +46,6 @@ declare module 'virtual:devstack-manifest' {
 	export interface Manifest {
 		app: string;
 		network: 'localnet' | 'testnet' | 'mainnet';
-		version: 2;
 		emittedAt: string;
 		registry: {
 			tokens: ManifestToken[];
