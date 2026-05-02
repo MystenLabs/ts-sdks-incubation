@@ -3,11 +3,13 @@
 // bodies). For the common shape — build, publish, register, optional
 // post-publish hook — prefer `definePublishAction()` below.
 
+import { existsSync } from 'node:fs';
 import { isAbsolute, resolve as resolvePath } from 'node:path';
 import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
 import type { ActionRunContext, PublishAction } from '../core/types.js';
 import {
 	buildPriorCacheEntry,
+	computeSourceDigest,
 	publishMovePackage,
 	type PublishMovePackageResult,
 } from '../helpers/move-package.js';
@@ -94,6 +96,23 @@ export function definePublishAction(
 			const live = await client.getObject({ id: prior.packageId });
 			if (live.data === null || live.data === undefined) {
 				return { ok: false, detail: `${prior.packageId} not on chain` };
+			}
+			// Compare current source digest against the cached one — if the
+			// developer edited Move sources since the last publish, force a
+			// republish even though the old packageId is still live on chain.
+			// (`prepareSource` plugins like seal own digesting themselves.
+			// The on-host source dir may not exist when running against a
+			// pre-emitted manifest from another repo — skip silently.)
+			if (opts.prepareSource === undefined && prior.sourceDigest !== undefined) {
+				const sourceDir = isAbsolute(opts.sourcePath)
+					? opts.sourcePath
+					: resolvePath(ctx.appDir, opts.sourcePath);
+				if (existsSync(sourceDir)) {
+					const currentDigest = computeSourceDigest(sourceDir);
+					if (currentDigest !== prior.sourceDigest) {
+						return { ok: false, detail: 'source digest changed' };
+					}
+				}
 			}
 			return { ok: true, detail: prior.packageId };
 		},
