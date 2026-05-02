@@ -20,7 +20,7 @@ description: Sui localnet container with provisioned accounts and faucet.
 
 Account names are declared at the top level of `defineDevstackConfig` as
 `accounts: { name: spec, ... }`, not on the sui plugin — see the
-[accounts page](/docs/authoring/accounts). The sui plugin reads from `ctx.accounts` so the same
+[accounts page](/docs/concepts/accounts). The sui plugin reads from `ctx.accounts` so the same
 account names work across `pnpm exec devstack up`, `apply`, `deploy`, and `console`.
 
 Registers `sui-rpc`, `sui-grpc`, `sui-faucet` services plus each named account.

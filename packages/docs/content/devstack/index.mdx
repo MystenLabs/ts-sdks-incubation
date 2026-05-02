@@ -48,6 +48,18 @@ pnpm exec devstack up
 
 ## Where to next
 
-Start with [Getting started](/docs/getting-started) to bring up your first stack, then read about
-[actions](/docs/concepts/actions) and [plugins](/docs/concepts/plugins) to see how the reconciler is
-put together. The [React adapter](/docs/adapters/react) covers the typed package hooks.
+[Getting started](/docs/getting-started) brings up your first stack. From there the concepts
+build up in dependency order:
+
+- [State model](/docs/concepts/state-model) — where everything lives. Read this first; everything
+  else makes more sense after.
+- [Actions](/docs/concepts/actions) and [plugins](/docs/concepts/plugins) — the reconciler
+  primitives.
+- [setup:](/docs/concepts/setup), [accounts](/docs/concepts/accounts), and
+  [registry & manifest](/docs/concepts/registry-and-manifest) — declaring + accessing per-app
+  state.
+- [Stacks](/docs/concepts/stacks), [snapshots](/docs/concepts/snapshots), and
+  [ports](/docs/concepts/ports) — operating across multiple environments + caching cold starts.
+
+The [React adapter](/docs/adapters/react) covers typed package hooks for the UI; the
+[Playwright adapter](/docs/adapters/playwright) covers e2e testing.

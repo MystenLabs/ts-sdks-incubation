@@ -1,0 +1,116 @@
+---
+title: Registry & manifest
+description: The in-memory store plugins read and write, and the JSON it serializes to so the frontend can consume it.
+---
+
+The **registry** is the in-memory inter-plugin API. Every action's `ctx.registry` accessor reads
+and writes typed entries; downstream actions skip work when the entries they need are already
+present, and Emit actions (codegen) re-fire when kinds they depend on are dirtied.
+
+The **manifest** is the registry serialized to JSON at the end of every reconcile cycle. The
+frontend reads it via the `virtual:devstack-manifest` Vite virtual module so React components
+have access to package IDs, account addresses, service URLs, captured object IDs — everything
+the backend produced.
+
+## Registry shape
+
+Four core kinds; plugins extend with namespace-scoped kinds.
+
+```ts
+ctx.registry.tokens.list();                  // Token[]
+ctx.registry.packages.find('connect_four');  // Package | undefined
+ctx.registry.accounts.require('alice');      // Account, throws if missing
+ctx.registry.services.list();                // Service[]
+```
+
+Each `RegistryQuery<T>` exposes:
+
+| Method                   | Returns / behavior                                                                  |
+| ------------------------ | ----------------------------------------------------------------------------------- |
+| `list()`                 | Every entry, in insertion order.                                                    |
+| `find(name)`             | The entry by name, or `undefined`.                                                  |
+| `require(name)`          | The entry by name, throws when missing.                                             |
+| `register(item)`         | Insert or replace by `name`. Marks the kind dirty.                                  |
+| `unregister(name)`       | Remove by name. Returns true if removed; marks the kind dirty on success.           |
+
+## Plugin-namespaced kinds
+
+Plugins extend the registry with namespace-scoped kinds. Declare a `Namespace` shape, then
+access it via `ctx.registry.ns<Namespace>('<plugin>')`:
+
+```ts
+interface WalrusNamespace {
+	nodes: RegistryQuery<WalrusNode>;
+}
+
+const ns = ctx.registry.ns<WalrusNamespace>('walrus');
+ns.nodes.list();
+ns.nodes.register({ name: 'dryrun-node-0', /* ... */ });
+```
+
+The namespace becomes a top-level field in the serialized manifest under
+`registry.<namespace>.<kind>[]`. App code uses
+`ctx.registry.ns<MyNs>('my-app').sharedObjects.register({ ... })` to expose app-specific data
+through the same channel.
+
+## Dirty tracking
+
+Every `register()` (or `unregister()`) marks the kind dirty. The reconciler reads the dirty set
+after the topo walk and re-fires `Emit` actions whose `dependsOnKind` slice intersects it. That's
+how the codegen plugin re-runs whenever a Publish action registers a new package, without
+needing an explicit `needs:` edge.
+
+`registry.flushDirty()` clears the set; `registry.consumeDirty(kinds)` drops named kinds without
+clearing others. The reconciler uses `consumeDirty` per-Emit so a later action in the same cycle
+can still re-dirty a kind and the Emit re-fires again.
+
+## Manifest
+
+After every successful reconcile, devstack writes the registry to disk as JSON:
+
+```jsonc
+{
+	"app": "arena",
+	"network": "localnet",
+	"emittedAt": "2026-04-30T...",
+	"registry": {
+		"tokens": [...],
+		"packages": [{ "name": "connect_four", "packageId": "0x...", "captured": {...} }],
+		"accounts": [{ "name": "publisher", "address": "0x...", "funded": true }],
+		"services": [{ "name": "sui-rpc", "url": "http://127.0.0.1:9000", "kind": "sui-rpc", "port": 9000 }],
+		"arena": { "sharedObjects": [{ "name": "openLobby", "objectId": "0x..." }] }
+	}
+}
+```
+
+### Where it lives
+
+- **Localnet** (per-stack): `<appDir>/.devstack/stacks/<stack>/manifest.json`. Each stack
+  maintains its own manifest so multiple stacks coexist on disk.
+- **Live networks** (per-network only): `<appDir>/.devstack/manifests/<network>.json`. Live-net
+  deploys ignore the stack dimension — only one `testnet` per app, so a stack dimension would be
+  confusing.
+
+### How the frontend reads it
+
+The Vite plugin (`@mysten-incubation/devstack/vite`) reads the active stack's manifest and
+re-exports it as `virtual:devstack-manifest`. Switching stacks via `devstack stack use <other>`
+flips the active pointer; the dev server's watcher picks that up and reloads the virtual module.
+
+```ts
+import { manifest } from 'virtual:devstack-manifest';
+
+const rpcUrl = manifest.registry.services.find((s) => s.name === 'sui-rpc')?.url;
+const pkg = manifest.registry.packages.find((p) => p.name === 'connect_four');
+```
+
+For the full schema see [Manifest format](/docs/manifest).
+
+## Hydration
+
+On supervisor restart, the reconciler reads the prior manifest into the registry before walking
+the action graph. So a Publish action's `getStatus` sees the previously-recorded `packageId` and
+can short-circuit re-publish when the package is still live on chain.
+
+Hydration does not mark kinds dirty — the cascade only fires on actions that actually re-register
+during the cycle.
