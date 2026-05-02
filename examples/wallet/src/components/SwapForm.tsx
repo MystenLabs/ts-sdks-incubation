@@ -1,17 +1,16 @@
-import { useDevstackSignAndExecute } from '@mysten-incubation/devstack/react';
 import { useCurrentClient } from '@mysten/dapp-kit-react';
 import { useId, useMemo, useState } from 'react';
 
 import { deployment, findCoin } from '../generated/deployment.js';
 import { parseCoinAmount } from '../lib/format.js';
-import { useInvalidateBalances } from '../lib/queries.js';
+import { useInvalidateBalances, useSignAndExecute } from '../lib/queries.js';
 import { buildDeepbookSwapTx } from '../lib/transactions.js';
 import { Card } from './Card.js';
 
 export function SwapForm({ self }: { self: string }) {
 	const client = useCurrentClient();
 	const invalidate = useInvalidateBalances();
-	const { mutateAsync, isPending } = useDevstackSignAndExecute();
+	const { mutateAsync, isPending } = useSignAndExecute();
 
 	const pools = deployment.pools;
 	const deepbookPackageId = deployment.deepbookPackageId;
@@ -69,11 +68,7 @@ export function SwapForm({ self }: { self: string }) {
 			});
 			const result = await mutateAsync(transaction);
 			invalidate();
-			const txResult = result as {
-				Transaction?: { digest?: string };
-				FailedTransaction?: { digest?: string };
-			};
-			setLastDigest(txResult.Transaction?.digest ?? txResult.FailedTransaction?.digest ?? '');
+			setLastDigest(result.digest);
 		} catch (e) {
 			setError((e as Error).message);
 		}
