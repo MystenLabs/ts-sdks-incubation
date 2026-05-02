@@ -52,24 +52,42 @@ export interface FrontendPluginOptions {
 }
 
 export const frontend = (opts: FrontendPluginOptions = {}) => {
-	const port = opts.port ?? 5173;
-	const baseUrl = `http://localhost:${port}`;
+	const preferredPort = opts.port ?? 5173;
 	const baseCommand = opts.command ?? ['pnpm', 'exec', 'vite'];
-	const command =
-		opts.appendPort === false ? baseCommand : [...baseCommand, '--port', String(port)];
+	const appendPort = opts.appendPort !== false;
 	const needs = opts.needs ?? ['codegen.generate'];
 
 	// Per-instance state. Two `frontend()` factories in the same process
 	// don't interleave (each gets its own closure).
 	let child: ChildProcess | undefined;
 	let lastExitCode: number | null = null;
+	let resolvedPort: number | undefined;
+	let resolvedBaseUrl: string | undefined;
+
+	const resolveEndpoint = async (
+		ctx: ActionRunContext,
+	): Promise<{ port: number; baseUrl: string; command: string[] }> => {
+		if (ctx.network !== 'localnet') {
+			throw new Error('frontend: localnet-only');
+		}
+		const [port] = await ctx.ports.allocate({
+			slot: 'frontend.dev-server',
+			preferred: preferredPort,
+		});
+		const portValue = port as number;
+		resolvedPort = portValue;
+		resolvedBaseUrl = `http://localhost:${portValue}`;
+		const command = appendPort ? [...baseCommand, '--port', String(portValue)] : baseCommand;
+		return { port: portValue, baseUrl: resolvedBaseUrl, command };
+	};
 
 	const populateRegistry = (ctx: ActionRunContext): void => {
+		if (resolvedBaseUrl === undefined || resolvedPort === undefined) return;
 		ctx.registry.services.register({
 			name: 'dev-server',
 			kind: 'dev-server',
-			url: baseUrl,
-			port,
+			url: resolvedBaseUrl,
+			port: resolvedPort,
 		});
 	};
 
@@ -79,9 +97,10 @@ export const frontend = (opts: FrontendPluginOptions = {}) => {
 			hostProcess({
 				name: 'dev-server',
 				needs,
-				inputs: { port, command: command.join(' ') },
+				inputs: { preferredPort, command: baseCommand.join(' '), appendPort },
 				provides: { registry: populateRegistry },
-				getStatus: async () => {
+				getStatus: async (ctx) => {
+					const { baseUrl } = await resolveEndpoint(ctx);
 					const reachable = await probeUrl(baseUrl);
 					if (!reachable) return { ok: false, detail: `${baseUrl} not reachable` };
 					return { ok: true, detail: baseUrl };
@@ -92,6 +111,7 @@ export const frontend = (opts: FrontendPluginOptions = {}) => {
 					// constraint applies to the supervisor that runs us, not to
 					// the dev server itself.
 					requireLocalnetCtx(ctx);
+					const { baseUrl, command } = await resolveEndpoint(ctx);
 					const log = ctx.appendLog ?? ((line: string) => process.stdout.write(`${line}\n`));
 					const cwd = opts.cwd ?? ctx.appDir;
 					if (child !== undefined && child.exitCode === null) {

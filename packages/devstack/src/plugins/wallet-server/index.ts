@@ -42,23 +42,43 @@ export interface WalletServerPluginOptions {
 export const WALLET_SERVER_DEFAULT_PORT = 9420;
 
 export const walletServer = (opts: WalletServerPluginOptions = {}) => {
-	const port = opts.port ?? WALLET_SERVER_DEFAULT_PORT;
-	const baseUrl = opts.publicOrigin ?? `http://localhost:${port}`;
+	const preferredPort = opts.port ?? WALLET_SERVER_DEFAULT_PORT;
+	const explicitOrigin = opts.publicOrigin;
 	const needs = opts.needs ?? ['sui.accounts'];
 
 	// Per-instance state (closure scope, not module scope) — two
 	// `walletServer()` instances in one process don't interleave.
 	let activeServer: Server | undefined;
 	let activeToken: string | undefined;
+	let resolvedPort: number | undefined;
+	let resolvedBaseUrl: string | undefined;
+
+	const resolveEndpoint = async (
+		ctx: ActionRunContext,
+	): Promise<{ port: number; baseUrl: string }> => {
+		if (ctx.network !== 'localnet') {
+			throw new Error('wallet-server: localnet-only');
+		}
+		const [port] = await ctx.ports.allocate({
+			slot: 'wallet-server.http',
+			preferred: preferredPort,
+		});
+		const portValue = port as number;
+		resolvedPort = portValue;
+		resolvedBaseUrl = explicitOrigin ?? `http://localhost:${portValue}`;
+		return { port: portValue, baseUrl: resolvedBaseUrl };
+	};
 
 	const populateRegistry = (ctx: ActionRunContext): void => {
-		if (activeToken === undefined) return;
+		if (activeToken === undefined || resolvedBaseUrl === undefined || resolvedPort === undefined) {
+			return;
+		}
 		ctx.registry.services.register({
 			name: 'wallet-server',
 			kind: 'wallet-server',
-			url: baseUrl,
-			port,
-			endpointLabel: `${baseUrl}/?token=${activeToken}`,
+			url: resolvedBaseUrl,
+			port: resolvedPort,
+			endpointLabel: `${resolvedBaseUrl}/?token=${activeToken}`,
 		});
 	};
 
@@ -68,10 +88,14 @@ export const walletServer = (opts: WalletServerPluginOptions = {}) => {
 			hostProcess({
 				name: 'serve',
 				needs,
-				inputs: { port, baseUrl },
+				// Hint goes into the input hash (so changing the user's
+				// preferred port re-runs); resolved port is a runtime
+				// detail.
+				inputs: { preferredPort, publicOrigin: explicitOrigin ?? null },
 				provides: { registry: populateRegistry },
 				getStatus: async (ctx) => {
 					requireLocalnetCtx(ctx);
+					const { baseUrl } = await resolveEndpoint(ctx);
 					const reachable = await probeUrl(`${baseUrl}/health`);
 					if (!reachable) return { ok: false, detail: `${baseUrl} not reachable` };
 					// We need a token to publish in the registry's
@@ -89,6 +113,7 @@ export const walletServer = (opts: WalletServerPluginOptions = {}) => {
 				},
 				run: async (ctx) => {
 					requireLocalnetCtx(ctx);
+					const { port, baseUrl } = await resolveEndpoint(ctx);
 					const log = ctx.appendLog ?? ((line: string) => process.stdout.write(`${line}\n`));
 					if (activeServer !== undefined && activeServer.listening) {
 						// Idempotent — supervisor cycles call run again on warm
