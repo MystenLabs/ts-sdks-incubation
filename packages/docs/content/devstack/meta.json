@@ -19,6 +19,7 @@
 		"plugins/sui",
 		"plugins/walrus",
 		"plugins/seal",
+		"plugins/deepbook",
 		"plugins/codegen",
 		"plugins/imports",
 		"plugins/vite",

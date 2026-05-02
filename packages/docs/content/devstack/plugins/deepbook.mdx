@@ -1,0 +1,204 @@
+---
+title: deepbook
+description: First-class DeepBook v3 publish + pools + market-maker for localnet trading.
+---
+
+`deepbook({ rev?, admin?, pools?, marketMakers? })` ships a typed surface for the most common
+DeepBook v3 deployment patterns: build the upstream source image, publish the package, create
+whitelisted pools, and run continuous grid market-makers around configured mid prices.
+
+Localnet-only. For testnet/mainnet, apps reference the curated DeepBook addresses directly — see
+the [imports plugin](/devstack/plugins/imports) for the generic upstream-package flow.
+
+| Action                              | Kind                                                                                                                                                                |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `deepbook.source`                   | Build (`MystenLabs/deepbookv3@<rev>` source image, BuildKit git context). Idempotent on `imageExists`.                                                              |
+| `deepbook.publish`                  | Publish (`sui client test-publish --with-unpublished-dependencies` inside the sui container). Captures `registryId` + `adminCapId` into the manifest.               |
+| `deepbook.pools`                    | Seed (`init_balance_manager_map` once + `create_pool_admin<Base, Quote>` per declared pool). Pool entries land in `registry.ns('deepbook').pools`.                  |
+| `deepbook.market-maker-<name>`      | HostProcess (per-maker grid rebalancer). Cancels + re-posts a `levels`-deep ladder of POST_ONLY orders around the configured mid every `refreshIntervalMs`.        |
+
+```ts
+import { deepbook, defineDevstackConfig, sui } from '@mysten-incubation/devstack';
+
+export default defineDevstackConfig({
+	plugins: [
+		sui(),
+		deepbook({
+			rev: 'v7.0.0',
+			pools: [
+				{
+					name: 'sui_usdc',
+					base: 'sui',
+					quote: '@reg/musdc',
+					tickSize: 1_000n,
+					lotSize: 100_000_000n,
+					minSize: 1_000_000_000n,
+				},
+			],
+			marketMakers: [
+				{
+					name: 'alice',
+					signer: 'alice',
+					pools: ['sui_usdc'],
+					midPrices: { sui_usdc: 3_500_000n },
+					sizePerLevel: 1_000_000_000n,
+					levels: 3,
+					refreshIntervalMs: 10_000,
+				},
+			],
+		}),
+	],
+});
+```
+
+## Coin types — `'sui'` | `'@reg/<token>'` | full type
+
+Pool specs and `buildDeepbookSwapTx` accept three forms via the exported `resolveCoinType` helper:
+
+- `'sui'` — shorthand for `'0x2::sui::SUI'`.
+- `'@reg/<name>'` — resolved at run time via `registry.tokens.find(name).type`. Pair this with a
+  `publishMove({ ..., onPublished: (ctx, r) => ctx.registry.tokens.register(...) })` setup action so
+  pool specs reference your mock coins by name without hand-pasting their post-publish addresses.
+- Anything else — passed through as a fully-qualified Move type
+  (`'0x2::sui::SUI'`, `'0xabcd...::usdc::USDC'`).
+
+When pool specs reference `@reg/<token>` from a setup action, add the action's full name to
+`poolNeeds:` so the pool-creation step waits for the token registration:
+
+```ts
+deepbook({
+	pools: [{ name: 'sui_usdc', base: 'sui', quote: '@reg/musdc', /* ... */ }],
+	poolNeeds: ['my-app-setup.usdc'],
+});
+```
+
+## Pools
+
+Each entry in `pools:` materializes one whitelisted (or non-whitelisted, see below) DeepBook pool.
+
+```ts
+interface DeepbookPoolSpec {
+	name: string;          // unique within plugin
+	base: string;          // 'sui' | '@reg/<token>' | full move type
+	quote: string;
+	tickSize: bigint;      // quote-units per base-step
+	lotSize: bigint;       // base step
+	minSize: bigint;       // minimum order base size
+	whitelisted?: boolean; // default true (no DEEP fees)
+	stable?: boolean;      // default false
+}
+```
+
+Pool-creation idempotence: `getStatus` probes each declared pool's `Pool<Base, Quote>` object on
+chain. If every pool exists with the matching type, the action skips. Snapshot restore preserves
+pools (sui's container layer captures the full chain state including pool objects), so warm starts
+from a snapshot short-circuit pool creation entirely.
+
+Captured pool entries land in `registry.ns('deepbook').pools`:
+
+```ts
+import { deepbookNs } from '@mysten-incubation/devstack';
+
+const ns = deepbookNs(ctx.registry);
+const pool = ns.pools.require('sui_usdc'); // { name, poolId, objectType, baseCoinType, quoteCoinType }
+```
+
+## Market makers
+
+Each `marketMakers:` entry becomes a `deepbook.market-maker-<name>` HostProcess action. On every
+refresh tick the maker:
+
+1. Ensures its `BalanceManager` exists (created + funded on the first tick; cached in
+   `registry.ns('deepbook').balanceManagers` for warm restarts).
+2. Cancels every open order it holds on each pool it quotes.
+3. Posts a fresh grid: for `i in 1..=levels`, an ask at `mid + i*tickSpacing*tickSize` and a bid at
+   `mid - i*tickSpacing*tickSize`, each `sizePerLevel` base units, POST_ONLY,
+   `pay_with_deep: false`.
+
+All in one tx per refresh per maker — typically `1 + 2 * levels * |pools|` Move calls. Default
+cadence (`refreshIntervalMs: 10_000`) matches deepbook-sandbox's reference.
+
+```ts
+interface DeepbookMarketMakerSpec {
+	name: string;
+	signer: string;             // account name; gets its own BalanceManager
+	pools: string[];            // pool names this maker quotes
+	needs?: string[];           // cross-plugin deps (e.g. ['my-app.seedTokens'])
+	midPrices: Record<string, bigint>
+		| ((ctx) => Promise<Record<string, bigint>>);
+	levels?: number;            // default 3
+	tickSpacing?: number;       // default 1 (consecutive ticks)
+	sizePerLevel: bigint
+		| Record<string, bigint>;
+	refreshIntervalMs?: number; // default 10000
+	preDeposit?: Record<string, { base: bigint; quote: bigint }>;
+}
+```
+
+The function form of `midPrices` lets callers integrate an oracle (Pyth, off-chain feed, mock
+randomness) without the plugin caring how the mid was derived.
+
+### HostProcess semantics
+
+Market makers are HostProcess actions, so:
+
+- `applyTestSetupFilter` skips them in Playwright globalSetup — test setup brings the chain to
+  known state but doesn't start a daemon that would die when globalSetup returns.
+- The long-running supervisor (`devstack up`, `devstack watch`, the wallet's `pnpm dev`) owns the
+  loop. The `pnpm dev` integration via `playwright.config.ts`'s `webServer` covers the e2e case.
+- Initial tick is awaited so `getStatus` reports `ok` only after the BM + initial grid hit chain;
+  later ticks log + skip on transient chain errors. Orders left from a partial failure expire via
+  `expireMs` (24 h) and the next tick retries from clean state.
+
+## Swap helper
+
+```ts
+import { buildDeepbookSwapTx } from '@mysten-incubation/devstack';
+
+const tx = await buildDeepbookSwapTx({
+	client,
+	sender,
+	deepbookPackageId,
+	poolId,
+	baseCoinType,
+	quoteCoinType,
+	direction: 'base_to_quote', // or 'quote_to_base'
+	amountIn: 1_000_000_000n,
+	minOut: 0n,
+});
+```
+
+Splits `amountIn` from the sender's owned coins (`tx.gas` for SUI, merge+split for non-SUI), passes
+a zero `Coin<DEEP>` placeholder (whitelisted pools waive DEEP fees), invokes
+`pool::swap_exact_base_for_quote` or `swap_exact_quote_for_base`, and transfers all returned coins
+back to the sender. Use `tx.add(buildDeepbookSwapTx(...))` to splice into a larger transaction.
+
+For non-whitelisted pools, the helper's zero-DEEP placeholder will revert; pre-fund a real
+`Coin<DEEP>` and replace the placeholder.
+
+## Plugin options
+
+```ts
+interface DeepbookPluginOptions {
+	rev?: string;                           // default 'v7.0.0'
+	admin?: string;                         // default 'publisher' (signs publish + pool admin)
+	pools?: ReadonlyArray<DeepbookPoolSpec>;
+	poolNeeds?: string[];                   // appended to deepbook.pools' needs
+	marketMakers?: ReadonlyArray<DeepbookMarketMakerSpec>;
+}
+```
+
+Bumping `rev:` re-fetches + rebuilds the source image and re-publishes the package; pools created
+under the old packageId become orphans (snapshot restore from a pre-bump snapshot still works for
+their original packageId).
+
+## Why a typed plugin instead of `imports({ deepbook })`
+
+The generic [`imports()` plugin](/devstack/plugins/imports) handles arbitrary upstream Move
+packages by `(repo, rev, subdir)`. DeepBook is common enough that the wallet example used to wrap
+it with three hand-rolled `seed()` actions (pool creation, BalanceManager + initial orders, etc.)
+totalling ~150 lines of per-app boilerplate. `deepbook()` collapses that into a typed declarative
+spec — pools as data, market-makers as data — so apps that want a localnet swap-flow stand it up in
+one block instead of re-deriving the whole pipeline.
+
+For a non-DeepBook upstream Move package, `imports()` remains the right tool.
