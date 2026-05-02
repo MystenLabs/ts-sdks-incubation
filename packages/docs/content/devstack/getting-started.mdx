@@ -24,7 +24,18 @@ pnpm add -D @mysten-incubation/devstack
 Create a `devstack.config.ts` in your app root:
 
 ```ts
-import { codegen, defineDevstackConfig, sui, vite } from '@mysten-incubation/devstack';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import {
+	codegen,
+	defineDevstackConfig,
+	frontend,
+	publishMove,
+	sui,
+} from '@mysten-incubation/devstack';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
 
 export default defineDevstackConfig({
 	app: 'my-app',
@@ -33,7 +44,14 @@ export default defineDevstackConfig({
 		alice: {},
 		bob: {},
 	},
-	plugins: [sui(), codegen(), vite({ port: 5173 })],
+	plugins: [sui(), codegen(), frontend({ port: 5173 })],
+	setup: [
+		publishMove({
+			name: 'my_package',
+			needs: ['sui.accounts'],
+			path: resolve(HERE, 'move/my_package'),
+		}),
+	],
 });
 ```
 
@@ -41,9 +59,15 @@ Account names declared at the top level are funded on localnet via the faucet. E
 get a per-stack generated keypair on disk; live-network deployments override per network — see the
 [accounts page](/docs/authoring/accounts).
 
-The [`vite()` plugin](/docs/plugins/vite) brings the dev server up alongside the rest of the stack
-so a single `pnpm dev` script handles localnet + publishes + codegen + the UI dev server in one
-combined process.
+The [`setup:` field](/docs/authoring/setup) is where app-level state lives: publish Move packages,
+mint fixture coins, create initial shared objects. Each item is an action with explicit `needs` for
+ordering and `getStatus` for idempotence — same primitives the framework's own plugins use, just
+declared inline. Use `publishMove()` and `runTransaction()` for the common cases; drop into
+`seed()` / `definePublishAction()` directly when you need a custom probe.
+
+The [`frontend()` plugin](/docs/plugins/vite) brings the dev server up alongside the rest of the
+stack so a single `pnpm dev` script handles localnet + publishes + codegen + the UI dev server in
+one combined process.
 
 ## Bring it up
 
@@ -52,7 +76,7 @@ Wire your `package.json` scripts to the `devstack` binary:
 ```jsonc
 {
 	"scripts": {
-		"dev": "devstack watch",
+		"dev": "devstack up",
 		"localnet:up": "devstack up --once",
 		"apply": "devstack apply",
 		"codegen": "devstack codegen",
@@ -86,17 +110,38 @@ pnpm exec devstack apply
 
 ## What happened
 
-1. The `sui` plugin built `dev-examples/sui-localnet:<version>`, started a container, and
-   provisioned the keypairs you declared in `accounts:`.
-2. Each `definePublishAction` (or `publish()`) action ran `sui move build` + a publish tx and
-   recorded the package id in the manifest.
-3. `codegen` regenerated typed bindings under `src/generated/sui/<package>/`.
-4. The manifest was written to `<appDir>/.devstack/stacks/main/manifest.json`. Your Vite-built
+1. The `sui` plugin built `dev-examples/sui-localnet:<version>-r7`, started the container, and
+   provisioned the keypairs you declared in `accounts:`. The chain ledger lives in the container's
+   writable layer — `docker stop` + `docker start` resumes it; `docker rm` destroys it.
+2. The port allocator picked a free TCP port for sui's RPC + faucet (preferring `9000`/`9123` if
+   they were free), persisted it to `<stackDir>/ports.json`, and registered the resolved URL in
+   the manifest. Sibling stacks of the same app see those claims and avoid them automatically.
+3. Each `publishMove()` (or `definePublishAction()`) action under `setup:` ran `sui move build`
+   inside the container + a publish tx and recorded the package id in the manifest.
+4. `codegen` regenerated typed bindings under `src/generated/sui/<package>/`.
+5. The manifest was written to `<appDir>/.devstack/stacks/main/manifest.json`. Your Vite-built
    frontend reads it via the `virtual:devstack-manifest` module.
+
+## Snapshots
+
+After a stack is healthy, capture it for fast restore:
+
+```sh
+pnpm exec devstack snapshot save baseline
+pnpm exec devstack stack drop main --yes --force   # nuke for the demo
+pnpm exec devstack snapshot restore baseline       # ~1 s
+pnpm exec devstack apply                            # ~5 s — every action skips
+```
+
+`snapshot save` `docker commit`s every stateful container into a seed image and copies
+`<stackDir>` into `<appDir>/.devstack/snapshots/<id>/`. Restore re-tags the seed images back to
+their original names so the next `devstack up` starts containers with the seeded state already in
+place. CI uses `snapshot save baseline --push ghcr.io/myorg/...` to ship snapshots through GHCR.
 
 ## Next steps
 
-- [Actions](/docs/concepts/actions) — the six action kinds.
+- [Actions](/docs/concepts/actions) — the seven action kinds.
 - [Plugins](/docs/concepts/plugins) — composing built-ins or writing your own.
+- [setup: field](/docs/authoring/setup) — declaring per-app state.
 - [React adapter](/docs/adapters/react) — typed package hooks for the UI.
 - [Stacks](/docs/concepts/stacks) — named per-app environments for parallel experiments.

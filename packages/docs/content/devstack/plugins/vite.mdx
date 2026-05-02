@@ -1,19 +1,21 @@
 ---
-title: vite
-description: Run the Vite dev server alongside the rest of the stack — one process, one log stream.
+title: frontend
+description: Run a Vite (or Next, or any port-flag-aware) dev server alongside the rest of the stack — one process, one log stream.
 ---
 
-`vite({ port?, command?, cwd?, needs? })` contributes one Service action that spawns the Vite dev
-server as a host child process. Output streams through the supervisor's status renderer
-(timestamped + prefixed `[vite.dev-server]`), interleaved with the action panel cleanly.
+`frontend({ port?, command?, appendPort?, cwd?, needs? })` contributes one `hostProcess` action
+that spawns the dev server as a host child process. Output streams through the supervisor's
+status renderer (timestamped + prefixed `[vite.dev-server]`), interleaved with the action panel
+cleanly. Defaults run `pnpm exec vite --port <port>`; pass `command` to swap in any other tooling
+(Next.js, SvelteKit, Astro), and `appendPort: false` if your tool expects a different port flag.
 
 ```ts
-import { codegen, defineDevstackConfig, sui, vite } from '@mysten-incubation/devstack';
+import { codegen, defineDevstackConfig, frontend, sui } from '@mysten-incubation/devstack';
 
 export default defineDevstackConfig({
 	app: 'arena',
 	accounts: { publisher: {}, alice: {}, bob: {} },
-	plugins: [sui(), arenaPlugin(), codegen(), vite({ port: 5176 })],
+	plugins: [sui(), arenaPlugin(), codegen(), frontend({ port: 5176 })],
 });
 ```
 
@@ -22,41 +24,19 @@ Each app's `pnpm dev` becomes:
 ```jsonc
 {
 	"scripts": {
-		"dev": "devstack watch",
+		"dev": "devstack up",
 	},
 }
 ```
 
-`devstack watch` starts the long-running supervisor; the vite plugin's Service action brings up the
-dev server alongside sui localnet, walrus, seal, package publishes, codegen — everything in one
+`devstack up` runs the long-running supervisor; the frontend plugin's hostProcess action brings up
+the dev server alongside sui localnet, walrus, seal, package publishes, codegen — everything in one
 process.
 
-| Option    | Default                    | Notes                                                                                                                                                                                                      |
-| --------- | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `port`    | `5173`                     | Passed to `vite --port`. Ports 9000/9123 are already taken by sui's RPC + faucet on a default install.                                                                                                     |
-| `command` | `['pnpm', 'exec', 'vite']` | Override the dev-server command. The plugin appends `['--port', String(port)]` to whatever you pass.                                                                                                       |
-| `cwd`     | `ctx.appDir`               | Override the spawn cwd.                                                                                                                                                                                    |
-| `needs`   | `['codegen.generate']`     | Action ordering: vite waits until codegen has emitted bindings + the manifest is written. Pass `[]` to start immediately (the manifest virtual module returns a typed empty fallback before first deploy). |
-
-## Lifecycle
-
-- `getStatus` HEAD-probes `http://localhost:<port>` — returns `ok: true` once the dev server
-  responds.
-- `run` spawns the child, pipes stdout/stderr through `ctx.appendLog` (the supervisor's status
-  renderer interleaves action panel + log lines without garble), and waits for the URL to become
-  reachable before returning. Idempotent: a warm cycle that finds a running child skips re-spawn.
-- `onShutdown` kills the child with SIGINT on supervisor shutdown; SIGKILL after 5s if the child
-  doesn't exit cleanly.
-
-ANSI escapes are stripped from the child's output before logging — the renderer's panel-redraw
-expects plain text.
-
-## When to skip the plugin
-
-For UI-less apps (CLI tools, infrastructure scripts, library packages with no frontend) just don't
-load it. The supervisor still runs everything else.
-
-For apps with a custom dev-server command (Next.js, Astro, etc.), pass
-`command: ['pnpm', 'exec', 'next', 'dev']` (or whatever) — the plugin appends `--port`, so any
-command that takes that flag works. For commands that take port via env var or different flag, write
-a thin shell wrapper.
+| Option       | Default                    | Notes                                                                                                                                                                                                      |
+| ------------ | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `port`       | `5173`                     | Passed to `vite --port`. Ports 9000/9123 are already taken by sui's RPC + faucet on a default install.                                                                                                     |
+| `command`    | `['pnpm', 'exec', 'vite']` | Override the dev-server command. The plugin appends `['--port', String(port)]` unless `appendPort: false`.                                                                                                |
+| `appendPort` | `true`                     | When `false`, don't append `--port <port>` to `command`. Useful for tools with a different port flag (e.g. `next dev -p`).                                                                                |
+| `cwd`        | `ctx.appDir`               | Override the spawn cwd.                                                                                                                                                                                    |
+| `needs`      | `['codegen.generate']`     | Action ordering: vite waits until codegen has emitted bindings + the manifest is written. Pass `[]` to start immediately (the manifest virtual module returns a typed empty fallback before first deploy). |

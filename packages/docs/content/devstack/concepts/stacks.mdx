@@ -4,9 +4,16 @@ description:
   Named per-app environments — switch between main and scratch without trashing your working chain.
 ---
 
-A **stack** is a per-app named environment. Each stack maps to an isolated set of docker containers,
-volumes, and host-side state under `<appDir>/.devstack/stacks/<stack>/`. Container names embed the
-stack (`<app>-<stack>-sui`), so multiple stacks for the same app can coexist on one host.
+A **stack** is a per-app named environment. Each stack maps to an isolated set of docker
+containers + a docker network + a host-side state dir at `<appDir>/.devstack/stacks/<stack>/`
+(holding manifest, keys, ports.json, setup markers). Container names embed the stack
+(`<app>-<stack>-sui`), so multiple stacks for the same app can coexist on one host. The per-stack
+port allocator persists assignments to `<stackDir>/ports.json` and reads sibling stacks'
+allocations so collisions never happen across stacks of the same app.
+
+State lives in either the container's writable layer (chain ledger, walrus blob store —
+preserved across `docker stop`/`docker start`, captured for snapshots via `docker commit`) or the
+host stack dir. No named docker volumes.
 
 The active stack is whatever `<appDir>/.devstack/active` says, falling back to `'main'`. Override
 with `DEVSTACK_STACK=other` env var, or pin via `--target <stack>` / `--target localnet:<stack>` on

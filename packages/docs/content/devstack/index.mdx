@@ -15,23 +15,36 @@ pnpm exec devstack up
 
 ## What you get
 
-- **Fast cold start.** A sui-only stack comes up in ~17 s; full sui+walrus+seal in ~76 s on Apple
-  Silicon. Warm cycles short-circuit through `getStatus` and run in 1–3 s.
+- **Fast cold start.** A sui-only stack comes up in ~10–15 s; full sui+walrus+seal cold-builds
+  upstream images on first run (~10 min on Apple Silicon, cached forever after) and warm-restarts
+  in ~10 s. Warm cycles short-circuit through `getStatus` and run in 1–3 s.
+- **Snapshots.** `devstack snapshot save baseline` captures every stateful container as a
+  `docker commit`'d image plus a copy of the host-side stack dir. `restore` re-tags the seed
+  images so a fresh `devstack up` starts with all the seeded state in <15 s. CI ships snapshots
+  through GHCR via `--push <registry>`.
 - **Declarative configuration.** Each app declares its services (sui, walrus, seal, codegen,
-  imports, ...) as plugins. The reconciler walks the action graph, rebuilds only what drifted, and
-  produces a manifest the UI imports as a virtual module.
-- **Stacks.** Named per-app environments with isolated containers, volumes, and host state. Switch
-  between `main` and a scratch stack without trashing your working chain.
-- **Publish + codegen built in.** Move packages publish via the in-container sui CLI (or host CLI on
-  live nets). `@mysten/codegen` regenerates typed bindings whenever a package id changes.
-- **Typed React bindings.** `useDevstackPackage('connect_four').createLobby({ ... })(tx)` — codegen
-  builders pre-bound to the live `packageId`. Built-in `<DevstackDebugPanel />` for SE-2-style
-  form-per-builder inspection.
+  imports, ...) as plugins, plus per-app state via a top-level `setup: [...]` list of actions.
+  The reconciler walks the action graph, rebuilds only what drifted, and produces a manifest the
+  UI imports as a virtual module.
+- **Stacks with dynamic ports.** Named per-app environments with isolated containers and host
+  state. The per-stack port allocator persists assignments to `<stackDir>/ports.json` so `main`
+  and `test` stacks coexist without port-collision babysitting.
+- **Container-layer state.** Chain ledger + walrus blob store live in their containers' writable
+  layers; manifest, keys, ports, and setup markers live under `<stackDir>` on the host. No named
+  docker volumes — `docker stop` / `docker start` preserves state, snapshots capture it via
+  `docker commit`.
+- **Publish + codegen built in.** Move packages publish via the in-container sui CLI (or host CLI
+  on live nets). `@mysten/codegen` regenerates typed bindings whenever a package id changes.
+- **MVR-driven typed bindings.** Codegen emits `@local/<kebab-name>` placeholders in the move-call
+  builders; the SDK resolves them to live `packageId`s at transaction-build time via the
+  `mvr.overrides` config that `localnetDappKitConfig(manifest)` wires up automatically.
+  Component code is `tx.add(connectFour.joinLobby({ arguments: [...] }))` — same shape on
+  testnet/mainnet, only `dapp-kit.ts` differs.
 - **Live-network deploys.** The same plugin actions run against testnet/mainnet via
   `devstack deploy --network <n>` or `devstack apply --target <n>`.
-- **`pnpm dev` starts everything.** With the [`vite()` plugin](/docs/plugins/vite) loaded, the Vite
-  dev server runs alongside sui localnet, walrus, seal, package publishes, and codegen — one
-  combined process, one log stream.
+- **`pnpm dev` starts everything.** With the [`frontend()` plugin](/docs/plugins/vite) loaded, the
+  dev server (vite, next, anything) runs alongside sui localnet, walrus, seal, package publishes,
+  and codegen — one combined process, one log stream.
 
 ## Where to next
 

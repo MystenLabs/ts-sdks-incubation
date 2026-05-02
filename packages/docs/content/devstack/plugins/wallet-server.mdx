@@ -34,18 +34,26 @@ export default defineDevstackConfig({
 		// ...app plugins
 		codegen(),
 		walletServer({ port: 9420 }),
-		vite({ port: 5173 }),
+		frontend({ port: 5173 }),
 	],
 });
 ```
 
 ## Lifecycle
 
-`walletServer()` registers one Service action:
+`walletServer()` registers two actions, lifecycle-split so the manifest carries the wallet-server
+entry as soon as `apply` mode (Playwright globalSetup, `devstack apply`) completes — even before
+the listener is spawned:
 
-| Action                | Purpose                                                                                                                                                       |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `wallet-server.serve` | Spawn a Node `http` server on `port`. Register the URL + paired token in `manifest.registry.services` as the `wallet-server` entry. Close on supervisor stop. |
+| Action                   | Type        | Purpose                                                                                                                                                                          |
+| ------------------------ | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `wallet-server.register` | Register    | Allocate the host port via the per-stack port allocator, read or mint the bearer token, populate `manifest.registry.services` with the deterministic `wallet-server` entry.      |
+| `wallet-server.serve`    | HostProcess | Spawn a Node `http` server on the allocated port (read from the registry), serving the same token. Close on supervisor stop. Skipped by `applyTestSetupFilter` (test-bring-up).  |
+
+The split avoids a cold-first-run race: a Playwright globalSetup that ran the listener but then
+exited used to leave the manifest pointing at a dead server until the dev-server's supervisor took
+over. Now `register` populates the manifest unconditionally; `serve` runs only under a long-running
+supervisor, where its lifetime matches the listener's.
 
 The server holds an `address → Signer` map populated from `ctx.accounts.names()`. Every named
 account in `defineDevstackConfig({ accounts })` becomes signable — `cliSigner`, `envSigner`,
@@ -65,7 +73,9 @@ All `/api/*` requests require `Authorization: Bearer <token>` or a `?token=<hex>
 
 ```ts
 interface WalletServerPluginOptions {
-	/** TCP port for the wallet HTTP server. Default 9420. */
+	/** Preferred TCP port. Hint to the per-stack port allocator —
+	 * the allocator picks a free port if the preferred one is taken
+	 * by a sibling stack. Default 9420. */
 	port?: number;
 	/** Override the printed origin (e.g. when proxying through a tunnel). */
 	publicOrigin?: string;
@@ -82,5 +92,5 @@ interface WalletServerPluginOptions {
   entirely.
 - The server signs BCS `TransactionData` only. `signPersonalMessage` is unsupported, mirroring
   `RemoteCliAdapter`'s constraint with `sui keytool sign`.
-- The token is regenerated on every supervisor restart. The manifest is the source of truth — don't
-  persist it client-side.
+- The token is persisted to `<stackDir>/wallet-token` and reused across supervisor restarts. The
+  manifest is the source of truth for the URL + token — don't persist it client-side.

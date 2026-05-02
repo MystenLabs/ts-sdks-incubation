@@ -7,14 +7,15 @@ description: Every devstack subcommand.
 devstack <command> [options]
 
 Commands:
-  up [config]                  Bring the localnet stack up (one-shot reconciler).
-  watch [config]               Long-running supervisor; watches Move sources.
+  up [config]                  Long-running supervisor: brings the stack up + watches sources.
   apply [config] [--target]    Single-cycle reconcile against active stack or --target.
   deploy <config> --network    Live-network deploy slice (skip Service; keep Build).
   codegen [config] [--target]  Re-emit codegen against the prior manifest (read-only).
-  down [config]                Stop the active stack's containers (volumes preserved).
-  reset [config] --yes         Wipe the active stack — containers, volumes, host state.
+  down [config]                Stop the active stack's containers (writable layer preserved).
+  reset [config] --yes         Wipe the active stack — containers + host state.
   stack list|new|use|down|drop Manage named per-app stacks.
+  snapshot save|restore|list|rm|hash
+                               Capture / restore named snapshots of a stack.
   console [config] [--target]  REPL with manifest, client, accounts pre-bound.
 ```
 
@@ -24,14 +25,10 @@ Commands:
 devstack up [config] [--target <network|stack|network:stack>] [--stack <name>]
 ```
 
-Defaults to `./devstack.config.ts` and the active stack from `<appDir>/.devstack/active`. Reconciles
-toward the declared state and exits. The supervisor is localnet-only; live-network targets error
-with a hint pointing at `apply` or `deploy`.
-
-## watch
-
-Same as `up` minus the implicit `--once`. Long-running supervisor that watches Move sources and
-reconciles on change. Localnet-only.
+Long-running supervisor that brings the stack up and watches Move sources. Defaults to
+`./devstack.config.ts` and the active stack from `<appDir>/.devstack/active`. The supervisor is
+localnet-only; live-network targets error with a hint pointing at `apply` or `deploy`. Use
+`devstack apply` for the equivalent single-cycle CLI.
 
 ## apply
 
@@ -72,8 +69,8 @@ bindings without a fresh deploy.
 devstack down [config]
 ```
 
-Stops the active stack's containers; volumes persist (resumable on next `up`). Shortcut for
-`devstack stack down`.
+Stops the active stack's containers; the writable layer persists (resumable on next `up`).
+Shortcut for `devstack stack down`.
 
 ## reset
 
@@ -81,9 +78,9 @@ Stops the active stack's containers; volumes persist (resumable on next `up`). S
 devstack reset [config] --yes
 ```
 
-Wipes the active stack — containers, volumes, host state under `.devstack/stacks/<active>/`.
-Requires `--yes` (refuses without). Shortcut for `devstack stack drop --force --yes` against the
-active stack.
+Wipes the active stack — containers + host state under `.devstack/stacks/<active>/`. Requires
+`--yes` (refuses without). Shortcut for `devstack stack drop --force --yes` against the active
+stack.
 
 ## stack
 
@@ -91,9 +88,38 @@ active stack.
 devstack stack list|new <name>|use <name>|down [<name>]|drop <name> --yes [--force]
 ```
 
-Manage named per-app stacks. Each stack maps to an isolated set of containers, volumes, and host
-state under `.devstack/stacks/<name>/`. `drop` refuses the active stack and `main` unless `--force`
-is passed; the `reset` shortcut auto-passes `--force`.
+Manage named per-app stacks. Each stack maps to an isolated set of containers (state in their
+writable layers) and a host-side dir at `.devstack/stacks/<name>/` (manifest, keys, ports.json,
+setup markers). `drop` refuses the active stack and `main` unless `--force` is passed; the
+`reset` shortcut auto-passes `--force`.
+
+## snapshot
+
+```
+devstack snapshot save <alias> [--stack <name>] [--push <registry>]
+devstack snapshot restore <alias|id> [--stack <name>] [--force-arch]
+devstack snapshot list [--stack <name>]
+devstack snapshot rm <alias|id>
+devstack snapshot hash [--stack <name>]
+```
+
+Capture / restore named snapshots of a stack.
+
+`save` quiesces every container labeled for the stack (`docker pause` for sui's RocksDB,
+`docker stop` for batched-write services like walrus storage nodes), `docker commit`s each
+seeded container into a content-addressed image (e.g.
+`devstack-snapshot/<sha>/token-studio-main-sui:seeded`), and copies `<stackDir>` into
+`<appDir>/.devstack/snapshots/<sha>/`. With `--push <registry>`, also tags + pushes the seed
+images so other machines / CI runners can pull them on `restore`.
+
+`restore` re-tags each seed image back to its original tag — so the plugin's next `docker run`
+from its hardcoded image picks up the seeded layer — and restores `<stackDir>` from the bundle.
+The next `devstack up` short-circuits via `getStatus` because every action's state is already in
+place. Refuses cross-arch restore by default; use `--force-arch` to override (RocksDB binary
+format may corrupt across darwin/arm64 ↔ linux/amd64).
+
+`hash` prints the content-addressed `<sha-id>` for the current config without doing anything
+else — useful as a CI cache key.
 
 ## console
 
