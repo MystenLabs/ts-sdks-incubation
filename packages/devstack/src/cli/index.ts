@@ -14,8 +14,8 @@
 const USAGE = `devstack <command> [options]
 
 Commands:
-  up [config]                  Bring the localnet stack up (one-shot reconciler).
-  watch [config]               Long-running supervisor; watches Move sources.
+  up [config]                  Long-running supervisor: reconcile + watch
+                               Move sources. Pass --once to reconcile and exit.
   apply [config] [--target]    Single-cycle reconcile against active stack or --target.
   deploy <config> --network    Live-network deploy slice (skip Service; keep Build).
   codegen [config] [--target]  Re-emit codegen against the prior manifest (read-only).
@@ -36,14 +36,20 @@ async function main(): Promise<number> {
 	const argv = process.argv.slice(3);
 	switch (verb) {
 		case 'up': {
-			const args = argv.includes('--once') ? argv : [...argv, '--once'];
 			const mod = await import('./up.js');
-			return mod.main(args);
+			return mod.main(argv);
 		}
 		case 'watch': {
-			const args = argv.filter((a) => a !== '--once');
+			// Deprecated — `up` is now keepalive by default. Pass-through
+			// for back-compat; print a one-line note so users update their
+			// scripts. `--once` was previously stripped here; we no longer
+			// rewrite argv (the caller's intent is honored verbatim).
+			process.stderr.write(
+				'devstack: `watch` is deprecated; `up` is now long-running by default. ' +
+					'Use `up --once` for the old single-cycle behavior.\n',
+			);
 			const mod = await import('./up.js');
-			return mod.main(args);
+			return mod.main(argv);
 		}
 		case 'apply': {
 			const mod = await import('./apply.js');

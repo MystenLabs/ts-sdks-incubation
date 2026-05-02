@@ -45,6 +45,10 @@ export interface StackFlags {
 	 * guard. Used by the top-level `devstack reset` shortcut, where the
 	 * intent is "wipe state for the active stack and start over". */
 	force?: boolean;
+	/** When true, `drop` lists the containers/volumes/host dir it would
+	 * remove and exits without modifying anything. Pairs with the active-
+	 * stack guard so users can confirm what `drop` is about to do. */
+	dryRun?: boolean;
 }
 
 export async function runStack(flags: StackFlags): Promise<number> {
@@ -72,6 +76,7 @@ export async function runStack(flags: StackFlags): Promise<number> {
 				name: requireName(flags),
 				yes: flags.yes,
 				force: flags.force,
+				dryRun: flags.dryRun,
 			});
 	}
 }
@@ -191,6 +196,7 @@ async function dropStack(opts: {
 	name: string;
 	yes: boolean;
 	force?: boolean;
+	dryRun?: boolean;
 }): Promise<number> {
 	validateStackName(opts.name);
 	if (opts.name === DEFAULT_STACK && opts.force !== true) {
@@ -204,18 +210,35 @@ async function dropStack(opts: {
 		);
 		return 1;
 	}
+	const containerNames = await stackContainerNames(opts.appName, opts.name);
+	const prefix = `${opts.appName}-${opts.name}-`;
+	const volumeNames = await stackVolumeNames(prefix);
+	const dir = stackDir(opts.appDir, opts.name);
+	const dirExists = existsSync(dir);
+	if (opts.dryRun) {
+		process.stdout.write(`drop --dry-run for stack '${opts.name}':\n`);
+		process.stdout.write(
+			`  containers (${containerNames.length}): ${containerNames.join(', ') || '(none)'}\n`,
+		);
+		process.stdout.write(
+			`  volumes (${volumeNames.length}): ${volumeNames.join(', ') || '(none)'}\n`,
+		);
+		process.stdout.write(`  host dir: ${dirExists ? dir : '(none)'}\n`);
+		process.stdout.write('  Re-run without --dry-run + with --yes to actually drop.\n');
+		return 0;
+	}
 	if (!opts.yes) {
 		process.stderr.write(
-			`drop will remove docker volumes AND host state for stack '${opts.name}'. Re-run with --yes to confirm.\n`,
+			`drop will remove docker volumes AND host state for stack '${opts.name}'. ` +
+				`Use \`devstack stack drop ${opts.name} --dry-run\` to see exactly what would be deleted, ` +
+				`then re-run with --yes to confirm.\n`,
 		);
 		return 1;
 	}
 	await removeStackContainers({ appName: opts.appName, stack: opts.name });
-	const prefix = `${opts.appName}-${opts.name}-`;
 	await removeStackVolumes(prefix);
 	await removeNetwork(`${opts.appName}-${opts.name}-net`).catch(() => undefined);
-	const dir = stackDir(opts.appDir, opts.name);
-	if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+	if (dirExists) rmSync(dir, { recursive: true, force: true });
 	process.stdout.write(`dropped stack '${opts.name}'\n`);
 	return 0;
 }
@@ -264,15 +287,19 @@ async function removeStackContainers(opts: { appName: string; stack: string }): 
 	}
 }
 
-async function removeStackVolumes(prefix: string): Promise<void> {
+async function stackVolumeNames(prefix: string): Promise<string[]> {
 	const result = await dockerRun({
 		command: ['volume', 'ls', '--format', '{{.Name}}', '--filter', `name=${prefix}`],
 	});
-	if (result.code !== 0) return;
-	const names = result.stdout
+	if (result.code !== 0) return [];
+	return result.stdout
 		.split('\n')
 		.map((s) => s.trim())
 		.filter((s) => s.startsWith(prefix));
+}
+
+async function removeStackVolumes(prefix: string): Promise<void> {
+	const names = await stackVolumeNames(prefix);
 	for (const name of names) {
 		await dockerRun({ command: ['volume', 'rm', '-f', name] }).catch(() => undefined);
 	}
@@ -320,6 +347,8 @@ function parseArgs(argv: string[]): StackFlags {
 			flags.yes = true;
 		} else if (arg === '--force') {
 			flags.force = true;
+		} else if (arg === '--dry-run' || arg === '-n') {
+			flags.dryRun = true;
 		} else if (!arg.startsWith('--')) {
 			if (positional === 0) {
 				if (arg !== 'list' && arg !== 'new' && arg !== 'use' && arg !== 'down' && arg !== 'drop') {

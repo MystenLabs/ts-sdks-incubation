@@ -182,6 +182,16 @@ function scopeActions(
 		}
 	};
 
+	const unmatched = scope.filter((n) => !byName.has(n));
+	if (unmatched.length > 0) {
+		// eslint-disable-next-line no-console
+		console.warn(
+			`devstack: scopeActions has no match for [${unmatched.join(', ')}] (after the action filter). ` +
+				`Available action names: ${[...byName.keys()].join(', ')}. The cycle will run with whatever ` +
+				`scope entries DID match, plus their deps.`,
+		);
+	}
+
 	for (const name of scope) enqueue(name);
 
 	// Always include every Emit FIRST (so the dirty-kind cascade can fire),

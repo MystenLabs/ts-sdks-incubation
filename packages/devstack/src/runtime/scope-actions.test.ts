@@ -145,11 +145,16 @@ describe('runOneShot — actionScope', () => {
 		]);
 	});
 
-	it('silently drops scope entries that do not match any action', async () => {
+	it('warns and drops scope entries that do not match any action', async () => {
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 		await runOneShot({ ...baseOpts(), actionScope: ['app.does-not-exist'] });
 		const passed = (reconcilerCycleMock.mock.calls[0]?.[0] ?? []) as { name: string }[];
 		// No matches → only Emit survives the auto-include rule.
 		expect(passed.map((a) => a.name).sort()).toEqual(['app.codegen']);
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringMatching(/scopeActions has no match for \[app\.does-not-exist\]/),
+		);
+		warn.mockRestore();
 	});
 
 	it('treats empty actionScope as "no filter"', async () => {
