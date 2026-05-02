@@ -15,6 +15,7 @@
 //     check (no `plugins[]` requirement) — left intact since `stack`
 //     subcommands don't construct an action graph.
 
+import { existsSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 import type { DevstackConfig, Network } from '../core/types.js';
@@ -65,7 +66,13 @@ const NETWORKS: ReadonlyArray<Network> = ['localnet', 'testnet', 'mainnet'];
 
 /** Pick `--config <path>` or a trailing positional config path; defaults to
  * `'./devstack.config.ts'`. Skips past values of other known flags so
- * `--network testnet ./foo.ts` doesn't misread `testnet` as a positional. */
+ * `--network testnet ./foo.ts` doesn't misread `testnet` as a positional.
+ *
+ * Bare positionals are only accepted when they look like a path: contain a
+ * `/`, end with `.ts`/`.js`, or actually exist on disk. This stops
+ * `devstack up scratch` (where `scratch` is a stack name) from being
+ * misinterpreted as a config path; bare tokens fall through for verb-
+ * specific positional handling. */
 export function parseConfigArg(argv: string[]): string {
 	let configPath = './devstack.config.ts';
 	for (let i = 0; i < argv.length; i++) {
@@ -79,11 +86,19 @@ export function parseConfigArg(argv: string[]): string {
 			}
 		} else if (FLAGS_WITH_VALUES.has(arg)) {
 			i++;
-		} else if (!arg.startsWith('--')) {
+		} else if (!arg.startsWith('--') && looksLikeConfigPath(arg)) {
 			configPath = arg;
 		}
 	}
 	return configPath;
+}
+
+function looksLikeConfigPath(arg: string): boolean {
+	if (arg.includes('/')) return true;
+	if (arg.endsWith('.ts') || arg.endsWith('.js') || arg.endsWith('.mts') || arg.endsWith('.mjs')) {
+		return true;
+	}
+	return existsSync(arg);
 }
 
 /** Parse `--network <localnet|testnet|mainnet>`. Throws on unrecognized

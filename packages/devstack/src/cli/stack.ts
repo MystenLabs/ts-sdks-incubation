@@ -11,9 +11,10 @@
 //   use <name>              Switch active. Stops the previously-active
 //                           stack's containers (volumes preserved); does
 //                           not bring the new one up — run `localnet:up`.
-//   down [<name>]           Stop+remove the stack's containers (volumes
-//                           preserved → resumable on next `up`). Defaults
-//                           to active stack.
+//   down [<name>]           Stop the stack's containers (volumes AND
+//                           containers preserved → resumable on next
+//                           `up`). Defaults to active stack. Use `drop`
+//                           to remove containers + volumes.
 //   drop <name> [--yes]     Stop+remove containers AND volumes AND the
 //                           host-side `stacks/<name>/` dir. Refuses on
 //                           `main` and on the active stack.
@@ -73,7 +74,10 @@ export async function runStack(flags: StackFlags): Promise<number> {
 			return dropStack({
 				appName: config.app,
 				appDir,
-				name: requireName(flags),
+				// `devstack reset --yes` rewrites to `stack drop --force --yes` with
+				// no positional. Fall back to the active stack when --force is set
+				// so the top-level USAGE ("Wipe the active stack") matches behavior.
+				name: flags.stackName ?? (flags.force ? readActiveStack(appDir) : requireName(flags)),
 				yes: flags.yes,
 				force: flags.force,
 				dryRun: flags.dryRun,
@@ -211,8 +215,7 @@ async function dropStack(opts: {
 		return 1;
 	}
 	const containerNames = await stackContainerNames(opts.appName, opts.name);
-	const prefix = `${opts.appName}-${opts.name}-`;
-	const volumeNames = await stackVolumeNames(prefix);
+	const volumeNames = await stackVolumeNames({ appName: opts.appName, stack: opts.name });
 	const dir = stackDir(opts.appDir, opts.name);
 	const dirExists = existsSync(dir);
 	if (opts.dryRun) {
@@ -236,7 +239,7 @@ async function dropStack(opts: {
 		return 1;
 	}
 	await removeStackContainers({ appName: opts.appName, stack: opts.name });
-	await removeStackVolumes(prefix);
+	await removeStackVolumes({ appName: opts.appName, stack: opts.name });
 	await removeNetwork(`${opts.appName}-${opts.name}-net`).catch(() => undefined);
 	if (dirExists) rmSync(dir, { recursive: true, force: true });
 	process.stdout.write(`dropped stack '${opts.name}'\n`);
@@ -287,19 +290,51 @@ async function removeStackContainers(opts: { appName: string; stack: string }): 
 	}
 }
 
-async function stackVolumeNames(prefix: string): Promise<string[]> {
-	const result = await dockerRun({
+/** List a stack's named volumes by `devstack.app` + `devstack.stack`
+ * labels. Falls back to name-prefix matching for legacy volumes that
+ * predate label assignment (created before docker.ts started labeling
+ * volumes at run time). */
+async function stackVolumeNames(opts: {
+	appName: string;
+	stack: string;
+}): Promise<string[]> {
+	const labeled = await dockerRun({
+		command: [
+			'volume',
+			'ls',
+			'--format',
+			'{{.Name}}',
+			'--filter',
+			`label=devstack.app=${opts.appName}`,
+			'--filter',
+			`label=devstack.stack=${opts.stack}`,
+		],
+	});
+	const fromLabel = labeled.code === 0
+		? labeled.stdout
+				.split('\n')
+				.map((s) => s.trim())
+				.filter((s) => s.length > 0)
+		: [];
+	// Legacy fallback: anything that prefix-matches and isn't already in
+	// the labeled set. Older devstack versions created volumes without
+	// labels; this lets `stack drop` clean them up the first time.
+	const prefix = `${opts.appName}-${opts.stack}-`;
+	const byName = await dockerRun({
 		command: ['volume', 'ls', '--format', '{{.Name}}', '--filter', `name=${prefix}`],
 	});
-	if (result.code !== 0) return [];
-	return result.stdout
-		.split('\n')
-		.map((s) => s.trim())
-		.filter((s) => s.startsWith(prefix));
+	const fromPrefix = byName.code === 0
+		? byName.stdout
+				.split('\n')
+				.map((s) => s.trim())
+				.filter((s) => s.length > 0 && s.startsWith(prefix))
+		: [];
+	const set = new Set([...fromLabel, ...fromPrefix]);
+	return [...set];
 }
 
-async function removeStackVolumes(prefix: string): Promise<void> {
-	const names = await stackVolumeNames(prefix);
+async function removeStackVolumes(opts: { appName: string; stack: string }): Promise<void> {
+	const names = await stackVolumeNames(opts);
 	for (const name of names) {
 		await dockerRun({ command: ['volume', 'rm', '-f', name] }).catch(() => undefined);
 	}

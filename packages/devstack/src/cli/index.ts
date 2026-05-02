@@ -21,6 +21,7 @@ Commands:
   codegen [config] [--target]  Re-emit codegen against the prior manifest (read-only).
   down [config]                Stop the active stack's containers (volumes preserved).
   reset [config] --yes         Wipe the active stack — containers, volumes, host state.
+                               Pass --stack <name> to target a specific stack.
   stack list|new|use|down|drop Manage named per-app stacks.
   console [config] [--target]  REPL with manifest, client, accounts pre-bound.
 
