@@ -4,13 +4,13 @@
 // combined process with one log stream — no `concurrently`, no separate
 // `localnet:watch` script.
 //
-// Exposes `frontend()` (the canonical name) and `vite()` is no longer
-// shipped — vite is just one valid `command` configuration. Apps using
-// other tooling pass their own `command` array.
+// `frontend()` is the canonical factory. The default command is `pnpm
+// exec vite`, but apps using other tooling (Next.js, SvelteKit, Astro)
+// pass their own `command` array.
 //
 // One Service action:
 //
-//   <plugin>.dev-server — Spawns the configured command as a host child
+//   frontend.dev-server — Spawns the configured command as a host child
 //                         process (NOT a container). `getStatus`
 //                         GET-probes the dev URL; `run` spawns the
 //                         child, pipes its stdout/stderr through
@@ -74,7 +74,7 @@ export const frontend = (opts: FrontendPluginOptions = {}) => {
 	};
 
 	return definePlugin({
-		name: 'vite',
+		name: 'frontend',
 		actions: () => [
 			hostProcess({
 				name: 'dev-server',

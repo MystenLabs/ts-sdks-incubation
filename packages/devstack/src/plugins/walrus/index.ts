@@ -131,7 +131,7 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 					// `app-network` capability — sui.localnet's
 					// `needs: ['walrus.app-network:before']` query picks up this
 					// provider and orders this action ahead of it.
-					provides: ['walrus.app-network'],
+					provides: { capabilities: ['walrus.app-network'] },
 					inputs: { subnet: APP_NETWORK_SUBNET },
 					getStatus: async (ctx) => {
 						requireLocalnetCtx(ctx);

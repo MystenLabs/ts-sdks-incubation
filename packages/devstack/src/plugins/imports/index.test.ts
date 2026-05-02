@@ -107,7 +107,7 @@ describe('imports plugin — shape', () => {
 			'Publish:imports.deepbook',
 		]);
 		const publish = actions[1] as PublishAction;
-		expect(publish.provides).toEqual(['imports.deepbook']);
+		expect(publish.provides).toEqual({ capabilities: ['imports.deepbook'] });
 		expect(publish.needs).toEqual(['imports.deepbook-source', 'sui.accounts']);
 		expect(publish.path).toBe('<imported>');
 	});

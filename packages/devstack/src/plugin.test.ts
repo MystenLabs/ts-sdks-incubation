@@ -106,7 +106,7 @@ describe('expandPluginActions — needs resolution', () => {
 	it('passes through capability `:before` / `:after` queries unchanged', () => {
 		const out = expandPluginActions([
 			plugin('walrus', [
-				action('network', { provides: ['walrus.app-network'] }),
+				action('network', { provides: { capabilities: ['walrus.app-network'] } }),
 				action('localnet', { needs: ['walrus.app-network:before'] }),
 			]),
 			plugin('arena', [action('connect_four', { needs: ['db.cluster:after', 'sui.accounts'] })]),
@@ -115,12 +115,6 @@ describe('expandPluginActions — needs resolution', () => {
 		expect(localnet?.needs).toEqual(['walrus.app-network:before']);
 		const cf = out.find((a) => a.name === 'arena.connect_four');
 		expect(cf?.needs).toEqual(['db.cluster:after', 'sui.accounts']);
-	});
-
-	it('throws when a plugin declares an un-namespaced capability', () => {
-		expect(() =>
-			expandPluginActions([plugin('walrus', [action('network', { provides: ['app-network'] })])]),
-		).toThrow(/walrus.*declared capability 'app-network' without its own namespace/);
 	});
 
 	it('throws when an object-form provides has un-namespaced capabilities', () => {

@@ -47,35 +47,14 @@ import { type ResolveSeed, resolveImports } from './resolve.js';
 
 const IMPORT_NAME_RE = /^[a-z][a-z0-9_-]*$/;
 
-export interface ImportSpec {
+interface ImportSpecCommon {
 	/** Logical name. Becomes the `registry.packages` key, the per-package
 	 * action suffix (`imports.<name>`, `imports.<name>-source`), and the
 	 * capability identifier (`imports.<name>`). Lowercase letters, digits,
 	 * `_` and `-` only. No dots. */
 	name: string;
-	/** Source repo `<owner>/<repo>`. With `gitUrl` unset, becomes
-	 * `https://github.com/<owner>/<repo>.git`; pass `gitUrl` to override. */
-	repo: string;
-	/** Git rev (tag, branch, or commit). Bumping busts the source-image
-	 * cache and forces a re-import on the next cycle. */
-	rev: string;
-	/** Subdir within the repo where the package's `Move.toml` lives. */
+	/** Subdir within the source tree where the package's `Move.toml` lives. */
 	subdir: string;
-	/** Override the git clone URL. Default builds
-	 * `https://github.com/<repo>.git`. Pass an explicit URL with a
-	 * `<repo>` token, or a `(repo, rev) => url` factory. Useful for
-	 * non-GitHub hosts (private GitLab, Bitbucket, …). */
-	gitUrl?: string | ((repo: string, rev: string) => string);
-	/** Use a local on-host source tree instead of cloning from a git
-	 * host. When set, the `<name>-source` build action skips the
-	 * upstream-image build and verifies the path exists; the publish
-	 * action copies sources from `local.path/<subdir>` into the sui
-	 * container. Critical for upstream contributors who want to test a
-	 * working-tree change without pushing/cloning.
-	 *
-	 * Setting `local` short-circuits both `repo`+`rev` and `gitUrl`.
-	 * The path is resolved against `appDir` if relative. */
-	local?: { path: string };
 	/** Object-type filters: `{ adminCap: '::admin::AdminCap' }`. Captured
 	 * object ids land on the `registry.packages` entry's `captured` map. */
 	capture?: Record<string, string>;
@@ -100,6 +79,37 @@ export interface ImportSpec {
 	 * dep chains. The Publish action gains a `needs` edge for each entry
 	 * so dep packages publish before their dependents. */
 	dependsOn?: string[];
+}
+
+/** Git-source variant: clone `repo@rev`, build a content-addressed
+ * source image, publish out of it. */
+export interface GitImportSpec extends ImportSpecCommon {
+	/** Source repo `<owner>/<repo>`. With `gitUrl` unset, becomes
+	 * `https://github.com/<owner>/<repo>.git`; pass `gitUrl` to override. */
+	repo: string;
+	/** Git rev (tag, branch, or commit). Bumping busts the source-image
+	 * cache and forces a re-import on the next cycle. */
+	rev: string;
+	/** Override the git clone URL. Default builds
+	 * `https://github.com/<repo>.git`. Pass an explicit URL with a
+	 * `<repo>` token, or a `(repo, rev) => url` factory. Useful for
+	 * non-GitHub hosts (private GitLab, Bitbucket, …). */
+	gitUrl?: string | ((repo: string, rev: string) => string);
+}
+
+/** Local-source variant: skip the git clone + image build and use an
+ * on-host working tree directly. Critical for upstream contributors
+ * iterating on a Move package without pushing/cloning. */
+export interface LocalImportSpec extends ImportSpecCommon {
+	/** On-host path to the source tree's root (the dir containing the
+	 * package subdirs). Resolved against `appDir` if relative. */
+	local: { path: string };
+}
+
+export type ImportSpec = GitImportSpec | LocalImportSpec;
+
+function isLocalImport(spec: ImportSpec): spec is LocalImportSpec {
+	return 'local' in spec;
 }
 
 export interface ImportsPluginOptions {
@@ -144,17 +154,19 @@ export const imports = (opts: ImportsPluginOptions) => {
  * are NOT enqueued as separate ImportSpecs.
  */
 export async function withRecursiveDeps(seeds: ImportSpec[]): Promise<ImportSpec[]> {
-	const seedShape: ResolveSeed[] = seeds.map((s) => ({
+	const gitSeeds = seeds.filter((s): s is GitImportSpec => !isLocalImport(s));
+	const localSeeds = seeds.filter(isLocalImport);
+	const seedShape: ResolveSeed[] = gitSeeds.map((s) => ({
 		name: s.name,
 		repo: s.repo,
 		rev: s.rev,
 		subdir: s.subdir,
 	}));
 	const { resolved } = await resolveImports(seedShape);
-	const seedByName = new Map(seeds.map((s) => [s.name, s]));
-	return resolved.map((entry) => {
+	const seedByName = new Map(gitSeeds.map((s) => [s.name, s]));
+	const resolvedGit: ImportSpec[] = resolved.map((entry) => {
 		const seedSpec = seedByName.get(entry.name);
-		const base: ImportSpec = seedSpec ?? {
+		const base: GitImportSpec = seedSpec ?? {
 			name: entry.name,
 			repo: entry.repo,
 			rev: entry.rev,
@@ -168,57 +180,66 @@ export async function withRecursiveDeps(seeds: ImportSpec[]): Promise<ImportSpec
 			.filter((n): n is string => n !== undefined);
 		return { ...base, dependsOn: depNames };
 	});
+	return [...localSeeds, ...resolvedGit];
 }
 
 function applyDepLinks(spec: ImportSpec): InternalImportSpec {
+	if (isLocalImport(spec)) {
+		return { ...spec, dependsOn: spec.dependsOn ?? [] };
+	}
 	return { ...spec, dependsOn: spec.dependsOn ?? [] };
 }
 
-interface InternalImportSpec extends ImportSpec {
-	dependsOn: string[];
-}
+type InternalImportSpec =
+	| (GitImportSpec & { dependsOn: string[] })
+	| (LocalImportSpec & { dependsOn: string[] });
 
 function buildActionsForSpec(spec: InternalImportSpec): Action[] {
-	const imageTag = upstreamSourceImageTag(spec.repo, spec.rev);
 	const publisherAccount = spec.publisher ?? 'publisher';
 	const env = spec.env ?? 'localnet';
 	const sourceActionName = `${spec.name}-source`;
 	const depPublishNeeds = spec.dependsOn.map((d) => d);
-	const localSource = spec.local;
+
+	const sourceInputs = isLocalImport(spec)
+		? { local: spec.local.path, subdir: spec.subdir }
+		: { image: upstreamSourceImageTag(spec.repo, spec.rev), repo: spec.repo, rev: spec.rev, subdir: spec.subdir };
+
+	const publishInputs = isLocalImport(spec)
+		? { local: spec.local.path, subdir: spec.subdir, env, publisher: publisherAccount, addresses: spec.addresses }
+		: { repo: spec.repo, rev: spec.rev, subdir: spec.subdir, env, publisher: publisherAccount, addresses: spec.addresses };
 
 	return [
 		buildImage({
 			name: sourceActionName,
-			inputs: localSource
-				? { local: localSource.path, subdir: spec.subdir }
-				: { image: imageTag, repo: spec.repo, rev: spec.rev, subdir: spec.subdir },
-			watches: localSource
+			inputs: sourceInputs,
+			watches: isLocalImport(spec)
 				? [
-						`${localSource.path}/${spec.subdir}/Move.toml`,
-						`${localSource.path}/${spec.subdir}/sources/**`,
+						`${spec.local.path}/${spec.subdir}/Move.toml`,
+						`${spec.local.path}/${spec.subdir}/sources/**`,
 					]
 				: undefined,
 			getStatus: async (ctx) => {
 				if (curatedAddressFor(spec, ctx.network) !== undefined) {
 					return { ok: true, detail: 'curated address; no source image needed' };
 				}
-				if (localSource) {
+				if (isLocalImport(spec)) {
 					const { existsSync } = await import('node:fs');
 					const { isAbsolute, resolve: resolvePath } = await import('node:path');
-					const path = isAbsolute(localSource.path)
-						? localSource.path
-						: resolvePath(ctx.appDir, localSource.path);
+					const path = isAbsolute(spec.local.path)
+						? spec.local.path
+						: resolvePath(ctx.appDir, spec.local.path);
 					return existsSync(path)
 						? { ok: true, detail: `local: ${path}` }
 						: { ok: false, detail: `local path missing: ${path}` };
 				}
+				const imageTag = upstreamSourceImageTag(spec.repo, spec.rev);
 				return (await imageExists(imageTag))
 					? { ok: true, detail: imageTag }
 					: { ok: false, detail: `image ${imageTag} missing` };
 			},
 			run: async (ctx) => {
 				if (curatedAddressFor(spec, ctx.network) !== undefined) return;
-				if (localSource) return; // nothing to build for local sources
+				if (isLocalImport(spec)) return;
 				await ensureUpstreamSourceImage({ repo: spec.repo, rev: spec.rev, gitUrl: spec.gitUrl });
 			},
 		}),
@@ -227,16 +248,9 @@ function buildActionsForSpec(spec: InternalImportSpec): Action[] {
 			name: spec.name,
 			type: 'Publish',
 			needs: [sourceActionName, 'sui.accounts', ...depPublishNeeds],
-			provides: [`imports.${spec.name}`],
+			provides: { capabilities: [`imports.${spec.name}`] },
 			path: '<imported>',
-			inputs: {
-				repo: spec.repo,
-				rev: spec.rev,
-				subdir: spec.subdir,
-				env,
-				publisher: publisherAccount,
-				addresses: spec.addresses,
-			},
+			inputs: publishInputs,
 			getStatus: async (ctx) => {
 				const curated = curatedAddressFor(spec, ctx.network);
 				if (curated !== undefined) {
@@ -289,15 +303,29 @@ function buildActionsForSpec(spec: InternalImportSpec): Action[] {
 				const chainId = await client.getChainIdentifier();
 				const publisher = ctx.accounts.get(publisherAccount);
 				const prior = buildImportedPriorEntry(ctx.registry.packages.find(spec.name));
-				const localPath = localSource
-					? (await import('node:path')).isAbsolute(localSource.path)
-						? localSource.path
-						: (await import('node:path')).resolve(ctx.appDir, localSource.path)
-					: undefined;
+				let localPath: string | undefined;
+				let repo: string;
+				let rev: string;
+				let gitUrl: GitImportSpec['gitUrl'];
+				if (isLocalImport(spec)) {
+					const { isAbsolute, resolve: resolvePath } = await import('node:path');
+					localPath = isAbsolute(spec.local.path)
+						? spec.local.path
+						: resolvePath(ctx.appDir, spec.local.path);
+					// importMovePackage requires repo/rev for cache keying even
+					// for local sources; supply stable synthetic values.
+					repo = `local:${spec.name}`;
+					rev = 'local';
+					gitUrl = undefined;
+				} else {
+					repo = spec.repo;
+					rev = spec.rev;
+					gitUrl = spec.gitUrl;
+				}
 				const result = await importMovePackage({
 					containerName,
-					repo: spec.repo,
-					rev: spec.rev,
+					repo,
+					rev,
 					subdir: spec.subdir,
 					alias: spec.name,
 					chainId,
@@ -305,7 +333,7 @@ function buildActionsForSpec(spec: InternalImportSpec): Action[] {
 					publisher,
 					capture: spec.capture,
 					env,
-					gitUrl: spec.gitUrl,
+					gitUrl,
 					localPath,
 				});
 				ctx.registry.packages.register({

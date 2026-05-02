@@ -295,13 +295,11 @@ describe('Reconciler — provides.registry rehydration', () => {
 		expect(rehydrateCount).toBe(1);
 	});
 
-	it('legacy provides: string[] form does not invoke a registry hook', async () => {
-		// Smoke: actions with bare-array provides shouldn't fault in the
-		// helper extraction path.
+	it('provides without a registry hook leaves the registry untouched', async () => {
 		const action = register({
 			name: 'a',
 			inputs: {},
-			provides: ['arena.connect-four'],
+			provides: { capabilities: ['arena.connect-four'] },
 			run: async () => {},
 		});
 		const reconciler = new Reconciler();

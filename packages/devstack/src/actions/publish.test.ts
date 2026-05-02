@@ -64,12 +64,12 @@ describe('definePublishAction — shape', () => {
 			name: 'connect_four',
 			sourcePath: './move/connect_four',
 			capture: { adminCap: '::admin::AdminCap' },
-			provides: ['arena-game'],
+			provides: { capabilities: ['arena-game'] },
 		});
 		expect(a.type).toBe('Publish');
 		expect(a.name).toBe('connect_four');
 		expect(a.path).toBe('./move/connect_four');
-		expect(a.provides).toEqual(['arena-game']);
+		expect(a.provides).toEqual({ capabilities: ['arena-game'] });
 		expect(a.inputs).toEqual({
 			path: './move/connect_four',
 			capture: { adminCap: '::admin::AdminCap' },
