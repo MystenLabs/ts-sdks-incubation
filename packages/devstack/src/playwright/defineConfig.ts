@@ -3,8 +3,15 @@ import { fileURLToPath } from 'node:url';
 
 import { type PlaywrightTestConfig, defineConfig, devices } from '@playwright/test';
 
+import { createPortAllocator } from '../runtime/port-allocator.js';
+
 export interface DevstackPlaywrightOptions {
-	/** Vite dev-server port. */
+	/** Preferred Vite dev-server port (hint to the per-stack port
+	 * allocator). When `manageStack` is true the allocator may choose a
+	 * different port if a sibling stack of the same app has already
+	 * claimed this one — the resolved port lands in `<stackDir>/
+	 * ports.json` and is what Playwright actually polls. Without
+	 * `manageStack`, used as-is. */
 	port: number;
 	/** Override the dev-server bring-up command. Default: `pnpm dev`. */
 	command?: string;
@@ -24,6 +31,13 @@ export interface DevstackPlaywrightOptions {
 	 * `'test'`). Teardown defaults to `'down'` (preserve volumes for
 	 * resumability); set `DEVSTACK_E2E_TEARDOWN=drop` to wipe everything
 	 * at the end (CI mode).
+	 *
+	 * Returns a `Promise<PlaywrightTestConfig>` because port allocation
+	 * runs at config-eval time (so the port allocator can claim a free
+	 * port before sibling stacks of the same app race for it). User
+	 * configs `await` the call:
+	 *
+	 *   export default await defineDevstackPlaywrightConfig({...});
 	 */
 	manageStack?: boolean;
 	/**
@@ -39,15 +53,22 @@ export interface DevstackPlaywrightOptions {
  * defaults the four apps were duplicating: serial workers, GitHub-style CI
  * reporter, retries, screenshot-on-failure, Chromium project, and the
  * `pnpm dev` webServer.
+ *
+ * Async because port allocation must happen at config-eval time when
+ * `manageStack` is true — the allocator claims `<stackDir>/ports.json`
+ * before globalSetup runs so the resulting `baseURL` matches what the
+ * webServer's `pnpm dev` will bind. User configs `await` the call:
+ *
+ *   export default await defineDevstackPlaywrightConfig({...});
  */
-export function defineDevstackPlaywrightConfig(
+export async function defineDevstackPlaywrightConfig(
 	opts: DevstackPlaywrightOptions,
-): PlaywrightTestConfig {
-	const { port, command = 'pnpm dev', testDir = './e2e', extend } = opts;
-	const baseURL = `http://localhost:${port}`;
+): Promise<PlaywrightTestConfig> {
+	const { port: preferredPort, command = 'pnpm dev', testDir = './e2e', extend } = opts;
 
 	let globalSetup: string | undefined;
 	let globalTeardown: string | undefined;
+	let resolvedPort = preferredPort;
 	if (opts.manageStack === true) {
 		const here = dirname(fileURLToPath(import.meta.url));
 		// Match the extension to the consuming environment: workspace dev
@@ -64,7 +85,22 @@ export function defineDevstackPlaywrightConfig(
 		// without needing import-time access to `opts`.
 		const configPath = resolve(opts.configPath ?? './devstack.config.ts');
 		process.env.DEVSTACK_E2E_CONFIG_PATH = configPath;
+		// Pre-allocate the frontend port through the per-stack allocator
+		// so it sees sibling stacks' claims and picks a non-conflicting
+		// port. The runtime allocator (called from within the supervisor
+		// when `pnpm dev` runs) hits the same cache, so vite binds the
+		// same port Playwright is polling.
+		const appDir = dirname(configPath);
+		const stack = process.env.DEVSTACK_STACK ?? 'test';
+		const allocator = createPortAllocator({ appDir, stack });
+		const [allocated] = await allocator.allocate({
+			slot: 'frontend.dev-server',
+			preferred: preferredPort,
+		});
+		resolvedPort = allocated as number;
 	}
+
+	const baseURL = `http://localhost:${resolvedPort}`;
 
 	return defineConfig({
 		testDir,
