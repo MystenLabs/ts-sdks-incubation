@@ -477,6 +477,25 @@ returns `ok: false`.
 opt-out is one more API surface that adds little. Document the
 custom-`getStatus` pattern in CLAUDE.md.
 
+### Considered and rejected: named auto-checkpoints during `up`
+
+Sketched a `checkpoint('name')` action factory that would auto-`docker
+commit` at declared graph positions, with a `resumeFrom(name)`
+Playwright fixture for tests. Two reasons it doesn't fit:
+
+1. The primary win (per-test resume to different states) requires
+   per-test container churn (`docker rm` + `docker run` from the
+   checkpoint image) — directly contradicts the "shared containers
+   across tests" hard constraint that drove the state-and-snapshots
+   design.
+2. The remaining use cases are already covered: `devstack apply
+   --actions <name>` runs only up to a named action, then `devstack
+   snapshot save <alias>` captures it. Naming convenience doesn't
+   justify a parallel orchestrator path.
+
+Re-evaluate if a friction journal entry surfaces a real "I needed to
+save state mid-setup" case — current journal has zero such entries.
+
 ### Should we ship `runTransaction` with retry logic for the faucet flake?
 
 The faucet 500 we hit during verification is a real CLAUDE.md anti-
