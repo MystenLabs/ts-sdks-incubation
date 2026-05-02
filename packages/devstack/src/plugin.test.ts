@@ -1,8 +1,8 @@
-import { describe, expect, it, vi } from 'vitest';
-import type { Action, Plugin } from './core/types.js';
+import { describe, expect, it } from 'vitest';
+import type { Action, Plugin, Provides } from './core/types.js';
 import { definePlugin, expandPluginActions } from './plugin.js';
 
-const action = (name: string, opts: { needs?: string[]; provides?: string[] } = {}): Action =>
+const action = (name: string, opts: { needs?: string[]; provides?: Provides } = {}): Action =>
 	({
 		name,
 		type: 'Service',
@@ -117,13 +117,34 @@ describe('expandPluginActions — needs resolution', () => {
 		expect(cf?.needs).toEqual(['db.cluster:after', 'sui.accounts']);
 	});
 
-	it('warns when a plugin declares an un-namespaced capability', () => {
-		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-		expandPluginActions([plugin('walrus', [action('network', { provides: ['app-network'] })])]);
-		expect(warn).toHaveBeenCalledWith(
-			expect.stringMatching(/walrus.*declared capability 'app-network' without its own namespace/),
-		);
-		warn.mockRestore();
+	it('throws when a plugin declares an un-namespaced capability', () => {
+		expect(() =>
+			expandPluginActions([plugin('walrus', [action('network', { provides: ['app-network'] })])]),
+		).toThrow(/walrus.*declared capability 'app-network' without its own namespace/);
+	});
+
+	it('throws when an object-form provides has un-namespaced capabilities', () => {
+		expect(() =>
+			expandPluginActions([
+				plugin('walrus', [action('network', { provides: { capabilities: ['app-network'] } })]),
+			]),
+		).toThrow(/walrus.*declared capability 'app-network' without its own namespace/);
+	});
+
+	it('accepts object-form provides with namespaced capabilities and a registry hook', () => {
+		const hook = async () => {};
+		const out = expandPluginActions([
+			plugin('walrus', [
+				action('network', {
+					provides: { capabilities: ['walrus.app-network'], registry: hook },
+				}),
+			]),
+		]);
+		const network = out.find((a) => a.name === 'walrus.network');
+		expect(network?.provides).toEqual({
+			capabilities: ['walrus.app-network'],
+			registry: hook,
+		});
 	});
 
 	it('treats local-bare AND fully-qualified self-references identically', () => {

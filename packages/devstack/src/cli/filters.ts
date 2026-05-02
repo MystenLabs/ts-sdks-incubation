@@ -31,6 +31,7 @@ export const deployFilter: ActionFilter = (action, target) => {
 		case 'Publish':
 		case 'Register':
 		case 'Emit':
+		case 'Verify':
 			return true;
 	}
 };
@@ -49,6 +50,7 @@ export const applyFilter: ActionFilter = (action, target) => {
 		case 'Publish':
 		case 'Register':
 		case 'Emit':
+		case 'Verify':
 			return true;
 	}
 };

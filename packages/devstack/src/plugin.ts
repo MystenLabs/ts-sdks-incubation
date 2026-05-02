@@ -7,7 +7,8 @@
 // qualified; capability queries (`<cap>:before` / `<cap>:after`) are
 // passed through to the topo sorter unchanged.
 
-import type { Action, DevstackConfig, Plugin } from './core/types.js';
+import type { Action, DevstackConfig, Plugin, Provides } from './core/types.js';
+import { getProvidedCapabilities } from './core/types.js';
 
 const PLUGIN_NAME_RE = /^[a-z][a-z0-9_-]*$/;
 
@@ -91,23 +92,21 @@ function expandActionName(actionName: string, pluginName: string): string {
 }
 
 /**
- * Warn when a plugin declares a capability that isn't namespaced under
+ * Throw when a plugin declares a capability that isn't namespaced under
  * its own name. Without the `<plugin>.` prefix, any other plugin can
  * declare `provides: ['<cap>']` and intercept the ordering — a real
- * issue in a multi-author plugin ecosystem. We warn (not throw) for
- * back-compat with existing single-author setups; v2 escalates to error.
+ * issue in a multi-author plugin ecosystem.
  */
-function validateProvides(provides: readonly string[] | undefined, pluginName: string): void {
-	if (provides === undefined || provides.length === 0) return;
+function validateProvides(provides: Provides | undefined, pluginName: string): void {
+	const caps = getProvidedCapabilities(provides);
+	if (caps.length === 0) return;
 	const expectedPrefix = `${pluginName}.`;
-	for (const cap of provides) {
+	for (const cap of caps) {
 		if (!cap.startsWith(expectedPrefix)) {
-			// eslint-disable-next-line no-console
-			console.warn(
+			throw new Error(
 				`devstack: plugin '${pluginName}' declared capability '${cap}' without its own ` +
-					`namespace prefix. Other plugins can hijack this capability by also declaring ` +
-					`provides: ['${cap}']. Rename to '${expectedPrefix}${cap}' (and update any ` +
-					`':before'/':after' queries) before the v2 release escalates this to an error.`,
+					`namespace prefix. Rename to '${expectedPrefix}${cap}' (and update any ` +
+					`':before'/':after' queries to match).`,
 			);
 		}
 	}

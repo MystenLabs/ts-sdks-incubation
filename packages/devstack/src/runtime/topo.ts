@@ -2,6 +2,7 @@
 // edges. Throws on cycles or unresolved deps. Ties broken by input order.
 
 import type { Action } from '../core/types.js';
+import { getProvidedCapabilities } from '../core/types.js';
 
 export interface TopoSortOptions {
 	/**
@@ -54,7 +55,7 @@ export function topoSortActions(actions: Action[], options: TopoSortOptions = {}
 	// same capability is unspecified (callers shouldn't rely on it).
 	const providers = new Map<string, string[]>();
 	for (const a of actions) {
-		for (const cap of a.provides ?? []) {
+		for (const cap of getProvidedCapabilities(a.provides)) {
 			const arr = providers.get(cap) ?? [];
 			arr.push(a.name);
 			providers.set(cap, arr);

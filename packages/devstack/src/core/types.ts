@@ -59,7 +59,41 @@ export interface AccountsContext {
 
 // ─── Action graph ─────────────────────────────────────────────────────────
 
-export type ActionType = 'Build' | 'Service' | 'Publish' | 'Register' | 'Seed' | 'Emit';
+export type ActionType = 'Build' | 'Service' | 'Publish' | 'Register' | 'Seed' | 'Emit' | 'Verify';
+
+/**
+ * Object form of `provides`. Carries capability names plus an optional
+ * registry-rehydrate hook the reconciler invokes on warm-path skips so
+ * plugins don't have to manually re-register from `getStatus`.
+ *
+ * The `registry` hook is idempotent — runs once per cycle on cold runs
+ * AND on subsequent warm-path skips. Plugins typically share it with
+ * `run` to keep the registration logic in one place.
+ */
+export interface ProvidesObject {
+	capabilities?: string[];
+	registry?: (ctx: ActionRunContext) => Promise<void> | void;
+}
+
+/** Either a bare list of capability names (legacy form) or the object
+ * form with capabilities + registry-rehydrate hook. */
+export type Provides = string[] | ProvidesObject;
+
+/** Normalize either form of `provides` to its capability list. */
+export function getProvidedCapabilities(provides: Provides | undefined): string[] {
+	if (provides === undefined) return [];
+	if (Array.isArray(provides)) return provides;
+	return provides.capabilities ?? [];
+}
+
+/** Extract the registry-rehydrate hook from `provides`, if any. */
+export function getProvidesRegistryHook(
+	provides: Provides | undefined,
+): ((ctx: ActionRunContext) => Promise<void> | void) | undefined {
+	if (provides === undefined) return undefined;
+	if (Array.isArray(provides)) return undefined;
+	return provides.registry;
+}
 
 /**
  * Authoritative reconciler states: `idle`, `queued`, `running`, `healthy`,
@@ -83,18 +117,24 @@ export interface ActionBase<TInputs = unknown, TResult = unknown> {
 	name: string;
 	type: ActionType;
 	needs?: string[];
-	/** Names of capabilities this action provides. Other actions depend
-	 * on a capability via `:before` / `:after` queries in their `needs`
-	 * (e.g. `'walrus.app-network:before'` matches any action with
-	 * `provides: ['walrus.app-network']`). Soft — a query against a
-	 * capability with no providers is silently dropped.
+	/**
+	 * Capabilities this action provides + an optional registry-rehydrate
+	 * hook. Two shapes:
 	 *
-	 * Capability names MUST be namespaced with the providing plugin's
-	 * name (`<plugin>.<cap>`). The expander warns when a non-namespaced
-	 * capability is declared — without the prefix, any plugin can
-	 * declare `provides: ['<cap>']` and intercept another plugin's
-	 * ordering. */
-	provides?: string[];
+	 *   `string[]`        — bare capability names (legacy, equivalent to
+	 *                       `{ capabilities: [...] }`).
+	 *   `ProvidesObject`  — `{ capabilities?, registry? }`. The registry
+	 *                       hook fixes the historical "manually re-register
+	 *                       services from `getStatus`" anti-pattern: when
+	 *                       the reconciler skips `run` (warm path), it
+	 *                       calls `provides.registry(ctx)` so registry
+	 *                       entries this action provides are populated in
+	 *                       the in-memory registry without re-running.
+	 *
+	 * Capabilities for cross-action ordering (`:before` / `:after`) MUST
+	 * be namespaced with the providing plugin's name (`<plugin>.<cap>`).
+	 * Un-namespaced capabilities throw at expansion time. */
+	provides?: Provides;
 	inputs?: TInputs;
 	networks?: Network[];
 	/** Extra paths the file watcher should treat as inputs to this
@@ -167,13 +207,28 @@ export interface EmitAction<TInputs = unknown, TResult = unknown> extends Action
 	dependsOnKind?: string[];
 }
 
+/**
+ * Read-only invariant check. The reconciler runs `getStatus` only and fails
+ * the cycle on `ok:false`. No `run`. Useful for assertions like "seal
+ * key-server is reachable", "walrus storage nodes report healthy" — the
+ * Verify is wired downstream of whichever Service it gates and surfaces a
+ * loud failure rather than letting downstream actions encounter a silent
+ * misconfiguration.
+ */
+export interface VerifyAction<TInputs = unknown> extends ActionBase<TInputs, void> {
+	type: 'Verify';
+	getStatus: (ctx: ActionRunContext) => Promise<{ ok: boolean; detail?: string }>;
+	run?: undefined;
+}
+
 export type Action =
 	| BuildAction
 	| ServiceAction
 	| PublishAction
 	| RegisterAction
 	| SeedAction
-	| EmitAction;
+	| EmitAction
+	| VerifyAction;
 
 // ─── CLI target + filters ─────────────────────────────────────────────────
 

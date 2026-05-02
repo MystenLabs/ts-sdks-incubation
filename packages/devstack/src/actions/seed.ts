@@ -3,12 +3,12 @@
 // Localnet-only by default (Q5). Authors opt into live networks explicitly
 // via `liveNetworks: true` (any) or `liveNetworks: ['testnet']` (specific).
 
-import type { ActionRunContext, Network, SeedAction } from '../core/types.js';
+import type { ActionRunContext, Network, Provides, SeedAction } from '../core/types.js';
 
 export interface SeedOptions<TInputs extends Record<string, unknown>> {
 	name: string;
 	needs?: string[];
-	provides?: string[];
+	provides?: Provides;
 	inputs: TInputs;
 	/**
 	 * Networks this seed runs on. Default: localnet only.

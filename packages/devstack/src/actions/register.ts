@@ -6,12 +6,12 @@
 // Plugin authors typically also override `getStatus` for richer "is my
 // registered thing still live on-chain?" checks (Q14 §10.1 fix).
 
-import type { ActionRunContext, RegisterAction } from '../core/types.js';
+import type { ActionRunContext, Provides, RegisterAction } from '../core/types.js';
 
 export interface RegisterOptions<TInputs extends Record<string, unknown>> {
 	name: string;
 	needs?: string[];
-	provides?: string[];
+	provides?: Provides;
 	inputs: TInputs;
 	run: (ctx: ActionRunContext) => Promise<void>;
 	getStatus?: (ctx: ActionRunContext) => Promise<{ ok: boolean; detail?: string }>;

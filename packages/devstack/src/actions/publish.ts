@@ -6,7 +6,7 @@
 import { existsSync } from 'node:fs';
 import { isAbsolute, resolve as resolvePath } from 'node:path';
 import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
-import type { ActionRunContext, PublishAction } from '../core/types.js';
+import type { ActionRunContext, Provides, PublishAction } from '../core/types.js';
 import {
 	buildPriorCacheEntry,
 	computeSourceDigest,
@@ -18,7 +18,7 @@ import { suiContainerName } from '../plugins/sui/index.js';
 export interface PublishOptions {
 	name: string;
 	needs?: string[];
-	provides?: string[];
+	provides?: Provides;
 	/** Move package directory (relative to app dir). */
 	path: string;
 	/** Object-type filters: `{ adminCap: '::admin::AdminCap' }`. */
@@ -180,7 +180,7 @@ export function definePublishAction(
 export interface DefinePublishActionOptions {
 	name: string;
 	needs?: string[];
-	provides?: string[];
+	provides?: Provides;
 	/** Move package source directory, OR — when `prepareSource` is set —
 	 * a stable label used for input hashing and the file watcher (e.g.
 	 * a docker image tag). Absolute on-host paths used as-is; relative

@@ -30,6 +30,7 @@ import type {
 	SeedAction,
 	ShutdownHook,
 } from '../core/types.js';
+import { getProvidesRegistryHook } from '../core/types.js';
 import { stableHash } from './hash.js';
 import { topoSortActions } from './topo.js';
 
@@ -303,6 +304,30 @@ export class Reconciler {
 		const prior = this.state.get(action.name);
 		const hashMatches = prior !== undefined && prior.lastInputHash === inputHash;
 
+		// Verify actions: read-only invariant check. `getStatus.ok=false` is a
+		// hard failure for the cycle; ok=true is healthy. No `run` ever runs.
+		if (action.type === 'Verify') {
+			if (action.getStatus === undefined) {
+				throw new Error(
+					`Verify action '${action.name}' has no getStatus — that's the only thing it does`,
+				);
+			}
+			const status = await action.getStatus(ctx);
+			if (status.ok) {
+				await applyProvidesRegistry(action, ctx);
+				this.state.set(action.name, {
+					lastInputHash: inputHash,
+					status: 'healthy',
+					lastRunAt: Date.now(),
+				});
+				return 'healthy';
+			}
+			this.state.set(action.name, { lastInputHash: inputHash, status: 'failed' });
+			throw new Error(
+				`Verify '${action.name}' failed: ${status.detail ?? 'no detail provided'}`,
+			);
+		}
+
 		// `getStatus` is consulted on the cold cycle (no `prior` — supervisor
 		// restart) and on hash-match cycles, never on hash-mismatch with a
 		// known prior. Otherwise an action whose inputs drifted but whose
@@ -312,6 +337,7 @@ export class Reconciler {
 			if (action.getStatus !== undefined && (prior === undefined || hashMatches)) {
 				const status = await action.getStatus(ctx);
 				if (status.ok) {
+					await applyProvidesRegistry(action, ctx);
 					this.state.set(action.name, {
 						lastInputHash: inputHash,
 						status: 'healthy',
@@ -320,18 +346,24 @@ export class Reconciler {
 					return 'healthy';
 				}
 			} else if (hashMatches && action.getStatus === undefined) {
+				await applyProvidesRegistry(action, ctx);
 				this.state.set(action.name, { ...prior, status: 'healthy' });
 				return 'healthy';
 			}
 		}
 
 		if (action.run === undefined) {
+			await applyProvidesRegistry(action, ctx);
 			this.state.set(action.name, { lastInputHash: inputHash, status: 'healthy' });
 			return 'healthy';
 		}
 
 		try {
 			await action.run(ctx);
+			// Apply provides.registry after run too — lets plugins factor
+			// their registration into a single function used by both run
+			// and warm-path skip, instead of duplicating it.
+			await applyProvidesRegistry(action, ctx);
 			this.state.set(action.name, {
 				lastInputHash: inputHash,
 				status: 'healthy',
@@ -357,6 +389,24 @@ function emitIsDirty(emit: EmitAction, dirty: Set<string>): boolean {
 	const deps = emit.dependsOnKind;
 	if (deps === undefined || deps.length === 0) return false;
 	return deps.some((d) => dirty.has(d));
+}
+
+/**
+ * Run the action's `provides.registry` hook (if any). Called by the
+ * reconciler after run AND on warm-path skips so plugins can factor their
+ * registry-population logic into one place. The hook is idempotent —
+ * RegistryQuery.register overwrites by name, so calling it twice in a
+ * cycle is safe.
+ *
+ * Don't try to suppress dirty tracking here. If the rehydrate writes the
+ * same data the run already wrote, the dirty set has the kind in it
+ * either way; downstream Emits re-fire harmlessly. Suppression would add
+ * complexity for a marginal saving.
+ */
+async function applyProvidesRegistry(action: Action, ctx: ActionRunContext): Promise<void> {
+	const hook = getProvidesRegistryHook(action.provides);
+	if (hook === undefined) return;
+	await hook(ctx);
 }
 
 /** For each action, the set of action names that transitively depend on
