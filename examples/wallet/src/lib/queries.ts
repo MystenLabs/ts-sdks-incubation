@@ -68,11 +68,15 @@ export function useSignAndExecute(
 			return tx;
 		},
 		onSuccess: async (tx) => {
-			const wft = (
-				client as { waitForTransaction?: (a: { digest: string }) => Promise<unknown> }
-			).waitForTransaction;
-			if (typeof wft === 'function' && tx.digest.length > 0) {
-				await wft({ digest: tx.digest });
+			// Method-call form preserves `this` so the SDK's internal
+			// `this.core.X` access works. Destructuring
+			// `client.waitForTransaction` to a local would lose `this`
+			// and trip a runtime TypeError.
+			const c = client as {
+				waitForTransaction?: (a: { digest: string }) => Promise<unknown>;
+			};
+			if (typeof c.waitForTransaction === 'function' && tx.digest.length > 0) {
+				await c.waitForTransaction({ digest: tx.digest });
 			}
 			await Promise.all(
 				(options.invalidateKeys ?? []).map((key) => qc.invalidateQueries({ queryKey: key })),

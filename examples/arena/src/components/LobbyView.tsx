@@ -25,7 +25,7 @@ export function LobbyView({ lobby, self }: LobbyViewProps) {
 		setError(null);
 		try {
 			const tx = new Transaction();
-			connectFour.joinLobby({ arguments: [lobby.id] })(tx);
+			tx.add(connectFour.joinLobby({ arguments: [lobby.id] }));
 			await mutateAsync(tx);
 		} catch (e) {
 			setError((e as Error).message);

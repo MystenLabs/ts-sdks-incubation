@@ -42,7 +42,7 @@ export function GameView({ gameId, self }: GameViewProps) {
 		setError(null);
 		try {
 			const tx = new Transaction();
-			connectFour.play({ arguments: [gameId, column] })(tx);
+			tx.add(connectFour.play({ arguments: [gameId, column] }));
 			await mutateAsync(tx);
 		} catch (e) {
 			setError((e as Error).message);
