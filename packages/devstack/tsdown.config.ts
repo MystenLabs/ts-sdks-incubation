@@ -46,5 +46,9 @@ export default defineConfig({
 		{ from: 'src/plugins/sui/Dockerfile', to: 'dist/plugins/sui' },
 		{ from: 'src/plugins/sui/entrypoint.sh', to: 'dist/plugins/sui' },
 		{ from: 'src/plugins/seal/Dockerfile', to: 'dist/plugins/seal' },
+		// Ambient `.d.ts` for `virtual:devstack-manifest`. Apps reference it
+		// via `/// <reference types="@mysten-incubation/devstack/manifest" />`
+		// instead of duplicating ~50 lines of `declare module` per app.
+		{ from: 'src/manifest.d.ts', to: 'dist' },
 	],
 });

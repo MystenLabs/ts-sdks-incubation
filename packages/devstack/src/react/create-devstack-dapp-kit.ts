@@ -62,19 +62,11 @@ export function createDevstackDappKit(opts: CreateDevstackDappKitOptions): Devst
 
 	const finalConfig = (opts.extend !== undefined ? opts.extend(config) : config) as DappKitConfig;
 	const dAppKit = createDAppKit(finalConfig);
-	const slot = globalThis as { __devstackDAppKit__?: unknown };
-	if (slot.__devstackDAppKit__ !== undefined && slot.__devstackDAppKit__ !== dAppKit) {
-		// Two apps in the same realm (micro-frontend, Storybook host, dev
-		// HMR hot-reload that didn't tear down) silently overwriting each
-		// other's dAppKit makes `useDevstackSignAndExecute` sign with the
-		// wrong wallet. Warn loudly so the user catches it.
-		// eslint-disable-next-line no-console
-		console.warn(
-			'[createDevstackDappKit] Overwriting an existing globalThis.__devstackDAppKit__. ' +
-				'If you are running two devstack apps in the same window, useDevstackSignAndExecute ' +
-				'will resolve the most-recently-created instance — be careful which one is active.',
-		);
-	}
-	slot.__devstackDAppKit__ = dAppKit;
+	// Legacy back-compat: also publish to `globalThis.__devstackDAppKit__`
+	// so apps that haven't migrated to passing `dAppKit` through
+	// `<DevstackProvider>` still get a working `useDevstackSignAndExecute`.
+	// The hook prefers the context value; this slot is a fallback only.
+	// Drop in the next major.
+	(globalThis as { __devstackDAppKit__?: unknown }).__devstackDAppKit__ = dAppKit;
 	return { dAppKit };
 }
