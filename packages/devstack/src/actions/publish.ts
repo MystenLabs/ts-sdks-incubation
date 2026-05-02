@@ -21,7 +21,25 @@ export interface PublishOptions {
 	provides?: Provides;
 	/** Move package directory (relative to app dir). */
 	path: string;
-	/** Object-type filters: `{ adminCap: '::admin::AdminCap' }`. */
+	/**
+	 * Object-type filters mapped by capture key.
+	 *
+	 * Two filter forms (see `helpers/match-type.ts`):
+	 *
+	 *   `'::module::Type'`        — Suffix match. Matches any object whose
+	 *                                full type ends with the filter. Use for
+	 *                                non-generic types (`'::admin::AdminCap'`,
+	 *                                `'::registry::Registry'`).
+	 *   `'::module::Type<'`       — Generic type match. Trailing `<` opts
+	 *                                into a substring match so the filter
+	 *                                matches `Type<X>` for any type
+	 *                                arguments (`'::coin::TreasuryCap<'`,
+	 *                                `'::coin::CoinMetadata<'`).
+	 *
+	 * Without the trailing `<`, generic types fail to match because the
+	 * suffix never aligns. Forgetting it is the single most-common
+	 * silent-failure mode of `definePublishAction`.
+	 */
 	capture?: Record<string, string>;
 	/** Account name from the `accounts` registry to sign the publish tx. Defaults to first account. */
 	publisher?: string;
@@ -186,7 +204,25 @@ export interface DefinePublishActionOptions {
 	 * a docker image tag). Absolute on-host paths used as-is; relative
 	 * on-host paths resolved against `ctx.appDir` at run time. */
 	sourcePath: string;
-	/** Object-type filters: `{ adminCap: '::admin::AdminCap' }`. */
+	/**
+	 * Object-type filters mapped by capture key.
+	 *
+	 * Two filter forms (see `helpers/match-type.ts`):
+	 *
+	 *   `'::module::Type'`        — Suffix match. Matches any object whose
+	 *                                full type ends with the filter. Use for
+	 *                                non-generic types (`'::admin::AdminCap'`,
+	 *                                `'::registry::Registry'`).
+	 *   `'::module::Type<'`       — Generic type match. Trailing `<` opts
+	 *                                into a substring match so the filter
+	 *                                matches `Type<X>` for any type
+	 *                                arguments (`'::coin::TreasuryCap<'`,
+	 *                                `'::coin::CoinMetadata<'`).
+	 *
+	 * Without the trailing `<`, generic types fail to match because the
+	 * suffix never aligns. Forgetting it is the single most-common
+	 * silent-failure mode of `definePublishAction`.
+	 */
 	capture?: Record<string, string>;
 	/** Account name to sign the publish tx. Defaults to `'publisher'`. */
 	publisher?: string;

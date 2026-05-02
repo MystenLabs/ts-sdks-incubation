@@ -21,25 +21,43 @@ import { dockerRun, imageExists } from '../plugins/sui/docker.js';
 export interface EnsureUpstreamSourceImageOptions {
 	repo: string;
 	rev: string;
+	/** Override the git host URL template. Default builds
+	 * `https://github.com/<repo>.git`. Pass an explicit URL (e.g.
+	 * `https://gitlab.example.com/owner/repo.git`) when the upstream
+	 * isn't on GitHub. The `<repo>` token is replaced verbatim.
+	 *
+	 * Pass a function `(repo, rev) => url` for full programmatic control
+	 * (private hosts that mint short-lived clone URLs, etc.). */
+	gitUrl?: string | ((repo: string, rev: string) => string);
 }
 
 export interface EnsureUpstreamSourceImageResult {
 	imageTag: string;
 }
 
-const DOCKERFILE = `# syntax=docker/dockerfile:1
-ARG REPO
+function resolveGitUrl(
+	repo: string,
+	rev: string,
+	override: EnsureUpstreamSourceImageOptions['gitUrl'],
+): string {
+	if (typeof override === 'function') return override(repo, rev);
+	if (typeof override === 'string') return override.replace('<repo>', repo);
+	return `https://github.com/${repo}.git`;
+}
+
+function makeDockerfile(gitUrl: string): string {
+	return `# syntax=docker/dockerfile:1
 ARG REV
 FROM alpine/git AS clone
-ARG REPO
 ARG REV
-RUN git clone "https://github.com/\${REPO}.git" /src \\
+RUN git clone "${gitUrl}" /src \\
 	&& cd /src \\
 	&& git checkout "\${REV}" \\
 	&& rm -rf /src/.git
 FROM scratch
 COPY --from=clone /src /src
 `;
+}
 
 export function upstreamSourceImageTag(repo: string, rev: string): string {
 	const slug = repo.replace('/', '__');
@@ -55,19 +73,18 @@ export async function ensureUpstreamSourceImage(
 		return { imageTag };
 	}
 
+	const gitUrl = resolveGitUrl(opts.repo, opts.rev, opts.gitUrl);
 	const tmpCtx = mkdtempSync(join(tmpdir(), 'devstack-upstream-src-'));
 	try {
-		writeFileSync(join(tmpCtx, 'Dockerfile'), DOCKERFILE);
+		writeFileSync(join(tmpCtx, 'Dockerfile'), makeDockerfile(gitUrl));
 		process.stderr.write(
-			`devstack: building ${imageTag} (cloning ${opts.repo}@${opts.rev.slice(0, 12)})\n`,
+			`devstack: building ${imageTag} (cloning ${gitUrl} @ ${opts.rev.slice(0, 12)})\n`,
 		);
 		const build = await dockerRun({
 			command: [
 				'build',
 				'--tag',
 				imageTag,
-				'--build-arg',
-				`REPO=${opts.repo}`,
 				'--build-arg',
 				`REV=${opts.rev}`,
 				'--label',

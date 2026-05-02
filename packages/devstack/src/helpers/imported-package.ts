@@ -69,6 +69,17 @@ export interface ImportMovePackageOptions {
 	 */
 	publisher: Signer;
 	prior?: ImportedPackageCacheEntry;
+	/** Override the git clone URL when building the upstream-source
+	 * image. Plumbed through to `ensureUpstreamSourceImage`. Ignored when
+	 * `localPath` is set. */
+	gitUrl?: string | ((repo: string, rev: string) => string);
+	/** Use this on-host directory as the source tree instead of cloning
+	 * from a git host. The directory is copied into the sui container at
+	 * `<CONTAINER_IMPORT_PATH>/<alias>` so the env-inject + publish
+	 * commands run against an isolated copy (no mutation of the host
+	 * tree). The git-rev cache is bypassed when set; rebuilding on every
+	 * cycle is the trade-off for live-edit. */
+	localPath?: string;
 }
 
 export interface ImportMovePackageResult {
@@ -86,7 +97,11 @@ export async function importMovePackage(
 	const { containerName, repo, rev, subdir, alias, capture, chainId, prior } = opts;
 	const env = opts.env ?? 'localnet';
 
-	if (prior !== undefined && prior.sourceDigest === rev && prior.chainId === chainId) {
+	// Local-source mode bypasses the git-rev cache — the on-host tree is
+	// the live source of truth. Cycle-time changes the user makes to
+	// their checkout are picked up by the file watcher (`watches:` on
+	// the build action) and re-trigger import.
+	if (opts.localPath === undefined && prior !== undefined && prior.sourceDigest === rev && prior.chainId === chainId) {
 		return {
 			packageId: prior.packageId,
 			captured: prior.captured,
@@ -96,17 +111,35 @@ export async function importMovePackage(
 		};
 	}
 
-	// Build (or reuse) the content-addressed source image, extract its
-	// `/src` to a host tmp dir, and proceed with the existing Move.toml
-	// rewrite + docker-cp-into-sui-localnet flow. The host tmp dir is
-	// always cleaned up; the image stays as the durable cache.
-	const { imageTag } = await ensureUpstreamSourceImage({ repo, rev });
+	// Source-tree provisioning. Two modes:
+	//   - localPath: copy the on-host tree into a tmp dir (don't mutate
+	//     the user's checkout when we env-inject Move.toml).
+	//   - default: build (or reuse) the content-addressed source image,
+	//     extract its `/src` to a tmp dir.
 	const checkoutDir = mkdtempSync(join(tmpdir(), 'devstack-import-'));
 	try {
-		await extractUpstreamSource({ imageTag, destDir: checkoutDir });
+		if (opts.localPath !== undefined) {
+			if (!existsSync(opts.localPath)) {
+				throw new Error(`importMovePackage: localPath ${opts.localPath} does not exist`);
+			}
+			// Copy the on-host tree into the tmp dir. Use `cp -R` for
+			// portability; node's fs.cp is recent and the imports plugin
+			// already shells docker frequently.
+			const cpHost = spawnSync('cp', ['-R', `${opts.localPath}/.`, checkoutDir]);
+			if (cpHost.status !== 0) {
+				throw new Error(
+					`importMovePackage: failed to copy localPath ${opts.localPath}: ${cpHost.stderr.toString()}`,
+				);
+			}
+		} else {
+			const { imageTag } = await ensureUpstreamSourceImage({ repo, rev, gitUrl: opts.gitUrl });
+			await extractUpstreamSource({ imageTag, destDir: checkoutDir });
+		}
 		const packagePath = join(checkoutDir, subdir);
 		if (!existsSync(packagePath)) {
-			throw new Error(`importMovePackage: subdir "${subdir}" not found in ${imageTag}:/src`);
+			const sourceLabel =
+				opts.localPath !== undefined ? `localPath ${opts.localPath}` : `${repo}@${rev.slice(0, 12)}`;
+			throw new Error(`importMovePackage: subdir "${subdir}" not found under ${sourceLabel}`);
 		}
 
 		const containerRepoPath = `${CONTAINER_IMPORT_PATH}/${alias}`;
