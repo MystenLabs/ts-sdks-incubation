@@ -4,11 +4,12 @@
 //
 // Behavior matrix:
 //
-//                  | localnet | live net (testnet/mainnet)
-//   -------------- | -------- | ---------------------------
-//   deployFilter   | run all  | run Build/Publish/Register/Emit + gated Seed; skip Service
-//   applyFilter    | run all  | run Publish/Register/Emit + gated Seed; skip Service+Build
-//   emitOnlyFilter | Emit only| Emit only
+//                       | localnet                | live net (testnet/mainnet)
+//   ------------------- | ----------------------- | ---------------------------
+//   deployFilter        | run all                 | run Build/Publish/Register/Emit + gated Seed; skip Service+HostProcess
+//   applyFilter         | run all                 | run Publish/Register/Emit + gated Seed; skip Service+Build+HostProcess
+//   applyTestSetupFilter| run all EXCEPT HostProc | (not applicable — test setup is localnet-only)
+//   emitOnlyFilter      | Emit only               | Emit only
 //
 // `deployFilter` preserves today's `runOneShot` behavior verbatim — it
 // keeps Build on live nets even though Build is typically a docker-image
@@ -17,6 +18,14 @@
 // The looser `deployFilter` stays the implicit default for `devstack
 // deploy` so the C1 extraction is a true refactor with no behavior
 // change for the live-net deploy path.
+//
+// `applyTestSetupFilter` is for Playwright globalSetup and equivalent
+// test-bringup paths: bring the chain to known state (run Service so
+// docker containers come up + detach), but DO NOT start in-process
+// services that die when the test process exits (HostProcess —
+// wallet-server, vite). The webServer's `pnpm dev` Supervisor owns
+// HostProcess lifecycle from there, eliminating the documented two-
+// supervisor token race in notes/architecture-review/23-playwright-integration.md.
 
 import { seedRunsOn } from '../actions/seed.js';
 import type { ActionFilter, SeedAction } from '../core/types.js';
@@ -24,6 +33,7 @@ import type { ActionFilter, SeedAction } from '../core/types.js';
 export const deployFilter: ActionFilter = (action, target) => {
 	switch (action.type) {
 		case 'Service':
+		case 'HostProcess':
 			return false;
 		case 'Seed':
 			return seedRunsOn(action as SeedAction, target.network);
@@ -43,6 +53,7 @@ export const applyFilter: ActionFilter = (action, target) => {
 	}
 	switch (action.type) {
 		case 'Service':
+		case 'HostProcess':
 		case 'Build':
 			return false;
 		case 'Seed':
@@ -53,6 +64,11 @@ export const applyFilter: ActionFilter = (action, target) => {
 		case 'Verify':
 			return true;
 	}
+};
+
+export const applyTestSetupFilter: ActionFilter = (action, target) => {
+	if (action.type === 'HostProcess') return false;
+	return applyFilter(action, target);
 };
 
 export const emitOnlyFilter: ActionFilter = (action) => action.type === 'Emit';

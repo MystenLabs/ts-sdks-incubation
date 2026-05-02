@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { Action, ResolvedTarget, SeedAction } from '../core/types.js';
-import { applyFilter, deployFilter, emitOnlyFilter } from './filters.js';
+import { applyFilter, applyTestSetupFilter, deployFilter, emitOnlyFilter } from './filters.js';
 
 const localnet: ResolvedTarget = { network: 'localnet', stack: 'main', rpcUrl: '' };
 const testnet: ResolvedTarget = { network: 'testnet', stack: 'main', rpcUrl: 'https://t' };
@@ -18,6 +18,12 @@ describe('deployFilter', () => {
 	it('skips Service on every network', () => {
 		expect(deployFilter(make('Service'), localnet)).toBe(false);
 		expect(deployFilter(make('Service'), testnet)).toBe(false);
+	});
+
+	it('skips HostProcess on every network', () => {
+		expect(deployFilter(make('HostProcess'), localnet)).toBe(false);
+		expect(deployFilter(make('HostProcess'), testnet)).toBe(false);
+		expect(deployFilter(make('HostProcess'), mainnet)).toBe(false);
 	});
 
 	it('runs Build/Publish/Register/Emit on every network (preserves pre-C1 behavior)', () => {
@@ -46,14 +52,22 @@ describe('deployFilter', () => {
 
 describe('applyFilter', () => {
 	it('runs every action type on localnet', () => {
-		for (const type of ['Build', 'Service', 'Publish', 'Register', 'Emit'] as const) {
+		for (const type of [
+			'Build',
+			'Service',
+			'HostProcess',
+			'Publish',
+			'Register',
+			'Emit',
+		] as const) {
 			expect(applyFilter(make(type), localnet)).toBe(true);
 		}
 		expect(applyFilter(make('Seed') as SeedAction, localnet)).toBe(true);
 	});
 
-	it('skips Service AND Build on live nets', () => {
+	it('skips Service, HostProcess AND Build on live nets', () => {
 		expect(applyFilter(make('Service'), testnet)).toBe(false);
+		expect(applyFilter(make('HostProcess'), testnet)).toBe(false);
 		expect(applyFilter(make('Build'), testnet)).toBe(false);
 		expect(applyFilter(make('Build'), mainnet)).toBe(false);
 	});
@@ -67,6 +81,23 @@ describe('applyFilter', () => {
 	it('gates Seed on live nets by liveNetworks', () => {
 		expect(applyFilter(make('Seed') as SeedAction, testnet)).toBe(false);
 		expect(applyFilter(make('Seed', { liveNetworks: true }) as SeedAction, testnet)).toBe(true);
+	});
+});
+
+describe('applyTestSetupFilter', () => {
+	it('skips HostProcess on localnet (the test-setup race fix)', () => {
+		expect(applyTestSetupFilter(make('HostProcess'), localnet)).toBe(false);
+	});
+
+	it('still runs Service on localnet (containers detach and survive process exit)', () => {
+		expect(applyTestSetupFilter(make('Service'), localnet)).toBe(true);
+	});
+
+	it('runs the rest of the localnet graph (Build/Publish/Register/Seed/Emit/Verify)', () => {
+		for (const type of ['Build', 'Publish', 'Register', 'Emit', 'Verify'] as const) {
+			expect(applyTestSetupFilter(make(type), localnet)).toBe(true);
+		}
+		expect(applyTestSetupFilter(make('Seed') as SeedAction, localnet)).toBe(true);
 	});
 });
 

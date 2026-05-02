@@ -59,7 +59,15 @@ export interface AccountsContext {
 
 // ─── Action graph ─────────────────────────────────────────────────────────
 
-export type ActionType = 'Build' | 'Service' | 'Publish' | 'Register' | 'Seed' | 'Emit' | 'Verify';
+export type ActionType =
+	| 'Build'
+	| 'Service'
+	| 'HostProcess'
+	| 'Publish'
+	| 'Register'
+	| 'Seed'
+	| 'Emit'
+	| 'Verify';
 
 /**
  * Object form of `provides`. Carries capability names plus an optional
@@ -153,6 +161,27 @@ export interface ServiceAction<TInputs = unknown, TResult = unknown> extends Act
 	type: 'Service';
 }
 
+/**
+ * In-process service whose lifecycle is bound to the supervisor process —
+ * Node `http.Server` listeners (wallet-server), spawned child processes
+ * (vite dev-server). Discriminated from `Service` (docker containers
+ * detached from the supervisor) so test-setup paths can drop them: a
+ * Playwright globalSetup that runs HostProcess actions starts servers
+ * that immediately die when globalSetup returns, leaving downstream
+ * test logic to race against re-spawned (different-token) instances.
+ *
+ * Plugin authors get this type by calling `hostProcess()` instead of
+ * `containerService()`/`service()`. The runtime contract is identical
+ * to `Service` outside of filtering: same shutdown-hook semantics, same
+ * getStatus probe expectations, same place in the topo graph.
+ */
+export interface HostProcessAction<TInputs = unknown, TResult = unknown> extends ActionBase<
+	TInputs,
+	TResult
+> {
+	type: 'HostProcess';
+}
+
 export interface PublishAction<TInputs = unknown, TResult = unknown> extends ActionBase<
 	TInputs,
 	TResult
@@ -213,6 +242,7 @@ export interface VerifyAction<TInputs = unknown> extends ActionBase<TInputs, voi
 export type Action =
 	| BuildAction
 	| ServiceAction
+	| HostProcessAction
 	| PublishAction
 	| RegisterAction
 	| SeedAction
