@@ -102,6 +102,14 @@ export async function defineDevstackPlaywrightConfig(
 
 	const baseURL = `http://localhost:${resolvedPort}`;
 
+	// Pull `use` and `webServer` out of `extend` so we can shallow-merge
+	// them over the defaults — without this, `extend.webServer = {
+	// timeout: 180_000 }` would clobber the resolved URL + command and
+	// land Playwright on the user's preferred port even when the
+	// allocator picked something else (the original cause of
+	// `notes/friction.md:127`'s 5-min webServer timeouts).
+	const { use: extendUse, webServer: extendWebServer, ...extendRest } = extend ?? {};
+
 	return defineConfig({
 		testDir,
 		fullyParallel: false,
@@ -120,6 +128,7 @@ export async function defineDevstackPlaywrightConfig(
 			baseURL,
 			trace: 'on-first-retry',
 			screenshot: 'only-on-failure',
+			...extendUse,
 		},
 		projects: [
 			{
@@ -140,7 +149,8 @@ export async function defineDevstackPlaywrightConfig(
 			// override with a higher value if walrus/seal images are
 			// also cold.
 			timeout: opts.manageStack === true ? 300_000 : 60_000,
+			...extendWebServer,
 		},
-		...extend,
+		...extendRest,
 	});
 }
