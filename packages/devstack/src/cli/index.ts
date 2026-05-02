@@ -25,6 +25,8 @@ Commands:
   reset [config] --yes         Wipe the active stack — containers, volumes, host state.
                                Pass --stack <name> to target a specific stack.
   stack list|new|use|down|drop Manage named per-app stacks.
+  snapshot save|restore|list|rm|hash
+                               Capture / restore named snapshots of a stack.
   console [config] [--target]  REPL with manifest, client, accounts pre-bound.
 
 Run 'devstack <command> --help' for command-specific options where supported.
@@ -56,6 +58,10 @@ async function main(): Promise<number> {
 		}
 		case 'stack': {
 			const mod = await import('./stack.js');
+			return mod.main(argv);
+		}
+		case 'snapshot': {
+			const mod = await import('./snapshot.js');
 			return mod.main(argv);
 		}
 		case 'down': {
