@@ -53,13 +53,29 @@ export interface ImportSpec {
 	 * capability identifier (`imports.<name>`). Lowercase letters, digits,
 	 * `_` and `-` only. No dots. */
 	name: string;
-	/** GitHub `<owner>/<repo>`. */
+	/** Source repo `<owner>/<repo>`. With `gitUrl` unset, becomes
+	 * `https://github.com/<owner>/<repo>.git`; pass `gitUrl` to override. */
 	repo: string;
 	/** Git rev (tag, branch, or commit). Bumping busts the source-image
 	 * cache and forces a re-import on the next cycle. */
 	rev: string;
 	/** Subdir within the repo where the package's `Move.toml` lives. */
 	subdir: string;
+	/** Override the git clone URL. Default builds
+	 * `https://github.com/<repo>.git`. Pass an explicit URL with a
+	 * `<repo>` token, or a `(repo, rev) => url` factory. Useful for
+	 * non-GitHub hosts (private GitLab, Bitbucket, …). */
+	gitUrl?: string | ((repo: string, rev: string) => string);
+	/** Use a local on-host source tree instead of cloning from a git
+	 * host. When set, the `<name>-source` build action skips the
+	 * upstream-image build and verifies the path exists; the publish
+	 * action copies sources from `local.path/<subdir>` into the sui
+	 * container. Critical for upstream contributors who want to test a
+	 * working-tree change without pushing/cloning.
+	 *
+	 * Setting `local` short-circuits both `repo`+`rev` and `gitUrl`.
+	 * The path is resolved against `appDir` if relative. */
+	local?: { path: string };
 	/** Object-type filters: `{ adminCap: '::admin::AdminCap' }`. Captured
 	 * object ids land on the `registry.packages` entry's `captured` map. */
 	capture?: Record<string, string>;
@@ -168,14 +184,33 @@ function buildActionsForSpec(spec: InternalImportSpec): Action[] {
 	const env = spec.env ?? 'localnet';
 	const sourceActionName = `${spec.name}-source`;
 	const depPublishNeeds = spec.dependsOn.map((d) => d);
+	const localSource = spec.local;
 
 	return [
 		buildImage({
 			name: sourceActionName,
-			inputs: { image: imageTag, repo: spec.repo, rev: spec.rev, subdir: spec.subdir },
+			inputs: localSource
+				? { local: localSource.path, subdir: spec.subdir }
+				: { image: imageTag, repo: spec.repo, rev: spec.rev, subdir: spec.subdir },
+			watches: localSource
+				? [
+						`${localSource.path}/${spec.subdir}/Move.toml`,
+						`${localSource.path}/${spec.subdir}/sources/**`,
+					]
+				: undefined,
 			getStatus: async (ctx) => {
 				if (curatedAddressFor(spec, ctx.network) !== undefined) {
 					return { ok: true, detail: 'curated address; no source image needed' };
+				}
+				if (localSource) {
+					const { existsSync } = await import('node:fs');
+					const { isAbsolute, resolve: resolvePath } = await import('node:path');
+					const path = isAbsolute(localSource.path)
+						? localSource.path
+						: resolvePath(ctx.appDir, localSource.path);
+					return existsSync(path)
+						? { ok: true, detail: `local: ${path}` }
+						: { ok: false, detail: `local path missing: ${path}` };
 				}
 				return (await imageExists(imageTag))
 					? { ok: true, detail: imageTag }
@@ -183,7 +218,8 @@ function buildActionsForSpec(spec: InternalImportSpec): Action[] {
 			},
 			run: async (ctx) => {
 				if (curatedAddressFor(spec, ctx.network) !== undefined) return;
-				await ensureUpstreamSourceImage({ repo: spec.repo, rev: spec.rev });
+				if (localSource) return; // nothing to build for local sources
+				await ensureUpstreamSourceImage({ repo: spec.repo, rev: spec.rev, gitUrl: spec.gitUrl });
 			},
 		}),
 
@@ -253,6 +289,11 @@ function buildActionsForSpec(spec: InternalImportSpec): Action[] {
 				const chainId = await client.getChainIdentifier();
 				const publisher = ctx.accounts.get(publisherAccount);
 				const prior = buildImportedPriorEntry(ctx.registry.packages.find(spec.name));
+				const localPath = localSource
+					? (await import('node:path')).isAbsolute(localSource.path)
+						? localSource.path
+						: (await import('node:path')).resolve(ctx.appDir, localSource.path)
+					: undefined;
 				const result = await importMovePackage({
 					containerName,
 					repo: spec.repo,
@@ -264,6 +305,8 @@ function buildActionsForSpec(spec: InternalImportSpec): Action[] {
 					publisher,
 					capture: spec.capture,
 					env,
+					gitUrl: spec.gitUrl,
+					localPath,
 				});
 				ctx.registry.packages.register({
 					name: spec.name,
