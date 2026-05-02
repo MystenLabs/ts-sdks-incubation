@@ -75,16 +75,21 @@ describe('runTransaction default marker probe', () => {
 
 	it('invalidates the marker when the build callback changes (the footgun fix)', async () => {
 		await withTempAppDir(async (appDir) => {
-			// Real source-different bodies — comments alone aren't reliable
-			// because some bundlers strip them before Function.toString.
-			const oldBuild = () => 1;
+			// Real source-different bodies — different parameter names so
+			// even aggressive minifiers can't collapse them.
+			const oldBuild = function buildVOne() {
+				return undefined;
+			};
 			const oldHash = expectedHashFor({ signer: 'alice', build: oldBuild });
 			const path = resolve(appDir, '.devstack/stacks/main/setup/mint.done');
 			mkdirSync(resolve(path, '..'), { recursive: true });
 			writeFileSync(path, `${oldHash}\n`, 'utf8');
 
 			// User edits the callback — different source, different hash.
-			const newBuild = () => 42;
+			const newBuild = function buildVTwo() {
+				return undefined;
+			};
+			expect(oldBuild.toString()).not.toBe(newBuild.toString());
 			const action = runTransaction({ name: 'mint', signer: 'alice', build: newBuild });
 			const result = await action.getStatus!(fabricateCtx(appDir));
 			expect(result.ok).toBe(false);
