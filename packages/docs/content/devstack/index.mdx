@@ -42,7 +42,7 @@ pnpm exec devstack up
   testnet/mainnet, only `dapp-kit.ts` differs.
 - **Live-network deploys.** The same plugin actions run against testnet/mainnet via
   `devstack deploy --network <n>` or `devstack apply --target <n>`.
-- **`pnpm dev` starts everything.** With the [`frontend()` plugin](/docs/plugins/vite) loaded, the
+- **`pnpm dev` starts everything.** With the [`frontend()` plugin](/docs/plugins/frontend) loaded, the
   dev server (vite, next, anything) runs alongside sui localnet, walrus, seal, package publishes,
   and codegen — one combined process, one log stream.
 
