@@ -1,0 +1,103 @@
+name: Devstack E2E
+
+# Two-stage CI for example apps backed by devstack:
+#
+#   1. seed: bring up the stack cold, capture a snapshot, push seed images
+#      to GHCR. Snapshot bundle (small — manifest + keys + walrus configs)
+#      cached via actions/cache; seed images flow through GHCR.
+#   2. e2e:  matrix of test shards. Each restores the snapshot bundle from
+#      cache + pulls seed images from GHCR via `devstack snapshot restore`,
+#      then runs the example app's playwright suite.
+#
+# Cold-cache CI run pays the full ~75 s seed cost once; warm runs (cache
+# hit on the snapshot bundle) restore in <15 s and shards parallelize.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+# Permissions for GHCR push from the seed job.
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  seed:
+    name: Seed snapshot for token-studio
+    runs-on: ubuntu-latest
+    outputs:
+      snapshot-id: ${{ steps.hash.outputs.id }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # pin@v4.1.1
+      - uses: pnpm/action-setup@a3252b78c470c02df07e9d59298aecedc3ccdd6d # pin@v3.0.0
+      - name: Install Nodejs
+        uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8 # pin@v4.0.2
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build devstack
+        run: pnpm --filter @mysten-incubation/devstack build
+      - name: Compute snapshot id
+        id: hash
+        working-directory: examples/token-studio
+        run: |
+          ID=$(pnpm devstack snapshot hash)
+          echo "id=$ID" >> $GITHUB_OUTPUT
+      - name: Cache snapshot bundle
+        id: cache
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # pin@v4.2.0
+        with:
+          path: examples/token-studio/.devstack/snapshots
+          key: devstack-snapshot-${{ runner.arch }}-${{ steps.hash.outputs.id }}
+      - name: Log in to GHCR
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+      - name: Cold seed + capture snapshot
+        if: steps.cache.outputs.cache-hit != 'true'
+        working-directory: examples/token-studio
+        run: |
+          pnpm devstack up
+          pnpm devstack snapshot save baseline --push ghcr.io/${{ github.repository_owner }}/devstack-snapshots
+          pnpm devstack stack down
+
+  e2e:
+    name: E2E shard ${{ matrix.shard }}
+    needs: seed
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # pin@v4.1.1
+      - uses: pnpm/action-setup@a3252b78c470c02df07e9d59298aecedc3ccdd6d # pin@v3.0.0
+      - name: Install Nodejs
+        uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8 # pin@v4.0.2
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build devstack
+        run: pnpm --filter @mysten-incubation/devstack build
+      - name: Restore snapshot bundle
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # pin@v4.2.0
+        with:
+          path: examples/token-studio/.devstack/snapshots
+          key: devstack-snapshot-${{ runner.arch }}-${{ needs.seed.outputs.snapshot-id }}
+      - name: Log in to GHCR (for snapshot pull)
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+      - name: Restore snapshot
+        working-directory: examples/token-studio
+        run: pnpm devstack snapshot restore baseline
+      - name: Install playwright browsers
+        run: pnpm --filter @mysten-incubation/token-studio exec playwright install --with-deps chromium
+      - name: Run e2e tests (shard ${{ matrix.shard }}/2)
+        working-directory: examples/token-studio
+        run: pnpm test:e2e --shard ${{ matrix.shard }}/2

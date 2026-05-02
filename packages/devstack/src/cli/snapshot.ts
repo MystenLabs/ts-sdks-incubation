@@ -45,6 +45,7 @@ export interface SnapshotFlags {
 	ref?: string;
 	stack?: string;
 	forceArch?: boolean;
+	pushTo?: string;
 }
 
 export async function runSnapshot(flags: SnapshotFlags): Promise<number> {
@@ -65,7 +66,14 @@ export async function runSnapshot(flags: SnapshotFlags): Promise<number> {
 
 	switch (flags.subcommand) {
 		case 'save':
-			return saveCmd({ appName: config.app, appDir, stack, id, alias: flags.ref });
+			return saveCmd({
+				appName: config.app,
+				appDir,
+				stack,
+				id,
+				alias: flags.ref,
+				pushTo: flags.pushTo,
+			});
 		case 'restore':
 			return restoreCmd({
 				appName: config.app,
@@ -89,12 +97,17 @@ async function saveCmd(opts: {
 	stack: string;
 	id: string;
 	alias?: string;
+	pushTo?: string;
 }): Promise<number> {
 	process.stdout.write(`devstack snapshot save → ${opts.id}${opts.alias ? ` (alias='${opts.alias}')` : ''}\n`);
+	if (opts.pushTo !== undefined) {
+		process.stdout.write(`  pushing seed images to ${opts.pushTo}…\n`);
+	}
 	const entry = await captureSnapshot(opts);
 	process.stdout.write(`captured ${entry.containers.length} container(s):\n`);
 	for (const c of entry.containers) {
-		process.stdout.write(`  ${c.containerName}\n    ${c.originalImage} → ${c.seedImage}\n`);
+		const pushed = c.registryImage !== undefined ? ` (pushed: ${c.registryImage})` : '';
+		process.stdout.write(`  ${c.containerName}\n    ${c.originalImage} → ${c.seedImage}${pushed}\n`);
 	}
 	process.stdout.write(`bundle: ${snapshotBundlePath(opts.appDir, opts.id)}\n`);
 	return 0;
@@ -190,9 +203,15 @@ Options:
   --config <path>         Override the config path
   --force-arch            (restore) Allow cross-arch restore (RocksDB
                           binary format may corrupt; use with care)
+  --push <registry>       (save) Also tag each seed image as
+                          \`<registry>/<container>:<alias>\` and docker
+                          push. Restore will pull from the registry on
+                          machines where the local seed image is absent
+                          (CI / cross-host snapshot sharing).
 
 Examples:
   devstack snapshot save baseline
+  devstack snapshot save baseline --push ghcr.io/myorg/snapshots
   devstack snapshot list
   devstack snapshot restore baseline
   devstack snapshot rm baseline
@@ -216,6 +235,14 @@ function parseArgs(argv: string[]): SnapshotFlags {
 		}
 		if (arg === '--force-arch') {
 			flags.forceArch = true;
+			continue;
+		}
+		if (arg === '--push') {
+			const next = argv[++i];
+			if (next === undefined || next.startsWith('--')) {
+				throw new Error('devstack snapshot --push requires a <registry> argument');
+			}
+			flags.pushTo = next;
 			continue;
 		}
 		if (arg.startsWith('--')) continue;

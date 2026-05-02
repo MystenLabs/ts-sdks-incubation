@@ -55,6 +55,11 @@ export interface SnapshotContainerEntry {
 	 * `devstack-snapshot/<sha-id>/token-studio-main-sui:seeded`). Lives
 	 * in the local docker daemon's image store. */
 	seedImage: string;
+	/** Optional registry tag the seed image was pushed to via
+	 * `snapshot save --push <registry>`. When set, restore can pull from
+	 * the registry if the local seed image is missing — the canonical
+	 * mechanism for CI / cross-machine snapshot sharing. */
+	registryImage?: string;
 }
 
 export interface SnapshotEntry {
@@ -115,6 +120,13 @@ export interface CaptureOptions {
 	 * label-based discovery via `dockerRun(['ps', '-a', '--filter',
 	 * 'label=devstack.app=<a>', '--filter', 'label=devstack.stack=<s>'])`. */
 	containerNames?: string[];
+	/** When set, also tag each seed image as
+	 * `<registry>/<container>:<alias-or-id>` and `docker push`. Recorded
+	 * in `snapshot.json` so restore can pull from the registry on a
+	 * machine where the local seed image is absent (the CI / cross-host
+	 * sharing path). Requires the operator to have `docker login` against
+	 * the registry. */
+	pushTo?: string;
 }
 
 /** Capture the current state of a stack as a snapshot. For each labeled
@@ -162,6 +174,7 @@ export async function captureSnapshot(opts: CaptureOptions): Promise<SnapshotEnt
 		// 'none' → no-op
 	}
 
+	const aliasOrId = opts.alias ?? opts.id.slice(0, 16);
 	const containers: SnapshotContainerEntry[] = [];
 	for (const entry of inspected) {
 		if (entry.info === null || entry.info === undefined) continue;
@@ -176,11 +189,29 @@ export async function captureSnapshot(opts: CaptureOptions): Promise<SnapshotEnt
 				`captureSnapshot: docker commit failed for ${entry.name} → ${seedImage}: ${result.stderr.trim()}`,
 			);
 		}
-		containers.push({
+		const containerEntry: SnapshotContainerEntry = {
 			containerName: entry.name,
 			originalImage: entry.info.image,
 			seedImage,
-		});
+		};
+		if (opts.pushTo !== undefined) {
+			const registryImage = `${opts.pushTo.replace(/\/$/, '')}/${entry.name}:${aliasOrId}`;
+			const tag = await dockerRun({ command: ['tag', seedImage, registryImage] });
+			if (tag.code !== 0) {
+				throw new Error(
+					`captureSnapshot: docker tag ${seedImage} → ${registryImage} failed: ${tag.stderr.trim()}`,
+				);
+			}
+			const push = await dockerRun({ command: ['push', registryImage], stream: true });
+			if (push.code !== 0) {
+				throw new Error(
+					`captureSnapshot: docker push ${registryImage} failed (exit ${push.code}). ` +
+						`Did you \`docker login ${opts.pushTo.split('/')[0]}\`?`,
+				);
+			}
+			containerEntry.registryImage = registryImage;
+		}
+		containers.push(containerEntry);
 	}
 
 	// Un-quiesce: paused → unpause; stopped → start. Best-effort — a
@@ -270,16 +301,38 @@ export async function loadSnapshot(opts: RestoreOptions): Promise<SnapshotEntry>
 
 	// Re-tag each seed image to its original tag. This overwrites the
 	// existing tag locally — the next `docker run --image=<originalImage>`
-	// will pick up the seeded layer. Verify each seed image is present
-	// first; if missing, the snapshot is unusable on this machine.
+	// will pick up the seeded layer. If the seed image is absent locally
+	// AND a registry tag was recorded at capture time, pull from the
+	// registry first (CI / cross-host snapshot sharing path).
 	for (const c of entry.containers) {
-		const inspect = await dockerRun({
+		let inspect = await dockerRun({
 			command: ['image', 'inspect', c.seedImage, '--format', '{{.Id}}'],
 		});
+		if (inspect.code !== 0 && c.registryImage !== undefined) {
+			process.stderr.write(`loadSnapshot: pulling ${c.registryImage}…\n`);
+			const pull = await dockerRun({
+				command: ['pull', c.registryImage],
+				stream: true,
+			});
+			if (pull.code !== 0) {
+				throw new Error(
+					`loadSnapshot: docker pull ${c.registryImage} failed (exit ${pull.code}).`,
+				);
+			}
+			const reTag = await dockerRun({ command: ['tag', c.registryImage, c.seedImage] });
+			if (reTag.code !== 0) {
+				throw new Error(
+					`loadSnapshot: docker tag ${c.registryImage} → ${c.seedImage} failed: ${reTag.stderr.trim()}`,
+				);
+			}
+			inspect = await dockerRun({
+				command: ['image', 'inspect', c.seedImage, '--format', '{{.Id}}'],
+			});
+		}
 		if (inspect.code !== 0) {
 			throw new Error(
-				`loadSnapshot: seed image ${c.seedImage} not present locally. ` +
-					`Run \`devstack snapshot save\` again or pull from registry.`,
+				`loadSnapshot: seed image ${c.seedImage} not present locally and no registry tag recorded. ` +
+					`Run \`devstack snapshot save\` again or pass --push to capture registry tags.`,
 			);
 		}
 		const tag = await dockerRun({
