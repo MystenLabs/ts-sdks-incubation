@@ -260,6 +260,11 @@ export const sui = (opts: SuiPluginOptions = {}) => {
 								appName: ctx.appName,
 								stack: ctx.stack,
 								service: 'sui-localnet',
+								// RocksDB single-writer; cgroup pause is the safe fast
+								// quiesce for snapshot capture. Chain state lives in the
+								// container's writable layer (-r7) so commit:true
+								// captures it.
+								snapshot: { commit: true, quiesce: 'pause' },
 							}),
 							network,
 							networkAlias: SUI_LOCALNET_ALIAS,

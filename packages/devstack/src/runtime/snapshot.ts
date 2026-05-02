@@ -117,9 +117,13 @@ export interface CaptureOptions {
 	containerNames?: string[];
 }
 
-/** Capture the current state of a stack as a snapshot. Stops every
- * labeled container, commits each into a fresh seed image, then copies
- * `<stackDir>` into the bundle. Restarts the containers on the way out. */
+/** Capture the current state of a stack as a snapshot. For each labeled
+ * container: read its `devstack.snapshot.*` labels for per-container
+ * commit/quiesce policy, quiesce per the policy, `docker commit` (when
+ * commit=true), then restart. Copies `<stackDir>` into the bundle.
+ *
+ * Per-container defaults when labels are absent (e.g., legacy containers
+ * created before PR 4): commit=true, quiesce='stop'. */
 export async function captureSnapshot(opts: CaptureOptions): Promise<SnapshotEntry> {
 	const containerNames = opts.containerNames ?? (await listStackContainers(opts.appName, opts.stack));
 	if (containerNames.length === 0) {
@@ -129,48 +133,64 @@ export async function captureSnapshot(opts: CaptureOptions): Promise<SnapshotEnt
 		);
 	}
 
-	// Stop containers in reverse-discovery order. `docker stop` waits for
-	// graceful shutdown (SIGTERM → SIGKILL after 10s) which is the
-	// universally-safe quiesce for RocksDB-backed services. PR 4 will
-	// allow per-plugin opt-in to `docker pause` for faster capture.
-	const containerInfos = await Promise.all(containerNames.map((n) => inspectContainer(n)));
-	const wereRunning = new Set<string>();
-	for (let i = containerNames.length - 1; i >= 0; i--) {
-		const name = containerNames[i] as string;
-		const info = containerInfos[i];
-		if (info?.running === true) {
-			wereRunning.add(name);
-			await stopContainer(name);
+	// Inspect each container once for state + labels.
+	const inspected = await Promise.all(
+		containerNames.map(async (n) => ({
+			name: n,
+			info: await inspectContainer(n),
+			labels: await readContainerLabels(n),
+		})),
+	);
+
+	// Quiesce in reverse-discovery order so the leaves stop before the
+	// services that depend on them. `pause` is essentially instant; `stop`
+	// waits for graceful SIGTERM. Containers we'll later restart get
+	// recorded in `wasPaused`/`wasRunning` so the un-quiesce step matches.
+	const wasPaused = new Set<string>();
+	const wasRunning = new Set<string>();
+	for (let i = inspected.length - 1; i >= 0; i--) {
+		const entry = inspected[i];
+		if (entry === undefined || entry.info?.running !== true) continue;
+		const quiesce = parseQuiesce(entry.labels);
+		if (quiesce === 'pause') {
+			wasPaused.add(entry.name);
+			await pauseContainer(entry.name);
+		} else if (quiesce === 'stop') {
+			wasRunning.add(entry.name);
+			await stopContainer(entry.name);
 		}
+		// 'none' → no-op
 	}
 
 	const containers: SnapshotContainerEntry[] = [];
-	for (let i = 0; i < containerNames.length; i++) {
-		const name = containerNames[i] as string;
-		const info = containerInfos[i];
-		if (info === null || info === undefined) continue;
-		const seedImage = seedImageTag(opts.id, name);
+	for (const entry of inspected) {
+		if (entry.info === null || entry.info === undefined) continue;
+		const commit = parseCommit(entry.labels);
+		if (!commit) continue;
+		const seedImage = seedImageTag(opts.id, entry.name);
 		const result = await dockerRun({
-			command: ['commit', name, seedImage],
+			command: ['commit', entry.name, seedImage],
 		});
 		if (result.code !== 0) {
 			throw new Error(
-				`captureSnapshot: docker commit failed for ${name} → ${seedImage}: ${result.stderr.trim()}`,
+				`captureSnapshot: docker commit failed for ${entry.name} → ${seedImage}: ${result.stderr.trim()}`,
 			);
 		}
 		containers.push({
-			containerName: name,
-			originalImage: info.image,
+			containerName: entry.name,
+			originalImage: entry.info.image,
 			seedImage,
 		});
 	}
 
-	// Restart what was running before. Best-effort — a failure here doesn't
-	// invalidate the snapshot, just leaves the operator to bring the stack
-	// back up themselves.
-	for (const name of containerNames) {
-		if (wereRunning.has(name)) {
-			await startContainer(name).catch(() => undefined);
+	// Un-quiesce: paused → unpause; stopped → start. Best-effort — a
+	// failure here doesn't invalidate the snapshot, just leaves the
+	// operator to bring the stack back up themselves.
+	for (const entry of inspected) {
+		if (wasPaused.has(entry.name)) {
+			await unpauseContainer(entry.name).catch(() => undefined);
+		} else if (wasRunning.has(entry.name)) {
+			await startContainer(entry.name).catch(() => undefined);
 		}
 	}
 
@@ -332,6 +352,44 @@ export async function removeSnapshot(opts: { appDir: string; ref: string }): Pro
 		}
 	}
 	return true;
+}
+
+async function readContainerLabels(name: string): Promise<Record<string, string>> {
+	const result = await dockerRun({
+		command: ['container', 'inspect', name, '--format', '{{json .Config.Labels}}'],
+	});
+	if (result.code !== 0) return {};
+	try {
+		return JSON.parse(result.stdout.trim()) as Record<string, string>;
+	} catch {
+		return {};
+	}
+}
+
+function parseCommit(labels: Record<string, string>): boolean {
+	const raw = labels['devstack.snapshot.commit'];
+	if (raw === undefined) return true; // default for Service containers
+	return raw === 'true';
+}
+
+function parseQuiesce(labels: Record<string, string>): 'pause' | 'stop' | 'none' {
+	const raw = labels['devstack.snapshot.quiesce'];
+	if (raw === 'pause' || raw === 'stop' || raw === 'none') return raw;
+	return 'stop'; // safe default
+}
+
+async function pauseContainer(name: string): Promise<void> {
+	const result = await dockerRun({ command: ['pause', name] });
+	if (result.code !== 0) {
+		throw new Error(`pauseContainer: docker pause ${name} failed: ${result.stderr.trim()}`);
+	}
+}
+
+async function unpauseContainer(name: string): Promise<void> {
+	const result = await dockerRun({ command: ['unpause', name] });
+	if (result.code !== 0) {
+		throw new Error(`unpauseContainer: docker unpause ${name} failed: ${result.stderr.trim()}`);
+	}
 }
 
 async function listStackContainers(appName: string, stack: string): Promise<string[]> {

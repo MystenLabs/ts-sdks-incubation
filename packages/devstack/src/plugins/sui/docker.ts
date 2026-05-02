@@ -80,13 +80,24 @@ export async function imageExists(tag: string): Promise<boolean> {
  * under a single project pane (instead of showing a flat list). The
  * "project" maps to `<appName>-<stack>`; the "service" identifies the
  * individual container within that project. */
-export function devstackContainerLabels(opts: {
+export interface DevstackContainerLabelOpts {
 	appName: string;
 	stack: string;
 	service: string;
-}): Record<string, string> {
+	/** Snapshot capture metadata serialized into `devstack.snapshot.*`
+	 * labels. Read by the snapshot orchestrator (`runtime/snapshot.ts`)
+	 * to decide per-container whether to `docker commit` and how to
+	 * quiesce. Absent → orchestrator falls back to defaults
+	 * (commit:true, quiesce:'stop' for Service-typed actions). */
+	snapshot?: {
+		commit?: boolean;
+		quiesce?: 'pause' | 'stop' | 'none';
+	};
+}
+
+export function devstackContainerLabels(opts: DevstackContainerLabelOpts): Record<string, string> {
 	const project = `${opts.appName}-${opts.stack}`;
-	return {
+	const labels: Record<string, string> = {
 		'devstack.app': opts.appName,
 		'devstack.stack': opts.stack,
 		'devstack.kind': opts.service,
@@ -98,6 +109,13 @@ export function devstackContainerLabels(opts: {
 		'com.docker.compose.oneoff': 'False',
 		'com.docker.compose.version': '2.0.0',
 	};
+	if (opts.snapshot?.commit !== undefined) {
+		labels['devstack.snapshot.commit'] = String(opts.snapshot.commit);
+	}
+	if (opts.snapshot?.quiesce !== undefined) {
+		labels['devstack.snapshot.quiesce'] = opts.snapshot.quiesce;
+	}
+	return labels;
 }
 
 export interface BuildImageOptions {
