@@ -19,7 +19,8 @@
 // capture the published package via sui's container-layer commit;
 // restore brings the package back at its same address.
 
-import type { Provides, PublishAction, SetupActionScope } from '../core/types.js';
+import type { ActionRunContext, Provides, PublishAction, SetupActionScope } from '../core/types.js';
+import type { PublishMovePackageResult } from '../helpers/move-package.js';
 import { definePublishAction, type PublishInputs } from './publish.js';
 
 export interface PublishMoveOptions {
@@ -36,6 +37,9 @@ export interface PublishMoveOptions {
 	publisher?: string;
 	/** Registry entry name. Defaults to `name`. */
 	registryAs?: string;
+	/** Side-effect after a fresh publish (skipped on cache hit). Use for
+	 * token registration, follow-up shared-object creation, etc. */
+	onPublished?: (ctx: ActionRunContext, result: PublishMovePackageResult) => Promise<void> | void;
 	/** Setup-action scope. See `SetupActionScope`. Default: 'always'. */
 	scope?: SetupActionScope;
 }
@@ -49,6 +53,7 @@ export function publishMove(opts: PublishMoveOptions): PublishAction<PublishInpu
 		capture: opts.capture,
 		publisher: opts.publisher,
 		registryAs: opts.registryAs,
+		onPublished: opts.onPublished,
 	});
 	if (opts.scope !== undefined) {
 		action.scope = opts.scope;
