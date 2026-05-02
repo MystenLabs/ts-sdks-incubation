@@ -22,8 +22,6 @@
 // kept for back-compat; new code should use the options helper +
 // vanilla constructor.
 
-import type { WalrusClient, WalrusClientConfig } from '@mysten/walrus';
-import type { ClientWithCoreApi } from '@mysten/sui/client';
 
 interface DevstackWalrusNode {
 	ip: string;
@@ -109,50 +107,6 @@ export function localnetWalrusOptions(
 		packageConfig: { systemObjectId, stakingPoolId },
 		storageNodeClientOptions: { fetch: makeFetchOverride(baseFetch, nodes) },
 	};
-}
-
-export interface CreateDevstackWalrusClientOptions {
-	/** Manifest from `virtual:devstack-manifest`. */
-	manifest: unknown;
-	/** Sui client used by the SDK for chain reads. Typically
-	 * `useCurrentClient()` from dapp-kit-react. */
-	suiClient: ClientWithCoreApi;
-	/** Optional fetch override base, applied AFTER the host-URL rewrite. */
-	fetch?: typeof globalThis.fetch;
-	/** Walrus encoder WASM URL — pass through to `WalrusClient`. Optional;
-	 * the SDK falls back to its own bundled wasm when omitted. */
-	wasmUrl?: string;
-}
-
-/**
- * Convenience wrapper that constructs a `WalrusClient` against the
- * localnet manifest in one call.
- *
- * @deprecated Prefer the explicit shape so the call site stays
- * identical between localnet and production:
- *
- *     import { WalrusClient } from '@mysten/walrus';
- *     import { localnetWalrusOptions } from '@mysten-incubation/devstack/react';
- *
- *     const client = new WalrusClient({
- *       suiClient,
- *       ...localnetWalrusOptions(manifest),
- *       wasmUrl,
- *     });
- *
- * On mainnet/testnet, drop the spread; the rest of the call doesn't
- * change. See `notes/react-api-investigation.md` for the rationale.
- */
-export async function createDevstackWalrusClient(
-	opts: CreateDevstackWalrusClientOptions,
-): Promise<WalrusClient> {
-	const { WalrusClient } = await import('@mysten/walrus');
-	const config: WalrusClientConfig = {
-		suiClient: opts.suiClient,
-		...localnetWalrusOptions(opts.manifest, { fetch: opts.fetch }),
-		wasmUrl: opts.wasmUrl,
-	};
-	return new WalrusClient(config);
 }
 
 function makeFetchOverride(

@@ -1,10 +1,10 @@
-import { useDevstackPackage, useDevstackSignAndExecute } from '@mysten-incubation/devstack/react';
 import { Transaction } from '@mysten/sui/transactions';
 import { useState } from 'react';
 
 import { deployment } from '../generated/deployment.js';
+import * as connectFour from '../generated/sui/connect_four/game.js';
 import { labelFor, shortAddress } from '../lib/format.js';
-import type { ArenaLobby } from '../lib/queries.js';
+import { type ArenaLobby, useSignAndExecute } from '../lib/queries.js';
 import { Card } from './Card.js';
 
 interface LobbyViewProps {
@@ -13,8 +13,7 @@ interface LobbyViewProps {
 }
 
 export function LobbyView({ lobby, self }: LobbyViewProps) {
-	const connectFour = useDevstackPackage('connect_four');
-	const { mutateAsync, isPending } = useDevstackSignAndExecute({
+	const { mutateAsync, isPending } = useSignAndExecute({
 		invalidateKeys: [['arena']],
 	});
 	const [error, setError] = useState<string | null>(null);

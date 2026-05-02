@@ -1,15 +1,14 @@
-import { useDevstackPackage, useDevstackSignAndExecute } from '@mysten-incubation/devstack/react';
 import { Transaction } from '@mysten/sui/transactions';
 import { useId, useMemo, useState } from 'react';
 
 import { deployment } from '../generated/deployment.js';
+import * as vault from '../generated/sui/vault/vault.js';
 import { shortAddress } from '../lib/format.js';
-import { useFile, useOwnedCaps } from '../lib/queries.js';
+import { useFile, useOwnedCaps, useSignAndExecute } from '../lib/queries.js';
 import { Card } from './Card.js';
 
 export function GrantForm({ self }: { self: string }) {
 	const caps = useOwnedCaps(self);
-	const vault = useDevstackPackage('vault');
 	const others = useMemo(
 		() => Object.entries(deployment.accounts).filter(([, addr]) => addr !== self),
 		[self],
@@ -17,7 +16,7 @@ export function GrantForm({ self }: { self: string }) {
 	const ownedFiles = useMemo(() => caps.data ?? [], [caps.data]);
 	const [fileId, setFileId] = useState('');
 	const [recipient, setRecipient] = useState(others[0]?.[1] ?? '');
-	const { mutateAsync, isPending } = useDevstackSignAndExecute({
+	const { mutateAsync, isPending } = useSignAndExecute({
 		invalidateKeys: [['vault']],
 	});
 	const [error, setError] = useState<string | null>(null);
@@ -38,11 +37,7 @@ export function GrantForm({ self }: { self: string }) {
 			const tx = new Transaction();
 			vault.grantEntry({ arguments: [selectedFileId, recipient] })(tx);
 			const result = await mutateAsync(tx);
-			const txResult = result as {
-				Transaction?: { digest?: string };
-				FailedTransaction?: { digest?: string };
-			};
-			setLastDigest(txResult.Transaction?.digest ?? txResult.FailedTransaction?.digest ?? '');
+			setLastDigest(result.digest);
 		} catch (e) {
 			setError((e as Error).message);
 		}

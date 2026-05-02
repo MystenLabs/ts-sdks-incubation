@@ -1,19 +1,19 @@
-import { useDevstackPackage, useDevstackSignAndExecute } from '@mysten-incubation/devstack/react';
 import { CurrentAccountSigner } from '@mysten/dapp-kit-core';
 import { useCurrentClient } from '@mysten/dapp-kit-react';
 import { Transaction } from '@mysten/sui/transactions';
 import { useId, useMemo, useState } from 'react';
 
 import { dAppKit } from '../dapp-kit.js';
+import * as vault from '../generated/sui/vault/vault.js';
 import { stringToBytes } from '../lib/format.js';
+import { useSignAndExecute } from '../lib/queries.js';
 import { encryptForSealId, freshSealId } from '../lib/seal.js';
 import { blobIdToBytes, storeBlob } from '../lib/walrus.js';
 import { Card } from './Card.js';
 
 export function UploadForm() {
 	const client = useCurrentClient();
-	const vault = useDevstackPackage('vault');
-	const { mutateAsync, isPending } = useDevstackSignAndExecute({
+	const { mutateAsync, isPending } = useSignAndExecute({
 		invalidateKeys: [['vault']],
 	});
 	// One signer per app session — wraps the currently-connected dapp-kit
@@ -62,11 +62,7 @@ export function UploadForm() {
 				arguments: [name, Array.from(blobIdBytes), Array.from(sealIdBytes)],
 			})(tx);
 			const result = await mutateAsync(tx);
-			const txResult = result as {
-				Transaction?: { digest?: string };
-				FailedTransaction?: { digest?: string };
-			};
-			setLastDigest(txResult.Transaction?.digest ?? txResult.FailedTransaction?.digest ?? '');
+			setLastDigest(result.digest);
 		} catch (e) {
 			setError((e as Error).message);
 		} finally {

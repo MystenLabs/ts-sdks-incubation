@@ -1,16 +1,15 @@
-import { useDevstackPackage, useDevstackSignAndExecute } from '@mysten-incubation/devstack/react';
 import { Transaction } from '@mysten/sui/transactions';
 import { useId, useState } from 'react';
 
 import { deployment } from '../generated/deployment.js';
+import * as managedCoin from '../generated/sui/managed_coin/managed_coin.js';
 import { TREASURY_CAP_ID, parseStudioAmount, shortAddress } from '../lib/coin.js';
-import { useInvalidateCoinReads } from '../lib/queries.js';
+import { useInvalidateCoinReads, useSignAndExecute } from '../lib/queries.js';
 import { Card } from './Card.js';
 
 export function MintForm() {
-	const managedCoin = useDevstackPackage('managed_coin');
 	const invalidate = useInvalidateCoinReads();
-	const { mutateAsync, isPending } = useDevstackSignAndExecute();
+	const { mutateAsync, isPending } = useSignAndExecute();
 
 	const [recipient, setRecipient] = useState<string>(deployment.accounts.bob);
 	const [amount, setAmount] = useState('100');
@@ -27,11 +26,7 @@ export function MintForm() {
 			managedCoin.mint({ arguments: [TREASURY_CAP_ID, raw, recipient] })(tx);
 			const result = await mutateAsync(tx);
 			invalidate();
-			const txResult = result as {
-				Transaction?: { digest?: string };
-				FailedTransaction?: { digest?: string };
-			};
-			setLastDigest(txResult.Transaction?.digest ?? txResult.FailedTransaction?.digest ?? '');
+			setLastDigest(result.digest);
 		} catch (e) {
 			setError((e as Error).message);
 		}

@@ -1,34 +1,32 @@
 // React adapter public barrel. Apps import from
 // `@mysten-incubation/devstack/react`. Peer deps (`react`,
-// `react-dom`, `@mysten/dapp-kit-react`, `@tanstack/react-query`)
-// are optional — the rest of devstack stays usable without them.
+// `react-dom`, `@mysten/dapp-kit-react`) are optional — the rest of
+// devstack stays usable without them.
+//
+// Surface is intentionally minimal and manifest-driven. Generic SDK
+// patterns (signing transactions, binding codegen modules) live in
+// `@mysten/dapp-kit-react` / `@mysten/codegen` directly; devstack
+// just supplies the localnet config inputs that get spread into
+// `createDAppKit({...})` and `new WalrusClient({...})`. See
+// `notes/react-api-investigation.md` for the rationale.
 
-export { bindPackage } from './bind-package.js';
 export {
 	DevstackProvider,
 	useDevstackContext,
 	useDevstackManifest,
 	type DevstackProviderProps,
 } from './provider.js';
-export { useDevstackPackage, useDevstackPackageOptional } from './use-devstack-package.js';
 export { useDevstackDeployed, type UseDevstackDeployedOptions } from './use-devstack-deployed.js';
+export type { DevstackProviderState } from './types.js';
 export {
-	useDevstackSignAndExecute,
-	type UseDevstackSignAndExecuteOptions,
-} from './use-devstack-sign-and-execute.js';
-export type { CodegenModule, DevstackPackageRegistry, DevstackProviderState } from './types.js';
-export {
-	createDevstackDappKit,
 	localnetDappKitConfig,
-	type CreateDevstackDappKitOptions,
+	localnetMvrOverrides,
 	type LocalnetDappKitConfig,
 	type LocalnetDappKitConfigOptions,
+	type LocalnetMvrOverrides,
 } from './create-devstack-dapp-kit.js';
-export { DevstackDebugPanel, type DevstackDebugPanelProps } from './debug-panel.js';
 export {
-	createDevstackWalrusClient,
 	localnetWalrusOptions,
-	type CreateDevstackWalrusClientOptions,
 	type LocalnetWalrusOptions,
 	type LocalnetWalrusOptionsInit,
 } from './walrus.js';

@@ -1,16 +1,15 @@
-import { useDevstackSignAndExecute } from '@mysten-incubation/devstack/react';
 import { useCurrentClient } from '@mysten/dapp-kit-react';
 import { useId, useState } from 'react';
 
 import { deployment } from '../generated/deployment.js';
 import { buildTransferTx, parseStudioAmount, shortAddress } from '../lib/coin.js';
-import { useInvalidateCoinReads } from '../lib/queries.js';
+import { useInvalidateCoinReads, useSignAndExecute } from '../lib/queries.js';
 import { Card } from './Card.js';
 
 export function TransferForm({ self }: { self: string }) {
 	const client = useCurrentClient();
 	const invalidate = useInvalidateCoinReads();
-	const { mutateAsync, isPending } = useDevstackSignAndExecute();
+	const { mutateAsync, isPending } = useSignAndExecute();
 
 	const others = Object.entries(deployment.accounts).filter(([, addr]) => addr !== self);
 	const firstOther = (others[0]?.[1] ?? '') as string;
@@ -34,11 +33,7 @@ export function TransferForm({ self }: { self: string }) {
 			});
 			const result = await mutateAsync(transaction);
 			invalidate();
-			const txResult = result as {
-				Transaction?: { digest?: string };
-				FailedTransaction?: { digest?: string };
-			};
-			setLastDigest(txResult.Transaction?.digest ?? txResult.FailedTransaction?.digest ?? '');
+			setLastDigest(result.digest);
 		} catch (e) {
 			setError((e as Error).message);
 		}
