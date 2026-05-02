@@ -24,6 +24,7 @@ vi.mock('@mysten/sui/jsonRpc', () => ({
 import { definePublishAction } from './publish.js';
 import { RegistryImpl } from '../registry/index.js';
 import type { AccountsContext, ActionRunContext, PublishAction } from '../core/types.js';
+import { createInMemoryPortAllocator } from '../runtime/port-allocator.js';
 import type { Signer } from '@mysten/sui/cryptography';
 
 const fakeSigner = { toSuiAddress: () => '0xabc' } as unknown as Signer;
@@ -50,6 +51,7 @@ const makeCtx = (
 	network: 'localnet',
 	registry,
 	accounts,
+	ports: createInMemoryPortAllocator(),
 });
 
 beforeEach(() => {

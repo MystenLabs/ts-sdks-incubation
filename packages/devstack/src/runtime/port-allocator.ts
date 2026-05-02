@@ -28,22 +28,10 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { createServer } from 'node:net';
 import { dirname, resolve } from 'node:path';
 
+import type { PortAllocator, PortRequest } from '../core/types.js';
 import { stackDir } from './active-stack.js';
 
-export interface PortRequest {
-	/** Plugin-namespaced slot name (e.g. 'sui.rpc'). Stable across calls. */
-	slot: string;
-	/** Preferred port. Used if free; else the kernel picks one. Honors
-	 * historical hardcoded-port apps without forcing them to migrate. */
-	preferred?: number;
-	/** Number of contiguous ports to allocate. Default 1. Walrus uses
-	 * `count: 4` for its storage node host port range. */
-	count?: number;
-}
-
-export interface PortAllocator {
-	allocate(req: PortRequest): Promise<number[]>;
-}
+export type { PortAllocator, PortRequest };
 
 interface PortFile {
 	[slot: string]: number | number[];
