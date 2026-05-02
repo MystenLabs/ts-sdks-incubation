@@ -75,24 +75,19 @@ export interface ProvidesObject {
 	registry?: (ctx: ActionRunContext) => Promise<void> | void;
 }
 
-/** Either a bare list of capability names (legacy form) or the object
- * form with capabilities + registry-rehydrate hook. */
-export type Provides = string[] | ProvidesObject;
+/** Capabilities + registry-rehydrate hook the action provides. */
+export type Provides = ProvidesObject;
 
-/** Normalize either form of `provides` to its capability list. */
+/** Normalize `provides` to its capability list. */
 export function getProvidedCapabilities(provides: Provides | undefined): string[] {
-	if (provides === undefined) return [];
-	if (Array.isArray(provides)) return provides;
-	return provides.capabilities ?? [];
+	return provides?.capabilities ?? [];
 }
 
 /** Extract the registry-rehydrate hook from `provides`, if any. */
 export function getProvidesRegistryHook(
 	provides: Provides | undefined,
 ): ((ctx: ActionRunContext) => Promise<void> | void) | undefined {
-	if (provides === undefined) return undefined;
-	if (Array.isArray(provides)) return undefined;
-	return provides.registry;
+	return provides?.registry;
 }
 
 /**
@@ -119,17 +114,11 @@ export interface ActionBase<TInputs = unknown, TResult = unknown> {
 	needs?: string[];
 	/**
 	 * Capabilities this action provides + an optional registry-rehydrate
-	 * hook. Two shapes:
-	 *
-	 *   `string[]`        — bare capability names (legacy, equivalent to
-	 *                       `{ capabilities: [...] }`).
-	 *   `ProvidesObject`  — `{ capabilities?, registry? }`. The registry
-	 *                       hook fixes the historical "manually re-register
-	 *                       services from `getStatus`" anti-pattern: when
-	 *                       the reconciler skips `run` (warm path), it
-	 *                       calls `provides.registry(ctx)` so registry
-	 *                       entries this action provides are populated in
-	 *                       the in-memory registry without re-running.
+	 * hook (`{ capabilities?, registry? }`). The registry hook fixes the
+	 * historical "manually re-register services from `getStatus`"
+	 * anti-pattern: when the reconciler skips `run` (warm path), it calls
+	 * `provides.registry(ctx)` so registry entries this action provides
+	 * are populated in the in-memory registry without re-running.
 	 *
 	 * Capabilities for cross-action ordering (`:before` / `:after`) MUST
 	 * be namespaced with the providing plugin's name (`<plugin>.<cap>`).

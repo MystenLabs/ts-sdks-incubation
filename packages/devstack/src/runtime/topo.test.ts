@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import type { Action } from '../core/types.js';
+import type { Action, Provides } from '../core/types.js';
 import { topoSortActions } from './topo.js';
 
-const a = (name: string, opts: { needs?: string[]; provides?: string[] } = {}): Action =>
+const a = (name: string, opts: { needs?: string[]; provides?: Provides } = {}): Action =>
 	({
 		name,
 		type: 'Service',
@@ -37,7 +37,7 @@ describe('topoSortActions — capability `:before` queries', () => {
 	it('rewrites `cap:before` into a needs edge on each provider', () => {
 		const sorted = topoSortActions([
 			a('me', { needs: ['net:before'] }),
-			a('p', { provides: ['net'] }),
+			a('p', { provides: { capabilities: ['net'] } }),
 		]);
 		expect(indexOf(sorted, 'p')).toBeLessThan(indexOf(sorted, 'me'));
 		const meAfter = sorted.find((x) => x.name === 'me');
@@ -47,8 +47,8 @@ describe('topoSortActions — capability `:before` queries', () => {
 	it('orders me after every provider when a capability has multiple', () => {
 		const sorted = topoSortActions([
 			a('me', { needs: ['net:before'] }),
-			a('p1', { provides: ['net'] }),
-			a('p2', { provides: ['net'] }),
+			a('p1', { provides: { capabilities: ['net'] } }),
+			a('p2', { provides: { capabilities: ['net'] } }),
 		]);
 		expect(indexOf(sorted, 'p1')).toBeLessThan(indexOf(sorted, 'me'));
 		expect(indexOf(sorted, 'p2')).toBeLessThan(indexOf(sorted, 'me'));
@@ -61,7 +61,7 @@ describe('topoSortActions — capability `:before` queries', () => {
 	});
 
 	it('drops a self-edge when an action provides and queries the same capability', () => {
-		const sorted = topoSortActions([a('me', { needs: ['net:before'], provides: ['net'] })]);
+		const sorted = topoSortActions([a('me', { needs: ['net:before'], provides: { capabilities: ['net'] } })]);
 		expect(sorted.map((x) => x.name)).toEqual(['me']);
 		expect(sorted[0]?.needs).toEqual([]);
 	});
@@ -70,7 +70,7 @@ describe('topoSortActions — capability `:before` queries', () => {
 		const sorted = topoSortActions([
 			a('me', { needs: ['hardDep', 'net:before'] }),
 			a('hardDep'),
-			a('p', { provides: ['net'] }),
+			a('p', { provides: { capabilities: ['net'] } }),
 		]);
 		expect(indexOf(sorted, 'hardDep')).toBeLessThan(indexOf(sorted, 'me'));
 		expect(indexOf(sorted, 'p')).toBeLessThan(indexOf(sorted, 'me'));
@@ -81,7 +81,7 @@ describe('topoSortActions — capability `:after` queries', () => {
 	it('reverses the edge: `cap:after` ⇒ providers depend on me', () => {
 		const sorted = topoSortActions([
 			a('me', { needs: ['net:after'] }),
-			a('p', { provides: ['net'] }),
+			a('p', { provides: { capabilities: ['net'] } }),
 		]);
 		expect(indexOf(sorted, 'me')).toBeLessThan(indexOf(sorted, 'p'));
 	});
@@ -96,7 +96,7 @@ describe('topoSortActions — walrus migration', () => {
 	it('orders walrus.network before sui.localnet via `app-network` capability', () => {
 		const sorted = topoSortActions([
 			a('sui.localnet', { needs: ['walrus.app-network:before'] }),
-			a('walrus.network', { provides: ['walrus.app-network'] }),
+			a('walrus.network', { provides: { capabilities: ['walrus.app-network'] } }),
 		]);
 		expect(indexOf(sorted, 'walrus.network')).toBeLessThan(indexOf(sorted, 'sui.localnet'));
 	});

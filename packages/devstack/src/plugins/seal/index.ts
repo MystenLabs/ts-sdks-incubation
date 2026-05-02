@@ -88,7 +88,7 @@ export interface SealPluginOptions {
 	rev?: string;
 	/** Host port the key-server's HTTP API binds on. Frontend `SealClient`
 	 * talks to this URL. Default `2024`. */
-	apiPort?: number;
+	port?: number;
 	/** On-chain `KeyServer.name` field + registry record key. Default
 	 * `devstack-local`. Overriding lets two stacks on one host point at
 	 * distinct on-chain `KeyServer` objects without colliding on the
@@ -102,12 +102,12 @@ export interface SealPluginOptions {
 
 export const seal = (opts: SealPluginOptions = {}) => {
 	const rev = opts.rev ?? SEAL_REV;
-	const apiPort = opts.apiPort ?? KEY_SERVER_CONTAINER_PORT;
+	const port = opts.port ?? KEY_SERVER_CONTAINER_PORT;
 	const keyServerName = opts.keyServerName ?? SEAL_KEY_SERVER_NAME;
 	const masterOverride = opts.master;
 	const imageTag = sealImageTag(rev);
 	const platform = hostDockerPlatform();
-	const keyServerUrl = `http://127.0.0.1:${apiPort}`;
+	const keyServerUrl = `http://127.0.0.1:${port}`;
 
 	return definePlugin({
 		name: 'seal',
@@ -154,7 +154,7 @@ export const seal = (opts: SealPluginOptions = {}) => {
 				// Reconciler invokes this on every successful path (cold run +
 				// warm-path skip), so the in-memory `services` registry stays
 				// populated without `getStatus` having to re-register manually.
-				provides: { registry: (ctx) => registerKeyServerService(ctx, apiPort) },
+				provides: { registry: (ctx) => registerKeyServerService(ctx, port) },
 				getStatus: async (ctx) => {
 					const ns = ctx.registry.ns<SealNamespace>('seal');
 					const cached = ns.keyServer.find(keyServerName);
@@ -189,9 +189,9 @@ export const seal = (opts: SealPluginOptions = {}) => {
 			containerService({
 				name: 'key-server',
 				needs: ['register'],
-				inputs: { image: imageTag, apiPort },
+				inputs: { image: imageTag, port },
 				// See `register` above — same warm-path rehydrate pattern.
-				registry: (ctx) => registerKeyServerService(ctx, apiPort),
+				registry: (ctx) => registerKeyServerService(ctx, port),
 				containerName: (ctx) => keyServerContainerName(ctx.appName, ctx.stack),
 				healthyTimeoutMs: 3 * 60_000,
 				spec: (ctx) => {
@@ -204,7 +204,7 @@ export const seal = (opts: SealPluginOptions = {}) => {
 						network: appNetworkName(ctx.appName, ctx.stack),
 						hostname: 'seal-key-server',
 						restart: 'unless-stopped',
-						ports: [{ host: apiPort, container: KEY_SERVER_CONTAINER_PORT }],
+						ports: [{ host: port, container: KEY_SERVER_CONTAINER_PORT }],
 						labels: devstackContainerLabels({
 							appName: ctx.appName,
 							stack: ctx.stack,
@@ -408,12 +408,12 @@ function writeSealConfigYaml(opts: {
  * cold run completion AND warm-path skips — so the in-memory `services`
  * registry is populated even when neither action's `run` body executed
  * this cycle. Idempotent: `services.register` overwrites by name. */
-function registerKeyServerService(ctx: ActionRunContext, apiPort: number): void {
+function registerKeyServerService(ctx: ActionRunContext, port: number): void {
 	ctx.registry.services.register({
 		name: 'seal-key-server',
 		kind: 'seal-key-server',
-		url: `http://127.0.0.1:${apiPort}`,
-		port: apiPort,
+		url: `http://127.0.0.1:${port}`,
+		port: port,
 		endpointLabel: 'Seal key-server (Open mode)',
 	});
 }
