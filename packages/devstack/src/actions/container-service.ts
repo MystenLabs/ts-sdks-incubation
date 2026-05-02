@@ -14,6 +14,7 @@ import {
 	type LocalnetActionRunContext,
 	type Provides,
 	type ServiceAction,
+	type SnapshotMeta,
 	requireLocalnetCtx,
 } from '../core/types.js';
 import {
@@ -66,6 +67,22 @@ export interface ContainerServiceOptions<TInputs extends Record<string, unknown>
 	/** Override the default `waitForHealthy` timeout when the spec has a
 	 * docker healthcheck. Default 5 min. */
 	healthyTimeoutMs?: number;
+	/** Snapshot capture metadata. The orchestrator (`runtime/snapshot.ts`)
+	 * reads these via `devstack.snapshot.*` labels on the container —
+	 * `containerService` merges them into `spec.labels` at `docker run`
+	 * time and stamps `snapshotMeta` on the resulting Action so callers
+	 * can introspect.
+	 *
+	 *   - `commit: false` for stateless containers (seal, walrus.proxy)
+	 *     — skip the `docker commit` and the seed image entirely.
+	 *   - `quiesce: 'pause'` for single-writer RocksDB (sui localnet)
+	 *     — fastest safe capture.
+	 *   - `quiesce: 'stop'` (the default) for batched-write services
+	 *     (walrus storage nodes) — graceful flush.
+	 *   - `quiesce: 'none'` when there's nothing to flush (stateless).
+	 *
+	 * Default when unset: `{ commit: true, quiesce: 'stop' }`. */
+	snapshot?: SnapshotMeta;
 }
 
 export function containerService<TInputs extends Record<string, unknown>>(
@@ -84,12 +101,21 @@ export function containerService<TInputs extends Record<string, unknown>>(
 				}
 			: undefined);
 
+	const snapshotLabels: Record<string, string> = {};
+	if (opts.snapshot?.commit !== undefined) {
+		snapshotLabels['devstack.snapshot.commit'] = String(opts.snapshot.commit);
+	}
+	if (opts.snapshot?.quiesce !== undefined) {
+		snapshotLabels['devstack.snapshot.quiesce'] = opts.snapshot.quiesce;
+	}
+
 	return {
 		name: opts.name,
 		type: 'Service',
 		needs: opts.needs,
 		provides,
 		inputs: opts.inputs,
+		snapshotMeta: opts.snapshot,
 		getStatus: async (ctx) => {
 			requireLocalnetCtx(ctx);
 			const cName = opts.containerName(ctx);
@@ -117,7 +143,11 @@ export function containerService<TInputs extends Record<string, unknown>>(
 			}
 			if (opts.preRun !== undefined) await opts.preRun(ctx);
 			const spec = await opts.spec(ctx);
-			await runContainer({ ...spec, name: cName });
+			// Merge snapshot labels into whatever the plugin's spec
+			// already set. Plugin's labels win on collision (defensive),
+			// but in practice they don't set devstack.snapshot.* themselves.
+			const labels = { ...snapshotLabels, ...spec.labels };
+			await runContainer({ ...spec, name: cName, labels });
 			if (opts.postStart !== undefined) {
 				await opts.postStart(ctx, cName);
 			} else if (spec.healthcheck !== undefined) {

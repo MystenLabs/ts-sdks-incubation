@@ -116,6 +116,43 @@ export type ActionStatus =
 	| 'stale'
 	| 'dirty';
 
+/**
+ * Per-action snapshot capture metadata. Plugins declare this on
+ * Service/HostProcess actions to control what `devstack snapshot save`
+ * does for their containers; the orchestrator reads it from container
+ * labels (set at `docker run` time via `devstackContainerLabels`).
+ *
+ * Defaults when absent:
+ *   - Service: `{ commit: true, quiesce: 'stop' }`
+ *   - HostProcess: `{ commit: false, quiesce: 'none' }`
+ *
+ * The `capture`/`restore` callbacks are reserved for plugin-specific
+ * state outside the container's writable layer or `<stackDir>` — most
+ * plugins don't need them, since the implicit container-layer + host-fs
+ * model covers the typical case.
+ */
+export interface SnapshotMeta {
+	/** Capture this container's writable layer via `docker commit` on
+	 * `snapshot save`. Set false for stateless services (seal,
+	 * walrus.proxy) that re-derive on every start — saves snapshot disk
+	 * + image-store space. Default: true for Service, false for HostProcess. */
+	commit?: boolean;
+	/** Quiesce strategy before capture.
+	 *   - 'pause': cgroup freezer (microseconds; safe for single-writer
+	 *     RocksDB like sui localnet)
+	 *   - 'stop': graceful SIGTERM with timeout (required for batched-write
+	 *     services like walrus storage nodes — flushes pending writes)
+	 *   - 'none': skip (stateless / nothing to flush)
+	 * Default: 'stop' (universally safe). */
+	quiesce?: 'pause' | 'stop' | 'none';
+	/** Reserved for plugins with state outside the container layer + host
+	 * fs. Returns an opaque blob persisted in the snapshot bundle alongside
+	 * the host capture. Most plugins leave this undefined. */
+	capture?: (ctx: ActionRunContext) => Promise<unknown>;
+	/** Symmetric restore for state captured via `capture`. */
+	restore?: (ctx: ActionRunContext, blob: unknown) => Promise<void>;
+}
+
 export interface ActionBase<TInputs = unknown, TResult = unknown> {
 	name: string;
 	type: ActionType;
@@ -143,6 +180,13 @@ export interface ActionBase<TInputs = unknown, TResult = unknown> {
 	 * checked-in JSON, generated SDLs) whose change should trigger a
 	 * rerun but isn't detectable from the action's own shape. */
 	watches?: string[];
+	/** Snapshot capture metadata. Set by `containerService()` /
+	 * `service()` / `hostProcess()` factories from their `snapshot` option
+	 * field. Read by the snapshot orchestrator via container labels (the
+	 * factories serialize this into `devstack.snapshot.*` labels at
+	 * `docker run` time). Plugin authors should declare this in the
+	 * factory call, not stamp it on the action manually. */
+	snapshotMeta?: SnapshotMeta;
 	run?: (ctx: ActionRunContext) => Promise<TResult>;
 	getStatus?: (ctx: ActionRunContext) => Promise<{ ok: boolean; detail?: string }>;
 }

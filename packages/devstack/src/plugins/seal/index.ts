@@ -193,6 +193,10 @@ export const seal = (opts: SealPluginOptions = {}) => {
 				// See `register` above — same warm-path rehydrate pattern.
 				registry: (ctx) => registerKeyServerService(ctx, port),
 				containerName: (ctx) => keyServerContainerName(ctx.appName, ctx.stack),
+				// Stateless: master key in env (from <stackDir>/.keys),
+				// on-chain KeyServer in sui chain (captured via sui's commit).
+				// Nothing in its writable layer worth committing.
+				snapshot: { commit: false, quiesce: 'none' },
 				healthyTimeoutMs: 3 * 60_000,
 				spec: (ctx) => {
 					const ns = ctx.registry.ns<SealNamespace>('seal');

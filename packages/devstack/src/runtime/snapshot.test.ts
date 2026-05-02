@@ -17,7 +17,7 @@ describe('computeSnapshotId', () => {
 			{ name: 'sui', version: '1.0.0', inputs: { rpcPort: 9000 } },
 			{ name: 'walrus', version: '1.0.0', inputs: { rev: 'abc123' } },
 		],
-	} as const;
+	};
 
 	it('returns the same id for identical inputs', () => {
 		const a = computeSnapshotId(baseInput);

@@ -283,6 +283,11 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 						needs: ['deploy'],
 						inputs: { image: imageTag, ip, hostname: nodeHostname(nodeIdx) },
 						containerName: (ctx) => nodeContainerName(ctx.appName, ctx.stack, nodeIdx),
+						// RocksDB blob store + sync cursor live in the container layer.
+						// `stop` (graceful SIGTERM) flushes outstanding write batches —
+						// `pause` would risk losing them. commit:true captures the
+						// blob state on `devstack snapshot save`.
+						snapshot: { commit: true, quiesce: 'stop' },
 						spec: (ctx) => {
 							requireLocalnetCtx(ctx);
 							return {
@@ -338,6 +343,9 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 					needs: NODE_IPS.map((_, idx) => `node-${idx}`),
 					inputs: { ports: NODE_IPS.map((_, idx) => nodeHostPort(idx)) },
 					containerName: (ctx) => proxyContainerName(ctx.appName, ctx.stack),
+					// Stateless nginx; config regenerated from registry on each
+					// `up`. Nothing in its writable layer worth committing.
+					snapshot: { commit: false, quiesce: 'none' },
 					spec: (ctx) => {
 						requireLocalnetCtx(ctx);
 						const configPath = writeProxyConfig({
