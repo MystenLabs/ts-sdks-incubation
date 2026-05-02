@@ -31,6 +31,12 @@
 // epoch, set via the plugin's `epochsToRetain` option) and rewrites both
 // `num-epochs-to-retain` + `num-epochs-to-retain-for-checkpoints` on every
 // start, so changing the option takes effect without dropping the stack.
+// `-r7` drops the sui-bin shared volume export. Chain state lives in
+// the container's writable layer (no `:/root/.sui` volume mount) — `docker
+// stop` + `docker start` preserves it, `docker rm` destroys it (matches
+// the rest of the stack: state is disposable, snapshotted via `docker
+// commit`). The walrus image now bakes its own sui binary at build time
+// so storage nodes don't need the cross-container volume mount either.
 //
 // Dockerfile + entrypoint live alongside this file under
 // `packages/devstack/src/plugins/sui/`; resolved relative to this module
@@ -109,14 +115,13 @@ export const appNetworkName = (appName: string, stack: string): string => `${app
 export const suiContainerName = (appName: string, stack: string): string =>
 	`${appName}-${stack}-sui`;
 const SUI_LOCALNET_ALIAS = 'sui-localnet';
-const suiBinVolumeName = (appName: string, stack: string): string => `${appName}-${stack}-sui-bin`;
 
 export const sui = (opts: SuiPluginOptions = {}) => {
 	const version = opts.version ?? SUI_DEFAULT_VERSION;
 	const rpcPort = opts.rpcPort ?? 9000;
 	const faucetPort = opts.faucetPort ?? 9123;
 	const contextDir = opts.dockerContextDir ?? DEFAULT_DOCKER_CONTEXT;
-	const imageTag = `dev-examples/sui-localnet:${version}-r6`;
+	const imageTag = `dev-examples/sui-localnet:${version}-r7`;
 	const epochsToRetain = opts.epochsToRetain ?? 2;
 	const minBalance = opts.minBalance;
 
@@ -242,14 +247,11 @@ export const sui = (opts: SuiPluginOptions = {}) => {
 								{ host: rpcPort, container: 9000 },
 								{ host: faucetPort, container: 9123 },
 							],
-							volumes: [
-								`${containerName}-data:/root/.sui`,
-								// Shared bin volume — the image's entrypoint copies
-								// `sui` into /sui-bin on start. The walrus plugin mounts
-								// the same volume at /root/sui_bin so node containers can
-								// faucet + exchange via the matching sui binary.
-								`${suiBinVolumeName(ctx.appName, ctx.stack)}:/sui-bin`,
-							],
+							// No volumes — chain state lives in the container's
+							// writable layer. `docker stop` + `docker start`
+							// preserves it; `docker rm` destroys it (operator
+							// should `devstack stack down`, not `docker rm`).
+							// Snapshots capture state via `docker commit` (PR 3).
 							env: {
 								RUST_LOG: 'info,sui=info,sui_node=info',
 								DEVSTACK_SUI_EPOCHS_TO_RETAIN: String(epochsToRetain),
