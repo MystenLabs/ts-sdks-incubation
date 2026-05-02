@@ -1,7 +1,8 @@
-// Wallet app — multi-coin wallet UI + DeepBook v3 swap. Coin publishes,
-// pool/order seeds, etc. live in the app's `setup:` below; deepbook
-// itself is imported via the shared `imports` plugin (declared in
-// `plugins:`).
+// Wallet app — multi-coin wallet UI + DeepBook v3 swap. DeepBook itself
+// is published + pools created by the `deepbook()` plugin; the
+// app-level `setup:` handles the mock coin publishes, the supply mint,
+// and a static order seeding (PR 14 will replace the static seed with
+// a deepbook market-maker for continuous liquidity).
 
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,11 +11,14 @@ import {
 	type Registry,
 	type RegistryQuery,
 	codegen,
+	deepbook,
+	deepbookNs,
 	defineDevstackConfig,
 	frontend,
-	imports,
 	publishMove,
+	resolveCoinType,
 	seed,
+	SUI_COIN_TYPE,
 	sui,
 	walletServer,
 } from '@mysten-incubation/devstack';
@@ -25,7 +29,6 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const USDC_DIR = resolve(HERE, 'move/mock_usdc');
 const WETH_DIR = resolve(HERE, 'move/mock_weth');
 
-const SUI_COIN_TYPE = '0x2::sui::SUI';
 const SUI_CLOCK_OBJECT_ID = '0x6';
 
 // DeepBook constants from `deepbook::constants`. Used in seedOrders.
@@ -44,41 +47,29 @@ const WETH_DISTRIBUTION: ReadonlyArray<{ recipient: string; amount: bigint }> = 
 	{ recipient: 'carol', amount: 200_000_000n }, // 2 WETH
 ];
 
-interface PoolSpec {
-	name: string;
-	baseCoinKey: 'sui' | 'mock_usdc' | 'mock_weth';
-	quoteCoinKey: 'sui' | 'mock_usdc' | 'mock_weth';
-	tickSize: bigint;
-	lotSize: bigint;
-	minSize: bigint;
-}
-
-const POOLS: ReadonlyArray<PoolSpec> = [
+// Pool specs flow into the deepbook() plugin's `pools:` field. The
+// `@reg/<name>` references resolve at run time via
+// `registry.tokens.find(name).type` — the publishMove `onPublished`
+// hooks below register `musdc` and `mweth` before deepbook.pools runs
+// (see `poolNeeds:` on the deepbook plugin).
+const POOL_SPECS = [
 	{
 		name: 'sui_usdc',
-		baseCoinKey: 'sui',
-		quoteCoinKey: 'mock_usdc',
+		base: 'sui',
+		quote: '@reg/musdc',
 		tickSize: 1_000n, // 0.001 mUSDC per SUI (quote, 6 dec)
 		lotSize: 100_000_000n, // 0.1 SUI step (base, 9 dec)
 		minSize: 1_000_000_000n, // 1 SUI minimum (base, 9 dec)
 	},
 	{
 		name: 'sui_weth',
-		baseCoinKey: 'sui',
-		quoteCoinKey: 'mock_weth',
+		base: 'sui',
+		quote: '@reg/mweth',
 		tickSize: 100n, // 0.000001 mWETH per SUI (quote, 8 dec)
 		lotSize: 100_000_000n, // 0.1 SUI step (base, 9 dec)
 		minSize: 1_000_000_000n, // 1 SUI minimum (base, 9 dec)
 	},
-];
-
-interface WalletPool {
-	name: string;
-	poolId: string;
-	objectType: string;
-	baseCoinType: string;
-	quoteCoinType: string;
-}
+] as const;
 
 interface WalletBalanceManager {
 	name: string;
@@ -87,21 +78,8 @@ interface WalletBalanceManager {
 }
 
 interface WalletNamespace {
-	pools: RegistryQuery<WalletPool>;
 	balanceManager: RegistryQuery<WalletBalanceManager>;
 }
-
-const coinTypeFor = (registry: Registry, key: 'sui' | 'mock_usdc' | 'mock_weth'): string => {
-	if (key === 'sui') return SUI_COIN_TYPE;
-	const pkg = registry.packages.require(key);
-	return `${pkg.packageId}::${key}::${key.toUpperCase()}`;
-};
-
-const expectedPoolType = (deepbookPkg: string, registry: Registry, spec: PoolSpec): string => {
-	const base = coinTypeFor(registry, spec.baseCoinKey);
-	const quote = coinTypeFor(registry, spec.quoteCoinKey);
-	return `${deepbookPkg}::pool::Pool<${base}, ${quote}>`;
-};
 
 export default defineDevstackConfig({
 	app: 'wallet',
@@ -113,20 +91,13 @@ export default defineDevstackConfig({
 	},
 	plugins: [
 		sui({ version: 'devnet-v1.71.0', rpcPort: 9376, faucetPort: 9765 }),
-		imports({
-			packages: [
-				{
-					name: 'deepbook',
-					// Pinned to v7.0.0 (rev 190ab8fd, also tagged testnet-v19.0.0).
-					repo: 'MystenLabs/deepbookv3',
-					rev: 'v7.0.0',
-					subdir: 'packages/deepbook',
-					capture: {
-						registryId: '::registry::Registry',
-						adminCapId: '::registry::DeepbookAdminCap',
-					},
-				},
-			],
+		deepbook({
+			rev: 'v7.0.0',
+			pools: POOL_SPECS,
+			// Pool creation depends on the mock-coin publishes below registering
+			// `musdc` / `mweth` tokens before deepbook.pools' run resolves the
+			// `@reg/<name>` references.
+			poolNeeds: ['wallet-setup.usdc', 'wallet-setup.weth'],
 		}),
 		codegen(),
 		walletServer({ port: 9420 }),
@@ -153,7 +124,10 @@ export default defineDevstackConfig({
 		}),
 		publishMove({
 			name: 'weth',
-			needs: ['sui.accounts'],
+			// Serialized after `usdc` so both publishes don't equivocate on the
+			// publisher's gas object. See notes/friction.md — same-signer
+			// transactions should serialize automatically at the reconciler.
+			needs: ['usdc'],
 			registryAs: 'mock_weth',
 			path: WETH_DIR,
 			capture: {
@@ -170,13 +144,12 @@ export default defineDevstackConfig({
 			},
 		}),
 		// publisher mints the initial USDC + WETH supply to alice/bob/
-		// carol per the configured distribution. Custom getStatus checks
-		// each recipient's balance against the seed amount — chain-state
-		// validation, not a marker file (a chain reset would invalidate
-		// state but leave a marker stale).
+		// carol per the configured distribution. Also depends on
+		// `deepbook.pools` so it doesn't equivocate on publisher's gas
+		// object — same-signer serialization (see notes/friction.md).
 		seed({
 			name: 'seedTokens',
-			needs: ['usdc', 'weth'],
+			needs: ['usdc', 'weth', 'deepbook.pools'],
 			inputs: {
 				usdc: USDC_DISTRIBUTION.map((d) => ({ ...d, amount: d.amount.toString() })),
 				weth: WETH_DISTRIBUTION.map((d) => ({ ...d, amount: d.amount.toString() })),
@@ -251,109 +224,16 @@ export default defineDevstackConfig({
 				await client.waitForTransaction({ digest: result.digest });
 			},
 		}),
-		// publisher (deepbook admin) registers BalanceManagerMap and
-		// creates SUI/mUSDC + SUI/mWETH whitelisted pools (no DEEP fees).
-		seed({
-			name: 'seedPools',
-			// `seedTokens` is a soft dependency: the reconciler runs
-			// independent actions in parallel (default concurrency 4) and
-			// both seeds sign with the publisher account, so without this
-			// edge they race on the publisher's gas object and one of them
-			// fails with "already locked by a different transaction".
-			needs: ['imports.deepbook', 'usdc', 'weth', 'seedTokens'],
-			inputs: { pools: POOLS.map((p) => p.name) },
-			getStatus: async (ctx) => {
-				const deepbook = ctx.registry.packages.find('deepbook');
-				if (deepbook === undefined) return { ok: false, detail: 'deepbook missing' };
-				const ns = ctx.registry.ns<WalletNamespace>('wallet');
-				const client = createLocalSuiClient(ctx.registry.services.require('sui-rpc').url);
-				for (const spec of POOLS) {
-					const cached = ns.pools.find(spec.name);
-					if (cached === undefined) return { ok: false, detail: `pool ${spec.name} missing` };
-					const expected = expectedPoolType(deepbook.packageId, ctx.registry, spec);
-					if (cached.objectType !== expected) {
-						return { ok: false, detail: `pool ${spec.name} type stale` };
-					}
-					const live = await client.getObject({ id: cached.poolId });
-					if (live.data === null || live.data === undefined) {
-						return { ok: false, detail: `pool ${cached.poolId} not on chain` };
-					}
-				}
-				return { ok: true, detail: `${POOLS.length} pools live` };
-			},
-			run: async (ctx) => {
-				const publisher = ctx.accounts.get('publisher');
-				const client = createLocalSuiClient(ctx.registry.services.require('sui-rpc').url);
-				const deepbook = ctx.registry.packages.require('deepbook');
-				const registryId = deepbook.captured.registryId;
-				const adminCapId = deepbook.captured.adminCapId;
-				if (registryId === undefined || adminCapId === undefined) {
-					throw new Error('seedPools: deepbook captures missing');
-				}
-
-				const tx = new Transaction();
-				tx.setGasBudget(500_000_000);
-				tx.moveCall({
-					target: `${deepbook.packageId}::registry::init_balance_manager_map`,
-					arguments: [tx.object(registryId), tx.object(adminCapId)],
-				});
-				for (const spec of POOLS) {
-					const baseType = coinTypeFor(ctx.registry, spec.baseCoinKey);
-					const quoteType = coinTypeFor(ctx.registry, spec.quoteCoinKey);
-					tx.moveCall({
-						target: `${deepbook.packageId}::pool::create_pool_admin`,
-						typeArguments: [baseType, quoteType],
-						arguments: [
-							tx.object(registryId),
-							tx.pure.u64(spec.tickSize),
-							tx.pure.u64(spec.lotSize),
-							tx.pure.u64(spec.minSize),
-							tx.pure.bool(true), // whitelisted_pool — disables DEEP fee
-							tx.pure.bool(false), // stable_pool
-							tx.object(adminCapId),
-						],
-					});
-				}
-				const result = await client.signAndExecuteTransaction({
-					signer: publisher,
-					transaction: tx,
-					options: { showEffects: true, showObjectChanges: true },
-				});
-				if (result.effects?.status.status !== 'success') {
-					throw new Error(`seedPools: tx failed: ${result.effects?.status.error ?? 'unknown'}`);
-				}
-				await client.waitForTransaction({ digest: result.digest });
-
-				const ns = ctx.registry.ns<WalletNamespace>('wallet');
-				for (const spec of POOLS) {
-					const baseType = coinTypeFor(ctx.registry, spec.baseCoinKey);
-					const quoteType = coinTypeFor(ctx.registry, spec.quoteCoinKey);
-					const expected = `${deepbook.packageId}::pool::Pool<${baseType}, ${quoteType}>`;
-					const found = (result.objectChanges ?? []).find(
-						(c) => c.type === 'created' && 'objectType' in c && c.objectType === expected,
-					);
-					if (found === undefined || found.type !== 'created') {
-						throw new Error(`seedPools: created Pool object missing for ${spec.name}`);
-					}
-					ns.pools.register({
-						name: spec.name,
-						poolId: found.objectId,
-						objectType: expected,
-						baseCoinType: baseType,
-						quoteCoinType: quoteType,
-					});
-				}
-			},
-		}),
 		// alice creates a fresh BalanceManager, deposits SUI/mUSDC/mWETH,
 		// and posts 6 limit orders per pool so swaps in the UI have
-		// something to take.
+		// something to take. PR 14 replaces this with a deepbook
+		// market-maker action for continuous liquidity.
 		seed({
 			name: 'seedOrders',
-			needs: ['seedPools', 'seedTokens'],
+			needs: ['deepbook.pools', 'seedTokens'],
 			inputs: {
-				pools: POOLS.map((p) => p.name),
-				perSide: 3, // 3 asks + 3 bids per pool
+				pools: POOL_SPECS.map((p) => p.name),
+				perSide: 3,
 			},
 			getStatus: async (ctx) => {
 				const ns = ctx.registry.ns<WalletNamespace>('wallet');
@@ -374,30 +254,33 @@ export default defineDevstackConfig({
 				const alice = ctx.accounts.get('alice');
 				const aliceAddr = alice.toSuiAddress();
 				const client = createLocalSuiClient(ctx.registry.services.require('sui-rpc').url);
-				const deepbook = ctx.registry.packages.require('deepbook');
+				const deepbookPkg = ctx.registry.packages.require('deepbook');
 
-				const ns = ctx.registry.ns<WalletNamespace>('wallet');
-				const poolEntries = POOLS.map((spec) => ({ spec, cached: ns.pools.require(spec.name) }));
+				const dbNs = deepbookNs(ctx.registry);
+				const poolEntries = POOL_SPECS.map((spec) => ({
+					spec,
+					cached: dbNs.pools.require(spec.name),
+				}));
 
-				const usdcType = coinTypeFor(ctx.registry, 'mock_usdc');
-				const wethType = coinTypeFor(ctx.registry, 'mock_weth');
+				const usdcType = resolveCoinType(ctx.registry, '@reg/musdc');
+				const wethType = resolveCoinType(ctx.registry, '@reg/mweth');
 
 				const tx = new Transaction();
 				tx.setGasBudget(1_000_000_000);
 
 				const bm = tx.moveCall({
-					target: `${deepbook.packageId}::balance_manager::new`,
+					target: `${deepbookPkg.packageId}::balance_manager::new`,
 					arguments: [],
 				});
 
 				// 100 SUI per pool (base) — total split from gas.
 				const depositSui = 100_000_000_000n;
-				const totalSui = depositSui * BigInt(POOLS.length);
+				const totalSui = depositSui * BigInt(POOL_SPECS.length);
 				const [suiCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(totalSui)]);
 				if (suiCoin === undefined)
 					throw new Error('seedOrders: splitCoins(gas) returned no result');
 				tx.moveCall({
-					target: `${deepbook.packageId}::balance_manager::deposit`,
+					target: `${deepbookPkg.packageId}::balance_manager::deposit`,
 					typeArguments: [SUI_COIN_TYPE],
 					arguments: [bm, suiCoin],
 				});
@@ -424,29 +307,28 @@ export default defineDevstackConfig({
 					const [split] = tx.splitCoins(primaryRef, [tx.pure.u64(amount)]);
 					if (split === undefined) throw new Error('seedOrders: splitCoins returned no result');
 					tx.moveCall({
-						target: `${deepbook.packageId}::balance_manager::deposit`,
+						target: `${deepbookPkg.packageId}::balance_manager::deposit`,
 						typeArguments: [coinType],
 						arguments: [bm, split],
 					});
 				}
 
 				const proof = tx.moveCall({
-					target: `${deepbook.packageId}::balance_manager::generate_proof_as_owner`,
+					target: `${deepbookPkg.packageId}::balance_manager::generate_proof_as_owner`,
 					arguments: [bm],
 				});
 
 				const expireMs = BigInt(Date.now() + 24 * 60 * 60 * 1000);
 				let clientOrderId = 1;
 				for (const { spec, cached } of poolEntries) {
-					// Mid prices are arbitrary stand-ins; step = tickSize. Sized so 6
-					// orders (3 asks + 3 bids) fit per pool.
+					// Mid prices are arbitrary stand-ins; step = tickSize.
 					const mid = spec.name === 'sui_usdc' ? 3_500_000n : 10_000n;
 					for (let i = 1; i <= 3; i++) {
 						for (const isBid of [false, true] as const) {
 							const offset = spec.tickSize * BigInt(i);
 							const price = isBid ? mid - offset : mid + offset;
 							tx.moveCall({
-								target: `${deepbook.packageId}::pool::place_limit_order`,
+								target: `${deepbookPkg.packageId}::pool::place_limit_order`,
 								typeArguments: [cached.baseCoinType, cached.quoteCoinType],
 								arguments: [
 									tx.object(cached.poolId),
@@ -480,14 +362,14 @@ export default defineDevstackConfig({
 				await client.waitForTransaction({ digest: result.digest });
 
 				// Locate the transferred BalanceManager so getStatus can short-circuit.
-				const bmType = `${deepbook.packageId}::balance_manager::BalanceManager`;
+				const bmType = `${deepbookPkg.packageId}::balance_manager::BalanceManager`;
 				const bmObj = (result.objectChanges ?? []).find(
 					(c) => c.type === 'created' && 'objectType' in c && c.objectType === bmType,
 				);
 				if (bmObj === undefined || bmObj.type !== 'created') {
 					throw new Error('seedOrders: BalanceManager object missing from changes');
 				}
-				ns.balanceManager.register({
+				ctx.registry.ns<WalletNamespace>('wallet').balanceManager.register({
 					name: 'alice',
 					objectId: bmObj.objectId,
 					owner: aliceAddr,

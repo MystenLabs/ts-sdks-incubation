@@ -113,6 +113,18 @@ export {
 export { SEAL_REV } from './plugins/seal/build.js';
 export { codegen, type CodegenPluginOptions } from './plugins/codegen/index.js';
 export {
+	deepbook,
+	deepbookNs,
+	buildDeepbookSwapTx,
+	resolveCoinType,
+	SUI_COIN_TYPE,
+	type BuildSwapTxOptions,
+	type DeepbookNamespace,
+	type DeepbookPluginOptions,
+	type DeepbookPool,
+	type DeepbookPoolSpec,
+} from './plugins/deepbook/index.js';
+export {
 	imports,
 	withRecursiveDeps,
 	type ImportSpec,
