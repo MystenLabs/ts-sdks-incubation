@@ -5,9 +5,9 @@
 import {
 	codegen,
 	defineDevstackConfig,
+	frontend,
 	imports,
 	sui,
-	vite,
 	walletServer,
 } from '@mysten-incubation/devstack';
 import { walletPlugin } from './walletPlugin.ts';
@@ -47,6 +47,6 @@ export default defineDevstackConfig({
 		walletPlugin(),
 		codegen(),
 		walletServer({ port: 9420 }),
-		vite({ port: 5174 }),
+		frontend({ port: 5174 }),
 	],
 });

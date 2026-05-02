@@ -31,8 +31,8 @@ import { definePublishAction } from '../../actions/publish.js';
 import { register } from '../../actions/register.js';
 import { service } from '../../actions/service.js';
 import {
+	type ActionRunContext,
 	type LocalnetActionRunContext,
-	type Registry,
 	type RegistryQuery,
 	requireLocalnetCtx,
 } from '../../core/types.js';
@@ -54,6 +54,7 @@ import { appNetworkName } from '../sui/index.js';
 import {
 	SEAL_IMAGE_MOVE_PACKAGE_PATH,
 	SEAL_REV,
+	SEAL_SDK_VERSION,
 	ensureSealImage,
 	hostDockerPlatform,
 	sealImageTag,
@@ -93,11 +94,22 @@ export interface SealPluginOptions {
 	/** Host port the key-server's HTTP API binds on. Frontend `SealClient`
 	 * talks to this URL. Default `2024`. */
 	apiPort?: number;
+	/** On-chain `KeyServer.name` field + registry record key. Default
+	 * `devstack-local`. Overriding lets two stacks on one host point at
+	 * distinct on-chain `KeyServer` objects without colliding on the
+	 * registry key. */
+	keyServerName?: string;
+	/** Optional pre-generated BLS12-381 master key. Skips the in-image
+	 * `seal-cli genkey` invocation and the on-disk cache, useful for
+	 * deterministic test fixtures. */
+	master?: { masterKey: string; publicKey: string };
 }
 
 export const seal = (opts: SealPluginOptions = {}) => {
 	const rev = opts.rev ?? SEAL_REV;
 	const apiPort = opts.apiPort ?? KEY_SERVER_CONTAINER_PORT;
+	const keyServerName = opts.keyServerName ?? SEAL_KEY_SERVER_NAME;
+	const masterOverride = opts.master;
 	const imageTag = sealImageTag(rev);
 	const platform = hostDockerPlatform();
 	const keyServerUrl = `http://127.0.0.1:${apiPort}`;
@@ -143,10 +155,14 @@ export const seal = (opts: SealPluginOptions = {}) => {
 			register({
 				name: 'register',
 				needs: ['publish', 'build'],
-				inputs: { url: keyServerUrl, keyServerName: SEAL_KEY_SERVER_NAME, rev },
+				inputs: { url: keyServerUrl, keyServerName, rev },
+				// Reconciler invokes this on every successful path (cold run +
+				// warm-path skip), so the in-memory `services` registry stays
+				// populated without `getStatus` having to re-register manually.
+				provides: { registry: (ctx) => registerKeyServerService(ctx, apiPort) },
 				getStatus: async (ctx) => {
 					const ns = ctx.registry.ns<SealNamespace>('seal');
-					const cached = ns.keyServer.find(SEAL_KEY_SERVER_NAME);
+					const cached = ns.keyServer.find(keyServerName);
 					if (cached === undefined) return { ok: false, detail: 'no cached KeyServer' };
 					const sealPkg = ctx.registry.packages.find('seal');
 					if (sealPkg === undefined) return { ok: false, detail: 'seal package not registered' };
@@ -161,14 +177,17 @@ export const seal = (opts: SealPluginOptions = {}) => {
 					if (live.data === null || live.data === undefined) {
 						return { ok: false, detail: `KeyServer ${cached.objectId} not on chain` };
 					}
-					// Re-register service on warm path so the registry stays populated
-					// even when the action skips its run (mirrors sui.localnet).
-					registerKeyServerService(ctx.registry, apiPort);
 					return { ok: true, detail: cached.objectId };
 				},
 				run: async (ctx) => {
 					requireLocalnetCtx(ctx);
-					await registerSealKeyServer({ ctx, imageTag, apiPort, keyServerUrl });
+					await registerSealKeyServer({
+						ctx,
+						imageTag,
+						keyServerUrl,
+						keyServerName,
+						masterOverride,
+					});
 				},
 			}),
 
@@ -176,6 +195,8 @@ export const seal = (opts: SealPluginOptions = {}) => {
 				name: 'key-server',
 				needs: ['register'],
 				inputs: { image: imageTag, apiPort },
+				// See `register` above — same warm-path rehydrate pattern.
+				provides: { registry: (ctx) => registerKeyServerService(ctx, apiPort) },
 				getStatus: async (ctx) => {
 					requireLocalnetCtx(ctx);
 					const containerName = keyServerContainerName(ctx.appName, ctx.stack);
@@ -183,7 +204,6 @@ export const seal = (opts: SealPluginOptions = {}) => {
 					if (info === null) return { ok: false, detail: 'not present' };
 					if (!info.running) return { ok: false, detail: info.state };
 					if (info.healthy === true) {
-						registerKeyServerService(ctx.registry, apiPort);
 						return { ok: true, detail: `healthy on :${apiPort}` };
 					}
 					return { ok: false, detail: `${info.state} (health: ${healthLabel(info.healthy)})` };
@@ -195,8 +215,7 @@ export const seal = (opts: SealPluginOptions = {}) => {
 						const live = await inspectContainer(containerName);
 						if (live?.running === true) await stopContainer(containerName);
 					});
-					await runKeyServerContainer({ ctx, imageTag, platform, apiPort });
-					registerKeyServerService(ctx.registry, apiPort);
+					await runKeyServerContainer({ ctx, imageTag, platform, apiPort, keyServerName });
 				},
 			}),
 		],
@@ -206,28 +225,35 @@ export const seal = (opts: SealPluginOptions = {}) => {
 interface RegisterSealOptions {
 	ctx: LocalnetActionRunContext;
 	imageTag: string;
-	apiPort: number;
 	keyServerUrl: string;
+	keyServerName: string;
+	masterOverride: { masterKey: string; publicKey: string } | undefined;
 }
 
 async function registerSealKeyServer({
 	ctx,
 	imageTag,
-	apiPort,
 	keyServerUrl,
+	keyServerName,
+	masterOverride,
 }: RegisterSealOptions): Promise<void> {
 	const sealPkg = ctx.registry.packages.require('seal');
 	const publisher = ctx.accounts.get('publisher');
 	const client = createLocalSuiClient(ctx.registry.services.require('sui-rpc').url);
 
-	const keys = await ensureSealMasterKey({ imageTag, appDir: ctx.appDir, stack: ctx.stack });
+	const keys = await ensureSealMasterKey({
+		imageTag,
+		appDir: ctx.appDir,
+		stack: ctx.stack,
+		override: masterOverride,
+	});
 	const pkBytes = decodePrefixedHex(keys.publicKey);
 
 	const tx = new Transaction();
 	tx.moveCall({
 		target: `${sealPkg.packageId}::key_server::create_and_transfer_v2_independent_server`,
 		arguments: [
-			tx.pure.string(SEAL_KEY_SERVER_NAME),
+			tx.pure.string(keyServerName),
 			tx.pure.string(keyServerUrl),
 			tx.pure.u8(KEY_TYPE_BONEH_FRANKLIN_BLS12381),
 			tx.pure.vector('u8', Array.from(pkBytes)),
@@ -269,13 +295,12 @@ async function registerSealKeyServer({
 
 	const ns = ctx.registry.ns<SealNamespace>('seal');
 	ns.keyServer.register({
-		name: SEAL_KEY_SERVER_NAME,
+		name: keyServerName,
 		objectId,
 		url: keyServerUrl,
 		publicKey: keys.publicKey,
 		sealPackageId: sealPkg.packageId,
 	});
-	registerKeyServerService(ctx.registry, apiPort);
 }
 
 interface RunKeyServerOptions {
@@ -283,6 +308,7 @@ interface RunKeyServerOptions {
 	imageTag: string;
 	platform: string;
 	apiPort: number;
+	keyServerName: string;
 }
 
 async function runKeyServerContainer({
@@ -290,9 +316,10 @@ async function runKeyServerContainer({
 	imageTag,
 	platform,
 	apiPort,
+	keyServerName,
 }: RunKeyServerOptions): Promise<void> {
 	const ns = ctx.registry.ns<SealNamespace>('seal');
-	const cached = ns.keyServer.require(SEAL_KEY_SERVER_NAME);
+	const cached = ns.keyServer.require(keyServerName);
 	const containerName = keyServerContainerName(ctx.appName, ctx.stack);
 	const network = appNetworkName(ctx.appName, ctx.stack);
 	const configPath = sealConfigPath(ctx.appDir, ctx.stack);
@@ -333,7 +360,7 @@ async function runKeyServerContainer({
 				'CMD-SHELL',
 				[
 					"curl -sf -H 'Client-Sdk-Type: typescript'",
-					"-H 'Client-Sdk-Version: 0.4.18'",
+					`-H 'Client-Sdk-Version: ${SEAL_SDK_VERSION}'`,
 					'-H "Request-Id: $(cat /proc/sys/kernel/random/uuid)"',
 					`'http://localhost:${KEY_SERVER_CONTAINER_PORT}/v1/service?service_id=${cached.objectId}'`,
 					'> /dev/null || exit 1',
@@ -358,8 +385,14 @@ async function ensureSealMasterKey(opts: {
 	imageTag: string;
 	appDir: string;
 	stack: string;
+	override: CachedKeys | undefined;
 }): Promise<CachedKeys> {
 	const path = masterKeyPath(opts.appDir, opts.stack);
+	if (opts.override !== undefined) {
+		mkdirSync(join(stackDir(opts.appDir, opts.stack), '.keys'), { recursive: true });
+		writeFileSync(path, `${JSON.stringify(opts.override, null, 2)}\n`);
+		return opts.override;
+	}
 	const cached = readMasterKeyFile(path);
 	if (cached !== null) return cached;
 
@@ -416,8 +449,13 @@ function writeSealConfigYaml(opts: {
 	writeFileSync(path, yaml);
 }
 
-function registerKeyServerService(registry: Registry, apiPort: number): void {
-	registry.services.register({
+/** Shared `provides.registry` hook for both `seal.register` and
+ * `seal.key-server`. Reconciler invokes this on every successful path —
+ * cold run completion AND warm-path skips — so the in-memory `services`
+ * registry is populated even when neither action's `run` body executed
+ * this cycle. Idempotent: `services.register` overwrites by name. */
+function registerKeyServerService(ctx: ActionRunContext, apiPort: number): void {
+	ctx.registry.services.register({
 		name: 'seal-key-server',
 		kind: 'seal-key-server',
 		url: `http://127.0.0.1:${apiPort}`,
