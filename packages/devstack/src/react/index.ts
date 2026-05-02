@@ -20,11 +20,13 @@ export { useDevstackDeployed, type UseDevstackDeployedOptions } from './use-devs
 export { bindPackage, type CodegenModule } from './bind-package.js';
 export type { DevstackProviderState } from './types.js';
 export {
+	defaultMvrName,
 	localnetDappKitConfig,
 	localnetMvrOverrides,
 	type LocalnetDappKitConfig,
 	type LocalnetDappKitConfigOptions,
 	type LocalnetMvrOverrides,
+	type LocalnetMvrOverridesOptions,
 } from './create-devstack-dapp-kit.js';
 export {
 	localnetWalrusOptions,

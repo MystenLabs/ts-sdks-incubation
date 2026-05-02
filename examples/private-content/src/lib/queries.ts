@@ -1,28 +1,11 @@
-import { bindPackage, useDevstackManifest } from '@mysten-incubation/devstack/react';
 import { useCurrentClient, useDAppKit } from '@mysten/dapp-kit-react';
 import type { Transaction } from '@mysten/sui/transactions';
-import { useMemo } from 'react';
 import { useMutation, useQuery, useQueryClient, type UseMutationResult } from '@tanstack/react-query';
 
 import { deployment } from '../generated/deployment.js';
 import { Cap as CapStruct, File as FileStruct } from '../generated/sui/vault/vault.js';
 import { bytesToHex } from './format.js';
 import { bytesToBlobId } from './walrus.js';
-
-/**
- * Bind a codegen module against the live `packageId` from the manifest
- * for `name`. Returns the same module with `'@local-pkg/<name>'`
- * placeholders substituted by the live id at builder-call time.
- *
- * Production version (mainnet/testnet) reads the id from a constants
- * file instead of the manifest — same call shape downstream.
- */
-export function usePackage<M extends Record<string, unknown>>(module: M, name: string): M {
-	const manifest = useDevstackManifest();
-	const packages = manifest.registry.packages as Array<{ name: string; packageId: string }>;
-	const id = packages.find((p) => p.name === name)?.packageId ?? '0x0';
-	return useMemo(() => bindPackage(module, id), [module, id]) as M;
-}
 
 export interface UseSignAndExecuteOptions {
 	/** Query keys to invalidate on a successful tx. */

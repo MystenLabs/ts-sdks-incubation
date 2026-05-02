@@ -210,6 +210,38 @@ than the dev-server PID).
   `build:watch` terminal. Nice but invalidates published-only
   testing flows; trade-off worth thinking about before shipping.
 
+## Codegen — validate the `package` placeholder against MVR rules
+
+`@mysten/codegen` 0.10.4's CLI fallback for local packages emits
+`package: '@local-pkg/' + basename(trimmed)` — passing the Move
+package's directory name through unchanged. Move uses snake_case;
+MVR's `NAME_PATTERN = /^([a-z0-9]+(?:-[a-z0-9]+)*)$/` rejects
+underscores in app names. The CLI never validates the placeholder
+against `isValidNamedPackage` before writing it into the emitted
+TypeScript, so apps end up with a placeholder that fails the
+SuiClient's `mvr.overrides` validation at runtime.
+
+The local-package config schema uses `z.string()` (no validation),
+which is what makes the workaround in the devstack codegen plugin
+possible (we pass an explicit `package: '@local/<kebab>'` via the
+JS API). But the CLI's default and the schema both should require
+valid MVR names so apps that DON'T go through the devstack plugin
+get a clear error at codegen time instead of a silent runtime
+failure on the first transaction submit.
+
+Two changes to land upstream:
+
+1. `localPackageSchema` in `@mysten/codegen`'s `config.ts` should
+   refine `package` with `isValidNamedPackage`, the same way
+   `onChainPackageSchema` does. Catches snake_case at config-load
+   time with an actionable error.
+2. The CLI fallback in `cli/commands/generate/impl.ts` should
+   either reject snake_case basenames OR kebabize them (probably
+   reject — silent rewriting hides the user's intent).
+
+Without those, the devstack plugin's JS-API workaround stays
+load-bearing and can't move out.
+
 ## Methodology — extract from evidence, not anticipation
 
 Every deferred item above was deliberately left for a future cycle
