@@ -30,7 +30,7 @@ type Network = 'localnet' | 'testnet' | 'mainnet';
 interface ManifestRegistryShape {
 	registry?: {
 		services?: Array<{ name: string; url: string }>;
-		packages?: Array<{ name: string; packageId: string }>;
+		packages?: Array<{ name: string; packageId: string; mvrPlaceholder?: string }>;
 	};
 }
 
@@ -39,34 +39,12 @@ export interface LocalnetMvrOverrides {
 }
 
 /**
- * Default MVR-shape mapper. Move package names typically use
- * snake_case (`mock_usdc`); MVR app-name validation requires kebab
- * (`mock-usdc`). The default kebabizes and prefixes `@local/`.
- *
- * Mirrors the same default in the `codegen()` plugin's `mvrName`
- * option. Apps with a custom org override BOTH:
- *
- *     codegen({ mvrName: name => `@arena/${kebab(name)}` })
- *     localnetDappKitConfig(manifest, { mvrName: name => `@arena/${kebab(name)}` })
- */
-export function defaultMvrName(pkgName: string): string {
-	return `@local/${pkgName.replace(/_/g, '-')}`;
-}
-
-export interface LocalnetMvrOverridesOptions {
-	/** Map a registry package name to its MVR-shape placeholder. Must
-	 * agree with the matching option on the `codegen()` plugin so the
-	 * codegen-emitted `tx.moveCall({ package: ... })` placeholder lines
-	 * up with the override key. Defaults to {@link defaultMvrName}. */
-	mvrName?: (pkgName: string) => string;
-}
-
-/**
  * Build MVR-style package overrides from the devstack manifest. Each
- * registry package becomes a `mvrName(pkgName) → packageId` entry.
- * Spread into `SuiGrpcClient`'s `mvr.overrides` so the SDK's
- * `namedPackagesPlugin` resolves codegen-emitted placeholders to live
- * `packageId`s at transaction build time.
+ * package whose `mvrPlaceholder` was published by the `codegen()` plugin
+ * becomes a `placeholder → packageId` entry. Spread into
+ * `SuiGrpcClient`'s `mvr.overrides` so the SDK's `namedPackagesPlugin`
+ * resolves codegen-emitted placeholders to live `packageId`s at
+ * transaction build time.
  *
  *     new SuiGrpcClient({
  *       network, baseUrl,
@@ -77,15 +55,13 @@ export interface LocalnetMvrOverridesOptions {
  * localnet network — most apps just spread that helper and don't call
  * this directly.
  */
-export function localnetMvrOverrides(
-	manifest: unknown,
-	opts: LocalnetMvrOverridesOptions = {},
-): LocalnetMvrOverrides {
-	const mvrName = opts.mvrName ?? defaultMvrName;
+export function localnetMvrOverrides(manifest: unknown): LocalnetMvrOverrides {
 	const m = manifest as ManifestRegistryShape | undefined;
 	const packages: Record<string, string> = {};
 	for (const p of m?.registry?.packages ?? []) {
-		packages[mvrName(p.name)] = p.packageId;
+		if (p.mvrPlaceholder !== undefined) {
+			packages[p.mvrPlaceholder] = p.packageId;
+		}
 	}
 	return { packages };
 }
@@ -112,11 +88,6 @@ export interface LocalnetDappKitConfigOptions {
 	networks?: Partial<Record<Network, string>>;
 	/** Pass-through to dapp-kit. Default true. */
 	enableBurnerWallet?: boolean;
-	/** MVR-name mapper for the SuiClient's `mvr.overrides.packages`.
-	 * Must match the `mvrName` option passed to the `codegen()` plugin
-	 * so the codegen-emitted `@org/app-name` placeholders agree with
-	 * the override keys. Defaults to {@link defaultMvrName}. */
-	mvrName?: (pkgName: string) => string;
 }
 
 /**
@@ -145,7 +116,7 @@ export function localnetDappKitConfig(
 	const networks: Network[] = Array.from(
 		new Set<Network>(['localnet', ...(opts.additionalNetworks ?? [])]),
 	);
-	const mvrOverrides = localnetMvrOverrides(manifest, { mvrName: opts.mvrName });
+	const mvrOverrides = localnetMvrOverrides(manifest);
 	return {
 		defaultNetwork: 'localnet',
 		networks,

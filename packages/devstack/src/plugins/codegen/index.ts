@@ -20,11 +20,12 @@
 // codegen output.
 //
 // Each package's emitted builders use the `mvrName(pkgName)` string as
-// their `package` placeholder (e.g. `@local/connect-four`). The matching
-// `localnetMvrOverrides(manifest)` helper produces the same keys so the
-// SDK's `namedPackagesPlugin` resolves them to live `packageId`s at
-// transaction build time. Apps wire it via `localnetDappKitConfig` and
-// no longer need `bindPackage`.
+// their `package` placeholder (e.g. `@local/connect-four`). The plugin
+// publishes the resolved placeholder onto the package's registry record
+// (`Package.mvrPlaceholder`); `localnetMvrOverrides(manifest)` reads it
+// back so the SDK's `namedPackagesPlugin` resolves the placeholder to
+// live `packageId`s at transaction build time. Apps wire it via
+// `localnetDappKitConfig` and no longer need `bindPackage`.
 
 import { execSync, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, statSync } from 'node:fs';
@@ -77,6 +78,12 @@ export const codegen = (opts: CodegenPluginOptions = {}) => {
 				// `mvrName('_')` — distinct outputs across mappers without
 				// collision against any real package name.
 				inputs: { output, mvrShape: mvrName('_') },
+				provides: {
+					// Republish the placeholder onto every codegen-able package
+					// each successful cycle, so a fresh manifest hydration sees
+					// the placeholder even if `run` was skipped.
+					registry: (ctx) => publishPlaceholders(ctx, mvrName),
+				},
 				getStatus: async (ctx) => {
 					const targets = codegenTargets(ctx.registry.packages.list());
 					if (targets.length === 0) return { ok: true, detail: 'no codegen-able packages' };
@@ -126,6 +133,23 @@ function codegenTargets(pkgs: Package[]): CodegenTarget[] {
 		out.push({ name: pkg.name, path: pkg.path });
 	}
 	return out;
+}
+
+/** Mirror the codegen-emitted placeholder onto every codegen-able
+ * package's registry record so `localnetMvrOverrides(manifest)` can
+ * derive the override map without re-running the mapper. Idempotent —
+ * re-registers each package with its existing fields plus
+ * `mvrPlaceholder`. */
+function publishPlaceholders(
+	ctx: ActionRunContext,
+	mvrName: (pkgName: string) => string,
+): void {
+	for (const pkg of ctx.registry.packages.list()) {
+		if (pkg.path === undefined) continue;
+		const placeholder = mvrName(pkg.name);
+		if (pkg.mvrPlaceholder === placeholder) continue;
+		ctx.registry.packages.register({ ...pkg, mvrPlaceholder: placeholder });
+	}
 }
 
 function resolvedOutputDir(appDir: string, output: string): string {

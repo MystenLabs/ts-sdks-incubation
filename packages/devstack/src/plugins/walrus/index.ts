@@ -33,9 +33,10 @@ import { resolve } from 'node:path';
 import { Transaction } from '@mysten/sui/transactions';
 
 import { buildImage } from '../../actions/build.js';
+import { containerService } from '../../actions/container-service.js';
+import { job } from '../../actions/job.js';
 import { register } from '../../actions/register.js';
 import { seed } from '../../actions/seed.js';
-import { service } from '../../actions/service.js';
 import { createLocalSuiClient } from '../../helpers/sui-client.js';
 import {
 	type Action,
@@ -53,9 +54,7 @@ import {
 	readContainerFile,
 	removeContainer,
 	runContainer,
-	stopContainer,
 	waitForContainerExit,
-	waitForHealthy,
 } from '../sui/docker.js';
 import { appNetworkName } from '../sui/index.js';
 import { WALRUS_REV, ensureWalrusImage, hostDockerPlatform, walrusImageTag } from './build.js';
@@ -186,7 +185,7 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 			);
 
 			actions.push(
-				service({
+				job({
 					name: 'deploy',
 					needs: ['build', 'sui.localnet'],
 					inputs: { image: imageTag, rev },
@@ -250,36 +249,18 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 				const ip = NODE_IPS[nodeIdx];
 				if (ip === undefined) throw new Error(`walrus: missing IP for node ${nodeIdx}`);
 				actions.push(
-					service({
+					containerService({
 						name: `node-${nodeIdx}`,
 						needs: ['deploy'],
 						inputs: { image: imageTag, ip, hostname: nodeHostname(nodeIdx) },
-						getStatus: async (ctx) => {
+						containerName: (ctx) => nodeContainerName(ctx.appName, ctx.stack, nodeIdx),
+						spec: (ctx) => {
 							requireLocalnetCtx(ctx);
-							const info = await inspectContainer(
-								nodeContainerName(ctx.appName, ctx.stack, nodeIdx),
-							);
-							if (info === null) return { ok: false, detail: 'not present' };
-							if (!info.running) return { ok: false, detail: info.state };
-							if (info.healthy === true) return { ok: true, detail: `healthy on ${ip}:9184` };
-							return { ok: false, detail: `${info.state} (health: ${healthLabel(info.healthy)})` };
-						},
-						run: async (ctx) => {
-							requireLocalnetCtx(ctx);
-							const containerName = nodeContainerName(ctx.appName, ctx.stack, nodeIdx);
-							const network = appNetworkName(ctx.appName, ctx.stack);
-							ctx.onShutdown?.(async () => {
-								const live = await inspectContainer(containerName);
-								if (live?.running === true) await stopContainer(containerName);
-							});
-							const info = await inspectContainer(containerName);
-							if (info?.running && info.healthy === true) return;
-							if (info !== null) await removeContainer(containerName);
-							await runContainer({
-								name: containerName,
+							return {
+								name: '',
 								image: imageTag,
 								platform,
-								network,
+								network: appNetworkName(ctx.appName, ctx.stack),
 								ip,
 								hostname: nodeHostname(nodeIdx),
 								restart: 'unless-stopped',
@@ -311,53 +292,30 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 									retries: 60,
 									startPeriodSeconds: 30,
 								},
-							});
-							await waitForHealthy(containerName, { timeoutMs: 5 * 60_000 });
+							};
 						},
 					}),
 				);
 			}
 
 			actions.push(
-				service({
+				containerService({
 					name: 'proxy',
 					needs: NODE_IPS.map((_, idx) => `node-${idx}`),
 					inputs: { ports: NODE_IPS.map((_, idx) => nodeHostPort(idx)) },
-					getStatus: async (ctx) => {
+					containerName: (ctx) => proxyContainerName(ctx.appName, ctx.stack),
+					spec: (ctx) => {
 						requireLocalnetCtx(ctx);
-						const containerName = proxyContainerName(ctx.appName, ctx.stack);
-						const info = await inspectContainer(containerName);
-						if (info?.running !== true) return { ok: false, detail: info?.state ?? 'absent' };
-						// Cheap probe: nginx returns 200 (proxied health endpoint of node-0).
-						const ok = await probeUrl(`http://localhost:${nodeHostPort(0)}/v1/api`);
-						return ok
-							? {
-									ok: true,
-									detail: `4 nodes on ${nodeHostPort(0)}-${nodeHostPort(NODE_COUNT - 1)}`,
-								}
-							: { ok: false, detail: 'nginx running but node-0 not responding' };
-					},
-					run: async (ctx) => {
-						requireLocalnetCtx(ctx);
-						const containerName = proxyContainerName(ctx.appName, ctx.stack);
-						const network = appNetworkName(ctx.appName, ctx.stack);
 						const configPath = writeProxyConfig({
 							appDir: ctx.appDir,
 							stack: ctx.stack,
 							ports: NODE_IPS.map((_, idx) => nodeHostPort(idx)),
 						});
-						ctx.onShutdown?.(async () => {
-							const live = await inspectContainer(containerName);
-							if (live?.running === true) await stopContainer(containerName);
-						});
-						const info = await inspectContainer(containerName);
-						if (info?.running === true) return;
-						if (info !== null) await removeContainer(containerName);
-						await runContainer({
-							name: containerName,
+						return {
+							name: '',
 							image: 'nginx:alpine',
 							platform,
-							network,
+							network: appNetworkName(ctx.appName, ctx.stack),
 							hostname: 'walrus-proxy',
 							restart: 'unless-stopped',
 							ports: NODE_IPS.map((_, idx) => ({
@@ -370,7 +328,18 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 								service: 'walrus-proxy',
 							}),
 							volumes: [`${configPath}:/etc/nginx/nginx.conf:ro`],
-						});
+						};
+					},
+					probe: async () => {
+						const ok = await probeUrl(`http://localhost:${nodeHostPort(0)}/v1/api`);
+						return ok
+							? {
+									ok: true,
+									detail: `4 nodes on ${nodeHostPort(0)}-${nodeHostPort(NODE_COUNT - 1)}`,
+								}
+							: { ok: false, detail: 'nginx running but node-0 not responding' };
+					},
+					postStart: async () => {
 						await waitForReachable(`http://localhost:${nodeHostPort(0)}/v1/api`, 30_000);
 					},
 				}),
@@ -715,8 +684,3 @@ async function fetchObjectType(rpcUrl: string, objectId: string): Promise<string
 	return json.result?.data?.type;
 }
 
-function healthLabel(h: boolean | undefined): string {
-	if (h === true) return 'healthy';
-	if (h === false) return 'unhealthy';
-	return 'no probe';
-}

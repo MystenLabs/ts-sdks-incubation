@@ -27,9 +27,9 @@ import { join } from 'node:path';
 import { Transaction } from '@mysten/sui/transactions';
 
 import { buildImage } from '../../actions/build.js';
+import { containerService } from '../../actions/container-service.js';
 import { definePublishAction } from '../../actions/publish.js';
 import { register } from '../../actions/register.js';
-import { service } from '../../actions/service.js';
 import {
 	type ActionRunContext,
 	type LocalnetActionRunContext,
@@ -44,11 +44,6 @@ import {
 	devstackContainerLabels,
 	dockerRun,
 	imageExists,
-	inspectContainer,
-	removeContainer,
-	runContainer,
-	stopContainer,
-	waitForHealthy,
 } from '../sui/docker.js';
 import { appNetworkName } from '../sui/index.js';
 import {
@@ -191,31 +186,63 @@ export const seal = (opts: SealPluginOptions = {}) => {
 				},
 			}),
 
-			service({
+			containerService({
 				name: 'key-server',
 				needs: ['register'],
 				inputs: { image: imageTag, apiPort },
 				// See `register` above — same warm-path rehydrate pattern.
-				provides: { registry: (ctx) => registerKeyServerService(ctx, apiPort) },
-				getStatus: async (ctx) => {
-					requireLocalnetCtx(ctx);
-					const containerName = keyServerContainerName(ctx.appName, ctx.stack);
-					const info = await inspectContainer(containerName);
-					if (info === null) return { ok: false, detail: 'not present' };
-					if (!info.running) return { ok: false, detail: info.state };
-					if (info.healthy === true) {
-						return { ok: true, detail: `healthy on :${apiPort}` };
-					}
-					return { ok: false, detail: `${info.state} (health: ${healthLabel(info.healthy)})` };
-				},
-				run: async (ctx) => {
-					requireLocalnetCtx(ctx);
-					const containerName = keyServerContainerName(ctx.appName, ctx.stack);
-					ctx.onShutdown?.(async () => {
-						const live = await inspectContainer(containerName);
-						if (live?.running === true) await stopContainer(containerName);
-					});
-					await runKeyServerContainer({ ctx, imageTag, platform, apiPort, keyServerName });
+				registry: (ctx) => registerKeyServerService(ctx, apiPort),
+				containerName: (ctx) => keyServerContainerName(ctx.appName, ctx.stack),
+				healthyTimeoutMs: 3 * 60_000,
+				spec: (ctx) => {
+					const ns = ctx.registry.ns<SealNamespace>('seal');
+					const cached = ns.keyServer.require(keyServerName);
+					return {
+						name: '',
+						image: imageTag,
+						platform,
+						network: appNetworkName(ctx.appName, ctx.stack),
+						hostname: 'seal-key-server',
+						restart: 'unless-stopped',
+						ports: [{ host: apiPort, container: KEY_SERVER_CONTAINER_PORT }],
+						labels: devstackContainerLabels({
+							appName: ctx.appName,
+							stack: ctx.stack,
+							service: 'seal-key-server',
+						}),
+						env: {
+							// CONFIG_PATH-based config (env-only mode silently routes at the public
+							// devnet fullnode — must use a file to point at our localnet).
+							CONFIG_PATH: '/etc/seal/key-server-config.yaml',
+							MASTER_KEY: readMasterKey(ctx.appDir, ctx.stack),
+							PORT: String(KEY_SERVER_CONTAINER_PORT),
+							RUST_LOG: 'info',
+						},
+						volumes: [
+							`${sealConfigPath(ctx.appDir, ctx.stack)}:/etc/seal/key-server-config.yaml:ro`,
+						],
+						healthcheck: {
+							// `/v1/service?service_id=<id>` round-trips through the on-chain
+							// registration cache and returns 200 once the key-server has loaded
+							// our KeyServer object and minted a proof-of-possession. The
+							// version-validation middleware demands these headers — any other
+							// endpoint requires a signed session payload.
+							test: [
+								'CMD-SHELL',
+								[
+									"curl -sf -H 'Client-Sdk-Type: typescript'",
+									`-H 'Client-Sdk-Version: ${SEAL_SDK_VERSION}'`,
+									'-H "Request-Id: $(cat /proc/sys/kernel/random/uuid)"',
+									`'http://localhost:${KEY_SERVER_CONTAINER_PORT}/v1/service?service_id=${cached.objectId}'`,
+									'> /dev/null || exit 1',
+								].join(' '),
+							],
+							intervalSeconds: 5,
+							timeoutSeconds: 5,
+							retries: 30,
+							startPeriodSeconds: 10,
+						},
+					};
 				},
 			}),
 		],
@@ -301,79 +328,6 @@ async function registerSealKeyServer({
 		publicKey: keys.publicKey,
 		sealPackageId: sealPkg.packageId,
 	});
-}
-
-interface RunKeyServerOptions {
-	ctx: LocalnetActionRunContext;
-	imageTag: string;
-	platform: string;
-	apiPort: number;
-	keyServerName: string;
-}
-
-async function runKeyServerContainer({
-	ctx,
-	imageTag,
-	platform,
-	apiPort,
-	keyServerName,
-}: RunKeyServerOptions): Promise<void> {
-	const ns = ctx.registry.ns<SealNamespace>('seal');
-	const cached = ns.keyServer.require(keyServerName);
-	const containerName = keyServerContainerName(ctx.appName, ctx.stack);
-	const network = appNetworkName(ctx.appName, ctx.stack);
-	const configPath = sealConfigPath(ctx.appDir, ctx.stack);
-
-	const info = await inspectContainer(containerName);
-	if (info?.running === true && info.healthy === true) return;
-	if (info !== null) await removeContainer(containerName);
-
-	await runContainer({
-		name: containerName,
-		image: imageTag,
-		platform,
-		network,
-		hostname: 'seal-key-server',
-		restart: 'unless-stopped',
-		ports: [{ host: apiPort, container: KEY_SERVER_CONTAINER_PORT }],
-		labels: devstackContainerLabels({
-			appName: ctx.appName,
-			stack: ctx.stack,
-			service: 'seal-key-server',
-		}),
-		env: {
-			// CONFIG_PATH-based config (env-only mode silently routes at the public
-			// devnet fullnode — must use a file to point at our localnet).
-			CONFIG_PATH: '/etc/seal/key-server-config.yaml',
-			MASTER_KEY: readMasterKey(ctx.appDir, ctx.stack),
-			PORT: String(KEY_SERVER_CONTAINER_PORT),
-			RUST_LOG: 'info',
-		},
-		volumes: [`${configPath}:/etc/seal/key-server-config.yaml:ro`],
-		healthcheck: {
-			// `/v1/service?service_id=<id>` round-trips through the on-chain
-			// registration cache and returns 200 once the key-server has loaded
-			// our KeyServer object and minted a proof-of-possession. The
-			// version-validation middleware demands these headers — any other
-			// endpoint requires a signed session payload.
-			test: [
-				'CMD-SHELL',
-				[
-					"curl -sf -H 'Client-Sdk-Type: typescript'",
-					`-H 'Client-Sdk-Version: ${SEAL_SDK_VERSION}'`,
-					'-H "Request-Id: $(cat /proc/sys/kernel/random/uuid)"',
-					`'http://localhost:${KEY_SERVER_CONTAINER_PORT}/v1/service?service_id=${cached.objectId}'`,
-					'> /dev/null || exit 1',
-				].join(' '),
-			],
-			intervalSeconds: 5,
-			timeoutSeconds: 5,
-			retries: 30,
-			startPeriodSeconds: 10,
-		},
-	});
-
-	await waitForHealthy(containerName, { timeoutMs: 3 * 60_000 });
 }
 
 interface CachedKeys {
@@ -476,8 +430,3 @@ function decodePrefixedHex(s: string): Uint8Array {
 	return bytes;
 }
 
-function healthLabel(h: boolean | undefined): string {
-	if (h === true) return 'healthy';
-	if (h === false) return 'unhealthy';
-	return 'no probe';
-}
