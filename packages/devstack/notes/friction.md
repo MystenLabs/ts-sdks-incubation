@@ -9,7 +9,7 @@ Entries are roughly chronological. New entries at the bottom.
 
 ---
 
-## 2026-05-02 — Hardcoded ports across plugin instantiations
+## 2026-05-02 — Hardcoded ports across plugin instantiations [CLOSED — PR 8]
 
 `packages/devstack/src/plugins/sui/index.ts:73-76` lets apps pin
 `rpcPort` / `faucetPort` per plugin instance, but the actual ports are
@@ -107,7 +107,7 @@ contains the wallet-server entry as soon as globalSetup completes;
 the listener starts in a separate HostProcess action that
 applyTestSetupFilter skips.
 
-## 2026-05-02 — Faucet 500 on cold-first-bring-up
+## 2026-05-02 — Faucet 500 on cold-first-bring-up [CLOSED — keys.ts retry]
 
 Surfaced repeatedly in the state-and-snapshots e2e verification:
 `sui.accounts` fails on the first cycle of a fresh sui container with
