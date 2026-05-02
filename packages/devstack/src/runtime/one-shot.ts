@@ -39,6 +39,7 @@ import { resolveAccounts } from './accounts.js';
 import { DEFAULT_STACK } from './active-stack.js';
 import { hydrateRegistry } from './manifest-reader.js';
 import { manifestPath, writeManifest } from './manifest-writer.js';
+import { createPortAllocator } from './port-allocator.js';
 import { Reconciler } from './reconcile.js';
 
 export interface OneShotOptions {
@@ -128,6 +129,10 @@ export async function runOneShot(opts: OneShotOptions): Promise<OneShotResult> {
 	}
 
 	const reconciler = new Reconciler();
+	const ports =
+		opts.network === 'localnet'
+			? createPortAllocator({ appDir: opts.appDir, stack })
+			: undefined;
 	const result = await reconciler.cycle(scoped, {
 		appName: opts.appName,
 		appDir: opts.appDir,
@@ -135,6 +140,7 @@ export async function runOneShot(opts: OneShotOptions): Promise<OneShotResult> {
 		network: opts.network,
 		registry,
 		accounts,
+		ports,
 		// Filters may have stripped Service/Build actions whose dependents
 		// are still in `filtered`. Drop the orphaned `needs` edges instead
 		// of throwing.

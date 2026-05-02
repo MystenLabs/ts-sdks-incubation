@@ -4,6 +4,7 @@ import { register } from '../actions/register.js';
 import { service } from '../actions/service.js';
 import { verify } from '../actions/verify.js';
 import type { AccountsContext, ActionRunContext } from '../core/types.js';
+import { createInMemoryPortAllocator } from './port-allocator.js';
 import type { ReconcileProgress } from './reconcile.js';
 import { Reconciler } from './reconcile.js';
 import { RegistryImpl } from '../registry/index.js';
@@ -23,6 +24,7 @@ const baseCtx = (registry: RegistryImpl, progress?: (snap: ReconcileProgress) =>
 	network: 'localnet' as const,
 	registry,
 	accounts: emptyAccounts,
+	ports: createInMemoryPortAllocator(),
 	progress,
 });
 

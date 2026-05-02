@@ -11,6 +11,7 @@ import type {
 	Package,
 } from '../../core/types.js';
 import { RegistryImpl } from '../../registry/index.js';
+import { createInMemoryPortAllocator } from '../../runtime/port-allocator.js';
 import { codegen } from './index.js';
 
 // `codegen.generate` is the only action this plugin produces; tests below
@@ -32,6 +33,7 @@ const makeCtx = (appDir: string, registry: RegistryImpl): ActionRunContext => ({
 	network: 'localnet',
 	registry,
 	accounts: emptyAccounts,
+	ports: createInMemoryPortAllocator(),
 });
 
 const getGenerateAction = (output?: string): EmitAction => {

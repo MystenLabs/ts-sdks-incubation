@@ -499,10 +499,36 @@ interface ActionRunContextBase {
  * stack is a per-app named environment (default `'main'`); only one is
  * up at a time per app, but multiple stacks coexist on disk and can be
  * brought up/down independently.
+ *
+ * `ports` is the per-stack port allocator. Plugins that bind a host port
+ * call `await ctx.ports.allocate({ slot: '<plugin>.<name>', preferred: ... })`;
+ * the allocator returns a stable port for the slot for the stack's
+ * lifetime, persists assignments to `<stackDir>/ports.json`, and falls
+ * back to a kernel-chosen port when the preferred slot is taken. This
+ * is what lets `main` and `test` stacks of the same app coexist —
+ * neither stack hardcodes the same port.
  */
 export interface LocalnetActionRunContext extends ActionRunContextBase {
 	network: 'localnet';
 	stack: string;
+	ports: PortAllocator;
+}
+
+/** Subset of the `runtime/port-allocator` API exposed to plugin code. */
+export interface PortAllocator {
+	allocate(req: PortRequest): Promise<number[]>;
+}
+
+export interface PortRequest {
+	/** Plugin-namespaced slot name (e.g. 'sui.rpc'). Must be stable
+	 * across calls — it's the cache key. */
+	slot: string;
+	/** Preferred port. Used when free; else the kernel picks one. Lets
+	 * pinned-port apps keep their numbers. */
+	preferred?: number;
+	/** Number of contiguous ports to allocate. Default 1. Walrus's
+	 * storage-node host port range uses `count: 4`. */
+	count?: number;
 }
 
 /**

@@ -26,6 +26,7 @@ import type {
 	ActionStatus,
 	EmitAction,
 	Network,
+	PortAllocator,
 	Registry,
 	SeedAction,
 	ShutdownHook,
@@ -47,6 +48,10 @@ export interface ReconcileBaseContext {
 	network: Network;
 	registry: Registry;
 	accounts: AccountsContext;
+	/** Per-stack port allocator. Required on localnet (forwarded into
+	 * `LocalnetActionRunContext.ports`); ignored on live nets where no
+	 * local docker host bind is happening. */
+	ports?: PortAllocator;
 	/** Forwarded into each action's run context. Set by the supervisor. */
 	onShutdown?: (fn: ShutdownHook) => void;
 	/** Forwarded into each action's run context. Reconciler binds the
@@ -290,7 +295,15 @@ export class Reconciler {
 		};
 		const ctx: ActionRunContext =
 			base.network === 'localnet'
-				? { ...common, network: 'localnet', stack: base.stack }
+				? {
+						...common,
+						network: 'localnet',
+						stack: base.stack,
+						// Ports allocator is required on localnet; supervisor +
+						// runOneShot both inject it. Throw a typed error if a
+						// caller forgot to pass one rather than NaN'ing through.
+						ports: requirePorts(base.ports),
+					}
 				: { ...common, network: base.network };
 
 		// Network gating for Seed actions (Q5).
@@ -403,6 +416,18 @@ function emitIsDirty(emit: EmitAction, dirty: Set<string>): boolean {
  * either way; downstream Emits re-fire harmlessly. Suppression would add
  * complexity for a marginal saving.
  */
+function requirePorts(ports: PortAllocator | undefined): PortAllocator {
+	if (ports === undefined) {
+		throw new Error(
+			'reconcile: localnet cycle is missing the port allocator. ' +
+				'Supervisor and runOneShot must construct one with ' +
+				'`createPortAllocator({ appDir, stack })` and pass it via ' +
+				'ReconcileBaseContext.ports.',
+		);
+	}
+	return ports;
+}
+
 async function applyProvidesRegistry(action: Action, ctx: ActionRunContext): Promise<void> {
 	const hook = getProvidesRegistryHook(action.provides);
 	if (hook === undefined) return;

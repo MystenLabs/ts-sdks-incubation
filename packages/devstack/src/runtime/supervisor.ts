@@ -23,6 +23,7 @@ import type {
 	AccountsContext,
 	Action,
 	Network,
+	PortAllocator,
 	Plugin,
 	ShutdownHook,
 } from '../core/types.js';
@@ -33,6 +34,7 @@ import { DEFAULT_STACK, activeStackFile, writeActiveStack } from './active-stack
 import { FileWatcher } from './file-watcher.js';
 import { hydrateRegistry } from './manifest-reader.js';
 import { writeManifest } from './manifest-writer.js';
+import { createPortAllocator } from './port-allocator.js';
 import { Reconciler } from './reconcile.js';
 import { StatusRenderer } from './status-renderer.js';
 
@@ -70,6 +72,8 @@ export class Supervisor {
 	private readonly shutdownHooks: ShutdownHook[] = [];
 	private readonly accounts: AccountsContext;
 
+	private readonly ports: PortAllocator;
+
 	private cycleInFlight = false;
 	private cyclePending = false;
 	private stopped = false;
@@ -98,6 +102,7 @@ export class Supervisor {
 			writeActiveStack(this.appDir, this.stack);
 		}
 		this.actions = expandPluginActions(opts.plugins);
+		this.ports = createPortAllocator({ appDir: this.appDir, stack: this.stack });
 		this.accounts = resolveAccounts({
 			specs: opts.accounts ?? {},
 			appDir: this.appDir,
@@ -242,6 +247,7 @@ export class Supervisor {
 				network: this.network,
 				registry: this.registry,
 				accounts: this.accounts,
+				ports: this.ports,
 				onShutdown: (fn) => this.shutdownHooks.push(fn),
 				appendLog: (actionName, line) => this.renderer.appendLog(actionName, line),
 				progress: (snap) => this.renderer.update(snap.statuses, snap.failures),

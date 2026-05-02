@@ -42,6 +42,7 @@ import type {
 } from '../../core/types.js';
 import { expandPluginActions } from '../../plugin.js';
 import { RegistryImpl } from '../../registry/index.js';
+import { createInMemoryPortAllocator } from '../../runtime/port-allocator.js';
 import { imports } from './index.js';
 
 const fakeSigner = {
@@ -71,7 +72,12 @@ const makeCtx = (
 		accounts,
 	};
 	return network === 'localnet'
-		? { ...common, network: 'localnet', stack: 'main' }
+		? {
+				...common,
+				network: 'localnet',
+				stack: 'main',
+				ports: createInMemoryPortAllocator(),
+			}
 		: { ...common, network };
 };
 
