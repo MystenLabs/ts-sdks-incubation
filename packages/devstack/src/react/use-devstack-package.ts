@@ -19,6 +19,18 @@ type RegisteredModule<K> = K extends RegisteredKey ? DevstackPackageRegistry[K] 
  * `DevstackPackageRegistry` (see `types.ts`). Without augmentation,
  * the return type widens to the generic `CodegenModule = Record<string,
  * unknown>` and call sites have to narrow.
+ *
+ * @deprecated Conflates two concerns: codegen module → bound builder
+ * (generic, lives in codegen) and "where does the packageId come
+ * from" (env-specific: manifest on localnet; constants on mainnet).
+ * The cleaner shape is an app-local `usePackage(name)` that calls
+ * `bindPackage` with whichever packageId source the env provides;
+ * devstack's role becomes just `useDevstackManifest()` for the
+ * localnet branch.
+ *
+ * Will be removed once `bindPackage` finds a home outside devstack
+ * (likely upstream in `@mysten/codegen`). See
+ * `notes/react-api-investigation.md`.
  */
 export function useDevstackPackage<N extends string>(name: N): RegisteredModule<N> {
 	const { manifest, packages } = useDevstackContext();
@@ -50,9 +62,14 @@ export function useDevstackPackage<N extends string>(name: N): RegisteredModule<
 	}, [manifest, packages, name]);
 }
 
-/** Like `useDevstackPackage`, but returns `undefined` when the package
+/**
+ * Like `useDevstackPackage`, but returns `undefined` when the package
  * isn't deployed yet instead of throwing. Use to gracefully gate UI on
- * the pre-deploy state (e.g. show a "run pnpm localnet:up" hint). */
+ * the pre-deploy state (e.g. show a "run pnpm localnet:up" hint).
+ *
+ * @deprecated Same scope concern as `useDevstackPackage`. See
+ * `notes/react-api-investigation.md`.
+ */
 export function useDevstackPackageOptional<N extends string>(
 	name: N,
 ): RegisteredModule<N> | undefined {

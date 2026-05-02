@@ -1,13 +1,14 @@
-// Browser-side walrus integration. Lazily builds a `WalrusClient` against
-// the live devstack manifest (via `createDevstackWalrusClient`) — that
-// helper installs a fetch override that translates the on-chain committee
-// URLs (internal docker IPs) to the host-mapped plain-HTTP nginx proxy
-// the `walrus()` plugin runs.
+// Browser-side walrus integration. Builds a vanilla `WalrusClient`
+// against the live manifest. `localnetWalrusOptions(manifest)` returns
+// the localnet-specific bits — a `packageConfig` derived from the
+// manifest's walrus package + a fetch override that translates the
+// on-chain storage-node URLs (docker-internal IPs) to host-mapped
+// plain-HTTP. On testnet/mainnet the same call would drop the spread.
 
-import { createDevstackWalrusClient } from '@mysten-incubation/devstack/react';
+import { localnetWalrusOptions } from '@mysten-incubation/devstack/react';
 import type { ClientWithCoreApi } from '@mysten/sui/client';
 import type { Signer } from '@mysten/sui/cryptography';
-import type { WalrusClient } from '@mysten/walrus';
+import { WalrusClient } from '@mysten/walrus';
 // `?url` lets Vite serve the wasm with the right MIME type and a stable URL,
 // rather than the SDK's default fetch from a path that hits the SPA fallback
 // and returns `index.html`. Pattern matches the walrus SDK README.
@@ -22,9 +23,9 @@ let cachedSuiClient: ClientWithCoreApi | null = null;
 
 async function getClient(suiClient: ClientWithCoreApi): Promise<WalrusClient> {
 	if (cachedClient !== null && cachedSuiClient === suiClient) return cachedClient;
-	const client = await createDevstackWalrusClient({
-		manifest,
+	const client = new WalrusClient({
 		suiClient,
+		...localnetWalrusOptions(manifest),
 		wasmUrl: walrusWasmUrl,
 	});
 	cachedClient = client;
