@@ -1,17 +1,20 @@
-// `hostProcess()` — Service action factory for in-process subprocesses
+// `hostProcess()` — HostProcess action factory for in-process subprocesses
 // (vite dev-server, the wallet-server HTTP listener).
 //
-// Same underlying `ServiceAction` shape as `service()`. The split exists so
-// readers can see at a glance: this is a host-side child process with
-// signal-driven teardown, NOT a managed container. Conventions:
+// Returns a `HostProcessAction` (type: 'HostProcess'), discriminated from
+// `ServiceAction` (docker containers detached from the supervisor) so
+// test-setup paths like `applyTestSetupFilter` can drop them: a Playwright
+// globalSetup that runs HostProcess actions starts servers that immediately
+// die when globalSetup returns. Conventions:
 //
 //   - `getStatus` typically probes a local URL (HEAD / GET).
 //   - `run` spawns the child and registers an `onShutdown` hook that
 //     gracefully terminates it (SIGTERM → SIGKILL fallback).
-//   - The factory enforces nothing beyond documentation; it's a typed
-//     wrapper that makes intent explicit at call sites.
+//   - The factory enforces nothing beyond the type discriminator; it's a
+//     typed wrapper that makes intent explicit at call sites and gives
+//     filters something to pattern-match on.
 
-import type { ActionRunContext, Provides, ServiceAction } from '../core/types.js';
+import type { ActionRunContext, HostProcessAction, Provides } from '../core/types.js';
 
 export interface HostProcessOptions<TInputs extends Record<string, unknown>> {
 	name: string;
@@ -24,10 +27,10 @@ export interface HostProcessOptions<TInputs extends Record<string, unknown>> {
 
 export function hostProcess<TInputs extends Record<string, unknown>>(
 	opts: HostProcessOptions<TInputs>,
-): ServiceAction<TInputs> {
+): HostProcessAction<TInputs> {
 	return {
 		name: opts.name,
-		type: 'Service',
+		type: 'HostProcess',
 		needs: opts.needs,
 		provides: opts.provides,
 		inputs: opts.inputs,
