@@ -69,8 +69,34 @@ export async function runApply(flags: ApplyFlags): Promise<number> {
 }
 
 export async function main(argv: string[]): Promise<number> {
+	if (argv.includes('--help') || argv.includes('-h')) {
+		process.stdout.write(USAGE);
+		return 0;
+	}
 	return runApply(parseArgs(argv));
 }
+
+const USAGE = `devstack apply [config] [options]
+
+Single-cycle reconcile against the active stack (or --target). Runs the
+full action graph once and exits.
+
+Runs: Build, Publish, Register, Seed, Emit, Verify
+Skips: Service (containers stay running across cycles)
+
+On live nets: also skips Build (no docker assumed).
+
+Options:
+  --target <network[:stack]>  Override the active target
+  --actions <a,b,c>           Restrict to these action names + their deps
+  --config <path>             Override the config path
+
+Examples:
+  devstack apply
+  devstack apply --target testnet
+  devstack apply --target localnet:scratch
+  devstack apply --actions arena.connect_four
+`;
 
 function parseArgs(argv: string[]): ApplyFlags {
 	return {

@@ -68,8 +68,31 @@ export async function runCodegen(flags: CodegenFlags): Promise<number> {
 }
 
 export async function main(argv: string[]): Promise<number> {
+	if (argv.includes('--help') || argv.includes('-h')) {
+		process.stdout.write(USAGE);
+		return 0;
+	}
 	return runCodegen(parseArgs(argv));
 }
+
+const USAGE = `devstack codegen [config] [options]
+
+Re-emit codegen against the prior manifest. Read-only — manifest is not
+rewritten. Useful for regenerating TS bindings after editing a Move
+package's interface, or for regenerating against a live-net manifest
+produced by an earlier \`devstack deploy\`.
+
+Runs: Emit only.
+Skips: everything else (Build, Service, Publish, Register, Seed, Verify).
+
+Options:
+  --target <network[:stack]>   Override the active target
+  --config <path>              Override the config path
+
+Examples:
+  devstack codegen
+  devstack codegen --target testnet
+`;
 
 function parseArgs(argv: string[]): CodegenFlags {
 	return {

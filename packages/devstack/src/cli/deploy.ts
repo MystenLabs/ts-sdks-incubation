@@ -74,8 +74,31 @@ export async function runDeploy(flags: DeployFlags): Promise<number> {
 }
 
 export async function main(argv: string[]): Promise<number> {
+	if (argv.includes('--help') || argv.includes('-h')) {
+		process.stdout.write(USAGE);
+		return 0;
+	}
 	return runDeploy(parseArgs(argv));
 }
+
+const USAGE = `devstack deploy <config> --network <localnet|testnet|mainnet>
+
+Live-network deploy slice. Skips Service actions (no docker on prod);
+runs Build (for source artifacts), Publish, Register, Seed (live-net
+gated), Emit.
+
+Runs: Build, Publish, Register, Seed (live-net gated), Emit
+Skips: Service
+
+Options:
+  --network <network>          Required if --target is not set
+  --target <network[:stack]>   Alias for --network; also accepts a stack
+  --config <path>              Override the config path
+
+Examples:
+  devstack deploy --network testnet
+  devstack deploy --target mainnet
+`;
 
 function parseArgs(argv: string[]): DeployFlags {
 	return {

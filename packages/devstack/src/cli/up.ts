@@ -10,6 +10,12 @@
 // long form. Live-net targets (`--target testnet`) error with a pointer
 // at `apply` / `deploy` since the supervisor is localnet-only by
 // construction (see Supervisor's constructor guard).
+//
+// `runUp({ once: true })` is the programmatic shape used by playwright's
+// globalSetup: reconcile once + fire shutdown hooks. End users want
+// `devstack apply` for the equivalent CLI behavior — `--once` is
+// intentionally not advertised on the CLI to keep the matrix honest
+// (the user-visible verbs are `up` for keepalive, `apply` for one-shot).
 
 import { dirname, resolve } from 'node:path';
 import type { Network } from '../core/types.js';
@@ -83,14 +89,39 @@ export async function runUp(flags: UpFlags): Promise<number> {
 }
 
 export async function main(argv: string[]): Promise<number> {
+	if (argv.includes('--help') || argv.includes('-h')) {
+		process.stdout.write(USAGE);
+		return 0;
+	}
 	return runUp(parseArgs(argv));
 }
+
+const USAGE = `devstack up [config] [options]
+
+Long-running supervisor: brings the localnet stack up and watches Move
+sources for changes. Localnet only — use \`devstack deploy --network
+testnet\` for live-network deploys, or \`devstack apply --target ...\`
+for a single-cycle reconcile.
+
+Runs every action type: Build, Service, Publish, Register, Seed, Emit,
+Verify.
+
+Options:
+  --target <localnet:stack>   Override the active stack
+  --stack <name>              Override the active stack (alternative form)
+  --config <path>             Override the config path
+
+Examples:
+  devstack up
+  devstack up --target scratch
+  devstack up ./custom.config.ts
+`;
 
 function parseArgs(argv: string[]): UpFlags {
 	return {
 		configPath: parseConfigArg(argv),
 		network: parseNetworkArg(argv) ?? 'localnet',
-		once: argv.includes('--once'),
+		once: false,
 		stack: parseStackArg(argv),
 		target: parseTargetArg(argv),
 	};

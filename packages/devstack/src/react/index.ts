@@ -12,7 +12,6 @@
 
 export {
 	DevstackProvider,
-	useDevstackContext,
 	useDevstackManifest,
 	type DevstackProviderProps,
 } from './provider.js';
