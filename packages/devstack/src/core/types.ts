@@ -254,12 +254,6 @@ export interface Plugin {
 	 * cached image / wrong-version footgun is easier to triage. Plugin
 	 * authors set this manually; not enforced. */
 	version?: string;
-	/** Names of plugins that MUST also be loaded for this one to make
-	 * sense (e.g. walrus requires sui). Currently advisory — the
-	 * supervisor logs a warning when an entry is missing. Treat as
-	 * documentation; the action graph's `needs:` edges remain the
-	 * authoritative dependency mechanism. */
-	requires?: string[];
 	actions: () => Action[];
 }
 

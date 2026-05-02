@@ -14,10 +14,12 @@
 const USAGE = `devstack <command> [options]
 
 Commands:
-  up [config]                  Long-running supervisor: reconcile + watch
-                               Move sources. Pass --once to reconcile and exit.
+  up [config]                  Long-running supervisor (localnet only):
+                               reconcile + watch Move sources.
   apply [config] [--target]    Single-cycle reconcile against active stack or --target.
-  deploy <config> --network    Live-network deploy slice (skip Service; keep Build).
+                               Runs Build/Publish/Register/Seed/Emit; skips Service.
+  deploy <config> --network    Live-network deploy: Build + Publish + Register +
+                               Seed (live-net) + Emit. No Service.
   codegen [config] [--target]  Re-emit codegen against the prior manifest (read-only).
   down [config]                Stop the active stack's containers (volumes preserved).
   reset [config] --yes         Wipe the active stack — containers, volumes, host state.
