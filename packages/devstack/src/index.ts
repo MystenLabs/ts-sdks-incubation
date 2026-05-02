@@ -111,7 +111,11 @@ export {
 	type SealPluginOptions,
 } from './plugins/seal/index.js';
 export { SEAL_REV } from './plugins/seal/build.js';
-export { codegen, type CodegenPluginOptions } from './plugins/codegen/index.js';
+export {
+	codegen,
+	defaultMvrName,
+	type CodegenPluginOptions,
+} from './plugins/codegen/index.js';
 export {
 	deepbook,
 	deepbookNs,

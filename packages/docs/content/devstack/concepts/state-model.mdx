@@ -33,7 +33,7 @@ touching `/root/.sui` directly.
 
 Walrus storage nodes follow the same pattern (RocksDB blob index + slivers + sync cursor in the
 writable layer). Stateless containers (seal key-server, walrus proxy) opt out via
-[`containerService.snapshot.commit: false`](/docs/plugins/sui#snapshot-meta) so snapshot save
+[`containerService.snapshot.commit: false`](/devstack/plugins/sui#snapshot-meta) so snapshot save
 doesn't waste a seed image on them.
 
 ## Host fs `<stackDir>`
@@ -112,6 +112,6 @@ chain.
 
 ## See also
 
-- [Stacks](/docs/concepts/stacks) — how stack name flows into container/network/dir naming.
-- [Snapshots](/docs/concepts/snapshots) — the `docker commit` capture pipeline in detail.
-- [Ports](/docs/concepts/ports) — `<stackDir>/ports.json`, sibling-aware allocation.
+- [Stacks](/devstack/concepts/stacks) — how stack name flows into container/network/dir naming.
+- [Snapshots](/devstack/concepts/snapshots) — the `docker commit` capture pipeline in detail.
+- [Ports](/devstack/concepts/ports) — `<stackDir>/ports.json`, sibling-aware allocation.

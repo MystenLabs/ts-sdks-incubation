@@ -29,3 +29,8 @@ export {
 	type LocalnetWalrusOptions,
 	type LocalnetWalrusOptionsInit,
 } from './walrus.js';
+// `defaultMvrName` is the placeholder mapper apps pair with
+// `localnetDappKitConfig({ mvrName })` and `codegen({ mvrName })`. Lives
+// on the codegen plugin internally; re-exported here so apps that only
+// import from `/react` don't need a second import path.
+export { defaultMvrName } from '../plugins/codegen/index.js';
