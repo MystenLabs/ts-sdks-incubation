@@ -24,7 +24,7 @@
 // Calls are idempotent — re-allocating the same slot returns the
 // already-assigned port(s) without re-checking the OS.
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { dirname, resolve } from 'node:path';
 
@@ -40,10 +40,15 @@ interface PortFile {
 const CONTIGUOUS_RETRY_LIMIT = 16;
 
 /** Disk-backed allocator. Reads `<stackDir>/ports.json` lazily on first
- * `allocate`, writes through on every new assignment. */
+ * `allocate`, writes through on every new assignment. Also reads
+ * sibling stacks' ports files (`<appDir>/.devstack/stacks/<other>/ports.json`)
+ * so a port claimed by another stack is treated as taken even when
+ * that stack isn't currently running — keeps stable assignments
+ * across `down`/`up` cycles when multiple stacks coexist. */
 export function createPortAllocator(opts: { appDir: string; stack: string }): PortAllocator {
 	const path = resolve(stackDir(opts.appDir, opts.stack), 'ports.json');
 	const cache: PortFile = readPortFile(path);
+	const siblingTaken = collectSiblingTaken(opts.appDir, opts.stack);
 
 	return {
 		async allocate(req) {
@@ -62,12 +67,39 @@ export function createPortAllocator(opts: { appDir: string; stack: string }): Po
 				}
 				return arr;
 			}
-			const ports = await pickPorts({ count, preferred: req.preferred, taken: collectTaken(cache) });
+			const taken = new Set([...collectTaken(cache), ...siblingTaken]);
+			const ports = await pickPorts({ count, preferred: req.preferred, taken });
 			cache[req.slot] = ports.length === 1 ? (ports[0] as number) : ports;
 			writePortFile(path, cache);
+			// Make subsequent siblings see this allocation immediately.
+			for (const p of ports) siblingTaken.add(p);
 			return ports;
 		},
 	};
+}
+
+/** Collect ports claimed by sibling stacks of the same app so the
+ * current stack avoids them. Reads `<appDir>/.devstack/stacks/*\/ports.json`. */
+function collectSiblingTaken(appDir: string, currentStack: string): Set<number> {
+	const root = resolve(appDir, '.devstack', 'stacks');
+	const out = new Set<number>();
+	if (!existsSync(root)) return out;
+	let entries: string[];
+	try {
+		entries = readdirSync(root);
+	} catch {
+		return out;
+	}
+	for (const entry of entries) {
+		if (entry === currentStack) continue;
+		const file = resolve(root, entry, 'ports.json');
+		const data = readPortFile(file);
+		for (const v of Object.values(data)) {
+			if (Array.isArray(v)) for (const p of v) out.add(p);
+			else out.add(v);
+		}
+	}
+	return out;
 }
 
 /** In-memory allocator for tests. No disk I/O, no socket binds —
@@ -143,13 +175,19 @@ async function pickPorts(args: PickArgs): Promise<number[]> {
 	);
 }
 
-/** Bind to :0, read back the kernel-assigned port, release. */
+/** Bind to :0 on the unspecified-address interface so the kernel-assigned
+ * port is free across ALL local interfaces. Binding to '127.0.0.1' would
+ * give us a port that's free on loopback but might already be bound by
+ * Docker Desktop (which uses 0.0.0.0) — the test showed Node successfully
+ * binds 127.0.0.1:9059 even while Docker has 0.0.0.0:9059, which would
+ * lead the allocator to claim a port the docker daemon can't actually
+ * use. Omitting the host arg defaults to dual-stack/unspecified. */
 async function pickFreePort(): Promise<number> {
 	return new Promise((res, rej) => {
 		const server = createServer();
 		server.unref();
 		server.once('error', rej);
-		server.listen(0, '127.0.0.1', () => {
+		server.listen(0, () => {
 			const addr = server.address();
 			if (typeof addr !== 'object' || addr === null) {
 				server.close();
@@ -169,12 +207,16 @@ async function areAllFree(ports: number[]): Promise<boolean> {
 	return true;
 }
 
+/** Check that a port is free on the broad interface — same constraint
+ * as above. A `127.0.0.1`-only check passes for ports already taken by
+ * a Docker Desktop `-p` mapping on `0.0.0.0`, leading the allocator to
+ * claim ports docker can't bind. */
 async function isFree(port: number): Promise<boolean> {
 	return new Promise((res) => {
 		const server = createServer();
 		server.unref();
 		server.once('error', () => res(false));
-		server.listen(port, '127.0.0.1', () => {
+		server.listen(port, () => {
 			server.close(() => res(true));
 		});
 	});

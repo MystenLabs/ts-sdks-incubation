@@ -127,4 +127,17 @@ describe('createPortAllocator (disk-backed)', () => {
 			expect(typeof second[0]).toBe('number');
 		});
 	});
+
+	it('avoids ports claimed by sibling stacks of the same app', async () => {
+		await withTempAppDir(async (appDir) => {
+			const main = createPortAllocator({ appDir, stack: 'main' });
+			await main.allocate({ slot: 'sui.rpc', preferred: 30006 });
+			// Test stack constructed AFTER main has persisted; should see
+			// 30006 as taken even though it's not in test's own ports.json.
+			const test = createPortAllocator({ appDir, stack: 'test' });
+			const result = await test.allocate({ slot: 'sui.rpc', preferred: 30006 });
+			expect(result[0]).not.toBe(30006);
+			expect(typeof result[0]).toBe('number');
+		});
+	});
 });
