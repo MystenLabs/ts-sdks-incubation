@@ -38,6 +38,16 @@ interface SignAndExecuteFn {
  * Requires `@mysten/dapp-kit-react`'s `<SuiClientProvider>` and
  * `<WalletProvider>` ancestors plus `@tanstack/react-query`'s
  * `<QueryClientProvider>` — same shape every app already wires.
+ *
+ * @deprecated This hook is generic dapp-kit-react ergonomics, not
+ * localnet-specific. It will move out of `@mysten-incubation/devstack/react`
+ * once a destination is decided — likely upstream into
+ * `@mysten/dapp-kit-react` as `useSignAndExecuteTransaction`, or into
+ * a separate `@mysten-incubation/dapp-kit-utils` package.
+ *
+ * Apps that ship to mainnet with the same component code will need
+ * the same hook from a non-devstack source — see
+ * `notes/react-api-investigation.md`.
  */
 export function useDevstackSignAndExecute(
 	options: UseDevstackSignAndExecuteOptions = {},

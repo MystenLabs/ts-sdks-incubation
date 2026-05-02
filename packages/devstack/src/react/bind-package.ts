@@ -25,6 +25,16 @@ interface BuilderOptions {
 
 type Builder = (options?: BuilderOptions) => unknown;
 
+/**
+ * @deprecated Pure codegen runtime concern, not localnet-specific.
+ * This function will move out of devstack — likely upstream into
+ * `@mysten/codegen` as a runtime helper, OR into a small standalone
+ * package. Apps that ship to mainnet need the same `bindPackage`
+ * call to inject their hardcoded `packageId`s.
+ *
+ * Stays exported for now so existing call sites keep working. See
+ * `notes/react-api-investigation.md`.
+ */
 export function bindPackage(module: CodegenModule, packageId: string): CodegenModule {
 	const out: Record<string, unknown> = {};
 	for (const [key, value] of Object.entries(module)) {

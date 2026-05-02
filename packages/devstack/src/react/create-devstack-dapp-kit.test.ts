@@ -10,7 +10,7 @@ vi.mock('@mysten/sui/grpc', () => ({
 	SuiGrpcClient: SuiGrpcClientCtor,
 }));
 
-import { createDevstackDappKit } from './create-devstack-dapp-kit.js';
+import { createDevstackDappKit, localnetDappKitConfig } from './create-devstack-dapp-kit.js';
 
 beforeEach(() => {
 	createDAppKitMock.mockReset();
@@ -91,5 +91,57 @@ describe('createDevstackDappKit', () => {
 		});
 		const cfg = createDAppKitMock.mock.calls[0]?.[0] as { enableBurnerWallet: boolean };
 		expect(cfg.enableBurnerWallet).toBe(false);
+	});
+});
+
+describe('localnetDappKitConfig', () => {
+	const manifestWith = (rpcUrl: string) => ({
+		registry: { services: [{ name: 'sui-rpc', url: rpcUrl }] },
+	});
+
+	it('reads the sui-rpc URL out of the manifest', () => {
+		const cfg = localnetDappKitConfig(manifestWith('http://127.0.0.1:9000'));
+		expect(cfg.networks).toEqual(['localnet']);
+		expect(cfg.defaultNetwork).toBe('localnet');
+		cfg.createClient('localnet');
+		expect(SuiGrpcClientCtor).toHaveBeenCalledWith({
+			network: 'localnet',
+			baseUrl: 'http://127.0.0.1:9000',
+		});
+	});
+
+	it('localnetRpcUrl override wins over the manifest', () => {
+		const cfg = localnetDappKitConfig(manifestWith('http://from-manifest'), {
+			localnetRpcUrl: 'http://override',
+		});
+		cfg.createClient('localnet');
+		expect(SuiGrpcClientCtor).toHaveBeenCalledWith({
+			network: 'localnet',
+			baseUrl: 'http://override',
+		});
+	});
+
+	it('throws when neither manifest nor override has a URL', () => {
+		expect(() => localnetDappKitConfig({})).toThrow(/no localnetRpcUrl provided and no `sui-rpc`/);
+	});
+
+	it('forwards additionalNetworks deduped, with explicit per-network URLs', () => {
+		const cfg = localnetDappKitConfig(manifestWith('http://localhost:9000'), {
+			additionalNetworks: ['testnet', 'localnet'],
+			networks: { testnet: 'https://testnet.example' },
+		});
+		expect(cfg.networks).toEqual(['localnet', 'testnet']);
+		cfg.createClient('testnet');
+		expect(SuiGrpcClientCtor).toHaveBeenLastCalledWith({
+			network: 'testnet',
+			baseUrl: 'https://testnet.example',
+		});
+	});
+
+	it('throws when createClient runs against a network that has no URL', () => {
+		const cfg = localnetDappKitConfig(manifestWith('http://localhost:9000'), {
+			additionalNetworks: ['testnet'],
+		});
+		expect(() => cfg.createClient('testnet')).toThrow(/no RPC URL for network 'testnet'/);
 	});
 });

@@ -28,7 +28,10 @@
 	"pnpm": {
 		"onlyBuiltDependencies": [
 			"esbuild"
-		]
+		],
+		"overrides": {
+			"@mysten/sui": "catalog:"
+		}
 	},
 	"devDependencies": {
 		"@arethetypeswrong/cli": "^0.18.1",

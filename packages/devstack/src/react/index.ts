@@ -19,7 +19,16 @@ export {
 export type { CodegenModule, DevstackPackageRegistry, DevstackProviderState } from './types.js';
 export {
 	createDevstackDappKit,
+	localnetDappKitConfig,
 	type CreateDevstackDappKitOptions,
+	type LocalnetDappKitConfig,
+	type LocalnetDappKitConfigOptions,
 } from './create-devstack-dapp-kit.js';
 export { DevstackDebugPanel, type DevstackDebugPanelProps } from './debug-panel.js';
-export { createDevstackWalrusClient, type CreateDevstackWalrusClientOptions } from './walrus.js';
+export {
+	createDevstackWalrusClient,
+	localnetWalrusOptions,
+	type CreateDevstackWalrusClientOptions,
+	type LocalnetWalrusOptions,
+	type LocalnetWalrusOptionsInit,
+} from './walrus.js';
