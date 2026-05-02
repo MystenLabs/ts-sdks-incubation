@@ -25,6 +25,7 @@ export type {
 	BuildAction,
 	DevstackConfig,
 	EmitAction,
+	HostProcessAction,
 	LiveNetActionRunContext,
 	LocalnetActionRunContext,
 	Network,
@@ -41,7 +42,9 @@ export type {
 	SeedAction,
 	Service,
 	ServiceAction,
+	SetupActionScope,
 	ShutdownHook,
+	SnapshotMeta,
 	TestConfig,
 	Token,
 	VerifyAction,
@@ -69,8 +72,10 @@ export {
 	definePublishAction,
 	type DefinePublishActionOptions,
 } from './actions/publish.js';
+export { publishMove, type PublishMoveOptions } from './actions/publish-move.js';
 export { register } from './actions/register.js';
 export { seed, seedRunsOn } from './actions/seed.js';
+export { runTransaction, type RunTransactionOptions } from './actions/transaction.js';
 export { emit } from './actions/emit.js';
 
 // ─── Signer factories ─────────────────────────────────────────────────────

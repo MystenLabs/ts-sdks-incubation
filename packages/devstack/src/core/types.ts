@@ -187,9 +187,21 @@ export interface ActionBase<TInputs = unknown, TResult = unknown> {
 	 * `docker run` time). Plugin authors should declare this in the
 	 * factory call, not stamp it on the action manually. */
 	snapshotMeta?: SnapshotMeta;
+	/** Setup-action scope. Set by `runTransaction()` / `publishMove()` /
+	 * any user-declared action in `DevstackConfig.setup`. The action
+	 * filters drop out-of-scope actions before the topo walk:
+	 *   - 'always' (default): runs in every stack
+	 *   - 'localnet-only': skips on testnet/mainnet
+	 *   - 'test-only': runs only when the active stack name starts with 'test'
+	 * (Framework-internal plugin actions don't set this; they're scoped via
+	 * other mechanisms — `seed.liveNetworks`, `applyFilter`, etc.) */
+	scope?: SetupActionScope;
 	run?: (ctx: ActionRunContext) => Promise<TResult>;
 	getStatus?: (ctx: ActionRunContext) => Promise<{ ok: boolean; detail?: string }>;
 }
+
+/** Scope filter for app-level setup actions declared in `DevstackConfig.setup`. */
+export type SetupActionScope = 'always' | 'localnet-only' | 'test-only';
 
 export interface BuildAction<TInputs = unknown, TResult = unknown> extends ActionBase<
 	TInputs,
@@ -549,6 +561,19 @@ export interface DevstackConfig {
 	accounts?: Record<string, AccountSpec>;
 	networks?: Partial<Record<Network, NetworkConfig>>;
 	test?: TestConfig;
+	/**
+	 * App-level setup actions: Move package publishes, fixture mints,
+	 * shared-object seeds. Compiled into a synthetic plugin named
+	 * `<app>-setup` and appended to `plugins`. Use the ergonomic factories
+	 * `publishMove()` and `runTransaction()` for the common cases — they
+	 * forward to `definePublishAction` / `seed` with sensible defaults
+	 * (auto getStatus, default signer, marker-file idempotence).
+	 *
+	 * Per-action `scope` field controls whether the action runs in a
+	 * given stack (`'always'` default; `'test-only'` for fixtures only
+	 * needed in test stacks; `'localnet-only'` to skip on live nets).
+	 */
+	setup?: Action[];
 }
 
 export interface TestConfig {
