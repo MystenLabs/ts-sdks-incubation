@@ -156,6 +156,12 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 
 	return definePlugin({
 		name: 'walrus',
+		// Folded into the snapshot id. Bumping `rev:` (which derives a new
+		// `imageTag`) invalidates the cached snapshot — chain state is
+		// captured by sui's container layer; storage-node state is captured
+		// by walrus's own. Port-base hint is intentionally NOT included:
+		// reshuffling host ports doesn't change on-chain state.
+		inputs: { image: imageTag, rev },
 		actions: () => {
 			const actions: Action[] = [];
 
