@@ -20,7 +20,24 @@ description: Sui localnet container with provisioned accounts and faucet.
 
 Account names are declared at the top level of `defineDevstackConfig` as
 `accounts: { name: spec, ... }`, not on the sui plugin — see the
-[accounts page](/docs/concepts/accounts). The sui plugin reads from `ctx.accounts` so the same
+[accounts page](/devstack/concepts/accounts). The sui plugin reads from `ctx.accounts` so the same
 account names work across `pnpm exec devstack up`, `apply`, `deploy`, and `console`.
 
 Registers `sui-rpc`, `sui-grpc`, `sui-faucet` services plus each named account.
+
+## Snapshot meta
+
+`sui.localnet` declares `snapshot: { commit: true, quiesce: 'pause' }` — sui's RocksDB is single-
+writer, so the cgroup freezer is safe + faster than a full SIGTERM. `docker commit` captures the
+container's writable layer (chain state, validator state, indexer state); restore brings the same
+state back without re-running the cold-start sequence.
+
+Plugin authors pick the right pair per service:
+
+- `commit: true, quiesce: 'pause'` — single-writer in-memory state (RocksDB, leveldb).
+- `commit: true, quiesce: 'stop'` — batched writers that need a graceful flush (walrus storage
+  nodes).
+- `commit: false, quiesce: 'none'` — stateless services (`seal.key-server`, `walrus.proxy`).
+
+Apps don't usually touch this — the built-in plugins set it. Only relevant when authoring a
+[reusable plugin](/devstack/authoring/define-plugin).

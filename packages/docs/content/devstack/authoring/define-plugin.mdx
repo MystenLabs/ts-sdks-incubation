@@ -4,7 +4,7 @@ description: 'Construct reusable plugins via the definePlugin helper. (For per-a
 ---
 
 For per-app state — Move publishes, fixture mints, shared-object seeds — use the
-[`setup:` field on `DevstackConfig`](/docs/concepts/setup) instead of wrapping actions in a
+[`setup:` field on `DevstackConfig`](/devstack/concepts/setup) instead of wrapping actions in a
 plugin. Reach for `definePlugin` only when authoring a **reusable plugin** that you'll instantiate
 across multiple apps (the built-in `sui()`, `walrus()`, `seal()`, `imports()` plugins are the
 canonical examples; third-party plugins follow the same shape).
@@ -54,7 +54,7 @@ interface Plugin {
 `actions: () => Action[]` is invoked by `expandPluginActions` at config-load time. Bare action names
 get auto-prefixed with the plugin namespace; bare `needs:` entries resolve to the same plugin's
 actions; dotted `needs` pass through as cross-plugin references; suffixed `:before` / `:after`
-queries hit the [capability table](/docs/concepts/plugins#capabilities).
+queries hit the [capability table](/devstack/concepts/plugins#capabilities).
 
 ## definePublishAction
 

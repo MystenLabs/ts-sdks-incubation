@@ -15,13 +15,13 @@ devstack up                                  # ~5 s — every getStatus says ok
 ```
 
 This page explains what's in the bundle and why each piece is there. For the full CLI shape see
-[`devstack snapshot`](/docs/cli#snapshot).
+[`devstack snapshot`](/devstack/cli#snapshot).
 
 ## What gets captured
 
 For each container labeled with the stack, the orchestrator reads the
 `devstack.snapshot.{commit,quiesce}` labels (set by
-[`containerService.snapshot`](/docs/plugins/sui#snapshot-meta) at run time) and acts on them:
+[`containerService.snapshot`](/devstack/plugins/sui#snapshot-meta) at run time) and acts on them:
 
 | Container's snapshot meta              | Capture step                                       |
 | --------------------------------------- | -------------------------------------------------- |
@@ -121,13 +121,13 @@ the seed images (the bulk of the bytes) go through GHCR with native layer dedup.
 - **Snapshots aren't isolation primitives for tests.** Multiple tests against the same stack
   share its container-layer state; restoring between tests would mean per-test container
   recreation (~3-5 s each). For per-test isolation use the
-  [AccountPool fixture](/docs/adapters/playwright) and per-test object scoping instead. Snapshots
+  [AccountPool fixture](/devstack/adapters/playwright) and per-test object scoping instead. Snapshots
   are a cold-start cache, not a test-reset mechanism.
 - **Snapshots are platform-specific.** Cross-arch restore is refused by default (`--force-arch`
   to override) because RocksDB binary format may differ across architectures.
 
 ## See also
 
-- [State model](/docs/concepts/state-model) — what each capture mechanism actually copies.
-- [`devstack snapshot` CLI](/docs/cli#snapshot) — every subcommand.
-- [Snapshot meta on plugins](/docs/plugins/sui#snapshot-meta) — how plugins opt their containers in/out.
+- [State model](/devstack/concepts/state-model) — what each capture mechanism actually copies.
+- [`devstack snapshot` CLI](/devstack/cli#snapshot) — every subcommand.
+- [Snapshot meta on plugins](/devstack/plugins/sui#snapshot-meta) — how plugins opt their containers in/out.

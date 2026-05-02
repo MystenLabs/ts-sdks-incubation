@@ -17,8 +17,8 @@ It pairs with [`DevstackSignerAdapter`](/dev-wallet/guides/devstack-integration)
 import {
 	codegen,
 	defineDevstackConfig,
+	frontend,
 	sui,
-	vite,
 	walletServer,
 } from '@mysten-incubation/devstack';
 
@@ -61,11 +61,12 @@ account in `defineDevstackConfig({ accounts })` becomes signable — `cliSigner`
 
 ## Endpoints
 
-| Method | Path                                | Returns                                                                           |
-| ------ | ----------------------------------- | --------------------------------------------------------------------------------- |
-| `GET`  | `/health`                           | `{ ok: true }` — liveness probe, no auth required.                                |
-| `GET`  | `/api/v1/devstack/accounts`         | `{ accounts: [{ name, address, scheme, publicKey }] }` — full account snapshot.   |
-| `POST` | `/api/v1/devstack/sign-transaction` | `{ suiSignature, txBytes }` — signs the `txBytes` (base64 BCS `TransactionData`). |
+| Method | Path                                       | Returns                                                                           |
+| ------ | ------------------------------------------ | --------------------------------------------------------------------------------- |
+| `GET`  | `/health`                                  | `{ ok: true }` — liveness probe, no auth required.                                |
+| `GET`  | `/api/v1/devstack/accounts`                | `{ accounts: [{ name, address, scheme, publicKey }] }` — full account snapshot.   |
+| `POST` | `/api/v1/devstack/sign-transaction`        | `{ suiSignature, txBytes }` — signs the `txBytes` (base64 BCS `TransactionData`). |
+| `POST` | `/api/v1/devstack/sign-personal-message`   | `{ signature, bytes }` — signs an arbitrary message via `signer.signPersonalMessage`. |
 
 All `/api/*` requests require `Authorization: Bearer <token>` or a `?token=<hex>` query parameter.
 
@@ -90,7 +91,5 @@ interface WalletServerPluginOptions {
 
 - Localnet-only. Calls `requireLocalnetCtx` — `devstack deploy --network testnet` skips this plugin
   entirely.
-- The server signs BCS `TransactionData` only. `signPersonalMessage` is unsupported, mirroring
-  `RemoteCliAdapter`'s constraint with `sui keytool sign`.
 - The token is persisted to `<stackDir>/wallet-token` and reused across supervisor restarts. The
   manifest is the source of truth for the URL + token — don't persist it client-side.

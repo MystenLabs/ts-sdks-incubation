@@ -42,24 +42,24 @@ pnpm exec devstack up
   testnet/mainnet, only `dapp-kit.ts` differs.
 - **Live-network deploys.** The same plugin actions run against testnet/mainnet via
   `devstack deploy --network <n>` or `devstack apply --target <n>`.
-- **`pnpm dev` starts everything.** With the [`frontend()` plugin](/docs/plugins/frontend) loaded, the
+- **`pnpm dev` starts everything.** With the [`frontend()` plugin](/devstack/plugins/frontend) loaded, the
   dev server (vite, next, anything) runs alongside sui localnet, walrus, seal, package publishes,
   and codegen — one combined process, one log stream.
 
 ## Where to next
 
-[Getting started](/docs/getting-started) brings up your first stack. From there the concepts
+[Getting started](/devstack/getting-started) brings up your first stack. From there the concepts
 build up in dependency order:
 
-- [State model](/docs/concepts/state-model) — where everything lives. Read this first; everything
+- [State model](/devstack/concepts/state-model) — where everything lives. Read this first; everything
   else makes more sense after.
-- [Actions](/docs/concepts/actions) and [plugins](/docs/concepts/plugins) — the reconciler
+- [Actions](/devstack/concepts/actions) and [plugins](/devstack/concepts/plugins) — the reconciler
   primitives.
-- [setup:](/docs/concepts/setup), [accounts](/docs/concepts/accounts), and
-  [registry & manifest](/docs/concepts/registry-and-manifest) — declaring + accessing per-app
+- [setup:](/devstack/concepts/setup), [accounts](/devstack/concepts/accounts), and
+  [registry & manifest](/devstack/concepts/registry-and-manifest) — declaring + accessing per-app
   state.
-- [Stacks](/docs/concepts/stacks), [snapshots](/docs/concepts/snapshots), and
-  [ports](/docs/concepts/ports) — operating across multiple environments + caching cold starts.
+- [Stacks](/devstack/concepts/stacks), [snapshots](/devstack/concepts/snapshots), and
+  [ports](/devstack/concepts/ports) — operating across multiple environments + caching cold starts.
 
-The [React adapter](/docs/adapters/react) covers typed package hooks for the UI; the
-[Playwright adapter](/docs/adapters/playwright) covers e2e testing.
+The [React adapter](/devstack/adapters/react) covers typed package hooks for the UI; the
+[Playwright adapter](/devstack/adapters/playwright) covers e2e testing.

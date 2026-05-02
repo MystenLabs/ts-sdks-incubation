@@ -11,7 +11,7 @@ description: Factories for the action kinds.
 | `hostProcess({ name, run, getStatus?, ... })`                                  | `HostProcess` action — in-process listener / spawned child. Skipped by `applyTestSetupFilter` so test bring-up doesn't start servers that die with the process.               |
 | `publish({ name, run, getStatus?, ... })`                                      | `Publish` action — low-level escape hatch.                                                                                                                                    |
 | `definePublishAction({ name, sourcePath, ... })`                               | `Publish` action with build + register + cache baked in.                                                                                                                      |
-| `publishMove({ name, path, capture?, scope?, ... })`                           | Ergonomic wrapper over `definePublishAction` with friendlier `path:` naming + setup-action `scope`. Use inside [`setup:`](/docs/concepts/setup).                             |
+| `publishMove({ name, path, capture?, scope?, ... })`                           | Ergonomic wrapper over `definePublishAction` with friendlier `path:` naming + setup-action `scope`. Use inside [`setup:`](/devstack/concepts/setup).                             |
 | `register({ name, run, getStatus?, ... })`                                     | `Register` action — populates registry + manifest entries without starting a service.                                                                                         |
 | `seed({ name, run, getStatus?, liveNetworks? })`                               | `Seed` action. Default-skipped on testnet/mainnet. Pass `liveNetworks: true` (every network) or `liveNetworks: ['testnet']` to opt in.                                        |
 | `runTransaction({ name, signer, build, scope?, ... })`                         | `Seed` action that signs + executes a transaction by named signer with a `build(ctx, tx)` callback. Default idempotence is a marker file at `<stackDir>/setup/<name>.done`.   |
@@ -21,7 +21,7 @@ description: Factories for the action kinds.
 
 Every action shape carries:
 
-- `needs?: string[]` — see [actions](/docs/concepts/actions#edges).
+- `needs?: string[]` — see [actions](/devstack/concepts/actions#edges).
 - `provides?: string[]` — capability declarations.
 - `inputs?: Record<string, unknown>` — hashed for the source-digest gate.
 - `watches?: string[]` — extra file-watch paths beyond the inferred globs.
@@ -39,7 +39,7 @@ Subpath: `@mysten-incubation/devstack/helpers`.
   still live on-chain in `getStatus`.
 - `createLocalSuiClient(url, network?)` — minimal `SuiJsonRpcClient` constructor.
 - `cliSigner({ alias })` / `envSigner({ name })` / `generatedKeypair()` — produce `Signer` instances
-  for `config.accounts`. See the [accounts page](/docs/concepts/accounts).
+  for `config.accounts`. See the [accounts page](/devstack/concepts/accounts).
 - `buildPriorCacheEntry(pkg)` — convert a registry `Package` to the `prior` cache shape
   `publishMovePackage` accepts.
 - `ensureUpstreamSourceImage({ repo, rev })` / `extractUpstreamSource({ imageTag, destDir })` —
