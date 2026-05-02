@@ -65,7 +65,7 @@ ordering and `getStatus` for idempotence — same primitives the framework's own
 declared inline. Use `publishMove()` and `runTransaction()` for the common cases; drop into
 `seed()` / `definePublishAction()` directly when you need a custom probe.
 
-The [`frontend()` plugin](/docs/plugins/vite) brings the dev server up alongside the rest of the
+The [`frontend()` plugin](/docs/plugins/frontend) brings the dev server up alongside the rest of the
 stack so a single `pnpm dev` script handles localnet + publishes + codegen + the UI dev server in
 one combined process.
 

@@ -22,7 +22,7 @@
 		"plugins/deepbook",
 		"plugins/codegen",
 		"plugins/imports",
-		"plugins/vite",
+		"plugins/frontend",
 		"plugins/wallet-server",
 		"---Authoring---",
 		"authoring/define-plugin",

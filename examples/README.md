@@ -44,7 +44,7 @@ _template/
     ├── main.tsx              # <DevstackProvider> wiring
     ├── index.css
     ├── vite-env.d.ts         # /// reference to @mysten-incubation/devstack/manifest
-    └── dapp-kit.ts           # createDevstackDappKit + dev-wallet initializer
+    └── dapp-kit.ts           # createDAppKit + localnetDappKitConfig + dev-wallet initializer
 ```
 
 To stand up a new app:
