@@ -1,30 +1,36 @@
 ---
 title: definePlugin
-description: Construct plugins via the definePlugin helper.
+description: Construct reusable plugins via the definePlugin helper. (For per-app state, prefer the setup: field.)
 ---
+
+For per-app state — Move publishes, fixture mints, shared-object seeds — use the
+[`setup:` field on `DevstackConfig`](/docs/authoring/setup) instead of wrapping actions in a
+plugin. Reach for `definePlugin` only when authoring a **reusable plugin** that you'll instantiate
+across multiple apps (the built-in `sui()`, `walrus()`, `seal()`, `imports()` plugins are the
+canonical examples; third-party plugins follow the same shape).
 
 ```ts
 import { definePlugin, definePublishAction, seed } from '@mysten-incubation/devstack';
 
-export const arenaPlugin = () =>
+export const myReusablePlugin = (opts: { sourcePath: string } = {}) =>
 	definePlugin({
-		name: 'arena',
+		name: 'my-plugin',
 		actions: () => [
 			definePublishAction({
-				name: 'connect_four',
+				name: 'package',
 				needs: ['sui.accounts'],
-				sourcePath: './move/connect_four',
+				sourcePath: opts.sourcePath,
 				capture: { adminCap: '::admin::AdminCap' },
 			}),
 			seed({
-				name: 'openLobby',
-				needs: ['connect_four'],
+				name: 'init',
+				needs: ['package'],
 				inputs: {
 					/* hash inputs the file watcher sees */
 				},
 				getStatus: async (ctx) => {
-					const cached = ctx.registry.ns<ArenaNs>('arena').sharedObjects.find('openLobby');
-					if (cached === undefined) return { ok: false, detail: 'no cached lobby' };
+					const cached = ctx.registry.ns<MyNs>('my-plugin').objects.find('config');
+					if (cached === undefined) return { ok: false, detail: 'no cached config' };
 					return { ok: true, detail: cached.objectId };
 				},
 				run: async (ctx) => {

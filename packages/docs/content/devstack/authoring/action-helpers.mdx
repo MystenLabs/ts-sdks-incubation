@@ -1,17 +1,23 @@
 ---
 title: Action helpers
-description: Factories for the six action kinds.
+description: Factories for the action kinds.
 ---
 
-| Helper                                           | Returns                                                                                                                                |
-| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `buildImage({ name, run, getStatus?, ... })`     | `Build` action.                                                                                                                        |
-| `service({ name, run, getStatus?, ... })`        | `Service` action. Localnet only.                                                                                                       |
-| `publish({ name, run, getStatus?, ... })`        | `Publish` action — low-level escape hatch.                                                                                             |
-| `definePublishAction({ name, sourcePath, ... })` | `Publish` action with build + register + cache baked in.                                                                               |
-| `register({ name, run, getStatus?, ... })`       | `Register` action.                                                                                                                     |
-| `seed({ name, run, getStatus?, liveNetworks? })` | `Seed` action. Default-skipped on testnet/mainnet. Pass `liveNetworks: true` (every network) or `liveNetworks: ['testnet']` to opt in. |
-| `emit({ name, run, getStatus?, dependsOnKind })` | `Emit` action. Re-fires inline plus once per cycle when `dependsOnKind` is dirty.                                                      |
+| Helper                                                                         | Returns                                                                                                                                                                       |
+| ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `buildImage({ name, run, getStatus?, ... })`                                   | `Build` action.                                                                                                                                                               |
+| `service({ name, run, getStatus?, ... })`                                      | `Service` action — low-level docker container. Localnet only.                                                                                                                 |
+| `containerService({ name, containerName, spec, snapshot?, ... })`              | `Service` action with the standard inspect → resume-or-run → wait-for-healthy → register-shutdown lifecycle. Use this rather than raw `service()`. Localnet only.             |
+| `hostProcess({ name, run, getStatus?, ... })`                                  | `HostProcess` action — in-process listener / spawned child. Skipped by `applyTestSetupFilter` so test bring-up doesn't start servers that die with the process.               |
+| `publish({ name, run, getStatus?, ... })`                                      | `Publish` action — low-level escape hatch.                                                                                                                                    |
+| `definePublishAction({ name, sourcePath, ... })`                               | `Publish` action with build + register + cache baked in.                                                                                                                      |
+| `publishMove({ name, path, capture?, scope?, ... })`                           | Ergonomic wrapper over `definePublishAction` with friendlier `path:` naming + setup-action `scope`. Use inside [`setup:`](/docs/authoring/setup).                             |
+| `register({ name, run, getStatus?, ... })`                                     | `Register` action — populates registry + manifest entries without starting a service.                                                                                         |
+| `seed({ name, run, getStatus?, liveNetworks? })`                               | `Seed` action. Default-skipped on testnet/mainnet. Pass `liveNetworks: true` (every network) or `liveNetworks: ['testnet']` to opt in.                                        |
+| `runTransaction({ name, signer, build, scope?, ... })`                         | `Seed` action that signs + executes a transaction by named signer with a `build(ctx, tx)` callback. Default idempotence is a marker file at `<stackDir>/setup/<name>.done`.   |
+| `emit({ name, run, getStatus?, dependsOnKind })`                               | `Emit` action. Re-fires inline plus once per cycle when `dependsOnKind` is dirty.                                                                                             |
+| `verify({ name, getStatus, ... })`                                             | `Verify` action. Read-only invariant check; fails the cycle on `ok: false`. No `run`.                                                                                         |
+| `job({ name, run, getStatus?, ... })`                                          | `Service`-typed factory for one-shot jobs that exit after they're done (e.g. walrus deploy).                                                                                  |
 
 Every action shape carries:
 

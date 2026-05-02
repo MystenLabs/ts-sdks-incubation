@@ -1,18 +1,20 @@
 ---
 title: Actions
-description: The six action kinds the reconciler walks.
+description: The eight action kinds the reconciler walks.
 ---
 
-A plugin contributes named actions of one of six kinds:
+A plugin contributes named actions of one of eight kinds:
 
-| Kind       | Purpose                                                                                                  |
-| ---------- | -------------------------------------------------------------------------------------------------------- |
-| `Build`    | Idempotent image / artifact build.                                                                       |
-| `Service`  | Long-running process (docker container). Localnet only.                                                  |
-| `Publish`  | Move package publish — captures `packageId` + named object IDs into the registry.                        |
-| `Register` | On-chain registration that produces registry entries (e.g. account funding, KeyServer publish).          |
-| `Seed`     | Post-deploy state seeding (mint balances, open lobbies, place orders). Default-skipped on live networks. |
-| `Emit`     | Side-effecting outputs derived from the registry (codegen, manifest writes).                             |
+| Kind          | Purpose                                                                                                                                       |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Build`       | Idempotent image / artifact build.                                                                                                            |
+| `Service`     | Long-running docker container. State lives in the writable layer; `docker stop` + `docker start` preserves it. Localnet only.                 |
+| `HostProcess` | In-process subprocess (Node `http.Server`, vite dev-server). Lifecycle bound to the supervisor process; skipped by `applyTestSetupFilter`.    |
+| `Publish`     | Move package publish — captures `packageId` + named object IDs into the registry.                                                             |
+| `Register`    | On-chain or registry-only registration that produces registry entries (e.g. account funding, KeyServer publish, deterministic URL+token).     |
+| `Seed`        | Post-deploy state seeding (mint balances, open lobbies, place orders). Default-skipped on live networks; opt in via `liveNetworks`.           |
+| `Emit`        | Side-effecting outputs derived from the registry (codegen, manifest writes).                                                                  |
+| `Verify`      | Read-only invariant check. `getStatus` is the entire action; no `run`. Fails the cycle on `ok: false`.                                        |
 
 ## Edges
 

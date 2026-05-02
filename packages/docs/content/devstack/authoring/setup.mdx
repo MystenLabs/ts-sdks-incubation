@@ -1,0 +1,153 @@
+---
+title: setup
+description: Declare per-app state — Move publishes, fixture mints, shared-object seeds — inline in devstack.config.ts.
+---
+
+App-level state lives in `DevstackConfig.setup: [...]` — a list of actions appended to the action
+graph as a synthetic plugin (`<app>-setup`). From the rest of the system's perspective it's a
+normal plugin: same expansion rules, same filter chain, same snapshot capture path.
+
+```ts
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import {
+	defineDevstackConfig,
+	publishMove,
+	runTransaction,
+	sui,
+} from '@mysten-incubation/devstack';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+
+export default defineDevstackConfig({
+	app: 'token-studio',
+	accounts: { alice: {}, bob: {} },
+	plugins: [sui()],
+	setup: [
+		publishMove({
+			name: 'managed_coin',
+			needs: ['sui.accounts'],
+			path: resolve(HERE, 'move/managed_coin'),
+			publisher: 'alice',
+			capture: { admin: '::admin::AdminCap' },
+		}),
+		runTransaction({
+			name: 'mint-initial-supply',
+			needs: ['managed_coin'],
+			signer: 'alice',
+			build: (ctx, tx) => {
+				const pkg = ctx.registry.packages.require('managed_coin');
+				tx.moveCall({
+					target: `${pkg.packageId}::token::mint`,
+					arguments: [
+						tx.object(pkg.captured.admin),
+						tx.pure.u64(1_000_000_000n),
+						tx.pure.address(ctx.accounts.get('alice').toSuiAddress()),
+					],
+				});
+			},
+		}),
+	],
+});
+```
+
+## When to use which factory
+
+`setup:` accepts any [Action](/docs/concepts/actions). For the common patterns there are two
+ergonomic helpers:
+
+| Helper             | Wraps                  | Use for                                                                                                                                                      |
+| ------------------ | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `publishMove()`    | `definePublishAction`  | Build + publish a Move package; capture object IDs by type filter; register in `ctx.registry.packages`. Source-digest-aware skip predicate.                  |
+| `runTransaction()` | `seed`                 | Sign + execute a transaction by `signer: '<name>'` with a `build(ctx, tx)` callback. Default idempotence is a marker file at `<stackDir>/setup/<name>.done`. |
+
+For anything outside that, drop into the raw factories — they're first-class in `setup:`:
+
+```ts
+import { definePublishAction, register, seed } from '@mysten-incubation/devstack';
+
+setup: [
+	// Custom getStatus probing on-chain state directly:
+	seed({
+		name: 'create-shared-config',
+		needs: ['my_package'],
+		inputs: { version: 1 },
+		getStatus: async (ctx) => {
+			const cached = ctx.registry.ns<{ shared: RegistryQuery<...> }>('my-app').shared.find('config');
+			if (cached === undefined) return { ok: false, detail: 'no cached config' };
+			const live = await client.getObject({ id: cached.objectId });
+			return live.data ? { ok: true } : { ok: false, detail: 'config not on chain' };
+		},
+		run: async (ctx) => { /* ... */ },
+	}),
+],
+```
+
+The framework will not grow more helpers. If `publishMove` / `runTransaction` don't fit, write
+the raw action — its full power is right there.
+
+## Idempotence
+
+`runTransaction()`'s default marker file is keyed by `stableHash` of the action's inputs
+(signer name + `build.toString()` + scope + needs). Editing the build callback re-runs the
+action; the marker is overwritten with the new hash on success.
+
+Marker files live in `<stackDir>/setup/<name>.done`. Snapshot save captures them; restore brings
+them back; `devstack stack drop` clears them along with the rest of the stack. So:
+
+- First `devstack up` after a stack drop → marker absent → action runs.
+- Subsequent runs → marker matches → action skips.
+- After editing the build callback → marker hash mismatch → action re-runs once.
+- Snapshot restore → marker re-appears → action skips.
+
+For chain-state-sensitive idempotence (e.g. "alice owns this object"), provide a custom
+`getStatus`. The default probe is intentionally cheap — chain state can drift from the marker
+in ways the marker can't see.
+
+## Scope (test-only fixtures)
+
+Each `setup:` action carries an optional `scope` field:
+
+| Scope             | Runs on                                                            |
+| ----------------- | ------------------------------------------------------------------ |
+| `'always'` (default) | Every stack and network.                                          |
+| `'localnet-only'` | Only when `target.network === 'localnet'`.                         |
+| `'test-only'`     | Only when `target.network === 'localnet'` and the stack name starts with `test`. |
+
+Use `'test-only'` for fixtures that exist only to satisfy tests, like creating throwaway
+content for a list-view e2e:
+
+```ts
+setup: [
+	publishMove({ name: 'my_package', needs: ['sui.accounts'], path: '...' }),
+	runTransaction({
+		name: 'mint-supply',
+		needs: ['my_package'],
+		signer: 'alice',
+		build: (ctx, tx) => { /* prod-quality minting */ },
+	}),
+	runTransaction({
+		name: 'create-test-fixtures',
+		scope: 'test-only',
+		needs: ['mint-supply'],
+		signer: 'alice',
+		build: (ctx, tx) => { /* test-only seed objects */ },
+	}),
+],
+```
+
+The `main` and `test` stacks now have different action sets → different snapshot IDs by
+construction → cache independently.
+
+## How it composes
+
+- **Action graph**: `setup:` items express ordering via `needs:` (`needs: ['sui.accounts']`,
+  `needs: ['my-package']`). The reconciler walks the graph and reaches each setup action when
+  its dependencies have completed.
+- **Snapshot capture**: Setup actions' effects (chain state) ride along in sui's container layer
+  via `docker commit`; captured object IDs land in the manifest via the registry; marker files
+  live in `<stackDir>` and are part of host capture. `devstack snapshot save baseline` captures
+  the post-setup state; `restore` brings everything back without re-running setup actions.
+- **CI cache key**: `devstack snapshot hash` includes `setup:` actions in the content hash, so
+  any setup-action input change invalidates the snapshot cleanly.

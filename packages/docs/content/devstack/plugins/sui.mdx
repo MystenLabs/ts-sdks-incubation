@@ -10,12 +10,13 @@ description: Sui localnet container with provisioned accounts and faucet.
 - `sui.accounts` — Iterates `ctx.accounts.names()`, funds each address via the faucet on first run,
   registers each in `registry.accounts`.
 
-| Option                   | Default               | Notes                                                        |
-| ------------------------ | --------------------- | ------------------------------------------------------------ |
-| `version`                | `SUI_DEFAULT_VERSION` | sui-cli release tag, e.g. `'devnet-v1.71.0'`.                |
-| `rpcPort` / `faucetPort` | `9000` / `9123`       | Host ports. Override when running multiple apps on one host. |
-| `dockerContextDir`       | in-tree Dockerfile    | Override the Docker build-context dir.                       |
-| `minBalance`             | 50 SUI                | Per-account minimum funding (MIST).                          |
+| Option                   | Default               | Notes                                                                                                                                                |
+| ------------------------ | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `version`                | `SUI_DEFAULT_VERSION` | sui-cli release tag, e.g. `'devnet-v1.71.0'`. Bumping this rebuilds the local image.                                                                 |
+| `rpcPort` / `faucetPort` | `9000` / `9123`       | Preferred host ports — hints to the per-stack port allocator. The allocator picks a free port if the preferred one is taken by a sibling stack.      |
+| `dockerContextDir`       | in-tree Dockerfile    | Override the Docker build-context dir.                                                                                                               |
+| `epochsToRetain`         | `2`                   | Checkpoint history kept around. Lower = less disk; too low strands walrus storage nodes. Pass `'MAX'` to disable pruning.                            |
+| `minBalance`             | 50 SUI                | Per-account minimum funding (MIST).                                                                                                                  |
 
 Account names are declared at the top level of `defineDevstackConfig` as
 `accounts: { name: spec, ... }`, not on the sui plugin — see the

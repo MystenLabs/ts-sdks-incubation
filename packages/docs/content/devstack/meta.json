@@ -20,6 +20,7 @@
 		"plugins/vite",
 		"plugins/wallet-server",
 		"---Authoring---",
+		"authoring/setup",
 		"authoring/define-plugin",
 		"authoring/action-helpers",
 		"authoring/accounts",
