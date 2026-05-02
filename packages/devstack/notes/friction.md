@@ -124,7 +124,7 @@ has no retry. CLAUDE.md anti-pattern explicitly calls out
 with no restart" — `ensureFunded` should retry the faucet call with
 exponential backoff.
 
-## 2026-05-02 — Playwright `defineDevstackPlaywrightConfig` baseURL is hardcoded
+## 2026-05-02 — Playwright `defineDevstackPlaywrightConfig` baseURL is hardcoded [CLOSED — PR 16]
 
 `packages/devstack/src/playwright/defineConfig.ts:46-47`:
 
@@ -132,24 +132,21 @@ exponential backoff.
 const baseURL = `http://localhost:${port}`;
 ```
 
-`port` comes from the user's option (default 5173). With the port
-allocator (PR 8) the actual frontend port may differ when sibling
-stacks have claimed the preferred port — running `pnpm test:e2e`
-while another stack of the same app holds 5173 lands the test
-stack's frontend on a kernel-allocated port (e.g. 51202). Playwright
-polls `http://localhost:5173` and times out after 5 minutes.
+`port` came from the user's option (default 5173). With the port
+allocator the actual frontend port could differ when sibling stacks
+claimed the preferred port — running `pnpm test:e2e` while another
+stack of the same app held 5173 landed the test stack's frontend on
+a kernel-allocated port (e.g. 51202). Playwright polled
+`http://localhost:5173` and timed out after 5 minutes.
 
-Fix shape: `defineDevstackPlaywrightConfig` reads the manifest at
-config-eval time IF it exists (warm runs), and either honors the
-user's option as a preferred port (writing into the env so the port
-allocator picks it) or wraps the webServer in a poll-the-manifest-
-then-poll-the-URL pattern. Bigger lift than this plan covered;
-deferred.
-
-Workaround for now: don't run e2e while another stack of the same
-app is up on the conflicting port. Example clean-state sequence:
-`docker rm -f $(docker ps -aq --filter label=devstack.app=<app>)`,
-then `rm -rf .devstack/stacks` before `pnpm test:e2e`.
+**Closed by PR 16**: `defineDevstackPlaywrightConfig` already routed
+through the per-stack allocator on `manageStack: true`, but
+`extend.webServer` and `extend.use` overrides clobbered the resolved
+URL. PR 16 splits those out and shallow-merges them over the defaults
+— `extend.webServer = { timeout: 180_000 }` now keeps the resolved
+`url` + `command`. Verified: with `main` stack holding 5174, test
+stack's allocator picks 65218; all 7 wallet e2e tests pass without
+the prior workaround.
 
 ## 2026-05-02 — Reconciler runs same-signer transactions in parallel
 
