@@ -111,3 +111,46 @@ describe('emitOnlyFilter', () => {
 		expect(emitOnlyFilter(make('Seed') as SeedAction, localnet)).toBe(false);
 	});
 });
+
+describe('setup-action scope filtering', () => {
+	const testStack: ResolvedTarget = { network: 'localnet', stack: 'test', rpcUrl: '' };
+	const testNamedStack: ResolvedTarget = {
+		network: 'localnet',
+		stack: 'test-shard-1',
+		rpcUrl: '',
+	};
+
+	it("'always' (default) runs on every stack and network", () => {
+		expect(applyFilter(make('Publish'), localnet)).toBe(true);
+		expect(applyFilter(make('Publish'), testStack)).toBe(true);
+		expect(applyFilter(make('Publish', { scope: 'always' }), testnet)).toBe(true);
+	});
+
+	it("'localnet-only' skips on testnet/mainnet", () => {
+		const action = make('Publish', { scope: 'localnet-only' });
+		expect(applyFilter(action, localnet)).toBe(true);
+		expect(applyFilter(action, testStack)).toBe(true);
+		expect(applyFilter(action, testnet)).toBe(false);
+		expect(applyFilter(action, mainnet)).toBe(false);
+	});
+
+	it("'test-only' runs only on localnet stacks named 'test*'", () => {
+		const action = make('Publish', { scope: 'test-only' });
+		expect(applyFilter(action, localnet)).toBe(false); // stack='main'
+		expect(applyFilter(action, testStack)).toBe(true);
+		expect(applyFilter(action, testNamedStack)).toBe(true);
+		expect(applyFilter(action, testnet)).toBe(false); // wrong network
+	});
+
+	it('scope filter applies to deployFilter too', () => {
+		const action = make('Publish', { scope: 'test-only' });
+		expect(deployFilter(action, localnet)).toBe(false);
+		expect(deployFilter(action, testStack)).toBe(true);
+	});
+
+	it('scope filter applies to applyTestSetupFilter too', () => {
+		const action = make('Publish', { scope: 'test-only' });
+		expect(applyTestSetupFilter(action, localnet)).toBe(false);
+		expect(applyTestSetupFilter(action, testStack)).toBe(true);
+	});
+});

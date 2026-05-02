@@ -156,6 +156,11 @@ export function parseTargetArg(argv: string[]): string | undefined {
 /** Dynamic-import the config from `abs` and validate the minimum shape every
  * action-graph CLI relies on (`app: string`, `plugins: Plugin[]`).
  *
+ * If the config declares `setup: [...]`, those actions are wrapped into a
+ * synthetic plugin named `<app>-setup` and appended to `plugins`. From the
+ * rest of the system's perspective it's a normal plugin — same expansion
+ * rules, same filter chain, same snapshot capture path.
+ *
  * The bin re-execs itself with `--import tsx` (see `cli/index.ts`) when
  * the runtime needs TS loading, so by the time `loadConfig` runs, the
  * tsx loader is active. We just call plain `import()` here. */
@@ -168,6 +173,14 @@ export async function loadConfig(abs: string): Promise<DevstackConfig> {
 	}
 	if (typeof cfg.app !== 'string' || !Array.isArray(cfg.plugins)) {
 		throw new Error(`config at ${abs} is missing required fields { app, plugins[] }`);
+	}
+	if (cfg.setup !== undefined && cfg.setup.length > 0) {
+		const setupActions = cfg.setup;
+		const setupPlugin = {
+			name: `${cfg.app.replace(/[^a-z0-9_-]/gi, '-').toLowerCase()}-setup`,
+			actions: () => setupActions,
+		};
+		return { ...cfg, plugins: [...cfg.plugins, setupPlugin] };
 	}
 	return cfg;
 }
