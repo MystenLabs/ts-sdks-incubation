@@ -69,6 +69,33 @@ export const deepbook = (opts: DeepbookPluginOptions = {}) => {
 
 	return definePlugin({
 		name: 'deepbook',
+		// Folded into the snapshot id. `rev` covers the source image; pool
+		// + market-maker shapes change which on-chain objects the seed
+		// actions create, so they must invalidate the snapshot when the
+		// app author rewires the book. `midPrices` for makers is also part
+		// of the hash since changing it re-deposits + re-grids on next tick.
+		inputs: {
+			rev,
+			admin,
+			pools: pools.map((p) => ({
+				name: p.name,
+				base: p.base,
+				quote: p.quote,
+				tickSize: p.tickSize.toString(),
+				lotSize: p.lotSize.toString(),
+				minSize: p.minSize.toString(),
+				whitelisted: p.whitelisted ?? true,
+				stable: p.stable ?? false,
+			})),
+			marketMakers: marketMakers.map((m) => ({
+				name: m.name,
+				signer: m.signer,
+				pools: m.pools,
+				levels: m.levels ?? 3,
+				tickSpacing: m.tickSpacing ?? 1,
+				refreshIntervalMs: m.refreshIntervalMs ?? 10_000,
+			})),
+		},
 		actions: () => {
 			const actions: Action[] = [
 				deepbookSourceAction(rev),

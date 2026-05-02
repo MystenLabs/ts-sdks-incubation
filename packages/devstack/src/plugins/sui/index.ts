@@ -142,6 +142,11 @@ export const sui = (opts: SuiPluginOptions = {}) => {
 
 	return definePlugin({
 		name: 'sui',
+		// Folded into the snapshot id (`snapshotIdFromConfig`). Bumping
+		// `version`, swapping the docker context, or changing
+		// `epochsToRetain` invalidates the cached snapshot — anything else
+		// affects only chain state, which the snapshot captures verbatim.
+		inputs: { image: imageTag, epochsToRetain },
 		actions: () => [
 			buildImageAction({
 				name: 'build',

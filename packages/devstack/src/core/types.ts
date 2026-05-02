@@ -353,6 +353,14 @@ export interface Plugin {
 	 * cached image / wrong-version footgun is easier to triage. Plugin
 	 * authors set this manually; not enforced. */
 	version?: string;
+	/** Stable summary of every structurally-significant input the plugin
+	 * accepts — image tag, git rev, port hints, action set, etc. Folded
+	 * into the snapshot id (`snapshotIdFromConfig`) so bumping `rev:` on
+	 * a plugin or editing a `setup:` action invalidates cached
+	 * snapshots automatically. Plugin authors construct it from their
+	 * options bag; the runtime treats the value as opaque + JSON-
+	 * stringifies it via `stableHash`. */
+	inputs?: unknown;
 	actions: () => Action[];
 }
 

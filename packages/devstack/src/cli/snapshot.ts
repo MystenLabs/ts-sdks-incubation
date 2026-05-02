@@ -56,11 +56,15 @@ export async function runSnapshot(flags: SnapshotFlags): Promise<number> {
 	const id = snapshotIdFromConfig({
 		appName: config.app,
 		stack,
-		plugins: config.plugins.map((p) => ({ name: p.name, version: p.version })),
+		plugins: config.plugins.map((p) => ({
+			name: p.name,
+			version: p.version,
+			inputs: p.inputs,
+		})),
 		accountNames: Object.keys(config.accounts ?? {}).sort(),
 		// Best-effort sui image hint for the hash. Plugin authors may pin a
 		// different version; the snapshot id will still differ when they do
-		// because plugin inputs are part of the hash.
+		// because each plugin's `inputs` field is also part of the hash.
 		suiImage: `dev-examples/sui-localnet:${SUI_DEFAULT_VERSION}-r7`,
 	});
 

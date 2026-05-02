@@ -74,6 +74,25 @@ describe('snapshotIdFromConfig', () => {
 		});
 		expect(id).toMatch(/^[a-f0-9]+$/);
 	});
+
+	it('threads plugin.inputs through into the hash', () => {
+		// Without `inputs` plumbing, bumping a plugin's `rev` (without
+		// changing `version`) used to produce the same snapshot id —
+		// the documented invalidation gap that PR 21 closes.
+		const a = snapshotIdFromConfig({
+			appName: 'app',
+			stack: 'main',
+			plugins: [{ name: 'walrus', inputs: { rev: 'mainnet-v1.21' } }],
+			accountNames: ['alice'],
+		});
+		const b = snapshotIdFromConfig({
+			appName: 'app',
+			stack: 'main',
+			plugins: [{ name: 'walrus', inputs: { rev: 'mainnet-v1.22' } }],
+			accountNames: ['alice'],
+		});
+		expect(a).not.toBe(b);
+	});
 });
 
 describe('listSnapshots', () => {

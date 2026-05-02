@@ -128,6 +128,32 @@ export const imports = (opts: ImportsPluginOptions) => {
 	const specs = opts.packages.map(applyDepLinks);
 	return definePlugin({
 		name: 'imports',
+		// Folded into the snapshot id. Bumping any spec's `(repo, rev,
+		// subdir)` re-fetches + re-publishes the package, producing
+		// different on-chain object IDs — so the cached snapshot's
+		// captures wouldn't match. Curated `addresses[network]` are also
+		// part of the hash since they pin the live-net result.
+		inputs: specs.map((s) =>
+			isLocalImport(s)
+				? {
+						kind: 'local',
+						name: s.name,
+						path: s.local.path,
+						publisher: s.publisher,
+						env: s.env,
+						addresses: s.addresses ?? null,
+					}
+				: {
+						kind: 'git',
+						name: s.name,
+						repo: s.repo,
+						rev: s.rev,
+						subdir: s.subdir,
+						publisher: s.publisher,
+						env: s.env,
+						addresses: s.addresses ?? null,
+					},
+		),
 		actions: () => specs.flatMap(buildActionsForSpec),
 	});
 };

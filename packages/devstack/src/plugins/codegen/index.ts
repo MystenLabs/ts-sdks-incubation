@@ -69,6 +69,12 @@ export const codegen = (opts: CodegenPluginOptions = {}) => {
 	const mvrName = opts.mvrName ?? defaultMvrName;
 	return definePlugin({
 		name: 'codegen',
+		// Folded into the snapshot id. Output dir + mvrName shape change
+		// what gets written into `src/generated/` — both belong in the
+		// invalidator. The actual codegen output is in `src/generated/`
+		// (gitignored), not `<stackDir>`, so the snapshot's host capture
+		// doesn't include it; bumping these regens on next `up`.
+		inputs: { output, mvrShape: mvrName('_') },
 		actions: () => [
 			emit({
 				name: 'generate',

@@ -121,6 +121,11 @@ export const seal = (opts: SealPluginOptions = {}) => {
 
 	return definePlugin({
 		name: 'seal',
+		// Folded into the snapshot id. `imageTag` covers `rev` + `platform`
+		// (the build action's input) so bumping any of those re-derives a
+		// fresh id; the master key on disk is captured separately via the
+		// host-fs portion of the snapshot.
+		inputs: { image: imageTag, rev },
 		actions: () => [
 			buildImage({
 				name: 'build',

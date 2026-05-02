@@ -528,11 +528,14 @@ function readSymlinkTarget(path: string): string | null {
 
 /** Convenience: derive a snapshot id from a DevstackConfig + active stack
  * + platform. Used by the CLI `snapshot hash` subcommand and by future
- * cache lookups. */
+ * cache lookups. Each plugin's `inputs` field is folded into the hash
+ * so bumping `rev:` on walrus / seal / deepbook, switching the sui
+ * image tag, or editing a `setup:` action invalidates the cached
+ * snapshot id automatically. */
 export function snapshotIdFromConfig(input: {
 	appName: string;
 	stack: string;
-	plugins: ReadonlyArray<{ name: string; version?: string }>;
+	plugins: ReadonlyArray<{ name: string; version?: string; inputs?: unknown }>;
 	accountNames: string[];
 	suiImage?: string;
 }): string {
