@@ -22,14 +22,18 @@
 //     }),
 //   ],
 //
-// Default `getStatus` is marker-file based: `<stackDir>/setup/<name>.done`.
-// Action runs once per stack; snapshot restore brings the marker back so
-// no re-run; `devstack stack drop` clears the marker so it re-runs on
-// the next cold start. Override with explicit `getStatus` when the
-// action's idempotence needs an on-chain probe (e.g., "treasury cap
-// minted to alice").
+// Default `getStatus` is input-hash-keyed marker file. The marker lives at
+// `<stackDir>/setup/<name>.done` and its CONTENT is the stableHash of
+// the action's inputs (signer name + serialized build callback + scope +
+// needs). The probe checks both presence AND hash match, so editing the
+// build callback invalidates the marker and re-runs the transaction —
+// closing the footgun where a stale marker would skip new code.
+//
+// Snapshot restore brings the marker back; `devstack stack drop` clears
+// it. Override with explicit `getStatus` when the action's idempotence
+// needs an on-chain probe (e.g. "treasury cap minted to alice").
 
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
 import type { Transaction } from '@mysten/sui/transactions';
@@ -43,6 +47,7 @@ import type {
 import { requireLocalnetCtx } from '../core/types.js';
 import { createLocalSuiClient } from '../helpers/sui-client.js';
 import { stackDir } from '../runtime/active-stack.js';
+import { stableHash } from '../runtime/hash.js';
 import { Transaction as TransactionImpl } from '@mysten/sui/transactions';
 import { seed } from './seed.js';
 
@@ -65,12 +70,23 @@ export interface RunTransactionOptions {
 }
 
 export function runTransaction(opts: RunTransactionOptions): SeedAction<Record<string, unknown>> {
+	// `Function.toString()` is the cheapest way to make build-callback
+	// edits invalidate the marker. Closure-captured constants don't
+	// appear in toString output — users who want those to invalidate
+	// must reference them in the build body so the source captures the
+	// reference (or pass them through `inputs` in a custom getStatus).
+	const inputsHash = stableHash({
+		signer: opts.signer,
+		build: opts.build.toString(),
+		scope: opts.scope ?? 'always',
+		needs: opts.needs ?? [],
+	});
 	const action = seed({
 		name: opts.name,
 		needs: opts.needs,
 		provides: opts.provides,
-		inputs: { signer: opts.signer },
-		getStatus: opts.getStatus ?? defaultMarkerProbe(opts.name),
+		inputs: { signer: opts.signer, inputsHash },
+		getStatus: opts.getStatus ?? defaultMarkerProbe(opts.name, inputsHash),
 		run: async (ctx) => {
 			requireLocalnetCtx(ctx);
 			const url = ctx.registry.services.require('sui-rpc').url;
@@ -89,7 +105,7 @@ export function runTransaction(opts: RunTransactionOptions): SeedAction<Record<s
 				throw new Error(`runTransaction(${opts.name}): tx failed: ${err}`);
 			}
 			await client.waitForTransaction({ digest: result.digest });
-			writeMarker(ctx, opts.name);
+			writeMarker(ctx, opts.name, inputsHash);
 		},
 	});
 	if (opts.scope !== undefined) {
@@ -100,15 +116,19 @@ export function runTransaction(opts: RunTransactionOptions): SeedAction<Record<s
 
 function defaultMarkerProbe(
 	name: string,
+	expectedHash: string,
 ): (ctx: ActionRunContext) => Promise<{ ok: boolean; detail?: string }> {
 	return async (ctx) => {
 		if (ctx.network !== 'localnet') {
 			return { ok: false, detail: 'live net — re-run' };
 		}
 		const path = markerPath(ctx, name);
-		return existsSync(path)
-			? { ok: true, detail: 'marker present' }
-			: { ok: false, detail: 'marker absent' };
+		if (!existsSync(path)) return { ok: false, detail: 'marker absent' };
+		const observed = readFileSync(path, 'utf8').trim();
+		if (observed !== expectedHash) {
+			return { ok: false, detail: 'inputs changed since marker' };
+		}
+		return { ok: true, detail: 'marker matches' };
 	};
 }
 
@@ -122,8 +142,8 @@ function markerPath(ctx: ActionRunContext, actionName: string): string {
 	return resolve(stackDir(ctx.appDir, ctx.stack), 'setup', `${actionName}.done`);
 }
 
-function writeMarker(ctx: ActionRunContext, actionName: string): void {
+function writeMarker(ctx: ActionRunContext, actionName: string, hash: string): void {
 	const path = markerPath(ctx, actionName);
 	mkdirSync(dirname(path), { recursive: true });
-	writeFileSync(path, `${new Date().toISOString()}\n`, 'utf8');
+	writeFileSync(path, `${hash}\n`, 'utf8');
 }

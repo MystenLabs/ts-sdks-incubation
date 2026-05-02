@@ -100,3 +100,53 @@ Possible fixes (deferred — no design picked):
 
 The Register-then-HostProcess split feels right and is a natural
 follow-up to PR 1.
+
+**Closed by PR 9** (state-and-snapshots follow-up plan): the split
+landed and cold-first-run e2e on token-studio now passes. Manifest
+contains the wallet-server entry as soon as globalSetup completes;
+the listener starts in a separate HostProcess action that
+applyTestSetupFilter skips.
+
+## 2026-05-02 — Faucet 500 on cold-first-bring-up
+
+Surfaced repeatedly in the state-and-snapshots e2e verification:
+`sui.accounts` fails on the first cycle of a fresh sui container with
+`faucet http://127.0.0.1:9984/v2/gas → 500: {"status":{"Failure":{"Internal":"Failed to execute transaction after 2 retries"}}}`.
+The faucet HTTP endpoint is reachable (waitForFaucet returned ok),
+but its first txn submission fails the validator's "execute after N
+retries" path. Always succeeds on the next retry, so this is a brief
+ready-but-not-quite window between RPC up and the validator able to
+execute coin txns.
+
+`packages/devstack/src/plugins/sui/keys.ts:19-29`'s `ensureFunded`
+has no retry. CLAUDE.md anti-pattern explicitly calls out
+"long-running processes that `process.exit(1)` on transient errors
+with no restart" — `ensureFunded` should retry the faucet call with
+exponential backoff.
+
+## 2026-05-02 — Playwright `defineDevstackPlaywrightConfig` baseURL is hardcoded
+
+`packages/devstack/src/playwright/defineConfig.ts:46-47`:
+
+```
+const baseURL = `http://localhost:${port}`;
+```
+
+`port` comes from the user's option (default 5173). With the port
+allocator (PR 8) the actual frontend port may differ when sibling
+stacks have claimed the preferred port — running `pnpm test:e2e`
+while another stack of the same app holds 5173 lands the test
+stack's frontend on a kernel-allocated port (e.g. 51202). Playwright
+polls `http://localhost:5173` and times out after 5 minutes.
+
+Fix shape: `defineDevstackPlaywrightConfig` reads the manifest at
+config-eval time IF it exists (warm runs), and either honors the
+user's option as a preferred port (writing into the env so the port
+allocator picks it) or wraps the webServer in a poll-the-manifest-
+then-poll-the-URL pattern. Bigger lift than this plan covered;
+deferred.
+
+Workaround for now: don't run e2e while another stack of the same
+app is up on the conflicting port. Example clean-state sequence:
+`docker rm -f $(docker ps -aq --filter label=devstack.app=<app>)`,
+then `rm -rf .devstack/stacks` before `pnpm test:e2e`.
