@@ -45,7 +45,10 @@ interface AccountInfo {
 
 const DEFAULT_MAX_BODY_BYTES = 2 * 1024 * 1024;
 
-function generateToken(): string {
+/** Mint a fresh 256-bit bearer token. Exported so the Register action
+ * can produce a deterministic token at apply-time (then write it to
+ * `<stackDir>/wallet-token` for the listener to pick up). */
+export function generateToken(): string {
 	return randomBytes(32).toString('hex');
 }
 
