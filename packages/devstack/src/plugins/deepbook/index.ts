@@ -25,6 +25,10 @@
 
 import type { Action } from '../../core/types.js';
 import { definePlugin } from '../../plugin.js';
+import {
+	type DeepbookMarketMakerSpec,
+	deepbookMarketMakerAction,
+} from './market-maker.js';
 import { type DeepbookPoolSpec, deepbookPoolsAction } from './pools.js';
 import { deepbookPublishAction } from './publish.js';
 import { deepbookSourceAction } from './source.js';
@@ -48,12 +52,20 @@ export interface DeepbookPluginOptions {
 	 * 'wallet-setup.weth']` so pool creation waits until those tokens are
 	 * in the registry. The base `['publish']` need is always present. */
 	poolNeeds?: string[];
+	/** Per-maker grid rebalancers. Each entry becomes a
+	 *  `deepbook.market-maker.<name>` HostProcess action. Skipped by
+	 *  test-setup paths (`applyTestSetupFilter` drops HostProcess
+	 *  actions); the long-running supervisor (`devstack up`,
+	 *  `devstack watch`, `pnpm dev`) owns the loop. See
+	 *  `market-maker.ts` for the per-tick semantics. */
+	marketMakers?: ReadonlyArray<DeepbookMarketMakerSpec>;
 }
 
 export const deepbook = (opts: DeepbookPluginOptions = {}) => {
 	const rev = opts.rev ?? DEFAULT_REV;
 	const admin = opts.admin ?? 'publisher';
 	const pools = opts.pools ?? [];
+	const marketMakers = opts.marketMakers ?? [];
 
 	return definePlugin({
 		name: 'deepbook',
@@ -64,6 +76,9 @@ export const deepbook = (opts: DeepbookPluginOptions = {}) => {
 			];
 			if (pools.length > 0) {
 				actions.push(deepbookPoolsAction({ pools, admin, extraNeeds: opts.poolNeeds ?? [] }));
+			}
+			for (const maker of marketMakers) {
+				actions.push(deepbookMarketMakerAction({ maker, pools }));
 			}
 			return actions;
 		},
@@ -76,5 +91,6 @@ export type {
 	DeepbookNamespace,
 } from './pools.js';
 export { deepbookNs } from './pools.js';
+export type { DeepbookMarketMakerSpec } from './market-maker.js';
 export { resolveCoinType, SUI_COIN_TYPE } from './coin-spec.js';
 export { buildDeepbookSwapTx, type BuildSwapTxOptions } from './swap.js';

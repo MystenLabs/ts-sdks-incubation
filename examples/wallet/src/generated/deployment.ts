@@ -27,7 +27,7 @@ const registry = (manifest as { registry?: unknown }).registry as
 			services?: Array<{ name: string; url: string }>;
 			accounts?: Array<{ name: string; address: string }>;
 			packages?: Array<{ name: string; packageId: string }>;
-			wallet?: {
+			deepbook?: {
 				pools?: Array<{
 					name: string;
 					poolId: string;
@@ -42,7 +42,7 @@ const services = registry?.services ?? [];
 const accounts = registry?.accounts ?? [];
 const packages = registry?.packages ?? [];
 const tokens = registry?.tokens ?? [];
-const walletPools = registry?.wallet?.pools ?? [];
+const deepbookPools = registry?.deepbook?.pools ?? [];
 
 const accountMap: Record<string, string> = Object.fromEntries(
 	accounts.map((a) => [a.name, a.address]),
@@ -66,7 +66,7 @@ const allCoins: readonly CoinSpec[] = [SUI_COIN, ...coinsFromTokens];
 const symbolFor = (coinType: string): string =>
 	allCoins.find((c) => c.coinType === coinType)?.symbol ?? coinType.split('::').pop() ?? '?';
 
-const pools: readonly PoolView[] = walletPools.map((p) => ({
+const pools: readonly PoolView[] = deepbookPools.map((p) => ({
 	alias: p.name,
 	poolId: p.poolId,
 	baseCoinType: p.baseCoinType,
