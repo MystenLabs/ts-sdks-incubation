@@ -22,13 +22,22 @@ export interface DevstackProviderProps {
 	 * `manifest.registry.packages` (e.g. `'connect_four'`, `'mock_usdc'`).
 	 */
 	packages?: Record<string, CodegenModule>;
+	/** The active dAppKit (from `createDevstackDappKit` or directly from
+	 * `@mysten/dapp-kit-core`). Threaded explicitly so hooks like
+	 * `useDevstackSignAndExecute` can locate it without a `globalThis`
+	 * shim. Optional — hooks that don't need it work without it. */
+	dAppKit?: unknown;
 	children: ReactNode;
 }
 
 export function DevstackProvider(props: DevstackProviderProps): ReactElement {
 	const value = useMemo<DevstackProviderState>(
-		() => ({ manifest: props.manifest, packages: props.packages ?? {} }),
-		[props.manifest, props.packages],
+		() => ({
+			manifest: props.manifest,
+			packages: props.packages ?? {},
+			dAppKit: props.dAppKit,
+		}),
+		[props.manifest, props.packages, props.dAppKit],
 	);
 	return <DevstackContext.Provider value={value}>{props.children}</DevstackContext.Provider>;
 }

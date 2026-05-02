@@ -59,6 +59,9 @@
 		"./vitest/runtime": {
 			"types": "./dist/vitest/runtime.d.mts",
 			"import": "./dist/vitest/runtime.mjs"
+		},
+		"./manifest": {
+			"types": "./dist/manifest.d.ts"
 		}
 	},
 	"publishConfig": {

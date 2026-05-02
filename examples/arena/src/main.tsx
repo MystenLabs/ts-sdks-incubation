@@ -26,7 +26,11 @@ createRoot(rootEl).render(
 	<StrictMode>
 		<QueryClientProvider client={queryClient}>
 			<DAppKitProvider dAppKit={dAppKit}>
-				<DevstackProvider manifest={manifest} packages={{ connect_four: connectFour }}>
+				<DevstackProvider
+					manifest={manifest}
+					packages={{ connect_four: connectFour }}
+					dAppKit={dAppKit}
+				>
 					<App />
 					{import.meta.env.DEV && <DevstackDebugPanel />}
 				</DevstackProvider>

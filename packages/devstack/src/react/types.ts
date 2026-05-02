@@ -24,6 +24,18 @@ export interface DevstackProviderState {
 	 * the app. Order matters only for debugging.
 	 */
 	packages: Record<string, CodegenModule>;
+	/**
+	 * The active dAppKit (from `createDevstackDappKit` or directly from
+	 * `@mysten/dapp-kit-core`). Threaded explicitly so
+	 * `useDevstackSignAndExecute` can call `signAndExecuteTransaction`
+	 * without a `globalThis` lookup. Two devstack apps in one realm
+	 * (micro-frontend, Storybook host) no longer overwrite each other.
+	 *
+	 * Optional: hooks that don't need it (manifest reads, codegen
+	 * binding) work without it. Hooks that DO need it throw with an
+	 * actionable error if missing.
+	 */
+	dAppKit?: unknown;
 }
 
 /**

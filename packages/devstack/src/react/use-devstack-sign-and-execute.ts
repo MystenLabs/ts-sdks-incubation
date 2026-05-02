@@ -9,6 +9,8 @@ import { useCurrentClient } from '@mysten/dapp-kit-react';
 import type { Transaction } from '@mysten/sui/transactions';
 import { useMutation, useQueryClient, type UseMutationResult } from '@tanstack/react-query';
 
+import { useDevstackContext } from './provider.js';
+
 export interface UseDevstackSignAndExecuteOptions {
 	/** Query keys to invalidate on a successful tx. Default: no
 	 * invalidation. Pass an array of top-level query keys (matching the
@@ -53,16 +55,8 @@ export function useDevstackSignAndExecute(
 		waitForTransaction?: (args: { digest: string }) => Promise<unknown>;
 	};
 	const qc = useQueryClient();
-	// dapp-kit's React adapter exposes the active signer-shaped object
-	// via the global `dAppKit` registered through module augmentation.
-	// The actual `signAndExecuteTransaction` lives on dAppKit. To stay
-	// dependency-free at this layer, accept either a manually-bound
-	// `dAppKit` from the app context OR rely on the user to pass a
-	// `Transaction` and call `.signAndExecuteTransaction` themselves
-	// via `dAppKit`. The four apps already pass through dAppKit; mirror
-	// that surface by exposing a hook that delegates the actual sign+
-	// execute to a global `dAppKit.signAndExecuteTransaction` lookup.
-	const signAndExecute = lookupSignAndExecute();
+	const { dAppKit } = useDevstackContext();
+	const signAndExecute = lookupSignAndExecute(dAppKit);
 	return useMutation<SignAndExecuteResult, Error, Transaction>({
 		mutationFn: async (transaction) => signAndExecute({ transaction }),
 		onSuccess: async (result) => {
@@ -90,25 +84,30 @@ export function useDevstackSignAndExecute(
 	});
 }
 
-/** Resolve the `signAndExecuteTransaction` callable from the
- * app-augmented `Register['dAppKit']` global. The four example apps all
- * register a singleton `dAppKit` via dapp-kit's module augmentation;
- * accessing it via the global registry sidesteps a peer-dep on the
- * app's specific dapp-kit instance. Throws if no dAppKit was set up. */
-function lookupSignAndExecute(): SignAndExecuteFn {
-	// `@mysten/dapp-kit-react`'s React state isn't directly exposed
-	// here — apps register their dAppKit via module augmentation and
-	// use `useCurrentClient()` etc. As a pragmatic shim, expect the
-	// app to attach `dAppKit` to `globalThis.__devstackDAppKit__`
-	// during setup (the helper `createDevstackDappKit` does this in G2).
-	const fn = (
+/** Resolve `signAndExecuteTransaction` from the dAppKit threaded
+ * through `<DevstackProvider dAppKit={...}>`. Falls back to the legacy
+ * `globalThis.__devstackDAppKit__` slot for back-compat (apps written
+ * before the Provider gained a `dAppKit` prop), with a one-time
+ * deprecation note. */
+function lookupSignAndExecute(fromContext: unknown): SignAndExecuteFn {
+	const ctxFn = (fromContext as { signAndExecuteTransaction?: SignAndExecuteFn } | undefined)
+		?.signAndExecuteTransaction;
+	if (typeof ctxFn === 'function') return ctxFn;
+
+	const globalFn = (
 		globalThis as { __devstackDAppKit__?: { signAndExecuteTransaction: SignAndExecuteFn } }
 	).__devstackDAppKit__?.signAndExecuteTransaction;
-	if (typeof fn !== 'function') {
-		throw new Error(
-			'useDevstackSignAndExecute: no dAppKit registered. Use `createDevstackDappKit({...})` ' +
-				'from `@mysten-incubation/devstack/react` so the hook can locate the active wallet.',
+	if (typeof globalFn === 'function') {
+		// eslint-disable-next-line no-console
+		console.warn(
+			'useDevstackSignAndExecute: falling back to globalThis.__devstackDAppKit__. ' +
+				'Pass `dAppKit` to <DevstackProvider> so the hook reads from React context — ' +
+				'the global slot is deprecated and breaks when two apps share a realm.',
 		);
+		return globalFn;
 	}
-	return fn;
+	throw new Error(
+		'useDevstackSignAndExecute: no dAppKit available. Pass it to ' +
+			'<DevstackProvider dAppKit={dAppKit}> so the hook can read it from context.',
+	);
 }

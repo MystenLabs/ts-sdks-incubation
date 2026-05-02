@@ -26,7 +26,11 @@ createRoot(rootEl).render(
 	<StrictMode>
 		<QueryClientProvider client={queryClient}>
 			<DAppKitProvider dAppKit={dAppKit}>
-				<DevstackProvider manifest={manifest} packages={{ managed_coin: managedCoin }}>
+				<DevstackProvider
+					manifest={manifest}
+					packages={{ managed_coin: managedCoin }}
+					dAppKit={dAppKit}
+				>
 					<App />
 					{import.meta.env.DEV && <DevstackDebugPanel />}
 				</DevstackProvider>

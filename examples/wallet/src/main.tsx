@@ -31,6 +31,7 @@ createRoot(rootEl).render(
 				<DevstackProvider
 					manifest={manifest}
 					packages={{ mock_usdc: mockUsdc, mock_weth: mockWeth }}
+					dAppKit={dAppKit}
 				>
 					<App />
 					{import.meta.env.DEV && <DevstackDebugPanel />}
