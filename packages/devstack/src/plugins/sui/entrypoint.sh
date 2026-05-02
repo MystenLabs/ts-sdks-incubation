@@ -27,6 +27,43 @@ if [ ! -d /root/.sui/sui_config ]; then
 	sui genesis -f --with-faucet
 fi
 
+# Slow checkpoint pruning. The localnet's stock fullnode.yaml ships with
+# `num-epochs-to-retain: 0`, which prunes checkpoints aggressively (we
+# observed ~10 minutes of retention on a fresh chain). Walrus storage
+# nodes follow the chain from when they were registered onward via the
+# v2 LedgerService `get_full_checkpoint` gRPC; once their last-processed
+# checkpoint slips below sui's `lowest-available-checkpoint`, walrus is
+# permanently stuck (logs spam `Checkpoint <N> not found` and every blob
+# write returns 400).
+#
+# Default retention: 2 prior epochs. With sui-localnet's default 24h
+# epoch this holds 48–72h of history — enough for a multi-day dev session
+# with restart cycles, while still bounding disk growth. Override with the
+# `DEVSTACK_SUI_EPOCHS_TO_RETAIN` env var (set via the sui plugin's
+# `epochsToRetain` option) — `MAX` disables pruning, anything else is
+# parsed as a u64.
+# Idempotent: rewriting the same line is a no-op; covers existing volumes
+# that pre-date this fix.
+RETAIN_RAW="${DEVSTACK_SUI_EPOCHS_TO_RETAIN:-2}"
+if [ "$RETAIN_RAW" = "MAX" ]; then
+	RETAIN=18446744073709551615
+else
+	RETAIN="$RETAIN_RAW"
+fi
+FULLNODE_YAML=/root/.sui/sui_config/fullnode.yaml
+if [ -f "$FULLNODE_YAML" ]; then
+	# Always rewrite both fields so a changed `epochsToRetain` option takes
+	# effect on the next start without requiring a `devstack stack drop`.
+	# `num-epochs-to-retain-for-checkpoints` may already be present from a
+	# prior boot; the second sed handles that case.
+	sed -i "s/^  num-epochs-to-retain: .*\$/  num-epochs-to-retain: ${RETAIN}/" "$FULLNODE_YAML"
+	if grep -q '^  num-epochs-to-retain-for-checkpoints:' "$FULLNODE_YAML"; then
+		sed -i "s/^  num-epochs-to-retain-for-checkpoints: .*\$/  num-epochs-to-retain-for-checkpoints: ${RETAIN}/" "$FULLNODE_YAML"
+	else
+		sed -i "/^  num-epochs-to-retain: ${RETAIN}\$/a\\  num-epochs-to-retain-for-checkpoints: ${RETAIN}" "$FULLNODE_YAML"
+	fi
+fi
+
 # Strip --force-regenesis if it slipped in (legacy CMD compatibility).
 # We always want resume-from-disk now that genesis is persistent.
 args=""
