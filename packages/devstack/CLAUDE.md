@@ -62,6 +62,36 @@ From `MystenLabs/ts-sdks` (specialized, not bad — but don't copy wholesale):
 - Faucet-per-test in the hot path (5–10s per call)
 - Mock-only tests for hooks that need a real chain to verify
 
+## Setup design — the action graph IS the lifecycle
+
+App-level setup (`DevstackConfig.setup: [...]`) is a list of actions
+synthesized into a per-app plugin. We deliberately do not expose
+parallel lifecycle-hook APIs (`afterStackUp`, `afterPublish`, etc.)
+because the action graph already covers the use cases:
+
+- **Ordering** — express via `needs:` (`needs: ['sui.accounts']`,
+  `needs: ['my-package']`).
+- **Idempotence** — express via `getStatus`. `runTransaction` defaults
+  to a marker file at `<stackDir>/setup/<name>.done` whose CONTENT is
+  `stableHash` of the action's inputs (signer, build callback source,
+  scope, needs); editing the build callback re-runs.
+- **Snapshot composition** — markers live in `<stackDir>` so
+  `snapshot save` captures them; restore brings them back; setup skips.
+
+A separate hook system would either duplicate this or coordinate
+poorly with snapshots (re-running on every restore wastes work; not
+re-running collapses into the same action-graph idempotence). Setup
+actions ARE the lifecycle.
+
+## Helpers vs raw factories
+
+`publishMove()` and `runTransaction()` are sugar over the raw
+`definePublishAction` / `seed` factories. They cover the 90% case;
+they will not grow into a catalog. Anything outside drops into the
+raw factories directly inside `setup: [...]` — both forms are
+first-class. If you find yourself wanting a third helper, add a
+friction journal entry first.
+
 ## When invoking the Sui CLI from scripts
 
 Always:
