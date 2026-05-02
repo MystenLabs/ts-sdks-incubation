@@ -118,12 +118,27 @@ const SUI_LOCALNET_ALIAS = 'sui-localnet';
 
 export const sui = (opts: SuiPluginOptions = {}) => {
 	const version = opts.version ?? SUI_DEFAULT_VERSION;
-	const rpcPort = opts.rpcPort ?? 9000;
-	const faucetPort = opts.faucetPort ?? 9123;
+	// `rpcPort` / `faucetPort` are now hints to the per-stack port
+	// allocator. Resolved at action-run time via `ctx.ports.allocate`;
+	// the resolved values aren't part of `inputs` so a port reshuffle
+	// doesn't invalidate the action's skip predicate.
+	const preferredRpcPort = opts.rpcPort ?? 9000;
+	const preferredFaucetPort = opts.faucetPort ?? 9123;
 	const contextDir = opts.dockerContextDir ?? DEFAULT_DOCKER_CONTEXT;
 	const imageTag = `dev-examples/sui-localnet:${version}-r7`;
 	const epochsToRetain = opts.epochsToRetain ?? 2;
 	const minBalance = opts.minBalance;
+
+	const resolvePorts = async (
+		ctx: { ports: import('../../core/types.js').PortAllocator },
+	): Promise<{ rpcPort: number; faucetPort: number }> => {
+		const [rpcPort] = await ctx.ports.allocate({ slot: 'sui.rpc', preferred: preferredRpcPort });
+		const [faucetPort] = await ctx.ports.allocate({
+			slot: 'sui.faucet',
+			preferred: preferredFaucetPort,
+		});
+		return { rpcPort: rpcPort as number, faucetPort: faucetPort as number };
+	};
 
 	return definePlugin({
 		name: 'sui',
@@ -161,18 +176,22 @@ export const sui = (opts: SuiPluginOptions = {}) => {
 					// Reconciler invokes this on every successful path (cold run +
 					// warm-path skip), so the in-memory registry is populated
 					// regardless of whether `run` executed this cycle.
-					registry: (ctx) => {
+					registry: async (ctx) => {
 						requireLocalnetCtx(ctx);
+						const { rpcPort, faucetPort } = await resolvePorts(ctx);
 						registerServices(ctx, rpcPort, faucetPort);
 					},
 				},
 				inputs: {
 					image: imageTag,
-					rpcPort,
-					faucetPort,
+					// Preferred-port hints (not the resolved values) so port
+					// reshuffles don't invalidate the skip predicate.
+					rpcPort: preferredRpcPort,
+					faucetPort: preferredFaucetPort,
 				},
 				getStatus: async (ctx) => {
 					requireLocalnetCtx(ctx);
+					const { rpcPort } = await resolvePorts(ctx);
 					const containerName = suiContainerName(ctx.appName, ctx.stack);
 					const info = await inspectContainer(containerName);
 					if (info === null) {
@@ -204,6 +223,7 @@ export const sui = (opts: SuiPluginOptions = {}) => {
 				},
 				run: async (ctx) => {
 					requireLocalnetCtx(ctx);
+					const { rpcPort, faucetPort } = await resolvePorts(ctx);
 					const containerName = suiContainerName(ctx.appName, ctx.stack);
 					const network = appNetworkName(ctx.appName, ctx.stack);
 					await ensureNetwork({ name: network });
@@ -317,6 +337,8 @@ export const sui = (opts: SuiPluginOptions = {}) => {
 				getStatus: async (ctx) => {
 					const names = ctx.accounts.names();
 					if (names.length === 0) return { ok: true, detail: 'no accounts declared' };
+					requireLocalnetCtx(ctx);
+					const { rpcPort, faucetPort } = await resolvePorts(ctx);
 					const rpcUrl = `http://127.0.0.1:${rpcPort}`;
 					const faucetProbe = await probeFaucet(`http://127.0.0.1:${faucetPort}`);
 					if (!faucetProbe.ok) {
@@ -344,6 +366,8 @@ export const sui = (opts: SuiPluginOptions = {}) => {
 					return { ok: true, detail: `${names.length} account(s) funded` };
 				},
 				run: async (ctx) => {
+					requireLocalnetCtx(ctx);
+					const { rpcPort, faucetPort } = await resolvePorts(ctx);
 					const rpcUrl = `http://127.0.0.1:${rpcPort}`;
 					for (const name of ctx.accounts.names()) {
 						const signer = ctx.accounts.get(name);

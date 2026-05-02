@@ -102,12 +102,22 @@ export interface SealPluginOptions {
 
 export const seal = (opts: SealPluginOptions = {}) => {
 	const rev = opts.rev ?? SEAL_REV;
-	const port = opts.port ?? KEY_SERVER_CONTAINER_PORT;
+	const preferredPort = opts.port ?? KEY_SERVER_CONTAINER_PORT;
 	const keyServerName = opts.keyServerName ?? SEAL_KEY_SERVER_NAME;
 	const masterOverride = opts.master;
 	const imageTag = sealImageTag(rev);
 	const platform = hostDockerPlatform();
-	const keyServerUrl = `http://127.0.0.1:${port}`;
+
+	const resolveEndpoint = async (
+		ctx: { ports: import('../../core/types.js').PortAllocator },
+	): Promise<{ port: number; keyServerUrl: string }> => {
+		const [port] = await ctx.ports.allocate({
+			slot: 'seal.key-server',
+			preferred: preferredPort,
+		});
+		const portValue = port as number;
+		return { port: portValue, keyServerUrl: `http://127.0.0.1:${portValue}` };
+	};
 
 	return definePlugin({
 		name: 'seal',
@@ -150,11 +160,17 @@ export const seal = (opts: SealPluginOptions = {}) => {
 			register({
 				name: 'register',
 				needs: ['publish', 'build'],
-				inputs: { url: keyServerUrl, keyServerName, rev },
+				inputs: { preferredPort, keyServerName, rev },
 				// Reconciler invokes this on every successful path (cold run +
 				// warm-path skip), so the in-memory `services` registry stays
 				// populated without `getStatus` having to re-register manually.
-				provides: { registry: (ctx) => registerKeyServerService(ctx, port) },
+				provides: {
+					registry: async (ctx) => {
+						requireLocalnetCtx(ctx);
+						const { port } = await resolveEndpoint(ctx);
+						registerKeyServerService(ctx, port);
+					},
+				},
 				getStatus: async (ctx) => {
 					const ns = ctx.registry.ns<SealNamespace>('seal');
 					const cached = ns.keyServer.find(keyServerName);
@@ -164,8 +180,10 @@ export const seal = (opts: SealPluginOptions = {}) => {
 					if (cached.sealPackageId !== sealPkg.packageId) {
 						return { ok: false, detail: 'cached KeyServer references a stale seal package' };
 					}
+					requireLocalnetCtx(ctx);
+					const { keyServerUrl } = await resolveEndpoint(ctx);
 					if (cached.url !== keyServerUrl) {
-						return { ok: false, detail: 'cached KeyServer URL differs from configured port' };
+						return { ok: false, detail: 'cached KeyServer URL differs from allocated port' };
 					}
 					const client = createLocalSuiClient(ctx.registry.services.require('sui-rpc').url);
 					const live = await client.getObject({ id: cached.objectId });
@@ -176,6 +194,7 @@ export const seal = (opts: SealPluginOptions = {}) => {
 				},
 				run: async (ctx) => {
 					requireLocalnetCtx(ctx);
+					const { keyServerUrl } = await resolveEndpoint(ctx);
 					await registerSealKeyServer({
 						ctx,
 						imageTag,
@@ -189,16 +208,22 @@ export const seal = (opts: SealPluginOptions = {}) => {
 			containerService({
 				name: 'key-server',
 				needs: ['register'],
-				inputs: { image: imageTag, port },
+				inputs: { image: imageTag, preferredPort },
 				// See `register` above — same warm-path rehydrate pattern.
-				registry: (ctx) => registerKeyServerService(ctx, port),
+				registry: async (ctx) => {
+					requireLocalnetCtx(ctx);
+					const { port } = await resolveEndpoint(ctx);
+					registerKeyServerService(ctx, port);
+				},
 				containerName: (ctx) => keyServerContainerName(ctx.appName, ctx.stack),
 				// Stateless: master key in env (from <stackDir>/.keys),
 				// on-chain KeyServer in sui chain (captured via sui's commit).
 				// Nothing in its writable layer worth committing.
 				snapshot: { commit: false, quiesce: 'none' },
 				healthyTimeoutMs: 3 * 60_000,
-				spec: (ctx) => {
+				spec: async (ctx) => {
+					requireLocalnetCtx(ctx);
+					const { port } = await resolveEndpoint(ctx);
 					const ns = ctx.registry.ns<SealNamespace>('seal');
 					const cached = ns.keyServer.require(keyServerName);
 					return {

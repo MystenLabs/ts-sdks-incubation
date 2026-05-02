@@ -135,8 +135,24 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 	const suiVersion = SUI_DEFAULT_VERSION;
 	const imageTag = walrusImageTag(rev, suiVersion);
 	const platform = hostDockerPlatform();
-	const nodeHostPortBase = opts.nodeHostPortBase ?? DEFAULT_NODE_HOST_PORT_BASE;
-	const nodeHostPort = (idx: number): number => nodeHostPortBase + idx;
+	// `nodeHostPortBase` is now a hint to the per-stack allocator; the
+	// 4 storage-node host ports are allocated as a contiguous range
+	// (count: 4). Resolved at action-run time via ctx.ports.
+	const preferredNodeHostPortBase = opts.nodeHostPortBase ?? DEFAULT_NODE_HOST_PORT_BASE;
+	const resolveNodePorts = async (ctx: {
+		ports: import('../../core/types.js').PortAllocator;
+	}): Promise<readonly number[]> => {
+		return ctx.ports.allocate({
+			slot: 'walrus.node',
+			preferred: preferredNodeHostPortBase,
+			count: NODE_COUNT,
+		});
+	};
+	const indexer = (ports: readonly number[]) => (idx: number): number => {
+		const port = ports[idx];
+		if (port === undefined) throw new Error(`walrus: no host port allocated for node ${idx}`);
+		return port;
+	};
 
 	return definePlugin({
 		name: 'walrus',
@@ -341,13 +357,19 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 				containerService({
 					name: 'proxy',
 					needs: NODE_IPS.map((_, idx) => `node-${idx}`),
-					inputs: { ports: NODE_IPS.map((_, idx) => nodeHostPort(idx)) },
+					// Preferred port-base hint goes into inputs; the resolved
+					// per-stack port range is a runtime detail and shouldn't
+					// invalidate the skip predicate when allocator picks a
+					// different base.
+					inputs: { preferredNodeHostPortBase },
 					containerName: (ctx) => proxyContainerName(ctx.appName, ctx.stack),
 					// Stateless nginx; config regenerated from registry on each
 					// `up`. Nothing in its writable layer worth committing.
 					snapshot: { commit: false, quiesce: 'none' },
-					spec: (ctx) => {
+					spec: async (ctx) => {
 						requireLocalnetCtx(ctx);
+						const ports = await resolveNodePorts(ctx);
+						const nodeHostPort = indexer(ports);
 						const configPath = writeProxyConfig({
 							appDir: ctx.appDir,
 							stack: ctx.stack,
@@ -372,7 +394,10 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 							volumes: [`${configPath}:/etc/nginx/nginx.conf:ro`],
 						};
 					},
-					probe: async () => {
+					probe: async (ctx) => {
+						requireLocalnetCtx(ctx);
+						const ports = await resolveNodePorts(ctx);
+						const nodeHostPort = indexer(ports);
 						const ok = await probeUrl(`http://localhost:${nodeHostPort(0)}/v1/api`);
 						return ok
 							? {
@@ -381,7 +406,10 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 								}
 							: { ok: false, detail: 'nginx running but node-0 not responding' };
 					},
-					postStart: async () => {
+					postStart: async (ctx) => {
+						requireLocalnetCtx(ctx);
+						const ports = await resolveNodePorts(ctx);
+						const nodeHostPort = indexer(ports);
 						await waitForReachable(`http://localhost:${nodeHostPort(0)}/v1/api`, 30_000);
 					},
 				}),
@@ -435,7 +463,8 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 					},
 					run: async (ctx) => {
 						requireLocalnetCtx(ctx);
-						await registerWalrus(ctx, nodeHostPort);
+						const ports = await resolveNodePorts(ctx);
+						await registerWalrus(ctx, indexer(ports));
 					},
 				}),
 			);
