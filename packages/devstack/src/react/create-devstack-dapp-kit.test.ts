@@ -29,7 +29,7 @@ describe('localnetDappKitConfig', () => {
 		expect(SuiGrpcClientCtor).toHaveBeenCalledWith({
 			network: 'localnet',
 			baseUrl: 'http://127.0.0.1:9000',
-			mvr: { overrides: { packages: {} } },
+			mvr: undefined,
 		});
 	});
 
@@ -49,8 +49,8 @@ describe('localnetDappKitConfig', () => {
 			mvr: {
 				overrides: {
 					packages: {
-						'@local-pkg/connect_four': '0xabc',
-						'@local-pkg/mock_usdc': '0xdef',
+						'@local/connect-four': '0xabc',
+						'@local/mock-usdc': '0xdef',
 					},
 				},
 			},
@@ -83,7 +83,7 @@ describe('localnetDappKitConfig', () => {
 		expect(SuiGrpcClientCtor).toHaveBeenCalledWith({
 			network: 'localnet',
 			baseUrl: 'http://override',
-			mvr: { overrides: { packages: {} } },
+			mvr: undefined,
 		});
 	});
 
@@ -108,7 +108,7 @@ describe('localnetDappKitConfig', () => {
 });
 
 describe('localnetMvrOverrides', () => {
-	it('builds @local-pkg/<name> -> packageId map from manifest packages', () => {
+	it('kebabizes manifest package names and prefixes @local/', () => {
 		const m = {
 			registry: {
 				packages: [
@@ -119,8 +119,8 @@ describe('localnetMvrOverrides', () => {
 		};
 		expect(localnetMvrOverrides(m)).toEqual({
 			packages: {
-				'@local-pkg/connect_four': '0xabc',
-				'@local-pkg/mock_usdc': '0xdef',
+				'@local/connect-four': '0xabc',
+				'@local/mock-usdc': '0xdef',
 			},
 		});
 	});
@@ -129,5 +129,19 @@ describe('localnetMvrOverrides', () => {
 		expect(localnetMvrOverrides(undefined)).toEqual({ packages: {} });
 		expect(localnetMvrOverrides({})).toEqual({ packages: {} });
 		expect(localnetMvrOverrides({ registry: {} })).toEqual({ packages: {} });
+	});
+
+	it('honors a custom mvrName mapper', () => {
+		const m = {
+			registry: {
+				packages: [{ name: 'connect_four', packageId: '0xabc' }],
+			},
+		};
+		const out = localnetMvrOverrides(m, {
+			mvrName: (n) => `@arena/${n.replace(/_/g, '-')}`,
+		});
+		expect(out).toEqual({
+			packages: { '@arena/connect-four': '0xabc' },
+		});
 	});
 });

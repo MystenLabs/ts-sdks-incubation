@@ -1,8 +1,10 @@
 // Codegen plugin. Owns one Emit action:
 //
 //   codegen.generate — Iterates `registry.packages.list()`, filters to
-//                      entries with a host-resolvable `path`, and shells
-//                      `@mysten/codegen` per package. Output lands at
+//                      entries with a host-resolvable `path`, runs
+//                      `sui move summary`, then calls
+//                      `@mysten/codegen`'s `generateFromPackageSummary`
+//                      directly per package. Output lands at
 //                      `<appDir>/<output>` (default `src/generated/sui`).
 //
 // `dependsOnKind: ['packages']` means the reconciler re-fires this Emit
@@ -16,40 +18,65 @@
 // whose source lives inside a docker image, not on the host) are silently
 // skipped: only first-party Move packages with on-host sources get
 // codegen output.
+//
+// Each package's emitted builders use the `mvrName(pkgName)` string as
+// their `package` placeholder (e.g. `@local/connect-four`). The matching
+// `localnetMvrOverrides(manifest)` helper produces the same keys so the
+// SDK's `namedPackagesPlugin` resolves them to live `packageId`s at
+// transaction build time. Apps wire it via `localnetDappKitConfig` and
+// no longer need `bindPackage`.
 
-import { spawn } from 'node:child_process';
+import { execSync, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, statSync } from 'node:fs';
-import { createRequire } from 'node:module';
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 
+import { generateFromPackageSummary } from '@mysten/codegen';
 import { emit } from '../../actions/emit.js';
 import type { ActionRunContext, Package } from '../../core/types.js';
 import { definePlugin } from '../../plugin.js';
 
-// `@mysten/codegen` only exports its main entry, so `require.resolve` of the
-// bin subpath fails (`ERR_PACKAGE_PATH_NOT_EXPORTED`). Resolve the package
-// root via the entry point and append the bin path.
-const require = createRequire(import.meta.url);
-const CODEGEN_ENTRY = require.resolve('@mysten/codegen');
-const CODEGEN_ROOT = dirname(dirname(CODEGEN_ENTRY));
-const SUI_TS_CODEGEN_BIN = join(CODEGEN_ROOT, 'dist', 'bin', 'cli.mjs');
-
 const DEFAULT_OUTPUT = 'src/generated/sui';
+
+/**
+ * Default MVR-shape placeholder for a registry package. Move package
+ * names typically use snake_case (`mock_usdc`); MVR app-name validation
+ * requires kebab (`mock-usdc`). The default kebabizes and prefixes
+ * `@local/`. Apps with a custom org configure `codegen({ mvrName: ... })`
+ * AND pass the same mapper to `localnetMvrOverrides({ mvrName: ... })`
+ * so the codegen output and the SuiClient's overrides agree on names.
+ */
+export function defaultMvrName(pkgName: string): string {
+	return `@local/${pkgName.replace(/_/g, '-')}`;
+}
 
 export interface CodegenPluginOptions {
 	/** Output dir relative to the app root. Default `src/generated/sui`. */
 	output?: string;
+	/** Map a registry package name to its MVR-shape placeholder used in
+	 * codegen-emitted `tx.moveCall({ package: '<placeholder>', ... })`.
+	 * Defaults to {@link defaultMvrName}.
+	 *
+	 * The mapper's output must be a valid MVR name (kebab-case app, valid
+	 * SuiNS-shaped org with `@` prefix). Apps that override this MUST
+	 * pass the same mapper to `localnetMvrOverrides({ mvrName })` so the
+	 * placeholder used in the codegen output matches the override key. */
+	mvrName?: (pkgName: string) => string;
 }
 
 export const codegen = (opts: CodegenPluginOptions = {}) => {
 	const output = opts.output ?? DEFAULT_OUTPUT;
+	const mvrName = opts.mvrName ?? defaultMvrName;
 	return definePlugin({
 		name: 'codegen',
 		actions: () => [
 			emit({
 				name: 'generate',
 				dependsOnKind: ['packages'],
-				inputs: { output, codegenBin: relative(process.cwd(), SUI_TS_CODEGEN_BIN) },
+				// Include a sample of the mvrName mapper so changing it busts
+				// the input hash and triggers a re-emit. Probe value is just
+				// `mvrName('_')` — distinct outputs across mappers without
+				// collision against any real package name.
+				inputs: { output, mvrShape: mvrName('_') },
 				getStatus: async (ctx) => {
 					const targets = codegenTargets(ctx.registry.packages.list());
 					if (targets.length === 0) return { ok: true, detail: 'no codegen-able packages' };
@@ -79,7 +106,7 @@ export const codegen = (opts: CodegenPluginOptions = {}) => {
 					const outputAbs = resolvedOutputDir(ctx.appDir, output);
 					mkdirSync(outputAbs, { recursive: true });
 					for (const pkg of targets) {
-						await runCodegenForPackage({ ctx, pkg, output });
+						await runCodegenForPackage({ ctx, pkg, output, mvrName });
 					}
 				},
 			}),
@@ -109,48 +136,46 @@ async function runCodegenForPackage(opts: {
 	ctx: ActionRunContext;
 	pkg: CodegenTarget;
 	output: string;
+	mvrName: (pkgName: string) => string;
 }): Promise<void> {
-	const { ctx, pkg, output } = opts;
+	const { ctx, pkg, output, mvrName } = opts;
 	if (!existsSync(pkg.path)) {
 		throw new Error(`codegen: package path not found for ${pkg.name}: ${pkg.path}`);
 	}
-	// `sui-ts-codegen` uses the package-arg string verbatim as the output
-	// subdirectory name. Passing an absolute path produces a deeply nested
-	// `<output>/Users/.../move/vault/` tree; passing a relative path
-	// produces `<output>/move/vault/`. Neither matches what the rest of the
-	// generator expects (`<output>/<pkg.name>/`). Run codegen from the
-	// parent dir of the package so the bare basename (which equals the
-	// package's directory name and the registry's `pkg.name`) becomes the
-	// output subdir. The output flag stays absolute so `<output>` lands in
-	// the app's `src/generated/sui` regardless of cwd.
-	const packageDir = pkg.path;
-	const packageBaseName = basename(packageDir);
 	const absoluteOutput = resolvedOutputDir(ctx.appDir, output);
-	const args = [
-		SUI_TS_CODEGEN_BIN,
-		'generate',
-		'-o',
-		absoluteOutput,
-		'--importExtension',
-		'.js',
-		packageBaseName,
-	];
-	const result = await runShell({ cmd: 'node', args, cwd: dirname(packageDir) });
-	if (result.code !== 0) {
+
+	// `generateFromPackageSummary` reads the summary that `sui move
+	// summary` produces under `<pkg.path>/package_summaries/`. Run that
+	// step here ourselves (the CLI codegen wraps it; we're skipping the
+	// CLI to gain control over the `package` placeholder string).
+	try {
+		execSync('sui move summary', { cwd: pkg.path, stdio: 'ignore' });
+	} catch (err) {
 		throw new Error(
-			`codegen: sui-ts-codegen failed for ${pkg.name} (exit ${result.code})\n${result.stderr}`,
+			`codegen: \`sui move summary\` failed for ${pkg.name} at ${pkg.path}: ${
+				err instanceof Error ? err.message : String(err)
+			}`,
 		);
 	}
-	// sui-ts-codegen 0.10.x has paths where it prints "Command failed, Error: ..."
-	// to stdout but exits 0 (e.g. when the package's Move.toml is missing an
-	// [addresses] block matching the summary subdir). Detect that mode by
-	// inspecting output presence so silent fails don't propagate as success.
-	const expectedSubdir = join(resolvedOutputDir(ctx.appDir, output), pkg.name);
+
+	const placeholder = mvrName(pkg.name);
+	await generateFromPackageSummary({
+		package: {
+			path: pkg.path,
+			package: placeholder,
+			packageName: pkg.name,
+		},
+		prune: true,
+		outputDir: absoluteOutput,
+		importExtension: '.js',
+	});
+
+	const expectedSubdir = join(absoluteOutput, pkg.name);
 	if (!existsSync(expectedSubdir)) {
 		throw new Error(
-			`codegen: sui-ts-codegen exited 0 but wrote nothing to ${expectedSubdir}. ` +
+			`codegen: generateFromPackageSummary returned without writing ${expectedSubdir}. ` +
 				`Common cause: ${pkg.name}'s Move.toml is missing an [addresses] block ` +
-				`matching the package's summary subdir.\nstdout:\n${result.stdout}`,
+				`matching the package's summary subdir.`,
 		);
 	}
 }

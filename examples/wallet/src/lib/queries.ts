@@ -1,23 +1,6 @@
-import { bindPackage, useDevstackManifest } from '@mysten-incubation/devstack/react';
 import { useCurrentClient, useDAppKit } from '@mysten/dapp-kit-react';
 import type { Transaction } from '@mysten/sui/transactions';
-import { useMemo } from 'react';
 import { useMutation, useQuery, useQueryClient, type UseMutationResult } from '@tanstack/react-query';
-
-/**
- * Bind a codegen module against the live `packageId` from the manifest
- * for `name`. Returns the same module with `'@local-pkg/<name>'`
- * placeholders substituted by the live id at builder-call time.
- *
- * Production version (mainnet/testnet) reads the id from a constants
- * file instead of the manifest — same call shape downstream.
- */
-export function usePackage<M extends Record<string, unknown>>(module: M, name: string): M {
-	const manifest = useDevstackManifest();
-	const packages = manifest.registry.packages as Array<{ name: string; packageId: string }>;
-	const id = packages.find((p) => p.name === name)?.packageId ?? '0x0';
-	return useMemo(() => bindPackage(module, id), [module, id]) as M;
-}
 
 // Native SUI coin type — the constant lives at sui-framework address 0x2.
 export const SUI_COIN_TYPE = '0x2::sui::SUI';
