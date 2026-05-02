@@ -258,6 +258,19 @@ export type ActionFilter = (action: Action, target: ResolvedTarget) => boolean;
 
 export interface Plugin {
 	name: string;
+	/** Optional human-readable description shown in `devstack stack list`
+	 * and the renderer's plugin-overview block (when added). */
+	description?: string;
+	/** Plugin author's semver. Surfaced in diagnostic output so a stale
+	 * cached image / wrong-version footgun is easier to triage. Plugin
+	 * authors set this manually; not enforced. */
+	version?: string;
+	/** Names of plugins that MUST also be loaded for this one to make
+	 * sense (e.g. walrus requires sui). Currently advisory — the
+	 * supervisor logs a warning when an entry is missing. Treat as
+	 * documentation; the action graph's `needs:` edges remain the
+	 * authoritative dependency mechanism. */
+	requires?: string[];
 	actions: () => Action[];
 }
 
@@ -319,6 +332,11 @@ export interface RegistryQuery<T> {
 	find(name: string): T | undefined;
 	require(name: string): T;
 	register(item: T): void;
+	/** Remove the entry with this name. Returns true if an entry was
+	 * removed, false if there was none. Marks the kind dirty on success
+	 * so dependent Emit actions re-fire (e.g. codegen drops a generated
+	 * file when its package goes away). */
+	unregister(name: string): boolean;
 }
 
 export interface Registry {
