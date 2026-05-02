@@ -82,6 +82,7 @@ export function deepbookPoolsAction(opts: DeepbookPoolsActionOptions) {
 	return seed({
 		name: 'pools',
 		needs: ['publish', ...(opts.extraNeeds ?? [])],
+		runsAs: opts.admin,
 		inputs,
 		// Pool entries land in the plugin namespace via this action. Re-publish
 		// them on warm-path skips so anyone reading the registry sees the

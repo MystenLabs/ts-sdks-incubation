@@ -5,6 +5,17 @@ import { type PlaywrightTestConfig, defineConfig, devices } from '@playwright/te
 
 import { createPortAllocator } from '../runtime/port-allocator.js';
 
+type PlaywrightWebServer = NonNullable<PlaywrightTestConfig['webServer']>;
+type PlaywrightWebServerSingle = PlaywrightWebServer extends Array<infer U> ? U : PlaywrightWebServer;
+
+/** Like `Partial<PlaywrightTestConfig>` but lets callers override individual
+ *  `webServer` / `use` fields without having to redeclare the whole object —
+ *  the defineConfig defaults shallow-merge into the rest. */
+export type DevstackPlaywrightExtend = Omit<Partial<PlaywrightTestConfig>, 'webServer' | 'use'> & {
+	webServer?: Partial<PlaywrightWebServerSingle>;
+	use?: Partial<NonNullable<PlaywrightTestConfig['use']>>;
+};
+
 export interface DevstackPlaywrightOptions {
 	/** Preferred Vite dev-server port (hint to the per-stack port
 	 * allocator). When `manageStack` is true the allocator may choose a
@@ -17,8 +28,12 @@ export interface DevstackPlaywrightOptions {
 	command?: string;
 	/** Override the test directory. Default: `./e2e`. */
 	testDir?: string;
-	/** Extend the default config with arbitrary Playwright options. */
-	extend?: Partial<PlaywrightTestConfig>;
+	/** Extend the default config with arbitrary Playwright options.
+	 *  `webServer` and `use` accept partial shapes — they're shallow-
+	 *  merged onto the resolved defaults so an app can override just
+	 *  `webServer.timeout` (or just `use.headless`) without re-declaring
+	 *  the URL/command (or baseURL) the allocator filled in. */
+	extend?: DevstackPlaywrightExtend;
 	/**
 	 * When set, wires Playwright's globalSetup + globalTeardown to bring
 	 * the localnet stack up before tests and tear it down after. Use this

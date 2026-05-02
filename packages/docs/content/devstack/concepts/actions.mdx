@@ -25,6 +25,12 @@ A plugin contributes named actions of one of eight kinds:
   capabilities via `:before` / `:after` queries instead of pinning to a specific action name.
 - `watches?: string[]` — extra paths the file watcher should treat as inputs. Resolved against
   `appDir`. Useful for non-Move-package inputs (GraphQL schemas, JSON configs).
+- `runsAs?: string` — account name this action signs transactions as. The reconciler runs at most
+  one inflight action per distinct `runsAs` value, so two actions defaulting to the same
+  `'publisher'` don't equivocate on the same gas object. Set automatically by the
+  `publish`/`publishMove`/`runTransaction` factories from their `publisher` / `signer` field; raw
+  `seed()` callers that issue txs through `ctx.accounts.get(...)` should pass `runsAs:` explicitly
+  to engage the constraint.
 
 ## Skip predicate
 

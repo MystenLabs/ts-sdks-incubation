@@ -345,3 +345,89 @@ describe('Reconciler — Verify action', () => {
 		expect(err?.message).toMatch(/rpc unreachable/);
 	});
 });
+
+describe('Reconciler — same-signer serialization', () => {
+	it('runs two same-signer actions sequentially even without a needs: edge', async () => {
+		// Two actions with `runsAs: 'publisher'` and no needs between them
+		// must NOT overlap — Sui's gas-object equivocation guard would
+		// otherwise reject the second tx.
+		const order: string[] = [];
+		const inflight = new Set<string>();
+		let maxOverlap = 0;
+		const make = (name: string) => ({
+			name,
+			type: 'Publish' as const,
+			path: '/tmp/fake',
+			runsAs: 'publisher',
+			inputs: {},
+			run: async () => {
+				order.push(`start:${name}`);
+				inflight.add(name);
+				maxOverlap = Math.max(maxOverlap, inflight.size);
+				await new Promise((res) => setTimeout(res, 25));
+				inflight.delete(name);
+				order.push(`end:${name}`);
+			},
+		});
+		const reconciler = new Reconciler();
+		const registry = new RegistryImpl();
+		const result = await reconciler.cycle([make('alpha'), make('beta')], baseCtx(registry));
+		expect(result.statuses.get('alpha')).toBe('healthy');
+		expect(result.statuses.get('beta')).toBe('healthy');
+		expect(maxOverlap).toBe(1);
+		// Either ordering is fine; the constraint is non-overlap.
+		expect(order).toMatchObject(
+			order[0] === 'start:alpha'
+				? ['start:alpha', 'end:alpha', 'start:beta', 'end:beta']
+				: ['start:beta', 'end:beta', 'start:alpha', 'end:alpha'],
+		);
+	});
+
+	it('parallelizes two actions with different runsAs values', async () => {
+		const inflight = new Set<string>();
+		let maxOverlap = 0;
+		const make = (name: string, signer: string) => ({
+			name,
+			type: 'Publish' as const,
+			path: '/tmp/fake',
+			runsAs: signer,
+			inputs: {},
+			run: async () => {
+				inflight.add(name);
+				maxOverlap = Math.max(maxOverlap, inflight.size);
+				await new Promise((res) => setTimeout(res, 25));
+				inflight.delete(name);
+			},
+		});
+		const reconciler = new Reconciler();
+		const registry = new RegistryImpl();
+		await reconciler.cycle(
+			[make('alpha', 'alice'), make('beta', 'bob')],
+			baseCtx(registry),
+		);
+		expect(maxOverlap).toBe(2);
+	});
+
+	it('leaves actions without runsAs unconstrained', async () => {
+		// Mirror of the previous test but neither action declares runsAs;
+		// they should run concurrently as before.
+		const inflight = new Set<string>();
+		let maxOverlap = 0;
+		const make = (name: string) => ({
+			name,
+			type: 'Publish' as const,
+			path: '/tmp/fake',
+			inputs: {},
+			run: async () => {
+				inflight.add(name);
+				maxOverlap = Math.max(maxOverlap, inflight.size);
+				await new Promise((res) => setTimeout(res, 25));
+				inflight.delete(name);
+			},
+		});
+		const reconciler = new Reconciler();
+		const registry = new RegistryImpl();
+		await reconciler.cycle([make('alpha'), make('beta')], baseCtx(registry));
+		expect(maxOverlap).toBe(2);
+	});
+});

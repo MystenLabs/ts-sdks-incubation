@@ -56,6 +56,7 @@ export function publish(opts: PublishOptions): PublishAction<PublishInputs> {
 		needs: opts.needs,
 		provides: opts.provides,
 		path: opts.path,
+		runsAs: opts.publisher,
 		inputs: {
 			path: opts.path,
 			capture: opts.capture,
@@ -102,6 +103,7 @@ export function definePublishAction(
 		needs: opts.needs,
 		provides: opts.provides,
 		path: opts.sourcePath,
+		runsAs: publisherAccount,
 		inputs,
 		getStatus: async (ctx) => {
 			const prior = ctx.registry.packages.find(registryName);

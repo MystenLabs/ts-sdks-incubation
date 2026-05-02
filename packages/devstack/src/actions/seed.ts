@@ -16,6 +16,14 @@ export interface SeedOptions<TInputs extends Record<string, unknown>> {
 	 * - `Network[]` → explicit allow-list.
 	 */
 	liveNetworks?: boolean | Network[];
+	/**
+	 * Account name this seed signs as. Set when the `run:` callback
+	 * issues transactions through `ctx.accounts.get('<name>')` so the
+	 * reconciler can serialize same-signer seeds (otherwise concurrent
+	 * seeds on the same account equivocate on the gas object).
+	 * Plain register-only seeds with no signing should leave it unset.
+	 */
+	runsAs?: string;
 	run: (ctx: ActionRunContext) => Promise<void>;
 	getStatus?: (ctx: ActionRunContext) => Promise<{ ok: boolean; detail?: string }>;
 }
@@ -30,6 +38,7 @@ export function seed<TInputs extends Record<string, unknown>>(
 		provides: opts.provides,
 		inputs: opts.inputs,
 		liveNetworks: opts.liveNetworks,
+		runsAs: opts.runsAs,
 		run: opts.run,
 		getStatus: opts.getStatus,
 	};

@@ -86,6 +86,7 @@ export function runTransaction(opts: RunTransactionOptions): SeedAction<Record<s
 		needs: opts.needs,
 		provides: opts.provides,
 		inputs: { signer: opts.signer, inputsHash },
+		runsAs: opts.signer,
 		getStatus: opts.getStatus ?? defaultMarkerProbe(opts.name, inputsHash),
 		run: async (ctx) => {
 			requireLocalnetCtx(ctx);
