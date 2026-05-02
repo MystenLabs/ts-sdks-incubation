@@ -16,10 +16,14 @@
 //                         A shutdown hook closes the server gracefully on
 //                         supervisor stop.
 
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import type { Server } from 'node:http';
-import { service } from '../../actions/service.js';
+import { dirname, resolve } from 'node:path';
+import { hostProcess } from '../../actions/host-process.js';
+import type { ActionRunContext } from '../../core/types.js';
 import { requireLocalnetCtx } from '../../core/types.js';
 import { definePlugin } from '../../plugin.js';
+import { stackDir } from '../../runtime/active-stack.js';
 import { startWalletServer } from './server.js';
 
 export interface WalletServerPluginOptions {
@@ -37,39 +41,75 @@ export interface WalletServerPluginOptions {
 
 export const WALLET_SERVER_DEFAULT_PORT = 9420;
 
-let activeServer: Server | undefined;
-let activeToken: string | undefined;
-
 export const walletServer = (opts: WalletServerPluginOptions = {}) => {
 	const port = opts.port ?? WALLET_SERVER_DEFAULT_PORT;
 	const baseUrl = opts.publicOrigin ?? `http://localhost:${port}`;
 	const needs = opts.needs ?? ['sui.accounts'];
 
+	// Per-instance state (closure scope, not module scope) — two
+	// `walletServer()` instances in one process don't interleave.
+	let activeServer: Server | undefined;
+	let activeToken: string | undefined;
+
+	const populateRegistry = (ctx: ActionRunContext): void => {
+		if (activeToken === undefined) return;
+		ctx.registry.services.register({
+			name: 'wallet-server',
+			kind: 'wallet-server',
+			url: baseUrl,
+			port,
+			endpointLabel: `${baseUrl}/?token=${activeToken}`,
+		});
+	};
+
 	return definePlugin({
 		name: 'wallet-server',
 		actions: () => [
-			service({
+			hostProcess({
 				name: 'serve',
 				needs,
 				inputs: { port, baseUrl },
-				getStatus: async () => {
+				provides: { registry: populateRegistry },
+				getStatus: async (ctx) => {
+					requireLocalnetCtx(ctx);
 					const reachable = await probeUrl(`${baseUrl}/health`);
 					if (!reachable) return { ok: false, detail: `${baseUrl} not reachable` };
+					// We need a token to publish in the registry's
+					// endpointLabel. If we don't have one in memory and
+					// none is persisted, the running server is from a
+					// prior process whose token we lost — fail status so
+					// `run` restarts with a known token.
+					if (activeToken === undefined) {
+						activeToken = readPersistedToken(ctx.appDir, ctx.stack);
+						if (activeToken === undefined) {
+							return { ok: false, detail: 'running but token unknown; restarting' };
+						}
+					}
 					return { ok: true, detail: baseUrl };
 				},
 				run: async (ctx) => {
 					requireLocalnetCtx(ctx);
 					const log = ctx.appendLog ?? ((line: string) => process.stdout.write(`${line}\n`));
 					if (activeServer !== undefined && activeServer.listening) {
-						// Idempotent: warm cycles re-run when getStatus says
-						// not-reachable. Don't double-bind the port; the existing
-						// instance races the probe.
-						registerService(ctx, baseUrl, port, activeToken ?? '');
+						// Idempotent — supervisor cycles call run again on warm
+						// paths if getStatus says not-reachable. Don't double-bind
+						// the port; the existing instance races the probe.
 						return;
 					}
+					// Adoption path: a prior supervisor instance left a server
+					// listening AND its token is on disk. Trust it instead of
+					// trying to re-bind the port.
+					const persistedToken = readPersistedToken(ctx.appDir, ctx.stack);
+					if (persistedToken !== undefined && (await probeUrl(`${baseUrl}/health`))) {
+						activeToken = persistedToken;
+						log(`wallet-server adopted (existing process on ${baseUrl})`);
+						return;
+					}
+
 					const handle = startWalletServer({ port, accounts: ctx.accounts });
 					activeServer = handle.server;
 					activeToken = handle.token;
+					writePersistedToken(ctx.appDir, ctx.stack, handle.token);
 					log(`wallet-server listening on ${baseUrl}`);
 					log(`pair URL: ${baseUrl}/?token=${handle.token}`);
 					ctx.onShutdown?.(async () => {
@@ -78,28 +118,32 @@ export const walletServer = (opts: WalletServerPluginOptions = {}) => {
 							setTimeout(() => resolve(), 5_000).unref();
 						});
 						activeServer = undefined;
-						activeToken = undefined;
+						// activeToken stays so a subsequent same-process cycle
+						// can re-publish it without re-spawning.
 					});
-					registerService(ctx, baseUrl, port, handle.token);
 				},
 			}),
 		],
 	});
 };
 
-function registerService(
-	ctx: { registry: import('../../core/types.js').Registry },
-	url: string,
-	port: number,
-	token: string,
-): void {
-	ctx.registry.services.register({
-		name: 'wallet-server',
-		kind: 'wallet-server',
-		url,
-		port,
-		endpointLabel: token === '' ? undefined : `${url}/?token=${token}`,
-	});
+function tokenPath(appDir: string, stack: string): string {
+	return resolve(stackDir(appDir, stack), 'wallet-token');
+}
+
+function readPersistedToken(appDir: string, stack: string): string | undefined {
+	try {
+		const raw = readFileSync(tokenPath(appDir, stack), 'utf8').trim();
+		return raw.length > 0 ? raw : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function writePersistedToken(appDir: string, stack: string, token: string): void {
+	const path = tokenPath(appDir, stack);
+	mkdirSync(dirname(path), { recursive: true });
+	writeFileSync(path, `${token}\n`, 'utf8');
 }
 
 async function probeUrl(url: string): Promise<boolean> {

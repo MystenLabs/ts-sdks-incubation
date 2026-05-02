@@ -152,6 +152,15 @@ export const sui = (opts: SuiPluginOptions = {}) => {
 				// network action declares the provider so its subnet pin
 				// runs ahead of this docker network ensure.
 				needs: ['build', 'walrus.app-network:before'],
+				provides: {
+					// Reconciler invokes this on every successful path (cold run +
+					// warm-path skip), so the in-memory registry is populated
+					// regardless of whether `run` executed this cycle.
+					registry: (ctx) => {
+						requireLocalnetCtx(ctx);
+						registerServices(ctx, rpcPort, faucetPort);
+					},
+				},
 				inputs: {
 					image: imageTag,
 					rpcPort,
@@ -186,9 +195,6 @@ export const sui = (opts: SuiPluginOptions = {}) => {
 							detail: `checkpoint pruning active (${retain.detail ?? 'unknown'}) — walrus will get stuck`,
 						};
 					}
-					// Re-register services on warm path so the registry is populated
-					// even when the action skips its run.
-					registerServices(ctx, rpcPort, faucetPort);
 					return { ok: true, detail: probe.detail };
 				},
 				run: async (ctx) => {
@@ -208,7 +214,6 @@ export const sui = (opts: SuiPluginOptions = {}) => {
 						await startContainer(containerName);
 						await waitForRpc(`http://127.0.0.1:${rpcPort}`, { timeoutMs: 60_000 });
 						await waitForFaucet(`http://127.0.0.1:${faucetPort}`, { timeoutMs: 30_000 });
-						registerServices(ctx, rpcPort, faucetPort);
 						return;
 					}
 					if (info !== null && (!onNetwork || !imageMatches)) {
@@ -276,12 +281,29 @@ export const sui = (opts: SuiPluginOptions = {}) => {
 					// Faucet starts a beat after JSON-RPC; wait so downstream
 					// Register actions don't race the first request.
 					await waitForFaucet(`http://127.0.0.1:${faucetPort}`, { timeoutMs: 30_000 });
-					registerServices(ctx, rpcPort, faucetPort);
 				},
 			}),
 			register({
 				name: 'accounts',
 				needs: ['localnet'],
+				provides: {
+					// Reconciler invokes this on every successful path (cold run +
+					// warm-path skip), so the in-memory accounts registry is
+					// populated regardless of whether `run` executed this cycle.
+					// Only reached when `getStatus.ok` (every account funded), so
+					// the addresses we re-publish here are known-good.
+					registry: (ctx) => {
+						for (const name of ctx.accounts.names()) {
+							const signer = ctx.accounts.get(name);
+							ctx.registry.accounts.register({
+								name,
+								address: signer.toSuiAddress(),
+								role: name === 'publisher' ? 'publisher' : undefined,
+								funded: true,
+							});
+						}
+					},
+				},
 				inputs: {
 					minBalance: minBalance?.toString(),
 				},
@@ -293,10 +315,11 @@ export const sui = (opts: SuiPluginOptions = {}) => {
 					if (!faucetProbe.ok) {
 						return { ok: false, detail: `faucet: ${faucetProbe.detail ?? 'unreachable'}` };
 					}
-					// Cheap path: if every account is funded, hydrate the
-					// registry and skip the run. `ctx.accounts.get` rethrows
-					// any captured factory error per-account, so a misconfigured
-					// live-net signer surfaces with the captured cause.
+					// Cheap path: if every account is at-or-above minBalance the
+					// reconciler skips `run` and `provides.registry` repopulates
+					// the registry. `ctx.accounts.get` rethrows any captured
+					// factory error per-account, so a misconfigured live-net
+					// signer surfaces with the captured cause.
 					for (const name of names) {
 						try {
 							const signer = ctx.accounts.get(name);
@@ -306,12 +329,6 @@ export const sui = (opts: SuiPluginOptions = {}) => {
 								rpcUrl,
 								address,
 								minBalance,
-							});
-							ctx.registry.accounts.register({
-								name,
-								address,
-								role: name === 'publisher' ? 'publisher' : undefined,
-								funded: true,
 							});
 						} catch {
 							return { ok: false, detail: `account '${name}' not ready` };
@@ -329,12 +346,6 @@ export const sui = (opts: SuiPluginOptions = {}) => {
 							rpcUrl,
 							address,
 							minBalance,
-						});
-						ctx.registry.accounts.register({
-							name,
-							address,
-							role: name === 'publisher' ? 'publisher' : undefined,
-							funded: true,
 						});
 					}
 				},

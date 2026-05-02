@@ -9,9 +9,9 @@
 import {
 	codegen,
 	defineDevstackConfig,
+	frontend,
 	seal,
 	sui,
-	vite,
 	walletServer,
 	walrus,
 } from '@mysten-incubation/devstack';
@@ -38,6 +38,6 @@ export default defineDevstackConfig({
 		privateContentPlugin(),
 		codegen(),
 		walletServer({ port: 9423 }),
-		vite({ port: 5175 }),
+		frontend({ port: 5175 }),
 	],
 });

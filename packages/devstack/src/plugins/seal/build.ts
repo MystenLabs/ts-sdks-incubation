@@ -19,6 +19,11 @@ import { dockerRun, imageExists } from '../sui/docker.js';
  * Bump SEAL_REV to upgrade the local key-server. */
 export const SEAL_REV = '1caeaaa1ec8f48b2635d317c752b7e316f6be416';
 export const SEAL_REPO = 'MystenLabs/seal';
+/** TS SDK version the upstream key-server's version-validation middleware
+ * compares against (sent in the `Client-Sdk-Version` header from the
+ * container's healthcheck). Must satisfy the key-server's
+ * `ts_sdk_version_requirement` field — bump in lockstep with SEAL_REV. */
+export const SEAL_SDK_VERSION = '0.4.18';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SEAL_DOCKERFILE = resolve(HERE, 'Dockerfile');

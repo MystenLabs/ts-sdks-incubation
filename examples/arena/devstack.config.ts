@@ -8,8 +8,8 @@
 import {
 	codegen,
 	defineDevstackConfig,
+	frontend,
 	sui,
-	vite,
 	walletServer,
 } from '@mysten-incubation/devstack';
 import { arenaPlugin } from './arenaPlugin.ts';
@@ -26,6 +26,6 @@ export default defineDevstackConfig({
 		arenaPlugin(),
 		codegen(),
 		walletServer({ port: 9421 }),
-		vite({ port: 5176 }),
+		frontend({ port: 5176 }),
 	],
 });

@@ -1,72 +1,96 @@
-// Vite dev-server plugin. Adds vite to the devstack supervisor so
-// `pnpm dev` (configured to run `devstack up`) brings up the localnet
-// stack AND the dev server in one combined process with one log
-// stream — no `concurrently`, no separate `localnet:watch` script.
+// Frontend dev-server plugin. Adds a vite/next/sveltekit-style dev server
+// to the devstack supervisor so `pnpm dev` (configured to run
+// `devstack up`) brings up the localnet stack AND the dev server in one
+// combined process with one log stream — no `concurrently`, no separate
+// `localnet:watch` script.
+//
+// Exposes `frontend()` (the canonical name) and `vite()` is no longer
+// shipped — vite is just one valid `command` configuration. Apps using
+// other tooling pass their own `command` array.
 //
 // One Service action:
 //
-//   vite.dev-server — Spawns `vite --port <port>` as a host child
-//                     process (NOT a container). `getStatus` HEAD-probes
-//                     the dev URL; `run` spawns the child, pipes its
-//                     stdout/stderr through `ctx.appendLog` so the
-//                     status renderer can interleave vite output with
-//                     the action panel cleanly. Registers a shutdown
-//                     hook that SIGINTs the child on supervisor stop.
+//   <plugin>.dev-server — Spawns the configured command as a host child
+//                         process (NOT a container). `getStatus`
+//                         GET-probes the dev URL; `run` spawns the
+//                         child, pipes its stdout/stderr through
+//                         `ctx.appendLog`, and registers a shutdown hook
+//                         that SIGINTs the child on supervisor stop.
 //
-// `needs: ['codegen.generate']` so vite starts after the manifest +
-// generated bindings are written. The dev server CAN start earlier
-// (the vite plugin's `virtual:devstack-manifest` returns a typed
+// `needs: ['codegen.generate']` so the dev server starts after the
+// manifest + generated bindings are written. The dev server CAN start
+// earlier (the vite plugin's `virtual:devstack-manifest` returns a typed
 // empty fallback), but waiting avoids a "stack is empty" first paint
 // followed by an HMR reload.
 
 import { type ChildProcess, spawn } from 'node:child_process';
-import { service } from '../../actions/service.js';
+import { hostProcess } from '../../actions/host-process.js';
+import type { ActionRunContext } from '../../core/types.js';
 import { requireLocalnetCtx } from '../../core/types.js';
 import { definePlugin } from '../../plugin.js';
 
-export interface VitePluginOptions {
-	/** Vite dev-server port. Default 5173 (vite's default). The plugin
+export interface FrontendPluginOptions {
+	/** Dev-server port. Default 5173 (vite's default). The plugin
 	 * passes this as `--port` so the URL matches the manifest's
-	 * `services.<n>.url` lookup. */
+	 * `services.<n>.url` lookup. Pass `appendPort: false` to skip the
+	 * append (for tools like Next.js that take `-p` instead). */
 	port?: number;
 	/** Override the dev-server command. Default `['pnpm', 'exec', 'vite']`.
-	 * The plugin appends `['--port', String(port)]` to whatever you pass. */
+	 * The plugin appends `['--port', String(port)]` unless `appendPort`
+	 * is `false`. */
 	command?: string[];
+	/** When `false`, don't append `--port <port>` to `command`. Useful
+	 * for tooling with a different port flag (`next dev -p`,
+	 * `astro dev --port`). Default `true`. */
+	appendPort?: boolean;
 	/** Override the cwd. Defaults to `ctx.appDir`. */
 	cwd?: string;
-	/** Names of actions vite should wait for before starting. Default
-	 * `['codegen.generate']` — wait for typed bindings + manifest. Pass
-	 * `[]` to start immediately (vite's manifest fallback handles the
-	 * pre-deploy empty case). */
+	/** Names of actions the dev server should wait for before starting.
+	 * Default `['codegen.generate']` — wait for typed bindings + manifest.
+	 * Pass `[]` to start immediately. */
 	needs?: string[];
 }
 
-export const vite = (opts: VitePluginOptions = {}) => {
+export const frontend = (opts: FrontendPluginOptions = {}) => {
 	const port = opts.port ?? 5173;
 	const baseUrl = `http://localhost:${port}`;
 	const baseCommand = opts.command ?? ['pnpm', 'exec', 'vite'];
-	const command = [...baseCommand, '--port', String(port)];
+	const command =
+		opts.appendPort === false ? baseCommand : [...baseCommand, '--port', String(port)];
 	const needs = opts.needs ?? ['codegen.generate'];
 
+	// Per-instance state. Two `frontend()` factories in the same process
+	// don't interleave (each gets its own closure).
 	let child: ChildProcess | undefined;
+	let lastExitCode: number | null = null;
+
+	const populateRegistry = (ctx: ActionRunContext): void => {
+		ctx.registry.services.register({
+			name: 'dev-server',
+			kind: 'dev-server',
+			url: baseUrl,
+			port,
+		});
+	};
 
 	return definePlugin({
 		name: 'vite',
 		actions: () => [
-			service({
+			hostProcess({
 				name: 'dev-server',
 				needs,
 				inputs: { port, command: command.join(' ') },
+				provides: { registry: populateRegistry },
 				getStatus: async () => {
 					const reachable = await probeUrl(baseUrl);
 					if (!reachable) return { ok: false, detail: `${baseUrl} not reachable` };
 					return { ok: true, detail: baseUrl };
 				},
 				run: async (ctx) => {
-					// vite is a host process, not a container — no `ctx.stack`
+					// dev server is a host process, not a container — no `ctx.stack`
 					// in the spawn args. The Service action's localnet-only
-					// constraint applies to the supervisor that runs us, not
-					// to vite itself.
+					// constraint applies to the supervisor that runs us, not to
+					// the dev server itself.
 					requireLocalnetCtx(ctx);
 					const log = ctx.appendLog ?? ((line: string) => process.stdout.write(`${line}\n`));
 					const cwd = opts.cwd ?? ctx.appDir;
@@ -77,10 +101,18 @@ export const vite = (opts: VitePluginOptions = {}) => {
 						return;
 					}
 					log(`spawn ${command.join(' ')} (cwd=${cwd})`);
-					child = spawn(command[0] as string, command.slice(1), {
+					const head = command[0] as string;
+					const tail = command.slice(1);
+					child = spawn(head, tail, {
 						cwd,
 						stdio: ['ignore', 'pipe', 'pipe'],
 						env: { ...process.env, FORCE_COLOR: '0' },
+					});
+					child.on('exit', (code) => {
+						lastExitCode = code;
+						if (code !== null && code !== 0) {
+							log(`dev-server exited with code ${code}`);
+						}
 					});
 					streamLines(child, log);
 					ctx.onShutdown?.(async () => {
@@ -98,6 +130,11 @@ export const vite = (opts: VitePluginOptions = {}) => {
 						});
 					});
 					await waitForReachable(baseUrl, 30_000, log);
+					// Surface lastExitCode for testability — the helper above
+					// captures unexpected early exits the renderer should see.
+					if (lastExitCode !== null && lastExitCode !== 0) {
+						throw new Error(`dev-server exited early with code ${lastExitCode}`);
+					}
 				},
 			}),
 		],
@@ -129,14 +166,14 @@ async function waitForReachable(
 		}
 		await sleep(250);
 	}
-	throw new Error(`vite.dev-server: ${url} did not become reachable within ${timeoutMs}ms`);
+	throw new Error(`dev-server: ${url} did not become reachable within ${timeoutMs}ms`);
 }
 
 function sleep(ms: number): Promise<void> {
 	return new Promise((r) => setTimeout(r, ms));
 }
 
-function streamLines(child: ChildProcess, log: (line: string) => void): void {
+export function streamLines(child: ChildProcess, log: (line: string) => void): void {
 	const wire = (stream: NodeJS.ReadableStream | null): void => {
 		if (stream === null) return;
 		let buffer = '';
@@ -160,8 +197,9 @@ function streamLines(child: ChildProcess, log: (line: string) => void): void {
 }
 
 const ANSI_RE = /\x1b\[[0-9;?]*[a-zA-Z]/g;
-function stripAnsi(s: string): string {
-	// Vite emits ANSI color codes + cursor moves. The renderer's
-	// panel-redraw assumes plain text in `appendLog`, so we strip.
+export function stripAnsi(s: string): string {
+	// Vite (and most dev servers) emit ANSI color codes + cursor moves.
+	// The renderer's panel-redraw assumes plain text in `appendLog`, so
+	// we strip.
 	return s.replace(ANSI_RE, '');
 }

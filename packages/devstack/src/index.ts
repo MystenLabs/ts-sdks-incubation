@@ -113,7 +113,7 @@ export {
 	type ImportSpec,
 	type ImportsPluginOptions,
 } from './plugins/imports/index.js';
-export { vite, type VitePluginOptions } from './plugins/vite/index.js';
+export { frontend, type FrontendPluginOptions } from './plugins/vite/index.js';
 export {
 	walletServer,
 	WALLET_SERVER_DEFAULT_PORT,
