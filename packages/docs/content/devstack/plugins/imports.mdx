@@ -4,8 +4,12 @@ description: Recursive Move-package imports from git (DeepBook, Pyth, ...).
 ---
 
 `imports({ packages })` materializes Build + Publish actions for upstream Move packages declared at
-config-load time. Mirrors the wallet example's prior hand-rolled DeepBook block — generalized so any
-Sui app can pull in curated packages by `(repo, rev, subdir)` without per-app boilerplate.
+config-load time. Generalized so any Sui app can pull in curated packages by `(repo, rev, subdir)`
+without per-app boilerplate.
+
+For DeepBook v3, prefer the typed [`deepbook()` plugin](/devstack/plugins/deepbook) — it wraps the
+same publish flow with declarative pools + market-makers. Use `imports()` for upstream packages
+that don't have a first-class plugin.
 
 ```ts
 import { codegen, defineDevstackConfig, imports, sui } from '@mysten-incubation/devstack';
