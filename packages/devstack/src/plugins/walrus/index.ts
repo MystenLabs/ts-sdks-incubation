@@ -382,25 +382,45 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 					needs: ['deploy', 'node-0', 'proxy'],
 					inputs: { image: imageTag, rev },
 					getStatus: async (ctx) => {
-						// Cheap path: registry already populated from a prior cycle.
-						// Validate the recent fields (`hostApiUrl` per node + the
-						// `exchangeObject` capture) — older manifests don't carry
-						// either, and we want a re-register in that case rather
-						// than silently using stale state.
+						// The deploy volume is the authoritative source of truth: each
+						// `walrus.deploy` cycle rewrites `/opt/walrus/outputs/deploy` with
+						// fresh package + object IDs. Compare the registry's captured
+						// state against that file — a mismatch (chain regenesis, manifest
+						// from a previous deploy, etc.) returns ok:false so `run`
+						// re-registers with the live IDs.
+						requireLocalnetCtx(ctx);
+						let deployText: string;
+						try {
+							deployText = await readContainerFile(
+								nodeContainerName(ctx.appName, ctx.stack, 0),
+								'/opt/walrus/outputs/deploy',
+							);
+						} catch {
+							return { ok: false, detail: 'deploy file not yet readable' };
+						}
+						let ids: DeployFileIds;
+						try {
+							ids = parseDeployFile(deployText);
+						} catch {
+							return { ok: false, detail: 'deploy file unparseable' };
+						}
 						const ns = ctx.registry.ns<WalrusNamespace>('walrus');
 						const pkg = ctx.registry.packages.find('walrus');
 						const wal = ctx.registry.tokens.find('wal');
 						const nodes = ns.nodes.list();
 						if (
 							pkg !== undefined &&
+							pkg.packageId === ids.walrusPackageId &&
+							pkg.captured?.systemObject === ids.systemObject &&
+							pkg.captured?.stakingObject === ids.stakingObject &&
+							pkg.captured?.exchangeObject === ids.exchangeObject &&
 							wal !== undefined &&
 							nodes.length === NODE_COUNT &&
-							nodes.every((n) => typeof n.hostApiUrl === 'string') &&
-							typeof pkg.captured?.exchangeObject === 'string'
+							nodes.every((n) => typeof n.hostApiUrl === 'string')
 						) {
 							return { ok: true, detail: pkg.packageId };
 						}
-						return { ok: false, detail: 'walrus registry not yet populated' };
+						return { ok: false, detail: 'walrus registry stale or empty' };
 					},
 					run: async (ctx) => {
 						requireLocalnetCtx(ctx);
