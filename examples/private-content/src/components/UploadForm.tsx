@@ -4,14 +4,15 @@ import { Transaction } from '@mysten/sui/transactions';
 import { useId, useMemo, useState } from 'react';
 
 import { dAppKit } from '../dapp-kit.js';
-import * as vault from '../generated/sui/vault/vault.js';
+import * as vaultModule from '../generated/sui/vault/vault.js';
 import { stringToBytes } from '../lib/format.js';
-import { useSignAndExecute } from '../lib/queries.js';
+import { usePackage, useSignAndExecute } from '../lib/queries.js';
 import { encryptForSealId, freshSealId } from '../lib/seal.js';
 import { blobIdToBytes, storeBlob } from '../lib/walrus.js';
 import { Card } from './Card.js';
 
 export function UploadForm() {
+	const vault = usePackage(vaultModule, 'vault');
 	const client = useCurrentClient();
 	const { mutateAsync, isPending } = useSignAndExecute({
 		invalidateKeys: [['vault']],

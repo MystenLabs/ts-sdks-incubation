@@ -9,8 +9,16 @@ import { type Locator, type Page, expect } from '@playwright/test';
  * The dev wallet is registered as a single `Dev Wallet` whose `accounts`
  * list mirrors the devstack-resolved set. dApp Kit auto-connects to the
  * first account; we then call dApp Kit's `switchAccount({ account })` to
- * retarget without rebuilding the connection — `createDevstackDappKit`
- * exposes the kit on `globalThis.__devstackDAppKit__`.
+ * retarget without rebuilding the connection.
+ *
+ * Apps using this helper must expose their dAppKit instance on
+ * `globalThis.__devstackDAppKit__` from their `dapp-kit.ts`:
+ *
+ *     export const dAppKit = createDAppKit({ ... });
+ *     (globalThis as { __devstackDAppKit__?: typeof dAppKit }).__devstackDAppKit__ = dAppKit;
+ *
+ * The four example apps do this. It's a test-only convenience — the
+ * runtime app code never reads from this slot.
  */
 export async function connectAs(page: Page, label: string): Promise<void> {
 	await page.goto('/');
