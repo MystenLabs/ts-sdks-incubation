@@ -17,7 +17,7 @@ import type { RegistryImpl } from '../registry/index.js';
 import { stackDir } from './active-stack.js';
 import type { Manifest, SerializedRegistry } from './manifest-types.js';
 
-export type { Manifest, ManifestVersion, SerializedRegistry } from './manifest-types.js';
+export type { Manifest, SerializedRegistry } from './manifest-types.js';
 
 export interface WriteManifestOptions {
 	appName: string;
@@ -55,7 +55,6 @@ export function buildManifest(opts: WriteManifestOptions): Manifest {
 	return {
 		app: opts.appName,
 		network: opts.network,
-		version: 2,
 		emittedAt: new Date().toISOString(),
 		registry: serializeRegistry(reg),
 	};

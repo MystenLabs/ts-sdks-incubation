@@ -21,15 +21,10 @@ export {
 	manifestPath,
 	writeManifest,
 	type Manifest,
-	type ManifestVersion,
 	type SerializedRegistry,
 	type WriteManifestOptions,
 } from './runtime/manifest-writer.js';
-export {
-	hydrateRegistry,
-	readManifest,
-	readManifestWithMigration,
-} from './runtime/manifest-reader.js';
+export { hydrateRegistry, readManifest } from './runtime/manifest-reader.js';
 export { Supervisor, type SupervisorOptions } from './runtime/supervisor.js';
 export { StatusRenderer, type StatusRendererOptions } from './runtime/status-renderer.js';
 export { FileWatcher, type FileWatcherOptions } from './runtime/file-watcher.js';

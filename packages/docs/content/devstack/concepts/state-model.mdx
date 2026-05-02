@@ -1,0 +1,117 @@
+---
+title: State model
+description: Where every piece of stack state lives — and why.
+---
+
+devstack's state lives in three places. Knowing which is which makes everything else
+(stop/start, drop, snapshot, restore, cross-stack isolation) obvious.
+
+| Where                                        | What lives there                                                                                         | Survives `docker stop` | Survives `docker rm` | Captured by `snapshot save` |
+| -------------------------------------------- | -------------------------------------------------------------------------------------------------------- | :--------------------: | :------------------: | :-------------------------: |
+| Container writable layer                     | Sui chain ledger (`/root/.sui`), walrus storage-node RocksDB, anything else a Service action mutates     |          ✅            |          ❌          |       ✅ via `docker commit` |
+| Host fs `<appDir>/.devstack/stacks/<stack>/` | manifest, account keys, ports.json, walrus deploy outputs (bind-mounted), wallet-server token, setup markers |          ✅            |          ✅          |          ✅ via fs copy      |
+| Local docker daemon image store              | base images (sui-localnet, walrus-service, seal), `docker commit`'d seed images from snapshot save        |        n/a             |        n/a           | the seed images **are** the snapshot |
+
+**No named docker volumes anywhere.** Plugin authors who follow the conventions don't need them —
+state ends up in one of the three places above.
+
+## Container writable layer
+
+When sui's localnet container starts, its entrypoint creates `/root/.sui/sui_config` (genesis) and
+the validator writes RocksDB to `/root/.sui/db`. Both paths are inside the container's writable
+layer. So:
+
+- `docker stop sui-container && docker start sui-container` keeps every byte of chain state in
+  place. This is what `devstack stack down` + `devstack up` does — fast warm-restart, no
+  re-genesis.
+- `docker rm sui-container` deletes the writable layer along with the container. The chain is
+  gone. **`devstack stack drop` does this** — and also deletes the host stack dir below.
+
+`docker commit <container> <image>` packages the writable layer into a new immutable image layer
+on top of the base image. That's how `devstack snapshot save` captures sui state without ever
+touching `/root/.sui` directly.
+
+Walrus storage nodes follow the same pattern (RocksDB blob index + slivers + sync cursor in the
+writable layer). Stateless containers (seal key-server, walrus proxy) opt out via
+[`containerService.snapshot.commit: false`](/docs/plugins/sui#snapshot-meta) so snapshot save
+doesn't waste a seed image on them.
+
+## Host fs `<stackDir>`
+
+Everything that doesn't belong inside a container lives under
+`<appDir>/.devstack/stacks/<stack>/`:
+
+```
+<stackDir>/
+  manifest.json           # the registry serialized; read by the frontend via virtual:devstack-manifest
+  ports.json              # per-stack port allocator state — sticky across down/up
+  wallet-token            # bearer token for the in-process wallet-server
+  .keys/                  # per-stack ed25519 keys (alice.key, bob.key, …)
+  .generated/             # plugin-generated configs (walrus nginx proxy, etc.)
+  walrus/deploy/          # walrus deploy outputs (bind-mounted ro into storage nodes)
+  setup/<name>.done       # marker files written by runTransaction's default idempotence
+```
+
+This is what `docker stop` doesn't touch and `docker rm` doesn't touch — host files survive both.
+What clears the dir is `devstack stack drop` (or `devstack reset --yes`).
+
+`devstack snapshot save` recursively copies the whole dir into the snapshot bundle. `restore`
+copies it back.
+
+## Image store
+
+The local docker daemon's image store holds:
+
+- **Base images** — `dev-examples/sui-localnet:devnet-v1.71.0-r7`,
+  `dev-examples/walrus-service:<rev>-sui<ver>-r2`, `dev-examples/seal:<rev>`. Built once via
+  `devstack up`'s `Build` actions; cached forever after.
+- **Seed images** — `devstack-snapshot/<sha-id>/<container>:seeded`. Created by
+  `devstack snapshot save`; the writable-layer diff baked onto a base image. `restore` re-tags
+  them back to the base-image tag, so `docker run` from the plugin's hardcoded image picks up the
+  seeded layer.
+
+Image storage is per-host. `--push <registry>` extends this to GHCR / any OCI registry so other
+machines (and CI) can pull seeded images.
+
+## Implication: `down` vs `drop` vs `snapshot`
+
+Three operations, three different "where do they touch":
+
+| Operation                       | Container writable layer | Host `<stackDir>` | Image store           |
+| ------------------------------- | :----------------------: | :---------------: | :-------------------: |
+| `devstack stack down`           | preserved (stop)         | preserved         | unchanged             |
+| `devstack stack drop --yes`     | gone (rm)                | gone (rm -rf)     | unchanged (base images stay) |
+| `devstack reset --yes`          | gone (rm)                | gone (rm -rf)     | unchanged             |
+| `devstack snapshot save <name>` | quiesce + commit         | recursive copy    | new seed images       |
+| `devstack snapshot restore`    | new container from seeded image (any existing one removed first) | replaced from bundle | seed image retagged to base-image tag |
+
+So a typical iteration:
+
+1. `devstack up` (cold build → seed → healthy)
+2. `devstack snapshot save baseline` (capture)
+3. … work, mess things up …
+4. `devstack stack drop main --yes --force` (wipe)
+5. `devstack snapshot restore baseline` (restore from seed images + bundle)
+6. `devstack up` (warm — every getStatus says ok, ~5 s)
+
+## Why no volumes
+
+Earlier devstack used named docker volumes (`<app>-<stack>-sui-data`,
+`<app>-<stack>-walrus-deploy-outputs`, `<app>-<stack>-sui-bin`). That model can't be snapshotted
+naturally — `docker commit` captures the writable layer but **excludes** anything mounted as a
+volume; the volume becomes opaque to the snapshot pipeline. The work-around (tarballing each
+volume separately) was awkward and divergent from the Docker idiom.
+
+Container-layer state + host fs makes both lifecycles trivially compatible:
+- Container state goes in the writable layer → `docker commit` is the snapshot primitive.
+- Cross-container coordination state goes on host fs → bind-mounted into wherever it's read.
+
+The price: bumping a base image tag (`-rN` rev change) recreates the container, which loses the
+chain state. That's appropriate behavior — image-tag changes are exactly when you want a fresh
+chain.
+
+## See also
+
+- [Stacks](/docs/concepts/stacks) — how stack name flows into container/network/dir naming.
+- [Snapshots](/docs/concepts/snapshots) — the `docker commit` capture pipeline in detail.
+- [Ports](/docs/concepts/ports) — `<stackDir>/ports.json`, sibling-aware allocation.

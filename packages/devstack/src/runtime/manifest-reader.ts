@@ -49,41 +49,6 @@ export function readManifest(opts: ReadManifestOptions): Manifest | null {
 	return JSON.parse(raw) as Manifest;
 }
 
-/**
- * Migration table. Each entry takes a manifest at the listed version and
- * returns the same shape upgraded by one step. Empty today — every writer
- * emits version 2; the reader's path through this table is short-circuit
- * for v2-in/v2-out. The first real schema change adds an entry here.
- */
-const MANIFEST_MIGRATIONS: Record<number, (m: Manifest) => Manifest> = {
-	// 1: (m) => upgradeV1ToV2(m),
-};
-
-/**
- * `readManifest` + version-aware migration. Consumers that need to handle
- * older on-disk manifests (e.g. a stack created on a previous devstack
- * release) should prefer this entry. Throws on unknown future versions
- * with an actionable error so a downgrade isn't silent.
- */
-export function readManifestWithMigration(opts: ReadManifestOptions): Manifest | null {
-	const m = readManifest(opts);
-	if (m === null) return null;
-	let current = m;
-	const target = 2 as const;
-	while (current.version !== target) {
-		const migrate = MANIFEST_MIGRATIONS[current.version];
-		if (migrate === undefined) {
-			throw new Error(
-				`readManifestWithMigration: unknown manifest version ${current.version}. ` +
-					`This devstack release supports versions ${Object.keys(MANIFEST_MIGRATIONS).join(', ') || '(none)'} → ${target}. ` +
-					'Was the manifest written by a newer release? Try regenerating with `devstack reset --yes && devstack up`.',
-			);
-		}
-		current = migrate(current);
-	}
-	return current;
-}
-
 export interface HydrateOptions {
 	appDir: string;
 	stack: string;
