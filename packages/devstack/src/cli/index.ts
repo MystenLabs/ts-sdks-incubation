@@ -39,18 +39,6 @@ async function main(): Promise<number> {
 			const mod = await import('./up.js');
 			return mod.main(argv);
 		}
-		case 'watch': {
-			// Deprecated — `up` is now keepalive by default. Pass-through
-			// for back-compat; print a one-line note so users update their
-			// scripts. `--once` was previously stripped here; we no longer
-			// rewrite argv (the caller's intent is honored verbatim).
-			process.stderr.write(
-				'devstack: `watch` is deprecated; `up` is now long-running by default. ' +
-					'Use `up --once` for the old single-cycle behavior.\n',
-			);
-			const mod = await import('./up.js');
-			return mod.main(argv);
-		}
 		case 'apply': {
 			const mod = await import('./apply.js');
 			return mod.main(argv);

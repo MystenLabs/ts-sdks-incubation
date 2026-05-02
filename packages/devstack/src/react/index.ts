@@ -17,7 +17,6 @@ export {
 	type DevstackProviderProps,
 } from './provider.js';
 export { useDevstackDeployed, type UseDevstackDeployedOptions } from './use-devstack-deployed.js';
-export { bindPackage, type CodegenModule } from './bind-package.js';
 export type { DevstackProviderState } from './types.js';
 export {
 	defaultMvrName,

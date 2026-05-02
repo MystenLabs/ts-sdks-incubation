@@ -19,21 +19,19 @@ by `devstack up`.
 
 ```ts
 // dapp-kit.ts
+import { createDAppKit } from '@mysten/dapp-kit-core';
 import { devWalletInitializer } from '@mysten-incubation/dev-wallet';
 import { createDevstackAdapterFromManifest } from '@mysten-incubation/dev-wallet/adapters';
-import { createDevstackDappKit } from '@mysten-incubation/devstack/react';
+import { localnetDappKitConfig } from '@mysten-incubation/devstack/react';
 import { configureDevstackPanels, devstackPanels } from '@mysten-incubation/devstack-wallet-panels';
 import { manifest } from 'virtual:devstack-manifest';
-
-import { deployment } from './generated/deployment.js';
 
 configureDevstackPanels(manifest);
 
 const adapter = createDevstackAdapterFromManifest(manifest);
 
-export const { dAppKit } = createDevstackDappKit({
-	defaultNetwork: 'localnet',
-	localnetRpcUrl: deployment.rpcUrl,
+export const dAppKit = createDAppKit({
+	...localnetDappKitConfig(manifest),
 	walletInitializers: [
 		devWalletInitializer({
 			adapters: adapter ? [adapter] : [],
