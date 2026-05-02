@@ -103,11 +103,10 @@ export interface WalrusPluginOptions {
 	 * — default 19185, so the four nodes land on 19185–19188.
 	 *
 	 * Browser apps can't reach the storage nodes' internal docker IPs
-	 * (`10.0.0.10–13`) directly. The host port mapping pairs with the
-	 * `_walrus/node-<idx>` proxy installed by `devstackVitePlugins()` so
-	 * the `@mysten/walrus` SDK can talk to the real storage protocol from
-	 * a browser tab — `createDevstackWalrusClient()` rewrites the
-	 * SDK's fetch URLs accordingly. */
+	 * (`10.0.0.10–13`) directly. `createDevstackWalrusClient()` installs a
+	 * fetch override that rewrites the SDK's outbound storage-node URLs to
+	 * the host-mapped ports — that's what makes the storage protocol
+	 * reachable from a browser tab. */
 	nodeHostPortBase?: number;
 }
 

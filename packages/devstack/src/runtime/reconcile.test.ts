@@ -120,3 +120,120 @@ describe('Reconciler — progress callback', () => {
 		expect(result.statuses.get('a')).toBe('healthy');
 	});
 });
+
+describe('Reconciler — skip-predicate priority', () => {
+	// A Reconciler instance carries its own `state` map across cycles, so the
+	// "prior" branch we want to test is just "two cycles in a row with the
+	// same Reconciler". A fresh Reconciler each cycle would always be the
+	// cold-cycle branch.
+
+	it('hash mismatch with prior runs even when getStatus.ok=true (drift wins over warm-path)', async () => {
+		// The bug we're guarding against: a plugin whose `getStatus` always
+		// returns ok (because, say, the docker container is still up) would
+		// silently skip on inputs drift before the fix. The reconciler must
+		// re-run on hash mismatch regardless of getStatus.
+		let runCount = 0;
+		const reconciler = new Reconciler();
+		const registry = new RegistryImpl();
+
+		const makeAction = (subnet: string) =>
+			register({
+				name: 'a',
+				inputs: { subnet },
+				getStatus: async () => ({ ok: true }),
+				run: async () => {
+					runCount++;
+				},
+			});
+
+		// Cold cycle: getStatus.ok=true on cold path is allowed to skip
+		// (warm-path rehydration). But there's no prior state in memory, so
+		// the action runs at least once to establish the hash.
+		await reconciler.cycle([makeAction('10.0.0.0/24')], baseCtx(registry));
+		const cold = runCount;
+
+		// Same inputs, second cycle: hash matches, getStatus.ok=true → skip.
+		await reconciler.cycle([makeAction('10.0.0.0/24')], baseCtx(registry));
+		expect(runCount).toBe(cold);
+
+		// Inputs change, third cycle: hash drifts. getStatus still says ok,
+		// but the reconciler MUST run because inputs changed.
+		await reconciler.cycle([makeAction('10.0.0.0/16')], baseCtx(registry));
+		expect(runCount).toBe(cold + 1);
+	});
+
+	it('cold cycle with getStatus.ok=true skips (warm-path rehydration)', async () => {
+		// Documented design: a Reconciler with no prior state in memory but a
+		// `getStatus` that already reports healthy short-circuits — this is
+		// what lets seal/sui plugins hydrate from a manifest after restart
+		// without re-running expensive containers.
+		let runCount = 0;
+		const reconciler = new Reconciler();
+		const registry = new RegistryImpl();
+		const action = register({
+			name: 'a',
+			inputs: { stable: 'value' },
+			getStatus: async () => ({ ok: true }),
+			run: async () => {
+				runCount++;
+			},
+		});
+		await reconciler.cycle([action], baseCtx(registry));
+		expect(runCount).toBe(0);
+	});
+
+	it('hash match with getStatus.ok=true skips on subsequent cycles', async () => {
+		let runCount = 0;
+		let statusOk = false;
+		const reconciler = new Reconciler();
+		const registry = new RegistryImpl();
+		const action = register({
+			name: 'a',
+			inputs: { stable: 'value' },
+			getStatus: async () => ({ ok: statusOk }),
+			run: async () => {
+				runCount++;
+			},
+		});
+		// Cold cycle: getStatus says not ok → run, prior gets recorded.
+		await reconciler.cycle([action], baseCtx(registry));
+		expect(runCount).toBe(1);
+		// Second cycle: hash matches, getStatus now ok → skip.
+		statusOk = true;
+		await reconciler.cycle([action], baseCtx(registry));
+		expect(runCount).toBe(1);
+	});
+
+	it('hash match with no getStatus skips', async () => {
+		let runCount = 0;
+		const reconciler = new Reconciler();
+		const registry = new RegistryImpl();
+		const action = register({
+			name: 'a',
+			inputs: { stable: 'value' },
+			run: async () => {
+				runCount++;
+			},
+		});
+		await reconciler.cycle([action], baseCtx(registry));
+		await reconciler.cycle([action], baseCtx(registry));
+		expect(runCount).toBe(1);
+	});
+
+	it('getStatus.ok=false runs even on hash match', async () => {
+		let runCount = 0;
+		const reconciler = new Reconciler();
+		const registry = new RegistryImpl();
+		const action = register({
+			name: 'a',
+			inputs: { stable: 'value' },
+			getStatus: async () => ({ ok: false }),
+			run: async () => {
+				runCount++;
+			},
+		});
+		await reconciler.cycle([action], baseCtx(registry));
+		await reconciler.cycle([action], baseCtx(registry));
+		expect(runCount).toBe(2);
+	});
+});

@@ -6,19 +6,17 @@
 // changed.
 //
 // Skip predicate logic per action:
-//   - Hash mismatch + no `getStatus` → run.
-//   - Hash mismatch + `getStatus.ok === true` (cold cycle) → skip.
+//   - Cold cycle (no prior in memory) + `getStatus.ok === true` → skip
+//     (warm-path rehydration from a manifest survives supervisor restart).
+//   - Hash match + `getStatus.ok === true` → skip.
 //   - Hash match + no `getStatus` → skip.
-//   - `getStatus.ok === true` → skip.
+//   - Hash mismatch with prior → run unconditionally (inputs drift wins;
+//     `getStatus` is NOT consulted, so a stale-but-running container
+//     doesn't mask a config change).
+//   - No prior + no `getStatus` + hash mismatch → run.
 //   - `getStatus.ok === false` → run.
 // Plus: Emit actions also run when a dirty kind they depend on changed,
 // even if their own input hash matched.
-//
-// Cold-cycle getStatus (no `prior` in memory): the reconciler still
-// consults `getStatus` first when defined, so plugins that hydrate state
-// from the manifest (seal's cached `KeyServer` objectId, sui.localnet's
-// running container, walrus's deploy volume) can short-circuit expensive
-// re-runs on supervisor restart.
 
 import { seedRunsOn } from '../actions/seed.js';
 import type {
@@ -281,16 +279,18 @@ export class Reconciler {
 		base: ReconcileBaseContext,
 		forceRun: boolean,
 	): Promise<ActionStatus> {
-		const ctx: ActionRunContext = {
+		const common = {
 			appName: base.appName,
 			appDir: base.appDir,
-			stack: base.stack,
-			network: base.network,
 			registry: base.registry,
 			accounts: base.accounts,
 			onShutdown: base.onShutdown,
 			appendLog: base.appendLog ? (line: string) => base.appendLog?.(action.name, line) : undefined,
 		};
+		const ctx: ActionRunContext =
+			base.network === 'localnet'
+				? { ...common, network: 'localnet', stack: base.stack }
+				: { ...common, network: base.network };
 
 		// Network gating for Seed actions (Q5).
 		if (action.type === 'Seed') {
@@ -303,8 +303,13 @@ export class Reconciler {
 		const prior = this.state.get(action.name);
 		const hashMatches = prior !== undefined && prior.lastInputHash === inputHash;
 
+		// `getStatus` is consulted on the cold cycle (no `prior` — supervisor
+		// restart) and on hash-match cycles, never on hash-mismatch with a
+		// known prior. Otherwise an action whose inputs drifted but whose
+		// container still happens to be up would silently keep the stale
+		// state forever, because `getStatus` would always return ok.
 		if (!forceRun) {
-			if (action.getStatus !== undefined) {
+			if (action.getStatus !== undefined && (prior === undefined || hashMatches)) {
 				const status = await action.getStatus(ctx);
 				if (status.ok) {
 					this.state.set(action.name, {
@@ -314,7 +319,7 @@ export class Reconciler {
 					});
 					return 'healthy';
 				}
-			} else if (hashMatches) {
+			} else if (hashMatches && action.getStatus === undefined) {
 				this.state.set(action.name, { ...prior, status: 'healthy' });
 				return 'healthy';
 			}

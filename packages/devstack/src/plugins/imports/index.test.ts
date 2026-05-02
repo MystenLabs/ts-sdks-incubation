@@ -63,14 +63,17 @@ const makeCtx = (
 	registry: RegistryImpl,
 	network: Network = 'localnet',
 	accounts: AccountsContext = accountsWith({ publisher: fakeSigner }),
-): ActionRunContext => ({
-	appName: 'wallet',
-	appDir: '/tmp/wallet',
-	stack: 'main',
-	network,
-	registry,
-	accounts,
-});
+): ActionRunContext => {
+	const common = {
+		appName: 'wallet',
+		appDir: '/tmp/wallet',
+		registry,
+		accounts,
+	};
+	return network === 'localnet'
+		? { ...common, network: 'localnet', stack: 'main' }
+		: { ...common, network };
+};
 
 const setupRegistry = (): RegistryImpl => {
 	const registry = new RegistryImpl();
