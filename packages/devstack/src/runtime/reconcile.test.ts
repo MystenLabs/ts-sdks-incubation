@@ -123,6 +123,57 @@ describe('Reconciler — progress callback', () => {
 		const result = await reconciler.cycle([a], baseCtx(registry));
 		expect(result.statuses.get('a')).toBe('healthy');
 	});
+
+	it('cascade Emits consume dependsOnKind so they do not re-fire on every round', async () => {
+		// A non-Emit dirties `packages` AFTER the topo-walk Emit has already
+		// consumed `packages`. The cascade picks up the new dirty bit and re-
+		// runs the Emit. Without consumeDirty in the cascade loop, the same
+		// `packages` dirty bit would re-trigger the Emit every round until
+		// maxCascade=4 swallows it. With the fix, the Emit runs exactly once
+		// in the cascade.
+		let codegenRuns = 0;
+		const codegen = emit({
+			name: 'codegen',
+			dependsOnKind: ['packages'],
+			inputs: {},
+			run: async () => {
+				codegenRuns++;
+			},
+		});
+		const seedThatDirtiesPackagesPostEmit = register({
+			name: 'seed',
+			inputs: {},
+			provides: {
+				registry: (ctx) => {
+					// Marks `packages` dirty AFTER the topo-walk Emit consumed
+					// it: the topo-walk's `consumeDirty` ran when the Emit was
+					// scheduled at the end of round 1; this hook fires after.
+					ctx.registry.packages.register({
+						name: 'late',
+						packageId: '0xabcd',
+						captured: {},
+						network: 'localnet',
+					});
+				},
+			},
+			run: async (ctx) => {
+				ctx.registry.packages.register({
+					name: 'late',
+					packageId: '0xabcd',
+					captured: {},
+					network: 'localnet',
+				});
+			},
+		});
+
+		const reconciler = new Reconciler();
+		const registry = new RegistryImpl();
+		const result = await reconciler.cycle([codegen, seedThatDirtiesPackagesPostEmit], baseCtx(registry));
+		expect(result.statuses.get('codegen')).toBe('healthy');
+		// The Emit runs in the topo walk + at most once in the cascade. Pre-fix
+		// behavior would have run it 1 + maxCascade(4) = 5 times.
+		expect(codegenRuns).toBeLessThanOrEqual(2);
+	});
 });
 
 describe('Reconciler — skip-predicate priority', () => {

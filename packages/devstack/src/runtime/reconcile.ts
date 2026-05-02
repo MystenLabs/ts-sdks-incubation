@@ -283,7 +283,17 @@ export class Reconciler {
 				}
 				statuses.set(action.name, status);
 				emitProgress();
-				if (status === 'healthy') triggered = true;
+				if (status === 'healthy') {
+					triggered = true;
+					// Match the topo-walk path (line ~196): consume the kinds the
+					// Emit just observed so they don't re-trigger the same Emit
+					// next cascade round. Without this, a successful cascade Emit
+					// re-fires every round until `maxCascade` swallows it — only
+					// invisible because the loop bound caps the runaway.
+					if (emit.dependsOnKind !== undefined && emit.dependsOnKind.length > 0) {
+						base.registry.consumeDirty(emit.dependsOnKind);
+					}
+				}
 			}
 			dirty = base.registry.flushDirty();
 			if (!triggered) break;
