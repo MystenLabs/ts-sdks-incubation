@@ -6,12 +6,12 @@
 // hash also affects skipping — if the emitter version or output config
 // changes, it re-runs even when no kinds are dirty.
 
-import type { ActionRunContext, EmitAction } from '../core/types.js';
+import type { ActionRunContext, EmitAction, Provides } from '../core/types.js';
 
 export interface EmitOptions<TInputs extends Record<string, unknown>> {
 	name: string;
 	needs?: string[];
-	provides?: string[];
+	provides?: Provides;
 	inputs: TInputs;
 	dependsOnKind?: string[];
 	run: (ctx: ActionRunContext) => Promise<void>;

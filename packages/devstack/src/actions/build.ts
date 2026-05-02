@@ -3,12 +3,12 @@
 // P1: returns a typed BuildAction. Real Docker integration lands in P4
 // (sui plugin) when the first plugin needs to actually produce an image.
 
-import type { ActionRunContext, BuildAction } from '../core/types.js';
+import type { ActionRunContext, BuildAction, Provides } from '../core/types.js';
 
 export interface BuildImageOptions<TInputs extends Record<string, unknown>> {
 	name: string;
 	needs?: string[];
-	provides?: string[];
+	provides?: Provides;
 	inputs: TInputs;
 	run: (ctx: ActionRunContext) => Promise<void>;
 	getStatus?: (ctx: ActionRunContext) => Promise<{ ok: boolean; detail?: string }>;

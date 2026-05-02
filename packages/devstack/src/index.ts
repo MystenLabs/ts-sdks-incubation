@@ -31,6 +31,8 @@ export type {
 	NetworkConfig,
 	Package,
 	Plugin,
+	Provides,
+	ProvidesObject,
 	PublishAction,
 	RegisterAction,
 	Registry,
@@ -42,8 +44,13 @@ export type {
 	ShutdownHook,
 	TestConfig,
 	Token,
+	VerifyAction,
 } from './core/types.js';
-export { requireLocalnetCtx } from './core/types.js';
+export {
+	getProvidedCapabilities,
+	getProvidesRegistryHook,
+	requireLocalnetCtx,
+} from './core/types.js';
 
 // ─── Authoring helpers ────────────────────────────────────────────────────
 
@@ -53,6 +60,10 @@ export { defineDevstackConfig, definePlugin, expandPluginActions } from './plugi
 
 export { buildImage } from './actions/build.js';
 export { service } from './actions/service.js';
+export { containerService } from './actions/container-service.js';
+export { hostProcess } from './actions/host-process.js';
+export { job } from './actions/job.js';
+export { verify } from './actions/verify.js';
 export {
 	publish,
 	definePublishAction,

@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { emit } from '../actions/emit.js';
 import { register } from '../actions/register.js';
-import type { AccountsContext } from '../core/types.js';
+import { service } from '../actions/service.js';
+import { verify } from '../actions/verify.js';
+import type { AccountsContext, ActionRunContext } from '../core/types.js';
 import type { ReconcileProgress } from './reconcile.js';
 import { Reconciler } from './reconcile.js';
 import { RegistryImpl } from '../registry/index.js';
@@ -235,5 +237,111 @@ describe('Reconciler — skip-predicate priority', () => {
 		await reconciler.cycle([action], baseCtx(registry));
 		await reconciler.cycle([action], baseCtx(registry));
 		expect(runCount).toBe(2);
+	});
+});
+
+describe('Reconciler — provides.registry rehydration', () => {
+	it('calls provides.registry on warm-path skip (getStatus.ok=true)', async () => {
+		let runCount = 0;
+		let rehydrateCount = 0;
+		const populateRegistry = async (ctx: ActionRunContext) => {
+			rehydrateCount++;
+			ctx.registry.services.register({
+				name: 'sui-rpc',
+				kind: 'rpc',
+				url: 'http://127.0.0.1:9000',
+				port: 9000,
+			});
+		};
+		const action = service({
+			name: 'localnet',
+			inputs: { port: 9000 },
+			provides: { registry: populateRegistry },
+			getStatus: async () => ({ ok: true }),
+			run: async () => {
+				runCount++;
+			},
+		});
+
+		const reconciler = new Reconciler();
+		const registry = new RegistryImpl();
+
+		// Cold cycle — getStatus.ok=true skips run, but rehydrate still fires.
+		await reconciler.cycle([action], baseCtx(registry));
+		expect(runCount).toBe(0);
+		expect(rehydrateCount).toBe(1);
+		expect(registry.services.find('sui-rpc')?.url).toBe('http://127.0.0.1:9000');
+
+		// Second cycle — same as above.
+		await reconciler.cycle([action], baseCtx(registry));
+		expect(rehydrateCount).toBe(2);
+	});
+
+	it('calls provides.registry after a successful run', async () => {
+		let rehydrateCount = 0;
+		const action = register({
+			name: 'a',
+			inputs: { x: 1 },
+			provides: {
+				registry: async () => {
+					rehydrateCount++;
+				},
+			},
+			run: async () => {},
+		});
+		const reconciler = new Reconciler();
+		const registry = new RegistryImpl();
+		await reconciler.cycle([action], baseCtx(registry));
+		expect(rehydrateCount).toBe(1);
+	});
+
+	it('legacy provides: string[] form does not invoke a registry hook', async () => {
+		// Smoke: actions with bare-array provides shouldn't fault in the
+		// helper extraction path.
+		const action = register({
+			name: 'a',
+			inputs: {},
+			provides: ['arena.connect-four'],
+			run: async () => {},
+		});
+		const reconciler = new Reconciler();
+		const registry = new RegistryImpl();
+		const result = await reconciler.cycle([action], baseCtx(registry));
+		expect(result.statuses.get('arena.connect-four')).toBeUndefined();
+	});
+});
+
+describe('Reconciler — Verify action', () => {
+	it('Verify with ok=true marks healthy and runs provides.registry', async () => {
+		let rehydrateCount = 0;
+		const action = verify({
+			name: 'invariant',
+			inputs: {},
+			provides: {
+				registry: async () => {
+					rehydrateCount++;
+				},
+			},
+			check: async () => ({ ok: true }),
+		});
+		const reconciler = new Reconciler();
+		const registry = new RegistryImpl();
+		const result = await reconciler.cycle([action], baseCtx(registry));
+		expect(result.statuses.get('invariant')).toBe('healthy');
+		expect(rehydrateCount).toBe(1);
+	});
+
+	it('Verify with ok=false marks failed with the detail in the error', async () => {
+		const action = verify({
+			name: 'invariant',
+			inputs: {},
+			check: async () => ({ ok: false, detail: 'rpc unreachable' }),
+		});
+		const reconciler = new Reconciler();
+		const registry = new RegistryImpl();
+		const result = await reconciler.cycle([action], baseCtx(registry));
+		expect(result.statuses.get('invariant')).toBe('failed');
+		const err = result.failures.get('invariant');
+		expect(err?.message).toMatch(/rpc unreachable/);
 	});
 });
