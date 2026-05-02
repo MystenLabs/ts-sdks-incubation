@@ -57,9 +57,9 @@ export default defineDevstackConfig({
 
 Account names declared at the top level are funded on localnet via the faucet. Empty objects (`{}`)
 get a per-stack generated keypair on disk; live-network deployments override per network — see the
-[accounts page](/docs/authoring/accounts).
+[accounts page](/docs/concepts/accounts).
 
-The [`setup:` field](/docs/authoring/setup) is where app-level state lives: publish Move packages,
+The [`setup:` field](/docs/concepts/setup) is where app-level state lives: publish Move packages,
 mint fixture coins, create initial shared objects. Each item is an action with explicit `needs` for
 ordering and `getStatus` for idempotence — same primitives the framework's own plugins use, just
 declared inline. Use `publishMove()` and `runTransaction()` for the common cases; drop into
@@ -77,7 +77,6 @@ Wire your `package.json` scripts to the `devstack` binary:
 {
 	"scripts": {
 		"dev": "devstack up",
-		"localnet:up": "devstack up --once",
 		"apply": "devstack apply",
 		"codegen": "devstack codegen",
 		"deploy": "devstack deploy",
@@ -92,20 +91,15 @@ Then:
 pnpm dev                        # one combined process: stack + dev server
 ```
 
-The supervisor brings up sui-localnet, fund accounts, publish Move packages, regenerate codegen
-bindings, and start the Vite dev server — all in one log stream. Re-run is fast (~1–3 s) because
-each action's `getStatus` skip predicate short-circuits work that hasn't drifted.
+`devstack up` is the long-running supervisor — it brings up sui-localnet, funds accounts,
+publishes Move packages, regenerates codegen bindings, and starts the Vite dev server in one log
+stream. Watches Move sources and re-reconciles on change. Re-run from cold is ~10–15 s for a
+sui-only stack; warm cycles short-circuit through `getStatus` and run in ~1–3 s.
 
-For a single bring-up + exit (CI / e2e setup):
-
-```sh
-pnpm exec devstack up --once    # ~17 s cold, ~1.2 s warm
-```
-
-For a single cycle without the supervisor (CI-friendly, also works against testnet/mainnet):
+For a single bring-up + exit (CI / e2e setup) — same actions, no supervisor, no source-watching:
 
 ```sh
-pnpm exec devstack apply
+pnpm exec devstack apply        # ~10 s cold (image cached), ~5 s warm
 ```
 
 ## What happened
@@ -140,8 +134,18 @@ place. CI uses `snapshot save baseline --push ghcr.io/myorg/...` to ship snapsho
 
 ## Next steps
 
-- [Actions](/docs/concepts/actions) — the seven action kinds.
-- [Plugins](/docs/concepts/plugins) — composing built-ins or writing your own.
-- [setup: field](/docs/authoring/setup) — declaring per-app state.
-- [React adapter](/docs/adapters/react) — typed package hooks for the UI.
-- [Stacks](/docs/concepts/stacks) — named per-app environments for parallel experiments.
+The mental model, in dependency order:
+
+1. [State model](/docs/concepts/state-model) — where every byte of stack state lives.
+2. [Actions](/docs/concepts/actions) — the eight action kinds; how the reconciler walks them.
+3. [Plugins](/docs/concepts/plugins) — bundles of actions; built-ins + your own.
+4. [setup:](/docs/concepts/setup) — declaring per-app state inline.
+5. [Accounts](/docs/concepts/accounts) — named signers; per-network resolution.
+6. [Registry & manifest](/docs/concepts/registry-and-manifest) — the inter-plugin store and its
+   serialized form the frontend reads.
+7. [Stacks](/docs/concepts/stacks) — named per-app environments for parallel experiments.
+8. [Snapshots](/docs/concepts/snapshots) — `docker commit` cache for fast cold starts + CI.
+9. [Ports](/docs/concepts/ports) — per-stack allocator; `main` and `test` coexist freely.
+
+Then: [React adapter](/docs/adapters/react) for typed package hooks in the UI;
+[Playwright adapter](/docs/adapters/playwright) for e2e against real chain.
