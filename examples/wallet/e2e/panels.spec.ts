@@ -62,6 +62,9 @@ test('network panel shows wallet-server entry', async ({ page }) => {
 	const drawer = page.locator('dev-wallet-panel');
 	await drawer.locator('dev-wallet-tab-bar').getByRole('tab', { name: 'Network' }).click();
 	const network = drawer.locator('devstack-network-panel');
-	await expect(network.getByText('wallet-server')).toBeVisible();
-	await expect(network.getByText(/http:\/\/localhost:\d+/)).toBeVisible();
+	// Scope the URL assertion to the wallet-server row so we don't collide
+	// with other service rows (e.g. `dev-server` on `http://localhost:5174`).
+	const walletServerRow = network.locator('.row').filter({ hasText: 'wallet-server' });
+	await expect(walletServerRow).toBeVisible();
+	await expect(walletServerRow).toContainText(/http:\/\/localhost:\d+/);
 });
