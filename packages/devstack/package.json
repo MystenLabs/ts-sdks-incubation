@@ -82,6 +82,7 @@
 		"typecheck": "tsc --noEmit",
 		"test": "vitest run",
 		"test:watch": "vitest",
+		"smoke-test": "node --experimental-strip-types scripts/smoke-test-build.ts",
 		"prepublishOnly": "pnpm run build"
 	},
 	"dependencies": {
