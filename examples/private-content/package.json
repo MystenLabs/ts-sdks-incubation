@@ -4,7 +4,7 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
-		"dev": "devstack watch",
+		"dev": "devstack up",
 		"build": "tsc -b && vite build",
 		"preview": "vite preview",
 		"typecheck": "tsc -b --noEmit",
@@ -12,7 +12,6 @@
 		"test:e2e": "DEVSTACK_STACK=test playwright test",
 		"clean": "rm -rf dist .turbo node_modules/.tmp",
 		"localnet:up": "devstack up --once",
-		"localnet:watch": "devstack watch",
 		"apply": "devstack apply",
 		"codegen": "devstack codegen",
 		"deploy": "devstack deploy",

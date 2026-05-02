@@ -24,12 +24,12 @@ pnpm add -D @mysten-incubation/devstack
 
 ```ts
 // devstack.config.ts
-import { codegen, defineDevstackConfig, sui, vite } from '@mysten-incubation/devstack';
+import { codegen, defineDevstackConfig, frontend, sui } from '@mysten-incubation/devstack';
 
 export default defineDevstackConfig({
 	app: 'my-app',
 	accounts: { publisher: {}, alice: {}, bob: {} },
-	plugins: [sui(), codegen(), vite({ port: 5173 })],
+	plugins: [sui(), codegen(), frontend({ port: 5173 })],
 });
 ```
 
@@ -37,7 +37,7 @@ export default defineDevstackConfig({
 // package.json
 {
 	"scripts": {
-		"dev": "devstack watch",
+		"dev": "devstack up",
 		"localnet:up": "devstack up --once",
 		"apply": "devstack apply",
 		"codegen": "devstack codegen",
@@ -65,11 +65,19 @@ of one of six kinds:
 | Kind       | Purpose                                                                      |
 | ---------- | ---------------------------------------------------------------------------- |
 | `Build`    | Idempotent image / artifact build.                                           |
-| `Service`  | Long-running process (docker container). Localnet only.                      |
+| `Service`  | Long-running container or host process. Localnet only.                       |
 | `Publish`  | Move package publish — captures `packageId` + named object IDs.              |
 | `Register` | On-chain registration that produces registry entries.                        |
 | `Seed`     | Post-deploy state seeding (mint balances, open lobbies, place orders).       |
 | `Emit`     | Side-effecting outputs derived from the registry (codegen, manifest writes). |
+| `Verify`   | Read-only invariant check; fails the cycle on `ok: false`.                   |
+
+`provides` accepts either a bare `string[]` (capability names for
+ordering only) OR an object form `{ capabilities?, registry? }`.
+`provides.registry(ctx)` is invoked by the reconciler on every
+successful path — both the cold cycle and warm-path skips — so plugin
+authors can factor registry-population logic in one place instead of
+duplicating it across `run` and `getStatus`.
 
 Actions declare `needs: string[]` for ordering, `provides: string[]` for capability declarations,
 plus `getStatus?(ctx)` — a probe that returns `{ ok: true }` when the action's effect is already in
@@ -134,17 +142,16 @@ calls `requireLocalnetCtx(ctx)` to assert at runtime.
 
 | Command                                          | What it does                                                                    |
 | ------------------------------------------------ | ------------------------------------------------------------------------------- |
-| `devstack up [config]`                           | Bring the localnet stack up (one-shot reconciler).                              |
-| `devstack watch [config]`                        | Long-running supervisor; watches Move sources.                                  |
+| `devstack up [config]`                           | Long-running supervisor: reconcile + watch Move sources. `--once` for one-shot. |
 | `devstack apply [config] [--target] [--actions]` | Single-cycle reconcile. `--actions a,b,c` scopes to a subset.                   |
 | `devstack deploy <config> --network`             | Live-network deploy slice.                                                      |
 | `devstack codegen [config] [--target]`           | Re-emit codegen against the prior manifest (read-only).                         |
 | `devstack down [config]`                         | Stop the active stack's containers (volumes preserved).                         |
 | `devstack reset [config] --yes`                  | Wipe the active stack — containers, volumes, host state.                        |
-| `devstack stack list/new/use/down/drop`          | Manage named per-app stacks.                                                    |
+| `devstack stack list/new/use/down/drop`          | Manage named per-app stacks. `drop --dry-run` previews deletion.                |
 | `devstack console [config] [--target]`           | REPL with `manifest`, `client`, `accounts.<name>`, `packages.<name>` pre-bound. |
 
-`--target` accepts `<network>`, `<stack>`, or `<network>:<stack>`. The supervisor (`up`/`watch`) is
+`--target` accepts `<network>`, `<stack>`, or `<network>:<stack>`. The supervisor (`up`) is
 localnet-only; live-network targets error with a hint pointing at `apply` or `deploy`.
 
 ---
@@ -157,7 +164,7 @@ localnet-only; live-network targets error with a hint pointing at `apply` or `de
 | `@mysten-incubation/devstack/runtime`                  | Embedders                | `Reconciler`, `Supervisor`, `RegistryImpl`, `FileWatcher`, `StatusRenderer`, manifest I/O, `runOneShot`, active-stack helpers                      |
 | `@mysten-incubation/devstack/cli`                      | CLI consumers            | `runUp`, `runDeploy`, `runApply`, `runCodegen`, `runConsole`, `runStack`, target/filter helpers                                                    |
 | `@mysten-incubation/devstack/helpers`                  | Plugin authors           | `publishMovePackage`, `importMovePackage`, `seedSharedObject`, `objectTypeMatchesFilter`, `ensureUpstreamSourceImage`, `createLocalSuiClient`      |
-| `@mysten-incubation/devstack/react`                    | App authors (UI)         | `DevstackProvider`, `useDevstackPackage`, `useDevstackPackageOptional`, `useDevstackSignAndExecute`, `DevstackDebugPanel`, `createDevstackDappKit` |
+| `@mysten-incubation/devstack/react`                    | App authors (UI)         | `DevstackProvider`, `useDevstackManifest`, `useDevstackDeployed`, `localnetDappKitConfig`, `localnetMvrOverrides`, `localnetWalrusOptions`, `defaultMvrName` |
 | `@mysten-incubation/devstack/vite`                     | Vite users               | `devstackVitePlugins` (manifest + dev-keys virtual modules)                                                                                        |
 | `@mysten-incubation/devstack/playwright`               | E2E tests                | `defineDevstackPlaywrightConfig({ manageStack })` + helpers                                                                                        |
 | `@mysten-incubation/devstack/vitest`, `vitest/runtime` | Unit + chain-aware tests | `defineDevstackVitestConfig`, `AccountPool`                                                                                                        |
@@ -182,10 +189,20 @@ Seal key-server in Open mode. Four actions: build, publish (Move package), regis
 on-chain `KeyServer`), key-server (Service). The master key is cached at
 `<stackDir>/.keys/seal-master-key.json`.
 
-### `codegen({ output? })`
+### `codegen({ output?, mvrName? })`
 
-One Emit action that runs `@mysten/codegen` per `packages` registry entry whose `path?` is set.
-Defaults to `./src/generated/sui/<package>/`.
+One Emit action that runs `@mysten/codegen`'s `generateFromPackageSummary` per `packages`
+registry entry whose `path?` is set. Defaults to `./src/generated/sui/<package>/`.
+
+Each generated builder embeds an MVR-shape placeholder (`@local/<kebab-name>`) as its
+default `package` option. The matching `mvr.overrides.packages` entry — wired automatically
+by `localnetDappKitConfig(manifest)` — resolves the placeholder to the live `packageId` at
+transaction build time. App code calls `tx.add(connectFour.joinLobby({ arguments: [...] }))`
+directly; the SDK substitutes the live id during build.
+
+`mvrName?: (pkgName) => string` overrides the default placeholder shape. If you change it,
+pass the same mapper to `localnetDappKitConfig({ mvrName })` so the codegen output and the
+override key agree.
 
 ### `imports({ packages })`
 
@@ -238,15 +255,24 @@ factory for custom shapes (the imports plugin's escape hatch).
 
 ### Action helpers
 
-| Helper                                           | Returns                                                  |
-| ------------------------------------------------ | -------------------------------------------------------- |
-| `buildImage({ name, run, getStatus? })`          | `Build` action.                                          |
-| `service({ name, run, getStatus?, ... })`        | `Service` action. Localnet only.                         |
-| `publish({ name, run, getStatus?, ... })`        | `Publish` action — low-level escape hatch.               |
-| `definePublishAction({ name, sourcePath, ... })` | `Publish` action with build + register + cache baked in. |
-| `register({ name, run, ... })`                   | `Register` action.                                       |
-| `seed({ name, run, getStatus?, liveNetworks? })` | `Seed` action. Default-skipped on testnet/mainnet.       |
-| `emit({ name, run, dependsOnKind, ... })`        | `Emit` action.                                           |
+| Helper                                              | Returns                                                  |
+| --------------------------------------------------- | -------------------------------------------------------- |
+| `buildImage({ name, run, getStatus?, watches? })`   | `Build` action.                                          |
+| `service({ name, run, getStatus?, ... })`           | `Service` action. Localnet only.                         |
+| `containerService({ name, run, ... })`              | Typed factory: managed docker container.                 |
+| `hostProcess({ name, run, ... })`                   | Typed factory: in-process subprocess (vite, wallet-server). |
+| `job({ name, run, ... })`                           | Typed factory: run-once task.                            |
+| `verify({ name, check })`                           | `Verify` action — read-only invariant.                   |
+| `publish({ name, run, getStatus?, ... })`           | `Publish` action — low-level escape hatch.               |
+| `definePublishAction({ name, sourcePath, ... })`    | `Publish` action with build + register + cache baked in. |
+| `register({ name, run, ... })`                      | `Register` action.                                       |
+| `seed({ name, run, getStatus?, liveNetworks? })`    | `Seed` action. Default-skipped on testnet/mainnet.       |
+| `emit({ name, run, dependsOnKind, ... })`           | `Emit` action.                                           |
+
+`containerService` / `hostProcess` / `job` are typed wrappers around `service` for cognitive
+clarity at call sites. Same underlying `ServiceAction` shape — pick the one that matches the
+intent. Plugin authors wire `provides: { registry: ... }` on these to repopulate registry
+entries on warm-path skips without manually reimplementing the side effect inside `getStatus`.
 
 ### Helpers worth knowing
 
@@ -266,25 +292,26 @@ Subpath: `@mysten-incubation/devstack/helpers`.
 
 ## React adapter
 
-Subpath: `@mysten-incubation/devstack/react`.
+Subpath: `@mysten-incubation/devstack/react`. The surface is intentionally minimal and
+manifest-driven — generic SDK ergonomics (signing transactions, binding codegen modules)
+live in `@mysten/dapp-kit-react` / `@mysten/codegen` / your app's `lib/queries.ts`. Devstack
+contributes the localnet config inputs that get spread into vanilla `createDAppKit({...})`
+and `new WalrusClient({...})`.
 
 ```tsx
-// dapp-kit.ts
+// dapp-kit.ts — vanilla `createDAppKit`; the spread is the only localnet-specific piece
+import { createDAppKit } from '@mysten/dapp-kit-core';
 import { devWalletInitializer } from '@mysten-incubation/dev-wallet';
 import { createDevstackAdapterFromManifest } from '@mysten-incubation/dev-wallet/adapters';
-import { createDevstackDappKit } from '@mysten-incubation/devstack/react';
+import { localnetDappKitConfig } from '@mysten-incubation/devstack/react';
 import { configureDevstackPanels, devstackPanels } from '@mysten-incubation/devstack-wallet-panels';
 import { manifest } from 'virtual:devstack-manifest';
 
-import { deployment } from './generated/deployment';
-
 configureDevstackPanels(manifest);
-
 const devstackAdapter = createDevstackAdapterFromManifest(manifest);
 
-export const { dAppKit } = createDevstackDappKit({
-	defaultNetwork: 'localnet',
-	localnetRpcUrl: deployment.rpcUrl,
+export const dAppKit = createDAppKit({
+	...localnetDappKitConfig(manifest),
 	walletInitializers: [
 		devWalletInitializer({
 			adapters: devstackAdapter ? [devstackAdapter] : [],
@@ -303,46 +330,49 @@ declare module '@mysten/dapp-kit-react' {
 }
 ```
 
-Pair this with the `walletServer()` plugin in your `devstack.config.ts` so the adapter has a server
-to talk to:
+`localnetDappKitConfig(manifest)` returns the `defaultNetwork` / `networks` / `createClient`
+triple plus pre-loaded MVR overrides keyed `@local/<kebab-name>`. App TSX calls codegen
+builders directly — the SDK's `namedPackagesPlugin` resolves placeholders to live
+`packageId`s at tx build time.
 
 ```ts
 import { walletServer } from '@mysten-incubation/devstack';
 // ...
-plugins: [sui(), /* ... */, walletServer({ port: 9420 }), vite({ port: 5174 })],
+plugins: [sui(), /* ... */, walletServer({ port: 9420 }), frontend({ port: 5174 })],
 ```
 
-`walletServer()` registers a Service action that spins up an in-process HTTP endpoint exposing every
-account devstack resolved (`cliSigner`, `envSigner`, `generatedKeypair`, anything that materialises
-a `Signer`). Keys never enter the frontend bundle — `DevstackSignerAdapter` signs by HTTPing the
-supervisor process.
+`walletServer()` spins up an in-process HTTP endpoint exposing every account devstack
+resolved. Keys never enter the frontend bundle — `DevstackSignerAdapter` signs by HTTPing
+the supervisor process.
 
 ```tsx
-// main.tsx
-import { DevstackDebugPanel, DevstackProvider } from '@mysten-incubation/devstack/react';
+// main.tsx — no codegen-module registration; just the manifest
+import { DevstackProvider } from '@mysten-incubation/devstack/react';
 import { manifest } from 'virtual:devstack-manifest';
-import * as connectFour from './generated/sui/connect_four/game';
 
-<DevstackProvider manifest={manifest} packages={{ connect_four: connectFour }}>
+<DevstackProvider manifest={manifest}>
 	<App />
-	{import.meta.env.DEV && <DevstackDebugPanel />}
 </DevstackProvider>;
 ```
 
 ```tsx
-// In any component:
-import { useDevstackPackage, useDevstackSignAndExecute } from '@mysten-incubation/devstack/react';
+// component.tsx — no devstack imports outside `useSignAndExecute` (app-local)
+import { Transaction } from '@mysten/sui/transactions';
+import * as connectFour from './generated/sui/connect_four/game';
+import { useSignAndExecute } from './lib/queries';
 
-const connectFour = useDevstackPackage('connect_four');
-const { mutateAsync, isPending } = useDevstackSignAndExecute({ invalidateKeys: [['arena']] });
+const { mutateAsync, isPending } = useSignAndExecute({ invalidateKeys: [['arena']] });
 
 const tx = new Transaction();
-connectFour.joinLobby({ arguments: [lobbyId] })(tx);
+tx.add(connectFour.joinLobby({ arguments: [lobbyId] }));
 await mutateAsync(tx);
 ```
 
-The codegen builders are pre-bound to the live `packageId` from the manifest — no
-`package: deployment.connectFourPackageId` boilerplate.
+`useSignAndExecute` is a thin app-local helper around `dAppKit.signAndExecuteTransaction`
++ `useMutation` — typically ~50 lines in `lib/queries.ts`. The four examples each carry
+their own copy. Production app code looks identical; the only file that differs between
+local and prod is `dapp-kit.ts` (drops the `localnetDappKitConfig` spread, supplies its
+own RPC + real MVR or hardcoded packageIds).
 
 ---
 
@@ -376,10 +406,11 @@ at `<appDir>/.devstack/manifests/<network>.json`.
 
 ```
 src/
-  cli/         — up | watch | apply | deploy | codegen | console | stack | down | reset
+  cli/         — up | apply | deploy | codegen | console | stack | down | reset
   core/        — Action / Plugin / Registry / Network types + requireLocalnetCtx
   registry/    — typed Proxy-backed Registry
-  actions/     — Build / Service / Publish / definePublishAction / Register / Seed / Emit factories
+  actions/     — build / service / containerService / hostProcess / job /
+                 publish / definePublishAction / register / seed / emit / verify
   runtime/     — reconciler, supervisor, status renderer, file watcher,
                  manifest writer/reader (+ readManifestWithMigration),
                  one-shot (with actionScope), topo (with lenient mode),
@@ -387,9 +418,10 @@ src/
   plugin.ts    — definePlugin + expandPluginActions
   helpers/     — move-package (host or container build), imported-package,
                  sui-client, signers, keystore, seed-shared-object, ...
-  plugins/     — sui | walrus | seal | codegen | imports
-  react/       — DevstackProvider | useDevstackPackage | useDevstackSignAndExecute |
-                 DevstackDebugPanel | createDevstackDappKit | bindPackage
+  plugins/     — sui | walrus | seal | codegen | imports | wallet-server | vite
+  react/       — DevstackProvider | useDevstackManifest | useDevstackDeployed |
+                 localnetDappKitConfig | localnetMvrOverrides | localnetWalrusOptions |
+                 defaultMvrName
   vite/        — virtual:devstack-manifest plugin
   playwright/  — defineDevstackPlaywrightConfig (with manageStack) + helpers
   vitest/      — defineDevstackVitestConfig + AccountPool runtime
