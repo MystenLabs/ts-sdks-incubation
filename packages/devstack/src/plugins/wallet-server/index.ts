@@ -4,27 +4,40 @@
 // reads the service URL from the manifest and signs over HTTP, so
 // private keys never enter the frontend bundle.
 //
-// One Service action:
+// Two actions, lifecycle-split (resolves the cold-first-run manifest
+// race documented in notes/architecture-review/23-playwright-integration.md):
 //
-//   wallet-server.serve — Starts a Node `http` server on the configured
-//                         port. `getStatus` HEAD-probes `/health`; `run`
-//                         spawns the server (idempotent, restarts on
-//                         port reuse), prints the paired URL with a
-//                         random bearer token, and registers
-//                         `wallet-server` in `ctx.registry.services` so
-//                         the manifest carries the URL the frontend reads.
-//                         A shutdown hook closes the server gracefully on
-//                         supervisor stop.
+//   wallet-server.register — Register action. Allocates the host port via
+//                            ctx.ports, reads or mints the bearer token,
+//                            populates `ctx.registry.services` with the
+//                            deterministic URL+token. Runs in apply mode
+//                            (Playwright globalSetup, devstack apply, …),
+//                            so the manifest carries a wallet-server entry
+//                            even before the listener is up.
+//
+//   wallet-server.serve    — HostProcess action. Reads the URL+token from
+//                            the registry (populated by register), spawns
+//                            the Node `http` server, prints the paired URL.
+//                            Only runs in long-running supervisor paths
+//                            (`devstack up`, `devstack watch`); skipped by
+//                            `applyTestSetupFilter` so test bring-up doesn't
+//                            start a listener that would die on process exit.
+//
+//                            Adoption path: if a prior supervisor left a
+//                            server listening on the same port + the persisted
+//                            token, this action probes /health and trusts it
+//                            instead of double-binding.
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import type { Server } from 'node:http';
 import { dirname, resolve } from 'node:path';
 import { hostProcess } from '../../actions/host-process.js';
+import { register } from '../../actions/register.js';
 import type { ActionRunContext } from '../../core/types.js';
 import { requireLocalnetCtx } from '../../core/types.js';
 import { definePlugin } from '../../plugin.js';
 import { stackDir } from '../../runtime/active-stack.js';
-import { startWalletServer } from './server.js';
+import { generateToken, startWalletServer } from './server.js';
 
 export interface WalletServerPluginOptions {
 	/** TCP port for the wallet HTTP server. Default 9420. */
@@ -85,8 +98,8 @@ export const walletServer = (opts: WalletServerPluginOptions = {}) => {
 	return definePlugin({
 		name: 'wallet-server',
 		actions: () => [
-			hostProcess({
-				name: 'serve',
+			register({
+				name: 'register',
 				needs,
 				// Hint goes into the input hash (so changing the user's
 				// preferred port re-runs); resolved port is a runtime
@@ -95,14 +108,49 @@ export const walletServer = (opts: WalletServerPluginOptions = {}) => {
 				provides: { registry: populateRegistry },
 				getStatus: async (ctx) => {
 					requireLocalnetCtx(ctx);
+					const { baseUrl, port } = await resolveEndpoint(ctx);
+					const persisted = readPersistedToken(ctx.appDir, ctx.stack);
+					if (persisted === undefined) {
+						return { ok: false, detail: 'no persisted token' };
+					}
+					activeToken = persisted;
+					const cached = ctx.registry.services.find('wallet-server');
+					const expectedLabel = `${baseUrl}/?token=${persisted}`;
+					if (
+						cached === undefined ||
+						cached.url !== baseUrl ||
+						cached.port !== port ||
+						cached.endpointLabel !== expectedLabel
+					) {
+						return { ok: false, detail: 'registry entry stale' };
+					}
+					return { ok: true, detail: baseUrl };
+				},
+				run: async (ctx) => {
+					requireLocalnetCtx(ctx);
+					await resolveEndpoint(ctx);
+					let token = readPersistedToken(ctx.appDir, ctx.stack);
+					if (token === undefined) {
+						token = generateToken();
+						writePersistedToken(ctx.appDir, ctx.stack, token);
+					}
+					activeToken = token;
+					populateRegistry(ctx);
+				},
+			}),
+			hostProcess({
+				name: 'serve',
+				// Register populates URL+token in the registry; serve only
+				// starts the listener once that's done. Sui.accounts is a
+				// transitive need (register depends on it).
+				needs: ['register'],
+				inputs: { preferredPort, publicOrigin: explicitOrigin ?? null },
+				// No `provides.registry` — register's hook owns the entry.
+				getStatus: async (ctx) => {
+					requireLocalnetCtx(ctx);
 					const { baseUrl } = await resolveEndpoint(ctx);
 					const reachable = await probeUrl(`${baseUrl}/health`);
 					if (!reachable) return { ok: false, detail: `${baseUrl} not reachable` };
-					// We need a token to publish in the registry's
-					// endpointLabel. If we don't have one in memory and
-					// none is persisted, the running server is from a
-					// prior process whose token we lost — fail status so
-					// `run` restarts with a known token.
 					if (activeToken === undefined) {
 						activeToken = readPersistedToken(ctx.appDir, ctx.stack);
 						if (activeToken === undefined) {
@@ -131,7 +179,10 @@ export const walletServer = (opts: WalletServerPluginOptions = {}) => {
 						return;
 					}
 
-					const handle = startWalletServer({ port, accounts: ctx.accounts });
+					// Use the token populated by `register`; register's run
+					// always writes one before serve runs (transitive `needs`).
+					const token = persistedToken ?? generateToken();
+					const handle = startWalletServer({ port, token, accounts: ctx.accounts });
 					activeServer = handle.server;
 					activeToken = handle.token;
 					writePersistedToken(ctx.appDir, ctx.stack, handle.token);
