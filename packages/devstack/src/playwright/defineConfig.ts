@@ -51,12 +51,12 @@ export function defineDevstackPlaywrightConfig(
 	if (opts.manageStack === true) {
 		const here = dirname(fileURLToPath(import.meta.url));
 		// Match the extension to the consuming environment: workspace dev
-		// (running from `src/`) ships `.ts`; published `dist/` ships `.js`.
+		// (running from `src/`) ships `.ts`; published `dist/` ships `.mjs`.
 		// Playwright loads global-setup/teardown via Node's require, which
 		// can't transform `.ts` itself — but workspace devs run via tsx,
 		// which patches Node's loader to handle `.ts`.
 		const isSrc = here.includes(`${'/'}src${'/'}playwright`);
-		const ext = isSrc ? 'ts' : 'js';
+		const ext = isSrc ? 'ts' : 'mjs';
 		globalSetup = resolve(here, `global-setup.${ext}`);
 		globalTeardown = resolve(here, `global-teardown.${ext}`);
 		// Resolve the config path from the calling project's cwd; persist

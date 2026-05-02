@@ -8,6 +8,10 @@ import { createDevstackWalrusClient } from '@mysten-incubation/devstack/react';
 import type { ClientWithCoreApi } from '@mysten/sui/client';
 import type { Signer } from '@mysten/sui/cryptography';
 import type { WalrusClient } from '@mysten/walrus';
+// `?url` lets Vite serve the wasm with the right MIME type and a stable URL,
+// rather than the SDK's default fetch from a path that hits the SPA fallback
+// and returns `index.html`. Pattern matches the walrus SDK README.
+import walrusWasmUrl from '@mysten/walrus-wasm/web/walrus_wasm_bg.wasm?url';
 
 import { manifest } from '../generated/manifest.js';
 
@@ -18,7 +22,11 @@ let cachedSuiClient: ClientWithCoreApi | null = null;
 
 async function getClient(suiClient: ClientWithCoreApi): Promise<WalrusClient> {
 	if (cachedClient !== null && cachedSuiClient === suiClient) return cachedClient;
-	const client = await createDevstackWalrusClient({ manifest, suiClient });
+	const client = await createDevstackWalrusClient({
+		manifest,
+		suiClient,
+		wasmUrl: walrusWasmUrl,
+	});
 	cachedClient = client;
 	cachedSuiClient = suiClient;
 	return client;
@@ -49,7 +57,7 @@ export async function storeBlob(args: {
 	});
 	return {
 		blobId: result.blobId,
-		blobObjectId: result.blobObjectId,
+		blobObjectId: result.blobObject.id,
 	};
 }
 

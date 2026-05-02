@@ -49,6 +49,53 @@ export async function probeGrpc(rpcUrl: string, timeoutMs = 2000): Promise<Probe
 	}
 }
 
+/**
+ * Confirm sui-localnet has not pruned its checkpoint history. Walrus storage
+ * nodes follow the chain from when they were registered onward via the v2
+ * LedgerService `get_full_checkpoint` gRPC, and a localnet that prunes
+ * checkpoints out from under them gets the storage node permanently stuck
+ * (logs spam `Checkpoint <N> not found`, every blob write returns 400). The
+ * devstack-managed sui image's entrypoint disables pruning on first boot,
+ * but this check is the runtime fail-loud guard against a custom image, an
+ * upstream sui change, or a hand-edited fullnode.yaml — `sui_getCheckpoint(1)`
+ * returning NotFound is a one-line signal that the chain has begun pruning.
+ */
+export async function probeCheckpointRetention(
+	rpcUrl: string,
+	timeoutMs = 2000,
+): Promise<ProbeResult> {
+	try {
+		const res = await fetch(rpcUrl, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				jsonrpc: '2.0',
+				method: 'sui_getCheckpoint',
+				params: ['1'],
+				id: 1,
+			}),
+			signal: AbortSignal.timeout(timeoutMs),
+		});
+		if (!res.ok) return { ok: false, detail: `HTTP ${res.status}` };
+		const body = (await res.json()) as {
+			result?: { sequenceNumber?: string };
+			error?: { message?: string };
+		};
+		if (body.error !== undefined) {
+			return { ok: false, detail: `pruned (${body.error.message ?? 'no message'})` };
+		}
+		if (body.result?.sequenceNumber !== '1') {
+			return {
+				ok: false,
+				detail: `checkpoint 1 missing — pruning likely active (walrus will fall behind)`,
+			};
+		}
+		return { ok: true, detail: 'no pruning' };
+	} catch (err) {
+		return { ok: false, detail: (err as Error).message };
+	}
+}
+
 export async function probeFaucet(faucetUrl: string, timeoutMs = 2000): Promise<ProbeResult> {
 	try {
 		const res = await fetch(faucetUrl, { signal: AbortSignal.timeout(timeoutMs) });

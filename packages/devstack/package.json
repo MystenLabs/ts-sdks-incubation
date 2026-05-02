@@ -21,51 +21,51 @@
 		"url": "https://github.com/mysten-incubation/devstack/issues"
 	},
 	"type": "module",
-	"main": "./dist/index.js",
-	"types": "./dist/index.d.ts",
+	"main": "./dist/index.mjs",
+	"types": "./dist/index.d.mts",
 	"exports": {
 		".": {
-			"types": "./dist/index.d.ts",
-			"import": "./dist/index.js"
+			"types": "./dist/index.d.mts",
+			"import": "./dist/index.mjs"
 		},
 		"./cli": {
-			"types": "./dist/cli.d.ts",
-			"import": "./dist/cli.js"
+			"types": "./dist/cli.d.mts",
+			"import": "./dist/cli.mjs"
 		},
 		"./helpers": {
-			"types": "./dist/helpers.d.ts",
-			"import": "./dist/helpers.js"
+			"types": "./dist/helpers.d.mts",
+			"import": "./dist/helpers.mjs"
 		},
 		"./playwright": {
-			"types": "./dist/playwright/index.d.ts",
-			"import": "./dist/playwright/index.js"
+			"types": "./dist/playwright/index.d.mts",
+			"import": "./dist/playwright/index.mjs"
 		},
 		"./react": {
-			"types": "./dist/react/index.d.ts",
-			"import": "./dist/react/index.js"
+			"types": "./dist/react/index.d.mts",
+			"import": "./dist/react/index.mjs"
 		},
 		"./runtime": {
-			"types": "./dist/runtime.d.ts",
-			"import": "./dist/runtime.js"
+			"types": "./dist/runtime.d.mts",
+			"import": "./dist/runtime.mjs"
 		},
 		"./vite": {
-			"types": "./dist/vite.d.ts",
-			"import": "./dist/vite.js"
+			"types": "./dist/vite/plugin.d.mts",
+			"import": "./dist/vite/plugin.mjs"
 		},
 		"./vitest": {
-			"types": "./dist/vitest/index.d.ts",
-			"import": "./dist/vitest/index.js"
+			"types": "./dist/vitest/index.d.mts",
+			"import": "./dist/vitest/index.mjs"
 		},
 		"./vitest/runtime": {
-			"types": "./dist/vitest/runtime.d.ts",
-			"import": "./dist/vitest/runtime.js"
+			"types": "./dist/vitest/runtime.d.mts",
+			"import": "./dist/vitest/runtime.mjs"
 		}
 	},
 	"publishConfig": {
 		"access": "public"
 	},
 	"bin": {
-		"devstack": "./dist/cli/index.js"
+		"devstack": "./dist/cli/index.mjs"
 	},
 	"files": [
 		"dist",
@@ -77,15 +77,15 @@
 		"node": ">=24.0.0"
 	},
 	"scripts": {
-		"build": "tsup",
-		"build:watch": "tsup --watch",
+		"build": "tsdown",
+		"build:watch": "tsdown --watch",
 		"typecheck": "tsc --noEmit",
 		"test": "vitest run",
 		"test:watch": "vitest",
 		"prepublishOnly": "pnpm run build"
 	},
 	"dependencies": {
-		"@mysten/codegen": "^0.10.0",
+		"@mysten/codegen": "^0.10.4",
 		"@mysten/sui": "catalog:",
 		"@mysten/walrus": "^1.1.4",
 		"chokidar": "^4.0.1",
@@ -100,7 +100,7 @@
 		"@types/react": "catalog:",
 		"react": "catalog:",
 		"react-dom": "catalog:",
-		"tsup": "^8.3.0",
+		"tsdown": "0.20.0-beta.1",
 		"typescript": "catalog:",
 		"vite": "catalog:",
 		"vitest": "catalog:"

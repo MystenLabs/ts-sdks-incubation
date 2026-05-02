@@ -16,13 +16,21 @@
 //                   register in the `accounts` kind. Skip when every
 //                   account is already at-or-above `minBalance`.
 //
-// The `-r4` image-tag suffix is bumped manually when the Dockerfile or
+// The `-rN` image-tag suffix is bumped manually when the Dockerfile or
 // entrypoint changes meaningfully so existing local images get rebuilt on
-// next `devstack up`. `-r4` switches from ephemeral `--force-regenesis` to
+// next `devstack up`. `-r4` switched from ephemeral `--force-regenesis` to
 // persistent genesis (one-shot `sui genesis -f` bootstrap; `sui start`
-// resumes from /root/.sui/sui_config on subsequent starts) so chain
-// state survives `docker stop` + `docker start` for stack-level
-// resumability.
+// resumes from /root/.sui/sui_config on subsequent starts) so chain state
+// survives `docker stop` + `docker start` for stack-level resumability.
+// `-r5` patches the generated fullnode.yaml to disable checkpoint pruning
+// (`num-epochs-to-retain: u64::MAX`) so walrus storage nodes — which
+// follow the chain sequentially via `get_full_checkpoint` — don't fall
+// off the back of the available-checkpoint window on a long-running stack.
+// `-r6` makes that retention bounded + configurable: the entrypoint reads
+// `DEVSTACK_SUI_EPOCHS_TO_RETAIN` (default `2` ≈ 48–72h on a default-24h
+// epoch, set via the plugin's `epochsToRetain` option) and rewrites both
+// `num-epochs-to-retain` + `num-epochs-to-retain-for-checkpoints` on every
+// start, so changing the option takes effect without dropping the stack.
 //
 // Dockerfile + entrypoint live alongside this file under
 // `packages/devstack/src/plugins/sui/`; resolved relative to this module
@@ -47,7 +55,13 @@ import {
 	startContainer,
 	stopContainer,
 } from './docker.js';
-import { probeFaucet, probeRpc, waitForFaucet, waitForRpc } from './health.js';
+import {
+	probeCheckpointRetention,
+	probeFaucet,
+	probeRpc,
+	waitForFaucet,
+	waitForRpc,
+} from './health.js';
 import { ensureFunded } from './keys.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -64,6 +78,15 @@ export interface SuiPluginOptions {
 	dockerContextDir?: string;
 	/** Override the per-account minimum balance (MIST). Default 50 SUI. */
 	minBalance?: bigint;
+	/** Number of completed epochs of checkpoint history to retain.
+	 *
+	 * `sui-localnet`'s stock fullnode.yaml ships with `0` (aggressive
+	 * pruning, ~10 min of retention) which strands walrus storage nodes
+	 * mid-sync. Default here is `2` — at the localnet's default 24h
+	 * epoch, that holds 48–72h of history, enough for a multi-day dev
+	 * session. Pass `'MAX'` to disable pruning entirely. Pass any other
+	 * number to override (e.g. `1` for a tighter ~24h window). */
+	epochsToRetain?: number | 'MAX';
 }
 
 export const SUI_DEFAULT_VERSION = 'devnet-v1.71.0';
@@ -93,7 +116,8 @@ export const sui = (opts: SuiPluginOptions = {}) => {
 	const rpcPort = opts.rpcPort ?? 9000;
 	const faucetPort = opts.faucetPort ?? 9123;
 	const contextDir = opts.dockerContextDir ?? DEFAULT_DOCKER_CONTEXT;
-	const imageTag = `dev-examples/sui-localnet:${version}-r4`;
+	const imageTag = `dev-examples/sui-localnet:${version}-r6`;
+	const epochsToRetain = opts.epochsToRetain ?? 2;
 	const minBalance = opts.minBalance;
 
 	return definePlugin({
@@ -148,6 +172,20 @@ export const sui = (opts: SuiPluginOptions = {}) => {
 					const rpcUrl = `http://127.0.0.1:${rpcPort}`;
 					const probe = await probeRpc(rpcUrl, 1500);
 					if (!probe.ok) return { ok: false, detail: `RPC: ${probe.detail ?? 'unreachable'}` };
+					// Pruning guard. The devstack-managed image's entrypoint disables
+					// checkpoint pruning so walrus storage nodes (which sequentially
+					// follow the chain via `get_full_checkpoint`) don't fall off the
+					// back of the available-checkpoint window. If a custom image or
+					// hand-edited fullnode.yaml re-enables pruning, walrus uploads
+					// silently break with `400 Bad Request` after a few minutes —
+					// fail this status loudly instead.
+					const retain = await probeCheckpointRetention(rpcUrl, 1500);
+					if (!retain.ok) {
+						return {
+							ok: false,
+							detail: `checkpoint pruning active (${retain.detail ?? 'unknown'}) — walrus will get stuck`,
+						};
+					}
 					// Re-register services on warm path so the registry is populated
 					// even when the action skips its run.
 					registerServices(ctx, rpcPort, faucetPort);
@@ -207,7 +245,10 @@ export const sui = (opts: SuiPluginOptions = {}) => {
 								// faucet + exchange via the matching sui binary.
 								`${suiBinVolumeName(ctx.appName, ctx.stack)}:/sui-bin`,
 							],
-							env: { RUST_LOG: 'info,sui=info,sui_node=info' },
+							env: {
+								RUST_LOG: 'info,sui=info,sui_node=info',
+								DEVSTACK_SUI_EPOCHS_TO_RETAIN: String(epochsToRetain),
+							},
 							labels: devstackContainerLabels({
 								appName: ctx.appName,
 								stack: ctx.stack,
