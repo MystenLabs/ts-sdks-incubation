@@ -1,46 +1,46 @@
 // Sui localnet plugin. Owns three actions:
 //
-//   sui.build     — Build the `dev-examples/sui-localnet:<version>-r2` image
-//                   from the in-tree Dockerfile. Skip when the tag already
-//                   exists in the local Docker daemon.
-//   sui.localnet  — Run the container detached, wait for JSON-RPC to come
-//                   up, register `sui-rpc` / `sui-faucet` / `sui-grpc`
-//                   services in the registry. Skip when the named container
-//                   is already running and healthy (containers persist
-//                   across `up` invocations by design — §9.4).
+//   sui.build     — Build the `dev-examples/sui-localnet:<version>-r7` image
+//                   from the in-tree Dockerfile (multi-arch via the host's
+//                   docker buildx). Skip when the tag already exists in the
+//                   local Docker daemon.
+//   sui.localnet  — Run the container detached, wait for JSON-RPC + faucet,
+//                   register `sui-rpc` / `sui-faucet` / `sui-grpc` services
+//                   in the registry. Skip when the named container is
+//                   already running and healthy.
 //   sui.accounts  — For each name in `ctx.accounts.names()`: pull the
 //                   resolver-materialized `Signer` (localnet path:
 //                   `generatedKeypair()` loads-or-creates the on-disk key
 //                   under `<appDir>/.devstack/stacks/<stack>/.keys/`),
-//                   fund the address via the faucet if below `minBalance`,
+//                   fund the address via the faucet if below `minBalance`
+//                   (with retry/backoff for the cold-genesis race),
 //                   register in the `accounts` kind. Skip when every
 //                   account is already at-or-above `minBalance`.
 //
-// The `-rN` image-tag suffix is bumped manually when the Dockerfile or
-// entrypoint changes meaningfully so existing local images get rebuilt on
-// next `devstack up`. `-r4` switched from ephemeral `--force-regenesis` to
-// persistent genesis (one-shot `sui genesis -f` bootstrap; `sui start`
-// resumes from /root/.sui/sui_config on subsequent starts) so chain state
-// survives `docker stop` + `docker start` for stack-level resumability.
-// `-r5` patches the generated fullnode.yaml to disable checkpoint pruning
-// (`num-epochs-to-retain: u64::MAX`) so walrus storage nodes — which
-// follow the chain sequentially via `get_full_checkpoint` — don't fall
-// off the back of the available-checkpoint window on a long-running stack.
-// `-r6` makes that retention bounded + configurable: the entrypoint reads
-// `DEVSTACK_SUI_EPOCHS_TO_RETAIN` (default `2` ≈ 48–72h on a default-24h
-// epoch, set via the plugin's `epochsToRetain` option) and rewrites both
-// `num-epochs-to-retain` + `num-epochs-to-retain-for-checkpoints` on every
-// start, so changing the option takes effect without dropping the stack.
-// `-r7` drops the sui-bin shared volume export. Chain state lives in
-// the container's writable layer (no `:/root/.sui` volume mount) — `docker
-// stop` + `docker start` preserves it, `docker rm` destroys it (matches
-// the rest of the stack: state is disposable, snapshotted via `docker
-// commit`). The walrus image now bakes its own sui binary at build time
-// so storage nodes don't need the cross-container volume mount either.
+// State model: chain state (RocksDB at /root/.sui) lives in the
+// container's writable layer. `docker stop` + `docker start` preserves
+// it; `docker rm` destroys it. Snapshots capture state via `docker
+// commit` driven by the `devstack.snapshot.*` labels this plugin
+// emits on its container. No named volumes; the walrus plugin bakes
+// its own sui binary at image-build time rather than mounting one
+// from this container.
+//
+// Image tag: `dev-examples/sui-localnet:<version>-r7`. The `-rN`
+// suffix is bumped manually when the Dockerfile or entrypoint
+// changes meaningfully so existing local images get rebuilt on next
+// `devstack up`. The current `-r7` entrypoint:
+//   - bootstraps genesis once (`sui genesis -f`) into the writable
+//     layer, then resumes via `sui start` on subsequent starts.
+//   - reads `DEVSTACK_SUI_EPOCHS_TO_RETAIN` (default 2 ≈ 48–72h on
+//     the localnet's default 24h epoch) and rewrites
+//     `num-epochs-to-retain` + `num-epochs-to-retain-for-checkpoints`
+//     on every start — keeps walrus storage nodes from falling off
+//     the back of the available-checkpoint window without disabling
+//     pruning entirely.
 //
 // Dockerfile + entrypoint live alongside this file under
-// `packages/devstack/src/plugins/sui/`; resolved relative to this module
-// via import.meta.url.
+// `packages/devstack/src/plugins/sui/`; resolved relative to this
+// module via import.meta.url.
 
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';

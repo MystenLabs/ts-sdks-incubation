@@ -134,8 +134,10 @@ export interface CaptureOptions {
  * commit/quiesce policy, quiesce per the policy, `docker commit` (when
  * commit=true), then restart. Copies `<stackDir>` into the bundle.
  *
- * Per-container defaults when labels are absent (e.g., legacy containers
- * created before PR 4): commit=true, quiesce='stop'. */
+ * Per-container defaults when labels are absent: commit=true,
+ * quiesce='stop'. Plugin authors override via `containerService.snapshot`
+ * (e.g., `commit: false` for stateless containers like seal/walrus.proxy
+ * or `quiesce: 'pause'` for sui's RocksDB). */
 export async function captureSnapshot(opts: CaptureOptions): Promise<SnapshotEntry> {
 	const containerNames = opts.containerNames ?? (await listStackContainers(opts.appName, opts.stack));
 	if (containerNames.length === 0) {

@@ -1,27 +1,32 @@
-// `devstack stack` — manage per-app named environments. Each stack maps to
-// an isolated set of docker containers/networks/volumes (named with the
-// stack as a suffix) and a host-side state dir at
-// `<appDir>/.devstack/stacks/<stack>/`.
+// `devstack stack` — manage per-app named environments. Each stack maps
+// to an isolated set of docker containers + a docker network + a host-
+// side state dir at `<appDir>/.devstack/stacks/<stack>/`. State lives
+// either in the container's writable layer (chain ledger, blob store)
+// or in the host dir (manifest, keys, ports.json, setup markers); no
+// named volumes.
 //
-// Subcommands (all per-app, resolve config from ./devstack.config.ts unless
-// --config points elsewhere):
+// Subcommands (all per-app, resolve config from ./devstack.config.ts
+// unless --config points elsewhere):
 //
 //   list                    Show all stacks, mark active, show running.
 //   new <name>              Create an empty stack dir. Does not switch.
 //   use <name>              Switch active. Stops the previously-active
-//                           stack's containers (volumes preserved); does
-//                           not bring the new one up — run `localnet:up`.
-//   down [<name>]           Stop the stack's containers (volumes AND
-//                           containers preserved → resumable on next
-//                           `up`). Defaults to active stack. Use `drop`
-//                           to remove containers + volumes.
-//   drop <name> [--yes]     Stop+remove containers AND volumes AND the
-//                           host-side `stacks/<name>/` dir. Refuses on
-//                           `main` and on the active stack.
+//                           stack's containers (writable layer
+//                           preserved); does not bring the new one up
+//                           — run `devstack up`.
+//   down [<name>]           Stop the stack's containers (writable layer
+//                           preserved → resumable on next `up`). Defaults
+//                           to active stack. Use `drop` to delete
+//                           containers + host state entirely.
+//   drop <name> [--yes]     Stop+remove containers, remove the network,
+//                           and delete the host-side `stacks/<name>/`
+//                           dir. Refuses on `main` and on the active
+//                           stack unless --force.
 //
-// Stack switches don't copy chain state. Each stack is self-contained; a
-// dormant stack's data sits in named docker volumes (`<app>-<stack>-...`)
-// until `drop` is called.
+// Stack switches don't copy chain state. Each stack is self-contained;
+// a dormant stack's chain ledger sits in its container's writable
+// layer (preserved across `docker stop`/`docker start`) until `drop`
+// removes the container.
 
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -46,7 +51,7 @@ export interface StackFlags {
 	 * guard. Used by the top-level `devstack reset` shortcut, where the
 	 * intent is "wipe state for the active stack and start over". */
 	force?: boolean;
-	/** When true, `drop` lists the containers/volumes/host dir it would
+	/** When true, `drop` lists the containers + host dir it would
 	 * remove and exits without modifying anything. Pairs with the active-
 	 * stack guard so users can confirm what `drop` is about to do. */
 	dryRun?: boolean;
@@ -189,7 +194,7 @@ async function useStack(opts: { appName: string; appDir: string; name: string })
 async function downStack(opts: { appName: string; appDir: string; name: string }): Promise<number> {
 	await stopStackContainers({ appName: opts.appName, stack: opts.name });
 	process.stdout.write(
-		`stopped containers for stack '${opts.name}' (containers + volumes preserved → resumable on next \`localnet:up\`)\n`,
+		`stopped containers for stack '${opts.name}' (writable layer preserved → resumable on next \`devstack up\`)\n`,
 	);
 	return 0;
 }
@@ -215,7 +220,6 @@ async function dropStack(opts: {
 		return 1;
 	}
 	const containerNames = await stackContainerNames(opts.appName, opts.name);
-	const volumeNames = await stackVolumeNames({ appName: opts.appName, stack: opts.name });
 	const dir = stackDir(opts.appDir, opts.name);
 	const dirExists = existsSync(dir);
 	if (opts.dryRun) {
@@ -223,23 +227,19 @@ async function dropStack(opts: {
 		process.stdout.write(
 			`  containers (${containerNames.length}): ${containerNames.join(', ') || '(none)'}\n`,
 		);
-		process.stdout.write(
-			`  volumes (${volumeNames.length}): ${volumeNames.join(', ') || '(none)'}\n`,
-		);
 		process.stdout.write(`  host dir: ${dirExists ? dir : '(none)'}\n`);
 		process.stdout.write('  Re-run without --dry-run + with --yes to actually drop.\n');
 		return 0;
 	}
 	if (!opts.yes) {
 		process.stderr.write(
-			`drop will remove docker volumes AND host state for stack '${opts.name}'. ` +
+			`drop will remove containers AND host state for stack '${opts.name}'. ` +
 				`Use \`devstack stack drop ${opts.name} --dry-run\` to see exactly what would be deleted, ` +
 				`then re-run with --yes to confirm.\n`,
 		);
 		return 1;
 	}
 	await removeStackContainers({ appName: opts.appName, stack: opts.name });
-	await removeStackVolumes({ appName: opts.appName, stack: opts.name });
 	await removeNetwork(`${opts.appName}-${opts.name}-net`).catch(() => undefined);
 	if (dirExists) rmSync(dir, { recursive: true, force: true });
 	process.stdout.write(`dropped stack '${opts.name}'\n`);
@@ -281,62 +281,12 @@ async function stopStackContainers(opts: { appName: string; stack: string }): Pr
 }
 
 /** Stop AND remove containers. Used by `drop`, where we're tearing the
- * stack down for good and the volumes are about to be deleted too. */
+ * stack down for good — host state dir gets deleted next. */
 async function removeStackContainers(opts: { appName: string; stack: string }): Promise<void> {
 	const names = await stackContainerNames(opts.appName, opts.stack);
 	for (const name of names) {
 		await stopContainer(name).catch(() => undefined);
 		await removeContainer(name).catch(() => undefined);
-	}
-}
-
-/** List a stack's named volumes by `devstack.app` + `devstack.stack`
- * labels. Falls back to name-prefix matching for legacy volumes that
- * predate label assignment (created before docker.ts started labeling
- * volumes at run time). */
-async function stackVolumeNames(opts: {
-	appName: string;
-	stack: string;
-}): Promise<string[]> {
-	const labeled = await dockerRun({
-		command: [
-			'volume',
-			'ls',
-			'--format',
-			'{{.Name}}',
-			'--filter',
-			`label=devstack.app=${opts.appName}`,
-			'--filter',
-			`label=devstack.stack=${opts.stack}`,
-		],
-	});
-	const fromLabel = labeled.code === 0
-		? labeled.stdout
-				.split('\n')
-				.map((s) => s.trim())
-				.filter((s) => s.length > 0)
-		: [];
-	// Legacy fallback: anything that prefix-matches and isn't already in
-	// the labeled set. Older devstack versions created volumes without
-	// labels; this lets `stack drop` clean them up the first time.
-	const prefix = `${opts.appName}-${opts.stack}-`;
-	const byName = await dockerRun({
-		command: ['volume', 'ls', '--format', '{{.Name}}', '--filter', `name=${prefix}`],
-	});
-	const fromPrefix = byName.code === 0
-		? byName.stdout
-				.split('\n')
-				.map((s) => s.trim())
-				.filter((s) => s.length > 0 && s.startsWith(prefix))
-		: [];
-	const set = new Set([...fromLabel, ...fromPrefix]);
-	return [...set];
-}
-
-async function removeStackVolumes(opts: { appName: string; stack: string }): Promise<void> {
-	const names = await stackVolumeNames(opts);
-	for (const name of names) {
-		await dockerRun({ command: ['volume', 'rm', '-f', name] }).catch(() => undefined);
 	}
 }
 
