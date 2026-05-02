@@ -1,23 +1,18 @@
 #!/bin/sh
 # Devstack-managed sui-localnet entrypoint.
 #
-# Walrus's local testbed expects a sibling sui-localnet container that
-# shares its `sui` binary via a Docker volume mounted at /sui-bin. When
-# walrus is in the compose, devstack attaches that volume here; otherwise
-# the directory either doesn't exist or isn't writable, and we no-op.
-#
 # Persistence: `sui start --force-regenesis` runs an ephemeral network
 # (in-memory genesis). To preserve chain state across `docker stop` +
 # `docker start`, we bootstrap once with `sui genesis -f --with-faucet`
 # (writes a persistent config dir to /root/.sui/sui_config) and then run
 # `sui start` (no --force-regenesis), which resumes from the on-disk
-# state. The named volume mounted at /root/.sui carries the chain
-# forward.
+# state. As of `-r7` chain state lives in the container's writable layer
+# (no `:/root/.sui` volume) — `docker stop` + `docker start` preserves
+# it; `docker rm` destroys it. Snapshots capture state via `docker commit`.
+#
+# The walrus image bakes its own sui binary at build time; this entrypoint
+# no longer publishes a copy of `sui` to a shared `/sui-bin` volume.
 set -eu
-
-if [ -d /sui-bin ] && [ -w /sui-bin ]; then
-	cp -f /usr/local/bin/sui /sui-bin/sui
-fi
 
 mkdir -p /root/.sui
 
