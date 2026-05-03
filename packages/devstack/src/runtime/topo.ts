@@ -65,6 +65,15 @@ export function topoSortActions(actions: Action[], options: TopoSortOptions = {}
 	// Resolve each action's `needs`, splitting capability queries off:
 	// `:before` queries fold into resolved deps; `:after` queries are
 	// stashed for inverse-edge synthesis below.
+	//
+	// `cap:before` and `cap:after` queries with no matching provider are
+	// silently dropped. This is intentional for the "optional ordering"
+	// pattern (e.g. sui plugin's `walrus.app-network:before` orders sui
+	// after walrus IF walrus is loaded; sui-only stacks just skip the
+	// edge). The trade-off: a typo in a capability name (`localnett:
+	// before`) is invisible at topo time. A namespacing convention
+	// (`<plugin>.<cap>`) plus type-checked provider declarations is the
+	// real defense.
 	const resolvedNeeds = new Map<string, string[]>();
 	const afterQueries = new Map<string, string[]>();
 	for (const a of actions) {
