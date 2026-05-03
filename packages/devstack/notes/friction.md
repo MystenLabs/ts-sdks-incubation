@@ -18,10 +18,20 @@ upstream issue; only `private-content` end-to-end blob upload is
 affected (Seal works without walrus storage nodes; the upload path
 needs them). Other walrus-using flows are blocked.
 
-**Fix shape**: bump `WALRUS_REV` in `plugins/walrus/build.ts:32`
-to a rev past the axum-server 0.8.0 dep. `WRAPPER_REV` r3 → r4 to
-invalidate the local image cache. Tracked as PR 37 in
-`round-3-plan.md`.
+**Fix shape (deferred — no upstream fix in flight)**:
+`MystenLabs/walrus@main` HEAD (5/01) has no axum/TLS/panic-related
+commits in the last ~100; the v1.49.0 bump is just a version
+string. Speculative `WALRUS_REV` bump would risk a 10-minute
+rebuild for no fix. Re-evaluate on next walrus release tag, or
+report upstream with the `JoinError::Cancelled(Id(349))` stack
+trace + this localnet repro:
+
+  cd examples/private-content && pnpm devstack apply
+  docker logs private-content-main-walrus-node-0 | grep tls_rustls
+
+Workaround: the only consumer is `private-content`'s blob-upload
+e2e. Other walrus-using flows (read-only, KeyServer registration,
+deploy outputs) work fine.
 
 ## Closed (chronological, one line each)
 

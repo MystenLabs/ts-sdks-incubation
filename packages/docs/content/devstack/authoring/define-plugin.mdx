@@ -9,6 +9,10 @@ plugin. Reach for `definePlugin` only when authoring a **reusable plugin** that 
 across multiple apps (the built-in `sui()`, `walrus()`, `seal()`, `imports()` plugins are the
 canonical examples; third-party plugins follow the same shape).
 
+This page is the API reference. For a from-scratch walkthrough that builds a hypothetical
+`walrusBridge()` plugin end-to-end, see
+[Authoring a plugin](/devstack/authoring/plugin-authoring).
+
 ```ts
 import { definePlugin, definePublishAction, seed } from '@mysten-incubation/devstack';
 

@@ -1,0 +1,324 @@
+---
+title: Authoring a plugin
+description: A worked walkthrough for building a typed declarative plugin from scratch.
+---
+
+You're authoring a reusable plugin — instantiated across multiple
+apps, like the built-in `sui()` / `walrus()` / `seal()` /
+`deepbook()`. For app-specific actions (one-off Move publishes,
+fixture mints), use the [`setup:` field](/devstack/concepts/setup)
+instead.
+
+This page walks through building a hypothetical `walrusBridge()`
+plugin — a one-Service-one-Register-one-Seed plugin that wraps an
+imaginary "walrus blob bridge" service. The shape generalizes to
+any plugin you'd write.
+
+## Sketch
+
+```ts
+import { walrusBridge } from '@my-org/devstack-walrus-bridge';
+
+defineDevstackConfig({
+  app: 'my-app',
+  plugins: [
+    sui(),
+    walrus(),
+    walrusBridge({ rev: 'v0.3.1', admin: 'publisher' }),
+    // ...
+  ],
+  accounts: { publisher: {} },
+});
+```
+
+The plugin contributes three actions:
+
+| Action | Kind | Purpose |
+| ------ | ---- | ------- |
+| `walrus-bridge.image` | Build | Fetch + build the bridge container image |
+| `walrus-bridge.serve` | Service | Run the long-lived bridge container |
+| `walrus-bridge.register` | Register | Probe the bridge's `/health`, register its URL into `manifest.registry.services` |
+
+## Pick the action types
+
+Action types map to lifecycle:
+
+- **Build** — produce a docker image / artifact. Idempotent on
+  `imageExists`.
+- **Service** — long-running docker container. State lives in the
+  writable layer; survives `docker stop` + restart.
+- **HostProcess** — in-process child (vite, wallet-server's HTTP
+  listener). Lifecycle bound to the supervisor process.
+- **Publish** — Move package publish.
+- **Register** — anything that produces a registry entry without
+  fitting the above (e.g. parse deploy outputs into the registry).
+- **Seed** — post-publish state seeding (mint balances, place
+  orders).
+- **Emit** — side-effecting outputs derived from the registry
+  (codegen, manifest writes).
+- **Verify** — read-only invariant check.
+
+For walrus-bridge: a docker image (Build) + a long-running container
+(Service) + a one-shot endpoint registration (Register). No Move
+publish needed.
+
+## Skeleton
+
+```ts
+import {
+  buildImage,
+  containerService,
+  definePlugin,
+  register,
+  type Action,
+  type RegistryQuery,
+  requireLocalnetCtx,
+} from '@mysten-incubation/devstack';
+
+const DEFAULT_REV = 'v0.3.1';
+
+export interface WalrusBridgeNamespace {
+  endpoints: RegistryQuery<{ name: string; url: string }>;
+}
+
+export interface WalrusBridgePluginOptions {
+  rev?: string;
+  admin?: string;
+}
+
+export const walrusBridge = (opts: WalrusBridgePluginOptions = {}) => {
+  const rev = opts.rev ?? DEFAULT_REV;
+  const admin = opts.admin ?? 'publisher';
+  const imageTag = `dev-examples/walrus-bridge:${rev}`;
+
+  return definePlugin({
+    name: 'walrus-bridge',
+    // Folded into the snapshot id (concepts/snapshots). Bumping `rev`
+    // re-fetches the image; bumping `admin` doesn't affect on-chain
+    // state but is captured for completeness.
+    inputs: { rev, admin },
+    actions: () => {
+      const actions: Action[] = [];
+
+      actions.push(
+        buildImage({
+          name: 'image',
+          inputs: { image: imageTag, rev },
+          getStatus: async () =>
+            (await imageExists(imageTag))
+              ? { ok: true, detail: imageTag }
+              : { ok: false, detail: `image ${imageTag} missing` },
+          run: async () => {
+            await ensureWalrusBridgeImage({ rev });
+          },
+        }),
+      );
+
+      actions.push(
+        containerService({
+          name: 'serve',
+          needs: ['image', 'walrus.register'],
+          inputs: { image: imageTag, rev },
+          containerName: (ctx) => `${ctx.appName}-${ctx.stack}-walrus-bridge`,
+          // Stateless service — no commit; just docker run with the
+          // walrus testbed env wired in.
+          snapshot: { commit: false, quiesce: 'none' },
+          spec: (ctx) => ({
+            name: '',
+            image: imageTag,
+            network: appNetworkName(ctx.appName, ctx.stack),
+            ports: [{ host: 8080, container: 8080 }],
+            env: {
+              WALRUS_NODES: ctx.registry
+                .ns<WalrusNamespace>('walrus')
+                .nodes.list()
+                .map((n) => n.hostApiUrl)
+                .join(','),
+            },
+            // ...
+          }),
+        }),
+      );
+
+      actions.push(
+        register({
+          name: 'register',
+          needs: ['serve'],
+          inputs: { rev },
+          // Republish the cached entry on warm-path skips so codegen-
+          // style cascades downstream see a dirty bit (concepts/actions).
+          provides: {
+            registry: (ctx) => republishCachedEndpoint(ctx),
+          },
+          getStatus: async (ctx) => {
+            const cached = ctx.registry
+              .ns<WalrusBridgeNamespace>('walrus-bridge')
+              .endpoints.find('default');
+            if (cached === undefined) return { ok: false, detail: 'no cached endpoint' };
+            const reachable = await probeUrl(`${cached.url}/health`);
+            return reachable
+              ? { ok: true, detail: cached.url }
+              : { ok: false, detail: `${cached.url} not reachable` };
+          },
+          run: async (ctx) => {
+            requireLocalnetCtx(ctx);
+            const url = `http://localhost:8080`;
+            await waitForReachable(`${url}/health`, 30_000);
+            ctx.registry.ns<WalrusBridgeNamespace>('walrus-bridge').endpoints.register({
+              name: 'default',
+              url,
+            });
+          },
+        }),
+      );
+
+      return actions;
+    },
+  });
+};
+```
+
+## getStatus principles
+
+- **Probe content, not metadata.** Don't return ok=true just
+  because the container exists — query the actual state (chain
+  object present, file readable + parseable, URL reachable). This
+  is what makes plugins compose with snapshot restore: the
+  restored state passes the probe, the action skips, no
+  re-execution.
+- **Cheap probes**, called on every cycle. RPC calls are fine;
+  `docker exec` round-trips are too slow.
+- **`detail` strings appear in the renderer + JSON output.** Make
+  them informative: `"pool sui_usdc not on chain"` beats `"not
+  ready"`.
+
+See [`get-status.mdx`](/devstack/authoring/get-status) for more.
+
+## Cross-plugin ordering: `provides` + capability queries
+
+The walrus.register action above needs to run before walrus-bridge
+because it populates `walrus.nodes` which the bridge reads. We
+encode this with `needs: ['walrus.register']` (a fully-qualified
+cross-plugin reference).
+
+For the inverse — "I want to provide an extension point for other
+plugins to order around me" — declare a capability:
+
+```ts
+provides: { capabilities: ['walrus-bridge.api'] },
+```
+
+Other plugins can then `needs: ['walrus-bridge.api:before']`
+(should run before me) or `:after` (should run after me).
+Capabilities must be namespaced under the providing plugin's name
+(`walrus-bridge.api`, not `api`).
+
+## Same-signer serialization: `runsAs`
+
+Any action whose `run:` callback signs a transaction should set
+`runsAs:` to the account name:
+
+```ts
+runsAs: opts.admin,                    // for plugin-author-controlled signers
+runsAs: 'publisher',                   // for default signers
+```
+
+The reconciler runs at most one inflight action per `runsAs` value
+so two same-signer txs don't equivocate on the gas object. See
+[Same-signer serialization](/devstack/concepts/actions#same-signer-serialization).
+
+The built-in `publish` / `publishMove` / `runTransaction` factories
+thread their `publisher` / `signer` field onto `runsAs`
+automatically. Raw `seed()` / `register()` / `hostProcess()` need
+the explicit declaration.
+
+Note: with address-balance gas funding (default since PR 33), most
+parallel txs from the same account no longer collide on gas — the
+SDK auto-picks `payment: []` mode. `runsAs` still matters for txs
+that explicitly use `tx.gas` or for non-SUI gas paths.
+
+## Registry namespace
+
+Per-plugin registry entries live under
+`registry.ns<MyNamespace>('my-plugin')`. The namespace shape is a
+plain TS interface mapping kind names to `RegistryQuery<T>`:
+
+```ts
+interface WalrusBridgeNamespace {
+  endpoints: RegistryQuery<{ name: string; url: string }>;
+}
+
+const ns = ctx.registry.ns<WalrusBridgeNamespace>('walrus-bridge');
+ns.endpoints.register({ name: 'default', url: 'http://localhost:8080' });
+const cached = ns.endpoints.find('default');
+const all = ns.endpoints.list();
+```
+
+The namespace key (`'walrus-bridge'`) becomes a top-level field in
+`manifest.registry.walrus-bridge.endpoints`. Hydration on warm
+supervisor restart populates it from the manifest before any
+action runs.
+
+**Convention**: export a named accessor so callers don't have to
+remember the type:
+
+```ts
+export const walrusBridgeNs = (registry: Registry): WalrusBridgeNamespace =>
+  registry.ns<WalrusBridgeNamespace>('walrus-bridge');
+```
+
+## Snapshot meta
+
+Every container service declares whether its writable layer should
+be captured on `devstack snapshot save`:
+
+| Service | snapshot | Reason |
+| ------- | -------- | ------ |
+| sui.localnet | `{ commit: true, quiesce: 'pause' }` | RocksDB single-writer; cgroup freezer is safe |
+| walrus.node-N | `{ commit: true, quiesce: 'stop' }` | Batched writes; needs SIGTERM flush |
+| walrus.proxy | `{ commit: false, quiesce: 'none' }` | Stateless nginx |
+| walrus-bridge.serve | `{ commit: false, quiesce: 'none' }` | Stateless |
+
+See [Snapshot meta on plugins](/devstack/plugins/sui#snapshot-meta).
+
+## Surfacing helper functions
+
+If your plugin includes app-side tx-builders (like deepbook's
+`buildDeepbookSwapTx`), export them from your plugin's barrel so
+apps don't reach into deep internal paths:
+
+```ts
+// packages/walrus-bridge/src/index.ts
+export { walrusBridge, walrusBridgeNs } from './plugin.js';
+export { buildBridgeUploadTx, type BuildBridgeUploadTxOptions } from './tx.js';
+export type { WalrusBridgeNamespace, WalrusBridgePluginOptions } from './plugin.js';
+```
+
+Apps then `import { buildBridgeUploadTx } from '@my-org/devstack-
+walrus-bridge'` and `tx.add(buildBridgeUploadTx(...))` to splice
+into their own transactions.
+
+## Test it
+
+Plugins should ship at least one consumer example app that
+exercises every action they contribute. The four built-in example
+apps under `examples/` are the reference:
+
+- `examples/wallet/` — exercises `deepbook()` end-to-end.
+- `examples/private-content/` — exercises `walrus()` + `seal()`.
+
+For your plugin: `examples/<my-app>/devstack.config.ts` plus an
+e2e spec that asserts the registry namespace + service URL surface
+correctly through the manifest. See
+[Playwright adapter](/devstack/adapters/playwright).
+
+## See also
+
+- [Action types](/devstack/concepts/actions) — the full list +
+  edges + status states.
+- [Plugins concept](/devstack/concepts/plugins) — registry
+  namespacing, the `provides`/`needs` graph.
+- [`definePlugin` reference](/devstack/authoring/define-plugin) —
+  exact API surface.
+- [`get-status` patterns](/devstack/authoring/get-status) — when
+  warm-path skip works and when it doesn't.
