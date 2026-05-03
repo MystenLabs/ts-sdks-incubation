@@ -237,18 +237,21 @@ to land while the maker's tick was unresolved:
 Reproduced twice on cold e2e runs (test 4 = `alice sends 0.5 SUI
 to bob`).
 
-**Closed by PR 31**: dedicate a `mm` account in the wallet config;
-maker uses `signer: 'mm'`. seedTokens distribution adds an `mm`
-share so the maker has inventory.
+**Closed by PR 31** (interim) → **fully closed by PR 33+34**: PR 31
+dedicated a `mm` account as a workaround. PR 33 funded every
+account's address-balance accumulator (`fundsInAddressBalance`) on
+`sui.accounts`; PR 34 migrated `tx.splitCoins(tx.gas, ...)` →
+`tx.coin({ useGasCoin: false })` so build helpers don't reference
+the gas coin. With AB funded, the SDK's default gas-payer logic
+(`@mysten/sui` core-resolver) automatically picks
+`payment: []` + AB-mode for any tx whose dependencies don't
+reference `tx.gas`. Two concurrent txs from the same account no
+longer share a versioned input → no equivocation.
 
-The reconciler's `runsAs` constraint serialized action-to-action
-same-signer races (closed by PR 17). This was a NEW shape: action-
-to-browser-tx race. The framework can't know about browser txs that
-go through wallet-server's HTTP endpoint. The right architectural
-fix is a per-account mutex inside the keypair, scoped to the entire
-supervisor process — but that's a bigger lift. For now the
-ergonomic answer is "use a dedicated maker account so its 10s
-schedule doesn't collide with user-side txs".
+Verified: the wallet's market maker is back to `signer: 'alice'`
+(same account that drives user-side UI txs); two cold-stack e2e
+runs in a row pass 7/7. The `mm` workaround dropped from the
+wallet config.
 
 ## 2026-05-02 — Walrus 1.48.0 storage nodes panic on TLS startup
 

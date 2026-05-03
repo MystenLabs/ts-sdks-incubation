@@ -24,19 +24,17 @@ const USDC_DIR = resolve(HERE, 'move/mock_usdc');
 const WETH_DIR = resolve(HERE, 'move/mock_weth');
 
 // Initial token distributions (raw units, accounting for decimals).
-// `mm` (market-maker) gets a healthy share so its grid-replace ticks
-// have inventory to deposit + post; alice/bob/carol drive the UI.
+// alice gets a healthy share since she's also the deepbook market-
+// maker and needs inventory to seed + replenish her grid.
 const USDC_DISTRIBUTION: ReadonlyArray<{ recipient: string; amount: bigint }> = [
-	{ recipient: 'alice', amount: 25_000_000_000n }, // 25,000 USDC (6 dec)
+	{ recipient: 'alice', amount: 75_000_000_000n }, // 75,000 USDC (6 dec)
 	{ recipient: 'bob', amount: 10_000_000_000n }, // 10,000 USDC
 	{ recipient: 'carol', amount: 5_000_000_000n }, // 5,000 USDC
-	{ recipient: 'mm', amount: 50_000_000_000n }, // 50,000 USDC for the maker
 ];
 const WETH_DISTRIBUTION: ReadonlyArray<{ recipient: string; amount: bigint }> = [
-	{ recipient: 'alice', amount: 1_000_000_000n }, // 10 WETH (8 dec)
+	{ recipient: 'alice', amount: 6_000_000_000n }, // 60 WETH (8 dec)
 	{ recipient: 'bob', amount: 500_000_000n }, // 5 WETH
 	{ recipient: 'carol', amount: 200_000_000n }, // 2 WETH
-	{ recipient: 'mm', amount: 5_000_000_000n }, // 50 WETH for the maker
 ];
 
 // Pool specs flow into the deepbook() plugin's `pools:` field. The
@@ -70,13 +68,6 @@ export default defineDevstackConfig({
 		alice: {},
 		bob: {},
 		carol: {},
-		// Dedicated maker account so `deepbook.market-maker-mm`'s 10s
-		// refresh tick doesn't equivocate with alice's user-side txs
-		// going through dApp Kit + wallet-server. Both paths
-		// `ctx.accounts.get('alice').sign(...)` would touch alice's gas
-		// object simultaneously and Sui rejects the second one
-		// (notes/friction.md, observed via the e2e SUI-send flake).
-		mm: {},
 	},
 	plugins: [
 		sui({ version: 'devnet-v1.71.0', rpcPort: 9376, faucetPort: 9765 }),
@@ -94,11 +85,11 @@ export default defineDevstackConfig({
 			// the chain to known state but doesn't start a daemon.
 			marketMakers: [
 				{
-					name: 'mm',
-					signer: 'mm',
+					name: 'alice',
+					signer: 'alice',
 					pools: ['sui_usdc', 'sui_weth'],
-					// mm needs to own mUSDC + mWETH before the maker can
-					// deposit them into its BM. seedTokens mints those coins.
+					// alice needs to own mUSDC + mWETH before the maker can
+					// deposit them into the BM. seedTokens mints those coins.
 					needs: ['wallet-setup.seedTokens'],
 					midPrices: {
 						sui_usdc: 3_500_000n, // 3.5 mUSDC per SUI (6-dec quote)
