@@ -22,7 +22,7 @@ import {
 	type RegistryQuery,
 	requireLocalnetCtx,
 } from '../../core/types.js';
-import { createLocalSuiClient } from '../../helpers/sui-client.js';
+import { openSuiRpcClient } from '../../helpers/sui-client.js';
 import { seed } from '../../actions/seed.js';
 import { resolveCoinType } from './coin-spec.js';
 
@@ -95,10 +95,7 @@ export function deepbookPoolsAction(opts: DeepbookPoolsActionOptions) {
 			const deepbookPkg = ctx.registry.packages.find('deepbook');
 			if (deepbookPkg === undefined) return { ok: false, detail: 'deepbook not published' };
 			const ns = deepbookNs(ctx.registry);
-			const client = createLocalSuiClient(
-				ctx.registry.services.require('sui-rpc').url,
-				ctx.network,
-			);
+			const client = openSuiRpcClient(ctx);
 			for (const spec of opts.pools) {
 				const cached = ns.pools.find(spec.name);
 				if (cached === undefined) return { ok: false, detail: `pool ${spec.name} missing` };
@@ -124,10 +121,7 @@ export function deepbookPoolsAction(opts: DeepbookPoolsActionOptions) {
 				);
 			}
 			const admin = ctx.accounts.get(opts.admin);
-			const client = createLocalSuiClient(
-				ctx.registry.services.require('sui-rpc').url,
-				ctx.network,
-			);
+			const client = openSuiRpcClient(ctx);
 
 			const tx = new Transaction();
 			tx.setGasBudget(500_000_000);

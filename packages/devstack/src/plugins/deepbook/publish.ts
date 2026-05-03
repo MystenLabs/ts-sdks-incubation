@@ -12,7 +12,7 @@
 import type { ActionRunContext, PublishAction } from '../../core/types.js';
 import { requireLocalnetCtx } from '../../core/types.js';
 import { importMovePackage } from '../../helpers/imported-package.js';
-import { createLocalSuiClient } from '../../helpers/sui-client.js';
+import { openSuiRpcClient } from '../../helpers/sui-client.js';
 import { suiContainerName } from '../sui/index.js';
 import { DEEPBOOK_REPO, DEEPBOOK_SUBDIR } from './source.js';
 
@@ -37,7 +37,7 @@ export function deepbookPublishAction(opts: DeepbookPublishOptions): PublishActi
 		getStatus: async (ctx) => {
 			const prior = ctx.registry.packages.find('deepbook');
 			if (prior === undefined) return { ok: false, detail: 'no prior publish' };
-			const client = openSuiClient(ctx);
+			const client = openSuiRpcClient(ctx);
 			const chainId = await client.getChainIdentifier();
 			if (prior.chainId !== chainId) {
 				return { ok: false, detail: 'chainId differs from prior publish' };
@@ -57,7 +57,7 @@ export function deepbookPublishAction(opts: DeepbookPublishOptions): PublishActi
 		run: async (ctx) => {
 			requireLocalnetCtx(ctx);
 			const containerName = suiContainerName(ctx.appName, ctx.stack);
-			const client = openSuiClient(ctx);
+			const client = openSuiRpcClient(ctx);
 			const chainId = await client.getChainIdentifier();
 			const publisher = ctx.accounts.get(opts.admin);
 			const result = await importMovePackage({
@@ -82,11 +82,6 @@ export function deepbookPublishAction(opts: DeepbookPublishOptions): PublishActi
 			});
 		},
 	};
-}
-
-function openSuiClient(ctx: ActionRunContext) {
-	const url = ctx.registry.services.require('sui-rpc').url;
-	return createLocalSuiClient(url, ctx.network);
 }
 
 function buildPriorEntry(entry: ReturnType<ActionRunContext['registry']['packages']['find']>) {
