@@ -68,7 +68,7 @@ import {
 	waitForFaucet,
 	waitForRpc,
 } from './health.js';
-import { ensureFunded } from './keys.js';
+import { ensureAddressBalance, ensureFunded } from './keys.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_DOCKER_CONTEXT = HERE;
@@ -364,6 +364,12 @@ export const sui = (opts: SuiPluginOptions = {}) => {
 								address,
 								minBalance,
 							});
+							// getStatus performs both faucet + AB-deposit eagerly
+							// (idempotent on warm cycles). Without this step the
+							// AB accumulator stays empty for accounts the prior
+							// session already funded, and AB-gas mode (PR 35)
+							// has nothing to draw from.
+							await ensureAddressBalance({ rpcUrl, signer });
 						} catch {
 							return { ok: false, detail: `account '${name}' not ready` };
 						}
@@ -383,6 +389,10 @@ export const sui = (opts: SuiPluginOptions = {}) => {
 							address,
 							minBalance,
 						});
+						// After the faucet seeds a single coin, deposit most of
+						// it into the address-balance accumulator so AB-gas txs
+						// (PR 35) have something to draw from. Idempotent.
+						await ensureAddressBalance({ rpcUrl, signer });
 					}
 				},
 			}),
