@@ -167,3 +167,44 @@ explicit `runsAs:` for action bodies that sign via
 edges (`weth needs ['usdc']`, `seedTokens needs ['deepbook.pools']`)
 and now declares `seedTokens.runsAs = 'publisher'` — cold + warm
 apply healthy; all 7 e2e tests pass.
+
+## 2026-05-02 — Walrus subnet hardcoded at `10.0.0.0/24` blocks per-stack siblings
+
+`packages/devstack/src/plugins/walrus/index.ts:77-78`. The walrus
+plugin pins the docker network's IPAM at `10.0.0.0/24` and assigns
+storage nodes to fixed IPs `10.0.0.10–13`. Two stacks of the same
+walrus-using app (e.g. `private-content/main` + `private-content/test`,
+or two app's stacks both using walrus) try to claim the same
+`10.0.0.0/24` and the second-to-up errors with
+`docker network create … failed: invalid pool request: Pool overlaps
+with other one on this address space`. Reproduced while gathering
+e2e timings — `private-content` cold apply blocked by a leftover
+`private-content-test-net` from yesterday.
+
+Same architectural shape as the original "hardcoded ports" friction
+that the per-stack port allocator closed: the subnet is global where
+it should be per-stack.
+
+Fix shape attempted: derive a deterministic `octet` from
+`hash(appName/stack)`, place each stack on `10.<octet>.0.0/24`. The
+walrus plugin code change is small (~30 lines) and went in cleanly,
+but the upstream `MystenLabs/walrus@<rev>:docker/local-testbed/files/
+deploy-walrus.sh` script bakes the hardcoded IPs into the per-node
+YAML configs at deploy time. The storage nodes start, fail to bind
+their metrics endpoint to the now-mismatched IP (`Cannot assign
+requested address`), and panic. The fix needs either:
+
+1. Patch `deploy-walrus.sh` (sed it during `walrus.build`) to read
+   `WALRUS_NODE_IPS` env vars, then pass them through from
+   `walrus.deploy`. Same shape as the existing `RUN sed -i 's|--
+   storage-price 5|--with-wal-exchange --storage-price 5|'` patch in
+   `build.ts:78`.
+2. Or fork the upstream local-testbed scripts into the plugin and
+   maintain locally — heavier-weight; defer.
+
+Workaround for now: walrus-using apps run one stack at a time. The
+non-walrus-using apps (wallet, arena, token-studio) coexist freely
+since their docker networks land on `bridge`-default `172.x.0.0/16`
+pools that don't collide.
+
+Punch-list entry for the next walrus-image-rev cycle.
