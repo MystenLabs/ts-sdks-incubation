@@ -146,7 +146,7 @@ describe('runOneShot — actionScope', () => {
 	});
 
 	it('warns and drops scope entries that do not match any action', async () => {
-		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const warn = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
 		await runOneShot({ ...baseOpts(), actionScope: ['app.does-not-exist'] });
 		const passed = (reconcilerCycleMock.mock.calls[0]?.[0] ?? []) as { name: string }[];
 		// No matches → only Emit survives the auto-include rule.

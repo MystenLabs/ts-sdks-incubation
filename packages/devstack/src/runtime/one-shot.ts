@@ -145,6 +145,14 @@ export async function runOneShot(opts: OneShotOptions): Promise<OneShotResult> {
 		// are still in `filtered`. Drop the orphaned `needs` edges instead
 		// of throwing.
 		lenient: true,
+		// Per-action diagnostic stream → stderr. The supervisor renders
+		// these inline in its TTY panel; one-shot has no panel, so a
+		// timestamped `[<action>] <line>` per log keeps build/publish
+		// output visible to CI users. Stays on stderr so JSON output (if
+		// added later) is the only thing on stdout.
+		appendLog: (actionName, line) => {
+			process.stderr.write(`[${actionName}] ${line}\n`);
+		},
 	});
 
 	const path = opts.readOnly
@@ -190,11 +198,10 @@ function scopeActions(
 
 	const unmatched = scope.filter((n) => !byName.has(n));
 	if (unmatched.length > 0) {
-		// eslint-disable-next-line no-console
-		console.warn(
+		process.stderr.write(
 			`devstack: scopeActions has no match for [${unmatched.join(', ')}] (after the action filter). ` +
 				`Available action names: ${[...byName.keys()].join(', ')}. The cycle will run with whatever ` +
-				`scope entries DID match, plus their deps.`,
+				`scope entries DID match, plus their deps.\n`,
 		);
 	}
 
@@ -232,11 +239,10 @@ function scopeActions(
 	}
 
 	if (droppedCapabilities.size > 0) {
-		// eslint-disable-next-line no-console
-		console.warn(
+		process.stderr.write(
 			`devstack apply: scope walk dropped capability queries [${Array.from(droppedCapabilities).join(', ')}]. ` +
 				'Their providers will not be included in this cycle. If a provider is required, ' +
-				'add it explicitly to --actions.',
+				'add it explicitly to --actions.\n',
 		);
 	}
 
