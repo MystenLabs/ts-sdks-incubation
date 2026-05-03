@@ -18,10 +18,12 @@
 // exit. Reads config path + stack name from env vars set by
 // `defineDevstackPlaywrightConfig`. Exits non-zero if bring-up fails.
 
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
 import { loadConfig } from '../cli/args.js';
 import { applyTestSetupFilter } from '../cli/filters.js';
+import { stackDir } from '../runtime/active-stack.js';
 import { runOneShot } from '../runtime/one-shot.js';
 
 export default async function globalSetup(): Promise<void> {
@@ -56,4 +58,13 @@ export default async function globalSetup(): Promise<void> {
 			`devstack/playwright globalSetup: ${result.failures.size} action(s) failed:\n${summary}`,
 		);
 	}
+
+	// Drop a fresh-apply marker so the webServer's `pnpm dev` Supervisor
+	// (spawned moments later) skips the redundant non-HostProcess
+	// reconcile on its first cycle. Saves ~5s of getStatus probes per
+	// warm e2e run; supervisor consumes (deletes) the marker after
+	// reading it so only the immediate-next start benefits.
+	const markerDir = stackDir(appDir, stack);
+	mkdirSync(markerDir, { recursive: true });
+	writeFileSync(resolve(markerDir, '.last-apply-at'), `${Date.now()}\n`, 'utf8');
 }

@@ -17,7 +17,8 @@
 // container generally don't register hooks — containers persist across
 // `up` invocations by design (§9.4).
 
-import { existsSync as fsExistsSync } from 'node:fs';
+import { existsSync as fsExistsSync, readFileSync, unlinkSync } from 'node:fs';
+import { resolve as pathResolve } from 'node:path';
 import type {
 	AccountSpec,
 	AccountsContext,
@@ -30,7 +31,7 @@ import type {
 import { expandPluginActions } from '../plugin.js';
 import { RegistryImpl } from '../registry/index.js';
 import { resolveAccounts } from './accounts.js';
-import { DEFAULT_STACK, activeStackFile, writeActiveStack } from './active-stack.js';
+import { DEFAULT_STACK, activeStackFile, stackDir, writeActiveStack } from './active-stack.js';
 import { FileWatcher } from './file-watcher.js';
 import { hydrateRegistry } from './manifest-reader.js';
 import { writeManifest } from './manifest-writer.js';
@@ -126,7 +127,8 @@ export class Supervisor {
 		this.renderer.start(this.appName);
 		this.installSignalHandlers();
 		this.hydrateFromManifest();
-		await this.runCycle();
+		const fastStart = this.consumeRecentApplyMarker();
+		await this.runCycle({ hostProcessOnly: fastStart });
 		this.watcher.start();
 		this.installKeyHandlers();
 		// A pending Promise alone doesn't anchor Node's event loop; in
@@ -233,14 +235,28 @@ export class Supervisor {
 		void this.runCycle();
 	}
 
-	private async runCycle(): Promise<void> {
+	private async runCycle(opts: { hostProcessOnly?: boolean } = {}): Promise<void> {
 		if (this.cycleInFlight) {
 			this.cyclePending = true;
 			return;
 		}
 		this.cycleInFlight = true;
 		try {
-			const result = await this.reconciler.cycle(this.actions, {
+			// Fast-start path: globalSetup just ran apply, the chain is at
+			// known state. Skip the heavy non-HostProcess reconcile work
+			// (~5s of getStatus probes that would all return ok=true) and
+			// only spawn the HostProcess actions vite + wallet-server need.
+			// Subsequent cycles run the full graph.
+			const actions = opts.hostProcessOnly
+				? this.actions.filter((a) => a.type === 'HostProcess')
+				: this.actions;
+			if (opts.hostProcessOnly && actions.length > 0) {
+				this.renderer.appendLog(
+					'supervisor',
+					`fast-start: skipping ${this.actions.length - actions.length} non-HostProcess action(s) (recent apply)`,
+				);
+			}
+			const result = await this.reconciler.cycle(actions, {
 				appName: this.appName,
 				appDir: this.appDir,
 				stack: this.stack,
@@ -251,6 +267,7 @@ export class Supervisor {
 				onShutdown: (fn) => this.shutdownHooks.push(fn),
 				appendLog: (actionName, line) => this.renderer.appendLog(actionName, line),
 				progress: (snap) => this.renderer.update(snap.statuses, snap.failures),
+				lenient: opts.hostProcessOnly,
 			});
 			this.renderer.update(result.statuses, result.failures);
 			this.persistManifest();
@@ -265,6 +282,28 @@ export class Supervisor {
 					void this.runCycle();
 				});
 			}
+		}
+	}
+
+	/** When `globalSetup` (Playwright) or another sibling tool just
+	 * finished applying, it writes a fresh-apply marker into
+	 * `<stackDir>/.last-apply-at`. This supervisor's first cycle uses
+	 * that to skip the redundant reconcile of non-HostProcess actions
+	 * that the apply just verified (~5s recoverable on warm e2e).
+	 * Marker is consumed (deleted) so only the very next start
+	 * benefits — drift after that is detected normally. */
+	private consumeRecentApplyMarker(): boolean {
+		const path = pathResolve(stackDir(this.appDir, this.stack), '.last-apply-at');
+		if (!fsExistsSync(path)) return false;
+		try {
+			const at = Number(readFileSync(path, 'utf8').trim());
+			unlinkSync(path);
+			if (!Number.isFinite(at)) return false;
+			const ageMs = Date.now() - at;
+			if (ageMs < 0 || ageMs > 30_000) return false;
+			return true;
+		} catch {
+			return false;
 		}
 	}
 
