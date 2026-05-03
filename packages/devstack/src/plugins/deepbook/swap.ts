@@ -6,7 +6,7 @@
 import type { ClientWithCoreApi } from '@mysten/sui/client';
 import { Transaction, type TransactionResult } from '@mysten/sui/transactions';
 
-import { SUI_COIN_TYPE } from './coin-spec.js';
+import { splitInputCoin } from './coin-input.js';
 
 const SUI_CLOCK_OBJECT_ID = '0x6';
 
@@ -40,7 +40,14 @@ export async function buildDeepbookSwapTx(opts: BuildSwapTxOptions): Promise<Tra
 	const tx = new Transaction();
 	const inCoinType = opts.direction === 'base_to_quote' ? opts.baseCoinType : opts.quoteCoinType;
 
-	const inCoin = await splitInputCoin(tx, opts.client, opts.sender, inCoinType, opts.amountIn);
+	const inCoin = await splitInputCoin({
+		tx,
+		client: opts.client,
+		owner: opts.sender,
+		coinType: inCoinType,
+		amount: opts.amountIn,
+		errorPrefix: 'buildDeepbookSwapTx',
+	});
 	const deepCoin = tx.moveCall({
 		target: '0x2::coin::zero',
 		typeArguments: [`${opts.deepbookPackageId}::deep::DEEP`],
@@ -77,33 +84,3 @@ export async function buildDeepbookSwapTx(opts: BuildSwapTxOptions): Promise<Tra
 	return tx;
 }
 
-async function splitInputCoin(
-	tx: Transaction,
-	client: ClientWithCoreApi,
-	owner: string,
-	coinType: string,
-	amount: bigint,
-) {
-	if (coinType === SUI_COIN_TYPE) {
-		const [coin] = tx.splitCoins(tx.gas, [tx.pure.u64(amount)]);
-		if (coin === undefined) throw new Error('splitCoins(gas) returned no result');
-		return coin;
-	}
-	const { objects } = await client.core.listCoins({ owner, coinType });
-	const total = objects.reduce((acc, c) => acc + BigInt(c.balance), 0n);
-	if (total < amount) {
-		throw new Error(`buildDeepbookSwapTx: ${owner} has ${total} of ${coinType}; needs ${amount}`);
-	}
-	const [primary, ...rest] = objects;
-	if (primary === undefined) throw new Error(`buildDeepbookSwapTx: no ${coinType} coins`);
-	const primaryRef = tx.object(primary.objectId);
-	if (rest.length > 0) {
-		tx.mergeCoins(
-			primaryRef,
-			rest.map((c) => tx.object(c.objectId)),
-		);
-	}
-	const [split] = tx.splitCoins(primaryRef, [tx.pure.u64(amount)]);
-	if (split === undefined) throw new Error('splitCoins returned no result');
-	return split;
-}

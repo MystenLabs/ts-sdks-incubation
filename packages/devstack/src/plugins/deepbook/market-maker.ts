@@ -26,6 +26,7 @@ import {
 } from '../../core/types.js';
 import { hostProcess } from '../../actions/host-process.js';
 import { createLocalSuiClient, openSuiRpcClient } from '../../helpers/sui-client.js';
+import { splitInputCoin } from './coin-input.js';
 import { resolveCoinType } from './coin-spec.js';
 import { type DeepbookPoolSpec, deepbookNs } from './pools.js';
 
@@ -328,46 +329,20 @@ async function depositPreDeposits(
 	}
 
 	for (const [coinType, amount] of totalsByCoinType) {
-		const coin = await splitInputCoin(tx, client, owner, coinType, amount);
+		const coin = await splitInputCoin({
+			tx,
+			client,
+			owner,
+			coinType,
+			amount,
+			errorPrefix: 'market-maker',
+		});
 		tx.moveCall({
 			target: `${deepbookPackageId}::balance_manager::deposit`,
 			typeArguments: [coinType],
 			arguments: [bm, coin],
 		});
 	}
-}
-
-async function splitInputCoin(
-	tx: Transaction,
-	client: ReturnType<typeof createLocalSuiClient>,
-	owner: string,
-	coinType: string,
-	amount: bigint,
-): Promise<TransactionObjectArgument> {
-	if (coinType === '0x2::sui::SUI') {
-		const [coin] = tx.splitCoins(tx.gas, [tx.pure.u64(amount)]);
-		if (coin === undefined) throw new Error('market-maker: splitCoins(gas) returned no result');
-		return coin;
-	}
-	const { objects } = await client.core.listCoins({ owner, coinType });
-	const total = objects.reduce((acc, c) => acc + BigInt(c.balance), 0n);
-	if (total < amount) {
-		throw new Error(
-			`market-maker: ${owner} has ${total} of ${coinType}, needs ${amount} for pre-deposit`,
-		);
-	}
-	const [primary, ...rest] = objects;
-	if (primary === undefined) throw new Error(`market-maker: no ${coinType} coins`);
-	const primaryRef = tx.object(primary.objectId);
-	if (rest.length > 0) {
-		tx.mergeCoins(
-			primaryRef,
-			rest.map((c) => tx.object(c.objectId)),
-		);
-	}
-	const [split] = tx.splitCoins(primaryRef, [tx.pure.u64(amount)]);
-	if (split === undefined) throw new Error('market-maker: splitCoins returned no result');
-	return split;
 }
 
 function resolveSizePerLevel(
