@@ -168,7 +168,7 @@ edges (`weth needs ['usdc']`, `seedTokens needs ['deepbook.pools']`)
 and now declares `seedTokens.runsAs = 'publisher'` — cold + warm
 apply healthy; all 7 e2e tests pass.
 
-## 2026-05-02 — Walrus subnet hardcoded at `10.0.0.0/24` blocks per-stack siblings
+## 2026-05-02 — Walrus subnet hardcoded at `10.0.0.0/24` blocks per-stack siblings [CLOSED — PR 23]
 
 `packages/devstack/src/plugins/walrus/index.ts:77-78`. The walrus
 plugin pins the docker network's IPAM at `10.0.0.0/24` and assigns
@@ -207,4 +207,35 @@ non-walrus-using apps (wallet, arena, token-studio) coexist freely
 since their docker networks land on `bridge`-default `172.x.0.0/16`
 pools that don't collide.
 
-Punch-list entry for the next walrus-image-rev cycle.
+**Closed by PR 23**: `walrusOctet(appName, stack)` picks per-stack
+octet; `walrusSubnet(octet)` and `walrusNodeIp(octet, idx)` produce
+the per-stack `/24` and IPs. The deploy script is sed-patched at
+`walrus.build` to take `${WALRUS_NODE_IPS}` from env (set by
+`walrus.deploy.run`) and to redirect each node's
+`storage_path` from the read-only outputs bind-mount to
+`/var/walrus/storage` in the writable layer. Verified: cold apply
+on `private-content` puts walrus.network on `10.90.0.0/24`, deploy
+generates configs with the new IPs, nodes open RocksDB + bind REST
+API successfully.
+
+## 2026-05-02 — Walrus 1.48.0 storage nodes panic on TLS startup
+
+After PR 23's per-stack-subnet work landed and storage nodes
+opened their DBs cleanly, walrus-node 1.48.0 panics with
+`tls_rustls/mod.rs:204:14: called Result::unwrap() on an Err
+value: JoinError::Cancelled(Id(349))` shortly after binding REST
+API on `10.<octet>.0.10:9185`. The node is up briefly — the
+metrics endpoint starts, the REST API starts on `:9185`, then the
+TLS-server task is cancelled and the runtime panics.
+
+Likely an upstream issue with axum-server 0.8.0 or the walrus rev
+itself; not caused by the per-stack-subnet change (the same panic
+reproduces with the pre-PR-23 hardcoded `10.0.0.10` as well, as
+of the May 2 timing run that surfaced this). Pre-existing.
+
+`private-content` e2e (`seal-flow.spec.ts`) doesn't actually need
+the storage nodes to be healthy on a fresh stack — Seal works
+without walrus, walrus is only needed for the blob upload path.
+Worth either bumping `WALRUS_REV` to a fixed upstream rev or
+gating walrus-node liveness behind a non-strict probe (warn but
+don't block downstream).
