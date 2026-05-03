@@ -32,6 +32,11 @@ export interface ApplyFlags {
 	 * (e.g. `wallet.usdc`, `imports.deepbook`). Empty/undefined runs the
 	 * full graph. CLI parses `--actions a,b,c` (comma-separated). */
 	actions?: string[];
+	/** Emit a single-line JSON summary on stdout instead of the human
+	 * status table. Per-action diagnostic logs still go to stderr (one
+	 * `[<action>] <line>` per event). Useful for CI consumers that need
+	 * structured output without regex-parsing. */
+	json?: boolean;
 }
 
 export async function runApply(flags: ApplyFlags): Promise<number> {
@@ -52,18 +57,37 @@ export async function runApply(flags: ApplyFlags): Promise<number> {
 		actionScope: flags.actions,
 	});
 
-	const label =
-		target.network === 'localnet'
-			? `${target.network} stack=${target.stack}`
-			: `${target.network} (${target.rpcUrl})`;
-	process.stdout.write(`devstack apply → ${label}\n`);
-	if (result.hydrated) process.stdout.write('  hydrated registry from prior manifest\n');
-	for (const [name, status] of result.statuses) {
-		const failure = result.failures.get(name);
-		const detail = failure !== undefined ? ` — ${failure.message}` : '';
-		process.stdout.write(`  ${name.padEnd(36)} ${status}${detail}\n`);
+	if (flags.json === true) {
+		const summary = {
+			kind: 'summary' as const,
+			command: 'apply',
+			network: target.network,
+			stack: target.stack,
+			hydrated: result.hydrated,
+			manifestPath: result.manifestPath,
+			actions: [...result.statuses].map(([name, status]) => {
+				const failure = result.failures.get(name);
+				return failure === undefined
+					? { name, status }
+					: { name, status, error: failure.message };
+			}),
+			failureCount: result.failures.size,
+		};
+		process.stdout.write(`${JSON.stringify(summary)}\n`);
+	} else {
+		const label =
+			target.network === 'localnet'
+				? `${target.network} stack=${target.stack}`
+				: `${target.network} (${target.rpcUrl})`;
+		process.stdout.write(`devstack apply → ${label}\n`);
+		if (result.hydrated) process.stdout.write('  hydrated registry from prior manifest\n');
+		for (const [name, status] of result.statuses) {
+			const failure = result.failures.get(name);
+			const detail = failure !== undefined ? ` — ${failure.message}` : '';
+			process.stdout.write(`  ${name.padEnd(36)} ${status}${detail}\n`);
+		}
+		process.stdout.write(`manifest: ${result.manifestPath}\n`);
 	}
-	process.stdout.write(`manifest: ${result.manifestPath}\n`);
 
 	return result.failures.size === 0 ? 0 : 1;
 }
@@ -90,12 +114,15 @@ Options:
   --target <network[:stack]>  Override the active target
   --actions <a,b,c>           Restrict to these action names + their deps
   --config <path>             Override the config path
+  --json                      Emit a single-line JSON summary on stdout
+                              (per-action logs still go to stderr)
 
 Examples:
   devstack apply
   devstack apply --target testnet
   devstack apply --target localnet:scratch
   devstack apply --actions arena.connect_four
+  devstack apply --json | jq '.failureCount'
 `;
 
 function parseArgs(argv: string[]): ApplyFlags {
@@ -103,6 +130,7 @@ function parseArgs(argv: string[]): ApplyFlags {
 		configPath: parseConfigArg(argv),
 		target: parseTargetArg(argv),
 		actions: parseActionsArg(argv),
+		json: argv.includes('--json'),
 	};
 }
 
