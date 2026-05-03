@@ -497,3 +497,104 @@ serialization seam) holds up under review. The two clearest wins
 are the snapshot-id reform (real correctness gap that's invisible
 today because no one's hit it yet) and the doc-link sweep (50+ broken
 links in user-facing docs).
+
+---
+
+## Round 2 findings (after the first 4 PRs landed)
+
+While verifying PR 19-22 + measuring e2e timings, three more issues
+surfaced that belong in the next round of work.
+
+### R1. Walrus subnet hardcoded at `10.0.0.0/24` blocks per-stack siblings (P0)
+
+`packages/devstack/src/plugins/walrus/index.ts:77-78` pins the docker
+network at `10.0.0.0/24` and assigns storage nodes to fixed IPs
+`10.0.0.10–13`. Two walrus-using stacks (e.g. `private-content/main`
++ `/test`) collide with `Pool overlaps with other one on this address
+space`. Same architectural shape as the original "hardcoded ports"
+friction the per-stack port allocator closed.
+
+**Tried** — derive `octet` from `hash(appName/stack)` and use
+`10.<octet>.0.0/24`. Plugin-side change is ~30 lines and clean;
+**but** the upstream `MystenLabs/walrus@<rev>:docker/local-testbed/
+files/deploy-walrus.sh` script bakes the hardcoded `10.0.0.10–13`
+IPs into the per-node YAML configs at deploy time. Storage nodes
+start with the new IPs, then panic with `Cannot assign requested
+address` because their YAML still references the old subnet.
+
+**Fix shape**: `sed`-patch `deploy-walrus.sh` during `walrus.build`
+to read IPs from env vars (`WALRUS_NODE_IPS`), then thread the
+resolved octet's IPs from `walrus.deploy.run`. Mirrors the existing
+`RUN sed -i 's|--storage-price 5|--with-wal-exchange ...|'` patch
+in `build.ts:78`. The plugin-side change can be re-instated as soon
+as the script accepts external IPs.
+
+Captured in `notes/friction.md` as a closed-shape friction.
+
+### R2. Warm e2e double-walks the action graph (~5s recoverable per run) (P1)
+
+`globalSetup` calls `runApply` (one full reconcile cycle, ~5s warm).
+`webServer` runs `pnpm dev = devstack up` which **walks the same
+graph again** before vite spawns. Every action skips on getStatus.ok=
+true, so the second walk produces zero on-chain changes — but pays
+~5s of getStatus probes (faucet check, RPC calls, on-chain object
+existence checks).
+
+Measured: warm wallet e2e is 32s total; tests sum to 11s; bring-up
+overhead is ~21s (≈5s globalSetup + ~12s webServer + ~3-5s teardown).
+The webServer reconcile is the largest single overhead bucket.
+
+**Fix shape**: `pnpm dev` should detect "stack already at known
+state from this process's prior `runApply`" and skip straight to
+spawning HostProcess actions. Two routes:
+1. Cheap — pass `DEVSTACK_E2E_GLOBAL_SETUP_RAN=1` env from
+   globalSetup; supervisor skips the initial reconcile cycle.
+2. Cleaner — `runApply` returns a "manifest digest"; `up` reads
+   the stored digest from `<stackDir>/last-apply` and skips its
+   first cycle when the digest matches.
+
+Either way, the recoverable time is ~5s per warm e2e run × every CI
+job × every dev run.
+
+### R3. `alice sends 100 mUSDC` test flakes intermittently (P1)
+
+Test #5 (`e2e/send-sui.spec.ts:38`) failed 2/4 cold runs while
+gathering timing data; passes consistently on warm runs. Failure
+mode: `expect(sendCard.getByText(/Last tx:/i)).toBeVisible({ timeout:
+20_000 })` times out, but the tx itself succeeds (balance updates
+on next manual click).
+
+Hypothesis: race between (a) `useSignAndExecute.mutateAsync`
+resolving and `setLastDigest`'s render, and (b) `useInvalidateBalances`
+clearing query state — the component may re-render with empty
+state during the window where `Last tx:` should be visible. Worth a
+look but probably not framework-side.
+
+**Investigate**: bump the timeout? Add a fence between the two
+state writes? Inspect SendCard's render path. ~30min triage.
+
+---
+
+## Round 2 sequencing (additions to the original 7-step list)
+
+8. **R1 walrus subnet via deploy-script patch** (one PR) —
+   sed-patch `deploy-walrus.sh` in `walrus.build`, plumb env-var IPs
+   from `walrus.deploy.run`, re-instate the per-stack octet logic.
+   Unblocks parallel walrus stacks. ~80 lines incl. the previously
+   reverted `walrusOctet`/`walrusSubnet`/`walrusNodeIp` helpers.
+
+9. **R2 warm-path single-reconcile** (one PR) — wire
+   globalSetup's apply-completion signal into the `pnpm dev`
+   supervisor so the second cycle short-circuits. ~50 lines + a
+   verification test that reads timing from progress callbacks.
+
+10. **R3 mUSDC-send flake triage** (one PR) — investigation, then
+    either harden the test or fix the race. <50 lines.
+
+After Round 2 lands: continue with the original Round 1 punch-list
+items (5-7: examples extract pass, CLI logging/JSON, docs gaps).
+
+The order matters: R1 unblocks any future cross-stack timing work
+on private-content; R2 cuts e2e overhead by ~15% across the board;
+R3 stops blocking CI on a flake. All three are tractable and have
+specific measurements driving them.
