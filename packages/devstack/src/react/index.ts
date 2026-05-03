@@ -36,3 +36,11 @@ export {
 // plugin's Node-only deps (`node:child_process`, `@mysten/codegen`'s
 // emitter) into the browser bundle.
 export { defaultMvrName } from '../plugins/codegen/mvr.js';
+// `useSignAndExecute` — generic sign + waitForTransaction + invalidate
+// helper. Extracted from the 4 example apps' `lib/queries.ts` where it
+// had drifted into byte-identical copies; apps still wrap their app-
+// specific keys via `invalidateKeys`.
+export {
+	useSignAndExecute,
+	type UseSignAndExecuteOptions,
+} from './use-sign-and-execute.js';
