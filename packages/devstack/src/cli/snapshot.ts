@@ -46,6 +46,9 @@ export interface SnapshotFlags {
 	stack?: string;
 	forceArch?: boolean;
 	pushTo?: string;
+	/** Emit JSON on stdout for any read-only subcommand
+	 * (`hash`, `list`, `save` summary). */
+	json?: boolean;
 }
 
 export async function runSnapshot(flags: SnapshotFlags): Promise<number> {
@@ -77,6 +80,7 @@ export async function runSnapshot(flags: SnapshotFlags): Promise<number> {
 				id,
 				alias: flags.ref,
 				pushTo: flags.pushTo,
+				json: flags.json,
 			});
 		case 'restore':
 			return restoreCmd({
@@ -85,13 +89,14 @@ export async function runSnapshot(flags: SnapshotFlags): Promise<number> {
 				stack,
 				ref: requireRef(flags),
 				forceArch: flags.forceArch,
+				json: flags.json,
 			});
 		case 'list':
-			return listCmd({ appDir, stack });
+			return listCmd({ appDir, stack, json: flags.json });
 		case 'rm':
 			return rmCmd({ appDir, ref: requireRef(flags) });
 		case 'hash':
-			return hashCmd(id);
+			return hashCmd(id, flags.json);
 	}
 }
 
@@ -102,18 +107,45 @@ async function saveCmd(opts: {
 	id: string;
 	alias?: string;
 	pushTo?: string;
+	json?: boolean;
 }): Promise<number> {
-	process.stdout.write(`devstack snapshot save → ${opts.id}${opts.alias ? ` (alias='${opts.alias}')` : ''}\n`);
-	if (opts.pushTo !== undefined) {
-		process.stdout.write(`  pushing seed images to ${opts.pushTo}…\n`);
+	if (opts.json !== true) {
+		process.stdout.write(
+			`devstack snapshot save → ${opts.id}${opts.alias ? ` (alias='${opts.alias}')` : ''}\n`,
+		);
+		if (opts.pushTo !== undefined) {
+			process.stdout.write(`  pushing seed images to ${opts.pushTo}…\n`);
+		}
 	}
 	const entry = await captureSnapshot(opts);
-	process.stdout.write(`captured ${entry.containers.length} container(s):\n`);
-	for (const c of entry.containers) {
-		const pushed = c.registryImage !== undefined ? ` (pushed: ${c.registryImage})` : '';
-		process.stdout.write(`  ${c.containerName}\n    ${c.originalImage} → ${c.seedImage}${pushed}\n`);
+	if (opts.json === true) {
+		process.stdout.write(
+			`${JSON.stringify({
+				kind: 'summary' as const,
+				command: 'snapshot save',
+				id: entry.id,
+				alias: entry.alias,
+				stack: entry.stack,
+				platform: entry.platform,
+				bundlePath: snapshotBundlePath(opts.appDir, opts.id),
+				containers: entry.containers.map((c) => ({
+					containerName: c.containerName,
+					originalImage: c.originalImage,
+					seedImage: c.seedImage,
+					registryImage: c.registryImage,
+				})),
+			})}\n`,
+		);
+	} else {
+		process.stdout.write(`captured ${entry.containers.length} container(s):\n`);
+		for (const c of entry.containers) {
+			const pushed = c.registryImage !== undefined ? ` (pushed: ${c.registryImage})` : '';
+			process.stdout.write(
+				`  ${c.containerName}\n    ${c.originalImage} → ${c.seedImage}${pushed}\n`,
+			);
+		}
+		process.stdout.write(`bundle: ${snapshotBundlePath(opts.appDir, opts.id)}\n`);
 	}
-	process.stdout.write(`bundle: ${snapshotBundlePath(opts.appDir, opts.id)}\n`);
 	return 0;
 }
 
@@ -123,19 +155,55 @@ async function restoreCmd(opts: {
 	stack: string;
 	ref: string;
 	forceArch?: boolean;
+	json?: boolean;
 }): Promise<number> {
-	process.stdout.write(`devstack snapshot restore ${opts.ref}\n`);
 	const entry = await loadSnapshot(opts);
-	process.stdout.write(
-		`restored ${entry.containers.length} container image tag(s) + host state for stack '${opts.stack}'.\n`,
-	);
-	process.stdout.write(`run \`devstack up\` to bring the stack up against the restored state.\n`);
+	if (opts.json === true) {
+		process.stdout.write(
+			`${JSON.stringify({
+				kind: 'summary' as const,
+				command: 'snapshot restore',
+				id: entry.id,
+				alias: entry.alias,
+				stack: opts.stack,
+				containerCount: entry.containers.length,
+			})}\n`,
+		);
+	} else {
+		process.stdout.write(`devstack snapshot restore ${opts.ref}\n`);
+		process.stdout.write(
+			`restored ${entry.containers.length} container image tag(s) + host state for stack '${opts.stack}'.\n`,
+		);
+		process.stdout.write(
+			`run \`devstack up\` to bring the stack up against the restored state.\n`,
+		);
+	}
 	return 0;
 }
 
-async function listCmd(opts: { appDir: string; stack: string }): Promise<number> {
+async function listCmd(opts: {
+	appDir: string;
+	stack: string;
+	json?: boolean;
+}): Promise<number> {
 	const all = await listSnapshots(opts.appDir);
 	const filtered = all.filter((e) => e.stack === opts.stack);
+	if (opts.json === true) {
+		process.stdout.write(
+			`${JSON.stringify({
+				kind: 'summary' as const,
+				command: 'snapshot list',
+				stack: opts.stack,
+				snapshots: filtered.map((e) => ({
+					id: e.id,
+					alias: e.alias,
+					platform: e.platform,
+					createdAt: e.createdAt,
+				})),
+			})}\n`,
+		);
+		return 0;
+	}
 	if (filtered.length === 0) {
 		process.stdout.write(`no snapshots for stack '${opts.stack}'.\n`);
 		return 0;
@@ -156,8 +224,12 @@ async function rmCmd(opts: { appDir: string; ref: string }): Promise<number> {
 	return removed ? 0 : 1;
 }
 
-function hashCmd(id: string): number {
-	process.stdout.write(`${id}\n`);
+function hashCmd(id: string, json?: boolean): number {
+	if (json === true) {
+		process.stdout.write(`${JSON.stringify({ kind: 'summary', command: 'snapshot hash', id })}\n`);
+	} else {
+		process.stdout.write(`${id}\n`);
+	}
 	return 0;
 }
 
@@ -212,6 +284,8 @@ Options:
                           push. Restore will pull from the registry on
                           machines where the local seed image is absent
                           (CI / cross-host snapshot sharing).
+  --json                  Emit a single-line JSON summary on stdout
+                          (save / restore / list / hash).
 
 Examples:
   devstack snapshot save baseline
@@ -220,6 +294,7 @@ Examples:
   devstack snapshot restore baseline
   devstack snapshot rm baseline
   devstack snapshot hash
+  devstack snapshot hash --json | jq -r .id    # CI cache key
 `;
 
 function parseArgs(argv: string[]): SnapshotFlags {
@@ -239,6 +314,10 @@ function parseArgs(argv: string[]): SnapshotFlags {
 		}
 		if (arg === '--force-arch') {
 			flags.forceArch = true;
+			continue;
+		}
+		if (arg === '--json') {
+			flags.json = true;
 			continue;
 		}
 		if (arg === '--push') {

@@ -25,6 +25,9 @@ export interface DeployFlags {
 	network?: Network;
 	/** Raw `--target` value (network, stack, or `<network>:<stack>`). */
 	target?: string | undefined;
+	/** Emit a single-line JSON summary on stdout instead of the human
+	 * status table. */
+	json?: boolean;
 }
 
 export async function runDeploy(flags: DeployFlags): Promise<number> {
@@ -60,15 +63,36 @@ export async function runDeploy(flags: DeployFlags): Promise<number> {
 		accounts: config.accounts,
 	});
 
-	const label = network === 'localnet' ? `${network} stack=${stack}` : `${network} (${rpcUrl})`;
-	process.stdout.write(`devstack deploy → ${label}\n`);
-	if (result.hydrated) process.stdout.write('  hydrated registry from prior manifest\n');
-	for (const [name, status] of result.statuses) {
-		const failure = result.failures.get(name);
-		const detail = failure !== undefined ? ` — ${failure.message}` : '';
-		process.stdout.write(`  ${name.padEnd(36)} ${status}${detail}\n`);
+	if (flags.json === true) {
+		const summary = {
+			kind: 'summary' as const,
+			command: 'deploy',
+			network,
+			stack,
+			rpcUrl,
+			hydrated: result.hydrated,
+			manifestPath: result.manifestPath,
+			actions: [...result.statuses].map(([name, status]) => {
+				const failure = result.failures.get(name);
+				return failure === undefined
+					? { name, status }
+					: { name, status, error: failure.message };
+			}),
+			failureCount: result.failures.size,
+		};
+		process.stdout.write(`${JSON.stringify(summary)}\n`);
+	} else {
+		const label =
+			network === 'localnet' ? `${network} stack=${stack}` : `${network} (${rpcUrl})`;
+		process.stdout.write(`devstack deploy → ${label}\n`);
+		if (result.hydrated) process.stdout.write('  hydrated registry from prior manifest\n');
+		for (const [name, status] of result.statuses) {
+			const failure = result.failures.get(name);
+			const detail = failure !== undefined ? ` — ${failure.message}` : '';
+			process.stdout.write(`  ${name.padEnd(36)} ${status}${detail}\n`);
+		}
+		process.stdout.write(`manifest: ${result.manifestPath}\n`);
 	}
-	process.stdout.write(`manifest: ${result.manifestPath}\n`);
 
 	return result.failures.size === 0 ? 0 : 1;
 }
@@ -94,10 +118,12 @@ Options:
   --network <network>          Required if --target is not set
   --target <network[:stack]>   Alias for --network; also accepts a stack
   --config <path>              Override the config path
+  --json                       Emit a single-line JSON summary on stdout
 
 Examples:
   devstack deploy --network testnet
   devstack deploy --target mainnet
+  devstack deploy --network testnet --json | jq '.failureCount'
 `;
 
 function parseArgs(argv: string[]): DeployFlags {
@@ -105,6 +131,7 @@ function parseArgs(argv: string[]): DeployFlags {
 		configPath: parseConfigArg(argv),
 		network: parseNetworkArg(argv),
 		target: parseTargetArg(argv),
+		json: argv.includes('--json'),
 	};
 }
 
