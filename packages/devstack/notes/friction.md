@@ -218,6 +218,38 @@ on `private-content` puts walrus.network on `10.90.0.0/24`, deploy
 generates configs with the new IPs, nodes open RocksDB + bind REST
 API successfully.
 
+## 2026-05-02 — Same-account signer used by both supervisor + browser path equivocates [CLOSED — PR 31]
+
+The wallet's market-maker action signed as `alice` every 10s (refresh
+tick). The e2e SUI-send test connected as `alice` and signed via
+dApp Kit → wallet-server → `ctx.accounts.get('alice').sign(...)`.
+Both paths share alice's keypair object in the same supervisor
+process, but neither knows about the other's inflight tx. Sui's
+validator-equivocation guard rejected whichever user-side tx happened
+to land while the maker's tick was unresolved:
+
+> Transaction is rejected as invalid by more than 1/3 of validators
+> by stake (non-retriable). Non-retriable errors: [Object
+> (0x1970..., SequenceNumber(2374), o#8GqbJn...) already locked by
+> a different transaction: TransactionDigest(82E7z9...) {
+> k#99f25ef6.. } with 10000 stake].
+
+Reproduced twice on cold e2e runs (test 4 = `alice sends 0.5 SUI
+to bob`).
+
+**Closed by PR 31**: dedicate a `mm` account in the wallet config;
+maker uses `signer: 'mm'`. seedTokens distribution adds an `mm`
+share so the maker has inventory.
+
+The reconciler's `runsAs` constraint serialized action-to-action
+same-signer races (closed by PR 17). This was a NEW shape: action-
+to-browser-tx race. The framework can't know about browser txs that
+go through wallet-server's HTTP endpoint. The right architectural
+fix is a per-account mutex inside the keypair, scoped to the entire
+supervisor process — but that's a bigger lift. For now the
+ergonomic answer is "use a dedicated maker account so its 10s
+schedule doesn't collide with user-side txs".
+
 ## 2026-05-02 — Walrus 1.48.0 storage nodes panic on TLS startup
 
 After PR 23's per-stack-subnet work landed and storage nodes
