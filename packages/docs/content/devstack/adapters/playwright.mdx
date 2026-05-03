@@ -20,7 +20,7 @@ export default defineDevstackPlaywrightConfig({
 | `port`        | (required)               | Vite dev-server port.                                                                                                                                                                                                                          |
 | `command`     | `'pnpm dev'`             | Override the dev-server bring-up command.                                                                                                                                                                                                      |
 | `testDir`     | `'./e2e'`                | Override the test directory.                                                                                                                                                                                                                   |
-| `manageStack` | `false`                  | When true, wires `globalSetup` to bring the localnet stack up via `runUp({ once: true })`, and `globalTeardown` to tear it down via `runStack({ subcommand: 'down' })`. Hermetic `pnpm test:e2e` — no separate `:setup` / `:teardown` scripts. |
+| `manageStack` | `false`                  | When true, wires `globalSetup` to bring the localnet stack up via `runOneShot` with `applyTestSetupFilter` (chain seeding without spawning HostProcess actions), and `globalTeardown` to tear it down. Hermetic `pnpm test:e2e` — no separate `:setup` / `:teardown` scripts. |
 | `configPath`  | `'./devstack.config.ts'` | Path to the devstack config (relative to the playwright config's cwd). Only used when `manageStack: true`.                                                                                                                                     |
 | `extend`      | `undefined`              | Arbitrary Playwright config overrides merged into the base.                                                                                                                                                                                    |
 
@@ -28,13 +28,19 @@ export default defineDevstackPlaywrightConfig({
 
 When `manageStack: true`:
 
-1. `globalSetup` calls
-   `runUp({ configPath, stack: process.env.DEVSTACK_STACK ?? 'test', once: true })`.
-2. Tests run normally.
-3. `globalTeardown` calls `runStack({ subcommand: 'down' })` against the same stack — preserves
-   volumes for resumability on the next run.
+1. `globalSetup` runs `runOneShot` with `applyTestSetupFilter` against `DEVSTACK_STACK` (default
+   `'test'`). The chain comes to known state (Build/Publish/Register/Seed/Emit/Verify all run;
+   Service containers start and detach); `HostProcess` actions are skipped — they're started
+   later by `pnpm dev` so the wallet-server's URL+token doesn't get re-minted underneath the
+   browser. globalSetup writes a `.last-apply-at` marker in the stack dir.
+2. The webServer's `pnpm dev` Supervisor reads the marker — if fresh (<30s), its first reconcile
+   cycle skips the redundant chain-state probes and only spawns HostProcess actions
+   (vite, wallet-server). Saves ~5s of overhead per run.
+3. Tests run normally.
+4. `globalTeardown` calls `runStack({ subcommand: 'down' })` against the same stack — stops
+   containers but preserves their writable layer for resumability on the next run.
 
-Set `DEVSTACK_E2E_TEARDOWN=drop` to wipe volumes too (CI mode); `=none` to skip teardown entirely.
+Set `DEVSTACK_E2E_TEARDOWN=drop` to wipe everything (CI mode); `=none` to skip teardown entirely.
 
 ## Helpers
 
@@ -51,3 +57,34 @@ import {
 - `selectAccount(page, accountName)` — switches between connected accounts mid-test.
 - `waitForBalanceUpdate(page, /* selector */)` — polls a balance display until it reflects an
   expected change. Useful after a tx.
+
+## AccountPool fixture
+
+For tests that need fresh-funded keypairs without faucet calls in the hot path —
+typically programmatic Sui-client signing rather than wallet-adapter UI driving — the
+`/playwright/account-pool` subpath ships a Playwright `test` extension with `pool` + `account`
+fixtures.
+
+```ts
+import { test } from '@mysten-incubation/devstack/playwright/account-pool';
+
+test('concurrent transfers', async ({ pool }) => {
+	const sender = await pool.lease();
+	const recipient = await pool.lease();
+	try {
+		// sender.account.keypair signs a tx to recipient.account.address
+		// ...
+	} finally {
+		sender.release();
+		recipient.release();
+	}
+});
+```
+
+The pool is session-scoped (one per worker), constructed from the manifest's
+`sui-rpc` + `sui-faucet` services. First-run seeds N keypairs via the faucet; warm runs cost
+zero faucet calls (idempotent prefund). Snapshot restore brings the prefunded balances back.
+
+Leased accounts are **not** exposed through the dev-wallet UI — they're meant for programmatic
+signing. Tests that drive the wallet UI (`connectAs(page, 'alice')`) should keep using named
+accounts from `DevstackConfig.accounts`.

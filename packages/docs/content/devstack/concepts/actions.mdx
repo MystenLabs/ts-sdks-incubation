@@ -32,6 +32,30 @@ A plugin contributes named actions of one of eight kinds:
   `seed()` callers that issue txs through `ctx.accounts.get(...)` should pass `runsAs:` explicitly
   to engage the constraint.
 
+## Same-signer serialization
+
+Sui's validators reject any transaction that touches a gas object already locked by an inflight
+peer (the equivocation guard). Two actions defaulting to the same `publisher` and otherwise
+independent in the data graph (e.g. `publishMove({ name: 'usdc' })` + `publishMove({ name:
+'weth' })`) would race the publisher's gas object — second-to-arrive gets rejected. The
+reconciler's `runsAs` constraint avoids this without forcing app authors to thread synthetic
+`needs:` edges through the graph.
+
+The contract is "at most one inflight action per distinct `runsAs` value":
+
+- `publish`, `definePublishAction`, `publishMove` set `runsAs` from their `publisher:` field
+  (default `'publisher'`).
+- `runTransaction` sets `runsAs` from its `signer:` field.
+- Raw `seed()` and `register()` accept `runsAs?:` explicitly when their `run:` callback signs via
+  `ctx.accounts.get(...)`. The framework can't infer it.
+- `hostProcess()` accepts `runsAs?:` for long-running signers (e.g. the deepbook market-maker's
+  per-tick BalanceManager + grid txs).
+- Actions without `runsAs` are unconstrained — most Build / Service / Register actions don't
+  sign anything.
+
+`needs:` still dominates when both apply: an explicit dependency edge orders strictly; `runsAs`
+only kicks in for otherwise-parallel actions sharing a signer.
+
 ## Skip predicate
 
 Each action provides `getStatus?(ctx) => { ok: boolean; detail?: string }`. The reconciler walks the
