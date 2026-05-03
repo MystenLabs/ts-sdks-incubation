@@ -76,6 +76,20 @@ RUN chmod +x /root/sui_bin/sui
 COPY --from=walrus-src docker/local-testbed/files/deploy-walrus.sh /opt/walrus/scripts/deploy-walrus.sh
 COPY --from=walrus-src docker/local-testbed/files/run-walrus.sh /opt/walrus/scripts/run-walrus.sh
 RUN sed -i 's|--storage-price 5|--with-wal-exchange --storage-price 5|' /opt/walrus/scripts/deploy-walrus.sh
+# Replace the hardcoded host addresses with a runtime env var so the
+# walrus.deploy action can pass per-stack IPs (10.<octet>.0.10–13). The
+# unquoted \${WALRUS_NODE_IPS} preserves bash word-splitting so the four
+# IPs land as four separate arguments to --host-addresses.
+RUN sed -i 's|--host-addresses 10\\.0\\.0\\.10 10\\.0\\.0\\.11 10\\.0\\.0\\.12 10\\.0\\.0\\.13|--host-addresses \${WALRUS_NODE_IPS}|' /opt/walrus/scripts/deploy-walrus.sh
+# Redirect storage_path in each generated YAML config from the bind-
+# mounted (read-only) outputs dir to /var/walrus/storage in the
+# container's writable layer. Matches the no-volumes architectural
+# intent — configs live under \`<stackDir>\` (host capture); RocksDB
+# state lives in the writable layer (captured via docker commit on
+# snapshot save). The append runs after generate-dry-run-configs.
+RUN echo 'for f in /opt/walrus/outputs/dryrun-node-*.yaml; do sed -i "s|^storage_path: /opt/walrus/outputs/|storage_path: /var/walrus/storage/|" "$f"; done' >> /opt/walrus/scripts/deploy-walrus.sh
+# Ensure the storage path exists in node containers' writable layer.
+RUN mkdir -p /var/walrus/storage
 RUN chmod +x /opt/walrus/scripts/*.sh
 `;
 
@@ -88,8 +102,16 @@ RUN chmod +x /opt/walrus/scripts/*.sh
  *
  * `r2`: bake matching sui binary at /root/sui_bin/sui (replaces the
  * sui-bin shared-volume mechanism). The wrapper image now encodes both
- * the walrus rev AND the sui version in its tag. */
-const WRAPPER_REV = 'r2';
+ * the walrus rev AND the sui version in its tag.
+ * `r3`: replace the hardcoded `--host-addresses 10.0.0.10 10.0.0.11
+ * 10.0.0.12 10.0.0.13` in the deploy script with `${WALRUS_NODE_IPS}`
+ * so the walrus.deploy action can pass per-stack IPs through env
+ * (unblocks parallel walrus stacks). Also redirect each per-node
+ * YAML's `storage_path` from the read-only bind-mounted outputs dir
+ * to `/var/walrus/storage` in the container's writable layer
+ * (`docker commit` captures it on snapshot save), matching the
+ * no-volumes architectural intent for storage-node RocksDB. */
+const WRAPPER_REV = 'r3';
 
 /** Slug a sui version into a tag-safe component (e.g. `devnet-v1.71.0` →
  * `devnet-v1-71-0`). Periods aren't allowed in docker tag suffixes when

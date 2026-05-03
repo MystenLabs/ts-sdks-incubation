@@ -1,7 +1,9 @@
 // Walrus localnet plugin. Owns seven actions:
 //
-//   walrus.network      — Pins the per-(app, stack) docker network's subnet at 10.0.0.0/24
-//                         so the storage nodes' fixed IPs (10.0.0.10–13) land in the right
+//   walrus.network      — Pins the per-(app, stack) docker network's subnet at a per-stack
+//                         /24 (`10.<octet>.0.0/24`, octet derived from `hash(appName/stack)`)
+//                         so two walrus-using stacks coexist without overlapping pools. The
+//                         storage nodes' fixed IPs (`10.<octet>.0.10–13`) land in the right
 //                         pool. Declares `provides: ['walrus.app-network']` so the sui plugin's
 //                         localnet action (which queries `'app-network:before'`) runs after
 //                         this. Without a provider the sui plugin still works — it just
@@ -17,7 +19,7 @@
 //                         then exits(0). Idempotent via file-based getStatus — the deploy
 //                         file IS the output; container existence is incidental. Container
 //                         is auto-removed on success since outputs are on host.
-//   walrus.node-{0..3}  — 4 storage nodes on fixed IPs 10.0.0.10–13. Each runs run-walrus.sh,
+//   walrus.node-{0..3}  — 4 storage nodes on fixed IPs `10.<octet>.0.10–13`. Each runs run-walrus.sh,
 //                         which faucets SUI from the in-network `sui-localnet` alias, swaps
 //                         500 WAL on the exchange, and starts walrus-node. Storage-node
 //                         RocksDB lives in the container's writable layer (not a volume) —
@@ -74,8 +76,30 @@ import { SUI_DEFAULT_VERSION, appNetworkName } from '../sui/index.js';
 import { WALRUS_REV, ensureWalrusImage, hostDockerPlatform, walrusImageTag } from './build.js';
 
 const NODE_COUNT = 4;
-const NODE_IPS = ['10.0.0.10', '10.0.0.11', '10.0.0.12', '10.0.0.13'] as const;
-const APP_NETWORK_SUBNET = '10.0.0.0/24';
+
+/** Deterministic per-(app, stack) octet in [1, 250]. The walrus testbed
+ * needs a /24 with predictable IPs for its 4 storage nodes; using the
+ * same `10.0.0.0/24` for every app+stack pair would collide whenever
+ * two of them run concurrently (`Pool overlaps with other one on this
+ * address space`). Hashing `appName/stack` into the second-octet space
+ * gives ~250 per-host slots before any pigeonhole collision; octet 0
+ * is reserved. The deploy script's previously-hardcoded host addresses
+ * are replaced with `${WALRUS_NODE_IPS}` at `walrus.build` time
+ * (build.ts:78-82) so this plugin can pass per-stack IPs through env
+ * to the deploy container. */
+function walrusOctet(appName: string, stack: string): number {
+	let h = 0;
+	const s = `${appName}/${stack}`;
+	for (let i = 0; i < s.length; i++) {
+		h = (h * 31 + s.charCodeAt(i)) >>> 0;
+	}
+	return (h % 250) + 1;
+}
+
+const walrusSubnet = (octet: number): string => `10.${octet}.0.0/24`;
+const walrusNodeIp = (octet: number, idx: number): string => `10.${octet}.0.${10 + idx}`;
+const walrusNodeIpList = (octet: number): string =>
+	Array.from({ length: NODE_COUNT }, (_, i) => walrusNodeIp(octet, i)).join(' ');
 
 const deployContainerName = (appName: string, stack: string): string =>
 	`${appName}-${stack}-walrus-deploy`;
@@ -120,7 +144,8 @@ export interface WalrusPluginOptions {
 	 * — default 19185, so the four nodes land on 19185–19188.
 	 *
 	 * Browser apps can't reach the storage nodes' internal docker IPs
-	 * (`10.0.0.10–13`) directly. `createDevstackWalrusClient()` installs a
+	 * (the per-stack `10.<octet>.0.10–13`) directly.
+	 * `createDevstackWalrusClient()` installs a
 	 * fetch override that rewrites the SDK's outbound storage-node URLs to
 	 * the host-mapped ports — that's what makes the storage protocol
 	 * reachable from a browser tab. */
@@ -173,10 +198,11 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 					// `needs: ['walrus.app-network:before']` query picks up this
 					// provider and orders this action ahead of it.
 					provides: { capabilities: ['walrus.app-network'] },
-					inputs: { subnet: APP_NETWORK_SUBNET },
+					inputs: {},
 					getStatus: async (ctx) => {
 						requireLocalnetCtx(ctx);
 						const network = appNetworkName(ctx.appName, ctx.stack);
+						const subnet = walrusSubnet(walrusOctet(ctx.appName, ctx.stack));
 						const probe = await dockerNetworkSubnet(network);
 						switch (probe.kind) {
 							case 'missing':
@@ -184,21 +210,22 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 							case 'no-subnet':
 								return { ok: false, detail: `${network} exists but has no IPAM pin` };
 							case 'subnet':
-								return probe.cidr === APP_NETWORK_SUBNET
+								return probe.cidr === subnet
 									? { ok: true, detail: `${network} on ${probe.cidr}` }
 									: {
 											ok: false,
-											detail: `${network} pinned at ${probe.cidr}, expected ${APP_NETWORK_SUBNET}`,
+											detail: `${network} pinned at ${probe.cidr}, expected ${subnet}`,
 										};
 						}
 					},
 					run: async (ctx) => {
 						requireLocalnetCtx(ctx);
 						const network = appNetworkName(ctx.appName, ctx.stack);
+						const subnet = walrusSubnet(walrusOctet(ctx.appName, ctx.stack));
 						const probe = await dockerNetworkSubnet(network);
-						if (probe.kind === 'subnet' && probe.cidr !== APP_NETWORK_SUBNET) {
+						if (probe.kind === 'subnet' && probe.cidr !== subnet) {
 							throw new Error(
-								`walrus.network: ${network} already exists pinned at ${probe.cidr} but walrus needs ${APP_NETWORK_SUBNET} for fixed-IP nodes. Tear down the stack (\`docker network rm ${network}\`) and re-up.`,
+								`walrus.network: ${network} already exists pinned at ${probe.cidr} but walrus needs ${subnet} for fixed-IP nodes. Tear down the stack (\`docker network rm ${network}\`) and re-up.`,
 							);
 						}
 						if (probe.kind === 'no-subnet') {
@@ -206,7 +233,7 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 								`walrus.network: ${network} already exists with no IPAM pin (sui.localnet may have created it first). Tear down the stack (\`docker network rm ${network}\`) and re-up so walrus.network runs first.`,
 							);
 						}
-						await ensureNetwork({ name: network, subnet: APP_NETWORK_SUBNET });
+						await ensureNetwork({ name: network, subnet });
 					},
 				}),
 			);
@@ -273,6 +300,11 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 							network,
 							hostname: 'walrus-deploy',
 							restart: 'no',
+							// `WALRUS_NODE_IPS` is read by the deploy script's
+							// `--host-addresses ${WALRUS_NODE_IPS}` (sed-patched at
+							// build time, build.ts:78-82). Space-separated for
+							// shell word-splitting into 4 args.
+							env: { WALRUS_NODE_IPS: walrusNodeIpList(walrusOctet(ctx.appName, ctx.stack)) },
 							labels: devstackContainerLabels({
 								appName: ctx.appName,
 								stack: ctx.stack,
@@ -298,13 +330,11 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 
 			for (let i = 0; i < NODE_COUNT; i++) {
 				const nodeIdx = i;
-				const ip = NODE_IPS[nodeIdx];
-				if (ip === undefined) throw new Error(`walrus: missing IP for node ${nodeIdx}`);
 				actions.push(
 					containerService({
 						name: `node-${nodeIdx}`,
 						needs: ['deploy'],
-						inputs: { image: imageTag, ip, hostname: nodeHostname(nodeIdx) },
+						inputs: { image: imageTag, hostname: nodeHostname(nodeIdx) },
 						containerName: (ctx) => nodeContainerName(ctx.appName, ctx.stack, nodeIdx),
 						// RocksDB blob store + sync cursor live in the container layer.
 						// `stop` (graceful SIGTERM) flushes outstanding write batches —
@@ -313,6 +343,7 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 						snapshot: { commit: true, quiesce: 'stop' },
 						spec: (ctx) => {
 							requireLocalnetCtx(ctx);
+							const ip = walrusNodeIp(walrusOctet(ctx.appName, ctx.stack), nodeIdx);
 							return {
 								name: '',
 								image: imageTag,
@@ -363,7 +394,7 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 			actions.push(
 				containerService({
 					name: 'proxy',
-					needs: NODE_IPS.map((_, idx) => `node-${idx}`),
+					needs: Array.from({ length: NODE_COUNT }, (_, idx) => `node-${idx}`),
 					// Preferred port-base hint goes into inputs; the resolved
 					// per-stack port range is a runtime detail and shouldn't
 					// invalidate the skip predicate when allocator picks a
@@ -380,7 +411,8 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 						const configPath = writeProxyConfig({
 							appDir: ctx.appDir,
 							stack: ctx.stack,
-							ports: NODE_IPS.map((_, idx) => nodeHostPort(idx)),
+							appName: ctx.appName,
+							ports: Array.from({ length: NODE_COUNT }, (_, idx) => nodeHostPort(idx)),
 						});
 						return {
 							name: '',
@@ -389,7 +421,7 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 							network: appNetworkName(ctx.appName, ctx.stack),
 							hostname: 'walrus-proxy',
 							restart: 'unless-stopped',
-							ports: NODE_IPS.map((_, idx) => ({
+							ports: Array.from({ length: NODE_COUNT }, (_, idx) => ({
 								host: nodeHostPort(idx),
 								container: nodeHostPort(idx),
 							})),
@@ -663,9 +695,9 @@ async function registerWalrus(
 	});
 
 	const ns = ctx.registry.ns<WalrusNamespace>('walrus');
+	const octet = walrusOctet(ctx.appName, ctx.stack);
 	for (let i = 0; i < NODE_COUNT; i++) {
-		const ip = NODE_IPS[i];
-		if (ip === undefined) continue;
+		const ip = walrusNodeIp(octet, i);
 		ns.nodes.register({
 			name: nodeHostname(i),
 			hostname: nodeHostname(i),
@@ -709,14 +741,19 @@ function republishWalrusFromCache(ctx: ActionRunContext): void {
  * tracks the stack lifecycle (new stack → new config; drop stack → file
  * goes away with the rest).
  */
-function writeProxyConfig(opts: { appDir: string; stack: string; ports: number[] }): string {
+function writeProxyConfig(opts: {
+	appDir: string;
+	stack: string;
+	appName: string;
+	ports: number[];
+}): string {
 	const generatedDir = resolve(opts.appDir, '.devstack', 'stacks', opts.stack, '.generated');
 	mkdirSync(generatedDir, { recursive: true });
 	const configPath = resolve(generatedDir, 'walrus-proxy.conf');
+	const octet = walrusOctet(opts.appName, opts.stack);
 	const servers = opts.ports
 		.map((port, idx) => {
-			const upstream = NODE_IPS[idx];
-			if (upstream === undefined) throw new Error(`writeProxyConfig: missing IP for node ${idx}`);
+			const upstream = walrusNodeIp(octet, idx);
 			// `proxy_ssl_verify off` accepts the self-signed cert. SNI on so
 			// the upstream's certificate match doesn't depend on the IP.
 			return `
