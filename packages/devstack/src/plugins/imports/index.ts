@@ -35,7 +35,7 @@ import {
 	type ImportedPackageCacheEntry,
 	importMovePackage,
 } from '../../helpers/imported-package.js';
-import { createLocalSuiClient } from '../../helpers/sui-client.js';
+import { openSuiRpcClient } from '../../helpers/sui-client.js';
 import {
 	ensureUpstreamSourceImage,
 	upstreamSourceImageTag,
@@ -294,7 +294,7 @@ function buildActionsForSpec(spec: InternalImportSpec): Action[] {
 				}
 				const prior = ctx.registry.packages.find(spec.name);
 				if (prior === undefined) return { ok: false, detail: 'no prior import' };
-				const client = openSuiClient(ctx);
+				const client = openSuiRpcClient(ctx);
 				const chainId = await client.getChainIdentifier();
 				if (prior.chainId !== chainId) {
 					return { ok: false, detail: 'chainId differs from prior import' };
@@ -326,7 +326,7 @@ function buildActionsForSpec(spec: InternalImportSpec): Action[] {
 				// sui CLI, so the curated path above is the only live-net option.
 				requireLocalnetCtx(ctx);
 				const containerName = suiContainerName(ctx.appName, ctx.stack);
-				const client = openSuiClient(ctx);
+				const client = openSuiRpcClient(ctx);
 				const chainId = await client.getChainIdentifier();
 				const publisher = ctx.accounts.get(publisherAccount);
 				const prior = buildImportedPriorEntry(ctx.registry.packages.find(spec.name));
@@ -405,6 +405,3 @@ function buildImportedPriorEntry(
 	};
 }
 
-function openSuiClient(ctx: ActionRunContext) {
-	return createLocalSuiClient(ctx.registry.services.require('sui-rpc').url, ctx.network);
-}

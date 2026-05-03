@@ -36,7 +36,7 @@ import {
 	type RegistryQuery,
 	requireLocalnetCtx,
 } from '../../core/types.js';
-import { createLocalSuiClient } from '../../helpers/sui-client.js';
+import { openSuiRpcClient } from '../../helpers/sui-client.js';
 import { extractUpstreamSource } from '../../helpers/upstream-source.js';
 import { definePlugin } from '../../plugin.js';
 import { stackDir } from '../../runtime/active-stack.js';
@@ -196,7 +196,7 @@ export const seal = (opts: SealPluginOptions = {}) => {
 					if (cached.url !== keyServerUrl) {
 						return { ok: false, detail: 'cached KeyServer URL differs from allocated port' };
 					}
-					const client = createLocalSuiClient(ctx.registry.services.require('sui-rpc').url);
+					const client = openSuiRpcClient(ctx);
 					const live = await client.getObject({ id: cached.objectId });
 					if (live.data === null || live.data === undefined) {
 						return { ok: false, detail: `KeyServer ${cached.objectId} not on chain` };
@@ -309,7 +309,7 @@ async function registerSealKeyServer({
 }: RegisterSealOptions): Promise<void> {
 	const sealPkg = ctx.registry.packages.require('seal');
 	const publisher = ctx.accounts.get(publisherAccount);
-	const client = createLocalSuiClient(ctx.registry.services.require('sui-rpc').url);
+	const client = openSuiRpcClient(ctx);
 
 	const keys = await ensureSealMasterKey({
 		imageTag,

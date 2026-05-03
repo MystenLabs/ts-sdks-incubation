@@ -45,7 +45,7 @@ import type {
 	SetupActionScope,
 } from '../core/types.js';
 import { requireLocalnetCtx } from '../core/types.js';
-import { createLocalSuiClient } from '../helpers/sui-client.js';
+import { openSuiRpcClient } from '../helpers/sui-client.js';
 import { stackDir } from '../runtime/active-stack.js';
 import { stableHash } from '../runtime/hash.js';
 import { Transaction as TransactionImpl } from '@mysten/sui/transactions';
@@ -90,8 +90,7 @@ export function runTransaction(opts: RunTransactionOptions): SeedAction<Record<s
 		getStatus: opts.getStatus ?? defaultMarkerProbe(opts.name, inputsHash),
 		run: async (ctx) => {
 			requireLocalnetCtx(ctx);
-			const url = ctx.registry.services.require('sui-rpc').url;
-			const client = createLocalSuiClient(url, ctx.network);
+			const client = openSuiRpcClient(ctx);
 			const signer = ctx.accounts.get(opts.signer);
 			const tx = new TransactionImpl();
 			await opts.build(ctx, tx);

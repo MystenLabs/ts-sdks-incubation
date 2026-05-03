@@ -25,7 +25,7 @@ import {
 	requireLocalnetCtx,
 } from '../../core/types.js';
 import { hostProcess } from '../../actions/host-process.js';
-import { createLocalSuiClient } from '../../helpers/sui-client.js';
+import { createLocalSuiClient, openSuiRpcClient } from '../../helpers/sui-client.js';
 import { resolveCoinType } from './coin-spec.js';
 import { type DeepbookPoolSpec, deepbookNs } from './pools.js';
 
@@ -174,10 +174,7 @@ async function tick(
 	const deepbookPkg = ctx.registry.packages.require('deepbook');
 	const signer = ctx.accounts.get(maker.signer);
 	const signerAddr = signer.toSuiAddress();
-	const client = createLocalSuiClient(
-		ctx.registry.services.require('sui-rpc').url,
-		ctx.network,
-	);
+	const client = openSuiRpcClient(ctx);
 
 	const referenced = opts.pools.filter((p) => maker.pools.includes(p.name));
 	const mids =
