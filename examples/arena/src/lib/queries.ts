@@ -1,58 +1,11 @@
-import { useCurrentClient, useDAppKit } from '@mysten/dapp-kit-react';
+import { useCurrentClient } from '@mysten/dapp-kit-react';
 import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
-import type { Transaction } from '@mysten/sui/transactions';
-import { useMutation, useQuery, useQueryClient, type UseMutationResult } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 
 import { deployment } from '../generated/deployment.js';
 import { Game as GameStruct, Lobby as LobbyStruct } from '../generated/sui/connect_four/game.js';
 
-export interface UseSignAndExecuteOptions {
-	/** Query keys to invalidate on a successful tx. */
-	invalidateKeys?: ReadonlyArray<readonly unknown[]>;
-}
-
-/**
- * App-local sign+execute helper. Wraps `dAppKit.signAndExecuteTransaction`
- * (the documented dapp-kit-react entry) with `useMutation` ergonomics +
- * a `waitForTransaction` step so React Query invalidations fire after
- * the indexer has the new state.
- *
- * Used to live in `@mysten-incubation/devstack/react` as
- * `useDevstackSignAndExecute` but that wasn't localnet-specific — it
- * was generic dapp-kit-react usage. App-local copy keeps prod and
- * local code structurally identical.
- */
-export function useSignAndExecute(
-	options: UseSignAndExecuteOptions = {},
-): UseMutationResult<{ digest: string }, Error, Transaction> {
-	const dAppKit = useDAppKit();
-	const client = useCurrentClient();
-	const qc = useQueryClient();
-	return useMutation<{ digest: string }, Error, Transaction>({
-		mutationFn: async (transaction) => {
-			const result = await dAppKit.signAndExecuteTransaction({ transaction });
-			if ('FailedTransaction' in result && result.FailedTransaction) {
-				const status = (result.FailedTransaction as { status?: { error?: string | null } }).status;
-				throw new Error(status?.error ?? 'transaction failed');
-			}
-			const tx = (result as { Transaction?: { digest: string } }).Transaction;
-			if (!tx) throw new Error('signAndExecuteTransaction: missing Transaction in result');
-			return tx;
-		},
-		onSuccess: async (tx) => {
-			// Method-call form preserves `this` so the SDK's internal
-			// `this.core.X` access works. Destructuring `client.waitForTransaction`
-			// to a local would lose `this` and trip a runtime TypeError.
-			const c = client as { waitForTransaction?: (a: { digest: string }) => Promise<unknown> };
-			if (typeof c.waitForTransaction === 'function' && tx.digest.length > 0) {
-				await c.waitForTransaction({ digest: tx.digest });
-			}
-			await Promise.all(
-				(options.invalidateKeys ?? []).map((key) => qc.invalidateQueries({ queryKey: key })),
-			);
-		},
-	});
-}
+export { useSignAndExecute, type UseSignAndExecuteOptions } from '@mysten-incubation/devstack/react';
 
 // Reused for queries the gRPC client doesn't cover (queryTransactionBlocks,
 // queryEvents). FRICTION: dapp-kit's createClient picks one transport for
