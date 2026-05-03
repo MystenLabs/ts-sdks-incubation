@@ -1,4 +1,3 @@
-import { useCurrentClient } from '@mysten/dapp-kit-react';
 import { useId, useMemo, useState } from 'react';
 
 import { deployment, findCoin } from '../generated/deployment.js';
@@ -8,7 +7,6 @@ import { buildDeepbookSwapTx } from '../lib/transactions.js';
 import { Card } from './Card.js';
 
 export function SwapForm({ self }: { self: string }) {
-	const client = useCurrentClient();
 	const invalidate = useInvalidateBalances();
 	const { mutateAsync, isPending } = useSignAndExecute();
 
@@ -56,7 +54,6 @@ export function SwapForm({ self }: { self: string }) {
 			if (!pool) throw new Error('No pool selected');
 			if (!deepbookPackageId) throw new Error('DeepBook not deployed');
 			const transaction = await buildDeepbookSwapTx({
-				client,
 				sender: self,
 				deepbookPackageId,
 				poolId: pool.poolId,

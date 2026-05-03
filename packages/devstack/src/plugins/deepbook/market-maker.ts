@@ -25,7 +25,7 @@ import {
 	requireLocalnetCtx,
 } from '../../core/types.js';
 import { hostProcess } from '../../actions/host-process.js';
-import { createLocalSuiClient, openSuiRpcClient } from '../../helpers/sui-client.js';
+import { openSuiRpcClient } from '../../helpers/sui-client.js';
 import { splitInputCoin } from './coin-input.js';
 import { resolveCoinType } from './coin-spec.js';
 import { type DeepbookPoolSpec, deepbookNs } from './pools.js';
@@ -199,7 +199,7 @@ async function tick(
 			target: `${deepbookPkg.packageId}::balance_manager::new`,
 			arguments: [],
 		});
-		await depositPreDeposits(ctx, tx, bm, signerAddr, deepbookPkg.packageId, opts, mids, client);
+		await depositPreDeposits(ctx, tx, bm, signerAddr, deepbookPkg.packageId, opts, mids);
 	} else {
 		bm = tx.object(cached.objectId);
 	}
@@ -303,7 +303,6 @@ async function depositPreDeposits(
 	deepbookPackageId: string,
 	opts: DeepbookMarketMakerActionOptions,
 	mids: Record<string, bigint>,
-	client: ReturnType<typeof createLocalSuiClient>,
 ): Promise<void> {
 	const { maker } = opts;
 	const referenced = opts.pools.filter((p) => maker.pools.includes(p.name));
@@ -329,9 +328,8 @@ async function depositPreDeposits(
 	}
 
 	for (const [coinType, amount] of totalsByCoinType) {
-		const coin = await splitInputCoin({
+		const coin = splitInputCoin({
 			tx,
-			client,
 			owner,
 			coinType,
 			amount,
