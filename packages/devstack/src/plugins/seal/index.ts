@@ -98,6 +98,9 @@ export interface SealPluginOptions {
 	 * `seal-cli genkey` invocation and the on-disk cache, useful for
 	 * deterministic test fixtures. */
 	master?: { masterKey: string; publicKey: string };
+	/** Account that signs the `KeyServer` registration tx. Defaults to
+	 * `'publisher'` to match the rest of the built-ins. */
+	publisher?: string;
 }
 
 export const seal = (opts: SealPluginOptions = {}) => {
@@ -105,6 +108,7 @@ export const seal = (opts: SealPluginOptions = {}) => {
 	const preferredPort = opts.port ?? KEY_SERVER_CONTAINER_PORT;
 	const keyServerName = opts.keyServerName ?? SEAL_KEY_SERVER_NAME;
 	const masterOverride = opts.master;
+	const publisherAccount = opts.publisher ?? 'publisher';
 	const imageTag = sealImageTag(rev);
 	const platform = hostDockerPlatform();
 
@@ -143,6 +147,7 @@ export const seal = (opts: SealPluginOptions = {}) => {
 				name: 'publish',
 				needs: ['build', 'sui.accounts'],
 				registryAs: 'seal',
+				publisher: publisherAccount,
 				// Move sources are baked into the seal image; sourcePath here
 				// is a stable label (the image tag) used for input hashing
 				// only — the actual directory comes from `prepareSource`.
@@ -165,7 +170,8 @@ export const seal = (opts: SealPluginOptions = {}) => {
 			register({
 				name: 'register',
 				needs: ['publish', 'build'],
-				inputs: { preferredPort, keyServerName, rev },
+				runsAs: publisherAccount,
+				inputs: { preferredPort, keyServerName, rev, publisher: publisherAccount },
 				// Reconciler invokes this on every successful path (cold run +
 				// warm-path skip), so the in-memory `services` registry stays
 				// populated without `getStatus` having to re-register manually.
@@ -206,6 +212,7 @@ export const seal = (opts: SealPluginOptions = {}) => {
 						keyServerUrl,
 						keyServerName,
 						masterOverride,
+						publisher: publisherAccount,
 					});
 				},
 			}),
@@ -289,6 +296,7 @@ interface RegisterSealOptions {
 	keyServerUrl: string;
 	keyServerName: string;
 	masterOverride: { masterKey: string; publicKey: string } | undefined;
+	publisher: string;
 }
 
 async function registerSealKeyServer({
@@ -297,9 +305,10 @@ async function registerSealKeyServer({
 	keyServerUrl,
 	keyServerName,
 	masterOverride,
+	publisher: publisherAccount,
 }: RegisterSealOptions): Promise<void> {
 	const sealPkg = ctx.registry.packages.require('seal');
-	const publisher = ctx.accounts.get('publisher');
+	const publisher = ctx.accounts.get(publisherAccount);
 	const client = createLocalSuiClient(ctx.registry.services.require('sui-rpc').url);
 
 	const keys = await ensureSealMasterKey({

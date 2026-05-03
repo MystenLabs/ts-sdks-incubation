@@ -52,6 +52,7 @@ import { seed } from '../../actions/seed.js';
 import { createLocalSuiClient } from '../../helpers/sui-client.js';
 import {
 	type Action,
+	type ActionRunContext,
 	type LocalnetActionRunContext,
 	type RegistryQuery,
 	requireLocalnetCtx,
@@ -426,6 +427,16 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 					name: 'register',
 					needs: ['deploy', 'node-0', 'proxy'],
 					inputs: { image: imageTag, rev },
+					// Republish the cached registry entries on warm-path skips
+					// so the dirty bit fires for codegen-style cascades that
+					// depend on `packages` / `tokens` / `walrus.nodes` kinds.
+					// Same shape as deepbook/pools.ts:republishCachedPools —
+					// re-register reads the existing entry and writes it back
+					// (no-op on equal values, but signals dirtiness so emits
+					// downstream re-fire correctly).
+					provides: {
+						registry: (ctx) => republishWalrusFromCache(ctx),
+					},
 					getStatus: async (ctx) => {
 						// The deploy volume is the authoritative source of truth: each
 						// `walrus.deploy` cycle rewrites `/opt/walrus/outputs/deploy` with
@@ -664,6 +675,21 @@ async function registerWalrus(
 			hostApiUrl: `http://localhost:${nodeHostPort(i)}`,
 		});
 	}
+}
+
+/** Re-register cached walrus entries on warm-path skips so the dirty
+ * bit fires for downstream Emits (codegen cascades that depend on
+ * `packages` / `tokens` / `walrus.nodes`). Mirrors the shape used by
+ * deepbook/pools.ts:republishCachedPools — re-registering on equal
+ * values is a no-op for the registry's content, but it signals
+ * dirtiness so the cascade picks up the entries. */
+function republishWalrusFromCache(ctx: ActionRunContext): void {
+	const pkg = ctx.registry.packages.find('walrus');
+	if (pkg !== undefined) ctx.registry.packages.register(pkg);
+	const wal = ctx.registry.tokens.find('wal');
+	if (wal !== undefined) ctx.registry.tokens.register(wal);
+	const ns = ctx.registry.ns<WalrusNamespace>('walrus');
+	for (const node of ns.nodes.list()) ns.nodes.register(node);
 }
 
 /** Pull the WAL coin type out of the chain. The `walrus-deploy` output

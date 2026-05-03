@@ -13,6 +13,10 @@ export interface RegisterOptions<TInputs extends Record<string, unknown>> {
 	needs?: string[];
 	provides?: Provides;
 	inputs: TInputs;
+	/** Account this register signs as. Set when the `run:` callback issues
+	 * transactions through `ctx.accounts.get('<name>')` — engages the
+	 * reconciler's same-signer serialization. */
+	runsAs?: string;
 	run: (ctx: ActionRunContext) => Promise<void>;
 	getStatus?: (ctx: ActionRunContext) => Promise<{ ok: boolean; detail?: string }>;
 }
@@ -26,6 +30,7 @@ export function register<TInputs extends Record<string, unknown>>(
 		needs: opts.needs,
 		provides: opts.provides,
 		inputs: opts.inputs,
+		runsAs: opts.runsAs,
 		run: opts.run,
 		getStatus: opts.getStatus,
 	};

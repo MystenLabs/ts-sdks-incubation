@@ -35,20 +35,11 @@ import { generateFromPackageSummary } from '@mysten/codegen';
 import { emit } from '../../actions/emit.js';
 import type { ActionRunContext, Package } from '../../core/types.js';
 import { definePlugin } from '../../plugin.js';
+import { defaultMvrName } from './mvr.js';
+
+export { defaultMvrName } from './mvr.js';
 
 const DEFAULT_OUTPUT = 'src/generated/sui';
-
-/**
- * Default MVR-shape placeholder for a registry package. Move package
- * names typically use snake_case (`mock_usdc`); MVR app-name validation
- * requires kebab (`mock-usdc`). The default kebabizes and prefixes
- * `@local/`. Apps with a custom org configure `codegen({ mvrName: ... })`
- * AND pass the same mapper to `localnetMvrOverrides({ mvrName: ... })`
- * so the codegen output and the SuiClient's overrides agree on names.
- */
-export function defaultMvrName(pkgName: string): string {
-	return `@local/${pkgName.replace(/_/g, '-')}`;
-}
 
 export interface CodegenPluginOptions {
 	/** Output dir relative to the app root. Default `src/generated/sui`. */
