@@ -1,7 +1,4 @@
-import type { ClientWithCoreApi } from '@mysten/sui/client';
 import { Transaction } from '@mysten/sui/transactions';
-
-import { SUI_COIN_TYPE } from './queries.js';
 
 // Sui's system Clock object — required by DeepBook entry functions that use
 // timestamps for matching (passed by reference, not consumed).
@@ -9,50 +6,20 @@ const SUI_CLOCK_OBJECT_ID = '0x6';
 
 /**
  * Build a transaction that sends `amount` (raw base units) of `coinType` to
- * `recipient`. SUI splits from `tx.gas`; non-SUI coins resolve owned objects,
- * merge, then split — see notes/friction.md re: the v2 SDK lacking
- * `tx.coinWithBalance` while pinned to dapp-kit's @mysten/sui version.
+ * `recipient`. Uses `tx.coin({ useGasCoin: false })` which the SDK resolves
+ * via address-balance withdrawal when available, falling back to coin
+ * objects — so the same builder works whether the signing path uses
+ * coin-mode gas or address-balance gas.
  */
 export async function buildSendTx(args: {
-	client: ClientWithCoreApi;
-	sender: string;
 	coinType: string;
 	amount: bigint;
 	recipient: string;
 }): Promise<Transaction> {
-	const { client, sender, coinType, amount, recipient } = args;
-
-	if (coinType === SUI_COIN_TYPE) {
-		const tx = new Transaction();
-		const [coin] = tx.splitCoins(tx.gas, [tx.pure.u64(amount)]);
-		if (!coin) throw new Error('splitCoins returned no result');
-		tx.transferObjects([coin], recipient);
-		return tx;
-	}
-
-	const { objects } = await client.core.listCoins({ owner: sender, coinType });
-	if (objects.length === 0) throw new Error(`No ${coinType} coins owned by this account`);
-
-	const total = objects.reduce((acc, c) => acc + BigInt(c.balance), 0n);
-	if (total < amount) {
-		throw new Error(`Insufficient balance: have ${total}, need ${amount}`);
-	}
-
+	const { coinType, amount, recipient } = args;
 	const tx = new Transaction();
-	const [primary, ...rest] = objects;
-	if (!primary) throw new Error(`No ${coinType} coins owned by this account`);
-	const primaryRef = tx.object(primary.objectId);
-
-	if (rest.length > 0) {
-		tx.mergeCoins(
-			primaryRef,
-			rest.map((c) => tx.object(c.objectId)),
-		);
-	}
-
-	const [split] = tx.splitCoins(primaryRef, [tx.pure.u64(amount)]);
-	if (!split) throw new Error('splitCoins returned no result');
-	tx.transferObjects([split], recipient);
+	const coin = tx.coin({ balance: amount, type: coinType, useGasCoin: false });
+	tx.transferObjects([coin], recipient);
 	return tx;
 }
 
@@ -68,7 +35,6 @@ export async function buildSendTx(args: {
  * pre-quote.
  */
 export async function buildDeepbookSwapTx(args: {
-	client: ClientWithCoreApi;
 	sender: string;
 	deepbookPackageId: string;
 	poolId: string;
@@ -79,7 +45,6 @@ export async function buildDeepbookSwapTx(args: {
 	minOut: bigint;
 }): Promise<Transaction> {
 	const {
-		client,
 		sender,
 		deepbookPackageId,
 		poolId,
@@ -93,34 +58,10 @@ export async function buildDeepbookSwapTx(args: {
 	const inCoinType = direction === 'base_to_quote' ? baseCoinType : quoteCoinType;
 	const tx = new Transaction();
 
-	// Source the input amount: SUI splits from gas; non-SUI lists+merges+splits
-	// owned coins.
-	const inCoin = await sourceCoin();
-	async function sourceCoin() {
-		if (inCoinType === SUI_COIN_TYPE) {
-			const [split] = tx.splitCoins(tx.gas, [tx.pure.u64(amountIn)]);
-			if (!split) throw new Error('splitCoins returned no result');
-			return split;
-		}
-		const { objects } = await client.core.listCoins({ owner: sender, coinType: inCoinType });
-		if (objects.length === 0) throw new Error(`No ${inCoinType} coins owned by this account`);
-		const total = objects.reduce((acc, c) => acc + BigInt(c.balance), 0n);
-		if (total < amountIn) {
-			throw new Error(`Insufficient balance: have ${total}, need ${amountIn}`);
-		}
-		const [primary, ...rest] = objects;
-		if (!primary) throw new Error(`No ${inCoinType} coins`);
-		const primaryRef = tx.object(primary.objectId);
-		if (rest.length > 0) {
-			tx.mergeCoins(
-				primaryRef,
-				rest.map((c) => tx.object(c.objectId)),
-			);
-		}
-		const [split] = tx.splitCoins(primaryRef, [tx.pure.u64(amountIn)]);
-		if (!split) throw new Error('splitCoins returned no result');
-		return split;
-	}
+	// `tx.coin({ useGasCoin: false })` resolves via address-balance withdrawal
+	// when available, owned coin objects otherwise. Works in both coin-mode
+	// gas and address-balance gas paths.
+	const inCoin = tx.coin({ balance: amountIn, type: inCoinType, useGasCoin: false });
 
 	// `--with-unpublished-dependencies` inlines DeepBook's `token` sub-package
 	// under the parent's address, so DEEP type lives at deepbookPackageId.

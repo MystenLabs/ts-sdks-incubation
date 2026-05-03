@@ -40,9 +40,8 @@ export async function buildDeepbookSwapTx(opts: BuildSwapTxOptions): Promise<Tra
 	const tx = new Transaction();
 	const inCoinType = opts.direction === 'base_to_quote' ? opts.baseCoinType : opts.quoteCoinType;
 
-	const inCoin = await splitInputCoin({
+	const inCoin = splitInputCoin({
 		tx,
-		client: opts.client,
 		owner: opts.sender,
 		coinType: inCoinType,
 		amount: opts.amountIn,

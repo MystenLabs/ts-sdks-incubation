@@ -1,4 +1,3 @@
-import { useCurrentClient } from '@mysten/dapp-kit-react';
 import { useId, useMemo, useState } from 'react';
 
 import { deployment } from '../generated/deployment.js';
@@ -8,7 +7,6 @@ import { buildSendTx } from '../lib/transactions.js';
 import { Card } from './Card.js';
 
 export function SendForm({ self }: { self: string }) {
-	const client = useCurrentClient();
 	const invalidate = useInvalidateBalances();
 	const { mutateAsync, isPending } = useSignAndExecute();
 
@@ -36,8 +34,6 @@ export function SendForm({ self }: { self: string }) {
 			const raw = parseCoinAmount(amount, selectedCoin.decimals);
 			if (raw <= 0n) throw new Error('Amount must be greater than zero');
 			const transaction = await buildSendTx({
-				client,
-				sender: self,
 				coinType: selectedCoin.coinType,
 				amount: raw,
 				recipient,

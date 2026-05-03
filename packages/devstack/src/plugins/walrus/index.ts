@@ -633,10 +633,14 @@ async function seedWal(ctx: LocalnetActionRunContext): Promise<void> {
 			continue;
 		}
 		const tx = new Transaction();
-		const [paymentCoin] = tx.splitCoins(tx.gas, [tx.pure.u64(SEED_WAL_PAYMENT_SUI)]);
-		if (paymentCoin === undefined) {
-			throw new Error('walrus.seedWal: splitCoins returned no result');
-		}
+		// `useGasCoin: false` so the SDK resolver picks the SUI source
+		// itself (address-balance withdrawal preferred over coin
+		// objects) — keeps this builder gas-mode-agnostic.
+		const paymentCoin = tx.coin({
+			balance: SEED_WAL_PAYMENT_SUI,
+			type: '0x2::sui::SUI',
+			useGasCoin: false,
+		});
 		const walCoin = tx.moveCall({
 			target: `${exchangePkgId}::wal_exchange::exchange_all_for_wal`,
 			arguments: [tx.object(exchangeId), paymentCoin],
