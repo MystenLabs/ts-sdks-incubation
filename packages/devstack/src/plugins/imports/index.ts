@@ -276,6 +276,7 @@ function buildActionsForSpec(spec: InternalImportSpec): Action[] {
 			needs: [sourceActionName, 'sui.accounts', ...depPublishNeeds],
 			provides: { capabilities: [`imports.${spec.name}`] },
 			path: '<imported>',
+			runsAs: publisherAccount,
 			inputs: publishInputs,
 			getStatus: async (ctx) => {
 				const curated = curatedAddressFor(spec, ctx.network);

@@ -32,6 +32,7 @@ export function deepbookPublishAction(opts: DeepbookPublishOptions): PublishActi
 		type: 'Publish',
 		needs: ['source', 'sui.accounts'],
 		path: '<imported>',
+		runsAs: opts.admin,
 		inputs: { repo: DEEPBOOK_REPO, rev: opts.rev, admin: opts.admin },
 		getStatus: async (ctx) => {
 			const prior = ctx.registry.packages.find('deepbook');
