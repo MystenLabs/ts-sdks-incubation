@@ -1,7 +1,7 @@
 import type { ClientWithCoreApi } from '@mysten/sui/client';
 import { Transaction } from '@mysten/sui/transactions';
 
-import { deployment } from '../generated/deployment.js';
+import { deployment } from './deployment.js';
 
 export const MANAGED_COIN_TYPE = deployment.managedCoinType;
 export const TREASURY_CAP_ID = deployment.treasuryCapId;

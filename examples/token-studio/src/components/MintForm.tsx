@@ -2,7 +2,7 @@ import { Transaction } from '@mysten/sui/transactions';
 import { Card, Field } from '@mysten-incubation/devstack/react/ui';
 import { useState } from 'react';
 
-import { deployment } from '../generated/deployment.js';
+import { deployment } from '../lib/deployment.js';
 import * as managedCoin from '../generated/sui/managed_coin/managed_coin.js';
 import { TREASURY_CAP_ID, parseStudioAmount, shortAddress } from '../lib/coin.js';
 import { useInvalidateCoinReads, useSignAndExecute } from '../lib/queries.js';

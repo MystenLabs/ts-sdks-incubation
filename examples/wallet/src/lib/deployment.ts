@@ -1,10 +1,9 @@
-// Frontend-facing projection of the devstack manifest. The vite plugin reads
-// the active stack's manifest at `.devstack/stacks/<active>/manifest.json`
-// and re-exports it as `virtual:devstack-manifest`; this adapter narrows it
-// into the keys the UI reads, with empty-shape fallbacks so the app
-// renders before the first `localnet:up`.
+// App-level projection of the codegen-emitted typed manifest. Joins the
+// service URLs, the registered mock-coin tokens, and the deepbook pools
+// into the views the wallet UI reads — coin specs (with derived symbols),
+// pool views (with base/quote symbols joined), and a flat account map.
 
-import { manifest } from './manifest.js';
+import { manifest } from '../generated/manifest.js';
 
 export interface CoinSpec {
 	symbol: string;
@@ -21,28 +20,21 @@ export interface PoolView {
 	quoteSymbol: string;
 }
 
-const registry = (manifest as { registry?: unknown }).registry as
-	| {
-			tokens?: Array<{ name: string; type: string; decimals: number }>;
-			services?: Array<{ name: string; url: string }>;
-			accounts?: Array<{ name: string; address: string }>;
-			packages?: Array<{ name: string; packageId: string }>;
-			deepbook?: {
-				pools?: Array<{
-					name: string;
-					poolId: string;
-					baseCoinType: string;
-					quoteCoinType: string;
-				}>;
-			};
-	  }
-	| undefined;
+interface DeepbookNamespace {
+	pools?: ReadonlyArray<{
+		name: string;
+		poolId: string;
+		baseCoinType: string;
+		quoteCoinType: string;
+	}>;
+}
 
-const services = registry?.services ?? [];
-const accounts = registry?.accounts ?? [];
-const packages = registry?.packages ?? [];
-const tokens = registry?.tokens ?? [];
-const deepbookPools = registry?.deepbook?.pools ?? [];
+const services = manifest.registry.services;
+const accounts = manifest.registry.accounts;
+const packages = manifest.registry.packages;
+const tokens = manifest.registry.tokens;
+const deepbookPools =
+	(manifest.registry.deepbook as DeepbookNamespace | undefined)?.pools ?? [];
 
 const accountMap: Record<string, string> = Object.fromEntries(
 	accounts.map((a) => [a.name, a.address]),
@@ -78,11 +70,10 @@ const pools: readonly PoolView[] = deepbookPools.map((p) => ({
 export const deployment = {
 	rpcUrl: services.find((s) => s.name === 'sui-rpc')?.url ?? '',
 	faucetUrl: services.find((s) => s.name === 'sui-faucet')?.url,
-	accounts: accountMap as Record<string, string>,
+	accounts: accountMap,
 	coins: allCoins,
 	pools,
 	deepbookPackageId: packages.find((p) => p.name === 'deepbook')?.packageId,
-	publishedAt: manifest.emittedAt ?? '',
 } as const;
 
 export const isDeployed: boolean = Object.keys(deployment.accounts).length > 0;

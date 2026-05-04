@@ -3,7 +3,7 @@
 // plugin) can import the type without pulling node-fs into their type
 // graph. The writer/reader files import from here too.
 
-import type { Network } from '../core/types.js';
+import type { Account, Network, Package, Service, Token } from '../core/types.js';
 
 export interface Manifest {
 	app: string;
@@ -31,9 +31,9 @@ export interface SerializedActionState {
 }
 
 export interface SerializedRegistry {
-	tokens: unknown[];
-	packages: unknown[];
-	accounts: unknown[];
-	services: unknown[];
+	tokens: Token[];
+	packages: Package[];
+	accounts: Account[];
+	services: Service[];
 	[namespace: string]: unknown;
 }

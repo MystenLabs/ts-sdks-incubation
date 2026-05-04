@@ -2,7 +2,7 @@ import { useCurrentClient } from '@mysten/dapp-kit-react';
 import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
 import { useQuery } from '@tanstack/react-query';
 
-import { deployment } from '../generated/deployment.js';
+import { deployment } from './deployment.js';
 import { Game as GameStruct, Lobby as LobbyStruct } from '../generated/sui/connect_four/game.js';
 
 export { useSignAndExecute, type UseSignAndExecuteOptions } from '@mysten-incubation/devstack/react';

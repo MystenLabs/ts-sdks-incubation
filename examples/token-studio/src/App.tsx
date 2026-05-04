@@ -6,7 +6,7 @@ import { Balances } from './components/Balances.js';
 import { CoinHeader } from './components/CoinHeader.js';
 import { MintForm } from './components/MintForm.js';
 import { TransferForm } from './components/TransferForm.js';
-import { deployment } from './generated/deployment.js';
+import { deployment } from './lib/deployment.js';
 import { labelFor, shortAddress } from './lib/coin.js';
 
 export function App() {

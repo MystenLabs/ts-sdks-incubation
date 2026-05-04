@@ -1,7 +1,7 @@
 import { useCurrentClient } from '@mysten/dapp-kit-react';
 import { useState } from 'react';
 
-import { deployment } from '../generated/deployment.js';
+import { deployment } from '../lib/deployment.js';
 import { bytesToString, labelFor, shortAddress } from '../lib/format.js';
 import { type VaultCap, useFile, useOwnedCaps } from '../lib/queries.js';
 import { decryptForFile } from '../lib/seal.js';

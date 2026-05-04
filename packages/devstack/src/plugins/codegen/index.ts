@@ -1,18 +1,30 @@
 // Codegen plugin. Owns one Emit action:
 //
-//   codegen.generate — Iterates `registry.packages.list()`, filters to
-//                      entries with a host-resolvable `path`, runs
-//                      `sui move summary`, then calls
-//                      `@mysten/codegen`'s `generateFromPackageSummary`
-//                      directly per package. Output lands at
-//                      `<appDir>/<output>` (default `src/generated/sui`).
+//   codegen.generate — Two outputs per successful run:
+//                      1. Move bindings: iterates `registry.packages.list()`,
+//                         filters to entries with a host-resolvable `path`,
+//                         runs `sui move summary`, then calls
+//                         `@mysten/codegen`'s `generateFromPackageSummary`
+//                         per package. Output lands under `<appDir>/<output>`
+//                         (default `src/generated/sui`).
+//                      2. Typed manifest: a single `manifest.ts` file at
+//                         `<output>/../manifest.ts` (default
+//                         `src/generated/manifest.ts`) that re-projects the
+//                         registry snapshot with a `: Manifest` annotation
+//                         so apps don't re-type the four core registry kinds
+//                         (services, accounts, packages, tokens) at every
+//                         call site. Plugin namespaces stay `unknown` and
+//                         are cast in app code (`src/lib/deployment.ts`).
 //
-// `dependsOnKind: ['packages']` means the reconciler re-fires this Emit
-// whenever the packages kind dirties — i.e. after any Publish action runs
-// in the same cycle. The Emit's input hash also includes a stable
-// fingerprint of (name, packageId, path) per package, so the warm-cycle
-// `getStatus` short-circuits when no package the codegen cares about has
-// changed since the last write.
+// `dependsOnKind: ['packages', 'accounts', 'services', 'tokens']` means the
+// reconciler re-fires this Emit whenever any core registry kind dirties.
+// Plugin namespaces aren't enumerable at action-construction time, so
+// changes scoped to plugin namespaces alone (no core kind dirty in the
+// same cycle) won't trigger a re-emit — in practice they always co-dirty
+// with `packages` because Register/Seed actions follow Publish. The
+// `getStatus` gate also drops back to `ok: false` whenever the on-disk
+// `manifest.ts` content drifts from the current registry snapshot, so
+// any registry change of consequence regenerates.
 //
 // Pathless registry entries (imported packages — deepbook, seal, walrus —
 // whose source lives inside a docker image, not on the host) are silently
@@ -28,13 +40,14 @@
 // `localnetDappKitConfig` and no longer need `bindPackage`.
 
 import { execSync, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, statSync } from 'node:fs';
-import { isAbsolute, join, resolve } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 
 import { generateFromPackageSummary } from '@mysten/codegen';
 import { emit } from '../../actions/emit.js';
 import type { ActionRunContext, Package } from '../../core/types.js';
 import { definePlugin } from '../../plugin.js';
+import type { RegistryImpl } from '../../registry/index.js';
 import { defaultMvrName } from './mvr.js';
 
 export { defaultMvrName } from './mvr.js';
@@ -69,7 +82,13 @@ export const codegen = (opts: CodegenPluginOptions = {}) => {
 		actions: () => [
 			emit({
 				name: 'generate',
-				dependsOnKind: ['packages'],
+				// Re-fire on any registry kind that the typed `manifest.ts`
+				// projection consumes. Plugin namespaces aren't enumerable
+				// at action-construction time, so changes scoped to plugin
+				// namespaces alone (no core kind dirty in the same cycle)
+				// won't trigger a re-emit — in practice they always co-dirty
+				// with `packages` because Register/Seed actions follow Publish.
+				dependsOnKind: ['packages', 'accounts', 'services', 'tokens'],
 				// Include a sample of the mvrName mapper so changing it busts
 				// the input hash and triggers a re-emit. Probe value is just
 				// `mvrName('_')` — distinct outputs across mappers without
@@ -82,13 +101,20 @@ export const codegen = (opts: CodegenPluginOptions = {}) => {
 					registry: (ctx) => publishPlaceholders(ctx, mvrName),
 				},
 				getStatus: async (ctx) => {
+					const outputAbs = resolvedOutputDir(ctx.appDir, output);
+					const manifestPath = resolvedManifestPath(outputAbs);
+					const expectedManifest = renderTypedManifest(ctx);
+					if (
+						!existsSync(manifestPath) ||
+						readFileSync(manifestPath, 'utf8') !== expectedManifest
+					) {
+						return { ok: false, detail: 'manifest.ts stale' };
+					}
 					const targets = codegenTargets(ctx.registry.packages.list());
 					if (targets.length === 0) return { ok: true, detail: 'no codegen-able packages' };
-					const outputAbs = resolvedOutputDir(ctx.appDir, output);
 					if (!existsSync(outputAbs)) {
 						return { ok: false, detail: `${output} missing` };
 					}
-					const outMtime = statSync(outputAbs).mtimeMs;
 					for (const pkg of targets) {
 						const subdir = join(outputAbs, pkg.name);
 						if (!existsSync(subdir)) {
@@ -96,18 +122,21 @@ export const codegen = (opts: CodegenPluginOptions = {}) => {
 						}
 						// Move sources newer than the bindings → re-emit. Cheap proxy
 						// for "did the user touch the .move file since last codegen?"
-						// without re-running `sui move summary`.
-						if (newestMoveSourceMtime(pkg.path) > outMtime) {
+						// without re-running `sui move summary`. Use per-package subdir
+						// mtime so writes to sibling files don't invalidate the comparison.
+						const subMtime = statSync(subdir).mtimeMs;
+						if (newestMoveSourceMtime(pkg.path) > subMtime) {
 							return { ok: false, detail: `${pkg.name} sources newer than bindings` };
 						}
 					}
 					return { ok: true, detail: `${targets.length} package(s) up-to-date` };
 				},
 				run: async (ctx) => {
+					const outputAbs = resolvedOutputDir(ctx.appDir, output);
+					writeTypedManifest({ ctx, outputAbs });
 					const targets = codegenTargets(ctx.registry.packages.list());
 					if (targets.length === 0) return;
 					await ensureSuiOnPath();
-					const outputAbs = resolvedOutputDir(ctx.appDir, output);
 					mkdirSync(outputAbs, { recursive: true });
 					for (const pkg of targets) {
 						await runCodegenForPackage({ ctx, pkg, output, mvrName });
@@ -117,6 +146,53 @@ export const codegen = (opts: CodegenPluginOptions = {}) => {
 		],
 	});
 };
+
+/** Test helper. Pure function — same input, same output; no I/O. */
+export function renderTypedManifest(ctx: ActionRunContext): string {
+	const reg = ctx.registry as RegistryImpl;
+	const manifest = {
+		app: ctx.appName,
+		network: ctx.network,
+		emittedAt: '',
+		registry: reg.snapshot(),
+	};
+	const json = JSON.stringify(manifest, manifestReplacer, '\t');
+	return `// AUTO-GENERATED by @mysten-incubation/devstack codegen — do not edit.
+// Re-emitted on every successful \`devstack apply\`. Reflects the registry
+// state at last apply; for live values across stack switches, also import
+// from \`virtual:devstack-manifest\` (provided by the devstack vite plugin).
+//
+// The \`Manifest\` annotation gives apps strong typing on the four core
+// registry kinds (services, accounts, packages, tokens) without re-typing
+// at every call site. Plugin namespaces stay \`unknown\` — apps cast to a
+// specific shape in their per-app projection (typically \`src/lib/deployment.ts\`).
+
+import type { Manifest } from '@mysten-incubation/devstack';
+
+export const manifest: Manifest = ${json};
+`;
+}
+
+function writeTypedManifest(opts: { ctx: ActionRunContext; outputAbs: string }): void {
+	const file = resolvedManifestPath(opts.outputAbs);
+	mkdirSync(dirname(file), { recursive: true });
+	writeFileSync(file, renderTypedManifest(opts.ctx), 'utf8');
+}
+
+/** The typed manifest is colocated one level up from the Move-bindings
+ * output dir — `<appDir>/src/generated/manifest.ts` for the default
+ * `output: 'src/generated/sui'`. Lives outside the bindings dir on
+ * purpose: bindings are gitignored (large, regenerated, package-specific);
+ * the typed manifest is small, app-wide, and committed so apps typecheck
+ * on a fresh clone before the first `devstack apply`. */
+function resolvedManifestPath(outputAbs: string): string {
+	return resolve(outputAbs, '..', 'manifest.ts');
+}
+
+function manifestReplacer(_key: string, value: unknown): unknown {
+	if (typeof value === 'bigint') return value.toString();
+	return value;
+}
 
 interface CodegenTarget {
 	name: string;

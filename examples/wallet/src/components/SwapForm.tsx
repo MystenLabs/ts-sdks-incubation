@@ -1,7 +1,7 @@
 import { Card, Field } from '@mysten-incubation/devstack/react/ui';
 import { useMemo, useState } from 'react';
 
-import { deployment, findCoin } from '../generated/deployment.js';
+import { deployment, findCoin } from '../lib/deployment.js';
 import { parseCoinAmount } from '../lib/format.js';
 import { useInvalidateBalances, useSignAndExecute } from '../lib/queries.js';
 import { buildDeepbookSwapTx } from '../lib/transactions.js';

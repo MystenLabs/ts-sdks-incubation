@@ -4,7 +4,7 @@ import { ConnectButton } from '@mysten/dapp-kit-react/ui';
 
 import { GameView } from './components/GameView.js';
 import { LobbyView } from './components/LobbyView.js';
-import { deployment } from './generated/deployment.js';
+import { deployment } from './lib/deployment.js';
 import { labelFor, shortAddress } from './lib/format.js';
 import { useOpenLobby, useSpawnedGame } from './lib/queries.js';
 

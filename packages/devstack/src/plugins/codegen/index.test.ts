@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -10,9 +10,9 @@ import type {
 	EmitAction,
 	Package,
 } from '../../core/types.js';
-import { RegistryImpl } from '../../registry/index.js';
+import { defineRegistryKind, RegistryImpl } from '../../registry/index.js';
 import { createInMemoryPortAllocator } from '../../runtime/port-allocator.js';
-import { codegen } from './index.js';
+import { codegen, renderTypedManifest } from './index.js';
 
 // `codegen.generate` is the only action this plugin produces; tests below
 // inspect its `getStatus` gate, since `run()` shells `sui-ts-codegen` which
@@ -73,6 +73,16 @@ const writeBindings = (outputAbs: string, pkgName: string): string => {
 	return sub;
 };
 
+/** Pre-write the typed manifest exactly as `getStatus` expects, so tests
+ * that exercise other gate branches don't trip the manifest-staleness
+ * check first. Mirrors codegen's path convention: manifest.ts sits one
+ * level up from the Move-bindings dir. */
+const writeCurrentManifest = (outputAbs: string, ctx: ActionRunContext): void => {
+	const manifestPath = resolve(outputAbs, '..', 'manifest.ts');
+	mkdirSync(dirname(manifestPath), { recursive: true });
+	writeFileSync(manifestPath, renderTypedManifest(ctx), 'utf8');
+};
+
 const setMtime = (path: string, ms: number): void => {
 	// `statSync(p).mtimeMs` reads what utimesSync writes; both take seconds
 	// since epoch as floats. Used to deterministically position bindings
@@ -96,11 +106,11 @@ describe('codegen() factory', () => {
 		expect(plugin.actions()).toHaveLength(1);
 	});
 
-	it('the lone action is Emit with `dependsOnKind: [\'packages\']`', () => {
+	it('the lone action is Emit gated on the core registry kinds the typed manifest reads', () => {
 		const action = getGenerateAction();
 		expect(action.type).toBe('Emit');
 		expect(action.name).toBe('generate');
-		expect(action.dependsOnKind).toEqual(['packages']);
+		expect(action.dependsOnKind).toEqual(['packages', 'accounts', 'services', 'tokens']);
 	});
 
 	it('threads the `output` option into the action inputs (default `src/generated/sui`)', () => {
@@ -108,6 +118,45 @@ describe('codegen() factory', () => {
 		expect((defaultAction.inputs as { output: string }).output).toBe('src/generated/sui');
 		const customAction = getGenerateAction('custom/out');
 		expect((customAction.inputs as { output: string }).output).toBe('custom/out');
+	});
+});
+
+describe('renderTypedManifest', () => {
+	it('emits a TypeScript module with a `: Manifest` type annotation imported from devstack', () => {
+		const registry = new RegistryImpl();
+		registry.accounts.register({ name: 'alice', address: '0x1', funded: true });
+		registry.services.register({
+			name: 'sui-rpc',
+			kind: 'rpc',
+			url: 'http://localhost:31000',
+			port: 31000,
+		});
+		const ctx = makeCtx('/app', registry);
+		const out = renderTypedManifest(ctx);
+		expect(out).toMatch(/import type \{ Manifest \} from '@mysten-incubation\/devstack';/);
+		expect(out).toMatch(/export const manifest: Manifest =/);
+		expect(out).toMatch(/"alice"/);
+		expect(out).toMatch(/"sui-rpc"/);
+	});
+
+	it('includes plugin-namespaced registry kinds at top level of `registry`', () => {
+		const registry = new RegistryImpl();
+		const sharedObjects = defineRegistryKind<{ name: string; objectId: string }>(
+			'arena.sharedObjects',
+		);
+		sharedObjects(registry).register({ name: 'openLobby', objectId: '0xabc' });
+		const ctx = makeCtx('/app', registry);
+		const out = renderTypedManifest(ctx);
+		expect(out).toMatch(/"arena":/);
+		expect(out).toMatch(/"sharedObjects":/);
+		expect(out).toMatch(/"openLobby"/);
+	});
+
+	it('is deterministic for unchanged input (powers the staleness check)', () => {
+		const registry = new RegistryImpl();
+		registry.accounts.register({ name: 'alice', address: '0x1', funded: true });
+		const ctx = makeCtx('/app', registry);
+		expect(renderTypedManifest(ctx)).toBe(renderTypedManifest(ctx));
 	});
 });
 
@@ -123,8 +172,13 @@ describe('codegen.getStatus — gate behavior', () => {
 			network: 'localnet',
 			// path: undefined  ← imported package
 		});
+		const ctx = makeCtx(appDir, registry);
+		// Pre-stage the typed manifest the way `run()` would have, so the
+		// staleness gate passes and we hit the no-codegen-able-packages branch.
+		const outputAbs = join(appDir, 'src', 'generated', 'sui');
+		writeCurrentManifest(outputAbs, ctx);
 		const action = getGenerateAction();
-		const status = await action.getStatus!(makeCtx(appDir, registry));
+		const status = await action.getStatus!(ctx);
 		expect(status.ok).toBe(true);
 		expect(status.detail).toMatch(/no codegen-able packages/);
 	});
@@ -142,8 +196,13 @@ describe('codegen.getStatus — gate behavior', () => {
 			network: 'localnet',
 			path: pkgPath,
 		});
+		const ctx = makeCtx(appDir, registry);
+		// Stage a current manifest.ts so the staleness gate passes and we hit
+		// the missing-bindings-dir branch we want to assert on.
+		const outputAbs = join(appDir, 'src', 'generated', 'sui');
+		writeCurrentManifest(outputAbs, ctx);
 		const action = getGenerateAction();
-		const status = await action.getStatus!(makeCtx(appDir, registry));
+		const status = await action.getStatus!(ctx);
 		expect(status.ok).toBe(false);
 		expect(status.detail).toMatch(/missing/);
 	});
@@ -164,8 +223,10 @@ describe('codegen.getStatus — gate behavior', () => {
 			network: 'localnet',
 			path: pkgPath,
 		});
+		const ctx = makeCtx(appDir, registry);
+		writeCurrentManifest(outputAbs, ctx);
 		const action = getGenerateAction();
-		const status = await action.getStatus!(makeCtx(appDir, registry));
+		const status = await action.getStatus!(ctx);
 		expect(status.ok).toBe(false);
 		expect(status.detail).toMatch(/vault bindings missing/);
 	});
@@ -180,8 +241,8 @@ describe('codegen.getStatus — gate behavior', () => {
 		setMtime(join(pkgPath, 'sources', 'vault.move'), 1_000_000);
 		const outputAbs = join(appDir, 'src', 'generated', 'sui');
 		mkdirSync(outputAbs, { recursive: true });
-		writeBindings(outputAbs, 'vault');
-		setMtime(outputAbs, 2_000_000);
+		const subdir = writeBindings(outputAbs, 'vault');
+		setMtime(subdir, 2_000_000);
 
 		const registry = new RegistryImpl();
 		registry.packages.register({
@@ -191,8 +252,10 @@ describe('codegen.getStatus — gate behavior', () => {
 			network: 'localnet',
 			path: pkgPath,
 		});
+		const ctx = makeCtx(appDir, registry);
+		writeCurrentManifest(outputAbs, ctx);
 		const action = getGenerateAction();
-		const status = await action.getStatus!(makeCtx(appDir, registry));
+		const status = await action.getStatus!(ctx);
 		expect(status.ok).toBe(true);
 		expect(status.detail).toMatch(/up-to-date/);
 	});
@@ -205,8 +268,8 @@ describe('codegen.getStatus — gate behavior', () => {
 		// Bindings at T=1000s; source touched at T=2000s.
 		const outputAbs = join(appDir, 'src', 'generated', 'sui');
 		mkdirSync(outputAbs, { recursive: true });
-		writeBindings(outputAbs, 'vault');
-		setMtime(outputAbs, 1_000_000);
+		const subdir = writeBindings(outputAbs, 'vault');
+		setMtime(subdir, 1_000_000);
 		setMtime(join(pkgPath, 'sources', 'vault.move'), 2_000_000);
 
 		const registry = new RegistryImpl();
@@ -217,8 +280,10 @@ describe('codegen.getStatus — gate behavior', () => {
 			network: 'localnet',
 			path: pkgPath,
 		});
+		const ctx = makeCtx(appDir, registry);
+		writeCurrentManifest(outputAbs, ctx);
 		const action = getGenerateAction();
-		const status = await action.getStatus!(makeCtx(appDir, registry));
+		const status = await action.getStatus!(ctx);
 		expect(status.ok).toBe(false);
 		expect(status.detail).toMatch(/sources newer than bindings/);
 	});
@@ -231,11 +296,11 @@ describe('codegen.getStatus — gate behavior', () => {
 
 		const outputAbs = join(appDir, 'src', 'generated', 'sui');
 		mkdirSync(outputAbs, { recursive: true });
-		writeBindings(outputAbs, 'vault');
+		const subdir = writeBindings(outputAbs, 'vault');
 		// Sources at T=1_000_000s; bindings dir at T=2_000_000s (newer).
 		setMtime(join(pkgPath, 'Move.toml'), 1_000_000);
 		setMtime(join(pkgPath, 'sources', 'vault.move'), 1_000_000);
-		setMtime(outputAbs, 2_000_000);
+		setMtime(subdir, 2_000_000);
 
 		const registry = new RegistryImpl();
 		// Mix: one on-host package + one pathless (e.g. seal/walrus).
@@ -257,12 +322,42 @@ describe('codegen.getStatus — gate behavior', () => {
 		// current implementation (review 05 flagged this as a future
 		// hardening). The supported skip is `path: undefined`.
 
+		const ctx = makeCtx(appDir, registry);
+		writeCurrentManifest(outputAbs, ctx);
 		const action = getGenerateAction();
-		const status = await action.getStatus!(makeCtx(appDir, registry));
+		const status = await action.getStatus!(ctx);
 		// `seal` doesn't generate a "bindings missing" failure because the
 		// pathless entry is filtered by `codegenTargets()` before the loop.
 		expect(status.ok).toBe(true);
 		expect(status.detail).toMatch(/1 package\(s\) up-to-date/);
+	});
+
+	it('returns ok:false when manifest.ts is absent (run() must regenerate)', async () => {
+		const appDir = newAppDir();
+		const outputAbs = join(appDir, 'src', 'generated', 'sui');
+		mkdirSync(outputAbs, { recursive: true });
+		const registry = new RegistryImpl();
+		registry.accounts.register({ name: 'alice', address: '0x1', funded: true });
+		const action = getGenerateAction();
+		const status = await action.getStatus!(makeCtx(appDir, registry));
+		expect(status.ok).toBe(false);
+		expect(status.detail).toMatch(/manifest\.ts stale/);
+	});
+
+	it('returns ok:false when manifest.ts content drifts from the current registry snapshot', async () => {
+		const appDir = newAppDir();
+		const outputAbs = join(appDir, 'src', 'generated', 'sui');
+		mkdirSync(outputAbs, { recursive: true });
+		const registry = new RegistryImpl();
+		registry.accounts.register({ name: 'alice', address: '0x1', funded: true });
+		const ctx = makeCtx(appDir, registry);
+		writeCurrentManifest(outputAbs, ctx);
+		// Drift the registry without re-writing the file.
+		registry.accounts.register({ name: 'bob', address: '0x2', funded: true });
+		const action = getGenerateAction();
+		const status = await action.getStatus!(ctx);
+		expect(status.ok).toBe(false);
+		expect(status.detail).toMatch(/manifest\.ts stale/);
 	});
 
 	it('idempotency: a second getStatus on unchanged inputs still returns ok:true (no spurious re-gen)', async () => {
@@ -274,8 +369,8 @@ describe('codegen.getStatus — gate behavior', () => {
 		setMtime(join(pkgPath, 'sources', 'vault.move'), 1_000_000);
 		const outputAbs = join(appDir, 'src', 'generated', 'sui');
 		mkdirSync(outputAbs, { recursive: true });
-		writeBindings(outputAbs, 'vault');
-		setMtime(outputAbs, 2_000_000);
+		const subdir = writeBindings(outputAbs, 'vault');
+		setMtime(subdir, 2_000_000);
 
 		const pkg: Package = {
 			name: 'vault',
@@ -289,6 +384,7 @@ describe('codegen.getStatus — gate behavior', () => {
 
 		const action = getGenerateAction();
 		const ctx = makeCtx(appDir, registry);
+		writeCurrentManifest(outputAbs, ctx);
 		const first = await action.getStatus!(ctx);
 		const second = await action.getStatus!(ctx);
 		expect(first.ok).toBe(true);

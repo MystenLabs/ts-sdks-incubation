@@ -1,7 +1,7 @@
 import { useCurrentClient } from '@mysten/dapp-kit-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { deployment } from '../generated/deployment.js';
+import { deployment } from './deployment.js';
 import { MANAGED_COIN_TYPE } from './coin.js';
 
 export { useSignAndExecute, type UseSignAndExecuteOptions } from '@mysten-incubation/devstack/react';
