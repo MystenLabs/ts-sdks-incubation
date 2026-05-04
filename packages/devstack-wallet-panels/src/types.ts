@@ -1,7 +1,7 @@
 // Local manifest typings. We deliberately don't import the full `Manifest`
 // type from `@mysten-incubation/devstack` — that pulls Node-only build
 // machinery into the type graph. Browser consumers care about the
-// `services`, `accounts`, `packages`, and `tokens` shapes, which are
+// `services`, `accounts`, `packages`, and `coin.tokens` shapes, which are
 // stable across schema versions, so we narrow to those.
 
 export interface DevstackService {
@@ -44,7 +44,7 @@ export interface DevstackManifest {
 		services: DevstackService[];
 		accounts: DevstackAccount[];
 		packages: DevstackPackage[];
-		tokens: DevstackToken[];
+		coin?: { tokens?: DevstackToken[] };
 		[namespace: string]: unknown;
 	};
 }

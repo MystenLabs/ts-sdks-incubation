@@ -37,9 +37,9 @@ export type {
  *
  * Accepts `unknown` to stay compatible with manifests produced by either
  * the typed `virtual:devstack-manifest` declaration in an app's
- * `vite-env.d.ts` or the loose `Manifest` type emitted by devstack's
- * serializer (the latter declares `tokens: unknown[]` and friends).
- * Panels narrow what they need at render time. */
+ * `vite-env.d.ts` or the structurally-equivalent `Manifest` exported
+ * from `@mysten-incubation/devstack`. Panels narrow what they need at
+ * render time. */
 export function configureDevstackPanels(manifest: unknown): void {
 	setActiveManifest(manifest as DevstackManifest | null);
 }

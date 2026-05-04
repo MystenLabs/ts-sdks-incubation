@@ -3,14 +3,14 @@
 // `registry.ns('<plugin>')`. Per-kind dirty tracking lets the reconciler
 // dispatch Emit actions only when their `dependsOnKind` slice changed.
 //
-// Naming: `kindKey` is `'tokens' | 'packages' | 'accounts' | 'services' |
+// Naming: `kindKey` is `'packages' | 'accounts' | 'services' |
 // '<plugin>/<kind>'` — flat string used throughout dirty tracking.
 //
 // The dirty-tracking surface (`isDirty`, `flushDirty`, `consumeDirty`)
 // is **not** on the public `Registry` interface — only the reconciler
 // reaches it (via `RegistryImpl` cast). Plugins should not consult it.
 
-import type { Account, Package, Registry, RegistryQuery, Service, Token } from '../core/types.js';
+import type { Account, Package, Registry, RegistryQuery, Service } from '../core/types.js';
 import type { SerializedRegistry } from '../runtime/manifest-types.js';
 
 /** Typed accessor for a plugin-namespaced registry kind. Pin the kind
@@ -89,7 +89,6 @@ class RegistryQueryImpl<T extends { name: string }> implements RegistryQuery<T> 
 export class RegistryImpl implements Registry {
 	private readonly dirtySet = new Set<string>();
 
-	readonly tokens: RegistryQuery<Token>;
 	readonly packages: RegistryQuery<Package>;
 	readonly accounts: RegistryQuery<Account>;
 	readonly services: RegistryQuery<Service>;
@@ -97,7 +96,6 @@ export class RegistryImpl implements Registry {
 	private readonly namespaces = new Map<string, Record<string, RegistryQuery<unknown>>>();
 
 	constructor() {
-		this.tokens = new RegistryQueryImpl<Token>('tokens', this.dirtySet);
 		this.packages = new RegistryQueryImpl<Package>('packages', this.dirtySet);
 		this.accounts = new RegistryQueryImpl<Account>('accounts', this.dirtySet);
 		this.services = new RegistryQueryImpl<Service>('services', this.dirtySet);
@@ -144,7 +142,6 @@ export class RegistryImpl implements Registry {
 	 */
 	snapshot(): SerializedRegistry {
 		const out: SerializedRegistry = {
-			tokens: this.tokens.list(),
 			packages: this.packages.list(),
 			accounts: this.accounts.list(),
 			services: this.services.list(),

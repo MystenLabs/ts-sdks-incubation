@@ -54,10 +54,13 @@ declare module 'virtual:devstack-manifest' {
 		network: 'localnet' | 'testnet' | 'mainnet';
 		emittedAt: string;
 		registry: {
-			tokens: ManifestToken[];
 			packages: ManifestPackage[];
 			accounts: ManifestAccount[];
 			services: ManifestService[];
+			/**
+			 * Plugin-namespaced kinds. `tokens` lives under `coin.tokens`
+			 * (not a core kind — only fungible-coin apps use it).
+			 */
 			[namespace: string]: unknown;
 		};
 	}
