@@ -7,9 +7,12 @@
 A localnet harness for Sui apps. Each app declares the services it needs (sui, walrus, seal,
 imports, codegen, ...) as a list of plugins; `devstack` reconciles toward that state, publishes Move
 packages, runs codegen, and writes a typed manifest the frontend consumes via Vite. The harness is
-opinionated and fast — a fresh `arena` (sui-only) `pnpm exec devstack up` finishes in ~17 s; a fresh
-`private-content` (sui+walrus+seal) finishes in ~76 s on Apple Silicon. Warm cycles short-circuit
-through `getStatus` and run in 1–3 s.
+opinionated about its goals: warm cycles short-circuit through `getStatus` so subsequent
+`devstack up` invocations skip whatever's already converged. Cold cycles depend heavily on what's
+on the plugin list — a sui-only stack is ~10–20 s on Apple Silicon, a sui+walrus+seal stack
+takes longer because the walrus testbed image build is the dominant cost (cached forever after
+the first build). Numbers in this README are eyeballed during local development; if you're
+benchmarking, run it yourself and please file the timing as a note in `notes/friction.md`.
 
 For the full docs, see the [docs site](https://github.com/mysten-incubation/devstack#readme). For
 the journal of paper-cuts driving evolution, see
@@ -59,7 +62,7 @@ pnpm dev                             # one combined process: stack + dev server
 ```
 
 The supervisor brings up sui-localnet, fund accounts, publish Move packages, regenerate codegen
-bindings, AND start the Vite dev server — all in one log stream. Re-run is fast (~1–3 s) because
+bindings, AND start the Vite dev server — all in one log stream. Re-runs are noticeably faster (warm cycles short-circuit through `getStatus`) because
 each action's `getStatus` skip predicate short-circuits work that hasn't drifted.
 
 ---
