@@ -172,13 +172,23 @@ load-bearing prerequisite for everything else in Phase B.
 
 All Phase B PRs are landed, deferred (B7), or dropped (B10).
 
-### Phase C — distribution (3 PRs, all pending)
+### Phase C — distribution (3 PRs, 1 done)
 
-- **C1** — sync-template version rewriting in `create-devstack-app`.
-  Without this the scaffolder is broken end-to-end.
-- **C2** — publish to npm at `0.1.0`. Gated on B-phase finishing so
-  shapes are stable.
-- **C3** — README accuracy pass.
+- **C1** — _Done._ `sync-template.ts` (run as part of
+  `create-devstack-app`'s build) now walks `template/package.json`
+  and rewrites `workspace:*` specifiers to `^<workspace-pkg-version>`
+  and `catalog:` specifiers to the version recorded in
+  `pnpm-workspace.yaml`. The scaffolder produces an installable
+  `package.json` end-to-end; the only remaining blocker for `pnpm
+  create @mysten-incubation/devstack-app smoke` working off-monorepo
+  is publishing the workspace packages (C2).
+- **C2** — _Pending._ Publish to npm at `0.1.0`. Requires bumping
+  `@mysten-incubation/devstack` from `1.0.0` → `0.1.0` (drop the
+  pre-release placeholder), making `@mysten-incubation/tsconfig`
+  publishable (drop `private: true`, bump version), and the actual
+  `pnpm publish` runs.
+- **C3** — _Pending._ README accuracy pass — the cycle-time and
+  Apple Silicon claims need hands-on verification.
 
 ### Phase D — Debug Packages UI (3 PRs, all pending)
 
@@ -277,11 +287,11 @@ differentiator vs. scaffold-eth-2 but isn't strictly required for
 
 ## Status snapshot
 
-- **21 PRs landed** (PR 0, A1–A12, B1, B2, B3, B4, B5, B6, B8, B9, B11)
+- **22 PRs landed** (PR 0, A1–A12, B1, B2, B3, B4, B5, B6, B8, B9, B11, C1)
 - **1 PR deferred** (B7, with rationale)
 - **1 PR dropped** (B10 — UI components out of scope)
-- **23 PRs pending** across C–G (F8 subsumed by A12; B10 dropped):
-  - Phase C: C1–C3 (publish to npm)
+- **22 PRs pending** across C–G (F8 subsumed by A12; B10 dropped):
+  - Phase C: C2–C3 (publish to npm + README accuracy)
   - Phase D: D1–D3 (Debug Packages UI)
   - Phase E: E1–E2 (loadFixture, manual triggers)
   - Phase F: F1–F7 (per-plugin polish; F8 done as part of A12)
