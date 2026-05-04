@@ -188,7 +188,13 @@ async function runCodegenForPackage(opts: {
 		},
 		prune: true,
 		outputDir: absoluteOutput,
-		importExtension: '.js',
+		// `.ts` import specifiers (not `.js`) so Node 24's native
+		// type-stripping resolves in-tree imports directly, and `devstack
+		// console`'s plain `await import()` works without a loader. Vite
+		// and esbuild both handle `.ts` extensions natively; tsc requires
+		// `allowImportingTsExtensions: true` (set in `@mysten-incubation/
+		// tsconfig` so every example inherits it).
+		importExtension: '.ts',
 	});
 
 	const expectedSubdir = join(absoluteOutput, pkg.name);

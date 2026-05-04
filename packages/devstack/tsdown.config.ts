@@ -13,6 +13,8 @@ import { defineConfig } from 'tsdown';
 export default defineConfig({
 	entry: [
 		'src/index.ts',
+		'src/app-setup/index.ts',
+		'src/plugins/accounts/index.ts',
 		'src/playwright/index.ts',
 		'src/playwright/global-setup.ts',
 		'src/playwright/global-teardown.ts',
@@ -26,6 +28,7 @@ export default defineConfig({
 		'src/helpers.ts',
 		'src/runtime.ts',
 		'src/react/index.ts',
+		'src/react/ui/index.ts',
 	],
 	format: 'esm',
 	dts: true,

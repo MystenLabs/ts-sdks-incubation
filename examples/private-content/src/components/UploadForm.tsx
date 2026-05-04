@@ -1,7 +1,8 @@
 import { CurrentAccountSigner } from '@mysten/dapp-kit-core';
 import { useCurrentClient } from '@mysten/dapp-kit-react';
 import { Transaction } from '@mysten/sui/transactions';
-import { useId, useMemo, useState } from 'react';
+import { Card, Field } from '@mysten-incubation/devstack/react/ui';
+import { useMemo, useState } from 'react';
 
 import { dAppKit } from '../dapp-kit.js';
 import * as vault from '../generated/sui/vault/vault.js';
@@ -9,7 +10,6 @@ import { stringToBytes } from '../lib/format.js';
 import { useSignAndExecute } from '../lib/queries.js';
 import { encryptForSealId, freshSealId } from '../lib/seal.js';
 import { blobIdToBytes, storeBlob } from '../lib/walrus.js';
-import { Card } from './Card.js';
 
 export function UploadForm() {
 	const client = useCurrentClient();
@@ -121,17 +121,5 @@ export function UploadForm() {
 				)}
 			</form>
 		</Card>
-	);
-}
-
-function Field({ label, render }: { label: string; render: (id: string) => React.ReactNode }) {
-	const id = useId();
-	return (
-		<div>
-			<label htmlFor={id} className="block text-xs uppercase tracking-wide text-neutral-500 mb-1">
-				{label}
-			</label>
-			{render(id)}
-		</div>
 	);
 }

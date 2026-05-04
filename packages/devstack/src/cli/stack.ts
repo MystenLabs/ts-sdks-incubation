@@ -40,6 +40,7 @@ import {
 	stackDir,
 	writeActiveStack,
 } from '../runtime/active-stack.js';
+import { inspectSupervisorLock } from '../runtime/supervisor-lock.js';
 import { runIfMain } from './args.js';
 
 export interface StackFlags {
@@ -184,6 +185,18 @@ async function useStack(opts: { appName: string; appDir: string; name: string })
 		process.stdout.write(`already on stack '${opts.name}'\n`);
 		return 0;
 	}
+	// Refuse the switch when a supervisor is running on the current
+	// stack — switching while a supervisor is alive causes it to
+	// resurrect containers in a tight loop because its in-memory stack
+	// pointer doesn't re-read the active-stack file.
+	const lockState = inspectSupervisorLock({ appDir: opts.appDir, stack: current });
+	if (lockState !== null && lockState.alive) {
+		process.stderr.write(
+			`refusing to switch from active stack '${current}' — a supervisor is running ` +
+				`(PID ${lockState.pid}). Stop it (Ctrl-C, or kill ${lockState.pid}) before switching.\n`,
+		);
+		return 1;
+	}
 	await stopStackContainers({ appName: opts.appName, stack: current });
 	writeActiveStack(opts.appDir, opts.name);
 	process.stdout.write(`switched ${current} → ${opts.name}\n`);
@@ -312,8 +325,38 @@ async function loadConfig(abs: string): Promise<DevstackConfig> {
 }
 
 export async function main(argv: string[]): Promise<number> {
+	if (argv.includes('--help') || argv.includes('-h')) {
+		process.stdout.write(USAGE);
+		return 0;
+	}
 	return runStack(parseArgs(argv));
 }
+
+const USAGE = `devstack stack <subcommand> [options]
+
+Manage per-app named stacks. Each stack is an isolated set of containers
++ docker network + host-side state dir. Default stack is 'main'.
+
+Subcommands:
+  list                          Show all stacks; mark active.
+  new <name>                    Create a stack dir (does not switch).
+  use <name>                    Switch active. Stops the previous
+                                stack's containers (writable layer
+                                preserved). Run \`devstack up\` to bring
+                                the new stack up.
+  down [<name>]                 Stop containers, preserve writable
+                                layer. Defaults to active stack.
+  drop <name> [--yes] [--force] Stop+remove containers, network, and
+                                host state dir. Refuses on 'main' and
+                                on the active stack without --force.
+                                --dry-run / -n previews without acting.
+
+Options:
+  --config <path>               Override the config path
+  --yes, -y                     Skip the drop confirmation prompt
+  --force                       Allow drop on the active stack
+  --dry-run, -n                 Print what drop would do; no changes
+`;
 
 function parseArgs(argv: string[]): StackFlags {
 	const flags: StackFlags = {

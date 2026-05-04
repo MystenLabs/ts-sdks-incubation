@@ -32,7 +32,6 @@ export {
 } from './helpers/seed-shared-object.js';
 export { objectTypeMatchesFilter } from './helpers/match-type.js';
 export { createLocalSuiClient } from './helpers/sui-client.js';
-export { loadOrGenerateKeypair, keyFilePath, keysDir } from './helpers/keystore.js';
 // Signer factories (cliSigner, envSigner, generatedKeypair) are NOT
 // re-exported here. They're authoring-time API consumed in
 // `defineDevstackConfig({ accounts: { ... } })` — they belong on the

@@ -97,24 +97,24 @@ describe('expandPluginActions — needs resolution', () => {
 
 	it('passes through fully-qualified cross-plugin needs unchanged', () => {
 		const out = expandPluginActions([
-			plugin('arena', [action('connect_four', { needs: ['sui.accounts'] })]),
+			plugin('arena', [action('connect_four', { needs: ['accounts.fund'] })]),
 		]);
 		const cf = out.find((a) => a.name === 'arena.connect_four');
-		expect(cf?.needs).toEqual(['sui.accounts']);
+		expect(cf?.needs).toEqual(['accounts.fund']);
 	});
 
-	it('passes through capability `:before` / `:after` queries unchanged', () => {
+	it('passes through capability `:before` queries unchanged', () => {
 		const out = expandPluginActions([
 			plugin('walrus', [
 				action('network', { provides: { capabilities: ['walrus.app-network'] } }),
 				action('localnet', { needs: ['walrus.app-network:before'] }),
 			]),
-			plugin('arena', [action('connect_four', { needs: ['db.cluster:after', 'sui.accounts'] })]),
+			plugin('arena', [action('connect_four', { needs: ['db.cluster:before', 'accounts.fund'] })]),
 		]);
 		const localnet = out.find((a) => a.name === 'walrus.localnet');
 		expect(localnet?.needs).toEqual(['walrus.app-network:before']);
 		const cf = out.find((a) => a.name === 'arena.connect_four');
-		expect(cf?.needs).toEqual(['db.cluster:after', 'sui.accounts']);
+		expect(cf?.needs).toEqual(['db.cluster:before', 'accounts.fund']);
 	});
 
 	it('throws when an object-form provides has un-namespaced capabilities', () => {

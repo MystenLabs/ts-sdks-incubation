@@ -1,14 +1,54 @@
 // In-memory typed registry. Plugins register items via `register()`; other
-// plugins query via `list/find/require`. Namespaced kinds (per Q1) live
-// under `registry.ns('<plugin>')`. Per-kind dirty tracking (Q11) lets the
-// reconciler dispatch Emit actions only when their `dependsOnKind` slice
-// actually changed.
+// plugins query via `list/find/require`. Namespaced kinds live under
+// `registry.ns('<plugin>')`. Per-kind dirty tracking lets the reconciler
+// dispatch Emit actions only when their `dependsOnKind` slice changed.
 //
 // Naming: `kindKey` is `'tokens' | 'packages' | 'accounts' | 'services' |
 // '<plugin>/<kind>'` — flat string used throughout dirty tracking.
+//
+// The dirty-tracking surface (`isDirty`, `flushDirty`, `consumeDirty`)
+// is **not** on the public `Registry` interface — only the reconciler
+// reaches it (via `RegistryImpl` cast). Plugins should not consult it.
 
 import type { Account, Package, Registry, RegistryQuery, Service, Token } from '../core/types.js';
 import type { SerializedRegistry } from '../runtime/manifest-types.js';
+
+/** Typed accessor for a plugin-namespaced registry kind. Pin the kind
+ * at module top-level once; use the returned function from any plugin
+ * action to register/list/find without redeclaring the namespace shape:
+ *
+ *   const arenaSharedObjects = defineRegistryKind<ArenaSharedObject>(
+ *     'arena.sharedObjects',
+ *   );
+ *   arenaSharedObjects(ctx.registry).register({ name, ... });
+ *
+ * Beats the `ns<{...}>('arena').sharedObjects` form for two reasons:
+ * the typed kind name is a single source of truth (no risk of typo'ing
+ * a new namespace by accident), and the `T` type stays attached to the
+ * accessor so consumers don't redeclare it. */
+export function defineRegistryKind<T extends { name: string }>(
+	dottedKey: string,
+): (registry: Registry) => RegistryQuery<T> {
+	const dot = dottedKey.indexOf('.');
+	if (dot <= 0 || dot === dottedKey.length - 1) {
+		throw new Error(
+			`defineRegistryKind: '${dottedKey}' must be 'namespace.kind' (non-empty on both sides of the dot).`,
+		);
+	}
+	const ns = dottedKey.slice(0, dot);
+	const kind = dottedKey.slice(dot + 1);
+	return (registry) => {
+		const bag = registry.ns<Record<string, RegistryQuery<T>>>(ns);
+		const q = bag[kind];
+		if (q === undefined) {
+			throw new Error(
+				`defineRegistryKind: registry.ns('${ns}').${kind} returned undefined ` +
+					'(expected the proxy to auto-create the query). Bug.',
+			);
+		}
+		return q;
+	};
+}
 
 class RegistryQueryImpl<T extends { name: string }> implements RegistryQuery<T> {
 	private readonly items = new Map<string, T>();

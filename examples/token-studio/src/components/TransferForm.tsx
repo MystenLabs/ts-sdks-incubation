@@ -1,10 +1,10 @@
 import { useCurrentClient } from '@mysten/dapp-kit-react';
-import { useId, useState } from 'react';
+import { Card, Field } from '@mysten-incubation/devstack/react/ui';
+import { useState } from 'react';
 
 import { deployment } from '../generated/deployment.js';
 import { buildTransferTx, parseStudioAmount, shortAddress } from '../lib/coin.js';
 import { useInvalidateCoinReads, useSignAndExecute } from '../lib/queries.js';
-import { Card } from './Card.js';
 
 export function TransferForm({ self }: { self: string }) {
 	const client = useCurrentClient();
@@ -87,17 +87,5 @@ export function TransferForm({ self }: { self: string }) {
 				)}
 			</form>
 		</Card>
-	);
-}
-
-function Field({ label, render }: { label: string; render: (id: string) => React.ReactNode }) {
-	const id = useId();
-	return (
-		<div>
-			<label htmlFor={id} className="block text-xs uppercase tracking-wide text-neutral-500 mb-1">
-				{label}
-			</label>
-			{render(id)}
-		</div>
 	);
 }

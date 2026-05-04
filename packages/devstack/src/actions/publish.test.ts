@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const publishMovePackageMock = vi.hoisted(() => vi.fn());
 const getChainIdentifierMock = vi.hoisted(() => vi.fn());
@@ -21,7 +24,7 @@ vi.mock('@mysten/sui/jsonRpc', () => ({
 	})),
 }));
 
-import { definePublishAction } from './publish.js';
+import { publish } from './publish.js';
 import { RegistryImpl } from '../registry/index.js';
 import type { AccountsContext, ActionRunContext, PublishAction } from '../core/types.js';
 import { createInMemoryPortAllocator } from '../runtime/port-allocator.js';
@@ -54,92 +57,103 @@ const makeCtx = (
 	ports: createInMemoryPortAllocator(),
 });
 
+let tmpDirs: string[] = [];
+
+const newMovePackageDir = (contents: Record<string, string> = {}): string => {
+	const dir = mkdtempSync(join(tmpdir(), 'devstack-publish-'));
+	tmpDirs.push(dir);
+	writeFileSync(join(dir, 'Move.toml'), '[package]\nname = "test"\nedition = "2024"\n');
+	for (const [name, body] of Object.entries(contents)) {
+		writeFileSync(join(dir, name), body);
+	}
+	return dir;
+};
+
 beforeEach(() => {
 	publishMovePackageMock.mockReset();
 	getChainIdentifierMock.mockReset();
 	getObjectMock.mockReset();
+	tmpDirs = [];
 });
 
-describe('definePublishAction — shape', () => {
-	it('returns a PublishAction with bare name + provides + auto-injected getStatus/run', () => {
-		const a = definePublishAction({
+afterEach(() => {
+	for (const d of tmpDirs) rmSync(d, { recursive: true, force: true });
+});
+
+describe('publish — shape', () => {
+	it('returns a PublishAction with no default getStatus (idempotence comes from input-hash + persisted state)', () => {
+		const a = publish({
 			name: 'connect_four',
-			sourcePath: './move/connect_four',
+			path: '/tmp/does-not-exist/move/connect_four',
 			capture: { adminCap: '::admin::AdminCap' },
-			provides: { capabilities: ['arena-game'] },
+			provides: { capabilities: ['arena.game'] },
 		});
 		expect(a.type).toBe('Publish');
 		expect(a.name).toBe('connect_four');
-		expect(a.path).toBe('./move/connect_four');
-		expect(a.provides).toEqual({ capabilities: ['arena-game'] });
-		expect(a.inputs).toEqual({
-			path: './move/connect_four',
-			capture: { adminCap: '::admin::AdminCap' },
-			publisher: 'publisher',
-		});
-		expect(typeof a.getStatus).toBe('function');
+		expect(a.path).toBe('/tmp/does-not-exist/move/connect_four');
+		expect(a.provides).toEqual({ capabilities: ['arena.game'] });
+		expect(a.getStatus).toBeUndefined();
 		expect(typeof a.run).toBe('function');
 	});
 
 	it('honors a custom publisher name in inputs', () => {
-		const a = definePublishAction({
+		const a = publish({
 			name: 'pkg',
-			sourcePath: './move/pkg',
+			path: '/tmp/does-not-exist/move/pkg',
 			publisher: 'deployer',
 		});
 		expect(a.inputs).toMatchObject({ publisher: 'deployer' });
 	});
+
+	it('omits sourceDigest when path is relative (action expansion cannot resolve it)', () => {
+		const a = publish({
+			name: 'pkg',
+			path: './move/pkg',
+		});
+		expect(a.inputs).toMatchObject({ path: './move/pkg', sourceDigest: undefined });
+	});
+
+	it('omits sourceDigest when path does not exist on host', () => {
+		const a = publish({
+			name: 'pkg',
+			path: '/tmp/does-not-exist/move/pkg',
+		});
+		expect((a.inputs as { sourceDigest?: string }).sourceDigest).toBeUndefined();
+	});
+
+	it('omits sourceDigest when prepareSource is set (in-image source)', () => {
+		const a = publish({
+			name: 'pkg',
+			path: '/will/be/replaced',
+			prepareSource: async () => ({ dir: '/tmp/prepared' }),
+		});
+		expect((a.inputs as { sourceDigest?: string }).sourceDigest).toBeUndefined();
+	});
+
+	it('computes sourceDigest at action-construction time for absolute on-host paths', () => {
+		const dir = newMovePackageDir();
+		const a = publish({ name: 'pkg', path: dir });
+		const digest = (a.inputs as { sourceDigest?: string }).sourceDigest;
+		expect(digest).toMatch(/^[0-9a-f]{64}$/);
+	});
+
+	it('busts the action input hash when Move sources change between expansions', () => {
+		const dir = newMovePackageDir();
+		writeFileSync(join(dir, 'sources.move'), 'module test::a {}\n');
+		const before = (
+			publish({ name: 'pkg', path: dir }).inputs as { sourceDigest?: string }
+		).sourceDigest;
+		writeFileSync(join(dir, 'sources.move'), 'module test::a { public fun b() {} }\n');
+		const after = (
+			publish({ name: 'pkg', path: dir }).inputs as { sourceDigest?: string }
+		).sourceDigest;
+		expect(before).toMatch(/^[0-9a-f]{64}$/);
+		expect(after).toMatch(/^[0-9a-f]{64}$/);
+		expect(after).not.toBe(before);
+	});
 });
 
-describe('definePublishAction — default getStatus', () => {
-	const action = definePublishAction({
-		name: 'connect_four',
-		sourcePath: './move/connect_four',
-	}) as PublishAction;
-
-	it('returns ok=false when no prior package is in the registry', async () => {
-		const registry = new RegistryImpl();
-		const result = await action.getStatus?.(makeCtx(registry));
-		expect(result).toEqual({ ok: false, detail: 'no prior publish' });
-		// No prior → no client constructed at all (early return).
-		expect(getChainIdentifierMock).not.toHaveBeenCalled();
-	});
-
-	it('returns ok=false when chainId differs from the prior publish', async () => {
-		const registry = new RegistryImpl();
-		registry.services.register({ name: 'sui-rpc', kind: 'rpc', url: 'http://x', port: 1 });
-		registry.packages.register({
-			name: 'connect_four',
-			packageId: '0xpkg',
-			captured: {},
-			sourceDigest: 'aa',
-			chainId: 'chain-old',
-			network: 'localnet',
-		});
-		getChainIdentifierMock.mockResolvedValue('chain-new');
-		const result = await action.getStatus?.(makeCtx(registry));
-		expect(result).toEqual({ ok: false, detail: 'chainId differs from prior publish' });
-	});
-
-	it('returns ok=true when the cached package is still on chain', async () => {
-		const registry = new RegistryImpl();
-		registry.services.register({ name: 'sui-rpc', kind: 'rpc', url: 'http://x', port: 1 });
-		registry.packages.register({
-			name: 'connect_four',
-			packageId: '0xpkg',
-			captured: {},
-			sourceDigest: 'aa',
-			chainId: 'chain-1',
-			network: 'localnet',
-		});
-		getChainIdentifierMock.mockResolvedValue('chain-1');
-		getObjectMock.mockResolvedValue({ data: { objectId: '0xpkg' } });
-		const result = await action.getStatus?.(makeCtx(registry));
-		expect(result).toEqual({ ok: true, detail: '0xpkg' });
-	});
-});
-
-describe('definePublishAction — onPublished invocation', () => {
+describe('publish — onPublished invocation', () => {
 	const setup = () => {
 		const registry = new RegistryImpl();
 		registry.services.register({ name: 'sui-rpc', kind: 'rpc', url: 'http://x', port: 1 });
@@ -149,9 +163,9 @@ describe('definePublishAction — onPublished invocation', () => {
 
 	it('fires onPublished after a fresh publish, with the publish result', async () => {
 		const onPublished = vi.fn();
-		const a = definePublishAction({
+		const a = publish({
 			name: 'connect_four',
-			sourcePath: '/abs/move/connect_four',
+			path: '/abs/move/connect_four',
 			onPublished,
 		}) as PublishAction;
 		const registry = setup();
@@ -176,9 +190,9 @@ describe('definePublishAction — onPublished invocation', () => {
 
 	it('skips onPublished on a cache hit', async () => {
 		const onPublished = vi.fn();
-		const a = definePublishAction({
+		const a = publish({
 			name: 'connect_four',
-			sourcePath: '/abs/move/connect_four',
+			path: '/abs/move/connect_four',
 			onPublished,
 		}) as PublishAction;
 		const registry = setup();
@@ -197,9 +211,9 @@ describe('definePublishAction — onPublished invocation', () => {
 
 	it('uses the configured publisher account name', async () => {
 		const deployerSigner = { toSuiAddress: () => '0xdeployer' } as unknown as Signer;
-		const a = definePublishAction({
+		const a = publish({
 			name: 'pkg',
-			sourcePath: '/abs/pkg',
+			path: '/abs/pkg',
 			publisher: 'deployer',
 		}) as PublishAction;
 		const registry = setup();
@@ -217,9 +231,9 @@ describe('definePublishAction — onPublished invocation', () => {
 	});
 
 	it('uses registryAs to override the registry entry name', async () => {
-		const a = definePublishAction({
+		const a = publish({
 			name: 'pkg',
-			sourcePath: '/abs/pkg',
+			path: '/abs/pkg',
 			registryAs: 'custom_name',
 		}) as PublishAction;
 		const registry = setup();

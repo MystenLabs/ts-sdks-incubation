@@ -12,6 +12,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+	accounts,
 	codegen,
 	defineDevstackConfig,
 	frontend,
@@ -27,16 +28,13 @@ const VAULT_DIR = resolve(HERE, 'move/vault');
 
 export default defineDevstackConfig({
 	app: 'private-content',
-	accounts: {
-		publisher: {},
-		alice: {},
-		bob: {},
-	},
+	accounts: ['publisher', 'alice', 'bob'],
 	plugins: [
 		// Plugin port options are hints to the per-stack port allocator;
 		// the allocator picks any free port if a sibling stack has the
 		// preferred port claimed.
 		sui({ version: 'devnet-v1.71.0', rpcPort: 9482, faucetPort: 9871 }),
+		accounts(),
 		walrus(),
 		seal(),
 		codegen(),
@@ -46,7 +44,7 @@ export default defineDevstackConfig({
 	setup: [
 		publishMove({
 			name: 'vault',
-			needs: ['sui.accounts'],
+			needs: ['accounts.fund'],
 			path: VAULT_DIR,
 		}),
 	],

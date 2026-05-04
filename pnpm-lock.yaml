@@ -118,17 +118,72 @@ importers:
         specifier: ^7.3.2
         version: 7.3.3(@types/node@25.5.0)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)
 
-  examples/arena:
+  examples/_template:
     dependencies:
-      '@mysten-incubation/dev-wallet':
-        specifier: workspace:*
-        version: link:../../packages/dev-wallet
       '@mysten-incubation/devstack':
         specifier: workspace:*
         version: link:../../packages/devstack
-      '@mysten-incubation/devstack-wallet-panels':
+      '@mysten/dapp-kit-core':
+        specifier: 'catalog:'
+        version: 1.3.0(@mysten/sui@2.16.0(typescript@5.9.3))(typescript@5.9.3)
+      '@mysten/dapp-kit-react':
+        specifier: 'catalog:'
+        version: 2.0.1(@mysten/sui@2.16.0(typescript@5.9.3))(@types/react@19.2.14)(react@19.2.5)(typescript@5.9.3)
+      '@mysten/sui':
+        specifier: ^2.16.0
+        version: 2.16.0(typescript@5.9.3)
+      '@mysten/wallet-standard':
+        specifier: 'catalog:'
+        version: 0.20.1(@mysten/sui@2.16.0(typescript@5.9.3))
+      '@tanstack/react-query':
+        specifier: 'catalog:'
+        version: 5.100.6(react@19.2.5)
+      react:
+        specifier: 'catalog:'
+        version: 19.2.5
+      react-dom:
+        specifier: 'catalog:'
+        version: 19.2.5(react@19.2.5)
+    devDependencies:
+      '@mysten-incubation/tsconfig':
         specifier: workspace:*
-        version: link:../../packages/devstack-wallet-panels
+        version: link:../../packages/tsconfig
+      '@playwright/test':
+        specifier: 'catalog:'
+        version: 1.59.1
+      '@tailwindcss/vite':
+        specifier: 'catalog:'
+        version: 4.2.4(vite@6.4.2(@types/node@22.19.17)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0))
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.19.17
+      '@types/react':
+        specifier: 'catalog:'
+        version: 19.2.14
+      '@types/react-dom':
+        specifier: 'catalog:'
+        version: 19.2.3(@types/react@19.2.14)
+      '@vitejs/plugin-react':
+        specifier: 'catalog:'
+        version: 4.7.0(vite@6.4.2(@types/node@22.19.17)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0))
+      tailwindcss:
+        specifier: 'catalog:'
+        version: 4.2.4
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+      vite:
+        specifier: 'catalog:'
+        version: 6.4.2(@types/node@22.19.17)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)
+      vitest:
+        specifier: 'catalog:'
+        version: 2.1.9(@types/node@22.19.17)(happy-dom@20.8.4)(lightningcss@1.32.0)
+
+  examples/arena:
+    dependencies:
+      '@mysten-incubation/devstack':
+        specifier: workspace:*
+        version: link:../../packages/devstack
       '@mysten/dapp-kit-core':
         specifier: 'catalog:'
         version: 1.3.0(@mysten/sui@2.16.0(typescript@5.9.3))(typescript@5.9.3)
@@ -187,15 +242,9 @@ importers:
 
   examples/private-content:
     dependencies:
-      '@mysten-incubation/dev-wallet':
-        specifier: workspace:*
-        version: link:../../packages/dev-wallet
       '@mysten-incubation/devstack':
         specifier: workspace:*
         version: link:../../packages/devstack
-      '@mysten-incubation/devstack-wallet-panels':
-        specifier: workspace:*
-        version: link:../../packages/devstack-wallet-panels
       '@mysten/dapp-kit-core':
         specifier: 'catalog:'
         version: 1.3.0(@mysten/sui@2.16.0(typescript@5.9.3))(typescript@5.9.3)
@@ -263,15 +312,9 @@ importers:
 
   examples/token-studio:
     dependencies:
-      '@mysten-incubation/dev-wallet':
-        specifier: workspace:*
-        version: link:../../packages/dev-wallet
       '@mysten-incubation/devstack':
         specifier: workspace:*
         version: link:../../packages/devstack
-      '@mysten-incubation/devstack-wallet-panels':
-        specifier: workspace:*
-        version: link:../../packages/devstack-wallet-panels
       '@mysten/dapp-kit-core':
         specifier: 'catalog:'
         version: 1.3.0(@mysten/sui@2.16.0(typescript@5.9.3))(typescript@5.9.3)
@@ -330,15 +373,9 @@ importers:
 
   examples/wallet:
     dependencies:
-      '@mysten-incubation/dev-wallet':
-        specifier: workspace:*
-        version: link:../../packages/dev-wallet
       '@mysten-incubation/devstack':
         specifier: workspace:*
         version: link:../../packages/devstack
-      '@mysten-incubation/devstack-wallet-panels':
-        specifier: workspace:*
-        version: link:../../packages/devstack-wallet-panels
       '@mysten/dapp-kit-core':
         specifier: 'catalog:'
         version: 1.3.0(@mysten/sui@2.16.0(typescript@5.9.3))(typescript@5.9.3)
@@ -394,6 +431,21 @@ importers:
       vitest:
         specifier: 'catalog:'
         version: 2.1.9(@types/node@22.19.17)(happy-dom@20.8.4)(lightningcss@1.32.0)
+
+  packages/create-devstack-app:
+    devDependencies:
+      '@mysten-incubation/tsconfig':
+        specifier: workspace:*
+        version: link:../tsconfig
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.19.17
+      tsdown:
+        specifier: 0.20.0-beta.1
+        version: 0.20.0-beta.1(@arethetypeswrong/core@0.18.2)(typescript@5.9.3)
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
 
   packages/dev-wallet:
     dependencies:
@@ -510,6 +562,12 @@ importers:
 
   packages/devstack:
     dependencies:
+      '@mysten-incubation/dev-wallet':
+        specifier: workspace:*
+        version: link:../dev-wallet
+      '@mysten-incubation/devstack-wallet-panels':
+        specifier: workspace:*
+        version: link:../devstack-wallet-panels
       '@mysten/codegen':
         specifier: ^0.10.4
         version: 0.10.4

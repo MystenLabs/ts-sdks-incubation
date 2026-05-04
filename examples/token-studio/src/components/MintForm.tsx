@@ -1,11 +1,11 @@
 import { Transaction } from '@mysten/sui/transactions';
-import { useId, useState } from 'react';
+import { Card, Field } from '@mysten-incubation/devstack/react/ui';
+import { useState } from 'react';
 
 import { deployment } from '../generated/deployment.js';
 import * as managedCoin from '../generated/sui/managed_coin/managed_coin.js';
 import { TREASURY_CAP_ID, parseStudioAmount, shortAddress } from '../lib/coin.js';
 import { useInvalidateCoinReads, useSignAndExecute } from '../lib/queries.js';
-import { Card } from './Card.js';
 
 export function MintForm() {
 	const invalidate = useInvalidateCoinReads();
@@ -80,17 +80,5 @@ export function MintForm() {
 				)}
 			</form>
 		</Card>
-	);
-}
-
-function Field({ label, render }: { label: string; render: (id: string) => React.ReactNode }) {
-	const id = useId();
-	return (
-		<div>
-			<label htmlFor={id} className="block text-xs uppercase tracking-wide text-neutral-500 mb-1">
-				{label}
-			</label>
-			{render(id)}
-		</div>
 	);
 }

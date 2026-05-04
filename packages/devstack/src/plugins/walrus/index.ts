@@ -1,45 +1,15 @@
-// Walrus localnet plugin. Owns seven actions:
-//
-//   walrus.network      — Pins the per-(app, stack) docker network's subnet at a per-stack
-//                         /24 (`10.<octet>.0.0/24`, octet derived from `hash(appName/stack)`)
-//                         so two walrus-using stacks coexist without overlapping pools. The
-//                         storage nodes' fixed IPs (`10.<octet>.0.10–13`) land in the right
-//                         pool. Declares `provides: ['walrus.app-network']` so the sui plugin's
-//                         localnet action (which queries `'app-network:before'`) runs after
-//                         this. Without a provider the sui plugin still works — it just
-//                         lets docker pick any free pool, which is what single-app stacks
-//                         that don't need walrus already do.
-//   walrus.build        — Multi-arch build of `dev-examples/walrus-service:<rev>-sui<sui-ver>-r2`
-//                         via BuildKit's git build-context (no host clone). The wrapper bakes
-//                         a matching sui binary at /root/sui_bin/sui, so the storage nodes
-//                         no longer need a shared sui-bin volume from the sui container.
-//   walrus.deploy       — One-shot container that publishes WAL + walrus + walrus_subsidies
-//                         packages, generates per-node configs, writes them to
-//                         `<stackDir>/walrus/deploy/` (host bind mount; no named volume),
-//                         then exits(0). Idempotent via file-based getStatus — the deploy
-//                         file IS the output; container existence is incidental. Container
-//                         is auto-removed on success since outputs are on host.
-//   walrus.node-{0..3}  — 4 storage nodes on fixed IPs `10.<octet>.0.10–13`. Each runs run-walrus.sh,
-//                         which faucets SUI from the in-network `sui-localnet` alias, swaps
-//                         500 WAL on the exchange, and starts walrus-node. Storage-node
-//                         RocksDB lives in the container's writable layer (not a volume) —
-//                         `docker stop`/`docker start` preserves it; `docker commit`
-//                         captures it for snapshots.
-//   walrus.register     — Reads `/opt/walrus/outputs/deploy` from a node container, queries
-//                         the sui chain to extract the WAL coin type, and registers WAL
-//                         (tokens), the walrus package (packages), and the 4 nodes
-//                         (`registry.ns('walrus').nodes`).
-//
-// Architecture mirrors `MystenLabs/walrus/docker/local-testbed/` with two
-// deliberate divergences: (1) the deploy + nodes connect to our existing
-// devstack-managed multi-arch sui-localnet via the per-(app, stack)
-// `<app>-<stack>-net` Docker network and the `sui-localnet` DNS alias the
-// sui plugin registers on it, instead of upstream's bundled
-// `mysten/sui-tools:mainnet` image (amd64-only → Rosetta on M-series);
-// (2) deploy outputs are written to a per-stack host directory under
-// `<stackDir>/walrus/deploy/` (bind-mounted into deploy + node containers)
-// instead of a named docker volume — keeps cross-container coordination
-// state in `<stackDir>` where the snapshot host capture covers it.
+// Walrus localnet plugin. Seven actions: `walrus.network` pins a per-stack
+// `/24` so siblings coexist; `walrus.build` builds the testbed image with
+// matching sui binary baked in; `walrus.deploy` publishes WAL + walrus +
+// subsidies packages and writes per-node configs to `<stackDir>/walrus/
+// deploy/` (host bind, no named volume); `walrus.node-{0..3}` run storage
+// nodes on fixed IPs `10.<octet>.0.10–13` with RocksDB in the container
+// writable layer; `walrus.register` reads the deploy outputs and registers
+// the WAL coin + nodes in the registry. Mirrors `MystenLabs/walrus/docker/
+// local-testbed/` but connects to our multi-arch sui-localnet over the
+// per-(app, stack) network instead of the upstream amd64-only sui-tools
+// image, and uses host-fs for cross-container coordination so snapshots
+// capture it for free.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -48,7 +18,7 @@ import { Transaction } from '@mysten/sui/transactions';
 
 import { buildImage } from '../../actions/build.js';
 import { containerService } from '../../actions/container-service.js';
-import { job } from '../../actions/job.js';
+import { service } from '../../actions/service.js';
 import { register } from '../../actions/register.js';
 import { seed } from '../../actions/seed.js';
 import { createLocalSuiClient } from '../../helpers/sui-client.js';
@@ -174,11 +144,13 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 			count: NODE_COUNT,
 		});
 	};
-	const indexer = (ports: readonly number[]) => (idx: number): number => {
-		const port = ports[idx];
-		if (port === undefined) throw new Error(`walrus: no host port allocated for node ${idx}`);
-		return port;
-	};
+	const indexer =
+		(ports: readonly number[]) =>
+		(idx: number): number => {
+			const port = ports[idx];
+			if (port === undefined) throw new Error(`walrus: no host port allocated for node ${idx}`);
+			return port;
+		};
 
 	return definePlugin({
 		name: 'walrus',
@@ -253,7 +225,11 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 			);
 
 			actions.push(
-				job({
+				// Run-once Service action: the deploy script exits when
+				// done; no daemon. `getStatus` checks for the output file
+				// the script wrote, so a snapshot-restored stack skips
+				// without spinning a fresh container.
+				service({
 					name: 'deploy',
 					needs: ['build', 'sui.localnet'],
 					inputs: { image: imageTag, rev },
@@ -370,9 +346,7 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 								// configs come from a per-stack host bind mount; the sui
 								// binary is baked into the image at /root/sui_bin/sui
 								// (no shared sui-bin volume needed).
-								volumes: [
-									`${walrusDeployHostDir(ctx.appDir, ctx.stack)}:/opt/walrus/outputs:ro`,
-								],
+								volumes: [`${walrusDeployHostDir(ctx.appDir, ctx.stack)}:/opt/walrus/outputs:ro`],
 								command: ['/bin/bash', '-c', '/opt/walrus/scripts/run-walrus.sh'],
 								healthcheck: {
 									// walrus-node binds metrics on :9184 to its testbed IP
@@ -827,4 +801,3 @@ async function fetchObjectType(rpcUrl: string, objectId: string): Promise<string
 	const json = (await res.json()) as { result?: { data?: { type?: string }; error?: unknown } };
 	return json.result?.data?.type;
 }
-

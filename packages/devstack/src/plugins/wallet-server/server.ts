@@ -8,11 +8,18 @@
 //   POST /sign-transaction       → { suiSignature }
 //   POST /sign-personal-message  → { signature, bytes }
 //
-// Auth model mirrors `dev-wallet/src/server/cli-signing-middleware.ts`:
-// a 256-bit random token is generated at startup, printed to the
-// supervisor log, and required as `Authorization: Bearer <token>`
-// on every API request. CORS is open so the browser app can call
-// across origins (Vite dev-server vs the wallet-server port).
+// Auth + reachability defaults are localnet-only:
+//   - The listener binds 127.0.0.1, not 0.0.0.0. A coffee-shop LAN
+//     attacker who knows the bearer token cannot reach the port.
+//   - CORS is restricted to a per-stack allowlist (the manifest's
+//     dev-server origin, plus any caller-supplied origins). `*` is
+//     never the default.
+//   - A 256-bit random bearer token still gates every endpoint; the
+//     `?token=...` URL form is supported for the dev-wallet adapter's
+//     pairing flow.
+//
+// These defaults can be overridden via `WalletServerOptions` for
+// genuinely-remote dev rigs, but the override is opt-in.
 
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from 'node:http';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
@@ -28,6 +35,19 @@ export interface WalletServerOptions {
 	token?: string;
 	/** Maximum request body size in bytes. Defaults to 2 MB. */
 	maxBodyBytes?: number;
+	/** Bind address. Defaults to `127.0.0.1` (localhost-only) so a
+	 * shared-LAN attacker who somehow learned the bearer token cannot
+	 * reach the listener. Override with `'0.0.0.0'` (or a specific NIC)
+	 * only for a genuinely-remote dev rig where the user understands
+	 * the exposure. */
+	host?: string;
+	/** Allowed CORS origins. Defaults to `[]` — the server fills in the
+	 * dev-server origin from the manifest at registration time. Pass
+	 * extra origins for browser tooling that lives off the dev server
+	 * (Storybook, a separate test harness). `'*'` is rejected: bearer
+	 * tokens leak through manifests baked into the dev bundle, so an
+	 * any-origin policy compounds the leak. */
+	allowedOrigins?: string[];
 }
 
 export interface WalletServerHandle {
@@ -79,22 +99,42 @@ function buildAccountSnapshot(accounts: AccountsContext): {
 	return { infos, signersByAddress };
 }
 
-export function startWalletServer(opts: WalletServerOptions): WalletServerHandle {
+const DEFAULT_HOST = '127.0.0.1';
+
+export async function startWalletServer(opts: WalletServerOptions): Promise<WalletServerHandle> {
 	const token = opts.token ?? generateToken();
 	const maxBodyBytes = opts.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
+	const host = opts.host ?? DEFAULT_HOST;
+	const allowedOrigins = sanitizeAllowedOrigins(opts.allowedOrigins ?? []);
 	const snapshot = buildAccountSnapshot(opts.accounts);
 
 	const server = createServer(async (req, res) => {
-		setCorsHeaders(res);
+		const origin = typeof req.headers.origin === 'string' ? req.headers.origin : undefined;
+		applyCorsHeaders(res, origin, allowedOrigins);
 		if (req.method === 'OPTIONS') {
+			// Reject preflight from a non-allowlisted origin so the browser
+			// surfaces a CORS error instead of a misleading 200. Same-origin
+			// requests don't carry an `Origin` header, so undefined passes.
+			if (origin !== undefined && !originAllowed(origin, allowedOrigins)) {
+				res.statusCode = 403;
+				res.end();
+				return;
+			}
 			res.statusCode = 204;
 			res.end();
 			return;
 		}
 		try {
-			const url = new URL(req.url ?? '/', `http://localhost:${opts.port}`);
+			const url = new URL(req.url ?? '/', `http://${host}:${opts.port}`);
 			if (req.method === 'GET' && url.pathname === '/health') {
 				return sendJson(res, 200, { ok: true });
+			}
+			// Block any request whose Origin header doesn't match the
+			// allowlist (CORS pre-checks live in the browser; this is a
+			// belt-and-suspenders server-side guard against a same-machine
+			// attacker who's bypassed the OPTIONS preflight).
+			if (origin !== undefined && !originAllowed(origin, allowedOrigins)) {
+				return sendJson(res, 403, { error: `Origin ${origin} not allowed` });
 			}
 			if (!isAuthorized(req, token)) {
 				return sendJson(res, 401, {
@@ -117,16 +157,71 @@ export function startWalletServer(opts: WalletServerOptions): WalletServerHandle
 		}
 	});
 
-	server.listen(opts.port);
-	const url = `http://localhost:${opts.port}`;
+	// Await the 'listening' event so the returned handle's
+	// `server.address()` is immediately readable. Tests that pass
+	// `port: 0` rely on this to discover the assigned port; the
+	// production wallet-server flow doesn't care but the cost is one
+	// microtask.
+	await new Promise<void>((resolve, reject) => {
+		const onError = (err: Error) => {
+			server.off('listening', onListening);
+			reject(err);
+		};
+		const onListening = () => {
+			server.off('error', onError);
+			resolve();
+		};
+		server.once('error', onError);
+		server.once('listening', onListening);
+		server.listen(opts.port, host);
+	});
+	const addr = server.address();
+	const resolvedPort =
+		typeof addr === 'object' && addr !== null && 'port' in addr ? addr.port : opts.port;
+	const url = `http://${displayHost(host)}:${resolvedPort}`;
 	return { server, url, token };
 }
 
-function setCorsHeaders(res: ServerResponse): void {
-	res.setHeader('Access-Control-Allow-Origin', '*');
+/** Reject `'*'` with a clear error; otherwise normalize each entry to
+ * its `URL.origin` form so trailing slashes / paths don't subtly break
+ * matching. */
+function sanitizeAllowedOrigins(input: string[]): string[] {
+	const out: string[] = [];
+	for (const raw of input) {
+		if (raw === '*') {
+			throw new Error(
+				'wallet-server: allowedOrigins cannot include "*" — bearer tokens leak through ' +
+					'manifests baked into the dev bundle, so any-origin policies compound the leak. ' +
+					'Pass the dev-server origin (e.g. "http://localhost:5173") explicitly.',
+			);
+		}
+		try {
+			out.push(new URL(raw).origin);
+		} catch {
+			throw new Error(`wallet-server: invalid origin in allowedOrigins: ${raw}`);
+		}
+	}
+	return out;
+}
+
+function originAllowed(origin: string, allowed: string[]): boolean {
+	if (allowed.length === 0) return false;
+	return allowed.includes(origin);
+}
+
+function applyCorsHeaders(res: ServerResponse, origin: string | undefined, allowed: string[]): void {
+	res.setHeader('Vary', 'Origin');
+	if (origin !== undefined && originAllowed(origin, allowed)) {
+		res.setHeader('Access-Control-Allow-Origin', origin);
+	}
 	res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
 	res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 	res.setHeader('Access-Control-Max-Age', '86400');
+}
+
+function displayHost(host: string): string {
+	if (host === '0.0.0.0' || host === '::') return 'localhost';
+	return host;
 }
 
 function isAuthorized(req: IncomingMessage, token: string): boolean {

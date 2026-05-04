@@ -18,6 +18,7 @@ import type {
 	Token,
 } from '../core/types.js';
 import type { RegistryImpl } from '../registry/index.js';
+import type { SerializedActionState } from './manifest-types.js';
 import { type Manifest, manifestPath } from './manifest-writer.js';
 
 export interface ReadManifestOptions {
@@ -46,7 +47,14 @@ export function readManifest(opts: ReadManifestOptions): Manifest | null {
 		);
 	}
 	const raw = readFileSync(path, 'utf8');
-	return JSON.parse(raw) as Manifest;
+	try {
+		return JSON.parse(raw) as Manifest;
+	} catch (err) {
+		throw new Error(
+			`readManifest: ${path} is corrupt (${err instanceof Error ? err.message : 'invalid JSON'}). ` +
+				'Run `devstack reset --yes` to wipe the stack and regenerate, or hand-fix the file.',
+		);
+	}
 }
 
 export interface HydrateOptions {
@@ -93,4 +101,35 @@ export function hydrateRegistry(opts: HydrateOptions): boolean {
 
 	(reg as RegistryImpl).flushDirty();
 	return true;
+}
+
+/** Read the persisted reconciler state from the manifest, if any. Returns
+ * an empty record when no manifest exists or when the manifest predates
+ * the schema bump that introduced `actionStates`. The returned record is
+ * fed into `new Reconciler({ priorState })` so a fresh process can skip
+ * setup actions on input-hash match without rerunning getStatus.
+ *
+ * Lives next to `hydrateRegistry` so the supervisor / one-shot driver
+ * can call both at startup; they share the same manifest read. */
+export function readReconcilerState(opts: ReadManifestOptions): Record<string, SerializedActionState> {
+	const manifest = readManifestSafe(opts);
+	if (manifest === null) return {};
+	const states = manifest.actionStates;
+	if (states === undefined) return {};
+	const out: Record<string, SerializedActionState> = {};
+	for (const [name, entry] of Object.entries(states)) {
+		// Defensive: tolerate hand-edited manifests with the wrong shape.
+		if (entry === null || typeof entry !== 'object') continue;
+		if (typeof (entry as SerializedActionState).lastInputHash !== 'string') continue;
+		out[name] = entry as SerializedActionState;
+	}
+	return out;
+}
+
+function readManifestSafe(opts: ReadManifestOptions): Manifest | null {
+	try {
+		return readManifest(opts);
+	} catch {
+		return null;
+	}
 }

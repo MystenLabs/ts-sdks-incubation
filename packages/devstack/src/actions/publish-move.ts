@@ -1,8 +1,7 @@
 // `publishMove()` — ergonomic factory for app-level Move package publishes.
 //
-// Thin wrapper over `definePublishAction()` that uses the user-friendly
-// `path` field instead of `sourcePath`, and threads the setup-action
-// `scope` field. Use in `DevstackConfig.setup`:
+// Thin wrapper over `publish()` that threads the setup-action `scope`
+// field. Use in `DevstackConfig.setup`:
 //
 //   setup: [
 //     publishMove({
@@ -21,7 +20,7 @@
 
 import type { ActionRunContext, Provides, PublishAction, SetupActionScope } from '../core/types.js';
 import type { PublishMovePackageResult } from '../helpers/move-package.js';
-import { definePublishAction, type PublishInputs } from './publish.js';
+import { publish, type PublishInputs } from './publish.js';
 
 export interface PublishMoveOptions {
 	name: string;
@@ -29,9 +28,8 @@ export interface PublishMoveOptions {
 	provides?: Provides;
 	/** Move package source directory (relative to the app's `devstack.config.ts`). */
 	path: string;
-	/** Object-type filters to capture by name. See `definePublishAction`'s
-	 * `capture` for the filter syntax (suffix match; trailing `<` for
-	 * generic types). */
+	/** Object-type filters to capture by name. See `publish()`'s `capture`
+	 * for the filter syntax (suffix match; trailing `<` for generic types). */
 	capture?: Record<string, string>;
 	/** Account name that signs the publish. Defaults to `'publisher'`. */
 	publisher?: string;
@@ -45,11 +43,11 @@ export interface PublishMoveOptions {
 }
 
 export function publishMove(opts: PublishMoveOptions): PublishAction<PublishInputs> {
-	const action = definePublishAction({
+	const action = publish({
 		name: opts.name,
 		needs: opts.needs,
 		provides: opts.provides,
-		sourcePath: opts.path,
+		path: opts.path,
 		capture: opts.capture,
 		publisher: opts.publisher,
 		registryAs: opts.registryAs,

@@ -70,11 +70,11 @@ export const frontend = (opts: FrontendPluginOptions = {}) => {
 		if (ctx.network !== 'localnet') {
 			throw new Error('frontend: localnet-only');
 		}
-		const [port] = await ctx.ports.allocate({
+		const [portValue] = await ctx.ports.allocate({
 			slot: 'frontend.dev-server',
 			preferred: preferredPort,
 		});
-		const portValue = port as number;
+		if (portValue === undefined) throw new Error('frontend: port allocator returned no ports');
 		resolvedPort = portValue;
 		resolvedBaseUrl = `http://localhost:${portValue}`;
 		const command = appendPort ? [...baseCommand, '--port', String(portValue)] : baseCommand;

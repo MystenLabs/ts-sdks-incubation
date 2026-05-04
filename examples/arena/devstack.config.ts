@@ -9,14 +9,15 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
-	type Registry,
-	type RegistryQuery,
+	accounts,
 	codegen,
 	defineDevstackConfig,
+	defineRegistryKind,
 	frontend,
 	publishMove,
 	seed,
 	sui,
+	verify,
 	walletServer,
 } from '@mysten-incubation/devstack';
 import { createLocalSuiClient, seedSharedObject } from '@mysten-incubation/devstack/helpers';
@@ -30,18 +31,16 @@ interface ArenaSharedObject {
 	objectType: string;
 }
 
-const arenaSharedObjects = (registry: Registry): RegistryQuery<ArenaSharedObject> =>
-	registry.ns<{ sharedObjects: RegistryQuery<ArenaSharedObject> }>('arena').sharedObjects;
+// Typed accessor for `registry.ns('arena').sharedObjects` — single
+// source of truth for the kind name + element type.
+const arenaSharedObjects = defineRegistryKind<ArenaSharedObject>('arena.sharedObjects');
 
 export default defineDevstackConfig({
 	app: 'arena',
-	accounts: {
-		publisher: {},
-		alice: {},
-		bob: {},
-	},
+	accounts: ['publisher', 'alice', 'bob'],
 	plugins: [
 		sui({ version: 'devnet-v1.71.0' }),
+		accounts(),
 		codegen(),
 		walletServer({ port: 9421 }),
 		frontend({ port: 5176 }),
@@ -49,41 +48,22 @@ export default defineDevstackConfig({
 	setup: [
 		publishMove({
 			name: 'connect_four',
-			needs: ['sui.accounts'],
+			needs: ['accounts.fund'],
 			path: CONNECT_FOUR_DIR,
 		}),
 		// Seed one shared `Lobby` so a fresh `devstack up` gives players
-		// something to join immediately. Idempotent: getStatus reuses the
-		// cached objectId when its objectType matches the current
-		// connect_four packageId AND the on-chain object still exists.
-		// Registered under the plugin-namespaced kind
-		// `arena.sharedObjects` (generic enough to extend with future
-		// arena-owned shared objects without touching core kinds).
-		//
-		// Custom getStatus rather than runTransaction's marker file
-		// because the Lobby's existence + type are on-chain state worth
-		// validating directly (chain reset → marker stale; chain object
-		// existence check is the truth).
+		// something to join immediately. Hash-match skip handles the
+		// "already seeded, nothing changed" case via persisted state in
+		// the manifest. The paired `verify()` below independently checks
+		// that the seeded Lobby is still on-chain — an invariant probe,
+		// not an idempotence check (the Lobby could be consumed off-chain
+		// by a `join_lobby` call without any input change devstack can
+		// see). On `ok: false` the verify fails the cycle loudly; the
+		// user re-seeds with `devstack apply --actions arena.openLobby`.
 		seed({
 			name: 'openLobby',
 			needs: ['connect_four'],
 			inputs: { lobby: 'openLobby' },
-			getStatus: async (ctx) => {
-				const pkg = ctx.registry.packages.find('connect_four');
-				if (pkg === undefined) return { ok: false, detail: 'connect_four not published' };
-				const cached = arenaSharedObjects(ctx.registry).find('openLobby');
-				if (cached === undefined) return { ok: false, detail: 'no cached lobby' };
-				const expectedType = `${pkg.packageId}::game::Lobby`;
-				if (cached.objectType !== expectedType) {
-					return { ok: false, detail: 'lobby type stale (republished?)' };
-				}
-				const client = createLocalSuiClient(ctx.registry.services.require('sui-rpc').url);
-				const live = await client.getObject({ id: cached.objectId });
-				if (live.data === null || live.data === undefined) {
-					return { ok: false, detail: `lobby ${cached.objectId} not on chain` };
-				}
-				return { ok: true, detail: cached.objectId };
-			},
 			run: async (ctx) => {
 				const pkg = ctx.registry.packages.require('connect_four');
 				// Seed as alice so the UI's "waiting (you created the lobby)"
@@ -101,6 +81,30 @@ export default defineDevstackConfig({
 					objectId: result.objectId,
 					objectType: result.objectType,
 				});
+			},
+		}),
+		// Invariant: the seeded Lobby exists on-chain with the expected
+		// type. Verify runs every cycle — failures here mean someone
+		// consumed the Lobby off-chain (a `join_lobby` call) and a
+		// re-seed is needed.
+		verify({
+			name: 'openLobbyAlive',
+			needs: ['openLobby'],
+			check: async (ctx) => {
+				const pkg = ctx.registry.packages.find('connect_four');
+				if (pkg === undefined) return { ok: false, detail: 'connect_four not published' };
+				const cached = arenaSharedObjects(ctx.registry).find('openLobby');
+				if (cached === undefined) return { ok: false, detail: 'no cached lobby' };
+				const expectedType = `${pkg.packageId}::game::Lobby`;
+				if (cached.objectType !== expectedType) {
+					return { ok: false, detail: 'lobby type stale (republished?)' };
+				}
+				const client = createLocalSuiClient(ctx.registry.services.require('sui-rpc').url);
+				const live = await client.getObject({ id: cached.objectId });
+				if (live.data === null || live.data === undefined) {
+					return { ok: false, detail: `lobby ${cached.objectId} not on chain` };
+				}
+				return { ok: true, detail: cached.objectId };
 			},
 		}),
 	],

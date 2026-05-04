@@ -33,7 +33,7 @@ When `manageStack: true`:
    Service containers start and detach); `HostProcess` actions are skipped — they're started
    later by `pnpm dev` so the wallet-server's URL+token doesn't get re-minted underneath the
    browser. globalSetup writes a `.last-apply-at` marker in the stack dir.
-2. The webServer's `pnpm dev` Supervisor reads the marker — if fresh (<30s), its first reconcile
+2. The webServer's `pnpm dev` Supervisor reads the marker — if fresh (under 30s), its first reconcile
    cycle skips the redundant chain-state probes and only spawns HostProcess actions
    (vite, wallet-server). Saves ~5s of overhead per run.
 3. Tests run normally.

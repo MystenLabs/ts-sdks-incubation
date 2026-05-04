@@ -1,6 +1,8 @@
 import type { ReactNode } from 'react';
 
-// FRICTION: fourth copy. Extract to @mysten-incubation/ui after M5 cleanup.
+/** Section card with title, optional subtitle, optional right-aligned
+ *  header slot, and children body. Lifted from the 4 example apps where
+ *  the same JSX was duplicated byte-for-byte. */
 export function Card({
 	title,
 	subtitle,

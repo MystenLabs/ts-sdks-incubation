@@ -154,7 +154,7 @@ see plugin-authoring").
 
 ## Phase B — substantial
 
-### PR 40 — Extract `Card.tsx` + form `Field` to a shared `react/ui` (~200 lines)
+### PR 40 — Extract `Card.tsx` + form `Field` to a shared `react/ui` (~200 lines) — **DONE**
 
 **Friction**: `notes/project-review.md` — `Card.tsx` is byte-
 identical (modulo FRICTION-tagged comments) across all 4 example
@@ -182,7 +182,7 @@ shouldn't pay for the import. Sub-export keeps it opt-in.
 **Verify**: 4 example apps still typecheck + visual rendering
 unchanged + e2e green.
 
-### PR 41 — Extract `dapp-kit.ts` to `packages/devstack-app-setup/` (~250 lines)
+### PR 41 — Extract `dapp-kit.ts` to `packages/devstack-app-setup/` (~250 lines) — **DONE**
 
 **Friction**: `dapp-kit.ts` is 37 lines × 4 apps, byte-identical.
 Already flagged in `architecture-review-followups.md:42-50`.
@@ -217,7 +217,7 @@ those even if they're not using the dev-wallet pattern.
 
 **Verify**: 4 example apps still typecheck + e2e green.
 
-### PR 42 — `examples/_template/` + scaffolder seed (~400 lines)
+### PR 42 — `examples/_template/` + scaffolder seed (~400 lines) — **DONE**
 
 **Friction**: `architecture-review-followups.md:56-67`. The template
 + `pnpm create devstack-app` scaffolder from Round-1 don't exist.
@@ -251,7 +251,7 @@ Naming: `_template` (underscore-prefixed) so it doesn't show up in
 examples/myapp && cd examples/myapp && pnpm install && pnpm dev`
 brings up a working stack.
 
-### PR 43 — `pnpm create @mysten-incubation/devstack-app <name>` (~600 lines)
+### PR 43 — `pnpm create @mysten-incubation/devstack-app <name>` (~600 lines) — **DONE**
 
 **Friction**: `architecture-review-followups.md:56-67`. Apps need a
 quick scaffold path that bumps the example count without
@@ -283,7 +283,7 @@ allocator handles them at runtime anyway.
 
 ---
 
-## Phase C — bundled polish (PR 44, ~150 lines, single sweep)
+## Phase C — bundled polish (PR 44, ~150 lines, single sweep) — **DONE**
 
 P3 items grouped into one sweep so the diff stays reviewable. From
 `notes/project-review.md` and the post-review project-review:

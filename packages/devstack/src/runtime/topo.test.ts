@@ -77,18 +77,14 @@ describe('topoSortActions — capability `:before` queries', () => {
 	});
 });
 
-describe('topoSortActions — capability `:after` queries', () => {
-	it('reverses the edge: `cap:after` ⇒ providers depend on me', () => {
-		const sorted = topoSortActions([
-			a('me', { needs: ['net:after'] }),
-			a('p', { provides: { capabilities: ['net'] } }),
-		]);
-		expect(indexOf(sorted, 'me')).toBeLessThan(indexOf(sorted, 'p'));
-	});
-
-	it('silently drops `cap:after` queries with no providers', () => {
-		const sorted = topoSortActions([a('me', { needs: ['ghostcap:after'] })]);
-		expect(sorted.map((x) => x.name)).toEqual(['me']);
+describe('topoSortActions — `:after` removal', () => {
+	it('throws when an action still uses the removed `:after` suffix', () => {
+		expect(() =>
+			topoSortActions([
+				a('me', { needs: ['net:after'] }),
+				a('p', { provides: { capabilities: ['net'] } }),
+			]),
+		).toThrow(/dropped .:after.*Use .:before/s);
 	});
 });
 

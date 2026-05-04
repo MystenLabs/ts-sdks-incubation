@@ -18,9 +18,7 @@
 		"stack": "devstack stack"
 	},
 	"dependencies": {
-		"@mysten-incubation/dev-wallet": "workspace:*",
 		"@mysten-incubation/devstack": "workspace:*",
-		"@mysten-incubation/devstack-wallet-panels": "workspace:*",
 		"@mysten/dapp-kit-core": "catalog:",
 		"@mysten/dapp-kit-react": "catalog:",
 		"@mysten/seal": "catalog:",

@@ -1,11 +1,11 @@
 import { Transaction } from '@mysten/sui/transactions';
-import { useId, useMemo, useState } from 'react';
+import { Card, Field } from '@mysten-incubation/devstack/react/ui';
+import { useMemo, useState } from 'react';
 
 import { deployment } from '../generated/deployment.js';
 import * as vault from '../generated/sui/vault/vault.js';
 import { shortAddress } from '../lib/format.js';
 import { useFile, useOwnedCaps, useSignAndExecute } from '../lib/queries.js';
-import { Card } from './Card.js';
 
 export function GrantForm({ self }: { self: string }) {
 	const caps = useOwnedCaps(self);
@@ -105,17 +105,5 @@ export function GrantForm({ self }: { self: string }) {
 				)}
 			</form>
 		</Card>
-	);
-}
-
-function Field({ label, render }: { label: string; render: (id: string) => React.ReactNode }) {
-	const id = useId();
-	return (
-		<div>
-			<label htmlFor={id} className="block text-xs uppercase tracking-wide text-neutral-500 mb-1">
-				{label}
-			</label>
-			{render(id)}
-		</div>
 	);
 }

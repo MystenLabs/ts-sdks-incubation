@@ -1,10 +1,10 @@
-import { useId, useMemo, useState } from 'react';
+import { Card, Field } from '@mysten-incubation/devstack/react/ui';
+import { useMemo, useState } from 'react';
 
 import { deployment } from '../generated/deployment.js';
 import { parseCoinAmount, shortAddress } from '../lib/format.js';
 import { useInvalidateBalances, useSignAndExecute } from '../lib/queries.js';
 import { buildSendTx } from '../lib/transactions.js';
-import { Card } from './Card.js';
 
 export function SendForm({ self }: { self: string }) {
 	const invalidate = useInvalidateBalances();
@@ -111,20 +111,5 @@ export function SendForm({ self }: { self: string }) {
 				)}
 			</form>
 		</Card>
-	);
-}
-
-// FRICTION: this Field component is a near-duplicate of the one in
-// examples/token-studio/src/components/TransferForm.tsx. Form primitives keep
-// reappearing in every app — extract a tiny `<Field>` to a shared package.
-function Field({ label, render }: { label: string; render: (id: string) => React.ReactNode }) {
-	const id = useId();
-	return (
-		<div>
-			<label htmlFor={id} className="block text-xs uppercase tracking-wide text-neutral-500 mb-1">
-				{label}
-			</label>
-			{render(id)}
-		</div>
 	);
 }

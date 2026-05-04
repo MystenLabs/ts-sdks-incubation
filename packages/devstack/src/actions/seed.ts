@@ -1,9 +1,15 @@
 // `seed()` — Post-publish data write action factory.
 //
-// Localnet-only by default (Q5). Authors opt into live networks explicitly
-// via `liveNetworks: true` (any) or `liveNetworks: ['testnet']` (specific).
+// Localnet-only by default. Authors opt into live networks explicitly via
+// `liveNetworks: true` (any) or `liveNetworks: ['testnet']` (specific).
 
-import type { ActionRunContext, Network, Provides, SeedAction } from '../core/types.js';
+import type {
+	ActionRunContext,
+	Network,
+	Provides,
+	SeedAction,
+	SetupActionScope,
+} from '../core/types.js';
 
 export interface SeedOptions<TInputs extends Record<string, unknown>> {
 	name: string;
@@ -24,6 +30,11 @@ export interface SeedOptions<TInputs extends Record<string, unknown>> {
 	 * Plain register-only seeds with no signing should leave it unset.
 	 */
 	runsAs?: string;
+	/** Setup-action scope. See `SetupActionScope`. Default: 'always'.
+	 * Use `'test-only'` for fixtures that should run in the `test` stack
+	 * but not in `main`; `'localnet-only'` to skip on testnet/mainnet
+	 * even when `liveNetworks` would otherwise allow them. */
+	scope?: SetupActionScope;
 	run: (ctx: ActionRunContext) => Promise<void>;
 	getStatus?: (ctx: ActionRunContext) => Promise<{ ok: boolean; detail?: string }>;
 }
@@ -39,6 +50,7 @@ export function seed<TInputs extends Record<string, unknown>>(
 		inputs: opts.inputs,
 		liveNetworks: opts.liveNetworks,
 		runsAs: opts.runsAs,
+		...(opts.scope !== undefined ? { scope: opts.scope } : {}),
 		run: opts.run,
 		getStatus: opts.getStatus,
 	};

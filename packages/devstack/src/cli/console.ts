@@ -4,20 +4,26 @@
 // testnet/mainnet (live networks are stack-independent — only one
 // testnet/mainnet exists per app). Materializes a `SuiClient`, resolves
 // `Signer`s from `config.accounts` via `resolveAccounts`, and dynamically
-// imports any codegen-generated package bindings under
-// `<appDir>/<codegenDir>/<pkg>/<pkg>.ts`. Functions in those modules
-// are auto-wrapped to default `package:` to the live `packageId`, so a
-// REPL session reads like:
+// imports the codegen-generated package bindings under
+// `<appDir>/<codegenDir>/<pkg>/`. The REPL walks every `.ts` file in
+// each package's subdir, merges named exports under `packages.<name>`,
+// and auto-wraps functions to default `package:` to the live `packageId`,
+// so a REPL session reads like:
 //
 //   devstack> tx = new Transaction()
 //   devstack> packages.managed_coin.mint({ arguments: [t, 1000n, accounts.alice.toSuiAddress()] })(tx)
 //   devstack> client.signAndExecuteTransaction({ transaction: tx, signer: accounts.alice })
 //
+// Codegen output is loaded via plain `await import()` — Node 24+ strips
+// types from `.ts` files natively, and the codegen plugin emits `.ts`
+// import specifiers (rather than `.js`) so the in-tree bindings resolve
+// without any custom loader.
+//
 // One-shot lifecycle: print banner, start REPL, resolve on `.exit` / Ctrl-D.
 // The console does not run actions and never writes a manifest — it is a
-// read-only consumer (sink-style plugin shape, per design proposal §14 Q12).
+// read-only consumer of the manifest + registry.
 
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { start as startRepl } from 'node:repl';
 import { pathToFileURL } from 'node:url';
@@ -67,7 +73,14 @@ export async function runConsole(flags: ConsoleFlags): Promise<number> {
 	const network = target.network;
 	const stack = target.stack;
 
-	const manifest = readManifest({ appDir, stack, network });
+	let manifest: ReturnType<typeof readManifest>;
+	try {
+		manifest = readManifest({ appDir, stack, network });
+	} catch (err) {
+		throw new Error(
+			`devstack console: ${err instanceof Error ? err.message : 'failed to load manifest'}`,
+		);
+	}
 	if (manifest === null) {
 		const expected = manifestPath({ appDir, stack, network });
 		throw new Error(
@@ -223,26 +236,47 @@ interface LoadPackageBindingsOptions {
 	codegenDir: string;
 }
 
-async function loadPackageBindings(
+export async function loadPackageBindings(
 	opts: LoadPackageBindingsOptions,
 ): Promise<Record<string, unknown>> {
 	const root = isAbsolute(opts.codegenDir)
 		? opts.codegenDir
 		: resolve(opts.appDir, opts.codegenDir);
+	if (!existsSync(root)) return {};
+
+	// `@mysten/codegen` emits one `.ts` file per Move module under
+	// `<codegenDir>/<pkg>/<module>.ts`, plus a sibling `<codegenDir>/utils/`
+	// with shared helpers. Walk the package subdirs and merge module-level
+	// named exports under `packages.<pkg>`. Codegen is configured with
+	// `importExtension: '.ts'` so Node 24's native type-stripping resolves
+	// the in-tree imports without a custom loader.
 	const out: Record<string, unknown> = {};
 	for (const pkg of (opts.manifest.registry.packages ?? []) as Package[]) {
-		const candidate = join(root, pkg.name, `${pkg.name}.ts`);
-		if (!existsSync(candidate)) continue;
-		try {
-			const mod = (await import(pathToFileURL(candidate).href)) as Record<string, unknown>;
-			out[pkg.name] = wrapWithDefaultPackage(mod, pkg.packageId);
-		} catch (err) {
-			process.stderr.write(
-				`devstack console: failed to import bindings for ${pkg.name} (${candidate}): ${
-					err instanceof Error ? err.message : String(err)
-				}\n`,
-			);
+		const pkgDir = join(root, pkg.name);
+		if (!existsSync(pkgDir) || !statSync(pkgDir).isDirectory()) continue;
+		const moduleFiles = readdirSync(pkgDir).filter(
+			(name) => (name.endsWith('.ts') || name.endsWith('.mts')) && !name.endsWith('.d.ts'),
+		);
+		if (moduleFiles.length === 0) continue;
+		const merged: Record<string, unknown> = {};
+		for (const file of moduleFiles) {
+			const full = join(pkgDir, file);
+			try {
+				const mod = (await import(pathToFileURL(full).href)) as Record<string, unknown>;
+				for (const [key, val] of Object.entries(mod)) {
+					if (key === 'default') continue;
+					merged[key] = val;
+				}
+			} catch (err) {
+				process.stderr.write(
+					`devstack console: failed to import bindings for ${pkg.name}/${file}: ${
+						err instanceof Error ? err.message : String(err)
+					}\n`,
+				);
+			}
 		}
+		if (Object.keys(merged).length === 0) continue;
+		out[pkg.name] = wrapWithDefaultPackage(merged, pkg.packageId);
 	}
 	return out;
 }
@@ -251,7 +285,7 @@ async function loadPackageBindings(
 // string; arguments: ... }) => (tx) => tx.moveCall(...)`. Default `package:`
 // to the live `packageId` so REPL users don't have to thread it through every
 // call. Non-function exports (BCS structs, type re-exports) pass through.
-function wrapWithDefaultPackage(
+export function wrapWithDefaultPackage(
 	mod: Record<string, unknown>,
 	packageId: string,
 ): Record<string, unknown> {
@@ -303,8 +337,47 @@ function printBanner(opts: BannerOptions): void {
 }
 
 export async function main(argv: string[]): Promise<number> {
+	if (argv.includes('--help') || argv.includes('-h')) {
+		process.stdout.write(USAGE);
+		return 0;
+	}
 	return runConsole(parseArgs(argv));
 }
+
+const USAGE = `devstack console [config] [options]
+
+Open a Node REPL with the active stack's manifest, RPC client, account
+signers, and codegen-generated package bindings pre-bound. Reads the
+manifest from the active stack on localnet, or from
+\`<appDir>/.devstack/manifests/<network>.json\` for live nets.
+
+Bound names:
+  manifest          parsed Manifest
+  client            SuiClient pointed at the resolved RPC URL
+  accounts.<name>   resolved Signer per declared account
+  packages.<name>   per-package codegen module (auto-defaults
+                    \`package: <packageId>\` so callers don't thread it)
+  Transaction, bcs, Ed25519Keypair
+
+REPL commands:
+  .deploy [<pkg>]   Run \`apply\` against the active target. Optional
+                    <pkg> scopes to a single Publish + its cascade.
+  .help             List built-in REPL commands.
+  .exit (Ctrl-D)    Quit.
+
+Options:
+  --target <network[:stack]>   Override the active target
+  --stack <name>               Override the active stack (alternative)
+  --network <name>             Override the network (defaults localnet)
+  --codegen-dir <path>         Override the codegen output dir
+                               (default: src/generated/sui)
+  --config <path>              Override the config path
+
+Examples:
+  devstack console
+  devstack console --target testnet
+  devstack console --target localnet:scratch
+`;
 
 function parseArgs(argv: string[]): ConsoleFlags {
 	let codegenDir = DEFAULT_CODEGEN_DIR;

@@ -1,7 +1,7 @@
 import { deployment } from '../generated/deployment.js';
 import { formatStudio, shortAddress } from '../lib/coin.js';
 import { useCoinMetadata, useTotalSupply } from '../lib/queries.js';
-import { Card } from './Card.js';
+import { Card } from '@mysten-incubation/devstack/react/ui';
 
 export function CoinHeader() {
 	const metadata = useCoinMetadata();

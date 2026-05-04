@@ -11,11 +11,11 @@
 // at `apply` / `deploy` since the supervisor is localnet-only by
 // construction (see Supervisor's constructor guard).
 //
-// `runUp({ once: true })` is the programmatic shape used by playwright's
-// globalSetup: reconcile once + fire shutdown hooks. End users want
-// `devstack apply` for the equivalent CLI behavior — `--once` is
-// intentionally not advertised on the CLI to keep the matrix honest
-// (the user-visible verbs are `up` for keepalive, `apply` for one-shot).
+// `--once` runs one reconcile cycle and exits with shutdown hooks fired —
+// the same shape Playwright's globalSetup uses. Equivalent to
+// `devstack apply` plus the supervisor's HostProcess actions and
+// shutdown discipline. Useful for `pnpm localnet:up` style scripts that
+// want to bring the chain to known state and return.
 
 import { dirname, resolve } from 'node:path';
 import type { Network } from '../core/types.js';
@@ -80,10 +80,21 @@ export async function runUp(flags: UpFlags): Promise<number> {
 		accounts: config.accounts,
 		rpcUrl: config.networks?.[network]?.rpcUrl,
 	});
-	if (flags.once) {
-		await supervisor.runOnce();
-	} else {
-		await supervisor.start();
+	try {
+		if (flags.once) {
+			await supervisor.runOnce();
+		} else {
+			await supervisor.start();
+		}
+	} catch (err) {
+		// `SupervisorLockBusyError` (and any other startup error) gets a
+		// clean stderr message instead of the default Node stack trace —
+		// the user can act on it immediately.
+		if (err instanceof Error && err.name === 'SupervisorLockBusyError') {
+			process.stderr.write(`devstack up: ${err.message}\n`);
+			return 1;
+		}
+		throw err;
 	}
 	return 0;
 }
@@ -103,16 +114,21 @@ sources for changes. Localnet only — use \`devstack deploy --network
 testnet\` for live-network deploys, or \`devstack apply --target ...\`
 for a single-cycle reconcile.
 
-Runs every action type: Build, Service, Publish, Register, Seed, Emit,
-Verify.
+Runs every action type: Build, Service, HostProcess, Publish, Register,
+Seed, Emit, Verify.
 
 Options:
   --target <localnet:stack>   Override the active stack
   --stack <name>              Override the active stack (alternative form)
   --config <path>             Override the config path
+  --once                      Reconcile once and exit (fires shutdown
+                              hooks on the way out). Equivalent to the
+                              cycle Playwright globalSetup uses; \`pnpm
+                              localnet:up\` scripts wrap this.
 
 Examples:
   devstack up
+  devstack up --once
   devstack up --target scratch
   devstack up ./custom.config.ts
 `;
@@ -121,7 +137,7 @@ function parseArgs(argv: string[]): UpFlags {
 	return {
 		configPath: parseConfigArg(argv),
 		network: parseNetworkArg(argv) ?? 'localnet',
-		once: false,
+		once: argv.includes('--once'),
 		stack: parseStackArg(argv),
 		target: parseTargetArg(argv),
 	};

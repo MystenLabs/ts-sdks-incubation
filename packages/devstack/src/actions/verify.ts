@@ -11,11 +11,15 @@ export interface VerifyOptions<TInputs extends Record<string, unknown>> {
 	name: string;
 	needs?: string[];
 	provides?: Provides;
-	inputs: TInputs;
+	/** Optional inputs payload. Verify actions don't use the input-hash
+	 * skip predicate (they re-run every cycle by design), so inputs are
+	 * mostly informational — useful for snapshot identification when an
+	 * invariant probe needs to re-run on input drift. */
+	inputs?: TInputs;
 	check: (ctx: ActionRunContext) => Promise<{ ok: boolean; detail?: string }>;
 }
 
-export function verify<TInputs extends Record<string, unknown>>(
+export function verify<TInputs extends Record<string, unknown> = Record<string, unknown>>(
 	opts: VerifyOptions<TInputs>,
 ): VerifyAction<TInputs> {
 	return {
@@ -23,7 +27,7 @@ export function verify<TInputs extends Record<string, unknown>>(
 		type: 'Verify',
 		needs: opts.needs,
 		provides: opts.provides,
-		inputs: opts.inputs,
+		...(opts.inputs !== undefined ? { inputs: opts.inputs } : {}),
 		getStatus: opts.check,
 	};
 }

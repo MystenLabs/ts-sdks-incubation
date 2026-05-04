@@ -1,4 +1,5 @@
 import { Transaction } from '@mysten/sui/transactions';
+import { Card } from '@mysten-incubation/devstack/react/ui';
 import { useState } from 'react';
 
 import { deployment } from '../generated/deployment.js';
@@ -6,7 +7,6 @@ import * as connectFour from '../generated/sui/connect_four/game.js';
 import { labelFor, shortAddress } from '../lib/format.js';
 import { type ArenaGame, COLS, ROWS, useGame, useSignAndExecute } from '../lib/queries.js';
 import { Board } from './Board.js';
-import { Card } from './Card.js';
 
 interface GameViewProps {
 	gameId: string;
