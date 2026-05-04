@@ -99,7 +99,7 @@
 	"dependencies": {
 		"@mysten-incubation/dev-wallet": "workspace:*",
 		"@mysten-incubation/devstack-wallet-panels": "workspace:*",
-		"@mysten/codegen": "^0.10.4",
+		"@mysten/codegen": "catalog:",
 		"@mysten/sui": "catalog:",
 		"@mysten/walrus": "^1.1.4",
 		"chokidar": "^4.0.1",
@@ -110,7 +110,7 @@
 		"@mysten/dapp-kit-react": "catalog:",
 		"@playwright/test": "catalog:",
 		"@tanstack/react-query": "catalog:",
-		"@types/node": "^22.10.0",
+		"@types/node": "catalog:",
 		"@types/react": "catalog:",
 		"react": "catalog:",
 		"react-dom": "catalog:",

@@ -77,8 +77,8 @@
 	"homepage": "https://github.com/MystenLabs/ts-sdks-incubation/tree/main/packages/dev-wallet#readme",
 	"devDependencies": {
 		"@lit/react": "^1.0.8",
-		"@mysten/signers": "^1.0.1",
-		"@mysten/sui": "^2.9.1",
+		"@mysten/signers": "catalog:",
+		"@mysten/sui": "catalog:",
 		"@testing-library/react": "^16.3.1",
 		"@types/node": "^25.0.8",
 		"@types/react": "^19.2.8",
@@ -96,15 +96,15 @@
 		"@hono/node-server": "^1.19.9",
 		"@mysten/utils": "^0.3.1",
 		"@mysten/wallet-sdk": "^0.1.1",
-		"@mysten/wallet-standard": "^0.20.1",
+		"@mysten/wallet-standard": "catalog:",
 		"@mysten/window-wallet-core": "^0.1.4",
 		"hono": "^4.12.3",
 		"lit": "^3.3.2"
 	},
 	"peerDependencies": {
 		"@lit/react": "^1.0.8",
-		"@mysten/signers": "^1.0.1",
-		"@mysten/sui": "^2.9.1",
+		"@mysten/signers": "catalog:",
+		"@mysten/sui": "catalog:",
 		"@types/react": ">=17.0.0",
 		"react": ">=17.0.0"
 	},
