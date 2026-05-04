@@ -5,7 +5,7 @@ import { ConnectButton } from '@mysten/dapp-kit-react/ui';
 import { FilesList } from './components/FilesList.js';
 import { GrantForm } from './components/GrantForm.js';
 import { UploadForm } from './components/UploadForm.js';
-import { deployment } from './generated/deployment.js';
+import { deployment } from './lib/deployment.js';
 import { labelFor, shortAddress } from './lib/format.js';
 
 export function App() {

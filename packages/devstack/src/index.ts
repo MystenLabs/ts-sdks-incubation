@@ -54,6 +54,11 @@ export {
 	getProvidesRegistryHook,
 	requireLocalnetCtx,
 } from './core/types.js';
+export type {
+	Manifest,
+	SerializedActionState,
+	SerializedRegistry,
+} from './runtime/manifest-types.js';
 
 // ─── Authoring helpers ────────────────────────────────────────────────────
 

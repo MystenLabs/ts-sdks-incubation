@@ -148,7 +148,7 @@ load-bearing prerequisite for everything else in Phase B.
 | A11 | `apply --help` "Skips: Service" wording fixed to reflect actual behavior. |
 | A12 | New `authoring/plugin-authoring.mdx` walks through building a hypothetical `walrusBridge()` plugin end-to-end (action types, `getStatus` principles, cross-plugin ordering, `runsAs`, registry, snapshot meta, helper surfacing, testing). `define-plugin.mdx` cross-links to it. Subsumes F8. |
 
-### Phase B: API consolidations (11 PRs, 7 done + 1 deferred + 1 dropped)
+### Phase B: API consolidations (11 PRs, 8 done + 1 deferred + 1 dropped)
 
 | PR | What changed |
 |---|---|
@@ -160,7 +160,7 @@ load-bearing prerequisite for everything else in Phase B.
 | B9 | Merged `@mysten-incubation/devstack-app-setup` into `@mysten-incubation/devstack/app-setup` subpath. `createWalletApp`'s `exposeForPlaywright` defaults to true under DEV (Vite dev server) and false in production. HMR cleanup hook drops the stale `__devstackDAppKit__` global on module re-evaluation. The 5 examples + create-devstack-app template now import from the subpath; the standalone package was deleted. |
 | B11 | New `mintCoinDistribution()` setup helper. Wallet's 78-line `seedTokens` action collapses to ~6 lines: `mintCoinDistribution({ name, distributions: [{ package, module, distribution }] })`. Idempotence comes from input-hash skip; `treasuryCapId` is read from the package's `captured` map by convention. |
 | B5 | Extracted `sui.accounts` action into its own `accounts()` plugin under `plugins/accounts/`. Sui plugin shrunk to `build` + `localnet`; the accounts plugin reads sui-rpc + sui-faucet URLs from the registry (not from sui's closure scope). All 5 examples + scaffolder template explicitly include `accounts()` in their plugin list. `'sui.accounts'` → `'accounts.fund'` everywhere. |
-| B1 | _Pending._ Codegen emits a per-app `TypedManifest` that walks the registry namespaces at codegen time. Examples drop their hand-written `src/generated/deployment.ts` files. Manifest schema bump. |
+| B1 | `SerializedRegistry` schema bumped to use `Token`/`Package`/`Account`/`Service` instead of `unknown[]` — `Manifest` is now exported from `@mysten-incubation/devstack`. Codegen's `Emit` action gained a second output: `<appDir>/src/generated/manifest.ts`, a re-projection of the registry snapshot with a `: Manifest` annotation. `dependsOnKind` widened to all four core kinds; `getStatus` content-hash-checks the typed manifest on every cycle so any registry change regenerates. The 4 examples deleted their hand-written `src/generated/deployment.ts` files; per-app projections moved to `src/lib/deployment.ts` (each example's lib version casts plugin namespaces inline since those stay `unknown` on the manifest schema). 5 new tests cover the typed-manifest branch. |
 | B6 | _Pending._ Demote `tokens` from `Registry` core kinds to a plugin namespace. `Token` lives in a `coin()` plugin (or extras module). Walrus, wallet, and token-studio update. |
 | B10 | _Dropped._ A separate UI-component package is out of scope for a devstack tool. The existing minimal `react/ui/{Card,Field}` continues to ship from `@mysten-incubation/devstack` for example use; no new components, no extraction. |
 
@@ -168,16 +168,9 @@ load-bearing prerequisite for everything else in Phase B.
 
 ## What's left (in priority order)
 
-### Finish Phase B (2 PRs)
+### Finish Phase B (1 PR)
 
-Recommended order:
-
-1. **B1 — codegen TypedManifest.** Highest user-visible win:
-   eliminates the hand-written `deployment.ts` projection from each
-   example and gives apps typed access to manifest data without a
-   per-app shim. Most invasive remaining change; touches the codegen
-   emitter + every example.
-2. **B6 — demote `tokens` from core.** Cosmetic-ish. The registry
+1. **B6 — demote `tokens` from core.** Cosmetic-ish. The registry
    contract is more honest after, but no functional behavior changes.
 
 ### Phase C — distribution (3 PRs, all pending)
@@ -285,16 +278,16 @@ differentiator vs. scaffold-eth-2 but isn't strictly required for
 
 ## Status snapshot
 
-- **19 PRs landed** (PR 0, A1–A12, B2, B3, B4, B5, B8, B9, B11)
+- **20 PRs landed** (PR 0, A1–A12, B1, B2, B3, B4, B5, B8, B9, B11)
 - **1 PR deferred** (B7, with rationale)
 - **1 PR dropped** (B10 — UI components out of scope)
-- **25 PRs pending** across B–G (F8 subsumed by A12; B10 dropped):
-  - Phase B: B1 (codegen TypedManifest), B6 (demote tokens)
+- **24 PRs pending** across B–G (F8 subsumed by A12; B10 dropped):
+  - Phase B: B6 (demote tokens)
   - Phase C: C1–C3 (publish to npm)
   - Phase D: D1–D3 (Debug Packages UI)
   - Phase E: E1–E2 (loadFixture, manual triggers)
   - Phase F: F1–F7 (per-plugin polish; F8 done as part of A12)
   - Phase G: G1–G8 (monorepo hygiene)
 
-389 tests passing in `packages/devstack`; all 5 examples typecheck
+394 tests passing in `packages/devstack`; all 5 examples typecheck
 clean against the new shapes.

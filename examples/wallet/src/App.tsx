@@ -5,7 +5,7 @@ import { ConnectButton } from '@mysten/dapp-kit-react/ui';
 import { Balances } from './components/Balances.js';
 import { SendForm } from './components/SendForm.js';
 import { SwapForm } from './components/SwapForm.js';
-import { deployment } from './generated/deployment.js';
+import { deployment } from './lib/deployment.js';
 import { labelFor, shortAddress } from './lib/format.js';
 
 export function App() {

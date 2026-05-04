@@ -2,7 +2,7 @@ import { useCurrentClient } from '@mysten/dapp-kit-react';
 import { Card, Field } from '@mysten-incubation/devstack/react/ui';
 import { useState } from 'react';
 
-import { deployment } from '../generated/deployment.js';
+import { deployment } from '../lib/deployment.js';
 import { buildTransferTx, parseStudioAmount, shortAddress } from '../lib/coin.js';
 import { useInvalidateCoinReads, useSignAndExecute } from '../lib/queries.js';
 

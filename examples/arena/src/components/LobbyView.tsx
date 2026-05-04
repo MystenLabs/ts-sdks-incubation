@@ -2,7 +2,7 @@ import { Transaction } from '@mysten/sui/transactions';
 import { Card } from '@mysten-incubation/devstack/react/ui';
 import { useState } from 'react';
 
-import { deployment } from '../generated/deployment.js';
+import { deployment } from '../lib/deployment.js';
 import * as connectFour from '../generated/sui/connect_four/game.js';
 import { labelFor, shortAddress } from '../lib/format.js';
 import { type ArenaLobby, useSignAndExecute } from '../lib/queries.js';

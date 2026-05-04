@@ -20,6 +20,8 @@ declare module 'virtual:devstack-manifest' {
 		sourceDigest?: string;
 		chainId?: string;
 		network: 'localnet' | 'testnet' | 'mainnet';
+		path?: string;
+		mvrPlaceholder?: string;
 	}
 	export interface ManifestAccount {
 		name: string;
@@ -37,11 +39,15 @@ declare module 'virtual:devstack-manifest' {
 	export interface ManifestSharedObject {
 		name: string;
 		objectId: string;
-		objectType: string;
+		objectType?: string;
 	}
 	export interface ManifestToken {
 		name: string;
-		[key: string]: unknown;
+		type: string;
+		decimals: number;
+		treasuryCapId?: string;
+		metadataId?: string;
+		faucet?: bigint;
 	}
 	export interface Manifest {
 		app: string;

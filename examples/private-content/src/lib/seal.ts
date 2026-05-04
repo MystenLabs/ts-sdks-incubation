@@ -2,7 +2,7 @@ import { SealClient, type SealCompatibleClient, SessionKey } from '@mysten/seal'
 import { Transaction } from '@mysten/sui/transactions';
 
 import { dAppKit } from '../dapp-kit.js';
-import { deployment } from '../generated/deployment.js';
+import { deployment } from './deployment.js';
 import { bytesToHex, hexToBytes } from './format.js';
 
 const SEAL_THRESHOLD = 1; // Open mode, single key server.
