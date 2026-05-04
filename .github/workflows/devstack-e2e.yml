@@ -1,16 +1,19 @@
 name: Devstack E2E
 
-# Two-stage CI for example apps backed by devstack:
+# Two-stage matrix CI for the example apps backed by devstack:
 #
-#   1. seed: bring up the stack cold, capture a snapshot, push seed images
-#      to GHCR. Snapshot bundle (small — manifest + keys + walrus configs)
-#      cached via actions/cache; seed images flow through GHCR.
-#   2. e2e:  matrix of test shards. Each restores the snapshot bundle from
-#      cache + pulls seed images from GHCR via `devstack snapshot restore`,
-#      then runs the example app's playwright suite.
+#   1. seed:  per-example, brings up the stack cold, captures a snapshot,
+#             pushes seed images to GHCR. Snapshot bundle (small — manifest
+#             + keys + walrus configs) cached via `actions/cache`; seed
+#             container images flow through GHCR.
+#   2. e2e:   matrix of (example × shard). Each restores the snapshot
+#             bundle from cache + pulls seed images from GHCR via
+#             `devstack snapshot restore`, then runs the example app's
+#             playwright suite.
 #
-# Cold-cache CI run pays the full ~75 s seed cost once; warm runs (cache
-# hit on the snapshot bundle) restore in <15 s and shards parallelize.
+# Cold-cache CI run pays the full ~75 s seed cost per example once; warm
+# runs (cache hit on the snapshot bundle) restore in <15 s. Shards
+# parallelize across both axes.
 
 on:
   push:
@@ -25,10 +28,17 @@ permissions:
 
 jobs:
   seed:
-    name: Seed snapshot for token-studio
+    name: Seed snapshot · ${{ matrix.example }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        example: [arena, private-content, token-studio, wallet]
     outputs:
-      snapshot-id: ${{ steps.hash.outputs.id }}
+      arena-snapshot-id: ${{ steps.export.outputs.arena }}
+      private-content-snapshot-id: ${{ steps.export.outputs.private-content }}
+      token-studio-snapshot-id: ${{ steps.export.outputs.token-studio }}
+      wallet-snapshot-id: ${{ steps.export.outputs.wallet }}
     steps:
       - name: Checkout
         uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # pin@v4.1.1
@@ -44,34 +54,38 @@ jobs:
         run: pnpm --filter @mysten-incubation/devstack build
       - name: Compute snapshot id
         id: hash
-        working-directory: examples/token-studio
+        working-directory: examples/${{ matrix.example }}
         run: |
           ID=$(pnpm devstack snapshot hash)
           echo "id=$ID" >> $GITHUB_OUTPUT
+      - name: Export snapshot id
+        id: export
+        run: echo "${{ matrix.example }}=${{ steps.hash.outputs.id }}" >> $GITHUB_OUTPUT
       - name: Cache snapshot bundle
         id: cache
         uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # pin@v4.2.0
         with:
-          path: examples/token-studio/.devstack/snapshots
-          key: devstack-snapshot-${{ runner.arch }}-${{ steps.hash.outputs.id }}
+          path: examples/${{ matrix.example }}/.devstack/snapshots
+          key: devstack-snapshot-${{ runner.arch }}-${{ matrix.example }}-${{ steps.hash.outputs.id }}
       - name: Log in to GHCR
         if: steps.cache.outputs.cache-hit != 'true'
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
       - name: Cold seed + capture snapshot
         if: steps.cache.outputs.cache-hit != 'true'
-        working-directory: examples/token-studio
+        working-directory: examples/${{ matrix.example }}
         run: |
           pnpm devstack up
           pnpm devstack snapshot save baseline --push ghcr.io/${{ github.repository_owner }}/devstack-snapshots
           pnpm devstack stack down
 
   e2e:
-    name: E2E shard ${{ matrix.shard }}
+    name: E2E · ${{ matrix.example }} shard ${{ matrix.shard }}
     needs: seed
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
+        example: [arena, private-content, token-studio, wallet]
         shard: [1, 2]
     steps:
       - name: Checkout
@@ -86,18 +100,29 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Build devstack
         run: pnpm --filter @mysten-incubation/devstack build
+      - name: Resolve snapshot id
+        id: snapshot
+        run: |
+          case "${{ matrix.example }}" in
+            arena)           ID="${{ needs.seed.outputs.arena-snapshot-id }}" ;;
+            private-content) ID="${{ needs.seed.outputs.private-content-snapshot-id }}" ;;
+            token-studio)    ID="${{ needs.seed.outputs.token-studio-snapshot-id }}" ;;
+            wallet)          ID="${{ needs.seed.outputs.wallet-snapshot-id }}" ;;
+            *) echo "unknown example ${{ matrix.example }}"; exit 1 ;;
+          esac
+          echo "id=$ID" >> $GITHUB_OUTPUT
       - name: Restore snapshot bundle
         uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # pin@v4.2.0
         with:
-          path: examples/token-studio/.devstack/snapshots
-          key: devstack-snapshot-${{ runner.arch }}-${{ needs.seed.outputs.snapshot-id }}
+          path: examples/${{ matrix.example }}/.devstack/snapshots
+          key: devstack-snapshot-${{ runner.arch }}-${{ matrix.example }}-${{ steps.snapshot.outputs.id }}
       - name: Log in to GHCR (for snapshot pull)
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
       - name: Restore snapshot
-        working-directory: examples/token-studio
+        working-directory: examples/${{ matrix.example }}
         run: pnpm devstack snapshot restore baseline
       - name: Install playwright browsers
-        run: pnpm --filter @mysten-incubation/token-studio exec playwright install --with-deps chromium
+        run: pnpm --filter @mysten-incubation/${{ matrix.example }} exec playwright install --with-deps chromium
       - name: Run e2e tests (shard ${{ matrix.shard }}/2)
-        working-directory: examples/token-studio
+        working-directory: examples/${{ matrix.example }}
         run: pnpm test:e2e --shard ${{ matrix.shard }}/2
