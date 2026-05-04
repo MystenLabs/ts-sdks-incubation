@@ -112,7 +112,9 @@ export {
 } from './plugins/walrus/index.js';
 export { WALRUS_REV } from './plugins/walrus/build.js';
 export {
+	localnetSealOptions,
 	seal,
+	type LocalnetSealOptions,
 	type SealKeyServer,
 	type SealNamespace,
 	type SealPluginOptions,
@@ -121,23 +123,11 @@ export { SEAL_REV } from './plugins/seal/build.js';
 export { codegen, defaultMvrName, type CodegenPluginOptions } from './plugins/codegen/index.js';
 export {
 	deepbook,
-	deepbookNs,
-	buildDeepbookSwapTx,
-	resolveCoinType,
-	SUI_COIN_TYPE,
-	type BuildSwapTxOptions,
 	type DeepbookMarketMakerSpec,
-	type DeepbookNamespace,
 	type DeepbookPluginOptions,
-	type DeepbookPool,
 	type DeepbookPoolSpec,
 } from './plugins/deepbook/index.js';
-export {
-	imports,
-	withRecursiveDeps,
-	type ImportSpec,
-	type ImportsPluginOptions,
-} from './plugins/imports/index.js';
+export { imports, type ImportSpec, type ImportsPluginOptions } from './plugins/imports/index.js';
 export { frontend, type FrontendPluginOptions } from './plugins/frontend/index.js';
 export {
 	walletServer,

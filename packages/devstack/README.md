@@ -190,11 +190,14 @@ come from top-level `accounts: { ... }` — the plugin no longer takes an `accou
 4-node Walrus testbed on a pinned subnet. Provides the `app-network` capability. First-run image
 build is heavy.
 
-### `seal({ rev?, apiPort? })`
+### `seal({ rev?, port?, keyServerName?, master?, publisher? })`
 
 Seal key-server in Open mode. Four actions: build, publish (Move package), register (BLS keypair +
-on-chain `KeyServer`), key-server (Service). The master key is cached at
-`<stackDir>/.keys/seal-master-key.json`.
+on-chain `KeyServer`), key-server (Service). On first run the `register` action shells out to
+`seal-cli genkey` inside the build image to mint a BLS12-381 master keypair, then writes both
+halves to `<stackDir>/.keys/seal-master-key.json`. Subsequent runs load the cached pair so
+`KeyServer.id` and the on-chain registration stay stable across `up`/`down` cycles. Pass
+`master:` directly to bypass key generation entirely (deterministic test fixtures).
 
 ### `codegen({ output?, mvrName? })`
 

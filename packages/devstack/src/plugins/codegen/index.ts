@@ -39,8 +39,16 @@
 // live `packageId`s at transaction build time. Apps wire it via
 // `localnetDappKitConfig` and no longer need `bindPackage`.
 
-import { execSync, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import {
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 
 import { generateFromPackageSummary } from '@mysten/codegen';
@@ -111,6 +119,15 @@ export const codegen = (opts: CodegenPluginOptions = {}) => {
 						return { ok: false, detail: 'manifest.ts stale' };
 					}
 					const targets = codegenTargets(ctx.registry.packages.list());
+					const targetNames = new Set(targets.map((t) => t.name));
+					if (existsSync(outputAbs)) {
+						// A leftover per-package binding dir from a removed Publish
+						// action — surface as stale so `run()` cleans it up.
+						const stale = staleBindingDirs(outputAbs, targetNames);
+						if (stale.length > 0) {
+							return { ok: false, detail: `stale bindings: ${stale.join(', ')}` };
+						}
+					}
 					if (targets.length === 0) return { ok: true, detail: 'no codegen-able packages' };
 					if (!existsSync(outputAbs)) {
 						return { ok: false, detail: `${output} missing` };
@@ -135,12 +152,22 @@ export const codegen = (opts: CodegenPluginOptions = {}) => {
 					const outputAbs = resolvedOutputDir(ctx.appDir, output);
 					writeTypedManifest({ ctx, outputAbs });
 					const targets = codegenTargets(ctx.registry.packages.list());
+					const targetNames = new Set(targets.map((t) => t.name));
+					if (existsSync(outputAbs)) {
+						for (const stale of staleBindingDirs(outputAbs, targetNames)) {
+							rmSync(join(outputAbs, stale), { recursive: true, force: true });
+						}
+					}
 					if (targets.length === 0) return;
 					await ensureSuiOnPath();
 					mkdirSync(outputAbs, { recursive: true });
-					for (const pkg of targets) {
-						await runCodegenForPackage({ ctx, pkg, output, mvrName });
-					}
+					// Per-package codegen is independent — `sui move summary` runs in
+					// each package's own dir, `generateFromPackageSummary` writes to
+					// distinct subdirs. Run in parallel; on a 4-package app this cuts
+					// the codegen step from ~2s serial to ~600ms.
+					await Promise.all(
+						targets.map((pkg) => runCodegenForPackage({ ctx, pkg, output, mvrName })),
+					);
 				},
 			}),
 		],
@@ -194,6 +221,21 @@ function manifestReplacer(_key: string, value: unknown): unknown {
 	return value;
 }
 
+/** Per-package binding subdirs in `<output>/` whose package no longer
+ * appears in the registry (e.g. an app removed a `publishMove(...)` from
+ * its setup). Used by `getStatus` to surface staleness and by `run` to
+ * actually delete the leftover dirs. The `manifest.ts` sibling is at
+ * `<output>/../manifest.ts`, not inside `<output>/`, so it isn't a
+ * candidate for deletion. */
+function staleBindingDirs(outputAbs: string, keep: ReadonlySet<string>): string[] {
+	const out: string[] = [];
+	for (const entry of readdirSync(outputAbs, { withFileTypes: true })) {
+		if (!entry.isDirectory()) continue;
+		if (!keep.has(entry.name)) out.push(entry.name);
+	}
+	return out;
+}
+
 interface CodegenTarget {
 	name: string;
 	path: string;
@@ -244,14 +286,18 @@ async function runCodegenForPackage(opts: {
 	// `generateFromPackageSummary` reads the summary that `sui move
 	// summary` produces under `<pkg.path>/package_summaries/`. Run that
 	// step here ourselves (the CLI codegen wraps it; we're skipping the
-	// CLI to gain control over the `package` placeholder string).
-	try {
-		execSync('sui move summary', { cwd: pkg.path, stdio: 'ignore' });
-	} catch (err) {
+	// CLI to gain control over the `package` placeholder string). Spawn
+	// (not execSync) so multiple packages parallelize via `Promise.all`
+	// in `run` — execSync would block the event loop and serialize them.
+	const summaryRes = await runShell({
+		cmd: 'sui',
+		args: ['move', 'summary'],
+		cwd: pkg.path,
+	});
+	if (summaryRes.code !== 0) {
 		throw new Error(
-			`codegen: \`sui move summary\` failed for ${pkg.name} at ${pkg.path}: ${
-				err instanceof Error ? err.message : String(err)
-			}`,
+			`codegen: \`sui move summary\` failed for ${pkg.name} at ${pkg.path} ` +
+				`(exit ${summaryRes.code}): ${summaryRes.stderr.trim() || summaryRes.stdout.trim()}`,
 		);
 	}
 
