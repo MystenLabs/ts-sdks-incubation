@@ -47,7 +47,6 @@ import {
 import { definePlugin } from '../../plugin.js';
 import { imageExists } from '../sui/docker.js';
 import { suiContainerName } from '../sui/index.js';
-import { type ResolveSeed, resolveImports } from './resolve.js';
 
 const IMPORT_NAME_RE = /^[a-z][a-z0-9_-]*$/;
 
@@ -78,10 +77,9 @@ interface ImportSpecCommon {
 	 * that network (e.g. publishing a fresh copy on testnet). */
 	addresses?: Partial<Record<Network, string>>;
 	/** Names of other ImportSpecs this one depends on (matched by `name`).
-	 * Populated by `withRecursiveDeps` when the recursive walker resolves
-	 * Move.toml git deps; users can also set it manually for hand-curated
-	 * dep chains. The Publish action gains a `needs` edge for each entry
-	 * so dep packages publish before their dependents. */
+	 * Set this manually for hand-curated dep chains. The Publish action
+	 * gains a `needs` edge for each entry so dep packages publish before
+	 * their dependents. */
 	dependsOn?: string[];
 }
 
@@ -122,12 +120,45 @@ export interface ImportsPluginOptions {
 
 export const imports = (opts: ImportsPluginOptions) => {
 	const seen = new Set<string>();
+	// Track revs per repo so we can warn when a single git repo is pinned
+	// to multiple revs across specs. Two specs from the same repo at
+	// different revs publish from different built-source images, almost
+	// always a config mistake (subdir packages from `MystenLabs/deepbookv3`
+	// at v6.0.0 vs. v7.0.0, e.g.) — silently produces two on-chain copies
+	// of the same Move package and the second one wins on subsequent reads
+	// of `@reg/<name>` references. Localnet-only failure mode; surface it.
+	const revsByRepo = new Map<string, Map<string, string[]>>();
 	for (const spec of opts.packages) {
 		validateImportName(spec.name);
 		if (seen.has(spec.name)) {
 			throw new Error(`imports: duplicate package name '${spec.name}'`);
 		}
 		seen.add(spec.name);
+		if (!isLocalImport(spec)) {
+			let revMap = revsByRepo.get(spec.repo);
+			if (revMap === undefined) {
+				revMap = new Map();
+				revsByRepo.set(spec.repo, revMap);
+			}
+			let names = revMap.get(spec.rev);
+			if (names === undefined) {
+				names = [];
+				revMap.set(spec.rev, names);
+			}
+			names.push(spec.name);
+		}
+	}
+	for (const [repo, revs] of revsByRepo) {
+		if (revs.size <= 1) continue;
+		const detail = Array.from(revs.entries())
+			.map(([rev, names]) => `${rev} → [${names.join(', ')}]`)
+			.join('; ');
+		process.stderr.write(
+			`imports: warning — ${repo} pinned to ${revs.size} different revs: ${detail}. ` +
+				`Two specs from the same repo at different revs build separate source ` +
+				`images and produce different package IDs; align the \`rev:\` fields ` +
+				`unless you genuinely need both versions side-by-side.\n`,
+		);
 	}
 	const specs = opts.packages.map(applyDepLinks);
 	return definePlugin({
@@ -161,57 +192,6 @@ export const imports = (opts: ImportsPluginOptions) => {
 		actions: () => specs.flatMap(buildActionsForSpec),
 	});
 };
-
-/**
- * Async helper for recursive Move.toml dep walking. Given a list of
- * top-level seed specs, returns an expanded `ImportSpec[]` containing
- * every transitively-required git package (deduped by `(repo, rev,
- * subdir)`, framework deps to `MystenLabs/sui` skipped). Each resolved
- * spec carries a `dependsOn` list so the imports plugin's per-package
- * Publish actions chain in topo order.
- *
- * Use at config-load time:
- *
- *   const packages = await withRecursiveDeps([{ name: 'deepbook', ... }]);
- *   export default defineDevstackConfig({
- *     plugins: [sui(), imports({ packages }), ...],
- *   });
- *
- * The first call clones source images for every transitively-required
- * package — slow on cold cache, fast on warm (image cache by `(repo,
- * rev)`). Local (`{ local = "..." }`) deps stay inside their parent's
- * source tree and publish via `--with-unpublished-dependencies`; they
- * are NOT enqueued as separate ImportSpecs.
- */
-export async function withRecursiveDeps(seeds: ImportSpec[]): Promise<ImportSpec[]> {
-	const gitSeeds = seeds.filter((s): s is GitImportSpec => !isLocalImport(s));
-	const localSeeds = seeds.filter(isLocalImport);
-	const seedShape: ResolveSeed[] = gitSeeds.map((s) => ({
-		name: s.name,
-		repo: s.repo,
-		rev: s.rev,
-		subdir: s.subdir,
-	}));
-	const { resolved } = await resolveImports(seedShape);
-	const seedByName = new Map(gitSeeds.map((s) => [s.name, s]));
-	const resolvedGit: ImportSpec[] = resolved.map((entry) => {
-		const seedSpec = seedByName.get(entry.name);
-		const base: GitImportSpec = seedSpec ?? {
-			name: entry.name,
-			repo: entry.repo,
-			rev: entry.rev,
-			subdir: entry.subdir,
-		};
-		const depNames = entry.depKeys
-			.map((depKey) => {
-				const depEntry = resolved.find((r) => r.key === depKey);
-				return depEntry?.name;
-			})
-			.filter((n): n is string => n !== undefined);
-		return { ...base, dependsOn: depNames };
-	});
-	return [...localSeeds, ...resolvedGit];
-}
 
 function applyDepLinks(spec: ImportSpec): InternalImportSpec {
 	if (isLocalImport(spec)) {

@@ -112,12 +112,5 @@ export const deepbook = (opts: DeepbookPluginOptions = {}) => {
 	});
 };
 
-export type {
-	DeepbookPool,
-	DeepbookPoolSpec,
-	DeepbookNamespace,
-} from './pools.js';
-export { deepbookNs } from './pools.js';
+export type { DeepbookPoolSpec } from './pools.js';
 export type { DeepbookMarketMakerSpec } from './market-maker.js';
-export { resolveCoinType, SUI_COIN_TYPE } from './coin-spec.js';
-export { buildDeepbookSwapTx, type BuildSwapTxOptions } from './swap.js';

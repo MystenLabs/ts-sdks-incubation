@@ -71,7 +71,6 @@ export interface SealKeyServer {
 	name: string;
 	objectId: string;
 	url: string;
-	publicKey: string;
 	sealPackageId: string;
 }
 
@@ -97,6 +96,40 @@ export interface SealPluginOptions {
 	/** Account that signs the `KeyServer` registration tx. Defaults to
 	 * `'publisher'` to match the rest of the built-ins. */
 	publisher?: string;
+}
+
+/** Options for constructing a `@mysten/seal` `SealClient` against a
+ * devstack-managed localnet. Pass into `new SealClient({...suiClient,
+ * ...localnetSealOptions(manifest)})`. Pulls the registered key-server
+ * object id(s) out of the manifest; falls back to `serverConfigs: []`
+ * pre-bring-up so apps that thread this through the constructor before
+ * `devstack up` finishes don't crash on startup (the client throws on
+ * actual encrypt/decrypt instead). */
+export interface LocalnetSealOptions {
+	serverConfigs: Array<{ objectId: string; weight: number }>;
+	verifyKeyServers: boolean;
+}
+
+interface SealManifestNamespace {
+	keyServer?: ReadonlyArray<{ objectId: string }>;
+}
+
+/** Build the `SealClient` constructor's seal-side fields from the
+ * devstack manifest. `serverConfigs` derives from
+ * `manifest.registry.seal.keyServer` (one entry per registered key
+ * server, equal weight); `verifyKeyServers: false` because devstack's
+ * Open-mode key servers are self-signed and the SDK can't verify them
+ * against the on-chain registration without the master pubkey, which
+ * we deliberately don't surface in the registry. */
+export function localnetSealOptions(manifest: {
+	registry: { seal?: unknown };
+}): LocalnetSealOptions {
+	const ns = manifest.registry.seal as SealManifestNamespace | undefined;
+	const servers = ns?.keyServer ?? [];
+	return {
+		serverConfigs: servers.map((s) => ({ objectId: s.objectId, weight: 1 })),
+		verifyKeyServers: false,
+	};
 }
 
 export const seal = (opts: SealPluginOptions = {}) => {
@@ -364,7 +397,6 @@ async function registerSealKeyServer({
 		name: keyServerName,
 		objectId,
 		url: keyServerUrl,
-		publicKey: keys.publicKey,
 		sealPackageId: sealPkg.packageId,
 	});
 }

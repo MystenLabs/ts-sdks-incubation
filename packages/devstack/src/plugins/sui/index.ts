@@ -283,19 +283,17 @@ function registerServices(
 ): void {
 	const rpcUrl = `http://127.0.0.1:${rpcPort}`;
 	const faucetUrl = `http://127.0.0.1:${faucetPort}`;
+	// `sui-rpc` is the canonical entry — sui-test-validator serves both
+	// JSON-RPC and gRPC on the same port (the SDK negotiates the protocol
+	// on the request body), so a separate `sui-grpc` registry entry was
+	// noise. Apps that want gRPC point a `SuiGrpcClient` at the `sui-rpc`
+	// URL.
 	ctx.registry.services.register({
 		name: 'sui-rpc',
 		kind: 'sui-rpc',
 		url: rpcUrl,
 		port: rpcPort,
-		endpointLabel: 'Sui JSON-RPC',
-	});
-	ctx.registry.services.register({
-		name: 'sui-grpc',
-		kind: 'sui-grpc',
-		url: rpcUrl,
-		port: rpcPort,
-		endpointLabel: 'Sui gRPC (sui.rpc.v2.LedgerService)',
+		endpointLabel: 'Sui JSON-RPC + gRPC',
 	});
 	ctx.registry.services.register({
 		name: 'sui-faucet',

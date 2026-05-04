@@ -1,15 +1,10 @@
-// Shared `splitInputCoin` for deepbook tx-builders. Used by:
-//
-//   - `swap.ts` — split the input coin (`amountIn`) for the swap.
-//   - `market-maker.ts` — split each pre-deposit amount before
-//     depositing into the maker's BalanceManager.
-//
-// Wraps `tx.coin({ balance, type, useGasCoin: false })` — the SDK
-// resolver picks the cheapest source: address-balance withdrawal
+// `splitInputCoin` helper for deepbook's market-maker. Wraps
+// `tx.coin({ balance, type, useGasCoin: false })` — the SDK
+// resolver picks the cheapest source (address-balance withdrawal
 // when the sender's accumulator has enough, owned coin objects
-// otherwise. `useGasCoin: false` keeps it gas-mode-agnostic so the
-// same builder works whether the signing path uses coin gas or
-// address-balance gas.
+// otherwise). `useGasCoin: false` keeps it gas-mode-agnostic so
+// the same builder works whether the signing path uses coin gas
+// or address-balance gas.
 
 import type { Transaction, TransactionObjectArgument } from '@mysten/sui/transactions';
 

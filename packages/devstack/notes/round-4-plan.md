@@ -225,17 +225,17 @@ next 90 days, build this.** It's the conversion moment for new users
   e2e suites.
 - **E2** — per-action manual triggers in supervisor TUI.
 
-### Phase F — per-plugin polish (8 PRs, 1 done, parallelizable)
+### Phase F — per-plugin polish (8 PRs, 5 done, parallelizable)
 
 | | Highlights |
 |---|---|
-| F1 sui | drop `sui-grpc` redundant entry; add `image`/`volumes`/`logLevel`/`genesis` opts; pre-flight Docker check |
-| F2 walrus | `appendLog` for build progress; `nodeCount`/`suiVersion` opts; `verify()` actions for node liveness |
-| F3 seal | fix README option name; document master-key persistence; drop dead `publicKey` field; add `localnetSealOptions(manifest)` |
-| F4 codegen | deletion cleanup on package drop; `Promise.all` parallelization |
-| F5 imports | delete dead `withRecursiveDeps`; warn on rev-conflicts |
-| F6 deepbook | drop dead public exports |
-| F7 wallet-server | delete empty `src/wallet-panels/` stub; account hot-reload |
+| F1 sui | _Partial._ Dropped redundant `sui-grpc` registry entry (sui-test-validator serves both protocols on the same port). The image/volumes/logLevel/genesis opts and pre-flight Docker check still pending. |
+| F2 walrus | _Pending._ `appendLog` for build progress; `nodeCount`/`suiVersion` opts; `verify()` actions for node liveness. |
+| F3 seal | _Done._ Fixed README option name (`apiPort` → `port` + listed all options); documented master-key persistence path + first-run/cached-run flow; dropped dead `SealKeyServer.publicKey` field; added `localnetSealOptions(manifest)` exported alongside `localnetMvrOverrides` / `localnetDappKitConfig`. |
+| F4 codegen | _Done._ `getStatus`/`run` now detect + clean up stale per-package binding subdirs when an app removes a `publishMove` entry. `runCodegenForPackage` switched from `execSync` to async `runShell` so `Promise.all` parallelizes the per-package codegen pass (~3× speedup on a 4-package app). |
+| F5 imports | _Done._ Dropped dead `withRecursiveDeps` (and its public re-export). Added a rev-conflict warning: `imports({ packages })` walks the specs at config time and prints a stderr warning when a single repo is pinned to multiple revs across entries (silent footgun otherwise — produces two on-chain copies of the same Move package). |
+| F6 deepbook | _Done._ Deleted `swap.ts` (duplicate of each app's local `buildDeepbookSwapTx`); dropped public re-exports for `buildDeepbookSwapTx`, `BuildSwapTxOptions`, `deepbookNs`, `DeepbookPool`, `DeepbookNamespace`, `resolveCoinType`, `SUI_COIN_TYPE` — none had source-level external consumers. Kept `DeepbookPoolSpec` and `DeepbookMarketMakerSpec` (referenced from `DeepbookPluginOptions`). |
+| F7 wallet-server | _Pending._ The empty `src/wallet-panels/` stub the plan flagged was already removed in earlier work; only the account hot-reload item remains. |
 | F8 frontend | _Done — covered by A12's `plugin-authoring.mdx`._ |
 
 ### Phase G — monorepo / governance (8 PRs, rolling)
@@ -304,15 +304,17 @@ differentiator vs. scaffold-eth-2 but is independent of round 4.
 
 ## Status snapshot
 
-- **22 PRs landed** (PR 0, A1–A12, B1, B2, B3, B4, B5, B6, B8, B9, B11, C1)
+- **27 PRs landed** (PR 0, A1–A12, B1–B6, B8, B9, B11, C1, F3–F6 + F1
+  partial)
 - **2 PRs deferred** (B7 with rationale; C2 — publishing to npm has no
   near-term plan)
 - **1 PR dropped** (B10 — UI components out of scope)
-- **21 PRs pending** across C–G (F8 subsumed by A12; B10 dropped; C2 deferred):
+- **16 PRs pending** across C–G (F3–F6, F8 done; B10 dropped; C2 deferred):
   - Phase C: C3 (README accuracy, low priority)
   - Phase D: D1–D3 (Debug Packages UI)
   - Phase E: E1–E2 (loadFixture, manual triggers)
-  - Phase F: F1–F7 (per-plugin polish; F8 done as part of A12)
+  - Phase F: F1 (remaining bits — image/logLevel/genesis opts), F2
+    (walrus), F7 (wallet-server account hot-reload)
   - Phase G: G1–G8 (monorepo hygiene)
 
 395 tests passing in `packages/devstack`; all 5 examples typecheck
