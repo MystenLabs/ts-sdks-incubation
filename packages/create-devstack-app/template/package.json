@@ -18,27 +18,27 @@
 		"stack": "devstack stack"
 	},
 	"dependencies": {
-		"@mysten-incubation/devstack": "workspace:*",
-		"@mysten/dapp-kit-core": "catalog:",
-		"@mysten/dapp-kit-react": "catalog:",
-		"@mysten/sui": "catalog:",
-		"@mysten/wallet-standard": "catalog:",
-		"@tanstack/react-query": "catalog:",
-		"react": "catalog:",
-		"react-dom": "catalog:"
+		"@mysten-incubation/devstack": "^1.0.0",
+		"@mysten/dapp-kit-core": "^1.3.0",
+		"@mysten/dapp-kit-react": "^2.0.1",
+		"@mysten/sui": "^2.16.0",
+		"@mysten/wallet-standard": "^0.20.1",
+		"@tanstack/react-query": "^5.100.0",
+		"react": "^19.2.5",
+		"react-dom": "^19.2.5"
 	},
 	"devDependencies": {
-		"@mysten-incubation/tsconfig": "workspace:*",
-		"@playwright/test": "catalog:",
-		"@tailwindcss/vite": "catalog:",
+		"@mysten-incubation/tsconfig": "^0.0.0",
+		"@playwright/test": "^1.59.1",
+		"@tailwindcss/vite": "^4.2.4",
 		"@types/node": "^22.10.0",
-		"@types/react": "catalog:",
-		"@types/react-dom": "catalog:",
-		"@vitejs/plugin-react": "catalog:",
-		"tailwindcss": "catalog:",
-		"typescript": "catalog:",
-		"vite": "catalog:",
-		"vitest": "catalog:"
+		"@types/react": "^19.2.14",
+		"@types/react-dom": "^19.2.3",
+		"@vitejs/plugin-react": "^4.7.0",
+		"tailwindcss": "^4.2.4",
+		"typescript": "^5.9.3",
+		"vite": "^6.4.2",
+		"vitest": "^2.1.9"
 	},
 	"engines": {
 		"node": ">=24"
