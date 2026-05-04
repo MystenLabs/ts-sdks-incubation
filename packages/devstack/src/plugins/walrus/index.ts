@@ -110,6 +110,11 @@ export interface WalrusPluginOptions {
 	 * and bakes the deploy/run scripts into the resulting image (no host
 	 * filesystem cache). */
 	rev?: string;
+	/** Sui release tag baked into the walrus image (the testbed embeds
+	 * `sui` for genesis + admin txs). Defaults to `SUI_DEFAULT_VERSION`
+	 * — keep it in sync with the `sui()` plugin's `version` to avoid
+	 * shipping two different sui binaries in one stack. */
+	suiVersion?: string;
 	/** Base host port for storage node REST APIs. Each node's `9185`
 	 * (HTTPS sliver/metadata API) is mapped to `nodeHostPortBase + nodeIdx`
 	 * — default 19185, so the four nodes land on 19185–19188.
@@ -129,7 +134,7 @@ const proxyContainerName = (appName: string, stack: string): string =>
 
 export const walrus = (opts: WalrusPluginOptions = {}) => {
 	const rev = opts.rev ?? WALRUS_REV;
-	const suiVersion = SUI_DEFAULT_VERSION;
+	const suiVersion = opts.suiVersion ?? SUI_DEFAULT_VERSION;
 	const imageTag = walrusImageTag(rev, suiVersion);
 	const platform = hostDockerPlatform();
 	// `nodeHostPortBase` is now a hint to the per-stack allocator; the

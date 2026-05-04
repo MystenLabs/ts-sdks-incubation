@@ -63,6 +63,30 @@ function runDocker(
 	});
 }
 
+/** Pre-flight: verify the Docker daemon is running and responding.
+ * Throws with an actionable message if `docker info` fails (engine
+ * stopped, socket permission denied, Docker Desktop not started yet).
+ * Cheap enough to call once at the top of an action's run() — turns
+ * a confusing chain of downstream `docker run` failures into a single
+ * clear error before any state mutation. */
+export async function requireDockerDaemon(): Promise<void> {
+	const result = await dockerRun({
+		command: ['info', '--format', '{{.ServerVersion}}'],
+	});
+	if (result.code !== 0) {
+		const stderr = result.stderr.trim();
+		const hint = /permission denied/i.test(stderr)
+			? '\n  → Docker socket permissions: add your user to the `docker` group, or run with sudo.'
+			: /cannot connect to the docker daemon/i.test(stderr)
+				? '\n  → Daemon not running: start Docker Desktop (or `colima start` / `systemctl start docker`).'
+				: '';
+		throw new Error(
+			`docker daemon not reachable (\`docker info\` exited ${result.code}).${hint}\n` +
+				(stderr.length > 0 ? `  stderr: ${stderr}` : ''),
+		);
+	}
+}
+
 /** Returns true when the image tag is present in the local docker daemon.
  * Lets `runDocker`'s ENOENT-aware error surface to callers when docker
  * itself is missing — masking that as "image absent" would silently

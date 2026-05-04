@@ -78,6 +78,15 @@ export const walletServer = (opts: WalletServerPluginOptions = {}) => {
 	let activeToken: string | undefined;
 	let resolvedPort: number | undefined;
 	let resolvedBaseUrl: string | undefined;
+	// Hot-reload: serve.run captures the running listener's
+	// `setAccounts` callback so warm cycles can swap in a fresh
+	// AccountsContext (new account added between cycles) without
+	// restarting. `lastAccountNames` is the change-detector for
+	// serve.getStatus — when the supervisor's resolved accounts list
+	// drifts from what the listener last saw, we return ok:false and
+	// rely on `run` to call `setActiveAccounts(ctx.accounts)`.
+	let setActiveAccounts: ((accounts: import('../../core/types.js').AccountsContext) => void) | undefined;
+	let lastAccountNames: readonly string[] | undefined;
 
 	const resolveEndpoint = async (
 		ctx: ActionRunContext,
@@ -172,6 +181,19 @@ export const walletServer = (opts: WalletServerPluginOptions = {}) => {
 							return { ok: false, detail: 'running but token unknown; restarting' };
 						}
 					}
+					// Hot-reload trigger: drift between the last-seen account
+					// names and the supervisor's currently-resolved list means
+					// `devstack.config.ts` grew (or lost) an account. Return
+					// `ok: false` and let `run` call setActiveAccounts to plumb
+					// the new context into the still-listening server.
+					const currentNames = ctx.accounts.names();
+					if (
+						setActiveAccounts !== undefined &&
+						lastAccountNames !== undefined &&
+						!arraysEqual(currentNames, lastAccountNames)
+					) {
+						return { ok: false, detail: 'accounts changed; hot-reloading' };
+					}
 					return { ok: true, detail: baseUrl };
 				},
 				run: async (ctx) => {
@@ -179,9 +201,16 @@ export const walletServer = (opts: WalletServerPluginOptions = {}) => {
 					const { port, baseUrl } = await resolveEndpoint(ctx);
 					const log = ctx.appendLog ?? ((line: string) => process.stdout.write(`${line}\n`));
 					if (activeServer !== undefined && activeServer.listening) {
-						// Idempotent — supervisor cycles call run again on warm
-						// paths if getStatus says not-reachable. Don't double-bind
-						// the port; the existing instance races the probe.
+						// Warm-cycle hot-reload path: the listener is healthy but
+						// `getStatus` saw new accounts. Plumb the fresh
+						// `ctx.accounts` reference into the running server (next
+						// /accounts list / sign request rebuilds the snapshot
+						// from it) and update our drift tracker.
+						if (setActiveAccounts !== undefined) {
+							setActiveAccounts(ctx.accounts);
+							lastAccountNames = ctx.accounts.names();
+							log(`wallet-server hot-reloaded accounts: [${lastAccountNames.join(', ')}]`);
+						}
 						return;
 					}
 					// Adoption path: a prior supervisor instance left a server
@@ -215,6 +244,8 @@ export const walletServer = (opts: WalletServerPluginOptions = {}) => {
 					});
 					activeServer = handle.server;
 					activeToken = handle.token;
+					setActiveAccounts = handle.setAccounts;
+					lastAccountNames = ctx.accounts.names();
 					writePersistedToken(ctx.appDir, ctx.stack, handle.token);
 					log(`wallet-server listening on ${baseUrl}`);
 					if (allowedOrigins.length > 0) {
@@ -227,6 +258,8 @@ export const walletServer = (opts: WalletServerPluginOptions = {}) => {
 							setTimeout(() => resolve(), 5_000).unref();
 						});
 						activeServer = undefined;
+						setActiveAccounts = undefined;
+						lastAccountNames = undefined;
 						// activeToken stays so a subsequent same-process cycle
 						// can re-publish it without re-spawning.
 					});
@@ -270,4 +303,12 @@ function originOf(url: string): string {
 	} catch {
 		return url;
 	}
+}
+
+function arraysEqual(a: readonly string[], b: readonly string[]): boolean {
+	if (a.length !== b.length) return false;
+	for (let i = 0; i < a.length; i++) {
+		if (a[i] !== b[i]) return false;
+	}
+	return true;
 }
