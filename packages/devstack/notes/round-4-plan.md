@@ -238,17 +238,17 @@ next 90 days, build this.** It's the conversion moment for new users
 | F7 wallet-server | _Pending._ The empty `src/wallet-panels/` stub the plan flagged was already removed in earlier work; only the account hot-reload item remains. |
 | F8 frontend | _Done — covered by A12's `plugin-authoring.mdx`._ |
 
-### Phase G — monorepo / governance (8 PRs, rolling)
+### Phase G — monorepo / governance (8 PRs, 2 done, rolling)
 
 | | Highlights |
 |---|---|
-| G1 | catalog drift cleanup |
-| G2 | CI Node version harmonization (Node 24 across all workflows) |
-| G3 | e2e CI matrix expansion to all 4 examples |
-| G4 | top-level governance — `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, root `LICENSE` |
-| G5 | move `packages/docs` → `apps/docs` (per AGENTS.md convention) |
-| G6 | add `typecheck` task to `turbo.json` |
-| G7 | promote CLAUDE.md content into user-facing `concepts/setup.mdx` |
+| G1 | _Pending._ Catalog drift cleanup. Multiple versions of `@types/node`, `@mysten/sui`, `@tanstack/react-query`, etc. across the workspace; tedious bulk swap to `catalog:` references. |
+| G2 | _Done._ All four CI workflows (changesets-ci, changesets, turborepo, devstack-e2e) bumped to Node 24, matching the `engines.node: ">=24"` requirement that comes from devstack's reliance on native TypeScript stripping. |
+| G3 | _Pending._ e2e CI matrix expansion to all 4 examples. |
+| G4 | _Pending._ Top-level governance — `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, root `LICENSE`. |
+| G5 | _Pending._ Move `packages/docs` → `apps/docs` (per AGENTS.md convention). |
+| G6 | _Done._ Added `typecheck` task to `turbo.json` (plus dropped the `devstack` peerDep/devDep from `devstack-wallet-panels` to break a pre-existing build cycle that was hidden by turbo not running typecheck). `pnpm turbo run typecheck` now covers all 12 packages. |
+| G7 | _Pending._ Promote CLAUDE.md content into user-facing `concepts/setup.mdx`. |
 | G8 | delete scratch artifacts (`examples/myapp-smoke/` from review) |
 
 ---
@@ -304,18 +304,20 @@ differentiator vs. scaffold-eth-2 but is independent of round 4.
 
 ## Status snapshot
 
-- **27 PRs landed** (PR 0, A1–A12, B1–B6, B8, B9, B11, C1, F3–F6 + F1
-  partial)
+- **29 PRs landed** (PR 0, A1–A12, B1–B6, B8, B9, B11, C1, F3–F6 + F1
+  partial, G2, G6)
 - **2 PRs deferred** (B7 with rationale; C2 — publishing to npm has no
   near-term plan)
 - **1 PR dropped** (B10 — UI components out of scope)
-- **16 PRs pending** across C–G (F3–F6, F8 done; B10 dropped; C2 deferred):
+- **14 PRs pending** (B10 dropped; C2 deferred):
   - Phase C: C3 (README accuracy, low priority)
   - Phase D: D1–D3 (Debug Packages UI)
   - Phase E: E1–E2 (loadFixture, manual triggers)
   - Phase F: F1 (remaining bits — image/logLevel/genesis opts), F2
     (walrus), F7 (wallet-server account hot-reload)
-  - Phase G: G1–G8 (monorepo hygiene)
+  - Phase G: G1, G3, G4, G5, G7, G8 (catalog drift, e2e matrix,
+    governance, docs move, CLAUDE→concepts/setup, scratch artifact
+    cleanup)
 
 395 tests passing in `packages/devstack`; all 5 examples typecheck
 clean against the new shapes.

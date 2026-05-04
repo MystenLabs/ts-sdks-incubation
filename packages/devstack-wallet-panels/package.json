@@ -36,13 +36,9 @@
 		"lit": "^3.3.2"
 	},
 	"devDependencies": {
-		"@mysten-incubation/devstack": "workspace:*",
 		"@mysten-incubation/tsconfig": "workspace:*",
 		"@types/node": "^22.10.0",
 		"tsdown": "0.20.0-beta.1",
 		"typescript": "catalog:"
-	},
-	"peerDependencies": {
-		"@mysten-incubation/devstack": "workspace:*"
 	}
 }

@@ -636,9 +636,6 @@ importers:
         specifier: ^3.3.2
         version: 3.3.2
     devDependencies:
-      '@mysten-incubation/devstack':
-        specifier: workspace:*
-        version: link:../devstack
       '@mysten-incubation/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
