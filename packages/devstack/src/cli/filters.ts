@@ -1,31 +1,12 @@
 // Action filters consumed by `runOneShot`. Each filter returns `true` for
-// actions that should run against the resolved target, `false` for ones
-// the cycle drops before the topo walk.
+// actions that should run against the resolved target, `false` for ones the
+// cycle drops before the topo walk.
 //
-// Behavior matrix:
-//
-//                       | localnet                | live net (testnet/mainnet)
-//   ------------------- | ----------------------- | ---------------------------
-//   deployFilter        | run all                 | run Build/Publish/Register/Emit + gated Seed; skip Service+HostProcess
-//   applyFilter         | run all                 | run Publish/Register/Emit + gated Seed; skip Service+Build+HostProcess
-//   applyTestSetupFilter| run all EXCEPT HostProc | (not applicable — test setup is localnet-only)
-//   emitOnlyFilter      | Emit only               | Emit only
-//
-// `deployFilter` preserves today's `runOneShot` behavior verbatim — it
-// keeps Build on live nets even though Build is typically a docker-image
-// build that doesn't make sense remotely. The plan's `applyFilter` is the
-// tighter variant and is the right default for `devstack apply` (C2).
-// The looser `deployFilter` stays the implicit default for `devstack
-// deploy` so the C1 extraction is a true refactor with no behavior
-// change for the live-net deploy path.
-//
-// `applyTestSetupFilter` is for Playwright globalSetup and equivalent
-// test-bringup paths: bring the chain to known state (run Service so
-// docker containers come up + detach), but DO NOT start in-process
-// services that die when the test process exits (HostProcess —
-// wallet-server, vite). The webServer's `pnpm dev` Supervisor owns
-// HostProcess lifecycle from there, eliminating the documented two-
-// supervisor token race in notes/architecture-review/23-playwright-integration.md.
+// `deployFilter` (devstack deploy) and `applyFilter` (devstack apply) differ
+// on live nets: deploy keeps Build, apply drops it. `applyTestSetupFilter`
+// is for Playwright globalSetup — runs Service (containers detach) but
+// skips HostProcess (wallet-server / vite die when the test process exits).
+// `emitOnlyFilter` runs only Emit actions.
 
 import { seedRunsOn } from '../actions/seed.js';
 import type { Action, ActionFilter, ResolvedTarget, SeedAction } from '../core/types.js';

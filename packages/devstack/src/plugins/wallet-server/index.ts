@@ -47,9 +47,20 @@ export interface WalletServerPluginOptions {
 	 * `http://localhost:<port>`. */
 	publicOrigin?: string;
 	/** Names of actions that must run before the server starts. Default
-	 * `['sui.accounts']` so funded accounts are available before any sign
+	 * `['accounts.fund']` so funded accounts are available before any sign
 	 * request can arrive. Pass `[]` to start immediately. */
 	needs?: string[];
+	/** Bind address. Defaults to `127.0.0.1` so the listener is
+	 * unreachable from sibling machines on the LAN. Override with
+	 * `'0.0.0.0'` (or a specific NIC) only when the user knowingly
+	 * accepts that exposure. */
+	host?: string;
+	/** Extra CORS-allowed origins on top of the dev-server origin the
+	 * plugin auto-discovers from the manifest. Pass when a sibling tool
+	 * (Storybook, Cypress UI) lives off the dev-server. The dev-server
+	 * origin itself is added automatically; pass nothing for the default
+	 * setup. `'*'` is rejected — the underlying server throws. */
+	allowedOrigins?: string[];
 }
 
 export const WALLET_SERVER_DEFAULT_PORT = 9420;
@@ -57,7 +68,9 @@ export const WALLET_SERVER_DEFAULT_PORT = 9420;
 export const walletServer = (opts: WalletServerPluginOptions = {}) => {
 	const preferredPort = opts.port ?? WALLET_SERVER_DEFAULT_PORT;
 	const explicitOrigin = opts.publicOrigin;
-	const needs = opts.needs ?? ['sui.accounts'];
+	const needs = opts.needs ?? ['accounts.fund'];
+	const host = opts.host ?? '127.0.0.1';
+	const extraAllowedOrigins = opts.allowedOrigins ?? [];
 
 	// Per-instance state (closure scope, not module scope) — two
 	// `walletServer()` instances in one process don't interleave.
@@ -72,11 +85,13 @@ export const walletServer = (opts: WalletServerPluginOptions = {}) => {
 		if (ctx.network !== 'localnet') {
 			throw new Error('wallet-server: localnet-only');
 		}
-		const [port] = await ctx.ports.allocate({
+		const [portValue] = await ctx.ports.allocate({
 			slot: 'wallet-server.http',
 			preferred: preferredPort,
 		});
-		const portValue = port as number;
+		if (portValue === undefined) {
+			throw new Error('wallet-server: port allocator returned no ports');
+		}
 		resolvedPort = portValue;
 		resolvedBaseUrl = explicitOrigin ?? `http://localhost:${portValue}`;
 		return { port: portValue, baseUrl: resolvedBaseUrl };
@@ -182,11 +197,29 @@ export const walletServer = (opts: WalletServerPluginOptions = {}) => {
 					// Use the token populated by `register`; register's run
 					// always writes one before serve runs (transitive `needs`).
 					const token = persistedToken ?? generateToken();
-					const handle = startWalletServer({ port, token, accounts: ctx.accounts });
+					// Build CORS allowlist: dev-server origin from the
+					// manifest (auto-discovered) plus any caller-supplied
+					// extras. Without this, the browser's CORS preflight
+					// from the Vite dev-server origin would be denied.
+					const devServer = ctx.registry.services.find('dev-server');
+					const allowedOrigins = [
+						...(devServer !== undefined ? [originOf(devServer.url)] : []),
+						...extraAllowedOrigins,
+					];
+					const handle = await startWalletServer({
+						port,
+						host,
+						token,
+						accounts: ctx.accounts,
+						allowedOrigins,
+					});
 					activeServer = handle.server;
 					activeToken = handle.token;
 					writePersistedToken(ctx.appDir, ctx.stack, handle.token);
 					log(`wallet-server listening on ${baseUrl}`);
+					if (allowedOrigins.length > 0) {
+						log(`CORS allowed: ${allowedOrigins.join(', ')}`);
+					}
 					log(`pair URL: ${baseUrl}/?token=${handle.token}`);
 					ctx.onShutdown?.(async () => {
 						await new Promise<void>((resolve) => {
@@ -228,5 +261,13 @@ async function probeUrl(url: string): Promise<boolean> {
 		return res.ok;
 	} catch {
 		return false;
+	}
+}
+
+function originOf(url: string): string {
+	try {
+		return new URL(url).origin;
+	} catch {
+		return url;
 	}
 }

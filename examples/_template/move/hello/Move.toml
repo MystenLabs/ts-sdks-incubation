@@ -1,0 +1,9 @@
+[package]
+name = "hello"
+edition = "2024"
+version = "0.0.1"
+
+[dependencies]
+
+[addresses]
+hello = "0x0"

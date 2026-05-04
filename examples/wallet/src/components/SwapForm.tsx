@@ -1,10 +1,10 @@
-import { useId, useMemo, useState } from 'react';
+import { Card, Field } from '@mysten-incubation/devstack/react/ui';
+import { useMemo, useState } from 'react';
 
 import { deployment, findCoin } from '../generated/deployment.js';
 import { parseCoinAmount } from '../lib/format.js';
 import { useInvalidateBalances, useSignAndExecute } from '../lib/queries.js';
 import { buildDeepbookSwapTx } from '../lib/transactions.js';
-import { Card } from './Card.js';
 
 export function SwapForm({ self }: { self: string }) {
 	const invalidate = useInvalidateBalances();
@@ -140,17 +140,5 @@ export function SwapForm({ self }: { self: string }) {
 				)}
 			</form>
 		</Card>
-	);
-}
-
-function Field({ label, render }: { label: string; render: (id: string) => React.ReactNode }) {
-	const id = useId();
-	return (
-		<div>
-			<label htmlFor={id} className="block text-xs uppercase tracking-wide text-neutral-500 mb-1">
-				{label}
-			</label>
-			{render(id)}
-		</div>
 	);
 }

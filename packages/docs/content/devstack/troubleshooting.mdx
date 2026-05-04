@@ -61,9 +61,12 @@ you don't pin manually.
 ## Faucet 500 on cold first run
 
 **Symptom**: `sui.accounts` fails on the first cycle of a fresh
-sui container with `faucet http://127.0.0.1:9765/v2/gas → 500:
-{"status":{"Failure":{"Internal":"Failed to execute transaction
-after 2 retries"}}}`.
+sui container with a faucet 500 response:
+
+```
+faucet http://127.0.0.1:9765/v2/gas → 500:
+{"status":{"Failure":{"Internal":"Failed to execute transaction after 2 retries"}}}
+```
 
 **Cause**: cold-genesis race — the faucet HTTP endpoint is up
 before the validator is ready to execute coin txns. `keys.ts:64`

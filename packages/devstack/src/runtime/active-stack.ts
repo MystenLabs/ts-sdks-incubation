@@ -11,7 +11,7 @@
 // idempotent on a fresh checkout (no stray writes) until the user picks
 // a stack via `devstack stack new` / `use`.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 export const DEFAULT_STACK = 'main';
@@ -33,7 +33,13 @@ export function readActiveStack(appDir: string): string {
 export function writeActiveStack(appDir: string, name: string): void {
 	const path = activeStackFile(appDir);
 	mkdirSync(dirname(path), { recursive: true });
-	writeFileSync(path, `${name}\n`, 'utf8');
+	// Atomic write: stage to `.tmp` then `rename` (POSIX-atomic on the
+	// same filesystem). A concurrent reader sees either the prior pointer
+	// or the new one — never a half-written file. Matches the manifest
+	// writer's pattern.
+	const tmp = `${path}.tmp`;
+	writeFileSync(tmp, `${name}\n`, 'utf8');
+	renameSync(tmp, path);
 }
 
 /** Path to a stack's host-side state directory (manifest + keys live here). */

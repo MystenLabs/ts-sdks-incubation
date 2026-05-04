@@ -27,10 +27,9 @@
 
 import { dirname, resolve } from 'node:path';
 
-import { SUI_DEFAULT_VERSION, suiContainerName } from '../plugins/sui/index.js';
+import { SUI_DEFAULT_VERSION } from '../plugins/sui/index.js';
 import { resolveStack } from '../runtime/active-stack.js';
 import {
-	type SnapshotEntry,
 	captureSnapshot,
 	listSnapshots,
 	loadSnapshot,
@@ -174,18 +173,12 @@ async function restoreCmd(opts: {
 		process.stdout.write(
 			`restored ${entry.containers.length} container image tag(s) + host state for stack '${opts.stack}'.\n`,
 		);
-		process.stdout.write(
-			`run \`devstack up\` to bring the stack up against the restored state.\n`,
-		);
+		process.stdout.write(`run \`devstack up\` to bring the stack up against the restored state.\n`);
 	}
 	return 0;
 }
 
-async function listCmd(opts: {
-	appDir: string;
-	stack: string;
-	json?: boolean;
-}): Promise<number> {
+async function listCmd(opts: { appDir: string; stack: string; json?: boolean }): Promise<number> {
 	const all = await listSnapshots(opts.appDir);
 	const filtered = all.filter((e) => e.stack === opts.stack);
 	if (opts.json === true) {
@@ -220,7 +213,9 @@ async function listCmd(opts: {
 
 async function rmCmd(opts: { appDir: string; ref: string }): Promise<number> {
 	const removed = await removeSnapshot(opts);
-	process.stdout.write(removed ? `removed snapshot '${opts.ref}'\n` : `no snapshot '${opts.ref}'\n`);
+	process.stdout.write(
+		removed ? `removed snapshot '${opts.ref}'\n` : `no snapshot '${opts.ref}'\n`,
+	);
 	return removed ? 0 : 1;
 }
 
@@ -245,10 +240,6 @@ function requireRef(flags: SnapshotFlags): string {
 function snapshotBundlePath(appDir: string, id: string): string {
 	return resolve(appDir, '.devstack', 'snapshots', id);
 }
-
-// suiContainerName is imported for convenience callers that want to
-// pre-discover the sui container name; not used in the dispatcher itself.
-export { suiContainerName, type SnapshotEntry };
 
 export async function main(argv: string[]): Promise<number> {
 	if (argv.includes('--help') || argv.includes('-h')) {
@@ -330,13 +321,7 @@ function parseArgs(argv: string[]): SnapshotFlags {
 		}
 		if (arg.startsWith('--')) continue;
 		if (positional === 0) {
-			if (
-				arg !== 'save' &&
-				arg !== 'restore' &&
-				arg !== 'list' &&
-				arg !== 'rm' &&
-				arg !== 'hash'
-			) {
+			if (arg !== 'save' && arg !== 'restore' && arg !== 'list' && arg !== 'rm' && arg !== 'hash') {
 				throw new Error(
 					`devstack snapshot: unknown subcommand '${arg}' — expected save|restore|list|rm|hash`,
 				);

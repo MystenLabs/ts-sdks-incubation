@@ -23,6 +23,9 @@
 // Recursion (Move.toml dep walking) is workstream D2 — D1 ships the
 // single-package case that mirrors today's hand-rolled blocks.
 
+import { existsSync } from 'node:fs';
+import { isAbsolute } from 'node:path';
+
 import { buildImage } from '../../actions/build.js';
 import {
 	type Action,
@@ -35,6 +38,7 @@ import {
 	type ImportedPackageCacheEntry,
 	importMovePackage,
 } from '../../helpers/imported-package.js';
+import { computeSourceDigest } from '../../helpers/move-package.js';
 import { openSuiRpcClient } from '../../helpers/sui-client.js';
 import {
 	ensureUpstreamSourceImage,
@@ -226,12 +230,21 @@ function buildActionsForSpec(spec: InternalImportSpec): Action[] {
 	const sourceActionName = `${spec.name}-source`;
 	const depPublishNeeds = spec.dependsOn.map((d) => d);
 
+	// Local imports include a content digest so editing Move sources
+	// busts the reconciler's hash-match skip. Git imports key on (repo,
+	// rev) — same rev → same content by construction. The digest is
+	// computed at action-construction time; falls back to undefined when
+	// the path can't be resolved (relative path, unknown appDir).
+	const localSourceDigest = isLocalImport(spec)
+		? safeDigest(`${spec.local.path}/${spec.subdir}`)
+		: undefined;
+
 	const sourceInputs = isLocalImport(spec)
-		? { local: spec.local.path, subdir: spec.subdir }
+		? { local: spec.local.path, subdir: spec.subdir, digest: localSourceDigest }
 		: { image: upstreamSourceImageTag(spec.repo, spec.rev), repo: spec.repo, rev: spec.rev, subdir: spec.subdir };
 
 	const publishInputs = isLocalImport(spec)
-		? { local: spec.local.path, subdir: spec.subdir, env, publisher: publisherAccount, addresses: spec.addresses }
+		? { local: spec.local.path, subdir: spec.subdir, env, publisher: publisherAccount, addresses: spec.addresses, digest: localSourceDigest }
 		: { repo: spec.repo, rev: spec.rev, subdir: spec.subdir, env, publisher: publisherAccount, addresses: spec.addresses };
 
 	return [
@@ -273,16 +286,19 @@ function buildActionsForSpec(spec: InternalImportSpec): Action[] {
 		{
 			name: spec.name,
 			type: 'Publish',
-			needs: [sourceActionName, 'sui.accounts', ...depPublishNeeds],
-			provides: { capabilities: [`imports.${spec.name}`] },
-			path: '<imported>',
-			runsAs: publisherAccount,
-			inputs: publishInputs,
-			getStatus: async (ctx) => {
-				const curated = curatedAddressFor(spec, ctx.network);
-				if (curated !== undefined) {
+			needs: [sourceActionName, 'accounts.fund', ...depPublishNeeds],
+			provides: {
+				capabilities: [`imports.${spec.name}`],
+				// Re-register on warm-path skip so downstream consumers
+				// (codegen, deepbook pools) see the package without
+				// rerunning `run`. The curated-address case relies on
+				// this to land in the registry on cycles where the
+				// reconciler's hash-match skip fires.
+				registry: (ctx) => {
 					const prior = ctx.registry.packages.find(spec.name);
-					if (prior?.packageId !== curated) {
+					if (prior !== undefined) return;
+					const curated = curatedAddressFor(spec, ctx.network);
+					if (curated !== undefined) {
 						ctx.registry.packages.register({
 							name: spec.name,
 							packageId: curated,
@@ -290,27 +306,17 @@ function buildActionsForSpec(spec: InternalImportSpec): Action[] {
 							network: ctx.network,
 						});
 					}
-					return { ok: true, detail: `curated ${curated}` };
-				}
-				const prior = ctx.registry.packages.find(spec.name);
-				if (prior === undefined) return { ok: false, detail: 'no prior import' };
-				const client = openSuiRpcClient(ctx);
-				const chainId = await client.getChainIdentifier();
-				if (prior.chainId !== chainId) {
-					return { ok: false, detail: 'chainId differs from prior import' };
-				}
-				const live = await client.getObject({ id: prior.packageId });
-				if (live.data === null || live.data === undefined) {
-					return { ok: false, detail: `${prior.packageId} not on chain` };
-				}
-				for (const [depName, depId] of Object.entries(prior.deps ?? {})) {
-					const depLive = await client.getObject({ id: depId });
-					if (depLive.data === null || depLive.data === undefined) {
-						return { ok: false, detail: `dep ${depName} (${depId}) not on chain` };
-					}
-				}
-				return { ok: true, detail: prior.packageId };
+				},
 			},
+			path: '<imported>',
+			runsAs: publisherAccount,
+			inputs: publishInputs,
+			// No default getStatus. Hash-match + persisted state covers
+			// the warm path; chainId-regenesis is detected via
+			// `Package.chainId` recorded post-publish (when a user runs
+			// `devstack reset --yes`, the manifest is wiped, state is
+			// empty, action runs fresh). On manual external regenesis,
+			// run `devstack reset` to clear stale state.
 			run: async (ctx) => {
 				const curated = curatedAddressFor(spec, ctx.network);
 				if (curated !== undefined) {
@@ -403,5 +409,19 @@ function buildImportedPriorEntry(
 		sourceDigest: entry.sourceDigest,
 		chainId: entry.chainId,
 	};
+}
+
+/** Compute a Move source digest if the path is absolute and on disk.
+ * Local imports use this so a Move source edit busts the reconciler's
+ * input-hash skip predicate. Returns undefined for relative paths
+ * (action expansion can't resolve them without `appDir`). */
+function safeDigest(path: string): string | undefined {
+	if (!isAbsolute(path)) return undefined;
+	if (!existsSync(path)) return undefined;
+	try {
+		return computeSourceDigest(path);
+	} catch {
+		return undefined;
+	}
 }
 

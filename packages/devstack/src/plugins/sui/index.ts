@@ -1,51 +1,13 @@
-// Sui localnet plugin. Owns three actions:
-//
-//   sui.build     — Build the `dev-examples/sui-localnet:<version>-r7` image
-//                   from the in-tree Dockerfile (multi-arch via the host's
-//                   docker buildx). Skip when the tag already exists in the
-//                   local Docker daemon.
-//   sui.localnet  — Run the container detached, wait for JSON-RPC + faucet,
-//                   register `sui-rpc` / `sui-faucet` / `sui-grpc` services
-//                   in the registry. Skip when the named container is
-//                   already running and healthy.
-//   sui.accounts  — For each name in `ctx.accounts.names()`: pull the
-//                   resolver-materialized `Signer` (localnet path:
-//                   `generatedKeypair()` loads-or-creates the on-disk key
-//                   under `<appDir>/.devstack/stacks/<stack>/.keys/`),
-//                   fund the address via the faucet if below `minBalance`
-//                   (with retry/backoff for the cold-genesis race),
-//                   register in the `accounts` kind. Skip when every
-//                   account is already at-or-above `minBalance`.
-//
-// State model: chain state (RocksDB at /root/.sui) lives in the
-// container's writable layer. `docker stop` + `docker start` preserves
-// it; `docker rm` destroys it. Snapshots capture state via `docker
-// commit` driven by the `devstack.snapshot.*` labels this plugin
-// emits on its container. No named volumes; the walrus plugin bakes
-// its own sui binary at image-build time rather than mounting one
-// from this container.
-//
-// Image tag: `dev-examples/sui-localnet:<version>-r7`. The `-rN`
-// suffix is bumped manually when the Dockerfile or entrypoint
-// changes meaningfully so existing local images get rebuilt on next
-// `devstack up`. The current `-r7` entrypoint:
-//   - bootstraps genesis once (`sui genesis -f`) into the writable
-//     layer, then resumes via `sui start` on subsequent starts.
-//   - reads `DEVSTACK_SUI_EPOCHS_TO_RETAIN` (default 2 ≈ 48–72h on
-//     the localnet's default 24h epoch) and rewrites
-//     `num-epochs-to-retain` + `num-epochs-to-retain-for-checkpoints`
-//     on every start — keeps walrus storage nodes from falling off
-//     the back of the available-checkpoint window without disabling
-//     pruning entirely.
-//
-// Dockerfile + entrypoint live alongside this file under
-// `packages/devstack/src/plugins/sui/`; resolved relative to this
-// module via import.meta.url.
+// Sui localnet plugin. Three actions: `sui.build` (docker image),
+// `sui.localnet` (run container + register services). Chain state
+// lives in the container writable layer; snapshots capture via
+// `docker commit`. The `-rN` suffix in the image tag bumps manually
+// whenever the Dockerfile / entrypoint changes meaningfully. Dockerfile +
+// entrypoint sit beside this file, resolved via `import.meta.url`.
 
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildImage as buildImageAction } from '../../actions/build.js';
-import { register } from '../../actions/register.js';
 import { service } from '../../actions/service.js';
 import { requireLocalnetCtx } from '../../core/types.js';
 import { definePlugin } from '../../plugin.js';
@@ -63,12 +25,10 @@ import {
 } from './docker.js';
 import {
 	probeCheckpointRetention,
-	probeFaucet,
 	probeRpc,
 	waitForFaucet,
 	waitForRpc,
 } from './health.js';
-import { ensureAddressBalance, ensureFunded } from './keys.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_DOCKER_CONTEXT = HERE;
@@ -82,8 +42,6 @@ export interface SuiPluginOptions {
 	faucetPort?: number;
 	/** Override the Docker build-context dir. Default points at the in-tree Dockerfile. */
 	dockerContextDir?: string;
-	/** Override the per-account minimum balance (MIST). Default 50 SUI. */
-	minBalance?: bigint;
 	/** Number of completed epochs of checkpoint history to retain.
 	 *
 	 * `sui-localnet`'s stock fullnode.yaml ships with `0` (aggressive
@@ -127,11 +85,10 @@ export const sui = (opts: SuiPluginOptions = {}) => {
 	const contextDir = opts.dockerContextDir ?? DEFAULT_DOCKER_CONTEXT;
 	const imageTag = `dev-examples/sui-localnet:${version}-r7`;
 	const epochsToRetain = opts.epochsToRetain ?? 2;
-	const minBalance = opts.minBalance;
 
-	const resolvePorts = async (
-		ctx: { ports: import('../../core/types.js').PortAllocator },
-	): Promise<{ rpcPort: number; faucetPort: number }> => {
+	const resolvePorts = async (ctx: {
+		ports: import('../../core/types.js').PortAllocator;
+	}): Promise<{ rpcPort: number; faucetPort: number }> => {
 		const [rpcPort] = await ctx.ports.allocate({ slot: 'sui.rpc', preferred: preferredRpcPort });
 		const [faucetPort] = await ctx.ports.allocate({
 			slot: 'sui.faucet',
@@ -313,87 +270,6 @@ export const sui = (opts: SuiPluginOptions = {}) => {
 					// Faucet starts a beat after JSON-RPC; wait so downstream
 					// Register actions don't race the first request.
 					await waitForFaucet(`http://127.0.0.1:${faucetPort}`, { timeoutMs: 30_000 });
-				},
-			}),
-			register({
-				name: 'accounts',
-				needs: ['localnet'],
-				provides: {
-					// Reconciler invokes this on every successful path (cold run +
-					// warm-path skip), so the in-memory accounts registry is
-					// populated regardless of whether `run` executed this cycle.
-					// Only reached when `getStatus.ok` (every account funded), so
-					// the addresses we re-publish here are known-good.
-					registry: (ctx) => {
-						for (const name of ctx.accounts.names()) {
-							const signer = ctx.accounts.get(name);
-							ctx.registry.accounts.register({
-								name,
-								address: signer.toSuiAddress(),
-								role: name === 'publisher' ? 'publisher' : undefined,
-								funded: true,
-							});
-						}
-					},
-				},
-				inputs: {
-					minBalance: minBalance?.toString(),
-				},
-				getStatus: async (ctx) => {
-					const names = ctx.accounts.names();
-					if (names.length === 0) return { ok: true, detail: 'no accounts declared' };
-					requireLocalnetCtx(ctx);
-					const { rpcPort, faucetPort } = await resolvePorts(ctx);
-					const rpcUrl = `http://127.0.0.1:${rpcPort}`;
-					const faucetProbe = await probeFaucet(`http://127.0.0.1:${faucetPort}`);
-					if (!faucetProbe.ok) {
-						return { ok: false, detail: `faucet: ${faucetProbe.detail ?? 'unreachable'}` };
-					}
-					// Cheap path: if every account is at-or-above minBalance the
-					// reconciler skips `run` and `provides.registry` repopulates
-					// the registry. `ctx.accounts.get` rethrows any captured
-					// factory error per-account, so a misconfigured live-net
-					// signer surfaces with the captured cause.
-					for (const name of names) {
-						try {
-							const signer = ctx.accounts.get(name);
-							const address = signer.toSuiAddress();
-							await ensureFunded({
-								faucetUrl: `http://127.0.0.1:${faucetPort}`,
-								rpcUrl,
-								address,
-								minBalance,
-							});
-							// getStatus performs both faucet + AB-deposit eagerly
-							// (idempotent on warm cycles). Without this step the
-							// AB accumulator stays empty for accounts the prior
-							// session already funded, and AB-gas mode (PR 35)
-							// has nothing to draw from.
-							await ensureAddressBalance({ rpcUrl, signer });
-						} catch {
-							return { ok: false, detail: `account '${name}' not ready` };
-						}
-					}
-					return { ok: true, detail: `${names.length} account(s) funded` };
-				},
-				run: async (ctx) => {
-					requireLocalnetCtx(ctx);
-					const { rpcPort, faucetPort } = await resolvePorts(ctx);
-					const rpcUrl = `http://127.0.0.1:${rpcPort}`;
-					for (const name of ctx.accounts.names()) {
-						const signer = ctx.accounts.get(name);
-						const address = signer.toSuiAddress();
-						await ensureFunded({
-							faucetUrl: `http://127.0.0.1:${faucetPort}`,
-							rpcUrl,
-							address,
-							minBalance,
-						});
-						// After the faucet seeds a single coin, deposit most of
-						// it into the address-balance accumulator so AB-gas txs
-						// (PR 35) have something to draw from. Idempotent.
-						await ensureAddressBalance({ rpcUrl, signer });
-					}
 				},
 			}),
 		],

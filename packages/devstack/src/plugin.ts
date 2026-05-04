@@ -4,8 +4,8 @@
 // auto-prefixes bare action names with the plugin's namespace
 // (`<plugin>.<name>`), and resolves bare-name `needs:` entries to the
 // same local-prefixed form. Cross-plugin references stay fully
-// qualified; capability queries (`<cap>:before` / `<cap>:after`) are
-// passed through to the topo sorter unchanged.
+// qualified; capability queries (`<cap>:before`) are passed through to
+// the topo sorter unchanged.
 
 import type { Action, DevstackConfig, Plugin, Provides } from './core/types.js';
 import { getProvidedCapabilities } from './core/types.js';
@@ -53,8 +53,8 @@ export function expandPluginActions(plugins: Plugin[]): Action[] {
 
 		// Second pass — resolve `needs`. Bare entries point at local
 		// actions and must exist; dotted entries are cross-plugin FQNs;
-		// `:before` / `:after` queries are capability lookups handled by
-		// the topo sorter.
+		// `:before` queries are capability lookups handled by the topo
+		// sorter.
 		for (const { action, fullName } of expanded) {
 			const resolvedNeeds = (action.needs ?? []).map((n) =>
 				resolveNeed(n, plugin.name, localFullNames),
@@ -106,7 +106,7 @@ function validateProvides(provides: Provides | undefined, pluginName: string): v
 			throw new Error(
 				`devstack: plugin '${pluginName}' declared capability '${cap}' without its own ` +
 					`namespace prefix. Rename to '${expectedPrefix}${cap}' (and update any ` +
-					`':before'/':after' queries to match).`,
+					`':before' queries to match).`,
 			);
 		}
 	}
@@ -114,7 +114,7 @@ function validateProvides(provides: Provides | undefined, pluginName: string): v
 
 function resolveNeed(need: string, pluginName: string, localFullNames: Set<string>): string {
 	// Capability queries are passed through verbatim — topo resolves them.
-	if (need.endsWith(':before') || need.endsWith(':after')) return need;
+	if (need.endsWith(':before')) return need;
 	// Already-qualified cross-plugin references pass through.
 	if (need.includes('.')) return need;
 	// Bare name → must reference a local action.
@@ -124,7 +124,7 @@ function resolveNeed(need: string, pluginName: string, localFullNames: Set<strin
 			`expandPluginActions: plugin '${pluginName}' has bare need '${need}' but no ` +
 				`local action with that name. For a cross-plugin reference, use the ` +
 				`fully-qualified form '<plugin>.${need}'. For a capability query, use ` +
-				`'${need}:before' or '${need}:after'.`,
+				`'${need}:before'.`,
 		);
 	}
 	return localFq;

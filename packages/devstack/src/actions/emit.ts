@@ -1,7 +1,7 @@
 // `emit()` — Sink action factory. Reads the registry; writes files.
 //
 // Re-runs when `dependsOnKind` intersects the registry's dirty set after a
-// reconciliation cycle (Q11). `dependsOnKind` accepts core kind names
+// reconciliation cycle. `dependsOnKind` accepts core kind names
 // (`'packages'`) or namespaced (`'walrus/blobs'`). The Emit's own input
 // hash also affects skipping — if the emitter version or output config
 // changes, it re-runs even when no kinds are dirty.

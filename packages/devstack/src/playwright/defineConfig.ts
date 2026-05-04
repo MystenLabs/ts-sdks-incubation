@@ -6,7 +6,8 @@ import { type PlaywrightTestConfig, defineConfig, devices } from '@playwright/te
 import { createPortAllocator } from '../runtime/port-allocator.js';
 
 type PlaywrightWebServer = NonNullable<PlaywrightTestConfig['webServer']>;
-type PlaywrightWebServerSingle = PlaywrightWebServer extends Array<infer U> ? U : PlaywrightWebServer;
+type PlaywrightWebServerSingle =
+	PlaywrightWebServer extends Array<infer U> ? U : PlaywrightWebServer;
 
 /** Like `Partial<PlaywrightTestConfig>` but lets callers override individual
  *  `webServer` / `use` fields without having to redeclare the whole object —
@@ -112,7 +113,10 @@ export async function defineDevstackPlaywrightConfig(
 			slot: 'frontend.dev-server',
 			preferred: preferredPort,
 		});
-		resolvedPort = allocated as number;
+		if (allocated === undefined) {
+			throw new Error('defineDevstackPlaywrightConfig: port allocator returned no ports');
+		}
+		resolvedPort = allocated;
 	}
 
 	const baseURL = `http://localhost:${resolvedPort}`;

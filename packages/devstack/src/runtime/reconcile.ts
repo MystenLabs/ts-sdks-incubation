@@ -1,22 +1,31 @@
 // Reconciler. Walks an action DAG once, evaluating each action's skip
 // predicate and running on miss. After the walk, dispatches Emit actions
 // whose `dependsOnKind` slice intersects the dirty set produced by source
-// actions (Q11). Idempotent across cycles within a single supervisor
-// lifetime: stable input hashes mean a re-run is a no-op when nothing
-// changed.
+// actions. Idempotent across cycles AND across processes: stable input
+// hashes plus persisted state in the manifest mean a fresh `devstack up`
+// against an existing stack skips every setup action without rerunning.
 //
-// Skip predicate logic per action:
-//   - Cold cycle (no prior in memory) + `getStatus.ok === true` → skip
-//     (warm-path rehydration from a manifest survives supervisor restart).
-//   - Hash match + `getStatus.ok === true` → skip.
-//   - Hash match + no `getStatus` → skip.
-//   - Hash mismatch with prior → run unconditionally (inputs drift wins;
-//     `getStatus` is NOT consulted, so a stale-but-running container
-//     doesn't mask a config change).
-//   - No prior + no `getStatus` + hash mismatch → run.
-//   - `getStatus.ok === false` → run.
-// Plus: Emit actions also run when a dirty kind they depend on changed,
-// even if their own input hash matched.
+// Skip predicate per action type:
+//
+//   Service / HostProcess (liveness):
+//     - Always probes `getStatus` on cold start + hash match.
+//     - Hash mismatch → run unconditionally (config drift beats liveness).
+//
+//   Verify (invariant):
+//     - Always probes `getStatus`. `ok:false` is a cycle failure, not a run.
+//
+//   Build / Publish / Register / Seed / Emit (setup):
+//     - Hash match → skip (without probing). Plugin-level `getStatus` is
+//       optional and consulted only when defined.
+//     - Hash mismatch → run unconditionally.
+//     - Plus: Emit also runs when a dirty kind it depends on changed,
+//       even if its own input hash matched.
+//
+// State persistence: `Reconciler.state` is serialized into
+// `Manifest.actionStates` at end-of-cycle and rehydrated at startup via
+// `priorState`. Without this, every fresh process treats every action as
+// a cold cycle — which is what PR 35's friction journal called the
+// "rehydrate from getStatus anti-pattern."
 
 import { seedRunsOn } from '../actions/seed.js';
 import type {
@@ -32,12 +41,25 @@ import type {
 	ShutdownHook,
 } from '../core/types.js';
 import { getProvidesRegistryHook } from '../core/types.js';
+import type { RegistryImpl } from '../registry/index.js';
 import { stableHash } from './hash.js';
 import { topoSortActions } from './topo.js';
 
 interface ActionState {
 	lastInputHash?: string;
 	status: ActionStatus;
+	lastRunAt?: number;
+}
+
+/** Persistent per-action state — the subset of `ActionState` worth
+ * carrying across processes via the manifest. `status` is intentionally
+ * not persisted: only `healthy` actions ever land in the state map at
+ * end-of-cycle, so reproducing the in-memory shape on hydrate would be
+ * lying about the post-restart state. The reconciler treats hydrated
+ * entries as "this hash was last seen healthy"; the next cycle's
+ * `getStatus` (if any) re-confirms liveness. */
+export interface PersistedActionState {
+	lastInputHash: string;
 	lastRunAt?: number;
 }
 
@@ -93,8 +115,29 @@ export interface ReconcileResult {
 	dirtyKinds: Set<string>;
 }
 
+export interface ReconcilerOptions {
+	/** Persisted action state from a prior process — typically loaded from
+	 * `Manifest.actionStates` by the supervisor / one-shot driver. Each
+	 * entry is treated as "this action's `inputHash` was healthy last
+	 * cycle"; the next cycle skips on hash match without rerunning
+	 * `getStatus` (for actions that don't define one). */
+	priorState?: Record<string, PersistedActionState>;
+}
+
 export class Reconciler {
 	private readonly state = new Map<string, ActionState>();
+
+	constructor(opts: ReconcilerOptions = {}) {
+		if (opts.priorState !== undefined) {
+			for (const [name, persisted] of Object.entries(opts.priorState)) {
+				this.state.set(name, {
+					lastInputHash: persisted.lastInputHash,
+					status: 'healthy',
+					lastRunAt: persisted.lastRunAt,
+				});
+			}
+		}
+	}
 
 	async cycle(actions: Action[], base: ReconcileBaseContext): Promise<ReconcileResult> {
 		const sorted = topoSortActions(actions, { lenient: base.lenient });
@@ -206,7 +249,7 @@ export class Reconciler {
 			if (status !== 'failed' && action.type === 'Emit') {
 				const emit = action as EmitAction;
 				if (emit.dependsOnKind !== undefined && emit.dependsOnKind.length > 0) {
-					base.registry.consumeDirty(emit.dependsOnKind);
+					(base.registry as RegistryImpl).consumeDirty(emit.dependsOnKind);
 				}
 			}
 			emitProgress();
@@ -244,7 +287,7 @@ export class Reconciler {
 		// genuinely-stale Emits. Repeat until quiescent (an Emit could
 		// mutate a kind that triggers another Emit — e.g. codegen → register
 		// a `generated` kind). Bounded to prevent infinite loops on bad plugins.
-		let dirty = base.registry.flushDirty();
+		let dirty = (base.registry as RegistryImpl).flushDirty();
 
 		// Interim snapshot: before the cascade runs, mark any Emit that's
 		// about to re-fire as `'dirty'` for the renderer. Transient — the
@@ -291,11 +334,11 @@ export class Reconciler {
 					// re-fires every round until `maxCascade` swallows it — only
 					// invisible because the loop bound caps the runaway.
 					if (emit.dependsOnKind !== undefined && emit.dependsOnKind.length > 0) {
-						base.registry.consumeDirty(emit.dependsOnKind);
+						(base.registry as RegistryImpl).consumeDirty(emit.dependsOnKind);
 					}
 				}
 			}
-			dirty = base.registry.flushDirty();
+			dirty = (base.registry as RegistryImpl).flushDirty();
 			if (!triggered) break;
 		}
 
@@ -328,7 +371,8 @@ export class Reconciler {
 					}
 				: { ...common, network: base.network };
 
-		// Network gating for Seed actions (Q5).
+		// Seed actions are localnet-only by default; authors opt into
+		// live networks via `runsOn: ['testnet', 'mainnet']` (see seed.ts).
 		if (action.type === 'Seed') {
 			if (!seedRunsOn(action as SeedAction, base.network)) {
 				return 'skipped';
@@ -358,19 +402,35 @@ export class Reconciler {
 				return 'healthy';
 			}
 			this.state.set(action.name, { lastInputHash: inputHash, status: 'failed' });
-			throw new Error(
-				`Verify '${action.name}' failed: ${status.detail ?? 'no detail provided'}`,
-			);
+			throw new Error(`Verify '${action.name}' failed: ${status.detail ?? 'no detail provided'}`);
 		}
 
 		// `getStatus` is consulted on the cold cycle (no `prior` — supervisor
-		// restart) and on hash-match cycles, never on hash-mismatch with a
-		// known prior. Otherwise an action whose inputs drifted but whose
-		// container still happens to be up would silently keep the stale
-		// state forever, because `getStatus` would always return ok.
+		// restart with no persisted state) and on hash-match cycles, never on
+		// hash-mismatch with a known prior. Otherwise an action whose inputs
+		// drifted but whose container still happens to be up would silently
+		// keep the stale state forever, because `getStatus` would always
+		// return ok.
+		//
+		// The contract is "read-only probe returning {ok, detail}". A throw
+		// from the probe is ambiguous — could be a transient network blip
+		// or genuine misconfiguration. Treat it as `{ok: false}` so `run`
+		// gets a chance to recover, rather than permanently failing the
+		// action and blocking every dependent.
 		if (!forceRun) {
 			if (action.getStatus !== undefined && (prior === undefined || hashMatches)) {
-				const status = await action.getStatus(ctx);
+				let status: { ok: boolean; detail?: string };
+				try {
+					status = await action.getStatus(ctx);
+				} catch (err) {
+					if (base.appendLog !== undefined) {
+						base.appendLog(
+							action.name,
+							`getStatus threw — treating as not-ready: ${err instanceof Error ? err.message : String(err)}`,
+						);
+					}
+					status = { ok: false, detail: 'getStatus threw' };
+				}
 				if (status.ok) {
 					await applyProvidesRegistry(action, ctx);
 					this.state.set(action.name, {
@@ -417,6 +477,24 @@ export class Reconciler {
 
 	resetAction(name: string): void {
 		this.state.delete(name);
+	}
+
+	/** Snapshot the persistent slice of state for serialization into the
+	 * manifest. Only actions that have a recorded `lastInputHash` are
+	 * included — actions that never ran (or whose only successful state
+	 * was a Verify, which doesn't have a meaningful "last input hash")
+	 * are omitted. */
+	serializeState(): Record<string, PersistedActionState> {
+		const out: Record<string, PersistedActionState> = {};
+		for (const [name, entry] of this.state) {
+			if (entry.status !== 'healthy') continue;
+			if (entry.lastInputHash === undefined) continue;
+			out[name] = {
+				lastInputHash: entry.lastInputHash,
+				...(entry.lastRunAt === undefined ? {} : { lastRunAt: entry.lastRunAt }),
+			};
+		}
+		return out;
 	}
 }
 

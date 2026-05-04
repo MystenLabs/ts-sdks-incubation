@@ -13,8 +13,8 @@ export type {
 	Account,
 	AccountFactory,
 	AccountFactoryContext,
-	AccountNetworkSpec,
 	AccountSpec,
+	AccountsConfig,
 	AccountsContext,
 	Action,
 	ActionBase,
@@ -58,6 +58,7 @@ export {
 // ─── Authoring helpers ────────────────────────────────────────────────────
 
 export { defineDevstackConfig, definePlugin, expandPluginActions } from './plugin.js';
+export { defineRegistryKind } from './registry/index.js';
 
 // ─── Action factories ─────────────────────────────────────────────────────
 
@@ -65,18 +66,23 @@ export { buildImage } from './actions/build.js';
 export { service } from './actions/service.js';
 export { containerService } from './actions/container-service.js';
 export { hostProcess } from './actions/host-process.js';
-export { job } from './actions/job.js';
 export { verify } from './actions/verify.js';
 export {
 	publish,
-	definePublishAction,
-	type DefinePublishActionOptions,
+	type PublishOptions,
+	type PublishInputs,
 } from './actions/publish.js';
 export { publishMove, type PublishMoveOptions } from './actions/publish-move.js';
 export { register } from './actions/register.js';
 export { seed, seedRunsOn } from './actions/seed.js';
 export { runTransaction, type RunTransactionOptions } from './actions/transaction.js';
 export { emit } from './actions/emit.js';
+export {
+	mintCoinDistribution,
+	type CoinDistributionEntry,
+	type CoinDistributionSpec,
+	type MintCoinDistributionOptions,
+} from './actions/mint-coin-distribution.js';
 
 // ─── Signer factories ─────────────────────────────────────────────────────
 
@@ -90,13 +96,8 @@ export {
 
 // ─── Built-in plugins ─────────────────────────────────────────────────────
 
-export {
-	sui,
-	suiContainerName,
-	appNetworkName,
-	SUI_DEFAULT_VERSION,
-	type SuiPluginOptions,
-} from './plugins/sui/index.js';
+export { accounts, type AccountsPluginOptions } from './plugins/accounts/index.js';
+export { sui, SUI_DEFAULT_VERSION, type SuiPluginOptions } from './plugins/sui/index.js';
 export {
 	walrus,
 	type WalrusNamespace,
@@ -111,11 +112,7 @@ export {
 	type SealPluginOptions,
 } from './plugins/seal/index.js';
 export { SEAL_REV } from './plugins/seal/build.js';
-export {
-	codegen,
-	defaultMvrName,
-	type CodegenPluginOptions,
-} from './plugins/codegen/index.js';
+export { codegen, defaultMvrName, type CodegenPluginOptions } from './plugins/codegen/index.js';
 export {
 	deepbook,
 	deepbookNs,

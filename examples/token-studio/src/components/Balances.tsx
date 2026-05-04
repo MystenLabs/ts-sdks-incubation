@@ -3,7 +3,7 @@ import { useCurrentAccount } from '@mysten/dapp-kit-react';
 import { deployment } from '../generated/deployment.js';
 import { formatStudio, shortAddress } from '../lib/coin.js';
 import { useCoinBalance } from '../lib/queries.js';
-import { Card } from './Card.js';
+import { Card } from '@mysten-incubation/devstack/react/ui';
 
 export function Balances() {
 	const me = useCurrentAccount();
@@ -59,7 +59,7 @@ function BalanceRow({
 				)}
 			</td>
 			<td className="px-4 py-2 font-mono text-xs">{shortAddress(address, 8, 6)}</td>
-			<td className="px-4 py-2 text-right tabular-nums">
+			<td className="px-4 py-2 text-right tabular-nums" data-testid={`balance-${name}-studio`}>
 				{balance.isPending ? '…' : balance.data ? formatStudio(balance.data.balance, 2) : '—'}
 			</td>
 		</tr>

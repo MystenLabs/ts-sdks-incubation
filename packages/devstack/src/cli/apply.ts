@@ -105,10 +105,14 @@ const USAGE = `devstack apply [config] [options]
 Single-cycle reconcile against the active stack (or --target). Runs the
 full action graph once and exits.
 
-Runs: Build, Publish, Register, Seed, Emit, Verify
-Skips: Service (containers stay running across cycles)
+On localnet: runs every action type (Build, Service, HostProcess,
+Publish, Register, Seed, Emit, Verify). Differs from \`devstack up\`
+only in that there's no file watcher and the supervisor doesn't stay
+resident — the cycle settles, then exits.
 
-On live nets: also skips Build (no docker assumed).
+On live nets (testnet, mainnet): skips Service, HostProcess, and Build
+(no docker assumed). Runs Publish/Register/Seed/Emit/Verify against the
+configured RPC.
 
 Options:
   --target <network[:stack]>  Override the active target

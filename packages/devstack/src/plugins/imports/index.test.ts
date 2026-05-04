@@ -96,7 +96,7 @@ beforeEach(() => {
 });
 
 describe('imports plugin — shape', () => {
-	it('emits one Build + one Publish per package, with provides on the Publish', () => {
+	it('emits one Build + one Publish per package, with provides + registry rehydrate hook on the Publish', () => {
 		const plugin = imports({
 			packages: [
 				{
@@ -113,9 +113,13 @@ describe('imports plugin — shape', () => {
 			'Publish:imports.deepbook',
 		]);
 		const publish = actions[1] as PublishAction;
-		expect(publish.provides).toEqual({ capabilities: ['imports.deepbook'] });
-		expect(publish.needs).toEqual(['imports.deepbook-source', 'sui.accounts']);
+		expect(publish.provides?.capabilities).toEqual(['imports.deepbook']);
+		expect(typeof publish.provides?.registry).toBe('function');
+		expect(publish.needs).toEqual(['imports.deepbook-source', 'accounts.fund']);
 		expect(publish.path).toBe('<imported>');
+		// Idempotence comes from the reconciler's hash-match skip + persisted
+		// state — no default getStatus on the publish action.
+		expect(publish.getStatus).toBeUndefined();
 	});
 
 	it('emits actions for multiple packages, each with their own Build/Publish pair', () => {
@@ -237,7 +241,12 @@ describe('imports plugin — Build action', () => {
 	});
 });
 
-describe('imports plugin — Publish getStatus', () => {
+describe('imports plugin — Publish provides.registry rehydrate', () => {
+	// The rehydrate hook runs on warm-path skip (when the reconciler's
+	// hash-match skip predicate fires) so downstream actions still see
+	// the package in the registry without rerunning `run`. Most relevant
+	// for the curated-address live-net path: a fresh process hydrates an
+	// empty registry, the rehydrate hook re-registers the curated id.
 	const plugin = imports({
 		packages: [
 			{
@@ -250,81 +259,18 @@ describe('imports plugin — Publish getStatus', () => {
 		],
 	});
 	const publish = expandPluginActions([plugin])[1] as PublishAction;
+	const rehydrate = publish.provides?.registry;
 
-	it('localnet: returns ok=false when no prior import exists', async () => {
-		const status = await publish.getStatus?.(makeCtx(setupRegistry(), 'localnet'));
-		expect(status).toEqual({ ok: false, detail: 'no prior import' });
-	});
-
-	it('localnet: returns ok=false when chainId differs from prior', async () => {
+	it('live net curated: registers the curated address on first rehydrate', async () => {
 		const registry = setupRegistry();
-		registry.packages.register({
-			name: 'deepbook',
-			packageId: '0xpkg',
-			captured: {},
-			sourceDigest: 'v7.0.0',
-			chainId: 'chain-old',
-			network: 'localnet',
-		});
-		getChainIdentifierMock.mockResolvedValue('chain-new');
-		const status = await publish.getStatus?.(makeCtx(registry, 'localnet'));
-		expect(status?.ok).toBe(false);
-	});
-
-	it('localnet: returns ok=true when package + deps are live on chain', async () => {
-		const registry = setupRegistry();
-		registry.packages.register({
-			name: 'deepbook',
-			packageId: '0xpkg',
-			captured: {},
-			deps: { deep: '0xdeep' },
-			sourceDigest: 'v7.0.0',
-			chainId: 'chain-1',
-			network: 'localnet',
-		});
-		getChainIdentifierMock.mockResolvedValue('chain-1');
-		getObjectMock.mockResolvedValue({ data: { objectId: 'x' } });
-		const status = await publish.getStatus?.(makeCtx(registry, 'localnet'));
-		expect(status).toEqual({ ok: true, detail: '0xpkg' });
-		// One call for the package, one for the `deep` dep.
-		expect(getObjectMock).toHaveBeenCalledTimes(2);
-	});
-
-	it('localnet: returns ok=false when an auto-published dep is missing on chain', async () => {
-		const registry = setupRegistry();
-		registry.packages.register({
-			name: 'deepbook',
-			packageId: '0xpkg',
-			captured: {},
-			deps: { deep: '0xdeep' },
-			sourceDigest: 'v7.0.0',
-			chainId: 'chain-1',
-			network: 'localnet',
-		});
-		getChainIdentifierMock.mockResolvedValue('chain-1');
-		// Package exists; dep is gone.
-		getObjectMock
-			.mockResolvedValueOnce({ data: { objectId: '0xpkg' } })
-			.mockResolvedValueOnce({ data: null });
-		const status = await publish.getStatus?.(makeCtx(registry, 'localnet'));
-		expect(status?.ok).toBe(false);
-		expect(status?.detail).toMatch(/dep deep/);
-	});
-
-	it('live net with curated address: returns ok and registers the curated id', async () => {
-		const registry = setupRegistry();
-		const status = await publish.getStatus?.(makeCtx(registry, 'testnet'));
-		expect(status?.ok).toBe(true);
-		expect(status?.detail).toMatch(/curated/);
+		await rehydrate?.(makeCtx(registry, 'testnet'));
 		expect(registry.packages.find('deepbook')).toMatchObject({
 			packageId: '0xdee9testnet',
 			network: 'testnet',
 		});
-		// No on-chain probe — curated path skips it entirely.
-		expect(getChainIdentifierMock).not.toHaveBeenCalled();
 	});
 
-	it('live net with curated address: skips re-register when already current', async () => {
+	it('live net curated: rehydrate is a no-op when the package is already in the registry', async () => {
 		const registry = setupRegistry();
 		registry.packages.register({
 			name: 'deepbook',
@@ -332,9 +278,14 @@ describe('imports plugin — Publish getStatus', () => {
 			captured: {},
 			network: 'testnet',
 		});
-		await publish.getStatus?.(makeCtx(registry, 'testnet'));
-		// Still one entry, unchanged.
+		await rehydrate?.(makeCtx(registry, 'testnet'));
 		expect(registry.packages.list().filter((p) => p.name === 'deepbook')).toHaveLength(1);
+	});
+
+	it('localnet: rehydrate is a no-op (no curated address on localnet)', async () => {
+		const registry = setupRegistry();
+		await rehydrate?.(makeCtx(registry, 'localnet'));
+		expect(registry.packages.find('deepbook')).toBeUndefined();
 	});
 });
 

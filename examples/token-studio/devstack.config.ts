@@ -6,6 +6,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+	accounts,
 	codegen,
 	defineDevstackConfig,
 	frontend,
@@ -19,16 +20,13 @@ const MANAGED_COIN_DIR = resolve(HERE, 'move/managed_coin');
 
 export default defineDevstackConfig({
 	app: 'token-studio',
-	accounts: {
-		alice: {},
-		bob: {},
-		carol: {},
-	},
+	accounts: ['alice', 'bob', 'carol'],
 	plugins: [
 		// Plugin port options are hints to the per-stack port allocator;
 		// the allocator picks any free port if a sibling stack has the
 		// preferred port claimed.
 		sui({ version: 'devnet-v1.71.0', rpcPort: 9059, faucetPort: 9984 }),
+		accounts(),
 		codegen(),
 		walletServer({ port: 9422 }),
 		frontend({ port: 5173 }),
@@ -41,7 +39,7 @@ export default defineDevstackConfig({
 	setup: [
 		publishMove({
 			name: 'managedCoin',
-			needs: ['sui.accounts'],
+			needs: ['accounts.fund'],
 			registryAs: 'managed_coin',
 			path: MANAGED_COIN_DIR,
 			publisher: 'alice',

@@ -32,14 +32,17 @@ let baseUrl: string;
 let signer: Ed25519Keypair;
 let aliceAddress: string;
 
-beforeEach(() => {
+beforeEach(async () => {
 	signer = new Ed25519Keypair();
 	aliceAddress = signer.toSuiAddress();
-	handle = startWalletServer({
+	handle = await startWalletServer({
 		port: 0,
 		accounts: buildFakeAccounts(signer),
 		token: TEST_TOKEN,
 		maxBodyBytes: 256,
+		// Tests need the dev-server origin allow-listed so the CORS
+		// path returns headers; we use the default localhost-only bind.
+		allowedOrigins: ['http://localhost:5173'],
 	});
 	const addr = handle.server.address();
 	if (addr === null || typeof addr === 'string') {
@@ -299,12 +302,62 @@ describe('Body size enforcement', () => {
 });
 
 describe('CORS', () => {
-	it('OPTIONS preflight returns 204 with permissive CORS headers', async () => {
+	it('OPTIONS preflight from an allowlisted origin returns 204 + echoes the origin', async () => {
 		const res = await fetch(`${baseUrl}/api/v1/devstack/accounts`, {
 			method: 'OPTIONS',
+			headers: { Origin: 'http://localhost:5173' },
 		});
 		expect(res.status).toBe(204);
-		expect(res.headers.get('access-control-allow-origin')).toBe('*');
+		expect(res.headers.get('access-control-allow-origin')).toBe('http://localhost:5173');
 		expect(res.headers.get('access-control-allow-methods')).toMatch(/POST/);
+		expect(res.headers.get('vary')).toBe('Origin');
+	});
+
+	it('OPTIONS preflight without an Origin header still succeeds (same-origin / curl)', async () => {
+		const res = await fetch(`${baseUrl}/api/v1/devstack/accounts`, { method: 'OPTIONS' });
+		expect(res.status).toBe(204);
+		expect(res.headers.get('access-control-allow-origin')).toBeNull();
+	});
+
+	it('OPTIONS preflight from a non-allowlisted origin returns 403', async () => {
+		const res = await fetch(`${baseUrl}/api/v1/devstack/accounts`, {
+			method: 'OPTIONS',
+			headers: { Origin: 'https://evil.example.com' },
+		});
+		expect(res.status).toBe(403);
+		expect(res.headers.get('access-control-allow-origin')).toBeNull();
+	});
+
+	it('GET from a non-allowlisted origin returns 403 even with valid auth', async () => {
+		const res = await fetch(`${baseUrl}/api/v1/devstack/accounts`, {
+			headers: { ...authHeaders(), Origin: 'https://evil.example.com' },
+		});
+		expect(res.status).toBe(403);
+	});
+});
+
+describe('CORS — allowedOrigins validation', () => {
+	it('rejects "*" in allowedOrigins at startup', async () => {
+		const sig = new Ed25519Keypair();
+		await expect(
+			startWalletServer({
+				port: 0,
+				accounts: buildFakeAccounts(sig),
+				token: TEST_TOKEN,
+				allowedOrigins: ['*'],
+			}),
+		).rejects.toThrow(/cannot include "\*"/);
+	});
+
+	it('rejects malformed origins', async () => {
+		const sig = new Ed25519Keypair();
+		await expect(
+			startWalletServer({
+				port: 0,
+				accounts: buildFakeAccounts(sig),
+				token: TEST_TOKEN,
+				allowedOrigins: ['not a url'],
+			}),
+		).rejects.toThrow(/invalid origin/);
 	});
 });

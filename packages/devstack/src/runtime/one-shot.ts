@@ -4,7 +4,7 @@
 // no file watcher, and no parallelism beyond what the reconciler itself
 // provides (Emit cascade + getStatus skip predicates).
 //
-// Filtering (§14 Q5; see cli/filters.ts):
+// Filtering (see cli/filters.ts):
 //   - `deployFilter` (default): skip Service; gate Seed by network; run
 //     Build/Publish/Register/Emit on every network. Mirrors the inline
 //     `actionRunsOnLiveNet` predicate this module shipped pre-C1.
@@ -25,7 +25,7 @@
 // that re-register during the cycle trigger Emit re-runs.
 
 import type {
-	AccountSpec,
+	AccountsConfig,
 	ActionFilter,
 	ActionStatus,
 	Network,
@@ -37,7 +37,7 @@ import { RegistryImpl } from '../registry/index.js';
 import { deployFilter } from '../cli/filters.js';
 import { resolveAccounts } from './accounts.js';
 import { DEFAULT_STACK } from './active-stack.js';
-import { hydrateRegistry } from './manifest-reader.js';
+import { hydrateRegistry, readReconcilerState } from './manifest-reader.js';
 import { manifestPath, writeManifest } from './manifest-writer.js';
 import { createPortAllocator } from './port-allocator.js';
 import { Reconciler } from './reconcile.js';
@@ -51,7 +51,7 @@ export interface OneShotOptions {
 	/** Account specs from `DevstackConfig.accounts`. Resolved against the
 	 * target network so `ctx.accounts.<name>` returns a `Signer` per the
 	 * spec's per-network slot (or `default`). */
-	accounts?: Record<string, AccountSpec>;
+	accounts?: AccountsConfig;
 	/** Stack name. Live-network deploys ignore the stack dimension —
 	 * manifests are still keyed by network only. Defaults to 'main'. */
 	stack?: string;
@@ -101,7 +101,7 @@ export async function runOneShot(opts: OneShotOptions): Promise<OneShotResult> {
 			: scopeActions(filtered, opts.actionScope);
 
 	const accounts = resolveAccounts({
-		specs: opts.accounts ?? {},
+		specs: opts.accounts ?? [],
 		appDir: opts.appDir,
 		stack,
 		network: opts.network,
@@ -112,6 +112,9 @@ export async function runOneShot(opts: OneShotOptions): Promise<OneShotResult> {
 	const hydrated = opts.skipHydrate
 		? false
 		: hydrateRegistry({ appDir: opts.appDir, stack, network: opts.network, registry });
+	const priorState = opts.skipHydrate
+		? {}
+		: readReconcilerState({ appDir: opts.appDir, stack, network: opts.network });
 
 	// Live-net: pre-register the network's RPC endpoint so consumers
 	// (codegen Emit, REPL bindings) can `services.find('sui-rpc')` even
@@ -128,11 +131,14 @@ export async function runOneShot(opts: OneShotOptions): Promise<OneShotResult> {
 		registry.flushDirty();
 	}
 
-	const reconciler = new Reconciler();
+	const reconciler = new Reconciler({ priorState });
 	const ports =
-		opts.network === 'localnet'
-			? createPortAllocator({ appDir: opts.appDir, stack })
-			: undefined;
+		opts.network === 'localnet' ? createPortAllocator({ appDir: opts.appDir, stack }) : undefined;
+	// Stream status transitions to stderr so CI consumers see which
+	// actions ran without parsing the final summary. Tracked here (not
+	// in the reconciler) because the supervisor uses its own progress
+	// pump for the TTY renderer; piping to stderr is a one-shot concern.
+	const lastStatus = new Map<string, string>();
 	const result = await reconciler.cycle(scoped, {
 		appName: opts.appName,
 		appDir: opts.appDir,
@@ -145,13 +151,28 @@ export async function runOneShot(opts: OneShotOptions): Promise<OneShotResult> {
 		// are still in `filtered`. Drop the orphaned `needs` edges instead
 		// of throwing.
 		lenient: true,
-		// Per-action diagnostic stream → stderr. The supervisor renders
-		// these inline in its TTY panel; one-shot has no panel, so a
-		// timestamped `[<action>] <line>` per log keeps build/publish
-		// output visible to CI users. Stays on stderr so JSON output (if
-		// added later) is the only thing on stdout.
+		// Per-action diagnostic stream → stderr. Plugins emit free-form
+		// log lines via `ctx.appendLog`; the reconciler's progress
+		// callback below emits one-line status transitions so stderr
+		// shows progress even when no plugin writes a log.
 		appendLog: (actionName, line) => {
 			process.stderr.write(`[${actionName}] ${line}\n`);
+		},
+		progress: (snapshot) => {
+			for (const [name, status] of snapshot.statuses) {
+				const prev = lastStatus.get(name);
+				if (prev === status) continue;
+				lastStatus.set(name, status);
+				// Skip the initial 'queued' burst: the renderer initializes
+				// every action to queued before the topo walk starts. Stderr
+				// would be noisy with N copies of "queued". Real transitions
+				// (queued → running → healthy/failed/skipped) are what users
+				// care about.
+				if (status === 'queued' && prev === undefined) continue;
+				const detail = snapshot.failures.get(name)?.message;
+				const suffix = detail !== undefined ? ` — ${detail}` : '';
+				process.stderr.write(`[${name}] ${status}${suffix}\n`);
+			}
 		},
 	});
 
@@ -163,6 +184,7 @@ export async function runOneShot(opts: OneShotOptions): Promise<OneShotResult> {
 				stack,
 				network: opts.network,
 				registry,
+				actionStates: reconciler.serializeState(),
 			});
 
 	return {
@@ -224,13 +246,13 @@ function scopeActions(
 		const action = byName.get(name);
 		if (action === undefined) continue;
 		for (const need of action.needs ?? []) {
-			// Strip capability suffixes: `cap:before` / `cap:after`. The
-			// scope walk follows direct deps; capability resolution
-			// happens in topo. We intentionally drop these because we
-			// can't (without a full pre-resolve) know which provider was
-			// going to satisfy them — but we record the capability name
-			// so the user gets a heads-up.
-			if (need.endsWith(':before') || need.endsWith(':after')) {
+			// Strip capability suffixes: `cap:before`. The scope walk
+			// follows direct deps; capability resolution happens in
+			// topo. We intentionally drop these because we can't
+			// (without a full pre-resolve) know which provider was going
+			// to satisfy them — but we record the capability name so the
+			// user gets a heads-up.
+			if (need.endsWith(':before')) {
 				droppedCapabilities.add(need);
 				continue;
 			}

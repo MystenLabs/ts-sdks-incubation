@@ -28,6 +28,10 @@
 			"types": "./dist/index.d.mts",
 			"import": "./dist/index.mjs"
 		},
+		"./app-setup": {
+			"types": "./dist/app-setup/index.d.mts",
+			"import": "./dist/app-setup/index.mjs"
+		},
 		"./cli": {
 			"types": "./dist/cli.d.mts",
 			"import": "./dist/cli.mjs"
@@ -43,6 +47,10 @@
 		"./react": {
 			"types": "./dist/react/index.d.mts",
 			"import": "./dist/react/index.mjs"
+		},
+		"./react/ui": {
+			"types": "./dist/react/ui/index.d.mts",
+			"import": "./dist/react/ui/index.mjs"
 		},
 		"./runtime": {
 			"types": "./dist/runtime.d.mts",
@@ -89,6 +97,8 @@
 		"prepublishOnly": "pnpm run build"
 	},
 	"dependencies": {
+		"@mysten-incubation/dev-wallet": "workspace:*",
+		"@mysten-incubation/devstack-wallet-panels": "workspace:*",
 		"@mysten/codegen": "^0.10.4",
 		"@mysten/sui": "catalog:",
 		"@mysten/walrus": "^1.1.4",

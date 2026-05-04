@@ -154,10 +154,10 @@ describe('resolveAccounts — explicit Signer slots', () => {
 		expect(ctx.get('publisher')).toBe(fallback);
 	});
 
-	it('treats a bare Signer spec as default everywhere', () => {
+	it('a Signer in `default` slot covers every live-net target', () => {
 		const everywhere = fakeSigner('all');
 		const tn = resolveAccounts({
-			specs: { publisher: everywhere },
+			specs: { publisher: { default: everywhere } },
 			appDir: newAppDir(),
 			stack: 'main',
 			network: 'testnet',
@@ -165,13 +165,39 @@ describe('resolveAccounts — explicit Signer slots', () => {
 		});
 		expect(tn.get('publisher')).toBe(everywhere);
 		const mn = resolveAccounts({
-			specs: { publisher: everywhere },
+			specs: { publisher: { default: everywhere } },
 			appDir: newAppDir(),
 			stack: 'main',
 			network: 'mainnet',
 			rpcUrl: 'https://rpc.example',
 		});
 		expect(mn.get('publisher')).toBe(everywhere);
+	});
+});
+
+describe('resolveAccounts — string-array form', () => {
+	it('accepts `accounts: ["alice", "bob"]` and treats each as the empty spec', () => {
+		const ctx = resolveAccounts({
+			specs: ['alice', 'bob'],
+			appDir: newAppDir(),
+			stack: 'main',
+			network: 'localnet',
+			rpcUrl: '',
+		});
+		expect(ctx.names()).toEqual(['alice', 'bob']);
+		expect(ctx.get('alice').toSuiAddress()).toMatch(/^0x[0-9a-f]+$/);
+		expect(ctx.get('bob').toSuiAddress()).toMatch(/^0x[0-9a-f]+$/);
+	});
+
+	it('string-array form falls through to the same live-net error as `{}`', () => {
+		const ctx = resolveAccounts({
+			specs: ['publisher'],
+			appDir: newAppDir(),
+			stack: 'main',
+			network: 'testnet',
+			rpcUrl: '',
+		});
+		expect(() => ctx.get('publisher')).toThrow(/no factory configured for network 'testnet'/);
 	});
 });
 

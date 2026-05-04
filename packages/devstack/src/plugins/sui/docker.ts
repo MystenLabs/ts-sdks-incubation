@@ -4,9 +4,9 @@
 // build/run logs to the parent stderr so the developer sees long-running
 // progress.
 //
-// The supervisor's design (§9.4) keeps containers alive across `up`
-// invocations: action `getStatus()` should report `ok: true` when the
-// container is running and healthy, so the reconciler skips the restart.
+// Containers are kept alive across `up` invocations — Service actions'
+// `getStatus()` reports `ok: true` when the container is running and
+// healthy, so the reconciler skips the restart.
 
 import { spawn } from 'node:child_process';
 

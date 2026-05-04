@@ -1,26 +1,14 @@
-// Long-running supervisor. Hosts the registry, reconciles the action
-// graph on file changes / retries, renders the live status block, and
-// shuts down cleanly on SIGINT / SIGTERM / `q` / `s` keystrokes.
-//
-// One reconcile cycle is in flight at any time. Concurrent triggers
-// (file events, retries) coalesce into a `cyclePending` flag and re-fire
-// after the current cycle completes. This keeps the action graph the
-// single ordering authority — no parallel cycles racing on the same
-// registry.
-//
-// Shutdown hooks fire in parallel: actions register them via
-// `ActionRunContext.onShutdown` (see Discovery 2026-04-29). Each hook
-// is typically `docker stop` against an independent container, so
-// running them serially wasted N×10s of SIGTERM grace per teardown.
-// Hooks that need ordering should compose internally — the supervisor
-// makes no ordering guarantees. Real Service actions that detach a
-// container generally don't register hooks — containers persist across
-// `up` invocations by design (§9.4).
+// Long-running supervisor: hosts the registry, reconciles the action graph
+// on file changes / retries, renders the live status block, and shuts down
+// cleanly on SIGINT / SIGTERM / `q` / `s` keystrokes. One reconcile cycle is
+// in flight at any time; concurrent triggers coalesce. Shutdown hooks fire
+// in parallel — they're typically `docker stop` against independent
+// containers; serial teardown wasted N×10s of SIGTERM grace.
 
 import { existsSync as fsExistsSync, readFileSync, unlinkSync } from 'node:fs';
 import { resolve as pathResolve } from 'node:path';
 import type {
-	AccountSpec,
+	AccountsConfig,
 	AccountsContext,
 	Action,
 	Network,
@@ -33,11 +21,15 @@ import { RegistryImpl } from '../registry/index.js';
 import { resolveAccounts } from './accounts.js';
 import { DEFAULT_STACK, activeStackFile, stackDir, writeActiveStack } from './active-stack.js';
 import { FileWatcher } from './file-watcher.js';
-import { hydrateRegistry } from './manifest-reader.js';
+import { hydrateRegistry, readReconcilerState } from './manifest-reader.js';
 import { writeManifest } from './manifest-writer.js';
 import { createPortAllocator } from './port-allocator.js';
 import { Reconciler } from './reconcile.js';
 import { StatusRenderer } from './status-renderer.js';
+import {
+	type SupervisorLockHandle,
+	acquireSupervisorLock,
+} from './supervisor-lock.js';
 
 export interface SupervisorOptions {
 	appName: string;
@@ -46,7 +38,7 @@ export interface SupervisorOptions {
 	/** Account specs from `DevstackConfig.accounts`. Resolved at startup
 	 * into `ctx.accounts.<name>` for every action. Empty / undefined leaves
 	 * the resolver with zero accounts — `ctx.accounts.names()` returns []. */
-	accounts?: Record<string, AccountSpec>;
+	accounts?: AccountsConfig;
 	/** Optional pre-resolved RPC URL plumbed into account factories. The
 	 * supervisor resolves accounts before sui's Service action registers
 	 * `sui-rpc`, so the built-in factories (cliSigner, envSigner,
@@ -67,7 +59,7 @@ export class Supervisor {
 
 	private readonly actions: Action[];
 	private readonly registry = new RegistryImpl();
-	private readonly reconciler = new Reconciler();
+	private readonly reconciler: Reconciler;
 	private readonly renderer: StatusRenderer;
 	private readonly watcher: FileWatcher;
 	private readonly shutdownHooks: ShutdownHook[] = [];
@@ -78,6 +70,7 @@ export class Supervisor {
 	private cycleInFlight = false;
 	private cyclePending = false;
 	private stopped = false;
+	private lock: SupervisorLockHandle | undefined;
 
 	private signalHandler: (() => void) | null = null;
 	private keyHandler: ((c: Buffer) => void) | null = null;
@@ -105,12 +98,23 @@ export class Supervisor {
 		this.actions = expandPluginActions(opts.plugins);
 		this.ports = createPortAllocator({ appDir: this.appDir, stack: this.stack });
 		this.accounts = resolveAccounts({
-			specs: opts.accounts ?? {},
+			specs: opts.accounts ?? [],
 			appDir: this.appDir,
 			stack: this.stack,
 			network: this.network,
 			rpcUrl: opts.rpcUrl ?? '',
 		});
+		// Hydrate persisted reconciler state from the prior manifest so a
+		// fresh `devstack up` against an existing stack treats already-
+		// applied setup actions (Publish / Register / Seed / Emit / Build)
+		// as healthy on input-hash match — without rerunning getStatus.
+		// Service / HostProcess / Verify still re-probe every cycle.
+		const priorState = readReconcilerState({
+			appDir: this.appDir,
+			stack: this.stack,
+			network: this.network,
+		});
+		this.reconciler = new Reconciler({ priorState });
 		this.renderer = new StatusRenderer({
 			actions: this.actions,
 			stream: opts.stream,
@@ -124,6 +128,7 @@ export class Supervisor {
 	}
 
 	async start(): Promise<void> {
+		await this.acquireLock();
 		this.renderer.start(this.appName);
 		this.installSignalHandlers();
 		this.hydrateFromManifest();
@@ -143,11 +148,20 @@ export class Supervisor {
 
 	/** Run one reconcile cycle, then shut down. For `devstack up --once`. */
 	async runOnce(): Promise<void> {
+		await this.acquireLock();
 		this.renderer.start(this.appName);
 		this.installSignalHandlers();
 		this.hydrateFromManifest();
 		await this.runCycle();
 		await this.shutdown();
+	}
+
+	/** Acquire the per-(app, stack) lockfile so two `devstack up`
+	 * invocations don't fight over container names + manifest writes.
+	 * Throws `SupervisorLockBusyError` when another supervisor is
+	 * already running; the caller (CLI entry) reports that to stderr. */
+	private async acquireLock(): Promise<void> {
+		this.lock = await acquireSupervisorLock({ appDir: this.appDir, stack: this.stack });
 	}
 
 	/** Bulk-load the prior manifest into the registry so source actions'
@@ -216,6 +230,10 @@ export class Supervisor {
 			this.keepAlive = null;
 		}
 		this.uninstallSignalHandlers();
+		// Release the lockfile last so observers don't see it gone
+		// before our containers are stopped.
+		this.lock?.release();
+		this.lock = undefined;
 		if (this.exitResolver !== null) {
 			const r = this.exitResolver;
 			this.exitResolver = null;
@@ -315,6 +333,7 @@ export class Supervisor {
 				stack: this.stack,
 				network: this.network,
 				registry: this.registry,
+				actionStates: this.reconciler.serializeState(),
 			});
 		} catch (err) {
 			this.renderer.appendLog('supervisor', `manifest write failed: ${(err as Error).message}`);

@@ -1,4 +1,5 @@
 import { useCurrentClient } from '@mysten/dapp-kit-react';
+import type { SuiGrpcClient } from '@mysten/sui/grpc';
 import { useQuery } from '@tanstack/react-query';
 
 import { deployment } from '../generated/deployment.js';
@@ -6,7 +7,10 @@ import { Cap as CapStruct, File as FileStruct } from '../generated/sui/vault/vau
 import { bytesToHex } from './format.js';
 import { bytesToBlobId } from './walrus.js';
 
-export { useSignAndExecute, type UseSignAndExecuteOptions } from '@mysten-incubation/devstack/react';
+export {
+	useSignAndExecute,
+	type UseSignAndExecuteOptions,
+} from '@mysten-incubation/devstack/react';
 
 export interface VaultFile {
 	id: string;
@@ -28,7 +32,7 @@ export interface VaultCap {
  * suffices for the demo; pagination is future work).
  */
 export function useOwnedCaps(address: string | undefined) {
-	const client = useCurrentClient();
+	const client: SuiGrpcClient = useCurrentClient();
 	return useQuery({
 		queryKey: ['vault', 'caps', address, deployment.vaultPackageId],
 		queryFn: async (): Promise<VaultCap[]> => {
@@ -53,7 +57,7 @@ export function useOwnedCaps(address: string | undefined) {
  * resolve each Cap's `file_id` to its underlying File metadata + bytes.
  */
 export function useFile(fileId: string | undefined) {
-	const client = useCurrentClient();
+	const client: SuiGrpcClient = useCurrentClient();
 	return useQuery({
 		queryKey: ['vault', 'file', fileId],
 		queryFn: async (): Promise<VaultFile | null> => {

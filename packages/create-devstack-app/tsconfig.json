@@ -1,0 +1,10 @@
+{
+	"extends": "@mysten-incubation/tsconfig/node.json",
+	"compilerOptions": {
+		"outDir": "./dist",
+		"declaration": true,
+		"types": ["node"]
+	},
+	"include": ["src/**/*", "scripts/**/*"],
+	"exclude": ["dist", "node_modules", "template"]
+}

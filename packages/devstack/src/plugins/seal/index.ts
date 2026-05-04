@@ -28,7 +28,7 @@ import { Transaction } from '@mysten/sui/transactions';
 
 import { buildImage } from '../../actions/build.js';
 import { containerService } from '../../actions/container-service.js';
-import { definePublishAction } from '../../actions/publish.js';
+import { publish } from '../../actions/publish.js';
 import { register } from '../../actions/register.js';
 import {
 	type ActionRunContext,
@@ -40,11 +40,7 @@ import { openSuiRpcClient } from '../../helpers/sui-client.js';
 import { extractUpstreamSource } from '../../helpers/upstream-source.js';
 import { definePlugin } from '../../plugin.js';
 import { stackDir } from '../../runtime/active-stack.js';
-import {
-	devstackContainerLabels,
-	dockerRun,
-	imageExists,
-} from '../sui/docker.js';
+import { devstackContainerLabels, dockerRun, imageExists } from '../sui/docker.js';
 import { appNetworkName } from '../sui/index.js';
 import {
 	SEAL_IMAGE_MOVE_PACKAGE_PATH,
@@ -112,14 +108,14 @@ export const seal = (opts: SealPluginOptions = {}) => {
 	const imageTag = sealImageTag(rev);
 	const platform = hostDockerPlatform();
 
-	const resolveEndpoint = async (
-		ctx: { ports: import('../../core/types.js').PortAllocator },
-	): Promise<{ port: number; keyServerUrl: string }> => {
-		const [port] = await ctx.ports.allocate({
+	const resolveEndpoint = async (ctx: {
+		ports: import('../../core/types.js').PortAllocator;
+	}): Promise<{ port: number; keyServerUrl: string }> => {
+		const [portValue] = await ctx.ports.allocate({
 			slot: 'seal.key-server',
 			preferred: preferredPort,
 		});
-		const portValue = port as number;
+		if (portValue === undefined) throw new Error('seal: port allocator returned no ports');
 		return { port: portValue, keyServerUrl: `http://127.0.0.1:${portValue}` };
 	};
 
@@ -143,15 +139,15 @@ export const seal = (opts: SealPluginOptions = {}) => {
 				},
 			}),
 
-			definePublishAction({
+			publish({
 				name: 'publish',
-				needs: ['build', 'sui.accounts'],
+				needs: ['build', 'accounts.fund'],
 				registryAs: 'seal',
 				publisher: publisherAccount,
-				// Move sources are baked into the seal image; sourcePath here
-				// is a stable label (the image tag) used for input hashing
+				// Move sources are baked into the seal image; `path` here is
+				// a stable label (the image tag) used for input hashing
 				// only — the actual directory comes from `prepareSource`.
-				sourcePath: imageTag,
+				path: imageTag,
 				prepareSource: async () => {
 					await ensureSealImage({ rev });
 					const tmpDir = mkdtempSync(join(tmpdir(), 'devstack-seal-publish-'));
@@ -472,4 +468,3 @@ function decodePrefixedHex(s: string): Uint8Array {
 	}
 	return bytes;
 }
-

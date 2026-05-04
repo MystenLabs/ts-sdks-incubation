@@ -1,6 +1,6 @@
 [package]
 name = "mock_weth"
-edition = "2024.beta"
+edition = "2024"
 version = "0.0.1"
 
 # Sui, MoveStdlib, Bridge, DeepBook, SuiSystem are auto-added by sui-cli

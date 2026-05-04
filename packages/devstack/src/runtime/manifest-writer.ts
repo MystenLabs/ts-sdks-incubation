@@ -15,9 +15,9 @@ import { dirname, resolve } from 'node:path';
 import type { Network, Registry } from '../core/types.js';
 import type { RegistryImpl } from '../registry/index.js';
 import { stackDir } from './active-stack.js';
-import type { Manifest, SerializedRegistry } from './manifest-types.js';
+import type { Manifest, SerializedActionState, SerializedRegistry } from './manifest-types.js';
 
-export type { Manifest, SerializedRegistry } from './manifest-types.js';
+export type { Manifest, SerializedActionState, SerializedRegistry } from './manifest-types.js';
 
 export interface WriteManifestOptions {
 	appName: string;
@@ -25,6 +25,10 @@ export interface WriteManifestOptions {
 	stack: string;
 	network: Network;
 	registry: Registry;
+	/** Per-action state from `Reconciler.serializeState()`. Persists across
+	 * processes so a fresh `devstack up` skips already-applied setup
+	 * actions on hash match without rerunning their `getStatus` probe. */
+	actionStates?: Record<string, SerializedActionState>;
 }
 
 export interface ManifestPathOptions {
@@ -57,6 +61,9 @@ export function buildManifest(opts: WriteManifestOptions): Manifest {
 		network: opts.network,
 		emittedAt: new Date().toISOString(),
 		registry: serializeRegistry(reg),
+		...(opts.actionStates !== undefined && Object.keys(opts.actionStates).length > 0
+			? { actionStates: opts.actionStates }
+			: {}),
 	};
 }
 

@@ -37,7 +37,12 @@ import {
 } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
-import { dockerRun, inspectContainer, startContainer, stopContainer } from '../plugins/sui/docker.js';
+import {
+	dockerRun,
+	inspectContainer,
+	startContainer,
+	stopContainer,
+} from '../plugins/sui/docker.js';
 import { stableHash } from './hash.js';
 import { stackDir } from './active-stack.js';
 
@@ -139,7 +144,8 @@ export interface CaptureOptions {
  * (e.g., `commit: false` for stateless containers like seal/walrus.proxy
  * or `quiesce: 'pause'` for sui's RocksDB). */
 export async function captureSnapshot(opts: CaptureOptions): Promise<SnapshotEntry> {
-	const containerNames = opts.containerNames ?? (await listStackContainers(opts.appName, opts.stack));
+	const containerNames =
+		opts.containerNames ?? (await listStackContainers(opts.appName, opts.stack));
 	if (containerNames.length === 0) {
 		throw new Error(
 			`captureSnapshot: no containers labeled devstack.app=${opts.appName} ` +
@@ -290,7 +296,9 @@ export async function loadSnapshot(opts: RestoreOptions): Promise<SnapshotEntry>
 	}
 
 	const live = await listStackContainers(opts.appName, opts.stack);
-	const liveInfos = await Promise.all(live.map(async (n) => ({ name: n, info: await inspectContainer(n) })));
+	const liveInfos = await Promise.all(
+		live.map(async (n) => ({ name: n, info: await inspectContainer(n) })),
+	);
 	const running = liveInfos
 		.filter((entry) => entry.info?.running === true)
 		.map((entry) => entry.name);
@@ -317,9 +325,7 @@ export async function loadSnapshot(opts: RestoreOptions): Promise<SnapshotEntry>
 				stream: true,
 			});
 			if (pull.code !== 0) {
-				throw new Error(
-					`loadSnapshot: docker pull ${c.registryImage} failed (exit ${pull.code}).`,
-				);
+				throw new Error(`loadSnapshot: docker pull ${c.registryImage} failed (exit ${pull.code}).`);
 			}
 			const reTag = await dockerRun({ command: ['tag', c.registryImage, c.seedImage] });
 			if (reTag.code !== 0) {
@@ -547,9 +553,4 @@ export function snapshotIdFromConfig(input: {
 		accountNames: input.accountNames,
 		suiImage: input.suiImage,
 	});
-}
-
-// Helper exported for tests: get the snapshot directory for an id.
-export function snapshotDirFor(appDir: string, id: string): string {
-	return snapshotDir(appDir, id);
 }

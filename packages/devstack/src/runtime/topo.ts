@@ -29,17 +29,22 @@ export interface TopoSortOptions {
  * Other actions reference capabilities via suffixed queries in their own
  * `needs`:
  *   - `'cap:before'` → "providers of cap run before me" (provider→me
- *     edges, equivalent to direct `needs` on each provider).
- *   - `'cap:after'` → "providers of cap run after me" (me→provider
- *     edges, the reverse direction).
- * Queries against capabilities with no providers are silently dropped.
- * Self-edges (an action that provides cap and queries it) are dropped.
+ *     edges, equivalent to a direct `needs` on each provider).
+ *
+ * Queries against capabilities with no providers are silently dropped —
+ * the "optional ordering" pattern. The sui plugin's `walrus.app-network:
+ * before` orders sui after walrus IF walrus is loaded; sui-only stacks
+ * skip the edge.
+ *
+ * `:after` was the symmetric inverse ("providers run after me") but had
+ * zero production callers across all 8 plugins + every example, so it's
+ * been removed. Future need is satisfied by adding a `provides` to the
+ * other side and a normal `:before` query.
  *
  * Returned actions are shallow-cloned with their `needs` rewritten to the
  * resolved effective deps (capability queries replaced by concrete
- * provider names, plus any synthesized inverse edges). Callers should
- * always walk the returned array, not the input — synthesized edges are
- * otherwise silently lost.
+ * provider names). Callers should always walk the returned array, not
+ * the input — synthesized edges are otherwise silently lost.
  */
 export function topoSortActions(actions: Action[], options: TopoSortOptions = {}): Action[] {
 	const byName = new Map<string, Action>();
@@ -62,55 +67,30 @@ export function topoSortActions(actions: Action[], options: TopoSortOptions = {}
 		}
 	}
 
-	// Resolve each action's `needs`, splitting capability queries off:
-	// `:before` queries fold into resolved deps; `:after` queries are
-	// stashed for inverse-edge synthesis below.
-	//
-	// `cap:before` and `cap:after` queries with no matching provider are
-	// silently dropped. This is intentional for the "optional ordering"
-	// pattern (e.g. sui plugin's `walrus.app-network:before` orders sui
-	// after walrus IF walrus is loaded; sui-only stacks just skip the
-	// edge). The trade-off: a typo in a capability name (`localnett:
-	// before`) is invisible at topo time. A namespacing convention
-	// (`<plugin>.<cap>`) plus type-checked provider declarations is the
-	// real defense.
-	const resolvedNeeds = new Map<string, string[]>();
-	const afterQueries = new Map<string, string[]>();
+	// Resolve each action's `needs`. `:before` queries fold into the
+	// resolved deps (provider→me edges); raw names pass through.
+	// Capability queries with no matching provider are silently dropped.
+	const effectiveDeps = new Map<string, string[]>();
 	for (const a of actions) {
 		const resolved: string[] = [];
-		const afters: string[] = [];
 		for (const need of a.needs ?? []) {
-			const m = need.match(/^(.+):(before|after)$/);
+			const m = need.match(/^(.+):before$/);
 			if (m === null) {
+				if (need.endsWith(':after')) {
+					throw new Error(
+						`topoSortActions: action '${a.name}' uses dropped \`:after\` capability ` +
+							`suffix in '${need}'. Use \`:before\` from the other side instead.`,
+					);
+				}
 				resolved.push(need);
 				continue;
 			}
 			const cap = m[1] as string;
-			const dir = m[2] as 'before' | 'after';
-			if (dir === 'before') {
-				for (const p of providers.get(cap) ?? []) {
-					if (p !== a.name) resolved.push(p);
-				}
-			} else {
-				afters.push(cap);
+			for (const p of providers.get(cap) ?? []) {
+				if (p !== a.name) resolved.push(p);
 			}
 		}
-		resolvedNeeds.set(a.name, resolved);
-		if (afters.length > 0) afterQueries.set(a.name, afters);
-	}
-
-	// Effective deps = resolved needs ∪ inverse edges from `:after`
-	// queries. `needs: ['cap:after']` synthesizes "each provider depends
-	// on me", so each provider runs after me.
-	const effectiveDeps = new Map<string, string[]>();
-	for (const [name, deps] of resolvedNeeds) effectiveDeps.set(name, [...deps]);
-	for (const a of actions) {
-		for (const cap of afterQueries.get(a.name) ?? []) {
-			for (const provName of providers.get(cap) ?? []) {
-				if (provName === a.name) continue;
-				effectiveDeps.get(provName)?.push(a.name);
-			}
-		}
+		effectiveDeps.set(a.name, resolved);
 	}
 
 	// Lenient mode: drop edges that point at actions absent from the

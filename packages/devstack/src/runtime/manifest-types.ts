@@ -10,6 +10,24 @@ export interface Manifest {
 	network: Network;
 	emittedAt: string;
 	registry: SerializedRegistry;
+	/** Per-action state: the input hash + last successful run timestamp.
+	 *
+	 * Hydrated into `Reconciler.state` at supervisor / one-shot startup so
+	 * cold-cycle skip predicates work without re-running getStatus. The
+	 * reconciler's contract is "skip when hash matches"; without persisted
+	 * state, a fresh process can't know the hash matched. With persistence,
+	 * setup actions (Publish / Register / Seed / Emit / Build) skip on
+	 * input-hash match alone — `getStatus` is reserved for liveness probes
+	 * (Service / HostProcess) and invariant checks (Verify).
+	 *
+	 * Keys are fully-qualified action names (`<plugin>.<action>`); values
+	 * are the same shape the in-memory `ActionState` uses. */
+	actionStates?: Record<string, SerializedActionState>;
+}
+
+export interface SerializedActionState {
+	lastInputHash: string;
+	lastRunAt?: number;
 }
 
 export interface SerializedRegistry {

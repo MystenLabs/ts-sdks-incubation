@@ -39,17 +39,31 @@ export type AccountFactory = (ctx: AccountFactoryContext) => Promise<Signer> | S
  *     loads-or-creates a per-stack Ed25519 keypair on disk;
  *  4. otherwise, materialization fails and is surfaced lazily on first
  *     `ctx.accounts.get(name)` with the captured factory error.
+ *
+ * The empty `{}` form (every example's default) means "use rule 3 on
+ * localnet, fail on live nets" — the most common case. Apps don't need
+ * to fill any slots until they actually deploy live.
  */
-export interface AccountNetworkSpec {
+export interface AccountSpec {
 	default?: Signer | AccountFactory;
 	localnet?: Signer | AccountFactory;
 	testnet?: Signer | AccountFactory;
 	mainnet?: Signer | AccountFactory;
 }
 
-/** Either a pre-built `Signer`, an `AccountFactory`, or a per-network map.
- * Bare values are treated as the `default` slot — used for every network. */
-export type AccountSpec = AccountNetworkSpec | Signer | AccountFactory;
+/** Top-level `accounts:` shape on `DevstackConfig`. Two forms — pick by
+ * what you need:
+ *
+ *   - `string[]` — names only. Equivalent to `Object.fromEntries(names
+ *     .map((n) => [n, {}]))`. Localnet generates a per-stack keypair;
+ *     live-net deploys throw with a clear message until the user
+ *     populates a slot.
+ *   - `Record<string, AccountSpec>` — per-account map with optional
+ *     per-network slots. Use this when you need a non-default factory
+ *     for any network (typical for live-net deploys).
+ *
+ * The string-array form covers every example app today. */
+export type AccountsConfig = readonly string[] | Record<string, AccountSpec>;
 
 export interface AccountsContext {
 	get(name: string): Signer;
@@ -126,10 +140,13 @@ export type ActionStatus =
  *   - Service: `{ commit: true, quiesce: 'stop' }`
  *   - HostProcess: `{ commit: false, quiesce: 'none' }`
  *
- * The `capture`/`restore` callbacks are reserved for plugin-specific
- * state outside the container's writable layer or `<stackDir>` — most
- * plugins don't need them, since the implicit container-layer + host-fs
- * model covers the typical case.
+ * Container-layer capture (`commit`) plus host-fs capture under
+ * `<stackDir>` covers every plugin's state today. If a future plugin
+ * has state outside both seams (e.g. a host-side keystore in
+ * `~/.config/`), it should write into `<stackDir>` instead so the
+ * implicit host-fs sweep picks it up — that keeps the snapshot model
+ * uniform and avoids action-specific capture callbacks the orchestrator
+ * has to thread through the bundle.
  */
 export interface SnapshotMeta {
 	/** Capture this container's writable layer via `docker commit` on
@@ -145,12 +162,6 @@ export interface SnapshotMeta {
 	 *   - 'none': skip (stateless / nothing to flush)
 	 * Default: 'stop' (universally safe). */
 	quiesce?: 'pause' | 'stop' | 'none';
-	/** Reserved for plugins with state outside the container layer + host
-	 * fs. Returns an opaque blob persisted in the snapshot bundle alongside
-	 * the host capture. Most plugins leave this undefined. */
-	capture?: (ctx: ActionRunContext) => Promise<unknown>;
-	/** Symmetric restore for state captured via `capture`. */
-	restore?: (ctx: ActionRunContext, blob: unknown) => Promise<void>;
 }
 
 export interface ActionBase<TInputs = unknown, TResult = unknown> {
@@ -165,9 +176,10 @@ export interface ActionBase<TInputs = unknown, TResult = unknown> {
 	 * `provides.registry(ctx)` so registry entries this action provides
 	 * are populated in the in-memory registry without re-running.
 	 *
-	 * Capabilities for cross-action ordering (`:before` / `:after`) MUST
-	 * be namespaced with the providing plugin's name (`<plugin>.<cap>`).
-	 * Un-namespaced capabilities throw at expansion time. */
+	 * Capabilities for cross-action ordering use `<cap>:before` queries
+	 * in `needs:`. They MUST be namespaced with the providing plugin's
+	 * name (`<plugin>.<cap>`); un-namespaced capabilities throw at
+	 * expansion time. */
 	provides?: Provides;
 	inputs?: TInputs;
 	networks?: Network[];
@@ -443,9 +455,17 @@ export interface Registry {
 	readonly accounts: RegistryQuery<Account>;
 	readonly services: RegistryQuery<Service>;
 	/**
-	 * Plugin-namespaced kinds. Consumers narrow with a generic type
-	 * argument: `ctx.registry.ns<{ nodes: RegistryQuery<Node> }>('walrus').nodes`.
-	 * Get-or-creates the namespace; queries auto-create their kind on first access.
+	 * Plugin-namespaced kinds. Two equivalent ways to access:
+	 *
+	 *   ctx.registry.ns<{ nodes: RegistryQuery<Node> }>('walrus').nodes
+	 *
+	 *   const nodes = defineRegistryKind<Node>('walrus.nodes');
+	 *   nodes(ctx.registry).register(...);
+	 *
+	 * `defineRegistryKind` (in `@mysten-incubation/devstack`) is the
+	 * ergonomic path — pin the kind type at module top-level, no double
+	 * generic, and the typed accessor is reusable. `ns<T>` is the lower-
+	 * level escape hatch when the plugin needs a multi-kind bag.
 	 *
 	 * `T` is unconstrained intentionally — the runtime returns a Proxy that
 	 * auto-creates `RegistryQuery` queries on any string property access, so a
@@ -454,17 +474,6 @@ export interface Registry {
 	 * for no enforcement benefit.
 	 */
 	ns<T>(name: string): T;
-	/** True if the named kind (core: 'tokens'; namespaced: 'walrus/blobs') was modified this cycle. */
-	isDirty(kindKey: string): boolean;
-	/** Returns + clears the dirty set. Reconciler calls between cycles. */
-	flushDirty(): Set<string>;
-	/**
-	 * Removes the listed kinds from the dirty set without clearing others.
-	 * Reconciler calls this after each Emit run to record "this Emit has
-	 * seen these kinds at their current state." If a later action in the
-	 * same cycle re-dirties any of them, the cascade re-fires the Emit.
-	 */
-	consumeDirty(kinds: string[]): void;
 }
 
 // ─── Action runtime context ───────────────────────────────────────────────
@@ -599,13 +608,18 @@ export interface DevstackConfig {
 	app: string;
 	plugins: Plugin[];
 	/**
-	 * Named signing identities. Keys become `ctx.accounts.<name>`; the
-	 * resolver materializes a `Signer` per account using the spec's
-	 * per-network slot (or `default`), falling back to an implicit
-	 * `generatedKeypair()` on localnet. See `AccountSpec` for the
-	 * precedence rules.
+	 * Named signing identities. Two forms:
+	 *
+	 *   - `accounts: ['publisher', 'alice', 'bob']` — names only. Each
+	 *     gets the empty `{}` spec → localnet generates a per-stack
+	 *     keypair; live-net deploys throw until you populate a slot.
+	 *   - `accounts: { publisher: { mainnet: cliSigner({...}) }, alice: {} }` —
+	 *     per-account map for when you need non-default factories.
+	 *
+	 * Keys (or array entries) become `ctx.accounts.<name>`. See
+	 * `AccountSpec` for the per-network slot semantics.
 	 */
-	accounts?: Record<string, AccountSpec>;
+	accounts?: AccountsConfig;
 	networks?: Partial<Record<Network, NetworkConfig>>;
 	test?: TestConfig;
 	/**
@@ -613,8 +627,8 @@ export interface DevstackConfig {
 	 * shared-object seeds. Compiled into a synthetic plugin named
 	 * `<app>-setup` and appended to `plugins`. Use the ergonomic factories
 	 * `publishMove()` and `runTransaction()` for the common cases — they
-	 * forward to `definePublishAction` / `seed` with sensible defaults
-	 * (auto getStatus, default signer, marker-file idempotence).
+	 * forward to `publish` / `seed` with sensible defaults (default
+	 * signer, source-digest input hashing, hash-match skip).
 	 *
 	 * Per-action `scope` field controls whether the action runs in a
 	 * given stack (`'always'` default; `'test-only'` for fixtures only

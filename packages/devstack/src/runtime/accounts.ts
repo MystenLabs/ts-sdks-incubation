@@ -19,15 +19,15 @@ import type { Signer } from '@mysten/sui/cryptography';
 import type {
 	AccountFactory,
 	AccountFactoryContext,
-	AccountNetworkSpec,
 	AccountSpec,
+	AccountsConfig,
 	AccountsContext,
 	Network,
 } from '../core/types.js';
 import { generatedKeypair } from '../helpers/signers.js';
 
 export interface ResolveAccountsOptions {
-	specs: Record<string, AccountSpec>;
+	specs: AccountsConfig;
 	appDir: string;
 	stack: string;
 	network: Network;
@@ -37,10 +37,11 @@ export interface ResolveAccountsOptions {
 }
 
 export function resolveAccounts(opts: ResolveAccountsOptions): AccountsContext {
+	const specs = normalizeAccountsConfig(opts.specs);
 	const resolved = new Map<string, Signer>();
 	const errors = new Map<string, Error>();
 
-	for (const [name, spec] of Object.entries(opts.specs)) {
+	for (const [name, spec] of Object.entries(specs)) {
 		const ctx: AccountFactoryContext = {
 			accountName: name,
 			appDir: opts.appDir,
@@ -71,30 +72,42 @@ export function resolveAccounts(opts: ResolveAccountsOptions): AccountsContext {
 		}
 	}
 
+	const declaredNames = Object.keys(specs);
+
 	return {
 		get(name: string): Signer {
 			const captured = errors.get(name);
 			if (captured !== undefined) throw captured;
 			const signer = resolved.get(name);
 			if (signer !== undefined) return signer;
-			const declared = Object.keys(opts.specs);
-			if (declared.length === 0) {
+			if (declaredNames.length === 0) {
 				throw new Error(
 					`accounts.get('${name}'): no accounts declared. Add ` +
-						`\`accounts: { ${name}: {} }\` to your devstack config.`,
+						`\`accounts: ['${name}']\` to your devstack config.`,
 				);
 			}
 			throw new Error(
-				`accounts.get('${name}'): unknown account. Declared: ${declared.join(', ')}.`,
+				`accounts.get('${name}'): unknown account. Declared: ${declaredNames.join(', ')}.`,
 			);
 		},
 		has(name: string): boolean {
 			return resolved.has(name) || errors.has(name);
 		},
 		names(): string[] {
-			return Object.keys(opts.specs);
+			return declaredNames;
 		},
 	};
+}
+
+/** Normalize the two `AccountsConfig` forms to the canonical
+ * record-of-AccountSpec shape used internally. */
+export function normalizeAccountsConfig(specs: AccountsConfig): Record<string, AccountSpec> {
+	if (Array.isArray(specs)) {
+		const out: Record<string, AccountSpec> = {};
+		for (const name of specs) out[name] = {};
+		return out;
+	}
+	return specs as Record<string, AccountSpec>;
 }
 
 function materialize(
@@ -108,28 +121,14 @@ function materialize(
 	throw new Error(
 		`account '${name}': no factory configured for network '${ctx.network}' ` +
 			'(and no `default` slot). Add a per-network entry — e.g. ' +
-			`\`${name}: { ${ctx.network}: cliSigner({ alias: '...' }) }\`.`,
+			`\`accounts: { ${name}: { ${ctx.network}: cliSigner({ alias: '...' }) } }\`.`,
 	);
 }
 
-function isSignerLike(value: unknown): value is Signer {
-	// Duck-typed `Signer` check. The class is abstract so user-defined
-	// signer subclasses MAY not extend our imported `Signer` symbol if
-	// dual-bundle resolution causes `@mysten/sui/cryptography` to load
-	// twice (this has bitten us in published builds). Look for the
-	// methods that actually matter at runtime instead.
-	if (value === null || typeof value !== 'object') return false;
-	const v = value as { toSuiAddress?: unknown; signTransaction?: unknown };
-	return typeof v.toSuiAddress === 'function' && typeof v.signTransaction === 'function';
-}
-
 function pickSlot(spec: AccountSpec, network: Network): Signer | AccountFactory | undefined {
-	if (typeof spec === 'function') return spec;
-	if (isSignerLike(spec)) return spec;
-	const map = spec as AccountNetworkSpec;
-	const slot = map[network];
+	const slot = spec[network];
 	if (slot !== undefined) return slot;
-	if (map.default !== undefined) return map.default;
+	if (spec.default !== undefined) return spec.default;
 	return undefined;
 }
 

@@ -13,6 +13,10 @@ vi.mock('./reconcile.js', async () => {
 		...actual,
 		Reconciler: vi.fn().mockImplementation(() => ({
 			cycle: reconcilerCycleMock,
+			// runOneShot calls serializeState() at end-of-cycle to persist
+			// per-action state into the manifest. Tests don't assert on it,
+			// so an empty record is fine.
+			serializeState: () => ({}),
 		})),
 	};
 });
@@ -21,10 +25,9 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runOneShot } from './one-shot.js';
-import type { Plugin } from '../core/types.js';
+import type { Action, Plugin, PublishAction } from '../core/types.js';
 import { definePlugin } from '../plugin.js';
 import { buildImage } from '../actions/build.js';
-import { publish } from '../actions/publish.js';
 import { emit } from '../actions/emit.js';
 import { register } from '../actions/register.js';
 import { applyFilter } from '../cli/filters.js';
@@ -44,13 +47,18 @@ const stubAction = (
 		});
 	}
 	if (kind === 'Publish') {
-		return publish({
+		// Construct a raw PublishAction stub — the unified `publish()`
+		// factory bakes in a real run body that talks to the chain;
+		// tests for scope-walking just need the action shape.
+		return {
 			name,
+			type: 'Publish',
 			needs: opts.needs,
 			path: '<stub>',
+			inputs: { path: '<stub>' },
 			run: async () => {},
 			getStatus: async () => ({ ok: true, detail: '' }),
-		});
+		} satisfies PublishAction as Action;
 	}
 	if (kind === 'Register') {
 		return register({
