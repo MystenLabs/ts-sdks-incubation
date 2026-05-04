@@ -93,13 +93,14 @@ pnpm dev                        # one combined process: stack + dev server
 
 `devstack up` is the long-running supervisor — it brings up sui-localnet, funds accounts,
 publishes Move packages, regenerates codegen bindings, and starts the Vite dev server in one log
-stream. Watches Move sources and re-reconciles on change. Re-run from cold is ~10–15 s for a
-sui-only stack; warm cycles short-circuit through `getStatus` and run in ~1–3 s.
+stream. Watches Move sources and re-reconciles on change. Cold cycles are dominated by
+container startup; warm cycles short-circuit through `getStatus` and complete much faster (the
+hot path is service-liveness probes plus a registry-snapshot read).
 
 For a single bring-up + exit (CI / e2e setup) — same actions, no supervisor, no source-watching:
 
 ```sh
-pnpm exec devstack apply        # ~10 s cold (image cached), ~5 s warm
+pnpm exec devstack apply
 ```
 
 ## What happened

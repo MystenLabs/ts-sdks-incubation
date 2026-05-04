@@ -22,9 +22,12 @@ pnpm exec devstack up
 
 ## What you get
 
-- **Fast cold start.** A sui-only stack comes up in ~10–15 s; full sui+walrus+seal cold-builds
-  upstream images on first run (~10 min on Apple Silicon, cached forever after) and warm-restarts
-  in ~10 s. Warm cycles short-circuit through `getStatus` and run in 1–3 s.
+- **Fast cold start by design.** Warm cycles short-circuit through `getStatus`, so re-runs skip
+  whatever's already converged. A sui-only stack cold-starts on the order of tens of seconds; a
+  full sui+walrus+seal stack pays an upstream walrus-image build on the first run (multi-minute,
+  one-time, cached forever after) and is dominated by container startup on subsequent cycles. Run
+  it on your hardware and file the actual timings — devstack is a prototype and the README's
+  numbers move every time the underlying images bump.
 - **Snapshots.** `devstack snapshot save baseline` captures every stateful container as a
   `docker commit`'d image plus a copy of the host-side stack dir. `restore` re-tags the seed
   images so a fresh `devstack up` starts with all the seeded state in under 15 s. CI ships snapshots

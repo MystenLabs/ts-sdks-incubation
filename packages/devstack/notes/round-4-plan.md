@@ -199,9 +199,18 @@ concrete release decision.
   concern.
 - **C2** — _Deferred._ Publish to npm. No near-term plan; revisit
   when there's a release decision.
-- **C3** — _Pending (low priority)._ README accuracy pass — the
-  cycle-time and Apple Silicon claims need hands-on verification.
-  Useful regardless of publishing.
+- **C3** — _Done (qualitative pass)._ Stripped specific cycle-time
+  numbers from `packages/devstack/README.md`,
+  `packages/docs/content/devstack/index.mdx`, and the Getting
+  Started page. The architecture review surfaced that the README's
+  "warm cycle 1–3 s / cold private-content 76 s on Apple Silicon"
+  claims didn't reproduce in practice (verified: 9.4 s best-run,
+  2 min worst-run pre-A1). Replaced with qualitative framing
+  ("warm cycles short-circuit through `getStatus`", "tens of
+  seconds for sui-only", "cold runs depend on what's on the plugin
+  list") and a steer to file actual measurements as friction-journal
+  notes. Pinpoint timings can come back once they're benchmarked
+  on a fixed hardware profile.
 
 ### Phase D — Debug Packages UI — _Dropped._
 
@@ -212,12 +221,21 @@ as a tool. The dev wallet (`@mysten-incubation/dev-wallet`) is where
 that kind of UI belongs if it gets built; devstack stops at the
 typed-manifest layer.
 
-### Phase E — test isolation (2 PRs, all pending)
+### Phase E — test isolation (2 PRs, both deferred)
 
-- **E1** — `loadFixture()` over `runtime/snapshot.ts` plumbing.
-  Drops `test.describe.configure({ mode: 'serial' })` from the example
-  e2e suites.
-- **E2** — per-action manual triggers in supervisor TUI.
+- **E1** — _Deferred._ `loadFixture()` over `runtime/snapshot.ts`
+  plumbing. The architecture review wanted this so example e2e
+  suites could drop `test.describe.configure({ mode: 'serial' })`,
+  but every plausible mechanism trades off against a different
+  pain point: per-test snapshot restore is ~15 s on `docker
+  commit`-based snapshots (too slow); per-stack-per-test means N
+  containers spinning up in parallel; in-memory revert needs a
+  Sui-side checkpoint API we don't have access to. Capture-only
+  for now — revisit when there's a concrete e2e suite that's
+  measurably bottlenecked by serial mode.
+- **E2** — _Deferred._ Per-action manual triggers in the
+  supervisor TUI. Useful but lower-priority; the friction journal
+  has the original observation.
 
 ### Phase F — per-plugin polish (8 PRs, 7 done + 1 partial, parallelizable)
 
@@ -299,15 +317,14 @@ differentiator vs. scaffold-eth-2 but is independent of round 4.
 
 ## Status snapshot
 
-- **37 PRs landed** (PR 0, A1–A12, B1–B6, B8, B9, B11, C1, F1, F2
+- **38 PRs landed** (PR 0, A1–A12, B1–B6, B8, B9, B11, C1, C3, F1, F2
   partial, F3–F7, G1, G2, G3, G4, G6, G7, G8)
-- **3 PRs deferred** (B7 with rationale; C2 publishing has no near-term
-  plan; G5 docs-move blocked on Vercel UI)
+- **5 PRs deferred** (B7 with rationale; C2 publishing has no near-term
+  plan; G5 docs-move blocked on Vercel UI; E1 loadFixture awaits a
+  concrete bottleneck; E2 manual triggers lower-priority)
 - **2 PRs dropped** (B10 UI components; D1–D3 Debug Packages UI — out
   of scope for a devstack tool)
-- **3 PRs pending**:
-  - Phase C: C3 (README accuracy, low priority)
-  - Phase E: E1–E2 (loadFixture, manual triggers)
+- **0 PRs pending.** Round 4 is closed end-to-end.
 
 397 tests passing in `packages/devstack`; all 5 examples typecheck
 clean against the new shapes.
