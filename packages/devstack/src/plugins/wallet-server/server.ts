@@ -54,6 +54,13 @@ export interface WalletServerHandle {
 	server: Server;
 	url: string;
 	token: string;
+	/** Hot-reload entry point. Replaces the AccountsContext the server
+	 * builds its per-request snapshot from, so a supervisor cycle that
+	 * resolved a freshly-added account can plumb it into a still-running
+	 * listener without restarting (and without reissuing the bearer
+	 * token, which apps already cached). The next request rebuilds the
+	 * snapshot from the new context. */
+	setAccounts: (accounts: AccountsContext) => void;
 }
 
 interface AccountInfo {
@@ -106,7 +113,21 @@ export async function startWalletServer(opts: WalletServerOptions): Promise<Wall
 	const maxBodyBytes = opts.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
 	const host = opts.host ?? DEFAULT_HOST;
 	const allowedOrigins = sanitizeAllowedOrigins(opts.allowedOrigins ?? []);
-	const snapshot = buildAccountSnapshot(opts.accounts);
+	// Hot-reloadable account source. Each request rebuilds its snapshot
+	// from the latest reference so a supervisor cycle that swaps the
+	// accounts context (account added to `devstack.config.ts` between
+	// cycles) is reflected on the next /accounts list or /sign request
+	// without restarting the listener.
+	let activeAccounts = opts.accounts;
+	let cachedSnapshot = buildAccountSnapshot(activeAccounts);
+	let cachedFor = activeAccounts;
+	const currentSnapshot = (): typeof cachedSnapshot => {
+		if (cachedFor !== activeAccounts) {
+			cachedSnapshot = buildAccountSnapshot(activeAccounts);
+			cachedFor = activeAccounts;
+		}
+		return cachedSnapshot;
+	};
 
 	const server = createServer(async (req, res) => {
 		const origin = typeof req.headers.origin === 'string' ? req.headers.origin : undefined;
@@ -142,13 +163,18 @@ export async function startWalletServer(opts: WalletServerOptions): Promise<Wall
 				});
 			}
 			if (req.method === 'GET' && url.pathname === '/api/v1/devstack/accounts') {
-				return sendJson(res, 200, { accounts: snapshot.infos });
+				return sendJson(res, 200, { accounts: currentSnapshot().infos });
 			}
 			if (req.method === 'POST' && url.pathname === '/api/v1/devstack/sign-transaction') {
-				return await handleSign(req, res, snapshot.signersByAddress, maxBodyBytes);
+				return await handleSign(req, res, currentSnapshot().signersByAddress, maxBodyBytes);
 			}
 			if (req.method === 'POST' && url.pathname === '/api/v1/devstack/sign-personal-message') {
-				return await handleSignPersonalMessage(req, res, snapshot.signersByAddress, maxBodyBytes);
+				return await handleSignPersonalMessage(
+					req,
+					res,
+					currentSnapshot().signersByAddress,
+					maxBodyBytes,
+				);
 			}
 			sendJson(res, 404, { error: `No route for ${req.method} ${url.pathname}` });
 		} catch (err) {
@@ -179,7 +205,15 @@ export async function startWalletServer(opts: WalletServerOptions): Promise<Wall
 	const resolvedPort =
 		typeof addr === 'object' && addr !== null && 'port' in addr ? addr.port : opts.port;
 	const url = `http://${displayHost(host)}:${resolvedPort}`;
-	return { server, url, token };
+	return {
+		server,
+		url,
+		token,
+		setAccounts: (accounts) => {
+			activeAccounts = accounts;
+			// `cachedFor` mismatch on next request triggers a rebuild.
+		},
+	};
 }
 
 /** Reject `'*'` with a clear error; otherwise normalize each entry to

@@ -19,6 +19,7 @@ import {
 	imageExists,
 	inspectContainer,
 	removeContainer,
+	requireDockerDaemon,
 	runContainer,
 	startContainer,
 	stopContainer,
@@ -40,8 +41,28 @@ export interface SuiPluginOptions {
 	rpcPort?: number;
 	/** Host port for the faucet. Default `9123`. */
 	faucetPort?: number;
+	/** Pre-built image tag to use instead of building from `dockerContextDir`.
+	 * When set, the `sui.build` action becomes a verify-only probe (existence
+	 * check) rather than a docker build. Useful when consuming a CI-published
+	 * image (`ghcr.io/<org>/sui-localnet:<sha>`) or pinning to an upstream
+	 * sui-test-validator image; the resolved tag flows into the snapshot id
+	 * so snapshots cached against one image don't restore against another. */
+	image?: string;
 	/** Override the Docker build-context dir. Default points at the in-tree Dockerfile. */
 	dockerContextDir?: string;
+	/** RUST_LOG passed to the sui-test-validator process. Default
+	 * `'info,sui=info,sui_node=info'`. Set `'debug'` to fire-hose every
+	 * subsystem; usually you want a more focused override like
+	 * `'info,sui_consensus=debug,sui_storage=debug'`. */
+	logLevel?: string;
+	/** Extra `--volume` bind mounts attached to the localnet container.
+	 * Each entry is a Docker-style `host:container[:ro]` spec. Use sparingly
+	 * — chain state lives in the writable layer by design (see the no-volumes
+	 * comment in `localnet.run`); these are for ancillary mounts (custom
+	 * `fullnode.yaml`, certificates, snapshot-restore scratch). Mounts apply
+	 * only to the `sui-localnet` container's create path; existing containers
+	 * keep their original mount set until rebuilt. */
+	volumes?: string[];
 	/** Number of completed epochs of checkpoint history to retain.
 	 *
 	 * `sui-localnet`'s stock fullnode.yaml ships with `0` (aggressive
@@ -83,8 +104,12 @@ export const sui = (opts: SuiPluginOptions = {}) => {
 	const preferredRpcPort = opts.rpcPort ?? 9000;
 	const preferredFaucetPort = opts.faucetPort ?? 9123;
 	const contextDir = opts.dockerContextDir ?? DEFAULT_DOCKER_CONTEXT;
-	const imageTag = `dev-examples/sui-localnet:${version}-r7`;
+	const builtImageTag = `dev-examples/sui-localnet:${version}-r7`;
+	const imageTag = opts.image ?? builtImageTag;
+	const useExternalImage = opts.image !== undefined;
 	const epochsToRetain = opts.epochsToRetain ?? 2;
+	const logLevel = opts.logLevel ?? 'info,sui=info,sui_node=info';
+	const extraVolumes = opts.volumes ?? [];
 
 	const resolvePorts = async (ctx: {
 		ports: import('../../core/types.js').PortAllocator;
@@ -103,7 +128,7 @@ export const sui = (opts: SuiPluginOptions = {}) => {
 		// `version`, swapping the docker context, or changing
 		// `epochsToRetain` invalidates the cached snapshot — anything else
 		// affects only chain state, which the snapshot captures verbatim.
-		inputs: { image: imageTag, epochsToRetain },
+		inputs: { image: imageTag, epochsToRetain, logLevel, externalImage: useExternalImage },
 		actions: () => [
 			buildImageAction({
 				name: 'build',
@@ -111,14 +136,40 @@ export const sui = (opts: SuiPluginOptions = {}) => {
 					image: imageTag,
 					version,
 					contextDir,
+					external: useExternalImage,
 				},
 				getStatus: async () => {
 					const exists = await imageExists(imageTag);
-					return exists
-						? { ok: true, detail: imageTag }
-						: { ok: false, detail: `image ${imageTag} missing` };
+					if (exists) return { ok: true, detail: imageTag };
+					if (useExternalImage) {
+						// Caller pinned a pre-built tag — `build` is a verify-only
+						// probe in this mode, not a docker build. Fail loudly so
+						// the operator pulls / repushes their image; running the
+						// in-tree build action would clobber the wrong tag.
+						return {
+							ok: false,
+							detail:
+								`pre-built image ${imageTag} not found locally — run \`docker pull ${imageTag}\` ` +
+								`(or remove the \`sui({ image })\` override to build from \`dockerContextDir\`)`,
+						};
+					}
+					return { ok: false, detail: `image ${imageTag} missing` };
 				},
 				run: async () => {
+					await requireDockerDaemon();
+					if (useExternalImage) {
+						// External image: build action is a no-op outside getStatus.
+						// `getStatus` already failed if the image isn't local; if we
+						// reach `run` it means a transient mismatch; re-check and
+						// throw with the same actionable message.
+						if (!(await imageExists(imageTag))) {
+							throw new Error(
+								`sui.build: pre-built image ${imageTag} disappeared between getStatus and run. ` +
+									`Pull it (\`docker pull ${imageTag}\`) and retry.`,
+							);
+						}
+						return;
+					}
 					await dockerBuildImage({
 						tag: imageTag,
 						contextDir,
@@ -185,6 +236,7 @@ export const sui = (opts: SuiPluginOptions = {}) => {
 				},
 				run: async (ctx) => {
 					requireLocalnetCtx(ctx);
+					await requireDockerDaemon();
 					const { rpcPort, faucetPort } = await resolvePorts(ctx);
 					const containerName = suiContainerName(ctx.appName, ctx.stack);
 					const network = appNetworkName(ctx.appName, ctx.stack);
@@ -229,13 +281,17 @@ export const sui = (opts: SuiPluginOptions = {}) => {
 								{ host: rpcPort, container: 9000 },
 								{ host: faucetPort, container: 9123 },
 							],
-							// No volumes — chain state lives in the container's
-							// writable layer. `docker stop` + `docker start`
-							// preserves it; `docker rm` destroys it (operator
-							// should `devstack stack down`, not `docker rm`).
-							// Snapshots capture state via `docker commit` (PR 3).
+							// Chain state lives in the container's writable layer
+							// by design — `docker stop`/`start` preserves it;
+							// `docker rm` destroys it (operator should
+							// `devstack stack down`, not `docker rm`); snapshots
+							// capture it via `docker commit` (PR 3). `volumes:`
+							// here is the user-supplied extra-mount escape hatch
+							// (custom fullnode.yaml, certs, snapshot scratch);
+							// chain state stays in the writable layer regardless.
+							volumes: extraVolumes,
 							env: {
-								RUST_LOG: 'info,sui=info,sui_node=info',
+								RUST_LOG: logLevel,
 								DEVSTACK_SUI_EPOCHS_TO_RETAIN: String(epochsToRetain),
 							},
 							labels: devstackContainerLabels({

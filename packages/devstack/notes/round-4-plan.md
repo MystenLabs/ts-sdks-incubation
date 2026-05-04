@@ -219,17 +219,18 @@ typed-manifest layer.
   e2e suites.
 - **E2** — per-action manual triggers in supervisor TUI.
 
-### Phase F — per-plugin polish (8 PRs, 5 done, parallelizable)
+### Phase F — per-plugin polish (8 PRs, 7 done + 1 partial, parallelizable)
 
 | | Highlights |
 |---|---|
-| F1 sui | _Partial._ Dropped redundant `sui-grpc` registry entry (sui-test-validator serves both protocols on the same port). The image/volumes/logLevel/genesis opts and pre-flight Docker check still pending. |
-| F2 walrus | _Pending._ `appendLog` for build progress; `nodeCount`/`suiVersion` opts; `verify()` actions for node liveness. |
+| F1 sui | _Done._ Dropped redundant `sui-grpc` registry entry. Added `image?: string` (use a pre-built tag instead of building from `dockerContextDir` — `sui.build` becomes a verify-only probe in this mode), `volumes?: string[]` (extra `--volume` mounts for custom `fullnode.yaml` / certs / snapshot scratch — chain state still lives in the writable layer), `logLevel?: string` (override RUST_LOG; default unchanged). New `requireDockerDaemon()` helper in `plugins/sui/docker.ts` runs at the top of `sui.localnet.run` and throws a clear "start Docker Desktop / colima start / systemctl start docker" message instead of letting downstream `docker run` fail incoherently. The `genesis` opt deferred — the upstream container generates genesis on `--force-regenesis`; bind-mounting a pre-baked genesis is an advanced case worth a friction-journal entry first. |
+| F2 walrus | _Partial._ Added `suiVersion?: string` option — was hardcoded to `SUI_DEFAULT_VERSION`, now configurable so an app pinning a sui version through `sui({ version })` can match it through `walrus({ suiVersion })`. The `appendLog`/`nodeCount`/`verify()` items deferred — walrus's existing build path already streams to stderr (the appendLog equivalent without the supervisor TUI plumbing), nodeCount is a 8-site refactor (subnet + ports + container names + config gen all keyed off `NODE_COUNT = 4`), and per-node verify actions are real new actions worth a focused PR. |
+
 | F3 seal | _Done._ Fixed README option name (`apiPort` → `port` + listed all options); documented master-key persistence path + first-run/cached-run flow; dropped dead `SealKeyServer.publicKey` field; added `localnetSealOptions(manifest)` exported alongside `localnetMvrOverrides` / `localnetDappKitConfig`. |
 | F4 codegen | _Done._ `getStatus`/`run` now detect + clean up stale per-package binding subdirs when an app removes a `publishMove` entry. `runCodegenForPackage` switched from `execSync` to async `runShell` so `Promise.all` parallelizes the per-package codegen pass (~3× speedup on a 4-package app). |
 | F5 imports | _Done._ Dropped dead `withRecursiveDeps` (and its public re-export). Added a rev-conflict warning: `imports({ packages })` walks the specs at config time and prints a stderr warning when a single repo is pinned to multiple revs across entries (silent footgun otherwise — produces two on-chain copies of the same Move package). |
 | F6 deepbook | _Done._ Deleted `swap.ts` (duplicate of each app's local `buildDeepbookSwapTx`); dropped public re-exports for `buildDeepbookSwapTx`, `BuildSwapTxOptions`, `deepbookNs`, `DeepbookPool`, `DeepbookNamespace`, `resolveCoinType`, `SUI_COIN_TYPE` — none had source-level external consumers. Kept `DeepbookPoolSpec` and `DeepbookMarketMakerSpec` (referenced from `DeepbookPluginOptions`). |
-| F7 wallet-server | _Pending._ The empty `src/wallet-panels/` stub the plan flagged was already removed in earlier work; only the account hot-reload item remains. |
+| F7 wallet-server | _Done._ The `src/wallet-panels/` stub the plan flagged was already removed in earlier work. New: `WalletServerHandle.setAccounts(accounts)` swaps the AccountsContext the listener builds its per-request snapshot from. The `serve` action's `getStatus` compares `ctx.accounts.names()` to the listener's last-seen list; on drift it returns `ok: false` with detail `accounts changed; hot-reloading`, and `run` calls `setActiveAccounts(ctx.accounts)` against the still-listening server. Adding an account to `devstack.config.ts` now flows into a running supervisor without restarting the listener (or invalidating the bearer token apps already cached). 2 new tests cover the API + sign-transaction signer resolution. |
 | F8 frontend | _Done — covered by A12's `plugin-authoring.mdx`._ |
 
 ### Phase G — monorepo / governance (8 PRs, 7 done + 1 deferred)
@@ -298,17 +299,15 @@ differentiator vs. scaffold-eth-2 but is independent of round 4.
 
 ## Status snapshot
 
-- **34 PRs landed** (PR 0, A1–A12, B1–B6, B8, B9, B11, C1, F3–F6 + F1
-  partial, G1, G2, G3, G4, G6, G7, G8)
+- **37 PRs landed** (PR 0, A1–A12, B1–B6, B8, B9, B11, C1, F1, F2
+  partial, F3–F7, G1, G2, G3, G4, G6, G7, G8)
 - **3 PRs deferred** (B7 with rationale; C2 publishing has no near-term
   plan; G5 docs-move blocked on Vercel UI)
 - **2 PRs dropped** (B10 UI components; D1–D3 Debug Packages UI — out
   of scope for a devstack tool)
-- **6 PRs pending**:
+- **3 PRs pending**:
   - Phase C: C3 (README accuracy, low priority)
   - Phase E: E1–E2 (loadFixture, manual triggers)
-  - Phase F: F1 (remaining bits — image/logLevel/genesis opts), F2
-    (walrus), F7 (wallet-server account hot-reload)
 
-395 tests passing in `packages/devstack`; all 5 examples typecheck
+397 tests passing in `packages/devstack`; all 5 examples typecheck
 clean against the new shapes.

@@ -336,6 +336,73 @@ describe('CORS', () => {
 	});
 });
 
+describe('setAccounts hot-reload', () => {
+	it('next /accounts request reflects the swapped AccountsContext', async () => {
+		// Sanity: initial fixture has only alice.
+		const before = await fetch(`${baseUrl}/api/v1/devstack/accounts`, {
+			headers: authHeaders(),
+		}).then((r) => r.json() as Promise<{ accounts: Array<{ name: string }> }>);
+		expect(before.accounts.map((a) => a.name)).toEqual(['alice']);
+
+		// Build a fresh AccountsContext with alice + a brand-new bob.
+		const bob = new Ed25519Keypair();
+		const map = new Map<string, Ed25519Keypair>([
+			['alice', signer],
+			['bob', bob],
+		]);
+		const refreshed: AccountsContext = {
+			names: () => [...map.keys()],
+			has: (n) => map.has(n),
+			get: (n) => {
+				const s = map.get(n);
+				if (s === undefined) throw new Error(`unknown account: ${n}`);
+				return s;
+			},
+		};
+		handle?.setAccounts(refreshed);
+
+		const after = await fetch(`${baseUrl}/api/v1/devstack/accounts`, {
+			headers: authHeaders(),
+		}).then((r) => r.json() as Promise<{ accounts: Array<{ name: string; address: string }> }>);
+		expect(after.accounts.map((a) => a.name).sort()).toEqual(['alice', 'bob']);
+		const bobEntry = after.accounts.find((a) => a.name === 'bob');
+		expect(bobEntry?.address).toBe(bob.toSuiAddress());
+	});
+
+	it('sign-transaction picks up a hot-reloaded signer for a new address', async () => {
+		const carol = new Ed25519Keypair();
+		const map = new Map<string, Ed25519Keypair>([
+			['alice', signer],
+			['carol', carol],
+		]);
+		const refreshed: AccountsContext = {
+			names: () => [...map.keys()],
+			has: (n) => map.has(n),
+			get: (n) => {
+				const s = map.get(n);
+				if (s === undefined) throw new Error(`unknown account: ${n}`);
+				return s;
+			},
+		};
+		handle?.setAccounts(refreshed);
+
+		const fakeTxBytes = toBase64(new Uint8Array([0xde, 0xad, 0xbe, 0xef]));
+		const res = await fetch(`${baseUrl}/api/v1/devstack/sign-transaction`, {
+			method: 'POST',
+			headers: authHeaders(),
+			body: JSON.stringify({ address: carol.toSuiAddress(), transactionBlock: fakeTxBytes }),
+		});
+		// The fake tx bytes will fail signing (400), but the point of this
+		// test is that the *address* resolves to a known signer post-hot-reload.
+		// A 404 would mean the address wasn't found in the swapped accounts —
+		// the bug F7 fixed. Any other status means we got past the address
+		// lookup, so hot-reload worked.
+		expect(res.status).not.toBe(404);
+		const body = (await res.json()) as { error?: string };
+		expect(body.error ?? '').not.toMatch(/no signer for/i);
+	});
+});
+
 describe('CORS — allowedOrigins validation', () => {
 	it('rejects "*" in allowedOrigins at startup', async () => {
 		const sig = new Ed25519Keypair();
