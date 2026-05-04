@@ -1,14 +1,19 @@
 # ts-sdks-incubation
 
-Incubation TypeScript packages for the [Sui](https://sui.io) blockchain ecosystem, published under the `@mysten-incubation` npm scope.
+Incubation TypeScript packages for the [Sui](https://sui.io) blockchain ecosystem. Some
+packages are published to npm under the `@mysten-incubation` scope; **devstack and the
+related packages are still prototypes — they live in this monorepo only and are not
+published to npm yet, with no near-term plan to publish.** The public surface of the
+prototype packages breaks freely as we iterate; pin nothing from outside this monorepo.
 
 ## Packages
 
-| Package                                                                        | Description                                                                    | npm                                                                                                                                                       |
-| ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`@mysten-incubation/dev-wallet`](packages/dev-wallet)                         | Modular dev wallet for Sui dApp development and testing                        | [![npm](https://img.shields.io/npm/v/@mysten-incubation/dev-wallet)](https://www.npmjs.com/package/@mysten-incubation/dev-wallet)                         |
-| [`@mysten-incubation/devstack`](packages/devstack)                             | Declarative reconciler + plugin harness for fully-seeded Sui local development | [![npm](https://img.shields.io/npm/v/@mysten-incubation/devstack)](https://www.npmjs.com/package/@mysten-incubation/devstack)                             |
-| [`@mysten-incubation/devstack-wallet-panels`](packages/devstack-wallet-panels) | Devstack-aware Faucet / Packages / Network panels for the dev-wallet panel API | [![npm](https://img.shields.io/npm/v/@mysten-incubation/devstack-wallet-panels)](https://www.npmjs.com/package/@mysten-incubation/devstack-wallet-panels) |
+| Package                                                                        | Description                                                                    | Status                                                                                                                            |
+| ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| [`@mysten-incubation/dev-wallet`](packages/dev-wallet)                         | Modular dev wallet for Sui dApp development and testing                        | [![npm](https://img.shields.io/npm/v/@mysten-incubation/dev-wallet)](https://www.npmjs.com/package/@mysten-incubation/dev-wallet) |
+| [`@mysten-incubation/devstack`](packages/devstack)                             | Declarative reconciler + plugin harness for fully-seeded Sui local development | Prototype — not published to npm                                                                                                  |
+| [`@mysten-incubation/devstack-wallet-panels`](packages/devstack-wallet-panels) | Devstack-aware Faucet / Packages / Network panels for the dev-wallet panel API | Prototype — not published to npm                                                                                                  |
+| [`@mysten-incubation/create-devstack-app`](packages/create-devstack-app)       | Scaffolder for new devstack-backed apps                                        | Prototype — not published to npm                                                                                                  |
 
 ## Examples
 
@@ -51,7 +56,10 @@ pnpm --filter @mysten-incubation/docs dev
 
 ## Contributing
 
-Changes require [changesets](https://github.com/changesets/changesets) for version management. Run `pnpm changeset` to create one.
+For published packages (dev-wallet), changes require [changesets](https://github.com/changesets/changesets)
+for version management — run `pnpm changeset` to create one. Prototype packages
+(devstack and friends) don't use changesets day-to-day; breaking changes go in directly
+without deprecation cycles.
 
 See [AGENTS.md](AGENTS.md) for detailed development guidance.
 

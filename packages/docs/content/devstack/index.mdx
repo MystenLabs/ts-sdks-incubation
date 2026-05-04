@@ -4,12 +4,19 @@ description:
   devstack is a declarative reconciler and plugin harness for fully-seeded Sui local development.
 ---
 
+<Callout type="warn">
+	**Prototype — not on npm.** Devstack is a prototype. Nothing is published to npm and there is no
+	near-term plan to publish. The public API breaks freely as we iterate; pin nothing from outside
+	this monorepo.
+</Callout>
+
 devstack brings up `sui-localnet` (plus optional Walrus storage nodes and Seal key servers),
 publishes Move packages, runs codegen, and writes a typed manifest that your frontend consumes via
 Vite.
 
 ```sh
-pnpm add -D @mysten-incubation/devstack
+# Inside this monorepo:
+pnpm --filter <your-app> add -D @mysten-incubation/devstack@workspace:*
 pnpm exec devstack up
 ```
 

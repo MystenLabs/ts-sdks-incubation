@@ -2,9 +2,22 @@
 
 This file provides guidance to AI agents working with code in this repository.
 
+## Project status — prototype, not released
+
+Nothing in this repo is published to npm yet, and we are **not publishing anytime soon**.
+There are no consumers outside the monorepo, no compatibility surface to honor, no
+deprecation cycle. **Break the API directly when something is wrong** — rename, restructure,
+delete; update every callsite in the same commit. Don't ship shims, fallbacks, `@deprecated`
+markers, or "v2 alongside v1" exports. We get one shot to set the public surface right before
+anyone depends on it. Capture friction at `packages/devstack/notes/friction.md` rather than
+papering over it.
+
 ## Overview
 
-This is a monorepo containing incubation TypeScript packages for the Sui blockchain ecosystem under the `@mysten-incubation` npm scope. It uses pnpm workspaces, turbo for build orchestration, and changesets for versioning.
+This is a monorepo containing prototype TypeScript packages for the Sui blockchain ecosystem
+under the `@mysten-incubation` namespace. It uses pnpm workspaces and turbo for build
+orchestration. The `@mysten-incubation/*` scope is reserved for an eventual release; until
+then the packages are workspace-only.
 
 ## Common Commands
 
@@ -41,13 +54,9 @@ pnpm lint:fix
 
 ### Package Management
 
-```bash
-# Add a changeset for version updates
-pnpm changeset
-
-# Version packages
-pnpm changeset-version
-```
+Changesets are present in the repo but unused day-to-day — nothing is published yet
+(see "Project status" above). Don't add changesets to PRs unless you're explicitly
+preparing for a release.
 
 ## Architecture
 
@@ -83,18 +92,13 @@ pnpm changeset-version
 - Each package can have its own test configuration (typically using Vitest)
 - Common build outputs: `dist/` for compiled code
 
-### Changeset Conventions
-
-- **`patch`**: Bug fixes that don't change the public API shape
-- **`minor`**: New fields, methods, or types added to the public API
-- **`major`**: Breaking changes to existing public API
-
 ### Development Workflow
 
-1. Changes require changesets for version management
-2. Turbo ensures dependencies are built before dependents
-3. OXLint and Prettier are enforced across the codebase
-4. Tests must pass before changes can be merged
+1. Turbo ensures dependencies are built before dependents.
+2. Biome (lint + format) is enforced across the codebase.
+3. Tests must pass before changes are merged.
+4. Breaking changes don't need a deprecation cycle (see "Project status" above) —
+   rename/restructure/delete in place and update every callsite in the same commit.
 
 ### Pull Requests
 

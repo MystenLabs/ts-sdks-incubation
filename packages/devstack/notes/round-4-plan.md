@@ -1,17 +1,27 @@
-# Round 4 — devstack pre-release cleanup
+# Round 4 — devstack prototype cleanup
 
-This file is the working plan for shipping devstack as `0.1.0`. It
-captures the findings from the architecture review (40+ Opus sub-agents
-covering examples, plugins, runtime, adapters, docs, and hands-on
-testing), the changes we've shipped against those findings, and the
-backlog we still owe.
+This file is the working plan for the round-4 cleanup pass on devstack.
+It captures the findings from the architecture review (40+ Opus
+sub-agents covering examples, plugins, runtime, adapters, docs, and
+hands-on testing), the changes we've shipped against those findings,
+and the backlog we still owe.
+
+This is **not** a release plan. Devstack is a prototype, not published
+to npm, with no near-term plan to publish. The goal of round 4 is to
+get the surface right — bugs fixed, ergonomics tight, contracts
+honest — so that whenever a future release happens, we're starting
+from a clean shape rather than ratifying scars.
 
 ## Operating principle
 
-Devstack is unreleased. There are no prior consumers, no compatibility
-surface, no deprecation cycle to honor. Every change is in place: rename
-a function, drop a field, restructure an API — directly. No aliases, no
-shims, no migration story.
+Devstack is unreleased. **There are no consumers outside this monorepo,
+no compatibility surface, no deprecation cycle.** Every change is in
+place: rename a function, drop a field, restructure an API — directly.
+No aliases, no shims, no migration story, no `@deprecated` markers.
+This is the only phase where the cost of getting an API right is just
+code edits; once a release ships, redesigns turn into deprecations and
+we live with the wart for the project's lifetime. Spend the
+prototype-phase optionality.
 
 The bar is "scaffold-eth-2 for Sui." Build quality matters; cute matters.
 The friction journal at `notes/friction.md` continues to accumulate
@@ -172,23 +182,26 @@ load-bearing prerequisite for everything else in Phase B.
 
 All Phase B PRs are landed, deferred (B7), or dropped (B10).
 
-### Phase C — distribution (3 PRs, 1 done)
+### Phase C — distribution (mostly deferred — see status note below)
+
+**Deferred:** publishing to npm is not on the near-term roadmap. The
+prototype lives in this monorepo; consumers use `workspace:*`. C2 +
+the version-bump prep work it gates are deferred until there's a
+concrete release decision.
 
 - **C1** — _Done._ `sync-template.ts` (run as part of
   `create-devstack-app`'s build) now walks `template/package.json`
   and rewrites `workspace:*` specifiers to `^<workspace-pkg-version>`
   and `catalog:` specifiers to the version recorded in
   `pnpm-workspace.yaml`. The scaffolder produces an installable
-  `package.json` end-to-end; the only remaining blocker for `pnpm
-  create @mysten-incubation/devstack-app smoke` working off-monorepo
-  is publishing the workspace packages (C2).
-- **C2** — _Pending._ Publish to npm at `0.1.0`. Requires bumping
-  `@mysten-incubation/devstack` from `1.0.0` → `0.1.0` (drop the
-  pre-release placeholder), making `@mysten-incubation/tsconfig`
-  publishable (drop `private: true`, bump version), and the actual
-  `pnpm publish` runs.
-- **C3** — _Pending._ README accuracy pass — the cycle-time and
-  Apple Silicon claims need hands-on verification.
+  `package.json`; the actual `pnpm install` will work once the
+  workspace packages are publishable, which is a future-release
+  concern.
+- **C2** — _Deferred._ Publish to npm. No near-term plan; revisit
+  when there's a release decision.
+- **C3** — _Pending (low priority)._ README accuracy pass — the
+  cycle-time and Apple Silicon claims need hands-on verification.
+  Useful regardless of publishing.
 
 ### Phase D — Debug Packages UI (3 PRs, all pending)
 
@@ -266,32 +279,37 @@ should land in `notes/friction.md` so future-us has breadcrumbs:
 
 ---
 
-## Done criteria for `0.1.0`
+## Done criteria for "round 4 closed" (not a release)
 
-1. `pnpm create @mysten-incubation/devstack-app smoke && cd smoke && pnpm
-   dev` works on a fresh clone outside the monorepo, no manual edits.
-2. All 12 review-surfaced bugs have regression tests.
-3. Three sequential `apply` runs healthy on arena (proves PR A1 + A3 +
+These are the criteria that mean the prototype is in a clean
+state — not that it's ready to publish. Publishing is its own
+future decision (see Phase C above).
+
+1. All 12 review-surfaced bugs have regression tests.
+2. Three sequential `apply` runs healthy on arena (proves PR A1 + A3 +
    PR 0 hydration).
-4. `devstack console`'s `packages.<name>` works after a fresh apply.
-5. README claims verified by hands-on (warm cycle ≤3s with state
-   hydration).
-6. All 4 examples build + e2e pass in expanded CI matrix.
-7. Friction journal contains the capture-only items above.
+3. `devstack console`'s `packages.<name>` works after a fresh apply.
+4. README + docs claims verified by hands-on (warm cycle ≤3s with
+   state hydration).
+5. All 4 examples build + e2e pass in expanded CI matrix.
+6. Friction journal contains the capture-only items below.
+7. `pnpm create @mysten-incubation/devstack-app smoke` produces a
+   correctly-shaped scaffolded app — `pnpm install` actually
+   succeeding is a publish-time concern.
 
 The Debug Packages UI (Phase D) is the biggest remaining
-differentiator vs. scaffold-eth-2 but isn't strictly required for
-`0.1.0` — defer to `0.2.0` if Phases A–C take longer than expected.
+differentiator vs. scaffold-eth-2 but is independent of round 4.
 
 ---
 
 ## Status snapshot
 
 - **22 PRs landed** (PR 0, A1–A12, B1, B2, B3, B4, B5, B6, B8, B9, B11, C1)
-- **1 PR deferred** (B7, with rationale)
+- **2 PRs deferred** (B7 with rationale; C2 — publishing to npm has no
+  near-term plan)
 - **1 PR dropped** (B10 — UI components out of scope)
-- **22 PRs pending** across C–G (F8 subsumed by A12; B10 dropped):
-  - Phase C: C2–C3 (publish to npm + README accuracy)
+- **21 PRs pending** across C–G (F8 subsumed by A12; B10 dropped; C2 deferred):
+  - Phase C: C3 (README accuracy, low priority)
   - Phase D: D1–D3 (Debug Packages UI)
   - Phase E: E1–E2 (loadFixture, manual triggers)
   - Phase F: F1–F7 (per-plugin polish; F8 done as part of A12)
