@@ -203,20 +203,14 @@ concrete release decision.
   cycle-time and Apple Silicon claims need hands-on verification.
   Useful regardless of publishing.
 
-### Phase D — Debug Packages UI (3 PRs, all pending)
+### Phase D — Debug Packages UI — _Dropped._
 
-The single biggest "scaffold-eth-2 for Sui" gap. The agent's
-recommendation, which I endorse: **if we build ONE UI feature in the
-next 90 days, build this.** It's the conversion moment for new users
-— clicking `mint(amount, recipient)` from a UI within 60 seconds of
-`pnpm dev` is the entire pitch.
-
-- **D1** — persist `sui move summary` JSON in
-  `registry.packages[].summary` (the data already produced inside
-  codegen, currently discarded after the per-package builder pass).
-- **D2** — Lit panel in `devstack-wallet-panels` rendering forms
-  dispatched on Move type kind.
-- **D3** — Block Explorer panel (polling-based, ~580 LOC).
+A scaffold-eth-2-style auto-rendered Move-function form panel + block
+explorer would be the biggest single-feature differentiator for new
+users, but it's UI work — out of scope for what devstack should own
+as a tool. The dev wallet (`@mysten-incubation/dev-wallet`) is where
+that kind of UI belongs if it gets built; devstack stops at the
+typed-manifest layer.
 
 ### Phase E — test isolation (2 PRs, all pending)
 
@@ -238,17 +232,17 @@ next 90 days, build this.** It's the conversion moment for new users
 | F7 wallet-server | _Pending._ The empty `src/wallet-panels/` stub the plan flagged was already removed in earlier work; only the account hot-reload item remains. |
 | F8 frontend | _Done — covered by A12's `plugin-authoring.mdx`._ |
 
-### Phase G — monorepo / governance (8 PRs, 5 done, rolling)
+### Phase G — monorepo / governance (8 PRs, 7 done + 1 deferred)
 
 | | Highlights |
 |---|---|
-| G1 | _Pending._ Catalog drift cleanup. Multiple versions of `@types/node`, `@mysten/sui`, `@tanstack/react-query`, etc. across the workspace; tedious bulk swap to `catalog:` references. |
+| G1 | _Done._ Catalog extended with `@mysten/codegen`, `@mysten/signers`, `@tailwindcss/postcss`, `@types/node`. Swept 10 of 11 workspace `package.json` files to use `catalog:` references where catalog ≥ explicit version. `dev-wallet` (published) keeps explicit `vite ^7.3.1` / `vitest ^4.0.17` / newer React types — its toolchain is intentionally ahead of the catalog; only `@mysten/sui`, `@mysten/signers`, `@mysten/wallet-standard` switched there. `private-content` skipped (its `@types/node ^22.19.17` is already newer than catalog `^22.10.0`). All 12 packages typecheck clean post-sweep. |
 | G2 | _Done._ All four CI workflows (changesets-ci, changesets, turborepo, devstack-e2e) bumped to Node 24, matching the `engines.node: ">=24"` requirement that comes from devstack's reliance on native TypeScript stripping. |
 | G3 | _Done._ `devstack-e2e.yml` rewritten as a `(example, shard)` matrix over `[arena, private-content, token-studio, wallet]` × `[1, 2]`. Each example seeds independently (cold cache), caches its snapshot bundle by `example` + `snapshot-id`, and runs e2e shards in parallel. Per-example snapshot IDs flow through job outputs into the e2e job. |
 | G4 | _Done._ Added root `LICENSE` (copied from `packages/devstack/LICENSE` — Apache 2.0), `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`. CONTRIBUTING calls out the prototype-vs-published split (no changeset needed for prototype changes); SECURITY routes to `security@mystenlabs.com` with two-day ack window; COC is short-form with the standard scope + reporting flow. |
-| G5 | _Pending._ Move `packages/docs` → `apps/docs` (per AGENTS.md convention). |
+| G5 | _Deferred._ Move `packages/docs` → `apps/docs`. The Vercel deployment is rooted at `packages/docs/` via the project's UI-set Root Directory; an in-place move from this side would break deploys until someone with Vercel UI access updates the path. Cosmetic alignment only — defer until there's a release decision that makes the deployment churn worthwhile. |
 | G6 | _Done._ Added `typecheck` task to `turbo.json` (plus dropped the `devstack` peerDep/devDep from `devstack-wallet-panels` to break a pre-existing build cycle that was hidden by turbo not running typecheck). `pnpm turbo run typecheck` now covers all 12 packages. |
-| G7 | _Pending._ Promote CLAUDE.md content into user-facing `concepts/setup.mdx`. |
+| G7 | _Done._ `concepts/setup.mdx` gained an "action graph is the lifecycle" section explaining why devstack deliberately doesn't expose `afterStackUp` / `afterPublish` / `beforeShutdown` hooks (with a "you want X → use Y" mapping table). The "no third helper" rationale was sharpened to match CLAUDE.md's framing — capture the friction in the journal first, write the raw action, defer the helper decision until there are three concrete instances. `runsAs` discussion stays in `concepts/actions.mdx` where it belongs; `setup.mdx` cross-links. |
 | G8 | _Done._ Deleted `examples/myapp-smoke/` — leftover runtime state from a scaffolder smoke test, never tracked in git. |
 
 ---
@@ -304,19 +298,17 @@ differentiator vs. scaffold-eth-2 but is independent of round 4.
 
 ## Status snapshot
 
-- **32 PRs landed** (PR 0, A1–A12, B1–B6, B8, B9, B11, C1, F3–F6 + F1
-  partial, G2, G3, G4, G6, G8)
-- **2 PRs deferred** (B7 with rationale; C2 — publishing to npm has no
-  near-term plan)
-- **1 PR dropped** (B10 — UI components out of scope)
-- **11 PRs pending** (B10 dropped; C2 deferred):
+- **34 PRs landed** (PR 0, A1–A12, B1–B6, B8, B9, B11, C1, F3–F6 + F1
+  partial, G1, G2, G3, G4, G6, G7, G8)
+- **3 PRs deferred** (B7 with rationale; C2 publishing has no near-term
+  plan; G5 docs-move blocked on Vercel UI)
+- **2 PRs dropped** (B10 UI components; D1–D3 Debug Packages UI — out
+  of scope for a devstack tool)
+- **6 PRs pending**:
   - Phase C: C3 (README accuracy, low priority)
-  - Phase D: D1–D3 (Debug Packages UI)
   - Phase E: E1–E2 (loadFixture, manual triggers)
   - Phase F: F1 (remaining bits — image/logLevel/genesis opts), F2
     (walrus), F7 (wallet-server account hot-reload)
-  - Phase G: G1, G5, G7 (catalog drift, docs move,
-    CLAUDE→concepts/setup)
 
 395 tests passing in `packages/devstack`; all 5 examples typecheck
 clean against the new shapes.

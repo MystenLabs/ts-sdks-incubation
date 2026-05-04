@@ -7,6 +7,26 @@ App-level state lives in `DevstackConfig.setup: [...]` — a list of actions app
 graph as a synthetic plugin (`<app>-setup`). From the rest of the system's perspective it's a
 normal plugin: same expansion rules, same filter chain, same snapshot capture path.
 
+## The action graph is the lifecycle
+
+Devstack deliberately doesn't expose `afterStackUp` / `afterPublish` / `beforeShutdown` hooks. The
+action graph already covers what those hooks would do, and a parallel hook API would either
+duplicate it or coordinate poorly with snapshots:
+
+| You want                                  | Use                                                                                                  |
+| ----------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| "Run after my package publishes"          | `needs: ['<package-name>']` on a `runTransaction` / `seed` action.                                   |
+| "Run when localnet comes up"              | `needs: ['sui.accounts']` (or whatever pre-seed dependency).                                         |
+| "Run only on test stacks"                 | `scope: 'test-only'` — see below.                                                                    |
+| "Re-run only when my Move source changes" | Default: `publishMove`'s `sourceDigest` busts the input hash automatically.                          |
+| "Run again only when my inputs change"    | `inputs: { ... }` on the action — the reconciler hashes it.                                          |
+| "Skip if state is already correct"        | `getStatus` probe. Returns `{ ok: true }` to skip; `{ ok: false }` to run.                           |
+| "Don't race the gas object with my other transactions" | `runsAs` — see [Actions § same-signer serialization](/devstack/concepts/actions). |
+
+A hook system would need separate snapshot-restore semantics (re-fire on every `up`? skip
+post-restore? track explicit "ran-once" state?) and would split the lifecycle across two
+mechanisms. Setup actions are the lifecycle.
+
 ```ts
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -84,8 +104,12 @@ setup: [
 ],
 ```
 
-The framework will not grow more helpers. If `publishMove` / `runTransaction` don't fit, write
-the raw action — its full power is right there.
+The framework will not grow a third helper. The temptation to add one (`mintCoin`, `seedTokens`,
+`createSharedObject`, ...) is real every time a pattern recurs across two apps; resist it. Each
+helper carries surface area forever and pulls future maintainers into a "is this the right
+helper for my case?" decision. The raw `seed()` body is six lines plus the build callback the
+helper would have wrapped — write that, capture the friction in `notes/friction.md`, and revisit
+the helper question when you have three concrete instances pulling in the same direction.
 
 ## Idempotence
 

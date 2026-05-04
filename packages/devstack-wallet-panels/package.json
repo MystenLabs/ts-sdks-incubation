@@ -37,7 +37,7 @@
 	},
 	"devDependencies": {
 		"@mysten-incubation/tsconfig": "workspace:*",
-		"@types/node": "^22.10.0",
+		"@types/node": "catalog:",
 		"tsdown": "0.20.0-beta.1",
 		"typescript": "catalog:"
 	}
