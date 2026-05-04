@@ -3,6 +3,28 @@
 Conventions for AI assistants working in this repo. Apply alongside any IDE-specific configs in
 `.cursor/`, `.claude/`, `.opencode/`.
 
+## Project status — prototype, not released
+
+Devstack is a **prototype**. Nothing is published to npm yet, and we are **not publishing
+anytime soon**. There are no consumers outside this monorepo, no compatibility surface, no
+deprecation cycle to honor. This shapes how we work:
+
+- **Break the API freely.** If a name, shape, or contract is wrong, change it directly — don't
+  ship a shim, alias, or "v2" alongside the old one. We get one chance to set the surface
+  correctly before anyone depends on it; squander it and we live with the wart for the lifetime
+  of the project.
+- **No backwards compatibility.** No `@deprecated`, no fallback paths for old config formats, no
+  legacy export re-exports. Rename, restructure, delete; update every callsite in the same
+  commit.
+- **Surface every paper-cut now.** When something feels awkward (verbose, easy to misuse,
+  needlessly leaky), capture it in `notes/friction.md` and fix the root cause rather than
+  papering over it. Prototype phase is the only time the cost of a redesign is just code edits.
+- **Migration helpers and version-detection logic are anti-patterns** in this phase. If you
+  catch yourself adding either, stop — the right move is a hard break.
+
+Initial release is a future event with its own design pass. Until then, treat the public API as
+in flux.
+
 ## What this repo is
 
 A monorepo of high-quality Sui example apps + a devstack for fully-seeded local development. The bar

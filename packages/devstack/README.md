@@ -1,5 +1,9 @@
 # `@mysten-incubation/devstack`
 
+> ⚠️ **Prototype.** Devstack is not published to npm and there is no near-term plan to
+> publish. The public API is in flux — we break shapes whenever they're wrong rather than
+> ship a shim. Use it inside this monorepo via `workspace:*`; pin nothing in external code.
+
 A localnet harness for Sui apps. Each app declares the services it needs (sui, walrus, seal,
 imports, codegen, ...) as a list of plugins; `devstack` reconciles toward that state, publishes Move
 packages, runs codegen, and writes a typed manifest the frontend consumes via Vite. The harness is
@@ -18,8 +22,11 @@ the journal of paper-cuts driving evolution, see
 Requires **Node.js 24+** (native TypeScript stripping — no tsx, no pre-build of the config) and
 **Docker**.
 
+While the package isn't on npm, install via a workspace path or git URL:
+
 ```sh
-pnpm add -D @mysten-incubation/devstack
+# Inside this monorepo:
+pnpm --filter <your-app> add -D @mysten-incubation/devstack@workspace:*
 ```
 
 ```ts
