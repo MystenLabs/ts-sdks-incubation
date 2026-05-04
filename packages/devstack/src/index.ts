@@ -64,6 +64,7 @@ export type {
 
 export { defineDevstackConfig, definePlugin, expandPluginActions } from './plugin.js';
 export { defineRegistryKind } from './registry/index.js';
+export { coinTokens } from './coin.js';
 
 // ─── Action factories ─────────────────────────────────────────────────────
 

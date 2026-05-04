@@ -29,10 +29,14 @@ interface DeepbookNamespace {
 	}>;
 }
 
+interface CoinNamespace {
+	tokens?: ReadonlyArray<{ name: string; type: string; decimals: number }>;
+}
+
 const services = manifest.registry.services;
 const accounts = manifest.registry.accounts;
 const packages = manifest.registry.packages;
-const tokens = manifest.registry.tokens;
+const tokens = (manifest.registry.coin as CoinNamespace | undefined)?.tokens ?? [];
 const deepbookPools =
 	(manifest.registry.deepbook as DeepbookNamespace | undefined)?.pools ?? [];
 

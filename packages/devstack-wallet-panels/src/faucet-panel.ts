@@ -41,7 +41,7 @@ export class DevstackFaucetPanel extends LitElement {
 		}
 		const faucetUrl = manifest.registry.services?.find((s) => s.name === 'sui-faucet')?.url;
 		const packages = manifest.registry.packages ?? [];
-		const tokens = (manifest.registry.tokens ?? []).map((t) => {
+		const tokens = (manifest.registry.coin?.tokens ?? []).map((t) => {
 			if (t.treasuryCapId !== undefined) return t;
 			// Fallback: read the package's captured TreasuryCap object id by
 			// matching the token's package id against `manifest.registry.packages`.

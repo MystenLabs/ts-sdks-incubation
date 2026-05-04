@@ -21,6 +21,7 @@ import { containerService } from '../../actions/container-service.js';
 import { service } from '../../actions/service.js';
 import { register } from '../../actions/register.js';
 import { seed } from '../../actions/seed.js';
+import { coinTokens } from '../../coin.js';
 import { createLocalSuiClient } from '../../helpers/sui-client.js';
 import {
 	type Action,
@@ -468,7 +469,7 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 						}
 						const ns = ctx.registry.ns<WalrusNamespace>('walrus');
 						const pkg = ctx.registry.packages.find('walrus');
-						const wal = ctx.registry.tokens.find('wal');
+						const wal = coinTokens(ctx.registry).find('wal');
 						const nodes = ns.nodes.list();
 						if (
 							pkg !== undefined &&
@@ -499,7 +500,7 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 					inputs: { amountSui: SEED_WAL_PAYMENT_SUI.toString() },
 					getStatus: async (ctx) => {
 						requireLocalnetCtx(ctx);
-						const walType = ctx.registry.tokens.find('wal')?.type;
+						const walType = coinTokens(ctx.registry).find('wal')?.type;
 						if (walType === undefined) return { ok: false, detail: 'wal token not registered' };
 						const rpcUrl = ctx.registry.services.require('sui-rpc').url;
 						const client = createLocalSuiClient(rpcUrl);
@@ -648,7 +649,7 @@ async function registerWalrus(
 	const walCoinType = await fetchWalCoinType(rpcUrl, ids);
 
 	if (walCoinType !== undefined) {
-		ctx.registry.tokens.register({
+		coinTokens(ctx.registry).register({
 			name: 'wal',
 			type: walCoinType,
 			decimals: 9,
@@ -696,8 +697,8 @@ async function registerWalrus(
 function republishWalrusFromCache(ctx: ActionRunContext): void {
 	const pkg = ctx.registry.packages.find('walrus');
 	if (pkg !== undefined) ctx.registry.packages.register(pkg);
-	const wal = ctx.registry.tokens.find('wal');
-	if (wal !== undefined) ctx.registry.tokens.register(wal);
+	const wal = coinTokens(ctx.registry).find('wal');
+	if (wal !== undefined) coinTokens(ctx.registry).register(wal);
 	const ns = ctx.registry.ns<WalrusNamespace>('walrus');
 	for (const node of ns.nodes.list()) ns.nodes.register(node);
 }

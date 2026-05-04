@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import {
 	accounts,
 	codegen,
+	coinTokens,
 	defineDevstackConfig,
 	frontend,
 	publishMove,
@@ -49,7 +50,7 @@ export default defineDevstackConfig({
 				upgradeCapId: '0x2::package::UpgradeCap',
 			},
 			onPublished: (ctx, result) => {
-				ctx.registry.tokens.register({
+				coinTokens(ctx.registry).register({
 					name: 'managed_coin',
 					type: `${result.packageId}::managed_coin::MANAGED_COIN`,
 					decimals: 6,

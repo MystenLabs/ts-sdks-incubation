@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import {
 	accounts,
 	codegen,
+	coinTokens,
 	deepbook,
 	defineDevstackConfig,
 	frontend,
@@ -38,7 +39,7 @@ const WETH_DISTRIBUTION: ReadonlyArray<{ recipient: string; amount: bigint }> = 
 
 // Pool specs flow into the deepbook() plugin's `pools:` field. The
 // `@reg/<name>` references resolve at run time via
-// `registry.tokens.find(name).type` — the publishMove `onPublished`
+// `coinTokens(registry).find(name).type` — the publishMove `onPublished`
 // hooks below register `musdc` and `mweth` before deepbook.pools runs
 // (see `poolNeeds:` on the deepbook plugin).
 const POOL_SPECS = [
@@ -112,7 +113,7 @@ export default defineDevstackConfig({
 				upgradeCapId: '0x2::package::UpgradeCap',
 			},
 			onPublished: (ctx, result) => {
-				ctx.registry.tokens.register({
+				coinTokens(ctx.registry).register({
 					name: 'musdc',
 					type: `${result.packageId}::mock_usdc::MOCK_USDC`,
 					decimals: 6,
@@ -130,7 +131,7 @@ export default defineDevstackConfig({
 				upgradeCapId: '0x2::package::UpgradeCap',
 			},
 			onPublished: (ctx, result) => {
-				ctx.registry.tokens.register({
+				coinTokens(ctx.registry).register({
 					name: 'mweth',
 					type: `${result.packageId}::mock_weth::MOCK_WETH`,
 					decimals: 8,

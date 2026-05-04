@@ -15,7 +15,6 @@ import type {
 	Registry,
 	RegistryQuery,
 	Service,
-	Token,
 } from '../core/types.js';
 import type { RegistryImpl } from '../registry/index.js';
 import type { SerializedActionState } from './manifest-types.js';
@@ -78,14 +77,15 @@ export function hydrateRegistry(opts: HydrateOptions): boolean {
 	const reg = opts.registry;
 	const r = manifest.registry;
 
-	for (const t of (r.tokens ?? []) as Token[]) reg.tokens.register(t);
 	for (const p of (r.packages ?? []) as Package[]) reg.packages.register(p);
 	for (const a of (r.accounts ?? []) as Account[]) reg.accounts.register(a);
 	for (const s of (r.services ?? []) as Service[]) reg.services.register(s);
 
 	// Plugin-namespaced kinds are stored under top-level keys other than
-	// the four core ones. Round-trip them through the namespace API.
-	const coreKeys = new Set(['tokens', 'packages', 'accounts', 'services']);
+	// the three core ones. Round-trip them through the namespace API. The
+	// `coin.tokens` entries flow through this path now that `tokens` is
+	// no longer a core kind.
+	const coreKeys = new Set(['packages', 'accounts', 'services']);
 	for (const [name, value] of Object.entries(r)) {
 		if (coreKeys.has(name)) continue;
 		const bag = value as Record<string, Array<{ name: string }>>;

@@ -15,7 +15,6 @@ export const manifest: Manifest = {
 	"network": "localnet",
 	"emittedAt": "",
 	"registry": {
-		"tokens": [],
 		"packages": [],
 		"accounts": [],
 		"services": [],

@@ -450,7 +450,6 @@ export interface RegistryQuery<T> {
 }
 
 export interface Registry {
-	readonly tokens: RegistryQuery<Token>;
 	readonly packages: RegistryQuery<Package>;
 	readonly accounts: RegistryQuery<Account>;
 	readonly services: RegistryQuery<Service>;
