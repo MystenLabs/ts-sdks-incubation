@@ -6,7 +6,7 @@
 import { coinTokens } from '../../coin.js';
 import type { Registry } from '../../core/types.js';
 
-export const SUI_COIN_TYPE = '0x2::sui::SUI';
+const SUI_COIN_TYPE = '0x2::sui::SUI';
 
 /** Resolve a coin spec to a fully-qualified Move type. */
 export function resolveCoinType(registry: Registry, spec: string): string {

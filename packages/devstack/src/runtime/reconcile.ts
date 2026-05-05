@@ -179,8 +179,8 @@ export class Reconciler {
 		// Initial snapshot: every action `queued` (waiting in topo). Without
 		// this, the renderer sits on its `idle`-everything start-state until
 		// the first action finishes — which can be many minutes for a cold
-		// walrus.build (~10 min image build). The user thinks nothing is
-		// happening. Cheap to flip.
+		// seal.build (~5–8 min full Rust compile) or walrus.build (~2–3 min
+		// hybrid). The user thinks nothing is happening. Cheap to flip.
 		for (const action of sorted) statuses.set(action.name, 'queued');
 		emitProgress();
 

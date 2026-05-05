@@ -31,7 +31,7 @@ import { Transaction } from '@mysten/sui/transactions';
 import type { Signer } from '@mysten/sui/cryptography';
 import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
 
-export interface FaucetFundOptions {
+interface FaucetFundOptions {
 	faucetUrl: string;
 	rpcUrl: string;
 	address: string;
@@ -64,7 +64,7 @@ export const AB_TOLERANCE_MIST = 1_000_000_000n;
  * (caused by a stale gas-coin reference) is the typical reason this
  * fires. Override per-call via `EnsureAddressBalanceOptions.timeoutMs`
  * for tests or in environments where 30s is too aggressive. */
-export const DEFAULT_DEPOSIT_TIMEOUT_MS = 30_000;
+const DEFAULT_DEPOSIT_TIMEOUT_MS = 30_000;
 
 const SUI_COIN_TYPE = '0x2::sui::SUI';
 
@@ -92,7 +92,7 @@ export async function ensureFunded(opts: FaucetFundOptions): Promise<{ funded: b
 	);
 }
 
-export interface EnsureAddressBalanceOptions {
+interface EnsureAddressBalanceOptions {
 	rpcUrl: string;
 	signer: Signer;
 	/** MIST. Defaults to 50 SUI minus the coin reserve. */

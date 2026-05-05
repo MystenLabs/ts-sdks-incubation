@@ -85,7 +85,7 @@ interface ImportSpecCommon {
 
 /** Git-source variant: clone `repo@rev`, build a content-addressed
  * source image, publish out of it. */
-export interface GitImportSpec extends ImportSpecCommon {
+interface GitImportSpec extends ImportSpecCommon {
 	/** Source repo `<owner>/<repo>`. With `gitUrl` unset, becomes
 	 * `https://github.com/<owner>/<repo>.git`; pass `gitUrl` to override. */
 	repo: string;
@@ -102,19 +102,19 @@ export interface GitImportSpec extends ImportSpecCommon {
 /** Local-source variant: skip the git clone + image build and use an
  * on-host working tree directly. Critical for upstream contributors
  * iterating on a Move package without pushing/cloning. */
-export interface LocalImportSpec extends ImportSpecCommon {
+interface LocalImportSpec extends ImportSpecCommon {
 	/** On-host path to the source tree's root (the dir containing the
 	 * package subdirs). Resolved against `appDir` if relative. */
 	local: { path: string };
 }
 
-export type ImportSpec = GitImportSpec | LocalImportSpec;
+type ImportSpec = GitImportSpec | LocalImportSpec;
 
 function isLocalImport(spec: ImportSpec): spec is LocalImportSpec {
 	return 'local' in spec;
 }
 
-export interface ImportsPluginOptions {
+interface ImportsPluginOptions {
 	packages: ImportSpec[];
 }
 
@@ -221,11 +221,30 @@ function buildActionsForSpec(spec: InternalImportSpec): Action[] {
 
 	const sourceInputs = isLocalImport(spec)
 		? { local: spec.local.path, subdir: spec.subdir, digest: localSourceDigest }
-		: { image: upstreamSourceImageTag(spec.repo, spec.rev), repo: spec.repo, rev: spec.rev, subdir: spec.subdir };
+		: {
+				image: upstreamSourceImageTag(spec.repo, spec.rev),
+				repo: spec.repo,
+				rev: spec.rev,
+				subdir: spec.subdir,
+			};
 
 	const publishInputs = isLocalImport(spec)
-		? { local: spec.local.path, subdir: spec.subdir, env, publisher: publisherAccount, addresses: spec.addresses, digest: localSourceDigest }
-		: { repo: spec.repo, rev: spec.rev, subdir: spec.subdir, env, publisher: publisherAccount, addresses: spec.addresses };
+		? {
+				local: spec.local.path,
+				subdir: spec.subdir,
+				env,
+				publisher: publisherAccount,
+				addresses: spec.addresses,
+				digest: localSourceDigest,
+			}
+		: {
+				repo: spec.repo,
+				rev: spec.rev,
+				subdir: spec.subdir,
+				env,
+				publisher: publisherAccount,
+				addresses: spec.addresses,
+			};
 
 	return [
 		buildImage({
@@ -259,7 +278,12 @@ function buildActionsForSpec(spec: InternalImportSpec): Action[] {
 			run: async (ctx) => {
 				if (curatedAddressFor(spec, ctx.network) !== undefined) return;
 				if (isLocalImport(spec)) return;
-				await ensureUpstreamSourceImage({ repo: spec.repo, rev: spec.rev, gitUrl: spec.gitUrl });
+				await ensureUpstreamSourceImage({
+					repo: spec.repo,
+					rev: spec.rev,
+					gitUrl: spec.gitUrl,
+					appendLog: ctx.appendLog,
+				});
 			},
 		}),
 
@@ -348,6 +372,7 @@ function buildActionsForSpec(spec: InternalImportSpec): Action[] {
 					env,
 					gitUrl,
 					localPath,
+					appendLog: ctx.appendLog,
 				});
 				ctx.registry.packages.register({
 					name: spec.name,
@@ -404,4 +429,3 @@ function safeDigest(path: string): string | undefined {
 		return undefined;
 	}
 }
-

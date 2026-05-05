@@ -34,6 +34,7 @@ const makeCtx = (appDir: string, registry: RegistryImpl): ActionRunContext => ({
 	registry,
 	accounts: emptyAccounts,
 	ports: createInMemoryPortAllocator(),
+	inputHash: 'test',
 });
 
 const getGenerateAction = (output?: string): EmitAction => {

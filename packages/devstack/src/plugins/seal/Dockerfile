@@ -1,41 +1,47 @@
 # syntax=docker/dockerfile:1
-# Devstack-owned seal image. Builds key-server + seal-cli, plus stages the
-# `move/seal` Move package at /opt/seal/move-package for `seal.publish`
+# Devstack-owned seal image. Pulls the published `seal-cli` and `key-server`
+# binaries from the seal GitHub release (no Rust compile) and stages
+# the `move/seal` Move package at /opt/seal/move-package for `seal.publish`
 # to extract at publish time (via `docker create` + `docker cp`).
+#
+# The seal release workflow (.github/workflows/release.yml) builds
+# `seal-cli` and `key-server` and renames them to `seal-${platform}` and
+# `key-server-${platform}` for the release assets. We curl them and
+# rename `seal-${platform}` back to `seal-cli` inside the image so the
+# plugin's `--entrypoint seal-cli` invocation still works.
 #
 # The seal source comes from a BuildKit named context (`seal-src`)
 # declared by plugins/seal/build.ts as `--build-context
-# seal-src=https://github.com/MystenLabs/seal.git#<rev>`, so nothing
-# touches the host filesystem during build.
+# seal-src=https://github.com/MystenLabs/seal.git#<tag>`, so the Move
+# package fetch doesn't touch the host filesystem.
 #
-# We don't reuse upstream's official Dockerfile because (1) it only builds
-# key-server, and we need seal-cli for `genkey` during devstack bootstrap, and
-# (2) we want a multi-arch build, not the upstream amd64-only mainnet image.
-#
-# Rust toolchain matches upstream rust-toolchain.toml (1.90).
-FROM rust:1.90-bullseye AS builder
+# Multi-arch via TARGETARCH — same pattern as the sui-localnet
+# Dockerfile.
 
-ARG PROFILE=release
-
-WORKDIR /work
+FROM ubuntu:24.04 AS bin-fetch
+ARG SEAL_TAG
+ARG TARGETARCH
 
 RUN apt-get update \
-	&& apt-get install -y --no-install-recommends \
-		cmake clang pkg-config libssl-dev libpq-dev \
+	&& apt-get install -y --no-install-recommends ca-certificates curl \
 	&& rm -rf /var/lib/apt/lists/*
 
-COPY --from=seal-src crates ./crates
-COPY --from=seal-src Cargo.toml Cargo.lock ./
+RUN set -eux; \
+	case "$TARGETARCH" in \
+		arm64) PLATFORM=linux-aarch64 ;; \
+		amd64) PLATFORM=linux-x86_64 ;; \
+		*) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
+	esac; \
+	base="https://github.com/MystenLabs/seal/releases/download/${SEAL_TAG}"; \
+	curl -fsSL "$base/seal-${PLATFORM}" -o /tmp/seal-cli; \
+	curl -fsSL "$base/key-server-${PLATFORM}" -o /tmp/key-server; \
+	chmod +x /tmp/seal-cli /tmp/key-server
 
-ARG GIT_REVISION
-ENV GIT_REVISION=$GIT_REVISION
-
-RUN cargo build \
-		--bin key-server --bin seal-cli \
-		--profile $PROFILE \
-		--config net.git-fetch-with-cli=true
-
-FROM debian:bullseye-slim AS runtime
+# Runtime image. Same debian:bookworm-slim base + libpq5 the upstream
+# from-source build used (key-server's deps were unchanged). ca-certificates
+# is needed by the on-chain interactions; curl ships in the base for
+# the healthcheck script.
+FROM debian:bookworm-slim AS runtime
 
 EXPOSE 2024 9184
 
@@ -44,8 +50,8 @@ RUN apt-get update \
 		ca-certificates curl libpq5 \
 	&& rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /work/target/release/key-server /usr/local/bin/key-server
-COPY --from=builder /work/target/release/seal-cli   /usr/local/bin/seal-cli
+COPY --from=bin-fetch /tmp/seal-cli   /usr/local/bin/seal-cli
+COPY --from=bin-fetch /tmp/key-server /usr/local/bin/key-server
 
 # Stage the Move package for seal.publish — extracted at publish time
 # via `docker create <image>` + `docker cp <id>:/opt/seal/move-package`.

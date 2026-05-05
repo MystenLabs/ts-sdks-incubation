@@ -55,6 +55,7 @@ const makeCtx = (
 	registry,
 	accounts,
 	ports: createInMemoryPortAllocator(),
+	inputHash: 'test',
 });
 
 let tmpDirs: string[] = [];
@@ -91,7 +92,13 @@ describe('publish — shape', () => {
 		expect(a.type).toBe('Publish');
 		expect(a.name).toBe('connect_four');
 		expect(a.path).toBe('/tmp/does-not-exist/move/connect_four');
-		expect(a.provides).toEqual({ capabilities: ['arena.game'] });
+		// publish() now auto-attaches a `provides.registry` hook that
+		// re-registers the package on warm cycles so `providedBy` lands
+		// correctly for the supervisor's per-row outputs. Author-passed
+		// capabilities pass through; the auto-hook runs alongside any
+		// author-supplied registry hook.
+		expect(a.provides?.capabilities).toEqual(['arena.game']);
+		expect(typeof a.provides?.registry).toBe('function');
 		expect(a.getStatus).toBeUndefined();
 		expect(typeof a.run).toBe('function');
 	});

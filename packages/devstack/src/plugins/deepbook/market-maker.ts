@@ -87,7 +87,7 @@ export interface DeepbookMarketMakerSpec {
 	preDeposit?: Record<string, { base: bigint; quote: bigint }>;
 }
 
-export interface DeepbookMarketMakerActionOptions {
+interface DeepbookMarketMakerActionOptions {
 	maker: DeepbookMarketMakerSpec;
 	pools: ReadonlyArray<DeepbookPoolSpec>;
 }

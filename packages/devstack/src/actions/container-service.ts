@@ -23,11 +23,12 @@ import {
 	inspectContainer,
 	removeContainer,
 	runContainer,
+	startContainer,
 	stopContainer,
 	waitForHealthy,
 } from '../plugins/sui/docker.js';
 
-export interface ContainerServiceOptions<TInputs extends Record<string, unknown>> {
+interface ContainerServiceOptions<TInputs extends Record<string, unknown>> {
 	name: string;
 	needs?: string[];
 	provides?: Provides;
@@ -83,6 +84,11 @@ export interface ContainerServiceOptions<TInputs extends Record<string, unknown>
 	 *
 	 * Default when unset: `{ commit: true, quiesce: 'stop' }`. */
 	snapshot?: SnapshotMeta;
+	/** Optional identity hook. By default, `containerService` derives
+	 * identity from the running container's id (so a recreate flips
+	 * downstream cascades). Override when the meaningful change signal
+	 * lives elsewhere — runtime-fetched chainId, parsed file output. */
+	identity?: (ctx: LocalnetActionRunContext) => Promise<string | undefined>;
 }
 
 export function containerService<TInputs extends Record<string, unknown>>(
@@ -134,25 +140,85 @@ export function containerService<TInputs extends Record<string, unknown>>(
 			if (stopOnShutdown) {
 				ctx.onShutdown?.(async () => {
 					const live = await inspectContainer(cName);
-					if (live?.running === true) await stopContainer(cName);
+					// `restarting` state matters: a crashlooping container
+					// (e.g. walrus storage node started against a stale
+					// deploy file) reports `running: false` in the
+					// short-lived gap between exit and the next docker
+					// restart. Skipping the stop in that window leaves it
+					// under `restart: unless-stopped` forever after the
+					// supervisor exits. `docker stop` is a no-op on
+					// already-exited containers and disables the restart
+					// policy on `restarting` ones, so calling it
+					// unconditionally when the container exists is the
+					// safe shape.
+					if (live === null) return;
+					if (live.state === 'exited' || live.state === 'dead') return;
+					await stopContainer(cName);
 				});
 			}
 			const existing = await inspectContainer(cName);
-			if (existing !== null) {
-				await removeContainer(cName);
-			}
 			if (opts.preRun !== undefined) await opts.preRun(ctx);
 			const spec = await opts.spec(ctx);
-			// Merge snapshot labels into whatever the plugin's spec
-			// already set. Plugin's labels win on collision (defensive),
-			// but in practice they don't set devstack.snapshot.* themselves.
-			const labels = { ...snapshotLabels, ...spec.labels };
-			await runContainer({ ...spec, name: cName, labels });
+			// Stamp the reconciler's input hash on the container as a
+			// label. The hash captures `inputs` plus every upstream
+			// `identity` named in `needs:`, so two containers with the
+			// same label were created under the same upstream context.
+			// On the next cycle we compare the existing container's
+			// label against the current expected hash to decide:
+			//
+			//   - match: upstream is unchanged → resume the existing
+			//     container (`docker start` if stopped). Preserves the
+			//     writable layer where stateful services hold on-disk
+			//     data — walrus storage nodes' RocksDB blob store,
+			//     sui-localnet's chain state under
+			//     `/root/.sui/sui_config`, seal's generated cert. The
+			//     reconciler only entered `run` because of either a hash
+			//     mismatch (handled below) or a `getStatus` failure
+			//     (e.g. container exited); resume covers the latter.
+			//
+			//   - mismatch: upstream drifted (sui regenesis flips
+			//     chainId, walrus.deploy regenerated package IDs, …) →
+			//     remove + recreate. The old writable layer references
+			//     state that no longer exists on chain, so discarding
+			//     it is the correct move.
+			//
+			// Without this, every supervisor restart unconditionally
+			// removed and recreated stateful containers, wiping every
+			// blob the user had uploaded.
+			const inputHashLabel = 'devstack.input-hash';
+			const labels = {
+				...snapshotLabels,
+				...spec.labels,
+				[inputHashLabel]: ctx.inputHash,
+			};
+			const existingHash = existing?.labels?.[inputHashLabel];
+			const upstreamUnchanged =
+				existing !== null && existingHash === ctx.inputHash;
+			if (upstreamUnchanged) {
+				if (!existing.running) {
+					await startContainer(cName);
+				}
+				// existing.running === true ⇒ already up with matching
+				// upstream; nothing to do beyond the postStart probe.
+			} else {
+				if (existing !== null) await removeContainer(cName);
+				await runContainer({ ...spec, name: cName, labels });
+			}
 			if (opts.postStart !== undefined) {
 				await opts.postStart(ctx, cName);
 			} else if (spec.healthcheck !== undefined) {
 				await waitForHealthy(cName, { timeoutMs: opts.healthyTimeoutMs ?? 5 * 60_000 });
 			}
+		},
+		// Default identity = container id. A recreate flips it; a resume
+		// (`docker start` on a stopped container) keeps it stable. Plugins
+		// override when the meaningful identity is something else
+		// (parsed output, chainId, etc.).
+		identity: async (ctx) => {
+			requireLocalnetCtx(ctx);
+			if (opts.identity !== undefined) return opts.identity(ctx);
+			const info = await inspectContainer(opts.containerName(ctx));
+			return info?.id;
 		},
 	};
 }

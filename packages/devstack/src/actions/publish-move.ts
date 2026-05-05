@@ -22,7 +22,7 @@ import type { ActionRunContext, Provides, PublishAction, SetupActionScope } from
 import type { PublishMovePackageResult } from '../helpers/move-package.js';
 import { publish, type PublishInputs } from './publish.js';
 
-export interface PublishMoveOptions {
+interface PublishMoveOptions {
 	name: string;
 	needs?: string[];
 	provides?: Provides;

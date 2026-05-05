@@ -33,7 +33,17 @@ import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import type { DevstackConfig } from '../core/types.js';
-import { dockerRun, removeContainer, removeNetwork, stopContainer } from '../plugins/sui/docker.js';
+import {
+	buildCacheSize,
+	dockerRun,
+	listImagesByLabel,
+	pruneBuildCache,
+	pruneDanglingDevstackImages,
+	removeContainer,
+	removeImage,
+	removeNetwork,
+	stopContainer,
+} from '../plugins/sui/docker.js';
 import {
 	DEFAULT_STACK,
 	readActiveStack,
@@ -43,7 +53,7 @@ import {
 import { inspectSupervisorLock } from '../runtime/supervisor-lock.js';
 import { runIfMain } from './args.js';
 
-export interface StackFlags {
+interface StackFlags {
 	configPath: string;
 	subcommand: 'list' | 'new' | 'use' | 'down' | 'drop';
 	stackName?: string;
@@ -56,6 +66,14 @@ export interface StackFlags {
 	 * remove and exits without modifying anything. Pairs with the active-
 	 * stack guard so users can confirm what `drop` is about to do. */
 	dryRun?: boolean;
+	/** When true, `drop` ALSO removes every devstack-built image
+	 * (anything carrying a `devstack.cache=*` label) — sui-localnet,
+	 * walrus upstream + wrapper, seal, upstream-source. Used to force
+	 * a full first-build re-test from scratch. Images are global, not
+	 * per-stack — so other apps sharing the same cached image will
+	 * pay the rebuild cost on their next `up`. Best-effort: tags in
+	 * use by a running container are kept. */
+	images?: boolean;
 }
 
 export async function runStack(flags: StackFlags): Promise<number> {
@@ -87,6 +105,7 @@ export async function runStack(flags: StackFlags): Promise<number> {
 				yes: flags.yes,
 				force: flags.force,
 				dryRun: flags.dryRun,
+				images: flags.images,
 			});
 	}
 }
@@ -219,6 +238,7 @@ async function dropStack(opts: {
 	yes: boolean;
 	force?: boolean;
 	dryRun?: boolean;
+	images?: boolean;
 }): Promise<number> {
 	validateStackName(opts.name);
 	if (opts.name === DEFAULT_STACK && opts.force !== true) {
@@ -235,26 +255,91 @@ async function dropStack(opts: {
 	const containerNames = await stackContainerNames(opts.appName, opts.name);
 	const dir = stackDir(opts.appDir, opts.name);
 	const dirExists = existsSync(dir);
+	// Cached devstack-built images carry `devstack.cache=<kind>` —
+	// listing them with no value matches every kind (sui-localnet,
+	// walrus-upstream, walrus-service, seal, upstream-source). Only
+	// queried when `--images` is set; otherwise we skip the docker call.
+	const cachedImages =
+		opts.images === true ? await listImagesByLabel({ 'devstack.cache': '' }) : [];
 	if (opts.dryRun) {
 		process.stdout.write(`drop --dry-run for stack '${opts.name}':\n`);
 		process.stdout.write(
 			`  containers (${containerNames.length}): ${containerNames.join(', ') || '(none)'}\n`,
 		);
 		process.stdout.write(`  host dir: ${dirExists ? dir : '(none)'}\n`);
+		if (opts.images === true) {
+			process.stdout.write(
+				`  cached images (${cachedImages.length}, GLOBAL — affects every app on this host):\n`,
+			);
+			for (const img of cachedImages) {
+				process.stdout.write(`    ${img.ref}\n`);
+			}
+			if (cachedImages.length === 0) {
+				process.stdout.write('    (none)\n');
+			}
+			// Image-rm leaves layers + BuildKit cache behind. Without
+			// also pruning those, a rebuild after `--images` short-
+			// circuits through cache and doesn't actually re-exercise
+			// the build path the operator is trying to retest. Show
+			// the reclaim estimate so the user sees what `--images`
+			// will free.
+			const reclaimable = await buildCacheSize();
+			process.stdout.write(
+				`  dangling layers + BuildKit cache: would run ` +
+					`\`docker image prune -f --filter label=devstack.cache\` + ` +
+					`\`docker builder prune -f\`` +
+					(reclaimable !== undefined ? ` (currently ${reclaimable} reclaimable)` : '') +
+					'\n',
+			);
+		}
 		process.stdout.write('  Re-run without --dry-run + with --yes to actually drop.\n');
 		return 0;
 	}
 	if (!opts.yes) {
+		const imagesNote =
+			opts.images === true ? ' AND every cached devstack image (GLOBAL — all apps)' : '';
 		process.stderr.write(
-			`drop will remove containers AND host state for stack '${opts.name}'. ` +
-				`Use \`devstack stack drop ${opts.name} --dry-run\` to see exactly what would be deleted, ` +
-				`then re-run with --yes to confirm.\n`,
+			`drop will remove containers AND host state for stack '${opts.name}'${imagesNote}. ` +
+				`Use \`devstack stack drop ${opts.name}${opts.images === true ? ' --images' : ''} --dry-run\` ` +
+				'to see exactly what would be deleted, then re-run with --yes to confirm.\n',
 		);
 		return 1;
 	}
 	await removeStackContainers({ appName: opts.appName, stack: opts.name });
 	await removeNetwork(`${opts.appName}-${opts.name}-net`).catch(() => undefined);
 	if (dirExists) rmSync(dir, { recursive: true, force: true });
+	if (opts.images === true) {
+		let removed = 0;
+		let kept = 0;
+		for (const img of cachedImages) {
+			if (await removeImage(img.ref)) {
+				removed++;
+			} else {
+				kept++;
+				process.stdout.write(`  kept ${img.ref} (in use or has dependents)\n`);
+			}
+		}
+		process.stdout.write(
+			`removed ${removed} cached image${removed === 1 ? '' : 's'}` +
+				(kept > 0 ? ` (${kept} skipped)` : '') +
+				'\n',
+		);
+		// `removeImage` only drops tags. Untagged layer manifests stay
+		// in `docker image ls`, and the BuildKit layer cache that backed
+		// each build stays in BuildKit's separate store — so a rebuild
+		// would short-circuit through cache instead of actually
+		// re-running. Prune both for a real "first build from scratch"
+		// re-test.
+		const dangling = await pruneDanglingDevstackImages();
+		const danglingMatch = dangling.output.match(/Total reclaimed space:\s*(\S+)/);
+		process.stdout.write(
+			`pruned dangling image layers (${danglingMatch?.[1] ?? '0B'} reclaimed)\n`,
+		);
+		const cache = await pruneBuildCache();
+		const cacheMatch = cache.output.match(/Total:\s*(\S+)|Total reclaimed space:\s*(\S+)/);
+		const cacheFreed = cacheMatch?.[1] ?? cacheMatch?.[2] ?? '0B';
+		process.stdout.write(`pruned BuildKit cache (${cacheFreed} reclaimed)\n`);
+	}
 	process.stdout.write(`dropped stack '${opts.name}'\n`);
 	return 0;
 }
@@ -350,12 +435,17 @@ Subcommands:
                                 host state dir. Refuses on 'main' and
                                 on the active stack without --force.
                                 --dry-run / -n previews without acting.
+                                --images additionally drops every
+                                cached devstack-built image (GLOBAL —
+                                affects all apps on this host).
 
 Options:
   --config <path>               Override the config path
   --yes, -y                     Skip the drop confirmation prompt
   --force                       Allow drop on the active stack
   --dry-run, -n                 Print what drop would do; no changes
+  --images                      Also remove every devstack.cache=*
+                                image. Affects all apps on the host.
 `;
 
 function parseArgs(argv: string[]): StackFlags {
@@ -377,6 +467,8 @@ function parseArgs(argv: string[]): StackFlags {
 			flags.force = true;
 		} else if (arg === '--dry-run' || arg === '-n') {
 			flags.dryRun = true;
+		} else if (arg === '--images') {
+			flags.images = true;
 		} else if (!arg.startsWith('--')) {
 			if (positional === 0) {
 				if (arg !== 'list' && arg !== 'new' && arg !== 'use' && arg !== 'down' && arg !== 'drop') {

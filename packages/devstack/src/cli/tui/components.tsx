@@ -329,15 +329,14 @@ function RowDetail(props: {
 
 function Outputs(props: { outputs: RegistryOutput[] }): React.ReactElement {
 	return (
-		<Text>
+		<Box flexDirection="column">
 			{props.outputs.map((o, i) => (
-				<Text key={`${o.label}-${i}-${o.value}`}>
-					{i > 0 && <Text dimColor>  </Text>}
+				<Box key={`${o.label}-${i}-${o.value}`}>
 					<Text dimColor>{o.label} </Text>
 					<Text color="cyan">{o.value}</Text>
-				</Text>
+				</Box>
 			))}
-		</Text>
+		</Box>
 	);
 }
 

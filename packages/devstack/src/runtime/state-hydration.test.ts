@@ -48,7 +48,7 @@ describe('Reconciler — priorState hydration', () => {
 		});
 		const reconciler = new Reconciler();
 		const result1 = await reconciler.cycle([action], baseCtx());
-		expect(result1.statuses.get('app.setup')).toBe('healthy');
+		expect(result1.statuses.get('app.setup')).toBe('ok');
 		expect(run).toHaveBeenCalledTimes(1);
 
 		const persisted = reconciler.serializeState();
@@ -60,7 +60,7 @@ describe('Reconciler — priorState hydration', () => {
 		const action2 = register({ name: 'app.setup', inputs: { v: 1 }, run: run2 });
 		const reconciler2 = new Reconciler({ priorState: persisted });
 		const result2 = await reconciler2.cycle([action2], baseCtx());
-		expect(result2.statuses.get('app.setup')).toBe('healthy');
+		expect(result2.statuses.get('app.setup')).toBe('ok');
 		expect(run2).not.toHaveBeenCalled();
 	});
 

@@ -39,7 +39,7 @@ import { definePlugin } from '../../plugin.js';
 import { stackDir } from '../../runtime/active-stack.js';
 import { generateToken, startWalletServer } from './server.js';
 
-export interface WalletServerPluginOptions {
+interface WalletServerPluginOptions {
 	/** TCP port for the wallet HTTP server. Default 9420. */
 	port?: number;
 	/** Override the printed origin used in the paired URL (e.g. when proxying
@@ -63,7 +63,7 @@ export interface WalletServerPluginOptions {
 	allowedOrigins?: string[];
 }
 
-export const WALLET_SERVER_DEFAULT_PORT = 9420;
+const WALLET_SERVER_DEFAULT_PORT = 9420;
 
 export const walletServer = (opts: WalletServerPluginOptions = {}) => {
 	const preferredPort = opts.port ?? WALLET_SERVER_DEFAULT_PORT;
@@ -87,6 +87,30 @@ export const walletServer = (opts: WalletServerPluginOptions = {}) => {
 	// rely on `run` to call `setActiveAccounts(ctx.accounts)`.
 	let setActiveAccounts: ((accounts: import('../../core/types.js').AccountsContext) => void) | undefined;
 	let lastAccountNames: readonly string[] | undefined;
+	// Hot-reload for the CORS allowlist. `wallet-server.serve` only has
+	// `needs: ['register']` — it can (and frequently does) start before
+	// `frontend.dev-server` has registered its URL, so the initial
+	// allowlist is empty and the browser's first /api/v1/devstack/*
+	// fetch 403s with no Access-Control-Allow-Origin header. Each
+	// supervisor cycle now re-reads `dev-server` from the registry and
+	// pushes through `setAllowedOrigins` to the still-listening
+	// server — `lastAllowedOrigins` is the drift detector that gates the
+	// hot-reload.
+	let setAllowedOrigins: ((origins: string[]) => void) | undefined;
+	let lastAllowedOrigins: readonly string[] | undefined;
+
+	/** Compute the CORS allowlist from the current registry state.
+	 * `dev-server` may not be registered when `serve` first runs (it's
+	 * registered by `frontend.dev-server`'s provides.registry, which can
+	 * fire later); the supervisor cycle re-checks each pass and pushes
+	 * through `setAllowedOrigins` when the result drifts. */
+	const currentAllowedOrigins = (ctx: ActionRunContext): string[] => {
+		const devServer = ctx.registry.services.find('dev-server');
+		return [
+			...(devServer !== undefined ? [originOf(devServer.url)] : []),
+			...extraAllowedOrigins,
+		];
+	};
 
 	const resolveEndpoint = async (
 		ctx: ActionRunContext,
@@ -194,6 +218,19 @@ export const walletServer = (opts: WalletServerPluginOptions = {}) => {
 					) {
 						return { ok: false, detail: 'accounts changed; hot-reloading' };
 					}
+					// Same drift gate for the CORS allowlist. The most common
+					// trigger is `dev-server` arriving in the registry one
+					// cycle after `serve` started — without this re-check
+					// the browser's fetches stay 403'd until the user
+					// restarts the supervisor.
+					const currentOrigins = currentAllowedOrigins(ctx);
+					if (
+						setAllowedOrigins !== undefined &&
+						lastAllowedOrigins !== undefined &&
+						!arraysEqual(currentOrigins, lastAllowedOrigins)
+					) {
+						return { ok: false, detail: 'CORS allowlist changed; hot-reloading' };
+					}
 					return { ok: true, detail: baseUrl };
 				},
 				run: async (ctx) => {
@@ -210,6 +247,12 @@ export const walletServer = (opts: WalletServerPluginOptions = {}) => {
 							setActiveAccounts(ctx.accounts);
 							lastAccountNames = ctx.accounts.names();
 							log(`wallet-server hot-reloaded accounts: [${lastAccountNames.join(', ')}]`);
+						}
+						if (setAllowedOrigins !== undefined) {
+							const next = currentAllowedOrigins(ctx);
+							setAllowedOrigins(next);
+							lastAllowedOrigins = next;
+							log(`wallet-server hot-reloaded CORS allowed: [${next.join(', ') || '(none)'}]`);
 						}
 						return;
 					}
@@ -230,11 +273,7 @@ export const walletServer = (opts: WalletServerPluginOptions = {}) => {
 					// manifest (auto-discovered) plus any caller-supplied
 					// extras. Without this, the browser's CORS preflight
 					// from the Vite dev-server origin would be denied.
-					const devServer = ctx.registry.services.find('dev-server');
-					const allowedOrigins = [
-						...(devServer !== undefined ? [originOf(devServer.url)] : []),
-						...extraAllowedOrigins,
-					];
+					const allowedOrigins = currentAllowedOrigins(ctx);
 					const handle = await startWalletServer({
 						port,
 						host,
@@ -245,11 +284,15 @@ export const walletServer = (opts: WalletServerPluginOptions = {}) => {
 					activeServer = handle.server;
 					activeToken = handle.token;
 					setActiveAccounts = handle.setAccounts;
+					setAllowedOrigins = handle.setAllowedOrigins;
 					lastAccountNames = ctx.accounts.names();
+					lastAllowedOrigins = allowedOrigins;
 					writePersistedToken(ctx.appDir, ctx.stack, handle.token);
 					log(`wallet-server listening on ${baseUrl}`);
 					if (allowedOrigins.length > 0) {
 						log(`CORS allowed: ${allowedOrigins.join(', ')}`);
+					} else {
+						log('CORS allowed: (empty — dev-server not yet registered, will hot-reload)');
 					}
 					log(`pair URL: ${baseUrl}/?token=${handle.token}`);
 					ctx.onShutdown?.(async () => {
@@ -259,7 +302,9 @@ export const walletServer = (opts: WalletServerPluginOptions = {}) => {
 						});
 						activeServer = undefined;
 						setActiveAccounts = undefined;
+						setAllowedOrigins = undefined;
 						lastAccountNames = undefined;
+						lastAllowedOrigins = undefined;
 						// activeToken stays so a subsequent same-process cycle
 						// can re-publish it without re-spawning.
 					});

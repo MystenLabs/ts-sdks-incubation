@@ -8,7 +8,7 @@
 
 import type { ActionRunContext, Provides, RegisterAction } from '../core/types.js';
 
-export interface RegisterOptions<TInputs extends Record<string, unknown>> {
+interface RegisterOptions<TInputs extends Record<string, unknown>> {
 	name: string;
 	needs?: string[];
 	provides?: Provides;
@@ -19,6 +19,7 @@ export interface RegisterOptions<TInputs extends Record<string, unknown>> {
 	runsAs?: string;
 	run: (ctx: ActionRunContext) => Promise<void>;
 	getStatus?: (ctx: ActionRunContext) => Promise<{ ok: boolean; detail?: string }>;
+	identity?: (ctx: ActionRunContext) => Promise<string | undefined>;
 }
 
 export function register<TInputs extends Record<string, unknown>>(
@@ -33,5 +34,6 @@ export function register<TInputs extends Record<string, unknown>>(
 		runsAs: opts.runsAs,
 		run: opts.run,
 		getStatus: opts.getStatus,
+		identity: opts.identity,
 	};
 }

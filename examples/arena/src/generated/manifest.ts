@@ -15,11 +15,73 @@ export const manifest: Manifest = {
 	"network": "localnet",
 	"emittedAt": "",
 	"registry": {
-		"packages": [],
-		"accounts": [],
-		"services": [],
+		"packages": [
+			{
+				"name": "connect_four",
+				"packageId": "0xdf89bc0534f9893494bdf6ba0071a9929f23ae5d89f86a9c9fe61aa5dc0337cb",
+				"captured": {},
+				"sourceDigest": "7f1d0a1cfc195f1bb1032c7356e7f09825792f14920b67d787590f0ab17cb2a0",
+				"chainId": "b5f38de5",
+				"network": "localnet",
+				"path": "/Users/michaelhayes/code/ts-sdks-incubation/examples/arena/move/connect_four",
+				"mvrPlaceholder": "@local/connect-four"
+			}
+		],
+		"accounts": [
+			{
+				"name": "publisher",
+				"address": "0x64824571cb72a13d5e5d0cff7945cdf600a090a66ae47d31f557fda66a264378",
+				"role": "publisher",
+				"funded": true
+			},
+			{
+				"name": "alice",
+				"address": "0x2926ec84565cfa65fba0afbef3f008c82853eb05c3c6e9474009c692c1a08993",
+				"funded": true
+			},
+			{
+				"name": "bob",
+				"address": "0x740856534d180f124e530445b9672ed02453d040c8f35a234c7209969058233a",
+				"funded": true
+			}
+		],
+		"services": [
+			{
+				"name": "sui-rpc",
+				"kind": "sui-rpc",
+				"url": "http://127.0.0.1:9000",
+				"port": 9000,
+				"endpointLabel": "Sui JSON-RPC + gRPC"
+			},
+			{
+				"name": "sui-faucet",
+				"kind": "sui-faucet",
+				"url": "http://127.0.0.1:9123",
+				"port": 9123,
+				"endpointLabel": "Sui faucet"
+			},
+			{
+				"name": "wallet-server",
+				"kind": "wallet-server",
+				"url": "http://localhost:9421",
+				"port": 9421,
+				"endpointLabel": "http://localhost:9421/?token=1ebe1ecf06100579d7b407bc5fc8027f03e1b538362a775a9a4764b52d462c83"
+			},
+			{
+				"name": "dev-server",
+				"kind": "dev-server",
+				"url": "http://localhost:5176",
+				"port": 5176
+			}
+		],
 		"arena": {
-			"sharedObjects": []
+			"sharedObjects": [
+				{
+					"name": "openLobby",
+					"objectId": "0x631588e1f1f8540352c95cacb28de937acb04da630036a2f5a144dcd3d31c9a2",
+					"objectType": "0xdf89bc0534f9893494bdf6ba0071a9929f23ae5d89f86a9c9fe61aa5dc0337cb::game::Lobby"
+				}
+			]
 		}
 	}
 };

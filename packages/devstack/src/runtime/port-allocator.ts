@@ -28,10 +28,8 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFile
 import { createServer } from 'node:net';
 import { dirname, resolve } from 'node:path';
 
-import type { PortAllocator, PortRequest } from '../core/types.js';
+import type { PortAllocator } from '../core/types.js';
 import { stackDir } from './active-stack.js';
-
-export type { PortAllocator, PortRequest };
 
 interface PortFile {
 	[slot: string]: number | number[];

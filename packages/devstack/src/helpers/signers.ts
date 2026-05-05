@@ -29,7 +29,7 @@ import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import type { AccountFactory } from '../core/types.js';
 import { loadOrGenerateKeypair } from './keystore.js';
 
-export interface CliSignerOptions {
+interface CliSignerOptions {
 	/** Alias from `sui.aliases`. Required: there's no "active alias" file in the sui CLI. */
 	alias: string;
 	/** Override the keystore file path. Defaults to `~/.sui/sui_config/sui.keystore`. */
@@ -64,7 +64,7 @@ export function cliSigner(opts: CliSignerOptions): Signer {
 	);
 }
 
-export interface EnvSignerOptions {
+interface EnvSignerOptions {
 	/** Env var name. Value is bech32 ('suiprivkey1...') or base64 (32 or 33 bytes). */
 	name: string;
 }

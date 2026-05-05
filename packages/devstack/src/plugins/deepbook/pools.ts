@@ -39,7 +39,7 @@ export interface DeepbookPoolSpec {
 	stable?: boolean;
 }
 
-export interface DeepbookPool {
+interface DeepbookPool {
 	name: string;
 	poolId: string;
 	objectType: string;
@@ -47,7 +47,7 @@ export interface DeepbookPool {
 	quoteCoinType: string;
 }
 
-export interface DeepbookNamespace {
+interface DeepbookNamespace {
 	pools: RegistryQuery<DeepbookPool>;
 	balanceManagers: RegistryQuery<{ name: string; objectId: string; owner: string }>;
 }
@@ -55,7 +55,7 @@ export interface DeepbookNamespace {
 export const deepbookNs = (registry: Registry): DeepbookNamespace =>
 	registry.ns<DeepbookNamespace>('deepbook');
 
-export interface DeepbookPoolsActionOptions {
+interface DeepbookPoolsActionOptions {
 	pools: ReadonlyArray<DeepbookPoolSpec>;
 	admin: string;
 	/** Cross-plugin needs added to the `['publish']` base set. Use to wait

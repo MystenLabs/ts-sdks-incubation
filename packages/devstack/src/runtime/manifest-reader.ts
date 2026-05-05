@@ -17,10 +17,10 @@ import type {
 	Service,
 } from '../core/types.js';
 import type { RegistryImpl } from '../registry/index.js';
-import type { SerializedActionState } from './manifest-types.js';
-import { type Manifest, manifestPath } from './manifest-writer.js';
+import type { Manifest, SerializedActionState } from './manifest-types.js';
+import { manifestPath } from './manifest-writer.js';
 
-export interface ReadManifestOptions {
+interface ReadManifestOptions {
 	appDir: string;
 	stack: string;
 	network: Network;
@@ -56,7 +56,7 @@ export function readManifest(opts: ReadManifestOptions): Manifest | null {
 	}
 }
 
-export interface HydrateOptions {
+interface HydrateOptions {
 	appDir: string;
 	stack: string;
 	network: Network;

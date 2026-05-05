@@ -26,7 +26,7 @@ import type {
 } from '../core/types.js';
 import { generatedKeypair } from '../helpers/signers.js';
 
-export interface ResolveAccountsOptions {
+interface ResolveAccountsOptions {
 	specs: AccountsConfig;
 	appDir: string;
 	stack: string;
@@ -101,7 +101,7 @@ export function resolveAccounts(opts: ResolveAccountsOptions): AccountsContext {
 
 /** Normalize the two `AccountsConfig` forms to the canonical
  * record-of-AccountSpec shape used internally. */
-export function normalizeAccountsConfig(specs: AccountsConfig): Record<string, AccountSpec> {
+function normalizeAccountsConfig(specs: AccountsConfig): Record<string, AccountSpec> {
 	if (Array.isArray(specs)) {
 		const out: Record<string, AccountSpec> = {};
 		for (const name of specs) out[name] = {};

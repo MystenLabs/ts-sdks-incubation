@@ -66,16 +66,19 @@ export function groupRegistryByProvider(
 	}
 	for (const pkg of reg.packages as PackageItem[]) {
 		if (pkg.providedBy === undefined || pkg.packageId === undefined) continue;
+		// Full packageId — truncating it ("0xab12…cdef") looks tidy but
+		// makes the row unusable: copy-pasting a truncated ID into a
+		// `sui client` command, MVR override, or a bug report fails.
 		push(pkg.providedBy, {
 			label: 'package',
-			value: `${pkg.name ?? ''} ${shortenId(pkg.packageId)}`.trim(),
+			value: `${pkg.name ?? ''} ${pkg.packageId}`.trim(),
 		});
 	}
 	for (const acc of reg.accounts as AccountItem[]) {
 		if (acc.providedBy === undefined || acc.address === undefined) continue;
 		push(acc.providedBy, {
 			label: 'account',
-			value: `${acc.name ?? ''} ${shortenId(acc.address)}`.trim(),
+			value: `${acc.name ?? ''} ${acc.address}`.trim(),
 		});
 	}
 	// Plugin-namespaced kinds (`walrus.nodes`, `seal.keys`, …). We
@@ -114,10 +117,3 @@ function shortServiceLabel(svc: ServiceItem): string {
 	return k;
 }
 
-/** Shorten 0x-prefixed Sui object/package IDs to `0xab12…cdef` so a
- * full 64-hex string doesn't dominate the row. Non-hex values pass
- * through unchanged. */
-function shortenId(id: string): string {
-	if (!id.startsWith('0x') || id.length < 12) return id;
-	return `${id.slice(0, 6)}…${id.slice(-4)}`;
-}

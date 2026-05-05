@@ -38,7 +38,7 @@ import {
 } from '../runtime/snapshot.js';
 import { loadConfig, parseConfigArg, parseStackArg, runIfMain } from './args.js';
 
-export interface SnapshotFlags {
+interface SnapshotFlags {
 	configPath: string;
 	subcommand: 'save' | 'restore' | 'list' | 'rm' | 'hash';
 	ref?: string;
@@ -50,7 +50,7 @@ export interface SnapshotFlags {
 	json?: boolean;
 }
 
-export async function runSnapshot(flags: SnapshotFlags): Promise<number> {
+async function runSnapshot(flags: SnapshotFlags): Promise<number> {
 	const abs = resolve(flags.configPath);
 	const config = await loadConfig(abs);
 	const appDir = dirname(abs);

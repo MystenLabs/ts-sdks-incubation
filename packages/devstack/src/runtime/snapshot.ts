@@ -46,7 +46,7 @@ import {
 import { stableHash } from './hash.js';
 import { stackDir } from './active-stack.js';
 
-export interface SnapshotContainerEntry {
+interface SnapshotContainerEntry {
 	/** Container name as it existed at capture time (e.g.,
 	 * `token-studio-main-sui`). Restore re-creates the container under
 	 * this name on the next `devstack up`. */
@@ -67,7 +67,7 @@ export interface SnapshotContainerEntry {
 	registryImage?: string;
 }
 
-export interface SnapshotEntry {
+interface SnapshotEntry {
 	id: string;
 	alias?: string;
 	createdAt: string;
@@ -77,7 +77,7 @@ export interface SnapshotEntry {
 	containers: SnapshotContainerEntry[];
 }
 
-export interface SnapshotIdInput {
+interface SnapshotIdInput {
 	appName: string;
 	stack: string;
 	/** Stable per-plugin metadata (name + version + options) used to derive
@@ -115,7 +115,7 @@ const aliasPath = (appDir: string, alias: string): string => resolve(aliasDir(ap
 const seedImageTag = (id: string, containerName: string): string =>
 	`devstack-snapshot/${id}/${containerName}:seeded`;
 
-export interface CaptureOptions {
+interface CaptureOptions {
 	appName: string;
 	appDir: string;
 	stack: string;
@@ -262,7 +262,7 @@ export async function captureSnapshot(opts: CaptureOptions): Promise<SnapshotEnt
 	return entry;
 }
 
-export interface RestoreOptions {
+interface RestoreOptions {
 	appName: string;
 	appDir: string;
 	stack: string;

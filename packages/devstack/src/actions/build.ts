@@ -5,7 +5,7 @@
 
 import type { ActionRunContext, BuildAction, Provides } from '../core/types.js';
 
-export interface BuildImageOptions<TInputs extends Record<string, unknown>> {
+interface BuildImageOptions<TInputs extends Record<string, unknown>> {
 	name: string;
 	needs?: string[];
 	provides?: Provides;
@@ -17,6 +17,7 @@ export interface BuildImageOptions<TInputs extends Record<string, unknown>> {
 	inputs: TInputs;
 	run: (ctx: ActionRunContext) => Promise<void>;
 	getStatus?: (ctx: ActionRunContext) => Promise<{ ok: boolean; detail?: string }>;
+	identity?: (ctx: ActionRunContext) => Promise<string | undefined>;
 }
 
 export function buildImage<TInputs extends Record<string, unknown>>(
@@ -31,5 +32,6 @@ export function buildImage<TInputs extends Record<string, unknown>>(
 		inputs: opts.inputs,
 		run: opts.run,
 		getStatus: opts.getStatus,
+		identity: opts.identity,
 	};
 }

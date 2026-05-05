@@ -5,13 +5,14 @@
 
 import type { ActionRunContext, Provides, ServiceAction } from '../core/types.js';
 
-export interface ServiceOptions<TInputs extends Record<string, unknown>> {
+interface ServiceOptions<TInputs extends Record<string, unknown>> {
 	name: string;
 	needs?: string[];
 	provides?: Provides;
 	inputs: TInputs;
 	run: (ctx: ActionRunContext) => Promise<void>;
 	getStatus?: (ctx: ActionRunContext) => Promise<{ ok: boolean; detail?: string }>;
+	identity?: (ctx: ActionRunContext) => Promise<string | undefined>;
 }
 
 export function service<TInputs extends Record<string, unknown>>(
@@ -25,5 +26,6 @@ export function service<TInputs extends Record<string, unknown>>(
 		inputs: opts.inputs,
 		run: opts.run,
 		getStatus: opts.getStatus,
+		identity: opts.identity,
 	};
 }

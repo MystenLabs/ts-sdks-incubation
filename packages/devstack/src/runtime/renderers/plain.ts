@@ -147,20 +147,22 @@ export class PlainRenderer implements Renderer {
 	}
 
 	setRegistry(snapshot: SerializedRegistry): void {
-		// Emit a one-time `→ <action> <outputs>` line per action whose
-		// outputs changed since last cycle. Outputs come from the
-		// registry filtered by `providedBy`: services contribute URLs,
-		// packages contribute packageIds. Quiet steady-state.
+		// Emit one line per registry output (`→ <action> <label> <value>`)
+		// for each action whose outputs changed. Splitting per output —
+		// rather than joining them all on one line — keeps long values
+		// (full packageIds, full addresses) from word-wrapping into the
+		// wrong column.
 		const byProvider = groupRegistryByProvider(snapshot);
 		for (const [name, outs] of byProvider) {
 			if (outs.length === 0) continue;
 			const key = JSON.stringify(outs);
 			if (this.outputsByAction.get(name) === key) continue;
 			this.outputsByAction.set(name, key);
-			const line = outs
-				.map((o) => `${this.style.gray(o.label)} ${this.style.cyan(o.value)}`)
-				.join(this.style.gray('  '));
-			this.stream.write(`${this.style.gray('→')} ${name} ${line}\n`);
+			for (const o of outs) {
+				this.stream.write(
+					`${this.style.gray('→')} ${name} ${this.style.gray(o.label)} ${this.style.cyan(o.value)}\n`,
+				);
+			}
 		}
 	}
 

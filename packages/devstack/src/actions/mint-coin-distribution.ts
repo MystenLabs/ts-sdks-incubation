@@ -18,7 +18,7 @@ import type { Provides, SeedAction } from '../core/types.js';
 import { openSuiRpcClient } from '../helpers/sui-client.js';
 import { seed } from './seed.js';
 
-export interface CoinDistributionEntry {
+interface CoinDistributionEntry {
 	/** Account name registered in `DevstackConfig.accounts`. */
 	recipient: string;
 	/** Mint amount in raw units (i.e. with the coin's decimals already
@@ -26,7 +26,7 @@ export interface CoinDistributionEntry {
 	amount: bigint;
 }
 
-export interface CoinDistributionSpec {
+interface CoinDistributionSpec {
 	/** Registry name of the published Move package (matches
 	 * `publishMove({ name })` or `registryAs:`). */
 	package: string;
@@ -39,7 +39,7 @@ export interface CoinDistributionSpec {
 	distribution: ReadonlyArray<CoinDistributionEntry>;
 }
 
-export interface MintCoinDistributionOptions {
+interface MintCoinDistributionOptions {
 	name: string;
 	needs?: string[];
 	provides?: Provides;

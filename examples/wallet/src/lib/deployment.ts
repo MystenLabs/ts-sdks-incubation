@@ -78,6 +78,12 @@ export const deployment = {
 	coins: allCoins,
 	pools,
 	deepbookPackageId: packages.find((p) => p.name === 'deepbook')?.packageId,
+	// Captured by the deepbook plugin's publish action — the
+	// `Registry` shared object the SDK needs alongside `DEEPBOOK_PACKAGE_ID`
+	// to bind pool keys to on-chain pool ids.
+	deepbookRegistryId: packages.find((p) => p.name === 'deepbook')?.captured?.['registryId'] as
+		| string
+		| undefined,
 } as const;
 
 export const isDeployed: boolean = Object.keys(deployment.accounts).length > 0;

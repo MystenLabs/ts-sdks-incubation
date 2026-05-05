@@ -70,6 +70,7 @@ const makeCtx = (
 		appDir: '/tmp/wallet',
 		registry,
 		accounts,
+		inputHash: 'test',
 	};
 	return network === 'localnet'
 		? {

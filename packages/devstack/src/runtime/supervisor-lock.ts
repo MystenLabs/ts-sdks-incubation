@@ -29,7 +29,7 @@ import { stackDir } from './active-stack.js';
 const writeAsync = promisify(write);
 const closeAsync = promisify(close);
 
-export interface SupervisorLockOptions {
+interface SupervisorLockOptions {
 	appDir: string;
 	stack: string;
 }
@@ -46,7 +46,7 @@ export interface SupervisorLockHandle {
 /** Returned by `inspectSupervisorLock` when an existing lockfile is
  * found. The caller decides whether to replace (dead PID) or refuse
  * (live PID). */
-export interface SupervisorLockState {
+interface SupervisorLockState {
 	pid: number;
 	alive: boolean;
 }

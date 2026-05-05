@@ -38,8 +38,8 @@ describe('runOneShot — actionFilter', () => {
 			plugins: [plugin],
 		});
 
-		expect(result.statuses.get('p.r')).toBe('healthy');
-		expect(result.statuses.get('p.e')).toBe('healthy');
+		expect(result.statuses.get('p.r')).toBe('ok');
+		expect(result.statuses.get('p.e')).toBe('ok');
 	});
 
 	it('emitOnlyFilter drops non-Emit actions', async () => {
@@ -75,7 +75,7 @@ describe('runOneShot — actionFilter', () => {
 		expect(registerRan).toBe(false);
 		expect(emitRan).toBe(true);
 		expect(result.statuses.has('p.r')).toBe(false);
-		expect(result.statuses.get('p.e')).toBe('healthy');
+		expect(result.statuses.get('p.e')).toBe('ok');
 	});
 
 	it('readOnly: true skips writing the manifest', async () => {

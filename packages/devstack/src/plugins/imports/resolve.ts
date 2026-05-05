@@ -23,14 +23,14 @@ import { join } from 'node:path';
 import { ensureUpstreamSourceImage, extractUpstreamSource } from '../../helpers/upstream-source.js';
 import { type GitDep, parseMoveToml } from './move-toml.js';
 
-export interface ResolveSeed {
+interface ResolveSeed {
 	name: string;
 	repo: string;
 	rev: string;
 	subdir: string;
 }
 
-export interface ResolvedImport {
+interface ResolvedImport {
 	/** Stable key — `<repo>@<rev>:<subdir>`. */
 	key: string;
 	/** Logical name. Top-level imports keep their declared name; transitive
@@ -43,7 +43,7 @@ export interface ResolvedImport {
 	depKeys: string[];
 }
 
-export interface ResolveResult {
+interface ResolveResult {
 	/** Topo-sorted: deps before dependents. */
 	resolved: ResolvedImport[];
 }

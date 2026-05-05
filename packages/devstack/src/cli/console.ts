@@ -37,7 +37,8 @@ import { Transaction } from '@mysten/sui/transactions';
 import type { DevstackConfig, Network, Package, Service } from '../core/types.js';
 import { resolveAccounts } from '../runtime/accounts.js';
 import { readManifest } from '../runtime/manifest-reader.js';
-import { type Manifest, manifestPath } from '../runtime/manifest-writer.js';
+import type { Manifest } from '../runtime/manifest-types.js';
+import { manifestPath } from '../runtime/manifest-writer.js';
 import {
 	loadConfig,
 	parseConfigArg,
@@ -50,7 +51,7 @@ import { resolveTarget } from './target.js';
 
 const DEFAULT_CODEGEN_DIR = 'src/generated/sui';
 
-export interface ConsoleFlags {
+interface ConsoleFlags {
 	configPath: string;
 	network: Network;
 	codegenDir: string;
@@ -58,7 +59,7 @@ export interface ConsoleFlags {
 	target?: string | undefined;
 }
 
-export async function runConsole(flags: ConsoleFlags): Promise<number> {
+async function runConsole(flags: ConsoleFlags): Promise<number> {
 	const abs = resolve(flags.configPath);
 	const config = await loadConfig(abs);
 	const appDir = dirname(abs);

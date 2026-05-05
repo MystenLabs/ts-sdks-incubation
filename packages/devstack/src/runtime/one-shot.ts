@@ -42,7 +42,7 @@ import { manifestPath, writeManifest } from './manifest-writer.js';
 import { createPortAllocator } from './port-allocator.js';
 import { Reconciler } from './reconcile.js';
 
-export interface OneShotOptions {
+interface OneShotOptions {
 	appName: string;
 	appDir: string;
 	network: Network;
@@ -78,7 +78,7 @@ export interface OneShotOptions {
 	actionScope?: string[];
 }
 
-export interface OneShotResult {
+interface OneShotResult {
 	statuses: Map<string, ActionStatus>;
 	failures: Map<string, Error>;
 	manifestPath: string;

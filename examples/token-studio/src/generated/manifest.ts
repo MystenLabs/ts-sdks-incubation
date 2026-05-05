@@ -15,11 +15,86 @@ export const manifest: Manifest = {
 	"network": "localnet",
 	"emittedAt": "",
 	"registry": {
-		"packages": [],
-		"accounts": [],
-		"services": [],
+		"packages": [
+			{
+				"name": "managed_coin",
+				"packageId": "0xd68fcec0bc0ef2d0854ddb50a60fd9bc55054f53abc464833688ee124c20486f",
+				"captured": {
+					"treasuryCapId": "0x374b2594ac08e78b7811d4822005ecea428564bc92dfa4b25c7b6e8548c526a5",
+					"metadataId": "0x4903ca93b5456f0d960ae66956bd60d97d570c93bec30ffb17d0bd5d4b1da7af",
+					"upgradeCapId": "0xec49c90c4782b79242199de64f937621fbf5ec6694f369e939226b328bf2ed01"
+				},
+				"sourceDigest": "57e9266687abc479bec2cd0cd3fe875c2c7d80b02c784f4ffa259a1d189433b6",
+				"chainId": "10ecfa85",
+				"network": "localnet",
+				"path": "/Users/michaelhayes/code/ts-sdks-incubation/examples/token-studio/move/managed_coin",
+				"mvrPlaceholder": "@local/managed-coin"
+			}
+		],
+		"accounts": [
+			{
+				"name": "alice",
+				"address": "0x171f60f4513b0721cb754b44855cd1d6db0d839a2814823d3c0eadf6d3bbe734",
+				"funded": true
+			},
+			{
+				"name": "bob",
+				"address": "0xa5b9135166a0ca3e1aa49c22327237c5f0b43115531af671cfac76dc441dca2f",
+				"funded": true
+			},
+			{
+				"name": "carol",
+				"address": "0x4ae0fbae4e05500b6e2cd1500cac0420720270629cb03f34cfeb4273fd1ff739",
+				"funded": true
+			}
+		],
+		"services": [
+			{
+				"name": "sui-rpc",
+				"kind": "sui-rpc",
+				"url": "http://127.0.0.1:9059",
+				"port": 9059,
+				"endpointLabel": "Sui JSON-RPC + gRPC"
+			},
+			{
+				"name": "sui-grpc",
+				"kind": "sui-grpc",
+				"url": "http://127.0.0.1:9059",
+				"port": 9059,
+				"endpointLabel": "Sui gRPC (sui.rpc.v2.LedgerService)"
+			},
+			{
+				"name": "sui-faucet",
+				"kind": "sui-faucet",
+				"url": "http://127.0.0.1:9984",
+				"port": 9984,
+				"endpointLabel": "Sui faucet"
+			},
+			{
+				"name": "wallet-server",
+				"kind": "wallet-server",
+				"url": "http://localhost:9422",
+				"port": 9422,
+				"endpointLabel": "http://localhost:9422/?token=82f93a390a5a9b1612728d19ef9ce7307068e85a5144239e5ba0d5aa9e9ae2a1"
+			},
+			{
+				"name": "dev-server",
+				"kind": "dev-server",
+				"url": "http://localhost:5173",
+				"port": 5173
+			}
+		],
+		"tokens": {
+			"0": []
+		},
 		"coin": {
-			"tokens": []
+			"tokens": [
+				{
+					"name": "managed_coin",
+					"type": "0xd68fcec0bc0ef2d0854ddb50a60fd9bc55054f53abc464833688ee124c20486f::managed_coin::MANAGED_COIN",
+					"decimals": 6
+				}
+			]
 		}
 	}
 };

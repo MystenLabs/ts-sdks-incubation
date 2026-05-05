@@ -7,7 +7,7 @@
 
 import type { ActionRunContext, Provides, VerifyAction } from '../core/types.js';
 
-export interface VerifyOptions<TInputs extends Record<string, unknown>> {
+interface VerifyOptions<TInputs extends Record<string, unknown>> {
 	name: string;
 	needs?: string[];
 	provides?: Provides;

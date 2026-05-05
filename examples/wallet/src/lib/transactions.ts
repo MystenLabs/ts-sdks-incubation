@@ -1,8 +1,11 @@
+import { DeepBookClient } from '@mysten/deepbook-v3';
+import type { CoinMap, PoolMap } from '@mysten/deepbook-v3';
+import type { ClientWithCoreApi } from '@mysten/sui/client';
 import { Transaction } from '@mysten/sui/transactions';
 
-// Sui's system Clock object — required by DeepBook entry functions that use
-// timestamps for matching (passed by reference, not consumed).
-const SUI_CLOCK_OBJECT_ID = '0x6';
+import { deployment } from './deployment.js';
+
+const SUI_COIN_TYPE = '0x2::sui::SUI';
 
 /**
  * Build a transaction that sends `amount` (raw base units) of `coinType` to
@@ -24,71 +27,128 @@ export async function buildSendTx(args: {
 }
 
 /**
- * Build a swap transaction against a DeepBook v3 pool. Splits `amountIn`
- * worth of `inCoinType` from the sender's owned coins (or `tx.gas` if SUI),
- * passes a zero `Coin<DEEP>` placeholder (whitelisted pools waive DEEP fees),
- * calls `pool::swap_exact_base_for_quote` or `swap_exact_quote_for_base`
- * depending on direction, and transfers the returned coins back.
+ * Memoized DeepBook SDK client. Built lazily from the manifest the first
+ * time a swap fires — re-keyed per `(suiClient, sender)` because the SDK
+ * stamps the sender on every produced tx via `setSenderIfNotSet` (the
+ * actual signer is still the wallet, but the SDK uses this for things
+ * like pre-flight balance lookups).
  *
- * The pool's argument order is fixed: base first, deep second, min_out third.
- * `min_out` is a slippage guard; pass 0 for "any output" or compute from a
- * pre-quote.
+ * The SDK takes a coin/pool registry keyed by symbol/alias rather than by
+ * type/objectId; we project the wallet's `deployment` shape into those
+ * keys here. Localnet has no pre-baked coin map (the upstream
+ * `mainnetCoins` / `testnetCoins` defaults reference real-network coin
+ * objects), so we provide our own.
+ */
+let cached: { suiClient: ClientWithCoreApi; sender: string; client: DeepBookClient } | null = null;
+
+function getDeepBookClient(suiClient: ClientWithCoreApi, sender: string): DeepBookClient {
+	if (cached !== null && cached.suiClient === suiClient && cached.sender === sender) {
+		return cached.client;
+	}
+	const { deepbookPackageId, deepbookRegistryId } = deployment;
+	if (deepbookPackageId === undefined) {
+		throw new Error('deepbook package not in manifest — run `pnpm localnet:up`');
+	}
+	if (deepbookRegistryId === undefined) {
+		throw new Error('deepbook registry id not captured in manifest');
+	}
+
+	// Coin map keyed by symbol. SUI + DEEP land first; everything else
+	// flows from the registry's coin tokens. `--with-unpublished-deps`
+	// bakes the `token` sub-package under the parent address, so DEEP
+	// lives at the deepbook package id. DEEP_SCALAR is 1e6 per the SDK
+	// constants — the SDK uses it to convert human-readable values into
+	// on-chain u64 (we always pass `bigint`, which the SDK uses raw).
+	const coins: CoinMap = {
+		SUI: { address: '0x2', type: SUI_COIN_TYPE, scalar: 1_000_000_000 },
+		DEEP: {
+			address: deepbookPackageId,
+			type: `${deepbookPackageId}::deep::DEEP`,
+			scalar: 1_000_000,
+		},
+	};
+	for (const c of deployment.coins) {
+		if (c.coinType === SUI_COIN_TYPE) continue;
+		const address = c.coinType.split('::')[0];
+		if (address === undefined) continue;
+		coins[c.symbol] = { address, type: c.coinType, scalar: 10 ** c.decimals };
+	}
+
+	// Pool map keyed by alias. The SDK looks coins up by symbol, so we
+	// reverse-map our pool's coin types into the symbols above. A pool
+	// whose base/quote coin isn't in the wallet's deployment surface is
+	// a bug in the manifest projection — fail loudly.
+	const symbolByType = new Map<string, string>();
+	for (const [key, v] of Object.entries(coins)) symbolByType.set(v.type, key);
+	const pools: PoolMap = {};
+	for (const p of deployment.pools) {
+		const baseSymbol = symbolByType.get(p.baseCoinType);
+		const quoteSymbol = symbolByType.get(p.quoteCoinType);
+		if (baseSymbol === undefined || quoteSymbol === undefined) {
+			throw new Error(
+				`pool ${p.alias}: ${p.baseCoinType} / ${p.quoteCoinType} not in coin map`,
+			);
+		}
+		pools[p.alias] = { address: p.poolId, baseCoin: baseSymbol, quoteCoin: quoteSymbol };
+	}
+
+	const client = new DeepBookClient({
+		client: suiClient,
+		address: sender,
+		// `network: 'localnet'` is rejected by the default-config branch
+		// (the SDK only ships mainnet/testnet defaults), so we provide an
+		// explicit `packageIds` and the network field is just metadata.
+		network: 'localnet',
+		coins,
+		pools,
+		packageIds: {
+			DEEPBOOK_PACKAGE_ID: deepbookPackageId,
+			REGISTRY_ID: deepbookRegistryId,
+			// DEEP_TREASURY_ID is unused for the whitelisted-pool swap
+			// path (`deepAmount: 0` produces a zero `Coin<DEEP>` via
+			// `coinWithBalance`, which never touches the treasury).
+			DEEP_TREASURY_ID: '0x0',
+		},
+	});
+
+	cached = { suiClient, sender, client };
+	return client;
+}
+
+/**
+ * Build a swap transaction against a DeepBook v3 pool using the
+ * official SDK. Whitelisted-pool path: `deepAmount: 0` makes the SDK
+ * emit a zero `Coin<DEEP>` placeholder; pools created by the
+ * devstack `deepbook()` plugin have `whitelisted: true` so the
+ * matcher waives the DEEP fee.
+ *
+ * The SDK accepts `amount` / `minOut` as either `number` (multiplied
+ * by the coin's `scalar` = 10^decimals) or `bigint` (used raw on-
+ * chain). We pass `bigint` so the caller stays in raw base units —
+ * matching what the form's `parseCoinAmount` already produces and
+ * keeping rounding behavior in the caller's hands.
  */
 export async function buildDeepbookSwapTx(args: {
+	suiClient: ClientWithCoreApi;
 	sender: string;
-	deepbookPackageId: string;
-	poolId: string;
-	baseCoinType: string;
-	quoteCoinType: string;
+	poolAlias: string;
 	direction: 'base_to_quote' | 'quote_to_base';
 	amountIn: bigint;
 	minOut: bigint;
 }): Promise<Transaction> {
-	const {
-		sender,
-		deepbookPackageId,
-		poolId,
-		baseCoinType,
-		quoteCoinType,
-		direction,
-		amountIn,
-		minOut,
-	} = args;
-
-	const inCoinType = direction === 'base_to_quote' ? baseCoinType : quoteCoinType;
+	const { suiClient, sender, poolAlias, direction, amountIn, minOut } = args;
+	const dbc = getDeepBookClient(suiClient, sender);
 	const tx = new Transaction();
-
-	// `tx.coin({ useGasCoin: false })` resolves via address-balance withdrawal
-	// when available, owned coin objects otherwise. Works in both coin-mode
-	// gas and address-balance gas paths.
-	const inCoin = tx.coin({ balance: amountIn, type: inCoinType, useGasCoin: false });
-
-	// `--with-unpublished-dependencies` inlines DeepBook's `token` sub-package
-	// under the parent's address, so DEEP type lives at deepbookPackageId.
-	const deepCoinType = `${deepbookPackageId}::deep::DEEP`;
-	const zeroDeep = tx.moveCall({
-		target: '0x2::coin::zero',
-		typeArguments: [deepCoinType],
-	});
-
-	const target =
+	const swap =
 		direction === 'base_to_quote'
-			? `${deepbookPackageId}::pool::swap_exact_base_for_quote`
-			: `${deepbookPackageId}::pool::swap_exact_quote_for_base`;
-	const [outBase, outQuote, outDeep] = tx.moveCall({
-		target,
-		typeArguments: [baseCoinType, quoteCoinType],
-		arguments: [
-			tx.object(poolId),
-			inCoin,
-			zeroDeep,
-			tx.pure.u64(minOut),
-			tx.object(SUI_CLOCK_OBJECT_ID),
-		],
-	});
-	if (!outBase || !outQuote || !outDeep) {
-		throw new Error('swap returned unexpected result shape');
-	}
+			? dbc.deepBook.swapExactBaseForQuote
+			: dbc.deepBook.swapExactQuoteForBase;
+	const [outBase, outQuote, outDeep] = swap({
+		poolKey: poolAlias,
+		amount: amountIn,
+		deepAmount: 0n,
+		minOut,
+	})(tx);
 	tx.transferObjects([outBase, outQuote, outDeep], sender);
 	return tx;
 }

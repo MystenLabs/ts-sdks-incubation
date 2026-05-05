@@ -11,7 +11,7 @@ import type {
 	SetupActionScope,
 } from '../core/types.js';
 
-export interface SeedOptions<TInputs extends Record<string, unknown>> {
+interface SeedOptions<TInputs extends Record<string, unknown>> {
 	name: string;
 	needs?: string[];
 	provides?: Provides;
@@ -37,6 +37,7 @@ export interface SeedOptions<TInputs extends Record<string, unknown>> {
 	scope?: SetupActionScope;
 	run: (ctx: ActionRunContext) => Promise<void>;
 	getStatus?: (ctx: ActionRunContext) => Promise<{ ok: boolean; detail?: string }>;
+	identity?: (ctx: ActionRunContext) => Promise<string | undefined>;
 }
 
 export function seed<TInputs extends Record<string, unknown>>(
@@ -53,6 +54,7 @@ export function seed<TInputs extends Record<string, unknown>>(
 		...(opts.scope !== undefined ? { scope: opts.scope } : {}),
 		run: opts.run,
 		getStatus: opts.getStatus,
+		identity: opts.identity,
 	};
 }
 

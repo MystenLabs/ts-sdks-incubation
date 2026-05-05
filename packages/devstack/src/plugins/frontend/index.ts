@@ -29,7 +29,7 @@ import type { ActionRunContext } from '../../core/types.js';
 import { requireLocalnetCtx } from '../../core/types.js';
 import { definePlugin } from '../../plugin.js';
 
-export interface FrontendPluginOptions {
+interface FrontendPluginOptions {
 	/** Dev-server port. Default 5173 (vite's default). The plugin
 	 * passes this as `--port` so the URL matches the manifest's
 	 * `services.<n>.url` lookup. Pass `appendPort: false` to skip the
@@ -193,7 +193,7 @@ function sleep(ms: number): Promise<void> {
 	return new Promise((r) => setTimeout(r, ms));
 }
 
-export function streamLines(child: ChildProcess, log: (line: string) => void): void {
+function streamLines(child: ChildProcess, log: (line: string) => void): void {
 	const wire = (stream: NodeJS.ReadableStream | null): void => {
 		if (stream === null) return;
 		let buffer = '';
@@ -217,7 +217,7 @@ export function streamLines(child: ChildProcess, log: (line: string) => void): v
 }
 
 const ANSI_RE = /\x1b\[[0-9;?]*[a-zA-Z]/g;
-export function stripAnsi(s: string): string {
+function stripAnsi(s: string): string {
 	// Vite (and most dev servers) emit ANSI color codes + cursor moves.
 	// The renderer's panel-redraw assumes plain text in `appendLog`, so
 	// we strip.

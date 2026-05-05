@@ -5,7 +5,7 @@
 
 import type { DevstackConfig, Network } from '../core/types.js';
 
-export interface NetworkProfile {
+interface NetworkProfile {
 	rpcUrl: string;
 }
 

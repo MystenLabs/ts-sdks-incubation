@@ -17,7 +17,6 @@ import {
 	publishMove,
 	seed,
 	sui,
-	verify,
 	walletServer,
 } from '@mysten-incubation/devstack';
 import { createLocalSuiClient, seedSharedObject } from '@mysten-incubation/devstack/helpers';
@@ -51,15 +50,18 @@ export default defineDevstackConfig({
 			needs: ['accounts.fund'],
 			path: CONNECT_FOUR_DIR,
 		}),
-		// Seed one shared `Lobby` so a fresh `devstack up` gives players
-		// something to join immediately. Hash-match skip handles the
-		// "already seeded, nothing changed" case via persisted state in
-		// the manifest. The paired `verify()` below independently checks
-		// that the seeded Lobby is still on-chain — an invariant probe,
-		// not an idempotence check (the Lobby could be consumed off-chain
-		// by a `join_lobby` call without any input change devstack can
-		// see). On `ok: false` the verify fails the cycle loudly; the
-		// user re-seeds with `devstack apply --actions arena.openLobby`.
+		// One-shot bootstrap: seed a single shared `Lobby` so `devstack
+		// up` gives players something to join on first boot. Hash-match
+		// skip is the steady-state path — once a lobby is in the
+		// manifest, the input hash matches and the action is a no-op,
+		// even after the lobby is joined and consumed off-chain. Lobby
+		// lifecycle from there is the app's UI concern (a "Create
+		// lobby" button), not the devstack cycle's: legitimate
+		// consumption should not fail / re-fire setup. The cascade DOES
+		// fire when it should — a republish of `connect_four` (chain
+		// regenesis) flips this action's input hash through the
+		// identity edge on `needs: ['connect_four']`, so a fresh chain
+		// gets a fresh lobby automatically.
 		seed({
 			name: 'openLobby',
 			needs: ['connect_four'],
@@ -81,30 +83,6 @@ export default defineDevstackConfig({
 					objectId: result.objectId,
 					objectType: result.objectType,
 				});
-			},
-		}),
-		// Invariant: the seeded Lobby exists on-chain with the expected
-		// type. Verify runs every cycle — failures here mean someone
-		// consumed the Lobby off-chain (a `join_lobby` call) and a
-		// re-seed is needed.
-		verify({
-			name: 'openLobbyAlive',
-			needs: ['openLobby'],
-			check: async (ctx) => {
-				const pkg = ctx.registry.packages.find('connect_four');
-				if (pkg === undefined) return { ok: false, detail: 'connect_four not published' };
-				const cached = arenaSharedObjects(ctx.registry).find('openLobby');
-				if (cached === undefined) return { ok: false, detail: 'no cached lobby' };
-				const expectedType = `${pkg.packageId}::game::Lobby`;
-				if (cached.objectType !== expectedType) {
-					return { ok: false, detail: 'lobby type stale (republished?)' };
-				}
-				const client = createLocalSuiClient(ctx.registry.services.require('sui-rpc').url);
-				const live = await client.getObject({ id: cached.objectId });
-				if (live.data === null || live.data === undefined) {
-					return { ok: false, detail: `lobby ${cached.objectId} not on chain` };
-				}
-				return { ok: true, detail: cached.objectId };
 			},
 		}),
 	],

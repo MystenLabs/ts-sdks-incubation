@@ -100,7 +100,16 @@ describe('createPortAllocator (disk-backed)', () => {
 			const file = JSON.parse(
 				readFileSync(resolve(appDir, '.devstack/stacks/main/ports.json'), 'utf8'),
 			);
-			expect(file['walrus.node']).toEqual([19185, 19186, 19187, 19188]);
+			// Don't assert the specific ports — `preferred: 19185` is a
+			// hint the kernel is free to ignore (port already in use on
+			// this host's loopback). What we DO need to verify is the
+			// shape: an array of 4 contiguous ports.
+			const ports = file['walrus.node'];
+			expect(Array.isArray(ports)).toBe(true);
+			expect(ports).toHaveLength(4);
+			for (let i = 1; i < ports.length; i++) {
+				expect(ports[i]).toBe(ports[0] + i);
+			}
 		});
 	});
 

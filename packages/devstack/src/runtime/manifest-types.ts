@@ -28,6 +28,12 @@ export interface Manifest {
 export interface SerializedActionState {
 	lastInputHash: string;
 	lastRunAt?: number;
+	/** Last identity this action exposed via its `identity(ctx)` hook.
+	 * Round-trips through the manifest so cold starts cascade correctly:
+	 * when a downstream's `needs:` chain has a different upstream
+	 * identity than what it last hashed against, its input hash
+	 * mismatches and it re-runs without any per-action chain probe. */
+	identity?: string;
 }
 
 export interface SerializedRegistry {

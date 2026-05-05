@@ -14,6 +14,13 @@
 // inside `run`, so even when the action does run, it skips the actual
 // chain publish when nothing structural changed.
 //
+// Chain regenesis (sui-localnet image bump → fresh genesis) is handled
+// at the supervisor level via the `<stackDir>/.chain-anchor` purge:
+// the supervisor compares the live chainId against the anchor and, on
+// mismatch, drops the registry's chain-bound state and the persisted
+// reconciler state, so the next cycle re-runs every action with a
+// clean slate. Per-action chain probes here would duplicate that.
+//
 // Plugin authors who need a custom shape (the imports plugin's
 // curated-address path on live nets, seal's `prepareSource` flow) use
 // `prepareSource` to swap the source-materialization step.
@@ -44,7 +51,7 @@ export interface PublishInputs extends Record<string, unknown> {
 	sourceDigest?: string;
 }
 
-export interface PublishOptions {
+interface PublishOptions {
 	name: string;
 	needs?: string[];
 	provides?: Provides;
@@ -97,6 +104,10 @@ export interface PublishOptions {
 	 * orthogonal invariant to check (e.g. a downstream object the
 	 * publish created might be destroyed off-chain). */
 	getStatus?: (ctx: ActionRunContext) => Promise<{ ok: boolean; detail?: string }>;
+	/** Optional identity override. Default = registered `packageId`,
+	 * which is what every downstream Register/Seed/Move-call reads, so
+	 * a republish auto-cascades. */
+	identity?: (ctx: ActionRunContext) => Promise<string | undefined>;
 }
 
 export function publish(opts: PublishOptions): PublishAction<PublishInputs> {
@@ -108,15 +119,39 @@ export function publish(opts: PublishOptions): PublishAction<PublishInputs> {
 		publisher: publisherAccount,
 		sourceDigest: digestAtExpansion(opts.path, opts.prepareSource !== undefined),
 	};
+	// Auto `provides.registry`: every Publish action re-registers its
+	// package from manifest-hydrated state on the warm-skip path. The
+	// reconciler's per-action registry proxy then stamps `providedBy`
+	// onto it, which is what wires the package into the supervisor's
+	// status row outputs (`package <name> <packageId>`). Without this,
+	// a warm cycle (publish.getStatus → ok, no run) leaves the
+	// hydrated entry's `providedBy` un-refreshed and the row shows no
+	// outputs. Plugins can still pass their own `provides.registry`
+	// for additional rehydrate work — we run the auto-hook first.
+	const provides: Provides = {
+		...(opts.provides?.capabilities !== undefined && {
+			capabilities: opts.provides.capabilities,
+		}),
+		registry: async (ctx) => {
+			const existing = ctx.registry.packages.find(registryName);
+			if (existing !== undefined) ctx.registry.packages.register(existing);
+			if (opts.provides?.registry !== undefined) {
+				await opts.provides.registry(ctx);
+			}
+		},
+	};
 	return {
 		name: opts.name,
 		type: 'Publish',
 		needs: opts.needs,
-		provides: opts.provides,
+		provides,
 		path: opts.path,
 		runsAs: publisherAccount,
 		inputs,
 		getStatus: opts.getStatus,
+		identity:
+			opts.identity ??
+			(async (ctx) => ctx.registry.packages.find(registryName)?.packageId),
 		run: async (ctx) => {
 			// Publish runs on every network. On localnet, the build step
 			// shells `sui move build` inside the localnet container — no

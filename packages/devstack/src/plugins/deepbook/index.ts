@@ -35,7 +35,7 @@ import { deepbookSourceAction } from './source.js';
 
 const DEFAULT_REV = 'v7.0.0';
 
-export interface DeepbookPluginOptions {
+interface DeepbookPluginOptions {
 	/** Pinned deepbookv3 git ref. Default `'v7.0.0'`. Bumping this re-fetches
 	 * + rebuilds the source image and re-publishes the package. */
 	rev?: string;
@@ -112,5 +112,3 @@ export const deepbook = (opts: DeepbookPluginOptions = {}) => {
 	});
 };
 
-export type { DeepbookPoolSpec } from './pools.js';
-export type { DeepbookMarketMakerSpec } from './market-maker.js';

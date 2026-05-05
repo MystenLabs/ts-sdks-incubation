@@ -21,7 +21,7 @@ const CAPTURE = {
 	adminCapId: '::registry::DeepbookAdminCap',
 } as const;
 
-export interface DeepbookPublishOptions {
+interface DeepbookPublishOptions {
 	rev: string;
 	admin: string;
 }
@@ -70,6 +70,7 @@ export function deepbookPublishAction(opts: DeepbookPublishOptions): PublishActi
 				publisher,
 				capture: CAPTURE,
 				prior: buildPriorEntry(ctx.registry.packages.find('deepbook')),
+				appendLog: ctx.appendLog,
 			});
 			ctx.registry.packages.register({
 				name: 'deepbook',
