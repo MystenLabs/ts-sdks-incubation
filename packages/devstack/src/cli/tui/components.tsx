@@ -15,14 +15,13 @@ import { useEffect, useState, useSyncExternalStore } from 'react';
 import { Box, Static, Text } from 'ink';
 import Spinner from 'ink-spinner';
 
-import type {
-	Action,
-	ActionEndpoint,
-	ActionStatus,
-	ActionType,
-} from '../../core/types.js';
+import type { Action, ActionStatus } from '../../core/types.js';
 import { formatMs } from '../../runtime/renderers/plain.js';
 import { type InkColor, buildPluginColorMap } from '../../runtime/renderers/plugin-colors.js';
+import {
+	type RegistryOutput,
+	groupRegistryByProvider,
+} from '../../runtime/renderers/registry-outputs.js';
 import type { Store, TuiState } from './store.js';
 
 /** Plugin color lookup derived from the current `pluginOrder`.
@@ -36,7 +35,7 @@ const STATUS_GLYPH: Record<ActionStatus, string> = {
 	idle: '·',
 	queued: '·',
 	running: '⟳',
-	healthy: '✓',
+	ok: '✓',
 	failed: '✗',
 	skipped: '–',
 	stale: '⟲',
@@ -45,25 +44,14 @@ const STATUS_GLYPH: Record<ActionStatus, string> = {
 
 /** Mapping for the status word in the row. `idle/queued/skipped` get
  * undefined (caller renders with `<Text dimColor>` for theme-portable
- * gray); `running/healthy/failed/stale/dirty` get explicit colors so
- * the eye lands on them. */
+ * gray); `running/ok/failed/stale/dirty` get explicit colors so the
+ * eye lands on them. */
 const STATUS_INK_COLOR: Partial<Record<ActionStatus, InkColor>> = {
 	running: 'cyan',
-	healthy: 'green',
+	ok: 'green',
 	failed: 'red',
 	stale: 'yellow',
 	dirty: 'yellow',
-};
-
-const TYPE_GLYPH: Record<ActionType, string> = {
-	Service: '◆',
-	Build: '⌬',
-	Publish: '↗',
-	Register: '⊞',
-	Seed: '✱',
-	Emit: '→',
-	HostProcess: '⚙',
-	Verify: '✓',
 };
 
 function useStore(store: Store): TuiState {
@@ -108,10 +96,10 @@ export function Header({ store }: { store: Store }): React.ReactElement {
 					<Text dimColor>rpc —</Text>
 				)}
 				<Box flexGrow={1} />
-				<Text color="green">{counts.healthy}</Text>
+				<Text color="green">{counts.ok}</Text>
 				<Text dimColor>/</Text>
 				<Text>{counts.total}</Text>
-				<Text dimColor> healthy</Text>
+				<Text dimColor> ok</Text>
 				{counts.running > 0 && (
 					<>
 						<Text dimColor> · </Text>
@@ -132,16 +120,16 @@ export function Header({ store }: { store: Store }): React.ReactElement {
 }
 
 interface StatusCounts {
-	healthy: number;
+	ok: number;
 	running: number;
 	failed: number;
 	total: number;
 }
 
 function countByStatus(state: TuiState): StatusCounts {
-	const c: StatusCounts = { healthy: 0, running: 0, failed: 0, total: state.actions.length };
+	const c: StatusCounts = { ok: 0, running: 0, failed: 0, total: state.actions.length };
 	for (const [, s] of state.statuses) {
-		if (s === 'healthy') c.healthy++;
+		if (s === 'ok') c.ok++;
 		else if (s === 'running') c.running++;
 		else if (s === 'failed') c.failed++;
 	}
@@ -153,6 +141,11 @@ export function StatusTable({ store }: { store: Store }): React.ReactElement {
 	useTick(250);
 	const groups = groupByPlugin(state.actions);
 	const colors = usePluginColors(state);
+	// Resolve registry-derived outputs for every action once per render
+	// (cheap snapshot walk) so each StatusRow can pull its own slice
+	// without each one re-walking the registry.
+	const outputs =
+		state.registry !== null ? groupRegistryByProvider(state.registry) : new Map();
 	return (
 		<Box flexDirection="column" paddingX={1}>
 			{groups.map(({ plugin, actions }) => (
@@ -162,6 +155,7 @@ export function StatusTable({ store }: { store: Store }): React.ReactElement {
 					actions={actions}
 					state={state}
 					color={colors.get(plugin) ?? 'gray'}
+					outputs={outputs}
 				/>
 			))}
 		</Box>
@@ -192,14 +186,15 @@ function PluginGroup(props: {
 	actions: Action[];
 	state: TuiState;
 	color: InkColor;
+	outputs: Map<string, RegistryOutput[]>;
 }): React.ReactElement {
-	const { plugin, actions, state, color } = props;
+	const { plugin, actions, state, color, outputs } = props;
 	let healthy = 0;
 	let running = 0;
 	let failed = 0;
 	for (const a of actions) {
 		const s = state.statuses.get(a.name);
-		if (s === 'healthy') healthy++;
+		if (s === 'ok') healthy++;
 		else if (s === 'running') running++;
 		else if (s === 'failed') failed++;
 	}
@@ -227,26 +222,35 @@ function PluginGroup(props: {
 				)}
 			</Box>
 			{actions.map((a) => (
-				<StatusRow key={a.name} action={a} state={state} />
+				<StatusRow
+					key={a.name}
+					action={a}
+					state={state}
+					outputs={outputs.get(a.name)}
+				/>
 			))}
 		</Box>
 	);
 }
 
-function StatusRow(props: { action: Action; state: TuiState }): React.ReactElement {
-	const { action, state } = props;
+function StatusRow(props: {
+	action: Action;
+	state: TuiState;
+	outputs: RegistryOutput[] | undefined;
+}): React.ReactElement {
+	const { action, state, outputs } = props;
 	const status: ActionStatus = state.statuses.get(action.name) ?? 'idle';
 	const start = state.startTimes.get(action.name);
 	const settle = state.settleTimes.get(action.name);
 	const failure = state.failures.get(action.name);
-	const endpoints = state.endpoints.get(action.name);
 	let dt = '';
 	if (status === 'running' && start !== undefined) dt = `+${formatMs(Date.now() - start)}`;
 	else if (settle !== undefined && start !== undefined) dt = formatMs(settle - start);
 	const statusColor = STATUS_INK_COLOR[status];
+	const shortName = stripPluginPrefix(action.name, action.plugin);
 	return (
 		<Box>
-			{/* col 1: status glyph + spinner — single fixed slot, narrow gap */}
+			{/* col 1: status glyph + spinner */}
 			<Box width={2}>
 				{status === 'running' ? (
 					<Text color="cyan">
@@ -258,45 +262,54 @@ function StatusRow(props: { action: Action; state: TuiState }): React.ReactEleme
 					</Text>
 				)}
 			</Box>
-			{/* col 2: action name with leading type glyph (dim). Plugin
-			 * prefix in the name (e.g. `sui.localnet`) carries the
-			 * grouping signal; we don't recolor it here so the row stays
-			 * visually calm against an already-colored plugin header. */}
-			<Box width={34}>
-				<Text dimColor>{TYPE_GLYPH[action.type]}</Text>
-				<Text> {action.name}</Text>
+			{/* col 2: short action name (plugin prefix stripped — the
+			 * plugin section header above already carries that signal) */}
+			<Box width={26}>
+				<Text>{shortName}</Text>
 			</Box>
-			{/* col 3: status word + duration, single column, right-aligned
-			 * tight against the detail. Saves horizontal space. */}
-			<Box width={18}>
-				<Text color={statusColor} dimColor={statusColor === undefined}>
-					{status}
-				</Text>
-				{dt !== '' && <Text dimColor>  {dt}</Text>}
+			{/* col 3: action type word, dim. The type carries what the
+			 * action does ("publish", "service", "build", …); the
+			 * lifecycle status is in the glyph + color. */}
+			<Box width={12}>
+				<Text dimColor>{action.type.toLowerCase()}</Text>
 			</Box>
-			{/* col 4: detail (flex) — failure / scheduling / endpoints */}
+			{/* col 4: duration — `+N` while running, settled time otherwise */}
+			<Box width={10}>
+				<Text dimColor>{dt}</Text>
+			</Box>
+			{/* col 5: detail (flex) — failure message, scheduling text,
+			 * or registry-derived outputs */}
 			<Box flexGrow={1}>
-				<RowDetail action={action} status={status} failure={failure} endpoints={endpoints} />
+				<RowDetail action={action} status={status} failure={failure} outputs={outputs} />
 			</Box>
 		</Box>
 	);
 }
 
+/** `sui.localnet` → `localnet`, `walrus.node-0` → `node-0`,
+ * unprefixed names pass through. Plugin grouping above the row
+ * already carries the prefix as identity. */
+function stripPluginPrefix(name: string, plugin: string | undefined): string {
+	if (plugin === undefined) return name;
+	const prefix = `${plugin}.`;
+	return name.startsWith(prefix) ? name.slice(prefix.length) : name;
+}
+
 /** Detail-column rules. Priority order:
  *   failure > stale/dirty > queued > skipped > idle (waiting on deps) >
- *   healthy+endpoints > blank.
+ *   ok+outputs > blank.
  *
  * The terminal `idle` and `queued` cases are common; we show `waiting
- * on …` only when there's actual upstream to name. Healthy actions
- * without endpoints leave the column blank so the eye flows past them
- * to the live ones. */
+ * on …` only when there's actual upstream to name. Settled actions
+ * without registry outputs leave the column blank so the eye flows
+ * past them to the live ones. */
 function RowDetail(props: {
 	action: Action;
 	status: ActionStatus;
 	failure?: string;
-	endpoints?: ActionEndpoint[];
+	outputs?: RegistryOutput[];
 }): React.ReactElement | null {
-	const { action, status, failure, endpoints } = props;
+	const { action, status, failure, outputs } = props;
 	const needs = (action.needs ?? []).filter((n) => !n.endsWith(':before'));
 	if (failure !== undefined) return <Text color="red">{failure}</Text>;
 	if (status === 'failed') return null;
@@ -308,20 +321,20 @@ function RowDetail(props: {
 	if (status === 'idle' && needs.length > 0) {
 		return <Text dimColor>waiting on {needs.join(', ')}</Text>;
 	}
-	if (status === 'healthy' && endpoints !== undefined && endpoints.length > 0) {
-		return <Endpoints endpoints={endpoints} />;
+	if (status === 'ok' && outputs !== undefined && outputs.length > 0) {
+		return <Outputs outputs={outputs} />;
 	}
 	return null;
 }
 
-function Endpoints(props: { endpoints: ActionEndpoint[] }): React.ReactElement {
+function Outputs(props: { outputs: RegistryOutput[] }): React.ReactElement {
 	return (
 		<Text>
-			{props.endpoints.map((ep, i) => (
-				<Text key={`${ep.url}-${i}`}>
+			{props.outputs.map((o, i) => (
+				<Text key={`${o.label}-${i}-${o.value}`}>
 					{i > 0 && <Text dimColor>  </Text>}
-					<Text dimColor>{ep.label} </Text>
-					<Text color="cyan">{ep.url}</Text>
+					<Text dimColor>{o.label} </Text>
+					<Text color="cyan">{o.value}</Text>
 				</Text>
 			))}
 		</Text>

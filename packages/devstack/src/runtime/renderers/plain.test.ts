@@ -42,27 +42,29 @@ describe('PlainRenderer', () => {
 
 		r.update(upd('running'), new Map());
 		r.update(upd('running'), new Map()); // no-op, no second line
-		r.update(upd('healthy'), new Map());
+		r.update(upd('ok'), new Map());
 
 		const after = out.text.slice(baseline.length);
-		const rows = after.split('\n').filter((l) => /sui\.localnet/.test(l));
+		// Plugin prefix `sui.` is stripped from the row name.
+		const rows = after.split('\n').filter((l) => /\blocalnet\b/.test(l));
 		expect(rows).toHaveLength(2);
-		expect(rows[0]).toMatch(/⟳.*running.*\+\d+ms/);
-		expect(rows[1]).toMatch(/✓.*healthy.*\d+ms/);
+		// Glyph + short name + type word; no per-state verb in the row.
+		expect(rows[0]).toMatch(/⟳ localnet .* service .*\+\d+ms/);
+		expect(rows[1]).toMatch(/✓ localnet .* service .*\d+ms/);
 	});
 
 	it('suppresses backward transitions (healthy → queued/running)', () => {
 		const { r, out } = makeRenderer([makeAction('sui.localnet')]);
 		const upd = (s: ActionStatus): Map<string, ActionStatus> => new Map([['sui.localnet', s]]);
 		r.update(upd('running'), new Map());
-		r.update(upd('healthy'), new Map());
+		r.update(upd('ok'), new Map());
 		const baseline = out.text;
 		// Cycle 2 re-entry: reconciler walks the topo with a fresh status
 		// map (queued → running → healthy). PlainRenderer should swallow
 		// the queued/running flips because we already settled.
 		r.update(upd('queued'), new Map());
 		r.update(upd('running'), new Map());
-		r.update(upd('healthy'), new Map());
+		r.update(upd('ok'), new Map());
 		const after = out.text.slice(baseline.length);
 		expect(after).not.toMatch(/queued/);
 		expect(after).not.toMatch(/running/);
@@ -78,25 +80,28 @@ describe('PlainRenderer', () => {
 		r.update(upd('running'), new Map());
 		r.update(upd('failed'), new Map([['sui.localnet', new Error('boom')]]));
 		const baseline = out.text;
-		// User retries → reconciler re-runs from cold, settles healthy.
-		// We want the healthy line, not the queued/running noise.
+		// User retries → reconciler re-runs from cold, settles ok.
+		// We want the ✓ row, not the queued/running noise.
 		r.update(upd('queued'), new Map());
 		r.update(upd('running'), new Map());
-		r.update(upd('healthy'), new Map());
+		r.update(upd('ok'), new Map());
 		const after = out.text.slice(baseline.length);
-		expect(after).toMatch(/healthy/);
-		expect(after).not.toMatch(/queued/);
-		expect(after).not.toMatch(/running/);
+		// Status conveyed by glyph; no "ok"/"healthy" word in the row.
+		expect(after).toMatch(/✓ localnet/);
+		expect(after).not.toMatch(/⟳/);
 	});
 
 	it('marks stale via markStale and skips when already stale', () => {
 		const { r, out } = makeRenderer([makeAction('sui.localnet')]);
 		const baseline = out.text;
-		r.update(new Map([['sui.localnet', 'healthy']]), new Map());
+		r.update(new Map([['sui.localnet', 'ok']]), new Map());
 		r.markStale(['sui.localnet']);
 		r.markStale(['sui.localnet']); // dedup — no second `stale` line
 		const after = out.text.slice(baseline.length);
-		expect(after.match(/stale/g)?.length ?? 0).toBe(1);
+		// Stale shows the ⟲ glyph (no longer prints the word "stale" —
+		// status is conveyed by glyph + color now).
+		const staleRows = after.split('\n').filter((l) => l.startsWith('⟲'));
+		expect(staleRows).toHaveLength(1);
 	});
 
 	it('renders the full shutdown lifecycle', () => {

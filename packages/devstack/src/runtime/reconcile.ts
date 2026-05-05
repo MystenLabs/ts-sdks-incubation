@@ -156,7 +156,7 @@ export class Reconciler {
 			for (const [name, persisted] of Object.entries(opts.priorState)) {
 				this.state.set(name, {
 					lastInputHash: persisted.lastInputHash,
-					status: 'healthy',
+					status: 'ok',
 					lastRunAt: persisted.lastRunAt,
 					identity: persisted.identity,
 				});
@@ -219,7 +219,7 @@ export class Reconciler {
 						blocked.add(a.name);
 						return false;
 					}
-					if (s !== 'healthy' && s !== 'skipped') return false;
+					if (s !== 'ok' && s !== 'skipped') return false;
 				}
 			}
 			// Emit serialization: an Emit waits for every non-Emit action
@@ -362,7 +362,7 @@ export class Reconciler {
 				}
 				statuses.set(action.name, status);
 				emitProgress();
-				if (status === 'healthy') {
+				if (status === 'ok') {
 					triggered = true;
 					// Match the topo-walk path (line ~196): consume the kinds the
 					// Emit just observed so they don't re-trigger the same Emit
@@ -458,11 +458,11 @@ export class Reconciler {
 				const identity = await captureIdentity(action, ctx, base, prior?.identity, inputHash);
 				this.state.set(action.name, {
 					lastInputHash: inputHash,
-					status: 'healthy',
+					status: 'ok',
 					lastRunAt: Date.now(),
 					identity,
 				});
-				return 'healthy';
+				return 'ok';
 			}
 			this.state.set(action.name, { lastInputHash: inputHash, status: 'failed' });
 			throw new Error(`Verify '${action.name}' failed: ${status.detail ?? 'no detail provided'}`);
@@ -499,11 +499,11 @@ export class Reconciler {
 					const identity = await captureIdentity(action, ctx, base, prior?.identity, inputHash);
 					this.state.set(action.name, {
 						lastInputHash: inputHash,
-						status: 'healthy',
+						status: 'ok',
 						lastRunAt: prior?.lastRunAt,
 						identity,
 					});
-					return 'healthy';
+					return 'ok';
 				}
 			} else if (hashMatches && action.getStatus === undefined) {
 				await applyProvidesRegistry(action, ctx);
@@ -513,8 +513,8 @@ export class Reconciler {
 				// derive from runtime state (e.g. chainId via RPC) that we
 				// want refreshed in the manifest.
 				const identity = await captureIdentity(action, ctx, base, prior?.identity, inputHash);
-				this.state.set(action.name, { ...prior, status: 'healthy', identity });
-				return 'healthy';
+				this.state.set(action.name, { ...prior, status: 'ok', identity });
+				return 'ok';
 			}
 		}
 
@@ -523,10 +523,10 @@ export class Reconciler {
 			const identity = await captureIdentity(action, ctx, base, prior?.identity, inputHash);
 			this.state.set(action.name, {
 				lastInputHash: inputHash,
-				status: 'healthy',
+				status: 'ok',
 				identity,
 			});
-			return 'healthy';
+			return 'ok';
 		}
 
 		try {
@@ -538,11 +538,11 @@ export class Reconciler {
 			const identity = await captureIdentity(action, ctx, base, prior?.identity, inputHash);
 			this.state.set(action.name, {
 				lastInputHash: inputHash,
-				status: 'healthy',
+				status: 'ok',
 				lastRunAt: Date.now(),
 				identity,
 			});
-			return 'healthy';
+			return 'ok';
 		} catch (err) {
 			this.state.set(action.name, { lastInputHash: prior?.lastInputHash, status: 'failed' });
 			throw err;
@@ -565,7 +565,7 @@ export class Reconciler {
 	serializeState(): Record<string, PersistedActionState> {
 		const out: Record<string, PersistedActionState> = {};
 		for (const [name, entry] of this.state) {
-			if (entry.status !== 'healthy') continue;
+			if (entry.status !== 'ok') continue;
 			if (entry.lastInputHash === undefined) continue;
 			out[name] = {
 				lastInputHash: entry.lastInputHash,
@@ -626,33 +626,39 @@ function emitIsDirty(emit: EmitAction, dirty: Set<string>): boolean {
  * complexity for a marginal saving.
  */
 /** Per-action `Registry` proxy. Stamps `providedBy: actionName` onto
- * every `services.register(...)` call so the supervisor can group
- * registered services by the action that produced them — that's how
- * the status renderer's per-row endpoint list flows out of the
- * existing registry without needing a separate declaration on the
- * action shape.
+ * every `services.register` / `packages.register` / `accounts.register`
+ * call so the supervisor can group registry items by the action that
+ * produced them — that's how the status renderer's per-row outputs
+ * (URLs, packageIds, addresses) flow out of the existing registry
+ * without needing a separate declaration on the action shape.
  *
  * Implemented as a Proxy (not a plain object spread) because plugins
  * cast `ctx.registry as RegistryImpl` to access non-public methods
  * (`snapshot()` from codegen, `flushDirty()` / `consumeDirty()` from
  * the reconciler itself). A spread would lose the prototype methods
  * and break those casts at runtime. The Proxy forwards every property
- * except the `services` getter, which we replace with a register-
- * stamping wrapper. */
+ * except the three built-in registry kinds, each replaced with a
+ * register-stamping wrapper. */
 function wrapRegistryForAction(registry: Registry, actionName: string): Registry {
-	const wrappedServices = new Proxy(registry.services, {
-		get(target, prop, receiver) {
-			if (prop === 'register') {
-				return (item: { providedBy?: string }) =>
-					target.register({ ...item, providedBy: item.providedBy ?? actionName } as never);
-			}
-			const value = Reflect.get(target, prop, receiver);
-			return typeof value === 'function' ? value.bind(target) : value;
-		},
-	});
+	const stamp = <T extends { providedBy?: string }>(query: { register: (item: T) => void }) =>
+		new Proxy(query, {
+			get(t, prop, receiver) {
+				if (prop === 'register') {
+					return (item: T) =>
+						t.register({ ...item, providedBy: item.providedBy ?? actionName });
+				}
+				const value = Reflect.get(t, prop, receiver);
+				return typeof value === 'function' ? value.bind(t) : value;
+			},
+		});
+	const wrappedServices = stamp(registry.services as never);
+	const wrappedPackages = stamp(registry.packages as never);
+	const wrappedAccounts = stamp(registry.accounts as never);
 	return new Proxy(registry, {
 		get(target, prop, receiver) {
 			if (prop === 'services') return wrappedServices;
+			if (prop === 'packages') return wrappedPackages;
+			if (prop === 'accounts') return wrappedAccounts;
 			const value = Reflect.get(target, prop, receiver);
 			return typeof value === 'function' ? value.bind(target) : value;
 		},
