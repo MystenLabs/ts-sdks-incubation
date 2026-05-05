@@ -24,9 +24,7 @@ export default defineConfig({
 		'src/cli/index.ts',
 		'src/cli/apply.ts',
 		'src/cli/codegen.ts',
-		'src/cli.ts',
 		'src/helpers.ts',
-		'src/runtime.ts',
 		'src/react/index.ts',
 		'src/react/ui/index.ts',
 	],
@@ -49,6 +47,10 @@ export default defineConfig({
 		{ from: 'src/plugins/sui/Dockerfile', to: 'dist/plugins/sui' },
 		{ from: 'src/plugins/sui/entrypoint.sh', to: 'dist/plugins/sui' },
 		{ from: 'src/plugins/seal/Dockerfile', to: 'dist/plugins/seal' },
+		{ from: 'src/plugins/walrus/upstream.Dockerfile', to: 'dist/plugins/walrus' },
+		{ from: 'src/plugins/walrus/wrapper.Dockerfile', to: 'dist/plugins/walrus' },
+		{ from: 'src/plugins/walrus/deploy.sh', to: 'dist/plugins/walrus' },
+		{ from: 'src/plugins/walrus/run.sh', to: 'dist/plugins/walrus' },
 		// Ambient `.d.ts` for `virtual:devstack-manifest`. Apps reference it
 		// via `/// <reference types="@mysten-incubation/devstack/manifest" />`
 		// instead of duplicating ~50 lines of `declare module` per app.

@@ -13,7 +13,7 @@ import { Transaction } from '@mysten/sui/transactions';
 
 import { objectTypeMatchesFilter } from './match-type.js';
 
-export interface SeedSharedObjectOptions {
+interface SeedSharedObjectOptions {
 	client: SuiJsonRpcClient;
 	publisher: Signer;
 	target: `${string}::${string}::${string}`;
@@ -22,7 +22,7 @@ export interface SeedSharedObjectOptions {
 	gasBudget?: bigint;
 }
 
-export interface SeedSharedObjectResult {
+interface SeedSharedObjectResult {
 	objectId: string;
 	objectType: string;
 	digest: string;

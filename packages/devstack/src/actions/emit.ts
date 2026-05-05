@@ -8,7 +8,7 @@
 
 import type { ActionRunContext, EmitAction, Provides } from '../core/types.js';
 
-export interface EmitOptions<TInputs extends Record<string, unknown>> {
+interface EmitOptions<TInputs extends Record<string, unknown>> {
 	name: string;
 	needs?: string[];
 	provides?: Provides;
@@ -16,6 +16,7 @@ export interface EmitOptions<TInputs extends Record<string, unknown>> {
 	dependsOnKind?: string[];
 	run: (ctx: ActionRunContext) => Promise<void>;
 	getStatus?: (ctx: ActionRunContext) => Promise<{ ok: boolean; detail?: string }>;
+	identity?: (ctx: ActionRunContext) => Promise<string | undefined>;
 }
 
 export function emit<TInputs extends Record<string, unknown>>(
@@ -30,5 +31,6 @@ export function emit<TInputs extends Record<string, unknown>>(
 		dependsOnKind: opts.dependsOnKind,
 		run: opts.run,
 		getStatus: opts.getStatus,
+		identity: opts.identity,
 	};
 }

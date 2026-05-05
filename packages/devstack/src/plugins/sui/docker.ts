@@ -10,16 +10,38 @@
 
 import { spawn } from 'node:child_process';
 
-export interface DockerResult {
+/** Map `process.arch` to the docker `--platform` value used for builds. */
+export function hostDockerPlatform(): string {
+	const arch = process.arch;
+	if (arch === 'arm64') return 'linux/arm64';
+	if (arch === 'x64') return 'linux/amd64';
+	throw new Error(`devstack: unsupported host architecture ${arch}`);
+}
+
+interface DockerResult {
 	stdout: string;
 	stderr: string;
 	code: number;
 }
 
-export interface DockerRunOptions {
+interface DockerRunOptions {
 	command: string[];
 	cwd?: string;
 	stream?: boolean;
+	/** When `stream: true`, each newline-delimited line of docker's
+	 * combined stdout/stderr is forwarded here instead of being written
+	 * raw to `process.stderr`. Used by long-running build/run actions
+	 * inside the supervisor — `appendLog` routes through the supervisor's
+	 * status renderer (panel-erase-then-redraw), so docker's progress
+	 * lines interleave with the status block instead of smashing it.
+	 *
+	 * When unset (or `stream: false`), nothing happens — non-streaming
+	 * call paths buffer stdout/stderr into the returned `DockerResult`
+	 * exclusively. When `stream: true` AND `appendLog` is unset, the
+	 * fallback is `process.stderr.write` (matches the pre-supervisor
+	 * behavior for `devstack apply`, `devstack snapshot save --push`, and
+	 * other one-shot CLI paths that don't run under the TUI). */
+	appendLog?: (line: string) => void;
 }
 
 export function dockerRun(opts: DockerRunOptions): Promise<DockerResult> {
@@ -28,7 +50,7 @@ export function dockerRun(opts: DockerRunOptions): Promise<DockerResult> {
 
 function runDocker(
 	argv: string[],
-	opts: { cwd?: string; stream?: boolean },
+	opts: { cwd?: string; stream?: boolean; appendLog?: (line: string) => void },
 ): Promise<DockerResult> {
 	return new Promise((resolve, reject) => {
 		const child = spawn(argv[0] ?? 'docker', argv.slice(1), {
@@ -37,15 +59,46 @@ function runDocker(
 		});
 		let stdout = '';
 		let stderr = '';
+		// Per-stream partial-line accumulators so docker's chunks
+		// (which arrive at OS-buffer boundaries, not line boundaries)
+		// don't fragment when forwarded through `appendLog`. We only
+		// allocate these for the streaming-with-callback path; the
+		// raw-stderr fallback writes whole chunks verbatim like before.
+		let stdoutBuf = '';
+		let stderrBuf = '';
+		const flushTo =
+			opts.stream === true && opts.appendLog !== undefined ? opts.appendLog : undefined;
+		const drain = (buf: string, cb: (line: string) => void): string => {
+			let rest = buf;
+			let nl = rest.indexOf('\n');
+			while (nl !== -1) {
+				cb(rest.slice(0, nl));
+				rest = rest.slice(nl + 1);
+				nl = rest.indexOf('\n');
+			}
+			return rest;
+		};
 		child.stdout?.on('data', (chunk: Buffer) => {
 			const s = chunk.toString();
 			stdout += s;
-			if (opts.stream === true) process.stderr.write(s);
+			if (opts.stream === true) {
+				if (flushTo !== undefined) {
+					stdoutBuf = drain(stdoutBuf + s, flushTo);
+				} else {
+					process.stderr.write(s);
+				}
+			}
 		});
 		child.stderr?.on('data', (chunk: Buffer) => {
 			const s = chunk.toString();
 			stderr += s;
-			if (opts.stream === true) process.stderr.write(s);
+			if (opts.stream === true) {
+				if (flushTo !== undefined) {
+					stderrBuf = drain(stderrBuf + s, flushTo);
+				} else {
+					process.stderr.write(s);
+				}
+			}
 		});
 		child.on('error', (err) => {
 			if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -59,7 +112,17 @@ function runDocker(
 			}
 			reject(err);
 		});
-		child.on('close', (code) => resolve({ stdout, stderr, code: code ?? 0 }));
+		child.on('close', (code) => {
+			// Flush any trailing partial line that didn't end in `\n`.
+			// Docker's final progress message often lacks a newline before
+			// the process exits; without this, the last line silently
+			// vanishes from the supervisor log.
+			if (flushTo !== undefined) {
+				if (stdoutBuf.length > 0) flushTo(stdoutBuf);
+				if (stderrBuf.length > 0) flushTo(stderrBuf);
+			}
+			resolve({ stdout, stderr, code: code ?? 0 });
+		});
 	});
 }
 
@@ -98,13 +161,135 @@ export async function imageExists(tag: string): Promise<boolean> {
 	return result.code === 0;
 }
 
+/** Repository:tag pair returned by `docker image ls --filter`. Used by
+ * the cache-GC helpers to enumerate candidates before targeted removal. */
+export interface ImageRef {
+	/** `<repository>:<tag>`. Pass to `removeImage`. */
+	ref: string;
+	repository: string;
+	tag: string;
+	id: string;
+}
+
+/** List images carrying every label in `labels` (Docker AND-joins
+ * multiple `--filter label=...` flags). An empty-string value matches
+ * the label key regardless of its value (docker syntax: `label=key`
+ * vs. `label=key=value`). Skips dangling rows where `Repository` or
+ * `Tag` is `<none>` — those are intermediate layers that shouldn't be
+ * tag-removed individually. Also skips `devstack-snapshot/*` rows:
+ * snapshot commits inherit their parent image's labels (`docker commit`
+ * carries `devstack.cache=...` forward), but they're a separate user
+ * concern managed by `devstack snapshot rm` rather than part of the
+ * build cache. Returns empty on docker error so callers can treat the
+ * result as "no work to do" without raising. */
+export async function listImagesByLabel(labels: Record<string, string>): Promise<ImageRef[]> {
+	const command = ['image', 'ls', '--format', '{{.Repository}}\t{{.Tag}}\t{{.ID}}'];
+	for (const [k, v] of Object.entries(labels)) {
+		command.push('--filter', v === '' ? `label=${k}` : `label=${k}=${v}`);
+	}
+	const result = await dockerRun({ command });
+	if (result.code !== 0) return [];
+	const out: ImageRef[] = [];
+	for (const line of result.stdout.split('\n')) {
+		const [repository, tag, id] = line.split('\t');
+		if (
+			repository === undefined ||
+			tag === undefined ||
+			id === undefined ||
+			repository === '<none>' ||
+			tag === '<none>' ||
+			repository.length === 0 ||
+			repository.startsWith('devstack-snapshot/')
+		) {
+			continue;
+		}
+		out.push({ ref: `${repository}:${tag}`, repository, tag, id });
+	}
+	return out;
+}
+
+/** Best-effort `docker image rm <tag>`. Swallows failures (image in use
+ * by a running container, dependent child image like a snapshot tag,
+ * race with a parallel pull) so callers can prune a list without one
+ * stuck tag aborting the rest. Returns `true` on success. */
+export async function removeImage(tag: string): Promise<boolean> {
+	const result = await dockerRun({ command: ['image', 'rm', tag] });
+	return result.code === 0;
+}
+
+/** Drop every image matching the `labels` filter set whose
+ * `repository:tag` is NOT in `keep`. Used post-build to GC superseded
+ * revs that share the cache label (e.g. drop `sui-localnet:devnet-v1.71.0-r6`
+ * after `r7` builds successfully). No `--force`: in-use tags survive,
+ * so the operator can clean up later via the explicit
+ * `devstack reset --images` path. Each removal logs `pruned <ref>` /
+ * `kept <ref> (in use)` via `appendLog` for visibility. */
+export async function pruneImagesByLabel(opts: {
+	labels: Record<string, string>;
+	keep: string[];
+	appendLog?: (line: string) => void;
+}): Promise<void> {
+	const candidates = await listImagesByLabel(opts.labels);
+	const keepSet = new Set(opts.keep);
+	for (const img of candidates) {
+		if (keepSet.has(img.ref)) continue;
+		const ok = await removeImage(img.ref);
+		if (ok) {
+			opts.appendLog?.(`devstack: pruned cached image ${img.ref}`);
+		} else {
+			opts.appendLog?.(`devstack: kept ${img.ref} (in use or has dependents)`);
+		}
+	}
+}
+
+/** Run `docker image prune -f --filter label=devstack.cache` to drop
+ * untagged image layers (manifests whose only tag was removed) that
+ * were devstack-built. Without this, `removeImage` calls leave dangling
+ * layer entries in `docker image ls` — the disk space stays allocated
+ * until the next `docker image prune`. Returns the docker output (which
+ * ends with `Total reclaimed space: <N>`) and an ok flag. Best-effort:
+ * `ok: false` on docker error rather than throwing. */
+export async function pruneDanglingDevstackImages(): Promise<{ output: string; ok: boolean }> {
+	const result = await dockerRun({
+		command: ['image', 'prune', '-f', '--filter', 'label=devstack.cache'],
+	});
+	return { output: result.stdout.trim(), ok: result.code === 0 };
+}
+
+/** Run `docker builder prune -f` to evict BuildKit cache layers that
+ * are no longer referenced by any image tag. Without this, `removeImage`
+ * frees the tag but the cargo-build cache that backed it stays in
+ * BuildKit's separate cache forever — a fresh rebuild then short-circuits
+ * through cache instead of re-running the actual build steps the
+ * operator is trying to retest. NOT scoped by label: `docker builder
+ * prune` doesn't accept image-label filters, so this is a host-wide
+ * sweep of unused cache. Safe in the sense that "in use" cache (anything
+ * referenced by a current image manifest) survives. Returns docker output
+ * + ok flag. Best-effort. */
+export async function pruneBuildCache(): Promise<{ output: string; ok: boolean }> {
+	const result = await dockerRun({ command: ['builder', 'prune', '-f'] });
+	return { output: result.stdout.trim(), ok: result.code === 0 };
+}
+
+/** Total reclaimable BuildKit cache size as a human-readable string
+ * (e.g. `'26.85GB'`). Used by `--images --dry-run` to report how much
+ * space the eventual `pruneBuildCache` call would free, without
+ * actually freeing it. Returns `undefined` on docker error (graceful
+ * degradation — dry-run is best-effort information). */
+export async function buildCacheSize(): Promise<string | undefined> {
+	const result = await dockerRun({ command: ['buildx', 'du'] });
+	if (result.code !== 0) return undefined;
+	const match = result.stdout.match(/Reclaimable:\s*(\S+)/);
+	return match?.[1];
+}
+
 /** Returns the standard label set for a devstack-managed container.
  * Combines our internal `devstack.*` filters with `com.docker.compose.*`
  * labels so Docker Desktop groups all containers for a given app+stack
  * under a single project pane (instead of showing a flat list). The
  * "project" maps to `<appName>-<stack>`; the "service" identifies the
  * individual container within that project. */
-export interface DevstackContainerLabelOpts {
+interface DevstackContainerLabelOpts {
 	appName: string;
 	stack: string;
 	service: string;
@@ -142,7 +327,7 @@ export function devstackContainerLabels(opts: DevstackContainerLabelOpts): Recor
 	return labels;
 }
 
-export interface BuildImageOptions {
+interface BuildImageOptions {
 	tag: string;
 	contextDir: string;
 	dockerfile?: string;
@@ -152,6 +337,15 @@ export interface BuildImageOptions {
 	labels?: Record<string, string>;
 	/** Build platform (e.g. `'linux/arm64'`). Forwarded as `--platform`. */
 	platform?: string;
+	/** BuildKit named contexts as `--build-context name=value` flags
+	 * (e.g. `{ 'walrus-src': 'https://github.com/.../walrus.git#v1' }`).
+	 * Lets the Dockerfile reference `--from=name` for `COPY` operations
+	 * without baking the source into the on-disk build context. */
+	buildContexts?: Record<string, string>;
+	/** Route docker's combined stdout/stderr through the supervisor's
+	 * status renderer. When unset, build output falls back to raw
+	 * `process.stderr` (see `DockerRunOptions.appendLog`). */
+	appendLog?: (line: string) => void;
 }
 
 export async function buildImage(opts: BuildImageOptions): Promise<void> {
@@ -162,6 +356,9 @@ export async function buildImage(opts: BuildImageOptions): Promise<void> {
 	for (const [k, v] of Object.entries(opts.labels ?? {})) {
 		args.push('--label', `${k}=${v}`);
 	}
+	for (const [k, v] of Object.entries(opts.buildContexts ?? {})) {
+		args.push('--build-context', `${k}=${v}`);
+	}
 	if (opts.platform !== undefined) {
 		args.push('--platform', opts.platform);
 	}
@@ -169,13 +366,13 @@ export async function buildImage(opts: BuildImageOptions): Promise<void> {
 		args.push('--file', opts.dockerfile);
 	}
 	args.push(opts.contextDir);
-	const result = await dockerRun({ command: args, stream: true });
+	const result = await dockerRun({ command: args, stream: true, appendLog: opts.appendLog });
 	if (result.code !== 0) {
 		throw new Error(`docker build failed (exit ${result.code}): ${result.stderr.slice(-400)}`);
 	}
 }
 
-export type ContainerState =
+type ContainerState =
 	| 'created'
 	| 'running'
 	| 'paused'
@@ -196,6 +393,10 @@ export interface ContainerInfo {
 	 * (e.g. `dev-examples/sui-localnet:devnet-v1.71.0-r4`). Used to
 	 * detect stale containers when the plugin's image-tag bumps. */
 	image: string;
+	/** Labels set at `docker run` time. `containerService` stamps the
+	 * reconciler's `inputHash` here as `devstack.input-hash` and reads
+	 * it back on the next cycle to decide resume-vs-recreate. */
+	labels: Record<string, string>;
 }
 
 export async function inspectContainer(name: string): Promise<ContainerInfo | null> {
@@ -216,6 +417,22 @@ export async function inspectContainer(name: string): Promise<ContainerInfo | nu
 	const idImage = idResult.stdout.trim().split(/\s+/);
 	const id = idImage[0] ?? '';
 	const image = idImage[1] ?? '';
+	// Pull labels separately as JSON to avoid template-quoting headaches
+	// on values containing spaces / special chars.
+	const labelsResult = await dockerRun({
+		command: ['container', 'inspect', name, '--format', '{{json .Config.Labels}}'],
+	});
+	let labels: Record<string, string> = {};
+	if (labelsResult.code === 0) {
+		try {
+			const parsed = JSON.parse(labelsResult.stdout.trim()) as Record<string, string> | null;
+			if (parsed !== null) labels = parsed;
+		} catch {
+			// Fall through with empty labels — non-fatal; the only
+			// callsite (containerService) treats missing label as
+			// "stale", which forces a recreate (safe default).
+		}
+	}
 	type DockerStateJson = {
 		Status?: string;
 		ExitCode?: number;
@@ -237,10 +454,11 @@ export async function inspectContainer(name: string): Promise<ContainerInfo | nu
 		running: status === 'running',
 		healthy: healthStatus === 'healthy' ? true : healthStatus === undefined ? undefined : false,
 		image,
+		labels,
 	};
 }
 
-export interface EnsureNetworkOptions {
+interface EnsureNetworkOptions {
 	name: string;
 	/** CIDR, e.g. `'10.0.0.0/24'`. Required on first create when fixed-IP
 	 * containers need to land on predictable addresses (walrus's testbed
@@ -261,7 +479,7 @@ export async function ensureNetwork(opts: EnsureNetworkOptions): Promise<void> {
 	}
 }
 
-export type DockerNetworkProbe =
+type DockerNetworkProbe =
 	| { kind: 'missing' }
 	| { kind: 'no-subnet' }
 	| { kind: 'subnet'; cidr: string };

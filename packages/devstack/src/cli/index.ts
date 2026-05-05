@@ -24,6 +24,8 @@ Commands:
   down [config]                Stop the active stack's containers (volumes preserved).
   reset [config] --yes         Wipe the active stack — containers, volumes, host state.
                                Pass --stack <name> to target a specific stack.
+                               Pass --images to additionally drop every cached
+                               devstack-built image (GLOBAL — affects all apps).
   stack list|new|use|down|drop Manage named per-app stacks.
   snapshot save|restore|list|rm|hash
                                Capture / restore named snapshots of a stack.

@@ -15,7 +15,7 @@ import { join, resolve } from 'node:path';
 import chokidar, { type FSWatcher } from 'chokidar';
 import type { Action } from '../core/types.js';
 
-export interface FileWatcherOptions {
+interface FileWatcherOptions {
 	actions: Action[];
 	appDir: string;
 	onStale: (actionNames: string[]) => void;

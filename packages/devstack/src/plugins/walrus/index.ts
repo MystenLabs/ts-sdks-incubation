@@ -11,6 +11,7 @@
 // image, and uses host-fs for cross-container coordination so snapshots
 // capture it for free.
 
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -43,21 +44,22 @@ import {
 	runContainer,
 	waitForContainerExit,
 } from '../sui/docker.js';
+import { hostDockerPlatform } from '../sui/docker.js';
 import { SUI_DEFAULT_VERSION, appNetworkName } from '../sui/index.js';
-import { WALRUS_REV, ensureWalrusImage, hostDockerPlatform, walrusImageTag } from './build.js';
+import { WALRUS_VERSION, ensureWalrusImage, walrusImageTag } from './build.js';
 
-const NODE_COUNT = 4;
+const DEFAULT_COMMITTEE_SIZE = 4;
+const DEFAULT_SHARDS = 100;
 
 /** Deterministic per-(app, stack) octet in [1, 250]. The walrus testbed
- * needs a /24 with predictable IPs for its 4 storage nodes; using the
- * same `10.0.0.0/24` for every app+stack pair would collide whenever
- * two of them run concurrently (`Pool overlaps with other one on this
- * address space`). Hashing `appName/stack` into the second-octet space
- * gives ~250 per-host slots before any pigeonhole collision; octet 0
- * is reserved. The deploy script's previously-hardcoded host addresses
- * are replaced with `${WALRUS_NODE_IPS}` at `walrus.build` time
- * (build.ts:78-82) so this plugin can pass per-stack IPs through env
- * to the deploy container. */
+ * needs a /24 with predictable IPs for the storage-node committee;
+ * using the same `10.0.0.0/24` for every app+stack pair would collide
+ * whenever two of them run concurrently (`Pool overlaps with other
+ * one on this address space`). Hashing `appName/stack` into the
+ * second-octet space gives ~250 per-host slots before any pigeonhole
+ * collision; octet 0 is reserved. The deploy script consumes
+ * `WALRUS_NODE_IPS` (space-separated) so this plugin can pass
+ * per-stack IPs through env to the deploy container. */
 function walrusOctet(appName: string, stack: string): number {
 	let h = 0;
 	const s = `${appName}/${stack}`;
@@ -69,8 +71,8 @@ function walrusOctet(appName: string, stack: string): number {
 
 const walrusSubnet = (octet: number): string => `10.${octet}.0.0/24`;
 const walrusNodeIp = (octet: number, idx: number): string => `10.${octet}.0.${10 + idx}`;
-const walrusNodeIpList = (octet: number): string =>
-	Array.from({ length: NODE_COUNT }, (_, i) => walrusNodeIp(octet, i)).join(' ');
+const walrusNodeIpList = (octet: number, committeeSize: number): string =>
+	Array.from({ length: committeeSize }, (_, i) => walrusNodeIp(octet, i)).join(' ');
 
 const deployContainerName = (appName: string, stack: string): string =>
 	`${appName}-${stack}-walrus-deploy`;
@@ -85,31 +87,37 @@ const nodeHostname = (idx: number): string => `dryrun-node-${idx}`;
 const walrusDeployHostDir = (appDir: string, stack: string): string =>
 	resolve(stackDir(appDir, stack), 'walrus', 'deploy');
 
-export interface WalrusNode {
+interface WalrusNode {
 	name: string;
 	hostname: string;
 	ip: string;
 	metricsUrl: string;
-	/** Internal docker-network URL (HTTPS, self-signed) — what the on-chain
-	 * committee data points at and what nodes use to talk to each other. */
+	/** Internal docker-network URL — what the on-chain committee data
+	 * points at and what nodes use to talk to each other. Plain HTTP:
+	 * we disable node-side TLS via the deploy-script patch (axum-server
+	 * 0.8.0 panics on the self-signed handshake on arm64-darwin), and
+	 * traffic stays inside the per-stack docker network so a self-signed
+	 * cert wouldn't add anything anyway. */
 	apiUrl: string;
 	/** Host-mapped URL for browser SDK access. The `walrus-node` container's
-	 * `9185` is published on `localhost:<nodeHostPortBase + idx>` so the
-	 * vite-proxy + SDK fetch override pair can reach it from a browser tab.
-	 * Same self-signed cert as `apiUrl`. */
+	 * `9185` is published on `localhost:<nodeHostPortBase + idx>` via the
+	 * walrus.proxy nginx sidecar — kept in place so the host-fronting
+	 * surface can be re-fronted with TLS termination later if needed
+	 * without touching the SDK call sites. */
 	hostApiUrl: string;
 }
 
-export interface WalrusNamespace {
+interface WalrusNamespace {
 	nodes: RegistryQuery<WalrusNode>;
 }
 
-export interface WalrusPluginOptions {
-	/** Pinned walrus revision. Defaults to the rev tracked in `build.ts`.
-	 * The build helper fetches the walrus repo via a BuildKit git context
-	 * and bakes the deploy/run scripts into the resulting image (no host
-	 * filesystem cache). */
-	rev?: string;
+interface WalrusPluginOptions {
+	/** Pinned walrus release tag (e.g. `'devnet-v1.48.0'`). Defaults to
+	 * the version tracked in `build.ts`. Used both to pull the matching
+	 * binary tarball (`walrus`, `walrus-node`) from the GitHub release
+	 * AND as the git ref BuildKit fetches matching source from to compile
+	 * `walrus-deploy` (the only binary not in the public release). */
+	version?: string;
 	/** Sui release tag baked into the walrus image (the testbed embeds
 	 * `sui` for genesis + admin txs). Defaults to `SUI_DEFAULT_VERSION`
 	 * — keep it in sync with the `sui()` plugin's `version` to avoid
@@ -126,20 +134,68 @@ export interface WalrusPluginOptions {
 	 * the host-mapped ports — that's what makes the storage protocol
 	 * reachable from a browser tab. */
 	nodeHostPortBase?: number;
+	/** Walrus epoch duration. Default `'24h'` so blobs uploaded with the
+	 * SDK's `epochs: 1` survive a normal supervisor restart cycle (~30s
+	 * to ~5 min). The upstream walrus testbed default is `'2m'`, but
+	 * even at that cadence a kill+restart that crosses an epoch
+	 * boundary lets the storage nodes garbage-collect the blob before
+	 * the developer can re-read it. Pass a shorter value when
+	 * exercising epoch-change behavior in tests; pass `'24h'` (or
+	 * higher) for normal app development.
+	 *
+	 * Format: `<N>(s|m|h|d)` — handled by walrus-deploy's CLI flag. */
+	epochDuration?: string;
+	/** Number of storage nodes in the committee. Default `4`. Each
+	 * node binds a fixed IP in the per-stack /24 (10.<octet>.0.10..);
+	 * a contiguous range of host ports of the same size is allocated
+	 * for browser SDK access via the walrus.proxy nginx sidecar. */
+	committeeSize?: number;
+	/** Number of storage shards distributed across the committee.
+	 * Default `100` — matches the upstream walrus testbed's hardcoded
+	 * value, which is what we shipped before this option existed. The
+	 * walrus team's procman default is `10`; we keep `100` to avoid a
+	 * silent behavior change but expose the knob for tests probing
+	 * shard-count edge cases. Must be `>= committeeSize`. */
+	shards?: number;
+	/** Enable garbage-collection config in each storage-node yaml.
+	 * Defaults to `false` (matches production behavior). When `true`,
+	 * `deploy.sh` appends:
+	 *
+	 *     db_config:
+	 *       global:
+	 *         experimental_use_optimistic_transaction_db: true
+	 *     garbage_collection:
+	 *       enable_blob_info_cleanup: true
+	 *       enable_data_deletion: true
+	 *
+	 * Useful for blob-cleanup tests; matches the walrus team's `--gc`
+	 * flag in their procman config. */
+	gc?: boolean;
 }
 
 const DEFAULT_NODE_HOST_PORT_BASE = 19185;
+const DEFAULT_EPOCH_DURATION = '24h';
 const proxyContainerName = (appName: string, stack: string): string =>
 	`${appName}-${stack}-walrus-proxy`;
 
 export const walrus = (opts: WalrusPluginOptions = {}) => {
-	const rev = opts.rev ?? WALRUS_REV;
+	const version = opts.version ?? WALRUS_VERSION;
 	const suiVersion = opts.suiVersion ?? SUI_DEFAULT_VERSION;
-	const imageTag = walrusImageTag(rev, suiVersion);
+	const imageTag = walrusImageTag(version, suiVersion);
 	const platform = hostDockerPlatform();
+	const epochDuration = opts.epochDuration ?? DEFAULT_EPOCH_DURATION;
+	const committeeSize = opts.committeeSize ?? DEFAULT_COMMITTEE_SIZE;
+	const shards = opts.shards ?? DEFAULT_SHARDS;
+	const gc = opts.gc ?? false;
+	if (committeeSize < 1) {
+		throw new Error(`walrus(): committeeSize must be >= 1, got ${committeeSize}`);
+	}
+	if (shards < committeeSize) {
+		throw new Error(`walrus(): shards (${shards}) must be >= committeeSize (${committeeSize})`);
+	}
 	// `nodeHostPortBase` is now a hint to the per-stack allocator; the
-	// 4 storage-node host ports are allocated as a contiguous range
-	// (count: 4). Resolved at action-run time via ctx.ports.
+	// committee-size host ports are allocated as a contiguous range,
+	// resolved at action-run time via ctx.ports.
 	const preferredNodeHostPortBase = opts.nodeHostPortBase ?? DEFAULT_NODE_HOST_PORT_BASE;
 	const resolveNodePorts = async (ctx: {
 		ports: import('../../core/types.js').PortAllocator;
@@ -147,7 +203,7 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 		return ctx.ports.allocate({
 			slot: 'walrus.node',
 			preferred: preferredNodeHostPortBase,
-			count: NODE_COUNT,
+			count: committeeSize,
 		});
 	};
 	const indexer =
@@ -160,12 +216,12 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 
 	return definePlugin({
 		name: 'walrus',
-		// Folded into the snapshot id. Bumping `rev:` (which derives a new
-		// `imageTag`) invalidates the cached snapshot — chain state is
+		// Folded into the snapshot id. Bumping `version:` (which derives a
+		// new `imageTag`) invalidates the cached snapshot — chain state is
 		// captured by sui's container layer; storage-node state is captured
 		// by walrus's own. Port-base hint is intentionally NOT included:
 		// reshuffling host ports doesn't change on-chain state.
-		inputs: { image: imageTag, rev },
+		inputs: { image: imageTag, version },
 		actions: () => {
 			const actions: Action[] = [];
 
@@ -219,13 +275,13 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 			actions.push(
 				buildImage({
 					name: 'build',
-					inputs: { image: imageTag, rev, suiVersion, platform },
+					inputs: { image: imageTag, version, suiVersion, platform },
 					getStatus: async () =>
 						(await imageExists(imageTag))
 							? { ok: true, detail: imageTag }
 							: { ok: false, detail: `image ${imageTag} missing` },
-					run: async () => {
-						await ensureWalrusImage({ rev, suiVersion });
+					run: async (ctx) => {
+						await ensureWalrusImage({ version, suiVersion, appendLog: ctx.appendLog });
 					},
 				}),
 			);
@@ -238,16 +294,15 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 				service({
 					name: 'deploy',
 					needs: ['build', 'sui.localnet'],
-					inputs: { image: imageTag, rev },
-					/** File-based: the file IS the output. Container existence is
-					 *  irrelevant — a snapshot restore that brings back
-					 *  `<stackDir>/walrus/deploy/deploy` should make this getStatus
-					 *  return ok with no container ever having existed in this
-					 *  process. Forward-compatible with future pre-deployed walrus
-					 *  testbed images: storage nodes that mount such an image
-					 *  could expose the same file at the same path inside the
-					 *  container, satisfying the same content check via
-					 *  readContainerFile (already used by the register action).
+					inputs: { image: imageTag, version, epochDuration, committeeSize, shards, gc },
+					/** File-based liveness check. The deploy file is the
+					 * primary output (snapshot-restored stacks bring it back
+					 * without spinning a deploy container). Chain-staleness
+					 * detection comes from the `identity` cascade:
+					 * `sui.localnet`'s identity is `chainId`, which we fold
+					 * into this action's input hash via `needs:`. So a chain
+					 * regenesis flips this action's input hash and forces a
+					 * re-deploy without any per-action chain probe.
 					 */
 					getStatus: async (ctx) => {
 						requireLocalnetCtx(ctx);
@@ -260,6 +315,24 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 							return { ok: true, detail: 'walrus contracts deployed' };
 						} catch (err) {
 							return { ok: false, detail: `deploy file unparseable: ${(err as Error).message}` };
+						}
+					},
+					/** Identity = sha256 of the parsed deploy file IDs. Each
+					 * `walrus.deploy` cycle rewrites these (fresh package +
+					 * object IDs every regen), so any downstream action with
+					 * `needs: ['walrus.deploy']` (the four storage nodes,
+					 * register, seedWal) cascades-re-runs through input-hash
+					 * mismatch — `containerService.run()` then wipes the node
+					 * containers' RocksDB writable layers on recreation. */
+					identity: async (ctx) => {
+						requireLocalnetCtx(ctx);
+						const file = resolve(walrusDeployHostDir(ctx.appDir, ctx.stack), 'deploy');
+						if (!existsSync(file)) return undefined;
+						try {
+							const ids = parseDeployFile(readFileSync(file, 'utf8'));
+							return createHash('sha256').update(JSON.stringify(ids)).digest('hex');
+						} catch {
+							return undefined;
 						}
 					},
 					run: async (ctx) => {
@@ -282,11 +355,30 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 							network,
 							hostname: 'walrus-deploy',
 							restart: 'no',
-							// `WALRUS_NODE_IPS` is read by the deploy script's
-							// `--host-addresses ${WALRUS_NODE_IPS}` (sed-patched at
-							// build time, build.ts:78-82). Space-separated for
-							// shell word-splitting into 4 args.
-							env: { WALRUS_NODE_IPS: walrusNodeIpList(walrusOctet(ctx.appName, ctx.stack)) },
+							// Env vars consumed by `deploy.sh`:
+							//   WALRUS_NODE_IPS — space-separated list of
+							//     committee-member IPs; the script word-splits
+							//     into N `--host-addresses` args.
+							//   WALRUS_COMMITTEE_SIZE / WALRUS_SHARDS — sizes
+							//     forwarded to walrus-deploy; script validates
+							//     SHARDS >= COMMITTEE_SIZE.
+							//   WALRUS_EPOCH_DURATION — overrides the script's
+							//     default 24h. Walrus garbage-collects blobs
+							//     whose registered `epochs` window has passed,
+							//     so a too-short epoch (upstream's 2m) lets
+							//     dev-cycle blobs disappear before the
+							//     developer's next read. We default to 24h.
+							//   WALRUS_GC — opt-in GC config block.
+							env: {
+								WALRUS_NODE_IPS: walrusNodeIpList(
+									walrusOctet(ctx.appName, ctx.stack),
+									committeeSize,
+								),
+								WALRUS_COMMITTEE_SIZE: String(committeeSize),
+								WALRUS_SHARDS: String(shards),
+								WALRUS_EPOCH_DURATION: epochDuration,
+								WALRUS_GC: gc ? 'true' : 'false',
+							},
 							labels: devstackContainerLabels({
 								appName: ctx.appName,
 								stack: ctx.stack,
@@ -310,7 +402,7 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 				}),
 			);
 
-			for (let i = 0; i < NODE_COUNT; i++) {
+			for (let i = 0; i < committeeSize; i++) {
 				const nodeIdx = i;
 				actions.push(
 					containerService({
@@ -351,7 +443,15 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 								// preserves it; `docker commit` captures it. The deploy
 								// configs come from a per-stack host bind mount; the sui
 								// binary is baked into the image at /root/sui_bin/sui
-								// (no shared sui-bin volume needed).
+								// (no shared sui-bin volume needed). Mount stays `:ro`
+								// because the underlying osxfs/gRPC-fuse driver on
+								// macOS Docker rejects keystore lock/write operations
+								// (`os error 95`/`Operation not supported`) even when
+								// the bind is rw — so run-walrus.sh copies the per-node
+								// sui keystore + yaml into /root (writable layer) and
+								// rewrites both yaml files (the sui wallet yaml AND
+								// the walrus-node yaml's `wallet_config` pointer) to
+								// reference the copies. See `walrus/build.ts`.
 								volumes: [`${walrusDeployHostDir(ctx.appDir, ctx.stack)}:/opt/walrus/outputs:ro`],
 								command: ['/bin/bash', '-c', '/opt/walrus/scripts/run-walrus.sh'],
 								healthcheck: {
@@ -374,7 +474,7 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 			actions.push(
 				containerService({
 					name: 'proxy',
-					needs: Array.from({ length: NODE_COUNT }, (_, idx) => `node-${idx}`),
+					needs: Array.from({ length: committeeSize }, (_, idx) => `node-${idx}`),
 					// Preferred port-base hint goes into inputs; the resolved
 					// per-stack port range is a runtime detail and shouldn't
 					// invalidate the skip predicate when allocator picks a
@@ -392,7 +492,7 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 							appDir: ctx.appDir,
 							stack: ctx.stack,
 							appName: ctx.appName,
-							ports: Array.from({ length: NODE_COUNT }, (_, idx) => nodeHostPort(idx)),
+							ports: Array.from({ length: committeeSize }, (_, idx) => nodeHostPort(idx)),
 						});
 						return {
 							name: '',
@@ -401,7 +501,7 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 							network: appNetworkName(ctx.appName, ctx.stack),
 							hostname: 'walrus-proxy',
 							restart: 'unless-stopped',
-							ports: Array.from({ length: NODE_COUNT }, (_, idx) => ({
+							ports: Array.from({ length: committeeSize }, (_, idx) => ({
 								host: nodeHostPort(idx),
 								container: nodeHostPort(idx),
 							})),
@@ -421,7 +521,7 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 						return ok
 							? {
 									ok: true,
-									detail: `4 nodes on ${nodeHostPort(0)}-${nodeHostPort(NODE_COUNT - 1)}`,
+									detail: `4 nodes on ${nodeHostPort(0)}-${nodeHostPort(committeeSize - 1)}`,
 								}
 							: { ok: false, detail: 'nginx running but node-0 not responding' };
 					},
@@ -438,7 +538,7 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 				register({
 					name: 'register',
 					needs: ['deploy', 'node-0', 'proxy'],
-					inputs: { image: imageTag, rev },
+					inputs: { image: imageTag, version },
 					// Republish the cached registry entries on warm-path skips
 					// so the dirty bit fires for codegen-style cascades that
 					// depend on `packages` / `tokens` / `walrus.nodes` kinds.
@@ -483,7 +583,7 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 							pkg.captured?.stakingObject === ids.stakingObject &&
 							pkg.captured?.exchangeObject === ids.exchangeObject &&
 							wal !== undefined &&
-							nodes.length === NODE_COUNT &&
+							nodes.length === committeeSize &&
 							nodes.every((n) => typeof n.hostApiUrl === 'string')
 						) {
 							return { ok: true, detail: pkg.packageId };
@@ -493,8 +593,13 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 					run: async (ctx) => {
 						requireLocalnetCtx(ctx);
 						const ports = await resolveNodePorts(ctx);
-						await registerWalrus(ctx, indexer(ports));
+						await registerWalrus(ctx, indexer(ports), committeeSize);
 					},
+					/** Identity = registered walrus packageId. Anything that
+					 * needs walrus's package (downstream Move calls, codegen
+					 * via `packages` dirty kind, the WAL token consumers)
+					 * cascade-re-runs when the deploy moved. */
+					identity: async (ctx) => ctx.registry.packages.find('walrus')?.packageId,
 				}),
 			);
 
@@ -643,6 +748,7 @@ async function seedWal(ctx: LocalnetActionRunContext): Promise<void> {
 async function registerWalrus(
 	ctx: LocalnetActionRunContext,
 	nodeHostPort: (idx: number) => number,
+	committeeSize: number,
 ): Promise<void> {
 	const deployText = await readContainerFile(
 		nodeContainerName(ctx.appName, ctx.stack, 0),
@@ -680,14 +786,14 @@ async function registerWalrus(
 
 	const ns = ctx.registry.ns<WalrusNamespace>('walrus');
 	const octet = walrusOctet(ctx.appName, ctx.stack);
-	for (let i = 0; i < NODE_COUNT; i++) {
+	for (let i = 0; i < committeeSize; i++) {
 		const ip = walrusNodeIp(octet, i);
 		ns.nodes.register({
 			name: nodeHostname(i),
 			hostname: nodeHostname(i),
 			ip,
 			metricsUrl: `http://${ip}:9184/metrics`,
-			apiUrl: `https://${ip}:9185`,
+			apiUrl: `http://${ip}:9185`,
 			hostApiUrl: `http://localhost:${nodeHostPort(i)}`,
 		});
 	}
@@ -738,15 +844,18 @@ function writeProxyConfig(opts: {
 	const servers = opts.ports
 		.map((port, idx) => {
 			const upstream = walrusNodeIp(octet, idx);
-			// `proxy_ssl_verify off` accepts the self-signed cert. SNI on so
-			// the upstream's certificate match doesn't depend on the IP.
+			// Plain-HTTP upstream: TLS is disabled on each storage node
+			// via the deploy-script patch (build.ts) — axum-server 0.8.0
+			// panics on the self-signed handshake on arm64-darwin. The
+			// proxy stays in place because callers reach storage nodes
+			// at `localhost:<port>` (host-mapped) — keeping the proxy
+			// means we can re-front with TLS termination here later if
+			// needed without touching the SDK call sites.
 			return `
 server {
 	listen 0.0.0.0:${port};
 	location / {
-		proxy_pass https://${upstream}:9185;
-		proxy_ssl_verify off;
-		proxy_ssl_server_name on;
+		proxy_pass http://${upstream}:9185;
 		proxy_set_header Host $host;
 		proxy_request_buffering off;
 		proxy_buffering off;

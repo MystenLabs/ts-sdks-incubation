@@ -24,7 +24,7 @@ interface BuildOutput {
 	dependencies: string[];
 }
 
-export interface PublishCacheEntry {
+interface PublishCacheEntry {
 	packageId: string;
 	captured: Record<string, string>;
 	sourceDigest: string;
@@ -33,7 +33,7 @@ export interface PublishCacheEntry {
 	chainId: string;
 }
 
-export interface PublishMovePackageOptions {
+interface PublishMovePackageOptions {
 	/** Sui-localnet container name. Required when `buildEnv: 'container'`
 	 * (the default); ignored when `buildEnv: 'host'`. */
 	containerName?: string;

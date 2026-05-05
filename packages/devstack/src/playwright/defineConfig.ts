@@ -12,7 +12,7 @@ type PlaywrightWebServerSingle =
 /** Like `Partial<PlaywrightTestConfig>` but lets callers override individual
  *  `webServer` / `use` fields without having to redeclare the whole object —
  *  the defineConfig defaults shallow-merge into the rest. */
-export type DevstackPlaywrightExtend = Omit<Partial<PlaywrightTestConfig>, 'webServer' | 'use'> & {
+type DevstackPlaywrightExtend = Omit<Partial<PlaywrightTestConfig>, 'webServer' | 'use'> & {
 	webServer?: Partial<PlaywrightWebServerSingle>;
 	use?: Partial<NonNullable<PlaywrightTestConfig['use']>>;
 };

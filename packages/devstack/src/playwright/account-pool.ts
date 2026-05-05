@@ -34,7 +34,7 @@ import { resolve } from 'node:path';
 
 import { test as base } from '@playwright/test';
 
-import type { Manifest } from '../runtime/manifest-writer.js';
+import type { Manifest } from '../runtime/manifest-types.js';
 import { AccountPool, type Lease } from '../vitest/accountPool.js';
 
 export interface DevstackAccountPoolFixtures {

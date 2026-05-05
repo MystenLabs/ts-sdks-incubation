@@ -18,7 +18,7 @@ import { resolveNetworkProfile } from './network-profile.js';
 
 const NETWORKS: ReadonlyArray<Network> = ['localnet', 'testnet', 'mainnet'];
 
-export interface ResolveTargetOptions {
+interface ResolveTargetOptions {
 	config: DevstackConfig;
 	appDir: string;
 	/** Raw `--target` value (or undefined when no flag was passed). */

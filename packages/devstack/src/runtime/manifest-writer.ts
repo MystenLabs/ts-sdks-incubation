@@ -17,9 +17,7 @@ import type { RegistryImpl } from '../registry/index.js';
 import { stackDir } from './active-stack.js';
 import type { Manifest, SerializedActionState, SerializedRegistry } from './manifest-types.js';
 
-export type { Manifest, SerializedActionState, SerializedRegistry } from './manifest-types.js';
-
-export interface WriteManifestOptions {
+interface WriteManifestOptions {
 	appName: string;
 	appDir: string;
 	stack: string;
@@ -31,7 +29,7 @@ export interface WriteManifestOptions {
 	actionStates?: Record<string, SerializedActionState>;
 }
 
-export interface ManifestPathOptions {
+interface ManifestPathOptions {
 	appDir: string;
 	stack: string;
 	network: Network;
@@ -54,7 +52,7 @@ export function manifestPath(opts: ManifestPathOptions): string {
 	return resolve(opts.appDir, '.devstack', 'manifests', `${opts.network}.json`);
 }
 
-export function buildManifest(opts: WriteManifestOptions): Manifest {
+function buildManifest(opts: WriteManifestOptions): Manifest {
 	const reg = opts.registry as RegistryImpl;
 	return {
 		app: opts.appName,

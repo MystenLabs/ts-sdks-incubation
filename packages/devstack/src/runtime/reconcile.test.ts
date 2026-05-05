@@ -74,14 +74,14 @@ describe('Reconciler — progress callback', () => {
 		expect(snapshots.some((s) => s.statuses.get('pkgs') === 'running')).toBe(true);
 		expect(snapshots.some((s) => s.statuses.get('codegen') === 'running')).toBe(true);
 		// pkgs reaches `healthy` BEFORE codegen does (Emit waited for it).
-		const pkgsHealthy = snapshots.findIndex((s) => s.statuses.get('pkgs') === 'healthy');
-		const codegenHealthy = snapshots.findIndex((s) => s.statuses.get('codegen') === 'healthy');
+		const pkgsHealthy = snapshots.findIndex((s) => s.statuses.get('pkgs') === 'ok');
+		const codegenHealthy = snapshots.findIndex((s) => s.statuses.get('codegen') === 'ok');
 		expect(pkgsHealthy).toBeGreaterThan(-1);
 		expect(codegenHealthy).toBeGreaterThan(-1);
 		expect(pkgsHealthy).toBeLessThan(codegenHealthy);
 		// Final result: both healthy.
-		expect(result.statuses.get('codegen')).toBe('healthy');
-		expect(result.statuses.get('pkgs')).toBe('healthy');
+		expect(result.statuses.get('codegen')).toBe('ok');
+		expect(result.statuses.get('pkgs')).toBe('ok');
 	});
 
 	it('emits queued → running → healthy transitions for each action; no `dirty` when nothing cascades', async () => {
@@ -106,8 +106,8 @@ describe('Reconciler — progress callback', () => {
 		expect(snapshots[0]?.statuses.get('b')).toBe('queued');
 		// Last snapshot: both healthy.
 		const last = snapshots.at(-1);
-		expect(last?.statuses.get('a')).toBe('healthy');
-		expect(last?.statuses.get('b')).toBe('healthy');
+		expect(last?.statuses.get('a')).toBe('ok');
+		expect(last?.statuses.get('b')).toBe('ok');
 		// At least one snapshot per action shows it `running`.
 		expect(snapshots.some((s) => s.statuses.get('a') === 'running')).toBe(true);
 		expect(snapshots.some((s) => s.statuses.get('b') === 'running')).toBe(true);
@@ -121,7 +121,7 @@ describe('Reconciler — progress callback', () => {
 		const reconciler = new Reconciler();
 		const registry = new RegistryImpl();
 		const result = await reconciler.cycle([a], baseCtx(registry));
-		expect(result.statuses.get('a')).toBe('healthy');
+		expect(result.statuses.get('a')).toBe('ok');
 	});
 
 	it('cascade Emits consume dependsOnKind so they do not re-fire on every round', async () => {
@@ -169,7 +169,7 @@ describe('Reconciler — progress callback', () => {
 		const reconciler = new Reconciler();
 		const registry = new RegistryImpl();
 		const result = await reconciler.cycle([codegen, seedThatDirtiesPackagesPostEmit], baseCtx(registry));
-		expect(result.statuses.get('codegen')).toBe('healthy');
+		expect(result.statuses.get('codegen')).toBe('ok');
 		// The Emit runs in the topo walk + at most once in the cascade. Pre-fix
 		// behavior would have run it 1 + maxCascade(4) = 5 times.
 		expect(codegenRuns).toBeLessThanOrEqual(2);
@@ -378,7 +378,7 @@ describe('Reconciler — Verify action', () => {
 		const reconciler = new Reconciler();
 		const registry = new RegistryImpl();
 		const result = await reconciler.cycle([action], baseCtx(registry));
-		expect(result.statuses.get('invariant')).toBe('healthy');
+		expect(result.statuses.get('invariant')).toBe('ok');
 		expect(rehydrateCount).toBe(1);
 	});
 
@@ -423,8 +423,8 @@ describe('Reconciler — same-signer serialization', () => {
 		const reconciler = new Reconciler();
 		const registry = new RegistryImpl();
 		const result = await reconciler.cycle([make('alpha'), make('beta')], baseCtx(registry));
-		expect(result.statuses.get('alpha')).toBe('healthy');
-		expect(result.statuses.get('beta')).toBe('healthy');
+		expect(result.statuses.get('alpha')).toBe('ok');
+		expect(result.statuses.get('beta')).toBe('ok');
 		expect(maxOverlap).toBe(1);
 		// Either ordering is fine; the constraint is non-overlap.
 		expect(order).toMatchObject(
@@ -480,5 +480,83 @@ describe('Reconciler — same-signer serialization', () => {
 		const registry = new RegistryImpl();
 		await reconciler.cycle([make('alpha'), make('beta')], baseCtx(registry));
 		expect(maxOverlap).toBe(2);
+	});
+});
+
+describe('Reconciler — abort signal', () => {
+	it('stops scheduling new actions once the signal is aborted; in-flight actions still drain', async () => {
+		// Two actions: `slow` runs for a while; `late` would normally
+		// schedule after `slow` settles. Aborting mid-`slow` should keep
+		// `slow` running to completion but leave `late` queued.
+		const ran: string[] = [];
+		const controller = new AbortController();
+		const slow = register({
+			name: 'slow',
+			inputs: {},
+			run: async () => {
+				ran.push('slow:start');
+				// Trip the abort while we're inflight, then keep running.
+				controller.abort();
+				await new Promise((res) => setTimeout(res, 25));
+				ran.push('slow:end');
+			},
+		});
+		const late = register({
+			name: 'late',
+			needs: ['slow'],
+			inputs: {},
+			run: async () => {
+				ran.push('late');
+			},
+		});
+		const reconciler = new Reconciler();
+		const registry = new RegistryImpl();
+		const result = await reconciler.cycle([slow, late], {
+			...baseCtx(registry),
+			signal: controller.signal,
+		});
+		// slow ran to completion; late never started.
+		expect(ran).toEqual(['slow:start', 'slow:end']);
+		expect(result.statuses.get('slow')).toBe('ok');
+		expect(result.statuses.get('late')).toBe('queued');
+	});
+
+	it('skips the Emit cascade when aborted before it would run', async () => {
+		// Codegen depends on `pkgs`. Abort fires while `pkgs` is running;
+		// codegen would normally fire (its dep settles healthy) — the abort
+		// should keep it from being scheduled.
+		const ran: string[] = [];
+		const controller = new AbortController();
+		const codegen = emit({
+			name: 'codegen',
+			dependsOnKind: ['packages'],
+			inputs: {},
+			run: async () => {
+				ran.push('codegen');
+			},
+		});
+		const pkgs = register({
+			name: 'pkgs',
+			inputs: {},
+			run: async (ctx) => {
+				controller.abort();
+				ctx.registry.packages.register({
+					name: 'foo',
+					packageId: '0x1',
+					captured: {},
+					network: 'localnet',
+				});
+				ran.push('pkgs');
+			},
+		});
+		const reconciler = new Reconciler();
+		const registry = new RegistryImpl();
+		const result = await reconciler.cycle([codegen, pkgs], {
+			...baseCtx(registry),
+			signal: controller.signal,
+		});
+		expect(ran).toEqual(['pkgs']);
+		expect(result.statuses.get('pkgs')).toBe('ok');
+		expect(result.statuses.get('codegen')).toBe('queued');
 	});
 });

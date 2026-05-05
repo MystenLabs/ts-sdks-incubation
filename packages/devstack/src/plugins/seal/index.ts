@@ -1,6 +1,6 @@
 // Seal key-server plugin. Owns four actions:
 //
-//   seal.build       — Multi-arch build of `dev-examples/seal:<rev>` (image
+//   seal.build       — Multi-arch build of `dev-examples/seal:<version>` (image
 //                      bundles `key-server` + `seal-cli`).
 //   seal.publish     — Publish the upstream `move/seal` package against the
 //                      sui-localnet container (M8 source-digest + on-chain
@@ -36,18 +36,23 @@ import {
 	type RegistryQuery,
 	requireLocalnetCtx,
 } from '../../core/types.js';
+import { pollUntilReady } from '../../helpers/poll.js';
 import { openSuiRpcClient } from '../../helpers/sui-client.js';
 import { extractUpstreamSource } from '../../helpers/upstream-source.js';
 import { definePlugin } from '../../plugin.js';
 import { stackDir } from '../../runtime/active-stack.js';
-import { devstackContainerLabels, dockerRun, imageExists } from '../sui/docker.js';
+import {
+	devstackContainerLabels,
+	dockerRun,
+	hostDockerPlatform,
+	imageExists,
+} from '../sui/docker.js';
 import { appNetworkName } from '../sui/index.js';
 import {
 	SEAL_IMAGE_MOVE_PACKAGE_PATH,
-	SEAL_REV,
 	SEAL_SDK_VERSION,
+	SEAL_VERSION,
 	ensureSealImage,
-	hostDockerPlatform,
 	sealImageTag,
 } from './build.js';
 
@@ -67,20 +72,24 @@ const sealConfigPath = (appDir: string, stack: string): string =>
 /** Frontend-facing `seal.keyServer` registry record. The manifest writer
  * round-trips it under `seal.keyServer` so dapps can read it via the
  * registry namespace. */
-export interface SealKeyServer {
+interface SealKeyServer {
 	name: string;
 	objectId: string;
 	url: string;
 	sealPackageId: string;
 }
 
-export interface SealNamespace {
+interface SealNamespace {
 	keyServer: RegistryQuery<SealKeyServer>;
 }
 
-export interface SealPluginOptions {
-	/** Pinned seal revision. Defaults to the rev tracked in `build.ts`. */
-	rev?: string;
+interface SealPluginOptions {
+	/** Pinned seal release tag (e.g. `'seal-v0.6.6'`). Defaults to the
+	 * version tracked in `build.ts`. Used both to pull the matching
+	 * `seal-cli` + `key-server` binaries from the GitHub release AND as
+	 * the git ref BuildKit fetches the `move/seal` Move package source
+	 * from for the publish path. */
+	version?: string;
 	/** Host port the key-server's HTTP API binds on. Frontend `SealClient`
 	 * talks to this URL. Default `2024`. */
 	port?: number;
@@ -98,47 +107,13 @@ export interface SealPluginOptions {
 	publisher?: string;
 }
 
-/** Options for constructing a `@mysten/seal` `SealClient` against a
- * devstack-managed localnet. Pass into `new SealClient({...suiClient,
- * ...localnetSealOptions(manifest)})`. Pulls the registered key-server
- * object id(s) out of the manifest; falls back to `serverConfigs: []`
- * pre-bring-up so apps that thread this through the constructor before
- * `devstack up` finishes don't crash on startup (the client throws on
- * actual encrypt/decrypt instead). */
-export interface LocalnetSealOptions {
-	serverConfigs: Array<{ objectId: string; weight: number }>;
-	verifyKeyServers: boolean;
-}
-
-interface SealManifestNamespace {
-	keyServer?: ReadonlyArray<{ objectId: string }>;
-}
-
-/** Build the `SealClient` constructor's seal-side fields from the
- * devstack manifest. `serverConfigs` derives from
- * `manifest.registry.seal.keyServer` (one entry per registered key
- * server, equal weight); `verifyKeyServers: false` because devstack's
- * Open-mode key servers are self-signed and the SDK can't verify them
- * against the on-chain registration without the master pubkey, which
- * we deliberately don't surface in the registry. */
-export function localnetSealOptions(manifest: {
-	registry: { seal?: unknown };
-}): LocalnetSealOptions {
-	const ns = manifest.registry.seal as SealManifestNamespace | undefined;
-	const servers = ns?.keyServer ?? [];
-	return {
-		serverConfigs: servers.map((s) => ({ objectId: s.objectId, weight: 1 })),
-		verifyKeyServers: false,
-	};
-}
-
 export const seal = (opts: SealPluginOptions = {}) => {
-	const rev = opts.rev ?? SEAL_REV;
+	const version = opts.version ?? SEAL_VERSION;
 	const preferredPort = opts.port ?? KEY_SERVER_CONTAINER_PORT;
 	const keyServerName = opts.keyServerName ?? SEAL_KEY_SERVER_NAME;
 	const masterOverride = opts.master;
 	const publisherAccount = opts.publisher ?? 'publisher';
-	const imageTag = sealImageTag(rev);
+	const imageTag = sealImageTag(version);
 	const platform = hostDockerPlatform();
 
 	const resolveEndpoint = async (ctx: {
@@ -154,21 +129,21 @@ export const seal = (opts: SealPluginOptions = {}) => {
 
 	return definePlugin({
 		name: 'seal',
-		// Folded into the snapshot id. `imageTag` covers `rev` + `platform`
-		// (the build action's input) so bumping any of those re-derives a
-		// fresh id; the master key on disk is captured separately via the
-		// host-fs portion of the snapshot.
-		inputs: { image: imageTag, rev },
+		// Folded into the snapshot id. `imageTag` covers `version` +
+		// `platform` (the build action's input) so bumping any of those
+		// re-derives a fresh id; the master key on disk is captured
+		// separately via the host-fs portion of the snapshot.
+		inputs: { image: imageTag, version },
 		actions: () => [
 			buildImage({
 				name: 'build',
-				inputs: { image: imageTag, rev, platform },
+				inputs: { image: imageTag, version, platform },
 				getStatus: async () =>
 					(await imageExists(imageTag))
 						? { ok: true, detail: imageTag }
 						: { ok: false, detail: `image ${imageTag} missing` },
-				run: async () => {
-					await ensureSealImage({ rev });
+				run: async (ctx) => {
+					await ensureSealImage({ version, appendLog: ctx.appendLog });
 				},
 			}),
 
@@ -181,8 +156,8 @@ export const seal = (opts: SealPluginOptions = {}) => {
 				// a stable label (the image tag) used for input hashing
 				// only — the actual directory comes from `prepareSource`.
 				path: imageTag,
-				prepareSource: async () => {
-					await ensureSealImage({ rev });
+				prepareSource: async (ctx) => {
+					await ensureSealImage({ version, appendLog: ctx.appendLog });
 					const tmpDir = mkdtempSync(join(tmpdir(), 'devstack-seal-publish-'));
 					await extractUpstreamSource({
 						imageTag,
@@ -200,7 +175,7 @@ export const seal = (opts: SealPluginOptions = {}) => {
 				name: 'register',
 				needs: ['publish', 'build'],
 				runsAs: publisherAccount,
-				inputs: { preferredPort, keyServerName, rev, publisher: publisherAccount },
+				inputs: { preferredPort, keyServerName, version, publisher: publisherAccount },
 				// Reconciler invokes this on every successful path (cold run +
 				// warm-path skip), so the in-memory `services` registry stays
 				// populated without `getStatus` having to re-register manually.
@@ -244,6 +219,11 @@ export const seal = (opts: SealPluginOptions = {}) => {
 						publisher: publisherAccount,
 					});
 				},
+				/** Identity = the on-chain KeyServer object id. Cascades
+				 * `seal.key-server` (the docker-side key server) when we
+				 * register a fresh KeyServer (regenesis re-publish path). */
+				identity: async (ctx) =>
+					ctx.registry.ns<SealNamespace>('seal').keyServer.find(keyServerName)?.objectId,
 			}),
 
 			containerService({
@@ -347,6 +327,29 @@ async function registerSealKeyServer({
 		override: masterOverride,
 	});
 	const pkBytes = decodePrefixedHex(keys.publicKey);
+
+	// Wait for the just-published seal package to be visible to sui's
+	// transaction-input-object check. `publishMovePackage` already
+	// waits for the publish tx's finality, but on a fresh chain there's
+	// a brief window where the new packageId hasn't propagated to the
+	// resolver — submitting a tx that calls into the package fails
+	// fast with `Error checking transaction input objects: Dependent
+	// package not found on-chain: 0x…`. Poll the object directly until
+	// it resolves.
+	await pollUntilReady(ctx, {
+		label: `seal package ${sealPkg.packageId.slice(0, 10)}…`,
+		probe: async () => {
+			try {
+				await client.core.getObject({ objectId: sealPkg.packageId });
+				return { ok: true };
+			} catch (err) {
+				return { ok: false, detail: String(err).split('\n')[0]?.slice(0, 120) ?? 'unknown' };
+			}
+		},
+		timeoutMs: 30_000,
+		intervalMs: 250,
+		progressIntervalMs: 5_000,
+	});
 
 	const tx = new Transaction();
 	tx.moveCall({

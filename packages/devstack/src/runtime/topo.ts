@@ -4,7 +4,7 @@
 import type { Action } from '../core/types.js';
 import { getProvidedCapabilities } from '../core/types.js';
 
-export interface TopoSortOptions {
+interface TopoSortOptions {
 	/**
 	 * Drop `needs` edges that point at actions absent from the input. When
 	 * `false` (default), an action that needs an unknown name throws —

@@ -22,6 +22,7 @@
 		"@mysten-incubation/devstack": "workspace:*",
 		"@mysten/dapp-kit-core": "catalog:",
 		"@mysten/dapp-kit-react": "catalog:",
+		"@mysten/deepbook-v3": "catalog:",
 		"@mysten/sui": "catalog:",
 		"@mysten/wallet-standard": "catalog:",
 		"@tanstack/react-query": "catalog:",

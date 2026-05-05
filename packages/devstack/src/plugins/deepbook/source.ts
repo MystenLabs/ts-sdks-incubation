@@ -5,7 +5,10 @@
 // `sui client test-publish --with-unpublished-dependencies`.
 
 import { buildImage } from '../../actions/build.js';
-import { ensureUpstreamSourceImage, upstreamSourceImageTag } from '../../helpers/upstream-source.js';
+import {
+	ensureUpstreamSourceImage,
+	upstreamSourceImageTag,
+} from '../../helpers/upstream-source.js';
 import { imageExists } from '../sui/docker.js';
 
 export const DEEPBOOK_REPO = 'MystenLabs/deepbookv3';
@@ -20,8 +23,8 @@ export function deepbookSourceAction(rev: string) {
 			(await imageExists(imageTag))
 				? { ok: true, detail: imageTag }
 				: { ok: false, detail: `image ${imageTag} missing` },
-		run: async () => {
-			await ensureUpstreamSourceImage({ repo: DEEPBOOK_REPO, rev });
+		run: async (ctx) => {
+			await ensureUpstreamSourceImage({ repo: DEEPBOOK_REPO, rev, appendLog: ctx.appendLog });
 		},
 	});
 }

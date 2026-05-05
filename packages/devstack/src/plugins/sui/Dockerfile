@@ -38,7 +38,12 @@ RUN chmod +x /usr/local/bin/devstack-entrypoint.sh
 
 ENV RUST_LOG=info,sui=info
 
-EXPOSE 9000 9123
+EXPOSE 9000 9123 9125
 
 ENTRYPOINT ["/usr/local/bin/devstack-entrypoint.sh"]
+# CMD is overridden at run time by the sui plugin (which injects the
+# `--with-indexer=postgres://...` URL pointing at the sidecar postgres
+# container). This default skips the indexer + GraphQL so the image
+# is runnable standalone (e.g. `docker run` for debug) without an
+# external postgres dependency.
 CMD ["start", "--with-faucet=0.0.0.0:9123"]

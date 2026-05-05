@@ -15,11 +15,11 @@ import { decodeSuiPrivateKey } from '@mysten/sui/cryptography';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { stackDir } from '../runtime/active-stack.js';
 
-export function keysDir(appDir: string, stack: string): string {
+function keysDir(appDir: string, stack: string): string {
 	return join(stackDir(appDir, stack), '.keys');
 }
 
-export function keyFilePath(appDir: string, stack: string, accountName: string): string {
+function keyFilePath(appDir: string, stack: string, accountName: string): string {
 	return join(keysDir(appDir, stack), `${accountName}.key`);
 }
 

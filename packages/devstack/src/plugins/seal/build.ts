@@ -1,73 +1,84 @@
-// Multi-arch seal image builder. Single-step Docker build with no host
-// filesystem state: BuildKit fetches the seal repo at the pinned rev
-// directly via a named build-context (`seal-src`), and the Dockerfile
-// `COPY --from=seal-src …` pulls source files into the build. Both
-// `key-server` and `seal-cli` end up in the runtime image, plus the
-// `move/seal` Move package staged at `/opt/seal/move-package` for
-// `seal.publish` to extract at publish time.
+// Multi-arch seal image builder. Pulls the published `seal-cli` and
+// `key-server` binaries from the seal GitHub release — no cargo compile.
+// The `move/seal` Move package is staged at /opt/seal/move-package via
+// `--build-context seal-src=https://github.com/MystenLabs/seal.git#<tag>`
+// so `seal.publish` can extract it at publish time.
 //
-// Native arm64 build on Apple Silicon — Rosetta is a 5–10x perf hit on a
-// release-profile Rust build (CLAUDE.md, "avoid emulation").
+// Native arm64 build on Apple Silicon — the released binary is a
+// linux/arm64 ELF, so the resulting image runs natively under Docker
+// Desktop's vmm without Rosetta.
 
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { dockerRun, imageExists } from '../sui/docker.js';
+import { dockerRun, hostDockerPlatform, imageExists, pruneImagesByLabel } from '../sui/docker.js';
 
-/** Pinned seal revision. Matches the latest tagged seal release as of
- * pinning (https://github.com/MystenLabs/seal/releases/tag/seal-v0.6.5).
- * Bump SEAL_REV to upgrade the local key-server. */
-export const SEAL_REV = '1caeaaa1ec8f48b2635d317c752b7e316f6be416';
-export const SEAL_REPO = 'MystenLabs/seal';
+/** Pinned seal release tag. Doubles as a git ref so BuildKit can pull
+ * the matching `move/seal` Move package source via the `seal-src`
+ * named build-context. Bump to upgrade the local key-server.
+ *
+ * Release artifact URL pattern:
+ *   https://github.com/MystenLabs/seal/releases/download/<tag>/seal-<platform>
+ *   https://github.com/MystenLabs/seal/releases/download/<tag>/key-server-<platform>
+ *
+ * The seal release workflow renames `seal-cli` → `seal-${platform}` for
+ * the release; the Dockerfile renames it back inside the image so the
+ * plugin's `--entrypoint seal-cli` invocation works unchanged. */
+export const SEAL_VERSION = 'seal-v0.6.6';
+const SEAL_REPO = 'MystenLabs/seal';
 /** TS SDK version the upstream key-server's version-validation middleware
  * compares against (sent in the `Client-Sdk-Version` header from the
  * container's healthcheck). Must satisfy the key-server's
- * `ts_sdk_version_requirement` field — bump in lockstep with SEAL_REV. */
+ * `ts_sdk_version_requirement` field — bump in lockstep with SEAL_VERSION. */
 export const SEAL_SDK_VERSION = '0.4.18';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SEAL_DOCKERFILE = resolve(HERE, 'Dockerfile');
 
-export function sealImageTag(rev: string = SEAL_REV): string {
-	return `dev-examples/seal:${rev.slice(0, 12)}`;
+/** Slug a release tag into a tag-safe component (e.g. `seal-v0.6.6` →
+ * `seal-v0-6-6`). Periods aren't allowed in docker tag suffixes when
+ * combined with our format. */
+function versionSlug(version: string): string {
+	return version.replace(/\./g, '-');
+}
+
+export function sealImageTag(version: string = SEAL_VERSION): string {
+	return `dev-examples/seal:${versionSlug(version)}`;
 }
 
 /** Path to the Move package inside the built seal image. `seal.publish`
  * extracts this to a host tmp dir and feeds it to `publishMovePackage`. */
 export const SEAL_IMAGE_MOVE_PACKAGE_PATH = '/opt/seal/move-package';
 
-export function hostDockerArch(): 'arm64' | 'amd64' {
-	const arch = process.arch;
-	if (arch === 'arm64') return 'arm64';
-	if (arch === 'x64') return 'amd64';
-	throw new Error(`devstack seal: unsupported host architecture ${arch}`);
-}
-
-export function hostDockerPlatform(): string {
-	return `linux/${hostDockerArch()}`;
-}
-
-export interface EnsureSealImageResult {
+interface EnsureSealImageResult {
 	imageTag: string;
 	platform: string;
 }
 
 /** Idempotent: returns immediately when the image is already in the local
- * Docker daemon. First build is multi-minute Rust release (~5–8 min on
- * M-series); we surface that to the developer via stderr. */
-export async function ensureSealImage(opts: { rev?: string }): Promise<EnsureSealImageResult> {
-	const rev = opts.rev ?? SEAL_REV;
-	const imageTag = sealImageTag(rev);
+ * Docker daemon. First build is ~30 s — just two binary downloads + a
+ * tiny Move-package COPY. The previous Rust-from-source build took
+ * ~5–8 min on M-series, replaced once seal published `seal-cli` and
+ * `key-server` as release artifacts.
+ *
+ * `appendLog` routes docker's combined stdout/stderr through the
+ * supervisor's status renderer; falls back to raw stderr when called
+ * outside the supervisor. */
+export async function ensureSealImage(opts: {
+	version?: string;
+	appendLog?: (line: string) => void;
+}): Promise<EnsureSealImageResult> {
+	const version = opts.version ?? SEAL_VERSION;
+	const imageTag = sealImageTag(version);
 	const platform = hostDockerPlatform();
+	const log = opts.appendLog ?? ((line: string) => process.stderr.write(`${line}\n`));
 
 	if (await imageExists(imageTag)) {
 		return { imageTag, platform };
 	}
 
-	const gitContext = `https://github.com/${SEAL_REPO}.git#${rev}`;
-	process.stderr.write(
-		`devstack seal: building ${imageTag} from ${SEAL_REPO}@${rev.slice(0, 12)} (${platform}) — first build ~5–8 min\n`,
-	);
+	const gitContext = `https://github.com/${SEAL_REPO}.git#${version}`;
+	log(`devstack seal: building ${imageTag} (binary fetch, ${platform}) — first build ~30 s`);
 	const build = await dockerRun({
 		command: [
 			'build',
@@ -78,20 +89,28 @@ export async function ensureSealImage(opts: { rev?: string }): Promise<EnsureSea
 			'--platform',
 			platform,
 			'--build-arg',
-			`GIT_REVISION=${rev.slice(0, 12)}`,
+			`SEAL_TAG=${version}`,
 			'--build-context',
 			`seal-src=${gitContext}`,
 			'--label',
 			'devstack.cache=seal',
 			'--label',
-			`devstack.rev=${rev}`,
+			`devstack.version=${version}`,
 			HERE,
 		],
 		stream: true,
+		appendLog: log,
 	});
 	if (build.code !== 0) {
 		throw new Error(`devstack seal: docker build failed (exit ${build.code})`);
 	}
+	// Drop superseded seal tags (older SEAL_VERSIONs). Keyed on the seal
+	// cache label so unrelated images are untouched.
+	await pruneImagesByLabel({
+		labels: { 'devstack.cache': 'seal' },
+		keep: [imageTag],
+		appendLog: log,
+	});
 
 	return { imageTag, platform };
 }

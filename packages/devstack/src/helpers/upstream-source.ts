@@ -16,9 +16,9 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { dockerRun, imageExists } from '../plugins/sui/docker.js';
+import { dockerRun, imageExists, pruneImagesByLabel } from '../plugins/sui/docker.js';
 
-export interface EnsureUpstreamSourceImageOptions {
+interface EnsureUpstreamSourceImageOptions {
 	repo: string;
 	rev: string;
 	/** Override the git host URL template. Default builds
@@ -29,9 +29,13 @@ export interface EnsureUpstreamSourceImageOptions {
 	 * Pass a function `(repo, rev) => url` for full programmatic control
 	 * (private hosts that mint short-lived clone URLs, etc.). */
 	gitUrl?: string | ((repo: string, rev: string) => string);
+	/** Route docker's combined stdout/stderr through the supervisor's
+	 * status renderer when called from inside `devstack up`. Falls back
+	 * to raw stderr when undefined (one-shot CLI paths). */
+	appendLog?: (line: string) => void;
 }
 
-export interface EnsureUpstreamSourceImageResult {
+interface EnsureUpstreamSourceImageResult {
 	imageTag: string;
 }
 
@@ -75,11 +79,10 @@ export async function ensureUpstreamSourceImage(
 
 	const gitUrl = resolveGitUrl(opts.repo, opts.rev, opts.gitUrl);
 	const tmpCtx = mkdtempSync(join(tmpdir(), 'devstack-upstream-src-'));
+	const log = opts.appendLog ?? ((line: string) => process.stderr.write(`${line}\n`));
 	try {
 		writeFileSync(join(tmpCtx, 'Dockerfile'), makeDockerfile(gitUrl));
-		process.stderr.write(
-			`devstack: building ${imageTag} (cloning ${gitUrl} @ ${opts.rev.slice(0, 12)})\n`,
-		);
+		log(`devstack: building ${imageTag} (cloning ${gitUrl} @ ${opts.rev.slice(0, 12)})`);
 		const build = await dockerRun({
 			command: [
 				'build',
@@ -96,10 +99,18 @@ export async function ensureUpstreamSourceImage(
 				tmpCtx,
 			],
 			stream: true,
+			appendLog: log,
 		});
 		if (build.code !== 0) {
 			throw new Error(`devstack upstream-source: build failed (exit ${build.code})`);
 		}
+		// Drop superseded revs *of this repo* (other repos' images keep
+		// their own tags — the `devstack.repo` filter scopes the prune).
+		await pruneImagesByLabel({
+			labels: { 'devstack.cache': 'upstream-source', 'devstack.repo': opts.repo },
+			keep: [imageTag],
+			appendLog: log,
+		});
 	} finally {
 		rmSync(tmpCtx, { recursive: true, force: true });
 	}

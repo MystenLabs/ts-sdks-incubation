@@ -113,13 +113,36 @@ function makeFetchOverride(
 	baseFetch: typeof globalThis.fetch,
 	nodes: ReadonlyArray<DevstackWalrusNode>,
 ): typeof globalThis.fetch {
-	const rules = nodes.map((n) => ({ from: n.apiUrl, to: n.hostApiUrl }));
+	// Match by host:port suffix instead of full URL prefix — the
+	// on-chain Committee data baked at `walrus.deploy` time records
+	// node addresses as `https://<ip>:9185` (TLS was the upstream
+	// default), but the actual storage nodes run plain HTTP because
+	// devstack disables TLS in their yaml (axum-server panic on
+	// arm64-darwin). A scheme-locked match would let those `https://`
+	// URLs pass through unmodified, leaving the browser to attempt
+	// connections to docker-internal IPs that aren't reachable from
+	// the host. Matching `://<ip>:9185` rewrites both schemes to the
+	// host-mapped HTTP port the walrus.proxy nginx sidecar exposes.
+	const rules = nodes.map((n) => {
+		try {
+			const parsed = new URL(n.apiUrl);
+			return { hostPort: `${parsed.hostname}:${parsed.port || (parsed.protocol === 'https:' ? '443' : '80')}`, to: n.hostApiUrl };
+		} catch {
+			return { hostPort: n.apiUrl, to: n.hostApiUrl };
+		}
+	});
 	return ((input, init) => {
 		const url =
 			typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
 		for (const rule of rules) {
-			if (url.startsWith(rule.from)) {
-				const rewritten = rule.to + url.slice(rule.from.length);
+			const idx = url.indexOf(`://${rule.hostPort}`);
+			if (idx > 0 && idx < 10) {
+				// `://` lives at position 5 (`http`) or 6 (`https`); cap
+				// at 10 to make sure we're matching the scheme
+				// separator and not stray text. Suffix after the
+				// host:port (path + query) is preserved.
+				const tailStart = idx + 3 + rule.hostPort.length;
+				const rewritten = rule.to + url.slice(tailStart);
 				if (typeof input === 'string' || input instanceof URL) {
 					return baseFetch(rewritten, init);
 				}

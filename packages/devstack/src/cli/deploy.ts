@@ -18,7 +18,7 @@ import { loadConfig, parseConfigArg, parseNetworkArg, parseTargetArg, runIfMain 
 import { resolveNetworkProfile } from './network-profile.js';
 import { resolveTarget } from './target.js';
 
-export interface DeployFlags {
+interface DeployFlags {
 	configPath: string;
 	/** Live-network selector. Mutually exclusive with `target`; one of the
 	 * two must be set. */
@@ -30,7 +30,7 @@ export interface DeployFlags {
 	json?: boolean;
 }
 
-export async function runDeploy(flags: DeployFlags): Promise<number> {
+async function runDeploy(flags: DeployFlags): Promise<number> {
 	const abs = resolve(flags.configPath);
 	const config = await loadConfig(abs);
 	const appDir = dirname(abs);

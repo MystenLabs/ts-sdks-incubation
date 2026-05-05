@@ -15,7 +15,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-import type { Manifest } from '../runtime/manifest-writer.js';
+import type { Manifest } from '../runtime/manifest-types.js';
 import { AccountPool } from './accountPool.js';
 
 export interface DevstackTestContext {

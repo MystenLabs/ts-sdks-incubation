@@ -417,7 +417,18 @@ export class Supervisor {
 					ports: this.ports,
 					onShutdown: (label, fn) => this.shutdownHooks.push({ label, run: fn }),
 					appendLog: (actionName, line) => this.renderer.appendLog(actionName, line),
-					progress: (snap) => this.renderer.update(snap.statuses, snap.failures),
+					progress: (snap) => {
+						this.renderer.update(snap.statuses, snap.failures);
+						// Push the current registry on every progress tick
+						// too — without this the renderer doesn't see new
+						// services / packages / accounts until the whole
+						// cycle finishes, so users watch a row settle
+						// `ok` with no outputs for several seconds before
+						// the URL/packageId fades in. snapshot() is a
+						// shallow walk, cheap to do per-tick.
+						this.refreshRpcUrl();
+						this.refreshRegistry();
+					},
 					lenient: opts.hostProcessOnly,
 					signal: this.abortController.signal,
 				});

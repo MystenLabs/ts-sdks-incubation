@@ -19,15 +19,15 @@ export interface GitDep {
 	subdir: string;
 }
 
-export interface LocalDep {
+interface LocalDep {
 	kind: 'local';
 	name: string;
 	path: string;
 }
 
-export type MoveTomlDep = GitDep | LocalDep;
+type MoveTomlDep = GitDep | LocalDep;
 
-export interface ParsedMoveToml {
+interface ParsedMoveToml {
 	packageName?: string;
 	deps: MoveTomlDep[];
 }

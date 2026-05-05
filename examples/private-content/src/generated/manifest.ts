@@ -15,11 +15,115 @@ export const manifest: Manifest = {
 	"network": "localnet",
 	"emittedAt": "",
 	"registry": {
-		"packages": [],
-		"accounts": [],
-		"services": [],
+		"packages": [
+			{
+				"name": "vault",
+				"packageId": "0xc6ab7137bf30bc0dea3bc6a8f77186eb6bb698f19ad57f4b730b6240258712d6",
+				"captured": {},
+				"sourceDigest": "61162141cde3e3cc83419faf85256d4206ca1d010a6fa1c53c3ea14b8a6868b7",
+				"chainId": "e17fc9f6",
+				"network": "localnet",
+				"path": "/Users/michaelhayes/code/ts-sdks-incubation/examples/private-content/move/vault",
+				"providedBy": "private-content-setup.vault",
+				"mvrPlaceholder": "@local/vault"
+			},
+			{
+				"name": "seal",
+				"packageId": "0x4119c18b90b4afe61d8a37facb5742c3967e22aa688752ceaf86becd5d8a65b2",
+				"captured": {},
+				"sourceDigest": "db25bf22d5aee3255ce94030be07d7559e77bfda1501bde5d6d3630bae0f467c",
+				"chainId": "e17fc9f6",
+				"network": "localnet",
+				"providedBy": "seal.publish"
+			}
+		],
+		"accounts": [
+			{
+				"name": "publisher",
+				"address": "0x224527b0aaba1439185e588ed1de7e8bc724d2b9663f74dffc210481120efb85",
+				"role": "publisher",
+				"funded": true,
+				"providedBy": "accounts.fund"
+			},
+			{
+				"name": "alice",
+				"address": "0x65d745d52ef27667b613981e1243cac7d5e9816f70e2416ce1bb6c8c02e15c4a",
+				"funded": true,
+				"providedBy": "accounts.fund"
+			},
+			{
+				"name": "bob",
+				"address": "0xb4111405b9c7d8e165cee9bca5177c5db5e4b27a8ec724d9f792761c7c8031ea",
+				"funded": true,
+				"providedBy": "accounts.fund"
+			}
+		],
+		"services": [
+			{
+				"name": "sui-indexer-db",
+				"kind": "sui-indexer-db",
+				"url": "postgres://postgres:devstack@sui-indexer-db:5432/sui_indexer",
+				"port": 5432,
+				"endpointLabel": "Sui indexer postgres (internal)",
+				"providedBy": "sui.indexer-db"
+			},
+			{
+				"name": "sui-rpc",
+				"kind": "sui-rpc",
+				"url": "http://127.0.0.1:9482",
+				"port": 9482,
+				"endpointLabel": "Sui JSON-RPC + gRPC",
+				"providedBy": "sui.localnet"
+			},
+			{
+				"name": "sui-faucet",
+				"kind": "sui-faucet",
+				"url": "http://127.0.0.1:9871",
+				"port": 9871,
+				"endpointLabel": "Sui faucet",
+				"providedBy": "sui.localnet"
+			},
+			{
+				"name": "sui-graphql",
+				"kind": "sui-graphql",
+				"url": "http://127.0.0.1:9125/graphql",
+				"port": 9125,
+				"endpointLabel": "Sui GraphQL",
+				"providedBy": "sui.localnet"
+			},
+			{
+				"name": "wallet-server",
+				"kind": "wallet-server",
+				"url": "http://localhost:9423",
+				"port": 9423,
+				"endpointLabel": "http://localhost:9423/?token=07ac24d5a828e74f84ed8a49efd18ee13a4654fed9858d0c698409c348cc57d0",
+				"providedBy": "wallet-server.register"
+			},
+			{
+				"name": "seal-key-server",
+				"kind": "seal-key-server",
+				"url": "http://127.0.0.1:2024",
+				"port": 2024,
+				"endpointLabel": "Seal key-server (Open mode)",
+				"providedBy": "seal.key-server"
+			},
+			{
+				"name": "dev-server",
+				"kind": "dev-server",
+				"url": "http://localhost:5175",
+				"port": 5175,
+				"providedBy": "frontend.dev-server"
+			}
+		],
 		"seal": {
-			"keyServer": []
+			"keyServer": [
+				{
+					"name": "devstack-local",
+					"objectId": "0x5eb1b45f7d0b8c46a9709d1034cb06fc53c3f73d5d2c98a0b6cce7d2858dba66",
+					"url": "http://127.0.0.1:2024",
+					"sealPackageId": "0x4119c18b90b4afe61d8a37facb5742c3967e22aa688752ceaf86becd5d8a65b2"
+				}
+			]
 		}
 	}
 };

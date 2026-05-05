@@ -41,7 +41,7 @@ export interface ImportedPackageCacheEntry {
 	chainId: string;
 }
 
-export interface ImportMovePackageOptions {
+interface ImportMovePackageOptions {
 	containerName: string;
 	repo: string;
 	rev: string;
@@ -80,9 +80,13 @@ export interface ImportMovePackageOptions {
 	 * tree). The git-rev cache is bypassed when set; rebuilding on every
 	 * cycle is the trade-off for live-edit. */
 	localPath?: string;
+	/** Route docker's combined stdout/stderr (image fetch, publish, etc.)
+	 * through the supervisor's status renderer. Threaded from
+	 * `ctx.appendLog` at the action's `run` site. */
+	appendLog?: (line: string) => void;
 }
 
-export interface ImportMovePackageResult {
+interface ImportMovePackageResult {
 	packageId: string;
 	captured: Record<string, string>;
 	deps: Record<string, string>;
@@ -101,7 +105,12 @@ export async function importMovePackage(
 	// the live source of truth. Cycle-time changes the user makes to
 	// their checkout are picked up by the file watcher (`watches:` on
 	// the build action) and re-trigger import.
-	if (opts.localPath === undefined && prior !== undefined && prior.sourceDigest === rev && prior.chainId === chainId) {
+	if (
+		opts.localPath === undefined &&
+		prior !== undefined &&
+		prior.sourceDigest === rev &&
+		prior.chainId === chainId
+	) {
 		return {
 			packageId: prior.packageId,
 			captured: prior.captured,
@@ -132,13 +141,20 @@ export async function importMovePackage(
 				);
 			}
 		} else {
-			const { imageTag } = await ensureUpstreamSourceImage({ repo, rev, gitUrl: opts.gitUrl });
+			const { imageTag } = await ensureUpstreamSourceImage({
+				repo,
+				rev,
+				gitUrl: opts.gitUrl,
+				appendLog: opts.appendLog,
+			});
 			await extractUpstreamSource({ imageTag, destDir: checkoutDir });
 		}
 		const packagePath = join(checkoutDir, subdir);
 		if (!existsSync(packagePath)) {
 			const sourceLabel =
-				opts.localPath !== undefined ? `localPath ${opts.localPath}` : `${repo}@${rev.slice(0, 12)}`;
+				opts.localPath !== undefined
+					? `localPath ${opts.localPath}`
+					: `${repo}@${rev.slice(0, 12)}`;
 			throw new Error(`importMovePackage: subdir "${subdir}" not found under ${sourceLabel}`);
 		}
 

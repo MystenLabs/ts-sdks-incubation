@@ -20,7 +20,7 @@ import { stableHash } from '../runtime/hash.js';
 import { Transaction as TransactionImpl } from '@mysten/sui/transactions';
 import { seed } from './seed.js';
 
-export interface RunTransactionOptions {
+interface RunTransactionOptions {
 	name: string;
 	needs?: string[];
 	provides?: Provides;

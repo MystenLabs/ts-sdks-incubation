@@ -45,6 +45,7 @@ import {
 	mkdirSync,
 	readdirSync,
 	readFileSync,
+	renameSync,
 	rmSync,
 	statSync,
 	writeFileSync,
@@ -58,11 +59,9 @@ import { definePlugin } from '../../plugin.js';
 import type { RegistryImpl } from '../../registry/index.js';
 import { defaultMvrName } from './mvr.js';
 
-export { defaultMvrName } from './mvr.js';
-
 const DEFAULT_OUTPUT = 'src/generated/sui';
 
-export interface CodegenPluginOptions {
+interface CodegenPluginOptions {
 	/** Output dir relative to the app root. Default `src/generated/sui`. */
 	output?: string;
 	/** Map a registry package name to its MVR-shape placeholder used in
@@ -152,22 +151,79 @@ export const codegen = (opts: CodegenPluginOptions = {}) => {
 					const outputAbs = resolvedOutputDir(ctx.appDir, output);
 					writeTypedManifest({ ctx, outputAbs });
 					const targets = codegenTargets(ctx.registry.packages.list());
-					const targetNames = new Set(targets.map((t) => t.name));
-					if (existsSync(outputAbs)) {
-						for (const stale of staleBindingDirs(outputAbs, targetNames)) {
-							rmSync(join(outputAbs, stale), { recursive: true, force: true });
+					if (targets.length === 0) {
+						// No bindings to generate; just clean stale subdirs of
+						// existing output (no atomic swap needed since there
+						// are no per-package writes to race against vite).
+						if (existsSync(outputAbs)) {
+							for (const stale of staleBindingDirs(outputAbs, new Set())) {
+								rmSync(join(outputAbs, stale), { recursive: true, force: true });
+							}
 						}
+						return;
 					}
-					if (targets.length === 0) return;
 					await ensureSuiOnPath();
-					mkdirSync(outputAbs, { recursive: true });
-					// Per-package codegen is independent — `sui move summary` runs in
-					// each package's own dir, `generateFromPackageSummary` writes to
-					// distinct subdirs. Run in parallel; on a 4-package app this cuts
-					// the codegen step from ~2s serial to ~600ms.
-					await Promise.all(
-						targets.map((pkg) => runCodegenForPackage({ ctx, pkg, output, mvrName })),
-					);
+					// Atomic-ish output swap: write the full per-package
+					// codegen tree to a sibling staging dir, then dir-swap
+					// over the live output. The previous behavior wrote each
+					// per-package subdir under `outputAbs` directly, which
+					// left vite's HMR seeing a half-written tree mid-cycle —
+					// `vault.ts` would land before its sibling
+					// `utils/index.ts` and vite's pre-transform would error
+					// out with "Failed to resolve import '../utils/index.ts'"
+					// repeatedly until the next file change kicked the
+					// pipeline. Staging + a single rename collapses the
+					// observable update to one filesystem event so vite
+					// always sees a consistent tree.
+					const stagingAbs = `${outputAbs}.staging-${process.pid}`;
+					if (existsSync(stagingAbs)) {
+						rmSync(stagingAbs, { recursive: true, force: true });
+					}
+					mkdirSync(stagingAbs, { recursive: true });
+					try {
+						// Per-package codegen is independent — `sui move summary` runs in
+						// each package's own dir, `generateFromPackageSummary` writes to
+						// distinct subdirs. Run in parallel; on a 4-package app this cuts
+						// the codegen step from ~2s serial to ~600ms.
+						await Promise.all(
+							targets.map((pkg) =>
+								runCodegenForPackage({
+									ctx,
+									pkg,
+									output,
+									mvrName,
+									outputDirOverride: stagingAbs,
+								}),
+							),
+						);
+						// Promote staging → live. The "rename old aside, rename
+						// new in" pattern keeps the live `outputAbs` populated
+						// at every observable moment except for one
+						// microsecond between the two renames — short enough
+						// that vite's chokidar coalesces it. The old tree
+						// goes to `<outputAbs>.discarding-<pid>` so the
+						// rmSync that frees its inodes can run after the
+						// swap (off the hot path).
+						const discardAbs = `${outputAbs}.discarding-${process.pid}`;
+						if (existsSync(outputAbs)) {
+							if (existsSync(discardAbs)) {
+								rmSync(discardAbs, { recursive: true, force: true });
+							}
+							renameSync(outputAbs, discardAbs);
+						}
+						renameSync(stagingAbs, outputAbs);
+						if (existsSync(discardAbs)) {
+							rmSync(discardAbs, { recursive: true, force: true });
+						}
+					} catch (err) {
+						// Generation or swap failed; leave the existing
+						// tree in place and clean up staging so the next
+						// cycle starts clean.
+						if (existsSync(stagingAbs)) {
+							rmSync(stagingAbs, { recursive: true, force: true });
+						}
+						throw err;
+					}
 				},
 			}),
 		],
@@ -276,12 +332,16 @@ async function runCodegenForPackage(opts: {
 	pkg: CodegenTarget;
 	output: string;
 	mvrName: (pkgName: string) => string;
+	/** When set, write to this directory instead of the resolved
+	 * default — used by the staging-then-swap path in `run` to avoid
+	 * vite seeing a half-written tree mid-cycle. */
+	outputDirOverride?: string;
 }): Promise<void> {
 	const { ctx, pkg, output, mvrName } = opts;
 	if (!existsSync(pkg.path)) {
 		throw new Error(`codegen: package path not found for ${pkg.name}: ${pkg.path}`);
 	}
-	const absoluteOutput = resolvedOutputDir(ctx.appDir, output);
+	const absoluteOutput = opts.outputDirOverride ?? resolvedOutputDir(ctx.appDir, output);
 
 	// `generateFromPackageSummary` reads the summary that `sui move
 	// summary` produces under `<pkg.path>/package_summaries/`. Run that

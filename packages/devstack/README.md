@@ -1,22 +1,24 @@
 # `@mysten-incubation/devstack`
 
-> ⚠️ **Prototype.** Devstack is not published to npm and there is no near-term plan to
-> publish. The public API is in flux — we break shapes whenever they're wrong rather than
-> ship a shim. Use it inside this monorepo via `workspace:*`; pin nothing in external code.
+> ⚠️ **Prototype.** Devstack is not published to npm and there is no near-term plan to publish. The
+> public API is in flux — we break shapes whenever they're wrong rather than ship a shim. Use it
+> inside this monorepo via `workspace:*`; pin nothing in external code.
 
 A localnet harness for Sui apps. Each app declares the services it needs (sui, walrus, seal,
 imports, codegen, ...) as a list of plugins; `devstack` reconciles toward that state, publishes Move
 packages, runs codegen, and writes a typed manifest the frontend consumes via Vite. The harness is
 opinionated about its goals: warm cycles short-circuit through `getStatus` so subsequent
-`devstack up` invocations skip whatever's already converged. Cold cycles depend heavily on what's
-on the plugin list — a sui-only stack is ~10–20 s on Apple Silicon, a sui+walrus+seal stack
-takes longer because the walrus testbed image build is the dominant cost (cached forever after
-the first build). Numbers in this README are eyeballed during local development; if you're
-benchmarking, run it yourself and please file the timing as a note in `notes/friction.md`.
+`devstack up` invocations skip whatever's already converged. Cold cycles depend heavily on what's on
+the plugin list — a sui-only stack is ~10–20 s on Apple Silicon. seal pulls release binaries (~30 s,
+no compile). walrus is hybrid: `walrus` and `walrus-node` come from the release tarball, but
+`walrus-deploy` (the testbed bootstrap binary) isn't published — we cargo-build only that. First
+build is ~9–10 min; subsequent version bumps drop to ~1–2 min because BuildKit cache mounts reuse
+the cargo registry + target dir. All images cached forever after the first build. Numbers in this
+README are eyeballed during local development; if you're benchmarking, run it yourself and please
+file the timing as a note in `notes/friction.md`.
 
 For the full docs, see the [docs site](https://github.com/mysten-incubation/devstack#readme). For
-the journal of paper-cuts driving evolution, see
-[`../../notes/friction.md`](../../notes/friction.md).
+the journal of paper-cuts driving evolution, see [`notes/friction.md`](notes/friction.md).
 
 ---
 
@@ -62,8 +64,9 @@ pnpm dev                             # one combined process: stack + dev server
 ```
 
 The supervisor brings up sui-localnet, fund accounts, publish Move packages, regenerate codegen
-bindings, AND start the Vite dev server — all in one log stream. Re-runs are noticeably faster (warm cycles short-circuit through `getStatus`) because
-each action's `getStatus` skip predicate short-circuits work that hasn't drifted.
+bindings, AND start the Vite dev server — all in one log stream. Re-runs are noticeably faster (warm
+cycles short-circuit through `getStatus`) because each action's `getStatus` skip predicate
+short-circuits work that hasn't drifted.
 
 ---
 
@@ -82,12 +85,10 @@ of one of six kinds:
 | `Emit`     | Side-effecting outputs derived from the registry (codegen, manifest writes). |
 | `Verify`   | Read-only invariant check; fails the cycle on `ok: false`.                   |
 
-`provides` accepts either a bare `string[]` (capability names for
-ordering only) OR an object form `{ capabilities?, registry? }`.
-`provides.registry(ctx)` is invoked by the reconciler on every
-successful path — both the cold cycle and warm-path skips — so plugin
-authors can factor registry-population logic in one place instead of
-duplicating it across `run` and `getStatus`.
+`provides` accepts either a bare `string[]` (capability names for ordering only) OR an object form
+`{ capabilities?, registry? }`. `provides.registry(ctx)` is invoked by the reconciler on every
+successful path — both the cold cycle and warm-path skips — so plugin authors can factor
+registry-population logic in one place instead of duplicating it across `run` and `getStatus`.
 
 Actions declare `needs: string[]` for ordering, `provides: string[]` for capability declarations,
 plus `getStatus?(ctx)` — a probe that returns `{ ok: true }` when the action's effect is already in
@@ -150,34 +151,69 @@ calls `requireLocalnetCtx(ctx)` to assert at runtime.
 
 ## CLI surface
 
-| Command                                          | What it does                                                                    |
-| ------------------------------------------------ | ------------------------------------------------------------------------------- |
-| `devstack up [config]`                           | Long-running supervisor: reconcile + watch Move sources. `--once` for one-shot. |
-| `devstack apply [config] [--target] [--actions]` | Single-cycle reconcile. `--actions a,b,c` scopes to a subset.                   |
-| `devstack deploy <config> --network`             | Live-network deploy slice.                                                      |
-| `devstack codegen [config] [--target]`           | Re-emit codegen against the prior manifest (read-only).                         |
-| `devstack down [config]`                         | Stop the active stack's containers (volumes preserved).                         |
-| `devstack reset [config] --yes`                  | Wipe the active stack — containers, volumes, host state.                        |
-| `devstack stack list/new/use/down/drop`          | Manage named per-app stacks. `drop --dry-run` previews deletion.                |
-| `devstack console [config] [--target]`           | REPL with `manifest`, `client`, `accounts.<name>`, `packages.<name>` pre-bound. |
+| Command                                          | What it does                                                                                                    |
+| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
+| `devstack up [config]`                           | Long-running supervisor: reconcile + watch Move sources. `--once` for one-shot.                                 |
+| `devstack apply [config] [--target] [--actions]` | Single-cycle reconcile. `--actions a,b,c` scopes to a subset.                                                   |
+| `devstack deploy <config> --network`             | Live-network deploy slice.                                                                                      |
+| `devstack codegen [config] [--target]`           | Re-emit codegen against the prior manifest (read-only).                                                         |
+| `devstack down [config]`                         | Stop the active stack's containers (volumes preserved).                                                         |
+| `devstack reset [config] --yes`                  | Wipe the active stack — containers, volumes, host state. `--images` also drops cached devstack images (global). |
+| `devstack stack list/new/use/down/drop`          | Manage named per-app stacks. `drop --dry-run` previews deletion; `drop --images` cascades to image cache.       |
+| `devstack console [config] [--target]`           | REPL with `manifest`, `client`, `accounts.<name>`, `packages.<name>` pre-bound.                                 |
 
 `--target` accepts `<network>`, `<stack>`, or `<network>:<stack>`. The supervisor (`up`) is
 localnet-only; live-network targets error with a hint pointing at `apply` or `deploy`.
+
+### Image cache
+
+The first-run builds — seal (~30 s, pure binary fetch) and walrus-service (~9–10 min on the cold
+first build because `walrus-deploy` depends on most of the walrus workspace; ~1–2 min on subsequent
+version bumps thanks to BuildKit cache mounts) — produce Docker images tagged
+`dev-examples/<name>:<rev>` and labeled `devstack.cache=<kind>`. Sui-localnet, walrus's wrapper
+layer, and the upstream-source images for `imports({ packages })` carry the same label scheme.
+
+Successful builds **GC superseded tags automatically**: bumping `WRAPPER_REV` in `sui` / `walrus` or
+pinning a new `SEAL_REV` triggers the new build to drop the prior tag once it lands, so old
+`r6`-style revisions don't accumulate. In-use tags are kept (no `--force`).
+
+To force a full first-build re-test from scratch:
+
+```sh
+# Preview what would be removed (lists tags + reports BuildKit reclaim estimate)
+devstack reset --images --dry-run
+
+# Drop active stack + every cached devstack-built image
+# (also runs `docker image prune` for dangling layers and `docker builder
+# prune` for BuildKit cache — without those, a rebuild short-circuits
+# through cached layers and doesn't actually re-exercise the build path)
+devstack reset --yes --images
+
+# Ad-hoc with the docker CLI directly:
+docker image rm $(docker image ls -q --filter "label=devstack.cache")
+docker image prune -f --filter "label=devstack.cache"
+docker builder prune -f
+```
+
+> **Why three commands?** `docker image rm` only removes the _tag_; the underlying layer manifest
+> stays as a dangling image, and the BuildKit layer cache (where the cargo-build outputs live) is in
+> a separate store that `image rm` never touches. To genuinely force a fresh Rust compile, all three
+> need to run.
 
 ---
 
 ## Subpath layout
 
-| Subpath                                                | Audience                 | What's there                                                                                                                                       |
-| ------------------------------------------------------ | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@mysten-incubation/devstack`                          | Plugin + app authors     | `definePlugin`, `defineDevstackConfig`, action factories, built-in plugins, signer factories, types                                                |
-| `@mysten-incubation/devstack/runtime`                  | Embedders                | `Reconciler`, `Supervisor`, `RegistryImpl`, `FileWatcher`, `StatusRenderer`, manifest I/O, `runOneShot`, active-stack helpers                      |
-| `@mysten-incubation/devstack/cli`                      | CLI consumers            | `runUp`, `runDeploy`, `runApply`, `runCodegen`, `runConsole`, `runStack`, target/filter helpers                                                    |
-| `@mysten-incubation/devstack/helpers`                  | Plugin authors           | `publishMovePackage`, `importMovePackage`, `seedSharedObject`, `objectTypeMatchesFilter`, `ensureUpstreamSourceImage`, `createLocalSuiClient`      |
+| Subpath                                                | Audience                 | What's there                                                                                                                                                 |
+| ------------------------------------------------------ | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `@mysten-incubation/devstack`                          | Plugin + app authors     | `definePlugin`, `defineDevstackConfig`, action factories, built-in plugins, signer factories, types                                                          |
+| `@mysten-incubation/devstack/runtime`                  | Embedders                | `Reconciler`, `Supervisor`, `RegistryImpl`, `FileWatcher`, `StatusRenderer`, manifest I/O, `runOneShot`, active-stack helpers                                |
+| `@mysten-incubation/devstack/cli`                      | CLI consumers            | `runUp`, `runDeploy`, `runApply`, `runCodegen`, `runConsole`, `runStack`, target/filter helpers                                                              |
+| `@mysten-incubation/devstack/helpers`                  | Plugin authors           | `publishMovePackage`, `importMovePackage`, `seedSharedObject`, `objectTypeMatchesFilter`, `ensureUpstreamSourceImage`, `createLocalSuiClient`                |
 | `@mysten-incubation/devstack/react`                    | App authors (UI)         | `DevstackProvider`, `useDevstackManifest`, `useDevstackDeployed`, `localnetDappKitConfig`, `localnetMvrOverrides`, `localnetWalrusOptions`, `defaultMvrName` |
-| `@mysten-incubation/devstack/vite`                     | Vite users               | `devstackVitePlugins` (manifest + dev-keys virtual modules)                                                                                        |
-| `@mysten-incubation/devstack/playwright`               | E2E tests                | `defineDevstackPlaywrightConfig({ manageStack })` + helpers                                                                                        |
-| `@mysten-incubation/devstack/vitest`, `vitest/runtime` | Unit + chain-aware tests | `defineDevstackVitestConfig`, `AccountPool`                                                                                                        |
+| `@mysten-incubation/devstack/vite`                     | Vite users               | `devstackVitePlugins` (manifest + dev-keys virtual modules)                                                                                                  |
+| `@mysten-incubation/devstack/playwright`               | E2E tests                | `defineDevstackPlaywrightConfig({ manageStack })` + helpers                                                                                                  |
+| `@mysten-incubation/devstack/vitest`, `vitest/runtime` | Unit + chain-aware tests | `defineDevstackVitestConfig`, `AccountPool`                                                                                                                  |
 
 ---
 
@@ -188,34 +224,39 @@ localnet-only; live-network targets error with a hint pointing at `apply` or `de
 Sui localnet container. Three actions: `sui.build`, `sui.localnet`, `sui.accounts`. Account names
 come from top-level `accounts: { ... }` — the plugin no longer takes an `accounts:` option.
 
-### `walrus({ rev? })`
+### `walrus({ version?, suiVersion?, nodeHostPortBase?, epochDuration?, committeeSize?, shards?, gc? })`
 
-4-node Walrus testbed on a pinned subnet. Provides the `app-network` capability. First-run image
-build is heavy.
+Walrus testbed on a pinned per-stack subnet. Provides the `app-network` capability. Defaults to a
+4-node committee with 100 shards. `version` pins a release tag (`'devnet-v1.48.0'` by default) —
+runtime binaries (`walrus`, `walrus-node`) come from the matching GitHub release tarball;
+`walrus-deploy` (the testbed bootstrap binary, not in any public release) compiles from source.
+First build ~9–10 min on M-series, version bumps ~1–2 min via BuildKit cache mounts. Pass
+`gc: true` to enable in-node blob garbage-collection (matches the walrus team's `--gc` knob in
+their procman config).
 
-### `seal({ rev?, port?, keyServerName?, master?, publisher? })`
+### `seal({ version?, port?, keyServerName?, master?, publisher? })`
 
 Seal key-server in Open mode. Four actions: build, publish (Move package), register (BLS keypair +
 on-chain `KeyServer`), key-server (Service). On first run the `register` action shells out to
-`seal-cli genkey` inside the build image to mint a BLS12-381 master keypair, then writes both
-halves to `<stackDir>/.keys/seal-master-key.json`. Subsequent runs load the cached pair so
-`KeyServer.id` and the on-chain registration stay stable across `up`/`down` cycles. Pass
-`master:` directly to bypass key generation entirely (deterministic test fixtures).
+`seal-cli genkey` inside the build image to mint a BLS12-381 master keypair, then writes both halves
+to `<stackDir>/.keys/seal-master-key.json`. Subsequent runs load the cached pair so `KeyServer.id`
+and the on-chain registration stay stable across `up`/`down` cycles. Pass `master:` directly to
+bypass key generation entirely (deterministic test fixtures).
 
 ### `codegen({ output?, mvrName? })`
 
-One Emit action that runs `@mysten/codegen`'s `generateFromPackageSummary` per `packages`
-registry entry whose `path?` is set. Defaults to `./src/generated/sui/<package>/`.
+One Emit action that runs `@mysten/codegen`'s `generateFromPackageSummary` per `packages` registry
+entry whose `path?` is set. Defaults to `./src/generated/sui/<package>/`.
 
-Each generated builder embeds an MVR-shape placeholder (`@local/<kebab-name>`) as its
-default `package` option. The matching `mvr.overrides.packages` entry — wired automatically
-by `localnetDappKitConfig(manifest)` — resolves the placeholder to the live `packageId` at
-transaction build time. App code calls `tx.add(connectFour.joinLobby({ arguments: [...] }))`
-directly; the SDK substitutes the live id during build.
+Each generated builder embeds an MVR-shape placeholder (`@local/<kebab-name>`) as its default
+`package` option. The matching `mvr.overrides.packages` entry — wired automatically by
+`localnetDappKitConfig(manifest)` — resolves the placeholder to the live `packageId` at transaction
+build time. App code calls `tx.add(connectFour.joinLobby({ arguments: [...] }))` directly; the SDK
+substitutes the live id during build.
 
-`mvrName?: (pkgName) => string` overrides the default placeholder shape. If you change it,
-pass the same mapper to `localnetDappKitConfig({ mvrName })` so the codegen output and the
-override key agree.
+`mvrName?: (pkgName) => string` overrides the default placeholder shape. If you change it, pass the
+same mapper to `localnetDappKitConfig({ mvrName })` so the codegen output and the override key
+agree.
 
 ### `imports({ packages })`
 
@@ -268,24 +309,24 @@ factory for custom shapes (the imports plugin's escape hatch).
 
 ### Action helpers
 
-| Helper                                              | Returns                                                  |
-| --------------------------------------------------- | -------------------------------------------------------- |
-| `buildImage({ name, run, getStatus?, watches? })`   | `Build` action.                                          |
-| `service({ name, run, getStatus?, ... })`           | `Service` action. Localnet only.                         |
-| `containerService({ name, run, ... })`              | Typed factory: managed docker container.                 |
-| `hostProcess({ name, run, ... })`                   | Typed factory: in-process subprocess (vite, wallet-server). |
-| `job({ name, run, ... })`                           | Typed factory: run-once task.                            |
-| `verify({ name, check })`                           | `Verify` action — read-only invariant.                   |
-| `publish({ name, run, getStatus?, ... })`           | `Publish` action — low-level escape hatch.               |
-| `definePublishAction({ name, sourcePath, ... })`    | `Publish` action with build + register + cache baked in. |
-| `register({ name, run, ... })`                      | `Register` action.                                       |
-| `seed({ name, run, getStatus?, liveNetworks? })`    | `Seed` action. Default-skipped on testnet/mainnet.       |
-| `emit({ name, run, dependsOnKind, ... })`           | `Emit` action.                                           |
+| Helper                                            | Returns                                                     |
+| ------------------------------------------------- | ----------------------------------------------------------- |
+| `buildImage({ name, run, getStatus?, watches? })` | `Build` action.                                             |
+| `service({ name, run, getStatus?, ... })`         | `Service` action. Localnet only.                            |
+| `containerService({ name, run, ... })`            | Typed factory: managed docker container.                    |
+| `hostProcess({ name, run, ... })`                 | Typed factory: in-process subprocess (vite, wallet-server). |
+| `job({ name, run, ... })`                         | Typed factory: run-once task.                               |
+| `verify({ name, check })`                         | `Verify` action — read-only invariant.                      |
+| `publish({ name, run, getStatus?, ... })`         | `Publish` action — low-level escape hatch.                  |
+| `definePublishAction({ name, sourcePath, ... })`  | `Publish` action with build + register + cache baked in.    |
+| `register({ name, run, ... })`                    | `Register` action.                                          |
+| `seed({ name, run, getStatus?, liveNetworks? })`  | `Seed` action. Default-skipped on testnet/mainnet.          |
+| `emit({ name, run, dependsOnKind, ... })`         | `Emit` action.                                              |
 
-`containerService` / `hostProcess` / `job` are typed wrappers around `service` for cognitive
-clarity at call sites. Same underlying `ServiceAction` shape — pick the one that matches the
-intent. Plugin authors wire `provides: { registry: ... }` on these to repopulate registry
-entries on warm-path skips without manually reimplementing the side effect inside `getStatus`.
+`containerService` / `hostProcess` / `job` are typed wrappers around `service` for cognitive clarity
+at call sites. Same underlying `ServiceAction` shape — pick the one that matches the intent. Plugin
+authors wire `provides: { registry: ... }` on these to repopulate registry entries on warm-path
+skips without manually reimplementing the side effect inside `getStatus`.
 
 ### Helpers worth knowing
 
@@ -306,10 +347,10 @@ Subpath: `@mysten-incubation/devstack/helpers`.
 ## React adapter
 
 Subpath: `@mysten-incubation/devstack/react`. The surface is intentionally minimal and
-manifest-driven — generic SDK ergonomics (signing transactions, binding codegen modules)
-live in `@mysten/dapp-kit-react` / `@mysten/codegen` / your app's `lib/queries.ts`. Devstack
-contributes the localnet config inputs that get spread into vanilla `createDAppKit({...})`
-and `new WalrusClient({...})`.
+manifest-driven — generic SDK ergonomics (signing transactions, binding codegen modules) live in
+`@mysten/dapp-kit-react` / `@mysten/codegen` / your app's `lib/queries.ts`. Devstack contributes the
+localnet config inputs that get spread into vanilla `createDAppKit({...})` and
+`new WalrusClient({...})`.
 
 ```tsx
 // dapp-kit.ts — vanilla `createDAppKit`; the spread is the only localnet-specific piece
@@ -343,10 +384,9 @@ declare module '@mysten/dapp-kit-react' {
 }
 ```
 
-`localnetDappKitConfig(manifest)` returns the `defaultNetwork` / `networks` / `createClient`
-triple plus pre-loaded MVR overrides keyed `@local/<kebab-name>`. App TSX calls codegen
-builders directly — the SDK's `namedPackagesPlugin` resolves placeholders to live
-`packageId`s at tx build time.
+`localnetDappKitConfig(manifest)` returns the `defaultNetwork` / `networks` / `createClient` triple
+plus pre-loaded MVR overrides keyed `@local/<kebab-name>`. App TSX calls codegen builders directly —
+the SDK's `namedPackagesPlugin` resolves placeholders to live `packageId`s at tx build time.
 
 ```ts
 import { walletServer } from '@mysten-incubation/devstack';
@@ -354,9 +394,8 @@ import { walletServer } from '@mysten-incubation/devstack';
 plugins: [sui(), /* ... */, walletServer({ port: 9420 }), frontend({ port: 5174 })],
 ```
 
-`walletServer()` spins up an in-process HTTP endpoint exposing every account devstack
-resolved. Keys never enter the frontend bundle — `DevstackSignerAdapter` signs by HTTPing
-the supervisor process.
+`walletServer()` spins up an in-process HTTP endpoint exposing every account devstack resolved. Keys
+never enter the frontend bundle — `DevstackSignerAdapter` signs by HTTPing the supervisor process.
 
 ```tsx
 // main.tsx — no codegen-module registration; just the manifest
@@ -382,10 +421,11 @@ await mutateAsync(tx);
 ```
 
 `useSignAndExecute` is a thin app-local helper around `dAppKit.signAndExecuteTransaction`
-+ `useMutation` — typically ~50 lines in `lib/queries.ts`. The four examples each carry
-their own copy. Production app code looks identical; the only file that differs between
-local and prod is `dapp-kit.ts` (drops the `localnetDappKitConfig` spread, supplies its
-own RPC + real MVR or hardcoded packageIds).
+
+- `useMutation` — typically ~50 lines in `lib/queries.ts`. The four examples each carry their own
+  copy. Production app code looks identical; the only file that differs between local and prod is
+  `dapp-kit.ts` (drops the `localnetDappKitConfig` spread, supplies its own RPC + real MVR or
+  hardcoded packageIds).
 
 ---
 

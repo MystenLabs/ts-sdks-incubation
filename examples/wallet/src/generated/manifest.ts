@@ -15,14 +15,165 @@ export const manifest: Manifest = {
 	"network": "localnet",
 	"emittedAt": "",
 	"registry": {
-		"packages": [],
-		"accounts": [],
-		"services": [],
+		"packages": [
+			{
+				"name": "deepbook",
+				"packageId": "0xcf444373d58d76142687dd3e6c858c2da9472483349691c3e9a7993652f2735a",
+				"captured": {
+					"registryId": "0xff51c5c8428e7590daecfa0da25beac3591362c204ae98dda6c01cf4e0bf8903",
+					"adminCapId": "0x0d69d2690df4181958aba4dcae922941f47fdd275446e0ea9f53c24b0a8fd178"
+				},
+				"deps": {},
+				"sourceDigest": "v7.0.0",
+				"chainId": "a8ebf2ce",
+				"network": "localnet",
+				"providedBy": "deepbook.publish"
+			},
+			{
+				"name": "mock_usdc",
+				"packageId": "0xfa5eb7e3bf8521b7db9063a6033ae5cd9189fb43bc30d819b44b146a1571e2ad",
+				"captured": {
+					"treasuryCapId": "0x408b789e7da5337aabddf56c0aa6027a4f90646be78284e86e6a5f76bb4420d6",
+					"metadataId": "0xee368b72ad4b13ea3005fcffe7de5965a5fb2e2e43cb917ce71ac4613f526c7d",
+					"upgradeCapId": "0x122c7d7cc752b8dc106c764ad39b9fb724b8b82792fab2ff29691e2850ffa805"
+				},
+				"sourceDigest": "6d0a4905d128fdbb8f2a2d1738e306b03ed61497699d87f416672eaaade0792c",
+				"chainId": "a8ebf2ce",
+				"network": "localnet",
+				"path": "/Users/michaelhayes/code/ts-sdks-incubation/examples/wallet/move/mock_usdc",
+				"providedBy": "wallet-setup.usdc",
+				"mvrPlaceholder": "@local/mock-usdc"
+			},
+			{
+				"name": "mock_weth",
+				"packageId": "0x7ee2bc31159381fbc8e621167b5a3777eba4bf23b27ad53719cbcfbac536b833",
+				"captured": {
+					"treasuryCapId": "0x4fa8d170cf7b41f07f25856230bd9b1d921bc87f874c3980c74e7d7cceffe12c",
+					"metadataId": "0x9a7fe1e107ff1ac43310452860937a0a3d05193a504c68b0ff5bf8e14e3215e8",
+					"upgradeCapId": "0x92e954fa21246b670f07b2be28dab7e1d22da7e2c55c1726c62b14c31e3251c9"
+				},
+				"sourceDigest": "e1f80510e083eb2748f377315009c8e863f0e7be41b6af02eca7e37568893fa2",
+				"chainId": "a8ebf2ce",
+				"network": "localnet",
+				"path": "/Users/michaelhayes/code/ts-sdks-incubation/examples/wallet/move/mock_weth",
+				"providedBy": "wallet-setup.weth",
+				"mvrPlaceholder": "@local/mock-weth"
+			}
+		],
+		"accounts": [
+			{
+				"name": "publisher",
+				"address": "0x9f1195dc9c443a252073616273da8954e7109efb75a45b63bb0a2c0ffef82b90",
+				"role": "publisher",
+				"funded": true,
+				"providedBy": "accounts.fund"
+			},
+			{
+				"name": "alice",
+				"address": "0x78366ce6221cb7d4d04c0d1338fb116c9f9b3758efec0858226864c32f553b36",
+				"funded": true,
+				"providedBy": "accounts.fund"
+			},
+			{
+				"name": "bob",
+				"address": "0xb6d036d87f86e7b11e812eea3f81c8c40c86497696795fefe4f2e8977d93e408",
+				"funded": true,
+				"providedBy": "accounts.fund"
+			},
+			{
+				"name": "carol",
+				"address": "0x6b58cae91b4bfe34303327d47357a4128359ad57fb0ad2e90866b741e6fef7c8",
+				"funded": true,
+				"providedBy": "accounts.fund"
+			}
+		],
+		"services": [
+			{
+				"name": "sui-rpc",
+				"kind": "sui-rpc",
+				"url": "http://127.0.0.1:9376",
+				"port": 9376,
+				"endpointLabel": "Sui JSON-RPC + gRPC",
+				"providedBy": "sui.localnet"
+			},
+			{
+				"name": "sui-faucet",
+				"kind": "sui-faucet",
+				"url": "http://127.0.0.1:9765",
+				"port": 9765,
+				"endpointLabel": "Sui faucet",
+				"providedBy": "sui.localnet"
+			},
+			{
+				"name": "wallet-server",
+				"kind": "wallet-server",
+				"url": "http://localhost:9420",
+				"port": 9420,
+				"endpointLabel": "http://localhost:9420/?token=ca72df444273c8361bf02b88961b30d84f9179f4336a02c07194152d32550504",
+				"providedBy": "wallet-server.register"
+			},
+			{
+				"name": "dev-server",
+				"kind": "dev-server",
+				"url": "http://localhost:5174",
+				"port": 5174,
+				"providedBy": "frontend.dev-server"
+			},
+			{
+				"name": "sui-indexer-db",
+				"kind": "sui-indexer-db",
+				"url": "postgres://postgres:devstack@sui-indexer-db:5432/sui_indexer",
+				"port": 5432,
+				"endpointLabel": "Sui indexer postgres (internal)",
+				"providedBy": "sui.indexer-db"
+			},
+			{
+				"name": "sui-graphql",
+				"kind": "sui-graphql",
+				"url": "http://127.0.0.1:9125/graphql",
+				"port": 9125,
+				"endpointLabel": "Sui GraphQL",
+				"providedBy": "sui.localnet"
+			}
+		],
 		"coin": {
-			"tokens": []
+			"tokens": [
+				{
+					"name": "musdc",
+					"type": "0xfa5eb7e3bf8521b7db9063a6033ae5cd9189fb43bc30d819b44b146a1571e2ad::mock_usdc::MOCK_USDC",
+					"decimals": 6
+				},
+				{
+					"name": "mweth",
+					"type": "0x7ee2bc31159381fbc8e621167b5a3777eba4bf23b27ad53719cbcfbac536b833::mock_weth::MOCK_WETH",
+					"decimals": 8
+				}
+			]
 		},
 		"deepbook": {
-			"pools": []
+			"pools": [
+				{
+					"name": "sui_usdc",
+					"poolId": "0x598a6c1fa29e876e5ac53ea810d2302d544d6d1613825e196bd9b9fcc4b18518",
+					"objectType": "0xcf444373d58d76142687dd3e6c858c2da9472483349691c3e9a7993652f2735a::pool::Pool<0x2::sui::SUI, 0xfa5eb7e3bf8521b7db9063a6033ae5cd9189fb43bc30d819b44b146a1571e2ad::mock_usdc::MOCK_USDC>",
+					"baseCoinType": "0x2::sui::SUI",
+					"quoteCoinType": "0xfa5eb7e3bf8521b7db9063a6033ae5cd9189fb43bc30d819b44b146a1571e2ad::mock_usdc::MOCK_USDC"
+				},
+				{
+					"name": "sui_weth",
+					"poolId": "0xff2ef580903b440e80a2e02f8d18a17833c799e49ace698057cdd462c648b88f",
+					"objectType": "0xcf444373d58d76142687dd3e6c858c2da9472483349691c3e9a7993652f2735a::pool::Pool<0x2::sui::SUI, 0x7ee2bc31159381fbc8e621167b5a3777eba4bf23b27ad53719cbcfbac536b833::mock_weth::MOCK_WETH>",
+					"baseCoinType": "0x2::sui::SUI",
+					"quoteCoinType": "0x7ee2bc31159381fbc8e621167b5a3777eba4bf23b27ad53719cbcfbac536b833::mock_weth::MOCK_WETH"
+				}
+			],
+			"balanceManagers": [
+				{
+					"name": "alice",
+					"objectId": "0x6ef690a724eff171d073ddb8cda40219851635e18246ec19a0d8305754e3e8d0",
+					"owner": "0x78366ce6221cb7d4d04c0d1338fb116c9f9b3758efec0858226864c32f553b36"
+				}
+			]
 		}
 	}
 };
