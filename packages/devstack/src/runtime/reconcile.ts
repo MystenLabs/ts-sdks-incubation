@@ -49,6 +49,12 @@ interface ActionState {
 	lastInputHash?: string;
 	status: ActionStatus;
 	lastRunAt?: number;
+	/** Whatever the action's `identity(ctx)` returned at the end of its
+	 * last successful run / skip. The reconciler folds the identities of
+	 * an action's `needs:` into its input hash, so an upstream identity
+	 * change cascades-re-runs every downstream automatically (chain
+	 * regenesis, package republish, deploy-file rewrite, …). */
+	identity?: string;
 }
 
 /** Persistent per-action state — the subset of `ActionState` worth
@@ -58,12 +64,16 @@ interface ActionState {
  * lying about the post-restart state. The reconciler treats hydrated
  * entries as "this hash was last seen healthy"; the next cycle's
  * `getStatus` (if any) re-confirms liveness. */
-export interface PersistedActionState {
+interface PersistedActionState {
 	lastInputHash: string;
 	lastRunAt?: number;
+	/** Last-known identity for this action; round-trips through the
+	 * manifest so cold starts cascade correctly when an upstream's
+	 * identity drifted while the supervisor was offline. */
+	identity?: string;
 }
 
-export interface ReconcileBaseContext {
+interface ReconcileBaseContext {
 	appName: string;
 	appDir: string;
 	stack: string;
@@ -74,8 +84,12 @@ export interface ReconcileBaseContext {
 	 * `LocalnetActionRunContext.ports`); ignored on live nets where no
 	 * local docker host bind is happening. */
 	ports?: PortAllocator;
-	/** Forwarded into each action's run context. Set by the supervisor. */
-	onShutdown?: (fn: ShutdownHook) => void;
+	/** Forwarded into each action's run context after the reconciler binds
+	 * the action's own name as `label`. The supervisor records the labeled
+	 * hook so the renderer's shutdown panel can show "stopping vite-dev"
+	 * rather than "hook 3/7". Public `ctx.onShutdown(fn)` shape stays
+	 * unchanged — labels are auto-derived. */
+	onShutdown?: (label: string, fn: ShutdownHook) => void;
 	/** Forwarded into each action's run context. Reconciler binds the
 	 * action name so the per-action `appendLog(line)` slot just takes a
 	 * line. Set by the supervisor; absent on one-shot paths. */
@@ -101,6 +115,16 @@ export interface ReconcileBaseContext {
 	 * (the supervisor's full-graph cycles want strict typo detection).
 	 */
 	lenient?: boolean;
+	/**
+	 * Halts new-action scheduling once aborted. Already-inflight actions
+	 * still drain (no in-action cancellation), and the Emit cascade is
+	 * skipped. Set by the supervisor on SIGINT so shutdown can quiesce
+	 * the cycle before firing hooks — without it, the cycle keeps
+	 * spawning new containers / HostProcess children AFTER `shutdown()`
+	 * has already drained the hook list, leaving the new resources
+	 * orphaned.
+	 */
+	signal?: AbortSignal;
 }
 
 export interface ReconcileProgress {
@@ -108,14 +132,14 @@ export interface ReconcileProgress {
 	failures: Map<string, Error>;
 }
 
-export interface ReconcileResult {
+interface ReconcileResult {
 	cycles: number;
 	statuses: Map<string, ActionStatus>;
 	failures: Map<string, Error>;
 	dirtyKinds: Set<string>;
 }
 
-export interface ReconcilerOptions {
+interface ReconcilerOptions {
 	/** Persisted action state from a prior process — typically loaded from
 	 * `Manifest.actionStates` by the supervisor / one-shot driver. Each
 	 * entry is treated as "this action's `inputHash` was healthy last
@@ -134,6 +158,7 @@ export class Reconciler {
 					lastInputHash: persisted.lastInputHash,
 					status: 'healthy',
 					lastRunAt: persisted.lastRunAt,
+					identity: persisted.identity,
 				});
 			}
 		}
@@ -260,15 +285,22 @@ export class Reconciler {
 		const pendingPromises = new Map<string, Promise<void>>();
 		while (true) {
 			let scheduled = 0;
-			while (inflight.size < maxConcurrency) {
-				const next = sorted.find(isReadyToRun);
-				if (next === undefined) break;
-				inflight.add(next.name);
-				pendingPromises.set(
-					next.name,
-					runOne(next).finally(() => pendingPromises.delete(next.name)),
-				);
-				scheduled++;
+			// Abort drains the inflight set without scheduling more — the
+			// Emit cascade below is skipped on the same condition. Already-
+			// running actions don't get cancelled (no in-action signal yet),
+			// so they finish naturally and register their shutdown hooks
+			// before the supervisor fires them.
+			if (base.signal?.aborted !== true) {
+				while (inflight.size < maxConcurrency) {
+					const next = sorted.find(isReadyToRun);
+					if (next === undefined) break;
+					inflight.add(next.name);
+					pendingPromises.set(
+						next.name,
+						runOne(next).finally(() => pendingPromises.delete(next.name)),
+					);
+					scheduled++;
+				}
 			}
 			if (inflight.size === 0) {
 				// Nothing in flight AND nothing schedulable → done. Any
@@ -280,6 +312,10 @@ export class Reconciler {
 			}
 			// Wait for at least one to settle, then re-check schedulability.
 			await Promise.race(pendingPromises.values());
+		}
+
+		if (base.signal?.aborted === true) {
+			return { cycles: 1, statuses, failures, dirtyKinds: new Set() };
 		}
 
 		// Dirty-tracked Emit cascade. After the topo walk, the dirty set
@@ -350,13 +386,48 @@ export class Reconciler {
 		base: ReconcileBaseContext,
 		forceRun: boolean,
 	): Promise<ActionStatus> {
+		// Seed actions are localnet-only by default; authors opt into
+		// live networks via `runsOn: ['testnet', 'mainnet']` (see seed.ts).
+		if (action.type === 'Seed') {
+			if (!seedRunsOn(action as SeedAction, base.network)) {
+				return 'skipped';
+			}
+		}
+
+		// Fold upstream identities into the input hash so a needs-edge
+		// becomes a real cascade signal: when an upstream's `identity`
+		// changes (chain regenesis, package republish, deploy file
+		// rewrite), every downstream's hash mismatches and re-runs
+		// without any per-action chain probe. Sorted-by-name so the hash
+		// is stable across `needs:` re-orderings. Computed before the
+		// ctx so it can be threaded through to `run` (containerService
+		// stamps it on the container as a label so a future cycle can
+		// tell whether the existing container's writable layer was
+		// produced under the same upstream context — same hash → resume,
+		// different hash → recreate so stale state goes with it).
+		const upstreamIdentities: Record<string, string> = {};
+		if (action.needs !== undefined) {
+			for (const need of action.needs) {
+				const id = this.state.get(need)?.identity;
+				if (id !== undefined) upstreamIdentities[need] = id;
+			}
+		}
+		const inputHash = stableHash({
+			inputs: action.inputs ?? null,
+			upstream:
+				Object.keys(upstreamIdentities).length === 0 ? null : upstreamIdentities,
+		});
+
 		const common = {
 			appName: base.appName,
 			appDir: base.appDir,
-			registry: base.registry,
+			registry: wrapRegistryForAction(base.registry, action.name),
 			accounts: base.accounts,
-			onShutdown: base.onShutdown,
+			onShutdown: base.onShutdown
+				? (fn: ShutdownHook) => base.onShutdown!(action.name, fn)
+				: undefined,
 			appendLog: base.appendLog ? (line: string) => base.appendLog?.(action.name, line) : undefined,
+			inputHash,
 		};
 		const ctx: ActionRunContext =
 			base.network === 'localnet'
@@ -370,16 +441,6 @@ export class Reconciler {
 						ports: requirePorts(base.ports),
 					}
 				: { ...common, network: base.network };
-
-		// Seed actions are localnet-only by default; authors opt into
-		// live networks via `runsOn: ['testnet', 'mainnet']` (see seed.ts).
-		if (action.type === 'Seed') {
-			if (!seedRunsOn(action as SeedAction, base.network)) {
-				return 'skipped';
-			}
-		}
-
-		const inputHash = stableHash(action.inputs ?? null);
 		const prior = this.state.get(action.name);
 		const hashMatches = prior !== undefined && prior.lastInputHash === inputHash;
 
@@ -394,10 +455,12 @@ export class Reconciler {
 			const status = await action.getStatus(ctx);
 			if (status.ok) {
 				await applyProvidesRegistry(action, ctx);
+				const identity = await captureIdentity(action, ctx, base, prior?.identity, inputHash);
 				this.state.set(action.name, {
 					lastInputHash: inputHash,
 					status: 'healthy',
 					lastRunAt: Date.now(),
+					identity,
 				});
 				return 'healthy';
 			}
@@ -433,23 +496,36 @@ export class Reconciler {
 				}
 				if (status.ok) {
 					await applyProvidesRegistry(action, ctx);
+					const identity = await captureIdentity(action, ctx, base, prior?.identity, inputHash);
 					this.state.set(action.name, {
 						lastInputHash: inputHash,
 						status: 'healthy',
 						lastRunAt: prior?.lastRunAt,
+						identity,
 					});
 					return 'healthy';
 				}
 			} else if (hashMatches && action.getStatus === undefined) {
 				await applyProvidesRegistry(action, ctx);
-				this.state.set(action.name, { ...prior, status: 'healthy' });
+				// Re-capture identity on the warm-path-skip branch too:
+				// upstream identities are stable here (their hash already
+				// gates this skip), but the action's OWN identity may
+				// derive from runtime state (e.g. chainId via RPC) that we
+				// want refreshed in the manifest.
+				const identity = await captureIdentity(action, ctx, base, prior?.identity, inputHash);
+				this.state.set(action.name, { ...prior, status: 'healthy', identity });
 				return 'healthy';
 			}
 		}
 
 		if (action.run === undefined) {
 			await applyProvidesRegistry(action, ctx);
-			this.state.set(action.name, { lastInputHash: inputHash, status: 'healthy' });
+			const identity = await captureIdentity(action, ctx, base, prior?.identity, inputHash);
+			this.state.set(action.name, {
+				lastInputHash: inputHash,
+				status: 'healthy',
+				identity,
+			});
 			return 'healthy';
 		}
 
@@ -459,10 +535,12 @@ export class Reconciler {
 			// their registration into a single function used by both run
 			// and warm-path skip, instead of duplicating it.
 			await applyProvidesRegistry(action, ctx);
+			const identity = await captureIdentity(action, ctx, base, prior?.identity, inputHash);
 			this.state.set(action.name, {
 				lastInputHash: inputHash,
 				status: 'healthy',
 				lastRunAt: Date.now(),
+				identity,
 			});
 			return 'healthy';
 		} catch (err) {
@@ -492,9 +570,40 @@ export class Reconciler {
 			out[name] = {
 				lastInputHash: entry.lastInputHash,
 				...(entry.lastRunAt === undefined ? {} : { lastRunAt: entry.lastRunAt }),
+				...(entry.identity === undefined ? {} : { identity: entry.identity }),
 			};
 		}
 		return out;
+	}
+}
+
+/** Resolve an action's identity. Default = the action's `inputHash`,
+ * which already folds in upstream identities — so cascades propagate
+ * transitively without every plugin author having to write an
+ * `identity` callback. Explicit `identity(ctx)` overrides for cases
+ * where the meaningful change signal isn't input-derived (chainId via
+ * RPC, parsed file content, on-chain object id).
+ *
+ * Best-effort: a transient throw from the explicit hook keeps the
+ * prior persisted value, so a single bad cycle doesn't wipe a
+ * downstream's cascade signal. */
+async function captureIdentity(
+	action: Action,
+	ctx: ActionRunContext,
+	base: ReconcileBaseContext,
+	prior: string | undefined,
+	inputHash: string,
+): Promise<string> {
+	if (action.identity === undefined) return inputHash;
+	try {
+		const explicit = await action.identity(ctx);
+		return explicit ?? inputHash;
+	} catch (err) {
+		base.appendLog?.(
+			action.name,
+			`identity threw — keeping prior value: ${err instanceof Error ? err.message : String(err)}`,
+		);
+		return prior ?? inputHash;
 	}
 }
 
@@ -516,6 +625,40 @@ function emitIsDirty(emit: EmitAction, dirty: Set<string>): boolean {
  * either way; downstream Emits re-fire harmlessly. Suppression would add
  * complexity for a marginal saving.
  */
+/** Per-action `Registry` proxy. Stamps `providedBy: actionName` onto
+ * every `services.register(...)` call so the supervisor can group
+ * registered services by the action that produced them — that's how
+ * the status renderer's per-row endpoint list flows out of the
+ * existing registry without needing a separate declaration on the
+ * action shape.
+ *
+ * Implemented as a Proxy (not a plain object spread) because plugins
+ * cast `ctx.registry as RegistryImpl` to access non-public methods
+ * (`snapshot()` from codegen, `flushDirty()` / `consumeDirty()` from
+ * the reconciler itself). A spread would lose the prototype methods
+ * and break those casts at runtime. The Proxy forwards every property
+ * except the `services` getter, which we replace with a register-
+ * stamping wrapper. */
+function wrapRegistryForAction(registry: Registry, actionName: string): Registry {
+	const wrappedServices = new Proxy(registry.services, {
+		get(target, prop, receiver) {
+			if (prop === 'register') {
+				return (item: { providedBy?: string }) =>
+					target.register({ ...item, providedBy: item.providedBy ?? actionName } as never);
+			}
+			const value = Reflect.get(target, prop, receiver);
+			return typeof value === 'function' ? value.bind(target) : value;
+		},
+	});
+	return new Proxy(registry, {
+		get(target, prop, receiver) {
+			if (prop === 'services') return wrappedServices;
+			const value = Reflect.get(target, prop, receiver);
+			return typeof value === 'function' ? value.bind(target) : value;
+		},
+	});
+}
+
 function requirePorts(ports: PortAllocator | undefined): PortAllocator {
 	if (ports === undefined) {
 		throw new Error(

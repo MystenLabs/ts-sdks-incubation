@@ -54,12 +54,19 @@ export function expandPluginActions(plugins: Plugin[]): Action[] {
 		// Second pass — resolve `needs`. Bare entries point at local
 		// actions and must exist; dotted entries are cross-plugin FQNs;
 		// `:before` queries are capability lookups handled by the topo
-		// sorter.
+		// sorter. `plugin` is stamped here (overwriting any author-set
+		// value) so the renderer's grouping/log-coloring is keyed off the
+		// real owning plugin and can't be forged.
 		for (const { action, fullName } of expanded) {
 			const resolvedNeeds = (action.needs ?? []).map((n) =>
 				resolveNeed(n, plugin.name, localFullNames),
 			);
-			out.push({ ...action, name: fullName, needs: resolvedNeeds } as Action);
+			out.push({
+				...action,
+				name: fullName,
+				needs: resolvedNeeds,
+				plugin: plugin.name,
+			} as Action);
 		}
 	}
 	return out;
