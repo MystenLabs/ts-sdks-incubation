@@ -9,7 +9,7 @@
 // methods on `InkRenderer` are the only mutators, and they translate
 // supervisor events into store updates + a single notify.
 
-import type { Action, ActionEndpoint, ActionStatus, Network } from '../../core/types.js';
+import type { Action, ActionStatus, Network } from '../../core/types.js';
 import type { SerializedRegistry } from '../../runtime/manifest-types.js';
 import type { ShutdownSummary } from '../../runtime/renderer.js';
 
@@ -55,7 +55,6 @@ export interface TuiState {
 	settleTimes: Map<string, number>;
 	/** Per-action endpoint outputs, populated post-cycle by the
 	 * supervisor from each registered service's `providedBy`. */
-	endpoints: Map<string, ActionEndpoint[]>;
 	registry: SerializedRegistry | null;
 	logs: LogLine[];
 	mainView: MainView;

@@ -18,7 +18,7 @@
 // call without `beginShutdown` having fired (e.g. cycle errored before
 // any hook registered).
 
-import type { Action, ActionEndpoint, ActionStatus, Network } from '../core/types.js';
+import type { Action, ActionStatus, Network } from '../core/types.js';
 import type { SerializedRegistry } from './manifest-types.js';
 
 export interface RendererStartOptions {
@@ -78,14 +78,11 @@ export interface Renderer {
 	 * cycle). Plain renderer ignores; Ink shows it in the header. */
 	setRpcUrl?(rpcUrl: string): void;
 
-	/** Per-cycle batched update of every healthy action's resolved
-	 * endpoints. Only sent when the set changes — quiet steady state. */
-	setEndpoints?(map: Map<string, ActionEndpoint[]>): void;
-
 	/** Per-cycle snapshot of the live registry (packages, accounts,
-	 * services, namespaced kinds). Powers the TUI's `registry` tab so
-	 * users can inspect live deploy state without leaving the
-	 * supervisor. PlainRenderer ignores. */
+	 * services, namespaced kinds). The renderer derives its per-row
+	 * outputs (URLs, packageIds, addresses, …) from this snapshot
+	 * filtered by `providedBy` — there's no separate
+	 * `setEndpoints`/`setPackages` call. */
 	setRegistry?(snapshot: SerializedRegistry): void;
 
 	/** Begin shutdown sequence with the labels of pending hooks (in the

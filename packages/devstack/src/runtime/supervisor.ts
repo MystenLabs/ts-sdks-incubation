@@ -11,12 +11,9 @@ import type {
 	AccountsConfig,
 	AccountsContext,
 	Action,
-	ActionEndpoint,
-	ActionStatus,
 	Network,
 	PortAllocator,
 	Plugin,
-	Service,
 	ShutdownHook,
 } from '../core/types.js';
 import { expandPluginActions } from '../plugin.js';
@@ -74,7 +71,6 @@ export class Supervisor {
 	/** JSON-stringified last-pushed endpoints map. Cheap diff so the
 	 * renderer doesn't re-render the URL-strewn detail column on every
 	 * cycle when nothing has actually changed. */
-	private lastEndpointsKey = '';
 
 	private readonly ports: PortAllocator;
 
@@ -427,7 +423,6 @@ export class Supervisor {
 				});
 				this.renderer.update(result.statuses, result.failures);
 				this.refreshRpcUrl();
-				this.refreshEndpoints(result.statuses);
 				this.refreshRegistry();
 				this.persistManifest();
 			} catch (err) {
@@ -599,33 +594,6 @@ export class Supervisor {
 		this.rendererActionRelease = null;
 	}
 
-	/** Group every registered service by the action that registered it
-	 * (the reconciler stamps `providedBy` on each `services.register`
-	 * via its per-action ctx wrapper) and push the resulting endpoint
-	 * map onto the renderer when it changes. Services without
-	 * `providedBy` (legacy or directly-injected entries) are skipped —
-	 * we don't have an attribution to surface. */
-	private refreshEndpoints(statuses: Map<string, ActionStatus>): void {
-		if (this.renderer.setEndpoints === undefined) return;
-		const map = new Map<string, ActionEndpoint[]>();
-		const pluginByAction = new Map<string, string | undefined>();
-		for (const a of this.actions) pluginByAction.set(a.name, a.plugin);
-		for (const svc of this.registry.services.list()) {
-			if (svc.providedBy === undefined) continue;
-			if (statuses.get(svc.providedBy) !== 'healthy') continue;
-			const plugin = pluginByAction.get(svc.providedBy);
-			const eps = map.get(svc.providedBy) ?? [];
-			eps.push(serviceToEndpoint(svc, plugin));
-			map.set(svc.providedBy, eps);
-		}
-		const key = JSON.stringify(
-			Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b)),
-		);
-		if (key === this.lastEndpointsKey) return;
-		this.lastEndpointsKey = key;
-		this.renderer.setEndpoints(map);
-	}
-
 	/** Push the live registry snapshot to the renderer so the TUI's
 	 * `registry` tab can render it. Plain renderer ignores the call.
 	 * Cheap: snapshot is a structural copy of the in-memory maps; no
@@ -690,35 +658,4 @@ export class Supervisor {
 		process.stdin.pause();
 		this.keyHandler = null;
 	}
-}
-
-/** Convert a registered service to a short-labeled `ActionEndpoint`
- * for the renderer. The label rules favor brevity:
- *   1. Strip `<plugin>-` prefix from `kind` if present (`sui-rpc` →
- *      `rpc`, `walrus-aggregator` → `aggregator`).
- *   2. Otherwise use the kind as-is (`dev-server`).
- *   3. Plugins that need verbose labels (e.g. wallet-server's pair
- *      URL) can override by providing a separate service registration
- *      whose `kind` already encodes the short label. */
-function serviceToEndpoint(svc: Service, plugin: string | undefined): ActionEndpoint {
-	return {
-		label: shortServiceLabel(svc, plugin),
-		url: svc.url,
-		kind: kindFromUrl(svc.url),
-	};
-}
-
-function shortServiceLabel(svc: Service, plugin: string | undefined): string {
-	if (plugin !== undefined && svc.kind.startsWith(`${plugin}-`)) {
-		return svc.kind.slice(plugin.length + 1);
-	}
-	if (plugin !== undefined && svc.name.startsWith(`${plugin}-`)) {
-		return svc.name.slice(plugin.length + 1);
-	}
-	return svc.kind || svc.name;
-}
-
-function kindFromUrl(url: string): ActionEndpoint['kind'] {
-	if (url.startsWith('ws://') || url.startsWith('wss://')) return 'ws';
-	return 'http';
 }

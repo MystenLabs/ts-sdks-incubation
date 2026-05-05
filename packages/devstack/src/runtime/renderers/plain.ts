@@ -10,14 +10,21 @@
 //     ran for X, came down cleanly" without scrolling.
 //   - No ANSI when output isn't a color-capable TTY (NO_COLOR honored).
 
-import type { Action, ActionEndpoint, ActionStatus, Network } from '../../core/types.js';
+import type {
+	Action,
+	ActionStatus,
+	ActionType,
+	Network,
+} from '../../core/types.js';
 import { type Color, makeStyler, supportsColor } from '../ansi.js';
+import type { SerializedRegistry } from '../manifest-types.js';
 import type {
 	Renderer,
 	RendererStartOptions,
 	ShutdownSummary,
 } from '../renderer.js';
 import { buildPluginColorMap } from './plugin-colors.js';
+import { groupRegistryByProvider } from './registry-outputs.js';
 
 interface PlainRendererOptions {
 	stream?: NodeJS.WriteStream;
@@ -29,7 +36,7 @@ const STATUS_COLOR: Record<ActionStatus, Color> = {
 	idle: 'gray',
 	queued: 'gray',
 	running: 'cyan',
-	healthy: 'green',
+	ok: 'green',
 	failed: 'red',
 	skipped: 'gray',
 	stale: 'yellow',
@@ -40,7 +47,7 @@ const STATUS_GLYPH: Record<ActionStatus, string> = {
 	idle: '·',
 	queued: '·',
 	running: '⟳',
-	healthy: '✓',
+	ok: '✓',
 	failed: '✗',
 	skipped: '–',
 	stale: '⟲',
@@ -57,11 +64,15 @@ export class PlainRenderer implements Renderer {
 	private readonly startTimes = new Map<string, number>();
 	/** Action → owning plugin lookup, for log-line coloring. */
 	private readonly pluginByAction = new Map<string, string | undefined>();
+	/** Action → action type, for type-aware status labels (`built` vs
+	 * `ok`, `published` vs `ok`, …). */
+	private readonly typeByAction = new Map<string, ActionType>();
 	/** Plugin → ANSI color, computed once at start from action order. */
 	private pluginColors = new Map<string, Color>();
-	/** Last-emitted endpoints per action, JSON-keyed. Lets `setEndpoints`
-	 * stay quiet when nothing in a row's URL set changed across cycles. */
-	private readonly endpointsByAction = new Map<string, string>();
+	/** Last per-action outputs we emitted, JSON-keyed against the
+	 * registry-derived outputs. Lets `setRegistry` stay quiet when
+	 * nothing in a row's outputs changed. */
+	private readonly outputsByAction = new Map<string, string>();
 	private actions: Action[] = [];
 	private startedAtMs = 0;
 	private rpcUrl: string | undefined;
@@ -83,6 +94,7 @@ export class PlainRenderer implements Renderer {
 		for (const a of opts.actions) {
 			this.statuses.set(a.name, 'idle');
 			this.pluginByAction.set(a.name, a.plugin);
+			this.typeByAction.set(a.name, a.type);
 			if (a.plugin !== undefined && !seen.has(a.plugin)) {
 				seen.add(a.plugin);
 				pluginOrder.push(a.plugin);
@@ -134,17 +146,19 @@ export class PlainRenderer implements Renderer {
 		this.stream.write(`${this.style.gray('rpc')} ${rpcUrl}\n`);
 	}
 
-	setEndpoints(map: Map<string, ActionEndpoint[]>): void {
-		// Emit a one-time `→ <action> <urls>` line per CHANGED entry so a
-		// CI log reader sees URLs as they come up, without re-emitting the
-		// same set every cycle.
-		for (const [name, eps] of map) {
-			if (eps.length === 0) continue;
-			const key = JSON.stringify(eps);
-			if (this.endpointsByAction.get(name) === key) continue;
-			this.endpointsByAction.set(name, key);
-			const line = eps
-				.map((e) => `${this.style.gray(e.label)} ${this.style.cyan(e.url)}`)
+	setRegistry(snapshot: SerializedRegistry): void {
+		// Emit a one-time `→ <action> <outputs>` line per action whose
+		// outputs changed since last cycle. Outputs come from the
+		// registry filtered by `providedBy`: services contribute URLs,
+		// packages contribute packageIds. Quiet steady-state.
+		const byProvider = groupRegistryByProvider(snapshot);
+		for (const [name, outs] of byProvider) {
+			if (outs.length === 0) continue;
+			const key = JSON.stringify(outs);
+			if (this.outputsByAction.get(name) === key) continue;
+			this.outputsByAction.set(name, key);
+			const line = outs
+				.map((o) => `${this.style.gray(o.label)} ${this.style.cyan(o.value)}`)
 				.join(this.style.gray('  '));
 			this.stream.write(`${this.style.gray('→')} ${name} ${line}\n`);
 		}
@@ -214,22 +228,36 @@ export class PlainRenderer implements Renderer {
 
 	private writeRow(name: string, status: ActionStatus, detail?: string): void {
 		const glyph = this.style[STATUS_COLOR[status]](STATUS_GLYPH[status]);
-		const tag = this.style[STATUS_COLOR[status]](status);
+		const type = this.typeByAction.get(name);
+		const plugin = this.pluginByAction.get(name);
+		// `sui.localnet` → `localnet` — plugin section header above
+		// already carries the prefix as identity; repeating it in every
+		// row is noise.
+		const shortName =
+			plugin !== undefined && name.startsWith(`${plugin}.`)
+				? name.slice(plugin.length + 1)
+				: name;
+		// Pad raw strings BEFORE styling — ANSI escape codes break
+		// `padEnd`'s length count.
+		const namePadded = shortName.padEnd(26);
+		const typeWord = (type ?? '').toLowerCase().padEnd(12);
 		const tail = detail ? this.style.red(` — ${detail}`) : '';
-		const t = this.style.gray(this.formatRowDuration(name, status));
-		this.stream.write(`${glyph} ${name.padEnd(28)} ${tag}${tail} ${t}\n`);
+		const t = this.formatRowDuration(name, status);
+		this.stream.write(
+			`${glyph} ${namePadded} ${this.style.gray(typeWord)} ${this.style.gray(t)}${tail}\n`,
+		);
 	}
 
 	/** Per-row duration string. Mirrors the design's two-form output:
 	 *   - `running` → `+<uptime>` (since renderer start), so a CI log
 	 *     reader can see how long into the run the transition fired.
-	 *   - `healthy` / `failed` / `skipped` → `<duration>` (since the
-	 *     row's own `running` transition), so the wall time the action
-	 *     took is obvious without subtraction.
+	 *   - `ok` / `failed` / `skipped` → `<duration>` (since the row's
+	 *     own `running` transition), so the wall time the action took
+	 *     is obvious without subtraction.
 	 *   - other transitional states (`stale`, `dirty`) → blank. */
 	private formatRowDuration(name: string, status: ActionStatus): string {
 		if (status === 'running') return `+${formatMs(Date.now() - this.startedAtMs)}`;
-		if (status === 'healthy' || status === 'failed' || status === 'skipped') {
+		if (status === 'ok' || status === 'failed' || status === 'skipped') {
 			const start = this.startTimes.get(name);
 			if (start === undefined) return '';
 			return formatMs(Date.now() - start);
@@ -240,7 +268,7 @@ export class PlainRenderer implements Renderer {
 
 /** Filter status transitions worth printing in line-oriented mode.
  * Suppress the noise from cycle re-entry (services-grew, file-stale
- * cascades): once an action is settled (`healthy`/`failed`/`skipped`),
+ * cascades): once an action is settled (`ok`/`failed`/`skipped`),
  * the next cycle's pre-walk `queued`/`running` flips don't add
  * information — they always converge back to the same settled state
  * within milliseconds. We do still emit:
@@ -250,8 +278,8 @@ export class PlainRenderer implements Renderer {
 function shouldEmitTransition(prev: ActionStatus | undefined, next: ActionStatus): boolean {
 	if (next === 'queued' || next === 'running') {
 		// Only print queued/running if we hadn't already settled. After
-		// a healthy/failed/skipped, a re-cycle's transient queued is noise.
-		if (prev === 'healthy' || prev === 'failed' || prev === 'skipped') return false;
+		// a ok/failed/skipped, a re-cycle's transient queued is noise.
+		if (prev === 'ok' || prev === 'failed' || prev === 'skipped') return false;
 	}
 	return true;
 }

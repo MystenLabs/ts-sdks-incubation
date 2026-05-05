@@ -113,18 +113,26 @@ export function getProvidesRegistryHook(
 }
 
 /**
- * Authoritative reconciler states: `idle`, `queued`, `running`, `healthy`,
- * `failed`, `skipped`. Two transient UI markers, set outside the reconciler
- * and cleared by the next authoritative `update()`:
+ * Authoritative reconciler lifecycle states: `idle`, `queued`,
+ * `running`, `ok`, `failed`, `skipped`. Two transient UI markers, set
+ * outside the reconciler and cleared by the next authoritative
+ * `update()`:
  * - `stale` — file watcher saw an input drift; the action will rerun.
  * - `dirty` — Emit's `dependsOnKind` matched a freshly-dirty kind;
  *   cascade pending.
+ *
+ * `ok` is the universal "settled successfully" state — for a Build it
+ * means the image is built, for Publish it means the package is on
+ * chain, for Service / HostProcess it means the runtime is up and
+ * passing health probes. Display layers (`runtime/renderers/
+ * status-label.ts`) translate `ok` to a type-specific verb (`built`,
+ * `published`, `ready`, …) so users see prose that matches the action.
  */
 export type ActionStatus =
 	| 'idle'
 	| 'queued'
 	| 'running'
-	| 'healthy'
+	| 'ok'
 	| 'failed'
 	| 'skipped'
 	| 'stale'
@@ -162,16 +170,6 @@ export interface SnapshotMeta {
 	 *   - 'none': skip (stateless / nothing to flush)
 	 * Default: 'stop' (universally safe). */
 	quiesce?: 'pause' | 'stop' | 'none';
-}
-
-/** Network address an action exposes once healthy. Surfaced inline in
- * the `devstack up` status table so users see e.g.
- * `JSON-RPC http://127.0.0.1:9000 · Faucet http://127.0.0.1:9123/gas`
- * without having to hunt through logs for the bind line. */
-export interface ActionEndpoint {
-	label: string;
-	url: string;
-	kind: 'rpc' | 'ws' | 'http' | 'web';
 }
 
 interface ActionBase<TInputs = unknown, TResult = unknown> {
@@ -465,6 +463,12 @@ export interface Package {
 	 * would have to be recomputed in two places.
 	 */
 	mvrPlaceholder?: string;
+	/** Action that registered this package — auto-stamped by the
+	 * reconciler's per-action registry proxy. The TUI groups registry
+	 * entries by `providedBy` so each row shows its own outputs (the
+	 * Publish action's row shows the resulting packageId; sui.localnet
+	 * shows the rpc/faucet URLs, etc.). */
+	providedBy?: string;
 }
 
 export interface Account {
@@ -472,6 +476,9 @@ export interface Account {
 	address: string;
 	role?: string;
 	funded?: boolean;
+	/** Action that registered this account — auto-stamped by the
+	 * reconciler's per-action registry proxy. */
+	providedBy?: string;
 }
 
 export interface Service {

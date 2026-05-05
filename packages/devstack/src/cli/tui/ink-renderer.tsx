@@ -16,7 +16,7 @@
 import { Box, type Instance, render, useApp, useInput } from 'ink';
 import { useEffect, useRef, useSyncExternalStore } from 'react';
 
-import type { ActionEndpoint, ActionStatus } from '../../core/types.js';
+import type { ActionStatus } from '../../core/types.js';
 import type { SerializedRegistry } from '../../runtime/manifest-types.js';
 import type {
 	Renderer,
@@ -79,7 +79,6 @@ export class InkRenderer implements Renderer {
 			failures: new Map(),
 			startTimes: new Map(),
 			settleTimes: new Map(),
-			endpoints: new Map(),
 			registry: null,
 			logs: [],
 			mainView: 'status',
@@ -114,7 +113,7 @@ export class InkRenderer implements Renderer {
 				if (prev === status) continue;
 				s.statuses.set(name, status);
 				if (status === 'running') s.startTimes.set(name, Date.now());
-				if (status === 'healthy' || status === 'failed' || status === 'skipped') {
+				if (status === 'ok' || status === 'failed' || status === 'skipped') {
 					s.settleTimes.set(name, Date.now());
 				}
 			}
@@ -149,12 +148,6 @@ export class InkRenderer implements Renderer {
 	setRpcUrl(rpcUrl: string): void {
 		this.store?.mutate((s) => {
 			s.rpcUrl = rpcUrl;
-		});
-	}
-
-	setEndpoints(map: Map<string, ActionEndpoint[]>): void {
-		this.store?.mutate((s) => {
-			s.endpoints = new Map(map);
 		});
 	}
 
