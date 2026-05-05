@@ -20,6 +20,8 @@
 import { dirname, resolve } from 'node:path';
 import type { Network } from '../core/types.js';
 import { resolveStack } from '../runtime/active-stack.js';
+import type { Renderer } from '../runtime/renderer.js';
+import { PlainRenderer } from '../runtime/renderers/plain.js';
 import { Supervisor } from '../runtime/supervisor.js';
 import {
 	loadConfig,
@@ -31,10 +33,13 @@ import {
 } from './args.js';
 import { resolveTarget } from './target.js';
 
-export interface UpFlags {
+interface UpFlags {
 	configPath: string;
 	network: Network;
 	once: boolean;
+	/** Force the line-oriented PlainRenderer even on a TTY. Also activated
+	 * by `DEVSTACK_NO_TUI=1`, `CI=*`, or a non-TTY stdout. */
+	noTui: boolean;
 	/** Override the active stack. When undefined, falls back to
 	 * `DEVSTACK_STACK` env var, then `<appDir>/.devstack/active`, then 'main'. */
 	stack?: string | undefined;
@@ -43,7 +48,7 @@ export interface UpFlags {
 	target?: string | undefined;
 }
 
-export async function runUp(flags: UpFlags): Promise<number> {
+async function runUp(flags: UpFlags): Promise<number> {
 	const abs = resolve(flags.configPath);
 	const config = await loadConfig(abs);
 	const appDir = dirname(abs);
@@ -71,6 +76,7 @@ export async function runUp(flags: UpFlags): Promise<number> {
 		stack = resolveStack({ appDir, flag: flags.stack });
 	}
 
+	const renderer = await selectRenderer(flags.noTui);
 	const supervisor = new Supervisor({
 		appName: config.app,
 		appDir,
@@ -79,6 +85,7 @@ export async function runUp(flags: UpFlags): Promise<number> {
 		plugins: config.plugins,
 		accounts: config.accounts,
 		rpcUrl: config.networks?.[network]?.rpcUrl,
+		renderer,
 	});
 	try {
 		if (flags.once) {
@@ -125,6 +132,9 @@ Options:
                               hooks on the way out). Equivalent to the
                               cycle Playwright globalSetup uses; \`pnpm
                               localnet:up\` scripts wrap this.
+  --no-tui                    Force the line-oriented plain renderer
+                              even on a TTY. Also activated by
+                              \`DEVSTACK_NO_TUI=1\` or \`CI=*\`.
 
 Examples:
   devstack up
@@ -138,9 +148,25 @@ function parseArgs(argv: string[]): UpFlags {
 		configPath: parseConfigArg(argv),
 		network: parseNetworkArg(argv) ?? 'localnet',
 		once: argv.includes('--once'),
+		noTui: argv.includes('--no-tui'),
 		stack: parseStackArg(argv),
 		target: parseTargetArg(argv),
 	};
+}
+
+/** Pick the right renderer for the current process environment. The
+ * Ink TUI lives in `cli/tui/ink-renderer.tsx` and is dynamically
+ * imported only when actually selected — keeps the React + ink runtime
+ * cost off the plain CI path. */
+async function selectRenderer(noTuiFlag: boolean): Promise<Renderer> {
+	const tuiable =
+		!noTuiFlag &&
+		process.env.DEVSTACK_NO_TUI === undefined &&
+		process.env.CI === undefined &&
+		Boolean(process.stdout.isTTY);
+	if (!tuiable) return new PlainRenderer();
+	const mod = await import('./tui/ink-renderer.js');
+	return new mod.InkRenderer();
 }
 
 runIfMain(import.meta.url, main);

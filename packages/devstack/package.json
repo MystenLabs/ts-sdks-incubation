@@ -32,10 +32,6 @@
 			"types": "./dist/app-setup/index.d.mts",
 			"import": "./dist/app-setup/index.mjs"
 		},
-		"./cli": {
-			"types": "./dist/cli.d.mts",
-			"import": "./dist/cli.mjs"
-		},
 		"./helpers": {
 			"types": "./dist/helpers.d.mts",
 			"import": "./dist/helpers.mjs"
@@ -51,10 +47,6 @@
 		"./react/ui": {
 			"types": "./dist/react/ui/index.d.mts",
 			"import": "./dist/react/ui/index.mjs"
-		},
-		"./runtime": {
-			"types": "./dist/runtime.d.mts",
-			"import": "./dist/runtime.mjs"
 		},
 		"./vite": {
 			"types": "./dist/vite/plugin.d.mts",
@@ -101,9 +93,10 @@
 		"@mysten-incubation/devstack-wallet-panels": "workspace:*",
 		"@mysten/codegen": "catalog:",
 		"@mysten/sui": "catalog:",
-		"@mysten/walrus": "^1.1.4",
 		"chokidar": "^4.0.1",
-		"zod": "catalog:"
+		"ink": "^7.0.0",
+		"ink-spinner": "^5.0.0",
+		"react": "catalog:"
 	},
 	"devDependencies": {
 		"@mysten/dapp-kit-core": "catalog:",
@@ -113,7 +106,6 @@
 		"@types/node": "catalog:",
 		"@types/react": "catalog:",
 		"react": "catalog:",
-		"react-dom": "catalog:",
 		"tsdown": "0.20.0-beta.1",
 		"typescript": "catalog:",
 		"vite": "catalog:",
@@ -125,7 +117,6 @@
 		"@playwright/test": "catalog:",
 		"@tanstack/react-query": "catalog:",
 		"react": "catalog:",
-		"react-dom": "catalog:",
 		"vite": "catalog:",
 		"vitest": "catalog:"
 	},
@@ -143,9 +134,6 @@
 			"optional": true
 		},
 		"react": {
-			"optional": true
-		},
-		"react-dom": {
 			"optional": true
 		},
 		"vite": {

@@ -7,7 +7,7 @@ import type { Signer } from '@mysten/sui/cryptography';
 
 export type Network = 'localnet' | 'testnet' | 'mainnet';
 
-export interface NetworkConfig {
+interface NetworkConfig {
 	rpcUrl?: string;
 }
 
@@ -92,7 +92,7 @@ export type ActionType =
  * AND on subsequent warm-path skips. Plugins typically share it with
  * `run` to keep the registration logic in one place.
  */
-export interface ProvidesObject {
+interface ProvidesObject {
 	capabilities?: string[];
 	registry?: (ctx: ActionRunContext) => Promise<void> | void;
 }
@@ -164,7 +164,17 @@ export interface SnapshotMeta {
 	quiesce?: 'pause' | 'stop' | 'none';
 }
 
-export interface ActionBase<TInputs = unknown, TResult = unknown> {
+/** Network address an action exposes once healthy. Surfaced inline in
+ * the `devstack up` status table so users see e.g.
+ * `JSON-RPC http://127.0.0.1:9000 · Faucet http://127.0.0.1:9123/gas`
+ * without having to hunt through logs for the bind line. */
+export interface ActionEndpoint {
+	label: string;
+	url: string;
+	kind: 'rpc' | 'ws' | 'http' | 'web';
+}
+
+interface ActionBase<TInputs = unknown, TResult = unknown> {
 	name: string;
 	type: ActionType;
 	needs?: string[];
@@ -221,8 +231,43 @@ export interface ActionBase<TInputs = unknown, TResult = unknown> {
 	 * declare `runsAs:` on the factory call so the reconciler can
 	 * serialize them. */
 	runsAs?: string;
+	/** Plugin that owns this action. Auto-derived from `Plugin.name` by
+	 * `expandPluginActions()` — plugin authors don't set this, and the
+	 * field is overwritten on expansion if they do. App-level setup
+	 * actions synthesized from `DevstackConfig.setup: [...]` carry the
+	 * literal value `'app'`. Used by the supervisor's status renderer
+	 * for grouping (one section header per plugin) and per-line log
+	 * coloring. */
+	plugin?: string;
 	run?: (ctx: ActionRunContext) => Promise<TResult>;
 	getStatus?: (ctx: ActionRunContext) => Promise<{ ok: boolean; detail?: string }>;
+	/**
+	 * Stable token representing what this action produced. The reconciler
+	 * captures it after every successful run / skip, persists it alongside
+	 * `lastInputHash`, and folds the `identity` of every upstream action
+	 * named in `needs:` into the downstream's input hash. Result: when an
+	 * upstream's identity changes, every downstream cascades-re-runs
+	 * automatically. No plugin author has to track "did upstream change
+	 * its outputs since I last ran?" by hand.
+	 *
+	 * Examples:
+	 *   - `sui.localnet`: `chainId` from RPC. Chain regenesis → identity
+	 *     flips → walrus.deploy / accounts.fund / publishes / etc. all
+	 *     cascade.
+	 *   - `walrus.deploy`: hash of the deploy file (its parsed package +
+	 *     object IDs). Deploy re-runs → walrus.node-* cascade →
+	 *     `containerService` recreates them with fresh writable layers.
+	 *   - `publish`: registered `packageId`. Republish → seal.register /
+	 *     downstream tx-builders cascade.
+	 *
+	 * Built-in factories supply a sensible default where they can
+	 * (`publish` → `packages.find(name).packageId`); explicit override
+	 * is for things only the author can compute (chainId via RPC, file
+	 * content hash). Returning `undefined` means "no cascade signal" —
+	 * use when downstream genuinely doesn't depend on identity drift,
+	 * not as a placeholder.
+	 */
+	identity?: (ctx: ActionRunContext) => Promise<string | undefined>;
 }
 
 /** Scope filter for app-level setup actions declared in `DevstackConfig.setup`. */
@@ -435,6 +480,11 @@ export interface Service {
 	url: string;
 	port: number;
 	endpointLabel?: string;
+	/** Action that registered this service. Stamped automatically by the
+	 * reconciler's per-action ctx wrapper — plugin authors don't set
+	 * this. The supervisor groups services by `providedBy` to build the
+	 * status renderer's per-row endpoint list. */
+	providedBy?: string;
 }
 
 export interface RegistryQuery<T> {
@@ -520,6 +570,21 @@ interface ActionRunContextBase {
 	 * — the `vite()` plugin pipes vite's stdout/stderr through this.
 	 */
 	appendLog?: (line: string) => void;
+	/**
+	 * The reconciler's computed input hash for this run. Folds in
+	 * `inputs` plus the `identity` of every upstream named in `needs:`,
+	 * so it captures the full upstream-context this action was invoked
+	 * with.
+	 *
+	 * Plumbed mainly so `containerService` can stamp it onto the
+	 * container at create time and compare on the next cycle: matching
+	 * hash means upstream is unchanged → resume the existing container
+	 * (preserves its writable-layer state — RocksDB, chain data,
+	 * generated certs); mismatch means upstream drifted → recreate so
+	 * stale state goes with it. Without this, every supervisor restart
+	 * blindly recreated stateful containers and lost the data.
+	 */
+	inputHash: string;
 }
 
 /**
@@ -548,7 +613,7 @@ export interface PortAllocator {
 	allocate(req: PortRequest): Promise<number[]>;
 }
 
-export interface PortRequest {
+interface PortRequest {
 	/** Plugin-namespaced slot name (e.g. 'sui.rpc'). Must be stable
 	 * across calls — it's the cache key. */
 	slot: string;
@@ -571,7 +636,7 @@ export interface PortRequest {
  * `ctx.network === 'localnet'`: code that reaches `ctx.stack` on a
  * live-network ctx is a type error, not a quiet `'main'` placeholder.
  */
-export interface LiveNetActionRunContext extends ActionRunContextBase {
+interface LiveNetActionRunContext extends ActionRunContextBase {
 	network: 'testnet' | 'mainnet';
 	stack?: undefined;
 }
@@ -636,7 +701,7 @@ export interface DevstackConfig {
 	setup?: Action[];
 }
 
-export interface TestConfig {
+interface TestConfig {
 	accountPoolSize?: number;
 	fundEachAccount?: bigint;
 }
