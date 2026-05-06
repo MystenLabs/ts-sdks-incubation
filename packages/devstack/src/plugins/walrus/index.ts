@@ -23,6 +23,7 @@ import { service } from '../../actions/service.js';
 import { register } from '../../actions/register.js';
 import { seed } from '../../actions/seed.js';
 import { coinTokens } from '../../coin.js';
+import { probeUrl, waitForReachable } from '../../helpers/probe.js';
 import { createLocalSuiClient } from '../../helpers/sui-client.js';
 import {
 	type Action,
@@ -234,7 +235,6 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 					provides: { capabilities: ['walrus.app-network'] },
 					inputs: {},
 					getStatus: async (ctx) => {
-						requireLocalnetCtx(ctx);
 						const network = appNetworkName(ctx.appName, ctx.stack);
 						const subnet = walrusSubnet(walrusOctet(ctx.appName, ctx.stack));
 						const probe = await dockerNetworkSubnet(network);
@@ -253,7 +253,6 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 						}
 					},
 					run: async (ctx) => {
-						requireLocalnetCtx(ctx);
 						const network = appNetworkName(ctx.appName, ctx.stack);
 						const subnet = walrusSubnet(walrusOctet(ctx.appName, ctx.stack));
 						const probe = await dockerNetworkSubnet(network);
@@ -305,7 +304,6 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 					 * re-deploy without any per-action chain probe.
 					 */
 					getStatus: async (ctx) => {
-						requireLocalnetCtx(ctx);
 						const file = resolve(walrusDeployHostDir(ctx.appDir, ctx.stack), 'deploy');
 						if (!existsSync(file)) {
 							return { ok: false, detail: 'deploy outputs not present' };
@@ -325,7 +323,6 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 					 * mismatch — `containerService.run()` then wipes the node
 					 * containers' RocksDB writable layers on recreation. */
 					identity: async (ctx) => {
-						requireLocalnetCtx(ctx);
 						const file = resolve(walrusDeployHostDir(ctx.appDir, ctx.stack), 'deploy');
 						if (!existsSync(file)) return undefined;
 						try {
@@ -336,7 +333,6 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 						}
 					},
 					run: async (ctx) => {
-						requireLocalnetCtx(ctx);
 						const network = appNetworkName(ctx.appName, ctx.stack);
 						const containerName = deployContainerName(ctx.appName, ctx.stack);
 						const hostDir = walrusDeployHostDir(ctx.appDir, ctx.stack);
@@ -416,7 +412,6 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 						// blob state on `devstack snapshot save`.
 						snapshot: { commit: true, quiesce: 'stop' },
 						spec: (ctx) => {
-							requireLocalnetCtx(ctx);
 							const ip = walrusNodeIp(walrusOctet(ctx.appName, ctx.stack), nodeIdx);
 							return {
 								name: '',
@@ -485,7 +480,6 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 					// `up`. Nothing in its writable layer worth committing.
 					snapshot: { commit: false, quiesce: 'none' },
 					spec: async (ctx) => {
-						requireLocalnetCtx(ctx);
 						const ports = await resolveNodePorts(ctx);
 						const nodeHostPort = indexer(ports);
 						const configPath = writeProxyConfig({
@@ -514,10 +508,11 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 						};
 					},
 					probe: async (ctx) => {
-						requireLocalnetCtx(ctx);
 						const ports = await resolveNodePorts(ctx);
 						const nodeHostPort = indexer(ports);
-						const ok = await probeUrl(`http://localhost:${nodeHostPort(0)}/v1/api`);
+						const ok = await probeUrl(`http://localhost:${nodeHostPort(0)}/v1/api`, {
+							accept: (r) => r.status > 0,
+						});
 						return ok
 							? {
 									ok: true,
@@ -526,10 +521,12 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 							: { ok: false, detail: 'nginx running but node-0 not responding' };
 					},
 					postStart: async (ctx) => {
-						requireLocalnetCtx(ctx);
 						const ports = await resolveNodePorts(ctx);
 						const nodeHostPort = indexer(ports);
-						await waitForReachable(`http://localhost:${nodeHostPort(0)}/v1/api`, 30_000);
+						await waitForReachable(`http://localhost:${nodeHostPort(0)}/v1/api`, 30_000, {
+							accept: (r) => r.status > 0,
+							intervalMs: 500,
+						});
 					},
 				}),
 			);
@@ -609,7 +606,6 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 					needs: ['register'],
 					inputs: { amountSui: SEED_WAL_PAYMENT_SUI.toString() },
 					getStatus: async (ctx) => {
-						requireLocalnetCtx(ctx);
 						const walType = coinTokens(ctx.registry).find('wal')?.type;
 						if (walType === undefined) return { ok: false, detail: 'wal token not registered' };
 						const rpcUrl = ctx.registry.services.require('sui-rpc').url;
@@ -873,23 +869,6 @@ ${servers}
 	return configPath;
 }
 
-async function probeUrl(url: string): Promise<boolean> {
-	try {
-		const res = await fetch(url, { method: 'GET', redirect: 'manual' });
-		return res.status > 0;
-	} catch {
-		return false;
-	}
-}
-
-async function waitForReachable(url: string, timeoutMs: number): Promise<void> {
-	const start = Date.now();
-	while (Date.now() - start < timeoutMs) {
-		if (await probeUrl(url)) return;
-		await new Promise((resolve) => setTimeout(resolve, 500));
-	}
-	throw new Error(`walrus.daemon: ${url} did not become reachable within ${timeoutMs}ms`);
-}
 
 async function fetchWalCoinType(rpcUrl: string, ids: DeployFileIds): Promise<string | undefined> {
 	if (ids.treasuryObject === undefined) return undefined;
@@ -901,18 +880,11 @@ async function fetchWalCoinType(rpcUrl: string, ids: DeployFileIds): Promise<str
 }
 
 async function fetchObjectType(rpcUrl: string, objectId: string): Promise<string | undefined> {
-	const body = JSON.stringify({
-		jsonrpc: '2.0',
-		method: 'sui_getObject',
-		params: [objectId, { showType: true }],
-		id: 1,
-	});
-	const res = await fetch(rpcUrl, {
-		method: 'POST',
-		headers: { 'content-type': 'application/json' },
-		body,
-	});
-	if (!res.ok) return undefined;
-	const json = (await res.json()) as { result?: { data?: { type?: string }; error?: unknown } };
-	return json.result?.data?.type;
+	const client = createLocalSuiClient(rpcUrl);
+	try {
+		const info = await client.core.getObject({ objectId });
+		return info.object.type;
+	} catch {
+		return undefined;
+	}
 }

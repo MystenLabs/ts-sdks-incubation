@@ -22,7 +22,6 @@ import { Transaction, type TransactionObjectArgument } from '@mysten/sui/transac
 import {
 	type ActionRunContext,
 	type LocalnetActionRunContext,
-	requireLocalnetCtx,
 } from '../../core/types.js';
 import { hostProcess } from '../../actions/host-process.js';
 import { openSuiRpcClient } from '../../helpers/sui-client.js';
@@ -127,7 +126,6 @@ export function deepbookMarketMakerAction(opts: DeepbookMarketMakerActionOptions
 			return { ok: false, detail: `maker ${maker.name} not running` };
 		},
 		run: async (ctx) => {
-			requireLocalnetCtx(ctx);
 			if (timer !== undefined) return;
 
 			const log = ctx.appendLog ?? ((line: string) => process.stdout.write(`${line}\n`));
@@ -333,7 +331,6 @@ async function depositPreDeposits(
 			owner,
 			coinType,
 			amount,
-			errorPrefix: 'market-maker',
 		});
 		tx.moveCall({
 			target: `${deepbookPackageId}::balance_manager::deposit`,

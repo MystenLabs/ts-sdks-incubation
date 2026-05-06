@@ -35,6 +35,7 @@ import { hostProcess } from '../../actions/host-process.js';
 import { register } from '../../actions/register.js';
 import type { ActionRunContext } from '../../core/types.js';
 import { requireLocalnetCtx } from '../../core/types.js';
+import { probeUrl } from '../../helpers/probe.js';
 import { definePlugin } from '../../plugin.js';
 import { stackDir } from '../../runtime/active-stack.js';
 import { generateToken, startWalletServer } from './server.js';
@@ -195,7 +196,6 @@ export const walletServer = (opts: WalletServerPluginOptions = {}) => {
 				inputs: { preferredPort, publicOrigin: explicitOrigin ?? null },
 				// No `provides.registry` — register's hook owns the entry.
 				getStatus: async (ctx) => {
-					requireLocalnetCtx(ctx);
 					const { baseUrl } = await resolveEndpoint(ctx);
 					const reachable = await probeUrl(`${baseUrl}/health`);
 					if (!reachable) return { ok: false, detail: `${baseUrl} not reachable` };
@@ -234,7 +234,6 @@ export const walletServer = (opts: WalletServerPluginOptions = {}) => {
 					return { ok: true, detail: baseUrl };
 				},
 				run: async (ctx) => {
-					requireLocalnetCtx(ctx);
 					const { port, baseUrl } = await resolveEndpoint(ctx);
 					const log = ctx.appendLog ?? ((line: string) => process.stdout.write(`${line}\n`));
 					if (activeServer !== undefined && activeServer.listening) {
@@ -330,16 +329,7 @@ function readPersistedToken(appDir: string, stack: string): string | undefined {
 function writePersistedToken(appDir: string, stack: string, token: string): void {
 	const path = tokenPath(appDir, stack);
 	mkdirSync(dirname(path), { recursive: true });
-	writeFileSync(path, `${token}\n`, 'utf8');
-}
-
-async function probeUrl(url: string): Promise<boolean> {
-	try {
-		const res = await fetch(url, { method: 'GET' });
-		return res.ok;
-	} catch {
-		return false;
-	}
+	writeFileSync(path, `${token}\n`, { encoding: 'utf8', mode: 0o600 });
 }
 
 function originOf(url: string): string {

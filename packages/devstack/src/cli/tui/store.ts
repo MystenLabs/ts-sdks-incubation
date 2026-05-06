@@ -97,6 +97,13 @@ export function createStore(initial: Omit<TuiState, 'version'>): Store {
 	};
 }
 
+/** Max log lines retained in store. Older lines have already committed
+ * to terminal scrollback via ink's `<Static>` and the user reaches them
+ * by scrolling natively; the in-memory buffer only feeds new mounts of
+ * `<Static>`. Cap prevents unbounded React state growth on long
+ * supervisor runs (vite/sui logs can spike to many lines/sec). */
+const MAX_LOG_LINES = 1000;
+
 export function appendLog(
 	state: TuiState,
 	line: LogLine,
@@ -107,7 +114,10 @@ export function appendLog(
 	// push leaves `itemsToRender` empty and the line never commits to
 	// stdout. The cost is one shallow array copy per log line — fine
 	// at our throughput (a few lines per second at peak).
-	state.logs = [...state.logs, line];
+	const next = state.logs.length >= MAX_LOG_LINES
+		? [...state.logs.slice(state.logs.length - MAX_LOG_LINES + 1), line]
+		: [...state.logs, line];
+	state.logs = next;
 	// Track plugin encounter order for stable color assignment. No
 	// per-plugin filtering anymore — logs flow into terminal scrollback
 	// via `<Static>`, the user uses native scrollback to navigate.

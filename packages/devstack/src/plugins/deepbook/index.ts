@@ -3,22 +3,27 @@
 // name: 'deepbook', ... }] })` indirection with a typed surface for the
 // most common DeepBook deployment patterns.
 //
-// Three actions:
+// Actions:
 //
-//   deepbook.source   — Build. Fetches + builds the upstream DeepBook
-//                        source as a content-addressed image via
-//                        BuildKit git context. Idempotent on imageExists.
-//   deepbook.publish  — Publish. Runs `sui client test-publish
-//                        --with-unpublished-dependencies` inside the sui
-//                        localnet container. Captures registryId +
-//                        adminCapId.
-//   deepbook.pools    — Seed. Calls `init_balance_manager_map` +
-//                        `create_pool_admin` for each declared pool.
-//                        Idempotent via on-chain pool-existence probe.
-//                        Pools land under `registry.ns('deepbook').pools`.
-//
-// PR 14 will add a fourth action — `deepbook.market-maker.<name>` —
-// for continuous grid-order liquidity. See notes/deepbook-plugin-plan.md.
+//   deepbook.source              — Build. Fetches + builds the upstream
+//                                    DeepBook source as a content-
+//                                    addressed image via BuildKit git
+//                                    context. Idempotent on imageExists.
+//   deepbook.publish             — Publish. Runs `sui client test-publish
+//                                    --with-unpublished-dependencies`
+//                                    inside the sui localnet container.
+//                                    Captures registryId + adminCapId.
+//   deepbook.pools               — Seed. Calls `init_balance_manager_map`
+//                                    + `create_pool_admin` for each
+//                                    declared pool. Idempotent via on-
+//                                    chain pool-existence probe. Pools
+//                                    land under
+//                                    `registry.ns('deepbook').pools`.
+//   deepbook.market-maker.<name> — HostProcess. Continuous grid-order
+//                                    rebalancer per maker spec. Skipped
+//                                    by `applyTestSetupFilter` (which
+//                                    drops HostProcess); the long-running
+//                                    supervisor owns the loop.
 //
 // Localnet-only (mirrors `walrus()`, `seal()`). Ships with a default
 // `rev: 'v7.0.0'` so most apps don't think about versions.
@@ -32,6 +37,9 @@ import {
 import { type DeepbookPoolSpec, deepbookPoolsAction } from './pools.js';
 import { deepbookPublishAction } from './publish.js';
 import { deepbookSourceAction } from './source.js';
+
+export type { DeepbookMarketMakerSpec } from './market-maker.js';
+export type { DeepbookPoolSpec } from './pools.js';
 
 const DEFAULT_REV = 'v7.0.0';
 

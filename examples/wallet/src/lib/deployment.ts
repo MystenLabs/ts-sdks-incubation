@@ -3,6 +3,12 @@
 // into the views the wallet UI reads — coin specs (with derived symbols),
 // pool views (with base/quote symbols joined), and a flat account map.
 
+import {
+	defineManifestKind,
+	selectAccountMap,
+	selectPackage,
+	selectService,
+} from '@mysten-incubation/devstack';
 import { manifest } from '../generated/manifest.js';
 
 export interface CoinSpec {
@@ -20,29 +26,20 @@ export interface PoolView {
 	quoteSymbol: string;
 }
 
-interface DeepbookNamespace {
-	pools?: ReadonlyArray<{
-		name: string;
-		poolId: string;
-		baseCoinType: string;
-		quoteCoinType: string;
-	}>;
+interface DeepbookPool {
+	name: string;
+	poolId: string;
+	baseCoinType: string;
+	quoteCoinType: string;
+}
+interface CoinToken {
+	name: string;
+	type: string;
+	decimals: number;
 }
 
-interface CoinNamespace {
-	tokens?: ReadonlyArray<{ name: string; type: string; decimals: number }>;
-}
-
-const services = manifest.registry.services;
-const accounts = manifest.registry.accounts;
-const packages = manifest.registry.packages;
-const tokens = (manifest.registry.coin as CoinNamespace | undefined)?.tokens ?? [];
-const deepbookPools =
-	(manifest.registry.deepbook as DeepbookNamespace | undefined)?.pools ?? [];
-
-const accountMap: Record<string, string> = Object.fromEntries(
-	accounts.map((a) => [a.name, a.address]),
-);
+const deepbookPoolsKind = defineManifestKind<DeepbookPool>('deepbook.pools');
+const coinTokensKind = defineManifestKind<CoinToken>('coin.tokens');
 
 // Native SUI: every Sui network has it before any package is published.
 const SUI_COIN: CoinSpec = {
@@ -51,7 +48,7 @@ const SUI_COIN: CoinSpec = {
 	decimals: 9,
 };
 
-const coinsFromTokens: CoinSpec[] = tokens.map((t) => ({
+const coinsFromTokens: CoinSpec[] = coinTokensKind(manifest).map((t) => ({
 	symbol: t.name.replace(/^m/, 'm').toUpperCase(),
 	coinType: t.type,
 	decimals: t.decimals,
@@ -62,7 +59,7 @@ const allCoins: readonly CoinSpec[] = [SUI_COIN, ...coinsFromTokens];
 const symbolFor = (coinType: string): string =>
 	allCoins.find((c) => c.coinType === coinType)?.symbol ?? coinType.split('::').pop() ?? '?';
 
-const pools: readonly PoolView[] = deepbookPools.map((p) => ({
+const pools: readonly PoolView[] = deepbookPoolsKind(manifest).map((p) => ({
 	alias: p.name,
 	poolId: p.poolId,
 	baseCoinType: p.baseCoinType,
@@ -71,19 +68,19 @@ const pools: readonly PoolView[] = deepbookPools.map((p) => ({
 	quoteSymbol: symbolFor(p.quoteCoinType),
 }));
 
+const deepbookPkg = selectPackage(manifest, 'deepbook');
+
 export const deployment = {
-	rpcUrl: services.find((s) => s.name === 'sui-rpc')?.url ?? '',
-	faucetUrl: services.find((s) => s.name === 'sui-faucet')?.url,
-	accounts: accountMap,
+	rpcUrl: selectService(manifest, 'sui-rpc')?.url ?? '',
+	faucetUrl: selectService(manifest, 'sui-faucet')?.url,
+	accounts: selectAccountMap(manifest),
 	coins: allCoins,
 	pools,
-	deepbookPackageId: packages.find((p) => p.name === 'deepbook')?.packageId,
+	deepbookPackageId: deepbookPkg?.packageId,
 	// Captured by the deepbook plugin's publish action — the
 	// `Registry` shared object the SDK needs alongside `DEEPBOOK_PACKAGE_ID`
 	// to bind pool keys to on-chain pool ids.
-	deepbookRegistryId: packages.find((p) => p.name === 'deepbook')?.captured?.['registryId'] as
-		| string
-		| undefined,
+	deepbookRegistryId: deepbookPkg?.captured?.['registryId'] as string | undefined,
 } as const;
 
 export const isDeployed: boolean = Object.keys(deployment.accounts).length > 0;

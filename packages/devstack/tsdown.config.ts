@@ -41,7 +41,6 @@ export default defineConfig({
 		'@mysten/dapp-kit-react',
 		'@tanstack/react-query',
 		'react',
-		'react-dom',
 	],
 	copy: [
 		{ from: 'src/plugins/sui/Dockerfile', to: 'dist/plugins/sui' },

@@ -13,7 +13,7 @@
 import { mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import type { Network, Registry } from '../core/types.js';
-import type { RegistryImpl } from '../registry/index.js';
+import type { InternalRegistry } from '../registry/index.js';
 import { stackDir } from './active-stack.js';
 import type { Manifest, SerializedActionState, SerializedRegistry } from './manifest-types.js';
 
@@ -53,7 +53,7 @@ export function manifestPath(opts: ManifestPathOptions): string {
 }
 
 function buildManifest(opts: WriteManifestOptions): Manifest {
-	const reg = opts.registry as RegistryImpl;
+	const reg = opts.registry as InternalRegistry;
 	return {
 		app: opts.appName,
 		network: opts.network,
@@ -79,7 +79,7 @@ export function writeManifest(opts: WriteManifestOptions): string {
 	return path;
 }
 
-function serializeRegistry(reg: RegistryImpl): SerializedRegistry {
+function serializeRegistry(reg: InternalRegistry): SerializedRegistry {
 	return reg.snapshot();
 }
 

@@ -133,8 +133,9 @@ Options:
                               cycle Playwright globalSetup uses; \`pnpm
                               localnet:up\` scripts wrap this.
   --no-tui                    Force the line-oriented plain renderer
-                              even on a TTY. Also activated by
-                              \`DEVSTACK_NO_TUI=1\` or \`CI=*\`.
+                              even on a TTY. Also activated by setting
+                              \`DEVSTACK_NO_TUI\` or \`CI\` to a truthy
+                              value (anything but '', '0', 'false', 'no').
 
 Examples:
   devstack up
@@ -161,12 +162,24 @@ function parseArgs(argv: string[]): UpFlags {
 async function selectRenderer(noTuiFlag: boolean): Promise<Renderer> {
 	const tuiable =
 		!noTuiFlag &&
-		process.env.DEVSTACK_NO_TUI === undefined &&
-		process.env.CI === undefined &&
+		!isEnvFlagSet('DEVSTACK_NO_TUI') &&
+		!isEnvFlagSet('CI') &&
 		Boolean(process.stdout.isTTY);
 	if (!tuiable) return new PlainRenderer();
 	const mod = await import('./tui/ink-renderer.js');
 	return new mod.InkRenderer();
+}
+
+/** True when an env var is set to a truthy value. Treats `''`, `'0'`,
+ * `'false'`, and `'no'` as unset — common CI conventions where the
+ * presence of the var with an empty/zero value should not enable a
+ * flag. */
+function isEnvFlagSet(name: string): boolean {
+	const v = process.env[name];
+	if (v === undefined) return false;
+	const trimmed = v.trim().toLowerCase();
+	if (trimmed === '' || trimmed === '0' || trimmed === 'false' || trimmed === 'no') return false;
+	return true;
 }
 
 runIfMain(import.meta.url, main);

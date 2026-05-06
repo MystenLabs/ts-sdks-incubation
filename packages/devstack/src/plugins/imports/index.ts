@@ -49,6 +49,17 @@ import { imageExists } from '../sui/docker.js';
 import { suiContainerName } from '../sui/index.js';
 
 const IMPORT_NAME_RE = /^[a-z][a-z0-9_-]*$/;
+// Charsets for fields that flow into shell command lines inside the sui
+// container (`docker exec sh -c ...`) and into a Dockerfile's `RUN git
+// clone "${gitUrl}"` build step. Strict charsets keep callers from
+// smuggling shell metas (`;`, `$(...)`, backticks, redirects) into the
+// publish path. Validated at config-expansion time so the error shows
+// up alongside the user's `imports({...})` call instead of midway through
+// a cycle.
+const IMPORT_SUBDIR_RE = /^[a-zA-Z0-9_./-]+$/;
+const IMPORT_ENV_RE = /^[a-z][a-z0-9_-]*$/;
+const IMPORT_REPO_RE = /^[a-zA-Z0-9_./-]+$/;
+const IMPORT_REV_RE = /^[a-zA-Z0-9_./-]+$/;
 
 interface ImportSpecCommon {
 	/** Logical name. Becomes the `registry.packages` key, the per-package
@@ -116,9 +127,24 @@ function isLocalImport(spec: ImportSpec): spec is LocalImportSpec {
 
 interface ImportsPluginOptions {
 	packages: ImportSpec[];
+	/** Plugin instance name. Default `'imports'`. Override when an app
+	 * declares two `imports()` calls (e.g. one for vendored libraries
+	 * and one for org packages) — bare-default instances would namespace-
+	 * collide on action expansion. Validated against the same kebab
+	 * regex `definePlugin` enforces; rejected if it would clash with
+	 * a built-in plugin name. */
+	name?: string;
 }
 
+const PLUGIN_INSTANCE_NAME_RE = /^[a-z][a-z0-9_-]*$/;
+
 export const imports = (opts: ImportsPluginOptions) => {
+	const pluginName = opts.name ?? 'imports';
+	if (!PLUGIN_INSTANCE_NAME_RE.test(pluginName)) {
+		throw new Error(
+			`imports: plugin name '${pluginName}' must match ${PLUGIN_INSTANCE_NAME_RE}.`,
+		);
+	}
 	const seen = new Set<string>();
 	// Track revs per repo so we can warn when a single git repo is pinned
 	// to multiple revs across specs. Two specs from the same repo at
@@ -130,6 +156,7 @@ export const imports = (opts: ImportsPluginOptions) => {
 	const revsByRepo = new Map<string, Map<string, string[]>>();
 	for (const spec of opts.packages) {
 		validateImportName(spec.name);
+		validateImportSpec(spec);
 		if (seen.has(spec.name)) {
 			throw new Error(`imports: duplicate package name '${spec.name}'`);
 		}
@@ -162,7 +189,7 @@ export const imports = (opts: ImportsPluginOptions) => {
 	}
 	const specs = opts.packages.map(applyDepLinks);
 	return definePlugin({
-		name: 'imports',
+		name: pluginName,
 		// Folded into the snapshot id. Bumping any spec's `(repo, rev,
 		// subdir)` re-fetches + re-publishes the package, producing
 		// different on-chain object IDs — so the cached snapshot's
@@ -208,7 +235,6 @@ function buildActionsForSpec(spec: InternalImportSpec): Action[] {
 	const publisherAccount = spec.publisher ?? 'publisher';
 	const env = spec.env ?? 'localnet';
 	const sourceActionName = `${spec.name}-source`;
-	const depPublishNeeds = spec.dependsOn.map((d) => d);
 
 	// Local imports include a content digest so editing Move sources
 	// busts the reconciler's hash-match skip. Git imports key on (repo,
@@ -290,7 +316,7 @@ function buildActionsForSpec(spec: InternalImportSpec): Action[] {
 		{
 			name: spec.name,
 			type: 'Publish',
-			needs: [sourceActionName, 'accounts.fund', ...depPublishNeeds],
+			needs: [sourceActionName, 'accounts.fund', ...spec.dependsOn],
 			provides: {
 				capabilities: [`imports.${spec.name}`],
 				// Re-register on warm-path skip so downstream consumers
@@ -394,6 +420,35 @@ function validateImportName(name: string): void {
 			`imports: invalid package name '${name}'. Must start with a lowercase ` +
 				"letter and contain only lowercase letters, digits, '_' or '-'.",
 		);
+	}
+}
+
+function validateImportSpec(spec: ImportSpec): void {
+	if (!IMPORT_SUBDIR_RE.test(spec.subdir)) {
+		throw new Error(
+			`imports: invalid subdir '${spec.subdir}' for '${spec.name}'. ` +
+				`Must match ${IMPORT_SUBDIR_RE} — letters, digits, '_', '-', '.', '/'.`,
+		);
+	}
+	if (spec.env !== undefined && !IMPORT_ENV_RE.test(spec.env)) {
+		throw new Error(
+			`imports: invalid env '${spec.env}' for '${spec.name}'. ` +
+				`Must match ${IMPORT_ENV_RE} — lowercase letters, digits, '_', '-'.`,
+		);
+	}
+	if (!isLocalImport(spec)) {
+		if (!IMPORT_REPO_RE.test(spec.repo)) {
+			throw new Error(
+				`imports: invalid repo '${spec.repo}' for '${spec.name}'. ` +
+					`Must match ${IMPORT_REPO_RE} — flows into a git URL and a Dockerfile RUN.`,
+			);
+		}
+		if (!IMPORT_REV_RE.test(spec.rev)) {
+			throw new Error(
+				`imports: invalid rev '${spec.rev}' for '${spec.name}'. ` +
+					`Must match ${IMPORT_REV_RE} — flows into 'git checkout' inside the build container.`,
+			);
+		}
 	}
 }
 

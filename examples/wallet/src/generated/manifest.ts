@@ -40,7 +40,6 @@ export const manifest: Manifest = {
 				"sourceDigest": "6d0a4905d128fdbb8f2a2d1738e306b03ed61497699d87f416672eaaade0792c",
 				"chainId": "a8ebf2ce",
 				"network": "localnet",
-				"path": "/Users/michaelhayes/code/ts-sdks-incubation/examples/wallet/move/mock_usdc",
 				"providedBy": "wallet-setup.usdc",
 				"mvrPlaceholder": "@local/mock-usdc"
 			},
@@ -55,7 +54,6 @@ export const manifest: Manifest = {
 				"sourceDigest": "e1f80510e083eb2748f377315009c8e863f0e7be41b6af02eca7e37568893fa2",
 				"chainId": "a8ebf2ce",
 				"network": "localnet",
-				"path": "/Users/michaelhayes/code/ts-sdks-incubation/examples/wallet/move/mock_weth",
 				"providedBy": "wallet-setup.weth",
 				"mvrPlaceholder": "@local/mock-weth"
 			}

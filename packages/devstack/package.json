@@ -14,11 +14,12 @@
 	"license": "Apache-2.0",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/mysten-incubation/devstack.git"
+		"url": "git+https://github.com/MystenLabs/ts-sdks-incubation.git",
+		"directory": "packages/devstack"
 	},
-	"homepage": "https://github.com/mysten-incubation/devstack#readme",
+	"homepage": "https://github.com/MystenLabs/ts-sdks-incubation/tree/main/packages/devstack#readme",
 	"bugs": {
-		"url": "https://github.com/mysten-incubation/devstack/issues"
+		"url": "https://github.com/MystenLabs/ts-sdks-incubation/issues"
 	},
 	"type": "module",
 	"main": "./dist/index.mjs",
@@ -77,7 +78,7 @@
 		"LICENSE"
 	],
 	"engines": {
-		"node": ">=24.0.0"
+		"node": ">=22.0.0"
 	},
 	"scripts": {
 		"build": "tsdown",
@@ -86,7 +87,7 @@
 		"test": "vitest run",
 		"test:watch": "vitest",
 		"smoke-test": "node --experimental-strip-types scripts/smoke-test-build.ts",
-		"prepublishOnly": "pnpm run build"
+		"prepublishOnly": "pnpm run typecheck && pnpm run build && pnpm run smoke-test"
 	},
 	"dependencies": {
 		"@mysten-incubation/dev-wallet": "workspace:*",
@@ -95,8 +96,7 @@
 		"@mysten/sui": "catalog:",
 		"chokidar": "^4.0.1",
 		"ink": "^7.0.0",
-		"ink-spinner": "^5.0.0",
-		"react": "catalog:"
+		"ink-spinner": "^5.0.0"
 	},
 	"devDependencies": {
 		"@mysten/dapp-kit-core": "catalog:",

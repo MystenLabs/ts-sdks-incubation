@@ -27,7 +27,6 @@ export const manifest: Manifest = {
 				"sourceDigest": "57e9266687abc479bec2cd0cd3fe875c2c7d80b02c784f4ffa259a1d189433b6",
 				"chainId": "10ecfa85",
 				"network": "localnet",
-				"path": "/Users/michaelhayes/code/ts-sdks-incubation/examples/token-studio/move/managed_coin",
 				"mvrPlaceholder": "@local/managed-coin"
 			}
 		],

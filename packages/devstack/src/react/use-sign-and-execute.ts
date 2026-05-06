@@ -28,6 +28,46 @@ export interface UseSignAndExecuteOptions {
  *   });
  *   const result = await mutateAsync(tx);   // { digest }
  */
+/** True when `result` looks like the failed-transaction shape from
+ * `dAppKit.signAndExecuteTransaction`. The shape is documented in
+ * `@mysten/dapp-kit-core` but its type doesn't expose it via a
+ * discriminated union; this guard pins the runtime contract instead of
+ * casting `result` at the read site. */
+function isFailedTransaction(
+	result: unknown,
+): result is { FailedTransaction: { status?: { error?: string | null } } } {
+	if (typeof result !== 'object' || result === null) return false;
+	if (!('FailedTransaction' in result)) return false;
+	const ft = (result as { FailedTransaction?: unknown }).FailedTransaction;
+	return typeof ft === 'object' && ft !== null;
+}
+
+/** True when `result` carries the success-shape `{ Transaction: { digest } }`. */
+function hasTransaction(result: unknown): result is { Transaction: { digest: string } } {
+	if (typeof result !== 'object' || result === null) return false;
+	if (!('Transaction' in result)) return false;
+	const tx = (result as { Transaction?: unknown }).Transaction;
+	return (
+		typeof tx === 'object' &&
+		tx !== null &&
+		'digest' in tx &&
+		typeof (tx as { digest?: unknown }).digest === 'string'
+	);
+}
+
+/** True when `client` exposes `waitForTransaction({digest})` as a method.
+ * The dapp-kit-react `useCurrentClient<TDAppKit>()` typing widens
+ * `client.core` to `any` across module-augmentation boundaries (see
+ * `notes/friction.md`); this guard sidesteps the widening at the read
+ * site instead of casting. */
+function hasWaitForTransaction(
+	client: unknown,
+): client is { waitForTransaction: (a: { digest: string }) => Promise<unknown> } {
+	if (typeof client !== 'object' || client === null) return false;
+	if (!('waitForTransaction' in client)) return false;
+	return typeof (client as { waitForTransaction?: unknown }).waitForTransaction === 'function';
+}
+
 export function useSignAndExecute(
 	options: UseSignAndExecuteOptions = {},
 ): UseMutationResult<{ digest: string }, Error, Transaction> {
@@ -37,25 +77,21 @@ export function useSignAndExecute(
 	return useMutation<{ digest: string }, Error, Transaction>({
 		mutationFn: async (transaction) => {
 			const result = await dAppKit.signAndExecuteTransaction({ transaction });
-			if ('FailedTransaction' in result && result.FailedTransaction) {
-				const status = (result.FailedTransaction as { status?: { error?: string | null } })
-					.status;
-				throw new Error(status?.error ?? 'transaction failed');
+			if (isFailedTransaction(result)) {
+				throw new Error(result.FailedTransaction.status?.error ?? 'transaction failed');
 			}
-			const tx = (result as { Transaction?: { digest: string } }).Transaction;
-			if (!tx) throw new Error('signAndExecuteTransaction: missing Transaction in result');
-			return tx;
+			if (!hasTransaction(result)) {
+				throw new Error('signAndExecuteTransaction: missing Transaction in result');
+			}
+			return result.Transaction;
 		},
 		onSuccess: async (tx) => {
 			// Method-call form preserves `this` so the SDK's internal
 			// `this.core.X` access works. Destructuring
 			// `client.waitForTransaction` to a local would lose `this`
 			// and trip a runtime TypeError.
-			const c = client as {
-				waitForTransaction?: (a: { digest: string }) => Promise<unknown>;
-			};
-			if (typeof c.waitForTransaction === 'function' && tx.digest.length > 0) {
-				await c.waitForTransaction({ digest: tx.digest });
+			if (hasWaitForTransaction(client) && tx.digest.length > 0) {
+				await client.waitForTransaction({ digest: tx.digest });
 			}
 			await Promise.all(
 				(options.invalidateKeys ?? []).map((key) => qc.invalidateQueries({ queryKey: key })),

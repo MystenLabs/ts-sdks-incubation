@@ -9,16 +9,19 @@
 // "up" at a time, but the lockfile is scoped accordingly).
 //
 // Acquisition uses `O_EXCL` for atomicity. If the file exists, we
-// check whether the recorded PID is still alive via `process.kill(pid,
-// 0)`; a dead PID means a prior supervisor crashed and the file is
-// stale — we replace it. A live PID is treated as "another supervisor
-// owns this stack" and acquisition fails.
+// check (a) whether the recorded PID is still alive via `process.kill(
+// pid, 0)`, AND (b) whether that live process's start time matches the
+// stamp written into the lockfile. PID reuse on a long-lived dev box
+// (laptop reboot + thousands of forks) can collide on a stale entry;
+// the start-time stamp distinguishes "same process" from "different
+// process that happens to share the PID."
 //
 // `cli/stack use` consults the same file: switching active stacks
 // while a supervisor is running on the previous stack would cause it
 // to resurrect containers in a tight loop. Better to refuse with a
 // clear hint.
 
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { close, write } from 'node:fs';
 import { dirname } from 'node:path';
@@ -70,22 +73,69 @@ export function lockfilePath(opts: SupervisorLockOptions): string {
 	return `${stackDir(opts.appDir, opts.stack)}/supervisor.pid`;
 }
 
+interface LockfileContents {
+	pid: number;
+	/** Process start time in epoch-ms, captured by the supervisor at
+	 * acquire time. The alive check matches it against the live
+	 * process's actual start time so PID reuse on a long-lived host
+	 * doesn't make a stale lock look held. Optional in the on-disk
+	 * representation: a missing or unparseable value falls back to
+	 * pid-only liveness (the legacy behavior). */
+	startTime?: number;
+}
+
+function parseLockfile(raw: string): LockfileContents | undefined {
+	const trimmed = raw.trim();
+	if (trimmed.length === 0) return undefined;
+	if (trimmed.startsWith('{')) {
+		try {
+			const obj = JSON.parse(trimmed) as Partial<LockfileContents>;
+			if (typeof obj.pid !== 'number' || !Number.isFinite(obj.pid) || obj.pid <= 0) {
+				return undefined;
+			}
+			return {
+				pid: obj.pid,
+				...(typeof obj.startTime === 'number' && Number.isFinite(obj.startTime)
+					? { startTime: obj.startTime }
+					: {}),
+			};
+		} catch {
+			return undefined;
+		}
+	}
+	const pid = Number.parseInt(trimmed, 10);
+	if (!Number.isFinite(pid) || pid <= 0) return undefined;
+	return { pid };
+}
+
 /** Read the current lockfile (if any) and report whether the PID is
- * alive. Returns `null` when no lockfile exists. */
+ * alive. Returns `null` when no lockfile exists. PID reuse: when the
+ * lockfile records a `startTime`, it's compared against the live
+ * process's actual start time and a mismatch is treated as stale. */
 export function inspectSupervisorLock(opts: SupervisorLockOptions): SupervisorLockState | null {
 	const path = lockfilePath(opts);
 	if (!existsSync(path)) return null;
-	let pid: number;
+	let raw: string;
 	try {
-		pid = Number.parseInt(readFileSync(path, 'utf8').trim(), 10);
+		raw = readFileSync(path, 'utf8');
 	} catch {
-		// Corrupt lockfile — treat as stale and let the acquirer replace it.
 		return { pid: 0, alive: false };
 	}
-	if (!Number.isFinite(pid) || pid <= 0) {
+	const parsed = parseLockfile(raw);
+	if (parsed === undefined) {
 		return { pid: 0, alive: false };
 	}
-	return { pid, alive: pidAlive(pid) };
+	if (!pidAlive(parsed.pid)) {
+		return { pid: parsed.pid, alive: false };
+	}
+	if (parsed.startTime !== undefined) {
+		const observed = processStartTimeMs(parsed.pid);
+		if (observed !== undefined && Math.abs(observed - parsed.startTime) > 2000) {
+			// PID reused — the live process is a different one. Treat as stale.
+			return { pid: parsed.pid, alive: false };
+		}
+	}
+	return { pid: parsed.pid, alive: true };
 }
 
 /** Acquire the supervisor lock for this (app, stack). Throws
@@ -128,7 +178,12 @@ export async function acquireSupervisorLock(
 		}
 		throw err;
 	}
-	await writeAsync(fd, `${myPid}\n`, null, 'utf8');
+	const myStartTime = processStartTimeMs(myPid);
+	const payload: LockfileContents = {
+		pid: myPid,
+		...(myStartTime !== undefined ? { startTime: myStartTime } : {}),
+	};
+	await writeAsync(fd, `${JSON.stringify(payload)}\n`, null, 'utf8');
 	await closeAsync(fd);
 
 	let released = false;
@@ -139,8 +194,8 @@ export async function acquireSupervisorLock(
 			// Only delete if the file still records OUR pid — protects
 			// against the rare case where our process clock skewed and
 			// another supervisor adopted an older lock.
-			const observed = readFileSync(path, 'utf8').trim();
-			if (observed === String(myPid)) {
+			const observed = parseLockfile(readFileSync(path, 'utf8'));
+			if (observed?.pid === myPid) {
 				unlinkSync(path);
 			}
 		} catch {
@@ -169,8 +224,28 @@ function pidAlive(pid: number): boolean {
 	}
 }
 
-/** Sync helper for legacy callers (the supervisor uses the async form;
- * `cli/stack` reads the lock state via this). */
+/** Best-effort process start time in epoch-ms via `ps -o lstart=`.
+ * Cross-platform on Linux + macOS. Returns `undefined` on Windows or if
+ * ps fails — callers fall back to PID-only liveness, the legacy
+ * behavior. The stamp's only job is to distinguish a reused PID from
+ * the original supervisor; ~1s precision is plenty. */
+function processStartTimeMs(pid: number): number | undefined {
+	try {
+		const result = spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8' });
+		if (result.status !== 0) return undefined;
+		const trimmed = result.stdout.trim();
+		if (trimmed.length === 0) return undefined;
+		const date = new Date(trimmed);
+		const ms = date.getTime();
+		return Number.isFinite(ms) ? ms : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** Test-only helper that seeds a lockfile with a chosen PID, used by
+ * supervisor-lock.test.ts to exercise stale-lock cleanup without
+ * forking a real process. Not part of the public surface. */
 export function writeStaleLockForTesting(opts: SupervisorLockOptions, pid: number): string {
 	const path = lockfilePath(opts);
 	mkdirSync(dirname(path), { recursive: true });

@@ -1,23 +1,32 @@
 // `buildImage()` — Build action factory.
 //
-// P1: returns a typed BuildAction. Real Docker integration lands in P4
-// (sui plugin) when the first plugin needs to actually produce an image.
+// Build actions are localnet-only by construction: the action filters
+// in `cli/filters.ts` strip them on testnet/mainnet cycles. Reflect that
+// in the type system — `run` / `getStatus` / `identity` callbacks here
+// receive `LocalnetActionRunContext` directly so plugin code reads
+// `ctx.stack`, `ctx.ports`, etc. without a `requireLocalnetCtx(ctx)`
+// runtime assert. The factory casts the closures into the wider
+// `ActionRunContext`-receiving shape that the reconciler needs because
+// `BuildAction.run` is part of the `Action` union.
 
-import type { ActionRunContext, BuildAction, Provides } from '../core/types.js';
+import type { BuildAction, LocalnetActionRunContext, Provides } from '../core/types.js';
+import { mergeRegistryShortcut } from '../core/types.js';
 
 interface BuildImageOptions<TInputs extends Record<string, unknown>> {
 	name: string;
 	needs?: string[];
 	provides?: Provides;
+	/** Sugar for `provides: { registry }`. */
+	registry?: (ctx: LocalnetActionRunContext) => Promise<void> | void;
 	/** Extra paths the file watcher should treat as inputs to this
 	 * action. Resolved against `appDir`; supports glob syntax. Useful
 	 * for builds whose triggers aren't captured by `inputs` (e.g. local
 	 * source trees behind an `imports({ local: { path } })`). */
 	watches?: string[];
 	inputs: TInputs;
-	run: (ctx: ActionRunContext) => Promise<void>;
-	getStatus?: (ctx: ActionRunContext) => Promise<{ ok: boolean; detail?: string }>;
-	identity?: (ctx: ActionRunContext) => Promise<string | undefined>;
+	run: (ctx: LocalnetActionRunContext) => Promise<void>;
+	getStatus?: (ctx: LocalnetActionRunContext) => Promise<{ ok: boolean; detail?: string }>;
+	identity?: (ctx: LocalnetActionRunContext) => Promise<string | undefined>;
 }
 
 export function buildImage<TInputs extends Record<string, unknown>>(
@@ -27,11 +36,11 @@ export function buildImage<TInputs extends Record<string, unknown>>(
 		name: opts.name,
 		type: 'Build',
 		needs: opts.needs,
-		provides: opts.provides,
+		provides: mergeRegistryShortcut(opts.provides, opts.registry),
 		watches: opts.watches,
 		inputs: opts.inputs,
-		run: opts.run,
-		getStatus: opts.getStatus,
-		identity: opts.identity,
+		run: opts.run as BuildAction<TInputs>['run'],
+		getStatus: opts.getStatus as BuildAction<TInputs>['getStatus'],
+		identity: opts.identity as BuildAction<TInputs>['identity'],
 	};
 }

@@ -2,25 +2,22 @@
 // vault package, the seal key server, the walrus-daemon URL, and a flat
 // account name → address map.
 
+import {
+	defineManifestKind,
+	selectAccountMap,
+	selectPackage,
+	selectService,
+} from '@mysten-incubation/devstack';
 import { manifest } from '../generated/manifest.js';
 
-interface SealNamespace {
-	keyServer?: ReadonlyArray<{
-		name: string;
-		objectId: string;
-		url: string;
-		sealPackageId: string;
-	}>;
+interface SealKeyServer {
+	name: string;
+	objectId: string;
+	url: string;
+	sealPackageId: string;
 }
-
-const services = manifest.registry.services;
-const accounts = manifest.registry.accounts;
-const packages = manifest.registry.packages;
-const sealKeyServer = (manifest.registry.seal as SealNamespace | undefined)?.keyServer?.[0];
-
-const accountMap: Record<string, string> = Object.fromEntries(
-	accounts.map((a) => [a.name, a.address]),
-);
+const sealKeyServers = defineManifestKind<SealKeyServer>('seal.keyServer');
+const sealKeyServer = sealKeyServers(manifest)[0];
 
 export interface SealView {
 	keyServerObjectId: string;
@@ -38,11 +35,11 @@ const seal: SealView | undefined =
 			};
 
 export const deployment = {
-	rpcUrl: services.find((s) => s.name === 'sui-rpc')?.url ?? '',
-	faucetUrl: services.find((s) => s.name === 'sui-faucet')?.url,
-	walrusDaemonUrl: services.find((s) => s.name === 'walrus-daemon')?.url,
-	accounts: accountMap,
-	vaultPackageId: packages.find((p) => p.name === 'vault')?.packageId,
+	rpcUrl: selectService(manifest, 'sui-rpc')?.url ?? '',
+	faucetUrl: selectService(manifest, 'sui-faucet')?.url,
+	walrusDaemonUrl: selectService(manifest, 'walrus-daemon')?.url,
+	accounts: selectAccountMap(manifest),
+	vaultPackageId: selectPackage(manifest, 'vault')?.packageId,
 	seal,
 } as const;
 

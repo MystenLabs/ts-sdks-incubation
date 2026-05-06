@@ -232,7 +232,6 @@ export const seal = (opts: SealPluginOptions = {}) => {
 				inputs: { image: imageTag, preferredPort },
 				// See `register` above — same warm-path rehydrate pattern.
 				registry: async (ctx) => {
-					requireLocalnetCtx(ctx);
 					const { port } = await resolveEndpoint(ctx);
 					registerKeyServerService(ctx, port);
 				},
@@ -243,7 +242,6 @@ export const seal = (opts: SealPluginOptions = {}) => {
 				snapshot: { commit: false, quiesce: 'none' },
 				healthyTimeoutMs: 3 * 60_000,
 				spec: async (ctx) => {
-					requireLocalnetCtx(ctx);
 					const { port } = await resolveEndpoint(ctx);
 					const ns = ctx.registry.ns<SealNamespace>('seal');
 					const cached = ns.keyServer.require(keyServerName);
@@ -417,8 +415,8 @@ async function ensureSealMasterKey(opts: {
 }): Promise<CachedKeys> {
 	const path = masterKeyPath(opts.appDir, opts.stack);
 	if (opts.override !== undefined) {
-		mkdirSync(join(stackDir(opts.appDir, opts.stack), '.keys'), { recursive: true });
-		writeFileSync(path, `${JSON.stringify(opts.override, null, 2)}\n`);
+		mkdirSync(join(stackDir(opts.appDir, opts.stack), '.keys'), { recursive: true, mode: 0o700 });
+		writeFileSync(path, `${JSON.stringify(opts.override, null, 2)}\n`, { mode: 0o600 });
 		return opts.override;
 	}
 	const cached = readMasterKeyFile(path);
@@ -437,8 +435,8 @@ async function ensureSealMasterKey(opts: {
 	}
 	const keys: CachedKeys = { masterKey: masterMatch[1], publicKey: publicMatch[1] };
 
-	mkdirSync(join(stackDir(opts.appDir, opts.stack), '.keys'), { recursive: true });
-	writeFileSync(path, `${JSON.stringify(keys, null, 2)}\n`);
+	mkdirSync(join(stackDir(opts.appDir, opts.stack), '.keys'), { recursive: true, mode: 0o700 });
+	writeFileSync(path, `${JSON.stringify(keys, null, 2)}\n`, { mode: 0o600 });
 	return keys;
 }
 

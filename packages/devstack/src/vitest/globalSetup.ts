@@ -39,7 +39,9 @@ export default async function setup({ provide }: SetupArg): Promise<() => Promis
 		resolve(process.cwd(), '.devstack', 'stacks', stack, 'manifest.json');
 	if (!existsSync(manifestPath)) {
 		throw new Error(
-			`devstack/vitest globalSetup: manifest not found at ${manifestPath}. Run \`pnpm localnet:up --stack ${stack}\` first (or set DEVSTACK_STACK / DEVSTACK_MANIFEST_PATH).`,
+			`devstack/vitest globalSetup: manifest not found at ${manifestPath}. ` +
+				`Run \`DEVSTACK_STACK=${stack} pnpm localnet:up\` first ` +
+				`(or set DEVSTACK_MANIFEST_PATH explicitly).`,
 		);
 	}
 	const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as Manifest;

@@ -20,7 +20,6 @@ import {
 	type ActionRunContext,
 	type Registry,
 	type RegistryQuery,
-	requireLocalnetCtx,
 } from '../../core/types.js';
 import { openSuiRpcClient } from '../../helpers/sui-client.js';
 import { seed } from '../../actions/seed.js';
@@ -111,7 +110,6 @@ export function deepbookPoolsAction(opts: DeepbookPoolsActionOptions) {
 			return { ok: true, detail: `${opts.pools.length} pool(s) live` };
 		},
 		run: async (ctx) => {
-			requireLocalnetCtx(ctx);
 			const deepbookPkg = ctx.registry.packages.require('deepbook');
 			const registryId = deepbookPkg.captured.registryId;
 			const adminCapId = deepbookPkg.captured.adminCapId;

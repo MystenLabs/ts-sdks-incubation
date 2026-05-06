@@ -27,14 +27,19 @@
 
 import { existsSync } from 'node:fs';
 import { isAbsolute, resolve as resolvePath } from 'node:path';
-import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
-import type { ActionRunContext, Provides, PublishAction } from '../core/types.js';
+import type {
+	ActionRunContext,
+	Provides,
+	PublishAction,
+	SetupActionScope,
+} from '../core/types.js';
 import {
 	buildPriorCacheEntry,
 	computeSourceDigest,
 	publishMovePackage,
 	type PublishMovePackageResult,
 } from '../helpers/move-package.js';
+import { openSuiRpcClient } from '../helpers/sui-client.js';
 import { suiContainerName } from '../plugins/sui/index.js';
 
 export interface PublishInputs extends Record<string, unknown> {
@@ -108,6 +113,9 @@ interface PublishOptions {
 	 * which is what every downstream Register/Seed/Move-call reads, so
 	 * a republish auto-cascades. */
 	identity?: (ctx: ActionRunContext) => Promise<string | undefined>;
+	/** Action-graph scope. See `SetupActionScope`. Forwarded onto the
+	 * resulting `PublishAction.scope`. */
+	scope?: SetupActionScope;
 }
 
 export function publish(opts: PublishOptions): PublishAction<PublishInputs> {
@@ -148,6 +156,7 @@ export function publish(opts: PublishOptions): PublishAction<PublishInputs> {
 		path: opts.path,
 		runsAs: publisherAccount,
 		inputs,
+		scope: opts.scope,
 		getStatus: opts.getStatus,
 		identity:
 			opts.identity ??
@@ -180,7 +189,7 @@ export function publish(opts: PublishOptions): PublishAction<PublishInputs> {
 				const containerName =
 					ctx.network === 'localnet' ? suiContainerName(ctx.appName, ctx.stack) : undefined;
 				const publisher = ctx.accounts.get(publisherAccount);
-				const client = openSuiClient(ctx);
+				const client = openSuiRpcClient(ctx);
 				const chainId = await client.getChainIdentifier();
 				const prior = buildPriorCacheEntry(ctx.registry.packages.find(registryName));
 				const result = await publishMovePackage({
@@ -224,9 +233,4 @@ function digestAtExpansion(sourcePath: string, prepareSource: boolean): string |
 	} catch {
 		return undefined;
 	}
-}
-
-function openSuiClient(ctx: ActionRunContext): SuiJsonRpcClient {
-	const url = ctx.registry.services.require('sui-rpc').url;
-	return new SuiJsonRpcClient({ url, network: ctx.network });
 }

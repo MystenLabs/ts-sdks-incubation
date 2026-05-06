@@ -73,7 +73,7 @@ short-circuits work that hasn't drifted.
 ## Architecture in one screen
 
 The runtime is a **declarative reconciler over an action graph**. A plugin contributes named actions
-of one of six kinds:
+of one of seven kinds:
 
 | Kind       | Purpose                                                                      |
 | ---------- | ---------------------------------------------------------------------------- |
@@ -85,20 +85,18 @@ of one of six kinds:
 | `Emit`     | Side-effecting outputs derived from the registry (codegen, manifest writes). |
 | `Verify`   | Read-only invariant check; fails the cycle on `ok: false`.                   |
 
-`provides` accepts either a bare `string[]` (capability names for ordering only) OR an object form
-`{ capabilities?, registry? }`. `provides.registry(ctx)` is invoked by the reconciler on every
-successful path — both the cold cycle and warm-path skips — so plugin authors can factor
-registry-population logic in one place instead of duplicating it across `run` and `getStatus`.
-
-Actions declare `needs: string[]` for ordering, `provides: string[]` for capability declarations,
-plus `getStatus?(ctx)` — a probe that returns `{ ok: true }` when the action's effect is already in
-place. The reconciler:
+Actions declare `needs: string[]` for ordering, `provides: { capabilities?, registry? }` for
+capability declarations + a registry-rehydrate hook the reconciler invokes on warm-path skips, plus
+`getStatus?(ctx)` — a probe that returns `{ ok: true }` when the action's effect is already in
+place. `provides.registry(ctx)` runs on every successful path — both the cold cycle and warm-path
+skips — so plugin authors can factor registry-population logic in one place instead of duplicating
+it across `run` and `getStatus`. The reconciler:
 
 1. Hydrates the registry from the prior manifest at
    `<appDir>/.devstack/stacks/<stack>/manifest.json` (localnet) or
    `<appDir>/.devstack/manifests/<network>.json` (live nets).
 2. Topo-sorts actions (Kahn, stable tie-break, capability synthesis from `provides` ↔
-   `needs: ['cap:before' | 'cap:after']`).
+   `needs: ['cap:before']`).
 3. For each action: calls `getStatus`; if `ok: true`, marks `skipped`. If `ok: false` (or unset,
    with a stale input hash), runs the action.
 4. After the topo walk, re-fires any `Emit` whose `dependsOnKind` is dirty — `consumeDirty` makes
@@ -108,35 +106,29 @@ place. The reconciler:
 ### Registry — the inter-plugin API
 
 ```ts
-ctx.registry.tokens.list();
 ctx.registry.packages.find('connect_four');
 ctx.registry.accounts.require('alice');
 ctx.registry.services.list();
 ```
 
-Plus plugin-namespaced kinds via `ctx.registry.ns<T>('walrus').nodes` — the namespace becomes a key
-in the serialized manifest under `registry.<ns>.<kind>[]`.
+`packages`, `accounts`, `services` are the three core kinds — every `RegistryQuery<T>` exposes
+`list()`, `find(name)`, `require(name)`, `register(item)`, and `unregister(name)`. Plugin-namespaced
+kinds register through `defineRegistryKind<T>('<ns>.<kind>')` and serialize under their dotted key
+in the manifest:
+
+```ts
+const arenaSharedObjects = defineRegistryKind<ArenaSharedObject>('arena.sharedObjects');
+arenaSharedObjects(ctx.registry).register({ name: 'openLobby', objectId, objectType });
+arenaSharedObjects(ctx.registry).list();
+```
 
 ### Accounts
 
 Top-level `accounts: { ... }` declares signers available as `ctx.accounts.get(name)` in plugins and
-`accounts.<name>` in the REPL. Empty `{}` gets a per-stack generated keypair on disk; per-network
-factories handle live deploys:
-
-```ts
-import { cliSigner, envSigner } from '@mysten-incubation/devstack';
-
-defineDevstackConfig({
-	accounts: {
-		alice: {},
-		publisher: {
-			testnet: cliSigner({ alias: 'deployer' }),
-			mainnet: envSigner({ name: 'PROD_KEY' }),
-		},
-	},
-	/* ... */
-});
-```
+`accounts.<name>` in the REPL. Empty `{}` gets a per-stack generated keypair on disk. Live-net
+deploys take a per-network signer config object (`{ testnet: ..., mainnet: ... }`); the prototype
+ships only the localnet auto-keypair path on the public surface — live signer factories live in
+source for in-monorepo use.
 
 ### Discriminated context
 
@@ -160,6 +152,7 @@ calls `requireLocalnetCtx(ctx)` to assert at runtime.
 | `devstack down [config]`                         | Stop the active stack's containers (volumes preserved).                                                         |
 | `devstack reset [config] --yes`                  | Wipe the active stack — containers, volumes, host state. `--images` also drops cached devstack images (global). |
 | `devstack stack list/new/use/down/drop`          | Manage named per-app stacks. `drop --dry-run` previews deletion; `drop --images` cascades to image cache.       |
+| `devstack snapshot save/restore/list/rm/hash`    | Capture / restore named snapshots of a stack (containers + volumes + host state).                               |
 | `devstack console [config] [--target]`           | REPL with `manifest`, `client`, `accounts.<name>`, `packages.<name>` pre-bound.                                 |
 
 `--target` accepts `<network>`, `<stack>`, or `<network>:<stack>`. The supervisor (`up`) is
@@ -200,20 +193,32 @@ docker builder prune -f
 > a separate store that `image rm` never touches. To genuinely force a fresh Rust compile, all three
 > need to run.
 
+### Networking
+
+Every Docker `--publish` defaults to `127.0.0.1:` — the sui-localnet RPC, faucet, GraphQL,
+seal key-server, and walrus storage nodes are reachable only from the developer's own machine.
+Other devices on the same LAN can't hit them. The wallet-server has its own `host:` knob with the
+same default. Pass `expose: 'lan'` on `RunContainerOptions` (the underlying primitive
+`runContainer` accepts) to bind a container's ports to `0.0.0.0` instead — useful for shared dev
+rigs (a teammate hitting your faucet, a phone connecting to your wallet-server). The default is
+deliberate: a localnet faucet on a laptop in a coffee shop should not mint dev SUI for arbitrary
+strangers.
+
 ---
 
 ## Subpath layout
 
-| Subpath                                                | Audience                 | What's there                                                                                                                                                 |
-| ------------------------------------------------------ | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `@mysten-incubation/devstack`                          | Plugin + app authors     | `definePlugin`, `defineDevstackConfig`, action factories, built-in plugins, signer factories, types                                                          |
-| `@mysten-incubation/devstack/runtime`                  | Embedders                | `Reconciler`, `Supervisor`, `RegistryImpl`, `FileWatcher`, `StatusRenderer`, manifest I/O, `runOneShot`, active-stack helpers                                |
-| `@mysten-incubation/devstack/cli`                      | CLI consumers            | `runUp`, `runDeploy`, `runApply`, `runCodegen`, `runConsole`, `runStack`, target/filter helpers                                                              |
-| `@mysten-incubation/devstack/helpers`                  | Plugin authors           | `publishMovePackage`, `importMovePackage`, `seedSharedObject`, `objectTypeMatchesFilter`, `ensureUpstreamSourceImage`, `createLocalSuiClient`                |
-| `@mysten-incubation/devstack/react`                    | App authors (UI)         | `DevstackProvider`, `useDevstackManifest`, `useDevstackDeployed`, `localnetDappKitConfig`, `localnetMvrOverrides`, `localnetWalrusOptions`, `defaultMvrName` |
-| `@mysten-incubation/devstack/vite`                     | Vite users               | `devstackVitePlugins` (manifest + dev-keys virtual modules)                                                                                                  |
-| `@mysten-incubation/devstack/playwright`               | E2E tests                | `defineDevstackPlaywrightConfig({ manageStack })` + helpers                                                                                                  |
-| `@mysten-incubation/devstack/vitest`, `vitest/runtime` | Unit + chain-aware tests | `defineDevstackVitestConfig`, `AccountPool`                                                                                                                  |
+| Subpath                                                | Audience                 | What's there                                                                                                                            |
+| ------------------------------------------------------ | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `@mysten-incubation/devstack`                          | App authors              | `defineDevstackConfig`, `defineRegistryKind`, `coinTokens`, `publishMove`, `seed`, `runTransaction`, `mintCoinDistribution`, built-in plugins (`sui`, `walrus`, `seal`, `accounts`, `codegen`, `imports`, `frontend`, `walletServer`, `deepbook`) |
+| `@mysten-incubation/devstack/app-setup`                | App authors (UI bootstrap) | `createWalletApp({ manifest })` — one-line dapp-kit setup wired with the devstack burner-wallet adapter and panels                    |
+| `@mysten-incubation/devstack/helpers`                  | App-setup callbacks      | `seedSharedObject`, `createLocalSuiClient`                                                                                              |
+| `@mysten-incubation/devstack/react`                    | App authors (UI)         | `DevstackProvider`, `useDevstackDeployed`, `useSignAndExecute`, `localnetDappKitConfig`, `localnetMvrOverrides`, `localnetWalrusOptions` |
+| `@mysten-incubation/devstack/react/ui`                 | App authors (UI)         | `Card`, `Field` — primitive components shared across examples                                                                           |
+| `@mysten-incubation/devstack/vite`                     | Vite users               | `devstackVitePlugins`, `devstackManifestPlugin` — `virtual:devstack-manifest` virtual module + dev-keys                                 |
+| `@mysten-incubation/devstack/playwright`               | E2E tests                | `defineDevstackPlaywrightConfig({ manageStack })`, `connectAs`, `selectAccount`, `waitForBalanceUpdate`, `test`, `expect`              |
+| `@mysten-incubation/devstack/vitest`, `vitest/runtime` | Unit + chain-aware tests | `defineDevstackVitestConfig`, `AccountPool`, `getSessionAccountPool`                                                                    |
+| `@mysten-incubation/devstack/manifest`                 | Type-only consumers      | `Manifest` (re-export of the types from the main barrel, for `.d.ts`-only consumption paths)                                            |
 
 ---
 
@@ -221,8 +226,9 @@ docker builder prune -f
 
 ### `sui({ version?, rpcPort?, faucetPort? })`
 
-Sui localnet container. Three actions: `sui.build`, `sui.localnet`, `sui.accounts`. Account names
-come from top-level `accounts: { ... }` — the plugin no longer takes an `accounts:` option.
+Sui localnet container. Two actions: `sui.build`, `sui.localnet`. Account funding lives in the
+separate `accounts()` plugin (`accounts.fund`) — the sui plugin no longer takes an `accounts:`
+option.
 
 ### `walrus({ version?, suiVersion?, nodeHostPortBase?, epochDuration?, committeeSize?, shards?, gc? })`
 
@@ -262,120 +268,110 @@ agree.
 
 Recursive Move-package imports from git. Per package: a Build action (content-addressed source
 image) + a Publish action with `provides: ['imports.<name>']`. Curated `addresses[network]`
-overrides the publish on live nets. Use `await withRecursiveDeps([{...}])` to walk Move.toml dep
-graphs.
+overrides the publish on live nets. Cross-imports referencing one another via `dependsOn:` walk
+the Move.toml dep graph automatically.
 
 ---
 
-## Plugin authoring
+## Authoring app-level `setup:` actions
+
+Apps declare per-app actions inline in `defineDevstackConfig({ setup: [...] })`. The list is
+synthesized into a per-app plugin at config-load time — no separate plugin definition needed for
+single-app code. The action graph IS the app lifecycle: ordering via `needs:`, idempotence via
+input-hash match (or an explicit `getStatus`), serialization on shared signers via `runsAs:`.
+
+The arena example, in full:
 
 ```ts
-import { definePlugin, definePublishAction, seed } from '@mysten-incubation/devstack';
+import {
+	accounts, codegen, defineDevstackConfig, defineRegistryKind, frontend,
+	publishMove, seed, sui, walletServer,
+} from '@mysten-incubation/devstack';
+import { createLocalSuiClient, seedSharedObject } from '@mysten-incubation/devstack/helpers';
 
-export const arenaPlugin = () =>
-	definePlugin({
-		name: 'arena',
-		actions: () => [
-			definePublishAction({
-				name: 'connect_four',
-				needs: ['sui.accounts'],
-				sourcePath: './move/connect_four',
-				capture: { adminCap: '::admin::AdminCap' },
-				onPublished: (ctx, result) => {
-					/* fired only on a fresh publish, not on cache hit */
-				},
-			}),
-			seed({
-				name: 'openLobby',
-				needs: ['connect_four'],
-				run: async (ctx) => {
-					/* mint + share Lobby */
-				},
-				getStatus: async (ctx) => {
-					/* check shared Lobby still on-chain */
-				},
-			}),
-		],
-	});
+interface ArenaSharedObject { name: string; objectId: string; objectType: string }
+const arenaSharedObjects = defineRegistryKind<ArenaSharedObject>('arena.sharedObjects');
+
+export default defineDevstackConfig({
+	app: 'arena',
+	accounts: ['publisher', 'alice', 'bob'],
+	plugins: [sui(), accounts(), codegen(), walletServer({ port: 9421 }), frontend({ port: 5176 })],
+	setup: [
+		publishMove({
+			name: 'connect_four',
+			needs: ['accounts.fund'],
+			path: './move/connect_four',
+		}),
+		seed({
+			name: 'openLobby',
+			needs: ['connect_four'],
+			inputs: { lobby: 'openLobby' },
+			run: async (ctx) => {
+				const pkg = ctx.registry.packages.require('connect_four');
+				const lobbyCreator = ctx.accounts.get('alice');
+				const client = createLocalSuiClient(ctx.registry.services.require('sui-rpc').url);
+				const result = await seedSharedObject({
+					client, publisher: lobbyCreator,
+					target: `${pkg.packageId}::game::create_lobby`,
+					objectTypeFilter: '::game::Lobby',
+				});
+				arenaSharedObjects(ctx.registry).register({
+					name: 'openLobby',
+					objectId: result.objectId,
+					objectType: result.objectType,
+				});
+			},
+		}),
+	],
+});
 ```
 
-Bare action names auto-prefix with the plugin namespace (`arena.connect_four`). Bare `needs:`
-resolve locally; dotted needs (`'sui.accounts'`) cross plugins; suffixed needs
-(`'app-network:before'`) hit the capability table.
+Bare `needs:` resolve to the same app's setup actions; dotted needs cross into plugins
+(`'accounts.fund'`, `'sui.localnet'`); suffixed needs (`'app-network:before'`) hit the capability
+table.
 
-`definePublishAction` bakes in a default `getStatus` (chainId match + on-chain liveness) and `run`
-(build → publish → register → optional `onPublished` hook). Use the lower-level `publish({...})`
-factory for custom shapes (the imports plugin's escape hatch).
+### Setup action factories
 
-### Action helpers
+`@mysten-incubation/devstack` re-exports the action factories app code reaches for:
 
-| Helper                                            | Returns                                                     |
-| ------------------------------------------------- | ----------------------------------------------------------- |
-| `buildImage({ name, run, getStatus?, watches? })` | `Build` action.                                             |
-| `service({ name, run, getStatus?, ... })`         | `Service` action. Localnet only.                            |
-| `containerService({ name, run, ... })`            | Typed factory: managed docker container.                    |
-| `hostProcess({ name, run, ... })`                 | Typed factory: in-process subprocess (vite, wallet-server). |
-| `job({ name, run, ... })`                         | Typed factory: run-once task.                               |
-| `verify({ name, check })`                         | `Verify` action — read-only invariant.                      |
-| `publish({ name, run, getStatus?, ... })`         | `Publish` action — low-level escape hatch.                  |
-| `definePublishAction({ name, sourcePath, ... })`  | `Publish` action with build + register + cache baked in.    |
-| `register({ name, run, ... })`                    | `Register` action.                                          |
-| `seed({ name, run, getStatus?, liveNetworks? })`  | `Seed` action. Default-skipped on testnet/mainnet.          |
-| `emit({ name, run, dependsOnKind, ... })`         | `Emit` action.                                              |
+- `publishMove({ name, path, needs?, capture?, onPublished?, ... })` — Publish action with build +
+  publish + register + cache baked in. `capture: { adminCap: '::admin::AdminCap' }` extracts
+  created objects by type-suffix into `registry.packages.<name>.captured`.
+- `seed({ name, run, getStatus?, inputs?, runsAs?, liveNetworks?, ... })` — Seed action. Skipped on
+  testnet/mainnet by default; opt in via `liveNetworks: ['testnet']`.
+- `runTransaction({ name, build, runsAs?, ... })` — generic transaction runner; default `getStatus`
+  is a marker file at `<stackDir>/setup/<name>.done` keyed by stable-hash of the inputs.
+- `mintCoinDistribution({ name, ... })` — coin-distribution helper used by token-bearing apps.
 
-`containerService` / `hostProcess` / `job` are typed wrappers around `service` for cognitive clarity
-at call sites. Same underlying `ServiceAction` shape — pick the one that matches the intent. Plugin
-authors wire `provides: { registry: ... }` on these to repopulate registry entries on warm-path
-skips without manually reimplementing the side effect inside `getStatus`.
+The lower-level factories (`definePlugin`, `service`, `containerService`, `hostProcess`,
+`buildImage`, `register`, `emit`, `publish`) are not on the public barrel — they're for
+in-monorepo plugin authoring and live under `packages/devstack/src/{actions,plugins}/`. Walk the
+built-in plugins (`src/plugins/{sui,walrus,seal,...}/`) as the canonical examples.
 
-### Helpers worth knowing
+### Helpers (`@mysten-incubation/devstack/helpers`)
 
-Subpath: `@mysten-incubation/devstack/helpers`.
-
-- `publishMovePackage` — host-side or in-container `sui move build` + SDK publish. Caches by
-  source-digest. `buildEnv: 'host' | 'container'`.
-- `importMovePackage` — git-pinned imports via in-container
-  `sui client test-publish --with-unpublished-dependencies`.
-- `seedSharedObject` — common Seed pattern; `getStatus` checks the cached shared-object id is still
-  live on-chain.
-- `createLocalSuiClient(url, network?)` — minimal `SuiJsonRpcClient` constructor.
-- `cliSigner({ alias })` / `envSigner({ name })` / `generatedKeypair()` — signer factories for
-  `config.accounts`.
+- `seedSharedObject({ client, publisher, target, objectTypeFilter })` — common Seed pattern. Calls
+  the target Move function, picks the created shared object by `objectTypeFilter`, returns
+  `{ objectId, objectType }`. The default `getStatus` baked into `seed()`'s wrapper checks the
+  cached shared-object id is still live on-chain.
+- `createLocalSuiClient(url, network?)` — minimal `SuiJsonRpcClient` constructor for setup-time
+  reads / writes.
 
 ---
 
 ## React adapter
 
-Subpath: `@mysten-incubation/devstack/react`. The surface is intentionally minimal and
-manifest-driven — generic SDK ergonomics (signing transactions, binding codegen modules) live in
-`@mysten/dapp-kit-react` / `@mysten/codegen` / your app's `lib/queries.ts`. Devstack contributes the
-localnet config inputs that get spread into vanilla `createDAppKit({...})` and
-`new WalrusClient({...})`.
+Two subpaths: `@mysten-incubation/devstack/app-setup` for the one-line dapp-kit bootstrap, and
+`@mysten-incubation/devstack/react` for the provider + hooks consumed inside components. The
+surface is intentionally minimal and manifest-driven — generic SDK ergonomics (signing
+transactions, binding codegen modules) live in `@mysten/dapp-kit-react` / `@mysten/codegen`.
 
 ```tsx
-// dapp-kit.ts — vanilla `createDAppKit`; the spread is the only localnet-specific piece
-import { createDAppKit } from '@mysten/dapp-kit-core';
-import { devWalletInitializer } from '@mysten-incubation/dev-wallet';
-import { createDevstackAdapterFromManifest } from '@mysten-incubation/dev-wallet/adapters';
-import { localnetDappKitConfig } from '@mysten-incubation/devstack/react';
-import { configureDevstackPanels, devstackPanels } from '@mysten-incubation/devstack-wallet-panels';
+// dapp-kit.ts — what every example uses, byte-for-byte
+import { createWalletApp } from '@mysten-incubation/devstack/app-setup';
 import { manifest } from 'virtual:devstack-manifest';
 
-configureDevstackPanels(manifest);
-const devstackAdapter = createDevstackAdapterFromManifest(manifest);
-
-export const dAppKit = createDAppKit({
-	...localnetDappKitConfig(manifest),
-	walletInitializers: [
-		devWalletInitializer({
-			adapters: devstackAdapter ? [devstackAdapter] : [],
-			panels: devstackPanels(),
-			autoConnect: true,
-			autoApprove: true,
-			mountUI: true,
-		}),
-	],
-});
+export const { dAppKit } = createWalletApp({ manifest });
 
 declare module '@mysten/dapp-kit-react' {
 	interface Register {
@@ -384,21 +380,25 @@ declare module '@mysten/dapp-kit-react' {
 }
 ```
 
-`localnetDappKitConfig(manifest)` returns the `defaultNetwork` / `networks` / `createClient` triple
-plus pre-loaded MVR overrides keyed `@local/<kebab-name>`. App TSX calls codegen builders directly —
-the SDK's `namedPackagesPlugin` resolves placeholders to live `packageId`s at tx build time.
+`createWalletApp({ manifest })` wires up `localnetDappKitConfig`, the devstack burner-wallet
+adapter (`@mysten-incubation/dev-wallet/adapters`), and the devstack panels
+(`@mysten-incubation/devstack-wallet-panels`) into a single `createDAppKit({...})` call. Apps
+declaring their own dapp-kit shape can compose `localnetDappKitConfig(manifest)` directly from the
+`/react` subpath instead — the function returns the `defaultNetwork` / `networks` / `createClient`
+triple plus pre-loaded MVR overrides keyed `@local/<kebab-name>`.
 
 ```ts
+// devstack.config.ts — opt-in walletServer is what lets the burner-wallet
+// adapter sign without leaking keys into the frontend bundle
 import { walletServer } from '@mysten-incubation/devstack';
-// ...
-plugins: [sui(), /* ... */, walletServer({ port: 9420 }), frontend({ port: 5174 })],
+plugins: [sui(), /* ... */, walletServer({ port: 9421 }), frontend({ port: 5176 })];
 ```
 
-`walletServer()` spins up an in-process HTTP endpoint exposing every account devstack resolved. Keys
-never enter the frontend bundle — `DevstackSignerAdapter` signs by HTTPing the supervisor process.
+`walletServer()` spins up an in-process HTTP endpoint exposing every account devstack resolved.
+Keys never enter the frontend bundle — the dev-wallet adapter signs by HTTPing the supervisor.
 
 ```tsx
-// main.tsx — no codegen-module registration; just the manifest
+// main.tsx
 import { DevstackProvider } from '@mysten-incubation/devstack/react';
 import { manifest } from 'virtual:devstack-manifest';
 
@@ -408,10 +408,10 @@ import { manifest } from 'virtual:devstack-manifest';
 ```
 
 ```tsx
-// component.tsx — no devstack imports outside `useSignAndExecute` (app-local)
+// component.tsx
 import { Transaction } from '@mysten/sui/transactions';
+import { useSignAndExecute } from '@mysten-incubation/devstack/react';
 import * as connectFour from './generated/sui/connect_four/game';
-import { useSignAndExecute } from './lib/queries';
 
 const { mutateAsync, isPending } = useSignAndExecute({ invalidateKeys: [['arena']] });
 
@@ -420,12 +420,10 @@ tx.add(connectFour.joinLobby({ arguments: [lobbyId] }));
 await mutateAsync(tx);
 ```
 
-`useSignAndExecute` is a thin app-local helper around `dAppKit.signAndExecuteTransaction`
-
-- `useMutation` — typically ~50 lines in `lib/queries.ts`. The four examples each carry their own
-  copy. Production app code looks identical; the only file that differs between local and prod is
-  `dapp-kit.ts` (drops the `localnetDappKitConfig` spread, supplies its own RPC + real MVR or
-  hardcoded packageIds).
+`useSignAndExecute` is a sign + waitForTransaction + invalidate helper. Apps wrap it in their own
+`lib/queries.ts` to bind app-specific `invalidateKeys` defaults, but the wrapper is a one-line
+re-export, not a fork. Production app code looks identical; the file that differs between local
+and prod is `dapp-kit.ts` — drop `createWalletApp` and supply your own RPC + MVR + adapter set.
 
 ---
 
@@ -438,20 +436,20 @@ at `<appDir>/.devstack/manifests/<network>.json`.
 {
 	"app": "arena",
 	"network": "localnet",
-	"version": 2,
 	"emittedAt": "2026-04-30T...",
 	"registry": {
-		"tokens": [...],
 		"packages": [{ "name": "connect_four", "packageId": "0x...", "captured": {...} }],
 		"accounts": [{ "name": "publisher", "address": "0x...", "funded": true }],
 		"services": [{ "name": "sui-rpc", "url": "http://127.0.0.1:9000", ... }],
-		"arena": { "sharedObjects": [{ "name": "openLobby", "objectId": "0x..." }] }
-	}
+		"arena": { "sharedObjects": [{ "name": "openLobby", "objectId": "0x..." }] },
+		"coin": { "tokens": [...] }
+	},
+	"actionStates": { "<plugin>.<action>": { "lastInputHash": "...", "lastRunAt": ..., "identity": "..." } }
 }
 ```
 
-`ManifestVersion = 1 | 2` is reserved for forward-compat; `readManifestWithMigration` from
-`/runtime` walks the (currently empty) migration table.
+`packages` / `accounts` / `services` are core kinds. Plugin-namespaced kinds register through
+`defineRegistryKind('<ns>.<kind>')` and serialize as nested objects (`registry.<ns>.<kind>[]`).
 
 ---
 
@@ -459,23 +457,28 @@ at `<appDir>/.devstack/manifests/<network>.json`.
 
 ```
 src/
-  cli/         — up | apply | deploy | codegen | console | stack | down | reset
+  cli/         — up | apply | deploy | codegen | console | stack | snapshot
+                 (down/reset are aliases on top of stack)
   core/        — Action / Plugin / Registry / Network types + requireLocalnetCtx
-  registry/    — typed Proxy-backed Registry
-  actions/     — build / service / containerService / hostProcess / job /
-                 publish / definePublishAction / register / seed / emit / verify
+  registry/    — typed Proxy-backed Registry + defineRegistryKind
+  actions/     — build / service / container-service / host-process /
+                 publish / publish-move / register / seed / emit / verify /
+                 transaction / mint-coin-distribution
   runtime/     — reconciler, supervisor, status renderer, file watcher,
-                 manifest writer/reader (+ readManifestWithMigration),
-                 one-shot (with actionScope), topo (with lenient mode),
-                 accounts resolver, hash, active-stack
-  plugin.ts    — definePlugin + expandPluginActions
+                 manifest writer/reader, one-shot (with actionScope),
+                 topo (with lenient mode), accounts resolver, hash,
+                 active-stack, supervisor-lock, port-allocator, snapshot
+  plugin.ts    — definePlugin + defineDevstackConfig + expandPluginActions
   helpers/     — move-package (host or container build), imported-package,
                  sui-client, signers, keystore, seed-shared-object, ...
-  plugins/     — sui | walrus | seal | codegen | imports | wallet-server | vite
-  react/       — DevstackProvider | useDevstackManifest | useDevstackDeployed |
-                 localnetDappKitConfig | localnetMvrOverrides | localnetWalrusOptions |
-                 defaultMvrName
-  vite/        — virtual:devstack-manifest plugin
+  plugins/     — accounts | sui | walrus | seal | codegen | deepbook |
+                 imports | wallet-server | frontend
+  app-setup/   — createWalletApp (one-line dapp-kit bootstrap)
+  react/       — DevstackProvider | useDevstackDeployed |
+                 useSignAndExecute | localnetDappKitConfig |
+                 localnetMvrOverrides | localnetWalrusOptions
+  vite/        — devstackManifestPlugin / devstackVitePlugins
+                 (virtual:devstack-manifest + dev-keys)
   playwright/  — defineDevstackPlaywrightConfig (with manageStack) + helpers
   vitest/      — defineDevstackVitestConfig + AccountPool runtime
 ```

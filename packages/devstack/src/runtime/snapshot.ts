@@ -233,17 +233,17 @@ export async function captureSnapshot(opts: CaptureOptions): Promise<SnapshotEnt
 		}
 	}
 
+	// Stage the bundle in a sibling tmp directory and publish it via a
+	// single `renameSync`. Without this two-step, a `kill -9` between the
+	// host-dir copy and the manifest write leaves a half-formed bundle on
+	// disk: `host/` present, `snapshot.json` absent → the next `restore`
+	// finds the snapshot dir but errors with no diagnostic. Atomic publish
+	// means partial state is invisible to readers.
 	const dir = snapshotDir(opts.appDir, opts.id);
-	mkdirSync(dir, { recursive: true });
-	const hostSrc = stackDir(opts.appDir, opts.stack);
-	const hostDst = resolve(dir, 'host');
-	if (existsSync(hostDst)) rmSync(hostDst, { recursive: true, force: true });
-	if (existsSync(hostSrc)) {
-		cpSync(hostSrc, hostDst, { recursive: true });
-	} else {
-		mkdirSync(hostDst, { recursive: true });
-	}
-
+	const stagingDir = `${dir}.staging.${process.pid}`;
+	if (existsSync(stagingDir)) rmSync(stagingDir, { recursive: true, force: true });
+	mkdirSync(stagingDir, { recursive: true });
+	let published = false;
 	const entry: SnapshotEntry = {
 		id: opts.id,
 		alias: opts.alias,
@@ -253,7 +253,24 @@ export async function captureSnapshot(opts: CaptureOptions): Promise<SnapshotEnt
 		appName: opts.appName,
 		containers,
 	};
-	writeManifestAtomic(resolve(dir, 'snapshot.json'), entry);
+	try {
+		const hostSrc = stackDir(opts.appDir, opts.stack);
+		const hostDst = resolve(stagingDir, 'host');
+		if (existsSync(hostSrc)) {
+			cpSync(hostSrc, hostDst, { recursive: true });
+		} else {
+			mkdirSync(hostDst, { recursive: true });
+		}
+		writeManifestAtomic(resolve(stagingDir, 'snapshot.json'), entry);
+
+		if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+		renameSync(stagingDir, dir);
+		published = true;
+	} finally {
+		if (!published && existsSync(stagingDir)) {
+			rmSync(stagingDir, { recursive: true, force: true });
+		}
+	}
 
 	if (opts.alias !== undefined) {
 		writeAlias(opts.appDir, opts.alias, opts.id);

@@ -56,7 +56,7 @@ import { generateFromPackageSummary } from '@mysten/codegen';
 import { emit } from '../../actions/emit.js';
 import type { ActionRunContext, Package } from '../../core/types.js';
 import { definePlugin } from '../../plugin.js';
-import type { RegistryImpl } from '../../registry/index.js';
+import type { InternalRegistry } from '../../registry/index.js';
 import { defaultMvrName } from './mvr.js';
 
 const DEFAULT_OUTPUT = 'src/generated/sui';
@@ -95,7 +95,7 @@ export const codegen = (opts: CodegenPluginOptions = {}) => {
 				// namespaces alone (no core kind dirty in the same cycle)
 				// won't trigger a re-emit — in practice they always co-dirty
 				// with `packages` because Register/Seed actions follow Publish.
-				dependsOnKind: ['packages', 'accounts', 'services', 'tokens'],
+				dependsOnKind: ['packages', 'accounts', 'services', 'coin/tokens'],
 				// Include a sample of the mvrName mapper so changing it busts
 				// the input hash and triggers a re-emit. Probe value is just
 				// `mvrName('_')` — distinct outputs across mappers without
@@ -232,7 +232,7 @@ export const codegen = (opts: CodegenPluginOptions = {}) => {
 
 /** Test helper. Pure function — same input, same output; no I/O. */
 export function renderTypedManifest(ctx: ActionRunContext): string {
-	const reg = ctx.registry as RegistryImpl;
+	const reg = ctx.registry as InternalRegistry;
 	const manifest = {
 		app: ctx.appName,
 		network: ctx.network,
@@ -272,8 +272,17 @@ function resolvedManifestPath(outputAbs: string): string {
 	return resolve(outputAbs, '..', 'manifest.ts');
 }
 
-function manifestReplacer(_key: string, value: unknown): unknown {
+function manifestReplacer(key: string, value: unknown): unknown {
 	if (typeof value === 'bigint') return value.toString();
+	// Strip `path` from package entries before serializing the typed
+	// manifest. The path is an absolute on-host filesystem path used by
+	// the in-process codegen runtime; baking it into the committed
+	// `manifest.ts` leaks one developer's home dir into every other
+	// developer's diff (and is meaningless after `git clone` to a
+	// different machine anyway). The runtime registry retains `path` —
+	// it's set fresh by `publishMove`'s `provides.registry` on every
+	// cycle. No consumer reads `path` off the typed manifest bundle.
+	if (key === 'path' && typeof value === 'string' && value.startsWith('/')) return undefined;
 	return value;
 }
 
@@ -435,7 +444,7 @@ function newestMoveSourceMtime(packagePath: string): number {
 		if (dir.endsWith(`${packagePath.endsWith('/') ? '' : '/'}build`)) continue;
 		let entries: import('node:fs').Dirent[];
 		try {
-			entries = readdirSyncSafe(dir);
+			entries = readdirSync(dir, { withFileTypes: true });
 		} catch {
 			continue;
 		}
@@ -457,9 +466,4 @@ function newestMoveSourceMtime(packagePath: string): number {
 		}
 	}
 	return newest;
-}
-
-function readdirSyncSafe(dir: string): import('node:fs').Dirent[] {
-	const fs = require('node:fs') as typeof import('node:fs');
-	return fs.readdirSync(dir, { withFileTypes: true });
 }

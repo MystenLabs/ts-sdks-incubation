@@ -84,32 +84,33 @@ export type ActionType =
 	| 'Verify';
 
 /**
- * Object form of `provides`. Carries capability names plus an optional
- * registry-rehydrate hook the reconciler invokes on warm-path skips so
- * plugins don't have to manually re-register from `getStatus`.
+ * Capabilities + registry-rehydrate hook the action provides.
  *
  * The `registry` hook is idempotent — runs once per cycle on cold runs
  * AND on subsequent warm-path skips. Plugins typically share it with
  * `run` to keep the registration logic in one place.
  */
-interface ProvidesObject {
+export interface Provides {
 	capabilities?: string[];
 	registry?: (ctx: ActionRunContext) => Promise<void> | void;
 }
 
-/** Capabilities + registry-rehydrate hook the action provides. */
-export type Provides = ProvidesObject;
-
-/** Normalize `provides` to its capability list. */
-export function getProvidedCapabilities(provides: Provides | undefined): string[] {
-	return provides?.capabilities ?? [];
-}
-
-/** Extract the registry-rehydrate hook from `provides`, if any. */
-export function getProvidesRegistryHook(
+/** Merge a `registry?:` shortcut on action-factory opts into the
+ * `provides?:` field. Used by every action factory so plugin authors can
+ * write the common `provides: { registry: ... }` case as a top-level
+ * `registry: (ctx) => ...` instead. If both are set, `provides.registry`
+ * wins (caller was explicit). The shortcut accepts a Localnet-narrowed
+ * ctx variant via the union — factories specialize TCtx to
+ * `LocalnetActionRunContext` when the action kind is localnet-only. */
+export function mergeRegistryShortcut<TCtx extends ActionRunContext>(
 	provides: Provides | undefined,
-): ((ctx: ActionRunContext) => Promise<void> | void) | undefined {
-	return provides?.registry;
+	registry: ((ctx: TCtx) => Promise<void> | void) | undefined,
+): Provides | undefined {
+	if (registry === undefined) return provides;
+	const wide = registry as (ctx: ActionRunContext) => Promise<void> | void;
+	if (provides === undefined) return { registry: wide };
+	if (provides.registry !== undefined) return provides;
+	return { ...provides, registry: wide };
 }
 
 /**
@@ -200,12 +201,14 @@ interface ActionBase<TInputs = unknown, TResult = unknown> {
 	 * checked-in JSON, generated SDLs) whose change should trigger a
 	 * rerun but isn't detectable from the action's own shape. */
 	watches?: string[];
-	/** Snapshot capture metadata. Set by `containerService()` /
-	 * `service()` / `hostProcess()` factories from their `snapshot` option
-	 * field. Read by the snapshot orchestrator via container labels (the
-	 * factories serialize this into `devstack.snapshot.*` labels at
-	 * `docker run` time). Plugin authors should declare this in the
-	 * factory call, not stamp it on the action manually. */
+	/** Snapshot capture metadata. Set by the `containerService()` factory
+	 * from its `snapshot` option field. Read by the snapshot orchestrator
+	 * via container labels (`containerService` serializes this into
+	 * `devstack.snapshot.*` labels at `docker run` time). Plugin authors
+	 * should declare this in the factory call, not stamp it on the action
+	 * manually. The plain `service()` and `hostProcess()` factories don't
+	 * accept `snapshot:` because they don't run docker containers — there's
+	 * no committable layer for the snapshot orchestrator to capture. */
 	snapshotMeta?: SnapshotMeta;
 	/** Setup-action scope. Set by `runTransaction()` / `publishMove()` /
 	 * any user-declared action in `DevstackConfig.setup`. The action

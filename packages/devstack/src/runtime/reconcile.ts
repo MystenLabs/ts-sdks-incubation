@@ -37,11 +37,11 @@ import type {
 	Network,
 	PortAllocator,
 	Registry,
+	RegistryQuery,
 	SeedAction,
 	ShutdownHook,
 } from '../core/types.js';
-import { getProvidesRegistryHook } from '../core/types.js';
-import type { RegistryImpl } from '../registry/index.js';
+import type { InternalRegistry } from '../registry/index.js';
 import { stableHash } from './hash.js';
 import { topoSortActions } from './topo.js';
 
@@ -59,10 +59,10 @@ interface ActionState {
 
 /** Persistent per-action state — the subset of `ActionState` worth
  * carrying across processes via the manifest. `status` is intentionally
- * not persisted: only `healthy` actions ever land in the state map at
+ * not persisted: only `ok` actions ever land in the state map at
  * end-of-cycle, so reproducing the in-memory shape on hydrate would be
  * lying about the post-restart state. The reconciler treats hydrated
- * entries as "this hash was last seen healthy"; the next cycle's
+ * entries as "this hash was last seen ok"; the next cycle's
  * `getStatus` (if any) re-confirms liveness. */
 interface PersistedActionState {
 	lastInputHash: string;
@@ -86,9 +86,9 @@ interface ReconcileBaseContext {
 	ports?: PortAllocator;
 	/** Forwarded into each action's run context after the reconciler binds
 	 * the action's own name as `label`. The supervisor records the labeled
-	 * hook so the renderer's shutdown panel can show "stopping vite-dev"
-	 * rather than "hook 3/7". Public `ctx.onShutdown(fn)` shape stays
-	 * unchanged — labels are auto-derived. */
+	 * hook so the renderer's shutdown panel can show "stopping
+	 * frontend.dev-server" rather than "hook 3/7". Public
+	 * `ctx.onShutdown(fn)` shape stays unchanged — labels are auto-derived. */
 	onShutdown?: (label: string, fn: ShutdownHook) => void;
 	/** Forwarded into each action's run context. Reconciler binds the
 	 * action name so the per-action `appendLog(line)` slot just takes a
@@ -200,9 +200,9 @@ export class Reconciler {
 		// Precompute, for each Emit, the set of actions that transitively
 		// depend on it via `needs:`. Used by the Emit serialization rule:
 		// an Emit only waits for non-Emits that DON'T depend on it.
-		// Without this, a Service like `vite.dev-server` that needs
+		// Without this, a Service like `frontend.dev-server` that needs
 		// `codegen.generate` deadlocks the scheduler — codegen waits for
-		// vite to settle, vite waits for codegen to finish.
+		// the dev server to settle, the dev server waits for codegen.
 		const dependentsByName = computeDependents(sorted);
 
 		const isReadyToRun = (a: Action): boolean => {
@@ -227,7 +227,7 @@ export class Reconciler {
 			// Emit would let a non-Emit dirty a kind AFTER the Emit consumed
 			// it, silently breaking the dirty-cascade invariant ("Emit re-
 			// fires only on truly-stale kinds"). Non-Emits that DO depend
-			// on this Emit (e.g. vite.dev-server needs codegen.generate)
+			// on this Emit (e.g. frontend.dev-server needs codegen.generate)
 			// run after by virtue of `needs:` and can't race.
 			if (a.type === 'Emit') {
 				const dependents = dependentsByName.get(a.name) ?? new Set();
@@ -274,7 +274,7 @@ export class Reconciler {
 			if (status !== 'failed' && action.type === 'Emit') {
 				const emit = action as EmitAction;
 				if (emit.dependsOnKind !== undefined && emit.dependsOnKind.length > 0) {
-					(base.registry as RegistryImpl).consumeDirty(emit.dependsOnKind);
+					(base.registry as InternalRegistry).consumeDirty(emit.dependsOnKind);
 				}
 			}
 			emitProgress();
@@ -318,12 +318,27 @@ export class Reconciler {
 			return { cycles: 1, statuses, failures, dirtyKinds: new Set() };
 		}
 
-		// Dirty-tracked Emit cascade. After the topo walk, the dirty set
-		// contains only kinds dirtied AFTER an Emit consumed them — i.e.
-		// genuinely-stale Emits. Repeat until quiescent (an Emit could
-		// mutate a kind that triggers another Emit — e.g. codegen → register
-		// a `generated` kind). Bounded to prevent infinite loops on bad plugins.
-		let dirty = (base.registry as RegistryImpl).flushDirty();
+		const dirtyKinds = await this.runEmitCascade(sorted, base, statuses, failures, isBlocked);
+		return { cycles: 1, statuses, failures, dirtyKinds };
+	}
+
+	/** Dirty-tracked Emit cascade. After the topo walk, the dirty set
+	 * contains only kinds dirtied AFTER an Emit consumed them — i.e.
+	 * genuinely-stale Emits. Repeat until quiescent: an Emit could mutate
+	 * a kind that triggers another Emit (codegen → register a generated
+	 * kind). Bounded by `maxCascade` to keep a buggy plugin from looping
+	 * forever. Returns the residual dirty set after the cascade settles. */
+	private async runEmitCascade(
+		sorted: Action[],
+		base: ReconcileBaseContext,
+		statuses: Map<string, ActionStatus>,
+		failures: Map<string, Error>,
+		isBlocked: (name: string) => boolean,
+	): Promise<Set<string>> {
+		const emitProgress = (): void => {
+			base.progress?.({ statuses: new Map(statuses), failures });
+		};
+		let dirty = (base.registry as InternalRegistry).flushDirty();
 
 		// Interim snapshot: before the cascade runs, mark any Emit that's
 		// about to re-fire as `'dirty'` for the renderer. Transient — the
@@ -370,15 +385,14 @@ export class Reconciler {
 					// re-fires every round until `maxCascade` swallows it — only
 					// invisible because the loop bound caps the runaway.
 					if (emit.dependsOnKind !== undefined && emit.dependsOnKind.length > 0) {
-						(base.registry as RegistryImpl).consumeDirty(emit.dependsOnKind);
+						(base.registry as InternalRegistry).consumeDirty(emit.dependsOnKind);
 					}
 				}
 			}
-			dirty = (base.registry as RegistryImpl).flushDirty();
+			dirty = (base.registry as InternalRegistry).flushDirty();
 			if (!triggered) break;
 		}
-
-		return { cycles: 1, statuses, failures, dirtyKinds: dirty };
+		return dirty;
 	}
 
 	private async evaluateAndRun(
@@ -394,17 +408,38 @@ export class Reconciler {
 			}
 		}
 
-		// Fold upstream identities into the input hash so a needs-edge
-		// becomes a real cascade signal: when an upstream's `identity`
-		// changes (chain regenesis, package republish, deploy file
-		// rewrite), every downstream's hash mismatches and re-runs
-		// without any per-action chain probe. Sorted-by-name so the hash
-		// is stable across `needs:` re-orderings. Computed before the
-		// ctx so it can be threaded through to `run` (containerService
-		// stamps it on the container as a label so a future cycle can
-		// tell whether the existing container's writable layer was
-		// produced under the same upstream context — same hash → resume,
-		// different hash → recreate so stale state goes with it).
+		const inputHash = this.computeInputHash(action);
+		const ctx = this.buildActionCtx(action, base, inputHash);
+		const prior = this.state.get(action.name);
+		const hashMatches = prior !== undefined && prior.lastInputHash === inputHash;
+
+		// Verify actions: read-only invariant check. `getStatus.ok=false`
+		// is a hard failure for the cycle; ok=true is healthy. No `run`.
+		if (action.type === 'Verify') {
+			return this.evaluateVerify(action, ctx, base, prior, inputHash);
+		}
+
+		// `getStatus` is consulted on the cold cycle (no `prior` —
+		// supervisor restart with no persisted state) and on hash-match
+		// cycles, never on hash-mismatch with a known prior. Otherwise an
+		// action whose inputs drifted but whose container still happens
+		// to be up would silently keep the stale state forever, because
+		// `getStatus` would always return ok.
+		if (!forceRun) {
+			const skipResult = await this.tryWarmPathSkip(action, ctx, base, prior, hashMatches, inputHash);
+			if (skipResult !== undefined) return skipResult;
+		}
+
+		return this.runAction(action, ctx, base, prior, inputHash);
+	}
+
+	/** Fold upstream identities into the input hash so a needs-edge
+	 * becomes a real cascade signal: when an upstream's `identity`
+	 * changes (chain regenesis, package republish, deploy file rewrite),
+	 * every downstream's hash mismatches and re-runs without any
+	 * per-action chain probe. Sorted-by-name so the hash is stable across
+	 * `needs:` re-orderings. */
+	private computeInputHash(action: Action): string {
 		const upstreamIdentities: Record<string, string> = {};
 		if (action.needs !== undefined) {
 			for (const need of action.needs) {
@@ -412,12 +447,22 @@ export class Reconciler {
 				if (id !== undefined) upstreamIdentities[need] = id;
 			}
 		}
-		const inputHash = stableHash({
+		return stableHash({
 			inputs: action.inputs ?? null,
 			upstream:
 				Object.keys(upstreamIdentities).length === 0 ? null : upstreamIdentities,
 		});
+	}
 
+	/** Build the per-action `ActionRunContext` that gets passed to
+	 * `run` / `getStatus` / `identity`. Localnet adds `stack` + `ports`;
+	 * live nets carry only the common fields. The wrapping registry
+	 * Proxy stamps `providedBy: actionName` onto every register call. */
+	private buildActionCtx(
+		action: Action,
+		base: ReconcileBaseContext,
+		inputHash: string,
+	): ActionRunContext {
 		const common = {
 			appName: base.appName,
 			appDir: base.appDir,
@@ -429,95 +474,114 @@ export class Reconciler {
 			appendLog: base.appendLog ? (line: string) => base.appendLog?.(action.name, line) : undefined,
 			inputHash,
 		};
-		const ctx: ActionRunContext =
-			base.network === 'localnet'
-				? {
-						...common,
-						network: 'localnet',
-						stack: base.stack,
-						// Ports allocator is required on localnet; supervisor +
-						// runOneShot both inject it. Throw a typed error if a
-						// caller forgot to pass one rather than NaN'ing through.
-						ports: requirePorts(base.ports),
-					}
-				: { ...common, network: base.network };
-		const prior = this.state.get(action.name);
-		const hashMatches = prior !== undefined && prior.lastInputHash === inputHash;
+		if (base.network === 'localnet') {
+			return {
+				...common,
+				network: 'localnet',
+				stack: base.stack,
+				// Ports allocator is required on localnet; supervisor +
+				// runOneShot both inject it. Throw a typed error if a
+				// caller forgot to pass one rather than NaN'ing through.
+				ports: requirePorts(base.ports),
+			};
+		}
+		return { ...common, network: base.network };
+	}
 
-		// Verify actions: read-only invariant check. `getStatus.ok=false` is a
-		// hard failure for the cycle; ok=true is healthy. No `run` ever runs.
-		if (action.type === 'Verify') {
-			if (action.getStatus === undefined) {
-				throw new Error(
-					`Verify action '${action.name}' has no getStatus — that's the only thing it does`,
-				);
+	private async evaluateVerify(
+		action: Action,
+		ctx: ActionRunContext,
+		base: ReconcileBaseContext,
+		prior: ActionState | undefined,
+		inputHash: string,
+	): Promise<ActionStatus> {
+		if (action.getStatus === undefined) {
+			throw new Error(
+				`Verify action '${action.name}' has no getStatus — that's the only thing it does`,
+			);
+		}
+		const status = await action.getStatus(ctx);
+		if (status.ok) {
+			await applyProvidesRegistry(action, ctx);
+			const identity = await captureIdentity(action, ctx, base, prior?.identity, inputHash);
+			this.state.set(action.name, {
+				lastInputHash: inputHash,
+				status: 'ok',
+				lastRunAt: Date.now(),
+				identity,
+			});
+			return 'ok';
+		}
+		this.state.set(action.name, { lastInputHash: inputHash, status: 'failed' });
+		throw new Error(`Verify '${action.name}' failed: ${status.detail ?? 'no detail provided'}`);
+	}
+
+	/** Try to short-circuit on cold-cycle `getStatus.ok=true` or warm
+	 * hash-match. Returns `'ok'` when the skip applies, `undefined` when
+	 * the caller should fall through to running the action. The
+	 * `getStatus` contract is "read-only probe returning {ok, detail}";
+	 * a throw is ambiguous (transient blip vs. real misconfiguration), so
+	 * we treat it as `{ok: false}` and let `run` recover rather than
+	 * permanently failing. */
+	private async tryWarmPathSkip(
+		action: Action,
+		ctx: ActionRunContext,
+		base: ReconcileBaseContext,
+		prior: ActionState | undefined,
+		hashMatches: boolean,
+		inputHash: string,
+	): Promise<ActionStatus | undefined> {
+		if (action.getStatus !== undefined && (prior === undefined || hashMatches)) {
+			let status: { ok: boolean; detail?: string };
+			try {
+				status = await action.getStatus(ctx);
+			} catch (err) {
+				if (base.appendLog !== undefined) {
+					base.appendLog(
+						action.name,
+						`getStatus threw — treating as not-ready: ${err instanceof Error ? err.message : String(err)}`,
+					);
+				}
+				status = { ok: false, detail: 'getStatus threw' };
 			}
-			const status = await action.getStatus(ctx);
 			if (status.ok) {
 				await applyProvidesRegistry(action, ctx);
 				const identity = await captureIdentity(action, ctx, base, prior?.identity, inputHash);
 				this.state.set(action.name, {
 					lastInputHash: inputHash,
 					status: 'ok',
-					lastRunAt: Date.now(),
+					lastRunAt: prior?.lastRunAt,
 					identity,
 				});
 				return 'ok';
 			}
-			this.state.set(action.name, { lastInputHash: inputHash, status: 'failed' });
-			throw new Error(`Verify '${action.name}' failed: ${status.detail ?? 'no detail provided'}`);
+			return undefined;
 		}
-
-		// `getStatus` is consulted on the cold cycle (no `prior` — supervisor
-		// restart with no persisted state) and on hash-match cycles, never on
-		// hash-mismatch with a known prior. Otherwise an action whose inputs
-		// drifted but whose container still happens to be up would silently
-		// keep the stale state forever, because `getStatus` would always
-		// return ok.
-		//
-		// The contract is "read-only probe returning {ok, detail}". A throw
-		// from the probe is ambiguous — could be a transient network blip
-		// or genuine misconfiguration. Treat it as `{ok: false}` so `run`
-		// gets a chance to recover, rather than permanently failing the
-		// action and blocking every dependent.
-		if (!forceRun) {
-			if (action.getStatus !== undefined && (prior === undefined || hashMatches)) {
-				let status: { ok: boolean; detail?: string };
-				try {
-					status = await action.getStatus(ctx);
-				} catch (err) {
-					if (base.appendLog !== undefined) {
-						base.appendLog(
-							action.name,
-							`getStatus threw — treating as not-ready: ${err instanceof Error ? err.message : String(err)}`,
-						);
-					}
-					status = { ok: false, detail: 'getStatus threw' };
-				}
-				if (status.ok) {
-					await applyProvidesRegistry(action, ctx);
-					const identity = await captureIdentity(action, ctx, base, prior?.identity, inputHash);
-					this.state.set(action.name, {
-						lastInputHash: inputHash,
-						status: 'ok',
-						lastRunAt: prior?.lastRunAt,
-						identity,
-					});
-					return 'ok';
-				}
-			} else if (hashMatches && action.getStatus === undefined) {
-				await applyProvidesRegistry(action, ctx);
-				// Re-capture identity on the warm-path-skip branch too:
-				// upstream identities are stable here (their hash already
-				// gates this skip), but the action's OWN identity may
-				// derive from runtime state (e.g. chainId via RPC) that we
-				// want refreshed in the manifest.
-				const identity = await captureIdentity(action, ctx, base, prior?.identity, inputHash);
-				this.state.set(action.name, { ...prior, status: 'ok', identity });
-				return 'ok';
-			}
+		if (hashMatches && action.getStatus === undefined && prior !== undefined) {
+			await applyProvidesRegistry(action, ctx);
+			// Re-capture identity on the warm-path-skip branch too:
+			// upstream identities are stable here (their hash already
+			// gates this skip), but the action's OWN identity may derive
+			// from runtime state (e.g. chainId via RPC) that we want
+			// refreshed in the manifest.
+			const identity = await captureIdentity(action, ctx, base, prior.identity, inputHash);
+			this.state.set(action.name, { ...prior, status: 'ok', identity });
+			return 'ok';
 		}
+		return undefined;
+	}
 
+	/** Cold-cycle run path: invokes `action.run`, then re-applies
+	 * `provides.registry` (so plugins factor their registration into one
+	 * function shared by both `run` and the warm-path skip), captures
+	 * identity for cascade signals, and updates persistent state. */
+	private async runAction(
+		action: Action,
+		ctx: ActionRunContext,
+		base: ReconcileBaseContext,
+		prior: ActionState | undefined,
+		inputHash: string,
+	): Promise<ActionStatus> {
 		if (action.run === undefined) {
 			await applyProvidesRegistry(action, ctx);
 			const identity = await captureIdentity(action, ctx, base, prior?.identity, inputHash);
@@ -528,12 +592,8 @@ export class Reconciler {
 			});
 			return 'ok';
 		}
-
 		try {
 			await action.run(ctx);
-			// Apply provides.registry after run too — lets plugins factor
-			// their registration into a single function used by both run
-			// and warm-path skip, instead of duplicating it.
 			await applyProvidesRegistry(action, ctx);
 			const identity = await captureIdentity(action, ctx, base, prior?.identity, inputHash);
 			this.state.set(action.name, {
@@ -626,21 +686,21 @@ function emitIsDirty(emit: EmitAction, dirty: Set<string>): boolean {
  * complexity for a marginal saving.
  */
 /** Per-action `Registry` proxy. Stamps `providedBy: actionName` onto
- * every `services.register` / `packages.register` / `accounts.register`
- * call so the supervisor can group registry items by the action that
- * produced them — that's how the status renderer's per-row outputs
- * (URLs, packageIds, addresses) flow out of the existing registry
- * without needing a separate declaration on the action shape.
+ * every `register()` call — for the three core kinds (services, packages,
+ * accounts) AND for plugin-namespaced kinds reached via `registry.ns(...)`
+ * or the `defineRegistryKind` accessor. Without the namespace coverage,
+ * the renderer's "group by providedBy" was second-class for any item
+ * registered through `arena.sharedObjects`, `seal.keyServer`, etc.
  *
  * Implemented as a Proxy (not a plain object spread) because plugins
- * cast `ctx.registry as RegistryImpl` to access non-public methods
+ * cast `ctx.registry as InternalRegistry` to access non-public methods
  * (`snapshot()` from codegen, `flushDirty()` / `consumeDirty()` from
  * the reconciler itself). A spread would lose the prototype methods
- * and break those casts at runtime. The Proxy forwards every property
- * except the three built-in registry kinds, each replaced with a
- * register-stamping wrapper. */
+ * and break those casts at runtime. */
 function wrapRegistryForAction(registry: Registry, actionName: string): Registry {
-	const stamp = <T extends { providedBy?: string }>(query: { register: (item: T) => void }) =>
+	const stamp = <T extends { name: string; providedBy?: string }>(
+		query: RegistryQuery<T>,
+	): RegistryQuery<T> =>
 		new Proxy(query, {
 			get(t, prop, receiver) {
 				if (prop === 'register') {
@@ -650,15 +710,38 @@ function wrapRegistryForAction(registry: Registry, actionName: string): Registry
 				const value = Reflect.get(t, prop, receiver);
 				return typeof value === 'function' ? value.bind(t) : value;
 			},
-		});
-	const wrappedServices = stamp(registry.services as never);
-	const wrappedPackages = stamp(registry.packages as never);
-	const wrappedAccounts = stamp(registry.accounts as never);
+		}) as RegistryQuery<T>;
+	const wrappedServices = stamp(registry.services);
+	const wrappedPackages = stamp(registry.packages);
+	const wrappedAccounts = stamp(registry.accounts);
+
+	/** Wrap a namespaced bag so each kind's `register()` stamps
+	 * `providedBy`. The bag itself is a Proxy that auto-creates queries
+	 * on string-property access; we intercept that get and stamp the
+	 * returned query before handing it back. */
+	const wrapNs = <T>(bag: T): T =>
+		new Proxy(bag as object, {
+			get(target, kindProp, receiver) {
+				const q = Reflect.get(target, kindProp, receiver) as
+					| RegistryQuery<{ name: string; providedBy?: string }>
+					| undefined;
+				if (q === undefined || typeof kindProp !== 'string') return q;
+				return stamp(q);
+			},
+		}) as T;
+
 	return new Proxy(registry, {
 		get(target, prop, receiver) {
 			if (prop === 'services') return wrappedServices;
 			if (prop === 'packages') return wrappedPackages;
 			if (prop === 'accounts') return wrappedAccounts;
+			if (prop === 'ns') {
+				// Bind so `target.ns(name)` resolves correctly inside
+				// `RegistryImpl`'s closure-captured `this`, then wrap the
+				// returned bag so namespaced-kind register() stamps too.
+				const ns = (target.ns as Registry['ns']).bind(target);
+				return <T>(name: string): T => wrapNs(ns<T>(name));
+			}
 			const value = Reflect.get(target, prop, receiver);
 			return typeof value === 'function' ? value.bind(target) : value;
 		},
@@ -678,7 +761,7 @@ function requirePorts(ports: PortAllocator | undefined): PortAllocator {
 }
 
 async function applyProvidesRegistry(action: Action, ctx: ActionRunContext): Promise<void> {
-	const hook = getProvidesRegistryHook(action.provides);
+	const hook = action.provides?.registry;
 	if (hook === undefined) return;
 	await hook(ctx);
 }

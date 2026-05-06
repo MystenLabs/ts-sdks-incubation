@@ -131,10 +131,13 @@ export async function importMovePackage(
 			if (!existsSync(opts.localPath)) {
 				throw new Error(`importMovePackage: localPath ${opts.localPath} does not exist`);
 			}
-			// Copy the on-host tree into the tmp dir. Use `cp -R` for
-			// portability; node's fs.cp is recent and the imports plugin
-			// already shells docker frequently.
-			const cpHost = spawnSync('cp', ['-R', `${opts.localPath}/.`, checkoutDir]);
+			// Copy the on-host tree into the tmp dir. `-RP` (R = recursive,
+			// P = preserve symlinks without following) so a stray symlink
+			// inside the source tree doesn't ferry contents from outside
+			// `localPath` into the build container — `cp -R` follows by
+			// default, which would let `sources/keystore -> /etc/ssh` etc.
+			// silently be copied in.
+			const cpHost = spawnSync('cp', ['-RP', `${opts.localPath}/.`, checkoutDir]);
 			if (cpHost.status !== 0) {
 				throw new Error(
 					`importMovePackage: failed to copy localPath ${opts.localPath}: ${cpHost.stderr.toString()}`,
@@ -178,12 +181,21 @@ export async function importMovePackage(
 		// `[environments]` block reject `--build-env localnet` with "Package X
 		// does not declare a `localnet` environment". The stub append is a
 		// no-op at publish time; the resolver just needs the name to exist.
-		const envInjectScript = [
-			`if ! grep -q '^\\[environments\\]' ${containerPkgPath}/Move.toml; then`,
-			`printf '\\n[environments]\\n%s = "0000"\\n' '${env}' >> ${containerPkgPath}/Move.toml;`,
-			'fi',
-		].join(' ');
-		dockerExec(containerName, ['sh', '-c', envInjectScript]);
+		// Pass `containerPkgPath` and `env` as positional args via `sh -c
+		// '<script>' sh "$1" "$2"` — keeps caller-supplied subdir/env values
+		// off the shell command line even with the upstream config validator.
+		const envInjectScript =
+			'if ! grep -q "^\\[environments\\]" "$1/Move.toml"; then ' +
+			'printf "\\n[environments]\\n%s = \\"0000\\"\\n" "$2" >> "$1/Move.toml"; ' +
+			'fi';
+		dockerExec(containerName, [
+			'sh',
+			'-c',
+			envInjectScript,
+			'sh',
+			containerPkgPath,
+			env,
+		]);
 
 		// Persistent-genesis bootstrap (`sui genesis -f --with-faucet` in the
 		// entrypoint) creates an env named `localnet` pointing at
@@ -224,19 +236,32 @@ export async function importMovePackage(
 		// Stderr is captured (not piped to /dev/null in-container) so failures
 		// surface a real diagnostic. RUST_LOG=error keeps the sui CLI's
 		// tracing-INFO output off stdout so the JSON parser at the bottom
-		// gets a clean buffer.
-		const publishCmd = [
-			`cd ${containerPkgPath} &&`,
-			'sui client test-publish',
-			`--build-env ${env}`,
-			`--pubfile-path ${pubFilePath}`,
-			'--with-unpublished-dependencies',
-			'--gas-budget 5000000000',
-			'--json',
-		].join(' ');
+		// gets a clean buffer. Caller-supplied values (containerPkgPath
+		// derived from `subdir`, `env`, `pubFilePath`) are passed as
+		// positional args to keep them off the shell command line.
+		const publishScript =
+			'cd "$1" && ' +
+			'sui client test-publish ' +
+			'--build-env "$2" ' +
+			'--pubfile-path "$3" ' +
+			'--with-unpublished-dependencies ' +
+			'--gas-budget 5000000000 ' +
+			'--json';
 		const publish = spawnSync(
 			'docker',
-			['exec', '-e', 'RUST_LOG=error', containerName, 'sh', '-c', publishCmd],
+			[
+				'exec',
+				'-e',
+				'RUST_LOG=error',
+				containerName,
+				'sh',
+				'-c',
+				publishScript,
+				'sh',
+				containerPkgPath,
+				env,
+				pubFilePath,
+			],
 			{ encoding: 'utf8', maxBuffer: 50 * 1024 * 1024 },
 		);
 		if (publish.status !== 0) {

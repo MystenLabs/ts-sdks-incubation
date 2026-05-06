@@ -18,9 +18,7 @@
 //     });
 //
 // On testnet/mainnet, the same call site uses the SDK's built-in
-// configuration without the override. The "create" wrapper below is
-// kept for back-compat; new code should use the options helper +
-// vanilla constructor.
+// configuration without the override.
 
 
 interface DevstackWalrusNode {

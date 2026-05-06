@@ -26,7 +26,7 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { hostProcess } from '../../actions/host-process.js';
 import type { ActionRunContext } from '../../core/types.js';
-import { requireLocalnetCtx } from '../../core/types.js';
+import { probeUrl, waitForReachable } from '../../helpers/probe.js';
 import { definePlugin } from '../../plugin.js';
 
 interface FrontendPluginOptions {
@@ -101,7 +101,7 @@ export const frontend = (opts: FrontendPluginOptions = {}) => {
 				provides: { registry: populateRegistry },
 				getStatus: async (ctx) => {
 					const { baseUrl } = await resolveEndpoint(ctx);
-					const reachable = await probeUrl(baseUrl);
+					const reachable = await probeUrl(baseUrl, { accept: (r) => r.status > 0 });
 					if (!reachable) return { ok: false, detail: `${baseUrl} not reachable` };
 					return { ok: true, detail: baseUrl };
 				},
@@ -110,7 +110,6 @@ export const frontend = (opts: FrontendPluginOptions = {}) => {
 					// in the spawn args. The Service action's localnet-only
 					// constraint applies to the supervisor that runs us, not to
 					// the dev server itself.
-					requireLocalnetCtx(ctx);
 					const { baseUrl, command } = await resolveEndpoint(ctx);
 					const log = ctx.appendLog ?? ((line: string) => process.stdout.write(`${line}\n`));
 					const cwd = opts.cwd ?? ctx.appDir;
@@ -120,6 +119,12 @@ export const frontend = (opts: FrontendPluginOptions = {}) => {
 						// duplicate child; let the existing one race the probe.
 						return;
 					}
+					// Reset the prior child's recorded exit code before
+					// spawning a new one. Without this, a transient crash on
+					// an earlier cycle would poison every subsequent cycle:
+					// the throw at the bottom of `run` reads closure state
+					// that no longer reflects the live child.
+					lastExitCode = null;
 					log(`spawn ${command.join(' ')} (cwd=${cwd})`);
 					const head = command[0] as string;
 					const tail = command.slice(1);
@@ -149,7 +154,7 @@ export const frontend = (opts: FrontendPluginOptions = {}) => {
 							});
 						});
 					});
-					await waitForReachable(baseUrl, 30_000, log);
+					await waitForReachable(baseUrl, 30_000, { accept: (r) => r.status > 0, log });
 					// Surface lastExitCode for testability — the helper above
 					// captures unexpected early exits the renderer should see.
 					if (lastExitCode !== null && lastExitCode !== 0) {
@@ -161,37 +166,6 @@ export const frontend = (opts: FrontendPluginOptions = {}) => {
 	});
 };
 
-async function probeUrl(url: string): Promise<boolean> {
-	try {
-		const res = await fetch(url, { method: 'GET', redirect: 'manual' });
-		// Vite's dev server returns 200 on `/` for the index. Any 2xx/3xx is
-		// "the server is up"; 4xx/5xx still counts because the process is
-		// listening (the failure is the request, not the server liveness).
-		return res.status > 0;
-	} catch {
-		return false;
-	}
-}
-
-async function waitForReachable(
-	url: string,
-	timeoutMs: number,
-	log: (line: string) => void,
-): Promise<void> {
-	const start = Date.now();
-	while (Date.now() - start < timeoutMs) {
-		if (await probeUrl(url)) {
-			log(`ready at ${url}`);
-			return;
-		}
-		await sleep(250);
-	}
-	throw new Error(`dev-server: ${url} did not become reachable within ${timeoutMs}ms`);
-}
-
-function sleep(ms: number): Promise<void> {
-	return new Promise((r) => setTimeout(r, ms));
-}
 
 function streamLines(child: ChildProcess, log: (line: string) => void): void {
 	const wire = (stream: NodeJS.ReadableStream | null): void => {

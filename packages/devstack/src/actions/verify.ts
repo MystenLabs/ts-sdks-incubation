@@ -6,28 +6,35 @@
 // letting downstream actions encounter a silent bad state.
 
 import type { ActionRunContext, Provides, VerifyAction } from '../core/types.js';
+import { mergeRegistryShortcut } from '../core/types.js';
 
 interface VerifyOptions<TInputs extends Record<string, unknown>> {
 	name: string;
 	needs?: string[];
 	provides?: Provides;
-	/** Optional inputs payload. Verify actions don't use the input-hash
-	 * skip predicate (they re-run every cycle by design), so inputs are
-	 * mostly informational — useful for snapshot identification when an
-	 * invariant probe needs to re-run on input drift. */
-	inputs?: TInputs;
-	check: (ctx: ActionRunContext) => Promise<{ ok: boolean; detail?: string }>;
+	/** Sugar for `provides: { registry }`. */
+	registry?: (ctx: ActionRunContext) => Promise<void> | void;
+	/** Inputs payload. Verify actions don't use the input-hash skip
+	 * predicate (they re-run every cycle by design), so the value is
+	 * informational — surfaces in the manifest snapshot of action state
+	 * for diagnostic purposes. Pass `{}` when the probe has no
+	 * meaningful inputs. */
+	inputs: TInputs;
+	/** Read-only invariant check. Returns `{ok, detail?}`. Named to
+	 * match `getStatus` on every other factory so authors don't have to
+	 * remember a per-factory naming exception. */
+	getStatus: (ctx: ActionRunContext) => Promise<{ ok: boolean; detail?: string }>;
 }
 
-export function verify<TInputs extends Record<string, unknown> = Record<string, unknown>>(
+export function verify<TInputs extends Record<string, unknown>>(
 	opts: VerifyOptions<TInputs>,
 ): VerifyAction<TInputs> {
 	return {
 		name: opts.name,
 		type: 'Verify',
 		needs: opts.needs,
-		provides: opts.provides,
-		...(opts.inputs !== undefined ? { inputs: opts.inputs } : {}),
-		getStatus: opts.check,
+		provides: mergeRegistryShortcut(opts.provides, opts.registry),
+		inputs: opts.inputs,
+		getStatus: opts.getStatus,
 	};
 }

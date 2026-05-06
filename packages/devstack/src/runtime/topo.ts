@@ -2,7 +2,6 @@
 // edges. Throws on cycles or unresolved deps. Ties broken by input order.
 
 import type { Action } from '../core/types.js';
-import { getProvidedCapabilities } from '../core/types.js';
 
 interface TopoSortOptions {
 	/**
@@ -13,7 +12,7 @@ interface TopoSortOptions {
 	 *
 	 * Set `true` for the one-shot path (`runApply`/`runDeploy`/`runCodegen`),
 	 * where an `ActionFilter` may have stripped Service/Build actions
-	 * before topo runs. Their dependents (e.g. `sui.accounts` needing
+	 * before topo runs. Their dependents (e.g. `accounts.fund` needing
 	 * `sui.localnet`, `imports.deepbook` needing `imports.deepbook-source`)
 	 * are still in the input — we just drop the now-orphaned edge so the
 	 * remaining actions can run in their original relative order.
@@ -60,7 +59,7 @@ export function topoSortActions(actions: Action[], options: TopoSortOptions = {}
 	// same capability is unspecified (callers shouldn't rely on it).
 	const providers = new Map<string, string[]>();
 	for (const a of actions) {
-		for (const cap of getProvidedCapabilities(a.provides)) {
+		for (const cap of a.provides?.capabilities ?? []) {
 			const arr = providers.get(cap) ?? [];
 			arr.push(a.name);
 			providers.set(cap, arr);
@@ -95,12 +94,20 @@ export function topoSortActions(actions: Action[], options: TopoSortOptions = {}
 
 	// Lenient mode: drop edges that point at actions absent from the
 	// input (likely filtered out by an ActionFilter before topo runs).
+	// Log to stderr at debug verbosity so a misconfigured filter doesn't
+	// silently swallow ordering edges. DEVSTACK_DEBUG_TOPO=1 enables.
 	if (options.lenient === true) {
+		const debug = process.env.DEVSTACK_DEBUG_TOPO === '1';
 		for (const [name, deps] of effectiveDeps) {
-			effectiveDeps.set(
-				name,
-				deps.filter((d) => byName.has(d)),
-			);
+			const kept = deps.filter((d) => byName.has(d));
+			if (debug && kept.length !== deps.length) {
+				const dropped = deps.filter((d) => !byName.has(d));
+				process.stderr.write(
+					`[devstack/topo] lenient: '${name}' dropping edges to filtered actions: ` +
+						`${dropped.join(', ')}\n`,
+				);
+			}
+			effectiveDeps.set(name, kept);
 		}
 	}
 

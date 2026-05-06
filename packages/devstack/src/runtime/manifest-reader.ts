@@ -16,7 +16,7 @@ import type {
 	RegistryQuery,
 	Service,
 } from '../core/types.js';
-import type { RegistryImpl } from '../registry/index.js';
+import type { InternalRegistry } from '../registry/index.js';
 import type { Manifest, SerializedActionState } from './manifest-types.js';
 import { manifestPath } from './manifest-writer.js';
 
@@ -91,7 +91,7 @@ export function hydrateRegistry(opts: HydrateOptions): boolean {
 		const bag = value as Record<string, Array<{ name: string }>>;
 		// Reach into the impl: ns<T>() returns a Proxy that auto-creates
 		// query objects for any kind name accessed on it.
-		const ns = (reg as RegistryImpl).ns<Record<string, RegistryQuery<{ name: string }>>>(name);
+		const ns = (reg as InternalRegistry).ns<Record<string, RegistryQuery<{ name: string }>>>(name);
 		for (const [kindName, items] of Object.entries(bag)) {
 			const query = ns[kindName];
 			if (query === undefined) continue;
@@ -99,7 +99,7 @@ export function hydrateRegistry(opts: HydrateOptions): boolean {
 		}
 	}
 
-	(reg as RegistryImpl).flushDirty();
+	(reg as InternalRegistry).flushDirty();
 	return true;
 }
 

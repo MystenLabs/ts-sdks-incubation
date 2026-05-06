@@ -14,7 +14,6 @@
 import type { Transaction } from '@mysten/sui/transactions';
 
 import type { ActionRunContext, Provides, SeedAction, SetupActionScope } from '../core/types.js';
-import { requireLocalnetCtx } from '../core/types.js';
 import { openSuiRpcClient } from '../helpers/sui-client.js';
 import { stableHash } from '../runtime/hash.js';
 import { Transaction as TransactionImpl } from '@mysten/sui/transactions';
@@ -59,7 +58,6 @@ export function runTransaction(opts: RunTransactionOptions): SeedAction<Record<s
 		scope: opts.scope,
 		getStatus: opts.getStatus,
 		run: async (ctx) => {
-			requireLocalnetCtx(ctx);
 			const client = openSuiRpcClient(ctx);
 			const signer = ctx.accounts.get(opts.signer);
 			const tx = new TransactionImpl();
