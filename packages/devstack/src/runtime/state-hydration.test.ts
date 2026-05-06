@@ -122,7 +122,7 @@ describe('Reconciler — priorState hydration', () => {
 
 	it('always reruns Verify regardless of priorState', async () => {
 		const probe = vi.fn(async () => ({ ok: true, detail: 'invariant holds' }));
-		const v = verify({ name: 'app.invariant', check: probe });
+		const v = verify({ name: 'app.invariant', inputs: {}, getStatus: probe });
 		const r = new Reconciler({
 			priorState: { 'app.invariant': { lastInputHash: 'irrelevant' } },
 		});

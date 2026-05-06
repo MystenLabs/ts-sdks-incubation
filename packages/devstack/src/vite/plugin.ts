@@ -1,36 +1,22 @@
-// Vite-side plugins for @mysten-incubation/devstack. Apps consume these via the
-// `@mysten-incubation/devstack/vite` subpath in their `vite.config.ts`. Kept fully
-// self-contained (no transitive devstack imports beyond type-only references)
-// so vite's config loader doesn't need `.js` → `.ts` fallback for cross-file
-// references — same reason the vitest entry is structured the way it is.
+// Vite plugin for @mysten-incubation/devstack. Apps consume this via the
+// `@mysten-incubation/devstack/vite` subpath in their `vite.config.ts`.
 //
-// Stacks: by default both plugins read from the active stack —
-// `<viteRoot>/.devstack/stacks/<active>/manifest.json` and `.../.keys/`. The
-// active stack is whatever `<viteRoot>/.devstack/active` says, falling back
-// to `'main'`. Apps that need to pin a stack pass `manifestPath`/`keysDir`
-// explicitly. The dev-server config watches `.devstack/active` so flipping
-// the pointer (via `devstack stack use`) reloads the virtual modules.
+// Stacks: by default the plugin reads from the active stack —
+// `<viteRoot>/.devstack/stacks/<active>/manifest.json`. The active stack
+// resolves through `runtime/active-stack.ts`'s charset-validated
+// `resolveStack`, which honors a `DEVSTACK_STACK` env override and the
+// `<viteRoot>/.devstack/active` pointer file (default `'main'`). Apps that
+// need to pin a stack pass `manifestPath` explicitly. The dev-server
+// config watches `.devstack/active` so flipping the pointer (via
+// `devstack stack use`) reloads the virtual module.
 
 import { existsSync, readFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 
 import type { Plugin } from 'vite';
 
+import { resolveStack, stackDir } from '../runtime/active-stack.js';
 import type { Manifest } from '../runtime/manifest-types.js';
-
-const DEFAULT_STACK = 'main';
-
-function readActiveStackFromRoot(viteRoot: string): string {
-	const path = join(viteRoot, '.devstack', 'active');
-	if (!existsSync(path)) return DEFAULT_STACK;
-	const raw = readFileSync(path, 'utf8').trim();
-	return raw.length > 0 ? raw : DEFAULT_STACK;
-}
-
-function envStackOverride(): string | undefined {
-	const v = process.env.DEVSTACK_STACK;
-	return v !== undefined && v.length > 0 ? v : undefined;
-}
 
 const VIRTUAL_ID = 'virtual:devstack-manifest';
 const RESOLVED_ID = `\0${VIRTUAL_ID}`;
@@ -39,7 +25,7 @@ const EMPTY_MANIFEST: Manifest = {
 	app: '',
 	network: 'localnet',
 	emittedAt: '',
-	registry: { tokens: [], packages: [], accounts: [], services: [] },
+	registry: { packages: [], accounts: [], services: [] },
 };
 
 export interface DevstackManifestPluginOptions {
@@ -64,13 +50,15 @@ export function devstackManifestPlugin(opts: DevstackManifestPluginOptions = {})
 	const overridePath = opts.manifestPath;
 	let resolvedRoot = '';
 	let activePath = '';
+	let isBuild = false;
+	let currentServer: import('vite').ViteDevServer | undefined;
 
 	const currentManifestPath = (): string => {
 		if (overridePath !== undefined) {
 			return isAbsolute(overridePath) ? overridePath : resolve(resolvedRoot, overridePath);
 		}
-		const stack = envStackOverride() ?? readActiveStackFromRoot(resolvedRoot);
-		return resolve(resolvedRoot, '.devstack', 'stacks', stack, 'manifest.json');
+		const stack = resolveStack({ appDir: resolvedRoot });
+		return join(stackDir(resolvedRoot, stack), 'manifest.json');
 	};
 
 	return {
@@ -78,6 +66,7 @@ export function devstackManifestPlugin(opts: DevstackManifestPluginOptions = {})
 		configResolved(config) {
 			resolvedRoot = config.root;
 			activePath = join(resolvedRoot, '.devstack', 'active');
+			isBuild = config.command === 'build';
 		},
 		resolveId(id) {
 			if (id === VIRTUAL_ID) return RESOLVED_ID;
@@ -85,10 +74,27 @@ export function devstackManifestPlugin(opts: DevstackManifestPluginOptions = {})
 		},
 		load(id) {
 			if (id !== RESOLVED_ID) return null;
+			// Re-prime the watcher on every load so a fresh-clone first
+			// cycle (manifest absent → present) picks up the new file.
+			// chokidar's `add` for a non-existent path is benign; doing
+			// it here ensures the path tracked at load time is always the
+			// one whose subsequent appearance triggers a reload.
+			currentServer?.watcher.add(currentManifestPath());
 			const data = readManifest(currentManifestPath());
+			// Build-mode guard: the wallet-server plugin writes the
+			// listener's bearer token into manifest service endpointLabels
+			// (the dev-wallet adapter parses it back out at pair time).
+			// Devstack is dev-only — we don't bake credentials into a
+			// production bundle. Surface the leak as a build error so
+			// `vite build` fails loudly instead of producing a leaky
+			// artifact. Long-term fix is per-session tokens written to
+			// `<stackDir>` and read via a Vite virtual module at dev time;
+			// until then, refuse the build.
+			if (isBuild) assertNoSecretsForBuild(data);
 			return `export const manifest = ${JSON.stringify(data)};`;
 		},
 		configureServer(server) {
+			currentServer = server;
 			server.watcher.add(currentManifestPath());
 			server.watcher.add(activePath);
 			const reload = (changed: string) => {
@@ -112,6 +118,28 @@ function readManifest(path: string): Manifest {
 		return JSON.parse(readFileSync(path, 'utf8')) as Manifest;
 	} catch {
 		return EMPTY_MANIFEST;
+	}
+}
+
+/** Refuse to bake a manifest into a production bundle when it carries
+ * dev credentials. The wallet-server plugin's `endpointLabel` is the
+ * known leak path today; check both that field and the `url` for any
+ * `?token=` query. */
+function assertNoSecretsForBuild(manifest: Manifest): void {
+	const services = manifest.registry.services ?? [];
+	for (const svc of services) {
+		const fields: Array<string | undefined> = [svc.endpointLabel, svc.url];
+		for (const value of fields) {
+			if (typeof value === 'string' && value.includes('?token=')) {
+				throw new Error(
+					`@mysten-incubation/devstack/vite: refusing to bake a manifest carrying a `
+						+ `bearer token into a production build (service '${svc.name}'). Devstack `
+						+ `is dev-only; the bundle must not leave the laptop. If you are intentionally `
+						+ `building a dev artifact, run \`devstack down\` first or point Vite at an `
+						+ `empty manifest path.`,
+				);
+			}
+		}
 	}
 }
 

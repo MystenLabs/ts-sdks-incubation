@@ -34,13 +34,50 @@ Commands:
 Run 'devstack <command> --help' for command-specific options where supported.
 `;
 
+const DOWN_USAGE = `devstack down [config] [--stack <name>]
+
+Stop the active stack's containers; volumes and host state are preserved.
+Subsequent \`devstack up\` resumes them. Targets the active stack by default;
+pass \`--stack <name>\` to operate on a specific named stack.
+`;
+
+const RESET_USAGE = `devstack reset [config] --yes [--stack <name>] [--images] [--dry-run]
+
+Wipe the active stack: stop and remove every container, drop volumes, and
+delete the per-stack \`.devstack/stacks/<stack>/\` directory.
+
+  --yes        Required — without it, no destructive action runs.
+  --stack <n>  Target a specific stack instead of the active one.
+  --images     Additionally drop every cached devstack-built image (sui,
+               walrus, seal, upstream-source). GLOBAL — affects all apps
+               sharing the docker engine. Pair with \`--dry-run\` first.
+  --dry-run    Print what would be removed without removing anything.
+`;
+
 async function main(): Promise<number> {
 	const verb = process.argv[2];
 	if (verb === undefined || verb === '--help' || verb === '-h' || verb === 'help') {
 		process.stdout.write(USAGE);
 		return verb === undefined ? 1 : 0;
 	}
-	const argv = process.argv.slice(3);
+	// Verb-specific help: route `down --help` / `reset --help` to focused
+	// USAGE strings instead of `stack`'s generic dump (those verbs delegate
+	// to `stack` internally — the user shouldn't see `stack`'s subcommand
+	// list when they asked about `reset`).
+	const wantsHelp = (n: number): boolean => {
+		const arg = process.argv[n];
+		return arg === '--help' || arg === '-h';
+	};
+	if (verb === 'down' && wantsHelp(3)) {
+		process.stdout.write(DOWN_USAGE);
+		return 0;
+	}
+	if (verb === 'reset' && wantsHelp(3)) {
+		process.stdout.write(RESET_USAGE);
+		return 0;
+	}
+	const { expandEqualsForms } = await import('./args.js');
+	const argv = expandEqualsForms(process.argv.slice(3));
 	switch (verb) {
 		case 'up': {
 			const mod = await import('./up.js');

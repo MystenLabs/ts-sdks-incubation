@@ -15,6 +15,7 @@ import {
 	type Provides,
 	type ServiceAction,
 	type SnapshotMeta,
+	mergeRegistryShortcut,
 	requireLocalnetCtx,
 } from '../core/types.js';
 import {
@@ -96,16 +97,15 @@ export function containerService<TInputs extends Record<string, unknown>>(
 ): ServiceAction<TInputs> {
 	const stopOnShutdown = opts.stopOnShutdown ?? true;
 	const userRegistry = opts.registry;
-	const provides: Provides | undefined =
-		opts.provides ??
-		(userRegistry !== undefined
-			? {
-					registry: (ctx) => {
-						requireLocalnetCtx(ctx);
-						return userRegistry(ctx);
-					},
-				}
-			: undefined);
+	const provides = mergeRegistryShortcut(
+		opts.provides,
+		userRegistry === undefined
+			? undefined
+			: (ctx) => {
+					requireLocalnetCtx(ctx);
+					return userRegistry(ctx);
+				},
+	);
 
 	const snapshotLabels: Record<string, string> = {};
 	if (opts.snapshot?.commit !== undefined) {

@@ -9,24 +9,65 @@ Hands-on verification tasks owed but unchecked live in [verification.md](verific
 
 ---
 
-### Walrus release tarballs — `ubuntu-aarch64` is misnamed (contains x86_64)
+### Walrus binary distribution — upstream fixed, awaiting v1.49.0 release
 
-`walrus-devnet-v1.48.0-ubuntu-aarch64.tgz` from the walrus GitHub release contains x86_64 ELF
-binaries (verified with `file`), not aarch64 — same content as `ubuntu-x86_64.tgz`. On Apple
-Silicon hosts the binaries fail to exec under Rosetta with `failed to open elf at
-/lib64/ld-linux-x86-64.so.2`. Blocks the obvious "binary fetch instead of cargo compile" win
-on arm64 hosts; on x86_64 it works fine.
+Two upstream bugs blocked a pure binary-fetch path for the walrus image:
 
-**Workaround**: `packages/devstack/src/plugins/walrus/upstream.Dockerfile` cargo-builds all three
-runtime binaries (`walrus`, `walrus-node`, `walrus-deploy`) from source. Marginal extra time
-vs. building walrus-deploy alone since the workspace deps were already loading. Cold first
-build: ~9–10 min on M-series. Subsequent version bumps: ~1–2 min via BuildKit cache mounts
-(`/usr/local/cargo/{registry,git}` + `/walrus/target`).
+1. `walrus-deploy` (the testbed bootstrap binary) wasn't in the GitHub Release tarballs —
+   only `walrus` + `walrus-node` shipped — so we had to cargo-build all three from source to
+   get it. Cold first build ~9–10 min on M-series; ~1–2 min on version bumps via BuildKit
+   cache mounts.
+2. `walrus-devnet-v1.48.0-ubuntu-aarch64.tgz` actually contained x86_64 ELF (verified with
+   `file`), so even after #1 the binary-fetch path wouldn't have worked on Apple Silicon
+   (would have died under Rosetta with `failed to open elf at /lib64/ld-linux-x86-64.so.2`).
 
-**Fix shape**: file with walrus team to (a) fix the aarch64 release artifact and (b) ship
-`walrus-deploy-<platform>` alongside the other binaries (the testbed bootstrap binary isn't
-in any release today — also blocking a pure binary path). When both are fixed, the upstream
-build collapses to a tarball-fetch like seal (~30 s).
+**Both fixed upstream**:
+
+- [MystenLabs/walrus#3349](https://github.com/MystenLabs/walrus/pull/3349) — adds
+  `walrus-deploy` to `binary-build-list.json`'s `release_binaries` set. Linux paths pull
+  from `gs://mysten-walrus-binaries/{walrus,walrus-arm64}/<sha>/walrus-deploy` (mp3 extracts
+  these from the existing `walrus-service` / `walrus-service-arm64` images); macOS builds
+  cargo on the runner. Merged 2026-05-06, commit `02b34ab`.
+- [MystenLabs/suiup#203](https://github.com/MystenLabs/suiup/pull/203) — registers
+  walrus-deploy in suiup so end-users can `suiup install walrus-deploy`. Independent of the
+  devstack's own fetch path but useful to know about. Merged 2026-05-06, commit `f99c2c0`.
+
+The arm64 GCS prefix was confirmed to be genuine aarch64 ELF (spot-checked with
+`curl -sr 0-512 gs://.../walrus-arm64/<sha>/walrus-deploy | file -`), and the
+release-tarball workflow consumes that prefix — so v1.49.0+ tarballs should be correct on
+all platforms.
+
+**Status**: waiting on the next walrus release tag. Latest is `devnet-v1.48.0` from
+2026-04-30. Devnet cadence over the last 8 releases is **14 days ± 2** (12–15d range), so
+**devnet-v1.49.0 estimated ~2026-05-14**. Testnet typically follows ~1 week behind devnet,
+mainnet ~1 week behind testnet.
+
+**Workaround until v1.49.0 ships**: keep cargo-building all three from source.
+`packages/devstack/src/plugins/walrus/upstream.Dockerfile`.
+
+**Migration when v1.49.0 ships**:
+
+1. In `packages/devstack/src/plugins/walrus/build.ts`, bump:
+   - `WALRUS_VERSION` → `devnet-v1.49.0` (or whichever channel devstack tracks)
+   - `UPSTREAM_REV` (so the upstream image cache busts; otherwise the new build is dead-cached)
+   - Drop `WALRUS_RUST_TOOLCHAIN` (the binary-fetch path doesn't need it)
+2. **Verify the aarch64 tarball is correct before relying on it**:
+   ```sh
+   curl -fsSL https://github.com/MystenLabs/walrus/releases/download/devnet-v1.49.0/walrus-devnet-v1.49.0-ubuntu-aarch64.tgz \
+     | tar -xzO walrus-deploy | file -
+   ```
+   Expect `ELF 64-bit LSB shared object, ARM aarch64`. If it reports x86_64, the
+   release-pipeline aarch64 packaging bug is still live and needs a separate ping —
+   `gs://mysten-walrus-binaries/walrus-arm64/<sha>/` is correct, so the bug would be
+   between GCS and the tarball.
+3. Rewrite `upstream.Dockerfile` to fetch the tarball and extract all three binaries
+   (mirrors the `seal` tarball-fetch shape). Drops the rust-toolchain stage, the apt-install
+   of cmake/clang/libssl-dev/libpq-dev, the BuildKit cache mounts, and the `GIT_REVISION`
+   plumbing for `walrus_utils::bin_version!` (binaries are version-stamped at upstream CI
+   time). Cold first build drops to ~30 s.
+4. Land the version bump + Dockerfile rewrite as one PR — the rewrite assumes the binary is
+   in the tarball, so it's coupled to the version that ships it.
+5. Remove this entry.
 
 ### Walrus aggregator daemon — verify the SDK doesn't need it
 
@@ -60,7 +101,9 @@ Reproduced on TS 5.9.3 with both `module: "NodeNext"` and `module: "Bundler"`.
 whenever the caller dereferences a parametric-`Include` method (`getObject`, `listOwnedObjects`,
 etc.) and depends on the response shape flowing through. Single-call patterns like
 `client.core.getBalance(...)` work unannotated because TS resolves the call site directly without
-needing `.core`'s nominal shape.
+needing `.core`'s nominal shape. The augmentation site is now
+`@mysten-incubation/devstack/app-setup` (the subpath export in this repo); when it lived in the
+external `@mysten-incubation/devstack-app-setup` package the same workaround applied.
 
 **Fix shape**: probably an upstream TS resolver edge case around `ReturnType<TDAppKit['getClient']>`
 when `TDAppKit` is a re-imported type alias. Worth a minimal repro + bug report to TypeScript or
@@ -106,15 +149,6 @@ that `restore` mis-handles silently.
 
 **Fix shape**: stage the whole bundle to a sibling tmp dir, then `renameSync` once. Cost is one
 extra dir copy per snapshot; benefit is crash-safety.
-
-### Cross-host snapshot port collisions on `--push`
-
-`devstack snapshot save --push <registry>` tags the seed images with names that include the
-host-allocated ports (e.g. `walrus-node-0:port-31010`). Restoring the bundle on a host that
-allocated a different port pool means the tags don't match what `restore` expects.
-
-**Fix shape**: drop port-derived tag suffixes; key purely on the snapshot content hash. Ports are
-runtime concerns and shouldn't leak into image identity.
 
 ### Live-net seed snapshot (forking real-network state)
 

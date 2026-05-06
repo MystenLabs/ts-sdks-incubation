@@ -2,28 +2,29 @@
 // connect_four package id and the openLobby shared object the UI reaches
 // for, plus a flat account name → address map.
 
+import {
+	defineManifestKind,
+	selectAccountMap,
+	selectPackage,
+	selectService,
+} from '@mysten-incubation/devstack';
 import { manifest } from '../generated/manifest.js';
 
-interface ArenaNamespace {
-	sharedObjects?: ReadonlyArray<{ name: string; objectId: string; objectType?: string }>;
+interface ArenaSharedObject {
+	name: string;
+	objectId: string;
+	objectType?: string;
 }
+const arenaSharedObjects = defineManifestKind<ArenaSharedObject>('arena.sharedObjects');
 
-const services = manifest.registry.services;
-const accounts = manifest.registry.accounts;
-const packages = manifest.registry.packages;
-const sharedObjects =
-	(manifest.registry.arena as ArenaNamespace | undefined)?.sharedObjects ?? [];
-
-const accountMap: Record<string, string> = Object.fromEntries(
-	accounts.map((a) => [a.name, a.address]),
-);
+const accountMap = selectAccountMap(manifest);
 
 export const deployment = {
-	rpcUrl: services.find((s) => s.name === 'sui-rpc')?.url ?? '',
-	faucetUrl: services.find((s) => s.name === 'sui-faucet')?.url,
+	rpcUrl: selectService(manifest, 'sui-rpc')?.url ?? '',
+	faucetUrl: selectService(manifest, 'sui-faucet')?.url,
 	accounts: accountMap,
-	connectFourPackageId: packages.find((p) => p.name === 'connect_four')?.packageId,
-	openLobbyId: sharedObjects.find((o) => o.name === 'openLobby')?.objectId,
+	connectFourPackageId: selectPackage(manifest, 'connect_four')?.packageId,
+	openLobbyId: arenaSharedObjects(manifest).find((o) => o.name === 'openLobby')?.objectId,
 } as const;
 
 export const isDeployed: boolean =

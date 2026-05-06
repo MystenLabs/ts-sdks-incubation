@@ -550,6 +550,15 @@ export interface RunContainerOptions {
 	name: string;
 	image: string;
 	ports?: Array<{ host: number; container: number }>;
+	/** Where published ports are reachable from. Defaults to `'localhost'`
+	 * — every `--publish` is prefixed `127.0.0.1:` so localnet services
+	 * (RPC, faucet, GraphQL, seal key-server, walrus storage nodes) only
+	 * accept connections from the developer's own machine. Pass `'lan'`
+	 * to bind every port to `0.0.0.0` instead — useful for shared dev
+	 * rigs (a teammate hitting your faucet, a phone connecting to your
+	 * wallet-server). The wallet-server has its own `host:` knob for the
+	 * same purpose; this controls everything else. */
+	expose?: 'localhost' | 'lan';
 	volumes?: string[];
 	env?: Record<string, string>;
 	command?: string[];
@@ -582,18 +591,16 @@ export interface RunContainerOptions {
 	labels?: Record<string, string>;
 }
 
-export async function runContainer(opts: RunContainerOptions): Promise<string> {
+/** Pure: builds the argv for `docker run` from `RunContainerOptions`.
+ * Extracted from `runContainer` so the port-bind, env, label, healthcheck
+ * shape is testable without spawning docker. */
+export function buildRunContainerArgs(opts: RunContainerOptions): string[] {
 	const args = ['run', '--detach', '--name', opts.name];
+	const bindPrefix = opts.expose === 'lan' ? '' : '127.0.0.1:';
 	for (const { host, container } of opts.ports ?? []) {
-		args.push('--publish', `${host}:${container}`);
+		args.push('--publish', `${bindPrefix}${host}:${container}`);
 	}
-	// Pre-create any named volumes with the same `devstack.app` /
-	// `devstack.stack` labels as the container, so `stack drop` can filter
-	// them by label rather than by name prefix (cross-app collisions).
-	for (const v of opts.volumes ?? []) {
-		await ensureLabeledVolume(v, opts.labels);
-		args.push('--volume', v);
-	}
+	for (const v of opts.volumes ?? []) args.push('--volume', v);
 	for (const [k, v] of Object.entries(opts.env ?? {})) args.push('--env', `${k}=${v}`);
 	for (const [k, v] of Object.entries(opts.labels ?? {})) args.push('--label', `${k}=${v}`);
 	args.push('--restart', opts.restart ?? 'unless-stopped');
@@ -618,7 +625,17 @@ export async function runContainer(opts: RunContainerOptions): Promise<string> {
 	}
 	args.push(opts.image);
 	if (opts.command !== undefined) args.push(...opts.command);
+	return args;
+}
 
+export async function runContainer(opts: RunContainerOptions): Promise<string> {
+	// Pre-create any named volumes with the same `devstack.app` /
+	// `devstack.stack` labels as the container, so `stack drop` can filter
+	// them by label rather than by name prefix (cross-app collisions).
+	for (const v of opts.volumes ?? []) {
+		await ensureLabeledVolume(v, opts.labels);
+	}
+	const args = buildRunContainerArgs(opts);
 	const result = await dockerRun({ command: args });
 	if (result.code !== 0) {
 		throw new Error(`docker run failed (exit ${result.code}): ${result.stderr.trim()}`);

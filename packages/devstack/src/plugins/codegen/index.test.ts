@@ -111,7 +111,7 @@ describe('codegen() factory', () => {
 		const action = getGenerateAction();
 		expect(action.type).toBe('Emit');
 		expect(action.name).toBe('generate');
-		expect(action.dependsOnKind).toEqual(['packages', 'accounts', 'services', 'tokens']);
+		expect(action.dependsOnKind).toEqual(['packages', 'accounts', 'services', 'coin/tokens']);
 	});
 
 	it('threads the `output` option into the action inputs (default `src/generated/sui`)', () => {
@@ -158,6 +158,21 @@ describe('renderTypedManifest', () => {
 		registry.accounts.register({ name: 'alice', address: '0x1', funded: true });
 		const ctx = makeCtx('/app', registry);
 		expect(renderTypedManifest(ctx)).toBe(renderTypedManifest(ctx));
+	});
+
+	it('strips absolute on-host `path` from package entries — no home-dir leak in committed bundle', () => {
+		const registry = new RegistryImpl();
+		registry.packages.register({
+			name: 'connect_four',
+			packageId: '0xabc',
+			captured: {},
+			network: 'localnet',
+			path: '/Users/foo/code/examples/arena/move/connect_four',
+		});
+		const out = renderTypedManifest(makeCtx('/app', registry));
+		expect(out).not.toContain('/Users/foo');
+		expect(out).not.toMatch(/"path":/);
+		expect(out).toContain('"connect_four"');
 	});
 });
 

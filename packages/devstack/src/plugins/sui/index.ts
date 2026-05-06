@@ -9,8 +9,6 @@ import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildImage as buildImageAction } from '../../actions/build.js';
 import { containerService } from '../../actions/container-service.js';
-import { service } from '../../actions/service.js';
-import { requireLocalnetCtx } from '../../core/types.js';
 import { pollUntilReady } from '../../helpers/poll.js';
 import { definePlugin } from '../../plugin.js';
 import {
@@ -19,13 +17,8 @@ import {
 	dockerRun,
 	ensureNetwork,
 	imageExists,
-	inspectContainer,
 	pruneImagesByLabel,
-	removeContainer,
 	requireDockerDaemon,
-	runContainer,
-	startContainer,
-	stopContainer,
 } from './docker.js';
 import { probeCheckpointRetention, probeFaucet, probeGraphql, probeRpc } from './health.js';
 
@@ -79,6 +72,13 @@ interface SuiPluginOptions {
 
 export const SUI_DEFAULT_VERSION = 'devnet-v1.71.0';
 
+/** Image revision suffix appended to `dev-examples/sui-localnet:<version>`.
+ * Bumped whenever the Dockerfile/entrypoint change in a way that requires
+ * a fresh build even on the same `SUI_DEFAULT_VERSION`. The CLI snapshot
+ * subcommand and the plugin's tag construction both read this — keep it
+ * the single source of truth for the `-rN` ratchet. */
+export const SUI_IMAGE_REVISION = 'r7';
+
 /** Per-(app, stack) docker network name. Other plugins (walrus, seal) join
  * this network and reach the sui localnet via the `sui-localnet` DNS
  * alias the localnet action registers. The sui plugin creates the
@@ -126,7 +126,7 @@ export const sui = (opts: SuiPluginOptions = {}) => {
 	const preferredFaucetPort = opts.faucetPort ?? 9123;
 	const preferredGraphqlPort = opts.graphqlPort ?? 9125;
 	const contextDir = opts.dockerContextDir ?? DEFAULT_DOCKER_CONTEXT;
-	const builtImageTag = `dev-examples/sui-localnet:${version}-r7`;
+	const builtImageTag = `dev-examples/sui-localnet:${version}-${SUI_IMAGE_REVISION}`;
 	const imageTag = opts.image ?? builtImageTag;
 	const useExternalImage = opts.image !== undefined;
 	const epochsToRetain = opts.epochsToRetain ?? 2;
@@ -273,7 +273,7 @@ export const sui = (opts: SuiPluginOptions = {}) => {
 					},
 				}),
 			}),
-			service({
+			containerService({
 				name: 'localnet',
 				// `walrus.app-network:before` is a soft capability query — silently
 				// drops when walrus isn't loaded. Walrus's
@@ -282,16 +282,6 @@ export const sui = (opts: SuiPluginOptions = {}) => {
 				// must be reachable before `--with-indexer=postgres://...`
 				// starts dialing during sui boot.
 				needs: ['build', 'indexer-db', 'walrus.app-network:before'],
-				provides: {
-					// Reconciler invokes this on every successful path (cold run +
-					// warm-path skip), so the in-memory registry is populated
-					// regardless of whether `run` executed this cycle.
-					registry: async (ctx) => {
-						requireLocalnetCtx(ctx);
-						const { rpcPort, faucetPort, graphqlPort } = await resolvePorts(ctx);
-						registerServices(ctx, rpcPort, faucetPort, graphqlPort);
-					},
-				},
 				inputs: {
 					image: imageTag,
 					// Preferred-port hints (not the resolved values) so port
@@ -300,22 +290,30 @@ export const sui = (opts: SuiPluginOptions = {}) => {
 					faucetPort: preferredFaucetPort,
 					graphqlPort: preferredGraphqlPort,
 				},
-				getStatus: async (ctx) => {
-					requireLocalnetCtx(ctx);
-					const { rpcPort } = await resolvePorts(ctx);
-					const containerName = suiContainerName(ctx.appName, ctx.stack);
-					const info = await inspectContainer(containerName);
-					if (info === null) {
-						return { ok: false, detail: `${containerName} not present` };
-					}
-					if (!info.running) return { ok: false, detail: `${containerName} stopped` };
+				containerName: (ctx) => suiContainerName(ctx.appName, ctx.stack),
+				// RocksDB single-writer; cgroup pause is the safe fast
+				// quiesce for snapshot capture. Chain state lives in the
+				// container's writable layer so commit:true captures it.
+				snapshot: { commit: true, quiesce: 'pause' },
+				registry: async (ctx) => {
+					const { rpcPort, faucetPort, graphqlPort } = await resolvePorts(ctx);
+					registerServices(ctx, rpcPort, faucetPort, graphqlPort);
+				},
+				preRun: async (ctx) => {
+					await requireDockerDaemon();
+					await ensureNetwork({ name: appNetworkName(ctx.appName, ctx.stack) });
+				},
+				probe: async (ctx, info) => {
 					const network = appNetworkName(ctx.appName, ctx.stack);
-					if (!(await containerOnNetwork(containerName, network))) {
-						return { ok: false, detail: `${containerName} not on ${network}` };
+					if (!(await containerOnNetwork(info.id, network))) {
+						return { ok: false, detail: `${info.id} not on ${network}` };
 					}
+					const { rpcPort } = await resolvePorts(ctx);
 					const rpcUrl = `http://127.0.0.1:${rpcPort}`;
-					const probe = await probeRpc(rpcUrl, 1500);
-					if (!probe.ok) return { ok: false, detail: `RPC: ${probe.detail ?? 'unreachable'}` };
+					const rpcProbe = await probeRpc(rpcUrl, 1500);
+					if (!rpcProbe.ok) {
+						return { ok: false, detail: `RPC: ${rpcProbe.detail ?? 'unreachable'}` };
+					}
 					// Pruning guard. The devstack-managed image's entrypoint disables
 					// checkpoint pruning so walrus storage nodes (which sequentially
 					// follow the chain via `get_full_checkpoint`) don't fall off the
@@ -330,149 +328,70 @@ export const sui = (opts: SuiPluginOptions = {}) => {
 							detail: `checkpoint pruning active (${retain.detail ?? 'unknown'}) — walrus will get stuck`,
 						};
 					}
-					return { ok: true, detail: probe.detail };
+					return { ok: true, detail: rpcProbe.detail };
 				},
-				run: async (ctx) => {
-					requireLocalnetCtx(ctx);
-					await requireDockerDaemon();
+				postStart: async (ctx) => {
 					const { rpcPort, faucetPort, graphqlPort } = await resolvePorts(ctx);
-					const containerName = suiContainerName(ctx.appName, ctx.stack);
-					const network = appNetworkName(ctx.appName, ctx.stack);
-					await ensureNetwork({ name: network });
-					const info = await inspectContainer(containerName);
-					const onNetwork = info !== null && (await containerOnNetwork(containerName, network));
-					const imageMatches = info !== null && info.image === imageTag;
-					// Compare the existing container's stamped input hash
-					// against the reconciler's current hash. A mismatch
-					// means EITHER the action's inputs drifted (image bump,
-					// port change) OR the manifest was wiped (`devstack
-					// reset`, fresh clone, leftover container from a prior
-					// app/stack experiment). Either way the safe call is
-					// to recreate so we never resume a chain that the
-					// caller's manifest doesn't know about. Without this
-					// check, `pnpm dev` against a fresh `.devstack` but a
-					// surviving sui container resumed a chain whose
-					// faucet/gas-coin state didn't match any expectation,
-					// hanging the first `accounts.fund` deposit tx.
-					const inputHashLabel = 'devstack.input-hash';
-					const existingHash = info?.labels?.[inputHashLabel];
-					const inputHashMatches = info !== null && existingHash === ctx.inputHash;
-					// Stop the container on supervisor shutdown (Ctrl-C, `q`
-					// keystroke, or parent process death). Volumes persist —
-					// the next `up` cycle detects the stopped container +
-					// matching image and resumes via the `startContainer`
-					// path below. Without this, sui keeps running detached
-					// after the supervisor exits, which surprises users who
-					// typed Ctrl-C.
-					//
-					// Registered FIRST (before any early-return path) so the
-					// resume branch — which previously skipped registration
-					// and left sui orphaned — also gets the hook. Mirrors
-					// `containerService.run`'s shape: handle every state but
-					// `exited`/`dead`/missing so a `restarting` container
-					// (auto-restart racing the shutdown) still gets a clean
-					// `docker stop` that disables the policy.
-					ctx.onShutdown?.(async () => {
-						const live = await inspectContainer(containerName);
-						if (live === null) return;
-						if (live.state === 'exited' || live.state === 'dead') return;
-						await stopContainer(containerName);
-					});
-					// Resume path: container exists, stopped, on the right
-					// network, AND was created with the same input-hash
-					// (manifest expectation matches the running chain) →
-					// `docker start` preserves the persistent chain state.
-					if (info !== null && !info.running && onNetwork && imageMatches && inputHashMatches) {
-						ctx.appendLog?.(`resuming existing container ${containerName}`);
-						await startContainer(containerName);
-						await waitForLocalnetServices(ctx, { rpcPort, faucetPort, graphqlPort });
-						return;
-					}
-					if (info !== null && (!onNetwork || !imageMatches || !inputHashMatches)) {
-						// Container exists but is stale: wrong network, image
-						// drifted (devstack upgrade), or input hash drifted
-						// (manifest was wiped / built from a prior app config).
-						// Remove + recreate so the new container's chain
-						// state is consistent with the supervisor's
-						// expectation.
-						await removeContainer(containerName);
-					}
-					const stillUsable =
-						info?.running === true && onNetwork && imageMatches && inputHashMatches;
-					if (!stillUsable) {
-						ctx.appendLog?.(
-							`creating sui-localnet container (rpc=${rpcPort}, faucet=${faucetPort}, graphql=${graphqlPort})`,
-						);
-						await runContainer({
-							name: containerName,
-							image: imageTag,
-							ports: [
-								{ host: rpcPort, container: 9000 },
-								{ host: faucetPort, container: 9123 },
-								{ host: graphqlPort, container: 9125 },
-							],
-							// Chain state lives in the container's writable layer
-							// by design — `docker stop`/`start` preserves it;
-							// `docker rm` destroys it (operator should
-							// `devstack stack down`, not `docker rm`); snapshots
-							// capture it via `docker commit` (PR 3). `volumes:`
-							// here is the user-supplied extra-mount escape hatch
-							// (custom fullnode.yaml, certs, snapshot scratch);
-							// chain state stays in the writable layer regardless.
-							volumes: extraVolumes,
-							env: {
-								RUST_LOG: logLevel,
-								DEVSTACK_SUI_EPOCHS_TO_RETAIN: String(epochsToRetain),
-							},
-							labels: {
-								...devstackContainerLabels({
-									appName: ctx.appName,
-									stack: ctx.stack,
-									service: 'sui-localnet',
-									// RocksDB single-writer; cgroup pause is the safe fast
-									// quiesce for snapshot capture. Chain state lives in the
-									// container's writable layer (-r7) so commit:true
-									// captures it.
-									snapshot: { commit: true, quiesce: 'pause' },
-								}),
-								// Stamp the reconciler's input hash so a later cycle
-								// can tell whether this container's chain state was
-								// produced under the same caller-context (manifest
-								// + image + ports). See the resume gate above.
-								[inputHashLabel]: ctx.inputHash,
-							},
-							network,
-							networkAlias: SUI_LOCALNET_ALIAS,
-							restart: 'unless-stopped',
-							healthcheck: {
-								test: [
-									'CMD-SHELL',
-									"curl -sf -X POST -H 'Content-Type: application/json' " +
-										`-d '{"jsonrpc":"2.0","method":"sui_getChainIdentifier","params":[],"id":1}' ` +
-										'http://localhost:9000 || exit 1',
-								],
-								intervalSeconds: 2,
-								timeoutSeconds: 2,
-								retries: 60,
-								startPeriodSeconds: 5,
-							},
-							// `--with-indexer=<DATABASE_URL>` points at the postgres
-							// sidecar on the per-stack docker network. The
-							// indexer connects via the `sui-indexer-db` DNS alias.
-							// `--with-graphql=HOST:PORT` runs the GraphQL server
-							// on top of that indexer, host-mapped via the port
-							// row above so apps on the host can hit it.
-							// Available in `sui start` from v1.30+ (this plugin's
-							// default is v1.71+, well within range).
-							command: [
-								'start',
-								'--with-faucet=0.0.0.0:9123',
-								`--with-indexer=${SUI_INDEXER_DATABASE_URL}`,
-								'--with-graphql=0.0.0.0:9125',
-							],
-						});
-					}
 					await waitForLocalnetServices(ctx, { rpcPort, faucetPort, graphqlPort });
+				},
+				spec: async (ctx) => {
+					const { rpcPort, faucetPort, graphqlPort } = await resolvePorts(ctx);
+					return {
+						name: '',
+						image: imageTag,
+						ports: [
+							{ host: rpcPort, container: 9000 },
+							{ host: faucetPort, container: 9123 },
+							{ host: graphqlPort, container: 9125 },
+						],
+						// Chain state lives in the container's writable layer
+						// by design — `docker stop`/`start` preserves it;
+						// `docker rm` destroys it (operator should
+						// `devstack stack down`, not `docker rm`); snapshots
+						// capture it via `docker commit`. `volumes:` here is
+						// the user-supplied extra-mount escape hatch (custom
+						// fullnode.yaml, certs, snapshot scratch); chain
+						// state stays in the writable layer regardless.
+						volumes: extraVolumes,
+						env: {
+							RUST_LOG: logLevel,
+							DEVSTACK_SUI_EPOCHS_TO_RETAIN: String(epochsToRetain),
+						},
+						labels: devstackContainerLabels({
+							appName: ctx.appName,
+							stack: ctx.stack,
+							service: 'sui-localnet',
+						}),
+						network: appNetworkName(ctx.appName, ctx.stack),
+						networkAlias: SUI_LOCALNET_ALIAS,
+						restart: 'unless-stopped',
+						healthcheck: {
+							test: [
+								'CMD-SHELL',
+								"curl -sf -X POST -H 'Content-Type: application/json' " +
+									`-d '{"jsonrpc":"2.0","method":"sui_getChainIdentifier","params":[],"id":1}' ` +
+									'http://localhost:9000 || exit 1',
+							],
+							intervalSeconds: 2,
+							timeoutSeconds: 2,
+							retries: 60,
+							startPeriodSeconds: 5,
+						},
+						// `--with-indexer=<DATABASE_URL>` points at the postgres
+						// sidecar on the per-stack docker network. The
+						// indexer connects via the `sui-indexer-db` DNS alias.
+						// `--with-graphql=HOST:PORT` runs the GraphQL server
+						// on top of that indexer, host-mapped via the port
+						// row above so apps on the host can hit it.
+						// Available in `sui start` from v1.30+ (this plugin's
+						// default is v1.71+, well within range).
+						command: [
+							'start',
+							'--with-faucet=0.0.0.0:9123',
+							`--with-indexer=${SUI_INDEXER_DATABASE_URL}`,
+							'--with-graphql=0.0.0.0:9125',
+						],
+					};
 				},
 				/** chainId is the only thing about sui-localnet that
 				 * downstream actions actually depend on. Folding it into
@@ -483,7 +402,6 @@ export const sui = (opts: SuiPluginOptions = {}) => {
 				 * publish, every register — without anyone needing to
 				 * write a chain probe by hand. */
 				identity: async (ctx) => {
-					requireLocalnetCtx(ctx);
 					const { rpcPort } = await resolvePorts(ctx);
 					return await fetchChainIdentifier(`http://127.0.0.1:${rpcPort}`);
 				},

@@ -3,28 +3,21 @@
 // declared accounts, the localnet RPC/faucet URLs — out of the generic
 // registry into the named fields components reach for.
 
+import { selectAccountMap, selectPackage, selectService } from '@mysten-incubation/devstack';
 import { manifest } from '../generated/manifest.js';
 
-const services = manifest.registry.services;
-const accounts = manifest.registry.accounts;
-const packages = manifest.registry.packages;
-
-const managedCoin = packages.find((p) => p.name === 'managed_coin');
+const managedCoin = selectPackage(manifest, 'managed_coin');
 const packageId = managedCoin?.packageId ?? '0x0';
 
-const accountMap: Record<string, string> = Object.fromEntries(
-	accounts.map((a) => [a.name, a.address]),
-);
-
 export const deployment = {
-	rpcUrl: services.find((s) => s.name === 'sui-rpc')?.url ?? '',
-	faucetUrl: services.find((s) => s.name === 'sui-faucet')?.url,
+	rpcUrl: selectService(manifest, 'sui-rpc')?.url ?? '',
+	faucetUrl: selectService(manifest, 'sui-faucet')?.url,
 	packageId,
 	managedCoinType: `${packageId}::managed_coin::MANAGED_COIN`,
 	treasuryCapId: managedCoin?.captured.treasuryCapId ?? '',
 	metadataId: managedCoin?.captured.metadataId ?? '',
 	upgradeCapId: managedCoin?.captured.upgradeCapId ?? '',
-	accounts: accountMap as Record<'alice' | 'bob' | 'carol', string>,
+	accounts: selectAccountMap(manifest) as Record<'alice' | 'bob' | 'carol', string>,
 } as const;
 
 export const isDeployed: boolean = (deployment.packageId as string) !== '0x0';

@@ -28,7 +28,7 @@
 
 import { register } from '../../actions/register.js';
 import { definePlugin } from '../../plugin.js';
-import { requireLocalnetCtx } from '../../core/types.js';
+import { probeUrl } from '../../helpers/probe.js';
 import {
 	AB_TOLERANCE_MIST,
 	COIN_RESERVE_MIST,
@@ -66,6 +66,13 @@ export const accounts = (opts: AccountsPluginOptions = {}) => {
 			register({
 				name: 'fund',
 				needs,
+				// Live-net targets supply pre-funded accounts via per-network
+				// signer factories; faucet + AB-deposit logic only makes
+				// sense against a localnet sui-faucet. Filtering at the
+				// scope layer keeps the action graph honest instead of
+				// relying on cli/filters.ts to drop arbitrary Register
+				// actions by type.
+				scope: 'localnet-only',
 				provides: {
 					// Reconciler invokes this on every successful path (cold run +
 					// warm-path skip), so the in-memory accounts registry is
@@ -95,7 +102,6 @@ export const accounts = (opts: AccountsPluginOptions = {}) => {
 					// reconciler's "is it already done?" semantic.
 					const names = ctx.accounts.names();
 					if (names.length === 0) return { ok: true, detail: 'no accounts declared' };
-					requireLocalnetCtx(ctx);
 					const rpcService = ctx.registry.services.find('sui-rpc');
 					const faucetService = ctx.registry.services.find('sui-faucet');
 					if (rpcService === undefined) {
@@ -105,7 +111,9 @@ export const accounts = (opts: AccountsPluginOptions = {}) => {
 						return { ok: false, detail: 'sui-faucet not registered (sui.localnet not up?)' };
 					}
 					const rpcUrl = rpcService.url;
-					const faucetReachable = await probeUrl(faucetService.url);
+					const faucetReachable = await probeUrl(faucetService.url, {
+						accept: (r) => r.status < 500,
+					});
 					if (!faucetReachable) {
 						return { ok: false, detail: `faucet ${faucetService.url} unreachable` };
 					}
@@ -151,7 +159,6 @@ export const accounts = (opts: AccountsPluginOptions = {}) => {
 					return { ok: true, detail: `${names.length} account(s) funded` };
 				},
 				run: async (ctx) => {
-					requireLocalnetCtx(ctx);
 					const rpcUrl = ctx.registry.services.require('sui-rpc').url;
 					const faucetUrl = ctx.registry.services.require('sui-faucet').url;
 					for (const name of ctx.accounts.names()) {
@@ -169,13 +176,3 @@ export const accounts = (opts: AccountsPluginOptions = {}) => {
 	});
 };
 
-async function probeUrl(url: string): Promise<boolean> {
-	try {
-		const res = await fetch(url, { method: 'GET' });
-		// Faucet returns 405 on GET (POST-only). Either response counts
-		// as "process is listening, will accept POSTs."
-		return res.status < 500;
-	} catch {
-		return false;
-	}
-}

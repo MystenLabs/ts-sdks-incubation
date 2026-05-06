@@ -10,11 +10,14 @@ import type {
 	SeedAction,
 	SetupActionScope,
 } from '../core/types.js';
+import { mergeRegistryShortcut } from '../core/types.js';
 
 interface SeedOptions<TInputs extends Record<string, unknown>> {
 	name: string;
 	needs?: string[];
 	provides?: Provides;
+	/** Sugar for `provides: { registry }`. */
+	registry?: (ctx: ActionRunContext) => Promise<void> | void;
 	inputs: TInputs;
 	/**
 	 * Networks this seed runs on. Default: localnet only.
@@ -47,7 +50,7 @@ export function seed<TInputs extends Record<string, unknown>>(
 		name: opts.name,
 		type: 'Seed',
 		needs: opts.needs,
-		provides: opts.provides,
+		provides: mergeRegistryShortcut(opts.provides, opts.registry),
 		inputs: opts.inputs,
 		liveNetworks: opts.liveNetworks,
 		runsAs: opts.runsAs,

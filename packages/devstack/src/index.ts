@@ -10,8 +10,13 @@ export type { Manifest } from './runtime/manifest-types.js';
 export { defineDevstackConfig } from './plugin.js';
 export { defineRegistryKind } from './registry/index.js';
 export { coinTokens } from './coin.js';
+export {
+	defineManifestKind,
+	selectAccountMap,
+	selectPackage,
+	selectService,
+} from './manifest-helpers.js';
 
-export { verify } from './actions/verify.js';
 export { publishMove } from './actions/publish-move.js';
 export { seed } from './actions/seed.js';
 export { runTransaction } from './actions/transaction.js';
@@ -23,6 +28,7 @@ export { walrus } from './plugins/walrus/index.js';
 export { seal } from './plugins/seal/index.js';
 export { codegen } from './plugins/codegen/index.js';
 export { deepbook } from './plugins/deepbook/index.js';
+export type { DeepbookPoolSpec, DeepbookMarketMakerSpec } from './plugins/deepbook/index.js';
 export { imports } from './plugins/imports/index.js';
 export { frontend } from './plugins/frontend/index.js';
 export { walletServer } from './plugins/wallet-server/index.js';

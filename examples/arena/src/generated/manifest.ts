@@ -23,7 +23,6 @@ export const manifest: Manifest = {
 				"sourceDigest": "7f1d0a1cfc195f1bb1032c7356e7f09825792f14920b67d787590f0ab17cb2a0",
 				"chainId": "b5f38de5",
 				"network": "localnet",
-				"path": "/Users/michaelhayes/code/ts-sdks-incubation/examples/arena/move/connect_four",
 				"mvrPlaceholder": "@local/connect-four"
 			}
 		],

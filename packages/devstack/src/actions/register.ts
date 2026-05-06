@@ -4,19 +4,34 @@
 // `Register` is for arbitrary on-chain transactions like registering a
 // seal `KeyServer` object, walrus's deploy script, or similar bootstraps.
 // Plugin authors typically also override `getStatus` for richer "is my
-// registered thing still live on-chain?" checks (Q14 §10.1 fix).
+// registered thing still live on-chain?" checks.
 
-import type { ActionRunContext, Provides, RegisterAction } from '../core/types.js';
+import type {
+	ActionRunContext,
+	Provides,
+	RegisterAction,
+	SetupActionScope,
+} from '../core/types.js';
+import { mergeRegistryShortcut } from '../core/types.js';
 
 interface RegisterOptions<TInputs extends Record<string, unknown>> {
 	name: string;
 	needs?: string[];
 	provides?: Provides;
+	/** Sugar for `provides: { registry }`. Re-runs on cold + warm-path
+	 * skip so the in-memory registry stays populated without `getStatus`
+	 * having to re-register. If both `provides` (with `registry`) and this
+	 * are set, `provides.registry` wins. */
+	registry?: (ctx: ActionRunContext) => Promise<void> | void;
 	inputs: TInputs;
 	/** Account this register signs as. Set when the `run:` callback issues
 	 * transactions through `ctx.accounts.get('<name>')` — engages the
 	 * reconciler's same-signer serialization. */
 	runsAs?: string;
+	/** Action-graph scope. Default `'always'`. `'localnet-only'` drops the
+	 * action on testnet/mainnet apply/deploy cycles; `'test-only'` runs
+	 * only on stacks whose name starts with `'test'`. */
+	scope?: SetupActionScope;
 	run: (ctx: ActionRunContext) => Promise<void>;
 	getStatus?: (ctx: ActionRunContext) => Promise<{ ok: boolean; detail?: string }>;
 	identity?: (ctx: ActionRunContext) => Promise<string | undefined>;
@@ -29,9 +44,10 @@ export function register<TInputs extends Record<string, unknown>>(
 		name: opts.name,
 		type: 'Register',
 		needs: opts.needs,
-		provides: opts.provides,
+		provides: mergeRegistryShortcut(opts.provides, opts.registry),
 		inputs: opts.inputs,
 		runsAs: opts.runsAs,
+		scope: opts.scope,
 		run: opts.run,
 		getStatus: opts.getStatus,
 		identity: opts.identity,

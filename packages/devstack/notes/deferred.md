@@ -17,11 +17,18 @@ work.
 
 ### C2 — npm publishing
 
-No near-term plan. Devstack is a prototype; consumers live in this
-monorepo via `workspace:*`. Publishing requires bumping
-`@mysten-incubation/devstack` to a real version, dropping `private: true`
-from `@mysten-incubation/tsconfig`, then `pnpm publish`. Revisit on a
-release decision.
+`@mysten-incubation/devstack` is at `1.0.0` with public `publishConfig`,
+so the package is technically publishable. Outstanding work before a
+real `pnpm publish`:
+
+- Confirm the workspace siblings devstack depends on at runtime
+  (`@mysten-incubation/dev-wallet`, `@mysten-incubation/devstack-wallet-panels`)
+  also publish in lockstep — pnpm rewrites `workspace:*` to a real
+  version on publish, so any sibling that stays unpublished will 404 at
+  consumer install time.
+- Run `pnpm pack && tar -tzf` against the produced tarball + a fresh-
+  cwd `npm install` to confirm the file tree, exports map, and bin
+  shebang survive the publish round-trip.
 
 ### E1 — `loadFixture()` for parallel e2e
 

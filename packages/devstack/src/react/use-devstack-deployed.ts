@@ -13,8 +13,8 @@ export interface UseDevstackDeployedOptions {
 /**
  * Returns true when the manifest is loaded AND has at least one
  * registered account AND every package in `requirePackages` (if set)
- * is present. Apps gate their UI on this to avoid mounting hooks like
- * `useDevstackPackage` before the stack is ready.
+ * is present. Apps gate their UI on this to avoid querying registered
+ * packages or accounts before the stack is ready.
  *
  * Without `requirePackages`, returns true as long as the manifest
  * carries at least one account and one package — a "stack is up at all"

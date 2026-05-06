@@ -3,7 +3,7 @@
 // `<stackDir>/.keys/*.key` files when it signs on the frontend's
 // behalf.
 //
-// Funding pipeline per account (sui.accounts action):
+// Funding pipeline per account (accounts.fund action):
 //
 //   1. ensureFunded: if total balance < minBalance, hit the faucet
 //      (which mints a Coin<SUI> object) and wait for it to settle.
@@ -11,10 +11,10 @@
 //      (separate from coin objects) holds < minBalance, sign a tx
 //      with the account's own keypair to push most of its coin
 //      balance into the address-balance via `0x2::coin::send_funds`.
-//      Over-deposits by `DEPOSIT_CUSHION_MIST` so the post-fee AB
-//      lands above target — without this cushion, storage fees +
-//      AB-gas drift land the AB just below target every cycle and
-//      every cycle re-deposits forever.
+//      Tolerates `AB_TOLERANCE_MIST` of slop so the post-fee AB
+//      lands above target — without it, storage fees + AB-gas drift
+//      land the AB just below target every cycle and every cycle
+//      re-deposits forever.
 //
 // Why both: coin objects have versions and serialize at the gas-coin
 // level (concurrent txs touching the same coin = equivocation).
@@ -68,7 +68,7 @@ const DEFAULT_DEPOSIT_TIMEOUT_MS = 30_000;
 
 const SUI_COIN_TYPE = '0x2::sui::SUI';
 
-/** Per-process per-address mutex. `sui.accounts.run` walks all
+/** Per-process per-address mutex. `accounts.fund.run` walks all
  * accounts sequentially, but defense in depth: if two cycles ever
  * race on the same address, serializing prevents two concurrent
  * send-funds txs from picking the same gas coin. */
@@ -253,7 +253,7 @@ export async function fetchBalance(rpcUrl: string, address: string): Promise<big
  * 5xx responses. The cold-genesis race between "faucet HTTP up" and
  * "validator ready to execute coin txns" routinely produces 5–10 s of
  * 500s with `Failed to execute transaction after N retries`; bare
- * `fetch` without retry surfaced that as `sui.accounts` failures during
+ * `fetch` without retry surfaced that as `accounts.fund` failures during
  * cold first-apply on every test stack. CLAUDE.md anti-pattern:
  * "long-running processes that process.exit(1) on transient errors
  * with no restart" — this is the same shape, just shorter-lived.

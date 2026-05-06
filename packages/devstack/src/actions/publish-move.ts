@@ -43,7 +43,7 @@ interface PublishMoveOptions {
 }
 
 export function publishMove(opts: PublishMoveOptions): PublishAction<PublishInputs> {
-	const action = publish({
+	return publish({
 		name: opts.name,
 		needs: opts.needs,
 		provides: opts.provides,
@@ -52,9 +52,6 @@ export function publishMove(opts: PublishMoveOptions): PublishAction<PublishInpu
 		publisher: opts.publisher,
 		registryAs: opts.registryAs,
 		onPublished: opts.onPublished,
+		scope: opts.scope,
 	});
-	if (opts.scope !== undefined) {
-		action.scope = opts.scope;
-	}
-	return action;
 }

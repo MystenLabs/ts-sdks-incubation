@@ -8,7 +8,6 @@
 // the topo sorter unchanged.
 
 import type { Action, DevstackConfig, Plugin, Provides } from './core/types.js';
-import { getProvidedCapabilities } from './core/types.js';
 
 const PLUGIN_NAME_RE = /^[a-z][a-z0-9_-]*$/;
 
@@ -82,15 +81,42 @@ function validatePluginName(name: string): void {
 	}
 }
 
+// Action name suffixes (the part after `<plugin>.`). One segment of the
+// same charset as plugin names — no dots, since dots are reserved as the
+// plugin/action separator. Rejecting `arena.foo.bar` keeps `resolveNeed`
+// honest: anything with a dot is a cross-plugin FQN, never a deeper
+// nested local name.
+const ACTION_SUFFIX_RE = /^[a-z][a-z0-9_-]*$/;
+
 function expandActionName(actionName: string, pluginName: string): string {
 	if (actionName.length === 0) {
 		throw new Error(
 			`expandPluginActions: plugin '${pluginName}' declared an action with an empty name`,
 		);
 	}
-	if (!actionName.includes('.')) return `${pluginName}.${actionName}`;
+	if (!actionName.includes('.')) {
+		if (!ACTION_SUFFIX_RE.test(actionName)) {
+			throw new Error(
+				`expandPluginActions: plugin '${pluginName}' declared action '${actionName}' ` +
+					`whose suffix doesn't match ${ACTION_SUFFIX_RE} (lowercase letters, digits, ` +
+					"'_' or '-'; must start with a letter).",
+			);
+		}
+		return `${pluginName}.${actionName}`;
+	}
 	const ownPrefix = `${pluginName}.`;
-	if (actionName.startsWith(ownPrefix)) return actionName;
+	if (actionName.startsWith(ownPrefix)) {
+		const suffix = actionName.slice(ownPrefix.length);
+		if (!ACTION_SUFFIX_RE.test(suffix)) {
+			throw new Error(
+				`expandPluginActions: plugin '${pluginName}' declared action '${actionName}'. ` +
+					`The suffix '${suffix}' must match ${ACTION_SUFFIX_RE} — multi-dot names ` +
+					"like 'arena.foo.bar' aren't supported (dots are reserved as the " +
+					'plugin/action separator).',
+			);
+		}
+		return actionName;
+	}
 	throw new Error(
 		`expandPluginActions: plugin '${pluginName}' declared action '${actionName}' ` +
 			`with a dotted name outside its own namespace. Use the bare suffix and let ` +
@@ -105,7 +131,7 @@ function expandActionName(actionName: string, pluginName: string): string {
  * issue in a multi-author plugin ecosystem.
  */
 function validateProvides(provides: Provides | undefined, pluginName: string): void {
-	const caps = getProvidedCapabilities(provides);
+	const caps = provides?.capabilities ?? [];
 	if (caps.length === 0) return;
 	const expectedPrefix = `${pluginName}.`;
 	for (const cap of caps) {

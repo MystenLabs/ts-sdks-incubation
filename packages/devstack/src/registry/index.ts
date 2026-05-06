@@ -8,10 +8,28 @@
 //
 // The dirty-tracking surface (`isDirty`, `flushDirty`, `consumeDirty`)
 // is **not** on the public `Registry` interface — only the reconciler
-// reaches it (via `RegistryImpl` cast). Plugins should not consult it.
+// reaches it. The `snapshot()` accessor is similarly internal: the
+// runtime's manifest writer + the first-party `codegen` plugin reach
+// for it via `as InternalRegistry`. Third-party plugins should not
+// consult either surface.
 
 import type { Account, Package, Registry, RegistryQuery, Service } from '../core/types.js';
 import type { SerializedRegistry } from '../runtime/manifest-types.js';
+
+/**
+ * Internal registry surface: adds the dirty-tracking + serialization
+ * methods that the reconciler, manifest writer/reader, and codegen plugin
+ * use. Not exposed on the public `Registry` interface — plugin authors
+ * shouldn't reach for `flushDirty` / `consumeDirty` directly. The
+ * runtime casts `Registry → InternalRegistry` once at the boundary
+ * instead of casting to the concrete `RegistryImpl` class everywhere.
+ */
+export interface InternalRegistry extends Registry {
+	isDirty(kindKey: string): boolean;
+	flushDirty(): Set<string>;
+	consumeDirty(kinds: string[]): void;
+	snapshot(): SerializedRegistry;
+}
 
 /** Typed accessor for a plugin-namespaced registry kind. Pin the kind
  * at module top-level once; use the returned function from any plugin
@@ -86,7 +104,7 @@ class RegistryQueryImpl<T extends { name: string }> implements RegistryQuery<T> 
 	}
 }
 
-export class RegistryImpl implements Registry {
+export class RegistryImpl implements InternalRegistry {
 	private readonly dirtySet = new Set<string>();
 
 	readonly packages: RegistryQuery<Package>;

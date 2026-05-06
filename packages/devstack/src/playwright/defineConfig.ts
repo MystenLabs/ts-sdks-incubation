@@ -91,8 +91,12 @@ export async function defineDevstackPlaywrightConfig(
 		// (running from `src/`) ships `.ts`; published `dist/` ships `.mjs`.
 		// Playwright loads global-setup/teardown via Node's require, which
 		// can't transform `.ts` itself — but workspace devs run via tsx,
-		// which patches Node's loader to handle `.ts`.
-		const isSrc = here.includes(`${'/'}src${'/'}playwright`);
+		// which patches Node's loader to handle `.ts`. `endsWith` works
+		// across path-separator conventions (POSIX `/` and Windows `\`)
+		// where `includes('/src/playwright')` would falsely fail on Windows
+		// or falsely match on a project-path coincidence.
+		const isSrc =
+			here.endsWith(`${'/'}src${'/'}playwright`) || here.endsWith(`${'\\'}src${'\\'}playwright`);
 		const ext = isSrc ? 'ts' : 'mjs';
 		globalSetup = resolve(here, `global-setup.${ext}`);
 		globalTeardown = resolve(here, `global-teardown.${ext}`);

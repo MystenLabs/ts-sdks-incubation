@@ -93,4 +93,23 @@ describe('parseTargetArg', () => {
 	it('returns undefined for empty value', () => {
 		expect(parseTargetArg(['--target', ''])).toBeUndefined();
 	});
+
+	it('reads --target=value', () => {
+		expect(parseTargetArg(['--target=testnet'])).toBe('testnet');
+		expect(parseTargetArg(['--target=localnet:scratch'])).toBe('localnet:scratch');
+	});
+});
+
+describe('--flag=value across all parsers', () => {
+	it('parseConfigArg accepts --config=path', () => {
+		expect(parseConfigArg(['--config=./foo.ts'])).toBe('./foo.ts');
+	});
+
+	it('parseStackArg accepts --stack=name', () => {
+		expect(parseStackArg(['--stack=feature'])).toBe('feature');
+	});
+
+	it('parseNetworkArg accepts --network=value', () => {
+		expect(parseNetworkArg(['--network=testnet'])).toBe('testnet');
+	});
 });

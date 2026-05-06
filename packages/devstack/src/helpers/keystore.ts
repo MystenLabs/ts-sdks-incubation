@@ -40,7 +40,7 @@ export function loadOrGenerateKeypair(
 		return { keypair: Ed25519Keypair.fromSecretKey(decoded.secretKey), created: false };
 	}
 	const keypair = new Ed25519Keypair();
-	mkdirSync(dirname(path), { recursive: true });
+	mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
 	writeFileSync(path, `${keypair.getSecretKey()}\n`, { mode: 0o600 });
 	return { keypair, created: true };
 }

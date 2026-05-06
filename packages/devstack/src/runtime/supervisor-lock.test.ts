@@ -82,7 +82,8 @@ describe('acquireSupervisorLock', () => {
 		const handle = await acquireSupervisorLock({ appDir, stack: 'main' });
 		expect(handle.pid).toBe(process.pid);
 		expect(existsSync(handle.path)).toBe(true);
-		expect(readFileSync(handle.path, 'utf8').trim()).toBe(String(process.pid));
+		const parsed = JSON.parse(readFileSync(handle.path, 'utf8')) as { pid: number };
+		expect(parsed.pid).toBe(process.pid);
 		handle.release();
 	});
 
@@ -100,7 +101,8 @@ describe('acquireSupervisorLock', () => {
 		writeStaleLockForTesting({ appDir, stack: 'main' }, 2147483646);
 		const handle = await acquireSupervisorLock({ appDir, stack: 'main' });
 		expect(handle.pid).toBe(process.pid);
-		expect(readFileSync(handle.path, 'utf8').trim()).toBe(String(process.pid));
+		const parsed = JSON.parse(readFileSync(handle.path, 'utf8')) as { pid: number };
+		expect(parsed.pid).toBe(process.pid);
 		handle.release();
 	});
 

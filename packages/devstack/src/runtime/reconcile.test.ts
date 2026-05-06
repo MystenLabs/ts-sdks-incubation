@@ -362,6 +362,84 @@ describe('Reconciler — provides.registry rehydration', () => {
 	});
 });
 
+describe('Reconciler — providedBy auto-stamping', () => {
+	it('stamps providedBy on register() calls into the three core kinds', async () => {
+		const action = register({
+			name: 'me.publish',
+			inputs: {},
+			run: async (ctx) => {
+				ctx.registry.packages.register({
+					name: 'pkg-a',
+					packageId: '0x1',
+					captured: {},
+					network: 'localnet',
+				});
+				ctx.registry.accounts.register({
+					name: 'alice',
+					address: '0xa',
+					funded: true,
+				});
+				ctx.registry.services.register({
+					name: 'rpc',
+					kind: 'rpc',
+					url: 'http://x',
+					port: 9000,
+				});
+			},
+		});
+		const reconciler = new Reconciler();
+		const registry = new RegistryImpl();
+		await reconciler.cycle([action], baseCtx(registry));
+		expect(registry.packages.find('pkg-a')?.providedBy).toBe('me.publish');
+		expect(registry.accounts.find('alice')?.providedBy).toBe('me.publish');
+		expect(registry.services.find('rpc')?.providedBy).toBe('me.publish');
+	});
+
+	it('stamps providedBy on namespaced-kind register() calls reached via ns()', async () => {
+		const action = register({
+			name: 'arena.openLobby',
+			inputs: {},
+			run: async (ctx) => {
+				const sharedObjects = ctx.registry
+					.ns<{ sharedObjects: { register: (item: { name: string; objectId: string }) => void; find: (name: string) => { name: string; objectId: string; providedBy?: string } | undefined } }>(
+						'arena',
+					)
+					.sharedObjects;
+				sharedObjects.register({ name: 'lobby-1', objectId: '0xabc' });
+			},
+		});
+		const reconciler = new Reconciler();
+		const registry = new RegistryImpl();
+		await reconciler.cycle([action], baseCtx(registry));
+		const item = registry
+			.ns<{ sharedObjects: { find: (n: string) => { providedBy?: string } | undefined } }>(
+				'arena',
+			)
+			.sharedObjects.find('lobby-1');
+		expect(item?.providedBy).toBe('arena.openLobby');
+	});
+
+	it('preserves an explicit providedBy if the caller set one', async () => {
+		const action = register({
+			name: 'forwarder',
+			inputs: {},
+			run: async (ctx) => {
+				ctx.registry.packages.register({
+					name: 'pkg-b',
+					packageId: '0x2',
+					captured: {},
+					network: 'localnet',
+					providedBy: 'somebody-else',
+				});
+			},
+		});
+		const reconciler = new Reconciler();
+		const registry = new RegistryImpl();
+		await reconciler.cycle([action], baseCtx(registry));
+		expect(registry.packages.find('pkg-b')?.providedBy).toBe('somebody-else');
+	});
+});
+
 describe('Reconciler — Verify action', () => {
 	it('Verify with ok=true marks healthy and runs provides.registry', async () => {
 		let rehydrateCount = 0;
@@ -373,7 +451,7 @@ describe('Reconciler — Verify action', () => {
 					rehydrateCount++;
 				},
 			},
-			check: async () => ({ ok: true }),
+			getStatus: async () => ({ ok: true }),
 		});
 		const reconciler = new Reconciler();
 		const registry = new RegistryImpl();
@@ -386,7 +464,7 @@ describe('Reconciler — Verify action', () => {
 		const action = verify({
 			name: 'invariant',
 			inputs: {},
-			check: async () => ({ ok: false, detail: 'rpc unreachable' }),
+			getStatus: async () => ({ ok: false, detail: 'rpc unreachable' }),
 		});
 		const reconciler = new Reconciler();
 		const registry = new RegistryImpl();

@@ -5,11 +5,14 @@
 //     per state transition + a final summary.
 //
 //   InkRenderer (../cli/tui/ink-renderer.tsx)
-//     Full TUI: header, status table, tab-switchable per-action log
-//     panes, footer hints, dedicated shutdown panel. TTY-only.
+//     React/Ink TUI on the primary screen: log lines stream into
+//     scrollback via `<Static>`, with an anchored bottom panel that
+//     toggles between status table, registry inspector, and a dedicated
+//     shutdown panel. TTY-only.
 //
-// `cli/up.ts` selects which based on `stdout.isTTY` + `CI` / `NO_COLOR` /
-// `DEVSTACK_NO_TUI` env. The supervisor only knows about this interface.
+// `cli/up.ts` selects which based on `stdout.isTTY` + `CI` /
+// `DEVSTACK_NO_TUI` env (with falsey-value handling) and the `--no-tui`
+// flag. The supervisor only knows about this interface.
 //
 // Lifecycle: `start()` once, then any number of `update()` /
 // `appendLog()` / `markStale()`. On shutdown: `beginShutdown(hooks)`,
@@ -32,17 +35,6 @@ export interface RendererStartOptions {
 	 * also pick this up from the registry's `sui-rpc` service later via
 	 * `setRpcUrl`. */
 	rpcUrl?: string;
-}
-
-export interface ShutdownProgress {
-	label: string;
-	status: 'pending' | 'running' | 'done' | 'failed';
-	/** Failure detail when status === 'failed'. */
-	detail?: string;
-	/** Wall-clock ms since beginShutdown when this hook started. */
-	startedAtMs?: number;
-	/** Wall-clock ms since beginShutdown when this hook settled. */
-	settledAtMs?: number;
 }
 
 export interface ShutdownSummary {

@@ -14,17 +14,12 @@ import type { Transaction, TransactionObjectArgument } from '@mysten/sui/transac
  * source automatically (address-balance withdrawal preferred, then
  * owned coin objects). Throws at execution time if the sender has
  * insufficient balance.
- *
- * `errorPrefix` is unused at build time today — kept on the surface
- * for backward compatibility with the prior splitInputCoin shape and
- * for diagnostic messages plugins prepend to caught errors.
  */
 export function splitInputCoin(opts: {
 	tx: Transaction;
 	owner: string;
 	coinType: string;
 	amount: bigint;
-	errorPrefix: string;
 }): TransactionObjectArgument {
 	return opts.tx.coin({
 		balance: opts.amount,

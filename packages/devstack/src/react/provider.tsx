@@ -2,10 +2,10 @@
 //
 // Apps wrap their tree (inside dapp-kit's providers) with this. The
 // provider's only job is to make the manifest available to child
-// hooks (`useDevstackManifest`, `useDevstackDeployed`). Manifest is a
-// localnet artifact; on testnet/mainnet apps either don't mount this
-// provider OR pass `manifest={null}` so manifest-driven hooks behave
-// gracefully.
+// hooks (`useDevstackDeployed`, plus anything reaching directly into
+// `useDevstackContext`). Manifest is a localnet artifact; on
+// testnet/mainnet apps either don't mount this provider OR pass
+// `manifest={null}` so manifest-driven hooks behave gracefully.
 
 import { createContext, useContext, useMemo, type ReactElement, type ReactNode } from 'react';
 import type { Manifest } from '../runtime/manifest-types.js';
@@ -16,8 +16,9 @@ const DevstackContext = createContext<DevstackProviderState | null>(null);
 export interface DevstackProviderProps {
 	/** The hydrated manifest, typically `import { manifest } from
 	 * 'virtual:devstack-manifest'`. Null is permitted for the pre-deploy
-	 * state (no `<localnet:up>` has run yet); hooks that need the manifest
-	 * throw with an actionable error in that case. */
+	 * state (no `localnet:up` has run yet); the in-tree
+	 * `useDevstackDeployed` hook returns `false` for that case so
+	 * consumers can render a not-ready state without crashing. */
 	manifest: Manifest | null;
 	children: ReactNode;
 }
@@ -38,15 +39,4 @@ export function useDevstackContext(): DevstackProviderState {
 		);
 	}
 	return ctx;
-}
-
-export function useDevstackManifest(): Manifest {
-	const { manifest } = useDevstackContext();
-	if (manifest === null) {
-		throw new Error(
-			'useDevstackManifest: no manifest available — has `pnpm localnet:up` been run? ' +
-				'The Vite plugin emits a stub manifest before first run; gate UI on `manifest.app !== ""`.',
-		);
-	}
-	return manifest;
 }

@@ -6,63 +6,9 @@
 // in `src/vite-env.d.ts` (or any `.d.ts` picked up by tsconfig). The
 // devstack vite plugin (`@mysten-incubation/devstack/vite`) supplies the
 // runtime values; this file gives TypeScript the corresponding types.
-//
-// Mirrors `runtime/manifest-types.ts` — keep in sync. Re-declared here
-// instead of imported because virtual modules can't be resolved through
-// real package paths in a `declare module` block.
 
 declare module 'virtual:devstack-manifest' {
-	export interface ManifestPackage {
-		name: string;
-		packageId: string;
-		captured: Record<string, string>;
-		deps?: Record<string, string>;
-		sourceDigest?: string;
-		chainId?: string;
-		network: 'localnet' | 'testnet' | 'mainnet';
-		path?: string;
-		mvrPlaceholder?: string;
-	}
-	export interface ManifestAccount {
-		name: string;
-		address: string;
-		role?: string;
-		funded?: boolean;
-	}
-	export interface ManifestService {
-		name: string;
-		kind: string;
-		url: string;
-		port: number;
-		endpointLabel?: string;
-	}
-	export interface ManifestSharedObject {
-		name: string;
-		objectId: string;
-		objectType?: string;
-	}
-	export interface ManifestToken {
-		name: string;
-		type: string;
-		decimals: number;
-		treasuryCapId?: string;
-		metadataId?: string;
-		faucet?: bigint;
-	}
-	export interface Manifest {
-		app: string;
-		network: 'localnet' | 'testnet' | 'mainnet';
-		emittedAt: string;
-		registry: {
-			packages: ManifestPackage[];
-			accounts: ManifestAccount[];
-			services: ManifestService[];
-			/**
-			 * Plugin-namespaced kinds. `tokens` lives under `coin.tokens`
-			 * (not a core kind — only fungible-coin apps use it).
-			 */
-			[namespace: string]: unknown;
-		};
-	}
+	import type { Manifest } from '@mysten-incubation/devstack';
+
 	export const manifest: Manifest;
 }

@@ -19,6 +19,12 @@ export const DEFAULT_STACK = 'main';
 /** Reserved stack used by e2e/integration test runs so `main` is never trampled. */
 export const TEST_STACK = 'test';
 
+/** Charset for stack names. Same shape as `cli/stack.ts`'s validator —
+ * applied at every resolve boundary so a malformed `.devstack/active`
+ * pointer or `DEVSTACK_STACK` env can't smuggle a path-traversal value
+ * (`'../foo'`) into `<appDir>/.devstack/stacks/<stack>/`. */
+const STACK_NAME_RE = /^[a-z0-9][a-z0-9-]{0,30}$/;
+
 export function activeStackFile(appDir: string): string {
 	return join(appDir, '.devstack', 'active');
 }
@@ -27,7 +33,15 @@ export function readActiveStack(appDir: string): string {
 	const path = activeStackFile(appDir);
 	if (!existsSync(path)) return DEFAULT_STACK;
 	const raw = readFileSync(path, 'utf8').trim();
-	return raw.length > 0 ? raw : DEFAULT_STACK;
+	if (raw.length === 0) return DEFAULT_STACK;
+	if (!STACK_NAME_RE.test(raw)) {
+		throw new Error(
+			`devstack: '.devstack/active' contains invalid stack name '${raw}'. ` +
+				`Must match ${STACK_NAME_RE}; rewrite with \`devstack stack use <name>\` ` +
+				'or delete the file to fall back to `main`.',
+		);
+	}
+	return raw;
 }
 
 export function writeActiveStack(appDir: string, name: string): void {
@@ -47,10 +61,28 @@ export function stackDir(appDir: string, stack: string): string {
 	return join(appDir, '.devstack', 'stacks', stack);
 }
 
-/** Resolve a stack name from CLI flag → env var → pointer file → default. */
+/** Resolve a stack name from CLI flag → env var → pointer file → default.
+ * Validates flag and env values against `STACK_NAME_RE` so a hostile or
+ * typo'd value can't reach `<appDir>/.devstack/stacks/<stack>/`. The CLI
+ * `stack new/use` paths apply the same validation up front, but resolve
+ * is the boundary every code path runs through. */
 export function resolveStack(opts: { appDir: string; flag?: string | undefined }): string {
-	if (opts.flag !== undefined && opts.flag.length > 0) return opts.flag;
+	if (opts.flag !== undefined && opts.flag.length > 0) {
+		if (!STACK_NAME_RE.test(opts.flag)) {
+			throw new Error(
+				`devstack: --stack '${opts.flag}' must match ${STACK_NAME_RE}.`,
+			);
+		}
+		return opts.flag;
+	}
 	const envVal = process.env.DEVSTACK_STACK;
-	if (envVal !== undefined && envVal.length > 0) return envVal;
+	if (envVal !== undefined && envVal.length > 0) {
+		if (!STACK_NAME_RE.test(envVal)) {
+			throw new Error(
+				`devstack: DEVSTACK_STACK='${envVal}' must match ${STACK_NAME_RE}.`,
+			);
+		}
+		return envVal;
+	}
 	return readActiveStack(opts.appDir);
 }

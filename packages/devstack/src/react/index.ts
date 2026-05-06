@@ -9,11 +9,7 @@
 // just supplies the localnet config inputs that get spread into
 // `createDAppKit({...})` and `new WalrusClient({...})`.
 
-export {
-	DevstackProvider,
-	useDevstackManifest,
-	type DevstackProviderProps,
-} from './provider.js';
+export { DevstackProvider, type DevstackProviderProps } from './provider.js';
 export { useDevstackDeployed, type UseDevstackDeployedOptions } from './use-devstack-deployed.js';
 export type { DevstackProviderState } from './types.js';
 export {

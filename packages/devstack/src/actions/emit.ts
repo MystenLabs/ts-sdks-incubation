@@ -7,11 +7,14 @@
 // changes, it re-runs even when no kinds are dirty.
 
 import type { ActionRunContext, EmitAction, Provides } from '../core/types.js';
+import { mergeRegistryShortcut } from '../core/types.js';
 
 interface EmitOptions<TInputs extends Record<string, unknown>> {
 	name: string;
 	needs?: string[];
 	provides?: Provides;
+	/** Sugar for `provides: { registry }`. */
+	registry?: (ctx: ActionRunContext) => Promise<void> | void;
 	inputs: TInputs;
 	dependsOnKind?: string[];
 	run: (ctx: ActionRunContext) => Promise<void>;
@@ -26,7 +29,7 @@ export function emit<TInputs extends Record<string, unknown>>(
 		name: opts.name,
 		type: 'Emit',
 		needs: opts.needs,
-		provides: opts.provides,
+		provides: mergeRegistryShortcut(opts.provides, opts.registry),
 		inputs: opts.inputs,
 		dependsOnKind: opts.dependsOnKind,
 		run: opts.run,

@@ -18,42 +18,54 @@ export const manifest: Manifest = {
 		"packages": [
 			{
 				"name": "vault",
-				"packageId": "0xc6ab7137bf30bc0dea3bc6a8f77186eb6bb698f19ad57f4b730b6240258712d6",
+				"packageId": "0x46dc4a9baab10321d619cecddc416bd193e1c814cca92941d452f22902e6b8c0",
 				"captured": {},
 				"sourceDigest": "61162141cde3e3cc83419faf85256d4206ca1d010a6fa1c53c3ea14b8a6868b7",
-				"chainId": "e17fc9f6",
+				"chainId": "973983e4",
 				"network": "localnet",
-				"path": "/Users/michaelhayes/code/ts-sdks-incubation/examples/private-content/move/vault",
 				"providedBy": "private-content-setup.vault",
 				"mvrPlaceholder": "@local/vault"
 			},
 			{
 				"name": "seal",
-				"packageId": "0x4119c18b90b4afe61d8a37facb5742c3967e22aa688752ceaf86becd5d8a65b2",
+				"packageId": "0x86771a703ecccd228b63d77728a54815231a7547637de7bc72f5833dc260e145",
 				"captured": {},
 				"sourceDigest": "db25bf22d5aee3255ce94030be07d7559e77bfda1501bde5d6d3630bae0f467c",
-				"chainId": "e17fc9f6",
+				"chainId": "973983e4",
 				"network": "localnet",
 				"providedBy": "seal.publish"
+			},
+			{
+				"name": "walrus",
+				"packageId": "0x8289fb0cedd7a65a08bdb421cf1cbea2e424d1095b30156dac9c33ec2a780565",
+				"captured": {
+					"systemObject": "0xf3732cd2ca36fcc8e2b6768ac69828469ea89414e27571973d13e6a619e05a99",
+					"stakingObject": "0xe7bf57511212df6e7f575c364762626136c5fee3829482f053e6e0d5242a564f",
+					"upgradeManagerObject": "0xc407f187e9cd0df9952cad74e8cb5dfb5da48e4a3088a95c9f611fb398e0ab6f",
+					"treasuryObject": "0x263f4754fc1b8719758caec4d899813b96dd89dc068a0a9d8c7a9b8634240e08",
+					"exchangeObject": "0xebe3a46459dba49d988ac36d674ecbf65d8433530a50629dfd01d68434580b6b"
+				},
+				"network": "localnet",
+				"providedBy": "walrus.register"
 			}
 		],
 		"accounts": [
 			{
 				"name": "publisher",
-				"address": "0x224527b0aaba1439185e588ed1de7e8bc724d2b9663f74dffc210481120efb85",
+				"address": "0x63133555848a8f022e303465429ccec95616065dc0c41268ba4e5309467e53b2",
 				"role": "publisher",
 				"funded": true,
 				"providedBy": "accounts.fund"
 			},
 			{
 				"name": "alice",
-				"address": "0x65d745d52ef27667b613981e1243cac7d5e9816f70e2416ce1bb6c8c02e15c4a",
+				"address": "0x1e77dea9d0ebb42a581054a2c6a5f3157082e4f9e766b5a1d2fa911ddd540e8d",
 				"funded": true,
 				"providedBy": "accounts.fund"
 			},
 			{
 				"name": "bob",
-				"address": "0xb4111405b9c7d8e165cee9bca5177c5db5e4b27a8ec724d9f792761c7c8031ea",
+				"address": "0x5a72e494620e28ab91e464d3aa9265a741eb5d65d033443856118042efdf805b",
 				"funded": true,
 				"providedBy": "accounts.fund"
 			}
@@ -96,7 +108,7 @@ export const manifest: Manifest = {
 				"kind": "wallet-server",
 				"url": "http://localhost:9423",
 				"port": 9423,
-				"endpointLabel": "http://localhost:9423/?token=07ac24d5a828e74f84ed8a49efd18ee13a4654fed9858d0c698409c348cc57d0",
+				"endpointLabel": "http://localhost:9423/?token=1c9a5002ac3a82d0ddb14b0fb96793bd26f8affd18185de5498987a4548364a8",
 				"providedBy": "wallet-server.register"
 			},
 			{
@@ -119,9 +131,54 @@ export const manifest: Manifest = {
 			"keyServer": [
 				{
 					"name": "devstack-local",
-					"objectId": "0x5eb1b45f7d0b8c46a9709d1034cb06fc53c3f73d5d2c98a0b6cce7d2858dba66",
+					"objectId": "0x212aa3c15b2841b89e6c226d1b33f50e98ce4ee48eaf62c3273f9ef2e4b30976",
 					"url": "http://127.0.0.1:2024",
-					"sealPackageId": "0x4119c18b90b4afe61d8a37facb5742c3967e22aa688752ceaf86becd5d8a65b2"
+					"sealPackageId": "0x86771a703ecccd228b63d77728a54815231a7547637de7bc72f5833dc260e145"
+				}
+			]
+		},
+		"walrus": {
+			"nodes": [
+				{
+					"name": "dryrun-node-0",
+					"hostname": "dryrun-node-0",
+					"ip": "10.90.0.10",
+					"metricsUrl": "http://10.90.0.10:9184/metrics",
+					"apiUrl": "http://10.90.0.10:9185",
+					"hostApiUrl": "http://localhost:19185"
+				},
+				{
+					"name": "dryrun-node-1",
+					"hostname": "dryrun-node-1",
+					"ip": "10.90.0.11",
+					"metricsUrl": "http://10.90.0.11:9184/metrics",
+					"apiUrl": "http://10.90.0.11:9185",
+					"hostApiUrl": "http://localhost:19186"
+				},
+				{
+					"name": "dryrun-node-2",
+					"hostname": "dryrun-node-2",
+					"ip": "10.90.0.12",
+					"metricsUrl": "http://10.90.0.12:9184/metrics",
+					"apiUrl": "http://10.90.0.12:9185",
+					"hostApiUrl": "http://localhost:19187"
+				},
+				{
+					"name": "dryrun-node-3",
+					"hostname": "dryrun-node-3",
+					"ip": "10.90.0.13",
+					"metricsUrl": "http://10.90.0.13:9184/metrics",
+					"apiUrl": "http://10.90.0.13:9185",
+					"hostApiUrl": "http://localhost:19188"
+				}
+			]
+		},
+		"coin": {
+			"tokens": [
+				{
+					"name": "wal",
+					"type": "0xdd9d461185f23a94ca2f8a5ea9dcd150ac407c4c841efa6a6c61da06f7cb371c::wal::WAL",
+					"decimals": 9
 				}
 			]
 		}

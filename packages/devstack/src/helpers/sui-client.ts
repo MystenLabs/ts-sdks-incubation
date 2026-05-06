@@ -11,12 +11,17 @@
 //   url, ctx.network)` that DRY-flagged in the project review.
 
 import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
-import type { ActionRunContext, Network } from '../core/types.js';
+import type { ActionRunContext } from '../core/types.js';
 
 /** Constructs a `SuiJsonRpcClient` against `url`. The `network` label is
  * cosmetic in the client (used for transaction display); defaults to
- * `'localnet'` since plugin code is the primary caller. */
-export function createLocalSuiClient(url: string, network: Network = 'localnet'): SuiJsonRpcClient {
+ * `'localnet'` since plugin code is the primary caller. Inlined the
+ * literal type here so the public `.d.mts` doesn't reach into
+ * `core/types.js`. */
+export function createLocalSuiClient(
+	url: string,
+	network: 'localnet' | 'testnet' | 'mainnet' = 'localnet',
+): SuiJsonRpcClient {
 	return new SuiJsonRpcClient({ url, network });
 }
 

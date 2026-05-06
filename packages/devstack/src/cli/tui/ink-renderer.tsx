@@ -1,17 +1,15 @@
 // Ink-based TUI renderer for `devstack up`. Mounts a single React tree
-// containing the chrome (Header, StatusTable / ShutdownPanel, TabStrip,
-// LogPane, Footer) and surfaces user actions back to the supervisor
-// via `onAction`. The supervisor still owns shutdown sequencing,
-// and retry-failed — this layer is purely presentational.
+// containing the chrome (Header, StatusTable / RegistryView /
+// ShutdownPanel, Footer) and surfaces user actions back to the supervisor
+// via `onAction`. The supervisor still owns shutdown sequencing and
+// retry — this layer is purely presentational.
 //
-// Rendering: alternateScreen + incrementalRendering. The first frame
-// pushes the primary screen aside (vim/less/htop style); ink only
-// writes to the alt buffer so the user's shell scrollback is intact
-// before and after the run. The Note that ink intentionally treats
-// alt-screen teardown output as disposable, so the post-shutdown
-// summary is written to stdout AFTER unmount() restores the primary
-// screen — that's the one line the user sees in their normal
-// terminal once `devstack up` exits.
+// Rendering: stays on the primary screen with `alternateScreen: false`
+// + `incrementalRendering: true`. Log lines stream to terminal
+// scrollback via ink's `<Static>`; only the anchored bottom panel
+// (status / registry / shutdown) redraws. After `unmount()`, a single
+// post-shutdown summary line is written to stdout so the user sees a
+// clean "shutdown complete" message once `devstack up` exits.
 
 import { Box, type Instance, render, useApp, useInput } from 'ink';
 import { useEffect, useRef, useSyncExternalStore } from 'react';
@@ -24,6 +22,7 @@ import type {
 	ShutdownSummary,
 	SupervisorAction,
 } from '../../runtime/renderer.js';
+import { formatMs } from '../../runtime/renderers/plain.js';
 import {
 	Footer,
 	Header,
@@ -86,7 +85,11 @@ export class InkRenderer implements Renderer {
 			pluginOrder,
 		});
 		this.instance = render(
-			<App store={this.store} fireAction={(a) => this.actionHandler?.(a)} />,
+			<App
+				store={this.store}
+				fireAction={(a) => this.actionHandler?.(a)}
+				forceExit={() => this.forceExit()}
+			/>,
 			{
 				stdout: this.opts.stdout ?? process.stdout,
 				stdin: this.opts.stdin ?? process.stdin,
@@ -102,8 +105,31 @@ export class InkRenderer implements Renderer {
 				// trampling.
 				alternateScreen: false,
 				incrementalRendering: true,
+				// Don't redirect plugins' direct console.* writes through
+				// ink — they'd bypass `<Static>` and confuse the panel-
+				// redraw, AND get stuck behind ink's frame queue. Plugins
+				// that want their output in the supervisor stream go
+				// through `ctx.appendLog`.
+				patchConsole: false,
 			},
 		);
+	}
+
+	/** Force-exit path triggered by a second `q` / `Ctrl+C`. Unmount ink
+	 * synchronously so the terminal is restored (cursor visible, raw
+	 * mode off, primary screen) before we exit; otherwise the user
+	 * lands in a half-broken terminal. */
+	private forceExit(): void {
+		const inst = this.instance;
+		this.instance = undefined;
+		try {
+			inst?.unmount();
+		} catch {
+			/* already unmounted */
+		}
+		const out = this.opts.stdout ?? process.stdout;
+		out.write('devstack up: force exit\n');
+		process.exit(130);
 	}
 
 	update(statuses: Map<string, ActionStatus>, failures: Map<string, Error>): void {
@@ -206,7 +232,7 @@ export class InkRenderer implements Renderer {
 		// the after-exit message looks identical regardless of which
 		// renderer was active during the run.
 		const total = summary.completed + summary.failed;
-		const dur = formatMsLite(summary.durationMs);
+		const dur = formatMs(summary.durationMs);
 		const head = summary.failed === 0 ? 'shutdown complete' : 'shutdown complete (with errors)';
 		const detail =
 			`${summary.completed}/${total} ok in ${dur}` +
@@ -239,30 +265,23 @@ export class InkRenderer implements Renderer {
 	}
 }
 
-/** Minimal duration formatter — matches `runtime/renderers/plain.ts`'s
- * `formatMs`. Inlined to keep the post-exit summary independent of
- * the React tree (which is unmounted by the time we format the line). */
-function formatMsLite(ms: number): string {
-	if (ms < 1_000) return `${Math.round(ms)}ms`;
-	if (ms < 60_000) return `${(ms / 1_000).toFixed(1)}s`;
-	const m = Math.floor(ms / 60_000);
-	const s = Math.round((ms % 60_000) / 1_000);
-	return `${m}m${s.toString().padStart(2, '0')}s`;
-}
-
 interface AppProps {
 	store: Store;
 	fireAction: (a: SupervisorAction) => void;
+	forceExit: () => void;
 }
 
-function App({ store, fireAction }: AppProps): React.ReactElement {
+const QUIT_RESET_MS = 3_000;
+
+function App({ store, fireAction, forceExit }: AppProps): React.ReactElement {
 	const { exit } = useApp();
 	// Track quit-key presses so a stuck shutdown doesn't trap the user
 	// in the TUI. First press → graceful (`fireAction('shutdown')`),
-	// second within ~3s → `process.exit(130)`. Mirrors the
-	// signal-handler force-exit on the supervisor side so the same
-	// escape works whether the user mashes Ctrl+C or the `q` key.
+	// second within `QUIT_RESET_MS` → forceExit (unmounts ink, exits
+	// 130). Mirrors the signal-handler force-exit on the supervisor side
+	// so the same escape works whether the user mashes Ctrl+C or `q`.
 	const quitCount = useRef(0);
+	const quitTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 	useInput((input, key) => {
 		if (input === 'i') {
 			// Toggle the bottom panel between the live status table and
@@ -278,10 +297,16 @@ function App({ store, fireAction }: AppProps): React.ReactElement {
 		if (input === 'q' || (key.ctrl && input === 'c')) {
 			quitCount.current += 1;
 			if (quitCount.current >= 2) {
-				process.stderr.write('\ndevstack up: force exit\n');
-				process.exit(130);
+				if (quitTimer.current !== undefined) clearTimeout(quitTimer.current);
+				forceExit();
+				return;
 			}
 			fireAction('shutdown');
+			if (quitTimer.current !== undefined) clearTimeout(quitTimer.current);
+			quitTimer.current = setTimeout(() => {
+				quitCount.current = 0;
+				quitTimer.current = undefined;
+			}, QUIT_RESET_MS);
 			return;
 		}
 	});

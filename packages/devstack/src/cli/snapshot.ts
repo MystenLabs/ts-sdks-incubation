@@ -27,7 +27,7 @@
 
 import { dirname, resolve } from 'node:path';
 
-import { SUI_DEFAULT_VERSION } from '../plugins/sui/index.js';
+import { SUI_DEFAULT_VERSION, SUI_IMAGE_REVISION } from '../plugins/sui/index.js';
 import { resolveStack } from '../runtime/active-stack.js';
 import {
 	captureSnapshot,
@@ -67,7 +67,7 @@ async function runSnapshot(flags: SnapshotFlags): Promise<number> {
 		// Best-effort sui image hint for the hash. Plugin authors may pin a
 		// different version; the snapshot id will still differ when they do
 		// because each plugin's `inputs` field is also part of the hash.
-		suiImage: `dev-examples/sui-localnet:${SUI_DEFAULT_VERSION}-r7`,
+		suiImage: `dev-examples/sui-localnet:${SUI_DEFAULT_VERSION}-${SUI_IMAGE_REVISION}`,
 	});
 
 	switch (flags.subcommand) {

@@ -20,6 +20,16 @@ import { pathToFileURL } from 'node:url';
 
 import type { DevstackConfig, Network } from '../core/types.js';
 
+// Names that flow into Docker resource names, container labels, and on-disk
+// state directories. Strict charsets at the config-load boundary so a typo
+// or hostile value can't slip through into a `docker run --name <X>` or a
+// `<stackDir>/.keys/<account>.key` path. APP_NAME_RE permits leading `_`
+// to accommodate the `_template` scaffold directory's name; container-name
+// rejection from Docker itself surfaces if anyone tries to bring up a
+// non-runnable name.
+const APP_NAME_RE = /^[a-z0-9_][a-z0-9._-]{0,30}$/;
+const ACCOUNT_NAME_RE = /^[a-z][a-z0-9_-]*$/;
+
 const RAN_REGISTRY = Symbol.for('@mysten-incubation/devstack/cli/ran-registry');
 
 interface RanRegistry {
@@ -62,6 +72,24 @@ const FLAGS_WITH_VALUES = new Set([
 	'--codegen-dir',
 ]);
 
+/** Split `--flag=value` argv tokens into the equivalent `--flag value`
+ * pair so the per-flag parsers below (and the verb dispatchers in
+ * `cli/{up,apply,deploy,...}.ts`) don't each need their own
+ * inline-value handling. Tokens without `=` (or non-`--`-prefixed) pass
+ * through unchanged. Idempotent. */
+export function expandEqualsForms(argv: string[]): string[] {
+	const out: string[] = [];
+	for (const arg of argv) {
+		if (arg.startsWith('--') && arg.includes('=')) {
+			const eq = arg.indexOf('=');
+			out.push(arg.slice(0, eq), arg.slice(eq + 1));
+		} else {
+			out.push(arg);
+		}
+	}
+	return out;
+}
+
 const NETWORKS: ReadonlyArray<Network> = ['localnet', 'testnet', 'mainnet'];
 
 /** Pick `--config <path>` or a trailing positional config path; defaults to
@@ -75,6 +103,7 @@ const NETWORKS: ReadonlyArray<Network> = ['localnet', 'testnet', 'mainnet'];
  * specific positional handling. */
 export function parseConfigArg(argv: string[]): string {
 	let configPath = './devstack.config.ts';
+	argv = expandEqualsForms(argv);
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i];
 		if (arg === undefined) continue;
@@ -104,6 +133,7 @@ function looksLikeConfigPath(arg: string): boolean {
 /** Parse `--network <localnet|testnet|mainnet>`. Throws on unrecognized
  * values; returns undefined when not set. */
 export function parseNetworkArg(argv: string[]): Network | undefined {
+	argv = expandEqualsForms(argv);
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i];
 		if (arg === undefined) continue;
@@ -123,6 +153,7 @@ export function parseNetworkArg(argv: string[]): Network | undefined {
 
 /** Parse `--stack <name>`. Returns undefined when not set or empty. */
 export function parseStackArg(argv: string[]): string | undefined {
+	argv = expandEqualsForms(argv);
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i];
 		if (arg === undefined) continue;
@@ -140,6 +171,7 @@ export function parseStackArg(argv: string[]): string | undefined {
  * interpretation (network, stack, or `<network>:<stack>`) lives in
  * `cli/target.ts:resolveTarget`. */
 export function parseTargetArg(argv: string[]): string | undefined {
+	argv = expandEqualsForms(argv);
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i];
 		if (arg === undefined) continue;
@@ -151,6 +183,20 @@ export function parseTargetArg(argv: string[]): string | undefined {
 		}
 	}
 	return undefined;
+}
+
+function validateAccountNames(abs: string, accounts: DevstackConfig['accounts']): void {
+	if (accounts === undefined) return;
+	const names = Array.isArray(accounts) ? accounts : Object.keys(accounts);
+	for (const name of names) {
+		if (typeof name !== 'string' || !ACCOUNT_NAME_RE.test(name)) {
+			throw new Error(
+				`config at ${abs}: invalid account name '${name}'. Must match ${ACCOUNT_NAME_RE} — ` +
+					"lowercase letters, digits, '_' or '-'; account names flow into " +
+					'`<stackDir>/.keys/<name>.key` so charset is enforced to keep them inside that dir.',
+			);
+		}
+	}
 }
 
 /** Dynamic-import the config from `abs` and validate the minimum shape every
@@ -174,6 +220,13 @@ export async function loadConfig(abs: string): Promise<DevstackConfig> {
 	if (typeof cfg.app !== 'string' || !Array.isArray(cfg.plugins)) {
 		throw new Error(`config at ${abs} is missing required fields { app, plugins[] }`);
 	}
+	if (!APP_NAME_RE.test(cfg.app)) {
+		throw new Error(
+			`config at ${abs}: invalid app name '${cfg.app}'. Must match ${APP_NAME_RE} — ` +
+				'lowercase letters, digits, dashes; up to 31 chars; no leading dash.',
+		);
+	}
+	validateAccountNames(abs, cfg.accounts);
 	if (cfg.setup !== undefined && cfg.setup.length > 0) {
 		const setupActions = cfg.setup;
 		const setupPlugin = {

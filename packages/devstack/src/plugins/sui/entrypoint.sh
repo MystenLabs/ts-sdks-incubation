@@ -59,14 +59,4 @@ if [ -f "$FULLNODE_YAML" ]; then
 	fi
 fi
 
-# Strip --force-regenesis if it slipped in (legacy CMD compatibility).
-# We always want resume-from-disk now that genesis is persistent.
-args=""
-for a in "$@"; do
-	case "$a" in
-		--force-regenesis) ;;
-		*) args="$args $a" ;;
-	esac
-done
-# shellcheck disable=SC2086
-exec sui $args
+exec sui "$@"
