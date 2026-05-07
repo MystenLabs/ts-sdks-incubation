@@ -1,49 +1,29 @@
 # Devstack public API surface
 
-> **⚠ STALE — rewrite pending.** This snapshot reflects the API as of the
-> design-review pass (commit `0561f09`). Phases 1–8 of the redesign at
-> `/Users/michaelhayes/.claude/plans/glittery-honking-nebula.md` have since
-> landed (see `notes/friction.md` for the summary). The actual current
-> surface differs in ~30 places — `coinTokens`, `mintCoinDistribution`,
-> `selectService`/`selectPackage`/`selectAccountMap`, `useDevstackDeployed`,
-> `useSignAndExecute`, `Card`/`Field`, `Registry.ns`, `DevstackProvider`,
-> `localnetDappKitConfig`/`localnetMvrOverrides`, the `/vite`, `/manifest`,
-> `/app-setup`, `/react/ui` subpaths, the `setup:`/`scope:` config fields,
-> `seed.liveNetworks`, `Action.scope`, `SetupActionScope`, the `onPublished`
-> callback, the wrapper `{ rpcUrl }` shape on `DevstackConfig.networks`, and
-> `DevstackConfig.test` are all gone. `defineDevstackConfig` now takes a
-> single `use:` array with type-checked `needs:` against the plugin set.
-> A re-emission against the post-Phase-8 surface is its own work item;
-> read source files directly until then.
-
-A design-review snapshot of every name a downstream consumer (`examples/*`, the
+A snapshot of every name a downstream consumer (`examples/*`, the
 `create-devstack-app` template, an external app) can import from
 `@mysten-incubation/devstack`. Implementation detail and rationale-of-internals
-are deliberately omitted — the goal here is to read the surface as a contract
-and ask "is this the right shape?" without having to chase callees.
+are deliberately omitted — the goal here is to read the surface as a
+contract.
 
 Scope: only what's reachable from the package's `exports` map in
 `package.json`. Identifiers used internally (e.g. `definePlugin`, raw
 `buildImage`/`service`/`hostProcess`/`containerService`/`publish`/`register`,
-signer factories like `cliSigner`/`envSigner`/`generatedKeypair`) live in source
-files but are NOT re-exported and are therefore out of scope.
+signer factories beyond `cliSigner`/`envSigner`) live in source files but
+are NOT re-exported and are therefore out of scope.
 
 ## Entry points
 
-The package ships ten import subpaths:
+The package ships six import subpaths plus a CLI binary:
 
-| Subpath                              | Purpose                                                              |
-| ------------------------------------ | -------------------------------------------------------------------- |
-| `@mysten-incubation/devstack`        | Plugin authoring + app-level setup actions (used in `devstack.config.ts`) |
-| `@mysten-incubation/devstack/helpers` | Side helpers usable from setup-action callbacks                     |
-| `@mysten-incubation/devstack/manifest` | Pure type-only re-export of `Manifest`                              |
-| `@mysten-incubation/devstack/app-setup` | One-call dapp-kit construction for devstack apps                   |
-| `@mysten-incubation/devstack/react`  | React adapter (provider, hooks, dapp-kit + walrus config helpers)    |
-| `@mysten-incubation/devstack/react/ui` | Two presentation primitives (`Card`, `Field`)                       |
-| `@mysten-incubation/devstack/vite`   | Vite plugin: virtual `'virtual:devstack-manifest'` module             |
-| `@mysten-incubation/devstack/vitest` | Vitest config builder (config-load surface, zero transitive imports) |
-| `@mysten-incubation/devstack/vitest/runtime` | Vitest test-side surface (AccountPool, session helpers)      |
-| `@mysten-incubation/devstack/playwright` | Playwright config builder + fixtures + page helpers              |
+| Subpath                                      | Purpose                                                              |
+| -------------------------------------------- | -------------------------------------------------------------------- |
+| `@mysten-incubation/devstack`                | Plugin authoring + setup actions (used in `devstack.config.ts`)      |
+| `@mysten-incubation/devstack/helpers`        | Side helpers + signer factories used inside setup-action callbacks   |
+| `@mysten-incubation/devstack/react`          | React adapter: `createWalletApp` + walrus-client config helper       |
+| `@mysten-incubation/devstack/vitest`         | Vitest config builder (config-load surface, no transitive imports)   |
+| `@mysten-incubation/devstack/vitest/runtime` | Vitest test-side surface (`AccountPool`, session helpers)            |
+| `@mysten-incubation/devstack/playwright`     | Playwright config builder + fixtures + page helpers                  |
 
 Plus a CLI binary: `devstack` (subcommands documented under [CLI](#cli)).
 
@@ -51,29 +31,23 @@ Plus a CLI binary: `devstack` (subcommands documented under [CLI](#cli)).
 
 ## `@mysten-incubation/devstack` (main barrel)
 
-The surface seen by `devstack.config.ts`. The barrel intentionally hides the
-plugin/action authoring primitives — only the app-author surface is exposed.
+The surface seen by `devstack.config.ts`. The barrel intentionally hides
+the plugin/action authoring primitives — only the app-author surface is
+exposed.
 
 ### Config entry point
 
 ```ts
-function defineDevstackConfig(config: DevstackConfig): DevstackConfig
-```
+function defineDevstackConfig<const TUse>(input: DevstackConfigInput): DevstackConfig;
 
-Identity helper. Every app's `devstack.config.ts` calls it once.
-
-```ts
-interface DevstackConfig {
+interface DevstackConfigInput {
   app: string;
-  plugins: Plugin[];
-  accounts?: readonly string[] | Record<string, AccountSpec>;
-  networks?: Partial<Record<Network, { rpcUrl?: string }>>;
-  test?: { accountPoolSize?: number; fundEachAccount?: bigint };
-  setup?: Action[];
+  use: ReadonlyArray<Plugin | Action | ReadonlyArray<Plugin | Action>>;
+  accounts?: AccountsConfig;
+  networks?: Partial<Record<Network, string>>;
 }
 
-type Network = 'localnet' | 'testnet' | 'mainnet';
-
+type AccountsConfig = readonly string[] | Record<string, AccountSpec>;
 interface AccountSpec {
   default?: Signer | AccountFactory;
   localnet?: Signer | AccountFactory;
@@ -81,6 +55,7 @@ interface AccountSpec {
   mainnet?: Signer | AccountFactory;
 }
 
+type Network = 'localnet' | 'testnet' | 'mainnet';
 type AccountFactory = (ctx: {
   accountName: string;
   appDir: string;
@@ -90,27 +65,63 @@ type AccountFactory = (ctx: {
 }) => Promise<Signer> | Signer;
 ```
 
-`accounts` accepts a `string[]` shorthand (each name gets the empty `{}` spec
-→ implicit per-stack `generatedKeypair` on localnet, throw on live nets) OR a
-fully-spelled `Record<string, AccountSpec>`. `setup` is a list of pre-built
-`Action`s — the synthesized `<app>-setup` plugin appends to `plugins`.
+`defineDevstackConfig` is the single entry point. It:
+
+- Flattens the `use:` array (accepts items, arrays of items, mixes).
+- Partitions plugins from bare setup actions.
+- Synthesizes a `<app>-setup` plugin from the bare actions so cross-action
+  `needs:` references stay stable.
+- Auto-injects `'accounts.fund'` into `needs:` of any setup action with
+  `runsAs` set, when the `accounts` plugin is in `use:`.
+- Returns a normalized `DevstackConfig` with `plugins:` pre-populated.
+
+The runtime consumes `config.plugins`; `use:` is the user-facing field
+only.
+
+#### Typed `needs:` validation
+
+The function is generic over `TUse` and constrains every dotted
+(`'<plugin>.<action>'`) `needs:` reference to actually be provided by a
+plugin in the same `use:` array. Unknown references surface as TS errors:
+
+```ts
+defineDevstackConfig({
+  app: 'spike-bad',
+  use: [
+    sui(),
+    accounts(),
+    publishMove({
+      name: 'foo',
+      path: '/tmp/foo',
+      needs: ['sui.acconut'], // typo
+    }),
+  ],
+});
+// Error: Type '...' is not assignable to type
+//   '"devstack: needs 'sui.acconut' but no plugin in use:[] provides it"'.
+```
+
+Unannotated plugins (those returning the default `Plugin<string>`)
+contribute `string & {}` to the provides union, which preserves
+autocomplete on annotated siblings while accepting their actions
+(graceful degradation). 8 of 9 built-in plugins are annotated today
+(`imports` is unannotated; its action names are templated by spec name
+and would need `<const TPackages>` machinery).
 
 ### Setup-action factories
 
-Used inside `setup: [...]`. Each returns a typed `Action` variant.
+Used inside `use: [...]`. Each returns a typed `Action` variant.
 
 ```ts
-function publishMove(opts: {
+function publishMove<const TNeeds extends string = never>(opts: {
   name: string;
-  needs?: string[];
+  needs?: readonly TNeeds[];
   provides?: Provides;
   path: string;
   capture?: Record<string, string>;
   publisher?: string;          // default 'publisher'
   registryAs?: string;
-  onPublished?: (ctx, result) => Promise<void> | void;
-  scope?: SetupActionScope;    // default 'always'
-}): PublishAction;
+}): PublishAction & { __needs?: TNeeds };
 
 function runTransaction(opts: {
   name: string;
@@ -119,63 +130,48 @@ function runTransaction(opts: {
   signer: string;              // account name from DevstackConfig.accounts
   build: (ctx, tx: Transaction) => void | Promise<void>;
   getStatus?: (ctx) => Promise<{ ok: boolean; detail?: string }>;
-  scope?: SetupActionScope;
 }): SeedAction;
 
-function seed<T>(opts: {
+function seed<TInputs>(opts: {
   name: string;
   needs?: string[];
   provides?: Provides;
-  registry?: (ctx) => Promise<void> | void;
-  inputs: T;
-  liveNetworks?: boolean | Network[];
+  inputs: TInputs;
+  networks?: Network[];        // default ['localnet']
   runsAs?: string;
-  scope?: SetupActionScope;
   run: (ctx) => Promise<void>;
   getStatus?: (ctx) => Promise<{ ok: boolean; detail?: string }>;
   identity?: (ctx) => Promise<string | undefined>;
-}): SeedAction<T>;
+}): SeedAction<TInputs>;
 
-function verify<T>(opts: {
-  name: string;
-  needs?: string[];
+function registerCoin<const TFrom extends string, const TName extends string = TFrom>(opts: {
+  name?: TName;                // defaults to `from`
+  from: TFrom;                 // name of an upstream publishMove action
+  module: string;
+  type: string;
+  decimals: number;
   provides?: Provides;
-  registry?: (ctx) => Promise<void> | void;
-  inputs?: T;
-  check: (ctx) => Promise<{ ok: boolean; detail?: string }>;
-}): VerifyAction<T>;
-
-function mintCoinDistribution(opts: {
-  name: string;
-  needs?: string[];
-  provides?: Provides;
-  signer?: string;             // default 'publisher'
-  distributions: ReadonlyArray<{
-    package: string;
-    module: string;
-    mintFunction?: string;     // default 'mint'
-    distribution: ReadonlyArray<{ recipient: string; amount: bigint }>;
-  }>;
-  gasBudget?: bigint;          // default 500_000_000n MIST
-}): SeedAction;
-
-type SetupActionScope = 'always' | 'localnet-only' | 'test-only';
+}): SeedAction & { __needs?: TFrom };
 ```
 
-`publishMove` and `runTransaction` are positioned as the 90% sugar; `seed` and
-`verify` are the underlying primitives that drop down. `mintCoinDistribution`
-is a single, explicitly-named convenience for the recurring "mint and split"
-pattern.
+`publishMove` is the 90% sugar; `seed` + `runTransaction` are the
+underlying primitives. `registerCoin` is the typed follow-on for the
+common "publish coin → register in `coin.tokens` namespace" pattern
+(replaces the deleted `onPublished` callback on `publishMove`).
+
+The `__needs` phantom is the carrier the type validator reads in
+`defineDevstackConfig`.
 
 ### Built-in plugins
 
-Each is a factory returning a `Plugin`. Options bags below show defaults.
+Each is a factory returning a `Plugin<TProvides>`. Options bags below
+show defaults.
 
 ```ts
 function accounts(opts?: {
   minBalance?: bigint;         // default 50 SUI in MIST
   needs?: string[];            // default ['sui.localnet']
-}): Plugin;
+}): Plugin<'accounts.fund'>;
 
 function sui(opts?: {
   version?: string;            // default 'devnet-v1.71.0' (SUI_DEFAULT_VERSION)
@@ -184,30 +180,30 @@ function sui(opts?: {
   graphqlPort?: number;        // default 9125
   image?: string;              // pre-built tag; turns build into existence-probe
   dockerContextDir?: string;
-  logLevel?: string;           // default 'info,sui=info,sui_node=info'
-  volumes?: string[];          // extra docker -v binds
+  logLevel?: string;
+  volumes?: string[];
   epochsToRetain?: number | 'MAX'; // default 2
-}): Plugin;
-
-const SUI_DEFAULT_VERSION: string;  // re-exported
+}): Plugin<'sui.build' | 'sui.indexer-db' | 'sui.localnet'>;
 
 function walrus(opts?: {
   version?: string;            // default WALRUS_VERSION
-  suiVersion?: string;         // default SUI_DEFAULT_VERSION
   nodeHostPortBase?: number;   // default 19185
   epochDuration?: string;      // default '24h'
   committeeSize?: number;      // default 4
   shards?: number;             // default 100
   gc?: boolean;                // default false
-}): Plugin;
+}): Plugin<
+  | 'walrus.network' | 'walrus.build' | 'walrus.deploy'
+  | 'walrus.proxy'   | 'walrus.register' | 'walrus.seedWal'
+  | `walrus.node-${number}`
+>;
 
 function seal(opts?: {
   version?: string;
   port?: number;               // default 2024
   keyServerName?: string;      // default 'devstack-local'
-  master?: { masterKey: string; publicKey: string };
   publisher?: string;          // default 'publisher'
-}): Plugin;
+}): Plugin<'seal.build' | 'seal.publish' | 'seal.register' | 'seal.key-server'>;
 
 function deepbook(opts?: {
   rev?: string;                // default 'v7.0.0'
@@ -215,24 +211,26 @@ function deepbook(opts?: {
   pools?: ReadonlyArray<DeepbookPoolSpec>;
   poolNeeds?: string[];
   marketMakers?: ReadonlyArray<DeepbookMarketMakerSpec>;
-}): Plugin;
+}): Plugin<
+  | 'deepbook.source' | 'deepbook.publish' | 'deepbook.pools'
+  | `deepbook.market-maker-${string}`
+>;
 
 function imports(opts: {
   packages: ImportSpec[];      // discriminated union of GitImportSpec | LocalImportSpec
-}): Plugin;
+  name?: string;               // plugin instance name; default 'imports'
+}): Plugin;                    // unannotated — see ImportSpec below
 
 function codegen(opts?: {
   output?: string;             // default 'src/generated/sui'
   mvrName?: (pkgName: string) => string;
-}): Plugin;
+}): Plugin<'codegen.generate'>;
 
 function frontend(opts?: {
   port?: number;               // default 5173
-  command?: string[];          // default ['pnpm', 'exec', 'vite']
-  appendPort?: boolean;        // default true
   cwd?: string;
   needs?: string[];            // default ['codegen.generate']
-}): Plugin;
+}): Plugin<'frontend.dev-server'>;
 
 function walletServer(opts?: {
   port?: number;               // default 9420
@@ -240,37 +238,32 @@ function walletServer(opts?: {
   needs?: string[];            // default ['accounts.fund']
   host?: string;               // default '127.0.0.1'
   allowedOrigins?: string[];
-}): Plugin;
+}): Plugin<'wallet-server.register' | 'wallet-server.serve'>;
 ```
 
 Notes:
-- Every plugin is a parameterless-callable function (no required args except
-  `imports`). The empty-options ergonomics matter: the README pitch is "drop
-  `sui()` into `plugins:` and you have a chain."
-- `DeepbookPoolSpec`, `DeepbookMarketMakerSpec`, `ImportSpec` are NOT exported
-  by name — they only appear as parameter types of these factories. App code
-  passes inline object literals.
-- Names in the action-graph: each plugin owns the namespace `<plugin-name>`
-  (e.g. `sui.localnet`, `accounts.fund`, `codegen.generate`, `walrus.deploy`,
-  `walrus.node-0`..`node-3`, `walrus.register`, `seal.build`, `seal.publish`,
-  `seal.register`, `seal.key-server`, `frontend.dev-server`, `wallet-server.register`,
-  `wallet-server.serve`, `imports.<name>`, `deepbook.publish`, `deepbook.pools`,
-  `deepbook.market-maker.<name>`).
+
+- Every plugin is a parameterless-callable function (no required args
+  except `imports`). Drop `sui()` into `use:` and you have a chain.
+- `DeepbookPoolSpec` and `DeepbookMarketMakerSpec` are exported by name
+  for inline-spec authoring. `ImportSpec` is NOT exported by name — it's
+  a discriminated union of `GitImportSpec | LocalImportSpec` and apps
+  pass inline literals.
+- Plugin namespaces in the action graph: each plugin owns the namespace
+  `<plugin-name>` (e.g. `sui.localnet`, `accounts.fund`, `walrus.deploy`,
+  `frontend.dev-server`).
 
 ### Registry types and helpers
 
 ```ts
 function defineRegistryKind<T extends { name: string }>(
-  dottedKey: `${string}.${string}`,
+  dottedKey: string,
 ): (registry: Registry) => RegistryQuery<T>;
-
-const coinTokens: (registry: Registry) => RegistryQuery<Token>;
 
 interface Registry {
   readonly packages: RegistryQuery<Package>;
   readonly accounts: RegistryQuery<Account>;
   readonly services: RegistryQuery<Service>;
-  ns<T>(name: string): T;       // proxy: any string property access auto-creates a RegistryQuery
 }
 
 interface RegistryQuery<T> {
@@ -296,60 +289,61 @@ interface Package {
 
 interface Account { name: string; address: string; role?: string; funded?: boolean; providedBy?: string }
 interface Service { name: string; kind: string; url: string; port: number; endpointLabel?: string; providedBy?: string }
-interface Token   { name: string; type: string; treasuryCapId?: string; decimals: number; metadataId?: string; faucet?: bigint }
 ```
 
-App code that reads the live runtime registry (rare — only in custom setup
-actions) goes through `ctx.registry`. App code that reads the *serialized*
-registry (the common case — codegen-emitted manifest) goes through the
-`Manifest` accessors below.
+App code that reads the live runtime registry (in `seed`/`runTransaction`/
+custom `seed` callbacks) goes through `ctx.registry`. The three core
+kinds are accessible directly; plugin-namespaced kinds (`coin.tokens`,
+`arena.sharedObjects`, `walrus.nodes`, etc.) go through
+`defineRegistryKind`.
 
 ### Manifest helpers (read-side)
 
 ```ts
-type Manifest = import('./runtime/manifest-types.js').Manifest;
-
-function selectService(manifest: Manifest, name: string): Service | undefined;
-function selectPackage(manifest: Manifest, name: string): Package | undefined;
-function selectAccountMap(manifest: Manifest): Record<string, string>;
+type Manifest = {
+  app: string;
+  network: Network;
+  emittedAt: string;
+  registry: SerializedRegistry;
+  actionStates?: Record<string, SerializedActionState>;
+};
 
 function defineManifestKind<T extends { name: string }>(
-  dottedKey: `${string}.${string}`,
+  dottedKey: string,
 ): (manifest: Manifest) => T[];
 ```
 
-`selectService` / `selectPackage` / `selectAccountMap` cover the core kinds.
-`defineManifestKind` is the read-side mirror of `defineRegistryKind` for
-plugin-namespaced kinds.
+The four core kinds (`packages`, `accounts`, `services`) are accessible
+directly off `manifest.registry.*`. `defineManifestKind` provides typed
+access to plugin-namespaced kinds. (Compared to the previous surface,
+`selectService`/`selectPackage`/`selectAccountMap` are gone — apps use
+direct array access on the typed manifest.)
 
-### Cross-cutting: `Action`, `Plugin`, `ActionRunContext`
+### Cross-cutting types
 
-These are the types every setup-action callback signature touches. Apps
-encounter them through `ctx: ActionRunContext` arguments rather than building
-their own actions, but the shape is the contract.
+The types every setup-action callback signature touches. Apps encounter
+them through `ctx: ActionRunContext` arguments rather than building
+their own actions.
 
 ```ts
 type ActionType = 'Build' | 'Service' | 'HostProcess' | 'Publish'
                 | 'Register' | 'Seed' | 'Emit' | 'Verify';
 
-interface Action /* discriminated union, one variant per ActionType */ {
+interface Action {
   name: string;                // FQN: '<plugin>.<suffix>' after expansion
   type: ActionType;
   needs?: string[];            // bare → local; dotted → cross-plugin; '<cap>:before' → capability query
   provides?: Provides;
   inputs?: unknown;
-  networks?: Network[];
+  networks?: Network[];        // default for seed: ['localnet']; default elsewhere: all
   watches?: string[];
   snapshotMeta?: SnapshotMeta;
-  scope?: SetupActionScope;    // app-level setup actions only
   runsAs?: string;
-  plugin?: string;             // auto-stamped — author should not set
   run?: (ctx: ActionRunContext) => Promise<unknown>;
   getStatus?: (ctx: ActionRunContext) => Promise<{ ok: boolean; detail?: string }>;
   identity?: (ctx: ActionRunContext) => Promise<string | undefined>;
   // plus type-discriminated extras:
   //   PublishAction:  path: string
-  //   SeedAction:     liveNetworks?: boolean | Network[]
   //   EmitAction:     dependsOnKind?: string[]
   //   VerifyAction:   getStatus required; run?: undefined
 }
@@ -364,12 +358,13 @@ interface SnapshotMeta {
   quiesce?: 'pause' | 'stop' | 'none';   // default 'stop'
 }
 
-interface Plugin {
+interface Plugin<TProvides extends string = string> {
   name: string;
   description?: string;
   version?: string;
-  inputs?: unknown;            // folded into snapshot id
+  inputs?: unknown;
   actions: () => Action[];
+  readonly __provides?: TProvides;  // type-only phantom
 }
 
 type ActionRunContext = LocalnetActionRunContext | LiveNetActionRunContext;
@@ -380,7 +375,7 @@ interface ActionRunContextBase {
   registry: Registry;
   accounts: { get(name: string): Signer; has(name: string): boolean; names(): string[] };
   onShutdown?: (fn: () => Promise<void> | void) => void;
-  appendLog?: (line: string) => void;
+  appendLog: (line: string) => void;  // always present (one-shot defaults to stdout)
   inputHash: string;
 }
 
@@ -392,81 +387,32 @@ interface LocalnetActionRunContext extends ActionRunContextBase {
 
 interface LiveNetActionRunContext extends ActionRunContextBase {
   network: 'testnet' | 'mainnet';
-  stack?: undefined;
 }
 
 function requireLocalnetCtx(ctx: ActionRunContext): asserts ctx is LocalnetActionRunContext;
 ```
 
-**Open question for review:** `Plugin`, `Action`, and `ActionRunContext` are
-structurally exported through the manifest and registry types but are NOT
-re-exported by name from the main barrel. Authors of new plugins live in
-`packages/devstack/src/plugins/...` and import from `core/types.js` directly.
-The decision in `src/index.ts` is to add re-exports "when a consumer
-materializes." If we expect external plugin authors at any point, the surface
-either needs those types or it needs an explicit "no, plugins are first-party
-only" stance.
-
 ---
 
 ## `@mysten-incubation/devstack/helpers`
 
-```ts
-function seedSharedObject(opts: {
-  client: SuiJsonRpcClient;
-  publisher: Signer;
-  target: `${string}::${string}::${string}`;
-  objectTypeFilter: string;
-  buildTx?: (tx: Transaction, target) => void;
-  gasBudget?: bigint;
-}): Promise<{ objectId: string; objectType: string; digest: string }>;
+Helpers used inside setup-action callbacks + signer factories used in
+per-network account slots.
 
+```ts
 function createLocalSuiClient(url: string, network?: Network): SuiJsonRpcClient;
+
+function cliSigner(opts: { alias?: string; configPath?: string }): AccountFactory;
+function envSigner(opts: { name: string }): AccountFactory;
 ```
 
-Two functions only. Used inside custom `seed()` callbacks. Per the
-`helpers.ts` comment, more exports get added as consumer demand materializes —
-today nothing else has crossed that bar.
+`cliSigner` and `envSigner` are the live-net signing-material factories
+apps plug into per-network account slots (e.g.
+`accounts: { publisher: { mainnet: cliSigner({ alias: 'release' }) } }`).
 
 ---
 
-## `@mysten-incubation/devstack/manifest`
-
-Type-only re-export:
-
-```ts
-type Manifest = {
-  app: string;
-  network: Network;
-  emittedAt: string;
-  registry: SerializedRegistry;
-  actionStates?: Record<string, SerializedActionState>;
-};
-
-interface SerializedRegistry {
-  packages: Package[];
-  accounts: Account[];
-  services: Service[];
-  [namespace: string]: unknown;     // plugin-namespaced kinds, opaque
-}
-
-interface SerializedActionState {
-  lastInputHash: string;
-  lastRunAt?: number;
-  identity?: string;
-}
-```
-
-The codegen plugin emits a typed `manifest.ts` whose value is annotated
-`as Manifest`; this subpath exists so downstream code (the vite plugin, the
-React adapter, tests) can import the type without pulling node-fs into their
-type graph.
-
----
-
-## `@mysten-incubation/devstack/app-setup`
-
-One function, intended for the app's `dapp-kit.ts`:
+## `@mysten-incubation/devstack/react`
 
 ```ts
 function createWalletApp(opts: {
@@ -478,114 +424,36 @@ function createWalletApp(opts: {
 }): { dAppKit: DevstackDappKit };
 
 type DevstackDappKit = DAppKit<('localnet' | 'testnet' | 'mainnet')[], SuiGrpcClient>;
-```
 
-Wraps `createDAppKit` with the devstack burner-wallet adapter, manifest-derived
-network config, MVR overrides, and the Faucet/Packages/Network panels. Lives at
-`/app-setup` rather than the main barrel because pulling it in transitively
-imports `@mysten/dapp-kit-core` + `@mysten-incubation/dev-wallet` +
-`@mysten-incubation/devstack-wallet-panels` — CLI / supervisor consumers don't
-need any of that.
-
----
-
-## `@mysten-incubation/devstack/react`
-
-```ts
-function DevstackProvider(props: { manifest: Manifest | null; children: ReactNode }): ReactElement;
-
-function useDevstackDeployed(opts?: { requirePackages?: ReadonlyArray<string> }): boolean;
-
-function useSignAndExecute(opts?: {
-  invalidateKeys?: ReadonlyArray<readonly unknown[]>;
-}): UseMutationResult<{ digest: string }, Error, Transaction>;
-
-interface DevstackProviderState { manifest: Manifest | null }
-
-// Vanilla dapp-kit-core config builders. Spread into createDAppKit({...}) on localnet;
-// drop on live nets.
-function localnetDappKitConfig(manifest: unknown, opts?: {
-  localnetRpcUrl?: string;
-  additionalNetworks?: Network[];
-  networks?: Partial<Record<Network, string>>;
-  enableBurnerWallet?: boolean;
-}): {
-  defaultNetwork: 'localnet';
-  networks: Network[];
-  createClient: (network: Network) => SuiGrpcClient;
-  enableBurnerWallet: boolean;
-};
-
-function localnetMvrOverrides(manifest: unknown): { packages: Record<string, string> };
-
-// Walrus client config builder. Spread into new WalrusClient({...}).
+// Walrus client config builder
 function localnetWalrusOptions(manifest: unknown, init?: {
   fetch?: typeof globalThis.fetch;
 }): {
   packageConfig: { systemObjectId: string; stakingPoolId: string };
   storageNodeClientOptions: { fetch: typeof globalThis.fetch };
 };
+
+interface CreateWalletAppOptions  { ... }   // reflects the params above
+interface LocalnetWalrusOptions    { ... }
+interface LocalnetWalrusOptionsInit { fetch?: typeof globalThis.fetch }
 ```
 
-Plus the corresponding type names:
-`DevstackProviderProps`, `UseDevstackDeployedOptions`, `UseSignAndExecuteOptions`,
-`LocalnetDappKitConfig`, `LocalnetDappKitConfigOptions`, `LocalnetMvrOverrides`,
-`LocalnetWalrusOptions`, `LocalnetWalrusOptionsInit`.
-
-Internal export available but not in the public list: `useDevstackContext` is
-declared in `provider.tsx` but is not re-exported from `react/index.ts`.
-
----
-
-## `@mysten-incubation/devstack/react/ui`
-
-```ts
-function Card(props: { ... }): JSX.Element;
-function Field(props: { ... }): JSX.Element;
-```
-
-Two presentational primitives, intentionally minimal. Used by the example
-apps' demo UIs. (Detailed prop shapes deliberately not transcribed —
-review-flag if this surface should grow or be removed.)
-
----
-
-## `@mysten-incubation/devstack/vite`
-
-```ts
-function devstackVitePlugins(opts?: {
-  manifestPath?: string;
-}): VitePlugin[];
-
-function devstackManifestPlugin(opts?: {
-  manifestPath?: string;
-}): VitePlugin;
-
-interface DevstackVitePluginsOptions     { manifestPath?: string }
-interface DevstackManifestPluginOptions  { manifestPath?: string }
-```
-
-Effects:
-- Synthesizes the `'virtual:devstack-manifest'` module so app code does
-  `import { manifest } from 'virtual:devstack-manifest'`.
-- Watches `<root>/.devstack/active` and the resolved manifest.json so a
-  `devstack stack use` flip live-reloads.
-- Falls back to a typed-empty manifest before first `devstack up`.
-
-`devstackVitePlugins` is the single-call ergonomic; `devstackManifestPlugin`
-is the lower-level form.
+Wraps `createDAppKit` with the devstack burner-wallet adapter, manifest-
+derived network config, MVR overrides, and the Faucet/Packages/Network
+panels. Apps read the manifest from `./generated/manifest.js`
+(codegen-emitted) and pass it in.
 
 ---
 
 ## `@mysten-incubation/devstack/vitest`
 
-Config-load surface, fully self-contained (no transitive imports — Vitest's
-config loader requires this).
+Config-load surface, fully self-contained (no transitive imports —
+Vitest's config loader requires this).
 
 ```ts
 function defineDevstackVitestConfig(opts?: {
   include?: string[];          // default ['src/**/*.{test,spec}.ts?(x)']
-  exclude?: string[];          // default ['e2e/**', 'node_modules', 'dist', '.turbo']
+  exclude?: string[];
   chain?: boolean;             // wires globalSetup + bumps timeouts
   extend?: UserConfig;         // mergeConfig'd onto the resolved defaults
 }): UserConfig;
@@ -606,9 +474,9 @@ class AccountPool {
 interface AccountPoolOptions {
   faucetUrl: string;
   rpcUrl: string;
-  size?: number;               // default DEFAULT_POOL_SIZE = 10
+  size?: number;               // default 10
   mnemonic?: string;           // default DEFAULT_MNEMONIC (public)
-  fundEach?: bigint;           // default DEFAULT_FUND_EACH = 5_000_000_000n MIST
+  fundEach?: bigint;           // default 5_000_000_000n MIST
   prefund?: boolean;           // default true
 }
 
@@ -657,28 +525,33 @@ interface DevstackAccountPoolFixtures {
 }
 ```
 
-Apps that opt in import `test` and `expect` from this subpath instead of
-`@playwright/test`. `connectAs` requires apps to expose their dapp-kit
-instance on `globalThis.__devstackDAppKit__` — `createWalletApp` from
-`/app-setup` does this automatically under DEV.
+`connectAs` requires apps to expose their dapp-kit instance on
+`globalThis.__devstackDAppKit__` — `createWalletApp` from `/react`
+does this automatically under DEV.
 
 ---
 
 ## CLI
 
-The `devstack` binary (only one command-line tool ships from this package).
-Surface boundaries that affect downstream contracts:
+The `devstack` binary. Single source for every action-graph CLI command.
 
 ```
 devstack up [config]                  Long-running supervisor (localnet only)
-devstack apply [config] [--target]    Single-cycle reconcile (Build/Publish/Register/Seed/Emit; no Service)
-devstack deploy <config> --network    Live-network deploy
+devstack apply [config] [--target]    Single-cycle reconcile against the
+                                      active stack or a target. Localnet runs
+                                      every action type; live nets skip
+                                      Service + HostProcess but keep Build /
+                                      Publish / Register / Seed (network-
+                                      gated) / Emit / Verify.
 devstack codegen [config] [--target]  Re-emit codegen against the prior manifest
-devstack down [config]                Stop containers; preserve volumes
-devstack reset [config] --yes         Wipe a stack (containers, volumes, host state)
+devstack down [config]                Stop a stack's containers; preserve volumes
+                                      Pass --stack <name> to target a specific stack
+devstack wipe [config] --yes          Wipe a stack — containers, volumes, host state
                                       Flags: --stack <n>, --images, --dry-run
-devstack stack list|new|use|down|drop Manage named per-app stacks
-devstack snapshot save|restore|list|rm|hash
+devstack stack list|new|use           Manage named per-app stacks
+                                      (use down/wipe with --stack to stop/delete)
+devstack snapshot save|restore|list|rm|id
+                                      Capture / restore named snapshots
 devstack console [config] [--target]  REPL with manifest, client, accounts pre-bound
 ```
 
@@ -688,7 +561,8 @@ Environment variables that act as part of the contract:
 - `DEVSTACK_MANIFEST_PATH` — overrides the manifest location for the
   Playwright AccountPool fixture.
 - `DEVSTACK_POOL_SIZE`, `DEVSTACK_POOL_FUND_EACH`, `DEVSTACK_SKIP_PREFUND` —
-  Playwright AccountPool tuning.
+  Playwright AccountPool tuning. (These are slated to migrate into
+  `defineDevstackPlaywrightConfig` opts; tracked in `notes/friction.md`.)
 - `DEVSTACK_E2E_TEARDOWN=drop` — full wipe in CI mode.
 - `DEVSTACK_E2E_CONFIG_PATH` — set internally by
   `defineDevstackPlaywrightConfig({ manageStack: true })`.
@@ -698,9 +572,11 @@ Filesystem contract:
 - `<appDir>/devstack.config.ts` — the entry point CLI commands look for.
 - `<appDir>/.devstack/active` — single-line file naming the active stack.
 - `<appDir>/.devstack/stacks/<stack>/manifest.json` — the persisted
-  `Manifest`, watched by the vite plugin.
+  `Manifest`.
 - `<appDir>/.devstack/stacks/<stack>/ports.json` — port-allocator cache.
 - `<appDir>/.devstack/stacks/<stack>/.keys/` — generated keypairs (per-stack).
+- `<appDir>/src/generated/manifest.ts` — codegen-emitted typed manifest
+  imported by app code as `from './generated/manifest.js'`.
 
 ---
 
@@ -708,68 +584,26 @@ Filesystem contract:
 
 | Subpath                | Functions | Classes | Types/Interfaces | Constants |
 | ---------------------- | --------- | ------- | ---------------- | --------- |
-| (main)                 | 17        | 0       | 1 (`Manifest`)   | 1 (`SUI_DEFAULT_VERSION`) — actually re-exported from `sui` plugin internals |
-| `/helpers`             | 2         | 0       | 0                | 0         |
-| `/manifest`            | 0         | 0       | 1                | 0         |
-| `/app-setup`           | 1         | 0       | 2                | 0         |
-| `/react`               | 6         | 0       | ~9               | 0         |
-| `/react/ui`            | 2 (cmps)  | 0       | 0                | 0         |
-| `/vite`                | 2         | 0       | 2                | 0         |
+| (main)                 | 14        | 0       | 5 (`Manifest`, `DevstackConfig`, `DevstackConfigInput`, `Plugin`, `Action`, plus `DeepbookPoolSpec`, `DeepbookMarketMakerSpec`) | 0 |
+| `/helpers`             | 3         | 0       | 0                | 0         |
+| `/react`               | 2         | 0       | 4                | 0         |
 | `/vitest`              | 1         | 0       | 1                | 0         |
 | `/vitest/runtime`      | 1         | 1       | 4                | 3         |
 | `/playwright`          | 4 + `test`/`expect` | 0 | 1            | 0         |
 
-(`SUI_DEFAULT_VERSION` is exported from `plugins/sui/index.ts` but NOT re-exported
-through the main barrel. It appears in plugin-internal use only — flag for review
-if it should be in the public surface or hidden.)
+Compared to the pre-redesign snapshot (commit `0561f09`):
 
----
+- Subpaths down from 10 → 6.
+- Main barrel down from 17 → 13 named exports + types.
+- Convenience tier deletions: `mintCoinDistribution`, `coinTokens`
+  (public re-export), `seedSharedObject`, `selectService`/`Package`/
+  `AccountMap`, `useDevstackDeployed`, `useSignAndExecute`,
+  `Card`/`Field`, `localnetDappKitConfig`, `localnetMvrOverrides`,
+  `Registry.ns<T>` proxy, `DevstackProvider`, `verify` factory.
+- Structural moves: `DevstackConfig.plugins + setup` → single `use:`.
+  `onPublished` callback → `registerCoin` follow-on. `seed.liveNetworks`
+  → `Action.networks`. `DevstackConfig.networks` flattened.
+- Type safety: `Plugin<TProvides>`, typed `needs:` validation in
+  `defineDevstackConfig`. Typos surface as TS errors at the callsite.
 
-## Suggested review focal points
-
-These are the places the surface most invites a "is this the right shape?"
-conversation. Listed without recommendations — the goal of this doc is a
-neutral basis for the conversation.
-
-1. **Plugin-author surface.** Today the main barrel hides `definePlugin`, the
-   raw `buildImage`/`service`/`hostProcess`/`containerService`/`publish`/
-   `register` factories, signer factories (`cliSigner`, `envSigner`,
-   `generatedKeypair`), and the `Plugin`/`Action`/`ActionRunContext` types. If
-   we're committing to "first-party plugins only," that's a posture worth
-   documenting on the barrel itself. If external plugin authors are in scope
-   even informally, we need to choose which of those names to surface.
-
-2. **Action authoring vs. setup-action authoring.** `seed()` and `verify()`
-   appear in the public surface as setup helpers, but they're also the
-   underlying primitives plugins use. Consumers reading the docs see a single
-   factory name covering two roles. Worth a hard look at whether to split or
-   unify the framing.
-
-3. **`ctx.registry.ns<T>(...)` vs. `defineRegistryKind` / `defineManifestKind`.**
-   Three ways to access plugin-namespaced kinds (proxy `ns<T>`, runtime accessor,
-   manifest accessor). The README narrative is "use `defineRegistryKind`," but
-   the proxy form is structurally exposed via `Registry.ns`.
-
-4. **Implicit assumptions about account names.** `'publisher'` is the default
-   `signer:`/`admin:`/`publisher:` for `publishMove`, `runTransaction`,
-   `mintCoinDistribution`, `deepbook`, `seal`. Apps that don't declare a
-   `publisher` account get a runtime error from `ctx.accounts.get('publisher')`
-   rather than a typed surface. Reasonable for a thin prototype; flag for
-   review on the path to a more typed surface.
-
-5. **`Action`/`ActionRunContext` types reachable via the React provider.**
-   `DevstackProviderState.manifest` carries a `Manifest`, which references
-   `SerializedRegistry`, which embeds `Account`/`Package`/`Service`. App code
-   that imports the React provider therefore transitively sees the entire
-   core type graph — a structural decision worth conscious sign-off.
-
-6. **Subpath count.** Ten subpaths is a lot for a "thin" prototype. Some
-   (`/manifest`, `/react/ui`) have one or two exports. Worth asking which to
-   collapse vs. keep distinct. The `/app-setup` vs. `/react` split has a
-   concrete dependency-isolation rationale; others may be vestigial.
-
-7. **Optional peer-dep policy.** Every framework adapter (`react`, `vite`,
-   `vitest`, `playwright`) is gated behind an optional peer dep. Apps that
-   import the wrong subpath without the peer installed get a module-not-found
-   error rather than a typed denial. Consider whether the `package.json`
-   `peerDependenciesMeta` story matches the surface story.
+Deferred work tracked in `notes/friction.md`.
