@@ -78,7 +78,7 @@ function isNetwork(value: string): value is Network {
  * Live-net targets without a declared `rpcUrl` throw via
  * `resolveNetworkProfile`. */
 function pickRpcUrl(config: DevstackConfig, network: Network): string {
-	const declared = config.networks?.[network]?.rpcUrl;
+	const declared = config.networks?.[network];
 	if (declared !== undefined) return declared;
 	if (network === 'localnet') return '';
 	return resolveNetworkProfile(config, network).rpcUrl;

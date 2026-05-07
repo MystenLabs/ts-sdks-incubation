@@ -1,16 +1,13 @@
 // `seed()` — Post-publish data write action factory.
 //
-// Localnet-only by default. Authors opt into live networks explicitly via
-// `liveNetworks: true` (any) or `liveNetworks: ['testnet']` (specific).
+// Localnet-only by default. Authors opt into other networks via the
+// shared `Action.networks: Network[]` field — pass
+// `networks: ['localnet', 'testnet']` to allow a seed on testnet too.
 
-import type {
-	ActionRunContext,
-	Network,
-	Provides,
-	SeedAction,
-	SetupActionScope,
-} from '../core/types.js';
+import type { ActionRunContext, Network, Provides, SeedAction } from '../core/types.js';
 import { mergeRegistryShortcut } from '../core/types.js';
+
+const DEFAULT_SEED_NETWORKS: ReadonlyArray<Network> = ['localnet'];
 
 interface SeedOptions<TInputs extends Record<string, unknown>> {
 	name: string;
@@ -20,11 +17,12 @@ interface SeedOptions<TInputs extends Record<string, unknown>> {
 	registry?: (ctx: ActionRunContext) => Promise<void> | void;
 	inputs: TInputs;
 	/**
-	 * Networks this seed runs on. Default: localnet only.
-	 * - `true` → all networks (use sparingly).
-	 * - `Network[]` → explicit allow-list.
+	 * Networks this seed runs on. Default: localnet only. Pass an
+	 * explicit list (e.g. `['localnet', 'testnet']`) to opt into live
+	 * networks; the supervisor's per-target action filter drops the seed
+	 * on every other network.
 	 */
-	liveNetworks?: boolean | Network[];
+	networks?: Network[];
 	/**
 	 * Account name this seed signs as. Set when the `run:` callback
 	 * issues transactions through `ctx.accounts.get('<name>')` so the
@@ -33,11 +31,6 @@ interface SeedOptions<TInputs extends Record<string, unknown>> {
 	 * Plain register-only seeds with no signing should leave it unset.
 	 */
 	runsAs?: string;
-	/** Setup-action scope. See `SetupActionScope`. Default: 'always'.
-	 * Use `'test-only'` for fixtures that should run in the `test` stack
-	 * but not in `main`; `'localnet-only'` to skip on testnet/mainnet
-	 * even when `liveNetworks` would otherwise allow them. */
-	scope?: SetupActionScope;
 	run: (ctx: ActionRunContext) => Promise<void>;
 	getStatus?: (ctx: ActionRunContext) => Promise<{ ok: boolean; detail?: string }>;
 	identity?: (ctx: ActionRunContext) => Promise<string | undefined>;
@@ -52,20 +45,18 @@ export function seed<TInputs extends Record<string, unknown>>(
 		needs: opts.needs,
 		provides: mergeRegistryShortcut(opts.provides, opts.registry),
 		inputs: opts.inputs,
-		liveNetworks: opts.liveNetworks,
+		networks: opts.networks ?? [...DEFAULT_SEED_NETWORKS],
 		runsAs: opts.runsAs,
-		...(opts.scope !== undefined ? { scope: opts.scope } : {}),
 		run: opts.run,
 		getStatus: opts.getStatus,
 		identity: opts.identity,
 	};
 }
 
-/** Returns true if the seed action is allowed to run on the given network. */
+/** Returns true if the seed action is allowed to run on the given network.
+ * Reads `action.networks` (default `['localnet']`); plugin authors override
+ * via `seed({ networks: ['localnet', 'testnet'] })`. */
 export function seedRunsOn(action: SeedAction, network: Network): boolean {
-	if (network === 'localnet') return true;
-	const live = action.liveNetworks;
-	if (live === true) return true;
-	if (Array.isArray(live)) return live.includes(network);
-	return false;
+	const networks = action.networks ?? DEFAULT_SEED_NETWORKS;
+	return networks.includes(network);
 }

@@ -3,12 +3,7 @@
 // into the views the wallet UI reads — coin specs (with derived symbols),
 // pool views (with base/quote symbols joined), and a flat account map.
 
-import {
-	defineManifestKind,
-	selectAccountMap,
-	selectPackage,
-	selectService,
-} from '@mysten-incubation/devstack';
+import { defineManifestKind } from '@mysten-incubation/devstack';
 import { manifest } from '../generated/manifest.js';
 
 export interface CoinSpec {
@@ -68,12 +63,12 @@ const pools: readonly PoolView[] = deepbookPoolsKind(manifest).map((p) => ({
 	quoteSymbol: symbolFor(p.quoteCoinType),
 }));
 
-const deepbookPkg = selectPackage(manifest, 'deepbook');
+const deepbookPkg = manifest.registry.packages.find((p) => p.name === 'deepbook');
 
 export const deployment = {
-	rpcUrl: selectService(manifest, 'sui-rpc')?.url ?? '',
-	faucetUrl: selectService(manifest, 'sui-faucet')?.url,
-	accounts: selectAccountMap(manifest),
+	rpcUrl: manifest.registry.services.find((s) => s.name === 'sui-rpc')?.url ?? '',
+	faucetUrl: manifest.registry.services.find((s) => s.name === 'sui-faucet')?.url,
+	accounts: Object.fromEntries(manifest.registry.accounts.map((a) => [a.name, a.address])),
 	coins: allCoins,
 	pools,
 	deepbookPackageId: deepbookPkg?.packageId,

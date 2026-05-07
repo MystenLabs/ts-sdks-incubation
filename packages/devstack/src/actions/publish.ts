@@ -3,9 +3,11 @@
 // Bakes in:
 //  - default `run`: build the Move package in the sui container (live
 //    nets fall back to the host's `sui` CLI), publish via
-//    `publishMovePackage`, register the result in `registry.packages`,
-//    invoke `onPublished(ctx, result)` on a fresh publish (skipped on
-//    cache hit).
+//    `publishMovePackage`, register the result in `registry.packages`.
+//    Follow-on side-effects (token registration, shared-object seeding)
+//    live in their own `seed()` actions that name the publish in their
+//    `needs:` — keeps the action graph honest about ordering and lets
+//    the reconciler skip them independently on warm cycles.
 //
 // No default `getStatus`: idempotence comes from the reconciler's
 // input-hash skip predicate (`source digest` baked into `inputs`)
@@ -27,17 +29,11 @@
 
 import { existsSync } from 'node:fs';
 import { isAbsolute, resolve as resolvePath } from 'node:path';
-import type {
-	ActionRunContext,
-	Provides,
-	PublishAction,
-	SetupActionScope,
-} from '../core/types.js';
+import type { ActionRunContext, Provides, PublishAction } from '../core/types.js';
 import {
 	buildPriorCacheEntry,
 	computeSourceDigest,
 	publishMovePackage,
-	type PublishMovePackageResult,
 } from '../helpers/move-package.js';
 import { openSuiRpcClient } from '../helpers/sui-client.js';
 import { suiContainerName } from '../plugins/sui/index.js';
@@ -100,10 +96,6 @@ interface PublishOptions {
 	prepareSource?: (
 		ctx: ActionRunContext,
 	) => Promise<{ dir: string; cleanup?: () => Promise<void> | void }>;
-	/** Side-effect hook fired after a fresh publish — token registration,
-	 * shared-object seeding, etc. Skipped on cache hit (the package
-	 * didn't actually republish). */
-	onPublished?: (ctx: ActionRunContext, result: PublishMovePackageResult) => Promise<void> | void;
 	/** Optional liveness probe. Most callers leave this undefined — the
 	 * reconciler's hash-match skip is sufficient. Pass when there's an
 	 * orthogonal invariant to check (e.g. a downstream object the
@@ -113,9 +105,6 @@ interface PublishOptions {
 	 * which is what every downstream Register/Seed/Move-call reads, so
 	 * a republish auto-cascades. */
 	identity?: (ctx: ActionRunContext) => Promise<string | undefined>;
-	/** Action-graph scope. See `SetupActionScope`. Forwarded onto the
-	 * resulting `PublishAction.scope`. */
-	scope?: SetupActionScope;
 }
 
 export function publish(opts: PublishOptions): PublishAction<PublishInputs> {
@@ -156,7 +145,6 @@ export function publish(opts: PublishOptions): PublishAction<PublishInputs> {
 		path: opts.path,
 		runsAs: publisherAccount,
 		inputs,
-		scope: opts.scope,
 		getStatus: opts.getStatus,
 		identity:
 			opts.identity ??
@@ -211,9 +199,6 @@ export function publish(opts: PublishOptions): PublishAction<PublishInputs> {
 					network: ctx.network,
 					path: registerPath,
 				});
-				if (!result.cacheHit && opts.onPublished !== undefined) {
-					await opts.onPublished(ctx, result);
-				}
 			} finally {
 				if (cleanup !== undefined) await cleanup();
 			}

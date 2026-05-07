@@ -1,5 +1,5 @@
-import { createWalletApp } from '@mysten-incubation/devstack/app-setup';
-import { manifest } from 'virtual:devstack-manifest';
+import { createWalletApp } from '@mysten-incubation/devstack/react';
+import { manifest } from './generated/manifest.js';
 
 export const { dAppKit } = createWalletApp({ manifest });
 

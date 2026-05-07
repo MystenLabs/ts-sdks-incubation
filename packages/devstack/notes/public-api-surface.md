@@ -1,5 +1,21 @@
 # Devstack public API surface
 
+> **⚠ STALE — rewrite pending.** This snapshot reflects the API as of the
+> design-review pass (commit `0561f09`). Phases 1–8 of the redesign at
+> `/Users/michaelhayes/.claude/plans/glittery-honking-nebula.md` have since
+> landed (see `notes/friction.md` for the summary). The actual current
+> surface differs in ~30 places — `coinTokens`, `mintCoinDistribution`,
+> `selectService`/`selectPackage`/`selectAccountMap`, `useDevstackDeployed`,
+> `useSignAndExecute`, `Card`/`Field`, `Registry.ns`, `DevstackProvider`,
+> `localnetDappKitConfig`/`localnetMvrOverrides`, the `/vite`, `/manifest`,
+> `/app-setup`, `/react/ui` subpaths, the `setup:`/`scope:` config fields,
+> `seed.liveNetworks`, `Action.scope`, `SetupActionScope`, the `onPublished`
+> callback, the wrapper `{ rpcUrl }` shape on `DevstackConfig.networks`, and
+> `DevstackConfig.test` are all gone. `defineDevstackConfig` now takes a
+> single `use:` array with type-checked `needs:` against the plugin set.
+> A re-emission against the post-Phase-8 surface is its own work item;
+> read source files directly until then.
+
 A design-review snapshot of every name a downstream consumer (`examples/*`, the
 `create-devstack-app` template, an external app) can import from
 `@mysten-incubation/devstack`. Implementation detail and rationale-of-internals

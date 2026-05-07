@@ -29,7 +29,7 @@ const VAULT_DIR = resolve(HERE, 'move/vault');
 export default defineDevstackConfig({
 	app: 'private-content',
 	accounts: ['publisher', 'alice', 'bob'],
-	plugins: [
+	use: [
 		// Plugin port options are hints to the per-stack port allocator;
 		// the allocator picks any free port if a sibling stack has the
 		// preferred port claimed.
@@ -40,8 +40,6 @@ export default defineDevstackConfig({
 		codegen(),
 		walletServer({ port: 9423 }),
 		frontend({ port: 5175 }),
-	],
-	setup: [
 		publishMove({
 			name: 'vault',
 			needs: ['accounts.fund'],

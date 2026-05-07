@@ -9,7 +9,7 @@
 //
 //     import { createDAppKit } from '@mysten/dapp-kit-core';
 //     import { localnetDappKitConfig } from '@mysten-incubation/devstack/react';
-//     import { manifest } from 'virtual:devstack-manifest';
+//     import { manifest } from './generated/manifest.js';
 //
 //     const dAppKit = createDAppKit({
 //       ...localnetDappKitConfig(manifest),

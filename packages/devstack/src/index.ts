@@ -6,21 +6,16 @@
 // when a consumer materializes — until then the surface stays small.
 
 export type { Manifest } from './runtime/manifest-types.js';
+export type { DevstackConfig, DevstackConfigInput, Plugin, Action } from './core/types.js';
 
 export { defineDevstackConfig } from './plugin.js';
 export { defineRegistryKind } from './registry/index.js';
-export { coinTokens } from './coin.js';
-export {
-	defineManifestKind,
-	selectAccountMap,
-	selectPackage,
-	selectService,
-} from './manifest-helpers.js';
+export { defineManifestKind } from './manifest-helpers.js';
 
 export { publishMove } from './actions/publish-move.js';
+export { registerCoin } from './actions/register-coin.js';
 export { seed } from './actions/seed.js';
 export { runTransaction } from './actions/transaction.js';
-export { mintCoinDistribution } from './actions/mint-coin-distribution.js';
 
 export { accounts } from './plugins/accounts/index.js';
 export { sui } from './plugins/sui/index.js';

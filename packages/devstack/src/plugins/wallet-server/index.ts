@@ -33,7 +33,7 @@ import type { Server } from 'node:http';
 import { dirname, resolve } from 'node:path';
 import { hostProcess } from '../../actions/host-process.js';
 import { register } from '../../actions/register.js';
-import type { ActionRunContext } from '../../core/types.js';
+import type { ActionRunContext, Plugin } from '../../core/types.js';
 import { requireLocalnetCtx } from '../../core/types.js';
 import { probeUrl } from '../../helpers/probe.js';
 import { definePlugin } from '../../plugin.js';
@@ -66,7 +66,9 @@ interface WalletServerPluginOptions {
 
 const WALLET_SERVER_DEFAULT_PORT = 9420;
 
-export const walletServer = (opts: WalletServerPluginOptions = {}) => {
+export const walletServer = (
+	opts: WalletServerPluginOptions = {},
+): Plugin<'wallet-server.register' | 'wallet-server.serve'> => {
 	const preferredPort = opts.port ?? WALLET_SERVER_DEFAULT_PORT;
 	const explicitOrigin = opts.publicOrigin;
 	const needs = opts.needs ?? ['accounts.fund'];

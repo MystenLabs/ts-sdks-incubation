@@ -9,6 +9,7 @@ import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildImage as buildImageAction } from '../../actions/build.js';
 import { containerService } from '../../actions/container-service.js';
+import type { Plugin } from '../../core/types.js';
 import { pollUntilReady } from '../../helpers/poll.js';
 import { definePlugin } from '../../plugin.js';
 import {
@@ -116,7 +117,9 @@ const SUI_INDEXER_DATABASE_URL = `postgres://${POSTGRES_USER}:${POSTGRES_PASSWOR
 const indexerDbContainerName = (appName: string, stack: string): string =>
 	`${appName}-${stack}-sui-indexer-db`;
 
-export const sui = (opts: SuiPluginOptions = {}) => {
+export const sui = (
+	opts: SuiPluginOptions = {},
+): Plugin<'sui.build' | 'sui.indexer-db' | 'sui.localnet'> => {
 	const version = opts.version ?? SUI_DEFAULT_VERSION;
 	// `rpcPort` / `faucetPort` are now hints to the per-stack port
 	// allocator. Resolved at action-run time via `ctx.ports.allocate`;

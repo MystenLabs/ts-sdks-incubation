@@ -7,10 +7,6 @@ import type { Signer } from '@mysten/sui/cryptography';
 
 export type Network = 'localnet' | 'testnet' | 'mainnet';
 
-interface NetworkConfig {
-	rpcUrl?: string;
-}
-
 // ─── Accounts ─────────────────────────────────────────────────────────────
 
 export interface AccountFactoryContext {
@@ -210,15 +206,6 @@ interface ActionBase<TInputs = unknown, TResult = unknown> {
 	 * accept `snapshot:` because they don't run docker containers — there's
 	 * no committable layer for the snapshot orchestrator to capture. */
 	snapshotMeta?: SnapshotMeta;
-	/** Setup-action scope. Set by `runTransaction()` / `publishMove()` /
-	 * any user-declared action in `DevstackConfig.setup`. The action
-	 * filters drop out-of-scope actions before the topo walk:
-	 *   - 'always' (default): runs in every stack
-	 *   - 'localnet-only': skips on testnet/mainnet
-	 *   - 'test-only': runs only when the active stack name starts with 'test'
-	 * (Framework-internal plugin actions don't set this; they're scoped via
-	 * other mechanisms — `seed.liveNetworks`, `applyFilter`, etc.) */
-	scope?: SetupActionScope;
 	/** Account name this action signs transactions as. The reconciler
 	 * uses this as a soft scheduling constraint: at most one inflight
 	 * action per distinct `runsAs` value, so two `publishMove`s with
@@ -270,9 +257,6 @@ interface ActionBase<TInputs = unknown, TResult = unknown> {
 	 */
 	identity?: (ctx: ActionRunContext) => Promise<string | undefined>;
 }
-
-/** Scope filter for app-level setup actions declared in `DevstackConfig.setup`. */
-export type SetupActionScope = 'always' | 'localnet-only' | 'test-only';
 
 export interface BuildAction<TInputs = unknown, TResult = unknown> extends ActionBase<
 	TInputs,
@@ -341,7 +325,6 @@ export interface SeedAction<TInputs = unknown, TResult = unknown> extends Action
 	TResult
 > {
 	type: 'Seed';
-	liveNetworks?: boolean | Network[];
 }
 
 export interface EmitAction<TInputs = unknown, TResult = unknown> extends ActionBase<
@@ -402,7 +385,19 @@ export type ActionFilter = (action: Action, target: ResolvedTarget) => boolean;
 
 // ─── Plugins ──────────────────────────────────────────────────────────────
 
-export interface Plugin {
+/**
+ * `TProvides` is a string literal union of every action name this plugin
+ * contributes (post-namespace-expansion: `'<plugin>.<action>'`). Used by
+ * `defineDevstackConfig` to type-check `needs:` references against the
+ * plugins actually present in the use array. Plugin factories declare it
+ * in their return-type annotation — e.g.
+ * `function sui(): Plugin<'sui.localnet' | 'sui.faucet'>`. Defaults to
+ * `string` when unannotated so untyped Plugin returns still work.
+ *
+ * The `__provides` field is type-only — it carries the union forward
+ * through inference and is never set at runtime.
+ */
+export interface Plugin<TProvides extends string = string> {
 	name: string;
 	/** Optional human-readable description shown in `devstack stack list`
 	 * and the renderer's plugin-overview block (when added). */
@@ -420,6 +415,8 @@ export interface Plugin {
 	 * stringifies it via `stableHash`. */
 	inputs?: unknown;
 	actions: () => Action[];
+	/** Type-only phantom: never set at runtime. See doc on `TProvides`. */
+	readonly __provides?: TProvides;
 }
 
 // ─── Registry kinds (core) ────────────────────────────────────────────────
@@ -513,26 +510,6 @@ export interface Registry {
 	readonly packages: RegistryQuery<Package>;
 	readonly accounts: RegistryQuery<Account>;
 	readonly services: RegistryQuery<Service>;
-	/**
-	 * Plugin-namespaced kinds. Two equivalent ways to access:
-	 *
-	 *   ctx.registry.ns<{ nodes: RegistryQuery<Node> }>('walrus').nodes
-	 *
-	 *   const nodes = defineRegistryKind<Node>('walrus.nodes');
-	 *   nodes(ctx.registry).register(...);
-	 *
-	 * `defineRegistryKind` (in `@mysten-incubation/devstack`) is the
-	 * ergonomic path — pin the kind type at module top-level, no double
-	 * generic, and the typed accessor is reusable. `ns<T>` is the lower-
-	 * level escape hatch when the plugin needs a multi-kind bag.
-	 *
-	 * `T` is unconstrained intentionally — the runtime returns a Proxy that
-	 * auto-creates `RegistryQuery` queries on any string property access, so a
-	 * tighter constraint (e.g. `Record<string, RegistryQuery<unknown>>`)
-	 * would force plugin-author types to carry a redundant index signature
-	 * for no enforcement benefit.
-	 */
-	ns<T>(name: string): T;
 }
 
 // ─── Action runtime context ───────────────────────────────────────────────
@@ -678,9 +655,29 @@ export function requireLocalnetCtx(ctx: ActionRunContext): asserts ctx is Localn
 
 // ─── Top-level config ─────────────────────────────────────────────────────
 
-export interface DevstackConfig {
+/**
+ * The shape `defineDevstackConfig` accepts. `use:` is a flat-or-nested
+ * array of `Plugin`s (built-in + custom plugin instances) and `Action`s
+ * (setup actions like `publishMove(...)`, `runTransaction(...)`, `seed(...)`).
+ *
+ * Single items, arrays of items, and mixes are all accepted: the runtime
+ * flattens before partitioning. Bare actions are folded into a synthetic
+ * `<app>-setup` plugin so cross-action `needs:` references stay stable.
+ *
+ *   defineDevstackConfig({
+ *     app: 'token-studio',
+ *     accounts: ['alice', 'bob'],
+ *     use: [
+ *       sui(),
+ *       accounts(),
+ *       codegen(),
+ *       publishMove({ name: 'managedCoin', path: ..., publisher: 'alice' }),
+ *     ],
+ *   });
+ */
+export interface DevstackConfigInput {
 	app: string;
-	plugins: Plugin[];
+	use: ReadonlyArray<Plugin | Action | ReadonlyArray<Plugin | Action>>;
 	/**
 	 * Named signing identities. Two forms:
 	 *
@@ -694,24 +691,18 @@ export interface DevstackConfig {
 	 * `AccountSpec` for the per-network slot semantics.
 	 */
 	accounts?: AccountsConfig;
-	networks?: Partial<Record<Network, NetworkConfig>>;
-	test?: TestConfig;
-	/**
-	 * App-level setup actions: Move package publishes, fixture mints,
-	 * shared-object seeds. Compiled into a synthetic plugin named
-	 * `<app>-setup` and appended to `plugins`. Use the ergonomic factories
-	 * `publishMove()` and `runTransaction()` for the common cases — they
-	 * forward to `publish` / `seed` with sensible defaults (default
-	 * signer, source-digest input hashing, hash-match skip).
-	 *
-	 * Per-action `scope` field controls whether the action runs in a
-	 * given stack (`'always'` default; `'test-only'` for fixtures only
-	 * needed in test stacks; `'localnet-only'` to skip on live nets).
-	 */
-	setup?: Action[];
+	networks?: Partial<Record<Network, string>>;
 }
 
-interface TestConfig {
-	accountPoolSize?: number;
-	fundEachAccount?: bigint;
+/**
+ * Internal post-normalization shape. The runtime (CLIs, supervisor,
+ * snapshot, etc.) consumes `plugins:` directly; bare setup actions from
+ * `DevstackConfigInput.use` are already folded into the synthetic
+ * `<app>-setup` plugin entry.
+ */
+export interface DevstackConfig {
+	app: string;
+	plugins: Plugin[];
+	accounts?: AccountsConfig;
+	networks?: Partial<Record<Network, string>>;
 }

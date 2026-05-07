@@ -29,10 +29,6 @@
 			"types": "./dist/index.d.mts",
 			"import": "./dist/index.mjs"
 		},
-		"./app-setup": {
-			"types": "./dist/app-setup/index.d.mts",
-			"import": "./dist/app-setup/index.mjs"
-		},
 		"./helpers": {
 			"types": "./dist/helpers.d.mts",
 			"import": "./dist/helpers.mjs"
@@ -45,14 +41,6 @@
 			"types": "./dist/react/index.d.mts",
 			"import": "./dist/react/index.mjs"
 		},
-		"./react/ui": {
-			"types": "./dist/react/ui/index.d.mts",
-			"import": "./dist/react/ui/index.mjs"
-		},
-		"./vite": {
-			"types": "./dist/vite/plugin.d.mts",
-			"import": "./dist/vite/plugin.mjs"
-		},
 		"./vitest": {
 			"types": "./dist/vitest/index.d.mts",
 			"import": "./dist/vitest/index.mjs"
@@ -60,9 +48,6 @@
 		"./vitest/runtime": {
 			"types": "./dist/vitest/runtime.d.mts",
 			"import": "./dist/vitest/runtime.mjs"
-		},
-		"./manifest": {
-			"types": "./dist/manifest.d.ts"
 		}
 	},
 	"publishConfig": {

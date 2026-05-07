@@ -6,18 +6,21 @@
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { Transaction } from '@mysten/sui/transactions';
+
 import {
 	accounts,
 	codegen,
-	coinTokens,
 	deepbook,
 	defineDevstackConfig,
 	frontend,
-	mintCoinDistribution,
 	publishMove,
+	registerCoin,
+	seed,
 	sui,
 	walletServer,
 } from '@mysten-incubation/devstack';
+import { createLocalSuiClient } from '@mysten-incubation/devstack/helpers';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const USDC_DIR = resolve(HERE, 'move/mock_usdc');
@@ -64,7 +67,7 @@ const POOL_SPECS = [
 export default defineDevstackConfig({
 	app: 'wallet',
 	accounts: ['publisher', 'alice', 'bob', 'carol'],
-	plugins: [
+	use: [
 		sui({ version: 'devnet-v1.71.0', rpcPort: 9376, faucetPort: 9765 }),
 		accounts(),
 		deepbook({
@@ -100,8 +103,6 @@ export default defineDevstackConfig({
 		codegen(),
 		walletServer({ port: 9420 }),
 		frontend({ port: 5174 }),
-	],
-	setup: [
 		publishMove({
 			name: 'usdc',
 			needs: ['accounts.fund'],
@@ -112,13 +113,13 @@ export default defineDevstackConfig({
 				metadataId: '::coin::CoinMetadata<',
 				upgradeCapId: '0x2::package::UpgradeCap',
 			},
-			onPublished: (ctx, result) => {
-				coinTokens(ctx.registry).register({
-					name: 'musdc',
-					type: `${result.packageId}::mock_usdc::MOCK_USDC`,
-					decimals: 6,
-				});
-			},
+		}),
+		registerCoin({
+			from: 'usdc',
+			name: 'musdc',
+			module: 'mock_usdc',
+			type: 'MOCK_USDC',
+			decimals: 6,
 		}),
 		publishMove({
 			name: 'weth',
@@ -130,25 +131,89 @@ export default defineDevstackConfig({
 				metadataId: '::coin::CoinMetadata<',
 				upgradeCapId: '0x2::package::UpgradeCap',
 			},
-			onPublished: (ctx, result) => {
-				coinTokens(ctx.registry).register({
-					name: 'mweth',
-					type: `${result.packageId}::mock_weth::MOCK_WETH`,
-					decimals: 8,
-				});
-			},
+		}),
+		registerCoin({
+			from: 'weth',
+			name: 'mweth',
+			module: 'mock_weth',
+			type: 'MOCK_WETH',
+			decimals: 8,
 		}),
 		// publisher mints the initial USDC + WETH supply to alice/bob/
 		// carol per the configured distribution. Idempotence comes from
 		// the reconciler's input-hash skip — change a recipient or an
 		// amount and the action re-runs; otherwise it skips.
-		mintCoinDistribution({
+		seed({
 			name: 'seedTokens',
 			needs: ['usdc', 'weth'],
-			distributions: [
-				{ package: 'mock_usdc', module: 'mock_usdc', distribution: USDC_DISTRIBUTION },
-				{ package: 'mock_weth', module: 'mock_weth', distribution: WETH_DISTRIBUTION },
-			],
+			runsAs: 'publisher',
+			inputs: {
+				signer: 'publisher',
+				gasBudget: '500000000',
+				distributions: [
+					{
+						package: 'mock_usdc',
+						module: 'mock_usdc',
+						distribution: USDC_DISTRIBUTION.map((e) => ({
+							recipient: e.recipient,
+							amount: e.amount.toString(),
+						})),
+					},
+					{
+						package: 'mock_weth',
+						module: 'mock_weth',
+						distribution: WETH_DISTRIBUTION.map((e) => ({
+							recipient: e.recipient,
+							amount: e.amount.toString(),
+						})),
+					},
+				],
+			},
+			run: async (ctx) => {
+				const client = createLocalSuiClient(
+					ctx.registry.services.require('sui-rpc').url,
+					ctx.network,
+				);
+				const signer = ctx.accounts.get('publisher');
+				const tx = new Transaction();
+				tx.setGasBudget(500_000_000n);
+				const specs = [
+					{ package: 'mock_usdc', module: 'mock_usdc', distribution: USDC_DISTRIBUTION },
+					{ package: 'mock_weth', module: 'mock_weth', distribution: WETH_DISTRIBUTION },
+				];
+				for (const spec of specs) {
+					const pkg = ctx.registry.packages.require(spec.package);
+					const treasuryCapId = pkg.captured.treasuryCapId;
+					if (treasuryCapId === undefined) {
+						throw new Error(
+							`seedTokens: package '${spec.package}' has no captured treasuryCapId`,
+						);
+					}
+					const target = `${pkg.packageId}::${spec.module}::mint`;
+					for (const entry of spec.distribution) {
+						const recipient = ctx.registry.accounts.require(entry.recipient).address;
+						tx.moveCall({
+							target,
+							arguments: [
+								tx.object(treasuryCapId),
+								tx.pure.u64(entry.amount),
+								tx.pure.address(recipient),
+							],
+						});
+					}
+				}
+				const result = await client.signAndExecuteTransaction({
+					signer,
+					transaction: tx,
+					options: { showEffects: true },
+				});
+				const status = result.effects?.status?.status;
+				if (status !== 'success') {
+					const err = result.effects?.status?.error ?? 'unknown';
+					throw new Error(`seedTokens: tx failed: ${err}`);
+				}
+				await client.waitForTransaction({ digest: result.digest });
+			},
 		}),
 	],
 });

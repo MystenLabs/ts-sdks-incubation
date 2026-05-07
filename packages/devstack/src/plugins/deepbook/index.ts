@@ -28,7 +28,7 @@
 // Localnet-only (mirrors `walrus()`, `seal()`). Ships with a default
 // `rev: 'v7.0.0'` so most apps don't think about versions.
 
-import type { Action } from '../../core/types.js';
+import type { Action, Plugin } from '../../core/types.js';
 import { definePlugin } from '../../plugin.js';
 import {
 	type DeepbookMarketMakerSpec,
@@ -69,7 +69,13 @@ interface DeepbookPluginOptions {
 	marketMakers?: ReadonlyArray<DeepbookMarketMakerSpec>;
 }
 
-export const deepbook = (opts: DeepbookPluginOptions = {}) => {
+type DeepbookProvides =
+	| 'deepbook.source'
+	| 'deepbook.publish'
+	| 'deepbook.pools'
+	| `deepbook.market-maker-${string}`;
+
+export const deepbook = (opts: DeepbookPluginOptions = {}): Plugin<DeepbookProvides> => {
 	const rev = opts.rev ?? DEFAULT_REV;
 	const admin = opts.admin ?? 'publisher';
 	const pools = opts.pools ?? [];

@@ -1,9 +1,10 @@
 // `publishMove()` — ergonomic factory for app-level Move package publishes.
 //
-// Thin wrapper over `publish()` that threads the setup-action `scope`
-// field. Use in `DevstackConfig.setup`:
+// Thin wrapper over `publish()`. Use inside `DevstackConfig.use: [...]`:
 //
-//   setup: [
+//   use: [
+//     sui(),
+//     accounts(),
 //     publishMove({
 //       name: 'token-studio',
 //       path: './move/token-studio',
@@ -18,13 +19,12 @@
 // capture the published package via sui's container-layer commit;
 // restore brings the package back at its same address.
 
-import type { ActionRunContext, Provides, PublishAction, SetupActionScope } from '../core/types.js';
-import type { PublishMovePackageResult } from '../helpers/move-package.js';
+import type { Provides, PublishAction } from '../core/types.js';
 import { publish, type PublishInputs } from './publish.js';
 
-interface PublishMoveOptions {
+interface PublishMoveOptions<TNeeds extends string> {
 	name: string;
-	needs?: string[];
+	needs?: readonly TNeeds[];
 	provides?: Provides;
 	/** Move package source directory (relative to the app's `devstack.config.ts`). */
 	path: string;
@@ -35,23 +35,24 @@ interface PublishMoveOptions {
 	publisher?: string;
 	/** Registry entry name. Defaults to `name`. */
 	registryAs?: string;
-	/** Side-effect after a fresh publish (skipped on cache hit). Use for
-	 * token registration, follow-up shared-object creation, etc. */
-	onPublished?: (ctx: ActionRunContext, result: PublishMovePackageResult) => Promise<void> | void;
-	/** Setup-action scope. See `SetupActionScope`. Default: 'always'. */
-	scope?: SetupActionScope;
 }
 
-export function publishMove(opts: PublishMoveOptions): PublishAction<PublishInputs> {
+/** The phantom-typed return shape: PublishAction plus a `__needs` carrier
+ * so `defineDevstackConfig`'s mapped-type validator can see what this
+ * action's needs are at compile time. The phantom has no runtime
+ * presence. */
+type WithNeeds<TNeeds extends string, T> = T & { readonly __needs?: TNeeds };
+
+export function publishMove<const TNeeds extends string = never>(
+	opts: PublishMoveOptions<TNeeds>,
+): WithNeeds<TNeeds, PublishAction<PublishInputs>> {
 	return publish({
 		name: opts.name,
-		needs: opts.needs,
+		needs: opts.needs as string[] | undefined,
 		provides: opts.provides,
 		path: opts.path,
 		capture: opts.capture,
 		publisher: opts.publisher,
 		registryAs: opts.registryAs,
-		onPublished: opts.onPublished,
-		scope: opts.scope,
-	});
+	}) as WithNeeds<TNeeds, PublishAction<PublishInputs>>;
 }

@@ -1,4 +1,3 @@
-import { useDevstackDeployed } from '@mysten-incubation/devstack/react';
 import { useCurrentAccount } from '@mysten/dapp-kit-react';
 import { ConnectButton } from '@mysten/dapp-kit-react/ui';
 
@@ -6,11 +5,11 @@ import { Balances } from './components/Balances.js';
 import { CoinHeader } from './components/CoinHeader.js';
 import { MintForm } from './components/MintForm.js';
 import { TransferForm } from './components/TransferForm.js';
-import { deployment } from './lib/deployment.js';
+import { deployment, isDeployed } from './lib/deployment.js';
 import { labelFor, shortAddress } from './lib/coin.js';
 
 export function App() {
-	const deployed = useDevstackDeployed({ requirePackages: ['managed_coin'] });
+	const deployed = isDeployed;
 	return (
 		<div className="min-h-screen flex flex-col">
 			<header className="flex items-center justify-between px-6 py-4 border-b border-neutral-200 dark:border-neutral-800 bg-white/50 dark:bg-neutral-950/50 backdrop-blur sticky top-0 z-10">

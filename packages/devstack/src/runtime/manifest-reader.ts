@@ -8,14 +8,7 @@
 // whose recorded `packageId` is still live on chain can skip republish.
 
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import type {
-	Account,
-	Network,
-	Package,
-	Registry,
-	RegistryQuery,
-	Service,
-} from '../core/types.js';
+import type { Account, Network, Package, Registry, Service } from '../core/types.js';
 import type { InternalRegistry } from '../registry/index.js';
 import type { Manifest, SerializedActionState } from './manifest-types.js';
 import { manifestPath } from './manifest-writer.js';
@@ -82,19 +75,16 @@ export function hydrateRegistry(opts: HydrateOptions): boolean {
 	for (const s of (r.services ?? []) as Service[]) reg.services.register(s);
 
 	// Plugin-namespaced kinds are stored under top-level keys other than
-	// the three core ones. Round-trip them through the namespace API. The
+	// the three core ones. Round-trip them through `getOrCreateKind`. The
 	// `coin.tokens` entries flow through this path now that `tokens` is
 	// no longer a core kind.
 	const coreKeys = new Set(['packages', 'accounts', 'services']);
 	for (const [name, value] of Object.entries(r)) {
 		if (coreKeys.has(name)) continue;
 		const bag = value as Record<string, Array<{ name: string }>>;
-		// Reach into the impl: ns<T>() returns a Proxy that auto-creates
-		// query objects for any kind name accessed on it.
-		const ns = (reg as InternalRegistry).ns<Record<string, RegistryQuery<{ name: string }>>>(name);
+		const internal = reg as InternalRegistry;
 		for (const [kindName, items] of Object.entries(bag)) {
-			const query = ns[kindName];
-			if (query === undefined) continue;
+			const query = internal.getOrCreateKind(name, kindName);
 			for (const item of items) query.register(item);
 		}
 	}

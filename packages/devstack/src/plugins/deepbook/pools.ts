@@ -16,12 +16,9 @@
 
 import { Transaction } from '@mysten/sui/transactions';
 
-import {
-	type ActionRunContext,
-	type Registry,
-	type RegistryQuery,
-} from '../../core/types.js';
+import { type ActionRunContext, type Registry } from '../../core/types.js';
 import { openSuiRpcClient } from '../../helpers/sui-client.js';
+import { defineRegistryKind } from '../../registry/index.js';
 import { seed } from '../../actions/seed.js';
 import { resolveCoinType } from './coin-spec.js';
 
@@ -46,13 +43,16 @@ interface DeepbookPool {
 	quoteCoinType: string;
 }
 
-interface DeepbookNamespace {
-	pools: RegistryQuery<DeepbookPool>;
-	balanceManagers: RegistryQuery<{ name: string; objectId: string; owner: string }>;
+interface DeepbookBalanceManager {
+	name: string;
+	objectId: string;
+	owner: string;
 }
 
-export const deepbookNs = (registry: Registry): DeepbookNamespace =>
-	registry.ns<DeepbookNamespace>('deepbook');
+export const deepbookPools = defineRegistryKind<DeepbookPool>('deepbook.pools');
+export const deepbookBalanceManagers = defineRegistryKind<DeepbookBalanceManager>(
+	'deepbook.balanceManagers',
+);
 
 interface DeepbookPoolsActionOptions {
 	pools: ReadonlyArray<DeepbookPoolSpec>;
@@ -93,10 +93,10 @@ export function deepbookPoolsAction(opts: DeepbookPoolsActionOptions) {
 			if (opts.pools.length === 0) return { ok: true, detail: 'no pools declared' };
 			const deepbookPkg = ctx.registry.packages.find('deepbook');
 			if (deepbookPkg === undefined) return { ok: false, detail: 'deepbook not published' };
-			const ns = deepbookNs(ctx.registry);
+			const pools = deepbookPools(ctx.registry);
 			const client = openSuiRpcClient(ctx);
 			for (const spec of opts.pools) {
-				const cached = ns.pools.find(spec.name);
+				const cached = pools.find(spec.name);
 				if (cached === undefined) return { ok: false, detail: `pool ${spec.name} missing` };
 				const expected = expectedPoolType(deepbookPkg.packageId, ctx.registry, spec);
 				if (cached.objectType !== expected) {
@@ -156,7 +156,7 @@ export function deepbookPoolsAction(opts: DeepbookPoolsActionOptions) {
 			}
 			await client.waitForTransaction({ digest: result.digest });
 
-			const ns = deepbookNs(ctx.registry);
+			const pools = deepbookPools(ctx.registry);
 			for (const spec of opts.pools) {
 				const baseType = resolveCoinType(ctx.registry, spec.base);
 				const quoteType = resolveCoinType(ctx.registry, spec.quote);
@@ -167,7 +167,7 @@ export function deepbookPoolsAction(opts: DeepbookPoolsActionOptions) {
 				if (found === undefined || found.type !== 'created') {
 					throw new Error(`deepbook.pools: created Pool object missing for ${spec.name}`);
 				}
-				ns.pools.register({
+				pools.register({
 					name: spec.name,
 					poolId: found.objectId,
 					objectType: expected,
@@ -186,13 +186,13 @@ function expectedPoolType(packageId: string, registry: Registry, spec: DeepbookP
 }
 
 function republishCachedPools(ctx: ActionRunContext, pools: ReadonlyArray<DeepbookPoolSpec>): void {
-	const ns = deepbookNs(ctx.registry);
+	const cache = deepbookPools(ctx.registry);
 	for (const spec of pools) {
-		const cached = ns.pools.find(spec.name);
+		const cached = cache.find(spec.name);
 		if (cached !== undefined) {
 			// Re-register so the dirty bit fires for codegen-style cascades
 			// even on warm-path skips. Same shape, no-op on equal values.
-			ns.pools.register(cached);
+			cache.register(cached);
 		}
 	}
 }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { coinTokens } from '../coin.js';
-import type { Account, Package, RegistryQuery, Service, Token } from '../core/types.js';
+import type { Account, Package, Service, Token } from '../core/types.js';
 import { RegistryImpl } from './index.js';
 
 const token = (name: string, overrides: Partial<Token> = {}): Token => ({
@@ -98,29 +98,29 @@ describe('RegistryImpl — coin namespace (tokens were demoted from core)', () =
 });
 
 describe('RegistryImpl — namespaced kinds', () => {
-	it('ns<T>(name) auto-creates the kind on first access (Proxy auto-viv)', () => {
+	it('getOrCreateKind(ns, kind) auto-creates the query on first access', () => {
 		const reg = new RegistryImpl();
-		const walrus = reg.ns<{ nodes: RegistryQuery<{ name: string }> }>('walrus');
+		const walrusNodes = reg.getOrCreateKind<{ name: string }>('walrus', 'nodes');
 		const node = { name: 'a' };
-		walrus.nodes.register(node);
-		expect(walrus.nodes.list()).toEqual([node]);
-		expect(walrus.nodes.find('a')).toBe(node);
+		walrusNodes.register(node);
+		expect(walrusNodes.list()).toEqual([node]);
+		expect(walrusNodes.find('a')).toBe(node);
 	});
 
-	it('ns returns the same namespace bag across calls (get-or-create)', () => {
+	it('getOrCreateKind returns the same query across calls', () => {
 		const reg = new RegistryImpl();
-		const a = reg.ns<{ nodes: RegistryQuery<{ name: string }> }>('walrus');
-		a.nodes.register({ name: 'one' });
-		const b = reg.ns<{ nodes: RegistryQuery<{ name: string }> }>('walrus');
-		// Different Proxies but the underlying map is shared, so registrations
-		// from `a` are visible through `b`.
-		expect(b.nodes.list()).toEqual([{ name: 'one' }]);
+		const a = reg.getOrCreateKind<{ name: string }>('walrus', 'nodes');
+		a.register({ name: 'one' });
+		const b = reg.getOrCreateKind<{ name: string }>('walrus', 'nodes');
+		// Same query object (or, at minimum, a query backed by the same
+		// underlying map) — registrations from `a` are visible through `b`.
+		expect(b.list()).toEqual([{ name: 'one' }]);
 	});
 
 	it('namespaced kind dirty keys are formatted as <ns>/<kind>', () => {
 		const reg = new RegistryImpl();
-		const walrus = reg.ns<{ nodes: RegistryQuery<{ name: string }> }>('walrus');
-		walrus.nodes.register({ name: 'a' });
+		const walrusNodes = reg.getOrCreateKind<{ name: string }>('walrus', 'nodes');
+		walrusNodes.register({ name: 'a' });
 		expect(reg.isDirty('walrus/nodes')).toBe(true);
 		expect(reg.isDirty('nodes')).toBe(false);
 	});
@@ -168,8 +168,8 @@ describe('RegistryImpl — dirty tracking', () => {
 
 	it('namespaced register dirties the namespaced key only', () => {
 		const reg = new RegistryImpl();
-		const walrus = reg.ns<{ nodes: RegistryQuery<{ name: string }> }>('walrus');
-		walrus.nodes.register({ name: 'a' });
+		const walrusNodes = reg.getOrCreateKind<{ name: string }>('walrus', 'nodes');
+		walrusNodes.register({ name: 'a' });
 		const flushed = reg.flushDirty();
 		expect(flushed).toEqual(new Set(['walrus/nodes']));
 	});
@@ -195,8 +195,8 @@ describe('RegistryImpl — dirty tracking', () => {
 		const reg = new RegistryImpl();
 		coinTokens(reg).register(token('sui'));
 		reg.packages.register(pkg('mock_usdc'));
-		const walrus = reg.ns<{ nodes: RegistryQuery<{ name: string; ip: string }> }>('walrus');
-		walrus.nodes.register({ name: 'a', ip: '10.0.0.10' });
+		const walrusNodes = reg.getOrCreateKind<{ name: string; ip: string }>('walrus', 'nodes');
+		walrusNodes.register({ name: 'a', ip: '10.0.0.10' });
 		const dirtyBefore = new Set(reg.flushDirty()); // capture + clear
 		const snap = reg.snapshot();
 		expect(snap.packages.map((p) => p.name)).toEqual(['mock_usdc']);

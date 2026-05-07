@@ -202,10 +202,11 @@ function validateAccountNames(abs: string, accounts: DevstackConfig['accounts'])
 /** Dynamic-import the config from `abs` and validate the minimum shape every
  * action-graph CLI relies on (`app: string`, `plugins: Plugin[]`).
  *
- * If the config declares `setup: [...]`, those actions are wrapped into a
- * synthetic plugin named `<app>-setup` and appended to `plugins`. From the
- * rest of the system's perspective it's a normal plugin — same expansion
- * rules, same filter chain, same snapshot capture path.
+ * Apps export `defineDevstackConfig(...)` as their default; the helper
+ * normalizes the user's `use: [...]` array into the runtime-facing
+ * `plugins: [...]` shape (synthesizing the `<app>-setup` plugin from any
+ * bare setup actions). By the time `loadConfig` reads the module, the
+ * normalization has already happened.
  *
  * The bin re-execs itself with `--import tsx` (see `cli/index.ts`) when
  * the runtime needs TS loading, so by the time `loadConfig` runs, the
@@ -218,7 +219,9 @@ export async function loadConfig(abs: string): Promise<DevstackConfig> {
 		throw new Error(`config at ${abs} did not export a default DevstackConfig`);
 	}
 	if (typeof cfg.app !== 'string' || !Array.isArray(cfg.plugins)) {
-		throw new Error(`config at ${abs} is missing required fields { app, plugins[] }`);
+		throw new Error(
+			`config at ${abs} did not export a normalized DevstackConfig — wrap your config in defineDevstackConfig({...}).`,
+		);
 	}
 	if (!APP_NAME_RE.test(cfg.app)) {
 		throw new Error(
@@ -227,26 +230,5 @@ export async function loadConfig(abs: string): Promise<DevstackConfig> {
 		);
 	}
 	validateAccountNames(abs, cfg.accounts);
-	if (cfg.setup !== undefined && cfg.setup.length > 0) {
-		const setupActions = cfg.setup;
-		const setupPlugin = {
-			name: `${cfg.app.replace(/[^a-z0-9_-]/gi, '-').toLowerCase()}-setup`,
-			// Folded into the snapshot id. Each setup action contributes its
-			// name + needs + inputs (the input bag the user passed); editing
-			// any of those invalidates the cached snapshot. `runTransaction`
-			// build callbacks are hashed via `Function.toString()` separately
-			// in the action's own input hash — that catches inline edits but
-			// not closure-captured constants (see notes/friction.md).
-			inputs: setupActions.map((a) => ({
-				name: a.name,
-				type: a.type,
-				needs: a.needs ?? null,
-				inputs: a.inputs ?? null,
-				scope: a.scope ?? null,
-			})),
-			actions: () => setupActions,
-		};
-		return { ...cfg, plugins: [...cfg.plugins, setupPlugin] };
-	}
 	return cfg;
 }

@@ -18,14 +18,14 @@
 //                         that SIGINTs the child on supervisor stop.
 //
 // `needs: ['codegen.generate']` so the dev server starts after the
-// manifest + generated bindings are written. The dev server CAN start
-// earlier (the vite plugin's `virtual:devstack-manifest` returns a typed
-// empty fallback), but waiting avoids a "stack is empty" first paint
-// followed by an HMR reload.
+// manifest + generated bindings are written. Without this gate the dev
+// server would import a stale or pre-emit `src/generated/manifest.ts`,
+// surfacing as a "stack is empty" first paint followed by an HMR reload
+// once codegen catches up.
 
 import { type ChildProcess, spawn } from 'node:child_process';
 import { hostProcess } from '../../actions/host-process.js';
-import type { ActionRunContext } from '../../core/types.js';
+import type { ActionRunContext, Plugin } from '../../core/types.js';
 import { probeUrl, waitForReachable } from '../../helpers/probe.js';
 import { definePlugin } from '../../plugin.js';
 
@@ -51,7 +51,7 @@ interface FrontendPluginOptions {
 	needs?: string[];
 }
 
-export const frontend = (opts: FrontendPluginOptions = {}) => {
+export const frontend = (opts: FrontendPluginOptions = {}): Plugin<'frontend.dev-server'> => {
 	const preferredPort = opts.port ?? 5173;
 	const baseCommand = opts.command ?? ['pnpm', 'exec', 'vite'];
 	const appendPort = opts.appendPort !== false;

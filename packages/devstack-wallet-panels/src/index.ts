@@ -3,7 +3,7 @@
 // Apps wire the panels into dev-wallet's panel API:
 //
 // ```ts
-// import { manifest } from 'virtual:devstack-manifest';
+// import { manifest } from './generated/manifest.js';
 // import { configureDevstackPanels, devstackPanels } from '@mysten-incubation/devstack-wallet-panels';
 // import { devWalletInitializer } from '@mysten-incubation/dev-wallet';
 //
@@ -33,13 +33,11 @@ export type {
 } from './types.js';
 
 /** Set the active devstack manifest for the panel custom elements. Call
- * once during app boot, with `manifest` from `virtual:devstack-manifest`.
+ * once during app boot, with `manifest` from
+ * `./generated/manifest.js` (codegen-emitted by `@mysten-incubation/devstack`).
  *
- * Accepts `unknown` to stay compatible with manifests produced by either
- * the typed `virtual:devstack-manifest` declaration in an app's
- * `vite-env.d.ts` or the structurally-equivalent `Manifest` exported
- * from `@mysten-incubation/devstack`. Panels narrow what they need at
- * render time. */
+ * Accepts `unknown` to stay loosely-coupled to whichever import path the
+ * app uses; panels narrow what they need at render time. */
 export function configureDevstackPanels(manifest: unknown): void {
 	setActiveManifest(manifest as DevstackManifest | null);
 }

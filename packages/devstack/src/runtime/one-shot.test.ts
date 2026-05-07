@@ -164,7 +164,7 @@ describe('runOneShot — actionFilter', () => {
 		});
 		const allLive = seed({
 			name: 'all-live',
-			liveNetworks: true,
+			networks: ['localnet', 'testnet', 'mainnet'],
 			inputs: {},
 			run: async () => {
 				liveSeedRan = true;

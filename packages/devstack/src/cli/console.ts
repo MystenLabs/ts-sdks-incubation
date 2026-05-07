@@ -197,7 +197,7 @@ interface PickRpcUrlOptions {
 
 function pickRpcUrl(opts: PickRpcUrlOptions): string {
 	if (opts.fromTarget.length > 0) return opts.fromTarget;
-	const override = opts.config.networks?.[opts.network]?.rpcUrl;
+	const override = opts.config.networks?.[opts.network];
 	if (override !== undefined) return override;
 	const services = (opts.manifest.registry.services ?? []) as Service[];
 	const rpc = services.find((s) => s.name === 'sui-rpc' || s.kind === 'sui-rpc');

@@ -13,7 +13,7 @@
 
 import type { Transaction } from '@mysten/sui/transactions';
 
-import type { ActionRunContext, Provides, SeedAction, SetupActionScope } from '../core/types.js';
+import type { ActionRunContext, Provides, SeedAction } from '../core/types.js';
 import { openSuiRpcClient } from '../helpers/sui-client.js';
 import { stableHash } from '../runtime/hash.js';
 import { Transaction as TransactionImpl } from '@mysten/sui/transactions';
@@ -33,8 +33,6 @@ interface RunTransactionOptions {
 	 * downstream object I created get destroyed off-chain?" invariants.
 	 * Most callers leave this undefined; hash match is sufficient. */
 	getStatus?: (ctx: ActionRunContext) => Promise<{ ok: boolean; detail?: string }>;
-	/** Setup-action scope. See `SetupActionScope`. Default: 'always'. */
-	scope?: SetupActionScope;
 }
 
 export function runTransaction(opts: RunTransactionOptions): SeedAction<Record<string, unknown>> {
@@ -46,7 +44,6 @@ export function runTransaction(opts: RunTransactionOptions): SeedAction<Record<s
 	const buildHash = stableHash({
 		signer: opts.signer,
 		build: opts.build.toString(),
-		scope: opts.scope ?? 'always',
 		needs: opts.needs ?? [],
 	});
 	return seed({
@@ -55,7 +52,6 @@ export function runTransaction(opts: RunTransactionOptions): SeedAction<Record<s
 		provides: opts.provides,
 		inputs: { signer: opts.signer, buildHash },
 		runsAs: opts.signer,
-		scope: opts.scope,
 		getStatus: opts.getStatus,
 		run: async (ctx) => {
 			const client = openSuiRpcClient(ctx);

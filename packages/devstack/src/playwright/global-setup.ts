@@ -43,7 +43,7 @@ export default async function globalSetup(): Promise<void> {
 		appName: config.app,
 		appDir,
 		network: 'localnet',
-		rpcUrl: config.networks?.localnet?.rpcUrl ?? '',
+		rpcUrl: config.networks?.localnet ?? '',
 		plugins: config.plugins,
 		accounts: config.accounts,
 		stack,

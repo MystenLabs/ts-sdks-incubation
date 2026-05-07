@@ -84,7 +84,7 @@ async function runUp(flags: UpFlags): Promise<number> {
 		network,
 		plugins: config.plugins,
 		accounts: config.accounts,
-		rpcUrl: config.networks?.[network]?.rpcUrl,
+		rpcUrl: config.networks?.[network],
 		renderer,
 	});
 	try {

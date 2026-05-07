@@ -11,22 +11,17 @@
 import { seedRunsOn } from '../actions/seed.js';
 import type { Action, ActionFilter, ResolvedTarget, SeedAction } from '../core/types.js';
 
-/** Setup-action scope filter. App-level setup actions declared in
- *  `DevstackConfig.setup` carry an optional `scope` field; out-of-scope
- *  actions are dropped before the topo walk. Framework actions don't set
- *  `scope` so this returns true for them by default. */
-function passesScope(action: Action, target: ResolvedTarget): boolean {
-	const scope = action.scope ?? 'always';
-	if (scope === 'always') return true;
-	if (scope === 'localnet-only') return target.network === 'localnet';
-	if (scope === 'test-only') {
-		return target.network === 'localnet' && target.stack.startsWith('test');
-	}
-	return true;
+/** Network allow-list filter. Actions can declare `networks: Network[]`
+ *  to restrict where they run (e.g. `['localnet']` for accounts.fund's
+ *  faucet flow). Actions without `networks` run on every target. */
+function passesNetwork(action: Action, target: ResolvedTarget): boolean {
+	const networks = action.networks;
+	if (networks === undefined) return true;
+	return networks.includes(target.network);
 }
 
 export const deployFilter: ActionFilter = (action, target) => {
-	if (!passesScope(action, target)) return false;
+	if (!passesNetwork(action, target)) return false;
 	switch (action.type) {
 		case 'Service':
 		case 'HostProcess':
@@ -43,7 +38,7 @@ export const deployFilter: ActionFilter = (action, target) => {
 };
 
 export const applyFilter: ActionFilter = (action, target) => {
-	if (!passesScope(action, target)) return false;
+	if (!passesNetwork(action, target)) return false;
 	if (target.network === 'localnet') {
 		if (action.type === 'Seed') return seedRunsOn(action as SeedAction, target.network);
 		return true;

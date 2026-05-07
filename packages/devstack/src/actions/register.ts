@@ -6,12 +6,7 @@
 // Plugin authors typically also override `getStatus` for richer "is my
 // registered thing still live on-chain?" checks.
 
-import type {
-	ActionRunContext,
-	Provides,
-	RegisterAction,
-	SetupActionScope,
-} from '../core/types.js';
+import type { ActionRunContext, Network, Provides, RegisterAction } from '../core/types.js';
 import { mergeRegistryShortcut } from '../core/types.js';
 
 interface RegisterOptions<TInputs extends Record<string, unknown>> {
@@ -28,10 +23,10 @@ interface RegisterOptions<TInputs extends Record<string, unknown>> {
 	 * transactions through `ctx.accounts.get('<name>')` — engages the
 	 * reconciler's same-signer serialization. */
 	runsAs?: string;
-	/** Action-graph scope. Default `'always'`. `'localnet-only'` drops the
-	 * action on testnet/mainnet apply/deploy cycles; `'test-only'` runs
-	 * only on stacks whose name starts with `'test'`. */
-	scope?: SetupActionScope;
+	/** Networks the action runs on. Defaults to all networks. Set to e.g.
+	 * `['localnet']` for actions that only make sense against a localnet
+	 * service (faucet flows, dev-only bootstraps). */
+	networks?: Network[];
 	run: (ctx: ActionRunContext) => Promise<void>;
 	getStatus?: (ctx: ActionRunContext) => Promise<{ ok: boolean; detail?: string }>;
 	identity?: (ctx: ActionRunContext) => Promise<string | undefined>;
@@ -47,7 +42,7 @@ export function register<TInputs extends Record<string, unknown>>(
 		provides: mergeRegistryShortcut(opts.provides, opts.registry),
 		inputs: opts.inputs,
 		runsAs: opts.runsAs,
-		scope: opts.scope,
+		networks: opts.networks,
 		run: opts.run,
 		getStatus: opts.getStatus,
 		identity: opts.identity,

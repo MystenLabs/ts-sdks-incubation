@@ -4,8 +4,8 @@
 // Apps now do (in `dapp-kit.ts` or inline in main.tsx):
 //
 // ```ts
-// import { manifest } from 'virtual:devstack-manifest';
-// import { createWalletApp } from '@mysten-incubation/devstack/app-setup';
+// import { manifest } from './generated/manifest.js';
+// import { createWalletApp } from '@mysten-incubation/devstack/react';
 //
 // export const { dAppKit } = createWalletApp({ manifest });
 //
@@ -18,10 +18,8 @@
 // }
 // ```
 //
-// Lives at the `/app-setup` subpath rather than the main barrel because
-// it pulls in `@mysten/dapp-kit-core` + `@mysten-incubation/dev-wallet`
-// + `@mysten-incubation/devstack-wallet-panels`. CLI / supervisor
-// consumers don't need any of that.
+// Ships from the `/react` subpath alongside the other dapp-kit-coupled
+// helpers; CLI / supervisor consumers don't pull this in.
 
 import type { DAppKit } from '@mysten/dapp-kit-core';
 import { createDAppKit } from '@mysten/dapp-kit-core';
@@ -30,7 +28,7 @@ import { devWalletInitializer } from '@mysten-incubation/dev-wallet';
 import { createDevstackAdapterFromManifest } from '@mysten-incubation/dev-wallet/adapters';
 import { configureDevstackPanels, devstackPanels } from '@mysten-incubation/devstack-wallet-panels';
 
-import { localnetDappKitConfig } from '../react/index.js';
+import { localnetDappKitConfig } from './create-devstack-dapp-kit.js';
 
 export interface CreateWalletAppOptions {
 	manifest: unknown;
