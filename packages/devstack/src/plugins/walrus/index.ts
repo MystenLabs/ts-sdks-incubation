@@ -116,13 +116,11 @@ interface WalrusPluginOptions {
 	 * the version tracked in `build.ts`. Used both to pull the matching
 	 * binary tarball (`walrus`, `walrus-node`) from the GitHub release
 	 * AND as the git ref BuildKit fetches matching source from to compile
-	 * `walrus-deploy` (the only binary not in the public release). */
+	 * `walrus-deploy` (the only binary not in the public release). The
+	 * sui version baked into the walrus image is derived internally from
+	 * `SUI_DEFAULT_VERSION` — apps should keep `sui()` and `walrus()`
+	 * pinned consistently (the package ships them aligned by default). */
 	version?: string;
-	/** Sui release tag baked into the walrus image (the testbed embeds
-	 * `sui` for genesis + admin txs). Defaults to `SUI_DEFAULT_VERSION`
-	 * — keep it in sync with the `sui()` plugin's `version` to avoid
-	 * shipping two different sui binaries in one stack. */
-	suiVersion?: string;
 	/** Base host port for storage node REST APIs. Each node's `9185`
 	 * (HTTPS sliver/metadata API) is mapped to `nodeHostPortBase + nodeIdx`
 	 * — default 19185, so the four nodes land on 19185–19188.
@@ -189,7 +187,7 @@ type WalrusProvides =
 
 export const walrus = (opts: WalrusPluginOptions = {}): Plugin<WalrusProvides> => {
 	const version = opts.version ?? WALRUS_VERSION;
-	const suiVersion = opts.suiVersion ?? SUI_DEFAULT_VERSION;
+	const suiVersion = SUI_DEFAULT_VERSION;
 	const imageTag = walrusImageTag(version, suiVersion);
 	const platform = hostDockerPlatform();
 	const epochDuration = opts.epochDuration ?? DEFAULT_EPOCH_DURATION;

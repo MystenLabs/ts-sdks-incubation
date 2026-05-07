@@ -38,7 +38,6 @@ export default defineDevstackConfig({
 		// link the metadata badge.
 		publishMove({
 			name: 'managedCoin',
-			needs: ['accounts.fund'],
 			registryAs: 'managed_coin',
 			path: MANAGED_COIN_DIR,
 			publisher: 'alice',

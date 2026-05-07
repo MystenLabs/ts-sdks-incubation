@@ -7,17 +7,11 @@
 // registered thing still live on-chain?" checks.
 
 import type { ActionRunContext, Network, Provides, RegisterAction } from '../core/types.js';
-import { mergeRegistryShortcut } from '../core/types.js';
 
 interface RegisterOptions<TInputs extends Record<string, unknown>> {
 	name: string;
 	needs?: string[];
 	provides?: Provides;
-	/** Sugar for `provides: { registry }`. Re-runs on cold + warm-path
-	 * skip so the in-memory registry stays populated without `getStatus`
-	 * having to re-register. If both `provides` (with `registry`) and this
-	 * are set, `provides.registry` wins. */
-	registry?: (ctx: ActionRunContext) => Promise<void> | void;
 	inputs: TInputs;
 	/** Account this register signs as. Set when the `run:` callback issues
 	 * transactions through `ctx.accounts.get('<name>')` — engages the
@@ -39,7 +33,7 @@ export function register<TInputs extends Record<string, unknown>>(
 		name: opts.name,
 		type: 'Register',
 		needs: opts.needs,
-		provides: mergeRegistryShortcut(opts.provides, opts.registry),
+		provides: opts.provides,
 		inputs: opts.inputs,
 		runsAs: opts.runsAs,
 		networks: opts.networks,

@@ -14,7 +14,7 @@
 		"localnet:up": "devstack up --once",
 		"apply": "devstack apply",
 		"codegen": "devstack codegen",
-		"deploy": "devstack deploy",
+		"deploy": "devstack apply",
 		"stack": "devstack stack"
 	},
 	"dependencies": {

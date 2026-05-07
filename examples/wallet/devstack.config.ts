@@ -105,7 +105,6 @@ export default defineDevstackConfig({
 		frontend({ port: 5174 }),
 		publishMove({
 			name: 'usdc',
-			needs: ['accounts.fund'],
 			registryAs: 'mock_usdc',
 			path: USDC_DIR,
 			capture: {
@@ -123,7 +122,6 @@ export default defineDevstackConfig({
 		}),
 		publishMove({
 			name: 'weth',
-			needs: ['accounts.fund'],
 			registryAs: 'mock_weth',
 			path: WETH_DIR,
 			capture: {

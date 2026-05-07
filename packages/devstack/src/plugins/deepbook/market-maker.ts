@@ -128,7 +128,7 @@ export function deepbookMarketMakerAction(opts: DeepbookMarketMakerActionOptions
 		run: async (ctx) => {
 			if (timer !== undefined) return;
 
-			const log = ctx.appendLog ?? ((line: string) => process.stdout.write(`${line}\n`));
+			const log = ctx.appendLog;
 
 			// First tick is awaited so getStatus reports `ok` only after the
 			// initial grid is on chain. Subsequent ticks are fire-and-log;

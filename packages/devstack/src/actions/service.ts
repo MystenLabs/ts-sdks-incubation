@@ -10,14 +10,11 @@
 // `ServiceAction.run` is part of the `Action` union.
 
 import type { LocalnetActionRunContext, Provides, ServiceAction } from '../core/types.js';
-import { mergeRegistryShortcut } from '../core/types.js';
 
 interface ServiceOptions<TInputs extends Record<string, unknown>> {
 	name: string;
 	needs?: string[];
 	provides?: Provides;
-	/** Sugar for `provides: { registry }`. */
-	registry?: (ctx: LocalnetActionRunContext) => Promise<void> | void;
 	inputs: TInputs;
 	run: (ctx: LocalnetActionRunContext) => Promise<void>;
 	getStatus?: (ctx: LocalnetActionRunContext) => Promise<{ ok: boolean; detail?: string }>;
@@ -31,7 +28,7 @@ export function service<TInputs extends Record<string, unknown>>(
 		name: opts.name,
 		type: 'Service',
 		needs: opts.needs,
-		provides: mergeRegistryShortcut(opts.provides, opts.registry),
+		provides: opts.provides,
 		inputs: opts.inputs,
 		run: opts.run as ServiceAction<TInputs>['run'],
 		getStatus: opts.getStatus as ServiceAction<TInputs>['getStatus'],

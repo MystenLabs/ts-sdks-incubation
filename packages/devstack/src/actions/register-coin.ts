@@ -48,18 +48,20 @@ export function registerCoin<const TFrom extends string, const TName extends str
 	const action = seed({
 		name: `register-${opts.from}`,
 		needs: [opts.from],
-		provides: opts.provides,
+		provides: {
+			...(opts.provides ?? {}),
+			registry: (ctx) => {
+				const pkg = ctx.registry.packages.find(opts.from);
+				if (pkg === undefined) return;
+				const existing = coinTokens(ctx.registry).find(registryName);
+				if (existing !== undefined) coinTokens(ctx.registry).register(existing);
+			},
+		},
 		inputs: {
 			from: opts.from,
 			module: opts.module,
 			type: opts.type,
 			decimals: opts.decimals,
-		},
-		registry: (ctx) => {
-			const pkg = ctx.registry.packages.find(opts.from);
-			if (pkg === undefined) return;
-			const existing = coinTokens(ctx.registry).find(registryName);
-			if (existing !== undefined) coinTokens(ctx.registry).register(existing);
 		},
 		run: async (ctx) => {
 			const pkg = ctx.registry.packages.require(opts.from);

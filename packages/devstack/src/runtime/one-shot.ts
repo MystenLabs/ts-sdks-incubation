@@ -1,14 +1,12 @@
-// One-shot reconciler. Powers `devstack deploy --network <n>` today and
-// will power `devstack apply` / `devstack codegen` once C2 lands. A single
-// invocation of `Reconciler.cycle` against a live RPC, with no supervisor,
-// no file watcher, and no parallelism beyond what the reconciler itself
-// provides (Emit cascade + getStatus skip predicates).
+// One-shot reconciler. Powers `devstack apply` and `devstack codegen`. A
+// single invocation of `Reconciler.cycle` against a live RPC, with no
+// supervisor, no file watcher, and no parallelism beyond what the
+// reconciler itself provides (Emit cascade + getStatus skip predicates).
 //
 // Filtering (see cli/filters.ts):
-//   - `deployFilter` (default): skip Service; gate Seed by network; run
-//     Build/Publish/Register/Emit on every network. Mirrors the inline
-//     `actionRunsOnLiveNet` predicate this module shipped pre-C1.
-//   - `applyFilter`: localnet runs all kinds; live nets skip Service+Build.
+//   - `applyFilter` (default): localnet runs every action type; live nets
+//     skip Service + HostProcess (no docker assumed) but keep Build /
+//     Publish / Register / Seed (network-gated) / Emit / Verify.
 //   - `emitOnlyFilter`: codegen-style read-only re-emit.
 //
 // Why `Reconciler.cycle` instead of a bespoke parallel-level walk: the
@@ -34,7 +32,7 @@ import type {
 } from '../core/types.js';
 import { expandPluginActions } from '../plugin.js';
 import { RegistryImpl } from '../registry/index.js';
-import { deployFilter } from '../cli/filters.js';
+import { applyFilter } from '../cli/filters.js';
 import { resolveAccounts } from './accounts.js';
 import { DEFAULT_STACK } from './active-stack.js';
 import { hydrateRegistry, readReconcilerState } from './manifest-reader.js';
@@ -57,10 +55,10 @@ interface OneShotOptions {
 	stack?: string;
 	/** Skip hydration from prior manifest. Default: false (hydrate). */
 	skipHydrate?: boolean;
-	/** Filter applied during plugin expansion. Default: `deployFilter`
-	 * (skip Service; gate Seed by network; run everything else). Override
-	 * with `applyFilter` for `devstack apply` or `emitOnlyFilter` for
-	 * `devstack codegen`. */
+	/** Filter applied during plugin expansion. Default: `applyFilter`
+	 * (localnet runs every action type; live nets skip Service +
+	 * HostProcess). Override with `emitOnlyFilter` for codegen-only
+	 * re-emit, or with a custom predicate for ad-hoc selections. */
 	actionFilter?: ActionFilter;
 	/** When true, skip the post-cycle manifest write — useful for codegen,
 	 * which regenerates bindings without disturbing the on-disk manifest.
@@ -92,7 +90,7 @@ export async function runOneShot(opts: OneShotOptions): Promise<OneShotResult> {
 		stack,
 		rpcUrl: opts.rpcUrl,
 	};
-	const filter = opts.actionFilter ?? deployFilter;
+	const filter = opts.actionFilter ?? applyFilter;
 	const allActions = expandPluginActions(opts.plugins);
 	const filtered = allActions.filter((a) => filter(a, target));
 	const scoped =

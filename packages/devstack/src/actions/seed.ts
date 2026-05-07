@@ -5,7 +5,6 @@
 // `networks: ['localnet', 'testnet']` to allow a seed on testnet too.
 
 import type { ActionRunContext, Network, Provides, SeedAction } from '../core/types.js';
-import { mergeRegistryShortcut } from '../core/types.js';
 
 const DEFAULT_SEED_NETWORKS: ReadonlyArray<Network> = ['localnet'];
 
@@ -13,8 +12,6 @@ interface SeedOptions<TInputs extends Record<string, unknown>> {
 	name: string;
 	needs?: string[];
 	provides?: Provides;
-	/** Sugar for `provides: { registry }`. */
-	registry?: (ctx: ActionRunContext) => Promise<void> | void;
 	inputs: TInputs;
 	/**
 	 * Networks this seed runs on. Default: localnet only. Pass an
@@ -43,7 +40,7 @@ export function seed<TInputs extends Record<string, unknown>>(
 		name: opts.name,
 		type: 'Seed',
 		needs: opts.needs,
-		provides: mergeRegistryShortcut(opts.provides, opts.registry),
+		provides: opts.provides,
 		inputs: opts.inputs,
 		networks: opts.networks ?? [...DEFAULT_SEED_NETWORKS],
 		runsAs: opts.runsAs,

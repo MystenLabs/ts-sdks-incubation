@@ -7,15 +7,14 @@
 // code stays focused on what's unique (the spec) instead of repeating the
 // imperative remove+rerun dance.
 //
-// Pair with `provides: { registry: ... }` (or pass `registry`) to populate
-// the in-memory registry on warm-path skips.
+// Pair with `provides: { registry: ... }` to populate the in-memory
+// registry on warm-path skips.
 
 import {
 	type LocalnetActionRunContext,
 	type Provides,
 	type ServiceAction,
 	type SnapshotMeta,
-	mergeRegistryShortcut,
 	requireLocalnetCtx,
 } from '../core/types.js';
 import {
@@ -51,9 +50,6 @@ interface ContainerServiceOptions<TInputs extends Record<string, unknown>> {
 		ctx: LocalnetActionRunContext,
 		info: ContainerInfo,
 	) => Promise<{ ok: boolean; detail?: string }>;
-	/** Sugar for `provides: { registry }`. If both are set, the explicit
-	 * `provides` wins. */
-	registry?: (ctx: LocalnetActionRunContext) => void | Promise<void>;
 	/** Run before the container is created — e.g. `ensureNetwork`, write a
 	 * generated config file. */
 	preRun?: (ctx: LocalnetActionRunContext) => Promise<void>;
@@ -96,16 +92,7 @@ export function containerService<TInputs extends Record<string, unknown>>(
 	opts: ContainerServiceOptions<TInputs>,
 ): ServiceAction<TInputs> {
 	const stopOnShutdown = opts.stopOnShutdown ?? true;
-	const userRegistry = opts.registry;
-	const provides = mergeRegistryShortcut(
-		opts.provides,
-		userRegistry === undefined
-			? undefined
-			: (ctx) => {
-					requireLocalnetCtx(ctx);
-					return userRegistry(ctx);
-				},
-	);
+	const provides = opts.provides;
 
 	const snapshotLabels: Record<string, string> = {};
 	if (opts.snapshot?.commit !== undefined) {

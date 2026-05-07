@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { Action, ResolvedTarget, SeedAction } from '../core/types.js';
-import { applyFilter, applyTestSetupFilter, deployFilter, emitOnlyFilter } from './filters.js';
+import { applyFilter, applyTestSetupFilter, emitOnlyFilter } from './filters.js';
 
 const localnet: ResolvedTarget = { network: 'localnet', stack: 'main', rpcUrl: '' };
 const testnet: ResolvedTarget = { network: 'testnet', stack: 'main', rpcUrl: 'https://t' };
@@ -13,44 +13,6 @@ const make = <T extends Action['type']>(type: T, extras: Partial<Action> = {}): 
 		type,
 		...extras,
 	}) as Action;
-
-describe('deployFilter', () => {
-	it('skips Service on every network', () => {
-		expect(deployFilter(make('Service'), localnet)).toBe(false);
-		expect(deployFilter(make('Service'), testnet)).toBe(false);
-	});
-
-	it('skips HostProcess on every network', () => {
-		expect(deployFilter(make('HostProcess'), localnet)).toBe(false);
-		expect(deployFilter(make('HostProcess'), testnet)).toBe(false);
-		expect(deployFilter(make('HostProcess'), mainnet)).toBe(false);
-	});
-
-	it('runs Build/Publish/Register/Emit on every network (preserves pre-C1 behavior)', () => {
-		for (const t of [localnet, testnet, mainnet] as const) {
-			expect(deployFilter(make('Build'), t)).toBe(true);
-			expect(deployFilter(make('Publish'), t)).toBe(true);
-			expect(deployFilter(make('Register'), t)).toBe(true);
-			expect(deployFilter(make('Emit'), t)).toBe(true);
-		}
-	});
-
-	it('runs Seed on localnet always', () => {
-		expect(deployFilter(make('Seed') as SeedAction, localnet)).toBe(true);
-	});
-
-	it('gates Seed on live nets by networks', () => {
-		const opt = make('Seed', { networks: ['localnet', 'testnet'] }) as SeedAction;
-		expect(deployFilter(opt, testnet)).toBe(true);
-		expect(deployFilter(opt, mainnet)).toBe(false);
-		const allLive = make('Seed', {
-			networks: ['localnet', 'testnet', 'mainnet'],
-		}) as SeedAction;
-		expect(deployFilter(allLive, mainnet)).toBe(true);
-		const localOnly = make('Seed', { networks: ['localnet'] }) as SeedAction;
-		expect(deployFilter(localOnly, testnet)).toBe(false);
-	});
-});
 
 describe('applyFilter', () => {
 	it('runs every action type on localnet', () => {
@@ -67,17 +29,21 @@ describe('applyFilter', () => {
 		expect(applyFilter(make('Seed') as SeedAction, localnet)).toBe(true);
 	});
 
-	it('skips Service, HostProcess AND Build on live nets', () => {
+	it('skips Service + HostProcess on live nets (no docker assumed on prod)', () => {
 		expect(applyFilter(make('Service'), testnet)).toBe(false);
 		expect(applyFilter(make('HostProcess'), testnet)).toBe(false);
-		expect(applyFilter(make('Build'), testnet)).toBe(false);
-		expect(applyFilter(make('Build'), mainnet)).toBe(false);
+		expect(applyFilter(make('Service'), mainnet)).toBe(false);
+		expect(applyFilter(make('HostProcess'), mainnet)).toBe(false);
 	});
 
-	it('runs Publish/Register/Emit on live nets', () => {
-		expect(applyFilter(make('Publish'), testnet)).toBe(true);
-		expect(applyFilter(make('Register'), testnet)).toBe(true);
-		expect(applyFilter(make('Emit'), testnet)).toBe(true);
+	it('runs Build/Publish/Register/Emit/Verify on live nets', () => {
+		for (const t of [testnet, mainnet] as const) {
+			expect(applyFilter(make('Build'), t)).toBe(true);
+			expect(applyFilter(make('Publish'), t)).toBe(true);
+			expect(applyFilter(make('Register'), t)).toBe(true);
+			expect(applyFilter(make('Emit'), t)).toBe(true);
+			expect(applyFilter(make('Verify'), t)).toBe(true);
+		}
 	});
 
 	it('gates Seed on live nets by networks', () => {
@@ -137,12 +103,6 @@ describe('action network filtering', () => {
 		expect(applyFilter(action, localnet)).toBe(false);
 		expect(applyFilter(action, testnet)).toBe(true);
 		expect(applyFilter(action, mainnet)).toBe(false);
-	});
-
-	it('network filter applies to deployFilter too', () => {
-		const action = make('Publish', { networks: ['localnet'] });
-		expect(deployFilter(action, localnet)).toBe(true);
-		expect(deployFilter(action, testnet)).toBe(false);
 	});
 
 	it('network filter applies to applyTestSetupFilter too', () => {

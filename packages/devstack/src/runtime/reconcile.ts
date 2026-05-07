@@ -471,7 +471,9 @@ export class Reconciler {
 			onShutdown: base.onShutdown
 				? (fn: ShutdownHook) => base.onShutdown!(action.name, fn)
 				: undefined,
-			appendLog: base.appendLog ? (line: string) => base.appendLog?.(action.name, line) : undefined,
+			appendLog: base.appendLog
+				? (line: string) => base.appendLog?.(action.name, line)
+				: (line: string) => process.stdout.write(`[${action.name}] ${line}\n`),
 			inputHash,
 		};
 		if (base.network === 'localnet') {

@@ -125,6 +125,22 @@ export function defineDevstackConfig<
 			setupActions.push(item);
 		}
 	}
+	// Auto-injection: when the `accounts` plugin is in the use array, every
+	// setup action that signs transactions (carries `runsAs`) implicitly
+	// needs the account to be funded first. Inject `'accounts.fund'` into
+	// such actions' `needs:` so app authors don't have to repeat it on
+	// every publishMove/runTransaction/seed they declare.
+	const hasAccountsPlugin = plugins.some((p) => p.name === 'accounts');
+	if (hasAccountsPlugin) {
+		for (let i = 0; i < setupActions.length; i++) {
+			const action = setupActions[i];
+			if (action === undefined) continue;
+			if (action.runsAs === undefined) continue;
+			const existing = action.needs ?? [];
+			if (existing.includes('accounts.fund')) continue;
+			setupActions[i] = { ...action, needs: ['accounts.fund', ...existing] } as Action;
+		}
+	}
 	if (setupActions.length > 0) {
 		const setupPluginName = `${input.app.replace(/[^a-z0-9_-]/gi, '-').toLowerCase()}-setup`;
 		const setupPlugin: Plugin = {

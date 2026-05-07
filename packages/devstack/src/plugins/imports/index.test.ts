@@ -71,6 +71,7 @@ const makeCtx = (
 		registry,
 		accounts,
 		inputHash: 'test',
+		appendLog: () => {},
 	};
 	return network === 'localnet'
 		? {
@@ -235,10 +236,12 @@ describe('imports plugin — Build action', () => {
 
 	it('localnet run calls ensureUpstreamSourceImage', async () => {
 		await build.run?.(makeCtx(new RegistryImpl(), 'localnet'));
-		expect(ensureUpstreamSourceImageMock).toHaveBeenCalledWith({
-			repo: 'MystenLabs/deepbookv3',
-			rev: 'v7.0.0',
-		});
+		expect(ensureUpstreamSourceImageMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				repo: 'MystenLabs/deepbookv3',
+				rev: 'v7.0.0',
+			}),
+		);
 	});
 });
 

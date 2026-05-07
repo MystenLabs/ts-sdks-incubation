@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { emit } from '../actions/emit.js';
 import { register } from '../actions/register.js';
-import { applyFilter, deployFilter, emitOnlyFilter } from '../cli/filters.js';
+import { applyFilter, emitOnlyFilter } from '../cli/filters.js';
 import { definePlugin } from '../plugin.js';
 import { runOneShot } from './one-shot.js';
 
@@ -20,7 +20,7 @@ describe('runOneShot — actionFilter', () => {
 		rmSync(appDir, { recursive: true, force: true });
 	});
 
-	it('default deployFilter runs Build/Publish/Register/Emit on live nets', async () => {
+	it('default applyFilter runs Publish/Register/Emit on live nets', async () => {
 		const reg = register({ name: 'r', inputs: {}, run: async () => {} });
 		const em = emit({
 			name: 'e',
@@ -151,7 +151,7 @@ describe('runOneShot — actionFilter', () => {
 		expect(manifest.registry.services?.find((s) => s.name === 'sui-rpc')).toBeUndefined();
 	});
 
-	it('filters Seed actions by network gate (deployFilter)', async () => {
+	it('filters Seed actions by network gate (applyFilter)', async () => {
 		const { seed } = await import('../actions/seed.js');
 		let localnetSeedRan = false;
 		let liveSeedRan = false;
@@ -178,7 +178,7 @@ describe('runOneShot — actionFilter', () => {
 			network: 'testnet',
 			rpcUrl: 'https://t',
 			plugins: [plugin],
-			actionFilter: deployFilter,
+			actionFilter: applyFilter,
 		});
 
 		expect(localnetSeedRan).toBe(false);

@@ -42,7 +42,6 @@ export default defineDevstackConfig({
 		frontend({ port: 5175 }),
 		publishMove({
 			name: 'vault',
-			needs: ['accounts.fund'],
 			path: VAULT_DIR,
 		}),
 	],

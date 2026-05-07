@@ -47,7 +47,6 @@ export default defineDevstackConfig({
 		frontend({ port: 5176 }),
 		publishMove({
 			name: 'connect_four',
-			needs: ['accounts.fund'],
 			path: CONNECT_FOUR_DIR,
 		}),
 		// One-shot bootstrap: seed a single shared `Lobby` so `devstack

@@ -44,7 +44,7 @@ export interface PollUntilReadyOptions {
 }
 
 export async function pollUntilReady(
-	ctx: { appendLog?: (line: string) => void },
+	ctx: { appendLog: (line: string) => void },
 	opts: PollUntilReadyOptions,
 ): Promise<void> {
 	const timeoutMs = opts.timeoutMs ?? 60_000;
@@ -54,17 +54,17 @@ export async function pollUntilReady(
 	const deadline = start + timeoutMs;
 	let lastProgressAt = start;
 	let lastDetail = '';
-	ctx.appendLog?.(`waiting for ${opts.label}…`);
+	ctx.appendLog(`waiting for ${opts.label}…`);
 	while (Date.now() < deadline) {
 		const result = await opts.probe();
 		if (result.ok) {
-			ctx.appendLog?.(`${opts.label} ready (${formatMs(Date.now() - start)})`);
+			ctx.appendLog(`${opts.label} ready (${formatMs(Date.now() - start)})`);
 			return;
 		}
 		lastDetail = result.detail ?? 'unknown';
 		const now = Date.now();
 		if (progressIntervalMs > 0 && now - lastProgressAt >= progressIntervalMs) {
-			ctx.appendLog?.(
+			ctx.appendLog(
 				`still waiting for ${opts.label} (${formatMs(now - start)}, last: ${lastDetail})`,
 			);
 			lastProgressAt = now;

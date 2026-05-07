@@ -18,7 +18,7 @@
 //     Drop the on-disk bundle + the seed images. Removes any aliases
 //     pointing at the id.
 //
-//   hash [--stack <name>]
+//   id [--stack <name>]
 //     Print the content-addressed `<sha-id>` for the active config —
 //     used by CI cache keys.
 //
@@ -40,13 +40,13 @@ import { loadConfig, parseConfigArg, parseStackArg, runIfMain } from './args.js'
 
 interface SnapshotFlags {
 	configPath: string;
-	subcommand: 'save' | 'restore' | 'list' | 'rm' | 'hash';
+	subcommand: 'save' | 'restore' | 'list' | 'rm' | 'id';
 	ref?: string;
 	stack?: string;
 	forceArch?: boolean;
 	pushTo?: string;
 	/** Emit JSON on stdout for any read-only subcommand
-	 * (`hash`, `list`, `save` summary). */
+	 * (`id`, `list`, `save` summary). */
 	json?: boolean;
 }
 
@@ -94,8 +94,8 @@ async function runSnapshot(flags: SnapshotFlags): Promise<number> {
 			return listCmd({ appDir, stack, json: flags.json });
 		case 'rm':
 			return rmCmd({ appDir, ref: requireRef(flags) });
-		case 'hash':
-			return hashCmd(id, flags.json);
+		case 'id':
+			return idCmd(id, flags.json);
 	}
 }
 
@@ -219,9 +219,9 @@ async function rmCmd(opts: { appDir: string; ref: string }): Promise<number> {
 	return removed ? 0 : 1;
 }
 
-function hashCmd(id: string, json?: boolean): number {
+function idCmd(id: string, json?: boolean): number {
 	if (json === true) {
-		process.stdout.write(`${JSON.stringify({ kind: 'summary', command: 'snapshot hash', id })}\n`);
+		process.stdout.write(`${JSON.stringify({ kind: 'summary', command: 'snapshot id', id })}\n`);
 	} else {
 		process.stdout.write(`${id}\n`);
 	}
@@ -262,7 +262,7 @@ Subcommands:
                           are running — \`devstack stack down\` first.
   list                    Show snapshots for the active stack.
   rm <alias|id>           Drop a snapshot bundle + its seed images.
-  hash                    Print the content-addressed id for the active
+  id                      Print the content-addressed id for the active
                           config (used by CI cache keys).
 
 Options:
@@ -276,7 +276,7 @@ Options:
                           machines where the local seed image is absent
                           (CI / cross-host snapshot sharing).
   --json                  Emit a single-line JSON summary on stdout
-                          (save / restore / list / hash).
+                          (save / restore / list / id).
 
 Examples:
   devstack snapshot save baseline
@@ -284,8 +284,8 @@ Examples:
   devstack snapshot list
   devstack snapshot restore baseline
   devstack snapshot rm baseline
-  devstack snapshot hash
-  devstack snapshot hash --json | jq -r .id    # CI cache key
+  devstack snapshot id
+  devstack snapshot id --json | jq -r .id    # CI cache key
 `;
 
 function parseArgs(argv: string[]): SnapshotFlags {
@@ -321,9 +321,9 @@ function parseArgs(argv: string[]): SnapshotFlags {
 		}
 		if (arg.startsWith('--')) continue;
 		if (positional === 0) {
-			if (arg !== 'save' && arg !== 'restore' && arg !== 'list' && arg !== 'rm' && arg !== 'hash') {
+			if (arg !== 'save' && arg !== 'restore' && arg !== 'list' && arg !== 'rm' && arg !== 'id') {
 				throw new Error(
-					`devstack snapshot: unknown subcommand '${arg}' — expected save|restore|list|rm|hash`,
+					`devstack snapshot: unknown subcommand '${arg}' — expected save|restore|list|rm|id`,
 				);
 			}
 			flags.subcommand = arg;

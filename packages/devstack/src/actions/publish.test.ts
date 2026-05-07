@@ -56,6 +56,7 @@ const makeCtx = (
 	accounts,
 	ports: createInMemoryPortAllocator(),
 	inputHash: 'test',
+	appendLog: () => {},
 });
 
 let tmpDirs: string[] = [];

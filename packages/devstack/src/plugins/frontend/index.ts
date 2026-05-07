@@ -1,21 +1,21 @@
-// Frontend dev-server plugin. Adds a vite/next/sveltekit-style dev server
-// to the devstack supervisor so `pnpm dev` (configured to run
-// `devstack up`) brings up the localnet stack AND the dev server in one
-// combined process with one log stream — no `concurrently`, no separate
-// `localnet:watch` script.
+// Frontend dev-server plugin. Wires Vite into the devstack supervisor so
+// `pnpm dev` (configured to run `devstack up`) brings up the localnet
+// stack AND the dev server in one combined process with one log stream —
+// no `concurrently`, no separate `localnet:watch` script.
 //
-// `frontend()` is the canonical factory. The default command is `pnpm
-// exec vite`, but apps using other tooling (Next.js, SvelteKit, Astro)
-// pass their own `command` array.
+// Committed to Vite. The plugin runs `pnpm exec vite --port <port>`
+// from the app dir; alternative dev servers (Next.js, SvelteKit) would
+// need their own plugin (the previous `command:` opt was never used by
+// any example).
 //
 // One Service action:
 //
-//   frontend.dev-server — Spawns the configured command as a host child
-//                         process (NOT a container). `getStatus`
-//                         GET-probes the dev URL; `run` spawns the
-//                         child, pipes its stdout/stderr through
-//                         `ctx.appendLog`, and registers a shutdown hook
-//                         that SIGINTs the child on supervisor stop.
+//   frontend.dev-server — Spawns Vite as a host child process (NOT a
+//                         container). `getStatus` GET-probes the dev URL;
+//                         `run` spawns the child, pipes its stdout/stderr
+//                         through `ctx.appendLog`, and registers a
+//                         shutdown hook that SIGINTs the child on
+//                         supervisor stop.
 //
 // `needs: ['codegen.generate']` so the dev server starts after the
 // manifest + generated bindings are written. Without this gate the dev
@@ -30,19 +30,10 @@ import { probeUrl, waitForReachable } from '../../helpers/probe.js';
 import { definePlugin } from '../../plugin.js';
 
 interface FrontendPluginOptions {
-	/** Dev-server port. Default 5173 (vite's default). The plugin
-	 * passes this as `--port` so the URL matches the manifest's
-	 * `services.<n>.url` lookup. Pass `appendPort: false` to skip the
-	 * append (for tools like Next.js that take `-p` instead). */
+	/** Dev-server port. Default 5173 (vite's default). Passed as
+	 * `--port` so the URL matches the manifest's `services.<n>.url`
+	 * lookup. */
 	port?: number;
-	/** Override the dev-server command. Default `['pnpm', 'exec', 'vite']`.
-	 * The plugin appends `['--port', String(port)]` unless `appendPort`
-	 * is `false`. */
-	command?: string[];
-	/** When `false`, don't append `--port <port>` to `command`. Useful
-	 * for tooling with a different port flag (`next dev -p`,
-	 * `astro dev --port`). Default `true`. */
-	appendPort?: boolean;
 	/** Override the cwd. Defaults to `ctx.appDir`. */
 	cwd?: string;
 	/** Names of actions the dev server should wait for before starting.
@@ -51,10 +42,10 @@ interface FrontendPluginOptions {
 	needs?: string[];
 }
 
+const VITE_COMMAND: ReadonlyArray<string> = ['pnpm', 'exec', 'vite'];
+
 export const frontend = (opts: FrontendPluginOptions = {}): Plugin<'frontend.dev-server'> => {
 	const preferredPort = opts.port ?? 5173;
-	const baseCommand = opts.command ?? ['pnpm', 'exec', 'vite'];
-	const appendPort = opts.appendPort !== false;
 	const needs = opts.needs ?? ['codegen.generate'];
 
 	// Per-instance state. Two `frontend()` factories in the same process
@@ -77,7 +68,7 @@ export const frontend = (opts: FrontendPluginOptions = {}): Plugin<'frontend.dev
 		if (portValue === undefined) throw new Error('frontend: port allocator returned no ports');
 		resolvedPort = portValue;
 		resolvedBaseUrl = `http://localhost:${portValue}`;
-		const command = appendPort ? [...baseCommand, '--port', String(portValue)] : baseCommand;
+		const command = [...VITE_COMMAND, '--port', String(portValue)];
 		return { port: portValue, baseUrl: resolvedBaseUrl, command };
 	};
 
@@ -97,7 +88,7 @@ export const frontend = (opts: FrontendPluginOptions = {}): Plugin<'frontend.dev
 			hostProcess({
 				name: 'dev-server',
 				needs,
-				inputs: { preferredPort, command: baseCommand.join(' '), appendPort },
+				inputs: { preferredPort, command: VITE_COMMAND.join(' ') },
 				provides: { registry: populateRegistry },
 				getStatus: async (ctx) => {
 					const { baseUrl } = await resolveEndpoint(ctx);
@@ -111,7 +102,7 @@ export const frontend = (opts: FrontendPluginOptions = {}): Plugin<'frontend.dev
 					// constraint applies to the supervisor that runs us, not to
 					// the dev server itself.
 					const { baseUrl, command } = await resolveEndpoint(ctx);
-					const log = ctx.appendLog ?? ((line: string) => process.stdout.write(`${line}\n`));
+					const log = ctx.appendLog;
 					const cwd = opts.cwd ?? ctx.appDir;
 					if (child !== undefined && child.exitCode === null) {
 						// Idempotent — supervisor cycles call run again on warm

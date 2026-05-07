@@ -91,24 +91,6 @@ export interface Provides {
 	registry?: (ctx: ActionRunContext) => Promise<void> | void;
 }
 
-/** Merge a `registry?:` shortcut on action-factory opts into the
- * `provides?:` field. Used by every action factory so plugin authors can
- * write the common `provides: { registry: ... }` case as a top-level
- * `registry: (ctx) => ...` instead. If both are set, `provides.registry`
- * wins (caller was explicit). The shortcut accepts a Localnet-narrowed
- * ctx variant via the union — factories specialize TCtx to
- * `LocalnetActionRunContext` when the action kind is localnet-only. */
-export function mergeRegistryShortcut<TCtx extends ActionRunContext>(
-	provides: Provides | undefined,
-	registry: ((ctx: TCtx) => Promise<void> | void) | undefined,
-): Provides | undefined {
-	if (registry === undefined) return provides;
-	const wide = registry as (ctx: ActionRunContext) => Promise<void> | void;
-	if (provides === undefined) return { registry: wide };
-	if (provides.registry !== undefined) return provides;
-	return { ...provides, registry: wide };
-}
-
 /**
  * Authoritative reconciler lifecycle states: `idle`, `queued`,
  * `running`, `ok`, `failed`, `skipped`. Two transient UI markers, set
@@ -547,16 +529,16 @@ interface ActionRunContextBase {
 	 */
 	onShutdown?: (fn: ShutdownHook) => void;
 	/**
-	 * Stream a log line into the supervisor's status renderer. The
-	 * renderer prefixes with the action name + timestamp and handles
-	 * the panel-erase-then-redraw dance so logs interleave cleanly with
-	 * the status block. Only present under the supervisor; one-shot
-	 * paths leave it undefined.
+	 * Stream a log line into the supervisor's status renderer. Always
+	 * present — under the supervisor, the renderer prefixes with the
+	 * action name + timestamp and handles the panel-erase-then-redraw
+	 * dance so logs interleave cleanly with the status block; under
+	 * one-shot CLI paths, the implementation forwards to `process.stdout`.
 	 *
 	 * Useful for Service actions that spawn long-running child processes
-	 * — the `vite()` plugin pipes vite's stdout/stderr through this.
+	 * — the `frontend` plugin pipes vite's stdout/stderr through this.
 	 */
-	appendLog?: (line: string) => void;
+	appendLog: (line: string) => void;
 	/**
 	 * The reconciler's computed input hash for this run. Folds in
 	 * `inputs` plus the `identity` of every upstream named in `needs:`,
