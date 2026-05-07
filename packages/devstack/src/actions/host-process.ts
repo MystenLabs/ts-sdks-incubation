@@ -23,14 +23,11 @@
 // `HostProcessAction.run` is part of the `Action` union.
 
 import type { HostProcessAction, LocalnetActionRunContext, Provides } from '../core/types.js';
-import { mergeRegistryShortcut } from '../core/types.js';
 
 interface HostProcessOptions<TInputs extends Record<string, unknown>> {
 	name: string;
 	needs?: string[];
 	provides?: Provides;
-	/** Sugar for `provides: { registry }`. */
-	registry?: (ctx: LocalnetActionRunContext) => Promise<void> | void;
 	inputs: TInputs;
 	/** Account this process signs transactions as, when applicable
 	 *  (e.g. the deepbook market-maker's BalanceManager + grid txs).
@@ -48,7 +45,7 @@ export function hostProcess<TInputs extends Record<string, unknown>>(
 		name: opts.name,
 		type: 'HostProcess',
 		needs: opts.needs,
-		provides: mergeRegistryShortcut(opts.provides, opts.registry),
+		provides: opts.provides,
 		inputs: opts.inputs,
 		runsAs: opts.runsAs,
 		run: opts.run as HostProcessAction<TInputs>['run'],

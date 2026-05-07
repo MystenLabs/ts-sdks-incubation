@@ -6,14 +6,11 @@
 // letting downstream actions encounter a silent bad state.
 
 import type { ActionRunContext, Provides, VerifyAction } from '../core/types.js';
-import { mergeRegistryShortcut } from '../core/types.js';
 
 interface VerifyOptions<TInputs extends Record<string, unknown>> {
 	name: string;
 	needs?: string[];
 	provides?: Provides;
-	/** Sugar for `provides: { registry }`. */
-	registry?: (ctx: ActionRunContext) => Promise<void> | void;
 	/** Inputs payload. Verify actions don't use the input-hash skip
 	 * predicate (they re-run every cycle by design), so the value is
 	 * informational — surfaces in the manifest snapshot of action state
@@ -33,7 +30,7 @@ export function verify<TInputs extends Record<string, unknown>>(
 		name: opts.name,
 		type: 'Verify',
 		needs: opts.needs,
-		provides: mergeRegistryShortcut(opts.provides, opts.registry),
+		provides: opts.provides,
 		inputs: opts.inputs,
 		getStatus: opts.getStatus,
 	};

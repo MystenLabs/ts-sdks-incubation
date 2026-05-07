@@ -32,7 +32,6 @@ export default defineDevstackConfig({
 		frontend({ port: 5180 }),
 		publishMove({
 			name: 'hello',
-			needs: ['accounts.fund'],
 			path: HELLO_DIR,
 			publisher: 'alice',
 		}),

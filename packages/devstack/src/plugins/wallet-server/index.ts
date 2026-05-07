@@ -237,7 +237,7 @@ export const walletServer = (
 				},
 				run: async (ctx) => {
 					const { port, baseUrl } = await resolveEndpoint(ctx);
-					const log = ctx.appendLog ?? ((line: string) => process.stdout.write(`${line}\n`));
+					const log = ctx.appendLog;
 					if (activeServer !== undefined && activeServer.listening) {
 						// Warm-cycle hot-reload path: the listener is healthy but
 						// `getStatus` saw new accounts. Plumb the fresh

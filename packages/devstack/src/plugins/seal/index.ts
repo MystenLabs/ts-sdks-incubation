@@ -97,10 +97,6 @@ interface SealPluginOptions {
 	 * distinct on-chain `KeyServer` objects without colliding on the
 	 * registry key. */
 	keyServerName?: string;
-	/** Optional pre-generated BLS12-381 master key. Skips the in-image
-	 * `seal-cli genkey` invocation and the on-disk cache, useful for
-	 * deterministic test fixtures. */
-	master?: { masterKey: string; publicKey: string };
 	/** Account that signs the `KeyServer` registration tx. Defaults to
 	 * `'publisher'` to match the rest of the built-ins. */
 	publisher?: string;
@@ -112,7 +108,6 @@ export const seal = (
 	const version = opts.version ?? SEAL_VERSION;
 	const preferredPort = opts.port ?? KEY_SERVER_CONTAINER_PORT;
 	const keyServerName = opts.keyServerName ?? SEAL_KEY_SERVER_NAME;
-	const masterOverride = opts.master;
 	const publisherAccount = opts.publisher ?? 'publisher';
 	const imageTag = sealImageTag(version);
 	const platform = hostDockerPlatform();
@@ -215,7 +210,6 @@ export const seal = (
 						imageTag,
 						keyServerUrl,
 						keyServerName,
-						masterOverride,
 						publisher: publisherAccount,
 					});
 				},
@@ -231,9 +225,12 @@ export const seal = (
 				needs: ['register'],
 				inputs: { image: imageTag, preferredPort },
 				// See `register` above — same warm-path rehydrate pattern.
-				registry: async (ctx) => {
-					const { port } = await resolveEndpoint(ctx);
-					registerKeyServerService(ctx, port);
+				provides: {
+					registry: async (ctx) => {
+						requireLocalnetCtx(ctx);
+						const { port } = await resolveEndpoint(ctx);
+						registerKeyServerService(ctx, port);
+					},
 				},
 				containerName: (ctx) => keyServerContainerName(ctx.appName, ctx.stack),
 				// Stateless: master key in env (from <stackDir>/.keys),
@@ -301,7 +298,6 @@ interface RegisterSealOptions {
 	imageTag: string;
 	keyServerUrl: string;
 	keyServerName: string;
-	masterOverride: { masterKey: string; publicKey: string } | undefined;
 	publisher: string;
 }
 
@@ -310,7 +306,6 @@ async function registerSealKeyServer({
 	imageTag,
 	keyServerUrl,
 	keyServerName,
-	masterOverride,
 	publisher: publisherAccount,
 }: RegisterSealOptions): Promise<void> {
 	const sealPkg = ctx.registry.packages.require('seal');
@@ -321,7 +316,6 @@ async function registerSealKeyServer({
 		imageTag,
 		appDir: ctx.appDir,
 		stack: ctx.stack,
-		override: masterOverride,
 	});
 	const pkBytes = decodePrefixedHex(keys.publicKey);
 
@@ -409,14 +403,8 @@ async function ensureSealMasterKey(opts: {
 	imageTag: string;
 	appDir: string;
 	stack: string;
-	override: CachedKeys | undefined;
 }): Promise<CachedKeys> {
 	const path = masterKeyPath(opts.appDir, opts.stack);
-	if (opts.override !== undefined) {
-		mkdirSync(join(stackDir(opts.appDir, opts.stack), '.keys'), { recursive: true, mode: 0o700 });
-		writeFileSync(path, `${JSON.stringify(opts.override, null, 2)}\n`, { mode: 0o600 });
-		return opts.override;
-	}
 	const cached = readMasterKeyFile(path);
 	if (cached !== null) return cached;
 

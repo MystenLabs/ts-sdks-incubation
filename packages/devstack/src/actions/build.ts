@@ -10,14 +10,11 @@
 // `BuildAction.run` is part of the `Action` union.
 
 import type { BuildAction, LocalnetActionRunContext, Provides } from '../core/types.js';
-import { mergeRegistryShortcut } from '../core/types.js';
 
 interface BuildImageOptions<TInputs extends Record<string, unknown>> {
 	name: string;
 	needs?: string[];
 	provides?: Provides;
-	/** Sugar for `provides: { registry }`. */
-	registry?: (ctx: LocalnetActionRunContext) => Promise<void> | void;
 	/** Extra paths the file watcher should treat as inputs to this
 	 * action. Resolved against `appDir`; supports glob syntax. Useful
 	 * for builds whose triggers aren't captured by `inputs` (e.g. local
@@ -36,7 +33,7 @@ export function buildImage<TInputs extends Record<string, unknown>>(
 		name: opts.name,
 		type: 'Build',
 		needs: opts.needs,
-		provides: mergeRegistryShortcut(opts.provides, opts.registry),
+		provides: opts.provides,
 		watches: opts.watches,
 		inputs: opts.inputs,
 		run: opts.run as BuildAction<TInputs>['run'],

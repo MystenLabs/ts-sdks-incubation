@@ -9,7 +9,7 @@ import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildImage as buildImageAction } from '../../actions/build.js';
 import { containerService } from '../../actions/container-service.js';
-import type { Plugin } from '../../core/types.js';
+import { type Plugin, requireLocalnetCtx } from '../../core/types.js';
 import { pollUntilReady } from '../../helpers/poll.js';
 import { definePlugin } from '../../plugin.js';
 import {
@@ -203,7 +203,7 @@ export const sui = (
 						}
 						return;
 					}
-					const log = ctx.appendLog ?? ((line: string) => process.stderr.write(`${line}\n`));
+					const log = ctx.appendLog;
 					await dockerBuildImage({
 						tag: imageTag,
 						contextDir,
@@ -242,14 +242,16 @@ export const sui = (
 				preRun: async (ctx) => {
 					await ensureNetwork({ name: appNetworkName(ctx.appName, ctx.stack) });
 				},
-				registry: (ctx) => {
-					ctx.registry.services.register({
-						name: 'sui-indexer-db',
-						kind: 'sui-indexer-db',
-						url: SUI_INDEXER_DATABASE_URL,
-						port: 5432,
-						endpointLabel: 'Sui indexer postgres (internal)',
-					});
+				provides: {
+					registry: (ctx) => {
+						ctx.registry.services.register({
+							name: 'sui-indexer-db',
+							kind: 'sui-indexer-db',
+							url: SUI_INDEXER_DATABASE_URL,
+							port: 5432,
+							endpointLabel: 'Sui indexer postgres (internal)',
+						});
+					},
 				},
 				spec: (ctx) => ({
 					name: '',
@@ -298,9 +300,12 @@ export const sui = (
 				// quiesce for snapshot capture. Chain state lives in the
 				// container's writable layer so commit:true captures it.
 				snapshot: { commit: true, quiesce: 'pause' },
-				registry: async (ctx) => {
-					const { rpcPort, faucetPort, graphqlPort } = await resolvePorts(ctx);
-					registerServices(ctx, rpcPort, faucetPort, graphqlPort);
+				provides: {
+					registry: async (ctx) => {
+						requireLocalnetCtx(ctx);
+						const { rpcPort, faucetPort, graphqlPort } = await resolvePorts(ctx);
+						registerServices(ctx, rpcPort, faucetPort, graphqlPort);
+					},
 				},
 				preRun: async (ctx) => {
 					await requireDockerDaemon();
@@ -422,7 +427,7 @@ export const sui = (
  * GraphQL gets the longest ceiling because the embedded indexer's
  * postgres bootstrap + schema migrations dominate. */
 async function waitForLocalnetServices(
-	ctx: { appendLog?: (line: string) => void },
+	ctx: { appendLog: (line: string) => void },
 	ports: { rpcPort: number; faucetPort: number; graphqlPort: number },
 ): Promise<void> {
 	const rpcUrl = `http://127.0.0.1:${ports.rpcPort}`;
