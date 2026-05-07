@@ -3,7 +3,7 @@ import { useCurrentAccount } from '@mysten/dapp-kit-react';
 import { deployment } from '../lib/deployment.js';
 import { formatStudio, shortAddress } from '../lib/coin.js';
 import { useCoinBalance } from '../lib/queries.js';
-import { Card } from '@mysten-incubation/devstack/react/ui';
+import { Card } from '../ui/Card.js';
 
 export function Balances() {
 	const me = useCurrentAccount();

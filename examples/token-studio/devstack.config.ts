@@ -8,10 +8,10 @@ import { fileURLToPath } from 'node:url';
 import {
 	accounts,
 	codegen,
-	coinTokens,
 	defineDevstackConfig,
 	frontend,
 	publishMove,
+	registerCoin,
 	sui,
 	walletServer,
 } from '@mysten-incubation/devstack';
@@ -22,7 +22,7 @@ const MANAGED_COIN_DIR = resolve(HERE, 'move/managed_coin');
 export default defineDevstackConfig({
 	app: 'token-studio',
 	accounts: ['alice', 'bob', 'carol'],
-	plugins: [
+	use: [
 		// Plugin port options are hints to the per-stack port allocator;
 		// the allocator picks any free port if a sibling stack has the
 		// preferred port claimed.
@@ -31,13 +31,11 @@ export default defineDevstackConfig({
 		codegen(),
 		walletServer({ port: 9422 }),
 		frontend({ port: 5173 }),
-	],
-	// App-level setup: publish the managed_coin Move package as alice
-	// (publisher = TreasuryCap holder; the UI gates the mint card on
-	// `address === accounts.alice`). Captures TreasuryCap +
-	// CoinMetadata + UpgradeCap so the UI can mint via the cap and
-	// link the metadata badge.
-	setup: [
+		// App-level setup: publish the managed_coin Move package as alice
+		// (publisher = TreasuryCap holder; the UI gates the mint card on
+		// `address === accounts.alice`). Captures TreasuryCap +
+		// CoinMetadata + UpgradeCap so the UI can mint via the cap and
+		// link the metadata badge.
 		publishMove({
 			name: 'managedCoin',
 			needs: ['accounts.fund'],
@@ -49,13 +47,13 @@ export default defineDevstackConfig({
 				metadataId: '::coin::CoinMetadata<',
 				upgradeCapId: '0x2::package::UpgradeCap',
 			},
-			onPublished: (ctx, result) => {
-				coinTokens(ctx.registry).register({
-					name: 'managed_coin',
-					type: `${result.packageId}::managed_coin::MANAGED_COIN`,
-					decimals: 6,
-				});
-			},
+		}),
+		registerCoin({
+			from: 'managedCoin',
+			name: 'managed_coin',
+			module: 'managed_coin',
+			type: 'MANAGED_COIN',
+			decimals: 6,
 		}),
 	],
 });

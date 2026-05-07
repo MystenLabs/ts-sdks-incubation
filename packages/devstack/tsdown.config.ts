@@ -13,12 +13,10 @@ import { defineConfig } from 'tsdown';
 export default defineConfig({
 	entry: [
 		'src/index.ts',
-		'src/app-setup/index.ts',
 		'src/plugins/accounts/index.ts',
 		'src/playwright/index.ts',
 		'src/playwright/global-setup.ts',
 		'src/playwright/global-teardown.ts',
-		'src/vite/plugin.ts',
 		'src/vitest/index.ts',
 		'src/vitest/runtime.ts',
 		'src/cli/index.ts',
@@ -26,7 +24,6 @@ export default defineConfig({
 		'src/cli/codegen.ts',
 		'src/helpers.ts',
 		'src/react/index.ts',
-		'src/react/ui/index.ts',
 	],
 	format: 'esm',
 	dts: true,
@@ -50,9 +47,5 @@ export default defineConfig({
 		{ from: 'src/plugins/walrus/wrapper.Dockerfile', to: 'dist/plugins/walrus' },
 		{ from: 'src/plugins/walrus/deploy.sh', to: 'dist/plugins/walrus' },
 		{ from: 'src/plugins/walrus/run.sh', to: 'dist/plugins/walrus' },
-		// Ambient `.d.ts` for `virtual:devstack-manifest`. Apps reference it
-		// via `/// <reference types="@mysten-incubation/devstack/manifest" />`
-		// instead of duplicating ~50 lines of `declare module` per app.
-		{ from: 'src/manifest.d.ts', to: 'dist' },
 	],
 });

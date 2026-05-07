@@ -168,12 +168,10 @@ describe('publish — onPublished invocation', () => {
 		return registry;
 	};
 
-	it('fires onPublished after a fresh publish, with the publish result', async () => {
-		const onPublished = vi.fn();
+	it('registers the published package in registry.packages with chainId', async () => {
 		const a = publish({
 			name: 'connect_four',
 			path: '/abs/move/connect_four',
-			onPublished,
 		}) as PublishAction;
 		const registry = setup();
 		publishMovePackageMock.mockResolvedValue({
@@ -186,34 +184,11 @@ describe('publish — onPublished invocation', () => {
 		await a.run?.(makeCtx(registry));
 
 		expect(publishMovePackageMock).toHaveBeenCalledTimes(1);
-		expect(onPublished).toHaveBeenCalledTimes(1);
-		expect(onPublished.mock.calls[0]?.[1]).toMatchObject({ packageId: '0xnew', cacheHit: false });
 		expect(registry.packages.find('connect_four')).toMatchObject({
 			name: 'connect_four',
 			packageId: '0xnew',
 			chainId: 'chain-1',
 		});
-	});
-
-	it('skips onPublished on a cache hit', async () => {
-		const onPublished = vi.fn();
-		const a = publish({
-			name: 'connect_four',
-			path: '/abs/move/connect_four',
-			onPublished,
-		}) as PublishAction;
-		const registry = setup();
-		publishMovePackageMock.mockResolvedValue({
-			packageId: '0xold',
-			captured: {},
-			sourceDigest: 'aa',
-			cacheHit: true,
-		});
-
-		await a.run?.(makeCtx(registry));
-
-		expect(publishMovePackageMock).toHaveBeenCalledTimes(1);
-		expect(onPublished).not.toHaveBeenCalled();
 	});
 
 	it('uses the configured publisher account name', async () => {

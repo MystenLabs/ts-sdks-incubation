@@ -687,16 +687,18 @@ function emitIsDirty(emit: EmitAction, dirty: Set<string>): boolean {
  */
 /** Per-action `Registry` proxy. Stamps `providedBy: actionName` onto
  * every `register()` call — for the three core kinds (services, packages,
- * accounts) AND for plugin-namespaced kinds reached via `registry.ns(...)`
- * or the `defineRegistryKind` accessor. Without the namespace coverage,
+ * accounts) AND for plugin-namespaced kinds reached through the
+ * `defineRegistryKind` accessor (which routes through
+ * `InternalRegistry.getOrCreateKind`). Without the namespace coverage,
  * the renderer's "group by providedBy" was second-class for any item
  * registered through `arena.sharedObjects`, `seal.keyServer`, etc.
  *
  * Implemented as a Proxy (not a plain object spread) because plugins
  * cast `ctx.registry as InternalRegistry` to access non-public methods
  * (`snapshot()` from codegen, `flushDirty()` / `consumeDirty()` from
- * the reconciler itself). A spread would lose the prototype methods
- * and break those casts at runtime. */
+ * the reconciler itself, `getOrCreateKind()` from `defineRegistryKind`).
+ * A spread would lose the prototype methods and break those casts at
+ * runtime. */
 function wrapRegistryForAction(registry: Registry, actionName: string): Registry {
 	const stamp = <T extends { name: string; providedBy?: string }>(
 		query: RegistryQuery<T>,
@@ -715,32 +717,25 @@ function wrapRegistryForAction(registry: Registry, actionName: string): Registry
 	const wrappedPackages = stamp(registry.packages);
 	const wrappedAccounts = stamp(registry.accounts);
 
-	/** Wrap a namespaced bag so each kind's `register()` stamps
-	 * `providedBy`. The bag itself is a Proxy that auto-creates queries
-	 * on string-property access; we intercept that get and stamp the
-	 * returned query before handing it back. */
-	const wrapNs = <T>(bag: T): T =>
-		new Proxy(bag as object, {
-			get(target, kindProp, receiver) {
-				const q = Reflect.get(target, kindProp, receiver) as
-					| RegistryQuery<{ name: string; providedBy?: string }>
-					| undefined;
-				if (q === undefined || typeof kindProp !== 'string') return q;
-				return stamp(q);
-			},
-		}) as T;
-
 	return new Proxy(registry, {
 		get(target, prop, receiver) {
 			if (prop === 'services') return wrappedServices;
 			if (prop === 'packages') return wrappedPackages;
 			if (prop === 'accounts') return wrappedAccounts;
-			if (prop === 'ns') {
-				// Bind so `target.ns(name)` resolves correctly inside
-				// `RegistryImpl`'s closure-captured `this`, then wrap the
-				// returned bag so namespaced-kind register() stamps too.
-				const ns = (target.ns as Registry['ns']).bind(target);
-				return <T>(name: string): T => wrapNs(ns<T>(name));
+			if (prop === 'getOrCreateKind') {
+				// Bind so `target.getOrCreateKind(...)` resolves correctly
+				// inside `RegistryImpl`'s closure-captured `this`, then stamp
+				// the returned query so namespaced-kind register() stamps
+				// providedBy.
+				const internal = target as InternalRegistry;
+				const fn = internal.getOrCreateKind.bind(internal);
+				return <T extends { name: string }>(namespace: string, kind: string) =>
+					stamp(
+						fn<T>(namespace, kind) as RegistryQuery<{
+							name: string;
+							providedBy?: string;
+						}>,
+					) as RegistryQuery<T>;
 			}
 			const value = Reflect.get(target, prop, receiver);
 			return typeof value === 'function' ? value.bind(target) : value;

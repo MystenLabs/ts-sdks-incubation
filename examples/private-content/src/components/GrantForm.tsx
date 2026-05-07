@@ -1,5 +1,6 @@
 import { Transaction } from '@mysten/sui/transactions';
-import { Card, Field } from '@mysten-incubation/devstack/react/ui';
+import { Card } from '../ui/Card.js';
+import { Field } from '../ui/Field.js';
 import { useMemo, useState } from 'react';
 
 import { deployment } from '../lib/deployment.js';

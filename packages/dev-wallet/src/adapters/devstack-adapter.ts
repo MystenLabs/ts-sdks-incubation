@@ -179,7 +179,7 @@ export interface DevstackSignerAdapterOptions {
  * Construct from the active manifest's `wallet-server` service entry:
  *
  * ```ts
- * import { manifest } from 'virtual:devstack-manifest';
+ * import { manifest } from './generated/manifest.js';
  * import { DevstackSignerAdapter } from '@mysten-incubation/dev-wallet/adapters';
  *
  * const service = manifest.registry.services?.find(s => s.name === 'wallet-server');

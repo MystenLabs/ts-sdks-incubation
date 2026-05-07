@@ -6,7 +6,7 @@ import { bytesToString, labelFor, shortAddress } from '../lib/format.js';
 import { type VaultCap, useFile, useOwnedCaps } from '../lib/queries.js';
 import { decryptForFile } from '../lib/seal.js';
 import { readBlob } from '../lib/walrus.js';
-import { Card } from '@mysten-incubation/devstack/react/ui';
+import { Card } from '../ui/Card.js';
 
 export function FilesList({ self }: { self: string }) {
 	const caps = useOwnedCaps(self);

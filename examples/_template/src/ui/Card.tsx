@@ -1,8 +1,7 @@
 import type { ReactNode } from 'react';
 
 /** Section card with title, optional subtitle, optional right-aligned
- *  header slot, and children body. Lifted from the 4 example apps where
- *  the same JSX was duplicated byte-for-byte. */
+ *  header slot, and children body. */
 export function Card({
 	title,
 	subtitle,

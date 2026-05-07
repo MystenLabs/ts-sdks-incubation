@@ -45,15 +45,6 @@ describe('runTransaction — inputs.buildHash captures build/signer/scope/needs'
 		);
 	});
 
-	it('changes the buildHash when scope changes', () => {
-		const build = () => undefined;
-		const a = runTransaction({ name: 'mint', signer: 'alice', build });
-		const b = runTransaction({ name: 'mint', signer: 'alice', build, scope: 'test-only' });
-		expect((a.inputs as { buildHash: string }).buildHash).not.toBe(
-			(b.inputs as { buildHash: string }).buildHash,
-		);
-	});
-
 	it('changes the buildHash when needs change', () => {
 		const build = () => undefined;
 		const a = runTransaction({ name: 'mint', signer: 'alice', build });
@@ -79,21 +70,6 @@ describe('runTransaction — action shape', () => {
 			getStatus: probe,
 		});
 		expect(a.getStatus).toBe(probe);
-	});
-
-	it('threads scope onto the action when set', () => {
-		const a = runTransaction({
-			name: 'mint',
-			signer: 'alice',
-			build: () => undefined,
-			scope: 'test-only',
-		});
-		expect(a.scope).toBe('test-only');
-	});
-
-	it('omits scope when not set (action-level default applies)', () => {
-		const a = runTransaction({ name: 'mint', signer: 'alice', build: () => undefined });
-		expect(a.scope).toBeUndefined();
 	});
 
 	it('sets runsAs to the signer name for same-signer serialization', () => {

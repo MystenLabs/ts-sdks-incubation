@@ -12,8 +12,8 @@ const withRpc: DevstackConfig = {
 	app: 'test',
 	plugins: [],
 	networks: {
-		testnet: { rpcUrl: 'https://rpc.testnet' },
-		mainnet: { rpcUrl: 'https://rpc.mainnet' },
+		testnet: 'https://rpc.testnet',
+		mainnet: 'https://rpc.mainnet',
 	},
 };
 
@@ -86,7 +86,7 @@ describe('resolveTarget', () => {
 
 	it('throws when live-net rpcUrl is missing', () => {
 		expect(() => resolveTarget({ config: empty, appDir, raw: 'testnet' })).toThrow(
-			/networks\.testnet\.rpcUrl/,
+			/networks\.testnet/,
 		);
 	});
 });

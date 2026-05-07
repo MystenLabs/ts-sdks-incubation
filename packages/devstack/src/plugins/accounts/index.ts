@@ -27,6 +27,7 @@
 // cliSigner({...}) } }`.
 
 import { register } from '../../actions/register.js';
+import type { Plugin } from '../../core/types.js';
 import { definePlugin } from '../../plugin.js';
 import { probeUrl } from '../../helpers/probe.js';
 import {
@@ -51,7 +52,7 @@ export interface AccountsPluginOptions {
 	needs?: string[];
 }
 
-export const accounts = (opts: AccountsPluginOptions = {}) => {
+export const accounts = (opts: AccountsPluginOptions = {}): Plugin<'accounts.fund'> => {
 	const minBalance = opts.minBalance;
 	const needs = opts.needs ?? ['sui.localnet'];
 
@@ -69,10 +70,10 @@ export const accounts = (opts: AccountsPluginOptions = {}) => {
 				// Live-net targets supply pre-funded accounts via per-network
 				// signer factories; faucet + AB-deposit logic only makes
 				// sense against a localnet sui-faucet. Filtering at the
-				// scope layer keeps the action graph honest instead of
-				// relying on cli/filters.ts to drop arbitrary Register
-				// actions by type.
-				scope: 'localnet-only',
+				// network-allowlist layer keeps the action graph honest
+				// instead of relying on cli/filters.ts to drop arbitrary
+				// Register actions by type.
+				networks: ['localnet'],
 				provides: {
 					// Reconciler invokes this on every successful path (cold run +
 					// warm-path skip), so the in-memory accounts registry is

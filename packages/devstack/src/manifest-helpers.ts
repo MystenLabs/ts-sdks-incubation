@@ -1,37 +1,15 @@
-// App-side accessors for the serialized `Manifest` shape that codegen
-// emits and `<DevstackProvider>` carries through React. Mirror the
-// runtime-side `defineRegistryKind` from `src/registry/`: at runtime,
-// plugin authors register/list against a `Registry`; in app code,
-// callers read from a `Manifest`.
+// App-side accessor for the serialized `Manifest` shape that codegen
+// emits. Mirrors the runtime-side `defineRegistryKind` from
+// `src/registry/`: at runtime, plugin authors register/list against a
+// `Registry`; in app code, callers read from a `Manifest`.
 //
-// These exist to absorb the byte-identical projection logic that was
-// duplicated across every example's `lib/deployment.ts` (four
-// re-derivations of "find sui-rpc URL", "find package by name", "build
-// account map") with subtly different fallback semantics. App code
-// keeps its app-specific projection but threads it through these.
+// The four core kinds (`packages`, `accounts`, `services`, plus any
+// plugin-namespaced kinds) are accessible directly off
+// `manifest.registry.*`. `defineManifestKind` provides typed access to
+// plugin-namespaced kinds (e.g. `arena.sharedObjects`,
+// `deepbook.pools`).
 
-import type { Package, Service } from './core/types.js';
 import type { Manifest } from './runtime/manifest-types.js';
-
-/** Look up a service by registry name. Returns `undefined` if absent —
- * caller picks the fallback (`''` for URL fields, `null` for "not deployed
- * yet" gates, etc.). */
-export function selectService(manifest: Manifest, name: string): Service | undefined {
-	return manifest.registry.services.find((s) => s.name === name);
-}
-
-/** Look up a package by registry name. Captured object IDs land on
- * `result.captured` keyed by the `capture: { ... }` config the publish
- * action declared. */
-export function selectPackage(manifest: Manifest, name: string): Package | undefined {
-	return manifest.registry.packages.find((p) => p.name === name);
-}
-
-/** Project the accounts list into a `name → address` map. Useful for
- * `'publisher' as keyof typeof accountMap`-style typing in app code. */
-export function selectAccountMap(manifest: Manifest): Record<string, string> {
-	return Object.fromEntries(manifest.registry.accounts.map((a) => [a.name, a.address]));
-}
 
 /** Typed accessor for a plugin-namespaced registry kind on the
  * serialized `Manifest`. Symmetric to `defineRegistryKind` (which works

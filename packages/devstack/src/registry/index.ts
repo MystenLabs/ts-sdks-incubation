@@ -1,17 +1,20 @@
 // In-memory typed registry. Plugins register items via `register()`; other
-// plugins query via `list/find/require`. Namespaced kinds live under
-// `registry.ns('<plugin>')`. Per-kind dirty tracking lets the reconciler
-// dispatch Emit actions only when their `dependsOnKind` slice changed.
+// plugins query via `list/find/require`. Plugin-namespaced kinds are
+// accessed exclusively through `defineRegistryKind` accessors (the
+// underlying lookup is internal to this module). Per-kind dirty tracking
+// lets the reconciler dispatch Emit actions only when their
+// `dependsOnKind` slice changed.
 //
 // Naming: `kindKey` is `'packages' | 'accounts' | 'services' |
 // '<plugin>/<kind>'` — flat string used throughout dirty tracking.
 //
 // The dirty-tracking surface (`isDirty`, `flushDirty`, `consumeDirty`)
-// is **not** on the public `Registry` interface — only the reconciler
-// reaches it. The `snapshot()` accessor is similarly internal: the
+// and the namespace lookup (`getOrCreateKind`) are **not** on the public
+// `Registry` interface — only the reconciler and `defineRegistryKind`
+// reach them. The `snapshot()` accessor is similarly internal: the
 // runtime's manifest writer + the first-party `codegen` plugin reach
 // for it via `as InternalRegistry`. Third-party plugins should not
-// consult either surface.
+// consult any of these surfaces.
 
 import type { Account, Package, Registry, RegistryQuery, Service } from '../core/types.js';
 import type { SerializedRegistry } from '../runtime/manifest-types.js';
@@ -19,16 +22,27 @@ import type { SerializedRegistry } from '../runtime/manifest-types.js';
 /**
  * Internal registry surface: adds the dirty-tracking + serialization
  * methods that the reconciler, manifest writer/reader, and codegen plugin
- * use. Not exposed on the public `Registry` interface — plugin authors
- * shouldn't reach for `flushDirty` / `consumeDirty` directly. The
- * runtime casts `Registry → InternalRegistry` once at the boundary
- * instead of casting to the concrete `RegistryImpl` class everywhere.
+ * use, plus `getOrCreateKind` used by `defineRegistryKind` to resolve a
+ * dotted-key kind reference. Not exposed on the public `Registry`
+ * interface — plugin authors shouldn't reach for `flushDirty` /
+ * `consumeDirty` directly. The runtime casts `Registry → InternalRegistry`
+ * once at the boundary instead of casting to the concrete `RegistryImpl`
+ * class everywhere.
  */
 export interface InternalRegistry extends Registry {
 	isDirty(kindKey: string): boolean;
 	flushDirty(): Set<string>;
 	consumeDirty(kinds: string[]): void;
 	snapshot(): SerializedRegistry;
+	/**
+	 * Resolve a plugin-namespaced kind, creating the underlying
+	 * `RegistryQuery` on first access. Used by `defineRegistryKind` and
+	 * `manifest-reader` when round-tripping serialized registries.
+	 */
+	getOrCreateKind<T extends { name: string }>(
+		namespace: string,
+		kind: string,
+	): RegistryQuery<T>;
 }
 
 /** Typed accessor for a plugin-namespaced registry kind. Pin the kind
@@ -40,8 +54,7 @@ export interface InternalRegistry extends Registry {
  *   );
  *   arenaSharedObjects(ctx.registry).register({ name, ... });
  *
- * Beats the `ns<{...}>('arena').sharedObjects` form for two reasons:
- * the typed kind name is a single source of truth (no risk of typo'ing
+ * The typed kind name is a single source of truth (no risk of typo'ing
  * a new namespace by accident), and the `T` type stays attached to the
  * accessor so consumers don't redeclare it. */
 export function defineRegistryKind<T extends { name: string }>(
@@ -55,17 +68,7 @@ export function defineRegistryKind<T extends { name: string }>(
 	}
 	const ns = dottedKey.slice(0, dot);
 	const kind = dottedKey.slice(dot + 1);
-	return (registry) => {
-		const bag = registry.ns<Record<string, RegistryQuery<T>>>(ns);
-		const q = bag[kind];
-		if (q === undefined) {
-			throw new Error(
-				`defineRegistryKind: registry.ns('${ns}').${kind} returned undefined ` +
-					'(expected the proxy to auto-create the query). Bug.',
-			);
-		}
-		return q;
-	};
+	return (registry) => (registry as InternalRegistry).getOrCreateKind<T>(ns, kind);
 }
 
 class RegistryQueryImpl<T extends { name: string }> implements RegistryQuery<T> {
@@ -111,7 +114,7 @@ export class RegistryImpl implements InternalRegistry {
 	readonly accounts: RegistryQuery<Account>;
 	readonly services: RegistryQuery<Service>;
 
-	private readonly namespaces = new Map<string, Record<string, RegistryQuery<unknown>>>();
+	private readonly namespaces = new Map<string, Map<string, RegistryQuery<{ name: string }>>>();
 
 	constructor() {
 		this.packages = new RegistryQueryImpl<Package>('packages', this.dirtySet);
@@ -119,23 +122,21 @@ export class RegistryImpl implements InternalRegistry {
 		this.services = new RegistryQueryImpl<Service>('services', this.dirtySet);
 	}
 
-	ns<T>(name: string): T {
-		let bag = this.namespaces.get(name);
+	getOrCreateKind<T extends { name: string }>(
+		namespace: string,
+		kind: string,
+	): RegistryQuery<T> {
+		let bag = this.namespaces.get(namespace);
 		if (!bag) {
-			bag = {};
-			this.namespaces.set(name, bag);
+			bag = new Map();
+			this.namespaces.set(namespace, bag);
 		}
-		const dirty = this.dirtySet;
-		// Lazy proxy: kind queries are created on first access.
-		return new Proxy(bag, {
-			get(target, prop: string) {
-				if (typeof prop !== 'string') return undefined;
-				if (!(prop in target)) {
-					target[prop] = new RegistryQueryImpl<{ name: string }>(`${name}/${prop}`, dirty);
-				}
-				return target[prop];
-			},
-		}) as T;
+		let query = bag.get(kind);
+		if (!query) {
+			query = new RegistryQueryImpl<{ name: string }>(`${namespace}/${kind}`, this.dirtySet);
+			bag.set(kind, query);
+		}
+		return query as RegistryQuery<T>;
 	}
 
 	isDirty(kindKey: string): boolean {
@@ -166,7 +167,7 @@ export class RegistryImpl implements InternalRegistry {
 		};
 		for (const [name, kinds] of this.namespaces) {
 			const bag: Record<string, unknown[]> = {};
-			for (const [kindName, query] of Object.entries(kinds)) {
+			for (const [kindName, query] of kinds) {
 				bag[kindName] = query.list();
 			}
 			out[name] = bag;

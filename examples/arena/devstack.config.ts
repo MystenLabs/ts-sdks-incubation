@@ -8,6 +8,8 @@
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { Transaction } from '@mysten/sui/transactions';
+
 import {
 	accounts,
 	codegen,
@@ -19,7 +21,7 @@ import {
 	sui,
 	walletServer,
 } from '@mysten-incubation/devstack';
-import { createLocalSuiClient, seedSharedObject } from '@mysten-incubation/devstack/helpers';
+import { createLocalSuiClient } from '@mysten-incubation/devstack/helpers';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONNECT_FOUR_DIR = resolve(HERE, 'move/connect_four');
@@ -37,14 +39,12 @@ const arenaSharedObjects = defineRegistryKind<ArenaSharedObject>('arena.sharedOb
 export default defineDevstackConfig({
 	app: 'arena',
 	accounts: ['publisher', 'alice', 'bob'],
-	plugins: [
+	use: [
 		sui({ version: 'devnet-v1.71.0' }),
 		accounts(),
 		codegen(),
 		walletServer({ port: 9421 }),
 		frontend({ port: 5176 }),
-	],
-	setup: [
 		publishMove({
 			name: 'connect_four',
 			needs: ['accounts.fund'],
@@ -72,16 +72,30 @@ export default defineDevstackConfig({
 				// surface attaches to alice on first up.
 				const lobbyCreator = ctx.accounts.get('alice');
 				const client = createLocalSuiClient(ctx.registry.services.require('sui-rpc').url);
-				const result = await seedSharedObject({
-					client,
-					publisher: lobbyCreator,
-					target: `${pkg.packageId}::game::create_lobby`,
-					objectTypeFilter: '::game::Lobby',
+				const target = `${pkg.packageId}::game::create_lobby` as const;
+				const tx = new Transaction();
+				tx.moveCall({ target });
+				const result = await client.signAndExecuteTransaction({
+					signer: lobbyCreator,
+					transaction: tx,
+					options: { showObjectChanges: true, showEffects: true },
 				});
+				if (result.effects?.status.status !== 'success') {
+					throw new Error(
+						`openLobby: ${target} failed: ${result.effects?.status.error ?? 'unknown'}`,
+					);
+				}
+				const created = (result.objectChanges ?? []).find(
+					(c) =>
+						c.type === 'created' && 'objectType' in c && c.objectType.endsWith('::game::Lobby'),
+				);
+				if (created === undefined || !('objectId' in created) || !('objectType' in created)) {
+					throw new Error('openLobby: no created Lobby in objectChanges');
+				}
 				arenaSharedObjects(ctx.registry).register({
 					name: 'openLobby',
-					objectId: result.objectId,
-					objectType: result.objectType,
+					objectId: created.objectId,
+					objectType: created.objectType,
 				});
 			},
 		}),

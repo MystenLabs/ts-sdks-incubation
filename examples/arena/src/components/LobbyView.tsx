@@ -1,5 +1,5 @@
 import { Transaction } from '@mysten/sui/transactions';
-import { Card } from '@mysten-incubation/devstack/react/ui';
+import { Card } from '../ui/Card.js';
 import { useState } from 'react';
 
 import { deployment } from '../lib/deployment.js';

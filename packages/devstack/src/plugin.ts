@@ -7,23 +7,156 @@
 // qualified; capability queries (`<cap>:before`) are passed through to
 // the topo sorter unchanged.
 
-import type { Action, DevstackConfig, Plugin, Provides } from './core/types.js';
+import type {
+	Action,
+	DevstackConfig,
+	DevstackConfigInput,
+	Plugin,
+	Provides,
+} from './core/types.js';
 
 const PLUGIN_NAME_RE = /^[a-z][a-z0-9_-]*$/;
 
-export function definePlugin(plugin: Plugin): Plugin {
+export function definePlugin<TProvides extends string = string>(
+	plugin: Plugin<TProvides>,
+): Plugin<TProvides> {
 	validatePluginName(plugin.name);
 	return plugin;
 }
 
 /**
- * Identity helper for `devstack.config.ts`. Apps invoke this to declare
- * their config so editors infer types from the locked thin shape
- * (§8.3): `{ app, plugins, networks?, test? }`. Pure passthrough — the
- * loader inspects the value at runtime.
+ * Extract every action-name string a `use:` array (or any flat-or-nested
+ * `Plugin | Action` collection) provides. Used by
+ * `defineDevstackConfig` to type-check `needs:` references against the
+ * plugins actually present in the surrounding config.
+ *
+ * Plugins contribute their `TProvides` union; bare setup actions
+ * currently contribute nothing at the type level (their names live in a
+ * synthetic `<app>-setup` plugin and are validated locally at runtime).
+ *
+ * Unannotated plugins (`Plugin<string>`, the default) contribute the
+ * non-widening `string & {}` — TS keeps the annotated siblings' string
+ * literals visible in autocomplete (instead of collapsing the union to
+ * just `string`) while still accepting any string at the position. As
+ * each plugin gets annotated, the union tightens and unknown strings
+ * start producing TS errors. This is the "graceful degradation" mode
+ * during the transitional period where not every plugin advertises
+ * what it provides.
  */
-export function defineDevstackConfig(config: DevstackConfig): DevstackConfig {
-	return config;
+export type ProvidedBy<TUse extends ReadonlyArray<unknown>> = TUse[number] extends infer Entry
+	? Entry extends ReadonlyArray<unknown>
+		? ProvidedBy<Entry>
+		: Entry extends Plugin<infer P>
+			? string extends P
+				? string & {}
+				: P
+			: never
+	: never;
+
+/**
+ * Extract every dotted (`'<plugin>.<action>'`) `needs:` reference any
+ * setup action in the use array declares. Bare-name needs (local
+ * references inside the synthetic `<app>-setup` plugin) are excluded —
+ * those resolve at runtime against sibling setup actions and don't
+ * need cross-array validation.
+ */
+type DottedNeedsIn<TUse extends ReadonlyArray<unknown>> = TUse[number] extends infer Entry
+	? Entry extends ReadonlyArray<unknown>
+		? DottedNeedsIn<Entry>
+		: Entry extends { __needs?: infer N }
+			? N extends `${string}.${string}`
+				? N
+				: never
+			: never
+	: never;
+
+/**
+ * Validation: returns `TUse` if every dotted `needs:` reference matches
+ * a `Plugin<TProvides>` provides string in the same array; otherwise
+ * returns a branded error string that surfaces as a `Type 'X' is not
+ * assignable to type 'Error: ...'` message at the call site.
+ */
+type ValidateUse<TUse extends ReadonlyArray<unknown>> = [
+	Exclude<DottedNeedsIn<TUse>, ProvidedBy<TUse>>,
+] extends [never]
+	? TUse
+	: `devstack: needs '${Exclude<DottedNeedsIn<TUse>, ProvidedBy<TUse>>}' but no plugin in use:[] provides it`;
+
+/**
+ * Normalize the input config: flatten the `use:` array, partition
+ * `Plugin` instances from bare `Action`s, and fold the bare actions into
+ * a synthetic `<app>-setup` plugin so cross-action `needs:` references
+ * stay stable. The runtime consumes the returned `plugins:` field;
+ * downstream consumers don't see the original `use:` shape.
+ *
+ * The generic `TUse` lets the type system infer the union of provided
+ * action names — `defineDevstackConfig({...})` callers can extract it
+ * via `ProvidedBy<typeof config.use>` for autocomplete or validation
+ * helpers built atop the public surface.
+ */
+export function defineDevstackConfig<
+	const TUse extends ReadonlyArray<Plugin | Action | ReadonlyArray<Plugin | Action>>,
+>(input: {
+	app: string;
+	use: ValidateUse<TUse>;
+	accounts?: DevstackConfigInput['accounts'];
+	networks?: DevstackConfigInput['networks'];
+}): DevstackConfig {
+	// `input.use` is typed as `ValidateUse<TUse>` for compile-time
+	// validation; at runtime it's always the user's `TUse` array
+	// (validation failures surface as TS errors, not runtime ones).
+	const useArray = input.use as unknown as ReadonlyArray<
+		Plugin | Action | ReadonlyArray<Plugin | Action>
+	>;
+	const flat: Array<Plugin | Action> = [];
+	for (const entry of useArray) {
+		if (Array.isArray(entry)) {
+			for (const inner of entry) flat.push(inner as Plugin | Action);
+		} else {
+			flat.push(entry as Plugin | Action);
+		}
+	}
+	const plugins: Plugin[] = [];
+	const setupActions: Action[] = [];
+	for (const item of flat) {
+		if (isPlugin(item)) {
+			plugins.push(item);
+		} else {
+			setupActions.push(item);
+		}
+	}
+	if (setupActions.length > 0) {
+		const setupPluginName = `${input.app.replace(/[^a-z0-9_-]/gi, '-').toLowerCase()}-setup`;
+		const setupPlugin: Plugin = {
+			name: setupPluginName,
+			// Folded into the snapshot id: each setup action contributes its
+			// name + needs + inputs. `runTransaction` build callbacks are
+			// hashed via `Function.toString()` separately in the action's
+			// own input hash — that catches inline edits but not closure-
+			// captured constants (see notes/friction.md).
+			inputs: setupActions.map((a) => ({
+				name: a.name,
+				type: a.type,
+				needs: a.needs ?? null,
+				inputs: a.inputs ?? null,
+			})),
+			actions: () => setupActions,
+		};
+		plugins.push(setupPlugin);
+	}
+	return {
+		app: input.app,
+		plugins,
+		accounts: input.accounts,
+		networks: input.networks,
+	};
+}
+
+/** Type guard: a `Plugin` carries an `actions: () => Action[]` callable;
+ * an `Action` doesn't. Both have a `name`, so we discriminate by the
+ * presence of the `actions` function. */
+function isPlugin(item: Plugin | Action): item is Plugin {
+	return typeof (item as Plugin).actions === 'function';
 }
 
 export function expandPluginActions(plugins: Plugin[]): Action[] {

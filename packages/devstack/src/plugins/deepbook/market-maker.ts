@@ -27,7 +27,7 @@ import { hostProcess } from '../../actions/host-process.js';
 import { openSuiRpcClient } from '../../helpers/sui-client.js';
 import { splitInputCoin } from './coin-input.js';
 import { resolveCoinType } from './coin-spec.js';
-import { type DeepbookPoolSpec, deepbookNs } from './pools.js';
+import { type DeepbookPoolSpec, deepbookBalanceManagers, deepbookPools } from './pools.js';
 
 const SUI_CLOCK_OBJECT_ID = '0x6';
 
@@ -168,8 +168,9 @@ async function tick(
 	log: (line: string) => void,
 ): Promise<void> {
 	const { maker } = opts;
-	const ns = deepbookNs(ctx.registry);
-	const cached = ns.balanceManagers.find(maker.name);
+	const balanceManagers = deepbookBalanceManagers(ctx.registry);
+	const pools = deepbookPools(ctx.registry);
+	const cached = balanceManagers.find(maker.name);
 	const deepbookPkg = ctx.registry.packages.require('deepbook');
 	const signer = ctx.accounts.get(maker.signer);
 	const signerAddr = signer.toSuiAddress();
@@ -210,7 +211,7 @@ async function tick(
 	const expireMs = BigInt(Date.now() + 24 * 60 * 60 * 1000);
 	let clientOrderId = Math.floor(Date.now() / 1000); // monotonic-ish, distinct across ticks
 	for (const spec of referenced) {
-		const cachedPool = ns.pools.require(spec.name);
+		const cachedPool = pools.require(spec.name);
 		if (!creating) {
 			tx.moveCall({
 				target: `${deepbookPkg.packageId}::pool::cancel_all_orders`,
@@ -274,7 +275,7 @@ async function tick(
 		if (bmObj === undefined || bmObj.type !== 'created') {
 			throw new Error(`deepbook.market-maker-${maker.name}: BalanceManager id missing`);
 		}
-		ns.balanceManagers.register({
+		balanceManagers.register({
 			name: maker.name,
 			objectId: bmObj.objectId,
 			owner: signerAddr,

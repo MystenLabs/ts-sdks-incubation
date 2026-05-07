@@ -22,7 +22,7 @@ const HELLO_DIR = resolve(HERE, 'move/hello');
 export default defineDevstackConfig({
 	app: '_template',
 	accounts: ['alice', 'bob'],
-	plugins: [
+	use: [
 		// Port hints — the per-stack allocator picks any free port if a
 		// sibling stack has the preferred port claimed.
 		sui({ rpcPort: 9100, faucetPort: 9101 }),
@@ -30,8 +30,6 @@ export default defineDevstackConfig({
 		codegen(),
 		walletServer({ port: 9102 }),
 		frontend({ port: 5180 }),
-	],
-	setup: [
 		publishMove({
 			name: 'hello',
 			needs: ['accounts.fund'],

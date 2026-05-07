@@ -33,13 +33,14 @@ import { register } from '../../actions/register.js';
 import {
 	type ActionRunContext,
 	type LocalnetActionRunContext,
-	type RegistryQuery,
+	type Plugin,
 	requireLocalnetCtx,
 } from '../../core/types.js';
 import { pollUntilReady } from '../../helpers/poll.js';
 import { openSuiRpcClient } from '../../helpers/sui-client.js';
 import { extractUpstreamSource } from '../../helpers/upstream-source.js';
 import { definePlugin } from '../../plugin.js';
+import { defineRegistryKind } from '../../registry/index.js';
 import { stackDir } from '../../runtime/active-stack.js';
 import {
 	devstackContainerLabels,
@@ -79,9 +80,7 @@ interface SealKeyServer {
 	sealPackageId: string;
 }
 
-interface SealNamespace {
-	keyServer: RegistryQuery<SealKeyServer>;
-}
+const sealKeyServers = defineRegistryKind<SealKeyServer>('seal.keyServer');
 
 interface SealPluginOptions {
 	/** Pinned seal release tag (e.g. `'seal-v0.6.6'`). Defaults to the
@@ -107,7 +106,9 @@ interface SealPluginOptions {
 	publisher?: string;
 }
 
-export const seal = (opts: SealPluginOptions = {}) => {
+export const seal = (
+	opts: SealPluginOptions = {},
+): Plugin<'seal.build' | 'seal.publish' | 'seal.register' | 'seal.key-server'> => {
 	const version = opts.version ?? SEAL_VERSION;
 	const preferredPort = opts.port ?? KEY_SERVER_CONTAINER_PORT;
 	const keyServerName = opts.keyServerName ?? SEAL_KEY_SERVER_NAME;
@@ -187,8 +188,7 @@ export const seal = (opts: SealPluginOptions = {}) => {
 					},
 				},
 				getStatus: async (ctx) => {
-					const ns = ctx.registry.ns<SealNamespace>('seal');
-					const cached = ns.keyServer.find(keyServerName);
+					const cached = sealKeyServers(ctx.registry).find(keyServerName);
 					if (cached === undefined) return { ok: false, detail: 'no cached KeyServer' };
 					const sealPkg = ctx.registry.packages.find('seal');
 					if (sealPkg === undefined) return { ok: false, detail: 'seal package not registered' };
@@ -223,7 +223,7 @@ export const seal = (opts: SealPluginOptions = {}) => {
 				 * `seal.key-server` (the docker-side key server) when we
 				 * register a fresh KeyServer (regenesis re-publish path). */
 				identity: async (ctx) =>
-					ctx.registry.ns<SealNamespace>('seal').keyServer.find(keyServerName)?.objectId,
+					sealKeyServers(ctx.registry).find(keyServerName)?.objectId,
 			}),
 
 			containerService({
@@ -243,8 +243,7 @@ export const seal = (opts: SealPluginOptions = {}) => {
 				healthyTimeoutMs: 3 * 60_000,
 				spec: async (ctx) => {
 					const { port } = await resolveEndpoint(ctx);
-					const ns = ctx.registry.ns<SealNamespace>('seal');
-					const cached = ns.keyServer.require(keyServerName);
+					const cached = sealKeyServers(ctx.registry).require(keyServerName);
 					return {
 						name: '',
 						image: imageTag,
@@ -393,8 +392,7 @@ async function registerSealKeyServer({
 		keyServerObjectId: objectId,
 	});
 
-	const ns = ctx.registry.ns<SealNamespace>('seal');
-	ns.keyServer.register({
+	sealKeyServers(ctx.registry).register({
 		name: keyServerName,
 		objectId,
 		url: keyServerUrl,

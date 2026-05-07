@@ -1,5 +1,6 @@
 import { useCurrentClient } from '@mysten/dapp-kit-react';
-import { Card, Field } from '@mysten-incubation/devstack/react/ui';
+import { Card } from '../ui/Card.js';
+import { Field } from '../ui/Field.js';
 import { useState } from 'react';
 
 import { deployment } from '../lib/deployment.js';

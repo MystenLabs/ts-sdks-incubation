@@ -29,10 +29,11 @@ import {
 	type Action,
 	type ActionRunContext,
 	type LocalnetActionRunContext,
-	type RegistryQuery,
+	type Plugin,
 	requireLocalnetCtx,
 } from '../../core/types.js';
 import { definePlugin } from '../../plugin.js';
+import { defineRegistryKind } from '../../registry/index.js';
 import { stackDir } from '../../runtime/active-stack.js';
 import {
 	devstackContainerLabels,
@@ -108,9 +109,7 @@ interface WalrusNode {
 	hostApiUrl: string;
 }
 
-interface WalrusNamespace {
-	nodes: RegistryQuery<WalrusNode>;
-}
+const walrusNodes = defineRegistryKind<WalrusNode>('walrus.nodes');
 
 interface WalrusPluginOptions {
 	/** Pinned walrus release tag (e.g. `'devnet-v1.48.0'`). Defaults to
@@ -179,7 +178,16 @@ const DEFAULT_EPOCH_DURATION = '24h';
 const proxyContainerName = (appName: string, stack: string): string =>
 	`${appName}-${stack}-walrus-proxy`;
 
-export const walrus = (opts: WalrusPluginOptions = {}) => {
+type WalrusProvides =
+	| 'walrus.network'
+	| 'walrus.build'
+	| 'walrus.deploy'
+	| 'walrus.proxy'
+	| 'walrus.register'
+	| 'walrus.seedWal'
+	| `walrus.node-${number}`;
+
+export const walrus = (opts: WalrusPluginOptions = {}): Plugin<WalrusProvides> => {
 	const version = opts.version ?? WALRUS_VERSION;
 	const suiVersion = opts.suiVersion ?? SUI_DEFAULT_VERSION;
 	const imageTag = walrusImageTag(version, suiVersion);
@@ -569,10 +577,9 @@ export const walrus = (opts: WalrusPluginOptions = {}) => {
 						} catch {
 							return { ok: false, detail: 'deploy file unparseable' };
 						}
-						const ns = ctx.registry.ns<WalrusNamespace>('walrus');
 						const pkg = ctx.registry.packages.find('walrus');
 						const wal = coinTokens(ctx.registry).find('wal');
-						const nodes = ns.nodes.list();
+						const nodes = walrusNodes(ctx.registry).list();
 						if (
 							pkg !== undefined &&
 							pkg.packageId === ids.walrusPackageId &&
@@ -780,11 +787,11 @@ async function registerWalrus(
 		network: ctx.network,
 	});
 
-	const ns = ctx.registry.ns<WalrusNamespace>('walrus');
+	const nodes = walrusNodes(ctx.registry);
 	const octet = walrusOctet(ctx.appName, ctx.stack);
 	for (let i = 0; i < committeeSize; i++) {
 		const ip = walrusNodeIp(octet, i);
-		ns.nodes.register({
+		nodes.register({
 			name: nodeHostname(i),
 			hostname: nodeHostname(i),
 			ip,
@@ -806,8 +813,8 @@ function republishWalrusFromCache(ctx: ActionRunContext): void {
 	if (pkg !== undefined) ctx.registry.packages.register(pkg);
 	const wal = coinTokens(ctx.registry).find('wal');
 	if (wal !== undefined) coinTokens(ctx.registry).register(wal);
-	const ns = ctx.registry.ns<WalrusNamespace>('walrus');
-	for (const node of ns.nodes.list()) ns.nodes.register(node);
+	const nodes = walrusNodes(ctx.registry);
+	for (const node of nodes.list()) nodes.register(node);
 }
 
 /** Pull the WAL coin type out of the chain. The `walrus-deploy` output

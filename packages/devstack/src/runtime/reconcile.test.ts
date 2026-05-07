@@ -7,7 +7,7 @@ import type { AccountsContext, ActionRunContext } from '../core/types.js';
 import { createInMemoryPortAllocator } from './port-allocator.js';
 import type { ReconcileProgress } from './reconcile.js';
 import { Reconciler } from './reconcile.js';
-import { RegistryImpl } from '../registry/index.js';
+import { RegistryImpl, defineRegistryKind } from '../registry/index.js';
 
 const emptyAccounts: AccountsContext = {
 	get: (name) => {
@@ -395,27 +395,23 @@ describe('Reconciler — providedBy auto-stamping', () => {
 		expect(registry.services.find('rpc')?.providedBy).toBe('me.publish');
 	});
 
-	it('stamps providedBy on namespaced-kind register() calls reached via ns()', async () => {
+	it('stamps providedBy on namespaced-kind register() calls reached via defineRegistryKind', async () => {
+		const arenaSharedObjects = defineRegistryKind<{
+			name: string;
+			objectId: string;
+			providedBy?: string;
+		}>('arena.sharedObjects');
 		const action = register({
 			name: 'arena.openLobby',
 			inputs: {},
 			run: async (ctx) => {
-				const sharedObjects = ctx.registry
-					.ns<{ sharedObjects: { register: (item: { name: string; objectId: string }) => void; find: (name: string) => { name: string; objectId: string; providedBy?: string } | undefined } }>(
-						'arena',
-					)
-					.sharedObjects;
-				sharedObjects.register({ name: 'lobby-1', objectId: '0xabc' });
+				arenaSharedObjects(ctx.registry).register({ name: 'lobby-1', objectId: '0xabc' });
 			},
 		});
 		const reconciler = new Reconciler();
 		const registry = new RegistryImpl();
 		await reconciler.cycle([action], baseCtx(registry));
-		const item = registry
-			.ns<{ sharedObjects: { find: (n: string) => { providedBy?: string } | undefined } }>(
-				'arena',
-			)
-			.sharedObjects.find('lobby-1');
+		const item = arenaSharedObjects(registry).find('lobby-1');
 		expect(item?.providedBy).toBe('arena.openLobby');
 	});
 
