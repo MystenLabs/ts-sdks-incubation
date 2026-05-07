@@ -9,78 +9,84 @@ Hands-on verification tasks owed but unchecked live in [verification.md](verific
 
 ---
 
-### Public API redesign — Phases 1–8 landed; 9 deferred
+### Public API redesign — Phases 1–10 landed (with named follow-ups)
 
-Critical-design pass on `notes/public-api-surface.md` surfaced five recurring issues:
-stringly-typed identifier graph, plugin/setup-action duplication, subpath sprawl,
-convenience-tier accumulation, and action-contract leakage. The redesign plan at
-`/Users/michaelhayes/.claude/plans/glittery-honking-nebula.md` covers Phases 1–10.
-Phases 1–8 landed in this session:
+Critical-design pass on `notes/public-api-surface.md` surfaced five recurring
+issues: stringly-typed identifier graph, plugin/setup-action duplication,
+subpath sprawl, convenience-tier accumulation, and action-contract leakage.
+The redesign plan at `/Users/michaelhayes/.claude/plans/glittery-honking-nebula.md`
+covered Phases 1–10. All phases landed across two commits:
 
-- **Phase 1** — Convenience deletions: `mintCoinDistribution`, `coinTokens` (public
-  re-export), `seedSharedObject`, `selectService`/`selectPackage`/`selectAccountMap`,
-  `useDevstackDeployed`, `useSignAndExecute`, `Card`/`Field`, `Registry.ns<T>` proxy,
-  `localnetDappKitConfig`/`localnetMvrOverrides`. Each example owns its own copy
-  where needed.
-- **Phase 2** — Subpath consolidation: dropped `/vite` (codegen-emitted
-  `src/generated/manifest.ts` is the only read path now) and `/manifest`. 14
-  example/template imports migrated from `'virtual:devstack-manifest'` to
-  `'./generated/manifest.js'`.
-- **Phase 3** — React surface: `createWalletApp` moved from `/app-setup` into
-  `/react`. `/app-setup` subpath dropped. `DevstackProvider` deleted (no remaining
-  hooks needed it).
-- **Phase 4** — Plugin/setup unification: `DevstackConfig.plugins + setup` →
-  single `use:` array. `defineDevstackConfig` is the normalization site (synthesizes
-  `<app>-setup` plugin from bare actions). Dropped `SetupActionScope`,
-  `Action.scope?`, the `'test-only'` magic. `accounts` plugin uses
-  `networks: ['localnet']` instead of `scope: 'localnet-only'`.
-- **Phase 5** — Typed `needs:`. `Plugin<TProvides>` generic with phantom
-  `__provides?`. `publishMove<const TNeeds>` carries `__needs?` phantom on its
-  return shape. `defineDevstackConfig`'s `use:` is constrained by
-  `ValidateUse<TUse>` — typo `'sui.acconut'` produces a TS error string at the
-  callsite. Unannotated plugins contribute `string & {}` (preserves autocomplete
-  on annotated siblings without falsely rejecting unknown plugins). All built-in
-  plugins annotated except `imports` (templated by spec name; needs `<const
-  TPackages>` machinery — flag as remaining work).
-- **Phase 6** — `onPublished` callback dropped from `publish()`/`publishMove()`.
-  Replaced with `registerCoin({ from, name, module, type, decimals })` follow-on
-  Seed action that names the publish in its `needs:` and runs after.
-- **Phase 7** (focused) — Dropped `seed.liveNetworks: boolean | Network[]` in
-  favor of the shared `Action.networks: Network[]` (default `['localnet']` for
-  `seed`). Skipped: dropping the `provides.registry` shortcut on action factories
-  (~9 plugin callsites; lower-value cleanup, defer).
-- **Phase 8** (focused) — Flattened `DevstackConfig.networks: Partial<Record<Network,
-  { rpcUrl?: string }>>` to `Partial<Record<Network, string>>`. Dropped the unused
-  `DevstackConfig.test` field. Skipped: walrus `suiVersion` derivation, seal
-  `master` keys move, imports `gitImport()`/`localImport()` factories, frontend →
-  vite rename, walletServer fold into `createWalletApp` (each its own work item).
+**`d6d6f79`** — Phases 1–6, 7-focused, 8-focused, 10:
 
-**Deferred for follow-up:**
+- **Phase 1** — Convenience deletions: `mintCoinDistribution`, `coinTokens`
+  (public re-export), `seedSharedObject`, `selectService`/`Package`/
+  `AccountMap`, `useDevstackDeployed`, `useSignAndExecute`, `Card`/`Field`,
+  `Registry.ns<T>` proxy, `localnetDappKitConfig`/`localnetMvrOverrides`.
+- **Phase 2** — Subpath consolidation: dropped `/vite`, `/manifest`. 14
+  example/template imports migrated to `'./generated/manifest.js'`.
+- **Phase 3** — `createWalletApp` moved into `/react`. `/app-setup`
+  dropped. `DevstackProvider` deleted.
+- **Phase 4** — `DevstackConfig.plugins + setup` → single `use:` array.
+  `defineDevstackConfig` synthesizes `<app>-setup` plugin from bare
+  actions. Dropped `SetupActionScope`, `Action.scope?`, `'test-only'`
+  magic.
+- **Phase 5** — Typed `needs:` via `Plugin<TProvides>` + `publishMove<const
+  TNeeds>` phantom + `ValidateUse<TUse>` mapped-type validator. 8 of 9
+  built-in plugins annotated.
+- **Phase 6** — `onPublished` callback → `registerCoin` follow-on action.
+- **Phase 7-focused** — `seed.liveNetworks` → `Action.networks`.
+- **Phase 8-focused** — `DevstackConfig.networks` flattened. `test`
+  field dropped.
 
-- **Phase 5C** — Auto-injection: factories like `publishMove({ publisher: 'alice'
-  })` should auto-add `'accounts.fund'` to `needs:` when an `accounts` plugin is
-  in the use array, eliminating most app-author `needs:` boilerplate. Skipped to
-  keep this pass tractable.
-- **Phase 7 — `provides.registry` shortcut removal** — 9 plugin callsites currently
-  use the shortcut form `registry: (ctx) => ...` instead of `provides: { registry:
-  ... }`. Migration is mechanical but invasive.
-- **Phase 7 — `requireLocalnetCtx` removal** — would require Action to be generic
-  over its run-context (`ServiceAction<TCtx>`, etc.), touching every plugin's
-  `run` callback. Deferred.
-- **Phase 7 — `appendLog` non-optional** — currently optional on `ActionRunContext`;
-  audit + removal of every conditional `appendLog?.(...)` callsite (~30) is its
-  own work.
-- **Phase 8 — `walrus({ suiVersion })`** — coupled binary versioning leaks into
-  user opts. Should be derived internally.
-- **Phase 8 — `walletServer` plugin fold** — Today `walletServer()` and
-  `createWalletApp({ manifest })` are paired but separately authored. They should
-  fold into one `walletApp({ port, ... })` plugin in `use:`.
-- **Phase 9 — CLI verb cleanup** — `up`/`apply`/`deploy` collapse, `down`/`reset`/
-  `stack down`/`stack drop` collapse to two verbs, env-var migration to config-
-  builder opts. User-workflow-facing change; needs its own session.
-- **`notes/public-api-surface.md`** — stale. Was the input doc for this redesign;
-  needs a full re-emission against the post-Phase-8 surface. The header should
-  carry a "rewrite pending" marker until that lands.
+**`0d0cc67`** — remaining deferred items:
+
+- **Phase 5C** — Auto-inject `'accounts.fund'` into `needs:` for setup
+  actions with `runsAs` when accounts plugin present. Six example
+  configs lose the boilerplate `needs: ['accounts.fund']` lines.
+- **Phase 7 — `provides.registry` shortcut removal** — top-level
+  `registry: (ctx) => ...` opt dropped from every action factory;
+  authors write `provides: { registry: ... }`. `mergeRegistryShortcut`
+  helper deleted. Plugin callsites that relied on the auto-narrow-to-
+  localnet behavior (sui, seal containerService) now call
+  `requireLocalnetCtx(ctx)` explicitly.
+- **Phase 7 — `appendLog` non-optional** — one-shot path provides a
+  `process.stdout`-fallback default. Plugin callbacks drop the
+  `??-fallback` dance.
+- **Phase 8 — `frontend` committed to vite** — dropped `command:` and
+  `appendPort:` opts (no consumer used them). The plugin runs
+  `pnpm exec vite --port <port>`.
+- **Phase 8 — walrus suiVersion / seal master keys** — both derive
+  internally; opts removed.
+- **Phase 9 — CLI verb cleanup** — `devstack deploy --network` folded
+  into `devstack apply --network`. `applyFilter` now keeps Build on
+  live nets (was `deployFilter`'s job). `devstack reset` renamed to
+  `devstack wipe`. `snapshot hash` renamed to `snapshot id`.
+- **Phase 10** — `notes/public-api-surface.md` rewritten against the
+  post-redesign surface.
+
+**Open follow-ups:**
+
+- **`requireLocalnetCtx` removal** — would require `Action` to be
+  generic over its run-context (`ServiceAction<TCtx>`, etc.), touching
+  every plugin's `run` callback. Cleaner DX for plugin authors but
+  invasive surgery; deferred until plugin-author DX is the bottleneck.
+- **`walletServer` fold into `walletApp({ port, ... })`** — today
+  `walletServer()` (server-side plugin) and `createWalletApp()`
+  (browser-side factory) are paired but authored separately because
+  they run in different processes. A clean fold isn't obvious; the
+  current shape is honest. Revisit if the seam becomes a friction.
+- **`imports` typed factories** — `gitImport()` and `localImport()`
+  factories with discriminated `ImportSpec` narrowing. No example
+  consumes `imports()` today, so the typing work has no immediate
+  payoff. Restore when an example materializes.
+- **DEVSTACK_POOL_* / DEVSTACK_E2E_TEARDOWN env vars** — should
+  migrate to `defineDevstackPlaywrightConfig` opts. Currently
+  documented but stringly-typed. Small surface; defer until a real
+  CI scenario forces the issue.
+- **Named coin shape** — apps still inline a `{ name; type; decimals }`
+  type when they need to write to the `coin.tokens` registry kind.
+  Could be exported as a public `Token` type; nobody's asked.
 
 ---
 
