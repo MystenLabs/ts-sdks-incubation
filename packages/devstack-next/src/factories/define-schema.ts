@@ -1,18 +1,14 @@
-import type {
-	Dep,
-	DepRecipe,
-	NodeImpl,
-	Producer,
-	ProducerGet,
-	Provides,
-} from '../engine/types.js';
+import type { Dep, DepRecipe, NodeImpl, Producer, ProducerGet, Provides } from '../engine/types.js';
 import { buildProducerGet, type DefineInput } from './define.js';
 
 // User-supplied per-instance config. `provides` is hoisted to the schema
 // definition (shared across all instances), so the user's `create`
 // callback returns everything else.
-export type SchemaInstanceConfig<TState, TProvides extends Provides<TState>, TDeps = unknown> =
-	Omit<DefineInput<TState, TProvides, TDeps>, 'provides'>;
+export type SchemaInstanceConfig<
+	TState,
+	TProvides extends Provides<TState>,
+	TDeps = unknown,
+> = Omit<DefineInput<TState, TProvides, TDeps>, 'provides'>;
 
 export interface SchemaDefinition<TConfig, TState, TProvides extends Provides<TState>> {
 	id: string;
@@ -68,9 +64,7 @@ export function defineSchema<TConfig, TState, TProvides extends Provides<TState>
 		if (!recipe) {
 			const declared = Object.keys(providesRec);
 			const list = declared.length ? declared.join(', ') : '<none>';
-			throw new Error(
-				`schema "${schema.id}" does not provide "${key}" (declared keys: ${list})`,
-			);
+			throw new Error(`schema "${schema.id}" does not provide "${key}" (declared keys: ${list})`);
 		}
 		const dep: Dep<any, any> = {
 			__pluginId,
@@ -84,14 +78,9 @@ export function defineSchema<TConfig, TState, TProvides extends Provides<TState>
 	const create = (userConfig: TConfig): Producer<TState, TProvides> => {
 		const instanceCfg = schema.create(userConfig);
 		if (!instanceCfg.name) {
-			throw new Error(
-				`defineSchema("${schema.id}").create: returned config must include \`name\``,
-			);
+			throw new Error(`defineSchema("${schema.id}").create: returned config must include \`name\``);
 		}
-		if (
-			typeof instanceCfg.start !== 'function' &&
-			typeof instanceCfg.run !== 'function'
-		) {
+		if (typeof instanceCfg.start !== 'function' && typeof instanceCfg.run !== 'function') {
 			throw new Error(
 				`defineSchema("${schema.id}").create("${instanceCfg.name}"): must define at least one of start, run`,
 			);
