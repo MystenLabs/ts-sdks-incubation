@@ -63,8 +63,10 @@ describe('sui (localnet static — rpcUrl override skips Docker)', () => {
 		const state = engine.getState().nodes.get('sui.localnet')!.state as SuiState;
 		expect(state.rpcUrl).toBe('http://10.0.0.1:9000');
 		expect(state.faucetUrl).toBe('http://10.0.0.1:9123');
-		// No container started.
-		expect(state.containerId).toBeUndefined();
+		// rpcUrl override skips the dockerContainer node entirely — no
+		// container, no port allocation.
+		expect(engine.getState().nodes.has('sui.localnet.container')).toBe(false);
+		expect(engine.getState().nodes.has('ports')).toBe(false);
 	});
 });
 
@@ -158,6 +160,25 @@ describe('sui (provides.full)', () => {
 		await engine.runOnce();
 		const state = engine.getState().nodes.get('consumer')!.state as { ok: boolean };
 		expect(state.ok).toBe(true);
+	});
+});
+
+describe('sui (localnet docker composition — no real Docker)', () => {
+	// Verify the localnet schema instance composes the underlying
+	// `dockerContainer` runner (rather than calling docker directly). The
+	// graph must surface a `sui.localnet.container` producer alongside the
+	// `sui.localnet` transformer; that's the structural contract any
+	// snapshot / lifecycle pass relies on for uniform container discovery.
+	it('builds a graph with sui.localnet + sui.localnet.container + ports', () => {
+		const node = sui.create({ network: 'localnet' });
+		const engine = new Engine({ stack: [node] }, { env });
+		const state = engine.getState();
+		// The transformer node is in the graph...
+		expect(state.nodes.has('sui.localnet')).toBe(true);
+		// ...along with the underlying dockerContainer runner...
+		expect(state.nodes.has('sui.localnet.container')).toBe(true);
+		// ...which auto-injects a Dep on the standard `ports` node.
+		expect(state.nodes.has('ports')).toBe(true);
 	});
 });
 

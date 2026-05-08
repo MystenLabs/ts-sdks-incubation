@@ -3,8 +3,8 @@ import { promisify } from 'node:util';
 import type { Provides } from '../engine/types.js';
 import { dep } from '../factories/dep.js';
 import { defineSchema, type SchemaInstanceConfig } from '../factories/define-schema.js';
+import { dockerContainer } from '../runners/docker-container.js';
 import type { Endpoint } from '../shapes/index.js';
-import { ports } from '../standard/ports.js';
 
 const exec = promisify(execFile);
 
@@ -29,8 +29,6 @@ export interface SuiState {
 	/** Set on localnet + testnet/devnet; absent on mainnet. */
 	faucetUrl?: string;
 	network: SuiNetwork;
-	/** Set on localnet only. Lets `stop()` tear the container down. */
-	containerId?: string;
 }
 
 const provides = {
@@ -58,9 +56,14 @@ const PUBLIC_FAUCET: Partial<Record<SuiNetwork, string>> = {
 const DEFAULT_LOCALNET_IMAGE = 'mystenlabs/sui-tools:devnet';
 
 // `sui` schema. `sui.create({ network })` returns a Producer:
-//   - localnet → a container-spawning Producer with auto-deps on the
-//     standard `ports` graph node for rpc + faucet slots. Consumer URLs
-//     resolve to `http://127.0.0.1:<host-port>`.
+//   - localnet → a pure transformer Producer that depends on a private
+//     `dockerContainer({...})` node for the actual container lifecycle.
+//     Plugin code never calls `docker` directly; the runner handles spawn,
+//     ready probing, warm-restart liveness, shutdown registration, and
+//     puts a `DockerContainerState`-shaped node into the graph that any
+//     snapshot / lifecycle pass can discover uniformly. Consumer URLs
+//     resolve to `http://127.0.0.1:<host-port>` from the container's
+//     allocated host ports.
 //   - testnet/mainnet/devnet → a stub Producer that just publishes the
 //     well-known fullnode URL (no Docker, no ports).
 //
@@ -97,74 +100,42 @@ function localnetInstance(
 	}
 	const image = opts.image ?? DEFAULT_LOCALNET_IMAGE;
 	const readyTimeoutMs = opts.readyTimeoutMs ?? 60_000;
-	const deps: LocalnetDeps = {
-		rpcPort: ports.get('allocate', { slot: 'sui.rpc' }),
-		faucetPort: ports.get('allocate', { slot: 'sui.faucet' }),
-	};
+
+	const container = dockerContainer({
+		name: 'sui.localnet.container',
+		runsAs: 'sui',
+		image,
+		args: [
+			'sui-test-validator',
+			'--fullnode-rpc-port',
+			'9000',
+			'--faucet-port',
+			'9123',
+			'--with-faucet',
+		],
+		ports: [
+			{ slot: 'sui.rpc', containerPort: 9000 },
+			{ slot: 'sui.faucet', containerPort: 9123 },
+		],
+		readyTimeoutMs,
+		readyProbe: async ({ hostPorts }) => {
+			const port = hostPorts['sui.rpc'];
+			if (port === undefined) return false;
+			return probeSuiRpc(`http://127.0.0.1:${port}`);
+		},
+	});
 
 	return {
 		name: 'sui.localnet',
-		runsAs: 'sui',
-		deps,
-		start: async ({ deps: { rpcPort, faucetPort }, prior, log, onShutdown }) => {
-			if (prior?.containerId && (await containerIsRunning(prior.containerId))) {
-				log(`reusing running sui localnet container ${short(prior.containerId)}`);
-				onShutdown(async () => {
-					if (await containerIsRunning(prior.containerId!)) {
-						await dockerRm(prior.containerId!, log);
-					}
-				});
-				return prior;
-			}
-
-			const args = [
-				'run',
-				'-d',
-				'--rm',
-				'-p',
-				`${rpcPort}:9000`,
-				'-p',
-				`${faucetPort}:9123`,
-				image,
-				'sui-test-validator',
-				'--fullnode-rpc-port',
-				'9000',
-				'--faucet-port',
-				'9123',
-				'--with-faucet',
-			];
-			log(`docker ${args.join(' ')}`);
-			const { stdout } = await exec('docker', args);
-			const containerId = stdout.trim();
-
-			onShutdown(async () => {
-				if (await containerIsRunning(containerId)) {
-					await dockerRm(containerId, log);
-				}
-			});
-
-			const rpcUrl = `http://127.0.0.1:${rpcPort}`;
-			const ok = await waitForReady(() => probeSuiRpc(rpcUrl), readyTimeoutMs, 250);
-			if (!ok) {
-				await dockerRm(containerId, log);
-				throw new Error(
-					`sui.localnet: RPC at ${rpcUrl} did not become ready within ${readyTimeoutMs}ms`,
-				);
-			}
-
-			return {
-				rpcUrl,
-				faucetUrl: `http://127.0.0.1:${faucetPort}`,
-				network: 'localnet',
-				containerId,
-			};
+		deps: {
+			rpcPort: container.get('hostPort', { slot: 'sui.rpc' }),
+			faucetPort: container.get('hostPort', { slot: 'sui.faucet' }),
 		},
-		stop: async ({ state, log }) => {
-			if (state?.containerId && (await containerIsRunning(state.containerId))) {
-				log(`stopping sui localnet ${short(state.containerId)}`);
-				await dockerRm(state.containerId, log);
-			}
-		},
+		start: async ({ deps: { rpcPort, faucetPort } }): Promise<SuiState> => ({
+			rpcUrl: `http://127.0.0.1:${rpcPort}`,
+			faucetUrl: `http://127.0.0.1:${faucetPort}`,
+			network: 'localnet',
+		}),
 		represents: {
 			endpoints: (s: SuiState): Endpoint[] => {
 				const out: Endpoint[] = [{ name: 'sui-rpc', url: s.rpcUrl, kind: 'rpc' }];
@@ -213,11 +184,6 @@ function staticInstance(
 	};
 }
 
-interface LocalnetDeps {
-	rpcPort: ReturnType<typeof ports.get<'allocate'>>;
-	faucetPort: ReturnType<typeof ports.get<'allocate'>>;
-}
-
 async function probeSuiRpc(rpcUrl: string): Promise<boolean> {
 	try {
 		const body = JSON.stringify({
@@ -240,51 +206,4 @@ async function probeSuiRpc(rpcUrl: string): Promise<boolean> {
 	} catch {
 		return false;
 	}
-}
-
-async function containerIsRunning(containerId: string): Promise<boolean> {
-	try {
-		const { stdout } = await exec('docker', [
-			'inspect',
-			'-f',
-			'{{.State.Running}}',
-			containerId,
-		]);
-		return stdout.trim() === 'true';
-	} catch {
-		return false;
-	}
-}
-
-async function dockerRm(containerId: string, log: (line: string) => void): Promise<void> {
-	try {
-		await exec('docker', ['rm', '-f', containerId]);
-	} catch (err) {
-		log(`docker rm -f ${short(containerId)} failed: ${(err as Error).message}`);
-	}
-}
-
-async function waitForReady(
-	probe: () => Promise<boolean>,
-	timeoutMs: number,
-	intervalMs: number,
-): Promise<boolean> {
-	const deadline = Date.now() + timeoutMs;
-	while (Date.now() < deadline) {
-		try {
-			if (await probe()) return true;
-		} catch {
-			// keep polling — sui RPC commonly errors before localnet boot completes
-		}
-		await sleep(intervalMs);
-	}
-	return false;
-}
-
-function sleep(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function short(id: string): string {
-	return id.slice(0, 12);
 }
