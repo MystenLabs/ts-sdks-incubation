@@ -5,6 +5,18 @@ export { BuildError, buildGraph } from './engine/build.js';
 export { CycleError } from './engine/topo.js';
 export { DEVSTACK_NEXT_VERSION } from './engine/snapshot.js';
 
+export {
+	dep,
+	define,
+	defineSchema,
+	type DefineInput,
+	type Schema,
+	type SchemaDefinition,
+	type SchemaInstanceConfig,
+} from './factories/index.js';
+
+export { ports, type PortRequest, type PortsState } from './standard/index.js';
+
 export type {
 	CycleResult,
 	Dep,
