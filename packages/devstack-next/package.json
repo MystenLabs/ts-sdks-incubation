@@ -1,0 +1,51 @@
+{
+	"name": "@mysten-incubation/devstack-next",
+	"version": "0.0.0-dev",
+	"description": "Layered redesign of @mysten-incubation/devstack — pure-logic engine, define/defineSchema factories, plugin packages.",
+	"keywords": [
+		"sui",
+		"move",
+		"localnet",
+		"developer-experience",
+		"walrus",
+		"seal",
+		"docker"
+	],
+	"license": "Apache-2.0",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/MystenLabs/ts-sdks-incubation.git",
+		"directory": "packages/devstack-next"
+	},
+	"homepage": "https://github.com/MystenLabs/ts-sdks-incubation/tree/main/packages/devstack-next#readme",
+	"bugs": {
+		"url": "https://github.com/MystenLabs/ts-sdks-incubation/issues"
+	},
+	"private": true,
+	"type": "module",
+	"sideEffects": false,
+	"main": "./dist/index.mjs",
+	"types": "./dist/index.d.mts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.mts",
+			"import": "./dist/index.mjs"
+		}
+	},
+	"engines": {
+		"node": ">=24.0.0"
+	},
+	"scripts": {
+		"build": "tsdown",
+		"build:watch": "tsdown --watch",
+		"typecheck": "tsc --noEmit",
+		"test": "vitest run",
+		"test:watch": "vitest"
+	},
+	"devDependencies": {
+		"@types/node": "catalog:",
+		"tsdown": "^0.21.10",
+		"typescript": "catalog:",
+		"vitest": "catalog:"
+	}
+}
