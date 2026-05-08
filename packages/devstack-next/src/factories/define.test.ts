@@ -40,10 +40,7 @@ describe('define', () => {
 		const node = define({
 			name: 'kv',
 			provides: {
-				lookup: dep(
-					(s: { map: Record<string, number> }, d: { key: string }) =>
-						s.map[d.key] ?? -1,
-				),
+				lookup: dep((s: { map: Record<string, number> }, d: { key: string }) => s.map[d.key] ?? -1),
 			},
 			start: async () => ({ map: { a: 1 } }),
 		});
@@ -73,9 +70,7 @@ describe('define', () => {
 	});
 
 	it('rejects definitions with no name', () => {
-		expect(() =>
-			define({ start: async () => undefined } as never),
-		).toThrow(/`name` is required/);
+		expect(() => define({ start: async () => undefined } as never)).toThrow(/`name` is required/);
 	});
 
 	it('passes through start, run, stop, restart, getStatus, inputs, represents, runsAs', () => {

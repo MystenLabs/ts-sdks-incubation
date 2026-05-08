@@ -27,9 +27,7 @@ export interface DefineInput<TState, TProvides extends Provides<TState>, TDeps> 
 	stop?: (args: StopArgs<TState>) => Promise<void>;
 	restart?: (args: RunArgs<TState, TProvides, TDeps>) => Promise<TState>;
 
-	getStatus?: (
-		args: GetStatusArgs<TState, TDeps>,
-	) => Promise<{ ok: boolean }> | { ok: boolean };
+	getStatus?: (args: GetStatusArgs<TState, TDeps>) => Promise<{ ok: boolean }> | { ok: boolean };
 	inputs?: (args: InputsArgs<TDeps>) => unknown | Promise<unknown>;
 	snapshot?: (args: { env: Env; state: TState }) => Promise<TState>;
 	represents?: Represents<TState>;
@@ -53,16 +51,12 @@ export function define<
 	TState,
 	TProvides extends Provides<TState> = Provides<TState>,
 	TDeps = unknown,
->(
-	config: DefineInput<TState, TProvides, TDeps>,
-): Producer<TState, TProvides> {
+>(config: DefineInput<TState, TProvides, TDeps>): Producer<TState, TProvides> {
 	if (!config.name) {
 		throw new Error('define: `name` is required');
 	}
 	if (typeof config.start !== 'function' && typeof config.run !== 'function') {
-		throw new Error(
-			`define("${config.name}"): must define at least one of start, run`,
-		);
+		throw new Error(`define("${config.name}"): must define at least one of start, run`);
 	}
 
 	const __id = Symbol(config.name);

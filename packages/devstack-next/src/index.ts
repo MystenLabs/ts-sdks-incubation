@@ -15,7 +15,32 @@ export {
 	type SchemaInstanceConfig,
 } from './factories/index.js';
 
-export { ports, type PortRequest, type PortsState } from './standard/index.js';
+export {
+	accountPool,
+	ports,
+	type AccountPoolMaterializeArgs,
+	type AccountPoolOptions,
+	type AccountPoolState,
+	type PortRequest,
+	type PortsState,
+} from './standard/index.js';
+
+export {
+	dockerContainer,
+	hostProcess,
+	type DockerContainerConfig,
+	type DockerContainerState,
+	type DockerPortMapping,
+	type DockerReadyProbeArgs,
+	type DockerResolveArgs,
+	type DockerValue,
+	type DockerVolumeMapping,
+	type HostProcessConfig,
+	type HostProcessHandle,
+	type HostProcessResolveArgs,
+	type HostProcessState,
+	type HostProcessValue,
+} from './runners/index.js';
 
 export type {
 	CycleResult,
