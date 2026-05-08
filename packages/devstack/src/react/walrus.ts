@@ -1,12 +1,12 @@
 // Walrus integration helpers.
 //
-// `localnetWalrusOptions(manifest)` returns `packageConfig` plus a
-// `storageNodeClientOptions.fetch` that flips `https://` → `http://`
-// on outbound URLs — devstack disables TLS on the storage nodes
-// (axum-server 0.8.0 self-signed-handshake panic on arm64-darwin),
-// and the SDK still hardcodes `https://${network_address}`. Once
-// `@mysten/walrus`'s `storageNodeUrlScheme` ships, the override
-// deletes and callers pass `storageNodeUrlScheme: 'http'` instead.
+// `localnetWalrusOptions(manifest)` returns the localnet-specific
+// `WalrusClient` config: `packageConfig` from the manifest and
+// `storageNodeUrlScheme: 'http'`, since devstack disables TLS on the
+// storage nodes (axum-server 0.8.0 self-signed-handshake panic on
+// arm64-darwin) and `@mysten/walrus@>=1.1.7` lets callers opt out of
+// the SDK's default `https://` prefix. On testnet/mainnet the same
+// call site drops the spread.
 
 interface DevstackManifestShape {
 	registry?: {
@@ -22,17 +22,9 @@ export interface LocalnetWalrusOptions {
 	/** `systemObjectId` + `stakingPoolId` for `WalrusClient`. Read from
 	 * the manifest's `walrus` package `captured` fields. */
 	packageConfig: { systemObjectId: string; stakingPoolId: string };
-	/** Fetch override that rewrites the storage-node SDK's outbound
-	 * `https://` URLs to `http://`. Spread into the `WalrusClient`'s
-	 * `storageNodeClientOptions`. */
-	storageNodeClientOptions: { fetch: typeof globalThis.fetch };
-}
-
-export interface LocalnetWalrusOptionsInit {
-	/** Optional base fetch — used in environments where the global
-	 * `fetch` should be replaced (e.g. node, MSW). The override wraps
-	 * this base. */
-	fetch?: typeof globalThis.fetch;
+	/** Always `'http'` — devstack storage nodes serve plain HTTP. Spread
+	 * into `new WalrusClient({ ... })`. */
+	storageNodeUrlScheme: 'http';
 }
 
 /**
@@ -47,17 +39,12 @@ export interface LocalnetWalrusOptionsInit {
  *     });
  *
  * Production code drops the spread and uses the SDK's built-in
- * defaults (or its own per-network overrides). The call shape is
- * structurally identical between localnet and prod — only the
- * config-input piece differs.
+ * defaults (or its own per-network overrides).
  *
  * Throws if the manifest is empty or doesn't carry a `walrus` package
  * — that means devstack hasn't brought walrus up yet.
  */
-export function localnetWalrusOptions(
-	manifest: unknown,
-	init: LocalnetWalrusOptionsInit = {},
-): LocalnetWalrusOptions {
+export function localnetWalrusOptions(manifest: unknown): LocalnetWalrusOptions {
 	const m = manifest as DevstackManifestShape;
 	const walrusPkg = m.registry?.packages?.find((p) => p.name === 'walrus');
 	if (walrusPkg === undefined) {
@@ -72,27 +59,8 @@ export function localnetWalrusOptions(
 			'localnetWalrusOptions: walrus package missing systemObject/stakingObject in manifest.captured.',
 		);
 	}
-	const baseFetch = init.fetch ?? globalThis.fetch.bind(globalThis);
 	return {
 		packageConfig: { systemObjectId, stakingPoolId },
-		storageNodeClientOptions: { fetch: makeHttpsToHttpFetch(baseFetch) },
+		storageNodeUrlScheme: 'http',
 	};
-}
-
-const HTTPS_PREFIX = 'https://';
-
-function makeHttpsToHttpFetch(baseFetch: typeof globalThis.fetch): typeof globalThis.fetch {
-	return ((input, init) => {
-		const url =
-			typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
-		if (!url.startsWith(HTTPS_PREFIX)) {
-			return baseFetch(input as RequestInfo, init);
-		}
-		const rewritten = `http://${url.slice(HTTPS_PREFIX.length)}`;
-		if (typeof input === 'string' || input instanceof URL) {
-			return baseFetch(rewritten, init);
-		}
-		// Rebuild Request with the new URL — Request.url is read-only.
-		return baseFetch(new Request(rewritten, input), init);
-	}) as typeof globalThis.fetch;
 }

@@ -2,6 +2,11 @@ autoInstallPeers: false
 # Enforce that packages must be at least 2 days old before they're installed
 # This reduces the risk of supply chain attacks from newly published packages
 minimumReleaseAge: 2880
+# Mysten Labs packages are first-party — apply the age gate only to
+# third-party deps so we can pull SDK updates the day they ship.
+minimumReleaseAgeExclude:
+  - '@mysten/*'
+  - '@mysten-incubation/*'
 packages:
   - 'packages/**'
   - 'apps/**'
