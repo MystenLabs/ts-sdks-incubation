@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import type { Dep, Env, ResolvedDeps } from '../engine/types.js';
+import type { Dep, Env, Provides, ResolvedDeps } from '../engine/types.js';
+import { dep } from '../factories/dep.js';
 import { define } from '../factories/define.js';
 import { ports } from '../standard/ports.js';
 
@@ -57,9 +58,37 @@ export interface DockerContainerConfig<TDeps> {
 	inputs?: (args: DockerResolveArgs<TDeps>) => unknown | Promise<unknown>;
 }
 
+// Provides exposed by every `dockerContainer`-built node so parent
+// producers can read state without re-spawning. Plugins that wrap a
+// container (e.g. sui-localnet) declare a private `dockerContainer({...})`
+// and Dep on `hostPort` / `state` to build their own state shape — this is
+// the path that keeps a uniform `dockerContainer` graph node visible to
+// snapshot / shutdown / telemetry tooling instead of inlining `docker run`
+// in plugin code.
+const containerProvides = {
+	state: dep((s: DockerContainerState) => s),
+	hostPort: dep((s: DockerContainerState, req: { slot: string }) => {
+		const port = s.hostPorts[req.slot];
+		if (port === undefined) {
+			throw new Error(
+				`dockerContainer hostPort: slot '${req.slot}' is not declared in this container's \`ports\` config`,
+			);
+		}
+		return port;
+	}),
+} satisfies Provides<DockerContainerState>;
+
 // `dockerContainer` wraps a docker container into a Process producer.
 // Auto-declares Dep edges on the standard `ports` graph node for each
 // port mapping, so consumers don't need to wire them by hand.
+//
+// Exposes `provides.state` (full DockerContainerState) and
+// `provides.hostPort` (Dep<{slot}, number>). Plugin authors that need to
+// shape their own producer around a container (sui-localnet, walrus, …)
+// declare a private `dockerContainer({...})`, Dep on these provides, and
+// keep their own producer as a pure transformer — that way the container
+// node remains a first-class graph member that any snapshot / lifecycle
+// pass can walk.
 //
 // The container's state ({ containerId, hostPorts, ... }) is stored in
 // SnapshotRecord; warm restarts re-attach to a still-running container
@@ -84,9 +113,10 @@ export function dockerContainer<TDeps = undefined>(cfg: DockerContainerConfig<TD
 		_ports: portAutoDeps,
 	};
 
-	return define<DockerContainerState>({
+	return define<DockerContainerState, typeof containerProvides>({
 		name: cfg.name,
 		deps: internalDeps,
+		provides: containerProvides,
 		...(cfg.runsAs !== undefined ? { runsAs: cfg.runsAs } : {}),
 		...(cfg.inputs
 			? {
