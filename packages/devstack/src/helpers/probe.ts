@@ -16,9 +16,7 @@ export interface ProbeOptions {
 	 * polling. Default 1500ms. Callers with their own outer loop should
 	 * keep this strictly smaller than the loop interval. */
 	intervalMs?: number;
-	/** Extra request headers. Useful when the target performs Host-header
-	 * vhost routing (walrus.proxy nginx vhosts by Host: walrus-node-N) and
-	 * the URL alone wouldn't carry the right value. */
+	/** Extra request headers. */
 	headers?: Record<string, string>;
 }
 

@@ -85,13 +85,9 @@ const walrusNodeIp = (octet: number, idx: number): string => `10.${octet}.0.${10
 const walrusListeningIpList = (octet: number, committeeSize: number): string =>
 	Array.from({ length: committeeSize }, (_, i) => walrusNodeIp(octet, i)).join(' ');
 
-/** Public hostname registered on chain for storage node `idx`.
- * `*.localhost` is RFC-6761 reserved and resolves to 127.0.0.1 on every
- * mainstream OS resolver and modern browser, so the same string works
- * from a host browser (→ host port → walrus.proxy → storage node) and
- * from inside the docker network (→ network alias → storage node
- * directly). The walrus.proxy nginx vhost-routes by Host header so a
- * single shared host port serves all N nodes. */
+/** Public hostname registered on chain. `*.localhost` resolves to
+ * 127.0.0.1 on the host (RFC 6761); a matching docker network alias on
+ * each node container handles the in-network case. */
 const walrusPublicHost = (idx: number): string => `walrus-node-${idx}.localhost`;
 const walrusPublicHostList = (committeeSize: number): string =>
 	Array.from({ length: committeeSize }, (_, i) => walrusPublicHost(i)).join(' ');
@@ -113,18 +109,10 @@ interface WalrusNode {
 	name: string;
 	hostname: string;
 	ip: string;
-	/** Public hostname registered in the on-chain Committee. Uses the
-	 * `*.localhost` RFC-6761 namespace so the same string resolves to
-	 * 127.0.0.1 from a host browser AND to the storage-node container
-	 * (via a docker network alias) from inside the docker network. */
 	publicHost: string;
 	metricsUrl: string;
-	/** Storage-node REST API URL — uniform across the host and the
-	 * docker network. From the host this hits walrus.proxy on a host
-	 * port; from inside docker the same name resolves directly to the
-	 * storage-node container. Plain HTTP: we disable node-side TLS via
-	 * the deploy-script patch (axum-server 0.8.0 panics on the
-	 * self-signed handshake on arm64-darwin). */
+	/** Plain HTTP — TLS is disabled on the node side (axum-server 0.8.0
+	 * self-signed-handshake panic on arm64-darwin). */
 	apiUrl: string;
 }
 
@@ -140,12 +128,8 @@ interface WalrusPluginOptions {
 	 * `SUI_DEFAULT_VERSION` — apps should keep `sui()` and `walrus()`
 	 * pinned consistently (the package ships them aligned by default). */
 	version?: string;
-	/** Preferred host port for the walrus.proxy nginx sidecar. A single
-	 * shared port fronts all N storage nodes via Host-header vhost
-	 * routing (`walrus-node-0.localhost`, `walrus-node-1.localhost`, …).
-	 * Default 19185; the per-stack port allocator may pick a different
-	 * port if 19185 is already in use, in which case the on-chain
-	 * Committee URLs reflect whatever the allocator returned. */
+	/** Preferred host port for the walrus.proxy nginx sidecar (default
+	 * 19185). The per-stack allocator may pick a different one. */
 	nodePortBase?: number;
 	/** Walrus epoch duration. Default `'24h'` so blobs uploaded with the
 	 * SDK's `epochs: 1` survive a normal supervisor restart cycle (~30s
@@ -215,10 +199,6 @@ export const walrus = (opts: WalrusPluginOptions = {}): Plugin<WalrusProvides> =
 	if (shards < committeeSize) {
 		throw new Error(`walrus(): shards (${shards}) must be >= committeeSize (${committeeSize})`);
 	}
-	// `nodePortBase` is a hint to the per-stack allocator. We allocate
-	// exactly one port (the shared walrus.proxy port); all storage
-	// nodes register the same port on chain via vhost routing on the
-	// proxy. Resolved at action-run time via ctx.ports.
 	const preferredNodePortBase = opts.nodePortBase ?? DEFAULT_NODE_PORT_BASE;
 	const resolveSharedPort = async (ctx: {
 		ports: import('../../core/types.js').PortAllocator;
@@ -374,30 +354,8 @@ export const walrus = (opts: WalrusPluginOptions = {}): Plugin<WalrusProvides> =
 							network,
 							hostname: 'walrus-deploy',
 							restart: 'no',
-							// Env vars consumed by `deploy.sh`:
-							//   WALRUS_PUBLIC_HOSTS — space-separated list of
-							//     N hostnames; passed to walrus-deploy as
-							//     `--host-addresses` and end up as the
-							//     on-chain Committee `network_address` for
-							//     each node.
-							//   WALRUS_LISTENING_IPS — space-separated list
-							//     of N internal docker IPs; passed to
-							//     `generate-dry-run-configs` as
-							//     `--listening-ips` so binding stays on the
-							//     docker IP regardless of the public hostname.
-							//   WALRUS_REST_API_PORT — single port used both
-							//     for `public_port` (on chain) and as the
-							//     bind port on each node.
-							//   WALRUS_COMMITTEE_SIZE / WALRUS_SHARDS — sizes
-							//     forwarded to walrus-deploy; script validates
-							//     SHARDS >= COMMITTEE_SIZE.
-							//   WALRUS_EPOCH_DURATION — overrides the script's
-							//     default 24h. Walrus garbage-collects blobs
-							//     whose registered `epochs` window has passed,
-							//     so a too-short epoch (upstream's 2m) lets
-							//     dev-cycle blobs disappear before the
-							//     developer's next read. We default to 24h.
-							//   WALRUS_GC — opt-in GC config block.
+							// Consumed by `deploy.sh` — see its header for the
+							// full set of env vars.
 							env: {
 								WALRUS_PUBLIC_HOSTS: walrusPublicHostList(committeeSize),
 								WALRUS_LISTENING_IPS: walrusListeningIpList(
@@ -459,20 +417,11 @@ export const walrus = (opts: WalrusPluginOptions = {}): Plugin<WalrusProvides> =
 								network: appNetworkName(ctx.appName, ctx.stack),
 								ip,
 								hostname: nodeHostname(nodeIdx),
-								// Docker network alias matching the on-chain Committee's
-								// `network_address`. From inside the docker network, peer
-								// storage nodes resolve `walrus-node-${nodeIdx}.localhost`
-								// directly to this container — no proxy hop. From the
-								// host, `*.localhost` resolves to 127.0.0.1 (RFC 6761) and
-								// hits walrus.proxy on the shared host port instead.
+								// Alias matching the on-chain `network_address` —
+								// peer nodes resolve it directly, no proxy hop.
 								networkAlias: walrusPublicHost(nodeIdx),
 								restart: 'unless-stopped',
 								env: { NODE_NAME: nodeHostname(nodeIdx) },
-								// No host port mapping — peer-to-peer traffic stays on
-								// the docker network. The walrus.proxy nginx sidecar
-								// publishes a single shared host port that vhost-routes
-								// to the right node's docker IP, so browser SDK clients
-								// can reach all N nodes through one publish.
 								labels: devstackContainerLabels({
 									appName: ctx.appName,
 									stack: ctx.stack,
@@ -551,8 +500,6 @@ export const walrus = (opts: WalrusPluginOptions = {}): Plugin<WalrusProvides> =
 					},
 					probe: async (ctx) => {
 						const sharedPort = await resolveSharedPort(ctx);
-						// Probe the host-port path with an explicit Host header so
-						// nginx's vhost match selects node-0's upstream.
 						const ok = await probeUrl(`http://localhost:${sharedPort}/v1/api`, {
 							accept: (r) => r.status > 0,
 							headers: { Host: walrusPublicHost(0) },
@@ -863,19 +810,8 @@ function republishWalrusFromCache(ctx: ActionRunContext): void {
  * action down — apps still get `packages.walrus` and node URLs. */
 /**
  * Write an nginx config that fronts all N storage nodes on a single
- * shared port using Host-header vhost routing. The on-chain Committee
- * registers each node as `walrus-node-<idx>.localhost:<sharedPort>`,
- * so the same URL works:
- *
- *   - from a host browser: `*.localhost` → 127.0.0.1 (RFC 6761) →
- *     host port → this proxy → vhost match → upstream docker IP.
- *   - from inside docker: a `walrus-node-<idx>.localhost` network
- *     alias on the storage-node container resolves directly without
- *     touching this proxy at all.
- *
- * The config goes into the per-stack `<stackDir>/.generated/` so it
- * tracks the stack lifecycle (new stack → new config; drop stack → file
- * goes away with the rest).
+ * shared host port via Host-header vhost routing. Lives under per-stack
+ * `<stackDir>/.generated/` so it tracks the stack lifecycle.
  */
 function writeProxyConfig(opts: {
 	appDir: string;
@@ -897,11 +833,6 @@ function writeProxyConfig(opts: {
 	const servers = Array.from({ length: opts.committeeSize }, (_, idx) => {
 		const upstream = walrusNodeIp(octet, idx);
 		const serverName = walrusPublicHost(idx);
-		// Plain-HTTP upstream: TLS is disabled on each storage node via
-		// the deploy-script patch (build.ts) — axum-server 0.8.0 panics
-		// on the self-signed handshake on arm64-darwin. The upstream
-		// port matches the bind port the nodes are configured for via
-		// `--rest-api-port` in deploy.sh.
 		return `
 server {
 	listen 0.0.0.0:${opts.sharedPort};
