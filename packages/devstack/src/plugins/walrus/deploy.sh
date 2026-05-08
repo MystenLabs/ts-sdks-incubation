@@ -84,11 +84,6 @@ fi
 find "$WALRUS_CONTRACT_DIR" -name 'build' -type d -exec rm -rf {} +
 rm -f "$WORKING_DIR"/dryrun-node-*.yaml "$WORKING_DIR"/dryrun-node-*.log
 
-# `--host-addresses` lands in the on-chain Committee as the node's
-# `public_host`. We pass per-node hostnames (e.g. `walrus-node-0.localnet`)
-# rather than docker IPs so the registered URL resolves correctly from
-# both the host (browser) and from inside the docker network — the
-# binding stays on the docker IP via `--listening-ips` below.
 "$WALRUS_DEPLOY_BIN" deploy-system-contract \
 	--working-dir "$WORKING_DIR" \
 	--contract-dir "$WALRUS_CONTRACT_DIR" \
@@ -103,10 +98,6 @@ rm -f "$WORKING_DIR"/dryrun-node-*.yaml "$WORKING_DIR"/dryrun-node-*.log
 	--with-wal-exchange \
 	> "$WORKING_DIR/deploy"
 
-# `--listening-ips` overrides the bind address per node. Without it,
-# generate-dry-run-configs would resolve the public hostname for the
-# bind, which is not what we want (the bind has to be the docker IP
-# inside the per-stack network).
 "$WALRUS_DEPLOY_BIN" generate-dry-run-configs \
 	--working-dir "$WORKING_DIR" \
 	--listening-ips "${LISTENING_IPS[@]}"

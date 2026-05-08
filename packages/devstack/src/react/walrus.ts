@@ -1,37 +1,12 @@
 // Walrus integration helpers.
 //
-// On localnet, the on-chain Walrus Committee registers each storage
-// node as `walrus-node-<idx>.localhost:<sharedPort>`. The `*.localhost`
-// reservation (RFC 6761) makes that string resolvable to 127.0.0.1
-// from any modern OS resolver / browser, so the same URL works from a
-// host browser (→ host port → walrus.proxy nginx vhost-routes by
-// `Host:` → upstream docker IP) and from inside the docker network (→
-// network alias on each storage-node container → direct).
-//
-// What still doesn't line up is the scheme: the walrus TS SDK
-// hardcodes `https://${node_info.network_address}` at
-// `WalrusClient#getCommittee`, but our storage nodes serve plain HTTP
-// (axum-server 0.8.0 panics on the self-signed handshake on
-// arm64-darwin, so devstack disables TLS via `tls.disable_tls: true`
-// in each per-node yaml). Until the upstream `storageNodeUrlScheme`
-// option ships in `@mysten/walrus`, we plumb a fetch override that
-// rewrites the SDK's outbound storage-node URLs from `https://` to
-// `http://`. The override only sees storage-node URLs because it's
-// scoped via `storageNodeClientOptions.fetch` (the SDK's
-// upload-relay / sui-RPC paths use different fetch instances), so an
-// unconditional scheme swap is safe.
-//
-// `localnetWalrusOptions(manifest)` returns the localnet-specific
-// pieces (`packageConfig` + `storageNodeClientOptions.fetch`) so app
-// code can construct a vanilla `WalrusClient`:
-//
-//     const client = new WalrusClient({
-//       suiClient,
-//       ...localnetWalrusOptions(manifest),
-//     });
-//
-// On testnet/mainnet, the same call site uses the SDK's built-in
-// configuration without the override.
+// `localnetWalrusOptions(manifest)` returns `packageConfig` plus a
+// `storageNodeClientOptions.fetch` that flips `https://` → `http://`
+// on outbound URLs — devstack disables TLS on the storage nodes
+// (axum-server 0.8.0 self-signed-handshake panic on arm64-darwin),
+// and the SDK still hardcodes `https://${network_address}`. Once
+// `@mysten/walrus`'s `storageNodeUrlScheme` ships, the override
+// deletes and callers pass `storageNodeUrlScheme: 'http'` instead.
 
 interface DevstackManifestShape {
 	registry?: {

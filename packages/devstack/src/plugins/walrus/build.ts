@@ -94,11 +94,8 @@ const UPSTREAM_REV = 'r3';
  *        the deploy file. Previous fork dropped this — `walrus get-wal`
  *        failed with "could not find a valid Walrus configuration
  *        file".
- * `r13`: prior bump (no-op cache bust).
- * `r14`: deploy.sh now takes WALRUS_PUBLIC_HOSTS + WALRUS_LISTENING_IPS
- *        + WALRUS_REST_API_PORT (replacing WALRUS_NODE_IPS), so the
- *        on-chain Committee carries hostnames the host AND the docker
- *        network can both resolve, decoupled from the docker-IP bind. */
+ * `r14`: deploy.sh consumes WALRUS_PUBLIC_HOSTS + WALRUS_LISTENING_IPS
+ *        + WALRUS_REST_API_PORT — split public hostname from bind IP. */
 const WRAPPER_REV = 'r14';
 
 /** Slug a release tag into a tag-safe component (e.g. `devnet-v1.71.0`
