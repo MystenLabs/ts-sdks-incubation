@@ -10,13 +10,24 @@
 # no CLI args; the caller (`walrus.deploy` action) sets WALRUS_*.
 #
 # Required env (set by walrus.deploy action's container env):
-#   WALRUS_NODE_IPS        — space-separated list of N storage-node IPs
-#                             (one per committee member). N defines
-#                             COMMITTEE_SIZE; mismatch with
+#   WALRUS_PUBLIC_HOSTS    — space-separated list of N storage-node
+#                             public hostnames (one per committee
+#                             member). These are passed to walrus-deploy
+#                             as `--host-addresses` and end up in the
+#                             on-chain Committee `network_address`.
+#                             N defines COMMITTEE_SIZE; mismatch with
 #                             WALRUS_COMMITTEE_SIZE fails fast.
+#   WALRUS_LISTENING_IPS   — space-separated list of N internal docker
+#                             IPs the storage nodes bind their REST API
+#                             on. Passed to walrus-deploy as
+#                             `--listening-ips` so binding is decoupled
+#                             from the on-chain `public_host`.
 # Optional:
+#   WALRUS_REST_API_PORT   — REST API port. Used both as on-chain
+#                             `public_port` and as the bind port for
+#                             every node (default 9185).
 #   WALRUS_COMMITTEE_SIZE  — committee size (default: count of
-#                             WALRUS_NODE_IPS).
+#                             WALRUS_PUBLIC_HOSTS).
 #   WALRUS_SHARDS          — total shards (default 100). Must be >=
 #                             COMMITTEE_SIZE.
 #   WALRUS_EPOCH_DURATION  — walrus epoch (default 24h).
@@ -37,16 +48,26 @@ SHARDS="${WALRUS_SHARDS:-100}"
 EPOCH_DURATION="${WALRUS_EPOCH_DURATION:-24h}"
 NETWORK="${WALRUS_NETWORK:-http://sui-localnet:9000;http://sui-localnet:9123/gas}"
 GC="${WALRUS_GC:-false}"
+REST_API_PORT="${WALRUS_REST_API_PORT:-9185}"
 
-if [ -z "${WALRUS_NODE_IPS:-}" ]; then
-	echo "deploy-walrus: WALRUS_NODE_IPS is required (space-separated IPs)" >&2
+if [ -z "${WALRUS_PUBLIC_HOSTS:-}" ]; then
+	echo "deploy-walrus: WALRUS_PUBLIC_HOSTS is required (space-separated hostnames)" >&2
 	exit 1
 fi
-read -r -a HOSTS <<< "$WALRUS_NODE_IPS"
-COMMITTEE_SIZE="${WALRUS_COMMITTEE_SIZE:-${#HOSTS[@]}}"
+if [ -z "${WALRUS_LISTENING_IPS:-}" ]; then
+	echo "deploy-walrus: WALRUS_LISTENING_IPS is required (space-separated docker IPs)" >&2
+	exit 1
+fi
+read -r -a PUBLIC_HOSTS <<< "$WALRUS_PUBLIC_HOSTS"
+read -r -a LISTENING_IPS <<< "$WALRUS_LISTENING_IPS"
+COMMITTEE_SIZE="${WALRUS_COMMITTEE_SIZE:-${#PUBLIC_HOSTS[@]}}"
 
-if [ "${#HOSTS[@]}" -ne "$COMMITTEE_SIZE" ]; then
-	echo "deploy-walrus: WALRUS_NODE_IPS has ${#HOSTS[@]} entries but WALRUS_COMMITTEE_SIZE=$COMMITTEE_SIZE" >&2
+if [ "${#PUBLIC_HOSTS[@]}" -ne "$COMMITTEE_SIZE" ]; then
+	echo "deploy-walrus: WALRUS_PUBLIC_HOSTS has ${#PUBLIC_HOSTS[@]} entries but WALRUS_COMMITTEE_SIZE=$COMMITTEE_SIZE" >&2
+	exit 1
+fi
+if [ "${#LISTENING_IPS[@]}" -ne "$COMMITTEE_SIZE" ]; then
+	echo "deploy-walrus: WALRUS_LISTENING_IPS has ${#LISTENING_IPS[@]} entries but WALRUS_COMMITTEE_SIZE=$COMMITTEE_SIZE" >&2
 	exit 1
 fi
 if ! [ "$COMMITTEE_SIZE" -gt 0 ] 2>/dev/null; then
@@ -63,21 +84,32 @@ fi
 find "$WALRUS_CONTRACT_DIR" -name 'build' -type d -exec rm -rf {} +
 rm -f "$WORKING_DIR"/dryrun-node-*.yaml "$WORKING_DIR"/dryrun-node-*.log
 
+# `--host-addresses` lands in the on-chain Committee as the node's
+# `public_host`. We pass per-node hostnames (e.g. `walrus-node-0.localnet`)
+# rather than docker IPs so the registered URL resolves correctly from
+# both the host (browser) and from inside the docker network — the
+# binding stays on the docker IP via `--listening-ips` below.
 "$WALRUS_DEPLOY_BIN" deploy-system-contract \
 	--working-dir "$WORKING_DIR" \
 	--contract-dir "$WALRUS_CONTRACT_DIR" \
 	--do-not-copy-contracts \
 	--sui-network "$NETWORK" \
 	--n-shards "$SHARDS" \
-	--host-addresses "${HOSTS[@]}" \
+	--host-addresses "${PUBLIC_HOSTS[@]}" \
+	--rest-api-port "$REST_API_PORT" \
 	--storage-price 5 \
 	--write-price 1 \
 	--epoch-duration "$EPOCH_DURATION" \
 	--with-wal-exchange \
 	> "$WORKING_DIR/deploy"
 
+# `--listening-ips` overrides the bind address per node. Without it,
+# generate-dry-run-configs would resolve the public hostname for the
+# bind, which is not what we want (the bind has to be the docker IP
+# inside the per-stack network).
 "$WALRUS_DEPLOY_BIN" generate-dry-run-configs \
-	--working-dir "$WORKING_DIR"
+	--working-dir "$WORKING_DIR" \
+	--listening-ips "${LISTENING_IPS[@]}"
 
 # Append event-processor + storage_path + tls-disable + optional GC to
 # every generated node yaml. Order:
