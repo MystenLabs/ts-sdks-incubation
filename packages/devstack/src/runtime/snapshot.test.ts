@@ -11,11 +11,11 @@ describe('computeSnapshotId', () => {
 		appName: 'token-studio',
 		stack: 'main',
 		platform: 'darwin/arm64',
-		suiImage: 'dev-examples/sui-localnet:devnet-v1.71.0-r7',
+		suiImage: 'mysten-devstack/sui-localnet:devnet-v1.71.0-r8',
 		accountNames: ['alice', 'bob', 'publisher'],
 		plugins: [
-			{ name: 'sui', version: '1.0.0', inputs: { rpcPort: 9000 } },
-			{ name: 'walrus', version: '1.0.0', inputs: { rev: 'abc123' } },
+			{ name: 'sui', version: '0.0.0-test', inputs: { rpcPort: 9000 } },
+			{ name: 'walrus', version: '0.0.0-test', inputs: { rev: 'abc123' } },
 		],
 	};
 
@@ -31,8 +31,8 @@ describe('computeSnapshotId', () => {
 		const b = computeSnapshotId({
 			...baseInput,
 			plugins: [
-				{ name: 'sui', version: '1.0.0', inputs: { rpcPort: 9001 } },
-				{ name: 'walrus', version: '1.0.0', inputs: { rev: 'abc123' } },
+				{ name: 'sui', version: '0.0.0-test', inputs: { rpcPort: 9001 } },
+				{ name: 'walrus', version: '0.0.0-test', inputs: { rev: 'abc123' } },
 			],
 		});
 		expect(a).not.toBe(b);
@@ -42,7 +42,7 @@ describe('computeSnapshotId', () => {
 		const a = computeSnapshotId(baseInput);
 		const b = computeSnapshotId({
 			...baseInput,
-			suiImage: 'dev-examples/sui-localnet:devnet-v1.72.0-r7',
+			suiImage: 'mysten-devstack/sui-localnet:devnet-v1.72.0-r8',
 		});
 		expect(a).not.toBe(b);
 	});
@@ -69,7 +69,7 @@ describe('snapshotIdFromConfig', () => {
 		const id = snapshotIdFromConfig({
 			appName: 'app',
 			stack: 'main',
-			plugins: [{ name: 'sui', version: '1.0.0' }],
+			plugins: [{ name: 'sui', version: '0.0.0-test' }],
 			accountNames: ['alice'],
 		});
 		expect(id).toMatch(/^[a-f0-9]+$/);

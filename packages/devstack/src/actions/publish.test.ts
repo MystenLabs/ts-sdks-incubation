@@ -161,7 +161,7 @@ describe('publish — shape', () => {
 	});
 });
 
-describe('publish — onPublished invocation', () => {
+describe('publish — registry registration', () => {
 	const setup = () => {
 		const registry = new RegistryImpl();
 		registry.services.register({ name: 'sui-rpc', kind: 'rpc', url: 'http://x', port: 1 });

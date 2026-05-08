@@ -6,29 +6,14 @@ to act on one materializes. Not friction (the pain is captured already
 elsewhere or doesn't exist yet); not verification (no hands-on check
 owed). Pure "we decided not to do this now."
 
-### B7 — deepbook `poolNeeds` auto-derive
-
-Pool specs reference `@reg/<name>` tokens that get registered at run time
-inside `onPublished` hooks. Auto-deriving `needs:` from the references
-would require mapping `@reg/<name>` → registering action at expansion
-time, but the registering action only exists post-publish — so the
-derivation is fragile by construction. Manual `poolNeeds` continues to
-work.
-
 ### C2 — npm publishing
 
-`@mysten-incubation/devstack` is at `1.0.0` with public `publishConfig`,
-so the package is technically publishable. Outstanding work before a
-real `pnpm publish`:
-
-- Confirm the workspace siblings devstack depends on at runtime
-  (`@mysten-incubation/dev-wallet`, `@mysten-incubation/devstack-wallet-panels`)
-  also publish in lockstep — pnpm rewrites `workspace:*` to a real
-  version on publish, so any sibling that stays unpublished will 404 at
-  consumer install time.
-- Run `pnpm pack && tar -tzf` against the produced tarball + a fresh-
-  cwd `npm install` to confirm the file tree, exports map, and bin
-  shebang survive the publish round-trip.
+`@mysten-incubation/devstack` is at `0.1.0` with public `publishConfig`
+and ready to publish. Remaining gates are workspace-sibling ordering:
+`@mysten-incubation/dev-wallet` is at `0.0.1` on npm and needs a `0.1.0`
+publish to match the local workspace; `@mysten-incubation/devstack-wallet-panels`
+doesn't exist on npm yet. pnpm rewrites `workspace:*` on publish, so any
+sibling that lags will 404 at consumer install time.
 
 ### E1 — `loadFixture()` for parallel e2e
 

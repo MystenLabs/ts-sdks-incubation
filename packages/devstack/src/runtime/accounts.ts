@@ -120,8 +120,10 @@ function materialize(
 	if (ctx.network === 'localnet') return invokeSlot(generatedKeypair(), ctx);
 	throw new Error(
 		`account '${name}': no factory configured for network '${ctx.network}' ` +
-			'(and no `default` slot). Add a per-network entry — e.g. ' +
-			`\`accounts: { ${name}: { ${ctx.network}: cliSigner({ alias: '...' }) } }\`.`,
+			'(and no `default` slot). Provide an explicit factory ' +
+			`(cliSigner / envSigner) — e.g. ` +
+			`\`accounts: { ${name}: { ${ctx.network}: cliSigner({ alias: '...' }) } }\` ` +
+			`or \`{ ${ctx.network}: envSigner({ name: '${name.toUpperCase()}_KEY' }) }\`.`,
 	);
 }
 

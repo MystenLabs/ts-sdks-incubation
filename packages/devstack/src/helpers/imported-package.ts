@@ -1,5 +1,5 @@
 // Move-package import helper. `importMovePackage(...)` ensures a content-
-// addressed `dev-examples/upstream-source:<repo-slug>-<rev>` image exists
+// addressed `mysten-devstack/upstream-source:<repo-slug>-<rev>` image exists
 // for the requested git checkout, extracts its `/src` to a tmp host dir,
 // `docker cp`s the checkout into the running sui-localnet container, and
 // runs `sui client test-publish --build-env <env> --pubfile-path …
@@ -17,16 +17,21 @@
 // `test-publish`. The image's auto-created client.yaml lands on
 // `testnet` as active, which would route the publish at the public
 // testnet RPC instead of our localnet on :9000.
-
-import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+//
+// `node:*` modules load via top-level `await import(...)` so the static
+// surface stays browser-safe — see `runtime/hash.ts` for rationale.
 
 import { Keypair, type Signer } from '@mysten/sui/cryptography';
 
 import { objectTypeMatchesFilter } from './match-type.js';
 import { ensureUpstreamSourceImage, extractUpstreamSource } from './upstream-source.js';
+
+const [nodeChildProcess, nodeFs, nodeOs, nodePath] = await Promise.all([
+	import('node:child_process'),
+	import('node:fs'),
+	import('node:os'),
+	import('node:path'),
+]);
 
 const CONTAINER_IMPORT_PATH = '/tmp/devstack-imports';
 
@@ -125,10 +130,10 @@ export async function importMovePackage(
 	//     the user's checkout when we env-inject Move.toml).
 	//   - default: build (or reuse) the content-addressed source image,
 	//     extract its `/src` to a tmp dir.
-	const checkoutDir = mkdtempSync(join(tmpdir(), 'devstack-import-'));
+	const checkoutDir = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'devstack-import-'));
 	try {
 		if (opts.localPath !== undefined) {
-			if (!existsSync(opts.localPath)) {
+			if (!nodeFs.existsSync(opts.localPath)) {
 				throw new Error(`importMovePackage: localPath ${opts.localPath} does not exist`);
 			}
 			// Copy the on-host tree into the tmp dir. `-RP` (R = recursive,
@@ -137,7 +142,7 @@ export async function importMovePackage(
 			// `localPath` into the build container — `cp -R` follows by
 			// default, which would let `sources/keystore -> /etc/ssh` etc.
 			// silently be copied in.
-			const cpHost = spawnSync('cp', ['-RP', `${opts.localPath}/.`, checkoutDir]);
+			const cpHost = nodeChildProcess.spawnSync("cp", ['-RP', `${opts.localPath}/.`, checkoutDir]);
 			if (cpHost.status !== 0) {
 				throw new Error(
 					`importMovePackage: failed to copy localPath ${opts.localPath}: ${cpHost.stderr.toString()}`,
@@ -152,8 +157,8 @@ export async function importMovePackage(
 			});
 			await extractUpstreamSource({ imageTag, destDir: checkoutDir });
 		}
-		const packagePath = join(checkoutDir, subdir);
-		if (!existsSync(packagePath)) {
+		const packagePath = nodePath.join(checkoutDir, subdir);
+		if (!nodeFs.existsSync(packagePath)) {
 			const sourceLabel =
 				opts.localPath !== undefined
 					? `localPath ${opts.localPath}`
@@ -164,7 +169,7 @@ export async function importMovePackage(
 		const containerRepoPath = `${CONTAINER_IMPORT_PATH}/${alias}`;
 		dockerExec(containerName, ['rm', '-rf', containerRepoPath]);
 		dockerExec(containerName, ['mkdir', '-p', containerRepoPath]);
-		const cp = spawnSync('docker', [
+		const cp = nodeChildProcess.spawnSync("docker", [
 			'cp',
 			`${checkoutDir}/.`,
 			`${containerName}:${containerRepoPath}/`,
@@ -247,7 +252,7 @@ export async function importMovePackage(
 			'--with-unpublished-dependencies ' +
 			'--gas-budget 5000000000 ' +
 			'--json';
-		const publish = spawnSync(
+		const publish = nodeChildProcess.spawnSync(
 			'docker',
 			[
 				'exec',
@@ -332,12 +337,12 @@ export async function importMovePackage(
 			cacheHit: false,
 		};
 	} finally {
-		rmSync(checkoutDir, { recursive: true, force: true });
+		nodeFs.rmSync(checkoutDir, { recursive: true, force: true });
 	}
 }
 
 function dockerExec(containerName: string, argv: string[]): void {
-	const result = spawnSync('docker', ['exec', containerName, ...argv], { encoding: 'utf8' });
+	const result = nodeChildProcess.spawnSync("docker", ['exec', containerName, ...argv], { encoding: 'utf8' });
 	if (result.status !== 0) {
 		throw new Error(
 			`importMovePackage: docker exec ${argv.join(' ')} failed (exit ${result.status}): ${result.stderr}`,
@@ -346,7 +351,7 @@ function dockerExec(containerName: string, argv: string[]): void {
 }
 
 function dockerExecWithInput(containerName: string, argv: string[], stdin: string): void {
-	const result = spawnSync('docker', ['exec', '-i', containerName, ...argv], {
+	const result = nodeChildProcess.spawnSync("docker", ['exec', '-i', containerName, ...argv], {
 		encoding: 'utf8',
 		input: stdin,
 	});

@@ -1,92 +1,11 @@
-# Friction journal — open friction
+# Friction journal
 
-Per `CLAUDE.md`: when something hurts (hardcoded port, copy-paste, manual step, brittle
-interaction), capture it here as a one-line entry + file path. Don't silently work around the pain —
-the pain is the data; this file is the input to the next round of cleanup.
+Per CLAUDE.md: when something hurts (hardcoded port, copy-paste, manual step,
+brittle interaction), capture it here as a one-line entry + file path. The pain
+is the data; this file is the input to the next round of cleanup.
 
-Closed-out PRs that were proposed and deferred with rationale live in [deferred.md](deferred.md).
-Hands-on verification tasks owed but unchecked live in [verification.md](verification.md).
-
----
-
-### Public API redesign — Phases 1–10 landed (with named follow-ups)
-
-Critical-design pass on `notes/public-api-surface.md` surfaced five recurring
-issues: stringly-typed identifier graph, plugin/setup-action duplication,
-subpath sprawl, convenience-tier accumulation, and action-contract leakage.
-The redesign plan at `/Users/michaelhayes/.claude/plans/glittery-honking-nebula.md`
-covered Phases 1–10. All phases landed across two commits:
-
-**`d6d6f79`** — Phases 1–6, 7-focused, 8-focused, 10:
-
-- **Phase 1** — Convenience deletions: `mintCoinDistribution`, `coinTokens`
-  (public re-export), `seedSharedObject`, `selectService`/`Package`/
-  `AccountMap`, `useDevstackDeployed`, `useSignAndExecute`, `Card`/`Field`,
-  `Registry.ns<T>` proxy, `localnetDappKitConfig`/`localnetMvrOverrides`.
-- **Phase 2** — Subpath consolidation: dropped `/vite`, `/manifest`. 14
-  example/template imports migrated to `'./generated/manifest.js'`.
-- **Phase 3** — `createWalletApp` moved into `/react`. `/app-setup`
-  dropped. `DevstackProvider` deleted.
-- **Phase 4** — `DevstackConfig.plugins + setup` → single `use:` array.
-  `defineDevstackConfig` synthesizes `<app>-setup` plugin from bare
-  actions. Dropped `SetupActionScope`, `Action.scope?`, `'test-only'`
-  magic.
-- **Phase 5** — Typed `needs:` via `Plugin<TProvides>` + `publishMove<const
-  TNeeds>` phantom + `ValidateUse<TUse>` mapped-type validator. 8 of 9
-  built-in plugins annotated.
-- **Phase 6** — `onPublished` callback → `registerCoin` follow-on action.
-- **Phase 7-focused** — `seed.liveNetworks` → `Action.networks`.
-- **Phase 8-focused** — `DevstackConfig.networks` flattened. `test`
-  field dropped.
-
-**`0d0cc67`** — remaining deferred items:
-
-- **Phase 5C** — Auto-inject `'accounts.fund'` into `needs:` for setup
-  actions with `runsAs` when accounts plugin present. Six example
-  configs lose the boilerplate `needs: ['accounts.fund']` lines.
-- **Phase 7 — `provides.registry` shortcut removal** — top-level
-  `registry: (ctx) => ...` opt dropped from every action factory;
-  authors write `provides: { registry: ... }`. `mergeRegistryShortcut`
-  helper deleted. Plugin callsites that relied on the auto-narrow-to-
-  localnet behavior (sui, seal containerService) now call
-  `requireLocalnetCtx(ctx)` explicitly.
-- **Phase 7 — `appendLog` non-optional** — one-shot path provides a
-  `process.stdout`-fallback default. Plugin callbacks drop the
-  `??-fallback` dance.
-- **Phase 8 — `frontend` committed to vite** — dropped `command:` and
-  `appendPort:` opts (no consumer used them). The plugin runs
-  `pnpm exec vite --port <port>`.
-- **Phase 8 — walrus suiVersion / seal master keys** — both derive
-  internally; opts removed.
-- **Phase 9 — CLI verb cleanup** — `devstack deploy --network` folded
-  into `devstack apply --network`. `applyFilter` now keeps Build on
-  live nets (was `deployFilter`'s job). `devstack reset` renamed to
-  `devstack wipe`. `snapshot hash` renamed to `snapshot id`.
-- **Phase 10** — `notes/public-api-surface.md` rewritten against the
-  post-redesign surface.
-
-**Open follow-ups:**
-
-- **`requireLocalnetCtx` removal** — would require `Action` to be
-  generic over its run-context (`ServiceAction<TCtx>`, etc.), touching
-  every plugin's `run` callback. Cleaner DX for plugin authors but
-  invasive surgery; deferred until plugin-author DX is the bottleneck.
-- **`walletServer` fold into `walletApp({ port, ... })`** — today
-  `walletServer()` (server-side plugin) and `createWalletApp()`
-  (browser-side factory) are paired but authored separately because
-  they run in different processes. A clean fold isn't obvious; the
-  current shape is honest. Revisit if the seam becomes a friction.
-- **`imports` typed factories** — `gitImport()` and `localImport()`
-  factories with discriminated `ImportSpec` narrowing. No example
-  consumes `imports()` today, so the typing work has no immediate
-  payoff. Restore when an example materializes.
-- **DEVSTACK_POOL_* / DEVSTACK_E2E_TEARDOWN env vars** — should
-  migrate to `defineDevstackPlaywrightConfig` opts. Currently
-  documented but stringly-typed. Small surface; defer until a real
-  CI scenario forces the issue.
-- **Named coin shape** — apps still inline a `{ name; type; decimals }`
-  type when they need to write to the `coin.tokens` registry kind.
-  Could be exported as a public `Token` type; nobody's asked.
+Closed-out PRs that were proposed and deferred with rationale live in deferred.md.
+Hands-on verification tasks owed but unchecked live in verification.md.
 
 ---
 
@@ -172,8 +91,8 @@ to add; helps "why did the build fail two days ago?" investigations.
 
 `@mysten/dapp-kit-react`'s `useCurrentClient<TDAppKit extends DAppKit<any>>()` resolves `TDAppKit`
 from the `Register['dAppKit']` augmentation. When the augmentation references a `dAppKit` whose type
-comes from another package (e.g. `createWalletApp({manifest})` in
-`@mysten-incubation/devstack-app-setup`), the immediate hover type of `useCurrentClient()` correctly
+comes from another package (e.g. `createDevstackDappKit({manifest})` in
+`@mysten-incubation/devstack/react`), the immediate hover type of `useCurrentClient()` correctly
 resolves to `SuiGrpcClient`, but `c.core` widens to `any`. With an explicit annotation
 `const c: SuiGrpcClient = useCurrentClient()`, `c.core` correctly resolves to `GrpcCoreClient`.
 Reproduced on TS 5.9.3 with both `module: "NodeNext"` and `module: "Bundler"`.
@@ -182,9 +101,8 @@ Reproduced on TS 5.9.3 with both `module: "NodeNext"` and `module: "Bundler"`.
 whenever the caller dereferences a parametric-`Include` method (`getObject`, `listOwnedObjects`,
 etc.) and depends on the response shape flowing through. Single-call patterns like
 `client.core.getBalance(...)` work unannotated because TS resolves the call site directly without
-needing `.core`'s nominal shape. The augmentation site is now
-`@mysten-incubation/devstack/app-setup` (the subpath export in this repo); when it lived in the
-external `@mysten-incubation/devstack-app-setup` package the same workaround applied.
+needing `.core`'s nominal shape. The augmentation site is `@mysten-incubation/devstack/react`
+(the subpath export in this repo).
 
 **Fix shape**: probably an upstream TS resolver edge case around `ReturnType<TDAppKit['getClient']>`
 when `TDAppKit` is a re-imported type alias. Worth a minimal repro + bug report to TypeScript or
@@ -221,16 +139,6 @@ surfaced — the watcher just doesn't fire on the affected paths.
 bump it via `sysctl` (root only) or print an actionable warning that names the sysctl line. macOS's
 analogous limit (`kern.maxfiles`) hits a different failure mode and probably needs its own probe.
 
-### Snapshot bundle non-atomicity
-
-`devstack snapshot save` writes the host bundle in two steps: `<stackDir>/host/` is recursively
-copied, then `snapshot.json` is written atomically. Both steps are individually atomic but not
-jointly — a `kill -9` between them leaves a half-formed bundle (host dir present, manifest absent)
-that `restore` mis-handles silently.
-
-**Fix shape**: stage the whole bundle to a sibling tmp dir, then `renameSync` once. Cost is one
-extra dir copy per snapshot; benefit is crash-safety.
-
 ### Live-net seed snapshot (forking real-network state)
 
 There's no analog to Hardhat's `--fork-url` for seeding a localnet from a live testnet/mainnet
@@ -261,22 +169,16 @@ file lock or a chain transaction in flight can race the snapshot capture.
 **Fix shape**: extend the snapshot quiesce protocol to call a plugin-provided `pause()` hook on each
 HostProcess action. Plugins implement it idempotently.
 
-### Multi-instance plugin support (`imports() ×2`)
+### Bearer token leak through manifest baked into bundle (partial mitigation)
 
-Two `imports()` calls in one config (e.g. one for vendor packages, one for org packages) collide on
-action expansion — both produce `imports.<package>` action names that clash in the topo sorter.
+The `walletApp()` plugin's bearer token lives in the manifest, which Vite bakes into the production
+bundle. A devstack-deployed dev build that's then hosted on a public URL would expose the token.
 
-**Fix shape**: namespace plugin instances when two of the same plugin appear
-(`imports[0].<package>`, `imports[1].<package>`), or accept an explicit `instanceId:` parameter.
+**Partial mitigation**: the generated manifest path is `.gitignore`d so the secret doesn't enter
+version control by accident. The bundle-bake leak is unchanged — a `vite build` of an app that
+imports from `./generated/manifest.js` still inlines the token.
 
-### Bearer token leak through manifest baked into bundle
-
-`wallet-server`'s bearer token lives in the manifest, which Vite bakes into the production bundle. A
-devstack-deployed dev build that's then hosted on a public URL would expose the token. Today this is
-mitigated because devstack is dev-only — the bundle isn't supposed to leave the laptop — but the
-failure mode is silent.
-
-**Fix shape**: per-session tokens minted by the wallet-server on each listener start, written to
-`<stackDir>` instead of the manifest. The frontend reads from a local file (Vite virtual module) at
-dev time, errors out at build time. Long-term work; depends on a "production-mode" flag on the
-manifest.
+**Fix shape (long-form, still open)**: per-session tokens minted by the wallet-app server on each
+listener start, written to `<stackDir>` instead of the manifest. The frontend reads from a local
+file (Vite virtual module) at dev time, errors out at build time. Depends on a "production-mode"
+flag on the manifest.

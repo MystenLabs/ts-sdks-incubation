@@ -151,7 +151,26 @@ describe('acquireSupervisorLock', () => {
 			expect(err).toBeInstanceOf(SupervisorLockBusyError);
 			const e = err as SupervisorLockBusyError;
 			expect(e.state.pid).toBe(process.pid);
+			expect(e.holderPid).toBe(process.pid);
 			expect(e.path).toMatch(/supervisor\.pid$/);
+		}
+	});
+
+	it('SupervisorLockBusyError message is verb-agnostic (catch sites add the verb)', async () => {
+		const appDir = newAppDir();
+		writeStaleLockForTesting({ appDir, stack: 'main' }, process.pid);
+		try {
+			await acquireSupervisorLock({ appDir, stack: 'main' });
+			expect.fail('should have thrown');
+		} catch (err) {
+			expect(err).toBeInstanceOf(SupervisorLockBusyError);
+			const e = err as SupervisorLockBusyError;
+			// `apply`, `codegen`, `snapshot save`, and `up` all acquire this
+			// lock — the class message names none of them; CLI catch sites
+			// prepend the verb-specific tail using `holderPid`.
+			expect(e.message).toContain('another devstack process is running');
+			expect(e.message).toContain(`PID ${process.pid}`);
+			expect(e.message).not.toContain('devstack up');
 		}
 	});
 });

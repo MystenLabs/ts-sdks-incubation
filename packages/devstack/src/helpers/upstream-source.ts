@@ -1,7 +1,7 @@
 // Content-addressed source images for upstream Move packages.
 //
 // Replaces the host-clone caches at `packages/devstack-state/imports/<repo>@<rev>/`
-// with Docker images named `dev-examples/upstream-source:<repo-slug>-<short-rev>`.
+// with Docker images named `mysten-devstack/upstream-source:<repo-slug>-<short-rev>`.
 // Each image bakes the full git checkout under `/src` so import-time
 // consumers (e.g. `helpers/imported-package.ts`) can `docker create` +
 // `docker cp` the prepped sources to a tmp dir without touching the host
@@ -11,12 +11,19 @@
 // keyed on `<repo, rev>` via the build args, so a rev bump produces a
 // new image tag and Docker's layer cache short-circuits unchanged revs.
 // Idempotent: returns immediately if the tag already exists locally.
+//
+// `node:*` modules load via top-level `await import(...)` so the static
+// surface stays browser-safe — see `runtime/hash.ts` for rationale.
 
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { imageExists, pruneImagesByLabel } from '../runtime/docker/images.js';
+import { DEVSTACK_IMAGE_NAMESPACE } from '../runtime/docker/labels.js';
+import { dockerRun } from '../runtime/docker/run.js';
 
-import { dockerRun, imageExists, pruneImagesByLabel } from '../plugins/sui/docker.js';
+const [nodeFs, nodeOs, nodePath] = await Promise.all([
+	import('node:fs'),
+	import('node:os'),
+	import('node:path'),
+]);
 
 interface EnsureUpstreamSourceImageOptions {
 	repo: string;
@@ -66,7 +73,7 @@ COPY --from=clone /src /src
 export function upstreamSourceImageTag(repo: string, rev: string): string {
 	const slug = repo.replace('/', '__');
 	const shortRev = rev.length > 12 ? rev.slice(0, 12) : rev;
-	return `dev-examples/upstream-source:${slug}-${shortRev}`;
+	return `${DEVSTACK_IMAGE_NAMESPACE}/upstream-source:${slug}-${shortRev}`;
 }
 
 export async function ensureUpstreamSourceImage(
@@ -78,10 +85,10 @@ export async function ensureUpstreamSourceImage(
 	}
 
 	const gitUrl = resolveGitUrl(opts.repo, opts.rev, opts.gitUrl);
-	const tmpCtx = mkdtempSync(join(tmpdir(), 'devstack-upstream-src-'));
+	const tmpCtx = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'devstack-upstream-src-'));
 	const log = opts.appendLog ?? ((line: string) => process.stderr.write(`${line}\n`));
 	try {
-		writeFileSync(join(tmpCtx, 'Dockerfile'), makeDockerfile(gitUrl));
+		nodeFs.writeFileSync(nodePath.join(tmpCtx, 'Dockerfile'), makeDockerfile(gitUrl));
 		log(`devstack: building ${imageTag} (cloning ${gitUrl} @ ${opts.rev.slice(0, 12)})`);
 		const build = await dockerRun({
 			command: [
@@ -112,7 +119,7 @@ export async function ensureUpstreamSourceImage(
 			appendLog: log,
 		});
 	} finally {
-		rmSync(tmpCtx, { recursive: true, force: true });
+		nodeFs.rmSync(tmpCtx, { recursive: true, force: true });
 	}
 
 	return { imageTag };

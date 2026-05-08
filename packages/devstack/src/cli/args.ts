@@ -11,9 +11,11 @@
 //   - `parseTargetArg` only extracts the raw string; resolution lives in
 //     `cli/target.ts:resolveTarget` so the precedence rules are in one place.
 //   - `loadConfig` does the strict shape check every CLI relies on
-//     (`{ app, plugins[] }`). The `cli/stack.ts` loader has a looser
-//     check (no `plugins[]` requirement) — left intact since `stack`
-//     subcommands don't construct an action graph.
+//     (`{ app, plugins[] }`) plus app- and account-name regex checks.
+//     `cli/stack.ts` consumes the same loader: `defineDevstackConfig`
+//     always emits `plugins: []` (synthesizing an `<app>-setup` plugin
+//     when needed), so the strict check never spuriously fires for a
+//     valid config.
 
 import { existsSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
@@ -74,9 +76,9 @@ const FLAGS_WITH_VALUES = new Set([
 
 /** Split `--flag=value` argv tokens into the equivalent `--flag value`
  * pair so the per-flag parsers below (and the verb dispatchers in
- * `cli/{up,apply,deploy,...}.ts`) don't each need their own
- * inline-value handling. Tokens without `=` (or non-`--`-prefixed) pass
- * through unchanged. Idempotent. */
+ * `cli/{up,apply,...}.ts`) don't each need their own inline-value
+ * handling. Tokens without `=` (or non-`--`-prefixed) pass through
+ * unchanged. Idempotent. */
 export function expandEqualsForms(argv: string[]): string[] {
 	const out: string[] = [];
 	for (const arg of argv) {

@@ -5,7 +5,7 @@
 //     chain seeded (packages published, accounts funded, walrus deployed).
 //   - All Service actions run — docker containers start and detach,
 //     surviving this process's exit.
-//   - HostProcess actions (wallet-server's in-process Node http.Server,
+//   - HostProcess actions (wallet-app's in-process Node http.Server,
 //     vite dev-server) DO NOT run here. They die with their parent
 //     process and would leave a window between globalSetup exit and
 //     webServer spawn where a Playwright page could load a dead-token
@@ -25,6 +25,11 @@ import { loadConfig } from '../cli/args.js';
 import { applyTestSetupFilter } from '../cli/filters.js';
 import { stackDir } from '../runtime/active-stack.js';
 import { runOneShot } from '../runtime/one-shot.js';
+import {
+	SupervisorLockBusyError,
+	inspectSupervisorLock,
+	lockfilePath,
+} from '../runtime/supervisor-lock.js';
 
 export default async function globalSetup(): Promise<void> {
 	const configPath = process.env.DEVSTACK_E2E_CONFIG_PATH;
@@ -38,6 +43,18 @@ export default async function globalSetup(): Promise<void> {
 	const config = await loadConfig(abs);
 	const appDir = dirname(abs);
 	const stack = process.env.DEVSTACK_STACK ?? 'test';
+
+	// Refuse to reconcile underneath a live supervisor. If a developer
+	// runs `pnpm dev` (which holds the supervisor lock on stack `'test'`
+	// after `stack use test`) and `pnpm test:e2e` in another terminal,
+	// runOneShot below would race with the supervisor over container
+	// names, port allocations, and manifest writes — half-restarted
+	// services and corrupted state. Same actionable PID-bearing error
+	// the CLI's `up` / `apply` / `wipe` already raise.
+	const lockState = inspectSupervisorLock({ appDir, stack });
+	if (lockState !== null && lockState.alive) {
+		throw new SupervisorLockBusyError(lockState, lockfilePath({ appDir, stack }));
+	}
 
 	const result = await runOneShot({
 		appName: config.app,

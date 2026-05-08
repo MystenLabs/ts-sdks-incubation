@@ -22,12 +22,20 @@
 // server would import a stale or pre-emit `src/generated/manifest.ts`,
 // surfacing as a "stack is empty" first paint followed by an HMR reload
 // once codegen catches up.
+//
+// `node:child_process` loads via top-level `await import(...)` so the
+// static surface stays browser-safe — see `runtime/hash.ts` for
+// rationale.
 
-import { type ChildProcess, spawn } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 import { hostProcess } from '../../actions/host-process.js';
 import type { ActionRunContext, Plugin } from '../../core/types.js';
 import { probeUrl, waitForReachable } from '../../helpers/probe.js';
+import { streamLines } from '../../helpers/stream-lines.js';
 import { definePlugin } from '../../plugin.js';
+import { requireLocalnetCtx } from '../../runtime/runtime-helpers.js';
+
+const nodeChildProcess = await import('node:child_process');
 
 interface FrontendPluginOptions {
 	/** Dev-server port. Default 5173 (vite's default). Passed as
@@ -58,9 +66,7 @@ export const frontend = (opts: FrontendPluginOptions = {}): Plugin<'frontend.dev
 	const resolveEndpoint = async (
 		ctx: ActionRunContext,
 	): Promise<{ port: number; baseUrl: string; command: string[] }> => {
-		if (ctx.network !== 'localnet') {
-			throw new Error('frontend: localnet-only');
-		}
+		requireLocalnetCtx(ctx, 'frontend.dev-server');
 		const [portValue] = await ctx.ports.allocate({
 			slot: 'frontend.dev-server',
 			preferred: preferredPort,
@@ -84,6 +90,7 @@ export const frontend = (opts: FrontendPluginOptions = {}): Plugin<'frontend.dev
 
 	return definePlugin({
 		name: 'frontend',
+		provides: ['frontend.dev-server'],
 		actions: () => [
 			hostProcess({
 				name: 'dev-server',
@@ -119,7 +126,7 @@ export const frontend = (opts: FrontendPluginOptions = {}): Plugin<'frontend.dev
 					log(`spawn ${command.join(' ')} (cwd=${cwd})`);
 					const head = command[0] as string;
 					const tail = command.slice(1);
-					child = spawn(head, tail, {
+					child = nodeChildProcess.spawn(head, tail, {
 						cwd,
 						stdio: ['ignore', 'pipe', 'pipe'],
 						env: { ...process.env, FORCE_COLOR: '0' },
@@ -157,34 +164,3 @@ export const frontend = (opts: FrontendPluginOptions = {}): Plugin<'frontend.dev
 	});
 };
 
-
-function streamLines(child: ChildProcess, log: (line: string) => void): void {
-	const wire = (stream: NodeJS.ReadableStream | null): void => {
-		if (stream === null) return;
-		let buffer = '';
-		stream.on('data', (chunk: Buffer) => {
-			buffer += chunk.toString('utf8');
-			let nl = buffer.indexOf('\n');
-			while (nl !== -1) {
-				const line = stripAnsi(buffer.slice(0, nl)).trimEnd();
-				if (line.length > 0) log(line);
-				buffer = buffer.slice(nl + 1);
-				nl = buffer.indexOf('\n');
-			}
-		});
-		stream.on('end', () => {
-			const line = stripAnsi(buffer).trimEnd();
-			if (line.length > 0) log(line);
-		});
-	};
-	wire(child.stdout);
-	wire(child.stderr);
-}
-
-const ANSI_RE = /\x1b\[[0-9;?]*[a-zA-Z]/g;
-function stripAnsi(s: string): string {
-	// Vite (and most dev servers) emit ANSI color codes + cursor moves.
-	// The renderer's panel-redraw assumes plain text in `appendLog`, so
-	// we strip.
-	return s.replace(ANSI_RE, '');
-}

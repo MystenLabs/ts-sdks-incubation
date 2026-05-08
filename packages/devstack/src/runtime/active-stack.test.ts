@@ -10,6 +10,7 @@ import {
 	readActiveStack,
 	resolveStack,
 	stackDir,
+	validateUserStackName,
 	writeActiveStack,
 } from './active-stack.js';
 
@@ -112,5 +113,27 @@ describe('resolveStack — precedence', () => {
 		writeActiveStack(appDir, 'from-file');
 		vi.stubEnv('DEVSTACK_STACK', '');
 		expect(resolveStack({ appDir, flag: '' })).toBe('from-file');
+	});
+});
+
+describe('validateUserStackName', () => {
+	it('accepts plain valid names', () => {
+		expect(() => validateUserStackName('main')).not.toThrow();
+		expect(() => validateUserStackName('feature-foo')).not.toThrow();
+		expect(() => validateUserStackName('dev')).not.toThrow();
+		expect(() => validateUserStackName('a')).not.toThrow();
+	});
+
+	it('rejects malformed names (charset / leading dash / too long)', () => {
+		expect(() => validateUserStackName('-leading-dash')).toThrow(/must match/);
+		expect(() => validateUserStackName('UPPER')).toThrow(/must match/);
+		expect(() => validateUserStackName('with spaces')).toThrow(/must match/);
+		expect(() => validateUserStackName('a'.repeat(40))).toThrow(/must match/);
+	});
+
+	it('rejects the reserved `test` name with an actionable message', () => {
+		expect(() => validateUserStackName('test')).toThrow(
+			/'test' is reserved for the e2e test harness/,
+		);
 	});
 });

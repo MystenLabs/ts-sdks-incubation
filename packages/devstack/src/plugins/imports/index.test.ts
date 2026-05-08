@@ -6,8 +6,11 @@ const importMovePackageMock = vi.hoisted(() => vi.fn());
 const getChainIdentifierMock = vi.hoisted(() => vi.fn());
 const getObjectMock = vi.hoisted(() => vi.fn());
 
-vi.mock('../sui/docker.js', async () => {
-	const actual = await vi.importActual<typeof import('../sui/docker.js')>('../sui/docker.js');
+vi.mock('../../runtime/docker/index.js', async () => {
+	const actual =
+		await vi.importActual<typeof import('../../runtime/docker/index.js')>(
+			'../../runtime/docker/index.js',
+		);
 	return { ...actual, imageExists: imageExistsMock };
 });
 
@@ -37,6 +40,7 @@ import type {
 	AccountsContext,
 	ActionRunContext,
 	BuildAction,
+	LocalnetActionRunContext,
 	Network,
 	PublishAction,
 } from '../../core/types.js';
@@ -60,11 +64,26 @@ const accountsWith = (entries: Record<string, Signer>): AccountsContext => ({
 	names: () => Object.keys(entries),
 });
 
-const makeCtx = (
+function makeCtx(
+	registry: RegistryImpl,
+	network: 'localnet',
+	accounts?: AccountsContext,
+): LocalnetActionRunContext;
+function makeCtx(
+	registry: RegistryImpl,
+	network: Exclude<Network, 'localnet'>,
+	accounts?: AccountsContext,
+): ActionRunContext;
+function makeCtx(
+	registry: RegistryImpl,
+	network?: Network,
+	accounts?: AccountsContext,
+): ActionRunContext;
+function makeCtx(
 	registry: RegistryImpl,
 	network: Network = 'localnet',
 	accounts: AccountsContext = accountsWith({ publisher: fakeSigner }),
-): ActionRunContext => {
+): ActionRunContext {
 	const common = {
 		appName: 'wallet',
 		appDir: '/tmp/wallet',
@@ -81,7 +100,7 @@ const makeCtx = (
 				ports: createInMemoryPortAllocator(),
 			}
 		: { ...common, network };
-};
+}
 
 const setupRegistry = (): RegistryImpl => {
 	const registry = new RegistryImpl();
@@ -370,7 +389,7 @@ describe('imports plugin — Publish run', () => {
 		const registry = setupRegistry();
 
 		await expect(publish.run?.(makeCtx(registry, 'testnet'))).rejects.toThrow(
-			/requires localnet but got testnet/,
+			/imports\.deepbook: requires localnet but got testnet/,
 		);
 		expect(importMovePackageMock).not.toHaveBeenCalled();
 	});

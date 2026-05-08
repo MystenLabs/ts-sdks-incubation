@@ -6,7 +6,7 @@
 // Per declared package, the plugin emits two actions:
 //
 //   imports.<name>-source — Build. Ensures the content-addressed
-//                           `dev-examples/upstream-source:<repo>-<rev>`
+//                           `mysten-devstack/upstream-source:<repo>-<rev>`
 //                           image exists. No-op on live nets that have a
 //                           curated `addresses[network]` set.
 //   imports.<name>        — Publish. On localnet, runs `importMovePackage`
@@ -22,17 +22,17 @@
 //
 // Recursion (Move.toml dep walking) is workstream D2 — D1 ships the
 // single-package case that mirrors today's hand-rolled blocks.
-
-import { existsSync } from 'node:fs';
-import { isAbsolute } from 'node:path';
+//
+// `node:*` modules load via top-level `await import(...)` so the static
+// surface stays browser-safe — see `runtime/hash.ts` for rationale.
 
 import { buildImage } from '../../actions/build.js';
-import {
-	type Action,
-	type ActionRunContext,
-	type Network,
-	type PublishAction,
-	requireLocalnetCtx,
+import type {
+	Action,
+	ActionRunContext,
+	Network,
+	Plugin,
+	PublishAction,
 } from '../../core/types.js';
 import {
 	type ImportedPackageCacheEntry,
@@ -45,8 +45,11 @@ import {
 	upstreamSourceImageTag,
 } from '../../helpers/upstream-source.js';
 import { definePlugin } from '../../plugin.js';
-import { imageExists } from '../sui/docker.js';
+import { imageExists } from '../../runtime/docker/index.js';
+import { requireLocalnetCtx } from '../../runtime/runtime-helpers.js';
 import { suiContainerName } from '../sui/index.js';
+
+const [nodeFs, nodePath] = await Promise.all([import('node:fs'), import('node:path')]);
 
 const IMPORT_NAME_RE = /^[a-z][a-z0-9_-]*$/;
 // Charsets for fields that flow into shell command lines inside the sui
@@ -125,26 +128,38 @@ function isLocalImport(spec: ImportSpec): spec is LocalImportSpec {
 	return 'local' in spec;
 }
 
-interface ImportsPluginOptions {
-	packages: ImportSpec[];
+interface ImportsPluginOptions<
+	TPackages extends ReadonlyArray<{ name: string }>,
+	TPluginName extends string,
+> {
+	packages: TPackages;
 	/** Plugin instance name. Default `'imports'`. Override when an app
 	 * declares two `imports()` calls (e.g. one for vendored libraries
 	 * and one for org packages) — bare-default instances would namespace-
 	 * collide on action expansion. Validated against the same kebab
 	 * regex `definePlugin` enforces; rejected if it would clash with
 	 * a built-in plugin name. */
-	name?: string;
+	name?: TPluginName;
 }
 
 const PLUGIN_INSTANCE_NAME_RE = /^[a-z][a-z0-9_-]*$/;
 
-export const imports = (opts: ImportsPluginOptions) => {
+export const imports = <
+	const TPackages extends ReadonlyArray<{ name: string }>,
+	const TPluginName extends string = 'imports',
+>(
+	opts: ImportsPluginOptions<TPackages, TPluginName>,
+): Plugin<
+	| `${TPluginName}.${TPackages[number]['name']}`
+	| `${TPluginName}.${TPackages[number]['name']}-source`
+> => {
 	const pluginName = opts.name ?? 'imports';
 	if (!PLUGIN_INSTANCE_NAME_RE.test(pluginName)) {
 		throw new Error(
 			`imports: plugin name '${pluginName}' must match ${PLUGIN_INSTANCE_NAME_RE}.`,
 		);
 	}
+	const packagesArray = opts.packages as unknown as ImportSpec[];
 	const seen = new Set<string>();
 	// Track revs per repo so we can warn when a single git repo is pinned
 	// to multiple revs across specs. Two specs from the same repo at
@@ -154,7 +169,7 @@ export const imports = (opts: ImportsPluginOptions) => {
 	// of the same Move package and the second one wins on subsequent reads
 	// of `@reg/<name>` references. Localnet-only failure mode; surface it.
 	const revsByRepo = new Map<string, Map<string, string[]>>();
-	for (const spec of opts.packages) {
+	for (const spec of packagesArray) {
 		validateImportName(spec.name);
 		validateImportSpec(spec);
 		if (seen.has(spec.name)) {
@@ -187,8 +202,11 @@ export const imports = (opts: ImportsPluginOptions) => {
 				`unless you genuinely need both versions side-by-side.\n`,
 		);
 	}
-	const specs = opts.packages.map(applyDepLinks);
-	return definePlugin({
+	const specs = packagesArray.map(applyDepLinks);
+	return definePlugin<
+		| `${TPluginName}.${TPackages[number]['name']}`
+		| `${TPluginName}.${TPackages[number]['name']}-source`
+	>({
 		name: pluginName,
 		// Folded into the snapshot id. Bumping any spec's `(repo, rev,
 		// subdir)` re-fetches + re-publishes the package, producing
@@ -344,9 +362,9 @@ function buildActionsForSpec(spec: InternalImportSpec): Action[] {
 			// No default getStatus. Hash-match + persisted state covers
 			// the warm path; chainId-regenesis is detected via
 			// `Package.chainId` recorded post-publish (when a user runs
-			// `devstack reset --yes`, the manifest is wiped, state is
+			// `devstack wipe --yes`, the manifest is wiped, state is
 			// empty, action runs fresh). On manual external regenesis,
-			// run `devstack reset` to clear stale state.
+			// run `devstack wipe` to clear stale state.
 			run: async (ctx) => {
 				const curated = curatedAddressFor(spec, ctx.network);
 				if (curated !== undefined) {
@@ -360,7 +378,7 @@ function buildActionsForSpec(spec: InternalImportSpec): Action[] {
 				}
 				// Falling through to importMovePackage — needs the in-container
 				// sui CLI, so the curated path above is the only live-net option.
-				requireLocalnetCtx(ctx);
+				requireLocalnetCtx(ctx, `imports.${spec.name}`);
 				const containerName = suiContainerName(ctx.appName, ctx.stack);
 				const client = openSuiRpcClient(ctx);
 				const chainId = await client.getChainIdentifier();
@@ -476,8 +494,8 @@ function buildImportedPriorEntry(
  * input-hash skip predicate. Returns undefined for relative paths
  * (action expansion can't resolve them without `appDir`). */
 function safeDigest(path: string): string | undefined {
-	if (!isAbsolute(path)) return undefined;
-	if (!existsSync(path)) return undefined;
+	if (!nodePath.isAbsolute(path)) return undefined;
+	if (!nodeFs.existsSync(path)) return undefined;
 	try {
 		return computeSourceDigest(path);
 	} catch {

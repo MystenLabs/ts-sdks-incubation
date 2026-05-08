@@ -2,8 +2,14 @@
 // input fingerprint per action (Q3 — helpers compute hashes from declared
 // inputs). FS-side hashing (Move source files, dockerfiles) extends this in
 // later phases by feeding additional content into the same `update()` flow.
+//
+// `node:crypto` loads via top-level `await import(...)` so this module's
+// static surface stays browser-safe — the reconciler core reaches it
+// transitively from the main barrel's plugin re-exports, and Rollup binds
+// named imports against externals during parse (which fails for
+// `__vite-browser-external`'s empty surface).
 
-import { createHash } from 'node:crypto';
+const nodeCrypto = await import('node:crypto');
 
 type JsonValue =
 	| string
@@ -69,7 +75,7 @@ function stableStringify(value: unknown, seen: WeakSet<object>): string {
 }
 
 export function stableHash(value: unknown): string {
-	const h = createHash('sha256');
+	const h = nodeCrypto.createHash('sha256');
 	h.update(stableStringify(value as JsonValue, new WeakSet()));
 	return h.digest('hex');
 }

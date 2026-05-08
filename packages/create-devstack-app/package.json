@@ -1,6 +1,6 @@
 {
 	"name": "@mysten-incubation/create-devstack-app",
-	"version": "0.0.1",
+	"version": "0.1.0",
 	"description": "Scaffold a new devstack-backed Sui app from the canonical template. Run via `pnpm create @mysten-incubation/devstack-app <name>`.",
 	"keywords": ["sui", "devstack", "scaffold", "create"],
 	"license": "Apache-2.0",
@@ -39,6 +39,6 @@
 		"typescript": "catalog:"
 	},
 	"engines": {
-		"node": ">=24"
+		"node": ">=24.0.0"
 	}
 }

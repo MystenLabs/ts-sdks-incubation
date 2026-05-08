@@ -21,8 +21,8 @@
 // chain.
 //
 // Live-net targets (testnet/mainnet) skip this plugin via the
-// `applyFilter` / `deployFilter` (which strip every Service action and
-// the actions they need). On those networks accounts are pre-existing;
+// `applyFilter` (which strips every Service action and the actions they
+// need). On those networks accounts are pre-existing;
 // users supply their own factories via `accounts: { publisher: { mainnet:
 // cliSigner({...}) } }`.
 
@@ -63,6 +63,7 @@ export const accounts = (opts: AccountsPluginOptions = {}): Plugin<'accounts.fun
 		// `DevstackConfig.accounts` and lives in the `accounts` field of
 		// the snapshot id, not here.
 		inputs: { minBalance: minBalance?.toString() },
+		provides: ['accounts.fund'],
 		actions: () => [
 			register({
 				name: 'fund',

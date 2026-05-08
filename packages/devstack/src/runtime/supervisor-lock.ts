@@ -55,17 +55,20 @@ interface SupervisorLockState {
 }
 
 export class SupervisorLockBusyError extends Error {
+	/** PID of the live process holding the supervisor lock. Catch sites
+	 * use this to format a verb-specific message (`devstack apply`,
+	 * `devstack codegen`, etc.) without re-parsing `err.message`. */
+	readonly holderPid: number;
 	constructor(
 		readonly state: SupervisorLockState,
 		readonly path: string,
 	) {
 		super(
-			`supervisor lock at ${path} is held by PID ${state.pid} ` +
-				'(another `devstack up` is running for this stack). ' +
-				'Stop it (Ctrl-C in its terminal, or kill the PID) before ' +
-				'starting a new one.',
+			`another devstack process is running on this stack (PID ${state.pid}). ` +
+				`Stop it (Ctrl-C in its terminal, or kill ${state.pid}) before continuing.`,
 		);
 		this.name = 'SupervisorLockBusyError';
+		this.holderPid = state.pid;
 	}
 }
 

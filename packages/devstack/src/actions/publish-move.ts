@@ -21,9 +21,15 @@
 
 import type { Provides, PublishAction } from '../core/types.js';
 import { publish, type PublishInputs } from './publish.js';
+import type { WithNeeds } from './with-needs.js';
 
-interface PublishMoveOptions<TNeeds extends string> {
-	name: string;
+interface PublishMoveOptions<
+	TName extends string,
+	TNeeds extends string,
+	TPublisher extends string,
+	TRegistryAs extends string,
+> {
+	name: TName;
 	needs?: readonly TNeeds[];
 	provides?: Provides;
 	/** Move package source directory (relative to the app's `devstack.config.ts`). */
@@ -31,21 +37,86 @@ interface PublishMoveOptions<TNeeds extends string> {
 	/** Object-type filters to capture by name. See `publish()`'s `capture`
 	 * for the filter syntax (suffix match; trailing `<` for generic types). */
 	capture?: Record<string, string>;
-	/** Account name that signs the publish. Defaults to `'publisher'`. */
-	publisher?: string;
-	/** Registry entry name. Defaults to `name`. */
-	registryAs?: string;
+	/** Account name that signs the publish. Defaults to `'publisher'`.
+	 * `defineDevstackConfig` validates this against the declared
+	 * `accounts:` union via a phantom marker on the returned action. */
+	publisher?: TPublisher;
+	/** Registry entry name. Defaults to `name`. The literal flows into
+	 * downstream `ctx.registry.packages.find/require` typing via a
+	 * phantom marker — sibling `runTransaction.build`/`seed.run`
+	 * callbacks that name this `publishMove` (or its `registryAs`) in
+	 * their `needs:` get autocomplete on the registry lookup name. */
+	registryAs?: TRegistryAs;
 }
 
-/** The phantom-typed return shape: PublishAction plus a `__needs` carrier
- * so `defineDevstackConfig`'s mapped-type validator can see what this
- * action's needs are at compile time. The phantom has no runtime
- * presence. */
-type WithNeeds<TNeeds extends string, T> = T & { readonly __needs?: TNeeds };
+/**
+ * Phantom marker on the returned action carrying the `publisher`
+ * literal. `defineDevstackConfig` extracts the union of these from
+ * `use:[]` and validates against the declared `accounts:` so a typo
+ * (`publisher: 'alic'` against `accounts: ['alice']`) surfaces at the
+ * `defineDevstackConfig` call site. No runtime cost.
+ */
+type SignsAs<TPublisher extends string, T> = T & { readonly __signsAs?: TPublisher };
 
-export function publishMove<const TNeeds extends string = never>(
-	opts: PublishMoveOptions<TNeeds>,
-): WithNeeds<TNeeds, PublishAction<PublishInputs>> {
+/**
+ * Phantom marker on the returned action carrying the action's name
+ * literal. Used by `registerCoin({ from })` validation in
+ * `defineDevstackConfig` — `from` references the action by name (the
+ * `publishMove({ name })` value), not the registry-key (`registryAs`).
+ */
+type PublishesPackage<TName extends string, T> = T & {
+	readonly __publishesPackage?: TName;
+};
+
+/**
+ * Phantom marker on the returned action carrying the registry-key
+ * literal (`registryAs ?? name`). Used by `registerCoin({ package })`
+ * validation in `defineDevstackConfig` — `package` references the
+ * registry key the publish registered under, distinct from the
+ * action-name carrier `__publishesPackage`. A typo on `package:`
+ * surfaces at the `defineDevstackConfig` call site rather than at
+ * runtime as a "no entry named '<typo>'"-style error from
+ * `ctx.registry.packages.require`.
+ */
+type PublishesRegistryAs<TRegistryAs extends string, T> = T & {
+	readonly __publishesRegistryAs?: TRegistryAs;
+};
+
+/**
+ * Build, publish, and register a Move package. Sugar over the raw
+ * `publish()` factory from `/authoring`. The published package lands
+ * in `ctx.registry.packages` under `name` (or `registryAs`); captured
+ * objects appear in `pkg.captured`.
+ *
+ * @example
+ * ```ts
+ * import { dirname, resolve } from 'node:path';
+ * import { fileURLToPath } from 'node:url';
+ * import { publishMove } from '@mysten-incubation/devstack';
+ *
+ * const HERE = dirname(fileURLToPath(import.meta.url));
+ *
+ * publishMove({
+ *   name: 'hello',
+ *   path: resolve(HERE, 'move/hello'),
+ *   publisher: 'alice',
+ * });
+ * ```
+ */
+export function publishMove<
+	const TName extends string,
+	const TNeeds extends string = never,
+	const TPublisher extends string = 'publisher',
+	const TRegistryAs extends string = TName,
+>(
+	opts: PublishMoveOptions<TName, TNeeds, TPublisher, TRegistryAs>,
+): WithNeeds<
+	TNeeds,
+	SignsAs<
+		TPublisher,
+		PublishesPackage<TName, PublishesRegistryAs<TRegistryAs, PublishAction<PublishInputs>>>
+	>
+> {
 	return publish({
 		name: opts.name,
 		needs: opts.needs as string[] | undefined,
@@ -54,5 +125,11 @@ export function publishMove<const TNeeds extends string = never>(
 		capture: opts.capture,
 		publisher: opts.publisher,
 		registryAs: opts.registryAs,
-	}) as WithNeeds<TNeeds, PublishAction<PublishInputs>>;
+	}) as WithNeeds<
+		TNeeds,
+		SignsAs<
+			TPublisher,
+			PublishesPackage<TName, PublishesRegistryAs<TRegistryAs, PublishAction<PublishInputs>>>
+		>
+	>;
 }

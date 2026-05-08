@@ -34,6 +34,9 @@ Commands:
   snapshot save|restore|list|rm|id
                                Capture / restore named snapshots of a stack.
   console [config] [--target]  REPL with manifest, client, accounts pre-bound.
+  status [config] [--target]   Read-only print of the manifest's action-graph state.
+                               No side effects.
+  doctor                       Preflight environment check (docker, sui CLI, node, etc).
 
 Run 'devstack <command> --help' for command-specific options where supported.
 `;
@@ -64,10 +67,10 @@ async function main(): Promise<number> {
 		process.stdout.write(USAGE);
 		return verb === undefined ? 1 : 0;
 	}
-	// Verb-specific help: route `down --help` / `reset --help` to focused
+	// Verb-specific help: route `down --help` / `wipe --help` to focused
 	// USAGE strings instead of `stack`'s generic dump (those verbs delegate
 	// to `stack` internally — the user shouldn't see `stack`'s subcommand
-	// list when they asked about `reset`).
+	// list when they asked about `wipe`).
 	const wantsHelp = (n: number): boolean => {
 		const arg = process.argv[n];
 		return arg === '--help' || arg === '-h';
@@ -113,6 +116,14 @@ async function main(): Promise<number> {
 		}
 		case 'console': {
 			const mod = await import('./console.js');
+			return mod.main(argv);
+		}
+		case 'status': {
+			const mod = await import('./status.js');
+			return mod.main(argv);
+		}
+		case 'doctor': {
+			const mod = await import('./doctor.js');
 			return mod.main(argv);
 		}
 		default:

@@ -27,8 +27,10 @@
 
 import { dirname, resolve } from 'node:path';
 
+import { DEVSTACK_IMAGE_NAMESPACE } from '../runtime/docker/labels.js';
+import { dockerRun } from '../runtime/docker/run.js';
 import { SUI_DEFAULT_VERSION, SUI_IMAGE_REVISION } from '../plugins/sui/index.js';
-import { resolveStack } from '../runtime/active-stack.js';
+import { resolveStack, stackDir } from '../runtime/active-stack.js';
 import {
 	captureSnapshot,
 	listSnapshots,
@@ -36,6 +38,10 @@ import {
 	removeSnapshot,
 	snapshotIdFromConfig,
 } from '../runtime/snapshot.js';
+import {
+	SupervisorLockBusyError,
+	acquireSupervisorLock,
+} from '../runtime/supervisor-lock.js';
 import { loadConfig, parseConfigArg, parseStackArg, runIfMain } from './args.js';
 
 interface SnapshotFlags {
@@ -48,6 +54,11 @@ interface SnapshotFlags {
 	/** Emit JSON on stdout for any read-only subcommand
 	 * (`id`, `list`, `save` summary). */
 	json?: boolean;
+	/** `save --dry-run`: print the would-do summary and exit 0 without
+	 * mutating any docker / on-disk state. Acquires the supervisor lock
+	 * the same way as a real save (so a running supervisor still
+	 * surfaces the lock-busy error — the operator wants to know). */
+	dryRun?: boolean;
 }
 
 async function runSnapshot(flags: SnapshotFlags): Promise<number> {
@@ -67,7 +78,7 @@ async function runSnapshot(flags: SnapshotFlags): Promise<number> {
 		// Best-effort sui image hint for the hash. Plugin authors may pin a
 		// different version; the snapshot id will still differ when they do
 		// because each plugin's `inputs` field is also part of the hash.
-		suiImage: `dev-examples/sui-localnet:${SUI_DEFAULT_VERSION}-${SUI_IMAGE_REVISION}`,
+		suiImage: `${DEVSTACK_IMAGE_NAMESPACE}/sui-localnet:${SUI_DEFAULT_VERSION}-${SUI_IMAGE_REVISION}`,
 	});
 
 	switch (flags.subcommand) {
@@ -80,6 +91,7 @@ async function runSnapshot(flags: SnapshotFlags): Promise<number> {
 				alias: flags.ref,
 				pushTo: flags.pushTo,
 				json: flags.json,
+				dryRun: flags.dryRun,
 			});
 		case 'restore':
 			return restoreCmd({
@@ -107,45 +119,159 @@ async function saveCmd(opts: {
 	alias?: string;
 	pushTo?: string;
 	json?: boolean;
+	dryRun?: boolean;
 }): Promise<number> {
-	if (opts.json !== true) {
-		process.stdout.write(
-			`devstack snapshot save → ${opts.id}${opts.alias ? ` (alias='${opts.alias}')` : ''}\n`,
-		);
-		if (opts.pushTo !== undefined) {
-			process.stdout.write(`  pushing seed images to ${opts.pushTo}…\n`);
+	// Coordinate with any active supervisor: a `devstack up` cycle can be
+	// mid-write on the manifest while we read it for the snapshot, which
+	// would tear the bundle. Acquire the per-stack lock and hold it for
+	// the duration of the capture (or the dry-run preview). A live
+	// supervisor → fail fast with an actionable message; a stale lock
+	// (dead PID) is reclaimed transparently by `acquireSupervisorLock`.
+	let lock: { release: () => void };
+	try {
+		lock = await acquireSupervisorLock({ appDir: opts.appDir, stack: opts.stack });
+	} catch (err) {
+		if (err instanceof SupervisorLockBusyError) {
+			const pid = err.holderPid;
+			process.stderr.write(
+				`devstack snapshot save: another devstack process is running on this stack (PID ${pid}). ` +
+					`Stop it (Ctrl-C in its terminal, or kill ${pid}) before running \`devstack snapshot save\` — ` +
+					`capture must coordinate with the cycle to avoid torn manifest reads.\n`,
+			);
+			return 1;
 		}
+		throw err;
 	}
-	const entry = await captureSnapshot(opts);
+	try {
+		if (opts.dryRun === true) {
+			return await saveDryRun(opts);
+		}
+		if (opts.json !== true) {
+			process.stdout.write(
+				`devstack snapshot save → ${opts.id}${opts.alias ? ` (alias='${opts.alias}')` : ''}\n`,
+			);
+			if (opts.pushTo !== undefined) {
+				process.stdout.write(`  pushing seed images to ${opts.pushTo}…\n`);
+			}
+		}
+		const entry = await captureSnapshot(opts);
+		if (opts.json === true) {
+			process.stdout.write(
+				`${JSON.stringify({
+					kind: 'summary' as const,
+					command: 'snapshot save',
+					id: entry.id,
+					alias: entry.alias,
+					stack: entry.stack,
+					platform: entry.platform,
+					bundlePath: snapshotBundlePath(opts.appDir, opts.id),
+					containers: entry.containers.map((c) => ({
+						containerName: c.containerName,
+						originalImage: c.originalImage,
+						seedImage: c.seedImage,
+						registryImage: c.registryImage,
+					})),
+				})}\n`,
+			);
+		} else {
+			process.stdout.write(`captured ${entry.containers.length} container(s):\n`);
+			for (const c of entry.containers) {
+				const pushed = c.registryImage !== undefined ? ` (pushed: ${c.registryImage})` : '';
+				process.stdout.write(
+					`  ${c.containerName}\n    ${c.originalImage} → ${c.seedImage}${pushed}\n`,
+				);
+			}
+			process.stdout.write(`bundle: ${snapshotBundlePath(opts.appDir, opts.id)}\n`);
+		}
+		return 0;
+	} finally {
+		lock.release();
+	}
+}
+
+/** `snapshot save --dry-run`: print what a real save would do and exit 0
+ * without mutating docker or the snapshot dir. Honors `--json` for CI
+ * parseability — the output mirrors the real save's JSON shape with
+ * `kind: 'dry-run'` so consumers can branch on it. */
+async function saveDryRun(opts: {
+	appName: string;
+	appDir: string;
+	stack: string;
+	id: string;
+	alias?: string;
+	pushTo?: string;
+	json?: boolean;
+}): Promise<number> {
+	const containerNames = await listStackContainerNames(opts.appName, opts.stack);
+	const aliasOrId = opts.alias ?? opts.id.slice(0, 16);
+	const containers = containerNames.map((name) => {
+		const seedImage = `devstack-snapshot/${opts.id}/${name}:seeded`;
+		const registryImage =
+			opts.pushTo !== undefined
+				? `${opts.pushTo.replace(/\/$/, '')}/${name}:${aliasOrId}`
+				: undefined;
+		return { containerName: name, seedImage, registryImage };
+	});
+	const stackHostDir = stackDir(opts.appDir, opts.stack);
+	const bundlePath = snapshotBundlePath(opts.appDir, opts.id);
+
 	if (opts.json === true) {
 		process.stdout.write(
 			`${JSON.stringify({
-				kind: 'summary' as const,
+				kind: 'dry-run' as const,
 				command: 'snapshot save',
-				id: entry.id,
-				alias: entry.alias,
-				stack: entry.stack,
-				platform: entry.platform,
-				bundlePath: snapshotBundlePath(opts.appDir, opts.id),
-				containers: entry.containers.map((c) => ({
-					containerName: c.containerName,
-					originalImage: c.originalImage,
-					seedImage: c.seedImage,
-					registryImage: c.registryImage,
-				})),
+				id: opts.id,
+				alias: opts.alias,
+				stack: opts.stack,
+				bundlePath,
+				stackHostDir,
+				containers,
 			})}\n`,
 		);
-	} else {
-		process.stdout.write(`captured ${entry.containers.length} container(s):\n`);
-		for (const c of entry.containers) {
-			const pushed = c.registryImage !== undefined ? ` (pushed: ${c.registryImage})` : '';
-			process.stdout.write(
-				`  ${c.containerName}\n    ${c.originalImage} → ${c.seedImage}${pushed}\n`,
-			);
-		}
-		process.stdout.write(`bundle: ${snapshotBundlePath(opts.appDir, opts.id)}\n`);
+		return 0;
 	}
+	process.stdout.write(
+		`snapshot save --dry-run for stack '${opts.stack}':\n  id: ${opts.id}` +
+			`${opts.alias ? ` (alias='${opts.alias}')` : ''}\n`,
+	);
+	if (containers.length === 0) {
+		process.stdout.write(
+			`  no containers labeled devstack.app=${opts.appName} devstack.stack=${opts.stack} ` +
+				`— bring the stack up first with \`devstack up\`.\n`,
+		);
+	} else {
+		for (const c of containers) {
+			const pushed =
+				c.registryImage !== undefined ? ` (would push: ${c.registryImage})` : '';
+			process.stdout.write(`  would commit ${c.containerName} → ${c.seedImage}${pushed}\n`);
+		}
+	}
+	process.stdout.write(`  would copy host state from ${stackHostDir} → snapshot bundle\n`);
+	process.stdout.write(`  would write bundle at ${bundlePath}\n`);
 	return 0;
+}
+
+/** Mirror of `runtime/snapshot.ts#listStackContainers`, kept local to the
+ * dry-run path so we don't take a runtime dependency on a private helper.
+ * Filters by both `devstack.app` and `devstack.stack` labels. */
+async function listStackContainerNames(appName: string, stack: string): Promise<string[]> {
+	const result = await dockerRun({
+		command: [
+			'ps',
+			'-a',
+			'--format',
+			'{{.Names}}',
+			'--filter',
+			`label=devstack.app=${appName}`,
+			'--filter',
+			`label=devstack.stack=${stack}`,
+		],
+	});
+	if (result.code !== 0) return [];
+	return result.stdout
+		.split('\n')
+		.map((s) => s.trim())
+		.filter((s) => s.length > 0);
 }
 
 async function restoreCmd(opts: {
@@ -268,18 +394,27 @@ Subcommands:
 Options:
   --stack <name>          Override the active stack
   --config <path>         Override the config path
-  --force-arch            (restore) Allow cross-arch restore (RocksDB
-                          binary format may corrupt; use with care)
+  --force-arch            (restore) Allow cross-arch restore. RocksDB
+                          binary format can corrupt on first write when
+                          the captured arch differs from the current
+                          host (e.g. linux/amd64 → darwin/arm64); a
+                          loud stderr warning prints before proceeding.
   --push <registry>       (save) Also tag each seed image as
                           \`<registry>/<container>:<alias>\` and docker
                           push. Restore will pull from the registry on
                           machines where the local seed image is absent
                           (CI / cross-host snapshot sharing).
+  --dry-run, -n           (save) Print the would-do summary and exit 0
+                          without committing images or writing the
+                          bundle. Still acquires the supervisor lock so
+                          a running \`devstack up\` surfaces as an error.
   --json                  Emit a single-line JSON summary on stdout
-                          (save / restore / list / id).
+                          (save / restore / list / id; honored by
+                          \`save --dry-run\` for CI consumption).
 
 Examples:
   devstack snapshot save baseline
+  devstack snapshot save baseline --dry-run
   devstack snapshot save baseline --push ghcr.io/myorg/snapshots
   devstack snapshot list
   devstack snapshot restore baseline
@@ -311,6 +446,10 @@ function parseArgs(argv: string[]): SnapshotFlags {
 			flags.json = true;
 			continue;
 		}
+		if (arg === '--dry-run' || arg === '-n') {
+			flags.dryRun = true;
+			continue;
+		}
 		if (arg === '--push') {
 			const next = argv[++i];
 			if (next === undefined || next.startsWith('--')) {
@@ -321,7 +460,13 @@ function parseArgs(argv: string[]): SnapshotFlags {
 		}
 		if (arg.startsWith('--')) continue;
 		if (positional === 0) {
-			if (arg !== 'save' && arg !== 'restore' && arg !== 'list' && arg !== 'rm' && arg !== 'id') {
+			if (
+				arg !== 'save' &&
+				arg !== 'restore' &&
+				arg !== 'list' &&
+				arg !== 'rm' &&
+				arg !== 'id'
+			) {
 				throw new Error(
 					`devstack snapshot: unknown subcommand '${arg}' — expected save|restore|list|rm|id`,
 				);

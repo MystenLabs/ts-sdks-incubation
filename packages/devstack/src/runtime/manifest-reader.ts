@@ -19,6 +19,34 @@ interface ReadManifestOptions {
 	network: Network;
 }
 
+/** Thrown by {@link hydrateRegistry} when the persisted manifest's
+ * `app` field doesn't match the current `appName`. Surfaces a clean,
+ * actionable stderr message in the CLI try/catch instead of a stack
+ * trace — the user knows which manifest is offending, what the old
+ * app name was, what the new one is, and how to recover.
+ *
+ * Cold-start safety: without this guard, a renamed `app:` would
+ * silently hydrate the new run's registry with the old app's
+ * `packageId`s, addresses, and reconciler hashes. Setup actions
+ * would then skip on input-hash matches against the wrong app's
+ * persisted hashes — the worst kind of stale state, since it's
+ * invisible until something downstream blows up referencing a
+ * package that doesn't exist on this app's chain. */
+export class ManifestAppMismatchError extends Error {
+	constructor(
+		readonly manifestPath: string,
+		readonly manifestApp: string,
+		readonly currentApp: string,
+	) {
+		super(
+			`manifest at ${manifestPath} was emitted for app '${manifestApp}'; ` +
+				`current devstack.config.ts has app: '${currentApp}'.\n` +
+				'Run `devstack wipe --yes` to clear the stale state and start fresh.',
+		);
+		this.name = 'ManifestAppMismatchError';
+	}
+}
+
 /** Soft cap on manifest file size. Real manifests are <100KB; anything
  * orders-of-magnitude larger is either a bug (a Publish action's
  * `captured` map blew up) or a hostile committed file. Refuse rather
@@ -35,7 +63,7 @@ export function readManifest(opts: ReadManifestOptions): Manifest | null {
 		throw new Error(
 			`readManifest: ${path} is ${stat.size} bytes (cap ${MANIFEST_MAX_BYTES}). ` +
 				'Real manifests are <100KB. If the file ballooned legitimately, raise the cap; ' +
-				'if it was committed by mistake, regenerate via `devstack reset --yes && devstack up`.',
+				'if it was committed by mistake, regenerate via `devstack wipe --yes && devstack up`.',
 		);
 	}
 	const raw = readFileSync(path, 'utf8');
@@ -44,12 +72,13 @@ export function readManifest(opts: ReadManifestOptions): Manifest | null {
 	} catch (err) {
 		throw new Error(
 			`readManifest: ${path} is corrupt (${err instanceof Error ? err.message : 'invalid JSON'}). ` +
-				'Run `devstack reset --yes` to wipe the stack and regenerate, or hand-fix the file.',
+				'Run `devstack wipe --yes` to wipe the stack and regenerate, or hand-fix the file.',
 		);
 	}
 }
 
 interface HydrateOptions {
+	appName: string;
 	appDir: string;
 	stack: string;
 	network: Network;
@@ -62,10 +91,23 @@ interface HydrateOptions {
  * Clears the dirty set after hydration so the cascade doesn't see hydrated
  * kinds as "freshly changed" — only actions that actually re-register
  * during the cycle should trigger Emit re-runs.
+ *
+ * Throws {@link ManifestAppMismatchError} when the persisted manifest's
+ * `app` field doesn't match `opts.appName`. Without this guard, a
+ * renamed `app:` would silently hydrate the new run with the old app's
+ * persisted state.
  */
 export function hydrateRegistry(opts: HydrateOptions): boolean {
 	const manifest = readManifest({ appDir: opts.appDir, stack: opts.stack, network: opts.network });
 	if (manifest === null) return false;
+
+	if (manifest.app !== opts.appName) {
+		throw new ManifestAppMismatchError(
+			manifestPath({ appDir: opts.appDir, stack: opts.stack, network: opts.network }),
+			manifest.app,
+			opts.appName,
+		);
+	}
 
 	const reg = opts.registry;
 	const r = manifest.registry;

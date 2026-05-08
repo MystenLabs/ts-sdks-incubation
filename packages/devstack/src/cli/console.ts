@@ -36,7 +36,7 @@ import { Transaction } from '@mysten/sui/transactions';
 
 import type { DevstackConfig, Network, Package, Service } from '../core/types.js';
 import { resolveAccounts } from '../runtime/accounts.js';
-import { readManifest } from '../runtime/manifest-reader.js';
+import { ManifestAppMismatchError, readManifest } from '../runtime/manifest-reader.js';
 import type { Manifest } from '../runtime/manifest-types.js';
 import { manifestPath } from '../runtime/manifest-writer.js';
 import {
@@ -64,13 +64,25 @@ async function runConsole(flags: ConsoleFlags): Promise<number> {
 	const config = await loadConfig(abs);
 	const appDir = dirname(abs);
 
-	const target = resolveTarget({
-		config,
-		appDir,
-		raw: flags.target,
-		fallbackNetwork: flags.network,
-		fallbackStack: flags.stack,
-	});
+	// `resolveTarget` may throw `MissingNetworkProfileError` for an
+	// undeclared live-net `--target`. Surface that with the clean
+	// stderr-and-exit-1 shape rather than a stack trace.
+	let target: ReturnType<typeof resolveTarget>;
+	try {
+		target = resolveTarget({
+			config,
+			appDir,
+			raw: flags.target,
+			fallbackNetwork: flags.network,
+			fallbackStack: flags.stack,
+		});
+	} catch (err) {
+		if (err instanceof Error && isCleanStartupError(err.name)) {
+			process.stderr.write(`devstack console: ${err.message}\n`);
+			return 1;
+		}
+		throw err;
+	}
 	const network = target.network;
 	const stack = target.stack;
 
@@ -85,7 +97,21 @@ async function runConsole(flags: ConsoleFlags): Promise<number> {
 	if (manifest === null) {
 		const expected = manifestPath({ appDir, stack, network });
 		throw new Error(
-			`devstack console: no manifest at ${expected} — run \`devstack apply\` (localnet) or \`devstack deploy --network ${network}\` first`,
+			`devstack console: no manifest at ${expected} — run \`devstack apply\` (localnet) or \`devstack apply --target ${network}\` first`,
+		);
+	}
+	// Mirror the `hydrateRegistry` guard: if the persisted manifest's
+	// `app` field doesn't match the loaded config's `app:`, the user
+	// renamed the app and we'd be loading another app's bindings into
+	// this REPL session. Refuse with the same actionable remediation
+	// the runtime surfaces. Throw the named-class error so the CLI's
+	// top-level catch surfaces a clean stderr message rather than a
+	// stack trace (matches `apply` / `codegen` / `up`).
+	if (manifest.app !== config.app) {
+		throw new ManifestAppMismatchError(
+			manifestPath({ appDir, stack, network }),
+			manifest.app,
+			config.app,
 		);
 	}
 
@@ -342,7 +368,20 @@ export async function main(argv: string[]): Promise<number> {
 		process.stdout.write(USAGE);
 		return 0;
 	}
-	return runConsole(parseArgs(argv));
+	try {
+		return await runConsole(parseArgs(argv));
+	} catch (err) {
+		// Named-class errors thrown deep in the console startup
+		// (`ManifestAppMismatchError` from the app-mismatch guard;
+		// `MissingNetworkProfileError` from `resolveTarget`) get a clean
+		// stderr message instead of a stack trace, matching `apply` /
+		// `codegen` / `up`.
+		if (err instanceof Error && isCleanStartupError(err.name)) {
+			process.stderr.write(`devstack console: ${err.message}\n`);
+			return 1;
+		}
+		throw err;
+	}
 }
 
 const USAGE = `devstack console [config] [options]
@@ -395,6 +434,15 @@ function parseArgs(argv: string[]): ConsoleFlags {
 		stack: parseStackArg(argv),
 		target: parseTargetArg(argv),
 	};
+}
+
+const CLEAN_STARTUP_ERROR_NAMES = new Set([
+	'ManifestAppMismatchError',
+	'MissingNetworkProfileError',
+]);
+
+function isCleanStartupError(name: string): boolean {
+	return CLEAN_STARTUP_ERROR_NAMES.has(name);
 }
 
 runIfMain(import.meta.url, main);

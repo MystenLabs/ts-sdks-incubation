@@ -11,21 +11,46 @@
 
 import type { Manifest } from './runtime/manifest-types.js';
 
-/** Typed accessor for a plugin-namespaced registry kind on the
+/** Query shape returned by `defineManifestKind`. Symmetric to
+ * `RegistryQuery` on the runtime side: read-only `list`/`find`/`require`
+ * (no `register`/`unregister` — the manifest is frozen at codegen time).
+ *
+ * `TName` mirrors the runtime-side `RegistryQuery<T, TName>` parameter
+ * — passing a literal-string union autocompletes known names + flags
+ * typos at compile time. Defaults to `string` so untyped callers work
+ * unchanged. */
+export interface ManifestQuery<T, TName extends string = string> {
+	list(): T[];
+	find(name: TName | (string & {})): T | undefined;
+	require(name: TName | (string & {})): T;
+}
+
+/**
+ * Typed accessor for a plugin-namespaced registry kind on the
  * serialized `Manifest`. Symmetric to `defineRegistryKind` (which works
- * against a runtime `Registry`):
+ * against a runtime `Registry`).
  *
- *   const arenaSharedObjects = defineManifestKind<ArenaSharedObject>(
- *     'arena.sharedObjects',
- *   );
- *   const lobby = arenaSharedObjects(manifest).find((o) => o.name === 'openLobby');
+ * The `T` type is unconstrained beyond `{ name: string }` (every
+ * registered item has a name); cast at the consuming call site if your
+ * kind carries additional required fields.
  *
- * The `T` type is unconstrained beyond `{ name: string }` (every registered
- * item has a name); cast at the consuming call site if your kind carries
- * additional required fields. */
-export function defineManifestKind<T extends { name: string }>(
+ * @example
+ * ```ts
+ * import { defineManifestKind } from '@mysten-incubation/devstack';
+ * import { manifest } from './generated/manifest';
+ *
+ * interface ArenaSharedObject { name: string; objectId: string }
+ *
+ * const arenaSharedObjects = defineManifestKind<ArenaSharedObject>(
+ *   'arena.sharedObjects',
+ * );
+ *
+ * const lobby = arenaSharedObjects(manifest).require('openLobby');
+ * ```
+ */
+export function defineManifestKind<T extends { name: string }, TName extends string = string>(
 	dottedKey: string,
-): (manifest: Manifest) => T[] {
+): (manifest: Manifest) => ManifestQuery<T, TName> {
 	const dot = dottedKey.indexOf('.');
 	if (dot <= 0 || dot === dottedKey.length - 1) {
 		throw new Error(
@@ -36,8 +61,20 @@ export function defineManifestKind<T extends { name: string }>(
 	const kind = dottedKey.slice(dot + 1);
 	return (manifest) => {
 		const namespace = manifest.registry[ns] as Record<string, unknown> | undefined;
-		if (!namespace) return [];
-		const items = namespace[kind];
-		return Array.isArray(items) ? (items as T[]) : [];
+		const items: T[] =
+			namespace !== undefined && Array.isArray(namespace[kind])
+				? (namespace[kind] as T[])
+				: [];
+		return {
+			list: () => items,
+			find: (name) => items.find((item) => item.name === name),
+			require: (name) => {
+				const found = items.find((item) => item.name === name);
+				if (found === undefined) {
+					throw new Error(`manifest: '${dottedKey}' has no entry named '${name}'`);
+				}
+				return found;
+			},
+		};
 	};
 }

@@ -12,8 +12,8 @@
 // ticks (and warm restarts) reuse the cached BM.
 //
 // HostProcess so `applyTestSetupFilter` skips it in Playwright
-// globalSetup; the long-running supervisor (`devstack up`,
-// `devstack watch`, `pnpm dev`) owns the loop. If a refresh tx fails
+// globalSetup; the long-running supervisor (`devstack up`, `pnpm dev`)
+// owns the loop. If a refresh tx fails
 // the tick logs and skips — orders left from a partial failure expire
 // via `expireMs` (24 h default) and the next tick retries.
 

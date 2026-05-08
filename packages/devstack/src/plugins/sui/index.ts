@@ -4,27 +4,33 @@
 // `docker commit`. The `-rN` suffix in the image tag bumps manually
 // whenever the Dockerfile / entrypoint changes meaningfully. Dockerfile +
 // entrypoint sit beside this file, resolved via `import.meta.url`.
+//
+// `DEFAULT_DOCKER_CONTEXT` resolves the directory the bundled
+// Dockerfile sits in via `new URL('.', import.meta.url).pathname` —
+// the browser-safe equivalent of `dirname(fileURLToPath(import.meta.url))`,
+// kept that way so the main-barrel import chain in `examples/*` Vite
+// builds doesn't trip Rollup on a static `node:path` / `node:url`
+// named-import binding against `__vite-browser-external`.
 
-import { dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { buildImage as buildImageAction } from '../../actions/build.js';
 import { containerService } from '../../actions/container-service.js';
-import { type Plugin, requireLocalnetCtx } from '../../core/types.js';
+import type { Plugin } from '../../core/types.js';
 import { pollUntilReady } from '../../helpers/poll.js';
 import { definePlugin } from '../../plugin.js';
 import {
-	buildImage as dockerBuildImage,
+	DEVSTACK_IMAGE_NAMESPACE,
+	appNetworkName,
+	buildContainerImage,
 	devstackContainerLabels,
-	dockerRun,
 	ensureNetwork,
 	imageExists,
 	pruneImagesByLabel,
 	requireDockerDaemon,
-} from './docker.js';
+} from '../../runtime/docker/index.js';
+import { dockerRun } from '../../runtime/docker/run.js';
 import { probeCheckpointRetention, probeFaucet, probeGraphql, probeRpc } from './health.js';
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-const DEFAULT_DOCKER_CONTEXT = HERE;
+const DEFAULT_DOCKER_CONTEXT = new URL('.', import.meta.url).pathname;
 
 interface SuiPluginOptions {
 	/** Sui release tag, e.g. `'devnet-v1.71.0'`. Becomes a build-arg. */
@@ -73,25 +79,13 @@ interface SuiPluginOptions {
 
 export const SUI_DEFAULT_VERSION = 'devnet-v1.71.0';
 
-/** Image revision suffix appended to `dev-examples/sui-localnet:<version>`.
+/** Image revision suffix appended to `mysten-devstack/sui-localnet:<version>`.
  * Bumped whenever the Dockerfile/entrypoint change in a way that requires
  * a fresh build even on the same `SUI_DEFAULT_VERSION`. The CLI snapshot
  * subcommand and the plugin's tag construction both read this — keep it
  * the single source of truth for the `-rN` ratchet. */
-export const SUI_IMAGE_REVISION = 'r7';
+export const SUI_IMAGE_REVISION = 'r8';
 
-/** Per-(app, stack) docker network name. Other plugins (walrus, seal) join
- * this network and reach the sui localnet via the `sui-localnet` DNS
- * alias the localnet action registers. The sui plugin creates the
- * network without a subnet preference — when a plugin in the graph
- * needs a deterministic subnet (walrus's testbed pins 10.0.0.10–13 on
- * 10.0.0.0/24), it should declare an action with
- * `provides: ['walrus.app-network']` and call `ensureNetwork({ name, subnet })`
- * first. The `localnet` action below queries `'walrus.app-network:before'` so
- * any provider runs ahead. Without a provider, the sui plugin's call
- * lets docker pick any free pool — so multiple stacks (and multiple
- * apps) coexist on one host. */
-export const appNetworkName = (appName: string, stack: string): string => `${appName}-${stack}-net`;
 /** Sui localnet container name — same convention as the network. Apps
  * and other plugins import this so docker exec / cleanup commands target
  * the right container for the active stack. */
@@ -129,7 +123,7 @@ export const sui = (
 	const preferredFaucetPort = opts.faucetPort ?? 9123;
 	const preferredGraphqlPort = opts.graphqlPort ?? 9125;
 	const contextDir = opts.dockerContextDir ?? DEFAULT_DOCKER_CONTEXT;
-	const builtImageTag = `dev-examples/sui-localnet:${version}-${SUI_IMAGE_REVISION}`;
+	const builtImageTag = `${DEVSTACK_IMAGE_NAMESPACE}/sui-localnet:${version}-${SUI_IMAGE_REVISION}`;
 	const imageTag = opts.image ?? builtImageTag;
 	const useExternalImage = opts.image !== undefined;
 	const epochsToRetain = opts.epochsToRetain ?? 2;
@@ -162,6 +156,7 @@ export const sui = (
 		// `epochsToRetain` invalidates the cached snapshot — anything else
 		// affects only chain state, which the snapshot captures verbatim.
 		inputs: { image: imageTag, epochsToRetain, logLevel, externalImage: useExternalImage },
+		provides: ['sui.build', 'sui.indexer-db', 'sui.localnet'],
 		actions: () => [
 			buildImageAction({
 				name: 'build',
@@ -204,7 +199,7 @@ export const sui = (
 						return;
 					}
 					const log = ctx.appendLog;
-					await dockerBuildImage({
+					await buildContainerImage({
 						tag: imageTag,
 						contextDir,
 						buildArgs: { SUI_VERSION: version },
@@ -302,7 +297,6 @@ export const sui = (
 				snapshot: { commit: true, quiesce: 'pause' },
 				provides: {
 					registry: async (ctx) => {
-						requireLocalnetCtx(ctx);
 						const { rpcPort, faucetPort, graphqlPort } = await resolvePorts(ctx);
 						registerServices(ctx, rpcPort, faucetPort, graphqlPort);
 					},

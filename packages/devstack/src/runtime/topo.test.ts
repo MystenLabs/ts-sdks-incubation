@@ -24,8 +24,75 @@ describe('topoSortActions — direct needs (unchanged behavior)', () => {
 		);
 	});
 
+	it('reconstructs the cycle path in the error message', () => {
+		// a → b → c → a: each action lists its predecessor in `needs` so the
+		// dep edge runs from the listed name back to the action. The cycle
+		// reconstructor walks needs-edges, so from `a` we traverse
+		// a → b → c → a, closing the loop.
+		let captured: string | undefined;
+		try {
+			topoSortActions([
+				a('a', { needs: ['b'] }),
+				a('b', { needs: ['c'] }),
+				a('c', { needs: ['a'] }),
+			]);
+		} catch (err) {
+			captured = err instanceof Error ? err.message : String(err);
+		}
+		expect(captured).toBeDefined();
+		expect(captured).toMatch(/cycle detected: /);
+		// All three names + at least one node repeated to close the loop.
+		expect(captured).toMatch(/a/);
+		expect(captured).toMatch(/b/);
+		expect(captured).toMatch(/c/);
+		// Every cycle has the form "X → Y → Z → X" — the starting node
+		// repeats. Verify the path-arrow separator is present.
+		expect(captured).toMatch(/ → /);
+		// Verify the round-trip: count the first cycle node in the
+		// detail; it must appear at least twice (head and tail).
+		const detail = captured?.match(/cycle detected: (.+)$/)?.[1] ?? '';
+		const head = detail.split(' → ')[0];
+		expect(head).toBeDefined();
+		expect(detail.endsWith(` → ${head}`)).toBe(true);
+	});
+
 	it('throws on unknown direct dep', () => {
 		expect(() => topoSortActions([a('a', { needs: ['ghost'] })])).toThrow(/needs unknown/);
+	});
+
+	it('suggests a near-match for an unknown dep with a small typo', () => {
+		// Off-by-one typo: missing trailing 'r' on 'connect_four'. The
+		// suggester reports the close candidate inline so the user sees
+		// the fix without rerunning a separate `actions list`.
+		let captured: string | undefined;
+		try {
+			topoSortActions([
+				a('arena.connect_four'),
+				a('arena.lobby', { needs: ['arena.connect_fou'] }),
+			]);
+		} catch (err) {
+			captured = err instanceof Error ? err.message : String(err);
+		}
+		expect(captured).toBeDefined();
+		expect(captured).toMatch(/needs unknown 'arena\.connect_fou'/);
+		expect(captured).toMatch(/did you mean: 'arena\.connect_four'/);
+	});
+
+	it('omits the suggestion when no candidate is within edit-distance limit', () => {
+		// A wildly different name shouldn't get a noisy suggestion. The
+		// budget scales with the unknown's length.
+		let captured: string | undefined;
+		try {
+			topoSortActions([
+				a('arena.connect_four'),
+				a('arena.lobby', { needs: ['totally.unrelated.action'] }),
+			]);
+		} catch (err) {
+			captured = err instanceof Error ? err.message : String(err);
+		}
+		expect(captured).toBeDefined();
+		expect(captured).toMatch(/needs unknown/);
+		expect(captured).not.toMatch(/did you mean/);
 	});
 
 	it('throws on duplicate name', () => {

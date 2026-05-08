@@ -4,11 +4,22 @@
 // Implements the source-digest gate: when a prior cache entry exists
 // with matching source-digest + chainId AND the cached packageId still
 // resolves on-chain, the publish is skipped.
+//
+// `node:*` modules are loaded via top-level `await import(...)` so
+// the module's static surface stays browser-safe — `actions/publish.ts`
+// is reachable from `examples/*` Vite builds via the main barrel's
+// `publishMove` re-export, and Rollup binds named/namespace imports
+// against externals during parse (which fails for
+// `__vite-browser-external`'s empty surface). Dynamic `import(...)`
+// expressions bypass that bind step; the wallet's tree-shake then
+// drops this whole module thanks to the package's `sideEffects: false`.
 
-import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
+const [nodeChildProcess, nodeCrypto, nodeFs, nodePath] = await Promise.all([
+	import('node:child_process'),
+	import('node:crypto'),
+	import('node:fs'),
+	import('node:path'),
+]);
 
 import type { Signer } from '@mysten/sui/cryptography';
 import type { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
@@ -16,6 +27,7 @@ import { Transaction } from '@mysten/sui/transactions';
 
 import type { Package } from '../core/types.js';
 import { objectTypeMatchesFilter } from './match-type.js';
+import { wireStream } from './stream-lines.js';
 
 const CONTAINER_BUILD_PATH = '/tmp/devstack-move-build';
 
@@ -55,6 +67,14 @@ interface PublishMovePackageOptions {
 	 * — packages without an explicit `[environments]` block accept it,
 	 * and Sui resolves framework deps from its bundled cache. */
 	moveBuildEnv?: string;
+	/** Optional per-action diagnostic stream. When wired (typically the
+	 * action's `ctx.appendLog`), each newline-delimited line of `sui move
+	 * build`'s stderr is forwarded as it arrives — so a 60s cargo
+	 * recompile or a syntax-error compile shows progress incrementally
+	 * instead of looking frozen until the buffered tail dumps at the
+	 * end. Stdout stays buffered (we parse it as JSON for the bytecode
+	 * dump). */
+	appendLog?: (line: string) => void;
 }
 
 export interface PublishMovePackageResult {
@@ -94,7 +114,7 @@ export async function publishMovePackage(
 	let modules: string[];
 	let dependencies: string[];
 	if (buildEnv === 'host') {
-		const built = buildOnHost(packagePath, moveBuildEnv);
+		const built = await buildOnHost(packagePath, moveBuildEnv, opts.appendLog);
 		modules = built.modules;
 		dependencies = built.dependencies;
 	} else {
@@ -105,7 +125,7 @@ export async function publishMovePackage(
 			);
 		}
 		copyIntoContainer(containerName, packagePath);
-		const built = buildInContainer(containerName, moveBuildEnv);
+		const built = await buildInContainer(containerName, moveBuildEnv, opts.appendLog);
 		modules = built.modules;
 		dependencies = built.dependencies;
 	}
@@ -142,7 +162,7 @@ export async function publishMovePackage(
  * lacks the digest/chainId fields needed to gate a republish (older
  * manifests, or entries from imports that don't carry source digests).
  *
- * Extracted from per-app boilerplate so `definePublishAction` and any
+ * Extracted from per-app boilerplate so `publish()` and any
  * remaining hand-rolled Publish actions can share the same fallback
  * rules.
  */
@@ -163,21 +183,21 @@ export function buildPriorCacheEntry(pkg: Package | undefined): PublishCacheEntr
 export function computeSourceDigest(packagePath: string): string {
 	const files = collectSourceFiles(packagePath);
 	files.sort();
-	const hash = createHash('sha256');
+	const hash = nodeCrypto.createHash('sha256');
 	for (const file of files) {
-		hash.update(relative(packagePath, file));
+		hash.update(nodePath.relative(packagePath, file));
 		hash.update('\0');
-		hash.update(readFileSync(file));
+		hash.update(nodeFs.readFileSync(file));
 		hash.update('\0');
 	}
 	return hash.digest('hex');
 }
 
 function collectSourceFiles(dir: string, out: string[] = []): string[] {
-	for (const entry of readdirSync(dir)) {
+	for (const entry of nodeFs.readdirSync(dir)) {
 		if (entry === 'build' || entry === 'tests' || entry === '.git') continue;
-		const full = join(dir, entry);
-		const s = statSync(full);
+		const full = nodePath.join(dir, entry);
+		const s = nodeFs.statSync(full);
 		if (s.isDirectory()) {
 			collectSourceFiles(full, out);
 		} else if (entry === 'Move.toml' || entry.endsWith('.move')) {
@@ -188,7 +208,7 @@ function collectSourceFiles(dir: string, out: string[] = []): string[] {
 }
 
 function copyIntoContainer(containerName: string, hostPath: string): void {
-	const cleanup = spawnSync('docker', [
+	const cleanup = nodeChildProcess.spawnSync('docker', [
 		'exec',
 		containerName,
 		'sh',
@@ -200,7 +220,7 @@ function copyIntoContainer(containerName: string, hostPath: string): void {
 			`devstack publish: failed to prepare ${CONTAINER_BUILD_PATH}: ${cleanup.stderr.toString()}`,
 		);
 	}
-	const cp = spawnSync('docker', [
+	const cp = nodeChildProcess.spawnSync('docker', [
 		'cp',
 		`${hostPath}/.`,
 		`${containerName}:${CONTAINER_BUILD_PATH}/`,
@@ -210,7 +230,11 @@ function copyIntoContainer(containerName: string, hostPath: string): void {
 	}
 }
 
-function buildInContainer(containerName: string, moveBuildEnv: string): BuildOutput {
+async function buildInContainer(
+	containerName: string,
+	moveBuildEnv: string,
+	appendLog: ((line: string) => void) | undefined,
+): Promise<BuildOutput> {
 	// `RUST_LOG=error` because Sui v1.71 emits tracing INFO to stdout
 	// during `move build`, which would otherwise pollute the JSON output.
 	//
@@ -223,7 +247,14 @@ function buildInContainer(containerName: string, moveBuildEnv: string): BuildOut
 	// the CLI auto-resolves Sui + MoveStdlib without internet round-trips
 	// after the first build (deps are content-addressed in the image's
 	// `~/.move` cache).
-	const result = spawnSync(
+	//
+	// Async `spawn` (not `spawnSync`) so `sui move build`'s stderr can
+	// stream through `appendLog` line-by-line as the build progresses.
+	// A cold cargo recompile takes 10–60s; with `spawnSync`'s buffered
+	// stderr, the supervisor row sat at "running" with no output until
+	// the wall of compile messages dumped at the end. Async streaming
+	// surfaces compile errors and progress lines incrementally.
+	return runMoveBuild(
 		'docker',
 		[
 			'exec',
@@ -239,12 +270,11 @@ function buildInContainer(containerName: string, moveBuildEnv: string): BuildOut
 			'--build-env',
 			moveBuildEnv,
 		],
-		{ encoding: 'utf8', maxBuffer: 50 * 1024 * 1024 },
+		{
+			label: 'sui move build',
+			appendLog,
+		},
 	);
-	if (result.status !== 0) {
-		throw new Error(`sui move build failed (exit ${result.status}):\n${result.stderr}`);
-	}
-	return parseBuildJson(result.stdout, result.stderr);
 }
 
 /**
@@ -255,8 +285,12 @@ function buildInContainer(containerName: string, moveBuildEnv: string): BuildOut
  * fix is `cargo install --git https://github.com/MystenLabs/sui --branch
  * testnet sui` or the official binaries).
  */
-function buildOnHost(packagePath: string, moveBuildEnv: string): BuildOutput {
-	const probe = spawnSync('sui', ['--version'], { encoding: 'utf8' });
+async function buildOnHost(
+	packagePath: string,
+	moveBuildEnv: string,
+	appendLog: ((line: string) => void) | undefined,
+): Promise<BuildOutput> {
+	const probe = nodeChildProcess.spawnSync('sui', ['--version'], { encoding: 'utf8' });
 	if (probe.status !== 0) {
 		throw new Error(
 			'publishMovePackage: host `sui` CLI not found on PATH. Install from ' +
@@ -264,7 +298,7 @@ function buildOnHost(packagePath: string, moveBuildEnv: string): BuildOutput {
 				'Required for live-network publishes; localnet publishes use the in-container CLI.',
 		);
 	}
-	const result = spawnSync(
+	return runMoveBuild(
 		'sui',
 		[
 			'move',
@@ -275,12 +309,85 @@ function buildOnHost(packagePath: string, moveBuildEnv: string): BuildOutput {
 			'--build-env',
 			moveBuildEnv,
 		],
-		{ encoding: 'utf8', maxBuffer: 50 * 1024 * 1024, env: { ...process.env, RUST_LOG: 'error' } },
+		{
+			label: 'host sui move build',
+			appendLog,
+			env: { ...process.env, RUST_LOG: 'error' },
+		},
 	);
-	if (result.status !== 0) {
-		throw new Error(`host sui move build failed (exit ${result.status}):\n${result.stderr}`);
-	}
-	return parseBuildJson(result.stdout, result.stderr);
+}
+
+interface RunMoveBuildOptions {
+	label: string;
+	appendLog: ((line: string) => void) | undefined;
+	env?: NodeJS.ProcessEnv;
+}
+
+/** Spawn `sui move build` (or `docker exec sui move build`) and stream
+ * its stderr through `appendLog` line-by-line while buffering stdout
+ * for JSON parsing. Throws with the buffered stderr on non-zero exit
+ * so the existing error format is preserved.
+ *
+ * Why split stdout vs stderr: stdout carries the bytecode dump as a
+ * single JSON line we feed into `parseBuildJson`; mixing it with the
+ * progress stream would garble both. Stderr carries cargo compile
+ * progress + Move type-check errors — the parts the user actually
+ * needs to see while the build runs. */
+function runMoveBuild(
+	command: string,
+	args: string[],
+	opts: RunMoveBuildOptions,
+): Promise<BuildOutput> {
+	return new Promise((resolve, reject) => {
+		const child = nodeChildProcess.spawn(command, args, {
+			env: opts.env ?? process.env,
+			stdio: ['ignore', 'pipe', 'pipe'],
+		});
+		let stdout = '';
+		let stderr = '';
+		child.stdout?.setEncoding('utf8');
+		child.stderr?.setEncoding('utf8');
+		child.stdout?.on('data', (chunk: string) => {
+			stdout += chunk;
+		});
+		// Always buffer stderr (we need it for the error message on
+		// non-zero exit); ALSO stream it line-by-line through appendLog
+		// when wired so the supervisor row shows progress as the build
+		// runs. The pre-async path buffered stderr exclusively, so a 60s
+		// `sui move build` froze the row with no output until the very
+		// end.
+		child.stderr?.on('data', (chunk: string) => {
+			stderr += chunk;
+		});
+		if (opts.appendLog !== undefined) {
+			wireStream(child.stderr, opts.appendLog);
+		}
+		child.on('error', (err) => {
+			if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+				reject(
+					new Error(
+						`${opts.label}: ${command} not found on PATH. ` +
+							(command === 'sui'
+								? 'Install from https://docs.sui.io/guides/developer/getting-started/sui-install.'
+								: "Install Docker Desktop, Colima, or your distro's docker package and start the engine."),
+					),
+				);
+				return;
+			}
+			reject(err);
+		});
+		child.on('close', (code) => {
+			if (code !== 0) {
+				reject(new Error(`${opts.label} failed (exit ${code}):\n${stderr}`));
+				return;
+			}
+			try {
+				resolve(parseBuildJson(stdout, stderr));
+			} catch (err) {
+				reject(err);
+			}
+		});
+	});
 }
 
 function parseBuildJson(stdout: string, stderr: string): BuildOutput {

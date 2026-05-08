@@ -1,6 +1,6 @@
 {
 	"name": "@mysten-incubation/devstack",
-	"version": "1.0.0",
+	"version": "0.1.0",
 	"description": "Declarative reconciler + plugin harness for fully-seeded Sui local development. Brings up sui-localnet (+ optional walrus, seal), publishes Move packages, runs codegen, and writes a typed manifest the frontend consumes.",
 	"keywords": [
 		"sui",
@@ -22,12 +22,17 @@
 		"url": "https://github.com/MystenLabs/ts-sdks-incubation/issues"
 	},
 	"type": "module",
+	"sideEffects": false,
 	"main": "./dist/index.mjs",
 	"types": "./dist/index.d.mts",
 	"exports": {
 		".": {
 			"types": "./dist/index.d.mts",
 			"import": "./dist/index.mjs"
+		},
+		"./authoring": {
+			"types": "./dist/authoring.d.mts",
+			"import": "./dist/authoring.mjs"
 		},
 		"./helpers": {
 			"types": "./dist/helpers.d.mts",
@@ -63,7 +68,7 @@
 		"LICENSE"
 	],
 	"engines": {
-		"node": ">=22.0.0"
+		"node": ">=24.0.0"
 	},
 	"scripts": {
 		"build": "tsdown",
@@ -75,53 +80,47 @@
 		"prepublishOnly": "pnpm run typecheck && pnpm run build && pnpm run smoke-test"
 	},
 	"dependencies": {
-		"@mysten-incubation/dev-wallet": "workspace:*",
-		"@mysten-incubation/devstack-wallet-panels": "workspace:*",
 		"@mysten/codegen": "catalog:",
 		"@mysten/sui": "catalog:",
 		"chokidar": "^4.0.1",
 		"ink": "^7.0.0",
-		"ink-spinner": "^5.0.0"
+		"ink-spinner": "^5.0.0",
+		"react": "catalog:"
 	},
 	"devDependencies": {
+		"@mysten-incubation/dev-wallet": "workspace:*",
+		"@mysten-incubation/devstack-wallet-panels": "workspace:*",
 		"@mysten/dapp-kit-core": "catalog:",
-		"@mysten/dapp-kit-react": "catalog:",
 		"@playwright/test": "catalog:",
 		"@tanstack/react-query": "catalog:",
 		"@types/node": "catalog:",
 		"@types/react": "catalog:",
-		"react": "catalog:",
-		"tsdown": "0.20.0-beta.1",
+		"tsdown": "^0.21.10",
 		"typescript": "catalog:",
-		"vite": "catalog:",
 		"vitest": "catalog:"
 	},
 	"peerDependencies": {
+		"@mysten-incubation/dev-wallet": "workspace:*",
+		"@mysten-incubation/devstack-wallet-panels": "workspace:*",
 		"@mysten/dapp-kit-core": "catalog:",
-		"@mysten/dapp-kit-react": "catalog:",
 		"@playwright/test": "catalog:",
 		"@tanstack/react-query": "catalog:",
-		"react": "catalog:",
-		"vite": "catalog:",
 		"vitest": "catalog:"
 	},
 	"peerDependenciesMeta": {
-		"@mysten/dapp-kit-core": {
+		"@mysten-incubation/dev-wallet": {
 			"optional": true
 		},
-		"@mysten/dapp-kit-react": {
+		"@mysten-incubation/devstack-wallet-panels": {
+			"optional": true
+		},
+		"@mysten/dapp-kit-core": {
 			"optional": true
 		},
 		"@playwright/test": {
 			"optional": true
 		},
 		"@tanstack/react-query": {
-			"optional": true
-		},
-		"react": {
-			"optional": true
-		},
-		"vite": {
 			"optional": true
 		},
 		"vitest": {

@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # Devstack-owned walrus wrapper image. Composes onto the upstream stage
-# (`dev-examples/walrus-service:<version>-upstream`) with:
+# (`mysten-devstack/walrus-service:<version>-upstream`) with:
 #   - matching sui binary at /root/sui_bin/sui (used by the testbed
 #     scripts; we no longer rely on a shared-volume from sui-localnet);
 #   - our forked deploy.sh + run.sh at /opt/walrus/scripts/, replacing

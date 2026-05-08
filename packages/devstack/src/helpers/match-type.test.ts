@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { objectTypeMatchesFilter } from './match-type.js';
 
 // `objectTypeMatchesFilter` is the shared rule used by `publishMovePackage`
-// (and `seedSharedObject`, `importedPackage`) to map a user-declared
+// (and `importedPackage`) to map a user-declared
 // `capture: { manifestKey: '<filter>' }` against the `objectType` strings the
 // chain returns in `objectChanges`. Two regimes:
 //

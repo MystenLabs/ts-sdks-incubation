@@ -17,11 +17,16 @@ import type {
 	ShutdownHook,
 } from '../core/types.js';
 import { expandPluginActions } from '../plugin.js';
+import { requireDockerDaemon } from './docker/index.js';
 import { RegistryImpl } from '../registry/index.js';
 import { resolveAccounts } from './accounts.js';
 import { DEFAULT_STACK, activeStackFile, stackDir, writeActiveStack } from './active-stack.js';
 import { FileWatcher } from './file-watcher.js';
-import { hydrateRegistry, readReconcilerState } from './manifest-reader.js';
+import {
+	ManifestAppMismatchError,
+	hydrateRegistry,
+	readReconcilerState,
+} from './manifest-reader.js';
 import { writeManifest } from './manifest-writer.js';
 import { createPortAllocator } from './port-allocator.js';
 import { Reconciler } from './reconcile.js';
@@ -61,6 +66,10 @@ export class Supervisor {
 	readonly network: Network;
 
 	private readonly actions: Action[];
+	/** plugin-name → description, derived once at construction. Surfaces
+	 * to the renderer's `start()` so plugin section headers can show
+	 * provenance (e.g. the auto-synthesized `<app>-setup` plugin). */
+	private readonly pluginDescriptions: Map<string, string>;
 	private readonly registry = new RegistryImpl();
 	private readonly reconciler: Reconciler;
 	private readonly renderer: Renderer;
@@ -114,8 +123,7 @@ export class Supervisor {
 		if (this.network !== 'localnet') {
 			throw new Error(
 				`Supervisor is localnet-only — received network='${this.network}'. ` +
-					`For one-shot live-network work use \`devstack apply --target ${this.network}\` ` +
-					`or \`devstack deploy --network ${this.network}\`.`,
+					`For one-shot live-network work use \`devstack apply --target ${this.network}\`.`,
 			);
 		}
 		// Ensure the active-stack pointer exists so out-of-band consumers
@@ -125,6 +133,10 @@ export class Supervisor {
 			writeActiveStack(this.appDir, this.stack);
 		}
 		this.actions = expandPluginActions(opts.plugins);
+		this.pluginDescriptions = new Map();
+		for (const p of opts.plugins) {
+			if (p.description !== undefined) this.pluginDescriptions.set(p.name, p.description);
+		}
 		this.ports = createPortAllocator({ appDir: this.appDir, stack: this.stack });
 		this.accounts = resolveAccounts({
 			specs: opts.accounts ?? [],
@@ -154,6 +166,7 @@ export class Supervisor {
 	}
 
 	async start(): Promise<void> {
+		await this.preflightDocker();
 		await this.acquireLock();
 		this.renderer.start({
 			appName: this.appName,
@@ -161,6 +174,7 @@ export class Supervisor {
 			network: this.network,
 			actions: this.actions,
 			rpcUrl: this.lastRpcUrl,
+			pluginDescriptions: this.pluginDescriptions,
 		});
 		this.installRendererActions();
 		this.installSignalHandlers();
@@ -185,6 +199,7 @@ export class Supervisor {
 
 	/** Run one reconcile cycle, then shut down. For `devstack up --once`. */
 	async runOnce(): Promise<void> {
+		await this.preflightDocker();
 		await this.acquireLock();
 		this.renderer.start({
 			appName: this.appName,
@@ -192,12 +207,26 @@ export class Supervisor {
 			network: this.network,
 			actions: this.actions,
 			rpcUrl: this.lastRpcUrl,
+			pluginDescriptions: this.pluginDescriptions,
 		});
 		this.installRendererActions();
 		this.installSignalHandlers();
 		this.hydrateFromManifest();
 		await this.runCycle();
 		await this.shutdown();
+	}
+
+	/** Localnet preflight: verify the Docker daemon is reachable BEFORE
+	 * any action runs. Without this, a dead daemon produces N×red rows
+	 * in the action grid as each plugin's `getStatus` image-existence
+	 * probe fails one by one, then `requireDockerDaemon` finally throws
+	 * from inside `run`. The user sees the real error 5–10s late, after
+	 * the cosmetic noise. By preflighting up-front, the supervisor
+	 * throws `DockerDaemonError` cleanly before the renderer even
+	 * starts; the CLI try/catch surfaces it as a single stderr line. */
+	private async preflightDocker(): Promise<void> {
+		if (this.network !== 'localnet') return;
+		await requireDockerDaemon();
 	}
 
 	/** Acquire the per-(app, stack) lockfile so two `devstack up`
@@ -212,16 +241,25 @@ export class Supervisor {
 	 * `getStatus()` skip predicates see prior on-chain state on a fresh
 	 * process — e.g. seal's cached `KeyServer` objectId lands in the
 	 * registry on cycle 1, getStatus probes the chain, skip. Mirrors
-	 * the equivalent step in `runOneShot` (deploy path). */
+	 * the equivalent step in `runOneShot` (deploy path).
+	 *
+	 * `ManifestAppMismatchError` propagates: a stale manifest from a
+	 * renamed app must not silently hydrate the new run's registry, so
+	 * the CLI try/catch surfaces an actionable error instead. Other
+	 * read errors (corrupt JSON, oversized file) stay non-fatal — the
+	 * existing `manifest hydrate failed` log keeps the supervisor up
+	 * since hydration is an optimization, not a hard precondition. */
 	private hydrateFromManifest(): void {
 		try {
 			hydrateRegistry({
+				appName: this.appName,
 				appDir: this.appDir,
 				stack: this.stack,
 				network: this.network,
 				registry: this.registry,
 			});
 		} catch (err) {
+			if (err instanceof ManifestAppMismatchError) throw err;
 			this.renderer.appendLog('supervisor', `manifest hydrate failed: ${(err as Error).message}`);
 		}
 	}
@@ -384,8 +422,8 @@ export class Supervisor {
 		// late-registered services / packages that downstream Service
 		// actions may want to react to. The canonical case: `frontend.
 		// dev-server` registers the `dev-server` service late in the cycle,
-		// AFTER `wallet-server.serve` already started with an empty CORS
-		// allowlist. The 2nd cycle's getStatus on wallet-server.serve sees
+		// AFTER `wallet-app.serve` already started with an empty CORS
+		// allowlist. The 2nd cycle's getStatus on wallet-app.serve sees
 		// the new entry, returns ok:false (drift), and triggers the
 		// hot-reload of `setAllowedOrigins`. Without an automatic re-cycle
 		// the user would be stuck with 403'd CORS until a file change
@@ -396,7 +434,7 @@ export class Supervisor {
 				// Fast-start path: globalSetup just ran apply, the chain is at
 				// known state. Skip the heavy non-HostProcess reconcile work
 				// (~5s of getStatus probes that would all return ok=true) and
-				// only spawn the HostProcess actions vite + wallet-server need.
+				// only spawn the HostProcess actions vite + wallet-app need.
 				// Subsequent cycles run the full graph.
 				const actions = opts.hostProcessOnly
 					? this.actions.filter((a) => a.type === 'HostProcess')

@@ -1,6 +1,6 @@
 // Per-stack keystore. Manages on-disk Ed25519 keypairs at
 // `<appDir>/.devstack/stacks/<stack>/.keys/<account>.key`, written as a
-// single bech32 (`suiprivkey1...`) line. The `walletServer()` plugin
+// single bech32 (`suiprivkey1...`) line. The `walletApp()` plugin
 // signs with these in-process so the dev wallet's
 // `DevstackSignerAdapter` can route signatures over HTTP without ever
 // loading the bytes into the frontend bundle.

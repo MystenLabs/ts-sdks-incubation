@@ -10,10 +10,10 @@ import { connectAs } from '@mysten-incubation/devstack/playwright';
  *   3. Click "Mint 1.000000 musdc" → publisher's MUSDC cell in the
  *      Balances table goes from 0 to a non-zero value, proving the
  *      panel's tx routed all the way through the DevstackSignerAdapter
- *      → wallet-server → on-chain.
+ *      → wallet-app → on-chain.
  */
 
-test('faucet panel mints custom token via wallet-server', async ({ page }) => {
+test('faucet panel mints custom token via wallet-app', async ({ page }) => {
 	await connectAs(page, 'publisher');
 
 	const drawerTrigger = page.locator('dev-wallet-panel').locator('.trigger');
@@ -56,15 +56,15 @@ test('packages panel shows captured object ids', async ({ page }) => {
 	await expect(packages.getByText('deepbook', { exact: true })).toBeVisible();
 });
 
-test('network panel shows wallet-server entry', async ({ page }) => {
+test('network panel shows wallet-app entry', async ({ page }) => {
 	await connectAs(page, 'publisher');
 	await page.locator('dev-wallet-panel').locator('.trigger').click();
 	const drawer = page.locator('dev-wallet-panel');
 	await drawer.locator('dev-wallet-tab-bar').getByRole('tab', { name: 'Network' }).click();
 	const network = drawer.locator('devstack-network-panel');
-	// Scope the URL assertion to the wallet-server row so we don't collide
+	// Scope the URL assertion to the wallet-app row so we don't collide
 	// with other service rows (e.g. `dev-server` on `http://localhost:5174`).
-	const walletServerRow = network.locator('.row').filter({ hasText: 'wallet-server' });
-	await expect(walletServerRow).toBeVisible();
-	await expect(walletServerRow).toContainText(/http:\/\/localhost:\d+/);
+	const walletAppRow = network.locator('.row').filter({ hasText: 'wallet-app' });
+	await expect(walletAppRow).toBeVisible();
+	await expect(walletAppRow).toContainText(/http:\/\/localhost:\d+/);
 });

@@ -6,7 +6,10 @@
 // `dependsOnKind` slice changed.
 //
 // Naming: `kindKey` is `'packages' | 'accounts' | 'services' |
-// '<plugin>/<kind>'` — flat string used throughout dirty tracking.
+// '<plugin>.<kind>'` — flat dotted string used throughout dirty tracking.
+// The dotted form matches the `defineRegistryKind('namespace.kind')`
+// surface so the same string flows through `dependsOnKind` consumers
+// without translation.
 //
 // The dirty-tracking surface (`isDirty`, `flushDirty`, `consumeDirty`)
 // and the namespace lookup (`getOrCreateKind`) are **not** on the public
@@ -45,18 +48,29 @@ export interface InternalRegistry extends Registry {
 	): RegistryQuery<T>;
 }
 
-/** Typed accessor for a plugin-namespaced registry kind. Pin the kind
+/**
+ * Typed accessor for a plugin-namespaced registry kind. Pin the kind
  * at module top-level once; use the returned function from any plugin
- * action to register/list/find without redeclaring the namespace shape:
- *
- *   const arenaSharedObjects = defineRegistryKind<ArenaSharedObject>(
- *     'arena.sharedObjects',
- *   );
- *   arenaSharedObjects(ctx.registry).register({ name, ... });
+ * action to register/list/find without redeclaring the namespace shape.
  *
  * The typed kind name is a single source of truth (no risk of typo'ing
  * a new namespace by accident), and the `T` type stays attached to the
- * accessor so consumers don't redeclare it. */
+ * accessor so consumers don't redeclare it.
+ *
+ * @example
+ * ```ts
+ * import { defineRegistryKind } from '@mysten-incubation/devstack';
+ *
+ * interface ArenaSharedObject { name: string; objectId: string }
+ *
+ * const arenaSharedObjects = defineRegistryKind<ArenaSharedObject>(
+ *   'arena.sharedObjects',
+ * );
+ *
+ * // inside a plugin action:
+ * arenaSharedObjects(ctx.registry).register({ name: 'lobby', objectId });
+ * ```
+ */
 export function defineRegistryKind<T extends { name: string }>(
 	dottedKey: string,
 ): (registry: Registry) => RegistryQuery<T> {
@@ -71,12 +85,27 @@ export function defineRegistryKind<T extends { name: string }>(
 	return (registry) => (registry as InternalRegistry).getOrCreateKind<T>(ns, kind);
 }
 
+/**
+ * Tracks the set of field names ever observed on items registered into a
+ * given kind. Mismatch detection compares the incoming key-set against
+ * this growing observed-set: an incoming register adds new keys to the
+ * observed-set, but if NONE of its keys appear in the observed-set —
+ * AND the observed-set wasn't empty — that's a genuine shape collision
+ * (two plugins reusing the same kind name with structurally disjoint
+ * `T` shapes). Optional fields naturally widen the observed-set without
+ * triggering a false positive.
+ */
+function fieldKeys(item: { name: string }): string[] {
+	return Object.keys(item).sort();
+}
+
 class RegistryQueryImpl<T extends { name: string }> implements RegistryQuery<T> {
 	private readonly items = new Map<string, T>();
 
 	constructor(
 		private readonly kindKey: string,
 		private readonly dirty: Set<string>,
+		private readonly kindFieldsObserved: Map<string, Set<string>>,
 	) {}
 
 	list(): T[] {
@@ -95,7 +124,79 @@ class RegistryQueryImpl<T extends { name: string }> implements RegistryQuery<T> 
 		return item;
 	}
 
+	/**
+	 * Register an item under this kind, with a structural-collision guard
+	 * folded into the path.
+	 *
+	 * What the guard prevents:
+	 *   Two plugins registering structurally-disjoint shapes under the
+	 *   same `<ns>.<kind>` dotted key. Without it, the second plugin's
+	 *   items silently coexist with the first's in `list()`, and consumers
+	 *   that asked `find()` for a known name might get back an item with
+	 *   an entirely unexpected shape — opaque downstream.
+	 *
+	 * Growing observed-set model:
+	 *   The FIRST register's keys form the seed observed-set. Each
+	 *   subsequent register can ADD optional fields (its keys are unioned
+	 *   into the observed-set) without firing the guard. This matches the
+	 *   real-world authoring pattern where a plugin's items grow optional
+	 *   metadata over time.
+	 *
+	 * Threshold-of-2:
+	 *   Every kind's `T extends { name: string }` so `name` is a universal
+	 *   field — overlap on `name` alone tells us nothing. We require
+	 *   overlap of 2 or more fields to consider this register a same-shape
+	 *   continuation. A register that shares ONLY `name` with the prior
+	 *   observed set is rejected when the observed-set has more than one
+	 *   field (`observed.size > 1`) — i.e. only after we've seen enough
+	 *   structure to spot the collision.
+	 *
+	 * Known limitation:
+	 *   Kinds whose `T` has only `{name, x}` (one non-`name` field) can
+	 *   slip through if the second plugin's `T = {name, x}` happens to
+	 *   share the field name (`x`) by coincidence — overlap=2 passes, even
+	 *   though the field's type/semantics differ between the two plugins.
+	 *   The guard is structural-key-based; it doesn't and can't reason
+	 *   about field types. Pick distinct kind names per plugin
+	 *   (`<plugin>.<kind>`) to avoid the trap.
+	 *
+	 * Narrowing semantics:
+	 *   The observed-set never shrinks. A register that DROPS a
+	 *   previously-observed field passes silently — the registered item
+	 *   simply lacks the field; consumers reading the kind get
+	 *   `undefined` for that key. The collision guard catches
+	 *   structurally-disjoint shapes (overlap < 2 with observed.size > 1),
+	 *   not field-removals from the established schema. If a plugin
+	 *   author needs to break the schema, use a fresh kind name (e.g.
+	 *   bump `<plugin>.foo` → `<plugin>.foo-v2`).
+	 */
 	register(item: T): void {
+		const incoming = fieldKeys(item as { name: string });
+		const observed = this.kindFieldsObserved.get(this.kindKey);
+		if (observed === undefined) {
+			this.kindFieldsObserved.set(this.kindKey, new Set(incoming));
+		} else {
+			// Genuine collision detector: the incoming item's keys must
+			// share at least the `name` field with what we've observed
+			// (every kind has `name` by constraint). Beyond that, we
+			// require non-trivial overlap — otherwise two plugins reusing
+			// the same kind name with structurally disjoint shapes would
+			// produce undefined behavior. Optional/added fields widen the
+			// observed-set without firing.
+			const incomingSet = new Set(incoming);
+			let overlap = 0;
+			for (const k of incomingSet) if (observed.has(k)) overlap++;
+			if (overlap < 2 && observed.size > 1) {
+				throw new Error(
+					`Registry: kind '${this.kindKey}' was first registered with fields ` +
+						`{${Array.from(observed).sort().join(',')}} but this register has ` +
+						`{${incoming.join(',')}} — likely a shape collision between two ` +
+						`plugins reusing the same kind name. Pick a different kind name ` +
+						`(e.g. namespace it under your plugin).`,
+				);
+			}
+			for (const k of incomingSet) observed.add(k);
+		}
 		this.items.set(item.name, item);
 		this.dirty.add(this.kindKey);
 	}
@@ -110,6 +211,15 @@ class RegistryQueryImpl<T extends { name: string }> implements RegistryQuery<T> 
 export class RegistryImpl implements InternalRegistry {
 	private readonly dirtySet = new Set<string>();
 
+	/** Observed-fields set per `(ns.kind)` key. Used by
+	 * `RegistryQueryImpl.register` to detect when two plugins try to
+	 * register structurally different items into the same kind name —
+	 * a typo or namespace collision that previously surfaced as opaque
+	 * downstream behavior. Optional/added fields widen this set without
+	 * triggering false positives; only a register whose keys barely
+	 * overlap (≤1, just the inherited `name`) trips the collision check. */
+	private readonly kindFieldsObserved = new Map<string, Set<string>>();
+
 	readonly packages: RegistryQuery<Package>;
 	readonly accounts: RegistryQuery<Account>;
 	readonly services: RegistryQuery<Service>;
@@ -117,9 +227,21 @@ export class RegistryImpl implements InternalRegistry {
 	private readonly namespaces = new Map<string, Map<string, RegistryQuery<{ name: string }>>>();
 
 	constructor() {
-		this.packages = new RegistryQueryImpl<Package>('packages', this.dirtySet);
-		this.accounts = new RegistryQueryImpl<Account>('accounts', this.dirtySet);
-		this.services = new RegistryQueryImpl<Service>('services', this.dirtySet);
+		this.packages = new RegistryQueryImpl<Package>(
+			'packages',
+			this.dirtySet,
+			this.kindFieldsObserved,
+		);
+		this.accounts = new RegistryQueryImpl<Account>(
+			'accounts',
+			this.dirtySet,
+			this.kindFieldsObserved,
+		);
+		this.services = new RegistryQueryImpl<Service>(
+			'services',
+			this.dirtySet,
+			this.kindFieldsObserved,
+		);
 	}
 
 	getOrCreateKind<T extends { name: string }>(
@@ -133,7 +255,11 @@ export class RegistryImpl implements InternalRegistry {
 		}
 		let query = bag.get(kind);
 		if (!query) {
-			query = new RegistryQueryImpl<{ name: string }>(`${namespace}/${kind}`, this.dirtySet);
+			query = new RegistryQueryImpl<{ name: string }>(
+				`${namespace}.${kind}`,
+				this.dirtySet,
+				this.kindFieldsObserved,
+			);
 			bag.set(kind, query);
 		}
 		return query as RegistryQuery<T>;

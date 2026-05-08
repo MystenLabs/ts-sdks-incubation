@@ -10,12 +10,11 @@
 // Pair with `provides: { registry: ... }` to populate the in-memory
 // registry on warm-path skips.
 
-import {
-	type LocalnetActionRunContext,
-	type Provides,
-	type ServiceAction,
-	type SnapshotMeta,
-	requireLocalnetCtx,
+import type {
+	LocalnetActionRunContext,
+	Provides,
+	ServiceAction,
+	SnapshotMeta,
 } from '../core/types.js';
 import {
 	type ContainerInfo,
@@ -26,12 +25,12 @@ import {
 	startContainer,
 	stopContainer,
 	waitForHealthy,
-} from '../plugins/sui/docker.js';
+} from '../runtime/docker/index.js';
 
-interface ContainerServiceOptions<TInputs extends Record<string, unknown>> {
+export interface ContainerServiceOptions<TInputs extends Record<string, unknown>> {
 	name: string;
 	needs?: string[];
-	provides?: Provides;
+	provides?: Provides<LocalnetActionRunContext>;
 	inputs: TInputs;
 	/** Per-stack container name (typically `${appName}-${stack}-<service>`). */
 	containerName: (ctx: LocalnetActionRunContext) => string;
@@ -110,7 +109,6 @@ export function containerService<TInputs extends Record<string, unknown>>(
 		inputs: opts.inputs,
 		snapshotMeta: opts.snapshot,
 		getStatus: async (ctx) => {
-			requireLocalnetCtx(ctx);
 			const cName = opts.containerName(ctx);
 			const info = await inspectContainer(cName);
 			if (info === null) return { ok: false, detail: 'not present' };
@@ -122,7 +120,6 @@ export function containerService<TInputs extends Record<string, unknown>>(
 			return { ok: true, detail: info.healthy === true ? 'healthy' : 'running' };
 		},
 		run: async (ctx) => {
-			requireLocalnetCtx(ctx);
 			const cName = opts.containerName(ctx);
 			if (stopOnShutdown) {
 				ctx.onShutdown?.(async () => {
@@ -188,7 +185,23 @@ export function containerService<TInputs extends Record<string, unknown>>(
 				// existing.running === true ⇒ already up with matching
 				// upstream; nothing to do beyond the postStart probe.
 			} else {
-				if (existing !== null) await removeContainer(cName);
+				if (existing !== null) {
+					// Drift: existing container was created under a
+					// different upstream context. Log the transition
+					// before destroying the old container so operators
+					// see WHY a recreate fired (a sui regenesis flips
+					// chainId; walrus.deploy regenerated package IDs;
+					// inputs changed in the config). Without this, a
+					// recreate cycle just shows up as a fresh
+					// `runContainer` line with no explanation.
+					const oldShort = (existingHash ?? '<none>').slice(0, 8);
+					const newShort = ctx.inputHash.slice(0, 8);
+					ctx.appendLog(
+						`container drift: input-hash bumped (${oldShort}… → ${newShort}…); ` +
+							`recreating ${cName}`,
+					);
+					await removeContainer(cName);
+				}
 				await runContainer({ ...spec, name: cName, labels });
 			}
 			if (opts.postStart !== undefined) {
@@ -202,7 +215,6 @@ export function containerService<TInputs extends Record<string, unknown>>(
 		// override when the meaningful identity is something else
 		// (parsed output, chainId, etc.).
 		identity: async (ctx) => {
-			requireLocalnetCtx(ctx);
 			if (opts.identity !== undefined) return opts.identity(ctx);
 			const info = await inspectContainer(opts.containerName(ctx));
 			return info?.id;

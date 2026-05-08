@@ -1,324 +1,75 @@
 # `@mysten-incubation/devstack`
 
-> ⚠️ **Prototype.** Devstack is not published to npm and there is no near-term plan to publish. The
-> public API is in flux — we break shapes whenever they're wrong rather than ship a shim. Use it
-> inside this monorepo via `workspace:*`; pin nothing in external code.
+A declarative reconciler and plugin harness for fully-seeded Sui local
+development. Brings up sui-localnet (plus optional walrus, seal, deepbook),
+publishes Move packages, runs codegen, and writes a typed manifest the
+frontend consumes. The same `devstack.config.ts` drives localnet, testnet,
+and mainnet — live nets skip Service / HostProcess actions but keep
+Build / Publish / Register / Seed / Emit / Verify.
 
-A localnet harness for Sui apps. Each app declares the services it needs (sui, walrus, seal,
-imports, codegen, ...) as a list of plugins; `devstack` reconciles toward that state, publishes Move
-packages, runs codegen, and writes a typed manifest the frontend consumes via Vite. The harness is
-opinionated about its goals: warm cycles short-circuit through `getStatus` so subsequent
-`devstack up` invocations skip whatever's already converged. Cold cycles depend heavily on what's on
-the plugin list — a sui-only stack is ~10–20 s on Apple Silicon. seal pulls release binaries (~30 s,
-no compile). walrus is hybrid: `walrus` and `walrus-node` come from the release tarball, but
-`walrus-deploy` (the testbed bootstrap binary) isn't published — we cargo-build only that. First
-build is ~9–10 min; subsequent version bumps drop to ~1–2 min because BuildKit cache mounts reuse
-the cargo registry + target dir. All images cached forever after the first build. Numbers in this
-README are eyeballed during local development; if you're benchmarking, run it yourself and please
-file the timing as a note in `notes/friction.md`.
+## Status
 
-For the full docs, see the [docs site](https://github.com/mysten-incubation/devstack#readme). For
-the journal of paper-cuts driving evolution, see [`notes/friction.md`](notes/friction.md).
+Initial release (0.1.0). The public API will follow semver — breaking
+changes land at minor-version boundaries.
 
----
+## Before you start
 
-## Quickstart
+- **Node.js 24+.** devstack relies on Node's native TypeScript stripping to
+  load `devstack.config.ts` directly — older Node throws
+  `ERR_UNKNOWN_FILE_EXTENSION` on the config import.
+- **Docker.** Required for localnet (sui-localnet, walrus, seal containers).
+  The `devstack doctor` preflight reports a clear error if the daemon isn't
+  reachable.
+- **`pnpm create @mysten-incubation/devstack-app <name>`** — recommended
+  starting point. Scaffolds a working app from the canonical template
+  (`packages/create-devstack-app/`). Want to vendor the template by hand
+  instead? Copy `examples/_template/` and follow the steps in its README.
 
-Requires **Node.js 24+** (native TypeScript stripping — no tsx, no pre-build of the config) and
-**Docker**.
-
-While the package isn't on npm, install via a workspace path or git URL:
-
-```sh
-# Inside this monorepo:
-pnpm --filter <your-app> add -D @mysten-incubation/devstack@workspace:*
-```
+## 30-second example
 
 ```ts
 // devstack.config.ts
-import { codegen, defineDevstackConfig, frontend, sui } from '@mysten-incubation/devstack';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-export default defineDevstackConfig({
-	app: 'my-app',
-	accounts: { publisher: {}, alice: {}, bob: {} },
-	plugins: [sui(), codegen(), frontend({ port: 5173 })],
-});
-```
-
-```jsonc
-// package.json
-{
-	"scripts": {
-		"dev": "devstack up",
-		"localnet:up": "devstack up --once",
-		"apply": "devstack apply",
-		"codegen": "devstack codegen",
-		"deploy": "devstack deploy",
-		"stack": "devstack stack",
-	},
-}
-```
-
-```sh
-pnpm dev                             # one combined process: stack + dev server
-```
-
-The supervisor brings up sui-localnet, fund accounts, publish Move packages, regenerate codegen
-bindings, AND start the Vite dev server — all in one log stream. Re-runs are noticeably faster (warm
-cycles short-circuit through `getStatus`) because each action's `getStatus` skip predicate
-short-circuits work that hasn't drifted.
-
----
-
-## Architecture in one screen
-
-The runtime is a **declarative reconciler over an action graph**. A plugin contributes named actions
-of one of seven kinds:
-
-| Kind       | Purpose                                                                      |
-| ---------- | ---------------------------------------------------------------------------- |
-| `Build`    | Idempotent image / artifact build.                                           |
-| `Service`  | Long-running container or host process. Localnet only.                       |
-| `Publish`  | Move package publish — captures `packageId` + named object IDs.              |
-| `Register` | On-chain registration that produces registry entries.                        |
-| `Seed`     | Post-deploy state seeding (mint balances, open lobbies, place orders).       |
-| `Emit`     | Side-effecting outputs derived from the registry (codegen, manifest writes). |
-| `Verify`   | Read-only invariant check; fails the cycle on `ok: false`.                   |
-
-Actions declare `needs: string[]` for ordering, `provides: { capabilities?, registry? }` for
-capability declarations + a registry-rehydrate hook the reconciler invokes on warm-path skips, plus
-`getStatus?(ctx)` — a probe that returns `{ ok: true }` when the action's effect is already in
-place. `provides.registry(ctx)` runs on every successful path — both the cold cycle and warm-path
-skips — so plugin authors can factor registry-population logic in one place instead of duplicating
-it across `run` and `getStatus`. The reconciler:
-
-1. Hydrates the registry from the prior manifest at
-   `<appDir>/.devstack/stacks/<stack>/manifest.json` (localnet) or
-   `<appDir>/.devstack/manifests/<network>.json` (live nets).
-2. Topo-sorts actions (Kahn, stable tie-break, capability synthesis from `provides` ↔
-   `needs: ['cap:before']`).
-3. For each action: calls `getStatus`; if `ok: true`, marks `skipped`. If `ok: false` (or unset,
-   with a stale input hash), runs the action.
-4. After the topo walk, re-fires any `Emit` whose `dependsOnKind` is dirty — `consumeDirty` makes
-   this re-fire-once-per-cycle, not infinite.
-5. Writes the manifest.
-
-### Registry — the inter-plugin API
-
-```ts
-ctx.registry.packages.find('connect_four');
-ctx.registry.accounts.require('alice');
-ctx.registry.services.list();
-```
-
-`packages`, `accounts`, `services` are the three core kinds — every `RegistryQuery<T>` exposes
-`list()`, `find(name)`, `require(name)`, `register(item)`, and `unregister(name)`. Plugin-namespaced
-kinds register through `defineRegistryKind<T>('<ns>.<kind>')` and serialize under their dotted key
-in the manifest:
-
-```ts
-const arenaSharedObjects = defineRegistryKind<ArenaSharedObject>('arena.sharedObjects');
-arenaSharedObjects(ctx.registry).register({ name: 'openLobby', objectId, objectType });
-arenaSharedObjects(ctx.registry).list();
-```
-
-### Accounts
-
-Top-level `accounts: { ... }` declares signers available as `ctx.accounts.get(name)` in plugins and
-`accounts.<name>` in the REPL. Empty `{}` gets a per-stack generated keypair on disk. Live-net
-deploys take a per-network signer config object (`{ testnet: ..., mainnet: ... }`); the prototype
-ships only the localnet auto-keypair path on the public surface — live signer factories live in
-source for in-monorepo use.
-
-### Discriminated context
-
-```ts
-type ActionRunContext = LocalnetActionRunContext | LiveNetActionRunContext;
-```
-
-Plugin code that touches `ctx.stack` either narrows on `if (ctx.network === 'localnet') { ... }` or
-calls `requireLocalnetCtx(ctx)` to assert at runtime.
-
----
-
-## CLI surface
-
-| Command                                          | What it does                                                                                                    |
-| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
-| `devstack up [config]`                           | Long-running supervisor: reconcile + watch Move sources. `--once` for one-shot.                                 |
-| `devstack apply [config] [--target] [--actions]` | Single-cycle reconcile. `--actions a,b,c` scopes to a subset.                                                   |
-| `devstack deploy <config> --network`             | Live-network deploy slice.                                                                                      |
-| `devstack codegen [config] [--target]`           | Re-emit codegen against the prior manifest (read-only).                                                         |
-| `devstack down [config]`                         | Stop the active stack's containers (volumes preserved).                                                         |
-| `devstack reset [config] --yes`                  | Wipe the active stack — containers, volumes, host state. `--images` also drops cached devstack images (global). |
-| `devstack stack list/new/use/down/drop`          | Manage named per-app stacks. `drop --dry-run` previews deletion; `drop --images` cascades to image cache.       |
-| `devstack snapshot save/restore/list/rm/hash`    | Capture / restore named snapshots of a stack (containers + volumes + host state).                               |
-| `devstack console [config] [--target]`           | REPL with `manifest`, `client`, `accounts.<name>`, `packages.<name>` pre-bound.                                 |
-
-`--target` accepts `<network>`, `<stack>`, or `<network>:<stack>`. The supervisor (`up`) is
-localnet-only; live-network targets error with a hint pointing at `apply` or `deploy`.
-
-### Image cache
-
-The first-run builds — seal (~30 s, pure binary fetch) and walrus-service (~9–10 min on the cold
-first build because `walrus-deploy` depends on most of the walrus workspace; ~1–2 min on subsequent
-version bumps thanks to BuildKit cache mounts) — produce Docker images tagged
-`dev-examples/<name>:<rev>` and labeled `devstack.cache=<kind>`. Sui-localnet, walrus's wrapper
-layer, and the upstream-source images for `imports({ packages })` carry the same label scheme.
-
-Successful builds **GC superseded tags automatically**: bumping `WRAPPER_REV` in `sui` / `walrus` or
-pinning a new `SEAL_REV` triggers the new build to drop the prior tag once it lands, so old
-`r6`-style revisions don't accumulate. In-use tags are kept (no `--force`).
-
-To force a full first-build re-test from scratch:
-
-```sh
-# Preview what would be removed (lists tags + reports BuildKit reclaim estimate)
-devstack reset --images --dry-run
-
-# Drop active stack + every cached devstack-built image
-# (also runs `docker image prune` for dangling layers and `docker builder
-# prune` for BuildKit cache — without those, a rebuild short-circuits
-# through cached layers and doesn't actually re-exercise the build path)
-devstack reset --yes --images
-
-# Ad-hoc with the docker CLI directly:
-docker image rm $(docker image ls -q --filter "label=devstack.cache")
-docker image prune -f --filter "label=devstack.cache"
-docker builder prune -f
-```
-
-> **Why three commands?** `docker image rm` only removes the _tag_; the underlying layer manifest
-> stays as a dangling image, and the BuildKit layer cache (where the cargo-build outputs live) is in
-> a separate store that `image rm` never touches. To genuinely force a fresh Rust compile, all three
-> need to run.
-
-### Networking
-
-Every Docker `--publish` defaults to `127.0.0.1:` — the sui-localnet RPC, faucet, GraphQL,
-seal key-server, and walrus storage nodes are reachable only from the developer's own machine.
-Other devices on the same LAN can't hit them. The wallet-server has its own `host:` knob with the
-same default. Pass `expose: 'lan'` on `RunContainerOptions` (the underlying primitive
-`runContainer` accepts) to bind a container's ports to `0.0.0.0` instead — useful for shared dev
-rigs (a teammate hitting your faucet, a phone connecting to your wallet-server). The default is
-deliberate: a localnet faucet on a laptop in a coffee shop should not mint dev SUI for arbitrary
-strangers.
-
----
-
-## Subpath layout
-
-| Subpath                                                | Audience                 | What's there                                                                                                                            |
-| ------------------------------------------------------ | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `@mysten-incubation/devstack`                          | App authors              | `defineDevstackConfig`, `defineRegistryKind`, `coinTokens`, `publishMove`, `seed`, `runTransaction`, `mintCoinDistribution`, built-in plugins (`sui`, `walrus`, `seal`, `accounts`, `codegen`, `imports`, `frontend`, `walletServer`, `deepbook`) |
-| `@mysten-incubation/devstack/app-setup`                | App authors (UI bootstrap) | `createWalletApp({ manifest })` — one-line dapp-kit setup wired with the devstack burner-wallet adapter and panels                    |
-| `@mysten-incubation/devstack/helpers`                  | App-setup callbacks      | `seedSharedObject`, `createLocalSuiClient`                                                                                              |
-| `@mysten-incubation/devstack/react`                    | App authors (UI)         | `DevstackProvider`, `useDevstackDeployed`, `useSignAndExecute`, `localnetDappKitConfig`, `localnetMvrOverrides`, `localnetWalrusOptions` |
-| `@mysten-incubation/devstack/react/ui`                 | App authors (UI)         | `Card`, `Field` — primitive components shared across examples                                                                           |
-| `@mysten-incubation/devstack/vite`                     | Vite users               | `devstackVitePlugins`, `devstackManifestPlugin` — `virtual:devstack-manifest` virtual module + dev-keys                                 |
-| `@mysten-incubation/devstack/playwright`               | E2E tests                | `defineDevstackPlaywrightConfig({ manageStack })`, `connectAs`, `selectAccount`, `waitForBalanceUpdate`, `test`, `expect`              |
-| `@mysten-incubation/devstack/vitest`, `vitest/runtime` | Unit + chain-aware tests | `defineDevstackVitestConfig`, `AccountPool`, `getSessionAccountPool`                                                                    |
-| `@mysten-incubation/devstack/manifest`                 | Type-only consumers      | `Manifest` (re-export of the types from the main barrel, for `.d.ts`-only consumption paths)                                            |
-
----
-
-## Built-in plugins
-
-### `sui({ version?, rpcPort?, faucetPort? })`
-
-Sui localnet container. Two actions: `sui.build`, `sui.localnet`. Account funding lives in the
-separate `accounts()` plugin (`accounts.fund`) — the sui plugin no longer takes an `accounts:`
-option.
-
-### `walrus({ version?, suiVersion?, nodeHostPortBase?, epochDuration?, committeeSize?, shards?, gc? })`
-
-Walrus testbed on a pinned per-stack subnet. Provides the `app-network` capability. Defaults to a
-4-node committee with 100 shards. `version` pins a release tag (`'devnet-v1.48.0'` by default) —
-runtime binaries (`walrus`, `walrus-node`) come from the matching GitHub release tarball;
-`walrus-deploy` (the testbed bootstrap binary, not in any public release) compiles from source.
-First build ~9–10 min on M-series, version bumps ~1–2 min via BuildKit cache mounts. Pass
-`gc: true` to enable in-node blob garbage-collection (matches the walrus team's `--gc` knob in
-their procman config).
-
-### `seal({ version?, port?, keyServerName?, master?, publisher? })`
-
-Seal key-server in Open mode. Four actions: build, publish (Move package), register (BLS keypair +
-on-chain `KeyServer`), key-server (Service). On first run the `register` action shells out to
-`seal-cli genkey` inside the build image to mint a BLS12-381 master keypair, then writes both halves
-to `<stackDir>/.keys/seal-master-key.json`. Subsequent runs load the cached pair so `KeyServer.id`
-and the on-chain registration stay stable across `up`/`down` cycles. Pass `master:` directly to
-bypass key generation entirely (deterministic test fixtures).
-
-### `codegen({ output?, mvrName? })`
-
-One Emit action that runs `@mysten/codegen`'s `generateFromPackageSummary` per `packages` registry
-entry whose `path?` is set. Defaults to `./src/generated/sui/<package>/`.
-
-Each generated builder embeds an MVR-shape placeholder (`@local/<kebab-name>`) as its default
-`package` option. The matching `mvr.overrides.packages` entry — wired automatically by
-`localnetDappKitConfig(manifest)` — resolves the placeholder to the live `packageId` at transaction
-build time. App code calls `tx.add(connectFour.joinLobby({ arguments: [...] }))` directly; the SDK
-substitutes the live id during build.
-
-`mvrName?: (pkgName) => string` overrides the default placeholder shape. If you change it, pass the
-same mapper to `localnetDappKitConfig({ mvrName })` so the codegen output and the override key
-agree.
-
-### `imports({ packages })`
-
-Recursive Move-package imports from git. Per package: a Build action (content-addressed source
-image) + a Publish action with `provides: ['imports.<name>']`. Curated `addresses[network]`
-overrides the publish on live nets. Cross-imports referencing one another via `dependsOn:` walk
-the Move.toml dep graph automatically.
-
----
-
-## Authoring app-level `setup:` actions
-
-Apps declare per-app actions inline in `defineDevstackConfig({ setup: [...] })`. The list is
-synthesized into a per-app plugin at config-load time — no separate plugin definition needed for
-single-app code. The action graph IS the app lifecycle: ordering via `needs:`, idempotence via
-input-hash match (or an explicit `getStatus`), serialization on shared signers via `runsAs:`.
-
-The arena example, in full:
-
-```ts
 import {
-	accounts, codegen, defineDevstackConfig, defineRegistryKind, frontend,
-	publishMove, seed, sui, walletServer,
+	accounts,
+	codegen,
+	defineDevstackConfig,
+	frontend,
+	publishMove,
+	runTransaction,
+	sui,
+	walletApp,
 } from '@mysten-incubation/devstack';
-import { createLocalSuiClient, seedSharedObject } from '@mysten-incubation/devstack/helpers';
 
-interface ArenaSharedObject { name: string; objectId: string; objectType: string }
-const arenaSharedObjects = defineRegistryKind<ArenaSharedObject>('arena.sharedObjects');
+const HERE = dirname(fileURLToPath(import.meta.url));
 
 export default defineDevstackConfig({
-	app: 'arena',
-	accounts: ['publisher', 'alice', 'bob'],
-	plugins: [sui(), accounts(), codegen(), walletServer({ port: 9421 }), frontend({ port: 5176 })],
-	setup: [
+	app: 'hello',
+	accounts: ['alice', 'bob'],
+	use: [
+		sui(),
+		accounts(),
+		codegen(),
+		walletApp(),
+		frontend(),
 		publishMove({
-			name: 'connect_four',
-			needs: ['accounts.fund'],
-			path: './move/connect_four',
+			name: 'hello',
+			path: resolve(HERE, 'move/hello'),
+			publisher: 'alice',
 		}),
-		seed({
-			name: 'openLobby',
-			needs: ['connect_four'],
-			inputs: { lobby: 'openLobby' },
-			run: async (ctx) => {
-				const pkg = ctx.registry.packages.require('connect_four');
-				const lobbyCreator = ctx.accounts.get('alice');
-				const client = createLocalSuiClient(ctx.registry.services.require('sui-rpc').url);
-				const result = await seedSharedObject({
-					client, publisher: lobbyCreator,
-					target: `${pkg.packageId}::game::create_lobby`,
-					objectTypeFilter: '::game::Lobby',
-				});
-				arenaSharedObjects(ctx.registry).register({
-					name: 'openLobby',
-					objectId: result.objectId,
-					objectType: result.objectType,
+		runTransaction({
+			name: 'mint-greeting',
+			needs: ['hello'],
+			signer: 'alice',
+			build: (ctx, tx) => {
+				const pkg = ctx.registry.packages.require('hello');
+				tx.moveCall({
+					target: `${pkg.packageId}::hello::mint`,
+					arguments: [
+						tx.pure.vector('u8', Array.from(new TextEncoder().encode('hi'))),
+					],
 				});
 			},
 		}),
@@ -326,159 +77,442 @@ export default defineDevstackConfig({
 });
 ```
 
-Bare `needs:` resolve to the same app's setup actions; dotted needs cross into plugins
-(`'accounts.fund'`, `'sui.localnet'`); suffixed needs (`'app-network:before'`) hit the capability
-table.
-
-### Setup action factories
-
-`@mysten-incubation/devstack` re-exports the action factories app code reaches for:
-
-- `publishMove({ name, path, needs?, capture?, onPublished?, ... })` — Publish action with build +
-  publish + register + cache baked in. `capture: { adminCap: '::admin::AdminCap' }` extracts
-  created objects by type-suffix into `registry.packages.<name>.captured`.
-- `seed({ name, run, getStatus?, inputs?, runsAs?, liveNetworks?, ... })` — Seed action. Skipped on
-  testnet/mainnet by default; opt in via `liveNetworks: ['testnet']`.
-- `runTransaction({ name, build, runsAs?, ... })` — generic transaction runner; default `getStatus`
-  is a marker file at `<stackDir>/setup/<name>.done` keyed by stable-hash of the inputs.
-- `mintCoinDistribution({ name, ... })` — coin-distribution helper used by token-bearing apps.
-
-The lower-level factories (`definePlugin`, `service`, `containerService`, `hostProcess`,
-`buildImage`, `register`, `emit`, `publish`) are not on the public barrel — they're for
-in-monorepo plugin authoring and live under `packages/devstack/src/{actions,plugins}/`. Walk the
-built-in plugins (`src/plugins/{sui,walrus,seal,...}/`) as the canonical examples.
-
-### Helpers (`@mysten-incubation/devstack/helpers`)
-
-- `seedSharedObject({ client, publisher, target, objectTypeFilter })` — common Seed pattern. Calls
-  the target Move function, picks the created shared object by `objectTypeFilter`, returns
-  `{ objectId, objectType }`. The default `getStatus` baked into `seed()`'s wrapper checks the
-  cached shared-object id is still live on-chain.
-- `createLocalSuiClient(url, network?)` — minimal `SuiJsonRpcClient` constructor for setup-time
-  reads / writes.
-
----
-
-## React adapter
-
-Two subpaths: `@mysten-incubation/devstack/app-setup` for the one-line dapp-kit bootstrap, and
-`@mysten-incubation/devstack/react` for the provider + hooks consumed inside components. The
-surface is intentionally minimal and manifest-driven — generic SDK ergonomics (signing
-transactions, binding codegen modules) live in `@mysten/dapp-kit-react` / `@mysten/codegen`.
-
-```tsx
-// dapp-kit.ts — what every example uses, byte-for-byte
-import { createWalletApp } from '@mysten-incubation/devstack/app-setup';
-import { manifest } from 'virtual:devstack-manifest';
-
-export const { dAppKit } = createWalletApp({ manifest });
-
-declare module '@mysten/dapp-kit-react' {
-	interface Register {
-		dAppKit: typeof dAppKit;
-	}
+```jsonc
+// package.json (excerpt)
+{
+	"scripts": {
+		"dev": "devstack up",
+		"apply": "devstack apply",
+		"codegen": "devstack codegen",
+		"deploy:testnet": "devstack apply --target testnet",
+		"deploy:mainnet": "devstack apply --target mainnet",
+		"stack": "devstack stack",
+	},
 }
 ```
 
-`createWalletApp({ manifest })` wires up `localnetDappKitConfig`, the devstack burner-wallet
-adapter (`@mysten-incubation/dev-wallet/adapters`), and the devstack panels
-(`@mysten-incubation/devstack-wallet-panels`) into a single `createDAppKit({...})` call. Apps
-declaring their own dapp-kit shape can compose `localnetDappKitConfig(manifest)` directly from the
-`/react` subpath instead — the function returns the `defaultNetwork` / `networks` / `createClient`
-triple plus pre-loaded MVR overrides keyed `@local/<kebab-name>`.
+`pnpm dev` brings up sui-localnet, funds accounts, publishes `move/hello`,
+regenerates codegen bindings, fires `mint-greeting` once, and starts the
+Vite dev server — all in one log stream. Re-runs short-circuit through
+each action's `getStatus` skip predicate.
+
+Requires Node.js 24+ (native TypeScript stripping — no tsx, no pre-build
+of the config) and Docker.
+
+`publisher:` is a literal account name. `publishMove` defaults `publisher`
+to the literal account `'publisher'` — either declare it in `accounts:`
+(e.g. `accounts: ['publisher', 'alice']`) or override per-action
+(`publishMove({ publisher: 'alice' })`, as the example does).
+
+## Subpath imports
+
+| Subpath                                      | For                                                                                                                           |
+| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `@mysten-incubation/devstack`                | App authors — `defineDevstackConfig`, plugin factories, setup-action factories, registry types.                               |
+| `@mysten-incubation/devstack/helpers`        | Side helpers (`createLocalSuiClient`, `cliSigner`, `envSigner`, `generatedKeypair`).                                          |
+| `@mysten-incubation/devstack/react`          | React adapter — `createDevstackDappKit` factory + `localnetWalrusOptions`.                                                    |
+| `@mysten-incubation/devstack/vitest`         | Vitest config builder.                                                                                                        |
+| `@mysten-incubation/devstack/vitest/runtime` | Test-side: `AccountPool`, session helpers.                                                                                    |
+| `@mysten-incubation/devstack/playwright`     | Playwright config builder + fixtures + page helpers.                                                                          |
+| `@mysten-incubation/devstack/authoring`      | Plugin authors — `definePlugin` + raw action factories (`service`, `containerService`, `buildImage`, `hostProcess`, `publish`, `register`, `emit`, `verify`). App authors should NOT use this. |
+
+## Built-in plugins
+
+- `sui()` — Sui localnet container. Provides `sui.build`, `sui.indexer-db`, `sui.localnet`.
+- `walrus()` — Walrus testbed (4-node committee, 100 shards). First build ~9–10 min; bumps ~1–2 min via BuildKit cache mounts.
+- `seal()` — Seal key-server in Open mode. Pulls release binaries (~30 s, no compile).
+- `deepbook({ pools, marketMakers })` — DeepBookV3 publish + pool init + optional grid market-maker hostprocesses.
+- `accounts()` — Account funding action (`accounts.fund`) over the `sui` faucet.
+- `codegen()` — Runs `@mysten/codegen`'s `generateFromPackageSummary` over every published package.
+- `frontend()` — Vite dev-server hostprocess. Default port 5173.
+- `walletApp()` — In-process HTTP signer endpoint (default port 9420) the dev-wallet adapter calls. Keys never enter the frontend bundle.
+- `imports({ packages })` — Recursive Move-package imports from git or local paths. Per package: a Build (content-addressed source image) + a Publish action.
+
+### `walletApp` (server) + `createDevstackDappKit` (browser)
+
+The server-side plugin `walletApp` (from the main barrel) and the
+browser-side factory `createDevstackDappKit` (from `/react`) form a
+paired contract. The plugin runs an HTTP signer endpoint inside the
+supervisor (default port 9420). The factory wires up dapp-kit + the
+burner-wallet adapter pointed at that server, and (under `mountUI:
+true`, the default) mounts the Faucet / Packages / Network panels.
+Most apps import both — the plugin in `devstack.config.ts` and the
+factory in `src/dapp-kit.ts`.
+
+### Token references — `@reg/<name>`
+
+Plugin specs that need to reference a coin published elsewhere in the
+config accept the literal string `@reg/<name>` and resolve it at run
+time against `coinTokens(registry).find(name).type`. The deepbook
+plugin's `pools:` is the canonical consumer:
 
 ```ts
-// devstack.config.ts — opt-in walletServer is what lets the burner-wallet
-// adapter sign without leaking keys into the frontend bundle
-import { walletServer } from '@mysten-incubation/devstack';
-plugins: [sui(), /* ... */, walletServer({ port: 9421 }), frontend({ port: 5176 })];
+deepbook({
+  pools: [
+    {
+      base: '@reg/deep',         // resolves to deepbook's own DEEP coin
+      quote: '@reg/musdc',       // resolves to whatever publishMove({...}) +
+                                 // registerCoin({ name: 'musdc', ... }) registered
+      // ...
+    },
+  ],
+}),
 ```
 
-`walletServer()` spins up an in-process HTTP endpoint exposing every account devstack resolved.
-Keys never enter the frontend bundle — the dev-wallet adapter signs by HTTPing the supervisor.
+The spec is unresolved at config-load time — `@reg/musdc` is opaque
+until the surrounding `use:[]` actually contains a matching
+`registerCoin({ name: 'musdc', ... })`. The deepbook pool action's
+`needs:` should list the matching `register-musdc` so the publish-and-
+register fans out before the pool tx fires.
 
-```tsx
-// main.tsx
-import { DevstackProvider } from '@mysten-incubation/devstack/react';
-import { manifest } from 'virtual:devstack-manifest';
+## Setup-action factories
 
-<DevstackProvider manifest={manifest}>
-	<App />
-</DevstackProvider>;
-```
+Drop these directly into `use: [...]`. Each returns a typed `Action`.
 
-```tsx
-// component.tsx
-import { Transaction } from '@mysten/sui/transactions';
-import { useSignAndExecute } from '@mysten-incubation/devstack/react';
-import * as connectFour from './generated/sui/connect_four/game';
+- `publishMove({ name, path, publisher?, capture?, registryAs? })` — build + publish + register a Move package. Captures created objects by type-suffix into `registry.packages.<name>.captured`.
+- `registerCoin({ from, module, type, decimals })` — typed follow-on for the common "publish coin → register in `coin.tokens` namespace" pattern.
+- `seed({ name, run, getStatus?, inputs?, runsAs?, networks? })` — generic post-publish seeding. Localnet-only by default; opt into live nets via `networks: ['testnet']`.
+- `runTransaction({ name, signer, build, getStatus? })` — fire a single transaction, idempotent via persisted reconciler state keyed by the input hash.
 
-const { mutateAsync, isPending } = useSignAndExecute({ invalidateKeys: [['arena']] });
+`register()` (from `/authoring`) has the same default as `seed()` —
+opt into live nets via `networks: ['localnet', 'testnet', 'mainnet']`
+if your custom register action should run on testnet/mainnet. Most
+register flows wire dev-only bootstraps (key-server registration,
+walrus deploy, faucet-fund follow-ons), so the safe default is the
+conservative one — silent live-net fan-out is rarely intended.
 
-const tx = new Transaction();
-tx.add(connectFour.joinLobby({ arguments: [lobbyId] }));
-await mutateAsync(tx);
-```
-
-`useSignAndExecute` is a sign + waitForTransaction + invalidate helper. Apps wrap it in their own
-`lib/queries.ts` to bind app-specific `invalidateKeys` defaults, but the wrapper is a one-line
-re-export, not a fork. Production app code looks identical; the file that differs between local
-and prod is `dapp-kit.ts` — drop `createWalletApp` and supply your own RPC + MVR + adapter set.
-
----
-
-## Manifest format
-
-Per-stack on localnet at `<appDir>/.devstack/stacks/<stack>/manifest.json`; per-network on live nets
-at `<appDir>/.devstack/manifests/<network>.json`.
-
-```jsonc
-{
-	"app": "arena",
-	"network": "localnet",
-	"emittedAt": "2026-04-30T...",
-	"registry": {
-		"packages": [{ "name": "connect_four", "packageId": "0x...", "captured": {...} }],
-		"accounts": [{ "name": "publisher", "address": "0x...", "funded": true }],
-		"services": [{ "name": "sui-rpc", "url": "http://127.0.0.1:9000", ... }],
-		"arena": { "sharedObjects": [{ "name": "openLobby", "objectId": "0x..." }] },
-		"coin": { "tokens": [...] }
-	},
-	"actionStates": { "<plugin>.<action>": { "lastInputHash": "...", "lastRunAt": ..., "identity": "..." } }
-}
-```
-
-`packages` / `accounts` / `services` are core kinds. Plugin-namespaced kinds register through
-`defineRegistryKind('<ns>.<kind>')` and serialize as nested objects (`registry.<ns>.<kind>[]`).
-
----
-
-## Layout
+## CLI
 
 ```
-src/
-  cli/         — up | apply | deploy | codegen | console | stack | snapshot
-                 (down/reset are aliases on top of stack)
-  core/        — Action / Plugin / Registry / Network types + requireLocalnetCtx
-  registry/    — typed Proxy-backed Registry + defineRegistryKind
-  actions/     — build / service / container-service / host-process /
-                 publish / publish-move / register / seed / emit / verify /
-                 transaction / mint-coin-distribution
-  runtime/     — reconciler, supervisor, status renderer, file watcher,
-                 manifest writer/reader, one-shot (with actionScope),
-                 topo (with lenient mode), accounts resolver, hash,
-                 active-stack, supervisor-lock, port-allocator, snapshot
-  plugin.ts    — definePlugin + defineDevstackConfig + expandPluginActions
-  helpers/     — move-package (host or container build), imported-package,
-                 sui-client, signers, keystore, seed-shared-object, ...
-  plugins/     — accounts | sui | walrus | seal | codegen | deepbook |
-                 imports | wallet-server | frontend
-  app-setup/   — createWalletApp (one-line dapp-kit bootstrap)
-  react/       — DevstackProvider | useDevstackDeployed |
-                 useSignAndExecute | localnetDappKitConfig |
-                 localnetMvrOverrides | localnetWalrusOptions
-  vite/        — devstackManifestPlugin / devstackVitePlugins
-                 (virtual:devstack-manifest + dev-keys)
-  playwright/  — defineDevstackPlaywrightConfig (with manageStack) + helpers
-  vitest/      — defineDevstackVitestConfig + AccountPool runtime
+devstack up [config]                  Long-running supervisor (localnet only)
+devstack apply [config] [--target]    Single-cycle reconcile against active stack or a target
+devstack codegen [config] [--target]  Re-emit codegen against the prior manifest (read-only)
+devstack status [config] [--target]   Print manifest action-graph state (read-only)
+devstack doctor                       Preflight environment check
+devstack down [config]                Stop a stack's containers; preserve volumes
+devstack wipe [config] --yes          Wipe a stack — containers, volumes, host state
+devstack stack list|new|use           Manage named per-app stacks
+devstack snapshot save|restore|list|rm|id   Capture / restore named snapshots
+devstack console [config] [--target]  REPL with manifest, client, accounts pre-bound
 ```
+
+`--target` accepts `<network>`, `<stack>`, or `<network>:<stack>`:
+
+- `devstack apply --target testnet` — bare network. Live network, full
+  action graph minus Service / HostProcess.
+- `devstack apply --target localnet:scratch` — explicit pair. Localnet
+  with a specific named stack.
+- `devstack apply --target scratch` — bare stack name (defaults network
+  to localnet).
+
+The supervisor (`up`) is localnet-only; live-network targets error with
+a hint pointing at `apply`.
+
+## Operations
+
+Day-to-day commands beyond `up` / `apply`:
+
+- **`devstack doctor`** — preflight check (docker daemon reachable, sui
+  CLI present, Node version, inotify limits, manifest exists). Run it
+  first when something's off; the supervisor's own preflight runs the
+  same docker check, but `doctor` covers everything before you commit
+  to a long cycle.
+- **`devstack status [--target]`** — print the manifest's action-graph
+  state without running a cycle. Read-only; no docker / RPC calls.
+- **`devstack down [config]`** — stop a stack's containers but preserve
+  its volumes and host state. Re-run `up` to resume from the same
+  RocksDB / generated key material.
+- **`devstack wipe [config] --yes`** — hard reset: containers, volumes,
+  host state under `.devstack/stacks/<stack>/`, and (with `--images`)
+  cached devstack-built images. Pair with `--dry-run` first to preview
+  what would be deleted.
+- **`devstack snapshot save <id>`** — capture the current stack as a
+  named snapshot. Acquires the supervisor lock; if `devstack up` is
+  running, save fails fast with "supervisor is running on stack '...'
+  (PID ...). Stop it before saving." Pass `--dry-run` to preview the
+  capture without acting (works with `--json` for CI consumption).
+
+### Removing an action
+
+Removing a setup action from `use:` (e.g. deleting a `publishMove` or
+`runTransaction`) is not destructive — devstack will not undo what's
+already on chain (Move packages are immutable). But the orphaned state
+lingers:
+
+- Codegen drops the per-package bindings on the next `apply` (good).
+- The manifest's `actionStates` keeps the removed action's
+  input-hash and last-run timestamp until the next manifest write
+  overwrites it.
+- Generated keypairs in `<appDir>/.devstack/stacks/<stack>/.keys/`
+  stay on disk if the matching account was also removed from
+  `accounts:`.
+- Cached docker images for any plugin you removed stay in your local
+  docker store.
+
+For a clean slate after structural removal:
+
+```sh
+devstack wipe --yes              # this stack
+devstack wipe --yes --images     # this stack + all cached devstack images (GLOBAL)
+```
+
+Re-adding an action with the same name as one you previously removed
+reuses the persisted `actionStates` entry as the warm-path baseline.
+If the inputs are byte-identical (same hash), the reconciler short-
+circuits via `getStatus` (or directly, if no `getStatus` is defined) —
+fine for an identical re-add. If the new action is structurally
+different, the input hash mismatches and the action runs as a fresh
+cycle. When in doubt, run `devstack wipe --yes` first so re-added
+actions start from a clean baseline.
+
+### Where logs go
+
+- **Supervisor banner + status panel.** The renderer prints to stdout —
+  the same stream as the rest of the CLI. There is no per-action log
+  file on disk today; everything an action emits surfaces in the same
+  combined stream as the supervisor.
+- **Action `ctx.appendLog(...)`.** Plugin callbacks call `appendLog`
+  inside `run()` / `getStatus()` to emit named log lines. The active
+  renderer routes them — the TUI/plain renderer interleaves them with
+  the live action-graph block; one-shot CLI paths forward them straight
+  to `process.stdout`.
+- **Container logs (sui-localnet, walrus, seal, etc.)** are owned by the
+  Docker daemon and read via `docker logs <container>` (or
+  `docker logs -f` to tail). Container names follow the pattern
+  `<app>-<stack>-<service>` — `docker ps --filter label=devstack.app=<app>`
+  lists the active set for a given app.
+
+### Going to live nets
+
+Apps declare per-network signers in `accounts: { ... }` and run
+`devstack apply --target testnet|mainnet`. Localnet uses an implicit
+`generatedKeypair()` factory if no slot is filled; live nets require an
+explicit factory.
+
+A typical testnet deploy goes like this:
+
+1. Tell devstack which RPC to point at via `networks:` and add the
+   per-network signing material under `accounts:`. The empty `{}` form
+   is fine for accounts that only run on localnet — only the live-net
+   slots need explicit factories.
+
+   ```ts
+   export default defineDevstackConfig({
+   	app: 'hello',
+   	networks: {
+   		testnet: 'https://fullnode.testnet.sui.io:443',
+   	},
+   	accounts: {
+   		publisher: {
+   			testnet: cliSigner({ alias: 'release' }),
+   			mainnet: envSigner({ name: 'MAINNET_PUBLISHER_KEY' }),
+   		},
+   	},
+   	use: [/* ... */],
+   });
+   ```
+
+2. Make sure `cliSigner({ alias: 'release' })` will resolve. The factory
+   reads `~/.sui/sui_config/sui.aliases` to map the alias to a key in
+   `~/.sui/sui_config/sui.keystore` — you switch to the alias once
+   (`sui client switch --alias release`), and devstack picks up the same
+   key on every run. `envSigner({ name })` reads the env var as
+   `suiprivkey1...` material; CI workflows wire that through their secret
+   store.
+
+   > If your alias's address has no testnet gas, run `sui client faucet` first. Mainnet has no faucet — fund the address out of band.
+
+3. `pnpm exec devstack apply --target testnet`. Build / Publish /
+   Register / Seed (network-gated) / Emit / Verify run; Service +
+   HostProcess are skipped (no docker daemon assumed on testnet).
+   The resulting manifest lands at
+   `<appDir>/.devstack/manifests/testnet.json`, separate from the
+   localnet stack manifests under `.devstack/stacks/<stack>/`.
+
+4. Sanity-check the deploy from the REPL:
+   `pnpm exec devstack console --target testnet` — drops you into a
+   Node REPL with `manifest`, `client`, and `accounts` pre-bound, so
+   you can poke at the published packages or query on-chain state.
+
+#### Production builds
+
+> **Important**: the manifest contains a dev-time bearer token used by
+> the server-side `walletApp()` plugin. Vite bakes the manifest into
+> production builds, so a `pnpm build` after
+> `devstack apply --target testnet` produces a bundle that ships the
+> token. The token is dev-only — it authorizes transaction signing
+> against the supervisor, which only runs on the developer's laptop —
+> but it shouldn't end up on a public CDN.
+>
+> The codegen-emitted `src/generated/manifest.ts` is gitignored by
+> default to prevent the dev-time bearer token from landing in git
+> history. Apps regenerate the file locally via `devstack apply` —
+> after cloning a devstack app, run `devstack apply` (or `pnpm dev`,
+> which calls it) before `pnpm build` so the manifest exists.
+>
+> For production deploys to live nets:
+>
+> - Pass `mountUI: false` to
+>   `createDevstackDappKit({ manifest, mountUI: false })` from `/react`
+>   so the dev-wallet floating UI doesn't render. With `mountUI: false`
+>   the panels module is not loaded, so production bundles drop the
+>   panels code entirely (~30KB).
+> - Better, use a separate `dapp-kit.ts` for production that swaps the
+>   dev-wallet adapter for a real wallet (Slush, Suiet, etc.) and only
+>   reads the live-net manifest fields the app actually needs.
+>
+> Tracked as a known limitation; the proper fix (per-session tokens
+> written to `<stackDir>` rather than the manifest, gated by a
+> production-mode flag) is on the post-0.1.0 roadmap.
+
+For Ledger / KMS / vault factories, write your own matching the
+`AccountFactory` contract (`(ctx) => Signer | Promise<Signer>`). See the
+"Custom factory pattern" section in `helpers/signers.ts` for an
+illustrative Ledger example.
+
+## Image cache
+
+Built images carry the label `devstack.cache=<kind>` and are tagged
+`mysten-devstack/<name>:<rev>`. Successful rebuilds GC superseded tags
+automatically (pinning a new `version:` triggers the new build to drop the
+prior tag once it lands; in-use tags are kept). To force a full first-build
+re-test:
+
+```sh
+devstack wipe --yes --images          # drops cached devstack-built images (GLOBAL)
+devstack wipe --yes --images --dry-run # preview only
+```
+
+`--images` is global — it affects all apps sharing the docker engine. Pair
+with `--dry-run` first.
+
+## Networking
+
+Every Docker `--publish` defaults to `127.0.0.1:` — sui-localnet RPC,
+faucet, GraphQL, the seal key-server, walrus storage nodes, and walletApp
+are reachable only from the developer's machine. Other devices on the same
+LAN can't hit them. The default is deliberate: a localnet faucet on a
+laptop in a coffee shop should not mint dev SUI for arbitrary strangers.
+
+## Testing
+
+Two test config builders. Both are config-load-time only and don't pull
+the runtime into your test files.
+
+```ts
+// vitest.config.ts
+import { defineDevstackVitestConfig } from '@mysten-incubation/devstack/vitest';
+
+export default defineDevstackVitestConfig({ chain: true });
+```
+
+```ts
+// playwright.config.ts
+import { defineDevstackPlaywrightConfig } from '@mysten-incubation/devstack/playwright';
+
+export default await defineDevstackPlaywrightConfig({
+	port: 5180,
+	manageStack: true, // bring up + tear down a `test` stack hermetically
+});
+```
+
+The `playwright` subpath also exports `connectAs` / `selectAccount` /
+`waitForBalanceUpdate` page helpers and an `AccountPool` fixture
+(`pool` session-scoped, `account` per-test).
+
+#### `manageStack: true` lifecycle
+
+- **Stack name** defaults to `'test'`. Override via the `DEVSTACK_STACK`
+  env var (e.g. `DEVSTACK_STACK=ci-shard-2 pnpm test:e2e`); the same name
+  is consumed by both globalSetup and globalTeardown.
+- **globalSetup** brings the stack up (`runOneShot` with the test-setup
+  filter — Build / Publish / Register / Seed / Emit / Verify run, Service
+  containers start and detach, HostProcess actions stay off so the
+  Playwright `webServer`'s `pnpm dev` Supervisor owns them) before any
+  test file runs.
+- **globalTeardown** runs after all tests finish, regardless of
+  pass/fail. Disposition is configurable via the typed `teardown:` opt
+  on `defineDevstackPlaywrightConfig` or the `DEVSTACK_E2E_TEARDOWN` env
+  var:
+  - `'down'` (default) — stop containers, preserve volumes (resumable).
+  - `'drop'` — full wipe (containers, volumes, host state). CI mode.
+  - `'none'` — leave the stack running for post-mortem debugging.
+
+#### A test using `connectAs`
+
+```ts
+import { connectAs, expect, test } from '@mysten-incubation/devstack/playwright';
+
+test('alice can sign a transaction', async ({ page }) => {
+	await page.goto('/');
+	await connectAs(page, 'alice');
+
+	const balance = page.getByTestId('balance-alice-mycoin');
+	const before = (await balance.textContent()) ?? '';
+
+	await page.getByRole('button', { name: 'Mint 1' }).click();
+	await expect(balance).not.toHaveText(before, { timeout: 15_000 });
+});
+```
+
+> **Prereq**: `connectAs` reads the dapp-kit instance from
+> `globalThis.__devstackDAppKit__`. The `createDevstackDappKit` factory
+> from `@mysten-incubation/devstack/react` exposes it under DEV (vite
+> dev server). If your app wires dapp-kit manually (without
+> `createDevstackDappKit` from `/react`), set
+> `globalThis.__devstackDAppKit__ = dAppKit` in your dev-time entry
+> point.
+
+`test` and `expect` come from the playwright subpath rather than
+`@playwright/test` so the `pool` (session-scoped) and `account`
+(per-test, leased from the pool) fixtures are available — useful when
+a test needs an unrelated keypair separate from the named
+`'alice' / 'publisher' / ...` wallets `connectAs` operates on.
+
+For a fuller, real-world worked example, see
+[`examples/wallet/e2e/panels.spec.ts`](https://github.com/MystenLabs/ts-sdks-incubation/blob/main/examples/wallet/e2e/panels.spec.ts).
+
+## Architecture
+
+The runtime is a declarative reconciler over an action graph. A plugin
+contributes named actions of one of eight kinds (Build, Service,
+HostProcess, Publish, Register, Seed, Emit, Verify). Each action declares
+`needs: string[]` for ordering, `provides: { capabilities?, registry? }`
+for capability declarations and a registry-rehydrate hook the reconciler
+invokes on warm-path skips, plus `getStatus?(ctx)` — a probe that returns
+`{ ok: true }` when the action's effect is already in place. The
+reconciler hydrates the registry from the prior manifest, topo-sorts
+actions (Kahn, stable tie-break, capability synthesis from `provides` ↔
+`needs: ['cap:before']`), runs or skips each action, and writes the new
+manifest.
+
+For depth, see [`docs/devstack-design.md`](docs/devstack-design.md).
+
+## Known limitations
+
+- **Walrus 1.48.0 storage-node TLS panic.** The `private-content`
+  example's end-to-end blob upload doesn't work on the current default
+  `walrus({ version: 'devnet-v1.48.0' })`. Other walrus-using flows
+  (read, registration, deploy outputs) work. Resolved by upstream's
+  `devnet-v1.49.0`; bump the `version:` opt once it ships.
+- **Bearer token in development manifest.** `devstack apply` emits a
+  bearer token into `src/generated/manifest.ts` for the `walletApp`
+  HTTP signer endpoint. The file is gitignored by default. Don't
+  deploy a devstack-built bundle to a public URL until the
+  token-rotation work lands — the dev-only token authorizes signing
+  against the supervisor.
+- **Post-clone `devstack apply` required.** The codegen-emitted
+  `src/generated/manifest.ts` is gitignored, so a fresh clone needs
+  `devstack apply` (or `pnpm dev`) before `pnpm build` succeeds.
+
+## Writing your own plugin
+
+Third-party plugins import from `@mysten-incubation/devstack/authoring`,
+which exposes `definePlugin`, the raw action factories (`buildImage`,
+`service`, `containerService`, `hostProcess`, `publish`, `register`,
+`emit`, `verify`), the `requireLocalnetCtx` narrowing helper, and the
+docker primitives a `containerService(spec)` callback typically reaches
+for (`runContainer`, `appNetworkName`, `devstackContainerLabels`,
+`requireDockerDaemon`, …).
+
+For the full shape, see [`docs/devstack-design.md`](docs/devstack-design.md).

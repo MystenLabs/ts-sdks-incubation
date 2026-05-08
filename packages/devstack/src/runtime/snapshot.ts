@@ -37,12 +37,8 @@ import {
 } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
-import {
-	dockerRun,
-	inspectContainer,
-	startContainer,
-	stopContainer,
-} from '../plugins/sui/docker.js';
+import { inspectContainer, startContainer, stopContainer } from './docker/index.js';
+import { dockerRun } from './docker/run.js';
 import { stableHash } from './hash.js';
 import { stackDir } from './active-stack.js';
 
@@ -52,7 +48,7 @@ interface SnapshotContainerEntry {
 	 * this name on the next `devstack up`. */
 	containerName: string;
 	/** Image tag the container was originally created from (e.g.,
-	 * `dev-examples/sui-localnet:devnet-v1.71.0-r7`). Restore re-tags
+	 * `mysten-devstack/sui-localnet:devnet-v1.71.0-r8`). Restore re-tags
 	 * `seedImage` to this so the plugin's `docker run` from its
 	 * hardcoded tag picks up the seeded layer. */
 	originalImage: string;
@@ -301,14 +297,35 @@ export async function loadSnapshot(opts: RestoreOptions): Promise<SnapshotEntry>
 	const id = resolveAlias(opts.appDir, opts.ref) ?? opts.ref;
 	const dir = snapshotDir(opts.appDir, id);
 	if (!existsSync(resolve(dir, 'snapshot.json'))) {
-		throw new Error(`loadSnapshot: no snapshot at ${dir} (ref='${opts.ref}')`);
+		// Surface the available snapshots inline so the user doesn't have
+		// to chase up a separate `snapshot list` invocation. Filter to the
+		// requested stack so the list stays short on multi-stack apps.
+		const available = await listSnapshots(opts.appDir);
+		const sameStack = available.filter((e) => e.stack === opts.stack);
+		const aliases = sameStack.map(
+			(e) => `${e.id.slice(0, 12)}…${e.alias !== undefined ? ` (${e.alias})` : ''}`,
+		);
+		throw new Error(
+			`loadSnapshot: no snapshot '${opts.ref}' for stack '${opts.stack}'\n` +
+				`  Available: ${aliases.length > 0 ? aliases.join(', ') : '(none)'}`,
+		);
 	}
 	const entry = readManifest(resolve(dir, 'snapshot.json'));
 	const currentPlatform = `${process.platform}/${process.arch}`;
-	if (entry.platform !== currentPlatform && opts.forceArch !== true) {
-		throw new Error(
-			`loadSnapshot: snapshot platform '${entry.platform}' != current '${currentPlatform}'. ` +
-				`Cross-arch restore can corrupt RocksDB; pass --force-arch to override.`,
+	if (entry.platform !== currentPlatform) {
+		if (opts.forceArch !== true) {
+			throw new Error(
+				`loadSnapshot: snapshot platform '${entry.platform}' != current '${currentPlatform}'. ` +
+					`Cross-arch restore can corrupt RocksDB; pass --force-arch to override.`,
+			);
+		}
+		// --force-arch was passed; the operator explicitly opted into the
+		// risk. Surface a loud warning before proceeding so a caller that
+		// passed it reflexively (e.g. CI script copy-pasted from a working
+		// same-arch run) sees the actual implication when this fires.
+		process.stderr.write(
+			`WARNING: cross-arch snapshot restore (${entry.platform} → ${currentPlatform}). ` +
+				`RocksDB binary format may corrupt on first write — proceed with caution.\n`,
 		);
 	}
 
@@ -550,10 +567,10 @@ function readSymlinkTarget(path: string): string | null {
 }
 
 /** Convenience: derive a snapshot id from a DevstackConfig + active stack
- * + platform. Used by the CLI `snapshot hash` subcommand and by future
+ * + platform. Used by the CLI `snapshot id` subcommand and by future
  * cache lookups. Each plugin's `inputs` field is folded into the hash
  * so bumping `rev:` on walrus / seal / deepbook, switching the sui
- * image tag, or editing a `setup:` action invalidates the cached
+ * image tag, or editing a `use:` setup action invalidates the cached
  * snapshot id automatically. */
 export function snapshotIdFromConfig(input: {
 	appName: string;

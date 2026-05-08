@@ -1,6 +1,6 @@
 // Test whether a Sui object's `objectType` matches a user-declared
-// `capture` filter. Shared by `publishMovePackage` and
-// `seedSharedObject` so both helpers obey the same rule.
+// `capture` filter. Shared by `publishMovePackage` and the
+// imports plugin so both helpers obey the same rule.
 //
 // `endsWith` when the filter doesn't contain `<` (so `::registry::Registry`
 // matches `<pkg>::registry::Registry` but NOT

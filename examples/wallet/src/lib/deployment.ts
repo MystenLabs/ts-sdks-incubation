@@ -3,7 +3,7 @@
 // into the views the wallet UI reads — coin specs (with derived symbols),
 // pool views (with base/quote symbols joined), and a flat account map.
 
-import { defineManifestKind } from '@mysten-incubation/devstack';
+import { defineManifestKind, type Token } from '@mysten-incubation/devstack';
 import { manifest } from '../generated/manifest.js';
 
 export interface CoinSpec {
@@ -27,14 +27,9 @@ interface DeepbookPool {
 	baseCoinType: string;
 	quoteCoinType: string;
 }
-interface CoinToken {
-	name: string;
-	type: string;
-	decimals: number;
-}
 
 const deepbookPoolsKind = defineManifestKind<DeepbookPool>('deepbook.pools');
-const coinTokensKind = defineManifestKind<CoinToken>('coin.tokens');
+const coinTokensKind = defineManifestKind<Token>('coin.tokens');
 
 // Native SUI: every Sui network has it before any package is published.
 const SUI_COIN: CoinSpec = {
@@ -43,7 +38,7 @@ const SUI_COIN: CoinSpec = {
 	decimals: 9,
 };
 
-const coinsFromTokens: CoinSpec[] = coinTokensKind(manifest).map((t) => ({
+const coinsFromTokens: CoinSpec[] = coinTokensKind(manifest).list().map((t) => ({
 	symbol: t.name.replace(/^m/, 'm').toUpperCase(),
 	coinType: t.type,
 	decimals: t.decimals,
@@ -54,7 +49,7 @@ const allCoins: readonly CoinSpec[] = [SUI_COIN, ...coinsFromTokens];
 const symbolFor = (coinType: string): string =>
 	allCoins.find((c) => c.coinType === coinType)?.symbol ?? coinType.split('::').pop() ?? '?';
 
-const pools: readonly PoolView[] = deepbookPoolsKind(manifest).map((p) => ({
+const pools: readonly PoolView[] = deepbookPoolsKind(manifest).list().map((p) => ({
 	alias: p.name,
 	poolId: p.poolId,
 	baseCoinType: p.baseCoinType,

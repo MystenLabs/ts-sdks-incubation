@@ -21,7 +21,15 @@ describe('runOneShot — actionFilter', () => {
 	});
 
 	it('default applyFilter runs Publish/Register/Emit on live nets', async () => {
-		const reg = register({ name: 'r', inputs: {}, run: async () => {} });
+		// `register()` defaults to `['localnet']` (matches `seed()`); pass
+		// an explicit `networks:` to opt into the live-net filter slice
+		// being exercised here.
+		const reg = register({
+			name: 'r',
+			inputs: {},
+			networks: ['localnet', 'testnet', 'mainnet'],
+			run: async () => {},
+		});
 		const em = emit({
 			name: 'e',
 			dependsOnKind: [],

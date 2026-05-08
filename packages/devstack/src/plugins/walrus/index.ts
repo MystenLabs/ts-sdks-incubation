@@ -10,10 +10,9 @@
 // per-(app, stack) network instead of the upstream amd64-only sui-tools
 // image, and uses host-fs for cross-container coordination so snapshots
 // capture it for free.
-
-import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+//
+// `node:*` modules load via top-level `await import(...)` so the static
+// surface stays browser-safe — see `runtime/hash.ts` for rationale.
 
 import { Transaction } from '@mysten/sui/transactions';
 
@@ -22,33 +21,43 @@ import { containerService } from '../../actions/container-service.js';
 import { service } from '../../actions/service.js';
 import { register } from '../../actions/register.js';
 import { seed } from '../../actions/seed.js';
-import { coinTokens } from '../../coin.js';
+import { coinTokens } from '../../registry/coin.js';
 import { probeUrl, waitForReachable } from '../../helpers/probe.js';
 import { createLocalSuiClient } from '../../helpers/sui-client.js';
-import {
-	type Action,
-	type ActionRunContext,
-	type LocalnetActionRunContext,
-	type Plugin,
-	requireLocalnetCtx,
+import type {
+	Action,
+	ActionRunContext,
+	LocalnetActionRunContext,
+	Plugin,
 } from '../../core/types.js';
 import { definePlugin } from '../../plugin.js';
 import { defineRegistryKind } from '../../registry/index.js';
 import { stackDir } from '../../runtime/active-stack.js';
+import { requireLocalnetCtx } from '../../runtime/runtime-helpers.js';
 import {
+	appNetworkName,
 	devstackContainerLabels,
-	dockerNetworkSubnet,
 	ensureNetwork,
+	hostDockerPlatform,
 	imageExists,
 	inspectContainer,
 	readContainerFile,
 	removeContainer,
 	runContainer,
 	waitForContainerExit,
-} from '../sui/docker.js';
-import { hostDockerPlatform } from '../sui/docker.js';
-import { SUI_DEFAULT_VERSION, appNetworkName } from '../sui/index.js';
+} from '../../runtime/docker/index.js';
+// Internal subnet probe for the walrus committee's fixed-IP testbed —
+// imported from the leaf network module so it stays out of the
+// `/authoring` plugin surface (no other plugin needs it).
+import { dockerNetworkSubnet } from '../../runtime/docker/network.js';
+import { SUI_DEFAULT_VERSION } from '../sui/index.js';
 import { WALRUS_VERSION, ensureWalrusImage, walrusImageTag } from './build.js';
+
+const [nodeCrypto, nodeFs, nodePath] = await Promise.all([
+	import('node:crypto'),
+	import('node:fs'),
+	import('node:path'),
+]);
 
 const DEFAULT_COMMITTEE_SIZE = 4;
 const DEFAULT_SHARDS = 100;
@@ -87,7 +96,7 @@ const nodeHostname = (idx: number): string => `dryrun-node-${idx}`;
  * and into each storage node (ro). Snapshot host capture covers it
  * automatically because it lives under `<stackDir>`. */
 const walrusDeployHostDir = (appDir: string, stack: string): string =>
-	resolve(stackDir(appDir, stack), 'walrus', 'deploy');
+	nodePath.resolve(stackDir(appDir, stack), 'walrus', 'deploy');
 
 interface WalrusNode {
 	name: string;
@@ -102,7 +111,7 @@ interface WalrusNode {
 	 * cert wouldn't add anything anyway. */
 	apiUrl: string;
 	/** Host-mapped URL for browser SDK access. The `walrus-node` container's
-	 * `9185` is published on `localhost:<nodeHostPortBase + idx>` via the
+	 * `9185` is published on `localhost:<nodePortBase + idx>` via the
 	 * walrus.proxy nginx sidecar — kept in place so the host-fronting
 	 * surface can be re-fronted with TLS termination later if needed
 	 * without touching the SDK call sites. */
@@ -122,7 +131,7 @@ interface WalrusPluginOptions {
 	 * pinned consistently (the package ships them aligned by default). */
 	version?: string;
 	/** Base host port for storage node REST APIs. Each node's `9185`
-	 * (HTTPS sliver/metadata API) is mapped to `nodeHostPortBase + nodeIdx`
+	 * (HTTPS sliver/metadata API) is mapped to `nodePortBase + nodeIdx`
 	 * — default 19185, so the four nodes land on 19185–19188.
 	 *
 	 * Browser apps can't reach the storage nodes' internal docker IPs
@@ -131,7 +140,7 @@ interface WalrusPluginOptions {
 	 * fetch override that rewrites the SDK's outbound storage-node URLs to
 	 * the host-mapped ports — that's what makes the storage protocol
 	 * reachable from a browser tab. */
-	nodeHostPortBase?: number;
+	nodePortBase?: number;
 	/** Walrus epoch duration. Default `'24h'` so blobs uploaded with the
 	 * SDK's `epochs: 1` survive a normal supervisor restart cycle (~30s
 	 * to ~5 min). The upstream walrus testbed default is `'2m'`, but
@@ -171,7 +180,7 @@ interface WalrusPluginOptions {
 	gc?: boolean;
 }
 
-const DEFAULT_NODE_HOST_PORT_BASE = 19185;
+const DEFAULT_NODE_PORT_BASE = 19185;
 const DEFAULT_EPOCH_DURATION = '24h';
 const proxyContainerName = (appName: string, stack: string): string =>
 	`${appName}-${stack}-walrus-proxy`;
@@ -200,16 +209,16 @@ export const walrus = (opts: WalrusPluginOptions = {}): Plugin<WalrusProvides> =
 	if (shards < committeeSize) {
 		throw new Error(`walrus(): shards (${shards}) must be >= committeeSize (${committeeSize})`);
 	}
-	// `nodeHostPortBase` is now a hint to the per-stack allocator; the
+	// `nodePortBase` is now a hint to the per-stack allocator; the
 	// committee-size host ports are allocated as a contiguous range,
 	// resolved at action-run time via ctx.ports.
-	const preferredNodeHostPortBase = opts.nodeHostPortBase ?? DEFAULT_NODE_HOST_PORT_BASE;
+	const preferredNodePortBase = opts.nodePortBase ?? DEFAULT_NODE_PORT_BASE;
 	const resolveNodePorts = async (ctx: {
 		ports: import('../../core/types.js').PortAllocator;
 	}): Promise<readonly number[]> => {
 		return ctx.ports.allocate({
 			slot: 'walrus.node',
-			preferred: preferredNodeHostPortBase,
+			preferred: preferredNodePortBase,
 			count: committeeSize,
 		});
 	};
@@ -241,6 +250,7 @@ export const walrus = (opts: WalrusPluginOptions = {}): Plugin<WalrusProvides> =
 					provides: { capabilities: ['walrus.app-network'] },
 					inputs: {},
 					getStatus: async (ctx) => {
+						requireLocalnetCtx(ctx, 'walrus');
 						const network = appNetworkName(ctx.appName, ctx.stack);
 						const subnet = walrusSubnet(walrusOctet(ctx.appName, ctx.stack));
 						const probe = await dockerNetworkSubnet(network);
@@ -259,6 +269,7 @@ export const walrus = (opts: WalrusPluginOptions = {}): Plugin<WalrusProvides> =
 						}
 					},
 					run: async (ctx) => {
+						requireLocalnetCtx(ctx, 'walrus');
 						const network = appNetworkName(ctx.appName, ctx.stack);
 						const subnet = walrusSubnet(walrusOctet(ctx.appName, ctx.stack));
 						const probe = await dockerNetworkSubnet(network);
@@ -310,12 +321,12 @@ export const walrus = (opts: WalrusPluginOptions = {}): Plugin<WalrusProvides> =
 					 * re-deploy without any per-action chain probe.
 					 */
 					getStatus: async (ctx) => {
-						const file = resolve(walrusDeployHostDir(ctx.appDir, ctx.stack), 'deploy');
-						if (!existsSync(file)) {
+						const file = nodePath.resolve(walrusDeployHostDir(ctx.appDir, ctx.stack), 'deploy');
+						if (!nodeFs.existsSync(file)) {
 							return { ok: false, detail: 'deploy outputs not present' };
 						}
 						try {
-							parseDeployFile(readFileSync(file, 'utf8'));
+							parseDeployFile(nodeFs.readFileSync(file, "utf8"));
 							return { ok: true, detail: 'walrus contracts deployed' };
 						} catch (err) {
 							return { ok: false, detail: `deploy file unparseable: ${(err as Error).message}` };
@@ -329,11 +340,11 @@ export const walrus = (opts: WalrusPluginOptions = {}): Plugin<WalrusProvides> =
 					 * mismatch — `containerService.run()` then wipes the node
 					 * containers' RocksDB writable layers on recreation. */
 					identity: async (ctx) => {
-						const file = resolve(walrusDeployHostDir(ctx.appDir, ctx.stack), 'deploy');
-						if (!existsSync(file)) return undefined;
+						const file = nodePath.resolve(walrusDeployHostDir(ctx.appDir, ctx.stack), 'deploy');
+						if (!nodeFs.existsSync(file)) return undefined;
 						try {
-							const ids = parseDeployFile(readFileSync(file, 'utf8'));
-							return createHash('sha256').update(JSON.stringify(ids)).digest('hex');
+							const ids = parseDeployFile(nodeFs.readFileSync(file, "utf8"));
+							return nodeCrypto.createHash("sha256").update(JSON.stringify(ids)).digest('hex');
 						} catch {
 							return undefined;
 						}
@@ -342,7 +353,7 @@ export const walrus = (opts: WalrusPluginOptions = {}): Plugin<WalrusProvides> =
 						const network = appNetworkName(ctx.appName, ctx.stack);
 						const containerName = deployContainerName(ctx.appName, ctx.stack);
 						const hostDir = walrusDeployHostDir(ctx.appDir, ctx.stack);
-						mkdirSync(hostDir, { recursive: true });
+						nodeFs.mkdirSync(hostDir, { recursive: true });
 						// If a stale container is hanging around (from a prior
 						// failed run that didn't auto-rm), remove it before
 						// re-running so the docker run name doesn't collide.
@@ -480,7 +491,7 @@ export const walrus = (opts: WalrusPluginOptions = {}): Plugin<WalrusProvides> =
 					// per-stack port range is a runtime detail and shouldn't
 					// invalidate the skip predicate when allocator picks a
 					// different base.
-					inputs: { preferredNodeHostPortBase },
+					inputs: { preferredNodePortBase },
 					containerName: (ctx) => proxyContainerName(ctx.appName, ctx.stack),
 					// Stateless nginx; config regenerated from registry on each
 					// `up`. Nothing in its writable layer worth committing.
@@ -559,7 +570,7 @@ export const walrus = (opts: WalrusPluginOptions = {}): Plugin<WalrusProvides> =
 						// state against that file — a mismatch (chain regenesis, manifest
 						// from a previous deploy, etc.) returns ok:false so `run`
 						// re-registers with the live IDs.
-						requireLocalnetCtx(ctx);
+						requireLocalnetCtx(ctx, 'walrus');
 						let deployText: string;
 						try {
 							deployText = await readContainerFile(
@@ -593,7 +604,7 @@ export const walrus = (opts: WalrusPluginOptions = {}): Plugin<WalrusProvides> =
 						return { ok: false, detail: 'walrus registry stale or empty' };
 					},
 					run: async (ctx) => {
-						requireLocalnetCtx(ctx);
+						requireLocalnetCtx(ctx, 'walrus');
 						const ports = await resolveNodePorts(ctx);
 						await registerWalrus(ctx, indexer(ports), committeeSize);
 					},
@@ -634,7 +645,7 @@ export const walrus = (opts: WalrusPluginOptions = {}): Plugin<WalrusProvides> =
 						return { ok: true, detail: `${names.length} accounts funded` };
 					},
 					run: async (ctx) => {
-						requireLocalnetCtx(ctx);
+						requireLocalnetCtx(ctx, 'walrus');
 						await seedWal(ctx);
 					},
 				}),
@@ -644,6 +655,7 @@ export const walrus = (opts: WalrusPluginOptions = {}): Plugin<WalrusProvides> =
 		},
 	});
 };
+
 
 const SEED_WAL_PAYMENT_SUI = 1_000_000_000n; // 1 SUI per account → exchange rate determines WAL out
 const SEED_WAL_THRESHOLD = 1n; // any positive balance counts as "funded"
@@ -838,9 +850,9 @@ function writeProxyConfig(opts: {
 	appName: string;
 	ports: number[];
 }): string {
-	const generatedDir = resolve(opts.appDir, '.devstack', 'stacks', opts.stack, '.generated');
-	mkdirSync(generatedDir, { recursive: true });
-	const configPath = resolve(generatedDir, 'walrus-proxy.conf');
+	const generatedDir = nodePath.resolve(opts.appDir, '.devstack', 'stacks', opts.stack, '.generated');
+	nodeFs.mkdirSync(generatedDir, { recursive: true });
+	const configPath = nodePath.resolve(generatedDir, 'walrus-proxy.conf');
 	const octet = walrusOctet(opts.appName, opts.stack);
 	const servers = opts.ports
 		.map((port, idx) => {
@@ -870,7 +882,7 @@ http {
 ${servers}
 }
 `;
-	writeFileSync(configPath, config, 'utf8');
+	nodeFs.writeFileSync(configPath, config, 'utf8');
 	return configPath;
 }
 

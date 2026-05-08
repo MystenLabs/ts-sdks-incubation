@@ -14,11 +14,14 @@
 		"localnet:up": "devstack up --once",
 		"apply": "devstack apply",
 		"codegen": "devstack codegen",
-		"deploy": "devstack apply",
+		"deploy:testnet": "devstack apply --target testnet",
+		"deploy:mainnet": "devstack apply --target mainnet",
 		"stack": "devstack stack"
 	},
 	"dependencies": {
-		"@mysten-incubation/devstack": "^1.0.0",
+		"@mysten-incubation/dev-wallet": "^0.1.0",
+		"@mysten-incubation/devstack": "^0.1.0",
+		"@mysten-incubation/devstack-wallet-panels": "^0.1.0",
 		"@mysten/dapp-kit-core": "^1.3.0",
 		"@mysten/dapp-kit-react": "^2.0.1",
 		"@mysten/sui": "^2.16.0",

@@ -237,7 +237,7 @@ describe('ensureAddressBalance — submission timeout', () => {
 		const signer = Ed25519Keypair.generate();
 		await expect(
 			ensureAddressBalance({ rpcUrl: RPC_URL, signer, timeoutMs: 50 }),
-		).rejects.toThrow(/timed out after 50ms.*devstack reset --yes/s);
+		).rejects.toThrow(/timed out after 50ms.*devstack wipe --yes/s);
 		resolveHang?.({ digest: '0xignored', effects: { status: { status: 'success' } } });
 	});
 });

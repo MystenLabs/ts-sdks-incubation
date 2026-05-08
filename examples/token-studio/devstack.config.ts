@@ -13,7 +13,7 @@ import {
 	publishMove,
 	registerCoin,
 	sui,
-	walletServer,
+	walletApp,
 } from '@mysten-incubation/devstack';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -29,7 +29,7 @@ export default defineDevstackConfig({
 		sui({ version: 'devnet-v1.71.0', rpcPort: 9059, faucetPort: 9984 }),
 		accounts(),
 		codegen(),
-		walletServer({ port: 9422 }),
+		walletApp({ port: 9422 }),
 		frontend({ port: 5173 }),
 		// App-level setup: publish the managed_coin Move package as alice
 		// (publisher = TreasuryCap holder; the UI gates the mint card on
@@ -49,6 +49,7 @@ export default defineDevstackConfig({
 		}),
 		registerCoin({
 			from: 'managedCoin',
+			package: 'managed_coin',
 			name: 'managed_coin',
 			module: 'managed_coin',
 			type: 'MANAGED_COIN',

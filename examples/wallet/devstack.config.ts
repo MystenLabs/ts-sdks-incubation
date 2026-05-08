@@ -1,6 +1,6 @@
 // Wallet app — multi-coin wallet UI + DeepBook v3 swap. DeepBook itself
 // is published + pools created + continuously made-by alice via the
-// `deepbook()` plugin; the app-level `setup:` handles the mock coin
+// `deepbook()` plugin; app-level entries in `use:` handle the mock coin
 // publishes and the supply mint.
 
 import { dirname, resolve } from 'node:path';
@@ -18,7 +18,7 @@ import {
 	registerCoin,
 	seed,
 	sui,
-	walletServer,
+	walletApp,
 } from '@mysten-incubation/devstack';
 import { createLocalSuiClient } from '@mysten-incubation/devstack/helpers';
 
@@ -29,22 +29,27 @@ const WETH_DIR = resolve(HERE, 'move/mock_weth');
 // Initial token distributions (raw units, accounting for decimals).
 // alice gets a healthy share since she's also the deepbook market-
 // maker and needs inventory to seed + replenish her grid.
-const USDC_DISTRIBUTION: ReadonlyArray<{ recipient: string; amount: bigint }> = [
+//
+// `as const satisfies …` keeps `recipient` a literal union ('alice' |
+// 'bob' | 'carol') so `ctx.registry.accounts.require(entry.recipient)`
+// stays typed against the registry's account-name set rather than
+// widening to `string`.
+const USDC_DISTRIBUTION = [
 	{ recipient: 'alice', amount: 75_000_000_000n }, // 75,000 USDC (6 dec)
 	{ recipient: 'bob', amount: 10_000_000_000n }, // 10,000 USDC
 	{ recipient: 'carol', amount: 5_000_000_000n }, // 5,000 USDC
-];
-const WETH_DISTRIBUTION: ReadonlyArray<{ recipient: string; amount: bigint }> = [
+] as const satisfies ReadonlyArray<{ recipient: 'alice' | 'bob' | 'carol'; amount: bigint }>;
+const WETH_DISTRIBUTION = [
 	{ recipient: 'alice', amount: 6_000_000_000n }, // 60 WETH (8 dec)
 	{ recipient: 'bob', amount: 500_000_000n }, // 5 WETH
 	{ recipient: 'carol', amount: 200_000_000n }, // 2 WETH
-];
+] as const satisfies ReadonlyArray<{ recipient: 'alice' | 'bob' | 'carol'; amount: bigint }>;
 
 // Pool specs flow into the deepbook() plugin's `pools:` field. The
 // `@reg/<name>` references resolve at run time via
-// `coinTokens(registry).find(name).type` — the publishMove `onPublished`
-// hooks below register `musdc` and `mweth` before deepbook.pools runs
-// (see `poolNeeds:` on the deepbook plugin).
+// `coinTokens(registry).find(name).type` — the `registerCoin(...)`
+// follow-ons below register `musdc` and `mweth` before deepbook.pools
+// runs (see `poolNeeds:` on the deepbook plugin).
 const POOL_SPECS = [
 	{
 		name: 'sui_usdc',
@@ -71,7 +76,7 @@ export default defineDevstackConfig({
 		sui({ version: 'devnet-v1.71.0', rpcPort: 9376, faucetPort: 9765 }),
 		accounts(),
 		deepbook({
-			rev: 'v7.0.0',
+			version: 'v7.0.0',
 			pools: POOL_SPECS,
 			// Pool creation depends on the mock-coin publishes below registering
 			// `musdc` / `mweth` tokens before deepbook.pools' run resolves the
@@ -101,7 +106,7 @@ export default defineDevstackConfig({
 			],
 		}),
 		codegen(),
-		walletServer({ port: 9420 }),
+		walletApp({ port: 9420 }),
 		frontend({ port: 5174 }),
 		publishMove({
 			name: 'usdc',
@@ -115,6 +120,7 @@ export default defineDevstackConfig({
 		}),
 		registerCoin({
 			from: 'usdc',
+			package: 'mock_usdc',
 			name: 'musdc',
 			module: 'mock_usdc',
 			type: 'MOCK_USDC',
@@ -132,6 +138,7 @@ export default defineDevstackConfig({
 		}),
 		registerCoin({
 			from: 'weth',
+			package: 'mock_weth',
 			name: 'mweth',
 			module: 'mock_weth',
 			type: 'MOCK_WETH',
@@ -175,12 +182,23 @@ export default defineDevstackConfig({
 				const signer = ctx.accounts.get('publisher');
 				const tx = new Transaction();
 				tx.setGasBudget(500_000_000n);
+				// Package names here are the upstream `publishMove({
+				// registryAs })` keys (`mock_usdc`, `mock_weth`), not the
+				// action names in `needs:` (`'usdc'`, `'weth'`) — so we
+				// route through `find` (loose-typed) and surface a clear
+				// error on miss instead of `require` (typed-only against
+				// the seed's `needs:` union).
 				const specs = [
 					{ package: 'mock_usdc', module: 'mock_usdc', distribution: USDC_DISTRIBUTION },
 					{ package: 'mock_weth', module: 'mock_weth', distribution: WETH_DISTRIBUTION },
 				];
 				for (const spec of specs) {
-					const pkg = ctx.registry.packages.require(spec.package);
+					const pkg = ctx.registry.packages.find(spec.package);
+					if (pkg === undefined) {
+						throw new Error(
+							`seedTokens: package '${spec.package}' not registered yet`,
+						);
+					}
 					const treasuryCapId = pkg.captured.treasuryCapId;
 					if (treasuryCapId === undefined) {
 						throw new Error(

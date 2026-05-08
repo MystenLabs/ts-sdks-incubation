@@ -83,6 +83,7 @@ export class InkRenderer implements Renderer {
 			mainView: 'status',
 			shutdown: null,
 			pluginOrder,
+			pluginDescriptions: opts.pluginDescriptions ?? new Map(),
 		});
 		this.instance = render(
 			<App

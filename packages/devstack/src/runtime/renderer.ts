@@ -35,6 +35,10 @@ export interface RendererStartOptions {
 	 * also pick this up from the registry's `sui-rpc` service later via
 	 * `setRpcUrl`. */
 	rpcUrl?: string;
+	/** Optional human-readable description per plugin name. Renderers
+	 * surface these as a sub-line under the plugin's section header
+	 * (e.g. the synthesized `<app>-setup` plugin's provenance). */
+	pluginDescriptions?: Map<string, string>;
 }
 
 export interface ShutdownSummary {

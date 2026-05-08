@@ -1,6 +1,6 @@
 {
 	"name": "@mysten-incubation/devstack-wallet-panels",
-	"version": "0.0.1",
+	"version": "0.1.0",
 	"description": "Devstack-aware Lit panels (Faucet, Packages, Network) for @mysten-incubation/dev-wallet's panel API.",
 	"keywords": ["sui", "wallet", "devstack", "developer-experience"],
 	"license": "Apache-2.0",
@@ -38,7 +38,7 @@
 	"devDependencies": {
 		"@mysten-incubation/tsconfig": "workspace:*",
 		"@types/node": "catalog:",
-		"tsdown": "0.20.0-beta.1",
+		"tsdown": "^0.21.10",
 		"typescript": "catalog:"
 	}
 }

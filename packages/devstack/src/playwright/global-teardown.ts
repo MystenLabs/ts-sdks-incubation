@@ -2,8 +2,9 @@
 // after every test file has finished. Volumes are preserved so the
 // next `pnpm dev`/`pnpm test:e2e` resumes without a full re-publish.
 //
-// Set `DEVSTACK_E2E_TEARDOWN=drop` to wipe volumes too (useful in CI
-// where each run wants a fresh chain).
+// `defineDevstackPlaywrightConfig({ teardown: 'drop' })` wipes volumes
+// too (CI mode); the helper translates the typed opt into the
+// `DEVSTACK_E2E_TEARDOWN` env var that this module reads.
 
 import { runStack } from '../cli/stack.js';
 
