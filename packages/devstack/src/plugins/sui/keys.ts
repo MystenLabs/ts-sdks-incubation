@@ -1,5 +1,5 @@
 // Sui localnet faucet helper. Per-account key management lives in
-// `helpers/keystore.ts`; the `walletServer()` plugin reads the same
+// `helpers/keystore.ts`; the `walletApp()` plugin reads the same
 // `<stackDir>/.keys/*.key` files when it signs on the frontend's
 // behalf.
 //
@@ -166,7 +166,7 @@ export async function ensureAddressBalance(
 				() =>
 					reject(
 						new Error(
-							`ensureAddressBalance: deposit tx for ${address} timed out after ${timeoutMs}ms — the chain may have a stale gas-coin retry queue. Try \`devstack reset --yes\` to wipe the stack.`,
+							`ensureAddressBalance: deposit tx for ${address} timed out after ${timeoutMs}ms — the chain may have a stale gas-coin retry queue. Try \`devstack wipe --yes\` to wipe the stack.`,
 						),
 					),
 				timeoutMs,

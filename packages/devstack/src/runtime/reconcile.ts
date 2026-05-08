@@ -34,6 +34,7 @@ import type {
 	ActionRunContext,
 	ActionStatus,
 	EmitAction,
+	LocalnetActionRunContext,
 	Network,
 	PortAllocator,
 	Registry,
@@ -41,6 +42,25 @@ import type {
 	SeedAction,
 	ShutdownHook,
 } from '../core/types.js';
+
+/**
+ * Variance bridge. Action callbacks (run/getStatus/identity/provides.registry)
+ * for Build/Service/HostProcess are typed against `LocalnetActionRunContext`;
+ * Publish/Register/Seed/Emit/Verify against `ActionRunContext`. The
+ * reconciler holds the wider `ActionRunContext`. TS unions the callbacks'
+ * parameter types contravariantly so a direct call collapses to the narrow
+ * intersection — the cast collapses it back to the wide union, and the
+ * action filters in `cli/filters.ts` guarantee the localnet-only actions
+ * never see a live-net ctx at runtime.
+ */
+type AnyCtxCallback<T> = (ctx: ActionRunContext) => Promise<T> | T;
+type ActionCallback<T> =
+	| ((ctx: LocalnetActionRunContext) => Promise<T> | T)
+	| ((ctx: ActionRunContext) => Promise<T> | T);
+
+function asWide<T>(fn: ActionCallback<T>): AnyCtxCallback<T> {
+	return fn as AnyCtxCallback<T>;
+}
 import type { InternalRegistry } from '../registry/index.js';
 import { stableHash } from './hash.js';
 import { topoSortActions } from './topo.js';
@@ -150,6 +170,13 @@ interface ReconcilerOptions {
 
 export class Reconciler {
 	private readonly state = new Map<string, ActionState>();
+	/** Monotonic count of `cycle()` invocations on this reconciler. Used
+	 * by `tryWarmPathSkip` to suppress the "getStatus threw" stderr line
+	 * on cycle 1 — most plugins' getStatus legitimately throws on cold
+	 * start because the registry has nothing to query (no live container,
+	 * no stamped objectId). The line looks like an error to first-time
+	 * users; on cycles 2+ it's a real signal worth surfacing. */
+	private cycleCount = 0;
 
 	constructor(opts: ReconcilerOptions = {}) {
 		if (opts.priorState !== undefined) {
@@ -165,6 +192,7 @@ export class Reconciler {
 	}
 
 	async cycle(actions: Action[], base: ReconcileBaseContext): Promise<ReconcileResult> {
+		this.cycleCount += 1;
 		const sorted = topoSortActions(actions, { lenient: base.lenient });
 		const statuses = new Map<string, ActionStatus>();
 		const failures = new Map<string, Error>();
@@ -272,10 +300,7 @@ export class Reconciler {
 			settled.add(action.name);
 			inflight.delete(action.name);
 			if (status !== 'failed' && action.type === 'Emit') {
-				const emit = action as EmitAction;
-				if (emit.dependsOnKind !== undefined && emit.dependsOnKind.length > 0) {
-					(base.registry as InternalRegistry).consumeDirty(emit.dependsOnKind);
-				}
+				consumeKindsFor(action as EmitAction, base.registry as InternalRegistry);
 			}
 			emitProgress();
 		};
@@ -379,14 +404,12 @@ export class Reconciler {
 				emitProgress();
 				if (status === 'ok') {
 					triggered = true;
-					// Match the topo-walk path (line ~196): consume the kinds the
-					// Emit just observed so they don't re-trigger the same Emit
-					// next cascade round. Without this, a successful cascade Emit
+					// Match the topo-walk path: consume the kinds the Emit just
+					// observed so they don't re-trigger the same Emit next
+					// cascade round. Without this, a successful cascade Emit
 					// re-fires every round until `maxCascade` swallows it — only
 					// invisible because the loop bound caps the runaway.
-					if (emit.dependsOnKind !== undefined && emit.dependsOnKind.length > 0) {
-						(base.registry as InternalRegistry).consumeDirty(emit.dependsOnKind);
-					}
+					consumeKindsFor(emit, base.registry as InternalRegistry);
 				}
 			}
 			dirty = (base.registry as InternalRegistry).flushDirty();
@@ -502,7 +525,7 @@ export class Reconciler {
 				`Verify action '${action.name}' has no getStatus — that's the only thing it does`,
 			);
 		}
-		const status = await action.getStatus(ctx);
+		const status = await asWide(action.getStatus)(ctx);
 		if (status.ok) {
 			await applyProvidesRegistry(action, ctx);
 			const identity = await captureIdentity(action, ctx, base, prior?.identity, inputHash);
@@ -536,13 +559,30 @@ export class Reconciler {
 		if (action.getStatus !== undefined && (prior === undefined || hashMatches)) {
 			let status: { ok: boolean; detail?: string };
 			try {
-				status = await action.getStatus(ctx);
+				status = await asWide(action.getStatus)(ctx);
 			} catch (err) {
 				if (base.appendLog !== undefined) {
-					base.appendLog(
-						action.name,
-						`getStatus threw — treating as not-ready: ${err instanceof Error ? err.message : String(err)}`,
-					);
+					// Cold cycle 1 with no prior state: most plugins' getStatus
+					// legitimately throws because the registry has nothing to
+					// query (no live container, no stamped objectId). Emit the
+					// noisy "getStatus threw" line on cycles 2+ only, where it
+					// genuinely signals an unexpected probe failure. On cycle
+					// 1 with no prior, we soften the message to make clear
+					// it's expected; the underlying not-ready treatment is
+					// unchanged.
+					const noisy =
+						this.cycleCount > 1 || prior !== undefined;
+					if (noisy) {
+						base.appendLog(
+							action.name,
+							`getStatus threw — treating as not-ready: ${err instanceof Error ? err.message : String(err)}`,
+						);
+					} else {
+						base.appendLog(
+							action.name,
+							'getStatus reports not yet ready (registry hydrating)',
+						);
+					}
 				}
 				status = { ok: false, detail: 'getStatus threw' };
 			}
@@ -595,7 +635,7 @@ export class Reconciler {
 			return 'ok';
 		}
 		try {
-			await action.run(ctx);
+			await asWide(action.run)(ctx);
 			await applyProvidesRegistry(action, ctx);
 			const identity = await captureIdentity(action, ctx, base, prior?.identity, inputHash);
 			this.state.set(action.name, {
@@ -658,7 +698,7 @@ async function captureIdentity(
 ): Promise<string> {
 	if (action.identity === undefined) return inputHash;
 	try {
-		const explicit = await action.identity(ctx);
+		const explicit = await asWide(action.identity)(ctx);
 		return explicit ?? inputHash;
 	} catch (err) {
 		base.appendLog?.(
@@ -672,7 +712,28 @@ async function captureIdentity(
 function emitIsDirty(emit: EmitAction, dirty: Set<string>): boolean {
 	const deps = emit.dependsOnKind;
 	if (deps === undefined || deps.length === 0) return false;
+	// `'*'` means "any dirty kind" — codegen uses this because plugin-
+	// namespaced kinds (walrus.nodes, seal.keyServer, …) aren't enumerable
+	// at action-construction time, but the typed manifest projects all of
+	// them. Without the wildcard a plugin that registers only its own
+	// namespace would never trigger codegen.
+	if (deps.includes('*')) return dirty.size > 0;
 	return deps.some((d) => dirty.has(d));
+}
+
+/** Kinds an Emit's run-completion should consume off the registry's dirty
+ * set. For a wildcard Emit, that's every currently-dirty kind — otherwise
+ * the wildcard would re-trigger the same Emit every cascade round until
+ * `maxCascade` swallows it. `flushDirty()` returns + clears, which is
+ * exactly the wildcard semantics; the per-kind path stays narrow. */
+function consumeKindsFor(emit: EmitAction, registry: InternalRegistry): void {
+	const deps = emit.dependsOnKind;
+	if (deps === undefined || deps.length === 0) return;
+	if (deps.includes('*')) {
+		registry.flushDirty();
+		return;
+	}
+	registry.consumeDirty(deps);
 }
 
 /**
@@ -760,7 +821,7 @@ function requirePorts(ports: PortAllocator | undefined): PortAllocator {
 async function applyProvidesRegistry(action: Action, ctx: ActionRunContext): Promise<void> {
 	const hook = action.provides?.registry;
 	if (hook === undefined) return;
-	await hook(ctx);
+	await asWide(hook)(ctx);
 }
 
 /** For each action, the set of action names that transitively depend on

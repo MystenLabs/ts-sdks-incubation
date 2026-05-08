@@ -7,11 +7,20 @@
 // Native arm64 build on Apple Silicon — the released binary is a
 // linux/arm64 ELF, so the resulting image runs natively under Docker
 // Desktop's vmm without Rosetta.
+//
+// `HERE` and `SEAL_DOCKERFILE` resolve via `new URL(...).pathname` —
+// browser-safe equivalent of `dirname(fileURLToPath(import.meta.url))` —
+// so this module's static surface stays clean of `node:path` /
+// `node:url` named imports for `examples/*` Vite builds (the main-
+// barrel chain reaches `seal.build` transitively).
 
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-import { dockerRun, hostDockerPlatform, imageExists, pruneImagesByLabel } from '../sui/docker.js';
+import {
+	DEVSTACK_IMAGE_NAMESPACE,
+	hostDockerPlatform,
+	imageExists,
+	pruneImagesByLabel,
+} from '../../runtime/docker/index.js';
+import { dockerRun } from '../../runtime/docker/run.js';
 
 /** Pinned seal release tag. Doubles as a git ref so BuildKit can pull
  * the matching `move/seal` Move package source via the `seal-src`
@@ -32,8 +41,8 @@ const SEAL_REPO = 'MystenLabs/seal';
  * `ts_sdk_version_requirement` field — bump in lockstep with SEAL_VERSION. */
 export const SEAL_SDK_VERSION = '0.4.18';
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-const SEAL_DOCKERFILE = resolve(HERE, 'Dockerfile');
+const HERE = new URL('.', import.meta.url).pathname;
+const SEAL_DOCKERFILE = `${HERE}Dockerfile`;
 
 /** Slug a release tag into a tag-safe component (e.g. `seal-v0.6.6` →
  * `seal-v0-6-6`). Periods aren't allowed in docker tag suffixes when
@@ -43,7 +52,7 @@ function versionSlug(version: string): string {
 }
 
 export function sealImageTag(version: string = SEAL_VERSION): string {
-	return `dev-examples/seal:${versionSlug(version)}`;
+	return `${DEVSTACK_IMAGE_NAMESPACE}/seal:${versionSlug(version)}`;
 }
 
 /** Path to the Move package inside the built seal image. `seal.publish`

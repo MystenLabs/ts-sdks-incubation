@@ -11,7 +11,7 @@ export class DevstackPackagesPanel extends LitElement {
 	override render() {
 		const manifest = getActiveManifest();
 		if (manifest === null) {
-			return html`<div class="empty">No manifest loaded — run <code>pnpm localnet:up</code>.</div>`;
+			return html`<div class="empty">No manifest loaded — run <code>devstack up</code>.</div>`;
 		}
 		const packages = manifest.registry.packages ?? [];
 		const tokens = manifest.registry.coin?.tokens ?? [];

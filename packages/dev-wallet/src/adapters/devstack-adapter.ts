@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Devstack signer adapter — exposes accounts resolved by `devstack up`'s
-// `walletServer()` plugin to dApp Kit, signing transactions over HTTP so
+// `walletApp()` plugin to dApp Kit, signing transactions over HTTP so
 // private keys never enter the frontend bundle. Mirrors RemoteCliAdapter's
 // out-of-process model; the difference is the source of accounts (devstack
 // resolved signers vs `sui keytool list`) and the endpoint paths.
@@ -53,9 +53,9 @@ function publicKeyForScheme(base64: string, scheme: SignatureScheme): PublicKey 
 }
 
 /**
- * Signer that delegates transaction signing to the devstack wallet-server
+ * Signer that delegates transaction signing to the devstack wallet-app
  * over HTTP. Mirrors {@link CliProxySigner} but talks to the
- * `walletServer()` plugin's endpoints under `/api/v1/devstack/*`.
+ * `walletApp()` plugin's endpoints under `/api/v1/devstack/*`.
  */
 export class DevstackProxySigner extends Signer {
 	#address: string;
@@ -82,7 +82,7 @@ export class DevstackProxySigner extends Signer {
 	async sign(_bytes: Uint8Array): Promise<Uint8Array<ArrayBuffer>> {
 		throw new Error(
 			'DevstackProxySigner does not support raw digest signing. ' +
-				'Use signTransaction (the wallet-server signs BCS-serialized TransactionData).',
+				'Use signTransaction (the wallet-app signs BCS-serialized TransactionData).',
 		);
 	}
 
@@ -159,11 +159,11 @@ export class DevstackProxySigner extends Signer {
 }
 
 export interface DevstackSignerAdapterOptions {
-	/** Wallet-server origin (e.g. `http://localhost:9420`). Read from
-	 * `manifest.registry.services[name='wallet-server'].url`. */
+	/** Wallet-app origin (e.g. `http://localhost:9420`). Read from
+	 * `manifest.registry.services[name='wallet-app'].url`. */
 	serverOrigin: string;
 	/** Bearer token. Read from the matching service entry's `endpointLabel`
-	 * (parse `?token=<hex>` from the URL). Omit if the wallet-server runs
+	 * (parse `?token=<hex>` from the URL). Omit if the wallet-app runs
 	 * without auth. */
 	token?: string | null;
 	/** Override the adapter's display name. Defaults to `'Devstack'`. */
@@ -174,15 +174,15 @@ export interface DevstackSignerAdapterOptions {
  * {@link SignerAdapter} that surfaces every account resolved by `devstack up`
  * (including `cliSigner`/`envSigner`/`generatedKeypair` slots) without
  * shipping their private keys into the frontend bundle. All signing happens
- * server-side via the `walletServer()` plugin.
+ * server-side via the `walletApp()` plugin.
  *
- * Construct from the active manifest's `wallet-server` service entry:
+ * Construct from the active manifest's `wallet-app` service entry:
  *
  * ```ts
  * import { manifest } from './generated/manifest.js';
  * import { DevstackSignerAdapter } from '@mysten-incubation/dev-wallet/adapters';
  *
- * const service = manifest.registry.services?.find(s => s.name === 'wallet-server');
+ * const service = manifest.registry.services?.find(s => s.name === 'wallet-app');
  * const adapter = service
  *   ? new DevstackSignerAdapter({
  *       serverOrigin: service.url,
@@ -256,7 +256,7 @@ export class DevstackSignerAdapter extends BaseSignerAdapter {
 
 /**
  * Pull the `?token=<hex>` parameter off a paired URL produced by the
- * `walletServer()` plugin. Returns `null` if the input is undefined or
+ * `walletApp()` plugin. Returns `null` if the input is undefined or
  * doesn't carry a token.
  */
 export function parseDevstackToken(pairedUrl: string | undefined): string | null {
@@ -270,14 +270,14 @@ export function parseDevstackToken(pairedUrl: string | undefined): string | null
 }
 
 /**
- * Convenience: read the `wallet-server` entry from a devstack manifest and
+ * Convenience: read the `wallet-app` entry from a devstack manifest and
  * build a configured adapter, or return `null` when the service isn't
- * present (no `walletServer()` plugin running, or stack hasn't come up yet).
+ * present (no `walletApp()` plugin running, or stack hasn't come up yet).
  */
 export function createDevstackAdapterFromManifest(manifest: {
 	registry?: { services?: ReadonlyArray<{ name: string; url: string; endpointLabel?: string }> };
 }): DevstackSignerAdapter | null {
-	const service = manifest.registry?.services?.find((s) => s.name === 'wallet-server');
+	const service = manifest.registry?.services?.find((s) => s.name === 'wallet-app');
 	if (service === undefined) return null;
 	return new DevstackSignerAdapter({
 		serverOrigin: service.url,

@@ -10,9 +10,12 @@
 // on read; only `writeActiveStack` writes it. This keeps `up` purely
 // idempotent on a fresh checkout (no stray writes) until the user picks
 // a stack via `devstack stack new` / `use`.
+//
+// `node:fs` / `node:path` load via top-level `await import(...)` so
+// the static surface stays browser-safe — see `runtime/hash.ts`'s
+// header for the same pattern's rationale.
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+const [nodeFs, nodePath] = await Promise.all([import('node:fs'), import('node:path')]);
 
 export const DEFAULT_STACK = 'main';
 
@@ -25,14 +28,38 @@ export const TEST_STACK = 'test';
  * (`'../foo'`) into `<appDir>/.devstack/stacks/<stack>/`. */
 const STACK_NAME_RE = /^[a-z0-9][a-z0-9-]{0,30}$/;
 
+/** Refuse to let users create a stack named `'test'` via `devstack stack
+ * new test`. The e2e harness (`defineDevstackPlaywrightConfig`,
+ * `defineDevstackVitestConfig({ chain: true })`) defaults to this name,
+ * applies a setup-action filter to it, and tears it down (`down` or
+ * `drop`) when the run finishes. If a user had previously created a
+ * regular dev stack called `test`, `pnpm test:e2e` would silently
+ * destroy it. The validator below enforces the reservation at the only
+ * boundary where a user-typed name reaches a stack-creating code path
+ * (CLI `stack new` / `stack use` calls `validateUserStackName`). The
+ * harness itself sidesteps this check by writing the active-stack
+ * pointer programmatically. */
+export function validateUserStackName(name: string): void {
+	if (!STACK_NAME_RE.test(name)) {
+		throw new Error(
+			`stack name '${name}' must match ${STACK_NAME_RE} — lowercase letters, digits, dashes; up to 31 chars; no leading dash`,
+		);
+	}
+	if (name === TEST_STACK) {
+		throw new Error(
+			`stack name '${TEST_STACK}' is reserved for the e2e test harness. Choose a different name (e.g. \`dev\`, \`feature-foo\`).`,
+		);
+	}
+}
+
 export function activeStackFile(appDir: string): string {
-	return join(appDir, '.devstack', 'active');
+	return nodePath.join(appDir, '.devstack', 'active');
 }
 
 export function readActiveStack(appDir: string): string {
 	const path = activeStackFile(appDir);
-	if (!existsSync(path)) return DEFAULT_STACK;
-	const raw = readFileSync(path, 'utf8').trim();
+	if (!nodeFs.existsSync(path)) return DEFAULT_STACK;
+	const raw = nodeFs.readFileSync(path, 'utf8').trim();
 	if (raw.length === 0) return DEFAULT_STACK;
 	if (!STACK_NAME_RE.test(raw)) {
 		throw new Error(
@@ -46,19 +73,19 @@ export function readActiveStack(appDir: string): string {
 
 export function writeActiveStack(appDir: string, name: string): void {
 	const path = activeStackFile(appDir);
-	mkdirSync(dirname(path), { recursive: true });
+	nodeFs.mkdirSync(nodePath.dirname(path), { recursive: true });
 	// Atomic write: stage to `.tmp` then `rename` (POSIX-atomic on the
 	// same filesystem). A concurrent reader sees either the prior pointer
 	// or the new one — never a half-written file. Matches the manifest
 	// writer's pattern.
 	const tmp = `${path}.tmp`;
-	writeFileSync(tmp, `${name}\n`, 'utf8');
-	renameSync(tmp, path);
+	nodeFs.writeFileSync(tmp, `${name}\n`, 'utf8');
+	nodeFs.renameSync(tmp, path);
 }
 
 /** Path to a stack's host-side state directory (manifest + keys live here). */
 export function stackDir(appDir: string, stack: string): string {
-	return join(appDir, '.devstack', 'stacks', stack);
+	return nodePath.join(appDir, '.devstack', 'stacks', stack);
 }
 
 /** Resolve a stack name from CLI flag → env var → pointer file → default.

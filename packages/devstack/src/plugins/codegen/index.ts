@@ -16,15 +16,17 @@
 //                         call site. Plugin namespaces stay `unknown` and
 //                         are cast in app code (`src/lib/deployment.ts`).
 //
-// `dependsOnKind: ['packages', 'accounts', 'services', 'tokens']` means the
-// reconciler re-fires this Emit whenever any core registry kind dirties.
-// Plugin namespaces aren't enumerable at action-construction time, so
-// changes scoped to plugin namespaces alone (no core kind dirty in the
-// same cycle) won't trigger a re-emit — in practice they always co-dirty
-// with `packages` because Register/Seed actions follow Publish. The
-// `getStatus` gate also drops back to `ok: false` whenever the on-disk
-// `manifest.ts` content drifts from the current registry snapshot, so
-// any registry change of consequence regenerates.
+// `dependsOnKind: ['*']` means the reconciler re-fires this Emit whenever
+// ANY registry kind dirties — core (packages/accounts/services/coin.tokens)
+// or plugin-namespaced (walrus.nodes, seal.keyServer, arena.sharedObjects,
+// deepbook.pools, …). Plugin namespaces aren't enumerable at action-
+// construction time, so a static list would miss any plugin that registers
+// only its own namespace. The wildcard makes the typed manifest's coverage
+// match its actual scope: it projects the full registry snapshot, so it
+// must re-emit on any registry change. The `getStatus` gate also drops
+// back to `ok: false` whenever the on-disk `manifest.ts` content drifts
+// from the current registry snapshot, so any registry change of consequence
+// regenerates.
 //
 // Pathless registry entries (imported packages — deepbook, seal, walrus —
 // whose source lives inside a docker image, not on the host) are silently
@@ -38,26 +40,31 @@
 // back so the SDK's `namedPackagesPlugin` resolves the placeholder to
 // live `packageId`s at transaction build time. Apps wire it via
 // `localnetDappKitConfig` and no longer need `bindPackage`.
+//
+// `node:*` modules and `@mysten/codegen` (which itself reaches into
+// `node:fs`) load via top-level `await import(...)` so the static
+// surface stays browser-safe — see `runtime/hash.ts` for rationale.
 
-import { spawn } from 'node:child_process';
-import {
-	existsSync,
-	mkdirSync,
-	readdirSync,
-	readFileSync,
-	renameSync,
-	rmSync,
-	statSync,
-	writeFileSync,
-} from 'node:fs';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
-
-import { generateFromPackageSummary } from '@mysten/codegen';
 import { emit } from '../../actions/emit.js';
 import type { ActionRunContext, Package, Plugin } from '../../core/types.js';
 import { definePlugin } from '../../plugin.js';
 import type { InternalRegistry } from '../../registry/index.js';
 import { defaultMvrName } from './mvr.js';
+
+const [nodeChildProcess, nodeFs, nodePath, mystenCodegen] = await Promise.all([
+	import('node:child_process'),
+	import('node:fs'),
+	import('node:path'),
+	// `@mysten/codegen` reaches into `node:fs/promises` + `path` from its
+	// own static surface, so a regular `await import('@mysten/codegen')`
+	// would still pull the chain into Vite's `examples/*` build graph.
+	// Hide the specifier behind a dynamic expression so Rollup's static
+	// analyzer can't trace it; tree-shake then drops the dynamic call
+	// entirely when the codegen plugin's named export goes unused.
+	import(/* @vite-ignore */ ['@mysten', 'codegen'].join('/')) as Promise<
+		typeof import('@mysten/codegen')
+	>,
+]);
 
 const DEFAULT_OUTPUT = 'src/generated/sui';
 
@@ -86,16 +93,16 @@ export const codegen = (opts: CodegenPluginOptions = {}): Plugin<'codegen.genera
 		// (gitignored), not `<stackDir>`, so the snapshot's host capture
 		// doesn't include it; bumping these regens on next `up`.
 		inputs: { output, mvrShape: mvrName('_') },
+		provides: ['codegen.generate'],
 		actions: () => [
 			emit({
 				name: 'generate',
-				// Re-fire on any registry kind that the typed `manifest.ts`
-				// projection consumes. Plugin namespaces aren't enumerable
-				// at action-construction time, so changes scoped to plugin
-				// namespaces alone (no core kind dirty in the same cycle)
-				// won't trigger a re-emit — in practice they always co-dirty
-				// with `packages` because Register/Seed actions follow Publish.
-				dependsOnKind: ['packages', 'accounts', 'services', 'coin/tokens'],
+				// Re-fire on ANY registry kind dirty — the typed manifest
+				// projects the full registry snapshot, including plugin-
+				// namespaced kinds (walrus.nodes, seal.keyServer, …) that
+				// aren't enumerable at action-construction time. The wildcard
+				// makes the cascade match the manifest's actual scope.
+				dependsOnKind: ['*'],
 				// Include a sample of the mvrName mapper so changing it busts
 				// the input hash and triggers a re-emit. Probe value is just
 				// `mvrName('_')` — distinct outputs across mappers without
@@ -112,14 +119,14 @@ export const codegen = (opts: CodegenPluginOptions = {}): Plugin<'codegen.genera
 					const manifestPath = resolvedManifestPath(outputAbs);
 					const expectedManifest = renderTypedManifest(ctx);
 					if (
-						!existsSync(manifestPath) ||
-						readFileSync(manifestPath, 'utf8') !== expectedManifest
+						!nodeFs.existsSync(manifestPath) ||
+						nodeFs.readFileSync(manifestPath, 'utf8') !== expectedManifest
 					) {
 						return { ok: false, detail: 'manifest.ts stale' };
 					}
 					const targets = codegenTargets(ctx.registry.packages.list());
 					const targetNames = new Set(targets.map((t) => t.name));
-					if (existsSync(outputAbs)) {
+					if (nodeFs.existsSync(outputAbs)) {
 						// A leftover per-package binding dir from a removed Publish
 						// action — surface as stale so `run()` cleans it up.
 						const stale = staleBindingDirs(outputAbs, targetNames);
@@ -128,19 +135,19 @@ export const codegen = (opts: CodegenPluginOptions = {}): Plugin<'codegen.genera
 						}
 					}
 					if (targets.length === 0) return { ok: true, detail: 'no codegen-able packages' };
-					if (!existsSync(outputAbs)) {
+					if (!nodeFs.existsSync(outputAbs)) {
 						return { ok: false, detail: `${output} missing` };
 					}
 					for (const pkg of targets) {
-						const subdir = join(outputAbs, pkg.name);
-						if (!existsSync(subdir)) {
+						const subdir = nodePath.join(outputAbs, pkg.name);
+						if (!nodeFs.existsSync(subdir)) {
 							return { ok: false, detail: `${pkg.name} bindings missing` };
 						}
 						// Move sources newer than the bindings → re-emit. Cheap proxy
 						// for "did the user touch the .move file since last codegen?"
 						// without re-running `sui move summary`. Use per-package subdir
 						// mtime so writes to sibling files don't invalidate the comparison.
-						const subMtime = statSync(subdir).mtimeMs;
+						const subMtime = nodeFs.statSync(subdir).mtimeMs;
 						if (newestMoveSourceMtime(pkg.path) > subMtime) {
 							return { ok: false, detail: `${pkg.name} sources newer than bindings` };
 						}
@@ -155,9 +162,9 @@ export const codegen = (opts: CodegenPluginOptions = {}): Plugin<'codegen.genera
 						// No bindings to generate; just clean stale subdirs of
 						// existing output (no atomic swap needed since there
 						// are no per-package writes to race against vite).
-						if (existsSync(outputAbs)) {
+						if (nodeFs.existsSync(outputAbs)) {
 							for (const stale of staleBindingDirs(outputAbs, new Set())) {
-								rmSync(join(outputAbs, stale), { recursive: true, force: true });
+								nodeFs.rmSync(nodePath.join(outputAbs, stale), { recursive: true, force: true });
 							}
 						}
 						return;
@@ -176,10 +183,10 @@ export const codegen = (opts: CodegenPluginOptions = {}): Plugin<'codegen.genera
 					// observable update to one filesystem event so vite
 					// always sees a consistent tree.
 					const stagingAbs = `${outputAbs}.staging-${process.pid}`;
-					if (existsSync(stagingAbs)) {
-						rmSync(stagingAbs, { recursive: true, force: true });
+					if (nodeFs.existsSync(stagingAbs)) {
+						nodeFs.rmSync(stagingAbs, { recursive: true, force: true });
 					}
-					mkdirSync(stagingAbs, { recursive: true });
+					nodeFs.mkdirSync(stagingAbs, { recursive: true });
 					try {
 						// Per-package codegen is independent — `sui move summary` runs in
 						// each package's own dir, `generateFromPackageSummary` writes to
@@ -205,22 +212,22 @@ export const codegen = (opts: CodegenPluginOptions = {}): Plugin<'codegen.genera
 						// rmSync that frees its inodes can run after the
 						// swap (off the hot path).
 						const discardAbs = `${outputAbs}.discarding-${process.pid}`;
-						if (existsSync(outputAbs)) {
-							if (existsSync(discardAbs)) {
-								rmSync(discardAbs, { recursive: true, force: true });
+						if (nodeFs.existsSync(outputAbs)) {
+							if (nodeFs.existsSync(discardAbs)) {
+								nodeFs.rmSync(discardAbs, { recursive: true, force: true });
 							}
-							renameSync(outputAbs, discardAbs);
+							nodeFs.renameSync(outputAbs, discardAbs);
 						}
-						renameSync(stagingAbs, outputAbs);
-						if (existsSync(discardAbs)) {
-							rmSync(discardAbs, { recursive: true, force: true });
+						nodeFs.renameSync(stagingAbs, outputAbs);
+						if (nodeFs.existsSync(discardAbs)) {
+							nodeFs.rmSync(discardAbs, { recursive: true, force: true });
 						}
 					} catch (err) {
 						// Generation or swap failed; leave the existing
 						// tree in place and clean up staging so the next
 						// cycle starts clean.
-						if (existsSync(stagingAbs)) {
-							rmSync(stagingAbs, { recursive: true, force: true });
+						if (nodeFs.existsSync(stagingAbs)) {
+							nodeFs.rmSync(stagingAbs, { recursive: true, force: true });
 						}
 						throw err;
 					}
@@ -257,18 +264,20 @@ export const manifest: Manifest = ${json};
 
 function writeTypedManifest(opts: { ctx: ActionRunContext; outputAbs: string }): void {
 	const file = resolvedManifestPath(opts.outputAbs);
-	mkdirSync(dirname(file), { recursive: true });
-	writeFileSync(file, renderTypedManifest(opts.ctx), 'utf8');
+	nodeFs.mkdirSync(nodePath.dirname(file), { recursive: true });
+	nodeFs.writeFileSync(file, renderTypedManifest(opts.ctx), 'utf8');
 }
 
 /** The typed manifest is colocated one level up from the Move-bindings
  * output dir — `<appDir>/src/generated/manifest.ts` for the default
  * `output: 'src/generated/sui'`. Lives outside the bindings dir on
  * purpose: bindings are gitignored (large, regenerated, package-specific);
- * the typed manifest is small, app-wide, and committed so apps typecheck
- * on a fresh clone before the first `devstack apply`. */
+ * the typed manifest is also gitignored — it embeds a per-stack dev-only
+ * bearer token used by the server-side `walletApp` plugin, so apps
+ * regenerate it locally via `devstack apply` rather than pulling a stale
+ * (or worse, leaked) copy from version control. */
 function resolvedManifestPath(outputAbs: string): string {
-	return resolve(outputAbs, '..', 'manifest.ts');
+	return nodePath.resolve(outputAbs, '..', 'manifest.ts');
 }
 
 function manifestReplacer(key: string, value: unknown): unknown {
@@ -293,7 +302,7 @@ function manifestReplacer(key: string, value: unknown): unknown {
  * candidate for deletion. */
 function staleBindingDirs(outputAbs: string, keep: ReadonlySet<string>): string[] {
 	const out: string[] = [];
-	for (const entry of readdirSync(outputAbs, { withFileTypes: true })) {
+	for (const entry of nodeFs.readdirSync(outputAbs, { withFileTypes: true })) {
 		if (!entry.isDirectory()) continue;
 		if (!keep.has(entry.name)) out.push(entry.name);
 	}
@@ -332,7 +341,7 @@ function publishPlaceholders(
 }
 
 function resolvedOutputDir(appDir: string, output: string): string {
-	return isAbsolute(output) ? output : resolve(appDir, output);
+	return nodePath.isAbsolute(output) ? output : nodePath.resolve(appDir, output);
 }
 
 async function runCodegenForPackage(opts: {
@@ -346,7 +355,7 @@ async function runCodegenForPackage(opts: {
 	outputDirOverride?: string;
 }): Promise<void> {
 	const { ctx, pkg, output, mvrName } = opts;
-	if (!existsSync(pkg.path)) {
+	if (!nodeFs.existsSync(pkg.path)) {
 		throw new Error(`codegen: package path not found for ${pkg.name}: ${pkg.path}`);
 	}
 	const absoluteOutput = opts.outputDirOverride ?? resolvedOutputDir(ctx.appDir, output);
@@ -370,7 +379,7 @@ async function runCodegenForPackage(opts: {
 	}
 
 	const placeholder = mvrName(pkg.name);
-	await generateFromPackageSummary({
+	await mystenCodegen.generateFromPackageSummary({
 		package: {
 			path: pkg.path,
 			package: placeholder,
@@ -387,8 +396,8 @@ async function runCodegenForPackage(opts: {
 		importExtension: '.ts',
 	});
 
-	const expectedSubdir = join(absoluteOutput, pkg.name);
-	if (!existsSync(expectedSubdir)) {
+	const expectedSubdir = nodePath.join(absoluteOutput, pkg.name);
+	if (!nodeFs.existsSync(expectedSubdir)) {
 		throw new Error(
 			`codegen: generateFromPackageSummary returned without writing ${expectedSubdir}. ` +
 				`Common cause: ${pkg.name}'s Move.toml is missing an [addresses] block ` +
@@ -415,7 +424,7 @@ interface ShellResult {
 
 function runShell(opts: { cmd: string; args: string[]; cwd?: string }): Promise<ShellResult> {
 	return new Promise((resolvePromise) => {
-		const child = spawn(opts.cmd, opts.args, { cwd: opts.cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+		const child = nodeChildProcess.spawn(opts.cmd, opts.args, { cwd: opts.cwd, stdio: ['ignore', 'pipe', 'pipe'] });
 		let stdout = '';
 		let stderr = '';
 		child.stdout.on('data', (chunk: Buffer) => {
@@ -443,12 +452,12 @@ function newestMoveSourceMtime(packagePath: string): number {
 		if (dir.endsWith(`${packagePath.endsWith('/') ? '' : '/'}build`)) continue;
 		let entries: import('node:fs').Dirent[];
 		try {
-			entries = readdirSync(dir, { withFileTypes: true });
+			entries = nodeFs.readdirSync(dir, { withFileTypes: true });
 		} catch {
 			continue;
 		}
 		for (const entry of entries) {
-			const full = join(dir, entry.name);
+			const full = nodePath.join(dir, entry.name);
 			if (entry.isDirectory()) {
 				if (entry.name === 'build') continue;
 				stack.push(full);
@@ -457,7 +466,7 @@ function newestMoveSourceMtime(packagePath: string): number {
 			if (!entry.isFile()) continue;
 			if (!entry.name.endsWith('.move') && entry.name !== 'Move.toml') continue;
 			try {
-				const m = statSync(full).mtimeMs;
+				const m = nodeFs.statSync(full).mtimeMs;
 				if (m > newest) newest = m;
 			} catch {
 				// ignore

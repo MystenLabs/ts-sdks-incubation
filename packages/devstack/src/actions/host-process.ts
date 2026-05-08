@@ -1,5 +1,5 @@
 // `hostProcess()` — HostProcess action factory for in-process subprocesses
-// (vite dev-server, the wallet-server HTTP listener).
+// (vite dev-server, the wallet-app HTTP listener).
 //
 // Returns a `HostProcessAction` (type: 'HostProcess'), discriminated from
 // `ServiceAction` (docker containers detached from the supervisor) so
@@ -15,19 +15,17 @@
 //     filters something to pattern-match on.
 
 // HostProcess actions are localnet-only by construction (the filters in
-// `cli/filters.ts` drop them on live-net cycles). Reflect that in the
-// type system: `run` / `getStatus` / `identity` callbacks receive
-// `LocalnetActionRunContext` directly so plugin code reads `ctx.stack`,
-// `ctx.ports`, etc. without `requireLocalnetCtx(ctx)`. The factory casts
-// to the wider `ActionRunContext`-receiving shape because
-// `HostProcessAction.run` is part of the `Action` union.
+// `cli/filters.ts` drop them on live-net cycles), so
+// `HostProcessAction.run` / `getStatus` / `identity` receive
+// `LocalnetActionRunContext` directly — `ctx.stack`, `ctx.ports`, etc.
+// read without any runtime narrowing.
 
 import type { HostProcessAction, LocalnetActionRunContext, Provides } from '../core/types.js';
 
-interface HostProcessOptions<TInputs extends Record<string, unknown>> {
+export interface HostProcessOptions<TInputs extends Record<string, unknown>> {
 	name: string;
 	needs?: string[];
-	provides?: Provides;
+	provides?: Provides<LocalnetActionRunContext>;
 	inputs: TInputs;
 	/** Account this process signs transactions as, when applicable
 	 *  (e.g. the deepbook market-maker's BalanceManager + grid txs).
@@ -48,8 +46,8 @@ export function hostProcess<TInputs extends Record<string, unknown>>(
 		provides: opts.provides,
 		inputs: opts.inputs,
 		runsAs: opts.runsAs,
-		run: opts.run as HostProcessAction<TInputs>['run'],
-		getStatus: opts.getStatus as HostProcessAction<TInputs>['getStatus'],
-		identity: opts.identity as HostProcessAction<TInputs>['identity'],
+		run: opts.run,
+		getStatus: opts.getStatus,
+		identity: opts.identity,
 	};
 }

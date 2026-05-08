@@ -1,17 +1,14 @@
 // `buildImage()` — Build action factory.
 //
-// Build actions are localnet-only by construction: the action filters
-// in `cli/filters.ts` strip them on testnet/mainnet cycles. Reflect that
-// in the type system — `run` / `getStatus` / `identity` callbacks here
-// receive `LocalnetActionRunContext` directly so plugin code reads
-// `ctx.stack`, `ctx.ports`, etc. without a `requireLocalnetCtx(ctx)`
-// runtime assert. The factory casts the closures into the wider
-// `ActionRunContext`-receiving shape that the reconciler needs because
-// `BuildAction.run` is part of the `Action` union.
+// Build actions are network-flexible: `applyFilter` keeps them on live
+// nets so live-net publish cycles can shell the host's `sui` CLI to
+// compile when no localnet container is around. Build closures receive
+// the full `ActionRunContext`; plugins that touch `ctx.stack` / `ctx.ports`
+// narrow with `if (ctx.network !== 'localnet') ...` before reaching them.
 
-import type { BuildAction, LocalnetActionRunContext, Provides } from '../core/types.js';
+import type { ActionRunContext, BuildAction, Provides } from '../core/types.js';
 
-interface BuildImageOptions<TInputs extends Record<string, unknown>> {
+export interface BuildImageOptions<TInputs extends Record<string, unknown>> {
 	name: string;
 	needs?: string[];
 	provides?: Provides;
@@ -21,9 +18,9 @@ interface BuildImageOptions<TInputs extends Record<string, unknown>> {
 	 * source trees behind an `imports({ local: { path } })`). */
 	watches?: string[];
 	inputs: TInputs;
-	run: (ctx: LocalnetActionRunContext) => Promise<void>;
-	getStatus?: (ctx: LocalnetActionRunContext) => Promise<{ ok: boolean; detail?: string }>;
-	identity?: (ctx: LocalnetActionRunContext) => Promise<string | undefined>;
+	run: (ctx: ActionRunContext) => Promise<void>;
+	getStatus?: (ctx: ActionRunContext) => Promise<{ ok: boolean; detail?: string }>;
+	identity?: (ctx: ActionRunContext) => Promise<string | undefined>;
 }
 
 export function buildImage<TInputs extends Record<string, unknown>>(
@@ -36,8 +33,8 @@ export function buildImage<TInputs extends Record<string, unknown>>(
 		provides: opts.provides,
 		watches: opts.watches,
 		inputs: opts.inputs,
-		run: opts.run as BuildAction<TInputs>['run'],
-		getStatus: opts.getStatus as BuildAction<TInputs>['getStatus'],
-		identity: opts.identity as BuildAction<TInputs>['identity'],
+		run: opts.run,
+		getStatus: opts.getStatus,
+		identity: opts.identity,
 	};
 }

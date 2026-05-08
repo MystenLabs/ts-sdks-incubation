@@ -12,7 +12,7 @@ interface SealKeyServer {
 	sealPackageId: string;
 }
 const sealKeyServers = defineManifestKind<SealKeyServer>('seal.keyServer');
-const sealKeyServer = sealKeyServers(manifest)[0];
+const sealKeyServer = sealKeyServers(manifest).list()[0];
 
 export interface SealView {
 	keyServerObjectId: string;

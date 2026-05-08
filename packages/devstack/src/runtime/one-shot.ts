@@ -17,7 +17,7 @@
 // cascade correctness — example apps publish 1–3 packages per deploy, so
 // the wall-clock impact is small.
 //
-// Hydration: prior manifest at examples/<n>/.devstack/manifests/<network>.json
+// Hydration: prior manifest at examples/<app>/.devstack/manifests/<network>.json
 // is loaded into the registry so `getStatus()` skip predicates see prior
 // on-chain state. The hydrate step does not dirty kinds; only actions
 // that re-register during the cycle trigger Emit re-runs.
@@ -31,6 +31,7 @@ import type {
 	ResolvedTarget,
 } from '../core/types.js';
 import { expandPluginActions } from '../plugin.js';
+import { requireDockerDaemon } from './docker/index.js';
 import { RegistryImpl } from '../registry/index.js';
 import { applyFilter } from '../cli/filters.js';
 import { resolveAccounts } from './accounts.js';
@@ -85,6 +86,14 @@ interface OneShotResult {
 
 export async function runOneShot(opts: OneShotOptions): Promise<OneShotResult> {
 	const stack = opts.stack ?? DEFAULT_STACK;
+	// Localnet preflight: verify the Docker daemon is reachable before
+	// any action runs. Without this, a dead daemon produces N×red rows
+	// in the per-action stderr stream (each plugin's image-existence
+	// probe fails) before the real error surfaces. Live nets don't need
+	// docker — skip the check entirely.
+	if (opts.network === 'localnet') {
+		await requireDockerDaemon();
+	}
 	const target: ResolvedTarget = {
 		network: opts.network,
 		stack,
@@ -109,7 +118,13 @@ export async function runOneShot(opts: OneShotOptions): Promise<OneShotResult> {
 	const registry = new RegistryImpl();
 	const hydrated = opts.skipHydrate
 		? false
-		: hydrateRegistry({ appDir: opts.appDir, stack, network: opts.network, registry });
+		: hydrateRegistry({
+				appName: opts.appName,
+				appDir: opts.appDir,
+				stack,
+				network: opts.network,
+				registry,
+			});
 	const priorState = opts.skipHydrate
 		? {}
 		: readReconcilerState({ appDir: opts.appDir, stack, network: opts.network });

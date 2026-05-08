@@ -33,7 +33,7 @@ export class DevstackFaucetPanel extends LitElement {
 	override render() {
 		const manifest = getActiveManifest();
 		if (manifest === null) {
-			return html`<div class="empty">No manifest loaded — run <code>pnpm localnet:up</code>.</div>`;
+			return html`<div class="empty">No manifest loaded — run <code>devstack up</code>.</div>`;
 		}
 		const recipient = this.activeAddress;
 		if (recipient === '') {

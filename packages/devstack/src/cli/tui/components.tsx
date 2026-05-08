@@ -156,6 +156,7 @@ export function StatusTable({ store }: { store: Store }): React.ReactElement {
 					state={state}
 					color={colors.get(plugin) ?? 'gray'}
 					outputs={outputs}
+					description={state.pluginDescriptions.get(plugin)}
 				/>
 			))}
 		</Box>
@@ -187,8 +188,9 @@ function PluginGroup(props: {
 	state: TuiState;
 	color: InkColor;
 	outputs: Map<string, RegistryOutput[]>;
+	description: string | undefined;
 }): React.ReactElement {
-	const { plugin, actions, state, color, outputs } = props;
+	const { plugin, actions, state, color, outputs, description } = props;
 	let healthy = 0;
 	let running = 0;
 	let failed = 0;
@@ -221,6 +223,11 @@ function PluginGroup(props: {
 					</>
 				)}
 			</Box>
+			{description !== undefined && (
+				<Box>
+					<Text dimColor>({description})</Text>
+				</Box>
+			)}
 			{actions.map((a) => (
 				<StatusRow
 					key={a.name}

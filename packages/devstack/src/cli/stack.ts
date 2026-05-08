@@ -30,28 +30,29 @@
 
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
-import type { DevstackConfig } from '../core/types.js';
+// Internal-only helpers — imported from the leaf modules (not the
+// `/authoring`-curated barrel) so they stay out of the public
+// plugin-authoring surface.
+import { removeContainer, stopContainer } from '../runtime/docker/containers.js';
 import {
 	buildCacheSize,
-	dockerRun,
 	listImagesByLabel,
 	pruneBuildCache,
 	pruneDanglingDevstackImages,
-	removeContainer,
 	removeImage,
-	removeNetwork,
-	stopContainer,
-} from '../plugins/sui/docker.js';
+} from '../runtime/docker/images.js';
+import { removeNetwork } from '../runtime/docker/network.js';
+import { dockerRun } from '../runtime/docker/run.js';
 import {
 	DEFAULT_STACK,
 	readActiveStack,
 	stackDir,
+	validateUserStackName,
 	writeActiveStack,
 } from '../runtime/active-stack.js';
 import { inspectSupervisorLock } from '../runtime/supervisor-lock.js';
-import { runIfMain } from './args.js';
+import { expandEqualsForms, loadConfig, runIfMain } from './args.js';
 
 interface StackFlags {
 	configPath: string;
@@ -59,7 +60,7 @@ interface StackFlags {
 	stackName?: string;
 	yes: boolean;
 	/** When true, `drop` ignores the "refuses to drop the active stack"
-	 * guard. Used by the top-level `devstack reset` shortcut, where the
+	 * guard. Used by the top-level `devstack wipe` shortcut, where the
 	 * intent is "wipe state for the active stack and start over". */
 	force?: boolean;
 	/** When true, `drop` lists the containers + host dir it would
@@ -98,7 +99,7 @@ export async function runStack(flags: StackFlags): Promise<number> {
 			return dropStack({
 				appName: config.app,
 				appDir,
-				// `devstack reset --yes` rewrites to `stack drop --force --yes` with
+				// `devstack wipe --yes` rewrites to `stack drop --force --yes` with
 				// no positional. Fall back to the active stack when --force is set
 				// so the top-level USAGE ("Wipe the active stack") matches behavior.
 				name: flags.stackName ?? (flags.force ? readActiveStack(appDir) : requireName(flags)),
@@ -127,7 +128,7 @@ async function listStacks(ctx: AppCtx): Promise<number> {
 	const stacks = listStackDirs(ctx.appDir);
 	if (stacks.length === 0) {
 		process.stdout.write(
-			`no stacks yet — run \`pnpm localnet:up\` to create the default stack '${DEFAULT_STACK}'\n`,
+			`no stacks yet — run \`devstack up\` to create the default stack '${DEFAULT_STACK}'\n`,
 		);
 		return 0;
 	}
@@ -179,7 +180,15 @@ async function runningContainersByStack(appName: string): Promise<Map<string, st
 }
 
 async function newStack(opts: { appDir: string; name: string }): Promise<number> {
-	validateStackName(opts.name);
+	// `validateUserStackName` enforces the charset AND refuses the
+	// reserved `'test'` name (used by the e2e test harness; a regular
+	// stack with that name would be silently torn down by `pnpm test:e2e`).
+	try {
+		validateUserStackName(opts.name);
+	} catch (err) {
+		process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+		return 1;
+	}
 	const dir = stackDir(opts.appDir, opts.name);
 	if (existsSync(dir)) {
 		process.stderr.write(`stack '${opts.name}' already exists at ${dir}\n`);
@@ -219,7 +228,7 @@ async function useStack(opts: { appName: string; appDir: string; name: string })
 	await stopStackContainers({ appName: opts.appName, stack: current });
 	writeActiveStack(opts.appDir, opts.name);
 	process.stdout.write(`switched ${current} → ${opts.name}\n`);
-	process.stdout.write('  bring up with: pnpm localnet:up\n');
+	process.stdout.write('  bring up with: devstack up\n');
 	return 0;
 }
 
@@ -305,6 +314,19 @@ async function dropStack(opts: {
 		);
 		return 1;
 	}
+	// Refuse drop while a supervisor is mid-cycle on this stack — it would
+	// otherwise log `docker stop` failures as we yank containers out from
+	// under it, and orphan its lockfile. `--force` covers the active-stack
+	// guard, NOT the running-supervisor guard; bypassing the latter has no
+	// safe path. Mirrors `useStack`.
+	const lockState = inspectSupervisorLock({ appDir: opts.appDir, stack: opts.name });
+	if (lockState !== null && lockState.alive) {
+		process.stderr.write(
+			`refusing to drop stack '${opts.name}' — a supervisor is running ` +
+				`(PID ${lockState.pid}). Stop it (Ctrl-C, or kill ${lockState.pid}) before dropping.\n`,
+		);
+		return 1;
+	}
 	await removeStackContainers({ appName: opts.appName, stack: opts.name });
 	await removeNetwork(`${opts.appName}-${opts.name}-net`).catch(() => undefined);
 	if (dirExists) rmSync(dir, { recursive: true, force: true });
@@ -368,7 +390,7 @@ async function stackContainerNames(appName: string, stack: string): Promise<stri
 }
 
 /** Stop containers without removing them. Preserves docker-internal state
- * (chain data, etc.) so a subsequent `localnet:up` resumes via `docker start`
+ * (chain data, etc.) so a subsequent `devstack up` resumes via `docker start`
  * without firing the sui plugin's `--force-regenesis`. Use when switching
  * stacks or for `down`. */
 async function stopStackContainers(opts: { appName: string; stack: string }): Promise<void> {
@@ -395,18 +417,6 @@ function validateStackName(name: string): void {
 			`stack name '${name}' must match ${STACK_NAME_RE} — lowercase letters, digits, dashes; up to 31 chars; no leading dash`,
 		);
 	}
-}
-
-async function loadConfig(abs: string): Promise<DevstackConfig> {
-	const mod = (await import(pathToFileURL(abs).href)) as Record<string, unknown>;
-	const cfg = (mod.default ?? mod.config) as DevstackConfig | undefined;
-	if (cfg === undefined || typeof cfg !== 'object') {
-		throw new Error(`config at ${abs} did not export a default DevstackConfig`);
-	}
-	if (typeof cfg.app !== 'string') {
-		throw new Error(`config at ${abs} is missing required field { app }`);
-	}
-	return cfg;
 }
 
 export async function main(argv: string[]): Promise<number> {
@@ -449,6 +459,10 @@ Options:
 `;
 
 function parseArgs(argv: string[]): StackFlags {
+	// Defensive: the dispatcher in `cli/index.ts` already runs argv through
+	// `expandEqualsForms`, but `runIfMain` lets stack.ts be invoked directly
+	// (`tsx ... cli/stack.ts --stack=foo`), so split `=`-forms here too.
+	argv = expandEqualsForms(argv);
 	const flags: StackFlags = {
 		configPath: './devstack.config.ts',
 		subcommand: 'list',
@@ -461,6 +475,15 @@ function parseArgs(argv: string[]): StackFlags {
 		if (arg === '--config') {
 			const next = argv[++i];
 			if (next !== undefined) flags.configPath = next;
+		} else if (arg === '--stack') {
+			// Explicit branch — without it, `--stack X` worked only by
+			// accident: the loop fell through `--stack` (no branch matched)
+			// and `X` got picked up as positional 1. That broke whenever a
+			// real positional preceded the flag (e.g.
+			// `stack drop main --stack X` would silently ignore `X`) or
+			// when `--stack` was the only positional-shaped pair.
+			const next = argv[++i];
+			if (next !== undefined) flags.stackName = next;
 		} else if (arg === '--yes' || arg === '-y') {
 			flags.yes = true;
 		} else if (arg === '--force') {

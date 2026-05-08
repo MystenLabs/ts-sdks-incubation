@@ -7,18 +7,17 @@
 //   - No supervisor wrapper; no key handlers, no file watcher, no shutdown
 //     hooks. One walk, exit.
 //   - Localnet `apply` reuses the same `runOneShot` engine the live-net
-//     `deploy` path uses, so the cycle semantics (skip predicates, dirty
-//     cascade) are identical across networks.
-//
-// Differs from `devstack deploy`:
-//   - `apply` runs Service+Build on localnet so it can stand up containers
-//     from cold; `deploy` is a live-net slice (skip Service; keep Build).
-//   - `apply` accepts a localnet stack via `--target <stack>` or
-//     `<network>:<stack>` (per `resolveTarget`).
+//     path uses, so the cycle semantics (skip predicates, dirty cascade)
+//     are identical across networks.
 
 import { dirname, resolve } from 'node:path';
 
 import { runOneShot } from '../runtime/one-shot.js';
+import {
+	type SupervisorLockHandle,
+	SupervisorLockBusyError,
+	acquireSupervisorLock,
+} from '../runtime/supervisor-lock.js';
 import { loadConfig, parseConfigArg, parseTargetArg, runIfMain } from './args.js';
 import { applyFilter } from './filters.js';
 import { resolveTarget } from './target.js';
@@ -43,19 +42,66 @@ export async function runApply(flags: ApplyFlags): Promise<number> {
 	const abs = resolve(flags.configPath);
 	const config = await loadConfig(abs);
 	const appDir = dirname(abs);
-	const target = resolveTarget({ config, appDir, raw: flags.target });
 
-	const result = await runOneShot({
-		appName: config.app,
-		appDir,
-		network: target.network,
-		stack: target.stack,
-		rpcUrl: target.rpcUrl,
-		plugins: config.plugins,
-		accounts: config.accounts,
-		actionFilter: applyFilter,
-		actionScope: flags.actions,
-	});
+	// `resolveTarget` itself can throw `MissingNetworkProfileError` for an
+	// undeclared live-net target — surface that with the clean shape too.
+	let target: ReturnType<typeof resolveTarget>;
+	try {
+		target = resolveTarget({ config, appDir, raw: flags.target });
+	} catch (err) {
+		if (err instanceof Error && isCleanStartupError(err.name)) {
+			process.stderr.write(`devstack apply: ${err.message}\n`);
+			return 1;
+		}
+		throw err;
+	}
+
+	// Localnet `apply` races with a running `devstack up` supervisor on
+	// manifest writes / container names / port-allocator state. Acquire
+	// the per-stack supervisor lock for the duration of the cycle (mirror
+	// of `cli/snapshot.ts`'s save path). Live-net targets don't have a
+	// supervisor — skip the lock there.
+	let lock: SupervisorLockHandle | undefined;
+	let result: Awaited<ReturnType<typeof runOneShot>>;
+	try {
+		if (target.network === 'localnet') {
+			lock = await acquireSupervisorLock({ appDir, stack: target.stack });
+		}
+
+		result = await runOneShot({
+			appName: config.app,
+			appDir,
+			network: target.network,
+			stack: target.stack,
+			rpcUrl: target.rpcUrl,
+			plugins: config.plugins,
+			accounts: config.accounts,
+			actionFilter: applyFilter,
+			actionScope: flags.actions,
+		});
+	} catch (err) {
+		// `ManifestAppMismatchError`, `DockerDaemonError`,
+		// `SupervisorLockBusyError`, and `MissingNetworkProfileError` get a
+		// clean stderr message — the user can act on each immediately
+		// without parsing a stack trace. Name-based check (not instanceof)
+		// because downstream consumers may bundle the runtime separately
+		// from the CLI; class identity would diverge across bundles.
+		if (err instanceof Error && err.name === 'SupervisorLockBusyError') {
+			const pid = (err as SupervisorLockBusyError).holderPid;
+			process.stderr.write(
+				`devstack apply: another devstack process is running on this stack (PID ${pid}). ` +
+					`Stop it (Ctrl-C in its terminal, or kill ${pid}) before running \`devstack apply\`.\n`,
+			);
+			return 1;
+		}
+		if (err instanceof Error && isCleanStartupError(err.name)) {
+			process.stderr.write(`devstack apply: ${err.message}\n`);
+			return 1;
+		}
+		throw err;
+	} finally {
+		lock?.release();
+	}
 
 	if (flags.json === true) {
 		const summary = {
@@ -80,6 +126,13 @@ export async function runApply(flags: ApplyFlags): Promise<number> {
 				? `${target.network} stack=${target.stack}`
 				: `${target.network} (${target.rpcUrl})`;
 		process.stdout.write(`devstack apply → ${label}\n`);
+		for (const plugin of config.plugins) {
+			if (plugin.name.endsWith('-setup') && plugin.description?.startsWith('auto-synthesized')) {
+				process.stdout.write(
+					`  ${plugin.description.replace('auto-synthesized', `synthesized '${plugin.name}'`)}\n`,
+				);
+			}
+		}
 		if (result.hydrated) process.stdout.write('  hydrated registry from prior manifest\n');
 		for (const [name, status] of result.statuses) {
 			const failure = result.failures.get(name);
@@ -136,6 +189,17 @@ function parseArgs(argv: string[]): ApplyFlags {
 		actions: parseActionsArg(argv),
 		json: argv.includes('--json'),
 	};
+}
+
+const CLEAN_STARTUP_ERROR_NAMES = new Set([
+	'ManifestAppMismatchError',
+	'DockerDaemonError',
+	'SupervisorLockBusyError',
+	'MissingNetworkProfileError',
+]);
+
+function isCleanStartupError(name: string): boolean {
+	return CLEAN_STARTUP_ERROR_NAMES.has(name);
 }
 
 function parseActionsArg(argv: string[]): string[] | undefined {

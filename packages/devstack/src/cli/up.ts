@@ -8,13 +8,13 @@
 // `--target` resolution: localnet-only. A bare value names a stack
 // (`--target scratch` → localnet/scratch); `localnet:<stack>` is the
 // long form. Live-net targets (`--target testnet`) error with a pointer
-// at `apply` / `deploy` since the supervisor is localnet-only by
+// at `apply --target` since the supervisor is localnet-only by
 // construction (see Supervisor's constructor guard).
 //
 // `--once` runs one reconcile cycle and exits with shutdown hooks fired —
 // the same shape Playwright's globalSetup uses. Equivalent to
 // `devstack apply` plus the supervisor's HostProcess actions and
-// shutdown discipline. Useful for `pnpm localnet:up` style scripts that
+// shutdown discipline. Useful for `devstack up` style scripts that
 // want to bring the chain to known state and return.
 
 import { dirname, resolve } from 'node:path';
@@ -23,6 +23,7 @@ import { resolveStack } from '../runtime/active-stack.js';
 import type { Renderer } from '../runtime/renderer.js';
 import { PlainRenderer } from '../runtime/renderers/plain.js';
 import { Supervisor } from '../runtime/supervisor.js';
+import { SupervisorLockBusyError } from '../runtime/supervisor-lock.js';
 import {
 	loadConfig,
 	parseConfigArg,
@@ -56,18 +57,31 @@ async function runUp(flags: UpFlags): Promise<number> {
 	let stack: string;
 	let network: Network = flags.network;
 	if (flags.target !== undefined) {
-		const resolved = resolveTarget({
-			config,
-			appDir,
-			raw: flags.target,
-			fallbackStack: flags.stack,
-		});
+		// `resolveTarget` may throw `MissingNetworkProfileError` for an
+		// undeclared live-net `--target` — that's caught downstream by the
+		// clean-startup-error path so the user sees the actionable
+		// remediation, not a stack trace. Note `up` is localnet-only, so a
+		// live-net target also surfaces an explicit reroute message below.
+		let resolved: ReturnType<typeof resolveTarget>;
+		try {
+			resolved = resolveTarget({
+				config,
+				appDir,
+				raw: flags.target,
+				fallbackStack: flags.stack,
+			});
+		} catch (err) {
+			if (err instanceof Error && isCleanStartupError(err.name)) {
+				process.stderr.write(`devstack up: ${err.message}\n`);
+				return 1;
+			}
+			throw err;
+		}
 		if (resolved.network !== 'localnet') {
 			throw new Error(
 				`devstack up: --target '${flags.target}' resolves to ${resolved.network}; ` +
 					`the supervisor is localnet-only. ` +
-					`Use \`devstack apply --target ${flags.target}\` or ` +
-					`\`devstack deploy --network ${resolved.network}\` instead.`,
+					`Use \`devstack apply --target ${flags.target}\` instead.`,
 			);
 		}
 		stack = resolved.stack;
@@ -87,6 +101,13 @@ async function runUp(flags: UpFlags): Promise<number> {
 		rpcUrl: config.networks?.[network],
 		renderer,
 	});
+	for (const plugin of config.plugins) {
+		if (plugin.name.endsWith('-setup') && plugin.description?.startsWith('auto-synthesized')) {
+			process.stdout.write(
+				`  ${plugin.description.replace('auto-synthesized', `synthesized '${plugin.name}'`)}\n`,
+			);
+		}
+	}
 	try {
 		if (flags.once) {
 			await supervisor.runOnce();
@@ -94,16 +115,39 @@ async function runUp(flags: UpFlags): Promise<number> {
 			await supervisor.start();
 		}
 	} catch (err) {
-		// `SupervisorLockBusyError` (and any other startup error) gets a
-		// clean stderr message instead of the default Node stack trace —
-		// the user can act on it immediately.
+		// `SupervisorLockBusyError`, `ManifestAppMismatchError`, and
+		// `DockerDaemonError` get a clean stderr message instead of the
+		// default Node stack trace — the user can act on each immediately.
+		// Name-based check: the supervisor is bundled separately from the
+		// CLI in some downstream consumers, so `instanceof` against the
+		// exported class would silently fail on a duplicate-class identity
+		// across bundles.
 		if (err instanceof Error && err.name === 'SupervisorLockBusyError') {
+			const pid = (err as SupervisorLockBusyError).holderPid;
+			process.stderr.write(
+				`devstack up: another devstack process is running on this stack (PID ${pid}). ` +
+					`Stop it (Ctrl-C in its terminal, or kill ${pid}) before running \`devstack up\`.\n`,
+			);
+			return 1;
+		}
+		if (err instanceof Error && isCleanStartupError(err.name)) {
 			process.stderr.write(`devstack up: ${err.message}\n`);
 			return 1;
 		}
 		throw err;
 	}
 	return 0;
+}
+
+const CLEAN_STARTUP_ERROR_NAMES = new Set([
+	'SupervisorLockBusyError',
+	'ManifestAppMismatchError',
+	'DockerDaemonError',
+	'MissingNetworkProfileError',
+]);
+
+function isCleanStartupError(name: string): boolean {
+	return CLEAN_STARTUP_ERROR_NAMES.has(name);
 }
 
 export async function main(argv: string[]): Promise<number> {
@@ -117,9 +161,8 @@ export async function main(argv: string[]): Promise<number> {
 const USAGE = `devstack up [config] [options]
 
 Long-running supervisor: brings the localnet stack up and watches Move
-sources for changes. Localnet only — use \`devstack deploy --network
-testnet\` for live-network deploys, or \`devstack apply --target ...\`
-for a single-cycle reconcile.
+sources for changes. Localnet only — for a live-network apply, run
+\`devstack apply --target testnet|mainnet\`.
 
 Runs every action type: Build, Service, HostProcess, Publish, Register,
 Seed, Emit, Verify.
@@ -130,8 +173,8 @@ Options:
   --config <path>             Override the config path
   --once                      Reconcile once and exit (fires shutdown
                               hooks on the way out). Equivalent to the
-                              cycle Playwright globalSetup uses; \`pnpm
-                              localnet:up\` scripts wrap this.
+                              cycle Playwright globalSetup uses; \`devstack
+                              up\` scripts wrap this.
   --no-tui                    Force the line-oriented plain renderer
                               even on a TTY. Also activated by setting
                               \`DEVSTACK_NO_TUI\` or \`CI\` to a truthy

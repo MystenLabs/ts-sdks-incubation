@@ -26,9 +26,12 @@
 // Plugin authors who need a custom shape (the imports plugin's
 // curated-address path on live nets, seal's `prepareSource` flow) use
 // `prepareSource` to swap the source-materialization step.
+//
+// `node:fs` / `node:path` load via top-level `await import(...)` so
+// the static surface stays browser-safe for `examples/*` Vite builds
+// reaching this module via the main barrel's `publishMove` re-export
+// (see `helpers/move-package.ts` for the same pattern's rationale).
 
-import { existsSync } from 'node:fs';
-import { isAbsolute, resolve as resolvePath } from 'node:path';
 import type { ActionRunContext, Provides, PublishAction } from '../core/types.js';
 import {
 	buildPriorCacheEntry,
@@ -37,6 +40,8 @@ import {
 } from '../helpers/move-package.js';
 import { openSuiRpcClient } from '../helpers/sui-client.js';
 import { suiContainerName } from '../plugins/sui/index.js';
+
+const [nodeFs, nodePath] = await Promise.all([import('node:fs'), import('node:path')]);
 
 export interface PublishInputs extends Record<string, unknown> {
 	path: string;
@@ -52,7 +57,7 @@ export interface PublishInputs extends Record<string, unknown> {
 	sourceDigest?: string;
 }
 
-interface PublishOptions {
+export interface PublishOptions<TPublisher extends string = 'publisher'> {
 	name: string;
 	needs?: string[];
 	provides?: Provides;
@@ -81,8 +86,14 @@ interface PublishOptions {
 	 * silent-failure mode of `publish()`.
 	 */
 	capture?: Record<string, string>;
-	/** Account name to sign the publish tx. Defaults to `'publisher'`. */
-	publisher?: string;
+	/** Account name to sign the publish tx. Defaults to `'publisher'`.
+	 *
+	 * The literal flows into a phantom `__signsAs` marker on the returned
+	 * action that `defineDevstackConfig` reads to validate against the
+	 * declared `accounts:` union — a typo (`publisher: 'alic'` against
+	 * `accounts: ['alice']`) surfaces at the `defineDevstackConfig` call
+	 * site rather than at runtime. */
+	publisher?: TPublisher;
 	/** Registry entry name. Defaults to `opts.name` (the bare action name
 	 * the plugin author wrote, before auto-prefixing). Use this when the
 	 * package's logical name differs from the action's. */
@@ -107,7 +118,18 @@ interface PublishOptions {
 	identity?: (ctx: ActionRunContext) => Promise<string | undefined>;
 }
 
-export function publish(opts: PublishOptions): PublishAction<PublishInputs> {
+/**
+ * Phantom marker on the returned action carrying the `publisher` literal.
+ * `defineDevstackConfig` extracts the union of these from `use:[]` and
+ * validates against the declared `accounts:` so a typo (`publisher: 'alic'`
+ * against `accounts: ['alice']`) surfaces at the `defineDevstackConfig`
+ * call site rather than at runtime. Carries no runtime cost.
+ */
+type SignsAs<TPublisher extends string, T> = T & { readonly __signsAs?: TPublisher };
+
+export function publish<const TPublisher extends string = 'publisher'>(
+	opts: PublishOptions<TPublisher>,
+): SignsAs<TPublisher, PublishAction<PublishInputs>> {
 	const registryName = opts.registryAs ?? opts.name;
 	const publisherAccount = opts.publisher ?? 'publisher';
 	const inputs: PublishInputs = {
@@ -169,7 +191,7 @@ export function publish(opts: PublishOptions): PublishAction<PublishInputs> {
 				// codegen — leave registerPath undefined so codegen skips
 				// the package, matching the seal/imports-style precedent.
 			} else {
-				sourceDir = isAbsolute(opts.path) ? opts.path : resolvePath(ctx.appDir, opts.path);
+				sourceDir = nodePath.isAbsolute(opts.path) ? opts.path : nodePath.resolve(ctx.appDir, opts.path);
 				registerPath = sourceDir;
 			}
 			try {
@@ -189,6 +211,7 @@ export function publish(opts: PublishOptions): PublishAction<PublishInputs> {
 					chainId,
 					prior,
 					buildEnv: isLocalnet ? 'container' : 'host',
+					appendLog: ctx.appendLog,
 				});
 				ctx.registry.packages.register({
 					name: registryName,
@@ -203,7 +226,7 @@ export function publish(opts: PublishOptions): PublishAction<PublishInputs> {
 				if (cleanup !== undefined) await cleanup();
 			}
 		},
-	};
+	} as SignsAs<TPublisher, PublishAction<PublishInputs>>;
 }
 
 /** Compute a Move source digest if the path is absolute and exists.
@@ -211,8 +234,8 @@ export function publish(opts: PublishOptions): PublishAction<PublishInputs> {
  * for paths the action expansion can't resolve to a real on-host dir. */
 function digestAtExpansion(sourcePath: string, prepareSource: boolean): string | undefined {
 	if (prepareSource) return undefined;
-	if (!isAbsolute(sourcePath)) return undefined;
-	if (!existsSync(sourcePath)) return undefined;
+	if (!nodePath.isAbsolute(sourcePath)) return undefined;
+	if (!nodeFs.existsSync(sourcePath)) return undefined;
 	try {
 		return computeSourceDigest(sourcePath);
 	} catch {

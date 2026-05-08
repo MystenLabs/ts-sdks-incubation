@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { coinTokens } from '../coin.js';
+import { coinTokens } from './coin.js';
 import type { Account, Package, Service, Token } from '../core/types.js';
 import { RegistryImpl } from './index.js';
 
@@ -89,10 +89,10 @@ describe('RegistryImpl — coin namespace (tokens were demoted from core)', () =
 		expect(coinTokens(reg).require('sui')).toBe(sui);
 	});
 
-	it('the dirty key is `coin/tokens`, not `tokens`', () => {
+	it('the dirty key is `coin.tokens`, not `tokens`', () => {
 		const reg = new RegistryImpl();
 		coinTokens(reg).register(token('sui'));
-		expect(reg.isDirty('coin/tokens')).toBe(true);
+		expect(reg.isDirty('coin.tokens')).toBe(true);
 		expect(reg.isDirty('tokens')).toBe(false);
 	});
 });
@@ -107,6 +107,32 @@ describe('RegistryImpl — namespaced kinds', () => {
 		expect(walrusNodes.find('a')).toBe(node);
 	});
 
+	it('rejects a register with a different field-set than the first register on the same kind', () => {
+		// Two plugins reusing the same kind name with structurally
+		// different `T` shapes is a real risk in a multi-author plugin
+		// ecosystem. Catch it loudly at the second register so the second
+		// plugin's author sees a clear "did you mean a different kind name?"
+		// rather than mysterious "field X missing" downstream.
+		const reg = new RegistryImpl();
+		const kind = reg.getOrCreateKind<{ name: string; foo: string }>('plugin-a', 'thing');
+		kind.register({ name: 'a', foo: 'x' });
+		const sameKindOtherShape = reg.getOrCreateKind<{ name: string; bar: string }>(
+			'plugin-a',
+			'thing',
+		);
+		expect(() => sameKindOtherShape.register({ name: 'b', bar: 'y' })).toThrow(
+			/kind 'plugin-a\.thing' was first registered with fields \{foo,name\} but this register has \{bar,name\}/,
+		);
+	});
+
+	it('accepts repeated registers with matching field-sets (e.g. updating an entry)', () => {
+		const reg = new RegistryImpl();
+		const kind = reg.getOrCreateKind<{ name: string; foo: string }>('plugin-a', 'thing');
+		kind.register({ name: 'a', foo: 'x' });
+		expect(() => kind.register({ name: 'a', foo: 'y' })).not.toThrow();
+		expect(kind.find('a')?.foo).toBe('y');
+	});
+
 	it('getOrCreateKind returns the same query across calls', () => {
 		const reg = new RegistryImpl();
 		const a = reg.getOrCreateKind<{ name: string }>('walrus', 'nodes');
@@ -117,11 +143,11 @@ describe('RegistryImpl — namespaced kinds', () => {
 		expect(b.list()).toEqual([{ name: 'one' }]);
 	});
 
-	it('namespaced kind dirty keys are formatted as <ns>/<kind>', () => {
+	it('namespaced kind dirty keys are formatted as <ns>.<kind>', () => {
 		const reg = new RegistryImpl();
 		const walrusNodes = reg.getOrCreateKind<{ name: string }>('walrus', 'nodes');
 		walrusNodes.register({ name: 'a' });
-		expect(reg.isDirty('walrus/nodes')).toBe(true);
+		expect(reg.isDirty('walrus.nodes')).toBe(true);
 		expect(reg.isDirty('nodes')).toBe(false);
 	});
 });
@@ -162,7 +188,7 @@ describe('RegistryImpl — dirty tracking', () => {
 	it('consumeDirty on a never-dirtied kind is a no-op', () => {
 		const reg = new RegistryImpl();
 		reg.packages.register(pkg('p1'));
-		reg.consumeDirty(['services', 'walrus/nodes']);
+		reg.consumeDirty(['services', 'walrus.nodes']);
 		expect(reg.isDirty('packages')).toBe(true);
 	});
 
@@ -171,7 +197,7 @@ describe('RegistryImpl — dirty tracking', () => {
 		const walrusNodes = reg.getOrCreateKind<{ name: string }>('walrus', 'nodes');
 		walrusNodes.register({ name: 'a' });
 		const flushed = reg.flushDirty();
-		expect(flushed).toEqual(new Set(['walrus/nodes']));
+		expect(flushed).toEqual(new Set(['walrus.nodes']));
 	});
 
 	it('unregister removes the entry and dirties the kind', () => {
@@ -208,7 +234,7 @@ describe('RegistryImpl — dirty tracking', () => {
 		// just flushed.
 		expect(reg.flushDirty().size).toBe(0);
 		// And the prior dirty set was as we expected. `tokens` no longer a
-		// core kind, so its registration appears as `coin/tokens`.
-		expect(dirtyBefore).toEqual(new Set(['coin/tokens', 'packages', 'walrus/nodes']));
+		// core kind, so its registration appears as `coin.tokens`.
+		expect(dirtyBefore).toEqual(new Set(['coin.tokens', 'packages', 'walrus.nodes']));
 	});
 });

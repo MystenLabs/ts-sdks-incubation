@@ -18,8 +18,51 @@
 // `generatedKeypair` is the implicit fallback factory for accounts on
 // localnet — it loads-or-creates a per-stack Ed25519 key on disk so
 // addresses stay stable across `devstack up` cycles within a stack and
-// the `walletServer()` plugin signs with the same identities the
-// dev-wallet's `DevstackSignerAdapter` exposes to the frontend.
+// the `walletApp()` plugin signs with the same identities the
+// dev-wallet's `DevstackSignerAdapter` exposes to the frontend. Exported
+// so apps can be explicit:
+//   accounts: { alice: { localnet: generatedKeypair() } }
+//
+// ── Custom factory pattern ─────────────────────────────────────────────
+//
+// For live-net deploys with hardware wallets (Ledger), cloud KMS (AWS
+// KMS / GCP KMS), or a corporate vault, write your own factory. The
+// contract is the `AccountFactory` type from `@mysten-incubation/devstack`:
+//
+//   type AccountFactory = (ctx: AccountFactoryContext) => Promise<Signer> | Signer;
+//
+// Where `AccountFactoryContext` carries `{ accountName, appDir, stack,
+// network, rpcUrl }` so factories can scope per-network or per-stack.
+//
+// Example — Ledger pattern (illustrative; bring your own Ledger lib):
+//
+//   import type { AccountFactory } from '@mysten-incubation/devstack';
+//   import { LedgerTransport, LedgerSigner } from 'your-ledger-lib';
+//
+//   export function ledgerSigner(opts: {
+//     derivationPath: string;
+//   }): AccountFactory {
+//     return async ({ accountName, network }) => {
+//       if (network === 'localnet') {
+//         throw new Error(
+//           `ledgerSigner: '${accountName}' is for live nets only`,
+//         );
+//       }
+//       const transport = await LedgerTransport.open();
+//       return new LedgerSigner(transport, opts.derivationPath);
+//     };
+//   }
+//
+//   // Plug into per-network slots:
+//   accounts: {
+//     publisher: {
+//       mainnet: ledgerSigner({ derivationPath: "m/44'/784'/0'/0'/0'" }),
+//     },
+//   }
+//
+// Devstack does NOT ship Ledger / KMS factories itself — adding them
+// would pull heavy optional peer deps into the package. The contract
+// is intentionally narrow so third parties can adopt it in a few lines.
 
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';

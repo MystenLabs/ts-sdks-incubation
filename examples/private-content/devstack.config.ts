@@ -1,6 +1,6 @@
 // Private-content app — Seal-encrypted file vault on top of sui-localnet,
 // walrus, and a single Open-mode seal key server. The vault Move package
-// is published as part of the app's `setup:` (no client-side `use seal::`
+// is published via an entry in the app's `use:` (no client-side `use seal::`
 // import; access control runs entirely client-side via SessionKey + the
 // `vault::vault::seal_approve` dry-run policy fn).
 //
@@ -19,7 +19,7 @@ import {
 	publishMove,
 	seal,
 	sui,
-	walletServer,
+	walletApp,
 	walrus,
 } from '@mysten-incubation/devstack';
 
@@ -38,7 +38,7 @@ export default defineDevstackConfig({
 		walrus(),
 		seal(),
 		codegen(),
-		walletServer({ port: 9423 }),
+		walletApp({ port: 9423 }),
 		frontend({ port: 5175 }),
 		publishMove({
 			name: 'vault',

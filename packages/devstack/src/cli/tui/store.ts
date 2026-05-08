@@ -62,6 +62,10 @@ export interface TuiState {
 	/** Plugin encounter order. Stable across appendLog calls and used
 	 * to assign deterministic colors via `buildPluginColorMap`. */
 	pluginOrder: string[];
+	/** plugin-name → description, surfaced as a sub-line under the
+	 * plugin's section header. Empty map when no plugins declared
+	 * descriptions. */
+	pluginDescriptions: Map<string, string>;
 	version: number;
 }
 

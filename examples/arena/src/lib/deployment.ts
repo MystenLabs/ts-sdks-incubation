@@ -20,7 +20,7 @@ export const deployment = {
 	accounts: accountMap,
 	connectFourPackageId: manifest.registry.packages.find((p) => p.name === 'connect_four')
 		?.packageId,
-	openLobbyId: arenaSharedObjects(manifest).find((o) => o.name === 'openLobby')?.objectId,
+	openLobbyId: arenaSharedObjects(manifest).find('openLobby')?.objectId,
 } as const;
 
 export const isDeployed: boolean =

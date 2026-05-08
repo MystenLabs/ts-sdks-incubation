@@ -12,10 +12,37 @@ type PlaywrightWebServerSingle =
 /** Like `Partial<PlaywrightTestConfig>` but lets callers override individual
  *  `webServer` / `use` fields without having to redeclare the whole object —
  *  the defineConfig defaults shallow-merge into the rest. */
-type DevstackPlaywrightExtend = Omit<Partial<PlaywrightTestConfig>, 'webServer' | 'use'> & {
+export type DevstackPlaywrightExtend = Omit<
+	Partial<PlaywrightTestConfig>,
+	'webServer' | 'use'
+> & {
 	webServer?: Partial<PlaywrightWebServerSingle>;
 	use?: Partial<NonNullable<PlaywrightTestConfig['use']>>;
 };
+
+/**
+ * AccountPool tuning, shared between vitest and playwright config helpers.
+ * The `account-pool` Playwright fixture and the vitest globalSetup pick
+ * these up from env vars set at config-eval time — env vars are the cross-
+ * process transport, but apps configure them through these typed opts.
+ */
+export interface DevstackPoolOptions {
+	/** Number of accounts to pre-fund. */
+	size?: number;
+	/** Per-account fund amount in MIST. */
+	fundEach?: bigint;
+	/** Skip the prefund step. Useful when restoring a snapshot whose
+	 * accounts are already funded. */
+	skipPrefund?: boolean;
+}
+
+/**
+ * Teardown disposition after Playwright finishes:
+ *   - `'down'`: stop containers, preserve volumes (resumable).
+ *   - `'drop'`: stop + wipe everything (CI mode).
+ *   - `'none'`: leave containers running.
+ */
+export type DevstackTeardownMode = 'down' | 'drop' | 'none';
 
 export interface DevstackPlaywrightOptions {
 	/** Preferred Vite dev-server port (hint to the per-stack port
@@ -44,9 +71,9 @@ export interface DevstackPlaywrightOptions {
 	 *   defineDevstackPlaywrightConfig({ port: 5176, manageStack: true })
 	 *
 	 * Stack name resolves from `DEVSTACK_STACK` env var (defaults to
-	 * `'test'`). Teardown defaults to `'down'` (preserve volumes for
-	 * resumability); set `DEVSTACK_E2E_TEARDOWN=drop` to wipe everything
-	 * at the end (CI mode).
+	 * `'test'`). Teardown defaults to `process.env.CI ? 'drop' : 'down'`
+	 * — preserve volumes for resumable local iteration, wipe in CI to
+	 * avoid stale-state flakes. Override per-app via `teardown:`.
 	 *
 	 * Returns a `Promise<PlaywrightTestConfig>` because port allocation
 	 * runs at config-eval time (so the port allocator can claim a free
@@ -62,10 +89,33 @@ export interface DevstackPlaywrightOptions {
 	 * playwright config's directory.
 	 */
 	configPath?: string;
+	/**
+	 * AccountPool tuning. The `account-pool` Playwright fixture reads
+	 * these via env vars set at config-eval time. Omit to fall back to
+	 * the pool's internal defaults (or to existing env-var overrides on
+	 * the command line — typed opts take precedence when set).
+	 */
+	pool?: DevstackPoolOptions;
+	/**
+	 * Disposition of the localnet stack after Playwright finishes. Only
+	 * meaningful when `manageStack` is true. Defaults to
+	 * `process.env.CI ? 'drop' : 'down'`:
+	 *   - **Local dev** (`CI` unset): `'down'` preserves the writable
+	 *     layer so the next `pnpm test:e2e` resumes the funded
+	 *     accounts + published packages without paying the cold-start
+	 *     cost.
+	 *   - **CI**: `'drop'` wipes containers + volumes + host state so
+	 *     stale state from one run can't bleed into the next (a flake
+	 *     amplifier on shared runners).
+	 * Override explicitly for either side: `teardown: 'down'` keeps
+	 * containers around in CI for log capture; `teardown: 'drop'`
+	 * forces a clean teardown locally.
+	 */
+	teardown?: DevstackTeardownMode;
 }
 
 /**
- * Single-line Playwright config for dev-examples apps. Bakes in the same
+ * Single-line Playwright config for apps using devstack. Bakes in the same
  * defaults the four apps were duplicating: serial workers, GitHub-style CI
  * reporter, retries, screenshot-on-failure, Chromium project, and the
  * `pnpm dev` webServer.
@@ -81,6 +131,14 @@ export async function defineDevstackPlaywrightConfig(
 	opts: DevstackPlaywrightOptions,
 ): Promise<PlaywrightTestConfig> {
 	const { port: preferredPort, command = 'pnpm dev', testDir = './e2e', extend } = opts;
+
+	applyPoolOptionsToEnv(opts.pool);
+	// Default the teardown mode to `'drop'` under CI (clean state per
+	// run, no flake-amplifying volume reuse) and `'down'` locally
+	// (preserve funded accounts + published packages across runs for
+	// fast iteration). Explicit `opts.teardown` always wins.
+	const teardownDefault: DevstackTeardownMode = process.env.CI ? 'drop' : 'down';
+	process.env.DEVSTACK_E2E_TEARDOWN = opts.teardown ?? teardownDefault;
 
 	let globalSetup: string | undefined;
 	let globalTeardown: string | undefined;
@@ -176,4 +234,21 @@ export async function defineDevstackPlaywrightConfig(
 		},
 		...extendRest,
 	});
+}
+
+/** Translate typed pool opts into the env vars the in-test-process
+ * fixtures and globalSetup modules read. Env-var transport because
+ * Playwright/Vitest load globalSetup in fresh module contexts that
+ * can't `import` from the config-eval scope. */
+function applyPoolOptionsToEnv(pool: DevstackPoolOptions | undefined): void {
+	if (pool === undefined) return;
+	if (pool.size !== undefined) {
+		process.env.DEVSTACK_POOL_SIZE = String(pool.size);
+	}
+	if (pool.fundEach !== undefined) {
+		process.env.DEVSTACK_POOL_FUND_EACH = pool.fundEach.toString();
+	}
+	if (pool.skipPrefund === true) {
+		process.env.DEVSTACK_SKIP_PREFUND = '1';
+	}
 }

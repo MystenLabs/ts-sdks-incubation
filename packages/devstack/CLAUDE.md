@@ -3,41 +3,13 @@
 Conventions for AI assistants working in this repo. Apply alongside any IDE-specific configs in
 `.cursor/`, `.claude/`, `.opencode/`.
 
-## Project status — prototype, not released
-
-Devstack is a **prototype**. Nothing is published to npm yet, and we are **not publishing
-anytime soon**. There are no consumers outside this monorepo, no compatibility surface, no
-deprecation cycle to honor. This shapes how we work:
-
-- **Break the API freely.** If a name, shape, or contract is wrong, change it directly — don't
-  ship a shim, alias, or "v2" alongside the old one. We get one chance to set the surface
-  correctly before anyone depends on it; squander it and we live with the wart for the lifetime
-  of the project.
-- **No backwards compatibility.** No `@deprecated`, no fallback paths for old config formats, no
-  legacy export re-exports. Rename, restructure, delete; update every callsite in the same
-  commit.
-- **Surface every paper-cut now.** When something feels awkward (verbose, easy to misuse,
-  needlessly leaky), capture it in `notes/friction.md` and fix the root cause rather than
-  papering over it. Prototype phase is the only time the cost of a redesign is just code edits.
-- **Migration helpers and version-detection logic are anti-patterns** in this phase. If you
-  catch yourself adding either, stop — the right move is a hard break.
-
-Initial release is a future event with its own design pass. Until then, treat the public API as
-in flux.
-
 ## What this repo is
 
 A monorepo of high-quality Sui example apps + a devstack for fully-seeded local development. The bar
 is "scaffold-eth-2 for Sui." Build quality matters; cute matters.
 
-## Methodology: build-then-extract
-
-We are deliberately **not** designing the devstack upfront. Phase 1 builds the `token-studio` app
-end-to-end with intentionally ad-hoc supporting infrastructure. Friction encountered along the way
-is captured in `notes/friction.md`. Phase 2 extracts the devstack from that journal.
-
-**If you find yourself designing a new shared abstraction for a problem we've only seen once:
-stop.** Add a journal entry instead. We extract from evidence, not anticipation.
+Devstack is at 0.1.0 — initial public release. Treat the public API as semver-bound; breaking
+changes land at minor-version bumps in the 0.x series.
 
 ## Code conventions
 
@@ -47,9 +19,6 @@ stop.** Add a journal entry instead. We extract from evidence, not anticipation.
 - **Imports**: `import type` for type-only imports (Biome enforces). Use `node:` protocol for
   built-ins.
 - **No comments** unless they explain a non-obvious _why_. Don't narrate code.
-- **Friction journal**: when something hurts (hardcoded port, copy-paste, manual step), add a short
-  entry to `notes/friction.md` with file path + one-line description. Do not silently work around
-  pain — the pain is the data.
 
 ## File / package conventions
 
@@ -66,8 +35,9 @@ stop.** Add a journal entry instead. We extract from evidence, not anticipation.
 - **Unit/integration**: Vitest, in `src/**/*.test.ts(x)` or sibling `__tests__/` folders.
 - **E2E**: Playwright, in each app's `e2e/` folder. Real localnet, real wallet adapter — not mocks.
   Mocks for unit tests only.
-- **Fresh localnet per test file** via testcontainers (Phase 1+). Pre-fund accounts in
-  `globalSetup`, claim from a pool — never faucet-per-test.
+- **Fresh localnet per test file** via the e2e harness's `manageStack: true` flag (Playwright
+  globalSetup brings up a hermetic stack before tests; globalTeardown disposes per the configured
+  `teardown:` mode). Pre-fund accounts in `globalSetup`, claim from a pool — never faucet-per-test.
 
 ## Anti-patterns we will not repeat
 
@@ -86,18 +56,22 @@ From `MystenLabs/ts-sdks` (specialized, not bad — but don't copy wholesale):
 
 ## Setup design — the action graph IS the lifecycle
 
-App-level setup (`DevstackConfig.setup: [...]`) is a list of actions
-synthesized into a per-app plugin. We deliberately do not expose
-parallel lifecycle-hook APIs (`afterStackUp`, `afterPublish`, etc.)
-because the action graph already covers the use cases:
+App-level setup actions appear inline in `DevstackConfig.use: [...]`
+alongside plugins. Bare actions in `use:` are folded into a synthetic
+`<app>-setup` plugin at config-load time, so cross-action `needs:`
+references resolve consistently. We deliberately do not expose parallel
+lifecycle-hook APIs (`afterStackUp`, `afterPublish`, etc.) because the
+action graph already covers the use cases:
 
 - **Ordering** — express via `needs:` (`needs: ['sui.accounts']`,
   `needs: ['my-package']`).
-- **Idempotence** — express via `getStatus`. `runTransaction` defaults
-  to a marker file at `<stackDir>/setup/<name>.done` whose CONTENT is
-  `stableHash` of the action's inputs (signer, build callback source,
-  scope, needs); editing the build callback re-runs.
-- **Snapshot composition** — markers live in `<stackDir>` so
+- **Idempotence** — express via `getStatus`. The reconciler also folds
+  every action's input hash into persisted state in the manifest at
+  `<appDir>/.devstack/stacks/<stack>/manifest.json` (under
+  `actionStates['<plugin>.<action>'].lastInputHash`); a stale hash
+  forces a re-run on the next cycle. Editing a `runTransaction`
+  build callback flips the hash and re-fires.
+- **Snapshot composition** — `actionStates` are part of the manifest, so
   `snapshot save` captures them; restore brings them back; setup skips.
 - **Same-signer serialization** — `runsAs:` (defaulted by
   `publishMove`/`runTransaction` from `publisher`/`signer`; passed
@@ -105,7 +79,12 @@ because the action graph already covers the use cases:
   `ctx.accounts.get(...)`). The reconciler runs at most one inflight
   action per distinct `runsAs` value so two same-account actions don't
   equivocate on the gas object — apps don't need to thread synthetic
-  `needs:` edges between them.
+  `needs:` edges between them. **`runsAs:` provides exclusivity, not
+  ordering.** Two ready-to-run actions with the same `runsAs` value
+  fire one-at-a-time, but the order between them is scheduler-arbitrary
+  across cycles. Apps that need a specific order (e.g. action B must
+  observe action A's on-chain effect) should still thread the edge
+  explicitly via `needs:`.
 
 A separate hook system would either duplicate this or coordinate
 poorly with snapshots (re-running on every restore wastes work; not
@@ -115,11 +94,37 @@ actions ARE the lifecycle.
 ## Helpers vs raw factories
 
 `publishMove()` and `runTransaction()` are sugar over the raw
-`definePublishAction` / `seed` factories. They cover the 90% case;
+`publish` / `seed` factories from
+`@mysten-incubation/devstack/authoring`. They cover the 90% case;
 they will not grow into a catalog. Anything outside drops into the
-raw factories directly inside `setup: [...]` — both forms are
-first-class. If you find yourself wanting a third helper, add a
-friction journal entry first.
+raw factories directly inside `use: [...]` — both forms are
+first-class. App authors should reach for the helpers; the
+`/authoring` subpath is for third parties writing custom plugins.
+
+The main barrel re-exports `register`, `emit`, `verify`, `seed`, and
+`registerCoin` directly, so app code doesn't need to reach into
+`/authoring` for those — only `definePlugin`, `buildImage`, `service`,
+`containerService`, `hostProcess`, and `publish` (the lower-level
+factories that have ergonomic wrappers in the main barrel) require
+the `/authoring` subpath.
+
+### `Plugin<TProvides>` + runtime `provides`
+
+The `Plugin<'foo.x' | 'foo.y'>` annotation flows into
+`defineDevstackConfig`'s typed-needs validator (catches typos in
+`needs:` references). It's purely type-level.
+
+Plugins MAY also set runtime `provides: ['foo.x', 'foo.y']` array
+which mirrors the type union. When set, `expandPluginActions`
+cross-validates: every action returned must appear in `provides`,
+and vice versa. Catches drift between the type annotation and the
+actual `actions:` body at runtime.
+
+Skip `provides:` when action names are dynamic (template-literal
+types like `walrus.node-${number}`) — the runtime check can't
+enumerate them. Built-ins `walrus`, `deepbook`, `imports` skip;
+static plugins (`sui`, `seal`, `accounts`, `codegen`, `frontend`,
+`wallet-app`) opt in.
 
 ## When invoking the Sui CLI from scripts
 
@@ -129,10 +134,3 @@ Always:
 - Pre-set `~/.sui/sui_config/client.yaml` so no interactive prompts.
 - Wrap in retries with exponential backoff + jitter; don't use flat polling.
 - Fail loudly with an actionable message if Docker / RPC / faucet aren't ready.
-
-## Memory + planning
-
-- Update plans rather than starting new ones for the same effort.
-- Use `notes/friction.md` for cross-session observations about pain points; that file is the input
-  to Phase 2 design.
-- Don't write speculative architecture docs. Write code, capture friction, then design.

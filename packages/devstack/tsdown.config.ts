@@ -13,6 +13,7 @@ import { defineConfig } from 'tsdown';
 export default defineConfig({
 	entry: [
 		'src/index.ts',
+		'src/authoring.ts',
 		'src/plugins/accounts/index.ts',
 		'src/playwright/index.ts',
 		'src/playwright/global-setup.ts',
@@ -29,7 +30,15 @@ export default defineConfig({
 	dts: true,
 	outDir: 'dist',
 	unbundle: true,
-	treeshake: false,
+	// `treeshake: true` makes tsdown drop bare side-effect re-export
+	// edges (`runtime/docker/index.ts`'s named re-exports compile to
+	// `import "./images.js"; import "./daemon.js"; …` under
+	// `unbundle: true` — those bare imports defeat downstream
+	// `sideEffects: false` tree-shaking in the `examples/*` Vite
+	// builds, even though every named export in the chain is unused).
+	// Tree-shaking the dist is safe: internal module evaluations are
+	// pure (`dirname(fileURLToPath(...))`, `definePlugin({...})`).
+	treeshake: true,
 	platform: 'node',
 	target: 'node22',
 	sourcemap: true,

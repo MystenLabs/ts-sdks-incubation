@@ -1,7 +1,7 @@
 // Arena app — on-chain Connect Four. Matchmaking via shared `Lobby`
 // objects, gameplay via shared `Game` objects (column-major 7x6 board,
 // winner: Option<address>). The Move package + openLobby seed live in
-// the app's `setup:` below; named accounts are declared at the top
+// the app's `use:` below; named accounts are declared at the top
 // level so the devstack resolver materializes a `Signer` per name and
 // the sui plugin's accounts action faucets each on localnet.
 
@@ -19,7 +19,7 @@ import {
 	publishMove,
 	seed,
 	sui,
-	walletServer,
+	walletApp,
 } from '@mysten-incubation/devstack';
 import { createLocalSuiClient } from '@mysten-incubation/devstack/helpers';
 
@@ -43,7 +43,7 @@ export default defineDevstackConfig({
 		sui({ version: 'devnet-v1.71.0' }),
 		accounts(),
 		codegen(),
-		walletServer({ port: 9421 }),
+		walletApp({ port: 9421 }),
 		frontend({ port: 5176 }),
 		publishMove({
 			name: 'connect_four',
@@ -64,6 +64,7 @@ export default defineDevstackConfig({
 		seed({
 			name: 'openLobby',
 			needs: ['connect_four'],
+			runsAs: 'alice',
 			inputs: { lobby: 'openLobby' },
 			run: async (ctx) => {
 				const pkg = ctx.registry.packages.require('connect_four');

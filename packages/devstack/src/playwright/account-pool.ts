@@ -29,12 +29,9 @@
 // The pool's idempotent prefund means warm runs cost zero faucet calls;
 // snapshot restore brings the prefunded balances back.
 
-import { existsSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-
 import { test as base } from '@playwright/test';
 
-import type { Manifest } from '../runtime/manifest-types.js';
+import { findManifestForCwd } from '../runtime/manifest-discovery.js';
 import { AccountPool, type Lease } from '../vitest/accountPool.js';
 
 export interface DevstackAccountPoolFixtures {
@@ -73,16 +70,16 @@ export { expect } from '@playwright/test';
 
 async function constructPool(): Promise<AccountPool> {
 	const stack = process.env.DEVSTACK_STACK ?? 'test';
-	const manifestPath =
-		process.env.DEVSTACK_MANIFEST_PATH ??
-		resolve(process.cwd(), '.devstack', 'stacks', stack, 'manifest.json');
-	if (!existsSync(manifestPath)) {
+	let discovery: ReturnType<typeof findManifestForCwd>;
+	try {
+		discovery = findManifestForCwd({ stack });
+	} catch (err) {
 		throw new Error(
-			`devstack/playwright AccountPool: manifest not found at ${manifestPath}. ` +
-				`Run \`devstack up --stack ${stack}\` (or set DEVSTACK_MANIFEST_PATH) first.`,
+			`devstack/playwright AccountPool: ${err instanceof Error ? err.message : String(err)}\n` +
+				`  Hint: run \`devstack up --stack ${stack}\` first.`,
 		);
 	}
-	const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as Manifest;
+	const { path: manifestPath, manifest } = discovery;
 	const services = manifest.registry.services as Array<{ name: string; url: string }>;
 	const rpcUrl = services.find((s) => s.name === 'sui-rpc')?.url;
 	const faucetUrl = services.find((s) => s.name === 'sui-faucet')?.url;

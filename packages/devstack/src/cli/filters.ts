@@ -6,7 +6,7 @@
 // action type; live nets skip Service + HostProcess (no docker assumed)
 // but keep Build, Publish, Register, Seed (network-gated), Emit, Verify.
 // `applyTestSetupFilter` is for Playwright globalSetup — runs Service
-// (containers detach) but skips HostProcess (wallet-server / vite die
+// (containers detach) but skips HostProcess (wallet-app / vite die
 // when the test process exits). `emitOnlyFilter` runs only Emit actions.
 
 import { seedRunsOn } from '../actions/seed.js';

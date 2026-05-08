@@ -26,7 +26,7 @@
 //                                    supervisor owns the loop.
 //
 // Localnet-only (mirrors `walrus()`, `seal()`). Ships with a default
-// `rev: 'v7.0.0'` so most apps don't think about versions.
+// `version: 'v7.0.0'` so most apps don't think about versions.
 
 import type { Action, Plugin } from '../../core/types.js';
 import { definePlugin } from '../../plugin.js';
@@ -41,12 +41,12 @@ import { deepbookSourceAction } from './source.js';
 export type { DeepbookMarketMakerSpec } from './market-maker.js';
 export type { DeepbookPoolSpec } from './pools.js';
 
-const DEFAULT_REV = 'v7.0.0';
+const DEFAULT_VERSION = 'v7.0.0';
 
 interface DeepbookPluginOptions {
 	/** Pinned deepbookv3 git ref. Default `'v7.0.0'`. Bumping this re-fetches
 	 * + rebuilds the source image and re-publishes the package. */
-	rev?: string;
+	version?: string;
 	/** Account that signs the publish + pool-admin txs. Default `'publisher'`. */
 	admin?: string;
 	/** Pools to create on first up. Empty array (default) skips pool creation
@@ -63,9 +63,8 @@ interface DeepbookPluginOptions {
 	/** Per-maker grid rebalancers. Each entry becomes a
 	 *  `deepbook.market-maker.<name>` HostProcess action. Skipped by
 	 *  test-setup paths (`applyTestSetupFilter` drops HostProcess
-	 *  actions); the long-running supervisor (`devstack up`,
-	 *  `devstack watch`, `pnpm dev`) owns the loop. See
-	 *  `market-maker.ts` for the per-tick semantics. */
+	 *  actions); the long-running supervisor (`devstack up`, `pnpm dev`)
+	 *  owns the loop. See `market-maker.ts` for the per-tick semantics. */
 	marketMakers?: ReadonlyArray<DeepbookMarketMakerSpec>;
 }
 
@@ -76,20 +75,20 @@ type DeepbookProvides =
 	| `deepbook.market-maker-${string}`;
 
 export const deepbook = (opts: DeepbookPluginOptions = {}): Plugin<DeepbookProvides> => {
-	const rev = opts.rev ?? DEFAULT_REV;
+	const version = opts.version ?? DEFAULT_VERSION;
 	const admin = opts.admin ?? 'publisher';
 	const pools = opts.pools ?? [];
 	const marketMakers = opts.marketMakers ?? [];
 
 	return definePlugin({
 		name: 'deepbook',
-		// Folded into the snapshot id. `rev` covers the source image; pool
+		// Folded into the snapshot id. `version` covers the source image; pool
 		// + market-maker shapes change which on-chain objects the seed
 		// actions create, so they must invalidate the snapshot when the
 		// app author rewires the book. `midPrices` for makers is also part
 		// of the hash since changing it re-deposits + re-grids on next tick.
 		inputs: {
-			rev,
+			version,
 			admin,
 			pools: pools.map((p) => ({
 				name: p.name,
@@ -112,8 +111,8 @@ export const deepbook = (opts: DeepbookPluginOptions = {}): Plugin<DeepbookProvi
 		},
 		actions: () => {
 			const actions: Action[] = [
-				deepbookSourceAction(rev),
-				deepbookPublishAction({ rev, admin }),
+				deepbookSourceAction(version),
+				deepbookPublishAction({ version, admin }),
 			];
 			if (pools.length > 0) {
 				actions.push(deepbookPoolsAction({ pools, admin, extraNeeds: opts.poolNeeds ?? [] }));

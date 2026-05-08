@@ -108,11 +108,14 @@ describe('codegen() factory', () => {
 		expect(plugin.actions()).toHaveLength(1);
 	});
 
-	it('the lone action is Emit gated on the core registry kinds the typed manifest reads', () => {
+	it('the lone action is Emit gated on the wildcard so plugin-namespaced kinds also re-fire it', () => {
 		const action = getGenerateAction();
 		expect(action.type).toBe('Emit');
 		expect(action.name).toBe('generate');
-		expect(action.dependsOnKind).toEqual(['packages', 'accounts', 'services', 'coin/tokens']);
+		// Wildcard — any registry kind dirty re-fires codegen, including
+		// plugin-namespaced kinds (walrus.nodes, seal.keyServer, …) that
+		// aren't enumerable at action-construction time.
+		expect(action.dependsOnKind).toEqual(['*']);
 	});
 
 	it('threads the `output` option into the action inputs (default `src/generated/sui`)', () => {

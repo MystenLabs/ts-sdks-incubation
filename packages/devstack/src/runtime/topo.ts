@@ -122,7 +122,9 @@ export function topoSortActions(actions: Action[], options: TopoSortOptions = {}
 	for (const a of actions) {
 		for (const dep of effectiveDeps.get(a.name) ?? []) {
 			if (!byName.has(dep)) {
-				throw new Error(`topoSortActions: action '${a.name}' needs unknown '${dep}'`);
+				const suggestion = suggestNearMatch(dep, Array.from(byName.keys()));
+				const hint = suggestion !== undefined ? ` (did you mean: '${suggestion}'?)` : '';
+				throw new Error(`topoSortActions: action '${a.name}' needs unknown '${dep}'${hint}`);
 			}
 			indegree.set(a.name, (indegree.get(a.name) ?? 0) + 1);
 		}
@@ -161,7 +163,13 @@ export function topoSortActions(actions: Action[], options: TopoSortOptions = {}
 
 	if (result.length !== actions.length) {
 		const remaining = actions.filter((a) => !result.includes(a)).map((a) => a.name);
-		throw new Error(`topoSortActions: cycle detected involving [${remaining.join(', ')}]`);
+		const remainingSet = new Set(remaining);
+		const cycle = reconstructCycle(remaining[0] ?? '', remainingSet, effectiveDeps);
+		const detail =
+			cycle.length > 0
+				? cycle.join(' → ')
+				: `[${remaining.join(', ')}]`;
+		throw new Error(`topoSortActions: cycle detected: ${detail}`);
 	}
 	return result.map((a) => {
 		const deps = effectiveDeps.get(a.name) ?? [];
@@ -170,4 +178,78 @@ export function topoSortActions(actions: Action[], options: TopoSortOptions = {}
 		if (same) return a;
 		return { ...a, needs: deps } as Action;
 	});
+}
+
+/** Standard iterative Levenshtein distance with a single-row rolling
+ * buffer. Used by the unknown-dep error formatter to surface
+ * "did you mean" suggestions for typos in `needs:` references. */
+function levenshtein(a: string, b: string): number {
+	const m = a.length;
+	const n = b.length;
+	if (m === 0) return n;
+	if (n === 0) return m;
+	const prev = Array<number>(n + 1).fill(0).map((_, i) => i);
+	const curr = Array<number>(n + 1).fill(0);
+	for (let i = 1; i <= m; i++) {
+		curr[0] = i;
+		for (let j = 1; j <= n; j++) {
+			const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+			curr[j] = Math.min(
+				(curr[j - 1] ?? 0) + 1,
+				(prev[j] ?? 0) + 1,
+				(prev[j - 1] ?? 0) + cost,
+			);
+		}
+		for (let j = 0; j <= n; j++) prev[j] = curr[j] ?? 0;
+	}
+	return curr[n] ?? 0;
+}
+
+/** Find the closest action name within an edit-distance budget proportional
+ * to the length of the unknown reference. Returns undefined when no
+ * candidate is close enough, so the caller can omit the hint clause
+ * entirely (avoiding noisy suggestions on entirely-different names). */
+function suggestNearMatch(unknown: string, candidates: readonly string[]): string | undefined {
+	const limit = Math.max(2, Math.floor(unknown.length * 0.3));
+	let best: { name: string; dist: number } | undefined;
+	for (const c of candidates) {
+		const d = levenshtein(unknown, c);
+		if (d > limit) continue;
+		if (best === undefined || d < best.dist) best = { name: c, dist: d };
+	}
+	return best?.name;
+}
+
+/** From a node known to participate in a cycle, walk needs-edges through
+ * the unsettled set until we revisit a node — that closes the cycle.
+ * Returns the cycle path with the start node repeated at the end so the
+ * loop is visible in error output (e.g. `a → b → c → a`). The walk is
+ * bounded by `unsettled.size` since each step either visits a new node
+ * or closes the cycle. */
+function reconstructCycle(
+	start: string,
+	unsettled: Set<string>,
+	effectiveDeps: Map<string, string[]>,
+): string[] {
+	if (start === '' || !unsettled.has(start)) return [];
+	const path: string[] = [start];
+	const visitedAt = new Map<string, number>();
+	visitedAt.set(start, 0);
+	let current = start;
+	while (path.length <= unsettled.size + 1) {
+		const next = (effectiveDeps.get(current) ?? []).find((dep) => unsettled.has(dep));
+		if (next === undefined) return path; // shouldn't happen for a real cycle
+		const seenAt = visitedAt.get(next);
+		if (seenAt !== undefined) {
+			// Close the cycle: trim leading nodes that aren't part of the
+			// loop, then append the revisited node so the round-trip is
+			// visible.
+			path.push(next);
+			return path.slice(seenAt);
+		}
+		visitedAt.set(next, path.length);
+		path.push(next);
+		current = next;
+	}
+	return path;
 }

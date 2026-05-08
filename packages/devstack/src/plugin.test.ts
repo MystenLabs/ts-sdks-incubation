@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Action, Plugin, Provides } from './core/types.js';
-import { definePlugin, expandPluginActions } from './plugin.js';
+import { defineDevstackConfig, definePlugin, expandPluginActions } from './plugin.js';
 
 const action = (name: string, opts: { needs?: string[]; provides?: Provides } = {}): Action =>
 	({
@@ -51,6 +51,72 @@ describe('definePlugin — name validation', () => {
 			/invalid plugin name/i,
 		);
 		expect(() => definePlugin({ name: 'foo!', actions: () => [] })).toThrow(/invalid plugin name/i);
+	});
+
+	it("rejects names ending in '-setup' (reserved for the synthesizer)", () => {
+		// `defineDevstackConfig` builds a synthetic `<app>-setup` plugin
+		// from inline use:[] actions; user-defined plugins ending in
+		// `-setup` would collide and surface as a vague duplicate-action
+		// error at topo time. Reject up front.
+		expect(() => definePlugin({ name: 'wallet-setup', actions: () => [] })).toThrow(
+			/'-setup' — that suffix is reserved/,
+		);
+		expect(() => definePlugin({ name: 'foo-setup', actions: () => [] })).toThrow(
+			/'-setup' — that suffix is reserved/,
+		);
+	});
+
+	it("accepts names that contain 'setup' but don't end in '-setup'", () => {
+		// `setup-helper`, `mysetup`, `wallet-setup-extra` are fine.
+		expect(() => definePlugin({ name: 'setup-helper', actions: () => [] })).not.toThrow();
+		expect(() => definePlugin({ name: 'mysetup', actions: () => [] })).not.toThrow();
+		expect(() => definePlugin({ name: 'wallet-setup-extra', actions: () => [] })).not.toThrow();
+	});
+});
+
+describe('expandPluginActions — synthesizer plugin name acceptance', () => {
+	// `defineDevstackConfig` constructs a synthetic plugin object directly
+	// (not via `definePlugin`) named `<app>-setup` and stamps it with a
+	// module-private symbol so `expandPluginActions` lets the synthesizer
+	// brand past the reserved-suffix gate. Third-party plugins reaching
+	// the same path (skipping `definePlugin`) without the brand are
+	// rejected.
+	it("rejects an unbranded '<app>-setup' Plugin literal from a third party", () => {
+		// A naïve third party could skip `definePlugin`'s strict check and
+		// build the Plugin object literal directly — without the brand,
+		// `expandPluginActions` rejects.
+		expect(() =>
+			expandPluginActions([{ name: 'foo-setup', actions: () => [action('a')] }]),
+		).toThrow(/'-setup' — that suffix is reserved/);
+		expect(() =>
+			expandPluginActions([{ name: 'bar-setup', actions: () => [] }]),
+		).toThrow(/'-setup' — that suffix is reserved/);
+	});
+
+	it("rejects a third-party plugin that fakes the marker with a different symbol", () => {
+		// Symbol identity matters: an own-named symbol with the same
+		// description doesn't match the module-private symbol used by
+		// the synthesizer, so the bypass attempt fails closed.
+		const fakeBrand = Symbol('devstack.synthesized-plugin');
+		const fake = { name: 'evil-setup', actions: () => [action('a')] } as unknown as Record<
+			symbol,
+			unknown
+		>;
+		fake[fakeBrand] = true;
+		expect(() => expandPluginActions([fake as unknown as { name: string; actions: () => Action[] }]))
+			.toThrow(/'-setup' — that suffix is reserved/);
+	});
+
+	it("accepts the branded plugin produced by defineDevstackConfig (round-trip)", () => {
+		// Drive the actual synthesis path: configure inline setup actions
+		// and run the resulting `<app>-setup` plugin through expand.
+		const config = defineDevstackConfig({
+			app: 'arena',
+			use: [{ name: 'a', type: 'Service' } as Action],
+		});
+		expect(() => expandPluginActions(config.plugins)).not.toThrow();
+		// The synthesizer named the plugin `<app>-setup`.
+		expect(config.plugins.some((p) => p.name === 'arena-setup')).toBe(true);
 	});
 });
 
@@ -171,5 +237,54 @@ describe('expandPluginActions — own-namespace dotted names accepted', () => {
 		]);
 		expect(out.map((a) => a.name).sort()).toEqual(['walrus.build', 'walrus.network']);
 		expect(out.find((a) => a.name === 'walrus.network')?.needs).toEqual(['walrus.build']);
+	});
+});
+
+describe('expandPluginActions — provides cross-validation', () => {
+	it('passes when the declared provides set matches the actions returned', () => {
+		expect(() =>
+			expandPluginActions([
+				{
+					name: 'x',
+					provides: ['x.service', 'x.build'],
+					actions: () => [action('service'), action('build')],
+				},
+			]),
+		).not.toThrow();
+	});
+
+	it("throws when provides declares a name that no action returns (typo: 'x.servic' vs 'x.service')", () => {
+		expect(() =>
+			expandPluginActions([
+				{
+					name: 'x',
+					provides: ['x.servic'],
+					actions: () => [action('service')],
+				},
+			]),
+		).toThrow(/declared provides include 'x\.servic'/);
+	});
+
+	it('throws when an action is returned but not listed in provides', () => {
+		expect(() =>
+			expandPluginActions([
+				{
+					name: 'x',
+					provides: ['x.service'],
+					actions: () => [action('service'), action('extra')],
+				},
+			]),
+		).toThrow(/returned action 'x\.extra' but it isn't listed/);
+	});
+
+	it("skips the cross-check when provides is undefined (dynamic-action plugins like walrus.node-${number})", () => {
+		expect(() =>
+			expandPluginActions([
+				{
+					name: 'dyn',
+					actions: () => [action('node-0'), action('node-1')],
+				},
+			]),
+		).not.toThrow();
 	});
 });

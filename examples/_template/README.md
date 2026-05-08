@@ -17,10 +17,10 @@ _template/
 ├── move/hello/               # one Move package with one entry function
 └── src/
     ├── App.tsx               # Card + ConnectButton + mint button
-    ├── main.tsx              # <DAppKitProvider> + <DevstackProvider>
-    ├── dapp-kit.ts           # createWalletApp({ manifest })
+    ├── main.tsx              # <DAppKitProvider> wiring
+    ├── dapp-kit.ts           # createDevstackDappKit({ manifest })
     ├── index.css             # tailwind import + theme
-    └── vite-env.d.ts         # /// reference to virtual:devstack-manifest
+    └── vite-env.d.ts         # /// <reference types="vite/client" />
 ```
 
 ## Stand up a new app from this template

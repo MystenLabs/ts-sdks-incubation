@@ -1,5 +1,5 @@
 // `deepbook.publish` — runs `importMovePackage` against
-// `MystenLabs/deepbookv3@<rev>` inside the sui localnet container.
+// `MystenLabs/deepbookv3@<version>` inside the sui localnet container.
 // Uses `sui client test-publish --with-unpublished-dependencies` so
 // DeepBook's `token` sub-package gets inlined under the parent
 // address — that's how the `DEEP` coin type ends up at
@@ -10,9 +10,9 @@
 // action (and any user code) can reach them.
 
 import type { ActionRunContext, PublishAction } from '../../core/types.js';
-import { requireLocalnetCtx } from '../../core/types.js';
 import { importMovePackage } from '../../helpers/imported-package.js';
 import { openSuiRpcClient } from '../../helpers/sui-client.js';
+import { requireLocalnetCtx } from '../../runtime/runtime-helpers.js';
 import { suiContainerName } from '../sui/index.js';
 import { DEEPBOOK_REPO, DEEPBOOK_SUBDIR } from './source.js';
 
@@ -22,7 +22,7 @@ const CAPTURE = {
 } as const;
 
 interface DeepbookPublishOptions {
-	rev: string;
+	version: string;
 	admin: string;
 }
 
@@ -33,7 +33,7 @@ export function deepbookPublishAction(opts: DeepbookPublishOptions): PublishActi
 		needs: ['source', 'accounts.fund'],
 		path: '<imported>',
 		runsAs: opts.admin,
-		inputs: { repo: DEEPBOOK_REPO, rev: opts.rev, admin: opts.admin },
+		inputs: { repo: DEEPBOOK_REPO, version: opts.version, admin: opts.admin },
 		getStatus: async (ctx) => {
 			const prior = ctx.registry.packages.find('deepbook');
 			if (prior === undefined) return { ok: false, detail: 'no prior publish' };
@@ -55,7 +55,7 @@ export function deepbookPublishAction(opts: DeepbookPublishOptions): PublishActi
 			return { ok: true, detail: prior.packageId };
 		},
 		run: async (ctx) => {
-			requireLocalnetCtx(ctx);
+			requireLocalnetCtx(ctx, 'deepbook.publish');
 			const containerName = suiContainerName(ctx.appName, ctx.stack);
 			const client = openSuiRpcClient(ctx);
 			const chainId = await client.getChainIdentifier();
@@ -63,7 +63,7 @@ export function deepbookPublishAction(opts: DeepbookPublishOptions): PublishActi
 			const result = await importMovePackage({
 				containerName,
 				repo: DEEPBOOK_REPO,
-				rev: opts.rev,
+				rev: opts.version,
 				subdir: DEEPBOOK_SUBDIR,
 				alias: 'deepbook',
 				chainId,

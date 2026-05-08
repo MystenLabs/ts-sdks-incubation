@@ -85,7 +85,7 @@ export function localnetWalrusOptions(
 	const nodes = m.registry?.walrus?.nodes ?? [];
 	if (walrusPkg === undefined) {
 		throw new Error(
-			'localnetWalrusOptions: no `walrus` package in manifest. Has `pnpm localnet:up` finished bringing walrus up?',
+			'localnetWalrusOptions: no `walrus` package in manifest. Has `devstack up` finished bringing walrus up?',
 		);
 	}
 	if (nodes.length === 0) {

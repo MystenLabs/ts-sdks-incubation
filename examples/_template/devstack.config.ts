@@ -1,4 +1,4 @@
-// Minimal devstack config: sui localnet, codegen, wallet-server, vite
+// Minimal devstack config: sui localnet, codegen, wallet-app, vite
 // frontend, and one Move package published as alice. Runs a single
 // `runTransaction` after publish to demonstrate the setup pattern.
 
@@ -13,7 +13,7 @@ import {
 	publishMove,
 	runTransaction,
 	sui,
-	walletServer,
+	walletApp,
 } from '@mysten-incubation/devstack';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -28,7 +28,7 @@ export default defineDevstackConfig({
 		sui({ rpcPort: 9100, faucetPort: 9101 }),
 		accounts(),
 		codegen(),
-		walletServer({ port: 9102 }),
+		walletApp({ port: 9102 }),
 		frontend({ port: 5180 }),
 		publishMove({
 			name: 'hello',
@@ -36,7 +36,7 @@ export default defineDevstackConfig({
 			publisher: 'alice',
 		}),
 		// Demonstrates the runTransaction shape — fires once after publish,
-		// idempotent via the input-hash marker file at <stackDir>/setup/.
+		// idempotent via the reconciler's input-hash skip persisted in the manifest.
 		runTransaction({
 			name: 'mint-greeting',
 			needs: ['hello'],

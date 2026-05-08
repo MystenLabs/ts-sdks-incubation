@@ -3,7 +3,7 @@
 //   - 'sui' as shorthand for '0x2::sui::SUI'
 //   - '@reg/<name>' to look up coinTokens(registry).find(name).type at runtime
 
-import { coinTokens } from '../../coin.js';
+import { coinTokens } from '../../registry/coin.js';
 import type { Registry } from '../../core/types.js';
 
 const SUI_COIN_TYPE = '0x2::sui::SUI';
@@ -17,7 +17,7 @@ export function resolveCoinType(registry: Registry, spec: string): string {
 		if (token === undefined) {
 			throw new Error(
 				`deepbook: registry token '${name}' missing — declare it before deepbook ` +
-					`runs (publish your mock coin first, register via onPublished). ` +
+					`runs (publish your mock coin first, register via registerCoin). ` +
 					`Spec: '${spec}'`,
 			);
 		}

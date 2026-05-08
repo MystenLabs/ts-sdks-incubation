@@ -124,6 +124,65 @@ describe('Reconciler — progress callback', () => {
 		expect(result.statuses.get('a')).toBe('ok');
 	});
 
+	it("`dependsOnKind: ['*']` wildcard fires the Emit on any registered kind, core or plugin-namespaced", async () => {
+		// Codegen-style emit declares the wildcard. A non-Emit action
+		// registers a plugin-namespaced kind (`test/dirty-marker` style —
+		// not in the four core kinds, and not a name production uses, so
+		// the shape-collision check in `RegistryImpl` doesn't fire on the
+		// fresh shape). Without the wildcard, a static dependsOnKind list
+		// would miss the plugin namespace and the Emit would never re-fire
+		// on a registration scoped solely to that namespace.
+		const dirtyMarkers = defineRegistryKind<{ name: string; rest: string }>('test.dirty-marker');
+		let emitRuns = 0;
+		const codegen = emit({
+			name: 'codegen',
+			dependsOnKind: ['*'],
+			inputs: {},
+			run: async () => {
+				emitRuns++;
+			},
+		});
+		const registerWalrusNode = register({
+			name: 'walrus.register',
+			inputs: {},
+			run: async (ctx) => {
+				dirtyMarkers(ctx.registry).register({ name: 'node-0', rest: 'http://x' });
+			},
+		});
+		const reconciler = new Reconciler();
+		const registry = new RegistryImpl();
+		const result = await reconciler.cycle([codegen, registerWalrusNode], baseCtx(registry));
+		expect(result.statuses.get('codegen')).toBe('ok');
+		expect(result.statuses.get('walrus.register')).toBe('ok');
+		// Emit ran exactly once — the wildcard matched the freshly-dirty
+		// `test/dirty-marker` kind, and `consumeKindsFor` flushed all dirty
+		// kinds post-run so the cascade doesn't re-trigger.
+		expect(emitRuns).toBe(1);
+	});
+
+	it("`dependsOnKind: ['*']` does not fire when the registry is clean", async () => {
+		// Wildcard matches "any dirty kind" — when nothing dirties, the
+		// Emit runs once in the topo walk (before the dirty-cascade gate
+		// applies) and stays settled. The cascade's emitIsDirty check must
+		// return false on an empty dirty set.
+		let emitRuns = 0;
+		const codegen = emit({
+			name: 'codegen',
+			dependsOnKind: ['*'],
+			inputs: {},
+			run: async () => {
+				emitRuns++;
+			},
+		});
+		const reconciler = new Reconciler();
+		const registry = new RegistryImpl();
+		const result = await reconciler.cycle([codegen], baseCtx(registry));
+		expect(result.statuses.get('codegen')).toBe('ok');
+		// One run from the topo walk; cascade short-circuits because dirty
+		// is empty (no other actions to dirty anything).
+		expect(emitRuns).toBe(1);
+	});
+
 	it('cascade Emits consume dependsOnKind so they do not re-fire on every round', async () => {
 		// A non-Emit dirties `packages` AFTER the topo-walk Emit has already
 		// consumed `packages`. The cascade picks up the new dirty bit and re-

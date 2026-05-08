@@ -1,6 +1,6 @@
 // Resolve a CLI `--target` value (or fallback) into a concrete
-// `ResolvedTarget` (network, stack, rpcUrl). Used by `devstack deploy`
-// today, `devstack apply` / `devstack codegen` once those land.
+// `ResolvedTarget` (network, stack, rpcUrl). Used by `devstack apply`
+// / `devstack codegen`.
 //
 // Target string forms:
 //   - `<network>:<stack>` — unambiguous; live nets ignore the stack and

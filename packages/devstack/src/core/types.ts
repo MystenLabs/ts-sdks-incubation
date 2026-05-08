@@ -61,11 +61,52 @@ export interface AccountSpec {
  * The string-array form covers every example app today. */
 export type AccountsConfig = readonly string[] | Record<string, AccountSpec>;
 
-export interface AccountsContext {
-	get(name: string): Signer;
-	has(name: string): boolean;
-	names(): string[];
+/**
+ * Per-action accounts handle. Generic over the union of declared
+ * account names so app authors get autocomplete on `ctx.accounts.get`
+ * inside `run:`/`build:` callbacks of the action factories that thread
+ * the union through (`runTransaction({signer})` carries `TSigner` from
+ * its own field; `seed({runsAs})` similarly).
+ *
+ * `get(name)` and `has(name)` are typed against the declared union —
+ * a stray `ctx.accounts.get('alic')` against `accounts: ['alice']`
+ * surfaces at compile time. `names()` returns the typed union as an
+ * array. Plugin code that needs to look up arbitrary account names
+ * (no statically-knowable union) keeps the default `TAccounts =
+ * string` and works as before. The runtime always materializes a
+ * loose `AccountsContext<string>` and the action factories cast at
+ * the public boundary.
+ */
+export interface AccountsContext<TAccounts extends string = string> {
+	get(name: TAccounts): Signer;
+	/**
+	 * Probe — returns false on miss rather than throwing. Keeps the loose
+	 * `(string & {})` arm so callers can ask "is this account registered
+	 * yet?" without a typed union (mirrors `RegistryQuery.find`'s probe
+	 * posture: both return a falsy value on miss).
+	 */
+	has(name: TAccounts | (string & {})): boolean;
+	names(): TAccounts[];
 }
+
+/**
+ * Extract the union of declared account names from a `DevstackConfigInput['accounts']`
+ * value. Supports both the array form (`['alice', 'bob']`) and the
+ * record form (`{ alice: {}, bob: {} }`). The `extends string` filter
+ * collapses non-string entries (defensive — `accounts:` shouldn't carry
+ * them, but TS infers `keyof Record<...>` as `string | number | symbol`
+ * by default).
+ */
+export type AccountNames<TAccounts> =
+	TAccounts extends ReadonlyArray<infer N>
+		? N extends string
+			? N
+			: never
+		: TAccounts extends Record<infer K, AccountSpec>
+			? K extends string
+				? K
+				: never
+			: never;
 
 // ─── Action graph ─────────────────────────────────────────────────────────
 
@@ -86,9 +127,9 @@ export type ActionType =
  * AND on subsequent warm-path skips. Plugins typically share it with
  * `run` to keep the registration logic in one place.
  */
-export interface Provides {
+export interface Provides<TCtx extends ActionRunContext = ActionRunContext> {
 	capabilities?: string[];
-	registry?: (ctx: ActionRunContext) => Promise<void> | void;
+	registry?: (ctx: TCtx) => Promise<void> | void;
 }
 
 /**
@@ -151,7 +192,7 @@ export interface SnapshotMeta {
 	quiesce?: 'pause' | 'stop' | 'none';
 }
 
-interface ActionBase<TInputs = unknown, TResult = unknown> {
+interface ActionBase<TCtx extends ActionRunContext, TInputs = unknown, TResult = unknown> {
 	name: string;
 	type: ActionType;
 	needs?: string[];
@@ -167,7 +208,7 @@ interface ActionBase<TInputs = unknown, TResult = unknown> {
 	 * in `needs:`. They MUST be namespaced with the providing plugin's
 	 * name (`<plugin>.<cap>`); un-namespaced capabilities throw at
 	 * expansion time. */
-	provides?: Provides;
+	provides?: Provides<TCtx>;
 	inputs?: TInputs;
 	networks?: Network[];
 	/** Extra paths the file watcher should treat as inputs to this
@@ -204,13 +245,15 @@ interface ActionBase<TInputs = unknown, TResult = unknown> {
 	/** Plugin that owns this action. Auto-derived from `Plugin.name` by
 	 * `expandPluginActions()` — plugin authors don't set this, and the
 	 * field is overwritten on expansion if they do. App-level setup
-	 * actions synthesized from `DevstackConfig.setup: [...]` carry the
-	 * literal value `'app'`. Used by the supervisor's status renderer
+	 * actions synthesized from inline `use:[...]` entries
+	 * (`publishMove`, `seed`, `runTransaction`, …) carry the synthetic
+	 * plugin name `<app>-setup` (e.g. `'wallet-setup'`,
+	 * `'token-studio-setup'`). Used by the supervisor's status renderer
 	 * for grouping (one section header per plugin) and per-line log
 	 * coloring. */
 	plugin?: string;
-	run?: (ctx: ActionRunContext) => Promise<TResult>;
-	getStatus?: (ctx: ActionRunContext) => Promise<{ ok: boolean; detail?: string }>;
+	run?: (ctx: TCtx) => Promise<TResult>;
+	getStatus?: (ctx: TCtx) => Promise<{ ok: boolean; detail?: string }>;
 	/**
 	 * Stable token representing what this action produced. The reconciler
 	 * captures it after every successful run / skip, persists it alongside
@@ -237,10 +280,11 @@ interface ActionBase<TInputs = unknown, TResult = unknown> {
 	 * use when downstream genuinely doesn't depend on identity drift,
 	 * not as a placeholder.
 	 */
-	identity?: (ctx: ActionRunContext) => Promise<string | undefined>;
+	identity?: (ctx: TCtx) => Promise<string | undefined>;
 }
 
 export interface BuildAction<TInputs = unknown, TResult = unknown> extends ActionBase<
+	ActionRunContext,
 	TInputs,
 	TResult
 > {
@@ -248,6 +292,7 @@ export interface BuildAction<TInputs = unknown, TResult = unknown> extends Actio
 }
 
 export interface ServiceAction<TInputs = unknown, TResult = unknown> extends ActionBase<
+	LocalnetActionRunContext,
 	TInputs,
 	TResult
 > {
@@ -256,7 +301,7 @@ export interface ServiceAction<TInputs = unknown, TResult = unknown> extends Act
 
 /**
  * In-process service whose lifecycle is bound to the supervisor process —
- * Node `http.Server` listeners (wallet-server), spawned child processes
+ * Node `http.Server` listeners (wallet-app), spawned child processes
  * (vite dev-server). Discriminated from `Service` (docker containers
  * detached from the supervisor) so test-setup paths can drop them: a
  * Playwright globalSetup that runs HostProcess actions starts servers
@@ -269,6 +314,7 @@ export interface ServiceAction<TInputs = unknown, TResult = unknown> extends Act
  * getStatus probe expectations, same place in the topo graph.
  */
 export interface HostProcessAction<TInputs = unknown, TResult = unknown> extends ActionBase<
+	LocalnetActionRunContext,
 	TInputs,
 	TResult
 > {
@@ -276,6 +322,7 @@ export interface HostProcessAction<TInputs = unknown, TResult = unknown> extends
 }
 
 export interface PublishAction<TInputs = unknown, TResult = unknown> extends ActionBase<
+	ActionRunContext,
 	TInputs,
 	TResult
 > {
@@ -296,6 +343,7 @@ export interface PublishAction<TInputs = unknown, TResult = unknown> extends Act
 }
 
 export interface RegisterAction<TInputs = unknown, TResult = unknown> extends ActionBase<
+	ActionRunContext,
 	TInputs,
 	TResult
 > {
@@ -303,6 +351,7 @@ export interface RegisterAction<TInputs = unknown, TResult = unknown> extends Ac
 }
 
 export interface SeedAction<TInputs = unknown, TResult = unknown> extends ActionBase<
+	ActionRunContext,
 	TInputs,
 	TResult
 > {
@@ -310,10 +359,27 @@ export interface SeedAction<TInputs = unknown, TResult = unknown> extends Action
 }
 
 export interface EmitAction<TInputs = unknown, TResult = unknown> extends ActionBase<
+	ActionRunContext,
 	TInputs,
 	TResult
 > {
 	type: 'Emit';
+	/**
+	 * Registry kinds whose dirty bit re-fires this Emit. Accepts core kind
+	 * names (`'packages'`, `'accounts'`, `'services'`) or namespaced
+	 * (`'walrus.nodes'`, `'arena.sharedObjects'`).
+	 *
+	 * The literal `'*'` is a wildcard meaning "any dirty kind". Use it
+	 * when the Emit consumes the full registry snapshot and can't
+	 * enumerate the relevant kinds at action-construction time — the
+	 * codegen plugin's typed-manifest emit is the canonical case, since
+	 * plugin-namespaced kinds (e.g. `walrus.nodes`, `seal.keyServer`)
+	 * aren't enumerable until those plugins have run.
+	 *
+	 * Mixing `'*'` with other entries is allowed but redundant: the
+	 * wildcard subsumes them. `consumeDirty` handles wildcard by
+	 * flushing the entire dirty set.
+	 */
 	dependsOnKind?: string[];
 }
 
@@ -325,7 +391,7 @@ export interface EmitAction<TInputs = unknown, TResult = unknown> extends Action
  * loud failure rather than letting downstream actions encounter a silent
  * misconfiguration.
  */
-export interface VerifyAction<TInputs = unknown> extends ActionBase<TInputs, void> {
+export interface VerifyAction<TInputs = unknown> extends ActionBase<ActionRunContext, TInputs, void> {
 	type: 'Verify';
 	getStatus: (ctx: ActionRunContext) => Promise<{ ok: boolean; detail?: string }>;
 	run?: undefined;
@@ -359,8 +425,14 @@ export interface ResolvedTarget {
  * Predicate applied during plugin expansion — actions for which it returns
  * `false` are dropped before the topo walk. Built-in filters live in
  * `cli/filters.ts`:
- *   - `deployFilter` — live-net deploy slice (skip Service; gate Seed).
- *   - `applyFilter` — localnet runs all; live nets skip Service+Build.
+ *   - `applyFilter` — universal one-shot filter. Localnet runs every
+ *     action type; live nets skip Service + HostProcess (no docker
+ *     daemon assumed) but keep Build, Publish, Register, Seed
+ *     (network-gated), Emit, Verify.
+ *   - `applyTestSetupFilter` — Playwright globalSetup variant. Runs
+ *     Service (containers detach from the test process) but skips
+ *     HostProcess (vite / wallet-app would die when globalSetup
+ *     returns).
  *   - `emitOnlyFilter` — only Emit actions; used by `devstack codegen`.
  */
 export type ActionFilter = (action: Action, target: ResolvedTarget) => boolean;
@@ -391,12 +463,28 @@ export interface Plugin<TProvides extends string = string> {
 	/** Stable summary of every structurally-significant input the plugin
 	 * accepts — image tag, git rev, port hints, action set, etc. Folded
 	 * into the snapshot id (`snapshotIdFromConfig`) so bumping `rev:` on
-	 * a plugin or editing a `setup:` action invalidates cached
+	 * a plugin or editing a `use:` setup action invalidates cached
 	 * snapshots automatically. Plugin authors construct it from their
 	 * options bag; the runtime treats the value as opaque + JSON-
 	 * stringifies it via `stableHash`. */
 	inputs?: unknown;
 	actions: () => Action[];
+	/**
+	 * Optional runtime list of fully-qualified action names this plugin
+	 * provides — mirrors the `TProvides` type union when the plugin's
+	 * action names are statically enumerable. When set, `expandPluginActions`
+	 * cross-checks both directions: every literal in `provides` must
+	 * appear in the actions returned by `actions()`, and every returned
+	 * action's FQN must appear in `provides`. Catches typos like a
+	 * declared `'sui.servic'` against a returned `'sui.service'` at
+	 * config-load time.
+	 *
+	 * Plugins with dynamic action sets (e.g. `walrus.node-${number}` for
+	 * a configurable committee size) leave this undefined — the type
+	 * union is template-literal and isn't a finite set. Static plugins
+	 * (sui, accounts, codegen, frontend, wallet-app, seal) set it.
+	 */
+	provides?: readonly string[];
 	/** Type-only phantom: never set at runtime. See doc on `TProvides`. */
 	readonly __provides?: TProvides;
 }
@@ -406,10 +494,7 @@ export interface Plugin<TProvides extends string = string> {
 export interface Token {
 	name: string;
 	type: string;
-	treasuryCapId?: string;
 	decimals: number;
-	metadataId?: string;
-	faucet?: bigint;
 }
 
 export interface Package {
@@ -476,20 +561,47 @@ export interface Service {
 	providedBy?: string;
 }
 
-export interface RegistryQuery<T> {
+/**
+ * Typed query over a registry kind. `TName` is the literal-string union
+ * of names known statically — for `packages` it's the union extracted
+ * from sibling `publishMove({ name })` declarations (typically the
+ * action's own `needs:` set).
+ *
+ * `find` / `require` / `unregister` all accept the loose `(string &
+ * {})` arm so plugin code that lacks a statically-knowable union can
+ * still reach into the registry without casting. Callers with a typed
+ * union see the union members in autocomplete; the literal arm catches
+ * typos at compile time when the caller picks a name from that union.
+ * `register(item)` is typed-only via the item's `name` field — if you
+ * want to register an arbitrary string, type the item accordingly.
+ *
+ * Defaults to `string` so existing call sites and built-in plugin
+ * code compile without changes.
+ */
+export interface RegistryQuery<T, TName extends string = string> {
 	list(): T[];
-	find(name: string): T | undefined;
-	require(name: string): T;
+	find(name: TName | (string & {})): T | undefined;
+	require(name: TName | (string & {})): T;
 	register(item: T): void;
 	/** Remove the entry with this name. Returns true if an entry was
 	 * removed, false if there was none. Marks the kind dirty on success
 	 * so dependent Emit actions re-fire (e.g. codegen drops a generated
 	 * file when its package goes away). */
-	unregister(name: string): boolean;
+	unregister(name: TName | (string & {})): boolean;
 }
 
-export interface Registry {
-	readonly packages: RegistryQuery<Package>;
+/**
+ * In-memory registry surfaced on `ctx.registry`. Generic over `TPackages`
+ * (the literal-string union of `publishMove({ name })` and
+ * `publish({ registryAs })` declarations in the surrounding `use:[]`)
+ * so `ctx.registry.packages.find(...)` and `.require(...)` autocomplete
+ * known names + flag typos at compile time.
+ *
+ * Defaults to `string` so the loose form covers built-in plugin code
+ * paths that don't see the surrounding config.
+ */
+export interface Registry<TPackages extends string = string> {
+	readonly packages: RegistryQuery<Package, TPackages>;
 	readonly accounts: RegistryQuery<Account>;
 	readonly services: RegistryQuery<Service>;
 }
@@ -498,8 +610,19 @@ export interface Registry {
 
 export type ShutdownHook = () => Promise<void> | void;
 
-/** Fields common to every action's run context, regardless of network. */
-interface ActionRunContextBase {
+/** Fields common to every action's run context, regardless of network.
+ * Generic over `TAccounts` (the typed account-name union from
+ * `DevstackConfig.accounts`) and `TPackages` (the typed package-name
+ * union from inline `publishMove({ name })` declarations) so callbacks
+ * inside `seed`/`runTransaction`/`publishMove`/`registerCoin` get
+ * autocomplete on `ctx.accounts.get(...)` and
+ * `ctx.registry.packages.find/require(...)`. Defaults to `string`
+ * everywhere to keep built-in plugin actions and the legacy authoring
+ * surface working without explicit generics. */
+interface ActionRunContextBase<
+	TAccounts extends string = string,
+	TPackages extends string = string,
+> {
 	appName: string;
 	/**
 	 * Absolute path to the app's root directory (the dir containing
@@ -508,7 +631,7 @@ interface ActionRunContextBase {
 	 * `<appDir>/.devstack/stacks/<stack>/`.
 	 */
 	appDir: string;
-	registry: Registry;
+	registry: Registry<TPackages>;
 	/**
 	 * Resolved account directory for this run. Names declared in
 	 * `DevstackConfig.accounts` materialize into `Signer`s here; on
@@ -517,11 +640,11 @@ interface ActionRunContextBase {
 	 * captured at resolve time and re-thrown on `get(name)` so the rest
 	 * of the action graph keeps running.
 	 */
-	accounts: AccountsContext;
+	accounts: AccountsContext<TAccounts>;
 	/**
 	 * Register a teardown callback to run on supervisor shutdown (SIGINT,
 	 * `q` keystroke, or programmatic stop). Only present when the action
-	 * runs under `devstack up`'s supervisor; one-shot paths (`devstack deploy`,
+	 * runs under `devstack up`'s supervisor; one-shot paths (`devstack apply`,
 	 * smoke scripts) leave it undefined. Real Service actions that detach
 	 * a container (`docker compose up -d`) generally don't need this — the
 	 * containers persist across `up` invocations by design. Hooks are
@@ -571,7 +694,10 @@ interface ActionRunContextBase {
  * is what lets `main` and `test` stacks of the same app coexist —
  * neither stack hardcodes the same port.
  */
-export interface LocalnetActionRunContext extends ActionRunContextBase {
+export interface LocalnetActionRunContext<
+	TAccounts extends string = string,
+	TPackages extends string = string,
+> extends ActionRunContextBase<TAccounts, TPackages> {
 	network: 'localnet';
 	stack: string;
 	ports: PortAllocator;
@@ -601,39 +727,52 @@ interface PortRequest {
  * host-side state dirs) must narrow on `ctx.network === 'localnet'`
  * first; if they actually require localnet, throw with a clear message.
  *
- * `stack?: undefined` is explicit so the type narrows correctly on
- * `ctx.network === 'localnet'`: code that reaches `ctx.stack` on a
- * live-network ctx is a type error, not a quiet `'main'` placeholder.
+ * `stack` is omitted entirely (not present-but-undefined) so reading
+ * `ctx.stack` on the union type is a hard TS error unless the author
+ * has narrowed on `ctx.network === 'localnet'` first. Without this
+ * carve-out, `ctx.stack` would type as `string | undefined` on the
+ * union and a missed narrow would silently produce `undefined` at
+ * runtime — typically interpolated into a container name where the
+ * resulting string lacks the per-stack disambiguator.
  */
-interface LiveNetActionRunContext extends ActionRunContextBase {
+interface LiveNetActionRunContext<
+	TAccounts extends string = string,
+	TPackages extends string = string,
+> extends ActionRunContextBase<TAccounts, TPackages> {
 	network: 'testnet' | 'mainnet';
-	stack?: undefined;
 }
 
 /**
  * Discriminated union: every action's run context is either localnet
- * (with `stack`) or a live network (without). Plugin code that touches
- * `stack` must narrow with `if (ctx.network === 'localnet') { ... }` or
- * call `requireLocalnetCtx(ctx)` to assert at runtime.
+ * (with `stack` + `ports`) or a live network (without). Build /
+ * Service / HostProcess actions are typed against
+ * `LocalnetActionRunContext` directly via their `Action.run`
+ * signatures, so plugin authors get `ctx.stack` / `ctx.ports` reads
+ * without any runtime narrowing.
+ *
+ * Publish / Register / Seed / Emit / Verify actions are typed against
+ * the full union — they may run on either network. `stack` and `ports`
+ * are absent on `LiveNetActionRunContext`, so reading either on the
+ * union without first narrowing is a TS error. Authors that need
+ * `ctx.stack` / `ctx.ports` inside a network-flexible action narrow
+ * explicitly:
+ *
+ *   if (ctx.network !== 'localnet') {
+ *     throw new Error('foo: requires localnet');
+ *   }
+ *   // ctx is now LocalnetActionRunContext — `ctx.stack` / `ctx.ports` are accessible.
+ *
+ * The recommended alternative is to declare `networks: ['localnet']`
+ * on the action factory, which lets the network filter drop the action
+ * on live-net cycles before the run callback fires. Most plugin
+ * authoring takes that route.
  */
-export type ActionRunContext = LocalnetActionRunContext | LiveNetActionRunContext;
-
-/**
- * Runtime narrowing helper. Throws with an actionable message when an
- * action that requires localnet (Service / Build / container-touching
- * Publish) is asked to run on testnet/mainnet. After this returns,
- * TypeScript narrows `ctx` to `LocalnetActionRunContext` so reads of
- * `ctx.stack` typecheck.
- */
-export function requireLocalnetCtx(ctx: ActionRunContext): asserts ctx is LocalnetActionRunContext {
-	if (ctx.network !== 'localnet') {
-		throw new Error(
-			`requireLocalnetCtx: this action requires localnet but got ${ctx.network}. ` +
-				`Live-network targets should filter the action out (see cli/filters.ts) or ` +
-				`the action should branch on \`ctx.network\` to handle the live-net case.`,
-		);
-	}
-}
+export type ActionRunContext<
+	TAccounts extends string = string,
+	TPackages extends string = string,
+> =
+	| LocalnetActionRunContext<TAccounts, TPackages>
+	| LiveNetActionRunContext<TAccounts, TPackages>;
 
 // ─── Top-level config ─────────────────────────────────────────────────────
 

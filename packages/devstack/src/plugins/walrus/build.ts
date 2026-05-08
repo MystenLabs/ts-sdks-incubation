@@ -6,7 +6,7 @@
 //      binaries and cargo-build only walrus-deploy. The Dockerfile
 //      lives at `./upstream.Dockerfile` and source for the deploy
 //      compile comes from a BuildKit named context (`walrus-src`).
-//      Tagged `dev-examples/walrus-service:<release-slug>-upstream`.
+//      Tagged `mysten-devstack/walrus-service:<release-slug>-upstream`.
 //      First build is ~9–10 min on M-series; rev-bumps drop to ~1–2
 //      min thanks to BuildKit cache mounts in the deploy-build stage.
 //   2. Wrapper image at `./wrapper.Dockerfile` that composes on top:
@@ -15,15 +15,24 @@
 //        - copies our forked deploy.sh + run.sh into
 //          /opt/walrus/scripts (replaces upstream's bash + the 5 sed
 //          patches we used to layer on top).
-//      Tagged `dev-examples/walrus-service:<release-slug>-sui<sui-ver>-<wrapper-rev>`.
+//      Tagged `mysten-devstack/walrus-service:<release-slug>-sui<sui-ver>-<wrapper-rev>`.
 //
 // Native arm64 build on Apple Silicon — Rosetta is a 5–10x perf hit on
 // release-profile Rust (CLAUDE.md, "avoid emulation").
+//
+// `HERE` and the Dockerfile paths resolve via `new URL(...).pathname` —
+// browser-safe equivalent of `dirname(fileURLToPath(import.meta.url))` —
+// so this module's static surface stays clean of `node:path` /
+// `node:url` named imports for `examples/*` Vite builds (the main-
+// barrel chain reaches `walrus.build` transitively).
 
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-import { buildImage, hostDockerPlatform, imageExists, pruneImagesByLabel } from '../sui/docker.js';
+import {
+	DEVSTACK_IMAGE_NAMESPACE,
+	buildContainerImage,
+	hostDockerPlatform,
+	imageExists,
+	pruneImagesByLabel,
+} from '../../runtime/docker/index.js';
 import { SUI_DEFAULT_VERSION } from '../sui/index.js';
 
 /** Pinned walrus release tag. Doubles as a git ref (release tags
@@ -46,9 +55,9 @@ const WALRUS_REPO = 'MystenLabs/walrus';
  * against the same glibc as `debian:bookworm-slim` runtime. */
 const WALRUS_RUST_TOOLCHAIN = '1.93';
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-const UPSTREAM_DOCKERFILE = resolve(HERE, 'upstream.Dockerfile');
-const WRAPPER_DOCKERFILE = resolve(HERE, 'wrapper.Dockerfile');
+const HERE = new URL('.', import.meta.url).pathname;
+const UPSTREAM_DOCKERFILE = `${HERE}upstream.Dockerfile`;
+const WRAPPER_DOCKERFILE = `${HERE}wrapper.Dockerfile`;
 
 /** Upstream-image revision suffix. Bumped when `upstream.Dockerfile`
  * changes in a way that doesn't already invalidate via `WALRUS_VERSION`
@@ -60,7 +69,7 @@ const WRAPPER_DOCKERFILE = resolve(HERE, 'wrapper.Dockerfile');
  *       `ubuntu:24.04` (glibc 2.38) so the wrapper's sui binary
  *       (built on Ubuntu 24.04) loads. `bookworm` failed with
  *       `version 'GLIBC_2.38' not found` once we tried to exec sui. */
-const UPSTREAM_REV = 'r2';
+const UPSTREAM_REV = 'r3';
 
 /** Wrapper-image revision suffix. Bumped when the wrapper Dockerfile
  * (or the deploy.sh / run.sh scripts it copies) changes meaningfully,
@@ -85,7 +94,7 @@ const UPSTREAM_REV = 'r2';
  *        the deploy file. Previous fork dropped this — `walrus get-wal`
  *        failed with "could not find a valid Walrus configuration
  *        file". */
-const WRAPPER_REV = 'r12';
+const WRAPPER_REV = 'r13';
 
 /** Slug a release tag into a tag-safe component (e.g. `devnet-v1.71.0`
  * → `devnet-v1-71-0`). Periods aren't allowed in docker tag suffixes
@@ -98,11 +107,11 @@ export function walrusImageTag(
 	version: string = WALRUS_VERSION,
 	suiVersion: string = SUI_DEFAULT_VERSION,
 ): string {
-	return `dev-examples/walrus-service:${versionSlug(version)}-sui${versionSlug(suiVersion)}-${WRAPPER_REV}`;
+	return `${DEVSTACK_IMAGE_NAMESPACE}/walrus-service:${versionSlug(version)}-sui${versionSlug(suiVersion)}-${WRAPPER_REV}`;
 }
 
 function walrusUpstreamImageTag(version: string): string {
-	return `dev-examples/walrus-service:${versionSlug(version)}-upstream-${UPSTREAM_REV}`;
+	return `${DEVSTACK_IMAGE_NAMESPACE}/walrus-service:${versionSlug(version)}-upstream-${UPSTREAM_REV}`;
 }
 
 interface EnsureWalrusImageResult {
@@ -142,7 +151,7 @@ export async function ensureWalrusImage(opts: {
 		log(
 			`devstack walrus: building ${upstreamTag} (binary fetch + walrus-deploy compile, ${platform}) — first build ~9–10 min`,
 		);
-		await buildImage({
+		await buildContainerImage({
 			tag: upstreamTag,
 			contextDir: HERE,
 			dockerfile: UPSTREAM_DOCKERFILE,
@@ -177,7 +186,7 @@ export async function ensureWalrusImage(opts: {
 	}
 
 	log(`devstack walrus: building ${imageTag} (wrapper + sui ${suiVersion})`);
-	await buildImage({
+	await buildContainerImage({
 		tag: imageTag,
 		contextDir: HERE,
 		dockerfile: WRAPPER_DOCKERFILE,
