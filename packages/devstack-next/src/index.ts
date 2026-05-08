@@ -1,6 +1,8 @@
 export { Engine } from './engine/class.js';
 export type { EngineOptions } from './engine/class.js';
 
+export { defineDevstackConfig } from './config.js';
+
 export { BuildError, buildGraph } from './engine/build.js';
 export { CycleError } from './engine/topo.js';
 export { DEVSTACK_NEXT_VERSION } from './engine/snapshot.js';
