@@ -16,6 +16,10 @@ export interface ProbeOptions {
 	 * polling. Default 1500ms. Callers with their own outer loop should
 	 * keep this strictly smaller than the loop interval. */
 	intervalMs?: number;
+	/** Extra request headers. Useful when the target performs Host-header
+	 * vhost routing (walrus.proxy nginx vhosts by Host: walrus-node-N) and
+	 * the URL alone wouldn't carry the right value. */
+	headers?: Record<string, string>;
 }
 
 export interface WaitForReachableOptions extends ProbeOptions {
@@ -47,6 +51,7 @@ async function probeUrlDetailed(
 			method: 'GET',
 			redirect: 'manual',
 			signal: AbortSignal.timeout(timeoutMs),
+			...(opts.headers !== undefined ? { headers: opts.headers } : {}),
 		});
 		if (accept(res)) return { ok: true };
 		return { ok: false, outcome: `HTTP ${res.status}` };

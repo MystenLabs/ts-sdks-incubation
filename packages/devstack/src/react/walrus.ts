@@ -1,12 +1,25 @@
 // Walrus integration helpers.
 //
-// On localnet, walrus storage nodes register themselves on chain with
-// their internal docker-network IP (`https://10.0.0.10–13:9185`) — the
-// URL nodes use to talk to each other. Browsers can't reach those IPs
-// directly and the cert is self-signed, so the `walrus()` plugin
-// publishes each node on a host port. The SDK still sees the docker
-// IPs in the on-chain committee data; we plumb a fetch override that
-// rewrites outbound URLs to the host-mapped plain-HTTP equivalents.
+// On localnet, the on-chain Walrus Committee registers each storage
+// node as `walrus-node-<idx>.localhost:<sharedPort>`. The `*.localhost`
+// reservation (RFC 6761) makes that string resolvable to 127.0.0.1
+// from any modern OS resolver / browser, so the same URL works from a
+// host browser (→ host port → walrus.proxy nginx vhost-routes by
+// `Host:` → upstream docker IP) and from inside the docker network (→
+// network alias on each storage-node container → direct).
+//
+// What still doesn't line up is the scheme: the walrus TS SDK
+// hardcodes `https://${node_info.network_address}` at
+// `WalrusClient#getCommittee`, but our storage nodes serve plain HTTP
+// (axum-server 0.8.0 panics on the self-signed handshake on
+// arm64-darwin, so devstack disables TLS via `tls.disable_tls: true`
+// in each per-node yaml). Until the upstream `storageNodeUrlScheme`
+// option ships in `@mysten/walrus`, we plumb a fetch override that
+// rewrites the SDK's outbound storage-node URLs from `https://` to
+// `http://`. The override only sees storage-node URLs because it's
+// scoped via `storageNodeClientOptions.fetch` (the SDK's
+// upload-relay / sui-RPC paths use different fetch instances), so an
+// unconditional scheme swap is safe.
 //
 // `localnetWalrusOptions(manifest)` returns the localnet-specific
 // pieces (`packageConfig` + `storageNodeClientOptions.fetch`) so app
@@ -20,13 +33,6 @@
 // On testnet/mainnet, the same call site uses the SDK's built-in
 // configuration without the override.
 
-
-interface DevstackWalrusNode {
-	ip: string;
-	apiUrl: string;
-	hostApiUrl: string;
-}
-
 interface DevstackManifestShape {
 	registry?: {
 		packages?: Array<{
@@ -34,9 +40,6 @@ interface DevstackManifestShape {
 			packageId: string;
 			captured?: Record<string, string>;
 		}>;
-		walrus?: {
-			nodes?: DevstackWalrusNode[];
-		};
 	};
 }
 
@@ -44,9 +47,9 @@ export interface LocalnetWalrusOptions {
 	/** `systemObjectId` + `stakingPoolId` for `WalrusClient`. Read from
 	 * the manifest's `walrus` package `captured` fields. */
 	packageConfig: { systemObjectId: string; stakingPoolId: string };
-	/** Fetch override that rewrites docker-internal storage-node URLs to
-	 * the host-mapped plain-HTTP equivalents. Spread into the
-	 * `WalrusClient`'s `storageNodeClientOptions`. */
+	/** Fetch override that rewrites the storage-node SDK's outbound
+	 * `https://` URLs to `http://`. Spread into the `WalrusClient`'s
+	 * `storageNodeClientOptions`. */
 	storageNodeClientOptions: { fetch: typeof globalThis.fetch };
 }
 
@@ -74,7 +77,7 @@ export interface LocalnetWalrusOptionsInit {
  * config-input piece differs.
  *
  * Throws if the manifest is empty or doesn't carry a `walrus` package
- * + nodes — that means devstack hasn't brought walrus up yet.
+ * — that means devstack hasn't brought walrus up yet.
  */
 export function localnetWalrusOptions(
 	manifest: unknown,
@@ -82,15 +85,9 @@ export function localnetWalrusOptions(
 ): LocalnetWalrusOptions {
 	const m = manifest as DevstackManifestShape;
 	const walrusPkg = m.registry?.packages?.find((p) => p.name === 'walrus');
-	const nodes = m.registry?.walrus?.nodes ?? [];
 	if (walrusPkg === undefined) {
 		throw new Error(
 			'localnetWalrusOptions: no `walrus` package in manifest. Has `devstack up` finished bringing walrus up?',
-		);
-	}
-	if (nodes.length === 0) {
-		throw new Error(
-			"localnetWalrusOptions: no walrus nodes in manifest. The `walrus.register` action probably hasn't completed.",
 		);
 	}
 	const systemObjectId = walrusPkg.captured?.systemObject;
@@ -103,51 +100,24 @@ export function localnetWalrusOptions(
 	const baseFetch = init.fetch ?? globalThis.fetch.bind(globalThis);
 	return {
 		packageConfig: { systemObjectId, stakingPoolId },
-		storageNodeClientOptions: { fetch: makeFetchOverride(baseFetch, nodes) },
+		storageNodeClientOptions: { fetch: makeHttpsToHttpFetch(baseFetch) },
 	};
 }
 
-function makeFetchOverride(
-	baseFetch: typeof globalThis.fetch,
-	nodes: ReadonlyArray<DevstackWalrusNode>,
-): typeof globalThis.fetch {
-	// Match by host:port suffix instead of full URL prefix — the
-	// on-chain Committee data baked at `walrus.deploy` time records
-	// node addresses as `https://<ip>:9185` (TLS was the upstream
-	// default), but the actual storage nodes run plain HTTP because
-	// devstack disables TLS in their yaml (axum-server panic on
-	// arm64-darwin). A scheme-locked match would let those `https://`
-	// URLs pass through unmodified, leaving the browser to attempt
-	// connections to docker-internal IPs that aren't reachable from
-	// the host. Matching `://<ip>:9185` rewrites both schemes to the
-	// host-mapped HTTP port the walrus.proxy nginx sidecar exposes.
-	const rules = nodes.map((n) => {
-		try {
-			const parsed = new URL(n.apiUrl);
-			return { hostPort: `${parsed.hostname}:${parsed.port || (parsed.protocol === 'https:' ? '443' : '80')}`, to: n.hostApiUrl };
-		} catch {
-			return { hostPort: n.apiUrl, to: n.hostApiUrl };
-		}
-	});
+const HTTPS_PREFIX = 'https://';
+
+function makeHttpsToHttpFetch(baseFetch: typeof globalThis.fetch): typeof globalThis.fetch {
 	return ((input, init) => {
 		const url =
 			typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
-		for (const rule of rules) {
-			const idx = url.indexOf(`://${rule.hostPort}`);
-			if (idx > 0 && idx < 10) {
-				// `://` lives at position 5 (`http`) or 6 (`https`); cap
-				// at 10 to make sure we're matching the scheme
-				// separator and not stray text. Suffix after the
-				// host:port (path + query) is preserved.
-				const tailStart = idx + 3 + rule.hostPort.length;
-				const rewritten = rule.to + url.slice(tailStart);
-				if (typeof input === 'string' || input instanceof URL) {
-					return baseFetch(rewritten, init);
-				}
-				// Rebuild Request with the new URL — Request.url is read-only.
-				return baseFetch(new Request(rewritten, input), init);
-			}
+		if (!url.startsWith(HTTPS_PREFIX)) {
+			return baseFetch(input as RequestInfo, init);
 		}
-		return baseFetch(input as RequestInfo, init);
+		const rewritten = `http://${url.slice(HTTPS_PREFIX.length)}`;
+		if (typeof input === 'string' || input instanceof URL) {
+			return baseFetch(rewritten, init);
+		}
+		// Rebuild Request with the new URL — Request.url is read-only.
+		return baseFetch(new Request(rewritten, input), init);
 	}) as typeof globalThis.fetch;
 }
