@@ -30,6 +30,22 @@
 		".": {
 			"types": "./dist/index.d.mts",
 			"import": "./dist/index.mjs"
+		},
+		"./helpers": {
+			"types": "./dist/helpers/index.d.mts",
+			"import": "./dist/helpers/index.mjs"
+		},
+		"./persistence": {
+			"types": "./dist/persistence/index.d.mts",
+			"import": "./dist/persistence/index.mjs"
+		},
+		"./plugins": {
+			"types": "./dist/plugins/index.d.mts",
+			"import": "./dist/plugins/index.mjs"
+		},
+		"./shapes": {
+			"types": "./dist/shapes/index.d.mts",
+			"import": "./dist/shapes/index.mjs"
 		}
 	},
 	"engines": {
