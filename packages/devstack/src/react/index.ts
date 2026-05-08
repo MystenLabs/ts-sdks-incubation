@@ -24,8 +24,4 @@ export {
 	type LocalnetDappKitConfigOptions,
 	type LocalnetMvrOverrides,
 } from './create-devstack-dapp-kit.js';
-export {
-	localnetWalrusOptions,
-	type LocalnetWalrusOptions,
-	type LocalnetWalrusOptionsInit,
-} from './walrus.js';
+export { localnetWalrusOptions, type LocalnetWalrusOptions } from './walrus.js';
