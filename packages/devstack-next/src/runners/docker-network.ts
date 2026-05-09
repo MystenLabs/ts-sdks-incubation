@@ -77,7 +77,7 @@ interface NetworkSpec {
 }
 
 function deriveNetworkSpec(env: { appName: string; stack?: string }): NetworkSpec {
-	const stack = env.stack ?? 'default';
+	const stack = env.stack ?? 'main';
 	const octet = dockerNetworkOctet(env.appName, stack);
 	return {
 		name: `${env.appName}-${stack}`,

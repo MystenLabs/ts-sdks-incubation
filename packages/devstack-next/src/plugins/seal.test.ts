@@ -7,7 +7,12 @@ import type { Dep, Env, Provides } from '../engine/types.js';
 import { dep } from '../factories/dep.js';
 import { define } from '../factories/define.js';
 import { sui } from './sui.js';
-import { seal, sealLocalnet, type SealState } from './seal.js';
+import {
+	parseSealKeygenOutput,
+	seal,
+	sealLocalnet,
+	type SealState,
+} from './seal.js';
 
 const env: Env = { appName: 'demo', appDir: '/tmp/seal-test', network: 'localnet', stack: 'main' };
 
@@ -43,7 +48,7 @@ describe('seal (url override — no Docker)', () => {
 });
 
 describe('seal (graph composition — managed mode, no real Docker)', () => {
-	it('builds graph with seal.image + seal.key-server.container + seal.key-server + ports', () => {
+	it('builds graph with seal.image + seal.key-server.container + seal.key-server + seal.keygen + ports', () => {
 		const node = seal.create({});
 		const engine = new Engine({ stack: [node] }, { env });
 		const state = engine.getState();
@@ -51,6 +56,9 @@ describe('seal (graph composition — managed mode, no real Docker)', () => {
 		expect(state.nodes.has('seal.key-server.container')).toBe(true);
 		// Image build chains content-addressed via dockerImage.
 		expect(state.nodes.has('seal.image')).toBe(true);
+		// Keygen chain (5c): one-shot container + transformer.
+		expect(state.nodes.has('seal.keygen.container')).toBe(true);
+		expect(state.nodes.has('seal.keygen')).toBe(true);
 		expect(state.nodes.has('ports')).toBe(true);
 	});
 
@@ -140,7 +148,7 @@ describe('sealLocalnet (graph composition — no real chain)', () => {
 			start: async () => ({ keypair: Ed25519Keypair.generate() }),
 		});
 		const signerDep = signerNode.get('signer') as unknown as Dep<unknown, Ed25519Keypair>;
-		const ops = sealLocalnet({ signer: signerDep, publicKeyHex: '0xdeadbeef' });
+		const ops = sealLocalnet({ signer: signerDep });
 		return { signerNode, ops };
 	}
 
@@ -184,6 +192,46 @@ describe('sealLocalnet (graph composition — no real chain)', () => {
 		expect(state.nodes.has('publish.seal')).toBe(true);
 		expect(state.nodes.has('seal.source')).toBe(true);
 		expect(state.nodes.has('seal.key-server')).toBe(true);
+	});
+});
+
+describe('seal.keygen (parseSealKeygenOutput)', () => {
+	it('parses Master/Public key lines from seal-cli genkey output', () => {
+		const stdout = [
+			'Some preamble.',
+			'Master key: 0xabc123',
+			'Public key: 0xdef456',
+			'Trailing noise.',
+		].join('\n');
+		const keys = parseSealKeygenOutput(stdout);
+		expect(keys.masterKey).toBe('0xabc123');
+		expect(keys.publicKey).toBe('0xdef456');
+	});
+
+	it('throws on missing Master key line', () => {
+		expect(() => parseSealKeygenOutput('Public key: 0xdef\n')).toThrow(/seal-cli genkey/);
+	});
+
+	it('throws on missing Public key line', () => {
+		expect(() => parseSealKeygenOutput('Master key: 0xabc\n')).toThrow(/seal-cli genkey/);
+	});
+});
+
+describe('seal (publicKey / masterKey provides — managed-mode-only)', () => {
+	it('throws when consumed in url-override mode', async () => {
+		const consumer = define({
+			name: 'consumer',
+			deps: { pk: seal.get('publicKey') },
+			start: async ({ deps }) => ({ pk: (deps as { pk: string }).pk }),
+		});
+		const engine = new Engine(
+			{ stack: [seal.create({ url: 'https://stub/' }), consumer] },
+			{ env },
+		);
+		const result = await engine.runOnce();
+		const errored = result.errored.find((e) => e.name === 'consumer');
+		expect(errored).toBeDefined();
+		expect(errored!.error.message).toMatch(/only available in managed mode/);
 	});
 });
 

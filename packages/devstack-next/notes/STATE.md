@@ -42,9 +42,11 @@ f1d465b  stack new + stack use CLI subcommands
          5a per-stack docker network primitive
          sui-localnet + walrus.deploy join via `sui-localnet` alias
          5b seal image build via dockerImage (binary fetch, no compile)
+         5c seal.keygen via dockerOneShot (seal-cli genkey, disk-cached)
+         dockerOneShot: idempotent re-runs, --entrypoint config
 ```
 
-Tests: 357 passing. Typecheck clean. Build clean.
+Tests: 363 passing. Typecheck clean. Build clean.
 
 ## What's built
 
@@ -80,6 +82,11 @@ src/runners/        L4 — process/container/image runners
                       (deploy scripts, init jobs). Same image-Dep / env /
                       volumes surface; throws on non-zero exit with the
                       last 32 KB of combined output in the message.
+                      `entrypoint:` overrides `--entrypoint`; `start`
+                      bails early on stable `inputHash` so re-runs
+                      don't fire unless inputs change (one-shot
+                      semantics — fresh keygen runs would silently
+                      invalidate captured outputs).
   docker-network.ts   `dockerNetwork` — singleton per-(app, stack) bridge
                       network with deterministic `/24` subnet
                       (`10.<octet>.0.0/24`, octet ∈ [1, 250] hashed
@@ -133,12 +140,19 @@ src/plugins/        L6
                       dockerImage (vendored Dockerfile under
                       seal/docker/, binary-fetch from the seal GitHub
                       release at SEAL_TAG — no rust compile) →
-                      dockerContainer. `image:` override skips the
-                      build for pre-built tags; `url:` skips Docker
-                      entirely. `sealLocalnet({...})` sibling factory
-                      exposes gitFetch + publishMove +
-                      KeyServer-register producers for localnet
-                      bring-up.
+                      dockerContainer. The container's `MASTER_KEY`
+                      env reads from `seal.keygen` (a dockerOneShot
+                      running `seal-cli genkey` once, parsing master+
+                      public key out of stdout, persisting to
+                      `<stackDir>/.keys/seal-master-key.json` mode
+                      0600, and exposing `masterKey` / `publicKey` /
+                      `full` Deps). Schema-level `seal.get('publicKey')`
+                      / `masterKey` surface the keys to consumers
+                      (throws in url-override mode). `image:` override
+                      skips the build for pre-built tags; `url:` skips
+                      Docker entirely. `sealLocalnet({...})` sibling
+                      factory drops the `publicKeyHex` opt — its
+                      register step Deps on `seal.get('publicKey')`.
   sui.ts              localnet — chains dockerImage (vendored Dockerfile
                       under sui/docker/) → dockerContainer; image build
                       is content-addressed via SUI_VERSION build-arg.
@@ -220,11 +234,6 @@ fan-out is automatic: bumping a build arg flips the image's identity
 ## What's deferred / not yet built
 
 ### Plugin features
-- **seal keygen**: 5b shipped (image bakes `seal-cli` and `key-server`).
-  `sealLocalnet` still requires callers to supply the BLS master /
-  public keys themselves; 5c lands `seal.keygen` (a `dockerOneShot`
-  running `seal-cli genkey`) so the bootstrap pair is produced
-  end-to-end without a manual step.
 - **walrus per-stack docker network**: 5a primitive landed (sui +
   walrus.deploy join the per-stack bridge with `sui-localnet` alias).
   Storage nodes still don't get fixed IPs — that's 5e. Real-running

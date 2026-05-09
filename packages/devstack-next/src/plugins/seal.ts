@@ -1,9 +1,11 @@
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Keypair } from '@mysten/sui/cryptography';
 import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
 import type { SuiObjectChange } from '@mysten/sui/jsonRpc';
 import { Transaction } from '@mysten/sui/transactions';
-import type { Dep, Provides } from '../engine/types.js';
+import type { Dep, Env, Provides } from '../engine/types.js';
 import { dep } from '../factories/dep.js';
 import { define } from '../factories/define.js';
 import { defineSchema, type SchemaInstanceConfig } from '../factories/define-schema.js';
@@ -12,6 +14,7 @@ import { publishMove } from '../helpers/publish-move.js';
 import { publishViaSuiCli } from '../helpers/publish-via-cli.js';
 import { dockerContainer } from '../runners/docker-container.js';
 import { dockerImage } from '../runners/docker-image.js';
+import { dockerOneShot } from '../runners/docker-one-shot.js';
 import type { Endpoint, Package } from '../shapes/index.js';
 import { sui } from './sui.js';
 
@@ -56,13 +59,46 @@ export interface SealOptions {
 export interface SealState {
 	url: string;
 	managed: boolean;
+	/** Hex-encoded BLS12-381 master key. Set in managed mode (sourced
+	 * from the per-stack `seal.keygen` producer); undefined when running
+	 * against an externally-managed key server (`url:` override). */
+	masterKey?: string;
+	/** Hex-encoded BLS12-381 public key paired with `masterKey`. Same
+	 * managed-mode-only semantics. `sealLocalnet({...}).register` Deps
+	 * on this so the on-chain `KeyServer.public_key` matches the master
+	 * key the key-server container loads at boot. */
+	publicKey?: string;
 }
 
 const provides = {
 	keyServer: dep((s: SealState) => ({ url: s.url })),
 	url: dep((s: SealState) => s.url),
 	full: dep((s: SealState) => s),
+	masterKey: dep((s: SealState) => {
+		if (s.masterKey === undefined) {
+			throw new Error('seal.masterKey: only available in managed mode (no `url:` override)');
+		}
+		return s.masterKey;
+	}),
+	publicKey: dep((s: SealState) => {
+		if (s.publicKey === undefined) {
+			throw new Error('seal.publicKey: only available in managed mode (no `url:` override)');
+		}
+		return s.publicKey;
+	}),
 } satisfies Provides<SealState>;
+
+export interface SealKeygenState {
+	masterKey: string;
+	publicKey: string;
+	generatedAt: number;
+}
+
+const keygenProvides = {
+	masterKey: dep((s: SealKeygenState) => s.masterKey),
+	publicKey: dep((s: SealKeygenState) => s.publicKey),
+	full: dep((s: SealKeygenState) => s),
+} satisfies Provides<SealKeygenState>;
 
 // `seal` schema. `seal.create({})` returns a single producer:
 //   - Default → a pure transformer that depends on a private
@@ -112,21 +148,60 @@ function managedInstance(
 					context: { path: DOCKER_CONTEXT },
 					args: { SEAL_TAG: version },
 				});
+	const imageRef = typeof image === 'string' ? image : image.get('tag');
+
+	// Keygen chain. The dockerOneShot runs `seal-cli genkey` once; the
+	// transformer parses its tail and persists to a 0600 disk file under
+	// `<stackDir>/.keys/`. On subsequent runs (snapshot wipe but disk
+	// kept; or just warm restart with stable inputs) the transformer
+	// returns the cached file contents — fresh keys on every cycle would
+	// silently invalidate the on-chain `KeyServer` registration.
+	const keygenContainer = dockerOneShot({
+		name: 'seal.keygen.container',
+		runsAs: 'seal-keygen',
+		image: imageRef,
+		entrypoint: 'seal-cli',
+		args: ['genkey'],
+	});
+
+	const keygenDeps = { container: keygenContainer.get('full') };
+	const keygen = define<SealKeygenState, typeof keygenProvides, typeof keygenDeps>({
+		name: 'seal.keygen',
+		runsAs: 'seal-keygen',
+		deps: keygenDeps,
+		provides: keygenProvides,
+		start: async ({ env, deps }) => {
+			const cached = readSealKeygenFile(env);
+			if (cached !== undefined) return cached;
+			const tail = deps.container.tail;
+			const keys = parseSealKeygenOutput(tail);
+			const state: SealKeygenState = { ...keys, generatedAt: Date.now() };
+			writeSealKeygenFile(env, state);
+			return state;
+		},
+	});
 
 	const container = dockerContainer({
 		name: 'seal.key-server.container',
 		runsAs: 'seal',
-		image: typeof image === 'string' ? image : image.get('tag'),
+		image: imageRef,
+		deps: { masterKey: keygen.get('masterKey') },
+		containerEnv: ({ deps }) => ({ MASTER_KEY: deps.masterKey }),
 		ports: [{ slot: 'seal.key-server', containerPort }],
 		readyTimeoutMs,
 	});
 
 	return {
 		name: 'seal.key-server',
-		deps: { hostPort: container.get('hostPort', { slot: 'seal.key-server' }) },
-		start: async ({ deps: { hostPort } }): Promise<SealState> => ({
+		deps: {
+			hostPort: container.get('hostPort', { slot: 'seal.key-server' }),
+			keys: keygen.get('full'),
+		},
+		start: async ({ deps: { hostPort, keys } }): Promise<SealState> => ({
 			url: `http://127.0.0.1:${hostPort}`,
 			managed: true,
+			masterKey: keys.masterKey,
+			publicKey: keys.publicKey,
 		}),
 		represents: {
 			endpoints: (s: SealState): Endpoint[] => [
@@ -134,6 +209,62 @@ function managedInstance(
 			],
 		},
 	};
+}
+
+// Parse `seal-cli genkey` stdout. Format (one line each):
+//   Master key: <hex>
+//   Public key: <hex>
+// Both are BLS12-381 elements; the hex prefix may or may not include
+// `0x` depending on the seal-cli build. The on-chain `vector<u8>`
+// argument expects raw bytes, so we strip `0x` later.
+export function parseSealKeygenOutput(stdout: string): {
+	masterKey: string;
+	publicKey: string;
+} {
+	const masterMatch = stdout.match(/^Master key:\s*(\S+)/m);
+	const publicMatch = stdout.match(/^Public key:\s*(\S+)/m);
+	const master = masterMatch?.[1];
+	const pub = publicMatch?.[1];
+	if (master === undefined || pub === undefined) {
+		throw new Error(
+			`seal.keygen: could not parse seal-cli genkey output (last 1KB):\n${stdout.slice(-1024)}`,
+		);
+	}
+	return { masterKey: master, publicKey: pub };
+}
+
+function sealKeygenPath(env: Env): string {
+	return join(env.appDir, '.devstack', 'stacks', env.stack ?? 'main', '.keys', 'seal-master-key.json');
+}
+
+function readSealKeygenFile(env: Env): SealKeygenState | undefined {
+	const path = sealKeygenPath(env);
+	if (!existsSync(path)) return undefined;
+	try {
+		const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<SealKeygenState>;
+		if (
+			typeof parsed.masterKey !== 'string' ||
+			typeof parsed.publicKey !== 'string' ||
+			typeof parsed.generatedAt !== 'number'
+		) {
+			return undefined;
+		}
+		return {
+			masterKey: parsed.masterKey,
+			publicKey: parsed.publicKey,
+			generatedAt: parsed.generatedAt,
+		};
+	} catch {
+		// Corrupt cache file — fall through to re-parse the container's
+		// fresh tail. Old devstack used the same "best-effort cache" model.
+		return undefined;
+	}
+}
+
+function writeSealKeygenFile(env: Env, state: SealKeygenState): void {
+	const path = sealKeygenPath(env);
+	mkdirSync(join(path, '..'), { recursive: true, mode: 0o700 });
+	writeFileSync(path, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
 }
 
 function staticInstance(url: string): SchemaInstanceConfig<SealState, typeof provides, any> {
@@ -152,11 +283,6 @@ export interface SealLocalnetOptions {
 	/** Publisher signer for both publish + register. Typically
 	 * `accounts.get('signer', { name: 'publisher' })`. */
 	signer: Dep<unknown, Keypair>;
-	/** Hex-encoded BLS12-381 public key. Must pair with the master key
-	 * loaded into the seal key-server container's `MASTER_KEY` env.
-	 * Generated by `seal-cli genkey` on a one-time bootstrap; cache the
-	 * pair on disk and re-supply both on subsequent runs. */
-	publicKeyHex: string;
 	/** Pinned seal release tag. Default `'seal-v0.6.6'` — must match
 	 * `SEAL_DEFAULT_VERSION` baked into the key-server image. */
 	version?: string;
@@ -189,13 +315,14 @@ const registerProvides = {
 //     `key_server::create_and_transfer_v2_independent_server` on the
 //     just-published seal package. Reads the key-server URL from the
 //     `seal` schema instance's `full` Dep so it adapts to the docker-
-//     allocated host port.
+//     allocated host port, and the matching BLS public key from
+//     `seal.get('publicKey')` (sourced from `seal.keygen` — paired
+//     with the master key the key-server container loads at boot).
 //
-// Both producers chain `sui.get('rpc')` ambiently; the engine pulls the
+// All producers chain `sui.get('rpc')` ambiently; the engine pulls the
 // running sui instance into the graph transitively. Caller threads in
-// the publisher signer + the public-key hex (paired with the master
-// key the key-server container loads — keep them in sync via a
-// one-time `seal-cli genkey` bootstrap).
+// the publisher signer; everything else (publish source, public key)
+// flows from existing graph nodes.
 export function sealLocalnet(opts: SealLocalnetOptions) {
 	const version = opts.version ?? SEAL_DEFAULT_VERSION;
 	const keyServerName = opts.keyServerName ?? 'devstack-local';
@@ -221,6 +348,7 @@ export function sealLocalnet(opts: SealLocalnetOptions) {
 			signer: opts.signer,
 			rpc: sui.get('rpc'),
 			pkg: publish.get('package'),
+			publicKey: seal.get('publicKey'),
 			keyServer: seal.get('full'),
 		},
 		provides: registerProvides,
@@ -229,9 +357,10 @@ export function sealLocalnet(opts: SealLocalnetOptions) {
 				signer: Keypair;
 				rpc: { url: string };
 				pkg: Package;
+				publicKey: string;
 				keyServer: SealState;
 			};
-			const pkBytes = decodeHex(opts.publicKeyHex);
+			const pkBytes = decodeHex(d.publicKey);
 			const tx = new Transaction();
 			tx.moveCall({
 				target: `${d.pkg.packageId}::key_server::create_and_transfer_v2_independent_server`,
