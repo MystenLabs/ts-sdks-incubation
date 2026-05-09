@@ -296,6 +296,113 @@ describe('dockerContainer', () => {
 	);
 
 	itDocker(
+		'snapshot lifecycle commits writable layer; restore boots from committedTag',
+		async () => {
+			// Stateful container pattern: write a marker file into the
+			// writable layer, commit the snapshot, stop the engine,
+			// start a fresh engine with the saved SnapshotRecord →
+			// the marker should still be there because the new
+			// container booted from the committed tag, not the base
+			// image.
+			const node = dockerContainer({
+				name: 'stateful',
+				image: 'alpine:3.19',
+				args: ['sleep', '120'],
+				snapshot: { commit: true, quiesce: 'pause' },
+			});
+
+			// Cycle 1: start, write marker, save snapshot.
+			const engine1 = new Engine({ stack: [node] }, { env });
+			await engine1.runOnce();
+			const state1 = engine1.getState().nodes.get('stateful')?.state as
+				| DockerContainerState
+				| undefined;
+			trackContainer(state1?.containerId);
+			expect(state1).toBeDefined();
+			// `--rm` should be off for stateful containers so docker
+			// stop+commit+start works for `quiesce: 'stop'`. We're
+			// using pause here, but verify the auto-remove flag
+			// behavior just by reading docker inspect.
+			const autoRemoveOut = execFileSync(
+				'docker',
+				['inspect', '-f', '{{.HostConfig.AutoRemove}}', state1!.containerId],
+				{ encoding: 'utf8' },
+			).trim();
+			expect(autoRemoveOut).toBe('false');
+
+			// Write a marker file.
+			execFileSync('docker', [
+				'exec',
+				state1!.containerId,
+				'sh',
+				'-c',
+				'echo persistent > /var/marker-state',
+			]);
+
+			// Save snapshot — runs the snapshot lifecycle hook,
+			// committing the writable layer.
+			const snapshot = await engine1.saveSnapshot();
+			const snapState = snapshot.nodeStates['stateful']?.state as
+				| DockerContainerState
+				| undefined;
+			expect(snapState?.committedTag).toMatch(
+				/^devstack-snapshot\/stateful:c\d{8}T\d{6}$/,
+			);
+			expect(snapState?.committedAt).toBeGreaterThan(0);
+			const committedTag = snapState!.committedTag!;
+
+			// Verify the labels were applied.
+			const labelsOut = execFileSync(
+				'docker',
+				['image', 'inspect', '-f', '{{json .Config.Labels}}', committedTag],
+				{ encoding: 'utf8' },
+			).trim();
+			const labels = JSON.parse(labelsOut) as Record<string, string>;
+			expect(labels['devstack.commit-of']).toBe('stateful');
+			expect(labels['devstack.app']).toBe(env.appName);
+			expect(labels['devstack.stack']).toBe('main');
+
+			// Cleanup engine 1 — removes the container.
+			await engine1.stop();
+			expect(await checkRunning(state1!.containerId)).toBe(false);
+
+			// Cycle 2: fresh engine with the saved snapshot.
+			// Should use the committedTag, not alpine:3.19.
+			const engine2 = new Engine(
+				{ stack: [node] },
+				{ env, initialSnapshot: snapshot },
+			);
+			await engine2.runOnce();
+			const state2 = engine2.getState().nodes.get('stateful')?.state as
+				| DockerContainerState
+				| undefined;
+			trackContainer(state2?.containerId);
+			expect(state2!.image).toBe(committedTag);
+			expect(state2!.committedTag).toBe(committedTag);
+
+			// Marker file should still be there — chain state
+			// (writable layer) survived `docker rm` via the commit.
+			const markerOut = execFileSync(
+				'docker',
+				['exec', state2!.containerId, 'cat', '/var/marker-state'],
+				{ encoding: 'utf8' },
+			).trim();
+			expect(markerOut).toBe('persistent');
+
+			await engine2.stop();
+			// Track the committed tag for cleanup.
+			try {
+				execFileSync('docker', ['image', 'rm', '-f', committedTag], {
+					stdio: 'ignore',
+				});
+			} catch {
+				// best-effort
+			}
+		},
+		120_000,
+	);
+
+	itDocker(
 		'errors and removes the container when readyProbe times out',
 		async () => {
 			const node = dockerContainer({

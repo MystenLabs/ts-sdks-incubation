@@ -37,6 +37,7 @@ export {
 	dockerOneShot,
 	hostProcess,
 	type DockerContainerConfig,
+	type DockerContainerSnapshotConfig,
 	type DockerContainerState,
 	type DockerImageConfig,
 	type DockerImageContext,
