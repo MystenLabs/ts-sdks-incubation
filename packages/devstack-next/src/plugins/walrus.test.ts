@@ -1,0 +1,137 @@
+import { describe, expect, it } from 'vitest';
+import { Engine } from '../engine/class.js';
+import type { Env } from '../engine/types.js';
+import { define } from '../factories/define.js';
+import {
+	walrus,
+	type WalrusNetworkState,
+	type WalrusNodeState,
+} from './walrus.js';
+
+const env: Env = { appName: 'demo', appDir: '/tmp/walrus-test', network: 'localnet', stack: 'main' };
+
+describe('walrus (no Docker — rpcUrls override)', () => {
+	it('rejects nodeCount of 0', () => {
+		expect(() => walrus({ nodeCount: 0 })).toThrow(/at least 1/);
+	});
+
+	it('rejects mismatched rpcUrls length', () => {
+		expect(() => walrus({ nodeCount: 3, rpcUrls: ['a', 'b'] })).toThrow(
+			/length .* must equal nodeCount/,
+		);
+	});
+
+	it('builds N node producers + an aggregator', () => {
+		const w = walrus({ rpcUrls: ['http://n0/', 'http://n1/', 'http://n2/'] });
+		expect(w.nodes).toHaveLength(3);
+		expect(w.nodes.map((n) => n.name)).toEqual([
+			'walrus.node-0',
+			'walrus.node-1',
+			'walrus.node-2',
+		]);
+		expect(w.appNetwork.name).toBe('walrus.app-network');
+	});
+
+	it('aggregator publishes the URLs of every node', async () => {
+		const w = walrus({ rpcUrls: ['http://n0:9000/', 'http://n1:9000/'] });
+		const engine = new Engine({ stack: [w.appNetwork] }, { env });
+		const result = await engine.runOnce();
+		expect(result.errored).toEqual([]);
+		const network = engine.getState().nodes.get('walrus.app-network')!.state as WalrusNetworkState;
+		expect(network.nodeCount).toBe(2);
+		expect(network.urls.sort()).toEqual(['http://n0:9000/', 'http://n1:9000/']);
+	});
+
+	it('appNetwork pulls in every node transitively', async () => {
+		const w = walrus({ rpcUrls: ['http://n0/', 'http://n1/'] });
+		// Only push appNetwork; nodes resolve via deps.
+		const engine = new Engine({ stack: [w.appNetwork] }, { env });
+		await engine.runOnce();
+		const state = engine.getState();
+		expect(state.nodes.has('walrus.node-0')).toBe(true);
+		expect(state.nodes.has('walrus.node-1')).toBe(true);
+		expect(state.nodes.has('walrus.app-network')).toBe(true);
+	});
+
+	it('node.rpc Dep resolves to { url } per node', async () => {
+		const w = walrus({ rpcUrls: ['http://n0/', 'http://n1/'] });
+		const consumer = define({
+			name: 'consumer',
+			deps: { rpc0: w.nodes[0]!.get('rpc'), rpc1: w.nodes[1]!.get('rpc') },
+			start: async ({ deps: { rpc0, rpc1 } }) => ({ a: rpc0.url, b: rpc1.url }),
+		});
+		const engine = new Engine({ stack: [w.appNetwork, consumer] }, { env });
+		await engine.runOnce();
+		const state = engine.getState().nodes.get('consumer')!.state as { a: string; b: string };
+		expect(state.a).toBe('http://n0/');
+		expect(state.b).toBe('http://n1/');
+	});
+
+	it('appNetwork.urls Dep projects the URL list', async () => {
+		const w = walrus({ rpcUrls: ['http://n0/', 'http://n1/', 'http://n2/'] });
+		const consumer = define({
+			name: 'consumer',
+			deps: { urls: w.appNetwork.get('urls') },
+			start: async ({ deps: { urls } }) => ({ count: urls.length, joined: urls.join(',') }),
+		});
+		const engine = new Engine({ stack: [w.appNetwork, consumer] }, { env });
+		await engine.runOnce();
+		const state = engine.getState().nodes.get('consumer')!.state as {
+			count: number;
+			joined: string;
+		};
+		expect(state.count).toBe(3);
+		expect(state.joined).toContain('http://n0/');
+	});
+
+	it('node represents.endpoints projects an Endpoint', async () => {
+		const w = walrus({ rpcUrls: ['http://n0/'] });
+		const engine = new Engine({ stack: [w.appNetwork] }, { env });
+		await engine.runOnce();
+		const node0 = engine.getState().nodes.get('walrus.node-0')!;
+		const endpoints = node0.representations?.endpoints as { name: string; url: string }[];
+		expect(endpoints[0]?.name).toBe('walrus-node-0');
+		expect(endpoints[0]?.url).toBe('http://n0/');
+	});
+
+	it('node state includes index + rpcUrl', async () => {
+		const w = walrus({ rpcUrls: ['http://a/', 'http://b/'] });
+		const engine = new Engine({ stack: [w.appNetwork] }, { env });
+		await engine.runOnce();
+		const node1 = engine.getState().nodes.get('walrus.node-1')!.state as WalrusNodeState;
+		expect(node1.index).toBe(1);
+		expect(node1.rpcUrl).toBe('http://b/');
+	});
+});
+
+describe('walrus (graph composition — no real Docker)', () => {
+	// Mirrors the sui-localnet test: verify the producers compose
+	// dockerContainer rather than calling docker directly. The graph
+	// surface must include `walrus.node-${i}.container` siblings so any
+	// snapshot / lifecycle pass can walk them uniformly.
+	it('container path: node + node.container + ports siblings', () => {
+		const w = walrus({ nodeCount: 2 });
+		const engine = new Engine({ stack: [w.appNetwork] }, { env });
+		const state = engine.getState();
+		expect(state.nodes.has('walrus.node-0')).toBe(true);
+		expect(state.nodes.has('walrus.node-0.container')).toBe(true);
+		expect(state.nodes.has('walrus.node-1')).toBe(true);
+		expect(state.nodes.has('walrus.node-1.container')).toBe(true);
+		expect(state.nodes.has('walrus.app-network')).toBe(true);
+		expect(state.nodes.has('ports')).toBe(true);
+	});
+
+	it('rpcUrls override skips docker — no .container nodes in the graph', () => {
+		const w = walrus({ rpcUrls: ['http://x/', 'http://y/'] });
+		const engine = new Engine({ stack: [w.appNetwork] }, { env });
+		const state = engine.getState();
+		expect(state.nodes.has('walrus.node-0')).toBe(true);
+		expect(state.nodes.has('walrus.node-0.container')).toBe(false);
+		expect(state.nodes.has('walrus.node-1.container')).toBe(false);
+		expect(state.nodes.has('ports')).toBe(false);
+	});
+});
+
+// Real-Docker exercises happen in `runners/docker-container.test.ts`; the
+// walrus tests above cover wiring (graph composition, dep fan-in,
+// represents) without pulling a real image, mirroring `plugins/sui.test.ts`.
