@@ -20,6 +20,8 @@ Commands:
                     construct an engine.
   snapshot          Capture / restore labeled snapshots
                     (save | restore | list | delete).
+  reset             Stop snapshot-managed containers / processes
+                    and clear per-stack on-disk state.
 
 Run \`devstack-next <command> --help\` for command-specific options.
 `;
@@ -46,6 +48,10 @@ export async function main(argv: readonly string[]): Promise<number> {
 		}
 		case 'snapshot': {
 			const mod = await import('./snapshot.js');
+			return mod.main(subArgv);
+		}
+		case 'reset': {
+			const mod = await import('./reset.js');
 			return mod.main(subArgv);
 		}
 		default:

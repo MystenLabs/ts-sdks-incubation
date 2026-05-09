@@ -15,6 +15,7 @@ import {
 } from '../persistence/index.js';
 import { sui } from '../plugins/sui.js';
 import { runApply } from './apply.js';
+import { runReset } from './reset.js';
 import {
 	runSnapshotDelete,
 	runSnapshotList,
@@ -374,6 +375,125 @@ describe('runSnapshot*', () => {
 	});
 });
 
+describe('runReset', () => {
+	const localEnv = (override?: Partial<Env>): Env => ({
+		appName: 'demo',
+		appDir,
+		network: 'localnet',
+		stack: 'main',
+		...override,
+	});
+
+	function snapshotWithRunnerStates(env: Env, deadPid: number): SnapshotRecord {
+		const recordEnv: SnapshotRecord['env'] = { appName: env.appName, network: env.network };
+		if (env.stack !== undefined) recordEnv.stack = env.stack;
+		return {
+			createdAt: 1_700_000_000_000,
+			env: recordEnv,
+			nodeStates: {
+				'sui.localnet.container': {
+					lastInputHash: 'abc',
+					lastRunAt: 1_700_000_000_000,
+					identity: 'id1',
+					// DockerContainerState shape — fake id, dockerContainerExists
+					// returns false → we don't actually call docker rm.
+					state: {
+						containerId: 'fakecontainer000000000000000000000000000000000000000000000000fake',
+						startedAt: 1_700_000_000_000,
+						image: 'mystenlabs/sui-tools:devnet',
+						args: ['sui-test-validator'],
+						hostPorts: { 'sui.rpc': 9000 },
+					},
+				},
+				'host.proc': {
+					lastInputHash: 'def',
+					lastRunAt: 1_700_000_000_000,
+					identity: 'id2',
+					// HostProcessState shape — pid is dead, isAlive returns
+					// false → no kill attempted.
+					state: {
+						pid: deadPid,
+						startedAt: 1_700_000_000_000,
+						command: 'true',
+						args: [],
+					},
+				},
+				'plain.action': {
+					lastInputHash: 'ghi',
+					lastRunAt: 1_700_000_000_000,
+					identity: 'id3',
+					// Not a runner state — must be ignored.
+					state: { value: 42 },
+				},
+			},
+			meta: { devstackVersion: '0.0.0-dev' },
+		};
+	}
+
+	it('removes the per-stack state directory', async () => {
+		const env = localEnv();
+		await writeSnapshot(env, snapshotWithRunnerStates(env, 1));
+		expect(await tryReadSnapshot(env)).toBeDefined();
+
+		const out = new CaptureStream();
+		const result = await runReset({ env, out: asWriteStream(out), noStop: true });
+		expect(result.exitCode).toBe(0);
+		expect(await tryReadSnapshot(env)).toBeUndefined();
+		expect(result.removedPaths.length).toBeGreaterThan(0);
+	});
+
+	it('keeps labeled snapshots when --keep-snapshots is set', async () => {
+		const env = localEnv();
+		await writeSnapshot(env, snapshotWithRunnerStates(env, 1));
+		await runSnapshotSave({ env, label: 'kept', out: asWriteStream(new CaptureStream()) });
+		expect(await readdir(labeledSnapshotsDir(env))).toHaveLength(1);
+
+		await runReset({
+			env,
+			out: asWriteStream(new CaptureStream()),
+			noStop: true,
+			keepSnapshots: true,
+		});
+		expect(await tryReadSnapshot(env)).toBeUndefined();
+		expect(await readdir(labeledSnapshotsDir(env))).toHaveLength(1);
+	});
+
+	it('skips already-dead processes / nonexistent containers without error', async () => {
+		const env = localEnv();
+		// Pick a pid that can't be alive — out of range.
+		await writeSnapshot(env, snapshotWithRunnerStates(env, 0x7fff_ffff));
+		const out = new CaptureStream();
+		const result = await runReset({ env, out: asWriteStream(out) });
+		expect(result.exitCode).toBe(0);
+		// No kills happened (container fake, pid dead).
+		expect(result.killed).toEqual([]);
+	});
+
+	it('emits structured JSON when --json is set', async () => {
+		const env = localEnv();
+		await writeSnapshot(env, snapshotWithRunnerStates(env, 0x7fff_ffff));
+		const out = new CaptureStream();
+		await runReset({ env, out: asWriteStream(out), json: true, noStop: true });
+		const parsed = JSON.parse(out.text) as {
+			command: string;
+			killed: unknown[];
+			removedPaths: string[];
+		};
+		expect(parsed.command).toBe('reset');
+		expect(parsed.killed).toEqual([]);
+		expect(parsed.removedPaths.length).toBeGreaterThan(0);
+	});
+
+	it('refuses non-localnet networks', async () => {
+		await expect(
+			runReset({
+				env: { ...localEnv(), network: 'testnet' },
+				out: asWriteStream(new CaptureStream()),
+			}),
+		).rejects.toThrow(/localnet/);
+	});
+});
+
 describe('runUp', () => {
 	it('runs the first cycle, idles until stopSignal, writes snapshot at cycle:end', async () => {
 		let resolveStop: () => void = () => undefined;
@@ -383,13 +503,18 @@ describe('runUp', () => {
 		const out = new CaptureStream();
 
 		// The supervisor finishes cycle 0, schedules a snapshot write at
-		// cycle:end, then idles. We resolve the stop signal as soon as the
-		// stderr renderer reports cycle:end so the test doesn't block.
+		// cycle:end, then idles. The cycle:end snapshot write is fire-and-
+		// forget (`void engine.saveSnapshot().then(writeSnapshot)`), so we
+		// can't stop on the renderer's `] end (` line — the snapshot file
+		// may not exist yet by the time runUp returns. Poll for the
+		// snapshot file directly instead.
 		const subscription = setInterval(() => {
-			if (out.text.includes('] end (')) {
-				resolveStop();
-				clearInterval(subscription);
-			}
+			void tryReadSnapshot(env).then((snap) => {
+				if (snap !== undefined) {
+					resolveStop();
+					clearInterval(subscription);
+				}
+			});
 		}, 5);
 		// Belt-and-suspenders timeout — never block this test forever.
 		const guard = setTimeout(() => {
