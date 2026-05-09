@@ -44,9 +44,10 @@ f1d465b  stack new + stack use CLI subcommands
          5b seal image build via dockerImage (binary fetch, no compile)
          5c seal.keygen via dockerOneShot (seal-cli genkey, disk-cached)
          dockerOneShot: idempotent re-runs, --entrypoint config
+         5d sui.indexer-db (postgres sidecar) + sui.get('graphql')
 ```
 
-Tests: 363 passing. Typecheck clean. Build clean.
+Tests: 364 passing. Typecheck clean. Build clean.
 
 ## What's built
 
@@ -160,8 +161,17 @@ src/plugins/        L6
                       `sui-localnet` so siblings reach the localnet at
                       `sui-localnet:9000` / `:9123` without host-port
                       threading. Exported as
-                      `SUI_LOCALNET_NETWORK_ALIAS`. `image:` override
-                      skips the build for pre-built tags.
+                      `SUI_LOCALNET_NETWORK_ALIAS`. A postgres sidecar
+                      (`sui.indexer-db`, image postgres:16-alpine,
+                      alias `sui-indexer-db`, no host port) backs sui's
+                      embedded indexer + GraphQL — sui-localnet's args
+                      now include `--with-indexer` (over the per-stack
+                      network) and `--with-graphql=0.0.0.0:9125`.
+                      Schema-level `sui.get('graphql')` provides the
+                      host URL (`http://127.0.0.1:<port>/graphql`) on
+                      localnet; throws on live nets where GraphQL
+                      availability depends on the operator. `image:`
+                      override skips the build for pre-built tags.
                       testnet/mainnet/devnet stubs unchanged.
   walrus.ts           multi-node committee + aggregator + deploy +
                       register. Two-stage image chain
