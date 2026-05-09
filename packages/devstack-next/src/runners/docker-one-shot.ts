@@ -32,6 +32,12 @@ export interface DockerOneShotState {
 	durationMs: number;
 	/** Last ~32 KB of combined stdout+stderr captured for diagnostics. */
 	tail: string;
+	/** Engine `inputHash` at the time the container ran. Used to bail
+	 * out of `start` early when nothing about the spawn would change —
+	 * one-shots should NOT re-run on stable inputs (think keygen, where
+	 * a fresh run produces fresh keys and silently invalidates anything
+	 * that captured the prior public key). */
+	inputHash: string;
 }
 
 export interface DockerOneShotConfig<TDeps> {
@@ -46,6 +52,10 @@ export interface DockerOneShotConfig<TDeps> {
 	/** Container command — `args` after the image in `docker run`. May
 	 * read upstream deps. */
 	args?: DockerOneShotValue<string[], TDeps>;
+	/** Optional `--entrypoint <bin>` override (e.g. running `seal-cli`
+	 * against an image whose default ENTRYPOINT is `key-server`). Static
+	 * string only — folds into the input hash via the inputs callback. */
+	entrypoint?: string;
 	containerEnv?: DockerOneShotValue<Record<string, string>, TDeps>;
 	volumes?: DockerOneShotValue<DockerOneShotVolumeMapping[], TDeps>;
 
@@ -147,7 +157,18 @@ export function dockerOneShot<TDeps = undefined>(cfg: DockerOneShotConfig<TDeps>
 				}
 			: {}),
 
-		start: async ({ env, deps, log }) => {
+		start: async ({ env, deps, log, prior, inputHash }) => {
+			// One-shots don't re-run on stable inputs. The engine fires
+			// `start` every cycle (because `hasStart`), so the bail-early
+			// logic lives here: if the prior run's `inputHash` matches,
+			// reuse its state. The engine still recomputes `inputHash`
+			// from upstream identities + ownInputs, so a Dockerfile bump,
+			// arg change, env tweak, or upstream image rebuild flips the
+			// hash and we re-run.
+			if (prior && prior.inputHash === inputHash) {
+				log(`reusing prior one-shot result (inputs unchanged, exit ${prior.exitCode})`);
+				return prior;
+			}
 			const resolved = deps as unknown as {
 				user: ResolvedDeps<TDeps>;
 				_image?: string;
@@ -190,6 +211,7 @@ export function dockerOneShot<TDeps = undefined>(cfg: DockerOneShotConfig<TDeps>
 				...(cfg.ip !== undefined ? { ip: cfg.ip } : {}),
 				...(hostname !== undefined ? { hostname } : {}),
 				...(cfg.platform !== undefined ? { platform: cfg.platform } : {}),
+				...(cfg.entrypoint !== undefined ? { entrypoint: cfg.entrypoint } : {}),
 			});
 
 			log(`docker run ${runArgs.join(' ')}`);
@@ -222,6 +244,7 @@ export function dockerOneShot<TDeps = undefined>(cfg: DockerOneShotConfig<TDeps>
 				finishedAt,
 				durationMs: finishedAt - startedAt,
 				tail: result.tail,
+				inputHash,
 			};
 		},
 	});
@@ -243,11 +266,13 @@ function buildDockerRunArgs(opts: {
 	ip?: string;
 	hostname?: string;
 	platform?: string;
+	entrypoint?: string;
 }): string[] {
 	// `--rm` so the auto-removal handles cleanup; otherwise the next run
 	// would collide on the same name even after dockerRm above.
 	const args = ['run', '--rm', '--name', opts.containerName];
 	if (opts.platform !== undefined) args.push('--platform', opts.platform);
+	if (opts.entrypoint !== undefined) args.push('--entrypoint', opts.entrypoint);
 	if (opts.network !== undefined) {
 		args.push('--network', opts.network);
 		if (opts.networkAlias !== undefined) args.push('--network-alias', opts.networkAlias);

@@ -217,6 +217,66 @@ describe('dockerOneShot (run — docker required)', () => {
 	);
 
 	itDocker(
+		'reuses prior result on warm restart when inputs are unchanged (idempotent)',
+		async () => {
+			// One-shot semantics: rerunning with the same inputs should
+			// return the prior state without re-spawning the container.
+			// Use `printenv` so a re-run would surface a different
+			// timestamp in the tail — if we see the prior tail, we know
+			// the bail-early branch fired.
+			const job = dockerOneShot({
+				name: 'idempotent',
+				image: 'alpine:3.19',
+				args: ['sh', '-c', 'echo first-run-marker; date +%s%N'],
+			});
+			const engine = new Engine({ stack: [job] }, { env });
+			await engine.runOnce();
+			const first = engine.getState().nodes.get('idempotent')?.state as
+				| DockerOneShotState
+				| undefined;
+			track(first);
+			const firstStartedAt = first!.startedAt;
+			const firstInputHash = first!.inputHash;
+			expect(firstInputHash.length).toBeGreaterThan(0);
+
+			// Second cycle: invalidate forces dispatch, but inputs are
+			// unchanged so dockerOneShot's bail-early branch in start()
+			// returns the prior state. startedAt should NOT advance.
+			engine.invalidate('idempotent');
+			await engine.runOnce();
+			const second = engine.getState().nodes.get('idempotent')?.state as
+				| DockerOneShotState
+				| undefined;
+			expect(second!.startedAt).toBe(firstStartedAt);
+			expect(second!.inputHash).toBe(firstInputHash);
+		},
+		60_000,
+	);
+
+	itDocker(
+		'honors `entrypoint` config — runs --entrypoint <bin>',
+		async () => {
+			// Default ENTRYPOINT in alpine is /bin/sh; we override to
+			// `echo` so args become `echo HELLO` and stdout matches.
+			const job = dockerOneShot({
+				name: 'entrypoint-override',
+				image: 'alpine:3.19',
+				entrypoint: 'echo',
+				args: ['HELLO-FROM-ECHO'],
+			});
+			const engine = new Engine({ stack: [job] }, { env });
+			const result = await engine.runOnce();
+			expect(result.errored).toEqual([]);
+			const state = engine.getState().nodes.get('entrypoint-override')?.state as
+				| DockerOneShotState
+				| undefined;
+			track(state);
+			expect(state!.tail).toContain('HELLO-FROM-ECHO');
+		},
+		60_000,
+	);
+
+	itDocker(
 		'chains a Dep<string> for image (off dockerImage) and re-runs when the image identity flips',
 		async () => {
 			// Build a tiny image whose tag is content-addressed; the
