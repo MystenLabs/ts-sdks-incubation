@@ -52,11 +52,16 @@ f1d465b  stack new + stack use CLI subcommands
          runTransaction.deps polish — extra deps in build callback
          5g walrusProxy — single-host-port nginx vhost in front of nodes
          6a dockerContainer.snapshot — quiesce + commit + restore
-         6b end-to-end integration tests (sui, seal, snapshot, walrus-gated)
+         6b end-to-end integration tests (sui, seal, snapshot, walrus)
+         seal restructure: sealLocalnet owns full lifecycle (cycle break)
+         walrus: hostname=dryrun-node-<i>, run.sh args, gate on deploy
+         sui: faucet probed alongside RPC in readyProbe
+         7c README rewrite + MIGRATION.md + 1.0.0-rc.0 bump
 ```
 
-Tests: 381 default + 3 integration passing (walrus integration gated
-on RUN_SLOW_INTEGRATION=1). Typecheck clean. Build clean.
+Tests: 381 default + 4 integration (sui, seal, walrus, snapshot —
+all live against real docker with HTTP probes of running daemons).
+Typecheck clean. Build clean.
 
 ## What's built
 

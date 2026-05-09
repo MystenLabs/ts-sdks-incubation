@@ -1,6 +1,6 @@
 import type { AnyNodeImpl, BuiltGraph, Env, NodeState, SnapshotRecord } from './types.js';
 
-export const DEVSTACK_NEXT_VERSION = '0.0.0-dev';
+export const DEVSTACK_NEXT_VERSION = '1.0.0-rc.0';
 
 export interface CreateSnapshotArgs {
 	env: Env;

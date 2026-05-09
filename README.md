@@ -11,9 +11,26 @@ prototype packages breaks freely as we iterate; pin nothing from outside this mo
 | Package                                                                        | Description                                                                    | Status                                                                                                                            |
 | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
 | [`@mysten-incubation/dev-wallet`](packages/dev-wallet)                         | Modular dev wallet for Sui dApp development and testing                        | [![npm](https://img.shields.io/npm/v/@mysten-incubation/dev-wallet)](https://www.npmjs.com/package/@mysten-incubation/dev-wallet) |
-| [`@mysten-incubation/devstack`](packages/devstack)                             | Declarative reconciler + plugin harness for fully-seeded Sui local development | Prototype — not published to npm                                                                                                  |
+| [`@mysten-incubation/devstack-next`](packages/devstack-next)                   | Producer-graph engine + plugins for fully-seeded Sui local development         | Prototype — actively developed (replaces `devstack`)                                                                              |
+| [`@mysten-incubation/devstack`](packages/devstack)                             | **Legacy** action-graph predecessor of `devstack-next`. New apps should use `devstack-next`; see [MIGRATION](packages/devstack-next/MIGRATION.md). | Prototype — being phased out                                                |
 | [`@mysten-incubation/devstack-wallet-panels`](packages/devstack-wallet-panels) | Devstack-aware Faucet / Packages / Network panels for the dev-wallet panel API | Prototype — not published to npm                                                                                                  |
 | [`@mysten-incubation/create-devstack-app`](packages/create-devstack-app)       | Scaffolder for new devstack-backed apps                                        | Prototype — not published to npm                                                                                                  |
+
+### Why two devstack packages?
+
+`devstack-next` is a parallel rebuild of `devstack` from first
+principles — same goals (fully-seeded local Sui dev: chain, walrus
+committee, seal key-server, deepbook pools, accounts, packages,
+manifest), redesigned plumbing (typed Provides Deps instead of a
+string-keyed registry; producer graph instead of action graph;
+docker-commit snapshots that actually round-trip chain state through
+`docker rm`).
+
+The old `devstack` continues to work for the existing
+`examples/*` apps; new apps and integrations should target
+`devstack-next`. See
+[`packages/devstack-next/MIGRATION.md`](packages/devstack-next/MIGRATION.md)
+for the API mapping.
 
 ## Examples
 
