@@ -33,8 +33,22 @@ export interface Dep<TData, TConsumerView> {
 	get: (producerState: any, data: TData) => TConsumerView;
 }
 
+// Recursive Dep unwrapper. Mirrors `walk()` in cycle.ts: a Dep becomes
+// its consumer view, an array maps element-wise, a plain object recurses
+// into its values, primitives pass through unchanged. So a `TDeps` of
+// `{ nodes: Dep<void, NodeState>[] }` resolves to `{ nodes: NodeState[] }`
+// — no cast needed at the call site. Order matters: Dep is checked first
+// so its structural shape doesn't trip the `object` branch.
+export type ResolveDep<T> = T extends Dep<any, infer R>
+	? R
+	: T extends readonly (infer U)[]
+		? ResolveDep<U>[]
+		: T extends object
+			? { [K in keyof T]: ResolveDep<T[K]> }
+			: T;
+
 export type ResolvedDeps<TDeps> = {
-	[K in keyof TDeps]: TDeps[K] extends Dep<any, infer R> ? R : never;
+	[K in keyof TDeps]: ResolveDep<TDeps[K]>;
 };
 
 export type ProducerGet<TProvides> = <K extends keyof TProvides>(
