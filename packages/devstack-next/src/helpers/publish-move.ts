@@ -31,8 +31,14 @@ export interface PublishMoveOptions<TSigner> {
 	/** Logical package name used in `represents.packages` and the engine
 	 * node name (`publish.<name>`). Must be unique per stack. */
 	name: string;
-	/** Path to the Move package, relative to `env.appDir`. */
-	path: string;
+	/** Path to the Move package. Either a literal string (relative to
+	 * `env.appDir` or absolute) for first-party Move packages in the
+	 * app's tree, or a `Dep<void, string>` chained off a `gitFetch(...)`
+	 * (or any other producer that exposes a path) for upstream Move
+	 * packages vendored into the dev stack. With a Dep, the path
+	 * resolves at start-time and the engine cascade re-fires publish on
+	 * source changes. */
+	path: string | Dep<void, string>;
 	/** Dep returning the publisher signer — typically
 	 * `accounts.get('signer', { name: 'publisher' })`.
 	 * `Dep<any, …>` here so callers can pass either a no-data Dep
@@ -113,7 +119,14 @@ export function publishMove<TSigner>(opts: PublishMoveOptions<TSigner>) {
 		throw new Error(`publishMove("${opts.name}"): \`publish\` callback is required`);
 	}
 
-	const deps = { signer: opts.signer, rpc: sui.get('rpc') };
+	const pathIsDep = isPathDep(opts.path);
+	const deps: Record<string, Dep<unknown, unknown>> = {
+		signer: opts.signer as Dep<unknown, unknown>,
+		rpc: sui.get('rpc') as unknown as Dep<unknown, unknown>,
+	};
+	if (pathIsDep) {
+		deps._path = opts.path as Dep<unknown, unknown>;
+	}
 	const provName = opts.name;
 	const mvrPlaceholder = opts.mvrPlaceholder ?? `@local/${opts.name}`;
 
@@ -134,17 +147,30 @@ export function publishMove<TSigner>(opts: PublishMoveOptions<TSigner>) {
 		runsAs: opts.runsAs ?? 'publisher',
 		deps,
 		provides: namedProvides,
-		inputs: ({ env, deps: { rpc } }) => {
-			const abs = resolvePath(env.appDir, opts.path);
+		inputs: ({ env, deps: depsResolved }) => {
+			const r = depsResolved as { rpc: { url: string }; _path?: string };
+			const abs = resolveSourcePath(opts.path, env.appDir, r._path);
 			return {
 				name: opts.name,
-				rpcUrl: rpc.url,
-				sourceHash: hashMoveTree(abs),
+				rpcUrl: r.rpc.url,
+				// Empty string when the path Dep hasn't resolved yet — engine
+				// re-fires us once the upstream path lands.
+				sourceHash: abs === undefined ? '' : hashMoveTree(abs),
 				mvrPlaceholder,
 			};
 		},
-		run: async ({ env, deps: { signer, rpc }, watch }) => {
-			const abs = resolvePath(env.appDir, opts.path);
+		run: async ({ env, deps: depsResolved, watch }) => {
+			const r = depsResolved as {
+				signer: TSigner;
+				rpc: { url: string };
+				_path?: string;
+			};
+			const abs = resolveSourcePath(opts.path, env.appDir, r._path);
+			if (abs === undefined) {
+				throw new Error(
+					`publishMove("${opts.name}"): path Dep resolved to empty/undefined`,
+				);
+			}
 			if (!existsSync(abs)) {
 				throw new Error(`publishMove("${opts.name}"): source path does not exist: ${abs}`);
 			}
@@ -156,8 +182,8 @@ export function publishMove<TSigner>(opts: PublishMoveOptions<TSigner>) {
 			const sourceHash = hashMoveTree(abs);
 			const result = await opts.publish({
 				sourcePath: abs,
-				signer,
-				rpcUrl: rpc.url,
+				signer: r.signer,
+				rpcUrl: r.rpc.url,
 				sourceHash,
 			});
 			const state: PublishState = {
@@ -185,6 +211,24 @@ export function publishMove<TSigner>(opts: PublishMoveOptions<TSigner>) {
 function resolvePath(appDir: string, path: string): string {
 	if (path.startsWith('/')) return path;
 	return join(appDir, path);
+}
+
+function isPathDep(path: string | Dep<void, string>): path is Dep<void, string> {
+	if (typeof path !== 'object' || path === null) return false;
+	return '__producer' in path || '__pluginId' in path;
+}
+
+// Resolve the path option to an absolute fs path.
+//   - Literal string: relative to env.appDir.
+//   - Dep: read the resolved value from the deps slot.
+function resolveSourcePath(
+	pathOpt: string | Dep<void, string>,
+	appDir: string,
+	resolvedDepValue: string | undefined,
+): string | undefined {
+	if (typeof pathOpt === 'string') return resolvePath(appDir, pathOpt);
+	if (resolvedDepValue === undefined || resolvedDepValue.length === 0) return undefined;
+	return resolvedDepValue.startsWith('/') ? resolvedDepValue : join(appDir, resolvedDepValue);
 }
 
 // Hash the Move source tree under `root`. Walks recursively, picks up
