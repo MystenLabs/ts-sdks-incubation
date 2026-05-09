@@ -41,9 +41,10 @@ f1d465b  stack new + stack use CLI subcommands
 (this session)
          5a per-stack docker network primitive
          sui-localnet + walrus.deploy join via `sui-localnet` alias
+         5b seal image build via dockerImage (binary fetch, no compile)
 ```
 
-Tests: 355 passing. Typecheck clean. Build clean (152 files, ~679 kB).
+Tests: 357 passing. Typecheck clean. Build clean.
 
 ## What's built
 
@@ -128,11 +129,16 @@ src/plugins/        L6
                       AdminCap) + optional pool-creation flow.
   manifest.ts         typed-manifest TS emit (renamed from codegen.ts).
                       Sibling to bindings — runtime values vs. type bindings.
-  seal.ts             single-container key-server schema (delegates to
-                      dockerContainer; url-override escape hatch).
-                      `sealLocalnet({...})` sibling factory exposes
-                      gitFetch + publishMove + KeyServer-register
-                      producers for localnet bring-up.
+  seal.ts             single-container key-server schema. Chains
+                      dockerImage (vendored Dockerfile under
+                      seal/docker/, binary-fetch from the seal GitHub
+                      release at SEAL_TAG — no rust compile) →
+                      dockerContainer. `image:` override skips the
+                      build for pre-built tags; `url:` skips Docker
+                      entirely. `sealLocalnet({...})` sibling factory
+                      exposes gitFetch + publishMove +
+                      KeyServer-register producers for localnet
+                      bring-up.
   sui.ts              localnet — chains dockerImage (vendored Dockerfile
                       under sui/docker/) → dockerContainer; image build
                       is content-addressed via SUI_VERSION build-arg.
@@ -214,11 +220,11 @@ fan-out is automatic: bumping a build arg flips the image's identity
 ## What's deferred / not yet built
 
 ### Plugin features
-- **seal real image + keygen**: `mystenlabs/seal-key-server:latest` is
-  still a placeholder; `sealLocalnet` callers must supply the BLS
-  master / public keys themselves. Both go away when the seal image
-  build (with `seal-cli` baked in) lands as part of the per-plugin
-  package split.
+- **seal keygen**: 5b shipped (image bakes `seal-cli` and `key-server`).
+  `sealLocalnet` still requires callers to supply the BLS master /
+  public keys themselves; 5c lands `seal.keygen` (a `dockerOneShot`
+  running `seal-cli genkey`) so the bootstrap pair is produced
+  end-to-end without a manual step.
 - **walrus per-stack docker network**: 5a primitive landed (sui +
   walrus.deploy join the per-stack bridge with `sui-localnet` alias).
   Storage nodes still don't get fixed IPs — that's 5e. Real-running

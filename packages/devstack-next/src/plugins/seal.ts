@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import type { Keypair } from '@mysten/sui/cryptography';
 import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
 import type { SuiObjectChange } from '@mysten/sui/jsonRpc';
@@ -10,10 +11,15 @@ import { gitFetch } from '../helpers/git-fetch.js';
 import { publishMove } from '../helpers/publish-move.js';
 import { publishViaSuiCli } from '../helpers/publish-via-cli.js';
 import { dockerContainer } from '../runners/docker-container.js';
+import { dockerImage } from '../runners/docker-image.js';
 import type { Endpoint, Package } from '../shapes/index.js';
 import { sui } from './sui.js';
 
-const DEFAULT_SEAL_IMAGE = 'mystenlabs/seal-key-server:latest';
+// Vendored Dockerfile ships under `src/plugins/seal/docker/`.
+// `tsdown.config.ts` mirrors it to `dist/plugins/seal/docker/` so
+// `import.meta.url` resolves the same path in source and built outputs.
+const DOCKER_CONTEXT = fileURLToPath(new URL('./seal/docker/', import.meta.url));
+
 const DEFAULT_KEY_SERVER_CONTAINER_PORT = 2024;
 const DEFAULT_READY_TIMEOUT_MS = 60_000;
 
@@ -28,9 +34,15 @@ const SEAL_MOVE_SUBDIR = 'move/seal';
 const KEY_TYPE_BONEH_FRANKLIN_BLS12381 = 0;
 
 export interface SealOptions {
-	/** Override the key-server image. Default
-	 * `mystenlabs/seal-key-server:latest`. */
+	/** Pre-built key-server image. When set, the `seal.image` build is
+	 * skipped and the literal tag is used directly. Useful for
+	 * CI-published images or pinning to an upstream tag. */
 	image?: string;
+	/** Pinned seal release tag, e.g. `'seal-v0.6.6'`. Becomes a
+	 * `--build-arg SEAL_TAG=<tag>` to the vendored Dockerfile and the
+	 * git ref used to fetch the matching `move/seal` Move package via
+	 * `gitFetch`. Defaults to `SEAL_DEFAULT_VERSION`. */
+	version?: string;
 	/** Container port the key-server binds inside the container. Host
 	 * port is allocated. Default 2024 (upstream's default). */
 	containerPort?: number;
@@ -83,14 +95,28 @@ export const seal = defineSchema<SealOptions, SealState, typeof provides>({
 function managedInstance(
 	opts: SealOptions,
 ): SchemaInstanceConfig<SealState, typeof provides, any> {
-	const image = opts.image ?? DEFAULT_SEAL_IMAGE;
 	const containerPort = opts.containerPort ?? DEFAULT_KEY_SERVER_CONTAINER_PORT;
 	const readyTimeoutMs = opts.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
+	const version = opts.version ?? SEAL_DEFAULT_VERSION;
+
+	// Image: build from the vendored Dockerfile via `dockerImage` unless
+	// the caller pinned a pre-built tag. Same content-addressed pattern
+	// as `sui.image` / `walrus.image*` — a `version` bump or Dockerfile
+	// edit flips the tag, which in turn flips the container's input
+	// hash and triggers a recreate.
+	const image =
+		opts.image !== undefined
+			? opts.image
+			: dockerImage({
+					name: 'seal.image',
+					context: { path: DOCKER_CONTEXT },
+					args: { SEAL_TAG: version },
+				});
 
 	const container = dockerContainer({
 		name: 'seal.key-server.container',
 		runsAs: 'seal',
-		image,
+		image: typeof image === 'string' ? image : image.get('tag'),
 		ports: [{ slot: 'seal.key-server', containerPort }],
 		readyTimeoutMs,
 	});
