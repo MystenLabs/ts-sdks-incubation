@@ -7,6 +7,7 @@ export {
 	type AccountsState,
 	type AccountSpec,
 } from './accounts.js';
+export { bindings, type BindingsOptions, type BindingsState } from './bindings.js';
 export {
 	deepbook,
 	type DeepbookNetwork,
