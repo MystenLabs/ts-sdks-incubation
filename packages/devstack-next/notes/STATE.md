@@ -47,9 +47,12 @@ f1d465b  stack new + stack use CLI subcommands
          5d sui.indexer-db (postgres sidecar) + sui.get('graphql')
          5e walrus committee on per-stack network (fixed IPs + aliases)
          dockerContainer.ip extended to function form for runtime IPs
+         5f walrus.seedWal — per-account swap producers (SUI → WAL)
+         walrus.exchange shared chain-discovery transformer
+         runTransaction.deps polish — extra deps in build callback
 ```
 
-Tests: 365 passing. Typecheck clean. Build clean.
+Tests: 374 passing. Typecheck clean. Build clean.
 
 ## What's built
 
@@ -194,9 +197,18 @@ src/plugins/        L6
                       `walrus.deploy` parses the outputs file.
                       `walrus.register` projects deploy state into a
                       Package shape consumers (manifest / bindings)
-                      pivot on. `image:` skips the build; `rpcUrls:`
+                      pivot on. `walrus.exchange` is a chain-discovery
+                      transformer: reads the exchange object once,
+                      derives the wal_exchange package id + WAL coin
+                      type, exposes them so per-account
+                      `walrusSeedWal` producers share a single RPC.
+                      `walrusSeedWal({ exchange, accounts })` returns
+                      one `runTransaction` per account named
+                      `tx.walrus.seedWal.<name>` — failures isolate,
+                      runsAs locks per-account, fresh deploy
+                      cascades. `image:` skips the build; `rpcUrls:`
                       skips docker entirely (deploy + register +
-                      `dockerNetwork` included).
+                      exchange + `dockerNetwork` included).
 ```
 
 ### Persistence + frontends (L7)

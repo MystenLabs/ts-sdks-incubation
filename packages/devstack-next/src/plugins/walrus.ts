@@ -1,9 +1,13 @@
 import { mkdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { Dep, Provides } from '../engine/types.js';
+import type { Keypair } from '@mysten/sui/cryptography';
+import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
+import { Transaction } from '@mysten/sui/transactions';
+import type { Dep, Producer, Provides } from '../engine/types.js';
 import { dep } from '../factories/dep.js';
 import { define } from '../factories/define.js';
+import { runTransaction } from '../helpers/run-transaction.js';
 import { dockerContainer } from '../runners/docker-container.js';
 import { dockerImage } from '../runners/docker-image.js';
 import { dockerNetwork } from '../runners/docker-network.js';
@@ -100,6 +104,24 @@ export interface WalrusRegisterState {
 	exchangeObject?: string;
 }
 
+export interface WalrusExchangeState {
+	/** Exchange object id (from `walrus.register.exchangeObject`). */
+	objectId: string;
+	/** Package id of the wal_exchange Move package — different from the
+	 * walrus package id (the exchange ships in a separate `wal_exchange`
+	 * package). Discovered by reading the exchange object's `type` and
+	 * splitting on `::`. */
+	packageId: string;
+	/** Fully qualified WAL coin type (`<walrusPackageId>::wal::WAL`).
+	 * Convenience for consumers that need to query / type-tag balances
+	 * — derived from the walrus package id, not the exchange's. */
+	walType: string;
+	/** When the chain lookup resolved. Folds into the producer's
+	 * identity so a fresh deploy (new exchange object) cascades into
+	 * `walrus.seedWal.<name>` re-runs. */
+	resolvedAt: number;
+}
+
 const nodeProvides = {
 	rpc: dep((s: WalrusNodeState) => ({ url: s.rpcUrl })),
 	full: dep((s: WalrusNodeState) => s),
@@ -120,6 +142,13 @@ const registerProvides = {
 	package: dep((s: WalrusRegisterState) => s.package),
 	full: dep((s: WalrusRegisterState) => s),
 } satisfies Provides<WalrusRegisterState>;
+
+const exchangeProvides = {
+	full: dep((s: WalrusExchangeState) => s),
+	objectId: dep((s: WalrusExchangeState) => s.objectId),
+	packageId: dep((s: WalrusExchangeState) => s.packageId),
+	walType: dep((s: WalrusExchangeState) => s.walType),
+} satisfies Provides<WalrusExchangeState>;
 
 // `walrus({ nodeCount })` — multi-node walrus testbed.
 //
@@ -178,6 +207,7 @@ export function walrus(opts: WalrusOptions = {}) {
 	const deploy =
 		rpcUrls !== undefined ? undefined : buildDeploy({ image: image!, opts, nodeCount, shards });
 	const register = deploy !== undefined ? buildRegister(deploy) : undefined;
+	const exchange = register !== undefined ? buildExchange(register) : undefined;
 
 	const nodes = Array.from({ length: nodeCount }, (_, i) =>
 		rpcUrls !== undefined
@@ -201,7 +231,7 @@ export function walrus(opts: WalrusOptions = {}) {
 		},
 	});
 
-	return { nodes, appNetwork, deploy, register };
+	return { nodes, appNetwork, deploy, register, exchange };
 }
 
 type ImageRef = string | Dep<void, string>;
@@ -349,6 +379,49 @@ function buildRegister(deploy: DeploySteps) {
 	});
 }
 
+// `walrus.exchange` — chain-discovery transformer. The exchange object
+// id is in `walrus.register` (parsed out of the deploy file), but the
+// exchange Move package's id is NOT — it ships as a separate
+// `wal_exchange` package. Discover the package id by reading the
+// exchange object's `.type` field and splitting on `::`. Cached as a
+// graph node so per-account `walrus.seedWal.<name>` producers all
+// share the single RPC round-trip; an upstream deploy bump cascades
+// into a fresh resolution.
+function buildExchange(register: ReturnType<typeof buildRegister>): Producer<WalrusExchangeState, typeof exchangeProvides> {
+	return define<WalrusExchangeState, typeof exchangeProvides>({
+		name: 'walrus.exchange',
+		deps: { register: register.get('full'), rpc: sui.get('rpc') },
+		provides: exchangeProvides,
+		start: async ({ deps }) => {
+			const d = deps as { register: WalrusRegisterState; rpc: { url: string } };
+			const exchangeObjectId = d.register.exchangeObject;
+			if (exchangeObjectId === undefined) {
+				throw new Error(
+					'walrus.exchange: register.exchangeObject is missing — was the deploy run with `--with-wal-exchange`?',
+				);
+			}
+			const client = new SuiJsonRpcClient({ url: d.rpc.url, network: 'localnet' });
+			const objectInfo = await client.core.getObject({ objectId: exchangeObjectId });
+			const exchangeType = objectInfo.object.type;
+			const packageId = exchangeType.split('::')[0];
+			if (packageId === undefined || !packageId.startsWith('0x')) {
+				throw new Error(
+					`walrus.exchange: unexpected exchange object type "${exchangeType}" — expected "<pkg>::wal_exchange::Exchange"`,
+				);
+			}
+			return {
+				objectId: exchangeObjectId,
+				packageId,
+				// Convention: WAL ships in the main walrus package as
+				// `<walrusPackageId>::wal::WAL`. Hardcoded module/struct
+				// names match upstream's source layout.
+				walType: `${d.register.package.packageId}::wal::WAL`,
+				resolvedAt: Date.now(),
+			};
+		},
+	});
+}
+
 function containerNode(index: number, opts: WalrusOptions, image: ImageRef, deploy: DeploySteps) {
 	const containerApiPort = opts.containerApiPort ?? DEFAULT_NODE_API_PORT;
 	const readyTimeoutMs = opts.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
@@ -436,6 +509,131 @@ function walrusPublicHost(index: number): string {
  * `10.<octet>.0.10..13`. */
 function walrusNodeIp(octet: number, index: number): string {
 	return `10.${octet}.0.${10 + index}`;
+}
+
+export interface WalrusSeedWalAccount {
+	/** Display name surfaced in the producer name (`walrus.seedWal.<name>`)
+	 * and result state. Doesn't have to match the accounts plugin's
+	 * spec key, but conventionally does. */
+	name: string;
+	/** Signer Dep — typically `accounts.pool.get('signer', { name })`. */
+	signer: Dep<unknown, Keypair>;
+}
+
+export interface WalrusSeedWalOptions {
+	/** `walrus.exchange` producer (from `walrus({...}).exchange!`). The
+	 * helper Deps on its `full` view so per-account txs share the
+	 * single chain lookup. */
+	exchange: Producer<WalrusExchangeState, typeof exchangeProvides>;
+	/** Accounts to seed. One producer is materialized per entry; failures
+	 * are isolated per-account. */
+	accounts: WalrusSeedWalAccount[];
+	/** SUI to swap into WAL on each account, in MIST. Default 1 SUI
+	 * (1_000_000_000n). The exchange's pricing decides the WAL out;
+	 * a tiny amount is enough for any reasonable blob upload session. */
+	paymentMist?: bigint;
+}
+
+export interface WalrusSeedWalAccountState {
+	name: string;
+	address: string;
+	digest: string;
+	paymentMist: string;
+	seededAt: number;
+}
+
+const DEFAULT_SEED_WAL_PAYMENT_MIST = 1_000_000_000n;
+
+// `walrusSeedWal({...})` — bundle of per-account seed transactions that
+// swap SUI for WAL on the testbed's `Exchange` so apps can upload blobs
+// without manual `walrus get-wal` calls.
+//
+// Returns one `runTransaction` producer per declared account, named
+// `tx.walrus.seedWal.<name>`. Each:
+//   - Deps on its signer + the shared `walrus.exchange` info producer
+//     (so the on-chain exchange-package-id lookup happens once).
+//   - Builds an `exchange_all_for_wal` Move call paying `paymentMist`
+//     SUI sourced via `tx.coin({ useGasCoin: false })` (address-balance
+//     preferred), transfers the resulting WAL coin to the signer.
+//   - Persists `{ name, address, digest, paymentMist, seededAt }`.
+//
+// Failure isolation: a per-account producer's error is scoped to that
+// node — the rest of the cycle proceeds. The engine's runsAs key is
+// `<name>` so two seed steps for the same account serialize naturally
+// (rare in practice; common case is one signer per account).
+//
+// Idempotency: each producer's identity folds in the exchange info,
+// signer, payment amount, and rpc url. Stable inputs → engine skips
+// the run. A fresh deploy invalidates `walrus.exchange` → cascades into
+// every per-account seed.
+export function walrusSeedWal(opts: WalrusSeedWalOptions) {
+	if (opts.accounts.length === 0) {
+		throw new Error('walrusSeedWal: at least one account is required');
+	}
+	const seenNames = new Set<string>();
+	for (const acc of opts.accounts) {
+		if (!acc.name) throw new Error('walrusSeedWal: account `name` is required');
+		if (seenNames.has(acc.name)) {
+			throw new Error(`walrusSeedWal: duplicate account name "${acc.name}"`);
+		}
+		seenNames.add(acc.name);
+	}
+
+	const paymentMist = opts.paymentMist ?? DEFAULT_SEED_WAL_PAYMENT_MIST;
+	if (paymentMist <= 0n) {
+		throw new Error(`walrusSeedWal: paymentMist must be positive (got ${paymentMist})`);
+	}
+
+	return opts.accounts.map((acc) =>
+		runTransaction({
+			name: `walrus.seedWal.${acc.name}`,
+			signer: acc.signer,
+			deps: { exchange: opts.exchange.get('full') },
+			// Fold paymentMist into the input hash so a bumped amount
+			// re-fires; signer-identity changes already cascade via the
+			// signer Dep.
+			inputs: () => ({ paymentMist: paymentMist.toString() }),
+			build: async ({ signer, rpcUrl, deps }) => {
+				const exchange = deps.exchange;
+				const tx = new Transaction();
+				// `useGasCoin: false` lets the SDK pull from address-
+				// balance if available, falling back to owned coins.
+				// Keeps the helper agnostic of the funding source the
+				// accounts plugin chose (faucet-only vs AB-deposit).
+				const paymentCoin = tx.coin({
+					balance: paymentMist,
+					type: '0x2::sui::SUI',
+					useGasCoin: false,
+				});
+				const walCoin = tx.moveCall({
+					target: `${exchange.packageId}::wal_exchange::exchange_all_for_wal`,
+					arguments: [tx.object(exchange.objectId), paymentCoin],
+				});
+				const address = signer.toSuiAddress();
+				tx.transferObjects([walCoin], tx.pure.address(address));
+				const client = new SuiJsonRpcClient({ url: rpcUrl, network: 'localnet' });
+				const result = await client.signAndExecuteTransaction({
+					signer,
+					transaction: tx,
+					options: { showEffects: true },
+				});
+				if (result.effects?.status.status !== 'success') {
+					throw new Error(
+						`walrus.seedWal.${acc.name}: failed: ${result.effects?.status.error ?? 'unknown'}`,
+					);
+				}
+				await client.waitForTransaction({ digest: result.digest });
+				const seedState: WalrusSeedWalAccountState = {
+					name: acc.name,
+					address,
+					digest: result.digest,
+					paymentMist: paymentMist.toString(),
+					seededAt: Date.now(),
+				};
+				return seedState;
+			},
+		}),
+	);
 }
 
 export function parseDeployFile(text: string): Omit<WalrusDeployState, 'outputDir'> {
