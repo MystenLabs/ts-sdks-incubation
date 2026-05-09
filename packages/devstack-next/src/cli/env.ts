@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { DevstackConfig, Env } from '../engine/types.js';
@@ -76,8 +76,51 @@ async function buildEnv(
 	const appDir = dirname(configPath);
 	const appName = await resolveAppName(appDir);
 	const env: Env = { appName, appDir, network };
-	if (stack !== undefined) env.stack = stack;
+	// Explicit `--stack` flag wins; fall back to the active-stack pointer
+	// at `<appDir>/.devstack/active` written by `stack use`. Subcommands
+	// that want a hard default ('main') still apply theirs after this —
+	// callers see `env.stack` as the user's expressed preference.
+	const resolved = stack ?? (await readActiveStack(appDir));
+	if (resolved !== undefined) env.stack = resolved;
 	return env;
+}
+
+const ACTIVE_STACK_FILENAME = 'active';
+const STACK_NAME_RE = /^[a-z0-9_][a-z0-9._-]{0,63}$/;
+
+/** Read the per-app active-stack pointer at
+ * `<appDir>/.devstack/active`, or `undefined` if the file isn't
+ * present / readable. Written by the `stack use <name>` CLI; consumed
+ * by `buildEnv` so unflagged commands default to the user's last
+ * `stack use`. */
+export async function readActiveStack(appDir: string): Promise<string | undefined> {
+	const path = join(appDir, '.devstack', ACTIVE_STACK_FILENAME);
+	let raw: string;
+	try {
+		raw = await readFile(path, 'utf8');
+	} catch {
+		return undefined;
+	}
+	const trimmed = raw.trim();
+	if (trimmed.length === 0) return undefined;
+	if (!STACK_NAME_RE.test(trimmed)) return undefined;
+	return trimmed;
+}
+
+/** Write the active-stack pointer. Used by `stack use`. The `<name>`
+ * is charset-validated by callers (CLI surface) — we only write valid
+ * names from this function. */
+export async function writeActiveStack(appDir: string, name: string): Promise<void> {
+	const dir = join(appDir, '.devstack');
+	await mkdir(dir, { recursive: true });
+	await writeFile(join(dir, ACTIVE_STACK_FILENAME), `${name}\n`, 'utf8');
+}
+
+/** Charset gate for stack names. Lowercase + digits + `_-.`, 1–64
+ * chars. Same shape as the app-name gate so per-stack values flow
+ * cleanly into Docker labels / paths. */
+export function isValidStackName(name: string): boolean {
+	return STACK_NAME_RE.test(name);
 }
 
 async function findConfig(start: string): Promise<string> {

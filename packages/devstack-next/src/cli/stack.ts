@@ -1,9 +1,9 @@
-import { readdir, stat } from 'node:fs/promises';
+import { mkdir, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Env, SnapshotRecord } from '../engine/types.js';
 import { devstackDir, snapshotPathFor, tryReadSnapshot } from '../persistence/index.js';
 import { hasFlag, parseCommonFlags, readPositionals } from './args.js';
-import { resolveEnvOnly } from './env.js';
+import { isValidStackName, readActiveStack, resolveEnvOnly, writeActiveStack } from './env.js';
 import {
 	dockerContainerExists,
 	isAlive,
@@ -26,6 +26,13 @@ Subcommands:
   list                    Show every stack on disk for this app, with
                           a count of running runners (containers,
                           processes) recorded in each snapshot.
+  new <name>              Create the per-stack state directory at
+                          <appDir>/.devstack/stacks/<name>/. Idempotent.
+                          Does not start anything — pair with \`up\` or
+                          \`stack use\`.
+  use <name>              Write <appDir>/.devstack/active so unflagged
+                          commands default to <name>. Equivalent to
+                          passing --stack <name> on every command.
   down [<name>]           Stop the stack's recorded runners but keep
                           state on disk so a follow-up \`up\` resumes.
                           Sister to \`reset\`, which clears state. The
@@ -197,6 +204,99 @@ export async function runStackDown(opts: RunStackDownOptions): Promise<RunStackD
 	return { exitCode: 0, killed };
 }
 
+export interface RunStackNewOptions {
+	env: Env;
+	name: string;
+	out?: NodeJS.WriteStream;
+	json?: boolean;
+}
+
+export interface RunStackNewResult {
+	exitCode: number;
+	stackDir: string;
+	created: boolean;
+}
+
+// `stack new <name>` — mkdir-p the per-stack state dir. Idempotent
+// (already-exists isn't an error). Localnet only.
+export async function runStackNew(opts: RunStackNewOptions): Promise<RunStackNewResult> {
+	const out = opts.out ?? process.stdout;
+	requireLocalnet(opts.env, 'new');
+	if (!isValidStackName(opts.name)) {
+		throw new Error(
+			`stack new: name '${opts.name}' is invalid (must be lowercase + digits + ._-, 1-64 chars)`,
+		);
+	}
+	const stackDir = join(devstackDir(opts.env), 'stacks', opts.name);
+	let created: boolean;
+	try {
+		await stat(stackDir);
+		created = false;
+	} catch {
+		created = true;
+	}
+	await mkdir(stackDir, { recursive: true });
+	if (opts.json === true) {
+		out.write(
+			`${JSON.stringify({ command: 'stack new', stack: opts.name, stackDir, created })}\n`,
+		);
+	} else if (created) {
+		out.write(`stack '${opts.name}': created at ${stackDir}\n`);
+	} else {
+		out.write(`stack '${opts.name}': already exists at ${stackDir}\n`);
+	}
+	return { exitCode: 0, stackDir, created };
+}
+
+export interface RunStackUseOptions {
+	env: Env;
+	name: string;
+	out?: NodeJS.WriteStream;
+	json?: boolean;
+}
+
+export interface RunStackUseResult {
+	exitCode: number;
+	previous?: string;
+	active: string;
+}
+
+// `stack use <name>` — write `<appDir>/.devstack/active` so unflagged
+// commands default to <name>. The corresponding stack dir is created
+// if missing (mkdir-p) so `use` followed by `up` doesn't trip on a
+// stack that was never explicitly `new`-ed.
+export async function runStackUse(opts: RunStackUseOptions): Promise<RunStackUseResult> {
+	const out = opts.out ?? process.stdout;
+	requireLocalnet(opts.env, 'use');
+	if (!isValidStackName(opts.name)) {
+		throw new Error(
+			`stack use: name '${opts.name}' is invalid (must be lowercase + digits + ._-, 1-64 chars)`,
+		);
+	}
+	const previous = await readActiveStack(opts.env.appDir);
+	await mkdir(join(devstackDir(opts.env), 'stacks', opts.name), { recursive: true });
+	await writeActiveStack(opts.env.appDir, opts.name);
+
+	if (opts.json === true) {
+		out.write(
+			`${JSON.stringify({
+				command: 'stack use',
+				active: opts.name,
+				...(previous !== undefined ? { previous } : {}),
+			})}\n`,
+		);
+	} else if (previous === opts.name) {
+		out.write(`stack '${opts.name}': already active\n`);
+	} else if (previous === undefined) {
+		out.write(`stack '${opts.name}': now active (no prior default)\n`);
+	} else {
+		out.write(`stack '${opts.name}': now active (was '${previous}')\n`);
+	}
+	const result: RunStackUseResult = { exitCode: 0, active: opts.name };
+	if (previous !== undefined) result.previous = previous;
+	return result;
+}
+
 async function countRunning(snapshot: SnapshotRecord): Promise<number> {
 	let running = 0;
 	for (const nodeState of Object.values(snapshot.nodeStates)) {
@@ -244,6 +344,32 @@ export async function main(argv: string[]): Promise<number> {
 		case 'list': {
 			const result = await runStackList({
 				env: baseEnv.env,
+				...(json ? { json: true } : {}),
+			});
+			return result.exitCode;
+		}
+		case 'new': {
+			const name = positionals[1];
+			if (name === undefined) {
+				process.stderr.write(`devstack-next stack new: <name> required\n`);
+				return 1;
+			}
+			const result = await runStackNew({
+				env: baseEnv.env,
+				name,
+				...(json ? { json: true } : {}),
+			});
+			return result.exitCode;
+		}
+		case 'use': {
+			const name = positionals[1];
+			if (name === undefined) {
+				process.stderr.write(`devstack-next stack use: <name> required\n`);
+				return 1;
+			}
+			const result = await runStackUse({
+				env: baseEnv.env,
+				name,
 				...(json ? { json: true } : {}),
 			});
 			return result.exitCode;

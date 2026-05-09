@@ -19,7 +19,8 @@ import { dep } from '../factories/dep.js';
 import { runApply } from './apply.js';
 import { runDoctor } from './doctor.js';
 import { runReset } from './reset.js';
-import { runStackDown, runStackList } from './stack.js';
+import { readActiveStack } from './env.js';
+import { runStackDown, runStackList, runStackNew, runStackUse } from './stack.js';
 import {
 	runSnapshotDelete,
 	runSnapshotList,
@@ -701,6 +702,107 @@ describe('runStackDown', () => {
 		await expect(
 			runStackDown({
 				env: { ...localEnv(), network: 'testnet' },
+				out: asWriteStream(new CaptureStream()),
+			}),
+		).rejects.toThrow(/localnet/);
+	});
+});
+
+describe('runStackNew + runStackUse', () => {
+	const localEnv = (): Env => ({
+		appName: 'demo',
+		appDir,
+		network: 'localnet',
+	});
+
+	it('runStackNew creates the per-stack directory (idempotent)', async () => {
+		const out = new CaptureStream();
+		const first = await runStackNew({
+			env: localEnv(),
+			name: 'qa',
+			out: asWriteStream(out),
+		});
+		expect(first.exitCode).toBe(0);
+		expect(first.created).toBe(true);
+		expect(first.stackDir).toBe(join(appDir, '.devstack/stacks/qa'));
+
+		const out2 = new CaptureStream();
+		const second = await runStackNew({
+			env: localEnv(),
+			name: 'qa',
+			out: asWriteStream(out2),
+		});
+		expect(second.created).toBe(false);
+		expect(out2.text).toContain('already exists');
+	});
+
+	it('runStackNew rejects invalid names', async () => {
+		await expect(
+			runStackNew({
+				env: localEnv(),
+				name: 'BAD/name',
+				out: asWriteStream(new CaptureStream()),
+			}),
+		).rejects.toThrow(/invalid/);
+	});
+
+	it('runStackUse writes the active pointer; readActiveStack reads it back', async () => {
+		const out = new CaptureStream();
+		const result = await runStackUse({
+			env: localEnv(),
+			name: 'qa',
+			out: asWriteStream(out),
+		});
+		expect(result.exitCode).toBe(0);
+		expect(result.active).toBe('qa');
+		expect(result.previous).toBeUndefined();
+		expect(await readActiveStack(appDir)).toBe('qa');
+	});
+
+	it('runStackUse reports the prior active when overwriting', async () => {
+		await runStackUse({
+			env: localEnv(),
+			name: 'qa',
+			out: asWriteStream(new CaptureStream()),
+		});
+		const out = new CaptureStream();
+		const result = await runStackUse({
+			env: localEnv(),
+			name: 'staging',
+			out: asWriteStream(out),
+		});
+		expect(result.previous).toBe('qa');
+		expect(result.active).toBe('staging');
+		expect(out.text).toContain("was 'qa'");
+	});
+
+	it('runStackUse mkdir-creates the stack dir alongside writing active', async () => {
+		await runStackUse({
+			env: localEnv(),
+			name: 'fresh',
+			out: asWriteStream(new CaptureStream()),
+		});
+		const fs = await import('node:fs/promises');
+		const stat = await fs.stat(join(appDir, '.devstack/stacks/fresh'));
+		expect(stat.isDirectory()).toBe(true);
+	});
+
+	it('readActiveStack returns undefined when no pointer is set', async () => {
+		expect(await readActiveStack(appDir)).toBeUndefined();
+	});
+
+	it('readActiveStack ignores invalid pointer contents', async () => {
+		const fs = await import('node:fs/promises');
+		await fs.mkdir(join(appDir, '.devstack'), { recursive: true });
+		await fs.writeFile(join(appDir, '.devstack/active'), 'BAD/Name\n', 'utf8');
+		expect(await readActiveStack(appDir)).toBeUndefined();
+	});
+
+	it('refuses non-localnet networks', async () => {
+		await expect(
+			runStackNew({
+				env: { ...localEnv(), network: 'testnet' },
+				name: 'qa',
 				out: asWriteStream(new CaptureStream()),
 			}),
 		).rejects.toThrow(/localnet/);
