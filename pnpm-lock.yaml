@@ -659,6 +659,9 @@ importers:
 
   packages/devstack-next:
     dependencies:
+      '@mysten/sui':
+        specifier: ^2.16.0
+        version: 2.16.0(typescript@5.9.3)
       ink:
         specifier: ^7.0.0
         version: 7.0.1(@types/react@19.2.14)(react@19.2.5)
@@ -3363,6 +3366,7 @@ packages:
 
   '@ungap/structured-clone@1.3.0':
     resolution: {integrity: sha512-WmoN8qaIAo7WTYWbAZuG8PYEhn5fkz7dZrqTBZ7dtt//lL2Gwms1IcnQ5yHqjDfX8Ft5j4YzDM23f87zBfDe9g==}
+    deprecated: Potential CWE-502 - Update to 1.3.1 or higher
 
   '@vitejs/plugin-react@4.7.0':
     resolution: {integrity: sha512-gUu9hwfWvvEDBBmgtAowQCojwZmJ5mcLn3aufeCsitijs3+f2NsrPtlAWIR6OPiqljl96GVCUbLe0HyqIpVaoA==}
@@ -7258,8 +7262,8 @@ snapshots:
   '@mysten/sui@2.16.0(typescript@5.9.3)':
     dependencies:
       '@graphql-typed-document-node/core': 3.2.0(graphql@16.13.1)
-      '@mysten/bcs': 2.0.3
-      '@mysten/utils': 0.3.1
+      '@mysten/bcs': 2.0.5
+      '@mysten/utils': 0.3.3
       '@noble/curves': 2.0.1
       '@noble/hashes': 2.0.1
       '@protobuf-ts/grpcweb-transport': 2.11.1

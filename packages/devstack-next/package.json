@@ -70,6 +70,7 @@
 		"test:watch": "vitest"
 	},
 	"dependencies": {
+		"@mysten/sui": "catalog:",
 		"ink": "^7.0.0",
 		"react": "catalog:"
 	},
