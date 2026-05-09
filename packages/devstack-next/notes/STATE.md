@@ -28,9 +28,14 @@ a8e4f4b  dockerContainer.image accepts Dep<string>
 29a26ed  cliSigner helper — Sui CLI keystore signers
 89772df  ResolvedDeps recurses through arrays + objects
 dde94bc  sui plugin builds its own image via dockerImage
+d65c2da  dockerImage buildContexts — BuildKit named contexts
+ef03690  walrus plugin chains image build via dockerImage
+587fc36  dockerOneShot runner — run-to-completion containers
+b8c18cf  walrus.deploy + node-container deploy mount
+0e4fff4  walrus.register — project deploy state into shapes
 ```
 
-Tests: 314 passing. Typecheck clean. Build clean (143 files, ~549 kB).
+Tests: 327 passing. Typecheck clean. Build clean (145 files, ~599 kB).
 
 ## What's built
 
@@ -59,6 +64,13 @@ src/runners/        L4 — process/container/image runners
                       `image` accepts a Dep<string> so dockerImage results chain in.
   docker-image.ts     dockerImage({...}) — content-addressed `docker build`.
                       Provides tag (`<prefix>/<name>:<hash>`), digest, full.
+                      `buildContexts:` exposes BuildKit `--build-context` for
+                      Dockerfiles that COPY --from=<name> (e.g. walrus's
+                      cargo workspace fetched via `walrus-src=git#tag`).
+  docker-one-shot.ts  dockerOneShot({...}) — run-to-completion containers
+                      (deploy scripts, init jobs). Same image-Dep / env /
+                      volumes surface; throws on non-zero exit with the
+                      last 32 KB of combined output in the message.
 
 src/standard/       L4 — standard graph nodes
   ports.ts            singleton port allocator
@@ -93,8 +105,17 @@ src/plugins/        L6
                       is content-addressed via SUI_VERSION build-arg.
                       `image:` override skips the build for pre-built
                       tags. testnet/mainnet/devnet stubs unchanged.
-  walrus.ts           multi-node + aggregator (each node delegates to
-                      dockerContainer; rpcUrls escape hatch)
+  walrus.ts           multi-node committee + aggregator + deploy +
+                      register. Two-stage image chain
+                      `walrus.image.upstream` → `walrus.image` (the
+                      latter chains BASE_IMAGE off the former's tag).
+                      `walrus.deploy.container` runs deploy-walrus.sh
+                      via dockerOneShot; `walrus.deploy` parses the
+                      outputs file. `walrus.register` projects deploy
+                      state into a Package shape consumers (manifest /
+                      bindings) pivot on. `image:` skips the build;
+                      `rpcUrls:` skips docker entirely (deploy +
+                      register included).
 ```
 
 ### Persistence + frontends (L7)
@@ -150,11 +171,16 @@ fan-out is automatic: bumping a build arg flips the image's identity
 - **accounts.fund**: only faucets, doesn't push to the address-balance
   accumulator yet (the original devstack does both). AB deposit is
   cheaper to add when there's a real consumer asking for it.
-- **walrus / seal real images**: the defaults
-  (`mystenlabs/walrus-service:latest`, `mystenlabs/seal-key-server:latest`)
-  are placeholders and not pinned to known-good tags. Sui ported its
-  build via `dockerImage` (vendored Dockerfile under `sui/docker/`);
-  walrus + seal still pending, slated for Chunks 2–3.
+- **seal real image**: `mystenlabs/seal-key-server:latest` is still a
+  placeholder. Sui + walrus port their builds via `dockerImage`
+  (vendored Dockerfiles under `sui/docker/` + `walrus/docker/`); seal
+  is the remaining one.
+- **walrus per-stack docker network**: storage nodes can't reach each
+  other peer-to-peer in the current model — every container runs on
+  bridge with host-port mapping only. The deploy step runs structurally
+  but a real-running committee needs the per-stack docker-network +
+  fixed-IP design (committee subnet, network alias DNS) the original
+  devstack had. Pending — defer until a consumer drives the design.
 - **deepbook localnet publish**: `deepbook()` only knows about
   testnet/mainnet ids. Publishing the source against a localnet sui is
   deferred to a future devstack-deepbook plugin.
