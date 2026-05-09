@@ -239,9 +239,16 @@ function localnetInstance(
 		networkAlias: SUI_LOCALNET_NETWORK_ALIAS,
 		readyTimeoutMs,
 		readyProbe: async ({ hostPorts }) => {
-			const port = hostPorts['sui.rpc'];
-			if (port === undefined) return false;
-			return probeSuiRpc(`http://127.0.0.1:${port}`);
+			const rpcPort = hostPorts['sui.rpc'];
+			const faucetPort = hostPorts['sui.faucet'];
+			if (rpcPort === undefined || faucetPort === undefined) return false;
+			// Both must be live before we declare the localnet ready —
+			// downstream `accounts.fund` immediately POSTs to the
+			// faucet and was failing with `fetch failed` when the RPC
+			// came up first and start unblocked too early.
+			const rpcOk = await probeSuiRpc(`http://127.0.0.1:${rpcPort}`);
+			if (!rpcOk) return false;
+			return probeFaucet(`http://127.0.0.1:${faucetPort}`);
 		},
 		// RocksDB chain state lives in the writable layer. Pause-then-
 		// commit captures a consistent flushed snapshot — snapshot
@@ -335,6 +342,33 @@ async function probeSuiRpc(rpcUrl: string): Promise<boolean> {
 			rpcUrl,
 		]);
 		return stdout.includes('result');
+	} catch {
+		return false;
+	}
+}
+
+// Probes the sui faucet via a `POST /v2/gas` to a synthetic
+// 0x0 recipient. Daemon answers with a 4xx (rejected request) only
+// once it's listening + parsing JSON; pre-bind the connection
+// refuses entirely. `curl -s` (no `-f`) exits 0 on 4xx responses
+// but throws on network-level errors.
+async function probeFaucet(faucetUrl: string): Promise<boolean> {
+	try {
+		await exec('curl', [
+			'-s',
+			'-o',
+			'/dev/null',
+			'--max-time',
+			'2',
+			'-X',
+			'POST',
+			'-H',
+			'Content-Type: application/json',
+			'-d',
+			'{"FixedAmountRequest":{"recipient":"0x0000000000000000000000000000000000000000000000000000000000000000"}}',
+			`${faucetUrl}/v2/gas`,
+		]);
+		return true;
 	} catch {
 		return false;
 	}

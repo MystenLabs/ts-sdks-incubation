@@ -1,4 +1,5 @@
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
+import { promisify } from 'node:util';
 import { expect } from 'vitest';
 import { Engine } from '../engine/class.js';
 import { sui } from '../plugins/sui.js';
@@ -11,6 +12,8 @@ import {
 } from '../plugins/walrus.js';
 import type { DockerContainerState } from '../runners/index.js';
 import { describeIntegration, itIntegration } from './_helpers.js';
+
+const exec = promisify(execFile);
 
 // End-to-end happy path for a real walrus committee on top of a real
 // sui-localnet:
@@ -127,22 +130,39 @@ describeIntegration('walrus (committee + deploy + register, 5e/5f, slow)', () =>
 				expect(appNetwork?.nodeCount).toBe(1);
 				expect(appNetwork?.urls).toEqual([node0!.rpcUrl]);
 
-				// --- container reached the spawned state -----------------
-				// The storage-node binary's chain handshake at boot can
-				// race with sui-localnet's settle window; on flaky
-				// machines the daemon exits and gets restarted by the
-				// engine. Container existence (ID resolves via docker
-				// inspect) is sufficient to assert the wiring at this
-				// layer; full SDK upload happens out-of-scope of the
-				// integration suite.
-				const containerExists = execFileSync(
+				// --- node is actually running + responds over HTTP ------
+				// Storage-node daemons can take a few seconds to settle
+				// (faucet → wal-exchange → walrus-node run handshake).
+				// We poll for liveness up to 60s; failure means the
+				// daemon crashed at boot — surface that loudly.
+				const containerRunning = execFileSync(
 					'docker',
-					['inspect', '-f', '{{.Id}}', containerNode0!.containerId],
+					['inspect', '-f', '{{.State.Running}}', containerNode0!.containerId],
 					{ encoding: 'utf8' },
 				).trim();
-				expect(containerExists.startsWith(containerNode0!.containerId.slice(0, 12))).toBe(
-					true,
-				);
+				if (containerRunning !== 'true') {
+					const logs = await exec('docker', [
+						'logs',
+						'--tail',
+						'120',
+						containerNode0!.containerId,
+					])
+						.then((r) => `${r.stdout}\n${r.stderr}`)
+						.catch((e) => `<docker logs failed: ${e}>`);
+					throw new Error(
+						`walrus.node-0 container is not running (state=${containerRunning}); ` +
+							`logs (last 120 lines):\n${logs}`,
+					);
+				}
+
+				const reachable = await pollNodeAlive(node0!.rpcUrl, 60_000);
+				if (!reachable) {
+					// Surface container logs to help diagnose flakes.
+					const logs = await exec('docker', ['logs', '--tail', '60', containerNode0!.containerId])
+						.then((r) => `${r.stdout}\n${r.stderr}`)
+						.catch(() => '<docker logs failed>');
+					throw new Error(`walrus.node-0 not reachable at ${node0!.rpcUrl}; logs:\n${logs}`);
+				}
 			} finally {
 				await engine.stop();
 			}
@@ -152,3 +172,19 @@ describeIntegration('walrus (committee + deploy + register, 5e/5f, slow)', () =>
 		{ slow: true },
 	);
 });
+
+// Walrus storage nodes serve REST API paths; root returns 404 but the
+// daemon is up. `curl` without `-f` exits 0 on any HTTP response, only
+// throws on connection-refused / timeout — which is what we want.
+async function pollNodeAlive(url: string, timeoutMs: number): Promise<boolean> {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		try {
+			await exec('curl', ['-sS', '-o', '/dev/null', '--max-time', '2', url]);
+			return true;
+		} catch {
+			await new Promise((r) => setTimeout(r, 1000));
+		}
+	}
+	return false;
+}

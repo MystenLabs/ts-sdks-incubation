@@ -47,29 +47,13 @@ describe('seal (url override — no Docker)', () => {
 	});
 });
 
-describe('seal (graph composition — managed mode, no real Docker)', () => {
-	it('builds graph with seal.image + seal.key-server.container + seal.key-server + seal.keygen + ports', () => {
-		const node = seal.create({});
-		const engine = new Engine({ stack: [node] }, { env });
-		const state = engine.getState();
-		expect(state.nodes.has('seal.key-server')).toBe(true);
-		expect(state.nodes.has('seal.key-server.container')).toBe(true);
-		// Image build chains content-addressed via dockerImage.
-		expect(state.nodes.has('seal.image')).toBe(true);
-		// Keygen chain (5c): one-shot container + transformer.
-		expect(state.nodes.has('seal.keygen.container')).toBe(true);
-		expect(state.nodes.has('seal.keygen')).toBe(true);
-		expect(state.nodes.has('ports')).toBe(true);
-	});
-
-	it('skips seal.image when caller pins a pre-built image tag', () => {
-		const node = seal.create({ image: 'mystenlabs/seal-key-server:devnet' });
-		const engine = new Engine({ stack: [node] }, { env });
-		const state = engine.getState();
-		expect(state.nodes.has('seal.key-server')).toBe(true);
-		expect(state.nodes.has('seal.key-server.container')).toBe(true);
-		// No dockerImage build when the caller has a pre-built tag.
-		expect(state.nodes.has('seal.image')).toBe(false);
+describe('seal (graph composition — managed mode requires sealLocalnet)', () => {
+	it('seal.create({}) throws — managed mode now requires sealLocalnet', () => {
+		// The schema instance is a thin transformer over sealLocalnet's
+		// produced container + keygen Deps; without those, there's no
+		// way to project SealState. The url-override path is the only
+		// standalone-usable mode now.
+		expect(() => seal.create({})).toThrow(/sealLocalnet/);
 	});
 
 	it('vendored docker context resolves to a real on-disk directory', () => {
@@ -130,12 +114,10 @@ describe('seal (static get accessors via __pluginId)', () => {
 });
 
 describe('sealLocalnet (graph composition — no real chain)', () => {
-	// `sealLocalnet({...})` exposes a `publish` + `register` pair on top
-	// of the existing `seal` schema. Verify both producers compose into
-	// the graph alongside seal's key-server, the source gitFetch, and
-	// the implicit sui dep.
+	// `sealLocalnet({...})` owns the full localnet stack: image,
+	// keygen, publish, register, key-server container, AND the schema
+	// instance. The user spreads its return into `stack`.
 	function makeOps() {
-		// Synthetic signer producer matches the accountPool pattern.
 		interface SignerState {
 			keypair: Ed25519Keypair;
 		}
@@ -152,16 +134,38 @@ describe('sealLocalnet (graph composition — no real chain)', () => {
 		return { signerNode, ops };
 	}
 
-	it('publish + register + source siblings appear with sui + seal pulled in', () => {
+	it('returns the full bundle: image, keygen, source, publish, register, container, instance', () => {
+		const { signerNode, ops } = makeOps();
+		expect(ops.image).toBeDefined();
+		expect(ops.keygenContainer).toBeDefined();
+		expect(ops.keygen).toBeDefined();
+		expect(ops.source).toBeDefined();
+		expect(ops.publish).toBeDefined();
+		expect(ops.register).toBeDefined();
+		expect(ops.container).toBeDefined();
+		expect(ops.instance).toBeDefined();
+		// Names are stable so external tooling can pivot.
+		expect(ops.publish.name).toBe('publish.seal');
+		expect(ops.register.name).toBe('seal.register');
+		expect(ops.instance.name).toBe('seal.key-server');
+		void signerNode;
+	});
+
+	it('all bundle producers + sui pull into one engine cleanly', () => {
 		const { signerNode, ops } = makeOps();
 		const engine = new Engine(
 			{
 				stack: [
-					sui.create({ network: 'localnet', rpcUrl: 'http://stub/' }),
-					seal.create({ url: 'https://stub/' }),
+					sui.create({ network: 'localnet' }),
 					signerNode,
+					ops.image!,
+					ops.keygenContainer,
+					ops.keygen,
+					ops.source,
 					ops.publish,
 					ops.register,
+					ops.container,
+					ops.instance,
 				],
 			},
 			{ env },
@@ -170,28 +174,43 @@ describe('sealLocalnet (graph composition — no real chain)', () => {
 		expect(state.nodes.has('publish.seal')).toBe(true);
 		expect(state.nodes.has('seal.register')).toBe(true);
 		expect(state.nodes.has('seal.source')).toBe(true);
+		expect(state.nodes.has('seal.image')).toBe(true);
+		expect(state.nodes.has('seal.keygen')).toBe(true);
+		expect(state.nodes.has('seal.keygen.container')).toBe(true);
 		expect(state.nodes.has('seal.key-server')).toBe(true);
+		expect(state.nodes.has('seal.key-server.container')).toBe(true);
 		expect(state.nodes.has('sui.localnet')).toBe(true);
+		// dockerNetwork pulled in transitively via the key-server
+		// container's network.
+		expect(state.nodes.has('docker.network')).toBe(true);
 	});
 
-	it('register depends on publish, sui rpc, and seal key-server', () => {
+	it('register Deps directly on keygen.publicKey (not via schema) so no cycle', () => {
+		// The whole point of moving the wiring into sealLocalnet was to
+		// break the schema → container → register → schema cycle. A
+		// graph build error here would surface as a CycleError from
+		// engine/topo.
 		const { signerNode, ops } = makeOps();
-		const engine = new Engine(
-			{
-				stack: [
-					sui.create({ network: 'localnet', rpcUrl: 'http://stub/' }),
-					seal.create({ url: 'https://stub/' }),
-					signerNode,
-					ops.register,
-				],
-			},
-			{ env },
-		);
-		// Engine pulls in the right transitive nodes via deps.
-		const state = engine.getState();
-		expect(state.nodes.has('publish.seal')).toBe(true);
-		expect(state.nodes.has('seal.source')).toBe(true);
-		expect(state.nodes.has('seal.key-server')).toBe(true);
+		expect(
+			() =>
+				new Engine(
+					{
+						stack: [
+							sui.create({ network: 'localnet' }),
+							signerNode,
+							ops.image!,
+							ops.keygenContainer,
+							ops.keygen,
+							ops.source,
+							ops.publish,
+							ops.register,
+							ops.container,
+							ops.instance,
+						],
+					},
+					{ env },
+				),
+		).not.toThrow();
 	});
 });
 
