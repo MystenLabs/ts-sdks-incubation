@@ -14,3 +14,9 @@ export {
 	type SuiOptions,
 	type SuiState,
 } from './sui.js';
+export {
+	walrus,
+	type WalrusNetworkState,
+	type WalrusNodeState,
+	type WalrusOptions,
+} from './walrus.js';
