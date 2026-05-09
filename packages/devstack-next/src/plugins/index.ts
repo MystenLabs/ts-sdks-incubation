@@ -7,13 +7,18 @@ export {
 	type AccountsState,
 	type AccountSpec,
 } from './accounts.js';
-export { codegen, renderManifest, type CodegenOptions, type CodegenState } from './codegen.js';
 export {
 	deepbook,
 	type DeepbookNetwork,
 	type DeepbookOptions,
 	type DeepbookState,
 } from './deepbook.js';
+export {
+	manifest,
+	renderManifest,
+	type ManifestOptions,
+	type ManifestState,
+} from './manifest.js';
 export { seal, type SealOptions, type SealState } from './seal.js';
 export {
 	sui,

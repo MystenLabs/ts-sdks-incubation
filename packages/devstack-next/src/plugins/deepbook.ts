@@ -66,7 +66,7 @@ const provides = {
 //
 // No container, no on-chain calls. Just publishes the canonical DeepBook
 // v3 package ids + registry / treasury object ids for the chosen
-// network. Consumers (frontend SDK, codegen) read them via
+// network. Consumers (frontend SDK, manifest, bindings) read them via
 // `deepbook.get('package')` etc.
 //
 // Network resolution:

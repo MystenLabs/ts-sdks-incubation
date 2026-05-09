@@ -8,7 +8,7 @@ import type { DevstackConfig, Producer } from './engine/types.js';
 //   defineDevstackConfig({
 //     stack: [
 //       sui.create({ network: 'localnet' }),
-//       codegen({ packages: [token.get('package')] }),
+//       manifest({ packages: [token.get('package')] }),
 //     ],
 //   });
 //

@@ -7,7 +7,7 @@ import type { Env } from '../engine/types.js';
 import { dep } from '../factories/dep.js';
 import { define } from '../factories/define.js';
 import { sui } from '../plugins/sui.js';
-import { codegen } from '../plugins/codegen.js';
+import { manifest } from '../plugins/manifest.js';
 import type { Package } from '../shapes/index.js';
 import { hashMoveTree, publishMove } from './publish-move.js';
 
@@ -184,7 +184,7 @@ describe('publishMove', () => {
 		expect(publishCount).toBe(2);
 	});
 
-	it('exposes a Package-shape Dep that codegen can consume', async () => {
+	it('exposes a Package-shape Dep that manifest can consume', async () => {
 		const root = join(appDir, 'move/token');
 		await writeMoveSources(root, {
 			'Move.toml': '[package]\nname = "token"',
@@ -198,7 +198,7 @@ describe('publishMove', () => {
 			signer: acc.get('signer'),
 			publish: async () => ({ packageId: '0xpkg-token' }),
 		});
-		const generate = codegen({ packages: [token.get('package')] });
+		const generate = manifest({ packages: [token.get('package')] });
 
 		const engine = new Engine(
 			{ stack: [sui.create({ network: 'testnet' }), generate] },
@@ -319,7 +319,7 @@ describe('publishMove', () => {
 			signer: acc.get('signer'),
 			publish: async () => ({ packageId: '0xpkg' }),
 		});
-		const generate = codegen({ packages: [token.get('package')] });
+		const generate = manifest({ packages: [token.get('package')] });
 		const engine = new Engine(
 			{ stack: [sui.create({ network: 'testnet' }), token, generate] },
 			{ env: baseEnv() },

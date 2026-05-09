@@ -182,11 +182,11 @@ describe('sui (localnet docker composition — no real Docker)', () => {
 	});
 });
 
-describe('sui + codegen integration', () => {
+describe('sui + manifest integration', () => {
 	it('endpoints can flow through `represents` into a downstream consumer', async () => {
-		// Synthetic codegen-like consumer that reads the schema's `full` Dep
+		// Synthetic manifest-like consumer that reads the schema's `full` Dep
 		// and reads its representations to emit a manifest. This is the
-		// representative pattern the real codegen uses on `endpoints`.
+		// representative pattern the real manifest plugin uses on `endpoints`.
 		const consumer = define({
 			name: 'consumer',
 			deps: { sui: sui.get('full') },
