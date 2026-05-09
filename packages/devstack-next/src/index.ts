@@ -29,9 +29,15 @@ export {
 
 export {
 	dockerContainer,
+	dockerImage,
 	hostProcess,
 	type DockerContainerConfig,
 	type DockerContainerState,
+	type DockerImageConfig,
+	type DockerImageContext,
+	type DockerImageResolveArgs,
+	type DockerImageState,
+	type DockerImageValue,
 	type DockerPortMapping,
 	type DockerReadyProbeArgs,
 	type DockerResolveArgs,

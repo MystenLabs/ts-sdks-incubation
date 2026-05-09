@@ -17,3 +17,12 @@ export {
 	type DockerValue,
 	type DockerVolumeMapping,
 } from './docker-container.js';
+
+export {
+	dockerImage,
+	type DockerImageConfig,
+	type DockerImageContext,
+	type DockerImageResolveArgs,
+	type DockerImageState,
+	type DockerImageValue,
+} from './docker-image.js';
