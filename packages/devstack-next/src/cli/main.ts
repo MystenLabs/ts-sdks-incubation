@@ -22,6 +22,8 @@ Commands:
                     (save | restore | list | delete).
   reset             Stop snapshot-managed containers / processes
                     and clear per-stack on-disk state.
+  doctor            Preflight checks (docker daemon, sui CLI,
+                    snapshot host-port conflicts).
 
 Run \`devstack-next <command> --help\` for command-specific options.
 `;
@@ -52,6 +54,10 @@ export async function main(argv: readonly string[]): Promise<number> {
 		}
 		case 'reset': {
 			const mod = await import('./reset.js');
+			return mod.main(subArgv);
+		}
+		case 'doctor': {
+			const mod = await import('./doctor.js');
 			return mod.main(subArgv);
 		}
 		default:
