@@ -26,9 +26,11 @@ a8e4f4b  dockerContainer.image accepts Dep<string>
 0d08759  viteDevServer helper + hostProcess provides
 3934203  gitFetch helper + publishMove.path accepts Dep<string>
 29a26ed  cliSigner helper — Sui CLI keystore signers
+89772df  ResolvedDeps recurses through arrays + objects
+dde94bc  sui plugin builds its own image via dockerImage
 ```
 
-Tests: 306 passing. Typecheck clean. Build clean (143 files, ~540 kB).
+Tests: 314 passing. Typecheck clean. Build clean (143 files, ~549 kB).
 
 ## What's built
 
@@ -86,7 +88,11 @@ src/plugins/        L6
                       Sibling to bindings — runtime values vs. type bindings.
   seal.ts             single-container key-server (delegates to
                       dockerContainer; url-override escape hatch)
-  sui.ts              localnet (delegates to dockerContainer) + testnet/mainnet/devnet stubs
+  sui.ts              localnet — chains dockerImage (vendored Dockerfile
+                      under sui/docker/) → dockerContainer; image build
+                      is content-addressed via SUI_VERSION build-arg.
+                      `image:` override skips the build for pre-built
+                      tags. testnet/mainnet/devnet stubs unchanged.
   walrus.ts           multi-node + aggregator (each node delegates to
                       dockerContainer; rpcUrls escape hatch)
 ```
@@ -146,10 +152,9 @@ fan-out is automatic: bumping a build arg flips the image's identity
   cheaper to add when there's a real consumer asking for it.
 - **walrus / seal real images**: the defaults
   (`mystenlabs/walrus-service:latest`, `mystenlabs/seal-key-server:latest`)
-  are placeholders and not pinned to known-good tags. The `dockerImage`
-  runner unblocks per-plugin image builds (the `*.build` actions in the
-  original devstack); the upgrade itself is still pending and lives in
-  a future devstack-walrus / devstack-seal package.
+  are placeholders and not pinned to known-good tags. Sui ported its
+  build via `dockerImage` (vendored Dockerfile under `sui/docker/`);
+  walrus + seal still pending, slated for Chunks 2–3.
 - **deepbook localnet publish**: `deepbook()` only knows about
   testnet/mainnet ids. Publishing the source against a localnet sui is
   deferred to a future devstack-deepbook plugin.
@@ -172,9 +177,11 @@ redundant once typed TS imports existed, and required a separate
 sync mechanism. The new model is one source per consumer.
 
 ### Other deferred (not for next session)
-- Full sui plugin features: image build (now possible via dockerImage),
-  indexer-db, GraphQL, docker-commit snapshots. Per the plan these go
-  in a future `packages/devstack-sui/` package.
+- Full sui plugin features: indexer-db, GraphQL, docker-commit
+  snapshots. Image build is done; the rest goes in a future
+  `packages/devstack-sui/` package. (The `sui.image` step here
+  intentionally omits indexer/graphql — leave them as TODO until a
+  consumer drives the design.)
 - Per-plugin package split (`packages/devstack-walrus/` etc.) — keep
   plugins in `devstack-next/src/plugins/` for now; split at cutover.
 - Examples cutover.
@@ -198,14 +205,13 @@ sync mechanism. The new model is one source per consumer.
 - Co-Authored-By trailer on commits:
   `Claude Opus 4.7 (1M context) <noreply@anthropic.com>`.
 
-### TS-inference quirks worth knowing
+### TS inference
 
-- `define()`'s third generic is `TDeps`. When `deps:` includes an
-  array of `Dep`s (e.g. walrus's aggregator over `nodes.map(n =>
-  n.get('full'))`), `ResolvedDeps<TDeps>` doesn't auto-unwrap the
-  array — the engine resolves it recursively at runtime, but the TS
-  surface needs a cast. Pattern: declare a local `type Deps = {...}`
-  and do `(deps as Deps).whatever`. See `src/plugins/walrus.ts`.
+`ResolvedDeps<TDeps>` recursively unwraps `Dep<any, R>` through arrays
+and nested objects (via `ResolveDep<T>`), mirroring the runtime walker
+in `cycle.ts`. So `deps: { nodes: nodes.map(n => n.get('full')) }`
+types as `{ nodes: WalrusNodeState[] }` at the call site — no cast
+required. See `engine/types.ts`.
 
 ## Key files to read first when picking up
 
