@@ -15,6 +15,7 @@ import {
 } from '../persistence/index.js';
 import { sui } from '../plugins/sui.js';
 import { runApply } from './apply.js';
+import { runDoctor } from './doctor.js';
 import { runReset } from './reset.js';
 import {
 	runSnapshotDelete,
@@ -491,6 +492,86 @@ describe('runReset', () => {
 				out: asWriteStream(new CaptureStream()),
 			}),
 		).rejects.toThrow(/localnet/);
+	});
+});
+
+describe('runDoctor', () => {
+	const localEnv = (override?: Partial<Env>): Env => ({
+		appName: 'demo',
+		appDir,
+		network: 'localnet',
+		stack: 'main',
+		...override,
+	});
+
+	it('always emits a checks list with docker + sui CLI checks', async () => {
+		const out = new CaptureStream();
+		const result = await runDoctor({ env: localEnv(), out: asWriteStream(out) });
+		const names = result.checks.map((c) => c.name);
+		expect(names).toContain('docker daemon');
+		expect(names).toContain('sui CLI');
+		// Without a snapshot, the host-ports informational check fires once.
+		expect(names.filter((n) => n === 'host ports')).toHaveLength(1);
+	});
+
+	it('exit code reflects required-check failures', async () => {
+		const result = await runDoctor({
+			env: localEnv(),
+			out: asWriteStream(new CaptureStream()),
+		});
+		const requiredFailed = result.checks.filter((c) => c.required && !c.ok).length;
+		expect(result.exitCode).toBe(requiredFailed === 0 ? 0 : 1);
+	});
+
+	it('reports an informational entry per snapshot-allocated port', async () => {
+		const env = localEnv();
+		// Hand-write a snapshot with a `ports` node mapping two slots and a
+		// docker container with a third hostPort.
+		const record: SnapshotRecord = {
+			createdAt: 1_700_000_000_000,
+			env: { appName: env.appName, network: env.network, stack: env.stack ?? 'main' },
+			nodeStates: {
+				ports: {
+					lastInputHash: 'abc',
+					lastRunAt: 1_700_000_000_000,
+					identity: 'id',
+					state: { map: { 'sui.rpc': 49100, 'sui.faucet': 49101 } },
+				},
+				'sui.localnet.container': {
+					lastInputHash: 'def',
+					lastRunAt: 1_700_000_000_000,
+					identity: 'id2',
+					state: {
+						containerId: 'fake',
+						startedAt: 1_700_000_000_000,
+						image: 'mystenlabs/sui-tools:devnet',
+						args: [],
+						hostPorts: { 'sui.rpc': 49100 },
+					},
+				},
+			},
+			meta: { devstackVersion: '0.0.0-dev' },
+		};
+		await writeSnapshot(env, record);
+		const result = await runDoctor({ env, out: asWriteStream(new CaptureStream()) });
+		const portChecks = result.checks.filter((c) => c.name.startsWith('port '));
+		expect(portChecks.map((c) => c.name).sort()).toEqual(['port 49100', 'port 49101']);
+		// All port checks are informational (ok=true, required=false).
+		for (const c of portChecks) {
+			expect(c.ok).toBe(true);
+			expect(c.required).toBe(false);
+		}
+	});
+
+	it('emits structured JSON when --json is set', async () => {
+		const out = new CaptureStream();
+		await runDoctor({ env: localEnv(), out: asWriteStream(out), json: true });
+		const parsed = JSON.parse(out.text) as {
+			command: string;
+			checks: { name: string; ok: boolean; required: boolean }[];
+		};
+		expect(parsed.command).toBe('doctor');
+		expect(parsed.checks.some((c) => c.name === 'docker daemon')).toBe(true);
 	});
 });
 
