@@ -52,9 +52,11 @@ f1d465b  stack new + stack use CLI subcommands
          runTransaction.deps polish — extra deps in build callback
          5g walrusProxy — single-host-port nginx vhost in front of nodes
          6a dockerContainer.snapshot — quiesce + commit + restore
+         6b end-to-end integration tests (sui, seal, snapshot, walrus-gated)
 ```
 
-Tests: 381 passing. Typecheck clean. Build clean.
+Tests: 381 default + 3 integration passing (walrus integration gated
+on RUN_SLOW_INTEGRATION=1). Typecheck clean. Build clean.
 
 ## What's built
 
@@ -250,6 +252,15 @@ src/cli/            L7 bin — devstack-next up | apply | status |
 src/tui/            L7 — Ink-based engine subscriber (TUI for `up`)
 src/vitest/         L7 — setupForTest / readSnapshot / getNodeState
 src/playwright/     L7 — createDevstackFixture (worker-scoped)
+src/integration/    L7 — docker-gated end-to-end suite (sui, seal,
+                    snapshot save→restore, walrus). Separate
+                    `vitest.integration.config.ts` + `pnpm
+                    test:integration` script; default `pnpm test`
+                    excludes this dir. `itIntegration` /
+                    `describeIntegration` (`_helpers.ts`) gate on
+                    docker availability AND, for the walrus
+                    committee, `RUN_SLOW_INTEGRATION=1` (the cargo
+                    compile is multi-minute on first build).
 ```
 
 ### Public API (`exports` in package.json)

@@ -197,6 +197,13 @@ function localnetInstance(
 				return false;
 			}
 		},
+		// Indexer schema + populated indexes live in the postgres data
+		// directory inside the writable layer. `quiesce: 'stop'` calls
+		// `docker stop` so postgres's WAL flushes cleanly before the
+		// commit — `pause` would catch the daemon mid-write. Restore
+		// brings the populated schema back so a `snapshot restore`
+		// doesn't have to re-index from chain.
+		snapshot: { commit: true, quiesce: 'stop' },
 	});
 
 	const container = dockerContainer({
@@ -236,6 +243,11 @@ function localnetInstance(
 			if (port === undefined) return false;
 			return probeSuiRpc(`http://127.0.0.1:${port}`);
 		},
+		// RocksDB chain state lives in the writable layer. Pause-then-
+		// commit captures a consistent flushed snapshot — snapshot
+		// restore brings the chain back without re-running genesis or
+		// the (much slower) walrus + seal + deepbook publish pipelines.
+		snapshot: { commit: true, quiesce: 'pause' },
 	});
 
 	return {

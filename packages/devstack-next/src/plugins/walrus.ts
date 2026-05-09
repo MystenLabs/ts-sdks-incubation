@@ -449,6 +449,11 @@ function containerNode(index: number, opts: WalrusOptions, image: ImageRef, depl
 		volumes: ({ env }) => [
 			{ host: deploy.hostDir(env), container: '/opt/walrus/outputs' },
 		],
+		// Storage-node RocksDB lives in the writable layer (the
+		// container is the single writer). Pause-commit captures it
+		// consistently; restore lets the committee come back online
+		// without re-syncing from the deploy step.
+		snapshot: { commit: true, quiesce: 'pause' },
 	});
 
 	return define({
