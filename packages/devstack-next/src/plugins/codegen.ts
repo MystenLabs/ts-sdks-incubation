@@ -103,7 +103,7 @@ function resolveOutput(appDir: string, output: string): string {
 // only show when actual content changes.
 export function renderManifest(deps: ResolvedDeps): string {
 	const sorted: ResolvedDeps = {
-		packages: dedupeAndSort(deps.packages, (p) => p.name),
+		packages: dedupeAndSort(deps.packages, (p) => p.name).map(stripHostFields),
 		endpoints: dedupeAndSort(deps.endpoints, (e) => e.name),
 		accounts: dedupeAndSort(deps.accounts, (a) => a.name),
 	};
@@ -121,6 +121,17 @@ export interface Manifest {
 
 export const manifest: Manifest = ${json};
 `;
+}
+
+// Drop host-only fields from Package before serialization. The `path`
+// field is an absolute on-host filesystem location used by the
+// in-process bindings runtime; baking it into the committed manifest
+// would leak one developer's home dir into every other developer's diff
+// (and is meaningless after `git clone` to a different machine anyway).
+function stripHostFields(pkg: Package): Package {
+	if (pkg.path === undefined) return pkg;
+	const { path: _path, ...rest } = pkg;
+	return rest;
 }
 
 function dedupeAndSort<T>(items: T[], keyFn: (item: T) => string): T[] {

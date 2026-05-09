@@ -250,7 +250,87 @@ describe('publishMove', () => {
 		const view = engine.getState().nodes.get('publish.token')!;
 		const pkgs = view.representations?.packages as Package[] | undefined;
 		expect(pkgs).toBeDefined();
-		expect(pkgs![0]).toEqual({ name: 'token', packageId: '0xpkg-token' });
+		const pkg = pkgs![0]!;
+		expect(pkg.name).toBe('token');
+		expect(pkg.packageId).toBe('0xpkg-token');
+		expect(pkg.mvrPlaceholder).toBe('@local/token');
+		// `path` is an absolute on-host path; just check that it ends with the
+		// configured relative path (env.appDir is a tmpdir).
+		expect(pkg.path).toMatch(/move\/token$/);
+	});
+
+	it('defaults mvrPlaceholder to @local/<name>', async () => {
+		const root = join(appDir, 'move/token');
+		await writeMoveSources(root, {
+			'Move.toml': '',
+			'sources/x.move': 'module token::x {}',
+		});
+		const acc = makeSigner('publisher', '0x111');
+		const token = publishMove({
+			name: 'token',
+			path: 'move/token',
+			signer: acc.get('signer'),
+			publish: async () => ({ packageId: '0xpkg' }),
+		});
+		const engine = new Engine(
+			{ stack: [sui.create({ network: 'testnet' }), token] },
+			{ env: baseEnv() },
+		);
+		await engine.runOnce();
+		const view = engine.getState().nodes.get('publish.token')!;
+		const pkgs = view.representations?.packages as Package[];
+		expect(pkgs[0]?.mvrPlaceholder).toBe('@local/token');
+	});
+
+	it('honors a custom mvrPlaceholder', async () => {
+		const root = join(appDir, 'move/token');
+		await writeMoveSources(root, {
+			'Move.toml': '',
+			'sources/x.move': 'module token::x {}',
+		});
+		const acc = makeSigner('publisher', '0x111');
+		const token = publishMove({
+			name: 'token',
+			path: 'move/token',
+			signer: acc.get('signer'),
+			publish: async () => ({ packageId: '0xpkg' }),
+			mvrPlaceholder: '@my-org/token',
+		});
+		const engine = new Engine(
+			{ stack: [sui.create({ network: 'testnet' }), token] },
+			{ env: baseEnv() },
+		);
+		await engine.runOnce();
+		const view = engine.getState().nodes.get('publish.token')!;
+		const pkgs = view.representations?.packages as Package[];
+		expect(pkgs[0]?.mvrPlaceholder).toBe('@my-org/token');
+	});
+
+	it('manifest emission strips path (no host filesystem leak)', async () => {
+		const root = join(appDir, 'move/token');
+		await writeMoveSources(root, {
+			'Move.toml': '',
+			'sources/x.move': 'module token::x {}',
+		});
+		const acc = makeSigner('publisher', '0x111');
+		const token = publishMove({
+			name: 'token',
+			path: 'move/token',
+			signer: acc.get('signer'),
+			publish: async () => ({ packageId: '0xpkg' }),
+		});
+		const generate = codegen({ packages: [token.get('package')] });
+		const engine = new Engine(
+			{ stack: [sui.create({ network: 'testnet' }), token, generate] },
+			{ env: baseEnv() },
+		);
+		await engine.runOnce();
+		const fs = await import('node:fs/promises');
+		const body = await fs.readFile(join(appDir, 'src/generated/manifest.ts'), 'utf8');
+		// path stripped; mvrPlaceholder retained.
+		expect(body).not.toContain('"path"');
+		expect(body).not.toContain(appDir);
+		expect(body).toContain('"mvrPlaceholder": "@local/token"');
 	});
 
 	it('preserves objects (TreasuryCap, etc.) in state', async () => {

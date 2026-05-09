@@ -13,9 +13,21 @@ export interface Package {
 	name: string;
 	/** On-chain object id of the published package. */
 	packageId: string;
-	/** MVR placeholder string (`@local/<app>::<pkg>`). Optional — codegen
-	 * fills it in if the consumer needs it. */
+	/** MVR placeholder string (`'@local/<name>'` by convention). The
+	 * `bindings` plugin emits `tx.moveCall({ package: '<placeholder>', … })`
+	 * using this string; `localnetMvrOverrides(manifest)` reads it back to
+	 * resolve the placeholder to a live `packageId` at transaction-build
+	 * time. Set by `publishMove`; absent for packages that publish only a
+	 * static address (e.g. canonical deepbook IDs on testnet/mainnet). */
 	mvrPlaceholder?: string;
+	/** Host-side path to the Move source. Set when the package was
+	 * published from local source (`publishMove`); absent when source
+	 * lives inside a docker image (upstream imports) or doesn't exist
+	 * locally (canonical deepbook IDs). The `bindings` plugin uses this
+	 * to find sources for `sui move summary`; the `manifest` plugin
+	 * strips it before serializing so per-developer absolute paths
+	 * don't leak into committed files. */
+	path?: string;
 }
 
 export interface Endpoint {
