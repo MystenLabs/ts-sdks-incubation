@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Keypair } from '@mysten/sui/cryptography';
@@ -494,6 +494,14 @@ export function walrusDeployHostDir(env: { appDir: string; stack?: string }): st
 	return resolve(env.appDir, '.devstack', 'stacks', env.stack ?? 'default', 'walrus', 'deploy');
 }
 
+// Per-stack host path that holds the generated nginx config for
+// `walrusProxy`. Mirrors `walrusDeployHostDir` — both live under
+// `<stackDir>/walrus/...`. Bind-mounted read-only into the nginx
+// container as `/etc/nginx/nginx.conf`.
+export function walrusProxyConfigPath(env: { appDir: string; stack?: string }): string {
+	return resolve(env.appDir, '.devstack', 'stacks', env.stack ?? 'default', 'walrus', 'proxy', 'nginx.conf');
+}
+
 /** Public hostname registered on chain. `*.localhost` resolves to
  * 127.0.0.1 on the host (RFC 6761); a matching docker network alias
  * on each node container handles the in-network case so `walrus-node-
@@ -634,6 +642,193 @@ export function walrusSeedWal(opts: WalrusSeedWalOptions) {
 			},
 		}),
 	);
+}
+
+export interface WalrusProxyOptions {
+	/** Walrus storage-node producers — typically `walrus({...}).nodes`.
+	 * The proxy gates on each node's `full` state (so nginx starts only
+	 * after the committee is up) and dispatches by `Host:
+	 * walrus-node-<i>.localhost` headers, deriving the per-node alias
+	 * from each node's `index`. Empty-array → throws (proxy with no
+	 * upstreams is meaningless). */
+	nodes: Producer<WalrusNodeState, typeof nodeProvides>[];
+	/** Container port the storage nodes listen on inside the per-stack
+	 * network. nginx listens on the same port so the upstream
+	 * `proxy_pass` is symmetric. Default `DEFAULT_NODE_API_PORT` (9185).
+	 * Match this to the `containerApiPort:` you passed to `walrus({...})`. */
+	nodePort?: number;
+	/** Ready-probe timeout. Default 30s. */
+	readyTimeoutMs?: number;
+}
+
+export interface WalrusProxyState {
+	url: string;
+	port: number;
+}
+
+const proxyProvides = {
+	url: dep((s: WalrusProxyState) => s.url),
+	full: dep((s: WalrusProxyState) => s),
+} satisfies Provides<WalrusProxyState>;
+
+// `walrusProxy({...})` — single-host-port nginx vhost in front of an
+// N-node committee. Returns one transformer producer
+// (`walrus.proxy`) backed by a private `walrus.proxy.container`
+// dockerContainer (graph sibling for snapshot / lifecycle uniformity).
+//
+// Why a proxy at all when each storage-node container already maps a
+// host port? Two reasons:
+//   - A single allocated host port keeps app-side wiring stable across
+//     committee resizes.
+//   - SDK clients that key on `Host: walrus-node-<i>.localhost` (the
+//     names the nodes register on chain) get one URL to reach all of
+//     them — the alternative is N per-node URLs in the manifest.
+//
+// Wiring details:
+//   - nginx listens on `nodePort` inside the container; the host port
+//     is allocated via the standard `ports` node.
+//   - The container joins `dockerNetwork` with alias
+//     `walrus-proxy.localhost`; vhost upstreams pass to each node's
+//     `10.<octet>.0.<10+i>:<nodePort>` directly (deterministic IPs from
+//     5e — no DNS hop). Octet flows in via `dockerNetwork.get('octet')`
+//     so the generated config tracks the per-(app, stack) subnet.
+//   - The config is written to `<stackDir>/walrus/proxy/nginx.conf` at
+//     start-time and bind-mounted read-only into the container. Same
+//     pattern walrus.deploy.container uses for its outputs file.
+//
+// Identity / re-runs: each node's `full` Dep flows in, so a recreated
+// node (image bump, octet flip, deploy-driven invalidation) cascades
+// into the proxy's input hash — nginx restarts on the new node identity.
+export function walrusProxy(opts: WalrusProxyOptions) {
+	if (opts.nodes.length === 0) {
+		throw new Error('walrusProxy: at least one node is required');
+	}
+	const nodePort = opts.nodePort ?? DEFAULT_NODE_API_PORT;
+	const readyTimeoutMs = opts.readyTimeoutMs ?? 30_000;
+	const slot = 'walrus.proxy';
+
+	const proxyContainer = dockerContainer({
+		name: 'walrus.proxy.container',
+		runsAs: 'walrus-proxy',
+		image: 'nginx:alpine',
+		network: dockerNetwork.get('name'),
+		networkAlias: 'walrus-proxy.localhost',
+		// `_octet` flows into the volumes callback for IP-based
+		// upstream pass-through; `_nodes` gates on the committee being
+		// up (any node identity flip cascades through here).
+		deps: {
+			_octet: dockerNetwork.get('octet'),
+			_nodes: opts.nodes.map((n) => n.get('full')),
+		},
+		ports: [{ slot, containerPort: nodePort }],
+		readyTimeoutMs,
+		volumes: ({ env, deps }) => {
+			const indices = deps._nodes.map((n) => n.index).sort((a, b) => a - b);
+			const config = renderWalrusProxyConfig({
+				octet: deps._octet,
+				nodeIndices: indices,
+				nodePort,
+			});
+			const path = walrusProxyConfigPath(env);
+			mkdirSync(resolve(path, '..'), { recursive: true });
+			writeFileSync(path, config, 'utf8');
+			return [{ host: path, container: '/etc/nginx/nginx.conf' }];
+		},
+		// Folds inputs that the volumes side-effect depends on into the
+		// container's input hash so a node-count change or octet flip
+		// flips the container identity → recreate.
+		inputs: ({ deps }) => {
+			const resolved = deps as { _octet: number; _nodes: WalrusNodeState[] };
+			return {
+				octet: resolved._octet,
+				nodeIndices: resolved._nodes.map((n) => n.index).sort((a, b) => a - b),
+				nodePort,
+			};
+		},
+		readyProbe: async ({ hostPorts }) => {
+			const port = hostPorts[slot];
+			if (port === undefined) return false;
+			// Hit the proxy with a known Host. Even if the upstream
+			// returns 502 (node still booting), nginx itself answering
+			// any HTTP response is enough to declare ready — we already
+			// gated on the nodes' `full` state via deps so this is just
+			// confirming nginx loaded its config.
+			return await probeProxy(port, walrusPublicHost(0));
+		},
+	});
+
+	const proxyDeps = { hostPort: proxyContainer.get('hostPort', { slot }) };
+	return define<WalrusProxyState, typeof proxyProvides, typeof proxyDeps>({
+		name: 'walrus.proxy',
+		deps: proxyDeps,
+		provides: proxyProvides,
+		start: async ({ deps: { hostPort } }): Promise<WalrusProxyState> => ({
+			url: `http://127.0.0.1:${hostPort}`,
+			port: hostPort,
+		}),
+		represents: {
+			endpoints: (s: WalrusProxyState): Endpoint[] => [
+				{ name: 'walrus-proxy', url: s.url, kind: 'walrus-proxy' },
+			],
+		},
+	});
+}
+
+/** Render the nginx config that fronts an N-node walrus committee on
+ * a single port via Host-header vhost routing. Pure; testable in
+ * isolation. The string format is stable so the input-hash machinery
+ * can fold it through `inputs:` rather than diffing the file. */
+export function renderWalrusProxyConfig(opts: {
+	octet: number;
+	nodeIndices: number[];
+	nodePort: number;
+}): string {
+	const servers = opts.nodeIndices
+		.map((idx) => {
+			const upstream = walrusNodeIp(opts.octet, idx);
+			const serverName = walrusPublicHost(idx);
+			return `	server {
+		listen 0.0.0.0:${opts.nodePort};
+		server_name ${serverName};
+		location / {
+			proxy_pass http://${upstream}:${opts.nodePort};
+			proxy_set_header Host $host;
+			proxy_request_buffering off;
+			proxy_buffering off;
+			client_max_body_size 0;
+		}
+	}`;
+		})
+		.join('\n');
+	return `events {}
+http {
+${servers}
+}
+`;
+}
+
+async function probeProxy(hostPort: number, hostHeader: string): Promise<boolean> {
+	try {
+		const { execFile } = await import('node:child_process');
+		const { promisify } = await import('node:util');
+		const exec = promisify(execFile);
+		// `--max-time 2` so a hung upstream doesn't wedge the probe
+		// loop. Any 2xx/4xx/5xx counts as "nginx is up"; only
+		// connection-refused / timeout fails the probe.
+		await exec('curl', [
+			'-sS',
+			'-o',
+			'/dev/null',
+			'--max-time',
+			'2',
+			'-H',
+			`Host: ${hostHeader}`,
+			`http://127.0.0.1:${hostPort}/`,
+		]);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 export function parseDeployFile(text: string): Omit<WalrusDeployState, 'outputDir'> {

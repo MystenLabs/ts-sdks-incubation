@@ -50,9 +50,10 @@ f1d465b  stack new + stack use CLI subcommands
          5f walrus.seedWal — per-account swap producers (SUI → WAL)
          walrus.exchange shared chain-discovery transformer
          runTransaction.deps polish — extra deps in build callback
+         5g walrusProxy — single-host-port nginx vhost in front of nodes
 ```
 
-Tests: 374 passing. Typecheck clean. Build clean.
+Tests: 380 passing. Typecheck clean. Build clean.
 
 ## What's built
 
@@ -206,9 +207,16 @@ src/plugins/        L6
                       one `runTransaction` per account named
                       `tx.walrus.seedWal.<name>` — failures isolate,
                       runsAs locks per-account, fresh deploy
-                      cascades. `image:` skips the build; `rpcUrls:`
-                      skips docker entirely (deploy + register +
-                      exchange + `dockerNetwork` included).
+                      cascades. `walrusProxy({ nodes })` is an
+                      opt-in single-host-port nginx vhost in front
+                      of the committee — joins the per-stack
+                      network as `walrus-proxy.localhost`,
+                      generates its config from the node indices +
+                      octet, mounts read-only into nginx:alpine,
+                      ready-probes via curl. `image:` skips the
+                      build; `rpcUrls:` skips docker entirely
+                      (deploy + register + exchange +
+                      `dockerNetwork` included).
 ```
 
 ### Persistence + frontends (L7)

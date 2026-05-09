@@ -9,7 +9,9 @@ import { define } from '../factories/define.js';
 import { sui } from './sui.js';
 import {
 	parseDeployFile,
+	renderWalrusProxyConfig,
 	walrus,
+	walrusProxy,
 	walrusSeedWal,
 	type WalrusNetworkState,
 	type WalrusNodeState,
@@ -346,6 +348,88 @@ describe('walrusSeedWal (graph composition — no real chain)', () => {
 		const w = walrus({ rpcUrls: ['http://x/'] });
 		expect(w.exchange).toBeUndefined();
 		expect(w.register).toBeUndefined();
+	});
+});
+
+describe('walrusProxy (graph composition + nginx config — no real chain)', () => {
+	it('rejects an empty nodes array', () => {
+		expect(() => walrusProxy({ nodes: [] })).toThrow(/at least one node/);
+	});
+
+	it('builds a graph node `walrus.proxy` backed by a sibling container', () => {
+		const w = walrus({ nodeCount: 2 });
+		const proxy = walrusProxy({ nodes: w.nodes });
+		const engine = new Engine(
+			{ stack: [sui.create({ network: 'localnet' }), w.appNetwork, proxy] },
+			{ env },
+		);
+		const state = engine.getState();
+		expect(state.nodes.has('walrus.proxy')).toBe(true);
+		expect(state.nodes.has('walrus.proxy.container')).toBe(true);
+		// dockerNetwork is pulled in transitively because the proxy joins it.
+		expect(state.nodes.has('docker.network')).toBe(true);
+	});
+
+	it('represents.endpoints projects a walrus-proxy Endpoint', () => {
+		// We can't actually run the proxy without docker, but we can check
+		// the represents callback handles synthetic state — same pattern
+		// the sui / walrus.node tests use to verify the projector.
+		const synthetic = { url: 'http://127.0.0.1:7777', port: 7777 };
+		const w = walrus({ nodeCount: 1 });
+		const proxy = walrusProxy({ nodes: w.nodes });
+		const impl = proxy as unknown as {
+			represents?: { endpoints?: (s: unknown) => unknown[] };
+		};
+		const endpoints = impl.represents?.endpoints?.(synthetic) as
+			| { name: string; url: string; kind?: string }[]
+			| undefined;
+		expect(endpoints).toEqual([
+			{ name: 'walrus-proxy', url: 'http://127.0.0.1:7777', kind: 'walrus-proxy' },
+		]);
+	});
+});
+
+describe('renderWalrusProxyConfig (pure)', () => {
+	it('emits one server block per node with the right vhost + upstream', () => {
+		const config = renderWalrusProxyConfig({
+			octet: 42,
+			nodeIndices: [0, 1, 2],
+			nodePort: 9185,
+		});
+		// Three vhost blocks.
+		const serverCount = (config.match(/server\s*\{/g) ?? []).length;
+		expect(serverCount).toBe(3);
+		// Each vhost has the right Host + upstream IP.
+		expect(config).toContain('server_name walrus-node-0.localhost');
+		expect(config).toContain('proxy_pass http://10.42.0.10:9185');
+		expect(config).toContain('server_name walrus-node-1.localhost');
+		expect(config).toContain('proxy_pass http://10.42.0.11:9185');
+		expect(config).toContain('server_name walrus-node-2.localhost');
+		expect(config).toContain('proxy_pass http://10.42.0.12:9185');
+		// Single shared listen port across all servers.
+		expect((config.match(/listen 0\.0\.0\.0:9185/g) ?? []).length).toBe(3);
+	});
+
+	it('honors a non-default nodePort', () => {
+		const config = renderWalrusProxyConfig({
+			octet: 7,
+			nodeIndices: [0],
+			nodePort: 8080,
+		});
+		expect(config).toContain('listen 0.0.0.0:8080');
+		expect(config).toContain('proxy_pass http://10.7.0.10:8080');
+	});
+
+	it('handles non-contiguous node indices (e.g. node-1 dropped from a committee)', () => {
+		const config = renderWalrusProxyConfig({
+			octet: 5,
+			nodeIndices: [0, 2, 3],
+			nodePort: 9185,
+		});
+		expect(config).toContain('server_name walrus-node-0.localhost');
+		expect(config).not.toContain('server_name walrus-node-1.localhost');
+		expect(config).toContain('server_name walrus-node-2.localhost');
+		expect(config).toContain('server_name walrus-node-3.localhost');
 	});
 });
 
