@@ -63,7 +63,7 @@ export interface PublishMoveOptions<TSigner> {
 	mvrPlaceholder?: string;
 }
 
-interface PublishState extends PublishedPackage {
+export interface PublishState extends PublishedPackage {
 	sourceHash: string;
 	/** Absolute path to the Move source. Captured in start() so the
 	 * `package` Dep can surface it without re-resolving against env. */
