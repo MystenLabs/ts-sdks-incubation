@@ -49,17 +49,32 @@ export interface PublishMoveOptions<TSigner> {
 	 * publishMove actions sharing the publisher signer serialize against
 	 * each other (avoids gas-object equivocation). */
 	runsAs?: string;
+	/** MVR placeholder used by the `bindings` plugin in emitted
+	 * `tx.moveCall({ package: '<placeholder>', … })` calls. Defaults to
+	 * `'@local/<name>'`. Override only when an app needs a specific
+	 * placeholder string (e.g. cross-app sharing); the default works for
+	 * 99% of cases. */
+	mvrPlaceholder?: string;
 }
 
 interface PublishState extends PublishedPackage {
 	sourceHash: string;
+	/** Absolute path to the Move source. Captured in start() so the
+	 * `package` Dep can surface it without re-resolving against env. */
+	path: string;
+	mvrPlaceholder: string;
 }
 
+// Default `provides` values are placeholders — the real recipes are
+// constructed inside the factory below where `name` + `mvrPlaceholder`
+// are known.
 const provides = {
-	package: dep((s: PublishState): Package => {
-		const result: Package = { name: '', packageId: s.packageId };
-		return result;
-	}),
+	package: dep((s: PublishState): Package => ({
+		name: '',
+		packageId: s.packageId,
+		mvrPlaceholder: s.mvrPlaceholder,
+		path: s.path,
+	})),
 	full: dep((s: PublishState) => s),
 } satisfies Provides<PublishState>;
 
@@ -100,12 +115,18 @@ export function publishMove<TSigner>(opts: PublishMoveOptions<TSigner>) {
 
 	const deps = { signer: opts.signer, rpc: sui.get('rpc') };
 	const provName = opts.name;
+	const mvrPlaceholder = opts.mvrPlaceholder ?? `@local/${opts.name}`;
 
-	// Customize the package recipe to inject the user's name (the schema
-	// can't know it at module load — only when publishMove is called).
+	// Customize the package recipe to inject the user's name + the
+	// resolved placeholder (the schema can't know either at module load).
 	const namedProvides = {
 		...provides,
-		package: dep((s: PublishState): Package => ({ name: provName, packageId: s.packageId })),
+		package: dep((s: PublishState): Package => ({
+			name: provName,
+			packageId: s.packageId,
+			mvrPlaceholder: s.mvrPlaceholder,
+			path: s.path,
+		})),
 	} satisfies Provides<PublishState>;
 
 	return define<PublishState, typeof namedProvides, typeof deps>({
@@ -119,6 +140,7 @@ export function publishMove<TSigner>(opts: PublishMoveOptions<TSigner>) {
 				name: opts.name,
 				rpcUrl: rpc.url,
 				sourceHash: hashMoveTree(abs),
+				mvrPlaceholder,
 			};
 		},
 		run: async ({ env, deps: { signer, rpc } }) => {
@@ -133,12 +155,24 @@ export function publishMove<TSigner>(opts: PublishMoveOptions<TSigner>) {
 				rpcUrl: rpc.url,
 				sourceHash,
 			});
-			const state: PublishState = { packageId: result.packageId, sourceHash };
+			const state: PublishState = {
+				packageId: result.packageId,
+				sourceHash,
+				path: abs,
+				mvrPlaceholder,
+			};
 			if (result.objects !== undefined) state.objects = result.objects;
 			return state;
 		},
 		represents: {
-			packages: (s: PublishState): Package[] => [{ name: opts.name, packageId: s.packageId }],
+			packages: (s: PublishState): Package[] => [
+				{
+					name: opts.name,
+					packageId: s.packageId,
+					mvrPlaceholder: s.mvrPlaceholder,
+					path: s.path,
+				},
+			],
 		},
 	});
 }
