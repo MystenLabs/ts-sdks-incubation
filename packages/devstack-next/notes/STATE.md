@@ -18,9 +18,11 @@ c5ac218  L7 CLI reset — stop runners + clear stack state
 cd3f537  Package shape — add path + populate mvrPlaceholder
 57847c4  rename codegen → manifest
 9fc4b95  L6 bindings plugin — Move source → typed TS bindings
+b71b1b3  L4 dockerImage runner — content-addressed builds
+a8e4f4b  dockerContainer.image accepts Dep<string>
 ```
 
-Tests: 269 passing. Typecheck clean. Build clean (124 files, ~435 kB).
+Tests: 278 passing. Typecheck clean. Build clean (127 files, ~465 kB).
 
 ## What's built
 
@@ -43,9 +45,12 @@ src/factories/      L4
   define-schema.ts    defineSchema()
   dep.ts              dep() recipe builder
 
-src/runners/        L4 — process/container runners
+src/runners/        L4 — process/container/image runners
   host-process.ts     hostProcess({...})
-  docker-container.ts dockerContainer({...}) — exposes provides.state + provides.hostPort
+  docker-container.ts dockerContainer({...}) — exposes provides.state + provides.hostPort.
+                      `image` accepts a Dep<string> so dockerImage results chain in.
+  docker-image.ts     dockerImage({...}) — content-addressed `docker build`.
+                      Provides tag (`<prefix>/<name>:<hash>`), digest, full.
 
 src/standard/       L4 — standard graph nodes
   ports.ts            singleton port allocator
@@ -107,11 +112,17 @@ the bin.
 
 **Plugins never call external runtimes (docker, processes, network
 tools) directly from `start`.** Always delegate to a runner factory
-(`dockerContainer`, `hostProcess`) so the resource is a first-class
-graph node. That's what enables uniform snapshot / shutdown / liveness
-handling across plugins. `sui.ts`, `walrus.ts`, and `seal.ts` all
-follow this rule; their containers appear as `*.container` siblings
-of the transformer producers in the graph.
+(`dockerContainer`, `dockerImage`, `hostProcess`) so the resource is a
+first-class graph node. That's what enables uniform snapshot /
+shutdown / liveness handling across plugins. `sui.ts`, `walrus.ts`,
+and `seal.ts` all follow this rule; their containers appear as
+`*.container` siblings of the transformer producers in the graph.
+
+The image build is now also a runner. Plugins that build their own
+images (the upcoming sui-tools / walrus-service / seal-key-server
+upgrades) chain `dockerImage` → `dockerContainer` so image-rebuild
+fan-out is automatic: bumping a build arg flips the image's identity
+→ container's input hash flips → container restarts on the new tag.
 
 ## What's deferred / not yet built
 
@@ -121,11 +132,10 @@ of the transformer producers in the graph.
   cheaper to add when there's a real consumer asking for it.
 - **walrus / seal real images**: the defaults
   (`mystenlabs/walrus-service:latest`, `mystenlabs/seal-key-server:latest`)
-  are placeholders and not pinned to known-good tags. Per-plugin image
-  build (the `*.build` actions in the original devstack) lives in a
-  future devstack-walrus / devstack-seal package — and depends on the
-  `dockerImage` runner being built first (Phase 1 of the gap-closure
-  plan).
+  are placeholders and not pinned to known-good tags. The `dockerImage`
+  runner unblocks per-plugin image builds (the `*.build` actions in the
+  original devstack); the upgrade itself is still pending and lives in
+  a future devstack-walrus / devstack-seal package.
 - **deepbook localnet publish**: `deepbook()` only knows about
   testnet/mainnet ids. Publishing the source against a localnet sui is
   deferred to a future devstack-deepbook plugin.
@@ -186,6 +196,9 @@ sync mechanism. The new model is one source per consumer.
 - `packages/devstack-next/PLAN.md` (especially L6 ~962–1127, L7 ~1128–1413)
 - `packages/devstack-next/src/engine/class.ts` — Engine API
 - `packages/devstack-next/src/runners/docker-container.ts` — runner pattern
+- `packages/devstack-next/src/runners/docker-image.ts` — content-
+  addressed image build runner; chains into dockerContainer via
+  `image: Dep<string>` for image-aware containers
 - `packages/devstack-next/src/plugins/sui.ts` — schema-style plugin
   composing `dockerContainer` (template for walrus / seal)
 - `packages/devstack-next/src/plugins/accounts.ts` — disk-backed
