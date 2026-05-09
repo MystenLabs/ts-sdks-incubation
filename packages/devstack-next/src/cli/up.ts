@@ -1,3 +1,4 @@
+import { watch as fsWatch } from 'node:fs/promises';
 import { Engine } from '../engine/class.js';
 import type { DevstackConfig, Env } from '../engine/types.js';
 import { tryReadSnapshot, writeSnapshot } from '../persistence/index.js';
@@ -11,6 +12,11 @@ Long-running supervisor. Reads the prior snapshot, runs the first cycle,
 auto-saves a snapshot at each cycle:end, and idles until SIGINT. Use
 \`apply\` for the one-shot variant.
 
+While idling, watches every path that nodes registered via
+\`runArgs.watch(...)\` (e.g. publishMove watches its Move source dir);
+fs events trigger \`engine.invalidate(name)\` and a fresh cycle, debounced
+~150ms so editor save bursts coalesce into a single rebuild.
+
 Options:
   --config <path>             Override the config path (default: walk up
                               from cwd looking for devstack.config.ts)
@@ -20,6 +26,8 @@ Options:
   --no-tui                    Force the line-oriented plain renderer
                               even on a TTY. Auto-applied when stdout
                               isn't a TTY (CI logs, redirected output).
+  --no-watch                  Disable file-watching. Cycles only fire from
+                              SIGUSR2 (manual re-trigger) or SIGINT (stop).
   -h, --help                  Show this help
 `;
 
@@ -37,6 +45,10 @@ export interface RunUpOptions {
 	stopSignal?: Promise<void>;
 	/** Force a specific renderer. Default: 'tui' on a TTY, 'plain' off. */
 	renderer?: RendererKind;
+	/** Disable file-watching. Default: enabled. */
+	noWatch?: boolean;
+	/** Override the debounce window for fs events. Default 150ms. */
+	watchDebounceMs?: number;
 }
 
 export async function runUp(opts: RunUpOptions): Promise<number> {
@@ -85,6 +97,15 @@ export async function runUp(opts: RunUpOptions): Promise<number> {
 			});
 	});
 
+	const detachWatcher =
+		opts.noWatch === true
+			? () => undefined
+			: attachFileWatcher(engine, {
+					out,
+					quietLogs: kind === 'tui',
+					...(opts.watchDebounceMs !== undefined ? { debounceMs: opts.watchDebounceMs } : {}),
+				});
+
 	const externalStop = opts.stopSignal ?? defaultStopSignal();
 	const stopSignal = Promise.race([externalStop, tuiQuitSignal]);
 
@@ -94,9 +115,139 @@ export async function runUp(opts: RunUpOptions): Promise<number> {
 	});
 	await startPromise;
 
+	detachWatcher();
 	detachSnapshotWriter();
 	await detachRenderer();
 	return 0;
+}
+
+interface WatcherOptions {
+	out: NodeJS.WriteStream;
+	quietLogs: boolean;
+	debounceMs?: number;
+}
+
+// File-watcher infrastructure. Subscribes to cycle:end so the watcher
+// set follows the engine's authoritative `getWatchPaths(name)`. On any
+// fs event, marks the originating node dirty and triggers a debounced
+// `engine.cycle()` — bursts of saves from an editor coalesce into one
+// rebuild rather than firing N cycles back-to-back.
+//
+// node:fs/promises `watch()` is async-iterable and reasonably reliable
+// on darwin/win32 with `recursive: true`. On linux the recursive flag
+// silently degrades to non-recursive (no native inotify recursion);
+// users with deep Move trees on linux may want to switch to chokidar
+// — defer until someone reports the gap.
+function attachFileWatcher(
+	engine: Engine,
+	opts: WatcherOptions,
+): () => void {
+	const debounceMs = opts.debounceMs ?? 150;
+	// path → { aborter, names: which nodes care about this path }
+	const active = new Map<string, { aborter: AbortController; names: Set<string> }>();
+	const pendingInvalidations = new Set<string>();
+	let debounceTimer: NodeJS.Timeout | undefined;
+	let detached = false;
+
+	const log = (line: string): void => {
+		if (!opts.quietLogs) opts.out.write(`${line}\n`);
+	};
+
+	const fireCycle = (): void => {
+		debounceTimer = undefined;
+		if (pendingInvalidations.size === 0 || detached) return;
+		const triggered = [...pendingInvalidations].sort();
+		pendingInvalidations.clear();
+		for (const name of triggered) engine.invalidate(name);
+		log(`[watch] cycle triggered by ${triggered.join(', ')}`);
+		// engine.cycle errors surface as engine:error events through the
+		// renderer; swallow the rejection here so the watcher's microtask
+		// doesn't bubble an unhandled rejection.
+		void engine.cycle().catch(() => undefined);
+	};
+
+	const scheduleCycle = (): void => {
+		if (debounceTimer !== undefined) clearTimeout(debounceTimer);
+		debounceTimer = setTimeout(fireCycle, debounceMs);
+	};
+
+	const startWatcher = (path: string): AbortController => {
+		const aborter = new AbortController();
+		(async () => {
+			try {
+				for await (const _evt of fsWatch(path, {
+					recursive: true,
+					signal: aborter.signal,
+				})) {
+					const entry = active.get(path);
+					if (!entry) continue;
+					for (const name of entry.names) pendingInvalidations.add(name);
+					scheduleCycle();
+				}
+			} catch (err) {
+				if (aborter.signal.aborted) return;
+				const code = (err as { code?: string }).code;
+				if (code === 'ENOENT') {
+					// Path doesn't exist (yet). Common on cold starts before a
+					// publishMove has actually written its source dir. Drop the
+					// watcher; the next cycle:end refresh re-attempts when the
+					// path has been registered fresh.
+					return;
+				}
+				log(`[watch] error on ${path}: ${(err as Error).message ?? String(err)}`);
+			}
+		})();
+		return aborter;
+	};
+
+	const refresh = (): void => {
+		if (detached) return;
+		const desired = new Map<string, Set<string>>();
+		for (const name of engine.getState().nodes.keys()) {
+			for (const p of engine.getWatchPaths(name)) {
+				let set = desired.get(p);
+				if (!set) {
+					set = new Set();
+					desired.set(p, set);
+				}
+				set.add(name);
+			}
+		}
+		// Cancel watchers no longer wanted.
+		for (const [path, entry] of active) {
+			if (!desired.has(path)) {
+				entry.aborter.abort();
+				active.delete(path);
+			}
+		}
+		// Add or update remaining watchers.
+		for (const [path, names] of desired) {
+			const existing = active.get(path);
+			if (existing === undefined) {
+				active.set(path, { aborter: startWatcher(path), names });
+			} else {
+				existing.names = names;
+			}
+		}
+	};
+
+	const detachSubscriber = engine.subscribe((event) => {
+		if (event.type === 'cycle:end') refresh();
+	});
+
+	// Initial pass — engine.start() is what kicks off cycle 0; by the
+	// time the cycle:end subscriber fires, watch paths from start() are
+	// already registered. The initial refresh after the subscribe is
+	// belt-and-suspenders for a `runOnce`-style integration.
+	refresh();
+
+	return () => {
+		detached = true;
+		detachSubscriber();
+		if (debounceTimer !== undefined) clearTimeout(debounceTimer);
+		for (const { aborter } of active.values()) aborter.abort();
+		active.clear();
+	};
 }
 
 // Listen once on SIGINT/SIGTERM. Returns a promise that resolves when
@@ -128,9 +279,11 @@ export async function main(argv: string[]): Promise<number> {
 		...(flags.stack !== undefined ? { stack: flags.stack } : {}),
 	});
 	const noTui = hasFlag(argv, '--no-tui');
+	const noWatch = hasFlag(argv, '--no-watch');
 	return runUp({
 		config: loaded.config,
 		env: loaded.env,
 		...(noTui || !process.stdout.isTTY ? { renderer: 'plain' as const } : {}),
+		...(noWatch ? { noWatch: true } : {}),
 	});
 }

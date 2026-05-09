@@ -143,11 +143,16 @@ export function publishMove<TSigner>(opts: PublishMoveOptions<TSigner>) {
 				mvrPlaceholder,
 			};
 		},
-		run: async ({ env, deps: { signer, rpc } }) => {
+		run: async ({ env, deps: { signer, rpc }, watch }) => {
 			const abs = resolvePath(env.appDir, opts.path);
 			if (!existsSync(abs)) {
 				throw new Error(`publishMove("${opts.name}"): source path does not exist: ${abs}`);
 			}
+			// Register the source dir for fs-watching. The supervisor uses
+			// engine.getWatchPaths(name) to drive `up` re-cycles when a
+			// .move file changes. inputs() includes hashMoveTree so the
+			// re-cycle picks up the edit and re-publishes.
+			watch(abs);
 			const sourceHash = hashMoveTree(abs);
 			const result = await opts.publish({
 				sourcePath: abs,
