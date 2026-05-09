@@ -266,10 +266,14 @@ function buildDeploy(args: {
 		// Couple to sui (rpc/faucet) so the deploy step gates on the
 		// localnet being live; the actual URLs come from the in-network
 		// alias below — sui's host-port mappings aren't reachable from
-		// inside the deploy container.
+		// inside the deploy container. `_octet` flows the per-(app,
+		// stack) subnet's second octet so WALRUS_LISTENING_IPS pins to
+		// the same `10.<octet>.0.10..` block storage nodes claim via
+		// `--ip` below.
 		deps: {
 			_rpc: sui.get('rpc'),
 			_faucet: sui.get('faucet'),
+			_octet: dockerNetwork.get('octet'),
 		},
 		network: dockerNetwork.get('name'),
 		volumes: ({ env }) => {
@@ -277,13 +281,14 @@ function buildDeploy(args: {
 			mkdirSync(hostDir, { recursive: true });
 			return [{ host: hostDir, container: '/opt/walrus/outputs' }];
 		},
-		containerEnv: () => ({
+		containerEnv: ({ deps }) => ({
 			WALRUS_PUBLIC_HOSTS: publicHosts,
-			// In a per-stack docker network the listening IPs would
-			// match the IPAM-pinned committee subnet (5e). Until storage
-			// nodes get fixed IPs, bind to 0.0.0.0 so the deploy step
-			// at least produces output configs the parser can read.
-			WALRUS_LISTENING_IPS: Array.from({ length: args.nodeCount }, () => '0.0.0.0').join(' '),
+			// IPAM-pinned committee subnet — each storage node's
+			// `dockerContainer.ip` resolves to the matching slot below
+			// so deploy-time config + runtime listening IPs agree.
+			WALRUS_LISTENING_IPS: Array.from({ length: args.nodeCount }, (_, i) =>
+				walrusNodeIp(deps._octet, i),
+			).join(' '),
 			WALRUS_REST_API_PORT: String(restApiPort),
 			WALRUS_COMMITTEE_SIZE: String(args.nodeCount),
 			WALRUS_SHARDS: String(args.shards),
@@ -355,6 +360,17 @@ function containerNode(index: number, opts: WalrusOptions, image: ImageRef, depl
 		image,
 		ports: [{ slot, containerPort: containerApiPort }],
 		readyTimeoutMs,
+		// Join the per-(app, stack) docker network with a fixed IP +
+		// alias matching `walrusPublicHost(index)`. The IP comes from
+		// `dockerNetwork.octet` so the per-stack second octet matches
+		// the deploy step's `WALRUS_LISTENING_IPS` exactly. The alias
+		// (`walrus-node-<i>.localhost`) matches the on-chain registered
+		// public host so other in-network containers (deploy script,
+		// proxy) reach the node by the same name the chain knows.
+		network: dockerNetwork.get('name'),
+		networkAlias: walrusPublicHost(index),
+		deps: { _octet: dockerNetwork.get('octet') },
+		ip: ({ deps }) => walrusNodeIp(deps._octet, index),
 		// Mount deploy outputs read-only — run.sh inside the container
 		// reads its keystore + per-node yaml from /opt/walrus/outputs.
 		volumes: ({ env }) => [
@@ -406,11 +422,20 @@ export function walrusDeployHostDir(env: { appDir: string; stack?: string }): st
 }
 
 /** Public hostname registered on chain. `*.localhost` resolves to
- * 127.0.0.1 on the host (RFC 6761); a matching docker network alias on
- * each node container handles the in-network case (when network
- * support lands). */
+ * 127.0.0.1 on the host (RFC 6761); a matching docker network alias
+ * on each node container handles the in-network case so `walrus-node-
+ * <i>.localhost` resolves both ways. */
 function walrusPublicHost(index: number): string {
 	return `walrus-node-${index}.localhost`;
+}
+
+/** Per-storage-node fixed IP within the per-stack `/24`. Slots 10..
+ * leave room at the bottom of the subnet for sui-localnet,
+ * sui-indexer-db, and ad-hoc scratch containers (docker assigns those
+ * dynamically when no `--ip` is set). 4-node committee occupies
+ * `10.<octet>.0.10..13`. */
+function walrusNodeIp(octet: number, index: number): string {
+	return `10.${octet}.0.${10 + index}`;
 }
 
 export function parseDeployFile(text: string): Omit<WalrusDeployState, 'outputDir'> {

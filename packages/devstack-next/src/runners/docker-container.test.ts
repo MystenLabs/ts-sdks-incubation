@@ -245,6 +245,57 @@ describe('dockerContainer', () => {
 	);
 
 	itDocker(
+		'computes a fixed IP via `ip:` callback from upstream deps (octet → /24 slot)',
+		async () => {
+			// Walrus storage-node pattern: container's IP is computed from
+			// the dockerNetwork's resolved octet so the deploy-time
+			// `WALRUS_LISTENING_IPS` and the runtime `--ip` agree without
+			// the caller hand-coding either.
+			const container = dockerContainer({
+				name: 'pinned-ip',
+				image: 'alpine:3.19',
+				args: ['sleep', '60'],
+				network: dockerNetwork.get('name'),
+				networkAlias: 'pinned-ip-alias',
+				deps: { _octet: dockerNetwork.get('octet') },
+				ip: ({ deps }) => `10.${deps._octet}.0.20`,
+			});
+			const engine = new Engine({ stack: [container] }, { env });
+			const result = await engine.runOnce();
+			expect(result.errored).toEqual([]);
+
+			const cState = engine.getState().nodes.get('pinned-ip')?.state as
+				| DockerContainerState
+				| undefined;
+			const netState = engine.getState().nodes.get('docker.network')?.state as
+				| DockerNetworkState
+				| undefined;
+			trackContainer(cState?.containerId);
+			if (netState?.name) trackedNetworks.add(netState.name);
+
+			expect(cState?.ip).toBe(`10.${netState!.octet}.0.20`);
+
+			// Verify docker actually pinned the IP — the network's
+			// IPAM block on the inspect output reports the per-network
+			// IPv4Address.
+			const inspectIp = execFileSync(
+				'docker',
+				[
+					'inspect',
+					'-f',
+					`{{(index .NetworkSettings.Networks "${netState!.name}").IPAddress}}`,
+					cState!.containerId,
+				],
+				{ encoding: 'utf8' },
+			).trim();
+			expect(inspectIp).toBe(`10.${netState!.octet}.0.20`);
+
+			await engine.stop();
+		},
+		120_000,
+	);
+
+	itDocker(
 		'errors and removes the container when readyProbe times out',
 		async () => {
 			const node = dockerContainer({

@@ -45,9 +45,11 @@ f1d465b  stack new + stack use CLI subcommands
          5c seal.keygen via dockerOneShot (seal-cli genkey, disk-cached)
          dockerOneShot: idempotent re-runs, --entrypoint config
          5d sui.indexer-db (postgres sidecar) + sui.get('graphql')
+         5e walrus committee on per-stack network (fixed IPs + aliases)
+         dockerContainer.ip extended to function form for runtime IPs
 ```
 
-Tests: 364 passing. Typecheck clean. Build clean.
+Tests: 365 passing. Typecheck clean. Build clean.
 
 ## What's built
 
@@ -177,10 +179,18 @@ src/plugins/        L6
                       register. Two-stage image chain
                       `walrus.image.upstream` → `walrus.image` (the
                       latter chains BASE_IMAGE off the former's tag).
+                      Storage-node containers join `dockerNetwork`
+                      with fixed IPs `10.<octet>.0.<10+i>` (computed
+                      from `dockerNetwork.octet` via the
+                      `ip: ({ deps }) => ...` callback) and aliases
+                      `walrus-node-<i>.localhost` matching the on-
+                      chain registered public hosts.
                       `walrus.deploy.container` runs deploy-walrus.sh
                       via dockerOneShot, joining `dockerNetwork` so
                       `WALRUS_NETWORK` points at `sui-localnet:9000`
-                      (alias) instead of `host.docker.internal`.
+                      (alias) instead of `host.docker.internal`;
+                      `WALRUS_LISTENING_IPS` enumerates the same
+                      `10.<octet>.0.<10+i>` block storage nodes pin.
                       `walrus.deploy` parses the outputs file.
                       `walrus.register` projects deploy state into a
                       Package shape consumers (manifest / bindings)
