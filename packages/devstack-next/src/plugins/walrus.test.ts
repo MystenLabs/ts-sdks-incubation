@@ -4,7 +4,9 @@ import { describe, expect, it } from 'vitest';
 import { Engine } from '../engine/class.js';
 import type { Env } from '../engine/types.js';
 import { define } from '../factories/define.js';
+import { sui } from './sui.js';
 import {
+	parseDeployFile,
 	walrus,
 	type WalrusNetworkState,
 	type WalrusNodeState,
@@ -112,10 +114,15 @@ describe('walrus (graph composition — no real Docker)', () => {
 	// surface must include `walrus.node-${i}.container` siblings so any
 	// snapshot / lifecycle pass can walk them uniformly. The image
 	// chain (`walrus.image.upstream` → `walrus.image`) appears alongside
-	// when no `image:` override is supplied.
-	it('container path: node + node.container + image chain + ports siblings', () => {
+	// when no `image:` override is supplied; the deploy chain
+	// (`walrus.deploy` + `walrus.deploy.container`) appears whenever
+	// not in `rpcUrls:` mode.
+	it('container path: nodes + image chain + deploy chain + ports siblings', () => {
 		const w = walrus({ nodeCount: 2 });
-		const engine = new Engine({ stack: [w.appNetwork] }, { env });
+		const engine = new Engine(
+			{ stack: [sui.create({ network: 'localnet' }), w.appNetwork] },
+			{ env },
+		);
 		const state = engine.getState();
 		expect(state.nodes.has('walrus.node-0')).toBe(true);
 		expect(state.nodes.has('walrus.node-0.container')).toBe(true);
@@ -124,19 +131,25 @@ describe('walrus (graph composition — no real Docker)', () => {
 		expect(state.nodes.has('walrus.app-network')).toBe(true);
 		expect(state.nodes.has('walrus.image')).toBe(true);
 		expect(state.nodes.has('walrus.image.upstream')).toBe(true);
+		expect(state.nodes.has('walrus.deploy')).toBe(true);
+		expect(state.nodes.has('walrus.deploy.container')).toBe(true);
 		expect(state.nodes.has('ports')).toBe(true);
 	});
 
 	it('skips walrus.image* when caller pins a pre-built image tag', () => {
 		const w = walrus({ nodeCount: 2, image: 'mystenlabs/walrus-service:latest' });
-		const engine = new Engine({ stack: [w.appNetwork] }, { env });
+		const engine = new Engine(
+			{ stack: [sui.create({ network: 'localnet' }), w.appNetwork] },
+			{ env },
+		);
 		const state = engine.getState();
 		expect(state.nodes.has('walrus.node-0.container')).toBe(true);
+		expect(state.nodes.has('walrus.deploy.container')).toBe(true);
 		expect(state.nodes.has('walrus.image')).toBe(false);
 		expect(state.nodes.has('walrus.image.upstream')).toBe(false);
 	});
 
-	it('rpcUrls override skips docker — no .container nodes in the graph', () => {
+	it('rpcUrls override skips docker — no .container or deploy nodes in the graph', () => {
 		const w = walrus({ rpcUrls: ['http://x/', 'http://y/'] });
 		const engine = new Engine({ stack: [w.appNetwork] }, { env });
 		const state = engine.getState();
@@ -144,6 +157,8 @@ describe('walrus (graph composition — no real Docker)', () => {
 		expect(state.nodes.has('walrus.node-0.container')).toBe(false);
 		expect(state.nodes.has('walrus.node-1.container')).toBe(false);
 		expect(state.nodes.has('walrus.image')).toBe(false);
+		expect(state.nodes.has('walrus.deploy')).toBe(false);
+		expect(state.nodes.has('walrus.deploy.container')).toBe(false);
 		expect(state.nodes.has('ports')).toBe(false);
 	});
 
@@ -154,6 +169,44 @@ describe('walrus (graph composition — no real Docker)', () => {
 		expect(existsSync(`${ctx}wrapper.Dockerfile`)).toBe(true);
 		expect(existsSync(`${ctx}deploy.sh`)).toBe(true);
 		expect(existsSync(`${ctx}run.sh`)).toBe(true);
+	});
+});
+
+describe('walrus parseDeployFile', () => {
+	it('parses required + optional ids from the walrus-deploy summary', () => {
+		const text = `package_id: 0xabc
+system_object: 0xsys
+staking_object: 0xstk
+upgrade_manager_object: 0xupg
+treasury_object: 0xtre
+exchange_object: 0xex
+extra_field: 0xignored
+`;
+		const ids = parseDeployFile(text);
+		expect(ids.walrusPackageId).toBe('0xabc');
+		expect(ids.systemObject).toBe('0xsys');
+		expect(ids.stakingObject).toBe('0xstk');
+		expect(ids.upgradeManagerObject).toBe('0xupg');
+		expect(ids.treasuryObject).toBe('0xtre');
+		expect(ids.exchangeObject).toBe('0xex');
+	});
+
+	it('omits optional ids when the summary lists `None`', () => {
+		const text = `package_id: 0xabc
+system_object: 0xsys
+staking_object: 0xstk
+exchange_object: None
+`;
+		const ids = parseDeployFile(text);
+		expect(ids.exchangeObject).toBeUndefined();
+		expect(ids.treasuryObject).toBeUndefined();
+	});
+
+	it('throws when a required id is missing', () => {
+		const text = `package_id: 0xabc
+system_object: 0xsys
+`;
+		expect(() => parseDeployFile(text)).toThrow(/staking_object/);
 	});
 });
 
