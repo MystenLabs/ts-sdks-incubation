@@ -318,4 +318,57 @@ describe('accounts.fund', () => {
 		const errored = cycle.errored.find((e) => e.name === 'accounts.fund');
 		expect(errored).toBeDefined();
 	});
+
+	it('skips AB-deposit silently when sui RPC is unreachable', async () => {
+		const { pool, fund } = accounts({
+			specs: { publisher: {} },
+			// Opt-in target — default is 0n which short-circuits before
+			// the RPC probe. Non-zero forces the gate to run.
+			abMinBalanceMist: 100_000_000_000n,
+		});
+		const engine = new Engine(
+			{
+				stack: [
+					sui.create({
+						network: 'localnet',
+						// Unreachable RPC — probeRpc returns false → AB-deposit
+						// skipped silently. Faucet stub still serves.
+						rpcUrl: 'http://127.0.0.1:1',
+						faucetUrl,
+					}),
+					pool,
+					fund,
+				],
+			},
+			{ env: localEnv() },
+		);
+		const cycle = await engine.runOnce();
+		expect(cycle.errored).toEqual([]);
+		const fundState = engine.getState().nodes.get('accounts.fund')?.state as
+			| { fundedAt: number; addresses: string[] }
+			| undefined;
+		expect(fundState?.addresses).toHaveLength(1);
+	});
+
+	it('AB-deposit is off by default (abMinBalanceMist=0n)', async () => {
+		// `abMinBalanceMist` not set; even with a "reachable" RPC URL the
+		// AB-deposit short-circuits before the probe. Faucet still runs.
+		const { pool, fund } = accounts({ specs: { publisher: {} } });
+		const engine = new Engine(
+			{
+				stack: [
+					sui.create({
+						network: 'localnet',
+						rpcUrl: 'http://localhost:9999',
+						faucetUrl,
+					}),
+					pool,
+					fund,
+				],
+			},
+			{ env: localEnv() },
+		);
+		const cycle = await engine.runOnce();
+		expect(cycle.errored).toEqual([]);
+	});
 });
