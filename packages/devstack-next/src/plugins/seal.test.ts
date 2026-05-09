@@ -1,8 +1,11 @@
+import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { describe, expect, it } from 'vitest';
 import { Engine } from '../engine/class.js';
-import type { Env } from '../engine/types.js';
+import type { Dep, Env, Provides } from '../engine/types.js';
+import { dep } from '../factories/dep.js';
 import { define } from '../factories/define.js';
-import { seal, type SealState } from './seal.js';
+import { sui } from './sui.js';
+import { seal, sealLocalnet, type SealState } from './seal.js';
 
 const env: Env = { appName: 'demo', appDir: '/tmp/seal-test', network: 'localnet', stack: 'main' };
 
@@ -92,6 +95,72 @@ describe('seal (static get accessors via __pluginId)', () => {
 			start: async ({ deps: { ks } }) => ({ url: ks.url }),
 		});
 		expect(() => new Engine({ stack: [consumer] }, { env })).toThrow(/no instance/);
+	});
+});
+
+describe('sealLocalnet (graph composition — no real chain)', () => {
+	// `sealLocalnet({...})` exposes a `publish` + `register` pair on top
+	// of the existing `seal` schema. Verify both producers compose into
+	// the graph alongside seal's key-server, the source gitFetch, and
+	// the implicit sui dep.
+	function makeOps() {
+		// Synthetic signer producer matches the accountPool pattern.
+		interface SignerState {
+			keypair: Ed25519Keypair;
+		}
+		const signerProvides = {
+			signer: dep((s: SignerState) => s.keypair),
+		} satisfies Provides<SignerState>;
+		const signerNode = define<SignerState, typeof signerProvides>({
+			name: 'test.signer',
+			provides: signerProvides,
+			start: async () => ({ keypair: Ed25519Keypair.generate() }),
+		});
+		const signerDep = signerNode.get('signer') as unknown as Dep<unknown, Ed25519Keypair>;
+		const ops = sealLocalnet({ signer: signerDep, publicKeyHex: '0xdeadbeef' });
+		return { signerNode, ops };
+	}
+
+	it('publish + register + source siblings appear with sui + seal pulled in', () => {
+		const { signerNode, ops } = makeOps();
+		const engine = new Engine(
+			{
+				stack: [
+					sui.create({ network: 'localnet', rpcUrl: 'http://stub/' }),
+					seal.create({ url: 'https://stub/' }),
+					signerNode,
+					ops.publish,
+					ops.register,
+				],
+			},
+			{ env },
+		);
+		const state = engine.getState();
+		expect(state.nodes.has('publish.seal')).toBe(true);
+		expect(state.nodes.has('seal.register')).toBe(true);
+		expect(state.nodes.has('seal.source')).toBe(true);
+		expect(state.nodes.has('seal.key-server')).toBe(true);
+		expect(state.nodes.has('sui.localnet')).toBe(true);
+	});
+
+	it('register depends on publish, sui rpc, and seal key-server', () => {
+		const { signerNode, ops } = makeOps();
+		const engine = new Engine(
+			{
+				stack: [
+					sui.create({ network: 'localnet', rpcUrl: 'http://stub/' }),
+					seal.create({ url: 'https://stub/' }),
+					signerNode,
+					ops.register,
+				],
+			},
+			{ env },
+		);
+		// Engine pulls in the right transitive nodes via deps.
+		const state = engine.getState();
+		expect(state.nodes.has('publish.seal')).toBe(true);
+		expect(state.nodes.has('seal.source')).toBe(true);
+		expect(state.nodes.has('seal.key-server')).toBe(true);
 	});
 });
 
