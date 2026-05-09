@@ -183,4 +183,51 @@ describe('dockerImage (build)', () => {
 		},
 		180_000,
 	);
+
+	itDocker(
+		'buildContexts feed BuildKit named contexts and fold into the tag',
+		async () => {
+			writeMinimalDockerfile(
+				'docker',
+				'FROM alpine:3.19\nCOPY --from=extras /payload.txt /payload.txt\nRUN cat /payload.txt\n',
+			);
+			const extrasA = join(appDir, 'extras-a');
+			const extrasB = join(appDir, 'extras-b');
+			mkdirSync(extrasA, { recursive: true });
+			mkdirSync(extrasB, { recursive: true });
+			writeFileSync(join(extrasA, 'payload.txt'), 'payload version A\n');
+			writeFileSync(join(extrasB, 'payload.txt'), 'payload version B\n');
+
+			let extras = extrasA;
+			const img = dockerImage({
+				name: 'bctx',
+				context: { path: 'docker' },
+				buildContexts: { extras: { path: extras } },
+			});
+			void img;
+
+			// Rebuild explicitly per cycle by closing over `extras` via a
+			// fresh dockerImage producer each time — `buildContexts` is
+			// evaluated at producer-construction, not per-start.
+			const first = await runOnce({ extras: extrasA });
+			trackTag(first.tag);
+			const second = await runOnce({ extras: extrasB });
+			trackTag(second.tag);
+
+			expect(second.tag).not.toBe(first.tag);
+
+			async function runOnce(opts: { extras: string }): Promise<DockerImageState> {
+				const producer = dockerImage({
+					name: 'bctx',
+					context: { path: 'docker' },
+					buildContexts: { extras: { path: opts.extras } },
+				});
+				const eng = new Engine({ stack: [producer] }, { env });
+				const result = await eng.runOnce();
+				expect(result.errored).toEqual([]);
+				return eng.getState().nodes.get('bctx')!.state as DockerImageState;
+			}
+		},
+		180_000,
+	);
 });
