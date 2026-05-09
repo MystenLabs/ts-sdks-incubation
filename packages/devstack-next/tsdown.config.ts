@@ -28,6 +28,7 @@ export default defineConfig({
 	copy: [
 		{ from: 'src/plugins/sui/docker/Dockerfile', to: 'dist/plugins/sui/docker' },
 		{ from: 'src/plugins/sui/docker/entrypoint.sh', to: 'dist/plugins/sui/docker' },
+		{ from: 'src/plugins/seal/docker/Dockerfile', to: 'dist/plugins/seal/docker' },
 		{ from: 'src/plugins/walrus/docker/upstream.Dockerfile', to: 'dist/plugins/walrus/docker' },
 		{ from: 'src/plugins/walrus/docker/wrapper.Dockerfile', to: 'dist/plugins/walrus/docker' },
 		{ from: 'src/plugins/walrus/docker/deploy.sh', to: 'dist/plugins/walrus/docker' },

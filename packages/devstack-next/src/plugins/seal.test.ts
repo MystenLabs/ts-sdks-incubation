@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { describe, expect, it } from 'vitest';
 import { Engine } from '../engine/class.js';
@@ -41,13 +43,34 @@ describe('seal (url override — no Docker)', () => {
 });
 
 describe('seal (graph composition — managed mode, no real Docker)', () => {
-	it('builds graph with seal.key-server + seal.key-server.container + ports', () => {
+	it('builds graph with seal.image + seal.key-server.container + seal.key-server + ports', () => {
 		const node = seal.create({});
 		const engine = new Engine({ stack: [node] }, { env });
 		const state = engine.getState();
 		expect(state.nodes.has('seal.key-server')).toBe(true);
 		expect(state.nodes.has('seal.key-server.container')).toBe(true);
+		// Image build chains content-addressed via dockerImage.
+		expect(state.nodes.has('seal.image')).toBe(true);
 		expect(state.nodes.has('ports')).toBe(true);
+	});
+
+	it('skips seal.image when caller pins a pre-built image tag', () => {
+		const node = seal.create({ image: 'mystenlabs/seal-key-server:devnet' });
+		const engine = new Engine({ stack: [node] }, { env });
+		const state = engine.getState();
+		expect(state.nodes.has('seal.key-server')).toBe(true);
+		expect(state.nodes.has('seal.key-server.container')).toBe(true);
+		// No dockerImage build when the caller has a pre-built tag.
+		expect(state.nodes.has('seal.image')).toBe(false);
+	});
+
+	it('vendored docker context resolves to a real on-disk directory', () => {
+		// `seal.image` resolves its build context via `import.meta.url`
+		// from `seal.ts` — guard against the source-vs-built path drift
+		// that would only surface at `docker build` time.
+		const ctx = fileURLToPath(new URL('./seal/docker/', import.meta.url));
+		expect(existsSync(ctx)).toBe(true);
+		expect(existsSync(`${ctx}Dockerfile`)).toBe(true);
 	});
 });
 
