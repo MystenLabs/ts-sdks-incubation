@@ -1,14 +1,26 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Writable } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { defineDevstackConfig } from '../config.js';
-import type { DevstackConfig, Env } from '../engine/types.js';
+import type { DevstackConfig, Env, SnapshotRecord } from '../engine/types.js';
 import { define } from '../factories/define.js';
-import { snapshotPathFor, tryReadSnapshot } from '../persistence/index.js';
+import {
+	labeledSnapshotPath,
+	labeledSnapshotsDir,
+	snapshotPathFor,
+	tryReadSnapshot,
+	writeSnapshot,
+} from '../persistence/index.js';
 import { sui } from '../plugins/sui.js';
 import { runApply } from './apply.js';
+import {
+	runSnapshotDelete,
+	runSnapshotList,
+	runSnapshotRestore,
+	runSnapshotSave,
+} from './snapshot.js';
 import { runStatus } from './status.js';
 import { runUp } from './up.js';
 
@@ -176,6 +188,189 @@ describe('runStatus', () => {
 		expect(parsed.exists).toBe(true);
 		const sui = parsed.nodes.find((n) => n.name === 'sui.testnet');
 		expect(sui?.status).toBe('satisfied');
+	});
+});
+
+describe('runSnapshot*', () => {
+	const localEnv = (override?: Partial<Env>): Env => ({
+		appName: 'demo',
+		appDir,
+		network: 'localnet',
+		stack: 'main',
+		...override,
+	});
+
+	function sampleRecord(env: Env, createdAt: number): SnapshotRecord {
+		const recordEnv: SnapshotRecord['env'] = { appName: env.appName, network: env.network };
+		if (env.stack !== undefined) recordEnv.stack = env.stack;
+		return {
+			createdAt,
+			env: recordEnv,
+			nodeStates: {
+				'sui.localnet': {
+					lastInputHash: 'abc',
+					lastRunAt: createdAt,
+					identity: 'id1',
+					state: { rpcUrl: 'http://localhost:9000' },
+				},
+			},
+			meta: { devstackVersion: '0.0.0-dev' },
+		};
+	}
+
+	it('save copies the canonical snapshot to a labeled file', async () => {
+		const env = localEnv();
+		await writeSnapshot(env, sampleRecord(env, Date.UTC(2026, 4, 8, 12, 0, 0)));
+		const out = new CaptureStream();
+		const result = await runSnapshotSave({ env, label: 'baseline', out: asWriteStream(out) });
+		expect(result.exitCode).toBe(0);
+		expect(result.id).toBe('20260508T120000');
+		expect(result.label).toBe('baseline');
+		expect(result.path).toBe(labeledSnapshotPath(env, '20260508T120000', 'baseline'));
+		const body = await readFile(result.path!, 'utf8');
+		expect(JSON.parse(body).createdAt).toBe(Date.UTC(2026, 4, 8, 12, 0, 0));
+		expect(out.text).toContain('saved snapshot 20260508T120000');
+	});
+
+	it('save errors when no canonical snapshot exists', async () => {
+		const out = new CaptureStream();
+		const result = await runSnapshotSave({
+			env: localEnv(),
+			label: 'baseline',
+			out: asWriteStream(out),
+		});
+		expect(result.exitCode).toBe(1);
+		expect(out.text).toContain('no snapshot at');
+	});
+
+	it('save without a label writes <id>.json', async () => {
+		const env = localEnv();
+		await writeSnapshot(env, sampleRecord(env, Date.UTC(2026, 0, 1, 0, 0, 0)));
+		const result = await runSnapshotSave({
+			env,
+			out: asWriteStream(new CaptureStream()),
+		});
+		expect(result.exitCode).toBe(0);
+		expect(result.path).toBe(labeledSnapshotPath(env, '20260101T000000'));
+	});
+
+	it('save rejects malformed labels', async () => {
+		const env = localEnv();
+		await writeSnapshot(env, sampleRecord(env, Date.now()));
+		await expect(
+			runSnapshotSave({ env, label: 'not/a label', out: asWriteStream(new CaptureStream()) }),
+		).rejects.toThrow(/label/);
+	});
+
+	it('list returns newest-first; empty when no snapshots', async () => {
+		const env = localEnv();
+		const empty = await runSnapshotList({ env, out: asWriteStream(new CaptureStream()) });
+		expect(empty.entries).toEqual([]);
+
+		await writeSnapshot(env, sampleRecord(env, Date.UTC(2026, 0, 1, 0, 0, 0)));
+		await runSnapshotSave({ env, label: 'old', out: asWriteStream(new CaptureStream()) });
+		await writeSnapshot(env, sampleRecord(env, Date.UTC(2026, 5, 1, 0, 0, 0)));
+		await runSnapshotSave({ env, label: 'new', out: asWriteStream(new CaptureStream()) });
+
+		const out = new CaptureStream();
+		const result = await runSnapshotList({ env, out: asWriteStream(out) });
+		expect(result.exitCode).toBe(0);
+		expect(result.entries.map((e) => e.label)).toEqual(['new', 'old']);
+		expect(out.text).toContain('20260601T000000');
+		expect(out.text).toContain('20260101T000000');
+	});
+
+	it('list emits structured JSON when --json is set', async () => {
+		const env = localEnv();
+		await writeSnapshot(env, sampleRecord(env, Date.UTC(2026, 4, 8, 12, 0, 0)));
+		await runSnapshotSave({ env, label: 'baseline', out: asWriteStream(new CaptureStream()) });
+		const out = new CaptureStream();
+		await runSnapshotList({ env, out: asWriteStream(out), json: true });
+		const parsed = JSON.parse(out.text) as {
+			snapshots: { id: string; label?: string }[];
+		};
+		expect(parsed.snapshots).toHaveLength(1);
+		expect(parsed.snapshots[0]?.label).toBe('baseline');
+	});
+
+	it('restore copies a labeled snapshot back to the canonical path', async () => {
+		const env = localEnv();
+		await writeSnapshot(env, sampleRecord(env, Date.UTC(2026, 4, 8, 12, 0, 0)));
+		await runSnapshotSave({ env, label: 'baseline', out: asWriteStream(new CaptureStream()) });
+		// Mutate the canonical snapshot so restore has a visible effect.
+		await writeSnapshot(env, sampleRecord(env, Date.UTC(2030, 0, 1, 0, 0, 0)));
+		const before = await tryReadSnapshot(env);
+		expect(before?.createdAt).toBe(Date.UTC(2030, 0, 1, 0, 0, 0));
+
+		const out = new CaptureStream();
+		const result = await runSnapshotRestore({ env, ref: 'baseline', out: asWriteStream(out) });
+		expect(result.exitCode).toBe(0);
+		const after = await tryReadSnapshot(env);
+		expect(after?.createdAt).toBe(Date.UTC(2026, 4, 8, 12, 0, 0));
+		expect(out.text).toContain('restored snapshot');
+	});
+
+	it('restore by id-prefix works when unambiguous', async () => {
+		const env = localEnv();
+		await writeSnapshot(env, sampleRecord(env, Date.UTC(2026, 4, 8, 12, 0, 0)));
+		await runSnapshotSave({ env, out: asWriteStream(new CaptureStream()) });
+		await writeSnapshot(env, sampleRecord(env, Date.UTC(2030, 0, 1, 0, 0, 0)));
+		const result = await runSnapshotRestore({
+			env,
+			ref: '20260508',
+			out: asWriteStream(new CaptureStream()),
+		});
+		expect(result.exitCode).toBe(0);
+		const restored = await tryReadSnapshot(env);
+		expect(restored?.createdAt).toBe(Date.UTC(2026, 4, 8, 12, 0, 0));
+	});
+
+	it('restore returns exit 1 when ref does not match', async () => {
+		const out = new CaptureStream();
+		const result = await runSnapshotRestore({
+			env: localEnv(),
+			ref: 'nope',
+			out: asWriteStream(out),
+		});
+		expect(result.exitCode).toBe(1);
+		expect(out.text).toContain('no snapshot matching');
+	});
+
+	it('delete removes the labeled snapshot file', async () => {
+		const env = localEnv();
+		await writeSnapshot(env, sampleRecord(env, Date.UTC(2026, 4, 8, 12, 0, 0)));
+		await runSnapshotSave({ env, label: 'doomed', out: asWriteStream(new CaptureStream()) });
+		const dir = labeledSnapshotsDir(env);
+		expect(await readdir(dir)).toHaveLength(1);
+
+		const out = new CaptureStream();
+		const result = await runSnapshotDelete({ env, ref: 'doomed', out: asWriteStream(out) });
+		expect(result.exitCode).toBe(0);
+		expect(await readdir(dir)).toEqual([]);
+		expect(out.text).toContain('deleted snapshot');
+	});
+
+	it('save / list / delete refuse non-localnet networks', async () => {
+		const liveEnv = { ...localEnv(), network: 'testnet' };
+		await expect(
+			runSnapshotSave({ env: liveEnv, label: 'x', out: asWriteStream(new CaptureStream()) }),
+		).rejects.toThrow(/localnet/);
+		await expect(
+			runSnapshotList({ env: liveEnv, out: asWriteStream(new CaptureStream()) }),
+		).rejects.toThrow(/localnet/);
+	});
+
+	it('list tolerates a corrupt entry instead of crashing', async () => {
+		const env = localEnv();
+		await writeSnapshot(env, sampleRecord(env, Date.UTC(2026, 4, 8, 12, 0, 0)));
+		await runSnapshotSave({ env, label: 'good', out: asWriteStream(new CaptureStream()) });
+		// Drop a malformed file in the snapshots dir.
+		await writeFile(join(labeledSnapshotsDir(env), '20260101T000000-broken.json'), '{not json');
+		const out = new CaptureStream();
+		const result = await runSnapshotList({ env, out: asWriteStream(out) });
+		expect(result.exitCode).toBe(0);
+		expect(result.entries).toHaveLength(2);
+		expect(result.entries.map((e) => e.label).sort()).toEqual(['broken', 'good']);
 	});
 });
 
