@@ -1,14 +1,19 @@
+import { mkdirSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Dep, Provides } from '../engine/types.js';
 import { dep } from '../factories/dep.js';
 import { define } from '../factories/define.js';
 import { dockerContainer } from '../runners/docker-container.js';
 import { dockerImage } from '../runners/docker-image.js';
+import { dockerOneShot } from '../runners/docker-one-shot.js';
 import type { Endpoint } from '../shapes/index.js';
-import { SUI_DEFAULT_VERSION } from './sui.js';
+import { sui, SUI_DEFAULT_VERSION } from './sui.js';
 
 const DEFAULT_NODE_API_PORT = 9185;
 const DEFAULT_READY_TIMEOUT_MS = 60_000;
+const DEFAULT_EPOCH_DURATION = '24h';
+const DEFAULT_SHARDS = 100;
 
 /** Pinned walrus release tag. Doubles as a git ref so BuildKit can
  * fetch matching source for the cargo-build stage of `walrus.image
@@ -46,11 +51,18 @@ export interface WalrusOptions {
 	containerApiPort?: number;
 	/** Per-node ready-probe timeout. Default 60s. */
 	readyTimeoutMs?: number;
+	/** Number of shards distributed across the committee. Default 100
+	 * (matches walrus testbed's hardcoded value). Must be >= nodeCount. */
+	shards?: number;
+	/** Walrus epoch duration. Default `'24h'` so blobs uploaded with
+	 * `epochs: 1` survive a normal supervisor restart cycle. */
+	epochDuration?: string;
 	/** Override per-node RPC URLs entirely. When provided, no
 	 * `dockerContainer` runner is created — each node becomes a pure
 	 * transformer publishing the supplied URL. Length must match
 	 * `nodeCount` (or `nodeCount` is inferred from this array). Useful
-	 * for tests and when nodes are managed externally. */
+	 * for tests and when nodes are managed externally. The deploy +
+	 * register steps are also skipped in this mode. */
 	rpcUrls?: string[];
 }
 
@@ -64,6 +76,20 @@ export interface WalrusNetworkState {
 	urls: string[];
 }
 
+export interface WalrusDeployState {
+	/** Absolute path on host that holds the deploy outputs (yaml configs
+	 * + the `deploy` summary file). Bind-mounted into the deploy
+	 * container (rw) and into each storage node container (ro) by the
+	 * walrus plugin. */
+	outputDir: string;
+	walrusPackageId: string;
+	systemObject: string;
+	stakingObject: string;
+	upgradeManagerObject?: string;
+	treasuryObject?: string;
+	exchangeObject?: string;
+}
+
 const nodeProvides = {
 	rpc: dep((s: WalrusNodeState) => ({ url: s.rpcUrl })),
 	full: dep((s: WalrusNodeState) => s),
@@ -74,21 +100,28 @@ const networkProvides = {
 	full: dep((s: WalrusNetworkState) => s),
 } satisfies Provides<WalrusNetworkState>;
 
+const deployProvides = {
+	full: dep((s: WalrusDeployState) => s),
+	outputDir: dep((s: WalrusDeployState) => s.outputDir),
+	packageId: dep((s: WalrusDeployState) => s.walrusPackageId),
+} satisfies Provides<WalrusDeployState>;
+
 // `walrus({ nodeCount })` — multi-node walrus testbed.
 //
-// Returns `{ nodes, appNetwork }`:
-//   - `nodes[i]`: pure-transformer producer named `walrus.node-${i}` that
-//     depends on a private `dockerContainer({...})` for the actual
-//     container lifecycle. Per the cross-cutting rule, plugins never
-//     call docker directly from `start`; the runner exposes
-//     `provides.state` + `provides.hostPort` so this transformer can
-//     project a clean `WalrusNodeState`. Container nodes appear as
-//     siblings in the graph (`walrus.node-${i}.container`) and
-//     participate in snapshot / shutdown uniformly.
-//
-//   - `appNetwork`: aggregator producer named `walrus.app-network`
-//     whose `deps:` is the array of every node's `full` view. Consumers
-//     can depend on this alone instead of listing every node.
+// Returns `{ nodes, appNetwork, deploy? }`:
+//   - `nodes[i]`: pure-transformer producer named `walrus.node-${i}`
+//     wrapping a private `dockerContainer({...})`.
+//   - `appNetwork`: aggregator producer `walrus.app-network` whose
+//     `deps:` is the array of every node's `full` view.
+//   - `deploy`: present when running against the bundled image (i.e.
+//     not in `rpcUrls:` mode). A pair of producers:
+//       `walrus.deploy.container` — `dockerOneShot` that runs
+//                                   `/opt/walrus/scripts/deploy-walrus.sh`
+//                                   with sui + walrus env + a host
+//                                   bind-mount for outputs.
+//       `walrus.deploy`           — transformer that reads the
+//                                   container's outputs file and parses
+//                                   it into `WalrusDeployState`.
 //
 // Without an `image:` override, two `dockerImage` producers are wired
 // into the graph:
@@ -103,13 +136,13 @@ const networkProvides = {
 //
 // Static usage:
 //   const w = walrus({ nodeCount: 3 });
-//   defineDevstackConfig({ stack: [w.appNetwork] });    // pulls in nodes
+//   defineDevstackConfig({ stack: [sui.create({ network: 'localnet' }), w.appNetwork] });
 //
 // Test / external-management usage:
 //   walrus({ rpcUrls: ['http://node0/', 'http://node1/'] }) — each node
 //   becomes a pure transformer publishing the supplied URL with no
-//   container, no port allocation. Mirrors the `sui({ rpcUrl })` escape
-//   hatch.
+//   container, no port allocation, no deploy step. Mirrors the
+//   `sui({ rpcUrl })` escape hatch.
 export function walrus(opts: WalrusOptions = {}) {
 	const rpcUrls = opts.rpcUrls;
 	if (rpcUrls !== undefined && opts.nodeCount !== undefined && rpcUrls.length !== opts.nodeCount) {
@@ -121,11 +154,19 @@ export function walrus(opts: WalrusOptions = {}) {
 	if (nodeCount < 1) {
 		throw new Error('walrus: nodeCount must be at least 1');
 	}
+	const shards = opts.shards ?? DEFAULT_SHARDS;
+	if (shards < nodeCount) {
+		throw new Error(`walrus: shards (${shards}) must be >= nodeCount (${nodeCount})`);
+	}
 
 	const image = rpcUrls !== undefined ? undefined : resolveImage(opts);
+	const deploy =
+		rpcUrls !== undefined ? undefined : buildDeploy({ image: image!, opts, nodeCount, shards });
 
 	const nodes = Array.from({ length: nodeCount }, (_, i) =>
-		rpcUrls !== undefined ? staticNode(i, rpcUrls[i]!) : containerNode(i, opts, image!),
+		rpcUrls !== undefined
+			? staticNode(i, rpcUrls[i]!)
+			: containerNode(i, opts, image!, deploy!),
 	);
 
 	const appNetDeps = { nodes: nodes.map((n) => n.get('full')) };
@@ -144,7 +185,7 @@ export function walrus(opts: WalrusOptions = {}) {
 		},
 	});
 
-	return { nodes, appNetwork };
+	return { nodes, appNetwork, deploy };
 }
 
 type ImageRef = string | Dep<void, string>;
@@ -179,7 +220,76 @@ function resolveImage(opts: WalrusOptions): ImageRef {
 	return wrapper.get('tag');
 }
 
-function containerNode(index: number, opts: WalrusOptions, image: ImageRef) {
+interface DeploySteps {
+	deploy: ReturnType<typeof define<WalrusDeployState, typeof deployProvides, any>>;
+	hostDir: (env: { appDir: string; stack?: string }) => string;
+}
+
+function buildDeploy(args: {
+	image: ImageRef;
+	opts: WalrusOptions;
+	nodeCount: number;
+	shards: number;
+}): DeploySteps {
+	const epochDuration = args.opts.epochDuration ?? DEFAULT_EPOCH_DURATION;
+	const restApiPort = args.opts.containerApiPort ?? DEFAULT_NODE_API_PORT;
+	const publicHosts = Array.from({ length: args.nodeCount }, (_, i) => walrusPublicHost(i)).join(' ');
+
+	// host.docker.internal works on Docker Desktop for Mac/Windows.
+	// Linux Docker needs `--add-host=host.docker.internal:host-gateway`
+	// in the dockerOneShot config — the walrus committee + cross-stack
+	// network design isn't sorted yet (see notes/STATE.md), so this is
+	// the structural wiring; a real-running walrus deploy needs the
+	// network story below to be filled in.
+	const containerHost = (url: string): string =>
+		url.replace('http://127.0.0.1:', 'http://host.docker.internal:');
+
+	const deployContainer = dockerOneShot({
+		name: 'walrus.deploy.container',
+		runsAs: 'walrus-deploy',
+		image: typeof args.image === 'string' ? args.image : args.image,
+		deps: {
+			rpc: sui.get('rpc'),
+			faucet: sui.get('faucet'),
+		},
+		volumes: ({ env }) => {
+			const hostDir = walrusDeployHostDir(env);
+			mkdirSync(hostDir, { recursive: true });
+			return [{ host: hostDir, container: '/opt/walrus/outputs' }];
+		},
+		containerEnv: ({ deps }) => ({
+			WALRUS_PUBLIC_HOSTS: publicHosts,
+			// In a per-stack docker network the listening IPs would
+			// match the IPAM-pinned committee subnet. We don't have
+			// network support here yet — bind to 0.0.0.0 so the deploy
+			// step at least produces output configs the parser can
+			// read; actual node-to-node traffic still needs the
+			// committee network design.
+			WALRUS_LISTENING_IPS: Array.from({ length: args.nodeCount }, () => '0.0.0.0').join(' '),
+			WALRUS_REST_API_PORT: String(restApiPort),
+			WALRUS_COMMITTEE_SIZE: String(args.nodeCount),
+			WALRUS_SHARDS: String(args.shards),
+			WALRUS_EPOCH_DURATION: epochDuration,
+			WALRUS_NETWORK: `${containerHost(deps.rpc.url)};${containerHost(deps.faucet.url)}/gas`,
+		}),
+		args: ['/bin/bash', '-c', '/opt/walrus/scripts/deploy-walrus.sh'],
+	});
+
+	const deploy = define<WalrusDeployState, typeof deployProvides>({
+		name: 'walrus.deploy',
+		deps: { c: deployContainer.get('full') },
+		provides: deployProvides,
+		start: async ({ env }) => {
+			const hostDir = walrusDeployHostDir(env);
+			const text = readFileSync(resolve(hostDir, 'deploy'), 'utf8');
+			return { ...parseDeployFile(text), outputDir: hostDir };
+		},
+	});
+
+	return { deploy, hostDir: walrusDeployHostDir };
+}
+
+function containerNode(index: number, opts: WalrusOptions, image: ImageRef, deploy: DeploySteps) {
 	const containerApiPort = opts.containerApiPort ?? DEFAULT_NODE_API_PORT;
 	const readyTimeoutMs = opts.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
 	const slot = `walrus.node-${index}.api`;
@@ -190,11 +300,23 @@ function containerNode(index: number, opts: WalrusOptions, image: ImageRef) {
 		image,
 		ports: [{ slot, containerPort: containerApiPort }],
 		readyTimeoutMs,
+		// Mount deploy outputs read-only — run.sh inside the container
+		// reads its keystore + per-node yaml from /opt/walrus/outputs.
+		volumes: ({ env }) => [
+			{ host: deploy.hostDir(env), container: '/opt/walrus/outputs' },
+		],
 	});
 
 	return define({
 		name: `walrus.node-${index}`,
-		deps: { apiPort: container.get('hostPort', { slot }) },
+		// `_deploy` couples the node to the deploy step's identity even
+		// when the node container could in principle reuse a prior
+		// running container — a fresh deploy must fan out to a node
+		// recreation.
+		deps: {
+			apiPort: container.get('hostPort', { slot }),
+			_deploy: deploy.deploy.get('full'),
+		},
 		provides: nodeProvides,
 		start: async ({ deps: { apiPort } }): Promise<WalrusNodeState> => ({
 			index,
@@ -219,4 +341,48 @@ function staticNode(index: number, rpcUrl: string) {
 			],
 		},
 	});
+}
+
+// Per-stack host path that holds the walrus deploy outputs. Bind-mounted
+// into the deploy container (rw) and into each storage-node container
+// (ro) so run.sh reads its per-node config from the same place.
+export function walrusDeployHostDir(env: { appDir: string; stack?: string }): string {
+	return resolve(env.appDir, '.devstack', 'stacks', env.stack ?? 'default', 'walrus', 'deploy');
+}
+
+/** Public hostname registered on chain. `*.localhost` resolves to
+ * 127.0.0.1 on the host (RFC 6761); a matching docker network alias on
+ * each node container handles the in-network case (when network
+ * support lands). */
+function walrusPublicHost(index: number): string {
+	return `walrus-node-${index}.localhost`;
+}
+
+export function parseDeployFile(text: string): Omit<WalrusDeployState, 'outputDir'> {
+	const get = (key: string): string | undefined => {
+		const m = text.match(new RegExp(`^${key}:\\s*(\\S+)\\s*$`, 'm'));
+		const value = m?.[1];
+		if (value === undefined || value === 'None') return undefined;
+		return value;
+	};
+	const walrusPackageId = get('package_id');
+	const systemObject = get('system_object');
+	const stakingObject = get('staking_object');
+	if (walrusPackageId === undefined || systemObject === undefined || stakingObject === undefined) {
+		throw new Error(
+			`walrus.deploy: deploy file missing one of {package_id, system_object, staking_object}:\n${text.slice(0, 400)}`,
+		);
+	}
+	const out: Omit<WalrusDeployState, 'outputDir'> = {
+		walrusPackageId,
+		systemObject,
+		stakingObject,
+	};
+	const upgradeManagerObject = get('upgrade_manager_object');
+	if (upgradeManagerObject !== undefined) out.upgradeManagerObject = upgradeManagerObject;
+	const treasuryObject = get('treasury_object');
+	if (treasuryObject !== undefined) out.treasuryObject = treasuryObject;
+	const exchangeObject = get('exchange_object');
+	if (exchangeObject !== undefined) out.exchangeObject = exchangeObject;
+	return out;
 }
