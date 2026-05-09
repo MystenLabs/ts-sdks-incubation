@@ -119,8 +119,11 @@ describe('walrus (graph composition — no real Docker)', () => {
 	// not in `rpcUrls:` mode.
 	it('container path: nodes + image chain + deploy chain + ports siblings', () => {
 		const w = walrus({ nodeCount: 2 });
+		// `register` is in the graph only when something pulls it in;
+		// drop it on the stack alongside appNetwork to exercise both
+		// chains.
 		const engine = new Engine(
-			{ stack: [sui.create({ network: 'localnet' }), w.appNetwork] },
+			{ stack: [sui.create({ network: 'localnet' }), w.appNetwork, w.register!] },
 			{ env },
 		);
 		const state = engine.getState();
@@ -133,6 +136,7 @@ describe('walrus (graph composition — no real Docker)', () => {
 		expect(state.nodes.has('walrus.image.upstream')).toBe(true);
 		expect(state.nodes.has('walrus.deploy')).toBe(true);
 		expect(state.nodes.has('walrus.deploy.container')).toBe(true);
+		expect(state.nodes.has('walrus.register')).toBe(true);
 		expect(state.nodes.has('ports')).toBe(true);
 	});
 
