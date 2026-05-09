@@ -7,7 +7,7 @@ import { define } from '../factories/define.js';
 import { dockerContainer } from '../runners/docker-container.js';
 import { dockerImage } from '../runners/docker-image.js';
 import { dockerOneShot } from '../runners/docker-one-shot.js';
-import type { Endpoint } from '../shapes/index.js';
+import type { Endpoint, Package } from '../shapes/index.js';
 import { sui, SUI_DEFAULT_VERSION } from './sui.js';
 
 const DEFAULT_NODE_API_PORT = 9185;
@@ -90,6 +90,15 @@ export interface WalrusDeployState {
 	exchangeObject?: string;
 }
 
+export interface WalrusRegisterState {
+	package: Package;
+	systemObject: string;
+	stakingObject: string;
+	upgradeManagerObject?: string;
+	treasuryObject?: string;
+	exchangeObject?: string;
+}
+
 const nodeProvides = {
 	rpc: dep((s: WalrusNodeState) => ({ url: s.rpcUrl })),
 	full: dep((s: WalrusNodeState) => s),
@@ -105,6 +114,11 @@ const deployProvides = {
 	outputDir: dep((s: WalrusDeployState) => s.outputDir),
 	packageId: dep((s: WalrusDeployState) => s.walrusPackageId),
 } satisfies Provides<WalrusDeployState>;
+
+const registerProvides = {
+	package: dep((s: WalrusRegisterState) => s.package),
+	full: dep((s: WalrusRegisterState) => s),
+} satisfies Provides<WalrusRegisterState>;
 
 // `walrus({ nodeCount })` — multi-node walrus testbed.
 //
@@ -162,6 +176,7 @@ export function walrus(opts: WalrusOptions = {}) {
 	const image = rpcUrls !== undefined ? undefined : resolveImage(opts);
 	const deploy =
 		rpcUrls !== undefined ? undefined : buildDeploy({ image: image!, opts, nodeCount, shards });
+	const register = deploy !== undefined ? buildRegister(deploy) : undefined;
 
 	const nodes = Array.from({ length: nodeCount }, (_, i) =>
 		rpcUrls !== undefined
@@ -185,7 +200,7 @@ export function walrus(opts: WalrusOptions = {}) {
 		},
 	});
 
-	return { nodes, appNetwork, deploy };
+	return { nodes, appNetwork, deploy, register };
 }
 
 type ImageRef = string | Dep<void, string>;
@@ -287,6 +302,43 @@ function buildDeploy(args: {
 	});
 
 	return { deploy, hostDir: walrusDeployHostDir };
+}
+
+// `walrus.register` is a projection of `walrus.deploy`'s parsed state
+// into well-typed shapes (Package + the captured object IDs) downstream
+// consumers — manifest, bindings, codegen — pivot on. The on-chain
+// publish + node registration happens inside the deploy container's
+// `walrus-deploy deploy-system-contract` invocation; we don't redo
+// either step from TS. The dep on `sui.get('rpc')` is reserved for
+// future enhancement (e.g. fetching the WAL coin type from chain to
+// emit a CoinToken shape) — kept here so the register step gates on
+// sui being live.
+function buildRegister(deploy: DeploySteps) {
+	return define<WalrusRegisterState, typeof registerProvides>({
+		name: 'walrus.register',
+		deps: { deploy: deploy.deploy.get('full'), rpc: sui.get('rpc') },
+		provides: registerProvides,
+		start: async ({ deps }) => {
+			const d = (deps as { deploy: WalrusDeployState }).deploy;
+			const pkg: Package = {
+				name: 'walrus',
+				packageId: d.walrusPackageId,
+				mvrPlaceholder: '@local/walrus',
+			};
+			const out: WalrusRegisterState = {
+				package: pkg,
+				systemObject: d.systemObject,
+				stakingObject: d.stakingObject,
+			};
+			if (d.upgradeManagerObject !== undefined) out.upgradeManagerObject = d.upgradeManagerObject;
+			if (d.treasuryObject !== undefined) out.treasuryObject = d.treasuryObject;
+			if (d.exchangeObject !== undefined) out.exchangeObject = d.exchangeObject;
+			return out;
+		},
+		represents: {
+			packages: (s: WalrusRegisterState): Package[] => [s.package],
+		},
+	});
 }
 
 function containerNode(index: number, opts: WalrusOptions, image: ImageRef, deploy: DeploySteps) {
