@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { Engine } from '../engine/class.js';
 import type { Env } from '../engine/types.js';
@@ -169,7 +171,7 @@ describe('sui (localnet docker composition — no real Docker)', () => {
 	// graph must surface a `sui.localnet.container` producer alongside the
 	// `sui.localnet` transformer; that's the structural contract any
 	// snapshot / lifecycle pass relies on for uniform container discovery.
-	it('builds a graph with sui.localnet + sui.localnet.container + ports', () => {
+	it('builds a graph with sui.image + sui.localnet.container + sui.localnet + ports', () => {
 		const node = sui.create({ network: 'localnet' });
 		const engine = new Engine({ stack: [node] }, { env });
 		const state = engine.getState();
@@ -177,8 +179,30 @@ describe('sui (localnet docker composition — no real Docker)', () => {
 		expect(state.nodes.has('sui.localnet')).toBe(true);
 		// ...along with the underlying dockerContainer runner...
 		expect(state.nodes.has('sui.localnet.container')).toBe(true);
+		// ...the dockerImage build the container chains its tag from...
+		expect(state.nodes.has('sui.image')).toBe(true);
 		// ...which auto-injects a Dep on the standard `ports` node.
 		expect(state.nodes.has('ports')).toBe(true);
+	});
+
+	it('vendored docker context resolves to a real on-disk directory', () => {
+		// `sui.image` resolves its build context via `import.meta.url` from
+		// `sui.ts` — guard against the source-vs-built path drift that
+		// would only surface at `docker build` time.
+		const ctx = fileURLToPath(new URL('./sui/docker/', import.meta.url));
+		expect(existsSync(ctx)).toBe(true);
+		expect(existsSync(`${ctx}Dockerfile`)).toBe(true);
+		expect(existsSync(`${ctx}entrypoint.sh`)).toBe(true);
+	});
+
+	it('skips sui.image when caller pins a pre-built image tag', () => {
+		const node = sui.create({ network: 'localnet', image: 'mystenlabs/sui-tools:devnet' });
+		const engine = new Engine({ stack: [node] }, { env });
+		const state = engine.getState();
+		expect(state.nodes.has('sui.localnet')).toBe(true);
+		expect(state.nodes.has('sui.localnet.container')).toBe(true);
+		// No dockerImage build when the caller has a pre-built tag.
+		expect(state.nodes.has('sui.image')).toBe(false);
 	});
 });
 
