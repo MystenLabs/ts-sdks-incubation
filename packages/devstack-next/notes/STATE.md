@@ -33,9 +33,14 @@ ef03690  walrus plugin chains image build via dockerImage
 587fc36  dockerOneShot runner — run-to-completion containers
 b8c18cf  walrus.deploy + node-container deploy mount
 0e4fff4  walrus.register — project deploy state into shapes
+83ff236  publishViaSuiCli helper — host-CLI compile + tx.publish
+18cfa87  sealLocalnet — gitFetch + publishMove + KeyServer register
+174a0d1  deepbookLocalnet — gitFetch + publishMove + create-pool flow
+f1d465b  stack new + stack use CLI subcommands
+53ad8d3  accounts.fund AB-deposit (opt-in, gated on RPC reachability)
 ```
 
-Tests: 327 passing. Typecheck clean. Build clean (145 files, ~599 kB).
+Tests: 345 passing. Typecheck clean. Build clean (148 files, ~654 kB).
 
 ## What's built
 
@@ -84,22 +89,34 @@ src/shapes/         WorldView typed shapes — Package, Endpoint, Account
 ### Helpers + plugins (L5, L6)
 
 ```
-src/helpers/        L5 — sugar (publishMove, runTransaction, gitFetch,
-                    cliSigner, viteDevServer)
+src/helpers/        L5 — sugar (publishMove, publishViaSuiCli,
+                    runTransaction, gitFetch, cliSigner, envSigner,
+                    viteDevServer).
                     publishMove.path accepts Dep<string> so users chain
                     gitFetch → publishMove for upstream Move vendoring.
+                    publishViaSuiCli is the default publish callback
+                    (host `sui move build` + tx.publish + sign +
+                    execute); accepts an optional `capture:` callback
+                    for plugins that surface Registry / AdminCap ids.
 
 src/plugins/        L6
-  accounts.ts         disk-backed Ed25519 keystore + fund Action
-                      (depends on sui.get('faucet'))
+  accounts.ts         disk-backed Ed25519 keystore + fund step
+                      (faucet + opt-in AB-deposit gated on RPC
+                      reachability via `abMinBalanceMist`).
   bindings.ts         Move source → typed TS bindings via
                       `sui move summary` + `@mysten/codegen`. Atomic
                       dir swap so Vite never sees partial trees.
-  deepbook.ts         pre-deployed package-id lookup (testnet / mainnet)
+  deepbook.ts         pre-deployed package-id lookup (testnet/mainnet)
+                      + `deepbookLocalnet({...})` sibling factory:
+                      gitFetch + publishMove (capturing Registry +
+                      AdminCap) + optional pool-creation flow.
   manifest.ts         typed-manifest TS emit (renamed from codegen.ts).
                       Sibling to bindings — runtime values vs. type bindings.
-  seal.ts             single-container key-server (delegates to
-                      dockerContainer; url-override escape hatch)
+  seal.ts             single-container key-server schema (delegates to
+                      dockerContainer; url-override escape hatch).
+                      `sealLocalnet({...})` sibling factory exposes
+                      gitFetch + publishMove + KeyServer-register
+                      producers for localnet bring-up.
   sui.ts              localnet — chains dockerImage (vendored Dockerfile
                       under sui/docker/) → dockerContainer; image build
                       is content-addressed via SUI_VERSION build-arg.
@@ -128,7 +145,12 @@ src/file-watcher.ts L7 — attachFileWatcher(engine, opts) — public API.
                     main barrel for embedded use.
 src/persistence/    L7 — atomic snapshot read/write under <appDir>/.devstack/...
 src/cli/            L7 bin — devstack-next up | apply | status |
-                              snapshot | reset | doctor | stack
+                              snapshot | reset | doctor | stack.
+                              `stack list | new | use | down`. Active
+                              pointer at <appDir>/.devstack/active so
+                              unflagged commands respect the user's
+                              last `stack use` (resolved via
+                              `readActiveStack` in cli/env.ts).
 src/tui/            L7 — Ink-based engine subscriber (TUI for `up`)
 src/vitest/         L7 — setupForTest / readSnapshot / getNodeState
 src/playwright/     L7 — createDevstackFixture (worker-scoped)
@@ -168,22 +190,27 @@ fan-out is automatic: bumping a build arg flips the image's identity
 ## What's deferred / not yet built
 
 ### Plugin features
-- **accounts.fund**: only faucets, doesn't push to the address-balance
-  accumulator yet (the original devstack does both). AB deposit is
-  cheaper to add when there's a real consumer asking for it.
-- **seal real image**: `mystenlabs/seal-key-server:latest` is still a
-  placeholder. Sui + walrus port their builds via `dockerImage`
-  (vendored Dockerfiles under `sui/docker/` + `walrus/docker/`); seal
-  is the remaining one.
+- **seal real image + keygen**: `mystenlabs/seal-key-server:latest` is
+  still a placeholder; `sealLocalnet` callers must supply the BLS
+  master / public keys themselves. Both go away when the seal image
+  build (with `seal-cli` baked in) lands as part of the per-plugin
+  package split.
 - **walrus per-stack docker network**: storage nodes can't reach each
   other peer-to-peer in the current model — every container runs on
   bridge with host-port mapping only. The deploy step runs structurally
   but a real-running committee needs the per-stack docker-network +
   fixed-IP design (committee subnet, network alias DNS) the original
   devstack had. Pending — defer until a consumer drives the design.
-- **deepbook localnet publish**: `deepbook()` only knows about
-  testnet/mainnet ids. Publishing the source against a localnet sui is
-  deferred to a future devstack-deepbook plugin.
+- **deepbookLocalnet end-to-end run**: composes the right primitives
+  (gitFetch + publishMove + create_pool_admin tx) and tests the graph
+  shape, but exercising it against a live sui-localnet (real publish,
+  real pool creation, real Pool ids back) needs a docker-gated
+  integration test. Deferred until a consumer wants pools wired.
+- **walrus seedWal + walrus.proxy**: not ported. The walrus-deploy
+  binary in the deploy container handles WAL exchange registration, so
+  basic test setups don't need a separate seedWal step; nginx vhost
+  proxy is committee-network-dependent and waits on the per-stack
+  network design above.
 
 ### Frontend integration
 
@@ -211,10 +238,6 @@ sync mechanism. The new model is one source per consumer.
 - Per-plugin package split (`packages/devstack-walrus/` etc.) — keep
   plugins in `devstack-next/src/plugins/` for now; split at cutover.
 - Examples cutover.
-- envSigner helper (parallel to cliSigner — read keypair from env var).
-- accounts.fund AB-deposit step — needs a running localnet to test.
-- `stack new` / `stack use` (multi-stack convenience; --stack flag
-  works today, no implicit "active stack" yet).
 
 ## Conventions
 
