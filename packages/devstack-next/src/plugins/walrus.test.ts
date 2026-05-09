@@ -1,13 +1,16 @@
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { describe, expect, it } from 'vitest';
 import { Engine } from '../engine/class.js';
-import type { Env } from '../engine/types.js';
+import type { Dep, Env, Provides } from '../engine/types.js';
+import { dep } from '../factories/dep.js';
 import { define } from '../factories/define.js';
 import { sui } from './sui.js';
 import {
 	parseDeployFile,
 	walrus,
+	walrusSeedWal,
 	type WalrusNetworkState,
 	type WalrusNodeState,
 } from './walrus.js';
@@ -215,6 +218,134 @@ exchange_object: None
 system_object: 0xsys
 `;
 		expect(() => parseDeployFile(text)).toThrow(/staking_object/);
+	});
+});
+
+describe('walrusSeedWal (graph composition — no real chain)', () => {
+	function makeSignerNode(name: string) {
+		interface SignerState {
+			keypair: Ed25519Keypair;
+		}
+		const signerProvides = {
+			signer: dep((s: SignerState) => s.keypair),
+		} satisfies Provides<SignerState>;
+		const node = define<SignerState, typeof signerProvides>({
+			name: `test.signer.${name}`,
+			provides: signerProvides,
+			start: async () => ({ keypair: Ed25519Keypair.generate() }),
+		});
+		return node;
+	}
+
+	it('rejects an empty accounts list', () => {
+		const w = walrus({ nodeCount: 1 });
+		expect(() => walrusSeedWal({ exchange: w.exchange!, accounts: [] })).toThrow(
+			/at least one account/,
+		);
+	});
+
+	it('rejects duplicate account names', () => {
+		const w = walrus({ nodeCount: 1 });
+		const s1 = makeSignerNode('alice');
+		const s2 = makeSignerNode('alice2');
+		expect(() =>
+			walrusSeedWal({
+				exchange: w.exchange!,
+				accounts: [
+					{
+						name: 'alice',
+						signer: s1.get('signer') as unknown as Dep<unknown, Ed25519Keypair>,
+					},
+					{
+						name: 'alice',
+						signer: s2.get('signer') as unknown as Dep<unknown, Ed25519Keypair>,
+					},
+				],
+			}),
+		).toThrow(/duplicate account name "alice"/);
+	});
+
+	it('rejects non-positive paymentMist', () => {
+		const w = walrus({ nodeCount: 1 });
+		const s = makeSignerNode('a');
+		expect(() =>
+			walrusSeedWal({
+				exchange: w.exchange!,
+				accounts: [{ name: 'a', signer: s.get('signer') as unknown as Dep<unknown, Ed25519Keypair> }],
+				paymentMist: 0n,
+			}),
+		).toThrow(/paymentMist must be positive/);
+	});
+
+	it('one runTransaction producer per account, named tx.walrus.seedWal.<name>', () => {
+		const w = walrus({ nodeCount: 1 });
+		const sP = makeSignerNode('publisher');
+		const sM = makeSignerNode('minter');
+		const seeds = walrusSeedWal({
+			exchange: w.exchange!,
+			accounts: [
+				{
+					name: 'publisher',
+					signer: sP.get('signer') as unknown as Dep<unknown, Ed25519Keypair>,
+				},
+				{
+					name: 'minter',
+					signer: sM.get('signer') as unknown as Dep<unknown, Ed25519Keypair>,
+				},
+			],
+		});
+		expect(seeds).toHaveLength(2);
+		expect(seeds[0]!.name).toBe('tx.walrus.seedWal.publisher');
+		expect(seeds[1]!.name).toBe('tx.walrus.seedWal.minter');
+	});
+
+	it('per-account producer pulls walrus.exchange + sui + walrus.register into the graph transitively', () => {
+		const w = walrus({ nodeCount: 1 });
+		const sP = makeSignerNode('publisher');
+		const seeds = walrusSeedWal({
+			exchange: w.exchange!,
+			accounts: [
+				{
+					name: 'publisher',
+					signer: sP.get('signer') as unknown as Dep<unknown, Ed25519Keypair>,
+				},
+			],
+		});
+		// Only push the seed step + sui — every other walrus piece flows
+		// in via Deps. Mirrors how a user would wire this in their
+		// devstack config.
+		const engine = new Engine(
+			{ stack: [sui.create({ network: 'localnet' }), sP, ...seeds] },
+			{ env },
+		);
+		const state = engine.getState();
+		expect(state.nodes.has('tx.walrus.seedWal.publisher')).toBe(true);
+		expect(state.nodes.has('walrus.exchange')).toBe(true);
+		expect(state.nodes.has('walrus.register')).toBe(true);
+		expect(state.nodes.has('walrus.deploy')).toBe(true);
+		expect(state.nodes.has('sui.localnet')).toBe(true);
+	});
+
+	it('runsAs key per producer is the action name (per-account lock)', () => {
+		const w = walrus({ nodeCount: 1 });
+		const s = makeSignerNode('publisher');
+		const [seed] = walrusSeedWal({
+			exchange: w.exchange!,
+			accounts: [
+				{
+					name: 'publisher',
+					signer: s.get('signer') as unknown as Dep<unknown, Ed25519Keypair>,
+				},
+			],
+		});
+		const impl = seed as unknown as { runsAs?: string };
+		expect(impl.runsAs).toBe('walrus.seedWal.publisher');
+	});
+
+	it('exchange producer is undefined in rpcUrls mode (no Docker → no register)', () => {
+		const w = walrus({ rpcUrls: ['http://x/'] });
+		expect(w.exchange).toBeUndefined();
+		expect(w.register).toBeUndefined();
 	});
 });
 

@@ -134,6 +134,60 @@ describe('runTransaction', () => {
 		expect(impl.runsAs).toBe('mint-initial');
 	});
 
+	it('flows caller-supplied extra deps into the build callback as ctx.deps', async () => {
+		// Synthetic "deploy info" transformer that produces a packageId.
+		// Mirrors the pattern walrusSeedWal uses to share a chain-discovered
+		// exchange package id across N per-account seed transactions.
+		interface PkgState {
+			packageId: string;
+		}
+		const pkgProvides = {
+			full: dep((s: PkgState) => s),
+		};
+		const pkgNode = define<PkgState, typeof pkgProvides>({
+			name: 'deploy.info',
+			provides: pkgProvides,
+			start: async () => ({ packageId: '0xabc' }),
+		});
+
+		const acc = makeSigner('publisher', '0x111');
+		let captured: string | undefined;
+		const tx = runTransaction({
+			name: 'with-extra-deps',
+			signer: acc.get('signer'),
+			deps: { pkg: pkgNode.get('full') },
+			build: async ({ deps }) => {
+				captured = deps.pkg.packageId;
+				return { ok: true };
+			},
+		});
+		const engine = new Engine(
+			{ stack: [sui.create({ network: 'testnet' }), tx] },
+			{ env },
+		);
+		await engine.runOnce();
+		expect(captured).toBe('0xabc');
+	});
+
+	it('extra deps default to {} when caller omits them', async () => {
+		const acc = makeSigner('publisher', '0x111');
+		let captured: object | undefined;
+		const tx = runTransaction({
+			name: 'no-extra-deps',
+			signer: acc.get('signer'),
+			build: async ({ deps }) => {
+				captured = deps;
+				return { ok: true };
+			},
+		});
+		const engine = new Engine(
+			{ stack: [sui.create({ network: 'testnet' }), tx] },
+			{ env },
+		);
+		await engine.runOnce();
+		expect(captured).toEqual({});
+	});
+
 	it('runsAs override lets multiple transactions share a single signer lock', async () => {
 		const acc = makeSigner('publisher', '0x111');
 		const tx1 = runTransaction({
