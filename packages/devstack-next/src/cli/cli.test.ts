@@ -14,6 +14,8 @@ import {
 	writeSnapshot,
 } from '../persistence/index.js';
 import { sui } from '../plugins/sui.js';
+import { mkdir, writeFile as writeFsFile } from 'node:fs/promises';
+import { dep } from '../factories/dep.js';
 import { runApply } from './apply.js';
 import { runDoctor } from './doctor.js';
 import { runReset } from './reset.js';
@@ -572,6 +574,123 @@ describe('runDoctor', () => {
 		};
 		expect(parsed.command).toBe('doctor');
 		expect(parsed.checks.some((c) => c.name === 'docker daemon')).toBe(true);
+	});
+});
+
+describe('runUp file-watching', () => {
+	it('re-cycles when a watched path changes', async () => {
+		const env = { appName: 'demo', appDir, network: 'localnet' as const, stack: 'main' };
+		const watchedDir = join(appDir, 'sources');
+		await mkdir(watchedDir, { recursive: true });
+		await writeFsFile(join(watchedDir, 'a.txt'), 'first\n');
+
+		// Producer that registers `watchedDir` for fs-watching and counts
+		// how many times it has been (re-)started. We assert runCount > 1
+		// after touching the file.
+		let runCount = 0;
+		type S = { runCount: number };
+		const watcher = define<S>({
+			name: 'fs-watch-probe',
+			provides: { rev: dep((s: S) => s.runCount) },
+			// `inputs` flips every cycle so the engine doesn't short-circuit
+			// us via input-hash equality. The `watch()` registration is the
+			// real subject under test.
+			inputs: () => ({ now: Date.now() }),
+			start: async ({ watch }) => {
+				watch(watchedDir);
+				runCount += 1;
+				return { runCount };
+			},
+		});
+		const config = defineDevstackConfig({ stack: [watcher] });
+
+		let resolveStop: () => void = () => undefined;
+		const stopSignal = new Promise<void>((r) => {
+			resolveStop = r;
+		});
+		const out = new CaptureStream();
+
+		// Wait for cycle 0 to complete, then mutate the watched file. The
+		// fs.watch callback should fire engine.invalidate + engine.cycle,
+		// which re-runs `watcher.start` → runCount becomes 2.
+		const guard = setTimeout(() => {
+			resolveStop();
+		}, 5000);
+		const driver = (async () => {
+			while (runCount === 0) await new Promise((r) => setTimeout(r, 20));
+			// Ensure the watcher is registered before we mutate. attachFileWatcher
+			// runs an initial refresh after the first cycle:end emit, then again
+			// on subsequent cycle:ends — give it one tick to land before we mutate.
+			await new Promise((r) => setTimeout(r, 50));
+			await writeFsFile(join(watchedDir, 'a.txt'), 'second\n');
+			while (runCount < 2) await new Promise((r) => setTimeout(r, 20));
+			resolveStop();
+		})();
+
+		try {
+			const code = await runUp({
+				config,
+				env,
+				out: asWriteStream(out),
+				stopSignal,
+				renderer: 'plain',
+				watchDebounceMs: 25,
+			});
+			expect(code).toBe(0);
+		} finally {
+			clearTimeout(guard);
+			await driver.catch(() => undefined);
+		}
+
+		expect(runCount).toBeGreaterThanOrEqual(2);
+	});
+
+	it('does not register watchers when noWatch is set', async () => {
+		const env = { appName: 'demo', appDir, network: 'localnet' as const, stack: 'main' };
+		const watchedDir = join(appDir, 'sources');
+		await mkdir(watchedDir, { recursive: true });
+		await writeFsFile(join(watchedDir, 'a.txt'), 'first\n');
+
+		let runCount = 0;
+		type S = { runCount: number };
+		const watcher = define<S>({
+			name: 'fs-watch-probe',
+			provides: { rev: dep((s: S) => s.runCount) },
+			inputs: () => ({ now: Date.now() }),
+			start: async ({ watch }) => {
+				watch(watchedDir);
+				runCount += 1;
+				return { runCount };
+			},
+		});
+		const config = defineDevstackConfig({ stack: [watcher] });
+
+		let resolveStop: () => void = () => undefined;
+		const stopSignal = new Promise<void>((r) => {
+			resolveStop = r;
+		});
+		const out = new CaptureStream();
+
+		const driver = (async () => {
+			while (runCount === 0) await new Promise((r) => setTimeout(r, 20));
+			// Mutate the watched file. With --no-watch, no cycle should
+			// fire — runCount stays at 1.
+			await writeFsFile(join(watchedDir, 'a.txt'), 'second\n');
+			await new Promise((r) => setTimeout(r, 200));
+			resolveStop();
+		})();
+
+		const code = await runUp({
+			config,
+			env,
+			out: asWriteStream(out),
+			stopSignal,
+			renderer: 'plain',
+			noWatch: true,
+		});
+		await driver;
+		expect(code).toBe(0);
+		expect(runCount).toBe(1);
 	});
 });
 
