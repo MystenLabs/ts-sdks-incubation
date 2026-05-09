@@ -42,7 +42,14 @@ export interface DockerContainerConfig<TDeps> {
 	deps?: TDeps;
 	runsAs?: string;
 
-	image: string;
+	/** Container image. Either a literal tag (`'alpine:3.19'`) for
+	 * pre-built images, or a `Dep<void, string>` chained off a
+	 * `dockerImage(...)` so the image build is itself a graph node. With
+	 * a Dep, bumping a build arg upstream flips the image's identity →
+	 * this container's input hash flips → the container is replaced on
+	 * the new tag. Cross-cutting rule: plugins compose `dockerImage` +
+	 * `dockerContainer` rather than calling `docker build` from `start`. */
+	image: string | Dep<void, string>;
 	args?: DockerValue<string[], TDeps>;
 	containerEnv?: DockerValue<Record<string, string>, TDeps>;
 	volumes?: DockerValue<DockerVolumeMapping[], TDeps>;
@@ -95,7 +102,12 @@ const containerProvides = {
 // by checking liveness via `docker inspect`.
 export function dockerContainer<TDeps = undefined>(cfg: DockerContainerConfig<TDeps>) {
 	if (!cfg.name) throw new Error('dockerContainer: `name` is required');
-	if (!cfg.image) throw new Error(`dockerContainer("${cfg.name}"): \`image\` is required`);
+	if (cfg.image === undefined || cfg.image === null) {
+		throw new Error(`dockerContainer("${cfg.name}"): \`image\` is required`);
+	}
+	if (typeof cfg.image === 'string' && cfg.image.length === 0) {
+		throw new Error(`dockerContainer("${cfg.name}"): \`image\` is required`);
+	}
 
 	const readyTimeoutMs = cfg.readyTimeoutMs ?? 60_000;
 	const readyPollIntervalMs = cfg.readyPollIntervalMs ?? 250;
@@ -108,10 +120,22 @@ export function dockerContainer<TDeps = undefined>(cfg: DockerContainerConfig<TD
 		portAutoDeps[slot] = ports.get('allocate', { slot });
 	}
 
-	const internalDeps = {
+	// `image: Dep<…>` (vs literal string) — hoist into internal deps so
+	// the engine resolves it to a tag string before start runs. The Dep
+	// pulls the upstream `dockerImage` node into the graph; an upstream
+	// rebuild flips this container's input hash via the cascade.
+	const imageIsDep = isDep(cfg.image);
+	const internalDeps: {
+		user: TDeps;
+		_ports: Record<string, Dep<{ slot: string }, number>>;
+		_image?: Dep<void, string>;
+	} = {
 		user: cfg.deps as TDeps,
 		_ports: portAutoDeps,
 	};
+	if (imageIsDep) {
+		internalDeps._image = cfg.image as Dep<void, string>;
+	}
 
 	return define<DockerContainerState, typeof containerProvides>({
 		name: cfg.name,
@@ -134,6 +158,7 @@ export function dockerContainer<TDeps = undefined>(cfg: DockerContainerConfig<TD
 			const resolved = deps as unknown as {
 				user: ResolvedDeps<TDeps>;
 				_ports: Record<string, number>;
+				_image?: string;
 			};
 			const hostPorts = resolved._ports ?? {};
 			const resolveCtx = { env, deps: resolved.user };
@@ -141,8 +166,21 @@ export function dockerContainer<TDeps = undefined>(cfg: DockerContainerConfig<TD
 			const containerArgs = resolveValue(cfg.args, resolveCtx) ?? [];
 			const containerEnv = resolveValue(cfg.containerEnv, resolveCtx) ?? {};
 			const volumes = resolveValue(cfg.volumes, resolveCtx) ?? [];
+			const image = imageIsDep ? (resolved._image as string) : (cfg.image as string);
+			if (typeof image !== 'string' || image.length === 0) {
+				throw new Error(
+					`dockerContainer("${cfg.name}"): image dep resolved to empty/non-string value`,
+				);
+			}
 
-			if (prior && (await containerIsRunning(prior.containerId))) {
+			// Reuse only if the prior container is still running AND its
+			// recorded image matches the current resolved tag. An upstream
+			// `dockerImage` rebuild that produces a new tag forces
+			// replacement here even though the container itself hasn't
+			// crashed — otherwise the graph would silently drift to running
+			// the old image while the rest of the system thinks it's on the
+			// new one.
+			if (prior && prior.image === image && (await containerIsRunning(prior.containerId))) {
 				log(`reusing running container ${prior.containerId.slice(0, 12)}`);
 				onShutdown(async () => {
 					if (await containerIsRunning(prior.containerId)) {
@@ -151,10 +189,14 @@ export function dockerContainer<TDeps = undefined>(cfg: DockerContainerConfig<TD
 				});
 				return prior;
 			}
+			if (prior && (await containerIsRunning(prior.containerId))) {
+				log(`image changed (${prior.image} → ${image}); replacing container ${prior.containerId.slice(0, 12)}`);
+				await dockerRm(prior.containerId, log);
+			}
 
 			const runArgs = buildDockerRunArgs({
 				name: cfg.name,
-				image: cfg.image,
+				image,
 				args: containerArgs,
 				containerEnv,
 				volumes,
@@ -189,7 +231,7 @@ export function dockerContainer<TDeps = undefined>(cfg: DockerContainerConfig<TD
 			return {
 				containerId,
 				startedAt: Date.now(),
-				image: cfg.image,
+				image,
 				args: containerArgs,
 				hostPorts,
 			};
@@ -202,6 +244,11 @@ export function dockerContainer<TDeps = undefined>(cfg: DockerContainerConfig<TD
 			}
 		},
 	});
+}
+
+function isDep(value: unknown): value is Dep<void, string> {
+	if (typeof value !== 'object' || value === null) return false;
+	return '__producer' in value || '__pluginId' in value;
 }
 
 function buildDockerRunArgs(opts: {
