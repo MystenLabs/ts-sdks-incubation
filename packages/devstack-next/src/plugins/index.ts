@@ -8,6 +8,7 @@ export {
 	type AccountSpec,
 } from './accounts.js';
 export { codegen, renderManifest, type CodegenOptions, type CodegenState } from './codegen.js';
+export { seal, type SealOptions, type SealState } from './seal.js';
 export {
 	sui,
 	type SuiNetwork,
