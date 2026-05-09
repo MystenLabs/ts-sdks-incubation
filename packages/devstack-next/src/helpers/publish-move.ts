@@ -89,7 +89,7 @@ const provides = {
 //     a single publisher signer serialize and don't fight for the gas
 //     object.
 //   - Projects the `packageId` onto a `Package`-shape Dep + represents
-//     it under the standard `packages` category, so codegen / TUI see it.
+//     it under the standard `packages` category, so manifest / bindings / TUI see it.
 //
 // The chain work itself is the caller's `publish` callback. Devstack-next
 // stays SDK-agnostic.

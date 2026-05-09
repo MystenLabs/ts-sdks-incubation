@@ -75,7 +75,7 @@ const DEFAULT_LOCALNET_IMAGE = 'mystenlabs/sui-tools:devnet';
 //   const cfg = defineDevstackConfig({
 //     stack: [
 //       sui.create({ network: 'localnet' }),
-//       codegen({ endpoints: [sui.get('endpoint-as-shape')] }),
+//       manifest({ endpoints: [sui.get('endpoint-as-shape')] }),
 //     ],
 //   });
 //

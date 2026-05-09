@@ -1,15 +1,16 @@
 // Shared shape types for cross-plugin fan-in. Plugins that publish their
 // state into one of these categories should `represents:` it under the
 // corresponding key (`packages`, `endpoints`, `accounts`) AND expose a
-// typed Dep that returns the shape verbatim, so `codegen` and friends can
-// consume them without a string-keyed registry.
+// typed Dep that returns the shape verbatim, so the `manifest` /
+// `bindings` plugins and friends can consume them without a string-keyed
+// registry.
 //
 // Plugins are free to define their own shape types beyond these — the
 // engine doesn't care. These are the conventional defaults that the core
-// codegen / TUI / observability tools pivot on.
+// manifest / bindings / TUI / observability tools pivot on.
 
 export interface Package {
-	/** Logical name (`'token'`, `'nft'`). Used as the codegen subdir. */
+	/** Logical name (`'token'`, `'nft'`). Used as the bindings subdir. */
 	name: string;
 	/** On-chain object id of the published package. */
 	packageId: string;

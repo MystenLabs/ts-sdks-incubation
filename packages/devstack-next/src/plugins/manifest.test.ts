@@ -7,12 +7,12 @@ import type { Env } from '../engine/types.js';
 import { dep } from '../factories/dep.js';
 import { define } from '../factories/define.js';
 import type { Account, Endpoint, Package } from '../shapes/index.js';
-import { codegen, renderManifest } from './codegen.js';
+import { manifest, renderManifest } from './manifest.js';
 
 let appDir: string;
 
 beforeEach(async () => {
-	appDir = await mkdtemp(join(tmpdir(), 'devstack-next-codegen-'));
+	appDir = await mkdtemp(join(tmpdir(), 'devstack-next-manifest-'));
 });
 
 afterEach(async () => {
@@ -24,7 +24,7 @@ function envFor(stack = 'main'): Env {
 }
 
 // Synthetic upstream producers — represent themselves as a Package /
-// Endpoint / Account so codegen can fan in via the typed deps.
+// Endpoint / Account so manifest can fan in via the typed deps.
 function makePackageProducer(name: string, packageId: string) {
 	type S = { name: string; packageId: string };
 	return define<S>({
@@ -62,14 +62,14 @@ function makeAccountProducer(name: string, address: string) {
 	});
 }
 
-describe('codegen', () => {
+describe('manifest', () => {
 	it('emits a typed manifest TypeScript file from upstream Deps', async () => {
 		const token = makePackageProducer('token', '0xpkg1');
 		const nft = makePackageProducer('nft', '0xpkg2');
 		const rpc = makeEndpointProducer('sui-rpc', 'http://localhost:9000', 'rpc');
 		const publisher = makeAccountProducer('publisher', '0xacc1');
 
-		const generate = codegen({
+		const generate = manifest({
 			packages: [token.get('package'), nft.get('package')],
 			endpoints: [rpc.get('endpoint')],
 			accounts: [publisher.get('account')],
@@ -79,7 +79,7 @@ describe('codegen', () => {
 		const result = await engine.runOnce();
 
 		expect(result.errored).toEqual([]);
-		expect(result.ran.map((r) => r.name)).toContain('codegen.manifest');
+		expect(result.ran.map((r) => r.name)).toContain('manifest');
 
 		const path = join(appDir, 'src/generated/manifest.ts');
 		const body = await readFile(path, 'utf8');
@@ -123,7 +123,7 @@ describe('codegen', () => {
 
 	it('does not rewrite the file when forced re-run produces identical content', async () => {
 		const token = makePackageProducer('token', '0xpkg1');
-		const generate = codegen({ packages: [token.get('package')] });
+		const generate = manifest({ packages: [token.get('package')] });
 		const engine = new Engine({ stack: [generate] }, { env: envFor() });
 
 		await engine.runOnce();
@@ -133,18 +133,18 @@ describe('codegen', () => {
 		// Tiny sleep so a re-write would produce a different mtime.
 		await new Promise((r) => setTimeout(r, 20));
 
-		// Force re-run codegen. forceRun bypasses getStatus, so run() fires.
+		// Force re-run manifest. forceRun bypasses getStatus, so run() fires.
 		// run()'s own content-equality check should suppress the write.
-		engine.invalidate('codegen.manifest');
+		engine.invalidate('manifest');
 		const result = await engine.cycle();
-		expect(result.ran.map((r) => r.name)).toContain('codegen.manifest');
+		expect(result.ran.map((r) => r.name)).toContain('manifest');
 		const mtimeSecond = (await stat(path)).mtimeMs;
 		expect(mtimeSecond).toBe(mtimeFirst);
 	});
 
-	it('skips downstream codegen entirely when nothing forced and not first cycle', async () => {
+	it('skips downstream manifest entirely when nothing forced and not first cycle', async () => {
 		const token = makePackageProducer('token', '0xpkg1');
-		const generate = codegen({ packages: [token.get('package')] });
+		const generate = manifest({ packages: [token.get('package')] });
 		const engine = new Engine({ stack: [generate] }, { env: envFor() });
 
 		await engine.runOnce();
@@ -165,7 +165,7 @@ describe('codegen', () => {
 				return { name: 'token', packageId: `0xpkg-rev${rev}`, rev };
 			},
 		});
-		const generate = codegen({ packages: [token.get('package')] });
+		const generate = manifest({ packages: [token.get('package')] });
 		const env = envFor();
 		const engine = new Engine({ stack: [generate] }, { env });
 
@@ -175,7 +175,7 @@ describe('codegen', () => {
 		expect(first).toContain('0xpkg-rev0');
 
 		// Bump rev on the env — token's `inputs` callback flips the input
-		// hash, token re-runs, codegen re-fires through cascade.
+		// hash, token re-runs, manifest re-fires through cascade.
 		(env as { rev?: number }).rev = 1;
 		engine.invalidate('pkg.token');
 		await engine.cycle();
@@ -186,7 +186,7 @@ describe('codegen', () => {
 
 	it('honors a custom output path (relative to env.appDir)', async () => {
 		const token = makePackageProducer('token', '0xpkg1');
-		const generate = codegen({
+		const generate = manifest({
 			packages: [token.get('package')],
 			output: 'custom/dir/manifest.ts',
 		});
@@ -199,7 +199,7 @@ describe('codegen', () => {
 	it('honors absolute output paths', async () => {
 		const token = makePackageProducer('token', '0xpkg1');
 		const absPath = join(appDir, 'absolute/manifest.ts');
-		const generate = codegen({ packages: [token.get('package')], output: absPath });
+		const generate = manifest({ packages: [token.get('package')], output: absPath });
 		const engine = new Engine({ stack: [generate] }, { env: envFor() });
 		await engine.runOnce();
 		const body = await readFile(absPath, 'utf8');
