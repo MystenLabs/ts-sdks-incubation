@@ -4,6 +4,12 @@ export {
 	type ViteDevServerState,
 } from './dev-servers.js';
 export {
+	gitFetch,
+	type GitFetchOptions,
+	type GitFetchState,
+	type GitUrlResolver,
+} from './git-fetch.js';
+export {
 	hashMoveTree,
 	publishMove,
 	type PublishMoveContext,
