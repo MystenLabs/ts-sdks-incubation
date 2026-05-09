@@ -25,7 +25,7 @@ export interface ManifestState {
 	contentHash: string;
 }
 
-interface ResolvedDeps {
+interface ManifestDeps {
 	packages: Package[];
 	endpoints: Endpoint[];
 	accounts: Account[];
@@ -61,11 +61,11 @@ export function manifest(opts: ManifestOptions = {}) {
 		deps,
 		inputs: ({ deps }) => ({
 			output,
-			body: renderManifest(deps as unknown as ResolvedDeps),
+			body: renderManifest(deps),
 		}),
 		getStatus: async ({ env, deps }) => {
 			const path = resolveOutput(env.appDir, output);
-			const expected = renderManifest(deps as unknown as ResolvedDeps);
+			const expected = renderManifest(deps);
 			try {
 				const actual = await readFile(path, 'utf8');
 				return { ok: actual === expected };
@@ -75,7 +75,7 @@ export function manifest(opts: ManifestOptions = {}) {
 		},
 		run: async ({ env, deps, prior }) => {
 			const path = resolveOutput(env.appDir, output);
-			const body = renderManifest(deps as unknown as ResolvedDeps);
+			const body = renderManifest(deps);
 			const contentHash = hashOf(body);
 			// Skip the write if the file already matches. Costs one
 			// stat+read per cycle but keeps Vite HMR quiet on no-op
@@ -103,8 +103,8 @@ function resolveOutput(appDir: string, output: string): string {
 
 // Emitted file body. Stable shape — sort keys, sort entries — so diffs
 // only show when actual content changes.
-export function renderManifest(deps: ResolvedDeps): string {
-	const sorted: ResolvedDeps = {
+export function renderManifest(deps: ManifestDeps): string {
+	const sorted: ManifestDeps = {
 		packages: dedupeAndSort(deps.packages, (p) => p.name).map(stripHostFields),
 		endpoints: dedupeAndSort(deps.endpoints, (e) => e.name),
 		accounts: dedupeAndSort(deps.accounts, (a) => a.name),

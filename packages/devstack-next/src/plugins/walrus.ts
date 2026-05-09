@@ -88,22 +88,16 @@ export function walrus(opts: WalrusOptions = {}) {
 		rpcUrls !== undefined ? staticNode(i, rpcUrls[i]!) : containerNode(i, opts),
 	);
 
-	// `ResolvedDeps` doesn't auto-unwrap arrays of Deps — the engine
-	// resolves them recursively at runtime, but the TS surface needs a
-	// cast at the boundary. Same pattern docker-container.ts uses for its
-	// internal deps composition.
-	type AppNetDeps = { nodes: WalrusNodeState[] };
+	const appNetDeps = { nodes: nodes.map((n) => n.get('full')) };
 	const appNetwork = define({
 		name: 'walrus.app-network',
-		deps: { nodes: nodes.map((n) => n.get('full')) },
+		deps: appNetDeps,
 		provides: networkProvides,
-		inputs: ({ deps }) => ({
-			urls: (deps as AppNetDeps).nodes.map((n) => n.rpcUrl).sort(),
+		inputs: ({ deps }) => ({ urls: deps.nodes.map((n) => n.rpcUrl).sort() }),
+		start: async ({ deps: { nodes: fulls } }): Promise<WalrusNetworkState> => ({
+			nodeCount: fulls.length,
+			urls: fulls.map((n) => n.rpcUrl),
 		}),
-		start: async ({ deps }): Promise<WalrusNetworkState> => {
-			const fulls = (deps as AppNetDeps).nodes;
-			return { nodeCount: fulls.length, urls: fulls.map((n) => n.rpcUrl) };
-		},
 		represents: {
 			endpoints: (s: WalrusNetworkState): Endpoint[] =>
 				s.urls.map((url, i) => ({ name: `walrus-node-${i}`, url, kind: 'walrus-node' })),

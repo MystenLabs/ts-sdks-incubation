@@ -45,10 +45,6 @@ export interface BindingsState {
 	targets: string[];
 }
 
-interface ResolvedDeps {
-	packages: Package[];
-}
-
 interface Target {
 	name: string;
 	path: string;
@@ -87,7 +83,7 @@ export function bindings(opts: BindingsOptions) {
 		name,
 		deps,
 		inputs: ({ env, deps }) => {
-			const targets = collectTargets((deps as unknown as ResolvedDeps).packages);
+			const targets = collectTargets(deps.packages);
 			return {
 				output,
 				importExtension,
@@ -102,7 +98,7 @@ export function bindings(opts: BindingsOptions) {
 			};
 		},
 		getStatus: async ({ env, deps }) => {
-			const targets = collectTargets((deps as unknown as ResolvedDeps).packages);
+			const targets = collectTargets(deps.packages);
 			const outputAbs = resolveOutput(env.appDir, output);
 			if (targets.length === 0) {
 				// Nothing to emit. Stale subdirs (from a prior config that
@@ -129,7 +125,7 @@ export function bindings(opts: BindingsOptions) {
 			return { ok: true };
 		},
 		run: async ({ env, deps, log }) => {
-			const targets = collectTargets((deps as unknown as ResolvedDeps).packages);
+			const targets = collectTargets(deps.packages);
 			const outputAbs = resolveOutput(env.appDir, output);
 
 			if (targets.length === 0) {
