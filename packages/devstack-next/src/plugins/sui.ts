@@ -6,7 +6,15 @@ import { dep } from '../factories/dep.js';
 import { defineSchema, type SchemaInstanceConfig } from '../factories/define-schema.js';
 import { dockerContainer } from '../runners/docker-container.js';
 import { dockerImage } from '../runners/docker-image.js';
+import { dockerNetwork } from '../runners/docker-network.js';
 import type { Endpoint } from '../shapes/index.js';
+
+/** In-network alias the sui-localnet container responds to. Sibling
+ * containers (walrus deploy + nodes, sui indexer, seal key-server) on
+ * the same per-(app, stack) docker network reach the localnet RPC at
+ * `sui-localnet:9000` and the faucet at `sui-localnet:9123` instead of
+ * threading host-port mappings. */
+export const SUI_LOCALNET_NETWORK_ALIAS = 'sui-localnet';
 
 const exec = promisify(execFile);
 
@@ -145,6 +153,11 @@ function localnetInstance(
 			{ slot: 'sui.rpc', containerPort: 9000 },
 			{ slot: 'sui.faucet', containerPort: 9123 },
 		],
+		// Join the per-(app, stack) docker network so siblings (walrus
+		// deploy + nodes, seal key-server) resolve the localnet at
+		// `sui-localnet:9000` instead of host.docker.internal.
+		network: dockerNetwork.get('name'),
+		networkAlias: SUI_LOCALNET_NETWORK_ALIAS,
 		readyTimeoutMs,
 		readyProbe: async ({ hostPorts }) => {
 			const port = hostPorts['sui.rpc'];

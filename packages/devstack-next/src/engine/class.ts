@@ -97,7 +97,14 @@ export class Engine {
 				// already surfaced via engine:error
 			}
 		}
-		const handlers = [...this.shutdownHandlers.values()].flat();
+		// Producers run in topo order (ancestors first), so their handlers
+		// land in the Map in topo order too. Reverse at shutdown so
+		// descendants tear down before ancestors — e.g. `dockerContainer`
+		// nodes attached to a `dockerNetwork` must `docker rm` before
+		// `docker network rm`, otherwise the network removal trips on
+		// "active endpoints". Within a single producer, handlers fire in
+		// registration order (first registered = first cleaned up).
+		const handlers = [...this.shutdownHandlers.values()].reverse().flat();
 		for (const fn of handlers) {
 			try {
 				await fn();

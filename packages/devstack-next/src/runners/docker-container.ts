@@ -23,6 +23,10 @@ export interface DockerContainerState {
 	image: string;
 	args: string[];
 	hostPorts: Record<string, number>;
+	/** Set when the container joined a docker network via `--network`.
+	 * Used to detect drift across cycles — a network rename forces a
+	 * container recreate. */
+	network?: string;
 }
 
 export interface DockerResolveArgs<TDeps> {
@@ -54,6 +58,21 @@ export interface DockerContainerConfig<TDeps> {
 	containerEnv?: DockerValue<Record<string, string>, TDeps>;
 	volumes?: DockerValue<DockerVolumeMapping[], TDeps>;
 	ports?: DockerPortMapping[];
+
+	/** Optional `--network <name>`. Literal string or `Dep<void, string>`
+	 * chained off the standard `dockerNetwork` node so the per-(app, stack)
+	 * bridge identity flows in. When set, sibling containers in the same
+	 * network resolve each other by `--network-alias` instead of host
+	 * port-forwarding. */
+	network?: string | Dep<void, string>;
+	/** Optional `--network-alias <alias>` — DNS name siblings on the
+	 * same network use to reach this container. Ignored unless
+	 * `network` is set. */
+	networkAlias?: string;
+	/** Optional `--ip <addr>` — fixed IP within the network's subnet.
+	 * Ignored unless `network` is set. Used by walrus storage nodes
+	 * (committee subnet pinned at deploy time). */
+	ip?: string;
 
 	// Optional ready check. Receives the running container's ID and the
 	// host-port map (slot → host port). Polled until truthy or timeout.
@@ -123,18 +142,25 @@ export function dockerContainer<TDeps = undefined>(cfg: DockerContainerConfig<TD
 	// `image: Dep<…>` (vs literal string) — hoist into internal deps so
 	// the engine resolves it to a tag string before start runs. The Dep
 	// pulls the upstream `dockerImage` node into the graph; an upstream
-	// rebuild flips this container's input hash via the cascade.
+	// rebuild flips this container's input hash via the cascade. Same
+	// trick for `network: Dep<…>` so the singleton `dockerNetwork` node
+	// is pulled in transitively whenever a container joins a network.
 	const imageIsDep = isDep(cfg.image);
+	const networkIsDep = cfg.network !== undefined && isDep(cfg.network);
 	const internalDeps: {
 		user: TDeps;
 		_ports: Record<string, Dep<{ slot: string }, number>>;
 		_image?: Dep<void, string>;
+		_network?: Dep<void, string>;
 	} = {
 		user: cfg.deps as TDeps,
 		_ports: portAutoDeps,
 	};
 	if (imageIsDep) {
 		internalDeps._image = cfg.image as Dep<void, string>;
+	}
+	if (networkIsDep) {
+		internalDeps._network = cfg.network as Dep<void, string>;
 	}
 
 	return define<DockerContainerState, typeof containerProvides>({
@@ -159,6 +185,7 @@ export function dockerContainer<TDeps = undefined>(cfg: DockerContainerConfig<TD
 				user: ResolvedDeps<TDeps>;
 				_ports: Record<string, number>;
 				_image?: string;
+				_network?: string;
 			};
 			const hostPorts = resolved._ports ?? {};
 			const resolveCtx = { env, deps: resolved.user };
@@ -172,15 +199,30 @@ export function dockerContainer<TDeps = undefined>(cfg: DockerContainerConfig<TD
 					`dockerContainer("${cfg.name}"): image dep resolved to empty/non-string value`,
 				);
 			}
+			const network = networkIsDep
+				? (resolved._network as string)
+				: (cfg.network as string | undefined);
+			if (network !== undefined && (typeof network !== 'string' || network.length === 0)) {
+				throw new Error(
+					`dockerContainer("${cfg.name}"): network dep resolved to empty/non-string value`,
+				);
+			}
 
 			// Reuse only if the prior container is still running AND its
-			// recorded image matches the current resolved tag. An upstream
-			// `dockerImage` rebuild that produces a new tag forces
-			// replacement here even though the container itself hasn't
-			// crashed — otherwise the graph would silently drift to running
-			// the old image while the rest of the system thinks it's on the
-			// new one.
-			if (prior && prior.image === image && (await containerIsRunning(prior.containerId))) {
+			// recorded image / network match the current resolved values.
+			// An upstream `dockerImage` rebuild that produces a new tag —
+			// or a `dockerNetwork` recreation under a different name —
+			// forces replacement here even though the container itself
+			// hasn't crashed; otherwise the graph would silently drift
+			// to running on stale infrastructure while the rest of the
+			// system thinks it's on the new one.
+			const networkMatches = (prior?.network ?? undefined) === (network ?? undefined);
+			if (
+				prior &&
+				prior.image === image &&
+				networkMatches &&
+				(await containerIsRunning(prior.containerId))
+			) {
 				log(`reusing running container ${prior.containerId.slice(0, 12)}`);
 				onShutdown(async () => {
 					if (await containerIsRunning(prior.containerId)) {
@@ -190,7 +232,10 @@ export function dockerContainer<TDeps = undefined>(cfg: DockerContainerConfig<TD
 				return prior;
 			}
 			if (prior && (await containerIsRunning(prior.containerId))) {
-				log(`image changed (${prior.image} → ${image}); replacing container ${prior.containerId.slice(0, 12)}`);
+				const reason = !networkMatches
+					? `network changed (${prior.network ?? '<none>'} → ${network ?? '<none>'})`
+					: `image changed (${prior.image} → ${image})`;
+				log(`${reason}; replacing container ${prior.containerId.slice(0, 12)}`);
 				await dockerRm(prior.containerId, log);
 			}
 
@@ -202,6 +247,9 @@ export function dockerContainer<TDeps = undefined>(cfg: DockerContainerConfig<TD
 				volumes,
 				portMappings,
 				hostPorts,
+				...(network !== undefined ? { network } : {}),
+				...(cfg.networkAlias !== undefined ? { networkAlias: cfg.networkAlias } : {}),
+				...(cfg.ip !== undefined ? { ip: cfg.ip } : {}),
 			});
 
 			log(`docker run ${runArgs.join(' ')}`);
@@ -234,6 +282,7 @@ export function dockerContainer<TDeps = undefined>(cfg: DockerContainerConfig<TD
 				image,
 				args: containerArgs,
 				hostPorts,
+				...(network !== undefined ? { network } : {}),
 			};
 		},
 
@@ -259,8 +308,16 @@ function buildDockerRunArgs(opts: {
 	volumes: DockerVolumeMapping[];
 	portMappings: DockerPortMapping[];
 	hostPorts: Record<string, number>;
+	network?: string;
+	networkAlias?: string;
+	ip?: string;
 }): string[] {
 	const args = ['run', '-d', '--rm'];
+	if (opts.network !== undefined) {
+		args.push('--network', opts.network);
+		if (opts.networkAlias !== undefined) args.push('--network-alias', opts.networkAlias);
+		if (opts.ip !== undefined) args.push('--ip', opts.ip);
+	}
 	for (const { slot, containerPort } of opts.portMappings) {
 		const hostPort = opts.hostPorts[slot];
 		if (!hostPort) continue;

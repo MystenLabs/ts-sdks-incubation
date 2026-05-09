@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Engine } from '../engine/class.js';
 import { dockerImage } from './docker-image.js';
+import { dockerNetwork } from './docker-network.js';
 import { dockerOneShot, type DockerOneShotState } from './docker-one-shot.js';
 
 const dockerAvailable = (() => {
@@ -17,13 +18,19 @@ const dockerAvailable = (() => {
 })();
 
 let appDir: string;
-let env: { appName: string; appDir: string; network: string };
+let env: { appName: string; appDir: string; network: string; stack: string };
 const trackedTags = new Set<string>();
 const trackedContainers = new Set<string>();
+const trackedNetworks = new Set<string>();
 
 beforeEach(() => {
 	appDir = mkdtempSync(join(tmpdir(), 'docker-one-shot-'));
-	env = { appName: 'test', appDir, network: 'localnet' };
+	env = {
+		appName: `dos-test-${Math.random().toString(36).slice(2, 8)}`,
+		appDir,
+		network: 'localnet',
+		stack: 'main',
+	};
 });
 
 afterEach(() => {
@@ -43,6 +50,14 @@ afterEach(() => {
 		}
 	}
 	trackedTags.clear();
+	for (const name of trackedNetworks) {
+		try {
+			execFileSync('docker', ['network', 'rm', name], { stdio: 'ignore' });
+		} catch {
+			// already gone
+		}
+	}
+	trackedNetworks.clear();
 	rmSync(appDir, { recursive: true, force: true });
 });
 
@@ -144,6 +159,59 @@ describe('dockerOneShot (run — docker required)', () => {
 			track(state);
 			expect(state!.exitCode).toBe(0);
 			expect(readFileSync(join(outputs, 'deploy'), 'utf8')).toBe('deploy=ok\n');
+		},
+		60_000,
+	);
+
+	itDocker(
+		'joins a docker network via Dep<string> for `network`',
+		async () => {
+			// Sibling alpine container with a network alias the one-shot
+			// can resolve from inside the network namespace. Verifies
+			// `network: dockerNetwork.get('name')` threads through to
+			// `docker run --network` and DNS works.
+			const sibling = execFileSync(
+				'docker',
+				[
+					'run',
+					'-d',
+					'--rm',
+					'--network',
+					'bridge',
+					'--name',
+					'one-shot-net-sibling-init',
+					'alpine:3.19',
+					'sleep',
+					'120',
+				],
+				{ encoding: 'utf8' },
+			).trim();
+			trackedContainers.add('one-shot-net-sibling-init');
+
+			const job = dockerOneShot({
+				name: 'with-network',
+				image: 'alpine:3.19',
+				args: ['sh', '-c', 'echo joined-network && exit 0'],
+				network: dockerNetwork.get('name'),
+			});
+			const engine = new Engine({ stack: [job] }, { env });
+			const result = await engine.runOnce();
+			expect(result.errored).toEqual([]);
+			const state = engine.getState().nodes.get('with-network')?.state as
+				| DockerOneShotState
+				| undefined;
+			track(state);
+			expect(state!.tail).toContain('joined-network');
+
+			const netName = `${env.appName}-main`;
+			trackedNetworks.add(netName);
+
+			// Cleanup the unrelated init container synchronously.
+			try {
+				execFileSync('docker', ['rm', '-f', sibling], { stdio: 'ignore' });
+			} catch {
+				// already gone
+			}
 		},
 		60_000,
 	);

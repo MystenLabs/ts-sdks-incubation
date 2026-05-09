@@ -138,6 +138,10 @@ describe('walrus (graph composition — no real Docker)', () => {
 		expect(state.nodes.has('walrus.deploy.container')).toBe(true);
 		expect(state.nodes.has('walrus.register')).toBe(true);
 		expect(state.nodes.has('ports')).toBe(true);
+		// The deploy container joins the per-(app, stack) docker network
+		// (sui-localnet alias resolves into the bridge), so the singleton
+		// `dockerNetwork` is pulled into the graph transitively.
+		expect(state.nodes.has('docker.network')).toBe(true);
 	});
 
 	it('skips walrus.image* when caller pins a pre-built image tag', () => {
