@@ -6,9 +6,10 @@ import { dep } from '../factories/dep.js';
 import { define } from '../factories/define.js';
 import { dockerContainer } from '../runners/docker-container.js';
 import { dockerImage } from '../runners/docker-image.js';
+import { dockerNetwork } from '../runners/docker-network.js';
 import { dockerOneShot } from '../runners/docker-one-shot.js';
 import type { Endpoint, Package } from '../shapes/index.js';
-import { sui, SUI_DEFAULT_VERSION } from './sui.js';
+import { sui, SUI_DEFAULT_VERSION, SUI_LOCALNET_NETWORK_ALIAS } from './sui.js';
 
 const DEFAULT_NODE_API_PORT = 9185;
 const DEFAULT_READY_TIMEOUT_MS = 60_000;
@@ -250,42 +251,44 @@ function buildDeploy(args: {
 	const restApiPort = args.opts.containerApiPort ?? DEFAULT_NODE_API_PORT;
 	const publicHosts = Array.from({ length: args.nodeCount }, (_, i) => walrusPublicHost(i)).join(' ');
 
-	// host.docker.internal works on Docker Desktop for Mac/Windows.
-	// Linux Docker needs `--add-host=host.docker.internal:host-gateway`
-	// in the dockerOneShot config — the walrus committee + cross-stack
-	// network design isn't sorted yet (see notes/STATE.md), so this is
-	// the structural wiring; a real-running walrus deploy needs the
-	// network story below to be filled in.
-	const containerHost = (url: string): string =>
-		url.replace('http://127.0.0.1:', 'http://host.docker.internal:');
+	// In-network address the deploy script targets — the per-(app, stack)
+	// docker network's `sui-localnet` alias resolves to the sui-localnet
+	// container's container-port 9000 (RPC) / 9123 (faucet). Hard-coded
+	// container ports because we're addressing the container directly,
+	// not the host-port-forwarded URL.
+	const SUI_IN_NETWORK_RPC = `http://${SUI_LOCALNET_NETWORK_ALIAS}:9000`;
+	const SUI_IN_NETWORK_FAUCET = `http://${SUI_LOCALNET_NETWORK_ALIAS}:9123`;
 
 	const deployContainer = dockerOneShot({
 		name: 'walrus.deploy.container',
 		runsAs: 'walrus-deploy',
 		image: typeof args.image === 'string' ? args.image : args.image,
+		// Couple to sui (rpc/faucet) so the deploy step gates on the
+		// localnet being live; the actual URLs come from the in-network
+		// alias below — sui's host-port mappings aren't reachable from
+		// inside the deploy container.
 		deps: {
-			rpc: sui.get('rpc'),
-			faucet: sui.get('faucet'),
+			_rpc: sui.get('rpc'),
+			_faucet: sui.get('faucet'),
 		},
+		network: dockerNetwork.get('name'),
 		volumes: ({ env }) => {
 			const hostDir = walrusDeployHostDir(env);
 			mkdirSync(hostDir, { recursive: true });
 			return [{ host: hostDir, container: '/opt/walrus/outputs' }];
 		},
-		containerEnv: ({ deps }) => ({
+		containerEnv: () => ({
 			WALRUS_PUBLIC_HOSTS: publicHosts,
 			// In a per-stack docker network the listening IPs would
-			// match the IPAM-pinned committee subnet. We don't have
-			// network support here yet — bind to 0.0.0.0 so the deploy
-			// step at least produces output configs the parser can
-			// read; actual node-to-node traffic still needs the
-			// committee network design.
+			// match the IPAM-pinned committee subnet (5e). Until storage
+			// nodes get fixed IPs, bind to 0.0.0.0 so the deploy step
+			// at least produces output configs the parser can read.
 			WALRUS_LISTENING_IPS: Array.from({ length: args.nodeCount }, () => '0.0.0.0').join(' '),
 			WALRUS_REST_API_PORT: String(restApiPort),
 			WALRUS_COMMITTEE_SIZE: String(args.nodeCount),
 			WALRUS_SHARDS: String(args.shards),
 			WALRUS_EPOCH_DURATION: epochDuration,
-			WALRUS_NETWORK: `${containerHost(deps.rpc.url)};${containerHost(deps.faucet.url)}/gas`,
+			WALRUS_NETWORK: `${SUI_IN_NETWORK_RPC};${SUI_IN_NETWORK_FAUCET}/gas`,
 		}),
 		args: ['/bin/bash', '-c', '/opt/walrus/scripts/deploy-walrus.sh'],
 	});

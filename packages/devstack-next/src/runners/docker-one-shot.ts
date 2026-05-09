@@ -49,10 +49,18 @@ export interface DockerOneShotConfig<TDeps> {
 	containerEnv?: DockerOneShotValue<Record<string, string>, TDeps>;
 	volumes?: DockerOneShotValue<DockerOneShotVolumeMapping[], TDeps>;
 
-	/** Optional `--network <name>` (e.g. when joining a per-stack
-	 * docker network so the container can resolve sibling containers
-	 * by alias). */
-	network?: DockerOneShotValue<string, TDeps>;
+	/** Optional `--network <name>`. Literal string or `Dep<void, string>`
+	 * chained off the standard `dockerNetwork` node so the per-(app,
+	 * stack) bridge identity flows in. Same shape as
+	 * `dockerContainer.network`. */
+	network?: string | Dep<void, string>;
+	/** Optional `--network-alias <alias>` — DNS name siblings on the
+	 * same network use to reach this container. Ignored unless
+	 * `network` is set. */
+	networkAlias?: string;
+	/** Optional `--ip <addr>` — fixed IP within the network's subnet.
+	 * Ignored unless `network` is set. */
+	ip?: string;
 	/** Optional `--hostname <name>` for in-network DNS. */
 	hostname?: DockerOneShotValue<string, TDeps>;
 	/** Optional `--platform <os/arch>`. */
@@ -110,11 +118,19 @@ export function dockerOneShot<TDeps = undefined>(cfg: DockerOneShotConfig<TDeps>
 	const timeoutMs = cfg.timeoutMs ?? 10 * 60_000;
 
 	const imageIsDep = isDep(cfg.image);
-	const internalDeps: { user: TDeps; _image?: Dep<void, string> } = {
+	const networkIsDep = cfg.network !== undefined && isDep(cfg.network);
+	const internalDeps: {
+		user: TDeps;
+		_image?: Dep<void, string>;
+		_network?: Dep<void, string>;
+	} = {
 		user: cfg.deps as TDeps,
 	};
 	if (imageIsDep) {
 		internalDeps._image = cfg.image as Dep<void, string>;
+	}
+	if (networkIsDep) {
+		internalDeps._network = cfg.network as Dep<void, string>;
 	}
 
 	return define<DockerOneShotState, typeof oneShotProvides>({
@@ -135,13 +151,21 @@ export function dockerOneShot<TDeps = undefined>(cfg: DockerOneShotConfig<TDeps>
 			const resolved = deps as unknown as {
 				user: ResolvedDeps<TDeps>;
 				_image?: string;
+				_network?: string;
 			};
 			const resolveCtx = { env, deps: resolved.user };
 
 			const containerArgs = resolveValue(cfg.args, resolveCtx) ?? [];
 			const containerEnv = resolveValue(cfg.containerEnv, resolveCtx) ?? {};
 			const volumes = resolveValue(cfg.volumes, resolveCtx) ?? [];
-			const network = resolveValue(cfg.network, resolveCtx);
+			const network = networkIsDep
+				? (resolved._network as string)
+				: (cfg.network as string | undefined);
+			if (network !== undefined && (typeof network !== 'string' || network.length === 0)) {
+				throw new Error(
+					`dockerOneShot("${cfg.name}"): network dep resolved to empty/non-string value`,
+				);
+			}
 			const hostname = resolveValue(cfg.hostname, resolveCtx);
 			const containerName = resolveValue(cfg.containerName, resolveCtx) ?? cfg.name;
 			const image = imageIsDep ? (resolved._image as string) : (cfg.image as string);
@@ -162,6 +186,8 @@ export function dockerOneShot<TDeps = undefined>(cfg: DockerOneShotConfig<TDeps>
 				containerEnv,
 				volumes,
 				...(network !== undefined ? { network } : {}),
+				...(cfg.networkAlias !== undefined ? { networkAlias: cfg.networkAlias } : {}),
+				...(cfg.ip !== undefined ? { ip: cfg.ip } : {}),
 				...(hostname !== undefined ? { hostname } : {}),
 				...(cfg.platform !== undefined ? { platform: cfg.platform } : {}),
 			});
@@ -213,6 +239,8 @@ function buildDockerRunArgs(opts: {
 	containerEnv: Record<string, string>;
 	volumes: DockerOneShotVolumeMapping[];
 	network?: string;
+	networkAlias?: string;
+	ip?: string;
 	hostname?: string;
 	platform?: string;
 }): string[] {
@@ -220,7 +248,11 @@ function buildDockerRunArgs(opts: {
 	// would collide on the same name even after dockerRm above.
 	const args = ['run', '--rm', '--name', opts.containerName];
 	if (opts.platform !== undefined) args.push('--platform', opts.platform);
-	if (opts.network !== undefined) args.push('--network', opts.network);
+	if (opts.network !== undefined) {
+		args.push('--network', opts.network);
+		if (opts.networkAlias !== undefined) args.push('--network-alias', opts.networkAlias);
+		if (opts.ip !== undefined) args.push('--ip', opts.ip);
+	}
 	if (opts.hostname !== undefined) args.push('--hostname', opts.hostname);
 	for (const [k, v] of Object.entries(opts.containerEnv)) {
 		args.push('-e', `${k}=${v}`);

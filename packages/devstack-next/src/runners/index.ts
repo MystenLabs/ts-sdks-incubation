@@ -28,6 +28,12 @@ export {
 } from './docker-image.js';
 
 export {
+	dockerNetwork,
+	dockerNetworkOctet,
+	type DockerNetworkState,
+} from './docker-network.js';
+
+export {
 	dockerOneShot,
 	type DockerOneShotConfig,
 	type DockerOneShotResolveArgs,

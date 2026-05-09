@@ -66,9 +66,10 @@ describe('sui (localnet static — rpcUrl override skips Docker)', () => {
 		expect(state.rpcUrl).toBe('http://10.0.0.1:9000');
 		expect(state.faucetUrl).toBe('http://10.0.0.1:9123');
 		// rpcUrl override skips the dockerContainer node entirely — no
-		// container, no port allocation.
+		// container, no port allocation, no per-stack docker network.
 		expect(engine.getState().nodes.has('sui.localnet.container')).toBe(false);
 		expect(engine.getState().nodes.has('ports')).toBe(false);
+		expect(engine.getState().nodes.has('docker.network')).toBe(false);
 	});
 });
 
@@ -171,7 +172,7 @@ describe('sui (localnet docker composition — no real Docker)', () => {
 	// graph must surface a `sui.localnet.container` producer alongside the
 	// `sui.localnet` transformer; that's the structural contract any
 	// snapshot / lifecycle pass relies on for uniform container discovery.
-	it('builds a graph with sui.image + sui.localnet.container + sui.localnet + ports', () => {
+	it('builds a graph with sui.image + sui.localnet.container + sui.localnet + ports + docker.network', () => {
 		const node = sui.create({ network: 'localnet' });
 		const engine = new Engine({ stack: [node] }, { env });
 		const state = engine.getState();
@@ -181,8 +182,12 @@ describe('sui (localnet docker composition — no real Docker)', () => {
 		expect(state.nodes.has('sui.localnet.container')).toBe(true);
 		// ...the dockerImage build the container chains its tag from...
 		expect(state.nodes.has('sui.image')).toBe(true);
-		// ...which auto-injects a Dep on the standard `ports` node.
+		// ...the standard ports allocator that the dockerContainer Deps on...
 		expect(state.nodes.has('ports')).toBe(true);
+		// ...and the per-(app, stack) docker network the container joins
+		// with alias `sui-localnet` (so siblings reach localnet without
+		// going through host port forwarding).
+		expect(state.nodes.has('docker.network')).toBe(true);
 	});
 
 	it('vendored docker context resolves to a real on-disk directory', () => {

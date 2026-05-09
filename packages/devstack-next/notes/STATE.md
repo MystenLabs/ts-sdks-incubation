@@ -38,9 +38,12 @@ b8c18cf  walrus.deploy + node-container deploy mount
 174a0d1  deepbookLocalnet — gitFetch + publishMove + create-pool flow
 f1d465b  stack new + stack use CLI subcommands
 53ad8d3  accounts.fund AB-deposit (opt-in, gated on RPC reachability)
+(this session)
+         5a per-stack docker network primitive
+         sui-localnet + walrus.deploy join via `sui-localnet` alias
 ```
 
-Tests: 345 passing. Typecheck clean. Build clean (148 files, ~654 kB).
+Tests: 355 passing. Typecheck clean. Build clean (152 files, ~679 kB).
 
 ## What's built
 
@@ -76,6 +79,19 @@ src/runners/        L4 — process/container/image runners
                       (deploy scripts, init jobs). Same image-Dep / env /
                       volumes surface; throws on non-zero exit with the
                       last 32 KB of combined output in the message.
+  docker-network.ts   `dockerNetwork` — singleton per-(app, stack) bridge
+                      network with deterministic `/24` subnet
+                      (`10.<octet>.0.0/24`, octet ∈ [1, 250] hashed
+                      from `<appName>/<stack>`). Network name
+                      `<appName>-<stack>`. Lifecycle: ensure on start,
+                      remove on shutdown (engine reverses shutdown
+                      order so attached containers tear down first).
+                      `dockerContainer` and `dockerOneShot` join via
+                      `network: dockerNetwork.get('name')` plus
+                      `networkAlias` / `ip` (literal strings). Pulled
+                      into the graph transitively whenever any
+                      consumer Deps on it — no-docker stacks (live-net
+                      sui stubs, `walrus({rpcUrls})`) skip it.
 
 src/standard/       L4 — standard graph nodes
   ports.ts            singleton port allocator
@@ -120,19 +136,27 @@ src/plugins/        L6
   sui.ts              localnet — chains dockerImage (vendored Dockerfile
                       under sui/docker/) → dockerContainer; image build
                       is content-addressed via SUI_VERSION build-arg.
-                      `image:` override skips the build for pre-built
-                      tags. testnet/mainnet/devnet stubs unchanged.
+                      Container joins `dockerNetwork` with alias
+                      `sui-localnet` so siblings reach the localnet at
+                      `sui-localnet:9000` / `:9123` without host-port
+                      threading. Exported as
+                      `SUI_LOCALNET_NETWORK_ALIAS`. `image:` override
+                      skips the build for pre-built tags.
+                      testnet/mainnet/devnet stubs unchanged.
   walrus.ts           multi-node committee + aggregator + deploy +
                       register. Two-stage image chain
                       `walrus.image.upstream` → `walrus.image` (the
                       latter chains BASE_IMAGE off the former's tag).
                       `walrus.deploy.container` runs deploy-walrus.sh
-                      via dockerOneShot; `walrus.deploy` parses the
-                      outputs file. `walrus.register` projects deploy
-                      state into a Package shape consumers (manifest /
-                      bindings) pivot on. `image:` skips the build;
-                      `rpcUrls:` skips docker entirely (deploy +
-                      register included).
+                      via dockerOneShot, joining `dockerNetwork` so
+                      `WALRUS_NETWORK` points at `sui-localnet:9000`
+                      (alias) instead of `host.docker.internal`.
+                      `walrus.deploy` parses the outputs file.
+                      `walrus.register` projects deploy state into a
+                      Package shape consumers (manifest / bindings)
+                      pivot on. `image:` skips the build; `rpcUrls:`
+                      skips docker entirely (deploy + register +
+                      `dockerNetwork` included).
 ```
 
 ### Persistence + frontends (L7)
@@ -195,12 +219,11 @@ fan-out is automatic: bumping a build arg flips the image's identity
   master / public keys themselves. Both go away when the seal image
   build (with `seal-cli` baked in) lands as part of the per-plugin
   package split.
-- **walrus per-stack docker network**: storage nodes can't reach each
-  other peer-to-peer in the current model — every container runs on
-  bridge with host-port mapping only. The deploy step runs structurally
-  but a real-running committee needs the per-stack docker-network +
-  fixed-IP design (committee subnet, network alias DNS) the original
-  devstack had. Pending — defer until a consumer drives the design.
+- **walrus per-stack docker network**: 5a primitive landed (sui +
+  walrus.deploy join the per-stack bridge with `sui-localnet` alias).
+  Storage nodes still don't get fixed IPs — that's 5e. Real-running
+  committee needs node containers on `10.<octet>.0.10..` via the new
+  `network` / `networkAlias` / `ip` config on `dockerContainer`.
 - **deepbookLocalnet end-to-end run**: composes the right primitives
   (gitFetch + publishMove + create_pool_admin tx) and tests the graph
   shape, but exercising it against a live sui-localnet (real publish,

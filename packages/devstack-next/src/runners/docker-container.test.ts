@@ -7,6 +7,7 @@ import { writeFileSync } from 'node:fs';
 import { Engine } from '../engine/class.js';
 import { dockerContainer, type DockerContainerState } from './docker-container.js';
 import { dockerImage, type DockerImageState } from './docker-image.js';
+import { dockerNetwork, type DockerNetworkState } from './docker-network.js';
 
 // Determine docker availability synchronously at module load — `itDocker`
 // is called during suite definition, before any beforeAll hooks fire.
@@ -20,12 +21,18 @@ const dockerAvailable = (() => {
 })();
 
 let appDir: string;
-let env: { appName: string; appDir: string; network: string };
+let env: { appName: string; appDir: string; network: string; stack: string };
 const trackedContainers = new Set<string>();
+const trackedNetworks = new Set<string>();
 
 beforeEach(() => {
 	appDir = mkdtempSync(join(tmpdir(), 'docker-runner-'));
-	env = { appName: 'test', appDir, network: 'localnet' };
+	env = {
+		appName: `dc-test-${Math.random().toString(36).slice(2, 8)}`,
+		appDir,
+		network: 'localnet',
+		stack: 'main',
+	};
 });
 
 afterEach(async () => {
@@ -37,6 +44,14 @@ afterEach(async () => {
 		}
 	}
 	trackedContainers.clear();
+	for (const name of trackedNetworks) {
+		try {
+			execFileSync('docker', ['network', 'rm', name], { stdio: 'ignore' });
+		} catch {
+			// already gone
+		}
+	}
+	trackedNetworks.clear();
 	rmSync(appDir, { recursive: true, force: true });
 });
 
@@ -176,6 +191,53 @@ describe('dockerContainer', () => {
 					// best-effort
 				}
 			}
+
+			await engine.stop();
+		},
+		120_000,
+	);
+
+	itDocker(
+		'joins a docker network via Dep + alias and threads --network/--network-alias',
+		async () => {
+			const container = dockerContainer({
+				name: 'on-network',
+				image: 'alpine:3.19',
+				args: ['sleep', '60'],
+				network: dockerNetwork.get('name'),
+				networkAlias: 'on-network-alias',
+			});
+			const engine = new Engine({ stack: [container] }, { env });
+			const result = await engine.runOnce();
+			expect(result.errored).toEqual([]);
+
+			const cState = engine.getState().nodes.get('on-network')?.state as
+				| DockerContainerState
+				| undefined;
+			const netState = engine.getState().nodes.get('docker.network')?.state as
+				| DockerNetworkState
+				| undefined;
+			trackContainer(cState?.containerId);
+			if (netState?.name) trackedNetworks.add(netState.name);
+
+			expect(cState?.network).toBe(netState?.name);
+
+			// Verify the container is actually attached to the named network
+			// — `docker inspect` exposes the NetworkSettings.Networks map.
+			const inspectOut = execFileSync(
+				'docker',
+				[
+					'inspect',
+					'-f',
+					`{{index .NetworkSettings.Networks "${netState!.name}"}}`,
+					cState!.containerId,
+				],
+				{ encoding: 'utf8' },
+			).trim();
+			// Non-empty (and not "<no value>") means docker reports the
+			// network as attached.
+			expect(inspectOut).not.toBe('<no value>');
+			expect(inspectOut.length).toBeGreaterThan(0);
 
 			await engine.stop();
 		},
