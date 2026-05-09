@@ -8,6 +8,7 @@ export default defineConfig({
 		'src/persistence/index.ts',
 		'src/plugins/index.ts',
 		'src/shapes/index.ts',
+		'src/vitest/index.ts',
 	],
 	format: 'esm',
 	dts: true,
