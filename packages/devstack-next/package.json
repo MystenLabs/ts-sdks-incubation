@@ -1,6 +1,6 @@
 {
 	"name": "@mysten-incubation/devstack-next",
-	"version": "0.0.0-dev",
+	"version": "1.0.0-rc.0",
 	"description": "Layered redesign of @mysten-incubation/devstack — pure-logic engine, define/defineSchema factories, plugin packages.",
 	"keywords": [
 		"sui",
