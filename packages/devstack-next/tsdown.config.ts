@@ -6,6 +6,7 @@ export default defineConfig({
 		'src/cli/main.ts',
 		'src/helpers/index.ts',
 		'src/persistence/index.ts',
+		'src/playwright/index.ts',
 		'src/plugins/index.ts',
 		'src/shapes/index.ts',
 		'src/vitest/index.ts',
