@@ -26,3 +26,12 @@ export {
 	type DockerImageState,
 	type DockerImageValue,
 } from './docker-image.js';
+
+export {
+	dockerOneShot,
+	type DockerOneShotConfig,
+	type DockerOneShotResolveArgs,
+	type DockerOneShotState,
+	type DockerOneShotValue,
+	type DockerOneShotVolumeMapping,
+} from './docker-one-shot.js';
