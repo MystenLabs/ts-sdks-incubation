@@ -119,6 +119,13 @@ export interface DockerContainerConfig<TDeps> {
 	 * committee computes `10.<octet>.0.<10+idx>` from the
 	 * `dockerNetwork` octet at start time). */
 	ip?: DockerValue<string, TDeps>;
+	/** Optional `--hostname <name>` — sets the container's `HOSTNAME`
+	 * env. Containers whose entrypoint scripts read `$HOSTNAME` to
+	 * locate per-instance config files (walrus storage nodes look
+	 * for `${HOSTNAME}.yaml` written by the deploy step) need this
+	 * set explicitly — the auto-generated docker hostname (12-char
+	 * container-id slice) won't match. */
+	hostname?: DockerValue<string, TDeps>;
 
 	// Optional ready check. Receives the running container's ID and the
 	// host-port map (slot → host port). Polled until truthy or timeout.
@@ -285,6 +292,12 @@ export function dockerContainer<TDeps = undefined>(cfg: DockerContainerConfig<TD
 					`dockerContainer("${cfg.name}"): ip resolved to empty/non-string value`,
 				);
 			}
+			const hostname = resolveValue(cfg.hostname, resolveCtx);
+			if (hostname !== undefined && (typeof hostname !== 'string' || hostname.length === 0)) {
+				throw new Error(
+					`dockerContainer("${cfg.name}"): hostname resolved to empty/non-string value`,
+				);
+			}
 
 			// Reuse only if the prior container is still running AND its
 			// recorded image / network / ip match the current resolved
@@ -339,6 +352,7 @@ export function dockerContainer<TDeps = undefined>(cfg: DockerContainerConfig<TD
 				...(network !== undefined ? { network } : {}),
 				...(cfg.networkAlias !== undefined ? { networkAlias: cfg.networkAlias } : {}),
 				...(ip !== undefined ? { ip } : {}),
+				...(hostname !== undefined ? { hostname } : {}),
 			});
 
 			log(`docker run ${runArgs.join(' ')}`);
@@ -457,6 +471,7 @@ function buildDockerRunArgs(opts: {
 	network?: string;
 	networkAlias?: string;
 	ip?: string;
+	hostname?: string;
 }): string[] {
 	const args = ['run', '-d'];
 	// `--rm` ensures cleanup if the engine crashes mid-cycle without
@@ -466,6 +481,7 @@ function buildDockerRunArgs(opts: {
 	// across stop. Long-running containers without commit fall back
 	// on the runner's onShutdown handler for cleanup.
 	if (opts.autoRemove) args.push('--rm');
+	if (opts.hostname !== undefined) args.push('--hostname', opts.hostname);
 	if (opts.network !== undefined) {
 		args.push('--network', opts.network);
 		if (opts.networkAlias !== undefined) args.push('--network-alias', opts.networkAlias);

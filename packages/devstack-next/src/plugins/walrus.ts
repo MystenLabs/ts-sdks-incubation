@@ -431,6 +431,12 @@ function containerNode(index: number, opts: WalrusOptions, image: ImageRef, depl
 		name: `walrus.node-${index}.container`,
 		runsAs: `walrus-${index}`,
 		image,
+		// The wrapper image ships `run-walrus.sh` at this path but
+		// doesn't declare an ENTRYPOINT — point at it explicitly.
+		// The script relocates the deploy outputs into the writable
+		// layer (read-only bind quirks on macOS), faucets SUI, swaps
+		// for WAL via the exchange, then exec's `walrus-node run`.
+		args: ['/bin/bash', '-c', '/opt/walrus/scripts/run-walrus.sh'],
 		ports: [{ slot, containerPort: containerApiPort }],
 		readyTimeoutMs,
 		// Join the per-(app, stack) docker network with a fixed IP +
@@ -442,7 +448,19 @@ function containerNode(index: number, opts: WalrusOptions, image: ImageRef, depl
 		// proxy) reach the node by the same name the chain knows.
 		network: dockerNetwork.get('name'),
 		networkAlias: walrusPublicHost(index),
-		deps: { _octet: dockerNetwork.get('octet') },
+		// `--hostname` sets `$HOSTNAME` inside the container; run.sh
+		// uses it to locate per-node config files (`${HOSTNAME}.yaml`,
+		// `${HOSTNAME}-sui.yaml`, `${HOSTNAME}.keystore`) the deploy
+		// step writes. Convention: `dryrun-node-<i>` matches what
+		// `walrus-deploy generate-dry-run-configs` emits.
+		hostname: walrusContainerHostname(index),
+		// Storage-node container Deps: deploy must finish before
+		// run.sh can read the output files; the dockerNetwork's
+		// octet flows into the IP computation above.
+		deps: {
+			_octet: dockerNetwork.get('octet'),
+			_deploy: deploy.deploy.get('full'),
+		},
 		ip: ({ deps }) => walrusNodeIp(deps._octet, index),
 		// Mount deploy outputs read-only — run.sh inside the container
 		// reads its keystore + per-node yaml from /opt/walrus/outputs.
@@ -513,6 +531,16 @@ export function walrusProxyConfigPath(env: { appDir: string; stack?: string }): 
  * <i>.localhost` resolves both ways. */
 function walrusPublicHost(index: number): string {
 	return `walrus-node-${index}.localhost`;
+}
+
+/** Container `--hostname`. Distinct from `walrusPublicHost` because the
+ * deploy script writes per-node config files keyed by this name
+ * (`<hostname>.yaml`, `<hostname>-sui.yaml`, `<hostname>.keystore`)
+ * which the storage-node container's run.sh reads via `$HOSTNAME`.
+ * `dryrun-node-<i>` matches the upstream walrus testbed convention
+ * — keep in lockstep with `WALRUS_PUBLIC_HOSTS` consumed by deploy. */
+function walrusContainerHostname(index: number): string {
+	return `dryrun-node-${index}`;
 }
 
 /** Per-storage-node fixed IP within the per-stack `/24`. Slots 10..

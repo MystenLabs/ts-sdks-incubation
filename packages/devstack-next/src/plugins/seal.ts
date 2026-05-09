@@ -14,9 +14,17 @@ import { publishMove } from '../helpers/publish-move.js';
 import { publishViaSuiCli } from '../helpers/publish-via-cli.js';
 import { dockerContainer } from '../runners/docker-container.js';
 import { dockerImage } from '../runners/docker-image.js';
+import { dockerNetwork } from '../runners/docker-network.js';
 import { dockerOneShot } from '../runners/docker-one-shot.js';
 import type { Endpoint, Package } from '../shapes/index.js';
-import { sui } from './sui.js';
+import { ports } from '../standard/ports.js';
+import { sui, SUI_LOCALNET_NETWORK_ALIAS } from './sui.js';
+
+/** Port slot the seal key-server claims via the standard `ports`
+ * allocator. Shared between the dockerContainer (which auto-Deps via
+ * its `ports:` config) and the register step (which Deps directly so
+ * the on-chain URL can be constructed before the container exists). */
+const SEAL_KEY_SERVER_PORT_SLOT = 'seal.key-server';
 
 // Vendored Dockerfile ships under `src/plugins/seal/docker/`.
 // `tsdown.config.ts` mirrors it to `dist/plugins/seal/docker/` so
@@ -37,23 +45,23 @@ const SEAL_MOVE_SUBDIR = 'move/seal';
 const KEY_TYPE_BONEH_FRANKLIN_BLS12381 = 0;
 
 export interface SealOptions {
-	/** Pre-built key-server image. When set, the `seal.image` build is
-	 * skipped and the literal tag is used directly. Useful for
-	 * CI-published images or pinning to an upstream tag. */
-	image?: string;
-	/** Pinned seal release tag, e.g. `'seal-v0.6.6'`. Becomes a
-	 * `--build-arg SEAL_TAG=<tag>` to the vendored Dockerfile and the
-	 * git ref used to fetch the matching `move/seal` Move package via
-	 * `gitFetch`. Defaults to `SEAL_DEFAULT_VERSION`. */
-	version?: string;
-	/** Container port the key-server binds inside the container. Host
-	 * port is allocated. Default 2024 (upstream's default). */
-	containerPort?: number;
-	/** Ready-probe timeout for the key-server. Default 60s. */
-	readyTimeoutMs?: number;
 	/** Skip Docker entirely — point the producer at an externally-managed
 	 * key server. Mirrors the `sui({ rpcUrl })` escape hatch. */
 	url?: string;
+	/** Resolved key-server host port. Required for managed mode —
+	 * sealLocalnet pre-allocates the slot via `ports.get('allocate',
+	 * { slot: 'seal.key-server' })` so register can submit the
+	 * matching on-chain URL before the container exists.
+	 * `Dep<any, …>` to accept either the parameterized port allocator
+	 * Dep (`{slot}`) or a plain dockerContainer hostPort Dep. */
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	hostPortDep?: Dep<any, number>;
+	/** Resolved keygen full state. The schema transformer projects
+	 * `masterKey` / `publicKey` from this into `SealState` so the
+	 * `seal.get('publicKey')` Dep used by register resolves without
+	 * cycling back through the schema. */
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	keygenDep?: Dep<any, SealKeygenState>;
 }
 
 export interface SealState {
@@ -128,87 +136,84 @@ export const seal = defineSchema<SealOptions, SealState, typeof provides>({
 	},
 });
 
+// Managed instance is now a thin transformer: it just projects the
+// pre-allocated host port + keygen state into `SealState`. The actual
+// docker work (image, keygen one-shot, key-server container) is
+// orchestrated by `sealLocalnet({...})` so it can break the cycle
+// between register (needs publicKey + URL) and the key-server
+// container (needs register's keyServerObjectId).
 function managedInstance(
 	opts: SealOptions,
 ): SchemaInstanceConfig<SealState, typeof provides, any> {
-	const containerPort = opts.containerPort ?? DEFAULT_KEY_SERVER_CONTAINER_PORT;
-	const readyTimeoutMs = opts.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
-	const version = opts.version ?? SEAL_DEFAULT_VERSION;
-
-	// Image: build from the vendored Dockerfile via `dockerImage` unless
-	// the caller pinned a pre-built tag. Same content-addressed pattern
-	// as `sui.image` / `walrus.image*` — a `version` bump or Dockerfile
-	// edit flips the tag, which in turn flips the container's input
-	// hash and triggers a recreate.
-	const image =
-		opts.image !== undefined
-			? opts.image
-			: dockerImage({
-					name: 'seal.image',
-					context: { path: DOCKER_CONTEXT },
-					args: { SEAL_TAG: version },
-				});
-	const imageRef = typeof image === 'string' ? image : image.get('tag');
-
-	// Keygen chain. The dockerOneShot runs `seal-cli genkey` once; the
-	// transformer parses its tail and persists to a 0600 disk file under
-	// `<stackDir>/.keys/`. On subsequent runs (snapshot wipe but disk
-	// kept; or just warm restart with stable inputs) the transformer
-	// returns the cached file contents — fresh keys on every cycle would
-	// silently invalidate the on-chain `KeyServer` registration.
-	const keygenContainer = dockerOneShot({
-		name: 'seal.keygen.container',
-		runsAs: 'seal-keygen',
-		image: imageRef,
-		entrypoint: 'seal-cli',
-		args: ['genkey'],
-	});
-
-	const keygenDeps = { container: keygenContainer.get('full') };
-	const keygen = define<SealKeygenState, typeof keygenProvides, typeof keygenDeps>({
-		name: 'seal.keygen',
-		runsAs: 'seal-keygen',
-		deps: keygenDeps,
-		provides: keygenProvides,
-		start: async ({ env, deps }) => {
-			const cached = readSealKeygenFile(env);
-			if (cached !== undefined) return cached;
-			const tail = deps.container.tail;
-			const keys = parseSealKeygenOutput(tail);
-			const state: SealKeygenState = { ...keys, generatedAt: Date.now() };
-			writeSealKeygenFile(env, state);
-			return state;
-		},
-	});
-
-	const container = dockerContainer({
-		name: 'seal.key-server.container',
-		runsAs: 'seal',
-		image: imageRef,
-		deps: { masterKey: keygen.get('masterKey') },
-		containerEnv: ({ deps }) => ({ MASTER_KEY: deps.masterKey }),
-		ports: [{ slot: 'seal.key-server', containerPort }],
-		readyTimeoutMs,
-	});
-
+	if (opts.hostPortDep === undefined || opts.keygenDep === undefined) {
+		throw new Error(
+			'seal.create: managed mode requires `hostPortDep` + `keygenDep` from sealLocalnet. ' +
+				'Pass `url:` to point at an externally-managed key server, or use ' +
+				'`sealLocalnet({ signer })` which wires the schema instance for you.',
+		);
+	}
 	return {
 		name: 'seal.key-server',
 		deps: {
-			hostPort: container.get('hostPort', { slot: 'seal.key-server' }),
-			keys: keygen.get('full'),
+			hostPort: opts.hostPortDep,
+			keys: opts.keygenDep,
 		},
-		start: async ({ deps: { hostPort, keys } }): Promise<SealState> => ({
-			url: `http://127.0.0.1:${hostPort}`,
-			managed: true,
-			masterKey: keys.masterKey,
-			publicKey: keys.publicKey,
-		}),
+		start: async ({ deps }): Promise<SealState> => {
+			const d = deps as { hostPort: number; keys: SealKeygenState };
+			return {
+				url: `http://127.0.0.1:${d.hostPort}`,
+				managed: true,
+				masterKey: d.keys.masterKey,
+				publicKey: d.keys.publicKey,
+			};
+		},
 		represents: {
 			endpoints: (s: SealState): Endpoint[] => [
 				{ name: 'seal-key-server', url: s.url, kind: 'seal-key-server' },
 			],
 		},
 	};
+}
+
+/** Render the seal key-server's CONFIG_PATH yaml. The daemon's env-only
+ * mode silently forces `network: Testnet` and a public-fullnode
+ * URL — for sui-localnet we MUST go through CONFIG_PATH. The
+ * `!Devnet` discriminator is what the binary expects for "custom
+ * chain via node_url"; `seal_package` is the on-chain seal package
+ * id (used to fetch session keys via Move call), and the Open-mode
+ * `key_server_object_id` is the registered `KeyServer` object the
+ * daemon reads its own metadata from on boot. */
+export function renderSealKeyServerConfig(opts: {
+	sealPackageId: string;
+	keyServerObjectId: string;
+	tsSdkVersionRequirement?: string;
+}): string {
+	const tsSdk = opts.tsSdkVersionRequirement ?? '>=0.4.5';
+	return [
+		'# Generated by devstack-next seal plugin.',
+		'# CONFIG_PATH-based config — env-only mode silently routes at the',
+		'# public testnet fullnode regardless of NODE_URL, so we must use',
+		'# this file to bind the daemon to sui-localnet via the per-stack',
+		'# docker network alias.',
+		'network: !Devnet',
+		`  seal_package: '${opts.sealPackageId}'`,
+		`node_url: http://${SUI_LOCALNET_NETWORK_ALIAS}:9000`,
+		'server_mode: !Open',
+		`  key_server_object_id: '${opts.keyServerObjectId}'`,
+		`ts_sdk_version_requirement: '${tsSdk}'`,
+		'',
+	].join('\n');
+}
+
+function sealKeyServerConfigPath(env: Env): string {
+	return join(
+		env.appDir,
+		'.devstack',
+		'stacks',
+		env.stack ?? 'main',
+		'.generated',
+		'seal-key-server-config.yaml',
+	);
 }
 
 // Parse `seal-cli genkey` stdout. Format (one line each):
@@ -283,9 +288,18 @@ export interface SealLocalnetOptions {
 	/** Publisher signer for both publish + register. Typically
 	 * `accounts.get('signer', { name: 'publisher' })`. */
 	signer: Dep<unknown, Keypair>;
-	/** Pinned seal release tag. Default `'seal-v0.6.6'` — must match
-	 * `SEAL_DEFAULT_VERSION` baked into the key-server image. */
+	/** Pre-built key-server image. When set, the `seal.image` build is
+	 * skipped and the literal tag is used directly. */
+	image?: string;
+	/** Pinned seal release tag. Default `'seal-v0.6.6'`. Becomes a
+	 * `--build-arg SEAL_TAG` to the vendored Dockerfile and the git ref
+	 * the `move/seal` package fetch uses. */
 	version?: string;
+	/** Container port the key-server binds inside the container. Host
+	 * port is allocated. Default 2024 (upstream's default). */
+	containerPort?: number;
+	/** Ready-probe timeout for the key-server. Default 60s. */
+	readyTimeoutMs?: number;
 	/** On-chain `KeyServer.name` field. Default `devstack-local`. */
 	keyServerName?: string;
 }
@@ -304,36 +318,90 @@ const registerProvides = {
 		url: s.keyServerUrl,
 		name: s.keyServerName,
 	})),
+	keyServerObjectId: dep((s: SealRegisterState) => s.keyServerObjectId),
 } satisfies Provides<SealRegisterState>;
 
-// `sealLocalnet({...})` — bundle of publish + register producers for
-// localnet bring-up. Returns:
-//   - `publish`: `publishMove` against the upstream `move/seal` Move
-//     package fetched via `gitFetch`. Provides the seal Package
-//     (manifest / bindings consumers pivot on this).
-//   - `register`: a `define()` that calls
-//     `key_server::create_and_transfer_v2_independent_server` on the
-//     just-published seal package. Reads the key-server URL from the
-//     `seal` schema instance's `full` Dep so it adapts to the docker-
-//     allocated host port, and the matching BLS public key from
-//     `seal.get('publicKey')` (sourced from `seal.keygen` — paired
-//     with the master key the key-server container loads at boot).
+// `sealLocalnet({...})` — full localnet bring-up of the seal stack.
+// Owns:
+//   - `seal.image` — content-addressed `dockerImage` build (binary
+//     fetch from the seal release; no rust compile).
+//   - `seal.keygen.container` + `seal.keygen` — `seal-cli genkey` once,
+//     parsed and persisted to `<stackDir>/.keys/`.
+//   - `seal.source` + `publish.seal` — gitFetch + publishMove against
+//     the upstream `move/seal` package via `publishViaSuiCli`.
+//   - `seal.register` — `key_server::create_and_transfer_v2_independent_server`
+//     Move call. Uses the pre-allocated host port to compute the
+//     on-chain URL BEFORE the key-server container starts (breaks the
+//     register ↔ container ↔ schema cycle).
+//   - `seal.key-server.container` — long-running daemon. CONFIG_PATH
+//     yaml is generated at start time using the published seal package
+//     id + the registered KeyServer object id; mounted read-only.
+//   - `instance` — the seal schema instance (a thin transformer that
+//     projects the host port + keygen state into SealState).
 //
-// All producers chain `sui.get('rpc')` ambiently; the engine pulls the
-// running sui instance into the graph transitively. Caller threads in
-// the publisher signer; everything else (publish source, public key)
-// flows from existing graph nodes.
+// User wires: spread the returned object into stack. `seal.get(...)`
+// Deps used elsewhere (in `manifest`, custom `runTransaction`s, etc.)
+// resolve to the schema instance via `__pluginId`.
+//
+//   const sl = sealLocalnet({ signer: pool.get('signer', { name: 'publisher' }) });
+//   defineDevstackConfig({
+//     stack: [
+//       sui.create({ network: 'localnet' }),
+//       pool,
+//       sl.image, sl.keygenContainer, sl.keygen,
+//       sl.source, sl.publish,
+//       sl.register, sl.container, sl.instance,
+//     ],
+//   });
 export function sealLocalnet(opts: SealLocalnetOptions) {
 	const version = opts.version ?? SEAL_DEFAULT_VERSION;
 	const keyServerName = opts.keyServerName ?? 'devstack-local';
+	const containerPort = opts.containerPort ?? DEFAULT_KEY_SERVER_CONTAINER_PORT;
+	const readyTimeoutMs = opts.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
 
+	// 1. Image — content-addressed build, or pre-built tag.
+	const imageProducer =
+		opts.image !== undefined
+			? undefined
+			: dockerImage({
+					name: 'seal.image',
+					context: { path: DOCKER_CONTEXT },
+					args: { SEAL_TAG: version },
+				});
+	const imageRef = imageProducer === undefined ? (opts.image as string) : imageProducer.get('tag');
+
+	// 2. Keygen — one-shot `seal-cli genkey` + persistence transformer.
+	const keygenContainer = dockerOneShot({
+		name: 'seal.keygen.container',
+		runsAs: 'seal-keygen',
+		image: imageRef,
+		entrypoint: 'seal-cli',
+		args: ['genkey'],
+	});
+	const keygenInnerDeps = { container: keygenContainer.get('full') };
+	const keygen = define<SealKeygenState, typeof keygenProvides, typeof keygenInnerDeps>({
+		name: 'seal.keygen',
+		runsAs: 'seal-keygen',
+		deps: keygenInnerDeps,
+		provides: keygenProvides,
+		start: async ({ env, deps }) => {
+			const cached = readSealKeygenFile(env);
+			if (cached !== undefined) return cached;
+			const tail = deps.container.tail;
+			const keys = parseSealKeygenOutput(tail);
+			const state: SealKeygenState = { ...keys, generatedAt: Date.now() };
+			writeSealKeygenFile(env, state);
+			return state;
+		},
+	});
+
+	// 3. Source + publish.
 	const source = gitFetch({
 		name: 'seal.source',
 		repo: SEAL_REPO,
 		rev: version,
 		subdir: SEAL_MOVE_SUBDIR,
 	});
-
 	const publish = publishMove({
 		name: 'seal',
 		path: source.get('path'),
@@ -341,39 +409,41 @@ export function sealLocalnet(opts: SealLocalnetOptions) {
 		publish: publishViaSuiCli,
 	});
 
-	const register = define<SealRegisterState, typeof registerProvides>({
+	// 4. Pre-allocated host port — register submits the URL to chain
+	//    using this port, and the container below claims the same slot
+	//    via its `ports:` config. Single source of truth.
+	const sealPortDep = ports.get('allocate', { slot: SEAL_KEY_SERVER_PORT_SLOT });
+
+	// 5. Register — on-chain KeyServer Move call. Deps directly on
+	//    keygen.publicKey (not via schema!) to avoid the cycle.
+	const registerDeps = {
+		signer: opts.signer,
+		rpc: sui.get('rpc'),
+		pkg: publish.get('package'),
+		publicKey: keygen.get('publicKey'),
+		hostPort: sealPortDep,
+	};
+	const register = define<SealRegisterState, typeof registerProvides, typeof registerDeps>({
 		name: 'seal.register',
 		runsAs: 'publisher',
-		deps: {
-			signer: opts.signer,
-			rpc: sui.get('rpc'),
-			pkg: publish.get('package'),
-			publicKey: seal.get('publicKey'),
-			keyServer: seal.get('full'),
-		},
+		deps: registerDeps,
 		provides: registerProvides,
 		start: async ({ deps }) => {
-			const d = deps as {
-				signer: Keypair;
-				rpc: { url: string };
-				pkg: Package;
-				publicKey: string;
-				keyServer: SealState;
-			};
-			const pkBytes = decodeHex(d.publicKey);
+			const keyServerUrl = `http://127.0.0.1:${deps.hostPort}`;
+			const pkBytes = decodeHex(deps.publicKey);
 			const tx = new Transaction();
 			tx.moveCall({
-				target: `${d.pkg.packageId}::key_server::create_and_transfer_v2_independent_server`,
+				target: `${deps.pkg.packageId}::key_server::create_and_transfer_v2_independent_server`,
 				arguments: [
 					tx.pure.string(keyServerName),
-					tx.pure.string(d.keyServer.url),
+					tx.pure.string(keyServerUrl),
 					tx.pure.u8(KEY_TYPE_BONEH_FRANKLIN_BLS12381),
 					tx.pure.vector('u8', Array.from(pkBytes)),
 				],
 			});
-			const client = new SuiJsonRpcClient({ url: d.rpc.url, network: 'localnet' });
+			const client = new SuiJsonRpcClient({ url: deps.rpc.url, network: 'localnet' });
 			const result = await client.signAndExecuteTransaction({
-				signer: d.signer,
+				signer: deps.signer,
 				transaction: tx,
 				options: { showObjectChanges: true, showEffects: true },
 			});
@@ -396,15 +466,66 @@ export function sealLocalnet(opts: SealLocalnetOptions) {
 				);
 			}
 			return {
-				package: d.pkg,
+				package: deps.pkg,
 				keyServerObjectId: objectId,
-				keyServerUrl: d.keyServer.url,
+				keyServerUrl,
 				keyServerName,
 			};
 		},
 	});
 
-	return { publish, register, source };
+	// 6. Long-running key-server container. CONFIG_PATH yaml is
+	//    rendered at start time using the published seal package +
+	//    registered KeyServer object id; written to host fs and mounted
+	//    read-only. The container joins the per-stack docker network
+	//    so node_url in the yaml resolves to sui-localnet via DNS.
+	const containerInnerDeps = {
+		masterKey: keygen.get('masterKey'),
+		pkg: publish.get('package'),
+		keyServerObjectId: register.get('keyServerObjectId'),
+	};
+	const container = dockerContainer<typeof containerInnerDeps>({
+		name: 'seal.key-server.container',
+		runsAs: 'seal',
+		image: imageRef,
+		network: dockerNetwork.get('name'),
+		deps: containerInnerDeps,
+		containerEnv: ({ deps }) => ({
+			CONFIG_PATH: '/etc/seal/key-server-config.yaml',
+			MASTER_KEY: deps.masterKey,
+			RUST_LOG: 'info',
+		}),
+		volumes: ({ env, deps }) => {
+			const yaml = renderSealKeyServerConfig({
+				sealPackageId: deps.pkg.packageId,
+				keyServerObjectId: deps.keyServerObjectId,
+			});
+			const path = sealKeyServerConfigPath(env);
+			mkdirSync(join(path, '..'), { recursive: true });
+			writeFileSync(path, yaml);
+			return [{ host: path, container: '/etc/seal/key-server-config.yaml' }];
+		},
+		ports: [{ slot: SEAL_KEY_SERVER_PORT_SLOT, containerPort }],
+		readyTimeoutMs,
+	});
+
+	// 7. Schema instance — thin transformer over the pre-allocated
+	//    host port + keygen state.
+	const instance = seal.create({
+		hostPortDep: container.get('hostPort', { slot: SEAL_KEY_SERVER_PORT_SLOT }),
+		keygenDep: keygen.get('full'),
+	});
+
+	return {
+		image: imageProducer,
+		keygenContainer,
+		keygen,
+		source,
+		publish,
+		register,
+		container,
+		instance,
+	};
 }
 
 function decodeHex(s: string): Uint8Array {
