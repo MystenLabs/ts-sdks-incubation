@@ -51,6 +51,14 @@ export interface DockerImageConfig<TDeps> {
 	/** Tag namespace. Default `'devstack'`. Result tag:
 	 * `<imagePrefix>/<name>:<contentHash>`. */
 	imagePrefix?: string;
+
+	/** BuildKit named contexts (`--build-context <name>=<value>`).
+	 * Each value is itself a `DockerImageContext` — a local path or a
+	 * git ref. Used by Dockerfiles that COPY `--from=<name>`, e.g. the
+	 * walrus upstream image whose Cargo workspace comes from the walrus
+	 * git repo at a pinned tag. Folded into the content hash so a ref
+	 * bump invalidates the cache. */
+	buildContexts?: Record<string, DockerImageContext>;
 }
 
 export interface DockerImageState {
@@ -127,6 +135,7 @@ export function dockerImage<TDeps = undefined>(cfg: DockerImageConfig<TDeps>) {
 				args,
 				...(cfg.target !== undefined ? { target: cfg.target } : {}),
 				...(cfg.platform !== undefined ? { platform: cfg.platform } : {}),
+				...(cfg.buildContexts !== undefined ? { buildContexts: cfg.buildContexts } : {}),
 				appDir: env.appDir,
 			});
 		},
@@ -138,6 +147,7 @@ export function dockerImage<TDeps = undefined>(cfg: DockerImageConfig<TDeps>) {
 				args,
 				...(cfg.target !== undefined ? { target: cfg.target } : {}),
 				...(cfg.platform !== undefined ? { platform: cfg.platform } : {}),
+				...(cfg.buildContexts !== undefined ? { buildContexts: cfg.buildContexts } : {}),
 				appDir: env.appDir,
 			});
 			const tag = `${imagePrefix}/${cfg.name}:${spec.contentHash}`;
@@ -154,6 +164,7 @@ export function dockerImage<TDeps = undefined>(cfg: DockerImageConfig<TDeps>) {
 				args,
 				...(cfg.target !== undefined ? { target: cfg.target } : {}),
 				...(cfg.platform !== undefined ? { platform: cfg.platform } : {}),
+				...(cfg.buildContexts !== undefined ? { buildContexts: cfg.buildContexts } : {}),
 				appDir: env.appDir,
 			});
 			log(`docker build ${buildArgsCli.join(' ')}`);
@@ -175,6 +186,7 @@ interface ContentSpec {
 	args: Record<string, string>;
 	target?: string;
 	platform?: string;
+	buildContexts?: Record<string, string>;
 	contentHash: string;
 }
 
@@ -184,12 +196,20 @@ function computeContentSpec(input: {
 	args: Record<string, string>;
 	target?: string;
 	platform?: string;
+	buildContexts?: Record<string, DockerImageContext>;
 	appDir: string;
 }): ContentSpec {
 	const contextSpec = describeContext(input.context, input.appDir);
 	const sortedArgs = Object.fromEntries(
 		Object.entries(input.args).sort(([a], [b]) => a.localeCompare(b)),
 	);
+	const sortedBuildContexts = input.buildContexts
+		? Object.fromEntries(
+				Object.entries(input.buildContexts)
+					.map(([k, v]) => [k, describeContext(v, input.appDir)] as const)
+					.sort(([a], [b]) => a.localeCompare(b)),
+			)
+		: undefined;
 	const h = createHash('sha256');
 	h.update(`context:${contextSpec}\0`);
 	h.update(`dockerfile:${input.dockerfile}\0`);
@@ -198,6 +218,11 @@ function computeContentSpec(input: {
 	}
 	if (input.target !== undefined) h.update(`target:${input.target}\0`);
 	if (input.platform !== undefined) h.update(`platform:${input.platform}\0`);
+	if (sortedBuildContexts !== undefined) {
+		for (const [k, v] of Object.entries(sortedBuildContexts)) {
+			h.update(`build-context:${k}=${v}\0`);
+		}
+	}
 	const contentHash = h.digest('hex').slice(0, 12);
 	const out: ContentSpec = {
 		contextSpec,
@@ -207,6 +232,7 @@ function computeContentSpec(input: {
 	};
 	if (input.target !== undefined) out.target = input.target;
 	if (input.platform !== undefined) out.platform = input.platform;
+	if (sortedBuildContexts !== undefined) out.buildContexts = sortedBuildContexts;
 	return out;
 }
 
@@ -285,6 +311,7 @@ function buildDockerBuildArgs(opts: {
 	args: Record<string, string>;
 	target?: string;
 	platform?: string;
+	buildContexts?: Record<string, DockerImageContext>;
 	appDir: string;
 }): string[] {
 	const cli = ['build', '-t', opts.tag];
@@ -292,6 +319,11 @@ function buildDockerBuildArgs(opts: {
 	if (opts.target !== undefined) cli.push('--target', opts.target);
 	for (const [k, v] of Object.entries(opts.args)) {
 		cli.push('--build-arg', `${k}=${v}`);
+	}
+	if (opts.buildContexts !== undefined) {
+		for (const [name, ctx] of Object.entries(opts.buildContexts)) {
+			cli.push('--build-context', `${name}=${buildContextSpecAsCli(ctx, opts.appDir)}`);
+		}
 	}
 	if ('path' in opts.context) {
 		const ctxAbs = isAbsolute(opts.context.path)
@@ -310,6 +342,18 @@ function buildDockerBuildArgs(opts: {
 		cli.push('-f', opts.dockerfile, gitUrl);
 	}
 	return cli;
+}
+
+// `--build-context <name>=<spec>` accepts a few forms; we use the same
+// flavor set as the primary build context: a local directory or a git
+// URL. Anything else (image refs like `docker-image://`, http URLs to
+// archives) isn't surfaced because we don't have a use for it yet.
+function buildContextSpecAsCli(ctx: DockerImageContext, appDir: string): string {
+	if ('path' in ctx) {
+		return isAbsolute(ctx.path) ? ctx.path : resolve(appDir, ctx.path);
+	}
+	const subdir = ctx.subdir;
+	return `${ctx.repo}#${ctx.rev}${subdir ? `:${subdir}` : ''}`;
 }
 
 async function imageExists(tag: string): Promise<boolean> {
