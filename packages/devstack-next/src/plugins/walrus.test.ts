@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { Engine } from '../engine/class.js';
 import type { Env } from '../engine/types.js';
@@ -108,8 +110,10 @@ describe('walrus (graph composition — no real Docker)', () => {
 	// Mirrors the sui-localnet test: verify the producers compose
 	// dockerContainer rather than calling docker directly. The graph
 	// surface must include `walrus.node-${i}.container` siblings so any
-	// snapshot / lifecycle pass can walk them uniformly.
-	it('container path: node + node.container + ports siblings', () => {
+	// snapshot / lifecycle pass can walk them uniformly. The image
+	// chain (`walrus.image.upstream` → `walrus.image`) appears alongside
+	// when no `image:` override is supplied.
+	it('container path: node + node.container + image chain + ports siblings', () => {
 		const w = walrus({ nodeCount: 2 });
 		const engine = new Engine({ stack: [w.appNetwork] }, { env });
 		const state = engine.getState();
@@ -118,7 +122,18 @@ describe('walrus (graph composition — no real Docker)', () => {
 		expect(state.nodes.has('walrus.node-1')).toBe(true);
 		expect(state.nodes.has('walrus.node-1.container')).toBe(true);
 		expect(state.nodes.has('walrus.app-network')).toBe(true);
+		expect(state.nodes.has('walrus.image')).toBe(true);
+		expect(state.nodes.has('walrus.image.upstream')).toBe(true);
 		expect(state.nodes.has('ports')).toBe(true);
+	});
+
+	it('skips walrus.image* when caller pins a pre-built image tag', () => {
+		const w = walrus({ nodeCount: 2, image: 'mystenlabs/walrus-service:latest' });
+		const engine = new Engine({ stack: [w.appNetwork] }, { env });
+		const state = engine.getState();
+		expect(state.nodes.has('walrus.node-0.container')).toBe(true);
+		expect(state.nodes.has('walrus.image')).toBe(false);
+		expect(state.nodes.has('walrus.image.upstream')).toBe(false);
 	});
 
 	it('rpcUrls override skips docker — no .container nodes in the graph', () => {
@@ -128,7 +143,17 @@ describe('walrus (graph composition — no real Docker)', () => {
 		expect(state.nodes.has('walrus.node-0')).toBe(true);
 		expect(state.nodes.has('walrus.node-0.container')).toBe(false);
 		expect(state.nodes.has('walrus.node-1.container')).toBe(false);
+		expect(state.nodes.has('walrus.image')).toBe(false);
 		expect(state.nodes.has('ports')).toBe(false);
+	});
+
+	it('vendored docker context resolves to a real on-disk directory', () => {
+		const ctx = fileURLToPath(new URL('./walrus/docker/', import.meta.url));
+		expect(existsSync(ctx)).toBe(true);
+		expect(existsSync(`${ctx}upstream.Dockerfile`)).toBe(true);
+		expect(existsSync(`${ctx}wrapper.Dockerfile`)).toBe(true);
+		expect(existsSync(`${ctx}deploy.sh`)).toBe(true);
+		expect(existsSync(`${ctx}run.sh`)).toBe(true);
 	});
 });
 
