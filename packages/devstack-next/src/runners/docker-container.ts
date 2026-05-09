@@ -27,6 +27,10 @@ export interface DockerContainerState {
 	 * Used to detect drift across cycles — a network rename forces a
 	 * container recreate. */
 	network?: string;
+	/** Resolved `--ip <addr>` if the container pinned a fixed IP. Same
+	 * drift-detection role as `network`: a different IP forces recreate
+	 * even when the network name is stable. */
+	ip?: string;
 }
 
 export interface DockerResolveArgs<TDeps> {
@@ -70,9 +74,12 @@ export interface DockerContainerConfig<TDeps> {
 	 * `network` is set. */
 	networkAlias?: string;
 	/** Optional `--ip <addr>` — fixed IP within the network's subnet.
-	 * Ignored unless `network` is set. Used by walrus storage nodes
-	 * (committee subnet pinned at deploy time). */
-	ip?: string;
+	 * Ignored unless `network` is set. Literal string for static
+	 * pinning, or a callback `({ env, deps }) => string` for IPs
+	 * derived from upstream state (e.g. the walrus storage-node
+	 * committee computes `10.<octet>.0.<10+idx>` from the
+	 * `dockerNetwork` octet at start time). */
+	ip?: DockerValue<string, TDeps>;
 
 	// Optional ready check. Receives the running container's ID and the
 	// host-port map (slot → host port). Polled until truthy or timeout.
@@ -207,20 +214,29 @@ export function dockerContainer<TDeps = undefined>(cfg: DockerContainerConfig<TD
 					`dockerContainer("${cfg.name}"): network dep resolved to empty/non-string value`,
 				);
 			}
+			const ip = resolveValue(cfg.ip, resolveCtx);
+			if (ip !== undefined && (typeof ip !== 'string' || ip.length === 0)) {
+				throw new Error(
+					`dockerContainer("${cfg.name}"): ip resolved to empty/non-string value`,
+				);
+			}
 
 			// Reuse only if the prior container is still running AND its
-			// recorded image / network match the current resolved values.
-			// An upstream `dockerImage` rebuild that produces a new tag —
-			// or a `dockerNetwork` recreation under a different name —
-			// forces replacement here even though the container itself
-			// hasn't crashed; otherwise the graph would silently drift
-			// to running on stale infrastructure while the rest of the
+			// recorded image / network / ip match the current resolved
+			// values. An upstream `dockerImage` rebuild that produces a
+			// new tag — or a `dockerNetwork` recreation under a different
+			// name, or an octet-derived IP that flipped — forces
+			// replacement here even though the container itself hasn't
+			// crashed; otherwise the graph would silently drift to
+			// running on stale infrastructure while the rest of the
 			// system thinks it's on the new one.
 			const networkMatches = (prior?.network ?? undefined) === (network ?? undefined);
+			const ipMatches = (prior?.ip ?? undefined) === (ip ?? undefined);
 			if (
 				prior &&
 				prior.image === image &&
 				networkMatches &&
+				ipMatches &&
 				(await containerIsRunning(prior.containerId))
 			) {
 				log(`reusing running container ${prior.containerId.slice(0, 12)}`);
@@ -234,7 +250,9 @@ export function dockerContainer<TDeps = undefined>(cfg: DockerContainerConfig<TD
 			if (prior && (await containerIsRunning(prior.containerId))) {
 				const reason = !networkMatches
 					? `network changed (${prior.network ?? '<none>'} → ${network ?? '<none>'})`
-					: `image changed (${prior.image} → ${image})`;
+					: !ipMatches
+						? `ip changed (${prior.ip ?? '<none>'} → ${ip ?? '<none>'})`
+						: `image changed (${prior.image} → ${image})`;
 				log(`${reason}; replacing container ${prior.containerId.slice(0, 12)}`);
 				await dockerRm(prior.containerId, log);
 			}
@@ -249,7 +267,7 @@ export function dockerContainer<TDeps = undefined>(cfg: DockerContainerConfig<TD
 				hostPorts,
 				...(network !== undefined ? { network } : {}),
 				...(cfg.networkAlias !== undefined ? { networkAlias: cfg.networkAlias } : {}),
-				...(cfg.ip !== undefined ? { ip: cfg.ip } : {}),
+				...(ip !== undefined ? { ip } : {}),
 			});
 
 			log(`docker run ${runArgs.join(' ')}`);
@@ -283,6 +301,7 @@ export function dockerContainer<TDeps = undefined>(cfg: DockerContainerConfig<TD
 				args: containerArgs,
 				hostPorts,
 				...(network !== undefined ? { network } : {}),
+				...(ip !== undefined ? { ip } : {}),
 			};
 		},
 
