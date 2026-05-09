@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
-import type { Env, ResolvedDeps } from '../engine/types.js';
+import type { Env, Provides, ResolvedDeps } from '../engine/types.js';
+import { dep } from '../factories/dep.js';
 import { define } from '../factories/define.js';
 
 export interface HostProcessHandle {
@@ -43,13 +44,26 @@ export interface HostProcessConfig<TDeps> {
 	inputs?: (args: HostProcessResolveArgs<TDeps>) => unknown | Promise<unknown>;
 }
 
+// Provides exposed by every `hostProcess`-built node so parent
+// producers can depend on it (gates, wrappers like viteDevServer).
+// `state` / `full` mirror dockerContainer's surface; `pid` is a scalar
+// projection for callers that only want the process id.
+const processProvides = {
+	state: dep((s: HostProcessState) => s),
+	full: dep((s: HostProcessState) => s),
+	pid: dep((s: HostProcessState) => s.pid),
+} satisfies Provides<HostProcessState>;
+
 // `hostProcess` wraps node:child_process.spawn into a Process producer.
 // The producer's state is { pid, startedAt, command, args }, which round-
 // trips through SnapshotRecord — letting warm restarts re-attach to a
 // running process by checking liveness via signal 0.
 //
-// Logs from stdout/stderr are forwarded to the engine's `log()` channel,
-// so they surface in the TUI / event stream like any other node logs.
+// Exposes provides.state / provides.full / provides.pid so other
+// producers can gate on a hostProcess (e.g. viteDevServer wraps a
+// hostProcess and consumers depend on its state to wait for the
+// process to be alive). Logs from stdout/stderr are forwarded to the
+// engine's `log()` channel.
 export function hostProcess<TDeps = undefined>(cfg: HostProcessConfig<TDeps>) {
 	if (!cfg.name) throw new Error('hostProcess: `name` is required');
 	if (!cfg.command) throw new Error(`hostProcess("${cfg.name}"): \`command\` is required`);
@@ -57,8 +71,9 @@ export function hostProcess<TDeps = undefined>(cfg: HostProcessConfig<TDeps>) {
 	const readyTimeoutMs = cfg.readyTimeoutMs ?? 30_000;
 	const readyPollIntervalMs = cfg.readyPollIntervalMs ?? 200;
 
-	return define<HostProcessState, {}, TDeps>({
+	return define<HostProcessState, typeof processProvides, TDeps>({
 		name: cfg.name,
+		provides: processProvides,
 		...(cfg.deps !== undefined ? { deps: cfg.deps } : {}),
 		...(cfg.runsAs !== undefined ? { runsAs: cfg.runsAs } : {}),
 		...(cfg.inputs ? { inputs: cfg.inputs } : {}),
