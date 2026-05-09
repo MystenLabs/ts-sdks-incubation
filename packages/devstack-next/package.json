@@ -26,10 +26,17 @@
 	"sideEffects": false,
 	"main": "./dist/index.mjs",
 	"types": "./dist/index.d.mts",
+	"bin": {
+		"devstack-next": "./dist/cli/main.mjs"
+	},
 	"exports": {
 		".": {
 			"types": "./dist/index.d.mts",
 			"import": "./dist/index.mjs"
+		},
+		"./cli": {
+			"types": "./dist/cli/index.d.mts",
+			"import": "./dist/cli/index.mjs"
 		},
 		"./helpers": {
 			"types": "./dist/helpers/index.d.mts",
