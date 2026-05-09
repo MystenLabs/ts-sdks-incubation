@@ -1,7 +1,15 @@
-import type { Provides } from '../engine/types.js';
+import type { Keypair } from '@mysten/sui/cryptography';
+import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
+import type { SuiObjectChange } from '@mysten/sui/jsonRpc';
+import { Transaction } from '@mysten/sui/transactions';
+import type { Dep, Provides } from '../engine/types.js';
 import { dep } from '../factories/dep.js';
 import { define } from '../factories/define.js';
+import { gitFetch } from '../helpers/git-fetch.js';
+import { publishMove } from '../helpers/publish-move.js';
+import { pickCreatedByTypeSuffix, publishViaSuiCli } from '../helpers/publish-via-cli.js';
 import type { Package } from '../shapes/index.js';
+import { sui } from './sui.js';
 
 // Pinned canonical DeepBook v3 ids per network. These come from
 // `@mysten/deepbook-v3/utils/constants.ts` — copy them locally so the
@@ -113,4 +121,202 @@ function resolveNetwork(
 		`deepbook: no canonical deployment for network '${envNetwork}'. ` +
 			`Pass network: 'testnet' | 'mainnet' explicitly, or run on a network that has one.`,
 	);
+}
+
+export const DEEPBOOK_DEFAULT_VERSION = 'v7.0.0';
+const DEEPBOOK_REPO = 'MystenLabs/deepbookv3';
+const DEEPBOOK_SUBDIR = 'packages/deepbook';
+const DEEPBOOK_REGISTRY_TYPE_SUFFIX = '::registry::Registry';
+const DEEPBOOK_ADMIN_CAP_TYPE_SUFFIX = '::registry::DeepbookAdminCap';
+
+export interface DeepbookLocalnetPoolSpec {
+	/** Logical pool name (used as the produced state key). */
+	name: string;
+	/** Base coin Move type, e.g. `'0x2::sui::SUI'`. */
+	base: string;
+	/** Quote coin Move type. */
+	quote: string;
+	tickSize: bigint;
+	lotSize: bigint;
+	minSize: bigint;
+	/** Whitelisted pool — disables DEEP fees. Default true (test-friendly). */
+	whitelisted?: boolean;
+	/** Stable pool — different fee math. Default false. */
+	stable?: boolean;
+}
+
+export interface DeepbookLocalnetOptions {
+	/** Publisher signer. Typically `accounts.get('signer', { name: 'publisher' })`. */
+	signer: Dep<unknown, Keypair>;
+	/** Pinned deepbookv3 git ref. Default `'v7.0.0'`. The `gitFetch`
+	 * cache key includes this, so a bump fetches a fresh tree and the
+	 * input hash flips → re-publish. */
+	version?: string;
+	/** Pools to seed after publish. Empty / omitted skips the pools
+	 * step entirely. */
+	pools?: ReadonlyArray<DeepbookLocalnetPoolSpec>;
+}
+
+export interface DeepbookPoolEntry {
+	name: string;
+	poolId: string;
+	objectType: string;
+	baseCoinType: string;
+	quoteCoinType: string;
+}
+
+export interface DeepbookPoolsState {
+	pools: DeepbookPoolEntry[];
+}
+
+const poolsProvides = {
+	full: dep((s: DeepbookPoolsState) => s),
+	pools: dep((s: DeepbookPoolsState) => s.pools),
+} satisfies Provides<DeepbookPoolsState>;
+
+// `deepbookLocalnet({ signer, version?, pools? })` — bundle of
+// gitFetch + publish + (optional) pool-creation producers for a
+// localnet deepbook deploy. Returns:
+//   - `source`: gitFetch'd `MystenLabs/deepbookv3` at the pinned tag,
+//     subdir `packages/deepbook`. The path Dep is what publish chains.
+//   - `publish`: publishMove against the source, capturing the system
+//     `Registry` + `DeepbookAdminCap` objects (suffix-matched on the
+//     publish tx's object changes) into `PublishedPackage.objects`.
+//   - `pools`: present when `pools:` is non-empty. A `define()` step
+//     that constructs a single programmable tx invoking
+//     `init_balance_manager_map` once + `pool::create_pool_admin`
+//     per pool spec, then parses the created Pool object ids out of
+//     the tx's object changes.
+//
+// Localnet-only — no live-net pool creation. Same shape as walrus()
+// + sealLocalnet(): a bag of producers the user composes into their
+// stack alongside `sui.create({ network: 'localnet' })`.
+//
+// Composes the existing primitives (`gitFetch`, `publishMove`,
+// `publishViaSuiCli`) — no new runners or factories.
+export function deepbookLocalnet(opts: DeepbookLocalnetOptions) {
+	const version = opts.version ?? DEEPBOOK_DEFAULT_VERSION;
+	const poolSpecs = opts.pools ?? [];
+
+	const source = gitFetch({
+		name: 'deepbook.source',
+		repo: DEEPBOOK_REPO,
+		rev: version,
+		subdir: DEEPBOOK_SUBDIR,
+	});
+
+	const publish = publishMove({
+		name: 'deepbook',
+		path: source.get('path'),
+		signer: opts.signer,
+		publish: (ctx) =>
+			publishViaSuiCli(ctx, {
+				capture: (changes) => {
+					const out: Record<string, string> = {};
+					const reg = pickCreatedByTypeSuffix(changes, DEEPBOOK_REGISTRY_TYPE_SUFFIX);
+					if (reg !== undefined) out.registryId = reg;
+					const cap = pickCreatedByTypeSuffix(changes, DEEPBOOK_ADMIN_CAP_TYPE_SUFFIX);
+					if (cap !== undefined) out.adminCapId = cap;
+					return out;
+				},
+			}),
+	});
+
+	const pools =
+		poolSpecs.length > 0
+			? define<DeepbookPoolsState, typeof poolsProvides>({
+					name: 'deepbook.pools',
+					runsAs: 'publisher',
+					deps: {
+						signer: opts.signer,
+						rpc: sui.get('rpc'),
+						pkg: publish.get('full'),
+					},
+					provides: poolsProvides,
+					inputs: () =>
+						poolSpecs.map((p) => ({
+							name: p.name,
+							base: p.base,
+							quote: p.quote,
+							tickSize: p.tickSize.toString(),
+							lotSize: p.lotSize.toString(),
+							minSize: p.minSize.toString(),
+							whitelisted: p.whitelisted ?? true,
+							stable: p.stable ?? false,
+						})),
+					start: async ({ deps }): Promise<DeepbookPoolsState> => {
+						const d = deps as {
+							signer: Keypair;
+							rpc: { url: string };
+							pkg: { packageId: string; objects?: Record<string, string> };
+						};
+						const registryId = d.pkg.objects?.registryId;
+						const adminCapId = d.pkg.objects?.adminCapId;
+						if (registryId === undefined || adminCapId === undefined) {
+							throw new Error(
+								'deepbook.pools: registryId / adminCapId missing from publish capture — ' +
+									'expected publishMove to surface them via the type-suffix capture',
+							);
+						}
+						const tx = new Transaction();
+						tx.setGasBudget(500_000_000);
+						tx.moveCall({
+							target: `${d.pkg.packageId}::registry::init_balance_manager_map`,
+							arguments: [tx.object(registryId), tx.object(adminCapId)],
+						});
+						for (const spec of poolSpecs) {
+							tx.moveCall({
+								target: `${d.pkg.packageId}::pool::create_pool_admin`,
+								typeArguments: [spec.base, spec.quote],
+								arguments: [
+									tx.object(registryId),
+									tx.pure.u64(spec.tickSize),
+									tx.pure.u64(spec.lotSize),
+									tx.pure.u64(spec.minSize),
+									tx.pure.bool(spec.whitelisted ?? true),
+									tx.pure.bool(spec.stable ?? false),
+									tx.object(adminCapId),
+								],
+							});
+						}
+						const client = new SuiJsonRpcClient({ url: d.rpc.url, network: 'localnet' });
+						const result = await client.signAndExecuteTransaction({
+							signer: d.signer,
+							transaction: tx,
+							options: { showEffects: true, showObjectChanges: true },
+						});
+						if (result.effects?.status?.status !== 'success') {
+							throw new Error(
+								`deepbook.pools: tx failed: ${result.effects?.status?.error ?? 'unknown'}`,
+							);
+						}
+						await client.waitForTransaction({ digest: result.digest });
+
+						const out: DeepbookPoolEntry[] = [];
+						const changes = (result.objectChanges ?? []) as SuiObjectChange[];
+						for (const spec of poolSpecs) {
+							const expected = `${d.pkg.packageId}::pool::Pool<${spec.base}, ${spec.quote}>`;
+							const found = changes.find(
+								(c) =>
+									c.type === 'created' &&
+									'objectType' in c &&
+									c.objectType === expected,
+							);
+							if (found === undefined || found.type !== 'created') {
+								throw new Error(`deepbook.pools: created Pool object missing for ${spec.name}`);
+							}
+							out.push({
+								name: spec.name,
+								poolId: found.objectId,
+								objectType: expected,
+								baseCoinType: spec.base,
+								quoteCoinType: spec.quote,
+							});
+						}
+						return { pools: out };
+					},
+				})
+			: undefined;
+
+	return { source, publish, pools };
 }
