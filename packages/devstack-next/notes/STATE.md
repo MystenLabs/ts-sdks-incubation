@@ -15,9 +15,12 @@ c5ac218  L7 CLI reset — stop runners + clear stack state
 20357f0  L6 walrus plugin — multi-node + aggregator
 8fd9c20  L6 seal plugin — single-container key-server
 57ee90c  L6 deepbook plugin — pre-deployed-id lookup
+cd3f537  Package shape — add path + populate mvrPlaceholder
+57847c4  rename codegen → manifest
+9fc4b95  L6 bindings plugin — Move source → typed TS bindings
 ```
 
-Tests: 262 passing. Typecheck clean. Build clean (121 files, ~411 kB).
+Tests: 269 passing. Typecheck clean. Build clean (124 files, ~435 kB).
 
 ## What's built
 
@@ -61,8 +64,12 @@ src/helpers/        L5 — sugar (publishMove, runTransaction)
 src/plugins/        L6
   accounts.ts         disk-backed Ed25519 keystore + fund Action
                       (depends on sui.get('faucet'))
-  codegen.ts          typed-manifest emit (no Move bindings yet)
+  bindings.ts         Move source → typed TS bindings via
+                      `sui move summary` + `@mysten/codegen`. Atomic
+                      dir swap so Vite never sees partial trees.
   deepbook.ts         pre-deployed package-id lookup (testnet / mainnet)
+  manifest.ts         typed-manifest TS emit (renamed from codegen.ts).
+                      Sibling to bindings — runtime values vs. type bindings.
   seal.ts             single-container key-server (delegates to
                       dockerContainer; url-override escape hatch)
   sui.ts              localnet (delegates to dockerContainer) + testnet/mainnet/devnet stubs
@@ -87,7 +94,7 @@ src/playwright/     L7 — createDevstackFixture (worker-scoped)
 - `/helpers` — `publishMove`, `runTransaction`
 - `/persistence` — snapshot path/read/write
 - `/playwright` — `test`, `expect`, `createDevstackFixture`
-- `/plugins` — `accounts`, `codegen`, `deepbook`, `seal`, `sui`, `walrus`
+- `/plugins` — `accounts`, `bindings`, `deepbook`, `manifest`, `seal`, `sui`, `walrus`
 - `/shapes` — `Package`, `Endpoint`, `Account`
 - `/vitest` — `setupForTest`, `readSnapshot`, `getNodeState`
 
@@ -116,15 +123,29 @@ of the transformer producers in the graph.
   (`mystenlabs/walrus-service:latest`, `mystenlabs/seal-key-server:latest`)
   are placeholders and not pinned to known-good tags. Per-plugin image
   build (the `*.build` actions in the original devstack) lives in a
-  future devstack-walrus / devstack-seal package.
+  future devstack-walrus / devstack-seal package — and depends on the
+  `dockerImage` runner being built first (Phase 1 of the gap-closure
+  plan).
 - **deepbook localnet publish**: `deepbook()` only knows about
   testnet/mainnet ids. Publishing the source against a localnet sui is
   deferred to a future devstack-deepbook plugin.
 
-### Move bindings codegen
-- `sui move summary` + `@mysten/codegen` integration. Needs a real Move
-  package to test against; STATE-frozen until an example app is
-  ported.
+### Frontend integration
+
+There is **no JSON manifest writer** by design. The integration model
+in the new world:
+
+- **`manifest` plugin** emits `src/generated/manifest.ts` — typed
+  values for the frontend to import at build time.
+- **`bindings` plugin** emits `src/generated/sui/<pkg-name>/` — typed
+  Move builders the frontend imports alongside the manifest.
+- **snapshot.json** is the inter-process state of record. Tests +
+  CLI + cross-process coordination read it directly (no separate
+  manifest needed).
+
+Old devstack wrote both a JSON manifest and a TS file; the JSON was
+redundant once typed TS imports existed, and required a separate
+sync mechanism. The new model is one source per consumer.
 
 ### Other deferred (not for next session)
 - Full sui plugin features: image build, indexer-db, GraphQL,
@@ -171,5 +192,10 @@ of the transformer producers in the graph.
   keystore plugin shape (define + define for Action)
 - `packages/devstack-next/src/plugins/deepbook.ts` — simplest plugin
   shape (single static lookup)
+- `packages/devstack-next/src/plugins/manifest.ts` +
+  `packages/devstack-next/src/plugins/bindings.ts` — frontend
+  integration pair: manifest emits values, bindings emits typed Move
+  builders. Atomic dir swap pattern in bindings is load-bearing for
+  Vite HMR.
 - `packages/devstack-next/src/cli/apply.ts` — pattern for CLI
   commands (programmatic `run*` + argv-driven `main`)
