@@ -18,6 +18,8 @@ Commands:
                     Writes a snapshot and exits.
   status            Read-only print of the on-disk snapshot. Doesn't
                     construct an engine.
+  snapshot          Capture / restore labeled snapshots
+                    (save | restore | list | delete).
 
 Run \`devstack-next <command> --help\` for command-specific options.
 `;
@@ -40,6 +42,10 @@ export async function main(argv: readonly string[]): Promise<number> {
 		}
 		case 'status': {
 			const mod = await import('./status.js');
+			return mod.main(subArgv);
+		}
+		case 'snapshot': {
+			const mod = await import('./snapshot.js');
 			return mod.main(subArgv);
 		}
 		default:
