@@ -14,8 +14,15 @@ export {
 	publishMove,
 	type PublishMoveContext,
 	type PublishMoveOptions,
+	type PublishState,
 	type PublishedPackage,
 } from './publish-move.js';
+export {
+	extractTrailingJson,
+	pickCreatedByTypeSuffix,
+	publishViaSuiCli,
+	type PublishCaptureCallback,
+} from './publish-via-cli.js';
 export {
 	runTransaction,
 	type RunTransactionContext,
