@@ -1,13 +1,14 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { decodeSuiPrivateKey } from '@mysten/sui/cryptography';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Engine } from '../engine/class.js';
 import type { Env } from '../engine/types.js';
 import { define } from '../factories/define.js';
 import type { Account } from '../shapes/index.js';
-import { cliSigner, type CliSignerState } from './signers.js';
+import { cliSigner, envSigner, type CliSignerState, type EnvSignerState } from './signers.js';
 
 let tmpDir: string;
 
@@ -158,3 +159,87 @@ describe('cliSigner (real keystore)', () => {
 		expect(accounts[0]?.address).toBe(ks.keypairs['publisher']!.toSuiAddress());
 	});
 });
+
+describe('envSigner', () => {
+	const ENV_VAR = 'DEVSTACK_NEXT_TEST_SIGNER';
+
+	afterEach(() => {
+		delete process.env[ENV_VAR];
+	});
+
+	it('rejects empty var', () => {
+		expect(() => envSigner({ var: '' })).toThrow(/var/);
+	});
+
+	it('reads a bech32-encoded secret from the env var', async () => {
+		const kp = Ed25519Keypair.generate();
+		process.env[ENV_VAR] = kp.getSecretKey();
+
+		const signer = envSigner({ var: ENV_VAR });
+		const engine = new Engine({ stack: [signer] }, { env });
+		const result = await engine.runOnce();
+		expect(result.errored).toEqual([]);
+		const state = engine.getState().nodes.get(`signer.${ENV_VAR.toLowerCase()}`)!
+			.state as EnvSignerState;
+		expect(state.address).toBe(kp.toSuiAddress());
+		expect(state.secretKey).toBe(kp.getSecretKey());
+	});
+
+	it('reads a 33-byte base64 secret (scheme byte + key)', async () => {
+		const kp = Ed25519Keypair.generate();
+		const secret = decodeBech32SecretBytes(kp.getSecretKey());
+		const withScheme = Buffer.concat([Buffer.from([0x00]), secret]);
+		process.env[ENV_VAR] = withScheme.toString('base64');
+
+		const signer = envSigner({ var: ENV_VAR });
+		const engine = new Engine({ stack: [signer] }, { env });
+		const result = await engine.runOnce();
+		expect(result.errored).toEqual([]);
+		const state = engine.getState().nodes.get(`signer.${ENV_VAR.toLowerCase()}`)!
+			.state as EnvSignerState;
+		expect(state.address).toBe(kp.toSuiAddress());
+	});
+
+	it('reads a bare 32-byte base64 secret (legacy form)', async () => {
+		const kp = Ed25519Keypair.generate();
+		const secret = decodeBech32SecretBytes(kp.getSecretKey());
+		process.env[ENV_VAR] = Buffer.from(secret).toString('base64');
+
+		const signer = envSigner({ var: ENV_VAR });
+		const engine = new Engine({ stack: [signer] }, { env });
+		const result = await engine.runOnce();
+		expect(result.errored).toEqual([]);
+		const state = engine.getState().nodes.get(`signer.${ENV_VAR.toLowerCase()}`)!
+			.state as EnvSignerState;
+		expect(state.address).toBe(kp.toSuiAddress());
+	});
+
+	it('errors when env var is unset', async () => {
+		delete process.env[ENV_VAR];
+		const signer = envSigner({ var: ENV_VAR });
+		const engine = new Engine({ stack: [signer] }, { env });
+		const result = await engine.runOnce();
+		const errored = result.errored.find((e) => e.name === `signer.${ENV_VAR.toLowerCase()}`);
+		expect(errored).toBeDefined();
+		expect(errored?.error.message).toMatch(/not set/);
+	});
+
+	it('errors on a non-Ed25519 33-byte payload', async () => {
+		const garbage = Buffer.alloc(33);
+		garbage[0] = 0x01; // secp256k1 scheme
+		process.env[ENV_VAR] = garbage.toString('base64');
+		const signer = envSigner({ var: ENV_VAR });
+		const engine = new Engine({ stack: [signer] }, { env });
+		const result = await engine.runOnce();
+		const errored = result.errored.find((e) => e.name === `signer.${ENV_VAR.toLowerCase()}`);
+		expect(errored).toBeDefined();
+		expect(errored?.error.message).toMatch(/Ed25519/);
+	});
+});
+
+// `Ed25519Keypair.getSecretKey()` returns the bech32 form. To round-trip
+// through the legacy base64 forms, decode it back to raw bytes via the
+// same SDK helper the source uses.
+function decodeBech32SecretBytes(bech32: string): Uint8Array {
+	return decodeSuiPrivateKey(bech32).secretKey;
+}
