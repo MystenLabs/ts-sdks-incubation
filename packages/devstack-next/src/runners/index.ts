@@ -10,6 +10,7 @@ export {
 export {
 	dockerContainer,
 	type DockerContainerConfig,
+	type DockerContainerSnapshotConfig,
 	type DockerContainerState,
 	type DockerPortMapping,
 	type DockerReadyProbeArgs,

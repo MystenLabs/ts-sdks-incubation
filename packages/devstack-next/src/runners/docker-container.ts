@@ -31,6 +31,45 @@ export interface DockerContainerState {
 	 * drift-detection role as `network`: a different IP forces recreate
 	 * even when the network name is stable. */
 	ip?: string;
+	/** When set, the container's writable layer was committed to this
+	 * image tag during a prior `engine.saveSnapshot()` call. The next
+	 * cold start (after engine.stop or a fresh engine session) uses
+	 * this tag as the image instead of the configured `image:`,
+	 * recovering chain state across `docker rm`. Carried forward from
+	 * `prior` so subsequent in-memory cycles see the chain
+	 * (run-from-tag → `prior.image === prior.committedTag`). */
+	committedTag?: string;
+	/** When the commit produced `committedTag`. Diagnostics only. */
+	committedAt?: number;
+}
+
+export interface DockerContainerSnapshotConfig {
+	/** Capture the container's writable layer via `docker commit` when
+	 * `engine.saveSnapshot()` runs. Required for stateful containers
+	 * (sui-localnet's RocksDB chain DB, sui-indexer-db's postgres,
+	 * walrus storage nodes' RocksDB); irrelevant for stateless ones
+	 * (seal key-server, walrus.deploy one-shot). Default `false`.
+	 *
+	 * On commit, the runner produces a tag
+	 * `devstack-snapshot/<container-name>:c<UTC-timestamp>` labeled
+	 * with `devstack.commit-of=<container-name>`,
+	 * `devstack.app=<appName>`, `devstack.stack=<stack>` so the
+	 * tag is GC-able later via `docker image prune --filter
+	 * label=devstack.app=<x>`. */
+	commit?: boolean;
+	/** Quiesce policy applied before the commit so the captured
+	 * filesystem is consistent.
+	 *  - `'pause'` cgroup-freezes the processes (good for
+	 *    RocksDB-style state where any running write is mid-flight).
+	 *    The runner unpauses after the commit.
+	 *  - `'stop'` SIGTERMs the container, waits for exit, commits, then
+	 *    starts the same container back up. Slower but gives the
+	 *    process a clean shutdown — necessary for write-ahead-log
+	 *    designs that flush on SIGTERM.
+	 *  - `'none'` runs `docker commit` against a live container. Fast,
+	 *    only safe for stateless services.
+	 * Default `'pause'` when `commit=true`. Ignored otherwise. */
+	quiesce?: 'pause' | 'stop' | 'none';
 }
 
 export interface DockerResolveArgs<TDeps> {
@@ -86,6 +125,13 @@ export interface DockerContainerConfig<TDeps> {
 	readyProbe?: (args: DockerReadyProbeArgs) => Promise<boolean> | boolean;
 	readyTimeoutMs?: number;
 	readyPollIntervalMs?: number;
+
+	/** Optional snapshot policy. When `commit:true`, `engine.saveSnapshot()`
+	 * runs `docker commit` against this container so the writable layer
+	 * survives `docker rm`. The next start after a restore uses the
+	 * committed tag instead of the configured `image:`, recovering chain
+	 * state. Stateless containers should leave this unset. */
+	snapshot?: DockerContainerSnapshotConfig;
 
 	// Forwarded to define for input-hash material.
 	inputs?: (args: DockerResolveArgs<TDeps>) => unknown | Promise<unknown>;
@@ -200,10 +246,29 @@ export function dockerContainer<TDeps = undefined>(cfg: DockerContainerConfig<TD
 			const containerArgs = resolveValue(cfg.args, resolveCtx) ?? [];
 			const containerEnv = resolveValue(cfg.containerEnv, resolveCtx) ?? {};
 			const volumes = resolveValue(cfg.volumes, resolveCtx) ?? [];
-			const image = imageIsDep ? (resolved._image as string) : (cfg.image as string);
-			if (typeof image !== 'string' || image.length === 0) {
+			const resolvedImage = imageIsDep
+				? (resolved._image as string)
+				: (cfg.image as string);
+			if (typeof resolvedImage !== 'string' || resolvedImage.length === 0) {
 				throw new Error(
 					`dockerContainer("${cfg.name}"): image dep resolved to empty/non-string value`,
+				);
+			}
+			// `prior.committedTag` takes precedence over the resolved
+			// image when the container is configured for snapshot commit
+			// — we're explicitly trying to recover chain state captured
+			// in that tag. The user-side trade-off: bumping `cfg.image`
+			// (or the upstream `dockerImage` build) is silently ignored
+			// while a committed snapshot exists; `devstack reset`
+			// discards the snapshot and lets the new image take effect.
+			const image =
+				cfg.snapshot?.commit && prior?.committedTag !== undefined
+					? prior.committedTag
+					: resolvedImage;
+			if (image !== resolvedImage) {
+				log(
+					`using committed-snapshot tag ${image} (configured image: ${resolvedImage}); ` +
+						'`devstack reset` to discard',
 				);
 			}
 			const network = networkIsDep
@@ -265,6 +330,12 @@ export function dockerContainer<TDeps = undefined>(cfg: DockerContainerConfig<TD
 				volumes,
 				portMappings,
 				hostPorts,
+				// Stateful containers (commit:true) drop `--rm` so the
+				// snapshot lifecycle's `docker stop` + `docker commit`
+				// + `docker start` quiesce-policy works without the
+				// container disappearing mid-stop. onShutdown still
+				// `docker rm -f`s on engine teardown.
+				autoRemove: cfg.snapshot?.commit !== true,
 				...(network !== undefined ? { network } : {}),
 				...(cfg.networkAlias !== undefined ? { networkAlias: cfg.networkAlias } : {}),
 				...(ip !== undefined ? { ip } : {}),
@@ -302,6 +373,14 @@ export function dockerContainer<TDeps = undefined>(cfg: DockerContainerConfig<TD
 				hostPorts,
 				...(network !== undefined ? { network } : {}),
 				...(ip !== undefined ? { ip } : {}),
+				// Carry forward the committedTag from prior so a fresh
+				// commit lifecycle update overwrites it cleanly. Without
+				// this, an in-memory cycle that re-runs start would
+				// drop the field and the next saveSnapshot would
+				// produce a snapshot without the commit pointer until
+				// snapshot-lifecycle re-fired.
+				...(prior?.committedTag !== undefined ? { committedTag: prior.committedTag } : {}),
+				...(prior?.committedAt !== undefined ? { committedAt: prior.committedAt } : {}),
 			};
 		},
 
@@ -311,6 +390,53 @@ export function dockerContainer<TDeps = undefined>(cfg: DockerContainerConfig<TD
 				await dockerRm(state.containerId, log);
 			}
 		},
+
+		...(cfg.snapshot?.commit
+			? {
+					// `engine.saveSnapshot()` calls this. Quiesce → docker
+					// commit → resume. The returned state has
+					// `committedTag` / `committedAt` pointing at the new
+					// image so the persisted SnapshotRecord carries the
+					// pointer; the in-memory engine state is untouched
+					// (createSnapshot reads our return value, not
+					// nodeStates), so subsequent in-session cycles keep
+					// reusing the live container.
+					snapshot: async ({ env, state }) => {
+						const quiesce = cfg.snapshot?.quiesce ?? 'pause';
+						if (!(await containerIsRunning(state.containerId))) {
+							// Container is dead — nothing to commit.
+							// Return state unchanged so the snapshot
+							// preserves any earlier committedTag.
+							return state;
+						}
+						const tag = computeCommitTag(env, cfg.name);
+						const labels: Record<string, string> = {
+							'devstack.commit-of': cfg.name,
+							'devstack.app': env.appName,
+						};
+						if (env.stack !== undefined) labels['devstack.stack'] = env.stack;
+						try {
+							if (quiesce === 'pause') await dockerPause(state.containerId);
+							else if (quiesce === 'stop') await dockerStop(state.containerId);
+							await dockerCommit(state.containerId, tag, labels);
+						} finally {
+							// Always resume — even if commit threw, leaving
+							// the container paused/stopped would wedge the
+							// next cycle.
+							if (quiesce === 'pause') {
+								await tryDockerUnpause(state.containerId);
+							} else if (quiesce === 'stop') {
+								await tryDockerStartContainer(state.containerId);
+							}
+						}
+						return {
+							...state,
+							committedTag: tag,
+							committedAt: Date.now(),
+						};
+					},
+				}
+			: {}),
 	});
 }
 
@@ -327,11 +453,19 @@ function buildDockerRunArgs(opts: {
 	volumes: DockerVolumeMapping[];
 	portMappings: DockerPortMapping[];
 	hostPorts: Record<string, number>;
+	autoRemove: boolean;
 	network?: string;
 	networkAlias?: string;
 	ip?: string;
 }): string[] {
-	const args = ['run', '-d', '--rm'];
+	const args = ['run', '-d'];
+	// `--rm` ensures cleanup if the engine crashes mid-cycle without
+	// firing onShutdown. Stateful (commit:true) containers skip it
+	// because the snapshot lifecycle's `docker stop` + `docker commit`
+	// + `docker start` quiesce-policy needs the container to persist
+	// across stop. Long-running containers without commit fall back
+	// on the runner's onShutdown handler for cleanup.
+	if (opts.autoRemove) args.push('--rm');
 	if (opts.network !== undefined) {
 		args.push('--network', opts.network);
 		if (opts.networkAlias !== undefined) args.push('--network-alias', opts.networkAlias);
@@ -367,6 +501,70 @@ async function dockerRm(containerId: string, log: (line: string) => void): Promi
 	} catch (err) {
 		log(`docker rm -f ${containerId.slice(0, 12)} failed: ${(err as Error).message}`);
 	}
+}
+
+async function dockerPause(containerId: string): Promise<void> {
+	await exec('docker', ['pause', containerId]);
+}
+
+async function tryDockerUnpause(containerId: string): Promise<void> {
+	try {
+		await exec('docker', ['unpause', containerId]);
+	} catch {
+		// Already unpaused or removed — best effort, the engine cycle
+		// shouldn't fail just because an unpause was redundant.
+	}
+}
+
+async function dockerStop(containerId: string): Promise<void> {
+	// Default `--time=10` SIGTERM grace + SIGKILL — matches Docker's
+	// default. Stateful processes (RocksDB) flush on SIGTERM within
+	// the grace window, giving us a clean filesystem to commit.
+	await exec('docker', ['stop', containerId]);
+}
+
+async function tryDockerStartContainer(containerId: string): Promise<void> {
+	try {
+		await exec('docker', ['start', containerId]);
+	} catch {
+		// Container might be `--rm`-removed or failed to restart.
+		// Treat as best-effort; the next engine cycle's start will
+		// notice `containerIsRunning=false` and recreate from the
+		// committedTag.
+	}
+}
+
+async function dockerCommit(
+	containerId: string,
+	tag: string,
+	labels: Record<string, string>,
+): Promise<void> {
+	const args = ['commit'];
+	for (const [k, v] of Object.entries(labels)) {
+		// `--change "LABEL k=v"` writes the label into the new image's
+		// metadata. `docker commit -c LABEL` only takes one value at a
+		// time, so loop.
+		args.push('--change', `LABEL ${k}=${v}`);
+	}
+	args.push(containerId, tag);
+	await exec('docker', args);
+}
+
+// `devstack-snapshot/<container-name>:c<utc-timestamp>` — content of
+// the timestamp suffix is opaque to the rest of the system; stable
+// enough to sort lexicographically (newest last) which simplifies
+// any future per-stack pruning logic. Repo segment carries the
+// container name so multi-container apps don't collide.
+function computeCommitTag(env: Env, containerName: string): string {
+	const slug = (s: string): string => s.replace(/[^a-z0-9._-]/gi, '-').toLowerCase();
+	const repo = `devstack-snapshot/${slug(containerName)}`;
+	const d = new Date();
+	const pad = (n: number, w = 2): string => String(n).padStart(w, '0');
+	const tag =
+		`c${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}` +
+		`T${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}`;
+	void env; // env is reserved for future per-(app, stack) namespacing
+	return `${repo}:${tag}`;
 }
 
 function resolveValue<T, TDeps>(

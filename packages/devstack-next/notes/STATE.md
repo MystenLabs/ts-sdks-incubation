@@ -51,9 +51,10 @@ f1d465b  stack new + stack use CLI subcommands
          walrus.exchange shared chain-discovery transformer
          runTransaction.deps polish — extra deps in build callback
          5g walrusProxy — single-host-port nginx vhost in front of nodes
+         6a dockerContainer.snapshot — quiesce + commit + restore
 ```
 
-Tests: 380 passing. Typecheck clean. Build clean.
+Tests: 381 passing. Typecheck clean. Build clean.
 
 ## What's built
 
@@ -80,6 +81,17 @@ src/runners/        L4 — process/container/image runners
   host-process.ts     hostProcess({...})
   docker-container.ts dockerContainer({...}) — exposes provides.state + provides.hostPort.
                       `image` accepts a Dep<string> so dockerImage results chain in.
+                      `snapshot:` config (`commit`, `quiesce`) wires
+                      `engine.saveSnapshot()` into a `docker
+                      pause`/`stop` → `docker commit` → resume cycle;
+                      the new tag goes into state.committedTag.
+                      Restore: a fresh engine session with that
+                      snapshot loaded boots the container from the
+                      committedTag instead of `cfg.image`, recovering
+                      chain state across `docker rm`. Stateful
+                      containers (commit:true) drop `--rm` so the
+                      stop+start quiesce policy survives without the
+                      container disappearing.
   docker-image.ts     dockerImage({...}) — content-addressed `docker build`.
                       Provides tag (`<prefix>/<name>:<hash>`), digest, full.
                       `buildContexts:` exposes BuildKit `--build-context` for
