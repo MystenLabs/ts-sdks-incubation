@@ -1,18 +1,35 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import type { Provides } from '../engine/types.js';
 import { dep } from '../factories/dep.js';
 import { defineSchema, type SchemaInstanceConfig } from '../factories/define-schema.js';
 import { dockerContainer } from '../runners/docker-container.js';
+import { dockerImage } from '../runners/docker-image.js';
 import type { Endpoint } from '../shapes/index.js';
 
 const exec = promisify(execFile);
+
+// Vendored Dockerfile + entrypoint.sh ship under `src/plugins/sui/docker/`.
+// `tsdown.config.ts` mirrors them to `dist/plugins/sui/docker/` so
+// `import.meta.url` resolves the same path in source and built outputs.
+const DOCKER_CONTEXT = fileURLToPath(new URL('./sui/docker/', import.meta.url));
+
+/** Sui release tag baked into the localnet image. Bump when consumers
+ * need a newer binary; the image's content-addressed tag flips
+ * automatically (build arg → input hash). */
+export const SUI_DEFAULT_VERSION = 'devnet-v1.71.0';
 
 export type SuiNetwork = 'localnet' | 'testnet' | 'mainnet' | 'devnet';
 
 export interface SuiOptions {
 	network: SuiNetwork;
-	/** Pre-built localnet image. Default: `mystenlabs/sui-tools:devnet`. */
+	/** Sui release tag, e.g. `'devnet-v1.71.0'`. Becomes a `--build-arg` to
+	 * the vendored Dockerfile. Localnet only. */
+	version?: string;
+	/** Pre-built localnet image. When set, the `sui.image` build is
+	 * skipped and the literal tag is used directly. Useful for CI-published
+	 * images or when pinning to an upstream sui-tools tag. */
 	image?: string;
 	/** Override RPC URL — point at an externally-managed sui node instead
 	 * of spawning a container. Localnet only (live nets always use this). */
@@ -52,8 +69,6 @@ const PUBLIC_FAUCET: Partial<Record<SuiNetwork, string>> = {
 	testnet: 'https://faucet.testnet.sui.io',
 	devnet: 'https://faucet.devnet.sui.io',
 };
-
-const DEFAULT_LOCALNET_IMAGE = 'mystenlabs/sui-tools:devnet';
 
 // `sui` schema. `sui.create({ network })` returns a Producer:
 //   - localnet → a pure transformer Producer that depends on a private
@@ -98,21 +113,34 @@ function localnetInstance(
 	if (opts.rpcUrl !== undefined) {
 		return staticInstance(opts);
 	}
-	const image = opts.image ?? DEFAULT_LOCALNET_IMAGE;
 	const readyTimeoutMs = opts.readyTimeoutMs ?? 60_000;
+	const version = opts.version ?? SUI_DEFAULT_VERSION;
+
+	// Image: build from the vendored Dockerfile via `dockerImage` unless the
+	// caller pinned a pre-built tag. The build runner is content-addressed —
+	// a Dockerfile/entrypoint edit or a `version` bump flips the tag, which
+	// in turn flips the container's input hash and triggers a recreate.
+	// `sui.image` deferred features (indexer-db, GraphQL) — see
+	// `notes/STATE.md`. Add a postgres sidecar + `--with-indexer` /
+	// `--with-graphql` here when a real consumer needs them.
+	const image =
+		opts.image !== undefined
+			? opts.image
+			: dockerImage({
+					name: 'sui.image',
+					context: { path: DOCKER_CONTEXT },
+					args: { SUI_VERSION: version },
+				});
 
 	const container = dockerContainer({
 		name: 'sui.localnet.container',
 		runsAs: 'sui',
-		image,
-		args: [
-			'sui-test-validator',
-			'--fullnode-rpc-port',
-			'9000',
-			'--faucet-port',
-			'9123',
-			'--with-faucet',
-		],
+		image: typeof image === 'string' ? image : image.get('tag'),
+		// `sui start` is the modern entrypoint (sui-test-validator is
+		// deprecated). The vendored entrypoint.sh handles genesis
+		// bootstrap + checkpoint-retention before exec'ing `sui` with
+		// these args.
+		args: ['start', '--with-faucet=0.0.0.0:9123'],
 		ports: [
 			{ slot: 'sui.rpc', containerPort: 9000 },
 			{ slot: 'sui.faucet', containerPort: 9123 },
