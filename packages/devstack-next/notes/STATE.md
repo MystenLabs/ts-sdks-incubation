@@ -8,18 +8,16 @@ stays focused on architecture.
 Branch: `integrate-devstack`. Most recent commits (oldest → newest):
 
 ```
-e0d3b83  L4 factories + ports allocator
-50692cf  L4 accountPool + hostProcess + dockerContainer runners
-c573c57  initial scaffold — L1 graph engine + design plan
-071e6d3  L3 config + L5 helpers + L6 codegen/sui + L7 persistence + shapes
-9277338  route sui-localnet through dockerContainer runner
-1970fe8  L7 CLI scaffold — up + apply + status
-5c8656d  L7 TUI — Ink-based engine subscriber
-76fe11d  L7 vitest harness
-ac27a7a  L7 playwright fixture
+ba4015b  L7 CLI snapshot — save | restore | list | delete
+c5ac218  L7 CLI reset — stop runners + clear stack state
+3c7cd1a  L7 CLI doctor — preflight checks
+8bc5ce7  L6 accounts plugin — disk-backed Sui keystore + fund
+20357f0  L6 walrus plugin — multi-node + aggregator
+8fd9c20  L6 seal plugin — single-container key-server
+57ee90c  L6 deepbook plugin — pre-deployed-id lookup
 ```
 
-Tests: 202 passing. Typecheck clean. Build clean (103 files, ~295 kB).
+Tests: 262 passing. Typecheck clean. Build clean (121 files, ~411 kB).
 
 ## What's built
 
@@ -48,7 +46,9 @@ src/runners/        L4 — process/container runners
 
 src/standard/       L4 — standard graph nodes
   ports.ts            singleton port allocator
-  account-pool.ts     createAccountPool factory (in-memory pool — not a real keystore yet)
+  account-pool.ts     accountPool factory (generic, BYO-signer-type — kept
+                      as a primitive; the disk-backed concrete plugin lives
+                      under src/plugins/accounts.ts)
 
 src/shapes/         WorldView typed shapes — Package, Endpoint, Account
 ```
@@ -59,15 +59,23 @@ src/shapes/         WorldView typed shapes — Package, Endpoint, Account
 src/helpers/        L5 — sugar (publishMove, runTransaction)
 
 src/plugins/        L6
-  sui.ts              localnet (delegates to dockerContainer) + testnet/mainnet/devnet stubs
+  accounts.ts         disk-backed Ed25519 keystore + fund Action
+                      (depends on sui.get('faucet'))
   codegen.ts          typed-manifest emit (no Move bindings yet)
+  deepbook.ts         pre-deployed package-id lookup (testnet / mainnet)
+  seal.ts             single-container key-server (delegates to
+                      dockerContainer; url-override escape hatch)
+  sui.ts              localnet (delegates to dockerContainer) + testnet/mainnet/devnet stubs
+  walrus.ts           multi-node + aggregator (each node delegates to
+                      dockerContainer; rpcUrls escape hatch)
 ```
 
 ### Persistence + frontends (L7)
 
 ```
 src/persistence/    L7 — atomic snapshot read/write under <appDir>/.devstack/...
-src/cli/            L7 bin — devstack-next up | apply | status
+src/cli/            L7 bin — devstack-next up | apply | status |
+                              snapshot | reset | doctor
 src/tui/            L7 — Ink-based engine subscriber (TUI for `up`)
 src/vitest/         L7 — setupForTest / readSnapshot / getNodeState
 src/playwright/     L7 — createDevstackFixture (worker-scoped)
@@ -79,51 +87,46 @@ src/playwright/     L7 — createDevstackFixture (worker-scoped)
 - `/helpers` — `publishMove`, `runTransaction`
 - `/persistence` — snapshot path/read/write
 - `/playwright` — `test`, `expect`, `createDevstackFixture`
-- `/plugins` — `sui`, `codegen`
+- `/plugins` — `accounts`, `codegen`, `deepbook`, `seal`, `sui`, `walrus`
 - `/shapes` — `Package`, `Endpoint`, `Account`
 - `/vitest` — `setupForTest`, `readSnapshot`, `getNodeState`
 
 Plus `bin: devstack-next`. The TUI and the CLI's programmatic exports
-(runApply/runUp/runStatus) are intentionally NOT in the public surface
-— implementation details of the bin.
+(runApply/runUp/runStatus/runSnapshot*/runReset/runDoctor) are
+intentionally NOT in the public surface — implementation details of
+the bin.
 
-### Cross-cutting rule (from this session)
+### Cross-cutting rule (formalized in this session)
 
 **Plugins never call external runtimes (docker, processes, network
 tools) directly from `start`.** Always delegate to a runner factory
 (`dockerContainer`, `hostProcess`) so the resource is a first-class
 graph node. That's what enables uniform snapshot / shutdown / liveness
-handling across plugins. The `9277338` commit refactored sui-localnet
-to follow this rule; it's the template for walrus / seal.
+handling across plugins. `sui.ts`, `walrus.ts`, and `seal.ts` all
+follow this rule; their containers appear as `*.container` siblings
+of the transformer producers in the graph.
 
 ## What's deferred / not yet built
 
-### CLI commands
-- `snapshot save|restore|list|delete` — labeled snapshots under
-  `<appDir>/.devstack/stacks/<stack>/snapshots/`. Save uses the
-  existing `labeledSnapshotPath` helper. Restore re-hydrates the
-  snapshot at the canonical location. List walks
-  `labeledSnapshotsDir`. Delete removes one.
-- `reset` — stops engine, removes per-stack `.devstack/` contents.
-- `doctor` — preflight checks: docker daemon, sui CLI, port
-  conflicts. No engine construction.
+### Plugin features
+- **accounts.fund**: only faucets, doesn't push to the address-balance
+  accumulator yet (the original devstack does both). AB deposit is
+  cheaper to add when there's a real consumer asking for it.
+- **walrus / seal real images**: the defaults
+  (`mystenlabs/walrus-service:latest`, `mystenlabs/seal-key-server:latest`)
+  are placeholders and not pinned to known-good tags. Per-plugin image
+  build (the `*.build` actions in the original devstack) lives in a
+  future devstack-walrus / devstack-seal package.
+- **deepbook localnet publish**: `deepbook()` only knows about
+  testnet/mainnet ids. Publishing the source against a localnet sui is
+  deferred to a future devstack-deepbook plugin.
 
-### Plugins (the rest)
-- **accounts** — real keystore signers materialized to disk under
-  `<appDir>/.devstack/stacks/<stack>/.keys/<name>.key`. Today's
-  `account-pool` standard node is in-memory only. Lift it to a plugin
-  with proper signer serialization + a `fund` Action that depends on
-  `sui.get('faucet')`.
-- **walrus** — dynamic node fan-out (`walrus.node-${i}`) + aggregator
-  node. Each node uses `dockerContainer` per the cross-cutting rule.
-  PLAN.md L6 has the design sketch (lines ~1037–1103).
-- **seal** — similar shape to walrus; `dockerContainer`-backed.
-- **deepbook** — bundle via plain function: loads pre-deployed package
-  IDs into a Producer that surfaces `Package` shapes. No container.
+### Move bindings codegen
+- `sui move summary` + `@mysten/codegen` integration. Needs a real Move
+  package to test against; STATE-frozen until an example app is
+  ported.
 
 ### Other deferred (not for next session)
-- Move bindings codegen (`sui move summary` + `@mysten/codegen`) —
-  needs a real Move package to test against.
 - Full sui plugin features: image build, indexer-db, GraphQL,
   docker-commit snapshots. Per the plan these go in a future
   `packages/devstack-sui/` package.
@@ -140,21 +143,33 @@ to follow this rule; it's the template for walrus / seal.
 - Strict TypeScript — no `any` without a one-line comment justifying it.
 - Comments only when WHY is non-obvious. Don't narrate code.
 - Tests colocated as `*.test.ts(x)`. Vitest. No external network in tests.
+  HTTP-dependent tests spin up a local `node:http` server (see
+  `src/plugins/accounts.test.ts` faucet stub).
 - Subpath exports pattern: each layer is a subpath. Add to
-  `package.json` `exports` and `tsdown.config.ts` `entry`.
+  `package.json` `exports` and `tsdown.config.ts` `entry`. Plugins all
+  roll up under `/plugins`.
 - Co-Authored-By trailer on commits:
   `Claude Opus 4.7 (1M context) <noreply@anthropic.com>`.
+
+### TS-inference quirks worth knowing
+
+- `define()`'s third generic is `TDeps`. When `deps:` includes an
+  array of `Dep`s (e.g. walrus's aggregator over `nodes.map(n =>
+  n.get('full'))`), `ResolvedDeps<TDeps>` doesn't auto-unwrap the
+  array — the engine resolves it recursively at runtime, but the TS
+  surface needs a cast. Pattern: declare a local `type Deps = {...}`
+  and do `(deps as Deps).whatever`. See `src/plugins/walrus.ts`.
 
 ## Key files to read first when picking up
 
 - `packages/devstack-next/PLAN.md` (especially L6 ~962–1127, L7 ~1128–1413)
 - `packages/devstack-next/src/engine/class.ts` — Engine API
 - `packages/devstack-next/src/runners/docker-container.ts` — runner pattern
-- `packages/devstack-next/src/plugins/sui.ts` — example of a plugin
-  composed via `dockerContainer` (the template for walrus/seal)
-- `packages/devstack-next/src/standard/account-pool.ts` — current
-  in-memory pool (lift to a real plugin)
-- `packages/devstack-next/src/cli/apply.ts` — pattern for new CLI
+- `packages/devstack-next/src/plugins/sui.ts` — schema-style plugin
+  composing `dockerContainer` (template for walrus / seal)
+- `packages/devstack-next/src/plugins/accounts.ts` — disk-backed
+  keystore plugin shape (define + define for Action)
+- `packages/devstack-next/src/plugins/deepbook.ts` — simplest plugin
+  shape (single static lookup)
+- `packages/devstack-next/src/cli/apply.ts` — pattern for CLI
   commands (programmatic `run*` + argv-driven `main`)
-- `packages/devstack/src/cli/snapshot.ts` — original snapshot CLI for
-  reference (do NOT copy wholesale; tied to the old runtime)
