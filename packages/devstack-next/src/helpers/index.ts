@@ -1,4 +1,9 @@
 export {
+	viteDevServer,
+	type ViteDevServerOptions,
+	type ViteDevServerState,
+} from './dev-servers.js';
+export {
 	hashMoveTree,
 	publishMove,
 	type PublishMoveContext,
