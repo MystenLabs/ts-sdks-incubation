@@ -20,9 +20,15 @@ cd3f537  Package shape — add path + populate mvrPlaceholder
 9fc4b95  L6 bindings plugin — Move source → typed TS bindings
 b71b1b3  L4 dockerImage runner — content-addressed builds
 a8e4f4b  dockerContainer.image accepts Dep<string>
+9448fa2  file-watching for `up`
+039b312  expose attachFileWatcher as a public API
+143aff9  L7 CLI stack — list + down (+ shared runner-state helper)
+0d08759  viteDevServer helper + hostProcess provides
+3934203  gitFetch helper + publishMove.path accepts Dep<string>
+29a26ed  cliSigner helper — Sui CLI keystore signers
 ```
 
-Tests: 278 passing. Typecheck clean. Build clean (127 files, ~465 kB).
+Tests: 306 passing. Typecheck clean. Build clean (143 files, ~540 kB).
 
 ## What's built
 
@@ -64,7 +70,10 @@ src/shapes/         WorldView typed shapes — Package, Endpoint, Account
 ### Helpers + plugins (L5, L6)
 
 ```
-src/helpers/        L5 — sugar (publishMove, runTransaction)
+src/helpers/        L5 — sugar (publishMove, runTransaction, gitFetch,
+                    cliSigner, viteDevServer)
+                    publishMove.path accepts Dep<string> so users chain
+                    gitFetch → publishMove for upstream Move vendoring.
 
 src/plugins/        L6
   accounts.ts         disk-backed Ed25519 keystore + fund Action
@@ -85,9 +94,14 @@ src/plugins/        L6
 ### Persistence + frontends (L7)
 
 ```
+src/file-watcher.ts L7 — attachFileWatcher(engine, opts) — public API.
+                    Subscribes to cycle:end and runs fs.watch on every
+                    node's getWatchPaths(name); fires debounced cycles
+                    on changes. Used by up.ts; also exported from the
+                    main barrel for embedded use.
 src/persistence/    L7 — atomic snapshot read/write under <appDir>/.devstack/...
 src/cli/            L7 bin — devstack-next up | apply | status |
-                              snapshot | reset | doctor
+                              snapshot | reset | doctor | stack
 src/tui/            L7 — Ink-based engine subscriber (TUI for `up`)
 src/vitest/         L7 — setupForTest / readSnapshot / getNodeState
 src/playwright/     L7 — createDevstackFixture (worker-scoped)
@@ -158,14 +172,16 @@ redundant once typed TS imports existed, and required a separate
 sync mechanism. The new model is one source per consumer.
 
 ### Other deferred (not for next session)
-- Full sui plugin features: image build, indexer-db, GraphQL,
-  docker-commit snapshots. Per the plan these go in a future
-  `packages/devstack-sui/` package.
+- Full sui plugin features: image build (now possible via dockerImage),
+  indexer-db, GraphQL, docker-commit snapshots. Per the plan these go
+  in a future `packages/devstack-sui/` package.
 - Per-plugin package split (`packages/devstack-walrus/` etc.) — keep
   plugins in `devstack-next/src/plugins/` for now; split at cutover.
 - Examples cutover.
-- File-watching for `up`. The engine has the `invalidate(name)` +
-  `cycle()` API; `up` just doesn't drive it from FS events yet.
+- envSigner helper (parallel to cliSigner — read keypair from env var).
+- accounts.fund AB-deposit step — needs a running localnet to test.
+- `stack new` / `stack use` (multi-stack convenience; --stack flag
+  works today, no implicit "active stack" yet).
 
 ## Conventions
 
