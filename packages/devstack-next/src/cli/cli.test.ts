@@ -19,6 +19,7 @@ import { dep } from '../factories/dep.js';
 import { runApply } from './apply.js';
 import { runDoctor } from './doctor.js';
 import { runReset } from './reset.js';
+import { runStackDown, runStackList } from './stack.js';
 import {
 	runSnapshotDelete,
 	runSnapshotList,
@@ -574,6 +575,135 @@ describe('runDoctor', () => {
 		};
 		expect(parsed.command).toBe('doctor');
 		expect(parsed.checks.some((c) => c.name === 'docker daemon')).toBe(true);
+	});
+});
+
+describe('runStackList', () => {
+	const localEnv = (override?: Partial<Env>): Env => ({
+		appName: 'demo',
+		appDir,
+		network: 'localnet',
+		stack: 'main',
+		...override,
+	});
+
+	function record(env: Env, createdAt: number): SnapshotRecord {
+		const recordEnv: SnapshotRecord['env'] = { appName: env.appName, network: env.network };
+		if (env.stack !== undefined) recordEnv.stack = env.stack;
+		return {
+			createdAt,
+			env: recordEnv,
+			nodeStates: {
+				'plain.action': {
+					lastInputHash: 'abc',
+					lastRunAt: createdAt,
+					identity: 'id',
+					state: { value: 1 },
+				},
+			},
+			meta: { devstackVersion: '0.0.0-dev' },
+		};
+	}
+
+	it('lists every stack on disk, marks no-snapshot dirs', async () => {
+		const env = localEnv();
+		await writeSnapshot(env, record(env, 1_000_000_000_000));
+		await writeSnapshot({ ...env, stack: 'test' }, record({ ...env, stack: 'test' }, 2_000_000_000_000));
+		// An empty stack dir simulates `mkdir` without a run.
+		const fs = await import('node:fs/promises');
+		await fs.mkdir(join(appDir, '.devstack/stacks/empty'), { recursive: true });
+
+		const out = new CaptureStream();
+		const result = await runStackList({ env, out: asWriteStream(out) });
+		expect(result.exitCode).toBe(0);
+		expect(result.stacks.map((s) => s.name).sort()).toEqual(['empty', 'main', 'test']);
+		const empty = result.stacks.find((s) => s.name === 'empty');
+		expect(empty?.hasSnapshot).toBe(false);
+		expect(out.text).toContain('main');
+		expect(out.text).toContain('test');
+		expect(out.text).toContain('empty');
+	});
+
+	it('emits structured JSON when --json is set', async () => {
+		const env = localEnv();
+		await writeSnapshot(env, record(env, 1_000_000_000_000));
+		const out = new CaptureStream();
+		await runStackList({ env, out: asWriteStream(out), json: true });
+		const parsed = JSON.parse(out.text) as {
+			command: string;
+			stacks: { name: string; hasSnapshot: boolean }[];
+		};
+		expect(parsed.command).toBe('stack list');
+		expect(parsed.stacks).toHaveLength(1);
+		expect(parsed.stacks[0]?.name).toBe('main');
+	});
+
+	it('returns empty list when no stacks dir exists', async () => {
+		const env = localEnv();
+		const out = new CaptureStream();
+		const result = await runStackList({ env, out: asWriteStream(out) });
+		expect(result.exitCode).toBe(0);
+		expect(result.stacks).toEqual([]);
+		expect(out.text).toContain('no stacks');
+	});
+
+	it('refuses non-localnet networks', async () => {
+		await expect(
+			runStackList({
+				env: { ...localEnv(), network: 'testnet' },
+				out: asWriteStream(new CaptureStream()),
+			}),
+		).rejects.toThrow(/localnet/);
+	});
+});
+
+describe('runStackDown', () => {
+	const localEnv = (override?: Partial<Env>): Env => ({
+		appName: 'demo',
+		appDir,
+		network: 'localnet',
+		stack: 'main',
+		...override,
+	});
+
+	it('reports nothing-to-do when no snapshot exists', async () => {
+		const out = new CaptureStream();
+		const result = await runStackDown({ env: localEnv(), out: asWriteStream(out) });
+		expect(result.exitCode).toBe(0);
+		expect(result.killed).toEqual([]);
+		expect(out.text).toContain('no snapshot');
+	});
+
+	it('preserves on-disk state (sister to reset)', async () => {
+		const env = localEnv();
+		const snapshot: SnapshotRecord = {
+			createdAt: 1_700_000_000_000,
+			env: { appName: env.appName, network: env.network, stack: env.stack ?? 'main' },
+			nodeStates: {
+				'host.proc': {
+					lastInputHash: 'x',
+					lastRunAt: 1_700_000_000_000,
+					identity: 'id',
+					state: { pid: 0x7fff_ffff, startedAt: 1, command: 'true', args: [] },
+				},
+			},
+			meta: { devstackVersion: '0.0.0-dev' },
+		};
+		await writeSnapshot(env, snapshot);
+
+		await runStackDown({ env, out: asWriteStream(new CaptureStream()) });
+		// Snapshot file is still present (this is what makes `down`
+		// different from `reset`).
+		expect(await tryReadSnapshot(env)).toBeDefined();
+	});
+
+	it('refuses non-localnet networks', async () => {
+		await expect(
+			runStackDown({
+				env: { ...localEnv(), network: 'testnet' },
+				out: asWriteStream(new CaptureStream()),
+			}),
+		).rejects.toThrow(/localnet/);
 	});
 });
 

@@ -1,13 +1,10 @@
-import { execFile } from 'node:child_process';
 import { join } from 'node:path';
-import { promisify } from 'node:util';
 import { rm } from 'node:fs/promises';
-import type { Env, SnapshotRecord } from '../engine/types.js';
+import type { Env } from '../engine/types.js';
 import { devstackDir, snapshotPathFor, tryReadSnapshot } from '../persistence/index.js';
 import { hasFlag, parseCommonFlags } from './args.js';
 import { resolveEnvOnly } from './env.js';
-
-const exec = promisify(execFile);
+import { killFromSnapshot, type KilledEntry } from './runner-state.js';
 
 export const RESET_USAGE = `devstack-next reset [options]
 
@@ -43,7 +40,7 @@ export interface RunResetOptions {
 
 export interface RunResetResult {
 	exitCode: number;
-	killed: { name: string; kind: 'docker' | 'process'; ref: string }[];
+	killed: KilledEntry[];
 	removedPaths: string[];
 }
 
@@ -65,7 +62,12 @@ export async function runReset(opts: RunResetOptions): Promise<RunResetResult> {
 	if (opts.noStop !== true) {
 		const snapshot = await tryReadSnapshot(opts.env);
 		if (snapshot !== undefined) {
-			killed.push(...(await killFromSnapshot(snapshot, out, opts.json === true)));
+			killed.push(
+				...(await killFromSnapshot(snapshot, {
+					out,
+					...(opts.json === true ? { json: true } : {}),
+				})),
+			);
 		}
 	}
 
@@ -93,46 +95,6 @@ export async function runReset(opts: RunResetOptions): Promise<RunResetResult> {
 	}
 
 	return { exitCode: 0, killed, removedPaths };
-}
-
-async function killFromSnapshot(
-	snapshot: SnapshotRecord,
-	out: NodeJS.WriteStream,
-	json: boolean,
-): Promise<RunResetResult['killed']> {
-	const killed: RunResetResult['killed'] = [];
-	for (const [name, nodeState] of Object.entries(snapshot.nodeStates)) {
-		const state = nodeState.state;
-		if (!isPlainObject(state)) continue;
-		if (looksLikeDockerContainerState(state)) {
-			const containerId = state.containerId as string;
-			if (await dockerContainerExists(containerId)) {
-				if (!json) out.write(`stopping container ${containerId.slice(0, 12)} (${name})\n`);
-				try {
-					await exec('docker', ['rm', '-f', containerId]);
-					killed.push({ name, kind: 'docker', ref: containerId });
-				} catch (err) {
-					if (!json) {
-						out.write(
-							`  ! docker rm -f ${containerId.slice(0, 12)} failed: ${asMessage(err)}\n`,
-						);
-					}
-				}
-			}
-		} else if (looksLikeHostProcessState(state)) {
-			const pid = state.pid as number;
-			if (isAlive(pid)) {
-				if (!json) out.write(`stopping process pid=${pid} (${name})\n`);
-				try {
-					process.kill(pid, 'SIGTERM');
-					killed.push({ name, kind: 'process', ref: String(pid) });
-				} catch (err) {
-					if (!json) out.write(`  ! kill ${pid} failed: ${asMessage(err)}\n`);
-				}
-			}
-		}
-	}
-	return killed;
 }
 
 async function removeStackContents(env: Env, keepSnapshots: boolean): Promise<string[]> {
@@ -181,41 +143,6 @@ async function pathExists(path: string): Promise<boolean> {
 	}
 }
 
-function isPlainObject(v: unknown): v is Record<string, unknown> {
-	return typeof v === 'object' && v !== null && !Array.isArray(v);
-}
-
-function looksLikeDockerContainerState(s: Record<string, unknown>): boolean {
-	return (
-		typeof s.containerId === 'string' &&
-		typeof s.image === 'string' &&
-		typeof s.hostPorts === 'object' &&
-		s.hostPorts !== null
-	);
-}
-
-function looksLikeHostProcessState(s: Record<string, unknown>): boolean {
-	return typeof s.pid === 'number' && typeof s.command === 'string' && Array.isArray(s.args);
-}
-
-async function dockerContainerExists(id: string): Promise<boolean> {
-	try {
-		await exec('docker', ['inspect', id]);
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-function isAlive(pid: number): boolean {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch {
-		return false;
-	}
-}
-
 function requireLocalnet(env: Env): void {
 	if (env.network !== 'localnet') {
 		throw new Error(
@@ -223,10 +150,6 @@ function requireLocalnet(env: Env): void {
 				`Live-net snapshots live at .devstack/networks/${env.network}.json — remove it manually if needed.`,
 		);
 	}
-}
-
-function asMessage(err: unknown): string {
-	return err instanceof Error ? err.message : String(err);
 }
 
 export async function main(argv: string[]): Promise<number> {

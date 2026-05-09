@@ -24,6 +24,7 @@ Commands:
                     and clear per-stack on-disk state.
   doctor            Preflight checks (docker daemon, sui CLI,
                     snapshot host-port conflicts).
+  stack             Manage per-app stacks (list | down).
 
 Run \`devstack-next <command> --help\` for command-specific options.
 `;
@@ -58,6 +59,10 @@ export async function main(argv: readonly string[]): Promise<number> {
 		}
 		case 'doctor': {
 			const mod = await import('./doctor.js');
+			return mod.main(subArgv);
+		}
+		case 'stack': {
+			const mod = await import('./stack.js');
 			return mod.main(subArgv);
 		}
 		default:
