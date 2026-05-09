@@ -21,3 +21,4 @@ export {
 	type RunTransactionContext,
 	type RunTransactionOptions,
 } from './run-transaction.js';
+export { cliSigner, type CliSignerOptions, type CliSignerState } from './signers.js';
