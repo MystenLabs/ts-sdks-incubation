@@ -16,6 +16,21 @@ import type { Endpoint } from '../shapes/index.js';
  * threading host-port mappings. */
 export const SUI_LOCALNET_NETWORK_ALIAS = 'sui-localnet';
 
+/** In-network alias for the postgres sidecar that backs sui's embedded
+ * indexer + GraphQL. Resolvable from the sui-localnet container only —
+ * no host port mapping. */
+export const SUI_INDEXER_DB_NETWORK_ALIAS = 'sui-indexer-db';
+
+// Postgres connection details. Kept in code (not user-configurable)
+// because the database is an internal implementation detail of the sui
+// plugin — only the colocated sui process talks to it. Same values the
+// old devstack used so cached snapshots interpret matching schemas.
+const SUI_INDEXER_DB_IMAGE = 'postgres:16-alpine';
+const SUI_INDEXER_DB_USER = 'postgres';
+const SUI_INDEXER_DB_PASSWORD = 'devstack';
+const SUI_INDEXER_DB_NAME = 'sui_indexer';
+const SUI_INDEXER_DATABASE_URL = `postgres://${SUI_INDEXER_DB_USER}:${SUI_INDEXER_DB_PASSWORD}@${SUI_INDEXER_DB_NETWORK_ALIAS}:5432/${SUI_INDEXER_DB_NAME}`;
+
 const exec = promisify(execFile);
 
 // Vendored Dockerfile + entrypoint.sh ship under `src/plugins/sui/docker/`.
@@ -53,6 +68,11 @@ export interface SuiState {
 	rpcUrl: string;
 	/** Set on localnet + testnet/devnet; absent on mainnet. */
 	faucetUrl?: string;
+	/** GraphQL endpoint URL (`http://127.0.0.1:<port>/graphql`). Set on
+	 * localnet (sui's embedded indexer + GraphQL fronted by the postgres
+	 * sidecar); absent on live nets where GraphQL availability depends on
+	 * the public fullnode operator. */
+	graphqlUrl?: string;
 	network: SuiNetwork;
 }
 
@@ -63,6 +83,12 @@ const provides = {
 			throw new Error(`sui (${s.network}): no faucet on this network`);
 		}
 		return { url: s.faucetUrl };
+	}),
+	graphql: dep((s: SuiState) => {
+		if (s.graphqlUrl === undefined) {
+			throw new Error(`sui (${s.network}): no graphql on this network`);
+		}
+		return { url: s.graphqlUrl };
 	}),
 	network: dep((s: SuiState) => s.network),
 	full: dep((s: SuiState) => s),
@@ -128,9 +154,6 @@ function localnetInstance(
 	// caller pinned a pre-built tag. The build runner is content-addressed —
 	// a Dockerfile/entrypoint edit or a `version` bump flips the tag, which
 	// in turn flips the container's input hash and triggers a recreate.
-	// `sui.image` deferred features (indexer-db, GraphQL) — see
-	// `notes/STATE.md`. Add a postgres sidecar + `--with-indexer` /
-	// `--with-graphql` here when a real consumer needs them.
 	const image =
 		opts.image !== undefined
 			? opts.image
@@ -140,22 +163,71 @@ function localnetInstance(
 					args: { SUI_VERSION: version },
 				});
 
+	// Postgres sidecar that backs `sui start --with-indexer`'s database.
+	// sui's CLI requires a real postgres URL — no embedded option — so
+	// we run a `postgres:16-alpine` next to the localnet container on
+	// the same per-stack docker network. Only the sui process talks to
+	// it (in-network alias `sui-indexer-db`); no host port mapping. Same
+	// shape the old devstack used.
+	const indexerDb = dockerContainer({
+		name: 'sui.indexer-db',
+		runsAs: 'sui-indexer-db',
+		image: SUI_INDEXER_DB_IMAGE,
+		network: dockerNetwork.get('name'),
+		networkAlias: SUI_INDEXER_DB_NETWORK_ALIAS,
+		containerEnv: {
+			POSTGRES_USER: SUI_INDEXER_DB_USER,
+			POSTGRES_PASSWORD: SUI_INDEXER_DB_PASSWORD,
+			POSTGRES_DB: SUI_INDEXER_DB_NAME,
+		},
+		readyTimeoutMs: 30_000,
+		readyProbe: async ({ containerId }) => {
+			try {
+				await exec('docker', [
+					'exec',
+					containerId,
+					'pg_isready',
+					'-U',
+					SUI_INDEXER_DB_USER,
+					'-d',
+					SUI_INDEXER_DB_NAME,
+				]);
+				return true;
+			} catch {
+				return false;
+			}
+		},
+	});
+
 	const container = dockerContainer({
 		name: 'sui.localnet.container',
 		runsAs: 'sui',
 		image: typeof image === 'string' ? image : image.get('tag'),
+		// Gate sui-localnet's start on the postgres sidecar being live —
+		// `--with-indexer` retries internally but only briefly; without
+		// the gate, a slow-starting postgres can wedge sui's boot.
+		deps: { _indexerDb: indexerDb.get('state') },
 		// `sui start` is the modern entrypoint (sui-test-validator is
 		// deprecated). The vendored entrypoint.sh handles genesis
 		// bootstrap + checkpoint-retention before exec'ing `sui` with
-		// these args.
-		args: ['start', '--with-faucet=0.0.0.0:9123'],
+		// these args. `--with-indexer` points at the postgres sidecar
+		// via the per-stack network alias; `--with-graphql` runs the
+		// embedded GraphQL server on top of the indexer.
+		args: [
+			'start',
+			'--with-faucet=0.0.0.0:9123',
+			`--with-indexer=${SUI_INDEXER_DATABASE_URL}`,
+			'--with-graphql=0.0.0.0:9125',
+		],
 		ports: [
 			{ slot: 'sui.rpc', containerPort: 9000 },
 			{ slot: 'sui.faucet', containerPort: 9123 },
+			{ slot: 'sui.graphql', containerPort: 9125 },
 		],
 		// Join the per-(app, stack) docker network so siblings (walrus
 		// deploy + nodes, seal key-server) resolve the localnet at
-		// `sui-localnet:9000` instead of host.docker.internal.
+		// `sui-localnet:9000` instead of host.docker.internal, AND so
+		// sui itself reaches the indexer-db via `sui-indexer-db:5432`.
 		network: dockerNetwork.get('name'),
 		networkAlias: SUI_LOCALNET_NETWORK_ALIAS,
 		readyTimeoutMs,
@@ -171,10 +243,14 @@ function localnetInstance(
 		deps: {
 			rpcPort: container.get('hostPort', { slot: 'sui.rpc' }),
 			faucetPort: container.get('hostPort', { slot: 'sui.faucet' }),
+			graphqlPort: container.get('hostPort', { slot: 'sui.graphql' }),
 		},
-		start: async ({ deps: { rpcPort, faucetPort } }): Promise<SuiState> => ({
+		start: async ({
+			deps: { rpcPort, faucetPort, graphqlPort },
+		}): Promise<SuiState> => ({
 			rpcUrl: `http://127.0.0.1:${rpcPort}`,
 			faucetUrl: `http://127.0.0.1:${faucetPort}`,
+			graphqlUrl: `http://127.0.0.1:${graphqlPort}/graphql`,
 			network: 'localnet',
 		}),
 		represents: {
@@ -182,6 +258,9 @@ function localnetInstance(
 				const out: Endpoint[] = [{ name: 'sui-rpc', url: s.rpcUrl, kind: 'rpc' }];
 				if (s.faucetUrl !== undefined) {
 					out.push({ name: 'sui-faucet', url: s.faucetUrl, kind: 'faucet' });
+				}
+				if (s.graphqlUrl !== undefined) {
+					out.push({ name: 'sui-graphql', url: s.graphqlUrl, kind: 'graphql' });
 				}
 				return out;
 			},
