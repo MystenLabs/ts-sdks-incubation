@@ -1,14 +1,12 @@
 import { defineDevstackPlaywrightConfig } from '@mysten-incubation/devstack/playwright';
 
+// `manageStack: false` — the webServer's `pnpm dev` (devstack-next
+// supervisor) owns stack bring-up.
 export default await defineDevstackPlaywrightConfig({
 	port: 5174,
-	manageStack: true,
 	extend: {
-		// Bump just the webServer timeout. defineDevstackPlaywrightConfig's
-		// 300s default covers cold sui; this app imports deepbook so we
-		// leave headroom but keep it tighter than private-content's needs.
-		// `command` + `url` are shallow-merged from the default so the
-		// allocator-resolved port survives the override.
-		webServer: { timeout: 180_000 },
+		// `pnpm dev` brings up sui + deepbook publish + pool creation —
+		// give the webServer enough room for a cold cargo build.
+		webServer: { timeout: 300_000 },
 	},
 });

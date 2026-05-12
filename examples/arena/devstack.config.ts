@@ -1,103 +1,139 @@
 // Arena app — on-chain Connect Four. Matchmaking via shared `Lobby`
-// objects, gameplay via shared `Game` objects (column-major 7x6 board,
-// winner: Option<address>). The Move package + openLobby seed live in
-// the app's `use:` below; named accounts are declared at the top
-// level so the devstack resolver materializes a `Signer` per name and
-// the sui plugin's accounts action faucets each on localnet.
+// objects, gameplay via shared `Game` objects. The Move package +
+// openLobby seed live in `stack` below; the Lobby objectId surfaces
+// through the manifest's `extras` slot so the UI auto-discovers a
+// pre-created lobby on first boot.
 
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import type { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { Transaction } from '@mysten/sui/transactions';
+import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
 
+import { defineDevstackConfig, define, dep } from '@mysten-incubation/devstack-next';
+import {
+	publishMove,
+	publishViaSuiCli,
+	viteDevServer,
+} from '@mysten-incubation/devstack-next/helpers';
 import {
 	accounts,
-	codegen,
-	defineDevstackConfig,
-	defineRegistryKind,
-	frontend,
-	publishMove,
-	seed,
+	manifest,
 	sui,
 	walletApp,
-} from '@mysten-incubation/devstack';
-import { createLocalSuiClient } from '@mysten-incubation/devstack/helpers';
+} from '@mysten-incubation/devstack-next/plugins';
+import type { Package } from '@mysten-incubation/devstack-next/shapes';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONNECT_FOUR_DIR = resolve(HERE, 'move/connect_four');
 
-interface ArenaSharedObject {
-	name: string;
+const a = accounts({ specs: { publisher: {}, alice: {}, bob: {} } });
+
+const connectFourPublish = publishMove({
+	name: 'connect_four',
+	path: CONNECT_FOUR_DIR,
+	signer: a.pool.get('signer', { name: 'publisher' }),
+	publish: publishViaSuiCli,
+});
+
+interface OpenLobbyState {
 	objectId: string;
 	objectType: string;
 }
 
-// Typed accessor for `registry.ns('arena').sharedObjects` — single
-// source of truth for the kind name + element type.
-const arenaSharedObjects = defineRegistryKind<ArenaSharedObject>('arena.sharedObjects');
+// One-shot bootstrap: seed a single shared `Lobby` so `pnpm dev`
+// gives players something to join on first boot. Hash-match skip is
+// the steady state — once the Lobby is captured, subsequent cycles
+// see the same input hash and don't re-fire even after the lobby is
+// consumed off-chain. Cascade fires only when `connect_four`'s
+// packageId flips (chain regenesis).
+const openLobby = define<OpenLobbyState>({
+	name: 'arena.openLobby',
+	runsAs: 'alice',
+	provides: {
+		objectId: dep((s: OpenLobbyState) => s.objectId),
+		full: dep((s: OpenLobbyState) => s),
+	},
+	deps: {
+		signer: a.pool.get('signer', { name: 'alice' }),
+		rpc: sui.get('rpc'),
+		pkg: connectFourPublish.get('package'),
+	},
+	inputs: ({ deps }) => {
+		const d = deps as { pkg: Package };
+		return { packageId: d.pkg.packageId };
+	},
+	start: async ({ deps }) => {
+		const d = deps as {
+			signer: Ed25519Keypair;
+			rpc: { url: string };
+			pkg: Package;
+		};
+		const client = new SuiJsonRpcClient({ url: d.rpc.url, network: 'localnet' });
+		const tx = new Transaction();
+		tx.moveCall({ target: `${d.pkg.packageId}::game::create_lobby` });
+		const result = await client.signAndExecuteTransaction({
+			signer: d.signer,
+			transaction: tx,
+			options: { showObjectChanges: true, showEffects: true },
+		});
+		if (result.effects?.status?.status !== 'success') {
+			throw new Error(`openLobby: ${result.effects?.status?.error ?? 'unknown'}`);
+		}
+		const created = (result.objectChanges ?? []).find(
+			(c) =>
+				c.type === 'created' &&
+				'objectType' in c &&
+				typeof c.objectType === 'string' &&
+				c.objectType.endsWith('::game::Lobby'),
+		);
+		if (created === undefined || created.type !== 'created') {
+			throw new Error('openLobby: no created Lobby in objectChanges');
+		}
+		await client.waitForTransaction({ digest: result.digest });
+		return {
+			objectId: created.objectId,
+			objectType: 'objectType' in created && typeof created.objectType === 'string'
+				? created.objectType
+				: '',
+		};
+	},
+});
+
+const m = manifest({
+	packages: [connectFourPublish.get('package')],
+	accounts: [
+		a.pool.get('account', { name: 'publisher' }),
+		a.pool.get('account', { name: 'alice' }),
+		a.pool.get('account', { name: 'bob' }),
+	],
+	extras: {
+		openLobbyId: openLobby.get('objectId'),
+	},
+});
+
+const wallet = walletApp.create({
+	accounts: [
+		{ name: 'alice', signer: a.pool.get('signer', { name: 'alice' }) },
+		{ name: 'bob', signer: a.pool.get('signer', { name: 'bob' }) },
+		{ name: 'publisher', signer: a.pool.get('signer', { name: 'publisher' }) },
+	],
+});
+
+const dev = viteDevServer({
+	gates: [connectFourPublish.get('package'), openLobby.get('objectId'), wallet.get('full')],
+});
 
 export default defineDevstackConfig({
-	app: 'arena',
-	accounts: ['publisher', 'alice', 'bob'],
-	use: [
-		sui({ version: 'devnet-v1.71.0' }),
-		accounts(),
-		codegen(),
-		walletApp({ port: 9421 }),
-		frontend({ port: 5176 }),
-		publishMove({
-			name: 'connect_four',
-			path: CONNECT_FOUR_DIR,
-		}),
-		// One-shot bootstrap: seed a single shared `Lobby` so `devstack
-		// up` gives players something to join on first boot. Hash-match
-		// skip is the steady-state path — once a lobby is in the
-		// manifest, the input hash matches and the action is a no-op,
-		// even after the lobby is joined and consumed off-chain. Lobby
-		// lifecycle from there is the app's UI concern (a "Create
-		// lobby" button), not the devstack cycle's: legitimate
-		// consumption should not fail / re-fire setup. The cascade DOES
-		// fire when it should — a republish of `connect_four` (chain
-		// regenesis) flips this action's input hash through the
-		// identity edge on `needs: ['connect_four']`, so a fresh chain
-		// gets a fresh lobby automatically.
-		seed({
-			name: 'openLobby',
-			needs: ['connect_four'],
-			runsAs: 'alice',
-			inputs: { lobby: 'openLobby' },
-			run: async (ctx) => {
-				const pkg = ctx.registry.packages.require('connect_four');
-				// Seed as alice so the UI's "waiting (you created the lobby)"
-				// surface attaches to alice on first up.
-				const lobbyCreator = ctx.accounts.get('alice');
-				const client = createLocalSuiClient(ctx.registry.services.require('sui-rpc').url);
-				const target = `${pkg.packageId}::game::create_lobby` as const;
-				const tx = new Transaction();
-				tx.moveCall({ target });
-				const result = await client.signAndExecuteTransaction({
-					signer: lobbyCreator,
-					transaction: tx,
-					options: { showObjectChanges: true, showEffects: true },
-				});
-				if (result.effects?.status.status !== 'success') {
-					throw new Error(
-						`openLobby: ${target} failed: ${result.effects?.status.error ?? 'unknown'}`,
-					);
-				}
-				const created = (result.objectChanges ?? []).find(
-					(c) =>
-						c.type === 'created' && 'objectType' in c && c.objectType.endsWith('::game::Lobby'),
-				);
-				if (created === undefined || !('objectId' in created) || !('objectType' in created)) {
-					throw new Error('openLobby: no created Lobby in objectChanges');
-				}
-				arenaSharedObjects(ctx.registry).register({
-					name: 'openLobby',
-					objectId: created.objectId,
-					objectType: created.objectType,
-				});
-			},
-		}),
+	stack: [
+		sui.create({ network: 'localnet' }),
+		a.pool,
+		a.fund,
+		connectFourPublish,
+		openLobby,
+		m,
+		wallet,
+		dev,
 	],
 });

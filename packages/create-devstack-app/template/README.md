@@ -1,10 +1,9 @@
-# Your devstack app
+# Devstack template
 
-A minimal-but-real devstack-backed Sui app, scaffolded by
-`pnpm create @mysten-incubation/devstack-app`.
+The minimal-but-real starting point for a new devstack-backed Sui app.
 
 ```
-.
+_template/
 ├── devstack.config.ts        # plugins + accounts + setup actions
 ├── package.json              # dev/build/test/e2e scripts
 ├── playwright.config.ts      # via defineDevstackPlaywrightConfig
@@ -24,26 +23,18 @@ A minimal-but-real devstack-backed Sui app, scaffolded by
     └── vite-env.d.ts         # /// <reference types="vite/client" />
 ```
 
-## Get started
+## Stand up a new app from this template
 
-```sh
-pnpm install
-pnpm dev
-```
+1. Copy the directory: `cp -r examples/_template examples/<your-app>`.
+2. Replace `_template` with your app name in `package.json` and
+   `devstack.config.ts`.
+3. Pick non-conflicting port hints in `devstack.config.ts` and
+   `vite.config.ts` (other examples occupy 9000-9999 + 5173-5176; the
+   per-stack port allocator handles collisions at runtime, but pinned
+   preferences are kinder to operators).
+4. Rename `move/hello/` to your package name and update the address in
+   `move/<pkg>/Move.toml`.
+5. `pnpm install` then `pnpm dev`.
 
-`pnpm dev` runs `devstack up`, which spins up a hermetic localnet (Sui +
-optional Walrus/Seal containers), publishes the Move package under `move/`,
-runs codegen into `src/generated/`, and serves the Vite dev server. The
-typed manifest the frontend consumes lives at
-`.devstack/stacks/main/manifest.json`.
-
-## Customize
-
-- **Add Move packages** under `move/<package>/` and reference them from
-  `devstack.config.ts` via `publishMove({ path: 'move/<package>' })`.
-- **Pick non-conflicting port hints** in `devstack.config.ts` and
-  `vite.config.ts` if you run multiple devstack apps side-by-side; the
-  per-stack port allocator handles runtime collisions, but pinned
-  preferences are kinder to operators.
-- **Run e2e** with `pnpm test:e2e` (Playwright; uses the `test` stack so
-  it doesn't share state with `pnpm dev`).
+For a guided scaffold, run
+`pnpm create @mysten-incubation/devstack-app <your-app>` instead.

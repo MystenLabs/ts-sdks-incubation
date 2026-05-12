@@ -1,53 +1,87 @@
-// Minimal devstack config: sui localnet, codegen, wallet-app, vite
+// Minimal devstack config: sui localnet, manifest, wallet-app, vite
 // frontend, and one Move package published as alice. Runs a single
 // `runTransaction` after publish to demonstrate the setup pattern.
 
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { Transaction } from '@mysten/sui/transactions';
+import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
+
+import { defineDevstackConfig } from '@mysten-incubation/devstack-next';
+import {
+	publishMove,
+	publishViaSuiCli,
+	runTransaction,
+	viteDevServer,
+} from '@mysten-incubation/devstack-next/helpers';
 import {
 	accounts,
-	codegen,
-	defineDevstackConfig,
-	frontend,
-	publishMove,
-	runTransaction,
+	manifest,
 	sui,
 	walletApp,
-} from '@mysten-incubation/devstack';
+} from '@mysten-incubation/devstack-next/plugins';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HELLO_DIR = resolve(HERE, 'move/hello');
 
+const a = accounts({ specs: { alice: {}, bob: {} } });
+
+const helloPublish = publishMove({
+	name: 'hello',
+	path: HELLO_DIR,
+	signer: a.pool.get('signer', { name: 'alice' }),
+	publish: publishViaSuiCli,
+});
+
+const m = manifest({
+	packages: [helloPublish.get('package')],
+});
+
+const wallet = walletApp.create({
+	accounts: [
+		{ name: 'alice', signer: a.pool.get('signer', { name: 'alice' }) },
+		{ name: 'bob', signer: a.pool.get('signer', { name: 'bob' }) },
+	],
+});
+
+const mintGreeting = runTransaction({
+	name: 'mint-greeting',
+	signer: a.pool.get('signer', { name: 'alice' }),
+	deps: { hello: helloPublish.get('package') },
+	build: async ({ signer, rpcUrl, deps }) => {
+		const tx = new Transaction();
+		tx.moveCall({
+			target: `${deps.hello.packageId}::hello::mint`,
+			arguments: [tx.pure.vector('u8', Array.from(new TextEncoder().encode('hello, sui')))],
+		});
+		const client = new SuiJsonRpcClient({ url: rpcUrl, network: 'localnet' });
+		const result = await client.signAndExecuteTransaction({
+			signer,
+			transaction: tx,
+			options: { showEffects: true },
+		});
+		if (result.effects?.status?.status !== 'success') {
+			throw new Error(`mint-greeting: ${result.effects?.status?.error ?? 'unknown'}`);
+		}
+		await client.waitForTransaction({ digest: result.digest });
+		return { digest: result.digest };
+	},
+});
+
+const dev = viteDevServer({
+	gates: [helloPublish.get('package'), wallet.get('full')],
+});
+
 export default defineDevstackConfig({
-	app: '_template',
-	accounts: ['alice', 'bob'],
-	use: [
-		// Port hints — the per-stack allocator picks any free port if a
-		// sibling stack has the preferred port claimed.
-		sui({ rpcPort: 9100, faucetPort: 9101 }),
-		accounts(),
-		codegen(),
-		walletApp({ port: 9102 }),
-		frontend({ port: 5180 }),
-		publishMove({
-			name: 'hello',
-			path: HELLO_DIR,
-			publisher: 'alice',
-		}),
-		// Demonstrates the runTransaction shape — fires once after publish,
-		// idempotent via the reconciler's input-hash skip persisted in the manifest.
-		runTransaction({
-			name: 'mint-greeting',
-			needs: ['hello'],
-			signer: 'alice',
-			build: (ctx, tx) => {
-				const pkg = ctx.registry.packages.require('hello');
-				tx.moveCall({
-					target: `${pkg.packageId}::hello::mint`,
-					arguments: [tx.pure.vector('u8', Array.from(new TextEncoder().encode('hello, sui')))],
-				});
-			},
-		}),
+	stack: [
+		sui.create({ network: 'localnet' }),
+		a.pool,
+		a.fund,
+		helloPublish,
+		mintGreeting,
+		m,
+		wallet,
+		dev,
 	],
 });

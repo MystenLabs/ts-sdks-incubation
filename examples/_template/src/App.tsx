@@ -6,7 +6,7 @@ import { useMutation, useQueryClient, type UseMutationResult } from '@tanstack/r
 import { useState } from 'react';
 import { manifest } from './generated/manifest.js';
 
-const helloPackage = manifest.registry?.packages?.find((p) => p.name === 'hello');
+const helloPackage = manifest.packages?.find((p) => p.name === 'hello');
 const helloPackageId = helloPackage?.packageId ?? '0x0';
 const isDeployed = helloPackageId !== '0x0';
 

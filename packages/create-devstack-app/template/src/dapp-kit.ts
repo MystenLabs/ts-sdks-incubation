@@ -1,4 +1,4 @@
-import { createDevstackDappKit } from '@mysten-incubation/devstack/react';
+import { createDevstackDappKit } from '@mysten-incubation/devstack-next/react';
 import { manifest } from './generated/manifest.js';
 
 export const { dAppKit } = await createDevstackDappKit({ manifest });
