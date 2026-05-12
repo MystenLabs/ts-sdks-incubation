@@ -1,18 +1,8 @@
-// App-level projection of the codegen-emitted typed manifest. Surfaces the
-// vault package, the seal key server, the walrus-daemon URL, and a flat
-// account name → address map.
+// App-level projection of the devstack-next manifest. Surfaces the
+// vault package, the seal key server (via `extras`), the walrus daemon
+// URL, and a flat account name → address map.
 
-import { defineManifestKind } from '@mysten-incubation/devstack';
 import { manifest } from '../generated/manifest.js';
-
-interface SealKeyServer {
-	name: string;
-	objectId: string;
-	url: string;
-	sealPackageId: string;
-}
-const sealKeyServers = defineManifestKind<SealKeyServer>('seal.keyServer');
-const sealKeyServer = sealKeyServers(manifest).list()[0];
 
 export interface SealView {
 	keyServerObjectId: string;
@@ -20,21 +10,30 @@ export interface SealView {
 	sealPackageId: string;
 }
 
+interface SealKeyServerExtras {
+	objectId: string;
+	url: string;
+	name: string;
+}
+
+const sealKeyServer = manifest.extras.sealKeyServer as SealKeyServerExtras | undefined;
+const sealPackage = manifest.packages.find((p) => p.name === 'seal');
+
 const seal: SealView | undefined =
-	sealKeyServer === undefined
-		? undefined
-		: {
+	sealKeyServer !== undefined && sealPackage !== undefined
+		? {
 				keyServerObjectId: sealKeyServer.objectId,
 				keyServerUrl: sealKeyServer.url,
-				sealPackageId: sealKeyServer.sealPackageId,
-			};
+				sealPackageId: sealPackage.packageId,
+			}
+		: undefined;
 
 export const deployment = {
-	rpcUrl: manifest.registry.services.find((s) => s.name === 'sui-rpc')?.url ?? '',
-	faucetUrl: manifest.registry.services.find((s) => s.name === 'sui-faucet')?.url,
-	walrusDaemonUrl: manifest.registry.services.find((s) => s.name === 'walrus-daemon')?.url,
-	accounts: Object.fromEntries(manifest.registry.accounts.map((a) => [a.name, a.address])),
-	vaultPackageId: manifest.registry.packages.find((p) => p.name === 'vault')?.packageId,
+	rpcUrl: manifest.endpoints.find((e) => e.name === 'sui-rpc')?.url ?? '',
+	faucetUrl: manifest.endpoints.find((e) => e.name === 'sui-faucet')?.url,
+	walrusDaemonUrl: manifest.endpoints.find((e) => e.name === 'walrus-proxy')?.url,
+	accounts: Object.fromEntries(manifest.accounts.map((a) => [a.name, a.address])),
+	vaultPackageId: manifest.packages.find((p) => p.name === 'vault')?.packageId,
 	seal,
 } as const;
 
