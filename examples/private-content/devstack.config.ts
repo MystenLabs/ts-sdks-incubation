@@ -22,6 +22,7 @@ import {
 	sui,
 	walletApp,
 	walrus,
+	walrusSeedWal,
 } from '@mysten-incubation/devstack-next/plugins';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -37,6 +38,18 @@ const vaultPublish = publishMove({
 });
 
 const w = walrus({ nodeCount: 4 });
+
+// Swap each account's faucet'd SUI for WAL — required to pay for blob
+// storage. One producer per account; `walrus.exchange` resolves the
+// exchange object's package id + WAL coin type once and shares it.
+const seedWal = walrusSeedWal({
+	exchange: w.exchange!,
+	accounts: [
+		{ name: 'publisher', signer: a.pool.get('signer', { name: 'publisher' }) },
+		{ name: 'alice', signer: a.pool.get('signer', { name: 'alice' }) },
+		{ name: 'bob', signer: a.pool.get('signer', { name: 'bob' }) },
+	],
+});
 
 const sl = sealLocalnet({
 	signer: a.pool.get('signer', { name: 'publisher' }),
@@ -85,6 +98,7 @@ export default defineDevstackConfig({
 		w.register!,
 		w.exchange!,
 		...w.nodes,
+		...seedWal,
 		// Seal stack: image (optional — undefined when `image:` override
 		// is set), keygen, source/publish, KeyServer register, container,
 		// schema instance. The engine deduplicates by producer __id, so
