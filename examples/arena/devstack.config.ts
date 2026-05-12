@@ -101,8 +101,18 @@ const openLobby = define<OpenLobbyState>({
 	},
 });
 
+const wallet = walletApp.create({
+	accounts: [
+		{ name: 'alice', signer: a.pool.get('signer', { name: 'alice' }) },
+		{ name: 'bob', signer: a.pool.get('signer', { name: 'bob' }) },
+		{ name: 'publisher', signer: a.pool.get('signer', { name: 'publisher' }) },
+	],
+	allowedOrigins: ['http://localhost:5176'],
+});
+
 const m = manifest({
 	packages: [connectFourPublish.get('package')],
+	endpoints: [sui.get('endpoint'), sui.get('faucetEndpoint'), wallet.get('endpoint')],
 	accounts: [
 		a.pool.get('account', { name: 'publisher' }),
 		a.pool.get('account', { name: 'alice' }),
@@ -113,15 +123,8 @@ const m = manifest({
 	},
 });
 
-const wallet = walletApp.create({
-	accounts: [
-		{ name: 'alice', signer: a.pool.get('signer', { name: 'alice' }) },
-		{ name: 'bob', signer: a.pool.get('signer', { name: 'bob' }) },
-		{ name: 'publisher', signer: a.pool.get('signer', { name: 'publisher' }) },
-	],
-});
-
 const dev = viteDevServer({
+	port: 5176,
 	gates: [connectFourPublish.get('package'), openLobby.get('objectId'), wallet.get('full')],
 });
 

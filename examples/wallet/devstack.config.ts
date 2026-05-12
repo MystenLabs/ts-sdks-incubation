@@ -15,6 +15,7 @@ import { Transaction } from '@mysten/sui/transactions';
 
 import { defineDevstackConfig, define } from '@mysten-incubation/devstack-next';
 import {
+	pickCreatedByTypeIncludes,
 	pickCreatedByTypeSuffix,
 	publishMove,
 	publishViaSuiCli,
@@ -58,9 +59,9 @@ const a = accounts({ specs: { publisher: {}, alice: {}, bob: {}, carol: {} } });
 function captureCoinObjects() {
 	return (changes: import('@mysten/sui/jsonRpc').SuiObjectChange[]) => {
 		const out: Record<string, string> = {};
-		const t = pickCreatedByTypeSuffix(changes, '::coin::TreasuryCap<');
+		const t = pickCreatedByTypeIncludes(changes, '::coin::TreasuryCap<');
 		if (t !== undefined) out.treasuryCapId = t;
-		const md = pickCreatedByTypeSuffix(changes, '::coin::CoinMetadata<');
+		const md = pickCreatedByTypeIncludes(changes, '::coin::CoinMetadata<');
 		if (md !== undefined) out.metadataId = md;
 		const up = pickCreatedByTypeSuffix(changes, '0x2::package::UpgradeCap');
 		if (up !== undefined) out.upgradeCapId = up;
@@ -222,12 +223,23 @@ const aliceMaker = deepbookMarketMaker({
 	tickSpacing: 1,
 });
 
+const wallet = walletApp.create({
+	accounts: [
+		{ name: 'publisher', signer: a.pool.get('signer', { name: 'publisher' }) },
+		{ name: 'alice', signer: a.pool.get('signer', { name: 'alice' }) },
+		{ name: 'bob', signer: a.pool.get('signer', { name: 'bob' }) },
+		{ name: 'carol', signer: a.pool.get('signer', { name: 'carol' }) },
+	],
+	allowedOrigins: ['http://localhost:5174'],
+});
+
 const m = manifest({
 	packages: [
 		usdcPublish.get('package'),
 		wethPublish.get('package'),
 		db.publish.get('package'),
 	],
+	endpoints: [sui.get('endpoint'), sui.get('faucetEndpoint'), wallet.get('endpoint')],
 	accounts: [
 		a.pool.get('account', { name: 'publisher' }),
 		a.pool.get('account', { name: 'alice' }),
@@ -243,16 +255,8 @@ const m = manifest({
 	},
 });
 
-const wallet = walletApp.create({
-	accounts: [
-		{ name: 'publisher', signer: a.pool.get('signer', { name: 'publisher' }) },
-		{ name: 'alice', signer: a.pool.get('signer', { name: 'alice' }) },
-		{ name: 'bob', signer: a.pool.get('signer', { name: 'bob' }) },
-		{ name: 'carol', signer: a.pool.get('signer', { name: 'carol' }) },
-	],
-});
-
 const dev = viteDevServer({
+	port: 5174,
 	gates: [
 		usdcPublish.get('package'),
 		wethPublish.get('package'),

@@ -7,11 +7,12 @@ import { fileURLToPath } from 'node:url';
 
 import { defineDevstackConfig } from '@mysten-incubation/devstack-next';
 import {
+	pickCreatedByTypeIncludes,
+	pickCreatedByTypeSuffix,
 	publishMove,
 	publishViaSuiCli,
 	viteDevServer,
 } from '@mysten-incubation/devstack-next/helpers';
-import { pickCreatedByTypeSuffix } from '@mysten-incubation/devstack-next/helpers';
 import {
 	accounts,
 	manifest,
@@ -37,9 +38,12 @@ const managedCoinPublish = publishMove({
 		publishViaSuiCli(ctx, {
 			capture: (changes) => {
 				const out: Record<string, string> = {};
-				const t = pickCreatedByTypeSuffix(changes, '::coin::TreasuryCap<');
+				// Generic types — `pickCreatedByTypeIncludes` for the
+				// fragment match; `pickCreatedByTypeSuffix` for the
+				// monomorphic `UpgradeCap`.
+				const t = pickCreatedByTypeIncludes(changes, '::coin::TreasuryCap<');
 				if (t !== undefined) out.treasuryCapId = t;
-				const md = pickCreatedByTypeSuffix(changes, '::coin::CoinMetadata<');
+				const md = pickCreatedByTypeIncludes(changes, '::coin::CoinMetadata<');
 				if (md !== undefined) out.metadataId = md;
 				const up = pickCreatedByTypeSuffix(changes, '0x2::package::UpgradeCap');
 				if (up !== undefined) out.upgradeCapId = up;
@@ -56,8 +60,18 @@ const managedCoinReg = registerCoin({
 	decimals: 6,
 });
 
+const wallet = walletApp.create({
+	accounts: [
+		{ name: 'alice', signer: a.pool.get('signer', { name: 'alice' }) },
+		{ name: 'bob', signer: a.pool.get('signer', { name: 'bob' }) },
+		{ name: 'carol', signer: a.pool.get('signer', { name: 'carol' }) },
+	],
+	allowedOrigins: ['http://localhost:5173'],
+});
+
 const m = manifest({
 	packages: [managedCoinPublish.get('package')],
+	endpoints: [sui.get('endpoint'), sui.get('faucetEndpoint'), wallet.get('endpoint')],
 	accounts: [
 		a.pool.get('account', { name: 'alice' }),
 		a.pool.get('account', { name: 'bob' }),
@@ -66,15 +80,8 @@ const m = manifest({
 	coins: [managedCoinReg.get('coin')],
 });
 
-const wallet = walletApp.create({
-	accounts: [
-		{ name: 'alice', signer: a.pool.get('signer', { name: 'alice' }) },
-		{ name: 'bob', signer: a.pool.get('signer', { name: 'bob' }) },
-		{ name: 'carol', signer: a.pool.get('signer', { name: 'carol' }) },
-	],
-});
-
 const dev = viteDevServer({
+	port: 5173,
 	gates: [managedCoinPublish.get('package'), wallet.get('full')],
 });
 

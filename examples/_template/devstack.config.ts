@@ -34,14 +34,23 @@ const helloPublish = publishMove({
 	publish: publishViaSuiCli,
 });
 
-const m = manifest({
-	packages: [helloPublish.get('package')],
-});
-
 const wallet = walletApp.create({
 	accounts: [
 		{ name: 'alice', signer: a.pool.get('signer', { name: 'alice' }) },
 		{ name: 'bob', signer: a.pool.get('signer', { name: 'bob' }) },
+	],
+	// Match the pinned vite port below. Hard-coded (rather than threaded
+	// through `dev.get('url')` as a `devServerOrigin` Dep) to avoid a
+	// dep cycle with viteDevServer's `gates: [wallet.get('full')]`.
+	allowedOrigins: ['http://localhost:5180'],
+});
+
+const m = manifest({
+	packages: [helloPublish.get('package')],
+	endpoints: [sui.get('endpoint'), sui.get('faucetEndpoint'), wallet.get('endpoint')],
+	accounts: [
+		a.pool.get('account', { name: 'alice' }),
+		a.pool.get('account', { name: 'bob' }),
 	],
 });
 
@@ -70,6 +79,11 @@ const mintGreeting = runTransaction({
 });
 
 const dev = viteDevServer({
+	// Pin to the same port Playwright's `defineDevstackPlaywrightConfig`
+	// uses as `baseURL`; vite.config.ts's strictPort=false lets it fall
+	// back if 5180 is busy (e.g. `pnpm dev` already running in another
+	// terminal), at which point the e2e job needs a different stack.
+	port: 5180,
 	gates: [helloPublish.get('package'), wallet.get('full')],
 });
 

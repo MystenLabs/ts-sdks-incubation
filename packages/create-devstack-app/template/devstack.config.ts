@@ -34,14 +34,20 @@ const helloPublish = publishMove({
 	publish: publishViaSuiCli,
 });
 
-const m = manifest({
-	packages: [helloPublish.get('package')],
-});
-
 const wallet = walletApp.create({
 	accounts: [
 		{ name: 'alice', signer: a.pool.get('signer', { name: 'alice' }) },
 		{ name: 'bob', signer: a.pool.get('signer', { name: 'bob' }) },
+	],
+	allowedOrigins: ['http://localhost:5180'],
+});
+
+const m = manifest({
+	packages: [helloPublish.get('package')],
+	endpoints: [sui.get('endpoint'), sui.get('faucetEndpoint'), wallet.get('endpoint')],
+	accounts: [
+		a.pool.get('account', { name: 'alice' }),
+		a.pool.get('account', { name: 'bob' }),
 	],
 });
 
@@ -70,6 +76,7 @@ const mintGreeting = runTransaction({
 });
 
 const dev = viteDevServer({
+	port: 5180,
 	gates: [helloPublish.get('package'), wallet.get('full')],
 });
 
