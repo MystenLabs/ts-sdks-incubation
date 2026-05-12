@@ -653,14 +653,18 @@ export function walrusSeedWal(opts: WalrusSeedWalOptions) {
 			build: async ({ signer, rpcUrl, deps }) => {
 				const exchange = deps.exchange;
 				const tx = new Transaction();
-				// `useGasCoin: false` lets the SDK pull from address-
-				// balance if available, falling back to owned coins.
-				// Keeps the helper agnostic of the funding source the
-				// accounts plugin chose (faucet-only vs AB-deposit).
+				// `useGasCoin: true` lets the SDK split the payment
+				// from the gas coin itself — one coin pays for both
+				// gas + the exchange. The faucet-only setup (the
+				// default for the `accounts` plugin without
+				// `abMinBalanceMist`) gives 5 small coins per account;
+				// reserving one for gas + assembling another for the
+				// payment ran out of usable coins with the previous
+				// `useGasCoin: false`.
 				const paymentCoin = tx.coin({
 					balance: paymentMist,
 					type: '0x2::sui::SUI',
-					useGasCoin: false,
+					useGasCoin: true,
 				});
 				const walCoin = tx.moveCall({
 					target: `${exchange.packageId}::wal_exchange::exchange_all_for_wal`,

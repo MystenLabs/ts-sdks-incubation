@@ -52,7 +52,22 @@ export async function publishViaSuiCli(
 ): Promise<PublishedPackage> {
 	const { stdout } = await exec(
 		'sui',
-		['move', 'build', '--dump-bytecode-as-base64', '--path', ctx.sourcePath],
+		[
+			'move',
+			'build',
+			'--dump-bytecode-as-base64',
+			// Inline unpublished deps' bytecode into the publish so
+			// `sui-cli`'s package-resolution doesn't try to look them
+			// up on-chain. Critical for vendored Move trees like
+			// deepbook + walrus whose `Move.lock` references a
+			// testnet-published id (`0x36dbef…token` etc.) that's
+			// absent on a fresh localnet — without this flag the
+			// publish fails with "Dependent package not found on-chain".
+			// No-op when every dep is already published.
+			'--with-unpublished-dependencies',
+			'--path',
+			ctx.sourcePath,
+		],
 		// `sui` writes plenty of progress to stderr; we only care about
 		// stdout, which is the JSON dump.
 		{ maxBuffer: 64 * 1024 * 1024 },
