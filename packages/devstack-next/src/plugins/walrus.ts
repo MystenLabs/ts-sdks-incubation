@@ -594,7 +594,12 @@ export interface WalrusSeedWalAccountState {
 	seededAt: number;
 }
 
-const DEFAULT_SEED_WAL_PAYMENT_MIST = 1_000_000_000n;
+// 0.5 SUI per seed call. The accounts plugin's faucet drips 1 SUI as
+// 5 coins of 0.2 SUI each; with `useGasCoin: false` the SDK reserves
+// one coin for gas, leaving 4 × 0.2 = 0.8 SUI to assemble the
+// payment. A 1 SUI default doesn't fit. 0.5 SUI still buys plenty of
+// WAL — the exchange's pricing is set in the deploy script.
+const DEFAULT_SEED_WAL_PAYMENT_MIST = 500_000_000n;
 
 // `walrusSeedWal({...})` — bundle of per-account seed transactions that
 // swap SUI for WAL on the testbed's `Exchange` so apps can upload blobs

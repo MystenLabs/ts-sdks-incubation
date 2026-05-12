@@ -84,8 +84,82 @@ fi
 find "$WALRUS_CONTRACT_DIR" -name 'build' -type d -exec rm -rf {} +
 rm -f "$WORKING_DIR"/dryrun-node-*.yaml "$WORKING_DIR"/dryrun-node-*.log
 
+# Pre-create the admin wallet with `active_env: localnet` so sui-cli's
+# package-environment finder matches `[environments.localnet]` in
+# `wal/Move.test.toml` by name. Without this, walrus-deploy creates a
+# wallet with `active_env: custom` (the SuiNetwork::Custom variant's
+# hardcoded alias), and sui-cli's `find_env` bails with "Could not
+# determine the correct dependencies to use for `custom`" once
+# walrus-deploy substitutes the chain_id into Move.toml's localnet env
+# entry. Passing `--admin-wallet-path` opts into the existing-wallet
+# branch of walrus-deploy's testbed::deploy_walrus_contract, which
+# loads our wallet instead of creating one — but the existing-wallet
+# branch also skips the auto-faucet, so we faucet the admin ourselves
+# below.
+ADMIN_WALLET_YAML="$WORKING_DIR/sui_admin.yaml"
+ADMIN_KEYSTORE="$WORKING_DIR/sui_admin.keystore"
+SUI_BIN="${SUI_BIN:-/root/sui_bin/sui}"
+
+# Split WALRUS_NETWORK ("rpc;faucet") so we can target the right URL
+# for the faucet. Bail if either piece is missing — would otherwise
+# surface as a confusing publish failure 30s later when the admin
+# can't pay for gas.
+WALRUS_NETWORK_RPC="${NETWORK%%;*}"
+WALRUS_NETWORK_FAUCET="${NETWORK#*;}"
+if [ "$WALRUS_NETWORK_RPC" = "$NETWORK" ] || [ -z "$WALRUS_NETWORK_FAUCET" ]; then
+	echo "deploy-walrus: WALRUS_NETWORK must include both rpc and faucet URLs (got '$NETWORK')" >&2
+	exit 1
+fi
+
+# sui CLI ignores `SUI_CLIENT_CONFIG` when its hard-coded
+# `$HOME/.sui/sui_config/client.yaml` doesn't exist — it auto-creates
+# the default + populates with mainnet/testnet/devnet/local envs.
+# So: point HOME at a scratch dir, let sui create its defaults there,
+# then add the docker-network localnet env + switch active to it.
+# Finally, copy the generated wallet YAML to walrus-deploy's expected
+# path with the alias renamed (no-op if HOME stays $WORKING_DIR for
+# the duration).
+export HOME="$WORKING_DIR/.suihome"
+rm -rf "$HOME"
+mkdir -p "$HOME/.sui/sui_config"
+
+# `new-address` answers the "create config" Y/n prompt by writing
+# defaults — that's exactly what we want. The keypair lands in the
+# keystore at $HOME/.sui/sui_config/sui.keystore.
+"$SUI_BIN" client new-address ed25519 admin --json > /dev/null
+# Add a per-stack localnet env pointing at the docker DNS name. sui's
+# default `local` env hardcodes 127.0.0.1:9000 which the container
+# can't reach.
+"$SUI_BIN" client new-env --alias localnet --rpc "$WALRUS_NETWORK_RPC" > /dev/null
+"$SUI_BIN" client switch --env localnet > /dev/null
+"$SUI_BIN" client switch --address admin > /dev/null
+
+ADMIN_ADDR=$("$SUI_BIN" client active-address)
+if [ "${ADMIN_ADDR#0x}" = "$ADMIN_ADDR" ]; then
+	echo "deploy-walrus: failed to resolve admin address from sui client (got '$ADMIN_ADDR')" >&2
+	exit 1
+fi
+
+# Copy the generated wallet config + keystore into the walrus-deploy
+# working dir. We rewrite the YAML to point at the keystore's new
+# location so walrus-deploy's `load_wallet_context_from_path` can
+# resolve it cleanly.
+cp "$HOME/.sui/sui_config/sui.keystore" "$ADMIN_KEYSTORE"
+sed -e "s|$HOME/.sui/sui_config/sui.keystore|$ADMIN_KEYSTORE|" \
+	"$HOME/.sui/sui_config/client.yaml" > "$ADMIN_WALLET_YAML"
+
+# Faucet the admin. walrus-deploy's create-wallet branch does this
+# automatically; the load-existing branch skips it.
+curl -fsS -X POST \
+	-H 'Content-Type: application/json' \
+	-d "{\"FixedAmountRequest\":{\"recipient\":\"$ADMIN_ADDR\"}}" \
+	"$WALRUS_NETWORK_FAUCET" > /dev/null
+# Give the faucet's gas object a moment to settle before publish.
+sleep 2
+
 "$WALRUS_DEPLOY_BIN" deploy-system-contract \
 	--working-dir "$WORKING_DIR" \
+	--admin-wallet-path "$ADMIN_WALLET_YAML" \
 	--contract-dir "$WALRUS_CONTRACT_DIR" \
 	--do-not-copy-contracts \
 	--sui-network "$NETWORK" \
