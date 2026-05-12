@@ -55,3 +55,10 @@ catalog:
   vite: ^6.4.2
   vitest: ^2.1.9
   zod: ^3.24.1
+
+  # Effect — pinned to a v4 beta that has cleared the 2-day quarantine.
+  # In v4, Schema/Stream/FileSystem/Path/etc. live in core `effect`; only
+  # the platform-node bindings and the vitest integration are separate.
+  effect: 4.0.0-beta.65
+  '@effect/platform-node': 4.0.0-beta.65
+  '@effect/vitest': 4.0.0-beta.65
