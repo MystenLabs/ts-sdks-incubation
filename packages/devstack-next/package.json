@@ -50,6 +50,10 @@
 			"types": "./dist/plugins/index.d.mts",
 			"import": "./dist/plugins/index.mjs"
 		},
+		"./react": {
+			"types": "./dist/react/index.d.mts",
+			"import": "./dist/react/index.mjs"
+		},
 		"./shapes": {
 			"types": "./dist/shapes/index.d.mts",
 			"import": "./dist/shapes/index.mjs"
@@ -77,6 +81,9 @@
 		"react": "catalog:"
 	},
 	"devDependencies": {
+		"@mysten-incubation/dev-wallet": "workspace:*",
+		"@mysten-incubation/devstack-wallet-panels": "workspace:*",
+		"@mysten/dapp-kit-core": "catalog:",
 		"@playwright/test": "catalog:",
 		"@types/node": "catalog:",
 		"@types/react": "catalog:",
@@ -85,10 +92,22 @@
 		"vitest": "catalog:"
 	},
 	"peerDependencies": {
+		"@mysten-incubation/dev-wallet": "workspace:*",
+		"@mysten-incubation/devstack-wallet-panels": "workspace:*",
+		"@mysten/dapp-kit-core": "catalog:",
 		"@playwright/test": "catalog:",
 		"vitest": "catalog:"
 	},
 	"peerDependenciesMeta": {
+		"@mysten-incubation/dev-wallet": {
+			"optional": true
+		},
+		"@mysten-incubation/devstack-wallet-panels": {
+			"optional": true
+		},
+		"@mysten/dapp-kit-core": {
+			"optional": true
+		},
 		"@playwright/test": {
 			"optional": true
 		},

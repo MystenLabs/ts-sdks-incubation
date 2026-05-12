@@ -99,6 +99,8 @@ describe('manifest', () => {
 			],
 			endpoints: [],
 			accounts: [],
+			coins: [],
+			extras: {},
 		});
 		const alphaIdx = body.indexOf('"alpha"');
 		const muIdx = body.indexOf('"mu"');
@@ -116,6 +118,8 @@ describe('manifest', () => {
 			],
 			endpoints: [],
 			accounts: [],
+			coins: [],
+			extras: {},
 		});
 		expect(body).toContain('"packageId": "0xnew"');
 		expect(body).not.toContain('"packageId": "0xold"');

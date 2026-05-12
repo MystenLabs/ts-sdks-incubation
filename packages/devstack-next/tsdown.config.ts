@@ -14,6 +14,7 @@ export default defineConfig({
 		'src/persistence/index.ts',
 		'src/playwright/index.ts',
 		'src/plugins/index.ts',
+		'src/react/index.ts',
 		'src/shapes/index.ts',
 		'src/vitest/index.ts',
 	],

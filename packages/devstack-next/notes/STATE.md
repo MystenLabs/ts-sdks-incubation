@@ -57,11 +57,30 @@ f1d465b  stack new + stack use CLI subcommands
          walrus: hostname=dryrun-node-<i>, run.sh args, gate on deploy
          sui: faucet probed alongside RPC in readyProbe
          7c README rewrite + MIGRATION.md + 1.0.0-rc.0 bump
+         7b walletApp port — HTTP signer endpoint, defineSchema,
+            persisted-token + devServerOrigin Dep + manifest endpoint
+         7b registerCoin + Coin shape + manifest.coins slot
+         7b deepbookMarketMaker port — grid maker, BM persistence
+            in producer state, mechanical port of old tick() logic
+         7b shape extensions — Endpoint.pairUrl, Package.captured,
+            manifest.extras slot for app-specific data; accounts.pool
+            gains `.get('account', { name })` for Account-shape Deps
+         7b deepbookLocalnet pool specs accept Dep<any, string | { type }>
+            for base/quote (registered coin `.get('coin')` flows through)
+         7b /react subpath — createDevstackDappKit + localnetWalrusOptions
+            ported, reads from manifest.endpoints / manifest.packages
+         7b dev-wallet adapter: two-shape (legacy + devstack-next)
+         7b devstack-wallet-panels: configureDevstackPanels normalizes
+            new-shape manifests into the panels' internal legacy view
+         7b examples cutover — all 5 (+ create-devstack-app template)
+            on devstack-next; devstack.config + deployment.ts +
+            generated/manifest.ts stubs all on the new shape
 ```
 
-Tests: 381 default + 4 integration (sui, seal, walrus, snapshot —
+Tests: 416 default + 4 integration (sui, seal, walrus, snapshot —
 all live against real docker with HTTP probes of running daemons).
-Typecheck clean. Build clean.
+Typecheck clean across workspace (14 packages including 5 examples).
+Build clean.
 
 ## What's built
 
@@ -274,7 +293,8 @@ src/integration/    L7 — docker-gated end-to-end suite (sui, seal,
 - `/helpers` — `publishMove`, `runTransaction`
 - `/persistence` — snapshot path/read/write
 - `/playwright` — `test`, `expect`, `createDevstackFixture`
-- `/plugins` — `accounts`, `bindings`, `deepbook`, `manifest`, `seal`, `sui`, `walrus`
+- `/plugins` — `accounts`, `bindings`, `deepbook`, `deepbookLocalnet`, `deepbookMarketMaker`, `manifest`, `registerCoin`, `seal`, `sealLocalnet`, `sui`, `walletApp`, `walrus`, `walrusProxy`, `walrusSeedWal`
+- `/react` — `createDevstackDappKit`, `localnetDappKitConfig`, `localnetMvrOverrides`, `localnetWalrusOptions`
 - `/shapes` — `Package`, `Endpoint`, `Account`
 - `/vitest` — `setupForTest`, `readSnapshot`, `getNodeState`
 
@@ -336,14 +356,8 @@ redundant once typed TS imports existed, and required a separate
 sync mechanism. The new model is one source per consumer.
 
 ### Other deferred (not for next session)
-- Full sui plugin features: indexer-db, GraphQL, docker-commit
-  snapshots. Image build is done; the rest goes in a future
-  `packages/devstack-sui/` package. (The `sui.image` step here
-  intentionally omits indexer/graphql — leave them as TODO until a
-  consumer drives the design.)
-- Per-plugin package split (`packages/devstack-walrus/` etc.) — keep
-  plugins in `devstack-next/src/plugins/` for now; split at cutover.
-- Examples cutover.
+- Snapshot pruning / GC for old per-stack snapshot files.
+- More signer flavors (multisig, zkLogin) when consumers ask.
 
 ## Conventions
 

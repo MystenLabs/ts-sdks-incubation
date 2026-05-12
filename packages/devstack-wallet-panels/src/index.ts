@@ -33,13 +33,63 @@ export type {
 } from './types.js';
 
 /** Set the active devstack manifest for the panel custom elements. Call
- * once during app boot, with `manifest` from
- * `./generated/manifest.js` (codegen-emitted by `@mysten-incubation/devstack`).
+ * once during app boot, with `manifest` from `./generated/manifest.js`
+ * (emitted by either `@mysten-incubation/devstack` codegen or the
+ * `@mysten-incubation/devstack-next` manifest plugin).
  *
- * Accepts `unknown` to stay loosely-coupled to whichever import path the
- * app uses; panels narrow what they need at render time. */
+ * Accepts both manifest shapes — old (`{ registry: { services, ... } }`)
+ * and new (`{ packages, endpoints, accounts, coins }`) — and normalizes
+ * to the legacy internal shape the panels render against. Panels stay
+ * stable across the migration; callers don't have to care which devstack
+ * emitted the manifest. */
 export function configureDevstackPanels(manifest: unknown): void {
-	setActiveManifest(manifest as DevstackManifest | null);
+	setActiveManifest(normalizeManifest(manifest));
+}
+
+interface NewManifestShape {
+	packages?: Array<{ name: string; packageId: string; captured?: Record<string, string>; path?: string }>;
+	endpoints?: Array<{ name: string; url: string; kind?: string; pairUrl?: string }>;
+	accounts?: Array<{ name: string; address: string }>;
+	coins?: Array<{ name: string; type: string; decimals: number }>;
+}
+
+function normalizeManifest(manifest: unknown): DevstackManifest | null {
+	if (manifest === null || manifest === undefined) return null;
+	const m = manifest as { registry?: unknown } & NewManifestShape;
+	// Old shape passes through unchanged.
+	if (m.registry !== undefined) return manifest as DevstackManifest;
+	// New shape — project into the internal old shape.
+	return {
+		app: '',
+		network: 'localnet',
+		emittedAt: new Date().toISOString(),
+		registry: {
+			services: (m.endpoints ?? []).map((e) => ({
+				name: e.name,
+				kind: e.kind ?? e.name,
+				url: e.url,
+				port: tryParsePort(e.url),
+				...(e.pairUrl !== undefined ? { endpointLabel: e.pairUrl } : {}),
+			})),
+			accounts: (m.accounts ?? []).map((a) => ({ name: a.name, address: a.address })),
+			packages: (m.packages ?? []).map((p) => ({
+				name: p.name,
+				packageId: p.packageId,
+				captured: p.captured ?? {},
+				...(p.path !== undefined ? { path: p.path } : {}),
+			})),
+			coin: { tokens: (m.coins ?? []).map((c) => ({ name: c.name, type: c.type, decimals: c.decimals })) },
+		},
+	};
+}
+
+function tryParsePort(url: string): number {
+	try {
+		const u = new URL(url);
+		return Number(u.port) || 0;
+	} catch {
+		return 0;
+	}
 }
 
 /** Default set of devstack panel descriptors. Drop into

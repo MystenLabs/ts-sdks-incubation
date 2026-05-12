@@ -284,10 +284,17 @@ function staticInstance(url: string): SchemaInstanceConfig<SealState, typeof pro
 	};
 }
 
+// `Dep<any, Keypair>` (TData covariance: parameterized + no-data both
+// satisfy contravariant TData). `Dep<unknown, …>` rejected name-keyed
+// signer Deps (`pool.get('signer', { name })` returns
+// `Dep<{name}, …>`).
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type SignerDep = Dep<any, Keypair>;
+
 export interface SealLocalnetOptions {
 	/** Publisher signer for both publish + register. Typically
 	 * `accounts.get('signer', { name: 'publisher' })`. */
-	signer: Dep<unknown, Keypair>;
+	signer: SignerDep;
 	/** Pre-built key-server image. When set, the `seal.image` build is
 	 * skipped and the literal tag is used directly. */
 	image?: string;

@@ -75,12 +75,18 @@ export interface PublishState extends PublishedPackage {
 // constructed inside the factory below where `name` + `mvrPlaceholder`
 // are known.
 const provides = {
-	package: dep((s: PublishState): Package => ({
-		name: '',
-		packageId: s.packageId,
-		mvrPlaceholder: s.mvrPlaceholder,
-		path: s.path,
-	})),
+	package: dep((s: PublishState): Package => {
+		const pkg: Package = {
+			name: '',
+			packageId: s.packageId,
+			mvrPlaceholder: s.mvrPlaceholder,
+			path: s.path,
+		};
+		if (s.objects !== undefined && Object.keys(s.objects).length > 0) {
+			pkg.captured = s.objects;
+		}
+		return pkg;
+	}),
 	full: dep((s: PublishState) => s),
 } satisfies Provides<PublishState>;
 
@@ -134,12 +140,18 @@ export function publishMove<TSigner>(opts: PublishMoveOptions<TSigner>) {
 	// resolved placeholder (the schema can't know either at module load).
 	const namedProvides = {
 		...provides,
-		package: dep((s: PublishState): Package => ({
-			name: provName,
-			packageId: s.packageId,
-			mvrPlaceholder: s.mvrPlaceholder,
-			path: s.path,
-		})),
+		package: dep((s: PublishState): Package => {
+			const pkg: Package = {
+				name: provName,
+				packageId: s.packageId,
+				mvrPlaceholder: s.mvrPlaceholder,
+				path: s.path,
+			};
+			if (s.objects !== undefined && Object.keys(s.objects).length > 0) {
+				pkg.captured = s.objects;
+			}
+			return pkg;
+		}),
 	} satisfies Provides<PublishState>;
 
 	return define<PublishState, typeof namedProvides, typeof deps>({
@@ -196,14 +208,18 @@ export function publishMove<TSigner>(opts: PublishMoveOptions<TSigner>) {
 			return state;
 		},
 		represents: {
-			packages: (s: PublishState): Package[] => [
-				{
+			packages: (s: PublishState): Package[] => {
+				const pkg: Package = {
 					name: opts.name,
 					packageId: s.packageId,
 					mvrPlaceholder: s.mvrPlaceholder,
 					path: s.path,
-				},
-			],
+				};
+				if (s.objects !== undefined && Object.keys(s.objects).length > 0) {
+					pkg.captured = s.objects;
+				}
+				return [pkg];
+			},
 		},
 	});
 }
