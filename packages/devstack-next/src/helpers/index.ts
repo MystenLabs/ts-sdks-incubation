@@ -19,6 +19,7 @@ export {
 } from './publish-move.js';
 export {
 	extractTrailingJson,
+	pickCreatedByTypeIncludes,
 	pickCreatedByTypeSuffix,
 	publishViaSuiCli,
 	type PublishCaptureCallback,

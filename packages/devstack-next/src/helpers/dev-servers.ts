@@ -13,6 +13,14 @@ export interface ViteDevServerOptions {
 	 * Override only if you're spinning up multiple dev servers and need
 	 * disjoint port allocations. */
 	slot?: string;
+	/** Pin a literal port for the dev server, bypassing the per-stack
+	 * allocator entirely. Useful when an external consumer needs to
+	 * know the URL up-front — e.g. Playwright's `baseURL` is set at
+	 * config-eval time and can't track a runtime-allocated port. With
+	 * `port` set, vite is invoked with `--port <n>`; the example's
+	 * `vite.config.ts` `strictPort` setting decides whether a busy
+	 * port raises or falls back. */
+	port?: number;
 	/** Working dir for the spawn. Default: env.appDir. */
 	cwd?: string;
 	/** Override the spawn. Default `pnpm exec vite`. The allocated port
@@ -64,14 +72,15 @@ export function viteDevServer(opts: ViteDevServerOptions = {}) {
 	const name = opts.name ?? 'frontend.dev-server';
 	const slot = opts.slot ?? 'frontend.dev-server';
 	const baseCommand = opts.command ?? { command: 'pnpm', args: ['exec', 'vite'] };
+	const pinnedPort = opts.port;
 
-	// hostProcess takes a single deps record. Fold gates in alongside
-	// the port; the engine resolves them all before start runs and the
-	// `args` callback ignores them — they're only there to gate the
-	// spawn on upstream identity.
-	const procDeps: Record<string, Dep<unknown, unknown>> = {
-		_port: ports.get('allocate', { slot }),
-	};
+	// hostProcess takes a single deps record. When `port:` is set the
+	// allocator's `_port` Dep is omitted (literal port wins); otherwise
+	// the allocator Dep flows in. Gates ride alongside either way.
+	const procDeps: Record<string, Dep<unknown, unknown>> = {};
+	if (pinnedPort === undefined) {
+		procDeps._port = ports.get('allocate', { slot });
+	}
 	if (opts.gates !== undefined) {
 		opts.gates.forEach((gate, i) => {
 			procDeps[`_gate${i}`] = gate as Dep<unknown, unknown>;
@@ -84,31 +93,37 @@ export function viteDevServer(opts: ViteDevServerOptions = {}) {
 		deps: procDeps,
 		command: baseCommand.command,
 		args: ({ deps }) => {
-			const port = (deps as { _port: number })._port;
+			const port = pinnedPort ?? (deps as { _port: number })._port;
 			return [...baseCommand.args, '--port', String(port)];
 		},
 		...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
 		inputs: ({ deps }) => ({
-			port: (deps as { _port: number })._port,
+			port: pinnedPort ?? (deps as { _port: number })._port,
 			command: baseCommand.command,
 			args: baseCommand.args,
 		}),
 	});
 
+	const outerDeps: Record<string, Dep<unknown, unknown>> = {
+		proc: proc.get('full') as Dep<unknown, unknown>,
+	};
+	if (pinnedPort === undefined) {
+		outerDeps.port = ports.get('allocate', { slot }) as Dep<unknown, unknown>;
+	}
+
 	return define<ViteDevServerState, typeof provides>({
 		name,
-		deps: {
-			port: ports.get('allocate', { slot }),
-			proc: proc.get('full'),
-		},
+		deps: outerDeps,
 		provides,
 		// `proc` is unused at projection time but listing it as a Dep
 		// pulls the hostProcess into the graph and ensures this node's
 		// identity flips when the process state flips (e.g. pid change
 		// after a re-spawn).
-		inputs: ({ deps }) => ({ port: (deps as { port: number }).port }),
+		inputs: ({ deps }) => ({
+			port: pinnedPort ?? (deps as { port: number }).port,
+		}),
 		start: async ({ deps }): Promise<ViteDevServerState> => {
-			const port = (deps as { port: number }).port;
+			const port = pinnedPort ?? (deps as { port: number }).port;
 			return { port, url: `http://localhost:${port}` };
 		},
 		represents: {
