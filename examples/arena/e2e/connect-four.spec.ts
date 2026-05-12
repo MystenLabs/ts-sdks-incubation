@@ -23,12 +23,10 @@ const manifestPath = join(here, '..', '.devstack', 'stacks', stack, 'manifest.js
 const keysDir = join(here, '..', '.devstack', 'stacks', stack, '.keys');
 
 interface RawManifest {
-	registry: {
-		packages: Array<{ name: string; packageId: string }>;
-		accounts: Array<{ name: string; address: string }>;
-		services: Array<{ name: string; url: string }>;
-		arena?: { sharedObjects?: Array<{ name: string; objectId: string; objectType: string }> };
-	};
+	packages: Array<{ name: string; packageId: string }>;
+	accounts: Array<{ name: string; address: string }>;
+	endpoints: Array<{ name: string; url: string }>;
+	extras: { openLobbyId?: string };
 }
 
 interface ResolvedManifest {
@@ -40,14 +38,15 @@ interface ResolvedManifest {
 
 function loadManifest(): ResolvedManifest {
 	const raw = JSON.parse(readFileSync(manifestPath, 'utf8')) as RawManifest;
-	const rpcUrl = raw.registry.services.find((s) => s.name === 'sui-rpc')?.url;
+	const rpcUrl = raw.endpoints.find((s) => s.name === 'sui-rpc')?.url;
 	if (rpcUrl === undefined) throw new Error('sui-rpc missing from manifest');
-	const connectFour = raw.registry.packages.find((p) => p.name === 'connect_four');
+	const connectFour = raw.packages.find((p) => p.name === 'connect_four');
 	if (connectFour === undefined) throw new Error('connect_four package missing from manifest');
-	const openLobby = raw.registry.arena?.sharedObjects?.find((o) => o.name === 'openLobby');
-	if (openLobby === undefined) throw new Error('openLobby missing from manifest');
+	const openLobbyId = raw.extras.openLobbyId;
+	if (openLobbyId === undefined) throw new Error('openLobbyId missing from manifest.extras');
+	const openLobby = { objectId: openLobbyId };
 	const accounts: Record<string, string> = Object.fromEntries(
-		raw.registry.accounts.map((a) => [a.name, a.address]),
+		raw.accounts.map((a) => [a.name, a.address]),
 	);
 	return { rpcUrl, accounts, connectFour, openLobby };
 }
