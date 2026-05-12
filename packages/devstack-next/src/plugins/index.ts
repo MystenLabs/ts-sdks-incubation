@@ -48,9 +48,14 @@ export {
 } from './sui.js';
 export {
 	walrus,
+	walrusProxy,
+	walrusSeedWal,
 	type WalrusNetworkState,
 	type WalrusNodeState,
 	type WalrusOptions,
+	type WalrusProxyOptions,
+	type WalrusSeedWalOptions,
+	type WalrusSeedWalAccount,
 } from './walrus.js';
 export {
 	walletApp,
