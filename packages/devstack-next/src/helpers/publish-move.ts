@@ -134,7 +134,11 @@ export function publishMove<TSigner>(opts: PublishMoveOptions<TSigner>) {
 		deps._path = opts.path as Dep<unknown, unknown>;
 	}
 	const provName = opts.name;
-	const mvrPlaceholder = opts.mvrPlaceholder ?? `@local/${opts.name}`;
+	// MVR-style placeholder. Names accept lowercase + digits + hyphens
+	// (no underscores) per the Move Registry spec; snake_case Move
+	// package names get bridged automatically. Callers can still
+	// override via `mvrPlaceholder:` for custom registries.
+	const mvrPlaceholder = opts.mvrPlaceholder ?? `@local/${opts.name.replace(/_/g, '-')}`;
 
 	// Customize the package recipe to inject the user's name + the
 	// resolved placeholder (the schema can't know either at module load).

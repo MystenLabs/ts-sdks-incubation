@@ -90,8 +90,8 @@ export async function publishViaSuiCli(
 /** Helper for capture callbacks: pick the first `created` change whose
  * type ends with the given suffix (e.g. `'::pool::Registry'`). Returns
  * the object id, or undefined if no match. Suffix-match is the right
- * grain because the package id portion of the type isn't known until
- * publish completes. */
+ * grain for monomorphic types because the package id portion isn't
+ * known until publish completes. */
 export function pickCreatedByTypeSuffix(
 	changes: SuiObjectChange[],
 	typeSuffix: string,
@@ -100,6 +100,24 @@ export function pickCreatedByTypeSuffix(
 		if (c.type !== 'created') continue;
 		if (typeof c.objectType !== 'string') continue;
 		if (!c.objectType.endsWith(typeSuffix)) continue;
+		return c.objectId;
+	}
+	return undefined;
+}
+
+/** Helper for capture callbacks targeting generic-typed objects (e.g.
+ * `'::coin::TreasuryCap<'` where the type arg makes a strict suffix
+ * match impossible). Matches when `objectType.includes(fragment)` —
+ * pass a fragment specific enough to uniquely identify the object
+ * (`'::coin::TreasuryCap<'` is enough on a single-coin publish). */
+export function pickCreatedByTypeIncludes(
+	changes: SuiObjectChange[],
+	fragment: string,
+): string | undefined {
+	for (const c of changes) {
+		if (c.type !== 'created') continue;
+		if (typeof c.objectType !== 'string') continue;
+		if (!c.objectType.includes(fragment)) continue;
 		return c.objectId;
 	}
 	return undefined;

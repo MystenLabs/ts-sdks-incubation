@@ -76,11 +76,21 @@ async function buildEnv(
 	const appDir = dirname(configPath);
 	const appName = await resolveAppName(appDir);
 	const env: Env = { appName, appDir, network };
-	// Explicit `--stack` flag wins; fall back to the active-stack pointer
-	// at `<appDir>/.devstack/active` written by `stack use`. Subcommands
-	// that want a hard default ('main') still apply theirs after this —
-	// callers see `env.stack` as the user's expressed preference.
-	const resolved = stack ?? (await readActiveStack(appDir));
+	// Precedence: explicit `--stack` flag > `DEVSTACK_STACK` env var >
+	// active-stack pointer at `<appDir>/.devstack/active` (written by
+	// `stack use`). Subcommands that want a hard default ('main') still
+	// apply theirs after this — callers see `env.stack` as the user's
+	// expressed preference.
+	let resolved = stack;
+	if (resolved === undefined) {
+		const fromEnv = process.env.DEVSTACK_STACK;
+		if (typeof fromEnv === 'string' && fromEnv.length > 0 && STACK_NAME_RE.test(fromEnv)) {
+			resolved = fromEnv;
+		}
+	}
+	if (resolved === undefined) {
+		resolved = await readActiveStack(appDir);
+	}
 	if (resolved !== undefined) env.stack = resolved;
 	return env;
 }

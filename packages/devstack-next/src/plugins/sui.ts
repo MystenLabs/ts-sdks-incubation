@@ -90,6 +90,20 @@ const provides = {
 		}
 		return { url: s.graphqlUrl };
 	}),
+	/** `Endpoint`-shape Dep for the `manifest({ endpoints })` slot.
+	 *  Always emits the RPC entry; the faucet + graphql entries are
+	 *  exposed separately so apps can opt out of either by not listing
+	 *  them in their manifest call. */
+	endpoint: dep(
+		(s: SuiState): Endpoint => ({ name: 'sui-rpc', url: s.rpcUrl, kind: 'rpc' }),
+	),
+	/** Throws on mainnet (no public faucet). */
+	faucetEndpoint: dep((s: SuiState): Endpoint => {
+		if (s.faucetUrl === undefined) {
+			throw new Error(`sui (${s.network}): no faucet on this network`);
+		}
+		return { name: 'sui-faucet', url: s.faucetUrl, kind: 'faucet' };
+	}),
 	network: dep((s: SuiState) => s.network),
 	full: dep((s: SuiState) => s),
 } satisfies Provides<SuiState>;
