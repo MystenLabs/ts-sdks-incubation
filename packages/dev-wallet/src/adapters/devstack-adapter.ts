@@ -159,12 +159,12 @@ export class DevstackProxySigner extends Signer {
 }
 
 export interface DevstackSignerAdapterOptions {
-	/** Wallet-app origin (e.g. `http://localhost:9420`). Read from
-	 * `manifest.registry.services[name='wallet-app'].url`. */
+	/** Wallet-app origin (e.g. `http://localhost:9420`). Read from the
+	 * matching endpoint entry on the active manifest. */
 	serverOrigin: string;
-	/** Bearer token. Read from the matching service entry's `endpointLabel`
-	 * (parse `?token=<hex>` from the URL). Omit if the wallet-app runs
-	 * without auth. */
+	/** Bearer token. Parse `?token=<hex>` from the manifest entry's
+	 * `pairUrl` (devstack-next) or `endpointLabel` (legacy devstack).
+	 * Omit if the wallet-app runs without auth. */
 	token?: string | null;
 	/** Override the adapter's display name. Defaults to `'Devstack'`. */
 	name?: string;
@@ -176,19 +176,22 @@ export interface DevstackSignerAdapterOptions {
  * shipping their private keys into the frontend bundle. All signing happens
  * server-side via the `walletApp()` plugin.
  *
- * Construct from the active manifest's `wallet-app` service entry:
+ * The simplest construction reads the manifest's `wallet-app` endpoint:
  *
  * ```ts
  * import { manifest } from './generated/manifest.js';
- * import { DevstackSignerAdapter } from '@mysten-incubation/dev-wallet/adapters';
+ * import { createDevstackAdapterFromManifest } from '@mysten-incubation/dev-wallet/adapters';
  *
- * const service = manifest.registry.services?.find(s => s.name === 'wallet-app');
- * const adapter = service
- *   ? new DevstackSignerAdapter({
- *       serverOrigin: service.url,
- *       token: parseToken(service.endpointLabel),
- *     })
- *   : null;
+ * const adapter = createDevstackAdapterFromManifest(manifest);
+ * ```
+ *
+ * Or thread the URL + token in manually (e.g. from a non-manifest source):
+ *
+ * ```ts
+ * const adapter = new DevstackSignerAdapter({
+ *     serverOrigin: 'http://localhost:9420',
+ *     token: '<bearer hex>',
+ * });
  * ```
  */
 export class DevstackSignerAdapter extends BaseSignerAdapter {
@@ -271,16 +274,35 @@ export function parseDevstackToken(pairedUrl: string | undefined): string | null
 
 /**
  * Convenience: read the `wallet-app` entry from a devstack manifest and
- * build a configured adapter, or return `null` when the service isn't
- * present (no `walletApp()` plugin running, or stack hasn't come up yet).
+ * build a configured adapter, or return `null` when the entry isn't
+ * present (no `walletApp.create(...)` in the stack, or it hasn't come
+ * up yet).
+ *
+ * Accepts either shape:
+ *   - devstack-next (`@mysten-incubation/devstack-next`): looks under
+ *     `manifest.endpoints` for `{ name: 'wallet-app', url, pairUrl }`.
+ *   - legacy devstack (`@mysten-incubation/devstack`): looks under
+ *     `manifest.registry.services` for `{ name: 'wallet-app', url,
+ *     endpointLabel: '<url>/?token=<hex>' }`. Kept so the adapter can
+ *     bridge consumers mid-migration.
  */
 export function createDevstackAdapterFromManifest(manifest: {
+	endpoints?: ReadonlyArray<{ name: string; url: string; pairUrl?: string }>;
 	registry?: { services?: ReadonlyArray<{ name: string; url: string; endpointLabel?: string }> };
 }): DevstackSignerAdapter | null {
+	const endpoint = manifest.endpoints?.find((e) => e.name === 'wallet-app');
+	if (endpoint !== undefined) {
+		return new DevstackSignerAdapter({
+			serverOrigin: endpoint.url,
+			token: parseDevstackToken(endpoint.pairUrl),
+		});
+	}
 	const service = manifest.registry?.services?.find((s) => s.name === 'wallet-app');
-	if (service === undefined) return null;
-	return new DevstackSignerAdapter({
-		serverOrigin: service.url,
-		token: parseDevstackToken(service.endpointLabel),
-	});
+	if (service !== undefined) {
+		return new DevstackSignerAdapter({
+			serverOrigin: service.url,
+			token: parseDevstackToken(service.endpointLabel),
+		});
+	}
+	return null;
 }

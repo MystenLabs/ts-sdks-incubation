@@ -121,45 +121,27 @@ the existing docker-image tests (`itDocker`).
 
 ## Phase 7 — release shape
 
-### 7a — per-plugin package split
+Devstack stays a single package; plugins ship as subpath exports
+(`@mysten-incubation/devstack-next/plugins`). No per-plugin package split.
 
-`packages/devstack-sui`, `devstack-walrus`, `devstack-seal`,
-`devstack-deepbook`, `devstack-accounts`. Each with its own README,
-exports, version. `devstack-next` becomes the engine + factories +
-helpers + runners core; the plugin packages depend on it.
-
-- **Dependencies**: API stable (after Phase 5; 6 is icing).
-- **Done when**: `pnpm publish --dry-run` succeeds for every package.
-
-### 7b — examples cutover
-
-Port `examples/*` from old devstack to devstack-next. One app at a
-time, smallest first. Updates each app's `devstack.config.ts`,
-manifest consumption, account-pool API.
-
-- **Dependencies**: 7a (or ship pre-split — split is cleanup).
-- **Done when**: every example uses `@mysten-incubation/devstack-next`
-  and the old `packages/devstack/` is deletable.
-
-### 7c — README + migration guide + 1.0
-
-Top-level README rewrite. Migration guide from devstack 0.1.0 →
-devstack-next (action graph → producer graph; registry → Provides
-Deps; setup actions → in-config plugin instances). Version bump to
-1.0.
-
-- **Dependencies**: 7a + 7b.
+7b (examples cutover) and 7c (README + migration + rc) both shipped —
+five examples + the create-devstack-app scaffold are on devstack-next,
+along with the supporting `walletApp` / `registerCoin` /
+`deepbookMarketMaker` plugin ports, the `Endpoint.pairUrl` /
+`Package.captured` / `manifest.extras` shape extensions, and the
+`/react` subpath helpers. Old `packages/devstack/` stays in the tree
+(intentionally — both manifests are supported by the dev-wallet
+adapter and the panels for migrating consumers).
 
 ## Smaller polish (ad-hoc, no specific phase)
 
-- `runTransaction` accepts extra Deps. The deepbook-pools step in
-  commit 174a0d1 dropped to raw `define()` because runTransaction's
-  signer + rpc are the only built-ins. Adding `deps?: TExtra` would
-  let consumers stay on the helper.
 - Snapshot pruning / GC for old per-stack `<id>-<label>.json` files
   (capture-and-restore pile up over a long dev session).
 - More signer flavors as consumers ask (multisig, zkLogin). Explicitly
   not on the critical path.
+- `runTransaction.deps` already landed earlier; deepbook-pools could
+  fold back from raw `define()` to the helper if a future cleanup pass
+  wants the consistency.
 
 ## Recommended sequencing
 
@@ -171,12 +153,10 @@ Deps; setup actions → in-config plugin instances). Version bump to
             ↓
             sealLocalnet upgraded
 
-5{a-g} ── 6a ── 6b ── 7a ── 7b ── 7c
+5{a-g} ── 6a ── 6b ── 7b ── 7c     (all shipped)
 ```
 
-5a is the keystone — start there. 5b + 5c can land in parallel since
-they're independent of the network primitive. Phase 6 follows Phase
-5; Phase 7 last.
+5a was the keystone — Phase 5 + 6 + 7 all complete.
 
 ## What's explicitly NOT in this plan
 

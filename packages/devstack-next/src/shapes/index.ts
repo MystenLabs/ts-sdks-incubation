@@ -29,6 +29,13 @@ export interface Package {
 	 * strips it before serializing so per-developer absolute paths
 	 * don't leak into committed files. */
 	path?: string;
+	/** Secondary object ids surfaced by the publish (TreasuryCap,
+	 * AdminCap, system / staking objects, etc.). Populated by
+	 * `publishViaSuiCli`'s `capture:` callback or by plugins that own
+	 * the publish flow (walrus, deepbook, seal). Frontends read this
+	 * to thread cap ids into Move calls without re-fetching from
+	 * chain. */
+	captured?: Record<string, string>;
 }
 
 export interface Endpoint {
@@ -38,6 +45,13 @@ export interface Endpoint {
 	url: string;
 	/** Optional category for grouping in the TUI / dashboard. */
 	kind?: string;
+	/** Pairing URL — the URL a developer clicks (or that the frontend
+	 * parses) to extract a session token. Today only the `wallet-app`
+	 * endpoint sets this: `<url>/?token=<hex>` matches the bearer token
+	 * the devstack signer server checks on each `/api/v1/devstack/*`
+	 * request. Other endpoints leave it absent. Localnet-only — the
+	 * token is a per-stack random bytestring, never a real credential. */
+	pairUrl?: string;
 }
 
 export interface Account {
@@ -45,4 +59,14 @@ export interface Account {
 	name: string;
 	/** Sui address (0x-prefixed hex). */
 	address: string;
+}
+
+export interface Coin {
+	/** Logical registry name (`'managed_coin'`, `'musdc'`). Matches the
+	 * `name` argument passed to `registerCoin`. */
+	name: string;
+	/** Fully-qualified Move type: `${packageId}::${module}::${TYPE}`. */
+	type: string;
+	/** Coin decimals (e.g. 6 for USDC-shaped, 9 for SUI-shaped). */
+	decimals: number;
 }

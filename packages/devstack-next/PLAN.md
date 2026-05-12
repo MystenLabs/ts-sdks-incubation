@@ -612,7 +612,7 @@ methods: `create(config)` to instantiate and `get(key, args?)` to build static D
 callable** — just methods on an object.
 
 ```typescript
-// In @mysten-incubation/devstack-sui:
+// In @mysten-incubation/devstack (src/plugins/sui.ts):
 import { defineSchema, dep, define, ports } from '@mysten-incubation/devstack';
 
 type SuiState = {
@@ -655,8 +655,7 @@ export const sui = defineSchema('sui', {
 User-side:
 
 ```typescript
-import { sui } from '@mysten-incubation/devstack-sui';
-import { codegen } from '@mysten-incubation/devstack/codegen';
+import { sui, codegen } from '@mysten-incubation/devstack/plugins';
 
 defineDevstackConfig({
 	stack: [
@@ -1323,10 +1322,10 @@ test('mints a token', async ({ page, devstack }) => {
 
 ### Package + file layout (clean parallel build)
 
-Single core package + per-plugin packages:
+Single package, plugins as subpath exports:
 
 ```
-packages/devstack/                # core
+packages/devstack/                # one package
   src/
     engine/                       # L1 — pure logic
       types.ts                    # NodeImpl, Producer, Dep, DepRecipe, EngineState, EngineEvent
@@ -1360,6 +1359,10 @@ packages/devstack/                # core
       run-transaction.ts
       register-coin.ts
       idempotent.ts               # input-hash skip helper
+    plugins/                      # L6 — sui, walrus, seal, deepbook, accounts,
+                                  #      bindings, manifest. All ship in this
+                                  #      package; consumers import from
+                                  #      `@mysten-incubation/devstack/plugins`.
     cli/                          # L7
       main.ts                     # entry point; argv routing
       up.ts
@@ -1380,13 +1383,6 @@ packages/devstack/                # core
       read.ts
       write.ts
     index.ts                      # public exports
-
-packages/devstack-sui/             # plugin
-  src/index.ts                     # exports `sui = defineSchema(...)`
-
-packages/devstack-walrus/          # plugin
-packages/devstack-seal/            # plugin
-packages/devstack-deepbook/        # plugin (bundle via plain function)
 ```
 
 **Public exports** (subpath exports in `package.json`):
@@ -1397,6 +1393,7 @@ packages/devstack-deepbook/        # plugin (bundle via plain function)
 - `@mysten-incubation/devstack/standard` → `ports`, `createAccountPool`
 - `@mysten-incubation/devstack/shapes` → `Package`, `Endpoint`, `Account`
 - `@mysten-incubation/devstack/helpers` → `publishMove`, `runTransaction`, `registerCoin`
+- `@mysten-incubation/devstack/plugins` → `sui`, `walrus`, `seal`, `deepbook`, `accounts`, `bindings`, `manifest`
 - `@mysten-incubation/devstack/cli` → CLI entry (also exposed as bin)
 - `@mysten-incubation/devstack/tui` → `TuiRenderer`
 - `@mysten-incubation/devstack/vitest` → harness

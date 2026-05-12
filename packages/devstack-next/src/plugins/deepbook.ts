@@ -129,13 +129,19 @@ const DEEPBOOK_SUBDIR = 'packages/deepbook';
 const DEEPBOOK_REGISTRY_TYPE_SUFFIX = '::registry::Registry';
 const DEEPBOOK_ADMIN_CAP_TYPE_SUFFIX = '::registry::DeepbookAdminCap';
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type CoinTypeDep = Dep<any, string> | Dep<any, { type: string }>;
+
 export interface DeepbookLocalnetPoolSpec {
 	/** Logical pool name (used as the produced state key). */
 	name: string;
-	/** Base coin Move type, e.g. `'0x2::sui::SUI'`. */
-	base: string;
-	/** Quote coin Move type. */
-	quote: string;
+	/** Base coin Move type. Either a literal `'0x2::sui::SUI'`, a Dep
+	 * returning the fully-qualified type string, or a Dep returning a
+	 * shape with a `.type` field (the `Coin` shape from
+	 * `registerCoin({ name }).get('coin')` works directly). */
+	base: string | CoinTypeDep;
+	/** Quote coin Move type. Same shape rules as `base`. */
+	quote: string | CoinTypeDep;
 	tickSize: bigint;
 	lotSize: bigint;
 	minSize: bigint;
@@ -147,7 +153,8 @@ export interface DeepbookLocalnetPoolSpec {
 
 export interface DeepbookLocalnetOptions {
 	/** Publisher signer. Typically `accounts.get('signer', { name: 'publisher' })`. */
-	signer: Dep<unknown, Keypair>;
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	signer: Dep<any, Keypair>;
 	/** Pinned deepbookv3 git ref. Default `'v7.0.0'`. The `gitFetch`
 	 * cache key includes this, so a bump fetches a fresh tree and the
 	 * input hash flips → re-publish. */
@@ -163,6 +170,13 @@ export interface DeepbookPoolEntry {
 	objectType: string;
 	baseCoinType: string;
 	quoteCoinType: string;
+	/** `tickSize` from the pool spec — needed by downstream consumers
+	 *  (market makers) to compute level offsets without re-reading the
+	 *  spec. Stored as a numeric string since `JSON.stringify` over a
+	 *  bigint would throw. */
+	tickSize: string;
+	lotSize: string;
+	minSize: string;
 }
 
 export interface DeepbookPoolsState {
@@ -222,6 +236,20 @@ export function deepbookLocalnet(opts: DeepbookLocalnetOptions) {
 			}),
 	});
 
+	// Per-pool deps map. Stable keys (`pool_<n>_base`/`_quote`) so the
+	// resolved deps object the engine hands back has predictable
+	// shape. Literal-string specs map to a no-op slot we ignore in
+	// `start`.
+	const poolDeps: Record<string, Dep<unknown, unknown>> = {};
+	poolSpecs.forEach((spec, i) => {
+		if (typeof spec.base !== 'string') {
+			poolDeps[`pool_${i}_base`] = spec.base as Dep<unknown, unknown>;
+		}
+		if (typeof spec.quote !== 'string') {
+			poolDeps[`pool_${i}_quote`] = spec.quote as Dep<unknown, unknown>;
+		}
+	});
+
 	const pools =
 		poolSpecs.length > 0
 			? define<DeepbookPoolsState, typeof poolsProvides>({
@@ -231,21 +259,24 @@ export function deepbookLocalnet(opts: DeepbookLocalnetOptions) {
 						signer: opts.signer,
 						rpc: sui.get('rpc'),
 						pkg: publish.get('full'),
+						...poolDeps,
 					},
 					provides: poolsProvides,
-					inputs: () =>
-						poolSpecs.map((p) => ({
+					inputs: ({ deps }) => {
+						const d = deps as Record<string, unknown>;
+						return poolSpecs.map((p, i) => ({
 							name: p.name,
-							base: p.base,
-							quote: p.quote,
+							base: resolveCoinType(p.base, d[`pool_${i}_base`]),
+							quote: resolveCoinType(p.quote, d[`pool_${i}_quote`]),
 							tickSize: p.tickSize.toString(),
 							lotSize: p.lotSize.toString(),
 							minSize: p.minSize.toString(),
 							whitelisted: p.whitelisted ?? true,
 							stable: p.stable ?? false,
-						})),
+						}));
+					},
 					start: async ({ deps }): Promise<DeepbookPoolsState> => {
-						const d = deps as {
+						const d = deps as Record<string, unknown> & {
 							signer: Keypair;
 							rpc: { url: string };
 							pkg: { packageId: string; objects?: Record<string, string> };
@@ -258,16 +289,23 @@ export function deepbookLocalnet(opts: DeepbookLocalnetOptions) {
 									'expected publishMove to surface them via the type-suffix capture',
 							);
 						}
+						// Resolve each pool spec's base/quote against the
+						// resolved deps map. Order matches `poolSpecs`.
+						const resolved = poolSpecs.map((p, i) => ({
+							spec: p,
+							base: resolveCoinType(p.base, d[`pool_${i}_base`]),
+							quote: resolveCoinType(p.quote, d[`pool_${i}_quote`]),
+						}));
 						const tx = new Transaction();
 						tx.setGasBudget(500_000_000);
 						tx.moveCall({
 							target: `${d.pkg.packageId}::registry::init_balance_manager_map`,
 							arguments: [tx.object(registryId), tx.object(adminCapId)],
 						});
-						for (const spec of poolSpecs) {
+						for (const { spec, base, quote } of resolved) {
 							tx.moveCall({
 								target: `${d.pkg.packageId}::pool::create_pool_admin`,
-								typeArguments: [spec.base, spec.quote],
+								typeArguments: [base, quote],
 								arguments: [
 									tx.object(registryId),
 									tx.pure.u64(spec.tickSize),
@@ -294,8 +332,8 @@ export function deepbookLocalnet(opts: DeepbookLocalnetOptions) {
 
 						const out: DeepbookPoolEntry[] = [];
 						const changes = (result.objectChanges ?? []) as SuiObjectChange[];
-						for (const spec of poolSpecs) {
-							const expected = `${d.pkg.packageId}::pool::Pool<${spec.base}, ${spec.quote}>`;
+						for (const { spec, base, quote } of resolved) {
+							const expected = `${d.pkg.packageId}::pool::Pool<${base}, ${quote}>`;
 							const found = changes.find(
 								(c) =>
 									c.type === 'created' &&
@@ -309,8 +347,11 @@ export function deepbookLocalnet(opts: DeepbookLocalnetOptions) {
 								name: spec.name,
 								poolId: found.objectId,
 								objectType: expected,
-								baseCoinType: spec.base,
-								quoteCoinType: spec.quote,
+								baseCoinType: base,
+								quoteCoinType: quote,
+								tickSize: spec.tickSize.toString(),
+								lotSize: spec.lotSize.toString(),
+								minSize: spec.minSize.toString(),
 							});
 						}
 						return { pools: out };
@@ -319,4 +360,26 @@ export function deepbookLocalnet(opts: DeepbookLocalnetOptions) {
 			: undefined;
 
 	return { source, publish, pools };
+}
+
+/** Resolve a pool-spec coin type to a literal string. Strings pass
+ * through; resolved Dep values (`string` or `{ type }`) project to the
+ * type string. Throws on missing/mismatched input. */
+function resolveCoinType(
+	specEntry: string | CoinTypeDep,
+	resolved: unknown,
+): string {
+	if (typeof specEntry === 'string') return specEntry;
+	if (typeof resolved === 'string') return resolved;
+	if (
+		resolved !== null &&
+		typeof resolved === 'object' &&
+		'type' in resolved &&
+		typeof (resolved as { type: unknown }).type === 'string'
+	) {
+		return (resolved as { type: string }).type;
+	}
+	throw new Error(
+		`deepbookLocalnet: pool spec base/quote Dep resolved to ${typeof resolved} — expected string or { type: string }`,
+	);
 }

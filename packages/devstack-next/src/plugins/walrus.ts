@@ -358,10 +358,20 @@ function buildRegister(deploy: DeploySteps) {
 		provides: registerProvides,
 		start: async ({ deps }) => {
 			const d = (deps as { deploy: WalrusDeployState }).deploy;
+			const captured: Record<string, string> = {
+				systemObject: d.systemObject,
+				stakingObject: d.stakingObject,
+			};
+			if (d.upgradeManagerObject !== undefined) {
+				captured.upgradeManagerObject = d.upgradeManagerObject;
+			}
+			if (d.treasuryObject !== undefined) captured.treasuryObject = d.treasuryObject;
+			if (d.exchangeObject !== undefined) captured.exchangeObject = d.exchangeObject;
 			const pkg: Package = {
 				name: 'walrus',
 				packageId: d.walrusPackageId,
 				mvrPlaceholder: '@local/walrus',
+				captured,
 			};
 			const out: WalrusRegisterState = {
 				package: pkg,
@@ -558,7 +568,8 @@ export interface WalrusSeedWalAccount {
 	 * spec key, but conventionally does. */
 	name: string;
 	/** Signer Dep — typically `accounts.pool.get('signer', { name })`. */
-	signer: Dep<unknown, Keypair>;
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	signer: Dep<any, Keypair>;
 }
 
 export interface WalrusSeedWalOptions {

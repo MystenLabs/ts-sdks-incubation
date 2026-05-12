@@ -18,15 +18,15 @@ through to its devstack-next equivalent.
 | `sui({ rpcPort, faucetPort, version })`                | `sui.create({ network: 'localnet', version? })`                                                         |
 | `accounts()` + top-level `accounts: ['alice', 'bob']`  | `accounts({ specs: { alice: {}, bob: {} } })` → returns `{ pool, fund }`                                |
 | `codegen()`                                            | `manifest({ packages: [...], endpoints: [...] })`                                                       |
-| `walletApp({ port })`                                  | **Gap** — see [Plugin gaps](#plugin-gaps) below                                                         |
+| `walletApp({ port })`                                  | `walletApp.create({ accounts: [...], devServerOrigin? })`                                               |
 | `frontend({ port })`                                   | `viteDevServer({ gates: [...] })` (helper, not a schema)                                                |
 | `publishMove({ name, path, publisher? })`              | `publishMove({ name, path, signer, publish: publishViaSuiCli })`                                        |
 | `seed({ name, needs, signer, run })`                   | `runTransaction({ name, signer, deps?, build })` (or raw `define()` for non-tx side effects)            |
 | `runTransaction({ name, needs, signer, build })`       | `runTransaction({ name, signer, deps?, build })` (`needs` becomes `deps`)                               |
-| `registerCoin({ from, package, … })`                   | **Gap** — see [Plugin gaps](#plugin-gaps) below                                                         |
+| `registerCoin({ from, package, … })`                   | `registerCoin({ name, package, module, type, decimals })` — feed `.get('coin')` to `manifest({ coins })` |
 | `walrus({})`                                           | `walrus({ nodeCount? })` → returns `{ nodes, appNetwork, deploy, register, exchange }`                  |
 | `seal({})`                                             | `sealLocalnet({ signer })` → returns full bundle (see seal section below)                               |
-| `deepbook({ pools, marketMakers })`                    | `deepbookLocalnet({ signer })` for publish + create-pool. Market makers: **gap**.                       |
+| `deepbook({ pools, marketMakers })`                    | `deepbookLocalnet({ signer, pools })` + `deepbookMarketMaker({...})` (separate producer per maker)      |
 | `ctx.registry.packages.require('foo')`                 | Direct Dep on the publish producer: `deps: { foo: helloPublish.get('package') }`                       |
 | `ctx.accounts.get('alice')`                            | `accountsBundle.pool.get('signer', { name: 'alice' })`                                                  |
 
@@ -295,6 +295,63 @@ defineDevstackConfig({
 `seal.create({ url })` for an externally-managed key server is
 unchanged.
 
+### `walletApp`
+
+`walletApp.create({ accounts, devServerOrigin? })` — in-process HTTP
+signer endpoint backing the dev-wallet `DevstackSignerAdapter`. Same
+HTTP surface as the old plugin (`/api/v1/devstack/{accounts,sign-transaction,sign-personal-message}`,
+bearer-token auth, persisted token under `<stackDir>/wallet-token`),
+redesigned around typed Deps:
+
+```typescript
+const a = accounts({ specs: { alice: {}, bob: {} } });
+
+const wallet = walletApp.create({
+    accounts: [
+        { name: 'alice', signer: a.pool.get('signer', { name: 'alice' }) },
+        { name: 'bob', signer: a.pool.get('signer', { name: 'bob' }) },
+    ],
+    // Optional. Pass the dev server's origin Dep so the wallet-app's
+    // CORS allowlist + input hash track it — a vite restart with a new
+    // port triggers a clean wallet-app restart that preserves the
+    // bearer token.
+    devServerOrigin: dev.get('origin'),
+});
+
+const m = manifest({
+    endpoints: [wallet.get('endpoint'), sui.get('endpoint-as-shape')],
+});
+
+defineDevstackConfig({
+    stack: [
+        sui.create({ network: 'localnet' }),
+        a.pool, a.fund,
+        wallet,
+        m,
+    ],
+});
+```
+
+Differences from the old plugin:
+
+- **No two-action split.** The register/serve split in the old plugin
+  was there to populate the manifest at apply-time before the listener
+  came up. devstack-next emits the manifest by reading the running
+  producer's state, so a single producer covers both jobs — no
+  apply-time placeholder.
+- **No `setAccounts` / `setAllowedOrigins` hot-reload.** An account
+  added or removed in `devstack.config.ts` flips the producer's input
+  hash and triggers a clean restart; the bearer token persists across
+  restarts so the frontend's stored pair URL keeps working.
+- **`port:` hint dropped.** The shared `ports` allocator picks an
+  ephemeral port via slot `'walletApp.http'` — warm restarts preserve
+  the allocation.
+
+`walletApp.get('url')` / `'token'` / `'pairUrl'` / `'endpoint'` /
+`'full'` resolve via the schema's static accessor before the instance
+exists, so `manifest({ endpoints: [walletApp.get('endpoint')] })`
+type-checks at config build time.
+
 ### `walrus`
 
 ```typescript
@@ -321,14 +378,50 @@ in front of the committee.
 ### `deepbook`
 
 ```typescript
+const usdcPublish = publishMove({ name: 'mock_usdc', ..., publish: publishViaSuiCli });
+const usdcCoin    = registerCoin({
+    name: 'musdc',
+    package: usdcPublish.get('package'),
+    module: 'mock_usdc',
+    type: 'MOCK_USDC',
+    decimals: 6,
+});
+
 const db = deepbookLocalnet({
     signer: pool.get('signer', { name: 'publisher' }),
-    pools: [{ name: 'sui_usdc', base: 'sui', quote: '@reg/musdc', ... }],
+    pools: [
+        {
+            name: 'sui_usdc',
+            base: '0x2::sui::SUI',
+            // Pool specs accept either a literal Move type or a Dep
+            // returning one (a registered coin's `.get('coin')` is
+            // accepted — the engine resolves it at runtime from the
+            // upstream publish's packageId).
+            quote: usdcCoin.get('coin'),
+            tickSize: 1_000n,
+            lotSize: 100_000_000n,
+            minSize: 1_000_000_000n,
+        },
+    ],
+});
+
+const aliceMaker = deepbookMarketMaker({
+    name: 'alice',
+    signer: pool.get('signer', { name: 'alice' }),
+    deepbookPackage: db.publish.get('package'),
+    pools: db.pools!.get('full'),
+    quotedPools: ['sui_usdc'],
+    midPrices: { sui_usdc: 3_500_000n },
+    sizePerLevel: 1_000_000_000n,
+    levels: 3,
 });
 ```
 
-`marketMakers` from old devstack is **not yet ported** — see
-[Plugin gaps](#plugin-gaps) below.
+The market-maker is a long-running producer — Playwright globalSetup
+runs `engine.runOnce()` so the tick loop never starts there; only
+`pnpm dev` / `devstack-next up` keep the supervisor alive. Mechanical
+port of old devstack's `deepbook/market-maker.ts` (same Move calls,
+same fee math, same cadence).
 
 ---
 
@@ -349,23 +442,17 @@ the committed tag.
 
 ## 5. Plugin gaps
 
-These are explicitly NOT yet ported — follow-up work tracked in
-`notes/PLAN-NEXT.md`:
+None blocking the example cutover — all five examples
+(`_template`, `arena`, `private-content`, `token-studio`, `wallet`)
+plus the `create-devstack-app` scaffold compile against devstack-next.
 
-- **`walletApp({ port })`** — the dev-wallet HTTP server with
-  custom-element panels (devstack-wallet-panels). The replacement
-  ("server-backed signer adapter + custom-element panel API") is a
-  separate workstream.
-- **`registerCoin({ from, package, name, … })`** — coin-token
-  registry helper. Workaround: emit the coin metadata directly via
-  the `manifest` plugin's `coins:` field (when added).
-- **`deepbook.marketMakers`** — long-running grid market-maker host
-  process. Easy to port to `hostProcess`-wrapping, but not in this
-  release.
-- **In-place example cutover** — the `examples/*` apps still use the
-  old API + their frontends consume the old manifest format. Porting
-  each app is mechanical for the chain-side bring-up but blocked on
-  the gaps above for full UI integration.
+Polish / nice-to-have, tracked in `notes/PLAN-NEXT.md`:
+
+- **Snapshot pruning / GC** — old per-stack `<id>-<label>.json`
+  snapshot files accumulate over long dev sessions.
+- **More signer flavors** — multisig + zkLogin signers when consumers
+  ask. The signer types are pluggable (`Dep<any, Keypair>`) so adding
+  a new flavor is non-invasive.
 
 ---
 

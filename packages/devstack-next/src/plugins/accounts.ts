@@ -70,6 +70,13 @@ const provides = {
 		}
 		return entry.address;
 	}),
+	account: dep((s: AccountsState, d: { name: string }): { name: string; address: string } => {
+		const entry = s.signers[d.name];
+		if (entry === undefined) {
+			throw new Error(`accounts.pool: signer '${d.name}' not in pool`);
+		}
+		return { name: d.name, address: entry.address };
+	}),
 	all: dep((s: AccountsState) =>
 		Object.entries(s.signers).map(([name, e]) => ({ name, address: e.address })),
 	),
