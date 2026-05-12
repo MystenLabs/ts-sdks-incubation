@@ -71,12 +71,32 @@ export async function main(argv: readonly string[]): Promise<number> {
 	}
 }
 
-// Only run when invoked as the entry point.
-if (import.meta.url === `file://${process.argv[1]}`) {
-	main(process.argv.slice(2))
-		.then((code) => process.exit(code))
-		.catch((err) => {
-			process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
-			process.exit(1);
-		});
+// Only run when invoked as the entry point. Compare resolved real
+// paths on both sides: pnpm's symlinked node_modules layout means
+// `process.argv[1]` reaches us through a symlink (e.g.
+// `…/node_modules/@mysten-incubation/devstack-next/dist/cli/main.mjs`)
+// while `import.meta.url` resolves to the real backing file (e.g.
+// `…/packages/devstack-next/dist/cli/main.mjs`). A naive string
+// compare silently no-ops the CLI under pnpm, which is how this
+// bug looked: `pnpm dev` exits 0 without running anything.
+if (typeof process.argv[1] === 'string') {
+	const [{ realpathSync }, { fileURLToPath }] = await Promise.all([
+		import('node:fs'),
+		import('node:url'),
+	]);
+	const self = realpathSync(fileURLToPath(import.meta.url));
+	let invoked: string | undefined;
+	try {
+		invoked = realpathSync(process.argv[1]);
+	} catch {
+		invoked = process.argv[1];
+	}
+	if (self === invoked) {
+		main(process.argv.slice(2))
+			.then((code) => process.exit(code))
+			.catch((err) => {
+				process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+				process.exit(1);
+			});
+	}
 }
