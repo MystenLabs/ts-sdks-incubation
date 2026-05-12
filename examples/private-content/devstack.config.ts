@@ -22,6 +22,7 @@ import {
 	sui,
 	walletApp,
 	walrus,
+	walrusProxy,
 	walrusSeedWal,
 } from '@mysten-incubation/devstack-next/plugins';
 
@@ -38,6 +39,13 @@ const vaultPublish = publishMove({
 });
 
 const w = walrus({ nodeCount: 4 });
+
+// Single-port nginx vhost in front of the storage-node committee.
+// Without it the walrus client in the browser can't reach the nodes —
+// each node's REST API is bound to a docker-internal IP
+// (10.<octet>.0.1n) and registered on chain as `walrus-node-<i>.localhost`,
+// which the browser resolves to 127.0.0.1 (no daemon there).
+const wp = walrusProxy({ nodes: w.nodes });
 
 // Swap each account's faucet'd SUI for WAL — required to pay for blob
 // storage. One producer per account; `walrus.exchange` resolves the
@@ -98,6 +106,7 @@ export default defineDevstackConfig({
 		w.register!,
 		w.exchange!,
 		...w.nodes,
+		wp,
 		...seedWal,
 		// Seal stack: image (optional — undefined when `image:` override
 		// is set), keygen, source/publish, KeyServer register, container,

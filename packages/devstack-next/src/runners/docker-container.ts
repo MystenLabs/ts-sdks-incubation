@@ -10,6 +10,16 @@ const exec = promisify(execFile);
 export interface DockerPortMapping {
 	slot: string;
 	containerPort: number;
+	/** Pin the host port instead of letting the allocator pick one.
+	 * Useful when an external consumer needs the host port to match
+	 * the container's published-on-chain address — e.g. walrus
+	 * storage nodes register themselves at `walrus-node-<i>.localhost:
+	 * <port>` on chain; the proxy in front of them must bind that same
+	 * port on `127.0.0.1` for browser fetches to resolve. Docker will
+	 * fail loudly if the port is already in use; the allocator can't
+	 * offer that guarantee since its ephemeral pick happens before the
+	 * conflict surfaces. */
+	hostPort?: number;
 }
 
 export interface DockerVolumeMapping {
@@ -193,10 +203,14 @@ export function dockerContainer<TDeps = undefined>(cfg: DockerContainerConfig<TD
 
 	// Build the auto-injected port deps. Each `ports.get('allocate', { slot })`
 	// returns a Dep<{slot}, number>. Resolved deps will give us slot→hostPort.
+	// Slots with a pinned `hostPort` skip the allocator entirely; the literal
+	// port flows through `hostPorts` in `start()` below.
 	const portMappings = cfg.ports ?? [];
 	const portAutoDeps: Record<string, Dep<{ slot: string }, number>> = {};
-	for (const { slot } of portMappings) {
-		portAutoDeps[slot] = ports.get('allocate', { slot });
+	for (const { slot, hostPort } of portMappings) {
+		if (hostPort === undefined) {
+			portAutoDeps[slot] = ports.get('allocate', { slot });
+		}
 	}
 
 	// `image: Dep<…>` (vs literal string) — hoist into internal deps so
@@ -247,7 +261,13 @@ export function dockerContainer<TDeps = undefined>(cfg: DockerContainerConfig<TD
 				_image?: string;
 				_network?: string;
 			};
-			const hostPorts = resolved._ports ?? {};
+			const hostPorts: Record<string, number> = { ...(resolved._ports ?? {}) };
+			// Layer the pinned-port slots over the allocator picks.
+			// Slots that pinned a `hostPort` skipped the allocator
+			// upstream — fill them in here.
+			for (const { slot, hostPort } of portMappings) {
+				if (hostPort !== undefined) hostPorts[slot] = hostPort;
+			}
 			const resolveCtx = { env, deps: resolved.user };
 
 			const containerArgs = resolveValue(cfg.args, resolveCtx) ?? [];

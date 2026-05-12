@@ -773,7 +773,13 @@ export function walrusProxy(opts: WalrusProxyOptions) {
 			_octet: dockerNetwork.get('octet'),
 			_nodes: opts.nodes.map((n) => n.get('full')),
 		},
-		ports: [{ slot, containerPort: nodePort }],
+		// Pin the host port to the same value the storage nodes
+		// register on chain (`walrus-node-<i>.localhost:<nodePort>`).
+		// Browsers resolve `*.localhost` to 127.0.0.1, so the proxy
+		// has to be listening on 127.0.0.1:<nodePort> for SDK blob
+		// uploads to land on it. Without the pin, the allocator gives
+		// the proxy an ephemeral host port the browser can't discover.
+		ports: [{ slot, containerPort: nodePort, hostPort: nodePort }],
 		readyTimeoutMs,
 		volumes: ({ env, deps }) => {
 			const indices = deps._nodes.map((n) => n.index).sort((a, b) => a - b);
