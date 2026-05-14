@@ -20,6 +20,7 @@ import {
 	PortAllocator,
 	PortAllocatorLive,
 } from './port-allocator.js';
+import { reallocatePortsOnConflict } from './docker/port-conflict.js';
 
 // Pick a port that's almost certainly free on developer machines. We
 // don't probe with `isPortFree` here because the whole point is to
@@ -135,5 +136,105 @@ describe('PortAllocator.release', () => {
 			// Build the layer once and share its Ref across yields.
 			Effect.provide(Layer.fresh(PortAllocatorLive)),
 		),
+	);
+});
+
+// `reallocatePortsOnConflict` is the shared helper that primitives
+// (sui, seal, walrus/nodes, walrus/proxy) hand to `Docker.run` as the
+// `onPortConflict` callback. It releases each conflicting host port
+// back to the allocator and re-allocates with the same value as
+// `preferred` — so the allocator either returns the original port (if
+// it has come free) or scans forward to the next free preferred-style
+// slot. This is the load-bearing behavior for the "pause stack A →
+// boot stack B → resume A on the next preferred port" UX.
+describe('reallocatePortsOnConflict — shared helper', () => {
+	it.effect(
+		'releases each conflicting port and re-allocates against the same preferred value (no external listeners → returns the same ports)',
+		() =>
+			Effect.scoped(
+				Effect.gen(function* () {
+					const allocator = yield* PortAllocator;
+					const preferredA = nextPort();
+					const preferredB = nextPort();
+					// Simulate the primitive's initial allocate path: both
+					// ports are now in the allocator's held set.
+					const firstA = yield* allocator.allocate(preferredA);
+					const firstB = yield* allocator.allocate(preferredB);
+					expect(firstA).toBe(preferredA);
+					expect(firstB).toBe(preferredB);
+
+					// Build the callback (operates inside its own scope so
+					// the new-port release finalizers don't leak across
+					// tests). The conflicting map mirrors what `Docker.run`
+					// would pass on a port-conflict resume: the caller's
+					// stale host→container map.
+					const scope = yield* Effect.scope;
+					const cb = reallocatePortsOnConflict(allocator, scope, 'test.primitive');
+					const fresh = yield* cb({
+						[firstA]: 9000,
+						[firstB]: 9123,
+					});
+
+					// Nothing external holds either preferred port, so
+					// after release+allocate we should land back on the
+					// same numbers — proving `release(p)` actually frees
+					// the slot for `allocate(p)`.
+					const freshKeys = Object.keys(fresh)
+						.map(Number)
+						.sort((a, b) => a - b);
+					expect(freshKeys).toEqual([preferredA, preferredB].sort((a, b) => a - b));
+					// Container ports preserved 1:1.
+					expect(fresh[preferredA]).toBe(9000);
+					expect(fresh[preferredB]).toBe(9123);
+				}).pipe(Effect.provide(Layer.fresh(PortAllocatorLive))),
+			),
+	);
+
+	it.effect(
+		'scans forward when the preferred port is held by an external listener (UX: pause A → B takes 9000 → resume A shifts to 9001)',
+		() =>
+			Effect.scoped(
+				Effect.gen(function* () {
+					const allocator = yield* PortAllocator;
+					const preferred = nextPort();
+					// Primitive's initial allocate — succeeds.
+					const first = yield* allocator.allocate(preferred);
+					expect(first).toBe(preferred);
+
+					// Release inside the allocator's held set (mirrors the
+					// scope-teardown finalizer firing when the primitive
+					// stops). Now an external process snaps up the port
+					// before resume fires.
+					yield* allocator.release(first);
+					const externalListener = yield* Effect.tryPromise({
+						try: () => listenOn(preferred, '127.0.0.1'),
+						catch: (cause) => new Error(`test setup: ${String(cause)}`),
+					});
+					liveServers.push(externalListener);
+
+					// Re-allocate to simulate the primitive entering its
+					// build path again. The allocator's held set is empty
+					// for `preferred` but the bind probe fails — scans
+					// forward.
+					const second = yield* allocator.allocate(preferred);
+					expect(second).toBeGreaterThan(preferred);
+
+					// Now imagine `docker start` failed with port-conflict
+					// (the external listener triggered the same conflict
+					// docker would see). The helper releases `second` and
+					// re-allocates against `preferred` — still blocked by
+					// the external listener, scans forward.
+					const scope = yield* Effect.scope;
+					const cb = reallocatePortsOnConflict(allocator, scope, 'test.primitive');
+					const fresh = yield* cb({ [second]: 9000 });
+					const freshKeys = Object.keys(fresh).map(Number);
+					expect(freshKeys.length).toBe(1);
+					// The new port is somewhere AFTER `preferred` (the
+					// external listener holds it), proving the helper
+					// asks the allocator to walk forward from the
+					// preferred value.
+					expect(freshKeys[0]).toBeGreaterThan(preferred);
+				}).pipe(Effect.provide(Layer.fresh(PortAllocatorLive))),
+			),
 	);
 });

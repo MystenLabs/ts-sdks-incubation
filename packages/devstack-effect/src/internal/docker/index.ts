@@ -45,3 +45,4 @@ export {
 export { networkCreate } from './network.js';
 export { awaitContainerReady, dockerLogsTail, dockerWait, followLogs } from './logs.js';
 export { ClaimedContainers, dockerOrphanSweep } from './sweep.js';
+export { reallocatePortsOnConflict } from './port-conflict.js';

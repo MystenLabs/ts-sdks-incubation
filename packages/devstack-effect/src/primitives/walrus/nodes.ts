@@ -13,6 +13,9 @@ import { PortAllocator } from '../../internal/port-allocator.js';
 import { WalrusError } from '../errors.js';
 import type { NodeState } from './internal.js';
 import { WALRUS_NODE_IP_BASE } from './internal.js';
+// Note: `Scope` is yielded inline via `Effect.scope` per node so the
+// `onPortConflict` callback's release finalizers attach to the same
+// scope as `Effect.addFinalizer` for the original allocate.
 
 export const startStorageNodes = (args: {
 	name: string;
@@ -28,6 +31,10 @@ export const startStorageNodes = (args: {
 }) =>
 	Effect.fn('walrus.nodes')(function* () {
 		const nodes: Array<NodeState> = [];
+		// Capture once outside the loop — same scope hosts every node's
+		// allocate finalizer, so `onPortConflict`'s release finalizers
+		// land symmetrically.
+		const nodesScope = yield* Effect.scope;
 		for (let i = 0; i < args.nodeCount; i++) {
 			// Per-node host port for our supervisor-side ready probe + as
 			// a debug surface. Skip `containerApiPort` itself (9185) so
@@ -79,6 +86,19 @@ export const startStorageNodes = (args: {
 				hostname: nodeHostname,
 				networkAlias: `walrus-node-${i}.localhost`,
 				detach: true,
+				// On a resume port-conflict (another stack snapped up our
+				// node's host port while we were paused), shift forward
+				// to the next free preferred port instead of an ephemeral.
+				// Note: only the supervisor-side ready probe and the
+				// debug surface use this port — the SDK reaches each node
+				// via `walrus-node-N.localhost:9185` through the proxy
+				// container on the shared docker network, so a host-port
+				// shift is invisible to SDK clients.
+				onPortConflict: Docker.reallocatePortsOnConflict(
+					args.portAllocator,
+					nodesScope,
+					`walrus.nodes[${i}]`,
+				),
 			}).pipe(
 				Effect.catchTag('DockerError', (cause) =>
 					Effect.fail(
