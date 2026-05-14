@@ -1,11 +1,10 @@
 // Ink components for the devstack TUI.
 //
-// Layout mirrors v3's `packages/devstack/src/tui/components.tsx`: a
-// rounded header bar, a single flat node table (one row per primitive,
-// no Services/Actions sections), a compact log tail of recent globals,
-// and a footer with the keybind hints. Ink owns all cursor/clear/diff
-// plumbing so we don't hand-roll any ANSI; that responsibility moves
-// entirely out of our codebase.
+// Layout: a rounded header bar, a single flat node table (one row per
+// primitive, no Services/Actions sections), a compact log tail of recent
+// globals, and a footer with the keybind hints. Ink owns all
+// cursor/clear/diff plumbing so we don't hand-roll any ANSI; that
+// responsibility moves entirely out of our codebase.
 
 import { Box, Static, Text, useApp, useInput } from 'ink';
 import React, { useEffect, useState } from 'react';
@@ -38,8 +37,8 @@ export const SHUTDOWN_LOG_MESSAGE =
 	'shutdown requested — tearing down. Sui localnet and other reusable containers stay running for fast next-restart; run `pnpm exec devstack wipe --yes` to fully tear down.';
 
 // Compact 8-char fixed-width name column tail — visually anchors the log
-// timestamp like v3 does. Wider rows would push the message off-screen on
-// narrow terminals while still under-utilizing the row's real estate.
+// timestamp. Wider rows would push the message off-screen on narrow
+// terminals while still under-utilizing the row's real estate.
 const NAME_WIDTH = 32;
 const STATUS_WIDTH = 11;
 // Synthetic group for entries whose key doesn't carry a `<group>.<name>`
@@ -53,12 +52,12 @@ const UNGROUPED = 'Other';
 //   2. `<Text wrap='truncate-end'>` — ink-side fallback that clips any
 //      remaining overflow inside the column width, preventing a single
 //      cell from wrapping onto a second line and breaking row alignment.
-// 60 chars matches what v3's NodeRow surfaces; the full text is always
-// reachable via the global log tail directly below.
+// 60 chars keeps the detail cell readable on narrow terminals; the full
+// text is always reachable via the global log tail directly below.
 const MAX_DETAIL_LEN = 60;
-// Last N global log entries shown under the table. Matches v3's tail
-// window — beyond that the user has the full scrollback above and
-// `manifest.json` for structured access.
+// Last N global log entries shown under the table — beyond that the user
+// has the full scrollback above and `manifest.json` for structured
+// access.
 
 const STATUS_GLYPH: Record<TagStatus, string> = {
 	pending: '·',
@@ -138,7 +137,6 @@ const levelColor = (level: string): string | undefined => {
 };
 
 // 'done' for completed actions reads better than 'ready' (it's a one-shot).
-// Same convention v3 uses; preserved across the section refactor.
 //
 // While `acquiring`, the status column reflects WHAT the primitive is doing
 // (`building`, `starting`, `waiting`, …) rather than the abstract
@@ -211,7 +209,7 @@ const truncate = (s: string, max = MAX_DETAIL_LEN): string => {
 	return `${s.slice(0, max - 1)}…`;
 };
 
-// Detail-column resolution order, mirroring v3's `NodeRow` precedence:
+// Detail-column resolution order:
 //   1. error      — the user's blocking concern, render in red.
 //   2. lastLog    — most recent narration for this primitive.
 //   3. primary    — the resolved artifact (URL / packageId / digest).
@@ -260,8 +258,7 @@ export interface AppProps {
 
 // Polls `engine.tuiState` rather than subscribing to a Stream: the engine
 // exposes a plain `Ref` (not a SubscriptionRef), and a 100ms tick is
-// already faster than the eye can perceive flicker. Matches the v3 store's
-// pushTail loop.
+// already faster than the eye can perceive flicker.
 export function App(props: AppProps): React.ReactElement {
 	const [state, setState] = useState<TuiState>(emptyState);
 	const inkApp = useApp();

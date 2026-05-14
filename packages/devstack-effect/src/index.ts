@@ -19,11 +19,10 @@ export {
 // Primitive factories + their per-call shapes. Re-exported by name
 // rather than `export *` because the interface barrel below introduces
 // canonical singleton tags (`Sui`, `Package`, …) that collide with the
-// per-factory shape names the primitives barrel surfaces. Phase 3+ will
-// flip the primitives to consume the interface tags directly, at which
-// point the two namespaces collapse again. For now the conflicting
-// `Sui`/`SuiShape` come from interfaces; everything else still comes
-// from primitives.
+// per-factory shape names the primitives barrel surfaces. The
+// conflicting `Sui`/`SuiShape` come from interfaces; everything else
+// still comes from primitives. Once every primitive consumes the
+// interface tag directly the two namespaces collapse again.
 export { accounts, type AccountSpec, type AccountsHandle } from './primitives/accounts.js';
 export { action, type ActionOptions } from './primitives/action.js';
 export { bindings, type BindingsOptions, type BindingsResult } from './primitives/bindings.js';
@@ -128,9 +127,9 @@ export {
 	type WalrusLocalClusterOptions,
 } from './primitives/walrus.js';
 
-// Canonical interface contracts. Every multi-impl factory landing in
-// Phase 3+ produces a `Layer` for one of these tags; consumers depend
-// on the tag, not on a specific factory.
+// Canonical interface contracts. Every multi-impl factory produces a
+// `Layer` for one of these tags; consumers depend on the tag, not on a
+// specific factory.
 export {
 	Sui,
 	type SuiShape,

@@ -79,6 +79,7 @@ export const walletApp = <const Name extends string = 'wallet-app'>(
 						cause,
 					}),
 			});
+			yield* Effect.annotateCurrentSpan({ 'wallet.port': port, 'wallet.bind': bindAddress });
 			// Tear down on scope close. `server.close()` alone stops
 			// accepting new connections but waits indefinitely for existing
 			// keep-alive sockets to drain — a browser tab from the dev

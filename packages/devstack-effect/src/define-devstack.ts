@@ -625,8 +625,7 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 	const buildLaunchEffect = (overrides: RunOverrides) => {
 		const renderer = overrides.renderer ?? resolveRenderer(config);
 
-		// Single iteration. Architecture (matches v3's per-primitive scope
-		// topology):
+		// Single iteration. Per-primitive scope topology:
 		//
 		//   supervisorScope ── runOnce's own Effect.scoped scope
 		//     │
@@ -677,9 +676,9 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 			// packageId on every process restart.
 			const claimedRef = yield* Ref.make<Set<string>>(new Set<string>());
 
-			// Phase 1: bootstrap engine + file watcher + platform. This is
-			// the supervisor's resource pool — it stays alive for the
-			// entire iteration, surviving per-primitive failures. The
+			// Bootstrap engine + file watcher + platform. This is the
+			// supervisor's resource pool — it stays alive for the entire
+			// iteration, surviving per-primitive failures. The
 			// per-primitive fibers Effect.provideContext(bootstrapCtx ⊕
 			// infraCtx) so they can yield* EngineHandle etc.
 			const bootstrapCtx = yield* Layer.buildWithMemoMap(BootstrapLive, memoMap, supervisorScope);
@@ -731,18 +730,18 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 				}
 			}
 
-			// Phase 2: build the full user stack as one composed Layer.
-			// Dependency wiring relies on Effect's Layer runtime ordering —
-			// providers complete before their consumers' acquires run. We
-			// catch any acquire failure here so the TUI stays alive (red
-			// rows + log entries) and `r` can trigger a full restart.
+			// Build the full user stack as one composed Layer. Dependency
+			// wiring relies on Effect's Layer runtime ordering — providers
+			// complete before their consumers' acquires run. We catch any
+			// acquire failure here so the TUI stays alive (red rows + log
+			// entries) and `r` can trigger a full restart.
 			//
 			// Per-primitive forked scopes were tried (forkPrimitive +
 			// cascade retry) but the cascade fires on ANY primitive's
 			// success, causing dependents to re-fire before slow
 			// dependencies finish — see notes/friction.md. True per-tag
 			// retry needs explicit dependency declarations on each
-			// PluginTag (v3 had DepRecipe); deferred to v1.1.
+			// PluginTag; deferred to v1.1.
 			const userStackLayer = composeStackLayer(config.stack, {
 				stackName: config.stackName,
 				network: config.network,

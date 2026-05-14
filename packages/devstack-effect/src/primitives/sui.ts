@@ -355,7 +355,7 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 		const rpcProbe = Effect.tryPromise({
 			try: () => client.getChainIdentifier(),
 			catch: (cause) => new Error(`rpc: ${stringifyCause(cause)}`),
-		});
+		}).pipe(Effect.withSpan('sui.probe.rpc'));
 		// Faucet probe: actually request funds for a stable throwaway
 		// recipient and verify the response body is `status: "Success"`.
 		// The prior `status < 500` check passed during the warm-up
@@ -364,27 +364,9 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 		// "ready" and downstream funding immediately tripped the 90s
 		// faucet timeout. Gating on a real tx success means Sui isn't
 		// marked ready until the faucet can actually fund.
-		const FAUCET_PROBE_RECIPIENT =
-			'0xf0bef0bef0bef0bef0bef0bef0bef0bef0bef0bef0bef0bef0bef0bef0bef0be';
-		const faucetProbe = Effect.tryPromise({
-			try: async () => {
-				const response = await fetch(`${faucetUrl}/v2/gas`, {
-					method: 'POST',
-					headers: { 'content-type': 'application/json' },
-					body: JSON.stringify({
-						FixedAmountRequest: { recipient: FAUCET_PROBE_RECIPIENT },
-					}),
-				});
-				if (!response.ok) throw new Error(`faucet HTTP ${response.status}`);
-				const body = (await response.json()) as { status?: unknown };
-				const status = body.status;
-				if (typeof status === 'object' && status !== null && 'Failure' in status) {
-					const failure = (status as { Failure: unknown }).Failure;
-					throw new Error(`faucet body: Failure ${JSON.stringify(failure)}`);
-				}
-			},
-			catch: (cause) => new Error(`faucet: ${stringifyCause(cause)}`),
-		});
+		const faucetProbe = faucetReadyProbe(faucetUrl).pipe(
+			Effect.withSpan('sui.probe.faucet'),
+		);
 		const graphqlProbe = Effect.tryPromise({
 			try: () =>
 				fetch(graphqlUrl, {
@@ -395,7 +377,7 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 					if (!r.ok) throw new Error(`graphql: ${r.status}`);
 				}),
 			catch: (cause) => new Error(`graphql: ${stringifyCause(cause)}`),
-		});
+		}).pipe(Effect.withSpan('sui.probe.graphql'));
 		yield* Effect.all([rpcProbe, faucetProbe, graphqlProbe], {
 			concurrency: 'unbounded',
 		}).pipe(
@@ -684,7 +666,10 @@ const awaitIndexerDbReady = (containerId: string) => {
 			return yield* Effect.fail(
 				new SuiError({
 					phase: 'indexer-ready',
-					message: `pg_isready exit ${result.exitCode}: ${result.stderr.trim() || result.stdout.trim()}`,
+					message: `pg_isready exit ${result.exitCode}`,
+					stdout: result.stdout,
+					stderr: result.stderr,
+					exitCode: result.exitCode,
 				}),
 			);
 		}
@@ -704,6 +689,48 @@ const awaitIndexerDbReady = (containerId: string) => {
 		Effect.withSpan('sui.indexer-ready'),
 	);
 };
+
+// Stable throwaway recipient used by the faucet ready-probe. The
+// probe POSTs an actual funding request and asserts the response body
+// is NOT `status: { Failure }` — see `faucetReadyProbe` below for
+// why. Hex bytes are arbitrary; any valid 32-byte Sui address works.
+const FAUCET_PROBE_RECIPIENT =
+	'0xf0bef0bef0bef0bef0bef0bef0bef0bef0bef0bef0bef0bef0bef0bef0bef0be';
+
+// Faucet ready-probe. POST a real funding request and verify the
+// response body is `status: "Success"` (or at least NOT a body-level
+// `status: { Failure }`). Exported for unit tests; production callers
+// invoke it from `suiLocalnet`'s ready-probe block.
+//
+// Why this exists: the prior probe checked only `response.ok` (or
+// `status < 500`), which passed during the warm-up window where the
+// sui-faucet binary's HTTP socket was up but its tx-submission
+// pipeline wasn't — the faucet returned 200 OK with body
+// `{"status": {"Failure": {"Internal": "..."}}}`. The supervisor
+// declared Sui "ready", and downstream `accounts.fund` immediately
+// tripped the 90s `requestFunds` timeout because every retry hit the
+// same Failure body. Gating ready on a real "no Failure" body means
+// Sui isn't marked ready until the faucet can actually fund.
+export const faucetReadyProbe = (faucetUrl: string): Effect.Effect<void, Error> =>
+	Effect.tryPromise({
+		try: async () => {
+			const response = await fetch(`${faucetUrl}/v2/gas`, {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({
+					FixedAmountRequest: { recipient: FAUCET_PROBE_RECIPIENT },
+				}),
+			});
+			if (!response.ok) throw new Error(`faucet HTTP ${response.status}`);
+			const body = (await response.json()) as { status?: unknown };
+			const status = body.status;
+			if (typeof status === 'object' && status !== null && 'Failure' in status) {
+				const failure = (status as { Failure: unknown }).Failure;
+				throw new Error(`faucet body: Failure ${JSON.stringify(failure)}`);
+			}
+		},
+		catch: (cause) => new Error(`faucet: ${stringifyCause(cause)}`),
+	});
 
 // Resolve the chain identifier from a ready-to-talk JSON-RPC client.
 // Localnet flips this on `--force-regenesis`; remote networks keep it

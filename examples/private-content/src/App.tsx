@@ -29,7 +29,7 @@ export function App() {
 			</main>
 
 			<footer className="px-6 py-3 border-t border-neutral-200 dark:border-neutral-800 text-xs text-neutral-500">
-				Phase 4 · capability-gated decryption demo
+				capability-gated decryption demo
 			</footer>
 		</div>
 	);

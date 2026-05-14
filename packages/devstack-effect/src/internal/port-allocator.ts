@@ -47,7 +47,11 @@ export class PortAllocatorError extends Schema.TaggedErrorClass<PortAllocatorErr
 const bindProbe = (port: number, host: string): Promise<boolean> =>
 	new Promise((resolve) => {
 		const server = net.createServer();
-		server.once('error', () => resolve(false));
+		server.once('error', () => {
+			server.unref();
+			server.close();
+			resolve(false);
+		});
 		server.once('listening', () => {
 			server.close(() => resolve(true));
 		});

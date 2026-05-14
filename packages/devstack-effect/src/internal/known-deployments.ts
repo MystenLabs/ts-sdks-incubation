@@ -1,7 +1,7 @@
 // Static registry of well-known deployments (packageIds, registry IDs, key
 // servers, etc.) for major Sui networks. Updated per release as protocols
-// evolve. Phase 6's `*Known*` factories default to these values; consumers
-// can override per call.
+// evolve. The `*Known*` factories default to these values; consumers can
+// override per call.
 //
 // Sources for these values are tracked in `notes/known-deployments-source.md`.
 // When updating, also update the source-tracking doc with the date and
@@ -146,7 +146,7 @@ export const knownDeployments: KnownDeployments = {
 	deepbook: {
 		// Sourced from `packages/devstack/src/plugins/deepbook.ts`, copied
 		// originally from `@mysten/deepbook-v3/utils/constants.ts`.
-		// TODO: confirm against Mysten registry as of 2026-05-13.
+		// TODO: confirm against the latest Mysten registry.
 		testnet: {
 			packageId: '0x22be4cade64bf2d02412c7e8d0e8beea2f78828b948118d46735315409371a3c',
 			registryId: '0x7c256edbda983a2cd6f946655f4bf3f00a41043993781f8674a7046e8c0e11d1',

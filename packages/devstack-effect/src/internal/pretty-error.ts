@@ -42,6 +42,7 @@ interface TaggedErrorLike {
 	readonly stderr?: unknown;
 	readonly stdout?: unknown;
 	readonly exitCode?: unknown;
+	readonly detail?: unknown;
 }
 
 const isTaggedError = (value: unknown): value is TaggedErrorLike =>
@@ -86,6 +87,9 @@ const renderTaggedError = (value: TaggedErrorLike): string => {
 	}
 	if (typeof value.stdout === 'string' && value.stdout.trim().length > 0) {
 		lines.push(`  stdout: ${truncate(value.stdout.trim())}`);
+	}
+	if (typeof value.detail === 'string' && value.detail.trim().length > 0) {
+		lines.push(`  detail: ${truncate(value.detail.trim())}`);
 	}
 	if (value.cause !== undefined && value.cause !== null) {
 		const rendered = prettyError(value.cause);

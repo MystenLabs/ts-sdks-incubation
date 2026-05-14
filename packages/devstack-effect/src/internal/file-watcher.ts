@@ -1,21 +1,18 @@
 // File watcher — emits change events for a watched path so the engine can
 // interrupt + restart affected layers on edit.
 //
-// Ported from `packages/devstack/src/file-watcher.ts` (v3) but adapted to
-// Effect v4 idioms:
-//
 //   - Each `watch(path)` returns a `Stream.Stream<ChangeEvent>` built via
-//     `Stream.callback` (the v4 successor of `Stream.async*`). The fs.watch
-//     handle is registered through `Effect.addFinalizer`, so the watcher
-//     closes when the consuming scope (or the stream itself) tears down.
+//     `Stream.callback`. The fs.watch handle is registered through
+//     `Effect.addFinalizer`, so the watcher closes when the consuming
+//     scope (or the stream itself) tears down.
 //   - All failures funnel through a single tagged `FileWatcherError`.
-//   - v3's debounce + multi-path engine integration lives at the engine
-//     layer — this service only emits raw events. Coalescing is a
-//     follow-up; for v1 each fs event becomes one ChangeEvent.
+//   - Debounce + multi-path engine integration lives at the engine layer
+//     — this service only emits raw events. Coalescing is a follow-up;
+//     each fs event currently becomes one ChangeEvent.
 //
 // Linux note: node's `fs.watch` with `recursive: true` silently degrades
-// to non-recursive on Linux (no native inotify recursion). v3 documents
-// the same caveat — defer chokidar until someone reports it.
+// to non-recursive on Linux (no native inotify recursion). Defer chokidar
+// until someone reports it.
 
 import { Cause, Context, Effect, Layer, Queue, Schema, Scope, Stream } from 'effect';
 import * as fs from 'node:fs';

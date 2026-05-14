@@ -60,6 +60,13 @@ export const SuiBuildImage = Context.Reference<{ readonly tag: string } | undefi
 export class SuiCliError extends Schema.TaggedErrorClass<SuiCliError>()('SuiCliError', {
 	op: Schema.String,
 	message: Schema.String,
+	// Optional captured streams + exit code from the sui CLI invocation
+	// that produced this failure. pretty-error.ts surfaces these when
+	// present so build / publish failures are debuggable without
+	// re-running.
+	stderr: Schema.optional(Schema.String),
+	stdout: Schema.optional(Schema.String),
+	exitCode: Schema.optional(Schema.Number),
 	cause: Schema.optional(Schema.Defect),
 }) {}
 
@@ -153,6 +160,9 @@ export const publishPackage = (
 				new SuiCliError({
 					op: 'sui client publish',
 					message: formatCliFailure('sui client publish', captured),
+					stdout: captured.stdout,
+					stderr: captured.stderr,
+					exitCode: captured.exitCode,
 				}),
 			);
 		}
@@ -164,7 +174,10 @@ export const publishPackage = (
 			Effect.mapError((err) =>
 				new SuiCliError({
 					op: err.op,
-					message: `${err.message}\n  stdout: ${truncateForError(captured.stdout)}\n  stderr: ${truncateForError(captured.stderr)}`,
+					message: err.message,
+					stdout: captured.stdout,
+					stderr: captured.stderr,
+					exitCode: captured.exitCode,
 					cause: err.cause,
 				}),
 			),
@@ -291,6 +304,9 @@ export const buildMove = (
 				new SuiCliError({
 					op: 'sui move build',
 					message: formatCliFailure('sui move build', captured),
+					stdout: captured.stdout,
+					stderr: captured.stderr,
+					exitCode: captured.exitCode,
 				}),
 			);
 		}
@@ -303,7 +319,10 @@ export const buildMove = (
 			Effect.mapError((err) =>
 				new SuiCliError({
 					op: err.op,
-					message: `${err.message}\n  stdout: ${truncateForError(captured.stdout)}\n  stderr: ${truncateForError(captured.stderr)}`,
+					message: err.message,
+					stdout: captured.stdout,
+					stderr: captured.stderr,
+					exitCode: captured.exitCode,
 					cause: err.cause,
 				}),
 			),
@@ -650,7 +669,10 @@ const scrubLockFileIfPresent = (
 		yield* fs.writeFileString(lockPath, scrubbed).pipe(Effect.catch(() => Effect.void));
 	});
 
-const stripPinnedSections = (source: string): string => {
+// Exported for unit tests; production callers go through
+// `scrubLockFileIfPresent` / `scrubMoveLock` which read + write the
+// file around this pure transform.
+export const stripPinnedSections = (source: string): string => {
 	const lines = source.split('\n');
 	const out: Array<string> = [];
 	let skipping = false;
