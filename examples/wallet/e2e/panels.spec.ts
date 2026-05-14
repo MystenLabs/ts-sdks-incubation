@@ -53,5 +53,7 @@ test('network panel shows wallet-app entry', async ({ page }) => {
 	const network = drawer.locator('devstack-network-panel');
 	const walletAppRow = network.locator('.row').filter({ hasText: 'wallet-app' });
 	await expect(walletAppRow).toBeVisible();
-	await expect(walletAppRow).toContainText(/http:\/\/localhost:\d+/);
+	// Wallet URL is now traefik-routed: `http://[<stack>.]wallet.<app>.localhost:5180`
+	// (was `http://localhost:<random>` before the routing migration).
+	await expect(walletAppRow).toContainText(/http:\/\/[\w.-]+\.localhost:\d+/);
 });

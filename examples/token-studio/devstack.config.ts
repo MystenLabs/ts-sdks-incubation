@@ -58,7 +58,10 @@ const wallet = walletApp({
 const dev = hostProcess({
 	name: 'frontend.dev-server',
 	command: 'pnpm',
-	args: ['exec', 'vite', '--port', '5173', '--strictPort'],
+	// `--host 0.0.0.0` so traefik (in container) can reach vite via
+	// `host.docker.internal:5173`. Vite default 127.0.0.1 is loopback-
+	// only and unreachable from container-land.
+	args: ['exec', 'vite', '--host', '0.0.0.0', '--port', '5173', '--strictPort'],
 	readyProbe: { kind: 'http', url: 'http://localhost:5173', timeoutMs: 60_000 },
 	endpoint: { name: 'dev-server', kind: 'dev-server' },
 	traefik: { service: 'dev', entrypoint: 'vite', localPort: 5173 },
