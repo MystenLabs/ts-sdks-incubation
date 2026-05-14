@@ -74,13 +74,29 @@ EOF
 
 # Step 3: faucet + WAL exchange + balance check, all from the relocated
 # config so sui SDK keystore writes land on a real fs. The faucet URL
-# must be reachable from inside this storage-node container: with the
-# v3 docker-DNS layout `http://sui-localnet:9123/gas` worked because
-# the sui localnet container was on the same docker network; in
-# devstack-effect the sui-localnet uses port forwarding instead, so
-# the caller injects `WALRUS_FAUCET_URL` pointing at
-# `http://host.docker.internal:9123/v1/gas`.
+# is injected via `WALRUS_FAUCET_URL` — defaults to
+# `http://sui-localnet:9123/gas` (docker-DNS hostname inside the
+# per-stack sui network the supervisor attaches us to post-run).
 FAUCET_URL="${WALRUS_FAUCET_URL:-http://sui-localnet:9123/gas}"
+
+# The supervisor attaches us to the per-stack sui network AFTER
+# `docker run` returns (the `--ip` walrus needs is on a different
+# primary network, so the sui attach is a post-run `docker network
+# connect`). That attach races with this script's first faucet call —
+# without a wait, the very first `sui client faucet` resolves
+# `sui-localnet` against an old DNS view, gets NXDOMAIN, and exits 1.
+# Loop on `getent hosts` until DNS settles; bounded to keep a truly
+# broken setup from hanging indefinitely.
+FAUCET_HOST=$(echo "$FAUCET_URL" | awk -F[/:] '{print $4}')
+for i in $(seq 1 30); do
+	if getent hosts "$FAUCET_HOST" >/dev/null 2>&1; then break; fi
+	if [ "$i" -eq 30 ]; then
+		echo "run.sh: faucet host '$FAUCET_HOST' never resolved after 30s; the supervisor's network-attach step may have failed" >&2
+		exit 1
+	fi
+	sleep 1
+done
+
 sui client faucet --url "$FAUCET_URL"
 sleep 3
 walrus get-wal --amount 500000000000
