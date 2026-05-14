@@ -217,12 +217,20 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 		// `Docker.run({ip})`, and a pinned /24 routinely collides with
 		// other docker networks on the host (walrus, leftover compose
 		// projects). Network name folds in `Identity.stack` so parallel
-		// stacks of the same app don't collide on the network.
+		// stacks of the same app don't collide on the network; for
+		// non-localnet `Identity.network`, a `-${network}` suffix is
+		// appended so the same `<app, stack>` against testnet doesn't
+		// collide on the bridge network with the same pair against
+		// localnet. The `network='localnet'` default keeps the name
+		// byte-identical to the pre-network-dimension shape so warm-
+		// restart resume still adopts existing networks.
 		const identity = yield* Identity;
-		const networkName =
+		const suiBase =
 			identity.stack === 'main'
 				? `${identity.app}-sui-network`
 				: `${identity.app}-${identity.stack}-sui-network`;
+		const networkName =
+			identity.network === 'localnet' ? suiBase : `${suiBase}-${identity.network}`;
 		yield* Docker.networkCreate(networkName).pipe(
 			Effect.catchTag('DockerError', (cause) =>
 				Effect.fail(
@@ -248,11 +256,15 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 		// completes, so a dapp that reads on-chain state via GraphQL
 		// (e.g. listing active lobbies) sees "no games" right after a
 		// resume even though the chain itself has them. Volume name is
-		// per-(app, stack) to match the sui-data volume.
-		const indexerDbVolume =
+		// per-(app, stack, network) to match the sui-data volume — the
+		// `-${network}` suffix is only appended for non-localnet so the
+		// default name stays byte-identical for warm-restart resume.
+		const indexerDbBase =
 			identity.stack === 'main'
 				? `devstack-${identity.app}-sui-indexer-db`
 				: `devstack-${identity.app}-${identity.stack}-sui-indexer-db`;
+		const indexerDbVolume =
+			identity.network === 'localnet' ? indexerDbBase : `${indexerDbBase}-${identity.network}`;
 		yield* setPhase('starting indexer-db');
 		const indexerDb = yield* Docker.run({
 			name: 'sui.indexer-db',
@@ -291,13 +303,18 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 		// with the container on Ctrl-C, the next process re-genesises with
 		// a brand-new chain id, and the publishMove state-store cache
 		// misses on every restart — visible as new packageIds on every
-		// `pnpm dev`. Volume name is per-(app, stack) so two stacks of the
-		// same app don't share genesis. `devstack wipe` removes this
-		// volume alongside the containers.
-		const suiDataVolume =
+		// `pnpm dev`. Volume name is per-(app, stack, network) so two stacks
+		// of the same app don't share genesis, and switching `network`
+		// (e.g. localnet → testnet) doesn't accidentally reuse the
+		// localnet's chain state. `localnet` is the byte-identical default
+		// so warm-restart resume still finds the existing volume.
+		// `devstack wipe` removes this volume alongside the containers.
+		const suiDataBase =
 			identity.stack === 'main'
 				? `devstack-${identity.app}-sui-data`
 				: `devstack-${identity.app}-${identity.stack}-sui-data`;
+		const suiDataVolume =
+			identity.network === 'localnet' ? suiDataBase : `${suiDataBase}-${identity.network}`;
 		yield* setPhase('starting localnet');
 		const localnetRunResult = yield* Docker.run({
 			name: 'sui.localnet',

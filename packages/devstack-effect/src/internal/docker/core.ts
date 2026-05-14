@@ -168,13 +168,18 @@ export const run = (
 		// primitive name (e.g. `sui.localnet`) become hyphens for the same
 		// reason — the dotted form looks like a domain name in container
 		// listings and trips terminal-link heuristics.
-		const name = composeContainerName(identity.app, identity.stack, primitiveName);
+		const name = composeContainerName(
+			identity.app,
+			identity.stack,
+			identity.network,
+			primitiveName,
+		);
 		// Compose project label so Docker Desktop groups all containers
 		// from this `<app, stack>` together in the UI even though we
 		// don't actually use docker-compose. Mirrors `docker compose`'s
 		// default project naming (the directory) — just the app for the
 		// `main` stack, app-stack for everything else.
-		const composeProject = composeProjectName(identity.app, identity.stack);
+		const composeProject = composeProjectName(identity.app, identity.stack, identity.network);
 		const detach = opts.detach ?? true;
 		// `devstack.app` / `devstack.stack` / `devstack.action` mirror v3
 		// `packages/devstack/src/runners/docker-container.ts:540-549` so
@@ -641,7 +646,10 @@ export const generateContainerName = (): string =>
 	`devstack-${Math.random().toString(36).slice(2, 10)}`;
 
 // `{app}-{stack}-{primitiveName}` (or `{app}-{primitiveName}` when `stack`
-// is the default `'main'`). Periods inside the user-supplied primitive name
+// is the default `'main'`). With `network !== 'localnet'`, a `-${network}`
+// suffix is appended to the project portion so the same `<app, stack>`
+// against testnet doesn't collide on container names with the same pair
+// against localnet. Periods inside the user-supplied primitive name
 // are folded to hyphens so a name like `sui.localnet` reads as
 // `template-sui-localnet` in `docker ps`. Empty `app` (engine never
 // reached) collapses to the bare primitiveName so the failure mode is
@@ -649,20 +657,28 @@ export const generateContainerName = (): string =>
 export const composeContainerName = (
 	app: string,
 	stack: string,
+	network: string,
 	primitiveName: string,
 ): string => {
 	const flat = primitiveName.replaceAll('.', '-');
-	const project = composeProjectName(app, stack);
+	const project = composeProjectName(app, stack, network);
 	if (project.length === 0) return flat;
 	return `${project}-${flat}`;
 };
 
-// `{app}` for the default `'main'` stack, `{app}-{stack}` for everything
-// else. Matches the project-naming convention docker-compose uses when no
-// explicit `--project-name` is passed (the directory). Empty `app` falls
-// back to the empty string so callers can detect the engine-not-reached
-// case and use a bare primitive name.
-export const composeProjectName = (app: string, stack: string): string => {
+// `{app}` for the default `<stack='main', network='localnet'>`,
+// `{app}-{stack}` when only `stack` deviates, `{app}-{network}` when only
+// `network` deviates, and `{app}-{stack}-{network}` when both do. Matches
+// the project-naming convention docker-compose uses when no explicit
+// `--project-name` is passed (the directory), extended with a `network`
+// suffix so we can run the same stack against testnet AND localnet
+// concurrently without container/volume name collisions. The
+// `network='localnet'` default is byte-identical to the pre-network shape
+// so warm-restart resumes still adopt existing containers. Empty `app`
+// falls back to the empty string so callers can detect the engine-not-
+// reached case and use a bare primitive name.
+export const composeProjectName = (app: string, stack: string, network: string): string => {
 	if (app.length === 0) return '';
-	return stack === 'main' ? app : `${app}-${stack}`;
+	const base = stack === 'main' ? app : `${app}-${stack}`;
+	return network === 'localnet' ? base : `${base}-${network}`;
 };
