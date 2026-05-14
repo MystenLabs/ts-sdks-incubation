@@ -235,34 +235,6 @@ export const run = (
 		const addHosts = opts.addHosts ?? ['host.docker.internal:host-gateway'];
 		const bindAddress = opts.bindAddress ?? '127.0.0.1';
 
-		const args: Array<string> = ['run'];
-		if (detach) args.push('-d');
-		args.push('--name', name);
-		for (const label of labels) {
-			args.push('--label', label);
-		}
-		if (opts.hostname !== undefined) args.push('--hostname', opts.hostname);
-		if (opts.network !== undefined) args.push('--network', opts.network);
-		if (opts.ip !== undefined) args.push(`--ip=${opts.ip}`);
-		if (opts.networkAlias !== undefined) args.push('--network-alias', opts.networkAlias);
-		for (const entry of addHosts) {
-			args.push(`--add-host=${entry}`);
-		}
-		for (const [hostPort, containerPort] of Object.entries(opts.ports ?? {})) {
-			args.push('-p', `${bindAddress}:${hostPort}:${containerPort}`);
-		}
-		for (const envFile of opts.envFiles ?? []) {
-			args.push('--env-file', envFile);
-		}
-		for (const [k, v] of Object.entries(opts.env ?? {})) {
-			args.push('-e', `${k}=${v}`);
-		}
-		for (const { host, container } of opts.mounts ?? []) {
-			args.push('-v', `${host}:${container}`);
-		}
-		args.push(opts.image);
-		for (const a of opts.args ?? []) args.push(a);
-
 		// Reuse-if-healthy: when an existing container with this name is
 		// already running the SAME image, skip recreation and adopt it.
 		// Sui localnet etc. are expensive to bring up (fresh genesis →
@@ -284,59 +256,47 @@ export const run = (
 				? Effect.void
 				: Ref.update(claimedRef, (s) => new Set(s).add(id));
 
-		const inspected = yield* inspectContainer(spawner, name);
-		let resumeFailedFallback = false;
-		if (inspected !== null && inspected.image === opts.image) {
-			// Two warm-restart paths, both faster than re-`run`:
-			//
-			//   1. running + matching image → adopt as-is. Sui chain ID,
-			//      walrus storage state, seal master key, etc. are all
-			//      preserved because the process never stopped.
-			//   2. stopped + matching image → `docker start <name>` to
-			//      resume from disk. Process restarts but its on-disk
-			//      state (genesis, RocksDB, walrus deploy outputs) is
-			//      untouched, so re-acquire is ~1s instead of a fresh
-			//      run with cold genesis. Containers land in this state
-			//      because the supervisor's exit-time finalizer runs
-			//      `docker stop` (not `docker rm -f`) — see the
-			//      finalizer registration below.
-			if (!inspected.running) {
-				yield* Effect.logInfo(`devstack: resuming stopped container '${name}'`);
-				// Capture exit code + stderr — `docker start` can fail
-				// for real reasons (port already in use on the host, the
-				// image's tag was pruned out from under it, runtime
-				// config drift). The earlier code just looked at the
-				// exitCode field returned by the spawner and ignored
-				// non-zero values, so a silent start-failure put the
-				// supervisor into "container exists but isn't actually
-				// running" territory and every downstream ready-probe
-				// timed out blind.
-				const startResult = yield* runCapturing(
-					spawner,
-					ChildProcess.make('docker', ['start', inspected.containerId]),
-					'docker start',
-				).pipe(Effect.catchTag('DockerError', () => Effect.succeed(null)));
-				if (startResult === null || startResult.exitCode !== 0) {
-					yield* Effect.logWarning(
-						`devstack: docker start '${name}' failed (` +
-							`exit=${startResult?.exitCode ?? 'spawn-error'}, ` +
-							`stderr=${(startResult?.stderr ?? '').trim().slice(0, 200)})` +
-							' — falling back to remove + fresh run',
-					);
-					resumeFailedFallback = true;
-				}
-			} else {
-				yield* Effect.logInfo(`devstack: reusing running container '${name}'`);
+		// Build the fresh `docker run` argv WITHOUT `-p` flags so we can
+		// reuse it on the recreate-after-resume-failure path with a
+		// fresh port allocation. The two paths that need port flags
+		// (`fresh` from a clean slate, and `recreate` when an image
+		// mismatch evicts a working container) splice them in below.
+		const portArgsFromOpts = (): Array<string> => {
+			const out: Array<string> = [];
+			for (const [hostPort, containerPort] of Object.entries(opts.ports ?? {})) {
+				out.push('-p', `${bindAddress}:${hostPort}:${containerPort}`);
 			}
-		}
-		if (inspected !== null && inspected.image === opts.image && !resumeFailedFallback) {
+			return out;
+		};
+		// Auto-allocate variant: pass only the container port so docker
+		// picks an ephemeral host port. The actual binding is read back
+		// via `inspectHostPorts` after `docker run` returns.
+		const portArgsAuto = (): Array<string> => {
+			const out: Array<string> = [];
+			for (const containerPort of Object.values(opts.ports ?? {})) {
+				out.push('-p', `${bindAddress}::${containerPort}`);
+			}
+			return out;
+		};
+
+		// Decide what to do based on the inspect probe — pure function,
+		// see `decideRunAction` below. The dispatcher executes the
+		// action; the resume branch can promote itself to `recreate`
+		// when `docker start` fails (e.g. the original host port is now
+		// held by something else), at which point the fallback MUST NOT
+		// reuse the caller's stale port preferences.
+		const inspected = yield* inspectContainer(spawner, name);
+		let action = decideRunAction(inspected, opts.image);
+
+		if (action.kind === 'adopt') {
+			yield* Effect.logInfo(`devstack: reusing running container '${name}'`);
 			yield* Effect.annotateCurrentSpan({
 				'docker.op': 'run',
 				'docker.name': name,
 				'docker.reused': true,
-				'docker.resumed': !inspected.running,
+				'docker.resumed': false,
 			});
-			yield* claim(inspected.containerId);
+			yield* claim(action.containerId);
 			// Finalizer: stop (don't remove) so the container's on-disk
 			// state survives until the next pnpm dev resumes it. `devstack
 			// wipe` is the only way to remove containers + volumes.
@@ -344,7 +304,7 @@ export const run = (
 				reuseScope,
 				Effect.uninterruptible(
 					spawner
-						.exitCode(ChildProcess.make('docker', ['stop', inspected.containerId]))
+						.exitCode(ChildProcess.make('docker', ['stop', action.containerId]))
 						.pipe(Effect.ignore),
 				),
 			);
@@ -355,29 +315,105 @@ export const run = (
 			// returned `hostPorts`, not their pre-resume allocator
 			// guesses, or the ready-probe hits a port the container
 			// isn't actually bound to and times out.
-			const hostPorts = yield* inspectHostPorts(spawner, inspected.containerId);
-			return { containerId: inspected.containerId, name, reused: true, hostPorts };
-		}
-		if (inspected !== null) {
-			// Container exists but the image changed (e.g. user bumped
-			// the sui version): remove it so the fresh `docker run`
-			// below succeeds. Resume isn't safe here — the on-disk
-			// state may not be compatible with the new image.
+			const hostPorts = yield* inspectHostPorts(spawner, action.containerId);
+			return { containerId: action.containerId, name, reused: true, hostPorts };
 		}
 
+		if (action.kind === 'resume') {
+			yield* Effect.logInfo(`devstack: resuming stopped container '${name}'`);
+			// Capture exit code + stderr — `docker start` can fail for
+			// real reasons (port already in use on the host, the image's
+			// tag was pruned out from under it, runtime config drift).
+			// The earlier code looked at the exitCode and ignored
+			// non-zero values, so a silent start-failure put the
+			// supervisor into "container exists but isn't actually
+			// running" territory and every downstream ready-probe timed
+			// out blind.
+			const startResult = yield* runCapturing(
+				spawner,
+				ChildProcess.make('docker', ['start', action.containerId]),
+				'docker start',
+			).pipe(Effect.catchTag('DockerError', () => Effect.succeed(null)));
+			if (startResult === null || startResult.exitCode !== 0) {
+				yield* Effect.logWarning(
+					`devstack: docker start '${name}' failed (` +
+						`exit=${startResult?.exitCode ?? 'spawn-error'}, ` +
+						`stderr=${(startResult?.stderr ?? '').trim().slice(0, 200)})` +
+						' — falling back to remove + fresh run with re-allocated ports',
+				);
+				// Promote to `recreate`: the existing container is the
+				// one we just failed to start, so we know its id; the
+				// dispatcher's recreate branch will rm it and re-run
+				// WITHOUT the caller's original host ports (docker picks
+				// fresh ephemeral ports, surfaced via inspectHostPorts).
+				action = { kind: 'recreate', existingId: action.containerId };
+			} else {
+				yield* Effect.annotateCurrentSpan({
+					'docker.op': 'run',
+					'docker.name': name,
+					'docker.reused': true,
+					'docker.resumed': true,
+				});
+				yield* claim(action.containerId);
+				yield* addFinalizer(
+					reuseScope,
+					Effect.uninterruptible(
+						spawner
+							.exitCode(ChildProcess.make('docker', ['stop', action.containerId]))
+							.pipe(Effect.ignore),
+					),
+				);
+				const hostPorts = yield* inspectHostPorts(spawner, action.containerId);
+				return { containerId: action.containerId, name, reused: true, hostPorts };
+			}
+		}
+
+		// `recreate` and `fresh` both end up here. The difference: on
+		// `recreate` we know a same-named container exists (image
+		// mismatch, or resume-failure promotion) and we MUST omit the
+		// caller's `-p hostPort:containerPort` mappings — the resume
+		// path likely failed because that host port is now held by
+		// something else, so reusing it guarantees a second failure.
+		// We pass `-p <containerPort>` (no host port) instead and let
+		// docker auto-allocate; the actual binding is read back via
+		// `inspectHostPorts` and returned to the caller via the
+		// `hostPorts` field.
+		const reAllocatePorts = action.kind === 'recreate';
+		const portArgs = reAllocatePorts ? portArgsAuto() : portArgsFromOpts();
+		const args = buildRunArgs({
+			detach,
+			name,
+			labels,
+			hostname: opts.hostname,
+			network: opts.network,
+			ip: opts.ip,
+			networkAlias: opts.networkAlias,
+			addHosts,
+			portArgs,
+			envFiles: opts.envFiles,
+			env: opts.env,
+			mounts: opts.mounts,
+			image: opts.image,
+			imageArgs: opts.args,
+		});
+
 		// Per-primitive orphan sweep. A prior process killed mid-cycle
-		// (SIGKILL, panic) can leave a same-named container lying around;
-		// docker rejects `run --name` collisions, so without this step
-		// every restart after a hard crash fails immediately. Force-remove
-		// is safer than reuse here — the inspect probe above already
-		// claimed the reuse path when health + image matched, so anything
-		// reaching this point is known-incompatible. Best-effort: a
-		// failure here just falls through and lets `docker run` surface
-		// the real reason.
+		// (SIGKILL, panic) can leave a same-named container lying
+		// around; docker rejects `run --name` collisions, so without
+		// this step every restart after a hard crash fails immediately.
+		// Force-remove is safer than reuse here — the inspect probe
+		// above already claimed the reuse path when health + image
+		// matched, so anything reaching this point is
+		// known-incompatible. Best-effort: a failure here just falls
+		// through and lets `docker run` surface the real reason.
 		yield* removeContainerIfExists(spawner, name).pipe(Effect.ignore);
 
 		const cmd = ChildProcess.make('docker', args);
-		yield* Effect.annotateCurrentSpan({ 'docker.op': 'run', 'docker.name': name });
+		yield* Effect.annotateCurrentSpan({
+			'docker.op': 'run',
+			'docker.name': name,
+			'docker.recreate': reAllocatePorts,
+		});
 
 		const captured = yield* runCapturing(spawner, cmd, 'docker run');
 		const containerId = captured.stdout.trim();
@@ -426,11 +462,117 @@ export const run = (
 			),
 		);
 
-		// Fresh spawn — host port bindings are exactly the caller's
-		// `opts.ports` (or empty when none were declared).
-		const hostPorts: Record<number, number> = { ...(opts.ports ?? {}) };
+		// On `fresh` the host port bindings are exactly the caller's
+		// `opts.ports`. On `recreate` we asked docker to auto-allocate,
+		// so we must read the actual bindings back from inspect — the
+		// caller's `opts.ports` keys (host ports) are now stale.
+		const hostPorts: Record<number, number> = reAllocatePorts
+			? yield* inspectHostPorts(spawner, containerId)
+			: { ...(opts.ports ?? {}) };
 		return { containerId, name, reused: false, hostPorts };
 	}).pipe(Effect.withSpan('Docker.run'));
+
+// -----------------------------------------------------------------------------
+// State machine — pure decision for `Docker.run`
+// -----------------------------------------------------------------------------
+
+/**
+ * Shape passed into `decideRunAction`: what `docker inspect` told us
+ * about a container with the requested name. Exported so tests can
+ * construct one without indirecting through `inspectContainer`.
+ */
+export interface InspectResult {
+	readonly running: boolean;
+	readonly image: string;
+	readonly containerId: string;
+}
+
+/**
+ * What `Docker.run` should do given the result of an `inspect` probe
+ * and the caller's requested image. Five logical states across the
+ * inspect × image-match × running-state matrix collapse into four
+ * action kinds; the fifth ("resume tried, `docker start` failed") is
+ * a runtime PROMOTION done by the dispatcher: it constructs
+ * `{ kind: 'recreate', existingId }` after the failed start and
+ * continues. That keeps this function pure and easy to unit-test.
+ */
+export type RunAction =
+	| { readonly kind: 'adopt'; readonly containerId: string }
+	| { readonly kind: 'resume'; readonly containerId: string }
+	| { readonly kind: 'recreate'; readonly existingId?: string }
+	| { readonly kind: 'fresh' };
+
+/**
+ * Pure decision: which of the four `RunAction` kinds describes what
+ * `Docker.run` should do for this `(inspected, requestedImage)` pair?
+ *
+ *   - `inspected === null`                 → `fresh`
+ *   - same image, running                  → `adopt`
+ *   - same image, stopped                  → `resume`
+ *   - different image (running or stopped) → `recreate`
+ */
+export const decideRunAction = (
+	inspected: InspectResult | null,
+	requestedImage: string,
+): RunAction => {
+	if (inspected === null) return { kind: 'fresh' };
+	if (inspected.image !== requestedImage) {
+		return { kind: 'recreate', existingId: inspected.containerId };
+	}
+	if (inspected.running) return { kind: 'adopt', containerId: inspected.containerId };
+	return { kind: 'resume', containerId: inspected.containerId };
+};
+
+interface BuildRunArgsInput {
+	readonly detach: boolean;
+	readonly name: string;
+	readonly labels: ReadonlyArray<string>;
+	readonly hostname?: string;
+	readonly network?: string;
+	readonly ip?: string;
+	readonly networkAlias?: string;
+	readonly addHosts: ReadonlyArray<string>;
+	readonly portArgs: ReadonlyArray<string>;
+	readonly envFiles?: ReadonlyArray<string>;
+	readonly env?: Record<string, string>;
+	readonly mounts?: ReadonlyArray<{ readonly host: string; readonly container: string }>;
+	readonly image: string;
+	readonly imageArgs?: ReadonlyArray<string>;
+}
+
+// Compose the `docker run` argv. Port flags are passed in pre-built so
+// the `recreate` path can swap host-bound bindings for auto-allocated
+// ones without duplicating the rest of the option assembly.
+const buildRunArgs = (input: BuildRunArgsInput): Array<string> => {
+	const out: Array<string> = ['run'];
+	if (input.detach) out.push('-d');
+	out.push('--name', input.name);
+	for (const label of input.labels) {
+		out.push('--label', label);
+	}
+	if (input.hostname !== undefined) out.push('--hostname', input.hostname);
+	if (input.network !== undefined) out.push('--network', input.network);
+	if (input.ip !== undefined) out.push(`--ip=${input.ip}`);
+	if (input.networkAlias !== undefined) out.push('--network-alias', input.networkAlias);
+	for (const entry of input.addHosts) {
+		out.push(`--add-host=${entry}`);
+	}
+	for (const a of input.portArgs) {
+		out.push(a);
+	}
+	for (const envFile of input.envFiles ?? []) {
+		out.push('--env-file', envFile);
+	}
+	for (const [k, v] of Object.entries(input.env ?? {})) {
+		out.push('-e', `${k}=${v}`);
+	}
+	for (const { host, container } of input.mounts ?? []) {
+		out.push('-v', `${host}:${container}`);
+	}
+	out.push(input.image);
+	for (const a of input.imageArgs ?? []) out.push(a);
+	return out;
+};
 
 // -----------------------------------------------------------------------------
 // Helpers — shared across the rest of the docker/ slice
@@ -457,17 +599,12 @@ export interface DockerExecResult {
 // matters; `docker inspect` returns exit code 1 with a `No such
 // object` error on stderr when the container doesn't exist — we treat
 // that uniformly as `null` so callers can branch on existence with one
-// check.
-interface InspectedContainer {
-	readonly running: boolean;
-	readonly image: string;
-	readonly containerId: string;
-}
-
+// check. Result type is `InspectResult` so `decideRunAction` can match
+// against it directly.
 const inspectContainer = (
 	spawner: Spawner,
 	name: string,
-): Effect.Effect<InspectedContainer | null, never> =>
+): Effect.Effect<InspectResult | null, never> =>
 	Effect.gen(function* () {
 		const cmd = ChildProcess.make('docker', [
 			'inspect',
