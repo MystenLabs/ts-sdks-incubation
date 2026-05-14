@@ -43,5 +43,5 @@ export {
 	type DockerOneShotResult,
 } from './exec.js';
 export { networkCreate } from './network.js';
-export { followLogs } from './logs.js';
+export { awaitContainerReady, dockerLogsTail, dockerWait, followLogs } from './logs.js';
 export { ClaimedContainers, dockerOrphanSweep } from './sweep.js';
