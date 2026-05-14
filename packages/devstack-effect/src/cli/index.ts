@@ -25,6 +25,7 @@ import type { RendererKind, RunOverrides } from '../define-devstack.js';
 import { prettyError } from '../internal/pretty-error.js';
 import { applyCommand } from './commands/apply.js';
 import { doctorCommand } from './commands/doctor.js';
+import { pruneCommand } from './commands/prune.js';
 import { snapshotCommand } from './commands/snapshot.js';
 import { stackCommand } from './commands/stack.js';
 import { statusCommand } from './commands/status.js';
@@ -128,6 +129,7 @@ export const rootCommand = Command.make('devstack').pipe(
 		statusCommand,
 		snapshotCommand,
 		wipeCommand,
+		pruneCommand,
 		stackCommand,
 		doctorCommand,
 		manifestCommand,
