@@ -60,6 +60,36 @@ export const dockerError =
 			cause,
 		});
 
+// Match docker / containerd error messages that indicate the host port a
+// container wants to bind is unavailable. We're deliberately permissive
+// here: docker emits several variants depending on which daemon component
+// surfaces the failure (`Bind for 0.0.0.0:9001 failed: port is already
+// allocated`, `Error response from daemon: driver failed programming
+// external connectivity ... address already in use`, `listen tcp
+// 127.0.0.1:9001: bind: address already in use`), and missing a real port
+// conflict is worse than over-matching — the worst outcome of a false
+// positive is auto-allocating an ephemeral port on the recreate path,
+// which is what the previous behavior did unconditionally anyway.
+//
+// Anything we DON'T match (OCI runtime errors, image-pull glitches,
+// daemon transient hiccups) keeps the caller's original `opts.ports` on
+// the recreate path so endpoints published at primitive-init time
+// (`http://localhost:2024`) remain valid after the resume-fallback.
+const PORT_CONFLICT_PATTERNS = [
+	'port is already allocated',
+	'address already in use',
+	'bind: address already in use',
+] as const;
+
+export const isPortConflictStderr = (stderr: string): boolean => {
+	if (stderr.length === 0) return false;
+	const lower = stderr.toLowerCase();
+	for (const pat of PORT_CONFLICT_PATTERNS) {
+		if (lower.includes(pat)) return true;
+	}
+	return false;
+};
+
 // -----------------------------------------------------------------------------
 // Run — long-running container with Scope-managed cleanup
 // -----------------------------------------------------------------------------
@@ -319,6 +349,19 @@ export const run = (
 			return { containerId: action.containerId, name, reused: true, hostPorts };
 		}
 
+		// Set when the resume path promotes itself to `recreate`
+		// SPECIFICALLY because the host port we asked for is held by
+		// something else. ONLY in that case do we want to drop the
+		// caller's `opts.ports` and let docker auto-allocate. For every
+		// other resume failure (OCI runtime errors, image-pull glitches,
+		// transient daemon hiccups) the original ports are still the
+		// right ones, and re-allocating breaks any caller that already
+		// published URLs at primitive-init time (e.g. seal-key-server
+		// captures `http://localhost:2024` into its endpoint and never
+		// re-reads — recreating on an ephemeral port leaves the
+		// supervisor probing a port the container isn't bound to).
+		let resumePortConflict = false;
+
 		if (action.kind === 'resume') {
 			yield* Effect.logInfo(`devstack: resuming stopped container '${name}'`);
 			// Capture exit code + stderr — `docker start` can fail for
@@ -335,17 +378,24 @@ export const run = (
 				'docker start',
 			).pipe(Effect.catchTag('DockerError', () => Effect.succeed(null)));
 			if (startResult === null || startResult.exitCode !== 0) {
+				const stderr = startResult?.stderr ?? '';
+				resumePortConflict = isPortConflictStderr(stderr);
 				yield* Effect.logWarning(
 					`devstack: docker start '${name}' failed (` +
 						`exit=${startResult?.exitCode ?? 'spawn-error'}, ` +
-						`stderr=${(startResult?.stderr ?? '').trim().slice(0, 200)})` +
-						' — falling back to remove + fresh run with re-allocated ports',
+						`stderr=${stderr.trim().slice(0, 200)})` +
+						(resumePortConflict
+							? ' — port conflict detected, falling back to remove + fresh run with re-allocated ports'
+							: ' — falling back to remove + fresh run with the original ports'),
 				);
 				// Promote to `recreate`: the existing container is the
 				// one we just failed to start, so we know its id; the
-				// dispatcher's recreate branch will rm it and re-run
-				// WITHOUT the caller's original host ports (docker picks
-				// fresh ephemeral ports, surfaced via inspectHostPorts).
+				// dispatcher's recreate branch will rm it and re-run.
+				// Whether the fresh run reuses the caller's host ports
+				// or asks docker to auto-allocate is decided below via
+				// `resumePortConflict` — most resume failures (OCI
+				// runtime errors, transient daemon issues) are NOT port
+				// problems and recreating on the same port works.
 				action = { kind: 'recreate', existingId: action.containerId };
 			} else {
 				yield* Effect.annotateCurrentSpan({
@@ -368,17 +418,24 @@ export const run = (
 			}
 		}
 
-		// `recreate` and `fresh` both end up here. The difference: on
-		// `recreate` we know a same-named container exists (image
-		// mismatch, or resume-failure promotion) and we MUST omit the
-		// caller's `-p hostPort:containerPort` mappings — the resume
-		// path likely failed because that host port is now held by
-		// something else, so reusing it guarantees a second failure.
-		// We pass `-p <containerPort>` (no host port) instead and let
-		// docker auto-allocate; the actual binding is read back via
-		// `inspectHostPorts` and returned to the caller via the
-		// `hostPorts` field.
-		const reAllocatePorts = action.kind === 'recreate';
+		// `recreate` and `fresh` both end up here. Port-arg selection:
+		//
+		//   - `fresh` (no prior container): honor the caller's
+		//     `opts.ports` exactly.
+		//   - `recreate` from an image-mismatch eviction (decision-time):
+		//     same — the caller's ports are still authoritative; the old
+		//     container is gone so there's nothing to conflict with.
+		//   - `recreate` from a resume-fallback promotion: depends on
+		//     WHY `docker start` failed. If stderr indicated a port
+		//     conflict (something else holds the host port now), drop
+		//     `opts.ports` and let docker auto-allocate — the actual
+		//     binding is read back via `inspectHostPorts`. For every
+		//     other failure (OCI runtime error, missing image layer,
+		//     daemon hiccup) the caller's ports are still correct and
+		//     re-allocating would silently move the endpoint out from
+		//     under callers that already published URLs at primitive-
+		//     init time.
+		const reAllocatePorts = resumePortConflict;
 		const portArgs = reAllocatePorts ? portArgsAuto() : portArgsFromOpts();
 		const args = buildRunArgs({
 			detach,
