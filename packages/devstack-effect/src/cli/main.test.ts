@@ -28,6 +28,7 @@ describe('CLI surface', () => {
 			'status',
 			'snapshot',
 			'wipe',
+			'prune',
 			'stack',
 			'doctor',
 			'manifest',

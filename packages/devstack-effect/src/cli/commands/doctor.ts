@@ -1,9 +1,13 @@
-// `devstack doctor` — preflight checks before bringing a stack up.
+// `devstack doctor` — preflight checks + inventory.
 //
-// V3 parity port. Reports on:
-//   - docker daemon reachable (required)
-//   - sui CLI on PATH (informational; missing it doesn't fail doctor)
-//   - common host ports free / in use (informational)
+// V3 parity port. Two-section report, none of which mutate state:
+//
+//   - Pre-flight checks: docker daemon, sui CLI, common host ports.
+//   - Inventory: every (app, stack) bucket of devstack-labelled docker
+//     resources on the machine, plus on-disk state dirs. The inventory
+//     reads labels from `docker ps -a` / `docker network ls` /
+//     `docker volume ls` filtered on `label=devstack.app`, and walks
+//     `<cwd>/.devstack/` for state.
 //
 // We use a fixed port set (9000, 9123, 9125, 5180) per the v4 port plan —
 // the v3 version walked the prior snapshot for allocated ports, but v4's
@@ -17,6 +21,12 @@ import { Console, Effect } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { Command } from 'effect/unstable/cli';
 import { createServer } from 'node:net';
+import {
+	collectInventory,
+	renderInventoryRow,
+	renderTotals,
+	totalsFor,
+} from '../../internal/docker/inventory.js';
 
 type Spawner = ReturnType<typeof ChildProcessSpawner.make>;
 
@@ -116,9 +126,34 @@ export const doctorCommand = Command.make('doctor', {}, () =>
 			ports.push(yield* checkPort(p));
 		}
 		const all: Array<Check> = [docker, sui, ...ports];
+		yield* Console.log('Checks');
 		for (const c of all) {
 			yield* Console.log(renderCheck(c));
 		}
+
+		// Inventory only runs when the docker daemon is reachable —
+		// otherwise `collectInventory` would emit empty rows and the
+		// section would be noise. Doctor's exit-code semantics are
+		// unchanged: docker-down still fails the command.
+		if (docker.ok) {
+			yield* Console.log('');
+			yield* Console.log('Inventory');
+			const rows = yield* collectInventory();
+			if (rows.length === 0) {
+				yield* Console.log('  (no devstack-labelled resources)');
+			} else {
+				for (const row of rows) {
+					yield* Console.log(renderInventoryRow(row));
+				}
+				yield* Console.log('');
+				yield* Console.log(renderTotals(totalsFor(rows)));
+				yield* Console.log('');
+				yield* Console.log(
+					'Hint: `devstack prune` to interactively remove orphaned stacks.',
+				);
+			}
+		}
+
 		const failedRequired = all.filter((c) => c.required && !c.ok);
 		if (failedRequired.length > 0) {
 			yield* Console.log('');
@@ -126,4 +161,8 @@ export const doctorCommand = Command.make('doctor', {}, () =>
 			return yield* Effect.fail(new Error('doctor: required checks failed'));
 		}
 	}),
-).pipe(Command.withDescription('Preflight checks: docker, sui CLI, common port availability'));
+).pipe(
+	Command.withDescription(
+		'Preflight checks + inventory of devstack-labelled docker resources',
+	),
+);
