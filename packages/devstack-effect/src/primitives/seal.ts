@@ -281,6 +281,13 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 					}),
 			),
 		);
+		// Release on scope teardown so the allocator's held-set doesn't
+		// grow monotonically across primitive restarts — otherwise
+		// subsequent runs probe from `preferred+N` rather than reusing
+		// the slot this cycle just freed. Registered immediately after
+		// allocate so a failure later in the build path still triggers
+		// release on scope close.
+		yield* Effect.addFinalizer(() => portAllocator.release(hostPort).pipe(Effect.ignore));
 		const keyServerUrl = `http://localhost:${hostPort}`;
 		yield* Effect.annotateCurrentSpan({ 'seal.hostPort': hostPort });
 

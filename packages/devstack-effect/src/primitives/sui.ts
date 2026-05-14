@@ -189,17 +189,25 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 		} else {
 			const allocator = yield* PortAllocator;
 			const allocSui = (preferred: number) =>
-				allocator.allocate(preferred).pipe(
-					Effect.catchTag('PortAllocatorError', (cause) =>
-						Effect.fail(
-							new SuiError({
-								phase: 'sui-up',
-								message: `sui-localnet: could not allocate host port near ${preferred}: ${cause.message}`,
-								cause,
-							}),
+				Effect.gen(function* () {
+					const port = yield* allocator.allocate(preferred).pipe(
+						Effect.catchTag('PortAllocatorError', (cause) =>
+							Effect.fail(
+								new SuiError({
+									phase: 'sui-up',
+									message: `sui-localnet: could not allocate host port near ${preferred}: ${cause.message}`,
+									cause,
+								}),
+							),
 						),
-					),
-				);
+					);
+					// Release on scope teardown so the allocator's held-set
+					// doesn't grow monotonically across primitive restarts —
+					// otherwise subsequent runs probe from `preferred+N`
+					// rather than reusing the slot this cycle just freed.
+					yield* Effect.addFinalizer(() => allocator.release(port).pipe(Effect.ignore));
+					return port;
+				});
 			hostRpcPort = yield* allocSui(LOCAL_RPC_PORT);
 			hostFaucetPort = yield* allocSui(LOCAL_FAUCET_PORT);
 			hostGraphqlPort = yield* allocSui(LOCAL_GRAPHQL_PORT);
