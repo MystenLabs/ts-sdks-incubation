@@ -30,7 +30,7 @@ import { layer as NodePathLayer } from '@effect/platform-node/NodePath';
 import { layer as NodeStdioLayer } from '@effect/platform-node/NodeStdio';
 import { layer as NodeTerminalLayer } from '@effect/platform-node/NodeTerminal';
 import { describe, expect, it } from '@effect/vitest';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -67,8 +67,19 @@ const makeMockSpawnerLayer = (recorder: Array<SpawnRecord>) => {
 		// `Docker.pull`/`Docker.build`'s post-build inspect resolves to a
 		// non-empty string. The vendored `sui-image/` build path threads
 		// through this branch on every integration run.
-		if (args[0] === 'image' && args[1] === 'inspect')
-			return `sha256:${'0'.repeat(64)}\n`;
+		if (args[0] === 'image' && args[1] === 'inspect') return `sha256:${'0'.repeat(64)}\n`;
+		// `docker inspect --format '{{(index .NetworkSettings.Networks
+		// "<net>").IPAddress}}'` → synthetic router-network IP. Drives
+		// the file-provider materialization in `Docker.run({traefik:
+		// [...]})`; without a non-empty response the helper retries
+		// for 3s and the test times out.
+		if (args[0] === 'inspect') {
+			const formatIdx = args.indexOf('--format');
+			const fmt = formatIdx >= 0 ? args[formatIdx + 1] : undefined;
+			if (fmt !== undefined && fmt.includes('NetworkSettings.Networks')) {
+				return '172.21.0.3\n';
+			}
+		}
 		// `docker exec <id> pg_isready ...` → realistic ready output.
 		if (args[0] === 'exec' && args[2] === 'pg_isready')
 			return '/var/run/postgresql:5432 - accepting connections\n';
@@ -199,6 +210,13 @@ describe('devstack integration smoke', () => {
 			const recorder: Array<SpawnRecord> = [];
 			const tmpDir = mkdtempSync(join(tmpdir(), 'devstack-int-'));
 			const restore = stubFetch();
+			// Pin the router file-provider dir to a per-test temp dir so
+			// the YAMLs Docker.run materializes for sui-localnet land
+			// somewhere we can inspect without touching the real
+			// `~/.devstack/traefik/dynamic`.
+			const routerDir = join(tmpDir, 'router');
+			const savedRouterEnv = process.env.DEVSTACK_ROUTER_DYNAMIC_DIR;
+			process.env.DEVSTACK_ROUTER_DYNAMIC_DIR = routerDir;
 			try {
 				const a = accounts({ alice: {} });
 				const layer = composeStackLayer([suiLocalnet(), a.alice], {
@@ -253,32 +271,37 @@ describe('devstack integration smoke', () => {
 				// Sui no longer publishes host ports (rpc/faucet/graphql
 				// reach this container through the shared Traefik
 				// router on the well-known entrypoint ports). The router
-				// labels stamped below are how SDK clients land here.
+				// is now wired via file-provider YAMLs written below.
 				expect(localnetRun?.args.some((a) => a.endsWith(':9000:9000'))).toBe(false);
-				// Stamps the canonical 5-label set per service (rpc /
-				// faucet / graphql), each gated by its stack-scoped
-				// hostname (`integration.<service>.<app>.localhost`).
+				// No `traefik.*` labels — those drove the docker
+				// provider, which we removed because of an IP-resolution
+				// race against the per-stack vs router-network attach
+				// order. See `internal/docker/router.ts` architecture
+				// comment.
+				expect(localnetRun?.args.some((a) => a.startsWith('traefik.'))).toBe(false);
+				// Instead, `Docker.run` attaches the container to
+				// `devstack-router` after `docker run` and writes one
+				// file-provider YAML per service (rpc / faucet /
+				// graphql) under `DEVSTACK_ROUTER_DYNAMIC_DIR`, with the
+				// resolved router-network IP folded into the upstream
+				// URL. The YAMLs are how Traefik (file-provider only)
+				// dispatches to this container.
 				expect(
-					localnetRun?.args.some((a) =>
-						a.startsWith(
-							'traefik.http.routers.devstack-effect-integration-sui-rpc.rule=Host(',
-						),
+					recorder.some(
+						(r) =>
+							r.args[0] === 'network' && r.args[1] === 'connect' && r.args[2] === 'devstack-router',
 					),
 				).toBe(true);
-				expect(
-					localnetRun?.args.some((a) =>
-						a.startsWith(
-							'traefik.http.routers.devstack-effect-integration-sui-faucet.rule=Host(',
-						),
-					),
-				).toBe(true);
-				expect(
-					localnetRun?.args.some((a) =>
-						a.startsWith(
-							'traefik.http.routers.devstack-effect-integration-sui-graphql.rule=Host(',
-						),
-					),
-				).toBe(true);
+				const yamlNames = readdirSync(routerDir);
+				expect(yamlNames).toContain('devstack-effect-integration-sui-rpc.yml');
+				expect(yamlNames).toContain('devstack-effect-integration-sui-faucet.yml');
+				expect(yamlNames).toContain('devstack-effect-integration-sui-graphql.yml');
+				// Each YAML carries the synthetic IP from the mock spawner.
+				const rpcYaml = readFileSync(
+					join(routerDir, 'devstack-effect-integration-sui-rpc.yml'),
+					'utf8',
+				);
+				expect(rpcYaml).toContain('http://172.21.0.3:9000');
 				// Image is content-addressed from the vendored `sui-image/`
 				// Dockerfile + entrypoint + SUI_VERSION; the `dockerImage`
 				// runner stamps `devstack-sui.image:<treeHash>-<configHash>`.
@@ -314,6 +337,11 @@ describe('devstack integration smoke', () => {
 				expect(netCreate).toBeDefined();
 			} finally {
 				restore();
+				if (savedRouterEnv === undefined) {
+					delete process.env.DEVSTACK_ROUTER_DYNAMIC_DIR;
+				} else {
+					process.env.DEVSTACK_ROUTER_DYNAMIC_DIR = savedRouterEnv;
+				}
 				yield* Effect.promise(() => rm(tmpDir, { recursive: true, force: true }));
 			}
 		}),
@@ -358,9 +386,7 @@ describe('devstack integration smoke', () => {
 				// Cross-check: the `Effect.provide` path also hit Docker.run
 				// with the scoped container name (`integration-provide` stack).
 				expect(
-					recorder.some((r) =>
-						r.args.includes('devstack-effect-integration-provide-sui-localnet'),
-					),
+					recorder.some((r) => r.args.includes('devstack-effect-integration-provide-sui-localnet')),
 				).toBe(true);
 			} finally {
 				restore();

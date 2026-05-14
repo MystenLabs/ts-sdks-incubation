@@ -3,15 +3,28 @@
 //
 // One Traefik container lives across stacks, attached to the
 // `devstack-router` network. Every primitive that wants HTTP exposure
-// publishes traefik docker-provider labels (see `core.ts` → `traefik`
-// option in `DockerRunOptions`) and joins the same network. Traefik
-// reads its config from:
+// joins the same network and the supervisor writes one file-provider
+// YAML per (id, hostname, entrypoint, upstream URL) tuple. Traefik is
+// **file-provider only** — every backend (docker or host) flows
+// through the same path:
 //
-//   - Docker provider: labels on running containers in the
-//     `devstack-router` network.
 //   - File provider: YAMLs under `~/.devstack/traefik/dynamic/`.
-//     Used for host processes (vite dev-server, wallet-app) that
-//     aren't in docker but still need a hostname-routed entrypoint.
+//     Used for host processes (vite dev-server, wallet-app) AND for
+//     docker containers. Traefik watches the directory and reloads
+//     on change.
+//
+// Why no docker-provider:
+//   Containers attach to two networks: a per-stack one (the `--network`
+//   on `docker run`) and `devstack-router` (added via `docker network
+//   connect` AFTER `docker run` completes). The docker-provider's
+//   container-events listener fires on the FIRST event — at which
+//   point the container has only its per-stack IP, not the router IP.
+//   Traefik captures the wrong URL and never re-fetches, so every
+//   request hangs/404s until somebody manually `docker restart`s the
+//   router. The fix: supervisor knows the router-network IP AFTER
+//   `docker network connect` returns, so it writes a deterministic
+//   file-provider YAML with the resolved upstream URL. Same code path
+//   for docker and host backends; no race window.
 //
 // Lifecycle:
 //   - First `pnpm dev` checks for an existing `devstack-traefik`
@@ -48,7 +61,7 @@ export const ROUTER_CONTAINER = 'devstack-traefik';
 // Pinned upstream traefik tag. v3.x is the supported major; lock to a
 // specific minor so reproducibility across hosts is stable. Bump in
 // lockstep with any changes to label semantics below.
-export const ROUTER_IMAGE = 'traefik:v3.1';
+export const ROUTER_IMAGE = 'traefik:v3.6';
 
 // Host directory backing the file provider. Traefik watches it on a
 // poll; primitives (vite, wallet-app) drop YAML into it at boot and
@@ -101,58 +114,59 @@ export const routerEntrypoint = (name: string): RouterEntrypoint | undefined =>
 // `Identity` (it's cross-stack) and the labels we want differ:
 // `devstack.router=true` rather than `devstack.app/.stack/.action`.
 
-export const ensureRouter: Effect.Effect<void, DockerError, ChildProcessSpawner.ChildProcessSpawner> =
-	Effect.gen(function* () {
-		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+export const ensureRouter: Effect.Effect<
+	void,
+	DockerError,
+	ChildProcessSpawner.ChildProcessSpawner
+> = Effect.gen(function* () {
+	const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 
-		// 1. Network — idempotent. Don't fail if it exists; just
-		//    surface other docker errors so the caller can decide.
-		yield* ensureRouterNetwork(spawner);
+	// 1. Network — idempotent. Don't fail if it exists; just
+	//    surface other docker errors so the caller can decide.
+	yield* ensureRouterNetwork(spawner);
 
-		// 2. File-provider dynamic dir — must exist before traefik
-		//    starts or it logs noisily about a missing watch target.
-		yield* ensureDynamicDir();
+	// 2. File-provider dynamic dir — must exist before traefik
+	//    starts or it logs noisily about a missing watch target.
+	yield* ensureDynamicDir();
 
-		// 3. Container — probe → adopt|resume|recreate|fresh.
-		const inspected = yield* inspectRouter(spawner);
-		if (inspected === null) {
-			yield* runRouterFresh(spawner);
-			return;
-		}
-		if (inspected.image !== ROUTER_IMAGE) {
-			yield* Effect.logInfo(
-				`devstack: traefik router image mismatch (have=${inspected.image}, want=${ROUTER_IMAGE}); recreating`,
-			);
-			yield* runCapturing(
-				spawner,
-				ChildProcess.make('docker', ['rm', '-f', ROUTER_CONTAINER]),
-				'docker rm router',
-			).pipe(Effect.ignore);
-			yield* runRouterFresh(spawner);
-			return;
-		}
-		if (inspected.running) {
-			yield* Effect.annotateCurrentSpan({ 'router.action': 'adopt' });
-			return;
-		}
-		yield* Effect.annotateCurrentSpan({ 'router.action': 'resume' });
-		const startResult = yield* runCapturing(
+	// 3. Container — probe → adopt|resume|recreate|fresh.
+	const inspected = yield* inspectRouter(spawner);
+	if (inspected === null) {
+		yield* runRouterFresh(spawner);
+		return;
+	}
+	if (inspected.image !== ROUTER_IMAGE) {
+		yield* Effect.logInfo(
+			`devstack: traefik router image mismatch (have=${inspected.image}, want=${ROUTER_IMAGE}); recreating`,
+		);
+		yield* runCapturing(
 			spawner,
-			ChildProcess.make('docker', ['start', ROUTER_CONTAINER]),
-			'docker start router',
-		).pipe(Effect.catchTag('DockerError', () => Effect.succeed(null)));
-		if (startResult === null || startResult.exitCode !== 0) {
-			yield* Effect.logWarning(
-				`devstack: router 'docker start' failed; recreating from scratch`,
-			);
-			yield* runCapturing(
-				spawner,
-				ChildProcess.make('docker', ['rm', '-f', ROUTER_CONTAINER]),
-				'docker rm router',
-			).pipe(Effect.ignore);
-			yield* runRouterFresh(spawner);
-		}
-	}).pipe(Effect.withSpan('Docker.ensureRouter'));
+			ChildProcess.make('docker', ['rm', '-f', ROUTER_CONTAINER]),
+			'docker rm router',
+		).pipe(Effect.ignore);
+		yield* runRouterFresh(spawner);
+		return;
+	}
+	if (inspected.running) {
+		yield* Effect.annotateCurrentSpan({ 'router.action': 'adopt' });
+		return;
+	}
+	yield* Effect.annotateCurrentSpan({ 'router.action': 'resume' });
+	const startResult = yield* runCapturing(
+		spawner,
+		ChildProcess.make('docker', ['start', ROUTER_CONTAINER]),
+		'docker start router',
+	).pipe(Effect.catchTag('DockerError', () => Effect.succeed(null)));
+	if (startResult === null || startResult.exitCode !== 0) {
+		yield* Effect.logWarning(`devstack: router 'docker start' failed; recreating from scratch`);
+		yield* runCapturing(
+			spawner,
+			ChildProcess.make('docker', ['rm', '-f', ROUTER_CONTAINER]),
+			'docker rm router',
+		).pipe(Effect.ignore);
+		yield* runRouterFresh(spawner);
+	}
+}).pipe(Effect.withSpan('Docker.ensureRouter'));
 
 // Best-effort directory creation. Uses node:fs/promises directly so we
 // don't drag a `FileSystem.FileSystem` dep through the router boot
@@ -176,13 +190,7 @@ const ensureRouterNetwork = (spawner: Spawner): Effect.Effect<void, DockerError>
 	Effect.gen(function* () {
 		const existing = yield* runCapturing(
 			spawner,
-			ChildProcess.make('docker', [
-				'network',
-				'ls',
-				'-q',
-				'--filter',
-				`name=^${ROUTER_NETWORK}$`,
-			]),
+			ChildProcess.make('docker', ['network', 'ls', '-q', '--filter', `name=^${ROUTER_NETWORK}$`]),
 			'docker network ls router',
 		);
 		if (existing.stdout.trim().length > 0) return;
@@ -232,6 +240,10 @@ const runRouterFresh = (spawner: Spawner): Effect.Effect<void, DockerError> =>
 		// not exposed. No auth (local dev only).
 		portFlags.push('-p', '127.0.0.1:8080:8080');
 
+		// File-provider only — no docker.sock mount, no `--providers.docker`.
+		// See the architecture comment at the top of this file for why
+		// the docker provider was removed (IP race with two-network
+		// container attachment).
 		const args: Array<string> = [
 			'run',
 			'-d',
@@ -245,14 +257,9 @@ const runRouterFresh = (spawner: Spawner): Effect.Effect<void, DockerError> =>
 			ROUTER_NETWORK,
 			...portFlags,
 			'-v',
-			'/var/run/docker.sock:/var/run/docker.sock:ro',
-			'-v',
 			`${dynDir}:/etc/traefik/dynamic:ro`,
 			ROUTER_IMAGE,
 			'--api.insecure=true',
-			'--providers.docker=true',
-			`--providers.docker.network=${ROUTER_NETWORK}`,
-			'--providers.docker.exposedbydefault=false',
 			'--providers.file.directory=/etc/traefik/dynamic',
 			'--providers.file.watch=true',
 		];
@@ -263,12 +270,16 @@ const runRouterFresh = (spawner: Spawner): Effect.Effect<void, DockerError> =>
 		yield* runCapturingOrFail(spawner, ChildProcess.make('docker', args), 'docker run router');
 	});
 
-// Compose the traefik label set for a single backend, given the
-// router id, hostname, entrypoint name, and the container's internal
-// service port. Multiple services on the same container produce
-// multiple label sets (each with a distinct router id) — the caller
-// passes a `RouterLabel[]` and `core.ts` appends each as a separate
-// `--label` flag.
+// Per-backend router entry. The caller (`Docker.run` for docker
+// containers, host-process / wallet-app for host backends) supplies
+// one `RouterLabel` per service; the supervisor materializes each as
+// a file-provider YAML. Multi-port primitives (e.g. sui-localnet
+// exposing rpc/faucet/graphql) pass one entry per service.
+//
+// Naming kept as `RouterLabel` for API stability — the type predates
+// the file-provider pivot when these used to be stamped as
+// `traefik.*` labels on the container. The shape (id, hostname,
+// entrypoint, servicePort) is unchanged.
 export interface RouterLabel {
 	/** Unique router/service id (e.g. `arena-main-sui-rpc`). */
 	readonly id: string;
@@ -279,14 +290,6 @@ export interface RouterLabel {
 	/** Internal container port the upstream service is bound to. */
 	readonly servicePort: number;
 }
-
-export const routerLabelStrings = (label: RouterLabel): ReadonlyArray<string> => [
-	'traefik.enable=true',
-	`traefik.docker.network=${ROUTER_NETWORK}`,
-	`traefik.http.routers.${label.id}.rule=Host(\`${label.hostname}\`)`,
-	`traefik.http.routers.${label.id}.entrypoints=${label.entrypoint}`,
-	`traefik.http.services.${label.id}.loadbalancer.server.port=${label.servicePort}`,
-];
 
 // File-provider YAML body for host processes (vite, wallet-app) that
 // can't be discovered via the docker provider. Caller writes this to

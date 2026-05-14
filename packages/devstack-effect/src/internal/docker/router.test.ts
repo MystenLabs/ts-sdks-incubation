@@ -1,11 +1,18 @@
 // Pure-helper tests for the router slice:
-//   - label assembly (`routerLabelStrings`)
 //   - file-provider YAML body shape (`renderFileProvider`)
 //   - file-provider write/remove lifecycle (`writeFileProvider` +
 //     `removeFileProvider`) against a temp `DEVSTACK_ROUTER_DYNAMIC_DIR`
 //
 // The full `ensureRouter` boot flow is covered by the integration
 // suite (it shells out to docker, which the unit tests don't carry).
+//
+// NOTE: an earlier revision tested `routerLabelStrings` here, asserting
+// the docker-provider label set we used to stamp on each container.
+// That export is gone — traefik is now file-provider-only (see the
+// architecture comment at the top of `router.ts`). Docker.run writes a
+// YAML per RouterLabel after `docker network connect`, dodging the
+// docker-provider race where the per-stack IP gets captured before the
+// router-network IP is settled.
 
 import { Effect } from 'effect';
 import { mkdtempSync, readFileSync, existsSync, rmSync } from 'node:fs';
@@ -13,40 +20,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { it as itEffect } from '@effect/vitest';
-import {
-	renderFileProvider,
-	removeFileProvider,
-	routerLabelStrings,
-	writeFileProvider,
-} from './router.js';
-
-describe('routerLabelStrings', () => {
-	it('stamps the canonical 5-label set for a single backend', () => {
-		const labels = routerLabelStrings({
-			id: 'arena-main-sui-rpc',
-			hostname: 'sui.arena.localhost',
-			entrypoint: 'sui-rpc',
-			servicePort: 9000,
-		});
-		expect(labels).toEqual([
-			'traefik.enable=true',
-			'traefik.docker.network=devstack-router',
-			'traefik.http.routers.arena-main-sui-rpc.rule=Host(`sui.arena.localhost`)',
-			'traefik.http.routers.arena-main-sui-rpc.entrypoints=sui-rpc',
-			'traefik.http.services.arena-main-sui-rpc.loadbalancer.server.port=9000',
-		]);
-	});
-
-	it('uses backticks around the hostname (traefik requires them on Host rules)', () => {
-		const labels = routerLabelStrings({
-			id: 'a-b-c',
-			hostname: 'host.localhost',
-			entrypoint: 'wallet',
-			servicePort: 5180,
-		});
-		expect(labels[2]).toBe('traefik.http.routers.a-b-c.rule=Host(`host.localhost`)');
-	});
-});
+import { renderFileProvider, removeFileProvider, writeFileProvider } from './router.js';
 
 describe('renderFileProvider', () => {
 	it('renders the canonical YAML shape for a host-process backend', () => {

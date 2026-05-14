@@ -15,8 +15,11 @@
 import { Effect, Layer, Sink, Stream } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { describe, expect, it } from '@effect/vitest';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import * as Docker from './docker.js';
-import { decideRunAction } from './docker/core.js';
+import { decideRunAction, inspectContainerIp } from './docker/core.js';
 import { Identity } from './identity.js';
 
 interface SpawnRecord {
@@ -54,6 +57,16 @@ interface SpawnerLayerOpts {
 	 * host-port binding). Defaults to `null` (empty bindings).
 	 */
 	readonly portBindingsJson?: string;
+	/**
+	 * Sequence of stdout strings returned by successive `docker inspect`
+	 * IP probes (`--format '{{(index .NetworkSettings.Networks
+	 * "<net>").IPAddress}}'`). Used by tests that exercise the retry
+	 * path in `inspectContainerIp` — the first N − 1 entries are empty
+	 * and the last is a real IP. When unset, every probe returns a
+	 * stable router-network IP `172.21.0.3` so the file-provider
+	 * happy-path tests don't need to thread this through.
+	 */
+	readonly routerIpSequence?: ReadonlyArray<string>;
 }
 
 const makeSpawnerLayer = (
@@ -61,13 +74,20 @@ const makeSpawnerLayer = (
 	inspectResponse: InspectResponse | null,
 	options: SpawnerLayerOpts = {},
 ) => {
+	// Index into `options.routerIpSequence` so successive IP probes get
+	// successive responses. Closed-over state — one counter per spawner
+	// layer, exactly mirroring how the real docker daemon's
+	// `NetworkSettings.Networks` eventually populates after `network
+	// connect` returns.
+	let routerIpIdx = 0;
 	const respondTo = (
 		args: ReadonlyArray<string>,
 	): { stdout: string; stderr: string; exitCode: number } => {
 		if (args[0] === 'inspect') {
-			// Distinguish the name-inspect (returns running|image|id) from
-			// the host-ports inspect (returns JSON for PortBindings) by
-			// the `--format` argument shape.
+			// Three inspect shapes are distinguished by the `--format`:
+			//   1. name-inspect → `{{.State.Running}}|{{.Config.Image}}|{{.Id}}`
+			//   2. host-port-inspect → `{{json .HostConfig.PortBindings}}`
+			//   3. router-IP-inspect → `{{(index .NetworkSettings.Networks "devstack-router").IPAddress}}`
 			const formatIdx = args.indexOf('--format');
 			const fmt = formatIdx >= 0 ? args[formatIdx + 1] : undefined;
 			if (fmt !== undefined && fmt.includes('PortBindings')) {
@@ -76,6 +96,12 @@ const makeSpawnerLayer = (
 					stderr: '',
 					exitCode: 0,
 				};
+			}
+			if (fmt !== undefined && fmt.includes('NetworkSettings.Networks')) {
+				const seq = options.routerIpSequence;
+				const next = seq === undefined ? '172.21.0.3' : (seq[routerIpIdx] ?? '');
+				routerIpIdx++;
+				return { stdout: `${next}\n`, stderr: '', exitCode: 0 };
 			}
 			if (inspectResponse === null) {
 				return { stdout: '', stderr: '', exitCode: 1 };
@@ -131,55 +157,51 @@ const identityLayer = Layer.succeed(Identity, {
 });
 
 describe('Docker.run reuse-if-healthy', () => {
-	it.effect(
-		'adopts an existing healthy container with the same image (skips docker run)',
-		() =>
-			Effect.gen(function* () {
-				const recorder: Array<SpawnRecord> = [];
-				const image = 'mystenlabs/sui-tools:1.0.0';
-				const spawnerLayer = makeSpawnerLayer(recorder, {
-					running: true,
-					image,
-					containerId: EXISTING_CONTAINER_ID,
-				});
+	it.effect('adopts an existing healthy container with the same image (skips docker run)', () =>
+		Effect.gen(function* () {
+			const recorder: Array<SpawnRecord> = [];
+			const image = 'mystenlabs/sui-tools:1.0.0';
+			const spawnerLayer = makeSpawnerLayer(recorder, {
+				running: true,
+				image,
+				containerId: EXISTING_CONTAINER_ID,
+			});
 
-				const result = yield* Docker.run({ name: 'sui.localnet', image }).pipe(
-					Effect.provide(spawnerLayer),
-					Effect.provide(identityLayer),
-					Effect.scoped,
-				);
+			const result = yield* Docker.run({ name: 'sui.localnet', image }).pipe(
+				Effect.provide(spawnerLayer),
+				Effect.provide(identityLayer),
+				Effect.scoped,
+			);
 
-				expect(result.containerId).toBe(EXISTING_CONTAINER_ID);
-				expect(recorder.some((r) => r.args[0] === 'inspect')).toBe(true);
-				expect(recorder.some((r) => r.args[0] === 'run')).toBe(false);
-			}),
+			expect(result.containerId).toBe(EXISTING_CONTAINER_ID);
+			expect(recorder.some((r) => r.args[0] === 'inspect')).toBe(true);
+			expect(recorder.some((r) => r.args[0] === 'run')).toBe(false);
+		}),
 	);
 
-	it.effect(
-		'recreates when an existing container is running a DIFFERENT image',
-		() =>
-			Effect.gen(function* () {
-				const recorder: Array<SpawnRecord> = [];
-				const image = 'mystenlabs/sui-tools:2.0.0';
-				const spawnerLayer = makeSpawnerLayer(recorder, {
-					running: true,
-					image: 'mystenlabs/sui-tools:1.0.0',
-					containerId: EXISTING_CONTAINER_ID,
-				});
+	it.effect('recreates when an existing container is running a DIFFERENT image', () =>
+		Effect.gen(function* () {
+			const recorder: Array<SpawnRecord> = [];
+			const image = 'mystenlabs/sui-tools:2.0.0';
+			const spawnerLayer = makeSpawnerLayer(recorder, {
+				running: true,
+				image: 'mystenlabs/sui-tools:1.0.0',
+				containerId: EXISTING_CONTAINER_ID,
+			});
 
-				const result = yield* Docker.run({ name: 'sui.localnet', image }).pipe(
-					Effect.provide(spawnerLayer),
-					Effect.provide(identityLayer),
-					Effect.scoped,
-				);
+			const result = yield* Docker.run({ name: 'sui.localnet', image }).pipe(
+				Effect.provide(spawnerLayer),
+				Effect.provide(identityLayer),
+				Effect.scoped,
+			);
 
-				expect(result.containerId).toBe(FAKE_CONTAINER_ID);
-				const runIdx = recorder.findIndex((r) => r.args[0] === 'run');
-				const psIdx = recorder.findIndex((r) => r.args[0] === 'ps');
-				expect(runIdx).toBeGreaterThanOrEqual(0);
-				expect(psIdx).toBeGreaterThanOrEqual(0);
-				expect(psIdx).toBeLessThan(runIdx);
-			}),
+			expect(result.containerId).toBe(FAKE_CONTAINER_ID);
+			const runIdx = recorder.findIndex((r) => r.args[0] === 'run');
+			const psIdx = recorder.findIndex((r) => r.args[0] === 'ps');
+			expect(runIdx).toBeGreaterThanOrEqual(0);
+			expect(psIdx).toBeGreaterThanOrEqual(0);
+			expect(psIdx).toBeLessThan(runIdx);
+		}),
 	);
 
 	it.effect(
@@ -208,112 +230,227 @@ describe('Docker.run reuse-if-healthy', () => {
 				expect(result.reused).toBe(true);
 				expect(recorder.some((r) => r.args[0] === 'run')).toBe(false);
 				expect(
-					recorder.some(
-						(r) => r.args[0] === 'start' && r.args[1] === EXISTING_CONTAINER_ID,
-					),
+					recorder.some((r) => r.args[0] === 'start' && r.args[1] === EXISTING_CONTAINER_ID),
 				).toBe(true);
 			}),
 	);
 
-	it.effect(
-		'creates a new container when nothing matches the requested name',
-		() =>
-			Effect.gen(function* () {
-				const recorder: Array<SpawnRecord> = [];
-				const image = 'mystenlabs/sui-tools:1.0.0';
-				const spawnerLayer = makeSpawnerLayer(recorder, null);
+	it.effect('creates a new container when nothing matches the requested name', () =>
+		Effect.gen(function* () {
+			const recorder: Array<SpawnRecord> = [];
+			const image = 'mystenlabs/sui-tools:1.0.0';
+			const spawnerLayer = makeSpawnerLayer(recorder, null);
 
-				const result = yield* Docker.run({ name: 'sui.localnet', image }).pipe(
-					Effect.provide(spawnerLayer),
-					Effect.provide(identityLayer),
-					Effect.scoped,
-				);
+			const result = yield* Docker.run({ name: 'sui.localnet', image }).pipe(
+				Effect.provide(spawnerLayer),
+				Effect.provide(identityLayer),
+				Effect.scoped,
+			);
 
-				expect(result.containerId).toBe(FAKE_CONTAINER_ID);
-				expect(recorder.some((r) => r.args[0] === 'run')).toBe(true);
-			}),
+			expect(result.containerId).toBe(FAKE_CONTAINER_ID);
+			expect(recorder.some((r) => r.args[0] === 'run')).toBe(true);
+		}),
 	);
 });
 
 // -----------------------------------------------------------------------------
-// Traefik label stamping — `Docker.run({traefik: [...]})` MUST append
-// the canonical 5-label set per router entry to the container labels
-// AND issue a `docker network connect devstack-router` post-run so the
-// router can dispatch to it.
+// Traefik file-provider materialization — `Docker.run({traefik: [...]})`:
+//
+//   1. DOES NOT stamp any `traefik.*` labels on the container (those
+//      drove the docker provider, which raced with the two-step network
+//      attach — see the `router.ts` architecture comment).
+//   2. Connects the container to `devstack-router` after `docker run`.
+//   3. Inspects the container's IP on `devstack-router` and writes one
+//      `<dynDir>/<id>.yml` per RouterLabel, with `http://<ip>:<port>`
+//      as the upstream URL.
+//   4. Registers a finalizer that removes each YAML on scope close.
 // -----------------------------------------------------------------------------
 
-describe('Docker.run traefik labels', () => {
-	it.effect('stamps the traefik label set and attaches to the router network on fresh run', () =>
-		Effect.gen(function* () {
-			const recorder: Array<SpawnRecord> = [];
-			const image = 'mystenlabs/sui-tools:1.0.0';
-			const spawnerLayer = makeSpawnerLayer(recorder, null);
-
-			yield* Docker.run({
-				name: 'sui.localnet',
-				image,
-				traefik: [
-					{
-						id: 'testapp-main-sui-rpc',
-						hostname: 'sui.testapp.localhost',
-						entrypoint: 'sui-rpc',
-						servicePort: 9000,
-					},
-				],
-			}).pipe(
-				Effect.provide(spawnerLayer),
-				Effect.provide(identityLayer),
-				Effect.scoped,
-			);
-
-			const runCmd = recorder.find((r) => r.args[0] === 'run');
-			expect(runCmd).toBeDefined();
-			const runArgs = runCmd!.args;
-			// Each traefik label is a `--label k=v` pair.
-			const labels = runArgs.flatMap((a, i) =>
-				a === '--label' && runArgs[i + 1] !== undefined ? [runArgs[i + 1]!] : [],
-			);
-			expect(labels).toContain('traefik.enable=true');
-			expect(labels).toContain('traefik.docker.network=devstack-router');
-			expect(labels).toContain(
-				'traefik.http.routers.testapp-main-sui-rpc.rule=Host(`sui.testapp.localhost`)',
-			);
-			expect(labels).toContain('traefik.http.routers.testapp-main-sui-rpc.entrypoints=sui-rpc');
-			expect(labels).toContain(
-				'traefik.http.services.testapp-main-sui-rpc.loadbalancer.server.port=9000',
-			);
-			// Post-run `docker network connect devstack-router <id>` was issued.
-			expect(
-				recorder.some(
-					(r) =>
-						r.args[0] === 'network' &&
-						r.args[1] === 'connect' &&
-						r.args[2] === 'devstack-router',
-				),
-			).toBe(true);
+// Pin DEVSTACK_ROUTER_DYNAMIC_DIR to a per-test temp dir so the
+// file-provider YAML writes land somewhere we can inspect and clean up
+// without colliding with a real `~/.devstack/traefik/dynamic`.
+//
+// Uses `Effect.acquireUseRelease` (not a JS try/finally inside
+// `Effect.gen`) so the env mutation + temp-dir cleanup straddle the
+// ENTIRE Effect, including the scope-finalizer phase that runs after
+// the `Effect.scoped` block returns. A naive try/finally would tear
+// the env back down BEFORE finalizers fire, leaving them looking at
+// the real home directory.
+const withTempRouterDir = <A, E, R>(
+	body: (dir: string) => Effect.Effect<A, E, R>,
+): Effect.Effect<A, E, R> =>
+	Effect.acquireUseRelease(
+		Effect.sync(() => {
+			const dir = mkdtempSync(join(tmpdir(), 'devstack-router-test-'));
+			const savedDirEnv = process.env.DEVSTACK_ROUTER_DYNAMIC_DIR;
+			process.env.DEVSTACK_ROUTER_DYNAMIC_DIR = dir;
+			return { dir, savedDirEnv };
 		}),
+		({ dir }) => body(dir),
+		({ dir, savedDirEnv }) =>
+			Effect.sync(() => {
+				if (savedDirEnv === undefined) {
+					delete process.env.DEVSTACK_ROUTER_DYNAMIC_DIR;
+				} else {
+					process.env.DEVSTACK_ROUTER_DYNAMIC_DIR = savedDirEnv;
+				}
+				rmSync(dir, { recursive: true, force: true });
+			}),
 	);
 
-	it.effect('omits the network connect when no traefik entries are supplied', () =>
+describe('Docker.run traefik file-provider', () => {
+	it.effect(
+		'attaches to the router network and writes one file-provider YAML per RouterLabel with the resolved IP',
+		() =>
+			withTempRouterDir((dir) =>
+				Effect.gen(function* () {
+					const recorder: Array<SpawnRecord> = [];
+					const image = 'mystenlabs/sui-tools:1.0.0';
+					const spawnerLayer = makeSpawnerLayer(recorder, null, {
+						// One IP probe per `Docker.run` call — the
+						// materializer calls `inspectContainerIp` once
+						// and shares the IP across that container's
+						// RouterLabels.
+						routerIpSequence: ['172.21.0.3'],
+					});
+
+					const rpcYamlPath = join(dir, 'testapp-main-sui-rpc.yml');
+					const faucetYamlPath = join(dir, 'testapp-main-sui-faucet.yml');
+					let rpcBodyDuringScope: string | undefined;
+					let faucetBodyDuringScope: string | undefined;
+
+					yield* Effect.scoped(
+						Effect.gen(function* () {
+							yield* Docker.run({
+								name: 'sui.localnet',
+								image,
+								traefik: [
+									{
+										id: 'testapp-main-sui-rpc',
+										hostname: 'sui.testapp.localhost',
+										entrypoint: 'sui-rpc',
+										servicePort: 9000,
+									},
+									{
+										id: 'testapp-main-sui-faucet',
+										hostname: 'sui.testapp.localhost',
+										entrypoint: 'sui-faucet',
+										servicePort: 9123,
+									},
+								],
+							});
+							// Inside the scope: both YAMLs exist with the
+							// resolved router-network IP folded into the
+							// upstream URL.
+							expect(existsSync(rpcYamlPath)).toBe(true);
+							expect(existsSync(faucetYamlPath)).toBe(true);
+							rpcBodyDuringScope = readFileSync(rpcYamlPath, 'utf8');
+							faucetBodyDuringScope = readFileSync(faucetYamlPath, 'utf8');
+						}).pipe(Effect.provide(spawnerLayer), Effect.provide(identityLayer)),
+					);
+
+					// 1. No `traefik.*` labels on the container — the
+					//    file-provider does the work the docker provider
+					//    used to do.
+					const runCmd = recorder.find((r) => r.args[0] === 'run');
+					expect(runCmd).toBeDefined();
+					const runArgs = runCmd!.args;
+					const labels = runArgs.flatMap((a, i) =>
+						a === '--label' && runArgs[i + 1] !== undefined ? [runArgs[i + 1]!] : [],
+					);
+					expect(labels.some((l) => l.startsWith('traefik.'))).toBe(false);
+
+					// 2. `docker network connect devstack-router <id>` issued.
+					expect(
+						recorder.some(
+							(r) =>
+								r.args[0] === 'network' &&
+								r.args[1] === 'connect' &&
+								r.args[2] === 'devstack-router',
+						),
+					).toBe(true);
+
+					// 3. The YAMLs captured during the scope carry the
+					//    resolved IP and correct entrypoint.
+					expect(rpcBodyDuringScope).toContain('http://172.21.0.3:9000');
+					expect(rpcBodyDuringScope).toContain('sui.testapp.localhost');
+					expect(rpcBodyDuringScope).toContain('entrypoints: ["sui-rpc"]');
+					expect(faucetBodyDuringScope).toContain('http://172.21.0.3:9123');
+					expect(faucetBodyDuringScope).toContain('entrypoints: ["sui-faucet"]');
+
+					// 4. Scope close fired the finalizers; both YAMLs are gone.
+					expect(existsSync(rpcYamlPath)).toBe(false);
+					expect(existsSync(faucetYamlPath)).toBe(false);
+				}),
+			),
+	);
+
+	it.effect(
+		'omits the network connect and file-provider work when no traefik entries are supplied',
+		() =>
+			withTempRouterDir(() =>
+				Effect.gen(function* () {
+					const recorder: Array<SpawnRecord> = [];
+					const image = 'mystenlabs/sui-tools:1.0.0';
+					const spawnerLayer = makeSpawnerLayer(recorder, null);
+
+					yield* Docker.run({ name: 'sui.localnet', image }).pipe(
+						Effect.provide(spawnerLayer),
+						Effect.provide(identityLayer),
+						Effect.scoped,
+					);
+
+					expect(
+						recorder.some(
+							(r) =>
+								r.args[0] === 'network' &&
+								r.args[1] === 'connect' &&
+								r.args[2] === 'devstack-router',
+						),
+					).toBe(false);
+					// And no router-IP inspect was attempted.
+					expect(
+						recorder.some(
+							(r) =>
+								r.args[0] === 'inspect' &&
+								r.args.some((a) => typeof a === 'string' && a.includes('NetworkSettings.Networks')),
+						),
+					).toBe(false);
+				}),
+			),
+	);
+});
+
+// -----------------------------------------------------------------------------
+// `inspectContainerIp` retry — the IP is empty on the first probe and
+// resolves on a later one. The helper must keep probing until docker
+// reports a non-empty address (within the retry budget) and not
+// short-circuit on the first empty response.
+// -----------------------------------------------------------------------------
+
+describe('inspectContainerIp', () => {
+	// `it.live` opts out of TestClock — the retry schedule sleeps
+	// between attempts and TestClock would freeze them. Wall-clock
+	// cost is bounded: 3 retries × 100ms = 300ms, well under the
+	// default timeout.
+	it.live('retries while docker reports an empty IP and returns the first non-empty value', () =>
 		Effect.gen(function* () {
 			const recorder: Array<SpawnRecord> = [];
-			const image = 'mystenlabs/sui-tools:1.0.0';
-			const spawnerLayer = makeSpawnerLayer(recorder, null);
-
-			yield* Docker.run({ name: 'sui.localnet', image }).pipe(
-				Effect.provide(spawnerLayer),
-				Effect.provide(identityLayer),
-				Effect.scoped,
+			const spawnerLayer = makeSpawnerLayer(recorder, null, {
+				routerIpSequence: ['', '', '172.21.0.7'],
+			});
+			const ip = yield* Effect.gen(function* () {
+				const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+				return yield* inspectContainerIp(spawner, FAKE_CONTAINER_ID, 'devstack-router');
+			}).pipe(Effect.provide(spawnerLayer));
+			expect(ip).toBe('172.21.0.7');
+			// Three IP-inspect calls were recorded.
+			const ipProbes = recorder.filter(
+				(r) =>
+					r.args[0] === 'inspect' &&
+					r.args.some((a) => typeof a === 'string' && a.includes('NetworkSettings.Networks')),
 			);
-
-			expect(
-				recorder.some(
-					(r) =>
-						r.args[0] === 'network' &&
-						r.args[1] === 'connect' &&
-						r.args[2] === 'devstack-router',
-				),
-			).toBe(false);
+			expect(ipProbes.length).toBe(3);
 		}),
 	);
 });
@@ -410,17 +547,11 @@ describe('Docker.run resume-fallback', () => {
 					// failure to make the dispatcher IGNORE this on the
 					// recreate path.
 					ports: { 9001: 9000 },
-				}).pipe(
-					Effect.provide(spawnerLayer),
-					Effect.provide(identityLayer),
-					Effect.scoped,
-				);
+				}).pipe(Effect.provide(spawnerLayer), Effect.provide(identityLayer), Effect.scoped);
 
 				// `docker start` was attempted and failed.
 				expect(
-					recorder.some(
-						(r) => r.args[0] === 'start' && r.args[1] === EXISTING_CONTAINER_ID,
-					),
+					recorder.some((r) => r.args[0] === 'start' && r.args[1] === EXISTING_CONTAINER_ID),
 				).toBe(true);
 
 				// A fresh `docker run` followed.
@@ -481,11 +612,7 @@ describe('Docker.run resume-fallback', () => {
 					image,
 					ports: { 9000: 9000 },
 					onPortConflict,
-				}).pipe(
-					Effect.provide(spawnerLayer),
-					Effect.provide(identityLayer),
-					Effect.scoped,
-				);
+				}).pipe(Effect.provide(spawnerLayer), Effect.provide(identityLayer), Effect.scoped);
 
 				// Callback was invoked once with the conflicting (caller's
 				// stale) host→container map.
@@ -540,11 +667,7 @@ describe('Docker.run resume-fallback', () => {
 					image,
 					ports: { 9000: 9000, 9123: 9123, 9125: 9125 },
 					onPortConflict,
-				}).pipe(
-					Effect.provide(spawnerLayer),
-					Effect.provide(identityLayer),
-					Effect.scoped,
-				);
+				}).pipe(Effect.provide(spawnerLayer), Effect.provide(identityLayer), Effect.scoped);
 
 				const runCmds = recorder.filter((r) => r.args[0] === 'run');
 				const runArgs = runCmds[0]?.args ?? [];
@@ -591,11 +714,7 @@ describe('Docker.run resume-fallback', () => {
 					image,
 					ports: { 2024: 2024 },
 					onPortConflict,
-				}).pipe(
-					Effect.provide(spawnerLayer),
-					Effect.provide(identityLayer),
-					Effect.scoped,
-				);
+				}).pipe(Effect.provide(spawnerLayer), Effect.provide(identityLayer), Effect.scoped);
 
 				// `isPortConflictStderr` didn't match → callback NOT invoked.
 				expect(callbackInvoked).toBe(false);
@@ -640,17 +759,11 @@ describe('Docker.run resume-fallback', () => {
 					name: 'seal.key-server',
 					image,
 					ports: { 2024: 2024 },
-				}).pipe(
-					Effect.provide(spawnerLayer),
-					Effect.provide(identityLayer),
-					Effect.scoped,
-				);
+				}).pipe(Effect.provide(spawnerLayer), Effect.provide(identityLayer), Effect.scoped);
 
 				// `docker start` was attempted and failed.
 				expect(
-					recorder.some(
-						(r) => r.args[0] === 'start' && r.args[1] === EXISTING_CONTAINER_ID,
-					),
+					recorder.some((r) => r.args[0] === 'start' && r.args[1] === EXISTING_CONTAINER_ID),
 				).toBe(true);
 
 				// A fresh `docker run` followed.
@@ -675,4 +788,3 @@ describe('Docker.run resume-fallback', () => {
 			}),
 	);
 });
-
