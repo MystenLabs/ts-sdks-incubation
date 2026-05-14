@@ -54,7 +54,6 @@ export {
 	ROUTER_ENTRYPOINTS,
 	routerEntrypoint,
 	routerDynamicDir,
-	routerLabelStrings,
 	renderFileProvider,
 	writeFileProvider,
 	removeFileProvider,

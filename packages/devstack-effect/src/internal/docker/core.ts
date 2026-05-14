@@ -10,7 +10,12 @@ import { DockerError } from '../../primitives/errors.js';
 import { Identity } from '../identity.js';
 import { LongLivedScope } from '../long-lived-scope.js';
 import { ClaimedContainers } from './sweep.js';
-import { ROUTER_NETWORK, routerLabelStrings, type RouterLabel } from './router.js';
+import {
+	ROUTER_NETWORK,
+	removeFileProvider,
+	writeFileProvider,
+	type RouterLabel,
+} from './router.js';
 import { Stream } from 'effect';
 
 // -----------------------------------------------------------------------------
@@ -278,14 +283,13 @@ export const run = (
 			`com.docker.compose.version=2.0.0`,
 			`com.docker.compose.oneoff=False`,
 		];
-		// Append traefik docker-provider labels for each requested
-		// router entry. When `traefik` is unset, no traefik labels are
-		// stamped — back-compat for hand-rolled callers and tests.
-		for (const entry of opts.traefik ?? []) {
-			for (const s of routerLabelStrings(entry)) {
-				baseLabels.push(s);
-			}
-		}
+		// Traefik exposure is now file-provider-driven (see `router.ts`
+		// architecture comment + the `materializeRouterEntries` call
+		// below). We deliberately DO NOT stamp `traefik.*` labels on the
+		// container — the docker provider would race with the two-step
+		// network attach (per-stack network at `docker run` time,
+		// `devstack-router` via `docker network connect` after) and
+		// capture the wrong upstream IP.
 		const labels: ReadonlyArray<string> = baseLabels;
 
 		// `--ip` is only valid alongside `--network`; surface the misuse as
@@ -337,9 +341,7 @@ export const run = (
 		const reuseScope = longLivedScope ?? scope;
 		const claimedRef = yield* ClaimedContainers;
 		const claim = (id: string): Effect.Effect<void> =>
-			claimedRef === undefined
-				? Effect.void
-				: Ref.update(claimedRef, (s) => new Set(s).add(id));
+			claimedRef === undefined ? Effect.void : Ref.update(claimedRef, (s) => new Set(s).add(id));
 
 		// Build the fresh `docker run` argv WITHOUT `-p` flags so we can
 		// reuse it on the recreate-after-resume-failure path with a
@@ -386,23 +388,11 @@ export const run = (
 				'docker.resumed': false,
 			});
 			yield* claim(action.containerId);
-			// Reattach to the router network on adoption — the
-			// container may have been created by an older devstack
-			// process without router exposure, OR docker may have
-			// disconnected it across a docker daemon restart.
-			// Idempotent on already-attached.
-			if ((opts.traefik ?? []).length > 0) {
-				yield* spawner
-					.exitCode(
-						ChildProcess.make('docker', [
-							'network',
-							'connect',
-							ROUTER_NETWORK,
-							action.containerId,
-						]),
-					)
-					.pipe(Effect.ignore);
-			}
+			// Reattach to the router network + materialize file-provider
+			// YAMLs. Reattach is idempotent on already-attached, and the
+			// YAML overwrite picks up the current IP if the daemon
+			// assigned a different one across a docker restart.
+			yield* materializeRouterEntries(spawner, action.containerId, opts.traefik, reuseScope);
 			// Finalizer: stop (don't remove) so the container's on-disk
 			// state survives until the next pnpm dev resumes it. `devstack
 			// wipe` is the only way to remove containers + volumes.
@@ -481,18 +471,7 @@ export const run = (
 					'docker.resumed': true,
 				});
 				yield* claim(action.containerId);
-				if ((opts.traefik ?? []).length > 0) {
-					yield* spawner
-						.exitCode(
-							ChildProcess.make('docker', [
-								'network',
-								'connect',
-								ROUTER_NETWORK,
-								action.containerId,
-							]),
-						)
-						.pipe(Effect.ignore);
-				}
+				yield* materializeRouterEntries(spawner, action.containerId, opts.traefik, reuseScope);
 				yield* addFinalizer(
 					reuseScope,
 					Effect.uninterruptible(
@@ -592,9 +571,7 @@ export const run = (
 		// paths and must NOT be pre-created; skip them.
 		for (const { host } of opts.mounts ?? []) {
 			if (host.includes('/')) continue;
-			yield* ensureLabeledVolume(spawner, host, identity.app, identity.stack).pipe(
-				Effect.ignore,
-			);
+			yield* ensureLabeledVolume(spawner, host, identity.app, identity.stack).pipe(Effect.ignore);
 		}
 
 		const cmd = ChildProcess.make('docker', args);
@@ -629,28 +606,19 @@ export const run = (
 			);
 		}
 
-		// Multi-network attach for traefik exposure. The router lives
-		// on the shared `devstack-router` network; backends keep
-		// their per-stack network as primary (for in-network DNS
-		// aliases / IP pins) and ADDITIONALLY join the router
-		// network so traefik can dispatch to them. `docker network
-		// connect` is idempotent on already-attached containers,
-		// which makes this safe for both fresh and adopted paths
-		// (the adopt-path doesn't actually run this on warm reuse
-		// because the labels survived, but we wire it here for
-		// uniformity — explicitly attaching twice is a no-op).
-		if ((opts.traefik ?? []).length > 0) {
-			yield* spawner
-				.exitCode(
-					ChildProcess.make('docker', [
-						'network',
-						'connect',
-						ROUTER_NETWORK,
-						containerId,
-					]),
-				)
-				.pipe(Effect.ignore);
-		}
+		// Multi-network attach for traefik exposure + file-provider
+		// YAML materialization. Backends keep their per-stack network
+		// as primary (for in-network DNS aliases / IP pins) and join
+		// the shared `devstack-router` network so traefik can reach
+		// them. After the network attach, the supervisor resolves the
+		// container's router-network IP and writes one
+		// `~/.devstack/traefik/dynamic/<id>.yml` per RouterLabel. We
+		// can't use traefik's docker provider here: it watches
+		// container events and would capture the per-stack IP on the
+		// first event, BEFORE `docker network connect` adds the
+		// router-network IP — every request would then 404 against a
+		// network traefik can't reach.
+		yield* materializeRouterEntries(spawner, containerId, opts.traefik, reuseScope);
 
 		// Best-effort `docker stop` on scope close. We deliberately
 		// stop instead of remove so the container's on-disk state
@@ -673,9 +641,7 @@ export const run = (
 		yield* addFinalizer(
 			reuseScope,
 			Effect.uninterruptible(
-				spawner
-					.exitCode(ChildProcess.make('docker', ['stop', containerId]))
-					.pipe(Effect.ignore),
+				spawner.exitCode(ChildProcess.make('docker', ['stop', containerId])).pipe(Effect.ignore),
 			),
 		);
 
@@ -897,6 +863,111 @@ const inspectHostPorts = (
 		return out;
 	});
 
+// Resolve a container's IP address on a specific docker network. Used
+// by the router file-provider materialization: traefik dials backends
+// by IP on the `devstack-router` network, and `docker network connect`
+// is async — the new endpoint is registered with the daemon BEFORE
+// the per-network IP is settled, so a naive single inspect can race.
+//
+// Retry the inspect with bounded backoff (defaults: 30 attempts × 100ms
+// ≈ 3s) until the IPAddress field is non-empty. Returns the IP on
+// success; fails with `DockerError` after exhausting attempts. Empty
+// IP means docker hasn't assigned one yet on that network — wait and
+// retry rather than papering over with a bogus URL.
+const ROUTER_IP_RETRY_ATTEMPTS = 30;
+const ROUTER_IP_RETRY_DELAY_MS = 100;
+
+export const inspectContainerIp = (
+	spawner: Spawner,
+	containerId: string,
+	networkName: string,
+): Effect.Effect<string, DockerError> =>
+	Effect.gen(function* () {
+		const fmt = `{{(index .NetworkSettings.Networks "${networkName}").IPAddress}}`;
+		const cmd = ChildProcess.make('docker', ['inspect', '--format', fmt, containerId]);
+		for (let attempt = 0; attempt < ROUTER_IP_RETRY_ATTEMPTS; attempt++) {
+			const captured = yield* runCapturing(spawner, cmd, 'docker inspect ip').pipe(
+				Effect.catchTag('DockerError', () => Effect.succeed(null)),
+			);
+			if (captured !== null && captured.exitCode === 0) {
+				const ip = captured.stdout.trim();
+				// `docker inspect --format` substitutes the literal
+				// `<no value>` when the named network isn't attached
+				// (yet). Treat that identically to an empty IP and
+				// retry; the network-connect side of the race is
+				// usually a single-digit-ms window.
+				if (ip.length > 0 && ip !== '<no value>') return ip;
+			}
+			if (attempt < ROUTER_IP_RETRY_ATTEMPTS - 1) {
+				yield* Effect.sleep(`${ROUTER_IP_RETRY_DELAY_MS} millis`);
+			}
+		}
+		return yield* Effect.fail(
+			new DockerError({
+				op: 'docker inspect ip',
+				message:
+					`failed to resolve IP for container ${containerId} on network ` +
+					`'${networkName}' after ${ROUTER_IP_RETRY_ATTEMPTS} attempts (` +
+					`${ROUTER_IP_RETRY_ATTEMPTS * ROUTER_IP_RETRY_DELAY_MS}ms total) — ` +
+					`network attach did not settle`,
+			}),
+		);
+	});
+
+// Materialize the per-RouterLabel file-provider YAMLs for a container.
+// Attaches the container to `devstack-router` (idempotent), resolves
+// its IP on that network via `inspectContainerIp`, then writes one
+// `<dynDir>/<id>.yml` per label and registers a finalizer on
+// `reuseScope` to remove the YAML on scope teardown.
+//
+// No-op when `traefik` is undefined or empty so callers that don't
+// want router exposure pay nothing.
+//
+// Best-effort across the entire flow: a `docker network connect`
+// failure (e.g. already attached → exit 1, which is fine), an
+// inspect-IP failure (network not settled within retry budget), or a
+// YAML write failure (rare — `~/.devstack` perms) is logged but does
+// NOT fail `Docker.run`. The container is up; direct-port debugging
+// still works. The router just won't dispatch to it until next boot.
+const materializeRouterEntries = (
+	spawner: Spawner,
+	containerId: string,
+	traefik: ReadonlyArray<RouterLabel> | undefined,
+	reuseScope: Scope,
+): Effect.Effect<void, never> =>
+	Effect.gen(function* () {
+		const entries = traefik ?? [];
+		if (entries.length === 0) return;
+		yield* spawner
+			.exitCode(ChildProcess.make('docker', ['network', 'connect', ROUTER_NETWORK, containerId]))
+			.pipe(Effect.ignore);
+		const ip: string | null = yield* inspectContainerIp(spawner, containerId, ROUTER_NETWORK).pipe(
+			Effect.catch((cause: DockerError) =>
+				Effect.logWarning(
+					`devstack: router file-provider skipped for ${containerId} — ${cause.message}`,
+				).pipe(Effect.as(null)),
+			),
+		);
+		if (ip === null) return;
+		for (const entry of entries) {
+			const wrote: boolean = yield* writeFileProvider({
+				id: entry.id,
+				hostname: entry.hostname,
+				entrypoint: entry.entrypoint,
+				upstreamUrl: `http://${ip}:${entry.servicePort}`,
+			}).pipe(
+				Effect.as(true),
+				Effect.catch((cause: DockerError) =>
+					Effect.logWarning(
+						`devstack: router file-provider write failed for ${entry.id} — ${cause.message}`,
+					).pipe(Effect.as(false)),
+				),
+			);
+			if (!wrote) continue;
+			yield* addFinalizer(reuseScope, removeFileProvider(entry.id));
+		}
+	});
+
 // Idempotently create a named volume stamped with
 // `devstack.app=<app>` / `devstack.stack=<stack>` so the wipe
 // label-filter (`docker volume ls --filter label=devstack.stack=…`)
@@ -955,13 +1026,7 @@ const removeContainerIfExists = (
 	Effect.gen(function* () {
 		// `^/<name>$` anchors the docker filter regex so a substring match
 		// against an unrelated container can't trigger an rm.
-		const lsCmd = ChildProcess.make('docker', [
-			'ps',
-			'-a',
-			'-q',
-			'--filter',
-			`name=^/${name}$`,
-		]);
+		const lsCmd = ChildProcess.make('docker', ['ps', '-a', '-q', '--filter', `name=^/${name}$`]);
 		const ls = yield* runCapturing(spawner, lsCmd, 'docker ps');
 		const ids = ls.stdout
 			.split('\n')
@@ -972,9 +1037,7 @@ const removeContainerIfExists = (
 			`devstack: removing stale container '${name}' from a prior run (id=${ids.join(',')})`,
 		);
 		for (const id of ids) {
-			yield* spawner
-				.exitCode(ChildProcess.make('docker', ['rm', '-f', id]))
-				.pipe(Effect.ignore);
+			yield* spawner.exitCode(ChildProcess.make('docker', ['rm', '-f', id])).pipe(Effect.ignore);
 		}
 		return true;
 	});
