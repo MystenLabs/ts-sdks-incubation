@@ -28,6 +28,7 @@ import { Effect, Layer, Schedule } from 'effect';
 import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
 import * as Docker from '../internal/docker.js';
 import { routerEntrypoint } from '../internal/docker/router.js';
+import type { Endpoint } from '../internal/endpoint.js';
 import { Sui, type SuiShape } from '../interfaces/sui.js';
 import { stringifyCause } from '../internal/stringify-cause.js';
 import { Identity } from '../internal/identity.js';
@@ -80,6 +81,36 @@ const SUI_INDEXER_DB_USER = 'sui';
 const SUI_INDEXER_DB_PASSWORD = 'sui';
 const SUI_INDEXER_DB_NAME = 'sui_indexer';
 const SUI_INDEXER_DATABASE_URL = `postgres://${SUI_INDEXER_DB_USER}:${SUI_INDEXER_DB_PASSWORD}@${SUI_INDEXER_DB_NETWORK_ALIAS}:5432/${SUI_INDEXER_DB_NAME}`;
+
+// In-container ports the sui binary binds on inside the localnet image.
+// These are the SAME values the container exposes internally, regardless
+// of any host-port mapping or router entrypoint. Consumers that join the
+// sui per-stack docker network dial sui-localnet directly on these ports
+// using the `sui-localnet` DNS alias; the routed `*.localhost` URLs are
+// reserved for host-side traffic (glibc bypasses /etc/hosts for
+// `.localhost`, so routed URLs are unreachable inside a glibc container).
+const INTERNAL_RPC_URL = `http://${SUI_LOCALNET_NETWORK_ALIAS}:${LOCAL_RPC_PORT}`;
+const INTERNAL_FAUCET_URL = `http://${SUI_LOCALNET_NETWORK_ALIAS}:${LOCAL_FAUCET_PORT}`;
+const INTERNAL_GRAPHQL_URL = `http://${SUI_LOCALNET_NETWORK_ALIAS}:${LOCAL_GRAPHQL_PORT}/graphql`;
+
+/**
+ * Per-stack docker network name used by `suiLocalnet`. Exported so
+ * downstream container-side consumers (walrus deploy / nodes, seal
+ * key-server) can join the same network and resolve `sui-localnet` via
+ * docker DNS. Mirrors the naming convention computed inside the
+ * `suiLocalnet` factory body — keep the two in lockstep.
+ */
+export const suiNetworkName = (identity: {
+	readonly app: string;
+	readonly stack: string;
+	readonly network: string;
+}): string => {
+	const base =
+		identity.stack === 'main'
+			? `${identity.app}-sui-network`
+			: `${identity.app}-${identity.stack}-sui-network`;
+	return identity.network === 'localnet' ? base : `${base}-${identity.network}`;
+};
 
 export interface SuiLocalnetOptions {
 	/** Pre-built image reference (e.g. a locally-built arm64 tag or an
@@ -157,11 +188,21 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 			}
 			const chainId = yield* fetchChainId(client);
 			const waitForTransactionsReady = yield* buildWaitForTransactionsReady(faucetUrl);
+			// Externally-managed RPC: we don't run a container, so no
+			// per-stack docker network exists and the `sui-localnet`
+			// in-network DNS alias would resolve to nothing. Leave the
+			// `container` URL undefined on each `Endpoint`; consumers
+			// that need container-side connectivity to an external RPC
+			// must thread their own reachable URL.
+			const rpc: Endpoint = { host: rpcUrl };
+			const faucet: Endpoint = { host: faucetUrl };
+			const graphql: Endpoint | undefined =
+				graphqlUrl !== undefined ? { host: graphqlUrl } : undefined;
 			return {
 				network: 'localnet',
-				rpcUrl,
-				faucetUrl,
-				graphqlUrl,
+				rpc,
+				faucet,
+				graphql,
 				client,
 				chainId,
 				waitForTransactionsReady,
@@ -233,12 +274,7 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 		// localnet. The `network='localnet'` default keeps the name
 		// byte-identical to the pre-network-dimension shape so warm-
 		// restart resume still adopts existing networks.
-		const suiBase =
-			identity.stack === 'main'
-				? `${identity.app}-sui-network`
-				: `${identity.app}-${identity.stack}-sui-network`;
-		const networkName =
-			identity.network === 'localnet' ? suiBase : `${suiBase}-${identity.network}`;
+		const networkName = suiNetworkName(identity);
 		yield* Docker.networkCreate(networkName).pipe(
 			Effect.catchTag('DockerError', (cause) =>
 				Effect.fail(
@@ -514,11 +550,33 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 		const chainId = yield* fetchChainId(client);
 		const waitForTransactionsReady = yield* buildWaitForTransactionsReady(faucetUrl);
 
+		// Endpoints carry both the routed host URL and the docker-DNS
+		// container URL. Containers that need to dial sui from inside
+		// the docker engine join `networkName` and resolve
+		// `sui-localnet` via docker DNS — bypassing `.localhost`'s
+		// host-only RFC 6761 resolution that glibc-based containers
+		// don't honor.
+		const rpc: Endpoint = {
+			host: rpcUrl,
+			container: INTERNAL_RPC_URL,
+			containerNetworks: [networkName],
+		};
+		const faucet: Endpoint = {
+			host: faucetUrl,
+			container: INTERNAL_FAUCET_URL,
+			containerNetworks: [networkName],
+		};
+		const graphql: Endpoint = {
+			host: graphqlUrl,
+			container: INTERNAL_GRAPHQL_URL,
+			containerNetworks: [networkName],
+		};
+
 		return {
 			network: 'localnet',
-			rpcUrl,
-			faucetUrl,
-			graphqlUrl,
+			rpc,
+			faucet,
+			graphql,
 			client,
 			chainId,
 			waitForTransactionsReady,
@@ -534,13 +592,13 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 			// suppresses the redundant `primary` in the TUI's row layout —
 			// the URL already lives in the first endpoint line.
 			const endpoints: Array<{ readonly label: string; readonly url: string }> = [
-				{ label: 'rpc', url: s.rpcUrl },
+				{ label: 'rpc', url: s.rpc.host },
 			];
-			if (s.faucetUrl !== undefined) endpoints.push({ label: 'faucet', url: s.faucetUrl });
-			if (s.graphqlUrl !== undefined) endpoints.push({ label: 'graphql', url: s.graphqlUrl });
+			if (s.faucet !== undefined) endpoints.push({ label: 'faucet', url: s.faucet.host });
+			if (s.graphql !== undefined) endpoints.push({ label: 'graphql', url: s.graphql.host });
 			return {
 				title: `sui.${s.network}`,
-				...(endpoints.length > 1 ? { endpoints } : { primary: s.rpcUrl }),
+				...(endpoints.length > 1 ? { endpoints } : { primary: s.rpc.host }),
 			};
 		},
 	});
@@ -621,11 +679,17 @@ export const suiTestnet = (options: SuiTestnetOptions = {}): StackMember => {
 		yield* EndpointRegistry.publish({ name: 'sui-graphql', url: graphqlUrl, kind: 'graphql' });
 		const chainId = yield* fetchChainId(client);
 		const waitForTransactionsReady = yield* buildWaitForTransactionsReady(faucetUrl);
+		// Live-net handles have no docker presence — the public testnet
+		// endpoints are routable from anywhere, no `container` URL or
+		// per-stack network is involved.
+		const rpc: Endpoint = { host: rpcUrl };
+		const faucet: Endpoint = { host: faucetUrl };
+		const graphql: Endpoint = { host: graphqlUrl };
 		return {
 			network: 'testnet',
-			rpcUrl,
-			faucetUrl,
-			graphqlUrl,
+			rpc,
+			faucet,
+			graphql,
 			client,
 			chainId,
 			waitForTransactionsReady,
@@ -637,13 +701,13 @@ export const suiTestnet = (options: SuiTestnetOptions = {}): StackMember => {
 		displayTitle: 'sui.testnet',
 		display: (s) => {
 			const endpoints: Array<{ readonly label: string; readonly url: string }> = [
-				{ label: 'rpc', url: s.rpcUrl },
+				{ label: 'rpc', url: s.rpc.host },
 			];
-			if (s.faucetUrl !== undefined) endpoints.push({ label: 'faucet', url: s.faucetUrl });
-			if (s.graphqlUrl !== undefined) endpoints.push({ label: 'graphql', url: s.graphqlUrl });
+			if (s.faucet !== undefined) endpoints.push({ label: 'faucet', url: s.faucet.host });
+			if (s.graphql !== undefined) endpoints.push({ label: 'graphql', url: s.graphql.host });
 			return {
 				title: `sui.${s.network}`,
-				...(endpoints.length > 1 ? { endpoints } : { primary: s.rpcUrl }),
+				...(endpoints.length > 1 ? { endpoints } : { primary: s.rpc.host }),
 			};
 		},
 	});
@@ -672,11 +736,13 @@ export const suiMainnet = (options: SuiMainnetOptions = {}): StackMember => {
 		// Mainnet has no faucet — the chain is presumed always-transferable
 		// (any caller submitting a tx on mainnet brought their own gas).
 		const waitForTransactionsReady = yield* buildWaitForTransactionsReady(undefined);
+		const rpc: Endpoint = { host: rpcUrl };
+		const graphql: Endpoint = { host: graphqlUrl };
 		return {
 			network: 'mainnet',
-			rpcUrl,
-			faucetUrl: undefined,
-			graphqlUrl,
+			rpc,
+			faucet: undefined,
+			graphql,
 			client,
 			chainId,
 			waitForTransactionsReady,
@@ -688,12 +754,12 @@ export const suiMainnet = (options: SuiMainnetOptions = {}): StackMember => {
 		displayTitle: 'sui.mainnet',
 		display: (s) => {
 			const endpoints: Array<{ readonly label: string; readonly url: string }> = [
-				{ label: 'rpc', url: s.rpcUrl },
+				{ label: 'rpc', url: s.rpc.host },
 			];
-			if (s.graphqlUrl !== undefined) endpoints.push({ label: 'graphql', url: s.graphqlUrl });
+			if (s.graphql !== undefined) endpoints.push({ label: 'graphql', url: s.graphql.host });
 			return {
 				title: `sui.${s.network}`,
-				...(endpoints.length > 1 ? { endpoints } : { primary: s.rpcUrl }),
+				...(endpoints.length > 1 ? { endpoints } : { primary: s.rpc.host }),
 			};
 		},
 	});
@@ -735,11 +801,20 @@ export const suiCustom = (options: SuiCustomOptions): StackMember => {
 		}
 		const chainId = yield* fetchChainId(client);
 		const waitForTransactionsReady = yield* buildWaitForTransactionsReady(faucetUrl);
+		// suiCustom has no docker presence — every `Endpoint` lives on
+		// the host URL only. Callers wrapping a remote RPC with a
+		// docker-side proxy can hand-roll their own Layer<Sui> if they
+		// need to set `container` / `containerNetworks`.
+		const rpc: Endpoint = { host: rpcUrl };
+		const faucet: Endpoint | undefined =
+			faucetUrl !== undefined ? { host: faucetUrl } : undefined;
+		const graphql: Endpoint | undefined =
+			graphqlUrl !== undefined ? { host: graphqlUrl } : undefined;
 		return {
 			network,
-			rpcUrl,
-			faucetUrl,
-			graphqlUrl,
+			rpc,
+			faucet,
+			graphql,
 			client,
 			chainId,
 			waitForTransactionsReady,
@@ -749,7 +824,7 @@ export const suiCustom = (options: SuiCustomOptions): StackMember => {
 	const { __layer, key, __kind, __displayTitle } = provideTag(Sui, build, {
 		kind: 'service',
 		displayTitle: `sui.${options.network ?? 'custom'}`,
-		display: (s) => ({ title: `sui.${s.network}`, primary: s.rpcUrl }),
+		display: (s) => ({ title: `sui.${s.network}`, primary: s.rpc.host }),
 	});
 	return { __layer, key, __kind, __displayTitle };
 };

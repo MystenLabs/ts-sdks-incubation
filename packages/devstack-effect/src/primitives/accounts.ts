@@ -12,7 +12,7 @@
 //   - 'ephemeral-funded' — generate a fresh Ed25519 keypair, persist it
 //     under `.devstack/stacks/<stack>/.keys/<name>.key` so warm starts
 //     reuse the same address, and request faucet funding. The faucet
-//     endpoint is read off the `Sui` tag's `faucetUrl`; pointing at a
+//     endpoint is read off the `Sui` tag's `faucet.host`; pointing at a
 //     network with no faucet (mainnet, suiCustom without a faucet) is
 //     a configuration error and fails at acquire-time.
 //   - 'keystore' — read a `suiprivkey1...` entry from the standard Sui
@@ -169,18 +169,20 @@ export const accounts = <S extends Record<string, AccountSpec>>(specs: S): Accou
 				yield* Effect.annotateCurrentSpan({ 'account.address': address });
 
 				if (source.from === 'ephemeral-funded') {
-					if (sui.faucetUrl === undefined) {
+					if (sui.faucet === undefined) {
 						return yield* Effect.fail(
 							new AccountError({
 								phase: 'fund',
 								message:
 									`accounts: '${name}' is ephemeral-funded but the configured Sui has no ` +
-									`faucetUrl. Use {from: 'keystore'|'env'|'inline'} for accounts on this ` +
+									`faucet. Use {from: 'keystore'|'env'|'inline'} for accounts on this ` +
 									`network, or pick suiLocalnet/suiTestnet which expose a faucet.`,
 							}),
 						);
 					}
-					const faucetUrl = sui.faucetUrl;
+					// Host-side faucet — `accounts.fund` runs in the supervisor
+					// process, not inside a container.
+					const faucetUrl = sui.faucet.host;
 					// Before the first faucet POST, ask the Sui primitive to
 					// confirm the chain is actually funds-transferable. The
 					// supervisor's Sui-ready gate is socket-level only — the

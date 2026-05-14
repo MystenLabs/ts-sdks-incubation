@@ -16,7 +16,6 @@ import {
 	type DockerExecResult,
 	type OutputLineCallback,
 } from './core.js';
-import { getTraefikRouterIp, listRegisteredHostnames } from './router.js';
 
 // Re-export so primitives can spell the callback shape without dipping
 // into the core module directly.
@@ -147,15 +146,6 @@ export interface DockerOneShotOptions {
 	 */
 	readonly gracePeriodMs?: number;
 	/**
-	 * When `true`, stamps one `--add-host <hostname>:<traefik-ip>` per
-	 * currently registered routed hostname (read fresh from the file-
-	 * provider directory at spawn time). Mirrors the
-	 * `Docker.run({ routerAddHosts })` opt — opt in on one-shots whose
-	 * containerized scripts dial routed URLs (e.g. walrus deploy-walrus.sh
-	 * reaches `http://sui.<app>.localhost:9000`). Default `false`.
-	 */
-	readonly routerAddHosts?: boolean;
-	/**
 	 * Per-line output sink. Invoked once per line of stdout (`level:
 	 * 'info'`) and stderr (`level: 'warn'`) as the line arrives — the
 	 * accumulated `stdout`/`stderr` strings on the result are unchanged,
@@ -198,44 +188,14 @@ export const runOneShot = (
 			? ['run', '--name', name]
 			: ['run', '--rm', '--name', name];
 		if (opts.entrypoint !== undefined) args.push('--entrypoint', opts.entrypoint);
-		// `routerAddHosts: true` implies the container needs to dial
-		// services through traefik on `devstack-router`. Add-host alone
-		// isn't enough — the container must also be ATTACHED to the
-		// router network so the resolved IP is reachable. A one-shot
-		// (`docker run --rm`) takes a single `--network`, so if the
-		// caller didn't specify one we use `devstack-router`. If the
-		// caller asked for a per-stack network, we honor that but log a
-		// warning that the router won't be reachable — the caller is
-		// responsible for the multi-network attach in that case.
+		// `--network` is opt-in only. A one-shot that needs to reach
+		// per-stack docker-DNS aliases (e.g. `sui-localnet`) must pass
+		// the network name explicitly. There is no longer a default
+		// fallback to `devstack-router`: containers reach sui via the
+		// sui-localnet per-stack network's DNS alias, not via routed
+		// hostnames (glibc bypasses `/etc/hosts` for `.localhost`).
 		if (opts.network !== undefined) {
 			args.push('--network', opts.network);
-		} else if (opts.routerAddHosts === true) {
-			args.push('--network', 'devstack-router');
-		}
-		// Routed-hostname add-host stamps. Mirrors `Docker.run`'s
-		// `routerAddHosts` opt — RFC 6761 `.localhost` resolution only
-		// works on the host OS, so a one-shot that dials a routed URL
-		// (e.g. walrus deploy-walrus.sh reaching `http://sui.<app>.
-		// localhost:9000`) needs explicit `/etc/hosts` entries pointing
-		// at traefik. Resolution failure (traefik unreachable, no
-		// hostnames registered) logs + falls through with no add-hosts
-		// rather than failing the one-shot.
-		if (opts.routerAddHosts === true) {
-			const hostnames = yield* listRegisteredHostnames();
-			if (hostnames.length > 0) {
-				const ip = yield* getTraefikRouterIp(spawner).pipe(
-					Effect.catch((cause: DockerError) =>
-						Effect.logWarning(
-							`devstack: runOneShot routerAddHosts skipped for '${name}' — ${cause.message}`,
-						).pipe(Effect.as(null)),
-					),
-				);
-				if (ip !== null) {
-					for (const h of hostnames) {
-						args.push(`--add-host=${h}:${ip}`);
-					}
-				}
-			}
 		}
 		for (const [k, v] of Object.entries(opts.env ?? {})) {
 			args.push('-e', `${k}=${v}`);

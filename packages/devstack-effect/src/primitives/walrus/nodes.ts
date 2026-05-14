@@ -42,6 +42,15 @@ export const startStorageNodes = (args: {
 	readyTimeoutMs: number;
 	deployDir: string;
 	network: string;
+	/**
+	 * Per-stack sui docker network the storage nodes attach to as a
+	 * secondary network so docker DNS resolves `sui-localnet`. The
+	 * primary network (`args.network`) keeps the pinned IPs walrus
+	 * requires; this additional attachment is what gives the node's
+	 * `WALRUS_FAUCET_URL` a working hostname. Undefined when sui is
+	 * an externally-managed RPC with no in-network alias.
+	 */
+	suiNetwork: string | undefined;
 	subnetPrefix: string;
 	identity: IdentityShape;
 	faucetUrl: string;
@@ -60,27 +69,29 @@ export const startStorageNodes = (args: {
 			// nothing on the host loopback maps to this storage node any
 			// more. The router binds 9185 once on the host and routes
 			// by `Host:` header.
-			yield* Docker.run({
+			//
+			// Network attach is multi-step: the primary network is
+			// `args.network` (walrus-net, where the pinned `--ip` lives);
+			// after `docker run` returns, the container additionally
+			// joins `devstack-router` (via `traefik:` materializer) AND
+			// `args.suiNetwork` (via `Docker.networkConnect` below) so
+			// the in-container `WALRUS_FAUCET_URL` (`http://sui-localnet
+			// :9123/v1/gas`) resolves via docker DNS.
+			const runResult = yield* Docker.run({
 				name: containerName,
 				image: args.image,
 				args: ['/bin/bash', '-c', '/opt/walrus/scripts/run-walrus.sh'],
 				mounts: [{ host: args.deployDir, container: '/opt/walrus/outputs' }],
 				// `--hostname` so the container's actual hostname matches
-				// the chain-registered name. `WALRUS_FAUCET_URL` keeps
-				// the host-gateway sui-faucet rewrite from v3.
+				// the chain-registered name. `WALRUS_FAUCET_URL` is the
+				// docker-DNS sui-localnet faucet URL (see
+				// `walrus/internal.ts` for the URL assembly).
 				env: { HOSTNAME: nodeHostname, WALRUS_FAUCET_URL: args.faucetUrl },
 				network: args.network,
 				ip: containerIp,
 				hostname: nodeHostname,
 				networkAlias: `walrus-node-${i}.localhost`,
 				detach: true,
-				// Storage nodes dial the sui faucet at the routed URL
-				// (`http://faucet.<app>.localhost:9123`) via
-				// `WALRUS_FAUCET_URL` — RFC 6761 `.localhost` resolution
-				// only works on the host OS, so the container needs
-				// explicit `/etc/hosts` entries pointing the routed
-				// hostnames at traefik.
-				routerAddHosts: true,
 				// Per-node traefik router entry. `id` is
 				// `<app>-<stack>-walrus-node-N`; `hostname` is the
 				// stack-scoped hostname the deploy phase registered on
@@ -111,6 +122,24 @@ export const startStorageNodes = (args: {
 					),
 				),
 			);
+
+			// Dual-home onto the per-stack sui network so docker DNS
+			// resolves `sui-localnet` for the storage node's faucet
+			// dialer. Skipped when sui is externally managed (no
+			// docker-side network to join).
+			if (args.suiNetwork !== undefined) {
+				yield* Docker.networkConnect(args.suiNetwork, runResult.containerId).pipe(
+					Effect.catchTag('DockerError', (cause) =>
+						Effect.fail(
+							new WalrusError({
+								phase: 'nodes',
+								message: `walrus.nodes: failed to attach storage node ${i} to sui network '${args.suiNetwork}': ${cause.message}`,
+								cause,
+							}),
+						),
+					),
+				);
+			}
 
 			// Router-fronted ready probe. Dial the public hostname (which
 			// resolves to 127.0.0.1) on the well-known walrus

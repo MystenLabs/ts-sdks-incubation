@@ -39,9 +39,9 @@ import { accounts } from './accounts.js';
 const mockSui = (faucetUrl: string | undefined): Layer.Layer<Sui> =>
 	Layer.succeed(Sui, {
 		network: 'localnet',
-		rpcUrl: 'http://localhost:9000',
+		rpc: { host: 'http://localhost:9000' },
 		chainId: 'test-chain',
-		faucetUrl,
+		faucet: faucetUrl !== undefined ? { host: faucetUrl } : undefined,
 		// The branches under test never call into `client`; cast through
 		// unknown so we don't have to wire a real SuiJsonRpcClient up.
 		client: {} as unknown as SuiShape['client'],
@@ -254,9 +254,9 @@ describe('accounts({...}) — source discriminator', () => {
 				// rediscover the same dead chain via its own retry budget.
 				const mockSuiWithFailingReady: Layer.Layer<Sui> = Layer.succeed(Sui, {
 					network: 'localnet',
-					rpcUrl: 'http://localhost:9000',
+					rpc: { host: 'http://localhost:9000' },
 					chainId: 'test-chain',
-					faucetUrl: 'http://localhost:9123',
+					faucet: { host: 'http://localhost:9123' },
 					client: {} as unknown as SuiShape['client'],
 					waitForTransactionsReady: () =>
 						Effect.fail(

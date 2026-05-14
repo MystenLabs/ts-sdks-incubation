@@ -64,8 +64,10 @@ describe('sui factory shapes', () => {
 					return yield* Sui;
 				}).pipe(Effect.provide(Layer.provide(member.__layer, TestBaseLayer)));
 				expect(sui.network).toBe('testnet');
-				expect(sui.rpcUrl).toBe('https://fullnode.testnet.sui.io:443');
-				expect(sui.faucetUrl).toBe('https://faucet.testnet.sui.io');
+				expect(sui.rpc.host).toBe('https://fullnode.testnet.sui.io:443');
+				expect(sui.faucet?.host).toBe('https://faucet.testnet.sui.io');
+				// Live-net handles have no docker presence.
+				expect(sui.rpc.container).toBeUndefined();
 			} finally {
 				restore();
 			}
@@ -80,7 +82,7 @@ describe('sui factory shapes', () => {
 				const sui = yield* Effect.gen(function* () {
 					return yield* Sui;
 				}).pipe(Effect.provide(Layer.provide(member.__layer, TestBaseLayer)));
-				expect(sui.rpcUrl).toBe('https://corp.example/sui');
+				expect(sui.rpc.host).toBe('https://corp.example/sui');
 			} finally {
 				restore();
 			}
@@ -96,10 +98,10 @@ describe('sui factory shapes', () => {
 					return yield* Sui;
 				}).pipe(Effect.provide(Layer.provide(member.__layer, TestBaseLayer)));
 				expect(sui.network).toBe('mainnet');
-				expect(sui.rpcUrl).toBe('https://fullnode.mainnet.sui.io:443');
+				expect(sui.rpc.host).toBe('https://fullnode.mainnet.sui.io:443');
 				// Mainnet has no faucet — confirming a misconfigured signer can't
 				// silently ask mainnet for free tokens.
-				expect(sui.faucetUrl).toBeUndefined();
+				expect(sui.faucet).toBeUndefined();
 			} finally {
 				restore();
 			}
@@ -115,7 +117,7 @@ describe('sui factory shapes', () => {
 					return yield* Sui;
 				}).pipe(Effect.provide(Layer.provide(member.__layer, TestBaseLayer)));
 				expect(sui.network).toBe('devnet');
-				expect(sui.rpcUrl).toBe('https://forked.example/sui');
+				expect(sui.rpc.host).toBe('https://forked.example/sui');
 			} finally {
 				restore();
 			}
@@ -164,8 +166,12 @@ describe('sui factory shapes', () => {
 					return yield* Sui;
 				}).pipe(Effect.provide(Layer.provide(member.__layer, TestBaseLayer)));
 				expect(sui.network).toBe('localnet');
-				expect(sui.rpcUrl).toBe('http://localhost:9000');
-				expect(sui.graphqlUrl).toBe('http://localhost:9125/graphql');
+				expect(sui.rpc.host).toBe('http://localhost:9000');
+				expect(sui.graphql?.host).toBe('http://localhost:9125/graphql');
+				// Externally-managed RPC: no per-stack docker network, no
+				// container-side URL on any endpoint.
+				expect(sui.rpc.container).toBeUndefined();
+				expect(sui.graphql?.container).toBeUndefined();
 			} finally {
 				restore();
 			}
@@ -180,7 +186,7 @@ describe('sui factory shapes', () => {
 				const sui = yield* Effect.gen(function* () {
 					return yield* Sui;
 				}).pipe(Effect.provide(Layer.provide(member.__layer, TestBaseLayer)));
-				expect(sui.graphqlUrl).toBeUndefined();
+				expect(sui.graphql).toBeUndefined();
 			} finally {
 				restore();
 			}
@@ -195,7 +201,7 @@ describe('sui factory shapes', () => {
 				const sui = yield* Effect.gen(function* () {
 					return yield* Sui;
 				}).pipe(Effect.provide(Layer.provide(member.__layer, TestBaseLayer)));
-				expect(sui.faucetUrl).toBeUndefined();
+				expect(sui.faucet).toBeUndefined();
 				yield* sui.waitForTransactionsReady();
 			} finally {
 				restore();

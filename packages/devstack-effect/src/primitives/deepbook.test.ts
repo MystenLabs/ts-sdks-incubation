@@ -222,9 +222,9 @@ const mkTmpDir = (label: string) =>
 const makeMockSuiOk = (chainId: string): Layer.Layer<Sui> =>
 	Layer.succeed(Sui, {
 		network: 'localnet',
-		rpcUrl: 'http://localhost:9000',
+		rpc: { host: 'http://localhost:9000' },
 		chainId,
-		faucetUrl: undefined,
+		faucet: undefined,
 		client: {
 			core: {
 				getObject: async (_args: { objectId: string }) => ({
@@ -238,9 +238,9 @@ const makeMockSuiOk = (chainId: string): Layer.Layer<Sui> =>
 const makeMockSuiMissingObject = (chainId: string): Layer.Layer<Sui> =>
 	Layer.succeed(Sui, {
 		network: 'localnet',
-		rpcUrl: 'http://localhost:9000',
+		rpc: { host: 'http://localhost:9000' },
 		chainId,
-		faucetUrl: undefined,
+		faucet: undefined,
 		client: {
 			core: {
 				getObject: async (_args: { objectId: string }) => {

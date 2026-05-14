@@ -21,8 +21,8 @@ import { Effect, FileSystem } from 'effect';
 import { ChildProcessSpawner } from 'effect/unstable/process';
 import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
 import * as Docker from '../../internal/docker.js';
+import type { Endpoint } from '../../internal/endpoint.js';
 import { EngineHandle } from '../../internal/engine.js';
-import { rewriteToHostGateway } from '../../internal/host-gateway.js';
 import type { IdentityShape } from '../../internal/identity.js';
 import { routerHostname } from '../../internal/router-hostname.js';
 import { stringifyCause } from '../../internal/stringify-cause.js';
@@ -53,8 +53,27 @@ const makeOutputLineSink = (label: string): Effect.Effect<Docker.OutputLineCallb
 export const deployContracts = (args: {
 	name: string;
 	image: string;
-	rpcUrl: string;
-	faucetUrl: string | undefined;
+	/**
+	 * Sui RPC `Endpoint`. The deploy one-shot dials it from inside a
+	 * container, so it MUST be reached via `rpc.container` (the
+	 * docker-DNS alias `http://sui-localnet:9000`). Host-form
+	 * `rpc.host` is the fallback for externally-managed RPCs where
+	 * no docker-side address exists; the caller is then responsible
+	 * for ensuring `host` is reachable from whatever default network
+	 * the one-shot lands on.
+	 */
+	rpc: Endpoint;
+	/** Sui faucet `Endpoint`; same `container`-preferred logic as `rpc`. */
+	faucet: Endpoint | undefined;
+	/**
+	 * Per-stack docker network the sui-localnet container belongs to.
+	 * The deploy container joins this network so docker DNS resolves
+	 * `sui-localnet` to sui's container IP. Undefined for externally-
+	 * managed RPCs — the caller is responsible for ensuring the
+	 * provided `rpc.host` is reachable from whatever default network
+	 * the one-shot lands on.
+	 */
+	suiNetwork: string | undefined;
 	nodeCount: number;
 	shards: number;
 	epochDuration: string;
@@ -103,18 +122,18 @@ export const deployContracts = (args: {
 			),
 		);
 
-		// Translate the host-side sui rpc / faucet URLs into addresses
-		// reachable from inside the deploy container. `Docker.run` now
-		// wires `host.docker.internal:host-gateway` for us; the deploy
-		// one-shot inherits the same default via `Docker.runOneShot`.
-		// `rewriteToHostGateway` runs through `new URL(...).toString()`
-		// which re-adds a trailing `/` on a path-less base — strip it
-		// before appending the `/gas` suffix below so we don't end up
-		// hitting `host.docker.internal:9123//gas` (404).
+		// Sui URL pair the deploy script reads via `WALRUS_NETWORK`.
+		// Prefer the docker-DNS URL (`http://sui-localnet:9000`) when
+		// `suiLocalnet` populated `rpc.container` — the deploy
+		// container joins `args.suiNetwork` below and resolves the
+		// alias via docker DNS, bypassing the `.localhost` glibc trap.
+		// Externally-managed RPCs leave `container` undefined; we then
+		// fall back to the routed `host` URL and the caller is
+		// responsible for reachability.
 		const stripTrailingSlash = (u: string): string => (u.endsWith('/') ? u.slice(0, -1) : u);
-		const inNetworkRpc = stripTrailingSlash(rewriteToHostGateway(args.rpcUrl));
+		const inNetworkRpc = stripTrailingSlash(args.rpc.container ?? args.rpc.host);
 		const inNetworkFaucet = stripTrailingSlash(
-			args.faucetUrl !== undefined ? rewriteToHostGateway(args.faucetUrl) : inNetworkRpc,
+			args.faucet?.container ?? args.faucet?.host ?? inNetworkRpc,
 		);
 
 		// Stack-scoped hostnames: storage nodes register
@@ -175,12 +194,14 @@ export const deployContracts = (args: {
 			env,
 			mounts: [{ host: outputDir, container: '/opt/walrus/outputs' }],
 			args: ['/bin/bash', '-c', '/opt/walrus/scripts/deploy-walrus.sh'],
-			// `WALRUS_NETWORK` carries the routed sui rpc/faucet URLs
-			// (`http://sui.<app>.localhost:9000`); RFC 6761 `.localhost`
-			// resolution only works on the host OS, so the deploy
-			// container needs explicit `/etc/hosts` entries pointing the
-			// routed names at traefik.
-			routerAddHosts: true,
+			// Join the per-stack sui docker network so the deploy
+			// script resolves `sui-localnet` via docker DNS. The
+			// routed `.localhost` URLs would NXDOMAIN inside a glibc
+			// container (RFC 6761 only fires on the host OS). When
+			// `suiNetwork` is undefined (externally-managed RPC), the
+			// one-shot lands on docker's default bridge and the
+			// caller-provided `rpcUrl` is responsible for reachability.
+			...(args.suiNetwork !== undefined ? { network: args.suiNetwork } : {}),
 			// Stream deploy.sh stdout/stderr into the supervisor TUI
 			// log as it arrives. Without this, a failed deploy surfaces
 			// only after `docker run` exits, and `--rm` (default for
