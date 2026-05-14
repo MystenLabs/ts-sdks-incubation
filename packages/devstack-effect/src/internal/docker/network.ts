@@ -7,6 +7,7 @@ import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { addFinalizer, type Scope } from 'effect/Scope';
 import { DockerError } from '../../primitives/errors.js';
 import { Identity } from '../identity.js';
+import { LongLivedScope } from '../long-lived-scope.js';
 import { composeProjectName, runCapturing, runCapturingOrFail } from './core.js';
 
 export const networkCreate = (
@@ -22,6 +23,17 @@ export const networkCreate = (
 		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 		const identity = yield* Identity;
 		const scope = yield* Effect.scope;
+		// Register the `network rm` finalizer on `LongLivedScope` (when
+		// `defineDevstack` provides it) so a per-cycle teardown on `r`
+		// doesn't destroy the bridge network out from under reused
+		// containers — those live on the same long-lived scope (see
+		// `Docker.run`), so without this the next cycle recreates a
+		// same-named network and the surviving containers stay attached
+		// to the orphaned one. Standalone callers (the tests) get no
+		// `LongLivedScope` in context and fall back to the inner scope,
+		// matching the previous behavior.
+		const longLivedScope = yield* LongLivedScope;
+		const finalizerScope = longLivedScope ?? scope;
 		yield* Effect.annotateCurrentSpan({ 'docker.network': name });
 
 		// Idempotent: if a network with this name already exists (left over
@@ -34,7 +46,7 @@ export const networkCreate = (
 		);
 		if (existing.stdout.trim().length > 0) {
 			yield* addFinalizer(
-				scope,
+				finalizerScope,
 				Effect.uninterruptible(
 					spawner.exitCode(ChildProcess.make('docker', ['network', 'rm', name])).pipe(Effect.ignore),
 				),
@@ -75,7 +87,7 @@ export const networkCreate = (
 		);
 
 		yield* addFinalizer(
-			scope,
+			finalizerScope,
 			Effect.uninterruptible(
 				spawner.exitCode(ChildProcess.make('docker', ['network', 'rm', name])).pipe(
 					// `network rm` fails with "active endpoints" if any container
