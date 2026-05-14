@@ -248,7 +248,7 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 		SealLocalKeygenInternalShape
 	>()(`@devstack/SealLocalKeygenInternal/${name}` as const) {}
 
-	const acquire = Effect.gen(function* () {
+	const acquire = Effect.fn(`seal(${name})`)(function* () {
 		// 0. Explicit ordering edges first — pins consumers before the
 		//    heavy docker / publish work kicks off.
 		for (const tag of options.dependsOn ?? []) {
@@ -594,8 +594,7 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 			keyManager: { masterKeyEnvFile, rotate },
 			packageId,
 		} satisfies SealLocalKeygenInternalShape;
-	}).pipe(
-		Effect.withSpan(`seal(${name})`),
+	})().pipe(
 		Effect.catchTag('SealError', Effect.fail),
 		Effect.catch((cause: unknown) =>
 			Effect.fail(
@@ -641,10 +640,23 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 	// `internalLayer`'s body yields, so they precede it; the two
 	// projection layers consume `SealLocalKeygenInternal` so they come
 	// after.
+	//
+	// `key` matches the internal tag's key (`@devstack/SealLocalKeygenInternal/${name}`)
+	// — `defineDevstack` pre-populates an engine entry for each
+	// StackMember at boot time, and `withEngineLifecycle` (inside
+	// `provideTag`) keys its `markAcquiring` / `markReady` calls on the
+	// tag's key. Using the same key collapses both into a single TUI
+	// row; mismatched keys produce TWO `seal.local` rows under the Seal
+	// section (one pre-populated, one from the acquire body).
+	// Cast the engine key to `Name` for the StackMember return type —
+	// the runtime `key` is the internal tag's namespaced key, but the
+	// public return type promises `Name` so downstream consumers that
+	// fold the StackMember into a typed union keep their inference.
+	// `.key` is never read from user code; engine-internal only.
 	return {
 		__layer: internalLayer,
 		__layers: [...innerLayers, internalLayer, keyServerLayer, keyManagerLayer],
-		key: name,
+		key: SealLocalKeygenInternal.key as Name,
 		__kind: 'service' as const,
 		__displayTitle: 'seal.local',
 	};
@@ -685,7 +697,7 @@ export const sealKnownKeyServer = (options: SealKnownKeyServerOptions = {}): Sta
 		);
 	}
 
-	const build = Effect.gen(function* () {
+	const build = Effect.fn(`sealKnownKeyServer(${name})`)(function* () {
 		yield* EndpointRegistry.publish({
 			name: 'seal-key-server',
 			url: keyServerUrl,
@@ -701,7 +713,7 @@ export const sealKnownKeyServer = (options: SealKnownKeyServerOptions = {}): Sta
 			keyServerUrl,
 			objectId,
 		} satisfies SealKeyServerShape;
-	}).pipe(Effect.withSpan(`sealKnownKeyServer(${name})`));
+	})();
 
 	const { __layer, __kind, __displayTitle } = provideTag(SealKeyServer, build, {
 		kind: 'service',
@@ -727,7 +739,7 @@ const publishSealMoveInline = (args: {
 	readonly faucetUrl: string | undefined;
 	readonly signer: Account;
 }): Effect.Effect<string, SealError, any> =>
-	Effect.gen(function* () {
+	Effect.fn('seal.publish')(function* () {
 		const { modules, dependencies } = yield* buildMove({
 			path: args.path,
 			rpcUrl: args.rpcUrl,
@@ -787,7 +799,7 @@ const publishSealMoveInline = (args: {
 		});
 
 		return published.packageId;
-	}).pipe(Effect.withSpan('seal.publish'));
+	})();
 
 // -----------------------------------------------------------------------------
 // Helpers (ported verbatim from v3)

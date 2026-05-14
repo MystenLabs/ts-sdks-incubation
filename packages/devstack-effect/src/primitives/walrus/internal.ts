@@ -509,7 +509,7 @@ const buildWrapperImage = (args: {
 	baseImage: string;
 	suiVersion: string;
 }): Effect.Effect<string, WalrusError, ChildProcessSpawner.ChildProcessSpawner> =>
-	Effect.gen(function* () {
+	Effect.fn('walrus.image')(function* () {
 		// Content-addressed tag from a coarse hash of the build inputs.
 		// Matches the shape `dockerImage` would produce for the upstream
 		// side so the two tags share a consistent naming convention.
@@ -537,7 +537,7 @@ const buildWrapperImage = (args: {
 			),
 		);
 		return result.tag;
-	}).pipe(Effect.withSpan('walrus.image'));
+	})();
 
 // -----------------------------------------------------------------------------
 // Phase 2: deploy
@@ -555,7 +555,7 @@ const deployContracts = (args: {
 	outputDir: string;
 	subnetPrefix: string;
 }) =>
-	Effect.gen(function* () {
+	Effect.fn('walrus.deploy')(function* () {
 		const fs = yield* FileSystem.FileSystem;
 
 		// Carve out a host directory for the deploy outputs. Bind-mounted
@@ -664,7 +664,7 @@ const deployContracts = (args: {
 			),
 		);
 		return yield* parseDeployFile(outputDir, text);
-	}).pipe(Effect.withSpan('walrus.deploy'));
+	})();
 
 // `parseDeployFile` mirrors v3's `parseDeployFile` byte-for-byte (the
 // upstream walrus-deploy tool writes `key: value` newline-separated
@@ -725,7 +725,7 @@ const registerCommittee = (args: {
 	deploy: DeployState;
 	nodeCount: number;
 }): Effect.Effect<void, WalrusError> =>
-	Effect.gen(function* () {
+	Effect.fn('walrus.register')(function* () {
 		// Surface the publisher's address as a span attribute when one
 		// was passed — handy when debugging "why didn't this account
 		// get registered" mismatches against the deploy outputs.
@@ -737,7 +737,7 @@ const registerCommittee = (args: {
 			});
 		}
 		// TODO: per-node `walrus::system::register_storage_node` moveCall fan-out when the wrapper image's deploy path is split across publish + register.
-	}).pipe(Effect.withSpan('walrus.register'));
+	})();
 
 // -----------------------------------------------------------------------------
 // Phase 4: storage nodes
@@ -755,7 +755,7 @@ const startStorageNodes = (args: {
 	portAllocator: typeof PortAllocator.Service;
 	faucetUrl: string;
 }) =>
-	Effect.gen(function* () {
+	Effect.fn('walrus.nodes')(function* () {
 		const nodes: Array<NodeState> = [];
 		for (let i = 0; i < args.nodeCount; i++) {
 			// Per-node host port for our supervisor-side ready probe + as
@@ -842,7 +842,7 @@ const startStorageNodes = (args: {
 			});
 		}
 		return nodes;
-	}).pipe(Effect.withSpan('walrus.nodes'));
+	})();
 
 // -----------------------------------------------------------------------------
 // Phase 5: exchange
@@ -853,7 +853,7 @@ const resolveExchange = (args: {
 	walrusPackageId: string;
 	exchangeObject: string | undefined;
 }): Effect.Effect<ExchangeState | undefined, WalrusError> =>
-	Effect.gen(function* () {
+	Effect.fn('walrus.exchange')(function* () {
 		if (args.exchangeObject === undefined) {
 			// Deploy ran without `--with-wal-exchange`. Skip silently —
 			// seed-account swaps will short-circuit on the same check.
@@ -886,7 +886,7 @@ const resolveExchange = (args: {
 			packageId,
 			walType: `${args.walrusPackageId}::wal::WAL`,
 		};
-	}).pipe(Effect.withSpan('walrus.exchange'));
+	})();
 
 // -----------------------------------------------------------------------------
 // Phase 6: proxy
@@ -899,7 +899,7 @@ const startProxy = (args: {
 	containerApiPort: number;
 	network: string;
 }) =>
-	Effect.gen(function* () {
+	Effect.fn('walrus.proxy')(function* () {
 		if (args.nodes.length === 0) {
 			return yield* Effect.fail(
 				new WalrusError({
@@ -982,12 +982,22 @@ const startProxy = (args: {
 		);
 
 		return `http://127.0.0.1:${args.proxyPort}`;
-	}).pipe(Effect.withSpan('walrus.proxy'));
+	})();
 
 // nginx config renderer — single port, N vhosts keyed on Host header.
 // Upstreams resolve to the per-node pinned IP on the shared docker
 // network, hitting the container's API port directly (no host port
 // indirection inside the network).
+//
+// CORS: walrus storage nodes don't set CORS headers themselves, so a
+// browser at `http://localhost:5173-5180` (the dev-server slot range)
+// reaching `http://walrus-node-N.localhost:9185` gets blocked at the
+// preflight. The proxy injects permissive CORS headers and short-
+// circuits OPTIONS with a 204 — only the localhost dev-server is on
+// the wire here, and an explicit allowlist would have to enumerate
+// every example's vite port (and any user-pinned port too), so we
+// reflect the request `Origin` instead. Same posture the seal-key-
+// server sets internally.
 const renderProxyConfig = (opts: {
 	nodes: ReadonlyArray<NodeState>;
 	proxyContainerPort: number;
@@ -1002,6 +1012,16 @@ const renderProxyConfig = (opts: {
 		listen 0.0.0.0:${opts.proxyContainerPort};
 		server_name ${serverName};
 		location / {
+			if ($request_method = OPTIONS) {
+				add_header Access-Control-Allow-Origin $http_origin always;
+				add_header Access-Control-Allow-Methods 'GET,POST,PUT,DELETE,PATCH,OPTIONS' always;
+				add_header Access-Control-Allow-Headers $http_access_control_request_headers always;
+				add_header Access-Control-Max-Age 86400 always;
+				add_header Content-Length 0 always;
+				return 204;
+			}
+			add_header Access-Control-Allow-Origin $http_origin always;
+			add_header Access-Control-Expose-Headers '*' always;
 			proxy_pass ${upstream};
 			proxy_set_header Host $host;
 			proxy_request_buffering off;
@@ -1027,11 +1047,11 @@ const seedWalForAccounts = (args: {
 	exchange: ExchangeState;
 	paymentMist: bigint;
 }): Effect.Effect<void, WalrusError> =>
-	Effect.gen(function* () {
+	Effect.fn('walrus.seed-accounts')(function* () {
 		for (const account of args.accounts) {
 			yield* swapSuiForWal(account, args.exchange, args.paymentMist);
 		}
-	}).pipe(Effect.withSpan('walrus.seed-accounts'));
+	})();
 
 const swapSuiForWal = (
 	account: Account,
