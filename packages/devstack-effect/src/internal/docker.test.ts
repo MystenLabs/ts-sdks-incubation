@@ -236,6 +236,89 @@ describe('Docker.run reuse-if-healthy', () => {
 });
 
 // -----------------------------------------------------------------------------
+// Traefik label stamping — `Docker.run({traefik: [...]})` MUST append
+// the canonical 5-label set per router entry to the container labels
+// AND issue a `docker network connect devstack-router` post-run so the
+// router can dispatch to it.
+// -----------------------------------------------------------------------------
+
+describe('Docker.run traefik labels', () => {
+	it.effect('stamps the traefik label set and attaches to the router network on fresh run', () =>
+		Effect.gen(function* () {
+			const recorder: Array<SpawnRecord> = [];
+			const image = 'mystenlabs/sui-tools:1.0.0';
+			const spawnerLayer = makeSpawnerLayer(recorder, null);
+
+			yield* Docker.run({
+				name: 'sui.localnet',
+				image,
+				traefik: [
+					{
+						id: 'testapp-main-sui-rpc',
+						hostname: 'sui.testapp.localhost',
+						entrypoint: 'sui-rpc',
+						servicePort: 9000,
+					},
+				],
+			}).pipe(
+				Effect.provide(spawnerLayer),
+				Effect.provide(identityLayer),
+				Effect.scoped,
+			);
+
+			const runCmd = recorder.find((r) => r.args[0] === 'run');
+			expect(runCmd).toBeDefined();
+			const runArgs = runCmd!.args;
+			// Each traefik label is a `--label k=v` pair.
+			const labels = runArgs.flatMap((a, i) =>
+				a === '--label' && runArgs[i + 1] !== undefined ? [runArgs[i + 1]!] : [],
+			);
+			expect(labels).toContain('traefik.enable=true');
+			expect(labels).toContain('traefik.docker.network=devstack-router');
+			expect(labels).toContain(
+				'traefik.http.routers.testapp-main-sui-rpc.rule=Host(`sui.testapp.localhost`)',
+			);
+			expect(labels).toContain('traefik.http.routers.testapp-main-sui-rpc.entrypoints=sui-rpc');
+			expect(labels).toContain(
+				'traefik.http.services.testapp-main-sui-rpc.loadbalancer.server.port=9000',
+			);
+			// Post-run `docker network connect devstack-router <id>` was issued.
+			expect(
+				recorder.some(
+					(r) =>
+						r.args[0] === 'network' &&
+						r.args[1] === 'connect' &&
+						r.args[2] === 'devstack-router',
+				),
+			).toBe(true);
+		}),
+	);
+
+	it.effect('omits the network connect when no traefik entries are supplied', () =>
+		Effect.gen(function* () {
+			const recorder: Array<SpawnRecord> = [];
+			const image = 'mystenlabs/sui-tools:1.0.0';
+			const spawnerLayer = makeSpawnerLayer(recorder, null);
+
+			yield* Docker.run({ name: 'sui.localnet', image }).pipe(
+				Effect.provide(spawnerLayer),
+				Effect.provide(identityLayer),
+				Effect.scoped,
+			);
+
+			expect(
+				recorder.some(
+					(r) =>
+						r.args[0] === 'network' &&
+						r.args[1] === 'connect' &&
+						r.args[2] === 'devstack-router',
+				),
+			).toBe(false);
+		}),
+	);
+});
+
+// -----------------------------------------------------------------------------
 // `decideRunAction` — pure five-state matrix for `Docker.run`
 // -----------------------------------------------------------------------------
 

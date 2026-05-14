@@ -10,6 +10,7 @@ import { DockerError } from '../../primitives/errors.js';
 import { Identity } from '../identity.js';
 import { LongLivedScope } from '../long-lived-scope.js';
 import { ClaimedContainers } from './sweep.js';
+import { ROUTER_NETWORK, routerLabelStrings, type RouterLabel } from './router.js';
 import { Stream } from 'effect';
 
 // -----------------------------------------------------------------------------
@@ -167,6 +168,30 @@ export interface DockerRunOptions {
 	readonly onPortConflict?: (
 		conflictingPorts: Readonly<Record<number, number>>,
 	) => Effect.Effect<Readonly<Record<number, number>>, DockerError, never>;
+	/**
+	 * Traefik router exposure. When set, `Docker.run` ALSO attaches the
+	 * container to the shared `devstack-router` docker network (in
+	 * addition to the per-stack `network`) and stamps the traefik
+	 * docker-provider labels for each entry. Multi-port primitives
+	 * (e.g. sui-localnet exposing rpc/faucet/graphql) pass one
+	 * `RouterLabel` per service; the router id is keyed off
+	 * `<app>-<stack>-<service>` so labels can't collide.
+	 *
+	 * The caller is responsible for ensuring the router container is
+	 * up before spawning these containers — `defineDevstack` invokes
+	 * `ensureRouter` at boot for the supervisor path. Standalone
+	 * `Docker.run` callers (tests, ad-hoc) that don't need router
+	 * routing simply leave this unset.
+	 *
+	 * Direct host-port publishing (`-p <host>:<container>`) is still
+	 * honored alongside traefik exposure when `ports` is also set —
+	 * useful for `curl`-against-127.0.0.1 debug surfaces while the
+	 * traefik path serves the user-facing URLs. The default is no
+	 * host port publishing when `traefik` is set (the router IS the
+	 * external surface), unless the env var `DEVSTACK_DIRECT_PORTS=1`
+	 * forces both.
+	 */
+	readonly traefik?: ReadonlyArray<RouterLabel>;
 }
 
 export interface DockerRunResult {
@@ -243,7 +268,7 @@ export const run = (
 		// `version`, `container-number`). Values mirror what `docker
 		// compose up` emits (verified via `docker inspect` against a real
 		// compose-managed container).
-		const labels: ReadonlyArray<string> = [
+		const baseLabels: Array<string> = [
 			`devstack.app=${identity.app}`,
 			`devstack.stack=${identity.stack}`,
 			`devstack.action=${primitiveName}`,
@@ -253,6 +278,15 @@ export const run = (
 			`com.docker.compose.version=2.0.0`,
 			`com.docker.compose.oneoff=False`,
 		];
+		// Append traefik docker-provider labels for each requested
+		// router entry. When `traefik` is unset, no traefik labels are
+		// stamped — back-compat for hand-rolled callers and tests.
+		for (const entry of opts.traefik ?? []) {
+			for (const s of routerLabelStrings(entry)) {
+				baseLabels.push(s);
+			}
+		}
+		const labels: ReadonlyArray<string> = baseLabels;
 
 		// `--ip` is only valid alongside `--network`; surface the misuse as
 		// a typed DockerError instead of letting docker emit a confusing
@@ -352,6 +386,23 @@ export const run = (
 				'docker.resumed': false,
 			});
 			yield* claim(action.containerId);
+			// Reattach to the router network on adoption — the
+			// container may have been created by an older devstack
+			// process without router exposure, OR docker may have
+			// disconnected it across a docker daemon restart.
+			// Idempotent on already-attached.
+			if ((opts.traefik ?? []).length > 0) {
+				yield* spawner
+					.exitCode(
+						ChildProcess.make('docker', [
+							'network',
+							'connect',
+							ROUTER_NETWORK,
+							action.containerId,
+						]),
+					)
+					.pipe(Effect.ignore);
+			}
 			// Finalizer: stop (don't remove) so the container's on-disk
 			// state survives until the next pnpm dev resumes it. `devstack
 			// wipe` is the only way to remove containers + volumes.
@@ -430,6 +481,18 @@ export const run = (
 					'docker.resumed': true,
 				});
 				yield* claim(action.containerId);
+				if ((opts.traefik ?? []).length > 0) {
+					yield* spawner
+						.exitCode(
+							ChildProcess.make('docker', [
+								'network',
+								'connect',
+								ROUTER_NETWORK,
+								action.containerId,
+							]),
+						)
+						.pipe(Effect.ignore);
+				}
 				yield* addFinalizer(
 					reuseScope,
 					Effect.uninterruptible(
@@ -564,6 +627,29 @@ export const run = (
 					exitCode: captured.exitCode,
 				}),
 			);
+		}
+
+		// Multi-network attach for traefik exposure. The router lives
+		// on the shared `devstack-router` network; backends keep
+		// their per-stack network as primary (for in-network DNS
+		// aliases / IP pins) and ADDITIONALLY join the router
+		// network so traefik can dispatch to them. `docker network
+		// connect` is idempotent on already-attached containers,
+		// which makes this safe for both fresh and adopted paths
+		// (the adopt-path doesn't actually run this on warm reuse
+		// because the labels survived, but we wire it here for
+		// uniformity — explicitly attaching twice is a no-op).
+		if ((opts.traefik ?? []).length > 0) {
+			yield* spawner
+				.exitCode(
+					ChildProcess.make('docker', [
+						'network',
+						'connect',
+						ROUTER_NETWORK,
+						containerId,
+					]),
+				)
+				.pipe(Effect.ignore);
 		}
 
 		// Best-effort `docker stop` on scope close. We deliberately

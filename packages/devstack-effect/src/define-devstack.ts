@@ -30,7 +30,7 @@ import { Context, Deferred, Effect, Layer, Ref, Stream } from 'effect';
 import { layer as NodeServicesLayer } from '@effect/platform-node/NodeServices';
 import { runMain as nodeRunMain } from '@effect/platform-node/NodeRuntime';
 import { ChildProcessSpawner } from 'effect/unstable/process';
-import { ClaimedContainers, dockerOrphanSweep } from './internal/docker.js';
+import { ClaimedContainers, dockerOrphanSweep, ensureRouter } from './internal/docker.js';
 import { prettyError } from './internal/pretty-error.js';
 import { LongLivedScope } from './internal/long-lived-scope.js';
 import {
@@ -722,6 +722,40 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 					supervisorScope,
 				);
 				const engine: EngineShape = Context.get(bootstrapCtx, EngineHandle);
+
+				// Ensure the shared Traefik router is up BEFORE any
+				// primitive starts. The router is the cross-stack
+				// reverse-proxy that binds the well-known host ports
+				// (9000 sui-rpc, 9123 faucet, 9185 walrus, etc.) and
+				// dispatches by Host header to per-stack backends.
+				// Idempotent: skipped if a healthy traefik is already
+				// running. Best-effort: a failure here logs a warning
+				// and continues — primitives that don't opt into the
+				// `traefik` label set still work over direct ports.
+				// `DEVSTACK_NO_ROUTER=1` skips traefik boot entirely —
+				// used by unit tests that don't go through docker,
+				// and as an emergency switch for users that don't
+				// want the shared router. Capped at 10s so a docker
+				// daemon hang doesn't block the supervisor.
+				if (process.env.DEVSTACK_NO_ROUTER !== '1') {
+					yield* (
+						ensureRouter.pipe(
+							Effect.provide(bootstrapCtx as any),
+							Effect.timeoutOrElse({
+								duration: '10 seconds',
+								orElse: () =>
+									Effect.logWarning(
+										'devstack: traefik router boot timed out after 10s — continuing without it',
+									),
+							}),
+							Effect.catch((cause: any) =>
+								Effect.logWarning(
+									`devstack: traefik router boot failed: ${(cause as { message?: string })?.message ?? String(cause)} — falling back to direct ports for any traefik-aware primitives`,
+								),
+							),
+						) as Effect.Effect<void, never, never>
+					);
+				}
 
 				// Best-effort: announce ourselves to the global registry so
 				// `devstack doctor` / `devstack prune` on any host shell can

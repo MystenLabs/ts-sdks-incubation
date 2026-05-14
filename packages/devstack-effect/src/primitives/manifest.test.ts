@@ -14,6 +14,7 @@ import * as nodePath from 'node:path';
 import { Effect, Layer } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 import { EngineLive } from '../internal/engine.js';
+import { Identity } from '../internal/identity.js';
 import {
 	AccountRegistryLive,
 	CoinRegistryLive,
@@ -22,12 +23,21 @@ import {
 } from '../internal/registries.js';
 import { manifest } from './manifest.js';
 
+// Identity needed since manifest's stack-scoped path resolution reads
+// `Identity.stack` at acquire time.
+const IdentityLive = Layer.succeed(Identity, {
+	app: 'devstack-test',
+	stack: 'main',
+	network: 'localnet',
+});
+
 const TestBaseLayer = Layer.mergeAll(
 	EngineLive,
 	PackageRegistryLive,
 	EndpointRegistryLive,
 	AccountRegistryLive,
 	CoinRegistryLive,
+	IdentityLive,
 );
 
 const mkTmpManifestPath = (label: string) =>

@@ -46,3 +46,19 @@ export { networkCreate } from './network.js';
 export { awaitContainerReady, dockerLogsTail, dockerWait, followLogs } from './logs.js';
 export { ClaimedContainers, dockerOrphanSweep } from './sweep.js';
 export { reallocatePortsOnConflict } from './port-conflict.js';
+export {
+	ensureRouter,
+	ROUTER_NETWORK,
+	ROUTER_CONTAINER,
+	ROUTER_IMAGE,
+	ROUTER_ENTRYPOINTS,
+	routerEntrypoint,
+	routerDynamicDir,
+	routerLabelStrings,
+	renderFileProvider,
+	writeFileProvider,
+	removeFileProvider,
+	type RouterLabel,
+	type RouterEntrypoint,
+	type FileProviderEntry,
+} from './router.js';
