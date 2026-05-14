@@ -130,6 +130,17 @@ export interface DockerRunResult {
 	 * has been up for hours and is verifiably healthy already.
 	 */
 	readonly reused: boolean;
+	/**
+	 * The container's actual host-port → container-port bindings. On a
+	 * fresh spawn this matches `opts.ports`. On resume/reuse this is
+	 * read back from `docker inspect` because the container was
+	 * created with its original port mappings — the caller's new
+	 * `opts.ports` is ignored by `docker start`. Callers that publish
+	 * URLs to the manifest (sui-localnet, etc.) MUST use these to
+	 * avoid a "manifest says port X, container is on port Y" mismatch
+	 * that surfaces as a ready-probe timeout.
+	 */
+	readonly hostPorts: Record<number, number>;
 }
 
 export const run = (
@@ -309,7 +320,15 @@ export const run = (
 						.pipe(Effect.ignore),
 				),
 			);
-			return { containerId: inspected.containerId, name, reused: true };
+			// Read the container's actual host-port bindings — `docker
+			// start` honors the original `docker run -p` mappings, not
+			// the caller's freshly-allocated `opts.ports`. Callers that
+			// publish URLs to the manifest (sui-localnet) MUST use the
+			// returned `hostPorts`, not their pre-resume allocator
+			// guesses, or the ready-probe hits a port the container
+			// isn't actually bound to and times out.
+			const hostPorts = yield* inspectHostPorts(spawner, inspected.containerId);
+			return { containerId: inspected.containerId, name, reused: true, hostPorts };
 		}
 		if (inspected !== null) {
 			// Container exists but the image changed (e.g. user bumped
@@ -379,7 +398,10 @@ export const run = (
 			),
 		);
 
-		return { containerId, name, reused: false };
+		// Fresh spawn — host port bindings are exactly the caller's
+		// `opts.ports` (or empty when none were declared).
+		const hostPorts: Record<number, number> = { ...(opts.ports ?? {}) };
+		return { containerId, name, reused: false, hostPorts };
 	}).pipe(Effect.withSpan('Docker.run'));
 
 // -----------------------------------------------------------------------------
@@ -435,6 +457,55 @@ const inspectContainer = (
 		const [runningStr, image, containerId] = parts as [string, string, string];
 		if (image.length === 0 || containerId.length === 0) return null;
 		return { running: runningStr === 'true', image, containerId };
+	});
+
+// Read the host-port bindings of an existing container as
+// `{ [hostPort]: containerPort }`. Used on resume to figure out which
+// ports the container is ACTUALLY bound to (the caller's `opts.ports`
+// arg is ignored by `docker start` — only `docker run` honors it).
+// Returns an empty record on any inspect failure so callers can fall
+// back to their caller-supplied ports.
+const inspectHostPorts = (
+	spawner: Spawner,
+	containerId: string,
+): Effect.Effect<Record<number, number>, never> =>
+	Effect.gen(function* () {
+		// `.NetworkSettings.Ports` is the runtime-resolved view, populated
+		// when the container is running. Shape:
+		//   { "9000/tcp": [ { HostIp: "127.0.0.1", HostPort: "9001" } ], ... }
+		// `.HostConfig.PortBindings` is the same shape but from config;
+		// inspecting a STOPPED container has the runtime view empty, so
+		// we read PortBindings instead. Falls back if both empty.
+		const cmd = ChildProcess.make('docker', [
+			'inspect',
+			'--format',
+			'{{json .HostConfig.PortBindings}}',
+			containerId,
+		]);
+		const captured = yield* runCapturing(spawner, cmd, 'docker inspect ports').pipe(
+			Effect.catchTag('DockerError', () => Effect.succeed(null)),
+		);
+		if (captured === null || captured.exitCode !== 0) return {};
+		const raw = captured.stdout.trim();
+		if (raw.length === 0 || raw === 'null' || raw === '{}') return {};
+		type PortBindings = Record<string, ReadonlyArray<{ HostPort?: string }> | null>;
+		const parsed: PortBindings = yield* Effect.try({
+			try: () => JSON.parse(raw) as PortBindings,
+			catch: () => undefined,
+		}).pipe(Effect.catch(() => Effect.succeed({} as PortBindings)));
+		const out: Record<number, number> = {};
+		for (const [key, bindings] of Object.entries(parsed)) {
+			// key is like "9000/tcp"
+			const containerPort = Number.parseInt(key.split('/')[0] ?? '', 10);
+			if (!Number.isFinite(containerPort)) continue;
+			if (bindings === null || bindings.length === 0) continue;
+			const hostPortStr = bindings[0]?.HostPort;
+			if (hostPortStr === undefined) continue;
+			const hostPort = Number.parseInt(hostPortStr, 10);
+			if (!Number.isFinite(hostPort)) continue;
+			out[hostPort] = containerPort;
+		}
+		return out;
 	});
 
 // Force-remove a container by exact name if one exists. Returns `true` if
