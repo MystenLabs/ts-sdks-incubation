@@ -12,7 +12,7 @@
 // fails the whole layer build. Internal retry with bounded exponential
 // backoff keeps that race from being a user-visible flake.
 
-import { Effect, Schedule, Schema } from 'effect';
+import { Effect, Ref, Schedule, Schema } from 'effect';
 
 // -----------------------------------------------------------------------------
 // Errors
@@ -133,6 +133,13 @@ export const requestFundsOnce = (opts: {
 export const requestFunds = (opts: {
 	faucetUrl: string;
 	address: string;
+	/**
+	 * Called on each retryable failure with the attempt count (1-indexed)
+	 * and the latest error. Lets callers surface "waiting on the faucet
+	 * (attempt N)" in their TUI row so a slow cold-start doesn't look
+	 * like a hang. Optional — callers that don't care can omit it.
+	 */
+	onAttempt?: (attempt: number, error: FaucetError) => Effect.Effect<void>;
 }): Effect.Effect<void, FaucetError> =>
 	Effect.gen(function* () {
 		// `faucetUrl` is the BASE (e.g. `http://localhost:9123`). The v2
@@ -144,18 +151,40 @@ export const requestFunds = (opts: {
 			'faucet.address': opts.address,
 		});
 
-		yield* requestFundsOnce(opts).pipe(
+		const attempts = yield* Ref.make(0);
+		const lastError = yield* Ref.make<FaucetError | undefined>(undefined);
+		const wrapped = requestFundsOnce(opts).pipe(
+			Effect.tapError((err) =>
+				Effect.gen(function* () {
+					const n = yield* Ref.updateAndGet(attempts, (x) => x + 1);
+					yield* Ref.set(lastError, err);
+					if (opts.onAttempt !== undefined) {
+						yield* opts.onAttempt(n, err);
+					}
+				}),
+			),
+		);
+
+		yield* wrapped.pipe(
 			Effect.retry(faucetRetrySchedule),
 			Effect.timeoutOrElse({
 				duration: '90 seconds',
 				orElse: () =>
-					Effect.fail(
-						new FaucetError({
-							url: opts.faucetUrl,
-							address: opts.address,
-							message: 'faucet did not accept request within 90s',
-						}),
-					),
+					Effect.gen(function* () {
+						const n = yield* Ref.get(attempts);
+						const last = yield* Ref.get(lastError);
+						return yield* Effect.fail(
+							new FaucetError({
+								url: opts.faucetUrl,
+								address: opts.address,
+								message:
+									`faucet did not accept request within 90s ` +
+									`(${n} attempts; last error: ${last?.message ?? 'unknown'})`,
+								...(last?.stderr ? { stderr: last.stderr } : {}),
+								...(last?.exitCode !== undefined ? { exitCode: last.exitCode } : {}),
+							}),
+						);
+					}),
 			}),
 		);
 	}).pipe(Effect.withSpan('Faucet.requestFunds'));

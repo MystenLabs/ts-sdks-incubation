@@ -301,18 +301,36 @@ export const StateStoreLive: Layer.Layer<StateStore, StateStoreLockedError, File
 				Effect.catch(() => Effect.succeed<LockBody | undefined>(undefined)),
 			);
 
-		const failLocked = (holder: LockBody | undefined) =>
-			Effect.fail(
+		const failLocked = (holder: LockBody | undefined) => {
+			const pid = holder?.pid ?? -1;
+			// Multi-line block: the framed actions matter more than the
+			// raw pid + path. SIGINT first (graceful), then a manual
+			// `kill -TERM` for the case the user's running supervisor is
+			// stuck and Ctrl-C isn't an option (separate terminal, lost
+			// foreground, etc.).
+			const lines = [
+				`devstack: stack '${cfg.stack}' (${cfg.network}) is already running` +
+					` (pid ${pid}${holder?.startedAt ? `, started ${holder.startedAt}` : ''}).`,
+				'',
+				'To recover:',
+				`  1. Find the running supervisor:    ps -p ${pid}`,
+				`  2. Stop it gracefully:             kill -TERM ${pid}`,
+				`     (or press Ctrl-C in that terminal)`,
+				`  3. If that process is already dead, remove the stale lock:`,
+				`        rm ${paths.lock}`,
+				'',
+				'Two supervisors against the same stack will fight over container',
+				'state, ports, and the Sui chain — refusing is safer than racing.',
+			];
+			return Effect.fail(
 				new StateStoreLockedError({
 					path: paths.lock,
-					holderPid: holder?.pid ?? -1,
+					holderPid: pid,
 					...(holder?.startedAt ? { holderStartedAt: holder.startedAt } : {}),
-					message:
-						`devstack state-store is locked by pid ${holder?.pid ?? -1}` +
-						(holder?.startedAt ? ` (started ${holder.startedAt})` : '') +
-						`. If you're sure that process is dead, remove ${paths.lock} and retry.`,
+					message: lines.join('\n'),
 				}),
 			);
+		};
 
 		// Atomic claim protocol:
 		//   1. Build a holder body with a fresh `instanceId`.
