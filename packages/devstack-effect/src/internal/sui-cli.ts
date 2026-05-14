@@ -1,0 +1,676 @@
+// Effect-flavored thin wrapper around the `sui` CLI for Move package
+// publishing.
+//
+// Ported from `packages/devstack/src/helpers/publish-via-cli.ts` (v3) and
+// adapted to Effect v4:
+//
+//   - Subprocess work goes through `effect/unstable/process`'s
+//     `ChildProcessSpawner` (Node binding provided upstream by
+//     `NodeChildProcessSpawner`).
+//   - All failures funnel through a single tagged `SuiCliError`.
+//
+// The CLI flow:
+//
+//   1. Derive the Sui address from `signerHex` (Ed25519) and run
+//      `sui client switch --address <addr>` so the publish tx is signed
+//      by the intended keypair. The caller is responsible for making
+//      sure the secret is already present in the sui-cli keystore.
+//   2. `sui client publish --skip-fetch-latest-git-deps --json …` runs
+//      the build + publish in one shot and writes a
+//      `SuiTransactionBlockResponse` to stdout.
+//   3. Parse, extract the package id from the `published` object change,
+//      and the upgrade-cap id from the `created` change whose objectType
+//      ends with `0x2::package::UpgradeCap`.
+//
+// `buildMove` is a thin sibling used by tests / dry-runs that only need
+// the compiled bytecode (no publish tx).
+
+import * as os from 'node:os';
+import * as path from 'node:path';
+import type { SuiObjectChange, SuiTransactionBlockResponse } from '@mysten/sui/jsonRpc';
+import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
+import { Context, Effect, FileSystem, Schema, Stream } from 'effect';
+import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
+import { inheritedHostEnv } from './safe-env.js';
+import { stringifyCause } from './stringify-cause.js';
+
+// Optional sui-tools image reference. When `suiLocalnet` builds its
+// vendored `sui-image/` it provides the resulting tag here so `buildMove`
+// can run `sui move build` INSIDE that image (matching the localnet's
+// exact sui version) instead of on the host. The host's `sui` CLI may be
+// newer than the pinned localnet release and reject flags the older
+// in-image sui requires (e.g. `--json` was renamed to `--json-errors`
+// post-`devnet-v1.71.0`), so the host-vs-localnet skew breaks publish on
+// any dev machine that's followed sui's release cadence.
+//
+// Default `undefined` means "no image available — fall back to host
+// `sui`". `suiTestnet` / `suiMainnet` / `suiCustom` leave the default in
+// place; only `suiLocalnet` populates it. The reference is consumed by
+// `buildMove` only; `publishPackage` (unused by `publishMove`, kept for
+// test/dry-run use) still shells out to host `sui client publish`.
+export const SuiBuildImage = Context.Reference<{ readonly tag: string } | undefined>(
+	'@devstack/SuiBuildImage',
+	{ defaultValue: () => undefined },
+);
+
+// -----------------------------------------------------------------------------
+// Errors
+// -----------------------------------------------------------------------------
+
+export class SuiCliError extends Schema.TaggedErrorClass<SuiCliError>()('SuiCliError', {
+	op: Schema.String,
+	message: Schema.String,
+	cause: Schema.optional(Schema.Defect),
+}) {}
+
+const suiCliError =
+	(op: string) =>
+	(cause: unknown): SuiCliError => {
+		const raw = stringifyCause(cause);
+		// ENOENT on spawn means the `sui` binary isn't reachable on the
+		// child's PATH. Surface a setup-actionable message rather than the
+		// opaque `NotFound: ChildProcess.spawn` Node error. Mismatched
+		// versions between a host-installed `sui` and the localnet
+		// container's binary can also produce subtle build/publish errors —
+		// flag that too so the user knows where to look.
+		const isENOENT = raw.includes('ENOENT') || raw.includes('NotFound');
+		const friendly = isENOENT
+			? `sui CLI not found on PATH. Install from https://github.com/MystenLabs/sui/releases or via \`cargo install --locked --git https://github.com/MystenLabs/sui.git sui\`. (Original: ${raw})`
+			: raw;
+		return new SuiCliError({ op, message: friendly, cause });
+	};
+
+// -----------------------------------------------------------------------------
+// publishPackage
+// -----------------------------------------------------------------------------
+
+export interface PublishPackageOptions {
+	readonly path: string;
+	readonly rpcUrl: string;
+	readonly faucetUrl?: string;
+	readonly signerHex: string;
+	readonly gasBudget?: bigint;
+	readonly mvrPlaceholder?: string;
+}
+
+export interface PublishPackageResult {
+	readonly packageId: string;
+	readonly upgradeCapId: string | undefined;
+	readonly digest: string;
+	readonly objectChanges: ReadonlyArray<SuiObjectChange>;
+}
+
+const UPGRADE_CAP_TYPE_SUFFIX = '0x2::package::UpgradeCap';
+
+export const publishPackage = (
+	opts: PublishPackageOptions,
+): Effect.Effect<PublishPackageResult, SuiCliError, ChildProcessSpawner.ChildProcessSpawner> =>
+	Effect.gen(function* () {
+		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+
+		const address = yield* deriveAddress(opts.signerHex);
+		yield* Effect.annotateCurrentSpan({
+			'sui.op': 'publish',
+			'sui.path': opts.path,
+			'sui.address': address,
+		});
+
+		const env = cliEnv(opts);
+
+		// Best-effort: switch the active address to the publisher. The
+		// caller is responsible for making sure the secret is in the
+		// keystore; we tolerate a missing alias by failing loud below
+		// when `sui client publish` itself errors.
+		const switchCmd = ChildProcess.make('sui', ['client', 'switch', '--address', address], {
+			env,
+		});
+		yield* spawner.exitCode(switchCmd).pipe(Effect.mapError(suiCliError('sui client switch')));
+
+		const publishArgs: Array<string> = [
+			'client',
+			'publish',
+			'--skip-fetch-latest-git-deps',
+			// Inline unpublished deps' bytecode so sui-cli's package
+			// resolver doesn't try to look them up on-chain. Required for
+			// vendored Move trees (e.g. deepbook + token) on a fresh
+			// localnet. Pairs with `scrubCachedMoveLocks` which strips
+			// `[env.testnet]` / `[env.mainnet]` entries that would
+			// otherwise short-circuit the resolver back to a chain id.
+			'--with-unpublished-dependencies',
+		];
+		if (opts.gasBudget !== undefined) {
+			publishArgs.push('--gas-budget', opts.gasBudget.toString());
+		}
+		publishArgs.push(opts.path);
+
+		const publishCmd = ChildProcess.make('sui', publishArgs, { env });
+		const captured = yield* runWithCapture(spawner, publishCmd, 'sui client publish');
+
+		// Fail-fast on non-zero exit so a build/compile failure surfaces the
+		// CLI's stderr instead of an opaque JSON-parse error on empty stdout.
+		if (captured.exitCode !== 0) {
+			return yield* Effect.fail(
+				new SuiCliError({
+					op: 'sui client publish',
+					message: formatCliFailure('sui client publish', captured),
+				}),
+			);
+		}
+
+		const response = yield* parseJson<SuiTransactionBlockResponse>(
+			captured.stdout,
+			'sui client publish',
+		).pipe(
+			Effect.mapError((err) =>
+				new SuiCliError({
+					op: err.op,
+					message: `${err.message}\n  stdout: ${truncateForError(captured.stdout)}\n  stderr: ${truncateForError(captured.stderr)}`,
+					cause: err.cause,
+				}),
+			),
+		);
+
+		if (response.effects?.status.status !== 'success') {
+			const detail = response.effects?.status.error ?? 'unknown';
+			return yield* Effect.fail(
+				new SuiCliError({
+					op: 'sui client publish',
+					message: `publish tx failed: ${detail}`,
+				}),
+			);
+		}
+
+		const objectChanges = (response.objectChanges ?? []) as ReadonlyArray<SuiObjectChange>;
+		const published = objectChanges.find(
+			(c): c is Extract<SuiObjectChange, { type: 'published' }> => c.type === 'published',
+		);
+		if (published === undefined) {
+			return yield* Effect.fail(
+				new SuiCliError({
+					op: 'sui client publish',
+					message: 'no `published` change in result',
+				}),
+			);
+		}
+
+		const upgradeCapId = objectChanges.find(
+			(c): c is Extract<SuiObjectChange, { type: 'created' }> =>
+				c.type === 'created' &&
+				typeof c.objectType === 'string' &&
+				c.objectType.endsWith(UPGRADE_CAP_TYPE_SUFFIX),
+		)?.objectId;
+
+		return {
+			packageId: published.packageId,
+			upgradeCapId,
+			digest: response.digest,
+			objectChanges,
+		};
+	}).pipe(Effect.withSpan('SuiCli.publishPackage'));
+
+// -----------------------------------------------------------------------------
+// buildMove
+// -----------------------------------------------------------------------------
+
+export interface BuildMoveOptions {
+	readonly path: string;
+	readonly rpcUrl: string;
+	readonly faucetUrl?: string;
+}
+
+export interface BuildMoveResult {
+	readonly modules: ReadonlyArray<string>;
+	readonly dependencies: ReadonlyArray<string>;
+}
+
+interface BuildMoveJson {
+	readonly modules: Array<string>;
+	readonly dependencies: Array<string>;
+}
+
+export const buildMove = (
+	opts: BuildMoveOptions,
+): Effect.Effect<BuildMoveResult, SuiCliError, ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem> =>
+	// Context.Reference with a defaultValue keeps `SuiBuildImage` out of the R
+	// channel — callers that haven't provided it transparently get the `undefined`
+	// default (host-CLI mode).
+	Effect.gen(function* () {
+		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+		const fs = yield* FileSystem.FileSystem;
+		const image = yield* SuiBuildImage;
+		yield* Effect.annotateCurrentSpan({
+			'sui.op': 'build',
+			'sui.path': opts.path,
+			'sui.build.mode': image !== undefined ? 'container' : 'host',
+			...(image !== undefined ? { 'sui.build.image': image.tag } : {}),
+		});
+
+		// Strip `[pinned.<env>.*]` sections from the package's Move.lock
+		// before invoking sui-cli. Upstream Move.locks frequently pin to a
+		// specific deploy environment (e.g. `use_environment = "testnet"`),
+		// which causes the build to embed that env's framework package
+		// ids into the bytecode — the resulting modules then fail to
+		// publish on localnet because those testnet ids aren't on chain.
+		// Stripping the lock forces sui-cli to re-resolve deps against the
+		// current sui-framework genesis (`0x1` + `0x2`).
+		yield* stripPinnedSectionsFromMoveLock(fs, opts.path).pipe(Effect.ignore);
+
+		// Build inside the localnet's exact sui version when one is
+		// available, host-installed sui otherwise. The host fallback is
+		// fragile post-devnet-v1.71.0 because newer sui's renamed `--json`
+		// to `--json-errors`; the in-container build sidesteps the skew
+		// entirely.
+		const cmd =
+			image !== undefined
+				? containerBuildCmd(image.tag, opts.path)
+				: hostBuildCmd(opts);
+
+		// Capture stdout, stderr, AND exitCode in one shot. The previous
+		// `spawner.string(cmd)` swallowed stderr and exitCode, which made
+		// the failure mode `JSON.parse('')` → "Unexpected end of JSON input"
+		// — useless for debugging WHY `sui move build` actually failed
+		// (deps it couldn't resolve, container missing, etc.).
+		const captured = yield* runWithCapture(spawner, cmd, 'sui move build');
+
+		// Non-zero exit ALWAYS fails before the JSON parse — a build that
+		// errored out gives us its stderr verbatim instead of the opaque
+		// parse-of-empty-string failure. `extractTrailingJson` would
+		// otherwise return `''` on empty stdout and the parser would crash
+		// without ever surfacing the real error.
+		if (captured.exitCode !== 0) {
+			// Dump full stderr/stdout to the engine log stream so the user
+			// can see the actual build output without depending on the
+			// truncated row detail.
+			if (captured.stderr.trim().length > 0) {
+				yield* Effect.logError(`sui move build stderr:\n${captured.stderr}`);
+			}
+			if (captured.stdout.trim().length > 0) {
+				yield* Effect.logError(`sui move build stdout:\n${captured.stdout}`);
+			}
+			return yield* Effect.fail(
+				new SuiCliError({
+					op: 'sui move build',
+					message: formatCliFailure('sui move build', captured),
+				}),
+			);
+		}
+
+		// Surface the FULL stdout when the parse fails. Without this the
+		// user only sees `Unexpected end of JSON input` and has no way to
+		// know what sui actually printed.
+		const trailing = extractTrailingJson(captured.stdout);
+		const built = yield* parseJson<BuildMoveJson>(trailing, 'sui move build').pipe(
+			Effect.mapError((err) =>
+				new SuiCliError({
+					op: err.op,
+					message: `${err.message}\n  stdout: ${truncateForError(captured.stdout)}\n  stderr: ${truncateForError(captured.stderr)}`,
+					cause: err.cause,
+				}),
+			),
+		);
+		return { modules: built.modules, dependencies: built.dependencies };
+	}).pipe(Effect.withSpan('SuiCli.buildMove'));
+
+// -----------------------------------------------------------------------------
+// Helpers
+// -----------------------------------------------------------------------------
+
+// Compose the argv for an in-container `sui move build`. The vendored
+// sui-image's default entrypoint runs `sui genesis` first (sets up a
+// localnet config) before exec'ing `sui "$@"`. For a one-shot move
+// build we don't need genesis — override the entrypoint to call `sui`
+// directly so stderr contains only build output, not genesis init logs.
+// The host source path is bind-mounted at `/workspace`; build is purely
+// local (no network). `--rm` reaps the container on exit.
+const containerBuildCmd = (imageTag: string, hostPath: string): ChildProcess.Command => {
+	// Bind-mount the PACKAGE'S PARENT directory (not the package itself)
+	// so sibling `{ local = "../token" }`-style deps resolve inside the
+	// container. The build target is `--path /workspace/<package-name>`.
+	// Without this, a Move.toml that references `../token` fails with
+	// "Invalid directory at `../token`" because /workspace ends at the
+	// package boundary.
+	const parent = path.dirname(hostPath);
+	const pkgName = path.basename(hostPath);
+	return ChildProcess.make('docker', [
+		'run',
+		'--rm',
+		'--entrypoint',
+		'sui',
+		'-v',
+		`${parent}:/workspace`,
+		imageTag,
+		'move',
+		'build',
+		'--path',
+		`/workspace/${pkgName}`,
+		'--dump-bytecode-as-base64',
+		'--with-unpublished-dependencies',
+	]);
+};
+
+// Compose the argv for a host-`sui` `move build`. Same flags as the
+// container path, but spawned directly with the host-inherited env so
+// `sui` can read its own keystore + config dir. Kept as a fallback for
+// suiTestnet / suiMainnet / suiCustom where there's no localnet image
+// to dispatch into.
+const hostBuildCmd = (opts: BuildMoveOptions): ChildProcess.Command =>
+	ChildProcess.make(
+		'sui',
+		[
+			'move',
+			'build',
+			'--path',
+			opts.path,
+			'--dump-bytecode-as-base64',
+			'--with-unpublished-dependencies',
+		],
+		{ env: cliEnv(opts) },
+	);
+
+// Build the env-var map for sui-cli invocations. `SUI_FULLNODE_URL`
+// points the CLI at our localnet RPC; `SUI_FAUCET_URL` is added when
+// the caller provided one (faucet calls happen elsewhere; we still
+// thread it so any sui-cli subcommand that reads it picks up the right
+// URL).
+const cliEnv = (opts: { rpcUrl: string; faucetUrl?: string }): Record<string, string> => {
+	// Merge the safe inherited host env (PATH, HOME, etc.) so the spawned
+	// `sui` binary is actually resolvable. Without this the child gets ONLY
+	// the two SUI_* vars below — PATH is empty → ENOENT even when sui is
+	// installed and on the user's interactive shell PATH.
+	const env: Record<string, string> = { ...inheritedHostEnv(), SUI_FULLNODE_URL: opts.rpcUrl };
+	if (opts.faucetUrl !== undefined) env.SUI_FAUCET_URL = opts.faucetUrl;
+	return env;
+};
+
+// Derive the Sui address (0x-prefixed) from an Ed25519 hex secret key.
+// Accepts an optional `0x` prefix on the hex. Wrapped in `Effect.try`
+// so an invalid hex string surfaces as `SuiCliError` rather than a
+// defect.
+const deriveAddress = (signerHex: string): Effect.Effect<string, SuiCliError> =>
+	Effect.try({
+		try: () => {
+			const hex = signerHex.startsWith('0x') ? signerHex.slice(2) : signerHex;
+			if (hex.length !== 64) {
+				throw new Error(
+					`expected a 32-byte (64-hex-char) Ed25519 secret, got ${hex.length} hex chars`,
+				);
+			}
+			const bytes = new Uint8Array(32);
+			for (let i = 0; i < 32; i++) {
+				const byte = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+				if (Number.isNaN(byte)) {
+					throw new Error(`invalid hex char at byte ${i}`);
+				}
+				bytes[i] = byte;
+			}
+			return Ed25519Keypair.fromSecretKey(bytes).toSuiAddress();
+		},
+		catch: suiCliError('deriveAddress'),
+	});
+
+// `sui move build --json` writes pure JSON to stdout, but other
+// subcommands occasionally emit progress lines first. Find the last
+// `{`-terminated chunk and parse that — same trick the v3 port uses.
+// Exported indirectly via `buildMove`; kept module-private otherwise.
+const extractTrailingJson = (text: string): string => {
+	const trimmed = text.trim();
+	if (trimmed.startsWith('{')) return trimmed;
+	const idx = trimmed.lastIndexOf('{');
+	if (idx === -1) return trimmed;
+	return trimmed.slice(idx);
+};
+
+// Captured output of one `sui` invocation. Mirrors `DockerExecResult` in
+// docker.ts — separate types because shared infra would couple two
+// otherwise-independent modules.
+interface SuiCliCapture {
+	readonly exitCode: number;
+	readonly stdout: string;
+	readonly stderr: string;
+}
+
+// Spawn `cmd`, drain stdout + stderr + exit code concurrently. The
+// spawner's `.string(...)` helper only captures stdout, which loses the
+// reason a failing `sui move build` failed (compile errors, missing
+// deps, host-vs-localnet version skew, etc. land on stderr). Mapped
+// errors carry the same `op` prefix that downstream callers stamp.
+type Spawner = ReturnType<typeof ChildProcessSpawner.make>;
+
+const runWithCapture = (
+	spawner: Spawner,
+	cmd: ChildProcess.Command,
+	op: string,
+): Effect.Effect<SuiCliCapture, SuiCliError> =>
+	Effect.scoped(
+		Effect.gen(function* () {
+			const handle = yield* spawner.spawn(cmd).pipe(Effect.mapError(suiCliError(op)));
+			const decode = <E>(stream: Stream.Stream<Uint8Array, E>) =>
+				Stream.mkString(Stream.decodeText(stream));
+			const [stdout, stderr, exitCode] = yield* Effect.all(
+				[
+					decode(handle.stdout).pipe(Effect.mapError(suiCliError(op))),
+					decode(handle.stderr).pipe(Effect.mapError(suiCliError(op))),
+					handle.exitCode.pipe(Effect.mapError(suiCliError(op))),
+				],
+				{ concurrency: 'unbounded' },
+			);
+			return { exitCode: exitCode as number, stdout, stderr };
+		}),
+	);
+
+// Build the user-facing failure message for a non-zero CLI exit.
+// Prefers stderr (where sui prints errors) and falls back to stdout for
+// the odd subcommand that swaps the two. Truncated to keep TUI rows
+// readable; the full output is still available via the OTLP span.
+const formatCliFailure = (op: string, captured: SuiCliCapture): string => {
+	const stderr = captured.stderr.trim();
+	const stdout = captured.stdout.trim();
+	const detail = stderr.length > 0 ? stderr : stdout;
+	return `${op} exited ${captured.exitCode}: ${truncateForError(detail)}`;
+};
+
+const MAX_ERROR_DETAIL = 600;
+
+const truncateForError = (text: string): string => {
+	const collapsed = text.replace(/\r/g, '').trim();
+	if (collapsed.length === 0) return '(empty)';
+	if (collapsed.length <= MAX_ERROR_DETAIL) return collapsed;
+	return `${collapsed.slice(0, MAX_ERROR_DETAIL - 1)}…`;
+};
+
+// Parse JSON inside an Effect so decoding failures map to `SuiCliError`.
+const parseJson = <T>(text: string, op: string): Effect.Effect<T, SuiCliError> =>
+	Effect.try({
+		try: () => JSON.parse(text) as T,
+		catch: suiCliError(`${op} (json parse)`),
+	});
+
+// -----------------------------------------------------------------------------
+// scrubCachedMoveLocks
+// -----------------------------------------------------------------------------
+
+// Walk `~/.move/git/` (sui-cli's content-addressed dep cache) and strip
+// `[env]` / `[env.<name>]` sections from every `Move.lock` whose
+// entries declare a published-id. Reason: sui-cli's legacy-manifest
+// resolver reads those entries and treats the dep as
+// already-published-on-chain. For deepbook's `token` dep that pulls the
+// testnet id and embeds it in the publish tx's `dependencies` array —
+// which then fails on a fresh localnet where that package id doesn't
+// exist. With the entries stripped, `--with-unpublished-dependencies`
+// correctly inlines the dep's bytecode.
+//
+// Ported from v3 `packages/devstack/src/helpers/publish-via-cli.ts`.
+// The `packagePath` argument is retained for API symmetry with the
+// caller (and a future per-package narrowing); the cache is keyed by
+// `<repo>@<rev>` so scrubbing it globally is safe and idempotent.
+//
+// Best-effort: missing cache root, unreadable lockfiles, etc. all
+// surface as a silent no-op. Any successful scrubs are recorded as a
+// span attribute.
+export const scrubCachedMoveLocks = (
+	_packagePath: string,
+): Effect.Effect<void, SuiCliError, FileSystem.FileSystem> =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem;
+		const root = path.join(os.homedir(), '.move', 'git');
+
+		const rootExists = yield* fs.exists(root).pipe(Effect.catch(() => Effect.succeed(false)));
+		if (!rootExists) {
+			yield* Effect.annotateCurrentSpan({ 'sui.scrub.root.missing': true });
+			return;
+		}
+
+		// `readDirectory({ recursive: true })` returns paths relative to
+		// `root`. Filter to `Move.lock` files and ignore anything inside
+		// a `.git` directory (we never need to touch git internals).
+		const entries = yield* fs
+			.readDirectory(root, { recursive: true })
+			.pipe(Effect.mapError(suiCliError('scrubCachedMoveLocks readDirectory')));
+
+		const lockPaths = entries
+			.filter((rel) => rel.endsWith(`${path.sep}Move.lock`) || rel === 'Move.lock')
+			.filter((rel) => !rel.split(path.sep).includes('.git'))
+			.map((rel) => path.join(root, rel));
+
+		let scrubbed = 0;
+		for (const lockPath of lockPaths) {
+			const didScrub = yield* scrubMoveLock(fs, lockPath);
+			if (didScrub) scrubbed++;
+		}
+
+		yield* Effect.annotateCurrentSpan({
+			'sui.scrub.candidates': lockPaths.length,
+			'sui.scrub.modified': scrubbed,
+		});
+	}).pipe(Effect.withSpan('SuiCli.scrubCachedMoveLocks'));
+
+// Read a single Move.lock, strip env / pinned-env sections, write back
+// if changed. Returns `true` if the file was modified. Silently skips
+// on read / parse failure — the file may be partial mid-fetch or owned
+// by another user. Uses `stripPinnedSections` so both legacy `[env.*]`
+// sections AND Move.lock v4 `[pinned.<env>.<pkg>]` sections get
+// removed; either flavor can carry the published-id pin that bakes a
+// testnet/mainnet address into a `move build`.
+const scrubMoveLock = (
+	fs: FileSystem.FileSystem,
+	lockPath: string,
+): Effect.Effect<boolean, never> =>
+	Effect.gen(function* () {
+		const contents = yield* fs
+			.readFileString(lockPath, 'utf8')
+			.pipe(Effect.catch(() => Effect.succeed<string | undefined>(undefined)));
+		if (contents === undefined) return false;
+
+		const cleaned = stripPinnedSections(contents);
+		if (cleaned === contents) return false;
+
+		yield* fs.writeFileString(lockPath, cleaned).pipe(Effect.catch(() => Effect.void));
+		return true;
+	});
+
+// Strip Move.lock v4 `[pinned.<env>.<pkg>]` sections from any Move.lock
+// reachable from `packagePath`. These sections lock the build to a
+// specific environment's package addresses; on localnet they cause the
+// build to embed testnet ids and the publish then fails ("Dependent
+// package not found on-chain"). Idempotent — re-stripping a scrubbed
+// lockfile is a no-op. Walks the package's source tree AND any
+// vendored deps under sibling `.devstack/imports/` directories the
+// caller may have pre-fetched, so transitive `pinned.<env>.<dep>`
+// entries inside deepbook/token/etc. lockfiles also get scrubbed.
+const stripPinnedSectionsFromMoveLock = (
+	fs: FileSystem.FileSystem,
+	packagePath: string,
+): Effect.Effect<void, never, never> =>
+	Effect.gen(function* () {
+		// Scrub the package's own Move.lock.
+		yield* scrubLockFileIfPresent(fs, path.join(packagePath, 'Move.lock'));
+		// Scrub `~/.move/git/<rev>/<subdir>/Move.lock` — sui-cli's
+		// cache of git-fetched Move deps. v3's `scrubCachedMoveLocks`
+		// targeted this path explicitly because deepbook's `token`
+		// dep pins testnet's published id (`0x36dbef…`) into its
+		// lockfile, which then gets embedded into the deepbook
+		// bytecode on publish and fails on localnet.
+		yield* scrubLockFilesUnder(fs, path.join(os.homedir(), '.move', 'git')).pipe(Effect.ignore);
+		// Walk for sibling vendored-imports lockfiles. Stop at the first
+		// `.devstack/imports` we find on the way up so we cover the
+		// example's full Move tree without recursing into the workspace
+		// root (which can contain unrelated lockfiles).
+		let dir = packagePath;
+		for (let i = 0; i < 6; i++) {
+			const importsDir = path.join(dir, '.devstack', 'imports');
+			const importsExists = yield* fs
+				.exists(importsDir)
+				.pipe(Effect.catch(() => Effect.succeed(false)));
+			if (importsExists) {
+				yield* scrubLockFilesUnder(fs, importsDir).pipe(Effect.ignore);
+				return;
+			}
+			const parent = path.dirname(dir);
+			if (parent === dir) break;
+			dir = parent;
+		}
+	});
+
+// Best-effort recursive scrub. Walks `dir` and scrubs every `Move.lock`
+// it finds, skipping `node_modules` / `.git` for obvious reasons.
+const scrubLockFilesUnder = (
+	fs: FileSystem.FileSystem,
+	dir: string,
+): Effect.Effect<void, never, never> =>
+	Effect.gen(function* () {
+		const entries = yield* fs
+			.readDirectory(dir)
+			.pipe(Effect.catch(() => Effect.succeed<ReadonlyArray<string>>([])));
+		for (const name of entries) {
+			if (name === 'node_modules' || name === '.git') continue;
+			const full = path.join(dir, name);
+			const info = yield* fs.stat(full).pipe(Effect.catch(() => Effect.succeed(undefined)));
+			if (info === undefined) continue;
+			if (info.type === 'Directory') {
+				yield* scrubLockFilesUnder(fs, full);
+			} else if (name === 'Move.lock') {
+				yield* scrubLockFileIfPresent(fs, full);
+			}
+		}
+	});
+
+const scrubLockFileIfPresent = (
+	fs: FileSystem.FileSystem,
+	lockPath: string,
+): Effect.Effect<void, never, never> =>
+	Effect.gen(function* () {
+		const exists = yield* fs.exists(lockPath).pipe(Effect.catch(() => Effect.succeed(false)));
+		if (!exists) return;
+		const contents = yield* fs
+			.readFileString(lockPath)
+			.pipe(Effect.catch(() => Effect.succeed(undefined)));
+		if (contents === undefined) return;
+		const scrubbed = stripPinnedSections(contents);
+		if (scrubbed === contents) return;
+		yield* fs.writeFileString(lockPath, scrubbed).pipe(Effect.catch(() => Effect.void));
+	});
+
+const stripPinnedSections = (source: string): string => {
+	const lines = source.split('\n');
+	const out: Array<string> = [];
+	let skipping = false;
+	for (const line of lines) {
+		const trimmed = line.trimStart();
+		if (trimmed.startsWith('[')) {
+			const header = trimmed.replace(/\s+/g, '');
+			// Skip both v4-style `[pinned.<env>.<pkg>]` sections AND the
+			// legacy `[env]` / `[env.<name>]` sections v3's
+			// `scrubCachedMoveLocks` targeted. Either one can carry
+			// `published-at`/`original-id` entries that pin a transitive
+			// dep to a specific net's id, which then ends up baked into
+			// the publish's bytecode.
+			if (header.startsWith('[pinned.') || header === '[env]' || header.startsWith('[env.')) {
+				skipping = true;
+				continue;
+			}
+			skipping = false;
+		}
+		if (!skipping) out.push(line);
+	}
+	return out.join('\n');
+};
