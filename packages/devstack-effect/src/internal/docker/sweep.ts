@@ -46,11 +46,23 @@ export const dockerOrphanSweep = (
 	Effect.gen(function* () {
 		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 		const composeProject = composeProjectName(app, stack);
+		// Belt-and-braces filter: `com.docker.compose.project` alone could collide
+		// with an unrelated `docker compose` project on the host whose name happens
+		// to match ours (e.g. another tool's `wallet` stack) — a false-positive
+		// would `docker rm -f` THEIR containers. Anding with the two devstack-only
+		// labels stamped by `Docker.run` (`core.ts:191-192`) means a match requires
+		// all three labels to line up, which is effectively impossible to hit by
+		// accident outside this package. `docker ps --filter label=...` is an
+		// AND-conjunction across repeats, exactly what we want.
 		const lsCmd = ChildProcess.make('docker', [
 			'ps',
 			'-aq',
 			'--filter',
 			`label=com.docker.compose.project=${composeProject}`,
+			'--filter',
+			`label=devstack.app=${app}`,
+			'--filter',
+			`label=devstack.stack=${stack}`,
 		]);
 		const idsText = yield* spawner.string(lsCmd).pipe(Effect.catch(() => Effect.succeed('')));
 		const ids = idsText
@@ -85,12 +97,21 @@ export const dockerOrphanSweep = (
 		// on this address space" even though no container is attached.
 		// Filter on the same compose-project label `Docker.networkCreate`
 		// stamps. Best-effort throughout.
+		// Same belt-and-braces tightening as the container filter above —
+		// `Docker.networkCreate` stamps `devstack.app` + `devstack.stack`
+		// alongside the compose-project label (`network.ts:61-62`), so
+		// ANDing all three filters keeps us from racing an unrelated host
+		// project that happened to pick the same compose-project name.
 		const lsNetCmd = ChildProcess.make('docker', [
 			'network',
 			'ls',
 			'-q',
 			'--filter',
 			`label=com.docker.compose.project=${composeProject}`,
+			'--filter',
+			`label=devstack.app=${app}`,
+			'--filter',
+			`label=devstack.stack=${stack}`,
 		]);
 		const netIdsText = yield* spawner.string(lsNetCmd).pipe(Effect.catch(() => Effect.succeed('')));
 		const netIds = netIdsText
