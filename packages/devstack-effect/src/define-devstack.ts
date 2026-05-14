@@ -204,10 +204,62 @@ const InfraLiveCore = Layer.provideMerge(
 // log entry) instead of leaking onto stdout as a fatal Layer.build
 // abort.
 //
+// `StateStoreLive` lives here too — its acquire opens the file-backed
+// `state.json.lock`, and a competing supervisor on the same stack should
+// fail loudly BEFORE any docker work runs. Folding StateStore into the
+// user-stack build worked only because `provideMerge`'s reduction order
+// happened to evaluate it early; lifting it into the bootstrap layer
+// makes "lock-first" a code-structure invariant. The lock's release
+// finalizer runs on the supervisor's bootstrap scope (which lives for
+// the whole runMain lifetime), so SIGINT / clean shutdown still removes
+// the lock file. `Identity` is colocated because it's a cheap pure
+// `Layer.succeed` derived from the same options.
+//
 // Same Live references as `InfraLiveCore` and `PlatformLive` so the
 // memo-map shared with the user-stack build re-uses these — no duplicate
-// `EngineLive` instance, no orphan `restartSignal` Deferred.
-const BootstrapLive = Layer.mergeAll(EngineLive, FileWatcherLive, NodeServicesLayer);
+// `EngineLive` instance, no orphan `restartSignal` Deferred, and only
+// ONE StateStore acquire (and therefore one lock-file write).
+const composeBootstrapLayer = (
+	opts: StackComposeOptions = {},
+): Layer.Layer<unknown, unknown, never> => {
+	const stateStoreConfig: {
+		readonly stack: string;
+		readonly network: SuiNetwork;
+		readonly stateDir?: string;
+	} = {
+		stack: resolveStackName(opts.stackName),
+		network: opts.network ?? 'localnet',
+		...(opts.stateDir !== undefined ? { stateDir: opts.stateDir } : {}),
+	};
+	const StateStoreConfigLive = Layer.succeed(StateStoreConfig, stateStoreConfig);
+	// `Layer.provideMerge` (not `provide`) re-exports `StateStoreConfig`
+	// from the resulting layer so user primitives can still
+	// `yield* StateStoreConfig` from inside their build body.
+	const StateStoreFullLive = Layer.provideMerge(StateStoreLive, StateStoreConfigLive);
+	const IdentityLive = Layer.succeed(Identity, {
+		app: deriveAppName(),
+		stack: stateStoreConfig.stack,
+		network: stateStoreConfig.network,
+	});
+	const platform: Layer.Layer<unknown, unknown, never> =
+		opts.platformLayer ?? (NodeServicesLayer as Layer.Layer<unknown, unknown, never>);
+	// Layer-order (innermost → outermost):
+	//   1. StateStoreLive consumes FileSystem + StateStoreConfig — those
+	//      have to be visible when it builds.
+	//   2. Engine + FileWatcher + Identity sit alongside it as siblings.
+	//   3. Platform provides FileSystem / Path / Child / Stdio / Terminal.
+	//
+	// `provideMerge` so platform services stay re-exported from the
+	// composed bootstrap layer (Docker.run inside the user stack still
+	// needs `yield* ChildProcessSpawner`).
+	const bootstrapCore = Layer.mergeAll(
+		EngineLive,
+		FileWatcherLive,
+		StateStoreFullLive,
+		IdentityLive,
+	);
+	return Layer.provideMerge(bootstrapCore, platform) as Layer.Layer<unknown, unknown, never>;
+};
 
 type EngineShape = EngineHandleShape;
 
@@ -584,6 +636,20 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 	const headerStack = resolveStackName(config.stackName);
 	const headerNetwork = config.network ?? 'localnet';
 
+	// Bootstrap layer for the supervisor: engine + filewatcher + platform
+	// + state-store + identity. Built once per `defineDevstack` so the
+	// state-store lock identity (path + instanceId derived inside its
+	// build body) stays consistent across cycles. Memo-map sharing between
+	// bootstrap and the user-stack build means a second StateStore acquire
+	// (via composeStackLayer's redundant wiring, kept for the
+	// provideDevstack path) is a memoised no-op — only one lock-file write
+	// per supervisor.
+	const bootstrapLayer = composeBootstrapLayer({
+		stackName: config.stackName,
+		network: config.network,
+		stateDir: config.stateDir,
+	});
+
 	const buildLaunchEffect = (overrides: RunOverrides): Effect.Effect<void, unknown, never> => {
 		const renderer = overrides.renderer ?? resolveRenderer(config);
 
@@ -639,12 +705,21 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 				// packageId on every process restart.
 				const claimedRef = yield* Ref.make<Set<string>>(new Set<string>());
 
-				// Bootstrap engine + file watcher + platform. This is the
-				// supervisor's resource pool — it stays alive for the entire
-				// iteration, surviving per-primitive failures. The
-				// per-primitive fibers Effect.provideContext(bootstrapCtx ⊕
-				// infraCtx) so they can yield* EngineHandle etc.
-				const bootstrapCtx = yield* Layer.buildWithMemoMap(BootstrapLive, memoMap, supervisorScope);
+				// Bootstrap engine + file watcher + platform + StateStore +
+				// Identity. This is the supervisor's resource pool — stays
+				// alive for the entire iteration, surviving per-primitive
+				// failures. The state-store acquire fires HERE (its build is
+				// what opens `state.json.lock` via O_EXCL), so a competing
+				// supervisor on the same <stack, network> fails loudly via
+				// `StateStoreLockedError` BEFORE we touch docker. Per-
+				// primitive fibers Effect.provideContext(bootstrapCtx ⊕
+				// infraCtx) so they can `yield* EngineHandle` / `yield*
+				// StateStore` / etc.
+				const bootstrapCtx = yield* Layer.buildWithMemoMap(
+					bootstrapLayer,
+					memoMap,
+					supervisorScope,
+				);
 				const engine: EngineShape = Context.get(bootstrapCtx, EngineHandle);
 
 				// Publish this cycle's engine to the outer launch effect so an
@@ -753,6 +828,31 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 							`devstack: swept ${swept.length} orphan container(s) from prior run of ${sweepApp}/${sweepStack}/${sweepNetwork}`,
 						);
 					}
+				}
+
+				// CI fast-fail: in non-interactive renderers (`plain` /
+				// `silent`), a first-cycle build failure should surface as
+				// a non-zero process exit instead of blocking on the restart
+				// signal forever — there's no user at the keyboard to press
+				// `r`, and CI runners would otherwise hang until SIGTERM.
+				// Interactive TUI mode keeps the wait-for-`r` behavior so a
+				// developer can fix the config and retry without losing the
+				// rendered failure tree.
+				//
+				// We fail AFTER the orphan sweep (above) so its `cycle === 1
+				// && buildSucceeded` guard still skips the destructive path
+				// — `buildSucceeded === false` here means we never touched
+				// docker state. The bootstrap scope's finalizers (state-store
+				// lock release, file-watcher cleanup) still run on the way
+				// out because `Effect.fail` exits via the scoped supervisor.
+				if (cycle === 1 && !buildSucceeded && renderer !== 'tui') {
+					yield* engine.setBuildStatus('shutting-down');
+					return yield* Effect.fail(
+						new Error(
+							'devstack: stack acquire failed on first cycle ' +
+								`(renderer=${renderer}); exiting non-zero. See log above for the underlying cause.`,
+						),
+					);
 				}
 
 				yield* engine.setBuildStatus('running');
