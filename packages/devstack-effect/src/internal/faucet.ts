@@ -37,14 +37,24 @@ export class FaucetError extends Schema.TaggedErrorClass<FaucetError>()('FaucetE
 // Public API
 // -----------------------------------------------------------------------------
 
-// Bounded exponential backoff capped at 40 attempts. Paired with a
-// 90s wall-clock budget at the call site — long enough to absorb a
-// cold sui-localnet boot where the faucet binary needs ~30-60s after
-// its HTTP socket opens before it can actually submit transactions
-// (during that window it returns 503 / Internal).
-const faucetRetrySchedule = Schedule.exponential('500 millis', 1.5).pipe(
-	Schedule.both(Schedule.recurs(40)),
-);
+// Bounded exponential backoff. Default schedule (40 attempts × 500ms
+// initial × 1.5 growth) is paired with the default 90s wall-clock
+// budget at the call site — long enough to absorb a cold sui-localnet
+// boot where the faucet binary needs ~30-60s after its HTTP socket
+// opens before it can actually submit transactions (during that
+// window it returns 503 / Internal). Callers can override both via
+// `requestFunds`'s `maxAttempts` / `initialDelayMs` / `timeoutMs`
+// opts — useful in CI where a clearly-broken faucet should fail fast
+// instead of burning the full 90s × N-accounts budget.
+const DEFAULT_MAX_ATTEMPTS = 40;
+const DEFAULT_INITIAL_DELAY_MS = 500;
+const DEFAULT_TIMEOUT_MS = 90_000;
+const BACKOFF_FACTOR = 1.5;
+
+const makeFaucetRetrySchedule = (initialDelayMs: number, maxAttempts: number) =>
+	Schedule.exponential(`${initialDelayMs} millis`, BACKOFF_FACTOR).pipe(
+		Schedule.both(Schedule.recurs(maxAttempts)),
+	);
 
 // Single-shot faucet POST + body parse. Exported so unit tests can
 // pin the body-level Failure detection without paying the retry /
@@ -151,8 +161,32 @@ export const requestFunds = (opts: {
 	 * like a hang. Optional — callers that don't care can omit it.
 	 */
 	onAttempt?: (attempt: number, error: FaucetError) => Effect.Effect<void>;
+	/**
+	 * Wall-clock budget for the whole funding request, including all
+	 * retries. Defaults to 90_000 (90s) — sized for a cold sui-localnet
+	 * boot. CI configs that point at a clearly-broken faucet can lower
+	 * this so failure surfaces in seconds instead of minutes-per-account.
+	 */
+	timeoutMs?: number;
+	/**
+	 * Maximum number of retry attempts before giving up (the initial
+	 * attempt plus `maxAttempts` retries). Defaults to 40 — paired with
+	 * the default 90s budget, the schedule saturates well before the
+	 * wall-clock timeout fires. Lower to fail-fast against a broken
+	 * faucet.
+	 */
+	maxAttempts?: number;
+	/**
+	 * Initial delay between retries, in milliseconds. Subsequent delays
+	 * grow by a fixed 1.5x factor (exponential backoff). Defaults to
+	 * 500ms.
+	 */
+	initialDelayMs?: number;
 }): Effect.Effect<void, FaucetError> =>
 	Effect.gen(function* () {
+		const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+		const maxAttempts = opts.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
+		const initialDelayMs = opts.initialDelayMs ?? DEFAULT_INITIAL_DELAY_MS;
 		// `faucetUrl` is the BASE (e.g. `http://localhost:9123`). The v2
 		// gas path is appended by `requestFundsOnce` — matches v3's
 		// `accounts.ts:440` convention so callers (and any externally
@@ -177,9 +211,9 @@ export const requestFunds = (opts: {
 		);
 
 		yield* wrapped.pipe(
-			Effect.retry(faucetRetrySchedule),
+			Effect.retry(makeFaucetRetrySchedule(initialDelayMs, maxAttempts)),
 			Effect.timeoutOrElse({
-				duration: '90 seconds',
+				duration: `${timeoutMs} millis`,
 				orElse: () =>
 					Effect.gen(function* () {
 						const n = yield* Ref.get(attempts);
@@ -189,7 +223,7 @@ export const requestFunds = (opts: {
 								url: opts.faucetUrl,
 								address: opts.address,
 								message:
-									`faucet did not accept request within 90s ` +
+									`faucet did not accept request within ${timeoutMs}ms ` +
 									`(${n} attempts; last error: ${last?.message ?? 'unknown'})`,
 								...(last?.stderr ? { stderr: last.stderr } : {}),
 								...(last?.exitCode !== undefined ? { exitCode: last.exitCode } : {}),

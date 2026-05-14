@@ -16,7 +16,7 @@
 
 import { Cause, Effect, Exit, Option } from 'effect';
 import { afterEach, beforeEach, describe, expect, it } from '@effect/vitest';
-import { FaucetError, requestFundsOnce } from './faucet.js';
+import { FaucetError, requestFunds, requestFundsOnce } from './faucet.js';
 
 // Track the original fetch so each test can restore it cleanly even
 // when an assertion throws partway through.
@@ -129,6 +129,82 @@ describe('requestFundsOnce', () => {
 			const err = extractFaucetError(exit);
 			expect(err).toBeInstanceOf(FaucetError);
 			expect(err?.message).toContain('503');
+		}),
+	);
+});
+
+// `requestFunds` adds retry + wall-clock budget around `requestFundsOnce`.
+// Today's defaults (90s, 40 attempts) are reproduced exactly when the new
+// `timeoutMs` / `maxAttempts` / `initialDelayMs` opts are unset — these
+// tests cover the override path so a CI config aimed at a broken faucet
+// can fail in seconds instead of the 90s × N-accounts wall-clock.
+//
+// These tests use `it.live` (real clock) rather than `it.effect` because
+// the retry schedule sleeps between attempts; `it.effect`'s TestClock
+// would freeze on the first `Schedule.exponential` delay. The custom
+// `initialDelayMs`/`timeoutMs` keep the wall-clock cost <1s.
+describe('requestFunds — configurable retry budget', () => {
+	it.live(
+		'maxAttempts override bounds the retry schedule (fail-fast against a broken faucet)',
+		() =>
+			// With a tiny `maxAttempts` and `initialDelayMs`, a perpetually
+			// failing fetch should surface a FaucetError quickly rather than
+			// hammering the default 40-attempt schedule. The wall-clock
+			// timeout is held well above the schedule's max delay so the
+			// failure path under test is "schedule exhausted", not "wall
+			// clock fired".
+			Effect.gen(function* () {
+				let calls = 0;
+				installFetch(
+					(async () => {
+						calls += 1;
+						throw new Error('ECONNREFUSED 127.0.0.1:9123');
+					}) as typeof fetch,
+				);
+				const started = Date.now();
+				const exit = yield* requestFunds({
+					...OPTS,
+					maxAttempts: 2,
+					initialDelayMs: 1,
+					timeoutMs: 4_000,
+				}).pipe(Effect.exit);
+				const elapsed = Date.now() - started;
+				expect(Exit.isFailure(exit)).toBe(true);
+				// Hard upper bound — with maxAttempts=2 and initialDelay=1ms,
+				// the schedule completes near-instantly. If a future refactor
+				// silently ignored `maxAttempts`, the default 40-attempt
+				// schedule would push elapsed well past this bound.
+				expect(elapsed).toBeLessThan(2_000);
+				// Schedule.recurs(N) = initial attempt + N retries.
+				expect(calls).toBeGreaterThanOrEqual(2);
+				expect(calls).toBeLessThanOrEqual(3);
+			}),
+	);
+
+	it.live('timeoutMs override surfaces in the wall-clock failure message', () =>
+		// Force the wall-clock branch by spacing retries far enough apart
+		// that the custom `timeoutMs` fires before the schedule exhausts.
+		// The error message should reflect the override value, not the
+		// 90s default — that's the user-visible signal that the knob is
+		// wired through.
+		Effect.gen(function* () {
+			installFetch(
+				(async () => {
+					throw new Error('ECONNREFUSED 127.0.0.1:9123');
+				}) as typeof fetch,
+			);
+			const exit = yield* requestFunds({
+				...OPTS,
+				timeoutMs: 100,
+				// Large attempt budget + large initial delay so the
+				// schedule can't exhaust before the wall-clock fires.
+				maxAttempts: 1000,
+				initialDelayMs: 200,
+			}).pipe(Effect.exit);
+			expect(Exit.isFailure(exit)).toBe(true);
+			const err = extractFaucetError(exit);
+			expect(err).toBeInstanceOf(FaucetError);
+			expect(err?.message).toContain('100ms');
 		}),
 	);
 });
