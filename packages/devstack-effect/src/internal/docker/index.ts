@@ -57,6 +57,8 @@ export {
 	renderFileProvider,
 	writeFileProvider,
 	removeFileProvider,
+	getTraefikRouterIp,
+	listRegisteredHostnames,
 	type RouterLabel,
 	type RouterEntrypoint,
 	type FileProviderEntry,

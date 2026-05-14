@@ -157,6 +157,12 @@ export const deployContracts = (args: {
 			env,
 			mounts: [{ host: outputDir, container: '/opt/walrus/outputs' }],
 			args: ['/bin/bash', '-c', '/opt/walrus/scripts/deploy-walrus.sh'],
+			// `WALRUS_NETWORK` carries the routed sui rpc/faucet URLs
+			// (`http://sui.<app>.localhost:9000`); RFC 6761 `.localhost`
+			// resolution only works on the host OS, so the deploy
+			// container needs explicit `/etc/hosts` entries pointing the
+			// routed names at traefik.
+			routerAddHosts: true,
 		}).pipe(
 			Effect.catchTag('DockerError', (cause) =>
 				Effect.fail(
