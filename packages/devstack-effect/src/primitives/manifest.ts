@@ -2,6 +2,7 @@ import { Effect, Schedule } from 'effect';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { makeTag } from '../tag.js';
+import { Identity } from '../internal/identity.js';
 import {
 	AccountRegistry,
 	CoinRegistry,
@@ -88,7 +89,7 @@ export const manifest = <const Name extends string = 'manifest', E = never, R = 
 	options: ManifestOptions<Name, E, R> = {},
 ) => {
 	const name = (options.name ?? 'manifest') as Name;
-	const outputPath = options.output ?? '.devstack/manifest.json';
+	const explicitOutput = options.output;
 	return makeTag(
 		name,
 		Effect.gen(function* () {
@@ -96,6 +97,18 @@ export const manifest = <const Name extends string = 'manifest', E = never, R = 
 			const eps = yield* EndpointRegistry;
 			const accts = yield* AccountRegistry;
 			const coins = yield* CoinRegistry;
+			// Stack-scoped path: `.devstack/stacks/<stack>/manifest.json`
+			// when running on a non-main stack, with the legacy
+			// `.devstack/manifest.json` byte-identical for the default
+			// `<main>` stack so warm-restart / playwright readers keep
+			// working unchanged. The caller's explicit `output` always
+			// wins. Closes #28 (manifest path not stack-scoped).
+			const identity = yield* Identity;
+			const outputPath =
+				explicitOutput ??
+				(identity.stack === 'main'
+					? '.devstack/manifest.json'
+					: `.devstack/stacks/${identity.stack}/manifest.json`);
 
 			// Resolve `extras` at build time so any failure surfaces before
 			// the rest of the stack acquires. The runtime discriminator
@@ -234,7 +247,12 @@ export const manifest = <const Name extends string = 'manifest', E = never, R = 
 		{
 			kind: 'action',
 			displayTitle: 'manifest',
-			display: () => ({ title: 'manifest', primary: outputPath }),
+			// The on-disk path is resolved inside the build body (it
+			// depends on `Identity.stack`). For the TUI's pre-build
+			// display we fall back to the explicit `output` if the
+			// caller set one, otherwise the legacy default — close
+			// enough; the row gets re-rendered once the body settles.
+			display: () => ({ title: 'manifest', primary: explicitOutput ?? '.devstack/manifest.json' }),
 		},
 	);
 };

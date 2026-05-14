@@ -449,6 +449,10 @@ describe('defineDevstack — CI fast-fail on first-cycle build failure', () => {
 		// process this is usually false (piped to the runner), but force `plain`
 		// explicitly anyway so the test doesn't accidentally pick `tui` if it
 		// runs in an interactive terminal.
+		// Skip the shared-traefik-router boot — these tests don't go
+		// through docker and we'd otherwise pay the 10s `ensureRouter`
+		// docker-shell-out timeout per test.
+		process.env.DEVSTACK_NO_ROUTER = '1';
 		stateDir = mkdtempSync(join(tmpdir(), 'devstack-ci-fastfail-'));
 	};
 

@@ -28,6 +28,7 @@
 import { existsSync } from 'node:fs';
 import { Console, Effect, Option } from 'effect';
 import { Argument, Command, Flag } from 'effect/unstable/cli';
+import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { render } from 'ink';
 import React from 'react';
 import {
@@ -39,6 +40,7 @@ import {
 	totalsFor,
 	type InventoryRow,
 } from '../../internal/docker/inventory.js';
+import { ROUTER_CONTAINER, ROUTER_NETWORK } from '../../internal/docker/router.js';
 import { registry } from '../../internal/registry.js';
 import { pruneStack, removeLabelledImagesNotInUse, type PruneStackResult } from './_prune-stack.js';
 import { PruneApp } from './_prune-ui.js';
@@ -112,6 +114,13 @@ const appFilterFlag = Flag.string('app').pipe(
 
 const dryRunFlag = Flag.boolean('dry-run').pipe(
 	Flag.withDescription('Print what would happen without removing anything'),
+	Flag.withDefault(false),
+);
+
+const includeRouterFlag = Flag.boolean('include-router').pipe(
+	Flag.withDescription(
+		'Also stop + remove the shared Traefik router container and its network (devstack-traefik / devstack-router)',
+	),
 	Flag.withDefault(false),
 );
 
@@ -252,6 +261,7 @@ interface BulkModeArgs {
 	readonly keepSnapshots: boolean;
 	readonly images: boolean;
 	readonly includeImages: boolean;
+	readonly includeRouter: boolean;
 	readonly dryRun: boolean;
 	readonly yes: boolean;
 }
@@ -286,6 +296,37 @@ const runBulkMode = (input: {
 			dryRun: input.args.dryRun,
 		});
 		yield* maybePruneImages(input.args.includeImages, input.args.dryRun);
+		yield* maybePruneRouter(input.args.includeRouter, input.args.dryRun);
+	});
+
+// `--include-router` post-pass. Removes the cross-stack singleton
+// traefik container + its shared network. Best-effort throughout —
+// docker errors don't block other prune steps.
+const maybePruneRouter = (enabled: boolean, dryRun: boolean) =>
+	Effect.gen(function* () {
+		if (!enabled) return;
+		if (dryRun) {
+			yield* Console.log(
+				`would also remove the shared traefik router (${ROUTER_CONTAINER}) and its network (${ROUTER_NETWORK})`,
+			);
+			return;
+		}
+		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+		const rmContainer = yield* spawner
+			.exitCode(ChildProcess.make('docker', ['rm', '-f', ROUTER_CONTAINER]))
+			.pipe(
+				Effect.map(() => true),
+				Effect.catch(() => Effect.succeed(false)),
+			);
+		const rmNetwork = yield* spawner
+			.exitCode(ChildProcess.make('docker', ['network', 'rm', ROUTER_NETWORK]))
+			.pipe(
+				Effect.map(() => true),
+				Effect.catch(() => Effect.succeed(false)),
+			);
+		yield* Console.log(
+			`removed router: container=${rmContainer ? 'yes' : 'no'}, network=${rmNetwork ? 'yes' : 'no'}`,
+		);
 	});
 
 // `--include-images` post-pass. Distinct from `--images` (which is
@@ -347,6 +388,7 @@ export const pruneCommand = Command.make(
 		abandoned: abandonedAliasFlag,
 		appFilter: appFilterFlag,
 		dryRun: dryRunFlag,
+		includeRouter: includeRouterFlag,
 	},
 	(args) =>
 		Effect.gen(function* () {
@@ -414,6 +456,7 @@ export const pruneCommand = Command.make(
 				});
 				yield* Console.log(renderPruneResult(mode.app, mode.stack, result));
 				yield* maybePruneImages(args.includeImages, args.dryRun);
+				yield* maybePruneRouter(args.includeRouter, args.dryRun);
 				return;
 			}
 
