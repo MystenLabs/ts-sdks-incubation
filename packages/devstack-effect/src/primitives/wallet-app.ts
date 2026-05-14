@@ -80,9 +80,30 @@ export const walletApp = <const Name extends string = 'wallet-app'>(
 			// Default to loopback so signing endpoints aren't exposed to other devices
 			// on the LAN (e.g. a coffee-shop network). Override via `bindAddress` for
 			// devcontainers / WSL where the browser lives on a different interface.
-			const bindAddress = options.bindAddress ?? '127.0.0.1';
+			// Default to 0.0.0.0 so traefik (running inside a docker
+			// container) can dial the wallet-app via `host.docker.internal:<port>`
+			// from the devstack-router network. Without this the file-
+			// provider YAML's upstream URL is unreachable and the
+			// router 502s on every signing request.
+			const bindAddress = options.bindAddress ?? '0.0.0.0';
 			const token = randomBytesHex(16);
-			const allowedOrigins = options.allowedOrigins ?? [];
+			// Auto-derive the routed dev-server origin from Identity so
+			// non-`main` stacks don't have to enumerate
+			// `test.dev.<app>.localhost` in user config. Each routed
+			// hostname for `dev` AND the bare-localhost form (single-
+			// stack development) is allowed; user-supplied extras are
+			// merged on top.
+			const identity = yield* Identity;
+			const devHostname = routerHostname(identity, 'dev');
+			const devEntrypoint = routerEntrypoint('vite');
+			const defaultAllowedOrigins: ReadonlyArray<string> = [
+				devEntrypoint !== undefined ? `http://${devHostname}:${devEntrypoint.port}` : '',
+				`http://localhost:${devEntrypoint?.port ?? 5175}`,
+			].filter((s) => s.length > 0);
+			const allowedOrigins: ReadonlyArray<string> = [
+				...defaultAllowedOrigins,
+				...(options.allowedOrigins ?? []),
+			];
 
 			yield* setPhase('starting http server');
 			const server = yield* Effect.tryPromise({
@@ -119,8 +140,8 @@ export const walletApp = <const Name extends string = 'wallet-app'>(
 			// Browsers resolve `*.localhost` to 127.0.0.1, hit the
 			// router on the well-known wallet entrypoint port (5180),
 			// and the router forwards by `Host:` header to this
-			// process.
-			const identity = yield* Identity;
+			// process. `identity` was resolved above for the auto-
+			// `allowedOrigins` derivation; reuse the same handle here.
 			const walletHostname = routerHostname(identity, 'wallet');
 			const walletEntrypointInfo = routerEntrypoint('wallet');
 			if (walletEntrypointInfo === undefined) {

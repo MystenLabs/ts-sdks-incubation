@@ -230,7 +230,10 @@ const m = manifest({
 const dev = hostProcess({
 	name: 'frontend.dev-server',
 	command: 'pnpm',
-	args: ['exec', 'vite', '--port', '5174', '--strictPort'],
+	// `--host 0.0.0.0` so traefik (in container) can reach vite via
+	// `host.docker.internal:5174`. Vite default 127.0.0.1 is loopback-
+	// only and unreachable from container-land.
+	args: ['exec', 'vite', '--host', '0.0.0.0', '--port', '5174', '--strictPort'],
 	readyProbe: { kind: 'http', url: 'http://localhost:5174', timeoutMs: 60_000 },
 	endpoint: { name: 'dev-server', kind: 'dev-server' },
 	traefik: { service: 'dev', entrypoint: 'vite', localPort: 5174 },

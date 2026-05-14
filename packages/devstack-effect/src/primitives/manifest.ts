@@ -160,6 +160,34 @@ export const manifest = <const Name extends string = 'manifest', E = never, R = 
 				};
 				const body = JSON.stringify(data, jsonBigintReplacer, 2);
 
+				// We write to two paths on non-main stacks:
+				//   - The canonical stack-scoped path (outputPath, e.g.
+				//     `.devstack/stacks/test/manifest.json`).
+				//   - The legacy flat path `.devstack/manifest.json`
+				//     too. Reason: examples' `src/generated/manifest.ts`
+				//     hardcodes `import '../../.devstack/manifest.json'`
+				//     because vite resolves imports at build time
+				//     (can't dynamically pick by stack). Without the
+				//     legacy write, vite fails with `failed to resolve
+				//     import "../../.devstack/manifest.json"` and the
+				//     dev-server can't load. Limitation: two concurrent
+				//     stacks racing on the same example would overwrite
+				//     each other's flat manifest; the stack-scoped path
+				//     stays authoritative for that case (and a future
+				//     dynamic-import strategy in the example would let
+				//     each stack pick its own).
+				// Resolve the legacy `.devstack/manifest.json` path for
+				// non-main stacks. outputPath is `<root>/.devstack/stacks/<stack>/manifest.json`;
+				// strip the trailing two segments and the stack dir to
+				// reach `<root>/.devstack/manifest.json`.
+				const isMainStack = outputPath.endsWith(path.join('.devstack', 'manifest.json'));
+				const legacyPath = isMainStack
+					? undefined
+					: path.join(
+							path.dirname(path.dirname(path.dirname(outputPath))),
+							'manifest.json',
+						);
+
 				const wrote = yield* Effect.tryPromise({
 					try: async (): Promise<boolean> => {
 						// Idempotent-write: read what's already on disk; skip
@@ -172,10 +200,26 @@ export const manifest = <const Name extends string = 'manifest', E = never, R = 
 						} catch {
 							// file missing — fall through to write
 						}
-						if (existing === body) return false;
-						await fs.mkdir(path.dirname(outputPath), { recursive: true });
-						await fs.writeFile(outputPath, body, 'utf-8');
-						return true;
+						let didWrite = false;
+						if (existing !== body) {
+							await fs.mkdir(path.dirname(outputPath), { recursive: true });
+							await fs.writeFile(outputPath, body, 'utf-8');
+							didWrite = true;
+						}
+						if (legacyPath !== undefined) {
+							let legacyExisting: string | undefined;
+							try {
+								legacyExisting = await fs.readFile(legacyPath, 'utf-8');
+							} catch {
+								// missing — fall through
+							}
+							if (legacyExisting !== body) {
+								await fs.mkdir(path.dirname(legacyPath), { recursive: true });
+								await fs.writeFile(legacyPath, body, 'utf-8');
+								didWrite = true;
+							}
+						}
+						return didWrite;
 					},
 					catch: (cause) =>
 						new ManifestError({
