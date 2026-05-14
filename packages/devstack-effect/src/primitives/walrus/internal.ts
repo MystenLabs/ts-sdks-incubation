@@ -33,7 +33,6 @@ import * as Docker from '../../internal/docker.js';
 import { EngineHandle } from '../../internal/engine.js';
 import { rewriteToHostGateway } from '../../internal/host-gateway.js';
 import { Identity } from '../../internal/identity.js';
-import { PortAllocator } from '../../internal/port-allocator.js';
 import { EndpointRegistry, PackageRegistry } from '../../internal/registries.js';
 import { StateStore } from '../../internal/state-store.js';
 import { type PluginTag } from '../../tag.js';
@@ -43,7 +42,6 @@ import { Sui } from '../sui.js';
 import { buildWrapperImage } from './image.js';
 import { deployContracts, resolveExchange } from './deploy.js';
 import { startStorageNodes } from './nodes.js';
-import { startProxy } from './proxy.js';
 
 // -----------------------------------------------------------------------------
 // Defaults
@@ -75,13 +73,12 @@ export const DEFAULT_SUI_VERSION = 'devnet-v1.71.0';
 export const DEFAULT_RUST_TOOLCHAIN = '1.93';
 
 export const DEFAULT_NODE_API_PORT = 9185;
-// Default proxy host port. Pinned to the same value the storage nodes
-// register on chain as their `public_port` (`containerApiPort`, 9185 by
-// default) so SDK clients keyed on `Host: walrus-node-N.localhost:9185`
-// land on the proxy. Browsers resolve `*.localhost` to 127.0.0.1, so
-// the proxy has to listen on 127.0.0.1:9185 for SDK blob uploads to
-// reach it.
-export const DEFAULT_PROXY_PORT = 9185;
+// Well-known port the Traefik router binds for the `walrus`
+// entrypoint. Storage nodes register this on chain as their
+// `public_port`, and SDK clients keyed on
+// `Host: walrus-node-N.<app>.localhost:9185` land on the router,
+// which forwards by Host header to the right per-stack backend.
+export const ROUTER_WALRUS_PORT = 9185;
 export const DEFAULT_READY_TIMEOUT_MS = 60_000;
 export const DEFAULT_EPOCH_DURATION = '24h';
 export const DEFAULT_SHARDS = 100;
@@ -129,7 +126,39 @@ export const subnetForStack = (
 // the underlying chain (`--force-regenesis`) naturally misses the
 // cache and re-runs the deploy one-shot against the fresh chain
 // state instead of pinning to stale package ids.
-const STATE_KEY_DEPLOY_PREFIX = 'walrus/deploy-output/v1';
+//
+// The v3 prefix bump corresponds to the router migration: a v2-shaped
+// cached deploy advertises non-stack-scoped `walrus-node-N.localhost`
+// hostnames as each node's `network_address` on chain, but the
+// post-router primitive registers stack-scoped
+// `walrus-node-N.<app>.localhost` (main) / `<stack>.walrus-node-N.<app>.localhost`
+// (non-main). A v2 cache would mis-route the SDK on the next boot —
+// the v3 prefix invalidates those stale caches automatically.
+const STATE_KEY_DEPLOY_PREFIX = 'walrus/deploy-output/v3';
+
+// StateStore key prefix for the cached seedWal swap results. Keyed by
+// `(chainId, exchange.objectId, account.address)` so:
+//   - regenesis flips `chainId` ⇒ miss ⇒ fresh swap
+//   - a different exchange object ⇒ miss
+//   - per-account isolation so adding a new seed account doesn't
+//     trample the others' cache
+// The cached value records the swap tx digest for debugging; the swap
+// is verified via a balance probe on cache hit (see `swapSuiForWal`).
+const STATE_KEY_SEED_WAL_PREFIX = 'walrus/seed-wal/v1';
+
+// Minimum WAL balance (in FROST, WAL's smallest unit) we accept as
+// proof the cached swap actually settled. Set well below
+// `DEFAULT_SEED_WAL_PAYMENT_MIST` (0.5 SUI of WAL at 1:1 exchange rate)
+// with slop for the gas-coin split. The exact exchange rate is
+// configurable in `wal_exchange`, so this is a heuristic lower bound,
+// not an invariant — undershoot triggers a re-swap which is harmless.
+const SEED_WAL_BALANCE_FLOOR_FROST = 400_000_000n;
+
+interface CachedSeedWalSwap {
+	readonly digest: string;
+	readonly paymentMist: string;
+	readonly seededAt: string;
+}
 
 // -----------------------------------------------------------------------------
 // Phase shapes — internal
@@ -165,9 +194,16 @@ export interface ExchangeState {
 
 export interface NodeState {
 	readonly index: number;
-	readonly hostPort: number;
 	readonly containerIp: string;
 	readonly rpcUrl: string;
+	/**
+	 * Stack-scoped router hostname this node registers on chain
+	 * (`walrus-node-N.<app>.localhost` for main, `<stack>.walrus-node-N.<app>.localhost`
+	 * for non-main). Folded into `rpcUrl` already; surfaced here too
+	 * so the orchestrator can derive the router-fronted aggregator
+	 * URL without re-parsing the URL string.
+	 */
+	readonly publicHostname: string;
 }
 
 // Output of the local-cluster acquire body. The four narrow interface
@@ -202,7 +238,6 @@ export const acquireLocalCluster = (args: {
 	readonly shards: number;
 	readonly epochDuration: string;
 	readonly readyTimeoutMs: number;
-	readonly preferredProxyPort: number;
 	readonly seedPaymentMist: bigint;
 	readonly walrusVersion: string;
 	readonly suiVersion: string;
@@ -219,7 +254,6 @@ export const acquireLocalCluster = (args: {
 		//    client for register, exchange-discovery, seed-accounts.
 		// -------------------------------------------------------------
 		const sui = yield* Sui;
-		const ports = yield* PortAllocator;
 		const state = yield* StateStore;
 		const identity = yield* Identity;
 		const { subnet: walrusSubnet, prefix: walrusSubnetPrefix } = subnetForStack(
@@ -306,9 +340,11 @@ export const acquireLocalCluster = (args: {
 		});
 
 		// -------------------------------------------------------------
-		// 2. Deploy contracts. Cache key folds in `sui.chainId` so a
-		//    regenesis of the underlying chain naturally misses the
-		//    cache and re-runs deploy against the fresh chain state.
+		// 2. Deploy contracts. Cache key folds in `sui.chainId` only —
+		//    no per-stack proxy port any more, since the Traefik router
+		//    binds 9185 once on the host and routes by `Host:` header
+		//    to the per-stack backend. A regenesis still flips
+		//    `chainId` and misses the cache.
 		// -------------------------------------------------------------
 		const deployStateKey = `${STATE_KEY_DEPLOY_PREFIX}/${sui.chainId}`;
 		const cached = yield* state.get<CachedDeployState>(deployStateKey);
@@ -343,6 +379,8 @@ export const acquireLocalCluster = (args: {
 				shards: args.shards,
 				epochDuration: args.epochDuration,
 				containerApiPort: args.containerApiPort,
+				routerEntrypointPort: ROUTER_WALRUS_PORT,
+				identity,
 				outputDir,
 				subnetPrefix: walrusSubnetPrefix,
 			});
@@ -395,11 +433,12 @@ export const acquireLocalCluster = (args: {
 			image,
 			nodeCount: args.nodeCount,
 			containerApiPort: args.containerApiPort,
+			routerEntrypointPort: ROUTER_WALRUS_PORT,
 			readyTimeoutMs: args.readyTimeoutMs,
 			deployDir: deploy.outputDir,
 			network: networkName,
 			subnetPrefix: walrusSubnetPrefix,
-			portAllocator: ports,
+			identity,
 			faucetUrl: nodeFaucetUrl,
 		});
 
@@ -414,34 +453,25 @@ export const acquireLocalCluster = (args: {
 		});
 
 		// -------------------------------------------------------------
-		// 6. Proxy — single nginx in front of the committee.
+		// 6. Aggregator/publisher URL — the Traefik router replaces the
+		//    per-stack nginx proxy from earlier revisions. Each storage
+		//    node carries its own traefik label set (see `nodes.ts`),
+		//    so vhost-routing happens at the global router instead of
+		//    a sidecar nginx. We pick node-0's router-fronted URL as
+		//    the representative aggregator/publisher endpoint; the SDK
+		//    can fan out across all `nodes[].rpcUrl` for read paths,
+		//    and any node accepts publisher writes. No second host
+		//    port allocation.
 		// -------------------------------------------------------------
-		yield* args.pushPhase('starting proxy');
-		const proxyPort = yield* ports.allocate(args.preferredProxyPort).pipe(
-			Effect.mapError(
-				(cause) =>
-					new WalrusError({
-						phase: 'proxy',
-						message: `walrus.proxy: could not allocate host port near ${args.preferredProxyPort}: ${cause.message}`,
-						cause,
-					}),
-			),
-		);
-		// Release on scope teardown so the allocator's held-set doesn't
-		// grow monotonically across primitive restarts — otherwise
-		// subsequent runs probe from `preferred+N` rather than reusing
-		// the slot this cycle just freed. Registered immediately after
-		// allocate so a failure later in the build path still triggers
-		// release on scope close.
-		yield* Effect.addFinalizer(() => ports.release(proxyPort).pipe(Effect.ignore));
-		const proxyUrl = yield* startProxy({
-			name: args.name,
-			nodes,
-			proxyPort,
-			containerApiPort: args.containerApiPort,
-			network: networkName,
-			portAllocator: ports,
-		});
+		if (nodes.length === 0) {
+			return yield* Effect.fail(
+				new WalrusError({
+					phase: 'proxy',
+					message: 'walrus: at least one storage node is required',
+				}),
+			);
+		}
+		const proxyUrl = nodes[0]!.rpcUrl;
 
 		// -------------------------------------------------------------
 		// 7. Seed accounts — swap SUI for WAL on each declared signer.
@@ -451,6 +481,7 @@ export const acquireLocalCluster = (args: {
 				accounts: seedAccounts,
 				exchange,
 				paymentMist: args.seedPaymentMist,
+				walrusPackageId: deploy.walrusPackageId,
 			});
 		}
 
@@ -574,22 +605,134 @@ const registerCommittee = (args: {
 
 // Kept co-located with the orchestrator + `makeAdminShape` because the
 // swap is reused on the ad-hoc `WalrusAdmin.seedWal` path too.
+//
+// Resume idempotency: every supervisor cycle previously re-ran the swap
+// → each seed account accumulated +0.5 WAL per restart. We cache the
+// swap result keyed by `(chainId, exchange.objectId, account.address)`
+// and skip on a cache hit whose recorded balance still resolves above
+// `SEED_WAL_BALANCE_FLOOR_FROST`. Cache writes are best-effort — a
+// state-store write failure must not fail the primitive (the swap has
+// already settled on chain).
 const seedWalForAccounts = (args: {
 	accounts: ReadonlyArray<Account>;
 	exchange: ExchangeState;
 	paymentMist: bigint;
-}): Effect.Effect<void, WalrusError> =>
+	walrusPackageId: string;
+}): Effect.Effect<void, WalrusError, Sui | StateStore> =>
 	Effect.fn('walrus.seed-accounts')(function* () {
 		for (const account of args.accounts) {
-			yield* swapSuiForWal(account, args.exchange, args.paymentMist);
+			yield* swapSuiForWalCached({
+				account,
+				exchange: args.exchange,
+				paymentMist: args.paymentMist,
+				walrusPackageId: args.walrusPackageId,
+			});
 		}
 	})();
+
+const swapSuiForWalCached = (args: {
+	account: Account;
+	exchange: ExchangeState;
+	paymentMist: bigint;
+	walrusPackageId: string;
+}): Effect.Effect<void, WalrusError, Sui | StateStore> =>
+	Effect.gen(function* () {
+		const sui = yield* Sui;
+		const state = yield* StateStore;
+		const cacheKey = `${STATE_KEY_SEED_WAL_PREFIX}/${sui.chainId}/${args.exchange.objectId}/${args.account.address}`;
+		const cached = yield* state.get<CachedSeedWalSwap>(cacheKey);
+
+		if (Option.isSome(cached)) {
+			// Verify the recorded swap still shows up on chain as WAL
+			// balance. A wiped volume or external balance drain
+			// invalidates the cache; otherwise we trust the prior swap.
+			const walType = args.exchange.walType;
+			const ok = yield* probeWalBalance({
+				address: args.account.address,
+				walType,
+			}).pipe(Effect.catch(() => Effect.succeed(0n)));
+			if (ok >= SEED_WAL_BALANCE_FLOOR_FROST) {
+				yield* Effect.annotateCurrentSpan({
+					'walrus.seed.cache': 'hit',
+					'walrus.seed.account': args.account.name,
+					'walrus.seed.address': args.account.address,
+					'walrus.seed.balance': ok.toString(),
+				});
+				return;
+			}
+			yield* Effect.annotateCurrentSpan({
+				'walrus.seed.cache': 'stale',
+				'walrus.seed.account': args.account.name,
+				'walrus.seed.balance': ok.toString(),
+			});
+			yield* state.remove(cacheKey).pipe(Effect.catch(() => Effect.void));
+		} else {
+			yield* Effect.annotateCurrentSpan({
+				'walrus.seed.cache': 'miss',
+				'walrus.seed.account': args.account.name,
+			});
+		}
+
+		const digest = yield* swapSuiForWal(args.account, args.exchange, args.paymentMist);
+		const toCache: CachedSeedWalSwap = {
+			digest,
+			paymentMist: args.paymentMist.toString(),
+			seededAt: new Date().toISOString(),
+		};
+		// Best-effort cache write — the swap has settled on chain
+		// regardless. Falling back to re-swap on the next cycle is a
+		// minor inefficiency, not a correctness bug. Catches any
+		// state-store IO defect.
+		yield* state.put(cacheKey, toCache).pipe(Effect.catch(() => Effect.void));
+		void args.walrusPackageId;
+	});
+
+// Read a single account's WAL balance via `SuiJsonRpcClient.getBalance`.
+// Returns 0 on any error so the cache-verify path falls through to a
+// re-swap cleanly (better to over-seed than under-seed). The cast to
+// `{ getBalance }` keeps this resilient to test mocks that satisfy
+// `SuiShape` with a minimal `client` (`.core` only) — those land in
+// the catch branch and we re-seed, which is the safer default.
+const probeWalBalance = (args: {
+	address: string;
+	walType: string;
+}): Effect.Effect<bigint, WalrusError, Sui> =>
+	Effect.gen(function* () {
+		const sui = yield* Sui;
+		const client = sui.client as unknown as {
+			readonly getBalance?: (a: {
+				owner: string;
+				coinType: string;
+			}) => Promise<{ totalBalance: string }>;
+		};
+		if (typeof client.getBalance !== 'function') {
+			return 0n;
+		}
+		const raw = yield* Effect.tryPromise({
+			try: () =>
+				client.getBalance!({
+					owner: args.address,
+					coinType: args.walType,
+				}),
+			catch: (cause) =>
+				new WalrusError({
+					phase: 'seed',
+					message: `walrus.seed: balance probe failed for ${args.address}`,
+					cause,
+				}),
+		});
+		try {
+			return BigInt(raw.totalBalance);
+		} catch {
+			return 0n;
+		}
+	});
 
 const swapSuiForWal = (
 	account: Account,
 	exchange: ExchangeState,
 	paymentMist: bigint,
-): Effect.Effect<void, WalrusError> =>
+): Effect.Effect<string, WalrusError> =>
 	Effect.gen(function* () {
 		yield* Effect.annotateCurrentSpan({
 			'walrus.seed.account': account.name,
@@ -611,7 +754,7 @@ const swapSuiForWal = (
 		});
 		tx.transferObjects([walCoin], tx.pure.address(account.address));
 
-		yield* account.signAndExecute(tx).pipe(
+		const result = yield* account.signAndExecute(tx).pipe(
 			Effect.mapError(
 				(cause) =>
 					new WalrusError({
@@ -621,6 +764,11 @@ const swapSuiForWal = (
 					}),
 			),
 		);
+		const digest =
+			typeof (result as { digest?: unknown }).digest === 'string'
+				? (result as { digest: string }).digest
+				: '';
+		return digest;
 	}).pipe(Effect.withSpan(`walrus.seed-accounts.${account.name}`));
 
 // -----------------------------------------------------------------------------

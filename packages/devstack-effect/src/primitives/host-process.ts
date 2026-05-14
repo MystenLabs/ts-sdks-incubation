@@ -1,5 +1,12 @@
 import { Effect, Stream } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
+import { Identity } from '../internal/identity.js';
+import {
+	routerEntrypoint,
+	removeFileProvider,
+	writeFileProvider,
+} from '../internal/docker/router.js';
+import { routerHostname, routerId } from '../internal/router-hostname.js';
 import { inheritedHostEnv } from '../internal/safe-env.js';
 import { stringifyCause } from '../internal/stringify-cause.js';
 import { makeTag, setPhase, type PluginTag } from '../tag.js';
@@ -26,6 +33,28 @@ export interface HostProcessHandle {
 	readonly url: string | undefined;
 }
 
+export interface HostProcessTraefikConfig {
+	/**
+	 * Logical service name folded into the stack-scoped hostname
+	 * (e.g. `'dev'` → `dev.<app>.localhost` on main, or
+	 * `<stack>.dev.<app>.localhost` on non-main). Also used to derive
+	 * the unique router id `<app>-<stack>-<service>`.
+	 */
+	readonly service: string;
+	/**
+	 * Router entrypoint name (one of `ROUTER_ENTRYPOINTS`'s `name`
+	 * values, e.g. `'vite'`, `'wallet'`). Drives the well-known host
+	 * port traefik binds for the public URL.
+	 */
+	readonly entrypoint: string;
+	/**
+	 * Local 127.0.0.1 port the spawned process binds. Traefik
+	 * forwards to `http://host.docker.internal:<localPort>` and the
+	 * SDK-facing URL surfaces as `http://<hostname>:<entrypointPort>`.
+	 */
+	readonly localPort: number;
+}
+
 export interface HostProcessOptions<Name extends string, E, R> {
 	readonly name: Name;
 	readonly command: string;
@@ -37,6 +66,14 @@ export interface HostProcessOptions<Name extends string, E, R> {
 	readonly readyProbe?: ReadyProbe;
 	readonly dependsOn?: ReadonlyArray<PluginTag<any, any, any, any>>;
 	readonly endpoint?: { readonly name: string; readonly kind?: string };
+	/**
+	 * Optional Traefik router exposure. When set, the primitive
+	 * writes a file-provider YAML under `~/.devstack/traefik/dynamic/`
+	 * pointing traefik at the spawned process's local port, and
+	 * surfaces the router-fronted URL as the registered endpoint.
+	 * Cleaned up on scope teardown.
+	 */
+	readonly traefik?: HostProcessTraefikConfig;
 }
 
 export const hostProcess = <const Name extends string, E = never, R = never>(
@@ -107,9 +144,49 @@ export const hostProcess = <const Name extends string, E = never, R = never>(
 				);
 			}
 
-			// 5. Register endpoint if requested. URL only meaningful for
+			// 5. Router exposure (optional). When `options.traefik` is
+			//    set, drop a file-provider YAML under
+			//    `~/.devstack/traefik/dynamic/` pointing traefik at the
+			//    spawned process's local port. The resulting public URL
+			//    is `http://<hostname>:<entrypointPort>`; we use it as
+			//    the registered endpoint URL so the manifest carries the
+			//    SDK-facing surface instead of the (private) local port.
+			let routerUrl: string | undefined;
+			if (options.traefik !== undefined) {
+				const identity = yield* Identity;
+				const hostname = routerHostname(identity, options.traefik.service);
+				const entrypoint = routerEntrypoint(options.traefik.entrypoint);
+				if (entrypoint === undefined) {
+					return yield* Effect.fail(
+						new HostProcessError({
+							command: options.command,
+							message: `hostProcess(${options.name}): router entrypoint '${options.traefik.entrypoint}' not registered`,
+						}),
+					);
+				}
+				const id = routerId(identity, options.traefik.service);
+				yield* writeFileProvider({
+					id,
+					hostname,
+					entrypoint: options.traefik.entrypoint,
+					upstreamUrl: `http://host.docker.internal:${options.traefik.localPort}`,
+				}).pipe(
+					Effect.catchTag('DockerError', (cause) =>
+						Effect.logWarning(
+							`hostProcess(${options.name}): file-provider YAML write failed (continuing on direct port): ${cause.message}`,
+						),
+					),
+				);
+				yield* Effect.addFinalizer(() => removeFileProvider(id));
+				routerUrl = `http://${hostname}:${entrypoint.port}`;
+			}
+
+			// 6. Register endpoint if requested. URL only meaningful for
 			//    HTTP probes — TCP/log don't yield a URL on their own.
-			const url = options.readyProbe?.kind === 'http' ? options.readyProbe.url : undefined;
+			//    Prefer the router-fronted URL when one was derived above.
+			const probeUrl =
+				options.readyProbe?.kind === 'http' ? options.readyProbe.url : undefined;
+			const url = routerUrl ?? probeUrl;
 			if (options.endpoint !== undefined && url !== undefined) {
 				yield* EndpointRegistry.publish({
 					name: options.endpoint.name,

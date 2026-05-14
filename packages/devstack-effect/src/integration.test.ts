@@ -218,7 +218,11 @@ describe('devstack integration smoke', () => {
 
 				const sui = Context.get(ctx, Sui);
 				expect(sui.network).toBe('localnet');
-				expect(sui.rpcUrl).toBe('http://localhost:9000');
+				// Router-fronted hostname URL on the well-known sui-rpc
+				// entrypoint port (9000). The stack name flows through
+				// `routerHostname` — non-main stacks get a `<stack>.`
+				// prefix on the hostname.
+				expect(sui.rpcUrl).toBe('http://integration.sui.devstack-effect.localhost:9000');
 				expect(sui.chainId).toMatch(/^[0-9a-f]+$/);
 
 				// Per-account tag — its `__layer` was folded into the user
@@ -246,8 +250,35 @@ describe('devstack integration smoke', () => {
 				expect(localnetRun).toBeDefined();
 				expect(localnetRun?.args).toContain('--name');
 				expect(localnetRun?.args).toContain(localnetName);
-				expect(localnetRun?.args).toContain('-p');
-				expect(localnetRun?.args.some((a) => a.endsWith(':9000:9000'))).toBe(true);
+				// Sui no longer publishes host ports (rpc/faucet/graphql
+				// reach this container through the shared Traefik
+				// router on the well-known entrypoint ports). The router
+				// labels stamped below are how SDK clients land here.
+				expect(localnetRun?.args.some((a) => a.endsWith(':9000:9000'))).toBe(false);
+				// Stamps the canonical 5-label set per service (rpc /
+				// faucet / graphql), each gated by its stack-scoped
+				// hostname (`integration.<service>.<app>.localhost`).
+				expect(
+					localnetRun?.args.some((a) =>
+						a.startsWith(
+							'traefik.http.routers.devstack-effect-integration-sui-rpc.rule=Host(',
+						),
+					),
+				).toBe(true);
+				expect(
+					localnetRun?.args.some((a) =>
+						a.startsWith(
+							'traefik.http.routers.devstack-effect-integration-sui-faucet.rule=Host(',
+						),
+					),
+				).toBe(true);
+				expect(
+					localnetRun?.args.some((a) =>
+						a.startsWith(
+							'traefik.http.routers.devstack-effect-integration-sui-graphql.rule=Host(',
+						),
+					),
+				).toBe(true);
 				// Image is content-addressed from the vendored `sui-image/`
 				// Dockerfile + entrypoint + SUI_VERSION; the `dockerImage`
 				// runner stamps `devstack-sui.image:<treeHash>-<configHash>`.

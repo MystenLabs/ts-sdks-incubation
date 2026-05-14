@@ -32,7 +32,6 @@ import {
 	acquireLocalCluster,
 	DEFAULT_EPOCH_DURATION,
 	DEFAULT_NODE_API_PORT,
-	DEFAULT_PROXY_PORT,
 	DEFAULT_READY_TIMEOUT_MS,
 	DEFAULT_RUST_TOOLCHAIN,
 	DEFAULT_SEED_WAL_PAYMENT_MIST,
@@ -50,9 +49,13 @@ export interface WalrusLocalClusterOptions<Name extends string = 'walrus'> {
 	readonly name?: Name;
 	readonly nodeCount?: number;
 	readonly seedAccounts?: ReadonlyArray<PluginTag<any, Account, any, any>>;
-	/** Preferred host port for the aggregator/publisher proxy. The actual
-	 *  port is allocated via `PortAllocator` (scans forward if busy).
-	 *  Default 9100. */
+	/**
+	 * @deprecated No longer honored. The shared Traefik router binds
+	 * the walrus entrypoint port (9185) once on the host and routes by
+	 * `Host:` header to each per-stack backend, so there is no per-
+	 * stack proxy port to allocate. Kept on the options shape for
+	 * back-compat; callers can safely drop it.
+	 */
 	readonly proxyPort?: number;
 	/** Pinned walrus release tag. Drives both the `git clone --branch` in
 	 *  the upstream Dockerfile and the matching Move-source fetch.
@@ -81,7 +84,6 @@ export const walrusLocalCluster = <const Name extends string = 'walrus'>(
 	options: WalrusLocalClusterOptions<Name> = {},
 ): StackMember => {
 	const name = (options.name ?? 'walrus') as Name;
-	const preferredProxyPort = options.proxyPort ?? DEFAULT_PROXY_PORT;
 	const nodeCount = options.nodeCount ?? 1;
 	const containerApiPort = options.containerApiPort ?? DEFAULT_NODE_API_PORT;
 	const shards = options.shards ?? DEFAULT_SHARDS;
@@ -177,7 +179,6 @@ export const walrusLocalCluster = <const Name extends string = 'walrus'>(
 			shards,
 			epochDuration,
 			readyTimeoutMs,
-			preferredProxyPort,
 			seedPaymentMist,
 			walrusVersion,
 			suiVersion,

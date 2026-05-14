@@ -27,6 +27,7 @@ import { existsSync } from 'node:fs';
 import { join as joinPath } from 'node:path';
 import { isPidAlive as isPidAliveShared } from '../process-liveness.js';
 import { registry, type RegistryEntry } from '../registry.js';
+import { ROUTER_CONTAINER, ROUTER_NETWORK } from './router.js';
 
 type Spawner = ReturnType<typeof ChildProcessSpawner.make>;
 type Fs = ReturnType<typeof FileSystem.make>;
@@ -811,3 +812,86 @@ export const totalsFor = (rows: ReadonlyArray<InventoryRow>): InventoryTotals =>
 
 export const renderTotals = (t: InventoryTotals): string =>
 	`Total: ${t.apps} app${t.apps === 1 ? '' : 's'}, ${t.stacks} stack${t.stacks === 1 ? '' : 's'}, ${t.containers} container${t.containers === 1 ? '' : 's'}, ${t.networks} network${t.networks === 1 ? '' : 's'}, ${t.volumes} volume${t.volumes === 1 ? '' : 's'}${t.bytes > 0 ? ` (~${formatBytes(t.bytes)})` : ''}, ${t.stateDirs} state ${t.stateDirs === 1 ? 'dir' : 'dirs'}`;
+
+// -----------------------------------------------------------------------------
+// Shared Traefik router inventory — singleton across all (app, stack)
+// buckets. Surfaced as a top-level row in `doctor` / `prune` so users
+// can see whether the cross-stack proxy infrastructure is live and how
+// many active stacks would notice if `--include-router` torched it.
+// -----------------------------------------------------------------------------
+
+export interface RouterInfo {
+	/** Whether the `devstack-traefik` container exists at all (running or not). */
+	readonly present: boolean;
+	/** Whether the container is currently running. */
+	readonly running: boolean;
+	/** Number of currently-running containers (across every (app, stack))
+	 *  that carry `traefik.enable=true` — these would lose external
+	 *  reachability if the router was removed. */
+	readonly activeBackends: number;
+	/** Distinct `devstack.app` values among those active backends. */
+	readonly apps: ReadonlyArray<string>;
+}
+
+export const collectRouterInfo = (): Effect.Effect<
+	RouterInfo,
+	never,
+	ChildProcessSpawner.ChildProcessSpawner
+> =>
+	Effect.gen(function* () {
+		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+		// Probe the singleton router container directly. `docker inspect`
+		// exit-0 means it exists; `.State.Running` distinguishes running
+		// from stopped. Errors collapse to "not present".
+		const inspectCmd = ChildProcess.make('docker', [
+			'inspect',
+			'--format',
+			'{{.State.Running}}',
+			ROUTER_CONTAINER,
+		]);
+		const inspectOut = yield* spawner.string(inspectCmd).pipe(Effect.catch(() => Effect.succeed('')));
+		const trimmed = inspectOut.trim();
+		const present = trimmed.length > 0;
+		const running = trimmed === 'true';
+		// Enumerate every running container with a `traefik.enable=true`
+		// label — those are the backends the router currently points at.
+		// We don't care about stopped containers (they're not currently
+		// using router routing) and we don't care about the router itself
+		// (which carries `devstack.router=true`, not `traefik.enable`).
+		const backendsCmd = ChildProcess.make('docker', [
+			'ps',
+			'--filter',
+			'label=traefik.enable=true',
+			'--format',
+			'{{.Label "devstack.app"}}',
+		]);
+		const backendsOut = yield* spawner
+			.string(backendsCmd)
+			.pipe(Effect.catch(() => Effect.succeed('')));
+		const lines = backendsOut
+			.split('\n')
+			.map((s) => s.trim())
+			.filter((s) => s.length > 0);
+		const apps = new Set<string>();
+		for (const app of lines) {
+			if (app.length > 0) apps.add(app);
+		}
+		return {
+			present,
+			running,
+			activeBackends: lines.length,
+			apps: [...apps].sort() as ReadonlyArray<string>,
+		};
+	}).pipe(Effect.withSpan('inventory.collectRouter'));
+
+export const renderRouterRow = (info: RouterInfo): string => {
+	if (!info.present) {
+		return `  devstack-router  —  not running (network: ${ROUTER_NETWORK})`;
+	}
+	const stateWord = info.running ? 'running' : 'stopped';
+	const usedBy =
+		info.activeBackends === 0
+			? 'no active backends'
+			: `${info.activeBackends} backend${info.activeBackends === 1 ? '' : 's'} across ${info.apps.length} app${info.apps.length === 1 ? '' : 's'}`;
+	return `  ${ROUTER_CONTAINER}  —  ${stateWord}, ${usedBy}`;
+};

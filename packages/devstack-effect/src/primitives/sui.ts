@@ -27,11 +27,12 @@
 import { Effect, Layer, Schedule } from 'effect';
 import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
 import * as Docker from '../internal/docker.js';
+import { routerEntrypoint } from '../internal/docker/router.js';
 import { Sui, type SuiShape } from '../interfaces/sui.js';
 import { stringifyCause } from '../internal/stringify-cause.js';
 import { Identity } from '../internal/identity.js';
-import { PortAllocator } from '../internal/port-allocator.js';
 import { EndpointRegistry } from '../internal/registries.js';
+import { routerHostname, routerId } from '../internal/router-hostname.js';
 import { SuiBuildImage } from '../internal/sui-cli.js';
 import { dockerImage } from '../plugin-author/index.js';
 import { provideTag, setPhase } from '../tag.js';
@@ -54,10 +55,10 @@ export type SuiNetwork = 'localnet' | 'testnet' | 'mainnet';
 // (or the Move package ABIs drift). Mirrors v3's `SUI_DEFAULT_VERSION`.
 const DEFAULT_SUI_VERSION = 'devnet-v1.71.0';
 
-// In-container ports the sui binary binds on. Host ports come from
-// the shared `PortAllocator` so two stacks can run side-by-side; the
-// resulting URLs are constructed at runtime from the allocated host
-// ports. `LOCAL_FAUCET_URL` is still emitted as a fallback for the
+// In-container ports the sui binary binds on. Hostname-based routing
+// via the shared traefik router means every stack lands on the same
+// well-known host port — disambiguation happens by `Host:` header.
+// `LOCAL_FAUCET_URL` is still emitted as a fallback for the
 // `options.rpcUrl`-but-no-`faucetUrl` branch where the caller pinned
 // the RPC explicitly (no localnet container started here).
 const LOCAL_RPC_PORT = 9000;
@@ -160,72 +161,45 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 			yield* setPhase('building image');
 			image = (yield* localnetImage!).tag;
 		}
-		// Host ports are allocator-driven so two stacks (or sibling
-		// example projects sharing a host) don't fight over 9000 /
-		// 9123 / 9125. The allocator scans forward when the preferred
-		// port is busy; the in-container ports stay fixed because the
-		// sui binary's `--with-faucet`/`--with-graphql` flags reference
-		// the in-container ports. Caller's `options.ports` short-circuits
-		// the allocator path for the rare case they want pinned host
-		// ports anyway.
-		let ports: Record<number, number>;
-		let hostRpcPort: number;
-		let hostFaucetPort: number;
-		let hostGraphqlPort: number;
-		// When ports come from the allocator (the common path), capture
-		// it here so the `onPortConflict` callback we pass to `Docker.run`
-		// can release + re-allocate on a port-conflict resume. Left
-		// `undefined` when the caller pinned `options.ports` — in that
-		// case there's no allocator state to re-shuffle and `Docker.run`
-		// falls back to its pre-existing auto-allocate path on a
-		// port-conflict resume (back-compat).
-		let suiAllocator: typeof PortAllocator.Service | undefined;
-		if (options.ports !== undefined) {
-			ports = options.ports;
-			// Best-effort reverse lookup: find the host port mapped to
-			// each in-container default. Fall back to the in-container
-			// value (assumes 1:1) when no entry matches.
-			const findHost = (containerPort: number): number => {
-				for (const [h, c] of Object.entries(ports)) {
-					if (c === containerPort) return Number(h);
-				}
-				return containerPort;
-			};
-			hostRpcPort = findHost(LOCAL_RPC_PORT);
-			hostFaucetPort = findHost(LOCAL_FAUCET_PORT);
-			hostGraphqlPort = findHost(LOCAL_GRAPHQL_PORT);
-		} else {
-			const allocator = yield* PortAllocator;
-			suiAllocator = allocator;
-			const allocSui = (preferred: number) =>
-				Effect.gen(function* () {
-					const port = yield* allocator.allocate(preferred).pipe(
-						Effect.catchTag('PortAllocatorError', (cause) =>
-							Effect.fail(
-								new SuiError({
-									phase: 'sui-up',
-									message: `sui-localnet: could not allocate host port near ${preferred}: ${cause.message}`,
-									cause,
-								}),
-							),
-						),
-					);
-					// Release on scope teardown so the allocator's held-set
-					// doesn't grow monotonically across primitive restarts —
-					// otherwise subsequent runs probe from `preferred+N`
-					// rather than reusing the slot this cycle just freed.
-					yield* Effect.addFinalizer(() => allocator.release(port).pipe(Effect.ignore));
-					return port;
-				});
-			hostRpcPort = yield* allocSui(LOCAL_RPC_PORT);
-			hostFaucetPort = yield* allocSui(LOCAL_FAUCET_PORT);
-			hostGraphqlPort = yield* allocSui(LOCAL_GRAPHQL_PORT);
-			ports = {
-				[hostRpcPort]: LOCAL_RPC_PORT,
-				[hostFaucetPort]: LOCAL_FAUCET_PORT,
-				[hostGraphqlPort]: LOCAL_GRAPHQL_PORT,
-			};
+		// Hostname-based routing via the shared `devstack-router`
+		// (Traefik) container. Each service (rpc/faucet/graphql) lands
+		// on a stack-scoped hostname on a fixed well-known entrypoint
+		// port (9000 sui-rpc, 9123 sui-faucet, 9125 sui-graphql); the
+		// router dispatches by `Host:` header to the right per-stack
+		// backend. Two stacks of the same app coexist on the same
+		// well-known ports because the hostnames differ
+		// (`sui.arena.localhost` vs `test.sui.arena.localhost`).
+		//
+		// `options.ports` is the rare opt-out: when set the container
+		// ALSO publishes direct host ports (in addition to the router
+		// path) so callers can dial 127.0.0.1 directly. Per-port
+		// allocator usage was removed: no `PortAllocator.allocate` for
+		// rpc/faucet/graphql any more.
+		const identity = yield* Identity;
+		const rpcHostname = routerHostname(identity, 'sui');
+		const faucetHostname = routerHostname(identity, 'faucet');
+		const graphqlHostname = routerHostname(identity, 'graphql');
+		const rpcEntrypointInfo = routerEntrypoint('sui-rpc');
+		const faucetEntrypointInfo = routerEntrypoint('sui-faucet');
+		const graphqlEntrypointInfo = routerEntrypoint('sui-graphql');
+		if (
+			rpcEntrypointInfo === undefined ||
+			faucetEntrypointInfo === undefined ||
+			graphqlEntrypointInfo === undefined
+		) {
+			return yield* Effect.fail(
+				new SuiError({
+					phase: 'sui-up',
+					message:
+						'sui-localnet: router entrypoints sui-rpc/sui-faucet/sui-graphql not registered',
+				}),
+			);
 		}
+		const rpcEntrypointPort = rpcEntrypointInfo.port;
+		const faucetEntrypointPort = faucetEntrypointInfo.port;
+		const graphqlEntrypointPort = graphqlEntrypointInfo.port;
+		// Caller-pinned direct host ports (rare opt-out).
+		const ports: Record<number, number> | undefined = options.ports;
 
 		// Per-stack docker network — gives the indexer db + sui-localnet
 		// stable in-network DNS aliases so the sui process can dial
@@ -241,7 +215,6 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 		// localnet. The `network='localnet'` default keeps the name
 		// byte-identical to the pre-network-dimension shape so warm-
 		// restart resume still adopts existing networks.
-		const identity = yield* Identity;
 		const suiBase =
 			identity.stack === 'main'
 				? `${identity.app}-sui-network`
@@ -333,10 +306,6 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 		const suiDataVolume =
 			identity.network === 'localnet' ? suiDataBase : `${suiDataBase}-${identity.network}`;
 		yield* setPhase('starting localnet');
-		// Capture the localnet scope so `onPortConflict`'s release
-		// finalizers attach symmetrically with the original `allocSui`
-		// finalizers — both fire on the same scope teardown.
-		const suiScope = yield* Effect.scope;
 		const localnetRunResult = yield* Docker.run({
 			name: 'sui.localnet',
 			image,
@@ -346,19 +315,41 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 				`--with-indexer=${SUI_INDEXER_DATABASE_URL}`,
 				'--with-graphql=0.0.0.0:9125',
 			],
-			ports,
+			// Direct host-port publishing only when the caller pins
+			// `options.ports`. The default path leaves it undefined so
+			// the container relies entirely on the router for external
+			// reachability — two stacks of the same app then never fight
+			// for the host's 9000/9123/9125.
+			...(ports !== undefined ? { ports } : {}),
 			network: networkName,
 			networkAlias: SUI_LOCALNET_NETWORK_ALIAS,
 			mounts: [{ host: suiDataVolume, container: '/root/.sui' }],
 			detach: true,
-			// Only wire the callback when the allocator was involved.
-			// With caller-pinned ports there's no allocator state to
-			// shift, so leave it undefined and let `Docker.run` fall
-			// back to its pre-existing auto-allocate behavior.
-			onPortConflict:
-				suiAllocator !== undefined
-					? Docker.reallocatePortsOnConflict(suiAllocator, suiScope, 'sui.localnet')
-					: undefined,
+			// One traefik router entry per service (rpc/faucet/graphql).
+			// `id` is `<app>-<stack>-<service>` so two stacks of the same
+			// app produce disjoint label sets; `entrypoint` matches the
+			// well-known router entrypoint name; `servicePort` is the
+			// container-internal port the sui binary binds on.
+			traefik: [
+				{
+					id: routerId(identity, 'sui-rpc'),
+					hostname: rpcHostname,
+					entrypoint: 'sui-rpc',
+					servicePort: LOCAL_RPC_PORT,
+				},
+				{
+					id: routerId(identity, 'sui-faucet'),
+					hostname: faucetHostname,
+					entrypoint: 'sui-faucet',
+					servicePort: LOCAL_FAUCET_PORT,
+				},
+				{
+					id: routerId(identity, 'sui-graphql'),
+					hostname: graphqlHostname,
+					entrypoint: 'sui-graphql',
+					servicePort: LOCAL_GRAPHQL_PORT,
+				},
+			],
 		}).pipe(
 			Effect.catchTag('DockerError', (cause) =>
 				Effect.fail(
@@ -370,30 +361,15 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 				),
 			),
 		);
+		void localnetRunResult;
 
-		// On a resumed container, the actual host port bindings come
-		// from the original `docker run -p` (which `docker start`
-		// honors verbatim) — NOT the freshly-allocated `hostRpcPort` /
-		// `hostFaucetPort` / `hostGraphqlPort` we computed above. Read
-		// the real bindings out of `Docker.run`'s result and override
-		// the URLs so the manifest, ready-probe, and downstream
-		// consumers all dial the port the container is actually bound
-		// to. Without this, resumed containers ended up with
-		// "manifest says 9001, container is on 9000" mismatches that
-		// surfaced as 60s ready-probe timeouts.
-		const actualPorts = localnetRunResult.hostPorts;
-		const findHostFor = (containerPort: number, fallback: number): number => {
-			for (const [h, c] of Object.entries(actualPorts)) {
-				if (c === containerPort) return Number(h);
-			}
-			return fallback;
-		};
-		const effectiveRpcPort = findHostFor(LOCAL_RPC_PORT, hostRpcPort);
-		const effectiveFaucetPort = findHostFor(LOCAL_FAUCET_PORT, hostFaucetPort);
-		const effectiveGraphqlPort = findHostFor(LOCAL_GRAPHQL_PORT, hostGraphqlPort);
-		const rpcUrl = `http://localhost:${effectiveRpcPort}`;
-		const faucetUrl = `http://localhost:${effectiveFaucetPort}`;
-		const graphqlUrl = `http://localhost:${effectiveGraphqlPort}/graphql`;
+		// SDK-facing URLs go through the shared Traefik router on the
+		// well-known entrypoint ports. The `Host:` header (set by every
+		// HTTP client that dials `http://sui.<app>.localhost:9000`) is
+		// what tells traefik which per-stack backend to forward to.
+		const rpcUrl = `http://${rpcHostname}:${rpcEntrypointPort}`;
+		const faucetUrl = `http://${faucetHostname}:${faucetEntrypointPort}`;
+		const graphqlUrl = `http://${graphqlHostname}:${graphqlEntrypointPort}/graphql`;
 		const client = new SuiJsonRpcClient({ url: rpcUrl, network: 'localnet' });
 
 		// Gate `Sui` readiness on ALL three endpoints actually serving:

@@ -33,9 +33,11 @@ import { render } from 'ink';
 import React from 'react';
 import {
 	collectInventory,
+	collectRouterInfo,
 	formatBytes,
 	isPidAlive,
 	renderInventoryRow,
+	renderRouterRow,
 	renderTotals,
 	totalsFor,
 	type InventoryRow,
@@ -246,6 +248,18 @@ const pruneRows = (
 // Inventory-print path used by `--list`.
 const printInventory = (rows: ReadonlyArray<InventoryRow>) =>
 	Effect.gen(function* () {
+		// Surface the shared Traefik router on its own line above the
+		// (app, stack) listing. The router is cross-stack infrastructure
+		// (one container, one network) — not a row in the per-stack
+		// bucket. Showing usage (how many backends, how many apps)
+		// helps the user decide whether `--include-router` would
+		// disrupt active work.
+		const router = yield* collectRouterInfo().pipe(
+			Effect.catch(() => Effect.succeed(undefined)),
+		);
+		if (router !== undefined) {
+			yield* Console.log(renderRouterRow(router));
+		}
 		if (rows.length === 0) {
 			yield* Console.log('(no devstack-labelled resources)');
 			return;
@@ -353,24 +367,33 @@ const maybePruneImages = (enabled: boolean, dryRun: boolean) =>
 // can stream `Console.log` lines without fighting Ink for the TTY.
 const runInteractivePicker = (
 	rows: ReadonlyArray<InventoryRow>,
-): Effect.Effect<ReadonlyArray<InventoryRow>> =>
-	Effect.callback<ReadonlyArray<InventoryRow>>((resume) => {
-		const instance = render(
-			React.createElement(PruneApp, {
-				rows,
-				onSubmit: (selected: ReadonlyArray<InventoryRow>) => {
-					instance.unmount();
-					resume(Effect.succeed(selected));
-				},
-				onQuit: () => {
-					instance.unmount();
-					resume(Effect.succeed([] as ReadonlyArray<InventoryRow>));
-				},
-			}),
-			// Picker doesn't need patchConsole — we only `Console.log` the
-			// result lines AFTER unmount.
-			{ exitOnCtrlC: false },
+) =>
+	Effect.gen(function* () {
+		// Pull the router info BEFORE mounting Ink so the row appears
+		// in the first frame. Best-effort: a failing docker query just
+		// elides the row.
+		const router = yield* collectRouterInfo().pipe(
+			Effect.catch(() => Effect.succeed(undefined)),
 		);
+		return yield* Effect.callback<ReadonlyArray<InventoryRow>>((resume) => {
+			const instance = render(
+				React.createElement(PruneApp, {
+					rows,
+					router,
+					onSubmit: (selected: ReadonlyArray<InventoryRow>) => {
+						instance.unmount();
+						resume(Effect.succeed(selected));
+					},
+					onQuit: () => {
+						instance.unmount();
+						resume(Effect.succeed([] as ReadonlyArray<InventoryRow>));
+					},
+				}),
+				// Picker doesn't need patchConsole — we only `Console.log` the
+				// result lines AFTER unmount.
+				{ exitOnCtrlC: false },
+			);
+		});
 	});
 
 export const pruneCommand = Command.make(

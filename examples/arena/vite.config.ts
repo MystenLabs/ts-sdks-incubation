@@ -25,5 +25,14 @@ export default defineConfig({
 	server: {
 		port: 5176,
 		strictPort: false,
+		// Allow the Traefik router to proxy this dev-server in via the
+		// stack-scoped hostname (`dev.<app>.localhost`). Without this
+		// Vite's `Host:` header allowlist rejects requests routed
+		// through traefik.
+		allowedHosts: ['.localhost'],
+		// HMR over the router. Client (browser) talks WS to the public
+		// router port (5175); pin `clientPort` so the HMR client
+		// doesn't dial the upstream local port from the public host.
+		hmr: { clientPort: 5175 },
 	},
 });

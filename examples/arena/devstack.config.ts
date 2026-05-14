@@ -53,15 +53,22 @@ const openLobby = tx({
 
 const wallet = walletApp({
 	accounts: [a.alice, a.bob, a.publisher],
-	allowedOrigins: ['http://localhost:5176'],
+	// Router-fronted dev URL on the well-known vite entrypoint port
+	// (5175) + legacy direct port.
+	allowedOrigins: ['http://dev.arena.localhost:5175', 'http://localhost:5176'],
 });
 
+// Vite spawns on a local port; the supervisor publishes a Traefik
+// file-provider entry so the public URL surfaces as
+// `http://dev.arena.localhost:5175`. Ready probe targets the local
+// port so we don't depend on router warm-up.
 const dev = hostProcess({
 	name: 'frontend.dev-server',
 	command: 'pnpm',
-	args: ['exec', 'vite', '--port', '5176'],
+	args: ['exec', 'vite', '--port', '5176', '--strictPort'],
 	readyProbe: { kind: 'http', url: 'http://localhost:5176', timeoutMs: 60_000 },
 	endpoint: { name: 'dev-server', kind: 'dev-server' },
+	traefik: { service: 'dev', entrypoint: 'vite', localPort: 5176 },
 	dependsOn: [connectFourPublish, openLobby, wallet],
 });
 

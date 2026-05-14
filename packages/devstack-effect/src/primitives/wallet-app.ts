@@ -1,7 +1,14 @@
 import { randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { Effect } from 'effect';
+import { Identity } from '../internal/identity.js';
 import { PortAllocator } from '../internal/port-allocator.js';
+import {
+	routerEntrypoint,
+	removeFileProvider,
+	writeFileProvider,
+} from '../internal/docker/router.js';
+import { routerHostname, routerId } from '../internal/router-hostname.js';
 import { EndpointRegistry } from '../internal/registries.js';
 import { stringifyCause } from '../internal/stringify-cause.js';
 import { makeTag, setPhase, type PluginTag } from '../tag.js';
@@ -13,6 +20,14 @@ export interface WalletApp {
 	readonly url: string;
 	readonly pairUrl: string;
 	readonly endpoint: { readonly name: string; readonly url: string };
+	/**
+	 * Local 127.0.0.1 port the wallet-app server actually binds.
+	 * The public `url` is the router-fronted hostname URL; this is
+	 * the upstream port traefik proxies TO. Surfaced for tests that
+	 * need to re-bind the port after a scope close to assert the
+	 * finalizer cleanup is correct.
+	 */
+	readonly localPort: number;
 }
 
 export interface WalletAppOptions<Name extends string> {
@@ -97,7 +112,41 @@ export const walletApp = <const Name extends string = 'wallet-app'>(
 				}),
 			);
 
-			const url = `http://localhost:${port}`;
+			// Router-fronted public URL. The wallet-app is a Node
+			// host process (not a docker container), so we drop a
+			// file-provider YAML under `~/.devstack/traefik/dynamic/`
+			// pointing traefik at `host.docker.internal:<localPort>`.
+			// Browsers resolve `*.localhost` to 127.0.0.1, hit the
+			// router on the well-known wallet entrypoint port (5180),
+			// and the router forwards by `Host:` header to this
+			// process.
+			const identity = yield* Identity;
+			const walletHostname = routerHostname(identity, 'wallet');
+			const walletEntrypointInfo = routerEntrypoint('wallet');
+			if (walletEntrypointInfo === undefined) {
+				return yield* Effect.fail(
+					new WalletAppError({
+						phase: 'listen',
+						message: 'wallet-app: router entrypoint \'wallet\' not registered',
+					}),
+				);
+			}
+			const walletRouterId = routerId(identity, 'wallet');
+			yield* writeFileProvider({
+				id: walletRouterId,
+				hostname: walletHostname,
+				entrypoint: 'wallet',
+				upstreamUrl: `http://host.docker.internal:${port}`,
+			}).pipe(
+				Effect.catchTag('DockerError', (cause) =>
+					Effect.logWarning(
+						`wallet-app: file-provider YAML write failed (continuing on direct port): ${cause.message}`,
+					),
+				),
+			);
+			yield* Effect.addFinalizer(() => removeFileProvider(walletRouterId));
+
+			const url = `http://${walletHostname}:${walletEntrypointInfo.port}`;
 			const pairUrl = `${url}/?token=${token}`;
 
 			yield* EndpointRegistry.publish({
@@ -111,6 +160,7 @@ export const walletApp = <const Name extends string = 'wallet-app'>(
 				url,
 				pairUrl,
 				endpoint: { name: 'wallet-app', url },
+				localPort: port,
 			} satisfies WalletApp;
 		}).pipe(Effect.withSpan(`walletApp(${name})`)),
 		{
