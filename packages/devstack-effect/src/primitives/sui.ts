@@ -299,7 +299,7 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 				? `devstack-${identity.app}-sui-data`
 				: `devstack-${identity.app}-${identity.stack}-sui-data`;
 		yield* setPhase('starting localnet');
-		yield* Docker.run({
+		const localnetRunResult = yield* Docker.run({
 			name: 'sui.localnet',
 			image,
 			args: [
@@ -345,28 +345,48 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 		// `fetch failed`. Native genesis settles in ~10 s; 60 s ceiling
 		// absorbs first-build jitter.
 		yield* setPhase('awaiting rpc + faucet + graphql');
-		// 120s default (was 60s). The faucet's HTTP socket binds early but
-		// the underlying sui-faucet binary takes a beat to be able to
+		// 120s default. The faucet's HTTP socket binds early but the
+		// underlying sui-faucet binary takes a beat to be able to
 		// execute its first tx — until then it returns 200 OK with a
 		// body-level `status: { Failure: { Internal: "..." } }`. The
 		// real-funding probe below catches that, but the retry budget
-		// needs to be wide enough to absorb the warm-up window.
+		// needs to be wide enough to absorb the warm-up window on
+		// cold genesis. Warm restarts skip the heavy probe; see below.
 		const readyTimeoutMs = options.readyTimeoutMs ?? 120_000;
 		const rpcProbe = Effect.tryPromise({
 			try: () => client.getChainIdentifier(),
 			catch: (cause) => new Error(`rpc: ${stringifyCause(cause)}`),
 		}).pipe(Effect.withSpan('sui.probe.rpc'));
-		// Faucet probe: actually request funds for a stable throwaway
-		// recipient and verify the response body is `status: "Success"`.
-		// The prior `status < 500` check passed during the warm-up
-		// window when the faucet returned 200 with a body-level
-		// `{"status": {"Failure": ...}}` — the supervisor declared Sui
-		// "ready" and downstream funding immediately tripped the 90s
-		// faucet timeout. Gating on a real tx success means Sui isn't
-		// marked ready until the faucet can actually fund.
-		const faucetProbe = faucetReadyProbe(faucetUrl).pipe(
-			Effect.withSpan('sui.probe.faucet'),
-		);
+		// Faucet probe choice:
+		//   - Cold container (`Docker.run` just spawned a fresh process):
+		//     send a REAL funding tx and verify `status: "Success"` so
+		//     we don't mark Sui ready until the faucet can actually
+		//     execute tx (otherwise downstream `accounts.fund` races
+		//     warm-up and fails after the 90s budget).
+		//   - Warm container (reused from a prior cycle): the faucet has
+		//     already been serving traffic for minutes/hours, so the
+		//     lightweight "HTTP socket is bound" check is plenty.
+		//     Sending real funding txs on every restart inflated the
+		//     ready-wait from ~1s to ~30s (~3s per probe iteration,
+		//     several iterations until `Effect.all` synchronises).
+		const faucetProbe = localnetRunResult.reused
+			? Effect.tryPromise({
+					try: async () => {
+						const r = await fetch(`${faucetUrl}/v2/gas`, {
+							method: 'POST',
+							headers: { 'content-type': 'application/json' },
+							body: JSON.stringify({
+								FixedAmountRequest: {
+									recipient:
+										'0x0000000000000000000000000000000000000000000000000000000000000000',
+								},
+							}),
+						});
+						if (r.status >= 500) throw new Error(`faucet: ${r.status}`);
+					},
+					catch: (cause) => new Error(`faucet: ${stringifyCause(cause)}`),
+				}).pipe(Effect.withSpan('sui.probe.faucet.light'))
+			: faucetReadyProbe(faucetUrl).pipe(Effect.withSpan('sui.probe.faucet'));
 		const graphqlProbe = Effect.tryPromise({
 			try: () =>
 				fetch(graphqlUrl, {
