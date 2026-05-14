@@ -25,7 +25,7 @@ import {
 	type WalrusProxyShape,
 } from '../../interfaces/walrus.js';
 import { dockerImage, gitFetch } from '../../plugin-author/index.js';
-import { type PluginTag } from '../../tag.js';
+import { composeLayers, type PluginTag } from '../../tag.js';
 import { WalrusError } from '../errors.js';
 import type { Account } from '../shared.js';
 import {
@@ -267,22 +267,18 @@ export const walrusLocalCluster = <const Name extends string = 'walrus'>(
 		any
 	>;
 
-	// Order matters: `composeStackLayer` folds left-to-right with
-	// `provideMerge(layer, acc)`, so each new layer consumes from the
-	// accumulated acc. Providers must come BEFORE consumers.
-	// `combinedLayer` yields `moveSource` and `upstreamImage` inside its
-	// body, so it goes LAST. Listing it first leaves its deps unsatisfied
-	// when the fold reaches them, producing `Service not found:
-	// walrus.move-source` at run time.
-	const layers: ReadonlyArray<Layer.Layer<any, any, any>> = [
-		...upstreamImage.__layers,
-		...(moveSource !== undefined ? moveSource.__layers : []),
-		combinedLayer,
-	];
-
+	// `composeLayers` lays out `inner → primary → projections` so the
+	// fold in `composeStackLayer` finds each layer's deps already
+	// satisfied. `combinedLayer` yields `moveSource` and `upstreamImage`
+	// inside its body, so it goes after them as `primary`. No projections
+	// here — the four interface tags resolve from a single
+	// `Layer.effectContext`.
 	return {
 		__layer: combinedLayer,
-		__layers: layers,
+		__layers: composeLayers({
+			inner: [upstreamImage, moveSource],
+			primary: combinedLayer,
+		}),
 		key: LOCAL_CLUSTER_KEY,
 		__kind: 'service' as const,
 		__displayTitle: 'walrus.cluster',

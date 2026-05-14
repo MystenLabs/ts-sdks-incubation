@@ -53,7 +53,7 @@ import {
 	type SealKeyManagerShape,
 	type SealKeyServerShape,
 } from '../interfaces/seal.js';
-import { provideTag, setPhase, type PluginTag } from '../tag.js';
+import { composeLayers, provideTag, setPhase, type PluginTag } from '../tag.js';
 import type { StackMember } from '../define-devstack.js';
 import { Sui } from './sui.js';
 import { publishMove } from './publish-move.js';
@@ -180,10 +180,18 @@ interface SealLocalKeygenInternalShape {
  * Local-only seal stack: builds + runs the seal key-server, owns the
  * master key, registers a KeyServer on chain. Provides both
  * `SealKeyServer` (read surface) and `SealKeyManager` (local admin).
+ *
+ * Return type is the plain `StackMember`. The `key` field on the
+ * returned StackMember is the engine-internal lookup key
+ * (`@devstack/SealLocalKeygenInternal/${name}`), NOT the user-facing
+ * primitive name — there's no narrow tag class for the public `name`
+ * to bind to, since the internal acquire tag is what the engine
+ * lifecycle keys on. Use `display`/`displayTitle` for the user-facing
+ * label; the engine-internal `key` is opaque to user code.
  */
 export const sealLocalKeygen = <const Name extends string = 'seal'>(
 	options: SealLocalKeygenOptions<Name>,
-): StackMember & { readonly key: Name } => {
+): StackMember => {
 	const name = (options.name ?? 'seal') as Name;
 	const version = options.version ?? DEFAULT_SEAL_VERSION;
 	const preferredHostPort = options.hostPort ?? DEFAULT_KEY_SERVER_PORT;
@@ -231,15 +239,6 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 					signer: options.signer,
 				})
 			: undefined;
-
-	// Inner sibling-tag layers that defineDevstack must merge so the
-	// inner tags resolve at runtime. Only include the tags we actually
-	// built — skipping a path keeps its layer out of the engine's
-	// mergeAll, so a stack that supplies `movePackagePath` never
-	// triggers gitFetch (and vice versa).
-	const innerLayers: Array<Layer.Layer<any, any, any>> = [...sealImage.__layers];
-	if (sourceFetch !== undefined) innerLayers.push(...sourceFetch.__layers);
-	if (publish !== undefined) innerLayers.push(...publish.__layers);
 
 	// Private "internal" tag class. Both the `SealKeyServer` and
 	// `SealKeyManager` projection layers read from it. Kept inside the
@@ -652,30 +651,31 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 		}),
 	);
 
-	// Order matters: `composeStackLayer` folds left-to-right with
-	// `provideMerge(layer, acc)`, so each new layer consumes from the
-	// accumulated acc. Providers come first, consumers last.
-	// `innerLayers` (sealImage, sourceFetch, publish) provide tags that
-	// `internalLayer`'s body yields, so they precede it; the two
-	// projection layers consume `SealLocalKeygenInternal` so they come
-	// after.
+	// `composeLayers` lays out `inner → primary → projections` so the
+	// fold in `composeStackLayer` finds each layer's deps already
+	// satisfied. Inner sibling tags (sealImage, sourceFetch, publish)
+	// provide the services `internalLayer`'s body yields; the projection
+	// layers (keyServer, keyManager) consume `SealLocalKeygenInternal` so
+	// they come last. Conditional siblings (sourceFetch / publish) pass
+	// `undefined` and are dropped — no `push` loop, no comment-heavy
+	// ordering invariants for future maintainers to violate.
 	//
-	// `key` matches the internal tag's key (`@devstack/SealLocalKeygenInternal/${name}`)
-	// — `defineDevstack` pre-populates an engine entry for each
-	// StackMember at boot time, and `withEngineLifecycle` (inside
-	// `provideTag`) keys its `markAcquiring` / `markReady` calls on the
-	// tag's key. Using the same key collapses both into a single TUI
-	// row; mismatched keys produce TWO `seal.local` rows under the Seal
-	// section (one pre-populated, one from the acquire body).
-	// Cast the engine key to `Name` for the StackMember return type —
-	// the runtime `key` is the internal tag's namespaced key, but the
-	// public return type promises `Name` so downstream consumers that
-	// fold the StackMember into a typed union keep their inference.
-	// `.key` is never read from user code; engine-internal only.
+	// `key` is the internal tag's namespaced key
+	// (`@devstack/SealLocalKeygenInternal/${name}`). `defineDevstack`
+	// pre-populates an engine entry per StackMember at boot, and
+	// `withEngineLifecycle` (inside `provideTag`) keys its
+	// `markAcquiring` / `markReady` calls on the tag's key — using the
+	// same key here collapses both into a single TUI row. The field is
+	// the engine-internal lookup key, NOT the user-facing primitive
+	// name; the public label is carried by `__displayTitle` / `display`.
 	return {
 		__layer: internalLayer,
-		__layers: [...innerLayers, internalLayer, keyServerLayer, keyManagerLayer],
-		key: SealLocalKeygenInternal.key as Name,
+		__layers: composeLayers({
+			inner: [sealImage, sourceFetch, publish],
+			primary: internalLayer,
+			projections: [keyServerLayer, keyManagerLayer],
+		}),
+		key: SealLocalKeygenInternal.key,
 		__kind: 'service' as const,
 		__displayTitle: 'seal.local',
 	};

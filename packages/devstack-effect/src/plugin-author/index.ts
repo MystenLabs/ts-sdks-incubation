@@ -15,15 +15,22 @@
 //   `action`, `tx`, etc. Creates a throwaway Context.Service class
 //   internally; sugar over `provideTag`.
 //
-// - `composeTag(name, build, innerTags)` — legacy. Aggregates inner
-//   tags' layers into a single composite tag. Existing seal/walrus/
-//   deepbook still use this; new factories should prefer returning
-//   multiple Layers via separate `provideTag` calls.
+// - `composeTag(name, build, innerTags)` — composite-tag sugar. Use
+//   when you want a single outer tag whose body yields from inner
+//   sibling tags. Aggregates the inner tags' layers automatically.
+//
+// - `composeLayers({primary, inner, projections})` — for multi-layer
+//   StackMembers that DON'T want a new outer tag class. Used by
+//   walrusLocalCluster (multi-interface acquire body) and
+//   sealLocalKeygen (internal tag + two projection layers) to assemble
+//   their `__layers` arrays without hand-rolling ordering.
 export {
 	provideTag,
 	makeTag,
 	composeTag,
+	composeLayers,
 	setPhase,
+	type ComposeLayersOptions,
 	type PluginTag,
 	type TagIdentity,
 	type MakeTagOptions,

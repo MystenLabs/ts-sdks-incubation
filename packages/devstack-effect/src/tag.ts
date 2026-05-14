@@ -18,12 +18,27 @@
 //                                   plugins). Internally just creates a
 //                                   throwaway class and calls provideTag.
 //
-//   composeTag(name, build, inner) — legacy. Aggregate inner tags'
-//                                   __layers into a parent tag built by
-//                                   makeTag. Existing seal/walrus/
-//                                   deepbook primitives still use it;
-//                                   new code should prefer multiple
-//                                   `provideTag` calls.
+//   composeTag(name, build, inner) — sugar around makeTag for composite
+//                                   primitives that expose a single outer
+//                                   tag whose body yields from inner
+//                                   sibling tags. Use this when you want
+//                                   the inner siblings to surface as
+//                                   engine entries alongside the outer.
+//                                   When you DON'T need a new outer tag
+//                                   (e.g. a multi-interface acquire body
+//                                   like walrusLocalCluster, or one with
+//                                   thin projection layers like
+//                                   sealLocalKeygen), use `composeLayers`
+//                                   directly to assemble the StackMember
+//                                   `__layers` array without inventing a
+//                                   throwaway outer class.
+//
+//   composeLayers({primary, inner, projections}) — assemble a
+//                                   provider-before-consumer ordered
+//                                   layer list for a multi-layer
+//                                   StackMember. Replaces the
+//                                   comment-heavy hand-rolled `__layers`
+//                                   arrays primitives used to maintain.
 //
 // Each tag carries:
 //   __layer  — the Layer.effect-wrapped producer for THIS tag.
@@ -365,22 +380,25 @@ export const makeTag = <const Name extends string, A, E = never, R = never>(
 // it does for tags listed at the top level of `config.stack`. composeTag
 // just makes sure those layers actually reach mergeAll.
 /**
- * Legacy composite-tag helper. Aggregates inner tags' `__layers` into
- * the outer tag's transitive layer list. Existing seal/walrus/deepbook
- * primitives still use this; new code should prefer returning multiple
- * Layers via repeated `provideTag` calls. The outer tag is built via
- * `makeTag` so it carries its own throwaway identity.
+ * Composite-tag helper. Aggregates inner tags' `__layers` into the outer
+ * tag's transitive layer list. Use this when you need a single outer tag
+ * whose body yields from inner sibling tags AND you want the siblings to
+ * surface as engine entries alongside the outer. For multi-interface
+ * acquire bodies (a single body producing several interface layers via
+ * `Layer.effectContext` or thin projection layers), use
+ * {@link composeLayers} directly — it assembles the `__layers` array
+ * without inventing a throwaway outer tag class.
+ *
+ * The outer tag is built via `makeTag` so it carries its own throwaway
+ * identity.
  */
 export const composeTag = <const Name extends string, A, E = never, R = never>(
 	name: Name,
 	build: Effect.Effect<A, E, R>,
-	innerTags: ReadonlyArray<{
-		readonly __layer?: Layer.Layer<any, any, any>;
-		readonly __layers?: ReadonlyArray<Layer.Layer<any, any, any>>;
-	}>,
+	innerTags: ReadonlyArray<HasLayers>,
 	options: ProvideTagOptions<A> = {},
 ): PluginTag<Name, A, Exclude<R, Scope.Scope>, E> => {
-	const extraLayers = innerTags.flatMap((t) => t.__layers ?? (t.__layer ? [t.__layer] : []));
+	const extraLayers = flattenInnerLayers(innerTags);
 	const merged: MakeTagOptions<A> = {
 		extraLayers,
 		...(options.kind !== undefined ? { kind: options.kind } : {}),
@@ -389,6 +407,68 @@ export const composeTag = <const Name extends string, A, E = never, R = never>(
 	};
 	return makeTag(name, build, merged);
 };
+
+// Anything that exposes a layer or a transitive layer list — the shape
+// `composeLayers` and `composeTag` accept for the `inner` slot. Tags
+// produced by `provideTag` / `makeTag` / `composeTag` satisfy this, as
+// do StackMembers returned by composite primitives.
+interface HasLayers {
+	readonly __layer?: Layer.Layer<any, any, any>;
+	readonly __layers?: ReadonlyArray<Layer.Layer<any, any, any>>;
+}
+
+// Flatten an inner-tag-ish into its layer contribution: prefer the
+// transitively-flattened `__layers` list when present, fall back to the
+// single `__layer`, drop entries with neither (or `undefined` entries,
+// which callers use to express conditional inclusion without a separate
+// branch).
+const flattenInnerLayers = (
+	inner: ReadonlyArray<HasLayers | undefined>,
+): ReadonlyArray<Layer.Layer<any, any, any>> =>
+	inner.flatMap((t) => {
+		if (t === undefined) return [] as ReadonlyArray<Layer.Layer<any, any, any>>;
+		if (t.__layers !== undefined) return t.__layers;
+		if (t.__layer !== undefined) return [t.__layer];
+		return [] as ReadonlyArray<Layer.Layer<any, any, any>>;
+	});
+
+export interface ComposeLayersOptions {
+	/** Inner sibling tags whose layers must surface alongside `primary`.
+	 *  Each entry contributes its `__layers` (preferred) or `__layer`.
+	 *  `undefined` entries are dropped — callers use this to express
+	 *  conditional inclusion (`[image, source, publish]` where some are
+	 *  only defined on certain branches) without a separate `push` loop. */
+	readonly inner?: ReadonlyArray<HasLayers | undefined>;
+	/** The primary layer for this StackMember. Goes after `inner` (so its
+	 *  body can consume inner-tag services) but before `projections`. */
+	readonly primary: Layer.Layer<any, any, any>;
+	/** Thin projection layers that read from `primary` to satisfy
+	 *  additional interface tags (e.g. `SealKeyServer` + `SealKeyManager`
+	 *  both reading from the internal seal tag). Go last because they
+	 *  consume `primary`'s output. */
+	readonly projections?: ReadonlyArray<Layer.Layer<any, any, any>>;
+}
+
+/**
+ * Build a provider-before-consumer ordered `__layers` array for a
+ * multi-layer StackMember. Replaces the comment-heavy hand-rolled
+ * `[...inner.__layers, primary, ...projections]` pattern in
+ * walrus / seal / deepbook with a single call.
+ *
+ * Ordering rationale: `composeStackLayer` folds left-to-right with
+ * `provideMerge(layer, acc)`, so each new layer consumes services from
+ * the accumulated acc. Providers must come BEFORE consumers — inner
+ * sibling tags' layers feed `primary`'s body, and `primary`'s output
+ * feeds the projection layers' bodies, so the canonical order is
+ * `inner → primary → projections`.
+ */
+export const composeLayers = (
+	opts: ComposeLayersOptions,
+): ReadonlyArray<Layer.Layer<any, any, any>> => [
+	...flattenInnerLayers(opts.inner ?? []),
+	opts.primary,
+	...(opts.projections ?? []),
+];
 
 // Phantom extractors for defineDevstack.
 export type TagRequires<T> = T extends PluginTag<any, any, infer R, any> ? R : never;
