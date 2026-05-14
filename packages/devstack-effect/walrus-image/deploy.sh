@@ -219,6 +219,16 @@ for f in "$WORKING_DIR"/dryrun-node-*[0-9].yaml; do
 	# Redirect storage_path before appending so the sed targets the
 	# upstream-generated line, not anything we appended.
 	sed -i "s|^storage_path: ${WORKING_DIR}/|storage_path: /var/walrus/storage/|" "$f"
+	# Rebind REST + metrics on 0.0.0.0 so the storage node listens on
+	# every interface (walrus-net, devstack-router, sui per-stack net),
+	# not only the walrus-net pinned IP from `--listening-ips`. The
+	# on-chain `public_host`/`public_port` (registered via
+	# `--host-addresses` above) stays the routable hostname; only the
+	# bind changes. Traefik (on devstack-router) routes by Host header
+	# to the storage node's devstack-router IP — that interface has
+	# to be listening, hence 0.0.0.0.
+	sed -i -E "s|^(rest_api_address): [0-9.]+:|\\1: 0.0.0.0:|" "$f"
+	sed -i -E "s|^(metrics_address): [0-9.]+:|\\1: 0.0.0.0:|" "$f"
 	cat >> "$f" <<-NODEEOF
 
 	event_processor_config:

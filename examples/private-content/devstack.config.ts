@@ -68,10 +68,18 @@ const wallet = walletApp({
 const dev = hostProcess({
 	name: 'frontend.dev-server',
 	command: 'pnpm',
-	args: ['exec', 'vite', '--port', '5175', '--strictPort'],
-	readyProbe: { kind: 'http', url: 'http://localhost:5175', timeoutMs: 60_000 },
+	// Local vite port must differ from traefik's `vite` entrypoint
+	// (5175 host). Traefik binds 5175 first; vite with --strictPort
+	// falls back to IPv6 (silent dual-stack quirk) and the readyProbe
+	// hits traefik (404) instead of vite. Use a distinct local port;
+	// traefik forwards Host=`dev.*.localhost:5175` → host:5170.
+	// `--host 0.0.0.0` so traefik (inside docker) can dial vite via
+	// `host.docker.internal:5170`. Vite defaults to 127.0.0.1 which
+	// isn't reachable from container-land.
+	args: ['exec', 'vite', '--host', '0.0.0.0', '--port', '5170', '--strictPort'],
+	readyProbe: { kind: 'http', url: 'http://localhost:5170', timeoutMs: 60_000 },
 	endpoint: { name: 'dev-server', kind: 'dev-server' },
-	traefik: { service: 'dev', entrypoint: 'vite', localPort: 5175 },
+	traefik: { service: 'dev', entrypoint: 'vite', localPort: 5170 },
 	// `SealKeyServer` here pins the dev-server behind seal's acquire.
 	// The interface tag is yieldable but TS treats it as a bare
 	// Context.Service rather than a `PluginTag`; the cast is safe

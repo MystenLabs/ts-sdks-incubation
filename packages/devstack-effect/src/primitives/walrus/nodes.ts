@@ -104,6 +104,12 @@ export const startStorageNodes = (args: {
 						hostname: publicHostname,
 						entrypoint: 'walrus',
 						servicePort: args.containerApiPort,
+						// Walrus storage-node REST API doesn't emit CORS
+						// headers. v3 setup relied on the now-deleted
+						// nginx walrus-proxy to inject them; here, route
+						// through the global `devstack-cors` middleware
+						// so browser-side blob fetches from vite work.
+						cors: true,
 					},
 				],
 				// Stream the storage node's docker-logs to the supervisor

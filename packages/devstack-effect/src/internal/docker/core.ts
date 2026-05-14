@@ -1042,6 +1042,7 @@ const materializeRouterEntries = (
 				hostname: entry.hostname,
 				entrypoint: entry.entrypoint,
 				upstreamUrl: `http://${ip}:${entry.servicePort}`,
+				cors: entry.cors,
 			}).pipe(
 				Effect.as(true),
 				Effect.catch((cause: DockerError) =>

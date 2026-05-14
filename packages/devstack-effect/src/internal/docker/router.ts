@@ -129,6 +129,13 @@ export const ensureRouter: Effect.Effect<
 	//    starts or it logs noisily about a missing watch target.
 	yield* ensureDynamicDir();
 
+	// 2a. Singleton CORS middleware — load before any backend that
+	//     references it. Walrus storage nodes don't emit CORS headers
+	//     themselves (v3 setup relied on an nginx walrus-proxy that
+	//     we deleted in favor of traefik), so browser-side fetches
+	//     get blocked by same-origin without this middleware.
+	yield* writeCorsMiddleware();
+
 	// 3. Container — probe → adopt|resume|recreate|fresh.
 	const inspected = yield* inspectRouter(spawner);
 	if (inspected === null) {
@@ -287,6 +294,13 @@ export interface RouterLabel {
 	readonly entrypoint: string;
 	/** Internal container port the upstream service is bound to. */
 	readonly servicePort: number;
+	/**
+	 * Inject the global `devstack-cors` middleware (permissive CORS
+	 * headers) into this route. Set for upstream services that don't
+	 * emit CORS themselves and are dialed cross-origin from a vite
+	 * dev-server — walrus storage nodes, primarily. Default `false`.
+	 */
+	readonly cors?: boolean;
 }
 
 // File-provider YAML body for host processes (vite, wallet-app) that
@@ -299,7 +313,31 @@ export interface FileProviderEntry {
 	readonly entrypoint: string;
 	/** Loopback URL of the host process (e.g. `http://host.docker.internal:5175`). */
 	readonly upstreamUrl: string;
+	/**
+	 * When true, inject the `devstack-cors` middleware into this
+	 * router. The middleware is defined globally by `writeCorsMiddleware`
+	 * (called once at router boot) and adds permissive CORS headers
+	 * (`Access-Control-Allow-Origin: *`, etc.) to upstream responses.
+	 *
+	 * Walrus storage nodes need this: their REST API doesn't emit CORS
+	 * headers, and the v3 setup relied on the now-deleted nginx walrus-
+	 * proxy to inject them. Browser-side fetches to
+	 * `walrus-node-N.<app>.localhost:9185/v1/blobs/…` get blocked by
+	 * the browser's same-origin policy without this.
+	 *
+	 * Sui RPC + faucet + GraphQL emit their own CORS headers; vite +
+	 * wallet-app are loopback dev servers that don't need cross-origin
+	 * access. Default `false`.
+	 */
+	readonly cors?: boolean;
 }
+
+// Middleware reference list for a router. When `cors === true`, point
+// at the singleton `devstack-cors@file` middleware. Traefik discovers
+// the middleware via the static YAML written by `writeCorsMiddleware`
+// at router boot.
+const routerMiddlewares = (entry: FileProviderEntry): string =>
+	entry.cors === true ? '      middlewares: ["devstack-cors@file"]\n' : '';
 
 export const renderFileProvider = (entry: FileProviderEntry): string =>
 	[
@@ -309,13 +347,54 @@ export const renderFileProvider = (entry: FileProviderEntry): string =>
 		`      rule: "Host(\`${entry.hostname}\`)"`,
 		`      entrypoints: ["${entry.entrypoint}"]`,
 		`      service: ${entry.id}`,
+		routerMiddlewares(entry).trimEnd(),
 		'  services:',
 		`    ${entry.id}:`,
 		'      loadBalancer:',
 		'        servers:',
 		`          - url: "${entry.upstreamUrl}"`,
 		'',
-	].join('\n');
+	]
+		.filter((line) => line !== '')
+		.join('\n');
+
+// Singleton CORS middleware YAML. Written to `~/.devstack/traefik/dynamic/_devstack-cors.yml`
+// once at router boot — the leading underscore sorts it ahead of
+// per-stack entries (alphabetical) so traefik picks the middleware up
+// before any router that references it.
+const CORS_MIDDLEWARE_YAML = `http:
+  middlewares:
+    devstack-cors:
+      headers:
+        accessControlAllowOriginList:
+          - "*"
+        accessControlAllowMethods:
+          - "GET"
+          - "POST"
+          - "PUT"
+          - "DELETE"
+          - "OPTIONS"
+        accessControlAllowHeaders:
+          - "*"
+        accessControlExposeHeaders:
+          - "*"
+        accessControlMaxAge: 86400
+`;
+
+const writeCorsMiddleware = (): Effect.Effect<void, DockerError> =>
+	Effect.gen(function* () {
+		yield* ensureDynamicDir();
+		const path = joinPath(routerDynamicDir(), '_devstack-cors.yml');
+		yield* Effect.tryPromise({
+			try: () => nodeFs.writeFile(path, CORS_MIDDLEWARE_YAML, 'utf8'),
+			catch: (cause) =>
+				new DockerError({
+					op: 'router.file-provider',
+					message: `failed to write cors middleware YAML at ${path}`,
+					cause,
+				}),
+		});
+	});
 
 export const writeFileProvider = (entry: FileProviderEntry): Effect.Effect<string, DockerError> =>
 	Effect.gen(function* () {

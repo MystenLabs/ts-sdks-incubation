@@ -23,7 +23,9 @@ export default defineConfig({
 		},
 	},
 	server: {
-		port: 5175,
+		// Vite's UPSTREAM port. Distinct from traefik's `vite` entrypoint
+		// (5175 host); the supervisor's devstack.config flag mirrors this.
+		port: 5170,
 		strictPort: false,
 		// Allow the Traefik router to proxy this dev-server in via the
 		// stack-scoped hostname (`dev.<app>.localhost`). Without this
@@ -31,9 +33,9 @@ export default defineConfig({
 		// through traefik.
 		allowedHosts: ['.localhost'],
 		// HMR over the router: the client (in the browser) talks WS to
-		// the public router port (5175); the router forwards to vite
-		// on the same local port. Pin `clientPort` so the HMR client
-		// doesn't dial the upstream port from a public hostname.
+		// the PUBLIC router port (5175); the router forwards to vite on
+		// 5170. Pin clientPort=5175 so the HMR client dials the public
+		// router port from the browser, not vite's upstream 5170.
 		hmr: { clientPort: 5175 },
 	},
 });
