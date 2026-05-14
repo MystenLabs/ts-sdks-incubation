@@ -556,6 +556,12 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 			envFiles: [masterKeyEnvFile],
 			mounts: [{ host: configPath, container: '/etc/seal/key-server-config.yaml' }],
 			detach: true,
+			// Key-server config carries the routed sui rpc URL as
+			// `node_url` (`http://sui.<app>.localhost:9000`); RFC 6761
+			// `.localhost` resolution only works on the host OS, so the
+			// container needs explicit `/etc/hosts` entries pointing the
+			// routed hostnames at traefik.
+			routerAddHosts: true,
 			// Single router entry for the key-server. The on-chain
 			// `KeyServer.url` registered above MUST match this hostname:port
 			// — the SDK reads the chain to discover the endpoint.

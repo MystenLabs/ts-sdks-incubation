@@ -14,6 +14,7 @@ import {
 	runCapturingOrFail,
 	type DockerExecResult,
 } from './core.js';
+import { getTraefikRouterIp, listRegisteredHostnames } from './router.js';
 
 // Re-export the result shape so consumers can `Docker.DockerExecResult`
 // if they ever annotate the type explicitly.
@@ -116,6 +117,15 @@ export interface DockerOneShotOptions {
 	 * interrupted). Defaults to 5_000 ms, matching v3.
 	 */
 	readonly gracePeriodMs?: number;
+	/**
+	 * When `true`, stamps one `--add-host <hostname>:<traefik-ip>` per
+	 * currently registered routed hostname (read fresh from the file-
+	 * provider directory at spawn time). Mirrors the
+	 * `Docker.run({ routerAddHosts })` opt — opt in on one-shots whose
+	 * containerized scripts dial routed URLs (e.g. walrus deploy-walrus.sh
+	 * reaches `http://sui.<app>.localhost:9000`). Default `false`.
+	 */
+	readonly routerAddHosts?: boolean;
 }
 
 export interface DockerOneShotResult {
@@ -137,6 +147,31 @@ export const runOneShot = (
 		const args: Array<string> = ['run', '--rm', '--name', name];
 		if (opts.entrypoint !== undefined) args.push('--entrypoint', opts.entrypoint);
 		if (opts.network !== undefined) args.push('--network', opts.network);
+		// Routed-hostname add-host stamps. Mirrors `Docker.run`'s
+		// `routerAddHosts` opt — RFC 6761 `.localhost` resolution only
+		// works on the host OS, so a one-shot that dials a routed URL
+		// (e.g. walrus deploy-walrus.sh reaching `http://sui.<app>.
+		// localhost:9000`) needs explicit `/etc/hosts` entries pointing
+		// at traefik. Resolution failure (traefik unreachable, no
+		// hostnames registered) logs + falls through with no add-hosts
+		// rather than failing the one-shot.
+		if (opts.routerAddHosts === true) {
+			const hostnames = yield* listRegisteredHostnames();
+			if (hostnames.length > 0) {
+				const ip = yield* getTraefikRouterIp(spawner).pipe(
+					Effect.catch((cause: DockerError) =>
+						Effect.logWarning(
+							`devstack: runOneShot routerAddHosts skipped for '${name}' — ${cause.message}`,
+						).pipe(Effect.as(null)),
+					),
+				);
+				if (ip !== null) {
+					for (const h of hostnames) {
+						args.push(`--add-host=${h}:${ip}`);
+					}
+				}
+			}
+		}
 		for (const [k, v] of Object.entries(opts.env ?? {})) {
 			args.push('-e', `${k}=${v}`);
 		}

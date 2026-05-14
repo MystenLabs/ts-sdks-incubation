@@ -15,12 +15,17 @@
 // router-network IP is settled.
 
 import { Effect } from 'effect';
-import { mkdtempSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { it as itEffect } from '@effect/vitest';
-import { renderFileProvider, removeFileProvider, writeFileProvider } from './router.js';
+import {
+	listRegisteredHostnames,
+	renderFileProvider,
+	removeFileProvider,
+	writeFileProvider,
+} from './router.js';
 
 describe('renderFileProvider', () => {
 	it('renders the canonical YAML shape for a host-process backend', () => {
@@ -78,6 +83,96 @@ describe('file-provider lifecycle', () => {
 			process.env.DEVSTACK_ROUTER_DYNAMIC_DIR = dir;
 			try {
 				yield* removeFileProvider('never-existed');
+			} finally {
+				if (savedDirEnv === undefined) {
+					delete process.env.DEVSTACK_ROUTER_DYNAMIC_DIR;
+				} else {
+					process.env.DEVSTACK_ROUTER_DYNAMIC_DIR = savedDirEnv;
+				}
+				rmSync(dir, { recursive: true, force: true });
+			}
+		}),
+	);
+});
+
+// -----------------------------------------------------------------------------
+// `listRegisteredHostnames` — extract Host(`...`) values from every
+// file-provider YAML in `routerDynamicDir()`. Drives the `--add-host`
+// add-on for containers that opt into routed-hostname DNS.
+// -----------------------------------------------------------------------------
+
+describe('listRegisteredHostnames', () => {
+	itEffect.effect('returns each YAML\'s Host(`...`) value; ignores non-yml files', () =>
+		Effect.gen(function* () {
+			const dir = mkdtempSync(join(tmpdir(), 'devstack-router-test-'));
+			const savedDirEnv = process.env.DEVSTACK_ROUTER_DYNAMIC_DIR;
+			process.env.DEVSTACK_ROUTER_DYNAMIC_DIR = dir;
+			try {
+				// Two real file-provider YAMLs alongside a stray non-yml
+				// file that should be ignored.
+				yield* writeFileProvider({
+					id: 'arena-main-sui-rpc',
+					hostname: 'sui.arena.localhost',
+					entrypoint: 'sui-rpc',
+					upstreamUrl: 'http://172.21.0.3:9000',
+				});
+				yield* writeFileProvider({
+					id: 'arena-main-walrus-node-0',
+					hostname: 'walrus-node-0.arena.localhost',
+					entrypoint: 'walrus',
+					upstreamUrl: 'http://172.21.0.4:9185',
+				});
+				writeFileSync(join(dir, 'README.txt'), 'not a yaml', 'utf8');
+
+				const hostnames = yield* listRegisteredHostnames();
+				expect([...hostnames].sort()).toEqual([
+					'sui.arena.localhost',
+					'walrus-node-0.arena.localhost',
+				]);
+			} finally {
+				if (savedDirEnv === undefined) {
+					delete process.env.DEVSTACK_ROUTER_DYNAMIC_DIR;
+				} else {
+					process.env.DEVSTACK_ROUTER_DYNAMIC_DIR = savedDirEnv;
+				}
+				rmSync(dir, { recursive: true, force: true });
+			}
+		}),
+	);
+
+	itEffect.effect('returns an empty array when the dir does not exist', () =>
+		Effect.gen(function* () {
+			const missingDir = join(tmpdir(), 'devstack-router-test-missing-' + Date.now());
+			const savedDirEnv = process.env.DEVSTACK_ROUTER_DYNAMIC_DIR;
+			process.env.DEVSTACK_ROUTER_DYNAMIC_DIR = missingDir;
+			try {
+				const hostnames = yield* listRegisteredHostnames();
+				expect(hostnames).toEqual([]);
+			} finally {
+				if (savedDirEnv === undefined) {
+					delete process.env.DEVSTACK_ROUTER_DYNAMIC_DIR;
+				} else {
+					process.env.DEVSTACK_ROUTER_DYNAMIC_DIR = savedDirEnv;
+				}
+			}
+		}),
+	);
+
+	itEffect.effect('skips YAMLs without a recognizable Host(`...`) rule', () =>
+		Effect.gen(function* () {
+			const dir = mkdtempSync(join(tmpdir(), 'devstack-router-test-'));
+			const savedDirEnv = process.env.DEVSTACK_ROUTER_DYNAMIC_DIR;
+			process.env.DEVSTACK_ROUTER_DYNAMIC_DIR = dir;
+			try {
+				writeFileSync(join(dir, 'bogus.yml'), 'http:\n  routers: {}\n', 'utf8');
+				yield* writeFileProvider({
+					id: 'arena-main-vite',
+					hostname: 'dev.arena.localhost',
+					entrypoint: 'vite',
+					upstreamUrl: 'http://host.docker.internal:5175',
+				});
+				const hostnames = yield* listRegisteredHostnames();
+				expect(hostnames).toEqual(['dev.arena.localhost']);
 			} finally {
 				if (savedDirEnv === undefined) {
 					delete process.env.DEVSTACK_ROUTER_DYNAMIC_DIR;

@@ -20,6 +20,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as Docker from './docker.js';
 import { decideRunAction, inspectContainerIp } from './docker/core.js';
+import {
+	getTraefikRouterIp,
+	resetTraefikRouterIpCacheForTesting,
+	writeFileProvider,
+} from './docker/router.js';
 import { Identity } from './identity.js';
 
 interface SpawnRecord {
@@ -786,5 +791,175 @@ describe('Docker.run resume-fallback', () => {
 				expect(result.hostPorts).toEqual({ 2024: 2024 });
 				expect(result.reused).toBe(false);
 			}),
+	);
+});
+
+// -----------------------------------------------------------------------------
+// `Docker.run({ routerAddHosts })` — RFC 6761 `.localhost` resolution
+// only fires on the host OS, so containers that dial routed URLs from
+// inside need explicit `/etc/hosts` entries pointing each registered
+// routed hostname at traefik's IP on `devstack-router`. The opt is
+// `false` by default; when `true`, the argv carries one `--add-host
+// <hostname>:<traefik-ip>` per YAML in the file-provider directory.
+// -----------------------------------------------------------------------------
+
+describe('Docker.run routerAddHosts', () => {
+	it.effect(
+		'omits routed `--add-host` entries by default (only the existing host-gateway entry)',
+		() =>
+			withTempRouterDir(() =>
+				Effect.gen(function* () {
+					resetTraefikRouterIpCacheForTesting();
+					// Seed two registered hostnames so we can distinguish
+					// "no add-hosts because dir is empty" from "no add-hosts
+					// because opt is off".
+					yield* writeFileProvider({
+						id: 'testapp-main-sui-rpc',
+						hostname: 'sui.testapp.localhost',
+						entrypoint: 'sui-rpc',
+						upstreamUrl: 'http://172.21.0.3:9000',
+					});
+
+					const recorder: Array<SpawnRecord> = [];
+					const spawnerLayer = makeSpawnerLayer(recorder, null);
+
+					yield* Docker.run({
+						name: 'sui.localnet',
+						image: 'mystenlabs/sui-tools:1.0.0',
+					}).pipe(Effect.provide(spawnerLayer), Effect.provide(identityLayer), Effect.scoped);
+
+					const runCmd = recorder.find((r) => r.args[0] === 'run');
+					expect(runCmd).toBeDefined();
+					const runArgs = runCmd!.args;
+					const addHosts = runArgs.filter((a) => a.startsWith('--add-host='));
+					// Default: only the host-gateway entry.
+					expect(addHosts).toEqual(['--add-host=host.docker.internal:host-gateway']);
+				}),
+			),
+	);
+
+	it.effect(
+		'stamps `--add-host <hostname>:<traefik-ip>` for each registered hostname when opted in',
+		() =>
+			withTempRouterDir(() =>
+				Effect.gen(function* () {
+					resetTraefikRouterIpCacheForTesting();
+					yield* writeFileProvider({
+						id: 'testapp-main-sui-rpc',
+						hostname: 'sui.testapp.localhost',
+						entrypoint: 'sui-rpc',
+						upstreamUrl: 'http://172.21.0.3:9000',
+					});
+					yield* writeFileProvider({
+						id: 'testapp-main-walrus-node-0',
+						hostname: 'walrus-node-0.testapp.localhost',
+						entrypoint: 'walrus',
+						upstreamUrl: 'http://172.21.0.4:9185',
+					});
+
+					const recorder: Array<SpawnRecord> = [];
+					const spawnerLayer = makeSpawnerLayer(recorder, null, {
+						// `getTraefikRouterIp` will inspect once and cache.
+						routerIpSequence: ['172.21.0.2'],
+					});
+
+					yield* Docker.run({
+						name: 'sui.localnet',
+						image: 'mystenlabs/sui-tools:1.0.0',
+						routerAddHosts: true,
+					}).pipe(Effect.provide(spawnerLayer), Effect.provide(identityLayer), Effect.scoped);
+
+					const runCmd = recorder.find((r) => r.args[0] === 'run');
+					expect(runCmd).toBeDefined();
+					const runArgs = runCmd!.args;
+					const addHosts = runArgs.filter((a) => a.startsWith('--add-host='));
+					// The host-gateway entry is preserved (still defaulted
+					// from `addHosts`), and each registered routed hostname
+					// gets stamped with traefik's IP.
+					expect(addHosts).toContain('--add-host=host.docker.internal:host-gateway');
+					expect(addHosts).toContain('--add-host=sui.testapp.localhost:172.21.0.2');
+					expect(addHosts).toContain('--add-host=walrus-node-0.testapp.localhost:172.21.0.2');
+					expect(addHosts.length).toBe(3);
+				}),
+			),
+	);
+
+	it.effect(
+		'`getTraefikRouterIp` docker-inspects once and reuses the cached IP for subsequent calls',
+		() =>
+			withTempRouterDir(() =>
+				Effect.gen(function* () {
+					resetTraefikRouterIpCacheForTesting();
+					yield* writeFileProvider({
+						id: 'testapp-main-sui-rpc',
+						hostname: 'sui.testapp.localhost',
+						entrypoint: 'sui-rpc',
+						upstreamUrl: 'http://172.21.0.3:9000',
+					});
+
+					const recorder: Array<SpawnRecord> = [];
+					const spawnerLayer = makeSpawnerLayer(recorder, null, {
+						routerIpSequence: ['172.21.0.2'],
+					});
+
+					yield* Effect.gen(function* () {
+						const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+						const ip1 = yield* getTraefikRouterIp(spawner);
+						const ip2 = yield* getTraefikRouterIp(spawner);
+						const ip3 = yield* getTraefikRouterIp(spawner);
+						expect(ip1).toBe('172.21.0.2');
+						expect(ip2).toBe('172.21.0.2');
+						expect(ip3).toBe('172.21.0.2');
+					}).pipe(Effect.provide(spawnerLayer));
+
+					// Across three `getTraefikRouterIp` calls the spawner
+					// only saw ONE router-IP inspect — the rest were
+					// served from the module-level cache. (We assert
+					// against the router-IP-inspect specifically to
+					// avoid coupling to unrelated probes.)
+					const routerIpInspects = recorder.filter(
+						(r) =>
+							r.args[0] === 'inspect' &&
+							r.args.some((a) => typeof a === 'string' && a.includes('NetworkSettings.Networks')),
+					);
+					expect(routerIpInspects.length).toBe(1);
+				}),
+			),
+	);
+
+	it.effect(
+		'`runOneShot` stamps the same `--add-host` entries when opted in',
+		() =>
+			withTempRouterDir(() =>
+				Effect.gen(function* () {
+					resetTraefikRouterIpCacheForTesting();
+					yield* writeFileProvider({
+						id: 'testapp-main-sui-rpc',
+						hostname: 'sui.testapp.localhost',
+						entrypoint: 'sui-rpc',
+						upstreamUrl: 'http://172.21.0.3:9000',
+					});
+
+					const recorder: Array<SpawnRecord> = [];
+					const spawnerLayer = makeSpawnerLayer(recorder, null, {
+						routerIpSequence: ['172.21.0.2'],
+					});
+
+					yield* Docker.runOneShot({
+						name: 'walrus-deploy',
+						image: 'mystenlabs/walrus-tools:1.0.0',
+						args: ['echo', 'hi'],
+						routerAddHosts: true,
+					}).pipe(Effect.provide(spawnerLayer));
+
+					const runCmd = recorder.find(
+						(r) => r.args[0] === 'run' && r.args.includes('--rm'),
+					);
+					expect(runCmd).toBeDefined();
+					const runArgs = runCmd!.args;
+					const addHosts = runArgs.filter((a) => a.startsWith('--add-host='));
+					expect(addHosts).toEqual(['--add-host=sui.testapp.localhost:172.21.0.2']);
+				}),
+			),
 	);
 });

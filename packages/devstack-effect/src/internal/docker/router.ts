@@ -44,7 +44,7 @@ import * as nodeFs from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join as joinPath } from 'node:path';
 import { DockerError } from '../../primitives/errors.js';
-import { runCapturing, runCapturingOrFail } from './core.js';
+import { runCapturing, runCapturingOrFail, inspectContainerIp, type Spawner } from './core.js';
 
 // Single shared docker network for every container that wants to be
 // addressable by hostname. Traefik attaches here; every other
@@ -183,8 +183,6 @@ const ensureDynamicDir = (): Effect.Effect<void, DockerError> =>
 				cause,
 			}),
 	}).pipe(Effect.asVoid);
-
-type Spawner = ReturnType<typeof ChildProcessSpawner.make>;
 
 const ensureRouterNetwork = (spawner: Spawner): Effect.Effect<void, DockerError> =>
 	Effect.gen(function* () {
@@ -340,3 +338,104 @@ export const removeFileProvider = (id: string): Effect.Effect<void, never> =>
 		try: () => nodeFs.unlink(joinPath(routerDynamicDir(), `${id}.yml`)),
 		catch: () => undefined,
 	}).pipe(Effect.catch(() => Effect.void));
+
+// -----------------------------------------------------------------------------
+// In-container DNS for routed hostnames — `--add-host` resolution
+// -----------------------------------------------------------------------------
+//
+// RFC 6761 `.localhost` resolution only kicks in on the host OS — inside a
+// container the routed hostnames (`sui.<app>.localhost`, etc.) fail DNS.
+// Callers that need to dial routed URLs from inside a container opt into
+// `routerAddHosts: true` on `Docker.run` / `Docker.runOneShot`; the
+// runtime then stamps `--add-host <hostname>:<traefik-router-ip>` for
+// every registered routed hostname. The container's `/etc/hosts` points
+// the routed names at traefik's IP on `devstack-router`; traefik
+// dispatches by `Host:` header to the right backend, identical to how
+// the host OS path works.
+
+// Module-level memoization of traefik's `devstack-router` IP. The traefik
+// container's IP on the router network doesn't change during its
+// lifetime, so we resolve it once per process and reuse across every
+// `Docker.run` / `Docker.runOneShot` that opts into `routerAddHosts`.
+// A plain mutable cell is sufficient: writes are idempotent (same IP
+// every time docker assigns one), concurrent first-callers do at most
+// a few redundant inspects before one wins, and the in-memory cache
+// dies with the supervisor process — well before any scenario that
+// would invalidate the IP (router container recreated via
+// `devstack prune --include-router` requires `pnpm dev` restart).
+
+let traefikRouterIpCache: string | null = null;
+
+/**
+ * Resolve traefik's IP on the `devstack-router` network. Memoized for
+ * the lifetime of the process — once docker has assigned the
+ * `devstack-traefik` container an IP, that IP is stable until the
+ * container is recreated (which happens on `devstack prune
+ * --include-router`, by which point the supervisor has torn down and
+ * the in-memory cache is gone too). Fails with `DockerError` if the
+ * inspect retries are exhausted (e.g. traefik isn't attached to the
+ * router network yet — the supervisor calls `ensureRouter` before any
+ * primitive that would consume this, so the failure mode is a bug
+ * upstream, not a transient).
+ */
+export const getTraefikRouterIp = (
+	spawner: Spawner,
+): Effect.Effect<string, DockerError> =>
+	Effect.gen(function* () {
+		if (traefikRouterIpCache !== null) return traefikRouterIpCache;
+		const ip = yield* inspectContainerIp(spawner, ROUTER_CONTAINER, ROUTER_NETWORK);
+		traefikRouterIpCache = ip;
+		return ip;
+	});
+
+// Test-only reset of the memoization cell. Lets the spawner-recorder
+// tests assert that `getTraefikRouterIp` only docker-inspects once
+// across N consecutive calls without leaking memoized state across
+// unrelated test cases. Not exported from the docker barrel.
+export const resetTraefikRouterIpCacheForTesting = (): void => {
+	traefikRouterIpCache = null;
+};
+
+// Pattern that matches the `rule: "Host(\`<hostname>\`)"` line in a
+// file-provider YAML. Anchored to the leading whitespace + key so we
+// don't false-match a user's free-text comment that happens to contain
+// the word `Host(`.
+const HOST_RULE_RE = /^\s*rule:\s*"Host\(`([^`]+)`\)"\s*$/m;
+
+/**
+ * Enumerate all registered routed hostnames by reading the file-
+ * provider YAMLs under `routerDynamicDir()`. Each YAML's
+ * `rule: "Host(\`...\`)"` value is extracted; the result is the set of
+ * hostnames that traefik is currently configured to dispatch on.
+ *
+ * Read fresh on every call — files appear/disappear at most a few
+ * times per stack boot, the cost is trivial, and caching would
+ * complicate the `Docker.run` path (which needs the current set at
+ * spawn time so containers stamped earlier in the boot get the right
+ * `--add-host` entries for hostnames registered later).
+ *
+ * Best-effort: a missing dir, an unreadable file, or a YAML that
+ * doesn't match the host-rule pattern is silently skipped. Returns an
+ * empty array if nothing is registered yet (the supervisor's first
+ * primitive can still boot before any YAML lands).
+ */
+export const listRegisteredHostnames = (): Effect.Effect<ReadonlyArray<string>> =>
+	Effect.tryPromise({
+		try: async () => {
+			const dir = routerDynamicDir();
+			const entries = await nodeFs.readdir(dir).catch(() => [] as Array<string>);
+			const hostnames: Array<string> = [];
+			for (const file of entries) {
+				if (!file.endsWith('.yml')) continue;
+				const body = await nodeFs
+					.readFile(joinPath(dir, file), 'utf8')
+					.catch(() => undefined);
+				if (body === undefined) continue;
+				const m = body.match(HOST_RULE_RE);
+				if (m === null || m[1] === undefined) continue;
+				hostnames.push(m[1]);
+			}
+			return hostnames as ReadonlyArray<string>;
+		},
+		catch: () => undefined,
+	}).pipe(Effect.catch(() => Effect.succeed([] as ReadonlyArray<string>)));

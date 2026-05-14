@@ -56,6 +56,13 @@ export const startStorageNodes = (args: {
 				hostname: nodeHostname,
 				networkAlias: `walrus-node-${i}.localhost`,
 				detach: true,
+				// Storage nodes dial the sui faucet at the routed URL
+				// (`http://faucet.<app>.localhost:9123`) via
+				// `WALRUS_FAUCET_URL` — RFC 6761 `.localhost` resolution
+				// only works on the host OS, so the container needs
+				// explicit `/etc/hosts` entries pointing the routed
+				// hostnames at traefik.
+				routerAddHosts: true,
 				// Per-node traefik router entry. `id` is
 				// `<app>-<stack>-walrus-node-N`; `hostname` is the
 				// stack-scoped hostname the deploy phase registered on

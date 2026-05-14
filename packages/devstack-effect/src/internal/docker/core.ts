@@ -12,6 +12,8 @@ import { LongLivedScope } from '../long-lived-scope.js';
 import { ClaimedContainers } from './sweep.js';
 import {
 	ROUTER_NETWORK,
+	getTraefikRouterIp,
+	listRegisteredHostnames,
 	removeFileProvider,
 	writeFileProvider,
 	type RouterLabel,
@@ -132,6 +134,23 @@ export interface DockerRunOptions {
 	 * Mac/Windows. Pass `[]` to opt out entirely.
 	 */
 	readonly addHosts?: ReadonlyArray<string>;
+	/**
+	 * When `true`, additionally stamps one `--add-host` per currently
+	 * registered routed hostname (read fresh from the file-provider
+	 * directory at spawn time), each pointing at traefik's IP on
+	 * `devstack-router`. Containers on Linux/Docker Desktop can't
+	 * resolve `*.localhost` (RFC 6761 only applies on the host OS), so
+	 * a container that tries to dial a routed URL like
+	 * `http://sui.<app>.localhost:9000` would get an NXDOMAIN. With
+	 * this opt set the hostname resolves to traefik inside the
+	 * container, the HTTP `Host:` header stays correct, and traefik
+	 * dispatches to the right backend — identical to the host-OS path.
+	 *
+	 * Stacks ALONGSIDE the existing `addHosts` opt; opt in only on the
+	 * primitives whose workloads dial routed URLs (walrus deploy,
+	 * walrus storage nodes, seal key-server). Default `false`.
+	 */
+	readonly routerAddHosts?: boolean;
 	/**
 	 * Static IP within `network`. Requires `network` to be set —
 	 * `--ip` is meaningless without `--network`, so we validate the
@@ -321,7 +340,17 @@ export const run = (
 		// on Linux can dial the host loopback. Docker Desktop already
 		// provides this entry on Mac/Windows, where re-declaring it is
 		// harmless. Caller can opt out by passing an explicit empty array.
-		const addHosts = opts.addHosts ?? ['host.docker.internal:host-gateway'];
+		const baseAddHosts = opts.addHosts ?? ['host.docker.internal:host-gateway'];
+		const routerEntries = opts.routerAddHosts === true
+			? yield* resolveRouterAddHosts(spawner).pipe(
+					Effect.catch((cause: DockerError) =>
+						Effect.logWarning(
+							`devstack: routerAddHosts resolution failed for '${name}' — ${cause.message}`,
+						).pipe(Effect.as([] as ReadonlyArray<string>)),
+					),
+				)
+			: ([] as ReadonlyArray<string>);
+		const addHosts: ReadonlyArray<string> = [...baseAddHosts, ...routerEntries];
 		const bindAddress = opts.bindAddress ?? '127.0.0.1';
 
 		// Reuse-if-healthy: when an existing container with this name is
@@ -661,6 +690,22 @@ export const run = (
 				: { ...(opts.ports ?? {}) };
 		return { containerId, name, reused: false, hostPorts };
 	}).pipe(Effect.withSpan('Docker.run'));
+
+// Resolve the `--add-host` entries for routed hostnames. Reads the
+// current set of registered hostnames fresh from the file-provider dir
+// and pairs each with traefik's IP on `devstack-router`. Empty when
+// nothing is registered yet; the inspect failure (traefik not running)
+// surfaces as a typed `DockerError` so `Docker.run` can log + continue
+// rather than fail the whole container boot.
+const resolveRouterAddHosts = (
+	spawner: Spawner,
+): Effect.Effect<ReadonlyArray<string>, DockerError> =>
+	Effect.gen(function* () {
+		const hostnames = yield* listRegisteredHostnames();
+		if (hostnames.length === 0) return [] as ReadonlyArray<string>;
+		const ip = yield* getTraefikRouterIp(spawner);
+		return hostnames.map((h) => `${h}:${ip}`);
+	});
 
 // -----------------------------------------------------------------------------
 // State machine — pure decision for `Docker.run`
