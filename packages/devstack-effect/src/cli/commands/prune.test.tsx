@@ -13,6 +13,7 @@ import { render as inkRender } from 'ink-testing-library';
 import React from 'react';
 import { PruneApp, selectableKeys } from './_prune-ui.js';
 import type { InventoryRow } from '../../internal/docker/inventory.js';
+import { parseDuration } from './prune.js';
 
 const row = (overrides: Partial<InventoryRow> = {}): InventoryRow => ({
 	app: 'arena',
@@ -22,7 +23,28 @@ const row = (overrides: Partial<InventoryRow> = {}): InventoryRow => ({
 	volumes: [],
 	stateDirs: [],
 	runningPid: undefined,
+	classification: 'untracked',
+	registryEntry: undefined,
 	...overrides,
+});
+
+describe('parseDuration (--stale flag)', () => {
+	it.each([
+		['30d', 30 * 86_400_000],
+		['12h', 12 * 3_600_000],
+		['45m', 45 * 60_000],
+		['90s', 90 * 1_000],
+	])('parses %s', (input, expectedMs) => {
+		const out = parseDuration(input);
+		expect(out).toEqual({ ms: expectedMs });
+	});
+
+	it('rejects compound or invalid forms', () => {
+		expect('error' in parseDuration('1d12h')).toBe(true);
+		expect('error' in parseDuration('abc')).toBe(true);
+		expect('error' in parseDuration('0d')).toBe(true);
+		expect('error' in parseDuration('-5d')).toBe(true);
+	});
 });
 
 describe('selectableKeys', () => {
@@ -45,8 +67,7 @@ describe('selectableKeys', () => {
 });
 
 describe('PruneApp', () => {
-	const flush = (ms = 20): Promise<void> =>
-		new Promise((resolve) => setTimeout(resolve, ms));
+	const flush = (ms = 20): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 	it('renders one row per stack and surfaces the running marker', async () => {
 		const rows = [
@@ -85,7 +106,7 @@ describe('PruneApp', () => {
 		stdin.write('\r');
 		await flush();
 		const frame = lastFrame() ?? '';
-		expect(frame).toContain('About to remove');
+		expect(frame).toContain('Will remove');
 		expect(frame).toContain('Proceed?');
 		unmount();
 	});
@@ -112,6 +133,28 @@ describe('PruneApp', () => {
 		unmount();
 	});
 
+	it('pre-selects abandoned rows on mount', async () => {
+		const rows = [
+			row({ app: 'arena', stack: 'main', classification: 'dormant' }),
+			row({ app: 'arena', stack: 'old', classification: 'abandoned' }),
+			row({ app: 'wallet', stack: 'main', classification: 'abandoned' }),
+		];
+		const { lastFrame, unmount } = inkRender(
+			React.createElement(PruneApp, {
+				rows,
+				onSubmit: () => undefined,
+				onQuit: () => undefined,
+			}),
+		);
+		await flush();
+		const frame = lastFrame() ?? '';
+		// The two abandoned rows render with `[x]`; the dormant row with `[ ]`.
+		// Surface order is preserved.
+		const checked = frame.split('\n').filter((l) => l.includes('[x]')).length;
+		expect(checked).toBe(2);
+		unmount();
+	});
+
 	it("doesn't open confirm when nothing is selected", async () => {
 		const { lastFrame, stdin, unmount } = inkRender(
 			React.createElement(PruneApp, {
@@ -124,7 +167,7 @@ describe('PruneApp', () => {
 		stdin.write('\r');
 		await flush();
 		const frame = lastFrame() ?? '';
-		expect(frame).not.toContain('About to remove');
+		expect(frame).not.toContain('Will remove');
 		expect(frame).toContain('[space] toggle');
 		unmount();
 	});

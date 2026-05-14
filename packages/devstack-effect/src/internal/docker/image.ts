@@ -24,11 +24,7 @@ export const pull = (
 		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 		yield* Effect.annotateCurrentSpan({ 'docker.image': image });
 
-		yield* runCapturingOrFail(
-			spawner,
-			ChildProcess.make('docker', ['pull', image]),
-			'docker pull',
-		);
+		yield* runCapturingOrFail(spawner, ChildProcess.make('docker', ['pull', image]), 'docker pull');
 
 		const stdout = yield* runCapturingOrFail(
 			spawner,
@@ -73,6 +69,14 @@ export const build = (
 		yield* Effect.annotateCurrentSpan({ 'docker.op': 'build', 'docker.tag': opts.tag });
 
 		const args: Array<string> = ['build', '--tag', opts.tag];
+		// Global devstack-built marker. `prune --include-images` and the
+		// inventory query both filter on `label=devstack.image=true` —
+		// keeping the label here (the only place we shell out to
+		// `docker build`) means every image we produce is reachable to
+		// the cleanup tooling. Per-stack `devstack.app` / `devstack.stack`
+		// labels are NOT stamped on images: a single built image (e.g.
+		// `walrus-rs:dev`) is intentionally reused across stacks.
+		args.push('--label', 'devstack.image=true');
 		if (opts.platform !== undefined) args.push('--platform', opts.platform);
 		for (const [k, v] of Object.entries(opts.buildArgs ?? {})) {
 			args.push('--build-arg', `${k}=${v}`);

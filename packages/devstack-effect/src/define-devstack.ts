@@ -42,6 +42,7 @@ import {
 import { FileWatcher, FileWatcherLive } from './internal/file-watcher.js';
 import { Identity, deriveAppName } from './internal/identity.js';
 import { LeasingLive } from './internal/leasing.js';
+import { registry, type RegistryNetwork } from './internal/registry.js';
 import { PortAllocatorLive } from './internal/port-allocator.js';
 import {
 	AccountRegistryLive,
@@ -722,6 +723,31 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 				);
 				const engine: EngineShape = Context.get(bootstrapCtx, EngineHandle);
 
+				// Best-effort: announce ourselves to the global registry so
+				// `devstack doctor` / `devstack prune` on any host shell can
+				// see this (app, stack, network) even from inside a different
+				// cwd — and, more importantly, still see it AFTER the repo
+				// gets `rm -rf`'d. The registry I/O is wrapped in
+				// `Effect.ignore` so a corrupt / locked registry file never
+				// blocks supervisor boot. The scope finalizer below clears
+				// our pid on clean shutdown so post-mortem `classify` drops
+				// us out of the `active` bucket without us having to be
+				// alive to write again.
+				const registryNetwork: RegistryNetwork = headerNetwork;
+				const registryRepoPath = process.env.DEVSTACK_APP_DIR ?? process.cwd();
+				yield* registry
+					.upsert({
+						app: headerApp,
+						stack: headerStack,
+						network: registryNetwork,
+						repoPath: registryRepoPath,
+						pid: process.pid,
+					})
+					.pipe(Effect.ignore);
+				yield* Effect.addFinalizer(() =>
+					registry.clearPid(headerApp, headerStack, registryNetwork).pipe(Effect.ignore),
+				);
+
 				// Publish this cycle's engine to the outer launch effect so an
 				// `Effect.onInterrupt` over there can flip `buildStatus` to
 				// `shutting-down` + append the user-facing teardown log line on
@@ -815,12 +841,7 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 				// docker state.
 				if (cycle === 1 && buildSucceeded) {
 					const claimed = yield* Ref.get(claimedRef);
-					const swept = yield* dockerOrphanSweep(
-						sweepApp,
-						sweepStack,
-						sweepNetwork,
-						claimed,
-					).pipe(
+					const swept = yield* dockerOrphanSweep(sweepApp, sweepStack, sweepNetwork, claimed).pipe(
 						Effect.provide(PlatformLive as Layer.Layer<ChildProcessSpawner.ChildProcessSpawner>),
 					);
 					if (swept.length > 0) {
