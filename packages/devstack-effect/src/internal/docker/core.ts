@@ -280,6 +280,7 @@ export const run = (
 				: Ref.update(claimedRef, (s) => new Set(s).add(id));
 
 		const inspected = yield* inspectContainer(spawner, name);
+		let resumeFailedFallback = false;
 		if (inspected !== null && inspected.image === opts.image) {
 			// Two warm-restart paths, both faster than re-`run`:
 			//
@@ -296,12 +297,34 @@ export const run = (
 			//      finalizer registration below.
 			if (!inspected.running) {
 				yield* Effect.logInfo(`devstack: resuming stopped container '${name}'`);
-				yield* spawner
-					.exitCode(ChildProcess.make('docker', ['start', inspected.containerId]))
-					.pipe(Effect.mapError(dockerError('docker start')));
+				// Capture exit code + stderr — `docker start` can fail
+				// for real reasons (port already in use on the host, the
+				// image's tag was pruned out from under it, runtime
+				// config drift). The earlier code just looked at the
+				// exitCode field returned by the spawner and ignored
+				// non-zero values, so a silent start-failure put the
+				// supervisor into "container exists but isn't actually
+				// running" territory and every downstream ready-probe
+				// timed out blind.
+				const startResult = yield* runCapturing(
+					spawner,
+					ChildProcess.make('docker', ['start', inspected.containerId]),
+					'docker start',
+				).pipe(Effect.catchTag('DockerError', () => Effect.succeed(null)));
+				if (startResult === null || startResult.exitCode !== 0) {
+					yield* Effect.logWarning(
+						`devstack: docker start '${name}' failed (` +
+							`exit=${startResult?.exitCode ?? 'spawn-error'}, ` +
+							`stderr=${(startResult?.stderr ?? '').trim().slice(0, 200)})` +
+							' — falling back to remove + fresh run',
+					);
+					resumeFailedFallback = true;
+				}
 			} else {
 				yield* Effect.logInfo(`devstack: reusing running container '${name}'`);
 			}
+		}
+		if (inspected !== null && inspected.image === opts.image && !resumeFailedFallback) {
 			yield* Effect.annotateCurrentSpan({
 				'docker.op': 'run',
 				'docker.name': name,
