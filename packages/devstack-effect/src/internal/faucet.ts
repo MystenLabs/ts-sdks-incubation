@@ -51,6 +51,16 @@ const faucetRetrySchedule = Schedule.exponential('500 millis', 1.5).pipe(
 // 90s-timeout cost of the full `requestFunds` wrapper. Production
 // callers always go through `requestFunds`, which adds the retry
 // schedule and a wall-clock budget on top.
+// Per-POST hard deadline. The sui-faucet binary internally retries the
+// underlying SUI transfer tx twice with ~30s timeouts, so a request
+// against a cold chain (no recent checkpoints) blocks for ~60s before
+// returning 500. That single slow response burns through most of our
+// 90s budget in one shot. By aborting at 5s we let the outer retry
+// loop hammer the faucet quickly — when the chain catches up, the
+// next attempt lands in <1s and we're done. Successful warm-faucet
+// calls return in well under 1s, so 5s is a safe upper bound.
+const FAUCET_FETCH_TIMEOUT_MS = 5_000;
+
 export const requestFundsOnce = (opts: {
 	faucetUrl: string;
 	address: string;
@@ -65,6 +75,7 @@ export const requestFundsOnce = (opts: {
 					body: JSON.stringify({
 						FixedAmountRequest: { recipient: opts.address },
 					}),
+					signal: AbortSignal.timeout(FAUCET_FETCH_TIMEOUT_MS),
 				}),
 			catch: (cause) =>
 				new FaucetError({
