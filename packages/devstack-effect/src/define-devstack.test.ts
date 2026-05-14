@@ -10,10 +10,13 @@
 // uses `console.log` for INFO/WARN and `console.error` for ERROR, so we
 // spy on both for safety against future log-level changes.
 
-import { Cause, Context, Deferred, Effect, Layer, Ref, Scope } from 'effect';
+import { Cause, Context, Deferred, Effect, Exit, Layer, Ref, Scope } from 'effect';
 import { describe, expect, it as vitestIt, vi } from 'vitest';
 import { it } from '@effect/vitest';
-import { composeStackLayer, type StackMember } from './define-devstack.js';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { composeStackLayer, defineDevstack, type StackMember } from './define-devstack.js';
 import { EngineHandle, EngineLive, type EngineHandleShape } from './internal/engine.js';
 
 const captureConsole = () => {
@@ -423,4 +426,106 @@ describe('defineDevstack — bootstrap-before-user-stack ordering', () => {
 			);
 		}),
 	);
+});
+
+// -----------------------------------------------------------------------------
+// CI fast-fail: plain/silent renderer with first-cycle build failure must
+// surface as a failed Effect (non-zero process exit) rather than blocking on
+// the restart Deferred. Interactive TUI mode keeps the wait-for-`r` behavior
+// for in-terminal recovery.
+// -----------------------------------------------------------------------------
+
+describe('defineDevstack — CI fast-fail on first-cycle build failure', () => {
+	// We need a real (writable) state dir for StateStoreLive's lock acquire,
+	// since `BootstrapLive` now folds state-store into the supervisor's
+	// resource pool. A throwaway tmpdir keeps the test isolated from other
+	// suites that may scribble in `.devstack/`.
+	let stateDir: string;
+	let savedEnv: NodeJS.ProcessEnv;
+
+	const setupTmp = () => {
+		savedEnv = { ...process.env };
+		// `process.stdout.isTTY` reads from the live stream. In vitest's worker
+		// process this is usually false (piped to the runner), but force `plain`
+		// explicitly anyway so the test doesn't accidentally pick `tui` if it
+		// runs in an interactive terminal.
+		stateDir = mkdtempSync(join(tmpdir(), 'devstack-ci-fastfail-'));
+	};
+
+	const teardownTmp = () => {
+		for (const k of Object.keys(process.env)) delete process.env[k];
+		Object.assign(process.env, savedEnv);
+		try {
+			rmSync(stateDir, { recursive: true, force: true });
+		} catch {
+			// best-effort
+		}
+	};
+
+	// A stack member whose acquire fails immediately. The `__layer` is a
+	// `Layer.effect` over a sentinel tag — building it `yield* Effect.fail`s,
+	// which the supervisor's `Effect.catchCause` captures as a failed-build
+	// signal.
+	class FailingService extends Context.Service<FailingService, { ok: boolean }>()(
+		'@devstack/test/FailingService',
+	) {}
+	const failingMember: StackMember = {
+		key: '@devstack/test/FailingService',
+		__layer: Layer.effect(
+			FailingService,
+			Effect.fail(new Error('test primitive intentionally fails on acquire')),
+		) as unknown as Layer.Layer<unknown, unknown, unknown>,
+	};
+
+	vitestIt('plain renderer: launchEffect fails on first-cycle build failure (does not hang)', async () => {
+		setupTmp();
+		try {
+			const devstack = defineDevstack({
+				stack: [failingMember],
+				stateDir,
+				renderer: 'plain',
+			});
+			// Wrap with a 5s timeout: if the fast-fail branch regresses,
+			// `Deferred.await(restartSignal)` blocks forever — the test would
+			// hang until vitest's per-test timeout. The explicit timeout +
+			// `Effect.runPromiseExit` lets us assert the failure shape AND
+			// fail loudly if the supervisor blocks.
+			const exit = await Effect.runPromiseExit(
+				devstack.launchEffect().pipe(Effect.timeout('5 seconds')),
+			);
+			expect(Exit.isFailure(exit)).toBe(true);
+			if (Exit.isFailure(exit)) {
+				// The fail-cause should carry our explicit "first cycle"
+				// message — NOT a timeout error (which would indicate the
+				// supervisor was blocking on the restart Deferred).
+				const pretty = Cause.pretty(exit.cause);
+				expect(pretty).toContain('stack acquire failed on first cycle');
+				expect(pretty).not.toContain('TimeoutException');
+			}
+		} finally {
+			teardownTmp();
+		}
+	}, 15_000);
+
+	vitestIt('silent renderer: same fast-fail path applies', async () => {
+		setupTmp();
+		try {
+			const devstack = defineDevstack({
+				stack: [failingMember],
+				stateDir,
+				renderer: 'silent',
+			});
+			const exit = await Effect.runPromiseExit(
+				devstack.launchEffect().pipe(Effect.timeout('5 seconds')),
+			);
+			expect(Exit.isFailure(exit)).toBe(true);
+			if (Exit.isFailure(exit)) {
+				const pretty = Cause.pretty(exit.cause);
+				expect(pretty).toContain('stack acquire failed on first cycle');
+				expect(pretty).not.toContain('TimeoutException');
+			}
+		} finally {
+			teardownTmp();
+		}
+	}, 15_000);
 });
