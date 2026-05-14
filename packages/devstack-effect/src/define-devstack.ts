@@ -805,19 +805,20 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 				stateDir: config.stateDir,
 				platformLayer: undefined,
 			});
-			yield* Layer.buildWithMemoMap(
+			const buildSucceeded = yield* Layer.buildWithMemoMap(
 				userStackLayer as Layer.Layer<unknown, unknown, never>,
 				memoMap,
 				supervisorScope,
 			).pipe(
 				Effect.provide(loggerLayer as Layer.Layer<unknown, never, never>),
 				Effect.provideService(ClaimedContainers, claimedRef),
+				Effect.as(true),
 				Effect.catchCause((cause) =>
 					engine.appendLog({
 						ts: Date.now(),
 						level: 'error',
 						message: `stack acquire failed:\n${prettyError(cause)}`,
-					}),
+					}).pipe(Effect.as(false)),
 				),
 			);
 
@@ -828,7 +829,16 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 			// process. Skipping this on later cycles (`r`) keeps long-lived
 			// containers from being reaped between cycles when their
 			// finalizer lives on `LongLivedScope`. Best-effort throughout.
-			if (cycle === 1) {
+			//
+			// CRITICAL: only sweep on successful build. A failed build
+			// (e.g. state-store locked by a sibling supervisor, primitive
+			// failure mid-acquire) leaves `claimedRef` incomplete — sweeping
+			// against it would destroy the sibling's healthy containers
+			// because they look like "orphans" to this process. The
+			// adopt-on-next-run path also relies on those containers
+			// surviving, so a failed cycle MUST be a no-op against existing
+			// docker state.
+			if (cycle === 1 && buildSucceeded) {
 				const claimed = yield* Ref.get(claimedRef);
 				const swept = yield* dockerOrphanSweep(sweepApp, sweepStack, claimed).pipe(
 					Effect.provide(PlatformLive as Layer.Layer<ChildProcessSpawner.ChildProcessSpawner>),
