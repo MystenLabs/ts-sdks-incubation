@@ -169,7 +169,20 @@ export const accounts = <S extends Record<string, AccountSpec>>(specs: S): Accou
 					}
 					const faucetUrl = sui.faucetUrl;
 					yield* setPhase('requesting funds');
-					yield* requestFunds({ faucetUrl, address }).pipe(
+					yield* requestFunds({
+						faucetUrl,
+						address,
+						// Surface retry progress so a slow cold-start
+						// (sui-faucet binary still warming up, returning 503
+						// or body-level `Failure` for the first ~30s after
+						// genesis) doesn't look like a hang in the TUI.
+						// `setPhase` mutates the row's status text — the
+						// dashboard re-renders within one tick.
+						onAttempt: (attempt, err) =>
+							setPhase(
+								`requesting funds (attempt ${attempt}, last: ${err.message.replace(/\n.*$/s, '')})`,
+							),
+					}).pipe(
 						Effect.catchTag('FaucetError', (cause) =>
 							Effect.fail(
 								new AccountError({

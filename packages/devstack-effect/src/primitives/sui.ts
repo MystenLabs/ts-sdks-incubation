@@ -370,29 +370,51 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 		// cold restart without any correctness benefit, since
 		// `accounts.fund` was already covering the same ground.
 		const readyTimeoutMs = options.readyTimeoutMs ?? 60_000;
+		// Per-fetch timeout via AbortSignal — without it a hung fetch
+		// (firewall drops, container in a weird half-listen state)
+		// blocks the whole `Effect.all` until the outer 60s timeout
+		// fires, with no signal about which probe was the laggard.
+		// 3s per attempt is plenty for a localhost HTTP round-trip;
+		// the retry loop picks back up immediately on failure.
+		const PROBE_FETCH_TIMEOUT_MS = 3000;
+		const probeFetch = (url: string, init: RequestInit) =>
+			fetch(url, { ...init, signal: AbortSignal.timeout(PROBE_FETCH_TIMEOUT_MS) });
+
+		// Track which probe last succeeded so the timeout error names
+		// the laggard. Hidden refs via closure since the probes already
+		// run inside the same Effect.gen.
+		const probeStatus: { rpc: boolean; faucet: boolean; graphql: boolean } = {
+			rpc: false,
+			faucet: false,
+			graphql: false,
+		};
 		const rpcProbe = Effect.tryPromise({
 			try: () => client.getChainIdentifier(),
 			catch: (cause) => new Error(`rpc: ${stringifyCause(cause)}`),
-		}).pipe(Effect.withSpan('sui.probe.rpc'));
+		}).pipe(
+			Effect.tap(() => Effect.sync(() => (probeStatus.rpc = true))),
+			Effect.withSpan('sui.probe.rpc'),
+		);
+		// Cheap socket-level liveness check. We deliberately do NOT
+		// POST `/v2/gas` here — that path actually transfers SUI from
+		// the dispenser and can block for many seconds during startup
+		// while the validator hasn't produced a checkpoint yet. Hitting
+		// `GET /` returns "OK" as soon as the HTTP server is bound and
+		// proves the faucet is up without consuming gas or stalling on
+		// chain state.
 		const faucetProbe = Effect.tryPromise({
 			try: async () => {
-				const r = await fetch(`${faucetUrl}/v2/gas`, {
-					method: 'POST',
-					headers: { 'content-type': 'application/json' },
-					body: JSON.stringify({
-						FixedAmountRequest: {
-							recipient:
-								'0x0000000000000000000000000000000000000000000000000000000000000000',
-						},
-					}),
-				});
+				const r = await probeFetch(faucetUrl, { method: 'GET' });
 				if (r.status >= 500) throw new Error(`faucet: ${r.status}`);
 			},
 			catch: (cause) => new Error(`faucet: ${stringifyCause(cause)}`),
-		}).pipe(Effect.withSpan('sui.probe.faucet'));
+		}).pipe(
+			Effect.tap(() => Effect.sync(() => (probeStatus.faucet = true))),
+			Effect.withSpan('sui.probe.faucet'),
+		);
 		const graphqlProbe = Effect.tryPromise({
 			try: () =>
-				fetch(graphqlUrl, {
+				probeFetch(graphqlUrl, {
 					method: 'POST',
 					headers: { 'content-type': 'application/json' },
 					body: JSON.stringify({ query: '{ chainIdentifier }' }),
@@ -400,7 +422,10 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 					if (!r.ok) throw new Error(`graphql: ${r.status}`);
 				}),
 			catch: (cause) => new Error(`graphql: ${stringifyCause(cause)}`),
-		}).pipe(Effect.withSpan('sui.probe.graphql'));
+		}).pipe(
+			Effect.tap(() => Effect.sync(() => (probeStatus.graphql = true))),
+			Effect.withSpan('sui.probe.graphql'),
+		);
 		yield* Effect.all([rpcProbe, faucetProbe, graphqlProbe], {
 			concurrency: 'unbounded',
 		}).pipe(
@@ -413,16 +438,23 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 					// (genesis crash, port-bind clash inside the
 					// container, indexer DB connection failure, …)
 					// instead of a generic "did not become ready".
-					Docker.dockerLogsTail('sui.localnet').pipe(
-						Effect.flatMap((tail) =>
-							Effect.fail(
+					Docker.dockerLogsTail(localnetRunResult.name).pipe(
+						Effect.flatMap((tail) => {
+							const stillFailing = (['rpc', 'faucet', 'graphql'] as const).filter(
+								(k) => !probeStatus[k],
+							);
+							const lagSummary =
+								stillFailing.length === 0
+									? 'all three probes succeeded at least once individually but never together'
+									: `never-succeeded: ${stillFailing.join(', ')}`;
+							return Effect.fail(
 								new SuiError({
 									phase: 'ready-probe',
-									message: `sui localnet did not become fully ready (rpc + faucet + graphql) within ${readyTimeoutMs}ms`,
+									message: `sui localnet did not become fully ready within ${readyTimeoutMs}ms (rpc=${probeStatus.rpc} faucet=${probeStatus.faucet} graphql=${probeStatus.graphql}); ${lagSummary}; sui-rpc=${rpcUrl} faucet=${faucetUrl} graphql=${graphqlUrl}`,
 									stderr: tail.length > 0 ? tail : undefined,
 								}),
-							),
-						),
+							);
+						}),
 					),
 			}),
 		);
