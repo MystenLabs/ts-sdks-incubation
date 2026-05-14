@@ -4,10 +4,9 @@
 
 import { Effect } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
-import { addFinalizer, type Scope } from 'effect/Scope';
+import type { Scope } from 'effect/Scope';
 import { DockerError } from '../../primitives/errors.js';
 import { Identity } from '../identity.js';
-import { LongLivedScope } from '../long-lived-scope.js';
 import { composeProjectName, runCapturing, runCapturingOrFail } from './core.js';
 
 export const networkCreate = (
@@ -22,35 +21,28 @@ export const networkCreate = (
 	Effect.gen(function* () {
 		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 		const identity = yield* Identity;
-		const scope = yield* Effect.scope;
-		// Register the `network rm` finalizer on `LongLivedScope` (when
-		// `defineDevstack` provides it) so a per-cycle teardown on `r`
-		// doesn't destroy the bridge network out from under reused
-		// containers — those live on the same long-lived scope (see
-		// `Docker.run`), so without this the next cycle recreates a
-		// same-named network and the surviving containers stay attached
-		// to the orphaned one. Standalone callers (the tests) get no
-		// `LongLivedScope` in context and fall back to the inner scope,
-		// matching the previous behavior.
-		const longLivedScope = yield* LongLivedScope;
-		const finalizerScope = longLivedScope ?? scope;
+		// Networks are persistent shared resources — they outlive any
+		// individual supervisor process. We deliberately register NO
+		// finalizer here: a clean Ctrl-C / SIGTERM should leave the
+		// network on disk so the next `pnpm dev` can resume the same
+		// containers (which are `docker stop`-ed, not removed). Removing
+		// the network on supervisor shutdown orphans the stopped
+		// containers — they can't `docker start` back without their
+		// network, and recreating a same-named network gives them a
+		// different bridge ID. Cleanup is the job of `devstack wipe`,
+		// which queries by `devstack.app=…` / `devstack.stack=…` label
+		// and removes containers + networks + volumes atomically.
 		yield* Effect.annotateCurrentSpan({ 'docker.network': name });
 
 		// Idempotent: if a network with this name already exists (left over
-		// from a prior run that didn't clean up), reuse it instead of
-		// failing. Same finalizer wires up either way.
+		// from a prior run, which is the EXPECTED case on warm restart),
+		// just reuse it.
 		const existing = yield* runCapturing(
 			spawner,
 			ChildProcess.make('docker', ['network', 'ls', '-q', '--filter', `name=^${name}$`]),
 			'docker network ls',
 		);
 		if (existing.stdout.trim().length > 0) {
-			yield* addFinalizer(
-				finalizerScope,
-				Effect.uninterruptible(
-					spawner.exitCode(ChildProcess.make('docker', ['network', 'rm', name])).pipe(Effect.ignore),
-				),
-			);
 			return name;
 		}
 
@@ -85,20 +77,6 @@ export const networkCreate = (
 			spawner,
 			ChildProcess.make('docker', createArgs),
 			'docker network create',
-		);
-
-		yield* addFinalizer(
-			finalizerScope,
-			Effect.uninterruptible(
-				spawner.exitCode(ChildProcess.make('docker', ['network', 'rm', name])).pipe(
-					// `network rm` fails with "active endpoints" if any container
-					// is still attached. Reverse-topo shutdown order normally
-					// drains them first, but a process killed mid-cycle can race.
-					// Leave the network for `docker network prune` to GC rather
-					// than wedge teardown.
-					Effect.ignore,
-				),
-			),
 		);
 
 		return name;
