@@ -10,11 +10,28 @@
 
 import { Effect } from 'effect';
 import * as Docker from '../../internal/docker.js';
+import { EngineHandle } from '../../internal/engine.js';
 import type { IdentityShape } from '../../internal/identity.js';
 import { routerHostname, routerId } from '../../internal/router-hostname.js';
 import { WalrusError } from '../errors.js';
 import type { NodeState } from './internal.js';
 import { WALRUS_NODE_IP_BASE } from './internal.js';
+
+// Per-line sink: tag each line with the storage-node label so the
+// TUI tail makes attribution obvious. No-op when no engine is wired
+// into the context (standalone callers / tests).
+const makeNodeOutputSink = (
+	label: string,
+): Effect.Effect<Docker.OutputLineCallback> =>
+	Effect.gen(function* () {
+		const engineOpt = yield* Effect.serviceOption(EngineHandle);
+		return (level, line) =>
+			engineOpt._tag === 'None'
+				? Effect.void
+				: engineOpt.value
+						.appendLog({ ts: Date.now(), level, message: `[${label}] ${line}` })
+						.pipe(Effect.ignore);
+	});
 
 export const startStorageNodes = (args: {
 	name: string;
@@ -36,6 +53,7 @@ export const startStorageNodes = (args: {
 			const containerName = `walrus-${args.name}-node-${i}`;
 			const nodeHostname = `dryrun-node-${i}`;
 			const publicHostname = routerHostname(args.identity, `walrus-node-${i}`);
+			const onOutputLine = yield* makeNodeOutputSink(`walrus.node-${i}`);
 
 			// Container readiness is probed in-network (we exec `wget` /
 			// `nc` into the container) instead of via a host port —
@@ -77,6 +95,11 @@ export const startStorageNodes = (args: {
 						servicePort: args.containerApiPort,
 					},
 				],
+				// Stream the storage node's docker-logs to the supervisor
+				// for the lifetime of the reuseScope. Useful for diagnosing
+				// peer-config / WAL-fund mishaps that surface as recurring
+				// log lines rather than container exits.
+				onOutputLine,
 			}).pipe(
 				Effect.catchTag('DockerError', (cause) =>
 					Effect.fail(

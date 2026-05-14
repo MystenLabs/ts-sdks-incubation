@@ -381,6 +381,15 @@ export const publishMove = <
 		{
 			kind: 'action',
 			displayTitle: `publish.${options.name}`,
+			// Auto-watch the Move source tree. An edit to a `.move` file
+			// (or `Move.toml`) under `options.path` triggers a hot-restart;
+			// the existing `hashMoveSources` cache fold ensures only a real
+			// content change makes the next publish actually republish.
+			// `bindings` consumers re-acquire as part of the same restart
+			// so generated TS picks up the new ABI without manual steps.
+			// Today this is whole-stack restart — selective per-primitive
+			// tear-down is tracked under the G2a hot-restart follow-up.
+			watch: [options.path],
 			// Full packageId in `primary` so users can copy-paste it; the
 			// dashboard wraps overflow rather than truncate with `…`. The
 			// upgrade-cap is dropped from extras (full id would crowd the

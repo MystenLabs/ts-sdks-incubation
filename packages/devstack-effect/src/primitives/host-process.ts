@@ -1,11 +1,13 @@
 import { Effect, Stream } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
+import { addFinalizer as addScopeFinalizer } from 'effect/Scope';
 import { Identity } from '../internal/identity.js';
 import {
 	routerEntrypoint,
 	removeFileProvider,
 	writeFileProvider,
 } from '../internal/docker/router.js';
+import { drainLinesWithCallback, type OutputLineCallback } from '../internal/docker/core.js';
 import { routerHostname, routerId } from '../internal/router-hostname.js';
 import { inheritedHostEnv } from '../internal/safe-env.js';
 import { stringifyCause } from '../internal/stringify-cause.js';
@@ -74,6 +76,19 @@ export interface HostProcessOptions<Name extends string, E, R> {
 	 * Cleaned up on scope teardown.
 	 */
 	readonly traefik?: HostProcessTraefikConfig;
+	/**
+	 * Per-line output sink for the spawned process's stdout (`info`)
+	 * and stderr (`warn`). Wired by callers that want vite / generic
+	 * dev-server output to surface in the supervisor TUI without
+	 * having to author a regex `log` readyProbe. Lines arriving while
+	 * a `log` readyProbe also reads stdout are duplicated to both
+	 * consumers — `Stream.broadcast` isn't needed because both halves
+	 * read independently bound copies of the spawner's stdout stream.
+	 *
+	 * Errors from the callback are swallowed so a flaky sink can't
+	 * kill the host process.
+	 */
+	readonly onOutputLine?: OutputLineCallback;
 }
 
 export const hostProcess = <const Name extends string, E = never, R = never>(
@@ -118,6 +133,47 @@ export const hostProcess = <const Name extends string, E = never, R = never>(
 				),
 			);
 			yield* Effect.annotateCurrentSpan({ 'hostProcess.pid': handle.pid });
+
+			// Per-line output sink: when the caller wires `onOutputLine`
+			// AND a `log` readyProbe isn't consuming stdout for us, fork
+			// background drainers so stdout (`info`) and stderr (`warn`)
+			// flow into the supervisor's log channel. We skip stdout when
+			// the readyProbe is `log`-shaped to avoid splitting bytes
+			// between two consumers of the same underlying OS pipe — the
+			// log probe already has the bytes; the supervisor sees the
+			// matched line through its own narration path.
+			const onOutputLine = options.onOutputLine;
+			if (onOutputLine !== undefined) {
+				const scope = yield* Effect.scope;
+				// IMPORTANT ordering subtlety: the spawner's `spawn`
+				// already registered a kill-child finalizer on this
+				// scope. Finalizers run LIFO, so anything we add AFTER
+				// runs first. We register a `handle.kill` finalizer
+				// here so the child dies BEFORE the spawner's own kill
+				// finalizer runs — closing stdout/stderr pipes early
+				// and letting the forked drainer fibers' Stream
+				// consumers settle naturally on EOF. Without this, the
+				// drainer fibers parked on a still-open pipe receive
+				// an interrupt but can't observe it (no yield point
+				// while waiting for next chunk), and scope teardown
+				// hangs.
+				yield* addScopeFinalizer(
+					scope,
+					Effect.uninterruptible(handle.kill().pipe(Effect.ignore)),
+				);
+				if (options.readyProbe?.kind !== 'log') {
+					yield* drainLinesWithCallback(
+						Stream.orDie(handle.stdout),
+						'info',
+						onOutputLine,
+					).pipe(Effect.ignore, Effect.forkIn(scope));
+				}
+				yield* drainLinesWithCallback(
+					Stream.orDie(handle.stderr),
+					'warn',
+					onOutputLine,
+				).pipe(Effect.ignore, Effect.forkIn(scope));
+			}
 
 			// 4. Wait for ready probe if provided.
 			if (options.readyProbe !== undefined) {

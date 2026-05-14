@@ -5,11 +5,12 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-import { Effect, Schedule } from 'effect';
+import { Effect, Option, Schedule } from 'effect';
 import { Transaction, type TransactionObjectArgument } from '@mysten/sui/transactions';
 import { makeTag, type PluginTag } from '../../tag.js';
 import { Sui } from '../sui.js';
 import { stringifyCause } from '../../internal/stringify-cause.js';
+import { StateStore } from '../../internal/state-store.js';
 import { DeepbookError } from '../errors.js';
 import { DeepbookCore, type DeepbookPoolRef } from '../../interfaces/deepbook.js';
 import type { Account, SuiObjectChange } from '../shared.js';
@@ -21,6 +22,22 @@ import {
 	resolveCoinRef,
 	type AnyCoinTag,
 } from './internal.js';
+
+// StateStore key prefix for the cached BalanceManager id. Versioned so
+// future schema bumps invalidate stale caches automatically. Folds in
+// `chainId` (regenesis ⇒ miss), the deepbook `packageId` (republish ⇒
+// miss — the cached BalanceManager belongs to the old package's type
+// universe), and the signer address (per-account isolation).
+//
+// Without this cache, every supervisor restart minted a fresh
+// BalanceManager — the closure state in the previous fiber went away
+// with the scope. Old BalanceManagers orphaned + held locked funds, and
+// the audit caught it.
+const STATE_KEY_BALANCE_MANAGER_PREFIX = 'deepbook/market-maker/balance-manager/v1';
+
+interface CachedBalanceManager {
+	readonly balanceManagerId: string;
+}
 
 export interface DeepbookMarketMakerPoolSpec<
 	Base extends string | AnyCoinTag = string | AnyCoinTag,
@@ -78,9 +95,10 @@ export const deepbookMarketMaker = <const Name extends string>(
 			for (const tag of options.dependsOn ?? []) {
 				yield* tag;
 			}
-			yield* Sui;
+			const sui = yield* Sui;
 			const signer = yield* options.signer;
 			const core = yield* DeepbookCore;
+			const state = yield* StateStore;
 
 			const levels = options.levels ?? 3;
 			const tickSpacing = options.tickSpacing ?? 1;
@@ -116,7 +134,44 @@ export const deepbookMarketMaker = <const Name extends string>(
 			// behavior); subsequent ticks reuse it. Mutable closure state
 			// rather than a Ref since the fiber is single-threaded and we
 			// don't read it from outside the loop.
+			//
+			// Resume idempotency: pre-load the cached BalanceManager id
+			// from the state-store keyed by `(chainId, packageId,
+			// signer.address)`. On a cache hit we verify the object is
+			// still on chain (handles wiped volumes / external resets)
+			// and only then trust it — otherwise mint a fresh one. Cache
+			// writes after the first successful mint are best-effort; a
+			// state-store IO defect must not crash the maker after the
+			// BalanceManager already settled on chain.
+			const cacheKey = `${STATE_KEY_BALANCE_MANAGER_PREFIX}/${sui.chainId}/${core.packageId}/${signer.address}`;
 			let balanceManagerId: string | undefined;
+			const cached = yield* state.get<CachedBalanceManager>(cacheKey);
+			if (Option.isSome(cached)) {
+				const candidate = cached.value.balanceManagerId;
+				const verified = yield* Effect.tryPromise({
+					try: () => sui.client.core.getObject({ objectId: candidate }),
+					catch: (cause) => cause,
+				}).pipe(
+					Effect.as(true),
+					Effect.catch(() => Effect.succeed(false)),
+				);
+				if (verified) {
+					yield* Effect.annotateCurrentSpan({
+						'deepbook.marketMaker.balanceManager.cache': 'hit',
+						'deepbook.marketMaker.balanceManager': candidate,
+					});
+					balanceManagerId = candidate;
+				} else {
+					yield* Effect.annotateCurrentSpan({
+						'deepbook.marketMaker.balanceManager.cache': 'stale',
+					});
+					yield* state.remove(cacheKey).pipe(Effect.catch(() => Effect.void));
+				}
+			} else {
+				yield* Effect.annotateCurrentSpan({
+					'deepbook.marketMaker.balanceManager.cache': 'miss',
+				});
+			}
 
 			const tickOnce = Effect.gen(function* () {
 				const creating = balanceManagerId === undefined;
@@ -220,6 +275,16 @@ export const deepbookMarketMaker = <const Name extends string>(
 						);
 					}
 					balanceManagerId = bmObj.objectId;
+					// Best-effort cache write — the BalanceManager already
+					// exists on chain; a state-store IO failure just means
+					// the next supervisor cycle re-mints (same orphan we
+					// just fixed, one cycle later — still better than
+					// crashing a running maker).
+					yield* state
+						.put(cacheKey, {
+							balanceManagerId: bmObj.objectId,
+						} satisfies CachedBalanceManager)
+						.pipe(Effect.catch(() => Effect.void));
 				}
 			}).pipe(Effect.withSpan('deepbookMarketMaker.tick'));
 

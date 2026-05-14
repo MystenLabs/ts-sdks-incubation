@@ -126,6 +126,22 @@ export interface ProvideTagOptions<A> {
 	 * before `display(value)` runs. Should match the title `display` emits to avoid
 	 * a flicker on resolve. */
 	readonly displayTitle?: string;
+	/**
+	 * Filesystem paths (directories or files) whose content changes should
+	 * trigger a hot-restart of the devstack. Aggregated by `defineDevstack`
+	 * alongside the top-level `config.watch` so primitive authors can
+	 * declare what they care about without forcing every config to repeat
+	 * those paths. `publishMove` uses this to auto-watch its Move source
+	 * tree; user code typically doesn't need to set it directly.
+	 *
+	 * Today this triggers a FULL-STACK restart (re-acquires every
+	 * primitive, including expensive ones like the walrus committee).
+	 * Selective per-primitive tear-down driven by which paths changed
+	 * is tracked as future work — the `__watchPaths` field on the
+	 * resulting tag is the surface that future implementation will key
+	 * on, so declaring paths here today is forward-compatible.
+	 */
+	readonly watch?: ReadonlyArray<string>;
 }
 
 /**
@@ -170,6 +186,9 @@ export interface PluginTag<Name extends string, A, R = never, E = never> extends
 	 * the `displayTitle` option passed to `provideTag` / `makeTag`. Absence →
 	 * fall back to the tag's key. */
 	readonly __displayTitle?: string;
+	/** Paths the tag's author wants watched for hot-restart. See `ProvideTagOptions.watch`.
+	 * Aggregated by `defineDevstack` into the runtime watch set. */
+	readonly __watchPaths?: ReadonlyArray<string>;
 }
 
 /**
@@ -287,6 +306,7 @@ export const provideTag = <T extends AnyTagClass, A, E = never, R = never>(
 	readonly key: string;
 	readonly __kind?: TagKind;
 	readonly __displayTitle?: string;
+	readonly __watchPaths?: ReadonlyArray<string>;
 } => {
 	const wrapped = withEngineLifecycle(TagClass.key, build, options);
 	// `Layer.effect`'s key is `Context.Key<I, S>`. The `as any` here is
@@ -301,9 +321,13 @@ export const provideTag = <T extends AnyTagClass, A, E = never, R = never>(
 		key: string;
 		__kind?: TagKind;
 		__displayTitle?: string;
+		__watchPaths?: ReadonlyArray<string>;
 	} = { __layer: layer, key: TagClass.key };
 	if (options.kind !== undefined) result.__kind = options.kind;
 	if (options.displayTitle !== undefined) result.__displayTitle = options.displayTitle;
+	if (options.watch !== undefined && options.watch.length > 0) {
+		result.__watchPaths = options.watch;
+	}
 	return result;
 };
 
@@ -333,6 +357,7 @@ export const makeTag = <const Name extends string, A, E = never, R = never>(
 		...(options.kind !== undefined ? { kind: options.kind } : {}),
 		...(options.display !== undefined ? { display: options.display } : {}),
 		...(options.displayTitle !== undefined ? { displayTitle: options.displayTitle } : {}),
+		...(options.watch !== undefined ? { watch: options.watch } : {}),
 	};
 	const { __layer, key } = provideTag(T, build, provideOpts);
 	// Order matters: `composeStackLayer` folds left-to-right with
@@ -355,6 +380,7 @@ export const makeTag = <const Name extends string, A, E = never, R = never>(
 		key: string;
 		__kind?: TagKind;
 		__displayTitle?: string;
+		__watchPaths?: ReadonlyArray<string>;
 	} = {
 		__layer,
 		__layers,
@@ -362,6 +388,9 @@ export const makeTag = <const Name extends string, A, E = never, R = never>(
 	};
 	if (options.kind !== undefined) extras.__kind = options.kind;
 	if (options.displayTitle !== undefined) extras.__displayTitle = options.displayTitle;
+	if (options.watch !== undefined && options.watch.length > 0) {
+		extras.__watchPaths = options.watch;
+	}
 	return Object.assign(T, extras) as unknown as PluginTag<
 		Name,
 		A,

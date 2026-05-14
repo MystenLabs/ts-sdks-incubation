@@ -963,3 +963,147 @@ describe('Docker.run routerAddHosts', () => {
 			),
 	);
 });
+
+// -----------------------------------------------------------------------------
+// `runOneShot({ onOutputLine })` — per-line streaming sink
+// -----------------------------------------------------------------------------
+//
+// The supervisor needs to see deploy.sh output as it arrives, not after the
+// one-shot's exit-code lands. We stream stdout and stderr through the
+// caller-supplied callback (level: 'info' / 'warn') in addition to
+// accumulating the full text on `result.stdout` / `result.stderr` — so a
+// failed deploy still produces a `WalrusError({stderr})` with the captured
+// text. These tests pin both halves of that contract using a synthetic
+// spawner that emits a known multi-line stdout + stderr from `docker run`.
+
+interface OutputSpawnerOpts {
+	readonly stdout: string;
+	readonly stderr: string;
+	readonly exitCode?: number;
+}
+
+const makeOutputSpawnerLayer = (
+	recorder: Array<SpawnRecord>,
+	output: OutputSpawnerOpts,
+) => {
+	const spawn = (command: ChildProcess.Command) => {
+		if (command._tag !== 'StandardCommand') {
+			return Effect.die(new Error('unexpected piped command'));
+		}
+		recorder.push({ command: command.command, args: [...command.args] });
+		const encoder = new TextEncoder();
+		// Only the foreground `docker run` carries the workload output;
+		// finalizer-time `docker rm -f` returns empty streams + exit 0.
+		const isRunInvocation = command.args[0] === 'run';
+		const stdoutBytes = encoder.encode(isRunInvocation ? output.stdout : '');
+		const stderrBytes = encoder.encode(isRunInvocation ? output.stderr : '');
+		const exit = isRunInvocation ? (output.exitCode ?? 0) : 0;
+		const handle = ChildProcessSpawner.makeHandle({
+			pid: ChildProcessSpawner.ProcessId(4242),
+			exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(exit)),
+			isRunning: Effect.succeed(false),
+			kill: () => Effect.void,
+			stdin: Sink.drain as never,
+			stdout: stdoutBytes.length > 0 ? Stream.succeed(stdoutBytes) : Stream.empty,
+			stderr: stderrBytes.length > 0 ? Stream.succeed(stderrBytes) : Stream.empty,
+			all: Stream.empty,
+			getInputFd: () => Sink.drain as never,
+			getOutputFd: () => Stream.empty,
+			unref: Effect.succeed(Effect.void),
+		});
+		return Effect.succeed(handle);
+	};
+	const impl = ChildProcessSpawner.make(spawn);
+	return Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, impl);
+};
+
+describe('Docker.runOneShot onOutputLine', () => {
+	it.effect(
+		'invokes the callback once per stdout line (info) and stderr line (warn)',
+		() =>
+			Effect.gen(function* () {
+				const recorder: Array<SpawnRecord> = [];
+				const captured: Array<{ level: string; line: string }> = [];
+				const spawnerLayer = makeOutputSpawnerLayer(recorder, {
+					stdout: 'step 1: starting\nstep 2: working\nstep 3: done\n',
+					stderr: 'warning: deprecated flag\nerror: connection refused\n',
+					exitCode: 0,
+				});
+
+				const result = yield* Docker.runOneShot({
+					name: 'one-shot-stream',
+					image: 'busybox:latest',
+					args: ['true'],
+					onOutputLine: (level, line) =>
+						Effect.sync(() => {
+							captured.push({ level, line });
+						}),
+				}).pipe(Effect.provide(spawnerLayer));
+
+				expect(result.exitCode).toBe(0);
+				const stdoutLines = captured
+					.filter((e) => e.level === 'info')
+					.map((e) => e.line);
+				expect(stdoutLines).toEqual([
+					'step 1: starting',
+					'step 2: working',
+					'step 3: done',
+				]);
+				const stderrLines = captured
+					.filter((e) => e.level === 'warn')
+					.map((e) => e.line);
+				expect(stderrLines).toEqual([
+					'warning: deprecated flag',
+					'error: connection refused',
+				]);
+			}),
+	);
+
+	it.effect(
+		'preserves the accumulated stdout/stderr strings on the result',
+		() =>
+			Effect.gen(function* () {
+				const recorder: Array<SpawnRecord> = [];
+				const spawnerLayer = makeOutputSpawnerLayer(recorder, {
+					stdout: 'line-a\nline-b\n',
+					stderr: 'err-a\nerr-b\n',
+					exitCode: 0,
+				});
+
+				const result = yield* Docker.runOneShot({
+					name: 'one-shot-accumulate',
+					image: 'busybox:latest',
+					args: ['true'],
+					// Sink that never fires — we just want to assert the
+					// accumulated strings carry the full captured output
+					// even when streaming is wired up.
+					onOutputLine: () => Effect.void,
+				}).pipe(Effect.provide(spawnerLayer));
+
+				expect(result.stdout).toBe('line-a\nline-b');
+				expect(result.stderr).toBe('err-a\nerr-b');
+			}),
+	);
+
+	it.effect(
+		'absent callback preserves the historical decode-to-string behavior',
+		() =>
+			Effect.gen(function* () {
+				const recorder: Array<SpawnRecord> = [];
+				const spawnerLayer = makeOutputSpawnerLayer(recorder, {
+					stdout: 'plain stdout output\n',
+					stderr: '',
+					exitCode: 0,
+				});
+
+				const result = yield* Docker.runOneShot({
+					name: 'one-shot-no-callback',
+					image: 'busybox:latest',
+					args: ['true'],
+				}).pipe(Effect.provide(spawnerLayer));
+
+				expect(result.exitCode).toBe(0);
+				expect(result.stdout).toContain('plain stdout output');
+			}),
+	);
+});

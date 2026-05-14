@@ -10,11 +10,17 @@ import {
 	captureStreams,
 	decodeStream,
 	dockerError,
+	drainLinesWithCallback,
 	generateContainerName,
 	runCapturingOrFail,
 	type DockerExecResult,
+	type OutputLineCallback,
 } from './core.js';
 import { getTraefikRouterIp, listRegisteredHostnames } from './router.js';
+
+// Re-export so primitives can spell the callback shape without dipping
+// into the core module directly.
+export type { OutputLineCallback, OutputLineLevel } from './core.js';
 
 // Re-export the result shape so consumers can `Docker.DockerExecResult`
 // if they ever annotate the type explicitly.
@@ -86,6 +92,29 @@ export const commitContainer = (
 	}).pipe(Effect.withSpan('Docker.commitContainer'));
 
 // -----------------------------------------------------------------------------
+// restartContainer — `docker restart <name>` (stop + start, same name + config)
+// -----------------------------------------------------------------------------
+
+// Used by primitives that need to bounce a long-running daemon to pick
+// up an updated bind-mount config or env-file (e.g. seal key rotation
+// rewriting `key-server-config.yaml` + `master-key.env`). Keeps the
+// container's identity stable so the outer `Docker.run` scope's
+// `docker rm -f` finalizer still targets the right container at
+// shutdown.
+export const restartContainer = (
+	name: string,
+): Effect.Effect<void, DockerError, ChildProcessSpawner.ChildProcessSpawner> =>
+	Effect.gen(function* () {
+		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+		yield* Effect.annotateCurrentSpan({ 'docker.op': 'restart', 'docker.name': name });
+		yield* runCapturingOrFail(
+			spawner,
+			ChildProcess.make('docker', ['restart', name]),
+			'docker restart',
+		);
+	}).pipe(Effect.withSpan('Docker.restartContainer'));
+
+// -----------------------------------------------------------------------------
 // runOneShot — run to completion, capture stdout
 // -----------------------------------------------------------------------------
 
@@ -126,6 +155,22 @@ export interface DockerOneShotOptions {
 	 * reaches `http://sui.<app>.localhost:9000`). Default `false`.
 	 */
 	readonly routerAddHosts?: boolean;
+	/**
+	 * Per-line output sink. Invoked once per line of stdout (`level:
+	 * 'info'`) and stderr (`level: 'warn'`) as the line arrives — the
+	 * accumulated `stdout`/`stderr` strings on the result are unchanged,
+	 * so callers that want to inspect them after exit still can.
+	 *
+	 * Wired by primitives (walrus deploy, seal keygen, …) to surface
+	 * script output into the supervisor's TUI log tail in real time —
+	 * before the one-shot's exit code lands. Lines are pushed
+	 * unconditionally; the callback is responsible for any sampling /
+	 * filtering it wants.
+	 *
+	 * Errors from the callback are swallowed so a flaky sink never
+	 * breaks a one-shot that would otherwise succeed.
+	 */
+	readonly onOutputLine?: OutputLineCallback;
 }
 
 export interface DockerOneShotResult {
@@ -144,9 +189,29 @@ export const runOneShot = (
 		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 
 		const name = opts.name ?? generateContainerName();
-		const args: Array<string> = ['run', '--rm', '--name', name];
+		// `--rm` auto-removes the container on exit — convenient for the
+		// happy path but destroys post-mortem logs when something goes
+		// wrong. Set DEVSTACK_KEEP_ONESHOT=1 to keep the container so
+		// `docker logs <name>` works for debugging.
+		const keepOneShot = process.env.DEVSTACK_KEEP_ONESHOT === '1';
+		const args: Array<string> = keepOneShot
+			? ['run', '--name', name]
+			: ['run', '--rm', '--name', name];
 		if (opts.entrypoint !== undefined) args.push('--entrypoint', opts.entrypoint);
-		if (opts.network !== undefined) args.push('--network', opts.network);
+		// `routerAddHosts: true` implies the container needs to dial
+		// services through traefik on `devstack-router`. Add-host alone
+		// isn't enough — the container must also be ATTACHED to the
+		// router network so the resolved IP is reachable. A one-shot
+		// (`docker run --rm`) takes a single `--network`, so if the
+		// caller didn't specify one we use `devstack-router`. If the
+		// caller asked for a per-stack network, we honor that but log a
+		// warning that the router won't be reachable — the caller is
+		// responsible for the multi-network attach in that case.
+		if (opts.network !== undefined) {
+			args.push('--network', opts.network);
+		} else if (opts.routerAddHosts === true) {
+			args.push('--network', 'devstack-router');
+		}
 		// Routed-hostname add-host stamps. Mirrors `Docker.run`'s
 		// `routerAddHosts` opt — RFC 6761 `.localhost` resolution only
 		// works on the host OS, so a one-shot that dials a routed URL
@@ -204,20 +269,40 @@ export const runOneShot = (
 			forceKillAfter: `${gracePeriodMs} millis`,
 		});
 
+		const onOutputLine = opts.onOutputLine;
 		const work = Effect.scoped(
 			Effect.gen(function* () {
 				const scope = yield* Effect.scope;
-				yield* addFinalizer(
-					scope,
-					spawner.exitCode(ChildProcess.make('docker', ['rm', '-f', name])).pipe(Effect.ignore),
-				);
+				// Skip the rm-f finalizer when DEVSTACK_KEEP_ONESHOT=1
+				// so post-mortem `docker logs <name>` works on a failed
+				// one-shot. Container survives until next devstack wipe
+				// or manual `docker rm`.
+				if (!keepOneShot) {
+					yield* addFinalizer(
+						scope,
+						spawner.exitCode(ChildProcess.make('docker', ['rm', '-f', name])).pipe(Effect.ignore),
+					);
+				}
 				const handle = yield* spawner.spawn(cmd).pipe(Effect.mapError(dockerError(op)));
+				// When a per-line sink is supplied, drain stdout/stderr
+				// through it so the supervisor's log tail sees script
+				// output as it arrives (instead of waiting on exit).
+				// We still accumulate the full text so `WalrusError`-style
+				// errors can include the captured stdout/stderr verbatim.
+				const stdoutEff =
+					onOutputLine === undefined
+						? decodeStream(handle.stdout).pipe(Effect.mapError(dockerError(op)))
+						: drainLinesWithCallback(handle.stdout, 'info', onOutputLine).pipe(
+								Effect.mapError(dockerError(op)),
+							);
+				const stderrEff =
+					onOutputLine === undefined
+						? decodeStream(handle.stderr).pipe(Effect.mapError(dockerError(op)))
+						: drainLinesWithCallback(handle.stderr, 'warn', onOutputLine).pipe(
+								Effect.mapError(dockerError(op)),
+							);
 				const [stdoutText, stderrText, code] = yield* Effect.all(
-					[
-						decodeStream(handle.stdout).pipe(Effect.mapError(dockerError(op))),
-						decodeStream(handle.stderr).pipe(Effect.mapError(dockerError(op))),
-						handle.exitCode.pipe(Effect.mapError(dockerError(op))),
-					],
+					[stdoutEff, stderrEff, handle.exitCode.pipe(Effect.mapError(dockerError(op)))],
 					{ concurrency: 'unbounded' },
 				);
 				return { exitCode: code as number, stdout: stdoutText, stderr: stderrText };

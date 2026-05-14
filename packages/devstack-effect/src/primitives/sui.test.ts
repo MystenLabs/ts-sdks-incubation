@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it } from '@effect/vitest';
 import { EngineLive } from '../internal/engine.js';
 import { EndpointRegistryLive } from '../internal/registries.js';
 import { Sui } from '../interfaces/sui.js';
-import { faucetReadyProbe, suiCustom, suiMainnet, suiTestnet } from './sui.js';
+import { faucetReadyProbe, suiCustom, suiLocalnet, suiMainnet, suiTestnet } from './sui.js';
 
 // EndpointRegistry is required by every Sui factory body (publish calls
 // for `sui-rpc` / `sui-faucet` / `sui-graphql`). EngineLive backs the
@@ -141,6 +141,46 @@ describe('sui factory shapes', () => {
 				// hangs the test would timeout; success means the
 				// no-faucet branch returns `Effect.void` directly.
 				yield* sui.waitForTransactionsReady();
+			} finally {
+				restore();
+			}
+		}),
+	);
+
+	// `suiLocalnet({ rpcUrl })` is the externally-managed-RPC branch — the
+	// user pre-booted their own sui-localnet (e.g. `sui start` directly)
+	// and just wants devstack to wrap it. `graphqlUrl` is plumbed through
+	// when supplied, left `undefined` otherwise (no auto-probe since the
+	// conventional port collides too easily).
+	it.effect('suiLocalnet({ rpcUrl, graphqlUrl }) surfaces graphqlUrl on Sui', () =>
+		Effect.gen(function* () {
+			const restore = stubChainIdFetch();
+			try {
+				const member = suiLocalnet({
+					rpcUrl: 'http://localhost:9000',
+					graphqlUrl: 'http://localhost:9125/graphql',
+				});
+				const sui = yield* Effect.gen(function* () {
+					return yield* Sui;
+				}).pipe(Effect.provide(Layer.provide(member.__layer, TestBaseLayer)));
+				expect(sui.network).toBe('localnet');
+				expect(sui.rpcUrl).toBe('http://localhost:9000');
+				expect(sui.graphqlUrl).toBe('http://localhost:9125/graphql');
+			} finally {
+				restore();
+			}
+		}),
+	);
+
+	it.effect('suiLocalnet({ rpcUrl }) without graphqlUrl leaves it undefined', () =>
+		Effect.gen(function* () {
+			const restore = stubChainIdFetch();
+			try {
+				const member = suiLocalnet({ rpcUrl: 'http://localhost:9000' });
+				const sui = yield* Effect.gen(function* () {
+					return yield* Sui;
+				}).pipe(Effect.provide(Layer.provide(member.__layer, TestBaseLayer)));
+				expect(sui.graphqlUrl).toBeUndefined();
 			} finally {
 				restore();
 			}

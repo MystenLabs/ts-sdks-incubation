@@ -21,6 +21,8 @@ export {
 	type DockerRunOptions,
 	type DockerRunResult,
 	type DockerExecResult,
+	type OutputLineCallback,
+	type OutputLineLevel,
 	composeContainerName,
 	composeProjectName,
 } from './core.js';
@@ -37,6 +39,7 @@ export {
 export {
 	exec,
 	commitContainer,
+	restartContainer,
 	runOneShot,
 	type DockerCommitResult,
 	type DockerOneShotOptions,

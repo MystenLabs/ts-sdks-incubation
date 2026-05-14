@@ -26,6 +26,8 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+import * as crypto from 'node:crypto';
+import * as nodeFs from 'node:fs/promises';
 import { Context, Deferred, Effect, Layer, Ref, Stream } from 'effect';
 import { layer as NodeServicesLayer } from '@effect/platform-node/NodeServices';
 import { runMain as nodeRunMain } from '@effect/platform-node/NodeRuntime';
@@ -84,6 +86,14 @@ export interface StackMember {
 	 * to `provideTag` / `makeTag`. Absence → fall back to the tag's key.
 	 */
 	readonly __displayTitle?: string;
+	/**
+	 * Filesystem paths the primitive's author wants watched for hot-restart.
+	 * Mirrors the `watch` option passed to `provideTag` / `makeTag`.
+	 * `defineDevstack` aggregates these into the runtime watch set
+	 * alongside the top-level `config.watch`. Today this triggers a full
+	 * stack restart; selective per-primitive tear-down is future work.
+	 */
+	readonly __watchPaths?: ReadonlyArray<string>;
 }
 
 export type RendererKind = 'tui' | 'plain' | 'silent';
@@ -297,6 +307,39 @@ const installSignalRestart = (
 // mode internally and tears it down on `instance.unmount()`, so the
 // previous Effect-Terminal-backed `installKeypressRestart` is gone.
 
+// Per-file content-hash cache. Shared across all watcher fibers so a
+// `fs.watch` event for a path we've already hashed compares against the
+// last seen value and short-circuits the restart when bytes haven't
+// changed (editor format-on-save with no diff, build tools touching mtime
+// for incremental cache invalidation, etc.). Limitation: when multiple
+// files change inside a single 250ms debounce window, the trailing event
+// reports the LAST changed file only — if THAT file rolled back to a
+// previously-seen hash but earlier files in the same save did change,
+// we'd skip the restart. Acceptable: that pattern requires a tool that
+// re-writes the same bytes on every save, which is rare. Directories +
+// unreadable paths short-circuit to "real change" (no hash to compare).
+const watchedFileHashes = new Map<string, string>();
+
+const hashFileIfChanged = (
+	filePath: string,
+): Effect.Effect<{ readonly changed: boolean; readonly reason: string }> =>
+	Effect.tryPromise({
+		try: async () => {
+			const stat = await nodeFs.stat(filePath);
+			if (!stat.isFile()) {
+				return { changed: true, reason: 'non-file (directory or special)' };
+			}
+			const content = await nodeFs.readFile(filePath);
+			const hash = crypto.createHash('sha256').update(content).digest('hex');
+			const prior = watchedFileHashes.get(filePath);
+			watchedFileHashes.set(filePath, hash);
+			if (prior === undefined) return { changed: true, reason: 'first sight' };
+			if (prior === hash) return { changed: false, reason: 'content unchanged' };
+			return { changed: true, reason: 'content changed' };
+		},
+		catch: (cause) => cause,
+	}).pipe(Effect.catch(() => Effect.succeed({ changed: true, reason: 'hash failed' })));
+
 // File-watcher fiber. When `hotRestart` is on, events are debounced 250ms
 // and the trailing edge signals the engine; coalescing avoids tearing the
 // stack down once per character of a multi-keystroke save. Otherwise we
@@ -312,7 +355,16 @@ const watchPathFiber = (
 		const drained = hotRestart
 			? Stream.runForEach(stream.pipe(Stream.debounce('250 millis')), (event) =>
 					Effect.gen(function* () {
-						yield* Effect.logInfo(`file change at ${event.path} (kind=${event.kind}) — restarting`);
+						const { changed, reason } = yield* hashFileIfChanged(event.path);
+						if (!changed) {
+							yield* Effect.logDebug(
+								`file change at ${event.path} ignored (${reason})`,
+							);
+							return;
+						}
+						yield* Effect.logInfo(
+							`file change at ${event.path} (kind=${event.kind}, ${reason}) — restarting`,
+						);
 						yield* engine.requestRestart;
 					}),
 				)
@@ -626,7 +678,19 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 		return entry;
 	});
 
-	const watchPaths = config.watch ?? [];
+	// Watch set = explicit `config.watch` plus every primitive that
+	// declared paths via `provideTag({watch})` / `makeTag({watch})`.
+	// `publishMove` uses this to auto-watch its Move source tree so a
+	// `.move` edit triggers a hot-restart (which cascades through
+	// `bindings` regen + frontend HMR) without the user having to repeat
+	// the Move path in `config.watch`. Selective per-primitive tear-down
+	// is future work — for now ALL declared paths share the full-stack
+	// restart trigger. De-dupe so a path that appears in both config.watch
+	// and a primitive's `__watchPaths` doesn't get two fs.watch handles.
+	const aggregatedPrimitiveWatch = config.stack.flatMap(
+		(m) => (m as { __watchPaths?: ReadonlyArray<string> }).__watchPaths ?? [],
+	);
+	const watchPaths = Array.from(new Set([...(config.watch ?? []), ...aggregatedPrimitiveWatch]));
 	// `hotRestart` only governs FILE-WATCH-driven restarts. User-driven
 	// restarts (TUI `r` key, SIGUSR2) ALWAYS recycle — pressing `r` is the
 	// explicit "I want to restart" gesture and would be inexplicable if the
