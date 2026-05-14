@@ -94,7 +94,7 @@ export {
 	type DeepbookMarketMakerPoolSpec,
 	type DeepbookPool,
 	type DeepbookPoolSpec,
-} from './primitives/deepbook.js';
+} from './primitives/deepbook/index.js';
 export {
 	sealKnownKeyServer,
 	sealLocalKeygen,
@@ -125,7 +125,7 @@ export {
 	walrusLocalCluster,
 	type WalrusKnownDeploymentOptions,
 	type WalrusLocalClusterOptions,
-} from './primitives/walrus.js';
+} from './primitives/walrus/index.js';
 
 // Canonical interface contracts. Every multi-impl factory produces a
 // `Layer` for one of these tags; consumers depend on the tag, not on a

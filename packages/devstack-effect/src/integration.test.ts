@@ -35,6 +35,7 @@ import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { composeStackLayer } from './define-devstack.js';
+import { PortAllocator } from './internal/port-allocator.js';
 import { accounts } from './primitives/accounts.js';
 import { Sui, suiLocalnet } from './primitives/sui.js';
 
@@ -115,6 +116,28 @@ const makeMockPlatformLayer = (recorder: Array<SpawnRecord>) =>
 		NodeTerminalLayer,
 	) as unknown as Layer.Layer<unknown, unknown, never>;
 
+// Deterministic `PortAllocator` for integration tests. The real
+// `PortAllocatorLive` does a TCP bind probe on `0.0.0.0` and
+// `127.0.0.1`, which on a developer machine running Docker Desktop
+// (or a CI runner with anything bound on 9000 / 9123 / 9125) scans
+// past the preferred port to the next free slot — so the resulting
+// `Sui.rpcUrl` ends up `http://localhost:9001` or similar, the
+// fetch stub (matching ONLY `:9000` / `:9123`) falls through to the
+// default `'{}'` response, `client.getChainIdentifier()` retries
+// forever, and the layer build never completes. This stub bypasses
+// the probe and just hands back the preferred port — `suiLocalnet`
+// then publishes `http://localhost:9000`, the stub fetch matches,
+// and the ready-probe succeeds on the first attempt. Wired via
+// `composeStackLayer`'s `infraOverrides` seam so `Layer.mergeAll`'s
+// later-wins semantics shadow `PortAllocatorLive` inside the
+// composed infra ring.
+const makeTestPortAllocatorLayer = () =>
+	Layer.succeed(PortAllocator, {
+		allocate: (preferred: number) => Effect.succeed(preferred),
+		release: () => Effect.void,
+		snapshot: Effect.succeed([] as ReadonlyArray<number>),
+	}) as unknown as Layer.Layer<unknown, unknown, never>;
+
 // Stub `globalThis.fetch` so SuiJsonRpcClient.getChainIdentifier(),
 // awaitReady's HTTP probe, and the faucet POST all resolve without a
 // real network. Returns a `restore()` cleanup the surrounding test must
@@ -183,6 +206,7 @@ describe('devstack integration smoke', () => {
 					network: 'localnet',
 					stateDir: tmpDir,
 					platformLayer: makeMockPlatformLayer(recorder),
+					infraOverrides: makeTestPortAllocatorLayer(),
 				});
 
 				// `Layer.build` returns the resolved Context — exactly what
@@ -285,6 +309,7 @@ describe('devstack integration smoke', () => {
 					network: 'localnet',
 					stateDir: tmpDir,
 					platformLayer: makeMockPlatformLayer(recorder),
+					infraOverrides: makeTestPortAllocatorLayer(),
 				});
 
 				const program = Effect.gen(function* () {
