@@ -812,15 +812,25 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 					Effect.provide(loggerLayer as Layer.Layer<unknown, never, never>),
 					Effect.provideService(ClaimedContainers, claimedRef),
 					Effect.as(true),
-					Effect.catchCause((cause) =>
-						engine
+					Effect.catchCause((cause) => {
+						const rendered = prettyError(cause);
+						// Belt-and-braces: write the cause directly to stderr so a
+						// CI fast-fail or a piped `pnpm dev > log` invocation can
+						// see what failed. The plain renderer's 500ms poll may
+						// not flush in time before the fast-fail Effect.fail
+						// exits the process, leaving the appendLog'd line stuck
+						// in the engine's Ref. stderr write is synchronous.
+						if (renderer !== 'tui') {
+							process.stderr.write(`stack acquire failed:\n${rendered}\n`);
+						}
+						return engine
 							.appendLog({
 								ts: Date.now(),
 								level: 'error',
-								message: `stack acquire failed:\n${prettyError(cause)}`,
+								message: `stack acquire failed:\n${rendered}`,
 							})
-							.pipe(Effect.as(false)),
-					),
+							.pipe(Effect.as(false));
+					}),
 				);
 
 				// Post-build orphan sweep. Removes any compose-project-labelled
