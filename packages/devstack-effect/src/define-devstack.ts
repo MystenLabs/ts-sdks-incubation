@@ -26,7 +26,7 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-import { Cause, Context, Deferred, Effect, Exit, Layer, Ref, Scope, Stream } from 'effect';
+import { Context, Deferred, Effect, Layer, Ref, Stream } from 'effect';
 import { layer as NodeServicesLayer } from '@effect/platform-node/NodeServices';
 import { runMain as nodeRunMain } from '@effect/platform-node/NodeRuntime';
 import { ChildProcessSpawner } from 'effect/unstable/process';
@@ -521,107 +521,6 @@ export const composeStackLayer = (
 	return fullLayer as Layer.Layer<unknown, unknown, never>;
 };
 
-/**
- * Long-running supervisor fiber for a single top-level stack member.
- *
- * Owns a chain of child scopes (a fresh one per acquire attempt) forked
- * off `supervisorScope`. On success the member's resolved services merge
- * into `sharedCtxRef` so later attempts by siblings find them; on
- * failure the partial scope is torn down (releasing any half-acquired
- * resources, e.g. a docker container that started before a port
- * conflict aborted the build) and the fiber blocks on
- * `engine.awaitRetry(key)`. The TUI's `r` keypress resolves the
- * Deferred via `engine.retryFailed`, and the fiber loops back into a
- * fresh child scope.
- *
- * Cascading-retry: every successful acquire fires `engine.signalRetry`
- * for every sibling currently in `status === 'failed'` whose key is in
- * `allKeysRef` (best-effort — siblings whose deps still aren't
- * available simply fail again and re-block). This is how `r` recovers
- * a config where both A (Sui) and B (accountAlice, which `yield* Sui`s)
- * are failed: pressing `r` re-runs both; A succeeds first, the cascade
- * fires, and B finds A's service in `sharedCtxRef` on its next attempt.
- *
- * Returned Effect runs forever — only supervisor-scope interruption
- * (Ctrl-C or a full restart) ends it. The catch-all on the outside is
- * defensive: a fiber-level crash (NOT a build failure — that's caught
- * above) appends to the log so the user sees it.
- *
- * Exported for tests; production code reaches this via the launch loop
- * in `defineDevstack`.
- */
-export const forkPrimitive = (
-	member: StackMember,
-	key: string,
-	supervisorScope: Scope.Scope,
-	engine: EngineHandleShape,
-	sharedCtxRef: Ref.Ref<Context.Context<unknown>>,
-	allKeysRef: Ref.Ref<ReadonlyArray<string>>,
-	loggerLayer: Layer.Layer<unknown, never, never>,
-): Effect.Effect<void, never, never> =>
-	Effect.gen(function* () {
-		const memberLayers: ReadonlyArray<Layer.Layer<any, any, any>> =
-			member.__layers ?? [member.__layer];
-		// Same shape as `composeStackLayer`'s reduce — seed `Layer.empty`
-		// via the `Layer.Any` constraint to skip the `unknown as` step.
-		const memberSeed: Layer.Any = Layer.empty;
-		const memberLayer = memberLayers.reduce<Layer.Layer<any, any, any>>(
-			(acc, l) => Layer.provideMerge(l, acc),
-			memberSeed as Layer.Layer<any, any, any>,
-		);
-
-		while (true) {
-			const childScope = yield* Scope.fork(supervisorScope, 'sequential');
-			// Fresh memoMap per iteration so a previous attempt's failed
-			// memoised entry (Effect's MemoMap caches the Exit per Layer)
-			// doesn't poison the retry. The infra layers' resolved values
-			// are not in this map — they were built once at the supervisor
-			// level and live in `sharedCtxRef`.
-			const memberMemo = yield* Layer.makeMemoMap;
-			const currentCtx = yield* Ref.get(sharedCtxRef);
-
-			const built = (yield* Layer.buildWithMemoMap(memberLayer, memberMemo, childScope).pipe(
-				Effect.provideContext(currentCtx as Context.Context<unknown>),
-				Effect.provide(loggerLayer),
-				Effect.exit,
-			)) as Exit.Exit<Context.Context<unknown>, unknown>;
-
-			if (Exit.isSuccess(built)) {
-				yield* Ref.update(sharedCtxRef, (c) =>
-					Context.merge(c, built.value) as Context.Context<unknown>,
-				);
-				const all = yield* Ref.get(allKeysRef);
-				const state = yield* Ref.get(engine.tuiState);
-				const failed = state.entries
-					.filter((e) => e.status === 'failed' && all.includes(e.key) && e.key !== key)
-					.map((e) => e.key);
-				for (const k of failed) {
-					yield* engine.signalRetry(k);
-				}
-				yield* engine.awaitRetry(key);
-				// Tear down the previous attempt's scope before re-acquiring.
-				// Without this, the second `docker run` would race the first
-				// for the same port / container name.
-				yield* Scope.close(childScope, Exit.void);
-			} else {
-				yield* Scope.close(childScope, built);
-				yield* engine.awaitRetry(key);
-			}
-		}
-	}).pipe(
-		Effect.catchCause((cause: Cause.Cause<unknown>) =>
-			Effect.gen(function* () {
-				if (!Cause.hasInterrupts(cause)) {
-					yield* engine.appendLog({
-						ts: Date.now(),
-						level: 'error',
-						message: `${key}: supervisor fiber died: ${Cause.pretty(cause)}`,
-					});
-				}
-			}),
-		),
-	);
-
 export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfig): Devstack => {
 	const config: DevstackConfig = Array.isArray(input)
 		? { stack: input }
@@ -677,9 +576,7 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 	const headerStack = resolveStackName(config.stackName);
 	const headerNetwork = config.network ?? 'localnet';
 
-	const buildLaunchEffect = (
-		overrides: RunOverrides,
-	): Effect.Effect<void, unknown, never> => {
+	const buildLaunchEffect = (overrides: RunOverrides): Effect.Effect<void, unknown, never> => {
 		const renderer = overrides.renderer ?? resolveRenderer(config);
 
 		// Single iteration. Per-primitive scope topology:
@@ -712,153 +609,148 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 			cycle: number,
 			tuiMount: TuiMount | undefined,
 			currentEngineRef: Ref.Ref<EngineHandleShape | undefined>,
-		) => Effect.gen(function* () {
-			// Fresh MemoMap per iteration so every restart re-evaluates the
-			// infra Live layers. Shared across the bootstrap and infra
-			// builds so EngineHandle / StateStore / etc. are the SAME
-			// instance the per-primitive fibers consume.
-			const memoMap = yield* Layer.makeMemoMap;
-			const supervisorScope = yield* Effect.scope;
+		) =>
+			Effect.gen(function* () {
+				// Fresh MemoMap per iteration so every restart re-evaluates the
+				// infra Live layers. Shared across the bootstrap and infra
+				// builds so EngineHandle / StateStore / etc. are the SAME
+				// instance the per-primitive fibers consume.
+				const memoMap = yield* Layer.makeMemoMap;
+				const supervisorScope = yield* Effect.scope;
 
-			// Per-cycle claim set: every container `Docker.run` either adopts
-			// (reuse-if-healthy hit) or creates is appended here. After the
-			// layer build completes (below), `dockerOrphanSweep` removes any
-			// compose-project-labelled container that's NOT in this set —
-			// those belong to primitives the user REMOVED from the config or
-			// to a prior crashed process. Running the sweep AFTER the build
-			// (instead of before) is what lets `Docker.run`'s adoption path
-			// reuse a still-healthy `sui.localnet` from a previous process —
-			// pre-build sweeping killed it unconditionally and forced a fresh
-			// Sui genesis → new chain id → publishMove cache miss → NEW
-			// packageId on every process restart.
-			const claimedRef = yield* Ref.make<Set<string>>(new Set<string>());
+				// Per-cycle claim set: every container `Docker.run` either adopts
+				// (reuse-if-healthy hit) or creates is appended here. After the
+				// layer build completes (below), `dockerOrphanSweep` removes any
+				// compose-project-labelled container that's NOT in this set —
+				// those belong to primitives the user REMOVED from the config or
+				// to a prior crashed process. Running the sweep AFTER the build
+				// (instead of before) is what lets `Docker.run`'s adoption path
+				// reuse a still-healthy `sui.localnet` from a previous process —
+				// pre-build sweeping killed it unconditionally and forced a fresh
+				// Sui genesis → new chain id → publishMove cache miss → NEW
+				// packageId on every process restart.
+				const claimedRef = yield* Ref.make<Set<string>>(new Set<string>());
 
-			// Bootstrap engine + file watcher + platform. This is the
-			// supervisor's resource pool — it stays alive for the entire
-			// iteration, surviving per-primitive failures. The
-			// per-primitive fibers Effect.provideContext(bootstrapCtx ⊕
-			// infraCtx) so they can yield* EngineHandle etc.
-			const bootstrapCtx = yield* Layer.buildWithMemoMap(BootstrapLive, memoMap, supervisorScope);
-			const engine: EngineShape = Context.get(bootstrapCtx, EngineHandle);
+				// Bootstrap engine + file watcher + platform. This is the
+				// supervisor's resource pool — it stays alive for the entire
+				// iteration, surviving per-primitive failures. The
+				// per-primitive fibers Effect.provideContext(bootstrapCtx ⊕
+				// infraCtx) so they can yield* EngineHandle etc.
+				const bootstrapCtx = yield* Layer.buildWithMemoMap(BootstrapLive, memoMap, supervisorScope);
+				const engine: EngineShape = Context.get(bootstrapCtx, EngineHandle);
 
-			// Publish this cycle's engine to the outer launch effect so an
-			// `Effect.onInterrupt` over there can flip `buildStatus` to
-			// `shutting-down` + append the user-facing teardown log line on
-			// SIGINT from outside the TUI (terminal Ctrl-C, external kill).
-			// Cleared on cycle teardown so a between-cycle interrupt doesn't
-			// poke a stale engine — currentRef stays undefined until the next
-			// cycle's bootstrap completes.
-			yield* Ref.set(currentEngineRef, engine);
-			yield* Effect.addFinalizer(() => Ref.set(currentEngineRef, undefined));
+				// Publish this cycle's engine to the outer launch effect so an
+				// `Effect.onInterrupt` over there can flip `buildStatus` to
+				// `shutting-down` + append the user-facing teardown log line on
+				// SIGINT from outside the TUI (terminal Ctrl-C, external kill).
+				// Cleared on cycle teardown so a between-cycle interrupt doesn't
+				// poke a stale engine — currentRef stays undefined until the next
+				// cycle's bootstrap completes.
+				yield* Ref.set(currentEngineRef, engine);
+				yield* Effect.addFinalizer(() => Ref.set(currentEngineRef, undefined));
 
-			yield* engine.setHeader({
-				app: headerApp,
-				stack: headerStack,
-				network: headerNetwork,
-				buildStatus: cycle === 1 ? 'running' : 'restarting',
-				cycle,
-			});
+				yield* engine.setHeader({
+					app: headerApp,
+					stack: headerStack,
+					network: headerNetwork,
+					buildStatus: cycle === 1 ? 'running' : 'restarting',
+					cycle,
+				});
 
-			yield* engine.resetRestartSignal;
-			yield* engine.seedTags(seedEntries);
+				yield* engine.resetRestartSignal;
+				yield* engine.seedTags(seedEntries);
 
-			// Re-point the long-lived ink mount at this cycle's fresh engine.
-			// MUST happen AFTER seedTags so the proxy's first eager snapshot
-			// already carries the new cycle's pending rows — without that the
-			// user would see a frame of empty state between the old cycle's
-			// terminal statuses and the new cycle's seeded rows. The plain
-			// renderer is rebuilt each cycle: it's a one-line-per-event
-			// stream, no layout state to preserve across cycles.
-			if (renderer === 'tui' && tuiMount !== undefined) {
-				yield* tuiMount.install(engine);
-			} else if (renderer === 'plain') {
-				const tuiSource = Ref.get(engine.tuiState);
-				yield* startPlainRenderer(tuiSource).pipe(Effect.provide(bootstrapCtx));
-			}
-
-			const loggerLayer =
-				renderer === 'tui' ? TuiLoggerLayer(engine) : Layer.empty;
-
-			yield* installSignalRestart('SIGUSR2', engine);
-
-			if (watchPaths.length > 0) {
-				for (const path of watchPaths) {
-					yield* watchPathFiber(path, engine, hotRestart).pipe(Effect.provide(bootstrapCtx));
+				// Re-point the long-lived ink mount at this cycle's fresh engine.
+				// MUST happen AFTER seedTags so the proxy's first eager snapshot
+				// already carries the new cycle's pending rows — without that the
+				// user would see a frame of empty state between the old cycle's
+				// terminal statuses and the new cycle's seeded rows. The plain
+				// renderer is rebuilt each cycle: it's a one-line-per-event
+				// stream, no layout state to preserve across cycles.
+				if (renderer === 'tui' && tuiMount !== undefined) {
+					yield* tuiMount.install(engine);
+				} else if (renderer === 'plain') {
+					const tuiSource = Ref.get(engine.tuiState);
+					yield* startPlainRenderer(tuiSource).pipe(Effect.provide(bootstrapCtx));
 				}
-			}
 
-			// Build the full user stack as one composed Layer. Dependency
-			// wiring relies on Effect's Layer runtime ordering — providers
-			// complete before their consumers' acquires run. We catch any
-			// acquire failure here so the TUI stays alive (red rows + log
-			// entries) and `r` can trigger a full restart.
-			//
-			// Per-primitive forked scopes were tried (forkPrimitive +
-			// cascade retry) but the cascade fires on ANY primitive's
-			// success, causing dependents to re-fire before slow
-			// dependencies finish — see notes/friction.md. True per-tag
-			// retry needs explicit dependency declarations on each
-			// PluginTag; deferred to v1.1.
-			const userStackLayer = composeStackLayer(config.stack, {
-				stackName: config.stackName,
-				network: config.network,
-				stateDir: config.stateDir,
-				platformLayer: undefined,
-			});
-			const buildSucceeded = yield* Layer.buildWithMemoMap(
-				userStackLayer as Layer.Layer<unknown, unknown, never>,
-				memoMap,
-				supervisorScope,
-			).pipe(
-				Effect.provide(loggerLayer as Layer.Layer<unknown, never, never>),
-				Effect.provideService(ClaimedContainers, claimedRef),
-				Effect.as(true),
-				Effect.catchCause((cause) =>
-					engine.appendLog({
-						ts: Date.now(),
-						level: 'error',
-						message: `stack acquire failed:\n${prettyError(cause)}`,
-					}).pipe(Effect.as(false)),
-				),
-			);
+				const loggerLayer = renderer === 'tui' ? TuiLoggerLayer(engine) : Layer.empty;
 
-			// Post-build orphan sweep. Removes any compose-project-labelled
-			// container that THIS process did NOT adopt-or-create during the
-			// layer build — i.e. containers whose primitives were dropped
-			// from the config, or that were left behind by a crashed prior
-			// process. Skipping this on later cycles (`r`) keeps long-lived
-			// containers from being reaped between cycles when their
-			// finalizer lives on `LongLivedScope`. Best-effort throughout.
-			//
-			// CRITICAL: only sweep on successful build. A failed build
-			// (e.g. state-store locked by a sibling supervisor, primitive
-			// failure mid-acquire) leaves `claimedRef` incomplete — sweeping
-			// against it would destroy the sibling's healthy containers
-			// because they look like "orphans" to this process. The
-			// adopt-on-next-run path also relies on those containers
-			// surviving, so a failed cycle MUST be a no-op against existing
-			// docker state.
-			if (cycle === 1 && buildSucceeded) {
-				const claimed = yield* Ref.get(claimedRef);
-				const swept = yield* dockerOrphanSweep(sweepApp, sweepStack, claimed).pipe(
-					Effect.provide(PlatformLive as Layer.Layer<ChildProcessSpawner.ChildProcessSpawner>),
+				yield* installSignalRestart('SIGUSR2', engine);
+
+				if (watchPaths.length > 0) {
+					for (const path of watchPaths) {
+						yield* watchPathFiber(path, engine, hotRestart).pipe(Effect.provide(bootstrapCtx));
+					}
+				}
+
+				// Build the full user stack as one composed Layer. Dependency
+				// wiring relies on Effect's Layer runtime ordering — providers
+				// complete before their consumers' acquires run. We catch any
+				// acquire failure here so the TUI stays alive (red rows + log
+				// entries) and `r` can trigger a full restart.
+				const userStackLayer = composeStackLayer(config.stack, {
+					stackName: config.stackName,
+					network: config.network,
+					stateDir: config.stateDir,
+					platformLayer: undefined,
+				});
+				const buildSucceeded = yield* Layer.buildWithMemoMap(
+					userStackLayer as Layer.Layer<unknown, unknown, never>,
+					memoMap,
+					supervisorScope,
+				).pipe(
+					Effect.provide(loggerLayer as Layer.Layer<unknown, never, never>),
+					Effect.provideService(ClaimedContainers, claimedRef),
+					Effect.as(true),
+					Effect.catchCause((cause) =>
+						engine
+							.appendLog({
+								ts: Date.now(),
+								level: 'error',
+								message: `stack acquire failed:\n${prettyError(cause)}`,
+							})
+							.pipe(Effect.as(false)),
+					),
 				);
-				if (swept.length > 0) {
-					yield* Effect.logInfo(
-						`devstack: swept ${swept.length} orphan container(s) from prior run of ${sweepApp}/${sweepStack}`,
+
+				// Post-build orphan sweep. Removes any compose-project-labelled
+				// container that THIS process did NOT adopt-or-create during the
+				// layer build — i.e. containers whose primitives were dropped
+				// from the config, or that were left behind by a crashed prior
+				// process. Skipping this on later cycles (`r`) keeps long-lived
+				// containers from being reaped between cycles when their
+				// finalizer lives on `LongLivedScope`. Best-effort throughout.
+				//
+				// CRITICAL: only sweep on successful build. A failed build
+				// (e.g. state-store locked by a sibling supervisor, primitive
+				// failure mid-acquire) leaves `claimedRef` incomplete — sweeping
+				// against it would destroy the sibling's healthy containers
+				// because they look like "orphans" to this process. The
+				// adopt-on-next-run path also relies on those containers
+				// surviving, so a failed cycle MUST be a no-op against existing
+				// docker state.
+				if (cycle === 1 && buildSucceeded) {
+					const claimed = yield* Ref.get(claimedRef);
+					const swept = yield* dockerOrphanSweep(sweepApp, sweepStack, claimed).pipe(
+						Effect.provide(PlatformLive as Layer.Layer<ChildProcessSpawner.ChildProcessSpawner>),
 					);
+					if (swept.length > 0) {
+						yield* Effect.logInfo(
+							`devstack: swept ${swept.length} orphan container(s) from prior run of ${sweepApp}/${sweepStack}`,
+						);
+					}
 				}
-			}
 
-			yield* engine.setBuildStatus('running');
+				yield* engine.setBuildStatus('running');
 
-			// Block on the full-restart signal until the user presses r
-			// (full restart), Shift+R, SIGUSR2, file watch, or Ctrl-C.
-			const signal = yield* Ref.get(engine.restartSignal);
-			yield* Deferred.await(signal);
-			yield* engine.setBuildStatus('restarting');
-			return true;
-		}).pipe(Effect.scoped, Effect.withSpan('Devstack.launch'));
+				// Block on the full-restart signal until the user presses r
+				// (full restart), Shift+R, SIGUSR2, file watch, or Ctrl-C.
+				const signal = yield* Ref.get(engine.restartSignal);
+				yield* Deferred.await(signal);
+				yield* engine.setBuildStatus('restarting');
+				return true;
+			}).pipe(Effect.scoped, Effect.withSpan('Devstack.launch'));
 
 		return Effect.gen(function* () {
 			// Capture the outer launch scope — lives for the entire

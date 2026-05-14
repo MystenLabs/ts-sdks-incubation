@@ -86,9 +86,6 @@ const makeNoopProxy = (
 		restartSignal: placeholderRestartSignal,
 		requestRestart,
 		resetRestartSignal: noop,
-		retryFailed: noop,
-		awaitRetry: () => noop,
-		signalRetry: () => noop,
 	};
 };
 
