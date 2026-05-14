@@ -5,95 +5,69 @@
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { defineDevstackConfig } from '@mysten-incubation/devstack-next';
 import {
+	accounts,
+	defineDevstack,
+	hostProcess,
+	manifest,
 	pickCreatedByTypeIncludes,
 	pickCreatedByTypeSuffix,
 	publishMove,
-	publishViaSuiCli,
-	viteDevServer,
-} from '@mysten-incubation/devstack-next/helpers';
-import {
-	accounts,
-	manifest,
-	registerCoin,
-	sui,
+	suiLocalnet,
 	walletApp,
-} from '@mysten-incubation/devstack-next/plugins';
+} from '@mysten-incubation/devstack-effect';
+import type { SuiObjectChange } from '@mysten-incubation/devstack-effect';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MANAGED_COIN_DIR = resolve(HERE, 'move/managed_coin');
 
-const a = accounts({ specs: { alice: {}, bob: {}, carol: {} } });
+const a = accounts({ alice: {}, bob: {}, carol: {} });
 
-// Publish as alice — same account holds the TreasuryCap (UI gates
-// minting on `address === accounts.alice`). Capture surfaces the
-// TreasuryCap + CoinMetadata + UpgradeCap object ids alongside
-// `packageId` on the manifest's `package.captured` map.
+const captureCoinObjects = (changes: ReadonlyArray<SuiObjectChange>) => {
+	const out: Record<string, string> = {};
+	const t = pickCreatedByTypeIncludes(changes, '::coin::TreasuryCap<');
+	if (t !== undefined) out.treasuryCapId = t;
+	const md = pickCreatedByTypeIncludes(changes, '::coin::CoinMetadata<');
+	if (md !== undefined) out.metadataId = md;
+	const up = pickCreatedByTypeSuffix(changes, '0x2::package::UpgradeCap');
+	if (up !== undefined) out.upgradeCapId = up;
+	return out;
+};
+
+// Publish as alice — same account holds the TreasuryCap. The `coins:`
+// shortcut registers the managed_coin Move type into the manifest's
+// coin namespace automatically.
 const managedCoinPublish = publishMove({
 	name: 'managed_coin',
 	path: MANAGED_COIN_DIR,
-	signer: a.pool.get('signer', { name: 'alice' }),
-	publish: (ctx) =>
-		publishViaSuiCli(ctx, {
-			capture: (changes) => {
-				const out: Record<string, string> = {};
-				// Generic types — `pickCreatedByTypeIncludes` for the
-				// fragment match; `pickCreatedByTypeSuffix` for the
-				// monomorphic `UpgradeCap`.
-				const t = pickCreatedByTypeIncludes(changes, '::coin::TreasuryCap<');
-				if (t !== undefined) out.treasuryCapId = t;
-				const md = pickCreatedByTypeIncludes(changes, '::coin::CoinMetadata<');
-				if (md !== undefined) out.metadataId = md;
-				const up = pickCreatedByTypeSuffix(changes, '0x2::package::UpgradeCap');
-				if (up !== undefined) out.upgradeCapId = up;
-				return out;
-			},
-		}),
+	signer: a.alice,
+	capture: captureCoinObjects,
+	coins: [{ name: 'managed_coin', module: 'managed_coin', type: 'MANAGED_COIN', decimals: 6 }],
 });
 
-const managedCoinReg = registerCoin({
-	name: 'managed_coin',
-	package: managedCoinPublish.get('package'),
-	module: 'managed_coin',
-	type: 'MANAGED_COIN',
-	decimals: 6,
-});
-
-const wallet = walletApp.create({
-	accounts: [
-		{ name: 'alice', signer: a.pool.get('signer', { name: 'alice' }) },
-		{ name: 'bob', signer: a.pool.get('signer', { name: 'bob' }) },
-		{ name: 'carol', signer: a.pool.get('signer', { name: 'carol' }) },
-	],
+const wallet = walletApp({
+	accounts: [a.alice, a.bob, a.carol],
 	allowedOrigins: ['http://localhost:5173'],
 });
 
-const m = manifest({
-	packages: [managedCoinPublish.get('package')],
-	endpoints: [sui.get('endpoint'), sui.get('faucetEndpoint'), wallet.get('endpoint')],
-	accounts: [
-		a.pool.get('account', { name: 'alice' }),
-		a.pool.get('account', { name: 'bob' }),
-		a.pool.get('account', { name: 'carol' }),
-	],
-	coins: [managedCoinReg.get('coin')],
+const dev = hostProcess({
+	name: 'frontend.dev-server',
+	command: 'pnpm',
+	args: ['exec', 'vite', '--port', '5173'],
+	readyProbe: { kind: 'http', url: 'http://localhost:5173', timeoutMs: 60_000 },
+	endpoint: { name: 'dev-server', kind: 'dev-server' },
+	dependsOn: [managedCoinPublish, wallet],
 });
 
-const dev = viteDevServer({
-	port: 5173,
-	gates: [managedCoinPublish.get('package'), wallet.get('full')],
-});
+const m = manifest();
 
-export default defineDevstackConfig({
-	stack: [
-		sui.create({ network: 'localnet' }),
-		a.pool,
-		a.fund,
-		managedCoinPublish,
-		managedCoinReg,
-		m,
-		wallet,
-		dev,
-	],
-});
+export default defineDevstack([
+	suiLocalnet(),
+	a.alice,
+	a.bob,
+	a.carol,
+	managedCoinPublish,
+	m,
+	wallet,
+	dev,
+]);

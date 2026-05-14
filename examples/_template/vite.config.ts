@@ -6,7 +6,7 @@ import { defineConfig } from 'vite';
 
 export default defineConfig({
 	plugins: [react(), tailwindcss()],
-	// `createDevstackDappKit` from `@mysten-incubation/devstack-next/react` is
+	// `createDevstackDappKit` from `@mysten-incubation/devstack-effect/dapp-kit` is
 	// async (lazy-loads the panels module so `mountUI: false` bundles
 	// drop ~30KB of devstack panels). Apps `await` it at module top
 	// level in `dapp-kit.ts`, which requires top-level await — bump the

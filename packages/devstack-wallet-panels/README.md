@@ -18,11 +18,11 @@ by `devstack up`.
 ## Use
 
 The one-liner: `createDevstackDappKit({ manifest })` from
-`@mysten-incubation/devstack/react` already wires these panels in.
+`@mysten-incubation/devstack/dapp-kit` already wires these panels in.
 
 ```ts
 // dapp-kit.ts
-import { createDevstackDappKit } from '@mysten-incubation/devstack/react';
+import { createDevstackDappKit } from '@mysten-incubation/devstack/dapp-kit';
 import { manifest } from 'virtual:devstack-manifest';
 
 export const { dAppKit } = createDevstackDappKit({ manifest });
@@ -42,7 +42,7 @@ list, or interleave with other wallet initializers — wire the panels by hand:
 import { createDAppKit } from '@mysten/dapp-kit-core';
 import { devWalletInitializer } from '@mysten-incubation/dev-wallet';
 import { createDevstackAdapterFromManifest } from '@mysten-incubation/dev-wallet/adapters';
-import { localnetDappKitConfig } from '@mysten-incubation/devstack/react';
+import { localnetDappKitConfig } from '@mysten-incubation/devstack/dapp-kit';
 import { configureDevstackPanels, devstackPanels } from '@mysten-incubation/devstack-wallet-panels';
 import { manifest } from 'virtual:devstack-manifest';
 

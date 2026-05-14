@@ -1,7 +1,7 @@
 {
 	"name": "@mysten-incubation/devstack",
 	"version": "0.1.0",
-	"description": "Declarative reconciler + plugin harness for fully-seeded Sui local development. Brings up sui-localnet (+ optional walrus, seal), publishes Move packages, runs codegen, and writes a typed manifest the frontend consumes.",
+	"description": "Composable developer-stack engine for Sui apps — typed producer graph, plugin model, vitest + playwright integrations.",
 	"keywords": [
 		"sui",
 		"move",
@@ -25,48 +25,53 @@
 	"sideEffects": false,
 	"main": "./dist/index.mjs",
 	"types": "./dist/index.d.mts",
+	"bin": {
+		"devstack": "./dist/cli/main.mjs"
+	},
+	"files": [
+		"dist",
+		"README.md",
+		"LICENSE",
+		"CHANGELOG.md"
+	],
 	"exports": {
 		".": {
 			"types": "./dist/index.d.mts",
 			"import": "./dist/index.mjs"
 		},
-		"./authoring": {
-			"types": "./dist/authoring.d.mts",
-			"import": "./dist/authoring.mjs"
+		"./dapp-kit": {
+			"types": "./dist/dapp-kit/index.d.mts",
+			"import": "./dist/dapp-kit/index.mjs"
 		},
 		"./helpers": {
-			"types": "./dist/helpers.d.mts",
-			"import": "./dist/helpers.mjs"
+			"types": "./dist/helpers/index.d.mts",
+			"import": "./dist/helpers/index.mjs"
+		},
+		"./leasing": {
+			"types": "./dist/leasing/index.d.mts",
+			"import": "./dist/leasing/index.mjs"
+		},
+		"./persistence": {
+			"types": "./dist/persistence/index.d.mts",
+			"import": "./dist/persistence/index.mjs"
 		},
 		"./playwright": {
 			"types": "./dist/playwright/index.d.mts",
 			"import": "./dist/playwright/index.mjs"
 		},
-		"./react": {
-			"types": "./dist/react/index.d.mts",
-			"import": "./dist/react/index.mjs"
+		"./plugins": {
+			"types": "./dist/plugins/index.d.mts",
+			"import": "./dist/plugins/index.mjs"
+		},
+		"./shapes": {
+			"types": "./dist/shapes/index.d.mts",
+			"import": "./dist/shapes/index.mjs"
 		},
 		"./vitest": {
 			"types": "./dist/vitest/index.d.mts",
 			"import": "./dist/vitest/index.mjs"
-		},
-		"./vitest/runtime": {
-			"types": "./dist/vitest/runtime.d.mts",
-			"import": "./dist/vitest/runtime.mjs"
 		}
 	},
-	"publishConfig": {
-		"access": "public"
-	},
-	"bin": {
-		"devstack": "./dist/cli/index.mjs"
-	},
-	"files": [
-		"dist",
-		"README.md",
-		"CHANGELOG.md",
-		"LICENSE"
-	],
 	"engines": {
 		"node": ">=24.0.0"
 	},
@@ -76,15 +81,14 @@
 		"typecheck": "tsc --noEmit",
 		"test": "vitest run",
 		"test:watch": "vitest",
-		"smoke-test": "node --experimental-strip-types scripts/smoke-test-build.ts",
-		"prepublishOnly": "pnpm run typecheck && pnpm run build && pnpm run smoke-test"
+		"test:integration": "vitest run --config vitest.integration.config.ts",
+		"smoke-test": "tsx scripts/smoke-test.ts",
+		"prepublishOnly": "pnpm build && pnpm test && pnpm smoke-test"
 	},
 	"dependencies": {
 		"@mysten/codegen": "catalog:",
 		"@mysten/sui": "catalog:",
-		"chokidar": "^4.0.1",
 		"ink": "^7.0.0",
-		"ink-spinner": "^5.0.0",
 		"react": "catalog:"
 	},
 	"devDependencies": {
@@ -92,10 +96,10 @@
 		"@mysten-incubation/devstack-wallet-panels": "workspace:*",
 		"@mysten/dapp-kit-core": "catalog:",
 		"@playwright/test": "catalog:",
-		"@tanstack/react-query": "catalog:",
 		"@types/node": "catalog:",
 		"@types/react": "catalog:",
 		"tsdown": "^0.21.10",
+		"tsx": "catalog:",
 		"typescript": "catalog:",
 		"vitest": "catalog:"
 	},
@@ -104,7 +108,6 @@
 		"@mysten-incubation/devstack-wallet-panels": "workspace:*",
 		"@mysten/dapp-kit-core": "catalog:",
 		"@playwright/test": "catalog:",
-		"@tanstack/react-query": "catalog:",
 		"vitest": "catalog:"
 	},
 	"peerDependenciesMeta": {
@@ -118,9 +121,6 @@
 			"optional": true
 		},
 		"@playwright/test": {
-			"optional": true
-		},
-		"@tanstack/react-query": {
 			"optional": true
 		},
 		"vitest": {

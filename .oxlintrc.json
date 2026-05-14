@@ -29,7 +29,8 @@
 		"examples/*/*.config.js",
 		"examples/*/*.config.d.ts",
 		"examples/*/*Plugin.js",
-		"examples/*/*Plugin.d.ts"
+		"examples/*/*Plugin.d.ts",
+		"repos"
 	],
 	"settings": {
 		"jsdoc": {

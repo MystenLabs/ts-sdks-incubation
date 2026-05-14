@@ -1,0 +1,27 @@
+// Dedicated tsc configuration for emitting `.d.ts` declarations for the
+// `./dapp-kit`, `./vitest`, and `./playwright` subpaths. Used by the
+// `build:dts-subpaths` package script — see `tsdown.config.ts` for why
+// we sidestep tsdown's bundler for these subpaths.
+//
+// We compile the whole `src/` so tsc can resolve transitive imports, then
+// `scripts/finalize-subpath-dts.ts` lifts the three subpath dirs out of
+// `dist/.dts-subpaths-tmp/` (renaming `.d.ts` -> `.d.mts` and `.js`
+// imports -> `.mjs`) into their final `dist/<subpath>/` paths. The
+// transitive types those subpaths reference already exist at
+// `dist/**/*.d.mts` thanks to the main tsdown build.
+{
+	"extends": "@mysten-incubation/tsconfig/base.json",
+	"compilerOptions": {
+		"declaration": true,
+		"emitDeclarationOnly": true,
+		"outDir": "./dist/.dts-subpaths-tmp",
+		"rootDir": "./src",
+		"lib": ["ES2022", "DOM"],
+		"types": ["node"],
+		"jsx": "react-jsx",
+		"noUnusedLocals": false,
+		"noUnusedParameters": false
+	},
+	"include": ["src/**/*"],
+	"exclude": ["dist", "node_modules", "src/**/*.test.ts", "src/**/*.test.tsx"]
+}

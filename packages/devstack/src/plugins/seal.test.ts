@@ -1,0 +1,274 @@
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
+import { describe, expect, it } from 'vitest';
+import { Engine } from '../engine/class.js';
+import type { Dep, Env, Provides } from '../engine/types.js';
+import { dep } from '../factories/dep.js';
+import { define } from '../factories/define.js';
+import { sui } from './sui.js';
+import {
+	parseSealKeygenOutput,
+	seal,
+	sealLocalnet,
+	type SealState,
+} from './seal.js';
+
+const env: Env = { appName: 'demo', appDir: '/tmp/seal-test', network: 'localnet', stack: 'main' };
+
+describe('seal (url override — no Docker)', () => {
+	it('publishes the supplied url and marks state as unmanaged', async () => {
+		const node = seal.create({ url: 'https://my-key-server.example/seal' });
+		const engine = new Engine({ stack: [node] }, { env });
+		const result = await engine.runOnce();
+		expect(result.errored).toEqual([]);
+		const state = engine.getState().nodes.get('seal.key-server')!.state as SealState;
+		expect(state.url).toBe('https://my-key-server.example/seal');
+		expect(state.managed).toBe(false);
+	});
+
+	it('skips the dockerContainer node when url is set', () => {
+		const node = seal.create({ url: 'https://x/' });
+		const engine = new Engine({ stack: [node] }, { env });
+		const state = engine.getState();
+		expect(state.nodes.has('seal.key-server')).toBe(true);
+		expect(state.nodes.has('seal.key-server.container')).toBe(false);
+		expect(state.nodes.has('ports')).toBe(false);
+	});
+
+	it('represents.endpoints projects an Endpoint', async () => {
+		const node = seal.create({ url: 'https://x/' });
+		const engine = new Engine({ stack: [node] }, { env });
+		await engine.runOnce();
+		const view = engine.getState().nodes.get('seal.key-server')!;
+		const endpoints = view.representations?.endpoints as { name: string; url: string }[];
+		expect(endpoints[0]?.name).toBe('seal-key-server');
+		expect(endpoints[0]?.url).toBe('https://x/');
+	});
+});
+
+describe('seal (graph composition — managed mode requires sealLocalnet)', () => {
+	it('seal.create({}) throws — managed mode now requires sealLocalnet', () => {
+		// The schema instance is a thin transformer over sealLocalnet's
+		// produced container + keygen Deps; without those, there's no
+		// way to project SealState. The url-override path is the only
+		// standalone-usable mode now.
+		expect(() => seal.create({})).toThrow(/sealLocalnet/);
+	});
+
+	it('vendored docker context resolves to a real on-disk directory', () => {
+		// `seal.image` resolves its build context via `import.meta.url`
+		// from `seal.ts` — guard against the source-vs-built path drift
+		// that would only surface at `docker build` time.
+		const ctx = fileURLToPath(new URL('./seal/docker/', import.meta.url));
+		expect(existsSync(ctx)).toBe(true);
+		expect(existsSync(`${ctx}Dockerfile`)).toBe(true);
+	});
+});
+
+describe('seal (static get accessors via __pluginId)', () => {
+	it('seal.get("keyServer") resolves the running instance and projects { url }', async () => {
+		const consumer = define({
+			name: 'consumer',
+			deps: { ks: seal.get('keyServer') },
+			start: async ({ deps: { ks } }) => ({ url: ks.url }),
+		});
+		const engine = new Engine(
+			{ stack: [seal.create({ url: 'https://k/' }), consumer] },
+			{ env },
+		);
+		await engine.runOnce();
+		const state = engine.getState().nodes.get('consumer')!.state as { url: string };
+		expect(state.url).toBe('https://k/');
+	});
+
+	it('seal.get("url") projects the bare URL string', async () => {
+		const consumer = define({
+			name: 'consumer',
+			deps: { url: seal.get('url') },
+			start: async ({ deps: { url } }) => ({ raw: url }),
+		});
+		const engine = new Engine(
+			{ stack: [seal.create({ url: 'https://k/' }), consumer] },
+			{ env },
+		);
+		await engine.runOnce();
+		const state = engine.getState().nodes.get('consumer')!.state as { raw: string };
+		expect(state.raw).toBe('https://k/');
+	});
+
+	it('rejects two `create` instances of the same schema in one stack', () => {
+		const a = seal.create({ url: 'https://a/' });
+		const b = seal.create({ url: 'https://b/' });
+		expect(() => new Engine({ stack: [a, b] }, { env })).toThrow(/two instances/);
+	});
+
+	it('errors when a static get is used without a create() in the stack', () => {
+		const consumer = define({
+			name: 'consumer',
+			deps: { ks: seal.get('keyServer') },
+			start: async ({ deps: { ks } }) => ({ url: ks.url }),
+		});
+		expect(() => new Engine({ stack: [consumer] }, { env })).toThrow(/no instance/);
+	});
+});
+
+describe('sealLocalnet (graph composition — no real chain)', () => {
+	// `sealLocalnet({...})` owns the full localnet stack: image,
+	// keygen, publish, register, key-server container, AND the schema
+	// instance. The user spreads its return into `stack`.
+	function makeOps() {
+		interface SignerState {
+			keypair: Ed25519Keypair;
+		}
+		const signerProvides = {
+			signer: dep((s: SignerState) => s.keypair),
+		} satisfies Provides<SignerState>;
+		const signerNode = define<SignerState, typeof signerProvides>({
+			name: 'test.signer',
+			provides: signerProvides,
+			start: async () => ({ keypair: Ed25519Keypair.generate() }),
+		});
+		const signerDep = signerNode.get('signer') as unknown as Dep<Ed25519Keypair>;
+		const ops = sealLocalnet({ signer: signerDep });
+		return { signerNode, ops };
+	}
+
+	it('returns the full bundle: image, keygen, source, publish, register, container, instance', () => {
+		const { signerNode, ops } = makeOps();
+		expect(ops.image).toBeDefined();
+		expect(ops.keygenContainer).toBeDefined();
+		expect(ops.keygen).toBeDefined();
+		expect(ops.source).toBeDefined();
+		expect(ops.publish).toBeDefined();
+		expect(ops.register).toBeDefined();
+		expect(ops.container).toBeDefined();
+		expect(ops.instance).toBeDefined();
+		// Names are stable so external tooling can pivot.
+		expect(ops.publish.name).toBe('publish.seal');
+		expect(ops.register.name).toBe('seal.register');
+		expect(ops.instance.name).toBe('seal.key-server');
+		void signerNode;
+	});
+
+	it('all bundle producers + sui pull into one engine cleanly', () => {
+		const { signerNode, ops } = makeOps();
+		const engine = new Engine(
+			{
+				stack: [
+					sui.create({ network: 'localnet' }),
+					signerNode,
+					ops.image!,
+					ops.keygenContainer,
+					ops.keygen,
+					ops.source,
+					ops.publish,
+					ops.register,
+					ops.container,
+					ops.instance,
+				],
+			},
+			{ env },
+		);
+		const state = engine.getState();
+		expect(state.nodes.has('publish.seal')).toBe(true);
+		expect(state.nodes.has('seal.register')).toBe(true);
+		expect(state.nodes.has('seal.source')).toBe(true);
+		expect(state.nodes.has('seal.image')).toBe(true);
+		expect(state.nodes.has('seal.keygen')).toBe(true);
+		expect(state.nodes.has('seal.keygen.container')).toBe(true);
+		expect(state.nodes.has('seal.key-server')).toBe(true);
+		expect(state.nodes.has('seal.key-server.container')).toBe(true);
+		expect(state.nodes.has('sui.localnet')).toBe(true);
+		// dockerNetwork pulled in transitively via the key-server
+		// container's network.
+		expect(state.nodes.has('docker.network')).toBe(true);
+	});
+
+	it('register Deps directly on keygen.publicKey (not via schema) so no cycle', () => {
+		// The whole point of moving the wiring into sealLocalnet was to
+		// break the schema → container → register → schema cycle. A
+		// graph build error here would surface as a CycleError from
+		// engine/topo.
+		const { signerNode, ops } = makeOps();
+		expect(
+			() =>
+				new Engine(
+					{
+						stack: [
+							sui.create({ network: 'localnet' }),
+							signerNode,
+							ops.image!,
+							ops.keygenContainer,
+							ops.keygen,
+							ops.source,
+							ops.publish,
+							ops.register,
+							ops.container,
+							ops.instance,
+						],
+					},
+					{ env },
+				),
+		).not.toThrow();
+	});
+});
+
+describe('seal.keygen (parseSealKeygenOutput)', () => {
+	it('parses Master/Public key lines from seal-cli genkey output', () => {
+		const stdout = [
+			'Some preamble.',
+			'Master key: 0xabc123',
+			'Public key: 0xdef456',
+			'Trailing noise.',
+		].join('\n');
+		const keys = parseSealKeygenOutput(stdout);
+		expect(keys.masterKey).toBe('0xabc123');
+		expect(keys.publicKey).toBe('0xdef456');
+	});
+
+	it('throws on missing Master key line', () => {
+		expect(() => parseSealKeygenOutput('Public key: 0xdef\n')).toThrow(/seal-cli genkey/);
+	});
+
+	it('throws on missing Public key line', () => {
+		expect(() => parseSealKeygenOutput('Master key: 0xabc\n')).toThrow(/seal-cli genkey/);
+	});
+});
+
+describe('seal (publicKey / masterKey provides — managed-mode-only)', () => {
+	it('throws when consumed in url-override mode', async () => {
+		const consumer = define({
+			name: 'consumer',
+			deps: { pk: seal.get('publicKey') },
+			start: async ({ deps }) => ({ pk: (deps as { pk: string }).pk }),
+		});
+		const engine = new Engine(
+			{ stack: [seal.create({ url: 'https://stub/' }), consumer] },
+			{ env },
+		);
+		const result = await engine.runOnce();
+		const errored = result.errored.find((e) => e.name === 'consumer');
+		expect(errored).toBeDefined();
+		expect(errored!.error.message).toMatch(/only available in managed mode/);
+	});
+});
+
+describe('seal (provides.full)', () => {
+	it('exposes the full state for "I depend on this being up" patterns', async () => {
+		const consumer = define({
+			name: 'consumer',
+			deps: { s: seal.get('full') },
+			start: async ({ deps: { s } }) => ({
+				ok: typeof (s as SealState).url === 'string' && (s as SealState).url.length > 0,
+			}),
+		});
+		const engine = new Engine(
+			{ stack: [seal.create({ url: 'https://x/' }), consumer] },
+			{ env },
+		);
+		await engine.runOnce();
+		const state = engine.getState().nodes.get('consumer')!.state as { ok: boolean };
+		expect(state.ok).toBe(true);
+	});
+});

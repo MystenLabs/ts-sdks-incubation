@@ -30,6 +30,7 @@ import * as Docker from '../internal/docker.js';
 import { Sui, type SuiShape } from '../interfaces/sui.js';
 import { stringifyCause } from '../internal/stringify-cause.js';
 import { Identity } from '../internal/identity.js';
+import { PortAllocator } from '../internal/port-allocator.js';
 import { EndpointRegistry } from '../internal/registries.js';
 import { SuiBuildImage } from '../internal/sui-cli.js';
 import { dockerImage } from '../plugin-author/index.js';
@@ -53,14 +54,18 @@ export type SuiNetwork = 'localnet' | 'testnet' | 'mainnet';
 // (or the Move package ABIs drift). Mirrors v3's `SUI_DEFAULT_VERSION`.
 const DEFAULT_SUI_VERSION = 'devnet-v1.71.0';
 
+// In-container ports the sui binary binds on. Host ports come from
+// the shared `PortAllocator` so two stacks can run side-by-side; the
+// resulting URLs are constructed at runtime from the allocated host
+// ports. `LOCAL_FAUCET_URL` is still emitted as a fallback for the
+// `options.rpcUrl`-but-no-`faucetUrl` branch where the caller pinned
+// the RPC explicitly (no localnet container started here).
 const LOCAL_RPC_PORT = 9000;
 const LOCAL_FAUCET_PORT = 9123;
 const LOCAL_GRAPHQL_PORT = 9125;
-const LOCAL_RPC_URL = `http://localhost:${LOCAL_RPC_PORT}`;
 // Faucet URLs are stored as BASES — `/v2/gas` is appended by the
 // faucet client (`internal/faucet.ts`). Matches v3's convention.
 const LOCAL_FAUCET_URL = `http://localhost:${LOCAL_FAUCET_PORT}`;
-const LOCAL_GRAPHQL_URL = `http://localhost:${LOCAL_GRAPHQL_PORT}/graphql`;
 
 // Postgres sidecar that backs `sui start --with-indexer`'s database.
 // The sui CLI requires a real postgres URL — there's no embedded
@@ -153,11 +158,57 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 			yield* setPhase('building image');
 			image = (yield* localnetImage!).tag;
 		}
-		const ports = options.ports ?? {
-			[LOCAL_RPC_PORT]: LOCAL_RPC_PORT,
-			[LOCAL_FAUCET_PORT]: LOCAL_FAUCET_PORT,
-			[LOCAL_GRAPHQL_PORT]: LOCAL_GRAPHQL_PORT,
-		};
+		// Host ports are allocator-driven so two stacks (or sibling
+		// example projects sharing a host) don't fight over 9000 /
+		// 9123 / 9125. The allocator scans forward when the preferred
+		// port is busy; the in-container ports stay fixed because the
+		// sui binary's `--with-faucet`/`--with-graphql` flags reference
+		// the in-container ports. Caller's `options.ports` short-circuits
+		// the allocator path for the rare case they want pinned host
+		// ports anyway.
+		let ports: Record<number, number>;
+		let hostRpcPort: number;
+		let hostFaucetPort: number;
+		let hostGraphqlPort: number;
+		if (options.ports !== undefined) {
+			ports = options.ports;
+			// Best-effort reverse lookup: find the host port mapped to
+			// each in-container default. Fall back to the in-container
+			// value (assumes 1:1) when no entry matches.
+			const findHost = (containerPort: number): number => {
+				for (const [h, c] of Object.entries(ports)) {
+					if (c === containerPort) return Number(h);
+				}
+				return containerPort;
+			};
+			hostRpcPort = findHost(LOCAL_RPC_PORT);
+			hostFaucetPort = findHost(LOCAL_FAUCET_PORT);
+			hostGraphqlPort = findHost(LOCAL_GRAPHQL_PORT);
+		} else {
+			const allocator = yield* PortAllocator;
+			const allocSui = (preferred: number) =>
+				allocator
+					.allocate(preferred)
+					.pipe(
+						Effect.catchTag('PortAllocatorError', (cause) =>
+							Effect.fail(
+								new SuiError({
+									phase: 'sui-up',
+									message: `sui-localnet: could not allocate host port near ${preferred}: ${cause.message}`,
+									cause,
+								}),
+							),
+						),
+					);
+			hostRpcPort = yield* allocSui(LOCAL_RPC_PORT);
+			hostFaucetPort = yield* allocSui(LOCAL_FAUCET_PORT);
+			hostGraphqlPort = yield* allocSui(LOCAL_GRAPHQL_PORT);
+			ports = {
+				[hostRpcPort]: LOCAL_RPC_PORT,
+				[hostFaucetPort]: LOCAL_FAUCET_PORT,
+				[hostGraphqlPort]: LOCAL_GRAPHQL_PORT,
+			};
+		}
 
 		// Per-stack docker network — gives the indexer db + sui-localnet
 		// stable in-network DNS aliases so the sui process can dial
@@ -274,9 +325,14 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 			),
 		);
 
-		const rpcUrl = LOCAL_RPC_URL;
-		const faucetUrl = LOCAL_FAUCET_URL;
-		const graphqlUrl = LOCAL_GRAPHQL_URL;
+		// URLs use the ALLOCATED host ports (not the in-container
+		// defaults) so dapp-kit / SDKs / browser clients dial whatever
+		// port the allocator picked. Falls back to the in-container
+		// defaults when the caller passed `options.ports` (matches the
+		// pre-allocator behaviour).
+		const rpcUrl = `http://localhost:${hostRpcPort}`;
+		const faucetUrl = `http://localhost:${hostFaucetPort}`;
+		const graphqlUrl = `http://localhost:${hostGraphqlPort}/graphql`;
 		const client = new SuiJsonRpcClient({ url: rpcUrl, network: 'localnet' });
 
 		// Gate `Sui` readiness on ALL three endpoints actually serving:

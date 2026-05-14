@@ -4,7 +4,7 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
-		"dev": "devstack-next up",
+		"dev": "devstack up",
 		"build": "tsc -b && vite build",
 		"preview": "vite preview",
 		"typecheck": "tsc -b --noEmit",
@@ -12,19 +12,19 @@
 		"test:watch": "vitest",
 		"test:e2e": "DEVSTACK_STACK=test playwright test",
 		"clean": "rm -rf dist .turbo node_modules/.tmp",
-		"apply": "devstack-next apply",
-		"stack": "devstack-next stack"
+		"apply": "devstack apply",
+		"stack": "devstack stack"
 	},
 	"dependencies": {
 		"@mysten-incubation/dev-wallet": "workspace:*",
-		"@mysten-incubation/devstack": "workspace:*",
-		"@mysten-incubation/devstack-next": "workspace:*",
+		"@mysten-incubation/devstack-effect": "workspace:*",
 		"@mysten-incubation/devstack-wallet-panels": "workspace:*",
 		"@mysten/dapp-kit-core": "catalog:",
 		"@mysten/dapp-kit-react": "catalog:",
 		"@mysten/sui": "catalog:",
 		"@mysten/wallet-standard": "catalog:",
 		"@tanstack/react-query": "catalog:",
+		"effect": "catalog:",
 		"react": "catalog:",
 		"react-dom": "catalog:"
 	},

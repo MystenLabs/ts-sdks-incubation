@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { Effect } from 'effect';
+import { PortAllocator } from '../internal/port-allocator.js';
 import { EndpointRegistry } from '../internal/registries.js';
 import { stringifyCause } from '../internal/stringify-cause.js';
 import { makeTag, setPhase, type PluginTag } from '../tag.js';
@@ -41,7 +42,26 @@ export const walletApp = <const Name extends string = 'wallet-app'>(
 				accountsByAddress.set(account.address, account);
 			}
 
-			const port = options.port ?? 5180;
+			// Run the preferred port through the shared `PortAllocator` so
+			// two stacks (or sibling examples whose supervisors share a
+			// host) can boot side-by-side without stepping on each other's
+			// 5180. The allocator scans forward from the preferred port
+			// when it's already bound by another process.
+			const allocator = yield* PortAllocator;
+			const preferredPort = options.port ?? 5180;
+			const port = yield* allocator
+				.allocate(preferredPort)
+				.pipe(
+					Effect.catchTag('PortAllocatorError', (cause) =>
+						Effect.fail(
+							new WalletAppError({
+								phase: 'listen',
+								message: `wallet-app: could not allocate port near ${preferredPort}: ${cause.message}`,
+								cause,
+							}),
+						),
+					),
+				);
 			// Default to loopback so signing endpoints aren't exposed to other devices
 			// on the LAN (e.g. a coffee-shop network). Override via `bindAddress` for
 			// devcontainers / WSL where the browser lives on a different interface.
@@ -72,7 +92,7 @@ export const walletApp = <const Name extends string = 'wallet-app'>(
 					// `closeAllConnections` exists on Node 18.2+ — devstack
 					// requires Node >= 24, so it's always present.
 					(server as { closeAllConnections?: () => void }).closeAllConnections?.();
-					server.close(() => resume(Effect.void));
+					server.close(() => resume(allocator.release(port)));
 				}),
 			);
 

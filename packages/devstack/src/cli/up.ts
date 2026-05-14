@@ -1,228 +1,171 @@
-// `devstack up` — long-running supervisor entry. Takes a config file path
-// (defaults to ./devstack.config.ts), loads it via dynamic import
-// (tsx-friendly), constructs a Supervisor, and starts.
-//
-// Per-app scripts run this via `tsx ../../packages/devstack/src/cli/up.ts
-// ./devstack.config.ts`.
-//
-// `--target` resolution: localnet-only. A bare value names a stack
-// (`--target scratch` → localnet/scratch); `localnet:<stack>` is the
-// long form. Live-net targets (`--target testnet`) error with a pointer
-// at `apply --target` since the supervisor is localnet-only by
-// construction (see Supervisor's constructor guard).
-//
-// `--once` runs one reconcile cycle and exits with shutdown hooks fired —
-// the same shape Playwright's globalSetup uses. Equivalent to
-// `devstack apply` plus the supervisor's HostProcess actions and
-// shutdown discipline. Useful for `devstack up` style scripts that
-// want to bring the chain to known state and return.
+import { Engine } from '../engine/class.js';
+import type { DevstackConfig, Env } from '../engine/types.js';
+import { attachFileWatcher } from '../file-watcher.js';
+import { tryReadSnapshot, withStackLock, writeSnapshot } from '../persistence/index.js';
+import { hasFlag, parseCommonFlags } from './args.js';
+import { loadConfigAndEnv } from './env.js';
+import { attachPlainRenderer } from './output.js';
 
-import { dirname, resolve } from 'node:path';
-import type { Network } from '../core/types.js';
-import { resolveStack } from '../runtime/active-stack.js';
-import type { Renderer } from '../runtime/renderer.js';
-import { PlainRenderer } from '../runtime/renderers/plain.js';
-import { Supervisor } from '../runtime/supervisor.js';
-import { SupervisorLockBusyError } from '../runtime/supervisor-lock.js';
-import {
-	loadConfig,
-	parseConfigArg,
-	parseNetworkArg,
-	parseStackArg,
-	parseTargetArg,
-	runIfMain,
-} from './args.js';
-import { resolveTarget } from './target.js';
+export const UP_USAGE = `devstack up [options]
 
-interface UpFlags {
-	configPath: string;
-	network: Network;
-	once: boolean;
-	/** Force the line-oriented PlainRenderer even on a TTY. Also activated
-	 * by `DEVSTACK_NO_TUI=1`, `CI=*`, or a non-TTY stdout. */
-	noTui: boolean;
-	/** Override the active stack. When undefined, falls back to
-	 * `DEVSTACK_STACK` env var, then `<appDir>/.devstack/active`, then 'main'. */
-	stack?: string | undefined;
-	/** Raw `--target` value, if set. Resolved to a localnet stack here;
-	 * live-net targets are rejected. */
-	target?: string | undefined;
+Long-running supervisor. Reads the prior snapshot, runs the first cycle,
+auto-saves a snapshot at each cycle:end, and idles until SIGINT. Use
+\`apply\` for the one-shot variant.
+
+While idling, watches every path that nodes registered via
+\`runArgs.watch(...)\` (e.g. publishMove watches its Move source dir);
+fs events trigger \`engine.invalidate(name)\` and a fresh cycle, debounced
+~150ms so editor save bursts coalesce into a single rebuild.
+
+Options:
+  --config <path>             Override the config path (default: walk up
+                              from cwd looking for devstack.config.ts)
+  --network <net>             Network: localnet | testnet | mainnet | devnet
+                              (default: localnet)
+  --stack <name>              Per-stack name (default: 'main', localnet only)
+  --no-tui                    Force the line-oriented plain renderer
+                              even on a TTY. Auto-applied when stdout
+                              isn't a TTY (CI logs, redirected output).
+  --no-watch                  Disable file-watching. Cycles only fire from
+                              SIGUSR2 (manual re-trigger) or SIGINT (stop).
+  -h, --help                  Show this help
+`;
+
+export type RendererKind = 'tui' | 'plain';
+
+export interface RunUpOptions {
+	config: DevstackConfig;
+	env: Env;
+	/** Where to write progress. Used by the plain renderer; ignored by
+	 * the TUI which takes over the terminal. Defaults to process.stderr. */
+	out?: NodeJS.WriteStream;
+	/** Provide a custom signal source for testing — defaults to a real
+	 * SIGINT/SIGTERM handler on the process. The promise resolves when
+	 * the user wants the supervisor to stop. */
+	stopSignal?: Promise<void>;
+	/** Force a specific renderer. Default: 'tui' on a TTY, 'plain' off. */
+	renderer?: RendererKind;
+	/** Disable file-watching. Default: enabled. */
+	noWatch?: boolean;
+	/** Override the debounce window for fs events. Default 150ms. */
+	watchDebounceMs?: number;
 }
 
-async function runUp(flags: UpFlags): Promise<number> {
-	const abs = resolve(flags.configPath);
-	const config = await loadConfig(abs);
-	const appDir = dirname(abs);
+export async function runUp(opts: RunUpOptions): Promise<number> {
+	const out = opts.out ?? process.stderr;
+	// `up` is a long-running supervisor — it holds the stack lock for
+	// its entire lifetime so no concurrent CLI invocation can corrupt
+	// shared docker labels / snapshot writes / port allocator state.
+	return withStackLock(opts.env, async () => runUpLocked(opts, out));
+}
 
-	let stack: string;
-	let network: Network = flags.network;
-	if (flags.target !== undefined) {
-		// `resolveTarget` may throw `MissingNetworkProfileError` for an
-		// undeclared live-net `--target` — that's caught downstream by the
-		// clean-startup-error path so the user sees the actionable
-		// remediation, not a stack trace. Note `up` is localnet-only, so a
-		// live-net target also surfaces an explicit reroute message below.
-		let resolved: ReturnType<typeof resolveTarget>;
-		try {
-			resolved = resolveTarget({
-				config,
-				appDir,
-				raw: flags.target,
-				fallbackStack: flags.stack,
-			});
-		} catch (err) {
-			if (err instanceof Error && isCleanStartupError(err.name)) {
-				process.stderr.write(`devstack up: ${err.message}\n`);
-				return 1;
-			}
-			throw err;
-		}
-		if (resolved.network !== 'localnet') {
-			throw new Error(
-				`devstack up: --target '${flags.target}' resolves to ${resolved.network}; ` +
-					`the supervisor is localnet-only. ` +
-					`Use \`devstack apply --target ${flags.target}\` instead.`,
-			);
-		}
-		stack = resolved.stack;
-		network = 'localnet';
-	} else {
-		stack = resolveStack({ appDir, flag: flags.stack });
-	}
-
-	const renderer = await selectRenderer(flags.noTui);
-	const supervisor = new Supervisor({
-		appName: config.app,
-		appDir,
-		stack,
-		network,
-		plugins: config.plugins,
-		accounts: config.accounts,
-		rpcUrl: config.networks?.[network],
-		renderer,
+async function runUpLocked(opts: RunUpOptions, out: NodeJS.WriteStream): Promise<number> {
+	const initial = await tryReadSnapshot(opts.env);
+	const engine = new Engine(opts.config, {
+		env: opts.env,
+		...(initial !== undefined ? { initialSnapshot: initial } : {}),
 	});
-	for (const plugin of config.plugins) {
-		if (plugin.name.endsWith('-setup') && plugin.description?.startsWith('auto-synthesized')) {
-			process.stdout.write(
-				`  ${plugin.description.replace('auto-synthesized', `synthesized '${plugin.name}'`)}\n`,
-			);
-		}
+
+	let stopSignalResolve: (() => void) | undefined;
+	const tuiQuitSignal = new Promise<void>((r) => {
+		stopSignalResolve = r;
+	});
+
+	// Pick a renderer. The Ink TUI dynamic-imports so the plain CI path
+	// doesn't pay the React + ink load cost.
+	const kind: RendererKind = opts.renderer ?? (process.stdout.isTTY ? 'tui' : 'plain');
+	let detachRenderer: () => void | Promise<void>;
+	if (kind === 'tui') {
+		const mod = await import('../tui/renderer.js');
+		const tui = mod.attachInkRenderer({
+			engine,
+			env: opts.env,
+			onQuit: () => stopSignalResolve?.(),
+		});
+		detachRenderer = () => tui.detach();
+	} else {
+		detachRenderer = attachPlainRenderer(engine, { out });
 	}
-	try {
-		if (flags.once) {
-			await supervisor.runOnce();
-		} else {
-			await supervisor.start();
-		}
-	} catch (err) {
-		// `SupervisorLockBusyError`, `ManifestAppMismatchError`, and
-		// `DockerDaemonError` get a clean stderr message instead of the
-		// default Node stack trace — the user can act on each immediately.
-		// Name-based check: the supervisor is bundled separately from the
-		// CLI in some downstream consumers, so `instanceof` against the
-		// exported class would silently fail on a duplicate-class identity
-		// across bundles.
-		if (err instanceof Error && err.name === 'SupervisorLockBusyError') {
-			const pid = (err as SupervisorLockBusyError).holderPid;
-			process.stderr.write(
-				`devstack up: another devstack process is running on this stack (PID ${pid}). ` +
-					`Stop it (Ctrl-C in its terminal, or kill ${pid}) before running \`devstack up\`.\n`,
-			);
-			return 1;
-		}
-		if (err instanceof Error && isCleanStartupError(err.name)) {
-			process.stderr.write(`devstack up: ${err.message}\n`);
-			return 1;
-		}
-		throw err;
-	}
+
+	// Auto-save a snapshot at each cycle:end. Errors are emitted as
+	// engine:error so the renderer surfaces them, then we keep going —
+	// snapshot write failure shouldn't take the supervisor down.
+	const detachSnapshotWriter = engine.subscribe((event) => {
+		if (event.type !== 'cycle:end') return;
+		void engine
+			.saveSnapshot()
+			.then((snapshot) => writeSnapshot(opts.env, snapshot))
+			.catch((err) => {
+				if (kind === 'plain') {
+					out.write(
+						`  ! snapshot write failed: ${err instanceof Error ? err.message : String(err)}\n`,
+					);
+				}
+			});
+	});
+
+	const detachWatcher =
+		opts.noWatch === true
+			? () => undefined
+			: attachFileWatcher(engine, {
+					// Plain-renderer path logs each fired cycle for visibility;
+					// the TUI has its own event-driven view, so suppress
+					// duplicate stderr noise there.
+					...(kind === 'plain'
+						? { log: (line: string) => out.write(`${line}\n`) }
+						: {}),
+					...(opts.watchDebounceMs !== undefined ? { debounceMs: opts.watchDebounceMs } : {}),
+				});
+
+	const externalStop = opts.stopSignal ?? defaultStopSignal();
+	const stopSignal = Promise.race([externalStop, tuiQuitSignal]);
+
+	const startPromise = engine.start();
+	stopSignal.then(() => engine.stop()).catch(() => {
+		/* signal source errors aren't fatal */
+	});
+	await startPromise;
+
+	detachWatcher();
+	detachSnapshotWriter();
+	await detachRenderer();
 	return 0;
 }
 
-const CLEAN_STARTUP_ERROR_NAMES = new Set([
-	'SupervisorLockBusyError',
-	'ManifestAppMismatchError',
-	'DockerDaemonError',
-	'MissingNetworkProfileError',
-]);
-
-function isCleanStartupError(name: string): boolean {
-	return CLEAN_STARTUP_ERROR_NAMES.has(name);
+// Listen once on SIGINT/SIGTERM. Returns a promise that resolves when
+// either fires. Both are removed once one fires so a follow-up Ctrl-C
+// after stop() begins falls through to Node's default behavior (a hard
+// exit), giving the operator an escape hatch.
+function defaultStopSignal(): Promise<void> {
+	return new Promise<void>((resolve) => {
+		const onSig = () => {
+			process.off('SIGINT', onSig);
+			process.off('SIGTERM', onSig);
+			resolve();
+		};
+		process.once('SIGINT', onSig);
+		process.once('SIGTERM', onSig);
+	});
 }
 
 export async function main(argv: string[]): Promise<number> {
-	if (argv.includes('--help') || argv.includes('-h')) {
-		process.stdout.write(USAGE);
+	const flags = parseCommonFlags(argv);
+	if (flags.help === true) {
+		process.stdout.write(UP_USAGE);
 		return 0;
 	}
-	return runUp(parseArgs(argv));
+	const loaded = await loadConfigAndEnv({
+		cwd: process.cwd(),
+		...(flags.configPath !== undefined ? { configPath: flags.configPath } : {}),
+		...(flags.network !== undefined ? { network: flags.network } : {}),
+		...(flags.stack !== undefined ? { stack: flags.stack } : {}),
+	});
+	const noTui = hasFlag(argv, '--no-tui');
+	const noWatch = hasFlag(argv, '--no-watch');
+	return runUp({
+		config: loaded.config,
+		env: loaded.env,
+		...(noTui || !process.stdout.isTTY ? { renderer: 'plain' as const } : {}),
+		...(noWatch ? { noWatch: true } : {}),
+	});
 }
-
-const USAGE = `devstack up [config] [options]
-
-Long-running supervisor: brings the localnet stack up and watches Move
-sources for changes. Localnet only — for a live-network apply, run
-\`devstack apply --target testnet|mainnet\`.
-
-Runs every action type: Build, Service, HostProcess, Publish, Register,
-Seed, Emit, Verify.
-
-Options:
-  --target <localnet:stack>   Override the active stack
-  --stack <name>              Override the active stack (alternative form)
-  --config <path>             Override the config path
-  --once                      Reconcile once and exit (fires shutdown
-                              hooks on the way out). Equivalent to the
-                              cycle Playwright globalSetup uses; \`devstack
-                              up\` scripts wrap this.
-  --no-tui                    Force the line-oriented plain renderer
-                              even on a TTY. Also activated by setting
-                              \`DEVSTACK_NO_TUI\` or \`CI\` to a truthy
-                              value (anything but '', '0', 'false', 'no').
-
-Examples:
-  devstack up
-  devstack up --once
-  devstack up --target scratch
-  devstack up ./custom.config.ts
-`;
-
-function parseArgs(argv: string[]): UpFlags {
-	return {
-		configPath: parseConfigArg(argv),
-		network: parseNetworkArg(argv) ?? 'localnet',
-		once: argv.includes('--once'),
-		noTui: argv.includes('--no-tui'),
-		stack: parseStackArg(argv),
-		target: parseTargetArg(argv),
-	};
-}
-
-/** Pick the right renderer for the current process environment. The
- * Ink TUI lives in `cli/tui/ink-renderer.tsx` and is dynamically
- * imported only when actually selected — keeps the React + ink runtime
- * cost off the plain CI path. */
-async function selectRenderer(noTuiFlag: boolean): Promise<Renderer> {
-	const tuiable =
-		!noTuiFlag &&
-		!isEnvFlagSet('DEVSTACK_NO_TUI') &&
-		!isEnvFlagSet('CI') &&
-		Boolean(process.stdout.isTTY);
-	if (!tuiable) return new PlainRenderer();
-	const mod = await import('./tui/ink-renderer.js');
-	return new mod.InkRenderer();
-}
-
-/** True when an env var is set to a truthy value. Treats `''`, `'0'`,
- * `'false'`, and `'no'` as unset — common CI conventions where the
- * presence of the var with an empty/zero value should not enable a
- * flag. */
-function isEnvFlagSet(name: string): boolean {
-	const v = process.env[name];
-	if (v === undefined) return false;
-	const trimmed = v.trim().toLowerCase();
-	if (trimmed === '' || trimmed === '0' || trimmed === 'false' || trimmed === 'no') return false;
-	return true;
-}
-
-runIfMain(import.meta.url, main);

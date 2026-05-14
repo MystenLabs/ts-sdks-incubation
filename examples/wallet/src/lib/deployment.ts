@@ -1,4 +1,4 @@
-// App-level projection of the devstack-next manifest. Joins the
+// App-level projection of the devstack manifest. Joins the
 // endpoint URLs, the registered mock-coin tokens, and the deepbook
 // pools (from `manifest.extras.deepbookPools`) into the views the
 // wallet UI reads — coin specs (with derived symbols), pool views

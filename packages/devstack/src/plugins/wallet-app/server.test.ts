@@ -3,29 +3,13 @@ import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { toBase64 } from '@mysten/sui/utils';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import type { AccountsContext } from '../../core/types.js';
 import { type WalletServerHandle, startWalletServer } from './server.js';
 
-// HTTP boundary tests for the wallet-app plugin. The auth + body
-// validation paths are the priority — they're the things a browser-side
-// signer adapter (or a hostile network neighbor) sees first, and the
-// architecture review flagged the auth flow + multi-format body parsing
-// as silent-failure prone.
+// HTTP boundary tests for the wallet-app plugin. Auth + body validation
+// are the priority — they're the things a browser-side signer adapter
+// (or a hostile network neighbor) sees first.
 
 const TEST_TOKEN = 'a'.repeat(64);
-
-const buildFakeAccounts = (signer: Ed25519Keypair): AccountsContext => {
-	const map = new Map<string, Ed25519Keypair>([['alice', signer]]);
-	return {
-		names: () => [...map.keys()],
-		has: (n) => map.has(n),
-		get: (n) => {
-			const s = map.get(n);
-			if (s === undefined) throw new Error(`unknown account: ${n}`);
-			return s;
-		},
-	};
-};
 
 let handle: WalletServerHandle | undefined;
 let baseUrl: string;
@@ -37,11 +21,9 @@ beforeEach(async () => {
 	aliceAddress = signer.toSuiAddress();
 	handle = await startWalletServer({
 		port: 0,
-		accounts: buildFakeAccounts(signer),
+		signers: [{ name: 'alice', signer }],
 		token: TEST_TOKEN,
 		maxBodyBytes: 256,
-		// Tests need the dev-server origin allow-listed so the CORS
-		// path returns headers; we use the default localhost-only bind.
 		allowedOrigins: ['http://localhost:5173'],
 	});
 	const addr = handle.server.address();
@@ -70,7 +52,7 @@ describe('GET /health (no auth required)', () => {
 		expect(await res.json()).toEqual({ ok: true });
 	});
 
-	it('returns 200 even when garbage Authorization header is sent', async () => {
+	it('returns 200 even when a garbage Authorization header is sent', async () => {
 		const res = await fetch(`${baseUrl}/health`, {
 			headers: { Authorization: 'Bearer not-the-real-token' },
 		});
@@ -141,8 +123,6 @@ describe('Authentication on /api/v1/devstack endpoints', () => {
 
 describe('Method/route mismatch', () => {
 	it('POST /api/v1/devstack/accounts (with valid auth) returns 404', async () => {
-		// The implementation only handles GET on /accounts; any other method
-		// falls through to the catch-all 404 with a useful message.
 		const res = await fetch(`${baseUrl}/api/v1/devstack/accounts`, {
 			method: 'POST',
 			headers: authHeaders(),
@@ -189,7 +169,6 @@ describe('POST /sign-transaction — body validation', () => {
 		const res = await fetch(url(), {
 			method: 'POST',
 			headers: authHeaders(),
-			// `!` is outside the base64 alphabet — fromBase64 rejects this.
 			body: JSON.stringify({ address: aliceAddress, txBytes: '!!!not-base64!!!' }),
 		});
 		expect(res.status).toBe(400);
@@ -284,7 +263,6 @@ describe('POST /sign-personal-message — body validation', () => {
 
 describe('Body size enforcement', () => {
 	it('returns 413 when the request body exceeds maxBodyBytes', async () => {
-		// maxBodyBytes was set to 256 in beforeEach; send well over that.
 		const huge = JSON.stringify({
 			address: aliceAddress,
 			txBytes: 'A'.repeat(2048),
@@ -336,80 +314,13 @@ describe('CORS', () => {
 	});
 });
 
-describe('setAccounts hot-reload', () => {
-	it('next /accounts request reflects the swapped AccountsContext', async () => {
-		// Sanity: initial fixture has only alice.
-		const before = await fetch(`${baseUrl}/api/v1/devstack/accounts`, {
-			headers: authHeaders(),
-		}).then((r) => r.json() as Promise<{ accounts: Array<{ name: string }> }>);
-		expect(before.accounts.map((a) => a.name)).toEqual(['alice']);
-
-		// Build a fresh AccountsContext with alice + a brand-new bob.
-		const bob = new Ed25519Keypair();
-		const map = new Map<string, Ed25519Keypair>([
-			['alice', signer],
-			['bob', bob],
-		]);
-		const refreshed: AccountsContext = {
-			names: () => [...map.keys()],
-			has: (n) => map.has(n),
-			get: (n) => {
-				const s = map.get(n);
-				if (s === undefined) throw new Error(`unknown account: ${n}`);
-				return s;
-			},
-		};
-		handle?.setAccounts(refreshed);
-
-		const after = await fetch(`${baseUrl}/api/v1/devstack/accounts`, {
-			headers: authHeaders(),
-		}).then((r) => r.json() as Promise<{ accounts: Array<{ name: string; address: string }> }>);
-		expect(after.accounts.map((a) => a.name).sort()).toEqual(['alice', 'bob']);
-		const bobEntry = after.accounts.find((a) => a.name === 'bob');
-		expect(bobEntry?.address).toBe(bob.toSuiAddress());
-	});
-
-	it('sign-transaction picks up a hot-reloaded signer for a new address', async () => {
-		const carol = new Ed25519Keypair();
-		const map = new Map<string, Ed25519Keypair>([
-			['alice', signer],
-			['carol', carol],
-		]);
-		const refreshed: AccountsContext = {
-			names: () => [...map.keys()],
-			has: (n) => map.has(n),
-			get: (n) => {
-				const s = map.get(n);
-				if (s === undefined) throw new Error(`unknown account: ${n}`);
-				return s;
-			},
-		};
-		handle?.setAccounts(refreshed);
-
-		const fakeTxBytes = toBase64(new Uint8Array([0xde, 0xad, 0xbe, 0xef]));
-		const res = await fetch(`${baseUrl}/api/v1/devstack/sign-transaction`, {
-			method: 'POST',
-			headers: authHeaders(),
-			body: JSON.stringify({ address: carol.toSuiAddress(), transactionBlock: fakeTxBytes }),
-		});
-		// The fake tx bytes will fail signing (400), but the point of this
-		// test is that the *address* resolves to a known signer post-hot-reload.
-		// A 404 would mean the address wasn't found in the swapped accounts —
-		// the bug F7 fixed. Any other status means we got past the address
-		// lookup, so hot-reload worked.
-		expect(res.status).not.toBe(404);
-		const body = (await res.json()) as { error?: string };
-		expect(body.error ?? '').not.toMatch(/no signer for/i);
-	});
-});
-
 describe('CORS — allowedOrigins validation', () => {
 	it('rejects "*" in allowedOrigins at startup', async () => {
 		const sig = new Ed25519Keypair();
 		await expect(
 			startWalletServer({
 				port: 0,
-				accounts: buildFakeAccounts(sig),
+				signers: [{ name: 'alice', signer: sig }],
 				token: TEST_TOKEN,
 				allowedOrigins: ['*'],
 			}),
@@ -421,7 +332,7 @@ describe('CORS — allowedOrigins validation', () => {
 		await expect(
 			startWalletServer({
 				port: 0,
-				accounts: buildFakeAccounts(sig),
+				signers: [{ name: 'alice', signer: sig }],
 				token: TEST_TOKEN,
 				allowedOrigins: ['not a url'],
 			}),

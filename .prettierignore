@@ -26,6 +26,9 @@ packages/docs/.source/
 **/move/**/build/
 **/move/**/package_summaries/
 
+# Vendored repositories (read-only reference material for coding agents)
+repos/
+
 # tsc -b emits sibling .js/.d.ts in examples/ — not source
 examples/*/*.config.js
 examples/*/*.config.d.ts

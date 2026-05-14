@@ -9,7 +9,7 @@
 //     of `@mysten-incubation/devstack`, not a workspace path).
 //   - `catalog:` → the version recorded in `pnpm-workspace.yaml` under
 //     `catalog:` (so React, dapp-kit, etc. resolve outside the monorepo).
-// Without this rewriting, `pnpm create @mysten-incubation/devstack-app
+// Without this rewriting, `pnpm create @mysten-incubation/devstackpp
 // my-app && cd my-app && pnpm install` fails because pnpm can't resolve
 // monorepo-only specifiers.
 //

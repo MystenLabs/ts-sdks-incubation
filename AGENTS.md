@@ -9,7 +9,7 @@ There are no consumers outside the monorepo, no compatibility surface to honor, 
 deprecation cycle. **Break the API directly when something is wrong** — rename, restructure,
 delete; update every callsite in the same commit. Don't ship shims, fallbacks, `@deprecated`
 markers, or "v2 alongside v1" exports. We get one shot to set the public surface right before
-anyone depends on it. Capture friction at `packages/devstack/notes/friction.md` rather than
+anyone depends on it. Capture friction at `packages/devstack-a/notes/friction.md` rather than
 papering over it.
 
 ## Overview

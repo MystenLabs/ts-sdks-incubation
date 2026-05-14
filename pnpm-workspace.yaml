@@ -15,6 +15,9 @@ packages:
   # Bundled template directory shipped with `create-devstack-app`. Mirror of
   # `examples/_template/`; not a real workspace project.
   - '!packages/create-devstack-app/template/**'
+  # Vendored repositories (read-only reference for coding agents). The
+  # subtree carries its own pnpm-workspace.yaml that must not nest into ours.
+  - '!repos/**'
 
 catalog:
   # @mysten/* — kept on a single shared version across the monorepo.

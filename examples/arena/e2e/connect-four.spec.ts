@@ -2,12 +2,11 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { connectAs } from '@mysten-incubation/devstack/playwright';
+import { connectAs, expect, test } from '@mysten-incubation/devstack-effect/playwright';
 import { decodeSuiPrivateKey } from '@mysten/sui/cryptography';
 import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { Transaction } from '@mysten/sui/transactions';
-import { expect, test } from '@playwright/test';
 
 /**
  * End-to-end Connect Four: alice joins (via UI), spawning the Game; then
@@ -19,7 +18,10 @@ import { expect, test } from '@playwright/test';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const stack = process.env.DEVSTACK_STACK ?? 'test';
-const manifestPath = join(here, '..', '.devstack', 'stacks', stack, 'manifest.json');
+// v4 emits the manifest at `.devstack/manifest.json` (flat layout);
+// per-account keys still live under `.devstack/stacks/<stack>/.keys/`
+// because the accounts primitive scopes them per-stack on disk.
+const manifestPath = join(here, '..', '.devstack', 'manifest.json');
 const keysDir = join(here, '..', '.devstack', 'stacks', stack, '.keys');
 
 interface RawManifest {

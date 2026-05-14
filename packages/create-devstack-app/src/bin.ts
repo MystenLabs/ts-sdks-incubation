@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// `pnpm create @mysten-incubation/devstack-app <name>` →
+// `pnpm create @mysten-incubation/devstackpp <name>` →
 // pnpm/npm look up `@mysten-incubation/create-devstack-app` and run this
 // bin with `<name>` as the first positional argument.
 
 import { scaffold } from './index.js';
 
-const USAGE = `Usage: pnpm create @mysten-incubation/devstack-app <name> [options]
+const USAGE = `Usage: pnpm create @mysten-incubation/devstackpp <name> [options]
 
 Arguments:
   <name>              App name. Lowercase, dash-separated, starts with a letter.

@@ -1,483 +1,412 @@
-// `devstack snapshot` — capture / restore named snapshots of a stack.
-//
-// Subcommands:
-//
-//   save <alias> [--stack <name>]
-//     Quiesce containers labeled for the stack, `docker commit` each into
-//     a fresh seed image, copy `<stackDir>` into the snapshot bundle.
-//
-//   restore <alias|id> [--stack <name>] [--force-arch]
-//     Re-tag each seed image to its original tag (so the plugin's
-//     `docker run` picks up the seeded layer), restore `<stackDir>`.
-//     Refuses if any labeled container is still running.
-//
-//   list [--stack <name>]
-//     Show all on-disk snapshots; mark aliased ones.
-//
-//   rm <alias|id>
-//     Drop the on-disk bundle + the seed images. Removes any aliases
-//     pointing at the id.
-//
-//   id [--stack <name>]
-//     Print the content-addressed `<sha-id>` for the active config —
-//     used by CI cache keys.
-//
-// Snapshots live under `<appDir>/.devstack/snapshots/<sha-id>/`. See
-// runtime/snapshot.ts for the on-disk layout.
-
-import { dirname, resolve } from 'node:path';
-
-import { DEVSTACK_IMAGE_NAMESPACE } from '../runtime/docker/labels.js';
-import { dockerRun } from '../runtime/docker/run.js';
-import { SUI_DEFAULT_VERSION, SUI_IMAGE_REVISION } from '../plugins/sui/index.js';
-import { resolveStack, stackDir } from '../runtime/active-stack.js';
+import { readFile, readdir, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import type { Env, SnapshotRecord } from '../engine/types.js';
 import {
-	captureSnapshot,
-	listSnapshots,
-	loadSnapshot,
-	removeSnapshot,
-	snapshotIdFromConfig,
-} from '../runtime/snapshot.js';
-import {
-	SupervisorLockBusyError,
-	acquireSupervisorLock,
-} from '../runtime/supervisor-lock.js';
-import { loadConfig, parseConfigArg, parseStackArg, runIfMain } from './args.js';
+	labeledSnapshotPath,
+	labeledSnapshotsDir,
+	snapshotPathFor,
+	tryReadSnapshot,
+	withStackLock,
+	writeJsonAtomic,
+} from '../persistence/index.js';
+import { hasFlag, parseCommonFlags, readPositionals } from './args.js';
+import { resolveEnvOnly } from './env.js';
 
-interface SnapshotFlags {
-	configPath: string;
-	subcommand: 'save' | 'restore' | 'list' | 'rm' | 'id';
-	ref?: string;
-	stack?: string;
-	forceArch?: boolean;
-	pushTo?: string;
-	/** Emit JSON on stdout for any read-only subcommand
-	 * (`id`, `list`, `save` summary). */
-	json?: boolean;
-	/** `save --dry-run`: print the would-do summary and exit 0 without
-	 * mutating any docker / on-disk state. Acquires the supervisor lock
-	 * the same way as a real save (so a running supervisor still
-	 * surfaces the lock-busy error — the operator wants to know). */
-	dryRun?: boolean;
-}
+export const SNAPSHOT_USAGE = `devstack snapshot <subcommand> [options]
 
-async function runSnapshot(flags: SnapshotFlags): Promise<number> {
-	const abs = resolve(flags.configPath);
-	const config = await loadConfig(abs);
-	const appDir = dirname(abs);
-	const stack = resolveStack({ appDir, flag: flags.stack });
-	const id = snapshotIdFromConfig({
-		appName: config.app,
-		stack,
-		plugins: config.plugins.map((p) => ({
-			name: p.name,
-			version: p.version,
-			inputs: p.inputs,
-		})),
-		accountNames: Object.keys(config.accounts ?? {}).sort(),
-		// Best-effort sui image hint for the hash. Plugin authors may pin a
-		// different version; the snapshot id will still differ when they do
-		// because each plugin's `inputs` field is also part of the hash.
-		suiImage: `${DEVSTACK_IMAGE_NAMESPACE}/sui-localnet:${SUI_DEFAULT_VERSION}-${SUI_IMAGE_REVISION}`,
-	});
+Capture / restore labeled snapshots of the current stack. Snapshots are
+JSON SnapshotRecord files copied to/from
+\`<appDir>/.devstack/stacks/<stack>/snapshots/<id>[-<label>].json\`.
+Localnet only — labeled snapshots make no sense on shared remote nets.
 
-	switch (flags.subcommand) {
-		case 'save':
-			return saveCmd({
-				appName: config.app,
-				appDir,
-				stack,
-				id,
-				alias: flags.ref,
-				pushTo: flags.pushTo,
-				json: flags.json,
-				dryRun: flags.dryRun,
-			});
-		case 'restore':
-			return restoreCmd({
-				appName: config.app,
-				appDir,
-				stack,
-				ref: requireRef(flags),
-				forceArch: flags.forceArch,
-				json: flags.json,
-			});
-		case 'list':
-			return listCmd({ appDir, stack, json: flags.json });
-		case 'rm':
-			return rmCmd({ appDir, ref: requireRef(flags) });
-		case 'id':
-			return idCmd(id, flags.json);
-	}
-}
+Subcommands:
+  save [label]            Capture the current snapshot.json into a labeled
+                          file. id is derived from the snapshot's
+                          createdAt — saving twice from the same snapshot
+                          is idempotent.
+  restore <label|id>      Copy a labeled snapshot back onto snapshot.json.
+                          Run \`devstack up\` afterwards to reconcile.
+  list                    List all labeled snapshots, newest first.
+  delete <label|id>       Remove one labeled snapshot.
 
-async function saveCmd(opts: {
-	appName: string;
-	appDir: string;
-	stack: string;
+Options:
+  --config <path>         Override the config path (default: walk up from
+                          cwd looking for devstack.config.ts)
+  --stack <name>          Per-stack name (default: 'main')
+  --json                  Emit single-line JSON on stdout
+  -h, --help              Show this help
+
+Examples:
+  devstack snapshot save baseline
+  devstack snapshot list
+  devstack snapshot list --json | jq '.snapshots[].label'
+  devstack snapshot restore baseline
+  devstack snapshot delete baseline
+`;
+
+export interface SnapshotEntry {
 	id: string;
-	alias?: string;
-	pushTo?: string;
-	json?: boolean;
-	dryRun?: boolean;
-}): Promise<number> {
-	// Coordinate with any active supervisor: a `devstack up` cycle can be
-	// mid-write on the manifest while we read it for the snapshot, which
-	// would tear the bundle. Acquire the per-stack lock and hold it for
-	// the duration of the capture (or the dry-run preview). A live
-	// supervisor → fail fast with an actionable message; a stale lock
-	// (dead PID) is reclaimed transparently by `acquireSupervisorLock`.
-	let lock: { release: () => void };
-	try {
-		lock = await acquireSupervisorLock({ appDir: opts.appDir, stack: opts.stack });
-	} catch (err) {
-		if (err instanceof SupervisorLockBusyError) {
-			const pid = err.holderPid;
-			process.stderr.write(
-				`devstack snapshot save: another devstack process is running on this stack (PID ${pid}). ` +
-					`Stop it (Ctrl-C in its terminal, or kill ${pid}) before running \`devstack snapshot save\` — ` +
-					`capture must coordinate with the cycle to avoid torn manifest reads.\n`,
-			);
-			return 1;
-		}
-		throw err;
-	}
-	try {
-		if (opts.dryRun === true) {
-			return await saveDryRun(opts);
-		}
-		if (opts.json !== true) {
-			process.stdout.write(
-				`devstack snapshot save → ${opts.id}${opts.alias ? ` (alias='${opts.alias}')` : ''}\n`,
-			);
-			if (opts.pushTo !== undefined) {
-				process.stdout.write(`  pushing seed images to ${opts.pushTo}…\n`);
-			}
-		}
-		const entry = await captureSnapshot(opts);
-		if (opts.json === true) {
-			process.stdout.write(
-				`${JSON.stringify({
-					kind: 'summary' as const,
-					command: 'snapshot save',
-					id: entry.id,
-					alias: entry.alias,
-					stack: entry.stack,
-					platform: entry.platform,
-					bundlePath: snapshotBundlePath(opts.appDir, opts.id),
-					containers: entry.containers.map((c) => ({
-						containerName: c.containerName,
-						originalImage: c.originalImage,
-						seedImage: c.seedImage,
-						registryImage: c.registryImage,
-					})),
-				})}\n`,
-			);
-		} else {
-			process.stdout.write(`captured ${entry.containers.length} container(s):\n`);
-			for (const c of entry.containers) {
-				const pushed = c.registryImage !== undefined ? ` (pushed: ${c.registryImage})` : '';
-				process.stdout.write(
-					`  ${c.containerName}\n    ${c.originalImage} → ${c.seedImage}${pushed}\n`,
-				);
-			}
-			process.stdout.write(`bundle: ${snapshotBundlePath(opts.appDir, opts.id)}\n`);
-		}
-		return 0;
-	} finally {
-		lock.release();
-	}
+	label?: string;
+	path: string;
+	createdAt: number;
 }
 
-/** `snapshot save --dry-run`: print what a real save would do and exit 0
- * without mutating docker or the snapshot dir. Honors `--json` for CI
- * parseability — the output mirrors the real save's JSON shape with
- * `kind: 'dry-run'` so consumers can branch on it. */
-async function saveDryRun(opts: {
-	appName: string;
-	appDir: string;
-	stack: string;
-	id: string;
-	alias?: string;
-	pushTo?: string;
+export interface RunSnapshotSaveOptions {
+	env: Env;
+	label?: string;
+	out?: NodeJS.WriteStream;
 	json?: boolean;
-}): Promise<number> {
-	const containerNames = await listStackContainerNames(opts.appName, opts.stack);
-	const aliasOrId = opts.alias ?? opts.id.slice(0, 16);
-	const containers = containerNames.map((name) => {
-		const seedImage = `devstack-snapshot/${opts.id}/${name}:seeded`;
-		const registryImage =
-			opts.pushTo !== undefined
-				? `${opts.pushTo.replace(/\/$/, '')}/${name}:${aliasOrId}`
-				: undefined;
-		return { containerName: name, seedImage, registryImage };
-	});
-	const stackHostDir = stackDir(opts.appDir, opts.stack);
-	const bundlePath = snapshotBundlePath(opts.appDir, opts.id);
+}
 
+export interface RunSnapshotSaveResult {
+	exitCode: number;
+	path?: string;
+	id?: string;
+	label?: string;
+}
+
+// `snapshot save` — copy the canonical snapshot.json to a labeled file.
+// id is derived from the snapshot's `createdAt` so saving twice from the
+// same canonical snapshot is idempotent (same target path).
+export async function runSnapshotSave(
+	opts: RunSnapshotSaveOptions,
+): Promise<RunSnapshotSaveResult> {
+	return withStackLock(opts.env, () => runSnapshotSaveLocked(opts));
+}
+
+async function runSnapshotSaveLocked(
+	opts: RunSnapshotSaveOptions,
+): Promise<RunSnapshotSaveResult> {
+	const out = opts.out ?? process.stdout;
+	requireLocalnet(opts.env, 'save');
+	if (opts.label !== undefined) validateLabel(opts.label);
+	const snapshot = await tryReadSnapshot(opts.env);
+	if (snapshot === undefined) {
+		const canonical = snapshotPathFor(opts.env);
+		writeError(out, opts.json === true, 'snapshot save', {
+			error: `no snapshot at ${canonical} — run \`devstack apply\` first`,
+		});
+		return { exitCode: 1 };
+	}
+	const id = idFromCreatedAt(snapshot.createdAt);
+	const path = labeledSnapshotPath(opts.env, id, opts.label);
+	await writeJsonAtomic(path, snapshot);
 	if (opts.json === true) {
-		process.stdout.write(
+		out.write(
 			`${JSON.stringify({
-				kind: 'dry-run' as const,
 				command: 'snapshot save',
-				id: opts.id,
-				alias: opts.alias,
-				stack: opts.stack,
-				bundlePath,
-				stackHostDir,
-				containers,
+				stack: opts.env.stack,
+				id,
+				label: opts.label,
+				path,
 			})}\n`,
 		);
-		return 0;
-	}
-	process.stdout.write(
-		`snapshot save --dry-run for stack '${opts.stack}':\n  id: ${opts.id}` +
-			`${opts.alias ? ` (alias='${opts.alias}')` : ''}\n`,
-	);
-	if (containers.length === 0) {
-		process.stdout.write(
-			`  no containers labeled devstack.app=${opts.appName} devstack.stack=${opts.stack} ` +
-				`— bring the stack up first with \`devstack up\`.\n`,
-		);
 	} else {
-		for (const c of containers) {
-			const pushed =
-				c.registryImage !== undefined ? ` (would push: ${c.registryImage})` : '';
-			process.stdout.write(`  would commit ${c.containerName} → ${c.seedImage}${pushed}\n`);
-		}
+		const aliasTag = opts.label ? ` (label='${opts.label}')` : '';
+		out.write(`saved snapshot ${id}${aliasTag}\n  → ${path}\n`);
 	}
-	process.stdout.write(`  would copy host state from ${stackHostDir} → snapshot bundle\n`);
-	process.stdout.write(`  would write bundle at ${bundlePath}\n`);
-	return 0;
+	return { exitCode: 0, path, id, label: opts.label };
 }
 
-/** Mirror of `runtime/snapshot.ts#listStackContainers`, kept local to the
- * dry-run path so we don't take a runtime dependency on a private helper.
- * Filters by both `devstack.app` and `devstack.stack` labels. */
-async function listStackContainerNames(appName: string, stack: string): Promise<string[]> {
-	const result = await dockerRun({
-		command: [
-			'ps',
-			'-a',
-			'--format',
-			'{{.Names}}',
-			'--filter',
-			`label=devstack.app=${appName}`,
-			'--filter',
-			`label=devstack.stack=${stack}`,
-		],
-	});
-	if (result.code !== 0) return [];
-	return result.stdout
-		.split('\n')
-		.map((s) => s.trim())
-		.filter((s) => s.length > 0);
-}
-
-async function restoreCmd(opts: {
-	appName: string;
-	appDir: string;
-	stack: string;
+export interface RunSnapshotRestoreOptions {
+	env: Env;
 	ref: string;
-	forceArch?: boolean;
+	out?: NodeJS.WriteStream;
 	json?: boolean;
-}): Promise<number> {
-	const entry = await loadSnapshot(opts);
+}
+
+export interface RunSnapshotRestoreResult {
+	exitCode: number;
+	source?: string;
+	target?: string;
+}
+
+// `snapshot restore` — locate the labeled snapshot by label or id-prefix
+// and copy it onto snapshot.json. The user runs `up`/`apply` next to
+// reconcile against the restored state.
+export async function runSnapshotRestore(
+	opts: RunSnapshotRestoreOptions,
+): Promise<RunSnapshotRestoreResult> {
+	return withStackLock(opts.env, () => runSnapshotRestoreLocked(opts));
+}
+
+async function runSnapshotRestoreLocked(
+	opts: RunSnapshotRestoreOptions,
+): Promise<RunSnapshotRestoreResult> {
+	const out = opts.out ?? process.stdout;
+	requireLocalnet(opts.env, 'restore');
+	const entries = await listEntries(opts.env);
+	const match = findMatch(entries, opts.ref);
+	if (match === undefined) {
+		writeError(out, opts.json === true, 'snapshot restore', {
+			error: `no snapshot matching '${opts.ref}'`,
+		});
+		return { exitCode: 1 };
+	}
+	const raw = await readFile(match.path, 'utf8');
+	const parsed = JSON.parse(raw) as SnapshotRecord;
+	const target = snapshotPathFor(opts.env);
+	await writeJsonAtomic(target, parsed);
 	if (opts.json === true) {
-		process.stdout.write(
+		out.write(
 			`${JSON.stringify({
-				kind: 'summary' as const,
 				command: 'snapshot restore',
-				id: entry.id,
-				alias: entry.alias,
-				stack: opts.stack,
-				containerCount: entry.containers.length,
+				stack: opts.env.stack,
+				id: match.id,
+				label: match.label,
+				source: match.path,
+				target,
 			})}\n`,
 		);
 	} else {
-		process.stdout.write(`devstack snapshot restore ${opts.ref}\n`);
-		process.stdout.write(
-			`restored ${entry.containers.length} container image tag(s) + host state for stack '${opts.stack}'.\n`,
-		);
-		process.stdout.write(`run \`devstack up\` to bring the stack up against the restored state.\n`);
+		out.write(`restored snapshot ${match.id}${match.label ? ` (label='${match.label}')` : ''}\n`);
+		out.write(`  ${match.path}\n  → ${target}\n`);
+		out.write(`run \`devstack up\` to reconcile against the restored state.\n`);
 	}
-	return 0;
+	return { exitCode: 0, source: match.path, target };
 }
 
-async function listCmd(opts: { appDir: string; stack: string; json?: boolean }): Promise<number> {
-	const all = await listSnapshots(opts.appDir);
-	const filtered = all.filter((e) => e.stack === opts.stack);
+export interface RunSnapshotListOptions {
+	env: Env;
+	out?: NodeJS.WriteStream;
+	json?: boolean;
+}
+
+export interface RunSnapshotListResult {
+	exitCode: number;
+	entries: SnapshotEntry[];
+}
+
+export async function runSnapshotList(
+	opts: RunSnapshotListOptions,
+): Promise<RunSnapshotListResult> {
+	const out = opts.out ?? process.stdout;
+	requireLocalnet(opts.env, 'list');
+	const entries = await listEntries(opts.env);
 	if (opts.json === true) {
-		process.stdout.write(
+		out.write(
 			`${JSON.stringify({
-				kind: 'summary' as const,
 				command: 'snapshot list',
-				stack: opts.stack,
-				snapshots: filtered.map((e) => ({
+				stack: opts.env.stack,
+				snapshots: entries.map((e) => ({
 					id: e.id,
-					alias: e.alias,
-					platform: e.platform,
+					label: e.label,
+					path: e.path,
 					createdAt: e.createdAt,
 				})),
 			})}\n`,
 		);
-		return 0;
+		return { exitCode: 0, entries };
 	}
-	if (filtered.length === 0) {
-		process.stdout.write(`no snapshots for stack '${opts.stack}'.\n`);
-		return 0;
+	if (entries.length === 0) {
+		out.write(`no snapshots for stack '${opts.env.stack ?? 'main'}'\n`);
+		return { exitCode: 0, entries };
 	}
-	process.stdout.write(`snapshots for stack '${opts.stack}':\n`);
-	for (const e of filtered) {
-		const aliasTag = e.alias ? ` ${e.alias}` : '';
-		process.stdout.write(
-			`  ${e.id.slice(0, 12)}…  ${e.platform.padEnd(15)}  ${e.createdAt}${aliasTag}\n`,
+	out.write(`snapshots for stack '${opts.env.stack ?? 'main'}' (newest first):\n`);
+	for (const e of entries) {
+		const labelTag = e.label ? `  ${e.label}` : '';
+		out.write(`  ${e.id}${labelTag}\n    ${e.path}\n`);
+	}
+	return { exitCode: 0, entries };
+}
+
+export interface RunSnapshotDeleteOptions {
+	env: Env;
+	ref: string;
+	out?: NodeJS.WriteStream;
+	json?: boolean;
+}
+
+export interface RunSnapshotDeleteResult {
+	exitCode: number;
+	path?: string;
+}
+
+export async function runSnapshotDelete(
+	opts: RunSnapshotDeleteOptions,
+): Promise<RunSnapshotDeleteResult> {
+	return withStackLock(opts.env, () => runSnapshotDeleteLocked(opts));
+}
+
+async function runSnapshotDeleteLocked(
+	opts: RunSnapshotDeleteOptions,
+): Promise<RunSnapshotDeleteResult> {
+	const out = opts.out ?? process.stdout;
+	requireLocalnet(opts.env, 'delete');
+	const entries = await listEntries(opts.env);
+	const match = findMatch(entries, opts.ref);
+	if (match === undefined) {
+		writeError(out, opts.json === true, 'snapshot delete', {
+			error: `no snapshot matching '${opts.ref}'`,
+		});
+		return { exitCode: 1 };
+	}
+	await rm(match.path);
+	if (opts.json === true) {
+		out.write(
+			`${JSON.stringify({
+				command: 'snapshot delete',
+				stack: opts.env.stack,
+				id: match.id,
+				label: match.label,
+				path: match.path,
+			})}\n`,
 		);
-	}
-	return 0;
-}
-
-async function rmCmd(opts: { appDir: string; ref: string }): Promise<number> {
-	const removed = await removeSnapshot(opts);
-	process.stdout.write(
-		removed ? `removed snapshot '${opts.ref}'\n` : `no snapshot '${opts.ref}'\n`,
-	);
-	return removed ? 0 : 1;
-}
-
-function idCmd(id: string, json?: boolean): number {
-	if (json === true) {
-		process.stdout.write(`${JSON.stringify({ kind: 'summary', command: 'snapshot id', id })}\n`);
 	} else {
-		process.stdout.write(`${id}\n`);
+		out.write(`deleted snapshot ${match.id}${match.label ? ` (label='${match.label}')` : ''}\n`);
 	}
-	return 0;
+	return { exitCode: 0, path: match.path };
 }
 
-function requireRef(flags: SnapshotFlags): string {
-	if (flags.ref === undefined || flags.ref.length === 0) {
+// Read every `<id>[-<label>].json` from the labeled snapshots dir and
+// parse out (id, label?, createdAt). Returns newest-first by id (which is
+// chronological because id derives from a UTC timestamp).
+async function listEntries(env: Env): Promise<SnapshotEntry[]> {
+	const dir = labeledSnapshotsDir(env);
+	let names: string[];
+	try {
+		names = await readdir(dir);
+	} catch (err) {
+		if ((err as { code?: string }).code === 'ENOENT') return [];
+		throw err;
+	}
+	const out: SnapshotEntry[] = [];
+	for (const name of names) {
+		if (!name.endsWith('.json')) continue;
+		const stem = name.slice(0, -5);
+		// Split on the FIRST '-' so labels can themselves contain hyphens.
+		const dash = stem.indexOf('-');
+		const id = dash === -1 ? stem : stem.slice(0, dash);
+		const label = dash === -1 ? undefined : stem.slice(dash + 1);
+		const path = join(dir, name);
+		// Read createdAt for the JSON summary. Tolerate parse failures —
+		// list shouldn't crash on a single corrupt entry.
+		let createdAt = 0;
+		try {
+			const raw = await readFile(path, 'utf8');
+			const parsed = JSON.parse(raw) as { createdAt?: number };
+			if (typeof parsed.createdAt === 'number') createdAt = parsed.createdAt;
+		} catch {
+			// leave createdAt at 0; sorts to bottom
+		}
+		const entry: SnapshotEntry = { id, path, createdAt };
+		if (label !== undefined) entry.label = label;
+		out.push(entry);
+	}
+	out.sort((a, b) => (b.id > a.id ? 1 : b.id < a.id ? -1 : 0));
+	return out;
+}
+
+// Match a user-supplied ref against the entry list. Resolution order:
+//   1. exact label match (most natural — user types the label they saved)
+//   2. exact id match
+//   3. id prefix match (must be unambiguous)
+function findMatch(entries: SnapshotEntry[], ref: string): SnapshotEntry | undefined {
+	const byLabel = entries.filter((e) => e.label === ref);
+	if (byLabel.length > 0) return byLabel[0];
+	const byId = entries.find((e) => e.id === ref);
+	if (byId) return byId;
+	const prefix = entries.filter((e) => e.id.startsWith(ref));
+	if (prefix.length === 1) return prefix[0];
+	return undefined;
+}
+
+function idFromCreatedAt(createdAt: number): string {
+	const d = new Date(createdAt);
+	const pad = (n: number, w = 2) => String(n).padStart(w, '0');
+	return (
+		`${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}` +
+		`T${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}`
+	);
+}
+
+const LABEL_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
+function validateLabel(label: string): void {
+	if (!LABEL_RE.test(label)) {
 		throw new Error(
-			`devstack snapshot ${flags.subcommand} requires <alias|id> as a positional argument`,
+			`snapshot label '${label}' must match ${LABEL_RE} (alnum + . _ -, 1–64 chars)`,
 		);
 	}
-	return flags.ref;
 }
 
-function snapshotBundlePath(appDir: string, id: string): string {
-	return resolve(appDir, '.devstack', 'snapshots', id);
+function requireLocalnet(env: Env, sub: string): void {
+	if (env.network !== 'localnet') {
+		throw new Error(
+			`snapshot ${sub}: labeled snapshots are only supported on localnet (got '${env.network}')`,
+		);
+	}
+}
+
+function writeError(
+	out: NodeJS.WriteStream,
+	json: boolean,
+	command: string,
+	body: { error: string },
+): void {
+	if (json) {
+		out.write(`${JSON.stringify({ command, ...body })}\n`);
+	} else {
+		out.write(`${body.error}\n`);
+	}
 }
 
 export async function main(argv: string[]): Promise<number> {
-	if (argv.includes('--help') || argv.includes('-h')) {
-		process.stdout.write(USAGE);
+	if (hasFlag(argv, '--help') || hasFlag(argv, '-h')) {
+		process.stdout.write(SNAPSHOT_USAGE);
 		return 0;
 	}
-	return runSnapshot(parseArgs(argv));
-}
-
-const USAGE = `devstack snapshot <subcommand> [options]
-
-Capture / restore named snapshots of a stack. State is captured as
-\`docker commit\`'d images plus a copy of <stackDir>; restore re-tags the
-seed images back to their original names so the plugin's next \`docker
-run\` picks up the seeded layer.
-
-Subcommands:
-  save <alias>            Capture the current state of the active stack.
-  restore <alias|id>      Restore a saved snapshot. Refuses if containers
-                          are running — \`devstack stack down\` first.
-  list                    Show snapshots for the active stack.
-  rm <alias|id>           Drop a snapshot bundle + its seed images.
-  id                      Print the content-addressed id for the active
-                          config (used by CI cache keys).
-
-Options:
-  --stack <name>          Override the active stack
-  --config <path>         Override the config path
-  --force-arch            (restore) Allow cross-arch restore. RocksDB
-                          binary format can corrupt on first write when
-                          the captured arch differs from the current
-                          host (e.g. linux/amd64 → darwin/arm64); a
-                          loud stderr warning prints before proceeding.
-  --push <registry>       (save) Also tag each seed image as
-                          \`<registry>/<container>:<alias>\` and docker
-                          push. Restore will pull from the registry on
-                          machines where the local seed image is absent
-                          (CI / cross-host snapshot sharing).
-  --dry-run, -n           (save) Print the would-do summary and exit 0
-                          without committing images or writing the
-                          bundle. Still acquires the supervisor lock so
-                          a running \`devstack up\` surfaces as an error.
-  --json                  Emit a single-line JSON summary on stdout
-                          (save / restore / list / id; honored by
-                          \`save --dry-run\` for CI consumption).
-
-Examples:
-  devstack snapshot save baseline
-  devstack snapshot save baseline --dry-run
-  devstack snapshot save baseline --push ghcr.io/myorg/snapshots
-  devstack snapshot list
-  devstack snapshot restore baseline
-  devstack snapshot rm baseline
-  devstack snapshot id
-  devstack snapshot id --json | jq -r .id    # CI cache key
-`;
-
-function parseArgs(argv: string[]): SnapshotFlags {
-	const flags: SnapshotFlags = {
-		configPath: parseConfigArg(argv),
-		subcommand: 'list',
-	};
-	const stack = parseStackArg(argv);
-	if (stack !== undefined) flags.stack = stack;
-	let positional = 0;
-	for (let i = 0; i < argv.length; i++) {
-		const arg = argv[i];
-		if (arg === undefined) continue;
-		if (arg === '--config' || arg === '--stack') {
-			i++; // consume value
-			continue;
-		}
-		if (arg === '--force-arch') {
-			flags.forceArch = true;
-			continue;
-		}
-		if (arg === '--json') {
-			flags.json = true;
-			continue;
-		}
-		if (arg === '--dry-run' || arg === '-n') {
-			flags.dryRun = true;
-			continue;
-		}
-		if (arg === '--push') {
-			const next = argv[++i];
-			if (next === undefined || next.startsWith('--')) {
-				throw new Error('devstack snapshot --push requires a <registry> argument');
-			}
-			flags.pushTo = next;
-			continue;
-		}
-		if (arg.startsWith('--')) continue;
-		if (positional === 0) {
-			if (
-				arg !== 'save' &&
-				arg !== 'restore' &&
-				arg !== 'list' &&
-				arg !== 'rm' &&
-				arg !== 'id'
-			) {
-				throw new Error(
-					`devstack snapshot: unknown subcommand '${arg}' — expected save|restore|list|rm|id`,
-				);
-			}
-			flags.subcommand = arg;
-		} else if (positional === 1) {
-			flags.ref = arg;
-		}
-		positional++;
+	const positionals = readPositionals(argv);
+	const sub = positionals[0];
+	if (sub === undefined) {
+		process.stderr.write(`devstack snapshot: subcommand required\n${SNAPSHOT_USAGE}`);
+		return 1;
 	}
-	return flags;
+	const flags = parseCommonFlags(argv);
+	const { env } = await resolveEnvOnly({
+		cwd: process.cwd(),
+		// Default to localnet — labeled snapshots are localnet-only and the
+		// common-flags parser leaves --network unset when not provided.
+		network: flags.network ?? 'localnet',
+		...(flags.configPath !== undefined ? { configPath: flags.configPath } : {}),
+		...(flags.stack !== undefined ? { stack: flags.stack } : {}),
+	});
+	const json = flags.json === true;
+	switch (sub) {
+		case 'save': {
+			const label = positionals[1];
+			const result = await runSnapshotSave({
+				env,
+				...(label !== undefined ? { label } : {}),
+				...(json ? { json: true } : {}),
+			});
+			return result.exitCode;
+		}
+		case 'restore': {
+			const ref = positionals[1];
+			if (ref === undefined) {
+				process.stderr.write(`devstack snapshot restore: <label|id> required\n`);
+				return 1;
+			}
+			const result = await runSnapshotRestore({ env, ref, ...(json ? { json: true } : {}) });
+			return result.exitCode;
+		}
+		case 'list': {
+			const result = await runSnapshotList({ env, ...(json ? { json: true } : {}) });
+			return result.exitCode;
+		}
+		case 'delete': {
+			const ref = positionals[1];
+			if (ref === undefined) {
+				process.stderr.write(`devstack snapshot delete: <label|id> required\n`);
+				return 1;
+			}
+			const result = await runSnapshotDelete({ env, ref, ...(json ? { json: true } : {}) });
+			return result.exitCode;
+		}
+		default:
+			process.stderr.write(
+				`devstack snapshot: unknown subcommand '${sub}'\n${SNAPSHOT_USAGE}`,
+			);
+			return 1;
+	}
 }
-
-runIfMain(import.meta.url, main);

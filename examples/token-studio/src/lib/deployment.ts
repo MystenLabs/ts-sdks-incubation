@@ -1,4 +1,4 @@
-// App-level projection of the devstack-next manifest. Pulls the shapes
+// App-level projection of the devstack manifest. Pulls the shapes
 // the UI cares about — the published managed_coin package, the declared
 // accounts, the localnet RPC/faucet URLs — out of the generic shape
 // into the named fields components reach for.

@@ -1,142 +1,88 @@
 // Arena app — on-chain Connect Four. Matchmaking via shared `Lobby`
-// objects, gameplay via shared `Game` objects. The Move package +
-// openLobby seed live in `stack` below; the Lobby objectId surfaces
-// through the manifest's `extras` slot so the UI auto-discovers a
-// pre-created lobby on first boot.
+// objects, gameplay via shared `Game` objects. A single shared `Lobby`
+// is seeded after publish so first-boot players have something to
+// join; its objectId surfaces through the manifest's `extras` slot.
 
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import type { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
-import { Transaction } from '@mysten/sui/transactions';
-import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
+import { Effect } from 'effect';
 
-import { defineDevstackConfig, define, dep } from '@mysten-incubation/devstack-next';
-import {
-	publishMove,
-	publishViaSuiCli,
-	viteDevServer,
-} from '@mysten-incubation/devstack-next/helpers';
 import {
 	accounts,
+	defineDevstack,
+	hostProcess,
 	manifest,
-	sui,
+	pickCreatedByTypeSuffix,
+	publishMove,
+	suiLocalnet,
+	tx,
 	walletApp,
-} from '@mysten-incubation/devstack-next/plugins';
-import type { Package } from '@mysten-incubation/devstack-next/shapes';
+} from '@mysten-incubation/devstack-effect';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONNECT_FOUR_DIR = resolve(HERE, 'move/connect_four');
 
-const a = accounts({ specs: { publisher: {}, alice: {}, bob: {} } });
+const a = accounts({ publisher: {}, alice: {}, bob: {} });
 
 const connectFourPublish = publishMove({
 	name: 'connect_four',
 	path: CONNECT_FOUR_DIR,
-	signer: a.pool.get('signer', { name: 'publisher' }),
-	publish: publishViaSuiCli,
+	signer: a.publisher,
 });
 
-interface OpenLobbyState {
-	objectId: string;
-	objectType: string;
-}
-
-// One-shot bootstrap: seed a single shared `Lobby` so `pnpm dev`
-// gives players something to join on first boot. Hash-match skip is
-// the steady state — once the Lobby is captured, subsequent cycles
-// see the same input hash and don't re-fire even after the lobby is
-// consumed off-chain. Cascade fires only when `connect_four`'s
-// packageId flips (chain regenesis).
-const openLobby = define<OpenLobbyState>({
+const openLobby = tx({
 	name: 'arena.openLobby',
-	runsAs: 'alice',
-	provides: {
-		objectId: dep((s: OpenLobbyState) => s.objectId),
-		full: dep((s: OpenLobbyState) => s),
-	},
-	deps: {
-		signer: a.pool.get('signer', { name: 'alice' }),
-		rpc: sui.get('rpc'),
-		pkg: connectFourPublish.get('package'),
-	},
-	inputs: ({ deps }) => {
-		const d = deps as { pkg: Package };
-		return { packageId: d.pkg.packageId };
-	},
-	start: async ({ deps }) => {
-		const d = deps as {
-			signer: Ed25519Keypair;
-			rpc: { url: string };
-			pkg: Package;
-		};
-		const client = new SuiJsonRpcClient({ url: d.rpc.url, network: 'localnet' });
-		const tx = new Transaction();
-		tx.moveCall({ target: `${d.pkg.packageId}::game::create_lobby` });
-		const result = await client.signAndExecuteTransaction({
-			signer: d.signer,
-			transaction: tx,
-			options: { showObjectChanges: true, showEffects: true },
-		});
-		if (result.effects?.status?.status !== 'success') {
-			throw new Error(`openLobby: ${result.effects?.status?.error ?? 'unknown'}`);
-		}
-		const created = (result.objectChanges ?? []).find(
-			(c) =>
-				c.type === 'created' &&
-				'objectType' in c &&
-				typeof c.objectType === 'string' &&
-				c.objectType.endsWith('::game::Lobby'),
-		);
-		if (created === undefined || created.type !== 'created') {
-			throw new Error('openLobby: no created Lobby in objectChanges');
-		}
-		await client.waitForTransaction({ digest: result.digest });
-		return {
-			objectId: created.objectId,
-			objectType: 'objectType' in created && typeof created.objectType === 'string'
-				? created.objectType
-				: '',
-		};
-	},
+	signer: a.alice,
+	dependsOn: [connectFourPublish],
+	// Idempotent against connect_four's packageId: once a Lobby exists on
+	// chain for this published package, every restart reuses its objectId
+	// instead of creating a new one. Without this, each `r` / process
+	// restart minted a fresh Lobby and the frontend (which reads
+	// openLobbyId from the manifest) pivoted off any in-progress game.
+	cacheKey: Effect.gen(function* () {
+		const pkg = yield* connectFourPublish;
+		return pkg.packageId;
+	}),
+	build: (t) =>
+		Effect.gen(function* () {
+			const pkg = yield* connectFourPublish;
+			t.moveCall({ target: `${pkg.packageId}::game::create_lobby` });
+		}),
 });
 
-const wallet = walletApp.create({
-	accounts: [
-		{ name: 'alice', signer: a.pool.get('signer', { name: 'alice' }) },
-		{ name: 'bob', signer: a.pool.get('signer', { name: 'bob' }) },
-		{ name: 'publisher', signer: a.pool.get('signer', { name: 'publisher' }) },
-	],
+const wallet = walletApp({
+	accounts: [a.alice, a.bob, a.publisher],
 	allowedOrigins: ['http://localhost:5176'],
 });
 
+const dev = hostProcess({
+	name: 'frontend.dev-server',
+	command: 'pnpm',
+	args: ['exec', 'vite', '--port', '5176'],
+	readyProbe: { kind: 'http', url: 'http://localhost:5176', timeoutMs: 60_000 },
+	endpoint: { name: 'dev-server', kind: 'dev-server' },
+	dependsOn: [connectFourPublish, openLobby, wallet],
+});
+
+// Manifest extras carry the lobby id. Resolved as an Effect so the
+// openLobby tag's result (objectChanges) is yielded post-acquire.
 const m = manifest({
-	packages: [connectFourPublish.get('package')],
-	endpoints: [sui.get('endpoint'), sui.get('faucetEndpoint'), wallet.get('endpoint')],
-	accounts: [
-		a.pool.get('account', { name: 'publisher' }),
-		a.pool.get('account', { name: 'alice' }),
-		a.pool.get('account', { name: 'bob' }),
-	],
-	extras: {
-		openLobbyId: openLobby.get('objectId'),
-	},
+	extras: Effect.gen(function* () {
+		const r = yield* openLobby;
+		const openLobbyId = pickCreatedByTypeSuffix(r.objectChanges, '::game::Lobby');
+		return openLobbyId === undefined ? {} : { openLobbyId };
+	}),
 });
 
-const dev = viteDevServer({
-	port: 5176,
-	gates: [connectFourPublish.get('package'), openLobby.get('objectId'), wallet.get('full')],
-});
-
-export default defineDevstackConfig({
-	stack: [
-		sui.create({ network: 'localnet' }),
-		a.pool,
-		a.fund,
-		connectFourPublish,
-		openLobby,
-		m,
-		wallet,
-		dev,
-	],
-});
+export default defineDevstack([
+	suiLocalnet(),
+	a.publisher,
+	a.alice,
+	a.bob,
+	connectFourPublish,
+	openLobby,
+	m,
+	wallet,
+	dev,
+]);

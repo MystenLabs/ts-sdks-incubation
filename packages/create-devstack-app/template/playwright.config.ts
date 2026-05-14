@@ -1,5 +1,20 @@
-import { defineDevstackPlaywrightConfig } from '@mysten-incubation/devstack/playwright';
+import { defineConfig, devices } from '@playwright/test';
+import { webServer } from '@mysten-incubation/devstack-effect/playwright';
 
-// `manageStack: false` — the webServer's `pnpm dev` (devstack-next
-// supervisor) owns stack bring-up.
-export default await defineDevstackPlaywrightConfig({ port: 5180 });
+// `pnpm dev` (the devstack supervisor) owns stack bring-up + writes
+// the manifest. 300s timeout covers sui-localnet bring-up + publish +
+// vite spawn.
+export default defineConfig({
+	testDir: './e2e',
+	fullyParallel: false,
+	workers: 1,
+	forbidOnly: !!process.env.CI,
+	retries: process.env.CI ? 2 : 0,
+	reporter: process.env.CI ? [['github'], ['list']] : 'list',
+	webServer: webServer({ endpoint: 'dev-server', timeout: 300_000 }),
+	use: {
+		trace: 'on-first-retry',
+		screenshot: 'only-on-failure',
+	},
+	projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+});

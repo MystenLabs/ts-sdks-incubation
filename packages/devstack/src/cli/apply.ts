@@ -1,219 +1,147 @@
-// `devstack apply` — single-cycle reconcile against the active or named
-// target. Runs every action kind on localnet (Service+Build included);
-// skips Service+Build on live nets. Seed actions are gated by network
-// per `seedRunsOn`.
-//
-// Differs from `devstack up --once`:
-//   - No supervisor wrapper; no key handlers, no file watcher, no shutdown
-//     hooks. One walk, exit.
-//   - Localnet `apply` reuses the same `runOneShot` engine the live-net
-//     path uses, so the cycle semantics (skip predicates, dirty cascade)
-//     are identical across networks.
+import { Engine } from '../engine/class.js';
+import type { CycleResult, DevstackConfig, Env } from '../engine/types.js';
+import { tryReadSnapshot, withStackLock, writeSnapshot } from '../persistence/index.js';
+import { hasFlag, parseCommonFlags } from './args.js';
+import { loadConfigAndEnv } from './env.js';
+import { attachPlainRenderer } from './output.js';
 
-import { dirname, resolve } from 'node:path';
+export const APPLY_USAGE = `devstack apply [options]
 
-import { runOneShot } from '../runtime/one-shot.js';
-import {
-	type SupervisorLockHandle,
-	SupervisorLockBusyError,
-	acquireSupervisorLock,
-} from '../runtime/supervisor-lock.js';
-import { loadConfig, parseConfigArg, parseTargetArg, runIfMain } from './args.js';
-import { applyFilter } from './filters.js';
-import { resolveTarget } from './target.js';
-
-export interface ApplyFlags {
-	configPath: string;
-	/** Raw `--target` value (network, stack, or `<network>:<stack>`). */
-	target?: string | undefined;
-	/** Restrict the cycle to these action names + their transitive deps +
-	 * downstream Emit cascades. Each entry is an action's full name
-	 * (e.g. `wallet.usdc`, `imports.deepbook`). Empty/undefined runs the
-	 * full graph. CLI parses `--actions a,b,c` (comma-separated). */
-	actions?: string[];
-	/** Emit a single-line JSON summary on stdout instead of the human
-	 * status table. Per-action diagnostic logs still go to stderr (one
-	 * `[<action>] <line>` per event). Useful for CI consumers that need
-	 * structured output without regex-parsing. */
-	json?: boolean;
-}
-
-export async function runApply(flags: ApplyFlags): Promise<number> {
-	const abs = resolve(flags.configPath);
-	const config = await loadConfig(abs);
-	const appDir = dirname(abs);
-
-	// `resolveTarget` itself can throw `MissingNetworkProfileError` for an
-	// undeclared live-net target — surface that with the clean shape too.
-	let target: ReturnType<typeof resolveTarget>;
-	try {
-		target = resolveTarget({ config, appDir, raw: flags.target });
-	} catch (err) {
-		if (err instanceof Error && isCleanStartupError(err.name)) {
-			process.stderr.write(`devstack apply: ${err.message}\n`);
-			return 1;
-		}
-		throw err;
-	}
-
-	// Localnet `apply` races with a running `devstack up` supervisor on
-	// manifest writes / container names / port-allocator state. Acquire
-	// the per-stack supervisor lock for the duration of the cycle (mirror
-	// of `cli/snapshot.ts`'s save path). Live-net targets don't have a
-	// supervisor — skip the lock there.
-	let lock: SupervisorLockHandle | undefined;
-	let result: Awaited<ReturnType<typeof runOneShot>>;
-	try {
-		if (target.network === 'localnet') {
-			lock = await acquireSupervisorLock({ appDir, stack: target.stack });
-		}
-
-		result = await runOneShot({
-			appName: config.app,
-			appDir,
-			network: target.network,
-			stack: target.stack,
-			rpcUrl: target.rpcUrl,
-			plugins: config.plugins,
-			accounts: config.accounts,
-			actionFilter: applyFilter,
-			actionScope: flags.actions,
-		});
-	} catch (err) {
-		// `ManifestAppMismatchError`, `DockerDaemonError`,
-		// `SupervisorLockBusyError`, and `MissingNetworkProfileError` get a
-		// clean stderr message — the user can act on each immediately
-		// without parsing a stack trace. Name-based check (not instanceof)
-		// because downstream consumers may bundle the runtime separately
-		// from the CLI; class identity would diverge across bundles.
-		if (err instanceof Error && err.name === 'SupervisorLockBusyError') {
-			const pid = (err as SupervisorLockBusyError).holderPid;
-			process.stderr.write(
-				`devstack apply: another devstack process is running on this stack (PID ${pid}). ` +
-					`Stop it (Ctrl-C in its terminal, or kill ${pid}) before running \`devstack apply\`.\n`,
-			);
-			return 1;
-		}
-		if (err instanceof Error && isCleanStartupError(err.name)) {
-			process.stderr.write(`devstack apply: ${err.message}\n`);
-			return 1;
-		}
-		throw err;
-	} finally {
-		lock?.release();
-	}
-
-	if (flags.json === true) {
-		const summary = {
-			kind: 'summary' as const,
-			command: 'apply',
-			network: target.network,
-			stack: target.stack,
-			hydrated: result.hydrated,
-			manifestPath: result.manifestPath,
-			actions: [...result.statuses].map(([name, status]) => {
-				const failure = result.failures.get(name);
-				return failure === undefined
-					? { name, status }
-					: { name, status, error: failure.message };
-			}),
-			failureCount: result.failures.size,
-		};
-		process.stdout.write(`${JSON.stringify(summary)}\n`);
-	} else {
-		const label =
-			target.network === 'localnet'
-				? `${target.network} stack=${target.stack}`
-				: `${target.network} (${target.rpcUrl})`;
-		process.stdout.write(`devstack apply → ${label}\n`);
-		for (const plugin of config.plugins) {
-			if (plugin.name.endsWith('-setup') && plugin.description?.startsWith('auto-synthesized')) {
-				process.stdout.write(
-					`  ${plugin.description.replace('auto-synthesized', `synthesized '${plugin.name}'`)}\n`,
-				);
-			}
-		}
-		if (result.hydrated) process.stdout.write('  hydrated registry from prior manifest\n');
-		for (const [name, status] of result.statuses) {
-			const failure = result.failures.get(name);
-			const detail = failure !== undefined ? ` — ${failure.message}` : '';
-			process.stdout.write(`  ${name.padEnd(36)} ${status}${detail}\n`);
-		}
-		process.stdout.write(`manifest: ${result.manifestPath}\n`);
-	}
-
-	return result.failures.size === 0 ? 0 : 1;
-}
-
-export async function main(argv: string[]): Promise<number> {
-	if (argv.includes('--help') || argv.includes('-h')) {
-		process.stdout.write(USAGE);
-		return 0;
-	}
-	return runApply(parseArgs(argv));
-}
-
-const USAGE = `devstack apply [config] [options]
-
-Single-cycle reconcile against the active stack (or --target). Runs the
-full action graph once and exits.
-
-On localnet: runs every action type (Build, Service, HostProcess,
-Publish, Register, Seed, Emit, Verify). Differs from \`devstack up\`
-only in that there's no file watcher and the supervisor doesn't stay
-resident — the cycle settles, then exits.
-
-On live nets (testnet, mainnet): skips Service, HostProcess, and Build
-(no docker assumed). Runs Publish/Register/Seed/Emit/Verify against the
-configured RPC.
+Single-cycle reconcile against the current stack. Reads the prior
+snapshot if one exists, runs one engine cycle, writes the new snapshot,
+and exits. Use \`up\` for the long-running variant.
 
 Options:
-  --target <network[:stack]>  Override the active target
-  --actions <a,b,c>           Restrict to these action names + their deps
-  --config <path>             Override the config path
-  --json                      Emit a single-line JSON summary on stdout
-                              (per-action logs still go to stderr)
+  --config <path>             Override the config path (default: walk up
+                              from cwd looking for devstack.config.ts)
+  --network <net>             Network: localnet | testnet | mainnet | devnet
+                              (default: localnet)
+  --stack <name>              Per-stack name (default: 'main', localnet only)
+  --json                      Emit a single-line JSON summary on stdout;
+                              per-node events still go to stderr.
+  -h, --help                  Show this help
 
 Examples:
   devstack apply
-  devstack apply --target testnet
-  devstack apply --target localnet:scratch
-  devstack apply --actions arena.connect_four
-  devstack apply --json | jq '.failureCount'
+  devstack apply --network testnet
+  devstack apply --json | jq '.errored'
 `;
 
-function parseArgs(argv: string[]): ApplyFlags {
-	return {
-		configPath: parseConfigArg(argv),
-		target: parseTargetArg(argv),
-		actions: parseActionsArg(argv),
-		json: argv.includes('--json'),
-	};
+export interface RunApplyOptions {
+	config: DevstackConfig;
+	env: Env;
+	/** Where to write per-event progress lines. Defaults to process.stderr. */
+	out?: NodeJS.WriteStream;
+	/** Where to write the structured `--json` summary. Defaults to
+	 * process.stdout — separate from `out` so callers (and tests) can
+	 * route human progress and machine-parseable output independently. */
+	summaryOut?: NodeJS.WriteStream;
+	json?: boolean;
 }
 
-const CLEAN_STARTUP_ERROR_NAMES = new Set([
-	'ManifestAppMismatchError',
-	'DockerDaemonError',
-	'SupervisorLockBusyError',
-	'MissingNetworkProfileError',
-]);
-
-function isCleanStartupError(name: string): boolean {
-	return CLEAN_STARTUP_ERROR_NAMES.has(name);
+export interface RunApplyResult {
+	exitCode: number;
+	cycle: CycleResult;
+	snapshotPath: string;
 }
 
-function parseActionsArg(argv: string[]): string[] | undefined {
-	for (let i = 0; i < argv.length; i++) {
-		if (argv[i] === '--actions' || argv[i] === '--scope') {
-			const next = argv[i + 1];
-			if (next === undefined || next.startsWith('--')) return undefined;
-			return next
-				.split(',')
-				.map((s) => s.trim())
-				.filter((s) => s.length > 0);
+// Programmatic entry point. Tests call this directly with a synthetic
+// config so they don't have to set up a temp dir + dynamic-import a TS
+// config file. The argv-driven `main` below just builds RunApplyOptions
+// from argv and delegates.
+//
+// Wraps the run in `withStackLock` so two `devstack apply` invocations
+// against the same stack don't fight; the second sees a clean
+// `StackLockBusyError`. Calls `engine.settle()` rather than a single
+// `runOnce()` so cold-cold starts that need a cascade (publish →
+// bindings → manifest) finish in one CLI invocation.
+export async function runApply(opts: RunApplyOptions): Promise<RunApplyResult> {
+	const out = opts.out ?? process.stderr;
+	const summaryOut = opts.summaryOut ?? process.stdout;
+	return withStackLock(opts.env, async () => {
+		const initial = await tryReadSnapshot(opts.env);
+		const engine = new Engine(opts.config, {
+			env: opts.env,
+			...(initial !== undefined ? { initialSnapshot: initial } : {}),
+		});
+		const detach = attachPlainRenderer(engine, { out, quietLogs: opts.json === true });
+		try {
+			const cycles = await engine.settle();
+			// Aggregate ran/skipped/errored across all cycles so the
+			// summary reflects the full settle pass, not just the last
+			// cycle. Final state of each node is what counts; we de-dup
+			// by name preferring the latest cycle's classification.
+			const cycle: CycleResult = aggregateCycles(cycles);
+			const snapshot = await engine.saveSnapshot();
+			const snapshotPath = await writeSnapshot(opts.env, snapshot);
+			const exitCode = cycle.errored.length > 0 ? 1 : 0;
+			if (opts.json === true) {
+				summaryOut.write(
+					`${JSON.stringify({
+						command: 'apply',
+						network: opts.env.network,
+						stack: opts.env.stack,
+						ran: cycle.ran.map((n) => n.name),
+						skipped: cycle.skipped.map((n) => ({ name: n.name, reason: n.reason })),
+						errored: cycle.errored.map((n) => ({ name: n.name, message: n.error.message })),
+						snapshotPath,
+						cyclesRan: cycles.length,
+					})}\n`,
+				);
+			} else {
+				out.write(`snapshot: ${snapshotPath}\n`);
+				if (cycles.length > 1) {
+					out.write(`settled in ${cycles.length} cycles\n`);
+				}
+				if (cycle.errored.length > 0) {
+					for (const e of cycle.errored) {
+						out.write(`  ! ${e.name}: ${e.error.message}\n`);
+					}
+				}
+			}
+			return { exitCode, cycle, snapshotPath };
+		} finally {
+			detach();
+			await engine.stop();
 		}
-	}
-	return undefined;
+	});
 }
 
-runIfMain(import.meta.url, main);
+// Fold the per-cycle results into a single summary keyed by node name —
+// final classification wins (e.g. a node that errored in cycle 1 then
+// ran clean in cycle 2 is reported as ran).
+function aggregateCycles(cycles: CycleResult[]): CycleResult {
+	const byName = new Map<string, { id: symbol; classification: 'ran' | 'skipped' | 'errored'; reason?: 'satisfied' | 'upstream_errored'; error?: Error }>();
+	for (const cycle of cycles) {
+		for (const r of cycle.ran) byName.set(r.name, { id: r.id, classification: 'ran' });
+		for (const s of cycle.skipped) byName.set(s.name, { id: s.id, classification: 'skipped', reason: s.reason });
+		for (const e of cycle.errored) byName.set(e.name, { id: e.id, classification: 'errored', error: e.error });
+	}
+	const out: CycleResult = { ran: [], skipped: [], errored: [] };
+	for (const [name, entry] of byName) {
+		if (entry.classification === 'ran') out.ran.push({ id: entry.id, name });
+		else if (entry.classification === 'skipped') out.skipped.push({ id: entry.id, name, reason: entry.reason! });
+		else out.errored.push({ id: entry.id, name, error: entry.error! });
+	}
+	return out;
+}
+
+export async function main(argv: string[]): Promise<number> {
+	const flags = parseCommonFlags(argv);
+	if (flags.help === true || hasFlag(argv, 'help')) {
+		process.stdout.write(APPLY_USAGE);
+		return 0;
+	}
+	const loaded = await loadConfigAndEnv({
+		cwd: process.cwd(),
+		...(flags.configPath !== undefined ? { configPath: flags.configPath } : {}),
+		...(flags.network !== undefined ? { network: flags.network } : {}),
+		...(flags.stack !== undefined ? { stack: flags.stack } : {}),
+	});
+	const result = await runApply({
+		config: loaded.config,
+		env: loaded.env,
+		...(flags.json === true ? { json: true } : {}),
+	});
+	return result.exitCode;
+}
