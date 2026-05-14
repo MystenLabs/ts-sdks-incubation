@@ -408,6 +408,22 @@ export const run = (
 		// through and lets `docker run` surface the real reason.
 		yield* removeContainerIfExists(spawner, name).pipe(Effect.ignore);
 
+		// Pre-create named volumes with devstack labels so `devstack
+		// wipe` can enumerate + remove them via
+		// `docker volume ls --filter label=devstack.stack=<stack>`.
+		// Without this, named-volume mounts ride in via `-v <name>:<path>`
+		// and docker creates them lazily WITHOUT any labels — meaning
+		// they accumulate forever (no label-filter can find them) and
+		// every run leaks ~100MB of RocksDB / postgres / walrus state.
+		// Bind mounts (host string contains '/') are user-owned host
+		// paths and must NOT be pre-created; skip them.
+		for (const { host } of opts.mounts ?? []) {
+			if (host.includes('/')) continue;
+			yield* ensureLabeledVolume(spawner, host, identity.app, identity.stack).pipe(
+				Effect.ignore,
+			);
+		}
+
 		const cmd = ChildProcess.make('docker', args);
 		yield* Effect.annotateCurrentSpan({
 			'docker.op': 'run',
@@ -671,6 +687,53 @@ const inspectHostPorts = (
 			out[hostPort] = containerPort;
 		}
 		return out;
+	});
+
+// Idempotently create a named volume stamped with
+// `devstack.app=<app>` / `devstack.stack=<stack>` so the wipe
+// label-filter (`docker volume ls --filter label=devstack.stack=…`)
+// can find + remove it later. `docker volume create` is itself
+// idempotent for names that match WITH the same configuration, but
+// the labels are only set on first create — so we probe with
+// `docker volume inspect <name>` first and skip the create when the
+// volume already exists (its labels were either set previously, or
+// it's a pre-devstack legacy volume we can't safely re-label without
+// destroying its contents). Best-effort: any docker failure here
+// falls through to docker's lazy create at `docker run -v` time, so
+// the worst case is one unlabeled volume — exactly the status quo
+// this function is trying to avoid, never a hard failure.
+const ensureLabeledVolume = (
+	spawner: Spawner,
+	name: string,
+	app: string,
+	stack: string,
+): Effect.Effect<void, never> =>
+	Effect.gen(function* () {
+		const inspected = yield* runCapturing(
+			spawner,
+			ChildProcess.make('docker', ['volume', 'inspect', name]),
+			'docker volume inspect',
+		).pipe(Effect.catchTag('DockerError', () => Effect.succeed(null)));
+		if (inspected !== null && inspected.exitCode === 0) {
+			// Already exists; leave it alone. Re-stamping labels would
+			// require `docker volume create --label … <name>` which is
+			// a no-op when the volume exists, OR a recreate which would
+			// destroy data — both wrong.
+			return;
+		}
+		yield* runCapturing(
+			spawner,
+			ChildProcess.make('docker', [
+				'volume',
+				'create',
+				'--label',
+				`devstack.app=${app}`,
+				'--label',
+				`devstack.stack=${stack}`,
+				name,
+			]),
+			'docker volume create',
+		).pipe(Effect.ignore);
 	});
 
 // Force-remove a container by exact name if one exists. Returns `true` if
