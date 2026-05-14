@@ -27,13 +27,15 @@ import { LeasingLive } from '../internal/leasing.js';
 import { StateStoreConfig } from '../internal/state-store.js';
 import { Sui } from '../interfaces/sui.js';
 import type { SuiShape } from '../interfaces/sui.js';
-import { AccountError } from './errors.js';
+import { AccountError, SuiError } from './errors.js';
 import { accounts } from './accounts.js';
 
 // Mock Sui — `client` is opaque to the discriminator branches and only
 // matters at sign-time, which we don't exercise here. Faucet URL is
 // flipped per-test to cover both the available-faucet and no-faucet
-// paths.
+// paths. `waitForTransactionsReady` resolves immediately so the
+// existing tests don't pay the real ready-probe budget; one dedicated
+// test below pins the propagation path when the chain never recovers.
 const mockSui = (faucetUrl: string | undefined): Layer.Layer<Sui> =>
 	Layer.succeed(Sui, {
 		network: 'localnet',
@@ -43,6 +45,7 @@ const mockSui = (faucetUrl: string | undefined): Layer.Layer<Sui> =>
 		// The branches under test never call into `client`; cast through
 		// unknown so we don't have to wire a real SuiJsonRpcClient up.
 		client: {} as unknown as SuiShape['client'],
+		waitForTransactionsReady: () => Effect.void,
 	});
 
 // `StateStoreConfig` is provided by `defineDevstack`/`provideDevstack`
@@ -66,8 +69,7 @@ const TestBaseLayer = Layer.mergeAll(
 
 const mkTmpDir = (label: string) =>
 	Effect.tryPromise({
-		try: () =>
-			nodeFs.mkdtemp(nodePath.join(nodeOs.tmpdir(), `devstack-accounts-${label}-`)),
+		try: () => nodeFs.mkdtemp(nodePath.join(nodeOs.tmpdir(), `devstack-accounts-${label}-`)),
 		catch: (cause) => new Error(`failed to create tmpdir: ${String(cause)}`),
 	}).pipe(Effect.orDie);
 
@@ -163,10 +165,7 @@ describe('accounts({...}) — source discriminator', () => {
 				return yield* a.guest;
 			}).pipe(
 				Effect.provide(
-					Layer.provide(
-						a.guest.__layer,
-						Layer.mergeAll(TestBaseLayer, mockSui(undefined)),
-					),
+					Layer.provide(a.guest.__layer, Layer.mergeAll(TestBaseLayer, mockSui(undefined))),
 				),
 			);
 			expect(guest.address).toBe(expectedAddress);
@@ -187,10 +186,7 @@ describe('accounts({...}) — source discriminator', () => {
 				return yield* a.oracle;
 			}).pipe(
 				Effect.provide(
-					Layer.provide(
-						a.oracle.__layer,
-						Layer.mergeAll(TestBaseLayer, mockSui(undefined)),
-					),
+					Layer.provide(a.oracle.__layer, Layer.mergeAll(TestBaseLayer, mockSui(undefined))),
 				),
 			);
 			expect(oracle.address).toBe(expectedAddress);
@@ -214,10 +210,7 @@ describe('accounts({...}) — source discriminator', () => {
 					return yield* a.ci;
 				}).pipe(
 					Effect.provide(
-						Layer.provide(
-							a.ci.__layer,
-							Layer.mergeAll(TestBaseLayer, mockSui(undefined)),
-						),
+						Layer.provide(a.ci.__layer, Layer.mergeAll(TestBaseLayer, mockSui(undefined))),
 					),
 				);
 				expect(ci.address).toBe(expectedAddress);
@@ -236,10 +229,7 @@ describe('accounts({...}) — source discriminator', () => {
 				return yield* a.ci;
 			}).pipe(
 				Effect.provide(
-					Layer.provide(
-						a.ci.__layer,
-						Layer.mergeAll(TestBaseLayer, mockSui(undefined)),
-					),
+					Layer.provide(a.ci.__layer, Layer.mergeAll(TestBaseLayer, mockSui(undefined))),
 				),
 				Effect.exit,
 			);
@@ -253,6 +243,53 @@ describe('accounts({...}) — source discriminator', () => {
 		}),
 	);
 
+	it.effect(
+		"from: 'ephemeral-funded' surfaces AccountError(fund) when waitForTransactionsReady fails",
+		() =>
+			Effect.gen(function* () {
+				const tmpdir = yield* mkTmpDir('wait-fails');
+				// Custom Sui mock whose `waitForTransactionsReady` fails so
+				// we exercise the propagation path that gates the faucet
+				// POST loop. Without this guard, the account would
+				// rediscover the same dead chain via its own retry budget.
+				const mockSuiWithFailingReady: Layer.Layer<Sui> = Layer.succeed(Sui, {
+					network: 'localnet',
+					rpcUrl: 'http://localhost:9000',
+					chainId: 'test-chain',
+					faucetUrl: 'http://localhost:9123',
+					client: {} as unknown as SuiShape['client'],
+					waitForTransactionsReady: () =>
+						Effect.fail(
+							new SuiError({
+								phase: 'wait-for-transactions-ready',
+								message: 'chain never became funds-transferable',
+							}),
+						),
+				});
+				const a = accounts({ alice: { from: 'ephemeral-funded' } });
+				const exit = yield* Effect.gen(function* () {
+					return yield* a.alice;
+				}).pipe(
+					Effect.provide(
+						Layer.provide(
+							a.alice.__layer,
+							Layer.mergeAll(TestBaseLayer, mockSuiWithFailingReady, mockStateConfig(tmpdir)),
+						),
+					),
+					Effect.exit,
+				);
+				expect(Exit.isFailure(exit)).toBe(true);
+				if (Exit.isFailure(exit)) {
+					const err = extractError(exit);
+					expect(err).toBeInstanceOf(AccountError);
+					expect(err?.phase).toBe('fund');
+					// The wrapping message must surface the underlying
+					// SuiError text so the user sees why the wait failed.
+					expect(err?.message).toMatch(/funds-transferable/);
+				}
+			}),
+	);
+
 	it.effect("from: 'ephemeral-funded' fails AccountError when Sui has no faucetUrl", () =>
 		Effect.gen(function* () {
 			const tmpdir = yield* mkTmpDir('nofaucet');
@@ -263,11 +300,7 @@ describe('accounts({...}) — source discriminator', () => {
 				Effect.provide(
 					Layer.provide(
 						a.alice.__layer,
-						Layer.mergeAll(
-							TestBaseLayer,
-							mockSui(undefined),
-							mockStateConfig(tmpdir),
-						),
+						Layer.mergeAll(TestBaseLayer, mockSui(undefined), mockStateConfig(tmpdir)),
 					),
 				),
 				Effect.exit,

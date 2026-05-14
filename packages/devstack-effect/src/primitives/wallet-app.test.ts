@@ -36,6 +36,9 @@ const stubSui: Layer.Layer<Sui> = Layer.succeed(Sui, {
 	rpcUrl: 'http://localhost:9000',
 	chainId: 'test-chain',
 	client: {} as unknown as SuiShape['client'],
+	// wallet-app never asks the chain to be funds-transferable; resolve
+	// immediately so the stub mirrors the mainnet/no-faucet branch.
+	waitForTransactionsReady: () => Effect.void,
 });
 
 // Build a stub account tag. The wallet-app reads `address` to key the
@@ -44,18 +47,21 @@ const stubSui: Layer.Layer<Sui> = Layer.succeed(Sui, {
 // here because it would drag in StateStore, faucet, leasing, etc. —
 // none of which are relevant to the finalizer behavior under test.
 const stubAccountTag = (name: string): PluginTag<string, Account, never, never> =>
-	makeTag(name, Effect.succeed({
+	makeTag(
 		name,
-		address: '0xstub',
-		publicKey: new Uint8Array(32),
-		scheme: 'ED25519',
-		signAndExecute: () =>
-			Effect.die('stub account: signAndExecute should not be called in this test'),
-		signTransaction: () =>
-			Effect.die('stub account: signTransaction should not be called in this test'),
-		signPersonalMessage: () =>
-			Effect.die('stub account: signPersonalMessage should not be called in this test'),
-	} as Account));
+		Effect.succeed({
+			name,
+			address: '0xstub',
+			publicKey: new Uint8Array(32),
+			scheme: 'ED25519',
+			signAndExecute: () =>
+				Effect.die('stub account: signAndExecute should not be called in this test'),
+			signTransaction: () =>
+				Effect.die('stub account: signTransaction should not be called in this test'),
+			signPersonalMessage: () =>
+				Effect.die('stub account: signPersonalMessage should not be called in this test'),
+		} as Account),
+	);
 
 // Open a real TCP listener on (port, '127.0.0.1') and resolve when
 // it's bound. Rejects on error so a still-held port surfaces as a
@@ -101,11 +107,7 @@ describe('walletApp finalizer', () => {
 			// Build the wallet-app's layer (its own + the inner account
 			// tag's transitively-flattened layers) and provide every
 			// service it needs: Sui, PortAllocator, EndpointRegistry.
-			const baseLayer = Layer.mergeAll(
-				stubSui,
-				PortAllocatorLive,
-				EndpointRegistryLive,
-			);
+			const baseLayer = Layer.mergeAll(stubSui, PortAllocatorLive, EndpointRegistryLive);
 			// The wallet-app's body `yield* acc` for each account tag,
 			// so the account layer has to be VISIBLE inside the
 			// wallet-app's R-channel. `provideMerge(self, that)` provides

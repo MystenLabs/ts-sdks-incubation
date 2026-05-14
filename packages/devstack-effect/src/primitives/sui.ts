@@ -136,6 +136,7 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 			yield* EndpointRegistry.publish({ name: 'sui-rpc', url: rpcUrl, kind: 'rpc' });
 			yield* EndpointRegistry.publish({ name: 'sui-faucet', url: faucetUrl, kind: 'faucet' });
 			const chainId = yield* fetchChainId(client);
+			const waitForTransactionsReady = yield* buildWaitForTransactionsReady(faucetUrl);
 			return {
 				network: 'localnet',
 				rpcUrl,
@@ -144,6 +145,7 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 				graphqlUrl: undefined,
 				client,
 				chainId,
+				waitForTransactionsReady,
 			} satisfies SuiShape;
 		}
 
@@ -187,19 +189,17 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 		} else {
 			const allocator = yield* PortAllocator;
 			const allocSui = (preferred: number) =>
-				allocator
-					.allocate(preferred)
-					.pipe(
-						Effect.catchTag('PortAllocatorError', (cause) =>
-							Effect.fail(
-								new SuiError({
-									phase: 'sui-up',
-									message: `sui-localnet: could not allocate host port near ${preferred}: ${cause.message}`,
-									cause,
-								}),
-							),
+				allocator.allocate(preferred).pipe(
+					Effect.catchTag('PortAllocatorError', (cause) =>
+						Effect.fail(
+							new SuiError({
+								phase: 'sui-up',
+								message: `sui-localnet: could not allocate host port near ${preferred}: ${cause.message}`,
+								cause,
+							}),
 						),
-					);
+					),
+				);
 			hostRpcPort = yield* allocSui(LOCAL_RPC_PORT);
 			hostFaucetPort = yield* allocSui(LOCAL_FAUCET_PORT);
 			hostGraphqlPort = yield* allocSui(LOCAL_GRAPHQL_PORT);
@@ -472,6 +472,7 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 		});
 
 		const chainId = yield* fetchChainId(client);
+		const waitForTransactionsReady = yield* buildWaitForTransactionsReady(faucetUrl);
 
 		return {
 			network: 'localnet',
@@ -480,6 +481,7 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 			graphqlUrl,
 			client,
 			chainId,
+			waitForTransactionsReady,
 		} satisfies SuiShape;
 	})();
 
@@ -578,6 +580,7 @@ export const suiTestnet = (options: SuiTestnetOptions = {}): StackMember => {
 		yield* EndpointRegistry.publish({ name: 'sui-faucet', url: faucetUrl, kind: 'faucet' });
 		yield* EndpointRegistry.publish({ name: 'sui-graphql', url: graphqlUrl, kind: 'graphql' });
 		const chainId = yield* fetchChainId(client);
+		const waitForTransactionsReady = yield* buildWaitForTransactionsReady(faucetUrl);
 		return {
 			network: 'testnet',
 			rpcUrl,
@@ -585,6 +588,7 @@ export const suiTestnet = (options: SuiTestnetOptions = {}): StackMember => {
 			graphqlUrl,
 			client,
 			chainId,
+			waitForTransactionsReady,
 		} satisfies SuiShape;
 	})();
 
@@ -625,6 +629,9 @@ export const suiMainnet = (options: SuiMainnetOptions = {}): StackMember => {
 		yield* EndpointRegistry.publish({ name: 'sui-rpc', url: rpcUrl, kind: 'rpc' });
 		yield* EndpointRegistry.publish({ name: 'sui-graphql', url: graphqlUrl, kind: 'graphql' });
 		const chainId = yield* fetchChainId(client);
+		// Mainnet has no faucet — the chain is presumed always-transferable
+		// (any caller submitting a tx on mainnet brought their own gas).
+		const waitForTransactionsReady = yield* buildWaitForTransactionsReady(undefined);
 		return {
 			network: 'mainnet',
 			rpcUrl,
@@ -632,6 +639,7 @@ export const suiMainnet = (options: SuiMainnetOptions = {}): StackMember => {
 			graphqlUrl,
 			client,
 			chainId,
+			waitForTransactionsReady,
 		} satisfies SuiShape;
 	})();
 
@@ -686,6 +694,7 @@ export const suiCustom = (options: SuiCustomOptions): StackMember => {
 			yield* EndpointRegistry.publish({ name: 'sui-graphql', url: graphqlUrl, kind: 'graphql' });
 		}
 		const chainId = yield* fetchChainId(client);
+		const waitForTransactionsReady = yield* buildWaitForTransactionsReady(faucetUrl);
 		return {
 			network,
 			rpcUrl,
@@ -693,6 +702,7 @@ export const suiCustom = (options: SuiCustomOptions): StackMember => {
 			graphqlUrl,
 			client,
 			chainId,
+			waitForTransactionsReady,
 		} satisfies SuiShape;
 	})();
 
@@ -761,23 +771,25 @@ const awaitIndexerDbReady = (containerId: string) => {
 // probe POSTs an actual funding request and asserts the response body
 // is NOT `status: { Failure }` — see `faucetReadyProbe` below for
 // why. Hex bytes are arbitrary; any valid 32-byte Sui address works.
-const FAUCET_PROBE_RECIPIENT =
-	'0xf0bef0bef0bef0bef0bef0bef0bef0bef0bef0bef0bef0bef0bef0bef0bef0be';
+const FAUCET_PROBE_RECIPIENT = '0xf0bef0bef0bef0bef0bef0bef0bef0bef0bef0bef0bef0bef0bef0bef0bef0be';
 
 // Faucet ready-probe. POST a real funding request and verify the
 // response body is `status: "Success"` (or at least NOT a body-level
 // `status: { Failure }`). Exported for unit tests; production callers
-// invoke it from `suiLocalnet`'s ready-probe block.
+// invoke it via the `waitForTransactionsReady` method on `SuiShape`
+// (see `makeWaitForTransactionsReady` below), which wraps this in a
+// retry/timeout budget and maps the rejection into a typed `SuiError`.
 //
-// Why this exists: the prior probe checked only `response.ok` (or
-// `status < 500`), which passed during the warm-up window where the
-// sui-faucet binary's HTTP socket was up but its tx-submission
-// pipeline wasn't — the faucet returned 200 OK with body
-// `{"status": {"Failure": {"Internal": "..."}}}`. The supervisor
-// declared Sui "ready", and downstream `accounts.fund` immediately
-// tripped the 90s `requestFunds` timeout because every retry hit the
-// same Failure body. Gating ready on a real "no Failure" body means
-// Sui isn't marked ready until the faucet can actually fund.
+// Why this exists: the supervisor's Sui-ready gate is socket-level
+// only (`GET /` to faucet, `getChainIdentifier()` for RPC, a `{
+// chainIdentifier }` GraphQL POST). Those pass as soon as the HTTP
+// servers are bound — typically a beat BEFORE the underlying validator
+// has produced a checkpoint, during which the faucet returns 200 OK
+// with body `{"status": {"Failure": {"Internal": "..."}}}` for any
+// real funding request. Primitives that immediately submit a
+// funds-transferable tx after yielding `Sui` need a stronger guarantee
+// than socket-level liveness; this probe upgrades that guarantee by
+// pinging the faucet's actual tx pipeline.
 export const faucetReadyProbe = (faucetUrl: string): Effect.Effect<void, Error> =>
 	Effect.tryPromise({
 		try: async () => {
@@ -799,6 +811,77 @@ export const faucetReadyProbe = (faucetUrl: string): Effect.Effect<void, Error> 
 		catch: (cause) => new Error(`faucet: ${stringifyCause(cause)}`),
 	});
 
+// Per-attempt and total budget for the `waitForTransactionsReady`
+// retry loop. The 5s spacing matches the upstream sui-faucet binary's
+// internal retry cadence; the 90s total budget matches the existing
+// `requestFunds` wall-clock in `internal/faucet.ts` — by the time
+// THAT timeout would fire, this probe will already have exhausted its
+// own budget and surfaced a more specific error.
+const WAIT_FOR_TX_READY_RETRY_SPACING = '2 seconds';
+const WAIT_FOR_TX_READY_TIMEOUT_MS = 90_000;
+
+/**
+ * Build an `Effect<void, SuiError>` that resolves when the chain
+ * underlying `faucetUrl` is actually transferring funds (i.e. the
+ * faucet's `/v2/gas` POST stops returning body-level `Failure`).
+ * Internal — every `Sui*` factory wraps it in `Effect.cached` so
+ * repeated `waitForTransactionsReady()` calls reuse the first
+ * success. Callers without a faucet (mainnet, suiCustom without one)
+ * get `Effect.void` instead — see the call sites in `suiLocalnet`,
+ * `suiTestnet`, `suiMainnet`, and `suiCustom`.
+ */
+const makeWaitForTransactionsReadyForFaucet = (faucetUrl: string): Effect.Effect<void, SuiError> =>
+	faucetReadyProbe(faucetUrl).pipe(
+		Effect.retry(Schedule.spaced(WAIT_FOR_TX_READY_RETRY_SPACING)),
+		Effect.timeoutOrElse({
+			duration: `${WAIT_FOR_TX_READY_TIMEOUT_MS} millis`,
+			orElse: () =>
+				Effect.fail(
+					new SuiError({
+						phase: 'wait-for-transactions-ready',
+						message:
+							`sui faucet at ${faucetUrl} did not become funds-transferable within ` +
+							`${WAIT_FOR_TX_READY_TIMEOUT_MS}ms (still returning body-level Failure or ` +
+							`5xx). The HTTP socket is bound but the underlying validator can't yet ` +
+							`accept funding txs — usually a chain still mid-genesis.`,
+					}),
+				),
+		}),
+		Effect.mapError((cause) =>
+			cause instanceof SuiError
+				? cause
+				: new SuiError({
+						phase: 'wait-for-transactions-ready',
+						message: `sui faucet at ${faucetUrl} probe failed: ${cause.message}`,
+						cause,
+					}),
+		),
+		Effect.withSpan('sui.waitForTransactionsReady'),
+	);
+
+/**
+ * Yields a memoized `waitForTransactionsReady` closure to embed in
+ * the returned `SuiShape`. Memoization makes repeat calls cheap — the
+ * first call pays the retry budget, every subsequent call sees a
+ * resolved cache. Networks without a faucet (mainnet, suiCustom
+ * without `faucetUrl`) get a no-op since the chain is presumed
+ * always-transferable on those surfaces; callers that need a real
+ * guarantee on a corporate fork should pin a `faucetUrl` explicitly.
+ */
+const buildWaitForTransactionsReady = (
+	faucetUrl: string | undefined,
+): Effect.Effect<() => Effect.Effect<void, SuiError>> =>
+	Effect.gen(function* () {
+		if (faucetUrl === undefined) {
+			// No faucet — the chain is presumed always-transferable (mainnet
+			// reads, corporate fork without funding flows). Callers that
+			// need a stronger guarantee should pin a faucetUrl.
+			return () => Effect.void;
+		}
+		const cached = yield* Effect.cached(makeWaitForTransactionsReadyForFaucet(faucetUrl));
+		return () => cached;
+	});
+
 // Resolve the chain identifier from a ready-to-talk JSON-RPC client.
 // Localnet flips this on `--force-regenesis`; remote networks keep it
 // stable. Downstream primitives fold it into their `StateStore` cache
@@ -818,4 +901,3 @@ const fetchChainId = (client: SuiJsonRpcClient): Effect.Effect<string, SuiError>
 		yield* Effect.annotateCurrentSpan({ 'sui.chainId': chainId });
 		return chainId;
 	});
-

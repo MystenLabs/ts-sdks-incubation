@@ -69,6 +69,19 @@ export type AccountSource =
 			 *  but accepting the field now keeps the spec stable across
 			 *  the eventual server-side change. */
 			readonly initialBalanceSui?: number;
+			/** Wall-clock budget for the faucet funding request, including
+			 *  all retries. Defaults to 90_000 (90s) — sized for a cold
+			 *  sui-localnet boot. CI configs pointed at a clearly-broken
+			 *  faucet can lower this so failure surfaces in seconds
+			 *  instead of minutes-per-account. Mirrors the `readyTimeoutMs`
+			 *  knob on `suiLocalnet`. */
+			readonly faucetTimeoutMs?: number;
+			/** Maximum number of faucet retry attempts before giving up
+			 *  (the initial attempt plus `faucetMaxAttempts` retries).
+			 *  Defaults to 40 — paired with the default 90s budget, the
+			 *  schedule saturates well before the wall-clock timeout
+			 *  fires. */
+			readonly faucetMaxAttempts?: number;
 	  }
 	| {
 			readonly from: 'keystore';
@@ -168,6 +181,34 @@ export const accounts = <S extends Record<string, AccountSpec>>(specs: S): Accou
 						);
 					}
 					const faucetUrl = sui.faucetUrl;
+					// Before the first faucet POST, ask the Sui primitive to
+					// confirm the chain is actually funds-transferable. The
+					// supervisor's Sui-ready gate is socket-level only — the
+					// faucet HTTP server is bound but the underlying validator
+					// may still be mid-genesis, in which case `/v2/gas` returns
+					// 200 OK with body `{status: {Failure: ...}}`. The
+					// `requestFunds` retry budget below already absorbs this
+					// race for a single account, but each parallel account
+					// would otherwise spend its own retry budget rediscovering
+					// the same fact; centralizing the wait at `sui` (the
+					// primitive memoizes via `Effect.cached`) lets every
+					// ephemeral-funded account share one cached resolution.
+					// The retry below stays as defense — `waitForTransactions
+					// Ready` confirms transferability against a sentinel
+					// recipient, then the real funding call races against any
+					// transient post-warm-up jitter.
+					yield* setPhase('awaiting chain funds-transferable');
+					yield* sui.waitForTransactionsReady().pipe(
+						Effect.catchTag('SuiError', (cause) =>
+							Effect.fail(
+								new AccountError({
+									phase: 'fund',
+									message: `accounts: '${name}' aborted before funding — chain never became funds-transferable: ${cause.message}`,
+									cause,
+								}),
+							),
+						),
+					);
 					yield* setPhase('requesting funds');
 					yield* requestFunds({
 						faucetUrl,
@@ -182,6 +223,15 @@ export const accounts = <S extends Record<string, AccountSpec>>(specs: S): Accou
 							setPhase(
 								`requesting funds (attempt ${attempt}, last: ${err.message.replace(/\n.*$/s, '')})`,
 							),
+						// Pass through the per-account retry-budget overrides
+						// when present. `requestFunds` falls back to its own
+						// defaults (90s / 40 attempts) when these are
+						// undefined, so the unset path matches today's
+						// behavior exactly.
+						...(source.faucetTimeoutMs !== undefined ? { timeoutMs: source.faucetTimeoutMs } : {}),
+						...(source.faucetMaxAttempts !== undefined
+							? { maxAttempts: source.faucetMaxAttempts }
+							: {}),
 					}).pipe(
 						Effect.catchTag('FaucetError', (cause) =>
 							Effect.fail(
@@ -234,8 +284,7 @@ export const accounts = <S extends Record<string, AccountSpec>>(specs: S): Accou
 												// "Dependent package not found on-chain" even
 												// though the publish reported success. Matches
 												// v3's `client.waitForTransaction({ digest })`.
-												try: () =>
-													sui.client.waitForTransaction({ digest: r.digest }),
+												try: () => sui.client.waitForTransaction({ digest: r.digest }),
 												catch: (cause): SignAndExecuteError => ({
 													_tag: 'SignAndExecuteError',
 													message: `accounts: waitForTransaction failed for '${name}': ${stringifyCause(cause)}`,
@@ -335,7 +384,9 @@ const acquireKeypair = (
 // Persist the bech32 secret key under `.devstack/stacks/<stack>/.keys/<name>.key`
 // (mode 0o600, dir 0o700) so warm starts keep a stable address. Mirrors v3's
 // disk-keystore layout in `packages/devstack/src/plugins/accounts.ts`.
-const acquireEphemeral = (name: string): Effect.Effect<Keypair, AccountError, AcquireRequirements> =>
+const acquireEphemeral = (
+	name: string,
+): Effect.Effect<Keypair, AccountError, AcquireRequirements> =>
 	Effect.gen(function* () {
 		const cfg = yield* StateStoreConfig;
 		const fs = yield* FileSystem.FileSystem;
@@ -479,10 +530,7 @@ const acquireFromEnv = (
 // have to declare it. `decodeSuiPrivateKey` itself throws on malformed
 // input — wrap it in `Effect.try` so the failure mode is a typed
 // `AccountError` rather than a defect.
-const decodeKeypair = (
-	name: string,
-	bech32: string,
-): Effect.Effect<Keypair, AccountError> =>
+const decodeKeypair = (name: string, bech32: string): Effect.Effect<Keypair, AccountError> =>
 	Effect.try({
 		try: () => {
 			const { scheme, secretKey } = decodeSuiPrivateKey(bech32);
@@ -505,7 +553,9 @@ const keypairForScheme = (scheme: SignatureScheme, secretKey: Uint8Array): Keypa
 		case 'Secp256r1':
 			return Secp256r1Keypair.fromSecretKey(secretKey);
 		default:
-			throw new Error(`unsupported signature scheme '${scheme}' (MultiSig/ZkLogin/Passkey not yet handled by accounts())`);
+			throw new Error(
+				`unsupported signature scheme '${scheme}' (MultiSig/ZkLogin/Passkey not yet handled by accounts())`,
+			);
 	}
 };
 
