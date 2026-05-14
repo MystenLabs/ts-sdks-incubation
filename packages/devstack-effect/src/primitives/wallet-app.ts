@@ -1,0 +1,298 @@
+import { randomBytes } from 'node:crypto';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { Effect } from 'effect';
+import { EndpointRegistry } from '../internal/registries.js';
+import { stringifyCause } from '../internal/stringify-cause.js';
+import { makeTag, setPhase, type PluginTag } from '../tag.js';
+import { WalletAppError } from './errors.js';
+import type { Account } from './shared.js';
+import { Sui } from './sui.js';
+
+export interface WalletApp {
+	readonly url: string;
+	readonly pairUrl: string;
+	readonly endpoint: { readonly name: string; readonly url: string };
+}
+
+export interface WalletAppOptions<Name extends string> {
+	readonly name?: Name;
+	readonly accounts: ReadonlyArray<PluginTag<any, Account, any, any>>;
+	readonly allowedOrigins?: ReadonlyArray<string>;
+	readonly port?: number;
+	readonly bindAddress?: string;
+}
+
+export const walletApp = <const Name extends string = 'wallet-app'>(
+	options: WalletAppOptions<Name>,
+) => {
+	const name = (options.name ?? 'wallet-app') as Name;
+	return makeTag(
+		name,
+		Effect.gen(function* () {
+			// Wait for sui to be ready before standing up the wallet server.
+			yield* Sui;
+			// Resolve each account tag — both for ordering (so accounts have been
+			// funded/registered before the wallet server is callable) and so we
+			// can wire the resolved Account values into the sign handler. Key by
+			// address (v3 endpoints look accounts up by address, not by name).
+			const accountsByAddress = new Map<string, Account>();
+			for (const acc of options.accounts) {
+				const account = yield* acc;
+				accountsByAddress.set(account.address, account);
+			}
+
+			const port = options.port ?? 5180;
+			// Default to loopback so signing endpoints aren't exposed to other devices
+			// on the LAN (e.g. a coffee-shop network). Override via `bindAddress` for
+			// devcontainers / WSL where the browser lives on a different interface.
+			const bindAddress = options.bindAddress ?? '127.0.0.1';
+			const token = randomBytesHex(16);
+			const allowedOrigins = options.allowedOrigins ?? [];
+
+			yield* setPhase('starting http server');
+			const server = yield* Effect.tryPromise({
+				try: () => startHttpServer(port, bindAddress, token, allowedOrigins, accountsByAddress),
+				catch: (cause) =>
+					new WalletAppError({
+						phase: 'listen',
+						message: `failed to start wallet server on port ${port}: ${String(cause)}`,
+						cause,
+					}),
+			});
+			// Tear down on scope close. `server.close()` alone stops
+			// accepting new connections but waits indefinitely for existing
+			// keep-alive sockets to drain — a browser tab from the dev
+			// wallet holding an open `fetch` keeps the port bound after
+			// the supervisor exits, and the next example's `pnpm dev`
+			// then hits `EADDRINUSE: 127.0.0.1:5180`. Force-close
+			// connections first, then `await` the close callback so the
+			// port is verifiably released before the finalizer returns.
+			yield* Effect.addFinalizer(() =>
+				Effect.callback<void>((resume) => {
+					// `closeAllConnections` exists on Node 18.2+ — devstack
+					// requires Node >= 24, so it's always present.
+					(server as { closeAllConnections?: () => void }).closeAllConnections?.();
+					server.close(() => resume(Effect.void));
+				}),
+			);
+
+			const url = `http://localhost:${port}`;
+			const pairUrl = `${url}/?token=${token}`;
+
+			yield* EndpointRegistry.publish({
+				name: 'wallet-app',
+				url,
+				kind: 'wallet',
+				pairUrl,
+			});
+
+			return {
+				url,
+				pairUrl,
+				endpoint: { name: 'wallet-app', url },
+			} satisfies WalletApp;
+		}).pipe(Effect.withSpan(`walletApp(${name})`)),
+		{
+			kind: 'service',
+			displayTitle: 'wallet',
+			display: (s) => ({ title: 'wallet', primary: s.pairUrl }),
+		},
+	);
+};
+
+// Start a minimal HTTP server backing the dev-wallet DevstackSignerAdapter.
+// Endpoints mirror the v3 wallet-app server:
+//   GET  /api/v1/devstack/health              → { ok: true }             (auth-gated)
+//   GET  /api/v1/devstack/accounts            → { accounts: [...] }      (auth-gated)
+//   POST /api/v1/devstack/sign-transaction    → { suiSignature, txBytes }(auth-gated)
+//   POST /api/v1/devstack/sign-personal-message → { signature, bytes }   (auth-gated)
+// CORS is restricted to an explicit allowlist passed by the user.
+const startHttpServer = (
+	port: number,
+	bindAddress: string,
+	token: string,
+	allowedOrigins: ReadonlyArray<string>,
+	accountsByAddress: ReadonlyMap<string, Account>,
+): Promise<Server> => {
+	return new Promise((resolve, reject) => {
+		const server = createServer((req, res) => {
+			const origin = req.headers.origin;
+			if (origin !== undefined && !allowedOrigins.includes(origin)) {
+				res.writeHead(403, { 'content-type': 'text/plain' });
+				res.end('forbidden origin');
+				return;
+			}
+			if (origin !== undefined) {
+				res.setHeader('access-control-allow-origin', origin);
+				res.setHeader('access-control-allow-headers', 'authorization,content-type');
+				res.setHeader('access-control-allow-methods', 'GET,POST,OPTIONS');
+			}
+			if (req.method === 'OPTIONS') {
+				res.writeHead(204);
+				res.end();
+				return;
+			}
+			if (req.url?.startsWith('/api/v1/devstack/')) {
+				const auth = req.headers.authorization;
+				if (auth !== `Bearer ${token}`) {
+					res.writeHead(401, { 'content-type': 'application/json' });
+					res.end(JSON.stringify({ error: 'unauthorized' }));
+					return;
+				}
+				if (req.method === 'GET' && req.url === '/api/v1/devstack/health') {
+					sendJson(res, 200, { ok: true });
+					return;
+				}
+				if (req.method === 'GET' && req.url === '/api/v1/devstack/accounts') {
+					handleAccounts(res, accountsByAddress);
+					return;
+				}
+				if (req.method === 'POST' && req.url === '/api/v1/devstack/sign-transaction') {
+					void handleSignTransaction(req, res, accountsByAddress);
+					return;
+				}
+				if (req.method === 'POST' && req.url === '/api/v1/devstack/sign-personal-message') {
+					void handleSignPersonalMessage(req, res, accountsByAddress);
+					return;
+				}
+				res.writeHead(404, { 'content-type': 'application/json' });
+				res.end(JSON.stringify({ error: `no route for ${req.method} ${req.url}` }));
+				return;
+			}
+			res.writeHead(404);
+			res.end('not found');
+		});
+		server.on('error', reject);
+		server.listen(port, bindAddress, () => resolve(server));
+	});
+};
+
+const handleAccounts = (
+	res: ServerResponse,
+	accountsByAddress: ReadonlyMap<string, Account>,
+): void => {
+	const accounts = Array.from(accountsByAddress.values(), (a) => ({
+		name: a.name,
+		address: a.address,
+		scheme: a.scheme,
+		publicKey: Buffer.from(a.publicKey).toString('base64'),
+	}));
+	sendJson(res, 200, { accounts });
+};
+
+const handleSignTransaction = async (
+	req: IncomingMessage,
+	res: ServerResponse,
+	accountsByAddress: ReadonlyMap<string, Account>,
+): Promise<void> => {
+	let body: Record<string, unknown>;
+	try {
+		body = await readJsonBody(req);
+	} catch (cause) {
+		sendJson(res, 400, {
+			error: `invalid request body: ${stringifyCause(cause)}`,
+		});
+		return;
+	}
+	const address = body['address'];
+	const txBytes = body['txBytes'];
+	if (typeof address !== 'string' || address.length === 0) {
+		sendJson(res, 400, { error: 'address must be a non-empty string' });
+		return;
+	}
+	if (typeof txBytes !== 'string' || txBytes.length === 0) {
+		sendJson(res, 400, { error: 'txBytes must be a non-empty base64 string' });
+		return;
+	}
+	const account = accountsByAddress.get(address);
+	if (account === undefined) {
+		sendJson(res, 404, { error: `no account for address '${address}'` });
+		return;
+	}
+	let bytes: Buffer;
+	try {
+		bytes = Buffer.from(txBytes, 'base64');
+	} catch (cause) {
+		sendJson(res, 400, {
+			error: `txBytes is not valid base64: ${stringifyCause(cause)}`,
+		});
+		return;
+	}
+	try {
+		const result = await Effect.runPromise(account.signTransaction(bytes));
+		sendJson(res, 200, { suiSignature: result.signature, txBytes: result.bytes });
+	} catch (cause) {
+		sendJson(res, 500, {
+			error: `signTransaction failed: ${stringifyCause(cause)}`,
+		});
+	}
+};
+
+const handleSignPersonalMessage = async (
+	req: IncomingMessage,
+	res: ServerResponse,
+	accountsByAddress: ReadonlyMap<string, Account>,
+): Promise<void> => {
+	let body: Record<string, unknown>;
+	try {
+		body = await readJsonBody(req);
+	} catch (cause) {
+		sendJson(res, 400, {
+			error: `invalid request body: ${stringifyCause(cause)}`,
+		});
+		return;
+	}
+	const address = body['address'];
+	const message = body['message'] ?? body['messageBytes'];
+	if (typeof address !== 'string' || address.length === 0) {
+		sendJson(res, 400, { error: 'address must be a non-empty string' });
+		return;
+	}
+	if (typeof message !== 'string' || message.length === 0) {
+		sendJson(res, 400, { error: 'message must be a non-empty base64 string' });
+		return;
+	}
+	const account = accountsByAddress.get(address);
+	if (account === undefined) {
+		sendJson(res, 404, { error: `no account for address '${address}'` });
+		return;
+	}
+	let bytes: Buffer;
+	try {
+		bytes = Buffer.from(message, 'base64');
+	} catch (cause) {
+		sendJson(res, 400, {
+			error: `message is not valid base64: ${stringifyCause(cause)}`,
+		});
+		return;
+	}
+	try {
+		const result = await Effect.runPromise(account.signPersonalMessage(bytes));
+		sendJson(res, 200, { signature: result.signature, bytes: result.bytes });
+	} catch (cause) {
+		sendJson(res, 500, {
+			error: `signPersonalMessage failed: ${stringifyCause(cause)}`,
+		});
+	}
+};
+
+const readJsonBody = async (req: IncomingMessage): Promise<Record<string, unknown>> => {
+	const chunks: Buffer[] = [];
+	for await (const chunk of req) {
+		chunks.push(chunk instanceof Buffer ? chunk : Buffer.from(chunk));
+	}
+	const raw = Buffer.concat(chunks).toString('utf8');
+	if (raw.length === 0) return {};
+	const parsed = JSON.parse(raw) as unknown;
+	if (parsed === null || typeof parsed !== 'object') {
+		throw new Error('body must be a JSON object');
+	}
+	return parsed as Record<string, unknown>;
+};
+
+const sendJson = (res: ServerResponse, status: number, body: unknown): void => {
+	res.writeHead(status, { 'content-type': 'application/json' });
+	res.end(JSON.stringify(body));
+};
+
+const randomBytesHex = (n: number): string => randomBytes(n).toString('hex');

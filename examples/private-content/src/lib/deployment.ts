@@ -1,4 +1,4 @@
-// App-level projection of the devstack-next manifest. Surfaces the
+// App-level projection of the devstack manifest. Surfaces the
 // vault package, the seal key server (via `extras`), the walrus daemon
 // URL, and a flat account name → address map.
 
@@ -17,7 +17,10 @@ interface SealKeyServerExtras {
 }
 
 const sealKeyServer = manifest.extras.sealKeyServer as SealKeyServerExtras | undefined;
-const sealPackage = manifest.packages.find((p) => p.name === 'seal');
+// `sealLocalKeygen` registers the published seal package under
+// `<name>.publish` (default name `seal`), so the manifest entry is
+// `seal.publish`, not `seal`.
+const sealPackage = manifest.packages.find((p) => p.name === 'seal.publish');
 
 const seal: SealView | undefined =
 	sealKeyServer !== undefined && sealPackage !== undefined

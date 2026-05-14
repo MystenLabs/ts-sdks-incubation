@@ -1,0 +1,396 @@
+// Core: tag plumbing for factory-generated services.
+//
+// Three primitives, layered:
+//
+//   provideTag(TagClass, build)   — primary. Given an EXISTING
+//                                   Context.Service class (typically
+//                                   imported from `src/interfaces/`),
+//                                   produce a `{ __layer, key }` pair
+//                                   that satisfies it. Multiple factories
+//                                   (`suiLocalnet`, `suiTestnet`, …) can
+//                                   each call `provideTag(Sui, …)` and
+//                                   they all target the same `Sui` tag.
+//
+//   makeTag(name, build)          — sugar. Creates a one-off tag class
+//                                   inline. Used by factories that don't
+//                                   participate in a shared interface
+//                                   (per-account tags, `action`, custom
+//                                   plugins). Internally just creates a
+//                                   throwaway class and calls provideTag.
+//
+//   composeTag(name, build, inner) — legacy. Aggregate inner tags'
+//                                   __layers into a parent tag built by
+//                                   makeTag. Existing seal/walrus/
+//                                   deepbook primitives still use it;
+//                                   new code should prefer multiple
+//                                   `provideTag` calls.
+//
+// Each tag carries:
+//   __layer  — the Layer.effect-wrapped producer for THIS tag.
+//   __layers — every Layer needed to satisfy the parent in the runtime
+//              graph: own __layer plus transitively-flattened inner
+//              layers from composites. defineDevstack mergeAll's this.
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
+import { Cause, Context, Effect, Layer, type Scope } from 'effect';
+import { EngineHandle } from './internal/engine.js';
+import { prettyError } from './internal/pretty-error.js';
+
+// Per-build "what tag am I inside" reference. `withEngineLifecycle`
+// overrides it with the wrapped tag's key right before running the
+// build body; `setPhase` reads it to know which engine entry to update
+// without each call site re-passing the key. The default empty value
+// makes the helper a noop when read outside a wrapped build (e.g. unit
+// tests that exercise a primitive's effect directly), keeping the
+// failure mode silent rather than throwing.
+export const CurrentTagKey = Context.Reference<string>('@devstack/CurrentTagKey', {
+	defaultValue: () => '',
+});
+
+/**
+ * Push a sub-phase narration onto the surrounding tag's entry — e.g.
+ * `yield* setPhase('building image')` or `yield* setPhase('running
+ * genesis')`. The tag key is resolved automatically from the ambient
+ * `CurrentTagKey` reference that `withEngineLifecycle` provides, so
+ * primitive authors don't have to thread it through manually. Outside
+ * an engine-wrapped build (e.g. unit tests), this is a noop.
+ */
+export const setPhase = (phase: string): Effect.Effect<void> =>
+	Effect.gen(function* () {
+		const key = yield* CurrentTagKey;
+		if (key.length === 0) return;
+		const engineOpt = yield* Effect.serviceOption(EngineHandle);
+		if (engineOpt._tag === 'None') return;
+		yield* engineOpt.value.setPhase(key, phase);
+	});
+
+// Phantom brand that gives factory-generated tags nominal identity at
+// the type level. Each `name: 'foo'` produces a distinct TagIdentity.
+export interface TagIdentity<Name extends string> {
+	readonly _tagBrand: 'devstack/tag';
+	readonly _tagName: Name;
+}
+
+/**
+ * Discriminator the TUI renders sections by. Services are long-running
+ * daemons users connect to (URLs, ports); actions are one-shot work that
+ * completes and produces an artifact (packageId, address, digest).
+ */
+export type TagKind = 'service' | 'action';
+
+/**
+ * User-facing projection of a tag's value into the dashboard row. The
+ * selector runs once on successful build with the resolved shape.
+ */
+export interface TuiDisplay {
+	/** Friendly label (e.g. 'sui localnet', 'publish hello', 'account alice'). Falls back to the tag key with the `@devstack/` prefix stripped. */
+	readonly title?: string;
+	/** Primary artifact — URL for services, packageId/address/digest for actions. */
+	readonly primary?: string;
+	/** Optional secondary chips rendered to the right of `primary` (e.g. '4 nodes', '12 modules'). */
+	readonly extras?: ReadonlyArray<string>;
+	/** Multiple labelled endpoints — used by primitives that expose several
+	 * URLs (sui's rpc + faucet + graphql). Rendered as indented lines under
+	 * the row. When present, the dashboard suppresses `primary` to avoid
+	 * duplicating the same URL. */
+	readonly endpoints?: ReadonlyArray<{ readonly label: string; readonly url: string }>;
+}
+
+/**
+ * Optional knobs for `provideTag` / `makeTag`. `kind` classifies the
+ * row into the Services or Actions section; `display` projects the
+ * resolved value into the user-facing fields. `displayTitle` is a static
+ * fallback rendered while the primitive is still acquiring (before the
+ * resolved value exists to feed `display`).
+ */
+export interface ProvideTagOptions<A> {
+	readonly kind?: TagKind;
+	readonly display?: (shape: A) => TuiDisplay;
+	/** Friendly name shown in the dashboard while `status === 'pending' | 'acquiring'`,
+	 * before `display(value)` runs. Should match the title `display` emits to avoid
+	 * a flicker on resolve. */
+	readonly displayTitle?: string;
+}
+
+/**
+ * Truncate a long on-chain id (Sui addresses, package ids, digests) to
+ * the `0xabc…123` shape the dashboard uses. Inputs shorter than the cut
+ * are returned unchanged.
+ */
+export const shortId = (id: string): string => {
+	if (id.length <= 12) return id;
+	const prefix = id.startsWith('0x') ? id.slice(0, 5) : id.slice(0, 5);
+	const suffix = id.slice(-3);
+	return `${prefix}…${suffix}`;
+};
+
+// User-visible shape of a plugin tag. Extends Context.Service so it's
+// yieldable with the right Effect prototype. Carries R/E as phantom
+// parameters so defineDevstack can verify graph closure.
+/**
+ * Type-parameterized tag. `Name` is the tag's identity key, `A` is the
+ * value shape consumers `yield*` to receive, `R` and `E` track required
+ * services and possible errors. Plugin authors writing dependencies
+ * typically use `PluginTag<any, YourShape, any, any>`.
+ */
+export interface PluginTag<Name extends string, A, R = never, E = never> extends Context.Service<
+	TagIdentity<Name>,
+	A
+> {
+	readonly key: Name;
+	// The tag's own layer — the Layer.effect-wrapped producer. Retained
+	// for backward compat with consumers that read `__layer` directly
+	// (e.g. accounts.ts, sui.ts).
+	readonly __layer: Layer.Layer<TagIdentity<Name>, E, R>;
+	// Transitively-flattened layer list: this tag's own layer plus every
+	// inner layer it composes. defineDevstack mergeAll's this list per
+	// stack member so inner tags built at factory time (seal's keygen,
+	// deepbook's publish, …) are present in the runtime.
+	readonly __layers: ReadonlyArray<Layer.Layer<any, any, any>>;
+	/** Service vs action classification for TUI sectioning. Absence → 'other'. */
+	readonly __kind?: TagKind;
+	/** Friendly title surfaced by the dashboard while the tag is still `pending`
+	 * (before `markAcquiring` triggers the in-build `setEntryTitle`). Mirrors
+	 * the `displayTitle` option passed to `provideTag` / `makeTag`. Absence →
+	 * fall back to the tag's key. */
+	readonly __displayTitle?: string;
+}
+
+/**
+ * Wrap a tag's build Effect so the engine observes its lifecycle:
+ *
+ *   pending → acquiring → ready | failed
+ *
+ * The wrap is applied at tag construction (inside `provideTag`) so primitive
+ * authors don't have to remember to call the engine themselves. The
+ * tradeoff is that `EngineHandle` ends up in the R channel of the inner
+ * Effect — that's satisfied by `InfraLive` in `defineDevstack`, so user
+ * code doesn't need to know about it. Phase tracking is left to authors
+ * who add `Effect.withSpan('<tag>.<phase>')` inside `build` — the engine
+ * doesn't peek at spans yet (Wave 10+).
+ *
+ * If a tag is built outside a devstack (e.g. inside a unit test that
+ * provides only the tag's layer), `EngineHandle` would be a missing
+ * dependency, so we resolve it via `Effect.serviceOption` and fall back
+ * to a noop when absent.
+ */
+const withEngineLifecycle = <A, E, R>(
+	name: string,
+	build: Effect.Effect<A, E, R>,
+	classification: {
+		readonly kind?: TagKind;
+		readonly display?: (shape: A) => TuiDisplay;
+		readonly displayTitle?: string;
+	},
+): Effect.Effect<A, E, R> =>
+	Effect.gen(function* () {
+		const engineOpt = yield* Effect.serviceOption(EngineHandle);
+		if (engineOpt._tag === 'None') {
+			// Still pin CurrentTagKey so `setPhase` calls inside the body
+			// land on the no-engine branch without crashing on a missing
+			// reference. The reference's defaultValue covers the
+			// no-provider case too — this is belt-and-braces for clarity.
+			return yield* build.pipe(Effect.provideService(CurrentTagKey, name));
+		}
+		const engine = engineOpt.value;
+		yield* engine.markAcquiring(name, classification.kind);
+		// Seed the row's title BEFORE the build body runs so the dashboard
+		// shows `accounts.alice` instead of the raw key `account/alice` while
+		// the primitive is still acquiring. `markReady` later overrides this
+		// with `display(value).title`.
+		if (classification.displayTitle !== undefined) {
+			yield* engine.setEntryTitle(name, classification.displayTitle);
+		}
+		// `onExit` fires BEFORE the failure escapes the wrapped effect, so the
+		// engine state (and the TUI's log buffer) reflect the failure even on
+		// a failed `Layer.build`. The launch loop catches the build failure
+		// and waits on `restartSignal`, leaving the rendered failure visible.
+		//
+		// On failure we ALSO push the full prettyError walk to the global log
+		// stream via `appendLog`. `markFailed` already stashed a short summary
+		// on the row; the log carries the multi-line stderr+phase tree the
+		// user needs to debug — and lives in only ONE place (no per-row
+		// duplicate, no umbrella "stack failed" suffix).
+		return yield* build.pipe(
+			Effect.onExit((exit) =>
+				exit._tag === 'Success'
+					? engine.markReady(
+							name,
+							classification.display !== undefined
+								? classification.display(exit.value)
+								: undefined,
+						)
+					: Effect.gen(function* () {
+							yield* engine.markFailed(name, exit.cause);
+							yield* engine.appendLog({
+								ts: Date.now(),
+								level: 'error',
+								message: `${name}: ${summarizeCauseForLog(exit.cause)}`,
+							});
+						}),
+			),
+			// Pin the ambient tag-key reference so `setPhase` inside the
+			// build body knows which engine entry to update without each
+			// primitive re-passing the key.
+			Effect.provideService(CurrentTagKey, name),
+		);
+	}) as Effect.Effect<A, E, R>;
+
+// Full cause-tree render for the TUI log row. Tagged errors (DockerError /
+// SuiError / …) carry structured fields (stderr, exitCode, phase) that the
+// user needs to debug the failure — `Cause.prettyErrors[0]?.message` would
+// collapse to just the outermost class's `message`, hiding the root cause.
+// Multi-line is fine here because the log region renders entries verbatim.
+const summarizeCauseForLog = (cause: Cause.Cause<unknown>): string => prettyError(cause);
+
+// Minimum surface we need from a Context.Service class to build a Layer
+// against it: a Context.Key (Layer.effect's first arg) plus the runtime
+// `key: string` we read in withEngineLifecycle. Both `provideTag`'s
+// `TagClass` and `PluginTag` shapes satisfy this.
+type AnyTagClass = Context.Key<any, any> & { readonly key: string };
+
+/**
+ * Bind a build Effect to an externally-defined Context.Service class —
+ * the primary primitive for implementing a shared interface.
+ *
+ * Use this when your factory is one of several implementations of the
+ * same interface (e.g. `suiLocalnet` / `suiTestnet` / `suiMainnet` all
+ * targeting `Sui`). Import the interface tag from `src/interfaces/` and
+ * pass it as `TagClass`. The same wrap as `makeTag` (engine lifecycle)
+ * is applied, but no new tag class is created — the caller owns the tag.
+ *
+ * Returns `{ __layer, key }`. Most callers will `Object.assign(TagClass, …)`
+ * onto the existing tag so it doubles as a `PluginTag` for defineDevstack.
+ */
+export const provideTag = <T extends AnyTagClass, A, E = never, R = never>(
+	TagClass: T,
+	build: Effect.Effect<A, E, R>,
+	options: ProvideTagOptions<A> = {},
+): {
+	readonly __layer: Layer.Layer<Context.Service.Identifier<T>, E, Exclude<R, Scope.Scope>>;
+	readonly key: string;
+	readonly __kind?: TagKind;
+	readonly __displayTitle?: string;
+} => {
+	const wrapped = withEngineLifecycle(TagClass.key, build, options);
+	// `Layer.effect`'s key is `Context.Key<I, S>`. The `as any` here is
+	// the single load-bearing boundary cast in this file: the build's A
+	// must match the tag's Shape, but TS can't infer S from the class
+	// type without the caller annotating, so we accept it on faith. All
+	// real call sites flow through provideTag, so this is also the only
+	// place `as any` is needed at the Service boundary.
+	const layer = Layer.effect(TagClass as Context.Key<Context.Service.Identifier<T>, A>, wrapped);
+	const result: {
+		__layer: typeof layer;
+		key: string;
+		__kind?: TagKind;
+		__displayTitle?: string;
+	} = { __layer: layer, key: TagClass.key };
+	if (options.kind !== undefined) result.__kind = options.kind;
+	if (options.displayTitle !== undefined) result.__displayTitle = options.displayTitle;
+	return result;
+};
+
+// Optional knobs for `makeTag`. `extraLayers` lets composite primitives
+// surface their inner tags' layers without the caller having to know
+// about the `__layers` field. Prefer `composeTag` over passing this by
+// hand — it's the same shape but with the inner-tag flattening built in.
+// `kind` + `display` flow through to the engine for TUI sectioning.
+export interface MakeTagOptions<A> extends ProvideTagOptions<A> {
+	readonly extraLayers?: ReadonlyArray<Layer.Layer<any, any, any>>;
+}
+
+/**
+ * Create a one-off tag from an Effect — the right primitive when you're
+ * NOT implementing a shared interface (per-account tags from `accounts()`,
+ * custom plugins, `action`, etc.). For factories that target an
+ * interface tag in `src/interfaces/`, use {@link provideTag} instead.
+ * For composites that build inner tags inline, use {@link composeTag}.
+ */
+export const makeTag = <const Name extends string, A, E = never, R = never>(
+	name: Name,
+	build: Effect.Effect<A, E, R>,
+	options: MakeTagOptions<A> = {},
+): PluginTag<Name, A, Exclude<R, Scope.Scope>, E> => {
+	class T extends Context.Service<TagIdentity<Name>, A>()(name as Name) {}
+	const provideOpts: ProvideTagOptions<A> = {
+		...(options.kind !== undefined ? { kind: options.kind } : {}),
+		...(options.display !== undefined ? { display: options.display } : {}),
+		...(options.displayTitle !== undefined ? { displayTitle: options.displayTitle } : {}),
+	};
+	const { __layer, key } = provideTag(T, build, provideOpts);
+	// Order matters: `composeStackLayer` folds left-to-right with
+	// `provideMerge(layer, acc)`, so each layer consumes services from
+	// the accumulated acc. Providers must come BEFORE consumers. Inner
+	// tags supplied via `extraLayers` provide the services the outer
+	// tag's body yields, so they go first; the outer tag's own layer
+	// (which consumes them) goes last.
+	const __layers: ReadonlyArray<Layer.Layer<any, any, any>> = [
+		...(options.extraLayers ?? []),
+		__layer,
+	];
+	// The Object.assign result is typed as the throwaway `typeof T`, which
+	// TS can't bridge to `PluginTag<Name, …>` even though both share the
+	// same `TagIdentity<Name>`. Funnel through `unknown` to land on the
+	// public type — the runtime shape is identical.
+	const extras: {
+		__layer: typeof __layer;
+		__layers: typeof __layers;
+		key: string;
+		__kind?: TagKind;
+		__displayTitle?: string;
+	} = {
+		__layer,
+		__layers,
+		key,
+	};
+	if (options.kind !== undefined) extras.__kind = options.kind;
+	if (options.displayTitle !== undefined) extras.__displayTitle = options.displayTitle;
+	return Object.assign(T, extras) as unknown as PluginTag<
+		Name,
+		A,
+		Exclude<R, Scope.Scope>,
+		E
+	>;
+};
+
+// composeTag — `makeTag` for composite primitives. Pass the inner tags
+// the body yields; the returned tag's `__layers` includes its own layer
+// plus the flattened transitive layers of every inner tag, so
+// defineDevstack picks them all up from a single stack-member entry.
+//
+// The inner-tag yields inside `build` still need their R channel
+// satisfied — that happens at Layer.build time via mergeAll, exactly as
+// it does for tags listed at the top level of `config.stack`. composeTag
+// just makes sure those layers actually reach mergeAll.
+/**
+ * Legacy composite-tag helper. Aggregates inner tags' `__layers` into
+ * the outer tag's transitive layer list. Existing seal/walrus/deepbook
+ * primitives still use this; new code should prefer returning multiple
+ * Layers via repeated `provideTag` calls. The outer tag is built via
+ * `makeTag` so it carries its own throwaway identity.
+ */
+export const composeTag = <const Name extends string, A, E = never, R = never>(
+	name: Name,
+	build: Effect.Effect<A, E, R>,
+	innerTags: ReadonlyArray<{
+		readonly __layer?: Layer.Layer<any, any, any>;
+		readonly __layers?: ReadonlyArray<Layer.Layer<any, any, any>>;
+	}>,
+	options: ProvideTagOptions<A> = {},
+): PluginTag<Name, A, Exclude<R, Scope.Scope>, E> => {
+	const extraLayers = innerTags.flatMap((t) => t.__layers ?? (t.__layer ? [t.__layer] : []));
+	const merged: MakeTagOptions<A> = {
+		extraLayers,
+		...(options.kind !== undefined ? { kind: options.kind } : {}),
+		...(options.display !== undefined ? { display: options.display } : {}),
+		...(options.displayTitle !== undefined ? { displayTitle: options.displayTitle } : {}),
+	};
+	return makeTag(name, build, merged);
+};
+
+// Phantom extractors for defineDevstack.
+export type TagRequires<T> = T extends PluginTag<any, any, infer R, any> ? R : never;
+export type TagErrors<T> = T extends PluginTag<any, any, any, infer E> ? E : never;
+export type TagProvides<T> = T extends PluginTag<infer N, any, any, any> ? TagIdentity<N> : never;
