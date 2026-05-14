@@ -4,15 +4,17 @@
 // since they're the bits most likely to drift when docker's `--format`
 // output changes.
 
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join as joinPath } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
-	byClassification,
 	computeClassification,
 	formatBytes,
 	parseSize,
-	renderClassificationTally,
 	renderInventoryRow,
 	renderTotals,
+	shortRepoPath,
 	summarizeContainers,
 	totalsFor,
 	volumeBytes,
@@ -28,7 +30,7 @@ const row = (overrides: Partial<InventoryRow> = {}): InventoryRow => ({
 	volumes: [],
 	stateDirs: [],
 	runningPid: undefined,
-	classification: 'untracked',
+	classification: 'idle',
 	registryEntry: undefined,
 	...overrides,
 });
@@ -98,6 +100,23 @@ describe('summarizeContainers', () => {
 	});
 });
 
+describe('shortRepoPath', () => {
+	it('returns an em-dash for missing/empty input', () => {
+		expect(shortRepoPath(undefined)).toBe('—');
+		expect(shortRepoPath('')).toBe('—');
+	});
+	it('returns the full path when it splits to ≤ 2 segments', () => {
+		expect(shortRepoPath('foo/bar')).toBe('foo/bar');
+		expect(shortRepoPath('foo')).toBe('foo');
+	});
+	it('keeps only the last two segments for deeper paths', () => {
+		expect(shortRepoPath('/Users/me/code/repo/examples/wallet')).toBe('…/examples/wallet');
+		// Leading `/` produces an empty first segment, so anything
+		// rooted at `/` collapses to its last two segments.
+		expect(shortRepoPath('/foo/bar')).toBe('…/foo/bar');
+	});
+});
+
 describe('renderInventoryRow', () => {
 	it('renders the canonical row format', () => {
 		const r = row({
@@ -126,6 +145,24 @@ describe('renderInventoryRow', () => {
 	it("emits 'no state' when stateDirs is empty", () => {
 		const rendered = renderInventoryRow(row());
 		expect(rendered).toContain('no state');
+	});
+
+	it('flags repo-gone rows inline', () => {
+		const rendered = renderInventoryRow(
+			row({
+				classification: 'repo-gone',
+				registryEntry: {
+					app: 'arena',
+					stack: 'main',
+					network: 'localnet',
+					repoPath: '/never/exists',
+					firstSeen: '2026-01-01T00:00:00.000Z',
+					lastSeen: '2026-04-01T00:00:00.000Z',
+				},
+			}),
+		);
+		expect(rendered).toContain('[repo gone]');
+		expect(rendered).toContain('…/never/exists');
 	});
 });
 
@@ -183,7 +220,7 @@ describe('volumeBytes', () => {
 });
 
 // ---------------------------------------------------------------------------
-// computeClassification — the docker-presence/registry crossjoin
+// computeClassification — three-way row state used by picker + doctor
 // ---------------------------------------------------------------------------
 
 const regEntry = (overrides: Partial<RegistryEntry> = {}): RegistryEntry => ({
@@ -197,69 +234,40 @@ const regEntry = (overrides: Partial<RegistryEntry> = {}): RegistryEntry => ({
 });
 
 describe('computeClassification', () => {
-	it('returns `untracked` when there is no registry entry and no running pid', () => {
-		expect(
-			computeClassification({ entry: undefined, dockerPresent: true, runningPid: undefined }),
-		).toBe('untracked');
+	it("returns 'idle' for a registry-less row with no running pid", () => {
+		expect(computeClassification({ entry: undefined, runningPid: undefined })).toBe('idle');
 	});
 
-	it('returns `active` for an entryless row with a live runningPid (never auto-prune a live state-lock)', () => {
-		expect(computeClassification({ entry: undefined, dockerPresent: true, runningPid: 1 })).toBe(
-			'active',
+	it("returns 'running' for a row with a live runningPid (regardless of registry)", () => {
+		// process.pid is always alive while the test runs.
+		expect(computeClassification({ entry: undefined, runningPid: process.pid })).toBe(
+			'running',
+		);
+		expect(computeClassification({ entry: regEntry(), runningPid: process.pid })).toBe(
+			'running',
 		);
 	});
 
-	it('returns `wiped` when there is a registry entry but no docker resources', () => {
+	it("returns 'repo-gone' when the registry has an entry and the repoPath does not exist", () => {
 		expect(
 			computeClassification({
-				entry: regEntry(),
-				dockerPresent: false,
+				entry: regEntry({ repoPath: '/this/path/will/never/exist/devstack-test' }),
 				runningPid: undefined,
 			}),
-		).toBe('wiped');
+		).toBe('repo-gone');
 	});
 
-	it('delegates to classifyEntry when registry + docker both have data', () => {
-		// repoPath does not exist → abandoned
-		const c = computeClassification({
-			entry: regEntry(),
-			dockerPresent: true,
-			runningPid: undefined,
-		});
-		expect(c).toBe('abandoned');
-	});
-});
-
-describe('byClassification / renderClassificationTally', () => {
-	it('buckets rows by classification', () => {
-		const rows: ReadonlyArray<InventoryRow> = [
-			row({ classification: 'abandoned' }),
-			row({ classification: 'abandoned', stack: 's2' }),
-			row({ classification: 'dormant', stack: 's3' }),
-			row({ classification: 'active', stack: 's4' }),
-		];
-		const b = byClassification(rows);
-		expect(b.abandoned).toHaveLength(2);
-		expect(b.dormant).toHaveLength(1);
-		expect(b.active).toHaveLength(1);
-		expect(b.stale).toHaveLength(0);
-	});
-
-	it('renderClassificationTally skips zero-count buckets', () => {
-		const rendered = renderClassificationTally([
-			row({ classification: 'abandoned' }),
-			row({ classification: 'dormant', stack: 's2' }),
-		]);
-		expect(rendered).toContain('2 stacks');
-		expect(rendered).toContain('1 abandoned');
-		expect(rendered).toContain('1 dormant');
-		expect(rendered).not.toContain('stale');
-	});
-});
-
-describe('renderInventoryRow with classification', () => {
-	it('prepends the classification tag', () => {
-		const rendered = renderInventoryRow(row({ classification: 'abandoned' }));
-		expect(rendered).toContain('[abandoned]');
+	it("returns 'idle' when the registry entry's repoPath does exist on disk", () => {
+		const dir = mkdtempSync(joinPath(tmpdir(), 'devstack-inventory-test-'));
+		try {
+			mkdirSync(dir, { recursive: true });
+			const out = computeClassification({
+				entry: regEntry({ repoPath: dir }),
+				runningPid: undefined,
+			});
+			expect(out).toBe('idle');
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });
