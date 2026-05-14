@@ -45,7 +45,7 @@ export {
 	type DockerOneShotOptions,
 	type DockerOneShotResult,
 } from './exec.js';
-export { networkCreate } from './network.js';
+export { networkCreate, networkConnect } from './network.js';
 export { awaitContainerReady, dockerLogsTail, dockerWait, followLogs } from './logs.js';
 export { ClaimedContainers, dockerOrphanSweep } from './sweep.js';
 export { reallocatePortsOnConflict } from './port-conflict.js';
@@ -61,7 +61,6 @@ export {
 	writeFileProvider,
 	removeFileProvider,
 	getTraefikRouterIp,
-	listRegisteredHostnames,
 	type RouterLabel,
 	type RouterEntrypoint,
 	type FileProviderEntry,

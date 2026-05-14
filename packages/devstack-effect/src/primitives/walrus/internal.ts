@@ -31,14 +31,13 @@ import { Transaction } from '@mysten/sui/transactions';
 import { type WalrusAdminShape } from '../../interfaces/walrus.js';
 import * as Docker from '../../internal/docker.js';
 import { EngineHandle } from '../../internal/engine.js';
-import { rewriteToHostGateway } from '../../internal/host-gateway.js';
 import { Identity } from '../../internal/identity.js';
 import { EndpointRegistry, PackageRegistry } from '../../internal/registries.js';
 import { StateStore } from '../../internal/state-store.js';
 import { type PluginTag } from '../../tag.js';
 import { WalrusError } from '../errors.js';
 import type { Account } from '../shared.js';
-import { Sui } from '../sui.js';
+import { Sui, suiNetworkName } from '../sui.js';
 import { buildWrapperImage } from './image.js';
 import { deployContracts, resolveExchange } from './deploy.js';
 import { startStorageNodes } from './nodes.js';
@@ -84,9 +83,10 @@ export const DEFAULT_EPOCH_DURATION = '24h';
 export const DEFAULT_SHARDS = 100;
 export const DEFAULT_SEED_WAL_PAYMENT_MIST = 500_000_000n;
 
-// Host gateway the containers can reach the host network through.
-// `Docker.run` now wires `--add-host=host.docker.internal:host-gateway`
-// by default, so this works uniformly on Linux + Docker Desktop.
+// Host gateway is still wired automatically by `Docker.run`
+// (`--add-host=host.docker.internal:host-gateway`) for the rare case a
+// storage node needs to talk to a host process — but the sui RPC /
+// faucet path is now docker-DNS-only (see `Sui.rpc.container`).
 
 // Per-stack docker network /24 — storage nodes claim fixed IPs via
 // `Docker.run({ip})` so the nginx proxy can address them on stable
@@ -361,6 +361,20 @@ export const acquireLocalCluster = (args: {
 		const outputDir =
 			identity.network === 'localnet' ? outputDirBase : `${outputDirBase}-${identity.network}`;
 
+		// Per-stack sui docker network — only meaningful when the sui
+		// primitive runs a container (i.e. `suiLocalnet` without an
+		// externally-managed RPC). Detect that case by checking
+		// whether the sui endpoint exposes a `container` URL; if it
+		// does, the network exists (one of `containerNetworks`) and
+		// we join it so docker DNS resolves `sui-localnet`. Falls back
+		// to `suiNetworkName(identity)` for defensive sanity (the
+		// current sui primitive always populates `containerNetworks`
+		// alongside `container`).
+		const suiNet =
+			sui.rpc.container !== undefined
+				? (sui.rpc.containerNetworks?.[0] ?? suiNetworkName(identity))
+				: undefined;
+
 		let deploy: DeployState;
 		if (Option.isSome(cached)) {
 			yield* Effect.annotateCurrentSpan({
@@ -373,8 +387,9 @@ export const acquireLocalCluster = (args: {
 			deploy = yield* deployContracts({
 				name: args.name,
 				image,
-				rpcUrl: sui.rpcUrl,
-				faucetUrl: sui.faucetUrl,
+				rpc: sui.rpc,
+				faucet: sui.faucet,
+				suiNetwork: suiNet,
 				nodeCount: args.nodeCount,
 				shards: args.shards,
 				epochDuration: args.epochDuration,
@@ -418,15 +433,20 @@ export const acquireLocalCluster = (args: {
 		//    in-network IP and a `PortAllocator`-issued host port.
 		// -------------------------------------------------------------
 		yield* args.pushPhase('starting nodes');
-		// `inNetworkFaucet` was computed inside `deployContracts` above;
-		// recompute it here (same shape — sui.faucetUrl or sui.rpcUrl
-		// with localhost → host.docker.internal, no `/gas` suffix yet).
-		// `WALRUS_FAUCET_URL` in run.sh appends the path explicitly via
-		// `--url`, so we pass the full URL with `/v1/gas`.
-		const nodeFaucetBase =
-			sui.faucetUrl !== undefined
-				? rewriteToHostGateway(sui.faucetUrl).replace(/\/+$/, '')
-				: rewriteToHostGateway(sui.rpcUrl).replace(/\/+$/, '');
+		// Storage-node `WALRUS_FAUCET_URL` — prefer the docker-DNS
+		// faucet alias (`http://sui-localnet:9123/v1/gas`) when
+		// `suiLocalnet` populated `faucet.container`; nodes join the
+		// sui per-stack network alongside their own walrus-net so
+		// docker DNS resolves. Fallback to the routed faucet URL for
+		// externally-managed RPCs (caller is on the hook for
+		// reachability in that case).
+		const stripTrailingSlash = (u: string): string => u.replace(/\/+$/, '');
+		const nodeFaucetBase = stripTrailingSlash(
+			sui.faucet?.container ??
+				sui.rpc.container ??
+				sui.faucet?.host ??
+				sui.rpc.host,
+		);
 		const nodeFaucetUrl = `${nodeFaucetBase}/v1/gas`;
 		const nodes = yield* startStorageNodes({
 			name: args.name,
@@ -437,6 +457,7 @@ export const acquireLocalCluster = (args: {
 			readyTimeoutMs: args.readyTimeoutMs,
 			deployDir: deploy.outputDir,
 			network: networkName,
+			suiNetwork: suiNet,
 			subnetPrefix: walrusSubnetPrefix,
 			identity,
 			faucetUrl: nodeFaucetUrl,
@@ -446,8 +467,10 @@ export const acquireLocalCluster = (args: {
 		// 5. Exchange object — resolve the wal_exchange package id by
 		//    reading the exchange object's `.type` on chain.
 		// -------------------------------------------------------------
+		// `resolveExchange` issues a `getObject` RPC from the host
+		// supervisor — use `rpc.host` (the routed URL).
 		const exchange = yield* resolveExchange({
-			rpcUrl: sui.rpcUrl,
+			rpcUrl: sui.rpc.host,
 			walrusPackageId: deploy.walrusPackageId,
 			exchangeObject: deploy.exchangeObject,
 		});
@@ -774,7 +797,8 @@ const swapSuiForWal = (
 // -----------------------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------------------
-
-// `rewriteToHostGateway` moved to `internal/host-gateway.ts` so siblings
-// (seal, deepbook, …) can share the same `localhost → host.docker.internal`
-// rewrite. Re-imported from there at the top of this file.
+//
+// Container-side sui URLs come from `Sui.rpc.container` /
+// `Sui.faucet?.container` directly — no `localhost →
+// host.docker.internal` rewrite needed, because containers now reach
+// sui via the per-stack docker network's `sui-localnet` DNS alias.

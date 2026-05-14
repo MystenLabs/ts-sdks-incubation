@@ -240,7 +240,15 @@ describe('devstack integration smoke', () => {
 				// entrypoint port (9000). The stack name flows through
 				// `routerHostname` — non-main stacks get a `<stack>.`
 				// prefix on the hostname.
-				expect(sui.rpcUrl).toBe('http://integration.sui.devstack-effect.localhost:9000');
+				expect(sui.rpc.host).toBe('http://integration.sui.devstack-effect.localhost:9000');
+				// Container-side URL points at the docker-DNS alias on
+				// sui's in-container port; consumer containers (walrus
+				// deploy/nodes, seal key-server) dial this form after
+				// joining one of `rpc.containerNetworks`.
+				expect(sui.rpc.container).toBe('http://sui-localnet:9000');
+				expect(sui.rpc.containerNetworks?.[0]).toMatch(
+					/^devstack-effect-integration-sui-network$/,
+				);
 				expect(sui.chainId).toMatch(/^[0-9a-f]+$/);
 
 				// Per-account tag — its `__layer` was folded into the user

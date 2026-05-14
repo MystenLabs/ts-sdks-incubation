@@ -37,7 +37,7 @@ import { walletApp } from './wallet-app.js';
 // through `unknown` is fine.
 const stubSui: Layer.Layer<Sui> = Layer.succeed(Sui, {
 	network: 'localnet',
-	rpcUrl: 'http://localhost:9000',
+	rpc: { host: 'http://localhost:9000' },
 	chainId: 'test-chain',
 	client: {} as unknown as SuiShape['client'],
 	// wallet-app never asks the chain to be funds-transferable; resolve

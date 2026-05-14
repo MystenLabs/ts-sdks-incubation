@@ -41,7 +41,6 @@ import {
 	type KnownNetwork,
 	type SealDeployment,
 } from '../internal/known-deployments.js';
-import { rewriteToHostGateway } from '../internal/host-gateway.js';
 import { Identity } from '../internal/identity.js';
 import { routerEntrypoint } from '../internal/docker/router.js';
 import { routerHostname, routerId } from '../internal/router-hostname.js';
@@ -59,7 +58,7 @@ import {
 } from '../interfaces/seal.js';
 import { composeLayers, provideTag, setPhase, type PluginTag } from '../tag.js';
 import type { StackMember } from '../define-devstack.js';
-import { Sui } from './sui.js';
+import { Sui, suiNetworkName } from './sui.js';
 import { publishMove } from './publish-move.js';
 import { SealError } from './errors.js';
 import type { Account, SuiObjectChange } from './shared.js';
@@ -92,12 +91,11 @@ const SEAL_KEYGEN_ARGS = ['genkey'] as const;
 // (`seal/move/seal/sources/key_server.move`).
 const KEY_TYPE_BONEH_FRANKLIN_BLS12381 = 0;
 
-// `Docker.run` wires `host.docker.internal:host-gateway` by default so
-// containers can dial the host RPC via this hostname on Linux as well
-// as Docker Desktop. The actual host port is resolved at build time
-// from the `Sui.rpcUrl` exposed by `suiLocalnet` (the `PortAllocator`
-// may have scanned forward from 9000), then `localhost` is rewritten
-// to the docker host gateway via `rewriteToHostGateway`.
+// Container-side sui RPC URL comes from `Sui.rpc.container` (the
+// docker-DNS alias `http://sui-localnet:9000`). The key-server's
+// container joins the per-stack sui docker network (one of
+// `Sui.rpc.containerNetworks`) so the alias resolves; no
+// `--add-host` plumbing or host-gateway rewrites needed.
 
 // Default `gitFetch` coordinates for the upstream seal Move sources.
 // The git ref reuses `DEFAULT_SEAL_VERSION` so the Move package and the
@@ -399,8 +397,10 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 			packageId = yield* publishSealMoveInline({
 				name,
 				path: fetched.path,
-				rpcUrl: sui.rpcUrl,
-				faucetUrl: sui.faucetUrl,
+				// `publishSealMoveInline` shells out to the host `sui`
+				// CLI via `buildMove`; pass the host URLs.
+				rpcUrl: sui.rpc.host,
+				faucetUrl: sui.faucet?.host,
 				signer,
 			});
 		}
@@ -462,9 +462,11 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 		// 6. Render the CONFIG_PATH yaml to a scoped temp dir + mount
 		//    it into the container. `makeTempDirectoryScoped` cleans up
 		//    on engine shutdown; the bind-mount keeps a docker volume
-		//    off the table. The yaml hardcodes
-		//    `host.docker.internal:9000` since `Docker.run` wires the
-		//    add-host entry on every container by default.
+		//    off the table. `node_url` is taken from `Sui.rpc.container`
+		//    (the docker-DNS alias `http://sui-localnet:9000`) so the
+		//    seal key-server can reach sui from inside its container —
+		//    glibc bypasses `/etc/hosts` for `.localhost`, so the
+		//    routed `Sui.rpc.host` would NXDOMAIN here.
 		const fs = yield* FileSystem.FileSystem;
 		const path = yield* Path.Path;
 
@@ -481,12 +483,11 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 				),
 			);
 		const configPath = path.join(configDir, 'key-server-config.yaml');
-		// Resolve the host-port-allocated sui RPC URL and rewrite
-		// `localhost`/`127.0.0.1` to `host.docker.internal` so the
-		// containerised key-server can reach it. Before `PortAllocator`,
-		// this was a hardcoded `:9000` constant — which broke the moment
-		// two stacks ran side-by-side and sui got bumped to 9001/9002.
-		const containerNodeUrl = rewriteToHostGateway(sui.rpcUrl);
+		// Container-side sui RPC URL. Prefer the docker-DNS alias
+		// (`http://sui-localnet:9000`) populated by `suiLocalnet`; fall
+		// back to `sui.rpc.host` for externally-managed RPCs where the
+		// caller is responsible for in-container reachability.
+		const containerNodeUrl = sui.rpc.container ?? sui.rpc.host;
 		const yaml = renderSealKeyServerConfig({
 			sealPackageId: packageId,
 			keyServerObjectId,
@@ -570,6 +571,23 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 		// callers using the manifest's published `seal-key-server`
 		// endpoint hit the right port; the chain-level handle is
 		// authoritative for cryptographic identity, not for routing.
+		// Per-stack sui network the key-server joins so docker DNS
+		// resolves the `sui-localnet` alias referenced from
+		// `node_url`. The first entry of `rpc.containerNetworks` is
+		// the per-stack sui network (suiLocalnet's container-boot
+		// path is the only producer of a container-side URL today).
+		// `undefined` when sui is externally-managed (no in-network
+		// alias exists). The traefik attachment is orthogonal — the
+		// key-server still publishes its own routed hostname for SDK
+		// consumers. We keep `suiNetworkName(identity)` as a
+		// fallback so the per-stack network name stays consistent
+		// with the producer even when no `containerNetworks` slot is
+		// surfaced (defensive — current sui primitive always sets
+		// both when `container` is defined).
+		const suiNet =
+			sui.rpc.container !== undefined
+				? (sui.rpc.containerNetworks?.[0] ?? suiNetworkName(identity))
+				: undefined;
 		yield* Docker.run({
 			name: keyServerContainerName,
 			image: imageTag,
@@ -580,12 +598,7 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 			envFiles: [masterKeyEnvFile],
 			mounts: [{ host: configPath, container: '/etc/seal/key-server-config.yaml' }],
 			detach: true,
-			// Key-server config carries the routed sui rpc URL as
-			// `node_url` (`http://sui.<app>.localhost:9000`); RFC 6761
-			// `.localhost` resolution only works on the host OS, so the
-			// container needs explicit `/etc/hosts` entries pointing the
-			// routed hostnames at traefik.
-			routerAddHosts: true,
+			...(suiNet !== undefined ? { network: suiNet } : {}),
 			// Single router entry for the key-server. The on-chain
 			// `KeyServer.url` registered above MUST match this hostname:port
 			// — the SDK reads the chain to discover the endpoint.
@@ -614,6 +627,8 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 				),
 			),
 		);
+		// (key-server container is a fire-and-forget detach; scope
+		// finalizer takes care of teardown — no captured run-result.)
 
 		// 8. Ready probe — `/health` returns a simple
 		//    `{name,version,status:"up"}` payload once the binary has

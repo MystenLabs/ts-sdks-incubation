@@ -247,10 +247,16 @@ export const publishMove = <
 			);
 
 			yield* setPhase('building move');
+			// `buildMove` shells out to the host `sui` CLI (or one
+			// embedded in the localnet image, dispatched via docker
+			// exec). Either way the CLI itself dials the chain — use
+			// the host URL form; the container alias is only valid
+			// from inside containers attached to the per-stack sui
+			// network.
 			const { modules, dependencies } = yield* buildMove({
 				path: options.path,
-				rpcUrl: sui.rpcUrl,
-				faucetUrl: sui.faucetUrl,
+				rpcUrl: sui.rpc.host,
+				faucetUrl: sui.faucet?.host,
 			}).pipe(
 				Effect.catchTag('SuiCliError', (cause) =>
 					Effect.fail(

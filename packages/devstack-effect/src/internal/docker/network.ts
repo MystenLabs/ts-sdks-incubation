@@ -81,3 +81,41 @@ export const networkCreate = (
 
 		return name;
 	}).pipe(Effect.withSpan('Docker.networkCreate'));
+
+/**
+ * Attach an already-running container to an additional docker network.
+ * Idempotent: `docker network connect` exits non-zero with `already
+ * exists in network` on a second call, which we swallow so callers
+ * (multi-network primitives like walrus storage nodes) can call this
+ * unconditionally on every boot cycle without branching on inspect
+ * state. Other failures are surfaced as a typed `DockerError`.
+ */
+export const networkConnect = (
+	networkName: string,
+	containerId: string,
+): Effect.Effect<void, DockerError, ChildProcessSpawner.ChildProcessSpawner> =>
+	Effect.gen(function* () {
+		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+		const captured = yield* runCapturing(
+			spawner,
+			ChildProcess.make('docker', ['network', 'connect', networkName, containerId]),
+			'docker network connect',
+		);
+		if (captured.exitCode === 0) return;
+		const stderr = captured.stderr.toLowerCase();
+		// `endpoint with name X already exists in network Y` is the
+		// idempotent case — already attached. Anything else is a real
+		// failure (network doesn't exist, container gone, daemon error).
+		if (stderr.includes('already exists in network') || stderr.includes('already attached')) {
+			return;
+		}
+		return yield* Effect.fail(
+			new DockerError({
+				op: 'docker network connect',
+				message: `failed to connect container ${containerId} to network '${networkName}': ${captured.stderr.trim()}`,
+				stdout: captured.stdout,
+				stderr: captured.stderr,
+				exitCode: captured.exitCode,
+			}),
+		);
+	}).pipe(Effect.withSpan('Docker.networkConnect'));

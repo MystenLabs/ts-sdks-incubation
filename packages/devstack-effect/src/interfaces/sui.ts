@@ -13,6 +13,7 @@
 
 import { Context, Effect, Schema } from 'effect';
 import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
+import type { Endpoint } from '../internal/endpoint.js';
 import { SuiError } from '../primitives/errors.js';
 
 /** Shape every Sui-producing factory must satisfy.
@@ -21,10 +22,19 @@ import { SuiError } from '../primitives/errors.js';
  *    bespoke chains (e.g. a pinned devnet snapshot, a tenant-specific
  *    fork) typecheck without losing literal narrowing on the common
  *    case.
- *  - `faucetUrl` is optional because mainnet has no faucet and testnet's
+ *  - `rpc` / `faucet` / `graphql` are `Endpoint`s carrying BOTH a
+ *    host-reachable URL and (when meaningful) a docker-DNS URL plus
+ *    the per-stack networks on which the docker-DNS form resolves.
+ *    Host-side callers (browser, supervisor, host-CLI invocations)
+ *    read `.host`; container-side callers (one-shot scripts, key-
+ *    server config files, walrus storage-node env) read `.container`
+ *    and attach to one of `.containerNetworks`. See
+ *    `src/internal/endpoint.ts` for the full rationale (glibc's
+ *    `.localhost` hardcode bypasses traefik for in-container DNS).
+ *  - `faucet` is optional because mainnet has no faucet and testnet's
  *    faucet may be unreachable in restricted networks; localnet always
  *    surfaces one.
- *  - `graphqlUrl` mirrors the field the current `primitives/sui.ts`
+ *  - `graphql` mirrors the field the current `primitives/sui.ts`
  *    primitive already populates — keeping it in the canonical shape
  *    means Phase 3's multi-impl factories don't lose coverage.
  *  - `chainId` is the checkpoint-0 digest; downstream primitives fold it
@@ -40,21 +50,31 @@ import { SuiError } from '../primitives/errors.js';
  *    yielding `Sui` (faucet POSTs, signed transfers, package publishes)
  *    must call this method first or be prepared to absorb a cold-start
  *    `Failure` storm via its own retry budget. Resolves immediately on
- *    networks without a faucet (mainnet, suiCustom without `faucetUrl`)
+ *    networks without a faucet (mainnet, suiCustom without `faucet`)
  *    where the chain is presumed always-transferable by definition.
  */
 export interface SuiShape {
-	readonly rpcUrl: string;
-	readonly chainId: string;
-	readonly client: SuiJsonRpcClient;
 	readonly network: 'localnet' | 'testnet' | 'mainnet' | 'devnet' | (string & {});
-	readonly faucetUrl?: string;
-	readonly graphqlUrl?: string;
+	readonly rpc: Endpoint;
+	readonly faucet?: Endpoint;
+	readonly graphql?: Endpoint;
+	readonly client: SuiJsonRpcClient;
+	readonly chainId: string;
 	readonly waitForTransactionsReady: () => Effect.Effect<void, SuiError>;
 }
 
 /** Canonical Sui service tag. */
 export class Sui extends Context.Service<Sui, SuiShape>()('@devstack/Sui') {}
+
+/** Runtime-validation mirror of `Endpoint`. Use inside
+ *  `SuiShapeSchema` (and any future shape that carries an `Endpoint`)
+ *  so a hand-rolled `Layer.succeed(Sui, ...)` shape can be validated
+ *  end-to-end via `Schema.decode(SuiShapeSchema)`. */
+export const EndpointSchema = Schema.Struct({
+	host: Schema.String,
+	container: Schema.optional(Schema.String),
+	containerNetworks: Schema.optional(Schema.Array(Schema.String)),
+});
 
 /** Runtime-validation mirror of `SuiShape`. Use
  *  `Schema.decode(SuiShapeSchema)` to validate a hand-rolled
@@ -65,11 +85,11 @@ export class Sui extends Context.Service<Sui, SuiShape>()('@devstack/Sui') {}
  *  (also not Schema-validatable) so it lives outside the runtime mirror;
  *  hand-rolled `Layer.succeed(Sui, ...)` providers must still supply it. */
 export const SuiShapeSchema = Schema.Struct({
-	rpcUrl: Schema.String,
+	network: Schema.String,
+	rpc: EndpointSchema,
+	faucet: Schema.optional(EndpointSchema),
+	graphql: Schema.optional(EndpointSchema),
 	chainId: Schema.String,
 	client: Schema.Unknown,
-	network: Schema.String,
-	faucetUrl: Schema.optional(Schema.String),
-	graphqlUrl: Schema.optional(Schema.String),
 	waitForTransactionsReady: Schema.Unknown,
 });
