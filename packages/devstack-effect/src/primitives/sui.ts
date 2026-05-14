@@ -299,7 +299,7 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 				? `devstack-${identity.app}-sui-data`
 				: `devstack-${identity.app}-${identity.stack}-sui-data`;
 		yield* setPhase('starting localnet');
-		const localnetRunResult = yield* Docker.run({
+		yield* Docker.run({
 			name: 'sui.localnet',
 			image,
 			args: [
@@ -345,48 +345,36 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 		// `fetch failed`. Native genesis settles in ~10 s; 60 s ceiling
 		// absorbs first-build jitter.
 		yield* setPhase('awaiting rpc + faucet + graphql');
-		// 120s default. The faucet's HTTP socket binds early but the
-		// underlying sui-faucet binary takes a beat to be able to
-		// execute its first tx — until then it returns 200 OK with a
-		// body-level `status: { Failure: { Internal: "..." } }`. The
-		// real-funding probe below catches that, but the retry budget
-		// needs to be wide enough to absorb the warm-up window on
-		// cold genesis. Warm restarts skip the heavy probe; see below.
-		const readyTimeoutMs = options.readyTimeoutMs ?? 120_000;
+		// Ready when the HTTP sockets are bound. The faucet binary may
+		// still be warming up (returning 200 OK with body-level
+		// `{"status": {"Failure": ...}}` for ~30s after cold genesis),
+		// but `requestFunds` in `internal/faucet.ts` already parses the
+		// body and retries on `Failure` through a 90s budget — that's
+		// where the warm-up race gets absorbed. Gating Sui-ready on a
+		// real funding tx (the previous attempt) added ~30s to every
+		// cold restart without any correctness benefit, since
+		// `accounts.fund` was already covering the same ground.
+		const readyTimeoutMs = options.readyTimeoutMs ?? 60_000;
 		const rpcProbe = Effect.tryPromise({
 			try: () => client.getChainIdentifier(),
 			catch: (cause) => new Error(`rpc: ${stringifyCause(cause)}`),
 		}).pipe(Effect.withSpan('sui.probe.rpc'));
-		// Faucet probe choice:
-		//   - Cold container (`Docker.run` just spawned a fresh process):
-		//     send a REAL funding tx and verify `status: "Success"` so
-		//     we don't mark Sui ready until the faucet can actually
-		//     execute tx (otherwise downstream `accounts.fund` races
-		//     warm-up and fails after the 90s budget).
-		//   - Warm container (reused from a prior cycle): the faucet has
-		//     already been serving traffic for minutes/hours, so the
-		//     lightweight "HTTP socket is bound" check is plenty.
-		//     Sending real funding txs on every restart inflated the
-		//     ready-wait from ~1s to ~30s (~3s per probe iteration,
-		//     several iterations until `Effect.all` synchronises).
-		const faucetProbe = localnetRunResult.reused
-			? Effect.tryPromise({
-					try: async () => {
-						const r = await fetch(`${faucetUrl}/v2/gas`, {
-							method: 'POST',
-							headers: { 'content-type': 'application/json' },
-							body: JSON.stringify({
-								FixedAmountRequest: {
-									recipient:
-										'0x0000000000000000000000000000000000000000000000000000000000000000',
-								},
-							}),
-						});
-						if (r.status >= 500) throw new Error(`faucet: ${r.status}`);
-					},
-					catch: (cause) => new Error(`faucet: ${stringifyCause(cause)}`),
-				}).pipe(Effect.withSpan('sui.probe.faucet.light'))
-			: faucetReadyProbe(faucetUrl).pipe(Effect.withSpan('sui.probe.faucet'));
+		const faucetProbe = Effect.tryPromise({
+			try: async () => {
+				const r = await fetch(`${faucetUrl}/v2/gas`, {
+					method: 'POST',
+					headers: { 'content-type': 'application/json' },
+					body: JSON.stringify({
+						FixedAmountRequest: {
+							recipient:
+								'0x0000000000000000000000000000000000000000000000000000000000000000',
+						},
+					}),
+				});
+				if (r.status >= 500) throw new Error(`faucet: ${r.status}`);
+			},
+			catch: (cause) => new Error(`faucet: ${stringifyCause(cause)}`),
+		}).pipe(Effect.withSpan('sui.probe.faucet'));
 		const graphqlProbe = Effect.tryPromise({
 			try: () =>
 				fetch(graphqlUrl, {

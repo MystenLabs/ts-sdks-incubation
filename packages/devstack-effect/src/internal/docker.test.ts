@@ -125,7 +125,7 @@ describe('Docker.run reuse-if-healthy', () => {
 	);
 
 	it.effect(
-		'recreates when an existing container exists but is NOT running',
+		'resumes a stopped container with matching image via `docker start` instead of re-running',
 		() =>
 			Effect.gen(function* () {
 				const recorder: Array<SpawnRecord> = [];
@@ -142,8 +142,18 @@ describe('Docker.run reuse-if-healthy', () => {
 					Effect.scoped,
 				);
 
-				expect(result.containerId).toBe(FAKE_CONTAINER_ID);
-				expect(recorder.some((r) => r.args[0] === 'run')).toBe(true);
+				// The stopped container's on-disk state is preserved by
+				// resuming it rather than recreating: ~1s start vs cold
+				// genesis. Adopts the existing container id; never calls
+				// `docker run`; does call `docker start <id>`.
+				expect(result.containerId).toBe(EXISTING_CONTAINER_ID);
+				expect(result.reused).toBe(true);
+				expect(recorder.some((r) => r.args[0] === 'run')).toBe(false);
+				expect(
+					recorder.some(
+						(r) => r.args[0] === 'start' && r.args[1] === EXISTING_CONTAINER_ID,
+					),
+				).toBe(true);
 			}),
 	);
 
