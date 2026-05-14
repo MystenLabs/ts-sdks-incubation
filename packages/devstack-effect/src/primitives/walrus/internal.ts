@@ -1023,6 +1023,16 @@ const renderProxyConfig = (opts: {
 		listen 0.0.0.0:${opts.proxyContainerPort};
 		server_name ${serverName};
 		location / {
+			# Walrus storage nodes already send a permissive
+			# \`Access-Control-Allow-Origin: *\` themselves. If we also
+			# add one, the browser sees two values and rejects with
+			# "header contains multiple values". Strip the upstream
+			# CORS headers, then inject the policy we want.
+			proxy_hide_header Access-Control-Allow-Origin;
+			proxy_hide_header Access-Control-Allow-Methods;
+			proxy_hide_header Access-Control-Allow-Headers;
+			proxy_hide_header Access-Control-Expose-Headers;
+			proxy_hide_header Access-Control-Allow-Credentials;
 			if ($request_method = OPTIONS) {
 				add_header Access-Control-Allow-Origin $http_origin always;
 				add_header Access-Control-Allow-Methods 'GET,POST,PUT,DELETE,PATCH,OPTIONS' always;

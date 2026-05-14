@@ -121,6 +121,15 @@ export interface DockerRunOptions {
 export interface DockerRunResult {
 	readonly containerId: string;
 	readonly name: string;
+	/**
+	 * `true` when `Docker.run` adopted an already-healthy container with
+	 * the matching image rather than spawning a fresh one. Lets callers
+	 * skip expensive ready-probes on warm restarts — e.g. `suiLocalnet`
+	 * sends a real funding tx as its faucet probe (so we don't race
+	 * warm-up on cold boots), but that's wasteful when the container
+	 * has been up for hours and is verifiably healthy already.
+	 */
+	readonly reused: boolean;
 }
 
 export const run = (
@@ -277,7 +286,7 @@ export const run = (
 							.pipe(Effect.ignore),
 					),
 				);
-				return { containerId: inspected.containerId, name };
+				return { containerId: inspected.containerId, name, reused: true };
 			}
 			// Stale (not running) or wrong image — fall through to the
 			// orphan-sweep + recreate path below.
@@ -336,7 +345,7 @@ export const run = (
 			),
 		);
 
-		return { containerId, name };
+		return { containerId, name, reused: false };
 	}).pipe(Effect.withSpan('Docker.run'));
 
 // -----------------------------------------------------------------------------
