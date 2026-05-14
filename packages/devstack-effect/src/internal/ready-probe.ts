@@ -58,6 +58,11 @@ export type InternalReadyProbe = HttpReadyProbe | TcpReadyProbe | InternalLogRea
 export class ReadyProbeError extends Schema.TaggedErrorClass<ReadyProbeError>()('ReadyProbeError', {
 	probe: Schema.Unknown,
 	message: Schema.String,
+	// Optional last-response body / socket-error text captured during the
+	// failing probe attempt. pretty-error.ts renders this so e.g. an HTTP
+	// 503 with a meaningful error payload, or a TCP `ECONNREFUSED` cause,
+	// surfaces in the failure tree without re-running.
+	detail: Schema.optional(Schema.String),
 	cause: Schema.optional(Schema.Defect),
 }) {}
 
@@ -111,14 +116,24 @@ const httpAttempt = (probe: HttpReadyProbe): Effect.Effect<void, ReadyProbeError
 				new ReadyProbeError({
 					probe,
 					message: 'fetch failed',
+					detail: cause instanceof Error ? cause.message : String(cause),
 					cause,
 				}),
 		});
 		if (response.status !== expected) {
+			// Best-effort: peek at the response body so a meaningful error
+			// payload (e.g. HTML error page, JSON error envelope) surfaces
+			// in the failure tree. Swallow body-read failures — the status
+			// mismatch is the primary signal.
+			const body = yield* Effect.tryPromise({
+				try: () => response.text(),
+				catch: () => undefined,
+			}).pipe(Effect.catch(() => Effect.succeed<string | undefined>(undefined)));
 			return yield* Effect.fail(
 				new ReadyProbeError({
 					probe,
 					message: `status ${response.status} !== ${expected}`,
+					detail: body !== undefined && body.length > 0 ? body : undefined,
 				}),
 			);
 		}
@@ -145,6 +160,7 @@ const tcpAttempt = (probe: TcpReadyProbe): Effect.Effect<void, ReadyProbeError> 
 					new ReadyProbeError({
 						probe,
 						message: 'tcp connect failed',
+						detail: cause.message,
 						cause,
 					}),
 				),

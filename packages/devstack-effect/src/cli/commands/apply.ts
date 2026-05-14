@@ -38,7 +38,7 @@ const loadDevstack = (configPath: string) =>
 		const mod = yield* Effect.tryPromise({
 			try: () => import(url) as Promise<{ default?: unknown }>,
 			catch: (cause) => wrapCause(`failed to load ${configPath}`, cause),
-		});
+		}).pipe(Effect.withSpan('cli.loadConfig', { attributes: { configPath } }));
 		const devstack = mod.default as Partial<DevstackLike> | undefined;
 		if (!devstack || typeof devstack.layer === 'undefined') {
 			return yield* Effect.fail(

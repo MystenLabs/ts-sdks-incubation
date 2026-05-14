@@ -713,7 +713,8 @@ export const loadImage = (
 			return yield* Effect.fail(
 				new DockerError({
 					op: 'docker load',
-					message: `docker load produced no "Loaded image:" line for ${tarPath} (stdout=${stdout})`,
+					message: `docker load produced no "Loaded image:" line for ${tarPath}`,
+					stdout,
 				}),
 			);
 		}

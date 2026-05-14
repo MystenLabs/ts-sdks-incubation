@@ -13,7 +13,7 @@
 
 import * as crypto from 'node:crypto';
 import * as path from 'node:path';
-import { Effect, FileSystem, Schema } from 'effect';
+import { Effect, FileSystem, Schema, Stream } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { stringifyCause } from '../internal/stringify-cause.js';
 import { makeTag } from '../tag.js';
@@ -24,6 +24,13 @@ import { makeTag } from '../tag.js';
 
 export class GitFetchError extends Schema.TaggedErrorClass<GitFetchError>()('GitFetchError', {
 	message: Schema.String,
+	// Optional captured streams + exit code from the `git` subprocess that
+	// produced this failure. pretty-error.ts surfaces these when present
+	// so clone/checkout failures (auth errors, missing ref, etc.) are
+	// debuggable without re-running.
+	stderr: Schema.optional(Schema.String),
+	stdout: Schema.optional(Schema.String),
+	exitCode: Schema.optional(Schema.Number),
 	cause: Schema.optional(Schema.Defect),
 }) {}
 
@@ -214,42 +221,75 @@ const runGit = (
 	spawner: Spawner,
 	args: ReadonlyArray<string>,
 ): Effect.Effect<boolean, GitFetchError> =>
-	Effect.gen(function* () {
-		const cmd = ChildProcess.make('git', [...args]);
-		const code = yield* spawner.exitCode(cmd).pipe(
-			Effect.mapError(
-				(cause): GitFetchError =>
-					new GitFetchError({
-						message: `git ${args.join(' ')} failed: ${cause.message}`,
-						cause,
-					}),
-			),
-		);
-		if (code !== 0) {
-			return yield* Effect.fail(
+	Effect.scoped(
+		Effect.gen(function* () {
+			const cmd = ChildProcess.make('git', [...args]);
+			const mapSpawnErr = (cause: unknown): GitFetchError =>
 				new GitFetchError({
-					message: `git ${args.join(' ')} exited with code ${code}`,
-				}),
+					message: `git ${args.join(' ')} failed: ${stringifyCause(cause)}`,
+					cause,
+				});
+			const handle = yield* spawner.spawn(cmd).pipe(Effect.mapError(mapSpawnErr));
+			const decode = <E>(stream: Stream.Stream<Uint8Array, E>) =>
+				Stream.mkString(Stream.decodeText(stream));
+			const [stdout, stderr, exitCode] = yield* Effect.all(
+				[
+					decode(handle.stdout).pipe(Effect.mapError(mapSpawnErr)),
+					decode(handle.stderr).pipe(Effect.mapError(mapSpawnErr)),
+					handle.exitCode.pipe(Effect.mapError(mapSpawnErr)),
+				],
+				{ concurrency: 'unbounded' },
 			);
-		}
-		return true;
-	});
+			const code = exitCode as number;
+			if (code !== 0) {
+				return yield* Effect.fail(
+					new GitFetchError({
+						message: `git ${args.join(' ')} exited with code ${code}`,
+						stdout,
+						stderr,
+						exitCode: code,
+					}),
+				);
+			}
+			return true;
+		}),
+	);
 
 // Run a git subcommand and return its trimmed stdout.
 const captureGit = (
 	spawner: Spawner,
 	args: ReadonlyArray<string>,
 ): Effect.Effect<string, GitFetchError> =>
-	Effect.gen(function* () {
-		const cmd = ChildProcess.make('git', [...args]);
-		const stdout = yield* spawner.string(cmd).pipe(
-			Effect.mapError(
-				(cause): GitFetchError =>
+	Effect.scoped(
+		Effect.gen(function* () {
+			const cmd = ChildProcess.make('git', [...args]);
+			const mapSpawnErr = (cause: unknown): GitFetchError =>
+				new GitFetchError({
+					message: `git ${args.join(' ')} failed: ${stringifyCause(cause)}`,
+					cause,
+				});
+			const handle = yield* spawner.spawn(cmd).pipe(Effect.mapError(mapSpawnErr));
+			const decode = <E>(stream: Stream.Stream<Uint8Array, E>) =>
+				Stream.mkString(Stream.decodeText(stream));
+			const [stdout, stderr, exitCode] = yield* Effect.all(
+				[
+					decode(handle.stdout).pipe(Effect.mapError(mapSpawnErr)),
+					decode(handle.stderr).pipe(Effect.mapError(mapSpawnErr)),
+					handle.exitCode.pipe(Effect.mapError(mapSpawnErr)),
+				],
+				{ concurrency: 'unbounded' },
+			);
+			const code = exitCode as number;
+			if (code !== 0) {
+				return yield* Effect.fail(
 					new GitFetchError({
-						message: `git ${args.join(' ')} failed: ${cause.message}`,
-						cause,
+						message: `git ${args.join(' ')} exited with code ${code}`,
+						stdout,
+						stderr,
+						exitCode: code,
 					}),
-			),
-		);
-		return stdout.trim();
-	});
+				);
+			}
+			return stdout.trim();
+		}),
+	);

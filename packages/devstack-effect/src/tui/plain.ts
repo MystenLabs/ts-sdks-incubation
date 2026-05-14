@@ -1,9 +1,8 @@
 // Plain line-oriented renderer for the devstack.
 //
-// Mirrors the v3 `attachPlainRenderer` at
-// `packages/devstack/src/cli/output.ts`: one structured line per status
-// transition + endpoint registration, written to stderr so stdout stays
-// clean for piping JSON / log harvesters.
+// One structured line per status transition + endpoint registration,
+// written to stderr so stdout stays clean for piping JSON / log
+// harvesters.
 //
 // Polls the same `TuiState` source as the TUI on a fixed cadence and
 // diffs against the previous snapshot. Tag status changes, new endpoints,

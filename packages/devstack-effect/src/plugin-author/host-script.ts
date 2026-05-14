@@ -21,12 +21,12 @@ export interface HostScriptOptions<Name extends string, E, R> {
 	 * Wall-clock budget for the entire spawn. On expiry the spawner's
 	 * finalizer SIGTERMs the child, then SIGKILLs after `gracePeriodMs` if
 	 * it hasn't exited, and the plugin fails with a tagged `HostProcessError`.
-	 * Defaults to 10 minutes, matching the v3 runner.
+	 * Defaults to 10 minutes.
 	 */
 	readonly timeoutMs?: number;
 	/**
 	 * Grace period between SIGTERM and the fallback SIGKILL when the timeout
-	 * fires. Defaults to 5_000 ms, matching v3.
+	 * fires. Defaults to 5_000 ms.
 	 */
 	readonly gracePeriodMs?: number;
 }

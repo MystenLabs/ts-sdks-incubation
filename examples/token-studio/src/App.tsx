@@ -28,7 +28,7 @@ export function App() {
 			</main>
 
 			<footer className="px-6 py-3 border-t border-neutral-200 dark:border-neutral-800 text-xs text-neutral-500">
-				Phase 1 · scaffold-eth-2-style DX for Sui · {shortAddress(deployment.packageId)}
+				scaffold-eth-2-style DX for Sui · {shortAddress(deployment.packageId)}
 			</footer>
 		</div>
 	);

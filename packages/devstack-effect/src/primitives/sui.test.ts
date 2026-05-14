@@ -9,13 +9,13 @@
 // — we stub global `fetch` for the duration of the test so the assertion
 // targets configuration logic, not network behavior.
 
-import { Effect, Layer } from 'effect';
+import { Cause, Effect, Exit, Layer, Option } from 'effect';
 import { layer as NodeFileSystemLayer } from '@effect/platform-node/NodeFileSystem';
-import { describe, expect, it } from '@effect/vitest';
+import { afterEach, beforeEach, describe, expect, it } from '@effect/vitest';
 import { EngineLive } from '../internal/engine.js';
 import { EndpointRegistryLive } from '../internal/registries.js';
 import { Sui } from '../interfaces/sui.js';
-import { suiCustom, suiMainnet, suiTestnet } from './sui.js';
+import { faucetReadyProbe, suiCustom, suiMainnet, suiTestnet } from './sui.js';
 
 // EndpointRegistry is required by every Sui factory body (publish calls
 // for `sui-rpc` / `sui-faucet` / `sui-graphql`). EngineLive backs the
@@ -119,6 +119,78 @@ describe('sui factory shapes', () => {
 			} finally {
 				restore();
 			}
+		}),
+	);
+});
+
+// faucetReadyProbe is the suiLocalnet ready gate that prevents the
+// supervisor from declaring Sui "ready" while the underlying
+// sui-faucet binary is still in its warm-up window (HTTP socket bound
+// but tx pipeline not). During that window the faucet returns
+// `200 OK` with body `{"status": {"Failure": {"Internal": "..."}}}`,
+// and a probe that only checked `response.ok` would let downstream
+// `accounts.fund` race ahead and trip the 90s requestFunds timeout
+// every time. These tests pin the rejection behavior.
+
+describe('faucetReadyProbe', () => {
+	let originalFetch: typeof globalThis.fetch;
+
+	beforeEach(() => {
+		originalFetch = globalThis.fetch;
+	});
+
+	afterEach(() => {
+		globalThis.fetch = originalFetch;
+	});
+
+	const FAUCET_URL = 'http://localhost:9123';
+
+	it.effect('rejects a 200 OK body with status: { Failure }', () =>
+		Effect.gen(function* () {
+			globalThis.fetch = (async () =>
+				new Response(
+					JSON.stringify({
+						status: { Failure: { Internal: 'gas object stale' } },
+					}),
+					{ status: 200, headers: { 'content-type': 'application/json' } },
+				)) as typeof fetch;
+			const exit = yield* faucetReadyProbe(FAUCET_URL).pipe(Effect.exit);
+			expect(Exit.isFailure(exit)).toBe(true);
+			// The throw is wrapped twice — once by the inner `throw` and
+			// again by `tryPromise`'s `catch` which prepends `faucet: `.
+			// Either way the `Failure` substring must reach the user, or
+			// the warm-up retry above will never know to keep waiting.
+			if (Exit.isFailure(exit)) {
+				const opt = Cause.findErrorOption(exit.cause as Cause.Cause<Error>);
+				expect(Option.isSome(opt)).toBe(true);
+				if (Option.isSome(opt)) {
+					expect(opt.value).toBeInstanceOf(Error);
+					expect((opt.value as Error).message).toContain('Failure');
+				}
+			}
+		}),
+	);
+
+	it.effect('resolves cleanly on a `status: "Success"` body', () =>
+		Effect.gen(function* () {
+			globalThis.fetch = (async () =>
+				new Response(
+					JSON.stringify({
+						status: 'Success',
+						coins_sent: [{ id: '0xdeadbeef', amount: 1_000_000_000 }],
+					}),
+					{ status: 200, headers: { 'content-type': 'application/json' } },
+				)) as typeof fetch;
+			yield* faucetReadyProbe(FAUCET_URL);
+		}),
+	);
+
+	it.effect('rejects a non-OK HTTP status (e.g. 503 during boot)', () =>
+		Effect.gen(function* () {
+			globalThis.fetch = (async () =>
+				new Response('not yet', { status: 503 })) as typeof fetch;
+			const exit = yield* faucetReadyProbe(FAUCET_URL).pipe(Effect.exit);
+			expect(Exit.isFailure(exit)).toBe(true);
 		}),
 	);
 });

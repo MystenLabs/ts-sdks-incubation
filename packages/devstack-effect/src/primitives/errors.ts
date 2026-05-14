@@ -6,6 +6,13 @@ export class SuiError extends Schema.TaggedErrorClass<SuiError>()('SuiError', {
 	// callers without a specific phase can still construct the error.
 	phase: Schema.optional(Schema.String),
 	message: Schema.String,
+	// Optional captured streams + exit code from a subprocess (e.g.
+	// `docker exec ... pg_isready`) that produced this failure.
+	// pretty-error.ts surfaces these when present so subprocess failures
+	// are debuggable without re-running.
+	stderr: Schema.optional(Schema.String),
+	stdout: Schema.optional(Schema.String),
+	exitCode: Schema.optional(Schema.Number),
 	cause: Schema.optional(Schema.Defect),
 }) {}
 
@@ -32,6 +39,13 @@ export class HostProcessError extends Schema.TaggedErrorClass<HostProcessError>(
 		// 'sui client publish'). Optional for the same reason as `phase`.
 		command: Schema.optional(Schema.String),
 		message: Schema.String,
+		// Optional captured streams + exit code from the host subprocess that
+		// produced this failure. pretty-error.ts surfaces these when present
+		// so host-script / host-process failures are debuggable without
+		// re-running.
+		stderr: Schema.optional(Schema.String),
+		stdout: Schema.optional(Schema.String),
+		exitCode: Schema.optional(Schema.Number),
 		cause: Schema.optional(Schema.Defect),
 	},
 ) {}
