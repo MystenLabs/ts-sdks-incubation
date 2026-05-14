@@ -258,8 +258,24 @@ export const acquireLocalCluster = (args: {
 		// 1b. Network — dedicated docker network for this stack with
 		//     a pinned /24 so storage nodes can claim deterministic
 		//     IPs. v3 does the same trick for intra-network DNS.
+		//
+		//     Network name is keyed by `(identity.app, identity.stack,
+		//     identity.network, args.name)` — without the stack
+		//     dimension, two parallel stacks of the same app collide on
+		//     the docker network and `network create` adopts the
+		//     sibling's network (with its sibling's subnet), failing
+		//     downstream with `invalid config for network walrus-…-net:
+		//     no configured subnet contains IP address 10.X.0.10`. The
+		//     default `<stack='main', network='localnet'>` keeps the
+		//     pre-change `walrus-${name}-net` shape byte-identical so
+		//     warm-restart resume still adopts existing networks.
 		// -------------------------------------------------------------
-		const networkName = `walrus-${args.name}-net`;
+		const walrusBase =
+			identity.stack === 'main'
+				? `walrus-${args.name}-net`
+				: `walrus-${identity.app}-${identity.stack}-${args.name}-net`;
+		const networkName =
+			identity.network === 'localnet' ? walrusBase : `${walrusBase}-${identity.network}`;
 		yield* Docker.networkCreate(networkName, { subnet: walrusSubnet }).pipe(
 			Effect.catchTag('DockerError', (cause) =>
 				Effect.fail(
@@ -283,7 +299,18 @@ export const acquireLocalCluster = (args: {
 		// -------------------------------------------------------------
 		const deployStateKey = `${STATE_KEY_DEPLOY_PREFIX}/${sui.chainId}`;
 		const cached = yield* state.get<CachedDeployState>(deployStateKey);
-		const outputDir = `${process.cwd()}/.devstack/walrus/${args.name}/deploy`;
+		// Output dir is keyed by `(identity.app, identity.stack,
+		// identity.network, args.name)` so two parallel stacks of the
+		// same app don't trample each other's on-disk deploy state. The
+		// default `<stack='main', network='localnet'>` keeps the
+		// pre-change `.devstack/walrus/${name}/deploy` path byte-
+		// identical so existing walrus state is still resumable.
+		const outputDirBase =
+			identity.stack === 'main'
+				? `${process.cwd()}/.devstack/walrus/${args.name}/deploy`
+				: `${process.cwd()}/.devstack/walrus/${identity.stack}/${args.name}/deploy`;
+		const outputDir =
+			identity.network === 'localnet' ? outputDirBase : `${outputDirBase}-${identity.network}`;
 
 		let deploy: DeployState;
 		if (Option.isSome(cached)) {

@@ -354,6 +354,7 @@ export const composeInfraLayer = (
 	const IdentityLive = Layer.succeed(Identity, {
 		app: deriveAppName(),
 		stack: stateStoreConfig.stack,
+		network: stateStoreConfig.network,
 	});
 	// `infraOverrides` (when set) is merged LAST so `Layer.mergeAll`'s
 	// later-wins semantics shadow any duplicate tag in `InfraLiveCore`
@@ -471,13 +472,17 @@ export const composeStackLayer = (
 	// @devstack/StateStoreConfig` — silent until a user-facing primitive
 	// happens to consume it.
 	const StateStoreFullLive = Layer.provideMerge(StateStoreLive, StateStoreConfigLive);
-	// `Identity` flows the resolved `<app, stack>` pair into
+	// `Identity` flows the resolved `<app, stack, network>` triple into
 	// `Docker.run` so every container we launch gets stamped with
 	// `--label devstack.app=... --label devstack.stack=... --label
-	// devstack.action=...`. `wipe` / `stack down` filter on these.
+	// devstack.action=...` and so the container/compose-project name
+	// includes the network suffix on non-localnet (preventing collisions
+	// when the same `<app, stack>` runs against testnet AND localnet).
+	// `wipe` / `stack down` filter on these labels.
 	const IdentityLive = Layer.succeed(Identity, {
 		app: deriveAppName(),
 		stack: stateStoreConfig.stack,
+		network: stateStoreConfig.network,
 	});
 	// `infraOverrides` (when set) is merged LAST so `Layer.mergeAll`'s
 	// later-wins semantics shadow any duplicate tag in `InfraLiveCore`
@@ -534,11 +539,14 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 
 	// Identity values used for the pre-build orphan sweep below. Mirrors
 	// the values `composeStackLayer` stamps into the `Identity` service so
-	// the sweep targets the same compose-project label (`{app}` for the
-	// default `main` stack, `{app}-{stack}` otherwise) that `Docker.run`
-	// writes onto every container.
+	// the sweep targets the same compose-project label (which is
+	// `{app}` for the default `main`/`localnet`, `{app}-{stack}` when only
+	// stack deviates, `{app}-{network}` when only network deviates, and
+	// `{app}-{stack}-{network}` when both do) that `Docker.run` writes
+	// onto every container.
 	const sweepApp = deriveAppName();
 	const sweepStack = resolveStackName(config.stackName);
+	const sweepNetwork: SuiNetwork = config.network ?? 'localnet';
 
 	// Best-effort: collect every stack member's tag key + classification +
 	// pending-state title for the TUI's initial seed. Members carry `__kind`
@@ -732,12 +740,17 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 				// docker state.
 				if (cycle === 1 && buildSucceeded) {
 					const claimed = yield* Ref.get(claimedRef);
-					const swept = yield* dockerOrphanSweep(sweepApp, sweepStack, claimed).pipe(
+					const swept = yield* dockerOrphanSweep(
+						sweepApp,
+						sweepStack,
+						sweepNetwork,
+						claimed,
+					).pipe(
 						Effect.provide(PlatformLive as Layer.Layer<ChildProcessSpawner.ChildProcessSpawner>),
 					);
 					if (swept.length > 0) {
 						yield* Effect.logInfo(
-							`devstack: swept ${swept.length} orphan container(s) from prior run of ${sweepApp}/${sweepStack}`,
+							`devstack: swept ${swept.length} orphan container(s) from prior run of ${sweepApp}/${sweepStack}/${sweepNetwork}`,
 						);
 					}
 				}

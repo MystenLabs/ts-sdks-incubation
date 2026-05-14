@@ -1,10 +1,13 @@
-// Per-devstack identity — the `<app>` and `<stack>` pair that gets
+// Per-devstack identity — the `<app, stack, network>` triple that gets
 // stamped onto every container we launch via `Docker.run`. Two
 // downstream consumers care:
 //
 //   1. `internal/docker.ts` reads this to append
 //      `--label devstack.app=<app> --label devstack.stack=<stack>
-//       --label devstack.action=<name>` on every container.
+//       --label devstack.action=<name>` on every container, and to
+//      compute the `<app>[-<stack>][-<network>]`-shaped container /
+//      compose-project name (see `composeContainerName` /
+//      `composeProjectName`).
 //   2. `cli/commands/wipe.ts` and `cli/commands/stack.ts down` use the
 //      labels to enumerate (`docker ps --filter label=devstack.stack=...`)
 //      and kill our containers, instead of the weaker `name=^devstack-`
@@ -14,15 +17,23 @@
 // `app` is derived from `<cwd>/package.json#name` (scope-stripped) with
 // `basename(cwd)` as the fallback, matching v3's `cli/env.ts`
 // `resolveAppName` behavior. `stack` echoes `DevstackConfig.stackName`
-// (default `'main'`).
+// (default `'main'`); `network` echoes `DevstackConfig.network`
+// (default `'localnet'`). The `network` dimension keeps
+// `<app, stack>=<arena, main>` against testnet from colliding on
+// docker container/volume/network names with the same pair against
+// localnet — without it, switching `network: 'localnet' → 'testnet'`
+// would adopt the localnet containers verbatim and dial them
+// expecting testnet RPC.
 
 import { Context } from 'effect';
 import { readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
+import type { SuiNetwork } from '../primitives/sui.js';
 
 export interface IdentityShape {
 	readonly app: string;
 	readonly stack: string;
+	readonly network: SuiNetwork;
 }
 
 export class Identity extends Context.Service<Identity, IdentityShape>()('@devstack/Identity') {}

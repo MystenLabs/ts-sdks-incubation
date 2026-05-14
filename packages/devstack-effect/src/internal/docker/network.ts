@@ -66,7 +66,8 @@ export const networkCreate = (
 		// label set is present (project + network + version).
 		const createArgs: Array<string> = ['network', 'create'];
 		const composeProject =
-			options?.composeProject ?? composeProjectName(identity.app, identity.stack);
+			options?.composeProject ??
+			composeProjectName(identity.app, identity.stack, identity.network);
 		createArgs.push('--label', `com.docker.compose.project=${composeProject}`);
 		createArgs.push('--label', `com.docker.compose.network=${name}`);
 		createArgs.push('--label', `com.docker.compose.version=2.0.0`);

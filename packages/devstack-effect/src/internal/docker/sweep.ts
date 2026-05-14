@@ -41,11 +41,12 @@ export const ClaimedContainers = Context.Reference<Ref.Ref<Set<string>> | undefi
 export const dockerOrphanSweep = (
 	app: string,
 	stack: string,
+	network: string,
 	claimed: ReadonlySet<string>,
 ): Effect.Effect<ReadonlyArray<string>, never, ChildProcessSpawner.ChildProcessSpawner> =>
 	Effect.gen(function* () {
 		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-		const composeProject = composeProjectName(app, stack);
+		const composeProject = composeProjectName(app, stack, network);
 		// Belt-and-braces filter: `com.docker.compose.project` alone could collide
 		// with an unrelated `docker compose` project on the host whose name happens
 		// to match ours (e.g. another tool's `wallet` stack) — a false-positive

@@ -70,7 +70,11 @@ const makeSpawnerLayer = (
 	return Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, impl);
 };
 
-const identityLayer = Layer.succeed(Identity, { app: 'testapp', stack: 'main' });
+const identityLayer = Layer.succeed(Identity, {
+	app: 'testapp',
+	stack: 'main',
+	network: 'localnet',
+});
 
 describe('Docker.run reuse-if-healthy', () => {
 	it.effect(
