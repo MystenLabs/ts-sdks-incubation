@@ -138,7 +138,7 @@ export const accounts = <S extends Record<string, AccountSpec>>(specs: S): Accou
 			'from' in rawSpec ? (rawSpec as AccountSource) : { from: 'ephemeral-funded' };
 		const tag = makeTag(
 			`account/${name}` as const,
-			Effect.gen(function* () {
+			Effect.fn(`account(${name})`)(function* () {
 				yield* Effect.annotateCurrentSpan({
 					'account.name': name,
 					'account.source': source.from,
@@ -274,7 +274,7 @@ export const accounts = <S extends Record<string, AccountSpec>>(specs: S): Accou
 					signTransaction,
 					signPersonalMessage,
 				} satisfies Account;
-			}).pipe(Effect.withSpan(`account(${name})`)),
+			})(),
 			{
 				kind: 'action',
 				displayTitle: `accounts.${name}`,

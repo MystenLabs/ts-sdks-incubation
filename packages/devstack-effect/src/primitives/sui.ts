@@ -127,7 +127,7 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 				})
 			: undefined;
 
-	const build = Effect.gen(function* () {
+	const build = Effect.fn('suiLocalnet')(function* () {
 		// Localnet with externally-managed RPC.
 		if (options.rpcUrl !== undefined) {
 			const rpcUrl = options.rpcUrl;
@@ -416,7 +416,7 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 			client,
 			chainId,
 		} satisfies SuiShape;
-	}).pipe(Effect.withSpan('suiLocalnet'));
+	})();
 
 	const { __layer, key, __kind, __displayTitle } = provideTag(Sui, build, {
 		kind: 'service',
@@ -504,7 +504,7 @@ export interface SuiTestnetOptions {
  * supplied URL). No container, no indexer — just a `SuiJsonRpcClient`.
  */
 export const suiTestnet = (options: SuiTestnetOptions = {}): StackMember => {
-	const build = Effect.gen(function* () {
+	const build = Effect.fn('suiTestnet')(function* () {
 		const rpcUrl = options.rpcUrl ?? 'https://fullnode.testnet.sui.io:443';
 		const faucetUrl = options.faucetUrl ?? 'https://faucet.testnet.sui.io';
 		const graphqlUrl = options.graphqlUrl ?? 'https://sui-testnet.mystenlabs.com/graphql';
@@ -521,7 +521,7 @@ export const suiTestnet = (options: SuiTestnetOptions = {}): StackMember => {
 			client,
 			chainId,
 		} satisfies SuiShape;
-	}).pipe(Effect.withSpan('suiTestnet'));
+	})();
 
 	const { __layer, key, __kind, __displayTitle } = provideTag(Sui, build, {
 		kind: 'service',
@@ -553,7 +553,7 @@ export interface SuiMainnetOptions {
  * handle unless you really mean it.
  */
 export const suiMainnet = (options: SuiMainnetOptions = {}): StackMember => {
-	const build = Effect.gen(function* () {
+	const build = Effect.fn('suiMainnet')(function* () {
 		const rpcUrl = options.rpcUrl ?? 'https://fullnode.mainnet.sui.io:443';
 		const graphqlUrl = options.graphqlUrl ?? 'https://sui-mainnet.mystenlabs.com/graphql';
 		const client = new SuiJsonRpcClient({ url: rpcUrl, network: 'mainnet' });
@@ -568,7 +568,7 @@ export const suiMainnet = (options: SuiMainnetOptions = {}): StackMember => {
 			client,
 			chainId,
 		} satisfies SuiShape;
-	}).pipe(Effect.withSpan('suiMainnet'));
+	})();
 
 	const { __layer, key, __kind, __displayTitle } = provideTag(Sui, build, {
 		kind: 'service',
@@ -603,7 +603,7 @@ export interface SuiCustomOptions {
  * optional.
  */
 export const suiCustom = (options: SuiCustomOptions): StackMember => {
-	const build = Effect.gen(function* () {
+	const build = Effect.fn('suiCustom')(function* () {
 		const rpcUrl = options.rpcUrl;
 		const faucetUrl = options.faucetUrl;
 		const graphqlUrl = options.graphqlUrl;
@@ -629,7 +629,7 @@ export const suiCustom = (options: SuiCustomOptions): StackMember => {
 			client,
 			chainId,
 		} satisfies SuiShape;
-	}).pipe(Effect.withSpan('suiCustom'));
+	})();
 
 	const { __layer, key, __kind, __displayTitle } = provideTag(Sui, build, {
 		kind: 'service',

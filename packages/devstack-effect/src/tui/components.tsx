@@ -231,6 +231,19 @@ const resolveDetail = (entry: TuiEntry): Detail | null => {
 	if (entry.lastLog !== undefined && entry.lastLog.length > 0) {
 		return { text: truncate(entry.lastLog), dim: true };
 	}
+	// While acquiring, fall through to the FULL phase string so the
+	// detail column surfaces what's happening. The status column only
+	// shows the first word (`deploying`, `starting`, `waiting`); without
+	// the full phase, a primitive that sits in "starting" for a minute
+	// reads as hung. The full phase lives in the detail slot only when
+	// nothing else (`lastLog`, `primary`) is competing for it.
+	if (
+		entry.status === 'acquiring' &&
+		entry.phase !== undefined &&
+		entry.phase.length > 0
+	) {
+		return { text: truncate(entry.phase), dim: true };
+	}
 	if (entry.primary !== undefined && entry.primary.length > 0) {
 		const extras =
 			entry.extras !== undefined && entry.extras.length > 0

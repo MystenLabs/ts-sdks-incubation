@@ -144,7 +144,7 @@ export const walrusLocalCluster = <const Name extends string = 'walrus'>(
 	// returns a Context populated with all four interface keys plus the
 	// legacy `Walrus` aggregate so a single `Layer.effectContext` covers
 	// every consumer shape downstream code might reach for.
-	const acquireAndProject = Effect.gen(function* () {
+	const acquireAndProject = Effect.fn(`walrusLocalCluster(${name})`)(function* () {
 		// Engine lifecycle is wired manually here rather than through
 		// `provideTag` because we're producing a multi-service Context
 		// from a single body. `EngineHandle` is satisfied by InfraLive
@@ -259,7 +259,7 @@ export const walrusLocalCluster = <const Name extends string = 'walrus'>(
 			Context.add(WalrusProxy, proxyShape),
 			Context.add(WalrusAdmin, adminShape),
 		);
-	}).pipe(Effect.withSpan(`walrusLocalCluster(${name})`));
+	})();
 
 	const combinedLayer = Layer.effectContext(acquireAndProject) as Layer.Layer<
 		WalrusNetwork | WalrusNodes | WalrusProxy | WalrusAdmin,
