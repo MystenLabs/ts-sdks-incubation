@@ -6,13 +6,29 @@
 // real lock file. The other half of the matrix (`deepbookLocalDeploy`
 // providing all three interfaces) is covered by the integration runs in
 // `examples/wallet`.
+//
+// The cache-on-resume describe below DOES touch the StateStore — it pre-
+// warms a cache entry under a per-test tmpdir, then proves the create-
+// pools tx is skipped on the next composite acquire by handing the
+// member a signer whose `signAndExecute` is `Effect.die`. If the cache
+// regresses, the die surfaces as a typed failure.
 
+import * as nodeCrypto from 'node:crypto';
+import * as nodeFs from 'node:fs/promises';
+import * as nodeOs from 'node:os';
+import * as nodePath from 'node:path';
 import { Effect, Exit, Layer } from 'effect';
 import { layer as NodeFileSystemLayer } from '@effect/platform-node/NodeFileSystem';
 import { describe, expect, it } from '@effect/vitest';
 import { EngineLive } from '../internal/engine.js';
+import { LeasingLive } from '../internal/leasing.js';
+import { PackageRegistryLive, CoinRegistryLive } from '../internal/registries.js';
+import { StateStore, StateStoreConfig, StateStoreLive } from '../internal/state-store.js';
 import { DeepbookAdmin, DeepbookCore, type DeepbookCoreShape } from '../interfaces/deepbook.js';
-import { deepbookKnownPackage } from './deepbook/index.js';
+import { Sui, type SuiShape } from '../interfaces/sui.js';
+import type { Account, SignAndExecuteError } from './shared.js';
+import { makeTag } from '../tag.js';
+import { deepbookKnownPackage, deepbookLocalDeploy } from './deepbook/index.js';
 
 // -----------------------------------------------------------------------------
 // Type-level compat: our `packageIds` shape must be assignable to the SDK's
@@ -127,6 +143,435 @@ describe('deepbookKnownPackage', () => {
 			expect(core.packageIds.MARGIN_PACKAGE_ID).toBeUndefined();
 			expect(core.packageIds.MARGIN_REGISTRY_ID).toBeUndefined();
 			expect(core.packageIds.LIQUIDATION_PACKAGE_ID).toBeUndefined();
+		}),
+	);
+});
+
+// -----------------------------------------------------------------------------
+// Resume-idempotency cache for `create-pools`
+//
+// Pre-populate the StateStore with a publishMove cache entry AND a
+// deepbook pools cache entry, then build the composite tag against a
+// signer whose `signAndExecute` is `Effect.die`. If the cache lookup
+// resolves, neither publish nor create-pools run a tx — the die is
+// never reached and the tag yields the cached pool shape. If the cache
+// regresses, the die surfaces as a defect and `Exit.isFailure` flips.
+//
+// The publishMove cache key is `publishMove/<name>/<sourceHash>/<chainId>`;
+// `sourceHash` is the first 16 hex chars of sha256 over (sorted)
+// `<relpath>\0<content>\0` records for every `.move` + `Move.toml` file
+// under the source dir. With a single `Move.toml` fixture the hash is
+// `sha256('Move.toml\0' + content + '\0')`. Mirrored inline below so a
+// regression in publishMove's hash algorithm reads as a hash-mismatch
+// here, not a silent cache-miss.
+// -----------------------------------------------------------------------------
+
+const computePublishMoveSourceHash = (relpath: string, content: string): string => {
+	const h = nodeCrypto.createHash('sha256');
+	h.update(`${relpath}\0`);
+	h.update(content);
+	h.update('\0');
+	return h.digest('hex').slice(0, 16);
+};
+
+// Stable poolsHash mirror — must match the algorithm in
+// `local-deploy.ts:hashPoolSpecs`. Sorted by name, bigints → decimal
+// strings, JSON.stringify, sha256, first 16 hex chars.
+const computePoolsHash = (
+	specs: ReadonlyArray<{
+		readonly name: string;
+		readonly base: string;
+		readonly quote: string;
+		readonly tickSize: bigint;
+		readonly lotSize: bigint;
+		readonly minSize: bigint;
+		readonly whitelisted: boolean;
+		readonly stable: boolean;
+	}>,
+): string => {
+	const canonical = specs
+		.slice()
+		.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+		.map((s) => ({
+			name: s.name,
+			base: s.base,
+			quote: s.quote,
+			tickSize: s.tickSize.toString(),
+			lotSize: s.lotSize.toString(),
+			minSize: s.minSize.toString(),
+			whitelisted: s.whitelisted,
+			stable: s.stable,
+		}));
+	return nodeCrypto
+		.createHash('sha256')
+		.update(JSON.stringify(canonical))
+		.digest('hex')
+		.slice(0, 16);
+};
+
+const mkTmpDir = (label: string) =>
+	Effect.tryPromise({
+		try: () => nodeFs.mkdtemp(nodePath.join(nodeOs.tmpdir(), `devstack-deepbook-${label}-`)),
+		catch: (cause) => new Error(`failed to create tmpdir: ${String(cause)}`),
+	}).pipe(Effect.orDie);
+
+// `client.core.getObject` is the only chain probe the cache-hit path
+// touches (verification step). Stub it to always resolve so a cache hit
+// is trusted; the BAD path (where the chain object is gone) is covered
+// by the second `it.effect` below.
+const makeMockSuiOk = (chainId: string): Layer.Layer<Sui> =>
+	Layer.succeed(Sui, {
+		network: 'localnet',
+		rpcUrl: 'http://localhost:9000',
+		chainId,
+		faucetUrl: undefined,
+		client: {
+			core: {
+				getObject: async (_args: { objectId: string }) => ({
+					object: { objectId: _args.objectId } as unknown,
+				}),
+			},
+		} as unknown as SuiShape['client'],
+		waitForTransactionsReady: () => Effect.void,
+	});
+
+const makeMockSuiMissingObject = (chainId: string): Layer.Layer<Sui> =>
+	Layer.succeed(Sui, {
+		network: 'localnet',
+		rpcUrl: 'http://localhost:9000',
+		chainId,
+		faucetUrl: undefined,
+		client: {
+			core: {
+				getObject: async (_args: { objectId: string }) => {
+					throw new Error('object not found');
+				},
+			},
+		} as unknown as SuiShape['client'],
+		waitForTransactionsReady: () => Effect.void,
+	});
+
+const mockStateConfig = (stateDir: string): Layer.Layer<StateStoreConfig> =>
+	Layer.succeed(StateStoreConfig, {
+		stack: 'test',
+		network: 'localnet',
+		stateDir,
+	});
+
+// Throwaway signer tag whose `signAndExecute` is `Effect.die`. Any tx
+// submission during the cache-hit path surfaces as a defect — the test
+// asserts the composite yield succeeds, which is only possible when
+// neither publish nor create-pools issued a tx.
+//
+// The mock Account's `publicKey` slot has to type-bridge across
+// `Uint8Array<ArrayBuffer>` (DOM lib's narrow shape) and the
+// `Uint8Array<ArrayBufferLike>` Node hands out — easiest to allocate
+// against a literal ArrayBuffer to side-step. We funnel through
+// `Account` at the end so the PluginTag type lines up with the
+// `signer` slot of `DeepbookLocalDeployOptions`.
+const makeDyingSigner = (address: string) => {
+	const account: Account = {
+		name: 'mock-signer',
+		address,
+		publicKey: new Uint8Array(new ArrayBuffer(0)),
+		scheme: 'ED25519',
+		signAndExecute: () =>
+			Effect.die('mock-signer.signAndExecute called — cache regression') as never,
+		signTransaction: () =>
+			Effect.fail({
+				_tag: 'SignAndExecuteError',
+				message: 'unreachable',
+			} satisfies SignAndExecuteError),
+		signPersonalMessage: () =>
+			Effect.fail({
+				_tag: 'SignAndExecuteError',
+				message: 'unreachable',
+			} satisfies SignAndExecuteError),
+	};
+	return makeTag('mock-signer', Effect.succeed(account));
+};
+
+// Per-test base — same shape as the deepbookKnownPackage suite but with
+// StateStoreLive provided (we need a real persistence layer to seed and
+// read the cache entries). FileSystem flows through NodeFileSystemLayer.
+const CacheBaseLayer = Layer.mergeAll(
+	EngineLive,
+	NodeFileSystemLayer,
+	LeasingLive,
+	PackageRegistryLive,
+	CoinRegistryLive,
+);
+
+describe('deepbookLocalDeploy — create-pools resume cache', () => {
+	it.effect('cache hit skips both publish and create-pools txs', () =>
+		Effect.gen(function* () {
+			const tmpdir = yield* mkTmpDir('cache-hit');
+			const chainId = 'test-chain-cache-hit';
+			const fakePackageId = '0xDEEPB00C';
+			const fakePoolId = '0xP00L1';
+
+			// Fixture Move source — single `Move.toml` so the publishMove
+			// sourceHash is deterministic and we can pre-warm the cache.
+			const moveSrcDir = nodePath.join(tmpdir, 'move-fixture');
+			yield* Effect.tryPromise({
+				try: () => nodeFs.mkdir(moveSrcDir, { recursive: true }),
+				catch: (cause) => new Error(String(cause)),
+			}).pipe(Effect.orDie);
+			const moveTomlContent = '[package]\nname = "deepbook"\nedition = "2024.beta"\n';
+			yield* Effect.tryPromise({
+				try: () => nodeFs.writeFile(nodePath.join(moveSrcDir, 'Move.toml'), moveTomlContent),
+				catch: (cause) => new Error(String(cause)),
+			}).pipe(Effect.orDie);
+
+			const sourceHash = computePublishMoveSourceHash('Move.toml', moveTomlContent);
+			const publishMoveKey = `publishMove/deepbook.publish/${sourceHash}/${chainId}`;
+
+			// Pool spec — match `deepbookLocalDeploy`'s `specs` shape so the
+			// resolvedSpecs sent into `hashPoolSpecs` round-trip to the same
+			// key as the production code.
+			const baseType = '0x2::sui::SUI';
+			const quoteType = `${fakePackageId}::usdc::USDC`;
+			const poolSpec = {
+				name: 'sui_usdc',
+				base: baseType,
+				quote: quoteType,
+				tickSize: 1_000n,
+				lotSize: 1_000_000n,
+				minSize: 10_000_000n,
+				whitelisted: true,
+				stable: false,
+			};
+			const poolsHash = computePoolsHash([poolSpec]);
+			const poolsKey = `deepbook/pools/v1/${chainId}/${fakePackageId}/${poolsHash}`;
+
+			// Build a `PluginTag` of type Account by yielding through
+			// `makeTag` — its `__layer` provides the tag identity. The body
+			// returns an Account whose `signAndExecute` is `Effect.die`.
+			const signerTag = makeDyingSigner('0xCAFE');
+
+			const member = deepbookLocalDeploy({
+				name: 'deepbook',
+				signer: signerTag,
+				movePackagePath: moveSrcDir,
+				pools: [
+					{
+						name: 'sui_usdc',
+						base: baseType,
+						quote: quoteType,
+						tickSize: poolSpec.tickSize,
+						lotSize: poolSpec.lotSize,
+						minSize: poolSpec.minSize,
+					},
+				],
+			});
+
+			const supportLayer = Layer.mergeAll(
+				CacheBaseLayer,
+				makeMockSuiOk(chainId),
+				Layer.provideMerge(
+					Layer.provide(StateStoreLive, mockStateConfig(tmpdir)),
+					NodeFileSystemLayer,
+				),
+				signerTag.__layer,
+			);
+
+			// Pre-warm both caches. `state.put` synchronously updates the
+			// in-memory Ref AND persists to disk; the deepbookLocalDeploy
+			// composite yield below picks up the values via the same Live
+			// layer instance (Layer is memoized within a single build).
+			yield* Effect.gen(function* () {
+				const state = yield* StateStore;
+				yield* state.put(publishMoveKey, {
+					name: 'deepbook.publish',
+					packageId: fakePackageId,
+					upgradeCapId: '0xCAP',
+					captured: {
+						registryId: '0xREG',
+						adminCapId: '0xADMIN',
+					},
+					coins: {},
+					sourcePath: moveSrcDir,
+					mvrPlaceholder: '@local/deepbook-publish',
+				});
+				yield* state.put(poolsKey, {
+					pools: [
+						{
+							name: 'sui_usdc',
+							poolId: fakePoolId,
+							base: baseType,
+							quote: quoteType,
+							tickSize: poolSpec.tickSize,
+							lotSize: poolSpec.lotSize,
+							minSize: poolSpec.minSize,
+						},
+					],
+				});
+			}).pipe(Effect.provide(supportLayer));
+
+			// Compose the deepbook layers with `provideMerge` so each
+			// layer can consume services published by the prior layer —
+			// the same fold composeStackLayer does in production. With
+			// plain `mergeAll`, the composite's `yield* publish` would
+			// see `deepbook.publish` as unsatisfied because the publish
+			// layer would be a sibling, not a provider.
+			//
+			// We drop the trailing three layers (`coreLayer` /
+			// `adminLayer` / `marketMakerLayer`) — those are the
+			// `DeepbookCore` / `DeepbookAdmin` / `DeepbookMarketMaker`
+			// interface bindings, and the market-maker layer mints a
+			// BalanceManager upfront (a separate tx that would also
+			// hit the dying signer). That's an orthogonal non-
+			// idempotency concern, out of scope for the create-pools
+			// cache fix.
+			const compositeLayers = (
+				member.__layers as ReadonlyArray<Layer.Layer<any, any, any>>
+			).slice(0, -3);
+			const memberLayer = compositeLayers.reduce<Layer.Layer<any, any, any>>(
+				(acc, layer) => Layer.provideMerge(layer, acc),
+				Layer.empty as unknown as Layer.Layer<any, any, any>,
+			);
+			const deployed = yield* Effect.gen(function* () {
+				return yield* member;
+			}).pipe(Effect.provide(Layer.provide(memberLayer, supportLayer)));
+
+			expect(deployed.packageId).toBe(fakePackageId);
+			expect(deployed.adminCapId).toBe('0xADMIN');
+			expect(deployed.registryId).toBe('0xREG');
+			expect(deployed.poolIds.size).toBe(1);
+			expect(deployed.poolIds.get('sui_usdc')).toBe(fakePoolId);
+			expect((deployed.pools as Record<string, { poolId: string }>).sui_usdc.poolId).toBe(
+				fakePoolId,
+			);
+			// Reaching this point at all proves the cache hit short-
+			// circuited both publish AND create-pools: the mock signer's
+			// `signAndExecute` is `Effect.die`, so any tx submission
+			// during the acquire would have surfaced as a defect.
+		}),
+	);
+
+	it.effect('cache hit but stale pool object invalidates and rebuilds', () =>
+		Effect.gen(function* () {
+			const tmpdir = yield* mkTmpDir('cache-stale');
+			const chainId = 'test-chain-cache-stale';
+			const fakePackageId = '0xDEEPB00D';
+			const stalePoolId = '0xSTALE';
+
+			const moveSrcDir = nodePath.join(tmpdir, 'move-fixture');
+			yield* Effect.tryPromise({
+				try: () => nodeFs.mkdir(moveSrcDir, { recursive: true }),
+				catch: (cause) => new Error(String(cause)),
+			}).pipe(Effect.orDie);
+			const moveTomlContent = '[package]\nname = "deepbook"\nedition = "2024.beta"\n';
+			yield* Effect.tryPromise({
+				try: () => nodeFs.writeFile(nodePath.join(moveSrcDir, 'Move.toml'), moveTomlContent),
+				catch: (cause) => new Error(String(cause)),
+			}).pipe(Effect.orDie);
+
+			const sourceHash = computePublishMoveSourceHash('Move.toml', moveTomlContent);
+			const publishMoveKey = `publishMove/deepbook.publish/${sourceHash}/${chainId}`;
+			const baseType = '0x2::sui::SUI';
+			const quoteType = `${fakePackageId}::usdc::USDC`;
+			const poolSpec = {
+				name: 'sui_usdc',
+				base: baseType,
+				quote: quoteType,
+				tickSize: 1_000n,
+				lotSize: 1_000_000n,
+				minSize: 10_000_000n,
+				whitelisted: true,
+				stable: false,
+			};
+			const poolsHash = computePoolsHash([poolSpec]);
+			const poolsKey = `deepbook/pools/v1/${chainId}/${fakePackageId}/${poolsHash}`;
+
+			const signerTag = makeDyingSigner('0xCAFE');
+			const member = deepbookLocalDeploy({
+				name: 'deepbook',
+				signer: signerTag,
+				movePackagePath: moveSrcDir,
+				pools: [
+					{
+						name: 'sui_usdc',
+						base: baseType,
+						quote: quoteType,
+						tickSize: poolSpec.tickSize,
+						lotSize: poolSpec.lotSize,
+						minSize: poolSpec.minSize,
+					},
+				],
+			});
+
+			// Same support shape as the happy-path test, but the Sui mock
+			// rejects every `getObject` call. The cache is still warmed —
+			// verification then fails, the entry is invalidated, and the
+			// dying signer's `Effect.die` fires from the `create-pools` tx
+			// (proving the invalidation path actually re-enters tx work).
+			const supportLayer = Layer.mergeAll(
+				CacheBaseLayer,
+				makeMockSuiMissingObject(chainId),
+				Layer.provideMerge(
+					Layer.provide(StateStoreLive, mockStateConfig(tmpdir)),
+					NodeFileSystemLayer,
+				),
+				signerTag.__layer,
+			);
+
+			yield* Effect.gen(function* () {
+				const state = yield* StateStore;
+				yield* state.put(publishMoveKey, {
+					name: 'deepbook.publish',
+					packageId: fakePackageId,
+					upgradeCapId: '0xCAP',
+					captured: { registryId: '0xREG', adminCapId: '0xADMIN' },
+					coins: {},
+					sourcePath: moveSrcDir,
+					mvrPlaceholder: '@local/deepbook-publish',
+				});
+				yield* state.put(poolsKey, {
+					pools: [
+						{
+							name: 'sui_usdc',
+							poolId: stalePoolId,
+							base: baseType,
+							quote: quoteType,
+							tickSize: poolSpec.tickSize,
+							lotSize: poolSpec.lotSize,
+							minSize: poolSpec.minSize,
+						},
+					],
+				});
+			}).pipe(Effect.provide(supportLayer));
+
+			// See the happy-path test for why we slice off the trailing
+			// three layers (the interface bindings + market-maker BM
+			// mint).
+			const compositeLayers = (
+				member.__layers as ReadonlyArray<Layer.Layer<any, any, any>>
+			).slice(0, -3);
+			const memberLayer = compositeLayers.reduce<Layer.Layer<any, any, any>>(
+				(acc, layer) => Layer.provideMerge(layer, acc),
+				Layer.empty as unknown as Layer.Layer<any, any, any>,
+			);
+			const exit = yield* Effect.gen(function* () {
+				return yield* member;
+			}).pipe(
+				Effect.provide(Layer.provide(memberLayer, supportLayer)),
+				Effect.exit,
+			);
+
+			// Stale verification path → invalidate cache → re-enter
+			// create-pools → mock signer dies. We don't care about the
+			// exact defect text, only that the composite did NOT silently
+			// succeed (which would mean the cache was trusted despite the
+			// chain not having the object).
+			expect(Exit.isFailure(exit)).toBe(true);
+
+			// Cache entry was removed during the verify-fail branch.
+			const remaining = yield* Effect.gen(function* () {
+				const state = yield* StateStore;
+				return yield* state.get(poolsKey);
+			}).pipe(Effect.provide(supportLayer));
+			expect(remaining._tag).toBe('None');
 		}),
 	);
 });

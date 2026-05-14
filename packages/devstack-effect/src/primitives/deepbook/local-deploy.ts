@@ -5,12 +5,14 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-import { Effect, Layer } from 'effect';
+import * as crypto from 'node:crypto';
+import { Effect, Layer, Option } from 'effect';
 import { Transaction } from '@mysten/sui/transactions';
 import { makeTag, provideTag, type PluginTag } from '../../tag.js';
 import { Sui } from '../sui.js';
 import { publishMove, pickCreatedByTypeSuffix } from '../publish-move.js';
 import { PackageRegistry } from '../../internal/registries.js';
+import { StateStore } from '../../internal/state-store.js';
 import { stringifyCause } from '../../internal/stringify-cause.js';
 import { DeepbookError } from '../errors.js';
 import {
@@ -31,6 +33,73 @@ import {
 	type DeepbookPool,
 	type DeepbookPoolSpec,
 } from './internal.js';
+
+// StateStore key prefix for the cached create-pools output. Versioned
+// so a future schema bump invalidates stale caches automatically. The
+// full key folds in `Sui.chainId` (regenesis ⇒ different chainId ⇒
+// miss), the deepbook `packageId` (republish ⇒ different packageId
+// ⇒ miss), and a hash of the requested pool specs (reconfigure ⇒
+// miss). Without this cache, `pool::create_pool_admin` aborts in
+// `registry::register_pool` (function 13) on every resume because
+// (base, quote) was already registered by the previous boot —
+// chain state survives `pnpm dev` restarts but the primitive
+// didn't know it.
+const STATE_KEY_POOLS_PREFIX = 'deepbook/pools/v1';
+
+// Subset of `DeepbookPool` we persist into `StateStore`. Echoes the
+// runtime pool record verbatim — the captured `poolId` is the load-
+// bearing piece (it's what `register_pool` would re-mint), the
+// `tick/lot/min` fields go in because consumers (`market-maker`,
+// `findPool`'s table) read them off the cached pool record on resume.
+// `bigint` round-trips through `state-store` via the BigInt-tagging
+// JSON reviver/replacer.
+interface CachedDeepbookPool {
+	readonly name: string;
+	readonly poolId: string;
+	readonly base: string;
+	readonly quote: string;
+	readonly tickSize: bigint;
+	readonly lotSize: bigint;
+	readonly minSize: bigint;
+}
+
+interface CachedDeepbookPools {
+	readonly pools: ReadonlyArray<CachedDeepbookPool>;
+}
+
+// Stable hash over the resolved pool specs. Keys sorted so JSON
+// stringify order doesn't bleed into the cache key. `tickSize` /
+// `lotSize` / `minSize` are bigints — JSON.stringify rejects them by
+// default, so they're rendered as decimal strings here. `name` /
+// `base` / `quote` are the (base, quote)-pair identity the chain
+// would otherwise reject on second-boot.
+const hashPoolSpecs = (
+	specs: ReadonlyArray<{
+		readonly name: string;
+		readonly base: string;
+		readonly quote: string;
+		readonly tickSize: bigint;
+		readonly lotSize: bigint;
+		readonly minSize: bigint;
+		readonly whitelisted: boolean;
+		readonly stable: boolean;
+	}>,
+): string => {
+	const canonical = specs
+		.slice()
+		.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+		.map((s) => ({
+			name: s.name,
+			base: s.base,
+			quote: s.quote,
+			tickSize: s.tickSize.toString(),
+			lotSize: s.lotSize.toString(),
+			minSize: s.minSize.toString(),
+			whitelisted: s.whitelisted,
+			stable: s.stable,
+		}));
+	return crypto.createHash('sha256').update(JSON.stringify(canonical)).digest('hex').slice(0, 16);
+};
 
 export interface DeepbookLocalDeployOptions<
 	Name extends string,
@@ -111,10 +180,11 @@ export const deepbookLocalDeploy = <
 			}
 			const sui = yield* Sui;
 			const signer = yield* options.signer;
+			const state = yield* StateStore;
 
 			// Surface the chain identifier as a span attribute. A regenesis
 			// of the underlying chain flips `sui.chainId`; downstream cache
-			// keys (if/when added) fold it in so they naturally miss.
+			// keys fold it in so they naturally miss.
 			yield* Effect.annotateCurrentSpan({ 'sui.chainId': sui.chainId });
 
 			if (publish === undefined) {
@@ -149,6 +219,14 @@ export const deepbookLocalDeploy = <
 
 			// One batched tx — `init_balance_manager_map` + N `create_pool_admin`
 			// calls (matches v3). Skipped entirely when no pools were requested.
+			//
+			// Resume idempotency: `pool::create_pool_admin` calls
+			// `registry::register_pool`, which aborts (function 13) on a
+			// duplicate (base, quote) pair. The chain state, named volumes,
+			// and packageId all survive `pnpm dev` restarts, but the
+			// primitive didn't know — so a second boot died here. Cache the
+			// captured pool object ids under (chainId, packageId,
+			// poolsHash) and reuse them on resume.
 			const pools = {} as Record<string, DeepbookPool>;
 			if (specs.length > 0) {
 				const resolvedSpecs: ReadonlyArray<{
@@ -169,71 +247,176 @@ export const deepbookLocalDeploy = <
 					return out;
 				});
 
-				yield* Effect.gen(function* () {
-					const t = new Transaction();
-					t.setGasBudget(500_000_000n);
+				const poolsHash = hashPoolSpecs(
+					resolvedSpecs.map(({ spec, base, quote }) => ({
+						name: spec.name,
+						base,
+						quote,
+						tickSize: spec.tickSize,
+						lotSize: spec.lotSize,
+						minSize: spec.minSize,
+						whitelisted: spec.whitelisted ?? true,
+						stable: spec.stable ?? false,
+					})),
+				);
+				const cacheKey = `${STATE_KEY_POOLS_PREFIX}/${sui.chainId}/${packageId}/${poolsHash}`;
+				const cached = yield* state.get<CachedDeepbookPools>(cacheKey);
 
-					t.moveCall({
-						target: `${packageId}::registry::init_balance_manager_map`,
-						arguments: [t.object(registryId), t.object(adminCapId)],
+				// Best-effort verification — confirm each cached pool object
+				// is still resolvable on chain before trusting the cache.
+				// Covers the pathological case where the state-store file
+				// survived but the chain got wiped externally (manual
+				// `docker volume rm`, container snapshot mismatch, etc.).
+				// Any verification failure falls through to a re-create.
+				// Mirrors publishMove's "chainId fold is the primary
+				// invalidator, secondary verify is defense-in-depth"
+				// pattern, but here we actually probe — the cost of a
+				// second create-pools-abort on resume is the entire
+				// reason this cache exists.
+				const verifyCached = (
+					payload: CachedDeepbookPools,
+				): Effect.Effect<boolean, never> =>
+					Effect.gen(function* () {
+						for (const p of payload.pools) {
+							const ok = yield* Effect.tryPromise({
+								try: () => sui.client.core.getObject({ objectId: p.poolId }),
+								catch: (cause) => cause,
+							}).pipe(
+								Effect.as(true),
+								Effect.catch(() => Effect.succeed(false)),
+							);
+							if (!ok) return false;
+						}
+						return true;
 					});
 
-					for (const { spec, base, quote } of resolvedSpecs) {
-						t.moveCall({
-							target: `${packageId}::pool::create_pool_admin`,
-							typeArguments: [base, quote],
-							arguments: [
-								t.object(registryId),
-								t.pure.u64(spec.tickSize),
-								t.pure.u64(spec.lotSize),
-								t.pure.u64(spec.minSize),
-								t.pure.bool(spec.whitelisted ?? true),
-								t.pure.bool(spec.stable ?? false),
-								t.object(adminCapId),
-							],
-						});
-					}
-
-					const result = yield* signer.signAndExecute(t).pipe(
-						Effect.mapError(
-							(cause) =>
-								new DeepbookError({
-									phase: 'create-pools',
-									message: `deepbookLocalDeploy(${name}): create-pools tx failed: ${cause.message}`,
-									cause,
-								}),
-						),
-					);
-
-					// Exact-string match against the expected `Pool<base, quote>`
-					// objectType keeps multi-pool tx output deterministic.
-					for (const { spec, base, quote } of resolvedSpecs) {
-						const expected = `${packageId}::pool::Pool<${base}, ${quote}>`;
-						const found = result.objectChanges.find(
-							(c): c is Extract<SuiObjectChange, { type: 'created' }> =>
-								c.type === 'created' && 'objectType' in c && c.objectType === expected,
+				let resumed = false;
+				if (Option.isSome(cached)) {
+					const verified = yield* verifyCached(cached.value);
+					if (verified) {
+						yield* Effect.logInfo(
+							`deepbookLocalDeploy(${name}): cache hit — chainId=${sui.chainId} ` +
+								`packageId=${packageId} poolsHash=${poolsHash} ` +
+								`(${cached.value.pools.length} pool${cached.value.pools.length === 1 ? '' : 's'}, verified)`,
 						);
-						if (found === undefined) {
-							return yield* Effect.fail(
-								new DeepbookError({
-									phase: 'create-pools',
-									message:
-										`deepbookLocalDeploy(${name}): pool '${spec.name}' missing from objectChanges ` +
-										`(expected type ${expected})`,
-								}),
-							);
+						yield* Effect.annotateCurrentSpan({
+							'deepbook.pools.cache': 'hit',
+							'deepbook.pools.count': cached.value.pools.length,
+							'deepbook.pools.hash': poolsHash,
+						});
+						for (const p of cached.value.pools) {
+							pools[p.name] = {
+								name: p.name,
+								poolId: p.poolId,
+								base: p.base,
+								quote: p.quote,
+								tickSize: p.tickSize,
+								lotSize: p.lotSize,
+								minSize: p.minSize,
+							};
 						}
-						pools[spec.name] = {
-							name: spec.name,
-							poolId: found.objectId,
-							base,
-							quote,
-							tickSize: spec.tickSize,
-							lotSize: spec.lotSize,
-							minSize: spec.minSize,
-						};
+						resumed = true;
+					} else {
+						yield* Effect.logInfo(
+							`deepbookLocalDeploy(${name}): cache hit but pool objects missing on chain — ` +
+								`invalidating and re-creating (chainId=${sui.chainId} packageId=${packageId})`,
+						);
+						yield* Effect.annotateCurrentSpan({
+							'deepbook.pools.cache': 'stale',
+							'deepbook.pools.hash': poolsHash,
+						});
+						yield* state.remove(cacheKey);
 					}
-				}).pipe(Effect.withSpan('deepbook.create-pools'));
+				}
+
+				if (!resumed) {
+					yield* Effect.annotateCurrentSpan({
+						'deepbook.pools.cache': Option.isNone(cached) ? 'miss' : 'invalidated',
+						'deepbook.pools.hash': poolsHash,
+					});
+					yield* Effect.gen(function* () {
+						const t = new Transaction();
+						t.setGasBudget(500_000_000n);
+
+						t.moveCall({
+							target: `${packageId}::registry::init_balance_manager_map`,
+							arguments: [t.object(registryId), t.object(adminCapId)],
+						});
+
+						for (const { spec, base, quote } of resolvedSpecs) {
+							t.moveCall({
+								target: `${packageId}::pool::create_pool_admin`,
+								typeArguments: [base, quote],
+								arguments: [
+									t.object(registryId),
+									t.pure.u64(spec.tickSize),
+									t.pure.u64(spec.lotSize),
+									t.pure.u64(spec.minSize),
+									t.pure.bool(spec.whitelisted ?? true),
+									t.pure.bool(spec.stable ?? false),
+									t.object(adminCapId),
+								],
+							});
+						}
+
+						const result = yield* signer.signAndExecute(t).pipe(
+							Effect.mapError(
+								(cause) =>
+									new DeepbookError({
+										phase: 'create-pools',
+										message: `deepbookLocalDeploy(${name}): create-pools tx failed: ${cause.message}`,
+										cause,
+									}),
+							),
+						);
+
+						// Exact-string match against the expected `Pool<base, quote>`
+						// objectType keeps multi-pool tx output deterministic.
+						for (const { spec, base, quote } of resolvedSpecs) {
+							const expected = `${packageId}::pool::Pool<${base}, ${quote}>`;
+							const found = result.objectChanges.find(
+								(c): c is Extract<SuiObjectChange, { type: 'created' }> =>
+									c.type === 'created' && 'objectType' in c && c.objectType === expected,
+							);
+							if (found === undefined) {
+								return yield* Effect.fail(
+									new DeepbookError({
+										phase: 'create-pools',
+										message:
+											`deepbookLocalDeploy(${name}): pool '${spec.name}' missing from objectChanges ` +
+											`(expected type ${expected})`,
+									}),
+								);
+							}
+							pools[spec.name] = {
+								name: spec.name,
+								poolId: found.objectId,
+								base,
+								quote,
+								tickSize: spec.tickSize,
+								lotSize: spec.lotSize,
+								minSize: spec.minSize,
+							};
+						}
+
+						// Persist the captured pool ids so the next supervisor
+						// cycle short-circuits the create-pools tx. Write
+						// happens AFTER capture so a mid-flight failure
+						// doesn't poison the cache with half-created pools.
+						const toCache: CachedDeepbookPools = {
+							pools: Object.values(pools).map((p) => ({
+								name: p.name,
+								poolId: p.poolId,
+								base: p.base,
+								quote: p.quote,
+								tickSize: p.tickSize,
+								lotSize: p.lotSize,
+								minSize: p.minSize,
+							})),
+						};
+						yield* state.put(cacheKey, toCache);
+					}).pipe(Effect.withSpan('deepbook.create-pools'));
+				}
 			}
 
 			yield* PackageRegistry.publish({
