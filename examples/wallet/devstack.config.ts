@@ -198,7 +198,9 @@ const maker = deepbookMarketMaker({
 
 const wallet = walletApp({
 	accounts: [a.publisher, a.alice, a.bob, a.carol],
-	allowedOrigins: ['http://localhost:5174'],
+	// Router-fronted dev URL on the well-known vite entrypoint port
+	// (5175) + legacy direct port for back-compat.
+	allowedOrigins: ['http://dev.wallet.localhost:5175', 'http://localhost:5174'],
 });
 
 // Project the deepbook pools into a UI-friendly extras blob. Reading
@@ -221,12 +223,17 @@ const m = manifest({
 });
 
 
+// Vite spawns on a local port; the supervisor publishes a Traefik
+// file-provider entry so the public URL surfaces as
+// `http://dev.wallet.localhost:5175`. Ready probe targets the local
+// port so we don't depend on router warm-up.
 const dev = hostProcess({
 	name: 'frontend.dev-server',
 	command: 'pnpm',
-	args: ['exec', 'vite', '--port', '5174'],
+	args: ['exec', 'vite', '--port', '5174', '--strictPort'],
 	readyProbe: { kind: 'http', url: 'http://localhost:5174', timeoutMs: 60_000 },
 	endpoint: { name: 'dev-server', kind: 'dev-server' },
+	traefik: { service: 'dev', entrypoint: 'vite', localPort: 5174 },
 	dependsOn: [usdcPublish, wethPublish, seedTokens, db, wallet],
 });
 

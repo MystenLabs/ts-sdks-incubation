@@ -1,104 +1,75 @@
 // Walrus phase 4 — storage-node committee.
 //
-// N detached containers, each on a pinned in-network IP and a
-// `PortAllocator`-issued host port. Per-node host ports are released
-// on scope teardown so the allocator's held-set doesn't grow
-// monotonically across primitive restarts.
+// N detached containers, each on a pinned in-network IP. No per-node
+// host port any more: each node carries a traefik label set so the
+// shared `devstack-router` exposes it on the well-known walrus
+// entrypoint port (9185) via the stack-scoped hostname the deploy
+// phase registered on chain.
 //
 // Span: `walrus.nodes` (preserved).
 
 import { Effect } from 'effect';
 import * as Docker from '../../internal/docker.js';
-import { PortAllocator } from '../../internal/port-allocator.js';
+import type { IdentityShape } from '../../internal/identity.js';
+import { routerHostname, routerId } from '../../internal/router-hostname.js';
 import { WalrusError } from '../errors.js';
 import type { NodeState } from './internal.js';
 import { WALRUS_NODE_IP_BASE } from './internal.js';
-// Note: `Scope` is yielded inline via `Effect.scope` per node so the
-// `onPortConflict` callback's release finalizers attach to the same
-// scope as `Effect.addFinalizer` for the original allocate.
 
 export const startStorageNodes = (args: {
 	name: string;
 	image: string;
 	nodeCount: number;
 	containerApiPort: number;
+	routerEntrypointPort: number;
 	readyTimeoutMs: number;
 	deployDir: string;
 	network: string;
 	subnetPrefix: string;
-	portAllocator: typeof PortAllocator.Service;
+	identity: IdentityShape;
 	faucetUrl: string;
 }) =>
 	Effect.fn('walrus.nodes')(function* () {
 		const nodes: Array<NodeState> = [];
-		// Capture once outside the loop — same scope hosts every node's
-		// allocate finalizer, so `onPortConflict`'s release finalizers
-		// land symmetrically.
-		const nodesScope = yield* Effect.scope;
 		for (let i = 0; i < args.nodeCount; i++) {
-			// Per-node host port for our supervisor-side ready probe + as
-			// a debug surface. Skip `containerApiPort` itself (9185) so
-			// the proxy can claim it — the on-chain committee tells SDK
-			// clients to reach the nodes at `walrus-node-N.localhost:9185`
-			// (resolves to 127.0.0.1), and that traffic must hit the
-			// proxy's Host-header vhost router, not node-0's raw port.
-			// `+ 1 + i` gives node-0=9186, node-1=9187, …; the allocator
-			// scans forward if a sibling stack already holds them.
-			const hostPort = yield* args.portAllocator.allocate(args.containerApiPort + 1 + i).pipe(
-				Effect.mapError(
-					(cause) =>
-						new WalrusError({
-							phase: 'nodes',
-							message: `walrus.nodes: could not allocate host port for node ${i}: ${cause.message}`,
-							cause,
-						}),
-				),
-			);
-			// Release on scope teardown so the allocator's held-set
-			// doesn't grow monotonically across primitive restarts —
-			// otherwise subsequent runs probe from `preferred+N` rather
-			// than reusing the slot this cycle just freed. Registered
-			// immediately after allocate so a failure later in the build
-			// path still triggers release on scope close.
-			yield* Effect.addFinalizer(() => args.portAllocator.release(hostPort).pipe(Effect.ignore));
 			const containerIp = `${args.subnetPrefix}.${WALRUS_NODE_IP_BASE + i}`;
 			const containerName = `walrus-${args.name}-node-${i}`;
-
 			const nodeHostname = `dryrun-node-${i}`;
+			const publicHostname = routerHostname(args.identity, `walrus-node-${i}`);
+
+			// Container readiness is probed in-network (we exec `wget` /
+			// `nc` into the container) instead of via a host port —
+			// nothing on the host loopback maps to this storage node any
+			// more. The router binds 9185 once on the host and routes
+			// by `Host:` header.
 			yield* Docker.run({
 				name: containerName,
 				image: args.image,
 				args: ['/bin/bash', '-c', '/opt/walrus/scripts/run-walrus.sh'],
-				ports: { [hostPort]: args.containerApiPort },
 				mounts: [{ host: args.deployDir, container: '/opt/walrus/outputs' }],
 				// `--hostname` so the container's actual hostname matches
-				// the chain-registered name (walrus-node reads its own
-				// hostname when self-identifying to peers). The redundant
-				// HOSTNAME env var is preserved as a belt-and-braces
-				// signal for run.sh which historically read it.
-				// `WALRUS_FAUCET_URL` overrides run.sh's legacy default of
-				// `http://sui-localnet:9123/gas` (a docker-DNS path that
-				// only worked in v3) with the host-gateway URL we use to
-				// reach the host-side sui localnet from this network.
+				// the chain-registered name. `WALRUS_FAUCET_URL` keeps
+				// the host-gateway sui-faucet rewrite from v3.
 				env: { HOSTNAME: nodeHostname, WALRUS_FAUCET_URL: args.faucetUrl },
 				network: args.network,
 				ip: containerIp,
 				hostname: nodeHostname,
 				networkAlias: `walrus-node-${i}.localhost`,
 				detach: true,
-				// On a resume port-conflict (another stack snapped up our
-				// node's host port while we were paused), shift forward
-				// to the next free preferred port instead of an ephemeral.
-				// Note: only the supervisor-side ready probe and the
-				// debug surface use this port — the SDK reaches each node
-				// via `walrus-node-N.localhost:9185` through the proxy
-				// container on the shared docker network, so a host-port
-				// shift is invisible to SDK clients.
-				onPortConflict: Docker.reallocatePortsOnConflict(
-					args.portAllocator,
-					nodesScope,
-					`walrus.nodes[${i}]`,
-				),
+				// Per-node traefik router entry. `id` is
+				// `<app>-<stack>-walrus-node-N`; `hostname` is the
+				// stack-scoped hostname the deploy phase registered on
+				// chain; `entrypoint: walrus` resolves to the well-known
+				// 9185 port (see `ROUTER_ENTRYPOINTS`); `servicePort` is
+				// the in-container port the storage node binds on.
+				traefik: [
+					{
+						id: routerId(args.identity, `walrus-node-${i}`),
+						hostname: publicHostname,
+						entrypoint: 'walrus',
+						servicePort: args.containerApiPort,
+					},
+				],
 			}).pipe(
 				Effect.catchTag('DockerError', (cause) =>
 					Effect.fail(
@@ -111,18 +82,20 @@ export const startStorageNodes = (args: {
 				),
 			);
 
-			// Wait for the node's API port to answer something — same
-			// "any HTTP response means alive" semantics as before.
-			// `awaitContainerReady` races the probe against the storage-
-			// node container's exit, so a node that crashes (run.sh
-			// faucet failure, walrus-deploy schema mismatch, …) surfaces
-			// its stderr in the error instead of timing out blind.
+			// Router-fronted ready probe. Dial the public hostname (which
+			// resolves to 127.0.0.1) on the well-known walrus
+			// entrypoint port (9185); traefik forwards to this node by
+			// `Host:` header. Proves both that the router has indexed
+			// the container's labels AND that the storage node is
+			// serving — no host-port mapping required. Races against
+			// `docker wait` so a crashed node surfaces its stderr
+			// rather than timing out blind.
 			yield* Docker.awaitContainerReady({
 				containerName,
 				probe: {
 					kind: 'tcp',
-					host: '127.0.0.1',
-					port: hostPort,
+					host: publicHostname,
+					port: args.routerEntrypointPort,
 					timeoutMs: args.readyTimeoutMs,
 				},
 			}).pipe(
@@ -140,9 +113,13 @@ export const startStorageNodes = (args: {
 
 			nodes.push({
 				index: i,
-				hostPort,
 				containerIp,
-				rpcUrl: `http://127.0.0.1:${hostPort}`,
+				// Router-fronted URL on the well-known walrus entrypoint
+				// port (9185). The SDK and any host process dialing the
+				// storage node lands here; traefik forwards to the
+				// per-stack container by `Host:` header.
+				rpcUrl: `http://${publicHostname}:${args.routerEntrypointPort}`,
+				publicHostname,
 			});
 		}
 		return nodes;

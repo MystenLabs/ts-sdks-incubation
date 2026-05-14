@@ -40,7 +40,9 @@ import {
 	type SealDeployment,
 } from '../internal/known-deployments.js';
 import { rewriteToHostGateway } from '../internal/host-gateway.js';
-import { PortAllocator } from '../internal/port-allocator.js';
+import { Identity } from '../internal/identity.js';
+import { routerEntrypoint } from '../internal/docker/router.js';
+import { routerHostname, routerId } from '../internal/router-hostname.js';
 import { StateStore, StateStoreConfig } from '../internal/state-store.js';
 import { stringifyCause } from '../internal/stringify-cause.js';
 import { buildMove } from '../internal/sui-cli.js';
@@ -257,8 +259,8 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 		}
 		const sui = yield* Sui;
 		const signer = yield* options.signer;
-		const portAllocator = yield* PortAllocator;
 		const stateStore = yield* StateStore;
+		const identity = yield* Identity;
 
 		// Fold the chain identifier into both StateStore keys. A
 		// regenesis of the underlying chain flips `sui.chainId`,
@@ -267,29 +269,30 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 		const blsKeypairKey = `${STATE_KEY_BLS_KEYPAIR_PREFIX}/${sui.chainId}`;
 		const keyServerIdKey = `${STATE_KEY_KEY_SERVER_ID_PREFIX}/${sui.chainId}`;
 
-		// 1. Allocate the host port up-front. The on-chain registration
-		//    URL must match the URL the container will later bind on,
-		//    so we need the port before step 5 (register) — not just
-		//    before step 8 (run container).
-		const hostPort = yield* portAllocator.allocate(preferredHostPort).pipe(
-			Effect.mapError(
-				(cause) =>
-					new SealError({
-						phase: 'port-alloc',
-						message: `seal(${name}): could not allocate host port near ${preferredHostPort}: ${cause.message}`,
-						cause,
-					}),
-			),
-		);
-		// Release on scope teardown so the allocator's held-set doesn't
-		// grow monotonically across primitive restarts — otherwise
-		// subsequent runs probe from `preferred+N` rather than reusing
-		// the slot this cycle just freed. Registered immediately after
-		// allocate so a failure later in the build path still triggers
-		// release on scope close.
-		yield* Effect.addFinalizer(() => portAllocator.release(hostPort).pipe(Effect.ignore));
-		const keyServerUrl = `http://localhost:${hostPort}`;
-		yield* Effect.annotateCurrentSpan({ 'seal.hostPort': hostPort });
+		// 1. Router exposure — derive the stack-scoped hostname and the
+		//    well-known seal entrypoint port (2024). The on-chain
+		//    `KeyServer` object's URL needs to match where the daemon
+		//    actually serves, so we resolve both here before step 5
+		//    (register). No `PortAllocator.allocate` — two stacks of the
+		//    same app coexist on `seal.<app>.localhost:2024` (main) and
+		//    `<stack>.seal.<app>.localhost:2024` (non-main) because the
+		//    Traefik router dispatches by `Host:` header. `preferredHostPort`
+		//    is kept on the options shape for back-compat but is ignored
+		//    on the router path.
+		void preferredHostPort;
+		const sealHostname = routerHostname(identity, 'seal');
+		const sealEntrypointInfo = routerEntrypoint('seal');
+		if (sealEntrypointInfo === undefined) {
+			return yield* Effect.fail(
+				new SealError({
+					phase: 'port-alloc',
+					message: `seal(${name}): router entrypoint 'seal' not registered`,
+				}),
+			);
+		}
+		const sealEntrypointPort = sealEntrypointInfo.port;
+		const keyServerUrl = `http://${sealHostname}:${sealEntrypointPort}`;
+		yield* Effect.annotateCurrentSpan({ 'seal.hostname': sealHostname });
 
 		// 2. Ensure the key-server image is present. Builds from the
 		//    vendored Dockerfile under `packages/devstack-effect/
@@ -546,7 +549,6 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 		yield* Docker.run({
 			name: keyServerContainerName,
 			image: imageTag,
-			ports: { [hostPort]: DEFAULT_KEY_SERVER_PORT },
 			env: {
 				CONFIG_PATH: '/etc/seal/key-server-config.yaml',
 				RUST_LOG: 'info',
@@ -554,11 +556,17 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 			envFiles: [masterKeyEnvFile],
 			mounts: [{ host: configPath, container: '/etc/seal/key-server-config.yaml' }],
 			detach: true,
-			onPortConflict: Docker.reallocatePortsOnConflict(
-				portAllocator,
-				sealScope,
-				`seal(${name})`,
-			),
+			// Single router entry for the key-server. The on-chain
+			// `KeyServer.url` registered above MUST match this hostname:port
+			// — the SDK reads the chain to discover the endpoint.
+			traefik: [
+				{
+					id: routerId(identity, 'seal'),
+					hostname: sealHostname,
+					entrypoint: 'seal',
+					servicePort: DEFAULT_KEY_SERVER_PORT,
+				},
+			],
 		}).pipe(
 			Effect.catchTag('DockerError', (cause) =>
 				Effect.fail(

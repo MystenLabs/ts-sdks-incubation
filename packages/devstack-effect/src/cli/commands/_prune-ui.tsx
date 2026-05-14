@@ -26,7 +26,11 @@
 
 import { Box, Text, useApp, useInput } from 'ink';
 import React, { useEffect, useMemo, useState } from 'react';
-import type { InventoryRow, InventoryTotals } from '../../internal/docker/inventory.js';
+import type {
+	InventoryRow,
+	InventoryTotals,
+	RouterInfo,
+} from '../../internal/docker/inventory.js';
 import {
 	formatBytes,
 	renderTotals,
@@ -38,6 +42,13 @@ import {
 
 export interface PruneAppProps {
 	readonly rows: ReadonlyArray<InventoryRow>;
+	/**
+	 * Shared Traefik router state, rendered as a separate non-selectable
+	 * row above the (app, stack) list. The router is cross-stack
+	 * infrastructure; removing it requires `--include-router` from the
+	 * non-interactive surface.
+	 */
+	readonly router?: RouterInfo;
 	/** Called with the selected rows after the user confirms. */
 	readonly onSubmit: (selected: ReadonlyArray<InventoryRow>) => void;
 	/** Called when the user quits without pruning. */
@@ -60,7 +71,12 @@ const initialSelection = (rows: ReadonlyArray<InventoryRow>): ReadonlySet<string
 	return out;
 };
 
-export function PruneApp({ rows, onSubmit, onQuit }: PruneAppProps): React.ReactElement {
+export function PruneApp({
+	rows,
+	router,
+	onSubmit,
+	onQuit,
+}: PruneAppProps): React.ReactElement {
 	const inkApp = useApp();
 	const [cursor, setCursor] = useState(0);
 	const [selected, setSelected] = useState<ReadonlySet<string>>(() => initialSelection(rows));
@@ -173,6 +189,11 @@ export function PruneApp({ rows, onSubmit, onQuit }: PruneAppProps): React.React
 						: 'no volume usage data'}
 				</Text>
 			</Box>
+			{router !== undefined ? (
+				<Box flexDirection="column" paddingX={1}>
+					<RouterRow router={router} />
+				</Box>
+			) : null}
 			<Box flexDirection="column" paddingX={1}>
 				{rows.map((row, i) => (
 					<PruneRow
@@ -252,6 +273,32 @@ function PruneRow({
 			<Text dimColor>{detail} </Text>
 			<Text dimColor>{repoSummary} </Text>
 			<Text dimColor>{lastSeen}</Text>
+		</Box>
+	);
+}
+
+// Cross-stack router row — rendered above the (app, stack) list so the
+// user can see whether the shared Traefik proxy is live. Not selectable
+// because torching it would silently break every running stack; the
+// non-interactive `--include-router` flag is the only way to remove it.
+function RouterRow({ router }: { readonly router: RouterInfo }): React.ReactElement {
+	if (!router.present) {
+		return (
+			<Box>
+				<Text dimColor>  [router] devstack-traefik — not running</Text>
+			</Box>
+		);
+	}
+	const stateColor = router.running ? 'green' : 'red';
+	const usedBy =
+		router.activeBackends === 0
+			? 'no active backends'
+			: `${router.activeBackends} backend${router.activeBackends === 1 ? '' : 's'} across ${router.apps.length} app${router.apps.length === 1 ? '' : 's'}`;
+	return (
+		<Box>
+			<Text dimColor>  [router] devstack-traefik </Text>
+			<Text color={stateColor}>{router.running ? 'running' : 'stopped'}</Text>
+			<Text dimColor> — {usedBy} (use --include-router to remove)</Text>
 		</Box>
 	);
 }

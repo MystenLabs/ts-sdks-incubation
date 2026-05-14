@@ -54,15 +54,24 @@ const sl = sealLocalKeygen({
 
 const wallet = walletApp({
 	accounts: [a.alice, a.bob, a.publisher],
-	allowedOrigins: ['http://localhost:5175'],
+	// Allow both the router-fronted dev hostname (the URL the user
+	// types in the browser) and the legacy `http://localhost:5175`
+	// (back-compat for any direct-port consumers).
+	allowedOrigins: ['http://dev.private-content.localhost:5175', 'http://localhost:5175'],
 });
 
+// Vite spawns on a local port (5175) and the supervisor publishes a
+// Traefik file-provider entry pointing the router at it. Public
+// browser URL → `http://dev.private-content.localhost:5175` (main
+// stack); ready probe targets the local port directly so the
+// supervisor doesn't depend on router warm-up.
 const dev = hostProcess({
 	name: 'frontend.dev-server',
 	command: 'pnpm',
-	args: ['exec', 'vite', '--port', '5175'],
+	args: ['exec', 'vite', '--port', '5175', '--strictPort'],
 	readyProbe: { kind: 'http', url: 'http://localhost:5175', timeoutMs: 60_000 },
 	endpoint: { name: 'dev-server', kind: 'dev-server' },
+	traefik: { service: 'dev', entrypoint: 'vite', localPort: 5175 },
 	// `SealKeyServer` here pins the dev-server behind seal's acquire.
 	// The interface tag is yieldable but TS treats it as a bare
 	// Context.Service rather than a `PluginTag`; the cast is safe

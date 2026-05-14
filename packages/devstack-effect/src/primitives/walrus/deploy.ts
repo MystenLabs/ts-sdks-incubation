@@ -22,6 +22,8 @@ import { ChildProcessSpawner } from 'effect/unstable/process';
 import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
 import * as Docker from '../../internal/docker.js';
 import { rewriteToHostGateway } from '../../internal/host-gateway.js';
+import type { IdentityShape } from '../../internal/identity.js';
+import { routerHostname } from '../../internal/router-hostname.js';
 import { stringifyCause } from '../../internal/stringify-cause.js';
 import { WalrusError } from '../errors.js';
 import type { DeployState, ExchangeState } from './internal.js';
@@ -40,6 +42,22 @@ export const deployContracts = (args: {
 	shards: number;
 	epochDuration: string;
 	containerApiPort: number;
+	/**
+	 * Well-known host port the Traefik router binds for the `walrus`
+	 * entrypoint (9185). Recorded on chain as each storage node's
+	 * `public_port` via `WALRUS_REST_API_PORT`. Identical for every
+	 * stack — disambiguation is by `Host:` header on the
+	 * stack-scoped `walrus-node-N.<app>.localhost` hostnames the
+	 * router dispatches by.
+	 */
+	routerEntrypointPort: number;
+	/**
+	 * Identity used to mint stack-scoped `WALRUS_PUBLIC_HOSTS` (the
+	 * hostnames each storage node registers as its `network_address`
+	 * on chain). With the Traefik router in front, those hostnames
+	 * resolve through the router to the right per-stack backend.
+	 */
+	identity: IdentityShape;
 	outputDir: string;
 	subnetPrefix: string;
 }): Effect.Effect<
@@ -82,9 +100,16 @@ export const deployContracts = (args: {
 			args.faucetUrl !== undefined ? rewriteToHostGateway(args.faucetUrl) : inNetworkRpc,
 		);
 
+		// Stack-scoped hostnames: storage nodes register
+		// `walrus-node-N.<app>.localhost` (main) or
+		// `<stack>.walrus-node-N.<app>.localhost` (non-main) as their
+		// `network_address` on chain. The Traefik router dispatches by
+		// `Host:` header to each node's pinned in-network IP. Two
+		// parallel stacks of the same app advertise disjoint hostnames
+		// and never trample each other's on-chain committee record.
 		const publicHosts = Array.from(
 			{ length: args.nodeCount },
-			(_, i) => `walrus-node-${i}.localhost`,
+			(_, i) => routerHostname(args.identity, `walrus-node-${i}`),
 		).join(' ');
 		// Pinned subnet IPs that the storage-node containers will claim
 		// at startup (see `startStorageNodes`). deploy-walrus.sh requires
@@ -100,10 +125,26 @@ export const deployContracts = (args: {
 		// v3's deploy-walrus.sh expects these env vars exactly. The
 		// public image likely lacks the script — see the deploy result
 		// check below for the fallback path.
+		//
+		// `WALRUS_REST_API_PORT` is passed to `walrus-deploy` as
+		// `--rest-api-port`, which becomes each storage node's on-chain
+		// `public_port`. Two parallel stacks both registering `:9185`
+		// caused SDK clients keyed on `Host: walrus-node-N.localhost:9185`
+		// to land on whichever proxy bound that host port first (cross-
+		// stack collision). We register the allocator-issued proxy host
+		// port instead — Stack B that shifts the proxy to 9186 now
+		// advertises `:9186` on its own chain, and the SDK dials the
+		// right proxy. Storage nodes still BIND on `containerApiPort`
+		// (9185) inside the container; the nginx proxy translates from
+		// the external `<proxyPort>` host port to the in-network
+		// `containerApiPort`.
 		const env: Record<string, string> = {
 			WALRUS_PUBLIC_HOSTS: publicHosts,
 			WALRUS_LISTENING_IPS: listeningIps,
-			WALRUS_REST_API_PORT: String(args.containerApiPort),
+			// Same for every stack now (no allocator-issued shift): the
+			// router binds 9185 once on the host and routes by Host
+			// header to the per-stack backend.
+			WALRUS_REST_API_PORT: String(args.routerEntrypointPort),
 			WALRUS_COMMITTEE_SIZE: String(args.nodeCount),
 			WALRUS_SHARDS: String(args.shards),
 			WALRUS_EPOCH_DURATION: args.epochDuration,

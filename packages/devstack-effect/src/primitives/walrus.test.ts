@@ -19,6 +19,7 @@ import {
 	type WalrusNetworkShape,
 } from '../interfaces/walrus.js';
 import { knownDeployments } from '../internal/known-deployments.js';
+import { routerHostname, routerId } from '../internal/router-hostname.js';
 import { walrusKnownDeployment } from './walrus/index.js';
 
 // -----------------------------------------------------------------------------
@@ -43,6 +44,50 @@ void _walrusPackageConfigCheck;
 // `EngineLive` (and `EngineLive` itself needs `NodeFileSystemLayer` via
 // StateStore — but only if we touch StateStore, which we don't here).
 const TestBaseLayer = Layer.mergeAll(EngineLive, NodeFileSystemLayer);
+
+// Stack-scoped hostnames the walrus deploy phase plugs into
+// `WALRUS_PUBLIC_HOSTS` (and that nodes register on chain as their
+// `network_address`). Pin the expected shape so a regression in
+// `routerHostname` / `routerId` doesn't silently misroute the on-chain
+// committee record off-stack. The router layer matches against `Host:`
+// header — these are EXACTLY the values that have to land on the
+// docker labels and on chain.
+describe('walrus storage-node router hostnames', () => {
+	const id = (app: string, stack: string) =>
+		({ app, stack, network: 'localnet' as const }) as const;
+
+	it('main stack — main-stack hostnames omit the stack prefix', () => {
+		expect(routerHostname(id('private-content', 'main'), 'walrus-node-0')).toBe(
+			'walrus-node-0.private-content.localhost',
+		);
+		expect(routerHostname(id('private-content', 'main'), 'walrus-node-3')).toBe(
+			'walrus-node-3.private-content.localhost',
+		);
+	});
+
+	it('non-main stack — stack prefix isolates parallel committees', () => {
+		expect(routerHostname(id('arena', 'test'), 'walrus-node-0')).toBe(
+			'test.walrus-node-0.arena.localhost',
+		);
+		// A second parallel stack of the SAME app must produce a
+		// disjoint hostname, otherwise the on-chain `network_address`
+		// would collide and traefik would route Stack B's traffic into
+		// Stack A's container.
+		expect(routerHostname(id('arena', 'worker-3'), 'walrus-node-0')).toBe(
+			'worker-3.walrus-node-0.arena.localhost',
+		);
+	});
+
+	it('routerId composes the per-node label namespace', () => {
+		// The label set `traefik.http.routers.<id>.*` keys on this; two
+		// parallel stacks must not stamp the same id or one stack's
+		// labels would overwrite the other's in the router config.
+		expect(routerId(id('private-content', 'main'), 'walrus-node-0')).toBe(
+			'private-content-main-walrus-node-0',
+		);
+		expect(routerId(id('arena', 'test'), 'walrus-node-2')).toBe('arena-test-walrus-node-2');
+	});
+});
 
 describe('walrusKnownDeployment', () => {
 	it.effect('provides WalrusNetwork + WalrusNodes from a network lookup with explicit nodes', () =>

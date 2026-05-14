@@ -18,9 +18,13 @@
 // any of (1)-(3) regresses, the bind fails with EADDRINUSE.
 
 import * as net from 'node:net';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Effect, Layer } from 'effect';
-import { afterEach, describe, expect, it } from '@effect/vitest';
+import { afterEach, beforeEach, describe, expect, it } from '@effect/vitest';
 import { Sui, type SuiShape } from '../interfaces/sui.js';
+import { Identity } from '../internal/identity.js';
 import { PortAllocatorLive } from '../internal/port-allocator.js';
 import { EndpointRegistryLive } from '../internal/registries.js';
 import { makeTag, type PluginTag } from '../tag.js';
@@ -82,11 +86,75 @@ const close = (server: net.Server): Promise<void> =>
 
 const liveServers: Array<net.Server> = [];
 
+// The router file-provider helper writes YAML under
+// `DEVSTACK_ROUTER_DYNAMIC_DIR ?? ~/.devstack/traefik/dynamic`. Point it
+// at a tmpdir for each test so we don't touch the user's real dynamic
+// directory, and so the post-test cleanup is contained.
+let savedRouterDir: string | undefined;
+let tmpRouterDir: string | undefined;
+
+beforeEach(() => {
+	savedRouterDir = process.env.DEVSTACK_ROUTER_DYNAMIC_DIR;
+	tmpRouterDir = mkdtempSync(join(tmpdir(), 'devstack-wallet-router-'));
+	process.env.DEVSTACK_ROUTER_DYNAMIC_DIR = tmpRouterDir;
+});
+
 afterEach(async () => {
 	while (liveServers.length > 0) {
 		const s = liveServers.pop();
 		if (s !== undefined) await close(s);
 	}
+	if (tmpRouterDir !== undefined) {
+		rmSync(tmpRouterDir, { recursive: true, force: true });
+		tmpRouterDir = undefined;
+	}
+	if (savedRouterDir === undefined) {
+		delete process.env.DEVSTACK_ROUTER_DYNAMIC_DIR;
+	} else {
+		process.env.DEVSTACK_ROUTER_DYNAMIC_DIR = savedRouterDir;
+	}
+});
+
+// Identity layer for the wallet-app test — the router-hostname helper
+// reads `(app, stack, network)` to compose the public hostname.
+const identityLayer = Layer.succeed(Identity, {
+	app: 'wallet-test',
+	stack: 'main',
+	network: 'localnet',
+});
+
+describe('walletApp router hostname', () => {
+	it.effect('endpoint URL uses the stack-scoped router hostname on the wallet entrypoint port', () =>
+		Effect.gen(function* () {
+			const acct = stubAccountTag('alice');
+			const PREFERRED = 41_817;
+			const app = walletApp({ accounts: [acct], port: PREFERRED });
+			const baseLayer = Layer.mergeAll(
+				stubSui,
+				identityLayer,
+				PortAllocatorLive,
+				EndpointRegistryLive,
+			);
+			const userLayer = Layer.provideMerge(app.__layer, acct.__layer);
+			const stackResolved = Layer.provide(userLayer, baseLayer);
+
+			const value = yield* Effect.scoped(
+				Effect.gen(function* () {
+					return yield* app;
+				}).pipe(Effect.provide(stackResolved as Layer.Layer<unknown, unknown, never>)),
+			);
+
+			// Identity-derived router URL: `wallet.<app>.localhost:5180`
+			// (main stack). The pairing token is preserved on `pairUrl`.
+			expect(value.url).toBe('http://wallet.wallet-test.localhost:5180');
+			expect(value.pairUrl.startsWith('http://wallet.wallet-test.localhost:5180/?token=')).toBe(
+				true,
+			);
+			// `localPort` carries the actual 127.0.0.1 binding for callers
+			// that need it (e.g. the finalizer test below).
+			expect(typeof value.localPort).toBe('number');
+		}),
+	);
 });
 
 describe('walletApp finalizer', () => {
@@ -107,7 +175,12 @@ describe('walletApp finalizer', () => {
 			// Build the wallet-app's layer (its own + the inner account
 			// tag's transitively-flattened layers) and provide every
 			// service it needs: Sui, PortAllocator, EndpointRegistry.
-			const baseLayer = Layer.mergeAll(stubSui, PortAllocatorLive, EndpointRegistryLive);
+			const baseLayer = Layer.mergeAll(
+				stubSui,
+				identityLayer,
+				PortAllocatorLive,
+				EndpointRegistryLive,
+			);
 			// The wallet-app's body `yield* acc` for each account tag,
 			// so the account layer has to be VISIBLE inside the
 			// wallet-app's R-channel. `provideMerge(self, that)` provides
@@ -120,12 +193,12 @@ describe('walletApp finalizer', () => {
 				Effect.gen(function* () {
 					// Yield the wallet-app tag — its build runs inside the
 					// surrounding `Effect.scoped`, so the finalizer fires
-					// on scope close.
+					// on scope close. The PUBLIC `url` now surfaces the
+					// router hostname + entrypoint port (`wallet.<app>.localhost:5180`),
+					// so we read `localPort` for the local 127.0.0.1
+					// bind the finalizer is supposed to release.
 					const value = yield* app;
-					// Parse the port out of `http://localhost:<port>`.
-					const match = /:(\d+)$/.exec(value.url);
-					expect(match).not.toBeNull();
-					return Number(match![1]);
+					return value.localPort;
 				}).pipe(Effect.provide(stackResolved as Layer.Layer<unknown, unknown, never>)),
 			);
 
