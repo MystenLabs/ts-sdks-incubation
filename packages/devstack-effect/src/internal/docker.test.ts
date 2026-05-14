@@ -6,9 +6,11 @@
 //
 // The bottom block covers the pure `decideRunAction` decision function
 // directly — five matrix branches plus the runtime "resume failed →
-// recreate" promotion (the latter via an integration test that fails
-// `docker start` and asserts `docker run` is called WITHOUT the caller's
-// original host ports — see `Docker.run resume-fallback re-allocates`).
+// recreate" promotion. The promotion path has TWO variants gated on
+// `docker start` stderr: port-conflict stderr → fresh run drops the
+// caller's host ports and asks docker to auto-allocate; any other stderr
+// (OCI runtime, image-pull glitch, transient daemon issue) → fresh run
+// keeps the caller's original ports. See `Docker.run resume-fallback`.
 
 import { Effect, Layer, Sink, Stream } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
@@ -38,6 +40,14 @@ interface SpawnerLayerOpts {
 	/** Exit code to return for `docker start`. Defaults to 0 (success). */
 	readonly startExitCode?: number;
 	/**
+	 * Stderr text emitted by `docker start`. The dispatcher inspects this
+	 * to decide whether the resume failure was port-related (re-allocate
+	 * ports on the fallback) or some other failure class (OCI runtime,
+	 * image-pull glitch, …) where the caller's original ports are still
+	 * correct. Defaults to empty.
+	 */
+	readonly startStderr?: string;
+	/**
 	 * JSON for `.HostConfig.PortBindings` returned by the second
 	 * `docker inspect <id> --format {{json .HostConfig.PortBindings}}`
 	 * call (used on the resume / recreate path to read the actual
@@ -51,7 +61,9 @@ const makeSpawnerLayer = (
 	inspectResponse: InspectResponse | null,
 	options: SpawnerLayerOpts = {},
 ) => {
-	const stdoutFor = (args: ReadonlyArray<string>): { text: string; exitCode: number } => {
+	const respondTo = (
+		args: ReadonlyArray<string>,
+	): { stdout: string; stderr: string; exitCode: number } => {
 		if (args[0] === 'inspect') {
 			// Distinguish the name-inspect (returns running|image|id) from
 			// the host-ports inspect (returns JSON for PortBindings) by
@@ -59,20 +71,28 @@ const makeSpawnerLayer = (
 			const formatIdx = args.indexOf('--format');
 			const fmt = formatIdx >= 0 ? args[formatIdx + 1] : undefined;
 			if (fmt !== undefined && fmt.includes('PortBindings')) {
-				return { text: `${options.portBindingsJson ?? 'null'}\n`, exitCode: 0 };
+				return {
+					stdout: `${options.portBindingsJson ?? 'null'}\n`,
+					stderr: '',
+					exitCode: 0,
+				};
 			}
 			if (inspectResponse === null) {
-				return { text: '', exitCode: 1 };
+				return { stdout: '', stderr: '', exitCode: 1 };
 			}
 			const { running, image, containerId } = inspectResponse;
-			return { text: `${running}|${image}|${containerId}\n`, exitCode: 0 };
+			return { stdout: `${running}|${image}|${containerId}\n`, stderr: '', exitCode: 0 };
 		}
 		if (args[0] === 'start') {
-			return { text: '', exitCode: options.startExitCode ?? 0 };
+			return {
+				stdout: '',
+				stderr: options.startStderr ?? '',
+				exitCode: options.startExitCode ?? 0,
+			};
 		}
-		if (args[0] === 'run') return { text: `${FAKE_CONTAINER_ID}\n`, exitCode: 0 };
-		if (args[0] === 'ps') return { text: '', exitCode: 0 };
-		return { text: '', exitCode: 0 };
+		if (args[0] === 'run') return { stdout: `${FAKE_CONTAINER_ID}\n`, stderr: '', exitCode: 0 };
+		if (args[0] === 'ps') return { stdout: '', stderr: '', exitCode: 0 };
+		return { stdout: '', stderr: '', exitCode: 0 };
 	};
 
 	const spawn = (command: ChildProcess.Command) => {
@@ -80,16 +100,19 @@ const makeSpawnerLayer = (
 			return Effect.die(new Error('unexpected piped command'));
 		}
 		recorder.push({ command: command.command, args: [...command.args] });
-		const { text, exitCode } = stdoutFor(command.args);
+		const { stdout, stderr, exitCode } = respondTo(command.args);
+		const encoder = new TextEncoder();
+		const stdoutBytes = encoder.encode(stdout);
+		const stderrBytes = encoder.encode(stderr);
 		const handle = ChildProcessSpawner.makeHandle({
 			pid: ChildProcessSpawner.ProcessId(1234),
 			exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(exitCode)),
 			isRunning: Effect.succeed(false),
 			kill: () => Effect.void,
 			stdin: Sink.drain as never,
-			stdout: Stream.succeed(new TextEncoder().encode(text)),
-			stderr: Stream.empty,
-			all: Stream.succeed(new TextEncoder().encode(text)),
+			stdout: Stream.succeed(stdoutBytes),
+			stderr: stderr.length > 0 ? Stream.succeed(stderrBytes) : Stream.empty,
+			all: Stream.succeed(stdoutBytes),
 			getInputFd: () => Sink.drain as never,
 			getOutputFd: () => Stream.empty,
 			unref: Effect.succeed(Effect.void),
@@ -258,28 +281,39 @@ describe('decideRunAction', () => {
 });
 
 // -----------------------------------------------------------------------------
-// `Docker.run` resume-fallback — promotes `resume` to `recreate` and
-// re-allocates ports rather than re-using the caller's stale `opts.ports`.
+// `Docker.run` resume-fallback — promotes `resume` to `recreate` when
+// `docker start` fails. Whether the fresh run reuses the caller's original
+// host ports or asks docker to auto-allocate depends on WHY `docker start`
+// failed:
+//   - stderr matches a port-conflict pattern → drop opts.ports and
+//     auto-allocate (something else holds the host port now)
+//   - any other stderr (OCI runtime errors, image-pull glitches, transient
+//     daemon issues) → keep the caller's original ports. Primitives that
+//     publish endpoints like `http://localhost:2024` at init time depend on
+//     this — re-allocating would silently move the endpoint and leave the
+//     supervisor probing a port the container isn't bound to.
 // -----------------------------------------------------------------------------
 
-describe('Docker.run resume-fallback re-allocates ports', () => {
+describe('Docker.run resume-fallback', () => {
 	it.effect(
-		'when `docker start` fails, recreate WITHOUT the caller-supplied host port',
+		'PORT CONFLICT: when `docker start` fails with "port is already allocated", recreate WITHOUT the caller-supplied host port',
 		() =>
 			Effect.gen(function* () {
 				const recorder: Array<SpawnRecord> = [];
 				const image = 'mystenlabs/sui-tools:1.0.0';
 				// Stopped container with matching image → decision returns
 				// `resume`. We force `docker start` to fail with exit code 1
-				// to simulate the original host port being held by another
-				// process; the dispatcher must promote to `recreate` and
-				// run the fresh container WITHOUT `-p 9001:9000` (the
-				// caller's stale host-port preference).
+				// AND a stderr message matching the port-conflict predicate.
+				// The dispatcher must promote to `recreate` and run the
+				// fresh container WITHOUT `-p 9001:9000` (the caller's now-
+				// unavailable host-port preference).
 				const spawnerLayer = makeSpawnerLayer(
 					recorder,
 					{ running: false, image, containerId: EXISTING_CONTAINER_ID },
 					{
 						startExitCode: 1,
+						startStderr:
+							'Error response from daemon: driver failed programming external connectivity on endpoint sui: Bind for 0.0.0.0:9001 failed: port is already allocated',
 						// After the fresh run, the dispatcher re-reads
 						// PortBindings to learn what docker auto-allocated.
 						portBindingsJson: '{"9000/tcp":[{"HostIp":"127.0.0.1","HostPort":"55512"}]}',
@@ -323,6 +357,72 @@ describe('Docker.run resume-fallback re-allocates ports', () => {
 				// the actual binding back from docker (55512 → 9000) — NOT
 				// the caller's stale 9001.
 				expect(result.hostPorts).toEqual({ 55512: 9000 });
+				expect(result.reused).toBe(false);
+			}),
+	);
+
+	it.effect(
+		'NON-PORT FAILURE: when `docker start` fails with an OCI runtime error, recreate WITH the ORIGINAL host port',
+		() =>
+			Effect.gen(function* () {
+				const recorder: Array<SpawnRecord> = [];
+				const image = 'mystenlabs/sui-tools:1.0.0';
+				// Stopped container with matching image → decision returns
+				// `resume`. `docker start` fails with stderr that does NOT
+				// match the port-conflict predicate. This is the real-world
+				// case that surfaced the regression: seal-key-server resume
+				// hit `OCI runtime create failed: runc create failed`.
+				// The dispatcher must still promote to `recreate` (to rm +
+				// rerun) but the fresh run MUST keep the caller's original
+				// `-p 2024:2024` mapping — the seal primitive published
+				// `http://localhost:2024` at init time and never re-reads,
+				// so the supervisor's ready-probe of port 2024 only works
+				// if the recreated container is actually bound to 2024.
+				const spawnerLayer = makeSpawnerLayer(
+					recorder,
+					{ running: false, image, containerId: EXISTING_CONTAINER_ID },
+					{
+						startExitCode: 1,
+						startStderr:
+							'Error response from daemon: failed to create task for container: failed to create shim task: OCI runtime create failed: runc create failed: unable to start container process',
+					},
+				);
+
+				const result = yield* Docker.run({
+					name: 'seal.key-server',
+					image,
+					ports: { 2024: 2024 },
+				}).pipe(
+					Effect.provide(spawnerLayer),
+					Effect.provide(identityLayer),
+					Effect.scoped,
+				);
+
+				// `docker start` was attempted and failed.
+				expect(
+					recorder.some(
+						(r) => r.args[0] === 'start' && r.args[1] === EXISTING_CONTAINER_ID,
+					),
+				).toBe(true);
+
+				// A fresh `docker run` followed.
+				const runCmds = recorder.filter((r) => r.args[0] === 'run');
+				expect(runCmds.length).toBe(1);
+				const runArgs = runCmds[0]?.args ?? [];
+
+				// The recreate path keeps the ORIGINAL `-p 127.0.0.1:2024:2024`
+				// mapping — NOT the auto-allocation variant
+				// `-p 127.0.0.1::2024`.
+				const hostBoundPortIdx = runArgs.findIndex((a) => a === '127.0.0.1:2024:2024');
+				expect(hostBoundPortIdx).toBeGreaterThanOrEqual(0);
+				const autoBoundPortIdx = runArgs.findIndex((a) => a === '127.0.0.1::2024');
+				expect(autoBoundPortIdx).toBe(-1);
+
+				// The result's hostPorts mirror the caller's `opts.ports`
+				// because we did NOT re-allocate — primitives that
+				// captured `http://localhost:2024` at init time are still
+				// valid.
+				expect(result.hostPorts).toEqual({ 2024: 2024 });
 				expect(result.reused).toBe(false);
 			}),
 	);
