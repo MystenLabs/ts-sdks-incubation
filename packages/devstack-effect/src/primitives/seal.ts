@@ -39,13 +39,13 @@ import {
 	type KnownNetwork,
 	type SealDeployment,
 } from '../internal/known-deployments.js';
+import { rewriteToHostGateway } from '../internal/host-gateway.js';
 import { PortAllocator } from '../internal/port-allocator.js';
 import { StateStore, StateStoreConfig } from '../internal/state-store.js';
 import { stringifyCause } from '../internal/stringify-cause.js';
 import { buildMove } from '../internal/sui-cli.js';
 import { dockerImage } from '../plugin-author/index.js';
 import { gitFetch } from '../plugin-author/index.js';
-import { awaitReady } from '../internal/ready-probe.js';
 import { EndpointRegistry, PackageRegistry } from '../internal/registries.js';
 import {
 	SealKeyManager,
@@ -90,8 +90,10 @@ const KEY_TYPE_BONEH_FRANKLIN_BLS12381 = 0;
 
 // `Docker.run` wires `host.docker.internal:host-gateway` by default so
 // containers can dial the host RPC via this hostname on Linux as well
-// as Docker Desktop.
-const SUI_NODE_URL_FROM_CONTAINER = 'http://host.docker.internal:9000';
+// as Docker Desktop. The actual host port is resolved at build time
+// from the `Sui.rpcUrl` exposed by `suiLocalnet` (the `PortAllocator`
+// may have scanned forward from 9000), then `localhost` is rewritten
+// to the docker host gateway via `rewriteToHostGateway`.
 
 // Default `gitFetch` coordinates for the upstream seal Move sources.
 // The git ref reuses `DEFAULT_SEAL_VERSION` so the Move package and the
@@ -446,10 +448,16 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 				),
 			);
 		const configPath = path.join(configDir, 'key-server-config.yaml');
+		// Resolve the host-port-allocated sui RPC URL and rewrite
+		// `localhost`/`127.0.0.1` to `host.docker.internal` so the
+		// containerised key-server can reach it. Before `PortAllocator`,
+		// this was a hardcoded `:9000` constant — which broke the moment
+		// two stacks ran side-by-side and sui got bumped to 9001/9002.
+		const containerNodeUrl = rewriteToHostGateway(sui.rpcUrl);
 		const yaml = renderSealKeyServerConfig({
 			sealPackageId: packageId,
 			keyServerObjectId,
-			nodeUrl: SUI_NODE_URL_FROM_CONTAINER,
+			nodeUrl: containerNodeUrl,
 		});
 		yield* fs.writeFileString(configPath, yaml).pipe(
 			Effect.mapError(
@@ -515,8 +523,9 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 		// 7. Long-running key-server container. Scope-managed: the
 		//    Docker.run finalizer `docker rm -f`s on shutdown.
 		yield* setPhase('starting key server');
+		const keyServerContainerName = `seal-${name}-key-server`;
 		yield* Docker.run({
-			name: `seal-${name}-key-server`,
+			name: keyServerContainerName,
 			image: imageTag,
 			ports: { [hostPort]: DEFAULT_KEY_SERVER_PORT },
 			env: {
@@ -545,16 +554,26 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 		//    starts accepting traffic. The `/v1/*` endpoints require a
 		//    `Client-Sdk-Version` header and reject the bare ready probe
 		//    with 400.
-		yield* awaitReady({
-			kind: 'http',
-			url: `${keyServerUrl}/health`,
-			timeoutMs: readyTimeoutMs,
+		//
+		// `Docker.awaitContainerReady` races the probe against
+		// `docker wait` so if the key-server crashes (bad CONFIG_PATH,
+		// unreachable sui node_url, missing master-key envfile), we
+		// surface the container's stderr instead of waiting out the
+		// full timeout with a generic "timed out" error.
+		yield* Docker.awaitContainerReady({
+			containerName: keyServerContainerName,
+			probe: {
+				kind: 'http',
+				url: `${keyServerUrl}/health`,
+				timeoutMs: readyTimeoutMs,
+			},
 		}).pipe(
 			Effect.catchTag('ReadyProbeError', (cause) =>
 				Effect.fail(
 					new SealError({
 						phase: 'ready',
 						message: `seal(${name}): key-server never became ready: ${cause.message}`,
+						stderr: cause.detail,
 						cause,
 					}),
 				),

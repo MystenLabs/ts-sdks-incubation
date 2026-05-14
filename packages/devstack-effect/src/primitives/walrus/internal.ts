@@ -25,10 +25,10 @@ import {
 } from '../../interfaces/walrus.js';
 import * as Docker from '../../internal/docker.js';
 import { EngineHandle } from '../../internal/engine.js';
+import { rewriteToHostGateway } from '../../internal/host-gateway.js';
 import { Identity } from '../../internal/identity.js';
 import { PortAllocator } from '../../internal/port-allocator.js';
 import { EndpointRegistry, PackageRegistry } from '../../internal/registries.js';
-import { awaitReady } from '../../internal/ready-probe.js';
 import { StateStore } from '../../internal/state-store.js';
 import { stringifyCause } from '../../internal/stringify-cause.js';
 import { type PluginTag } from '../../tag.js';
@@ -85,7 +85,6 @@ const PROXY_IMAGE = 'nginx:alpine';
 // Host gateway the containers can reach the host network through.
 // `Docker.run` now wires `--add-host=host.docker.internal:host-gateway`
 // by default, so this works uniformly on Linux + Docker Desktop.
-const HOST_GATEWAY = 'host.docker.internal';
 
 // Per-stack docker network /24 — storage nodes claim fixed IPs via
 // `Docker.run({ip})` so the nginx proxy can address them on stable
@@ -816,18 +815,26 @@ const startStorageNodes = (args: {
 			);
 
 			// Wait for the node's API port to answer something — same
-			// "any HTTP response means alive" semantics as v3's probe.
-			yield* awaitReady({
-				kind: 'tcp',
-				host: '127.0.0.1',
-				port: hostPort,
-				timeoutMs: args.readyTimeoutMs,
+			// "any HTTP response means alive" semantics as before.
+			// `awaitContainerReady` races the probe against the storage-
+			// node container's exit, so a node that crashes (run.sh
+			// faucet failure, walrus-deploy schema mismatch, …) surfaces
+			// its stderr in the error instead of timing out blind.
+			yield* Docker.awaitContainerReady({
+				containerName,
+				probe: {
+					kind: 'tcp',
+					host: '127.0.0.1',
+					port: hostPort,
+					timeoutMs: args.readyTimeoutMs,
+				},
 			}).pipe(
 				Effect.catchTag('ReadyProbeError', (cause) =>
 					Effect.fail(
 						new WalrusError({
 							phase: 'nodes',
 							message: `walrus.nodes: storage node ${i} never became ready: ${cause.message}`,
+							stderr: cause.detail,
 							cause,
 						}),
 					),
@@ -964,17 +971,21 @@ const startProxy = (args: {
 			),
 		);
 
-		yield* awaitReady({
-			kind: 'tcp',
-			host: '127.0.0.1',
-			port: args.proxyPort,
-			timeoutMs: 30_000,
+		yield* Docker.awaitContainerReady({
+			containerName,
+			probe: {
+				kind: 'tcp',
+				host: '127.0.0.1',
+				port: args.proxyPort,
+				timeoutMs: 30_000,
+			},
 		}).pipe(
 			Effect.catchTag('ReadyProbeError', (cause) =>
 				Effect.fail(
 					new WalrusError({
 						phase: 'proxy',
 						message: `walrus.proxy: nginx never became ready: ${cause.message}`,
+						stderr: cause.detail,
 						cause,
 					}),
 				),
@@ -1095,20 +1106,6 @@ const swapSuiForWal = (
 // Helpers
 // -----------------------------------------------------------------------------
 
-// Rewrite a `http://localhost:PORT/...` or `http://127.0.0.1:PORT/...`
-// URL so it points at the container-visible host gateway instead.
-// Containers can't reach `127.0.0.1` (that's themselves) — `Docker.run`
-// wires `host.docker.internal:host-gateway` for us, so this works on
-// both Docker Desktop and Linux. The path/query are preserved as-is.
-const rewriteToHostGateway = (url: string): string => {
-	try {
-		const u = new URL(url);
-		if (u.hostname === 'localhost' || u.hostname === '127.0.0.1') {
-			u.hostname = HOST_GATEWAY;
-			return u.toString();
-		}
-		return url;
-	} catch {
-		return url;
-	}
-};
+// `rewriteToHostGateway` moved to `internal/host-gateway.ts` so siblings
+// (seal, deepbook, …) can share the same `localhost → host.docker.internal`
+// rewrite. Re-imported from there at the top of this file.

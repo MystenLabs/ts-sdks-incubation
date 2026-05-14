@@ -385,11 +385,21 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 			Effect.timeoutOrElse({
 				duration: `${readyTimeoutMs} millis`,
 				orElse: () =>
-					Effect.fail(
-						new SuiError({
-							phase: 'ready-probe',
-							message: `sui localnet did not become fully ready (rpc + faucet + graphql) within ${readyTimeoutMs}ms`,
-						}),
+					// On timeout, fetch the sui-localnet container's log
+					// tail so the resulting error names a real cause
+					// (genesis crash, port-bind clash inside the
+					// container, indexer DB connection failure, …)
+					// instead of a generic "did not become ready".
+					Docker.dockerLogsTail('sui.localnet').pipe(
+						Effect.flatMap((tail) =>
+							Effect.fail(
+								new SuiError({
+									phase: 'ready-probe',
+									message: `sui localnet did not become fully ready (rpc + faucet + graphql) within ${readyTimeoutMs}ms`,
+									stderr: tail.length > 0 ? tail : undefined,
+								}),
+							),
+						),
 					),
 			}),
 		);
