@@ -25,6 +25,7 @@
 // stack's `state.json.lock`, `kill(pid, 0)` for liveness, and skip the
 // row with `skipped: <app>/<stack> (running pid <N>)` on the way past.
 
+import { existsSync } from 'node:fs';
 import { Console, Effect, Option } from 'effect';
 import { Argument, Command, Flag } from 'effect/unstable/cli';
 import { render } from 'ink';
@@ -33,12 +34,12 @@ import {
 	collectInventory,
 	formatBytes,
 	isPidAlive,
-	renderClassificationTally,
 	renderInventoryRow,
 	renderTotals,
 	totalsFor,
 	type InventoryRow,
 } from '../../internal/docker/inventory.js';
+import { registry } from '../../internal/registry.js';
 import { pruneStack, removeLabelledImagesNotInUse, type PruneStackResult } from './_prune-stack.js';
 import { PruneApp } from './_prune-ui.js';
 
@@ -60,7 +61,9 @@ const listFlag = Flag.boolean('list').pipe(
 );
 
 const allOrphansFlag = Flag.boolean('all-orphans').pipe(
-	Flag.withDescription("Remove every stack whose supervisor isn't running (requires --yes)"),
+	Flag.withDescription(
+		'Remove every stack whose supervisor is not running (use with care; requires --yes)',
+	),
 	Flag.withDefault(false),
 );
 
@@ -86,23 +89,23 @@ const includeImagesFlag = Flag.boolean('include-images').pipe(
 	Flag.withDefault(false),
 );
 
-const abandonedFlag = Flag.boolean('abandoned').pipe(
+const repoGoneFlag = Flag.boolean('repo-gone').pipe(
 	Flag.withDescription(
-		'Remove every stack classified `abandoned` (the recorded repoPath no longer exists on disk)',
+		'Remove every stack whose recorded repoPath no longer exists on disk',
 	),
 	Flag.withDefault(false),
 );
 
-const staleFlag = Flag.string('stale').pipe(
-	Flag.withDescription(
-		"Remove every stack whose last-seen timestamp is older than the given duration (e.g. '30d', '12h', '45m')",
-	),
-	Flag.optional,
+// Hidden alias kept for one release to ease the rename from `--abandoned`
+// to `--repo-gone`. Same semantics; resolved in `resolveMode` below.
+const abandonedAliasFlag = Flag.boolean('abandoned').pipe(
+	Flag.withDescription('Deprecated alias for --repo-gone'),
+	Flag.withDefault(false),
 );
 
 const appFilterFlag = Flag.string('app').pipe(
 	Flag.withDescription(
-		'Filter all modes (list / interactive / abandoned / stale / all-orphans) by app name',
+		'Filter all modes (list / interactive / --repo-gone / --all-orphans) by app name',
 	),
 	Flag.optional,
 );
@@ -112,54 +115,26 @@ const dryRunFlag = Flag.boolean('dry-run').pipe(
 	Flag.withDefault(false),
 );
 
-// Tiny duration parser — accepts `<int>(s|m|h|d)`. Anything more
-// exotic (e.g. compound `1d12h`) is a sign the user wants real
-// timestamp filtering; we punt with a friendly error.
-export const parseDuration = (raw: string): { ms: number } | { error: string } => {
-	const m = /^(\d+)([smhd])$/.exec(raw.trim());
-	if (m === null) {
-		return {
-			error: `--stale: '${raw}' must look like '30d' / '12h' / '45m' / '90s'`,
-		};
-	}
-	const value = Number.parseInt(m[1] ?? '0', 10);
-	if (!Number.isFinite(value) || value <= 0) {
-		return { error: `--stale: '${raw}' must be a positive integer + unit` };
-	}
-	const unit = m[2];
-	const ms =
-		unit === 's'
-			? value * 1000
-			: unit === 'm'
-				? value * 60_000
-				: unit === 'h'
-					? value * 3_600_000
-					: value * 86_400_000;
-	return { ms };
-};
-
 // Decide which mode to run based on the flag combination. The decision
 // is exhaustive so a stray combination (e.g. `--list --all-orphans`)
 // resolves to a single mode rather than silently picking one over the
 // other.
 //
 // Priority order — narrowest filter wins so a user that types
-// `prune --abandoned --list` still gets list (read-only beats write).
-// `--list` > target arg > `--abandoned` > `--stale` > `--all-orphans`
-// > default interactive.
+// `prune --repo-gone --list` still gets list (read-only beats write).
+// `--list` > target arg > `--repo-gone` > `--all-orphans` > default
+// interactive.
 type Mode =
 	| { readonly kind: 'list' }
 	| { readonly kind: 'target'; readonly app: string; readonly stack: string }
-	| { readonly kind: 'abandoned' }
-	| { readonly kind: 'stale'; readonly maxAgeMs: number }
+	| { readonly kind: 'repo-gone' }
 	| { readonly kind: 'all-orphans' }
 	| { readonly kind: 'interactive' };
 
 const resolveMode = (input: {
 	readonly list: boolean;
 	readonly target: Option.Option<string>;
-	readonly abandoned: boolean;
-	readonly stale: Option.Option<string>;
+	readonly repoGone: boolean;
 	readonly allOrphans: boolean;
 	readonly interactive: boolean;
 }): Effect.Effect<Mode, Error> =>
@@ -177,14 +152,29 @@ const resolveMode = (input: {
 			const [, app, stack] = m as unknown as [string, string, string];
 			return { kind: 'target', app, stack } as const;
 		}
-		if (input.abandoned) return { kind: 'abandoned' } as const;
-		if (Option.isSome(input.stale)) {
-			const parsed = parseDuration(input.stale.value);
-			if ('error' in parsed) return yield* Effect.fail(new Error(parsed.error));
-			return { kind: 'stale', maxAgeMs: parsed.ms } as const;
-		}
+		if (input.repoGone) return { kind: 'repo-gone' } as const;
 		if (input.allOrphans) return { kind: 'all-orphans' } as const;
 		return { kind: 'interactive' } as const;
+	});
+
+// Silent GC of stale registry entries: any entry whose `repoPath` is
+// still on disk but has no surviving docker resources is a leftover
+// from a `wipe` that didn't clean the registry, or out-of-band
+// cleanup. Drop it from the registry on every mutating prune run so the
+// inventory doesn't keep nagging the user. The collectInventory
+// snapshot has already filtered these out of `rows`, so we re-derive
+// the candidates here from the registry directly.
+const gcStaleRegistryEntries = (rows: ReadonlyArray<InventoryRow>) =>
+	Effect.gen(function* () {
+		const reg = yield* registry.read();
+		const presentKeys = new Set(rows.map((r) => `${r.app}/${r.stack}`));
+		for (const entry of reg.stacks) {
+			const key = `${entry.app}/${entry.stack}`;
+			if (presentKeys.has(key)) continue;
+			if (entry.pid !== undefined && isPidAlive(entry.pid)) continue;
+			if (!existsSync(entry.repoPath)) continue;
+			yield* registry.remove(entry.app, entry.stack, entry.network).pipe(Effect.ignore);
+		}
 	});
 
 const renderPruneResult = (app: string, stack: string, result: PruneStackResult): string => {
@@ -226,8 +216,9 @@ const pruneRows = (
 				continue;
 			}
 			if (options.dryRun) {
+				const tag = row.classification === 'repo-gone' ? ' (repo gone)' : '';
 				yield* Console.log(
-					`would prune ${row.app}/${row.stack} [${row.classification}]: ${row.containers.length} containers, ${row.networks.length} networks, ${row.volumes.length} volumes`,
+					`would prune ${row.app}/${row.stack}${tag}: ${row.containers.length} containers, ${row.networks.length} networks, ${row.volumes.length} volumes`,
 				);
 				continue;
 			}
@@ -255,10 +246,9 @@ const printInventory = (rows: ReadonlyArray<InventoryRow>) =>
 		}
 		yield* Console.log('');
 		yield* Console.log(renderTotals(totalsFor(rows)));
-		yield* Console.log(renderClassificationTally(rows));
 	});
 
-interface ClassificationModeArgs {
+interface BulkModeArgs {
 	readonly keepSnapshots: boolean;
 	readonly images: boolean;
 	readonly includeImages: boolean;
@@ -266,34 +256,31 @@ interface ClassificationModeArgs {
 	readonly yes: boolean;
 }
 
-// Shared body for `--abandoned`, `--stale`, `--all-orphans`. Selects
-// rows by `filter`, prints a tally, then calls `pruneRows`. `dryRun`
-// skips the `--yes` requirement (printing is read-only).
-const runClassificationMode = (input: {
+// Shared body for `--repo-gone` and `--all-orphans`. Caller pre-filters
+// the matching rows; we just gate on --yes / --dry-run, print a tally,
+// then delegate to pruneRows. `dryRun` skips the `--yes` requirement
+// since printing is read-only.
+const runBulkMode = (input: {
 	readonly label: string;
-	readonly filter: (r: InventoryRow) => boolean;
 	readonly rows: ReadonlyArray<InventoryRow>;
-	readonly args: ClassificationModeArgs;
-	/** Skip the `filter` step (`rows` is already filtered). */
-	readonly preFiltered?: boolean;
+	readonly args: BulkModeArgs;
 }) =>
 	Effect.gen(function* () {
-		const matched = input.preFiltered ? input.rows : input.rows.filter(input.filter);
-		if (matched.length === 0) {
+		if (input.rows.length === 0) {
 			yield* Console.log(`prune --${input.label}: nothing matches`);
 			return;
 		}
 		if (!input.args.yes && !input.args.dryRun) {
 			yield* Console.error(
-				`devstack prune --${input.label}: --yes (or --dry-run) is required to remove ${matched.length} stack${matched.length === 1 ? '' : 's'}`,
+				`devstack prune --${input.label}: --yes (or --dry-run) is required to remove ${input.rows.length} stack${input.rows.length === 1 ? '' : 's'}`,
 			);
 			return yield* Effect.fail(new Error('prune: --yes required'));
 		}
-		const totals = totalsFor(matched);
+		const totals = totalsFor(input.rows);
 		yield* Console.log(
-			`pruning ${matched.length} ${input.label} stack${matched.length === 1 ? '' : 's'}${totals.bytes > 0 ? ` (~${formatBytes(totals.bytes)})` : ''}`,
+			`pruning ${input.rows.length} ${input.label} stack${input.rows.length === 1 ? '' : 's'}${totals.bytes > 0 ? ` (~${formatBytes(totals.bytes)})` : ''}`,
 		);
-		yield* pruneRows(matched, {
+		yield* pruneRows(input.rows, {
 			keepSnapshots: input.args.keepSnapshots,
 			images: input.args.images,
 			dryRun: input.args.dryRun,
@@ -356,18 +343,20 @@ export const pruneCommand = Command.make(
 		keepSnapshots: keepSnapshotsFlag,
 		images: imagesFlag,
 		includeImages: includeImagesFlag,
-		abandoned: abandonedFlag,
-		stale: staleFlag,
+		repoGone: repoGoneFlag,
+		abandoned: abandonedAliasFlag,
 		appFilter: appFilterFlag,
 		dryRun: dryRunFlag,
 	},
 	(args) =>
 		Effect.gen(function* () {
+			// `--abandoned` is the legacy spelling; route it to
+			// `--repo-gone` so the rest of the resolver stays single-path.
+			const repoGone = args.repoGone || args.abandoned;
 			const mode = yield* resolveMode({
 				list: args.list,
 				target: args.target,
-				abandoned: args.abandoned,
-				stale: args.stale,
+				repoGone,
 				allOrphans: args.allOrphans,
 				interactive: args.interactive,
 			});
@@ -382,6 +371,14 @@ export const pruneCommand = Command.make(
 			if (mode.kind === 'list') {
 				yield* printInventory(rows);
 				return;
+			}
+
+			// All mutating modes silently GC stale registry entries
+			// (repo still on disk but no docker resources). Skipped on
+			// dry-run so a `--dry-run` pass doesn't surprise the user
+			// with a registry write.
+			if (!args.dryRun) {
+				yield* gcStaleRegistryEntries(allRows);
 			}
 
 			if (mode.kind === 'target') {
@@ -401,8 +398,9 @@ export const pruneCommand = Command.make(
 				const matchingInventory = allRows.find((r) => r.app === mode.app && r.stack === mode.stack);
 				if (args.dryRun) {
 					const m = matchingInventory;
+					const tag = m?.classification === 'repo-gone' ? ' (repo gone)' : '';
 					yield* Console.log(
-						`would prune ${mode.app}/${mode.stack} [${m?.classification ?? 'untracked'}]: ${m?.containers.length ?? 0} containers, ${m?.networks.length ?? 0} networks, ${m?.volumes.length ?? 0} volumes`,
+						`would prune ${mode.app}/${mode.stack}${tag}: ${m?.containers.length ?? 0} containers, ${m?.networks.length ?? 0} networks, ${m?.volumes.length ?? 0} volumes`,
 					);
 					return;
 				}
@@ -419,55 +417,20 @@ export const pruneCommand = Command.make(
 				return;
 			}
 
-			if (mode.kind === 'abandoned') {
-				yield* runClassificationMode({
-					label: 'abandoned',
-					filter: (r) => r.classification === 'abandoned',
-					rows,
-					args,
-				});
-				return;
-			}
-
-			if (mode.kind === 'stale') {
-				// `stale` rows are registry entries unseen in the last
-				// 30 days. The CLI flag accepts an arbitrary duration —
-				// re-classify here against the cutoff the user specified,
-				// independent of the registry's hard-coded threshold.
-				const now = Date.now();
-				const cutoff = now - mode.maxAgeMs;
-				const matched = rows.filter((r) => {
-					if (r.runningPid !== undefined) return false;
-					if (r.registryEntry === undefined) return false;
-					const lastSeen = Date.parse(r.registryEntry.lastSeen);
-					if (!Number.isFinite(lastSeen)) return false;
-					return lastSeen < cutoff;
-				});
-				yield* runClassificationMode({
-					label: `stale (>${mode.maxAgeMs / 86_400_000}d)`,
-					filter: () => false,
-					rows: matched,
-					args,
-					preFiltered: true,
-				});
+			if (mode.kind === 'repo-gone') {
+				const matched = rows.filter((r) => r.classification === 'repo-gone');
+				yield* runBulkMode({ label: 'repo-gone', rows: matched, args });
 				return;
 			}
 
 			if (mode.kind === 'all-orphans') {
-				// "All non-active" — every row except live supervisors.
-				// Includes abandoned + stale + dormant + untracked.
+				// Every row whose supervisor is not running. Use with
+				// care — this includes idle stacks the user might still
+				// want.
 				const orphans = rows.filter(
-					(r) =>
-						r.classification !== 'active' &&
-						(r.runningPid === undefined || !isPidAlive(r.runningPid)),
+					(r) => r.runningPid === undefined || !isPidAlive(r.runningPid),
 				);
-				yield* runClassificationMode({
-					label: 'all-orphans',
-					filter: () => false,
-					rows: orphans,
-					args,
-					preFiltered: true,
-				});
+				yield* runBulkMode({ label: 'all-orphans', rows: orphans, args });
 				return;
 			}
 
@@ -475,7 +438,7 @@ export const pruneCommand = Command.make(
 			// so a CI shell can't hang waiting for keypresses.
 			if (process.stdin.isTTY !== true) {
 				yield* Console.error(
-					'devstack prune: interactive mode requires a TTY. Use `--list`, `<app>/<stack> --yes`, `--abandoned --yes`, `--stale 30d --yes`, or `--all-orphans --yes`.',
+					'devstack prune: interactive mode requires a TTY. Use `--list`, `<app>/<stack> --yes`, `--repo-gone --yes`, or `--all-orphans --yes`.',
 				);
 				return yield* Effect.fail(new Error('prune: interactive mode without TTY'));
 			}
@@ -505,6 +468,6 @@ export const pruneCommand = Command.make(
 		}),
 ).pipe(
 	Command.withDescription(
-		'Inventory + interactive cross-stack cleanup. `--list` to print, `--interactive` to pick, `<app>/<stack> --yes` to target, `--all-orphans --yes` to nuke every idle stack.',
+		'Inventory + interactive cross-stack cleanup. `--list` to print, `--interactive` to pick, `<app>/<stack> --yes` to target, `--repo-gone --yes` to clean every stack whose repo is gone, `--all-orphans --yes` to nuke every idle stack.',
 	),
 );

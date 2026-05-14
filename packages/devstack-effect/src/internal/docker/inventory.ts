@@ -23,9 +23,10 @@
 
 import { Effect, FileSystem } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
+import { existsSync } from 'node:fs';
 import { join as joinPath } from 'node:path';
 import { isPidAlive as isPidAliveShared } from '../process-liveness.js';
-import { classifyEntry, registry, type Classification, type RegistryEntry } from '../registry.js';
+import { registry, type RegistryEntry } from '../registry.js';
 
 type Spawner = ReturnType<typeof ChildProcessSpawner.make>;
 type Fs = ReturnType<typeof FileSystem.make>;
@@ -41,19 +42,21 @@ export interface InventoryRow {
 	/** Supervisor PID if a live `state.json.lock` was found, else `undefined`. */
 	readonly runningPid: number | undefined;
 	/**
-	 * Lifecycle classification — derived from the global registry +
-	 * docker presence + repo-on-disk check. See `Classification` for
-	 * the bucket semantics. `'untracked'` rows have docker resources
-	 * but no registry entry (pre-registry orphans). `'wiped'` rows
-	 * have a registry entry but no docker resources (registry is
-	 * stale and can be GC'd).
+	 * Three-way row state used by the picker + doctor inventory. See
+	 * `computeClassification` for the rules.
+	 *   - `'running'`: a live supervisor pid holds this stack's lock.
+	 *     Never selectable / prunable.
+	 *   - `'repo-gone'`: the registry recorded a `repoPath` and that
+	 *     directory no longer exists on disk. The user's most common
+	 *     "I want to clean this up" trigger; pre-selected in the picker.
+	 *   - `'idle'`: everything else. Selectable, no special highlight.
 	 */
 	readonly classification: RowClassification;
 	/** Registry entry if one exists for this (app, stack). */
 	readonly registryEntry: RegistryEntry | undefined;
 }
 
-export type RowClassification = Classification | 'untracked' | 'wiped';
+export type RowClassification = 'running' | 'repo-gone' | 'idle';
 
 export interface ContainerRef {
 	readonly id: string;
@@ -584,8 +587,8 @@ export const collectInventory = (
 			{ concurrency: 'unbounded' },
 		);
 
-		// Bucket by (app, stack). Use `<app> <stack>` as the map key
-		// — ` ` can't appear in either field (docker rejects it in
+		// Bucket by (app, stack). Use `<app>/<stack>` as the map key
+		// — `/` can't appear in either field (docker rejects it in
 		// labels), so collisions are impossible.
 		type Bucket = {
 			containers: Array<ContainerRef>;
@@ -594,7 +597,7 @@ export const collectInventory = (
 		};
 		const buckets = new Map<string, Bucket>();
 		const ensure = (app: string, stack: string): Bucket => {
-			const k = `${app} ${stack}`;
+			const k = `${app}/${stack}`;
 			let b = buckets.get(k);
 			if (b === undefined) {
 				b = { containers: [], networks: [], volumes: [] };
@@ -632,29 +635,27 @@ export const collectInventory = (
 
 		// Read the global registry. Cross-join on (app, stack) so each
 		// docker-present row picks up the matching entry's
-		// `repoPath` / `lastSeen` / `pid`, AND we can surface `wiped`
-		// rows where the registry says we ran the stack but no docker
-		// resources survive on this host (e.g. a teardown that
-		// preceded the registry-remove call, or out-of-band cleanup).
+		// `repoPath` / `lastSeen` / `pid`. Registry-only entries (no
+		// surviving docker resources) only surface when their
+		// `repoPath` is gone — those are the "repo-gone" rows the user
+		// wants to GC. Registry-only entries whose repo still exists
+		// are stale bookkeeping and silently elided here; `prune`
+		// strips them from the registry in its own GC pass.
 		const registrySnapshot = yield* registry.read();
 		const registryByKey = new Map<string, RegistryEntry>();
 		for (const entry of registrySnapshot.stacks) {
-			registryByKey.set(`${entry.app} ${entry.stack}`, entry);
+			registryByKey.set(`${entry.app}/${entry.stack}`, entry);
 		}
 
 		const rows: Array<InventoryRow> = [];
 		const seenKeys = new Set<string>();
 		for (const [key, bucket] of buckets) {
-			const [app, stack] = key.split(' ') as [string, string];
+			const [app, stack] = key.split('/') as [string, string];
 			seenKeys.add(key);
 			const matchingStates = states.filter((s) => s.stack === stack);
 			const runningPid = matchingStates.find((s) => s.pid !== undefined && isPidAlive(s.pid))?.pid;
 			const entry = registryByKey.get(key);
-			const classification = computeClassification({
-				entry,
-				dockerPresent: true,
-				runningPid,
-			});
+			const classification = computeClassification({ entry, runningPid });
 			rows.push({
 				app,
 				stack,
@@ -668,21 +669,20 @@ export const collectInventory = (
 			});
 		}
 
-		// Registry-tracked rows with no surviving docker resources on
-		// this host — the stack was torn down (or the resources were
-		// destroyed out-of-band). Emit a row so `prune` can offer to GC
-		// the registry entry. No docker enumeration needed; the entry
-		// itself carries `repoPath` for the picker to surface.
+		// Registry-only entries (no docker resources on this host).
+		// Only surface the ones whose `repoPath` is gone — those carry
+		// the signal the user cares about ("I `rm -rf`'d this example
+		// and the registry still says it existed"). Entries whose repo
+		// is still on disk but have no docker presence are silently
+		// elided; `prune` strips them from the registry in its silent
+		// GC pass.
 		for (const entry of registrySnapshot.stacks) {
-			const key = `${entry.app} ${entry.stack}`;
+			const key = `${entry.app}/${entry.stack}`;
 			if (seenKeys.has(key)) continue;
 			const matchingStates = states.filter((s) => s.stack === entry.stack);
 			const runningPid = matchingStates.find((s) => s.pid !== undefined && isPidAlive(s.pid))?.pid;
-			const classification = computeClassification({
-				entry,
-				dockerPresent: false,
-				runningPid,
-			});
+			if (runningPid === undefined && existsSync(entry.repoPath)) continue;
+			const classification = computeClassification({ entry, runningPid });
 			rows.push({
 				app: entry.app,
 				stack: entry.stack,
@@ -710,28 +710,23 @@ export const collectInventory = (
 
 interface ClassificationInput {
 	readonly entry: RegistryEntry | undefined;
-	readonly dockerPresent: boolean;
 	readonly runningPid: number | undefined;
 }
 
-// Combine the registry's `classify` result with docker presence to
-// produce the wider `RowClassification` vocabulary. The registry's view
-// is authoritative for `active`/`dormant`/`stale`/`abandoned`; the
-// `untracked` and `wiped` buckets cover the cases where docker and the
-// registry disagree.
+// Three-way row state for the picker + doctor inventory. We deliberately
+// drop the older active/dormant/stale/abandoned/untracked/wiped vocab —
+// the user wants to "manage and clean things up without visiting each
+// repo", not a lifecycle report card. The rules in priority order:
+//   1. `runningPid` is alive  → `'running'` (never selectable).
+//   2. registry entry exists AND its `repoPath` is no longer on disk
+//      → `'repo-gone'` (the "I `rm -rf`'d the example, please clean it
+//      up" trigger; pre-selected in the picker).
+//   3. everything else → `'idle'`.
 export const computeClassification = (input: ClassificationInput): RowClassification => {
-	const { entry, dockerPresent, runningPid } = input;
-	if (entry === undefined) {
-		// No registry record. Pre-registry orphans (built before the
-		// registry shipped) or weird out-of-band state. A live state-
-		// dir lock still wins — never classify a row with a running
-		// supervisor as `untracked` because the picker would happily
-		// mark it for removal.
-		if (runningPid !== undefined) return 'active';
-		return 'untracked';
-	}
-	if (!dockerPresent && runningPid === undefined) return 'wiped';
-	return classifyEntry(entry);
+	const { entry, runningPid } = input;
+	if (runningPid !== undefined && isPidAliveShared(runningPid)) return 'running';
+	if (entry !== undefined && !existsSync(entry.repoPath)) return 'repo-gone';
+	return 'idle';
 };
 
 // Render helpers used by both `doctor` and `prune --list`.
@@ -753,6 +748,18 @@ export const volumeBytes = (row: InventoryRow): number => {
 	return total;
 };
 
+// `${app}/.../${parent}` shortener — keeps `/long/path/to/repos/wallet`
+// from blowing the row width. Used by both the doctor inventory line
+// and the Ink picker's row renderer.
+export const shortRepoPath = (full: string | undefined): string => {
+	if (full === undefined || full.length === 0) return '—';
+	const norm = full.replace(/\/+$/, '');
+	const parts = norm.split('/');
+	if (parts.length <= 2) return norm;
+	const tail = parts.slice(-2).join('/');
+	return `…/${tail}`;
+};
+
 export const renderInventoryRow = (row: InventoryRow): string => {
 	const containers = summarizeContainers(row);
 	const networks = `${row.networks.length} network${row.networks.length === 1 ? '' : 's'}`;
@@ -761,50 +768,9 @@ export const renderInventoryRow = (row: InventoryRow): string => {
 	const volumes = `${row.volumes.length} volume${row.volumes.length === 1 ? '' : 's'}${sized}`;
 	const state = row.stateDirs.length > 0 ? 'state present' : 'no state';
 	const running = row.runningPid !== undefined ? '  ← running' : '';
-	const tag = `[${row.classification}]`;
-	return `  ${tag} ${row.app} / ${row.stack}  —  ${containers}, ${networks}, ${volumes}, ${state}${running}`;
-};
-
-// Tally rows by classification — used by doctor's hint line and the
-// confirmation screen in the interactive picker. Each bucket carries
-// the same `InventoryTotals` shape so callers can mix-and-match
-// `renderTotals` with `byClassification`'s output.
-export const byClassification = (
-	rows: ReadonlyArray<InventoryRow>,
-): Readonly<Record<RowClassification, ReadonlyArray<InventoryRow>>> => {
-	const buckets: Record<RowClassification, Array<InventoryRow>> = {
-		active: [],
-		dormant: [],
-		stale: [],
-		abandoned: [],
-		untracked: [],
-		wiped: [],
-	};
-	for (const r of rows) buckets[r.classification].push(r);
-	return buckets;
-};
-
-// Compact "5 stacks: 2 active, 1 dormant, ..." line for doctor. Skips
-// zero-count classifications so the line stays readable when only one
-// or two buckets have rows.
-export const renderClassificationTally = (rows: ReadonlyArray<InventoryRow>): string => {
-	const buckets = byClassification(rows);
-	const order: ReadonlyArray<RowClassification> = [
-		'active',
-		'dormant',
-		'stale',
-		'abandoned',
-		'untracked',
-		'wiped',
-	];
-	const parts: Array<string> = [];
-	for (const k of order) {
-		const n = buckets[k].length;
-		if (n === 0) continue;
-		parts.push(`${n} ${k}`);
-	}
-	const total = rows.length;
-	return `${total} stack${total === 1 ? '' : 's'}: ${parts.join(', ')}`;
+	const repo = row.registryEntry !== undefined ? `  ${shortRepoPath(row.registryEntry.repoPath)}` : '';
+	const repoGone = row.classification === 'repo-gone' ? '  [repo gone]' : '';
+	return `  ${row.app} / ${row.stack}  —  ${containers}, ${networks}, ${volumes}, ${state}${repo}${repoGone}${running}`;
 };
 
 export interface InventoryTotals {

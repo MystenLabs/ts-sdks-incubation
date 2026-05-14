@@ -9,22 +9,28 @@
 //   enter          confirm and prune the selected rows
 //   q or Ctrl-C    quit without pruning
 //
-// Running rows render in dim red and are NOT selectable — pruning a
-// stack whose supervisor is alive would yank the rug from a live
-// dev-loop's docker resources. Operator must `q` and stop the
-// supervisor first.
+// Visual model (deliberately small — see commit 94965e70's predecessor
+// for the over-engineered classification-tag version we replaced):
+//
+//   - Running rows render in dim red with `(running pid N)`. Not
+//     selectable; the cursor skips them.
+//   - Repo-gone rows (registry recorded a repoPath that no longer
+//     exists on disk) render highlighted yellow and are pre-selected
+//     on mount. That's the user's most common "clean this up" trigger.
+//   - Everything else is a plain row, selectable, no special tag.
+//
+// Each row surfaces `repoPath` (last 2 path segments) and `lastSeen`
+// when the registry has a record — that's the cross-machine
+// recognition signal the user wanted ("oh right, that's the wallet
+// example I cloned to /tmp last week").
 
 import { Box, Text, useApp, useInput } from 'ink';
 import React, { useEffect, useMemo, useState } from 'react';
-import type {
-	InventoryRow,
-	InventoryTotals,
-	RowClassification,
-} from '../../internal/docker/inventory.js';
+import type { InventoryRow, InventoryTotals } from '../../internal/docker/inventory.js';
 import {
-	byClassification,
 	formatBytes,
 	renderTotals,
+	shortRepoPath,
 	summarizeContainers,
 	totalsFor,
 	volumeBytes,
@@ -40,16 +46,14 @@ export interface PruneAppProps {
 
 const rowKey = (r: InventoryRow): string => `${r.app}/${r.stack}`;
 
-// User-approved default: abandoned rows are pre-selected on mount. The
-// classification is computed by `internal/docker/inventory.ts` from the
-// global registry — a row is `abandoned` when the recorded
-// `repoPath` no longer exists on disk (a `rm -rf`'d example). The user
-// opted in to this default explicitly; stale rows still require a
-// space-toggle so multi-month-old stacks don't disappear silently.
+// Pre-select every repo-gone row. These are the rows the user almost
+// certainly wants to clean up (the recorded `repoPath` no longer
+// exists on disk — they `rm -rf`'d the example). Running rows are
+// never auto-selected because they aren't selectable at all.
 const initialSelection = (rows: ReadonlyArray<InventoryRow>): ReadonlySet<string> => {
 	const out = new Set<string>();
 	for (const r of rows) {
-		if (r.classification === 'abandoned' && r.runningPid === undefined) {
+		if (r.classification === 'repo-gone' && r.runningPid === undefined) {
 			out.add(rowKey(r));
 		}
 	}
@@ -154,13 +158,8 @@ export function PruneApp({ rows, onSubmit, onQuit }: PruneAppProps): React.React
 	});
 
 	const selectedRows = rows.filter((r) => selected.has(rowKey(r)));
-	const selectedTotals: InventoryTotals = totalsFor(selectedRows);
+	const selectedTotals: InventoryTotals = useMemo(() => totalsFor(selectedRows), [selectedRows]);
 	const orphanTotals = totalsFor(rows.filter(isSelectable));
-	// Confirmation tally — break the selected rows out by classification
-	// so the user sees exactly what they're about to remove (3 abandoned,
-	// 1 stale, etc.). useMemo so re-renders during cursor movement don't
-	// recompute.
-	const selectedTallyByClass = useMemo(() => byClassification(selectedRows), [selectedRows]);
 
 	return (
 		<Box flexDirection="column">
@@ -187,11 +186,10 @@ export function PruneApp({ rows, onSubmit, onQuit }: PruneAppProps): React.React
 			{confirming ? (
 				<Box paddingX={1} marginTop={1} flexDirection="column">
 					<Text>
-						Will remove: {renderClassificationTallyForUi(selectedTallyByClass)} (
+						Will remove: {selectedRows.length} stack{selectedRows.length === 1 ? '' : 's'} (
 						{selectedTotals.containers} containers, {selectedTotals.networks} networks,{' '}
 						{selectedTotals.volumes} volumes
-						{selectedTotals.bytes > 0 ? ` (~${formatBytes(selectedTotals.bytes)})` : ''}
-						).
+						{selectedTotals.bytes > 0 ? ` (~${formatBytes(selectedTotals.bytes)})` : ''}).
 					</Text>
 					<Text color="yellow">Proceed? [y/N]</Text>
 				</Box>
@@ -205,54 +203,6 @@ export function PruneApp({ rows, onSubmit, onQuit }: PruneAppProps): React.React
 		</Box>
 	);
 }
-
-const classificationColor = (kind: RowClassification): string | undefined => {
-	switch (kind) {
-		case 'active':
-			return 'cyan';
-		case 'dormant':
-			return 'green';
-		case 'stale':
-			return 'yellow';
-		case 'abandoned':
-			return 'red';
-		case 'untracked':
-			return 'magenta';
-		case 'wiped':
-			return undefined; // dim only
-	}
-};
-
-// `${app}/.../${parent}` shortener — keeps `/long/path/to/repos/wallet` from
-// blowing the row width. Leaves any non-string falsy input as `—`.
-const shortRepoPath = (full: string | undefined): string => {
-	if (full === undefined || full.length === 0) return '—';
-	const norm = full.replace(/\/+$/, '');
-	const parts = norm.split('/');
-	if (parts.length <= 2) return norm;
-	const tail = parts.slice(-2).join('/');
-	return `…/${tail}`;
-};
-
-const renderClassificationTallyForUi = (
-	buckets: Readonly<Record<RowClassification, ReadonlyArray<InventoryRow>>>,
-): string => {
-	const order: ReadonlyArray<RowClassification> = [
-		'abandoned',
-		'stale',
-		'dormant',
-		'untracked',
-		'wiped',
-		'active',
-	];
-	const parts: Array<string> = [];
-	for (const k of order) {
-		const n = buckets[k].length;
-		if (n === 0) continue;
-		parts.push(`${n} ${k}`);
-	}
-	return parts.length > 0 ? parts.join(', ') : '0 stacks';
-};
 
 function PruneRow({
 	row,
@@ -270,8 +220,6 @@ function PruneRow({
 	const detail = `${containers}, ${row.networks.length} net${row.networks.length === 1 ? '' : 's'}, ${row.volumes.length} vol${row.volumes.length === 1 ? '' : 's'}${sized}`;
 	const cursor = focused ? '>' : ' ';
 	const box = checked ? '[x]' : '[ ]';
-	const tag = `[${row.classification}]`;
-	const tagColor = classificationColor(row.classification);
 	const entry = row.registryEntry;
 	const repoSummary =
 		entry !== undefined ? shortRepoPath(entry.repoPath) : '(unknown — pre-registry)';
@@ -283,21 +231,25 @@ function PruneRow({
 					{cursor} [-] {row.app}/{row.stack}{' '}
 				</Text>
 				<Text color="red" dimColor>
-					{tag} (running pid {row.runningPid})
+					(running pid {row.runningPid})
 				</Text>
 				<Text dimColor> {detail}</Text>
 			</Box>
 		);
 	}
+	const repoGone = row.classification === 'repo-gone';
+	const labelColor = focused ? 'cyan' : repoGone ? 'yellow' : undefined;
 	return (
 		<Box>
-			<Text color={focused ? 'cyan' : undefined}>
+			<Text color={labelColor} bold={repoGone}>
 				{cursor} {box} {row.app}/{row.stack}{' '}
 			</Text>
-			<Text color={tagColor} dimColor={row.classification === 'wiped'}>
-				{tag}
-			</Text>
-			<Text dimColor> {detail} </Text>
+			{repoGone ? (
+				<Text color="yellow" bold>
+					[repo gone]{' '}
+				</Text>
+			) : null}
+			<Text dimColor>{detail} </Text>
 			<Text dimColor>{repoSummary} </Text>
 			<Text dimColor>{lastSeen}</Text>
 		</Box>
