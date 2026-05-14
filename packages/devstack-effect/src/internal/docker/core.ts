@@ -269,27 +269,53 @@ export const run = (
 				: Ref.update(claimedRef, (s) => new Set(s).add(id));
 
 		const inspected = yield* inspectContainer(spawner, name);
-		if (inspected !== null) {
-			if (inspected.running && inspected.image === opts.image) {
-				yield* Effect.logInfo(`devstack: reusing existing container '${name}'`);
-				yield* Effect.annotateCurrentSpan({
-					'docker.op': 'run',
-					'docker.name': name,
-					'docker.reused': true,
-				});
-				yield* claim(inspected.containerId);
-				yield* addFinalizer(
-					reuseScope,
-					Effect.uninterruptible(
-						spawner
-							.exitCode(ChildProcess.make('docker', ['rm', '-f', inspected.containerId]))
-							.pipe(Effect.ignore),
-					),
-				);
-				return { containerId: inspected.containerId, name, reused: true };
+		if (inspected !== null && inspected.image === opts.image) {
+			// Two warm-restart paths, both faster than re-`run`:
+			//
+			//   1. running + matching image → adopt as-is. Sui chain ID,
+			//      walrus storage state, seal master key, etc. are all
+			//      preserved because the process never stopped.
+			//   2. stopped + matching image → `docker start <name>` to
+			//      resume from disk. Process restarts but its on-disk
+			//      state (genesis, RocksDB, walrus deploy outputs) is
+			//      untouched, so re-acquire is ~1s instead of a fresh
+			//      run with cold genesis. Containers land in this state
+			//      because the supervisor's exit-time finalizer runs
+			//      `docker stop` (not `docker rm -f`) — see the
+			//      finalizer registration below.
+			if (!inspected.running) {
+				yield* Effect.logInfo(`devstack: resuming stopped container '${name}'`);
+				yield* spawner
+					.exitCode(ChildProcess.make('docker', ['start', inspected.containerId]))
+					.pipe(Effect.mapError(dockerError('docker start')));
+			} else {
+				yield* Effect.logInfo(`devstack: reusing running container '${name}'`);
 			}
-			// Stale (not running) or wrong image — fall through to the
-			// orphan-sweep + recreate path below.
+			yield* Effect.annotateCurrentSpan({
+				'docker.op': 'run',
+				'docker.name': name,
+				'docker.reused': true,
+				'docker.resumed': !inspected.running,
+			});
+			yield* claim(inspected.containerId);
+			// Finalizer: stop (don't remove) so the container's on-disk
+			// state survives until the next pnpm dev resumes it. `devstack
+			// wipe` is the only way to remove containers + volumes.
+			yield* addFinalizer(
+				reuseScope,
+				Effect.uninterruptible(
+					spawner
+						.exitCode(ChildProcess.make('docker', ['stop', inspected.containerId]))
+						.pipe(Effect.ignore),
+				),
+			);
+			return { containerId: inspected.containerId, name, reused: true };
+		}
+		if (inspected !== null) {
+			// Container exists but the image changed (e.g. user bumped
+			// the sui version): remove it so the fresh `docker run`
+			// below succeeds. Resume isn't safe here — the on-disk
+			// state may not be compatible with the new image.
 		}
 
 		// Per-primitive orphan sweep. A prior process killed mid-cycle
@@ -326,22 +352,30 @@ export const run = (
 			);
 		}
 
-		// Best-effort `docker rm -f` on scope close. Tolerate failure here
-		// because the container may have already exited / been removed by
-		// `--rm` or by a competing teardown — wedging the scope close on a
-		// stale container would block the rest of the engine shutdown.
-		// `Effect.uninterruptible` is essential: scope teardown fires under
-		// fiber interruption (SIGINT path), and without it the rm subprocess
-		// gets killed mid-flight, leaving the container running.
+		// Best-effort `docker stop` on scope close. We deliberately
+		// stop instead of remove so the container's on-disk state
+		// (named volumes, RocksDB stores, deploy outputs, …) survives
+		// to the next `pnpm dev`, where the reuse path above resumes
+		// it with `docker start` in ~1s. Full teardown is the job of
+		// `devstack wipe` (which removes via the label-based sweep).
+		//
+		// Tolerate failure here because the container may have already
+		// exited / been removed by `--rm` or a competing teardown.
+		// `Effect.uninterruptible` is essential: scope teardown fires
+		// under fiber interruption (SIGINT path), and without it the
+		// stop subprocess gets killed mid-flight, leaving the
+		// container in an indeterminate state.
 		//
 		// Registered on the `LongLivedScope` (when provided by
-		// `defineDevstack`) so per-cycle teardown on `r` doesn't kill
+		// `defineDevstack`) so per-cycle teardown on `r` doesn't stop
 		// reusable containers — see the reuse-if-healthy comment above.
 		yield* claim(containerId);
 		yield* addFinalizer(
 			reuseScope,
 			Effect.uninterruptible(
-				spawner.exitCode(ChildProcess.make('docker', ['rm', '-f', containerId])).pipe(Effect.ignore),
+				spawner
+					.exitCode(ChildProcess.make('docker', ['stop', containerId]))
+					.pipe(Effect.ignore),
 			),
 		);
 
