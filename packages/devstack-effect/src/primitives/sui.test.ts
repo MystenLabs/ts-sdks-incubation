@@ -121,6 +121,47 @@ describe('sui factory shapes', () => {
 			}
 		}),
 	);
+
+	// `waitForTransactionsReady` upgrades the socket-level "Sui ready"
+	// gate into a "chain can transfer funds" guarantee for primitives
+	// that immediately submit a funds-transferable tx after yielding
+	// `Sui`. On networks without a faucet the chain is presumed
+	// always-transferable (mainnet, suiCustom-without-faucet) so the
+	// method short-circuits to `Effect.void` — pinning this avoids
+	// regressing into "30s wait on every mainnet read" by accident.
+	it.effect('suiMainnet().waitForTransactionsReady() resolves immediately (no faucet)', () =>
+		Effect.gen(function* () {
+			const restore = stubChainIdFetch();
+			try {
+				const member = suiMainnet();
+				const sui = yield* Effect.gen(function* () {
+					return yield* Sui;
+				}).pipe(Effect.provide(Layer.provide(member.__layer, TestBaseLayer)));
+				// Should resolve without touching the network. If this
+				// hangs the test would timeout; success means the
+				// no-faucet branch returns `Effect.void` directly.
+				yield* sui.waitForTransactionsReady();
+			} finally {
+				restore();
+			}
+		}),
+	);
+
+	it.effect('suiCustom() without a faucet skips the ready probe', () =>
+		Effect.gen(function* () {
+			const restore = stubChainIdFetch();
+			try {
+				const member = suiCustom({ rpcUrl: 'https://forked.example/sui' });
+				const sui = yield* Effect.gen(function* () {
+					return yield* Sui;
+				}).pipe(Effect.provide(Layer.provide(member.__layer, TestBaseLayer)));
+				expect(sui.faucetUrl).toBeUndefined();
+				yield* sui.waitForTransactionsReady();
+			} finally {
+				restore();
+			}
+		}),
+	);
 });
 
 // faucetReadyProbe is the suiLocalnet ready gate that prevents the
@@ -187,8 +228,7 @@ describe('faucetReadyProbe', () => {
 
 	it.effect('rejects a non-OK HTTP status (e.g. 503 during boot)', () =>
 		Effect.gen(function* () {
-			globalThis.fetch = (async () =>
-				new Response('not yet', { status: 503 })) as typeof fetch;
+			globalThis.fetch = (async () => new Response('not yet', { status: 503 })) as typeof fetch;
 			const exit = yield* faucetReadyProbe(FAUCET_URL).pipe(Effect.exit);
 			expect(Exit.isFailure(exit)).toBe(true);
 		}),
