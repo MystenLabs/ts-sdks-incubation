@@ -1,6 +1,4 @@
-import { expect, test } from '@playwright/test';
-
-import { connectAs } from '@mysten-incubation/devstack/playwright';
+import { connectAs, expect, test } from '@mysten-incubation/devstack-effect/playwright';
 
 test('alice sends a greeting', async ({ page }) => {
 	await connectAs(page, 'alice');

@@ -1,244 +1,245 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { decodeSuiPrivateKey } from '@mysten/sui/cryptography';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { Engine } from '../engine/class.js';
+import type { Env } from '../engine/types.js';
+import { define } from '../factories/define.js';
+import type { Account } from '../shapes/index.js';
+import { cliSigner, envSigner, type CliSignerState, type EnvSignerState } from './signers.js';
 
-import { cliSigner, envSigner, generatedKeypair } from './signers.js';
+let tmpDir: string;
 
-// signers.ts is the user-facing factory layer. The architecture review flagged
-// `envSigner`'s three-format branching (bech32 / 33-byte / 32-byte) as
-// silent-failure prone, and `cliSigner` lacks a useful error when the alias
-// isn't present. Cover all branches + the localnet `generatedKeypair` stable-
-// per-stack contract.
-
-let tmpDirs: string[] = [];
-
-const newTmpDir = (prefix: string): string => {
-	const dir = mkdtempSync(join(tmpdir(), prefix));
-	tmpDirs.push(dir);
-	return dir;
-};
-
-beforeEach(() => {
-	tmpDirs = [];
+beforeEach(async () => {
+	tmpDir = await mkdtemp(join(tmpdir(), 'devstack-cli-signer-'));
 });
 
-afterEach(() => {
-	for (const d of tmpDirs) rmSync(d, { recursive: true, force: true });
+afterEach(async () => {
+	await rm(tmpDir, { recursive: true, force: true });
 });
 
-// Build a deterministic Ed25519 keypair from a 32-byte seed so every
-// branch of envSigner can be tested against the SAME ground-truth address.
-const seedKeypair = (): Ed25519Keypair => {
-	const secret = new Uint8Array(32);
-	for (let i = 0; i < 32; i++) secret[i] = (i * 7 + 13) & 0xff;
-	return Ed25519Keypair.fromSecretKey(secret);
+const env: Env = {
+	appName: 'demo',
+	appDir: '/tmp/demo',
+	network: 'testnet',
 };
 
-const seed32Bytes = (): Uint8Array => {
-	const secret = new Uint8Array(32);
-	for (let i = 0; i < 32; i++) secret[i] = (i * 7 + 13) & 0xff;
-	return secret;
-};
+interface FakeKeystore {
+	keystorePath: string;
+	aliasesPath: string;
+	keypairs: Record<string, Ed25519Keypair>;
+}
 
-describe('cliSigner — alias resolution against on-disk keystore', () => {
-	it('returns the keypair whose pubkey matches the alias entry', () => {
-		const dir = newTmpDir('devstack-cli-signer-');
-		const kp = seedKeypair();
-		// keystore is JSON array of base64-encoded 33-byte strings
-		// (1 scheme byte + 32 secret bytes), matching the on-disk layout
-		// the sui CLI writes.
-		const decoded = decodeSuiPrivateKey(kp.getSecretKey());
-		const entry = Buffer.concat([Buffer.from([0x00]), Buffer.from(decoded.secretKey)]).toString(
-			'base64',
-		);
-		const keystorePath = join(dir, 'sui.keystore');
-		const aliasesPath = join(dir, 'sui.aliases');
-		writeFileSync(keystorePath, JSON.stringify([entry]));
-		writeFileSync(
-			aliasesPath,
-			JSON.stringify([
-				{ alias: 'publisher', public_key_base64: kp.getPublicKey().toBase64() },
-			]),
-		);
+// Stand up a minimal sui-CLI-shaped keystore + aliases pair in tmpDir.
+// Each entry maps an alias to a pre-generated keypair we control, so
+// tests can assert cliSigner returns the expected one.
+async function makeFakeKeystore(aliases: string[]): Promise<FakeKeystore> {
+	const keypairs: Record<string, Ed25519Keypair> = {};
+	for (const alias of aliases) keypairs[alias] = Ed25519Keypair.generate();
 
-		const signer = cliSigner({ alias: 'publisher', keystorePath, aliasesPath });
-		expect(signer.toSuiAddress()).toBe(kp.toSuiAddress());
-	});
+	const keystoreEntries = Object.values(keypairs).map((kp) => kp.getSecretKey());
+	const aliasesEntries = Object.entries(keypairs).map(([alias, kp]) => ({
+		alias,
+		public_key_base64: kp.getPublicKey().toBase64(),
+	}));
 
-	it('throws a useful error when the alias is missing from sui.aliases', () => {
-		const dir = newTmpDir('devstack-cli-signer-');
-		const keystorePath = join(dir, 'sui.keystore');
-		const aliasesPath = join(dir, 'sui.aliases');
-		writeFileSync(keystorePath, JSON.stringify([]));
-		writeFileSync(aliasesPath, JSON.stringify([{ alias: 'someone-else', public_key_base64: 'x' }]));
+	const keystorePath = join(tmpDir, 'sui.keystore');
+	const aliasesPath = join(tmpDir, 'sui.aliases');
+	await writeFile(keystorePath, JSON.stringify(keystoreEntries), 'utf8');
+	await writeFile(aliasesPath, JSON.stringify(aliasesEntries), 'utf8');
+	return { keystorePath, aliasesPath, keypairs };
+}
 
-		expect(() => cliSigner({ alias: 'ghost', keystorePath, aliasesPath })).toThrow(
-			/alias 'ghost' not found/,
-		);
-	});
-
-	it('throws when the alias exists but no keystore entry matches its public key', () => {
-		const dir = newTmpDir('devstack-cli-signer-');
-		const kp = seedKeypair();
-		const keystorePath = join(dir, 'sui.keystore');
-		const aliasesPath = join(dir, 'sui.aliases');
-		// Empty keystore — alias points at a public key but there's no secret
-		// for it on disk.
-		writeFileSync(keystorePath, JSON.stringify([]));
-		writeFileSync(
-			aliasesPath,
-			JSON.stringify([
-				{ alias: 'publisher', public_key_base64: kp.getPublicKey().toBase64() },
-			]),
-		);
-		expect(() =>
-			cliSigner({ alias: 'publisher', keystorePath, aliasesPath }),
-		).toThrow(/no entry matching alias 'publisher'/);
+describe('cliSigner (validation — no fs reads)', () => {
+	it('rejects empty alias', () => {
+		expect(() => cliSigner({ alias: '' })).toThrow(/alias/);
 	});
 });
 
-describe('envSigner — three input formats', () => {
-	const VAR = 'DEVSTACK_TEST_ENVSIGNER_KEY';
-	const expected = seedKeypair().toSuiAddress();
+describe('cliSigner (real keystore)', () => {
+	it('loads the keypair matching the requested alias', async () => {
+		const ks = await makeFakeKeystore(['publisher', 'minter']);
+		const signer = cliSigner({
+			alias: 'publisher',
+			keystorePath: ks.keystorePath,
+			aliasesPath: ks.aliasesPath,
+		});
+		const engine = new Engine({ stack: [signer] }, { env });
+		const result = await engine.runOnce();
+		expect(result.errored).toEqual([]);
+		const state = engine.getState().nodes.get('signer.publisher')!.state as CliSignerState;
+		expect(state.alias).toBe('publisher');
+		expect(state.address).toBe(ks.keypairs['publisher']!.toSuiAddress());
+		expect(state.secretKey).toBe(ks.keypairs['publisher']!.getSecretKey());
+	});
+
+	it('signer Dep returns a working Ed25519Keypair', async () => {
+		const ks = await makeFakeKeystore(['publisher']);
+		const signer = cliSigner({
+			alias: 'publisher',
+			keystorePath: ks.keystorePath,
+			aliasesPath: ks.aliasesPath,
+		});
+		let received: Ed25519Keypair | undefined;
+		const consumer = define({
+			name: 'consumer',
+			deps: { sig: signer.get('signer') },
+			start: async ({ deps: { sig } }) => {
+				received = sig;
+				return { ok: true };
+			},
+		});
+		const engine = new Engine({ stack: [signer, consumer] }, { env });
+		await engine.runOnce();
+		expect(received).toBeInstanceOf(Ed25519Keypair);
+		expect(received!.toSuiAddress()).toBe(ks.keypairs['publisher']!.toSuiAddress());
+		// Sanity: signing a 32-byte payload returns a 64-byte signature.
+		const sig = await received!.sign(new Uint8Array(32));
+		expect(sig.byteLength).toBe(64);
+	});
+
+	it('errors with a clear message when alias is missing', async () => {
+		const ks = await makeFakeKeystore(['publisher']);
+		const signer = cliSigner({
+			alias: 'minter',
+			keystorePath: ks.keystorePath,
+			aliasesPath: ks.aliasesPath,
+		});
+		const engine = new Engine({ stack: [signer] }, { env });
+		const result = await engine.runOnce();
+		const errored = result.errored.find((e) => e.name === 'signer.minter');
+		expect(errored).toBeDefined();
+		expect(errored?.error.message).toMatch(/alias 'minter' not found/);
+	});
+
+	it('errors when the keystore has no entry for the alias public key', async () => {
+		const ks = await makeFakeKeystore(['publisher']);
+		// Truncate keystore to be empty while leaving aliases intact.
+		await writeFile(ks.keystorePath, '[]', 'utf8');
+		const signer = cliSigner({
+			alias: 'publisher',
+			keystorePath: ks.keystorePath,
+			aliasesPath: ks.aliasesPath,
+		});
+		const engine = new Engine({ stack: [signer] }, { env });
+		const result = await engine.runOnce();
+		const errored = result.errored.find((e) => e.name === 'signer.publisher');
+		expect(errored).toBeDefined();
+		expect(errored?.error.message).toMatch(/no entry matching alias/);
+	});
+
+	it('errors when the keystore file is missing', async () => {
+		const signer = cliSigner({
+			alias: 'publisher',
+			keystorePath: join(tmpDir, 'does-not-exist.keystore'),
+			aliasesPath: join(tmpDir, 'does-not-exist.aliases'),
+		});
+		const engine = new Engine({ stack: [signer] }, { env });
+		const result = await engine.runOnce();
+		const errored = result.errored.find((e) => e.name === 'signer.publisher');
+		expect(errored).toBeDefined();
+		expect(errored?.error.message).toMatch(/aliases file not found/);
+	});
+
+	it('represents.accounts surfaces the address for the manifest plugin', async () => {
+		const ks = await makeFakeKeystore(['publisher']);
+		const signer = cliSigner({
+			alias: 'publisher',
+			keystorePath: ks.keystorePath,
+			aliasesPath: ks.aliasesPath,
+		});
+		const engine = new Engine({ stack: [signer] }, { env });
+		await engine.runOnce();
+		const view = engine.getState().nodes.get('signer.publisher')!;
+		const accounts = view.representations?.accounts as Account[];
+		expect(accounts).toHaveLength(1);
+		expect(accounts[0]?.name).toBe('publisher');
+		expect(accounts[0]?.address).toBe(ks.keypairs['publisher']!.toSuiAddress());
+	});
+});
+
+describe('envSigner', () => {
+	const ENV_VAR = 'DEVSTACK_NEXT_TEST_SIGNER';
 
 	afterEach(() => {
-		delete process.env[VAR];
+		delete process.env[ENV_VAR];
 	});
 
-	it('decodes bech32 (suiprivkey1...) input', () => {
-		process.env[VAR] = seedKeypair().getSecretKey();
-		const signer = envSigner({ name: VAR });
-		expect(signer.toSuiAddress()).toBe(expected);
+	it('rejects empty var', () => {
+		expect(() => envSigner({ var: '' })).toThrow(/var/);
 	});
 
-	it('decodes 33-byte base64 input (scheme byte 0x00 + 32-byte secret)', () => {
-		const secret = seed32Bytes();
-		const buf = Buffer.concat([Buffer.from([0x00]), Buffer.from(secret)]);
-		expect(buf.length).toBe(33);
-		process.env[VAR] = buf.toString('base64');
-		const signer = envSigner({ name: VAR });
-		expect(signer.toSuiAddress()).toBe(expected);
+	it('reads a bech32-encoded secret from the env var', async () => {
+		const kp = Ed25519Keypair.generate();
+		process.env[ENV_VAR] = kp.getSecretKey();
+
+		const signer = envSigner({ var: ENV_VAR });
+		const engine = new Engine({ stack: [signer] }, { env });
+		const result = await engine.runOnce();
+		expect(result.errored).toEqual([]);
+		const state = engine.getState().nodes.get(`signer.${ENV_VAR.toLowerCase()}`)!
+			.state as EnvSignerState;
+		expect(state.address).toBe(kp.toSuiAddress());
+		expect(state.secretKey).toBe(kp.getSecretKey());
 	});
 
-	it('decodes 32-byte base64 input (raw secret, ed25519)', () => {
-		const buf = Buffer.from(seed32Bytes());
-		expect(buf.length).toBe(32);
-		process.env[VAR] = buf.toString('base64');
-		const signer = envSigner({ name: VAR });
-		expect(signer.toSuiAddress()).toBe(expected);
+	it('reads a 33-byte base64 secret (scheme byte + key)', async () => {
+		const kp = Ed25519Keypair.generate();
+		const secret = decodeBech32SecretBytes(kp.getSecretKey());
+		const withScheme = Buffer.concat([Buffer.from([0x00]), secret]);
+		process.env[ENV_VAR] = withScheme.toString('base64');
+
+		const signer = envSigner({ var: ENV_VAR });
+		const engine = new Engine({ stack: [signer] }, { env });
+		const result = await engine.runOnce();
+		expect(result.errored).toEqual([]);
+		const state = engine.getState().nodes.get(`signer.${ENV_VAR.toLowerCase()}`)!
+			.state as EnvSignerState;
+		expect(state.address).toBe(kp.toSuiAddress());
 	});
 
-	it('treats 33-byte input with a non-Ed25519 scheme byte as an error', () => {
-		const secret = seed32Bytes();
-		const buf = Buffer.concat([Buffer.from([0x01]), Buffer.from(secret)]); // 0x01 = secp256k1
-		process.env[VAR] = buf.toString('base64');
-		expect(() => envSigner({ name: VAR })).toThrow(/scheme byte 0x1/);
+	it('reads a bare 32-byte base64 secret (legacy form)', async () => {
+		const kp = Ed25519Keypair.generate();
+		const secret = decodeBech32SecretBytes(kp.getSecretKey());
+		process.env[ENV_VAR] = Buffer.from(secret).toString('base64');
+
+		const signer = envSigner({ var: ENV_VAR });
+		const engine = new Engine({ stack: [signer] }, { env });
+		const result = await engine.runOnce();
+		expect(result.errored).toEqual([]);
+		const state = engine.getState().nodes.get(`signer.${ENV_VAR.toLowerCase()}`)!
+			.state as EnvSignerState;
+		expect(state.address).toBe(kp.toSuiAddress());
 	});
 
-	it('throws when the env var is unset', () => {
-		delete process.env[VAR];
-		expect(() => envSigner({ name: VAR })).toThrow(/is not set/);
+	it('errors when env var is unset', async () => {
+		delete process.env[ENV_VAR];
+		const signer = envSigner({ var: ENV_VAR });
+		const engine = new Engine({ stack: [signer] }, { env });
+		const result = await engine.runOnce();
+		const errored = result.errored.find((e) => e.name === `signer.${ENV_VAR.toLowerCase()}`);
+		expect(errored).toBeDefined();
+		expect(errored?.error.message).toMatch(/not set/);
 	});
 
-	it('throws when the env var is the empty string', () => {
-		process.env[VAR] = '';
-		expect(() => envSigner({ name: VAR })).toThrow(/is not set/);
-	});
-
-	it('throws when the value is not bech32 and not a recognized base64 length', () => {
-		// 7 bytes of base64 — not 32, not 33, no `suiprivkey1` prefix.
-		process.env[VAR] = Buffer.from('garbage').toString('base64');
-		expect(() => envSigner({ name: VAR })).toThrow(/not a recognized key/);
-	});
-});
-
-describe('generatedKeypair — stable per (appDir, stack, accountName)', () => {
-	it('returns a Signer whose address matches across two factory invocations', () => {
-		const appDir = newTmpDir('devstack-gen-keypair-');
-		const factory = generatedKeypair();
-
-		const first = factory({
-			accountName: 'alice',
-			appDir,
-			stack: 'main',
-			network: 'localnet',
-			rpcUrl: '',
-		});
-		const second = factory({
-			accountName: 'alice',
-			appDir,
-			stack: 'main',
-			network: 'localnet',
-			rpcUrl: '',
-		});
-
-		// generatedKeypair() is sync on localnet — reading from disk.
-		if (first instanceof Promise || second instanceof Promise) {
-			throw new Error('expected generatedKeypair to be synchronous on localnet');
-		}
-		expect(first.toSuiAddress()).toBe(second.toSuiAddress());
-	});
-
-	it('throws on testnet/mainnet (localnet-only contract)', () => {
-		const appDir = newTmpDir('devstack-gen-keypair-');
-		const factory = generatedKeypair();
-		expect(() =>
-			factory({
-				accountName: 'alice',
-				appDir,
-				stack: 'main',
-				network: 'testnet',
-				rpcUrl: 'https://rpc.example',
-			}),
-		).toThrow(/only valid on localnet/);
-	});
-
-	it('produces distinct addresses across different account names in the same stack', () => {
-		const appDir = newTmpDir('devstack-gen-keypair-');
-		const factory = generatedKeypair();
-		const alice = factory({
-			accountName: 'alice',
-			appDir,
-			stack: 'main',
-			network: 'localnet',
-			rpcUrl: '',
-		});
-		const bob = factory({
-			accountName: 'bob',
-			appDir,
-			stack: 'main',
-			network: 'localnet',
-			rpcUrl: '',
-		});
-		if (alice instanceof Promise || bob instanceof Promise) {
-			throw new Error('expected generatedKeypair to be synchronous on localnet');
-		}
-		expect(alice.toSuiAddress()).not.toBe(bob.toSuiAddress());
-	});
-
-	it('produces distinct addresses across different stacks for the same account name', () => {
-		const appDir = newTmpDir('devstack-gen-keypair-');
-		const factory = generatedKeypair();
-		const onMain = factory({
-			accountName: 'alice',
-			appDir,
-			stack: 'main',
-			network: 'localnet',
-			rpcUrl: '',
-		});
-		const onScratch = factory({
-			accountName: 'alice',
-			appDir,
-			stack: 'scratch',
-			network: 'localnet',
-			rpcUrl: '',
-		});
-		if (onMain instanceof Promise || onScratch instanceof Promise) {
-			throw new Error('expected generatedKeypair to be synchronous on localnet');
-		}
-		expect(onMain.toSuiAddress()).not.toBe(onScratch.toSuiAddress());
+	it('errors on a non-Ed25519 33-byte payload', async () => {
+		const garbage = Buffer.alloc(33);
+		garbage[0] = 0x01; // secp256k1 scheme
+		process.env[ENV_VAR] = garbage.toString('base64');
+		const signer = envSigner({ var: ENV_VAR });
+		const engine = new Engine({ stack: [signer] }, { env });
+		const result = await engine.runOnce();
+		const errored = result.errored.find((e) => e.name === `signer.${ENV_VAR.toLowerCase()}`);
+		expect(errored).toBeDefined();
+		expect(errored?.error.message).toMatch(/Ed25519/);
 	});
 });
+
+// `Ed25519Keypair.getSecretKey()` returns the bech32 form. To round-trip
+// through the legacy base64 forms, decode it back to raw bytes via the
+// same SDK helper the source uses.
+function decodeBech32SecretBytes(bech32: string): Uint8Array {
+	return decodeSuiPrivateKey(bech32).secretKey;
+}

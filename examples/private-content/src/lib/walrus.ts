@@ -5,7 +5,7 @@
 // on-chain storage-node URLs (docker-internal IPs) to host-mapped
 // plain-HTTP. On testnet/mainnet the same call would drop the spread.
 
-import { localnetWalrusOptions } from '@mysten-incubation/devstack-next/react';
+import { localnetWalrusOptions } from '@mysten-incubation/devstack-effect/dapp-kit';
 import type { ClientWithCoreApi } from '@mysten/sui/client';
 import type { Signer } from '@mysten/sui/cryptography';
 import { WalrusClient } from '@mysten/walrus';

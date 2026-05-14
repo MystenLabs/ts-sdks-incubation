@@ -1,0 +1,18 @@
+[package]
+name = "deepbook"
+edition = "2024.beta"
+version = "0.0.1"
+
+[dependencies]
+# `token` is co-vendored under `../token`. The original
+# `{ git = …, subdir = "packages/token", rev = "main" }` form trips
+# sui-cli's automated address management on a fresh build: it queries
+# the active env (testnet by default) for `token`'s published-at and
+# bakes that id (`0x36dbef…`) into the deepbook bytecode, which then
+# fails to publish on localnet because that id doesn't exist there.
+# The local path bypasses AAM entirely so `--with-unpublished-dependencies`
+# can inline token's bytecode into the deepbook publish tx as intended.
+token = { local = "../token" }
+
+[addresses]
+deepbook = "0x0"

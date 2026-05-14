@@ -1,60 +1,39 @@
 import { defineConfig } from 'tsdown';
 
-// `unbundle: true` preserves the source directory layout in `dist/`, so
-// `import.meta.url` at runtime points at the same relative location it
-// did during local source runs. Plugin actions that resolve sibling
-// assets via `dirname(fileURLToPath(import.meta.url))` (`plugins/sui`,
-// `plugins/seal`, …) keep working in published builds without an
-// embed-as-string workaround.
-//
-// `copy` mirrors each plugin's non-source assets into the same path
-// under `dist/` so the bundled `index.mjs` finds its Dockerfile +
-// entrypoint.sh next to itself.
+// `unbundle: true` preserves the source layout in `dist/`, so
+// `import.meta.url` resolves the same relative locations at runtime as
+// during local source runs. `copy:` mirrors plugin-owned static assets
+// (Dockerfiles, entrypoints) into the matching `dist/` paths so plugins
+// resolve them via `new URL('./<asset>', import.meta.url)` in both
+// source and built outputs.
 export default defineConfig({
 	entry: [
 		'src/index.ts',
-		'src/authoring.ts',
-		'src/plugins/accounts/index.ts',
+		'src/cli/main.ts',
+		'src/helpers/index.ts',
+		'src/leasing/index.ts',
+		'src/persistence/index.ts',
 		'src/playwright/index.ts',
-		'src/playwright/global-setup.ts',
-		'src/playwright/global-teardown.ts',
+		'src/plugins/index.ts',
+		'src/dapp-kit/index.ts',
+		'src/shapes/index.ts',
 		'src/vitest/index.ts',
-		'src/vitest/runtime.ts',
-		'src/cli/index.ts',
-		'src/cli/apply.ts',
-		'src/cli/codegen.ts',
-		'src/helpers.ts',
-		'src/react/index.ts',
 	],
 	format: 'esm',
 	dts: true,
 	outDir: 'dist',
 	unbundle: true,
-	// `treeshake: true` makes tsdown drop bare side-effect re-export
-	// edges (`runtime/docker/index.ts`'s named re-exports compile to
-	// `import "./images.js"; import "./daemon.js"; …` under
-	// `unbundle: true` — those bare imports defeat downstream
-	// `sideEffects: false` tree-shaking in the `examples/*` Vite
-	// builds, even though every named export in the chain is unused).
-	// Tree-shaking the dist is safe: internal module evaluations are
-	// pure (`dirname(fileURLToPath(...))`, `definePlugin({...})`).
 	treeshake: true,
 	platform: 'node',
 	target: 'node22',
 	sourcemap: true,
-	external: [
-		'@mysten/dapp-kit-core',
-		'@mysten/dapp-kit-react',
-		'@tanstack/react-query',
-		'react',
-	],
 	copy: [
-		{ from: 'src/plugins/sui/Dockerfile', to: 'dist/plugins/sui' },
-		{ from: 'src/plugins/sui/entrypoint.sh', to: 'dist/plugins/sui' },
-		{ from: 'src/plugins/seal/Dockerfile', to: 'dist/plugins/seal' },
-		{ from: 'src/plugins/walrus/upstream.Dockerfile', to: 'dist/plugins/walrus' },
-		{ from: 'src/plugins/walrus/wrapper.Dockerfile', to: 'dist/plugins/walrus' },
-		{ from: 'src/plugins/walrus/deploy.sh', to: 'dist/plugins/walrus' },
-		{ from: 'src/plugins/walrus/run.sh', to: 'dist/plugins/walrus' },
+		{ from: 'src/plugins/sui/docker/Dockerfile', to: 'dist/plugins/sui/docker' },
+		{ from: 'src/plugins/sui/docker/entrypoint.sh', to: 'dist/plugins/sui/docker' },
+		{ from: 'src/plugins/seal/docker/Dockerfile', to: 'dist/plugins/seal/docker' },
+		{ from: 'src/plugins/walrus/docker/upstream.Dockerfile', to: 'dist/plugins/walrus/docker' },
+		{ from: 'src/plugins/walrus/docker/wrapper.Dockerfile', to: 'dist/plugins/walrus/docker' },
+		{ from: 'src/plugins/walrus/docker/deploy.sh', to: 'dist/plugins/walrus/docker' },
+		{ from: 'src/plugins/walrus/docker/run.sh', to: 'dist/plugins/walrus/docker' },
 	],
 });

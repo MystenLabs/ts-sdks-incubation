@@ -1,4 +1,4 @@
-import { createDevstackDappKit } from '@mysten-incubation/devstack-next/react';
+import { createDevstackDappKit } from '@mysten-incubation/devstack-effect/dapp-kit';
 import { manifest } from './generated/manifest.js';
 
 // `mountUI: false` skips the dynamic panels import — production bundles

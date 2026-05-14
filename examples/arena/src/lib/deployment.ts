@@ -1,4 +1,4 @@
-// App-level projection of the devstack-next manifest. Surfaces the
+// App-level projection of the devstack manifest. Surfaces the
 // connect_four package id and the openLobby shared object the UI
 // reaches for, plus a flat account name → address map.
 

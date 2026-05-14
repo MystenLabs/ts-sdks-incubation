@@ -1,6 +1,4 @@
-import { expect, test } from '@playwright/test';
-
-import { connectAs, selectAccount } from '@mysten-incubation/devstack/playwright';
+import { connectAs, expect, selectAccount, test } from '@mysten-incubation/devstack-effect/playwright';
 
 /**
  * Real Vite dev server, real Sui localnet, real wallet-standard adapter — no mocks.
@@ -27,13 +25,8 @@ test('alice sends 0.5 SUI to bob; balances update', async ({ page }) => {
 	await sendCard.getByLabel(/amount/i).fill('0.5');
 	await sendCard.getByRole('button', { name: /^Send$/ }).click();
 
-	// 30s matches swap.spec.ts. Non-SUI sends do an extra `client.core.
-	// listCoins` round-trip in `buildSendTx` before signing, so 20s was
-	// occasionally tight on cold runs (notes/friction.md).
 	await expect(sendCard.getByText(/Last tx:/i)).toBeVisible({ timeout: 30_000 });
 
-	// useSignAndExecute waits for the tx before invalidating, so a refetch is
-	// guaranteed to see the new state.
 	await expect(aliceCell).not.toHaveText(aliceInitial, { timeout: 10_000 });
 	await expect(bobCell).not.toHaveText(bobInitial, { timeout: 10_000 });
 });
@@ -56,9 +49,6 @@ test('alice sends 100 mUSDC to bob; balances update', async ({ page }) => {
 	await sendCard.getByLabel(/amount/i).fill('100');
 	await sendCard.getByRole('button', { name: /^Send$/ }).click();
 
-	// 30s matches swap.spec.ts. Non-SUI sends do an extra `client.core.
-	// listCoins` round-trip in `buildSendTx` before signing, so 20s was
-	// occasionally tight on cold runs (notes/friction.md).
 	await expect(sendCard.getByText(/Last tx:/i)).toBeVisible({ timeout: 30_000 });
 	await expect(aliceCell).not.toHaveText(aliceInitial, { timeout: 10_000 });
 	await expect(bobCell).not.toHaveText(bobInitial, { timeout: 10_000 });

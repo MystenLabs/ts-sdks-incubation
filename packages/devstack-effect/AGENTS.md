@@ -1,10 +1,29 @@
 # Writing Effect Guide — devstack-effect
 
-This package targets **Effect v4 beta**. The repo `.mcp.json` registers the
-[`effect-mcp`](https://github.com/tim-smart/effect-mcp) server; use the `effect_docs_search` MCP
-tool as the authoritative source for Effect docs. Also see
-[`https://effect.website/llms-full.txt`](https://effect.website/llms-full.txt) for the full
-documentation in a single LLM-readable file.
+This package targets **Effect v4 beta**.
+
+For package-specific conventions — primitives, interface tags, the
+`defineDevstack` / `provideDevstack` split, and the plugin-author tier
+— see [`README.md`](./README.md) and
+[`PLUGIN-AUTHORING.md`](./PLUGIN-AUTHORING.md). The rest of this file
+covers Effect v4 patterns the whole package follows.
+
+**Authoritative source**: the Effect v4 source is vendored at
+[`repos/effect-v4/`](../../repos/effect-v4/) (via `git subtree`). When you need to verify an API,
+grep `repos/effect-v4/packages/effect/src/` and `repos/effect-v4/packages/platform-node/src/`
+directly — docs lag the beta, source doesn't. The vendored repo's own
+[`AGENTS.md`](../../repos/effect-v4/AGENTS.md) and [`LLMS.md`](../../repos/effect-v4/LLMS.md) are
+worth a skim. The web docs at
+[`https://effect.website/llms-full.txt`](https://effect.website/llms-full.txt) are useful too but
+may be v3-flavored in places.
+
+Rules for the vendored repo:
+
+- Treat `repos/effect-v4/` as **read-only** reference material. Do not edit files there.
+- Do not import from `repos/effect-v4/` in our source. Use the `effect@beta` /
+  `@effect/platform-node@beta` npm packages (pinned in the workspace catalog).
+- To refresh:
+  `git subtree pull --prefix=repos/effect-v4 https://github.com/Effect-TS/effect-smol.git main --squash`.
 
 ## Repo conventions
 
@@ -32,8 +51,8 @@ documentation in a single LLM-readable file.
   already includes a `Scope` — no separate `it.scoped` in v4). The package re-exports everything
   from `vitest`, so import `describe`, `expect`, `it` from `@effect/vitest`. There is no `assert`
   export — use `expect`. Never use `Effect.runSync` inside `it`.
-- When the writing-effect guide below conflicts with what the `effect_docs_search` MCP returns for
-  v4, **trust the MCP** and update this file.
+- When the writing-effect guide below conflicts with what the vendored `repos/effect-v4/` source
+  shows, **trust the source** and update this file.
 
 ## Writing basic Effects
 
@@ -233,4 +252,6 @@ describe('My Effect tests', () => {
 - **`@effect/vitest`**: `it.effect`, `it.live`, `it.layer`, plus all of vitest re-exported
   (`describe`, `expect`).
 
-Reminder: when in doubt, call `effect_docs_search` via the `effect-docs` MCP server.
+Reminder: when in doubt, grep `repos/effect-v4/packages/effect/src/` (and
+`repos/effect-v4/packages/platform-node/src/` for the Node bindings). The source is the source of
+truth.

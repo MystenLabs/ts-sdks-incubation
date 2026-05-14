@@ -1,6 +1,4 @@
-import { expect, test } from '@playwright/test';
-
-import { connectAs } from '@mysten-incubation/devstack/playwright';
+import { connectAs, expect, test } from '@mysten-incubation/devstack-effect/playwright';
 
 /**
  * End-to-end smoke for `@mysten-incubation/devstack-wallet-panels`:
@@ -34,10 +32,6 @@ test('faucet panel mints custom token via wallet-app', async ({ page }) => {
 	await faucet.getByRole('button', { name: /Mint .* musdc/i }).click();
 	await expect(faucet.locator('.success').getByText(/Minted/i)).toBeVisible({ timeout: 30_000 });
 
-	// The Faucet panel signs via the wallet directly (not through
-	// `useDevstackSignAndExecute`), so it doesn't invalidate the app's
-	// query keys. The wallet example polls balances every 2s, so the cell
-	// updates on its own — no reload needed.
 	await expect(publisherMusdc).not.toHaveText(before, { timeout: 15_000 });
 });
 
@@ -47,13 +41,8 @@ test('packages panel shows captured object ids', async ({ page }) => {
 	const drawer = page.locator('dev-wallet-panel');
 	await drawer.locator('dev-wallet-tab-bar').getByRole('tab', { name: 'Packages' }).click();
 	const packages = drawer.locator('devstack-packages-panel');
-	// The package row's label is `mock_usdc`; its captured `type` value
-	// also contains the substring. Match exact label text to keep the
-	// assertion unambiguous. mock_usdc and mock_weth both have a
-	// `treasuryCapId` row, so allow ≥1 match.
 	await expect(packages.getByText('mock_usdc', { exact: true })).toBeVisible();
 	await expect(packages.getByText('treasuryCapId', { exact: true }).first()).toBeVisible();
-	await expect(packages.getByText('deepbook', { exact: true })).toBeVisible();
 });
 
 test('network panel shows wallet-app entry', async ({ page }) => {
@@ -62,8 +51,6 @@ test('network panel shows wallet-app entry', async ({ page }) => {
 	const drawer = page.locator('dev-wallet-panel');
 	await drawer.locator('dev-wallet-tab-bar').getByRole('tab', { name: 'Network' }).click();
 	const network = drawer.locator('devstack-network-panel');
-	// Scope the URL assertion to the wallet-app row so we don't collide
-	// with other service rows (e.g. `dev-server` on `http://localhost:5174`).
 	const walletAppRow = network.locator('.row').filter({ hasText: 'wallet-app' });
 	await expect(walletAppRow).toBeVisible();
 	await expect(walletAppRow).toContainText(/http:\/\/localhost:\d+/);

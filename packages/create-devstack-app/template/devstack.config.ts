@@ -1,94 +1,77 @@
 // Minimal devstack config: sui localnet, manifest, wallet-app, vite
-// frontend, and one Move package published as alice. Runs a single
-// `runTransaction` after publish to demonstrate the setup pattern.
+// frontend, and one Move transaction after publish to demonstrate the
+// setup pattern.
 
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { Transaction } from '@mysten/sui/transactions';
-import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
+import { Effect } from 'effect';
 
-import { defineDevstackConfig } from '@mysten-incubation/devstack-next';
-import {
-	publishMove,
-	publishViaSuiCli,
-	runTransaction,
-	viteDevServer,
-} from '@mysten-incubation/devstack-next/helpers';
 import {
 	accounts,
+	defineDevstack,
+	hostProcess,
 	manifest,
-	sui,
+	publishMove,
+	suiLocalnet,
+	tx,
 	walletApp,
-} from '@mysten-incubation/devstack-next/plugins';
+} from '@mysten-incubation/devstack-effect';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HELLO_DIR = resolve(HERE, 'move/hello');
 
-const a = accounts({ specs: { alice: {}, bob: {} } });
+const a = accounts({ alice: {}, bob: {} });
 
 const helloPublish = publishMove({
 	name: 'hello',
 	path: HELLO_DIR,
-	signer: a.pool.get('signer', { name: 'alice' }),
-	publish: publishViaSuiCli,
+	signer: a.alice,
 });
 
-const wallet = walletApp.create({
-	accounts: [
-		{ name: 'alice', signer: a.pool.get('signer', { name: 'alice' }) },
-		{ name: 'bob', signer: a.pool.get('signer', { name: 'bob' }) },
-	],
-	allowedOrigins: ['http://localhost:5180'],
-});
-
-const m = manifest({
-	packages: [helloPublish.get('package')],
-	endpoints: [sui.get('endpoint'), sui.get('faucetEndpoint'), wallet.get('endpoint')],
-	accounts: [
-		a.pool.get('account', { name: 'alice' }),
-		a.pool.get('account', { name: 'bob' }),
-	],
-});
-
-const mintGreeting = runTransaction({
+const mintGreeting = tx({
 	name: 'mint-greeting',
-	signer: a.pool.get('signer', { name: 'alice' }),
-	deps: { hello: helloPublish.get('package') },
-	build: async ({ signer, rpcUrl, deps }) => {
-		const tx = new Transaction();
-		tx.moveCall({
-			target: `${deps.hello.packageId}::hello::mint`,
-			arguments: [tx.pure.vector('u8', Array.from(new TextEncoder().encode('hello, sui')))],
-		});
-		const client = new SuiJsonRpcClient({ url: rpcUrl, network: 'localnet' });
-		const result = await client.signAndExecuteTransaction({
-			signer,
-			transaction: tx,
-			options: { showEffects: true },
-		});
-		if (result.effects?.status?.status !== 'success') {
-			throw new Error(`mint-greeting: ${result.effects?.status?.error ?? 'unknown'}`);
-		}
-		await client.waitForTransaction({ digest: result.digest });
-		return { digest: result.digest };
-	},
+	signer: a.alice,
+	dependsOn: [helloPublish],
+	build: (t) =>
+		Effect.gen(function* () {
+			const pkg = yield* helloPublish;
+			t.moveCall({
+				target: `${pkg.packageId}::hello::mint`,
+				arguments: [t.pure.vector('u8', Array.from(new TextEncoder().encode('hello, sui')))],
+			});
+		}),
 });
 
-const dev = viteDevServer({
-	port: 5180,
-	gates: [helloPublish.get('package'), wallet.get('full')],
+const wallet = walletApp({
+	accounts: [a.alice, a.bob],
+	// Frontend serves on 5179; walletApp listens on its own default
+	// (5180) and we whitelist the frontend's origin for CORS.
+	allowedOrigins: ['http://localhost:5179'],
 });
 
-export default defineDevstackConfig({
-	stack: [
-		sui.create({ network: 'localnet' }),
-		a.pool,
-		a.fund,
-		helloPublish,
-		mintGreeting,
-		m,
-		wallet,
-		dev,
-	],
+// Vite dev server — pin to the port Playwright's webServer config uses.
+// Spawned by the supervisor so `pnpm dev` brings up vite alongside the
+// stack. `dependsOn` gates the spawn until publish + wallet are ready so
+// the browser doesn't load the page before the manifest is on disk.
+const dev = hostProcess({
+	name: 'frontend.dev-server',
+	command: 'pnpm',
+	args: ['exec', 'vite', '--port', '5179'],
+	readyProbe: { kind: 'http', url: 'http://localhost:5179', timeoutMs: 60_000 },
+	endpoint: { name: 'dev-server', kind: 'dev-server' },
+	dependsOn: [helloPublish, wallet],
 });
+
+const m = manifest();
+
+export default defineDevstack([
+	suiLocalnet(),
+	a.alice,
+	a.bob,
+	helloPublish,
+	mintGreeting,
+	m,
+	wallet,
+	dev,
+]);

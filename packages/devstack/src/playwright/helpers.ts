@@ -17,8 +17,9 @@ import { type Locator, type Page, expect } from '@playwright/test';
  *     export const dAppKit = createDAppKit({ ... });
  *     (globalThis as { __devstackDAppKit__?: typeof dAppKit }).__devstackDAppKit__ = dAppKit;
  *
- * The four example apps do this. It's a test-only convenience — the
- * runtime app code never reads from this slot.
+ * `createDevstackDappKit` from `@mysten-incubation/devstack/dapp-kit`
+ * sets this slot automatically when running under Vite dev / preview /
+ * `PLAYWRIGHT=1`.
  */
 export async function connectAs(page: Page, label: string): Promise<void> {
 	await page.goto('/');

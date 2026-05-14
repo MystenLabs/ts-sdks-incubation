@@ -35,7 +35,7 @@ export type {
 /** Set the active devstack manifest for the panel custom elements. Call
  * once during app boot, with `manifest` from `./generated/manifest.js`
  * (emitted by either `@mysten-incubation/devstack` codegen or the
- * `@mysten-incubation/devstack-next` manifest plugin).
+ * `@mysten-incubation/devstack` manifest plugin).
  *
  * Accepts both manifest shapes — old (`{ registry: { services, ... } }`)
  * and new (`{ packages, endpoints, accounts, coins }`) — and normalizes

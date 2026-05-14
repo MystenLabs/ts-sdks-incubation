@@ -1,8 +1,8 @@
 # Examples
 
 Each example is a self-contained Sui app that consumes
-`@mysten-incubation/devstack` for localnet bring-up + Move publish +
-codegen + dev-wallet wiring.
+`@mysten-incubation/devstack-effect` for localnet bring-up + Move
+publish + codegen + dev-wallet wiring.
 
 ## Apps
 
@@ -10,6 +10,7 @@ codegen + dev-wallet wiring.
 | ------------------------------------ | ---------------------------------------------------------------------------------------------- |
 | [\_template](./_template)            | Minimal-but-real starting point. One Move package, one publish, one mint button, one e2e spec. |
 | [arena](./arena)                     | On-chain Connect Four. Matchmaking via shared Lobby; gameplay via shared Game.                 |
+| [effect-app](./effect-app)           | Pure-DI consumer mode. Same `Effect.gen` program runs against localnet in dev, testnet in prod.|
 | [private-content](./private-content) | Seal-encrypted file vault on top of walrus + a single Open-mode seal key server.               |
 | [token-studio](./token-studio)       | Single managed coin with TreasuryCap-gated minting.                                            |
 | [wallet](./wallet)                   | Multi-coin wallet UI + DeepBook v3 swap. Imports deepbook from upstream.                       |

@@ -26,7 +26,7 @@ Replace the in-bundle key flow with an out-of-process signing server.
   virtual module will fail to build — switch to
   `createDevstackAdapterFromManifest` from `@mysten-incubation/dev-wallet/adapters`.
 - `DevKey` and `DevWalletInitializerFactory` types from
-  `@mysten-incubation/devstack/react`. The `devKeys` and
+  `@mysten-incubation/devstack/dapp-kit`. The `devKeys` and
   `walletInitializerFactory` options on `createDevstackDappKit` are gone;
   use `walletInitializers` instead.
 

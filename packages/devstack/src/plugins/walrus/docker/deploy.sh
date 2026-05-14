@@ -1,0 +1,241 @@
+#!/bin/bash
+# Walrus testbed deploy script. Forked from MystenLabs/walrus's
+# `docker/local-testbed/files/deploy-walrus.sh` and informed by their
+# canonical procman config (https://wbbradley.github.io/procman/).
+#
+# Owned in-tree so we don't depend on the walrus repo's
+# `docker/local-testbed/` layout (the walrus team is migrating their
+# canonical local-testbed flow to procman; the bash files we used to
+# fetch via BuildKit context may go away). Inputs are env vars only —
+# no CLI args; the caller (`walrus.deploy` action) sets WALRUS_*.
+#
+# Required env (set by walrus.deploy action's container env):
+#   WALRUS_PUBLIC_HOSTS    — space-separated list of N storage-node
+#                             public hostnames (one per committee
+#                             member). These are passed to walrus-deploy
+#                             as `--host-addresses` and end up in the
+#                             on-chain Committee `network_address`.
+#                             N defines COMMITTEE_SIZE; mismatch with
+#                             WALRUS_COMMITTEE_SIZE fails fast.
+#   WALRUS_LISTENING_IPS   — space-separated list of N internal docker
+#                             IPs the storage nodes bind their REST API
+#                             on. Passed to walrus-deploy as
+#                             `--listening-ips` so binding is decoupled
+#                             from the on-chain `public_host`.
+# Optional:
+#   WALRUS_REST_API_PORT   — REST API port. Used both as on-chain
+#                             `public_port` and as the bind port for
+#                             every node (default 9185).
+#   WALRUS_COMMITTEE_SIZE  — committee size (default: count of
+#                             WALRUS_PUBLIC_HOSTS).
+#   WALRUS_SHARDS          — total shards (default 100). Must be >=
+#                             COMMITTEE_SIZE.
+#   WALRUS_EPOCH_DURATION  — walrus epoch (default 24h).
+#   WALRUS_NETWORK         — sui network mode passed to walrus-deploy
+#                             (default 'http://sui-localnet:9000;http://sui-localnet:9123/gas',
+#                             the per-stack docker DNS pointing at the
+#                             sui-localnet container).
+#   WALRUS_CONTRACT_DIR    — Move contract dir baked into the image
+#                             (default /opt/walrus/contracts).
+#   WALRUS_GC              — 'true' enables blob GC config (default
+#                             unset = false).
+set -euo pipefail
+
+WALRUS_DEPLOY_BIN="${WALRUS_DEPLOY_BIN:-/opt/walrus/bin/walrus-deploy}"
+WORKING_DIR="${WORKING_DIR:-/opt/walrus/outputs}"
+WALRUS_CONTRACT_DIR="${WALRUS_CONTRACT_DIR:-/opt/walrus/contracts}"
+SHARDS="${WALRUS_SHARDS:-100}"
+EPOCH_DURATION="${WALRUS_EPOCH_DURATION:-24h}"
+NETWORK="${WALRUS_NETWORK:-http://sui-localnet:9000;http://sui-localnet:9123/gas}"
+GC="${WALRUS_GC:-false}"
+REST_API_PORT="${WALRUS_REST_API_PORT:-9185}"
+
+if [ -z "${WALRUS_PUBLIC_HOSTS:-}" ]; then
+	echo "deploy-walrus: WALRUS_PUBLIC_HOSTS is required (space-separated hostnames)" >&2
+	exit 1
+fi
+if [ -z "${WALRUS_LISTENING_IPS:-}" ]; then
+	echo "deploy-walrus: WALRUS_LISTENING_IPS is required (space-separated docker IPs)" >&2
+	exit 1
+fi
+read -r -a PUBLIC_HOSTS <<< "$WALRUS_PUBLIC_HOSTS"
+read -r -a LISTENING_IPS <<< "$WALRUS_LISTENING_IPS"
+COMMITTEE_SIZE="${WALRUS_COMMITTEE_SIZE:-${#PUBLIC_HOSTS[@]}}"
+
+if [ "${#PUBLIC_HOSTS[@]}" -ne "$COMMITTEE_SIZE" ]; then
+	echo "deploy-walrus: WALRUS_PUBLIC_HOSTS has ${#PUBLIC_HOSTS[@]} entries but WALRUS_COMMITTEE_SIZE=$COMMITTEE_SIZE" >&2
+	exit 1
+fi
+if [ "${#LISTENING_IPS[@]}" -ne "$COMMITTEE_SIZE" ]; then
+	echo "deploy-walrus: WALRUS_LISTENING_IPS has ${#LISTENING_IPS[@]} entries but WALRUS_COMMITTEE_SIZE=$COMMITTEE_SIZE" >&2
+	exit 1
+fi
+if ! [ "$COMMITTEE_SIZE" -gt 0 ] 2>/dev/null; then
+	echo "deploy-walrus: COMMITTEE_SIZE=$COMMITTEE_SIZE must be a positive integer" >&2
+	exit 1
+fi
+if ! [ "$SHARDS" -ge "$COMMITTEE_SIZE" ] 2>/dev/null; then
+	echo "deploy-walrus: SHARDS=$SHARDS must be >= COMMITTEE_SIZE=$COMMITTEE_SIZE" >&2
+	exit 1
+fi
+
+# Clean stale build artifacts + any previous deploy outputs. Matches the
+# walrus team's procman config — fresh deploy each cycle.
+find "$WALRUS_CONTRACT_DIR" -name 'build' -type d -exec rm -rf {} +
+rm -f "$WORKING_DIR"/dryrun-node-*.yaml "$WORKING_DIR"/dryrun-node-*.log
+
+# Pre-create the admin wallet with `active_env: localnet` so sui-cli's
+# package-environment finder matches `[environments.localnet]` in
+# `wal/Move.test.toml` by name. Without this, walrus-deploy creates a
+# wallet with `active_env: custom` (the SuiNetwork::Custom variant's
+# hardcoded alias), and sui-cli's `find_env` bails with "Could not
+# determine the correct dependencies to use for `custom`" once
+# walrus-deploy substitutes the chain_id into Move.toml's localnet env
+# entry. Passing `--admin-wallet-path` opts into the existing-wallet
+# branch of walrus-deploy's testbed::deploy_walrus_contract, which
+# loads our wallet instead of creating one — but the existing-wallet
+# branch also skips the auto-faucet, so we faucet the admin ourselves
+# below.
+ADMIN_WALLET_YAML="$WORKING_DIR/sui_admin.yaml"
+ADMIN_KEYSTORE="$WORKING_DIR/sui_admin.keystore"
+SUI_BIN="${SUI_BIN:-/root/sui_bin/sui}"
+
+# Split WALRUS_NETWORK ("rpc;faucet") so we can target the right URL
+# for the faucet. Bail if either piece is missing — would otherwise
+# surface as a confusing publish failure 30s later when the admin
+# can't pay for gas.
+WALRUS_NETWORK_RPC="${NETWORK%%;*}"
+WALRUS_NETWORK_FAUCET="${NETWORK#*;}"
+if [ "$WALRUS_NETWORK_RPC" = "$NETWORK" ] || [ -z "$WALRUS_NETWORK_FAUCET" ]; then
+	echo "deploy-walrus: WALRUS_NETWORK must include both rpc and faucet URLs (got '$NETWORK')" >&2
+	exit 1
+fi
+
+# sui CLI ignores `SUI_CLIENT_CONFIG` when its hard-coded
+# `$HOME/.sui/sui_config/client.yaml` doesn't exist — it auto-creates
+# the default + populates with mainnet/testnet/devnet/local envs.
+# So: point HOME at a scratch dir, let sui create its defaults there,
+# then add the docker-network localnet env + switch active to it.
+# Finally, copy the generated wallet YAML to walrus-deploy's expected
+# path with the alias renamed (no-op if HOME stays $WORKING_DIR for
+# the duration).
+export HOME="$WORKING_DIR/.suihome"
+rm -rf "$HOME"
+mkdir -p "$HOME/.sui/sui_config"
+
+# `new-address` answers the "create config" Y/n prompt by writing
+# defaults — that's exactly what we want. The keypair lands in the
+# keystore at $HOME/.sui/sui_config/sui.keystore.
+"$SUI_BIN" client new-address ed25519 admin --json > /dev/null
+# Add a per-stack localnet env pointing at the docker DNS name. sui's
+# default `local` env hardcodes 127.0.0.1:9000 which the container
+# can't reach.
+"$SUI_BIN" client new-env --alias localnet --rpc "$WALRUS_NETWORK_RPC" > /dev/null
+"$SUI_BIN" client switch --env localnet > /dev/null
+"$SUI_BIN" client switch --address admin > /dev/null
+
+ADMIN_ADDR=$("$SUI_BIN" client active-address)
+if [ "${ADMIN_ADDR#0x}" = "$ADMIN_ADDR" ]; then
+	echo "deploy-walrus: failed to resolve admin address from sui client (got '$ADMIN_ADDR')" >&2
+	exit 1
+fi
+
+# Copy the generated wallet config + keystore into the walrus-deploy
+# working dir. We rewrite the YAML to point at the keystore's new
+# location so walrus-deploy's `load_wallet_context_from_path` can
+# resolve it cleanly.
+cp "$HOME/.sui/sui_config/sui.keystore" "$ADMIN_KEYSTORE"
+sed -e "s|$HOME/.sui/sui_config/sui.keystore|$ADMIN_KEYSTORE|" \
+	"$HOME/.sui/sui_config/client.yaml" > "$ADMIN_WALLET_YAML"
+
+# Faucet the admin. walrus-deploy's create-wallet branch does this
+# automatically; the load-existing branch skips it. The localnet faucet
+# returns 200 with the transferTxDigest the moment the request is
+# accepted — the tx itself commits async, so balance polling is what
+# gates progress, not the response code. A 1000 SUI drip should clear
+# the admin-balance check (n SUI minimum for the wal package publish);
+# walrus-deploy itself fails fast with an exact-mist amount in the
+# error if we move on too soon.
+echo "deploy-walrus: faucet → $ADMIN_ADDR ($WALRUS_NETWORK_FAUCET)"
+FAUCET_RESPONSE=$(curl -fsS -X POST \
+	-H 'Content-Type: application/json' \
+	-d "{\"FixedAmountRequest\":{\"recipient\":\"$ADMIN_ADDR\"}}" \
+	"$WALRUS_NETWORK_FAUCET")
+echo "deploy-walrus: faucet response: ${FAUCET_RESPONSE:0:200}..."
+
+# Poll the RPC for balance until the faucet's coins settle on chain.
+# `sleep 2` was racy on cold cycles — the faucet's tx hadn't propagated
+# to the node's owned-object index by the time walrus-deploy queried it.
+echo "deploy-walrus: polling for admin balance to settle"
+for i in $(seq 1 30); do
+	BALANCE_JSON=$(curl -fsS -X POST \
+		-H 'Content-Type: application/json' \
+		-d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"suix_getBalance\",\"params\":[\"$ADMIN_ADDR\"]}" \
+		"$WALRUS_NETWORK_RPC" || echo '{}')
+	BALANCE=$(echo "$BALANCE_JSON" | grep -oE '"totalBalance":"[0-9]+"' | head -1 | grep -oE '[0-9]+' || echo "0")
+	if [ -n "$BALANCE" ] && [ "$BALANCE" -gt 0 ] 2>/dev/null; then
+		echo "deploy-walrus: admin balance settled at $BALANCE MIST after ${i} polls"
+		break
+	fi
+	sleep 1
+done
+if [ -z "$BALANCE" ] || ! [ "$BALANCE" -gt 0 ] 2>/dev/null; then
+	echo "deploy-walrus: admin balance still 0 after 30s — faucet drip likely failed" >&2
+	echo "deploy-walrus: last balance JSON: $BALANCE_JSON" >&2
+	exit 1
+fi
+
+"$WALRUS_DEPLOY_BIN" deploy-system-contract \
+	--working-dir "$WORKING_DIR" \
+	--admin-wallet-path "$ADMIN_WALLET_YAML" \
+	--contract-dir "$WALRUS_CONTRACT_DIR" \
+	--do-not-copy-contracts \
+	--sui-network "$NETWORK" \
+	--n-shards "$SHARDS" \
+	--host-addresses "${PUBLIC_HOSTS[@]}" \
+	--rest-api-port "$REST_API_PORT" \
+	--storage-price 5 \
+	--write-price 1 \
+	--epoch-duration "$EPOCH_DURATION" \
+	--with-wal-exchange \
+	> "$WORKING_DIR/deploy"
+
+"$WALRUS_DEPLOY_BIN" generate-dry-run-configs \
+	--working-dir "$WORKING_DIR" \
+	--listening-ips "${LISTENING_IPS[@]}"
+
+# Append event-processor + storage_path + tls-disable + optional GC to
+# every generated node yaml. Order:
+#   1. event_processor_config — walrus team's procman default; we adopt
+#      it for parity.
+#   2. storage_path — point at the container writable layer instead of
+#      the read-only outputs bind so RocksDB writes succeed.
+#   3. tls.disable_tls — workaround for axum-server 0.8.0 panic on
+#      arm64-darwin self-signed handshake (see notes/friction.md). The
+#      per-stack walrus.proxy nginx terminates host-facing access, so
+#      plain HTTP between nodes is fine inside the docker network.
+#   4. db_config + garbage_collection — opt-in via WALRUS_GC=true.
+for f in "$WORKING_DIR"/dryrun-node-*[0-9].yaml; do
+	# Redirect storage_path before appending so the sed targets the
+	# upstream-generated line, not anything we appended.
+	sed -i "s|^storage_path: ${WORKING_DIR}/|storage_path: /var/walrus/storage/|" "$f"
+	cat >> "$f" <<-NODEEOF
+
+	event_processor_config:
+	  adaptive_downloader_config:
+	    max_workers: 2
+	    initial_workers: 2
+	tls:
+	  disable_tls: true
+	NODEEOF
+	if [ "$GC" = "true" ]; then
+		cat >> "$f" <<-GCEOF
+		db_config:
+		  global:
+		    experimental_use_optimistic_transaction_db: true
+		garbage_collection:
+		  enable_blob_info_cleanup: true
+		  enable_data_deletion: true
+		GCEOF
+	fi
+done

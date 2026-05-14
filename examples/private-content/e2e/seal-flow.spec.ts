@@ -1,5 +1,9 @@
-import { connectAs, selectAccount } from '@mysten-incubation/devstack/playwright';
-import { expect, test } from '@playwright/test';
+import {
+	connectAs,
+	expect,
+	selectAccount,
+	test,
+} from '@mysten-incubation/devstack-effect/playwright';
 
 /**
  * End-to-end Seal demo: alice encrypts + uploads, grants a Cap to bob, then

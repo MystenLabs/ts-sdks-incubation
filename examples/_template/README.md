@@ -37,4 +37,4 @@ _template/
 5. `pnpm install` then `pnpm dev`.
 
 For a guided scaffold, run
-`pnpm create @mysten-incubation/devstack-app <your-app>` instead.
+`pnpm create @mysten-incubation/devstackpp <your-app>` instead.

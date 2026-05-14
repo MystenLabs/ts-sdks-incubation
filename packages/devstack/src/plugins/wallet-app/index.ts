@@ -1,373 +1,249 @@
-// Wallet-app plugin. Adds an in-process HTTP server to the supervisor
-// that exposes `ctx.accounts` to a browser-side signer adapter — the
-// @mysten-incubation/dev-wallet `DevstackSignerAdapter` reads the
-// service URL from the manifest and signs over HTTP, so private keys
-// never enter the frontend bundle.
+// `walletApp` — in-process HTTP signer endpoint backing the dev-wallet
+// `DevstackSignerAdapter`. Exposes a fixed list of named signers so a
+// browser-side adapter can list addresses and request transaction
+// signatures without ever loading private keys into the frontend bundle.
 //
-// Two actions, lifecycle-split (resolves the cold-first-run manifest
-// race documented in notes/architecture-review/23-playwright-integration.md):
+// Caller passes `accounts: [{ name, signer: pool.get('signer', { name }) }, …]`
+// — each entry resolves the Dep to a live `Signer` at start time. Adding
+// or removing an account in `devstack.config.ts` flips the input hash
+// and triggers a clean restart with the new signer set; the bearer
+// token persists across restarts via `<stackDir>/wallet-token` so the
+// frontend's stored pair URL keeps working.
 //
-//   wallet-app.register — Register action. Allocates the host port via
-//                         ctx.ports, reads or mints the bearer token,
-//                         populates `ctx.registry.services` with the
-//                         deterministic URL+token. Runs in apply mode
-//                         (Playwright globalSetup, devstack apply, …),
-//                         so the manifest carries a wallet-app entry
-//                         even before the listener is up.
-//
-//   wallet-app.serve    — HostProcess action. Reads the URL+token from
-//                         the registry (populated by register), spawns
-//                         the Node `http` server, prints the paired URL.
-//                         Only runs in long-running supervisor paths
-//                         (`devstack up`); skipped by `applyTestSetupFilter`
-//                         so test bring-up doesn't start a listener that
-//                         would die on process exit.
-//
-//                         Adoption path: if a prior supervisor left a
-//                         server listening on the same port + the persisted
-//                         token, this action probes /health and trusts it
-//                         instead of double-binding.
-//
-// The browser-side counterpart is `createDevstackDappKit` in
-// `@mysten-incubation/devstack/react`, which reads the manifest entry
-// this plugin emits and wires up dapp-kit.
+// `walletApp.get('endpoint')` is a static Dep returning the `Endpoint`
+// shape — feed it to `manifest({ endpoints: [...] })` so the frontend
+// discovers the wallet server URL alongside sui-rpc and friends.
 
-import type { Server } from 'node:http';
-import { hostProcess } from '../../actions/host-process.js';
-import { register } from '../../actions/register.js';
-import type { ActionRunContext, Plugin } from '../../core/types.js';
-import { probeUrl } from '../../helpers/probe.js';
-import { definePlugin } from '../../plugin.js';
-import { stackDir } from '../../runtime/active-stack.js';
-import { requireLocalnetCtx } from '../../runtime/runtime-helpers.js';
-import { generateToken, startWalletServer } from './server.js';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import type { Signer } from '@mysten/sui/cryptography';
+import type { Dep, Provides } from '../../engine/types.js';
+import { dep } from '../../factories/dep.js';
+import { defineSchema, type SchemaInstanceConfig } from '../../factories/define-schema.js';
+import { ports } from '../../standard/ports.js';
+import type { Endpoint } from '../../shapes/index.js';
+import { generateToken, startWalletServer, type WalletServerHandle } from './server.js';
 
-// `node:fs` / `node:path` load via top-level `await import(...)` so the
-// static surface stays browser-safe — see `runtime/hash.ts` for rationale.
-const [nodeFs, nodePath] = await Promise.all([import('node:fs'), import('node:path')]);
+export const WALLET_APP_PORT_SLOT = 'walletApp.http';
 
-interface WalletAppPluginOptions {
-	/** TCP port for the wallet HTTP server. Default 9420. */
-	port?: number;
-	/** Override the printed origin used in the paired URL (e.g. when proxying
-	 * the dev server through a tunneling tool). Defaults to
+export interface WalletAppAccount {
+	name: string;
+	signer: Dep<Signer>;
+}
+
+export interface WalletAppOptions {
+	/** Accounts to expose. Each entry pairs a logical name with a Dep
+	 * returning a `Signer` — typically `pool.get('signer', { name })`
+	 * from the `accounts` plugin. */
+	accounts: WalletAppAccount[];
+	/** Dev-server origin to fold into the CORS allowlist. Pass as a Dep
+	 * (e.g. from `viteDevServer.get('origin')`) so the wallet-app
+	 * restarts cleanly when the dev server's port changes. */
+	devServerOrigin?: Dep<string>;
+	/** Extra static origins on top of `devServerOrigin`. Useful for
+	 * sibling tooling (Storybook, separate test harness) that lives off
+	 * the dev server. */
+	allowedOrigins?: string[];
+	/** Override the printed origin in the paired URL (e.g. when
+	 * proxying through a tunneling tool). Defaults to
 	 * `http://localhost:<port>`. */
 	publicOrigin?: string;
-	/** Names of actions that must run before the server starts. Default
-	 * `['accounts.fund']` so funded accounts are available before any sign
-	 * request can arrive. Pass `[]` to start immediately. */
-	needs?: string[];
-	/** Bind address. Defaults to `127.0.0.1` so the listener is
-	 * unreachable from sibling machines on the LAN. Override with
-	 * `'0.0.0.0'` (or a specific NIC) only when the user knowingly
-	 * accepts that exposure. */
+	/** Bind address. Default `127.0.0.1` so the listener is unreachable
+	 * from sibling LAN hosts. Override with `'0.0.0.0'` only when
+	 * knowingly accepting that exposure. */
 	host?: string;
-	/** Extra CORS-allowed origins on top of the dev-server origin the
-	 * plugin auto-discovers from the manifest. Pass when a sibling tool
-	 * (Storybook, Cypress UI) lives off the dev-server. The dev-server
-	 * origin itself is added automatically; pass nothing for the default
-	 * setup. `'*'` is rejected — the underlying server throws. */
-	allowedOrigins?: string[];
+	/** Max request body size in bytes. Default 2 MB. */
+	maxBodyBytes?: number;
 }
 
-const WALLET_APP_DEFAULT_PORT = 9420;
+export interface WalletAppState {
+	url: string;
+	token: string;
+	port: number;
+}
 
-/**
- * In-process HTTP signer endpoint (default port 9420) the dev-wallet
- * adapter calls. Exposes `ctx.accounts` to a browser-side adapter so
- * private keys never enter the frontend bundle. Pairs with
- * `createDevstackDappKit` from `@mysten-incubation/devstack/react`.
- *
- * @example
- * ```ts
- * import { defineDevstackConfig, walletApp } from '@mysten-incubation/devstack';
- *
- * export default defineDevstackConfig({
- *   app: 'hello',
- *   accounts: ['alice'],
- *   use: [walletApp()],
- * });
- * ```
- */
-export const walletApp = (
-	opts: WalletAppPluginOptions = {},
-): Plugin<'wallet-app.register' | 'wallet-app.serve'> => {
-	const preferredPort = opts.port ?? WALLET_APP_DEFAULT_PORT;
-	const explicitOrigin = opts.publicOrigin;
-	const needs = opts.needs ?? ['accounts.fund'];
-	const host = opts.host ?? '127.0.0.1';
-	const extraAllowedOrigins = opts.allowedOrigins ?? [];
-
-	// Per-instance state (closure scope, not module scope) — two
-	// `walletApp()` instances in one process don't interleave.
-	let activeServer: Server | undefined;
-	let activeToken: string | undefined;
-	let resolvedPort: number | undefined;
-	let resolvedBaseUrl: string | undefined;
-	// Hot-reload: serve.run captures the running listener's
-	// `setAccounts` callback so warm cycles can swap in a fresh
-	// AccountsContext (new account added between cycles) without
-	// restarting. `lastAccountNames` is the change-detector for
-	// serve.getStatus — when the supervisor's resolved accounts list
-	// drifts from what the listener last saw, we return ok:false and
-	// rely on `run` to call `setActiveAccounts(ctx.accounts)`.
-	let setActiveAccounts: ((accounts: import('../../core/types.js').AccountsContext) => void) | undefined;
-	let lastAccountNames: readonly string[] | undefined;
-	// Hot-reload for the CORS allowlist. `wallet-app.serve` only has
-	// `needs: ['register']` — it can (and frequently does) start before
-	// `frontend.dev-server` has registered its URL, so the initial
-	// allowlist is empty and the browser's first /api/v1/devstack/*
-	// fetch 403s with no Access-Control-Allow-Origin header. Each
-	// supervisor cycle now re-reads `dev-server` from the registry and
-	// pushes through `setAllowedOrigins` to the still-listening
-	// server — `lastAllowedOrigins` is the drift detector that gates the
-	// hot-reload.
-	let setAllowedOrigins: ((origins: string[]) => void) | undefined;
-	let lastAllowedOrigins: readonly string[] | undefined;
-
-	/** Compute the CORS allowlist from the current registry state.
-	 * `dev-server` may not be registered when `serve` first runs (it's
-	 * registered by `frontend.dev-server`'s provides.registry, which can
-	 * fire later); the supervisor cycle re-checks each pass and pushes
-	 * through `setAllowedOrigins` when the result drifts. */
-	const currentAllowedOrigins = (ctx: ActionRunContext): string[] => {
-		const devServer = ctx.registry.services.find('dev-server');
-		return [
-			...(devServer !== undefined ? [originOf(devServer.url)] : []),
-			...extraAllowedOrigins,
-		];
-	};
-
-	const resolveEndpoint = async (
-		ctx: ActionRunContext,
-	): Promise<{ port: number; baseUrl: string }> => {
-		requireLocalnetCtx(ctx, 'wallet-app');
-		const [portValue] = await ctx.ports.allocate({
-			slot: 'wallet-app.http',
-			preferred: preferredPort,
-		});
-		if (portValue === undefined) {
-			throw new Error('wallet-app: port allocator returned no ports');
-		}
-		resolvedPort = portValue;
-		resolvedBaseUrl = explicitOrigin ?? `http://localhost:${portValue}`;
-		return { port: portValue, baseUrl: resolvedBaseUrl };
-	};
-
-	const populateRegistry = (ctx: ActionRunContext): void => {
-		if (activeToken === undefined || resolvedBaseUrl === undefined || resolvedPort === undefined) {
-			return;
-		}
-		ctx.registry.services.register({
+const provides = {
+	url: dep((s: WalletAppState) => s.url),
+	token: dep((s: WalletAppState) => s.token),
+	port: dep((s: WalletAppState) => s.port),
+	/** Pair URL the user clicks to bind the frontend's adapter to this
+	 * server (token in query string). */
+	pairUrl: dep((s: WalletAppState) => `${s.url}/?token=${s.token}`),
+	/** `Endpoint` shape for the `manifest` plugin's `endpoints:` list.
+	 *  Sets `pairUrl` so the dev-wallet adapter (or any other consumer)
+	 *  can parse the bearer token out of the manifest entry. */
+	endpoint: dep(
+		(s: WalletAppState): Endpoint => ({
 			name: 'wallet-app',
+			url: s.url,
 			kind: 'wallet-app',
-			url: resolvedBaseUrl,
-			port: resolvedPort,
-			endpointLabel: `${resolvedBaseUrl}/?token=${activeToken}`,
-		});
-	};
+			pairUrl: `${s.url}/?token=${s.token}`,
+		}),
+	),
+	full: dep((s: WalletAppState) => s),
+} satisfies Provides<WalletAppState>;
 
-	return definePlugin({
-		name: 'wallet-app',
-		provides: ['wallet-app.register', 'wallet-app.serve'],
-		actions: () => [
-			register({
-				name: 'register',
-				needs,
-				// Hint goes into the input hash (so changing the user's
-				// preferred port re-runs); resolved port is a runtime
-				// detail.
-				inputs: { preferredPort, publicOrigin: explicitOrigin ?? null },
-				provides: { registry: populateRegistry },
-				getStatus: async (ctx) => {
-					requireLocalnetCtx(ctx, 'wallet-app');
-					const { baseUrl, port } = await resolveEndpoint(ctx);
-					const persisted = readPersistedToken(ctx.appDir, ctx.stack);
-					if (persisted === undefined) {
-						return { ok: false, detail: 'no persisted token' };
-					}
-					activeToken = persisted;
-					const cached = ctx.registry.services.find('wallet-app');
-					const expectedLabel = `${baseUrl}/?token=${persisted}`;
-					if (
-						cached === undefined ||
-						cached.url !== baseUrl ||
-						cached.port !== port ||
-						cached.endpointLabel !== expectedLabel
-					) {
-						return { ok: false, detail: 'registry entry stale' };
-					}
-					return { ok: true, detail: baseUrl };
-				},
-				run: async (ctx) => {
-					requireLocalnetCtx(ctx, 'wallet-app');
-					await resolveEndpoint(ctx);
-					let token = readPersistedToken(ctx.appDir, ctx.stack);
-					if (token === undefined) {
-						token = generateToken();
-						writePersistedToken(ctx.appDir, ctx.stack, token);
-					}
-					activeToken = token;
-					populateRegistry(ctx);
-				},
-			}),
-			hostProcess({
-				name: 'serve',
-				// Register populates URL+token in the registry; serve only
-				// starts the listener once that's done. Sui.accounts is a
-				// transitive need (register depends on it).
-				needs: ['register'],
-				inputs: { preferredPort, publicOrigin: explicitOrigin ?? null },
-				// No `provides.registry` — register's hook owns the entry.
-				getStatus: async (ctx) => {
-					const { baseUrl } = await resolveEndpoint(ctx);
-					const reachable = await probeUrl(`${baseUrl}/health`);
-					if (!reachable) return { ok: false, detail: `${baseUrl} not reachable` };
-					if (activeToken === undefined) {
-						activeToken = readPersistedToken(ctx.appDir, ctx.stack);
-						if (activeToken === undefined) {
-							return { ok: false, detail: 'running but token unknown; restarting' };
-						}
-					}
-					// Hot-reload trigger: drift between the last-seen account
-					// names and the supervisor's currently-resolved list means
-					// `devstack.config.ts` grew (or lost) an account. Return
-					// `ok: false` and let `run` call setActiveAccounts to plumb
-					// the new context into the still-listening server.
-					const currentNames = ctx.accounts.names();
-					if (
-						setActiveAccounts !== undefined &&
-						lastAccountNames !== undefined &&
-						!arraysEqual(currentNames, lastAccountNames)
-					) {
-						return { ok: false, detail: 'accounts changed; hot-reloading' };
-					}
-					// Same drift gate for the CORS allowlist. The most common
-					// trigger is `dev-server` arriving in the registry one
-					// cycle after `serve` started — without this re-check
-					// the browser's fetches stay 403'd until the user
-					// restarts the supervisor.
-					const currentOrigins = currentAllowedOrigins(ctx);
-					if (
-						setAllowedOrigins !== undefined &&
-						lastAllowedOrigins !== undefined &&
-						!arraysEqual(currentOrigins, lastAllowedOrigins)
-					) {
-						return { ok: false, detail: 'CORS allowlist changed; hot-reloading' };
-					}
-					return { ok: true, detail: baseUrl };
-				},
-				run: async (ctx) => {
-					const { port, baseUrl } = await resolveEndpoint(ctx);
-					const log = ctx.appendLog;
-					if (activeServer !== undefined && activeServer.listening) {
-						// Warm-cycle hot-reload path: the listener is healthy but
-						// `getStatus` saw new accounts. Plumb the fresh
-						// `ctx.accounts` reference into the running server (next
-						// /accounts list / sign request rebuilds the snapshot
-						// from it) and update our drift tracker.
-						if (setActiveAccounts !== undefined) {
-							setActiveAccounts(ctx.accounts);
-							lastAccountNames = ctx.accounts.names();
-							log(`wallet-app hot-reloaded accounts: [${lastAccountNames.join(', ')}]`);
-						}
-						if (setAllowedOrigins !== undefined) {
-							const next = currentAllowedOrigins(ctx);
-							setAllowedOrigins(next);
-							lastAllowedOrigins = next;
-							log(`wallet-app hot-reloaded CORS allowed: [${next.join(', ') || '(none)'}]`);
-						}
-						return;
-					}
-					// Adoption path: a prior supervisor instance left a server
-					// listening AND its token is on disk. Trust it instead of
-					// trying to re-bind the port.
-					const persistedToken = readPersistedToken(ctx.appDir, ctx.stack);
-					if (persistedToken !== undefined && (await probeUrl(`${baseUrl}/health`))) {
-						activeToken = persistedToken;
-						log(`wallet-app adopted (existing process on ${baseUrl})`);
-						return;
-					}
+export const walletApp = defineSchema<WalletAppOptions, WalletAppState, typeof provides>({
+	id: 'walletApp',
+	provides,
+	create: (opts): SchemaInstanceConfig<WalletAppState, typeof provides, any> => {
+		if (opts.accounts.length === 0) {
+			throw new Error('walletApp: at least one account is required');
+		}
+		const host = opts.host ?? '127.0.0.1';
+		const explicitOrigin = opts.publicOrigin;
+		const staticAllowedOrigins = opts.allowedOrigins ?? [];
 
-					// Use the token populated by `register`; register's run
-					// always writes one before serve runs (transitive `needs`).
-					const token = persistedToken ?? generateToken();
-					// Build CORS allowlist: dev-server origin from the
-					// manifest (auto-discovered) plus any caller-supplied
-					// extras. Without this, the browser's CORS preflight
-					// from the Vite dev-server origin would be denied.
-					const allowedOrigins = currentAllowedOrigins(ctx);
-					const handle = await startWalletServer({
-						port,
-						host,
-						token,
-						accounts: ctx.accounts,
-						allowedOrigins,
-					});
-					activeServer = handle.server;
-					activeToken = handle.token;
-					setActiveAccounts = handle.setAccounts;
-					setAllowedOrigins = handle.setAllowedOrigins;
-					lastAccountNames = ctx.accounts.names();
-					lastAllowedOrigins = allowedOrigins;
-					writePersistedToken(ctx.appDir, ctx.stack, handle.token);
-					log(`wallet-app listening on ${baseUrl}`);
-					if (allowedOrigins.length > 0) {
-						log(`CORS allowed: ${allowedOrigins.join(', ')}`);
-					} else {
-						log('CORS allowed: (empty — dev-server not yet registered, will hot-reload)');
-					}
-					log(`pair URL: ${baseUrl}/?token=${handle.token}`);
-					ctx.onShutdown?.(async () => {
-						await new Promise<void>((resolve) => {
-							handle.server.close(() => resolve());
-							setTimeout(() => resolve(), 5_000).unref();
-						});
-						activeServer = undefined;
-						setActiveAccounts = undefined;
-						setAllowedOrigins = undefined;
-						lastAccountNames = undefined;
-						lastAllowedOrigins = undefined;
-						// activeToken stays so a subsequent same-process cycle
-						// can re-publish it without re-spawning.
-					});
-				},
-			}),
-		],
-	});
-};
+		// Per-instance closure: tracks the running listener so a warm
+		// cycle with unchanged inputs can reuse it, and an input-hash
+		// change can close the old server cleanly before binding a new
+		// one. Closure-per-instance (not module) means two `walletApp`
+		// instances in one process can't collide — though the schema
+		// currently enforces a single instance per stack.
+		let active: WalletServerHandle | undefined;
 
-function tokenPath(appDir: string, stack: string): string {
-	return nodePath.resolve(stackDir(appDir, stack), 'wallet-token');
+		// Flat array of { name, signer-Dep }. ResolveDep walks arrays
+		// and objects, so at `start()` time `deps.accounts` is
+		// `{ name: string; signer: Signer }[]` — no manual unwrap.
+		const accountDeps = opts.accounts.map((a) => ({ name: a.name, signer: a.signer }));
+
+		const deps = {
+			port: ports.get('allocate', { slot: WALLET_APP_PORT_SLOT }),
+			accounts: accountDeps,
+			...(opts.devServerOrigin !== undefined ? { devServerOrigin: opts.devServerOrigin } : {}),
+		};
+
+		return {
+			name: 'walletApp',
+			deps,
+			inputs: ({ deps }) => {
+				const resolved = deps as ResolvedWalletAppDeps;
+				return {
+					host,
+					publicOrigin: explicitOrigin ?? null,
+					accountNames: resolved.accounts.map((a) => a.name).sort(),
+					accountAddresses: resolved.accounts
+						.map((a) => a.signer.toSuiAddress())
+						.sort(),
+					allowedOrigins: computeAllowedOrigins(
+						resolved.devServerOrigin,
+						staticAllowedOrigins,
+					).sort(),
+					// Port stays out of the input hash on purpose: warm
+					// restarts reuse the prior allocation, and a port
+					// re-allocation shouldn't be the trigger for a restart
+					// (that would loop).
+				};
+			},
+			start: async ({ deps, env, log, onShutdown }) => {
+				const resolved = deps as ResolvedWalletAppDeps;
+				const allowedOrigins = computeAllowedOrigins(
+					resolved.devServerOrigin,
+					staticAllowedOrigins,
+				);
+
+				// Warm-cycle fast path: same listener, same shape, just
+				// keep going. The engine only invokes start when the
+				// input hash flips, so reaching here with `active` set
+				// means an external trigger (file watcher with no
+				// content change, etc.).
+				if (active !== undefined && active.server.listening) {
+					return { url: active.url, token: active.token, port: resolved.port };
+				}
+
+				const persisted = await readPersistedToken(env.appDir, env.stack);
+				const token = persisted ?? generateToken();
+				if (persisted === undefined) {
+					await writePersistedToken(env.appDir, env.stack, token);
+				}
+
+				const signers = resolved.accounts.map((a) => ({ name: a.name, signer: a.signer }));
+				const handle = await startWalletServer({
+					port: resolved.port,
+					host,
+					token,
+					signers,
+					allowedOrigins,
+					...(opts.maxBodyBytes !== undefined ? { maxBodyBytes: opts.maxBodyBytes } : {}),
+				});
+				active = handle;
+
+				const url = explicitOrigin ?? handle.url;
+				log(`wallet-app listening on ${url}`);
+				log(`pair URL: ${url}/?token=${token}`);
+				log(
+					allowedOrigins.length > 0
+						? `CORS allowed: ${allowedOrigins.join(', ')}`
+						: 'CORS allowed: (none)',
+				);
+
+				onShutdown(async () => {
+					await closeServer(handle);
+					active = undefined;
+				});
+
+				return { url, token, port: resolved.port };
+			},
+		};
+	},
+});
+
+interface ResolvedWalletAppDeps {
+	port: number;
+	accounts: { name: string; signer: Signer }[];
+	devServerOrigin?: string;
 }
 
-function readPersistedToken(appDir: string, stack: string): string | undefined {
+function computeAllowedOrigins(
+	devServerOrigin: string | undefined,
+	extra: readonly string[],
+): string[] {
+	const out: string[] = [];
+	if (devServerOrigin !== undefined) {
+		try {
+			out.push(new URL(devServerOrigin).origin);
+		} catch {
+			// Skip malformed input. The server-side sanitize step in
+			// startWalletServer rejects anything bad with a clear error;
+			// no need to duplicate that policy here.
+		}
+	}
+	for (const o of extra) out.push(o);
+	return out;
+}
+
+function tokenPath(appDir: string, stack: string | undefined): string {
+	return join(appDir, '.devstack', 'stacks', stack ?? 'main', 'wallet-token');
+}
+
+async function readPersistedToken(
+	appDir: string,
+	stack: string | undefined,
+): Promise<string | undefined> {
 	try {
-		const raw = nodeFs.readFileSync(tokenPath(appDir, stack), 'utf8').trim();
-		return raw.length > 0 ? raw : undefined;
-	} catch {
-		return undefined;
+		const raw = await readFile(tokenPath(appDir, stack), 'utf8');
+		const trimmed = raw.trim();
+		return trimmed.length > 0 ? trimmed : undefined;
+	} catch (err) {
+		if ((err as { code?: string }).code === 'ENOENT') return undefined;
+		throw err;
 	}
 }
 
-function writePersistedToken(appDir: string, stack: string, token: string): void {
+async function writePersistedToken(
+	appDir: string,
+	stack: string | undefined,
+	token: string,
+): Promise<void> {
 	const path = tokenPath(appDir, stack);
-	nodeFs.mkdirSync(nodePath.dirname(path), { recursive: true });
-	nodeFs.writeFileSync(path, `${token}\n`, { encoding: 'utf8', mode: 0o600 });
+	await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+	await writeFile(path, `${token}\n`, { encoding: 'utf8', mode: 0o600 });
 }
 
-function originOf(url: string): string {
-	try {
-		return new URL(url).origin;
-	} catch {
-		return url;
-	}
-}
-
-function arraysEqual(a: readonly string[], b: readonly string[]): boolean {
-	if (a.length !== b.length) return false;
-	for (let i = 0; i < a.length; i++) {
-		if (a[i] !== b[i]) return false;
-	}
-	return true;
+async function closeServer(handle: WalletServerHandle): Promise<void> {
+	await new Promise<void>((resolve) => {
+		handle.server.close(() => resolve());
+		// Guard against a stuck connection holding the close open.
+		setTimeout(() => resolve(), 5_000).unref();
+	});
 }

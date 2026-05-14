@@ -1,16 +1,15 @@
-import { expect, test } from '@playwright/test';
-
-import { connectAs, selectAccount } from '@mysten-incubation/devstack/playwright';
+import { connectAs, expect, selectAccount, test } from '@mysten-incubation/devstack-effect/playwright';
 
 /**
- * DeepBook v3 swap exercise: real Sui localnet, real DeepBook v3 published
- * via the `deepbook()` plugin, real wallet adapter. Pools are whitelisted
- * (no DEEP fees) and continuously made by alice via
- * `deepbook.market-maker-alice` (a HostProcess action) — every refresh
- * tick reposts a 3-level grid around the configured mid, so both sides
- * of the book are populated for each test. alice signing both as the
- * maker AND as the user side is parallel-safe because gas is paid from
- * her address-balance accumulator (no shared gas-coin object).
+ * DeepBook v3 swap exercise: real Sui localnet, real DeepBook v3
+ * published via the `deepbook()` primitive with mock-coin tag refs,
+ * real wallet adapter. Pools are whitelisted (no DEEP fees) and
+ * continuously made by alice via `deepbookMarketMaker` — every refresh
+ * tick reposts a 3-level grid around the configured mid, so both
+ * sides of the book are populated for each test. alice signing both
+ * as the maker AND as the user side is parallel-safe because gas is
+ * paid from her address-balance accumulator (no shared gas-coin
+ * object).
  */
 
 test.describe.configure({ mode: 'serial' });
