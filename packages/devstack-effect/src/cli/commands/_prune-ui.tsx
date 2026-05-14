@@ -15,12 +15,14 @@
 // supervisor first.
 
 import { Box, Text, useApp, useInput } from 'ink';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import type {
 	InventoryRow,
 	InventoryTotals,
+	RowClassification,
 } from '../../internal/docker/inventory.js';
 import {
+	byClassification,
 	formatBytes,
 	renderTotals,
 	summarizeContainers,
@@ -38,10 +40,26 @@ export interface PruneAppProps {
 
 const rowKey = (r: InventoryRow): string => `${r.app}/${r.stack}`;
 
+// User-approved default: abandoned rows are pre-selected on mount. The
+// classification is computed by `internal/docker/inventory.ts` from the
+// global registry — a row is `abandoned` when the recorded
+// `repoPath` no longer exists on disk (a `rm -rf`'d example). The user
+// opted in to this default explicitly; stale rows still require a
+// space-toggle so multi-month-old stacks don't disappear silently.
+const initialSelection = (rows: ReadonlyArray<InventoryRow>): ReadonlySet<string> => {
+	const out = new Set<string>();
+	for (const r of rows) {
+		if (r.classification === 'abandoned' && r.runningPid === undefined) {
+			out.add(rowKey(r));
+		}
+	}
+	return out;
+};
+
 export function PruneApp({ rows, onSubmit, onQuit }: PruneAppProps): React.ReactElement {
 	const inkApp = useApp();
 	const [cursor, setCursor] = useState(0);
-	const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+	const [selected, setSelected] = useState<ReadonlySet<string>>(() => initialSelection(rows));
 	const [confirming, setConfirming] = useState(false);
 
 	// First selectable row by default. If every row is running there's
@@ -50,6 +68,7 @@ export function PruneApp({ rows, onSubmit, onQuit }: PruneAppProps): React.React
 	useEffect(() => {
 		const firstSelectable = rows.findIndex((r) => r.runningPid === undefined);
 		if (firstSelectable >= 0) setCursor(firstSelectable);
+		setSelected(initialSelection(rows));
 	}, [rows]);
 
 	const isSelectable = (r: InventoryRow): boolean => r.runningPid === undefined;
@@ -137,19 +156,25 @@ export function PruneApp({ rows, onSubmit, onQuit }: PruneAppProps): React.React
 	const selectedRows = rows.filter((r) => selected.has(rowKey(r)));
 	const selectedTotals: InventoryTotals = totalsFor(selectedRows);
 	const orphanTotals = totalsFor(rows.filter(isSelectable));
+	// Confirmation tally — break the selected rows out by classification
+	// so the user sees exactly what they're about to remove (3 abandoned,
+	// 1 stale, etc.). useMemo so re-renders during cursor movement don't
+	// recompute.
+	const selectedTallyByClass = useMemo(() => byClassification(selectedRows), [selectedRows]);
 
 	return (
-		<Box flexDirection='column'>
-			<Box paddingX={1} borderStyle='round' borderColor='gray'>
+		<Box flexDirection="column">
+			<Box paddingX={1} borderStyle="round" borderColor="gray">
 				<Text bold>devstack prune</Text>
 				<Text> · </Text>
 				<Text dimColor>
-					{rows.length} stack{rows.length === 1 ? '' : 's'}, {orphanTotals.bytes > 0
+					{rows.length} stack{rows.length === 1 ? '' : 's'},{' '}
+					{orphanTotals.bytes > 0
 						? `~${formatBytes(orphanTotals.bytes)} reclaimable`
 						: 'no volume usage data'}
 				</Text>
 			</Box>
-			<Box flexDirection='column' paddingX={1}>
+			<Box flexDirection="column" paddingX={1}>
 				{rows.map((row, i) => (
 					<PruneRow
 						key={rowKey(row)}
@@ -160,28 +185,74 @@ export function PruneApp({ rows, onSubmit, onQuit }: PruneAppProps): React.React
 				))}
 			</Box>
 			{confirming ? (
-				<Box paddingX={1} marginTop={1} flexDirection='column'>
+				<Box paddingX={1} marginTop={1} flexDirection="column">
 					<Text>
-						About to remove: {selectedTotals.containers} containers,{' '}
-						{selectedTotals.networks} networks, {selectedTotals.volumes} volumes
-						{selectedTotals.bytes > 0
-							? ` (~${formatBytes(selectedTotals.bytes)} reclaimed)`
-							: ''}{' '}
-						across {selectedRows.length} stack
-						{selectedRows.length === 1 ? '' : 's'}.
+						Will remove: {renderClassificationTallyForUi(selectedTallyByClass)} (
+						{selectedTotals.containers} containers, {selectedTotals.networks} networks,{' '}
+						{selectedTotals.volumes} volumes
+						{selectedTotals.bytes > 0 ? ` (~${formatBytes(selectedTotals.bytes)})` : ''}
+						).
 					</Text>
-					<Text color='yellow'>Proceed? [y/N]</Text>
+					<Text color="yellow">Proceed? [y/N]</Text>
 				</Box>
 			) : (
 				<Box paddingX={1} marginTop={1}>
 					<Text dimColor>
-						[space] toggle  [a] all orphans  [n] none  [enter] prune selected  [q]uit
+						[space] toggle [a] all orphans [n] none [enter] prune selected [q]uit
 					</Text>
 				</Box>
 			)}
 		</Box>
 	);
 }
+
+const classificationColor = (kind: RowClassification): string | undefined => {
+	switch (kind) {
+		case 'active':
+			return 'cyan';
+		case 'dormant':
+			return 'green';
+		case 'stale':
+			return 'yellow';
+		case 'abandoned':
+			return 'red';
+		case 'untracked':
+			return 'magenta';
+		case 'wiped':
+			return undefined; // dim only
+	}
+};
+
+// `${app}/.../${parent}` shortener — keeps `/long/path/to/repos/wallet` from
+// blowing the row width. Leaves any non-string falsy input as `—`.
+const shortRepoPath = (full: string | undefined): string => {
+	if (full === undefined || full.length === 0) return '—';
+	const norm = full.replace(/\/+$/, '');
+	const parts = norm.split('/');
+	if (parts.length <= 2) return norm;
+	const tail = parts.slice(-2).join('/');
+	return `…/${tail}`;
+};
+
+const renderClassificationTallyForUi = (
+	buckets: Readonly<Record<RowClassification, ReadonlyArray<InventoryRow>>>,
+): string => {
+	const order: ReadonlyArray<RowClassification> = [
+		'abandoned',
+		'stale',
+		'dormant',
+		'untracked',
+		'wiped',
+		'active',
+	];
+	const parts: Array<string> = [];
+	for (const k of order) {
+		const n = buckets[k].length;
+		if (n === 0) continue;
+		parts.push(`${n} ${k}`);
+	}
+	return parts.length > 0 ? parts.join(', ') : '0 stacks';
+};
 
 function PruneRow({
 	row,
@@ -196,28 +267,39 @@ function PruneRow({
 	const bytes = volumeBytes(row);
 	const sized = bytes > 0 ? ` (~${formatBytes(bytes)})` : '';
 	const containers = summarizeContainers(row);
-	const detail = `${containers}, ${row.networks.length} net${row.networks.length === 1 ? '' : 's'}, ${row.volumes.length} vol${row.volumes.length === 1 ? '' : 's'}${sized}, ${row.stateDirs.length > 0 ? 'state present' : 'no state'}`;
+	const detail = `${containers}, ${row.networks.length} net${row.networks.length === 1 ? '' : 's'}, ${row.volumes.length} vol${row.volumes.length === 1 ? '' : 's'}${sized}`;
 	const cursor = focused ? '>' : ' ';
 	const box = checked ? '[x]' : '[ ]';
+	const tag = `[${row.classification}]`;
+	const tagColor = classificationColor(row.classification);
+	const entry = row.registryEntry;
+	const repoSummary =
+		entry !== undefined ? shortRepoPath(entry.repoPath) : '(unknown — pre-registry)';
+	const lastSeen = entry?.lastSeen ?? '—';
 	if (running) {
 		return (
 			<Box>
 				<Text dimColor>
 					{cursor} [-] {row.app}/{row.stack}{' '}
 				</Text>
-				<Text color='red' dimColor>
-					(running pid {row.runningPid})
+				<Text color="red" dimColor>
+					{tag} (running pid {row.runningPid})
 				</Text>
-				<Text dimColor>  {detail}</Text>
+				<Text dimColor> {detail}</Text>
 			</Box>
 		);
 	}
 	return (
 		<Box>
 			<Text color={focused ? 'cyan' : undefined}>
-				{cursor} {box} {row.app}/{row.stack}
+				{cursor} {box} {row.app}/{row.stack}{' '}
 			</Text>
-			<Text dimColor>  {detail}</Text>
+			<Text color={tagColor} dimColor={row.classification === 'wiped'}>
+				{tag}
+			</Text>
+			<Text dimColor> {detail} </Text>
+			<Text dimColor>{repoSummary} </Text>
+			<Text dimColor>{lastSeen}</Text>
 		</Box>
 	);
 }

@@ -22,7 +22,9 @@ import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { Command } from 'effect/unstable/cli';
 import { createServer } from 'node:net';
 import {
+	byClassification,
 	collectInventory,
+	renderClassificationTally,
 	renderInventoryRow,
 	renderTotals,
 	totalsFor,
@@ -147,10 +149,28 @@ export const doctorCommand = Command.make('doctor', {}, () =>
 				}
 				yield* Console.log('');
 				yield* Console.log(renderTotals(totalsFor(rows)));
+				yield* Console.log(renderClassificationTally(rows));
+				// Adaptive hint — pitch the most-targeted cleanup command
+				// the operator actually has rows for. Abandoned wins over
+				// stale wins over the broad interactive picker.
+				const buckets = byClassification(rows);
+				const hint = (() => {
+					if (buckets.abandoned.length > 0) {
+						const n = buckets.abandoned.length;
+						return `Hint: \`devstack prune --abandoned --yes\` to clean ${n} abandoned stack${n === 1 ? '' : 's'}.`;
+					}
+					if (buckets.stale.length > 0) {
+						const n = buckets.stale.length;
+						return `Hint: \`devstack prune --stale 30d --yes\` to clean ${n} stale stack${n === 1 ? '' : 's'}.`;
+					}
+					if (buckets.wiped.length > 0) {
+						const n = buckets.wiped.length;
+						return `Hint: \`devstack prune --all-orphans --yes\` to GC ${n} wiped-but-still-registered row${n === 1 ? '' : 's'}.`;
+					}
+					return 'Hint: `devstack prune` to interactively remove orphaned stacks.';
+				})();
 				yield* Console.log('');
-				yield* Console.log(
-					'Hint: `devstack prune` to interactively remove orphaned stacks.',
-				);
+				yield* Console.log(hint);
 			}
 		}
 
@@ -162,7 +182,5 @@ export const doctorCommand = Command.make('doctor', {}, () =>
 		}
 	}),
 ).pipe(
-	Command.withDescription(
-		'Preflight checks + inventory of devstack-labelled docker resources',
-	),
+	Command.withDescription('Preflight checks + inventory of devstack-labelled docker resources'),
 );

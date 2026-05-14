@@ -24,6 +24,8 @@
 import { Effect, FileSystem } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { join as joinPath } from 'node:path';
+import { isPidAlive as isPidAliveShared } from '../process-liveness.js';
+import { classifyEntry, registry, type Classification, type RegistryEntry } from '../registry.js';
 
 type Spawner = ReturnType<typeof ChildProcessSpawner.make>;
 type Fs = ReturnType<typeof FileSystem.make>;
@@ -38,7 +40,20 @@ export interface InventoryRow {
 	readonly stateDirs: ReadonlyArray<string>;
 	/** Supervisor PID if a live `state.json.lock` was found, else `undefined`. */
 	readonly runningPid: number | undefined;
+	/**
+	 * Lifecycle classification — derived from the global registry +
+	 * docker presence + repo-on-disk check. See `Classification` for
+	 * the bucket semantics. `'untracked'` rows have docker resources
+	 * but no registry entry (pre-registry orphans). `'wiped'` rows
+	 * have a registry entry but no docker resources (registry is
+	 * stale and can be GC'd).
+	 */
+	readonly classification: RowClassification;
+	/** Registry entry if one exists for this (app, stack). */
+	readonly registryEntry: RegistryEntry | undefined;
 }
+
+export type RowClassification = Classification | 'untracked' | 'wiped';
 
 export interface ContainerRef {
 	readonly id: string;
@@ -65,9 +80,7 @@ export interface VolumeRef {
 // label=devstack.app` that means every row we read DOES have an app
 // label, but the explicit `{{.Label ...}}` template keeps the parser
 // defensive against docker version drift in the label format.
-const listContainers = (
-	spawner: Spawner,
-): Effect.Effect<ReadonlyArray<RawContainer>> =>
+const listContainers = (spawner: Spawner): Effect.Effect<ReadonlyArray<RawContainer>> =>
 	Effect.gen(function* () {
 		const cmd = ChildProcess.make('docker', [
 			'ps',
@@ -114,9 +127,7 @@ interface RawContainer {
 	readonly running: boolean;
 }
 
-const listNetworks = (
-	spawner: Spawner,
-): Effect.Effect<ReadonlyArray<RawNetwork>> =>
+const listNetworks = (spawner: Spawner): Effect.Effect<ReadonlyArray<RawNetwork>> =>
 	Effect.gen(function* () {
 		// `docker network ls` doesn't render individual labels via
 		// `--format {{.Label "..."}}` consistently across versions (older
@@ -171,9 +182,7 @@ interface RawNetwork {
 	readonly stack: string;
 }
 
-const listVolumes = (
-	spawner: Spawner,
-): Effect.Effect<ReadonlyArray<RawVolume>> =>
+const listVolumes = (spawner: Spawner): Effect.Effect<ReadonlyArray<RawVolume>> =>
 	Effect.gen(function* () {
 		const lsCmd = ChildProcess.make('docker', [
 			'volume',
@@ -230,9 +239,7 @@ interface RawVolume {
 // Falling back to "size unknown" on parse failure is preferable to a
 // stat-walk: `docker volume inspect` doesn't expose disk usage, and
 // `du`-ing the mountpoint requires root on a Docker-for-Mac VM.
-const fetchVolumeSizes = (
-	spawner: Spawner,
-): Effect.Effect<ReadonlyMap<string, number>> =>
+const fetchVolumeSizes = (spawner: Spawner): Effect.Effect<ReadonlyMap<string, number>> =>
 	Effect.gen(function* () {
 		const cmd = ChildProcess.make('docker', ['system', 'df', '-v', '--format', '{{json .}}']);
 		const out = yield* spawner.string(cmd).pipe(Effect.catch(() => Effect.succeed('')));
@@ -273,6 +280,153 @@ const fetchVolumeSizes = (
 		}
 		return sizes;
 	});
+
+// -----------------------------------------------------------------------------
+// Image inventory — global rollup (NOT per-(app, stack)). Devstack-built
+// images get a `devstack.image=true` label from `internal/docker/image.ts`
+// at build time. The label is global because:
+//   - The same base image is reused across stacks (e.g. `walrus-rs:dev`
+//     built once, mounted into every walrus.aggregator container).
+//   - The build cache lives in the docker daemon, not the per-stack
+//     compose project.
+//
+// Removal candidacy: an image with the label AND no running container
+// using it. `docker rmi` against an in-use image errors and we'd waste
+// a round-trip; instead we cross-reference `docker ps --format
+// {{.Image}}` against the label-filtered list and only surface
+// candidates that are not in active use.
+// -----------------------------------------------------------------------------
+
+export interface ImageRef {
+	readonly id: string;
+	readonly tag: string;
+	readonly sizeBytes: number | undefined;
+	/**
+	 * True if at least one running container references this image. Such
+	 * images are excluded from `prune --include-images` removal.
+	 */
+	readonly inUse: boolean;
+}
+
+export interface ImageInventory {
+	readonly labelled: ReadonlyArray<ImageRef>;
+	/**
+	 * Count of `devstack-*`-named images WITHOUT the
+	 * `devstack.image=true` label — pre-registry orphans. Doctor
+	 * surfaces this count with a hint to clean manually since we can't
+	 * safely auto-remove an unlabelled image (no proof it was devstack
+	 * that built it).
+	 */
+	readonly unlabelledOrphans: number;
+}
+
+// `docker images --filter label=devstack.image=true` lists every image
+// `internal/docker/image.ts:build` stamped. The `--format` template
+// asks for ID + Repository:Tag + Size; Size is human-readable so we
+// re-use `parseSize` to bytesify it. Tag may be `<none>:<none>` for
+// dangling layers — skip those.
+const listLabelledImages = (
+	spawner: Spawner,
+): Effect.Effect<ReadonlyArray<{ id: string; tag: string; sizeBytes: number | undefined }>> =>
+	Effect.gen(function* () {
+		const cmd = ChildProcess.make('docker', [
+			'images',
+			'--filter',
+			'label=devstack.image=true',
+			'--format',
+			'{{.ID}}\t{{.Repository}}:{{.Tag}}\t{{.Size}}',
+		]);
+		const out = yield* spawner.string(cmd).pipe(Effect.catch(() => Effect.succeed('')));
+		const rows: Array<{ id: string; tag: string; sizeBytes: number | undefined }> = [];
+		const seen = new Set<string>();
+		for (const line of out.split('\n')) {
+			const trimmed = line.trim();
+			if (trimmed.length === 0) continue;
+			const parts = trimmed.split('\t');
+			if (parts.length < 3) continue;
+			const [id, tag, size] = parts as [string, string, string];
+			if (seen.has(id)) continue;
+			seen.add(id);
+			rows.push({ id, tag, sizeBytes: parseSize(size) });
+		}
+		return rows as ReadonlyArray<{ id: string; tag: string; sizeBytes: number | undefined }>;
+	});
+
+// Returns the set of image references (repo:tag OR id) currently in use
+// by any container (running OR stopped — stopped containers still
+// reference their image and `docker rmi` would fail).
+const inUseImageRefs = (spawner: Spawner): Effect.Effect<ReadonlySet<string>> =>
+	Effect.gen(function* () {
+		const cmd = ChildProcess.make('docker', ['ps', '-a', '--format', '{{.Image}}\t{{.ImageID}}']);
+		const out = yield* spawner.string(cmd).pipe(Effect.catch(() => Effect.succeed('')));
+		const refs = new Set<string>();
+		for (const line of out.split('\n')) {
+			const trimmed = line.trim();
+			if (trimmed.length === 0) continue;
+			const parts = trimmed.split('\t');
+			if (parts.length < 1) continue;
+			const [image, id] = parts as [string, string | undefined];
+			if (image.length > 0) refs.add(image);
+			if (id !== undefined && id.length > 0) refs.add(id);
+		}
+		return refs as ReadonlySet<string>;
+	});
+
+// Count `devstack-*`-named images that do NOT carry the new
+// `devstack.image=true` label. These were built before the labelling
+// landed — we surface the count so doctor can hint at manual cleanup
+// (we can't safely auto-remove an unlabelled image, no proof we built it).
+const countUnlabelledOrphans = (spawner: Spawner): Effect.Effect<number> =>
+	Effect.gen(function* () {
+		const allCmd = ChildProcess.make('docker', ['images', '--format', '{{.ID}}', 'devstack-*']);
+		const labelledCmd = ChildProcess.make('docker', [
+			'images',
+			'--filter',
+			'label=devstack.image=true',
+			'--format',
+			'{{.ID}}',
+			'devstack-*',
+		]);
+		const all = yield* spawner.string(allCmd).pipe(Effect.catch(() => Effect.succeed('')));
+		const labelled = yield* spawner
+			.string(labelledCmd)
+			.pipe(Effect.catch(() => Effect.succeed('')));
+		const allIds = new Set(
+			all
+				.split('\n')
+				.map((s) => s.trim())
+				.filter((s) => s.length > 0),
+		);
+		const labelledIds = new Set(
+			labelled
+				.split('\n')
+				.map((s) => s.trim())
+				.filter((s) => s.length > 0),
+		);
+		let count = 0;
+		for (const id of allIds) if (!labelledIds.has(id)) count += 1;
+		return count;
+	});
+
+export const collectImageInventory = (): Effect.Effect<
+	ImageInventory,
+	never,
+	ChildProcessSpawner.ChildProcessSpawner
+> =>
+	Effect.gen(function* () {
+		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+		const [labelled, inUse, unlabelledOrphans] = yield* Effect.all(
+			[listLabelledImages(spawner), inUseImageRefs(spawner), countUnlabelledOrphans(spawner)],
+			{ concurrency: 'unbounded' },
+		);
+		const images: Array<ImageRef> = labelled.map((img) => ({
+			id: img.id,
+			tag: img.tag,
+			sizeBytes: img.sizeBytes,
+			inUse: inUse.has(img.id) || inUse.has(img.tag),
+		}));
+		return { labelled: images as ReadonlyArray<ImageRef>, unlabelledOrphans };
+	}).pipe(Effect.withSpan('inventory.collectImages'));
 
 // Parse docker's human-readable size strings ("1.234GB", "12.4MB",
 // "0B"). Returns bytes. Decimal SI units (1KB = 1000B) match docker's
@@ -341,9 +495,7 @@ export const enumerateStateLocations = (
 		const out: Array<StateLocation> = [];
 		for (const root of roots) {
 			const devstackDir = joinPath(root, '.devstack');
-			const exists = yield* fs
-				.exists(devstackDir)
-				.pipe(Effect.catch(() => Effect.succeed(false)));
+			const exists = yield* fs.exists(devstackDir).pipe(Effect.catch(() => Effect.succeed(false)));
 			if (!exists) continue;
 			// Per-stack layout.
 			const stacksRoot = joinPath(devstackDir, 'stacks');
@@ -371,9 +523,7 @@ export const enumerateStateLocations = (
 			// matching how the rest of the toolchain treats unspecified
 			// stack names.
 			const flat = joinPath(devstackDir, 'state.json');
-			const flatExists = yield* fs
-				.exists(flat)
-				.pipe(Effect.catch(() => Effect.succeed(false)));
+			const flatExists = yield* fs.exists(flat).pipe(Effect.catch(() => Effect.succeed(false)));
 			if (flatExists) {
 				const lockPath = joinPath(devstackDir, 'state.json.lock');
 				const pid = yield* readLockPid(fs, lockPath);
@@ -402,22 +552,10 @@ const readLockPid = (fs: Fs, lockPath: string): Effect.Effect<number | undefined
 		return undefined;
 	});
 
-// Mirror of `state-store.ts:isHolderLive` minus the start-time match
-// (we don't have access to the original `startedAt` here; for the
-// inventory a bare `kill(0)` is good enough — if the PID happens to
-// have been reused we'll surface a false positive "running" instead of
-// silently pruning an active supervisor's state, which is the safer
-// failure mode).
-export const isPidAlive = (pid: number): boolean => {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch (err) {
-		const code = (err as NodeJS.ErrnoException).code;
-		// EPERM proves the PID is in use even though we can't signal it.
-		return code === 'EPERM';
-	}
-};
+// Re-export from the shared helper so callers can keep importing
+// `isPidAlive` from this module. See `process-liveness.ts` for the full
+// rationale (POSIX kill(0) + EPERM=alive trick, PID reuse trade-off).
+export const isPidAlive = isPidAliveShared;
 
 /** Build the per-(app,stack) inventory from raw docker output + state. */
 export interface CollectInventoryOptions {
@@ -485,22 +623,38 @@ export const collectInventory = (
 		// Map (app, stack) buckets to inventory rows + look up state dirs
 		// and running pids per row.
 		const cwd = process.env.DEVSTACK_APP_DIR ?? process.cwd();
-		const roots =
-			options.roots !== undefined
-				? options.roots
-				: ([cwd] as ReadonlyArray<string>);
+		const roots = options.roots !== undefined ? options.roots : ([cwd] as ReadonlyArray<string>);
 
 		// Enumerate state dirs ONCE across all roots — the result is
 		// independent of (app, stack), so we filter by stack name
 		// per-bucket below.
 		const states = yield* enumerateStateLocations(fs, roots);
 
+		// Read the global registry. Cross-join on (app, stack) so each
+		// docker-present row picks up the matching entry's
+		// `repoPath` / `lastSeen` / `pid`, AND we can surface `wiped`
+		// rows where the registry says we ran the stack but no docker
+		// resources survive on this host (e.g. a teardown that
+		// preceded the registry-remove call, or out-of-band cleanup).
+		const registrySnapshot = yield* registry.read();
+		const registryByKey = new Map<string, RegistryEntry>();
+		for (const entry of registrySnapshot.stacks) {
+			registryByKey.set(`${entry.app} ${entry.stack}`, entry);
+		}
+
 		const rows: Array<InventoryRow> = [];
+		const seenKeys = new Set<string>();
 		for (const [key, bucket] of buckets) {
 			const [app, stack] = key.split(' ') as [string, string];
+			seenKeys.add(key);
 			const matchingStates = states.filter((s) => s.stack === stack);
-			const runningPid = matchingStates.find((s) => s.pid !== undefined && isPidAlive(s.pid))
-				?.pid;
+			const runningPid = matchingStates.find((s) => s.pid !== undefined && isPidAlive(s.pid))?.pid;
+			const entry = registryByKey.get(key);
+			const classification = computeClassification({
+				entry,
+				dockerPresent: true,
+				runningPid,
+			});
 			rows.push({
 				app,
 				stack,
@@ -509,14 +663,38 @@ export const collectInventory = (
 				volumes: bucket.volumes,
 				stateDirs: matchingStates.map((s) => s.dir),
 				runningPid,
+				classification,
+				registryEntry: entry,
 			});
 		}
 
-		// Orphan-state-only rows (state on disk but no docker resources)
-		// are deliberately omitted here: the state file holds the
-		// per-primitive data but not the originating `app` label, so we
-		// can't attribute them. Operators in that situation can clear
-		// from inside the repo with a regular `wipe --yes`.
+		// Registry-tracked rows with no surviving docker resources on
+		// this host — the stack was torn down (or the resources were
+		// destroyed out-of-band). Emit a row so `prune` can offer to GC
+		// the registry entry. No docker enumeration needed; the entry
+		// itself carries `repoPath` for the picker to surface.
+		for (const entry of registrySnapshot.stacks) {
+			const key = `${entry.app} ${entry.stack}`;
+			if (seenKeys.has(key)) continue;
+			const matchingStates = states.filter((s) => s.stack === entry.stack);
+			const runningPid = matchingStates.find((s) => s.pid !== undefined && isPidAlive(s.pid))?.pid;
+			const classification = computeClassification({
+				entry,
+				dockerPresent: false,
+				runningPid,
+			});
+			rows.push({
+				app: entry.app,
+				stack: entry.stack,
+				containers: [],
+				networks: [],
+				volumes: [],
+				stateDirs: matchingStates.map((s) => s.dir),
+				runningPid,
+				classification,
+				registryEntry: entry,
+			});
+		}
 
 		// Stable order: by app then stack.
 		rows.sort((a, b) => {
@@ -525,6 +703,36 @@ export const collectInventory = (
 		});
 		return rows as ReadonlyArray<InventoryRow>;
 	}).pipe(Effect.withSpan('inventory.collect'));
+
+// -----------------------------------------------------------------------------
+// Classification glue
+// -----------------------------------------------------------------------------
+
+interface ClassificationInput {
+	readonly entry: RegistryEntry | undefined;
+	readonly dockerPresent: boolean;
+	readonly runningPid: number | undefined;
+}
+
+// Combine the registry's `classify` result with docker presence to
+// produce the wider `RowClassification` vocabulary. The registry's view
+// is authoritative for `active`/`dormant`/`stale`/`abandoned`; the
+// `untracked` and `wiped` buckets cover the cases where docker and the
+// registry disagree.
+export const computeClassification = (input: ClassificationInput): RowClassification => {
+	const { entry, dockerPresent, runningPid } = input;
+	if (entry === undefined) {
+		// No registry record. Pre-registry orphans (built before the
+		// registry shipped) or weird out-of-band state. A live state-
+		// dir lock still wins — never classify a row with a running
+		// supervisor as `untracked` because the picker would happily
+		// mark it for removal.
+		if (runningPid !== undefined) return 'active';
+		return 'untracked';
+	}
+	if (!dockerPresent && runningPid === undefined) return 'wiped';
+	return classifyEntry(entry);
+};
 
 // Render helpers used by both `doctor` and `prune --list`.
 
@@ -553,7 +761,50 @@ export const renderInventoryRow = (row: InventoryRow): string => {
 	const volumes = `${row.volumes.length} volume${row.volumes.length === 1 ? '' : 's'}${sized}`;
 	const state = row.stateDirs.length > 0 ? 'state present' : 'no state';
 	const running = row.runningPid !== undefined ? '  ← running' : '';
-	return `  ${row.app} / ${row.stack}  —  ${containers}, ${networks}, ${volumes}, ${state}${running}`;
+	const tag = `[${row.classification}]`;
+	return `  ${tag} ${row.app} / ${row.stack}  —  ${containers}, ${networks}, ${volumes}, ${state}${running}`;
+};
+
+// Tally rows by classification — used by doctor's hint line and the
+// confirmation screen in the interactive picker. Each bucket carries
+// the same `InventoryTotals` shape so callers can mix-and-match
+// `renderTotals` with `byClassification`'s output.
+export const byClassification = (
+	rows: ReadonlyArray<InventoryRow>,
+): Readonly<Record<RowClassification, ReadonlyArray<InventoryRow>>> => {
+	const buckets: Record<RowClassification, Array<InventoryRow>> = {
+		active: [],
+		dormant: [],
+		stale: [],
+		abandoned: [],
+		untracked: [],
+		wiped: [],
+	};
+	for (const r of rows) buckets[r.classification].push(r);
+	return buckets;
+};
+
+// Compact "5 stacks: 2 active, 1 dormant, ..." line for doctor. Skips
+// zero-count classifications so the line stays readable when only one
+// or two buckets have rows.
+export const renderClassificationTally = (rows: ReadonlyArray<InventoryRow>): string => {
+	const buckets = byClassification(rows);
+	const order: ReadonlyArray<RowClassification> = [
+		'active',
+		'dormant',
+		'stale',
+		'abandoned',
+		'untracked',
+		'wiped',
+	];
+	const parts: Array<string> = [];
+	for (const k of order) {
+		const n = buckets[k].length;
+		if (n === 0) continue;
+		parts.push(`${n} ${k}`);
+	}
+	const total = rows.length;
+	return `${total} stack${total === 1 ? '' : 's'}: ${parts.join(', ')}`;
 };
 
 export interface InventoryTotals {

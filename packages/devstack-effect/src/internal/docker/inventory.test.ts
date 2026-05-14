@@ -6,8 +6,11 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+	byClassification,
+	computeClassification,
 	formatBytes,
 	parseSize,
+	renderClassificationTally,
 	renderInventoryRow,
 	renderTotals,
 	summarizeContainers,
@@ -15,6 +18,7 @@ import {
 	volumeBytes,
 	type InventoryRow,
 } from './inventory.js';
+import type { RegistryEntry } from '../registry.js';
 
 const row = (overrides: Partial<InventoryRow> = {}): InventoryRow => ({
 	app: 'arena',
@@ -24,6 +28,8 @@ const row = (overrides: Partial<InventoryRow> = {}): InventoryRow => ({
 	volumes: [],
 	stateDirs: [],
 	runningPid: undefined,
+	classification: 'untracked',
+	registryEntry: undefined,
 	...overrides,
 });
 
@@ -173,5 +179,87 @@ describe('volumeBytes', () => {
 			}),
 		);
 		expect(total).toBe(1_500);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// computeClassification — the docker-presence/registry crossjoin
+// ---------------------------------------------------------------------------
+
+const regEntry = (overrides: Partial<RegistryEntry> = {}): RegistryEntry => ({
+	app: 'arena',
+	stack: 'main',
+	network: 'localnet',
+	repoPath: '/never-exists-' + Math.random(),
+	firstSeen: '2026-01-01T00:00:00.000Z',
+	lastSeen: '2026-04-30T00:00:00.000Z',
+	...overrides,
+});
+
+describe('computeClassification', () => {
+	it('returns `untracked` when there is no registry entry and no running pid', () => {
+		expect(
+			computeClassification({ entry: undefined, dockerPresent: true, runningPid: undefined }),
+		).toBe('untracked');
+	});
+
+	it('returns `active` for an entryless row with a live runningPid (never auto-prune a live state-lock)', () => {
+		expect(computeClassification({ entry: undefined, dockerPresent: true, runningPid: 1 })).toBe(
+			'active',
+		);
+	});
+
+	it('returns `wiped` when there is a registry entry but no docker resources', () => {
+		expect(
+			computeClassification({
+				entry: regEntry(),
+				dockerPresent: false,
+				runningPid: undefined,
+			}),
+		).toBe('wiped');
+	});
+
+	it('delegates to classifyEntry when registry + docker both have data', () => {
+		// repoPath does not exist → abandoned
+		const c = computeClassification({
+			entry: regEntry(),
+			dockerPresent: true,
+			runningPid: undefined,
+		});
+		expect(c).toBe('abandoned');
+	});
+});
+
+describe('byClassification / renderClassificationTally', () => {
+	it('buckets rows by classification', () => {
+		const rows: ReadonlyArray<InventoryRow> = [
+			row({ classification: 'abandoned' }),
+			row({ classification: 'abandoned', stack: 's2' }),
+			row({ classification: 'dormant', stack: 's3' }),
+			row({ classification: 'active', stack: 's4' }),
+		];
+		const b = byClassification(rows);
+		expect(b.abandoned).toHaveLength(2);
+		expect(b.dormant).toHaveLength(1);
+		expect(b.active).toHaveLength(1);
+		expect(b.stale).toHaveLength(0);
+	});
+
+	it('renderClassificationTally skips zero-count buckets', () => {
+		const rendered = renderClassificationTally([
+			row({ classification: 'abandoned' }),
+			row({ classification: 'dormant', stack: 's2' }),
+		]);
+		expect(rendered).toContain('2 stacks');
+		expect(rendered).toContain('1 abandoned');
+		expect(rendered).toContain('1 dormant');
+		expect(rendered).not.toContain('stale');
+	});
+});
+
+describe('renderInventoryRow with classification', () => {
+	it('prepends the classification tag', () => {
+		const rendered = renderInventoryRow(row({ classification: 'abandoned' }));
+		expect(rendered).toContain('[abandoned]');
 	});
 });
