@@ -530,6 +530,19 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 		//    Docker.run finalizer `docker rm -f`s on shutdown.
 		yield* setPhase('starting key server');
 		const keyServerContainerName = `seal-${name}-key-server`;
+		// `onPortConflict` releases the conflicting host port and
+		// re-allocates with the same value as preferred, so a
+		// resume-after-pause where another stack now holds 2024
+		// shifts to 2025 (etc) instead of landing on a random
+		// ephemeral. Note: the on-chain KeyServer registration above
+		// pinned `keyServerUrl` to the originally-allocated port — if
+		// `onPortConflict` actually fires on a resume, downstream
+		// dApps still resolve via the registry, so the manifest is
+		// updated but the on-chain `key_server_object_id` still
+		// points at the original URL. Acceptable: on a port shift,
+		// callers using the manifest's published `seal-key-server`
+		// endpoint hit the right port; the chain-level handle is
+		// authoritative for cryptographic identity, not for routing.
 		yield* Docker.run({
 			name: keyServerContainerName,
 			image: imageTag,
@@ -541,6 +554,11 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 			envFiles: [masterKeyEnvFile],
 			mounts: [{ host: configPath, container: '/etc/seal/key-server-config.yaml' }],
 			detach: true,
+			onPortConflict: Docker.reallocatePortsOnConflict(
+				portAllocator,
+				sealScope,
+				`seal(${name})`,
+			),
 		}).pipe(
 			Effect.catchTag('DockerError', (cause) =>
 				Effect.fail(

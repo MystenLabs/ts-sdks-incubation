@@ -172,6 +172,14 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 		let hostRpcPort: number;
 		let hostFaucetPort: number;
 		let hostGraphqlPort: number;
+		// When ports come from the allocator (the common path), capture
+		// it here so the `onPortConflict` callback we pass to `Docker.run`
+		// can release + re-allocate on a port-conflict resume. Left
+		// `undefined` when the caller pinned `options.ports` — in that
+		// case there's no allocator state to re-shuffle and `Docker.run`
+		// falls back to its pre-existing auto-allocate path on a
+		// port-conflict resume (back-compat).
+		let suiAllocator: typeof PortAllocator.Service | undefined;
 		if (options.ports !== undefined) {
 			ports = options.ports;
 			// Best-effort reverse lookup: find the host port mapped to
@@ -188,6 +196,7 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 			hostGraphqlPort = findHost(LOCAL_GRAPHQL_PORT);
 		} else {
 			const allocator = yield* PortAllocator;
+			suiAllocator = allocator;
 			const allocSui = (preferred: number) =>
 				Effect.gen(function* () {
 					const port = yield* allocator.allocate(preferred).pipe(
@@ -324,6 +333,10 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 		const suiDataVolume =
 			identity.network === 'localnet' ? suiDataBase : `${suiDataBase}-${identity.network}`;
 		yield* setPhase('starting localnet');
+		// Capture the localnet scope so `onPortConflict`'s release
+		// finalizers attach symmetrically with the original `allocSui`
+		// finalizers — both fire on the same scope teardown.
+		const suiScope = yield* Effect.scope;
 		const localnetRunResult = yield* Docker.run({
 			name: 'sui.localnet',
 			image,
@@ -338,6 +351,14 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 			networkAlias: SUI_LOCALNET_NETWORK_ALIAS,
 			mounts: [{ host: suiDataVolume, container: '/root/.sui' }],
 			detach: true,
+			// Only wire the callback when the allocator was involved.
+			// With caller-pinned ports there's no allocator state to
+			// shift, so leave it undefined and let `Docker.run` fall
+			// back to its pre-existing auto-allocate behavior.
+			onPortConflict:
+				suiAllocator !== undefined
+					? Docker.reallocatePortsOnConflict(suiAllocator, suiScope, 'sui.localnet')
+					: undefined,
 		}).pipe(
 			Effect.catchTag('DockerError', (cause) =>
 				Effect.fail(

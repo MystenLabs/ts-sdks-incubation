@@ -440,6 +440,7 @@ export const acquireLocalCluster = (args: {
 			proxyPort,
 			containerApiPort: args.containerApiPort,
 			network: networkName,
+			portAllocator: ports,
 		});
 
 		// -------------------------------------------------------------

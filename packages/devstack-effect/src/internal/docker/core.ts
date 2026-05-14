@@ -146,6 +146,27 @@ export interface DockerRunOptions {
 	 * validate the combination up front.
 	 */
 	readonly networkAlias?: string;
+	/**
+	 * Callback invoked when the resume path detects a port-conflict
+	 * stderr (`isPortConflictStderr` matched) AND the dispatcher is
+	 * about to recreate the container. The current `opts.ports`
+	 * (host → container) is passed in; the resolved record REPLACES
+	 * `opts.ports` for the recreate's `-p <bind>:<host>:<container>`
+	 * mappings.
+	 *
+	 * `Docker.run` itself is allocator-agnostic. Primitives that
+	 * allocate via `PortAllocator` wire this callback through
+	 * `reallocatePortsOnConflict` (see `./port-conflict.ts`) so a
+	 * resume-after-pause that finds the preferred host port held by
+	 * another stack SHIFTS to the next free preferred-style slot
+	 * (9000 → 9001 → 9002) instead of landing on a random ephemeral
+	 * port. When omitted, `Docker.run` falls back to today's behavior:
+	 * pass `-p <bind>::<container>` so docker auto-allocates the host
+	 * port and read it back via `inspectHostPorts`.
+	 */
+	readonly onPortConflict?: (
+		conflictingPorts: Readonly<Record<number, number>>,
+	) => Effect.Effect<Readonly<Record<number, number>>, DockerError, never>;
 }
 
 export interface DockerRunResult {
@@ -291,16 +312,20 @@ export const run = (
 		// fresh port allocation. The two paths that need port flags
 		// (`fresh` from a clean slate, and `recreate` when an image
 		// mismatch evicts a working container) splice them in below.
-		const portArgsFromOpts = (): Array<string> => {
+		const portArgsFor = (ports: Record<number, number>): Array<string> => {
 			const out: Array<string> = [];
-			for (const [hostPort, containerPort] of Object.entries(opts.ports ?? {})) {
+			for (const [hostPort, containerPort] of Object.entries(ports)) {
 				out.push('-p', `${bindAddress}:${hostPort}:${containerPort}`);
 			}
 			return out;
 		};
 		// Auto-allocate variant: pass only the container port so docker
 		// picks an ephemeral host port. The actual binding is read back
-		// via `inspectHostPorts` after `docker run` returns.
+		// via `inspectHostPorts` after `docker run` returns. Used by the
+		// resume-fallback when stderr matched a port-conflict pattern AND
+		// no `onPortConflict` callback was supplied — back-compat for
+		// callers that haven't wired allocator-driven preferred-port
+		// recovery yet.
 		const portArgsAuto = (): Array<string> => {
 			const out: Array<string> = [];
 			for (const containerPort of Object.values(opts.ports ?? {})) {
@@ -427,16 +452,44 @@ export const run = (
 		//     container is gone so there's nothing to conflict with.
 		//   - `recreate` from a resume-fallback promotion: depends on
 		//     WHY `docker start` failed. If stderr indicated a port
-		//     conflict (something else holds the host port now), drop
-		//     `opts.ports` and let docker auto-allocate — the actual
-		//     binding is read back via `inspectHostPorts`. For every
-		//     other failure (OCI runtime error, missing image layer,
-		//     daemon hiccup) the caller's ports are still correct and
-		//     re-allocating would silently move the endpoint out from
-		//     under callers that already published URLs at primitive-
-		//     init time.
-		const reAllocatePorts = resumePortConflict;
-		const portArgs = reAllocatePorts ? portArgsAuto() : portArgsFromOpts();
+		//     conflict (something else holds the host port now), the
+		//     caller's preferred host port is stale. Two sub-cases:
+		//
+		//       a. `onPortConflict` callback supplied — ask the primitive
+		//          (which owns the `PortAllocator`) for a fresh
+		//          host→container map. The recreate path uses those as
+		//          full `<bind>:<host>:<container>` mappings so the new
+		//          binding is the next free preferred port (9000 → 9001
+		//          → …) instead of a random ephemeral. `result.hostPorts`
+		//          reflects the callback's mapping directly.
+		//       b. No callback — drop `opts.ports` and pass
+		//          `-p <bind>::<container>` so docker auto-allocates an
+		//          ephemeral host port. Read it back via
+		//          `inspectHostPorts`. This is the pre-existing
+		//          back-compat path for callers that haven't wired
+		//          allocator-driven recovery.
+		//
+		//     For every other failure class (OCI runtime error, missing
+		//     image layer, daemon hiccup) the caller's ports are still
+		//     correct and re-allocating would silently move the endpoint
+		//     out from under callers that already published URLs at
+		//     primitive-init time.
+		let recreatePorts: Record<number, number> | null = null;
+		if (resumePortConflict && opts.onPortConflict !== undefined && opts.ports !== undefined) {
+			const fresh = yield* opts.onPortConflict(opts.ports);
+			recreatePorts = { ...fresh };
+			yield* Effect.logInfo(
+				`devstack: '${name}' recreate using re-allocated ports ` +
+					`${JSON.stringify(recreatePorts)} (was ${JSON.stringify(opts.ports)})`,
+			);
+		}
+		const useCallbackPorts = recreatePorts !== null;
+		const useAutoAllocate = resumePortConflict && recreatePorts === null;
+		const portArgs = useCallbackPorts
+			? portArgsFor(recreatePorts as Record<number, number>)
+			: useAutoAllocate
+				? portArgsAuto()
+				: portArgsFor({ ...opts.ports });
 		const args = buildRunArgs({
 			detach,
 			name,
@@ -485,7 +538,12 @@ export const run = (
 		yield* Effect.annotateCurrentSpan({
 			'docker.op': 'run',
 			'docker.name': name,
-			'docker.recreate': reAllocatePorts,
+			'docker.recreate': resumePortConflict,
+			'docker.recreate.portStrategy': useCallbackPorts
+				? 'callback'
+				: useAutoAllocate
+					? 'auto'
+					: 'caller',
 		});
 
 		const captured = yield* runCapturing(spawner, cmd, 'docker run');
@@ -535,13 +593,20 @@ export const run = (
 			),
 		);
 
-		// On `fresh` the host port bindings are exactly the caller's
-		// `opts.ports`. On `recreate` we asked docker to auto-allocate,
-		// so we must read the actual bindings back from inspect — the
-		// caller's `opts.ports` keys (host ports) are now stale.
-		const hostPorts: Record<number, number> = reAllocatePorts
-			? yield* inspectHostPorts(spawner, containerId)
-			: { ...(opts.ports ?? {}) };
+		// Host-port report:
+		//   - callback-driven recreate: the callback authored the binding,
+		//     we passed it verbatim as `-p <bind>:<host>:<container>` to
+		//     docker; report it back. Skips an `inspect` round-trip on the
+		//     happy path.
+		//   - auto-allocate recreate: docker chose an ephemeral host port,
+		//     read the actual binding back via `inspect`.
+		//   - normal `fresh`/`recreate`: caller's `opts.ports` were
+		//     honored exactly.
+		const hostPorts: Record<number, number> = useCallbackPorts
+			? { ...(recreatePorts as Record<number, number>) }
+			: useAutoAllocate
+				? yield* inspectHostPorts(spawner, containerId)
+				: { ...(opts.ports ?? {}) };
 		return { containerId, name, reused: false, hostPorts };
 	}).pipe(Effect.withSpan('Docker.run'));
 

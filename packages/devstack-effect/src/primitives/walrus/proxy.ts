@@ -10,6 +10,7 @@
 
 import { Effect, FileSystem } from 'effect';
 import * as Docker from '../../internal/docker.js';
+import { PortAllocator } from '../../internal/port-allocator.js';
 import { stringifyCause } from '../../internal/stringify-cause.js';
 import { WalrusError } from '../errors.js';
 import type { NodeState } from './internal.js';
@@ -24,6 +25,15 @@ export const startProxy = (args: {
 	proxyPort: number;
 	containerApiPort: number;
 	network: string;
+	/**
+	 * Allocator handle for the proxy's host port. When provided, a
+	 * port-conflict on resume releases + re-allocates against the same
+	 * preferred value (shifts to next free), so the proxy ends up on
+	 * the next free preferred port instead of a random ephemeral.
+	 * Optional for callers that pre-pin `proxyPort` outside the
+	 * allocator path.
+	 */
+	portAllocator?: typeof PortAllocator.Service;
 }) =>
 	Effect.fn('walrus.proxy')(function* () {
 		if (args.nodes.length === 0) {
@@ -71,6 +81,7 @@ export const startProxy = (args: {
 		);
 
 		const containerName = `walrus-${args.name}-proxy`;
+		const proxyScope = yield* Effect.scope;
 		yield* Docker.run({
 			name: containerName,
 			image: PROXY_IMAGE,
@@ -78,6 +89,19 @@ export const startProxy = (args: {
 			mounts: [{ host: configPath, container: '/etc/nginx/nginx.conf' }],
 			network: args.network,
 			detach: true,
+			// On a resume port-conflict, shift forward via the allocator
+			// rather than auto-allocating an ephemeral. Optional — when
+			// no allocator is wired through, `Docker.run` falls back to
+			// auto-allocate (the host port is then read out of
+			// `DockerRunResult.hostPorts`).
+			onPortConflict:
+				args.portAllocator !== undefined
+					? Docker.reallocatePortsOnConflict(
+							args.portAllocator,
+							proxyScope,
+							`walrus.proxy(${args.name})`,
+						)
+					: undefined,
 		}).pipe(
 			Effect.catchTag('DockerError', (cause) =>
 				Effect.fail(
