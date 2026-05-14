@@ -19,7 +19,7 @@ import {
 	type WalrusNetworkShape,
 } from '../interfaces/walrus.js';
 import { knownDeployments } from '../internal/known-deployments.js';
-import { walrusKnownDeployment } from './walrus.js';
+import { walrusKnownDeployment } from './walrus/index.js';
 
 // -----------------------------------------------------------------------------
 // Type-level shape compatibility — `WalrusNetworkShape.packageConfig`

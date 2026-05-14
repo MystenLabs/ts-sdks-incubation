@@ -12,7 +12,7 @@ import { layer as NodeFileSystemLayer } from '@effect/platform-node/NodeFileSyst
 import { describe, expect, it } from '@effect/vitest';
 import { EngineLive } from '../internal/engine.js';
 import { DeepbookAdmin, DeepbookCore, type DeepbookCoreShape } from '../interfaces/deepbook.js';
-import { deepbookKnownPackage } from './deepbook.js';
+import { deepbookKnownPackage } from './deepbook/index.js';
 
 // -----------------------------------------------------------------------------
 // Type-level compat: our `packageIds` shape must be assignable to the SDK's

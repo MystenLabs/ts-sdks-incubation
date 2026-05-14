@@ -1,84 +1,40 @@
-// Walrus storage-node primitives — Effect v4 multi-impl port.
+// Walrus local-cluster acquire-phase internals.
 //
-// Phase 6b carved the legacy v3 composite into two factories that produce
-// the same narrow interface vocabulary:
+// Everything in this file is private to the `walrus/` directory:
+// constants + shared types + the per-phase helpers
+// (`buildWrapperImage`, `deployContracts`, `registerCommittee`,
+// `startStorageNodes`, `resolveExchange`, `startProxy`,
+// `seedWalForAccounts`, `swapSuiForWal`) and the top-level
+// `acquireLocalCluster` orchestrator. Re-exported only via `walrus/local-cluster.ts`'s
+// importer; not surfaced through the primitives barrel.
 //
-//   - `walrusLocalCluster(opts)`   — full local boot. Builds the
-//     wrapper image, deploys contracts on local sui, registers nodes,
-//     fronts them via nginx, funds seed accounts. Provides ALL FOUR
-//     interfaces (`WalrusNetwork`, `WalrusNodes`, `WalrusProxy`,
-//     `WalrusAdmin`).
-//   - `walrusKnownDeployment(opts)` — pure-config handle pointing at a
-//     known testnet/mainnet deployment. Provides only `WalrusNetwork`,
-//     `WalrusNodes`, and (when URLs are available) `WalrusProxy`. No
-//     `WalrusAdmin` — we never have admin power over a network we
-//     didn't boot.
-//
-// The legacy `Walrus` composite tag is gone — yield the narrow tags
-// directly. The on-disk `manifest.packages.walrus` aggregate is still
-// derived from the same acquired state, but it's not surfaced via a
-// Context.Service tag any more.
-//
-// Acquire-phase mechanics (local cluster) are unchanged from the previous
-// revision:
-//
-//   1. Build (or pull) two docker images — `walrus.image.upstream`
-//      (cargo-built walrus binaries from a pinned git ref) and
-//      `walrus.image` (wrapper baking sui-cli + deploy/run scripts on top).
-//   2. Run a deploy one-shot inside the wrapper image; that script
-//      publishes the walrus Move package on chain, registers N storage
-//      nodes via `walrus-deploy deploy-system-contract`, and writes a
-//      `deploy` summary file (package_id, system_object, staking_object,
-//      exchange_object) to a host-bind-mounted output directory.
-//   3. Parse the summary into a deploy state + project it as a `Package`
-//      registry entry.
-//   4. Read the exchange object's `.type` on chain to discover the
-//      separate `wal_exchange` package id.
-//   5. Spawn N storage-node containers — each on a fixed in-network IP,
-//      `--hostname dryrun-node-<i>`, alias `walrus-node-<i>.localhost`,
-//      sharing the deploy outputs read-only — that exec `walrus-node run`.
-//   6. Render an nginx config fronting the committee via Host-header
-//      vhost routing and bind-mount it into an `nginx:alpine` container.
-//   7. Optionally swap SUI→WAL on a set of seed accounts via the
-//      `exchange_all_for_wal` move call.
-//
-// Same observability spans as the previous revision (`walrus.image`,
-// `walrus.deploy`, `walrus.register`, `walrus.exchange`, `walrus.nodes`,
-// `walrus.proxy`, `walrus.seedAccounts`).
+// Same observability spans as the previous monolithic revision
+// (`walrus.image`, `walrus.deploy`, `walrus.register`,
+// `walrus.exchange`, `walrus.nodes`, `walrus.proxy`,
+// `walrus.seed-accounts`).
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { createHash } from 'node:crypto';
-import { Context, Effect, FileSystem, Layer, Option } from 'effect';
+import { Effect, FileSystem, Option } from 'effect';
 import { ChildProcessSpawner } from 'effect/unstable/process';
 import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
 import { Transaction } from '@mysten/sui/transactions';
-import type { StackMember } from '../define-devstack.js';
 import {
-	WalrusAdmin,
-	WalrusNetwork,
-	WalrusNodes,
-	WalrusProxy,
 	type WalrusAdminShape,
-	type WalrusNetworkShape,
-	type WalrusNodeInfo,
-	type WalrusNodesShape,
-	type WalrusProxyShape,
-} from '../interfaces/walrus.js';
-import * as Docker from '../internal/docker.js';
-import { EngineHandle } from '../internal/engine.js';
-import { Identity } from '../internal/identity.js';
-import { knownDeployments, type KnownNetwork } from '../internal/known-deployments.js';
-import { PortAllocator } from '../internal/port-allocator.js';
-import { EndpointRegistry, PackageRegistry } from '../internal/registries.js';
-import { awaitReady } from '../internal/ready-probe.js';
-import { StateStore } from '../internal/state-store.js';
-import { stringifyCause } from '../internal/stringify-cause.js';
-import { dockerImage, gitFetch } from '../plugin-author/index.js';
-import { type PluginTag } from '../tag.js';
-import { WalrusError } from './errors.js';
-import type { Account } from './shared.js';
-import { Sui } from './sui.js';
+} from '../../interfaces/walrus.js';
+import * as Docker from '../../internal/docker.js';
+import { EngineHandle } from '../../internal/engine.js';
+import { Identity } from '../../internal/identity.js';
+import { PortAllocator } from '../../internal/port-allocator.js';
+import { EndpointRegistry, PackageRegistry } from '../../internal/registries.js';
+import { awaitReady } from '../../internal/ready-probe.js';
+import { StateStore } from '../../internal/state-store.js';
+import { stringifyCause } from '../../internal/stringify-cause.js';
+import { type PluginTag } from '../../tag.js';
+import { WalrusError } from '../errors.js';
+import type { Account } from '../shared.js';
+import { Sui } from '../sui.js';
 
 // -----------------------------------------------------------------------------
 // Defaults
@@ -90,37 +46,37 @@ import { Sui } from './sui.js';
 //     Dockerfile's `git clone --branch ${WALRUS_VERSION}` step
 // Bump together — the cargo build and the Move package must agree on
 // the on-chain types they emit.
-const DEFAULT_WALRUS_REPO = 'https://github.com/MystenLabs/walrus.git';
-const DEFAULT_WALRUS_REF = 'devnet-v1.48.0';
+export const DEFAULT_WALRUS_REPO = 'https://github.com/MystenLabs/walrus.git';
+export const DEFAULT_WALRUS_REF = 'devnet-v1.48.0';
 // Walrus's Move sources moved from `move/walrus` to `contracts/walrus`
 // around the v1.20+ release branches. The wrapper image bakes its own
 // copy of the contracts, so the gitFetch is only used by downstream
 // `publishMove` consumers that want the on-disk tree.
-const DEFAULT_WALRUS_MOVE_SUBDIR = 'contracts/walrus';
+export const DEFAULT_WALRUS_MOVE_SUBDIR = 'contracts/walrus';
 
 // Matching sui binary baked into the wrapper image; `deploy.sh` shells
 // out to it for the admin wallet bootstrap. Kept aligned with the sui
 // localnet image's release so the wallet bytecode is mutually
 // compatible.
-const DEFAULT_SUI_VERSION = 'devnet-v1.71.0';
+export const DEFAULT_SUI_VERSION = 'devnet-v1.71.0';
 
 // Rust toolchain to cargo-build walrus on. v3 keeps this at the
 // `rust-toolchain.toml` walrus ships at the pinned tag — bump in
 // lockstep with `DEFAULT_WALRUS_REF` if walrus rolls forward.
-const DEFAULT_RUST_TOOLCHAIN = '1.93';
+export const DEFAULT_RUST_TOOLCHAIN = '1.93';
 
-const DEFAULT_NODE_API_PORT = 9185;
+export const DEFAULT_NODE_API_PORT = 9185;
 // Default proxy host port. Pinned to the same value the storage nodes
 // register on chain as their `public_port` (`containerApiPort`, 9185 by
 // default) so SDK clients keyed on `Host: walrus-node-N.localhost:9185`
 // land on the proxy. Browsers resolve `*.localhost` to 127.0.0.1, so
 // the proxy has to listen on 127.0.0.1:9185 for SDK blob uploads to
 // reach it.
-const DEFAULT_PROXY_PORT = 9185;
-const DEFAULT_READY_TIMEOUT_MS = 60_000;
-const DEFAULT_EPOCH_DURATION = '24h';
-const DEFAULT_SHARDS = 100;
-const DEFAULT_SEED_WAL_PAYMENT_MIST = 500_000_000n;
+export const DEFAULT_PROXY_PORT = 9185;
+export const DEFAULT_READY_TIMEOUT_MS = 60_000;
+export const DEFAULT_EPOCH_DURATION = '24h';
+export const DEFAULT_SHARDS = 100;
+export const DEFAULT_SEED_WAL_PAYMENT_MIST = 500_000_000n;
 
 // nginx tag used to front the storage-node committee. Held to a small
 // pinned alpine variant so cold-pull latency is bounded.
@@ -163,42 +119,11 @@ const subnetForStack = (app: string, stack: string): { readonly subnet: string; 
 // state instead of pinning to stale package ids.
 const STATE_KEY_DEPLOY_PREFIX = 'walrus/deploy-output/v1';
 
-export interface WalrusLocalClusterOptions<Name extends string = 'walrus'> {
-	readonly name?: Name;
-	readonly nodeCount?: number;
-	readonly seedAccounts?: ReadonlyArray<PluginTag<any, Account, any, any>>;
-	/** Preferred host port for the aggregator/publisher proxy. The actual
-	 *  port is allocated via `PortAllocator` (scans forward if busy).
-	 *  Default 9100. */
-	readonly proxyPort?: number;
-	/** Pinned walrus release tag. Drives both the `git clone --branch` in
-	 *  the upstream Dockerfile and the matching Move-source fetch.
-	 *  Default `walrus-v1.39.0`. */
-	readonly version?: string;
-	/** Sui release whose binary the wrapper image bakes for the deploy
-	 *  script's admin-wallet bootstrap. Default `devnet-v1.71.0`. */
-	readonly suiVersion?: string;
-	/** Container API port each storage node binds. Default 9185 (v3 default). */
-	readonly containerApiPort?: number;
-	/** Shards distributed across the committee. Must be >= nodeCount. */
-	readonly shards?: number;
-	/** Walrus epoch duration. Default `'24h'`. */
-	readonly epochDuration?: string;
-	/** Per-node ready probe timeout. Default 60s. */
-	readonly readyTimeoutMs?: number;
-	/** SUI to swap into WAL on each seed account, in MIST. Default 0.5 SUI. */
-	readonly seedPaymentMist?: bigint;
-	/** Optional path to a vendored `walrus/move/walrus` checkout. When
-	 *  omitted, the primitive `gitFetch`es the upstream source at a
-	 *  pinned ref. */
-	readonly movePackagePath?: string;
-}
-
 // -----------------------------------------------------------------------------
 // Phase shapes — internal
 // -----------------------------------------------------------------------------
 
-interface DeployState {
+export interface DeployState {
 	readonly outputDir: string;
 	readonly walrusPackageId: string;
 	readonly systemObject: string;
@@ -220,13 +145,13 @@ interface CachedDeployState {
 	readonly exchangeObject?: string;
 }
 
-interface ExchangeState {
+export interface ExchangeState {
 	readonly objectId: string;
 	readonly packageId: string;
 	readonly walType: string;
 }
 
-interface NodeState {
+export interface NodeState {
 	readonly index: number;
 	readonly hostPort: number;
 	readonly containerIp: string;
@@ -236,7 +161,7 @@ interface NodeState {
 // Output of the local-cluster acquire body. The four narrow interface
 // services are projected from this single shape so the body runs once
 // even though four `Context.Service` keys end up populated.
-interface LocalClusterAcquired {
+export interface LocalClusterAcquired {
 	readonly deploy: DeployState;
 	readonly nodes: ReadonlyArray<NodeState>;
 	readonly proxyUrl: string;
@@ -245,342 +170,11 @@ interface LocalClusterAcquired {
 	readonly seedPaymentMist: bigint;
 }
 
-// -----------------------------------------------------------------------------
-// walrusLocalCluster()
-// -----------------------------------------------------------------------------
-
 // Engine-visible key for the local cluster member. The TUI/engine sees a
 // single tag name even though the acquire fans out into four interface
 // layers underneath — that matches the user's mental model ("one walrus
 // thing"). Exposed via the returned `StackMember.key`.
-const LOCAL_CLUSTER_KEY = 'walrusLocalCluster';
-
-export const walrusLocalCluster = <const Name extends string = 'walrus'>(
-	options: WalrusLocalClusterOptions<Name> = {},
-): StackMember => {
-	const name = (options.name ?? 'walrus') as Name;
-	const preferredProxyPort = options.proxyPort ?? DEFAULT_PROXY_PORT;
-	const nodeCount = options.nodeCount ?? 1;
-	const containerApiPort = options.containerApiPort ?? DEFAULT_NODE_API_PORT;
-	const shards = options.shards ?? DEFAULT_SHARDS;
-	const epochDuration = options.epochDuration ?? DEFAULT_EPOCH_DURATION;
-	const readyTimeoutMs = options.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
-	const seedPaymentMist = options.seedPaymentMist ?? DEFAULT_SEED_WAL_PAYMENT_MIST;
-
-	if (nodeCount < 1) {
-		throw new Error('walrusLocalCluster: nodeCount must be at least 1');
-	}
-	if (shards < nodeCount) {
-		throw new Error(`walrusLocalCluster: shards (${shards}) must be >= nodeCount (${nodeCount})`);
-	}
-
-	const walrusVersion = options.version ?? DEFAULT_WALRUS_REF;
-	const suiVersion = options.suiVersion ?? DEFAULT_SUI_VERSION;
-
-	// Resolve each seed-account tag upfront so the type-checker treats
-	// the array as a tuple — yield* inside the build pulls each
-	// `Account` shape so we can submit per-account seed txs.
-	const seedAccountTags = options.seedAccounts ?? [];
-
-	// Sibling tag for the Move source fetch. Built at factory time so its
-	// layer surfaces via `__layers` and defineDevstack provides the deps
-	// (FileSystem + ChildProcessSpawner) at runtime. Skipped entirely
-	// when the caller vendors a path themselves.
-	const moveSource =
-		options.movePackagePath === undefined
-			? gitFetch({
-					name: `${name}.move-source` as const,
-					repo: DEFAULT_WALRUS_REPO,
-					ref: walrusVersion,
-					subdirectory: DEFAULT_WALRUS_MOVE_SUBDIR,
-				})
-			: undefined;
-
-	// Sibling tag for the upstream walrus image (cargo-built binaries).
-	// Built at factory time so its layer surfaces via `__layers` and
-	// defineDevstack provides the deps (`ChildProcessSpawner`) at
-	// runtime. The wrapper image is built _inline_ inside the body
-	// because its `BASE_IMAGE` build-arg depends on the upstream's
-	// runtime-resolved content-addressed tag, which only exists after
-	// the upstream tag's body has run.
-	const dockerContext = new URL('../../walrus-image/', import.meta.url).pathname;
-	const upstreamImage = dockerImage({
-		name: `${name}.image.upstream` as const,
-		build: {
-			context: dockerContext,
-			dockerfile: 'upstream.Dockerfile',
-			buildArgs: {
-				WALRUS_VERSION: walrusVersion,
-				WALRUS_REPO: DEFAULT_WALRUS_REPO,
-				RUST_TOOLCHAIN: DEFAULT_RUST_TOOLCHAIN,
-				GIT_REVISION: walrusVersion,
-			},
-		},
-	});
-
-	// Single acquire-and-project Effect. Runs the full boot once, then
-	// returns a Context populated with all four interface keys plus the
-	// legacy `Walrus` aggregate so a single `Layer.effectContext` covers
-	// every consumer shape downstream code might reach for.
-	const acquireAndProject = Effect.gen(function* () {
-		// Engine lifecycle is wired manually here rather than through
-		// `provideTag` because we're producing a multi-service Context
-		// from a single body. `EngineHandle` is satisfied by InfraLive
-		// at run time; when run outside a devstack (e.g. a unit test
-		// providing only this layer) we degrade to a noop.
-		const engineOpt = yield* Effect.serviceOption(EngineHandle);
-		const startup =
-			engineOpt._tag === 'Some'
-				? Effect.gen(function* () {
-						yield* engineOpt.value.markAcquiring(LOCAL_CLUSTER_KEY, 'service');
-						yield* engineOpt.value.setEntryTitle(LOCAL_CLUSTER_KEY, 'walrus.cluster');
-					})
-				: Effect.void;
-		yield* startup;
-
-		// Forward setPhase narration onto the engine entry. The acquire
-		// body doesn't go through `withEngineLifecycle` (it produces a
-		// multi-service Context, not a single tag), so we hand it a
-		// callback that no-ops outside an engine and pushes into the
-		// LOCAL_CLUSTER_KEY entry otherwise.
-		const pushPhase = (phase: string): Effect.Effect<void> =>
-			engineOpt._tag === 'Some'
-				? engineOpt.value.setPhase(LOCAL_CLUSTER_KEY, phase)
-				: Effect.void;
-
-		const acquired: LocalClusterAcquired = yield* acquireLocalCluster({
-			name,
-			nodeCount,
-			containerApiPort,
-			shards,
-			epochDuration,
-			readyTimeoutMs,
-			preferredProxyPort,
-			seedPaymentMist,
-			walrusVersion,
-			suiVersion,
-			dockerContext,
-			upstreamImage: upstreamImage as PluginTag<any, any, any, any>,
-			moveSource: moveSource as PluginTag<any, any, any, any> | undefined,
-			movePackagePath: options.movePackagePath,
-			seedAccountTags,
-			pushPhase,
-		}).pipe(
-			Effect.tapCause((cause) =>
-				engineOpt._tag === 'Some'
-					? engineOpt.value.markFailed(LOCAL_CLUSTER_KEY, cause)
-					: Effect.void,
-			),
-		);
-
-		if (engineOpt._tag === 'Some') {
-			yield* engineOpt.value.markReady(LOCAL_CLUSTER_KEY, {
-				title: 'walrus.cluster',
-				primary: acquired.proxyUrl,
-				extras: [`${acquired.nodes.length} node${acquired.nodes.length === 1 ? '' : 's'}`],
-			});
-		}
-
-		const exchangeIds =
-			acquired.deploy.exchangeObject !== undefined
-				? [acquired.deploy.exchangeObject]
-				: undefined;
-		const networkShape: WalrusNetworkShape = {
-			systemObjectId: acquired.deploy.systemObject,
-			stakingPoolId: acquired.deploy.stakingObject,
-			subsidiesPackageId: undefined,
-			exchangeIds,
-			network: 'localnet',
-			// SDK-ready view. Pass directly to `new WalrusClient({
-			// suiClient, packageConfig })` — the shape mirrors
-			// `WalrusPackageConfig` so the upstream SDK's package
-			// resolution (system-object type query) just works against
-			// the local deploy.
-			packageConfig: {
-				systemObjectId: acquired.deploy.systemObject,
-				stakingPoolId: acquired.deploy.stakingObject,
-				...(exchangeIds !== undefined ? { exchangeIds } : {}),
-			},
-		};
-
-		// Local nodes don't surface a registered `nodeId` or `publicKey`
-		// today — the upstream `deploy-system-contract` writes only the
-		// committee size + chain ids into the deploy summary, not the
-		// per-node BLS keys. Stable synthetic ids let `WalrusNodesShape`
-		// stay honest about what we can observe; future work could read
-		// the `staking_pool` object on chain to fill these in.
-		const nodesShape: WalrusNodesShape = {
-			nodes: acquired.nodes.map(
-				(n): WalrusNodeInfo => ({
-					nodeId: `walrus-node-${n.index}`,
-					publicKey: '',
-					url: n.rpcUrl,
-				}),
-			),
-		};
-
-		const proxyShape: WalrusProxyShape = {
-			proxyUrl: acquired.proxyUrl,
-			aggregatorUrl: acquired.proxyUrl,
-			publisherUrl: acquired.proxyUrl,
-		};
-
-		const adminShape: WalrusAdminShape = makeAdminShape({
-			nodes: acquired.nodes,
-			exchange: acquired.exchange,
-			defaultSeedPaymentMist: acquired.seedPaymentMist,
-			seedAccountsByAddress: new Map(acquired.seedAccounts.map((a) => [a.address, a] as const)),
-		});
-
-		return Context.make(WalrusNetwork, networkShape).pipe(
-			Context.add(WalrusNodes, nodesShape),
-			Context.add(WalrusProxy, proxyShape),
-			Context.add(WalrusAdmin, adminShape),
-		);
-	}).pipe(Effect.withSpan(`walrusLocalCluster(${name})`));
-
-	const combinedLayer = Layer.effectContext(acquireAndProject) as Layer.Layer<
-		WalrusNetwork | WalrusNodes | WalrusProxy | WalrusAdmin,
-		WalrusError,
-		any
-	>;
-
-	// Order matters: `composeStackLayer` folds left-to-right with
-	// `provideMerge(layer, acc)`, so each new layer consumes from the
-	// accumulated acc. Providers must come BEFORE consumers.
-	// `combinedLayer` yields `moveSource` and `upstreamImage` inside its
-	// body, so it goes LAST. Listing it first leaves its deps unsatisfied
-	// when the fold reaches them, producing `Service not found:
-	// walrus.move-source` at run time.
-	const layers: ReadonlyArray<Layer.Layer<any, any, any>> = [
-		...upstreamImage.__layers,
-		...(moveSource !== undefined ? moveSource.__layers : []),
-		combinedLayer,
-	];
-
-	return {
-		__layer: combinedLayer,
-		__layers: layers,
-		key: LOCAL_CLUSTER_KEY,
-		__kind: 'service' as const,
-		__displayTitle: 'walrus.cluster',
-	};
-};
-
-// -----------------------------------------------------------------------------
-// walrusKnownDeployment()
-// -----------------------------------------------------------------------------
-
-export interface WalrusKnownDeploymentOptions {
-	readonly network?: KnownNetwork;
-	readonly systemObjectId?: string;
-	readonly stakingPoolId?: string;
-	readonly subsidiesPackageId?: string;
-	readonly exchangeIds?: ReadonlyArray<string>;
-	readonly nodes?: ReadonlyArray<WalrusNodeInfo>;
-	readonly aggregatorUrl?: string;
-	readonly publisherUrl?: string;
-	readonly proxyUrl?: string;
-}
-
-const KNOWN_DEPLOYMENT_KEY = 'walrusKnownDeployment';
-
-export const walrusKnownDeployment = (options: WalrusKnownDeploymentOptions): StackMember => {
-	// Look up the known-deployment record up-front so missing fields
-	// trip a synchronous factory-time error rather than a deferred Layer
-	// failure. When `network` isn't supplied, every required field must
-	// be set explicitly — there's no record to fall back to.
-	const known =
-		options.network !== undefined ? knownDeployments.walrus[options.network] : undefined;
-
-	const systemObjectId = options.systemObjectId ?? known?.systemObjectId;
-	const stakingPoolId = options.stakingPoolId ?? known?.stakingPoolId;
-	const subsidiesPackageId = options.subsidiesPackageId ?? known?.subsidiesPackageId;
-	const exchangeIds = options.exchangeIds ?? known?.exchangeIds;
-	const nodes = options.nodes ?? known?.nodes;
-	const aggregatorUrl = options.aggregatorUrl ?? known?.aggregatorUrl;
-	const publisherUrl = options.publisherUrl ?? known?.publisherUrl;
-	const proxyUrl = options.proxyUrl ?? aggregatorUrl ?? publisherUrl;
-	const network = options.network ?? 'custom';
-
-	if (systemObjectId === undefined) {
-		throw new Error(
-			'walrusKnownDeployment: `systemObjectId` is required when `network` is not provided ' +
-				'or when the known-deployment record lacks one.',
-		);
-	}
-	if (stakingPoolId === undefined) {
-		throw new Error(
-			'walrusKnownDeployment: `stakingPoolId` is required when `network` is not provided ' +
-				'or when the known-deployment record lacks one.',
-		);
-	}
-	// The committee isn't statically registered — testnet has 100+ nodes
-	// and the upstream `@mysten/walrus` SDK fetches them dynamically from
-	// the staking pool. Surface the gap synchronously so consumers reach
-	// for `walrusLocalCluster()` (local testing) or pass an explicit
-	// committee list (production) instead of getting a confusing empty
-	// `nodes` array at the first read.
-	if (nodes === undefined) {
-		throw new Error(
-			`walrusKnownDeployment: Walrus ${network} committee has 100+ nodes and isn't ` +
-				'statically registered. Pass ' +
-				"`walrusKnownDeployment({ network, nodes: [...] })` with the explicit " +
-				'committee list, OR use `walrusLocalCluster()` for local testing.',
-		);
-	}
-
-	const networkShape: WalrusNetworkShape = {
-		systemObjectId,
-		stakingPoolId,
-		subsidiesPackageId,
-		exchangeIds,
-		network,
-		// SDK-ready view. Real testnet/mainnet values flow straight
-		// from the registry to `new WalrusClient({ packageConfig })`.
-		// `exchangeIds` is copied to a fresh mutable `string[]` here to
-		// match `@mysten/walrus`'s `WalrusPackageConfig.exchangeIds: string[]`
-		// — the source registry entry is `ReadonlyArray<string>`.
-		packageConfig: {
-			systemObjectId,
-			stakingPoolId,
-			...(exchangeIds !== undefined ? { exchangeIds: [...exchangeIds] } : {}),
-		},
-	};
-	const nodesShape: WalrusNodesShape = { nodes };
-
-	// Proxy is only provided when at least one of the URLs is reachable.
-	// Without any URLs the consumer can't talk to walrus, so we'd rather
-	// leave `WalrusProxy` unsatisfied (surfacing as ServiceNotFound) than
-	// hand them back empty strings that would 404 at the first blob op.
-	const hasProxy =
-		proxyUrl !== undefined && aggregatorUrl !== undefined && publisherUrl !== undefined;
-
-	const networkLayer = Layer.succeed(WalrusNetwork, networkShape);
-	const nodesLayer = Layer.succeed(WalrusNodes, nodesShape);
-	const proxyLayer = hasProxy
-		? Layer.succeed(WalrusProxy, {
-				proxyUrl: proxyUrl,
-				aggregatorUrl: aggregatorUrl,
-				publisherUrl: publisherUrl,
-			} satisfies WalrusProxyShape)
-		: undefined;
-
-	const layers: Array<Layer.Layer<any, any, any>> = [networkLayer, nodesLayer];
-	if (proxyLayer !== undefined) layers.push(proxyLayer);
-
-	const combinedLayer = Layer.mergeAll(
-		...(layers as [Layer.Layer<any, any, any>, ...Array<Layer.Layer<any, any, any>>]),
-	);
-	return {
-		__layer: combinedLayer,
-		__layers: layers,
-		key: KNOWN_DEPLOYMENT_KEY,
-		__kind: 'service' as const,
-		__displayTitle: `walrus.${network}`,
-	};
-};
-
+export const LOCAL_CLUSTER_KEY = 'walrusLocalCluster';
 
 // -----------------------------------------------------------------------------
 // Local cluster acquire — full boot
@@ -589,7 +183,7 @@ export const walrusKnownDeployment = (options: WalrusKnownDeploymentOptions): St
 // Extracted from the previous `walrus(opts)` body. The shape is unchanged;
 // only the projection step at the end is new. Returns the typed acquire
 // state so the caller can split it into the four interface keys.
-const acquireLocalCluster = (args: {
+export const acquireLocalCluster = (args: {
 	readonly name: string;
 	readonly nodeCount: number;
 	readonly containerApiPort: number;
@@ -848,6 +442,10 @@ const acquireLocalCluster = (args: {
 		} satisfies LocalClusterAcquired;
 	});
 
+// Re-export engine handle so local-cluster.ts can pull it from internal
+// without doubling the import surface.
+export { EngineHandle };
+
 // -----------------------------------------------------------------------------
 // WalrusAdmin construction
 // -----------------------------------------------------------------------------
@@ -858,7 +456,7 @@ const acquireLocalCluster = (args: {
 // can tighten it to a quorum-status check. `seedWal` reuses the swap helper
 // from phase 7 — the body's eager seeding covered the launch-time accounts;
 // this surfaces the same capability for ad-hoc post-boot top-ups.
-const makeAdminShape = (args: {
+export const makeAdminShape = (args: {
 	readonly nodes: ReadonlyArray<NodeState>;
 	readonly exchange: ExchangeState | undefined;
 	readonly defaultSeedPaymentMist: bigint;

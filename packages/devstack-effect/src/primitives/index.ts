@@ -64,7 +64,7 @@ export {
 	type DeepbookMarketMakerPoolSpec,
 	type DeepbookPool,
 	type DeepbookPoolSpec,
-} from './deepbook.js';
+} from './deepbook/index.js';
 export {
 	sealKnownKeyServer,
 	sealLocalKeygen,
@@ -92,4 +92,4 @@ export {
 	walrusLocalCluster,
 	type WalrusKnownDeploymentOptions,
 	type WalrusLocalClusterOptions,
-} from './walrus.js';
+} from './walrus/index.js';

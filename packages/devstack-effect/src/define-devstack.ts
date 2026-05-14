@@ -295,6 +295,21 @@ export interface StackComposeOptions {
 	 * fake; production code never sets this.
 	 */
 	readonly platformLayer?: Layer.Layer<unknown, unknown, never>;
+	/**
+	 * Optional layer of overrides merged into `InfraLive` AFTER the
+	 * default infra layers — `Layer.mergeAll`'s later-wins semantics let
+	 * the override shadow the default `PortAllocatorLive` / registry /
+	 * engine implementations. Intended for integration tests that want
+	 * deterministic behaviour (e.g. a `PortAllocator` that always
+	 * returns the preferred port without doing real TCP bind probes);
+	 * production code never sets this.
+	 *
+	 * Unlike `platformLayer` (which sits at the OUTER ring and is
+	 * `provideMerge`-d under InfraLive — so its services don't shadow
+	 * infra), this is merged INTO the infra ring, so it CAN shadow
+	 * services that the user stack consumes via `yield* SomeService`.
+	 */
+	readonly infraOverrides?: Layer.Layer<unknown, unknown, never>;
 }
 
 // Resolve the effective stack name. Precedence:
@@ -340,11 +355,27 @@ export const composeInfraLayer = (
 		app: deriveAppName(),
 		stack: stateStoreConfig.stack,
 	});
-	const InfraLive = Layer.mergeAll(InfraLiveCore, StateStoreFullLive, IdentityLive);
-	const platform =
-		opts.platformLayer !== undefined
-			? (opts.platformLayer as unknown as Layer.Layer<any, any, any>)
-			: (PlatformLive as unknown as Layer.Layer<any, any, any>);
+	// `infraOverrides` (when set) is merged LAST so `Layer.mergeAll`'s
+	// later-wins semantics shadow any duplicate tag in `InfraLiveCore`
+	// (e.g. a deterministic `PortAllocator` for integration tests).
+	const InfraLive =
+		opts.infraOverrides !== undefined
+			? Layer.mergeAll(
+					InfraLiveCore,
+					StateStoreFullLive,
+					IdentityLive,
+					opts.infraOverrides as Layer.Layer<any, any, any>,
+				)
+			: Layer.mergeAll(InfraLiveCore, StateStoreFullLive, IdentityLive);
+	// `platformLayer` accepts a `Layer<unknown,…>` (the "strongest layer"
+	// interpretation — provides ALL services). The default `PlatformLive`
+	// is a narrower `Layer<NodeServices,…>`; we cast to the wider shape
+	// since callers consume the composed layer via `Context.get(tag)` at
+	// runtime and accept ServiceNotFound for absent tags. Going through
+	// the same widening type as `platformLayer` (not `Layer<any,any,any>`)
+	// keeps E + RIn precise.
+	const platform: Layer.Layer<unknown, unknown, never> =
+		opts.platformLayer ?? (PlatformLive as Layer.Layer<unknown, unknown, never>);
 	return Layer.provideMerge(InfraLive, platform) as Layer.Layer<unknown, unknown, never>;
 };
 
@@ -406,9 +437,17 @@ export const composeStackLayer = (
 	// order is the stack's authoring order — users (and composite
 	// primitives' `__layers`) list providers before consumers, so we just
 	// fold left-to-right with `provideMerge(newLayer, acc)`.
+	// Accumulator widens to `Layer<any, any, any>` because each stack
+	// member's `__layer` declares its services through opaque tag
+	// identities — there's no precise type for "the heterogeneous union
+	// of all prior outputs". Contravariance on `ROut` means `Layer<never>`
+	// doesn't auto-widen, so we route the seed through `Layer.Any` (the
+	// canonical "some Layer" constraint type) and reduce from there.
+	// Drops the previous `as unknown as Layer<any,any,any>` round-trip.
+	const seed: Layer.Any = Layer.empty;
 	const userLayer = stackLayers.reduce<Layer.Layer<any, any, any>>(
 		(acc, layer) => Layer.provideMerge(layer, acc),
-		Layer.empty as unknown as Layer.Layer<any, any, any>,
+		seed as Layer.Layer<any, any, any>,
 	);
 
 	// Per-devstack state-store identity. Reads from config with sane
@@ -440,7 +479,18 @@ export const composeStackLayer = (
 		app: deriveAppName(),
 		stack: stateStoreConfig.stack,
 	});
-	const InfraLive = Layer.mergeAll(InfraLiveCore, StateStoreFullLive, IdentityLive);
+	// `infraOverrides` (when set) is merged LAST so `Layer.mergeAll`'s
+	// later-wins semantics shadow any duplicate tag in `InfraLiveCore`
+	// (e.g. a deterministic `PortAllocator` for integration tests).
+	const InfraLive =
+		opts.infraOverrides !== undefined
+			? Layer.mergeAll(
+					InfraLiveCore,
+					StateStoreFullLive,
+					IdentityLive,
+					opts.infraOverrides as Layer.Layer<any, any, any>,
+				)
+			: Layer.mergeAll(InfraLiveCore, StateStoreFullLive, IdentityLive);
 
 	// Layer-order rationale (innermost → outermost):
 	//   1. `userLayer` consumes infra (Engine, registries, StateStore,
@@ -461,10 +511,12 @@ export const composeStackLayer = (
 	// would both ServiceNotFound at runtime. provideMerge keeps the
 	// internal wiring intact while still re-exporting upward.
 	const withInfra = Layer.provideMerge(userLayer, InfraLive);
-	const platform =
-		opts.platformLayer !== undefined
-			? (opts.platformLayer as unknown as Layer.Layer<any, any, any>)
-			: (PlatformLive as unknown as Layer.Layer<any, any, any>);
+	// See `composeInfraLayer`: platformLayer is typed as the widest
+	// `Layer<unknown,…>` shape because the caller resolves services from
+	// the composed layer via `Context.get(tag)` at runtime. PlatformLive
+	// narrows to NodeServices; the cast widens (no `any` round-trip).
+	const platform: Layer.Layer<unknown, unknown, never> =
+		opts.platformLayer ?? (PlatformLive as Layer.Layer<unknown, unknown, never>);
 	const fullLayer = Layer.provideMerge(withInfra, platform);
 	return fullLayer as Layer.Layer<unknown, unknown, never>;
 };
@@ -510,9 +562,12 @@ export const forkPrimitive = (
 	Effect.gen(function* () {
 		const memberLayers: ReadonlyArray<Layer.Layer<any, any, any>> =
 			member.__layers ?? [member.__layer];
+		// Same shape as `composeStackLayer`'s reduce — seed `Layer.empty`
+		// via the `Layer.Any` constraint to skip the `unknown as` step.
+		const memberSeed: Layer.Any = Layer.empty;
 		const memberLayer = memberLayers.reduce<Layer.Layer<any, any, any>>(
 			(acc, l) => Layer.provideMerge(l, acc),
-			Layer.empty as unknown as Layer.Layer<any, any, any>,
+			memberSeed as Layer.Layer<any, any, any>,
 		);
 
 		while (true) {
@@ -622,7 +677,9 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 	const headerStack = resolveStackName(config.stackName);
 	const headerNetwork = config.network ?? 'localnet';
 
-	const buildLaunchEffect = (overrides: RunOverrides) => {
+	const buildLaunchEffect = (
+		overrides: RunOverrides,
+	): Effect.Effect<void, unknown, never> => {
 		const renderer = overrides.renderer ?? resolveRenderer(config);
 
 		// Single iteration. Per-primitive scope topology:
@@ -865,16 +922,8 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 	return {
 		layer: fullLayer,
 		config,
-		// Cast through `unknown` because the launch effect's success channel
-		// is `void` (the outer `while` returns nothing on clean shutdown) and
-		// `runPromise` / `runMain` typings expect a parameterizable channel.
-		launchEffect: (overrides = {}) =>
-			buildLaunchEffect(overrides) as unknown as Effect.Effect<void, unknown, never>,
-		run: (overrides = {}) =>
-			Effect.runPromise(
-				buildLaunchEffect(overrides) as unknown as Effect.Effect<never, unknown, never>,
-			).then(() => undefined),
-		runMain: (overrides = {}) =>
-			nodeRunMain(buildLaunchEffect(overrides) as unknown as Effect.Effect<never, unknown, never>),
+		launchEffect: (overrides = {}) => buildLaunchEffect(overrides),
+		run: (overrides = {}) => Effect.runPromise(buildLaunchEffect(overrides)).then(() => undefined),
+		runMain: (overrides = {}) => nodeRunMain(buildLaunchEffect(overrides)),
 	};
 };

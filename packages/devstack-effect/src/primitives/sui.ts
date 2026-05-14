@@ -463,18 +463,19 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 	const baseLayers: ReadonlyArray<Layer.Layer<any, any, any>> =
 		localnetImage !== undefined ? [...localnetImage.__layers, __layer] : [__layer];
 
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	let buildImageLayer: Layer.Layer<any, any, any> | undefined;
+	// `SuiBuildImage` is a `Context.Reference` (Identifier=`never`), so
+	// `Layer.succeed(SuiBuildImage, …)` and `Layer.effect(SuiBuildImage, …)`
+	// both produce `Layer<never, …, …>` — references populate the Context
+	// slot without surfacing in `ROut`. The `Layer.effect` branch's body
+	// yields from the sibling `localnetImage` tag, so its `RIn` carries
+	// that tag's Identifier. We bind the variable to `Layer.Any` (the
+	// canonical "some Layer" constraint) so both branches assign without
+	// a cast, and let the final `layers` array widen via the existing
+	// `Layer<any,any,any>` element type at its declaration site.
+	let buildImageLayer: Layer.Any | undefined;
 	if (options.image !== undefined) {
 		const pinned = options.image;
-		buildImageLayer = Layer.succeed(SuiBuildImage, { tag: pinned }) as unknown as Layer.Layer<
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			any,
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			any,
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			any
-		>;
+		buildImageLayer = Layer.succeed(SuiBuildImage, { tag: pinned });
 	} else if (localnetImage !== undefined) {
 		buildImageLayer = Layer.effect(
 			SuiBuildImage,
@@ -482,12 +483,13 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 				const img = yield* localnetImage;
 				return { tag: img.tag };
 			}),
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		) as unknown as Layer.Layer<any, any, any>;
+		);
 	}
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	const layers: ReadonlyArray<Layer.Layer<any, any, any>> =
-		buildImageLayer !== undefined ? [...baseLayers, buildImageLayer] : baseLayers;
+		buildImageLayer !== undefined
+			? [...baseLayers, buildImageLayer as Layer.Layer<any, any, any>]
+			: baseLayers;
 	return { __layer, __layers: layers, key, __kind, __displayTitle };
 };
 
