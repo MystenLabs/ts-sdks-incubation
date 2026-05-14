@@ -121,31 +121,6 @@ export interface EngineHandleShape {
 	/** Allocate a fresh Deferred for the next iteration. Called by the launch
 	 * loop after `Deferred.await` returns and before re-seeding tags. */
 	readonly resetRestartSignal: Effect.Effect<void>;
-	/**
-	 * Per-primitive retry. The launch loop installs one fiber per top-level
-	 * stack member; each fiber blocks on `awaitRetry(key)` after its acquire
-	 * settles (success OR failure). `retryFailed` resolves the Deferred for
-	 * every entry currently in `status === 'failed'` so those fibers loop
-	 * back and re-acquire in a fresh child scope. A successful re-acquire
-	 * adds the member's service to the supervisor-level `sharedContext`,
-	 * and the cascading-retry logic (see `define-devstack.ts:runOnce`)
-	 * automatically wakes any sibling that was failing because of a missing
-	 * upstream service.
-	 *
-	 * Both calls are idempotent: missing keys are no-ops, and the deferred
-	 * is recycled on each `awaitRetry` return so the next wait blocks again.
-	 */
-	readonly retryFailed: Effect.Effect<void>;
-	/** Wait for `retryFailed` to fire for `key`. Returns once the next
-	 * retry signal arrives. Internally swaps in a fresh Deferred so the
-	 * next call blocks again. Used by per-primitive fibers in the launch
-	 * loop; user code never calls this directly. */
-	readonly awaitRetry: (key: string) => Effect.Effect<void>;
-	/** Directly fire `key`'s retry signal regardless of its current status.
-	 * Used by the launch loop to cascade retries: when a provider primitive
-	 * succeeds via retry, every still-failed consumer is woken so it gets
-	 * a chance to find the newly-available service in `sharedContext`. */
-	readonly signalRetry: (key: string) => Effect.Effect<void>;
 }
 
 export class EngineHandle extends Context.Service<EngineHandle, EngineHandleShape>()(
@@ -184,16 +159,11 @@ const mergeEntry = (
 	prior: TuiEntry | undefined,
 	patch: Partial<TuiEntry> & { readonly key: string },
 ): TuiEntry => {
-	const base: TuiEntry =
-		prior ?? { key: patch.key, kind: 'other', status: 'pending' };
+	const base: TuiEntry = prior ?? { key: patch.key, kind: 'other', status: 'pending' };
 	return { ...base, ...patch };
 };
 
-const updateEntry = (
-	state: TuiState,
-	key: string,
-	patch: Partial<TuiEntry>,
-): TuiState => {
+const updateEntry = (state: TuiState, key: string, patch: Partial<TuiEntry>): TuiState => {
 	// Auto-register entries we've never seen before. `defineDevstack` seeds
 	// the top-level stack members, but inner tags built at factory time
 	// (e.g. seal's keyServer / keyManager projections, or the per-account
@@ -276,7 +246,11 @@ const summarizeCause = (cause: Cause.Cause<unknown>): string => {
 // projection so `extractDeepestMessage` walks our original tree.
 const rawFailure = (cause: Cause.Cause<unknown>): unknown => {
 	for (const reason of cause.reasons) {
-		const r = reason as { readonly _tag: string; readonly error?: unknown; readonly defect?: unknown };
+		const r = reason as {
+			readonly _tag: string;
+			readonly error?: unknown;
+			readonly defect?: unknown;
+		};
 		if (r._tag === 'Fail') return r.error;
 		if (r._tag === 'Die') return r.defect;
 	}
@@ -386,9 +360,7 @@ export const EngineLive: Layer.Layer<EngineHandle> = Layer.effect(
 		const markAllReady = Ref.update(tuiState, (s) => ({
 			...s,
 			entries: s.entries.map((t) =>
-				t.status === 'pending' || t.status === 'acquiring'
-					? { ...t, status: 'ready' as const }
-					: t,
+				t.status === 'pending' || t.status === 'acquiring' ? { ...t, status: 'ready' as const } : t,
 			),
 		}));
 
@@ -410,64 +382,6 @@ export const EngineLive: Layer.Layer<EngineHandle> = Layer.effect(
 			yield* Ref.set(restartSignal, fresh);
 		});
 
-		// Per-primitive retry slots. Allocated lazily on first `awaitRetry`
-		// so the per-fiber launch loop in `define-devstack.ts:runOnce` can
-		// register without the engine knowing the full stack up-front. The
-		// Deferred is recycled inside `awaitRetry` itself: once resolved, the
-		// fiber that was blocking allocates a fresh one before returning, so
-		// the next `awaitRetry(key)` call blocks again — keeping the retry
-		// semantics stable across multiple successful re-acquires.
-		const retrySignals = yield* Ref.make(new Map<string, Deferred.Deferred<void>>());
-
-		const getOrMakeRetrySlot = (key: string) =>
-			Effect.gen(function* () {
-				const map = yield* Ref.get(retrySignals);
-				const existing = map.get(key);
-				if (existing !== undefined) return existing;
-				const fresh = yield* Deferred.make<void>();
-				yield* Ref.update(retrySignals, (m) => {
-					// Lost-race guard: if another fiber installed a slot between
-					// our `Ref.get` and `Ref.update`, prefer the winner's value.
-					if (m.has(key)) return m;
-					const next = new Map(m);
-					next.set(key, fresh);
-					return next;
-				});
-				const winning = yield* Ref.get(retrySignals);
-				return winning.get(key) ?? fresh;
-			});
-
-		const awaitRetry = (key: string) =>
-			Effect.gen(function* () {
-				const slot = yield* getOrMakeRetrySlot(key);
-				yield* Deferred.await(slot);
-				// Recycle: replace with a fresh Deferred so the next caller
-				// blocks again. Single fiber awaits each key (the per-primitive
-				// supervisor fiber), so no contention here.
-				const fresh = yield* Deferred.make<void>();
-				yield* Ref.update(retrySignals, (m) => {
-					const next = new Map(m);
-					next.set(key, fresh);
-					return next;
-				});
-			});
-
-		const signalRetry = (key: string) =>
-			Effect.gen(function* () {
-				const slot = yield* getOrMakeRetrySlot(key);
-				yield* Deferred.succeed(slot, void 0);
-			});
-
-		const retryFailed = Effect.gen(function* () {
-			const state = yield* Ref.get(tuiState);
-			const failedKeys = state.entries
-				.filter((e) => e.status === 'failed')
-				.map((e) => e.key);
-			for (const key of failedKeys) {
-				yield* signalRetry(key);
-			}
-		});
-
 		return {
 			tuiState,
 			markAcquiring,
@@ -484,9 +398,6 @@ export const EngineLive: Layer.Layer<EngineHandle> = Layer.effect(
 			restartSignal,
 			requestRestart,
 			resetRestartSignal,
-			retryFailed,
-			awaitRetry,
-			signalRetry,
 		};
 	}),
 );
