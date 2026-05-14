@@ -299,7 +299,7 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 				? `devstack-${identity.app}-sui-data`
 				: `devstack-${identity.app}-${identity.stack}-sui-data`;
 		yield* setPhase('starting localnet');
-		yield* Docker.run({
+		const localnetRunResult = yield* Docker.run({
 			name: 'sui.localnet',
 			image,
 			args: [
@@ -325,14 +325,29 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 			),
 		);
 
-		// URLs use the ALLOCATED host ports (not the in-container
-		// defaults) so dapp-kit / SDKs / browser clients dial whatever
-		// port the allocator picked. Falls back to the in-container
-		// defaults when the caller passed `options.ports` (matches the
-		// pre-allocator behaviour).
-		const rpcUrl = `http://localhost:${hostRpcPort}`;
-		const faucetUrl = `http://localhost:${hostFaucetPort}`;
-		const graphqlUrl = `http://localhost:${hostGraphqlPort}/graphql`;
+		// On a resumed container, the actual host port bindings come
+		// from the original `docker run -p` (which `docker start`
+		// honors verbatim) — NOT the freshly-allocated `hostRpcPort` /
+		// `hostFaucetPort` / `hostGraphqlPort` we computed above. Read
+		// the real bindings out of `Docker.run`'s result and override
+		// the URLs so the manifest, ready-probe, and downstream
+		// consumers all dial the port the container is actually bound
+		// to. Without this, resumed containers ended up with
+		// "manifest says 9001, container is on 9000" mismatches that
+		// surfaced as 60s ready-probe timeouts.
+		const actualPorts = localnetRunResult.hostPorts;
+		const findHostFor = (containerPort: number, fallback: number): number => {
+			for (const [h, c] of Object.entries(actualPorts)) {
+				if (c === containerPort) return Number(h);
+			}
+			return fallback;
+		};
+		const effectiveRpcPort = findHostFor(LOCAL_RPC_PORT, hostRpcPort);
+		const effectiveFaucetPort = findHostFor(LOCAL_FAUCET_PORT, hostFaucetPort);
+		const effectiveGraphqlPort = findHostFor(LOCAL_GRAPHQL_PORT, hostGraphqlPort);
+		const rpcUrl = `http://localhost:${effectiveRpcPort}`;
+		const faucetUrl = `http://localhost:${effectiveFaucetPort}`;
+		const graphqlUrl = `http://localhost:${effectiveGraphqlPort}/graphql`;
 		const client = new SuiJsonRpcClient({ url: rpcUrl, network: 'localnet' });
 
 		// Gate `Sui` readiness on ALL three endpoints actually serving:
