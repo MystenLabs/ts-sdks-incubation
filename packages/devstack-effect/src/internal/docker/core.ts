@@ -216,6 +216,21 @@ export interface DockerRunOptions {
 	 * forces both.
 	 */
 	readonly traefik?: ReadonlyArray<RouterLabel>;
+	/**
+	 * Per-line output sink. When set, after the container is up
+	 * `Docker.run` spawns a `docker logs --follow <id>` child whose
+	 * stdout/stderr lines flow through `cb`. Lifecycle is bound to the
+	 * `reuseScope` finalizer (the LongLivedScope when present, else the
+	 * caller's per-cycle scope) — closing the scope kills the
+	 * docker-logs child, so the supervisor stops streaming when the
+	 * container is stopped/removed at teardown.
+	 *
+	 * stdout lines arrive as `'info'`, stderr lines as `'warn'`.
+	 * Lines are pushed unconditionally; the callback is responsible
+	 * for any sampling / filtering it wants. Errors from the callback
+	 * are swallowed.
+	 */
+	readonly onOutputLine?: OutputLineCallback;
 }
 
 export interface DockerRunResult {
@@ -433,6 +448,10 @@ export const run = (
 						.pipe(Effect.ignore),
 				),
 			);
+			// Stream this container's combined output into the
+			// supervisor's log channel for as long as the reuseScope is
+			// alive. No-op when the caller didn't supply a sink.
+			yield* attachLogFollower(spawner, action.containerId, name, opts.onOutputLine, reuseScope);
 			// Read the container's actual host-port bindings — `docker
 			// start` honors the original `docker run -p` mappings, not
 			// the caller's freshly-allocated `opts.ports`. Callers that
@@ -508,6 +527,13 @@ export const run = (
 							.exitCode(ChildProcess.make('docker', ['stop', action.containerId]))
 							.pipe(Effect.ignore),
 					),
+				);
+				yield* attachLogFollower(
+					spawner,
+					action.containerId,
+					name,
+					opts.onOutputLine,
+					reuseScope,
 				);
 				const hostPorts = yield* inspectHostPorts(spawner, action.containerId);
 				return { containerId: action.containerId, name, reused: true, hostPorts };
@@ -673,6 +699,9 @@ export const run = (
 				spawner.exitCode(ChildProcess.make('docker', ['stop', containerId])).pipe(Effect.ignore),
 			),
 		);
+		// Stream this fresh container's combined output through the
+		// supervisor's sink (when supplied) until the reuseScope closes.
+		yield* attachLogFollower(spawner, containerId, name, opts.onOutputLine, reuseScope);
 
 		// Host-port report:
 		//   - callback-driven recreate: the callback authored the binding,
@@ -690,6 +719,62 @@ export const run = (
 				: { ...(opts.ports ?? {}) };
 		return { containerId, name, reused: false, hostPorts };
 	}).pipe(Effect.withSpan('Docker.run'));
+
+// Spawn `docker logs --follow --since <epoch-secs> <id>` and pump every
+// line through `cb`. No-op when `cb` is undefined. The follower is
+// scope-managed: spawn happens inside `Effect.forkIn(scope)` so the
+// fiber's interruption fires when `scope` closes; the spawner's own
+// finalizer (registered via `addFinalizer` inside the forked Effect)
+// then sends `docker logs` a SIGTERM. We also register a typed
+// `docker.kill`-shaped finalizer as belt-and-suspenders so the
+// foreground `docker logs` process tree gets cleaned up even when
+// SIGTERM races a parent interrupt.
+//
+// We deliberately start with `--since <now>` so we don't re-emit the
+// entire historical log buffer every time a container is adopted or
+// resumed — only newly emitted lines flow through. On the fresh-run
+// path that misses the first millisecond of output, but that's the
+// same as what `docker logs -f` would emit on a tight race and is
+// acceptable for the supervisor's narration role.
+const attachLogFollower = (
+	spawner: Spawner,
+	containerId: string,
+	displayName: string,
+	cb: OutputLineCallback | undefined,
+	scope: Scope,
+): Effect.Effect<void, never> =>
+	Effect.gen(function* () {
+		if (cb === undefined) return;
+		const sinceSecs = Math.floor(Date.now() / 1000).toString();
+		const op = `docker logs -f ${displayName}`;
+		// `Effect.forkIn(scope)` registers the cancellation on the
+		// scope: the forked fiber gets interrupted (non-blocking) when
+		// `scope` closes, the inner `Effect.scoped` then runs the
+		// spawner's finalizer to SIGTERM the docker subprocess. We do
+		// NOT add a manual `Fiber.interrupt` finalizer — that would
+		// join on the drainer's natural exit (only when `docker logs
+		// -f` itself closes), defeating the purpose of forking.
+		yield* Effect.gen(function* () {
+			const followCmd = ChildProcess.make(
+				'docker',
+				['logs', '-f', '--since', sinceSecs, containerId],
+				{ killSignal: 'SIGTERM' },
+			);
+			const handle = yield* spawner.spawn(followCmd).pipe(Effect.mapError(dockerError(op)));
+			yield* Effect.all(
+				[
+					drainLinesWithCallback(handle.stdout, 'info', cb).pipe(Effect.ignore),
+					drainLinesWithCallback(handle.stderr, 'warn', cb).pipe(Effect.ignore),
+					handle.exitCode.pipe(Effect.ignore),
+				],
+				{ concurrency: 'unbounded' },
+			);
+		}).pipe(
+			Effect.scoped,
+			Effect.catchCause(() => Effect.void),
+			Effect.forkIn(scope),
+		);
+	}).pipe(Effect.catchCause(() => Effect.void));
 
 // Resolve the `--add-host` entries for routed hostnames. Reads the
 // current set of registered hostnames fresh from the file-provider dir
@@ -1155,6 +1240,58 @@ export const runCapturingOrFail = (
 // drain each via Stream → mkString.
 export const decodeStream = <E>(stream: Stream.Stream<Uint8Array, E>): Effect.Effect<string, E> =>
 	Stream.mkString(Stream.decodeText(stream));
+
+// -----------------------------------------------------------------------------
+// Per-line output sink
+// -----------------------------------------------------------------------------
+//
+// The supervisor needs to see step output (one-shot stdout/stderr,
+// detached container `docker logs --follow`, host-process stdout/stderr)
+// as it arrives, not only after the step exits. Each wrapper that
+// touches a subprocess accepts an optional `OutputLineCallback`. The
+// primitive owning the call (walrus.deploy, seal.*, host-process)
+// captures the supervisor's `EngineHandle.appendLog` in a closure and
+// passes it through — keeping the docker / host-process modules free of
+// engine-layer dependencies.
+
+/** stdout lines arrive as `'info'`, stderr lines as `'warn'`. */
+export type OutputLineLevel = 'info' | 'warn';
+
+/**
+ * Per-line sink invoked from a streaming drain. The implementation
+ * runs in the same fiber as the drain, so a callback that throws
+ * synchronously OR fails its Effect will propagate. The wrappers below
+ * defensively ignore the callback's errors so a flaky sink never
+ * breaks a step that would otherwise succeed.
+ */
+export type OutputLineCallback = (
+	level: OutputLineLevel,
+	line: string,
+) => Effect.Effect<void, never, never>;
+
+// Drain a byte stream line-by-line, calling `cb` on each line AND
+// concatenating the lines back into the final string so the existing
+// `WalrusError({stderr, stdout})` shape still gets the whole output.
+//
+// `Stream.splitLines` handles the buffering across chunk boundaries
+// so a `\n` split across two byte chunks doesn't get duplicated as
+// two callback invocations.
+export const drainLinesWithCallback = <E>(
+	stream: Stream.Stream<Uint8Array, E>,
+	level: OutputLineLevel,
+	cb: OutputLineCallback,
+): Effect.Effect<string, E> => {
+	const lines = stream.pipe(
+		Stream.decodeText(),
+		Stream.splitLines,
+		Stream.tap((line) => cb(level, line).pipe(Effect.ignore)),
+	);
+	return Stream.runFold(
+		lines,
+		() => '',
+		(acc, line) => (acc.length === 0 ? line : `${acc}\n${line}`),
+	);
+};
 
 // Docker rejects names that don't start with `[a-zA-Z0-9]`; prefix keeps the
 // names easy to spot in `docker ps`.

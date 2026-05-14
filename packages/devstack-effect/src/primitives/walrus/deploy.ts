@@ -21,6 +21,7 @@ import { Effect, FileSystem } from 'effect';
 import { ChildProcessSpawner } from 'effect/unstable/process';
 import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
 import * as Docker from '../../internal/docker.js';
+import { EngineHandle } from '../../internal/engine.js';
 import { rewriteToHostGateway } from '../../internal/host-gateway.js';
 import type { IdentityShape } from '../../internal/identity.js';
 import { routerHostname } from '../../internal/router-hostname.js';
@@ -28,6 +29,22 @@ import { stringifyCause } from '../../internal/stringify-cause.js';
 import { WalrusError } from '../errors.js';
 import type { DeployState, ExchangeState } from './internal.js';
 import { WALRUS_NODE_IP_BASE } from './internal.js';
+
+// Build a per-line sink that forwards each line to the supervisor's
+// log channel (when an engine is wired into the context). Lines are
+// tagged with the primitive label so a multi-step boot's TUI tail
+// reads e.g. `[walrus.deploy] WAL exchange registered ...` instead
+// of an unattributed sea of `docker run` output.
+const makeOutputLineSink = (label: string): Effect.Effect<Docker.OutputLineCallback> =>
+	Effect.gen(function* () {
+		const engineOpt = yield* Effect.serviceOption(EngineHandle);
+		return (level, line) =>
+			engineOpt._tag === 'None'
+				? Effect.void
+				: engineOpt.value
+						.appendLog({ ts: Date.now(), level, message: `[${label}] ${line}` })
+						.pipe(Effect.ignore);
+	});
 
 // -----------------------------------------------------------------------------
 // Phase 2: deploy
@@ -151,6 +168,7 @@ export const deployContracts = (args: {
 			WALRUS_NETWORK: `${inNetworkRpc};${inNetworkFaucet}/gas`,
 		};
 
+		const onOutputLine = yield* makeOutputLineSink('walrus.deploy');
 		const result = yield* Docker.runOneShot({
 			name: `walrus-${args.name}-deploy`,
 			image: args.image,
@@ -163,6 +181,14 @@ export const deployContracts = (args: {
 			// container needs explicit `/etc/hosts` entries pointing the
 			// routed names at traefik.
 			routerAddHosts: true,
+			// Stream deploy.sh stdout/stderr into the supervisor TUI
+			// log as it arrives. Without this, a failed deploy surfaces
+			// only after `docker run` exits, and `--rm` (default for
+			// one-shots) has already destroyed the container — so the
+			// user can't `docker logs` the corpse. Set
+			// `DEVSTACK_KEEP_ONESHOT=1` to additionally preserve the
+			// container post-mortem.
+			onOutputLine,
 		}).pipe(
 			Effect.catchTag('DockerError', (cause) =>
 				Effect.fail(

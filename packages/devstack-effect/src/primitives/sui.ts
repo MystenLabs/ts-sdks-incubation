@@ -95,7 +95,18 @@ export interface SuiLocalnetOptions {
 	/** Pre-existing RPC base. When set, `suiLocalnet` skips the container
 	 *  body and just wraps an externally-managed localnet. */
 	readonly rpcUrl?: string;
+	/** Faucet base for the externally-managed-RPC branch. Defaults to
+	 *  `http://localhost:9123` (the sui binary's conventional faucet port).
+	 *  Ignored when `rpcUrl` is not set — the container-boot path always
+	 *  embeds its own faucet. */
 	readonly faucetUrl?: string;
+	/** GraphQL base for the externally-managed-RPC branch. When set,
+	 *  surfaced on the `Sui` tag and published to `EndpointRegistry` as
+	 *  `sui-graphql`. Left `undefined` by default since there's no stable
+	 *  conventional port to probe — pass it explicitly if the upstream
+	 *  localnet binary was started with `--with-graphql`. Ignored when
+	 *  `rpcUrl` is not set — the container-boot path wires its own
+	 *  `--with-graphql=0.0.0.0:9125`. */
 	readonly graphqlUrl?: string;
 	readonly ports?: Readonly<Record<number, number>>;
 	readonly readyTimeoutMs?: number;
@@ -133,17 +144,24 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 		if (options.rpcUrl !== undefined) {
 			const rpcUrl = options.rpcUrl;
 			const faucetUrl = options.faucetUrl ?? LOCAL_FAUCET_URL;
+			const graphqlUrl = options.graphqlUrl;
 			const client = new SuiJsonRpcClient({ url: rpcUrl, network: 'localnet' });
 			yield* EndpointRegistry.publish({ name: 'sui-rpc', url: rpcUrl, kind: 'rpc' });
 			yield* EndpointRegistry.publish({ name: 'sui-faucet', url: faucetUrl, kind: 'faucet' });
+			if (graphqlUrl !== undefined) {
+				yield* EndpointRegistry.publish({
+					name: 'sui-graphql',
+					url: graphqlUrl,
+					kind: 'graphql',
+				});
+			}
 			const chainId = yield* fetchChainId(client);
 			const waitForTransactionsReady = yield* buildWaitForTransactionsReady(faucetUrl);
 			return {
 				network: 'localnet',
 				rpcUrl,
 				faucetUrl,
-				// TODO: surface a localnet graphql endpoint when one exists
-				graphqlUrl: undefined,
+				graphqlUrl,
 				client,
 				chainId,
 				waitForTransactionsReady,

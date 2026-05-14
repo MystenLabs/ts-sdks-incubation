@@ -32,8 +32,10 @@
 import * as nodeFs from 'node:fs/promises';
 import { Context, Effect, FileSystem, Layer, Option, Path } from 'effect';
 import { addFinalizer } from 'effect/Scope';
+import { ChildProcessSpawner } from 'effect/unstable/process';
 import { Transaction } from '@mysten/sui/transactions';
 import * as Docker from '../internal/docker.js';
+import { EngineHandle } from '../internal/engine.js';
 import {
 	knownDeployments,
 	type KnownNetwork,
@@ -261,6 +263,27 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 		const signer = yield* options.signer;
 		const stateStore = yield* StateStore;
 		const identity = yield* Identity;
+		// Captured at acquire time so the closure-bound `rotate` Effect
+		// can pre-provide it. Required because the `SealKeyManagerShape`
+		// interface declares `rotate: Effect.Effect<void, SealError>` with
+		// R = never — the consumer holding the manager shape isn't
+		// expected to provide ChildProcessSpawner / FileSystem / etc.
+		// The other services (FileSystem, Path) flow through captured
+		// values (`fs`, `path`) whose methods don't add R.
+		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+		// Per-line output sink — funnels seal-cli / key-server output
+		// into the supervisor's TUI log tail. The `<label>` prefix
+		// disambiguates which seal phase (keygen / container / rotate
+		// keygen) emitted a given line. The engine may not be wired
+		// (standalone tests), in which case the callback is a no-op.
+		const engineOpt = yield* Effect.serviceOption(EngineHandle);
+		const makeSealOutputSink = (label: string): Docker.OutputLineCallback =>
+			(level, line) =>
+				engineOpt._tag === 'None'
+					? Effect.void
+					: engineOpt.value
+							.appendLog({ ts: Date.now(), level, message: `[${label}] ${line}` })
+							.pipe(Effect.ignore);
 
 		// Fold the chain identifier into both StateStore keys. A
 		// regenesis of the underlying chain flips `sui.chainId`,
@@ -323,6 +346,7 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 				image: imageTag,
 				entrypoint: SEAL_KEYGEN_ENTRYPOINT,
 				args: [...SEAL_KEYGEN_ARGS],
+				onOutputLine: makeSealOutputSink(`seal.${name}.keygen`),
 			}).pipe(
 				Effect.catchTag('DockerError', (cause) =>
 					Effect.fail(
@@ -573,6 +597,12 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 					servicePort: DEFAULT_KEY_SERVER_PORT,
 				},
 			],
+			// Stream the key-server's docker-logs into the supervisor.
+			// Catches the `RUST_LOG=info` lines that document
+			// `CONFIG_PATH` parse failures, master-key load issues, and
+			// per-request errors — all of which were previously invisible
+			// to the user until they manually ran `docker logs`.
+			onOutputLine: makeSealOutputSink(`seal.${name}.key-server`),
 		}).pipe(
 			Effect.catchTag('DockerError', (cause) =>
 				Effect.fail(
@@ -629,14 +659,197 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 			kind: 'seal-key-server',
 		});
 
-		// Rotation is a no-op for now — surfaced so consumers can keep
-		// the manager-shape stable while we land an actual key-
-		// regeneration flow (clear cache + restart container).
-		const rotate: Effect.Effect<void, SealError> = Effect.fail(
-			new SealError({
-				phase: 'rotate',
-				message: `seal(${name}): rotate is not implemented yet`,
-			}),
+		// Key rotation: regenerate the BLS keypair, register a NEW on-chain
+		// KeyServerV2 Independent (the upstream contract has no in-place
+		// `pk` mutation for Independent servers — `key_server.move` exposes
+		// only `update()` for URL), re-render the yaml + env-file with the
+		// new identity, restart the container so it picks up the new
+		// master key, and update the StateStore cache so the next
+		// `pnpm dev` resumes against the rotated keys.
+		//
+		// IMPORTANT — in-memory staleness: callers that already captured
+		// `SealKeyServer`'s shape (objectId / serverConfigs) by yielding
+		// the tag BEFORE rotate hold pre-rotation values. The Layer
+		// caches `SealKeyServer`, so re-yielding inside the same scope
+		// returns the same cached shape too. To pick up the new identity
+		// the stack needs to be hot-restarted (`r` in the TUI / SIGUSR2 /
+		// a watched-file edit). Until then, the rotated key-server is
+		// running on the same routed URL but answers under the NEW
+		// on-chain object id; any consumer still keyed on the OLD id
+		// hits a key mismatch. Treat rotate as an admin/operator action,
+		// not a hot-swap.
+		//
+		// Old KeyServer object: the upstream contract has no delete
+		// entry, so it persists on-chain after rotation. Acceptable for
+		// localnet (the chain itself is ephemeral); on testnet/mainnet
+		// rotations would orphan objects — not a path we currently
+		// support for `Known*` factories.
+		const rotate: Effect.Effect<void, SealError> = Effect.gen(function* () {
+			// 1. Fresh keypair via `seal-cli genkey` one-shot. We DON'T
+			//    consult the StateStore cache — rotation is explicit, the
+			//    whole point is to bypass the cache.
+			yield* setPhase('rotate: generating new master key');
+			const result = yield* Docker.runOneShot({
+				name: `seal.${name}.keygen.rotate.${Date.now()}`,
+				image: imageTag,
+				entrypoint: SEAL_KEYGEN_ENTRYPOINT,
+				args: [...SEAL_KEYGEN_ARGS],
+				onOutputLine: makeSealOutputSink(`seal.${name}.rotate.keygen`),
+			}).pipe(
+				Effect.catchTag('DockerError', (cause) =>
+					Effect.fail(
+						new SealError({
+							phase: 'rotate',
+							message: `seal(${name}): rotate keygen container failed: ${cause.message}`,
+							cause,
+						}),
+					),
+				),
+			);
+			if (result.exitCode !== 0) {
+				return yield* Effect.fail(
+					new SealError({
+						phase: 'rotate',
+						message: `seal(${name}): rotate keygen exited ${result.exitCode}`,
+						stderr: redactMasterKey(result.stderr),
+						stdout: redactMasterKey(result.stdout),
+						exitCode: result.exitCode,
+					}),
+				);
+			}
+			const fresh = parseSealKeygenOutput(result.stdout);
+
+			// 2. Register a NEW on-chain KeyServerV2 Independent. URL stays
+			//    the same (routed hostname is stable per stack); only the
+			//    on-chain object id + pk change.
+			yield* setPhase('rotate: registering new on-chain key-server');
+			const tx = new Transaction();
+			const freshPkBytes = decodeHex(fresh.publicKey);
+			tx.moveCall({
+				target: `${packageId}::key_server::create_and_transfer_v2_independent_server`,
+				arguments: [
+					tx.pure.string(keyServerName),
+					tx.pure.string(keyServerUrl),
+					tx.pure.u8(KEY_TYPE_BONEH_FRANKLIN_BLS12381),
+					tx.pure.vector('u8', Array.from(freshPkBytes)),
+				],
+			});
+			const registerResult = yield* signer.signAndExecute(tx).pipe(
+				Effect.mapError(
+					(cause) =>
+						new SealError({
+							phase: 'rotate',
+							message: `seal(${name}): rotate register tx failed: ${cause.message}`,
+							cause,
+						}),
+				),
+			);
+			const created = registerResult.objectChanges.find(
+				(c): c is Extract<SuiObjectChange, { type: 'created' }> =>
+					c.type === 'created' &&
+					'objectType' in c &&
+					typeof c.objectType === 'string' &&
+					c.objectType.endsWith('::key_server::KeyServer'),
+			);
+			if (created === undefined) {
+				return yield* Effect.fail(
+					new SealError({
+						phase: 'rotate',
+						message:
+							`seal(${name}): rotated KeyServer object missing from objectChanges ` +
+							`(digest=${registerResult.digest})`,
+					}),
+				);
+			}
+			const newObjectId = created.objectId;
+
+			// 3. Re-render yaml + env-file with the new identity. Both are
+			//    bind-mounted into the container — overwriting in place is
+			//    what the daemon will read on restart.
+			yield* setPhase('rotate: writing new config');
+			const newYaml = renderSealKeyServerConfig({
+				sealPackageId: packageId,
+				keyServerObjectId: newObjectId,
+				nodeUrl: containerNodeUrl,
+			});
+			yield* fs.writeFileString(configPath, newYaml).pipe(
+				Effect.mapError(
+					(cause) =>
+						new SealError({
+							phase: 'rotate',
+							message: `seal(${name}): could not write rotated config to ${configPath}: ${cause.message}`,
+							cause,
+						}),
+				),
+			);
+			yield* fs.writeFileString(masterKeyEnvFile, `MASTER_KEY=${fresh.masterKey}\n`).pipe(
+				Effect.mapError(
+					(cause) =>
+						new SealError({
+							phase: 'rotate',
+							message: `seal(${name}): could not write rotated env-file to ${masterKeyEnvFile}: ${cause.message}`,
+							cause,
+						}),
+				),
+			);
+			yield* fs.chmod(masterKeyEnvFile, 0o600).pipe(
+				Effect.catch(() =>
+					Effect.tryPromise({
+						try: () => nodeFs.chmod(masterKeyEnvFile, 0o600),
+						catch: () => undefined,
+					}).pipe(Effect.catch(() => Effect.void)),
+				),
+			);
+
+			// 4. Bounce the daemon so it loads the new env + config.
+			yield* setPhase('rotate: restarting key-server');
+			yield* Docker.restartContainer(keyServerContainerName).pipe(
+				Effect.catchTag('DockerError', (cause) =>
+					Effect.fail(
+						new SealError({
+							phase: 'rotate',
+							message: `seal(${name}): rotate restart failed: ${cause.message}`,
+							cause,
+						}),
+					),
+				),
+			);
+
+			// 5. Ready probe — same shape as initial acquire. The endpoint
+			//    URL is unchanged but the on-chain identity behind it is
+			//    new, so a fresh probe also catches misconfiguration
+			//    (bad new yaml, env-file perms wrong) before rotate
+			//    returns success.
+			yield* Docker.awaitContainerReady({
+				containerName: keyServerContainerName,
+				probe: {
+					kind: 'http',
+					url: `${keyServerUrl}/health`,
+					timeoutMs: readyTimeoutMs,
+				},
+			}).pipe(
+				Effect.catchTag('ReadyProbeError', (cause) =>
+					Effect.fail(
+						new SealError({
+							phase: 'rotate',
+							message: `seal(${name}): rotated key-server never became ready: ${cause.message}`,
+							stderr: cause.detail,
+							cause,
+						}),
+					),
+				),
+			);
+
+			// 6. Update StateStore caches. The next `pnpm dev` resumes
+			//    against these values; without them, resume would short-
+			//    circuit the keygen + register paths with the OLD pair
+			//    against the NEW on-chain object id, leaving the daemon
+			//    serving pre-rotation keys.
+			yield* stateStore.put<PersistedBlsKeypair>(blsKeypairKey, fresh);
+			yield* stateStore.put<string>(keyServerIdKey, newObjectId);
+		}).pipe(
+			Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+			Effect.withSpan(`seal(${name}).rotate`),
 		);
 
 		return {

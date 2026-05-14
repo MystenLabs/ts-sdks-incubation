@@ -163,7 +163,22 @@ export const deepbookLocalDeploy = <
 					capture: (changes) => {
 						const registryId = pickCreatedByTypeSuffix(changes, DEEPBOOK_REGISTRY_TYPE_SUFFIX);
 						const adminCapId = pickCreatedByTypeSuffix(changes, DEEPBOOK_ADMIN_CAP_TYPE_SUFFIX);
-						return { registryId, adminCapId };
+						// DEEP `TreasuryCap` is `0x2::coin::TreasuryCap<{pkg}::deep::DEEP>`.
+						// We can't spell the full type here — the inner packageId is
+						// exactly what we're capturing — so match by the two stable
+						// substrings around the unknown middle. The TreasuryCap pattern
+						// is distinctive enough that this match doesn't collide with
+						// `CoinMetadata<...::deep::DEEP>` (which DOES end with
+						// `::deep::DEEP>` but starts with `0x2::coin::CoinMetadata<`).
+						const deepTreasuryId = changes.find(
+							(c): c is Extract<SuiObjectChange, { type: 'created' }> =>
+								c.type === 'created' &&
+								'objectType' in c &&
+								typeof c.objectType === 'string' &&
+								c.objectType.startsWith('0x2::coin::TreasuryCap<') &&
+								c.objectType.endsWith('::deep::DEEP>'),
+						)?.objectId;
+						return { registryId, adminCapId, deepTreasuryId };
 					},
 				})
 			: undefined;
@@ -431,19 +446,19 @@ export const deepbookLocalDeploy = <
 			);
 			const findPool = makeFindPool(name, pools);
 
-			// SDK-aligned view. `DEEP_TREASURY_ID` would be the locally-minted
-			// DEEP token's `TreasuryCap`; the local deepbook source we vendor
-			// doesn't expose a hook to capture it yet, so it's left undefined
-			// here. Consumers that need on-chain DEEP fees should run against
-			// `deepbookKnownPackage({network})` instead, where the canonical
-			// testnet/mainnet treasury id is registered.
-			// TODO(deep-treasury): plumb the locally-deployed DEEP
-			// TreasuryCap object id through `publishMove({capture})` and
-			// surface it here once the vendored Move source includes it.
+			// SDK-aligned view. `DEEP_TREASURY_ID` is the locally-minted DEEP
+			// token's `TreasuryCap` — the vendored deepbook-v3 Move source
+			// declares the `deep::DEEP` coin, so the publish tx creates a
+			// `TreasuryCap<{pkg}::deep::DEEP>` that we capture via the
+			// `publishMove({capture})` callback above. Falls back to `''` if
+			// the vendored source ever drops the DEEP module (we don't fail
+			// loudly because consumers that don't need DEEP fees on localnet
+			// shouldn't be forced to vendor a specific Move version).
+			const deepTreasuryId = (pkg.captured?.deepTreasuryId as string | undefined) ?? '';
 			const packageIds = {
 				DEEPBOOK_PACKAGE_ID: packageId,
 				REGISTRY_ID: registryId,
-				DEEP_TREASURY_ID: '',
+				DEEP_TREASURY_ID: deepTreasuryId,
 				MARGIN_PACKAGE_ID: undefined,
 				MARGIN_REGISTRY_ID: undefined,
 				LIQUIDATION_PACKAGE_ID: undefined,
