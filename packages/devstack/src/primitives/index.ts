@@ -29,15 +29,6 @@ export {
 } from './host-process.js';
 export { manifest, type ManifestData, type ManifestOptions } from './manifest.js';
 export {
-	pickCreatedByTypeIncludes,
-	pickCreatedByTypeSuffix,
-	publishMove,
-	type CoinSpec,
-	type Package,
-	type PublishedCoin,
-	type PublishMoveOptions,
-} from './publish-move.js';
-export {
 	registerCoin,
 	type RegisterCoinOptions,
 	type RegisterCoinResult,

@@ -23,5 +23,5 @@ export type PackageRef<
 	Captured extends Record<string, unknown> = Record<string, unknown>,
 > = Ref<
 	Name,
-	import('../primitives/publish-move.js').Package & { readonly captured: Captured }
+	import('./package/internal.js').Package & { readonly captured: Captured }
 >;
