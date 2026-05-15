@@ -5,7 +5,6 @@ import type { ClientWithCoreApi } from '@mysten/sui/client';
 import type { ReadonlyWalletAccount } from '@mysten/wallet-standard';
 import { html, nothing } from 'lit';
 import type { ReactiveController, ReactiveControllerHost } from 'lit';
-import { unsafeStatic, html as staticHtml } from 'lit/static-html.js';
 
 import { getNetworkFromChain } from '../wallet/constants.js';
 import type {
@@ -247,20 +246,7 @@ export class WalletController implements ReactiveController {
 		if (this.activeTab === 'assets') return this.renderAssetsTab();
 		if (this.activeTab === 'objects') return this.renderObjectsTab();
 		if (this.activeTab === 'settings') return this.renderSettingsTab();
-		const panel = this.#wallet?.panels.find((p) => p.id === this.activeTab);
-		if (panel !== undefined) return this.renderCustomPanel(panel.tagName);
 		return nothing;
-	}
-
-	renderCustomPanel(tagName: string) {
-		const tag = unsafeStatic(tagName);
-		return staticHtml`
-			<${tag}
-				.wallet=${this.#wallet}
-				.activeAddress=${this.activeAddress}
-				.client=${this.getActiveClient()}
-			></${tag}>
-		`;
 	}
 
 	renderSigningModal() {
@@ -323,7 +309,6 @@ export class WalletController implements ReactiveController {
 			<dev-wallet-tab-bar
 				exportparts="tab-bar, tab"
 				.active=${this.activeTab}
-				.panels=${this.#wallet?.panels ?? []}
 				@tab-changed=${(e: CustomEvent) => this.handleTabChanged(e)}
 			></dev-wallet-tab-bar>
 		`;

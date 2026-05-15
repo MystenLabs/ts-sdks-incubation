@@ -4,7 +4,7 @@
 import type { ClientWithCoreApi } from '@mysten/sui/client';
 import type { WalletIcon } from '@mysten/wallet-standard';
 
-import type { SignerAdapter, WalletPanelDescriptor } from '../types.js';
+import type { SignerAdapter } from '../types.js';
 import { DevWallet, type AutoApprovePolicy } from './dev-wallet.js';
 
 /**
@@ -28,8 +28,6 @@ export interface DevWalletInitializerConfig {
 	container?: HTMLElement;
 	/** Called with the DevWallet instance after creation. */
 	onWalletCreated?: (wallet: DevWallet) => void;
-	/** Custom tab panels appended to the wallet's built-in tabs. */
-	panels?: WalletPanelDescriptor[];
 }
 
 /**
@@ -102,7 +100,6 @@ export function devWalletInitializer(config: DevWalletInitializerConfig): {
 				autoApprove: config.autoApprove,
 				autoConnect: config.autoConnect,
 				clientFactory: (network) => getClient(network),
-				panels: config.panels,
 			});
 
 			config.onWalletCreated?.(wallet);

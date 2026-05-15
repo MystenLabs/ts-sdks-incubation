@@ -27,7 +27,6 @@ import { createDAppKit } from '@mysten/dapp-kit-core';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { devWalletInitializer } from '@mysten-incubation/dev-wallet';
 import { createDevstackAdapterFromManifest } from '@mysten-incubation/dev-wallet/adapters';
-import type { WalletPanelDescriptor } from '@mysten-incubation/dev-wallet';
 import { fromManifest } from '../runtime/manifest-loader.js';
 
 // Inline the network string union to keep the public return type from
@@ -136,8 +135,7 @@ export interface CreateDevstackDappKitOptions {
 	 * requests so e2e flows stay non-interactive. */
 	autoApprove?: boolean;
 	/** Default true. Set false for headless hosts (node-side rendering
-	 * tests). When false, the panels module is NOT loaded — production
-	 * bundles drop the panels code entirely. */
+	 *  tests) so the wallet UI is never mounted. */
 	mountUI?: boolean;
 	/** Expose the constructed kit on `globalThis.__devstackDAppKit__` so
 	 * the playwright `connectAs` helper can drive account switching from
@@ -160,37 +158,18 @@ function shouldExposeForPlaywright(): boolean {
 /**
  * Construct a dapp-kit instance wired up for devstack: localnet
  * network config, MVR overrides for `publishMove`-emitted placeholders,
- * the devstack burner-wallet adapter, and (optionally) the devstack
- * panels (Faucet, Packages, Network).
+ * and the devstack burner-wallet adapter.
  *
  * **Localnet only.** This factory throws when the manifest doesn't
  * carry a sui-rpc endpoint. For production deploys, swap
  * `dapp-kit.ts` for a hand-written setup that calls `createDAppKit`
  * directly with a real wallet adapter (Slush, Suiet, etc.) and only
  * the live-net manifest fields the app actually needs.
- *
- * The function is `async` so it can lazy-load the panels module under
- * `mountUI: true`. Bundlers tree-shake the panels import out of
- * production builds when `mountUI: false`.
  */
 export async function createDevstackDappKit(
 	opts: CreateDevstackDappKitOptions,
 ): Promise<{ dAppKit: DevstackDappKit }> {
 	const mountUI = opts.mountUI ?? true;
-	let panels: WalletPanelDescriptor[] = [];
-	if (mountUI) {
-		try {
-			const panelsModule = await import('@mysten-incubation/devstack-wallet-panels');
-			panelsModule.configureDevstackPanels(opts.manifest);
-			panels = panelsModule.devstackPanels();
-		} catch (err) {
-			console.warn(
-				'[createDevstackDappKit] failed to load @mysten-incubation/devstack-wallet-panels; ' +
-					'rendering without dev panels (dAppKit otherwise unaffected).',
-				err,
-			);
-		}
-	}
 	const devstackAdapter = createDevstackAdapterFromManifest(
 		opts.manifest as Parameters<typeof createDevstackAdapterFromManifest>[0],
 	);
@@ -199,7 +178,6 @@ export async function createDevstackDappKit(
 		walletInitializers: [
 			devWalletInitializer({
 				adapters: devstackAdapter ? [devstackAdapter] : [],
-				panels,
 				autoConnect: opts.autoConnect ?? true,
 				autoApprove: opts.autoApprove ?? true,
 				mountUI,
