@@ -121,6 +121,19 @@ export interface EngineHandleShape {
 	/** Allocate a fresh Deferred for the next iteration. Called by the launch
 	 * loop after `Deferred.await` returns and before re-seeding tags. */
 	readonly resetRestartSignal: Effect.Effect<void>;
+	/**
+	 * Tags that triggered the pending restart, by primitive key. Populated by
+	 * the file-watcher fiber when an event resolves to one or more primitives
+	 * via their declared `__watchPaths`; read by the next cycle's launch
+	 * effect for diagnostic / status-surfacing purposes. Empty when the
+	 * trigger was the TUI `r` key, SIGUSR2, or a watch event whose path
+	 * didn't match any primitive (a path from `config.watch` rather than a
+	 * primitive-declared watch). Cleared by `resetRestartSignal` so a fresh
+	 * cycle starts with no inherited attribution.
+	 */
+	readonly changedTags: Ref.Ref<ReadonlyArray<string>>;
+	/** Add primitive keys to `changedTags`. De-duped. */
+	readonly notifyChangedTags: (keys: ReadonlyArray<string>) => Effect.Effect<void>;
 }
 
 export class EngineHandle extends Context.Service<EngineHandle, EngineHandleShape>()(
@@ -266,6 +279,18 @@ export const EngineLive: Layer.Layer<EngineHandle> = Layer.effect(
 		// the EngineHandle identity stable across hot-restart cycles is what
 		// lets the TUI keep rendering through the teardown / rebuild.
 		const restartSignal = yield* Ref.make(yield* Deferred.make<void>());
+		// Attribution of which primitive(s) the most recent file-watch event
+		// resolved to. The watcher fiber writes here BEFORE firing
+		// `requestRestart`; the next cycle's launch reads it for diagnostic
+		// logging. Cleared on `resetRestartSignal` so each cycle starts with
+		// fresh attribution.
+		const changedTags = yield* Ref.make<ReadonlyArray<string>>([]);
+		const notifyChangedTags = (keys: ReadonlyArray<string>) =>
+			Ref.update(changedTags, (existing) => {
+				if (keys.length === 0) return existing;
+				const merged = new Set([...existing, ...keys]);
+				return Array.from(merged);
+			});
 
 		// Re-seeding clears the previous run's terminal statuses so a
 		// hot-restart cycle starts every tag fresh at `pending`. The
@@ -380,6 +405,11 @@ export const EngineLive: Layer.Layer<EngineHandle> = Layer.effect(
 		const resetRestartSignal = Effect.gen(function* () {
 			const fresh = yield* Deferred.make<void>();
 			yield* Ref.set(restartSignal, fresh);
+			// Clear watch-event attribution so the next cycle starts fresh —
+			// a stale `changedTags` value from cycle N would mislead cycle N+1's
+			// diagnostic surface into thinking the same primitives triggered
+			// when in fact this restart was the user pressing `r`.
+			yield* Ref.set(changedTags, []);
 		});
 
 		return {
@@ -398,6 +428,8 @@ export const EngineLive: Layer.Layer<EngineHandle> = Layer.effect(
 			restartSignal,
 			requestRestart,
 			resetRestartSignal,
+			changedTags,
+			notifyChangedTags,
 		};
 	}),
 );

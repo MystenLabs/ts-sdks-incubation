@@ -89,6 +89,50 @@ describe('EngineHandle.setPhase', () => {
 	);
 });
 
+describe('EngineHandle.notifyChangedTags watch-event attribution', () => {
+	// The watcher fiber calls `notifyChangedTags` BEFORE `requestRestart`
+	// so the next cycle's launch can read the Ref to surface which
+	// primitive(s) triggered this restart. The Ref de-dupes across
+	// repeated notifications (e.g. two debounced events on overlapping
+	// paths) and clears on `resetRestartSignal` so each cycle starts
+	// with fresh attribution.
+
+	it.effect('accumulates de-duped tag keys across multiple notify calls', () =>
+		Effect.gen(function* () {
+			const engine = yield* buildEngine();
+			yield* engine.notifyChangedTags(['publish.hello']);
+			yield* engine.notifyChangedTags(['bindings.hello', 'publish.hello']);
+			const tags = yield* Ref.get(engine.changedTags);
+			// Set-merge order isn't guaranteed; assert membership instead.
+			expect([...tags].sort()).toEqual(['bindings.hello', 'publish.hello']);
+		}),
+	);
+
+	it.effect('clears on resetRestartSignal so each cycle starts fresh', () =>
+		Effect.gen(function* () {
+			const engine = yield* buildEngine();
+			yield* engine.notifyChangedTags(['publish.hello']);
+			yield* engine.resetRestartSignal;
+			const tags = yield* Ref.get(engine.changedTags);
+			expect(tags).toEqual([]);
+		}),
+	);
+
+	it.effect('an empty notify is a noop (existing attribution preserved)', () =>
+		Effect.gen(function* () {
+			// A watcher fiber that hashes a directory event (no `__watchPaths`
+			// match) skips notify entirely — pinning this so a future refactor
+			// that always calls notify with []`empty doesn't accidentally
+			// clobber a prior cycle's attribution.
+			const engine = yield* buildEngine();
+			yield* engine.notifyChangedTags(['publish.hello']);
+			yield* engine.notifyChangedTags([]);
+			const tags = yield* Ref.get(engine.changedTags);
+			expect(tags).toEqual(['publish.hello']);
+		}),
+	);
+});
+
 describe('EngineHandle.markFailed root-cause extraction', () => {
 	it.effect('walks the cause chain to the innermost message for the row summary', () =>
 		// The outer wrapper's message is the same generic preamble for every

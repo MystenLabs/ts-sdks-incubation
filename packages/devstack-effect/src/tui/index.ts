@@ -42,6 +42,7 @@ const makeNoopProxy = (
 	currentRef: Ref.Ref<EngineHandleShape | undefined>,
 	stableState: Ref.Ref<import('./render.js').TuiState>,
 	placeholderRestartSignal: Ref.Ref<Deferred.Deferred<void>>,
+	placeholderChangedTags: Ref.Ref<ReadonlyArray<string>>,
 ): EngineHandleShape => {
 	const noop = Effect.void;
 	// `<App>` invokes `requestRestart` directly on key `r`/`R`; we forward
@@ -86,6 +87,13 @@ const makeNoopProxy = (
 		restartSignal: placeholderRestartSignal,
 		requestRestart,
 		resetRestartSignal: noop,
+		// Proxy doesn't track watch-event attribution — the per-cycle
+		// engine does. `<App>` doesn't read these either; only the
+		// launch loop's cycle-start log reads `changedTags`, and that
+		// reads the live cycle engine's own Ref. Provided as no-ops to
+		// satisfy the EngineHandleShape contract.
+		changedTags: placeholderChangedTags,
+		notifyChangedTags: () => noop,
 	};
 };
 
@@ -121,7 +129,13 @@ export const startTuiOnce = (): Effect.Effect<TuiMount, never, Scope> =>
 		});
 		const currentRef = yield* Ref.make<EngineHandleShape | undefined>(undefined);
 		const placeholderRestartSignal = yield* Ref.make(yield* Deferred.make<void>());
-		const proxy = makeNoopProxy(currentRef, stableState, placeholderRestartSignal);
+		const placeholderChangedTags = yield* Ref.make<ReadonlyArray<string>>([]);
+		const proxy = makeNoopProxy(
+			currentRef,
+			stableState,
+			placeholderRestartSignal,
+			placeholderChangedTags,
+		);
 
 		const onQuit = (): void => {
 			process.kill(process.pid, 'SIGINT');
