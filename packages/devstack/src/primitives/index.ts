@@ -32,4 +32,3 @@ export type {
 	Transaction,
 	TxResult,
 } from './shared.js';
-export { walletApp, type WalletApp, type WalletAppOptions } from './wallet-app.js';

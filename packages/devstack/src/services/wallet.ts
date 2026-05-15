@@ -3,7 +3,7 @@
 // `devstack(...)` does NOT auto-mount a wallet; users opt in by
 // constructing this ref and passing it to `devstack(...)`.
 
-import { walletApp, type WalletAppOptions } from '../primitives/wallet-app.js';
+import { walletApp, type WalletAppOptions } from './wallet/internal.js';
 import type { Account } from '../primitives/shared.js';
 import type { Ref } from '../advanced/tag.js';
 
