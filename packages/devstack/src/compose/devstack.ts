@@ -23,6 +23,7 @@ import {
 } from '../engine/registries.js';
 import type { Identity } from '../engine/identity.js';
 import type { Manifest } from '../runtime/manifest-schema.js';
+import { Faucet } from '../faucet/factory.js';
 import { fillDefaults } from './defaults.js';
 
 /** A single ref or an array of refs (from composite factories). The
@@ -102,8 +103,18 @@ export function devstack(
 		}
 	}
 
+	// Auto-include the Faucet service so `Account({ funding })` always
+	// finds a Faucet in scope. The Faucet ref's body best-effort yields
+	// `SuiTag` to register the built-in SUI HTTP strategy; missing Sui
+	// (rare — only in tests that override the default provider) leaves
+	// the registry empty until the user registers their own strategies.
+	const withFaucet: ReadonlyArray<StackMember> = [...flat, Faucet() as unknown as StackMember];
+
 	// Auto-include the v4 manifest emitter.
-	const withManifest: ReadonlyArray<StackMember> = [...flat, manifestRef(opts.extras)];
+	const withManifest: ReadonlyArray<StackMember> = [
+		...withFaucet,
+		manifestRef(opts.extras),
+	];
 
 	// Default-provider fill. Auto-adds `Sui()` when missing; extends with
 	// capability-keyed defaults.

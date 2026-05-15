@@ -27,6 +27,7 @@ import { StateStoreConfig } from '../engine/state-store.js';
 import { SuiTag, type SuiShape } from './sui.js';
 import { AccountError, SuiError } from '../engine/errors.js';
 import { Account } from './account.js';
+import { FaucetTag, type FaucetShape } from '../faucet/service.js';
 
 // Mock SuiTag — `client` is opaque to the discriminator branches and
 // only matters at sign-time, which we don't exercise here. Faucet URL
@@ -254,6 +255,49 @@ describe('Account(name, opts?) — source discriminator', () => {
 				),
 			);
 			expect(resolved.address).toBe(override);
+		}),
+	);
+
+	it.effect('funding spec dispatches each entry through Faucet.requestCoin', () =>
+		Effect.gen(function* () {
+			// Stand up a Faucet with a recording-fake strategy. The body
+			// drains the recorded calls to confirm Account threaded the
+			// declared funding through `requestCoin`.
+			const calls: Array<{ coinType: string; address: string; amount: bigint }> = [];
+			const FaucetWithRecording: Layer.Layer<FaucetTag> = Layer.effect(
+				FaucetTag,
+				Effect.sync(
+					(): FaucetShape => ({
+						register: () => Effect.void,
+						requestCoin: (coinType, address, amount) =>
+							Effect.sync(() => {
+								calls.push({ coinType, address, amount });
+							}),
+						listFundable: Effect.succeed([] as ReadonlyArray<string>),
+					}),
+				),
+			);
+			const kp = Ed25519Keypair.generate();
+			const expectedAddress = kp.getPublicKey().toSuiAddress();
+			const a = Account('funded', {
+				from: 'signer',
+				signer: kp,
+				funding: { SUI: 100n, WAL: 50n },
+			});
+			yield* Effect.gen(function* () {
+				return yield* a;
+			}).pipe(
+				Effect.provide(
+					Layer.provide(
+						a.__layer,
+						Layer.mergeAll(TestBaseLayer, mockSui(undefined), FaucetWithRecording),
+					),
+				),
+			);
+			expect(calls).toEqual([
+				{ coinType: 'SUI', address: expectedAddress, amount: 100n },
+				{ coinType: 'WAL', address: expectedAddress, amount: 50n },
+			]);
 		}),
 	);
 

@@ -82,6 +82,11 @@ export { Wallet, type WalletOptions } from './wallet.js';
 export { Bindings, type BindingsRefOptions } from './bindings.js';
 export { Codegen, type CodegenOptions } from './codegen.js';
 export { KnownPackage, type KnownPackageOptions } from './known-package.js';
+export { Faucet, type FaucetOptions } from '../faucet/factory.js';
+export { FaucetTag, type FaucetStrategy, type FaucetShape } from '../faucet/service.js';
+export { suiHttpStrategy } from '../faucet/strategies/sui-http.js';
+export { defineStrategy } from '../faucet/strategies/internal.js';
+export { FaucetRequestError } from '../faucet/errors.js';
 export {
 	defineEmitter,
 	type Emitter,

@@ -55,6 +55,7 @@ import { AccountError } from '../engine/errors.js';
 import { AccountRegistry } from '../engine/registries.js';
 import { Leasing } from '../engine/leasing.js';
 import { requestFunds } from '../engine/faucet.js';
+import { FaucetTag } from '../faucet/service.js';
 import { StateStoreConfig } from '../engine/state-store.js';
 import { stringifyCause } from '../engine/stringify-cause.js';
 import type {
@@ -209,11 +210,34 @@ export type AccountSource =
 	  };
 
 /**
+ * Optional cross-cutting funding spec. After the keypair is resolved
+ * (whichever `from:` branch ran), the Account body iterates these
+ * entries and dispatches each to the ambient `Faucet` service's
+ * `requestCoin(coinType, address, amount)`. Strategies registered
+ * against the Faucet (built-in: SUI HTTP; user-registered: WAL swap,
+ * TreasuryCap mint, …) handle the underlying funding mechanism.
+ *
+ * Independent of `'ephemeral-funded'`'s implicit SUI top-up — funding
+ * adds to whatever the source branch did. Useful for:
+ *   - Adding non-SUI coins to any account (`WAL` for walrus uploads,
+ *     a project-specific stablecoin, …);
+ *   - Topping up a `from: 'env'` / `'keystore'` account at boot.
+ *
+ * Keys are coin discriminators — short names for built-ins (`'SUI'`,
+ * `'WAL'`) or fully-qualified Move types for user coins.
+ */
+export type AccountFunding = Record<string, bigint>;
+
+/**
  * Per-account spec accepted by `Account(name, opts?)`. Discriminated by
  * `from:` (see {@link AccountSource}). The bare `{}` form is accepted
- * and treated as `{from: 'ephemeral-funded'}`.
+ * and treated as `{from: 'ephemeral-funded'}`. The optional cross-cutting
+ * `funding` field works on any branch and dispatches through the
+ * ambient `Faucet` service.
  */
-export type AccountSpec = AccountSource | Record<string, never>;
+export type AccountSpec =
+	| (AccountSource & { readonly funding?: AccountFunding })
+	| { readonly funding?: AccountFunding };
 
 // -----------------------------------------------------------------------------
 // Factory
@@ -236,6 +260,10 @@ export const Account = <const N extends string>(
 	// the body can treat `source` as a fully-discriminated `AccountSource`.
 	const source: AccountSource =
 		opts !== undefined && 'from' in opts ? (opts as AccountSource) : { from: 'ephemeral-funded' };
+	// Cross-cutting funding spec. Independent of the `from:` branch —
+	// dispatched through `Faucet.requestCoin` after the keypair resolves.
+	const funding: AccountFunding =
+		opts !== undefined && 'funding' in opts && opts.funding !== undefined ? opts.funding : {};
 
 	const accountTag = tag(
 		`account/${name}` as const,
@@ -332,6 +360,34 @@ export const Account = <const N extends string>(
 						),
 					),
 				);
+			}
+
+			// Cross-cutting funding pass. Dispatches each declared coin
+			// through the ambient `Faucet` service's strategy registry. If
+			// no Faucet is in scope (rare — only unit tests that build the
+			// Account layer without devstack(...)), the funding pass is
+			// silently a noop. Non-empty `funding` with no Faucet is treated
+			// as a noop rather than a failure to keep test ergonomics from
+			// regressing.
+			if (Object.keys(funding).length > 0) {
+				const faucetOpt = yield* Effect.serviceOption(FaucetTag);
+				if (faucetOpt._tag === 'Some') {
+					const faucet = faucetOpt.value;
+					for (const [coinType, amount] of Object.entries(funding)) {
+						yield* setPhase(`funding ${coinType}`);
+						yield* faucet.requestCoin(coinType, address, amount).pipe(
+							Effect.catchTag('FaucetRequestError', (cause) =>
+								Effect.fail(
+									new AccountError({
+										phase: 'fund',
+										message: `Account: '${name}' funding of ${amount}n ${coinType} failed: ${cause.message}`,
+										cause,
+									}),
+								),
+							),
+						);
+					}
+				}
 			}
 
 			yield* AccountRegistry.publish({ name, address });
