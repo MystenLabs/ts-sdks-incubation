@@ -258,15 +258,20 @@ export const buildMove = (
 			...(image !== undefined ? { 'sui.build.image': image.tag } : {}),
 		});
 
-		// Strip `[pinned.<env>.*]` sections from the package's Move.lock
-		// before invoking sui-cli. Upstream Move.locks frequently pin to a
-		// specific deploy environment (e.g. `use_environment = "testnet"`),
-		// which causes the build to embed that env's framework package
-		// ids into the bytecode — the resulting modules then fail to
+		// Strip `[pinned.<env>.*]` sections from upstream Move.locks
+		// before invoking sui-cli. Upstream Move.locks frequently pin to
+		// a specific deploy environment (e.g. `use_environment =
+		// "testnet"`), which would cause the build to embed that env's
+		// framework package ids — the resulting modules then fail to
 		// publish on localnet because those testnet ids aren't on chain.
-		// Stripping the lock forces sui-cli to re-resolve deps against the
-		// current sui-framework genesis (`0x1` + `0x2`).
-		yield* stripPinnedSectionsFromMoveLock(fs, opts.path).pipe(Effect.ignore);
+		// For container builds the scrub now happens inline inside the
+		// container shell (see `containerBuildCmd`) so we never mutate
+		// the cached source dir on the host — multi-stack supervisors
+		// would otherwise trample each other's Move.lock during
+		// concurrent boots. Host-cli mode still needs the host scrub.
+		if (image === undefined) {
+			yield* stripPinnedSectionsFromMoveLock(fs, opts.path).pipe(Effect.ignore);
+		}
 
 		// Build inside the localnet's exact sui version when one is
 		// available, host-installed sui otherwise. The host fallback is
@@ -342,30 +347,87 @@ export const buildMove = (
 // The host source path is bind-mounted at `/workspace`; build is purely
 // local (no network). `--rm` reaps the container on exit.
 const containerBuildCmd = (imageTag: string, hostPath: string): ChildProcess.Command => {
-	// Bind-mount the PACKAGE'S PARENT directory (not the package itself)
-	// so sibling `{ local = "../token" }`-style deps resolve inside the
-	// container. The build target is `--path /workspace/<package-name>`.
-	// Without this, a Move.toml that references `../token` fails with
-	// "Invalid directory at `../token`" because /workspace ends at the
-	// package boundary.
+	// Stream the package's PARENT directory into the container via tar
+	// over stdin instead of bind-mounting. The bind-mount approach
+	// shipped `build/` and `Move.lock` mutations back to the host
+	// source dir — fatal for multi-stack concurrency where two
+	// supervisors built the same cached source tree in parallel and
+	// trampled each other's outputs ("Directory not empty (os 39)").
+	// Hermetic copy-into-container leaves the host source pristine.
+	//
+	// Parent (not the package itself) so sibling `{ local = "../token" }`
+	// deps still resolve from /workspace once untarred. Build target
+	// remains `--path /workspace/<package-name>`.
 	const parent = path.dirname(hostPath);
 	const pkgName = path.basename(hostPath);
-	return ChildProcess.make('docker', [
-		'run',
-		'--rm',
-		'--entrypoint',
-		'sui',
-		'-v',
-		`${parent}:/workspace`,
-		imageTag,
-		'move',
-		'build',
-		'--path',
-		`/workspace/${pkgName}`,
-		'--dump-bytecode-as-base64',
-		'--with-unpublished-dependencies',
-	]);
+	// Inside-container `build/` + `node_modules/` cleanup post-untar.
+	// We can't reliably exclude these at tar time: bsdtar (the host's
+	// default on macOS) anchors `--exclude` patterns so they only
+	// match top-level entries, missing nested `seal/build/` etc.
+	// Stale `.mv` bytecode in those dirs makes sui-cli throw
+	// "stream did not contain valid UTF-8" when it walks the source
+	// looking for `.move` files. Clean inside the container with GNU
+	// find where path-globbing actually works.
+	const cleanup =
+		`(find /workspace -name build -type d -prune -exec rm -rf {} + 2>/dev/null || true) && ` +
+		`(find /workspace -name node_modules -type d -prune -exec rm -rf {} + 2>/dev/null || true)`;
+	// Inside-container Move.lock scrub: `[pinned.<env>.<pkg>]` sections
+	// in upstream Move.locks (deepbook's `token` dep, walrus, etc.) pin
+	// the build to testnet/mainnet package ids that don't exist on a
+	// fresh localnet. Awk drives a stateful skip flag: enter skip on a
+	// `[pinned.*]` header, exit on the next non-pinned `[` header.
+	// (A sed `addr1,addr2` range would mis-handle consecutive
+	// `[pinned.A]`/`[pinned.B]` blocks — the second header is the
+	// first range's terminator, so the second block's body leaks
+	// through. v4 Move.locks from deepbook ship 4 consecutive pinned
+	// blocks, which produced `duplicate key 'source' in table 'move'`
+	// TOML errors when their bodies were appended to the preceding
+	// `[move]` table.) Idempotent on already-scrubbed locks.
+	//
+	// The awk program is materialized via printf so we avoid embedding
+	// the awk single-quoted body inside a `find -exec sh -c '…'` (the
+	// triple-nested single-quoting would survive `shellQuote` of
+	// `innerScript` only by accident).
+	const stageAwk =
+		`printf '%s\\n%s\\n%s\\n' '/^\\[pinned\\./ { skip=1; next }' ` +
+		`'/^\\[/ && !/^\\[pinned\\./ { skip=0 }' '!skip { print }' > /tmp/scrub-move-lock.awk`;
+	const scrub =
+		`find /workspace -name Move.lock -not -path '*/node_modules/*' -not -path '*/.git/*' ` +
+		`-exec sh -c 'awk -f /tmp/scrub-move-lock.awk "$1" > "$1.new" && mv "$1.new" "$1"' _ {} ';'`;
+	const innerScript = [
+		'set -e',
+		'mkdir -p /workspace',
+		'cd /workspace',
+		// GNU tar inside the container warns on macOS xattr extended
+		// headers (`LIBARCHIVE.xattr.com.apple.provenance`) but
+		// extracts the underlying files correctly. Those warnings are
+		// non-fatal noise on stderr.
+		'tar -xf -',
+		cleanup,
+		stageAwk,
+		scrub,
+		`exec sui move build --path /workspace/${pkgName} --dump-bytecode-as-base64 --with-unpublished-dependencies`,
+	].join('; ');
+	// `--no-mac-metadata` strips the AppleDouble/`com.apple.*` xattrs
+	// bsdtar embeds by default — without it, GNU tar inside the
+	// container untars files whose attribute bytes confuse sui-cli's
+	// source walker ("Failed to build Move modules: stream did not
+	// contain valid UTF-8."). bsdtar-only flag; we only inject it on
+	// darwin where bsdtar is the default. Linux GNU tar has no macOS
+	// metadata to strip and would reject the unknown flag.
+	const macTarOpts = process.platform === 'darwin' ? '--no-mac-metadata' : '';
+	// `pipefail` so a tar failure (unreadable source, permission denied)
+	// propagates instead of being masked by docker's success exit. `; `
+	// separates the pipefail setting from the actual pipeline; a plain
+	// space would make `set` swallow the tar argv.
+	const outerScript = `set -o pipefail; tar ${macTarOpts} -cf - -C ${shellQuote(parent)} . | docker run --rm -i --entrypoint sh ${shellQuote(imageTag)} -c ${shellQuote(innerScript)}`;
+	return ChildProcess.make('sh', ['-c', outerScript]);
 };
+
+// POSIX single-quote escape for arbitrary string values embedded in a
+// shell command. Wraps in `'…'` and escapes embedded single quotes via
+// the standard `'\''` trick.
+const shellQuote = (s: string): string => `'${s.replaceAll("'", "'\\''")}'`;
 
 // Compose the argv for a host-`sui` `move build`. Same flags as the
 // container path, but spawned directly with the host-inherited env so
