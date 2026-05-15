@@ -37,7 +37,7 @@ import { StateStore } from '../../engine/state-store.js';
 import { type Ref } from '../../advanced/tag.js';
 import { WalrusError } from '../errors.js';
 import type { Account } from '../shared.js';
-import { Sui, suiNetworkName } from '../sui.js';
+import { SuiTag, suiNetworkName } from '../../services/sui.js';
 import { buildWrapperImage } from './image.js';
 import { deployContracts, resolveExchange } from './deploy.js';
 import { startStorageNodes } from './nodes.js';
@@ -253,7 +253,7 @@ export const acquireLocalCluster = (args: {
 		// 0. Yield Sui — pins the dependency edge + gives us rpcUrl /
 		//    client for register, exchange-discovery, seed-accounts.
 		// -------------------------------------------------------------
-		const sui = yield* Sui;
+		const sui = yield* SuiTag;
 		const state = yield* StateStore;
 		const identity = yield* Identity;
 		const { subnet: walrusSubnet, prefix: walrusSubnetPrefix } = subnetForStack(
@@ -641,7 +641,7 @@ const seedWalForAccounts = (args: {
 	exchange: ExchangeState;
 	paymentMist: bigint;
 	walrusPackageId: string;
-}): Effect.Effect<void, WalrusError, Sui | StateStore> =>
+}): Effect.Effect<void, WalrusError, SuiTag | StateStore> =>
 	Effect.fn('walrus.seed-accounts')(function* () {
 		for (const account of args.accounts) {
 			yield* swapSuiForWalCached({
@@ -658,9 +658,9 @@ const swapSuiForWalCached = (args: {
 	exchange: ExchangeState;
 	paymentMist: bigint;
 	walrusPackageId: string;
-}): Effect.Effect<void, WalrusError, Sui | StateStore> =>
+}): Effect.Effect<void, WalrusError, SuiTag | StateStore> =>
 	Effect.gen(function* () {
-		const sui = yield* Sui;
+		const sui = yield* SuiTag;
 		const state = yield* StateStore;
 		const cacheKey = `${STATE_KEY_SEED_WAL_PREFIX}/${sui.chainId}/${args.exchange.objectId}/${args.account.address}`;
 		const cached = yield* state.get<CachedSeedWalSwap>(cacheKey);
@@ -719,9 +719,9 @@ const swapSuiForWalCached = (args: {
 const probeWalBalance = (args: {
 	address: string;
 	walType: string;
-}): Effect.Effect<bigint, WalrusError, Sui> =>
+}): Effect.Effect<bigint, WalrusError, SuiTag> =>
 	Effect.gen(function* () {
-		const sui = yield* Sui;
+		const sui = yield* SuiTag;
 		const client = sui.client as unknown as {
 			readonly getBalance?: (a: {
 				owner: string;

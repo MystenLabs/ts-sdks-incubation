@@ -8,7 +8,7 @@
 import { Effect, Option, Schedule } from 'effect';
 import { Transaction, type TransactionObjectArgument } from '@mysten/sui/transactions';
 import { tag, type Ref } from '../../advanced/tag.js';
-import { Sui } from '../sui.js';
+import { SuiTag } from '../../services/sui.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
 import { StateStore } from '../../engine/state-store.js';
 import { DeepbookError } from '../errors.js';
@@ -95,7 +95,7 @@ export const deepbookMarketMaker = <const Name extends string>(
 			for (const tag of options.dependsOn ?? []) {
 				yield* tag;
 			}
-			const sui = yield* Sui;
+			const sui = yield* SuiTag;
 			const signer = yield* options.signer;
 			const core = yield* DeepbookCore;
 			const state = yield* StateStore;

@@ -1,21 +1,18 @@
-// Shape contracts for the RPC-only Sui factories. `suiLocalnet` is
-// covered by the integration runs in `examples/wallet` — booting a real
-// container under unit tests would just turn vitest red on machines
-// without Docker. The localnet-with-external-rpcUrl branch is the same
-// code path as `suiTestnet` minus the chain literal, so the assertions
-// here also lock down its behavior implicitly.
-//
-// Each factory ultimately fetches `chainIdentifier` against its `rpcUrl`
-// — we stub global `fetch` for the duration of the test so the assertion
-// targets configuration logic, not network behavior.
+// Shape contracts for the `Sui(opts?)` factory. The localnet container
+// branch is covered by the integration runs in `examples/wallet` —
+// booting a real sui-localnet container under unit tests would just
+// turn vitest red on machines without Docker. The other three branches
+// (localnet-with-external-rpcUrl, testnet, mainnet, custom) only fetch
+// `chainIdentifier` against their `rpcUrl` — we stub global `fetch` for
+// the duration of each test so the assertion targets configuration
+// logic, not network behavior.
 
 import { Cause, Effect, Exit, Layer, Option } from 'effect';
 import { layer as NodeFileSystemLayer } from '@effect/platform-node/NodeFileSystem';
 import { afterEach, beforeEach, describe, expect, it } from '@effect/vitest';
 import { EngineLive } from '../engine/engine.js';
 import { EndpointRegistryLive } from '../engine/registries.js';
-import { SuiTag as Sui } from '../services/sui.js';
-import { faucetReadyProbe, suiCustom, suiLocalnet, suiMainnet, suiTestnet } from './sui.js';
+import { Sui, faucetReadyProbe } from './sui.js';
 
 // EndpointRegistry is required by every Sui factory body (publish calls
 // for `sui-rpc` / `sui-faucet` / `sui-graphql`). EngineLive backs the
@@ -54,14 +51,14 @@ const stubChainIdFetch = (): (() => void) => {
 	};
 };
 
-describe('sui factory shapes', () => {
-	it.effect('suiTestnet() defaults to the well-known testnet endpoints', () =>
+describe('Sui(opts?) factory shapes', () => {
+	it.effect("Sui({ network: 'testnet' }) defaults to the well-known testnet endpoints", () =>
 		Effect.gen(function* () {
 			const restore = stubChainIdFetch();
 			try {
-				const member = suiTestnet();
+				const member = Sui({ network: 'testnet' });
 				const sui = yield* Effect.gen(function* () {
-					return yield* Sui;
+					return yield* member;
 				}).pipe(Effect.provide(Layer.provide(member.__layer, TestBaseLayer)));
 				expect(sui.network).toBe('testnet');
 				expect(sui.rpc.host).toBe('https://fullnode.testnet.sui.io:443');
@@ -74,13 +71,16 @@ describe('sui factory shapes', () => {
 		}),
 	);
 
-	it.effect('suiTestnet({ rpcUrl }) override wins over the default', () =>
+	it.effect("Sui({ network: 'testnet', testnet: { rpcUrl } }) override wins over the default", () =>
 		Effect.gen(function* () {
 			const restore = stubChainIdFetch();
 			try {
-				const member = suiTestnet({ rpcUrl: 'https://corp.example/sui' });
+				const member = Sui({
+					network: 'testnet',
+					testnet: { rpcUrl: 'https://corp.example/sui' },
+				});
 				const sui = yield* Effect.gen(function* () {
-					return yield* Sui;
+					return yield* member;
 				}).pipe(Effect.provide(Layer.provide(member.__layer, TestBaseLayer)));
 				expect(sui.rpc.host).toBe('https://corp.example/sui');
 			} finally {
@@ -89,13 +89,13 @@ describe('sui factory shapes', () => {
 		}),
 	);
 
-	it.effect('suiMainnet() defaults to mainnet rpc with NO faucet', () =>
+	it.effect("Sui({ network: 'mainnet' }) defaults to mainnet rpc with NO faucet", () =>
 		Effect.gen(function* () {
 			const restore = stubChainIdFetch();
 			try {
-				const member = suiMainnet();
+				const member = Sui({ network: 'mainnet' });
 				const sui = yield* Effect.gen(function* () {
-					return yield* Sui;
+					return yield* member;
 				}).pipe(Effect.provide(Layer.provide(member.__layer, TestBaseLayer)));
 				expect(sui.network).toBe('mainnet');
 				expect(sui.rpc.host).toBe('https://fullnode.mainnet.sui.io:443');
@@ -108,15 +108,16 @@ describe('sui factory shapes', () => {
 		}),
 	);
 
-	it.effect('suiCustom({ network }) carries the caller label through to SuiShape', () =>
+	it.effect('Sui({ network: { rpc } }) carries an explicit RPC through to SuiShape', () =>
 		Effect.gen(function* () {
 			const restore = stubChainIdFetch();
 			try {
-				const member = suiCustom({ rpcUrl: 'https://forked.example/sui', network: 'devnet' });
+				const member = Sui({ network: { rpc: 'https://forked.example/sui' } });
 				const sui = yield* Effect.gen(function* () {
-					return yield* Sui;
+					return yield* member;
 				}).pipe(Effect.provide(Layer.provide(member.__layer, TestBaseLayer)));
-				expect(sui.network).toBe('devnet');
+				// Default custom-network label when the caller doesn't supply one.
+				expect(sui.network).toBe('custom');
 				expect(sui.rpc.host).toBe('https://forked.example/sui');
 			} finally {
 				restore();
@@ -127,21 +128,21 @@ describe('sui factory shapes', () => {
 	// `waitForTransactionsReady` upgrades the socket-level "Sui ready"
 	// gate into a "chain can transfer funds" guarantee for primitives
 	// that immediately submit a funds-transferable tx after yielding
-	// `Sui`. On networks without a faucet the chain is presumed
-	// always-transferable (mainnet, suiCustom-without-faucet) so the
-	// method short-circuits to `Effect.void` — pinning this avoids
-	// regressing into "30s wait on every mainnet read" by accident.
-	it.effect('suiMainnet().waitForTransactionsReady() resolves immediately (no faucet)', () =>
+	// `SuiTag`. On networks without a faucet the chain is presumed
+	// always-transferable (mainnet, custom-without-faucet) so the method
+	// short-circuits to `Effect.void` — pinning this avoids regressing
+	// into "30s wait on every mainnet read" by accident.
+	it.effect("Sui({ network: 'mainnet' }).waitForTransactionsReady() resolves immediately", () =>
 		Effect.gen(function* () {
 			const restore = stubChainIdFetch();
 			try {
-				const member = suiMainnet();
+				const member = Sui({ network: 'mainnet' });
 				const sui = yield* Effect.gen(function* () {
-					return yield* Sui;
+					return yield* member;
 				}).pipe(Effect.provide(Layer.provide(member.__layer, TestBaseLayer)));
-				// Should resolve without touching the network. If this
-				// hangs the test would timeout; success means the
-				// no-faucet branch returns `Effect.void` directly.
+				// Should resolve without touching the network. If this hangs
+				// the test would timeout; success means the no-faucet branch
+				// returns `Effect.void` directly.
 				yield* sui.waitForTransactionsReady();
 			} finally {
 				restore();
@@ -149,42 +150,46 @@ describe('sui factory shapes', () => {
 		}),
 	);
 
-	// `suiLocalnet({ rpcUrl })` is the externally-managed-RPC branch — the
-	// user pre-booted their own sui-localnet (e.g. `sui start` directly)
-	// and just wants devstack to wrap it. `graphqlUrl` is plumbed through
-	// when supplied, left `undefined` otherwise (no auto-probe since the
-	// conventional port collides too easily).
-	it.effect('suiLocalnet({ rpcUrl, graphqlUrl }) surfaces graphqlUrl on Sui', () =>
-		Effect.gen(function* () {
-			const restore = stubChainIdFetch();
-			try {
-				const member = suiLocalnet({
-					rpcUrl: 'http://localhost:9000',
-					graphqlUrl: 'http://localhost:9125/graphql',
-				});
-				const sui = yield* Effect.gen(function* () {
-					return yield* Sui;
-				}).pipe(Effect.provide(Layer.provide(member.__layer, TestBaseLayer)));
-				expect(sui.network).toBe('localnet');
-				expect(sui.rpc.host).toBe('http://localhost:9000');
-				expect(sui.graphql?.host).toBe('http://localhost:9125/graphql');
-				// Externally-managed RPC: no per-stack docker network, no
-				// container-side URL on any endpoint.
-				expect(sui.rpc.container).toBeUndefined();
-				expect(sui.graphql?.container).toBeUndefined();
-			} finally {
-				restore();
-			}
-		}),
+	// The localnet-with-external-rpcUrl branch — the user pre-booted
+	// their own sui-localnet and just wants devstack to wrap it.
+	// `graphqlUrl` is plumbed through when supplied.
+	it.effect(
+		'Sui({ localnet: { rpcUrl, graphqlUrl } }) surfaces graphqlUrl on SuiTag',
+		() =>
+			Effect.gen(function* () {
+				const restore = stubChainIdFetch();
+				try {
+					const member = Sui({
+						localnet: {
+							rpcUrl: 'http://localhost:9000',
+							graphqlUrl: 'http://localhost:9125/graphql',
+						},
+					});
+					const sui = yield* Effect.gen(function* () {
+						return yield* member;
+					}).pipe(Effect.provide(Layer.provide(member.__layer, TestBaseLayer)));
+					expect(sui.faucet).toBeUndefined();
+					yield* sui.waitForTransactionsReady();
+					expect(sui.network).toBe('localnet');
+					expect(sui.rpc.host).toBe('http://localhost:9000');
+					expect(sui.graphql?.host).toBe('http://localhost:9125/graphql');
+					// Externally-managed RPC: no per-stack docker network, no
+					// container-side URL on any endpoint.
+					expect(sui.rpc.container).toBeUndefined();
+					expect(sui.graphql?.container).toBeUndefined();
+				} finally {
+					restore();
+				}
+			}),
 	);
 
-	it.effect('suiLocalnet({ rpcUrl }) without graphqlUrl leaves it undefined', () =>
+	it.effect("Sui({ localnet: { rpcUrl } }) without graphqlUrl leaves it undefined", () =>
 		Effect.gen(function* () {
 			const restore = stubChainIdFetch();
 			try {
-				const member = suiLocalnet({ rpcUrl: 'http://localhost:9000' });
+				const member = Sui({ localnet: { rpcUrl: 'http://localhost:9000' } });
 				const sui = yield* Effect.gen(function* () {
-					return yield* Sui;
+					return yield* member;
 				}).pipe(Effect.provide(Layer.provide(member.__layer, TestBaseLayer)));
 				expect(sui.graphql).toBeUndefined();
 			} finally {
@@ -193,13 +198,13 @@ describe('sui factory shapes', () => {
 		}),
 	);
 
-	it.effect('suiCustom() without a faucet skips the ready probe', () =>
+	it.effect('Sui({ network: { rpc } }) without a faucet skips the ready probe', () =>
 		Effect.gen(function* () {
 			const restore = stubChainIdFetch();
 			try {
-				const member = suiCustom({ rpcUrl: 'https://forked.example/sui' });
+				const member = Sui({ network: { rpc: 'https://forked.example/sui' } });
 				const sui = yield* Effect.gen(function* () {
-					return yield* Sui;
+					return yield* member;
 				}).pipe(Effect.provide(Layer.provide(member.__layer, TestBaseLayer)));
 				expect(sui.faucet).toBeUndefined();
 				yield* sui.waitForTransactionsReady();
@@ -210,14 +215,14 @@ describe('sui factory shapes', () => {
 	);
 });
 
-// faucetReadyProbe is the suiLocalnet ready gate that prevents the
-// supervisor from declaring Sui "ready" while the underlying
+// `faucetReadyProbe` is the localnet ready gate that prevents the
+// supervisor from declaring `SuiTag` "ready" while the underlying
 // sui-faucet binary is still in its warm-up window (HTTP socket bound
-// but tx pipeline not). During that window the faucet returns
-// `200 OK` with body `{"status": {"Failure": {"Internal": "..."}}}`,
-// and a probe that only checked `response.ok` would let downstream
-// `accounts.fund` race ahead and trip the 90s requestFunds timeout
-// every time. These tests pin the rejection behavior.
+// but tx pipeline not). During that window the faucet returns 200 OK
+// with body `{"status": {"Failure": {"Internal": "..."}}}`, and a probe
+// that only checked `response.ok` would let downstream `accounts.fund`
+// race ahead and trip the 90s requestFunds timeout every time. These
+// tests pin the rejection behavior.
 
 describe('faucetReadyProbe', () => {
 	let originalFetch: typeof globalThis.fetch;
