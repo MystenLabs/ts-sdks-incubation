@@ -32,7 +32,7 @@ export const a =
 export const program = Effect.gen(function* () {
 	const sui = yield* Sui;
 	const alice = yield* a.alice;
-	yield* Effect.log(`connected to sui ${sui.network} at ${sui.rpcUrl}`);
+	yield* Effect.log(`connected to sui ${sui.network} at ${sui.rpc.host}`);
 	yield* Effect.log(`chain id: ${sui.chainId}`);
 	yield* Effect.log(`alice: ${alice.address}`);
 });
