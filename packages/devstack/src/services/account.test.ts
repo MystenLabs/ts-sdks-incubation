@@ -219,6 +219,44 @@ describe('Account(name, opts?) — source discriminator', () => {
 		}),
 	);
 
+	it.effect("from: 'signer' uses the supplied Signer directly", () =>
+		Effect.gen(function* () {
+			// A real Keypair satisfies the Signer interface; using one here
+			// keeps the test independent of any HSM/remote-signer fixture
+			// while exercising the same code path.
+			const kp = Ed25519Keypair.generate();
+			const ext = Account('ext', { from: 'signer', signer: kp });
+			const resolved = yield* Effect.gen(function* () {
+				return yield* ext;
+			}).pipe(
+				Effect.provide(
+					Layer.provide(ext.__layer, Layer.mergeAll(TestBaseLayer, mockSui(undefined))),
+				),
+			);
+			expect(resolved.address).toBe(kp.getPublicKey().toSuiAddress());
+			// Mirrors the inline/env paths: scheme is whatever
+			// `getKeyScheme()` returns — `ED25519` here, not a lowercased
+			// projection.
+			expect(resolved.scheme).toBe('ED25519');
+		}),
+	);
+
+	it.effect("from: 'signer' honors a caller-supplied address override", () =>
+		Effect.gen(function* () {
+			const kp = Ed25519Keypair.generate();
+			const override = '0xdeadbeef';
+			const ext = Account('ext-pinned', { from: 'signer', signer: kp, address: override });
+			const resolved = yield* Effect.gen(function* () {
+				return yield* ext;
+			}).pipe(
+				Effect.provide(
+					Layer.provide(ext.__layer, Layer.mergeAll(TestBaseLayer, mockSui(undefined))),
+				),
+			);
+			expect(resolved.address).toBe(override);
+		}),
+	);
+
 	it.effect("from: 'env' fails AccountError when the env var is missing", () =>
 		Effect.gen(function* () {
 			const envKey = 'DEVSTACK_TEST_MISSING_ENV';
