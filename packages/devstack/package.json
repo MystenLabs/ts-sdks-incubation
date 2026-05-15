@@ -71,7 +71,6 @@
 	"devDependencies": {
 		"@effect/vitest": "catalog:",
 		"@mysten-incubation/dev-wallet": "workspace:*",
-		"@mysten-incubation/devstack-wallet-panels": "workspace:*",
 		"@mysten-incubation/tsconfig": "workspace:*",
 		"@mysten/dapp-kit-core": "catalog:",
 		"@mysten/dapp-kit-react": "catalog:",
@@ -85,7 +84,6 @@
 	},
 	"peerDependencies": {
 		"@mysten-incubation/dev-wallet": "workspace:*",
-		"@mysten-incubation/devstack-wallet-panels": "workspace:*",
 		"@mysten/dapp-kit-core": "catalog:",
 		"@mysten/dapp-kit-react": "catalog:",
 		"@mysten/sui": "catalog:",
@@ -93,9 +91,6 @@
 	},
 	"peerDependenciesMeta": {
 		"@mysten-incubation/dev-wallet": {
-			"optional": true
-		},
-		"@mysten-incubation/devstack-wallet-panels": {
 			"optional": true
 		},
 		"@mysten/dapp-kit-core": {

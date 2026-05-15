@@ -21,7 +21,7 @@ import type {
 } from '@mysten/wallet-standard';
 import { getWallets, ReadonlyWalletAccount, SUI_CHAINS } from '@mysten/wallet-standard';
 
-import type { SignerAdapter, WalletPanelDescriptor } from '../types.js';
+import type { SignerAdapter } from '../types.js';
 import { DEFAULT_WALLET_ICON, getNetworkFromChain, type WalletEventsMap } from './constants.js';
 import { type SigningResult, executeSigning } from './signing.js';
 
@@ -97,12 +97,6 @@ export interface DevWalletConfig {
 	 * and are shared with popup windows.
 	 */
 	persistNetworks?: boolean;
-	/**
-	 * Custom tab panels rendered after the built-in Assets/Objects/Settings tabs.
-	 * Each entry maps to a registered custom element; the wallet mounts it with
-	 * the active wallet, address, and client wired in as properties.
-	 */
-	panels?: WalletPanelDescriptor[];
 }
 
 /**
@@ -120,7 +114,6 @@ export class DevWallet implements Wallet {
 	readonly #autoConnect: boolean;
 	readonly #clientFactory: (network: string, url: string) => ClientWithCoreApi;
 	readonly #persistNetworks: boolean;
-	readonly #panels: WalletPanelDescriptor[];
 	#accounts: ReadonlyWalletAccount[];
 	#events: Emitter<WalletEventsMap>;
 	#unsubscribeAdapters: (() => void)[];
@@ -145,7 +138,6 @@ export class DevWallet implements Wallet {
 		this.#autoConnect = config.autoConnect ?? false;
 		this.#clientFactory =
 			config.clientFactory ?? ((network, url) => new SuiGrpcClient({ baseUrl: url, network }));
-		this.#panels = [...(config.panels ?? [])];
 		this.#accounts = this.#aggregateAccounts();
 		this.#events = mitt();
 		this.#unsubscribeAdapters = [];
@@ -216,11 +208,6 @@ export class DevWallet implements Wallet {
 
 	get adapters(): readonly SignerAdapter[] {
 		return this.#adapters;
-	}
-
-	/** Custom tab panels registered in the constructor. */
-	get panels(): readonly WalletPanelDescriptor[] {
-		return this.#panels;
 	}
 
 	getAdapterForAccount(address: string): SignerAdapter | undefined {

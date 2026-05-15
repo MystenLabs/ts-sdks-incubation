@@ -3,14 +3,12 @@
 
 import { css, html, LitElement, type TemplateResult } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
-import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 
-import type { WalletPanelDescriptor } from '../types.js';
 import { sharedStyles } from './styles.js';
 
-/** Built-in tab ids. Custom panels expose their own `id` strings via {@link WalletPanelDescriptor}. */
+/** Built-in tab ids. */
 export type BuiltinTabId = 'assets' | 'objects' | 'settings';
-export type TabId = BuiltinTabId | (string & {});
+export type TabId = BuiltinTabId;
 
 interface TabSpec {
 	id: TabId;
@@ -50,15 +48,6 @@ const SETTINGS_ICON = html`<svg
 	<path
 		d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"
 	/>
-</svg>`;
-
-const FALLBACK_ICON = html`<svg
-	viewBox="0 0 24 24"
-	fill="none"
-	stroke="currentColor"
-	stroke-width="2"
->
-	<circle cx="12" cy="12" r="9" />
 </svg>`;
 
 const BUILTIN_TABS: TabSpec[] = [
@@ -118,20 +107,8 @@ export class DevWalletTabBar extends LitElement {
 	@property({ type: String })
 	active: TabId = 'assets';
 
-	@property({ attribute: false })
-	panels: readonly WalletPanelDescriptor[] = [];
-
 	override render() {
-		const tabs: TabSpec[] = [
-			...BUILTIN_TABS,
-			...this.panels.map(
-				(p): TabSpec => ({
-					id: p.id,
-					label: p.label,
-					icon: p.icon !== undefined ? html`${unsafeHTML(p.icon)}` : FALLBACK_ICON,
-				}),
-			),
-		];
+		const tabs: TabSpec[] = BUILTIN_TABS;
 		return html`
 			<nav class="tab-bar" part="tab-bar" role="tablist" aria-label="Wallet navigation">
 				${tabs.map(

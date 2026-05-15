@@ -1,10 +1,10 @@
-// walletApp — stand up the dev-only signing server that backs
-// `@mysten-incubation/devstack-wallet-panels`. Binds an HTTP listener
-// (default loopback), exposes a one-shot `pairUrl` carrying a token,
-// and signs transactions with the resolved Account values for the
-// declared accounts. Only fit for local dev use — the signing
-// endpoints aren't authenticated beyond the pairing token, and the
-// allowed-origins list is the only CSRF defense.
+// walletApp — stand up the dev-only signing server consumed by the
+// in-page dev wallet adapter. Binds an HTTP listener (default loopback),
+// exposes a one-shot `pairUrl` carrying a token, and signs transactions
+// with the resolved Account values for the declared accounts. Only fit
+// for local dev use — the signing endpoints aren't authenticated beyond
+// the pairing token, and the allowed-origins list is the only CSRF
+// defense.
 
 import { randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';

@@ -4,31 +4,6 @@
 import type { Signer } from '@mysten/sui/cryptography';
 import type { ReadonlyWalletAccount } from '@mysten/wallet-standard';
 
-/**
- * Descriptor for a custom wallet panel mounted as a tab in the
- * built-in floating panel and standalone wallet UIs.
- *
- * The wallet renders the panel by creating an element of `tagName` and
- * setting `.wallet` (the {@link DevWallet} instance), `.activeAddress`,
- * and `.client` (the {@link ClientWithCoreApi} for the active network)
- * properties. Panel authors register a custom element ahead of time
- * (typically via `@customElement('my-panel')`) and reference its tag
- * here.
- */
-export interface WalletPanelDescriptor {
-	/** Unique panel id; becomes the tab id and persists with `activeTab`. */
-	id: string;
-	/** Visible label in the tab bar. Keep short (≤ 8 chars) for narrow drawers. */
-	label: string;
-	/** Optional inline SVG markup for the tab icon. Plain string — rendered
-	 * with Lit's `unsafeHTML` directive. Omit to fall back to a generic icon. */
-	icon?: string;
-	/** Custom element tag name, e.g. `'devstack-faucet-panel'`. The element
-	 * must be registered (decorated with `@customElement`) before the wallet
-	 * mounts; use side-effect imports in your registration entrypoint. */
-	tagName: string;
-}
-
 export interface ManagedAccount {
 	address: string;
 	label: string;
