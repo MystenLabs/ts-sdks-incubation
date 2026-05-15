@@ -21,7 +21,6 @@ import {
 	type DeepbookKnownPackageOptions,
 } from '../primitives/deepbook/index.js';
 import { DeepbookError } from '../primitives/errors.js';
-import { withSection } from './ref.js';
 
 // -----------------------------------------------------------------------------
 // DeepbookCore — read-side view
@@ -186,13 +185,13 @@ const resolveMode = (opts: DeepbookOptions): 'local' | 'known' => {
 export const Deepbook = (opts: DeepbookOptions = {}) => {
 	const mode = resolveMode(opts);
 	if (mode === 'known') {
-		return withSection(deepbookKnownPackage(opts.known ?? {}), 'service');
+		return Object.assign(deepbookKnownPackage(opts.known ?? {}), { __kind: 'service' as const });
 	}
 	const localOpts = {
 		...(opts.name !== undefined ? { name: opts.name } : {}),
 		...(opts.local ?? {}),
 	} as Parameters<typeof deepbookLocalDeploy>[0];
-	return withSection(deepbookLocalDeploy(localOpts), 'service');
+	return Object.assign(deepbookLocalDeploy(localOpts), { __kind: 'service' as const });
 };
 
 /** Market-maker factory. Spawns a fiber that posts POST_ONLY orders on
@@ -201,4 +200,4 @@ export const Deepbook = (opts: DeepbookOptions = {}) => {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const DeepbookMarketMaker = (opts: any) =>
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	withSection((deepbookMarketMaker as any)(opts), 'action');
+	Object.assign((deepbookMarketMaker as any)(opts), { __kind: 'action' as const });

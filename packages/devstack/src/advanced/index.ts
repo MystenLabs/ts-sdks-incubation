@@ -4,8 +4,8 @@
 //
 // Three groups, in increasing distance from the common path:
 //
-// 1. **Tag primitives** (`makeTag`, `provideTag`, `composeTag`,
-//    `composeLayers`, `setPhase`, plus `PluginTag` / `TagIdentity`
+// 1. **Tag primitives** (`tag`, `provide`, `composeTag`,
+//    `composeLayers`, `setPhase`, plus `Ref` / `TagIdentity`
 //    types). The substrate every built-in factory uses; reach here if
 //    you're writing a custom factory that returns its own Ref.
 // 2. **Plugin-author helpers** (`dockerImage`, `gitFetch`, `hostScript`,

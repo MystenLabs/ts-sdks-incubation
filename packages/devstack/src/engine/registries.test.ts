@@ -7,7 +7,7 @@ import {
 	PackageRegistryLive,
 } from './registries.js';
 import { EngineHandle, EngineLive } from './engine.js';
-import { makeTag } from '../advanced/tag.js';
+import { tag } from '../advanced/tag.js';
 
 describe('registries', () => {
 	it.effect('publish writes through to register', () =>
@@ -23,7 +23,7 @@ describe('registries', () => {
 	it.effect('requiring(tag) yields the tag first, then resolves the registry', () =>
 		Effect.gen(function* () {
 			// Publisher tag — registers an endpoint as part of its build.
-			const publisher = makeTag(
+			const publisher = tag(
 				'publisher',
 				Effect.gen(function* () {
 					yield* EndpointRegistry.publish({ name: 'from-publisher', url: 'http://pub' });
@@ -54,14 +54,14 @@ describe('registries', () => {
 });
 
 describe('engine hooks', () => {
-	it.effect('makeTag wraps build with acquiring → ready', () =>
+	it.effect('tag wraps build with acquiring → ready', () =>
 		Effect.gen(function* () {
-			const tag = makeTag('demo', Effect.succeed({ ok: true } as const));
+			const demoTag = tag('demo', Effect.succeed({ ok: true } as const));
 			const engine = yield* EngineHandle;
 			yield* engine.seedTags([{ key: 'demo' }]);
 
 			// Build the tag's layer — the wrapper should fire markAcquiring then markReady.
-			yield* Layer.build(tag.__layer).pipe(Effect.scoped);
+			yield* Layer.build(demoTag.__layer).pipe(Effect.scoped);
 
 			const state = yield* Ref.get(engine.tuiState);
 			const demo = state.entries.find((t) => t.key === 'demo');
@@ -69,13 +69,13 @@ describe('engine hooks', () => {
 		}).pipe(Effect.provide(EngineLive)),
 	);
 
-	it.effect('makeTag wraps build with acquiring → failed on error', () =>
+	it.effect('tag wraps build with acquiring → failed on error', () =>
 		Effect.gen(function* () {
-			const tag = makeTag('boom', Effect.fail('nope'));
+			const boomTag = tag('boom', Effect.fail('nope'));
 			const engine = yield* EngineHandle;
 			yield* engine.seedTags([{ key: 'boom' }]);
 
-			const exit = yield* Layer.build(tag.__layer).pipe(Effect.scoped, Effect.exit);
+			const exit = yield* Layer.build(boomTag.__layer).pipe(Effect.scoped, Effect.exit);
 			expect(exit._tag).toBe('Failure');
 
 			const state = yield* Ref.get(engine.tuiState);
@@ -95,17 +95,17 @@ describe('engine hooks', () => {
 		}).pipe(Effect.provide(EngineLive)),
 	);
 
-	it.effect('failed makeTag also pushes a log entry so the TUI log panel shows the cause', () =>
+	it.effect('failed tag also pushes a log entry so the TUI log panel shows the cause', () =>
 		Effect.gen(function* () {
 			// The TUI status row is short — only the first error line. The log
 			// panel carries the umbrella message so the user can correlate
 			// per-primitive failures even after the row is overwritten by a
 			// later transition.
-			const tag = makeTag('logging-boom', Effect.fail(new Error('docker not reachable')));
+			const loggingBoomTag = tag('logging-boom', Effect.fail(new Error('docker not reachable')));
 			const engine = yield* EngineHandle;
 			yield* engine.seedTags([{ key: 'logging-boom' }]);
 
-			yield* Layer.build(tag.__layer).pipe(Effect.scoped, Effect.exit);
+			yield* Layer.build(loggingBoomTag.__layer).pipe(Effect.scoped, Effect.exit);
 
 			const state = yield* Ref.get(engine.tuiState);
 			expect(state.logs.length).toBeGreaterThan(0);
@@ -122,7 +122,7 @@ describe('engine hooks', () => {
 			// have its display projection captured into title/primary/extras
 			// at the ready transition, not on every Ref read.
 			let calls = 0;
-			const tag = makeTag(
+			const servTag = tag(
 				'serv',
 				Effect.succeed({ url: 'http://localhost:1234', name: 'serv' } as const),
 				{
@@ -135,7 +135,7 @@ describe('engine hooks', () => {
 			);
 			const engine = yield* EngineHandle;
 			yield* engine.seedTags([{ key: 'serv', kind: 'service' }]);
-			yield* Layer.build(tag.__layer).pipe(Effect.scoped);
+			yield* Layer.build(servTag.__layer).pipe(Effect.scoped);
 			const state = yield* Ref.get(engine.tuiState);
 			const entry = state.entries.find((e) => e.key === 'serv');
 			expect(entry?.title).toBe('serv serv');

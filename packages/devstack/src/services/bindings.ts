@@ -5,13 +5,12 @@
 
 import { bindings, type BindingsOptions } from '../primitives/bindings.js';
 import type { LocalPackageShape } from './package.js';
-import type { PluginTag } from '../advanced/tag.js';
-import { withSection } from './ref.js';
+import type { Ref } from '../advanced/tag.js';
 
 export interface BindingsRefOptions {
 	/** Package refs to generate bindings for. Must satisfy
 	 *  `LocalPackageShape` (i.e. produced by `Package(...)`). */
-	readonly packages: ReadonlyArray<PluginTag<any, LocalPackageShape, any, any>>;
+	readonly packages: ReadonlyArray<Ref<any, LocalPackageShape, any, any>>;
 	/** Output directory. Each package emits under `<output>/<name>/`. */
 	readonly output: string;
 	/** Optional `.ts`/`.js`/`''` for the import-extension flavor in
@@ -29,5 +28,5 @@ export const Bindings = (opts: BindingsRefOptions) => {
 		...(opts.importExtension !== undefined ? { importExtension: opts.importExtension } : {}),
 		...(opts.name !== undefined ? { name: opts.name } : {}),
 	};
-	return withSection(bindings(bopts), 'app');
+	return Object.assign(bindings(bopts), { __kind: 'app' as const });
 };

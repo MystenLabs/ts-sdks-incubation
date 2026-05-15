@@ -18,7 +18,6 @@ import {
 } from '../primitives/walrus/index.js';
 import { WalrusError } from '../primitives/errors.js';
 import type { StackMember } from '../engine/supervisor.js';
-import { withSection } from './ref.js';
 
 // -----------------------------------------------------------------------------
 // WalrusNetwork — on-chain identifiers
@@ -227,7 +226,7 @@ const resolveMode = (opts: WalrusOptions): 'local' | 'known' => {
 export const Walrus = (opts: WalrusOptions = {}): StackMember => {
 	const mode = resolveMode(opts);
 	if (mode === 'known') {
-		return withSection(walrusKnownDeployment(opts.known ?? {}), 'service');
+		return Object.assign(walrusKnownDeployment(opts.known ?? {}), { __kind: 'service' as const });
 	}
-	return withSection(walrusLocalCluster(opts.local ?? {}), 'service');
+	return Object.assign(walrusLocalCluster(opts.local ?? {}), { __kind: 'service' as const });
 };

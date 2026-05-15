@@ -16,7 +16,7 @@ import * as path from 'node:path';
 import { Effect, FileSystem, Schema, Stream } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { stringifyCause } from '../../engine/stringify-cause.js';
-import { makeTag } from '../tag.js';
+import { tag } from '../tag.js';
 
 // -----------------------------------------------------------------------------
 // Errors
@@ -72,7 +72,7 @@ type Fs = ReturnType<typeof FileSystem.make>;
 // -----------------------------------------------------------------------------
 
 export const gitFetch = <const Name extends string>(options: GitFetchOptions<Name>) =>
-	makeTag(
+	tag(
 		options.name,
 		Effect.gen(function* () {
 			const fs = yield* FileSystem.FileSystem;

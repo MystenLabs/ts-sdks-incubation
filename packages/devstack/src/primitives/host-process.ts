@@ -20,7 +20,7 @@ import { drainLinesWithCallback, type OutputLineCallback } from '../engine/docke
 import { routerHostname, routerId } from '../engine/router-hostname.js';
 import { inheritedHostEnv } from '../engine/safe-env.js';
 import { stringifyCause } from '../engine/stringify-cause.js';
-import { makeTag, setPhase, type PluginTag } from '../advanced/tag.js';
+import { tag, setPhase, type Ref } from '../advanced/tag.js';
 import {
 	awaitReady,
 	type HttpReadyProbe,
@@ -79,7 +79,7 @@ export interface HostProcessOptions<Name extends string, E, R> {
 	readonly env?: Record<string, string> | Effect.Effect<Record<string, string>, E, R>;
 	readonly cwd?: string;
 	readonly readyProbe?: ReadyProbe;
-	readonly dependsOn?: ReadonlyArray<PluginTag<any, any, any, any>>;
+	readonly dependsOn?: ReadonlyArray<Ref<any, any, any, any>>;
 	readonly endpoint?: { readonly name: string; readonly kind?: string };
 	/**
 	 * Optional Traefik router exposure. When set, the primitive
@@ -119,7 +119,7 @@ export interface HostProcessOptions<Name extends string, E, R> {
 export const hostProcess = <const Name extends string, E = never, R = never>(
 	options: HostProcessOptions<Name, E, R>,
 ) =>
-	makeTag(
+	tag(
 		options.name,
 		Effect.gen(function* () {
 			yield* Effect.annotateCurrentSpan({

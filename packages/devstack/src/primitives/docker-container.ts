@@ -1,6 +1,6 @@
 import { Effect, Stream } from 'effect';
 import { ChildProcessSpawner } from 'effect/unstable/process';
-import { makeTag, setPhase, type PluginTag } from '../advanced/tag.js';
+import { tag, setPhase, type Ref } from '../advanced/tag.js';
 import * as Docker from '../engine/docker.js';
 import {
 	awaitReady,
@@ -33,14 +33,14 @@ export interface DockerContainerOptions<Name extends string, E, R> {
 	 *  (`--network-alias`). Requires `network` to be set. */
 	readonly networkAlias?: string;
 	readonly readyProbe?: ReadyProbe;
-	readonly dependsOn?: ReadonlyArray<PluginTag<any, any, any, any>>;
+	readonly dependsOn?: ReadonlyArray<Ref<any, any, any, any>>;
 	readonly endpoint?: { readonly name: string; readonly kind?: string };
 }
 
 export const dockerContainer = <const Name extends string, E = never, R = never>(
 	options: DockerContainerOptions<Name, E, R>,
 ) =>
-	makeTag(
+	tag(
 		options.name,
 		Effect.gen(function* () {
 			// 1. Resolve env: literal record, Effect, or undefined.

@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import { Effect, FileSystem } from 'effect';
 import * as Docker from '../../engine/docker.js';
 import { DockerError } from '../../primitives/errors.js';
-import { makeTag } from '../tag.js';
+import { tag } from '../tag.js';
 
 export interface DockerImage {
 	readonly tag: string;
@@ -68,7 +68,7 @@ const hashLocalTree = (contextPath: string) =>
 	});
 
 export const dockerImage = <const Name extends string>(options: DockerImageOptions<Name>) =>
-	makeTag(
+	tag(
 		options.name,
 		Effect.gen(function* () {
 			yield* Effect.annotateCurrentSpan({

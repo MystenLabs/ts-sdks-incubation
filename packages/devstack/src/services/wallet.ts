@@ -5,14 +5,13 @@
 
 import { walletApp, type WalletAppOptions } from '../primitives/wallet-app.js';
 import type { Account } from '../primitives/shared.js';
-import type { PluginTag } from '../advanced/tag.js';
-import { withSection } from './ref.js';
+import type { Ref } from '../advanced/tag.js';
 
 export interface WalletOptions {
 	/** Account refs whose signers the wallet UI exposes. Each is yielded
 	 *  for ordering so accounts are funded before the wallet accepts
 	 *  signing requests. */
-	readonly accounts: ReadonlyArray<PluginTag<any, Account, any, any>>;
+	readonly accounts: ReadonlyArray<Ref<any, Account, any, any>>;
 	/** Extra CORS origins, on top of the auto-derived
 	 *  `http://dev.<app>.localhost` and `http://localhost`. */
 	readonly allowedOrigins?: ReadonlyArray<string>;
@@ -33,5 +32,5 @@ export const Wallet = (opts: WalletOptions) => {
 		...(opts.bindAddress !== undefined ? { bindAddress: opts.bindAddress } : {}),
 		...(opts.name !== undefined ? { name: opts.name } : {}),
 	};
-	return withSection(walletApp(walletOpts), 'app');
+	return Object.assign(walletApp(walletOpts), { __kind: 'app' as const });
 };

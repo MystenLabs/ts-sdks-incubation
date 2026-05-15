@@ -1,16 +1,16 @@
 import { Effect } from 'effect';
-import { makeTag, type PluginTag } from '../advanced/tag.js';
+import { tag, type Ref } from '../advanced/tag.js';
 
 export interface ActionOptions<Name extends string, A, E, R> {
 	readonly name: Name;
 	readonly run: Effect.Effect<A, E, R>;
-	readonly dependsOn?: ReadonlyArray<PluginTag<any, any, any, any>>;
+	readonly dependsOn?: ReadonlyArray<Ref<any, any, any, any>>;
 }
 
 export const action = <const Name extends string, A, E = never, R = never>(
 	options: ActionOptions<Name, A, E, R>,
 ) =>
-	makeTag(
+	tag(
 		options.name,
 		Effect.gen(function* () {
 			for (const tag of options.dependsOn ?? []) {

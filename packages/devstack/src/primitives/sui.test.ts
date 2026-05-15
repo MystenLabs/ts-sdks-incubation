@@ -19,7 +19,7 @@ import { faucetReadyProbe, suiCustom, suiLocalnet, suiMainnet, suiTestnet } from
 
 // EndpointRegistry is required by every Sui factory body (publish calls
 // for `sui-rpc` / `sui-faucet` / `sui-graphql`). EngineLive backs the
-// lifecycle wrap applied by `provideTag`.
+// lifecycle wrap applied by `provide`.
 const TestBaseLayer = Layer.mergeAll(EngineLive, NodeFileSystemLayer, EndpointRegistryLive);
 
 // `SuiJsonRpcClient.getChainIdentifier` calls `getCheckpoint({id:'0'})`

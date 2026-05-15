@@ -7,7 +7,7 @@
 
 import { Effect, Option, Schedule } from 'effect';
 import { Transaction, type TransactionObjectArgument } from '@mysten/sui/transactions';
-import { makeTag, type PluginTag } from '../../advanced/tag.js';
+import { tag, type Ref } from '../../advanced/tag.js';
 import { Sui } from '../sui.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
 import { StateStore } from '../../engine/state-store.js';
@@ -70,7 +70,7 @@ export interface DeepbookMarketMakerHandle {
 
 export interface DeepbookMarketMakerOptions<Name extends string> {
 	readonly name: Name;
-	readonly signer: PluginTag<any, Account, any, any>;
+	readonly signer: Ref<any, Account, any, any>;
 	readonly pools: ReadonlyArray<DeepbookMarketMakerPoolSpec>;
 	/** Levels per side. Default 3 (so 6 orders per pool per tick). */
 	readonly levels?: number;
@@ -78,7 +78,7 @@ export interface DeepbookMarketMakerOptions<Name extends string> {
 	readonly tickSpacing?: number;
 	/** Refresh cadence in ms. Default 10_000 (10 s). */
 	readonly refreshMs?: number;
-	readonly dependsOn?: ReadonlyArray<PluginTag<any, any, any, any>>;
+	readonly dependsOn?: ReadonlyArray<Ref<any, any, any, any>>;
 }
 
 /**
@@ -89,7 +89,7 @@ export interface DeepbookMarketMakerOptions<Name extends string> {
 export const deepbookMarketMaker = <const Name extends string>(
 	options: DeepbookMarketMakerOptions<Name>,
 ) =>
-	makeTag(
+	tag(
 		options.name,
 		Effect.gen(function* () {
 			for (const tag of options.dependsOn ?? []) {

@@ -27,7 +27,7 @@ import { SuiTag as Sui, type SuiShape } from '../services/sui.js';
 import { Identity } from '../engine/identity.js';
 import { PortAllocatorLive } from '../engine/port-allocator.js';
 import { EndpointRegistryLive } from '../engine/registries.js';
-import { makeTag, type PluginTag } from '../advanced/tag.js';
+import { tag, type Ref } from '../advanced/tag.js';
 import type { Account } from './shared.js';
 import { walletApp } from './wallet-app.js';
 
@@ -50,8 +50,8 @@ const stubSui: Layer.Layer<Sui> = Layer.succeed(Sui, {
 // test (no HTTP traffic). We do NOT use the real `accounts()` factory
 // here because it would drag in StateStore, faucet, leasing, etc. —
 // none of which are relevant to the finalizer behavior under test.
-const stubAccountTag = (name: string): PluginTag<string, Account, never, never> =>
-	makeTag(
+const stubAccountTag = (name: string): Ref<string, Account, never, never> =>
+	tag(
 		name,
 		Effect.succeed({
 			name,

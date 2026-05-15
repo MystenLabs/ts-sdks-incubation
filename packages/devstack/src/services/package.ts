@@ -20,8 +20,7 @@ import { Context, Schema } from 'effect';
 import { publishMove, type CoinSpec, type PublishMoveOptions } from '../primitives/publish-move.js';
 import { pickCreatedByTypeIncludes } from '../primitives/sui-helpers.js';
 import type { Account, SuiObjectChange } from '../primitives/shared.js';
-import type { PluginTag } from '../advanced/tag.js';
-import { withSection } from './ref.js';
+import type { Ref } from '../advanced/tag.js';
 
 // -----------------------------------------------------------------------------
 // Package contracts
@@ -185,7 +184,7 @@ export interface PackageOptions<
 > {
 	/** Account that signs the publish transaction and ends up holding
 	 *  the resulting `UpgradeCap`. */
-	readonly signer: PluginTag<any, Account, any, any>;
+	readonly signer: Ref<any, Account, any, any>;
 	/** Override the MVR placeholder. Defaults to `@local/<slug-of-name>`. */
 	readonly mvr?: string;
 	/** Object-id capture. See {@link CaptureSpec}. */
@@ -231,5 +230,5 @@ export const Package = <
 		...(opts.capture !== undefined ? { capture: compileCapture<TCaptured>(opts.capture)! } : {}),
 		...(opts.coins !== undefined ? { coins: opts.coins } : {}),
 	};
-	return withSection(publishMove(publishOpts), 'package');
+	return Object.assign(publishMove(publishOpts), { __kind: 'package' as const });
 };

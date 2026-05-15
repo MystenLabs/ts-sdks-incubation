@@ -2,7 +2,7 @@ import { Effect, Stream } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { inheritedHostEnv } from '../../engine/safe-env.js';
 import { HostProcessError } from '../../primitives/errors.js';
-import { makeTag, type PluginTag } from '../tag.js';
+import { tag, type Ref } from '../tag.js';
 
 export interface HostScriptResult {
 	readonly exitCode: number;
@@ -16,7 +16,7 @@ export interface HostScriptOptions<Name extends string, E, R> {
 	readonly env?: Record<string, string> | Effect.Effect<Record<string, string>, E, R>;
 	readonly cwd?: string;
 	readonly captureStdout?: boolean;
-	readonly dependsOn?: ReadonlyArray<PluginTag<any, any, any, any>>;
+	readonly dependsOn?: ReadonlyArray<Ref<any, any, any, any>>;
 	/**
 	 * Wall-clock budget for the entire spawn. On expiry the spawner's
 	 * finalizer SIGTERMs the child, then SIGKILLs after `gracePeriodMs` if
@@ -37,7 +37,7 @@ const DEFAULT_HOST_SCRIPT_GRACE_PERIOD_MS = 5_000;
 export const hostScript = <const Name extends string, E = never, R = never>(
 	options: HostScriptOptions<Name, E, R>,
 ) =>
-	makeTag(
+	tag(
 		options.name,
 		Effect.gen(function* () {
 			// 1. Resolve env: literal record, Effect, or undefined.

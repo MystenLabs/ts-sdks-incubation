@@ -56,7 +56,7 @@ import {
 	type SealKeyManagerShape,
 	type SealKeyServerShape,
 } from '../services/seal.js';
-import { composeLayers, provideTag, setPhase, type PluginTag } from '../advanced/tag.js';
+import { composeLayers, provide, setPhase, type Ref } from '../advanced/tag.js';
 import type { StackMember } from '../engine/supervisor.js';
 import { Sui, suiNetworkName } from './sui.js';
 import { publishMove } from './publish-move.js';
@@ -139,7 +139,7 @@ export interface SealLocalKeygenShape {
 
 export interface SealLocalKeygenOptions<Name extends string> {
 	readonly name?: Name;
-	readonly signer: PluginTag<any, Account, any, any>;
+	readonly signer: Ref<any, Account, any, any>;
 	/** Skip the local image build and use a pre-built key-server image
 	 *  tag instead. When unset (the default) we build from the vendored
 	 *  Dockerfile under `packages/devstack/seal-image/`, fetching
@@ -166,7 +166,7 @@ export interface SealLocalKeygenOptions<Name extends string> {
 	/** On-chain `KeyServer.name` field. Default `devstack-local`. */
 	readonly keyServerName?: string;
 	/** Explicit ordering edges. Same shape as walrus/deepbook. */
-	readonly dependsOn?: ReadonlyArray<PluginTag<any, any, any, any>>;
+	readonly dependsOn?: ReadonlyArray<Ref<any, any, any, any>>;
 }
 
 // Combined intermediate shape produced by the heavy acquire effect.
@@ -901,7 +901,7 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 	// the TUI shows a single `seal` entry rather than separate entries
 	// per interface tag. The two projection layers below are trivial
 	// value extractions, not lifecycle-tracked.
-	const { __layer: internalLayer } = provideTag(SealLocalKeygenInternal, acquire, {
+	const { __layer: internalLayer } = provide(SealLocalKeygenInternal, acquire, {
 		kind: 'service',
 		displayTitle: 'seal.local',
 		display: (s) => ({ title: 'seal.local', primary: s.keyServer.keyServerUrl }),
@@ -935,7 +935,7 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 	// `key` is the internal tag's namespaced key
 	// (`@devstack/SealLocalKeygenInternal/${name}`). `defineDevstack`
 	// pre-populates an engine entry per StackMember at boot, and
-	// `withEngineLifecycle` (inside `provideTag`) keys its
+	// `withEngineLifecycle` (inside `provide`) keys its
 	// `markAcquiring` / `markReady` calls on the tag's key — using the
 	// same key here collapses both into a single TUI row. The field is
 	// the engine-internal lookup key, NOT the user-facing primitive
@@ -1006,7 +1006,7 @@ export const sealKnownKeyServer = (options: SealKnownKeyServerOptions = {}): Sta
 		} satisfies SealKeyServerShape;
 	})();
 
-	const { __layer, __kind, __displayTitle } = provideTag(SealKeyServer, build, {
+	const { __layer, __kind, __displayTitle } = provide(SealKeyServer, build, {
 		kind: 'service',
 		displayTitle: 'seal.known',
 		display: (s) => ({ title: 'seal.known', primary: s.keyServerUrl }),

@@ -8,7 +8,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { Effect } from 'effect';
-import { provideTag } from '../../advanced/tag.js';
+import { provide } from '../../advanced/tag.js';
 import { DeepbookCore, type DeepbookCoreShape } from '../../services/deepbook.js';
 import { knownDeployments, type KnownNetwork } from '../../engine/known-deployments.js';
 import type { StackMember } from '../../engine/supervisor.js';
@@ -78,7 +78,7 @@ export const deepbookKnownPackage = (opts: DeepbookKnownPackageOptions): StackMe
 	const poolIds = new Map<string, string>(staticPools.map((p) => [p.name, p.poolId]));
 	const findPool = makeFindPool('deepbookKnownPackage', fakeDeepbookPools);
 
-	const { __layer, key, __kind, __displayTitle } = provideTag(
+	const { __layer, key, __kind, __displayTitle } = provide(
 		DeepbookCore,
 		Effect.gen(function* () {
 			yield* Effect.annotateCurrentSpan({

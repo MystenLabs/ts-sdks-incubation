@@ -10,8 +10,7 @@ import {
 	type HostProcessOptions,
 	type ReadyProbe,
 } from '../primitives/host-process.js';
-import type { PluginTag } from '../advanced/tag.js';
-import { withSection } from './ref.js';
+import type { Ref } from '../advanced/tag.js';
 
 export interface DevOptions<E = never, R = never> {
 	/** Command to run. */
@@ -31,7 +30,7 @@ export interface DevOptions<E = never, R = never> {
 	readonly ready?: ReadyProbe;
 	/** Refs this dev server depends on (must be acquired first). Accepts
 	 *  any Ref or StackMember — the supervisor yields each for ordering. */
-	readonly needs?: ReadonlyArray<PluginTag<any, any, any, any> | { readonly __layer: unknown }>;
+	readonly needs?: ReadonlyArray<Ref<any, any, any, any> | { readonly __layer: unknown }>;
 	/** Override tag name. Defaults to `'frontend.dev-server'`. */
 	readonly name?: string;
 }
@@ -50,11 +49,11 @@ export const Dev = <E = never, R = never>(opts: DevOptions<E, R>) => {
 		...(opts.env !== undefined ? { env: opts.env } : {}),
 		...(opts.ready !== undefined ? { readyProbe: opts.ready } : {}),
 		...(opts.needs !== undefined
-			? { dependsOn: opts.needs as ReadonlyArray<PluginTag<any, any, any, any>> }
+			? { dependsOn: opts.needs as ReadonlyArray<Ref<any, any, any, any>> }
 			: {}),
 		...(opts.port !== undefined ? { port: { preferred: opts.port } } : {}),
 		endpoint: { name: 'dev-server', kind: 'dev-server' },
 		traefik: { service: 'dev', entrypoint: 'vite' },
 	};
-	return withSection(hostProcess(hostOpts), 'app');
+	return Object.assign(hostProcess(hostOpts), { __kind: 'app' as const });
 };

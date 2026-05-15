@@ -34,7 +34,7 @@ import { EngineHandle } from '../../engine/engine.js';
 import { Identity } from '../../engine/identity.js';
 import { EndpointRegistry, PackageRegistry } from '../../engine/registries.js';
 import { StateStore } from '../../engine/state-store.js';
-import { type PluginTag } from '../../advanced/tag.js';
+import { type Ref } from '../../advanced/tag.js';
 import { WalrusError } from '../errors.js';
 import type { Account } from '../shared.js';
 import { Sui, suiNetworkName } from '../sui.js';
@@ -242,10 +242,10 @@ export const acquireLocalCluster = (args: {
 	readonly walrusVersion: string;
 	readonly suiVersion: string;
 	readonly dockerContext: string;
-	readonly upstreamImage: PluginTag<any, any, any, any>;
-	readonly moveSource: PluginTag<any, any, any, any> | undefined;
+	readonly upstreamImage: Ref<any, any, any, any>;
+	readonly moveSource: Ref<any, any, any, any> | undefined;
 	readonly movePackagePath: string | undefined;
-	readonly seedAccountTags: ReadonlyArray<PluginTag<any, Account, any, any>>;
+	readonly seedAccountTags: ReadonlyArray<Ref<any, Account, any, any>>;
 	readonly pushPhase: (phase: string) => Effect.Effect<void>;
 }): Effect.Effect<LocalClusterAcquired, WalrusError, any> =>
 	Effect.gen(function* () {

@@ -1,6 +1,6 @@
 import { Effect, Option } from 'effect';
 import { Transaction } from '@mysten/sui/transactions';
-import { makeTag, setPhase, type PluginTag } from '../advanced/tag.js';
+import { tag, setPhase, type Ref } from '../advanced/tag.js';
 import { PublishError } from './errors.js';
 import { StateStore } from '../engine/state-store.js';
 import { Sui } from './sui.js';
@@ -8,10 +8,10 @@ import type { Account, TxResult } from './shared.js';
 
 export interface TxOptions<Name extends string, R> {
 	readonly name: Name;
-	readonly signer: PluginTag<any, Account, any, any>;
+	readonly signer: Ref<any, Account, any, any>;
 	readonly gasBudget?: bigint;
 	readonly build: (transaction: Transaction) => Effect.Effect<void, never, R>;
-	readonly dependsOn?: ReadonlyArray<PluginTag<any, any, any, any>>;
+	readonly dependsOn?: ReadonlyArray<Ref<any, any, any, any>>;
 	/**
 	 * Optional cache key. When set, `tx` is treated as idempotent against
 	 * this key folded with the chain id: if a prior execution's `TxResult`
@@ -44,7 +44,7 @@ export interface TxOptions<Name extends string, R> {
 }
 
 export const tx = <const Name extends string, R = never>(options: TxOptions<Name, R>) =>
-	makeTag(
+	tag(
 		options.name,
 		Effect.gen(function* () {
 			for (const tag of options.dependsOn ?? []) {

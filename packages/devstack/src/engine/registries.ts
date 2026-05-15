@@ -16,8 +16,8 @@
 // `tag` first (forcing the ordering at the type level and at runtime),
 // then returns the underlying registry service.
 
-import { Context, Effect, Layer, Ref } from 'effect';
-import type { PluginTag, TagIdentity } from '../advanced/tag.js';
+import { Context, Effect, Layer, Ref as EffectRef } from 'effect';
+import type { Ref, TagIdentity } from '../advanced/tag.js';
 
 export interface PackageRecord {
 	readonly name: string;
@@ -71,7 +71,7 @@ export interface RegistryShape<T> {
 interface RegistryHelpers<I, T> {
 	readonly publish: (entry: T) => Effect.Effect<void, never, I>;
 	readonly requiring: <Name extends string, A, R, E>(
-		tag: PluginTag<Name, A, R, E>,
+		tag: Ref<Name, A, R, E>,
 	) => Effect.Effect<RegistryShape<T>, E, R | TagIdentity<Name> | I>;
 }
 
@@ -110,7 +110,7 @@ export class CoinRegistry extends Context.Service<CoinRegistry, RegistryShape<Co
 const attachHelpers = <I, T>(service: Context.Service<I, RegistryShape<T>>): void => {
 	const helpers: RegistryHelpers<I, T> = {
 		publish: (entry) => service.use((reg) => reg.register(entry)),
-		requiring: <Name extends string, A, R, E>(tag: PluginTag<Name, A, R, E>) =>
+		requiring: <Name extends string, A, R, E>(tag: Ref<Name, A, R, E>) =>
 			Effect.gen(function* () {
 				yield* tag;
 				return yield* service;
@@ -127,10 +127,10 @@ attachHelpers<CoinRegistry, CoinRecord>(CoinRegistry);
 
 const makeRegistryLive = <T>() =>
 	Effect.gen(function* () {
-		const ref = yield* Ref.make<ReadonlyArray<T>>([]);
+		const ref = yield* EffectRef.make<ReadonlyArray<T>>([]);
 		return {
-			register: (entry: T) => Ref.update(ref, (xs) => [...xs, entry]),
-			snapshot: Ref.get(ref),
+			register: (entry: T) => EffectRef.update(ref, (xs) => [...xs, entry]),
+			snapshot: EffectRef.get(ref),
 		};
 	});
 
