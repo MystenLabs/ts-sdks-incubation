@@ -8,7 +8,7 @@
 import * as crypto from 'node:crypto';
 import { Effect, Layer, Option } from 'effect';
 import { Transaction } from '@mysten/sui/transactions';
-import { makeTag, provideTag, type PluginTag } from '../../advanced/tag.js';
+import { tag, provide, type Ref } from '../../advanced/tag.js';
 import { Sui } from '../sui.js';
 import { publishMove, pickCreatedByTypeSuffix } from '../publish-move.js';
 import { PackageRegistry } from '../../engine/registries.js';
@@ -106,7 +106,7 @@ export interface DeepbookLocalDeployOptions<
 	TPools extends ReadonlyArray<DeepbookPoolSpec>,
 > {
 	readonly name?: Name;
-	readonly signer: PluginTag<any, Account, any, any>;
+	readonly signer: Ref<any, Account, any, any>;
 	/** Filesystem path to a vendored deepbook-v3 Move package. The
 	 *  `@mysten/deepbook-v3` npm package does not currently ship compiled
 	 *  bytecode + dependency manifest in a form we can submit directly via
@@ -115,7 +115,7 @@ export interface DeepbookLocalDeployOptions<
 	 *  submodule). */
 	readonly movePackagePath?: string;
 	readonly pools?: TPools;
-	readonly dependsOn?: ReadonlyArray<PluginTag<any, any, any, any>>;
+	readonly dependsOn?: ReadonlyArray<Ref<any, any, any, any>>;
 }
 
 // Local-deploy carries the rich per-pool record (tick/lot/min) so the
@@ -187,7 +187,7 @@ export const deepbookLocalDeploy = <
 	// the rich shape. The three interface layers below all depend on this
 	// composite tag, so Layer.build dedupes the acquire (single publish
 	// regardless of how many interface tags are yielded downstream).
-	const composite = makeTag(
+	const composite = tag(
 		name,
 		Effect.gen(function* () {
 			for (const tag of options.dependsOn ?? []) {
@@ -511,7 +511,7 @@ export const deepbookLocalDeploy = <
 	// Context key. Stacking the local-deploy member satisfies every
 	// downstream consumer of `DeepbookCore` / `DeepbookAdmin` /
 	// `DeepbookMarketMaker` from a single config entry.
-	const coreLayer = provideTag(
+	const coreLayer = provide(
 		DeepbookCore,
 		Effect.gen(function* () {
 			const db = yield* composite;
@@ -525,7 +525,7 @@ export const deepbookLocalDeploy = <
 		}),
 	).__layer;
 
-	const adminLayer = provideTag(
+	const adminLayer = provide(
 		DeepbookAdmin,
 		Effect.gen(function* () {
 			yield* composite;
@@ -533,7 +533,7 @@ export const deepbookLocalDeploy = <
 		}),
 	).__layer;
 
-	const marketMakerLayer = provideTag(
+	const marketMakerLayer = provide(
 		DeepbookMarketMakerTag,
 		Effect.gen(function* () {
 			const db = yield* composite;

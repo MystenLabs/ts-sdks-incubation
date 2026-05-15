@@ -3,17 +3,17 @@
 
 // Three tag primitives, in preference order:
 //
-// - `provideTag(InterfaceTag, build)` — use when your factory IS an
+// - `provide(InterfaceTag, build)` — use when your factory IS an
 //   implementation of a shared interface (e.g. `suiLocalnet` provides
 //   `Sui`, `deepbookKnownPackage` provides `Deepbook`). Import the
 //   interface tag from `@mysten-incubation/devstack` and pass it
 //   as the first argument. Multiple factories targeting the same
 //   interface share one Context.Service class.
 //
-// - `makeTag(name, build)` — use for one-off tags that DON'T share an
+// - `tag(name, build)` — use for one-off tags that DON'T share an
 //   interface: per-account tags from `accounts()`, custom user plugins,
 //   `action`, `tx`, etc. Creates a throwaway Context.Service class
-//   internally; sugar over `provideTag`.
+//   internally; sugar over `provide`.
 //
 // - `composeTag(name, build, innerTags)` — composite-tag sugar. Use
 //   when you want a single outer tag whose body yields from inner
@@ -25,15 +25,15 @@
 //   sealLocalKeygen (internal tag + two projection layers) to assemble
 //   their `__layers` arrays without hand-rolling ordering.
 export {
-	provideTag,
-	makeTag,
+	provide,
+	tag,
 	composeTag,
 	composeLayers,
 	setPhase,
 	type ComposeLayersOptions,
-	type PluginTag,
+	type Ref,
 	type TagIdentity,
-	type MakeTagOptions,
+	type TagOptions,
 	type TagRequires,
 	type TagErrors,
 	type TagProvides,

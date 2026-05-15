@@ -20,7 +20,7 @@
 //   suiCustom({...})    — open-ended RPC-only handle for corporate fullnodes,
 //                         pinned forks, or air-gapped mirrors.
 //
-// Every factory returns `{ __layer, key }` via `provideTag(Sui, …)`, so
+// Every factory returns `{ __layer, key }` via `provide(Sui, …)`, so
 // `defineDevstack` and `provideDevstack` route them through Context
 // identically.
 
@@ -36,7 +36,7 @@ import { EndpointRegistry } from '../engine/registries.js';
 import { routerHostname, routerId } from '../engine/router-hostname.js';
 import { SuiBuildImage } from '../engine/sui-cli.js';
 import { dockerImage } from '../advanced/plugin-author/index.js';
-import { provideTag, setPhase } from '../advanced/tag.js';
+import { provide, setPhase } from '../advanced/tag.js';
 import type { StackMember } from '../engine/supervisor.js';
 import { SuiError } from './errors.js';
 
@@ -583,7 +583,7 @@ export const suiLocalnet = (options: SuiLocalnetOptions = {}): StackMember => {
 		} satisfies SuiShape;
 	})();
 
-	const { __layer, key, __kind, __displayTitle } = provideTag(Sui, build, {
+	const { __layer, key, __kind, __displayTitle } = provide(Sui, build, {
 		kind: 'service',
 		displayTitle: 'sui.localnet',
 		display: (s) => {
@@ -696,7 +696,7 @@ export const suiTestnet = (options: SuiTestnetOptions = {}): StackMember => {
 		} satisfies SuiShape;
 	})();
 
-	const { __layer, key, __kind, __displayTitle } = provideTag(Sui, build, {
+	const { __layer, key, __kind, __displayTitle } = provide(Sui, build, {
 		kind: 'service',
 		displayTitle: 'sui.testnet',
 		display: (s) => {
@@ -749,7 +749,7 @@ export const suiMainnet = (options: SuiMainnetOptions = {}): StackMember => {
 		} satisfies SuiShape;
 	})();
 
-	const { __layer, key, __kind, __displayTitle } = provideTag(Sui, build, {
+	const { __layer, key, __kind, __displayTitle } = provide(Sui, build, {
 		kind: 'service',
 		displayTitle: 'sui.mainnet',
 		display: (s) => {
@@ -821,7 +821,7 @@ export const suiCustom = (options: SuiCustomOptions): StackMember => {
 		} satisfies SuiShape;
 	})();
 
-	const { __layer, key, __kind, __displayTitle } = provideTag(Sui, build, {
+	const { __layer, key, __kind, __displayTitle } = provide(Sui, build, {
 		kind: 'service',
 		displayTitle: `sui.${options.network ?? 'custom'}`,
 		display: (s) => ({ title: `sui.${s.network}`, primary: s.rpc.host }),

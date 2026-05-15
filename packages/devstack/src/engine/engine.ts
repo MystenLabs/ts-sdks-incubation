@@ -7,7 +7,7 @@
 //        - kind       : service | action | other (drives section grouping)
 //        - title/primary/extras : user-facing projection captured at
 //          ready-time from the primitive's `display` selector
-//      `tag.ts`'s `makeTag` / `provideTag` wrap each primitive's build
+//      `tag.ts`'s `tag` / `provide` wrap each primitive's build
 //      Effect with engine hooks so transitions fire automatically.
 //
 //   2. The endpoint list — surfaced for primitives that register URLs
@@ -70,7 +70,7 @@ export interface EngineHandleShape {
 	/**
 	 * Safety net: flip any leftover `pending` / `acquiring` tag to `ready`.
 	 * Called by `defineDevstack` after `Layer.build` completes in case a
-	 * primitive used a hand-rolled Layer that bypassed the `makeTag` wrap.
+	 * primitive used a hand-rolled Layer that bypassed the `tag` wrap.
 	 */
 	readonly markAllReady: Effect.Effect<void>;
 	/**

@@ -9,7 +9,7 @@
 import { Effect, Schedule } from 'effect';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { makeTag } from '../advanced/tag.js';
+import { tag } from '../advanced/tag.js';
 import { Identity } from '../engine/identity.js';
 import {
 	AccountRegistry,
@@ -98,7 +98,7 @@ export const manifest = <const Name extends string = 'manifest', E = never, R = 
 ) => {
 	const name = (options.name ?? 'manifest') as Name;
 	const explicitOutput = options.output;
-	return makeTag(
+	return tag(
 		name,
 		Effect.gen(function* () {
 			const pkgs = yield* PackageRegistry;

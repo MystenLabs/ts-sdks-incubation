@@ -318,7 +318,7 @@ describe('Account(name, opts?) — source discriminator', () => {
 // Test helpers --------------------------------------------------------------
 
 // Pull the typed AccountError out of an `Exit.Failure`. The layer wrapping
-// in `makeTag` puts the failure under a non-trivial Cause tree (engine
+// in `tag` puts the failure under a non-trivial Cause tree (engine
 // lifecycle, scope finalizers); `Cause.findErrorOption` returns the
 // underlying typed value regardless of where it landed.
 const extractError = (exit: Exit.Exit<unknown, unknown>): AccountError | undefined => {

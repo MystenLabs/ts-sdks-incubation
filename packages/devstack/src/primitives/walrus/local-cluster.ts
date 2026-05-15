@@ -25,7 +25,7 @@ import {
 	type WalrusProxyShape,
 } from '../../services/walrus.js';
 import { dockerImage, gitFetch } from '../../advanced/plugin-author/index.js';
-import { composeLayers, type PluginTag } from '../../advanced/tag.js';
+import { composeLayers, type Ref } from '../../advanced/tag.js';
 import { WalrusError } from '../errors.js';
 import type { Account } from '../shared.js';
 import {
@@ -48,7 +48,7 @@ import {
 export interface WalrusLocalClusterOptions<Name extends string = 'walrus'> {
 	readonly name?: Name;
 	readonly nodeCount?: number;
-	readonly seedAccounts?: ReadonlyArray<PluginTag<any, Account, any, any>>;
+	readonly seedAccounts?: ReadonlyArray<Ref<any, Account, any, any>>;
 	/**
 	 * @deprecated No longer honored. The shared Traefik router binds
 	 * the walrus entrypoint port (9185) once on the host and routes by
@@ -148,7 +148,7 @@ export const walrusLocalCluster = <const Name extends string = 'walrus'>(
 	// every consumer shape downstream code might reach for.
 	const acquireAndProject = Effect.fn(`walrusLocalCluster(${name})`)(function* () {
 		// Engine lifecycle is wired manually here rather than through
-		// `provideTag` because we're producing a multi-service Context
+		// `provide` because we're producing a multi-service Context
 		// from a single body. `EngineHandle` is satisfied by InfraLive
 		// at run time; when run outside a devstack (e.g. a unit test
 		// providing only this layer) we degrade to a noop.
@@ -183,8 +183,8 @@ export const walrusLocalCluster = <const Name extends string = 'walrus'>(
 			walrusVersion,
 			suiVersion,
 			dockerContext,
-			upstreamImage: upstreamImage as PluginTag<any, any, any, any>,
-			moveSource: moveSource as PluginTag<any, any, any, any> | undefined,
+			upstreamImage: upstreamImage as Ref<any, any, any, any>,
+			moveSource: moveSource as Ref<any, any, any, any> | undefined,
 			movePackagePath: options.movePackagePath,
 			seedAccountTags,
 			pushPhase,

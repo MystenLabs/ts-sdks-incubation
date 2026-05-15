@@ -80,10 +80,5 @@ export { Action, type ActionOptions } from './action.js';
 export { Dev, type DevOptions } from './dev.js';
 export { Wallet, type WalletOptions } from './wallet.js';
 export { Bindings, type BindingsRefOptions } from './bindings.js';
-export {
-	type Ref,
-	type RefSection,
-	type AccountRef,
-	type PackageRef,
-	withSection,
-} from './ref.js';
+export { type AccountRef, type PackageRef } from './ref.js';
+export { type Ref } from '../advanced/tag.js';

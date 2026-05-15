@@ -61,6 +61,14 @@ import type { TagKind } from '../advanced/tag.js';
 import { startPlainRenderer } from '../tui/plain.js';
 import { SHUTDOWN_LOG_MESSAGE, startTuiOnce, TuiLoggerLayer, type TuiMount } from '../tui/index.js';
 
+// Structural shape of a stack member — anything carrying `__layer` (or
+// a flattened `__layers` for composites). Once Phase 3b finishes
+// inlining primitives, every entry in `config.stack` is a substrate
+// `Ref<...>` and this alias collapses; for now it survives because the
+// primitives' hand-rolled returns (`walrusLocalCluster`, `sealLocalKeygen`,
+// …) carry `{__layer, __layers, key}` directly without going through
+// `tag`/`provide`/`composeTag`, so they don't satisfy `Ref`'s
+// Context.Service brand.
 export interface StackMember {
 	readonly __layer: Layer.Layer<any, any, any>;
 	// Composite primitives (seal, deepbook, walrus) build inner tags at
@@ -70,7 +78,7 @@ export interface StackMember {
 	// list — when present, we mergeAll those instead of just `__layer`
 	// so inner-tag service resolution doesn't ServiceNotFound at runtime.
 	readonly __layers?: ReadonlyArray<Layer.Layer<any, any, any>>;
-	// Runtime-set on every tag produced by `makeTag` (it's the
+	// Runtime-set on every tag produced by `tag` (it's the
 	// Context.Service `key`). The type doesn't expose it on the public
 	// `StackMember` interface because callers may also pass hand-rolled
 	// layers (no `key`), but defineDevstack reads it best-effort to
@@ -78,7 +86,7 @@ export interface StackMember {
 	readonly key?: string;
 	/**
 	 * Section classification used by the TUI dashboard for grouping. Set
-	 * automatically when the member was built via `provideTag` / `makeTag`
+	 * automatically when the member was built via `provide` / `tag`
 	 * with `{kind}`; absent for hand-rolled layers, which render in a
 	 * fallback 'Other' section only when non-empty. Five values matching
 	 * the new user-intent framing: services / packages / accounts /
@@ -89,12 +97,12 @@ export interface StackMember {
 	 * Friendly title surfaced by the dashboard while the member is still
 	 * `pending` (before its build body runs and the in-build
 	 * `setEntryTitle` fires). Mirrors the `displayTitle` option passed
-	 * to `provideTag` / `makeTag`. Absence → fall back to the tag's key.
+	 * to `provide` / `tag`. Absence → fall back to the tag's key.
 	 */
 	readonly __displayTitle?: string;
 	/**
 	 * Filesystem paths the primitive's author wants watched for hot-restart.
-	 * Mirrors the `watch` option passed to `provideTag` / `makeTag`.
+	 * Mirrors the `watch` option passed to `provide` / `tag`.
 	 * `defineDevstack` aggregates these into the runtime watch set
 	 * alongside the top-level `config.watch`. Today this triggers a full
 	 * stack restart; selective per-primitive tear-down is future work.
@@ -343,7 +351,7 @@ const hashFileIfChanged = (
 
 // Owner of a watched path, as recorded at composition time. Used to
 // attribute file-change events back to the primitive that declared the
-// path via `provideTag({watch})` / `makeTag({watch})` so the supervisor
+// path via `provide({watch})` / `tag({watch})` so the supervisor
 // can (a) log "the publishMove(hello) primitive owns this file — that's
 // what triggered the restart" and (b) propagate the changed keys forward
 // via `engine.notifyChangedTags` for downstream diagnostics. A single
@@ -577,7 +585,7 @@ export const composeStackLayer = (
 
 	// Prefer `__layers` (transitively-flattened) when a composite tag
 	// supplies it; fall back to the single `__layer` for tags built via
-	// the legacy `makeTag(name, build)` shape or the hand-rolled `Sui`
+	// the legacy `tag(name, build)` shape or the hand-rolled `Sui`
 	// canonical pattern in `sui.ts`.
 	const stackLayers = stack.flatMap((m) => m.__layers ?? [m.__layer]);
 	// Fold the user stack with `provideMerge` so each layer can consume
@@ -704,7 +712,7 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 
 	// Best-effort: collect every stack member's tag key + classification +
 	// pending-state title for the TUI's initial seed. Members carry `__kind`
-	// when they're built via `makeTag` / `provideTag` with `{kind}` set —
+	// when they're built via `tag` / `provide` with `{kind}` set —
 	// without it the engine lands the entry in the 'other' section, which
 	// the renderer elides until it has content. `__displayTitle` (also set
 	// via the `displayTitle` option) gives the row a friendly label while
@@ -728,7 +736,7 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 	});
 
 	// Watch set = explicit `config.watch` plus every primitive that
-	// declared paths via `provideTag({watch})` / `makeTag({watch})`.
+	// declared paths via `provide({watch})` / `tag({watch})`.
 	// `publishMove` uses this to auto-watch its Move source tree so a
 	// `.move` edit triggers a hot-restart (which cascades through
 	// `bindings` regen + frontend HMR) without the user having to repeat

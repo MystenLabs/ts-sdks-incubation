@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import { Effect } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { generateFromPackageSummary } from '@mysten/codegen';
-import { makeTag, setPhase, type PluginTag } from '../advanced/tag.js';
+import { tag, setPhase, type Ref } from '../advanced/tag.js';
 import { stringifyCause } from '../engine/stringify-cause.js';
 import { BindingsError } from './errors.js';
 import type { LocalPackageShape } from '../services/package.js';
@@ -15,7 +15,7 @@ export interface BindingsResult {
 }
 
 export interface BindingsOptions {
-	readonly packages: ReadonlyArray<PluginTag<any, LocalPackageShape, any, any>>;
+	readonly packages: ReadonlyArray<Ref<any, LocalPackageShape, any, any>>;
 	readonly output: string;
 	readonly importExtension?: '.ts' | '.js' | '';
 	readonly name?: string;
@@ -50,7 +50,7 @@ export const bindings = (options: BindingsOptions) => {
 	const name = options.name ?? 'bindings';
 	const importExtension = options.importExtension ?? '.ts';
 
-	return makeTag(
+	return tag(
 		`bindings/${name}` as const,
 		Effect.fn(`bindings(${name})`)(function* () {
 			const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;

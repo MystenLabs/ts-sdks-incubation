@@ -40,7 +40,7 @@ type _WalrusPackageConfigCheck =
 const _walrusPackageConfigCheck: _WalrusPackageConfigCheck = true;
 void _walrusPackageConfigCheck;
 
-// `provideTag` wraps the build with engine lifecycle hooks; tests need
+// `provide` wraps the build with engine lifecycle hooks; tests need
 // `EngineLive` (and `EngineLive` itself needs `NodeFileSystemLayer` via
 // StateStore — but only if we touch StateStore, which we don't here).
 const TestBaseLayer = Layer.mergeAll(EngineLive, NodeFileSystemLayer);

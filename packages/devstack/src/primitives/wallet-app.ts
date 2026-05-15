@@ -19,7 +19,7 @@ import {
 import { routerHostname, routerId } from '../engine/router-hostname.js';
 import { EndpointRegistry } from '../engine/registries.js';
 import { stringifyCause } from '../engine/stringify-cause.js';
-import { makeTag, setPhase, type PluginTag } from '../advanced/tag.js';
+import { tag, setPhase, type Ref } from '../advanced/tag.js';
 import { WalletAppError } from './errors.js';
 import type { Account } from './shared.js';
 import { Sui } from './sui.js';
@@ -47,7 +47,7 @@ export interface WalletAppOptions<Name extends string> {
 	 * before the server accepts traffic) and the resolved `Account`
 	 * value is keyed by address into the sign handler.
 	 */
-	readonly accounts: ReadonlyArray<PluginTag<any, Account, any, any>>;
+	readonly accounts: ReadonlyArray<Ref<any, Account, any, any>>;
 	/**
 	 * Extra CORS origins to accept on the signing endpoints, on top of
 	 * the auto-derived `http://dev.<app>.localhost` (and stack-scoped
@@ -77,7 +77,7 @@ export const walletApp = <const Name extends string = 'wallet-app'>(
 	options: WalletAppOptions<Name>,
 ) => {
 	const name = (options.name ?? 'wallet-app') as Name;
-	return makeTag(
+	return tag(
 		name,
 		Effect.gen(function* () {
 			// Wait for sui to be ready before standing up the wallet server.

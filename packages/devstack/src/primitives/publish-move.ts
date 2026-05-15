@@ -12,7 +12,7 @@ import { Effect, FileSystem, Option, Schedule } from 'effect';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import { Transaction } from '@mysten/sui/transactions';
-import { makeTag, setPhase, type PluginTag } from '../advanced/tag.js';
+import { tag, setPhase, type Ref } from '../advanced/tag.js';
 import { Sui } from './sui.js';
 import { buildMove, scrubCachedMoveLocks } from '../engine/sui-cli.js';
 import { PackageRegistry, CoinRegistry } from '../engine/registries.js';
@@ -158,7 +158,7 @@ export interface PublishMoveOptions<
 	 * the resulting `UpgradeCap`. The tag is yielded for ordering, so
 	 * `signer` is always funded by the time the publish fires.
 	 */
-	readonly signer: PluginTag<any, Account, any, any>;
+	readonly signer: Ref<any, Account, any, any>;
 	/**
 	 * Optional override for the Move-Resolved-Reference placeholder
 	 * (the `[addresses]` table key in `Move.toml`). Defaults to `name`.
@@ -196,7 +196,7 @@ export const publishMove = <
 >(
 	options: PublishMoveOptions<Name, TCaptured, TCoins>,
 ) =>
-	makeTag(
+	tag(
 		options.name,
 		Effect.gen(function* () {
 			const signer = yield* options.signer;

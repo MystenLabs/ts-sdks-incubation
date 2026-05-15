@@ -1,5 +1,5 @@
 import { Effect } from 'effect';
-import { makeTag, setPhase, type PluginTag } from '../advanced/tag.js';
+import { tag, setPhase, type Ref } from '../advanced/tag.js';
 import { CoinRegistry } from '../engine/registries.js';
 import { toSdkCoin } from '../services/package.js';
 
@@ -50,7 +50,7 @@ export interface RegisterCoinResult {
 // to carry `packageId`.
 export interface RegisterCoinOptions<P extends { readonly packageId: string }> {
 	readonly name: string;
-	readonly package: PluginTag<any, P, any, any>;
+	readonly package: Ref<any, P, any, any>;
 	readonly module: string;
 	readonly type: string;
 	readonly decimals: number;
@@ -59,7 +59,7 @@ export interface RegisterCoinOptions<P extends { readonly packageId: string }> {
 export const registerCoin = <P extends { readonly packageId: string }>(
 	options: RegisterCoinOptions<P>,
 ) =>
-	makeTag(
+	tag(
 		`registerCoin/${options.name}` as const,
 		Effect.fn(`registerCoin(${options.name})`)(function* () {
 			const pkg = yield* options.package;

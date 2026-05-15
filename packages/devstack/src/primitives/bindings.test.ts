@@ -10,7 +10,7 @@
 import { Effect } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 import { bindings } from './bindings.js';
-import { makeTag } from '../advanced/tag.js';
+import { tag } from '../advanced/tag.js';
 import type { PackageShape } from '../services/package.js';
 
 describe('bindings type discipline', () => {
@@ -20,7 +20,7 @@ describe('bindings type discipline', () => {
 		// `upgradeCapId` so the error TS surfaces is specifically the
 		// missing-`sourcePath` mismatch with `LocalPackageShape` (rather
 		// than an incidental literal-type quirk on `upgradeCapId`).
-		const knownOnlyTag = makeTag(
+		const knownOnlyTag = tag(
 			'knownOnly',
 			Effect.succeed<PackageShape>({
 				name: 'knownOnly',

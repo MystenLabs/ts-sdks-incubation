@@ -40,7 +40,7 @@ type _SealKeyServerEntryCheck = SealKeyServerEntry extends _ExpectedKeyServerCon
 const _sealKeyServerEntryCheck: _SealKeyServerEntryCheck = true;
 void _sealKeyServerEntryCheck;
 
-// `provideTag` wraps the build with engine lifecycle hooks; tests need
+// `provide` wraps the build with engine lifecycle hooks; tests need
 // `EngineLive`. The known-key-server body also calls
 // `EndpointRegistry.publish`, so we add the in-memory `EndpointRegistry`
 // layer to the base — without it the build trips `ServiceNotFound`

@@ -2,24 +2,25 @@
 //
 // Three primitives, layered:
 //
-//   provideTag(TagClass, build)   — primary. Given an EXISTING
+//   provide(TagClass, build)      — primary. Given an EXISTING
 //                                   Context.Service class (typically
 //                                   imported from a `src/services/` tag
 //                                   class like `SuiTag` / `SealKeyServer`),
-//                                   produce a `{ __layer, key }` pair
-//                                   that satisfies it. Multiple factories
-//                                   (`suiLocalnet`, `suiTestnet`, …) can
-//                                   each call `provideTag(SuiTag, …)` and
-//                                   they all target the same `Sui` tag.
+//                                   mutate it into a yieldable Ref by
+//                                   stamping `__layer` / `key` onto it.
+//                                   Multiple factories (`suiLocalnet`,
+//                                   `suiTestnet`, …) can each call
+//                                   `provide(SuiTag, …)` and they all
+//                                   target the same `Sui` tag.
 //
-//   makeTag(name, build)          — sugar. Creates a one-off tag class
+//   tag(name, build)              — sugar. Creates a one-off tag class
 //                                   inline. Used by factories that don't
 //                                   participate in a shared interface
 //                                   (per-account tags, `action`, custom
 //                                   plugins). Internally just creates a
-//                                   throwaway class and calls provideTag.
+//                                   throwaway class and calls provide.
 //
-//   composeTag(name, build, inner) — sugar around makeTag for composite
+//   composeTag(name, build, inner) — sugar around `tag` for composite
 //                                   primitives that expose a single outer
 //                                   tag whose body yields from inner
 //                                   sibling tags. Use this when you want
@@ -30,16 +31,16 @@
 //                                   like walrusLocalCluster, or one with
 //                                   thin projection layers like
 //                                   sealLocalKeygen), use `composeLayers`
-//                                   directly to assemble the StackMember
+//                                   directly to assemble the Ref's
 //                                   `__layers` array without inventing a
 //                                   throwaway outer class.
 //
 //   composeLayers({primary, inner, projections}) — assemble a
 //                                   provider-before-consumer ordered
-//                                   layer list for a multi-layer
-//                                   StackMember. Replaces the
-//                                   comment-heavy hand-rolled `__layers`
-//                                   arrays primitives used to maintain.
+//                                   layer list for a multi-layer Ref.
+//                                   Replaces the comment-heavy hand-
+//                                   rolled `__layers` arrays primitives
+//                                   used to maintain.
 //
 // Each tag carries:
 //   __layer  — the Layer.effect-wrapped producer for THIS tag.
@@ -114,13 +115,13 @@ export interface TuiDisplay {
 }
 
 /**
- * Optional knobs for `provideTag` / `makeTag`. `kind` classifies the
- * row into the Services or Actions section; `display` projects the
- * resolved value into the user-facing fields. `displayTitle` is a static
+ * Optional knobs for `provide` / `tag`. `kind` classifies the row into
+ * the Services or Actions section; `display` projects the resolved
+ * value into the user-facing fields. `displayTitle` is a static
  * fallback rendered while the primitive is still acquiring (before the
  * resolved value exists to feed `display`).
  */
-export interface ProvideTagOptions<A> {
+export interface ProvideOptions<A> {
 	readonly kind?: TagKind;
 	readonly display?: (shape: A) => TuiDisplay;
 	/** Friendly name shown in the dashboard while `status === 'pending' | 'acquiring'`,
@@ -157,16 +158,16 @@ export const shortId = (id: string): string => {
 	return `${prefix}…${suffix}`;
 };
 
-// User-visible shape of a plugin tag. Extends Context.Service so it's
+// User-visible shape of a tag (Ref). Extends Context.Service so it's
 // yieldable with the right Effect prototype. Carries R/E as phantom
-// parameters so defineDevstack can verify graph closure.
+// parameters so devstack(...) can verify graph closure.
 /**
  * Type-parameterized tag. `Name` is the tag's identity key, `A` is the
  * value shape consumers `yield*` to receive, `R` and `E` track required
  * services and possible errors. Plugin authors writing dependencies
- * typically use `PluginTag<any, YourShape, any, any>`.
+ * typically use `Ref<any, YourShape, any, any>`.
  */
-export interface PluginTag<Name extends string, A, R = never, E = never> extends Context.Service<
+export interface Ref<Name extends string, A, R = never, E = never> extends Context.Service<
 	TagIdentity<Name>,
 	A
 > {
@@ -184,11 +185,11 @@ export interface PluginTag<Name extends string, A, R = never, E = never> extends
 	readonly __kind?: TagKind;
 	/** Friendly title surfaced by the dashboard while the tag is still `pending`
 	 * (before `markAcquiring` triggers the in-build `setEntryTitle`). Mirrors
-	 * the `displayTitle` option passed to `provideTag` / `makeTag`. Absence →
+	 * the `displayTitle` option passed to `provide` / `tag`. Absence →
 	 * fall back to the tag's key. */
 	readonly __displayTitle?: string;
-	/** Paths the tag's author wants watched for hot-restart. See `ProvideTagOptions.watch`.
-	 * Aggregated by `defineDevstack` into the runtime watch set. */
+	/** Paths the tag's author wants watched for hot-restart. See `ProvideOptions.watch`.
+	 * Aggregated by `devstack(...)` into the runtime watch set. */
 	readonly __watchPaths?: ReadonlyArray<string>;
 }
 
@@ -197,10 +198,10 @@ export interface PluginTag<Name extends string, A, R = never, E = never> extends
  *
  *   pending → acquiring → ready | failed
  *
- * The wrap is applied at tag construction (inside `provideTag`) so primitive
+ * The wrap is applied at tag construction (inside `provide`) so primitive
  * authors don't have to remember to call the engine themselves. The
  * tradeoff is that `EngineHandle` ends up in the R channel of the inner
- * Effect — that's satisfied by `InfraLive` in `defineDevstack`, so user
+ * Effect — that's satisfied by `InfraLive` in `devstack(...)`, so user
  * code doesn't need to know about it. Phase tracking is left to authors
  * who add `Effect.withSpan('<tag>.<phase>')` inside `build` — the engine
  * doesn't peek at spans yet (Wave 10+).
@@ -281,8 +282,8 @@ const summarizeCauseForLog = (cause: Cause.Cause<unknown>): string => prettyErro
 
 // Minimum surface we need from a Context.Service class to build a Layer
 // against it: a Context.Key (Layer.effect's first arg) plus the runtime
-// `key: string` we read in withEngineLifecycle. Both `provideTag`'s
-// `TagClass` and `PluginTag` shapes satisfy this.
+// `key: string` we read in withEngineLifecycle. Both `provide`'s
+// `TagClass` and `Ref` shapes satisfy this.
 type AnyTagClass = Context.Key<any, any> & { readonly key: string };
 
 /**
@@ -293,17 +294,23 @@ type AnyTagClass = Context.Key<any, any> & { readonly key: string };
  * same interface (e.g. `suiLocalnet` / `suiTestnet` / `suiMainnet` all
  * targeting `SuiTag`). Import the interface tag class from the matching
  * `src/services/X.ts` (e.g. `SuiTag` from `services/sui.ts`) and pass
- * it as `TagClass`. The same wrap as `makeTag` (engine lifecycle) is
+ * it as `TagClass`. The same wrap as `tag` (engine lifecycle) is
  * applied, but no new tag class is created — the caller owns the tag.
  *
- * Returns `{ __layer, key }`. Most callers will `Object.assign(TagClass, …)`
- * onto the existing tag so it doubles as a `PluginTag` for defineDevstack.
+ * `provide` mutates `TagClass` via `Object.assign` so the canonical
+ * Context.Service class itself doubles as a yieldable `Ref` — gaining
+ * `__layer` / `key` / `__kind` / `__displayTitle` / `__watchPaths` while
+ * keeping its `[Symbol.iterator]` (so `yield* TagClass` continues to
+ * work). One canonical tag per stack means one provide call per
+ * stack, so the mutation is one-shot in practice — calling two impl
+ * factories targeting the same canonical tag in the same stack was
+ * always a configuration error.
  */
-export const provideTag = <T extends AnyTagClass, A, E = never, R = never>(
+export const provide = <T extends AnyTagClass, A, E = never, R = never>(
 	TagClass: T,
 	build: Effect.Effect<A, E, R>,
-	options: ProvideTagOptions<A> = {},
-): {
+	options: ProvideOptions<A> = {},
+): T & {
 	readonly __layer: Layer.Layer<Context.Service.Identifier<T>, E, Exclude<R, Scope.Scope>>;
 	readonly key: string;
 	readonly __kind?: TagKind;
@@ -315,54 +322,55 @@ export const provideTag = <T extends AnyTagClass, A, E = never, R = never>(
 	// the single load-bearing boundary cast in this file: the build's A
 	// must match the tag's Shape, but TS can't infer S from the class
 	// type without the caller annotating, so we accept it on faith. All
-	// real call sites flow through provideTag, so this is also the only
+	// real call sites flow through provide, so this is also the only
 	// place `as any` is needed at the Service boundary.
 	const layer = Layer.effect(TagClass as Context.Key<Context.Service.Identifier<T>, A>, wrapped);
-	const result: {
+	const extras: {
 		__layer: typeof layer;
 		key: string;
 		__kind?: TagKind;
 		__displayTitle?: string;
 		__watchPaths?: ReadonlyArray<string>;
 	} = { __layer: layer, key: TagClass.key };
-	if (options.kind !== undefined) result.__kind = options.kind;
-	if (options.displayTitle !== undefined) result.__displayTitle = options.displayTitle;
+	if (options.kind !== undefined) extras.__kind = options.kind;
+	if (options.displayTitle !== undefined) extras.__displayTitle = options.displayTitle;
 	if (options.watch !== undefined && options.watch.length > 0) {
-		result.__watchPaths = options.watch;
+		extras.__watchPaths = options.watch;
 	}
-	return result;
+	// Mutate the canonical class so it doubles as a yieldable StackMember.
+	return Object.assign(TagClass, extras) as unknown as T & typeof extras;
 };
 
-// Optional knobs for `makeTag`. `extraLayers` lets composite primitives
+// Optional knobs for `tag`. `extraLayers` lets composite primitives
 // surface their inner tags' layers without the caller having to know
 // about the `__layers` field. Prefer `composeTag` over passing this by
 // hand — it's the same shape but with the inner-tag flattening built in.
 // `kind` + `display` flow through to the engine for TUI sectioning.
-export interface MakeTagOptions<A> extends ProvideTagOptions<A> {
+export interface TagOptions<A> extends ProvideOptions<A> {
 	readonly extraLayers?: ReadonlyArray<Layer.Layer<any, any, any>>;
 }
 
 /**
  * Create a one-off tag from an Effect — the right primitive when you're
- * NOT implementing a shared interface (per-account tags from `accounts()`,
- * custom plugins, `action`, etc.). For factories that target an
+ * NOT implementing a shared interface (per-account tags from `Account()`,
+ * custom plugins, `Action`, etc.). For factories that target an
  * interface tag class in `src/services/` (e.g. `SuiTag`, `SealKeyServer`),
- * use {@link provideTag} instead. For composites that build inner tags
+ * use {@link provide} instead. For composites that build inner tags
  * inline, use {@link composeTag}.
  */
-export const makeTag = <const Name extends string, A, E = never, R = never>(
+export const tag = <const Name extends string, A, E = never, R = never>(
 	name: Name,
 	build: Effect.Effect<A, E, R>,
-	options: MakeTagOptions<A> = {},
-): PluginTag<Name, A, Exclude<R, Scope.Scope>, E> => {
+	options: TagOptions<A> = {},
+): Ref<Name, A, Exclude<R, Scope.Scope>, E> => {
 	class T extends Context.Service<TagIdentity<Name>, A>()(name as Name) {}
-	const provideOpts: ProvideTagOptions<A> = {
+	const provideOpts: ProvideOptions<A> = {
 		...(options.kind !== undefined ? { kind: options.kind } : {}),
 		...(options.display !== undefined ? { display: options.display } : {}),
 		...(options.displayTitle !== undefined ? { displayTitle: options.displayTitle } : {}),
 		...(options.watch !== undefined ? { watch: options.watch } : {}),
 	};
-	const { __layer, key } = provideTag(T, build, provideOpts);
+	const { __layer, key } = provide(T, build, provideOpts);
 	// Order matters: `composeStackLayer` folds left-to-right with
 	// `provideMerge(layer, acc)`, so each layer consumes services from
 	// the accumulated acc. Providers must come BEFORE consumers. Inner
@@ -374,7 +382,7 @@ export const makeTag = <const Name extends string, A, E = never, R = never>(
 		__layer,
 	];
 	// The Object.assign result is typed as the throwaway `typeof T`, which
-	// TS can't bridge to `PluginTag<Name, …>` even though both share the
+	// TS can't bridge to `Ref<Name, …>` even though both share the
 	// same `TagIdentity<Name>`. Funnel through `unknown` to land on the
 	// public type — the runtime shape is identical.
 	const extras: {
@@ -394,7 +402,7 @@ export const makeTag = <const Name extends string, A, E = never, R = never>(
 	if (options.watch !== undefined && options.watch.length > 0) {
 		extras.__watchPaths = options.watch;
 	}
-	return Object.assign(T, extras) as unknown as PluginTag<
+	return Object.assign(T, extras) as unknown as Ref<
 		Name,
 		A,
 		Exclude<R, Scope.Scope>,
@@ -402,10 +410,10 @@ export const makeTag = <const Name extends string, A, E = never, R = never>(
 	>;
 };
 
-// composeTag — `makeTag` for composite primitives. Pass the inner tags
+// composeTag — `tag` for composite primitives. Pass the inner tags
 // the body yields; the returned tag's `__layers` includes its own layer
 // plus the flattened transitive layers of every inner tag, so
-// defineDevstack picks them all up from a single stack-member entry.
+// devstack(...) picks them all up from a single stack-member entry.
 //
 // The inner-tag yields inside `build` still need their R channel
 // satisfied — that happens at Layer.build time via mergeAll, exactly as
@@ -421,29 +429,29 @@ export const makeTag = <const Name extends string, A, E = never, R = never>(
  * {@link composeLayers} directly — it assembles the `__layers` array
  * without inventing a throwaway outer tag class.
  *
- * The outer tag is built via `makeTag` so it carries its own throwaway
+ * The outer tag is built via `tag` so it carries its own throwaway
  * identity.
  */
 export const composeTag = <const Name extends string, A, E = never, R = never>(
 	name: Name,
 	build: Effect.Effect<A, E, R>,
 	innerTags: ReadonlyArray<HasLayers>,
-	options: ProvideTagOptions<A> = {},
-): PluginTag<Name, A, Exclude<R, Scope.Scope>, E> => {
+	options: ProvideOptions<A> = {},
+): Ref<Name, A, Exclude<R, Scope.Scope>, E> => {
 	const extraLayers = flattenInnerLayers(innerTags);
-	const merged: MakeTagOptions<A> = {
+	const merged: TagOptions<A> = {
 		extraLayers,
 		...(options.kind !== undefined ? { kind: options.kind } : {}),
 		...(options.display !== undefined ? { display: options.display } : {}),
 		...(options.displayTitle !== undefined ? { displayTitle: options.displayTitle } : {}),
 	};
-	return makeTag(name, build, merged);
+	return tag(name, build, merged);
 };
 
 // Anything that exposes a layer or a transitive layer list — the shape
 // `composeLayers` and `composeTag` accept for the `inner` slot. Tags
-// produced by `provideTag` / `makeTag` / `composeTag` satisfy this, as
-// do StackMembers returned by composite primitives.
+// produced by `provide` / `tag` / `composeTag` satisfy this, as do
+// Refs returned by composite primitives.
 interface HasLayers {
 	readonly __layer?: Layer.Layer<any, any, any>;
 	readonly __layers?: ReadonlyArray<Layer.Layer<any, any, any>>;
@@ -471,8 +479,8 @@ export interface ComposeLayersOptions {
 	 *  conditional inclusion (`[image, source, publish]` where some are
 	 *  only defined on certain branches) without a separate `push` loop. */
 	readonly inner?: ReadonlyArray<HasLayers | undefined>;
-	/** The primary layer for this StackMember. Goes after `inner` (so its
-	 *  body can consume inner-tag services) but before `projections`. */
+	/** The primary layer for this Ref. Goes after `inner` (so its body
+	 *  can consume inner-tag services) but before `projections`. */
 	readonly primary: Layer.Layer<any, any, any>;
 	/** Thin projection layers that read from `primary` to satisfy
 	 *  additional interface tags (e.g. `SealKeyServer` + `SealKeyManager`
@@ -483,7 +491,7 @@ export interface ComposeLayersOptions {
 
 /**
  * Build a provider-before-consumer ordered `__layers` array for a
- * multi-layer StackMember. Replaces the comment-heavy hand-rolled
+ * multi-layer Ref. Replaces the comment-heavy hand-rolled
  * `[...inner.__layers, primary, ...projections]` pattern in
  * walrus / seal / deepbook with a single call.
  *
@@ -502,7 +510,7 @@ export const composeLayers = (
 	...(opts.projections ?? []),
 ];
 
-// Phantom extractors for defineDevstack.
-export type TagRequires<T> = T extends PluginTag<any, any, infer R, any> ? R : never;
-export type TagErrors<T> = T extends PluginTag<any, any, any, infer E> ? E : never;
-export type TagProvides<T> = T extends PluginTag<infer N, any, any, any> ? TagIdentity<N> : never;
+// Phantom extractors for devstack(...).
+export type TagRequires<T> = T extends Ref<any, any, infer R, any> ? R : never;
+export type TagErrors<T> = T extends Ref<any, any, any, infer E> ? E : never;
+export type TagProvides<T> = T extends Ref<infer N, any, any, any> ? TagIdentity<N> : never;

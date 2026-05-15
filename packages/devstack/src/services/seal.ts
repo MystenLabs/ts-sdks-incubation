@@ -20,9 +20,8 @@ import {
 } from '../primitives/seal.js';
 import { SealError } from '../primitives/errors.js';
 import type { Account } from '../primitives/shared.js';
-import type { PluginTag } from '../advanced/tag.js';
+import type { Ref } from '../advanced/tag.js';
 import type { StackMember } from '../engine/supervisor.js';
-import { withSection } from './ref.js';
 
 // -----------------------------------------------------------------------------
 // SealKeyServer — network-side view
@@ -156,7 +155,7 @@ export interface SealOptions {
 	/** Signer used to publish the Seal Move package on the local-keygen
 	 *  path. Required for `mode: 'local'` (or `'auto'` resolving to local).
 	 *  Ignored on `mode: 'known'`. */
-	readonly signer?: PluginTag<any, Account, any, any>;
+	readonly signer?: Ref<any, Account, any, any>;
 	/** Pass-through extras for the local-keygen path. */
 	readonly local?: Omit<SealLocalKeygenOptions<string>, 'name' | 'signer'>;
 	/** Pass-through extras for the known-key-server path. */
@@ -178,7 +177,7 @@ const resolveMode = (opts: SealOptions): 'local' | 'known' => {
 export const Seal = (opts: SealOptions = {}): StackMember => {
 	const mode = resolveMode(opts);
 	if (mode === 'known') {
-		return withSection(sealKnownKeyServer(opts.known ?? {}), 'service');
+		return Object.assign(sealKnownKeyServer(opts.known ?? {}), { __kind: 'service' as const });
 	}
 	if (opts.signer === undefined) {
 		throw new Error(
@@ -190,5 +189,5 @@ export const Seal = (opts: SealOptions = {}): StackMember => {
 		...(opts.name !== undefined ? { name: opts.name } : {}),
 		...(opts.local ?? {}),
 	};
-	return withSection(sealLocalKeygen(localOpts), 'service');
+	return Object.assign(sealLocalKeygen(localOpts), { __kind: 'service' as const });
 };

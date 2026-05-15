@@ -27,7 +27,7 @@ import { StateStore, StateStoreConfig, StateStoreLive } from '../engine/state-st
 import { DeepbookAdmin, DeepbookCore, type DeepbookCoreShape } from '../services/deepbook.js';
 import { SuiTag as Sui, type SuiShape } from '../services/sui.js';
 import type { Account, SignAndExecuteError } from './shared.js';
-import { makeTag } from '../advanced/tag.js';
+import { tag } from '../advanced/tag.js';
 import { deepbookKnownPackage, deepbookLocalDeploy } from './deepbook/index.js';
 
 // -----------------------------------------------------------------------------
@@ -52,7 +52,7 @@ type _DeepbookCheck =
 const _deepbookCheck: _DeepbookCheck = true;
 void _deepbookCheck;
 
-// `provideTag` wraps the build with engine lifecycle hooks; tests need
+// `provide` wraps the build with engine lifecycle hooks; tests need
 // `EngineLive` (and `EngineLive` itself needs `NodeFileSystemLayer` via
 // StateStore — but only if we touch StateStore, which we don't here).
 // `EngineLive` is a pure in-memory Ref, so it satisfies the wrap with
@@ -267,7 +267,7 @@ const mockStateConfig = (stateDir: string): Layer.Layer<StateStoreConfig> =>
 // `Uint8Array<ArrayBuffer>` (DOM lib's narrow shape) and the
 // `Uint8Array<ArrayBufferLike>` Node hands out — easiest to allocate
 // against a literal ArrayBuffer to side-step. We funnel through
-// `Account` at the end so the PluginTag type lines up with the
+// `Account` at the end so the Ref type lines up with the
 // `signer` slot of `DeepbookLocalDeployOptions`.
 const makeDyingSigner = (address: string) => {
 	const account: Account = {
@@ -288,7 +288,7 @@ const makeDyingSigner = (address: string) => {
 				message: 'unreachable',
 			} satisfies SignAndExecuteError),
 	};
-	return makeTag('mock-signer', Effect.succeed(account));
+	return tag('mock-signer', Effect.succeed(account));
 };
 
 // Per-test base — same shape as the deepbookKnownPackage suite but with
@@ -344,8 +344,8 @@ describe('deepbookLocalDeploy — create-pools resume cache', () => {
 			const poolsHash = computePoolsHash([poolSpec]);
 			const poolsKey = `deepbook/pools/v1/${chainId}/${fakePackageId}/${poolsHash}`;
 
-			// Build a `PluginTag` of type Account by yielding through
-			// `makeTag` — its `__layer` provides the tag identity. The body
+			// Build a `Ref` of type Account by yielding through
+			// `tag` — its `__layer` provides the tag identity. The body
 			// returns an Account whose `signAndExecute` is `Effect.die`.
 			const signerTag = makeDyingSigner('0xCAFE');
 

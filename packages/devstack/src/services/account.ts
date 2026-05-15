@@ -45,7 +45,7 @@ import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { Secp256k1Keypair } from '@mysten/sui/keypairs/secp256k1';
 import { Secp256r1Keypair } from '@mysten/sui/keypairs/secp256r1';
 import type { Keypair } from '@mysten/sui/cryptography';
-import { makeTag, setPhase, type PluginTag } from '../advanced/tag.js';
+import { tag, setPhase, type Ref } from '../advanced/tag.js';
 import { SuiTag } from './sui.js';
 import { AccountError } from '../primitives/errors.js';
 import { AccountRegistry } from '../engine/registries.js';
@@ -94,7 +94,7 @@ export interface AccountShape {
  *  configuration. Consumers (`Package({signer})`, `Seal({signer})`, …)
  *  accept any value matching this shape. */
 /* eslint-disable @typescript-eslint/no-explicit-any */
-export type AccountTag = PluginTag<any, AccountShape, any, AccountError>;
+export type AccountTag = Ref<any, AccountShape, any, AccountError>;
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
 /** Runtime-validation mirror of `AccountShape`. Use
@@ -211,7 +211,7 @@ export const Account = <const N extends string>(
 	const source: AccountSource =
 		opts !== undefined && 'from' in opts ? (opts as AccountSource) : { from: 'ephemeral-funded' };
 
-	const tag = makeTag(
+	const accountTag = tag(
 		`account/${name}` as const,
 		Effect.fn(`account(${name})`)(function* () {
 			yield* Effect.annotateCurrentSpan({
@@ -403,13 +403,12 @@ export const Account = <const N extends string>(
 			display: (s) => ({ title: `accounts.${s.name}`, primary: s.address }),
 		},
 	);
-	// Stamp `_section` (TUI grouping) and overwrite `__kind` so the
-	// engine-level kind aligns with the new section discriminator. The
-	// cast widens the inferred `{name: N}` shape to the broader `Account`
-	// contract and erases the per-source R requirements off `__layer`;
-	// callers provide those via `devstack(...)` / their test base layer.
-	return Object.assign(tag, {
-		_section: 'account' as const,
+	// Stamp `__kind` so the engine-level kind aligns with the TUI section
+	// discriminator. The cast widens the inferred `{name: N}` shape to the
+	// broader `Account` contract and erases the per-source R requirements
+	// off `__layer`; callers provide those via `devstack(...)` / their test
+	// base layer.
+	return Object.assign(accountTag, {
 		__kind: 'account' as const,
 	}) as unknown as AccountRef<`account/${N}`>;
 };

@@ -19,7 +19,6 @@ import {
 	type SuiMainnetOptions,
 	type SuiTestnetOptions,
 } from '../primitives/sui.js';
-import { withSection } from './ref.js';
 
 // -----------------------------------------------------------------------------
 // Contract
@@ -144,9 +143,11 @@ export const Sui = (opts: SuiOptions = {}) => {
 			rpcUrl: net.rpc,
 			...(net.faucet !== undefined ? { faucetUrl: net.faucet } : {}),
 		};
-		return withSection(suiCustom(customOpts), 'service');
+		return Object.assign(suiCustom(customOpts), { __kind: 'service' as const });
 	}
-	if (net === 'testnet') return withSection(suiTestnet(opts.testnet ?? {}), 'service');
-	if (net === 'mainnet') return withSection(suiMainnet(opts.mainnet ?? {}), 'service');
-	return withSection(suiLocalnet(opts.localnet ?? {}), 'service');
+	if (net === 'testnet')
+		return Object.assign(suiTestnet(opts.testnet ?? {}), { __kind: 'service' as const });
+	if (net === 'mainnet')
+		return Object.assign(suiMainnet(opts.mainnet ?? {}), { __kind: 'service' as const });
+	return Object.assign(suiLocalnet(opts.localnet ?? {}), { __kind: 'service' as const });
 };

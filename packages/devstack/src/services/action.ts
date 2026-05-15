@@ -17,16 +17,15 @@ import { Effect } from 'effect';
 import { Transaction } from '@mysten/sui/transactions';
 import { tx, type TxOptions } from '../primitives/tx.js';
 import type { Account } from '../primitives/shared.js';
-import type { PluginTag } from '../advanced/tag.js';
-import { withSection } from './ref.js';
+import type { Ref } from '../advanced/tag.js';
 
 export interface ActionOptions<Name extends string, R, E = unknown> {
 	/** Account that signs the action. */
-	readonly signer: PluginTag<any, Account, any, any>;
+	readonly signer: Ref<any, Account, any, any>;
 	/** Refs this action depends on. Yielded for ordering before `build`
 	 *  runs. Typically a list of `Package` refs whose ids the action
 	 *  references in `moveCall` targets. */
-	readonly needs?: ReadonlyArray<PluginTag<any, any, any, any>>;
+	readonly needs?: ReadonlyArray<Ref<any, any, any, any>>;
 	/** Optional gas budget for the transaction. */
 	readonly gasBudget?: bigint;
 	/** Build the transaction. Receives a fresh `Transaction` builder. The
@@ -66,5 +65,5 @@ export const Action = <const Name extends string, R = never, E = unknown>(
 		...(opts.gasBudget !== undefined ? { gasBudget: opts.gasBudget } : {}),
 		...(cacheKeyEff !== undefined ? { cacheKey: cacheKeyEff } : {}),
 	};
-	return withSection(tx(txOpts), 'action');
+	return Object.assign(tx(txOpts), { __kind: 'action' as const });
 };

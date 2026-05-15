@@ -3,7 +3,7 @@ import * as crypto from 'node:crypto';
 import { cacheGet, cachePut } from '../../engine/cache.js';
 import * as Docker from '../../engine/docker.js';
 import { DockerError } from '../../primitives/errors.js';
-import { makeTag, type PluginTag } from '../tag.js';
+import { tag, type Ref } from '../tag.js';
 
 export interface DockerOneShotResult {
 	readonly exitCode: number;
@@ -22,7 +22,7 @@ export interface DockerOneShotOptions<Name extends string, E, R> {
 	/** Override the image's `ENTRYPOINT`. Maps to `docker run --entrypoint`. */
 	readonly entrypoint?: string;
 	readonly captureStdout?: boolean;
-	readonly dependsOn?: ReadonlyArray<PluginTag<any, any, any, any>>;
+	readonly dependsOn?: ReadonlyArray<Ref<any, any, any, any>>;
 	readonly inputs?: unknown;
 	/**
 	 * Wall-clock budget for the underlying `docker run`. On expiry the
@@ -46,7 +46,7 @@ const jsonReplacer = (_key: string, value: unknown) =>
 export const dockerOneShot = <const Name extends string, E = never, R = never>(
 	options: DockerOneShotOptions<Name, E, R>,
 ) =>
-	makeTag(
+	tag(
 		options.name,
 		Effect.gen(function* () {
 			// 1. Resolve env: literal record, Effect, or undefined.

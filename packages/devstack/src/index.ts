@@ -47,7 +47,6 @@ export {
 	Bindings,
 	type BindingsRefOptions,
 	type Ref,
-	type RefSection,
 	type AccountRef,
 	type PackageRef,
 } from './services/index.js';
