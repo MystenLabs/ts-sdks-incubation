@@ -1,0 +1,213 @@
+---
+title: Services
+description: Every built-in Ref factory.
+---
+
+Every factory below returns a [Ref](../concepts/refs-and-tags). Pass
+them into `devstack(...)` to compose the stack.
+
+## `Sui(opts?)`
+
+The canonical sui factory. Defaults to localnet (vendored image with
+embedded faucet + indexer postgres + GraphQL).
+
+```ts
+Sui();                                      // localnet (default)
+Sui({ network: 'testnet' });                // public testnet RPC
+Sui({ network: 'mainnet' });                // public mainnet RPC
+Sui({ network: { rpc: 'https://example.com', faucet: 'https://example.com/faucet' } });
+Sui({ localnet: { rpcUrl: 'http://localhost:9000' } });  // wrap your own
+```
+
+Yields `SuiShape`: `{ network, rpc, faucet?, graphql?, client, chainId,
+waitForTransactionsReady }`.
+
+## `Account(name, opts?)`
+
+A single named account.
+
+```ts
+Account('alice');                                                   // ephemeral-funded
+Account('alice', { funding: { SUI: 1_000_000_000n, WAL: 50n } });   // multi-coin funding
+Account('ci', { from: 'env', key: 'ALICE_PRIVATE_KEY' });
+Account('mike', { from: 'keystore', alias: 'mike' });
+Account('test', { from: 'inline', privateKey: 'suiprivkey1...' });
+Account('hsm', { from: 'signer', signer: myHardwareSigner });
+```
+
+Source discriminators:
+
+- `'ephemeral-funded'` (default) — generate a fresh ed25519 keypair,
+  persist it under `.devstack/stacks/<stack>/.keys/<name>.key`, and
+  request faucet funding.
+- `'keystore'` — read from `~/.sui/sui_config/sui.keystore`.
+- `'env'` — read a `suiprivkey1...` from `process.env[key]`.
+- `'inline'` — accept a literal `suiprivkey1...` string (tests/demos
+  only).
+- `'signer'` — accept any `@mysten/sui/cryptography` `Signer`
+  instance. HSMs, remote signers, browser-connected wallets — devstack
+  never asks for `getSecretKey()` on this branch.
+
+The optional `funding` field works on **any** source. Coin keys are
+short names for built-ins (`'SUI'`, `'WAL'`) or fully-qualified Move
+types for user coins. See [Faucet reference](./faucet) for the
+strategy registry that backs it.
+
+## `Package(name, source, opts)`
+
+Publish a Move package from a local source tree.
+
+```ts
+const hello = Package('hello', './move/hello', {
+	signer: alice,
+	mvr: '@local/hello',                  // optional; defaults to `@local/<slug>`
+	capture: {                             // optional declarative form
+		adminCap: 'hello::admin::AdminCap',
+		registry: 'hello::store::Registry',
+	},
+	coins: [{ name: 'gold', module: 'gold', type: 'GOLD', decimals: 9 }],
+	codegen: true,                         // default; `false` excludes from Codegen
+});
+```
+
+Yields `LocalPackageShape`: `{ name, packageId, upgradeCapId,
+sourcePath, mvrPlaceholder, captured }`.
+
+`captured` is whatever the `capture` callback returned (declarative
+form: `Record<key, objectId>`; callback form: whatever you return).
+
+## `KnownPackage(name, opts)`
+
+A `Package`-shaped Ref backed by a fixed on-chain id — for
+referencing testnet/mainnet packages without publishing.
+
+```ts
+const deepbookV3 = KnownPackage('deepbook', {
+	packageId: '0xdee...',
+	mvrPlaceholder: '@mvr/deepbook',
+});
+```
+
+Yields `PackageShape` (no `sourcePath`/`captured`). `Codegen` /
+`Bindings` emitters that need source skip it; emitters that just need
+the id (DappKit, custom emitters) consume it.
+
+## `Action(name, opts)`
+
+A one-shot transaction the supervisor runs once per chain.
+
+```ts
+const seedAlice = Action('seed-alice', {
+	signer: alice,
+	needs: [hello],
+	cacheKey: Effect.gen(function* () {
+		const pkg = yield* hello;
+		return `seed/${pkg.packageId}`;
+	}),
+	build: (t) => Effect.gen(function* () {
+		const pkg = yield* hello;
+		t.moveCall({
+			target: `${pkg.packageId}::store::seed`,
+			arguments: [t.pure.u64(100n)],
+		});
+	}),
+});
+```
+
+`cacheKey` folds in `sui.chainId + signer.address` automatically, so a
+fresh genesis naturally misses the cache. Omit `cacheKey` to fire on
+every cycle (rare — usually a bug).
+
+## `Walrus(opts?)`, `Seal(opts?)`, `Deepbook(opts?)`
+
+Composite Refs that boot the underlying infra and surface four narrow
+interfaces apiece. Default `mode: 'local'` boots a full local cluster;
+`mode: 'known'` resolves a Ref against a pinned remote deployment.
+
+```ts
+Walrus();                                   // localnet cluster
+Walrus({ mode: 'known' });                  // resolve testnet
+Seal({ signer: alice });                    // localnet keygen
+Deepbook();                                 // localnet deploy
+DeepbookMarketMaker({ pools: [...] });      // continuous liquidity
+```
+
+Yield the narrow inner tags directly when you only need a slice —
+`yield* WalrusNodes`, `yield* SealKeyServer`, `yield* DeepbookAdmin`.
+
+## `Dev(opts)`
+
+Run a long-running host process — usually a Vite dev server.
+
+```ts
+Dev({
+	command: 'vite',
+	args: ['--port', '5173'],
+	port: 5173,                              // preferred host port
+	ready: { kind: 'http', path: '/', expectedStatus: 200 },
+	needs: [hello, bindings],                // hold start until ready
+});
+```
+
+Surfaces a routed `http://dev.<app>.localhost` URL alongside the host
+port. The manifest's `app.dev.url` carries it; Playwright's
+`webServer` config reads from there.
+
+## `Wallet(opts)`
+
+The dev-only signing-server UI. Opt-in; `devstack(...)` does not
+auto-mount it.
+
+```ts
+Wallet({ accounts: [alice, bob] });
+```
+
+Exposes a localhost HTTP API that signs transactions with the
+resolved accounts' keypairs. Allowed origins, port, and bind address
+are configurable.
+
+## `Bindings(opts)`
+
+Convenience facade over `Codegen({ emitters: [BindingsEmitter()] })`.
+
+```ts
+Bindings({
+	packages: [hello, world],
+	output: './src/generated',
+	importExtension: '.ts',                  // default
+});
+```
+
+See [Codegen reference](./codegen) for the full plug-in interface.
+
+## `Codegen(opts)`
+
+The general-purpose code-emit Ref. Run any combination of emitters
+(built-in `BindingsEmitter`, `DappKitEmitter`, or user emitters)
+against the resolved package set.
+
+```ts
+Codegen({
+	output: './src/generated',
+	packages: [hello, deepbookV3],
+	emitters: [BindingsEmitter(), DappKitEmitter({ flavor: 'react' })],
+});
+```
+
+See [Codegen reference](./codegen).
+
+## `DappKit(opts)`
+
+Convenience facade over `Codegen({ emitters: [DappKitEmitter()] })`.
+
+```ts
+DappKit({
+	packages: [hello],
+	output: './src/generated',
+	flavor: 'react',                         // default
+});
+```
+
+The emitted file lives at `<output>/dapp-kit/index.ts` and is what
+your `main.tsx` imports. See [Codegen reference](./codegen) for the
+flavor options.

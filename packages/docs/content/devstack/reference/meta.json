@@ -1,15 +1,4 @@
 {
 	"title": "Reference",
-	"description": "API surface.",
-	"pages": [
-		"cli",
-		"config",
-		"primitives-core",
-		"primitives-composite",
-		"dapp-kit",
-		"playwright",
-		"vitest",
-		"plugin-author",
-		"errors"
-	]
+	"pages": ["services", "codegen", "faucet", "cli", "advanced"]
 }

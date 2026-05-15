@@ -1,0 +1,101 @@
+---
+title: Faucet
+description: Per-coin funding strategies for Account funding.
+---
+
+The `Faucet` service centralizes coin funding through pluggable
+per-coin **strategies**. `Account({ funding })` dispatches each
+declared coin through `Faucet.requestCoin(coinType, address, amount)`.
+
+`devstack(...)` auto-includes a `Faucet()` Ref. Its body best-effort
+yields `SuiTag` to register the built-in SUI HTTP strategy when
+`sui.faucet` is reachable, then registers any caller-supplied
+strategies.
+
+## Built-in strategies
+
+### SUI HTTP
+
+Wraps the localnet/testnet faucet's HTTP API. Auto-registered when
+`Sui()`'s `faucet` endpoint is present.
+
+```ts
+import { suiHttpStrategy } from '@mysten-incubation/devstack';
+
+Faucet({
+	strategies: [suiHttpStrategy({ faucetUrl: 'http://localhost:9123' })],
+});
+```
+
+`amount` is currently ignored — the localnet faucet funds a fixed
+amount per request. The parameter is accepted for forward compat with
+server-side amount handling.
+
+## Writing your own strategy
+
+`defineStrategy({ coinType, request })` is the contract:
+
+```ts
+import { Effect } from 'effect';
+import { defineStrategy, FaucetRequestError } from '@mysten-incubation/devstack';
+
+const usdcMintStrategy = defineStrategy({
+	coinType: '0xpkg::usdc::USDC',
+	request: ({ address, amount }) =>
+		Effect.gen(function* () {
+			// Mint via TreasuryCap held in the supervisor's admin account,
+			// or call your own faucet endpoint, etc.
+			// ...
+		}).pipe(
+			Effect.mapError(
+				(cause) =>
+					new FaucetRequestError({
+						coinType: '0xpkg::usdc::USDC',
+						address,
+						amount,
+						message: `USDC mint failed: ${String(cause)}`,
+						cause,
+					}),
+			),
+		),
+});
+
+// Drop into devstack:
+devstack(
+	Sui(),
+	Faucet({ strategies: [usdcMintStrategy] }),     // overrides the auto-included one
+	Account('alice', { funding: { SUI: 1n, '0xpkg::usdc::USDC': 100n } }),
+);
+```
+
+`coinType` strings are the dispatch key. Short names (`'SUI'`,
+`'WAL'`) for built-ins; fully-qualified Move types for user coins.
+
+## Errors
+
+`FaucetRequestError` carries the per-call context:
+
+```ts
+class FaucetRequestError extends Data.TaggedError('FaucetRequestError')<{
+	readonly coinType: string;
+	readonly address: string;
+	readonly amount: bigint;
+	readonly message: string;
+	readonly cause?: unknown;
+}> {}
+```
+
+When raised inside `Account({ funding })`, the supervisor wraps it as
+`AccountError({ phase: 'fund', … })` so per-account error handling
+stays uniform.
+
+## Deferred strategies
+
+- **WAL swap** — convert SUI → WAL via the walrus exchange contract.
+  Today the bespoke `seedWal` Action inside `walrusLocalCluster`
+  handles this; the dedicated strategy + Action retirement lands in a
+  future commit. Until then, mint WAL by running `seedWal` through
+  the local cluster's admin Ref.
+- **TreasuryCap mint** — auto-derive a strategy from any
+  `Package({coins})` entry whose `TreasuryCap` the publishing account
+  still holds. Lands alongside the WAL swap retirement.

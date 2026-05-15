@@ -1,164 +1,111 @@
 ---
 title: CLI
+description: devstack command-line entrypoints.
 ---
 
-The `devstack` binary (`packages/devstack/dist/cli/main.mjs`) dynamic-imports your
-`devstack.config.ts` and routes to one of the verbs below. The most common entry is `devstack
-up`, which `pnpm dev` runs under the hood.
+The `devstack` binary ships with the package. `pnpm dev` in a
+scaffolded app runs `devstack up` under the hood.
 
-```
-devstack <verb> [args] [flags]
-```
+## `devstack up`
 
-## `up`
-
-Boot the stack and stay alive until interrupted.
+Boot the stack described by `./devstack.config.ts` and run until
+interrupted.
 
 ```bash
-devstack up [config-path]
+devstack up                            # default — interactive TUI
+devstack up --renderer plain           # one-line-per-event stream (CI, piped output)
+devstack up --renderer silent          # no output
+DEVSTACK_STACK=test devstack up        # per-stack state (parallel-safe)
 ```
 
-| Arg / flag      | Default                  | Notes                                                                |
-| --------------- | ------------------------ | -------------------------------------------------------------------- |
-| `config-path`   | `./devstack.config.ts`   | Path to the `defineDevstack(...)` export.                            |
-| `--renderer`    | `tui` on TTY, `plain` otherwise | `tui` / `plain` / `silent`. Use `plain` for CI logs.          |
+The supervisor:
 
-While running, the TUI accepts:
+1. Acquires every Ref in the config's stack in dependency order.
+2. Writes `.devstack/manifest.json` (or `.devstack/stacks/<stack>/manifest.json`
+   for non-default stacks) on every state change.
+3. Watches paths declared via `provide(..., {watch})` plus
+   `config.watch` and hot-restarts the affected primitives.
+4. Holds containers open on a long-lived scope so press-`r`
+   full-restart keeps `sui.localnet` and similar reusable containers
+   alive across cycles.
 
-- **`r`** — full restart (tears down and rebuilds every primitive).
-- **`q` / Ctrl-C** — clean shutdown.
-- **SIGUSR2** — equivalent to `r`, for triggering a restart from outside the TUI.
+TUI keybindings:
 
-## `apply`
+- `r` — full restart.
+- `R` — full restart (alias).
+- `q` — graceful shutdown.
+- Ctrl-C — graceful shutdown (also catches signals from outside the
+  TUI).
 
-One-shot reconcile. Builds every primitive, writes state + manifest, then exits clean. Ideal
-for CI that wants the stack stood up, used by a downstream step (like Playwright), and torn
-down at the end of the job.
+## `devstack apply`
+
+Acquire the stack once, emit the manifest, and exit immediately. Use
+for non-interactive contexts (CI seeding, build pipelines) that just
+need the side effects.
 
 ```bash
-devstack apply [config-path] [--json]
+devstack apply
+DEVSTACK_STACK=ci devstack apply
 ```
 
-| Arg / flag    | Default                  | Notes                                                              |
-| ------------- | ------------------------ | ------------------------------------------------------------------ |
-| `config-path` | `./devstack.config.ts`   | Same as `up`.                                                      |
-| `--json`      | `false`                  | Emit a machine-readable summary (manifest path, endpoint URLs).    |
+The supervisor still tears down its scope on exit; reusable containers
+on `longLivedScope` stay alive so the next `apply` (or `up`) adopts
+them.
 
-## `status`
+## `devstack stack`
 
-Print the current `state.json` and `manifest.json` for the current stack. Read-only; safe to
-run against a stack that's `up`.
+Manage per-stack state.
 
 ```bash
-devstack status [--json] [--stack <name>]
+devstack stack list                    # which stacks exist on this <app, network>?
+devstack stack down [stack]            # tear down containers + clear state
+devstack stack ls                      # alias for `list`
 ```
 
-## `snapshot`
+State lives under `.devstack/stacks/<stack>/`. `stack down` removes
+containers labelled `devstack.stack=<stack>` plus the state dir.
 
-Capture a snapshot of the on-disk state for the current stack — useful for archiving a known
-chain state for reproducible tests.
+## `devstack wipe`
+
+Remove every devstack-owned container and named volume on the host,
+regardless of `<app, stack, network>`. Use as a nuclear option when
+you want a clean docker daemon.
 
 ```bash
-devstack snapshot <name>            # create
-devstack snapshot list              # list available snapshots
-devstack snapshot restore <name>    # restore (replaces current state)
+devstack wipe
+devstack wipe --yes                    # skip confirmation
 ```
 
-## `wipe`
+## `devstack doctor`
 
-Tear down the current `(app, stack)`. Removes:
-
-1. Containers labeled `devstack.app=<app>` + `devstack.stack=<stack>`
-2. Networks with the same labels
-3. Volumes with the same labels (named volumes, not anonymous)
-4. The per-stack state dir under `.devstack/stacks/<stack>/`
-
-```bash
-devstack wipe --yes [--stack <name>]
-```
-
-Refuses to run without `--yes`. For cross-app cleanup (every stack on the machine), use
-`devstack prune` instead.
-
-## `prune`
-
-Interactive cross-stack selection across every `(app, stack)` on the machine. Useful for
-clearing out stale stacks from old branches.
-
-```bash
-devstack prune [--yes] [--all]
-```
-
-`--all` skips the picker and prunes everything. `--yes` skips the confirmation prompt.
-
-## `stack`
-
-Per-stack management. The CLI surface mirrors v3 even though the v4 runtime treats stack
-selection as a single env var (`DEVSTACK_STACK`):
-
-```bash
-devstack stack list                 # list stacks under .devstack/stacks/
-devstack stack new <name>           # create a per-stack state dir
-devstack stack use <name>           # mark <name> as active (writes .devstack/active)
-devstack stack rm <name>            # remove a stack's state dir
-devstack stack current              # print the current active stack
-```
-
-<Callout type="info">
-	The `active` file is laid down for future runtime support. Today the supervisor reads
-	`DEVSTACK_STACK` (or `defineDevstack({ stackName })`) — the `stack use` verb is a no-op
-	for the running engine. The directory structure is stable.
-</Callout>
-
-## `doctor`
-
-Preflight checks plus an inventory of devstack-labeled docker resources on the machine.
-Read-only; safe to run any time.
+Diagnostic checks for common setup issues — docker daemon health, sui
+binary version, port availability, lockfile staleness.
 
 ```bash
 devstack doctor
 ```
 
-Checks:
+Each check is `OK` / `WARN` / `FAIL` with a hint for how to fix it.
 
-- Docker daemon reachable
-- `sui` CLI on `PATH`
-- Common host ports (9000, 9123, 9125, 5180) not bound by foreign processes
+## `devstack prune`
 
-Inventory walks `docker ps -a` / `docker network ls` / `docker volume ls` filtered on
-`label=devstack.app`, plus `.devstack/` on disk.
-
-Exits 0 unless Docker is unreachable.
-
-## `manifest`
-
-Dump the current `.devstack/manifest.json`. Read-only.
+Reclaim disk from stopped stacks across every repo on the host.
 
 ```bash
-devstack manifest [--stack <name>] [--json]
+devstack prune                         # interactive — pick which to remove
+devstack prune --all --yes             # remove everything not currently running
 ```
 
-## `version`
-
-Print the package version.
-
-```bash
-devstack version
-```
+The host-wide registry under `~/.devstack/registry.json` tracks every
+stack ever booted on this host, so `prune` finds stale ones even after
+the repo that created them is deleted.
 
 ## Environment variables
 
-| Variable                | Effect                                                                       |
-| ----------------------- | ---------------------------------------------------------------------------- |
-| `DEVSTACK_STACK`        | Stack name. Falls back to `defineDevstack({ stackName })`, then `'main'`.    |
-| `DEVSTACK_STATE_DIR`    | Override the `.devstack` root.                                               |
-| `DEVSTACK_APP_DIR`      | Override the cwd used for registry repo-path resolution.                     |
-| `DEVSTACK_NO_ROUTER`    | Skip the shared Traefik router. Primitives fall back to direct port binding. |
-
-## Exit codes
-
-- **0** — clean shutdown (TUI `q`, Ctrl-C, end of `apply`).
-- **1** — fatal error (first-cycle build failure under `plain`/`silent` renderer, missing
-  config, malformed primitive). The pretty-printed error tree is logged before exit.
-- **130** is not emitted — Ctrl-C exits 0 even though the underlying signal is SIGINT, so
-  `pnpm` doesn't surface `ELIFECYCLE Command failed`.
+- `DEVSTACK_STACK` — override `config.stackName` for this invocation.
+  Layers under `.devstack/stacks/<stack>/`.
+- `DEVSTACK_APP_DIR` — pin the working directory the supervisor
+  treats as the repo root. Default is `process.cwd()`.
+- `DEVSTACK_NO_ROUTER` — skip the shared Traefik router boot. Useful
+  for tests that don't go through docker, or as an emergency switch
+  if `*.localhost` resolution is misbehaving.
