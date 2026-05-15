@@ -1,7 +1,7 @@
 # Examples
 
 Each example is a self-contained Sui app that consumes
-`@mysten-incubation/devstack-effect` for localnet bring-up + Move
+`@mysten-incubation/devstack` for localnet bring-up + Move
 publish + codegen + dev-wallet wiring.
 
 ## Apps

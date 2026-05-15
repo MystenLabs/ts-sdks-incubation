@@ -27,8 +27,8 @@ import {
 	suiLocalnet,
 	tx,
 	walletApp,
-} from '@mysten-incubation/devstack-effect';
-import type { SuiObjectChange } from '@mysten-incubation/devstack-effect';
+} from '@mysten-incubation/devstack';
+import type { SuiObjectChange } from '@mysten-incubation/devstack';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const USDC_DIR = resolve(HERE, 'move/mock_usdc');

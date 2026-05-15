@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { connectAs, expect, test } from '@mysten-incubation/devstack-effect/playwright';
+import { connectAs, expect, test } from '@mysten-incubation/devstack/playwright';
 import { decodeSuiPrivateKey } from '@mysten/sui/cryptography';
 import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';

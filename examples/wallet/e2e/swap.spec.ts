@@ -1,4 +1,4 @@
-import { connectAs, expect, selectAccount, test } from '@mysten-incubation/devstack-effect/playwright';
+import { connectAs, expect, selectAccount, test } from '@mysten-incubation/devstack/playwright';
 
 /**
  * DeepBook v3 swap exercise: real Sui localnet, real DeepBook v3

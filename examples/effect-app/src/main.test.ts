@@ -13,7 +13,7 @@
 
 import { Effect, Layer, Logger } from 'effect';
 import { describe, expect, it } from 'vitest';
-import { Sui } from '@mysten-incubation/devstack-effect';
+import { Sui } from '@mysten-incubation/devstack';
 import { a, program } from './main.js';
 
 // Minimal `Sui` stub — `client` is typed as `SuiJsonRpcClient` upstream
