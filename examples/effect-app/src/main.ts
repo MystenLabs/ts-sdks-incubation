@@ -32,7 +32,7 @@ export const program = Effect.gen(function* () {
 	yield* Effect.log(`alice: ${a.address}`);
 });
 
-const stack = devstack(sui, alice, { disableManifest: true });
+const stack = devstack(sui, alice);
 
 // Only run when invoked as a script (e.g. `tsx src/main.ts`). Without
 // this guard, importing the module from a vitest test would also boot

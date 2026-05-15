@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import type { PlaywrightTestConfig } from '@playwright/test';
-import type { ManifestData } from '../primitives/manifest.js';
+import { fromManifest } from '../runtime/manifest-loader.js';
 
 type PlaywrightWebServer = NonNullable<PlaywrightTestConfig['webServer']>;
 type PlaywrightWebServerSingle =
@@ -89,16 +89,37 @@ function resolveEndpoint(
 			throw err;
 		}
 	})();
-	const manifest = JSON.parse(raw) as ManifestData;
-	const ep = manifest.endpoints.find((e) => e.name === endpoint);
-	if (ep === undefined) {
-		const available = manifest.endpoints.map((e) => e.name).join(', ') || '<none>';
+	const manifest = fromManifest(JSON.parse(raw));
+	// Project the v4 manifest's nested endpoints into a flat
+	// `{name → url}` lookup so callers reach for canonical short names
+	// like `dev-server`, `sui-rpc`, `wallet-app`. The mapping mirrors
+	// what consumers expected from v3's `endpoints[]` array.
+	const flat: Record<string, string> = {};
+	const sui = manifest.services.sui;
+	if (sui !== undefined) {
+		flat['sui-rpc'] = sui.rpc.url;
+		if (sui.faucet !== undefined) flat['sui-faucet'] = sui.faucet.url;
+		if (sui.graphql !== undefined) flat['sui-graphql'] = sui.graphql.url;
+		if (sui.indexerDb !== undefined) flat['sui-indexer-db'] = sui.indexerDb.url;
+	}
+	const seal = manifest.services.seal;
+	if (seal !== undefined) flat['seal-key-server'] = seal.keyServer.url;
+	const walrus = manifest.services.walrus;
+	if (walrus !== undefined) {
+		flat['walrus-aggregator'] = walrus.aggregator.url;
+		flat['walrus-publisher'] = walrus.publisher.url;
+	}
+	if (manifest.app.dev !== undefined) flat['dev-server'] = manifest.app.dev.url;
+	if (manifest.app.wallet !== undefined) flat['wallet-app'] = manifest.app.wallet.url;
+	const url = flat[endpoint];
+	if (url === undefined) {
+		const available = Object.keys(flat).join(', ') || '<none>';
 		throw new Error(
 			`[devstack/playwright] no endpoint '${endpoint}' in manifest at ${manifestPath} ` +
 				`(available: ${available}). Check the plugin that's supposed to emit it.`,
 		);
 	}
-	return ep;
+	return { name: endpoint, url };
 }
 
 // Walk up from cwd looking for a manifest file. Check the v4-flat
