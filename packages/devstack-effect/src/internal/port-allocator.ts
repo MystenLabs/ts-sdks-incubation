@@ -10,7 +10,10 @@
 // from the set — the OS handles the actual socket teardown.
 
 import { Context, Effect, Layer, Ref, Schema } from 'effect';
+import * as fs from 'node:fs';
 import * as net from 'node:net';
+import * as os from 'node:os';
+import * as path from 'node:path';
 
 export interface PortAllocatorShape {
 	/** Reserve a port near the preferred. If preferred is in use, scan forward up to maxScan. */
@@ -57,6 +60,64 @@ const bindProbe = (port: number, host: string): Promise<boolean> =>
 		});
 		server.listen(port, host);
 	});
+// Host-wide port reservation directory. Two devstack supervisors
+// running side-by-side (e.g. `DEVSTACK_STACK=test pnpm dev` +
+// `DEVSTACK_STACK=alpha pnpm dev`) each maintain their own in-memory
+// `held` Ref — so without a shared filesystem rendezvous, both can
+// independently probe an OS-free port, both pass the in-memory check,
+// and both spawn vite against the same number. The first vite binds;
+// the second silently EADDRINUSE's. We write `<port>.lock` containing
+// our pid; the create is atomic (`wx`), so only one allocator can
+// own a given port at a time. Lock is deleted on `release()` and on
+// supervisor scope teardown.
+const portLockDir = path.join(os.homedir(), '.devstack', 'ports');
+const portLockPath = (port: number): string => path.join(portLockDir, `${port}.lock`);
+// `true` if successfully claimed; `false` if another LIVE process holds the lock.
+// Treats stale locks (referenced pid no longer exists) as reusable: we delete
+// the stale file and retry the create.
+const claimPortLock = (port: number): boolean => {
+	try {
+		fs.mkdirSync(portLockDir, { recursive: true });
+		fs.writeFileSync(portLockPath(port), String(process.pid), { flag: 'wx' });
+		return true;
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== 'EEXIST') return false;
+	}
+	// Lock exists: check if its pid is alive. `kill(pid, 0)` throws ESRCH for dead.
+	try {
+		const raw = fs.readFileSync(portLockPath(port), 'utf8').trim();
+		const pid = Number.parseInt(raw, 10);
+		if (Number.isFinite(pid) && pid > 0) {
+			try {
+				process.kill(pid, 0);
+				return false; // pid alive → another supervisor really holds it
+			} catch (sigErr) {
+				if ((sigErr as NodeJS.ErrnoException).code !== 'ESRCH') return false;
+				// pid is dead — fall through to delete + reclaim
+			}
+		}
+	} catch {
+		// Unreadable lock file: treat as stale and try to overwrite
+	}
+	try {
+		fs.unlinkSync(portLockPath(port));
+		fs.writeFileSync(portLockPath(port), String(process.pid), { flag: 'wx' });
+		return true;
+	} catch {
+		return false;
+	}
+};
+const releasePortLock = (port: number): void => {
+	try {
+		const raw = fs.readFileSync(portLockPath(port), 'utf8').trim();
+		// Only delete if WE wrote the lock — defensive against a racing
+		// process that already cleaned ours and wrote its own pid.
+		if (raw === String(process.pid)) fs.unlinkSync(portLockPath(port));
+	} catch {
+		// missing / unreadable: nothing to do
+	}
+};
+
 const isPortFree = async (port: number): Promise<boolean> => {
 	const [wildcardOk, loopbackOk] = await Promise.all([
 		bindProbe(port, '0.0.0.0'),
@@ -84,8 +145,14 @@ export const PortAllocatorLive: Layer.Layer<PortAllocator> = Layer.effect(
 						catch: () => new PortAllocatorError({ preferred, message: `probe failed for ${port}` }),
 					}).pipe(Effect.catch(() => Effect.succeed(false)));
 					if (!free) continue;
+					// Cross-process reservation: only one allocator at a
+					// time can claim `<port>.lock` in `~/.devstack/ports/`.
+					// Without this, two parallel supervisors both probe
+					// the same port as free and both spawn against it.
+					if (!claimPortLock(port)) continue;
 					// Re-check + insert atomically via Ref.modify so two
-					// concurrent allocate calls can't claim the same port.
+					// concurrent allocate calls in THIS process can't
+					// claim the same port either.
 					const claimed = yield* Ref.modify(ref, (s) => {
 						if (s.has(port)) return [false, s] as const;
 						const next = new Set(s);
@@ -93,6 +160,9 @@ export const PortAllocatorLive: Layer.Layer<PortAllocator> = Layer.effect(
 						return [true, next] as const;
 					});
 					if (claimed) return port;
+					// Lost the local race — release the file lock so the
+					// other in-process winner doesn't get stranded.
+					releasePortLock(port);
 				}
 				return yield* Effect.fail(
 					new PortAllocatorError({
@@ -103,15 +173,32 @@ export const PortAllocatorLive: Layer.Layer<PortAllocator> = Layer.effect(
 			}).pipe(Effect.withSpan('PortAllocator.allocate', { attributes: { preferred } }));
 
 		const release = (port: number): Effect.Effect<void> =>
-			Ref.update(ref, (s) => {
-				if (!s.has(port)) return s;
-				const next = new Set(s);
-				next.delete(port);
-				return next;
+			Effect.gen(function* () {
+				yield* Effect.sync(() => releasePortLock(port));
+				yield* Ref.update(ref, (s) => {
+					if (!s.has(port)) return s;
+					const next = new Set(s);
+					next.delete(port);
+					return next;
+				});
 			});
 
 		const snapshot: Effect.Effect<ReadonlyArray<number>> = Ref.get(ref).pipe(
 			Effect.map((s) => Array.from(s)),
+		);
+
+		// On supervisor shutdown, drop every port lock this allocator
+		// owns. Primitives rarely call `release()` explicitly; without
+		// this finalizer, lock files leak across runs and the
+		// stale-pid recovery path is the only thing keeping the dir
+		// usable. Best-effort: errors are swallowed.
+		yield* Effect.addFinalizer(() =>
+			Ref.get(ref).pipe(
+				Effect.map((held) => {
+					for (const port of held) releasePortLock(port);
+				}),
+				Effect.ignore,
+			),
 		);
 
 		return { allocate, release, snapshot };
