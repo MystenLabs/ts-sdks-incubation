@@ -18,8 +18,8 @@
 
 import { Context, Schema } from 'effect';
 import { publishMove, type CoinSpec, type PublishMoveOptions } from './package/internal.js';
-import { pickCreatedByTypeIncludes } from '../primitives/sui-helpers.js';
-import type { Account, SuiObjectChange } from '../primitives/shared.js';
+import { pickCreatedByTypeIncludes } from '../engine/sui-helpers.js';
+import type { Account, SuiObjectChange } from '../engine/shared.js';
 import type { Ref } from '../advanced/tag.js';
 
 // -----------------------------------------------------------------------------

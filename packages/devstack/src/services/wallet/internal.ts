@@ -20,8 +20,8 @@ import { routerHostname, routerId } from '../../engine/router-hostname.js';
 import { EndpointRegistry } from '../../engine/registries.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
 import { tag, setPhase, type Ref } from '../../advanced/tag.js';
-import { WalletAppError } from '../../primitives/errors.js';
-import type { Account } from '../../primitives/shared.js';
+import { WalletAppError } from '../../engine/errors.js';
+import type { Account } from '../../engine/shared.js';
 import { SuiTag } from '../sui.js';
 
 export interface WalletApp {

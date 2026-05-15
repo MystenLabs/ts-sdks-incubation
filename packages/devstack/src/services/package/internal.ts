@@ -17,11 +17,11 @@ import { SuiTag } from '../sui.js';
 import { buildMove, scrubCachedMoveLocks } from '../../engine/sui-cli.js';
 import { PackageRegistry, CoinRegistry } from '../../engine/registries.js';
 import { StateStore } from '../../engine/state-store.js';
-import { PublishError } from '../../primitives/errors.js';
+import { PublishError } from '../../engine/errors.js';
 import type { LocalPackageShape } from '../package.js';
 import { toSdkCoin } from '../package.js';
-import type { Account, SuiObjectChange } from '../../primitives/shared.js';
-import { pickCreatedByTypeSuffix } from '../../primitives/sui-helpers.js';
+import type { Account, SuiObjectChange } from '../../engine/shared.js';
+import { pickCreatedByTypeSuffix } from '../../engine/sui-helpers.js';
 
 // Content-hash the Move source tree under `sourcePath`. Hashes every
 // `.move` file plus `Move.toml`, ignoring build/output/hidden dirs so
@@ -467,4 +467,4 @@ export const publishMove = <
 // Capture helpers — moved to `sui-helpers.ts` so they can be imported by
 // configs that don't otherwise touch publish-move. Re-exported here for
 // back-compat with the previous import path used internally.
-export { pickCreatedByTypeIncludes, pickCreatedByTypeSuffix } from '../../primitives/sui-helpers.js';
+export { pickCreatedByTypeIncludes, pickCreatedByTypeSuffix } from '../../engine/sui-helpers.js';

@@ -5,7 +5,7 @@
 import { Effect } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { addFinalizer } from 'effect/Scope';
-import { DockerError } from '../../primitives/errors.js';
+import { DockerError } from '../../engine/errors.js';
 import { Identity } from '../identity.js';
 import {
 	captureStreams,

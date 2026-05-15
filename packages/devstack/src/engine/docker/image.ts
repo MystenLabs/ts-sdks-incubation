@@ -6,7 +6,7 @@
 import { isAbsolute, resolve } from 'node:path';
 import { Effect } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
-import { DockerError } from '../../primitives/errors.js';
+import { DockerError } from '../../engine/errors.js';
 import { runCapturingOrFail } from './core.js';
 
 // -----------------------------------------------------------------------------

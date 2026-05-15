@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import * as path from 'node:path';
 import { Effect, FileSystem } from 'effect';
 import * as Docker from '../../engine/docker.js';
-import { DockerError } from '../../primitives/errors.js';
+import { DockerError } from '../../engine/errors.js';
 import { tag } from '../tag.js';
 
 export interface DockerImage {

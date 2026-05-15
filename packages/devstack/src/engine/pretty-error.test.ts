@@ -6,7 +6,7 @@
 
 import { Cause } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
-import { DockerError, SuiError, WalrusError } from '../primitives/errors.js';
+import { DockerError, SuiError, WalrusError } from '../engine/errors.js';
 import { prettyError } from './pretty-error.js';
 
 describe('prettyError', () => {

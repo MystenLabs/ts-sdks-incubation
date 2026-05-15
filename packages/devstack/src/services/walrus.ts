@@ -16,7 +16,7 @@ import {
 	type WalrusKnownDeploymentOptions,
 	type WalrusLocalClusterOptions,
 } from './walrus/index.js';
-import { WalrusError } from '../primitives/errors.js';
+import { WalrusError } from '../engine/errors.js';
 import type { StackMember } from '../engine/supervisor.js';
 
 // -----------------------------------------------------------------------------

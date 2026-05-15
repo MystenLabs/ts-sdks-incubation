@@ -27,7 +27,7 @@
 import { Effect } from 'effect';
 import { addFinalizer, type Scope } from 'effect/Scope';
 import type { PortAllocator } from '../port-allocator.js';
-import { DockerError } from '../../primitives/errors.js';
+import { DockerError } from '../../engine/errors.js';
 
 /**
  * Build the `onPortConflict` callback for `Docker.run`. Releases each

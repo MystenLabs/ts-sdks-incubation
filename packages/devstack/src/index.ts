@@ -83,7 +83,7 @@ export {
 	registerCoin,
 	type RegisterCoinOptions,
 	type RegisterCoinResult,
-} from './primitives/register-coin.js';
+} from './services/coin.js';
 // Object-id pickers for `Action.build` callbacks that project from
 // `result.objectChanges`. Most uses are subsumed by `Package`'s
 // declarative `capture:` field; these stay for advanced callbacks that
@@ -91,7 +91,7 @@ export {
 export {
 	pickCreatedByTypeIncludes,
 	pickCreatedByTypeSuffix,
-} from './primitives/sui-helpers.js';
+} from './engine/sui-helpers.js';
 // Known-network deployment registry (testnet seal/walrus/deepbook
 // packages). Useful for hand-rolled `Seal({ mode: 'known' })` configs.
 export {
@@ -118,7 +118,7 @@ export {
 	SuiError,
 	WalletAppError,
 	WalrusError,
-} from './primitives/errors.js';
+} from './engine/errors.js';
 
 // ── Shared utility types ──
 // `Transaction` is `@mysten/sui/transactions`'s builder — re-exported
@@ -134,7 +134,7 @@ export type {
 	SuiTransactionBlockResponse,
 	Transaction,
 	TxResult,
-} from './primitives/shared.js';
+} from './engine/shared.js';
 
 // ── Interface tag classes ──
 // Canonical Context.Service tags every factory's underlying Layer

@@ -8,7 +8,7 @@
 import { Cause, Context, Deferred, Effect, Layer, Ref } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 import { EngineHandle, EngineLive, type EngineHandleShape } from './engine.js';
-import { DockerError, PublishError } from '../primitives/errors.js';
+import { DockerError, PublishError } from '../engine/errors.js';
 import { SuiCliError } from './sui-cli.js';
 
 const buildEngine = (): Effect.Effect<EngineHandleShape> =>

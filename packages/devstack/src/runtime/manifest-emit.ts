@@ -18,7 +18,7 @@ import {
 	PackageRegistry,
 } from '../engine/registries.js';
 import { jsonBigintReplacer } from '../engine/json-bigint.js';
-import { ManifestError } from '../primitives/errors.js';
+import { ManifestError } from '../engine/errors.js';
 import type { Manifest } from './manifest-schema.js';
 import { gatherManifest } from './service.js';
 

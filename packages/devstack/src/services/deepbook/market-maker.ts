@@ -11,9 +11,9 @@ import { tag, type Ref } from '../../advanced/tag.js';
 import { SuiTag } from '../sui.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
 import { StateStore } from '../../engine/state-store.js';
-import { DeepbookError } from '../../primitives/errors.js';
+import { DeepbookError } from '../../engine/errors.js';
 import { DeepbookCore, type DeepbookPoolRef } from '../deepbook.js';
-import type { Account, SuiObjectChange } from '../../primitives/shared.js';
+import type { Account, SuiObjectChange } from '../../engine/shared.js';
 import {
 	ORDER_TYPE_POST_ONLY,
 	SELF_MATCHING_ALLOWED,

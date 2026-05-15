@@ -13,7 +13,7 @@ import * as Docker from '../../engine/docker.js';
 import { EngineHandle } from '../../engine/engine.js';
 import type { IdentityShape } from '../../engine/identity.js';
 import { routerHostname, routerId } from '../../engine/router-hostname.js';
-import { WalrusError } from '../../primitives/errors.js';
+import { WalrusError } from '../../engine/errors.js';
 import type { NodeState } from './internal.js';
 import { WALRUS_NODE_IP_BASE } from './internal.js';
 

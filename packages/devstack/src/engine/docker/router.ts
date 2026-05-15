@@ -43,7 +43,7 @@ import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import * as nodeFs from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join as joinPath } from 'node:path';
-import { DockerError } from '../../primitives/errors.js';
+import { DockerError } from '../../engine/errors.js';
 import { runCapturing, runCapturingOrFail, inspectContainerIp, type Spawner } from './core.js';
 
 // Single shared docker network for every container that wants to be

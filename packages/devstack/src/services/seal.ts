@@ -18,8 +18,8 @@ import {
 	type SealKnownKeyServerOptions,
 	type SealLocalKeygenOptions,
 } from './seal/internal.js';
-import { SealError } from '../primitives/errors.js';
-import type { Account } from '../primitives/shared.js';
+import { SealError } from '../engine/errors.js';
+import type { Account } from '../engine/shared.js';
 import type { Ref } from '../advanced/tag.js';
 import type { StackMember } from '../engine/supervisor.js';
 

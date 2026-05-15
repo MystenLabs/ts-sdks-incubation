@@ -26,7 +26,7 @@ import { PackageRegistryLive, CoinRegistryLive } from '../engine/registries.js';
 import { StateStore, StateStoreConfig, StateStoreLive } from '../engine/state-store.js';
 import { DeepbookAdmin, DeepbookCore, type DeepbookCoreShape } from './deepbook.js';
 import { SuiTag as Sui, type SuiShape } from './sui.js';
-import type { Account, SignAndExecuteError } from '../primitives/shared.js';
+import type { Account, SignAndExecuteError } from '../engine/shared.js';
 import { tag } from '../advanced/tag.js';
 import { deepbookKnownPackage, deepbookLocalDeploy } from './deepbook/index.js';
 

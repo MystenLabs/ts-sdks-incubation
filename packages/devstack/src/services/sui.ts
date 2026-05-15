@@ -25,7 +25,7 @@ import { SuiBuildImage } from '../engine/sui-cli.js';
 import { dockerImage } from '../advanced/plugin-author/index.js';
 import { provide, setPhase, type Ref } from '../advanced/tag.js';
 import type { StackMember } from '../engine/supervisor.js';
-import { SuiError } from '../primitives/errors.js';
+import { SuiError } from '../engine/errors.js';
 
 // -----------------------------------------------------------------------------
 // Constants
