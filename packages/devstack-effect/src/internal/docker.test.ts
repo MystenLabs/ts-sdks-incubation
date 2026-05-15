@@ -863,7 +863,7 @@ describe('Docker.runOneShot onOutputLine', () => {
 						Effect.sync(() => {
 							captured.push({ level, line });
 						}),
-				}).pipe(Effect.provide(spawnerLayer));
+				}).pipe(Effect.provide(spawnerLayer), Effect.provide(identityLayer));
 
 				expect(result.exitCode).toBe(0);
 				const stdoutLines = captured
@@ -903,7 +903,7 @@ describe('Docker.runOneShot onOutputLine', () => {
 					// accumulated strings carry the full captured output
 					// even when streaming is wired up.
 					onOutputLine: () => Effect.void,
-				}).pipe(Effect.provide(spawnerLayer));
+				}).pipe(Effect.provide(spawnerLayer), Effect.provide(identityLayer));
 
 				expect(result.stdout).toBe('line-a\nline-b');
 				expect(result.stderr).toBe('err-a\nerr-b');
@@ -925,7 +925,7 @@ describe('Docker.runOneShot onOutputLine', () => {
 					name: 'one-shot-no-callback',
 					image: 'busybox:latest',
 					args: ['true'],
-				}).pipe(Effect.provide(spawnerLayer));
+				}).pipe(Effect.provide(spawnerLayer), Effect.provide(identityLayer));
 
 				expect(result.exitCode).toBe(0);
 				expect(result.stdout).toContain('plain stdout output');
