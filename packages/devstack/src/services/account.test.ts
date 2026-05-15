@@ -1,12 +1,12 @@
-// Per-source acquisition coverage for `accounts({...})`. The shared
-// signing closures (sign/signAndExecute/signPersonalMessage) are
-// covered by the integration runs in `examples/wallet` /
+// Per-source acquisition coverage for `Account(name, opts?)`. The
+// shared signing closures (sign / signAndExecute / signPersonalMessage)
+// are covered by the integration runs in `examples/wallet` /
 // `examples/private-content`; this file exercises the discriminator
 // branches in isolation and the matching error paths.
 //
-// Strategy: bypass `provideDevstack` and yield the per-name tag's own
+// Strategy: bypass the supervisor and yield the per-name Ref's own
 // `__layer` directly against a hand-rolled base (Engine + Leasing +
-// AccountRegistry + a mock `Sui`). For sources that touch the
+// AccountRegistry + a mock `SuiTag`). For sources that touch the
 // filesystem (`'ephemeral-funded'`), we also add a per-test temp
 // `StateStoreConfig` so the persisted `.keys/<name>.key` lands under
 // `os.tmpdir()` and never near a real `.devstack/`.
@@ -14,8 +14,7 @@
 import * as nodeFs from 'node:fs/promises';
 import * as nodeOs from 'node:os';
 import * as nodePath from 'node:path';
-import { Cause, Effect, Exit, Option } from 'effect';
-import { Layer } from 'effect';
+import { Cause, Effect, Exit, Layer, Option } from 'effect';
 import { layer as NodeFileSystemLayer } from '@effect/platform-node/NodeFileSystem';
 import { describe, expect, it } from '@effect/vitest';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
@@ -25,19 +24,18 @@ import { EngineLive } from '../engine/engine.js';
 import { AccountRegistryLive } from '../engine/registries.js';
 import { LeasingLive } from '../engine/leasing.js';
 import { StateStoreConfig } from '../engine/state-store.js';
-import { SuiTag as Sui } from '../services/sui.js';
-import type { SuiShape } from '../services/sui.js';
-import { AccountError, SuiError } from './errors.js';
-import { accounts } from './accounts.js';
+import { SuiTag, type SuiShape } from './sui.js';
+import { AccountError, SuiError } from '../primitives/errors.js';
+import { Account } from './account.js';
 
-// Mock Sui — `client` is opaque to the discriminator branches and only
-// matters at sign-time, which we don't exercise here. Faucet URL is
-// flipped per-test to cover both the available-faucet and no-faucet
-// paths. `waitForTransactionsReady` resolves immediately so the
-// existing tests don't pay the real ready-probe budget; one dedicated
-// test below pins the propagation path when the chain never recovers.
-const mockSui = (faucetUrl: string | undefined): Layer.Layer<Sui> =>
-	Layer.succeed(Sui, {
+// Mock SuiTag — `client` is opaque to the discriminator branches and
+// only matters at sign-time, which we don't exercise here. Faucet URL
+// is flipped per-test to cover both the available-faucet and no-faucet
+// paths. `waitForTransactionsReady` resolves immediately so the existing
+// tests don't pay the real ready-probe budget; one dedicated test below
+// pins the propagation path when the chain never recovers.
+const mockSui = (faucetUrl: string | undefined): Layer.Layer<SuiTag> =>
+	Layer.succeed(SuiTag, {
 		network: 'localnet',
 		rpc: { host: 'http://localhost:9000' },
 		chainId: 'test-chain',
@@ -48,9 +46,9 @@ const mockSui = (faucetUrl: string | undefined): Layer.Layer<Sui> =>
 		waitForTransactionsReady: () => Effect.void,
 	});
 
-// `StateStoreConfig` is provided by `defineDevstack`/`provideDevstack`
-// in production; tests stand it up directly so `acquireEphemeral` can
-// resolve a writable `.keys/` directory under a per-test tmpdir.
+// `StateStoreConfig` is provided by the supervisor in production; tests
+// stand it up directly so `acquireEphemeral` can resolve a writable
+// `.keys/` directory under a per-test tmpdir.
 const mockStateConfig = (stateDir: string): Layer.Layer<StateStoreConfig> =>
 	Layer.succeed(StateStoreConfig, {
 		stack: 'test',
@@ -58,7 +56,7 @@ const mockStateConfig = (stateDir: string): Layer.Layer<StateStoreConfig> =>
 		stateDir,
 	});
 
-// Base layer shared by every test. The Sui + StateStoreConfig pieces
+// Base layer shared by every test. The SuiTag + StateStoreConfig pieces
 // are layered on top per-test because their shapes vary.
 const TestBaseLayer = Layer.mergeAll(
 	EngineLive,
@@ -69,12 +67,12 @@ const TestBaseLayer = Layer.mergeAll(
 
 const mkTmpDir = (label: string) =>
 	Effect.tryPromise({
-		try: () => nodeFs.mkdtemp(nodePath.join(nodeOs.tmpdir(), `devstack-accounts-${label}-`)),
+		try: () => nodeFs.mkdtemp(nodePath.join(nodeOs.tmpdir(), `devstack-account-${label}-`)),
 		catch: (cause) => new Error(`failed to create tmpdir: ${String(cause)}`),
 	}).pipe(Effect.orDie);
 
-describe('accounts({...}) — source discriminator', () => {
-	it.effect('bare `{}` form resolves to ephemeral-funded shape', () =>
+describe('Account(name, opts?) — source discriminator', () => {
+	it.effect('bare `Account(name)` resolves to ephemeral-funded shape', () =>
 		Effect.gen(function* () {
 			const tmpdir = yield* mkTmpDir('legacy');
 			// Stub the faucet so the `ephemeral-funded` branch's HTTP call
@@ -82,13 +80,13 @@ describe('accounts({...}) — source discriminator', () => {
 			// acquire-phase succeeds without a real localnet.
 			const restore = stubFaucet();
 			try {
-				const a = accounts({ alice: {} });
-				const alice = yield* Effect.gen(function* () {
-					return yield* a.alice;
+				const alice = Account('alice');
+				const resolved = yield* Effect.gen(function* () {
+					return yield* alice;
 				}).pipe(
 					Effect.provide(
 						Layer.provide(
-							a.alice.__layer,
+							alice.__layer,
 							Layer.mergeAll(
 								TestBaseLayer,
 								mockSui('http://localhost:9123'),
@@ -97,8 +95,8 @@ describe('accounts({...}) — source discriminator', () => {
 						),
 					),
 				);
-				expect(alice.address.startsWith('0x')).toBe(true);
-				expect(alice.scheme).toBe('ED25519');
+				expect(resolved.address.startsWith('0x')).toBe(true);
+				expect(resolved.scheme).toBe('ED25519');
 			} finally {
 				restore();
 			}
@@ -110,13 +108,13 @@ describe('accounts({...}) — source discriminator', () => {
 			const tmpdir = yield* mkTmpDir('explicit');
 			const restore = stubFaucet();
 			try {
-				const a = accounts({ bob: { from: 'ephemeral-funded' } });
-				const bob = yield* Effect.gen(function* () {
-					return yield* a.bob;
+				const bob = Account('bob', { from: 'ephemeral-funded' });
+				const resolved = yield* Effect.gen(function* () {
+					return yield* bob;
 				}).pipe(
 					Effect.provide(
 						Layer.provide(
-							a.bob.__layer,
+							bob.__layer,
 							Layer.mergeAll(
 								TestBaseLayer,
 								mockSui('http://localhost:9123'),
@@ -125,15 +123,16 @@ describe('accounts({...}) — source discriminator', () => {
 						),
 					),
 				);
-				expect(bob.address.startsWith('0x')).toBe(true);
-				// Warm-start: re-yielding the SAME tag (new acquisition) under
+				expect(resolved.address.startsWith('0x')).toBe(true);
+				// Warm-start: re-yielding the SAME Ref (new acquisition) under
 				// the same stateDir should recover the persisted address.
-				const bob2 = yield* Effect.gen(function* () {
-					return yield* a.bob;
+				const bob2 = Account('bob', { from: 'ephemeral-funded' });
+				const resolved2 = yield* Effect.gen(function* () {
+					return yield* bob2;
 				}).pipe(
 					Effect.provide(
 						Layer.provide(
-							a.bob.__layer,
+							bob2.__layer,
 							Layer.mergeAll(
 								TestBaseLayer,
 								mockSui('http://localhost:9123'),
@@ -142,7 +141,7 @@ describe('accounts({...}) — source discriminator', () => {
 						),
 					),
 				);
-				expect(bob2.address).toBe(bob.address);
+				expect(resolved2.address).toBe(resolved.address);
 			} finally {
 				restore();
 			}
@@ -160,16 +159,16 @@ describe('accounts({...}) — source discriminator', () => {
 				'ED25519',
 			);
 
-			const a = accounts({ guest: { from: 'inline', privateKey: bech32 } });
-			const guest = yield* Effect.gen(function* () {
-				return yield* a.guest;
+			const guest = Account('guest', { from: 'inline', privateKey: bech32 });
+			const resolved = yield* Effect.gen(function* () {
+				return yield* guest;
 			}).pipe(
 				Effect.provide(
-					Layer.provide(a.guest.__layer, Layer.mergeAll(TestBaseLayer, mockSui(undefined))),
+					Layer.provide(guest.__layer, Layer.mergeAll(TestBaseLayer, mockSui(undefined))),
 				),
 			);
-			expect(guest.address).toBe(expectedAddress);
-			expect(guest.scheme).toBe('ED25519');
+			expect(resolved.address).toBe(expectedAddress);
+			expect(resolved.scheme).toBe('ED25519');
 		}),
 	);
 
@@ -181,16 +180,16 @@ describe('accounts({...}) — source discriminator', () => {
 				decodeSuiPrivateKey(kp.getSecretKey()).secretKey,
 				'Secp256k1',
 			);
-			const a = accounts({ oracle: { from: 'inline', privateKey: bech32 } });
-			const oracle = yield* Effect.gen(function* () {
-				return yield* a.oracle;
+			const oracle = Account('oracle', { from: 'inline', privateKey: bech32 });
+			const resolved = yield* Effect.gen(function* () {
+				return yield* oracle;
 			}).pipe(
 				Effect.provide(
-					Layer.provide(a.oracle.__layer, Layer.mergeAll(TestBaseLayer, mockSui(undefined))),
+					Layer.provide(oracle.__layer, Layer.mergeAll(TestBaseLayer, mockSui(undefined))),
 				),
 			);
-			expect(oracle.address).toBe(expectedAddress);
-			expect(oracle.scheme).toBe('Secp256k1');
+			expect(resolved.address).toBe(expectedAddress);
+			expect(resolved.scheme).toBe('Secp256k1');
 		}),
 	);
 
@@ -205,15 +204,15 @@ describe('accounts({...}) — source discriminator', () => {
 			const envKey = 'DEVSTACK_TEST_ENV_KEY';
 			process.env[envKey] = bech32;
 			try {
-				const a = accounts({ ci: { from: 'env', key: envKey } });
-				const ci = yield* Effect.gen(function* () {
-					return yield* a.ci;
+				const ci = Account('ci', { from: 'env', key: envKey });
+				const resolved = yield* Effect.gen(function* () {
+					return yield* ci;
 				}).pipe(
 					Effect.provide(
-						Layer.provide(a.ci.__layer, Layer.mergeAll(TestBaseLayer, mockSui(undefined))),
+						Layer.provide(ci.__layer, Layer.mergeAll(TestBaseLayer, mockSui(undefined))),
 					),
 				);
-				expect(ci.address).toBe(expectedAddress);
+				expect(resolved.address).toBe(expectedAddress);
 			} finally {
 				delete process.env[envKey];
 			}
@@ -224,12 +223,12 @@ describe('accounts({...}) — source discriminator', () => {
 		Effect.gen(function* () {
 			const envKey = 'DEVSTACK_TEST_MISSING_ENV';
 			delete process.env[envKey];
-			const a = accounts({ ci: { from: 'env', key: envKey } });
+			const ci = Account('ci', { from: 'env', key: envKey });
 			const exit = yield* Effect.gen(function* () {
-				return yield* a.ci;
+				return yield* ci;
 			}).pipe(
 				Effect.provide(
-					Layer.provide(a.ci.__layer, Layer.mergeAll(TestBaseLayer, mockSui(undefined))),
+					Layer.provide(ci.__layer, Layer.mergeAll(TestBaseLayer, mockSui(undefined))),
 				),
 				Effect.exit,
 			);
@@ -248,11 +247,11 @@ describe('accounts({...}) — source discriminator', () => {
 		() =>
 			Effect.gen(function* () {
 				const tmpdir = yield* mkTmpDir('wait-fails');
-				// Custom Sui mock whose `waitForTransactionsReady` fails so
-				// we exercise the propagation path that gates the faucet
-				// POST loop. Without this guard, the account would
-				// rediscover the same dead chain via its own retry budget.
-				const mockSuiWithFailingReady: Layer.Layer<Sui> = Layer.succeed(Sui, {
+				// Custom SuiTag mock whose `waitForTransactionsReady` fails so
+				// we exercise the propagation path that gates the faucet POST
+				// loop. Without this guard, the account would rediscover the
+				// same dead chain via its own retry budget.
+				const mockSuiWithFailingReady: Layer.Layer<SuiTag> = Layer.succeed(SuiTag, {
 					network: 'localnet',
 					rpc: { host: 'http://localhost:9000' },
 					chainId: 'test-chain',
@@ -266,13 +265,13 @@ describe('accounts({...}) — source discriminator', () => {
 							}),
 						),
 				});
-				const a = accounts({ alice: { from: 'ephemeral-funded' } });
+				const alice = Account('alice', { from: 'ephemeral-funded' });
 				const exit = yield* Effect.gen(function* () {
-					return yield* a.alice;
+					return yield* alice;
 				}).pipe(
 					Effect.provide(
 						Layer.provide(
-							a.alice.__layer,
+							alice.__layer,
 							Layer.mergeAll(TestBaseLayer, mockSuiWithFailingReady, mockStateConfig(tmpdir)),
 						),
 					),
@@ -283,8 +282,8 @@ describe('accounts({...}) — source discriminator', () => {
 					const err = extractError(exit);
 					expect(err).toBeInstanceOf(AccountError);
 					expect(err?.phase).toBe('fund');
-					// The wrapping message must surface the underlying
-					// SuiError text so the user sees why the wait failed.
+					// The wrapping message must surface the underlying SuiError
+					// text so the user sees why the wait failed.
 					expect(err?.message).toMatch(/funds-transferable/);
 				}
 			}),
@@ -293,13 +292,13 @@ describe('accounts({...}) — source discriminator', () => {
 	it.effect("from: 'ephemeral-funded' fails AccountError when Sui has no faucetUrl", () =>
 		Effect.gen(function* () {
 			const tmpdir = yield* mkTmpDir('nofaucet');
-			const a = accounts({ alice: { from: 'ephemeral-funded' } });
+			const alice = Account('alice', { from: 'ephemeral-funded' });
 			const exit = yield* Effect.gen(function* () {
-				return yield* a.alice;
+				return yield* alice;
 			}).pipe(
 				Effect.provide(
 					Layer.provide(
-						a.alice.__layer,
+						alice.__layer,
 						Layer.mergeAll(TestBaseLayer, mockSui(undefined), mockStateConfig(tmpdir)),
 					),
 				),
@@ -318,10 +317,10 @@ describe('accounts({...}) — source discriminator', () => {
 
 // Test helpers --------------------------------------------------------------
 
-// Pull the typed AccountError out of an `Exit.Failure`. The layer
-// wrapping in `provideTag` puts the failure under a non-trivial Cause
-// tree (engine lifecycle, scope finalizers); `Cause.findErrorOption`
-// returns the underlying typed value regardless of where it landed.
+// Pull the typed AccountError out of an `Exit.Failure`. The layer wrapping
+// in `makeTag` puts the failure under a non-trivial Cause tree (engine
+// lifecycle, scope finalizers); `Cause.findErrorOption` returns the
+// underlying typed value regardless of where it landed.
 const extractError = (exit: Exit.Exit<unknown, unknown>): AccountError | undefined => {
 	if (!Exit.isFailure(exit)) return undefined;
 	const cause = (exit as unknown as { cause: Cause.Cause<unknown> }).cause;

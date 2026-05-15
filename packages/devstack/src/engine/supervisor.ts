@@ -57,6 +57,7 @@ import {
 } from './registries.js';
 import { StateStoreConfig, StateStoreLive } from './state-store.js';
 import type { SuiNetwork } from '../primitives/sui.js';
+import type { TagKind } from '../advanced/tag.js';
 import { startPlainRenderer } from '../tui/plain.js';
 import { SHUTDOWN_LOG_MESSAGE, startTuiOnce, TuiLoggerLayer, type TuiMount } from '../tui/index.js';
 
@@ -76,13 +77,14 @@ export interface StackMember {
 	// pre-populate the TUI's pending-tag list.
 	readonly key?: string;
 	/**
-	 * Service vs action classification used by the TUI dashboard for
-	 * section grouping. Set automatically when the member was built via
-	 * `provideTag` / `makeTag` with `{kind}`; absent for hand-rolled
-	 * layers, which render in a fallback 'Other' section only when
-	 * non-empty.
+	 * Section classification used by the TUI dashboard for grouping. Set
+	 * automatically when the member was built via `provideTag` / `makeTag`
+	 * with `{kind}`; absent for hand-rolled layers, which render in a
+	 * fallback 'Other' section only when non-empty. Five values matching
+	 * the new user-intent framing: services / packages / accounts /
+	 * actions / app.
 	 */
-	readonly __kind?: 'service' | 'action';
+	readonly __kind?: TagKind;
 	/**
 	 * Friendly title surfaced by the dashboard while the member is still
 	 * `pending` (before its build body runs and the in-build
@@ -713,13 +715,13 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 	// generated fallback so the TUI still surfaces them.
 	const seedEntries: ReadonlyArray<{
 		readonly key: string;
-		readonly kind?: 'service' | 'action';
+		readonly kind?: TagKind;
 		readonly title?: string;
 	}> = config.stack.map((m, i) => {
 		const key = (m as { key?: string }).key ?? `stack[${i}]`;
-		const kind = (m as { __kind?: 'service' | 'action' }).__kind;
+		const kind = (m as { __kind?: TagKind }).__kind;
 		const title = (m as { __displayTitle?: string }).__displayTitle;
-		const entry: { key: string; kind?: 'service' | 'action'; title?: string } = { key };
+		const entry: { key: string; kind?: TagKind; title?: string } = { key };
 		if (kind !== undefined) entry.kind = kind;
 		if (title !== undefined) entry.title = title;
 		return entry;
