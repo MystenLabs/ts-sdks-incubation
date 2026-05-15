@@ -1,4 +1,3 @@
-export { action, type ActionOptions } from './action.js';
 export { bindings, type BindingsOptions, type BindingsResult } from './bindings.js';
 export {
 	dockerContainer,
@@ -42,5 +41,4 @@ export type {
 	Transaction,
 	TxResult,
 } from './shared.js';
-export { tx, type TxOptions } from './tx.js';
 export { walletApp, type WalletApp, type WalletAppOptions } from './wallet-app.js';

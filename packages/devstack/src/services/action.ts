@@ -1,23 +1,16 @@
-// Action(name, opts) — post-publish setup tx. Replaces the v3
-// `tx({name, signer, dependsOn, cacheKey, build})` factory. Same shape,
-// renamed to fit the new vocabulary:
-//
-//   - `dependsOn` → `needs` (consistent with the redesign's framing)
-//   - `cacheKey` accepts both the v3 `Effect<string>` form and a sync
-//     `(pkgs) => string` form derived from the `needs` array's resolved
-//     refs; the sync form covers the common case in one line.
-//
-// The `build` callback continues to receive the raw `Transaction` builder.
-// Its return Effect's `E` channel widens to whatever the yielded Refs
-// propagate (e.g. `PublishError` from a `Package` ref); the supervisor
-// catches errors at the engine level so users don't have to `catchTag`
-// inside every action's build body.
+// Action(name, opts) — post-publish setup tx. The build callback
+// receives a raw `Transaction` builder; its return Effect's `E` channel
+// widens to whatever the yielded Refs propagate (e.g. `PublishError`
+// from a `Package` ref), and the supervisor catches errors at the
+// engine level so users don't have to `catchTag` inside every action.
 
-import { Effect } from 'effect';
+import { Effect, Option } from 'effect';
 import { Transaction } from '@mysten/sui/transactions';
-import { tx, type TxOptions } from '../primitives/tx.js';
-import type { Account } from '../primitives/shared.js';
-import type { Ref } from '../advanced/tag.js';
+import { tag, setPhase, type Ref } from '../advanced/tag.js';
+import { PublishError } from '../primitives/errors.js';
+import { StateStore } from '../engine/state-store.js';
+import { SuiTag } from './sui.js';
+import type { Account, TxResult } from '../primitives/shared.js';
 
 export interface ActionOptions<Name extends string, R, E = unknown> {
 	/** Account that signs the action. */
@@ -33,7 +26,7 @@ export interface ActionOptions<Name extends string, R, E = unknown> {
 	 *  propagate; the supervisor catches errors at the engine level. */
 	readonly build: (transaction: Transaction) => Effect.Effect<void, E, R>;
 	/** Optional cache key. Two accepted forms:
-	 *    - `Effect<string>` — full programmatic control (v3-compatible).
+	 *    - `Effect<string>` — full programmatic control.
 	 *    - `string` — literal key; folded with chain id + signer address. */
 	readonly cacheKey?: Effect.Effect<string, unknown, unknown> | string;
 	/** Reserved for the typed `_name` parameter; defaults to the action's
@@ -42,7 +35,15 @@ export interface ActionOptions<Name extends string, R, E = unknown> {
 }
 
 /** Action factory. Returns a Ref that runs the supplied transaction once
- *  per chain (when `cacheKey` is set) or every cycle (when omitted). */
+ *  per chain (when `cacheKey` is set) or every cycle (when omitted).
+ *
+ *  Cache key folds in `sui.chainId` + `signer.address`, so a regenesis of
+ *  the underlying chain naturally misses the cache (the cached
+ *  objectChanges reference object ids that no longer exist). When set,
+ *  the on-chain side effects of this action are assumed to persist
+ *  across `docker rm` (the localnet image should be on a named volume)
+ *  — otherwise a stale cached result will reference objects the freshly-
+ *  genesised chain no longer has. */
 export const Action = <const Name extends string, R = never, E = unknown>(
 	name: Name,
 	opts: ActionOptions<Name, R, E>,
@@ -53,17 +54,86 @@ export const Action = <const Name extends string, R = never, E = unknown>(
 			: typeof opts.cacheKey === 'string'
 				? Effect.succeed(opts.cacheKey)
 				: opts.cacheKey;
-	// v3 `tx`'s `build` type pins E=never. The v4 `Action` widens E to
-	// match what real builds yield (Refs propagate their own E channels);
-	// the supervisor catches errors at the engine level. Cast through to
-	// the legacy signature — runtime behavior is identical.
-	const txOpts: TxOptions<Name, R> = {
+
+	return tag(
 		name,
-		signer: opts.signer,
-		build: opts.build as TxOptions<Name, R>['build'],
-		...(opts.needs !== undefined ? { dependsOn: opts.needs } : {}),
-		...(opts.gasBudget !== undefined ? { gasBudget: opts.gasBudget } : {}),
-		...(cacheKeyEff !== undefined ? { cacheKey: cacheKeyEff } : {}),
-	};
-	return Object.assign(tx(txOpts), { __kind: 'action' as const });
+		Effect.gen(function* () {
+			for (const dep of opts.needs ?? []) {
+				yield* dep;
+			}
+			const signer = yield* opts.signer;
+
+			// Cache-key path. Compute key first; on a hit, return the prior
+			// TxResult and skip build + sign + execute entirely.
+			if (cacheKeyEff !== undefined) {
+				const sui = yield* SuiTag;
+				const state = yield* StateStore;
+				const userKey = yield* (cacheKeyEff as Effect.Effect<string, unknown, never>);
+				const fullKey = `tx/${name}/${sui.chainId}/${signer.address}/${userKey}`;
+				const cached = yield* state.get<TxResult>(fullKey);
+				if (Option.isSome(cached)) {
+					yield* Effect.logInfo(
+						`Action(${name}): cache hit — key=${userKey} digest=${cached.value.digest}`,
+					);
+					return cached.value;
+				}
+				yield* Effect.logInfo(
+					`Action(${name}): cache miss — key=${userKey} (will sign+execute)`,
+				);
+				yield* setPhase('building');
+				const t = new Transaction();
+				if (opts.gasBudget !== undefined) {
+					t.setGasBudget(opts.gasBudget);
+				}
+				yield* (opts.build(t) as Effect.Effect<void, unknown, never>);
+				yield* setPhase('executing');
+				const result = yield* signer.signAndExecute(t).pipe(
+					Effect.mapError(
+						(cause) =>
+							new PublishError({
+								stage: 'publish-tx',
+								message: `Action(${name}): sign+execute failed`,
+								cause,
+							}),
+					),
+				);
+				yield* state.put(fullKey, result);
+				return result satisfies TxResult;
+			}
+
+			yield* setPhase('building');
+			const t = new Transaction();
+			if (opts.gasBudget !== undefined) {
+				t.setGasBudget(opts.gasBudget);
+			}
+			yield* (opts.build(t) as Effect.Effect<void, unknown, never>);
+			yield* setPhase('executing');
+			const result = yield* signer.signAndExecute(t).pipe(
+				Effect.mapError(
+					(cause) =>
+						new PublishError({
+							stage: 'publish-tx',
+							message: `Action(${name}): sign+execute failed`,
+							cause,
+						}),
+				),
+			);
+			return result satisfies TxResult;
+		}).pipe(Effect.withSpan(`Action(${name})`)),
+		{
+			kind: 'action',
+			displayTitle: `tx.${name}`,
+			display: (s: TxResult) => ({
+				title: `tx.${name}`,
+				primary: `digest ${s.digest}`,
+				...(s.objectChanges.length > 0
+					? {
+							extras: [
+								`${s.objectChanges.length} object${s.objectChanges.length === 1 ? '' : 's'}`,
+							],
+						}
+					: {}),
+			}),
+		},
+	);
 };
