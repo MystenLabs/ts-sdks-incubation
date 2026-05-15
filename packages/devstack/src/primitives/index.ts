@@ -17,15 +17,6 @@ export {
 	WalletAppError,
 	WalrusError,
 } from './errors.js';
-export {
-	hostProcess,
-	type HostProcessHandle,
-	type HostProcessOptions,
-	type HttpReadyProbe,
-	type LogReadyProbe,
-	type ReadyProbe,
-	type TcpReadyProbe,
-} from './host-process.js';
 export { manifest, type ManifestData, type ManifestOptions } from './manifest.js';
 export {
 	registerCoin,

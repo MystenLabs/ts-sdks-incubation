@@ -9,18 +9,18 @@
 import { Effect, Stream } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { addFinalizer as addScopeFinalizer } from 'effect/Scope';
-import { Identity } from '../engine/identity.js';
-import { PortAllocator } from '../engine/port-allocator.js';
+import { Identity } from '../../engine/identity.js';
+import { PortAllocator } from '../../engine/port-allocator.js';
 import {
 	routerEntrypoint,
 	removeFileProvider,
 	writeFileProvider,
-} from '../engine/docker/router.js';
-import { drainLinesWithCallback, type OutputLineCallback } from '../engine/docker/core.js';
-import { routerHostname, routerId } from '../engine/router-hostname.js';
-import { inheritedHostEnv } from '../engine/safe-env.js';
-import { stringifyCause } from '../engine/stringify-cause.js';
-import { tag, setPhase, type Ref } from '../advanced/tag.js';
+} from '../../engine/docker/router.js';
+import { drainLinesWithCallback, type OutputLineCallback } from '../../engine/docker/core.js';
+import { routerHostname, routerId } from '../../engine/router-hostname.js';
+import { inheritedHostEnv } from '../../engine/safe-env.js';
+import { stringifyCause } from '../../engine/stringify-cause.js';
+import { tag, setPhase, type Ref } from '../../advanced/tag.js';
 import {
 	awaitReady,
 	type HttpReadyProbe,
@@ -28,9 +28,9 @@ import {
 	type LogReadyProbe,
 	type ReadyProbe,
 	type TcpReadyProbe,
-} from '../engine/ready-probe.js';
-import { EndpointRegistry } from '../engine/registries.js';
-import { HostProcessError } from './errors.js';
+} from '../../engine/ready-probe.js';
+import { EndpointRegistry } from '../../engine/registries.js';
+import { HostProcessError } from '../../primitives/errors.js';
 
 // Re-export the canonical probe types from `internal/ready-probe.ts` so users
 // can keep importing them from this module (the public primitives entry point).

@@ -20,7 +20,7 @@ import { afterEach, beforeEach, describe, expect, it } from '@effect/vitest';
 import { Identity } from '../engine/identity.js';
 import { PortAllocatorLive } from '../engine/port-allocator.js';
 import { EndpointRegistryLive } from '../engine/registries.js';
-import { hostProcess } from './host-process.js';
+import { hostProcess } from './dev/internal.js';
 
 // Identity for the file-provider YAML naming convention. `service`
 // folds into the hostname (`<service>.<app>.localhost`) and the
