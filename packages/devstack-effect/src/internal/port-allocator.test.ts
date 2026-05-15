@@ -13,12 +13,17 @@
 // tests bind a real net.Server in the test process, then ask the
 // allocator to allocate the same port and assert it scanned forward.
 
+import * as fs from 'node:fs';
 import * as net from 'node:net';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { Effect, Layer } from 'effect';
 import { afterEach, describe, expect, it } from '@effect/vitest';
 import {
+	claimPortLock,
 	PortAllocator,
 	PortAllocatorLive,
+	releasePortLock,
 } from './port-allocator.js';
 import { reallocatePortsOnConflict } from './docker/port-conflict.js';
 
@@ -236,5 +241,186 @@ describe('reallocatePortsOnConflict — shared helper', () => {
 					expect(freshKeys[0]).toBeGreaterThan(preferred);
 				}).pipe(Effect.provide(Layer.fresh(PortAllocatorLive))),
 			),
+	);
+});
+
+
+// -----------------------------------------------------------------------------
+// claimPortLock / releasePortLock — cross-process file lock
+// -----------------------------------------------------------------------------
+//
+// The file lock is the only thing that prevents two parallel devstack
+// supervisors (e.g. `DEVSTACK_STACK=test pnpm dev` alongside
+// `DEVSTACK_STACK=alpha pnpm dev`) from both probing the same port as
+// OS-free, both passing their in-process held-set check, and both
+// spawning vite on the same number — the second binds silently fails.
+//
+// Two paths matter:
+//   1. The atomic O_EXCL create (lock claim).
+//   2. The stale-pid recovery (a previous supervisor crashed without
+//      releasing; the next one detects the dead pid via `kill(0)` and
+//      reclaims).
+//
+// We use a tmpdir as the lock directory so tests don't pollute the
+// host's `~/.devstack/ports/`. Each test gets its own directory so a
+// failure in one can't strand a lock for another.
+
+describe('claimPortLock / releasePortLock — file lock', () => {
+	let lockDir: string;
+
+	const setupTmpDir = () => {
+		lockDir = fs.mkdtempSync(path.join(os.tmpdir(), 'port-lock-test-'));
+	};
+
+	afterEach(() => {
+		// Clean up the tmpdir even if a test threw mid-way.
+		try {
+			fs.rmSync(lockDir, { recursive: true, force: true });
+		} catch {
+			// directory may not exist if setupTmpDir wasn't called
+		}
+	});
+
+	it('claims a fresh port and writes our pid to the lock file', () => {
+		setupTmpDir();
+		const port = 50_001;
+		expect(claimPortLock(port, lockDir)).toBe(true);
+		const written = fs.readFileSync(path.join(lockDir, `${port}.lock`), 'utf8').trim();
+		expect(written).toBe(String(process.pid));
+	});
+
+	it('rejects re-claiming our own port (idempotence is NOT a goal — caller already holds it)', () => {
+		// Defensive: if a primitive accidentally tries to claim a port
+		// it already locked, the second call must fail so the caller
+		// notices the bug rather than silently succeeding. Production
+		// callers (PortAllocator) gate on the in-memory Ref before
+		// calling claimPortLock, so the second call should never
+		// happen — this pins the contract anyway.
+		setupTmpDir();
+		const port = 50_002;
+		expect(claimPortLock(port, lockDir)).toBe(true);
+		// Same pid, same dir — the lock file already exists with our
+		// pid, the kill(0) probe succeeds (we ARE alive), so the
+		// second call returns false.
+		expect(claimPortLock(port, lockDir)).toBe(false);
+	});
+
+	it('reclaims a stale lock written by a dead pid', () => {
+		// Simulate a previous supervisor crash: write a lock file with
+		// a pid that's guaranteed to be dead, then claim. The `kill(0)`
+		// probe should throw ESRCH; the function deletes the stale
+		// file and writes our own.
+		setupTmpDir();
+		const port = 50_003;
+		// Dead pid: we use a max-int pid that no real process can hold.
+		// Linux MAX_PID is typically 2^22; macOS goes a bit higher;
+		// either way 2^31 - 1 is comfortably out of range.
+		const deadPid = 2_147_483_646;
+		fs.writeFileSync(path.join(lockDir, `${port}.lock`), String(deadPid));
+
+		expect(claimPortLock(port, lockDir)).toBe(true);
+
+		// The lock file should now contain OUR pid, not the dead one.
+		const reclaimed = fs.readFileSync(path.join(lockDir, `${port}.lock`), 'utf8').trim();
+		expect(reclaimed).toBe(String(process.pid));
+	});
+
+	it('refuses to reclaim a lock when the referenced pid is alive', () => {
+		// Use the test runner's own pid as the "live" holder. It IS
+		// alive (we're running in it), so `kill(0)` succeeds and the
+		// claim fails. Real-world equivalent: another supervisor is
+		// actually running and holding the port.
+		setupTmpDir();
+		const port = 50_004;
+		fs.writeFileSync(path.join(lockDir, `${port}.lock`), String(process.pid));
+
+		// Note: process.pid IS alive. The claim should reject.
+		expect(claimPortLock(port, lockDir)).toBe(false);
+
+		// Lock file is untouched.
+		const stillThere = fs.readFileSync(path.join(lockDir, `${port}.lock`), 'utf8').trim();
+		expect(stillThere).toBe(String(process.pid));
+	});
+
+	it('reclaims an unreadable / corrupt lock file by overwriting it', () => {
+		// Lock file exists but contains garbage (not a number) — the
+		// pid parse fails and we treat it as stale.
+		setupTmpDir();
+		const port = 50_005;
+		fs.writeFileSync(path.join(lockDir, `${port}.lock`), 'not-a-pid-at-all');
+
+		expect(claimPortLock(port, lockDir)).toBe(true);
+
+		// Overwritten with our pid.
+		const reclaimed = fs.readFileSync(path.join(lockDir, `${port}.lock`), 'utf8').trim();
+		expect(reclaimed).toBe(String(process.pid));
+	});
+
+	it('release deletes a lock we wrote', () => {
+		setupTmpDir();
+		const port = 50_006;
+		expect(claimPortLock(port, lockDir)).toBe(true);
+		expect(fs.existsSync(path.join(lockDir, `${port}.lock`))).toBe(true);
+
+		releasePortLock(port, lockDir);
+		expect(fs.existsSync(path.join(lockDir, `${port}.lock`))).toBe(false);
+	});
+
+	it('release leaves a lock written by a different pid untouched', () => {
+		// Defensive: if a stale-pid recovery raced with us and the lock
+		// now belongs to another supervisor's pid, we must NOT delete
+		// it. The "only delete if we wrote it" check is the only thing
+		// preventing release-loops where two supervisors stomp on each
+		// other's locks.
+		setupTmpDir();
+		const port = 50_007;
+		const otherPid = 2_147_483_645;
+		fs.writeFileSync(path.join(lockDir, `${port}.lock`), String(otherPid));
+
+		releasePortLock(port, lockDir);
+
+		// Still there.
+		expect(fs.existsSync(path.join(lockDir, `${port}.lock`))).toBe(true);
+		const untouched = fs.readFileSync(path.join(lockDir, `${port}.lock`), 'utf8').trim();
+		expect(untouched).toBe(String(otherPid));
+	});
+
+	it('release on a missing lock is a noop (no throw)', () => {
+		setupTmpDir();
+		const port = 50_008;
+		// File doesn't exist; release should swallow the ENOENT silently.
+		expect(() => releasePortLock(port, lockDir)).not.toThrow();
+	});
+});
+
+
+// -----------------------------------------------------------------------------
+// Two concurrent allocate() calls in the same process
+// -----------------------------------------------------------------------------
+//
+// `Ref.modify` inside `allocate` is the in-process race guard: when two
+// fibers call `allocate(preferred)` concurrently, both pass the kernel
+// bind probe and the cross-process file lock claim, but only one of
+// them wins the `Ref.modify` CAS. The loser releases the file lock and
+// scans forward to the next port. Without this, two primitives in the
+// same supervisor could end up sharing a port number — fatal because
+// one of them will silently lose the bind on actual `server.listen`.
+
+describe('PortAllocator.allocate — in-process race guard', () => {
+	it.effect('two concurrent allocates against the same preferred return distinct ports', () =>
+		Effect.gen(function* () {
+			const allocator = yield* PortAllocator;
+			const preferred = nextPort();
+			// Fork both allocates so they race the Ref.modify CAS.
+			const [a, b] = yield* Effect.all(
+				[allocator.allocate(preferred), allocator.allocate(preferred)],
+				{ concurrency: 'unbounded' },
+			);
+			expect(a).not.toBe(b);
+			// One of them should be the preferred value (whichever won
+			// the CAS first); the other scanned forward to preferred+1
+			// (or higher if external state intervened).
+			expect([a, b]).toContain(preferred);
+		}).pipe(Effect.provide(Layer.fresh(PortAllocatorLive))),
 	);
 });

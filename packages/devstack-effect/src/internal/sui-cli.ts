@@ -426,8 +426,9 @@ const containerBuildCmd = (imageTag: string, hostPath: string): ChildProcess.Com
 
 // POSIX single-quote escape for arbitrary string values embedded in a
 // shell command. Wraps in `'…'` and escapes embedded single quotes via
-// the standard `'\''` trick.
-const shellQuote = (s: string): string => `'${s.replaceAll("'", "'\\''")}'`;
+// the standard `'\''` trick. Exported for sui-cli.test.ts; the sole
+// production caller is `containerBuildCmd` above.
+export const shellQuote = (s: string): string => `'${s.replaceAll("'", "'\\''")}'`;
 
 // Compose the argv for a host-`sui` `move build`. Same flags as the
 // container path, but spawned directly with the host-inherited env so
