@@ -47,7 +47,7 @@ import { Secp256r1Keypair } from '@mysten/sui/keypairs/secp256r1';
 import type { Keypair } from '@mysten/sui/cryptography';
 import { tag, setPhase, type Ref } from '../advanced/tag.js';
 import { SuiTag } from './sui.js';
-import { AccountError } from '../primitives/errors.js';
+import { AccountError } from '../engine/errors.js';
 import { AccountRegistry } from '../engine/registries.js';
 import { Leasing } from '../engine/leasing.js';
 import { requestFunds } from '../engine/faucet.js';
@@ -57,7 +57,7 @@ import type {
 	Account as AccountValue,
 	SignAndExecuteError,
 	TxResult,
-} from '../primitives/shared.js';
+} from '../engine/shared.js';
 import type { AccountRef } from './ref.js';
 
 // -----------------------------------------------------------------------------

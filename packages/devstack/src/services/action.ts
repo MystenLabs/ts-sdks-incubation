@@ -7,10 +7,10 @@
 import { Effect, Option } from 'effect';
 import { Transaction } from '@mysten/sui/transactions';
 import { tag, setPhase, type Ref } from '../advanced/tag.js';
-import { PublishError } from '../primitives/errors.js';
+import { PublishError } from '../engine/errors.js';
 import { StateStore } from '../engine/state-store.js';
 import { SuiTag } from './sui.js';
-import type { Account, TxResult } from '../primitives/shared.js';
+import type { Account, TxResult } from '../engine/shared.js';
 
 export interface ActionOptions<Name extends string, R, E = unknown> {
 	/** Account that signs the action. */

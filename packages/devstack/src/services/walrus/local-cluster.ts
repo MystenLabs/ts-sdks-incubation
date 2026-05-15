@@ -26,8 +26,8 @@ import {
 } from '../walrus.js';
 import { dockerImage, gitFetch } from '../../advanced/plugin-author/index.js';
 import { composeLayers, type Ref } from '../../advanced/tag.js';
-import { WalrusError } from '../../primitives/errors.js';
-import type { Account } from '../../primitives/shared.js';
+import { WalrusError } from '../../engine/errors.js';
+import type { Account } from '../../engine/shared.js';
 import {
 	acquireLocalCluster,
 	DEFAULT_EPOCH_DURATION,

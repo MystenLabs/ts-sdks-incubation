@@ -4,7 +4,7 @@
 // constructing this ref and passing it to `devstack(...)`.
 
 import { walletApp, type WalletAppOptions } from './wallet/internal.js';
-import type { Account } from '../primitives/shared.js';
+import type { Account } from '../engine/shared.js';
 import type { Ref } from '../advanced/tag.js';
 
 export interface WalletOptions {

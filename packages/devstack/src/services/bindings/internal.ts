@@ -5,7 +5,7 @@ import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { generateFromPackageSummary } from '@mysten/codegen';
 import { tag, setPhase, type Ref } from '../../advanced/tag.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
-import { BindingsError } from '../../primitives/errors.js';
+import { BindingsError } from '../../engine/errors.js';
 import type { LocalPackageShape } from '../package.js';
 
 export interface BindingsResult {

@@ -20,7 +20,7 @@ import {
 	deepbookMarketMaker,
 	type DeepbookKnownPackageOptions,
 } from './deepbook/index.js';
-import { DeepbookError } from '../primitives/errors.js';
+import { DeepbookError } from '../engine/errors.js';
 
 // -----------------------------------------------------------------------------
 // DeepbookCore — read-side view

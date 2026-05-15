@@ -12,7 +12,7 @@ import type { Ref } from '../advanced/tag.js';
  *  declare `signer: AccountRef` instead of repeating the full generic. */
 export type AccountRef<Name extends string = string> = Ref<
 	Name,
-	import('../primitives/shared.js').Account
+	import('../engine/shared.js').Account
 >;
 
 /** Type-narrowed shorthand for package refs. Carries the captured-record

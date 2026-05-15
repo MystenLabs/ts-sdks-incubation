@@ -25,7 +25,7 @@ import { AccountRegistryLive } from '../engine/registries.js';
 import { LeasingLive } from '../engine/leasing.js';
 import { StateStoreConfig } from '../engine/state-store.js';
 import { SuiTag, type SuiShape } from './sui.js';
-import { AccountError, SuiError } from '../primitives/errors.js';
+import { AccountError, SuiError } from '../engine/errors.js';
 import { Account } from './account.js';
 
 // Mock SuiTag — `client` is opaque to the discriminator branches and

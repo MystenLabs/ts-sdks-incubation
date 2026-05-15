@@ -30,7 +30,7 @@ import {
 	type TcpReadyProbe,
 } from '../../engine/ready-probe.js';
 import { EndpointRegistry } from '../../engine/registries.js';
-import { HostProcessError } from '../../primitives/errors.js';
+import { HostProcessError } from '../../engine/errors.js';
 
 // Re-export the canonical probe types from `internal/ready-probe.ts` so users
 // can keep importing them from this module (the public primitives entry point).

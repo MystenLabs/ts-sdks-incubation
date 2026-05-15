@@ -2,7 +2,7 @@ import { Effect, Option } from 'effect';
 import * as crypto from 'node:crypto';
 import { cacheGet, cachePut } from '../../engine/cache.js';
 import * as Docker from '../../engine/docker.js';
-import { DockerError } from '../../primitives/errors.js';
+import { DockerError } from '../../engine/errors.js';
 import { tag, type Ref } from '../tag.js';
 
 export interface DockerOneShotResult {

@@ -19,7 +19,7 @@ import {
 } from '../engine/registries.js';
 import { jsonBigintReplacer } from '../engine/json-bigint.js';
 import { toSdkCoin } from '../services/package.js';
-import { ManifestError } from './errors.js';
+import { ManifestError } from '../engine/errors.js';
 
 export interface ManifestData {
 	readonly packages: ReadonlyArray<{

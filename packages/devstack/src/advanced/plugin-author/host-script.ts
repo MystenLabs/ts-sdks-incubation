@@ -1,7 +1,7 @@
 import { Effect, Stream } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { inheritedHostEnv } from '../../engine/safe-env.js';
-import { HostProcessError } from '../../primitives/errors.js';
+import { HostProcessError } from '../../engine/errors.js';
 import { tag, type Ref } from '../tag.js';
 
 export interface HostScriptResult {

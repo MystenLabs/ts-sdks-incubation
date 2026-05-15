@@ -15,7 +15,7 @@
 // `import * as Docker from '../engine/docker.js'`; this barrel
 // re-exports each slice's public symbol so that pattern keeps working.
 
-export { DockerError } from '../../primitives/errors.js';
+export { DockerError } from '../../engine/errors.js';
 export {
 	run,
 	type DockerRunOptions,

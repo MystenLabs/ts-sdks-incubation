@@ -1,33 +1,4 @@
-export {
-	dockerContainer,
-	type DockerContainerHandle,
-	type DockerContainerOptions,
-} from './docker-container.js';
-export {
-	AccountError,
-	BindingsError,
-	DeepbookError,
-	DockerError,
-	HostProcessError,
-	ManifestError,
-	PublishError,
-	SealError,
-	SuiError,
-	WalletAppError,
-	WalrusError,
-} from './errors.js';
+// Transitional barrel — most exports have moved out. The remaining
+// `manifest` factory stays here until Phase 3b cleanup wraps with the
+// v4 emitter cutover.
 export { manifest, type ManifestData, type ManifestOptions } from './manifest.js';
-export {
-	registerCoin,
-	type RegisterCoinOptions,
-	type RegisterCoinResult,
-} from './register-coin.js';
-export type {
-	Account,
-	SignAndExecuteError,
-	SignAndExecuteOptions,
-	SuiObjectChange,
-	SuiTransactionBlockResponse,
-	Transaction,
-	TxResult,
-} from './shared.js';

@@ -9,7 +9,7 @@
 import { Effect } from 'effect';
 import type { Transaction, TransactionObjectArgument } from '@mysten/sui/transactions';
 import { type Ref } from '../../advanced/tag.js';
-import { DeepbookError } from '../../primitives/errors.js';
+import { DeepbookError } from '../../engine/errors.js';
 import {
 	type DeepbookCoreShape,
 	type DeepbookPoolRef,

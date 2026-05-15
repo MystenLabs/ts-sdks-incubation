@@ -28,7 +28,7 @@ import { Identity } from '../engine/identity.js';
 import { PortAllocatorLive } from '../engine/port-allocator.js';
 import { EndpointRegistryLive } from '../engine/registries.js';
 import { tag, type Ref } from '../advanced/tag.js';
-import type { Account } from '../primitives/shared.js';
+import type { Account } from '../engine/shared.js';
 import { walletApp } from './wallet/internal.js';
 
 // Stub Sui — wallet-app yields it only for ordering (waits for the

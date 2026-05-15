@@ -14,14 +14,14 @@ import { publishMove, pickCreatedByTypeSuffix } from '../package/internal.js';
 import { PackageRegistry } from '../../engine/registries.js';
 import { StateStore } from '../../engine/state-store.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
-import { DeepbookError } from '../../primitives/errors.js';
+import { DeepbookError } from '../../engine/errors.js';
 import {
 	DeepbookAdmin,
 	DeepbookCore,
 	DeepbookMarketMakerTag,
 	type DeepbookCoreShape,
 } from '../deepbook.js';
-import type { Account, SuiObjectChange } from '../../primitives/shared.js';
+import type { Account, SuiObjectChange } from '../../engine/shared.js';
 import {
 	DEEPBOOK_ADMIN_CAP_TYPE_SUFFIX,
 	DEEPBOOK_REGISTRY_TYPE_SUFFIX,

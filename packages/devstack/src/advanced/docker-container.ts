@@ -8,7 +8,7 @@ import {
 	type ReadyProbe,
 } from '../engine/ready-probe.js';
 import { EndpointRegistry } from '../engine/registries.js';
-import { DockerError } from './errors.js';
+import { DockerError } from '../engine/errors.js';
 
 export interface DockerContainerHandle {
 	readonly containerId: string;
