@@ -7,6 +7,13 @@ export {
 	type StackMember,
 } from './define-devstack.js';
 export { provideDevstack, type ProvideDevstackOptions } from './provide-devstack.js';
+// `TagIdentity<Name>` is the per-name structural Service type the
+// `accounts({alice})` / `publishMove({name})` / etc. tags carry on
+// their `R` channel. Re-exported so consumers of these tags get
+// nameable inferred types — without it, `tsc --declaration` (composite
+// projects, the example apps' typecheck mode) trips TS2742 on any
+// program that yields a per-call tag.
+export type { TagIdentity } from './tag.js';
 export {
 	knownDeployments,
 	type DeepbookDeployment,

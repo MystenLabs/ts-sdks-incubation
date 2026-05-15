@@ -17,20 +17,23 @@ import { Sui } from '@mysten-incubation/devstack';
 import { a, program } from './main.js';
 
 // Minimal `Sui` stub — `client` is typed as `SuiJsonRpcClient` upstream
-// but the program only reads `network` / `rpcUrl` / `chainId`, so an
+// but the program only reads `network` / `rpc.host` / `chainId`, so an
 // empty `{}` cast satisfies the interface for testing.
+// `waitForTransactionsReady` is required by the SuiShape contract; the
+// program doesn't call it, so a noop Effect.void is enough.
 const STUB_SUI_SHAPE = {
 	network: 'localnet' as const,
-	rpcUrl: 'http://localhost:9000',
+	rpc: { host: 'http://localhost:9000' },
 	chainId: 'aabbccdd',
 	client: {} as never,
+	waitForTransactionsReady: () => Effect.void,
 };
 
 const STUB_ALICE_ADDRESS = '0x000000000000000000000000000000000000000000000000000000000000a11ce';
 const STUB_ALICE_SHAPE = {
 	name: 'alice',
 	address: STUB_ALICE_ADDRESS,
-	scheme: 'ed25519' as const,
+	scheme: 'ED25519' as const,
 	publicKey: new Uint8Array(32),
 	signAndExecute: () =>
 		Effect.die('signAndExecute stub not called by the smoke test'),
@@ -56,6 +59,7 @@ describe('effect-app program', () => {
 
 		const joined = captured.join('\n');
 		expect(joined).toContain('connected to sui localnet at http://localhost:9000');
+		// Stub above sets `rpc.host` so the program's `${sui.rpc.host}` resolves to it.
 		expect(joined).toContain('chain id: aabbccdd');
 		expect(joined).toContain(`alice: ${STUB_ALICE_ADDRESS}`);
 	});
