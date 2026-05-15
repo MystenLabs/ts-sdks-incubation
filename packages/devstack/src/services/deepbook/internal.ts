@@ -9,11 +9,11 @@
 import { Effect } from 'effect';
 import type { Transaction, TransactionObjectArgument } from '@mysten/sui/transactions';
 import { type Ref } from '../../advanced/tag.js';
-import { DeepbookError } from '../errors.js';
+import { DeepbookError } from '../../primitives/errors.js';
 import {
 	type DeepbookCoreShape,
 	type DeepbookPoolRef,
-} from '../../services/deepbook.js';
+} from '../deepbook.js';
 
 // -----------------------------------------------------------------------------
 // Constants

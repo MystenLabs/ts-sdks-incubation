@@ -8,12 +8,12 @@
 import { Effect, Option, Schedule } from 'effect';
 import { Transaction, type TransactionObjectArgument } from '@mysten/sui/transactions';
 import { tag, type Ref } from '../../advanced/tag.js';
-import { SuiTag } from '../../services/sui.js';
+import { SuiTag } from '../sui.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
 import { StateStore } from '../../engine/state-store.js';
-import { DeepbookError } from '../errors.js';
-import { DeepbookCore, type DeepbookPoolRef } from '../../services/deepbook.js';
-import type { Account, SuiObjectChange } from '../shared.js';
+import { DeepbookError } from '../../primitives/errors.js';
+import { DeepbookCore, type DeepbookPoolRef } from '../deepbook.js';
+import type { Account, SuiObjectChange } from '../../primitives/shared.js';
 import {
 	ORDER_TYPE_POST_ONLY,
 	SELF_MATCHING_ALLOWED,

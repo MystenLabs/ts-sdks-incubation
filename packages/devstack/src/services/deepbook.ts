@@ -19,7 +19,7 @@ import {
 	deepbookLocalDeploy,
 	deepbookMarketMaker,
 	type DeepbookKnownPackageOptions,
-} from '../primitives/deepbook/index.js';
+} from './deepbook/index.js';
 import { DeepbookError } from '../primitives/errors.js';
 
 // -----------------------------------------------------------------------------
