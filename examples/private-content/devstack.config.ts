@@ -68,18 +68,21 @@ const wallet = walletApp({
 const dev = hostProcess({
 	name: 'frontend.dev-server',
 	command: 'pnpm',
-	// Local vite port must differ from traefik's `vite` entrypoint
-	// (5175 host). Traefik binds 5175 first; vite with --strictPort
-	// falls back to IPv6 (silent dual-stack quirk) and the readyProbe
-	// hits traefik (404) instead of vite. Use a distinct local port;
-	// traefik forwards Host=`dev.*.localhost:5175` → host:5170.
-	// `--host 0.0.0.0` so traefik (inside docker) can dial vite via
-	// `host.docker.internal:5170`. Vite defaults to 127.0.0.1 which
-	// isn't reachable from container-land.
-	args: ['exec', 'vite', '--host', '0.0.0.0', '--port', '5170', '--strictPort'],
-	readyProbe: { kind: 'http', url: 'http://localhost:5170', timeoutMs: 60_000 },
+	// `port: { preferred }` allocates a per-stack host port via the
+	// shared `PortAllocator` (scanning forward when a sibling stack
+	// holds the preferred number) and exposes it as `$PORT` on the
+	// child. The companion `vite.config.ts` reads `process.env.PORT`
+	// for `server.port`. `--host 0.0.0.0` is required so traefik
+	// (running inside docker) can reach vite via host.docker.internal
+	// — vite defaults to 127.0.0.1. `--strictPort` so vite fails fast
+	// rather than silently picking a port the supervisor doesn't
+	// know about. Preferred 5170 is distinct from traefik's `vite`
+	// entrypoint (5175 host) so a collision can't punt vite into a
+	// dual-stack fallback that masks the readyProbe.
+	args: ['exec', 'vite', '--host', '0.0.0.0', '--strictPort'],
+	port: { preferred: 5170 },
 	endpoint: { name: 'dev-server', kind: 'dev-server' },
-	traefik: { service: 'dev', entrypoint: 'vite', localPort: 5170 },
+	traefik: { service: 'dev', entrypoint: 'vite' },
 	// `SealKeyServer` here pins the dev-server behind seal's acquire.
 	// The interface tag is yieldable but TS treats it as a bare
 	// Context.Service rather than a `PluginTag`; the cast is safe

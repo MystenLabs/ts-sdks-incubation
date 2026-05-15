@@ -51,20 +51,19 @@ const wallet = walletApp({
 	allowedOrigins: ['http://dev.token-studio.localhost:5175', 'http://localhost:5173'],
 });
 
-// Vite spawns on a local port; the supervisor publishes a Traefik
-// file-provider entry so the public URL surfaces as
-// `http://dev.token-studio.localhost:5175`. Ready probe targets the
-// local port so we don't depend on router warm-up.
+// `port: { preferred }` allocates a per-stack host port via the
+// shared `PortAllocator` and exposes it as `$PORT`. `vite.config.ts`
+// reads `process.env.PORT` for `server.port`. `--host 0.0.0.0` so
+// traefik (running inside docker) can reach vite via
+// host.docker.internal. `--strictPort` so vite fails fast rather than
+// drifting to a port the supervisor doesn't know about.
 const dev = hostProcess({
 	name: 'frontend.dev-server',
 	command: 'pnpm',
-	// `--host 0.0.0.0` so traefik (in container) can reach vite via
-	// `host.docker.internal:5173`. Vite default 127.0.0.1 is loopback-
-	// only and unreachable from container-land.
-	args: ['exec', 'vite', '--host', '0.0.0.0', '--port', '5173', '--strictPort'],
-	readyProbe: { kind: 'http', url: 'http://localhost:5173', timeoutMs: 60_000 },
+	args: ['exec', 'vite', '--host', '0.0.0.0', '--strictPort'],
+	port: { preferred: 5173 },
 	endpoint: { name: 'dev-server', kind: 'dev-server' },
-	traefik: { service: 'dev', entrypoint: 'vite', localPort: 5173 },
+	traefik: { service: 'dev', entrypoint: 'vite' },
 	dependsOn: [managedCoinPublish, wallet],
 });
 
