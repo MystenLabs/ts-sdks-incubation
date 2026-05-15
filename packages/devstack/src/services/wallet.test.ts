@@ -28,8 +28,8 @@ import { Identity } from '../engine/identity.js';
 import { PortAllocatorLive } from '../engine/port-allocator.js';
 import { EndpointRegistryLive } from '../engine/registries.js';
 import { tag, type Ref } from '../advanced/tag.js';
-import type { Account } from './shared.js';
-import { walletApp } from './wallet-app.js';
+import type { Account } from '../primitives/shared.js';
+import { walletApp } from './wallet/internal.js';
 
 // Stub Sui — wallet-app yields it only for ordering (waits for the
 // chain to be ready before binding its HTTP server). The shape's

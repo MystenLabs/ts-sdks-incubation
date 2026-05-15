@@ -9,20 +9,20 @@
 import { randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { Effect } from 'effect';
-import { Identity } from '../engine/identity.js';
-import { PortAllocator } from '../engine/port-allocator.js';
+import { Identity } from '../../engine/identity.js';
+import { PortAllocator } from '../../engine/port-allocator.js';
 import {
 	routerEntrypoint,
 	removeFileProvider,
 	writeFileProvider,
-} from '../engine/docker/router.js';
-import { routerHostname, routerId } from '../engine/router-hostname.js';
-import { EndpointRegistry } from '../engine/registries.js';
-import { stringifyCause } from '../engine/stringify-cause.js';
-import { tag, setPhase, type Ref } from '../advanced/tag.js';
-import { WalletAppError } from './errors.js';
-import type { Account } from './shared.js';
-import { SuiTag } from '../services/sui.js';
+} from '../../engine/docker/router.js';
+import { routerHostname, routerId } from '../../engine/router-hostname.js';
+import { EndpointRegistry } from '../../engine/registries.js';
+import { stringifyCause } from '../../engine/stringify-cause.js';
+import { tag, setPhase, type Ref } from '../../advanced/tag.js';
+import { WalletAppError } from '../../primitives/errors.js';
+import type { Account } from '../../primitives/shared.js';
+import { SuiTag } from '../sui.js';
 
 export interface WalletApp {
 	readonly url: string;
