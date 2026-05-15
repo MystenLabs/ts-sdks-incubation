@@ -223,20 +223,19 @@ const m = manifest({
 });
 
 
-// Vite spawns on a local port; the supervisor publishes a Traefik
-// file-provider entry so the public URL surfaces as
-// `http://dev.wallet.localhost:5175`. Ready probe targets the local
-// port so we don't depend on router warm-up.
+// `port: { preferred }` allocates a per-stack host port via the
+// shared `PortAllocator` and exposes it as `$PORT`. `vite.config.ts`
+// reads `process.env.PORT` for `server.port`. `--host 0.0.0.0` so
+// traefik (running inside docker) can reach vite via
+// host.docker.internal. `--strictPort` so vite fails fast rather than
+// drifting to a port the supervisor doesn't know about.
 const dev = hostProcess({
 	name: 'frontend.dev-server',
 	command: 'pnpm',
-	// `--host 0.0.0.0` so traefik (in container) can reach vite via
-	// `host.docker.internal:5174`. Vite default 127.0.0.1 is loopback-
-	// only and unreachable from container-land.
-	args: ['exec', 'vite', '--host', '0.0.0.0', '--port', '5174', '--strictPort'],
-	readyProbe: { kind: 'http', url: 'http://localhost:5174', timeoutMs: 60_000 },
+	args: ['exec', 'vite', '--host', '0.0.0.0', '--strictPort'],
+	port: { preferred: 5174 },
 	endpoint: { name: 'dev-server', kind: 'dev-server' },
-	traefik: { service: 'dev', entrypoint: 'vite', localPort: 5174 },
+	traefik: { service: 'dev', entrypoint: 'vite' },
 	dependsOn: [usdcPublish, wethPublish, seedTokens, db, wallet],
 });
 

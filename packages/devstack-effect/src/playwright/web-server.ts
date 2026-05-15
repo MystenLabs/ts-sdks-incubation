@@ -110,9 +110,14 @@ function discoverManifestPath(): string {
 	const stack = process.env.DEVSTACK_STACK ?? 'main';
 	let dir = process.cwd();
 	while (true) {
+		// Stack-scoped path FIRST so `DEVSTACK_STACK=test` playwright
+		// reads its own stack's manifest even when a sibling concurrent
+		// stack has overwritten the legacy flat `.devstack/manifest.json`
+		// more recently. Flat path remains the fallback for single-stack
+		// `main` setups.
 		const candidates = [
-			join(dir, '.devstack', 'manifest.json'),
 			join(dir, '.devstack', 'stacks', stack, 'manifest.json'),
+			join(dir, '.devstack', 'manifest.json'),
 		];
 		for (const candidate of candidates) {
 			try {

@@ -2,6 +2,7 @@ import { Effect, Stream } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { addFinalizer as addScopeFinalizer } from 'effect/Scope';
 import { Identity } from '../internal/identity.js';
+import { PortAllocator } from '../internal/port-allocator.js';
 import {
 	routerEntrypoint,
 	removeFileProvider,
@@ -53,8 +54,12 @@ export interface HostProcessTraefikConfig {
 	 * Local 127.0.0.1 port the spawned process binds. Traefik
 	 * forwards to `http://host.docker.internal:<localPort>` and the
 	 * SDK-facing URL surfaces as `http://<hostname>:<entrypointPort>`.
+	 *
+	 * Optional when `HostProcessOptions.port` is set — in that case
+	 * the allocated port overrides this value (so the caller doesn't
+	 * have to thread the same number through twice).
 	 */
-	readonly localPort: number;
+	readonly localPort?: number;
 }
 
 export interface HostProcessOptions<Name extends string, E, R> {
@@ -76,6 +81,16 @@ export interface HostProcessOptions<Name extends string, E, R> {
 	 * Cleaned up on scope teardown.
 	 */
 	readonly traefik?: HostProcessTraefikConfig;
+	/**
+	 * Optional port allocation. When set, the supervisor yields a port
+	 * from `PortAllocator` (scanning forward from `preferred` if it's
+	 * already bound), substitutes `{{PORT}}` placeholders in `args`
+	 * and `readyProbe.url`, and uses the allocated value as
+	 * `traefik.localPort`. Enables multiple stacks of the same
+	 * example to boot concurrently without colliding on a hardcoded
+	 * dev-server port.
+	 */
+	readonly port?: { readonly preferred: number };
 	/**
 	 * Per-line output sink for the spawned process's stdout (`info`)
 	 * and stderr (`warn`). Wired by callers that want vite / generic
@@ -107,6 +122,41 @@ export const hostProcess = <const Name extends string, E = never, R = never>(
 			const resolvedEnv: Record<string, string> =
 				envOpt === undefined ? {} : isEffect(envOpt) ? yield* envOpt : envOpt;
 
+			// 1a. Optional port allocation. When `options.port` is set,
+			//     yield a host port from PortAllocator (scanning forward
+			//     from `preferred` when the preferred is bound by a
+			//     sibling stack) and inject it as `$PORT` so scripts can
+			//     bind to it. Multiple stacks of the same example boot
+			//     side-by-side without hardcoded collisions.
+			const allocatedPort: number | undefined = yield* (options.port !== undefined
+				? Effect.gen(function* () {
+						const allocator = yield* PortAllocator;
+						return yield* allocator.allocate(options.port!.preferred).pipe(
+							Effect.mapError(
+								(cause) =>
+									new HostProcessError({
+										command: options.command,
+										message: `hostProcess(${options.name}): could not allocate port near ${options.port!.preferred}: ${cause.message}`,
+										cause,
+									}),
+							),
+						);
+					})
+				: Effect.succeed(undefined));
+			const portEnv: Record<string, string> =
+				allocatedPort === undefined ? {} : { PORT: String(allocatedPort) };
+
+			// When `port:` is set but no readyProbe was given, derive a
+			// default HTTP probe against the allocated port. Saves the
+			// caller from threading the port through twice — common case
+			// for dev servers (vite, next, etc.) that bind `$PORT`.
+			const resolvedReadyProbe: ReadyProbe | undefined =
+				options.readyProbe !== undefined
+					? options.readyProbe
+					: allocatedPort !== undefined
+						? { kind: 'http', url: `http://localhost:${allocatedPort}`, timeoutMs: 60_000 }
+						: undefined;
+
 			// 2. Resolve dependsOn — yield* each tag for ordering. Values
 			//    are unused here; the engine just needs the R-channel edges.
 			for (const tag of options.dependsOn ?? []) {
@@ -119,7 +169,10 @@ export const hostProcess = <const Name extends string, E = never, R = never>(
 			//    process when the enclosing scope closes.
 			const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 			const cmd = ChildProcess.make(options.command, options.args ?? [], {
-				env: { ...inheritedHostEnv(), ...resolvedEnv },
+				// User-supplied `env` wins last so callers can override
+				// `PORT` if they explicitly need a different value, but the
+				// allocator's choice is the default whenever `port:` is set.
+				env: { ...inheritedHostEnv(), ...portEnv, ...resolvedEnv },
 				cwd: options.cwd,
 			});
 			const handle = yield* spawner.spawn(cmd).pipe(
@@ -161,7 +214,7 @@ export const hostProcess = <const Name extends string, E = never, R = never>(
 					scope,
 					Effect.uninterruptible(handle.kill().pipe(Effect.ignore)),
 				);
-				if (options.readyProbe?.kind !== 'log') {
+				if (resolvedReadyProbe?.kind !== 'log') {
 					yield* drainLinesWithCallback(
 						Stream.orDie(handle.stdout),
 						'info',
@@ -176,18 +229,18 @@ export const hostProcess = <const Name extends string, E = never, R = never>(
 			}
 
 			// 4. Wait for ready probe if provided.
-			if (options.readyProbe !== undefined) {
+			if (resolvedReadyProbe !== undefined) {
 				yield* setPhase('awaiting ready');
 				const probe: InternalReadyProbe =
-					options.readyProbe.kind === 'log'
+					resolvedReadyProbe.kind === 'log'
 						? {
-								...options.readyProbe,
+								...resolvedReadyProbe,
 								// Drop the stdout stream's PlatformError into a defect — if
 								// the child process's stdout pipe blows up we'd never reach
 								// a ready state anyway, so a defect is the right surface.
 								logs: Stream.splitLines(Stream.decodeText(Stream.orDie(handle.stdout))),
 							}
-						: options.readyProbe;
+						: resolvedReadyProbe;
 				yield* awaitReady(probe).pipe(
 					Effect.mapError(
 						(cause) =>
@@ -209,6 +262,18 @@ export const hostProcess = <const Name extends string, E = never, R = never>(
 			//    SDK-facing surface instead of the (private) local port.
 			let routerUrl: string | undefined;
 			if (options.traefik !== undefined) {
+				// Prefer the allocated port (set when `options.port` is in
+				// use) over the explicit `localPort`; fail loudly if neither
+				// is set — silently routing traefik to port 0 would 502.
+				const upstreamPort = allocatedPort ?? options.traefik.localPort;
+				if (upstreamPort === undefined) {
+					return yield* Effect.fail(
+						new HostProcessError({
+							command: options.command,
+							message: `hostProcess(${options.name}): traefik requires either \`port: { preferred }\` or \`traefik.localPort\`.`,
+						}),
+					);
+				}
 				const identity = yield* Identity;
 				const hostname = routerHostname(identity, options.traefik.service);
 				const entrypoint = routerEntrypoint(options.traefik.entrypoint);
@@ -225,7 +290,7 @@ export const hostProcess = <const Name extends string, E = never, R = never>(
 					id,
 					hostname,
 					entrypoint: options.traefik.entrypoint,
-					upstreamUrl: `http://host.docker.internal:${options.traefik.localPort}`,
+					upstreamUrl: `http://host.docker.internal:${upstreamPort}`,
 				}).pipe(
 					Effect.catchTag('DockerError', (cause) =>
 						Effect.logWarning(
@@ -241,7 +306,7 @@ export const hostProcess = <const Name extends string, E = never, R = never>(
 			//    HTTP probes — TCP/log don't yield a URL on their own.
 			//    Prefer the router-fronted URL when one was derived above.
 			const probeUrl =
-				options.readyProbe?.kind === 'http' ? options.readyProbe.url : undefined;
+				resolvedReadyProbe?.kind === 'http' ? resolvedReadyProbe.url : undefined;
 			const url = routerUrl ?? probeUrl;
 			if (options.endpoint !== undefined && url !== undefined) {
 				yield* EndpointRegistry.publish({

@@ -23,6 +23,12 @@ const ALLOWED_ENV_KEYS: ReadonlyArray<string> = [
 	'LOCALAPPDATA',
 	'USERPROFILE',
 	'Path',
+	// Stack scope: children that derive their own stack-scoped state
+	// (vite resolving the per-stack manifest alias, nested devstack
+	// invocations, playwright e2e helpers) need to inherit this. Not a
+	// secret — it's intentional scoping data the supervisor itself
+	// reads from env when no explicit `stackName` is configured.
+	'DEVSTACK_STACK',
 ];
 
 export const inheritedHostEnv = (): Record<string, string> => {
