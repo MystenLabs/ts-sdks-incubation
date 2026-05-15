@@ -3,7 +3,7 @@ import {
 	expect,
 	selectAccount,
 	test,
-} from '@mysten-incubation/devstack-effect/playwright';
+} from '@mysten-incubation/devstack/playwright';
 
 /**
  * End-to-end Seal demo: alice encrypts + uploads, grants a Cap to bob, then

@@ -11,7 +11,7 @@
 	},
 	"dependencies": {
 		"@effect/platform-node": "catalog:",
-		"@mysten-incubation/devstack-effect": "workspace:*",
+		"@mysten-incubation/devstack": "workspace:*",
 		"effect": "catalog:"
 	},
 	"devDependencies": {

@@ -16,7 +16,7 @@ import {
 	suiLocalnet,
 	tx,
 	walletApp,
-} from '@mysten-incubation/devstack-effect';
+} from '@mysten-incubation/devstack';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HELLO_DIR = resolve(HERE, 'move/hello');

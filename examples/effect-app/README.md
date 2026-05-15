@@ -14,7 +14,7 @@ import {
     Sui,
     suiLocalnet,
     suiTestnet,
-} from '@mysten-incubation/devstack-effect';
+} from '@mysten-incubation/devstack';
 
 const a =
     process.env.NODE_ENV === 'production'

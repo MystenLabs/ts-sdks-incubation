@@ -1,4 +1,4 @@
-import { connectAs, expect, test } from '@mysten-incubation/devstack-effect/playwright';
+import { connectAs, expect, test } from '@mysten-incubation/devstack/playwright';
 
 /**
  * End-to-end smoke for `@mysten-incubation/devstack-wallet-panels`:

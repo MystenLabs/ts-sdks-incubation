@@ -1,5 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
-import { baseURL, webServer } from '@mysten-incubation/devstack-effect/playwright';
+import { baseURL, webServer } from '@mysten-incubation/devstack/playwright';
 
 // `pnpm dev` (the devstack supervisor) owns stack bring-up + writes
 // the manifest. 15-minute timeout because the first run has to build

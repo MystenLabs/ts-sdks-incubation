@@ -1,4 +1,4 @@
-import { connectAs, expect, selectAccount, test } from '@mysten-incubation/devstack-effect/playwright';
+import { connectAs, expect, selectAccount, test } from '@mysten-incubation/devstack/playwright';
 
 /**
  * Real Vite dev server, real Sui localnet, real wallet-standard adapter — no mocks.

@@ -16,7 +16,7 @@
 
 import { Effect } from 'effect';
 import { runMain } from '@effect/platform-node/NodeRuntime';
-import { accounts, provideDevstack, Sui, suiLocalnet, suiTestnet } from '@mysten-incubation/devstack-effect';
+import { accounts, provideDevstack, Sui, suiLocalnet, suiTestnet } from '@mysten-incubation/devstack';
 
 export const a =
 	process.env.NODE_ENV === 'production'

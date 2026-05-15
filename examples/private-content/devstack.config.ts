@@ -23,7 +23,7 @@ import {
 	suiLocalnet,
 	walletApp,
 	walrusLocalCluster,
-} from '@mysten-incubation/devstack-effect';
+} from '@mysten-incubation/devstack';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const VAULT_DIR = resolve(HERE, 'move/vault');

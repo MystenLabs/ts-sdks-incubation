@@ -1,7 +1,7 @@
 import { defineConfig } from 'vitest/config';
 
 // Plain vitest config. Wire devstack into chain-mode tests via
-// `withDevstack` from `@mysten-incubation/devstack-effect/vitest`.
+// `withDevstack` from `@mysten-incubation/devstack/vitest`.
 export default defineConfig({
 	test: {
 		include: ['src/**/*.{test,spec}.ts?(x)'],
