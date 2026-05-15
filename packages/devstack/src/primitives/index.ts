@@ -73,9 +73,3 @@ export {
 } from './seal.js';
 export { tx, type TxOptions } from './tx.js';
 export { walletApp, type WalletApp, type WalletAppOptions } from './wallet-app.js';
-export {
-	walrusKnownDeployment,
-	walrusLocalCluster,
-	type WalrusKnownDeploymentOptions,
-	type WalrusLocalClusterOptions,
-} from './walrus/index.js';

@@ -26,7 +26,7 @@ import { EngineHandle } from '../../engine/engine.js';
 import { Identity, type IdentityShape } from '../../engine/identity.js';
 import { routerHostname } from '../../engine/router-hostname.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
-import { WalrusError } from '../errors.js';
+import { WalrusError } from '../../primitives/errors.js';
 import type { DeployState, ExchangeState } from './internal.js';
 import { WALRUS_NODE_IP_BASE } from './internal.js';
 

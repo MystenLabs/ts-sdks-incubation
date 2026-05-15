@@ -13,7 +13,7 @@ import { createHash } from 'node:crypto';
 import { Effect } from 'effect';
 import { ChildProcessSpawner } from 'effect/unstable/process';
 import * as Docker from '../../engine/docker.js';
-import { WalrusError } from '../errors.js';
+import { WalrusError } from '../../primitives/errors.js';
 
 // Build the wrapper image that layers a matching sui binary + the
 // vendored `deploy.sh` / `run.sh` scripts on top of the upstream
