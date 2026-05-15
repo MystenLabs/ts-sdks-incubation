@@ -64,12 +64,5 @@ export {
 	type DeepbookPool,
 	type DeepbookPoolSpec,
 } from './deepbook/index.js';
-export {
-	sealKnownKeyServer,
-	sealLocalKeygen,
-	type SealKnownKeyServerOptions,
-	type SealLocalKeygenOptions,
-	type SealLocalKeygenShape,
-} from './seal.js';
 export { tx, type TxOptions } from './tx.js';
 export { walletApp, type WalletApp, type WalletAppOptions } from './wallet-app.js';

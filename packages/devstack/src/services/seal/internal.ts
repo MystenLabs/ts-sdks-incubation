@@ -34,34 +34,34 @@ import { Context, Effect, FileSystem, Layer, Option, Path } from 'effect';
 import { addFinalizer } from 'effect/Scope';
 import { ChildProcessSpawner } from 'effect/unstable/process';
 import { Transaction } from '@mysten/sui/transactions';
-import * as Docker from '../engine/docker.js';
-import { EngineHandle } from '../engine/engine.js';
+import * as Docker from '../../engine/docker.js';
+import { EngineHandle } from '../../engine/engine.js';
 import {
 	knownDeployments,
 	type KnownNetwork,
 	type SealDeployment,
-} from '../engine/known-deployments.js';
-import { Identity } from '../engine/identity.js';
-import { routerEntrypoint } from '../engine/docker/router.js';
-import { routerHostname, routerId } from '../engine/router-hostname.js';
-import { StateStore, StateStoreConfig } from '../engine/state-store.js';
-import { stringifyCause } from '../engine/stringify-cause.js';
-import { buildMove } from '../engine/sui-cli.js';
-import { dockerImage } from '../advanced/plugin-author/index.js';
-import { gitFetch } from '../advanced/plugin-author/index.js';
-import { EndpointRegistry, PackageRegistry } from '../engine/registries.js';
+} from '../../engine/known-deployments.js';
+import { Identity } from '../../engine/identity.js';
+import { routerEntrypoint } from '../../engine/docker/router.js';
+import { routerHostname, routerId } from '../../engine/router-hostname.js';
+import { StateStore, StateStoreConfig } from '../../engine/state-store.js';
+import { stringifyCause } from '../../engine/stringify-cause.js';
+import { buildMove } from '../../engine/sui-cli.js';
+import { dockerImage } from '../../advanced/plugin-author/index.js';
+import { gitFetch } from '../../advanced/plugin-author/index.js';
+import { EndpointRegistry, PackageRegistry } from '../../engine/registries.js';
 import {
 	SealKeyManager,
 	SealKeyServer,
 	type SealKeyManagerShape,
 	type SealKeyServerShape,
-} from '../services/seal.js';
-import { composeLayers, provide, setPhase, type Ref } from '../advanced/tag.js';
-import type { StackMember } from '../engine/supervisor.js';
-import { SuiTag, suiNetworkName } from '../services/sui.js';
-import { publishMove } from './publish-move.js';
-import { SealError } from './errors.js';
-import type { Account, SuiObjectChange } from './shared.js';
+} from '../seal.js';
+import { composeLayers, provide, setPhase, type Ref } from '../../advanced/tag.js';
+import type { StackMember } from '../../engine/supervisor.js';
+import { SuiTag, suiNetworkName } from '../sui.js';
+import { publishMove } from '../../primitives/publish-move.js';
+import { SealError } from '../../primitives/errors.js';
+import type { Account, SuiObjectChange } from '../../primitives/shared.js';
 
 // -----------------------------------------------------------------------------
 // Constants
