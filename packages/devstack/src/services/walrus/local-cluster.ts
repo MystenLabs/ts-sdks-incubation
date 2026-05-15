@@ -23,11 +23,11 @@ import {
 	type WalrusNodeInfo,
 	type WalrusNodesShape,
 	type WalrusProxyShape,
-} from '../../services/walrus.js';
+} from '../walrus.js';
 import { dockerImage, gitFetch } from '../../advanced/plugin-author/index.js';
 import { composeLayers, type Ref } from '../../advanced/tag.js';
-import { WalrusError } from '../errors.js';
-import type { Account } from '../shared.js';
+import { WalrusError } from '../../primitives/errors.js';
+import type { Account } from '../../primitives/shared.js';
 import {
 	acquireLocalCluster,
 	DEFAULT_EPOCH_DURATION,

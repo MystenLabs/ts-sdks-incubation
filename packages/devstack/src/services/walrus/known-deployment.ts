@@ -15,7 +15,7 @@ import {
 	type WalrusNodeInfo,
 	type WalrusNodesShape,
 	type WalrusProxyShape,
-} from '../../services/walrus.js';
+} from '../walrus.js';
 import { knownDeployments, type KnownNetwork } from '../../engine/known-deployments.js';
 
 export interface WalrusKnownDeploymentOptions {
