@@ -191,6 +191,12 @@ export interface PackageOptions<
 	readonly capture?: CaptureSpec<TCaptured>;
 	/** Coin specs to register against the published package. */
 	readonly coins?: TCoins;
+	/** Opt out of codegen for this package, or supply a per-package
+	 *  emitter list that overrides the stack-level `Codegen({ emitters })`.
+	 *  `false` excludes this package from every `Codegen(...)` ref in the
+	 *  stack. Default `true` — the package participates in codegen using
+	 *  whatever emitters the global `Codegen` ref declares. */
+	readonly codegen?: boolean | { readonly emitters?: ReadonlyArray<unknown> };
 }
 
 /** Compile a `capture` spec down to the v3 callback form `publishMove`
@@ -230,5 +236,12 @@ export const Package = <
 		...(opts.capture !== undefined ? { capture: compileCapture<TCaptured>(opts.capture)! } : {}),
 		...(opts.coins !== undefined ? { coins: opts.coins } : {}),
 	};
-	return Object.assign(publishMove(publishOpts), { __kind: 'package' as const });
+	// `codegen: false` is stamped onto the Ref object so any `Codegen(...)`
+	// in the stack that reads its `packages` list can filter this entry out.
+	// `true` (the default) is omitted — Codegen treats absence as opt-in.
+	const codegenExclude = opts.codegen === false;
+	return Object.assign(publishMove(publishOpts), {
+		__kind: 'package' as const,
+		...(codegenExclude ? { __codegenExclude: true as const } : {}),
+	});
 };
