@@ -3,7 +3,7 @@
 // default-provider step will auto-emit bindings when any `Package` is
 // declared without an explicit `Bindings(...)` in the stack.
 
-import { bindings, type BindingsOptions } from '../primitives/bindings.js';
+import { bindings, type BindingsOptions } from './bindings/internal.js';
 import type { LocalPackageShape } from './package.js';
 import type { Ref } from '../advanced/tag.js';
 
