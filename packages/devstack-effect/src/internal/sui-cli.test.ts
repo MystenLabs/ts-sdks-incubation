@@ -10,7 +10,7 @@
 // `move build`.
 
 import { describe, expect, it } from '@effect/vitest';
-import { stripPinnedSections } from './sui-cli.js';
+import { shellQuote, stripPinnedSections } from './sui-cli.js';
 
 describe('stripPinnedSections', () => {
 	it('strips v4-flat [pinned.<env>.<pkg>] sections', () => {
@@ -149,5 +149,77 @@ describe('stripPinnedSections', () => {
 			'name = "Sui"',
 		].join('\n');
 		expect(stripPinnedSections(input)).toBe(input);
+	});
+});
+
+
+// -----------------------------------------------------------------------------
+// shellQuote
+// -----------------------------------------------------------------------------
+//
+// `shellQuote` is the only defense between user-controlled package
+// names / paths (which become `--path /workspace/<name>` and the docker
+// image tag inside the container build pipeline) and the shell that
+// interprets the outer `sh -c` script in `containerBuildCmd`. A bug
+// here lets a publishMove caller with a malicious `name` or `path`
+// inject arbitrary commands into the host shell.
+//
+// We pin the POSIX single-quote escape contract:
+//   - Plain strings round-trip wrapped in `'…'`.
+//   - Embedded single quotes are broken out via the standard `'\''`
+//     four-char dance (close, escape, reopen).
+//   - Other shell metacharacters ($, `, ", ;, &, |, *, ?, etc.) are
+//     inert inside single quotes — the test asserts they are passed
+//     through unmodified, NOT escaped.
+
+describe('shellQuote', () => {
+	it('wraps a plain string in single quotes', () => {
+		expect(shellQuote('hello')).toBe(`'hello'`);
+	});
+
+	it('wraps a string containing spaces in single quotes (POSIX argv split-prevention)', () => {
+		// Without the wrap, `sh -c` would tokenize on the space and the
+		// container build would receive two args instead of one.
+		expect(shellQuote('hello world')).toBe(`'hello world'`);
+	});
+
+	it("escapes a single embedded apostrophe via the close/escape/reopen trick", () => {
+		// `it's` → `'it'\''s'`. The `'\''` is: close the open quote,
+		// emit a literal `'` via backslash escape, then reopen.
+		expect(shellQuote("it's")).toBe(`'it'\\''s'`);
+	});
+
+	it('escapes multiple apostrophes in a single string', () => {
+		expect(shellQuote("a'b'c")).toBe(`'a'\\''b'\\''c'`);
+	});
+
+	it('passes shell metacharacters through verbatim inside the quote', () => {
+		// $, `, ", ;, &, |, (, ), {, }, *, ?, [, ], \\ — none should
+		// be expanded or interpreted by sh because they're inside
+		// single quotes. A regression that switched to double-quote
+		// wrapping would break this test (`$VAR` would expand).
+		const dangerous = '$VAR `whoami` "x" ; rm -rf / & echo | true * ? \\';
+		expect(shellQuote(dangerous)).toBe(`'${dangerous}'`);
+	});
+
+	it('blocks command injection via embedded apostrophe + shell construct', () => {
+		// The classic attack: a malicious package name like
+		// `foo'; rm -rf / #` would, without the apostrophe escape,
+		// close the wrap and inject `rm -rf /` into the outer shell.
+		// With the escape it becomes a literal — the resulting argv
+		// inside the container is the verbatim string the caller
+		// supplied, which `sui move build --path /workspace/<that>`
+		// will fail on as a non-existent directory. Failure mode: bad
+		// path, NOT command execution. We assert the exact escape
+		// output so a regression that switched to a permissive shell-
+		// quote (e.g. just doubling the quote) breaks here.
+		const attack = "foo'; rm -rf / #";
+		expect(shellQuote(attack)).toBe(`'foo'\\''; rm -rf / #'`);
+	});
+
+	it('handles an empty string as a present-but-empty argv slot', () => {
+		// `sh -c "echo $(shellQuote '')"` should pass an empty arg, not
+		// drop the slot. The wrap `''` is the POSIX way to say so.
+		expect(shellQuote('')).toBe(`''`);
 	});
 });

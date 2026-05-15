@@ -70,22 +70,27 @@ const bindProbe = (port: number, host: string): Promise<boolean> =>
 // our pid; the create is atomic (`wx`), so only one allocator can
 // own a given port at a time. Lock is deleted on `release()` and on
 // supervisor scope teardown.
-const portLockDir = path.join(os.homedir(), '.devstack', 'ports');
-const portLockPath = (port: number): string => path.join(portLockDir, `${port}.lock`);
+//
+// `defaultPortLockDir` is computed lazily so tests can pass an
+// isolated tmpdir (no host-wide lock pollution); the allocator below
+// falls through to the default.
+export const defaultPortLockDir = (): string => path.join(os.homedir(), '.devstack', 'ports');
+const portLockPath = (dir: string, port: number): string => path.join(dir, `${port}.lock`);
 // `true` if successfully claimed; `false` if another LIVE process holds the lock.
 // Treats stale locks (referenced pid no longer exists) as reusable: we delete
-// the stale file and retry the create.
-const claimPortLock = (port: number): boolean => {
+// the stale file and retry the create. Exported for unit tests; production
+// callers go through PortAllocator.allocate.
+export const claimPortLock = (port: number, dir: string = defaultPortLockDir()): boolean => {
 	try {
-		fs.mkdirSync(portLockDir, { recursive: true });
-		fs.writeFileSync(portLockPath(port), String(process.pid), { flag: 'wx' });
+		fs.mkdirSync(dir, { recursive: true });
+		fs.writeFileSync(portLockPath(dir, port), String(process.pid), { flag: 'wx' });
 		return true;
 	} catch (err) {
 		if ((err as NodeJS.ErrnoException).code !== 'EEXIST') return false;
 	}
 	// Lock exists: check if its pid is alive. `kill(pid, 0)` throws ESRCH for dead.
 	try {
-		const raw = fs.readFileSync(portLockPath(port), 'utf8').trim();
+		const raw = fs.readFileSync(portLockPath(dir, port), 'utf8').trim();
 		const pid = Number.parseInt(raw, 10);
 		if (Number.isFinite(pid) && pid > 0) {
 			try {
@@ -100,19 +105,19 @@ const claimPortLock = (port: number): boolean => {
 		// Unreadable lock file: treat as stale and try to overwrite
 	}
 	try {
-		fs.unlinkSync(portLockPath(port));
-		fs.writeFileSync(portLockPath(port), String(process.pid), { flag: 'wx' });
+		fs.unlinkSync(portLockPath(dir, port));
+		fs.writeFileSync(portLockPath(dir, port), String(process.pid), { flag: 'wx' });
 		return true;
 	} catch {
 		return false;
 	}
 };
-const releasePortLock = (port: number): void => {
+export const releasePortLock = (port: number, dir: string = defaultPortLockDir()): void => {
 	try {
-		const raw = fs.readFileSync(portLockPath(port), 'utf8').trim();
+		const raw = fs.readFileSync(portLockPath(dir, port), 'utf8').trim();
 		// Only delete if WE wrote the lock — defensive against a racing
 		// process that already cleaned ours and wrote its own pid.
-		if (raw === String(process.pid)) fs.unlinkSync(portLockPath(port));
+		if (raw === String(process.pid)) fs.unlinkSync(portLockPath(dir, port));
 	} catch {
 		// missing / unreadable: nothing to do
 	}

@@ -14,10 +14,11 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node
 import * as net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Effect, Layer } from 'effect';
+import { Effect, Exit, Layer } from 'effect';
 import { layer as NodeServicesLayer } from '@effect/platform-node/NodeServices';
 import { afterEach, beforeEach, describe, expect, it } from '@effect/vitest';
 import { Identity } from '../internal/identity.js';
+import { PortAllocatorLive } from '../internal/port-allocator.js';
 import { EndpointRegistryLive } from '../internal/registries.js';
 import { hostProcess } from './host-process.js';
 
@@ -185,6 +186,65 @@ describe('hostProcess with traefik option', () => {
 // stream every line (e.g. vite output) into the supervisor's log channel
 // without authoring a regex probe — what the supervisor relies on to
 // pipe a step's narration into TUI / plain renderers.
+
+// -----------------------------------------------------------------------------
+// `hostProcess({ traefik })` — port-source validation
+// -----------------------------------------------------------------------------
+//
+// The post-spawn traefik publish step needs to know which upstream
+// port to point the file-provider YAML at. Two valid sources:
+//   1. `port: { preferred }` — supervisor allocates and exposes it as
+//      `$PORT` to the child + uses it as the upstream.
+//   2. `traefik.localPort` — caller-supplied verbatim.
+//
+// If neither is set, silently writing the YAML with no upstream port
+// would route traefik to host:0 and every request would 502. The
+// primitive fails fast with a clear message instead. This test pins
+// that contract — without it, a future refactor that drops the guard
+// would surface as opaque router 502s in production.
+
+describe('hostProcess({ traefik }) port-source validation', () => {
+	it.effect(
+		'fails fast when traefik is set but neither port:{preferred} nor traefik.localPort is provided',
+		() =>
+			Effect.gen(function* () {
+				const hp = hostProcess({
+					name: 'frontend.dev-server',
+					command: process.execPath,
+					// Short-lived child — the failure fires post-spawn, so
+					// we want the process to exit quickly so the scoped
+					// finalizer doesn't have to SIGTERM-wait.
+					args: ['-e', 'setTimeout(() => process.exit(0), 200)'],
+					// `traefik` set, but neither port: nor traefik.localPort.
+					traefik: { service: 'dev', entrypoint: 'vite' },
+				});
+
+				const baseLayer = Layer.mergeAll(
+					identityLayer,
+					NodeServicesLayer,
+					EndpointRegistryLive,
+					PortAllocatorLive,
+				);
+				const stackResolved = Layer.provide(hp.__layer, baseLayer);
+
+				const exit = yield* Effect.scoped(
+					Effect.gen(function* () {
+						return yield* hp;
+					}).pipe(Effect.provide(stackResolved as Layer.Layer<unknown, unknown, never>)),
+				).pipe(Effect.exit);
+
+				// Match on the tagged-error name + a stable message
+				// fragment via the Cause's pretty string so phrasing
+				// tweaks don't break the test.
+				expect(Exit.isFailure(exit)).toBe(true);
+				if (Exit.isFailure(exit)) {
+					const pretty = String(exit.cause);
+					expect(pretty).toContain('HostProcessError');
+					expect(pretty).toContain('traefik requires either');
+				}
+			}),
+	);
+});
 
 describe('hostProcess with onOutputLine', () => {
 	// SKIPPED: scope teardown hangs because the forked Stream.runFold drainer

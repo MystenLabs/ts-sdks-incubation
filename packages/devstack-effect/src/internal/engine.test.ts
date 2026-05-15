@@ -5,7 +5,7 @@
 // isolation: phase narration + the implicit clear-on-terminal logic that
 // keeps `(running genesis)` from sticking to a `ready` row.
 
-import { Cause, Context, Effect, Layer, Ref } from 'effect';
+import { Cause, Context, Deferred, Effect, Layer, Ref } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 import { EngineHandle, EngineLive, type EngineHandleShape } from './engine.js';
 import { DockerError, PublishError } from '../primitives/errors.js';
@@ -85,6 +85,67 @@ describe('EngineHandle.setPhase', () => {
 			yield* engine.setPhase('phantom', 'starting');
 			const state = yield* Ref.get(engine.tuiState);
 			expect(state.entries.length).toBe(0);
+		}),
+	);
+});
+
+describe('EngineHandle.requestRestart — Deferred signaling', () => {
+	// Hot-restart triggers (file watcher, SIGUSR2, TUI `r`) all converge
+	// on `requestRestart`. The launch loop awaits `restartSignal`'s
+	// current Deferred; `requestRestart` succeeds it. Pinning two
+	// invariants here:
+	//
+	//   1. A second `requestRestart` against the same already-succeeded
+	//      Deferred is a noop (Deferred.succeed is idempotent). Without
+	//      this, a flurry of fs.watch events arriving inside the 250ms
+	//      debounce window would each try to "re-fire" the signal —
+	//      harmless because the launch loop is already racing toward
+	//      teardown, but the test pins it so a future refactor that
+	//      replaced the Deferred with a Queue / Stream doesn't
+	//      accidentally double-queue.
+	//
+	//   2. After `resetRestartSignal` swaps in a fresh Deferred, the
+	//      previous (already-succeeded) one stays resolved — the launch
+	//      loop reads `restartSignal` once at the top of each cycle, so
+	//      a stale Deferred reference must remain valid for an in-flight
+	//      `Deferred.await`.
+
+	it.effect('a second requestRestart against the same Deferred is a noop', () =>
+		Effect.gen(function* () {
+			const engine = yield* buildEngine();
+			const before = yield* Ref.get(engine.restartSignal);
+
+			yield* engine.requestRestart;
+			yield* engine.requestRestart;
+
+			// Same Deferred, both succeeded. `Deferred.await` resolves
+			// immediately on the second succeed without throwing.
+			yield* Deferred.await(before);
+			const after = yield* Ref.get(engine.restartSignal);
+			// Ref still holds the same Deferred — requestRestart doesn't
+			// rotate it; only resetRestartSignal does.
+			expect(after).toBe(before);
+		}),
+	);
+
+	it.effect('resetRestartSignal swaps in a fresh Deferred without disturbing the resolved one', () =>
+		Effect.gen(function* () {
+			const engine = yield* buildEngine();
+			const before = yield* Ref.get(engine.restartSignal);
+			yield* engine.requestRestart;
+
+			yield* engine.resetRestartSignal;
+			const after = yield* Ref.get(engine.restartSignal);
+
+			// New Deferred installed.
+			expect(after).not.toBe(before);
+			// The OLD Deferred is still resolved — a fiber that captured
+			// it pre-reset can still await it without hanging.
+			yield* Deferred.await(before);
+			// The NEW one is unresolved (no requestRestart against it
+			// yet). `isDone` is the cheapest probe.
+			const isDone = yield* Deferred.isDone(after);
+			expect(isDone).toBe(false);
 		}),
 	);
 });
