@@ -1,3 +1,11 @@
+// manifest — emit `.devstack/manifest.json` (or
+// `.devstack/stacks/<stack>/manifest.json` on non-main stacks). The
+// sidecar is read by dapp-kit + e2e fixtures + frontend code at boot
+// to wire URLs / package ids / coin types to the values the supervisor
+// just produced. Optional `extras` accepts a literal record, a sync
+// function, or an Effect — see the `extras` field's JSDoc and the
+// SECURITY note.
+
 import { Effect, Schedule } from 'effect';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';

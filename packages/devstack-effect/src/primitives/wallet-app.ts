@@ -1,3 +1,11 @@
+// walletApp — stand up the dev-only signing server that backs
+// `@mysten-incubation/devstack-wallet-panels`. Binds an HTTP listener
+// (default loopback), exposes a one-shot `pairUrl` carrying a token,
+// and signs transactions with the resolved Account values for the
+// declared accounts. Only fit for local dev use — the signing
+// endpoints aren't authenticated beyond the pairing token, and the
+// allowed-origins list is the only CSRF defense.
+
 import { randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { Effect } from 'effect';
@@ -31,10 +39,37 @@ export interface WalletApp {
 }
 
 export interface WalletAppOptions<Name extends string> {
+	/** Tag name for this primitive. Defaults to `'wallet-app'`. */
 	readonly name?: Name;
+	/**
+	 * Accounts whose signers the wallet exposes for browser-driven
+	 * signing. Each tag is yielded for ordering (so accounts are funded
+	 * before the server accepts traffic) and the resolved `Account`
+	 * value is keyed by address into the sign handler.
+	 */
 	readonly accounts: ReadonlyArray<PluginTag<any, Account, any, any>>;
+	/**
+	 * Extra CORS origins to accept on the signing endpoints, on top of
+	 * the auto-derived `http://dev.<app>.localhost` (and stack-scoped
+	 * variants for non-`main` stacks) plus `http://localhost`. Pass the
+	 * exact origin (scheme + host + port) of any browser surface that
+	 * pairs with the wallet — devstack rejects everything else.
+	 */
 	readonly allowedOrigins?: ReadonlyArray<string>;
+	/**
+	 * Preferred host port. Routed through `PortAllocator`, so a sibling
+	 * stack already holding the preferred number causes a forward scan.
+	 * Defaults to 5180. The actual bound port surfaces on the resolved
+	 * tag's `localPort`; the public `url` is the router-fronted URL.
+	 */
 	readonly port?: number;
+	/**
+	 * Network interface the HTTP server binds. Defaults to `'0.0.0.0'`
+	 * so traefik (running inside docker) can reach the wallet via
+	 * `host.docker.internal:<port>`. Override to `'127.0.0.1'` for
+	 * non-router setups, or to a specific interface for devcontainers /
+	 * WSL where the browser lives on a different network.
+	 */
 	readonly bindAddress?: string;
 }
 

@@ -84,10 +84,14 @@ const dev = hostProcess({
 	endpoint: { name: 'dev-server', kind: 'dev-server' },
 	traefik: { service: 'dev', entrypoint: 'vite' },
 	// `SealKeyServer` here pins the dev-server behind seal's acquire.
-	// The interface tag is yieldable but TS treats it as a bare
-	// Context.Service rather than a `PluginTag`; the cast is safe
-	// because `dependsOn` only uses the yield for ordering (the engine
-	// reads no fields off the tag value).
+	// The interface tag is yieldable but TS types it as a bare
+	// `Context.Service` rather than a `PluginTag`; the `as never`
+	// cast satisfies `dependsOn`'s `PluginTag<…>` array slot. Safe
+	// because the engine only consumes `dependsOn` for ordering
+	// (yields each entry, discards the value). `SealKeyManager`
+	// isn't in the list because the dev-server itself only needs the
+	// SERVER to be ready — the seal client in the browser fetches
+	// session keys directly.
 	dependsOn: [vaultPublish, SealKeyServer as never, wallet],
 });
 
