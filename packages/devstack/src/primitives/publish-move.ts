@@ -18,8 +18,8 @@ import { buildMove, scrubCachedMoveLocks } from '../engine/sui-cli.js';
 import { PackageRegistry, CoinRegistry } from '../engine/registries.js';
 import { StateStore } from '../engine/state-store.js';
 import { PublishError } from './errors.js';
-import type { LocalPackageShape } from '../interfaces/package.js';
-import { toSdkCoin } from '../interfaces/coin.js';
+import type { LocalPackageShape } from '../services/package.js';
+import { toSdkCoin } from '../services/package.js';
 import type { Account, SuiObjectChange } from './shared.js';
 import { pickCreatedByTypeSuffix } from './sui-helpers.js';
 
@@ -97,7 +97,7 @@ export interface PublishedCoin extends CoinSpec {
 
 // Per-call shape returned by `publishMove`. Carries the universal
 // `LocalPackageShape` fields (so the per-name tag satisfies the
-// `LocalPackage` contract in `interfaces/package.ts` structurally) plus
+// `LocalPackageTag` contract in `services/package.ts` structurally) plus
 // `coins` — a typed record of the published coin specs the caller
 // declared. `bindings` keys off `LocalPackageShape` so a known-package
 // tag (which only satisfies `PackageShape`) is rejected at compose time.

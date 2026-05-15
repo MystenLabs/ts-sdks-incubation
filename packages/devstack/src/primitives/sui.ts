@@ -1,11 +1,11 @@
 // Sui chain primitives.
 //
-// Phase 3 collapsed the previously-internal `class Sui` here onto the
-// canonical interface tag in `src/interfaces/sui.ts`. We re-export it so
-// downstream primitives (`seal`, `walrus`, `accounts`, `publish-move`,
-// `wallet-app`, `tx`, `deepbook`) keep their existing `import { Sui }
-// from './sui.js'` paths working — both refer to the SAME class
-// (Context key `'@devstack/Sui'`).
+// The canonical Sui tag class (`SuiTag`, Context key `'@devstack/Sui'`)
+// lives at the top of `src/services/sui.ts` alongside the public-surface
+// `Sui` factory. This file imports `SuiTag as Sui` so downstream
+// primitives (`seal`, `walrus`, `accounts`, `publish-move`, `wallet-app`,
+// `tx`, `deepbook`) keep their existing `import { Sui } from './sui.js'`
+// paths working — they refer to the SAME runtime class.
 //
 // Factory shape:
 //
@@ -29,7 +29,7 @@ import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
 import * as Docker from '../engine/docker.js';
 import { routerEntrypoint } from '../engine/docker/router.js';
 import type { Endpoint } from '../engine/endpoint.js';
-import { Sui, type SuiShape } from '../interfaces/sui.js';
+import { SuiTag as Sui, type SuiShape } from '../services/sui.js';
 import { stringifyCause } from '../engine/stringify-cause.js';
 import { Identity } from '../engine/identity.js';
 import { EndpointRegistry } from '../engine/registries.js';
@@ -41,8 +41,8 @@ import type { StackMember } from '../engine/supervisor.js';
 import { SuiError } from './errors.js';
 
 // Re-export the canonical Sui tag so downstream primitives keep their
-// existing `import { Sui } from './sui.js'` paths. `Sui` here and `Sui`
-// in `interfaces/sui.ts` are the SAME class (shared Context key).
+// existing `import { Sui } from './sui.js'` paths. `Sui` here is just
+// `SuiTag` from `services/sui.ts` aliased — same class, same key.
 export { Sui, type SuiShape };
 
 export type SuiNetwork = 'localnet' | 'testnet' | 'mainnet';

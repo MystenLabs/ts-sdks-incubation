@@ -167,7 +167,7 @@ export {
 	DeepbookAdmin,
 	type DeepbookAdminShape,
 	type DeepbookMarketMakerShape,
-} from './interfaces/index.js';
+} from './services/index.js';
 
 // `TagIdentity<Name>` is the per-name structural Service type Refs
 // carry on their `R` channel. Re-exported so consumers of yielded Refs

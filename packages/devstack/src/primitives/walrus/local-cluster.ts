@@ -23,7 +23,7 @@ import {
 	type WalrusNodeInfo,
 	type WalrusNodesShape,
 	type WalrusProxyShape,
-} from '../../interfaces/walrus.js';
+} from '../../services/walrus.js';
 import { dockerImage, gitFetch } from '../../advanced/plugin-author/index.js';
 import { composeLayers, type PluginTag } from '../../advanced/tag.js';
 import { WalrusError } from '../errors.js';

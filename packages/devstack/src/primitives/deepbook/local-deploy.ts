@@ -18,9 +18,9 @@ import { DeepbookError } from '../errors.js';
 import {
 	DeepbookAdmin,
 	DeepbookCore,
-	DeepbookMarketMaker as DeepbookMarketMakerTag,
+	DeepbookMarketMakerTag,
 	type DeepbookCoreShape,
-} from '../../interfaces/deepbook.js';
+} from '../../services/deepbook.js';
 import type { Account, SuiObjectChange } from '../shared.js';
 import {
 	DEEPBOOK_ADMIN_CAP_TYPE_SUFFIX,

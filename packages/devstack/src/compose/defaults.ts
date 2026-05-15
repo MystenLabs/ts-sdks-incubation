@@ -10,8 +10,8 @@
 import { Sui as SuiFactory } from '../services/sui.js';
 import type { StackMember } from '../engine/supervisor.js';
 
-/** The canonical Context key for the Sui tag. Matches
- *  `@devstack/Sui` from `interfaces/sui.ts`. */
+/** The canonical Context key for the Sui tag. Matches the key on
+ *  `SuiTag` in `services/sui.ts` (`@devstack/Sui`). */
 const SUI_TAG_KEY = '@devstack/Sui';
 
 /** Auto-fill missing required providers. Today: Sui. Returns the

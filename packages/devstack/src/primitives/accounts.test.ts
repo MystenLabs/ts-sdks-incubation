@@ -25,8 +25,8 @@ import { EngineLive } from '../engine/engine.js';
 import { AccountRegistryLive } from '../engine/registries.js';
 import { LeasingLive } from '../engine/leasing.js';
 import { StateStoreConfig } from '../engine/state-store.js';
-import { Sui } from '../interfaces/sui.js';
-import type { SuiShape } from '../interfaces/sui.js';
+import { SuiTag as Sui } from '../services/sui.js';
+import type { SuiShape } from '../services/sui.js';
 import { AccountError, SuiError } from './errors.js';
 import { accounts } from './accounts.js';
 

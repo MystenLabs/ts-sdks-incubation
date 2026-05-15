@@ -11,7 +11,7 @@ import { Effect } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 import { bindings } from './bindings.js';
 import { makeTag } from '../advanced/tag.js';
-import type { PackageShape } from '../interfaces/package.js';
+import type { PackageShape } from '../services/package.js';
 
 describe('bindings type discipline', () => {
 	it('rejects packages that do not satisfy LocalPackageShape', () => {

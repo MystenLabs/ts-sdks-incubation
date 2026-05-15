@@ -12,7 +12,7 @@ import { Sui } from '../sui.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
 import { StateStore } from '../../engine/state-store.js';
 import { DeepbookError } from '../errors.js';
-import { DeepbookCore, type DeepbookPoolRef } from '../../interfaces/deepbook.js';
+import { DeepbookCore, type DeepbookPoolRef } from '../../services/deepbook.js';
 import type { Account, SuiObjectChange } from '../shared.js';
 import {
 	ORDER_TYPE_POST_ONLY,

@@ -1,7 +1,7 @@
 // Seal — Phase 6c multi-impl primitive.
 //
-// Two factories, both targeting the narrow interface tags in
-// `src/interfaces/seal.ts`:
+// Two factories, both targeting the narrow interface tag classes in
+// `src/services/seal.ts` (`SealKeyServer` + `SealKeyManager`):
 //
 //   sealLocalKeygen(opts) — full local stack. Builds the seal image,
 //     runs `seal-cli genkey`, publishes the seal Move package,
@@ -55,7 +55,7 @@ import {
 	SealKeyServer,
 	type SealKeyManagerShape,
 	type SealKeyServerShape,
-} from '../interfaces/seal.js';
+} from '../services/seal.js';
 import { composeLayers, provideTag, setPhase, type PluginTag } from '../advanced/tag.js';
 import type { StackMember } from '../engine/supervisor.js';
 import { Sui, suiNetworkName } from './sui.js';

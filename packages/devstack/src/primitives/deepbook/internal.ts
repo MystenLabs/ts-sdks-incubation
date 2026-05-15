@@ -13,7 +13,7 @@ import { DeepbookError } from '../errors.js';
 import {
 	type DeepbookCoreShape,
 	type DeepbookPoolRef,
-} from '../../interfaces/deepbook.js';
+} from '../../services/deepbook.js';
 
 // -----------------------------------------------------------------------------
 // Constants
