@@ -9,7 +9,7 @@ import {
 	hostProcess,
 	type HostProcessOptions,
 	type ReadyProbe,
-} from '../primitives/host-process.js';
+} from './dev/internal.js';
 import type { Ref } from '../advanced/tag.js';
 
 export interface DevOptions<E = never, R = never> {
