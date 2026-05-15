@@ -9,7 +9,7 @@
 
 import { Effect } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
-import { bindings } from './bindings.js';
+import { bindings } from './bindings/internal.js';
 import { tag } from '../advanced/tag.js';
 import type { PackageShape } from '../services/package.js';
 

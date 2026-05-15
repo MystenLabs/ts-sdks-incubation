@@ -1,4 +1,3 @@
-export { bindings, type BindingsOptions, type BindingsResult } from './bindings.js';
 export {
 	dockerContainer,
 	type DockerContainerHandle,
