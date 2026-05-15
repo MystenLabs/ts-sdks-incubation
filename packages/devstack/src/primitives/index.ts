@@ -51,18 +51,5 @@ export type {
 	Transaction,
 	TxResult,
 } from './shared.js';
-export {
-	deepbookKnownPackage,
-	deepbookLocalDeploy,
-	deepbookMarketMaker,
-	type DeepbookKnownPackageOptions,
-	type DeepbookLocalDeployOptions,
-	type DeepbookLocalDeployShape,
-	type DeepbookMarketMakerHandle,
-	type DeepbookMarketMakerOptions,
-	type DeepbookMarketMakerPoolSpec,
-	type DeepbookPool,
-	type DeepbookPoolSpec,
-} from './deepbook/index.js';
 export { tx, type TxOptions } from './tx.js';
 export { walletApp, type WalletApp, type WalletAppOptions } from './wallet-app.js';

@@ -9,19 +9,19 @@ import * as crypto from 'node:crypto';
 import { Effect, Layer, Option } from 'effect';
 import { Transaction } from '@mysten/sui/transactions';
 import { tag, provide, type Ref } from '../../advanced/tag.js';
-import { SuiTag } from '../../services/sui.js';
-import { publishMove, pickCreatedByTypeSuffix } from '../publish-move.js';
+import { SuiTag } from '../sui.js';
+import { publishMove, pickCreatedByTypeSuffix } from '../../primitives/publish-move.js';
 import { PackageRegistry } from '../../engine/registries.js';
 import { StateStore } from '../../engine/state-store.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
-import { DeepbookError } from '../errors.js';
+import { DeepbookError } from '../../primitives/errors.js';
 import {
 	DeepbookAdmin,
 	DeepbookCore,
 	DeepbookMarketMakerTag,
 	type DeepbookCoreShape,
-} from '../../services/deepbook.js';
-import type { Account, SuiObjectChange } from '../shared.js';
+} from '../deepbook.js';
+import type { Account, SuiObjectChange } from '../../primitives/shared.js';
 import {
 	DEEPBOOK_ADMIN_CAP_TYPE_SUFFIX,
 	DEEPBOOK_REGISTRY_TYPE_SUFFIX,
