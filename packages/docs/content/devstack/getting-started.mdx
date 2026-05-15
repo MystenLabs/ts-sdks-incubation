@@ -1,198 +1,112 @@
 ---
-title: Getting Started
+title: Getting started
+description: Scaffold a new app, run the supervisor, read the manifest.
 ---
 
-A devstack-backed app gives you a Sui localnet, a fresh `publishMove` of your Move package, a
-dev wallet, and a Vite frontend — all wired together. This page takes you from zero to e2e tests
-passing.
-
-## Prerequisites
-
-- **Docker** running. Devstack builds a native-architecture Sui image and runs Walrus/Seal in
-  containers; the daemon needs to be reachable.
-- **Node 24+** and **pnpm 10**. The template uses pnpm workspaces and `engines.node >= 24`.
-- **`sui` CLI on `PATH`** (optional but recommended). Devstack ships its own Sui in Docker for
-  localnet, but the host CLI is used to build Move packages during `publishMove`. The
-  [Sui install guide](https://docs.sui.io/guides/developer/getting-started/sui-install) covers
-  the standard `brew`/`cargo` paths.
-
-<Callout type="info">
-	First `pnpm dev` builds the Sui Docker image natively (~5 min on Apple Silicon). Walrus
-	(~10 min) and Seal (~5–8 min) only build if the example uses them. Subsequent runs hit the
-	Docker layer cache and start in seconds.
-</Callout>
-
-## Scaffold a new app
+## Scaffold
 
 ```bash
-pnpm create @mysten-incubation/devstackpp my-app
+pnpm create devstack-app my-app
 cd my-app
+pnpm install
+```
+
+The scaffold gives you:
+
+- `devstack.config.ts` — the single source of truth for your stack.
+- `move/` — an empty Move package (`./move/hello`) you can ignore or
+  expand.
+- `src/main.tsx` — a React app that reads `./generated/manifest.json`
+  via `fromManifest()`.
+- `playwright.config.ts` and an example `e2e/smoke.spec.ts`.
+- `vitest.config.ts` and a sample `tests/balance.test.ts`.
+
+## Boot the stack
+
+```bash
 pnpm dev
 ```
 
-The scaffolder copies the canonical [`examples/_template`](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/examples/_template)
-into `my-app/`, substitutes the app name into `package.json` and `devstack.config.ts`, runs
-`pnpm install`, and initializes git. The resulting app has:
+The TUI shows each Ref's lifecycle (`pending` → `acquiring` →
+`ready`). Localnet runs as a docker container labelled
+`devstack.app=my-app`; quit with `q` and devstack tears it down. Force
+a full restart with `r`; one Ref failing leaves siblings running so
+you can fix it and retry.
 
-```
-my-app/
-├── devstack.config.ts        # plugins + accounts + setup actions
-├── playwright.config.ts      # devstack/playwright wiring
-├── vite.config.ts
-├── vitest.config.ts
-├── package.json              # pnpm dev / test / test:e2e / build
-├── move/hello/               # one Move package with one entry function
-├── src/
-│   ├── App.tsx               # Card + ConnectButton + mint button
-│   ├── main.tsx              # <DAppKitProvider> wiring
-│   ├── dapp-kit.ts           # createDevstackDappKit({ manifest })
-│   └── index.css
-└── e2e/mint.spec.ts          # connect-and-mint flow
-```
+## Anatomy of `devstack.config.ts`
 
-### `pnpm dev`
-
-Boots the supervisor. The TUI shows one row per primitive (sui.localnet → accounts → hello
-publish → wallet-app → vite). When every row reads green, your stack is live:
-
-- Frontend at the URL the TUI logs (`http://dev.my-app.localhost:5179` or similar).
-- Dev wallet panel embedded in the page, pre-funded `alice` and `bob` accounts ready to sign.
-- `.devstack/manifest.json` written with package IDs and endpoint URLs — your frontend reads it
-  through `createDevstackDappKit`.
-- Move source changes trigger `publishMove` → bindings regen → Vite HMR.
-
-Press `r` to restart the whole stack, `q` (or Ctrl-C) to shut everything down cleanly.
-
-### `pnpm test:e2e`
-
-Runs Playwright against the **same** stack. The `playwright.config.ts` template hands
-`devstack.config.ts` to the Playwright `webServer` helper, which reads `.devstack/manifest.json`
-to find the dev-server URL and reuses an already-running supervisor when present.
+The generated file looks like:
 
 ```ts
-// e2e/mint.spec.ts
-import { connectAs, expect, test } from '@mysten-incubation/devstack/playwright';
+import { devstack, Sui, Account, Package, Bindings, Dev } from '@mysten-incubation/devstack';
 
-test('alice sends a greeting', async ({ page }) => {
-	await connectAs(page, 'alice');
-	await expect(page.getByTestId('package-id')).not.toHaveText('0x0');
-	await page.getByTestId('mint-button').click();
-	await expect(page.getByTestId('mint-tx')).toBeVisible({ timeout: 20_000 });
-});
+const alice = Account('alice', { funding: { SUI: 1_000_000_000n } });
+const hello = Package('hello', './move/hello', { signer: alice });
+
+export default devstack(
+	Sui(),
+	alice,
+	hello,
+	Bindings({ packages: [hello], output: './src/generated' }),
+	Dev({ command: 'vite', args: ['--port', '5173'] }),
+);
 ```
 
-`connectAs(page, 'alice')` clicks the connect button, picks the Dev Wallet from the modal, and
-retargets dApp Kit's current account to whichever account the devstack config registered as
-`alice`. See [E2E with Playwright](/devstack/guides/e2e-with-playwright) for the full surface.
+Every line returns a **Ref** — a typed handle that's simultaneously
+an Effect Layer, a yieldable tag (`yield* hello` resolves to the
+published package's `{packageId, captured, …}`), and a value you can
+pass into other factories (`signer: alice`). The supervisor composes
+them into one layered graph, orders acquisition by dependency, and
+holds them open until you quit. [Refs and tags](./concepts/refs-and-tags)
+covers the model.
 
-## Read your `devstack.config.ts`
+## Read the manifest
 
-The template ships this config. Each primitive is one declarative call; the order is the
-dependency order.
+Once the stack is up, every consumer reads from one place:
 
 ```ts
-// devstack.config.ts
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { Effect } from 'effect';
-import {
-	accounts,
-	defineDevstack,
-	hostProcess,
-	manifest,
-	publishMove,
-	suiLocalnet,
-	tx,
-	walletApp,
-} from '@mysten-incubation/devstack';
+import { fromManifest } from '@mysten-incubation/devstack';
+import manifestJson from './generated/manifest.json' with { type: 'json' };
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-const a = accounts({ alice: {}, bob: {} });
-
-const helloPublish = publishMove({
-	name: 'hello',
-	path: resolve(HERE, 'move/hello'),
-	signer: a.alice,
-});
-
-const mintGreeting = tx({
-	name: 'mint-greeting',
-	signer: a.alice,
-	dependsOn: [helloPublish],
-	build: (t) =>
-		Effect.gen(function* () {
-			const pkg = yield* helloPublish;
-			t.moveCall({
-				target: `${pkg.packageId}::hello::mint`,
-				arguments: [t.pure.vector('u8', Array.from(new TextEncoder().encode('hello, sui')))],
-			});
-		}),
-});
-
-const wallet = walletApp({
-	accounts: [a.alice, a.bob],
-	allowedOrigins: ['http://localhost:5179'],
-});
-
-const dev = hostProcess({
-	name: 'frontend.dev-server',
-	command: 'pnpm',
-	args: ['exec', 'vite', '--port', '5179'],
-	readyProbe: { kind: 'http', url: 'http://localhost:5179', timeoutMs: 60_000 },
-	endpoint: { name: 'dev-server', kind: 'dev-server' },
-	dependsOn: [helloPublish, wallet],
-});
-
-export default defineDevstack([
-	suiLocalnet(),
-	a.alice,
-	a.bob,
-	helloPublish,
-	mintGreeting,
-	manifest(),
-	wallet,
-	dev,
-]);
+const manifest = fromManifest(manifestJson);
+const rpcUrl = manifest.services.sui?.rpc.url;          // 'http://sui.my-app.localhost:9000'
+const packageId = manifest.packages.hello.id;           // '0x...' (new on every chain wipe)
+const aliceAddress = manifest.accounts.alice.address;   // '0x...' (stable per stack)
 ```
 
-What each piece does:
+The manifest is regenerated whenever the supervisor's state changes —
+package republished, account refunded, walrus deployed — so apps that
+read it always see the live values without coordinating their own
+cache invalidation.
 
-- **`suiLocalnet()`** — builds and runs the Sui localnet container with an embedded faucet.
-  Provides the `Sui` service used by every downstream primitive.
-- **`accounts({ alice, bob })`** — creates two Ed25519 keypairs, persists them under
-  `.devstack/stacks/main/.keys/`, and funds each from the faucet. Re-uses the same address
-  across restarts.
-- **`publishMove({ path, signer })`** — runs `sui move build` on the Move source tree, publishes
-  it as `alice`, and content-hashes the source so a no-op rebuild reuses the same `packageId`.
-- **`tx({ build })`** — signs and executes one transaction after the package is published. Same
-  shape works for any one-shot Sui transaction (mint, register, configure).
-- **`walletApp({ accounts })`** — stands up a dev-only signing server that backs the embedded
-  dev wallet. Browser connects, signing happens server-side with the resolved keys.
-- **`manifest()`** — writes `.devstack/manifest.json` with every package ID, endpoint URL, coin
-  type, and account address. Frontend reads this through `createDevstackDappKit`.
-- **`hostProcess(...)`** for Vite — the supervisor spawns Vite alongside the stack and waits for
-  `http://localhost:5179` to respond before declaring the row green.
+## Test against a real stack
 
-The frontend side:
+`pnpm test` runs vitest against a per-test stack named `test`. The
+fixture boots and tears down the same Refs your dev session uses, so
+unit tests never lie about what the production path does:
 
 ```ts
-// src/dapp-kit.ts
-import { createDevstackDappKit } from '@mysten-incubation/devstack/dapp-kit';
-import { manifest } from './generated/manifest.js';
+// tests/balance.test.ts
+import { devstackTest } from '@mysten-incubation/devstack/vitest';
+import config from '../devstack.config.js';
 
-export const { dAppKit } = await createDevstackDappKit({ manifest });
+const test = devstackTest(config);
+
+test('alice receives funding at boot', async ({ stack }) => {
+	const alice = await stack.account('alice');
+	const balance = await stack.client().getBalance({ owner: alice.address });
+	expect(BigInt(balance.totalBalance)).toBeGreaterThan(0n);
+});
 ```
 
-`createDevstackDappKit` reads the manifest, builds a `SuiGrpcClient` pointed at the localnet
-RPC, sets up [MVR overrides](/devstack/reference/dapp-kit#mvr-overrides) so your Move
-placeholders resolve to live package IDs, registers the dev wallet, and mounts the panel UI.
+`pnpm test:e2e` does the same for Playwright. The `webServer` config
+just spreads `playwrightWebServer({ endpoint: 'dev-server' })` — the
+URL is sourced from the manifest, so Playwright never races the
+supervisor for port allocation.
 
-## What's next
+## Next
 
-- **Add another Move package** — duplicate the `publishMove` call. See [Publish a
-  Move package](/devstack/guides/publish-move).
-- **Stand up Walrus / Seal / DeepBook** — [Walrus](/devstack/guides/walrus),
-  [Seal](/devstack/guides/seal), [DeepBook](/devstack/guides/deepbook).
-- **Write e2e tests** — [E2E with Playwright](/devstack/guides/e2e-with-playwright).
-- **Run against testnet in CI** — [Networks and accounts](/devstack/guides/networks-and-accounts).
-- **Understand the model** — [Concepts](/devstack/concepts).
+- [Refs and tags](./concepts/refs-and-tags) — the substrate model.
+- [Service reference](./reference/services) — every built-in factory.
+- [CLI reference](./reference/cli) — `devstack up`, `apply`, `wipe`,
+  `doctor`.

@@ -1,0 +1,133 @@
+---
+title: Writing a plugin
+description: A small docker-backed service as a Ref.
+---
+
+A "plugin" in devstack is just a function that returns a Ref. There's
+no plugin registry, no manifest, no API to opt into — write a function
+that takes options, builds an Effect body, wraps it with `tag(...)` or
+`provide(...)`, and returns the result.
+
+## Example: a Redis sidecar
+
+```ts
+// my-app/devstack/redis.ts
+import { Effect } from 'effect';
+import { Context } from 'effect';
+import { tag, dockerContainer, setPhase } from '@mysten-incubation/devstack/advanced';
+
+export interface RedisShape {
+	readonly url: string;
+	readonly host: string;
+	readonly port: number;
+}
+
+export class RedisTag extends Context.Service<RedisTag, RedisShape>()(
+	'@my-app/Redis',
+) {}
+
+export interface RedisOptions {
+	readonly version?: string;
+	readonly port?: number;
+}
+
+export const Redis = (opts: RedisOptions = {}) =>
+	tag(
+		'redis',
+		Effect.gen(function* () {
+			yield* setPhase('starting');
+			const handle = yield* dockerContainer({
+				name: 'redis',
+				image: `redis:${opts.version ?? '7-alpine'}`,
+				ports: { 6379: opts.port ?? 6379 },
+				ready: { kind: 'tcp', port: 6379 },
+			});
+			const port = handle.hostPorts[6379];
+			return {
+				url: `redis://localhost:${port}`,
+				host: 'localhost',
+				port,
+			} satisfies RedisShape;
+		}),
+		{
+			kind: 'service',
+			displayTitle: 'redis',
+			display: (s) => ({ title: 'redis', primary: s.url }),
+		},
+	);
+```
+
+Drop it into your config:
+
+```ts
+// devstack.config.ts
+import { devstack, Sui, Account } from '@mysten-incubation/devstack';
+import { Redis } from './devstack/redis.js';
+
+export default devstack(Sui(), Account('alice'), Redis());
+```
+
+Now `yield* RedisTag` works anywhere inside your stack, and the TUI
+shows a `redis` row alongside the built-in services.
+
+## Anatomy
+
+A plugin function does three things:
+
+1. **Yield the dependencies it needs.** `yield* SuiTag` if it joins
+   the sui docker network. `yield* alice` if it signs as that account.
+   The supervisor wires acquisition order from these yields.
+2. **Acquire its own resources.** Reach for `dockerImage`,
+   `dockerContainer`, `gitFetch`, `hostScript`, `hostProcess` from
+   `/advanced`. Or roll your own — anything that returns an
+   `Effect<Shape, Error, Scope>` works.
+3. **Return the resolved shape.** Whatever value `yield* mything`
+   should produce.
+
+The `tag(...)` wrap takes care of engine lifecycle (`pending` →
+`acquiring` → `ready`), the TUI projection (`kind` / `displayTitle`
+/ `display`), and optional file-watch declarations (`watch: [...]`).
+
+## When to use `provide` instead
+
+If your factory is one of several implementations of the same
+interface (`MyRedis({mode: 'sentinel'})`, `MyRedis({mode: 'cluster'})`,
+both yielding the same `RedisTag`), use `provide(RedisTag, body, opts)`
+inside each branch instead of `tag('redis', …)`. The factory at the
+top level wraps the branch selection:
+
+```ts
+export const Redis = (opts: RedisOptions = {}) => {
+	if (opts.mode === 'sentinel') return provide(RedisTag, sentinelBody, ...);
+	if (opts.mode === 'cluster') return provide(RedisTag, clusterBody, ...);
+	return provide(RedisTag, soloBody, ...);
+};
+```
+
+`provide` mutates `RedisTag` so it doubles as a yieldable Ref. That's
+why `yield* RedisTag` resolves even though the body was passed as the
+second argument — the class itself is the Ref.
+
+## Composite plugins
+
+If your plugin produces multiple shapes (a database + an admin API +
+a backup process), use `composeTag` to surface inner Refs alongside
+the outer one. The seal and walrus implementations are the canonical
+examples — read their source for the pattern.
+
+## Watching the right paths
+
+If your plugin reads files from disk (a Move source tree, a config
+file, vendored binaries), declare them via `{watch}` so the
+supervisor hot-restarts your plugin when they change:
+
+```ts
+return tag('redis', body, {
+	kind: 'service',
+	watch: ['./redis.conf'],          // restart on config changes
+});
+```
+
+The supervisor logs `file change at ./redis.conf — owned by redis —
+restarting` and your plugin's child scope tears down + re-acquires.
+Sibling Refs stay alive.

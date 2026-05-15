@@ -1,0 +1,71 @@
+---
+title: Advanced
+description: Plug-in author escape hatches under `/advanced`.
+---
+
+`@mysten-incubation/devstack/advanced` exposes the substrate primitives
+that the built-in `Service(...)` factories are built on. Reach for
+these when you're writing a custom plugin — a new docker-backed
+service, a host process devstack doesn't know about, an integration
+with another tool.
+
+## Tag primitives
+
+- **`tag(name, body, opts?)`** — create a one-off Ref. See
+  [refs-and-tags](../concepts/refs-and-tags).
+- **`provide(TagClass, body, opts?)`** — implement an existing
+  Context.Service class. Use when your factory is one of several
+  implementations of a shared interface tag (e.g.  a custom Sui
+  implementation targeting `SuiTag`).
+- **`composeTag(name, body, innerTags, opts?)`** — composite Ref that
+  surfaces inner tags' layers via `__layers`. Use for primitives
+  whose body yields several sibling tags.
+- **`composeLayers({inner?, primary, projections?})`** — assemble a
+  provider-before-consumer ordered `__layers` array directly. Used by
+  multi-interface acquire bodies (`walrusLocalCluster`,
+  `sealLocalKeygen`) that don't want a throwaway outer tag class.
+- **`setPhase(phase)`** — push a sub-phase narration onto the
+  surrounding tag's TUI row. Reads the ambient tag key from
+  `CurrentTagKey` so primitive authors don't pass it manually.
+
+## Docker helpers
+
+- **`dockerImage(opts)`** — build a docker image from a context
+  directory. Cached by content hash; reused across cycles when the
+  context bytes match.
+- **`dockerOneShot(opts)`** — run a one-shot container, capture
+  stdout/exit code, fail with `DockerError` on non-zero.
+- **`dockerContainer(opts)`** — long-running container with
+  ready-probe + finalizer. Adopts a healthy existing container on
+  warm restart.
+- **`gitFetch(opts)`** — fetch a pinned git ref into a local cache
+  dir, optionally extracting a subdirectory.
+- **`hostScript(opts)`** — one-shot host process (not in docker).
+  Capture stdout, enforce timeout/SIGTERM/SIGKILL.
+
+## Known deployments
+
+`knownDeployments` carries the testnet + mainnet package ids for
+walrus, seal, deepbook. Use when wiring a `Walrus({mode: 'known'})` /
+`Seal({mode: 'known'})` / `Deepbook({mode: 'known'})` against a known
+network.
+
+```ts
+import { knownDeployments } from '@mysten-incubation/devstack';
+
+const testnetSealPackage = knownDeployments.testnet.seal?.packageId;
+```
+
+## Engine internals
+
+The `EngineHandle` service drives the TUI's per-Ref status. Bodies
+wrapped via `provide`/`tag` get lifecycle calls for free
+(`markAcquiring` → `markReady` / `markFailed`). Custom multi-interface
+acquire bodies that don't go through `provide` call into it directly —
+see `walrusLocalCluster`'s `acquireAndProject` for the canonical
+pattern.
+
+You rarely need this. The list of things `/advanced` re-exports is
+deliberately stable; the ones above are the load-bearing surface for
+custom plugins. Reading the source of `Sui`, `Walrus`, or `Seal` is
+the fastest way to understand a real plugin's shape.

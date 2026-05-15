@@ -1,0 +1,147 @@
+---
+title: Codegen
+description: The plug-in emitter interface that powers Bindings and DappKit.
+---
+
+`Codegen({ output, emitters, packages? })` runs a list of **emitters**
+against a resolved package set. Built-in emitters cover the common
+cases; user emitters drop in alongside as peers.
+
+## Built-in emitters
+
+### `BindingsEmitter`
+
+Move → TypeScript bindings via `@mysten/codegen`.
+
+```ts
+import { Codegen, BindingsEmitter } from '@mysten-incubation/devstack';
+
+Codegen({
+	output: './src/generated',
+	packages: [hello, world],
+	emitters: [BindingsEmitter({ importExtension: '.ts' })],
+});
+```
+
+Output lands at `<output>/bindings/<package-name>/`. Local packages
+emit fully; `KnownPackage(...)` entries are silently skipped — bindings
+need the upstream Move source to feed `sui move summary`.
+
+Atomic dir swap (stage → rename existing aside → rename staging in)
+means a Vite dev server never sees a half-written tree mid-cycle.
+
+### `DappKitEmitter`
+
+Generate a TS module that wires `createDAppKit({...})` against the
+manifest.
+
+```ts
+import { Codegen, DappKitEmitter } from '@mysten-incubation/devstack';
+
+Codegen({
+	output: './src/generated',
+	packages: [hello, deepbookV3],
+	emitters: [DappKitEmitter({ flavor: 'react' })],
+});
+```
+
+Flavors:
+
+- `'core'` — imports only `@mysten/dapp-kit-core`.
+- `'react'` (default) — adds the `declare module
+  '@mysten/dapp-kit-react'` `Register` block so `useDAppKit()` infers
+  the correct type.
+
+Output lands at `<output>/dapp-kit/index.ts`. MVR overrides are sorted
+alphabetically and the writer skips no-op writes (existing bytes ==
+new bytes), so file watchers don't trip spurious HMR cycles.
+
+## Writing your own emitter
+
+`defineEmitter({ name, emit })` is the contract:
+
+```ts
+import { Effect } from 'effect';
+import { defineEmitter, CodegenError } from '@mysten-incubation/devstack';
+import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
+
+const VersionListEmitter = defineEmitter({
+	name: 'version-list',
+	emit: (ctx) =>
+		Effect.gen(function* () {
+			const lines = ctx.packages
+				.map((p) => `${p.name}: ${p.packageId}`)
+				.sort();
+			const out = path.join(ctx.outputDir, 'versions.txt');
+			yield* Effect.tryPromise({
+				try: () => fs.writeFile(out, lines.join('\n') + '\n', 'utf-8'),
+				catch: (cause) =>
+					new CodegenError({
+						emitter: 'version-list',
+						phase: 'write',
+						message: `failed to write ${out}`,
+						cause,
+					}),
+			});
+		}),
+});
+
+// Drop into any `Codegen({...})`:
+Codegen({
+	output: './src/generated',
+	packages: [hello],
+	emitters: [VersionListEmitter],
+});
+```
+
+The `CodegenContext` your emit receives carries:
+
+```ts
+interface CodegenContext {
+	readonly packages: ReadonlyArray<CodegenPackage>;
+	readonly outputDir: string;
+}
+
+interface CodegenPackage {
+	readonly name: string;
+	readonly packageId: string;
+	readonly mvrPlaceholder: string;
+	readonly sourcePath?: string;   // undefined for KnownPackage refs
+	readonly captured?: Record<string, unknown>;
+}
+```
+
+Filter on `sourcePath` if your emitter needs the Move source tree;
+otherwise consume every entry.
+
+## Per-Package opt-out
+
+`Package(name, source, { codegen: false })` excludes a package from
+every `Codegen(...)` in the stack:
+
+```ts
+const internalHelper = Package('internal-helper', './move/internal', {
+	signer: alice,
+	codegen: false,
+});
+```
+
+The Ref stamps `__codegenExclude` on itself; every `Codegen` body
+filters refs carrying that marker out of the emit context.
+
+## Errors
+
+Every emitter failure flows through `CodegenError`:
+
+```ts
+class CodegenError extends Data.TaggedError('CodegenError')<{
+	readonly emitter: string;
+	readonly phase: 'read' | 'generate' | 'write';
+	readonly message: string;
+	readonly cause?: unknown;
+}> {}
+```
+
+The `emitter` field carries the name of the emitter that failed —
+multi-emitter runs report which one tripped.
