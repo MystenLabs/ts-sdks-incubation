@@ -17,7 +17,7 @@
 // originates from a published Package's coin registry.
 
 import { Context, Schema } from 'effect';
-import { publishMove, type CoinSpec, type PublishMoveOptions } from '../primitives/publish-move.js';
+import { publishMove, type CoinSpec, type PublishMoveOptions } from './package/internal.js';
 import { pickCreatedByTypeIncludes } from '../primitives/sui-helpers.js';
 import type { Account, SuiObjectChange } from '../primitives/shared.js';
 import type { Ref } from '../advanced/tag.js';

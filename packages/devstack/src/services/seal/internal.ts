@@ -59,7 +59,7 @@ import {
 import { composeLayers, provide, setPhase, type Ref } from '../../advanced/tag.js';
 import type { StackMember } from '../../engine/supervisor.js';
 import { SuiTag, suiNetworkName } from '../sui.js';
-import { publishMove } from '../../primitives/publish-move.js';
+import { publishMove } from '../package/internal.js';
 import { SealError } from '../../primitives/errors.js';
 import type { Account, SuiObjectChange } from '../../primitives/shared.js';
 

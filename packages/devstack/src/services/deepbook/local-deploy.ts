@@ -10,7 +10,7 @@ import { Effect, Layer, Option } from 'effect';
 import { Transaction } from '@mysten/sui/transactions';
 import { tag, provide, type Ref } from '../../advanced/tag.js';
 import { SuiTag } from '../sui.js';
-import { publishMove, pickCreatedByTypeSuffix } from '../../primitives/publish-move.js';
+import { publishMove, pickCreatedByTypeSuffix } from '../package/internal.js';
 import { PackageRegistry } from '../../engine/registries.js';
 import { StateStore } from '../../engine/state-store.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
