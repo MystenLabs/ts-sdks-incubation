@@ -81,6 +81,7 @@ export { Dev, type DevOptions } from './dev.js';
 export { Wallet, type WalletOptions } from './wallet.js';
 export { Bindings, type BindingsRefOptions } from './bindings.js';
 export { Codegen, type CodegenOptions } from './codegen.js';
+export { DappKit, type DappKitRefOptions } from './dapp-kit.js';
 export { KnownPackage, type KnownPackageOptions } from './known-package.js';
 export { Faucet, type FaucetOptions } from '../faucet/factory.js';
 export { FaucetTag, type FaucetStrategy, type FaucetShape } from '../faucet/service.js';
@@ -95,5 +96,10 @@ export {
 } from '../codegen/define-emitter.js';
 export { CodegenError } from '../codegen/errors.js';
 export { BindingsEmitter, type BindingsEmitterOptions } from '../codegen/emitters/bindings.js';
+export {
+	DappKitEmitter,
+	type DappKitEmitterOptions,
+	type DappKitFlavor,
+} from '../codegen/emitters/dapp-kit.js';
 export { type AccountRef, type PackageRef } from './ref.js';
 export { type Ref } from '../advanced/tag.js';
