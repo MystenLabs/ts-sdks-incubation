@@ -1,13 +1,13 @@
 import { Effect, Stream } from 'effect';
 import { ChildProcessSpawner } from 'effect/unstable/process';
-import { makeTag, setPhase, type PluginTag } from '../tag.js';
-import * as Docker from '../internal/docker.js';
+import { makeTag, setPhase, type PluginTag } from '../advanced/tag.js';
+import * as Docker from '../engine/docker.js';
 import {
 	awaitReady,
 	type InternalReadyProbe,
 	type ReadyProbe,
-} from '../internal/ready-probe.js';
-import { EndpointRegistry } from '../internal/registries.js';
+} from '../engine/ready-probe.js';
+import { EndpointRegistry } from '../engine/registries.js';
 import { DockerError } from './errors.js';
 
 export interface DockerContainerHandle {

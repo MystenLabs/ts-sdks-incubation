@@ -9,18 +9,18 @@
 import { Effect, Stream } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { addFinalizer as addScopeFinalizer } from 'effect/Scope';
-import { Identity } from '../internal/identity.js';
-import { PortAllocator } from '../internal/port-allocator.js';
+import { Identity } from '../engine/identity.js';
+import { PortAllocator } from '../engine/port-allocator.js';
 import {
 	routerEntrypoint,
 	removeFileProvider,
 	writeFileProvider,
-} from '../internal/docker/router.js';
-import { drainLinesWithCallback, type OutputLineCallback } from '../internal/docker/core.js';
-import { routerHostname, routerId } from '../internal/router-hostname.js';
-import { inheritedHostEnv } from '../internal/safe-env.js';
-import { stringifyCause } from '../internal/stringify-cause.js';
-import { makeTag, setPhase, type PluginTag } from '../tag.js';
+} from '../engine/docker/router.js';
+import { drainLinesWithCallback, type OutputLineCallback } from '../engine/docker/core.js';
+import { routerHostname, routerId } from '../engine/router-hostname.js';
+import { inheritedHostEnv } from '../engine/safe-env.js';
+import { stringifyCause } from '../engine/stringify-cause.js';
+import { makeTag, setPhase, type PluginTag } from '../advanced/tag.js';
 import {
 	awaitReady,
 	type HttpReadyProbe,
@@ -28,8 +28,8 @@ import {
 	type LogReadyProbe,
 	type ReadyProbe,
 	type TcpReadyProbe,
-} from '../internal/ready-probe.js';
-import { EndpointRegistry } from '../internal/registries.js';
+} from '../engine/ready-probe.js';
+import { EndpointRegistry } from '../engine/registries.js';
 import { HostProcessError } from './errors.js';
 
 // Re-export the canonical probe types from `internal/ready-probe.ts` so users

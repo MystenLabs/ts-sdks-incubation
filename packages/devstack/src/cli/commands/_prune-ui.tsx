@@ -30,7 +30,7 @@ import type {
 	InventoryRow,
 	InventoryTotals,
 	RouterInfo,
-} from '../../internal/docker/inventory.js';
+} from '../../engine/docker/inventory.js';
 import {
 	formatBytes,
 	renderTotals,
@@ -38,7 +38,7 @@ import {
 	summarizeContainers,
 	totalsFor,
 	volumeBytes,
-} from '../../internal/docker/inventory.js';
+} from '../../engine/docker/inventory.js';
 
 export interface PruneAppProps {
 	readonly rows: ReadonlyArray<InventoryRow>;

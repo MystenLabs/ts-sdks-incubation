@@ -8,10 +8,10 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { Effect } from 'effect';
-import { provideTag } from '../../tag.js';
+import { provideTag } from '../../advanced/tag.js';
 import { DeepbookCore, type DeepbookCoreShape } from '../../interfaces/deepbook.js';
-import { knownDeployments, type KnownNetwork } from '../../internal/known-deployments.js';
-import type { StackMember } from '../../define-devstack.js';
+import { knownDeployments, type KnownNetwork } from '../../engine/known-deployments.js';
+import type { StackMember } from '../../engine/supervisor.js';
 import { makeFindPool, type DeepbookPool } from './internal.js';
 
 export interface DeepbookKnownPackageOptions {

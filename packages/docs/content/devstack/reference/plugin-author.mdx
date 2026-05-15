@@ -1,0 +1,259 @@
+---
+title: Plugin author
+---
+
+The `@mysten-incubation/devstack/plugin-author` subpath is for callers building **new** devstack
+primitives — not for user configs. It exposes the tag factories
+(`provideTag` / `makeTag` / `composeTag` / `composeLayers`), four low-level building blocks
+(`dockerImage`, `dockerOneShot`, `gitFetch`, `hostScript`), and the typed registries that the
+manifest writer reads from.
+
+<Callout type="info">
+	Working knowledge of [Effect-TS](https://effect.website) is required. Plugins are
+	`Layer.Layer`s under the hood and acquire bodies are `Effect.gen` functions.
+</Callout>
+
+## Tag factories
+
+Three factories, in preference order:
+
+### `provideTag`
+
+Use when your factory **is** an implementation of a shared interface. Multiple factories
+targeting the same interface share one Context.Service class.
+
+```ts
+import { provideTag, type PluginTag } from '@mysten-incubation/devstack/plugin-author';
+import { Sui } from '@mysten-incubation/devstack';
+
+const myCustomSui = provideTag(Sui, function* () {
+	// ...
+	return { network: 'localnet', rpc: { host: '...' }, /* ... */ };
+});
+```
+
+### `makeTag`
+
+Use for **one-off tags** that don't share an interface — per-account tags, custom user plugins,
+`action`, `tx`. Creates a throwaway Context.Service class internally.
+
+```ts
+import { makeTag } from '@mysten-incubation/devstack/plugin-author';
+
+const myTag = makeTag('my-thing', function* () {
+	return { /* shape */ };
+});
+```
+
+### `composeTag`
+
+Composite-tag sugar. Use when you want a single outer tag whose body yields from inner sibling
+tags. Aggregates the inner tags' `__layer`s automatically.
+
+```ts
+import { composeTag } from '@mysten-incubation/devstack/plugin-author';
+
+const composed = composeTag('outer', function* () {
+	const a = yield* innerTagA;
+	const b = yield* innerTagB;
+	return { a, b };
+}, [innerTagA, innerTagB]);
+```
+
+### `composeLayers`
+
+For multi-layer StackMembers that **don't** want a new outer tag class. Used by
+`walrusLocalCluster` (multi-interface acquire body) and `sealLocalKeygen` (internal tag + two
+projection layers).
+
+### Options
+
+All three factories accept:
+
+```ts
+interface MakeTagOptions {
+	readonly kind?: 'service' | 'action';        // TUI grouping.
+	readonly displayTitle?: string;              // Friendly row label.
+	readonly watch?: ReadonlyArray<string>;      // Paths to add to the supervisor's watch set.
+}
+```
+
+`watch:` is the hook `publishMove` uses to auto-declare its Move source tree. Plugin authors
+who pull in source from disk should declare the relevant paths here so a file change triggers
+a restart with proper attribution in the TUI log.
+
+### `setPhase`
+
+Update the TUI row's phase label while a build body is running:
+
+```ts
+import { setPhase } from '@mysten-incubation/devstack/plugin-author';
+
+yield* setPhase('building image');
+yield* dockerImage({ ... });
+yield* setPhase('deploying');
+yield* dockerOneShot({ ... });
+```
+
+The TUI surfaces the current phase between the row name and its status.
+
+## Building blocks
+
+### `dockerImage`
+
+```ts
+import { dockerImage } from '@mysten-incubation/devstack/plugin-author';
+
+const image = yield* dockerImage({
+	name: 'my-app/walrus',
+	context: '/abs/path/to/dockerfile/dir',
+	buildArgs?: Record<string, string>,
+	cacheKey?: Effect.Effect<string, unknown, unknown>,
+	platform?: string,                       // Default native.
+});
+```
+
+Builds a Docker image (idempotent via content-hash + cacheKey). Returns the resolved image
+ref. Used by every container primitive (sui, walrus, seal, deepbook).
+
+### `dockerOneShot`
+
+```ts
+import { dockerOneShot } from '@mysten-incubation/devstack/plugin-author';
+
+const result = yield* dockerOneShot({
+	name: 'walrus-deploy',
+	image: 'walrus/deploy:v1.39.0',
+	args: ['deploy', '--config', '/cfg/walrus.yaml'],
+	env?: Record<string, string>,
+	volumes?: ReadonlyArray<{ host: string; container: string }>,
+	cacheKey?: Effect.Effect<string, unknown, unknown>,
+});
+```
+
+One-shot container run. Returns `{ exitCode, stdout, stderr }`. Cached by `cacheKey` —
+identical inputs return the prior result without re-running.
+
+### `gitFetch`
+
+```ts
+import { gitFetch } from '@mysten-incubation/devstack/plugin-author';
+
+const fetched = yield* gitFetch({
+	repo: 'https://github.com/mystenlabs/walrus',
+	ref: 'walrus-v1.39.0',
+	subdir?: 'move/walrus',
+});
+```
+
+Fetches a git repo at a pinned ref into `.devstack/imports/<owner>_<repo>@<ref>/`. Pinned by
+SHA where possible. Returns the absolute path on disk. The walrus / seal / deepbook
+primitives use this for upstream Move sources.
+
+### `hostScript`
+
+```ts
+import { hostScript } from '@mysten-incubation/devstack/plugin-author';
+
+const result = yield* hostScript({
+	name: 'codegen',
+	command: 'pnpm',
+	args: ['codegen'],
+	cwd?: string,
+	env?: Record<string, string>,
+});
+```
+
+One-shot host process. Same shape as `dockerOneShot` but runs directly on the host.
+
+## Registries
+
+Plugin authors should `publish(...)` to these registries so the manifest writer picks the
+values up:
+
+```ts
+import {
+	AccountRegistry,
+	CoinRegistry,
+	EndpointRegistry,
+	PackageRegistry,
+} from '@mysten-incubation/devstack/plugin-author';
+
+const endpoints = yield* EndpointRegistry;
+yield* endpoints.publish({
+	name: 'my-service',
+	url: 'http://my-service.localhost:8080',
+	kind: 'rest-api',
+});
+```
+
+The four record shapes:
+
+| Registry              | Record                                                                              |
+| --------------------- | ----------------------------------------------------------------------------------- |
+| `AccountRegistry`     | `{ name, address }`                                                                 |
+| `CoinRegistry`        | `{ name, type, decimals, sdkCoin?: { address, type, scalar } }`                     |
+| `EndpointRegistry`    | `{ name, url, kind?, pairUrl? }`                                                    |
+| `PackageRegistry`     | `{ name, packageId, upgradeCapId?, captured?, mvrPlaceholder? }`                    |
+
+The `Live` layers and the bare `RegistryShape` snapshot interface stay internal — treat each
+registry as a black box via these typed helpers.
+
+## State cache
+
+For memoizing expensive setup work (image builds, keygen):
+
+```ts
+import { cacheGet, cachePut, cacheRemove } from '@mysten-incubation/devstack/plugin-author';
+
+const prior = yield* cacheGet<MyResult>('my-plugin/v1/' + inputHash);
+if (Option.isSome(prior)) return prior.value;
+
+const result = yield* expensiveSetup();
+yield* cachePut('my-plugin/v1/' + inputHash, result);
+return result;
+```
+
+Cache values round-trip through the same BigInt-aware JSON serializer the rest of devstack
+uses, so `bigint`-valued shapes survive (de)serialization.
+
+Plugin authors should **not** import `StateStore` directly — the cache facade keeps the
+underlying key namespace and lock semantics swappable.
+
+## Example: a custom plugin
+
+```ts
+import { Effect } from 'effect';
+import {
+	dockerImage,
+	dockerOneShot,
+	makeTag,
+	setPhase,
+} from '@mysten-incubation/devstack/plugin-author';
+
+interface MyDbHandle {
+	readonly url: string;
+}
+
+export const myDb = (opts: { port?: number } = {}) =>
+	makeTag<'my-db', MyDbHandle>(
+		'my-db',
+		Effect.gen(function* () {
+			yield* setPhase('building image');
+			const image = yield* dockerImage({
+				name: 'my-org/my-db',
+				context: '/path/to/my-db-image',
+			});
+
+			yield* setPhase('starting');
+			const port = opts.port ?? 5432;
+			// ... bring up container, register endpoint, etc.
+
+			return { url: `http://localhost:${port}` };
+		}),
+		{ kind: 'service', displayTitle: `my-db (:${opts.port ?? 5432})` },
+	);
+```
+
+Users then drop `myDb({ port: 5432 })` into their `defineDevstack([...])` array and it
+participates like any built-in primitive — TUI row, phase labels, scope-bound finalizers.

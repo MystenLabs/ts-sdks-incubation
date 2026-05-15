@@ -8,16 +8,22 @@
 
 import { Box, Static, Text, useApp, useInput } from 'ink';
 import React, { useEffect, useState } from 'react';
-import type { EngineHandleShape } from '../internal/engine.js';
+import type { EngineHandleShape } from '../engine/engine.js';
 import { Effect, Ref } from 'effect';
 import type {
 	BuildStatus,
 	TagStatus,
 	TuiEntry,
+	TuiEntryKind,
 	TuiHeader,
 	TuiLog,
 	TuiState,
 } from './render.js';
+
+/** The five user-intent sections the TUI groups by. Excludes 'other',
+ *  which is the catchall for legacy/hand-rolled refs that fall through
+ *  to `parseTitle`'s display-prefix grouping. */
+type TuiEntryKindLabel = Exclude<TuiEntryKind, 'other'>;
 
 const emptyState: TuiState = {
 	entries: [],
@@ -30,11 +36,11 @@ const emptyState: TuiState = {
 // from the q-keypress handler and the launch effect's `onInterrupt` hook so
 // the user sees identical copy whether they pressed `q` in the TUI, hit
 // Ctrl-C in the terminal, or this process received an external SIGINT.
-// Points users at containers we INTENTIONALLY leave running (reuse-if-healthy
-// in `Docker.run` adopts them on the next `pnpm dev`, keeping packageIds
-// stable) and at `devstack wipe` for the full nuke.
+// Phase 4 vocabulary scrub: "container" disappears from user-visible copy;
+// background-service framing replaces the docker-leaky "reusable containers"
+// language. `devstack wipe --yes` remains the path to a full local reset.
 export const SHUTDOWN_LOG_MESSAGE =
-	'shutdown requested — tearing down. Sui localnet and other reusable containers stay running for fast next-restart; run `pnpm exec devstack wipe --yes` to fully tear down.';
+	'Shutting down. Sui and other background services stay warm for a fast next start. Run `pnpm exec devstack wipe --yes` to clear all local state.';
 
 // Compact 8-char fixed-width name column tail — visually anchors the log
 // timestamp. Wider rows would push the message off-screen on narrow
@@ -382,25 +388,55 @@ function NodeTable({
 			</Box>
 		);
 	}
-	// Group rows by the leading `<group>.<name>` segment of each entry's
-	// title. Preserve the first-seen order so the dashboard reads
-	// top-to-bottom in the same order the user wrote `defineDevstack([...])`
-	// — sorting alphabetically would scramble the visual narrative of a
-	// stack that goes sui → accounts → publish → tx → wallet → dev-server.
-	const groups = new Map<string, Array<TuiEntry>>();
-	const groupOrder: Array<string> = [];
-	for (const entry of entries) {
-		const { group } = parseTitle(entryTitle(entry));
-		if (!groups.has(group)) {
-			groups.set(group, []);
-			groupOrder.push(group);
+	// Group rows by section. Each Ref factory stamps `__kind` (mapped to
+	// TuiEntry.kind) with one of: service, package, account, action, app.
+	// The fixed `SECTION_ORDER` below drives the visual order — services
+	// first (URLs the user dials), then artifacts (packages, accounts),
+	// then transactions, then the user's own app surface. Entries with
+	// `kind: 'other'` fall back to the legacy `parseTitle` heuristic so
+	// hand-rolled v3-style refs still render under a recognizable label.
+	const SECTION_ORDER: ReadonlyArray<TuiEntryKindLabel> = [
+		'service',
+		'package',
+		'account',
+		'action',
+		'app',
+	];
+	const SECTION_HEADER: Record<TuiEntryKindLabel, string> = {
+		service: 'services',
+		package: 'packages',
+		account: 'accounts',
+		action: 'actions',
+		app: 'app',
+	};
+	const buckets = new Map<string, Array<TuiEntry>>();
+	const bucketOrder: Array<string> = [];
+	const pushBucket = (key: string, entry: TuiEntry) => {
+		if (!buckets.has(key)) {
+			buckets.set(key, []);
+			bucketOrder.push(key);
 		}
-		groups.get(group)!.push(entry);
+		buckets.get(key)!.push(entry);
+	};
+	// First pass: stamp every entry with section-aware bucket. Sectioned
+	// entries land in the fixed-order buckets; unsectioned fall back to
+	// parseTitle so an 'Other' / legacy entry doesn't get lost.
+	for (const section of SECTION_ORDER) {
+		for (const entry of entries) {
+			if (entry.kind === section) pushBucket(SECTION_HEADER[section], entry);
+		}
+	}
+	// Second pass: legacy 'other' entries grouped by parseTitle's display
+	// prefix (or the synthetic UNGROUPED bucket).
+	for (const entry of entries) {
+		if (SECTION_ORDER.includes(entry.kind as TuiEntryKindLabel)) continue;
+		const { group } = parseTitle(entryTitle(entry));
+		pushBucket(group, entry);
 	}
 	return (
 		<Box flexDirection='column' paddingX={1}>
-			{groupOrder.map((group) => (
-				<GroupSection key={group} label={group} entries={groups.get(group) ?? []} />
+			{bucketOrder.map((group) => (
+				<GroupSection key={group} label={group} entries={buckets.get(group) ?? []} />
 			))}
 		</Box>
 	);

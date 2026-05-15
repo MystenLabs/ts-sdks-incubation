@@ -26,18 +26,18 @@
 
 import { Effect, Layer, Schedule } from 'effect';
 import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
-import * as Docker from '../internal/docker.js';
-import { routerEntrypoint } from '../internal/docker/router.js';
-import type { Endpoint } from '../internal/endpoint.js';
+import * as Docker from '../engine/docker.js';
+import { routerEntrypoint } from '../engine/docker/router.js';
+import type { Endpoint } from '../engine/endpoint.js';
 import { Sui, type SuiShape } from '../interfaces/sui.js';
-import { stringifyCause } from '../internal/stringify-cause.js';
-import { Identity } from '../internal/identity.js';
-import { EndpointRegistry } from '../internal/registries.js';
-import { routerHostname, routerId } from '../internal/router-hostname.js';
-import { SuiBuildImage } from '../internal/sui-cli.js';
-import { dockerImage } from '../plugin-author/index.js';
-import { provideTag, setPhase } from '../tag.js';
-import type { StackMember } from '../define-devstack.js';
+import { stringifyCause } from '../engine/stringify-cause.js';
+import { Identity } from '../engine/identity.js';
+import { EndpointRegistry } from '../engine/registries.js';
+import { routerHostname, routerId } from '../engine/router-hostname.js';
+import { SuiBuildImage } from '../engine/sui-cli.js';
+import { dockerImage } from '../advanced/plugin-author/index.js';
+import { provideTag, setPhase } from '../advanced/tag.js';
+import type { StackMember } from '../engine/supervisor.js';
 import { SuiError } from './errors.js';
 
 // Re-export the canonical Sui tag so downstream primitives keep their

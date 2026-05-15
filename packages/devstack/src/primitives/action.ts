@@ -1,5 +1,5 @@
 import { Effect } from 'effect';
-import { makeTag, type PluginTag } from '../tag.js';
+import { makeTag, type PluginTag } from '../advanced/tag.js';
 
 export interface ActionOptions<Name extends string, A, E, R> {
 	readonly name: Name;

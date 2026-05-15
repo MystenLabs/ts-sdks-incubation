@@ -5,7 +5,7 @@
 
 import { Effect, Ref } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
-import { EngineHandle, EngineLive } from '../internal/engine.js';
+import { EngineHandle, EngineLive } from '../engine/engine.js';
 import { TuiLoggerLayer } from './index.js';
 
 describe('TuiLoggerLayer', () => {

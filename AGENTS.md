@@ -27,6 +27,11 @@ then the packages are workspace-only.
 pnpm install
 pnpm turbo build
 
+# After a package rename (e.g. devstack-effect → devstack), node_modules/.bin shims
+# can stay pinned to the old name and surface as `Cannot find module
+# '@mysten-incubation/<old-name>/dist/cli/main.mjs'`. Refresh with:
+pnpm install --force
+
 # Build a specific package with dependencies
 pnpm turbo build --filter=@mysten-incubation/dev-wallet
 ```

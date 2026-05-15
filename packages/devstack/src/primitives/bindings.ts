@@ -3,8 +3,8 @@ import * as path from 'node:path';
 import { Effect } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { generateFromPackageSummary } from '@mysten/codegen';
-import { makeTag, setPhase, type PluginTag } from '../tag.js';
-import { stringifyCause } from '../internal/stringify-cause.js';
+import { makeTag, setPhase, type PluginTag } from '../advanced/tag.js';
+import { stringifyCause } from '../engine/stringify-cause.js';
 import { BindingsError } from './errors.js';
 import type { LocalPackageShape } from '../interfaces/package.js';
 

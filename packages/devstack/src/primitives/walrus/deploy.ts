@@ -20,12 +20,12 @@
 import { Effect, FileSystem } from 'effect';
 import { ChildProcessSpawner } from 'effect/unstable/process';
 import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
-import * as Docker from '../../internal/docker.js';
-import type { Endpoint } from '../../internal/endpoint.js';
-import { EngineHandle } from '../../internal/engine.js';
-import { Identity, type IdentityShape } from '../../internal/identity.js';
-import { routerHostname } from '../../internal/router-hostname.js';
-import { stringifyCause } from '../../internal/stringify-cause.js';
+import * as Docker from '../../engine/docker.js';
+import type { Endpoint } from '../../engine/endpoint.js';
+import { EngineHandle } from '../../engine/engine.js';
+import { Identity, type IdentityShape } from '../../engine/identity.js';
+import { routerHostname } from '../../engine/router-hostname.js';
+import { stringifyCause } from '../../engine/stringify-cause.js';
 import { WalrusError } from '../errors.js';
 import type { DeployState, ExchangeState } from './internal.js';
 import { WALRUS_NODE_IP_BASE } from './internal.js';

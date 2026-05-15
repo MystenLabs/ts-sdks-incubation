@@ -9,10 +9,10 @@
 // Span: `walrus.nodes` (preserved).
 
 import { Effect } from 'effect';
-import * as Docker from '../../internal/docker.js';
-import { EngineHandle } from '../../internal/engine.js';
-import type { IdentityShape } from '../../internal/identity.js';
-import { routerHostname, routerId } from '../../internal/router-hostname.js';
+import * as Docker from '../../engine/docker.js';
+import { EngineHandle } from '../../engine/engine.js';
+import type { IdentityShape } from '../../engine/identity.js';
+import { routerHostname, routerId } from '../../engine/router-hostname.js';
 import { WalrusError } from '../errors.js';
 import type { NodeState } from './internal.js';
 import { WALRUS_NODE_IP_BASE } from './internal.js';

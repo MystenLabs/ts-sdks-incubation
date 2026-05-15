@@ -10,14 +10,14 @@
 import { Effect, Exit, Layer } from 'effect';
 import { layer as NodeFileSystemLayer } from '@effect/platform-node/NodeFileSystem';
 import { describe, expect, it } from '@effect/vitest';
-import { EngineLive } from '../internal/engine.js';
+import { EngineLive } from '../engine/engine.js';
 import {
 	SealKeyManager,
 	SealKeyServer,
 	type SealKeyServerEntry,
 } from '../interfaces/seal.js';
-import { knownDeployments } from '../internal/known-deployments.js';
-import { EndpointRegistryLive } from '../internal/registries.js';
+import { knownDeployments } from '../engine/known-deployments.js';
+import { EndpointRegistryLive } from '../engine/registries.js';
 import { sealKnownKeyServer } from './seal.js';
 
 // -----------------------------------------------------------------------------

@@ -1,0 +1,132 @@
+---
+title: Refs and Layers
+---
+
+The central concept of the v4 API: every user concept — a service, a
+package, an account, an action, the dev server, the wallet UI — is
+created by a single factory call that returns a **Ref**. A Ref is
+simultaneously a typed value you pass into other factories, an Effect
+Layer that `devstack(...)` composes, and an Effect Tag you can `yield*`
+from inside any Effect program.
+
+This page explains what a Ref is, what you can do with one, and how the
+substrate underneath (Effect Layers) plugs in.
+
+## Code first
+
+```ts
+import { devstack } from '@mysten-incubation/devstack';
+import { Account, Action, Package } from '@mysten-incubation/devstack/services';
+
+const alice = Account('alice');                                // Ref<…Account>
+const hello = Package('hello', './move/hello', { signer: alice }); // Ref<…Package>
+
+const mint = Action('mint', {
+	signer: alice,
+	needs: [hello],
+	build: (t) => Effect.gen(function* () {
+		const pkg = yield* hello;                                  // ← yields the Ref
+		t.moveCall({ target: `${pkg.packageId}::hello::mint`, arguments: [] });
+	}),
+});
+
+export default devstack(alice, hello, mint);
+```
+
+Three Refs (`alice`, `hello`, `mint`), three roles:
+
+- **Cross-references.** `signer: alice` accepts only the Ref, not a
+	string. `needs: [hello]` accepts only Package Refs.
+- **Runtime tags.** Inside the `build` callback, `yield* hello` returns
+	the resolved package — `packageId`, `captured`, `coins`, etc.
+- **Layer composition.** `devstack(alice, hello, mint)` calls
+	`Layer.mergeAll` over the Refs, fills in defaults (auto-`Sui()`
+	when missing), and runs the supervisor.
+
+## Refs as values
+
+The IDE knows what a Ref is. Typos in cross-references fail at
+compile time:
+
+```ts
+const alice = Account('alice');
+const hello = Package('hello', './move/hello', {
+	signer: aliec,    // ✗ Cannot find name 'aliec'.
+});
+```
+
+There's no string lookup, no runtime "account not found" — if the Ref
+doesn't exist in your file, TypeScript stops you. Renames work because
+they're variable renames, not string-search-and-replace.
+
+The shape of each Ref is pinned at declaration:
+
+- `Account(name)` → Ref carrying the resolved `Account` (address, sign
+	functions).
+- `Package(name, path, opts)` → Ref carrying the published `Package`
+	(packageId, captured object IDs, coins).
+- `Action(name, opts)` → Ref carrying the `TxResult` (digest,
+	objectChanges).
+- `Sui()` / `Seal()` / `Walrus()` / `Deepbook()` → Refs carrying their
+	respective service shapes (RPC URL, key-server URL, aggregator URL,
+	etc.).
+
+## Refs as Effect tags
+
+`yield* alice` works because the same value is an Effect
+`Context.Service` tag. Once `devstack(...).layer` is provided to your
+program, every Ref becomes yieldable:
+
+```ts
+import { Effect } from 'effect';
+
+const program = Effect.gen(function* () {
+	const a = yield* alice;
+	const h = yield* hello;
+	yield* Effect.log(`alice: ${a.address}, hello: ${h.packageId}`);
+});
+
+const stack = devstack(alice, hello);
+Effect.runFork(program.pipe(Effect.provide(stack.layer)));
+```
+
+This is the same Effect Service mechanism used everywhere else in the
+ecosystem — Refs aren't a parallel framework. Plugin authors writing
+their own factories use the same `makeTag` / `provideTag` primitives
+from `@mysten-incubation/devstack/plugin-author`.
+
+## Refs as Layers
+
+Under the hood, a Ref is an `Effect.Layer` plus a small bag of metadata
+(name, section, watch paths). `devstack(...)` does three things with
+the Refs you pass it:
+
+1. **`Layer.mergeAll`** over every Ref's underlying Layer. The merged
+	 Layer's type lists every Ref's required services in its `R` channel —
+	 if anything is missing, Effect raises `ServiceNotFound` at startup.
+2. **Default fill.** If your Refs require `Sui` and no `Sui()` Ref is
+	 in the merge, `devstack(...)` adds `Sui()` (localnet) automatically.
+	 This is the bidirectional graph from v3, restored: declare a
+	 `Package`, get a Sui localnet for free.
+3. **Supervisor wiring.** The engine adds Identity, registries, the
+	 state-store, the file watcher, and the TUI on top of the merged
+	 user Layer.
+
+You can also just take the composed Layer and ignore the run loop —
+useful for Effect-native consumers:
+
+```ts
+const stack = devstack(alice, hello, { disableManifest: true });
+// `stack.layer` is `Layer.Layer<unknown, unknown, never>`. Provide it
+// to any Effect program; ignore `stack.run()` / `stack.runMain()`.
+```
+
+## When you don't need to think about Layers
+
+For the 90% case — you're writing a devstack config, not a plugin —
+you don't need to know what a Layer is. Treat Refs as typed values.
+Pass them around. The runtime composition is invisible.
+
+The "Layer" framing is here so when you do reach for a plugin (writing
+your own `Postgres()` factory, embedding devstack in a larger Effect
+program), the substrate is named and familiar instead of magic.

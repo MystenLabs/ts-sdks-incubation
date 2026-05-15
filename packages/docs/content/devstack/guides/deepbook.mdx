@@ -1,0 +1,168 @@
+---
+title: DeepBook
+---
+
+DeepBook is Sui's on-chain central-limit order book. Devstack ships three primitives:
+`deepbookLocalDeploy()` for a freshly-published DeepBook with seeded pools,
+`deepbookKnownPackage()` for a handle to an existing deployment, and `deepbookMarketMaker()` for
+a stub maker that keeps pools liquid during development.
+
+## Local deploy
+
+```ts
+import {
+	deepbookLocalDeploy,
+	deepbookMarketMaker,
+	publishMove,
+} from '@mysten-incubation/devstack';
+
+const a = accounts({ publisher: {}, alice: {}, bob: {} });
+
+// Publish your own mock coins as the publisher.
+const musdcPublish = publishMove({
+	name: 'musdc',
+	path: resolve(HERE, 'move/musdc'),
+	signer: a.publisher,
+	coins: { musdc: { module: 'musdc', type: 'MUSDC', decimals: 6 } },
+});
+
+const db = deepbookLocalDeploy({
+	name: 'deepbook',
+	signer: a.publisher,
+	movePackagePath: '.devstack/imports/mystenlabs_deepbookv3@v7.0.0/packages/deepbook',
+	pools: [
+		{
+			name: 'sui_usdc',
+			base: '0x2::sui::SUI',
+			quote: musdcPublish.coins.musdc,
+			tickSize: 1_000n,
+			lotSize: 100_000_000n,
+			minSize: 1_000_000_000n,
+		},
+	],
+});
+
+export default defineDevstack([
+	suiLocalnet(),
+	a.publisher,
+	a.alice,
+	a.bob,
+	musdcPublish,
+	db,
+	manifest(),
+]);
+```
+
+What `deepbookLocalDeploy` does:
+
+1. Publishes the DeepBook v3 Move package as `signer`.
+2. Creates each pool via `pool::create_pool_admin`. Pool specs reference base/quote coin types
+   either as static strings (`'0x2::sui::SUI'`) or as `PublishedCoin` references — local coins
+   resolve to their freshly-published `fullCoinType` after publish.
+3. Caches pool ids in `.devstack/stacks/<stack>/state.json` keyed on `(chainId, packageId, pool
+   spec hash)`. A warm restart skips the `create_pool_admin` calls (which abort on duplicate
+   registrations).
+4. Provides three interface tags: `DeepbookCore` (read), `DeepbookAdmin` (admin cap holder),
+   `DeepbookMarketMaker` (BalanceManager).
+
+### Pool specs
+
+| Field         | Type                        | Notes                                                                        |
+| ------------- | --------------------------- | ---------------------------------------------------------------------------- |
+| `name`        | `string`                    | Local identifier for `findPool`.                                             |
+| `base`        | `string \| PublishedCoin`   | Base coin type. Static (`0x2::sui::SUI`) or a coin from `publishMove.coins`. |
+| `quote`       | `string \| PublishedCoin`   | Quote coin type.                                                             |
+| `tickSize`    | `bigint`                    | Minimum price tick (smallest unit of quote).                                 |
+| `lotSize`     | `bigint`                    | Minimum order size (smallest unit of base).                                  |
+| `minSize`     | `bigint`                    | Minimum total order size.                                                    |
+
+## Market maker
+
+`deepbookMarketMaker()` seeds each pool with a multi-level ladder around `midPrice`, keeping
+the book liquid so frontends have something to swap against during development.
+
+```ts
+const maker = deepbookMarketMaker({
+	name: 'deepbook.maker',
+	signer: a.alice,
+	pools: [
+		{
+			name: 'sui_usdc',
+			base: '0x2::sui::SUI',
+			quote: musdcPublish.coins.musdc,
+			tickSize: 1_000n,
+			midPrice: 3_500_000n,
+			sizePerLevel: 1_000_000_000n,
+		},
+	],
+	dependsOn: [seedTokens, db],
+});
+```
+
+The maker yields a `BalanceManager` keyed by `signer` and posts a quadratic-ladder of bids and
+asks on each tick. `signer` must have enough inventory for the configured size — pair with a
+`tx` primitive that mints/seeds the maker's account first, and list it in `dependsOn`.
+
+## Frontend integration
+
+Project pool ids into `manifest.extras` so the frontend can list them without rediscovering on
+chain:
+
+```ts
+const m = manifest({
+	extras: Effect.gen(function* () {
+		const live = yield* db;
+		return {
+			deepbookPools: {
+				pools: Object.values(live.pools).map((p) => ({
+					name: p.name,
+					poolId: p.poolId,
+					baseCoinType: p.base,
+					quoteCoinType: p.quote,
+				})),
+			},
+		};
+	}),
+});
+```
+
+Yielding `db` inside `manifest({ extras })` also serves as a barrier — the manifest finalizer
+waits for DeepBook to finish acquiring before it writes.
+
+## Known package
+
+Same pattern as the other "known" factories:
+
+```ts
+import { deepbookKnownPackage } from '@mysten-incubation/devstack';
+
+const db = deepbookKnownPackage({ network: 'mainnet' });
+```
+
+Provides `DeepbookCore` only. No admin cap, no market maker — those are local-deploy-specific.
+
+## What's in each interface
+
+| Interface tag           | Shape                                                                           |
+| ----------------------- | ------------------------------------------------------------------------------- |
+| `DeepbookCore`          | `{ packageId, registryId, pools, findPool(name) }` — read surface.               |
+| `DeepbookAdmin`         | `{ adminCapId, … }` — for admin-gated calls.                                     |
+| `DeepbookMarketMaker`   | `{ balanceManagerId, … }` — handle for a per-account BalanceManager.             |
+
+## Common pitfalls
+
+- **`pool::create_pool_admin` aborts with function 13** — DeepBook's `registry::register_pool`
+  rejects duplicate `(base, quote)` registrations. Devstack caches pool ids per
+  `(chainId, packageId, pool spec hash)` to avoid re-calling on warm restart; if the chain
+  state survives but the cache doesn't, you'll hit this. Clear `.devstack/stacks/<stack>/state.json`
+  to force a re-cache, or run `devstack wipe` for a full reset.
+- **Coin type mismatch in market maker** — `deepbookMarketMaker.pools[i].quote` must match the
+  same coin spec passed to `deepbookLocalDeploy.pools[i].quote`. If you pass a static string
+  to one and a `PublishedCoin` to the other, the `findPool` lookup misses and the maker fails.
+- **No inventory at maker tick 1** — `seedTokens` must complete before the maker runs. List it
+  in `dependsOn:`.
+
+## Related
+
+- [Wallet example](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/examples/wallet) — full DeepBook v3 swap UI
+- [`deepbook*` reference](/devstack/reference/primitives-composite#deepbook)

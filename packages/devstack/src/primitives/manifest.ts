@@ -9,15 +9,15 @@
 import { Effect, Schedule } from 'effect';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { makeTag } from '../tag.js';
-import { Identity } from '../internal/identity.js';
+import { makeTag } from '../advanced/tag.js';
+import { Identity } from '../engine/identity.js';
 import {
 	AccountRegistry,
 	CoinRegistry,
 	EndpointRegistry,
 	PackageRegistry,
-} from '../internal/registries.js';
-import { jsonBigintReplacer } from '../internal/json-bigint.js';
+} from '../engine/registries.js';
+import { jsonBigintReplacer } from '../engine/json-bigint.js';
 import { toSdkCoin } from '../interfaces/coin.js';
 import { ManifestError } from './errors.js';
 

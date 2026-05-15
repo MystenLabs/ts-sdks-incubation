@@ -1,6 +1,6 @@
 import { Effect } from 'effect';
-import { makeTag, setPhase, type PluginTag } from '../tag.js';
-import { CoinRegistry } from '../internal/registries.js';
+import { makeTag, setPhase, type PluginTag } from '../advanced/tag.js';
+import { CoinRegistry } from '../engine/registries.js';
 import { toSdkCoin } from '../interfaces/coin.js';
 
 // Projects a published Move coin module into the manifest's `coins:`

@@ -1,0 +1,164 @@
+---
+title: Integration tests with Vitest
+---
+
+Devstack ships a `@mysten-incubation/devstack/vitest` helper for chain-mode integration tests:
+hand a `Devstack` to `withDevstack` and write tests that yield from primitive tags directly.
+Useful when you want to assert on-chain state without a browser.
+
+## Setup
+
+```ts
+// vitest.config.ts
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+	test: {
+		include: ['src/**/*.{test,spec}.ts?(x)'],
+		exclude: ['e2e/**', 'node_modules', 'dist', '.turbo'],
+		passWithNoTests: true,
+	},
+});
+```
+
+Devstack does NOT ship a mega-helper that auto-injects itself into `vitest.config.ts`. The
+config stays user-owned — `withDevstack` is the entry point inside test files.
+
+## Writing a test
+
+```ts
+// src/hello.test.ts
+import { Effect } from 'effect';
+import {
+	accounts,
+	defineDevstack,
+	publishMove,
+	suiLocalnet,
+	Sui,
+} from '@mysten-incubation/devstack';
+import { withDevstack } from '@mysten-incubation/devstack/vitest';
+import { resolve } from 'node:path';
+
+const a = accounts({ alice: {} });
+
+const helloPublish = publishMove({
+	name: 'hello',
+	path: resolve(import.meta.dirname, '../move/hello'),
+	signer: a.alice,
+});
+
+const devstack = defineDevstack([suiLocalnet(), a.alice, helloPublish]);
+
+withDevstack(devstack)('hello', (it) => {
+	it.effect('publishes and reads', () =>
+		Effect.gen(function* () {
+			const sui = yield* Sui;
+			const pkg = yield* helloPublish;
+			const alice = yield* a.alice;
+
+			expect(pkg.packageId).toMatch(/^0x[0-9a-f]+$/);
+			expect(alice.address).toMatch(/^0x[0-9a-f]+$/);
+			expect(sui.network).toBe('localnet');
+		}),
+	);
+});
+```
+
+`withDevstack(devstack)(name, body)` is sugar over `@effect/vitest`'s `it.layer`. It:
+
+- Binds the composed devstack layer to the suite.
+- Hands you back an `it` whose `it.effect(name, body)` runs `body` inside a `Effect.gen` with
+  every devstack service resolvable via `yield* Tag`.
+- Builds the layer once per suite — every primitive acquires when the first test runs and tears
+  down after the last.
+
+## Use a different stack per test process
+
+Vitest runs each test file in its own worker. To prevent state collisions, set
+`DEVSTACK_STACK` in your test command, or pass `stackName` explicitly:
+
+```ts
+const devstack = defineDevstack(
+	[suiLocalnet(), a.alice, helloPublish],
+	{ stackName: 'integration-tests' },
+);
+```
+
+For per-file isolation, combine vitest's `VITEST_POOL_ID` with the stack name:
+
+```ts
+const devstack = defineDevstack([suiLocalnet(), a.alice, helloPublish], {
+	stackName: `it-${process.env.VITEST_POOL_ID ?? '1'}`,
+});
+```
+
+Each worker boots its own stack. The Traefik router shares well-known ports across stacks via
+hostname routing; the per-stack port allocator scans forward for any non-routed primitives.
+
+## Asserting on-chain state
+
+`yield* Sui` gives you a `SuiShape` carrying a typed `client: SuiJsonRpcClient`. Use it for
+direct RPC reads:
+
+```ts
+import { Sui } from '@mysten-incubation/devstack';
+import { Effect } from 'effect';
+
+withDevstack(devstack)('balances', (it) => {
+	it.effect('alice is funded', () =>
+		Effect.gen(function* () {
+			const sui = yield* Sui;
+			const alice = yield* a.alice;
+
+			const balance = yield* Effect.tryPromise(() =>
+				sui.client.getBalance({ owner: alice.address }),
+			);
+			expect(BigInt(balance.totalBalance)).toBeGreaterThan(0n);
+		}),
+	);
+});
+```
+
+For sending transactions, yield the signer tag and call `signAndExecute`:
+
+```ts
+it.effect('alice can transfer', () =>
+	Effect.gen(function* () {
+		const alice = yield* a.alice;
+		const result = yield* alice.signAndExecute({
+			transaction: /* build a transaction */,
+		});
+		expect(result.effects?.status?.status).toBe('success');
+	}),
+);
+```
+
+## When to reach for this vs Playwright
+
+| Use case                                                    | Tool                                                       |
+| ----------------------------------------------------------- | ---------------------------------------------------------- |
+| UI behaviour, wallet click-through, frontend assertions     | [Playwright](/devstack/guides/e2e-with-playwright)         |
+| On-chain state assertions, no browser involved              | Vitest + `withDevstack`                                    |
+| Move package smoke tests after publish                      | Vitest + `withDevstack`                                    |
+| Reproducing a Sui RPC bug against a specific package        | Vitest + `withDevstack`                                    |
+| End-to-end dApp acceptance suite for CI                     | [Playwright](/devstack/guides/e2e-with-playwright)         |
+
+Both reuse the same `devstack.config.ts` shape. Vitest builds the layer in-process; Playwright
+boots the supervisor as a subprocess.
+
+## Common pitfalls
+
+- **Importing `devstack.config.ts` directly into a test** — that's fine, but if the config also
+  spawns Vite via `hostProcess`, the test will boot Vite too. Either factor out a "headless"
+  config for tests, or accept the extra acquire (Vite is fast).
+- **`ServiceNotFound: @devstack/Sui`** — you yielded a tag (`yield* Sui`) that isn't in the
+  stack. Add `suiLocalnet()` (or the relevant primitive) to the `defineDevstack` array.
+- **Tests hang on shutdown** — `withDevstack` builds the layer at suite start and tears down at
+  suite end. A primitive whose finalizer blocks (e.g. a runaway `docker rm`) will hold the
+  process open. Run `docker ps -a --filter label=devstack.app=<your-app>` to see if anything
+  survived; `devstack wipe` will clean it.
+
+## Related
+
+- [`vitest` subpath reference](/devstack/reference/vitest)
+- [Effect programs](/devstack/guides/effect-programs) — same `provideDevstack` shape, outside tests

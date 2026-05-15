@@ -1,0 +1,129 @@
+---
+title: Playwright
+---
+
+The `@mysten-incubation/devstack/playwright` subpath exports four things: two manifest-aware
+config helpers (`webServer`, `baseURL`), an out-of-band lifecycle fixture (`setupDevstack`),
+and three test helpers (`connectAs`, `selectAccount`, `waitForBalanceUpdate`). It also
+re-exports `test` and `expect` for one-line specs.
+
+For task-oriented usage see [E2E with Playwright](/devstack/guides/e2e-with-playwright).
+
+## `webServer`
+
+```ts
+import { webServer } from '@mysten-incubation/devstack/playwright';
+
+webServer({
+	endpoint: string,                  // Manifest endpoint name (e.g. 'dev-server').
+	manifestPath?: string,             // Override the discovery path.
+	command?: string,                  // Default 'pnpm dev'.
+	timeout?: number,                  // Default 120_000 ms.
+	extend?: Partial<…>,               // Merge extra fields into the result.
+}): PlaywrightWebServerConfig
+```
+
+Reads `.devstack/manifest.json`, looks up the named endpoint, and returns the Playwright
+`webServer` config carrying its URL. `reuseExistingServer` is `true` outside CI so an existing
+`pnpm dev` is reused, and `false` in CI so the test command owns the lifecycle.
+
+Manifest discovery walks up from `cwd` looking for:
+
+1. `<dir>/.devstack/stacks/<DEVSTACK_STACK ?? 'main'>/manifest.json`
+2. `<dir>/.devstack/manifest.json`
+
+The stack-scoped path comes first so `DEVSTACK_STACK=test playwright test` reads its own
+stack's manifest.
+
+## `baseURL`
+
+```ts
+import { baseURL } from '@mysten-incubation/devstack/playwright';
+
+baseURL({ endpoint: 'dev-server' }): string
+```
+
+Same manifest lookup, returns the URL alone — for `use.baseURL` in `defineConfig`. Pairs with
+`webServer({ endpoint })`; pass the same endpoint name to both.
+
+## `setupDevstack`
+
+Out-of-band fixture for callers that want Playwright (not `pnpm dev`) to own the stack
+lifecycle.
+
+```ts
+import { setupDevstack } from '@mysten-incubation/devstack/playwright';
+import devstack from './devstack.config.ts';
+
+const fixture = setupDevstack(devstack);
+
+export default defineConfig({
+	globalSetup: fixture.globalSetup,
+	globalTeardown: fixture.globalTeardown,
+	// ...
+});
+```
+
+- **`globalSetup`** — opens a long-lived scope and builds the devstack layer into it. Returns
+  when every primitive has acquired.
+- **`globalTeardown`** — closes the scope, running every finalizer in reverse order.
+
+Worker-scoped bring-up isn't supported here; for multi-worker isolation, spawn multiple
+`playwright test` processes with different `DEVSTACK_STACK` values (see [E2E with
+Playwright](/devstack/guides/e2e-with-playwright#parallel-workers-one-stack-per-worker)).
+
+## Test helpers
+
+### `connectAs`
+
+```ts
+import { connectAs } from '@mysten-incubation/devstack/playwright';
+
+await connectAs(page, 'alice');
+```
+
+Signature: `connectAs(page: Page, label: string): Promise<void>`.
+
+1. `page.goto('/')`.
+2. Click `mysten-dapp-kit-connect-button`.
+3. Click "Dev Wallet" in the connect modal.
+4. Assert "Connected as …" is visible.
+5. Call `dAppKit.switchAccount({ account })` for the account whose label matches `label`
+   (case-insensitive).
+6. Assert that "Connected as &lt;label&gt;" is visible.
+
+Requires the app's `dAppKit` instance to be exposed on `globalThis.__devstackDAppKit__`.
+`createDevstackDappKit` does this automatically under Vite dev / preview / `PLAYWRIGHT=1`.
+
+### `selectAccount`
+
+```ts
+import { selectAccount } from '@mysten-incubation/devstack/playwright';
+
+await selectAccount(page.locator('#signer-select'), 'alice');
+```
+
+Signature: `selectAccount(select: Locator, name: string): Promise<void>`. Picks a `<select>`
+option by visible text (the DOM `<select>` API doesn't accept regex labels).
+
+### `waitForBalanceUpdate`
+
+```ts
+import { waitForBalanceUpdate } from '@mysten-incubation/devstack/playwright';
+
+await waitForBalanceUpdate(page, 'alice-usdc', (text) => Number(text) > 0, {
+	timeout: 10_000,
+});
+```
+
+Signature: `waitForBalanceUpdate(page, name, predicate, opts?)`. Polls
+`data-testid="balance-<name>"` until `predicate(textContent)` returns true. `timeout` defaults
+to 10 seconds.
+
+## Re-exports
+
+```ts
+import { test, expect } from '@mysten-incubation/devstack/playwright';
+```
+
+Just `@playwright/test`'s `test` and `expect`. Lets you write one-line imports for the common case.

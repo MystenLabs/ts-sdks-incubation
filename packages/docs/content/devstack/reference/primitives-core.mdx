@@ -1,0 +1,332 @@
+---
+title: Core primitives
+---
+
+Reference for the primitive factories you'll use in nearly every `devstack.config.ts`. For
+Walrus / Seal / DeepBook see [Composite primitives](/devstack/reference/primitives-composite).
+
+## `sui*`
+
+```ts
+import {
+	suiLocalnet,
+	suiTestnet,
+	suiMainnet,
+	suiCustom,
+	Sui,
+	type SuiShape,
+} from '@mysten-incubation/devstack';
+```
+
+All four factories provide the canonical `Sui` interface tag. Consumer code yields `Sui`, not
+the factory shape.
+
+### `suiLocalnet`
+
+```ts
+suiLocalnet({
+	version?: string,           // Default 'devnet-v1.71.0'.
+	rpcUrl?: string,            // Pin to an existing node (skips container boot).
+	faucetUrl?: string,         // Required if rpcUrl is set and chain has a faucet.
+});
+```
+
+Builds a native-arch Sui localnet image from the vendored `sui-image/` Dockerfile and runs it
+with embedded faucet, GraphQL, and a `--with-indexer` Postgres sidecar.
+
+### `suiTestnet` / `suiMainnet`
+
+```ts
+suiTestnet({ rpcUrl?, faucetUrl? });
+suiMainnet({ rpcUrl? });
+```
+
+RPC-only handles pointing at Mysten's public fullnodes. Mainnet has no faucet.
+
+### `suiCustom`
+
+```ts
+suiCustom({
+	rpcUrl: string,
+	faucetUrl?: string,
+	chainId: string,
+});
+```
+
+For corporate fullnodes, pinned forks, air-gapped mirrors. No container.
+
+### `SuiShape`
+
+```ts
+interface SuiShape {
+	readonly network: 'localnet' | 'testnet' | 'mainnet';
+	readonly rpc: { readonly host: string };
+	readonly chainId: string;
+	readonly client: SuiJsonRpcClient;
+	readonly waitForTransactionsReady: (digests: ReadonlyArray<string>) => Effect.Effect<void>;
+}
+```
+
+## `accounts`
+
+```ts
+import { accounts } from '@mysten-incubation/devstack';
+
+const a = accounts({
+	alice: {},                                                    // ephemeral-funded
+	bob: { from: 'env', key: 'BOB_PRIVATE_KEY' },
+	deployer: { from: 'keystore', alias: 'deployer' },
+	fixture: { from: 'inline', key: 'suiprivkey1...' },
+});
+```
+
+Returns a record keyed by name. Each value is a `PluginTag` that resolves to:
+
+```ts
+interface Account {
+	readonly name: string;
+	readonly address: string;
+	readonly scheme: 'ED25519' | 'Secp256k1' | 'Secp256r1';
+	readonly publicKey: Uint8Array;
+	readonly signAndExecute: (...) => Effect.Effect<TxResult, SignAndExecuteError, never>;
+	readonly signTransaction: (...) => Effect.Effect<...>;
+	readonly signPersonalMessage: (...) => Effect.Effect<...>;
+}
+```
+
+See [Networks and accounts](/devstack/guides/networks-and-accounts) for the `from:` source
+discriminator.
+
+The combined `__layer` lives on the record itself — you list `a.alice`, `a.bob`, etc.
+individually in the stack array so each appears as its own row in the TUI.
+
+## `publishMove`
+
+```ts
+publishMove({
+	name: string,
+	path: string,                          // Absolute path to the Move package.
+	signer: PluginTag<…, Account, …>,
+	coins?: Record<string, CoinSpec>,
+	capture?: (result: { objectChanges }) => TCaptured,
+});
+```
+
+Returns a tag resolving to:
+
+```ts
+interface Package<TCaptured, TCoins> {
+	readonly name: string;
+	readonly packageId: string;
+	readonly upgradeCapId: string | undefined;
+	readonly captured: TCaptured;
+	readonly coins: TCoins;
+	readonly sourcePath: string;
+	readonly mvrPlaceholder: string;
+}
+```
+
+- **Content-hashes** `**/*.move` + `Move.toml`, folds into the StateStore cache key.
+- **Auto-watches** the `path` directory (declares it as a `WatchOwner` for the supervisor).
+- **Provides** `LocalPackage` (refining `Package`) so `bindings` can constrain to it.
+
+`pickCreatedByTypeSuffix(objectChanges, '::coin::TreasuryCap')` and
+`pickCreatedByTypeIncludes(objectChanges, '::AdminCap<')` are exported helpers for
+`capture:` callbacks.
+
+## `tx`
+
+```ts
+tx({
+	name: string,
+	signer: PluginTag<…, Account, …>,
+	gasBudget?: bigint,
+	dependsOn?: ReadonlyArray<PluginTag<…>>,
+	cacheKey?: Effect.Effect<string, unknown, unknown>,
+	build: (transaction: Transaction) => Effect.Effect<void, never, R>,
+});
+```
+
+Builds, signs, and executes one transaction. Resolves to `TxResult` (digest + objectChanges +
+effects). `build:` receives a `@mysten/sui` `Transaction` and may `yield*` other tags to read
+package IDs / addresses.
+
+`cacheKey:`, when set, fold-in `Sui.chainId` and the signer's address. A cache hit returns the
+prior `TxResult` without re-signing. Use this for idempotent setup tx; omit for tx that should
+fire on every cycle.
+
+## `action`
+
+```ts
+action({
+	name: string,
+	dependsOn?: ReadonlyArray<PluginTag<…>>,
+	run: Effect.Effect<TShape, E, R>,
+});
+```
+
+The catch-all for one-shot work that isn't a Sui transaction — fetch a fixture, write a config
+file, call into another supervisor's HTTP API. `run:` is yielded once at acquire; the returned
+shape is the tag's per-call value.
+
+## `manifest`
+
+```ts
+manifest({
+	name?: string,                          // Default 'manifest'.
+	output?: string,                        // Default .devstack/(stacks/<stack>/)manifest.json
+	extras?: Record<string, unknown> | (() => Record<string, unknown>) | Effect.Effect<…>,
+});
+```
+
+Writes the manifest sidecar described in [Concepts](/devstack/concepts#the-manifest). `extras`
+accepts three forms:
+
+- Plain object — serialized verbatim.
+- Sync function — called once at acquire.
+- Effect — for tag-dependent data (the common case for surfacing Seal/DeepBook live values).
+
+<Callout type="warn">
+	**Security**: Plain objects and sync functions are serialized verbatim. **Never pass
+	secrets** through `extras` — manifest is read by dapp-kit at dev time and any value is
+	recoverable from disk. Use `Effect.gen` if you need to redact before serialization.
+</Callout>
+
+## `bindings`
+
+```ts
+bindings({
+	packages: ReadonlyArray<PluginTag<…, LocalPackageShape, …>>,
+	output: string,
+	importExtension?: '.ts' | '.js' | '',
+	name?: string,
+});
+```
+
+Reads each `publishMove`-deployed package's source, runs `sui move summary`, hands the result
+to `@mysten/codegen`, and writes typed wrappers under `output/<pkg-name>/`. Atomic dir swap so
+Vite never observes a half-written tree.
+
+`packages:` must be `LocalPackageShape` tags (from `publishMove`). `*Known*`-deployed packages
+provide only `PackageShape` and are rejected at compile time.
+
+## `walletApp`
+
+```ts
+walletApp({
+	name?: string,                          // Default 'wallet-app'.
+	accounts: ReadonlyArray<PluginTag<…, Account, …>>,
+	allowedOrigins?: ReadonlyArray<string>,
+	port?: number,                          // Default 5180.
+	bindAddress?: string,                   // Default '0.0.0.0'.
+});
+```
+
+Stands up the dev-only signing server that backs the embedded dev wallet UI. Provides a
+`WalletApp` shape:
+
+```ts
+interface WalletApp {
+	readonly url: string;
+	readonly pairUrl: string;
+	readonly endpoint: { readonly name: string; readonly url: string };
+	readonly localPort: number;
+}
+```
+
+`allowedOrigins` is the CSRF defense — pass the exact scheme/host/port of every browser surface
+that pairs with the wallet. The auto-derived `http://dev.<app>.localhost` (and stack-scoped
+variants) are already included.
+
+<Callout type="warn">
+	The signing endpoints are authenticated only by the pairing token. **Local dev only** —
+	never expose `walletApp` past loopback or a trusted dev tunnel.
+</Callout>
+
+## `hostProcess`
+
+```ts
+hostProcess({
+	name: string,
+	command: string,
+	args?: ReadonlyArray<string>,
+	cwd?: string,
+	env?: Record<string, string> | Effect.Effect<Record<string, string>, E, R>,
+	readyProbe?: ReadyProbe,
+	dependsOn?: ReadonlyArray<PluginTag<…>>,
+	endpoint?: { name: string; kind?: string },
+	traefik?: { service: string; entrypoint: string; localPort?: number },
+	port?: { preferred: number },
+	onOutputLine?: (line: { stream: 'stdout' | 'stderr', text: string }) => void,
+});
+```
+
+Spawns a long-lived child process on the host. The supervisor:
+
+- Waits for the ready probe (HTTP / TCP / log regex / none) before declaring the row green.
+- Surfaces the URL as an endpoint (writable to the manifest).
+- Optionally publishes a Traefik file-provider entry so the process is reachable via a
+  stack-scoped hostname.
+- Kills the process on stack teardown.
+
+`port: { preferred }` allocates a per-stack port via `PortAllocator` (scans forward when the
+preferred number is bound) and exposes it as `$PORT`. The allocated value also becomes the
+default `readyProbe` URL.
+
+### Ready probes
+
+```ts
+{ kind: 'http', url: string, timeoutMs?: number, intervalMs?: number };
+{ kind: 'tcp', host: string, port: number, timeoutMs?: number };
+{ kind: 'log', pattern: RegExp, timeoutMs?: number };
+```
+
+The HTTP probe polls until any 2xx/3xx response. The log probe matches against the process's
+combined stdout+stderr stream.
+
+## `dockerContainer`
+
+```ts
+dockerContainer({
+	name: string,
+	image: string,
+	args?: ReadonlyArray<string>,
+	env?: Record<string, string>,
+	ports?: ReadonlyArray<{ host: number; container: number }>,
+	volumes?: ReadonlyArray<{ host: string; container: string }>,
+	networkAliases?: ReadonlyArray<string>,
+	readyProbe?: ReadyProbe,
+	dependsOn?: ReadonlyArray<PluginTag<…>>,
+});
+```
+
+Long-lived container. The escape hatch when neither `hostProcess` nor a higher-level primitive
+(walrus, seal, deepbook) fits. Containers are stamped with
+`devstack.app/stack/action` labels for cleanup by `wipe`/`prune`.
+
+For one-shot Docker work (build artifacts, key generation) see `dockerOneShot` in the
+[plugin-author surface](/devstack/reference/plugin-author).
+
+## Helpers
+
+```ts
+import {
+	pickCreatedByTypeSuffix,
+	pickCreatedByTypeIncludes,
+	registerCoin,
+} from '@mysten-incubation/devstack';
+```
+
+- **`pickCreatedByTypeSuffix(changes, '::coin::TreasuryCap')`** — find the first object created
+  with a Move type ending in the given suffix. Returns the `objectId` or throws.
+- **`pickCreatedByTypeIncludes(changes, 'AdminCap<')`** — same but uses `includes` matching.
+- **`registerCoin({ name, pkg, type, decimals })`** — register a coin into the `CoinRegistry`
+  after the fact (e.g. for a coin pulled from a known-package). `publishMove`'s `coins:`
+  shorthand already calls this for declared coins.
+
+## Errors
+
+Every primitive throws a tagged error from [`errors`](/devstack/reference/errors):
+`AccountError`, `BindingsError`, `DeepbookError`, `DockerError`, `HostProcessError`,
+`ManifestError`, `PublishError`, `SealError`, `SuiError`, `WalletAppError`, `WalrusError`.
+All extend Effect's `Data.TaggedError` so you can `catchTag` them in custom plumbing.

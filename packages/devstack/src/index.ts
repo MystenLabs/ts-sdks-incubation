@@ -1,19 +1,100 @@
+// `@mysten-incubation/devstack` — public barrel.
+//
+// Three pillars surface here:
+//
+// 1. **`devstack(...refs)`** — the canonical entry. Variadic over Refs;
+//    auto-fills default providers (`Sui()` when missing); writes the
+//    manifest sidecar. Returns a runnable handle with `run()`, `runMain()`,
+//    and `layer` for Effect-native consumers.
+// 2. **Ref factories** — `Sui`, `Seal`, `Walrus`, `Deepbook`,
+//    `DeepbookMarketMaker`, `Account`, `Package`, `Action`, `Dev`,
+//    `Wallet`, `Bindings`. Each returns a typed Ref usable as a
+//    cross-reference in other factories and yieldable inside Effects.
+// 3. **Runtime accessors** — `Devstack` Effect Service for in-Effect
+//    reads, `fromManifest` for browser / non-Effect consumers, plus the
+//    full v4 `Manifest` schema types.
+//
+// Escape hatches for plugin authors live under `@mysten-incubation/devstack/advanced`.
+
+// ── Compose entry ──
 export {
-	composeStackLayer,
-	defineDevstack,
-	type Devstack,
-	type DevstackConfig,
-	type StackComposeOptions,
-	type StackMember,
-} from './define-devstack.js';
-export { provideDevstack, type ProvideDevstackOptions } from './provide-devstack.js';
-// `TagIdentity<Name>` is the per-name structural Service type the
-// `accounts({alice})` / `publishMove({name})` / etc. tags carry on
-// their `R` channel. Re-exported so consumers of these tags get
-// nameable inferred types — without it, `tsc --declaration` (composite
-// projects, the example apps' typecheck mode) trips TS2742 on any
-// program that yields a per-call tag.
-export type { TagIdentity } from './tag.js';
+	devstack,
+	type DevstackComposeOptions,
+	type DevstackRefInput,
+} from './compose/devstack.js';
+
+// ── Ref factories ──
+export {
+	Sui,
+	type SuiOptions,
+	Seal,
+	type SealOptions,
+	Walrus,
+	type WalrusOptions,
+	Deepbook,
+	DeepbookMarketMaker,
+	type DeepbookOptions,
+	Account,
+	Package,
+	type PackageOptions,
+	type CaptureSpec,
+	Action,
+	type ActionOptions,
+	Dev,
+	type DevOptions,
+	Wallet,
+	type WalletOptions,
+	Bindings,
+	type BindingsRefOptions,
+	type Ref,
+	type RefSection,
+	type AccountRef,
+	type PackageRef,
+} from './services/index.js';
+
+// ── Runtime accessor ──
+export { Devstack, DevstackLive, gatherManifest } from './runtime/service.js';
+export { fromManifest } from './runtime/manifest-loader.js';
+export type {
+	Manifest,
+	ManifestEncoded,
+	AccountEntry,
+	AppManifest,
+	CoinEntry,
+	DeepbookManifest,
+	DeepbookPoolEntry,
+	EndpointEntry,
+	PackageEntry,
+	SealManifest,
+	SdkCoinEntry,
+	ServicesManifest,
+	StackIdentity,
+	SuiManifest,
+	WalrusManifest,
+} from './runtime/manifest-schema.js';
+
+// ── Helpers users routinely reach for ──
+// Coin registration: passes a published `Package` ref + module/type
+// into the CoinRegistry so deepbook pools (and other consumers that
+// need a runtime-resolved coin type) can reference it by ref. The new
+// `Package({ coins })` field auto-registers in the common case; reach
+// for `registerCoin` when you need to register a coin from an already-
+// published package or want a separate Ref to compose against.
+export {
+	registerCoin,
+	type RegisterCoinOptions,
+	type RegisterCoinResult,
+} from './primitives/register-coin.js';
+// Object-id pickers for `Action.build` callbacks that project from
+// `result.objectChanges`. Most uses are subsumed by `Package`'s
+// declarative `capture:` field; these stay for advanced callbacks that
+// need the full programmatic form.
+export {
+	pickCreatedByTypeIncludes,
+	pickCreatedByTypeSuffix,
+} from './primitives/sui-helpers.js';
+// Known-network deployment registry (testnet seal/walrus/deepbook
+// packages). Useful for hand-rolled `Seal({ mode: 'known' })` configs.
 export {
 	knownDeployments,
 	type DeepbookDeployment,
@@ -21,23 +102,11 @@ export {
 	type KnownNetwork,
 	type SealDeployment,
 	type WalrusDeployment,
-} from './internal/known-deployments.js';
+} from './engine/known-deployments.js';
 
-// Primitive factories + their per-call shapes. Re-exported by name
-// rather than `export *` because the interface barrel below introduces
-// canonical singleton tags (`Sui`, `Package`, …) that collide with the
-// per-factory shape names the primitives barrel surfaces. The
-// conflicting `Sui`/`SuiShape` come from interfaces; everything else
-// still comes from primitives. Once every primitive consumes the
-// interface tag directly the two namespaces collapse again.
-export { accounts, type AccountSpec, type AccountsHandle } from './primitives/accounts.js';
-export { action, type ActionOptions } from './primitives/action.js';
-export { bindings, type BindingsOptions, type BindingsResult } from './primitives/bindings.js';
-export {
-	dockerContainer,
-	type DockerContainerHandle,
-	type DockerContainerOptions,
-} from './primitives/docker-container.js';
+// ── Tagged error types ──
+// Surfaced for `catchTag`-style handling in custom Action build
+// callbacks and Effect-native consumers.
 export {
 	AccountError,
 	BindingsError,
@@ -51,37 +120,15 @@ export {
 	WalletAppError,
 	WalrusError,
 } from './primitives/errors.js';
-export {
-	hostProcess,
-	type HostProcessHandle,
-	type HostProcessOptions,
-	type HttpReadyProbe,
-	type LogReadyProbe,
-	type ReadyProbe,
-	type TcpReadyProbe,
-} from './primitives/host-process.js';
-export { manifest, type ManifestData, type ManifestOptions } from './primitives/manifest.js';
-export {
-	publishMove,
-	type CoinSpec,
-	// `Package` from publishMove is the per-call shape (carries captured
-	// + coins records); the canonical singleton-tag `Package` comes from
-	// the interfaces barrel below. Aliased here so both stay reachable.
-	type Package as PublishedPackage,
-	type PublishedCoin,
-	type PublishMoveOptions,
-} from './primitives/publish-move.js';
-export {
-	pickCreatedByTypeIncludes,
-	pickCreatedByTypeSuffix,
-} from './primitives/sui-helpers.js';
-export {
-	registerCoin,
-	type RegisterCoinOptions,
-	type RegisterCoinResult,
-} from './primitives/register-coin.js';
+
+// ── Shared utility types ──
+// `Transaction` is `@mysten/sui/transactions`'s builder — re-exported
+// for convenience so `Action.build` callbacks don't need a separate
+// dep import. `SuiObjectChange` is the shape `Action`'s
+// `expose:`/`capture:` callbacks consume. The others are the per-call
+// shapes returned by yielding the corresponding Ref inside an Effect.
 export type {
-	Account,
+	Account as AccountShape,
 	SignAndExecuteError,
 	SignAndExecuteOptions,
 	SuiObjectChange,
@@ -89,60 +136,17 @@ export type {
 	Transaction,
 	TxResult,
 } from './primitives/shared.js';
-export {
-	deepbookKnownPackage,
-	deepbookLocalDeploy,
-	deepbookMarketMaker,
-	type DeepbookKnownPackageOptions,
-	type DeepbookLocalDeployOptions,
-	type DeepbookLocalDeployShape,
-	type DeepbookMarketMakerHandle,
-	type DeepbookMarketMakerOptions,
-	type DeepbookMarketMakerPoolSpec,
-	type DeepbookPool,
-	type DeepbookPoolSpec,
-} from './primitives/deepbook/index.js';
-export {
-	sealKnownKeyServer,
-	sealLocalKeygen,
-	type SealKnownKeyServerOptions,
-	type SealLocalKeygenOptions,
-	type SealLocalKeygenShape,
-} from './primitives/seal.js';
-// `Sui`/`SuiShape` come from interfaces; the `sui*` factories + their
-// per-call options come from primitives. The `Sui` class in
-// `primitives/sui.ts` is just a re-export of the interface tag, so they
-// share the same Context key (`'@devstack/Sui'`) and are interchangeable
-// at runtime.
-export {
-	suiCustom,
-	suiLocalnet,
-	suiMainnet,
-	suiTestnet,
-	type SuiCustomOptions,
-	type SuiLocalnetOptions,
-	type SuiMainnetOptions,
-	type SuiNetwork,
-	type SuiTestnetOptions,
-} from './primitives/sui.js';
-export { tx, type TxOptions } from './primitives/tx.js';
-export { walletApp, type WalletApp, type WalletAppOptions } from './primitives/wallet-app.js';
-export {
-	walrusKnownDeployment,
-	walrusLocalCluster,
-	type WalrusKnownDeploymentOptions,
-	type WalrusLocalClusterOptions,
-} from './primitives/walrus/index.js';
 
-// Canonical interface contracts. Every multi-impl factory produces a
-// `Layer` for one of these tags; consumers depend on the tag, not on a
-// specific factory.
+// ── Interface tag classes ──
+// Canonical Context.Service tags every factory's underlying Layer
+// targets. Used inside `Action.build`/`extras` callbacks when the user
+// wants the narrow contract shape rather than the composite Ref shape
+// (e.g. `yield* SealKeyServer` for just the key-server URL + object id,
+// vs `yield* seal` for the full composite). Rare in user configs; most
+// of the time you yield the local Ref instead.
 export {
-	Sui,
 	type SuiShape,
-	Package,
 	type PackageShape,
-	LocalPackage,
 	type LocalPackageShape,
 	Coin,
 	type CoinShape,
@@ -162,8 +166,11 @@ export {
 	type DeepbookCoreShape,
 	DeepbookAdmin,
 	type DeepbookAdminShape,
-	DeepbookMarketMaker,
 	type DeepbookMarketMakerShape,
-	type AccountShape,
-	type AccountTag,
 } from './interfaces/index.js';
+
+// `TagIdentity<Name>` is the per-name structural Service type Refs
+// carry on their `R` channel. Re-exported so consumers of yielded Refs
+// get nameable inferred types — without it, `tsc --declaration`
+// (composite projects, the example apps' typecheck mode) trips TS2742.
+export type { TagIdentity } from './advanced/tag.js';

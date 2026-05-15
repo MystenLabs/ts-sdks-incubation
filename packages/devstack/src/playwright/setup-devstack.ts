@@ -29,7 +29,7 @@
 
 import { Effect, Exit, Scope } from 'effect';
 import { buildWithScope } from 'effect/Layer';
-import type { Devstack } from '../define-devstack.js';
+import type { Devstack } from '../engine/supervisor.js';
 
 export interface DevstackPlaywrightFixture {
 	/** Wire into `playwright.config.ts` `globalSetup`. Returns once every

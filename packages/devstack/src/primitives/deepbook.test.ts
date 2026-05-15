@@ -20,14 +20,14 @@ import * as nodePath from 'node:path';
 import { Effect, Exit, Layer } from 'effect';
 import { layer as NodeFileSystemLayer } from '@effect/platform-node/NodeFileSystem';
 import { describe, expect, it } from '@effect/vitest';
-import { EngineLive } from '../internal/engine.js';
-import { LeasingLive } from '../internal/leasing.js';
-import { PackageRegistryLive, CoinRegistryLive } from '../internal/registries.js';
-import { StateStore, StateStoreConfig, StateStoreLive } from '../internal/state-store.js';
+import { EngineLive } from '../engine/engine.js';
+import { LeasingLive } from '../engine/leasing.js';
+import { PackageRegistryLive, CoinRegistryLive } from '../engine/registries.js';
+import { StateStore, StateStoreConfig, StateStoreLive } from '../engine/state-store.js';
 import { DeepbookAdmin, DeepbookCore, type DeepbookCoreShape } from '../interfaces/deepbook.js';
 import { Sui, type SuiShape } from '../interfaces/sui.js';
 import type { Account, SignAndExecuteError } from './shared.js';
-import { makeTag } from '../tag.js';
+import { makeTag } from '../advanced/tag.js';
 import { deepbookKnownPackage, deepbookLocalDeploy } from './deepbook/index.js';
 
 // -----------------------------------------------------------------------------

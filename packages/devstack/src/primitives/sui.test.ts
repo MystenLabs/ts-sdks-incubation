@@ -12,8 +12,8 @@
 import { Cause, Effect, Exit, Layer, Option } from 'effect';
 import { layer as NodeFileSystemLayer } from '@effect/platform-node/NodeFileSystem';
 import { afterEach, beforeEach, describe, expect, it } from '@effect/vitest';
-import { EngineLive } from '../internal/engine.js';
-import { EndpointRegistryLive } from '../internal/registries.js';
+import { EngineLive } from '../engine/engine.js';
+import { EndpointRegistryLive } from '../engine/registries.js';
 import { Sui } from '../interfaces/sui.js';
 import { faucetReadyProbe, suiCustom, suiLocalnet, suiMainnet, suiTestnet } from './sui.js';
 

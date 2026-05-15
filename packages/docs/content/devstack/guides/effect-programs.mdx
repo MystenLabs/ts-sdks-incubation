@@ -1,0 +1,159 @@
+---
+title: Effect programs
+---
+
+`provideDevstack` is the escape hatch for callers who want devstack's services inside their own
+Effect program — scripts, agents, backend services, anything that's not a supervised dev
+session.
+
+This page assumes working knowledge of [Effect-TS](https://effect.website). If you're using
+devstack as a dev environment for a Vite app, you almost certainly want
+[`defineDevstack`](/devstack/concepts#the-stack) instead.
+
+## `defineDevstack` vs `provideDevstack`
+
+| Helper              | Returns                            | When to use                                                                    |
+| ------------------- | ---------------------------------- | ------------------------------------------------------------------------------ |
+| `defineDevstack`    | A `Devstack` with `.run()` + TUI    | `devstack up` boots this. Use for any supervised dev session.                  |
+| `provideDevstack`   | A `Layer.Layer<unknown, unknown, never>` | Pure DI. Plug into `Effect.provide`. No TUI, no file watch, no restart loop. |
+
+`provideDevstack` composes the same primitive layers, the same infra and platform layers, but
+omits the launch loop, file watcher, signal handlers, and renderer. Acquisition runs once when
+the layer builds; finalizers run when the scope closes.
+
+## Minimal example
+
+```ts
+import { Effect } from 'effect';
+import { runMain } from '@effect/platform-node/NodeRuntime';
+import {
+	accounts,
+	provideDevstack,
+	Sui,
+	suiLocalnet,
+} from '@mysten-incubation/devstack';
+
+const a = accounts({ alice: {} });
+
+const program = Effect.gen(function* () {
+	const sui = yield* Sui;
+	const alice = yield* a.alice;
+	yield* Effect.log(`sui ${sui.network} @ ${sui.rpc.host}`);
+	yield* Effect.log(`alice ${alice.address}`);
+});
+
+runMain(program.pipe(Effect.provide(provideDevstack([suiLocalnet(), a.alice]))));
+```
+
+`provideDevstack` returns a layer with `R = never` once provided — every service the program
+yields (e.g. `Sui`, `a.alice`) is resolved by the composed primitives. Missing services surface
+at runtime as `ServiceNotFound: @devstack/<key>`.
+
+## Mixing devstack into a larger Effect program
+
+`Layer.mergeAll` (or `Effect.provide(layer1)` then `.pipe(Effect.provide(layer2))`) composes
+devstack with your own services:
+
+```ts
+import { Effect, Layer } from 'effect';
+import { provideDevstack, Sui } from '@mysten-incubation/devstack';
+import { MyAppConfig, MyAppConfigLive } from './config.js';
+
+const program = Effect.gen(function* () {
+	const sui = yield* Sui;
+	const cfg = yield* MyAppConfig;
+	// ...
+});
+
+const layer = Layer.mergeAll(
+	provideDevstack([suiLocalnet(), a.alice]),
+	MyAppConfigLive,
+);
+
+runMain(program.pipe(Effect.provide(layer)));
+```
+
+Devstack provides its own platform layers (Node `FileSystem`, `Path`, `ChildProcessSpawner`,
+`Stdio`, `Terminal`). If your other layers also need those, `provideDevstack` already exposes
+them.
+
+## Switching network and account source at the layer
+
+The same `program` runs in dev and prod by varying the layer:
+
+```ts
+const a =
+	process.env.NODE_ENV === 'production'
+		? accounts({ alice: { from: 'env', key: 'ALICE_PRIVATE_KEY' } })
+		: accounts({ alice: { from: 'ephemeral-funded' } });
+
+const layer =
+	process.env.NODE_ENV === 'production'
+		? provideDevstack([suiTestnet(), a.alice])
+		: provideDevstack([suiLocalnet(), a.alice]);
+```
+
+The two `a.alice` tags have the same Context key (`accounts({ alice })` is what defines the
+class), so the program's `yield* a.alice` resolves against whichever layer was provided.
+
+## Embedding in a Vitest test (without `withDevstack`)
+
+`withDevstack` is the right tool for chain-mode integration tests, but if you need finer
+control (e.g. provide your own per-test stub layers), build the layer manually:
+
+```ts
+import { Effect, Layer, Scope, Exit } from 'effect';
+import { buildWithScope } from 'effect/Layer';
+import { provideDevstack, Sui } from '@mysten-incubation/devstack';
+
+beforeAll(async () => {
+	const scope = Scope.makeUnsafe('sequential');
+	const layer = provideDevstack([suiLocalnet(), a.alice]);
+	await Effect.runPromise(buildWithScope(layer, scope));
+	// ... save scope for afterAll teardown
+});
+
+afterAll(async () => {
+	await Effect.runPromise(Scope.close(scope, Exit.void));
+});
+```
+
+This is the same shape `setupDevstack` uses for Playwright `globalSetup`/`globalTeardown`.
+
+## Stack options
+
+`provideDevstack` accepts the same `StackComposeOptions` as `defineDevstack` (under the hood,
+`defineDevstack` calls `composeStackLayer` and adds a launch loop):
+
+```ts
+provideDevstack([suiLocalnet(), a.alice], {
+	stackName: 'agent-prod',
+	network: 'mainnet',
+	stateDir: '/var/lib/my-agent/.devstack',
+});
+```
+
+| Option              | Default       | Effect                                                                       |
+| ------------------- | ------------- | ---------------------------------------------------------------------------- |
+| `stackName`         | `'main'`      | Partitions persisted state under `.devstack/stacks/<stack>/`.                |
+| `network`           | `'localnet'`  | Drives state-file layout (`stacks/` for localnet, `networks/` for live nets). |
+| `stateDir`          | `.devstack`   | Root for the state store and keystores.                                      |
+
+## Common pitfalls
+
+- **`ServiceNotFound: @devstack/Sui`** — your program yields `Sui` but the layer doesn't include
+  a Sui factory. Add `suiLocalnet()` (or `suiTestnet()`, etc.) to the stack array.
+- **Long-running effects don't see config changes** — `provideDevstack` has no file watcher.
+  If you need hot-reload on config edits, use `defineDevstack` with `runMain()` (the
+  supervisor) instead.
+- **Docker resources leak on `Effect.runFork`** — devstack primitives register `docker rm -f`
+  finalizers on the surrounding scope. If you fork off a long-running fiber from inside a
+  scoped program and never close the parent scope, the finalizers don't run. Either await the
+  fork in the same scope or close the scope explicitly.
+
+## Related
+
+- [Networks and accounts](/devstack/guides/networks-and-accounts) — the dev/prod swap pattern
+- [Integration tests with Vitest](/devstack/guides/integration-tests) — `withDevstack` shortcut
+- [`provideDevstack` reference](/devstack/reference/config#providedevstack)
+- The [`effect-app` example](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/examples/effect-app) — pure-DI consumer mode

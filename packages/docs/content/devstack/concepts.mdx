@@ -1,0 +1,176 @@
+---
+title: Concepts
+---
+
+The mental model in five pieces: primitives, the stack, the supervisor, the manifest, and stacks
+(plural — the isolation unit).
+
+## Primitives
+
+A primitive is one declarative call that defines one resource. Devstack ships these out of the
+box:
+
+| Primitive                  | What it produces                                                                          |
+| -------------------------- | ----------------------------------------------------------------------------------------- |
+| `suiLocalnet()` / `suiTestnet()` / `suiMainnet()` / `suiCustom()` | The `Sui` service — RPC URL, chain id, optionally a faucet. |
+| `accounts({ alice, bob })` | One signer tag per name. Funded from the faucet on localnet; read from env / keystore / inline on other networks. |
+| `publishMove({ path, signer })` | A `LocalPackage` tag carrying `packageId`, `upgradeCapId`, captured object ids, and an MVR placeholder. |
+| `tx({ build })`            | A one-shot signed transaction. Optional `cacheKey` so it only re-executes when its inputs change. |
+| `action({ run })`          | A one-shot Effect for anything that isn't a Sui transaction.                              |
+| `walrusLocalCluster()` / `walrusKnownDeployment()` | A Walrus storage committee + proxy, or a handle to a remote one. |
+| `sealLocalKeygen()` / `sealKnownKeyServer()`       | A Seal key server (local in Open mode, or a handle to a remote one). |
+| `deepbookLocalDeploy()` / `deepbookKnownPackage()` / `deepbookMarketMaker()` | DeepBook v3 published locally, or a handle to an existing deployment, plus an optional market-maker. |
+| `bindings({ packages, output })` | Generated TypeScript bindings for one or more `publishMove` packages.               |
+| `manifest({ extras })`     | Writes `.devstack/manifest.json` with everything the frontend needs.                      |
+| `walletApp({ accounts })`  | A dev-only signing server backing the embedded dev wallet.                                |
+| `hostProcess({ command })` | A long-lived child process (vite, next dev, your own daemon) supervised by the stack.    |
+| `dockerContainer({...})`   | A long-lived container — the escape hatch when no higher-level primitive fits.            |
+
+Each primitive returns a **tag** (or a record of tags, e.g. `accounts({alice})` gives you
+`a.alice`). Tags carry their dependencies — `publishMove` reads the `Sui` tag's RPC URL,
+`accounts` reads the faucet endpoint, `tx` reads the signer tag. You don't wire dependencies
+manually: list every tag in the stack array and the supervisor resolves them in order.
+
+## The stack
+
+`defineDevstack([...])` takes an ordered array of tags and produces a `Devstack` object with a
+`run()` / `runMain()` / `launchEffect` surface plus a `layer` field for tests.
+
+```ts
+export default defineDevstack([
+	suiLocalnet(),
+	a.alice,
+	a.bob,
+	helloPublish,
+	manifest(),
+	wallet,
+	dev,
+]);
+```
+
+Authoring order is dependency order: list providers before consumers. `walletApp` reads
+`a.alice` and `a.bob`; if you put `walletApp` before `accounts`, the supervisor still resolves
+it correctly via the Effect Layer graph, but the TUI ordering follows your list — keeping it
+linear makes the dashboard read top-to-bottom.
+
+The `Devstack` object is what the CLI loads and what Playwright's `setupDevstack` consumes. You
+rarely call `.run()` directly — `devstack up` does that for you.
+
+## The supervisor
+
+When you run `devstack up` (or `pnpm dev`, which is `devstack up` under the hood), the
+supervisor:
+
+1. **Acquires a per-stack lock** under `.devstack/stacks/<stack>/state.json.lock`. A second
+   supervisor on the same `(app, stack)` fails fast with a lock-held error.
+2. **Boots a shared Traefik router** on the host (once per machine, idempotent). The router
+   binds well-known ports — 9000 for sui-rpc, 9123 for faucet, 9185 for Walrus, 5175 for vite —
+   and routes by `Host:` header to whichever stack is asking. Set `DEVSTACK_NO_ROUTER=1` to
+   skip; primitives that don't opt into routing still work over direct ports.
+3. **Builds each primitive** in order. Each row in the TUI tracks one tag: `pending →
+   acquiring → ready` (or `failed`). A failed primitive doesn't kill the supervisor — fix the
+   issue and press `r` to retry.
+4. **Watches your sources**. `publishMove` auto-declares its Move tree as a watch path. Any
+   `watch:` you pass to `defineDevstack` is added to the set. An edit triggers a full stack
+   restart (debounced 250 ms, with a content-hash short-circuit so a no-op save doesn't recycle).
+5. **Cleans up on shutdown**. Ctrl-C, `q`, or process termination runs every primitive's
+   finalizer in reverse order (containers torn down, lock files released, host ports freed).
+
+## The manifest
+
+`manifest()` writes `.devstack/manifest.json` once every primitive is ready. It's the contract
+between the supervisor (which knows the runtime values) and your frontend (which needs them).
+
+```jsonc
+{
+	"packages": [
+		{ "name": "hello", "packageId": "0x...", "upgradeCapId": "0x...", "mvrPlaceholder": "@local/hello" }
+	],
+	"endpoints": [
+		{ "name": "sui-rpc", "url": "http://localhost:9000" },
+		{ "name": "sui-faucet", "url": "http://localhost:9123" },
+		{ "name": "dev-server", "url": "http://dev.my-app.localhost:5175", "kind": "dev-server" },
+		{ "name": "wallet-app", "url": "http://wallet.my-app.localhost:5180" }
+	],
+	"accounts": [{ "name": "alice", "address": "0x..." }, { "name": "bob", "address": "0x..." }],
+	"coins": [],
+	"extras": {}
+}
+```
+
+- **`packages`** — every `publishMove` tag's `packageId`, upgrade cap, captured object ids, and
+  MVR placeholder. `createDevstackDappKit` reads these and configures the SDK's
+  `namedPackagesPlugin` so `@local/hello` in your Move calls resolves to the live `packageId`.
+- **`endpoints`** — every URL the frontend or e2e tests need. Playwright's `webServer({
+  endpoint: 'dev-server' })` reads this to find the Vite URL.
+- **`accounts`** — every funded account's address. `connectAs(page, 'alice')` looks this up to
+  retarget dApp Kit.
+- **`coins`** — every coin registered through `publishMove({ coins: {...} })` or `registerCoin`.
+- **`extras`** — anything you put in `manifest({ extras: {...} })`. Common pattern: surface a
+  Seal key-server URL or a Walrus system object id that the frontend needs.
+
+The frontend reads the manifest at build/dev time:
+
+```ts
+import { createDevstackDappKit } from '@mysten-incubation/devstack/dapp-kit';
+import { manifest } from './generated/manifest.js';
+
+export const { dAppKit } = await createDevstackDappKit({ manifest });
+```
+
+Re-runs of the stack regenerate the manifest. Vite picks up the change through normal HMR.
+
+## Stacks and isolation
+
+The word "stack" is overloaded — it means both _"the devstack you're running"_ and _"a named
+isolation unit"_. The second meaning is what matters for parallel testing.
+
+A stack name partitions state. Each named stack gets its own:
+
+- State directory: `.devstack/stacks/<stack>/state.json`
+- Keystore: `.devstack/stacks/<stack>/.keys/`
+- Manifest: `.devstack/stacks/<stack>/manifest.json`
+- Docker containers, networks, volumes — all labeled `devstack.stack=<stack>` and isolated.
+- Allocated host ports — the per-stack port allocator scans forward when the preferred port is
+  already bound by a sibling stack.
+
+You select a stack with `DEVSTACK_STACK=<name>` or by passing `{ stackName: '<name>' }` to
+`defineDevstack`. The default is `'main'`.
+
+```bash
+DEVSTACK_STACK=worker1 pnpm test:e2e     # one isolated stack
+DEVSTACK_STACK=worker2 pnpm test:e2e     # a second, in parallel
+```
+
+The Traefik router lets two stacks co-exist on the same well-known port — each gets its own
+hostname (`dev.my-app.localhost` for `main`, `dev.worker1.my-app.localhost` for
+`stack=worker1`). The browser sees a different hostname, the router dispatches to the right
+backend.
+
+### When to reach for a non-main stack
+
+- **CI test parallelism** — give each worker a stack name and they can't trample each other's
+  state.
+- **Side-by-side comparisons** — run `main` against your branch and `compare` against an older
+  ref to A/B test.
+- **Single-shot operations** — `DEVSTACK_STACK=apply-test devstack apply` runs every primitive
+  acquire, writes the manifest, exits clean. Pairs well with CI smoke tests.
+
+For a one-off teardown of a specific stack, see [`devstack
+wipe`](/devstack/reference/cli#wipe).
+
+## Where Effect comes in
+
+Devstack is built on [Effect-TS](https://effect.website). Each primitive contributes an `Effect
+Layer`, the supervisor composes them, the result runs under `NodeRuntime.runMain`. You don't
+need to know any of this to use the happy path — `defineDevstack([...])` and `pnpm dev` are the
+entire surface.
+
+Two places where Effect leaks through, and where you need a working knowledge:
+
+- **`tx({ build })`** — the build callback returns `Effect.Effect<void, never, R>`. You can
+  `yield* helloPublish` inside to read the resolved package ID.
+- **`provideDevstack([...])`** — for embedding the stack in your own Effect program, e.g.
+  scripts, agents, backend services. See [Effect programs](/devstack/guides/effect-programs).
+
+Outside those two surfaces, you can treat devstack like any other declarative config tool.

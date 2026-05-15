@@ -6,7 +6,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { Layer } from 'effect';
-import type { StackMember } from '../../define-devstack.js';
+import type { StackMember } from '../../engine/supervisor.js';
 import {
 	WalrusNetwork,
 	WalrusNodes,
@@ -16,7 +16,7 @@ import {
 	type WalrusNodesShape,
 	type WalrusProxyShape,
 } from '../../interfaces/walrus.js';
-import { knownDeployments, type KnownNetwork } from '../../internal/known-deployments.js';
+import { knownDeployments, type KnownNetwork } from '../../engine/known-deployments.js';
 
 export interface WalrusKnownDeploymentOptions {
 	readonly network?: KnownNetwork;

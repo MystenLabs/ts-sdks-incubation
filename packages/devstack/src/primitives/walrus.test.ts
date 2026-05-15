@@ -11,15 +11,15 @@
 import { Effect, Exit, Layer } from 'effect';
 import { layer as NodeFileSystemLayer } from '@effect/platform-node/NodeFileSystem';
 import { describe, expect, it } from '@effect/vitest';
-import { EngineLive } from '../internal/engine.js';
+import { EngineLive } from '../engine/engine.js';
 import {
 	WalrusAdmin,
 	WalrusNetwork,
 	WalrusNodes,
 	type WalrusNetworkShape,
 } from '../interfaces/walrus.js';
-import { knownDeployments } from '../internal/known-deployments.js';
-import { routerHostname, routerId } from '../internal/router-hostname.js';
+import { knownDeployments } from '../engine/known-deployments.js';
+import { routerHostname, routerId } from '../engine/router-hostname.js';
 import { walrusKnownDeployment } from './walrus/index.js';
 
 // -----------------------------------------------------------------------------

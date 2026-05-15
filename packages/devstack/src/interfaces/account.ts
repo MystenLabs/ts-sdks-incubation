@@ -17,7 +17,7 @@
 import { Effect, Schema } from 'effect';
 import type { Transaction } from '@mysten/sui/transactions';
 import type { SuiTransactionBlockResponse } from '@mysten/sui/jsonRpc';
-import type { PluginTag } from '../tag.js';
+import type { PluginTag } from '../advanced/tag.js';
 import { AccountError } from '../primitives/errors.js';
 
 /** Per-account-instance shape. Every per-name tag produced by the
