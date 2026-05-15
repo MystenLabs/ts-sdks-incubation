@@ -9,7 +9,7 @@ import * as crypto from 'node:crypto';
 import { Effect, Layer, Option } from 'effect';
 import { Transaction } from '@mysten/sui/transactions';
 import { tag, provide, type Ref } from '../../advanced/tag.js';
-import { Sui } from '../sui.js';
+import { SuiTag } from '../../services/sui.js';
 import { publishMove, pickCreatedByTypeSuffix } from '../publish-move.js';
 import { PackageRegistry } from '../../engine/registries.js';
 import { StateStore } from '../../engine/state-store.js';
@@ -193,7 +193,7 @@ export const deepbookLocalDeploy = <
 			for (const tag of options.dependsOn ?? []) {
 				yield* tag;
 			}
-			const sui = yield* Sui;
+			const sui = yield* SuiTag;
 			const signer = yield* options.signer;
 			const state = yield* StateStore;
 

@@ -3,7 +3,7 @@ import { Transaction } from '@mysten/sui/transactions';
 import { tag, setPhase, type Ref } from '../advanced/tag.js';
 import { PublishError } from './errors.js';
 import { StateStore } from '../engine/state-store.js';
-import { Sui } from './sui.js';
+import { SuiTag } from '../services/sui.js';
 import type { Account, TxResult } from './shared.js';
 
 export interface TxOptions<Name extends string, R> {
@@ -58,7 +58,7 @@ export const tx = <const Name extends string, R = never>(options: TxOptions<Name
 			// chain naturally misses the cache (the cached objectChanges
 			// reference object ids that no longer exist).
 			if (options.cacheKey !== undefined) {
-				const sui = yield* Sui;
+				const sui = yield* SuiTag;
 				const state = yield* StateStore;
 				const userKey = yield* (options.cacheKey as Effect.Effect<string, unknown, never>);
 				const fullKey = `tx/${options.name}/${sui.chainId}/${signer.address}/${userKey}`;

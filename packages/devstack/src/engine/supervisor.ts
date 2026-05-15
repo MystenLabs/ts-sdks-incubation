@@ -56,7 +56,7 @@ import {
 	PackageRegistryLive,
 } from './registries.js';
 import { StateStoreConfig, StateStoreLive } from './state-store.js';
-import type { SuiNetwork } from '../primitives/sui.js';
+import type { SuiNetwork } from '../services/sui.js';
 import type { TagKind } from '../advanced/tag.js';
 import { startPlainRenderer } from '../tui/plain.js';
 import { SHUTDOWN_LOG_MESSAGE, startTuiOnce, TuiLoggerLayer, type TuiMount } from '../tui/index.js';

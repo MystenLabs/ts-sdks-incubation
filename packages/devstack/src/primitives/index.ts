@@ -71,19 +71,6 @@ export {
 	type SealLocalKeygenOptions,
 	type SealLocalKeygenShape,
 } from './seal.js';
-export {
-	Sui,
-	suiCustom,
-	suiLocalnet,
-	suiMainnet,
-	suiTestnet,
-	type SuiCustomOptions,
-	type SuiLocalnetOptions,
-	type SuiMainnetOptions,
-	type SuiNetwork,
-	type SuiShape,
-	type SuiTestnetOptions,
-} from './sui.js';
 export { tx, type TxOptions } from './tx.js';
 export { walletApp, type WalletApp, type WalletAppOptions } from './wallet-app.js';
 export {

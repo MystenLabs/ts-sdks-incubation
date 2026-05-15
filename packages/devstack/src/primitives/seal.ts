@@ -58,7 +58,7 @@ import {
 } from '../services/seal.js';
 import { composeLayers, provide, setPhase, type Ref } from '../advanced/tag.js';
 import type { StackMember } from '../engine/supervisor.js';
-import { Sui, suiNetworkName } from './sui.js';
+import { SuiTag, suiNetworkName } from '../services/sui.js';
 import { publishMove } from './publish-move.js';
 import { SealError } from './errors.js';
 import type { Account, SuiObjectChange } from './shared.js';
@@ -257,7 +257,7 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 		for (const tag of options.dependsOn ?? []) {
 			yield* tag;
 		}
-		const sui = yield* Sui;
+		const sui = yield* SuiTag;
 		const signer = yield* options.signer;
 		const stateStore = yield* StateStore;
 		const identity = yield* Identity;

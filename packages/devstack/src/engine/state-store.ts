@@ -37,7 +37,7 @@ import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { Context, Effect, FileSystem, Layer, Option, PlatformError, Ref, Schema } from 'effect';
-import type { SuiNetwork } from '../primitives/sui.js';
+import type { SuiNetwork } from '../services/sui.js';
 import { jsonBigintReplacer, jsonBigintReviver } from './json-bigint.js';
 
 export interface StateStoreShape {

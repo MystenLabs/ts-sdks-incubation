@@ -22,7 +22,7 @@ import { stringifyCause } from '../engine/stringify-cause.js';
 import { tag, setPhase, type Ref } from '../advanced/tag.js';
 import { WalletAppError } from './errors.js';
 import type { Account } from './shared.js';
-import { Sui } from './sui.js';
+import { SuiTag } from '../services/sui.js';
 
 export interface WalletApp {
 	readonly url: string;
@@ -81,7 +81,7 @@ export const walletApp = <const Name extends string = 'wallet-app'>(
 		name,
 		Effect.gen(function* () {
 			// Wait for sui to be ready before standing up the wallet server.
-			yield* Sui;
+			yield* SuiTag;
 			// Resolve each account tag — both for ordering (so accounts have been
 			// funded/registered before the wallet server is callable) and so we
 			// can wire the resolved Account values into the sign handler. Key by

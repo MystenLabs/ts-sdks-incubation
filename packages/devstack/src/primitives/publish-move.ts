@@ -13,7 +13,7 @@ import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import { Transaction } from '@mysten/sui/transactions';
 import { tag, setPhase, type Ref } from '../advanced/tag.js';
-import { Sui } from './sui.js';
+import { SuiTag } from '../services/sui.js';
 import { buildMove, scrubCachedMoveLocks } from '../engine/sui-cli.js';
 import { PackageRegistry, CoinRegistry } from '../engine/registries.js';
 import { StateStore } from '../engine/state-store.js';
@@ -200,7 +200,7 @@ export const publishMove = <
 		options.name,
 		Effect.gen(function* () {
 			const signer = yield* options.signer;
-			const sui = yield* Sui;
+			const sui = yield* SuiTag;
 			const state = yield* StateStore;
 
 			// Content-hash the Move source tree and probe the StateStore
