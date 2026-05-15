@@ -36,8 +36,7 @@ describe('App', () => {
 		const frame = lastFrame() ?? '';
 		expect(frame).toContain('no primitives in stack');
 		// Both `r` and `R` trigger full restart today (per-primitive retry
-		// rolled back; see notes/friction.md). Footer surfaces the
-		// available keybinds.
+		// rolled back). Footer surfaces the available keybinds.
 		expect(frame).toContain('[r]estart');
 		expect(frame).toContain('[q]uit');
 		unmount();
@@ -260,7 +259,7 @@ describe('App', () => {
 	it('r (lowercase) keypress triggers engine.requestRestart (full restart)', async () => {
 		// After the per-primitive scope rollback, both `r` and `R` trigger
 		// a full stack restart via requestRestart. True per-primitive retry
-		// needs the per-primitive scope architecture; see notes/friction.md.
+		// would need a per-primitive scope architecture.
 		const engine = await buildEngine();
 		const { Deferred } = await import('effect');
 		const restartBefore = await Effect.runPromise(Ref.get(engine.restartSignal));

@@ -34,8 +34,8 @@ const main = defineConfig({
 // own d.mts. We sidestep the bundler by emitting these subpaths' dts
 // with a separate `tsc --emitDeclarationOnly` step driven by
 // `tsconfig.subpaths.json` (see the `build:dts-subpaths` script in
-// package.json). See `notes/friction.md` for the re-investigation plan
-// once rolldown-plugin-dts upstream fixes the bug.
+// package.json). Re-investigate once rolldown-plugin-dts fixes the
+// upstream bug.
 const fixtures = defineConfig({
 	entry: ['src/vitest/index.ts', 'src/playwright/index.ts', 'src/dapp-kit/index.ts'],
 	format: 'esm',

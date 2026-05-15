@@ -211,9 +211,9 @@ fi
 #   2. storage_path — point at the container writable layer instead of
 #      the read-only outputs bind so RocksDB writes succeed.
 #   3. tls.disable_tls — workaround for axum-server 0.8.0 panic on
-#      arm64-darwin self-signed handshake (see notes/friction.md). The
-#      per-stack walrus.proxy nginx terminates host-facing access, so
-#      plain HTTP between nodes is fine inside the docker network.
+#      arm64-darwin self-signed handshake. The per-stack walrus.proxy
+#      nginx terminates host-facing access, so plain HTTP between nodes
+#      is fine inside the docker network.
 #   4. db_config + garbage_collection — opt-in via WALRUS_GC=true.
 for f in "$WORKING_DIR"/dryrun-node-*[0-9].yaml; do
 	# Redirect storage_path before appending so the sed targets the
