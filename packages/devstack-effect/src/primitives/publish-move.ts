@@ -1,3 +1,13 @@
+// publishMove — build + publish a local Move package against the
+// resolved `Sui` chain, optionally registering published coins (the
+// `coins:` shorthand) and capturing extra object ids from the publish
+// transaction's object changes (the `capture:` callback). The per-name
+// tag satisfies `LocalPackage` (refining `Package`) so consumers that
+// need post-publish capabilities — `bindings`, the upgrade cap — can
+// constrain to it. Source-tree content-hashing folds into the
+// `StateStore` cache key, so a no-op rebuild reuses the previously
+// published `packageId` and downstream caches stay warm.
+
 import { Effect, FileSystem, Option, Schedule } from 'effect';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
@@ -128,11 +138,52 @@ export interface PublishMoveOptions<
 	TCaptured,
 	TCoins extends ReadonlyArray<CoinSpec>,
 > {
+	/**
+	 * Tag name. Used for the per-call tag (downstream consumers
+	 * `yield*` it), the manifest entry, and the Move address
+	 * placeholder (`<name>::module::Type` references in
+	 * `Move.toml` bind to `0x0` at build time and rewrite to the
+	 * published `packageId` post-publish).
+	 */
 	readonly name: Name;
+	/**
+	 * Filesystem path to the Move package root (the directory
+	 * containing `Move.toml`). Resolved relative to `process.cwd()`;
+	 * pass an absolute path when you can to avoid surprises under
+	 * `pnpm dev` invocations from a non-package directory.
+	 */
 	readonly path: string;
+	/**
+	 * Account that signs the publish transaction and ends up holding
+	 * the resulting `UpgradeCap`. The tag is yielded for ordering, so
+	 * `signer` is always funded by the time the publish fires.
+	 */
 	readonly signer: PluginTag<any, Account, any, any>;
+	/**
+	 * Optional override for the Move-Resolved-Reference placeholder
+	 * (the `[addresses]` table key in `Move.toml`). Defaults to `name`.
+	 * Set when the package's `Move.toml` declares its own address under
+	 * a key that differs from the tag name (e.g. legacy code shipped
+	 * before MVR conventions).
+	 */
 	readonly mvrPlaceholder?: string;
+	/**
+	 * Optional projection over the publish transaction's
+	 * `objectChanges`. The returned record is exposed on the resolved
+	 * tag as `captured` and serialized into the manifest's
+	 * `packages[].captured`. Use for object ids the package creates
+	 * during publish (treasury caps, admin caps, registry singletons)
+	 * that downstream consumers need to address. Pair with the
+	 * `pickCreatedByType*` helpers from `./sui-helpers.ts`.
+	 */
 	readonly capture?: (changes: ReadonlyArray<SuiObjectChange>) => TCaptured;
+	/**
+	 * Optional coin specs to register against the published package.
+	 * Each entry surfaces in the `CoinRegistry` (manifest + `Coin` tag
+	 * for downstream consumers) without the caller having to add a
+	 * separate `registerCoin` primitive. The `module` + `type` fields
+	 * key into the published package's coin types.
+	 */
 	readonly coins?: TCoins;
 }
 

@@ -13,11 +13,14 @@
 //     CLI use.
 //
 // Optional knobs:
-//   - `tui`: enable the in-terminal status renderer. Defaults to true when
-//     stdout is a TTY, false otherwise (e.g. CI logs, piped output).
-//   - `watch`: paths whose ChangeEvents should be observed. v1 just logs
-//     a warning per event — true hot-restart (interrupt + rebuild
-//     affected layers) is a follow-up. See TODO below.
+//   - `renderer`: 'tui' | 'plain' | 'silent'. Defaults to 'tui' when
+//     stdout is a TTY, 'plain' otherwise (CI logs, piped output).
+//   - `watch`: paths whose ChangeEvents should trigger a hot-restart of
+//     the full stack (debounced 250ms). Disable per-event restart with
+//     `hotRestart: false` while keeping the watcher running. Per-primitive
+//     selective rebuild keys off the attribution surface in `ownersFor`
+//     but isn't wired through Layer-cache invalidation yet — every event
+//     restarts the whole scope.
 //
 // Compile-time graph closure is loose (option-tag positions widen R via
 // `any`), so missing services surface at runtime via Effect's
@@ -302,11 +305,6 @@ const installSignalRestart = (
 			}),
 		);
 	});
-
-// TUI keybinds are owned by the ink `<App>` component now (see
-// `src/tui/components.tsx` — `useInput`). Ink's renderer manages raw
-// mode internally and tears it down on `instance.unmount()`, so the
-// previous Effect-Terminal-backed `installKeypressRestart` is gone.
 
 // Per-file content-hash cache. Shared across all watcher fibers so a
 // `fs.watch` event for a path we've already hashed compares against the

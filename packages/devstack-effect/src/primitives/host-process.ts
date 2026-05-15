@@ -1,3 +1,11 @@
+// hostProcess — spawn a long-lived child process on the host, scope
+// its lifecycle to the engine, optionally publish it via Traefik (so
+// it surfaces under a stack-scoped hostname), and surface its URL as
+// an Endpoint. The escape hatch for dev-servers (vite, next), local
+// daemons, and anything that doesn't fit a higher-level primitive.
+// Pair with `port: { preferred }` for per-stack allocation; pair with
+// `traefik` to expose the upstream port behind the router.
+
 import { Effect, Stream } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { addFinalizer as addScopeFinalizer } from 'effect/Scope';
@@ -84,11 +92,13 @@ export interface HostProcessOptions<Name extends string, E, R> {
 	/**
 	 * Optional port allocation. When set, the supervisor yields a port
 	 * from `PortAllocator` (scanning forward from `preferred` if it's
-	 * already bound), substitutes `{{PORT}}` placeholders in `args`
-	 * and `readyProbe.url`, and uses the allocated value as
-	 * `traefik.localPort`. Enables multiple stacks of the same
-	 * example to boot concurrently without colliding on a hardcoded
-	 * dev-server port.
+	 * already bound) and exposes it as `$PORT` to the spawned process.
+	 * The allocated value also becomes `traefik.localPort` (so the
+	 * caller doesn't have to thread the same number through twice) and
+	 * the default HTTP `readyProbe` URL when one isn't supplied. Enables
+	 * multiple stacks of the same example to boot concurrently without
+	 * colliding on a hardcoded dev-server port. User-supplied `env.PORT`
+	 * wins over the allocator's choice.
 	 */
 	readonly port?: { readonly preferred: number };
 	/**

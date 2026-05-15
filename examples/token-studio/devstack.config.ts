@@ -23,6 +23,13 @@ const MANAGED_COIN_DIR = resolve(HERE, 'move/managed_coin');
 
 const a = accounts({ alice: {}, bob: {}, carol: {} });
 
+// `publishMove`'s `capture:` callback runs after the publish tx
+// settles and projects the resulting object changes into the
+// `captured` field of the resolved package tag (also serialized into
+// the manifest's `packages[].captured`). Token-studio's frontend
+// dashboard reads these ids to mint / burn / freeze the managed coin
+// — without capturing them at publish time, every UI action would
+// have to re-discover the cap by walking the address's owned objects.
 const captureCoinObjects = (changes: ReadonlyArray<SuiObjectChange>) => {
 	const out: Record<string, string> = {};
 	const t = pickCreatedByTypeIncludes(changes, '::coin::TreasuryCap<');
