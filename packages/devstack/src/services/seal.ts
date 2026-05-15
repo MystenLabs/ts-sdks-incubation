@@ -17,7 +17,7 @@ import {
 	sealLocalKeygen,
 	type SealKnownKeyServerOptions,
 	type SealLocalKeygenOptions,
-} from '../primitives/seal.js';
+} from './seal/internal.js';
 import { SealError } from '../primitives/errors.js';
 import type { Account } from '../primitives/shared.js';
 import type { Ref } from '../advanced/tag.js';

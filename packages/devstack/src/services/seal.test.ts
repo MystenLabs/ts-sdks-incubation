@@ -15,10 +15,10 @@ import {
 	SealKeyManager,
 	SealKeyServer,
 	type SealKeyServerEntry,
-} from '../services/seal.js';
+} from './seal.js';
 import { knownDeployments } from '../engine/known-deployments.js';
 import { EndpointRegistryLive } from '../engine/registries.js';
-import { sealKnownKeyServer } from './seal.js';
+import { sealKnownKeyServer } from './seal/internal.js';
 
 // -----------------------------------------------------------------------------
 // Type-level shape compatibility — `SealKeyServerEntry` must remain
