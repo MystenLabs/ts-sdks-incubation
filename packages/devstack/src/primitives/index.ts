@@ -1,4 +1,3 @@
-export { accounts, type AccountSpec, type AccountsHandle } from './accounts.js';
 export { action, type ActionOptions } from './action.js';
 export { bindings, type BindingsOptions, type BindingsResult } from './bindings.js';
 export {

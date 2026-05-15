@@ -93,7 +93,7 @@ export interface TagIdentity<Name extends string> {
  * daemons users connect to (URLs, ports); actions are one-shot work that
  * completes and produces an artifact (packageId, address, digest).
  */
-export type TagKind = 'service' | 'action';
+export type TagKind = 'service' | 'package' | 'account' | 'action' | 'app';
 
 /**
  * User-facing projection of a tag's value into the dashboard row. The
