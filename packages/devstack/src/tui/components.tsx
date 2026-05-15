@@ -317,8 +317,8 @@ export function App(props: AppProps): React.ReactElement {
 		}
 		if (input === 'r' || input === 'R') {
 			// Both `r` and `R` trigger a full restart today. Per-primitive
-			// retry-failed needs the per-primitive scope architecture we
-			// rolled back; tracked in notes/friction.md.
+			// retry-failed would need a per-primitive scope architecture
+			// that we rolled back.
 			Effect.runFork(props.engine.requestRestart);
 			return;
 		}

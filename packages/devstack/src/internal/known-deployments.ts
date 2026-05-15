@@ -2,10 +2,6 @@
 // servers, etc.) for major Sui networks. Updated per release as protocols
 // evolve. The `*Known*` factories default to these values; consumers can
 // override per call.
-//
-// Sources for these values are tracked in `notes/known-deployments-source.md`.
-// When updating, also update the source-tracking doc with the date and
-// verification method.
 
 /**
  * Static registry of well-known on-chain deployments for testnet / mainnet.
@@ -15,8 +11,7 @@
  * file would silently redirect every `*KnownPackage()` / `*KnownDeployment()`
  * factory to an attacker-controlled address. Verify changes here against
  * official Mysten sources (Mysten registry, Walrus testnet docs, Seal key
- * server announcements) before merging. See `notes/known-deployments-source.md`
- * for the per-value provenance log.
+ * server announcements) before merging.
  *
  * **Walrus committee `nodes`** are intentionally *not* statically registered.
  * Testnet has 100+ storage nodes and the upstream `@mysten/walrus` SDK

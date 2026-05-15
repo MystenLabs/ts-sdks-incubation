@@ -43,7 +43,7 @@
 		}
 	},
 	"sideEffects": false,
-	"files": ["dist", "src", "README.md", "AGENTS.md", "LICENSE"],
+	"files": ["dist", "src", "LICENSE"],
 	"scripts": {
 		"build": "tsdown && pnpm build:dts-subpaths",
 		"build:dts-subpaths": "tsc -p tsconfig.subpaths.json && node --experimental-strip-types scripts/finalize-subpath-dts.ts",
