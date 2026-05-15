@@ -80,5 +80,15 @@ export { Action, type ActionOptions } from './action.js';
 export { Dev, type DevOptions } from './dev.js';
 export { Wallet, type WalletOptions } from './wallet.js';
 export { Bindings, type BindingsRefOptions } from './bindings.js';
+export { Codegen, type CodegenOptions } from './codegen.js';
+export { KnownPackage, type KnownPackageOptions } from './known-package.js';
+export {
+	defineEmitter,
+	type Emitter,
+	type CodegenContext,
+	type CodegenPackage,
+} from '../codegen/define-emitter.js';
+export { CodegenError } from '../codegen/errors.js';
+export { BindingsEmitter, type BindingsEmitterOptions } from '../codegen/emitters/bindings.js';
 export { type AccountRef, type PackageRef } from './ref.js';
 export { type Ref } from '../advanced/tag.js';
