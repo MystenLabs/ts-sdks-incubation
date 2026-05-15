@@ -864,6 +864,11 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 			yield* stateStore.put<string>(keyServerIdKey, newObjectId);
 		}).pipe(
 			Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+			// `Docker.runOneShot` now yields Identity to stack-scope
+			// container names. Pre-provide the captured value so the
+			// consumer-facing `rotate` stays R=never (mirrors the
+			// spawner pre-provide above).
+			Effect.provideService(Identity, identity),
 			Effect.withSpan(`seal(${name}).rotate`),
 		);
 

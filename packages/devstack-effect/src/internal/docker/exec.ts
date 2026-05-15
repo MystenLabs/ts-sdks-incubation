@@ -6,8 +6,10 @@ import { Effect } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { addFinalizer } from 'effect/Scope';
 import { DockerError } from '../../primitives/errors.js';
+import { Identity } from '../identity.js';
 import {
 	captureStreams,
+	composeContainerName,
 	decodeStream,
 	dockerError,
 	drainLinesWithCallback,
@@ -174,11 +176,28 @@ const DEFAULT_ONE_SHOT_GRACE_PERIOD_MS = 5_000;
 
 export const runOneShot = (
 	opts: DockerOneShotOptions,
-): Effect.Effect<DockerOneShotResult, DockerError, ChildProcessSpawner.ChildProcessSpawner> =>
+): Effect.Effect<
+	DockerOneShotResult,
+	DockerError,
+	ChildProcessSpawner.ChildProcessSpawner | Identity
+> =>
 	Effect.gen(function* () {
 		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+		const identity = yield* Identity;
 
-		const name = opts.name ?? generateContainerName();
+		// Stack-scope the container name with the same `{app}-{stack}-{name}`
+		// shape `run()` uses for long-lived containers, so two parallel
+		// stacks (or two repos sharing a primitive name) don't collide on
+		// docker's container-name global namespace. Without this, walrus
+		// deploy / seal keygen / etc. silently shared a name across stacks
+		// and the second stack 125'd with "container name already in use".
+		const primitiveName = opts.name ?? generateContainerName();
+		const name = composeContainerName(
+			identity.app,
+			identity.stack,
+			identity.network,
+			primitiveName,
+		);
 		// `--rm` auto-removes the container on exit — convenient for the
 		// happy path but destroys post-mortem logs when something goes
 		// wrong. Set DEVSTACK_KEEP_ONESHOT=1 to keep the container so

@@ -23,7 +23,7 @@ import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
 import * as Docker from '../../internal/docker.js';
 import type { Endpoint } from '../../internal/endpoint.js';
 import { EngineHandle } from '../../internal/engine.js';
-import type { IdentityShape } from '../../internal/identity.js';
+import { Identity, type IdentityShape } from '../../internal/identity.js';
 import { routerHostname } from '../../internal/router-hostname.js';
 import { stringifyCause } from '../../internal/stringify-cause.js';
 import { WalrusError } from '../errors.js';
@@ -99,7 +99,7 @@ export const deployContracts = (args: {
 }): Effect.Effect<
 	DeployState,
 	WalrusError,
-	FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner
+	FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner | Identity
 > =>
 	Effect.fn('walrus.deploy')(function* () {
 		const fs = yield* FileSystem.FileSystem;
