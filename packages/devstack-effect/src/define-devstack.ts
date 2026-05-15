@@ -28,6 +28,7 @@
 
 import * as crypto from 'node:crypto';
 import * as nodeFs from 'node:fs/promises';
+import * as nodePath from 'node:path';
 import { Context, Deferred, Effect, Layer, Ref, Stream } from 'effect';
 import { layer as NodeServicesLayer } from '@effect/platform-node/NodeServices';
 import { runMain as nodeRunMain } from '@effect/platform-node/NodeRuntime';
@@ -340,6 +341,37 @@ const hashFileIfChanged = (
 		catch: (cause) => cause,
 	}).pipe(Effect.catch(() => Effect.succeed({ changed: true, reason: 'hash failed' })));
 
+// Owner of a watched path, as recorded at composition time. Used to
+// attribute file-change events back to the primitive that declared the
+// path via `provideTag({watch})` / `makeTag({watch})` so the supervisor
+// can (a) log "the publishMove(hello) primitive owns this file — that's
+// what triggered the restart" and (b) propagate the changed keys forward
+// via `engine.notifyChangedTags` for downstream diagnostics. A single
+// path may have multiple owners (two primitives watching overlapping
+// directories), so attribution is a `ReadonlyArray`.
+export interface WatchOwner {
+	readonly key: string;
+	readonly title: string;
+	readonly absolutePath: string;
+}
+
+// Resolve a changed file path back to the primitive(s) that own it.
+// Absolute-path comparison handles the common case where the primitive
+// declared a relative directory (e.g. `./move/hello`) and the watcher
+// event reports a deep descendant file (`/abs/move/hello/sources/foo.move`).
+// We accept both exact match and prefix-with-separator so partial-name
+// collisions (`./move/hello-v2` vs `./move/hello`) don't false-positive.
+// Exported for unit tests; the watcher fiber is the only production caller.
+export const ownersFor = (
+	changedPath: string,
+	owners: ReadonlyArray<WatchOwner>,
+): ReadonlyArray<WatchOwner> => {
+	const abs = nodePath.resolve(process.cwd(), changedPath);
+	return owners.filter(
+		(o) => abs === o.absolutePath || abs.startsWith(o.absolutePath + nodePath.sep),
+	);
+};
+
 // File-watcher fiber. When `hotRestart` is on, events are debounced 250ms
 // and the trailing edge signals the engine; coalescing avoids tearing the
 // stack down once per character of a multi-keystroke save. Otherwise we
@@ -348,6 +380,7 @@ const watchPathFiber = (
 	path: string,
 	engine: EngineShape,
 	hotRestart: boolean,
+	owners: ReadonlyArray<WatchOwner>,
 ): Effect.Effect<void, never, FileWatcher | import('effect/Scope').Scope> =>
 	Effect.gen(function* () {
 		const watcher = yield* FileWatcher;
@@ -362,9 +395,25 @@ const watchPathFiber = (
 							);
 							return;
 						}
-						yield* Effect.logInfo(
-							`file change at ${event.path} (kind=${event.kind}, ${reason}) — restarting`,
-						);
+						// Attribution: resolve the changed path back to the
+						// primitives that declared it. Bare `config.watch`
+						// entries surface as "(unowned)" — the restart still
+						// fires, the diagnostic just notes the trigger wasn't
+						// associated with any specific primitive.
+						const matched = ownersFor(event.path, owners);
+						if (matched.length > 0) {
+							const labels = matched.map((o) => o.title).join(', ');
+							yield* Effect.logInfo(
+								`file change at ${event.path} (kind=${event.kind}, ${reason}) ` +
+									`— owned by ${labels} — restarting`,
+							);
+							yield* engine.notifyChangedTags(matched.map((o) => o.key));
+						} else {
+							yield* Effect.logInfo(
+								`file change at ${event.path} (kind=${event.kind}, ${reason}) ` +
+									`— unowned watch path — restarting`,
+							);
+						}
 						yield* engine.requestRestart;
 					}),
 				)
@@ -683,13 +732,35 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 	// `publishMove` uses this to auto-watch its Move source tree so a
 	// `.move` edit triggers a hot-restart (which cascades through
 	// `bindings` regen + frontend HMR) without the user having to repeat
-	// the Move path in `config.watch`. Selective per-primitive tear-down
-	// is future work — for now ALL declared paths share the full-stack
-	// restart trigger. De-dupe so a path that appears in both config.watch
-	// and a primitive's `__watchPaths` doesn't get two fs.watch handles.
-	const aggregatedPrimitiveWatch = config.stack.flatMap(
-		(m) => (m as { __watchPaths?: ReadonlyArray<string> }).__watchPaths ?? [],
-	);
+	// the Move path in `config.watch`. De-dupe so a path that appears in
+	// both config.watch and a primitive's `__watchPaths` doesn't get two
+	// fs.watch handles.
+	//
+	// `watchOwners` carries the reverse index — for each
+	// primitive-declared path, who declared it. Used by the watcher fiber
+	// to attribute file-change events back to their owning primitive and
+	// log diagnostic output ("publishMove(hello) — restarting"). Paths
+	// from `config.watch` are deliberately NOT in `watchOwners` — they
+	// surface in the diagnostic as "unowned watch path" so the user can
+	// tell at a glance whether the restart came from a primitive's
+	// declared input or from a config-level catch-all path. Selective
+	// per-primitive Layer-cache invalidation (so unchanged primitives
+	// skip their build effect across cycles) requires Effect MemoMap
+	// surgery that isn't appropriate to attempt in-session — the
+	// attribution surface here is the foundation that the future
+	// implementation will key on.
+	const watchOwners: ReadonlyArray<WatchOwner> = config.stack.flatMap((m, i) => {
+		const paths = (m as { __watchPaths?: ReadonlyArray<string> }).__watchPaths ?? [];
+		if (paths.length === 0) return [];
+		const key = (m as { key?: string }).key ?? `stack[${i}]`;
+		const title = (m as { __displayTitle?: string }).__displayTitle ?? key;
+		return paths.map((p) => ({
+			key,
+			title,
+			absolutePath: nodePath.resolve(process.cwd(), p),
+		}));
+	});
+	const aggregatedPrimitiveWatch = watchOwners.map((o) => o.absolutePath);
 	const watchPaths = Array.from(new Set([...(config.watch ?? []), ...aggregatedPrimitiveWatch]));
 	// `hotRestart` only governs FILE-WATCH-driven restarts. User-driven
 	// restarts (TUI `r` key, SIGUSR2) ALWAYS recycle — pressing `r` is the
@@ -864,6 +935,28 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 					cycle,
 				});
 
+				// Diagnostic surface: which primitive(s) triggered this
+				// restart, if any. Populated by the watcher fiber before it
+				// fired `requestRestart`. Cleared by `resetRestartSignal`
+				// below, so this is the only point in the cycle where the
+				// attribution from the previous cycle's trigger is still
+				// readable. Empty on cycle 1 (no prior trigger) and on
+				// user-driven restarts (TUI `r`, SIGUSR2) since those skip
+				// `notifyChangedTags`. Surfaced as a log line rather than a
+				// TUI section to keep the dashboard layout unchanged; the
+				// TUI watcher will pick this up if/when selective per-
+				// primitive Layer-cache invalidation lands and the row's
+				// rebuild status needs to be differentiated from a clean-
+				// slate acquire.
+				if (cycle > 1) {
+					const triggers = yield* Ref.get(engine.changedTags);
+					if (triggers.length > 0) {
+						yield* Effect.logInfo(
+							`devstack cycle ${cycle} triggered by ${triggers.join(', ')}`,
+						);
+					}
+				}
+
 				yield* engine.resetRestartSignal;
 				yield* engine.seedTags(seedEntries);
 
@@ -887,7 +980,9 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 
 				if (watchPaths.length > 0) {
 					for (const path of watchPaths) {
-						yield* watchPathFiber(path, engine, hotRestart).pipe(Effect.provide(bootstrapCtx));
+						yield* watchPathFiber(path, engine, hotRestart, watchOwners).pipe(
+							Effect.provide(bootstrapCtx),
+						);
 					}
 				}
 

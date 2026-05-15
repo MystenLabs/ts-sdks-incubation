@@ -15,8 +15,14 @@ import { describe, expect, it as vitestIt, vi } from 'vitest';
 import { it } from '@effect/vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { composeStackLayer, defineDevstack, type StackMember } from './define-devstack.js';
+import { join, resolve as resolvePath } from 'node:path';
+import {
+	composeStackLayer,
+	defineDevstack,
+	ownersFor,
+	type StackMember,
+	type WatchOwner,
+} from './define-devstack.js';
 import { EngineHandle, EngineLive, type EngineHandleShape } from './internal/engine.js';
 
 const captureConsole = () => {
@@ -532,4 +538,89 @@ describe('defineDevstack — CI fast-fail on first-cycle build failure', () => {
 			teardownTmp();
 		}
 	}, 15_000);
+});
+
+
+// -----------------------------------------------------------------------------
+// Watch-event attribution
+// -----------------------------------------------------------------------------
+//
+// `ownersFor` is the helper the file-watcher fiber uses to resolve a
+// changed path back to the primitive(s) that declared the watch. The
+// real watcher path is heavy to exercise (fs.watch, ChildProcessSpawner,
+// the full launch loop), so we test the resolver in isolation against
+// hand-built `WatchOwner` records — that's where the path-matching
+// invariants live (exact match, prefix-with-separator, partial-name
+// collision rejection).
+
+describe('ownersFor — watch-event attribution', () => {
+	const cwd = process.cwd();
+	const owner = (key: string, title: string, relPath: string): WatchOwner => ({
+		key,
+		title,
+		absolutePath: resolvePath(cwd, relPath),
+	});
+
+	vitestIt('exact-path match resolves to the declaring primitive', () => {
+		const owners: ReadonlyArray<WatchOwner> = [
+			owner('publish.hello', 'publish.hello', './move/hello/Move.toml'),
+		];
+		const hits = ownersFor('./move/hello/Move.toml', owners);
+		expect(hits.map((o) => o.key)).toEqual(['publish.hello']);
+	});
+
+	vitestIt('deep-descendant match resolves through a watched directory', () => {
+		const owners: ReadonlyArray<WatchOwner> = [
+			owner('publish.hello', 'publish.hello', './move/hello'),
+		];
+		const hits = ownersFor('./move/hello/sources/foo.move', owners);
+		expect(hits.map((o) => o.key)).toEqual(['publish.hello']);
+	});
+
+	vitestIt('rejects partial-name prefix collisions (hello vs hello-v2)', () => {
+		// `./move/hello-v2/sources/foo.move` should NOT match a primitive
+		// watching `./move/hello` — the absolute paths share a 5-char prefix
+		// but diverge before the separator, which the `startsWith(o.absolutePath + sep)`
+		// check guards against.
+		const owners: ReadonlyArray<WatchOwner> = [
+			owner('publish.hello', 'publish.hello', './move/hello'),
+		];
+		const hits = ownersFor('./move/hello-v2/sources/foo.move', owners);
+		expect(hits).toEqual([]);
+	});
+
+	vitestIt('multiple owners on the same path are all returned', () => {
+		// Two primitives watching overlapping directories both surface in
+		// the attribution log. Rare but legitimate (e.g. an action that
+		// watches the same Move sources as `publishMove` for an
+		// orchestration step).
+		const owners: ReadonlyArray<WatchOwner> = [
+			owner('publish.hello', 'publish.hello', './move/hello'),
+			owner('publish.hello.action', 'publish.hello.action', './move/hello/sources'),
+		];
+		const hits = ownersFor('./move/hello/sources/foo.move', owners);
+		expect(hits.map((o) => o.key).sort()).toEqual(['publish.hello', 'publish.hello.action']);
+	});
+
+	vitestIt('absolute changed paths are resolved against the owner index', () => {
+		// fs.watch can emit either relative or absolute paths depending on
+		// platform + how the watch was opened; resolving both sides to
+		// absolute keeps the comparison stable.
+		const absolute = resolvePath(cwd, './move/hello/sources/foo.move');
+		const owners: ReadonlyArray<WatchOwner> = [
+			owner('publish.hello', 'publish.hello', './move/hello'),
+		];
+		const hits = ownersFor(absolute, owners);
+		expect(hits.map((o) => o.key)).toEqual(['publish.hello']);
+	});
+
+	vitestIt('unowned paths return an empty array (no false attribution)', () => {
+		// Paths declared in `config.watch` but not by any primitive surface
+		// here. The watcher fiber logs these as "unowned watch path" rather
+		// than misattributing to a random primitive.
+		const owners: ReadonlyArray<WatchOwner> = [
+			owner('publish.hello', 'publish.hello', './move/hello'),
+		];
+		expect(ownersFor('./unrelated/file.ts', owners)).toEqual([]);
+	});
 });
