@@ -22,12 +22,16 @@
 //     for CI / prod where the secret comes from the environment.
 //   - 'inline' — accept a literal `suiprivkey1...` string. Useful for
 //     tests where the test author wants a known address.
+//   - 'signer' — accept any `@mysten/sui/cryptography` `Signer` instance.
+//     Use for HSMs, remote signers, browser-connected wallets under test,
+//     or anywhere the secret material lives outside this process.
+//     devstack never calls `getSecretKey()` on this branch.
 //
 // The bare `{}` form is treated as `{from: 'ephemeral-funded'}` so
 // callers without a discriminator keep working without code edits.
 //
 // Only `ephemeral-funded` writes to disk and only `ephemeral-funded`
-// funds; the other three assume the caller has already funded the
+// funds; the other four assume the caller has already funded the
 // account out-of-band or doesn't need a balance.
 
 import * as nodeFs from 'node:fs/promises';
@@ -44,7 +48,7 @@ import {
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { Secp256k1Keypair } from '@mysten/sui/keypairs/secp256k1';
 import { Secp256r1Keypair } from '@mysten/sui/keypairs/secp256r1';
-import type { Keypair } from '@mysten/sui/cryptography';
+import type { Keypair, Signer } from '@mysten/sui/cryptography';
 import { tag, setPhase, type Ref } from '../advanced/tag.js';
 import { SuiTag } from './sui.js';
 import { AccountError } from '../engine/errors.js';
@@ -180,6 +184,28 @@ export type AccountSource =
 			readonly from: 'inline';
 			/** Bech32 `suiprivkey1...` literal. */
 			readonly privateKey: string;
+	  }
+	| {
+			/**
+			 * Accept any `@mysten/sui/cryptography` `Signer` instance — a
+			 * `Keypair`, a hardware-wallet signer, a remote signer, or
+			 * anything else implementing the abstract `Signer` interface.
+			 *
+			 * Use this when the secret material lives outside devstack's
+			 * process entirely (HSM, remote signing service,
+			 * browser-connected wallet under test). devstack never asks for
+			 * `getSecretKey()` on this branch — the supplied signer's
+			 * `signTransaction` / `signPersonalMessage` /
+			 * `signAndExecuteTransaction` methods are called directly.
+			 */
+			readonly from: 'signer';
+			/** Any concrete implementation of `@mysten/sui/cryptography`'s
+			 *  `Signer` abstract class. */
+			readonly signer: Signer;
+			/** Override the derived address. When omitted, `signer.toSuiAddress()`
+			 *  is called. Useful for signers whose address is more expensive to
+			 *  derive than to memoise. */
+			readonly address?: string;
 	  };
 
 /**
@@ -223,10 +249,15 @@ export const Account = <const N extends string>(
 
 			if (source.from === 'keystore' || source.from === 'env' || source.from === 'inline') {
 				yield* setPhase('loading keystore');
+			} else if (source.from === 'signer') {
+				yield* setPhase('binding signer');
 			}
-			const keypair = yield* acquireKeypair(name, source);
-			const address = keypair.getPublicKey().toSuiAddress();
-			const scheme = keypair.getKeyScheme() as AccountValue['scheme'];
+			const signer = yield* acquireSigner(name, source);
+			const address =
+				source.from === 'signer' && source.address !== undefined
+					? source.address
+					: signer.toSuiAddress();
+			const scheme = signer.getKeyScheme() as AccountValue['scheme'];
 
 			yield* Effect.annotateCurrentSpan({ 'account.address': address });
 
@@ -316,7 +347,7 @@ export const Account = <const N extends string>(
 					Effect.tryPromise({
 						try: () =>
 							sui.client.signAndExecuteTransaction({
-								signer: keypair,
+								signer,
 								transaction,
 								options: {
 									showEffects: true,
@@ -366,7 +397,7 @@ export const Account = <const N extends string>(
 
 			const signTransaction = (transactionBytes: Uint8Array) =>
 				Effect.tryPromise({
-					try: () => keypair.signTransaction(transactionBytes),
+					try: () => signer.signTransaction(transactionBytes),
 					catch: (cause): SignAndExecuteError => ({
 						_tag: 'SignAndExecuteError',
 						message: `Account: signTransaction failed for '${name}': ${stringifyCause(cause)}`,
@@ -376,7 +407,7 @@ export const Account = <const N extends string>(
 
 			const signPersonalMessage = (messageBytes: Uint8Array) =>
 				Effect.tryPromise({
-					try: () => keypair.signPersonalMessage(messageBytes),
+					try: () => signer.signPersonalMessage(messageBytes),
 					catch: (cause): SignAndExecuteError => ({
 						_tag: 'SignAndExecuteError',
 						message: `Account: signPersonalMessage failed for '${name}': ${stringifyCause(cause)}`,
@@ -387,7 +418,7 @@ export const Account = <const N extends string>(
 			return {
 				name,
 				address,
-				publicKey: keypair.getPublicKey().toRawBytes(),
+				publicKey: signer.getPublicKey().toRawBytes(),
 				scheme,
 				signAndExecute,
 				signTransaction,
@@ -421,10 +452,10 @@ export const Account = <const N extends string>(
 
 type AcquireRequirements = FileSystem.FileSystem | StateStoreConfig;
 
-const acquireKeypair = (
+const acquireSigner = (
 	name: string,
 	source: AccountSource,
-): Effect.Effect<Keypair, AccountError, AcquireRequirements> => {
+): Effect.Effect<Signer, AccountError, AcquireRequirements> => {
 	switch (source.from) {
 		case 'ephemeral-funded':
 			return acquireEphemeral(name);
@@ -434,6 +465,8 @@ const acquireKeypair = (
 			return acquireFromEnv(name, source);
 		case 'inline':
 			return decodeKeypair(name, source.privateKey);
+		case 'signer':
+			return Effect.succeed(source.signer);
 	}
 };
 
