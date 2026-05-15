@@ -10,7 +10,7 @@
 import { Effect } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 import { bindings } from './bindings.js';
-import { makeTag } from '../tag.js';
+import { makeTag } from '../advanced/tag.js';
 import type { PackageShape } from '../interfaces/package.js';
 
 describe('bindings type discipline', () => {

@@ -9,17 +9,17 @@
 import { randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { Effect } from 'effect';
-import { Identity } from '../internal/identity.js';
-import { PortAllocator } from '../internal/port-allocator.js';
+import { Identity } from '../engine/identity.js';
+import { PortAllocator } from '../engine/port-allocator.js';
 import {
 	routerEntrypoint,
 	removeFileProvider,
 	writeFileProvider,
-} from '../internal/docker/router.js';
-import { routerHostname, routerId } from '../internal/router-hostname.js';
-import { EndpointRegistry } from '../internal/registries.js';
-import { stringifyCause } from '../internal/stringify-cause.js';
-import { makeTag, setPhase, type PluginTag } from '../tag.js';
+} from '../engine/docker/router.js';
+import { routerHostname, routerId } from '../engine/router-hostname.js';
+import { EndpointRegistry } from '../engine/registries.js';
+import { stringifyCause } from '../engine/stringify-cause.js';
+import { makeTag, setPhase, type PluginTag } from '../advanced/tag.js';
 import { WalletAppError } from './errors.js';
 import type { Account } from './shared.js';
 import { Sui } from './sui.js';

@@ -1,0 +1,167 @@
+---
+title: dApp Kit integration
+---
+
+The `@mysten-incubation/devstack/dapp-kit` subpath wires dApp Kit to a running devstack: reads
+the manifest, builds a `SuiGrpcClient`, sets up MVR placeholder overrides, registers the dev
+wallet, and (optionally) mounts the floating panels UI.
+
+## `createDevstackDappKit`
+
+The one-liner most apps use:
+
+```ts
+// src/dapp-kit.ts
+import { createDevstackDappKit } from '@mysten-incubation/devstack/dapp-kit';
+import { manifest } from './generated/manifest.js';
+
+export const { dAppKit } = await createDevstackDappKit({ manifest });
+
+declare module '@mysten/dapp-kit-react' {
+	interface Register {
+		dAppKit: typeof dAppKit;
+	}
+}
+```
+
+The `await` is intentional — `createDevstackDappKit` lazy-imports the panels module so
+`mountUI: false` bundles drop the panel code entirely. Set Vite's `build.target` and
+`optimizeDeps.esbuildOptions.target` to `'es2022'` so top-level `await` parses in both dev and
+prod.
+
+### Options
+
+```ts
+interface CreateDevstackDappKitOptions {
+	manifest: unknown;
+	autoConnect?: boolean;       // Default true.
+	autoApprove?: boolean;       // Default true — non-interactive signing for e2e tests.
+	mountUI?: boolean;           // Default true.
+	exposeForPlaywright?: boolean; // Default: true under Vite dev/preview or PLAYWRIGHT=1.
+}
+```
+
+- **`manifest`** — the runtime manifest object. Devstack's recommended pattern is to import the
+  generated JSON directly so Vite revalidates on regeneration; alternative is `fetch('/manifest.json')`
+  at boot.
+- **`autoApprove`** — when true, the devstack adapter signs without raising approval modals.
+  Required for headless e2e tests; safe in dev because the only accounts the adapter holds are
+  the devstack-resolved ones.
+- **`mountUI`** — when false, the panels module isn't loaded. Production bundles drop ~30 KB.
+- **`exposeForPlaywright`** — sets `globalThis.__devstackDAppKit__` so `connectAs(page,
+  'alice')` can drive account switching. Auto-detects Vite dev / preview / `PLAYWRIGHT=1`.
+
+### What it does internally
+
+1. Calls `localnetDappKitConfig(manifest)` (below) for `defaultNetwork`, `networks`,
+   `createClient`.
+2. Lazy-loads `@mysten-incubation/devstack-wallet-panels` if `mountUI` is on.
+3. Builds a `DevstackAdapter` (a `WalletAdapter` for `@mysten-incubation/dev-wallet`) keyed off
+   the manifest's `accounts`.
+4. Calls `createDAppKit` with the assembled config plus a single
+   `devWalletInitializer` carrying the devstack adapter + panels.
+
+## Lower-level helpers
+
+When `createDevstackDappKit` doesn't fit (e.g. you want a manual wallet adapter list,
+non-localnet networks alongside localnet, custom MVR overrides), pull the pieces apart:
+
+### `localnetDappKitConfig`
+
+```ts
+import { localnetDappKitConfig } from '@mysten-incubation/devstack/dapp-kit';
+import { createDAppKit } from '@mysten/dapp-kit-core';
+
+const dAppKit = createDAppKit({
+	...localnetDappKitConfig(manifest, {
+		additionalNetworks: ['testnet'],
+		networks: { testnet: 'https://fullnode.testnet.sui.io:443' },
+	}),
+	walletInitializers: [/* your own list */],
+});
+```
+
+Returns `{ defaultNetwork: 'localnet', networks, createClient, enableBurnerWallet }`. The
+`createClient(network)` callback builds a `SuiGrpcClient` for each network, with
+`mvr.overrides` populated from the manifest for `localnet`.
+
+Options:
+
+| Option              | Default                                  | Notes                                                          |
+| ------------------- | ---------------------------------------- | -------------------------------------------------------------- |
+| `localnetRpcUrl`    | manifest's `sui-rpc` endpoint            | Override if the dev server proxies the RPC.                    |
+| `additionalNetworks`| `[]`                                     | Extra networks alongside `localnet`.                           |
+| `networks`          | `{}`                                     | Per-network RPC URLs for `additionalNetworks`.                 |
+| `enableBurnerWallet`| `true`                                   | Pass-through to dApp Kit.                                      |
+
+Throws if the manifest has no `sui-rpc` endpoint (the stack hasn't reached `suiLocalnet()` yet).
+
+### `localnetMvrOverrides`
+
+```ts
+import { localnetMvrOverrides } from '@mysten-incubation/devstack/dapp-kit';
+
+const overrides = localnetMvrOverrides(manifest);
+// { packages: { '@local/hello': '0x...' } }
+```
+
+Translates each `publishMove`-emitted MVR placeholder to its live `packageId`. Spread into
+`SuiGrpcClient`'s `mvr.overrides` so the SDK's `namedPackagesPlugin` resolves placeholders at
+transaction-build time. `localnetDappKitConfig` already does this internally — call it directly
+only when building the SDK client yourself.
+
+### `localnetWalrusOptions`
+
+```ts
+import { localnetWalrusOptions } from '@mysten-incubation/devstack/dapp-kit';
+import { WalrusClient } from '@mysten/walrus';
+
+const walrusClient = new WalrusClient({
+	suiClient,
+	...localnetWalrusOptions(manifest),
+	wasmUrl,
+});
+```
+
+Returns `{ packageConfig: { systemObjectId, stakingPoolId }, storageNodeUrlScheme: 'http' }` —
+the localnet-specific bits a `WalrusClient` needs. Reads `manifest.packages` for the walrus
+deployment's captured fields. Throws with a helpful message if walrus hasn't acquired.
+
+## Mounting in your React app
+
+```tsx
+// src/main.tsx
+import { DAppKitProvider } from '@mysten/dapp-kit-react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { StrictMode } from 'react';
+import { createRoot } from 'react-dom/client';
+import { App } from './App.js';
+import { dAppKit } from './dapp-kit.js';
+
+const queryClient = new QueryClient();
+
+createRoot(document.getElementById('root')!).render(
+	<StrictMode>
+		<QueryClientProvider client={queryClient}>
+			<DAppKitProvider dAppKit={dAppKit}>
+				<App />
+			</DAppKitProvider>
+		</QueryClientProvider>
+	</StrictMode>,
+);
+```
+
+The dev wallet appears in the connect modal as "Dev Wallet", with one entry per devstack
+account. `ConnectButton` (from `@mysten/dapp-kit-react/ui`) works as it does in any dApp-Kit
+project.
+
+## Common pitfalls
+
+- **`localnetDappKitConfig: no localnetRpcUrl …`** — the manifest hasn't been written yet, or
+  doesn't include a `sui-rpc` endpoint. Make sure `suiLocalnet()` (or another `sui*` factory)
+  is in your stack and that `manifest()` runs after it.
+- **`createDevstackDappKit` top-level await fails to parse** — your Vite config needs `build.target:
+  'es2022'` and the matching `optimizeDeps.esbuildOptions.target`. Without these, esbuild's
+  default `es2020` rejects top-level `await` in dependency code.
+- **MVR placeholder doesn't resolve** — the placeholder must come from a `publishMove`-deployed
+  package (which auto-emits one). Known-package factories don't emit placeholders.

@@ -13,14 +13,14 @@ import * as nodeOs from 'node:os';
 import * as nodePath from 'node:path';
 import { Effect, Layer } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
-import { EngineLive } from '../internal/engine.js';
-import { Identity } from '../internal/identity.js';
+import { EngineLive } from '../engine/engine.js';
+import { Identity } from '../engine/identity.js';
 import {
 	AccountRegistryLive,
 	CoinRegistryLive,
 	EndpointRegistryLive,
 	PackageRegistryLive,
-} from '../internal/registries.js';
+} from '../engine/registries.js';
 import { manifest } from './manifest.js';
 
 // Identity needed since manifest's stack-scoped path resolution reads

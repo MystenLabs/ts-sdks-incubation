@@ -6,7 +6,7 @@
 
 export type TagStatus = 'pending' | 'acquiring' | 'ready' | 'failed';
 
-export type TuiEntryKind = 'service' | 'action' | 'other';
+export type TuiEntryKind = 'service' | 'package' | 'account' | 'action' | 'app' | 'other';
 
 /** Whole-stack lifecycle phase — drives the header tint and footer copy.
  *

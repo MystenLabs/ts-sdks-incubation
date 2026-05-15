@@ -8,8 +8,8 @@
 
 import { Console, Effect, FileSystem, Option, Path } from 'effect';
 import { Argument, Command, Flag } from 'effect/unstable/cli';
-import { prettyError } from '../../internal/pretty-error.js';
-import { list as listSnapshots, restore, snapshot } from '../../internal/snapshot.js';
+import { prettyError } from '../../engine/pretty-error.js';
+import { list as listSnapshots, restore, snapshot } from '../../engine/snapshot.js';
 
 // Preserve the underlying cause on `Error.cause` so the CLI's top-level
 // `tapCause` renderer can walk the full chain rather than collapsing to the

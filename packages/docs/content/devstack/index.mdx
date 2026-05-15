@@ -1,0 +1,80 @@
+---
+title: Devstack
+---
+
+One config file, one command, the whole Sui stack on your laptop. Sui localnet, your published
+Move packages, Walrus, Seal, DeepBook, a dev wallet, your frontend — all running and wired
+together with fresh package IDs flowing into your app on every save.
+
+<Callout type="warn">
+	**Prototype.** Devstack lives in the [ts-sdks-incubation
+	monorepo](https://github.com/MystenLabs/ts-sdks-incubation) and is not published to npm yet.
+	APIs break freely between commits.
+</Callout>
+
+## Use cases
+
+| I want to...                                                       | How                                                                                       | Where                                                                |
+| ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| **Start a Sui localnet** with one command                          | `pnpm create @mysten-incubation/devstackpp my-app && pnpm dev`                            | [Getting Started](/devstack/getting-started)                         |
+| **Publish my Move package** on every boot, hot-reload on save      | `publishMove({ path: './move/foo', signer: a.alice })`                                    | [Publish a Move package](/devstack/guides/publish-move)              |
+| **Run my frontend** with auto-injected package IDs and RPC URLs    | `createDevstackDappKit({ manifest })`                                                     | [dApp Kit integration](/devstack/reference/dapp-kit)                 |
+| Write **e2e tests** that connect a real wallet to localnet         | `webServer({ endpoint })` + `connectAs(page, 'alice')`                                    | [E2E with Playwright](/devstack/guides/e2e-with-playwright)          |
+| Run **two test workers** without state collisions                  | `DEVSTACK_STACK=worker1 …` / `DEVSTACK_STACK=worker2 …`                                   | [Concepts: stacks](/devstack/concepts#stacks-and-isolation)          |
+| Stand up **Walrus storage** locally                                | `walrusLocalCluster({ seedAccounts: [a.alice] })`                                         | [Walrus](/devstack/guides/walrus)                                    |
+| Stand up **Seal threshold encryption** locally                     | `sealLocalKeygen({ signer: a.publisher })`                                                | [Seal](/devstack/guides/seal)                                        |
+| Stand up **DeepBook v3** with seeded pools                         | `deepbookLocalDeploy({ name: 'deepbook', signer: a.publisher })`                          | [DeepBook](/devstack/guides/deepbook)                                |
+| Switch the same code from **localnet → testnet → mainnet**         | Swap `suiLocalnet()` for `suiTestnet()`; swap `accounts({})` for `accounts({ from: 'env' })` | [Networks and accounts](/devstack/guides/networks-and-accounts)   |
+| **Embed devstack inside an Effect program** (scripts, agents)      | `provideDevstack([...])`                                                                  | [Effect programs](/devstack/guides/effect-programs)                  |
+| Add a **custom service** (your own container, daemon, or script)   | `dockerContainer({...})` or `hostProcess({...})`                                          | [Plugin author](/devstack/reference/plugin-author)                   |
+
+## Quick start
+
+```bash
+pnpm create @mysten-incubation/devstackpp my-app
+cd my-app
+pnpm dev
+```
+
+`pnpm dev` builds the local Sui image on first run (~5 min cold), then boots localnet, funds two
+test accounts, publishes the example Move package, starts Vite, and opens the dev wallet panel.
+Subsequent runs hit the Docker layer cache and start in seconds.
+
+Once the stack is up:
+
+```bash
+pnpm test:e2e         # Playwright connects the dev wallet, signs, asserts
+```
+
+See [Getting Started](/devstack/getting-started) for the per-file walkthrough.
+
+## How it works
+
+A `devstack.config.ts` lists **primitives** — `suiLocalnet`, `accounts`, `publishMove`, `tx`,
+`walrusLocalCluster`, `sealLocalKeygen`, `deepbookLocalDeploy`, `walletApp`, `manifest`,
+`hostProcess`. Each primitive declares one resource. `defineDevstack([...])` composes them and
+the `devstack` CLI runs the supervisor:
+
+- Boots every primitive in dependency order, surfaces a live TUI with status per row.
+- Watches your Move sources (and any `watch:` paths you add) and hot-restarts on edit.
+- Writes a **manifest sidecar** to `.devstack/manifest.json` carrying every package ID, endpoint
+  URL, coin type, and account address — your frontend reads it via `createDevstackDappKit`.
+- Cleans up on Ctrl-C (containers, networks, volumes, lock files).
+
+The same `devstack.config.ts` plus a `playwright.config.ts` two-liner runs end-to-end tests
+against the real stack. Multiple stacks (e.g. test workers) can coexist on one machine via
+`DEVSTACK_STACK=<name>` — they share the same Docker daemon and host ports through a shared
+Traefik router that routes by hostname.
+
+See [Concepts](/devstack/concepts) for the model in more detail.
+
+## Where to next
+
+- New to devstack? [Getting Started](/devstack/getting-started).
+- Already up and running? Pick a guide:
+  - [Publish a Move package](/devstack/guides/publish-move)
+  - [E2E with Playwright](/devstack/guides/e2e-with-playwright)
+  - [Integration tests with Vitest](/devstack/guides/integration-tests)
+  - [Walrus](/devstack/guides/walrus) / [Seal](/devstack/guides/seal) / [DeepBook](/devstack/guides/deepbook)
+  - [Networks and accounts](/devstack/guides/networks-and-accounts)
+- Want a complete API reference? [Reference](/devstack/reference/cli).

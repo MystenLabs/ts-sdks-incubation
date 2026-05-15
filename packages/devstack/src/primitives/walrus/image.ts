@@ -12,7 +12,7 @@
 import { createHash } from 'node:crypto';
 import { Effect } from 'effect';
 import { ChildProcessSpawner } from 'effect/unstable/process';
-import * as Docker from '../../internal/docker.js';
+import * as Docker from '../../engine/docker.js';
 import { WalrusError } from '../errors.js';
 
 // Build the wrapper image that layers a matching sui binary + the

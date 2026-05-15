@@ -46,14 +46,14 @@ import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { Secp256k1Keypair } from '@mysten/sui/keypairs/secp256k1';
 import { Secp256r1Keypair } from '@mysten/sui/keypairs/secp256r1';
 import type { Keypair } from '@mysten/sui/cryptography';
-import { makeTag, setPhase, type PluginTag, type TagIdentity } from '../tag.js';
+import { makeTag, setPhase, type PluginTag, type TagIdentity } from '../advanced/tag.js';
 import { Sui } from './sui.js';
 import { AccountError } from './errors.js';
-import { AccountRegistry } from '../internal/registries.js';
-import { Leasing } from '../internal/leasing.js';
-import { requestFunds } from '../internal/faucet.js';
-import { StateStoreConfig } from '../internal/state-store.js';
-import { stringifyCause } from '../internal/stringify-cause.js';
+import { AccountRegistry } from '../engine/registries.js';
+import { Leasing } from '../engine/leasing.js';
+import { requestFunds } from '../engine/faucet.js';
+import { StateStoreConfig } from '../engine/state-store.js';
+import { stringifyCause } from '../engine/stringify-cause.js';
 import type { Account, SignAndExecuteError, TxResult } from './shared.js';
 
 /**

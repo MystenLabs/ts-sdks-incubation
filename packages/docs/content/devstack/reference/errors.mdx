@@ -1,0 +1,76 @@
+---
+title: Errors
+---
+
+Every primitive's failures are typed. Each error class extends Effect's
+`Schema.TaggedErrorClass` (a `Data.TaggedError` with schema-validated fields), so you can
+`catchTag` them in custom plumbing or pattern-match in the pretty-error renderer.
+
+```ts
+import { AccountError, PublishError, ... } from '@mysten-incubation/devstack';
+```
+
+## Error catalogue
+
+| Class                | `_tag`                | Carried fields                                                                                |
+| -------------------- | --------------------- | --------------------------------------------------------------------------------------------- |
+| `SuiError`           | `'SuiError'`          | `phase?`, `message`, `stderr?`, `stdout?`, `exitCode?`, `cause?`                              |
+| `AccountError`       | `'AccountError'`      | `phase`, `message`, `cause?` — `phase` ∈ `'load-key' \| 'decode-key' \| 'write-key' \| 'fund'` |
+| `PublishError`       | `'PublishError'`      | `stage?`, `message`, `cause?` — `stage` ∈ `'hash' \| 'scrub' \| 'build' \| 'publish-tx' \| 'parse'` |
+| `HostProcessError`   | `'HostProcessError'`  | `command?`, `message`, `stderr?`, `stdout?`, `exitCode?`, `cause?`                            |
+| `DockerError`        | `'DockerError'`       | `op?`, `message`, `stdout?`, `stderr?`, `exitCode?`, `cause?`                                 |
+| `WalletAppError`     | `'WalletAppError'`    | `phase`, `message`, `cause?` — `phase` ∈ `'listen'`                                          |
+| `ManifestError`      | `'ManifestError'`     | `phase`, `message`, `cause?` — `phase` ∈ `'write'`                                            |
+| `WalrusError`        | `'WalrusError'`       | `phase?`, `message`, `stderr?`, `stdout?`, `exitCode?`, `cause?`                              |
+| `SealError`          | `'SealError'`         | `phase?`, `message`, `stderr?`, `stdout?`, `exitCode?`, `cause?`                              |
+| `DeepbookError`      | `'DeepbookError'`     | `phase?`, `message`, `cause?`                                                                 |
+| `BindingsError`      | `'BindingsError'`     | `phase`, `message`, `cause?` — `phase` ∈ `'codegen' \| 'write'`                              |
+
+## Catching a specific error
+
+```ts
+import { Effect } from 'effect';
+import { publishMove, PublishError } from '@mysten-incubation/devstack';
+
+const myCustomPublish = Effect.gen(function* () {
+	// ...
+}).pipe(
+	Effect.catchTag('PublishError', (err) =>
+		Effect.gen(function* () {
+			yield* Effect.logWarning(`publish failed at ${err.stage}: ${err.message}`);
+			// fallback behavior
+		}),
+	),
+);
+```
+
+`catchTag` is the type-safe form; the `_tag` literals above are what it dispatches on.
+
+## Subprocess streams
+
+Five errors (`SuiError`, `DockerError`, `HostProcessError`, `WalrusError`, `SealError`) carry
+optional `stdout` / `stderr` / `exitCode` from the failing subprocess. The pretty-error
+renderer surfaces these when present so docker/host failures are debuggable without
+re-running. Truncated to ~1 KB upstream so verbose progress dumps don't dwarf the cause.
+
+## `cause`
+
+Most errors carry an optional `cause: Defect` field — the underlying `unknown` that triggered
+the wrap. The CLI's top-level `Effect.tapCause` (running before `runMain`'s default reporter)
+walks the full chain via `prettyError`, so users see e.g. `DockerError → ENOENT path` instead
+of a flat `Error.toString()`. When you catchTag and re-throw, preserve `cause:` so the chain
+stays intact.
+
+## The pretty-error renderer
+
+`prettyError(cause)` (internal) takes an Effect `Cause` and renders the tagged error tree with:
+
+- Tag name + summary line
+- Captured `phase` / `stage` / `command` / `op` when set
+- `stderr` / `stdout` body, truncated and indented
+- `exitCode` if available
+- Walks `cause` recursively
+
+The CLI hands every uncaught cause to it before exit; the supervisor pushes the same render
+into the TUI log on per-primitive failure. For your own code that catches a devstack error,
+read the fields directly — the renderer is internal.

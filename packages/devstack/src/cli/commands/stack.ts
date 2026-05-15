@@ -17,7 +17,7 @@ import { Console, Effect, FileSystem, Option } from 'effect';
 import { Argument, Command, Flag } from 'effect/unstable/cli';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { join as joinPath } from 'node:path';
-import { prettyError } from '../../internal/pretty-error.js';
+import { prettyError } from '../../engine/pretty-error.js';
 
 // Preserve the underlying cause on `Error.cause` so the CLI's top-level
 // `tapCause` renderer can walk the full chain (PlatformError → ENOENT path,

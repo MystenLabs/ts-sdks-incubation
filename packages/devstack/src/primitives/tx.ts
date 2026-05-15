@@ -1,8 +1,8 @@
 import { Effect, Option } from 'effect';
 import { Transaction } from '@mysten/sui/transactions';
-import { makeTag, setPhase, type PluginTag } from '../tag.js';
+import { makeTag, setPhase, type PluginTag } from '../advanced/tag.js';
 import { PublishError } from './errors.js';
-import { StateStore } from '../internal/state-store.js';
+import { StateStore } from '../engine/state-store.js';
 import { Sui } from './sui.js';
 import type { Account, TxResult } from './shared.js';
 

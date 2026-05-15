@@ -12,7 +12,7 @@ import { Context, Effect, Layer, Ref } from 'effect';
 import { describe, expect, it, vi } from 'vitest';
 import { render as inkRender } from 'ink-testing-library';
 import React from 'react';
-import { EngineHandle, EngineLive, type EngineHandleShape } from '../internal/engine.js';
+import { EngineHandle, EngineLive, type EngineHandleShape } from '../engine/engine.js';
 import { App } from './components.js';
 
 const buildEngine = async (): Promise<EngineHandleShape> => {
@@ -60,7 +60,7 @@ describe('App', () => {
 		);
 		await flush();
 		const frame = lastFrame() ?? '';
-		expect(frame).toContain('Sui');
+		expect(frame).toContain('Services');
 		expect(frame).toContain('localnet');
 		expect(frame).toContain('http://127.0.0.1:9000');
 		expect(frame).toContain('ready');
@@ -84,7 +84,7 @@ describe('App', () => {
 		);
 		await flush();
 		const frame = lastFrame() ?? '';
-		expect(frame).toContain('Publish');
+		expect(frame).toContain('Actions');
 		expect(frame).toContain('hello');
 		expect(frame).toContain('0xabc…123');
 		expect(frame).toContain('done');
@@ -232,11 +232,17 @@ describe('App', () => {
 		const state = await Effect.runPromise(Ref.get(engine.tuiState));
 		const tail = state.logs[state.logs.length - 1];
 		expect(tail).toBeDefined();
-		expect(tail?.message).toContain('shutdown requested');
-		// Surface the "containers stay running" hint AND the wipe escape hatch
-		// so a user pressing `q` knows what they're left with and how to nuke it.
-		expect(tail?.message).toContain('stay running');
+		// Phase 4 shutdown copy: "Shutting down. Sui and other background
+		// services stay warm for a fast next start. Run `pnpm exec devstack
+		// wipe --yes` to clear all local state." Three assertions: it's a
+		// real teardown narration, it mentions services staying warm so the
+		// user knows they aren't losing state, and it points at `devstack
+		// wipe` for the full nuke. Must NOT contain "container" — the v3
+		// docker-leaky vocabulary disappears from user-facing copy.
+		expect(tail?.message).toContain('Shutting down');
+		expect(tail?.message).toContain('stay warm');
 		expect(tail?.message).toContain('devstack wipe');
+		expect(tail?.message).not.toContain('container');
 		unmount();
 	});
 
@@ -306,9 +312,9 @@ describe('App', () => {
 		);
 		await flush();
 		const frame = lastFrame() ?? '';
-		expect(frame).toContain('Sui');
-		expect(frame).toContain('Accounts');
-		expect(frame).toContain('Publish');
+		expect(frame).toContain('Services');
+		expect(frame).toContain('Actions');
+		expect(frame).toContain('Actions');
 		// Bare `<name>` inside the section — no `<group>.<name>` duplication.
 		expect(frame).toContain('localnet');
 		expect(frame).toContain('alice');
@@ -329,7 +335,7 @@ describe('App', () => {
 		// The new grouped layout renders `Sui` as the section header and
 		// `localnet` as the row name — so the original `sui.localnet`
 		// title shows up split across two lines rather than verbatim.
-		expect(frame).toContain('Sui');
+		expect(frame).toContain('Services');
 		expect(frame).toContain('localnet');
 		expect(frame).not.toContain('@devstack/Sui');
 		expect(frame).toContain('pending');

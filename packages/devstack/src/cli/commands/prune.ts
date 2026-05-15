@@ -41,9 +41,9 @@ import {
 	renderTotals,
 	totalsFor,
 	type InventoryRow,
-} from '../../internal/docker/inventory.js';
-import { ROUTER_CONTAINER, ROUTER_NETWORK } from '../../internal/docker/router.js';
-import { registry } from '../../internal/registry.js';
+} from '../../engine/docker/inventory.js';
+import { ROUTER_CONTAINER, ROUTER_NETWORK } from '../../engine/docker/router.js';
+import { registry } from '../../engine/registry.js';
 import { pruneStack, removeLabelledImagesNotInUse, type PruneStackResult } from './_prune-stack.js';
 import { PruneApp } from './_prune-ui.js';
 

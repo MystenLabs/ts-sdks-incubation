@@ -28,15 +28,11 @@ import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { devWalletInitializer } from '@mysten-incubation/dev-wallet';
 import { createDevstackAdapterFromManifest } from '@mysten-incubation/dev-wallet/adapters';
 import type { WalletPanelDescriptor } from '@mysten-incubation/dev-wallet';
+import { fromManifest } from '../runtime/manifest-loader.js';
 
 // Inline the network string union to keep the public return type from
 // dragging shape types through .d.ts paths.
 type Network = 'localnet' | 'testnet' | 'mainnet';
-
-interface ManifestShape {
-	packages?: Array<{ name: string; packageId: string; mvrPlaceholder?: string }>;
-	endpoints?: Array<{ name: string; url: string; pairUrl?: string }>;
-}
 
 export interface LocalnetMvrOverrides {
 	packages: Record<string, string>;
@@ -53,11 +49,14 @@ export interface LocalnetMvrOverrides {
  * apps don't call it directly.
  */
 export function localnetMvrOverrides(manifest: unknown): LocalnetMvrOverrides {
-	const m = manifest as ManifestShape | undefined;
 	const packages: Record<string, string> = {};
-	for (const p of m?.packages ?? []) {
-		if (p.mvrPlaceholder !== undefined) {
-			packages[p.mvrPlaceholder] = p.packageId;
+	if (manifest === null || manifest === undefined || typeof manifest !== 'object') {
+		return { packages };
+	}
+	const v4 = fromManifest(manifest);
+	for (const [, pkg] of Object.entries(v4.packages)) {
+		if (pkg.mvr !== undefined) {
+			packages[pkg.mvr] = pkg.id;
 		}
 	}
 	return { packages };
@@ -94,13 +93,14 @@ export function localnetDappKitConfig(
 	manifest: unknown,
 	opts: LocalnetDappKitConfigOptions = {},
 ): LocalnetDappKitConfig {
-	const m = manifest as ManifestShape | undefined;
-	const endpoints = m?.endpoints ?? [];
-	const localnetRpcUrl =
-		opts.localnetRpcUrl ?? endpoints.find((e) => e.name === 'sui-rpc')?.url;
+	let resolvedRpcUrl: string | undefined = opts.localnetRpcUrl;
+	if (resolvedRpcUrl === undefined && manifest !== null && manifest !== undefined && typeof manifest === 'object') {
+		resolvedRpcUrl = fromManifest(manifest).services.sui?.rpc.url;
+	}
+	const localnetRpcUrl = resolvedRpcUrl;
 	if (localnetRpcUrl === undefined) {
 		throw new Error(
-			'localnetDappKitConfig: no localnetRpcUrl provided and no `sui-rpc` endpoint in manifest. ' +
+			'localnetDappKitConfig: no localnetRpcUrl provided and no sui service in manifest. ' +
 				'Has `devstack up` reached the sui plugin?',
 		);
 	}

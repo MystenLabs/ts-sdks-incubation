@@ -12,7 +12,7 @@ import { describe, expect, it } from 'vitest';
 import { render as inkRender } from 'ink-testing-library';
 import React from 'react';
 import { PruneApp, selectableKeys } from './_prune-ui.js';
-import type { InventoryRow } from '../../internal/docker/inventory.js';
+import type { InventoryRow } from '../../engine/docker/inventory.js';
 
 const row = (overrides: Partial<InventoryRow> = {}): InventoryRow => ({
 	app: 'arena',

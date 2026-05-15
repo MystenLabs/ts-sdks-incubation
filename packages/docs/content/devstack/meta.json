@@ -1,0 +1,6 @@
+{
+	"root": true,
+	"title": "Devstack",
+	"description": "Hermetic local Sui dev stack — localnet, Walrus, Seal, DeepBook, your Move packages, your frontend.",
+	"pages": ["index", "getting-started", "concepts", "guides", "reference"]
+}

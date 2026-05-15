@@ -13,7 +13,7 @@
 import { Effect, FileSystem } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { join as joinPath } from 'node:path';
-import { registry, type RegistryNetwork } from '../../internal/registry.js';
+import { registry, type RegistryNetwork } from '../../engine/registry.js';
 
 type Spawner = ReturnType<typeof ChildProcessSpawner.make>;
 type Fs = ReturnType<typeof FileSystem.make>;

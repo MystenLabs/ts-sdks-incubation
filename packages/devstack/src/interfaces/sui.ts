@@ -13,7 +13,7 @@
 
 import { Context, Effect, Schema } from 'effect';
 import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
-import type { Endpoint } from '../internal/endpoint.js';
+import type { Endpoint } from '../engine/endpoint.js';
 import { SuiError } from '../primitives/errors.js';
 
 /** Shape every Sui-producing factory must satisfy.

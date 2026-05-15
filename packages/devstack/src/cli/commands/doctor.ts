@@ -26,7 +26,7 @@ import {
 	renderInventoryRow,
 	renderTotals,
 	totalsFor,
-} from '../../internal/docker/inventory.js';
+} from '../../engine/docker/inventory.js';
 
 type Spawner = ReturnType<typeof ChildProcessSpawner.make>;
 

@@ -15,7 +15,7 @@ import { Console, Effect, Layer, Option } from 'effect';
 import { Argument, Command, Flag } from 'effect/unstable/cli';
 import { resolve as resolvePath } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { prettyError } from '../../internal/pretty-error.js';
+import { prettyError } from '../../engine/pretty-error.js';
 
 // Preserve the underlying cause on `Error.cause` so the CLI's top-level
 // `tapCause` renderer can walk the full chain instead of collapsing to the

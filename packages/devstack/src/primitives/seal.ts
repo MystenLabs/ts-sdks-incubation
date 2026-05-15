@@ -34,30 +34,30 @@ import { Context, Effect, FileSystem, Layer, Option, Path } from 'effect';
 import { addFinalizer } from 'effect/Scope';
 import { ChildProcessSpawner } from 'effect/unstable/process';
 import { Transaction } from '@mysten/sui/transactions';
-import * as Docker from '../internal/docker.js';
-import { EngineHandle } from '../internal/engine.js';
+import * as Docker from '../engine/docker.js';
+import { EngineHandle } from '../engine/engine.js';
 import {
 	knownDeployments,
 	type KnownNetwork,
 	type SealDeployment,
-} from '../internal/known-deployments.js';
-import { Identity } from '../internal/identity.js';
-import { routerEntrypoint } from '../internal/docker/router.js';
-import { routerHostname, routerId } from '../internal/router-hostname.js';
-import { StateStore, StateStoreConfig } from '../internal/state-store.js';
-import { stringifyCause } from '../internal/stringify-cause.js';
-import { buildMove } from '../internal/sui-cli.js';
-import { dockerImage } from '../plugin-author/index.js';
-import { gitFetch } from '../plugin-author/index.js';
-import { EndpointRegistry, PackageRegistry } from '../internal/registries.js';
+} from '../engine/known-deployments.js';
+import { Identity } from '../engine/identity.js';
+import { routerEntrypoint } from '../engine/docker/router.js';
+import { routerHostname, routerId } from '../engine/router-hostname.js';
+import { StateStore, StateStoreConfig } from '../engine/state-store.js';
+import { stringifyCause } from '../engine/stringify-cause.js';
+import { buildMove } from '../engine/sui-cli.js';
+import { dockerImage } from '../advanced/plugin-author/index.js';
+import { gitFetch } from '../advanced/plugin-author/index.js';
+import { EndpointRegistry, PackageRegistry } from '../engine/registries.js';
 import {
 	SealKeyManager,
 	SealKeyServer,
 	type SealKeyManagerShape,
 	type SealKeyServerShape,
 } from '../interfaces/seal.js';
-import { composeLayers, provideTag, setPhase, type PluginTag } from '../tag.js';
-import type { StackMember } from '../define-devstack.js';
+import { composeLayers, provideTag, setPhase, type PluginTag } from '../advanced/tag.js';
+import type { StackMember } from '../engine/supervisor.js';
 import { Sui, suiNetworkName } from './sui.js';
 import { publishMove } from './publish-move.js';
 import { SealError } from './errors.js';

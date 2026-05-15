@@ -33,7 +33,7 @@
 
 import { Console, Effect } from 'effect';
 import { Command, Flag } from 'effect/unstable/cli';
-import { deriveAppName } from '../../internal/identity.js';
+import { deriveAppName } from '../../engine/identity.js';
 import { pruneStack } from './_prune-stack.js';
 
 const stackFlag = Flag.string('stack').pipe(

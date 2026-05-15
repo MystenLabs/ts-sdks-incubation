@@ -18,7 +18,7 @@ import { Deferred, Effect, Layer, Logger, Ref } from 'effect';
 import type { Scope } from 'effect/Scope';
 import { render } from 'ink';
 import React from 'react';
-import type { EngineHandleShape } from '../internal/engine.js';
+import type { EngineHandleShape } from '../engine/engine.js';
 import { App } from './components.js';
 
 /**

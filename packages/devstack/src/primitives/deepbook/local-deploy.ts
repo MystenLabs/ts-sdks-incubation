@@ -8,12 +8,12 @@
 import * as crypto from 'node:crypto';
 import { Effect, Layer, Option } from 'effect';
 import { Transaction } from '@mysten/sui/transactions';
-import { makeTag, provideTag, type PluginTag } from '../../tag.js';
+import { makeTag, provideTag, type PluginTag } from '../../advanced/tag.js';
 import { Sui } from '../sui.js';
 import { publishMove, pickCreatedByTypeSuffix } from '../publish-move.js';
-import { PackageRegistry } from '../../internal/registries.js';
-import { StateStore } from '../../internal/state-store.js';
-import { stringifyCause } from '../../internal/stringify-cause.js';
+import { PackageRegistry } from '../../engine/registries.js';
+import { StateStore } from '../../engine/state-store.js';
+import { stringifyCause } from '../../engine/stringify-cause.js';
 import { DeepbookError } from '../errors.js';
 import {
 	DeepbookAdmin,

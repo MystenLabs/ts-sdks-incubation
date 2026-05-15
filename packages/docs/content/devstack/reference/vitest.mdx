@@ -1,0 +1,81 @@
+---
+title: Vitest
+---
+
+`@mysten-incubation/devstack/vitest` exposes one helper: `withDevstack`, which binds a
+`Devstack` to `@effect/vitest`'s `it.layer`. Use it for chain-mode integration tests that
+yield from devstack tags directly.
+
+For task-oriented usage see [Integration tests with Vitest](/devstack/guides/integration-tests).
+
+## `withDevstack`
+
+```ts
+import { defineDevstack, suiLocalnet } from '@mysten-incubation/devstack';
+import { withDevstack } from '@mysten-incubation/devstack/vitest';
+
+const devstack = defineDevstack([suiLocalnet()]);
+
+withDevstack(devstack)('my suite', (it) => {
+	it.effect('reads sui', () =>
+		Effect.gen(function* () {
+			const sui = yield* Sui;
+			// ...
+		}),
+	);
+});
+```
+
+`withDevstack(devstack)` returns the `(name?, body)` describe-binder from `@effect/vitest`'s
+`it.layer`. Inside the body, `it.effect` runs your test program with every devstack service
+resolvable via `yield* Tag`.
+
+### Lifecycle
+
+- The layer builds once per suite when the first `it.effect` runs.
+- Every primitive's acquire fires.
+- Tests run; tags are pinned in Context, no rebuild between them.
+- The scope closes after the last test, running every finalizer in reverse order.
+
+This makes acquisition cost amortized across the suite. For per-test isolation, declare
+multiple suites or split into separate test files.
+
+## Vitest config
+
+```ts
+// vitest.config.ts
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+	test: {
+		include: ['src/**/*.{test,spec}.ts?(x)'],
+		exclude: ['e2e/**', 'node_modules', 'dist', '.turbo'],
+		passWithNoTests: true,
+	},
+});
+```
+
+Devstack does **not** ship a `defineDevstackVitestConfig` wrapper. The vitest config stays
+user-owned — `withDevstack` is the entire surface.
+
+## Differences from v3
+
+For readers migrating from devstack v3:
+
+- **No `setup` / `teardown` exports.** v3 exposed those for `vitest globalSetup`; v4 lives
+  behind `it.layer` instead. Out-of-test acquire/release is covered by
+  [`setupDevstack`](/devstack/reference/playwright#setupdevstack) in the `/playwright` subpath
+  (works for any out-of-test boundary, not just Playwright).
+- **No `getNodeState`.** v4 layers don't expose per-tag acquire status outside the supervisor.
+  If a primitive needs to publish state, it does so via its tag's shape or via `StateStore`
+  (internal).
+
+## Common pitfalls
+
+- **Importing `devstack.config.ts` directly into a test** — fine, but if the config also
+  spawns Vite via `hostProcess`, the test will boot Vite too. Factor out a headless config for
+  tests, or accept the extra acquire.
+- **`ServiceNotFound: @devstack/<key>`** — you yielded a tag that isn't in the stack. Add the
+  relevant primitive.
+- **Tests hang on shutdown** — finalizers blocked on a runaway docker rm. Confirm with
+  `docker ps -a --filter label=devstack.app=<app>`; `devstack wipe` clears it.

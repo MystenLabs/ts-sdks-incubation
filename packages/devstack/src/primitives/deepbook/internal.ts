@@ -8,7 +8,7 @@
 
 import { Effect } from 'effect';
 import type { Transaction, TransactionObjectArgument } from '@mysten/sui/transactions';
-import { type PluginTag } from '../../tag.js';
+import { type PluginTag } from '../../advanced/tag.js';
 import { DeepbookError } from '../errors.js';
 import {
 	type DeepbookCoreShape,

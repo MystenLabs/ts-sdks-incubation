@@ -7,10 +7,10 @@
 
 import { Effect, Option, Schedule } from 'effect';
 import { Transaction, type TransactionObjectArgument } from '@mysten/sui/transactions';
-import { makeTag, type PluginTag } from '../../tag.js';
+import { makeTag, type PluginTag } from '../../advanced/tag.js';
 import { Sui } from '../sui.js';
-import { stringifyCause } from '../../internal/stringify-cause.js';
-import { StateStore } from '../../internal/state-store.js';
+import { stringifyCause } from '../../engine/stringify-cause.js';
+import { StateStore } from '../../engine/state-store.js';
 import { DeepbookError } from '../errors.js';
 import { DeepbookCore, type DeepbookPoolRef } from '../../interfaces/deepbook.js';
 import type { Account, SuiObjectChange } from '../shared.js';

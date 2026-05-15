@@ -12,7 +12,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { Context, Effect, Layer } from 'effect';
-import type { StackMember } from '../../define-devstack.js';
+import type { StackMember } from '../../engine/supervisor.js';
 import {
 	WalrusAdmin,
 	WalrusNetwork,
@@ -24,8 +24,8 @@ import {
 	type WalrusNodesShape,
 	type WalrusProxyShape,
 } from '../../interfaces/walrus.js';
-import { dockerImage, gitFetch } from '../../plugin-author/index.js';
-import { composeLayers, type PluginTag } from '../../tag.js';
+import { dockerImage, gitFetch } from '../../advanced/plugin-author/index.js';
+import { composeLayers, type PluginTag } from '../../advanced/tag.js';
 import { WalrusError } from '../errors.js';
 import type { Account } from '../shared.js';
 import {

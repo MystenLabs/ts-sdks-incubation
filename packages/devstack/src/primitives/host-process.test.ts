@@ -17,9 +17,9 @@ import { join } from 'node:path';
 import { Effect, Exit, Layer } from 'effect';
 import { layer as NodeServicesLayer } from '@effect/platform-node/NodeServices';
 import { afterEach, beforeEach, describe, expect, it } from '@effect/vitest';
-import { Identity } from '../internal/identity.js';
-import { PortAllocatorLive } from '../internal/port-allocator.js';
-import { EndpointRegistryLive } from '../internal/registries.js';
+import { Identity } from '../engine/identity.js';
+import { PortAllocatorLive } from '../engine/port-allocator.js';
+import { EndpointRegistryLive } from '../engine/registries.js';
 import { hostProcess } from './host-process.js';
 
 // Identity for the file-provider YAML naming convention. `service`

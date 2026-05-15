@@ -4,85 +4,42 @@
 
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-
-import {
-	accounts,
-	defineDevstack,
-	hostProcess,
-	manifest,
-	pickCreatedByTypeIncludes,
-	pickCreatedByTypeSuffix,
-	publishMove,
-	suiLocalnet,
-	walletApp,
-} from '@mysten-incubation/devstack';
-import type { SuiObjectChange } from '@mysten-incubation/devstack';
+import { devstack } from '@mysten-incubation/devstack';
+import { Account, Dev, Package, Wallet } from '@mysten-incubation/devstack/services';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MANAGED_COIN_DIR = resolve(HERE, 'move/managed_coin');
 
-const a = accounts({ alice: {}, bob: {}, carol: {} });
+const alice = Account('alice');
+const bob = Account('bob');
+const carol = Account('carol');
 
-// `publishMove`'s `capture:` callback runs after the publish tx
-// settles and projects the resulting object changes into the
-// `captured` field of the resolved package tag (also serialized into
-// the manifest's `packages[].captured`). Token-studio's frontend
-// dashboard reads these ids to mint / burn / freeze the managed coin
-// — without capturing them at publish time, every UI action would
-// have to re-discover the cap by walking the address's owned objects.
-const captureCoinObjects = (changes: ReadonlyArray<SuiObjectChange>) => {
-	const out: Record<string, string> = {};
-	const t = pickCreatedByTypeIncludes(changes, '::coin::TreasuryCap<');
-	if (t !== undefined) out.treasuryCapId = t;
-	const md = pickCreatedByTypeIncludes(changes, '::coin::CoinMetadata<');
-	if (md !== undefined) out.metadataId = md;
-	const up = pickCreatedByTypeSuffix(changes, '0x2::package::UpgradeCap');
-	if (up !== undefined) out.upgradeCapId = up;
-	return out;
-};
-
-// Publish as alice — same account holds the TreasuryCap. The `coins:`
-// shortcut registers the managed_coin Move type into the manifest's
-// coin namespace automatically.
-const managedCoinPublish = publishMove({
-	name: 'managed_coin',
-	path: MANAGED_COIN_DIR,
-	signer: a.alice,
-	capture: captureCoinObjects,
+// `capture:` keyed form maps result-key → type-substring. Each entry
+// picks the first created object whose type contains the substring and
+// surfaces it on the resolved Package as `pkg.captured.<key>`. The
+// token-studio frontend reads these ids to mint / burn / freeze the
+// managed coin — without capturing them at publish time, every UI
+// action would have to walk the publisher's owned objects.
+const managedCoin = Package('managed_coin', MANAGED_COIN_DIR, {
+	signer: alice,
+	capture: {
+		treasuryCapId: '::coin::TreasuryCap<',
+		metadataId: '::coin::CoinMetadata<',
+		upgradeCapId: '0x2::package::UpgradeCap',
+	},
 	coins: [{ name: 'managed_coin', module: 'managed_coin', type: 'MANAGED_COIN', decimals: 6 }],
 });
 
-const wallet = walletApp({
-	accounts: [a.alice, a.bob, a.carol],
-	// Router-fronted dev URL + legacy direct port.
+const wallet = Wallet({
+	accounts: [alice, bob, carol],
 	allowedOrigins: ['http://dev.token-studio.localhost:5175', 'http://localhost:5173'],
 });
 
-// `port: { preferred }` allocates a per-stack host port via the
-// shared `PortAllocator` and exposes it as `$PORT`. `vite.config.ts`
-// reads `process.env.PORT` for `server.port`. `--host 0.0.0.0` so
-// traefik (running inside docker) can reach vite via
-// host.docker.internal. `--strictPort` so vite fails fast rather than
-// drifting to a port the supervisor doesn't know about.
-const dev = hostProcess({
-	name: 'frontend.dev-server',
+const dev = Dev({
 	command: 'pnpm',
 	args: ['exec', 'vite', '--host', '0.0.0.0', '--strictPort'],
-	port: { preferred: 5173 },
-	endpoint: { name: 'dev-server', kind: 'dev-server' },
-	traefik: { service: 'dev', entrypoint: 'vite' },
-	dependsOn: [managedCoinPublish, wallet],
+	port: 5173,
+	needs: [managedCoin, wallet],
 });
 
-const m = manifest();
-
-export default defineDevstack([
-	suiLocalnet(),
-	a.alice,
-	a.bob,
-	a.carol,
-	managedCoinPublish,
-	m,
-	wallet,
-	dev,
-]);
+export default devstack(alice, bob, carol, managedCoin, wallet, dev);

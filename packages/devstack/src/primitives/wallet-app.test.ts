@@ -24,10 +24,10 @@ import { join } from 'node:path';
 import { Effect, Layer } from 'effect';
 import { afterEach, beforeEach, describe, expect, it } from '@effect/vitest';
 import { Sui, type SuiShape } from '../interfaces/sui.js';
-import { Identity } from '../internal/identity.js';
-import { PortAllocatorLive } from '../internal/port-allocator.js';
-import { EndpointRegistryLive } from '../internal/registries.js';
-import { makeTag, type PluginTag } from '../tag.js';
+import { Identity } from '../engine/identity.js';
+import { PortAllocatorLive } from '../engine/port-allocator.js';
+import { EndpointRegistryLive } from '../engine/registries.js';
+import { makeTag, type PluginTag } from '../advanced/tag.js';
 import type { Account } from './shared.js';
 import { walletApp } from './wallet-app.js';
 
