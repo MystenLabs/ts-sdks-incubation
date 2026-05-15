@@ -18,7 +18,7 @@ import {
 	PackageRegistry,
 } from '../engine/registries.js';
 import { jsonBigintReplacer } from '../engine/json-bigint.js';
-import { toSdkCoin } from '../interfaces/coin.js';
+import { toSdkCoin } from '../services/package.js';
 import { ManifestError } from './errors.js';
 
 export interface ManifestData {

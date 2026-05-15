@@ -23,7 +23,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Effect, Layer } from 'effect';
 import { afterEach, beforeEach, describe, expect, it } from '@effect/vitest';
-import { Sui, type SuiShape } from '../interfaces/sui.js';
+import { SuiTag as Sui, type SuiShape } from '../services/sui.js';
 import { Identity } from '../engine/identity.js';
 import { PortAllocatorLive } from '../engine/port-allocator.js';
 import { EndpointRegistryLive } from '../engine/registries.js';

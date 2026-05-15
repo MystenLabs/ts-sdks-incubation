@@ -4,11 +4,12 @@
 //
 //   provideTag(TagClass, build)   — primary. Given an EXISTING
 //                                   Context.Service class (typically
-//                                   imported from `src/interfaces/`),
+//                                   imported from a `src/services/` tag
+//                                   class like `SuiTag` / `SealKeyServer`),
 //                                   produce a `{ __layer, key }` pair
 //                                   that satisfies it. Multiple factories
 //                                   (`suiLocalnet`, `suiTestnet`, …) can
-//                                   each call `provideTag(Sui, …)` and
+//                                   each call `provideTag(SuiTag, …)` and
 //                                   they all target the same `Sui` tag.
 //
 //   makeTag(name, build)          — sugar. Creates a one-off tag class
@@ -290,9 +291,10 @@ type AnyTagClass = Context.Key<any, any> & { readonly key: string };
  *
  * Use this when your factory is one of several implementations of the
  * same interface (e.g. `suiLocalnet` / `suiTestnet` / `suiMainnet` all
- * targeting `Sui`). Import the interface tag from `src/interfaces/` and
- * pass it as `TagClass`. The same wrap as `makeTag` (engine lifecycle)
- * is applied, but no new tag class is created — the caller owns the tag.
+ * targeting `SuiTag`). Import the interface tag class from the matching
+ * `src/services/X.ts` (e.g. `SuiTag` from `services/sui.ts`) and pass
+ * it as `TagClass`. The same wrap as `makeTag` (engine lifecycle) is
+ * applied, but no new tag class is created — the caller owns the tag.
  *
  * Returns `{ __layer, key }`. Most callers will `Object.assign(TagClass, …)`
  * onto the existing tag so it doubles as a `PluginTag` for defineDevstack.
@@ -344,8 +346,9 @@ export interface MakeTagOptions<A> extends ProvideTagOptions<A> {
  * Create a one-off tag from an Effect — the right primitive when you're
  * NOT implementing a shared interface (per-account tags from `accounts()`,
  * custom plugins, `action`, etc.). For factories that target an
- * interface tag in `src/interfaces/`, use {@link provideTag} instead.
- * For composites that build inner tags inline, use {@link composeTag}.
+ * interface tag class in `src/services/` (e.g. `SuiTag`, `SealKeyServer`),
+ * use {@link provideTag} instead. For composites that build inner tags
+ * inline, use {@link composeTag}.
  */
 export const makeTag = <const Name extends string, A, E = never, R = never>(
 	name: Name,

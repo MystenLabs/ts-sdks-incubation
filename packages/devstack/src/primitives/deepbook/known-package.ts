@@ -9,7 +9,7 @@
 
 import { Effect } from 'effect';
 import { provideTag } from '../../advanced/tag.js';
-import { DeepbookCore, type DeepbookCoreShape } from '../../interfaces/deepbook.js';
+import { DeepbookCore, type DeepbookCoreShape } from '../../services/deepbook.js';
 import { knownDeployments, type KnownNetwork } from '../../engine/known-deployments.js';
 import type { StackMember } from '../../engine/supervisor.js';
 import { makeFindPool, type DeepbookPool } from './internal.js';

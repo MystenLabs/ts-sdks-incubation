@@ -15,7 +15,7 @@ import {
 	SealKeyManager,
 	SealKeyServer,
 	type SealKeyServerEntry,
-} from '../interfaces/seal.js';
+} from '../services/seal.js';
 import { knownDeployments } from '../engine/known-deployments.js';
 import { EndpointRegistryLive } from '../engine/registries.js';
 import { sealKnownKeyServer } from './seal.js';

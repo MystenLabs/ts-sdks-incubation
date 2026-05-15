@@ -28,7 +28,7 @@
 import { createHash } from 'node:crypto';
 import { Effect, Option } from 'effect';
 import { Transaction } from '@mysten/sui/transactions';
-import { type WalrusAdminShape } from '../../interfaces/walrus.js';
+import { type WalrusAdminShape } from '../../services/walrus.js';
 import * as Docker from '../../engine/docker.js';
 import { EngineHandle } from '../../engine/engine.js';
 import { Identity } from '../../engine/identity.js';

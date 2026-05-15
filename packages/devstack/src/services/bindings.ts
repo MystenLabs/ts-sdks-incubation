@@ -4,7 +4,7 @@
 // declared without an explicit `Bindings(...)` in the stack.
 
 import { bindings, type BindingsOptions } from '../primitives/bindings.js';
-import type { LocalPackageShape } from '../interfaces/package.js';
+import type { LocalPackageShape } from './package.js';
 import type { PluginTag } from '../advanced/tag.js';
 import { withSection } from './ref.js';
 

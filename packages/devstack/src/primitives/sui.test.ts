@@ -14,7 +14,7 @@ import { layer as NodeFileSystemLayer } from '@effect/platform-node/NodeFileSyst
 import { afterEach, beforeEach, describe, expect, it } from '@effect/vitest';
 import { EngineLive } from '../engine/engine.js';
 import { EndpointRegistryLive } from '../engine/registries.js';
-import { Sui } from '../interfaces/sui.js';
+import { SuiTag as Sui } from '../services/sui.js';
 import { faucetReadyProbe, suiCustom, suiLocalnet, suiMainnet, suiTestnet } from './sui.js';
 
 // EndpointRegistry is required by every Sui factory body (publish calls

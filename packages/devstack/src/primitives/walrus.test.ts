@@ -17,7 +17,7 @@ import {
 	WalrusNetwork,
 	WalrusNodes,
 	type WalrusNetworkShape,
-} from '../interfaces/walrus.js';
+} from '../services/walrus.js';
 import { knownDeployments } from '../engine/known-deployments.js';
 import { routerHostname, routerId } from '../engine/router-hostname.js';
 import { walrusKnownDeployment } from './walrus/index.js';

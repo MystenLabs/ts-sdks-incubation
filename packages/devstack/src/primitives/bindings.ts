@@ -6,7 +6,7 @@ import { generateFromPackageSummary } from '@mysten/codegen';
 import { makeTag, setPhase, type PluginTag } from '../advanced/tag.js';
 import { stringifyCause } from '../engine/stringify-cause.js';
 import { BindingsError } from './errors.js';
-import type { LocalPackageShape } from '../interfaces/package.js';
+import type { LocalPackageShape } from '../services/package.js';
 
 export interface BindingsResult {
 	readonly outputPath: string;
