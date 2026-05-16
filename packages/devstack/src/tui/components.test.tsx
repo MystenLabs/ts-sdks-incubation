@@ -126,6 +126,44 @@ describe('App', () => {
 		unmount();
 	});
 
+	it('actions section: an endpoint-bearing row is excluded from the collapse', async () => {
+		// Multi-endpoint primitives (walrus aggregator/publisher; future
+		// seal multi-server) carry URLs the user needs visible at all
+		// times. The collapse pool ignores rows whose `endpoints` are
+		// non-empty so a "compact" run of done actions doesn't hide
+		// the only URL on the dashboard.
+		const engine = await buildEngine();
+		await Effect.runPromise(
+			engine.seedTags([
+				{ key: 'publish.a', kind: 'action' },
+				{ key: 'publish.b', kind: 'action' },
+				{ key: 'publish.c', kind: 'action' },
+				{ key: 'publish.with-url', kind: 'action' },
+			]),
+		);
+		for (const k of ['publish.a', 'publish.b', 'publish.c']) {
+			await Effect.runPromise(engine.markAcquiring(k, 'action'));
+			await Effect.runPromise(engine.markReady(k, { title: k }));
+		}
+		await Effect.runPromise(engine.markAcquiring('publish.with-url', 'action'));
+		await Effect.runPromise(
+			engine.markReady('publish.with-url', {
+				title: 'publish.with-url',
+				endpoints: [{ label: 'pub', url: 'http://endpoint.example.localhost:9000' }],
+			}),
+		);
+		const { lastFrame, unmount } = inkRender(
+			React.createElement(App, { engine, onQuit: () => undefined, pollIntervalMs: 10 }),
+		);
+		await flush();
+		const frame = lastFrame() ?? '';
+		// The three URL-less ready rows still collapse...
+		expect(frame).toContain('done (3)');
+		// ...but the endpoint-bearing row renders its URL on its own line.
+		expect(frame).toContain('endpoint.example.localhost:9000');
+		unmount();
+	});
+
 	it('actions section: in-flight row stays full while ready siblings collapse', async () => {
 		// Failed/in-flight rows still need to surface their state — only the
 		// done rows fold. This keeps the user's attention pinned on what's

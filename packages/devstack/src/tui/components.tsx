@@ -462,8 +462,19 @@ function GroupSection({
 }): React.ReactElement {
 	const headerColor = sectionColor(label);
 	const collapsible = COLLAPSED_SECTIONS.has(label);
-	const ready = collapsible ? entries.filter((e) => e.status === 'ready') : [];
-	const others = collapsible ? entries.filter((e) => e.status !== 'ready') : entries;
+	// Rows with endpoints are excluded from the collapse pool — a
+	// multi-endpoint primitive (walrus aggregator/publisher; future
+	// seal multi-server) needs its endpoint detail visible at all
+	// times. Folding them into the `(N) ready` summary would hide
+	// the URL the user actually needs.
+	const hasVisibleEndpoints = (e: TuiEntry): boolean =>
+		e.endpoints !== undefined && e.endpoints.length > 0;
+	const ready = collapsible
+		? entries.filter((e) => e.status === 'ready' && !hasVisibleEndpoints(e))
+		: [];
+	const others = collapsible
+		? entries.filter((e) => e.status !== 'ready' || hasVisibleEndpoints(e))
+		: entries;
 	const shouldCollapse = collapsible && ready.length > COLLAPSE_THRESHOLD;
 	return (
 		<Box flexDirection='column'>
