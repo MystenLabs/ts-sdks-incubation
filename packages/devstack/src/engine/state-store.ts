@@ -32,13 +32,13 @@
 //   `version` key) are auto-migrated by rewrapping. Higher versions fail
 //   loudly with a migration-needed error.
 
-import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { Context, Effect, FileSystem, Layer, Option, PlatformError, Ref, Schema } from 'effect';
 import type { SuiNetwork } from '../services/sui.js';
 import { jsonBigintReplacer, jsonBigintReviver } from './json-bigint.js';
+import { isHolderLive as isHolderLiveImpl, processStartTime } from './process-liveness.js';
 
 export interface StateStoreShape {
 	readonly get: <T = unknown>(key: string) => Effect.Effect<Option.Option<T>>;
@@ -165,75 +165,22 @@ interface LockBody {
 	readonly instanceId: string;
 }
 
-// PID-reuse defense: best-effort start-time read for `pid`. POSIX uses
-// `ps -o lstart=`; Windows uses `tasklist` (which only confirms existence —
-// PID reuse on Windows is a known v1 trade-off). Returns undefined if the
-// process is gone or the platform can't supply a start time. `execFileSync`
-// is fine here — lookups are rare (only when a lock file already exists at
-// acquire time) and bounded in cost.
-const processStartTime = (pid: number): string | undefined => {
-	if (process.platform === 'win32') {
-		// `tasklist` confirms existence but doesn't expose start time in the
-		// default columns. Return undefined to signal "alive-but-no-stamp"
-		// so callers fall back to the `kill(0)` check.
-		try {
-			const out = execFileSync(
-				'tasklist',
-				['/fi', `PID eq ${pid}`, '/fo', 'csv', '/nh'],
-				{
-					encoding: 'utf8',
-					timeout: 2000,
-					stdio: ['ignore', 'pipe', 'ignore'],
-				},
-			);
-			// `tasklist` prints "INFO: No tasks..." on stdout when no match.
-			return out.trim().startsWith('"') ? '' : undefined;
-		} catch {
-			return undefined;
-		}
-	}
-	try {
-		const out = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
-			encoding: 'utf8',
-			timeout: 2000,
-			stdio: ['ignore', 'pipe', 'ignore'],
-		});
-		const trimmed = out.trim();
-		return trimmed.length > 0 ? trimmed : undefined;
-	} catch {
-		return undefined;
-	}
-};
-
-const isHolderLive = (holder: LockBody): boolean => {
-	// `process.kill(pid, 0)` is the canonical "is this process alive?"
-	// check on POSIX — it sends no signal and throws ESRCH if absent.
-	// On Node it also surfaces EPERM when the target is owned by another
-	// user, which still proves the PID is in use — treat as alive.
-	try {
-		process.kill(holder.pid, 0);
-	} catch (err) {
-		const code = (err as NodeJS.ErrnoException).code;
-		if (code === 'EPERM') return true;
-		// ESRCH (or anything else like an exotic error) — assume dead.
-		return false;
-	}
-	// Alive AND we have permission. Confirm start-time match if both sides
-	// have a stamp to compare. On Windows (`tasklist` returns '' on hit)
-	// or for legacy lock files (empty `startedAt`) we trust kill(0).
-	const live = processStartTime(holder.pid);
-	if (live === undefined) {
-		// Process disappeared between kill(0) and ps — race; treat as dead.
-		return false;
-	}
-	if (live === '' || holder.startedAt === '') return true;
-	return live === holder.startedAt;
-};
+// `processStartTime` and `isHolderLive` live in `process-liveness.ts`
+// so doctor and any future consumers can reach for the same start-time-
+// aware liveness check without re-implementing the cross-host /
+// PID-reuse defense.
+export const isHolderLive = (holder: LockBody): boolean => isHolderLiveImpl(holder);
 
 const parseLockBody = (raw: string): LockBody | undefined => {
 	try {
 		const parsed = JSON.parse(raw) as Partial<LockBody>;
-		if (typeof parsed.pid !== 'number') return undefined;
+		// Tighten the pid check — `typeof parsed.pid === 'number'` accepts
+		// `NaN` and `±Infinity` (both `'number'`) which would then crash
+		// `process.kill` and force the reclaim loop to silently treat
+		// the holder as dead. Require a finite positive integer.
+		if (typeof parsed.pid !== 'number' || !Number.isFinite(parsed.pid) || parsed.pid <= 0) {
+			return undefined;
+		}
 		return {
 			pid: parsed.pid,
 			startedAt: typeof parsed.startedAt === 'string' ? parsed.startedAt : '',
@@ -337,12 +284,13 @@ export const StateStoreLive: Layer.Layer<StateStore, StateStoreLockedError, File
 		//   2. `writeFileString(lock, body, {flag: 'wx'})` — O_EXCL create.
 		//      Success → we own the lock.
 		//   3. On EEXIST: read the existing holder. If alive → fail loudly.
-		//   4. Stale: write our body to `lock.tmp.<pid>.<rand>` then
-		//      `rename(tmp, lock)` (POSIX rename atomically overwrites the
-		//      destination — `wx` is _not_ safe between remove + create here).
-		//      Read the lock back and compare `instanceId`. If it matches
-		//      ours, we own it. Otherwise another reclaimer beat us — retry
-		//      the protocol from step 1.
+		//   4. Stale: unlink the lock and loop. The next iteration's
+		//      O_EXCL is the single source of truth — only one writer can
+		//      win the kernel's create-new-file race. (Pre-fix the loop
+		//      reclaimed via tempfile + rename + readback, but rename
+		//      overwrites unconditionally and the readback could land
+		//      between two peers' renames, letting both believe they
+		//      owned the lock.)
 		//
 		// Bounded retry count keeps a thundering herd of stale-lock
 		// reclaimers from looping forever in pathological cases.
@@ -368,34 +316,36 @@ export const StateStoreLive: Layer.Layer<StateStore, StateStoreLockedError, File
 				return yield* failLocked(existing);
 			}
 
-			// Stale lock — reclaim via tempfile + rename. The rename itself
-			// overwrites unconditionally, so the round-trip `instanceId`
-			// check is what actually decides who won.
-			const tmp = `${paths.lock}.tmp.${process.pid}.${randomUUID()}`;
-			const wroteTmp = yield* fs.writeFileString(tmp, serialized).pipe(
-				Effect.as(true),
-				Effect.catch(() => Effect.succeed(false)),
+			// Stale lock — reclaim via unlink + retry-O_EXCL. The previous
+			// rename-then-readback approach was racy: A and B could both
+			// rename their tmp file (each rename overwrites unconditionally)
+			// and BOTH read the lock between each other's renames, then
+			// both believe they won. Switching to "unlink the stale lock,
+			// then loop and retry the O_EXCL writeFile from the top"
+			// makes the O_EXCL the single source of truth — only one
+			// writer can win the create-new-file race the kernel mediates.
+			//
+			// `fs.remove` is safe even if a peer reclaimer raced us to the
+			// unlink: ENOENT just means someone else already cleared it,
+			// which is exactly the state we wanted.
+			//
+			// Tempfile name still includes `${hostname}.${pid}.${uuid}` so
+			// any peer reclaimer on an NFS-shared `.devstack/` whose
+			// reclaim attempt is in flight can't collide on tmp paths.
+			yield* fs.remove(paths.lock, { force: true }).pipe(Effect.catch(() => Effect.void));
+			// Drop a tmp probe with the hostname-tagged name to match the
+			// long-lived holder's `host` field convention; we never use the
+			// file's content here (the loop's next iteration will do its
+			// own O_EXCL write), but creating + removing it acts as a
+			// liveness check for the directory and surfaces filesystem
+			// errors (ENOSPC, EROFS) before the next O_EXCL attempt.
+			const probe = `${paths.lock}.tmp.${ownHost}.${process.pid}.${randomUUID()}`;
+			yield* fs.writeFileString(probe, serialized).pipe(
+				Effect.catch(() => Effect.void),
 			);
-			if (!wroteTmp) {
-				yield* fs.remove(tmp, { force: true }).pipe(Effect.catch(() => Effect.void));
-				continue;
-			}
-
-			const renamed = yield* fs.rename(tmp, paths.lock).pipe(
-				Effect.as(true),
-				Effect.catch(() => Effect.succeed(false)),
-			);
-			if (!renamed) {
-				yield* fs.remove(tmp, { force: true }).pipe(Effect.catch(() => Effect.void));
-				continue;
-			}
-
-			const after = yield* readExistingHolder();
-			if (after?.instanceId === body.instanceId) {
-				acquiredBody = body;
-				break;
-			}
-			// Another reclaimer's rename landed after ours — retry.
+			yield* fs.remove(probe, { force: true }).pipe(Effect.catch(() => Effect.void));
+			// Continue the loop — next iteration retries the O_EXCL write
+			// against a now-clear lock path.
 		}
 
 		if (!acquiredBody) {
