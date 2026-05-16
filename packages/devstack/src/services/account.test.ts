@@ -97,7 +97,7 @@ describe('Account(name, opts?) — source discriminator', () => {
 					),
 				);
 				expect(resolved.address.startsWith('0x')).toBe(true);
-				expect(resolved.scheme).toBe('ED25519');
+				expect(resolved.scheme).toBe('ed25519');
 			} finally {
 				restore();
 			}
@@ -169,7 +169,7 @@ describe('Account(name, opts?) — source discriminator', () => {
 				),
 			);
 			expect(resolved.address).toBe(expectedAddress);
-			expect(resolved.scheme).toBe('ED25519');
+			expect(resolved.scheme).toBe('ed25519');
 		}),
 	);
 
@@ -190,7 +190,7 @@ describe('Account(name, opts?) — source discriminator', () => {
 				),
 			);
 			expect(resolved.address).toBe(expectedAddress);
-			expect(resolved.scheme).toBe('Secp256k1');
+			expect(resolved.scheme).toBe('secp256k1');
 		}),
 	);
 
@@ -238,7 +238,7 @@ describe('Account(name, opts?) — source discriminator', () => {
 			// Mirrors the inline/env paths: scheme is whatever
 			// `getKeyScheme()` returns — `ED25519` here, not a lowercased
 			// projection.
-			expect(resolved.scheme).toBe('ED25519');
+			expect(resolved.scheme).toBe('ed25519');
 		}),
 	);
 

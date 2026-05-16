@@ -309,7 +309,16 @@ export const Account = <const N extends string>(
 				source.from === 'signer' && source.address !== undefined
 					? source.address
 					: signer.toSuiAddress();
-			const scheme = signer.getKeyScheme() as AccountValue['scheme'];
+			// HIGH-SEC3: lowercase the scheme at the boundary. The
+			// contract claims `'ed25519' | 'secp256k1' | 'secp256r1'`
+			// but `signer.getKeyScheme()` returns the mixed-case Sui SDK
+			// shape (`'ED25519'`, `'Secp256k1'`, …). The bare cast pre-fix
+			// just silenced TS without converting; downstream consumers
+			// (manifest serialization, on-chain Move type matching, the
+			// dev-wallet adapter) read the field expecting lowercase and
+			// quietly diverged.
+			const rawScheme = signer.getKeyScheme();
+			const scheme = rawScheme.toLowerCase() as AccountValue['scheme'];
 
 			yield* Effect.annotateCurrentSpan({ 'account.address': address });
 

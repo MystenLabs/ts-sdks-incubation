@@ -203,7 +203,13 @@ export const walletApp = <const Name extends string = 'wallet-app'>(
 			yield* Effect.addFinalizer(() => removeFileProvider(walletRouterId));
 
 			const url = `http://${walletHostname}:${walletEntrypointInfo.port}`;
-			const pairUrl = `${url}/?token=${token}`;
+			// C13: token rides in the URL fragment, not a query param.
+			// Fragments are NOT sent to the server (so they can't land
+			// in access logs) and most browsers don't write them to
+			// referrer headers. Adapter code on the page reads the
+			// fragment and stashes the token in sessionStorage before
+			// the hash is replaced.
+			const pairUrl = `${url}/#token=${token}`;
 
 			yield* EndpointRegistry.publish({
 				name: 'wallet-app',
@@ -222,9 +228,21 @@ export const walletApp = <const Name extends string = 'wallet-app'>(
 		{
 			kind: 'service',
 			displayTitle: 'wallet',
-			display: (s) => ({ title: 'wallet', primary: s.pairUrl }),
+			// Redact the token from the TUI primary so a screen
+			// recording / scrollback / over-the-shoulder doesn't leak
+			// signing capability. The full `pairUrl` (with token) is
+			// still in the manifest under `app.wallet.pairUrl` for
+			// programmatic consumers.
+			display: (s) => ({ title: 'wallet', primary: redactToken(s.pairUrl) }),
 		},
 	);
+};
+
+const redactToken = (pairUrl: string): string => {
+	// Match either fragment (post-C13) or query (legacy / external) forms.
+	return pairUrl
+		.replace(/#token=[^&]+/i, '#token=<redacted>')
+		.replace(/[?&]token=[^&]+/i, (m) => `${m[0]}token=<redacted>`);
 };
 
 // Start a minimal HTTP server backing the dev-wallet DevstackSignerAdapter.
@@ -234,6 +252,24 @@ export const walletApp = <const Name extends string = 'wallet-app'>(
 //   POST /api/v1/devstack/sign-transaction    → { suiSignature, txBytes }(auth-gated)
 //   POST /api/v1/devstack/sign-personal-message → { signature, bytes }   (auth-gated)
 // CORS is restricted to an explicit allowlist passed by the user.
+// Constant-time bearer compare — prevents a remote attacker from
+// inferring the token byte-by-byte via timing differences. `===` on
+// strings short-circuits at the first mismatch.
+const safeBearerEquals = (a: string, b: string): boolean => {
+	if (a.length !== b.length) return false;
+	let diff = 0;
+	for (let i = 0; i < a.length; i++) {
+		diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+	}
+	return diff === 0;
+};
+
+// Hard upper bound on signing-endpoint POST body size. Sign-tx /
+// sign-personal-message inputs are tiny (a few KB at most) — capping
+// at 64 KiB makes the signing surface immune to a `POST` flood that
+// streams gigabytes of body to OOM the supervisor process.
+const MAX_BODY_BYTES = 64 * 1024;
+
 const startHttpServer = (
 	port: number,
 	bindAddress: string,
@@ -241,6 +277,7 @@ const startHttpServer = (
 	allowedOrigins: ReadonlyArray<string>,
 	accountsByAddress: ReadonlyMap<string, Account>,
 ): Promise<Server> => {
+	const expectedAuth = `Bearer ${token}`;
 	return new Promise((resolve, reject) => {
 		const server = createServer((req, res) => {
 			const origin = req.headers.origin;
@@ -260,8 +297,20 @@ const startHttpServer = (
 				return;
 			}
 			if (req.url?.startsWith('/api/v1/devstack/')) {
+				// C12: require an Origin header on every signing request.
+				// The CORS allowlist above is fail-open when Origin is
+				// absent — non-browser tooling (curl, service workers,
+				// `file://`-served pages) sends no Origin and would sail
+				// through with only the bearer-token check. Requiring
+				// Origin on the signing path closes that bypass; the
+				// allowlist still gates which origins are acceptable.
+				if (origin === undefined) {
+					res.writeHead(403, { 'content-type': 'text/plain' });
+					res.end('Origin header required');
+					return;
+				}
 				const auth = req.headers.authorization;
-				if (auth !== `Bearer ${token}`) {
+				if (auth === undefined || !safeBearerEquals(auth, expectedAuth)) {
 					res.writeHead(401, { 'content-type': 'application/json' });
 					res.end(JSON.stringify({ error: 'unauthorized' }));
 					return;
@@ -404,9 +453,21 @@ const handleSignPersonalMessage = async (
 };
 
 const readJsonBody = async (req: IncomingMessage): Promise<Record<string, unknown>> => {
+	// HIGH-SEC2: cap the body size BEFORE buffering. An unbounded
+	// `for await` on the request body would let a malicious /
+	// runaway client stream gigabytes of payload into the supervisor
+	// process, OOM-ing the host. 64 KiB is well above the largest
+	// expected sign-tx body (a few KB) and small enough to be benign
+	// even under a bot flood.
 	const chunks: Buffer[] = [];
+	let total = 0;
 	for await (const chunk of req) {
-		chunks.push(chunk instanceof Buffer ? chunk : Buffer.from(chunk));
+		const buf = chunk instanceof Buffer ? chunk : Buffer.from(chunk);
+		total += buf.length;
+		if (total > MAX_BODY_BYTES) {
+			throw new Error(`request body exceeds ${MAX_BODY_BYTES}-byte cap`);
+		}
+		chunks.push(buf);
 	}
 	const raw = Buffer.concat(chunks).toString('utf8');
 	if (raw.length === 0) return {};
