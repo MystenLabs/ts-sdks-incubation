@@ -1,41 +1,35 @@
 ---
 title: Local development
-description: Boot a hermetic Sui dev environment, publish your Move packages, and run a dev server — all rebuilt automatically as you edit.
+description:
+  Boot a hermetic Sui dev environment, publish your Move packages, and run a dev server — all
+  rebuilt automatically as you edit.
 ---
 
-A typical Sui app's local dev loop touches a lot of tools: start
-`sui start` or `sui-test-validator`, hit the faucet, run `sui client
-publish`, copy the package id into a config file, restart your dev
-server, paste a new RPC URL when something moved, repeat after every
-edit. Each of those is a place to forget a step or get a stale value.
+A typical Sui app's local dev loop touches a lot of tools: start `sui start` or
+`sui-test-validator`, hit the faucet, run `sui client publish`, copy the package id into a config
+file, restart your dev server, paste a new RPC URL when something moved, repeat after every edit.
+Each of those is a place to forget a step or get a stale value.
 
-Devstack collapses the loop. One config describes every piece your
-app needs; one process owns bringing it up, watching for changes,
-and rebuilding the affected parts.
+Devstack collapses the loop. One config describes every piece your app needs; one process owns
+bringing it up, watching for changes, and rebuilding the affected parts.
 
 ## What you get
 
 `pnpm dev` runs `devstack up`, which:
 
-1. **Boots a localnet** in docker — Sui validator + indexer + faucet
-   + GraphQL — labelled with your app and stack name so parallel
-   stacks coexist.
+1. **Boots a localnet** in docker — Sui validator + indexer + faucet + GraphQL — labelled with your
+   app and stack name so parallel stacks coexist.
 2. **Funds accounts** declared in your config from the faucet.
-3. **Publishes Move packages** by running `sui move build` and
-   `sui client publish` against the localnet, capturing the resulting
-   `packageId`, `upgradeCapId`, and any objects you asked for.
-4. **Watches your sources** and reruns the affected steps in
-   dependency order whenever a file changes.
-5. **Launches your dev server** (Vite or anything else) once its
-   dependencies are ready.
-6. **Writes a manifest** to `.devstack/manifest.json` carrying every
-   resolved endpoint, package id, account address, and coin
-   registration so the rest of your code never hard-codes those
-   values.
+3. **Publishes Move packages** by running `sui move build` and `sui client publish` against the
+   localnet, capturing the resulting `packageId`, `upgradeCapId`, and any objects you asked for.
+4. **Watches your sources** and reruns the affected steps in dependency order whenever a file
+   changes.
+5. **Launches your dev server** (Vite or anything else) once its dependencies are ready.
+6. **Writes a manifest** to `.devstack/manifest.json` carrying every resolved endpoint, package id,
+   account address, and coin registration so the rest of your code never hard-codes those values.
 
-A TUI shows each Ref's state (`pending → acquiring → ready | failed`)
-in real time, plus a sub-phase narration inside `acquiring` (e.g.
-"building image", "requesting funds", "publishing").
+A TUI shows each Ref's state (`pending → acquiring → ready | failed`) in real time, plus a sub-phase
+narration inside `acquiring` (e.g. "building image", "requesting funds", "publishing").
 
 ## A minimal config
 
@@ -47,58 +41,48 @@ const alice = Account('alice');
 const hello = Package('hello', './move/hello', { signer: alice });
 
 const dev = Dev({
-  command: 'pnpm',
-  args: ['exec', 'vite'],
-  port: 5173,
-  needs: [hello],
+	command: 'pnpm',
+	args: ['exec', 'vite'],
+	port: 5173,
+	needs: [hello],
 });
 
 export default devstack(alice, hello, dev);
 ```
 
-`devstack(...)` auto-includes a Sui localnet whenever no `Sui(...)`
-ref is in the stack, so you don't have to spell it out for the
-default case.
+`devstack(...)` auto-includes a Sui localnet whenever no `Sui(...)` ref is in the stack, so you
+don't have to spell it out for the default case.
 
 ## Hot restart on edits
 
-The supervisor watches every path declared by every Ref. When a
-`.move` file under `./move/hello/` changes:
+The supervisor watches every path declared by every Ref. When a `.move` file under `./move/hello/`
+changes:
 
-1. The watcher fiber logs `file change at ./move/hello/... — owned
-   by packages.hello — restarting`.
-2. The current cycle's supervisor scope tears down its per-Ref child
-   scopes.
+1. The watcher fiber logs `file change at ./move/hello/... — owned by packages.hello — restarting`.
+2. The current cycle's supervisor scope tears down its per-Ref child scopes.
 3. The launch loop re-enters with a fresh cycle.
-4. `hello` re-acquires (rebuild + republish), and anything that
-   depends on it — bindings, the dev server's HMR — picks up the
-   new package id.
+4. `hello` re-acquires (rebuild + republish), and anything that depends on it — bindings, the dev
+   server's HMR — picks up the new package id.
 
-Containers registered on the supervisor's long-lived scope (the
-localnet, walrus nodes, …) survive cycle teardown. The chain stays
-up, package ids that didn't move stay cached, and the next cycle
-adopts the same containers — so restart isn't a 30-second cold boot
-every time.
+Containers registered on the supervisor's long-lived scope (the localnet, walrus nodes, …) survive
+cycle teardown. The chain stays up, package ids that didn't move stay cached, and the next cycle
+adopts the same containers — so restart isn't a 30-second cold boot every time.
 
-You can also force a full restart yourself with `r` in the TUI, or
-graceful shutdown with `q`.
+You can also force a full restart yourself with `r` in the TUI, or graceful shutdown with `q`.
 
 ## Per-Ref failures don't take down siblings
 
-If one Ref fails (your Move package has a build error, say), the TUI
-turns that row red and shows the failure cause. Sibling Refs stay in
-their `ready` state. Fix the error, save, and the watcher fires —
-only the failed Ref re-acquires.
+If one Ref fails (your Move package has a build error, say), the TUI turns that row red and shows
+the failure cause. Sibling Refs stay in their `ready` state. Fix the error, save, and the watcher
+fires — only the failed Ref re-acquires.
 
-This matters mostly for editing Move: a syntax error doesn't kill
-your dev server or your accounts; the next save brings `hello` back
-without restarting anything else.
+This matters mostly for editing Move: a syntax error doesn't kill your dev server or your accounts;
+the next save brings `hello` back without restarting anything else.
 
 ## Parallel stacks
 
-Every container is labelled with `<app, stack, network>`. Two
-checkouts of the same repo, or one repo running localnet + testnet
-side by side, won't collide.
+Every container is labelled with `<app, stack, network>`. Two checkouts of the same repo, or one
+repo running localnet + testnet side by side, won't collide.
 
 ```bash
 DEVSTACK_STACK=feature-branch pnpm dev    # separate state + containers
@@ -107,12 +91,10 @@ DEVSTACK_STACK=test pnpm test             # what vitest does by default
 
 State lives under `.devstack/stacks/<stack>/` per stack.
 
-Each `(app, stack)` pair gets its own Move build container
-(`devstack-<app>-<stack>-build`) so concurrent Move builds across
-stacks don't fight over bind-mounts. The trade-off: a cold start of a
-new stack (e.g. `DEVSTACK_STACK=test pnpm test` against an `app`
-that's only ever booted `main` before) pays one extra docker image
-pull.
+Each `(app, stack)` pair gets its own Move build container (`devstack-<app>-<stack>-build`) so
+concurrent Move builds across stacks don't fight over bind-mounts. The trade-off: a cold start of a
+new stack (e.g. `DEVSTACK_STACK=test pnpm test` against an `app` that's only ever booted `main`
+before) pays one extra docker image pull.
 
 ## Renderers
 
@@ -126,7 +108,6 @@ devstack up --renderer silent    # no output, exit status only
 ## Reference
 
 - [CLI reference](../reference/cli) — every `devstack` subcommand.
-- [Services reference](../reference/services) — every built-in Ref
-  factory and its options.
-- [Lifecycle](../internals/lifecycle) — supervisor scopes, hot-restart
-  semantics, when long-lived containers get reused.
+- [Services reference](../reference/services) — every built-in Ref factory and its options.
+- [Lifecycle](../internals/lifecycle) — supervisor scopes, hot-restart semantics, when long-lived
+  containers get reused.

@@ -51,7 +51,7 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
       - name: Build devstack
-        run: pnpm --filter @mysten-incubation/devstack build
+        run: pnpm turbo build --filter @mysten-incubation/devstack
       - name: Compute snapshot id
         id: hash
         working-directory: examples/${{ matrix.example }}
@@ -99,7 +99,7 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
       - name: Build devstack
-        run: pnpm --filter @mysten-incubation/devstack build
+        run: pnpm turbo build --filter @mysten-incubation/devstack
       - name: Resolve snapshot id
         id: snapshot
         run: |

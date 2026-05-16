@@ -3,29 +3,26 @@ title: Faucet
 description: Per-coin funding strategies for Account funding.
 ---
 
-The `Faucet` service centralizes coin funding through pluggable
-per-coin **strategies**. `Account({ funding })` dispatches each
-declared coin through `Faucet.requestCoin(coinType, address, amount)`.
+The `Faucet` service centralizes coin funding through pluggable per-coin **strategies**.
+`Account({ funding })` dispatches each declared coin through
+`Faucet.requestCoin(coinType, address, amount)`.
 
-For the task-shaped intro to funding (how to declare it on an
-account, what comes built-in), see
+For the task-shaped intro to funding (how to declare it on an account, what comes built-in), see
 [accounts and wallet](../features/accounts-and-wallet#multi-coin-funding).
 
-`devstack(...)` auto-includes a `Faucet()` Ref. Its body best-effort
-yields `SuiTag` to register the built-in SUI HTTP strategy when
-`sui.faucet` is reachable, then registers any caller-supplied
+`devstack(...)` auto-includes a `Faucet()` Ref. Its body best-effort yields `SuiTag` to register the
+built-in SUI HTTP strategy when `sui.faucet` is reachable, then registers any caller-supplied
 strategies.
 
 ## Built-in strategies
 
-All built-in strategy factories are exported from
-`@mysten-incubation/devstack/advanced` alongside the
-`defineStrategy` and `FaucetRequestError` primitives.
+All built-in strategy factories are exported from `@mysten-incubation/devstack/advanced` alongside
+the `defineStrategy` and `FaucetRequestError` primitives.
 
 ### `suiHttpStrategy`
 
-Wraps the localnet/testnet faucet's HTTP API. Auto-registered by
-`Sui()`'s body when `sui.faucet` is reachable.
+Wraps the localnet/testnet faucet's HTTP API. Auto-registered by `Sui()`'s body when `sui.faucet` is
+reachable.
 
 ```ts
 import { suiHttpStrategy } from '@mysten-incubation/devstack/advanced';
@@ -35,16 +32,13 @@ Faucet({
 });
 ```
 
-`amount` is currently ignored — the localnet faucet funds a fixed
-amount per request. The parameter is accepted for forward compat with
-server-side amount handling.
+`amount` is currently ignored — the localnet faucet funds a fixed amount per request. The parameter
+is accepted for forward compat with server-side amount handling.
 
 ### `walExchangeStrategy`
 
-Swaps SUI → WAL via the walrus exchange Move package.
-Auto-registered by `Walrus({ local })`'s body when at least one
-`seedAccounts` entry is declared (the first one becomes the swap
-admin).
+Swaps SUI → WAL via the walrus exchange Move package. Auto-registered by `Walrus({ local })`'s body
+when at least one `seedAccounts` entry is declared (the first one becomes the swap admin).
 
 ```ts
 import { walExchangeStrategy } from '@mysten-incubation/devstack/advanced';
@@ -60,16 +54,14 @@ Faucet({
 });
 ```
 
-`amount` is interpreted as **SUI MIST to spend** on the swap; the
-output WAL is whatever the exchange returns. `0n` falls back to
-`defaultPaymentMist`.
+`amount` is interpreted as **SUI MIST to spend** on the swap; the output WAL is whatever the
+exchange returns. `0n` falls back to `defaultPaymentMist`.
 
 ### `treasuryCapMintStrategy`
 
-Wraps `0x2::coin::mint_and_transfer` against a held TreasuryCap.
-Auto-registered by `Package({ coins })`'s publish step for each
-declared coin (one strategy per coin, signer = the package's
-publisher).
+Wraps `0x2::coin::mint_and_transfer` against a held TreasuryCap. Auto-registered by
+`Package({ coins })`'s publish step for each declared coin (one strategy per coin, signer = the
+package's publisher).
 
 ```ts
 import { treasuryCapMintStrategy } from '@mysten-incubation/devstack/advanced';
@@ -85,8 +77,7 @@ Faucet({
 });
 ```
 
-`amount` is the target balance in the coin's smallest unit (`u64`).
-`0n` is a no-op.
+`amount` is the target balance in the coin's smallest unit (`u64`). `0n` is a no-op.
 
 ## Writing your own strategy
 
@@ -125,12 +116,11 @@ devstack(
 );
 ```
 
-`coinType` strings are the dispatch key. Short names (`'SUI'`,
-`'WAL'`) for built-ins; fully-qualified Move types for user coins.
+`coinType` strings are the dispatch key. Short names (`'SUI'`, `'WAL'`) for built-ins;
+fully-qualified Move types for user coins.
 
-`Faucet({ strategies: [...] })` replaces the auto-included Faucet
-ref. The built-in SUI / WAL / TreasuryCap-mint strategies still
-register from their own primitives' bodies (Sui, Walrus, Package);
+`Faucet({ strategies: [...] })` replaces the auto-included Faucet ref. The built-in SUI / WAL /
+TreasuryCap-mint strategies still register from their own primitives' bodies (Sui, Walrus, Package);
 your strategies append to the registry alongside them.
 
 ## Errors
@@ -148,6 +138,4 @@ class FaucetRequestError extends Data.TaggedError('FaucetRequestError')<{
 ```
 
 When raised inside `Account({ funding })`, the supervisor wraps it as
-`AccountError({ phase: 'fund', … })` so per-account error handling
-stays uniform.
-
+`AccountError({ phase: 'fund', … })` so per-account error handling stays uniform.

@@ -1,25 +1,25 @@
 ---
 title: Playwright
-description: Boot the stack in globalSetup, point Playwright at the dev server from the manifest, and switch wallet accounts mid-test.
+description:
+  Boot the stack in globalSetup, point Playwright at the dev server from the manifest, and switch
+  wallet accounts mid-test.
 ---
 
 Playwright e2e for a Sui app usually has three rough edges:
 
-1. **Bring-up.** Playwright wants a `webServer` URL ready before
-   tests start, but the dev server itself depends on a localnet,
-   funded accounts, and a published Move package being ready first.
-2. **The wallet.** Browser wallets aren't designed for headless
-   automation — installing extensions, importing keys, clicking
-   through approve dialogs.
-3. **Account switching.** Mid-test, you often want to log out as
-   alice and log back in as bob. Real wallets don't expose that.
+1. **Bring-up.** Playwright wants a `webServer` URL ready before tests start, but the dev server
+   itself depends on a localnet, funded accounts, and a published Move package being ready first.
+2. **The wallet.** Browser wallets aren't designed for headless automation — installing extensions,
+   importing keys, clicking through approve dialogs.
+3. **Account switching.** Mid-test, you often want to log out as alice and log back in as bob. Real
+   wallets don't expose that.
 
 Devstack's Playwright integration solves all three.
 
 ## globalSetup / globalTeardown
 
-`setupDevstack(handle)` returns a pair of Promise-returning hooks
-Playwright calls before and after the whole test run:
+`setupDevstack(handle)` returns a pair of Promise-returning hooks Playwright calls before and after
+the whole test run:
 
 ```ts
 // playwright.config.ts
@@ -30,47 +30,40 @@ import stack from './devstack.config.ts';
 const fixture = setupDevstack(stack);
 
 export default defineConfig({
-  testDir: './e2e',
-  globalSetup: fixture.globalSetup,
-  globalTeardown: fixture.globalTeardown,
-  webServer: webServer({ endpoint: 'dev-server', timeout: 300_000 }),
-  use: {
-    baseURL: baseURL({ endpoint: 'dev-server' }),
-    trace: 'on-first-retry',
-  },
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+	testDir: './e2e',
+	globalSetup: fixture.globalSetup,
+	globalTeardown: fixture.globalTeardown,
+	webServer: webServer({ endpoint: 'dev-server', timeout: 300_000 }),
+	use: {
+		baseURL: baseURL({ endpoint: 'dev-server' }),
+		trace: 'on-first-retry',
+	},
+	projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
 });
 ```
 
-`globalSetup` builds the devstack layer against a long-lived scope
-and resolves once every Ref is `ready` — i.e., once your localnet is
-up, packages are published, accounts are funded, the dev wallet is
-listening, and the dev server is responding.
+`globalSetup` builds the devstack layer against a long-lived scope and resolves once every Ref is
+`ready` — i.e., once your localnet is up, packages are published, accounts are funded, the dev
+wallet is listening, and the dev server is responding.
 
-`globalTeardown` closes that scope, running finalizers in reverse
-acquisition order.
+`globalTeardown` closes that scope, running finalizers in reverse acquisition order.
 
-You can also drive `webServer` against an already-running `pnpm dev`
-session — `webServer({ ... })` sets `reuseExistingServer: !CI`, so
-locally Playwright connects to your already-booted stack instead of
-spawning a duplicate.
+You can also drive `webServer` against an already-running `pnpm dev` session — `webServer({ ... })`
+sets `reuseExistingServer: !CI`, so locally Playwright connects to your already-booted stack instead
+of spawning a duplicate.
 
 ## webServer / baseURL from the manifest
 
-`webServer({ endpoint })` and `baseURL({ endpoint })` resolve a
-named endpoint from `.devstack/manifest.json`. The endpoint names
-mirror what the manifest carries:
+`webServer({ endpoint })` and `baseURL({ endpoint })` resolve a named endpoint from
+`.devstack/manifest.json`. The endpoint names mirror what the manifest carries:
 
 - `dev-server` — your Vite (or whatever) dev server.
 - `wallet-app` — the dev wallet UI.
-- `sui-rpc`, `sui-faucet`, `sui-graphql`, `sui-indexer-db` — the
-  localnet endpoints.
-- `seal-key-server`, `walrus-aggregator`, `walrus-publisher` — the
-  composite services' surfaces.
+- `sui-rpc`, `sui-faucet`, `sui-graphql`, `sui-indexer-db` — the localnet endpoints.
+- `seal-key-server`, `walrus-aggregator`, `walrus-publisher` — the composite services' surfaces.
 
-Failing loud: a missing manifest or unknown endpoint throws with a
-list of available endpoints, not a silent localhost fallback that
-would just confuse you later.
+Failing loud: a missing manifest or unknown endpoint throws with a list of available endpoints, not
+a silent localhost fallback that would just confuse you later.
 
 ## connectAs: in-test account switching
 
@@ -78,21 +71,19 @@ would just confuse you later.
 import { test, expect, connectAs } from '@mysten-incubation/devstack/playwright';
 
 test('alice can sign in', async ({ page }) => {
-  await page.goto('/');
-  await connectAs(page, 'alice');
-  await expect(page.getByText(/Connected as.*alice/i)).toBeVisible();
+	await page.goto('/');
+	await connectAs(page, 'alice');
+	await expect(page.getByText(/Connected as.*alice/i)).toBeVisible();
 });
 ```
 
-`connectAs(page, label)` clicks the dapp-kit connect button, picks
-the dev wallet, and switches the active dapp-kit account to the one
-labelled `label`. It uses a small browser-side bridge that
-`createDevstackDappKit` mounts on `globalThis.__devstackDAppKit__` in
-dev / preview / `PLAYWRIGHT=1` mode.
+`connectAs(page, label)` clicks the dapp-kit connect button, picks the dev wallet, and switches the
+active dapp-kit account to the one labelled `label`. It uses a small browser-side bridge that
+`createDevstackDappKit` mounts on `globalThis.__devstackDAppKit__` in dev / preview / `PLAYWRIGHT=1`
+mode.
 
-For multi-account flows (alice grants bob a capability, bob acts on
-it), clear localStorage and `connectAs` again — dapp-kit persists
-the connected wallet across page loads:
+For multi-account flows (alice grants bob a capability, bob acts on it), clear localStorage and
+`connectAs` again — dapp-kit persists the connected wallet across page loads:
 
 ```ts
 await page.goto('/');
@@ -112,8 +103,8 @@ await selectAccount(form.getByLabel(/recipient/i), 'bob');
 await waitForBalanceUpdate(page, 'alice', (text) => Number(text) < 1_000_000);
 ```
 
-`test` and `expect` are re-exported from `@playwright/test` so a
-single import line covers a full spec:
+`test` and `expect` are re-exported from `@playwright/test` so a single import line covers a full
+spec:
 
 ```ts
 import { test, expect, connectAs } from '@mysten-incubation/devstack/playwright';
@@ -121,15 +112,13 @@ import { test, expect, connectAs } from '@mysten-incubation/devstack/playwright'
 
 ## CI
 
-The default config works in CI with one tweak: bump `webServer.timeout`
-so cold container pulls have headroom (300_000 is what the example
-apps use). Devstack labels containers with `<app, stack, network>`,
-so concurrent jobs that set `DEVSTACK_STACK=ci-<jobId>` don't
-collide.
+The default config works in CI with one tweak: bump `webServer.timeout` so cold container pulls have
+headroom (300_000 is what the example apps use). Devstack labels containers with
+`<app, stack, network>`, so concurrent jobs that set `DEVSTACK_STACK=ci-<jobId>` don't collide.
 
 ## Reference
 
-- `Wallet`, `Account`, `Dev` — the Refs Playwright drives against.
-  See [Services reference](../reference/services).
-- [Live networks](./live-networks) — running the same Playwright
-  suite against testnet/mainnet by swapping the devstack config.
+- `Wallet`, `Account`, `Dev` — the Refs Playwright drives against. See
+  [Services reference](../reference/services).
+- [Live networks](./live-networks) — running the same Playwright suite against testnet/mainnet by
+  swapping the devstack config.
