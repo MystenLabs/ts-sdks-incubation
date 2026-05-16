@@ -257,15 +257,31 @@ export class DevstackSignerAdapter extends BaseSignerAdapter {
 }
 
 /**
- * Pull the `?token=<hex>` parameter off a paired URL produced by the
- * `walletApp()` plugin. Returns `null` if the input is undefined or
- * doesn't carry a token.
+ * Pull the bearer token off a paired URL produced by the `walletApp()`
+ * plugin. Returns `null` if the input is undefined, malformed, or
+ * carries a `<redacted>` placeholder (post-Phase-E the manifest's
+ * pairUrl carries the redacted form; the real token lives in a
+ * sibling 0o600 file the consumer reads separately).
+ *
+ * Accepts BOTH the legacy `?token=…` query form (pre-Phase-8) and
+ * the fragment `#token=…` form (post-Phase-8) so older state
+ * manifests still pair on this code path.
  */
 export function parseDevstackToken(pairedUrl: string | undefined): string | null {
 	if (pairedUrl === undefined) return null;
 	try {
 		const url = new URL(pairedUrl);
-		return url.searchParams.get('token');
+		// Fragment form: `#token=<hex>` (post-Phase-8).
+		const hash = url.hash; // e.g. "#token=abcd"
+		if (hash.length > 1) {
+			const params = new URLSearchParams(hash.slice(1));
+			const fromHash = params.get('token');
+			if (fromHash !== null && fromHash !== '<redacted>') return fromHash;
+		}
+		// Query form: `?token=<hex>` (legacy).
+		const fromQuery = url.searchParams.get('token');
+		if (fromQuery !== null && fromQuery !== '<redacted>') return fromQuery;
+		return null;
 	} catch {
 		return null;
 	}

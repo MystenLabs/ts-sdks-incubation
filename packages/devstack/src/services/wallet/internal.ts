@@ -8,7 +8,9 @@
 
 import { randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { join as joinPath } from 'node:path';
 import { Effect } from 'effect';
+import { writeFileAtomic } from '../../engine/atomic-write.js';
 import { Identity } from '../../engine/identity.js';
 import { PortAllocator } from '../../engine/port-allocator.js';
 import {
@@ -18,6 +20,7 @@ import {
 } from '../../engine/docker/router.js';
 import { routerHostname, routerId } from '../../engine/router-hostname.js';
 import { EndpointRegistry } from '../../engine/registries.js';
+import { StateStoreConfig } from '../../engine/state-store.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
 import { tag, setPhase, type Ref } from '../../advanced/tag.js';
 import { WalletAppError } from '../../engine/errors.js';
@@ -112,15 +115,18 @@ export const walletApp = <const Name extends string = 'wallet-app'>(
 						),
 					),
 				);
-			// Default to loopback so signing endpoints aren't exposed to other devices
-			// on the LAN (e.g. a coffee-shop network). Override via `bindAddress` for
-			// devcontainers / WSL where the browser lives on a different interface.
-			// Default to 0.0.0.0 so traefik (running inside a docker
-			// container) can dial the wallet-app via `host.docker.internal:<port>`
-			// from the devstack-router network. Without this the file-
-			// provider YAML's upstream URL is unreachable and the
-			// router 502s on every signing request.
-			const bindAddress = options.bindAddress ?? '0.0.0.0';
+			// HIGH-SEC1: default to `127.0.0.1` so signing endpoints aren't
+			// exposed to other devices on the LAN. Modern Docker Desktop
+			// on macOS routes `host.docker.internal` traffic through the
+			// host loopback (the gateway-NAT path was retired in 4.x), so
+			// a 127.0.0.1-bound listener IS reachable from the traefik
+			// container. Linux dockerd with `host.docker.internal`
+			// configured via `--add-host` behaves the same way. Override
+			// via `bindAddress: '0.0.0.0'` for devcontainers / WSL where
+			// the browser lives on a different network interface; the
+			// CSRF defense (mandatory Origin header on signing endpoints,
+			// Phase 8 / C12) does the actual heavy lifting either way.
+			const bindAddress = options.bindAddress ?? '127.0.0.1';
 			const token = randomBytesHex(16);
 			// Auto-derive the routed dev-server origin from Identity so
 			// non-`main` stacks don't have to enumerate
@@ -210,6 +216,48 @@ export const walletApp = <const Name extends string = 'wallet-app'>(
 			// fragment and stashes the token in sessionStorage before
 			// the hash is replaced.
 			const pairUrl = `${url}/#token=${token}`;
+
+			// Phase E: write the raw token to a sibling 0o600 file under
+			// the stack's state dir. Filesystem-local tooling (CI
+			// fixtures, Playwright globalSetup helpers, future
+			// devstack-cli wrappers) can read this instead of parsing
+			// the fragment off `app.wallet.alternates[0]` in the
+			// manifest. The manifest pairUrl still carries the token
+			// for the browser-side adapter pairing flow — the browser
+			// can't read 0o600 files, so the sibling file is a
+			// supplement, not a replacement.
+			//
+			// `StateStoreConfig` is optional here so unit tests that
+			// build the wallet primitive without the full supervisor
+			// stack (no state-store wiring) still work; falls back to
+			// the env-derived path the rest of the toolchain uses.
+			const stateStoreCfgOpt = yield* Effect.serviceOption(StateStoreConfig);
+			const stackStateDir =
+				stateStoreCfgOpt._tag === 'Some'
+					? (stateStoreCfgOpt.value.stateDir ??
+						joinPath(
+							process.env.DEVSTACK_APP_DIR ?? process.cwd(),
+							'.devstack',
+							'stacks',
+							stateStoreCfgOpt.value.stack,
+						))
+					: joinPath(
+							process.env.DEVSTACK_APP_DIR ?? process.cwd(),
+							'.devstack',
+							'stacks',
+							identity.stack,
+						);
+			const tokenPath = joinPath(stackStateDir, 'wallet.token');
+			yield* Effect.tryPromise({
+				try: () => writeFileAtomic(tokenPath, token, { mode: 0o600 }),
+				catch: (cause) => cause,
+			}).pipe(
+				Effect.catch((cause) =>
+					Effect.logWarning(
+						`walletApp: failed to write sibling token file at ${tokenPath} (continuing; manifest pairUrl still carries the token): ${stringifyCause(cause)}`,
+					),
+				),
+			);
 
 			yield* EndpointRegistry.publish({
 				name: 'wallet-app',
