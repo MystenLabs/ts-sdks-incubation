@@ -76,6 +76,13 @@ the cycle teardown; the next cycle's `Docker.run` adopts them if
 they're still healthy. Chain id stays stable, `publishMove` hits its
 state-store cache, packageIds don't move.
 
+The Move build container (`devstack-<app>-<stack>-build`) is one of
+those long-lived adoptees. The first build pulls the pinned `sui` image
+and starts the container; every subsequent build hits a single
+`docker exec` that reuses the same container's `~/.move` cache. A press-`r`
+restart leaves the container alive, so the next cycle's `move build`
+runs against a warm sui-cli, not a freshly-pulled image.
+
 ## Hand-rolled run
 
 Three entry points sit at different levels of abstraction:

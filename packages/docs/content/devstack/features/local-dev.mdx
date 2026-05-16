@@ -107,6 +107,13 @@ DEVSTACK_STACK=test pnpm test             # what vitest does by default
 
 State lives under `.devstack/stacks/<stack>/` per stack.
 
+Each `(app, stack)` pair gets its own Move build container
+(`devstack-<app>-<stack>-build`) so concurrent Move builds across
+stacks don't fight over bind-mounts. The trade-off: a cold start of a
+new stack (e.g. `DEVSTACK_STACK=test pnpm test` against an `app`
+that's only ever booted `main` before) pays one extra docker image
+pull.
+
 ## Renderers
 
 The default TUI assumes a real terminal. For CI or piped output:

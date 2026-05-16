@@ -96,6 +96,10 @@ with the config knobs you need.
 - **[Walrus, Seal, and Deepbook](./features/services)** — composite
   Refs that boot the upstream infra locally and re-target the same
   shape against known testnet / mainnet deployments.
+- **[State and snapshots](./features/state-and-snapshots)** — what
+  survives across hot-restart, graceful shutdown, and host reboot,
+  plus `devstack snapshot save / restore` for checkpointing chain
+  state.
 - **[Live networks](./features/live-networks)** — same config,
   `--network testnet`, env-sourced accounts, `KnownPackage(...)`
   for third-party deps.

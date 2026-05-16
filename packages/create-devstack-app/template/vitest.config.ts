@@ -3,13 +3,19 @@ import { defineConfig } from 'vitest/config';
 // Plain vitest config. No mega-helper — per
 // `@mysten-incubation/devstack`'s design, vitest config stays
 // user-owned. For chain-mode integration tests, bind the devstack to
-// `@effect/vitest`'s `it.layer` via `withDevstack`:
+// `@effect/vitest`'s `it.effect` via `withDevstack`:
 //
-//   import { defineDevstack, suiLocalnet } from '@mysten-incubation/devstack';
+//   import { Account, devstack } from '@mysten-incubation/devstack';
 //   import { withDevstack } from '@mysten-incubation/devstack/vitest';
-//   const devstack = defineDevstack([suiLocalnet()]);
-//   withDevstack(devstack)('suite', (it) => {
-//     it.effect('reads sui', () => Effect.gen(function* () { /* ... */ }));
+//   const alice = Account('alice');
+//   const stack = devstack(alice);
+//   withDevstack(stack)('suite', (it) => {
+//     it.effect('alice is funded', () =>
+//       Effect.gen(function* () {
+//         const a = yield* alice;
+//         expect(a.address).toMatch(/^0x/);
+//       }),
+//     );
 //   });
 export default defineConfig({
 	test: {

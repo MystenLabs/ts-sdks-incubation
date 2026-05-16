@@ -19,9 +19,9 @@ import * as net from 'node:net';
 // -----------------------------------------------------------------------------
 
 // Public-facing probe shapes. The user picks one of these on a plugin's
-// `readyProbe` field. The engine (host-process / docker-container) wires the
-// runtime `logs` stream onto a `log` probe before calling `awaitReady` —
-// users never construct that field themselves.
+// `readyProbe` field. The engine (host-process / docker.run wrappers)
+// wires the runtime `logs` stream onto a `log` probe before calling
+// `awaitReady` — users never construct that field themselves.
 
 export interface HttpReadyProbe {
 	readonly kind: 'http';

@@ -38,7 +38,9 @@ Yield narrow interface tags for slices:
 
 ```ts
 import { Effect } from 'effect';
-import { WalrusNodesTag, WalrusProxyTag, WalrusAdminTag } from '@mysten-incubation/devstack';
+import { WalrusNodesTag, WalrusProxyTag } from '@mysten-incubation/devstack';
+// Admin-side tags are localnet-only, so they live under /advanced.
+import { WalrusAdminTag } from '@mysten-incubation/devstack/advanced';
 
 const uploadBlob = Effect.gen(function* () {
   const proxy = yield* WalrusProxyTag;       // aggregator + publisher URLs
@@ -217,6 +219,6 @@ See [live networks](./live-networks) for the promotion pattern.
 
 - [Services reference — Walrus / Seal / Deepbook](../reference/services#walrus-seal-deepbook) —
   every option and the inner tag shapes.
-- [Internals — advanced](../reference/advanced) — `composeTag`,
-  `dockerContainer`, and other primitives the composites are built
-  on.
+- [Advanced reference](../reference/advanced) — `composeTag`,
+  `dockerImage`, `gitFetch`, and the other plugin-author primitives
+  the composites are built on.

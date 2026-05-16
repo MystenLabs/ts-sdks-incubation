@@ -28,20 +28,24 @@ with another tool.
   surrounding tag's TUI row. Reads the ambient tag key from
   `CurrentTagKey` so primitive authors don't pass it manually.
 
-## Docker helpers
+## Plugin-author helpers
 
 - **`dockerImage(opts)`** — build a docker image from a context
   directory. Cached by content hash; reused across cycles when the
   context bytes match.
 - **`dockerOneShot(opts)`** — run a one-shot container, capture
-  stdout/exit code, fail with `DockerError` on non-zero.
-- **`dockerContainer(opts)`** — long-running container with
-  ready-probe + finalizer. Adopts a healthy existing container on
-  warm restart.
+  stdout/exit code, fail with `DockerError` on non-zero. Result is
+  cached by a hash of `(image, args, env, mounts, network, inputs)`
+  — re-acquires return the prior result without re-running.
 - **`gitFetch(opts)`** — fetch a pinned git ref into a local cache
   dir, optionally extracting a subdirectory.
 - **`hostScript(opts)`** — one-shot host process (not in docker).
   Capture stdout, enforce timeout/SIGTERM/SIGKILL.
+
+There's no generic long-running container helper in this surface
+today. Long-running services (`Sui()`, `Walrus()`, `Dev()`,
+`Wallet()`) wrap `Docker.run` directly inside their `tag(...)` body —
+read those factories' source if you need to author a custom one.
 
 ## Canonical deployments
 

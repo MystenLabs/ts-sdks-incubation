@@ -1,7 +1,7 @@
 // Port allocator — hands out free TCP ports. Composite primitives (sui,
-// walrus, seal, hostProcess, dockerContainer) use it instead of pinning
-// host:container 1:1, so two stacks can run side-by-side without manual
-// port juggling.
+// walrus, seal, the Dev host process, anything calling Docker.run) use
+// it instead of pinning host:container 1:1, so two stacks can run
+// side-by-side without manual port juggling.
 //
 // `allocate(preferred)` scans forward from `preferred` up to `maxScan`
 // ports, returning the first port that is (a) not in our held set and

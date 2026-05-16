@@ -66,12 +66,12 @@ them.
 Manage per-stack state.
 
 ```bash
-devstack stack list                    # what stacks exist under .devstack/stacks/
-devstack stack ls                      # alias
-devstack stack new <name>              # create the per-stack state dir
-devstack stack use <name>              # mark `<name>` as active (writes .devstack/active)
-devstack stack down [<name>]           # stop containers; KEEP on-disk state
-devstack stack drop <name> --yes       # remove .devstack/stacks/<name>/ (no docker)
+devstack stack list                          # what stacks exist under .devstack/stacks/
+devstack stack new <name>                    # create the per-stack state dir
+devstack stack new <name> --set-active       # also write .devstack/active
+devstack stack use <name>                    # mark `<name>` as active (writes .devstack/active)
+devstack stack down [<name>]                 # stop containers; KEEP on-disk state (default: active stack)
+devstack stack drop <name> --yes             # remove .devstack/stacks/<name>/ (no docker)
 ```
 
 `stack down` is non-destructive: it kills every container labelled
@@ -134,13 +134,34 @@ host-wide cleanup across stacks you've forgotten about, use
 ## `devstack doctor`
 
 Diagnostic checks for common setup issues — docker daemon health, sui
-binary version, port availability, lockfile staleness.
+binary version, port availability, lockfile staleness — followed by an
+inventory of every devstack-labelled docker resource on the host.
 
 ```bash
 devstack doctor
 ```
 
-Each check is `OK` / `WARN` / `FAIL` with a hint for how to fix it.
+Each check shows one of three symbols:
+
+- `✓` — pass.
+- `✗` — required check failed; doctor exits non-zero.
+- `!` — informational warning (sui CLI absent, port already bound, partial
+  lock cleanup); doesn't fail the run.
+
+### Stale state-store lock cleanup
+
+Every running supervisor holds an O_EXCL lock at
+`.devstack/stacks/<stack>/state.json.lock` (or `.devstack/networks/<network>.lock`).
+A SIGKILL, host power-cycle, or Docker Desktop hang can leave the lock
+behind with a dead pid inside; the next `pnpm dev` then fails with a
+misleading "stack 'main' is already running (pid <dead>)" message.
+
+`doctor` walks `<DEVSTACK_APP_DIR>/.devstack/` (defaults to
+`<cwd>/.devstack/`), reads the holder pid from each `*.lock`, and
+removes any lock whose pid is dead or whose body is unreadable. Live
+locks are never touched — a live holder is by definition not stale.
+Removed locks are listed in the report with their pid and `acquiredAt`
+timestamp so the cleanup is auditable.
 
 ## `devstack prune`
 
@@ -151,11 +172,21 @@ a live supervisor** — checked via the per-stack lock file's pid.
 
 ```bash
 devstack prune                         # interactive picker (default)
-devstack prune --list                  # print inventory and exit
+devstack prune --list                  # print inventory and exit (scriptable, no mutation)
 devstack prune <app>/<stack> --yes     # target one stack non-interactively
 devstack prune --all-orphans --yes     # remove every stack without a live supervisor
 devstack prune --repo-gone --yes       # remove every stack whose repo is no longer on disk
+devstack prune --app <name> --yes      # narrow any of the above to one app's stacks
+devstack prune --dry-run               # show what would happen; never mutate
 ```
+
+Mutating modes accept these refinements:
+
+- `--keep-snapshots` — leave `snapshots/` directories intact (default removes them).
+- `--images` — also `docker rmi` `devstack-*` image tags whose containers are gone.
+- `--include-images` — even more aggressive image removal across all matched stacks.
+- `--include-router` — also stop the shared `devstack-traefik` router (skip otherwise).
+- `--interactive` — force the Ink picker even if other flags would imply non-interactive.
 
 The host-wide registry persists `lastSeen` per stack so `prune`
 finds stale ones even after the repo that created them is gone.
