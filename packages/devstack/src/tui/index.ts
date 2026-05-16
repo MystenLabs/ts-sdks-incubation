@@ -170,12 +170,17 @@ export const startTuiOnce = (): Effect.Effect<TuiMount, never, Scope> =>
 
 		const install = (engine: EngineHandleShape) =>
 			Effect.gen(function* () {
-				yield* Ref.set(currentRef, engine);
-				// Eager first copy so the row transition is visible on the next
-				// React poll tick — without it the user sees a 50ms gap between
-				// install() and the first sync-fiber wake.
+				// Eager first copy of the engine's tuiState BEFORE flipping
+				// `currentRef`. The poll fiber (above) ignores ticks when
+				// `currentRef` is undefined, so by the time it sees the new
+				// engine the snapshot already reflects that engine's
+				// pending rows. Reverse order would expose a one-tick
+				// window where `currentRef === engine` but `stableState`
+				// still carried the previous cycle's entries — the user
+				// would see a frame of "wrong" rows before the next sync.
 				const snapshot = yield* Ref.get(engine.tuiState);
 				yield* Ref.set(stableState, snapshot);
+				yield* Ref.set(currentRef, engine);
 			});
 
 		return { proxy, install };
@@ -222,12 +227,23 @@ export const TuiLoggerLayer = (engine: EngineHandleShape): Layer.Layer<never, ne
 			: typeof message === 'string'
 				? message
 				: JSON.stringify(message);
+		// `Effect.runSync` of a Ref-update normally can't fail — but if
+		// the engine's tuiState Ref is bound to a torn-down scope (the
+		// supervisor is mid-shutdown and a late Logger emit races the
+		// scope finalizer) the runSync surfaces a `Scope closed`
+		// defect that bubbles out as an uncaught exception and crashes
+		// the supervisor process. Wrap with `catchCause` returning
+		// `void` so defects (the typed errors in our Logger pipeline
+		// is `never`) are swallowed — the log is the side-effect;
+		// losing it during shutdown is fine.
 		Effect.runSync(
-			engine.appendLog({
-				ts: date.getTime(),
-				level: logLevel,
-				message: text,
-			}),
+			engine
+				.appendLog({
+					ts: date.getTime(),
+					level: logLevel,
+					message: text,
+				})
+				.pipe(Effect.catchCause(() => Effect.void)),
 		);
 	});
 	return Logger.layer([tuiLogger]);
