@@ -151,13 +151,13 @@ Each check shows one of three symbols:
 ### Stale state-store lock cleanup
 
 Every running supervisor holds an O_EXCL lock at
-`.devstack/stacks/<stack>/state.json.lock` (or `.devstack/networks/<network>.lock`).
+`.devstack/stacks/{stack}/state.json.lock` (or `.devstack/networks/{network}.lock`).
 A SIGKILL, host power-cycle, or Docker Desktop hang can leave the lock
 behind with a dead pid inside; the next `pnpm dev` then fails with a
-misleading "stack 'main' is already running (pid <dead>)" message.
+misleading `stack 'main' is already running (pid 12345)` message.
 
-`doctor` walks `<DEVSTACK_APP_DIR>/.devstack/` (defaults to
-`<cwd>/.devstack/`), reads the holder pid from each `*.lock`, and
+`doctor` walks `{DEVSTACK_APP_DIR}/.devstack/` (defaults to
+`{cwd}/.devstack/`), reads the holder pid from each `*.lock`, and
 removes any lock whose pid is dead or whose body is unreadable. Live
 locks are never touched — a live holder is by definition not stale.
 Removed locks are listed in the report with their pid and `acquiredAt`
