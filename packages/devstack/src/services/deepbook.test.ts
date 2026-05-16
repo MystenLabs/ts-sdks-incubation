@@ -244,6 +244,7 @@ const makeMockSuiOk = (
 			},
 		} as unknown as Sui['client'],
 		waitForTransactionsReady: () => Effect.void,
+		runtime: 'bundled',
 	});
 
 const makeMockSuiMissingObject = (chainId: string): Layer.Layer<SuiTag> =>
@@ -260,6 +261,7 @@ const makeMockSuiMissingObject = (chainId: string): Layer.Layer<SuiTag> =>
 			},
 		} as unknown as Sui['client'],
 		waitForTransactionsReady: () => Effect.void,
+		runtime: 'bundled',
 	});
 
 const mockStateConfig = (stateDir: string): Layer.Layer<StateStoreConfig> =>

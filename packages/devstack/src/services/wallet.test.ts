@@ -43,6 +43,7 @@ const stubSui: Layer.Layer<SuiTag> = Layer.succeed(SuiTag, {
 	// wallet-app never asks the chain to be funds-transferable; resolve
 	// immediately so the stub mirrors the mainnet/no-faucet branch.
 	waitForTransactionsReady: () => Effect.void,
+		runtime: 'bundled',
 });
 
 // Build a stub account tag. The wallet-app reads `address` to key the
