@@ -107,6 +107,31 @@ export const Codegen = (opts: CodegenOptions) => {
 				resolved.push(toCodegenPackage(pkg));
 			}
 
+			// Collision detection: each emitter conventionally writes
+			// under `<outputDir>/<emitter.name>/`. Two emitters with the
+			// same `name` would clobber each other's output (and which
+			// one wins depends on iteration order, which is fragile).
+			// Fail loudly at acquire time so the conflict surfaces with
+			// the user's `Codegen({ emitters: [...] })` site in the
+			// stack trace, not as a mysterious missing-file error
+			// during a downstream consumer's TS build.
+			const emitterNamesSeen = new Set<string>();
+			for (const emitter of emitters) {
+				if (emitterNamesSeen.has(emitter.name)) {
+					return yield* Effect.fail(
+						new CodegenError({
+							emitter: emitter.name,
+							phase: 'generate',
+							message:
+								`Codegen('${name}'): duplicate emitter name '${emitter.name}'. ` +
+								`Each emitter writes under <outputDir>/<emitter.name>/; two ` +
+								`emitters with the same name would clobber each other.`,
+						}),
+					);
+				}
+				emitterNamesSeen.add(emitter.name);
+			}
+
 			const ctx: CodegenContext = { packages: resolved, outputDir };
 			yield* Effect.annotateCurrentSpan({
 				'codegen.output': outputDir,
@@ -114,11 +139,21 @@ export const Codegen = (opts: CodegenOptions) => {
 				'codegen.emitters': emitters.map((e) => e.name).join(','),
 			});
 
+			// Serial emit (concurrency: 1). Per-emitter locking is on the
+			// long-tail wishlist; until then, serial avoids the
+			// `~/.move` and bind-mount races between concurrent
+			// `sui move {build,summary}` invocations.
 			for (const emitter of emitters) {
 				yield* setPhase(`emit: ${emitter.name}`);
 				yield* emitter.emit(ctx).pipe(
 					Effect.mapError((cause) => {
-						if (cause instanceof CodegenError) return cause;
+						if (cause instanceof CodegenError) {
+							// Preserve the emitter's `phase` rather than
+							// re-wrapping into 'generate' — the original
+							// classification (e.g. 'write' for atomic
+							// dir-swap failures) is more diagnostic.
+							return cause;
+						}
 						return new CodegenError({
 							emitter: emitter.name,
 							phase: 'generate',

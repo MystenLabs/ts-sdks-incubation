@@ -17,6 +17,7 @@ import { Effect } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { generateFromPackageSummary } from '@mysten/codegen';
 import { stringifyCause } from '../../engine/stringify-cause.js';
+import { SuiBuildContainer } from '../../engine/sui-build-container.js';
 import { CodegenError } from '../errors.js';
 import { defineEmitter, type CodegenContext, type Emitter } from '../define-emitter.js';
 
@@ -96,7 +97,11 @@ const runEmit = (
 			'bindings.fingerprint': fingerprint ?? 'undefined',
 		});
 
-		const staging = `${outputAbs}.staging-${process.pid}`;
+		// Random staging suffix instead of `process.pid`. Two stacks of
+		// the same app forked from a parent supervisor would otherwise
+		// collide on the staging dir name (same pid post-fork on
+		// platforms that report the parent pid for forked workers).
+		const staging = `${outputAbs}.staging-${crypto.randomBytes(6).toString('hex')}`;
 
 		yield* Effect.tryPromise({
 			try: () => fs.rm(staging, { recursive: true, force: true }),
@@ -119,26 +124,49 @@ const runEmit = (
 				}),
 		});
 
+		// C7: prefer the SuiBuildContainer's pinned `sui` for `sui move
+		// summary`. The host `sui` may be a different version than the
+		// build container's pinned `sui`, and the resulting summary
+		// schema would diverge from what `@mysten/codegen` expects.
+		// Fall back to the host `sui` only when the build container
+		// can't reach the source (path outside the bind-mount or no
+		// build container provisioned at all).
+		const buildContainerOpt = yield* Effect.serviceOption(SuiBuildContainer);
+
 		const codegen = Effect.forEach(
 			targets,
 			(t) =>
 				Effect.gen(function* () {
 					yield* Effect.annotateCurrentSpan({ 'bindings.target': t.name });
 					yield* Effect.logInfo(`sui move summary -> ${t.name}`);
-					const summaryCmd = ChildProcess.make('sui', ['move', 'summary'], {
-						cwd: t.sourcePath,
-					});
-					yield* spawner.exitCode(summaryCmd).pipe(
-						Effect.mapError(
-							(cause) =>
-								new CodegenError({
-									emitter: 'bindings',
-									phase: 'generate',
-									message: `${t.name}: sui move summary failed: ${stringifyCause(cause)}`,
-									cause,
-								}),
-						),
-					);
+					if (buildContainerOpt._tag === 'Some' && buildContainerOpt.value.canExec(t.sourcePath)) {
+						yield* buildContainerOpt.value.runSummary(t.sourcePath).pipe(
+							Effect.mapError(
+								(cause) =>
+									new CodegenError({
+										emitter: 'bindings',
+										phase: 'generate',
+										message: `${t.name}: sui move summary (in build container) failed: ${stringifyCause(cause)}`,
+										cause,
+									}),
+							),
+						);
+					} else {
+						const summaryCmd = ChildProcess.make('sui', ['move', 'summary'], {
+							cwd: t.sourcePath,
+						});
+						yield* spawner.exitCode(summaryCmd).pipe(
+							Effect.mapError(
+								(cause) =>
+									new CodegenError({
+										emitter: 'bindings',
+										phase: 'generate',
+										message: `${t.name}: sui move summary (host fallback) failed: ${stringifyCause(cause)}`,
+										cause,
+									}),
+							),
+						);
+					}
 					yield* Effect.tryPromise({
 						try: () =>
 							generateFromPackageSummary({
