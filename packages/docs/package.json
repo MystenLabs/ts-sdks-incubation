@@ -13,8 +13,8 @@
 		"validate-docs": "tsx scripts/validate-llm-docs.ts",
 		"prettier:check": "prettier -c --ignore-unknown .",
 		"prettier:fix": "prettier -w --ignore-unknown .",
-		"oxlint:check": "oxlint  .",
-		"oxlint:fix": "oxlint --fix",
+		"oxlint:check": "oxlint --ignore-pattern='.next/**' --ignore-pattern='.source/**' --ignore-pattern='.turbo/**' --ignore-pattern='.vercel/**' --ignore-pattern='dist/**' --ignore-pattern='next-env.d.ts' .",
+		"oxlint:fix": "oxlint --fix --ignore-pattern='.next/**' --ignore-pattern='.source/**' --ignore-pattern='.turbo/**' --ignore-pattern='.vercel/**' --ignore-pattern='dist/**' --ignore-pattern='next-env.d.ts'",
 		"lint": "pnpm run oxlint:check && pnpm run prettier:check",
 		"lint:fix": "pnpm run oxlint:fix && pnpm run prettier:fix"
 	},
