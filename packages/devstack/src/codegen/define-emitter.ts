@@ -56,20 +56,31 @@ export interface CodegenContext {
  *  error messages; `emit` runs the codegen body and produces an Effect
  *  that resolves on success or fails with `CodegenError`.
  *
- *  Emit's R channel is open (`any`) so plug-ins can request infra
- *  services they need (`ChildProcessSpawner` for `BindingsEmitter`,
- *  `FileSystem` for anything that writes). `Codegen({...})` provides
- *  the standard infra (`NodeServicesLayer` + per-stack identity) so
- *  the common cases just work. */
-export interface Emitter {
+ *  The `R` parameter declares which infra services the emitter pulls
+ *  from the surrounding scope. `Codegen({...})` provides the standard
+ *  infra (`NodeServicesLayer` + per-stack identity), so emitters that
+ *  only consume those baseline services can leave `R` at its default
+ *  `never`. Emitters that need additional services (a custom
+ *  IndexerClient, say) widen the generic at the `defineEmitter` call
+ *  site; consumers compose the resulting layer normally.
+ *
+ *  `Codegen` accepts a heterogeneous emitter array via
+ *  `ReadonlyArray<Emitter<any>>` (see services/codegen.ts) so the
+ *  type guidance flows back the other way: a single emitter call
+ *  site with the wrong R fails to typecheck against the strict
+ *  `Codegen` provider set, but the array doesn't need an explicit
+ *  union annotation. */
+export interface Emitter<R = never> {
 	readonly name: string;
-	/* eslint-disable @typescript-eslint/no-explicit-any */
-	readonly emit: (ctx: CodegenContext) => Effect.Effect<void, CodegenError, any>;
-	/* eslint-enable @typescript-eslint/no-explicit-any */
+	readonly emit: (ctx: CodegenContext) => Effect.Effect<void, CodegenError, R>;
 }
 
 /** Helper to define an emitter. Returns its argument unchanged — the
  *  function exists so plug-in authors get inferred parameter types and
  *  TS infers the right shape for `emitters: [...]` arrays without an
- *  explicit annotation at the call site. */
-export const defineEmitter = (e: Emitter): Emitter => e;
+ *  explicit annotation at the call site.
+ *
+ *  Defaults `R` to `never` so emitters that don't reach for any extra
+ *  services typecheck cleanly. Callers needing services widen the
+ *  generic implicitly via the return type of the inner Effect. */
+export const defineEmitter = <R = never>(e: Emitter<R>): Emitter<R> => e;
