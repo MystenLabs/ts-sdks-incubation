@@ -230,7 +230,7 @@ export const Walrus = (opts: WalrusOptions = {}): StackMember => {
 	if (network !== 'localnet') {
 		const knownOpts: WalrusKnownDeploymentOptions = {
 			network,
-			...(opts.override ?? {}),
+			...opts.override,
 		};
 		return Object.assign(walrusKnownDeployment(knownOpts), { __kind: 'service' as const });
 	}

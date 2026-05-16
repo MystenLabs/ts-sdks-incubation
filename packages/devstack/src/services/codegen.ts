@@ -79,9 +79,7 @@ const toCodegenPackage = (pkg: Package | LocalPackage): CodegenPackage => {
 		name: pkg.name,
 		packageId: pkg.packageId,
 		mvrPlaceholder:
-			'mvrPlaceholder' in pkg && pkg.mvrPlaceholder !== undefined
-				? pkg.mvrPlaceholder
-				: pkg.name,
+			'mvrPlaceholder' in pkg && pkg.mvrPlaceholder !== undefined ? pkg.mvrPlaceholder : pkg.name,
 	};
 	const local = 'sourcePath' in pkg ? (pkg as LocalPackage) : undefined;
 	if (local !== undefined) {
@@ -110,9 +108,7 @@ export const Codegen = (opts: CodegenOptions = {}) => {
 	return tag(
 		`codegen/${name}` as const,
 		Effect.gen(function* () {
-			const outputDir = path.isAbsolute(output)
-				? output
-				: path.resolve(process.cwd(), output);
+			const outputDir = path.isAbsolute(output) ? output : path.resolve(process.cwd(), output);
 
 			yield* setPhase('resolving packages');
 			const resolved: Array<CodegenPackage> = [];

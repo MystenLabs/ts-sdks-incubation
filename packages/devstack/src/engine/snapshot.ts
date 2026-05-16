@@ -127,11 +127,7 @@ interface StackPaths {
 	readonly runtimeDir: string;
 }
 
-const resolveStackPaths = (
-	stack: string,
-	network: string,
-	pathSvc: Path.Path,
-): StackPaths => {
+const resolveStackPaths = (stack: string, network: string, pathSvc: Path.Path): StackPaths => {
 	const envOverride = process.env.DEVSTACK_STATE_DIR;
 	if (envOverride !== undefined && envOverride.length > 0) {
 		return {
@@ -242,11 +238,13 @@ const preCleanupApp = (
 			.map((s) => s.trim())
 			.filter((s) => s.length > 0);
 		for (const id of ids) {
-			yield* spawner
-				.exitCode(ChildProcess.make('docker', ['rm', '-f', id]))
-				.pipe(Effect.ignore);
+			yield* spawner.exitCode(ChildProcess.make('docker', ['rm', '-f', id])).pipe(Effect.ignore);
 		}
-	}).pipe(Effect.withSpan('snapshot.preCleanupApp', { attributes: { 'snapshot.app': app, 'snapshot.stack': stack } }));
+	}).pipe(
+		Effect.withSpan('snapshot.preCleanupApp', {
+			attributes: { 'snapshot.app': app, 'snapshot.stack': stack },
+		}),
+	);
 
 // -----------------------------------------------------------------------------
 // snapshot()
@@ -319,9 +317,7 @@ export const snapshot = (opts: {
 		if (hasState) {
 			yield* fs
 				.copyFile(stackPaths.stateFile, stateDst)
-				.pipe(
-					Effect.mapError(wrapError(`failed to copy ${stackPaths.stateFile} -> ${stateDst}`)),
-				);
+				.pipe(Effect.mapError(wrapError(`failed to copy ${stackPaths.stateFile} -> ${stateDst}`)));
 		}
 
 		// 2. runtime/ — tar the canonical service-owned state dir.
@@ -417,9 +413,7 @@ export const snapshot = (opts: {
 			network,
 			runtimeIncluded: runtimeTar !== undefined,
 			...(containerEntries.length > 0 ? { containers: containerEntries } : {}),
-			...(extras.length > 0
-				? { extras: extras.map((e) => ({ key: e.key, path: e.path })) }
-				: {}),
+			...(extras.length > 0 ? { extras: extras.map((e) => ({ key: e.key, path: e.path })) } : {}),
 		};
 		yield* fs
 			.writeFileString(metaDst, JSON.stringify(meta, null, 2))
@@ -504,9 +498,7 @@ export const restore = (opts: {
 				.pipe(Effect.mapError(wrapError(`failed to create ${stateDir}`)));
 			yield* fs
 				.copyFile(stateSrc, stackPaths.stateFile)
-				.pipe(
-					Effect.mapError(wrapError(`failed to copy ${stateSrc} -> ${stackPaths.stateFile}`)),
-				);
+				.pipe(Effect.mapError(wrapError(`failed to copy ${stateSrc} -> ${stackPaths.stateFile}`)));
 		}
 
 		// 2. runtime/ — untar back into place. mkdir-p the destination
@@ -542,7 +534,7 @@ export const restore = (opts: {
 			// `originalImage` per tarball without a quadratic search.
 			const byName = new Map<string, { originalImage?: string }>();
 			for (const c of meta?.containers ?? []) {
-				byName.set(c.name, { ...(c.originalImage !== undefined ? { originalImage: c.originalImage } : {}) });
+				byName.set(c.name, c.originalImage !== undefined ? { originalImage: c.originalImage } : {});
 			}
 			for (const entry of entries) {
 				if (!entry.endsWith('.tar')) continue;

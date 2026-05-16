@@ -11,8 +11,14 @@ describe('Leasing.withExclusive', () => {
 		Effect.gen(function* () {
 			const leasing = yield* Leasing;
 			const log: string[] = [];
-			yield* leasing.withExclusive('0xA', Effect.sync(() => log.push('a1')));
-			yield* leasing.withExclusive('0xA', Effect.sync(() => log.push('a2')));
+			yield* leasing.withExclusive(
+				'0xA',
+				Effect.sync(() => log.push('a1')),
+			);
+			yield* leasing.withExclusive(
+				'0xA',
+				Effect.sync(() => log.push('a2')),
+			);
 			expect(log).toEqual(['a1', 'a2']);
 		}).pipe(Effect.provide(LeasingLive)),
 	);

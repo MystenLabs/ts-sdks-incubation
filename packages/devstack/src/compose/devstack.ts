@@ -50,18 +50,11 @@ const isOptions = (x: unknown): x is DevstackComposeOptions => {
  *  member with `__kind: 'app'`, gets a `manifest` row in the TUI, and
  *  rides the engine lifecycle. The body delegates to `emitManifestV4`
  *  which handles the file-write + tick-interval logic. */
-const manifestRef = (
-	extras: DevstackComposeOptions['extras'],
-): StackMember => {
+const manifestRef = (extras: DevstackComposeOptions['extras']): StackMember => {
 	const body: Effect.Effect<
 		Manifest,
 		ManifestError,
-		| PackageRegistry
-		| EndpointRegistry
-		| AccountRegistry
-		| CoinRegistry
-		| Identity
-		| Scope.Scope
+		PackageRegistry | EndpointRegistry | AccountRegistry | CoinRegistry | Identity | Scope.Scope
 	> = emitManifestV4(extras !== undefined ? { extras } : {});
 	return tag('manifest', body, {
 		kind: 'app',
@@ -121,10 +114,7 @@ export function devstack(
 	const withFaucet: ReadonlyArray<StackMember> = [...flat, Faucet() as unknown as StackMember];
 
 	// Auto-include the v4 manifest emitter.
-	const withManifest: ReadonlyArray<StackMember> = [
-		...withFaucet,
-		manifestRef(opts.extras),
-	];
+	const withManifest: ReadonlyArray<StackMember> = [...withFaucet, manifestRef(opts.extras)];
 
 	// Default-provider fill. Auto-adds `Sui()` when missing; extends with
 	// capability-keyed defaults.

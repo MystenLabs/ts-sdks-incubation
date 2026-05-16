@@ -6,14 +6,14 @@ publish + codegen + dev-wallet wiring.
 
 ## Apps
 
-| App                                  | What it shows                                                                                  |
-| ------------------------------------ | ---------------------------------------------------------------------------------------------- |
-| [\_template](./_template)            | Minimal-but-real starting point. One Move package, one publish, one mint button, one e2e spec. |
-| [arena](./arena)                     | On-chain Connect Four. Matchmaking via shared Lobby; gameplay via shared Game.                 |
-| [effect-app](./effect-app)           | Pure-DI consumer mode. Same `Effect.gen` program runs against localnet in dev, testnet in prod.|
-| [private-content](./private-content) | Seal-encrypted file vault on top of walrus + a single Open-mode seal key server.               |
-| [token-studio](./token-studio)       | Single managed coin with TreasuryCap-gated minting.                                            |
-| [wallet](./wallet)                   | Multi-coin wallet UI + DeepBook v3 swap. Imports deepbook from upstream.                       |
+| App                                  | What it shows                                                                                   |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------- |
+| [\_template](./_template)            | Minimal-but-real starting point. One Move package, one publish, one mint button, one e2e spec.  |
+| [arena](./arena)                     | On-chain Connect Four. Matchmaking via shared Lobby; gameplay via shared Game.                  |
+| [effect-app](./effect-app)           | Pure-DI consumer mode. Same `Effect.gen` program runs against localnet in dev, testnet in prod. |
+| [private-content](./private-content) | Seal-encrypted file vault on top of walrus + a single Open-mode seal key server.                |
+| [token-studio](./token-studio)       | Single managed coin with TreasuryCap-gated minting.                                             |
+| [wallet](./wallet)                   | Multi-coin wallet UI + DeepBook v3 swap. Imports deepbook from upstream.                        |
 
 Run any one:
 

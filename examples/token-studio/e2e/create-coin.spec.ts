@@ -1,9 +1,4 @@
-import {
-	connectAs,
-	expect,
-	selectAccount,
-	test,
-} from '@mysten-incubation/devstack/playwright';
+import { connectAs, expect, selectAccount, test } from '@mysten-incubation/devstack/playwright';
 
 /**
  * Happy-path: alice (TreasuryCap holder) mints STUDIO to bob and the digest

@@ -132,4 +132,3 @@ function resolveEndpoint(
 	}
 	return { name: endpoint, url };
 }
-

@@ -70,9 +70,7 @@ export interface DiscoverManifestPathOptions {
  * exists. Pass `{ required: true }` to throw a "run `devstack up`
  * first" error on miss instead of returning `undefined`.
  */
-export function discoverManifestPath(
-	opts: DiscoverManifestPathOptions = {},
-): string | undefined {
+export function discoverManifestPath(opts: DiscoverManifestPathOptions = {}): string | undefined {
 	const envOverride = process.env.DEVSTACK_MANIFEST_PATH;
 	if (envOverride !== undefined && envOverride !== '') {
 		const resolved = resolve(envOverride);

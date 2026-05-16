@@ -392,9 +392,7 @@ const countUnlabelledOrphans = (spawner: Spawner): Effect.Effect<number> =>
 			'devstack-*',
 		]);
 		const all = yield* spawner.string(allCmd).pipe(Effect.orElseSucceed(() => ''));
-		const labelled = yield* spawner
-			.string(labelledCmd)
-			.pipe(Effect.orElseSucceed(() => ''));
+		const labelled = yield* spawner.string(labelledCmd).pipe(Effect.orElseSucceed(() => ''));
 		const allIds = new Set(
 			all
 				.split('\n')
@@ -503,9 +501,7 @@ export const enumerateStateLocations = (
 			if (!exists) continue;
 			// Per-stack layout.
 			const stacksRoot = joinPath(devstackDir, 'stacks');
-			const stacksExists = yield* fs
-				.exists(stacksRoot)
-				.pipe(Effect.orElseSucceed(() => false));
+			const stacksExists = yield* fs.exists(stacksRoot).pipe(Effect.orElseSucceed(() => false));
 			if (stacksExists) {
 				const entries = yield* fs
 					.readDirectory(stacksRoot)
@@ -769,7 +765,8 @@ export const renderInventoryRow = (row: InventoryRow): string => {
 	const volumes = `${row.volumes.length} volume${row.volumes.length === 1 ? '' : 's'}${sized}`;
 	const state = row.stateDirs.length > 0 ? 'state present' : 'no state';
 	const running = row.runningPid !== undefined ? '  ← running' : '';
-	const repo = row.registryEntry !== undefined ? `  ${shortRepoPath(row.registryEntry.repoPath)}` : '';
+	const repo =
+		row.registryEntry !== undefined ? `  ${shortRepoPath(row.registryEntry.repoPath)}` : '';
 	const repoGone = row.classification === 'repo-gone' ? '  [repo gone]' : '';
 	return `  ${row.app} / ${row.stack}  —  ${containers}, ${networks}, ${volumes}, ${state}${repo}${repoGone}${running}`;
 };
@@ -865,9 +862,7 @@ export const collectRouterInfo = (): Effect.Effect<
 			'--format',
 			'{{.Label "devstack.app"}}',
 		]);
-		const backendsOut = yield* spawner
-			.string(backendsCmd)
-			.pipe(Effect.orElseSucceed(() => ''));
+		const backendsOut = yield* spawner.string(backendsCmd).pipe(Effect.orElseSucceed(() => ''));
 		const lines = backendsOut
 			.split('\n')
 			.map((s) => s.trim())

@@ -37,9 +37,7 @@ const hashMoveSources = (sourcePath: string) =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem;
 		const hash = crypto.createHash('sha256');
-		const walk = (
-			dir: string,
-		): Effect.Effect<void, PublishError, FileSystem.FileSystem> =>
+		const walk = (dir: string): Effect.Effect<void, PublishError, FileSystem.FileSystem> =>
 			Effect.gen(function* () {
 				const entries = (yield* fs.readDirectory(dir)).slice().sort();
 				for (const name of entries) {
@@ -149,12 +147,10 @@ export interface Package<
 // instantiation (`captured: Record<string, unknown> | undefined`) because
 // concrete `TCaptured` choices the caller's `capture` lambda produces
 // flow through structurally at the call site.
-type _LocalPackageCompatibilityCheck = Package<
-	Record<string, unknown> | undefined,
-	Record<string, PublishedCoin>
-> extends LocalPackage
-	? true
-	: never;
+type _LocalPackageCompatibilityCheck =
+	Package<Record<string, unknown> | undefined, Record<string, PublishedCoin>> extends LocalPackage
+		? true
+		: never;
 const _localPackageCompatibilityCheck: _LocalPackageCompatibilityCheck = true;
 void _localPackageCompatibilityCheck;
 
@@ -447,7 +443,9 @@ export const publishMove = <
 				// fullnode hasn't ingested the publish checkpoint yet. Treat
 				// that as a retryable not-yet-ready signal.
 				if (response.error !== undefined && response.data === undefined) {
-					return yield* Effect.fail(new Error(`package not yet on-chain: ${JSON.stringify(response.error)}`));
+					return yield* Effect.fail(
+						new Error(`package not yet on-chain: ${JSON.stringify(response.error)}`),
+					);
 				}
 			}).pipe(
 				Effect.retry(Schedule.spaced('200 millis')),

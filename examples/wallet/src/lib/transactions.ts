@@ -88,9 +88,7 @@ function getDeepBookClient(suiClient: ClientWithCoreApi, sender: string): DeepBo
 		const baseSymbol = symbolByType.get(p.baseCoinType);
 		const quoteSymbol = symbolByType.get(p.quoteCoinType);
 		if (baseSymbol === undefined || quoteSymbol === undefined) {
-			throw new Error(
-				`pool ${p.alias}: ${p.baseCoinType} / ${p.quoteCoinType} not in coin map`,
-			);
+			throw new Error(`pool ${p.alias}: ${p.baseCoinType} / ${p.quoteCoinType} not in coin map`);
 		}
 		pools[p.alias] = { address: p.poolId, baseCoin: baseSymbol, quoteCoin: quoteSymbol };
 	}

@@ -126,9 +126,7 @@ describe('hostProcess with traefik option', () => {
 
 			expect(yamlPathDuringScope).toBeDefined();
 			expect(yamlBodyDuringScope).toContain('dev.host-test.localhost');
-			expect(yamlBodyDuringScope).toContain(
-				`http://host.docker.internal:${listener.port}`,
-			);
+			expect(yamlBodyDuringScope).toContain(`http://host.docker.internal:${listener.port}`);
 			expect(yamlBodyDuringScope).toContain('host-test-main-dev');
 
 			// Scope closed: the finalizer removed the YAML.
@@ -302,13 +300,10 @@ describe('hostProcess with onOutputLine', () => {
 				}).pipe(Effect.provide(stackResolved as Layer.Layer<unknown, unknown, never>)),
 			);
 
-			const stdoutLines = captured
-				.filter((e) => e.level === 'info')
-				.map((e) => e.line);
+			const stdoutLines = captured.filter((e) => e.level === 'info').map((e) => e.line);
 			expect(stdoutLines).toContain('vite: starting');
 			expect(stdoutLines).toContain('vite: ready in 200ms');
 
 			yield* Effect.promise(listener.close);
-		}),
-	);
+		}));
 });

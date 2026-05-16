@@ -11,11 +11,7 @@ import { Effect, Exit, Layer } from 'effect';
 import { layer as NodeFileSystemLayer } from '@effect/platform-node/NodeFileSystem';
 import { describe, expect, it } from '@effect/vitest';
 import { EngineLive } from '../engine/engine.js';
-import {
-	SealKeyManagerTag,
-	SealKeyServerTag,
-	type SealKeyServerEntry,
-} from './seal.js';
+import { SealKeyManagerTag, SealKeyServerTag, type SealKeyServerEntry } from './seal.js';
 import { knownDeployments } from '../engine/known-deployments.js';
 import { EndpointRegistryLive } from '../engine/registries.js';
 import { sealKnownKeyServer } from './seal/internal.js';
@@ -34,9 +30,7 @@ type _ExpectedKeyServerConfig = {
 	apiKey?: string;
 	aggregatorUrl?: string;
 };
-type _SealKeyServerEntryCheck = SealKeyServerEntry extends _ExpectedKeyServerConfig
-	? true
-	: never;
+type _SealKeyServerEntryCheck = SealKeyServerEntry extends _ExpectedKeyServerConfig ? true : never;
 const _sealKeyServerEntryCheck: _SealKeyServerEntryCheck = true;
 void _sealKeyServerEntryCheck;
 

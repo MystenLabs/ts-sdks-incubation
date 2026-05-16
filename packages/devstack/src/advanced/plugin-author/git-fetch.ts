@@ -74,7 +74,9 @@ const validateRepoUrl = (repo: string): void => {
 	if (repo.startsWith('-')) {
 		// `git clone -<flag> ...` would parse this as a flag instead of
 		// a positional arg, even with `--` separators in some envs.
-		throw new Error(`gitFetch: repo '${repo}' starts with '-' (rejected to avoid CLI flag injection)`);
+		throw new Error(
+			`gitFetch: repo '${repo}' starts with '-' (rejected to avoid CLI flag injection)`,
+		);
 	}
 	if (SCP_STYLE_REPO_RE.test(repo)) return;
 	for (const transport of ALLOWED_TRANSPORTS) {
@@ -99,7 +101,9 @@ const validateRef = (ref: string): void => {
 		throw new Error('gitFetch: ref must not be empty');
 	}
 	if (ref.startsWith('-')) {
-		throw new Error(`gitFetch: ref '${ref}' starts with '-' (rejected to avoid CLI flag injection)`);
+		throw new Error(
+			`gitFetch: ref '${ref}' starts with '-' (rejected to avoid CLI flag injection)`,
+		);
 	}
 	if (!VALID_REF_CHARS.test(ref)) {
 		throw new Error(
@@ -188,20 +192,16 @@ export const gitFetch = <const Name extends string>(options: GitFetchOptions<Nam
 				// forever. Bound the cache to "one entry per (repo, name)" by
 				// removing any sibling that's not us. Best-effort: a failure
 				// here never blocks the clone.
-				const siblingsToGc = yield* fs
-					.readDirectory(parentDir)
-					.pipe(
-						Effect.map((entries) => entries.filter((e) => e !== refHash)),
-						Effect.catch(() => Effect.succeed([] as ReadonlyArray<string>)),
-					);
+				const siblingsToGc = yield* fs.readDirectory(parentDir).pipe(
+					Effect.map((entries) => entries.filter((e) => e !== refHash)),
+					Effect.catch(() => Effect.succeed([] as ReadonlyArray<string>)),
+				);
 				for (const sibling of siblingsToGc) {
 					yield* fs
 						.remove(path.join(parentDir, sibling), { recursive: true, force: true })
 						.pipe(Effect.ignore);
 				}
-				yield* fs
-					.remove(cloneDir, { recursive: true, force: true })
-					.pipe(Effect.ignore);
+				yield* fs.remove(cloneDir, { recursive: true, force: true }).pipe(Effect.ignore);
 				yield* fs.makeDirectory(parentDir, { recursive: true }).pipe(Effect.mapError(mapErr));
 
 				const shallowOk = yield* runGit(spawner, [
@@ -219,9 +219,7 @@ export const gitFetch = <const Name extends string>(options: GitFetchOptions<Nam
 					// Shallow clone failed (ref is a sha, server refused,
 					// etc.). Clean and fall back to a full clone +
 					// checkout.
-					yield* fs
-						.remove(cloneDir, { recursive: true, force: true })
-						.pipe(Effect.ignore);
+					yield* fs.remove(cloneDir, { recursive: true, force: true }).pipe(Effect.ignore);
 					yield* runGit(spawner, ['clone', '--quiet', options.repo, cloneDir]).pipe(
 						Effect.mapError(mapErr),
 					);

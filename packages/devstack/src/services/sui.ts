@@ -239,9 +239,7 @@ export const faucetReadyProbe = (faucetUrl: string): Effect.Effect<void, Error> 
 const WAIT_FOR_TX_READY_RETRY_SPACING = '2 seconds';
 const WAIT_FOR_TX_READY_TIMEOUT_MS = 90_000;
 
-const makeWaitForTransactionsReadyForFaucet = (
-	faucetUrl: string,
-): Effect.Effect<void, SuiError> =>
+const makeWaitForTransactionsReadyForFaucet = (faucetUrl: string): Effect.Effect<void, SuiError> =>
 	faucetReadyProbe(faucetUrl).pipe(
 		Effect.retry(Schedule.spaced(WAIT_FOR_TX_READY_RETRY_SPACING)),
 		Effect.timeoutOrElse({
@@ -568,8 +566,7 @@ const buildLocalnet = (options: SuiLocalnetOptions): StackMember => {
 			return yield* Effect.fail(
 				new SuiError({
 					phase: 'sui-up',
-					message:
-						'sui-localnet: router entrypoints sui-rpc/sui-faucet/sui-graphql not registered',
+					message: 'sui-localnet: router entrypoints sui-rpc/sui-faucet/sui-graphql not registered',
 				}),
 			);
 		}
@@ -991,8 +988,7 @@ const buildCustom = (options: SuiCustomOptions): StackMember => {
 		const chainId = yield* fetchChainId(client);
 		const waitForTransactionsReady = yield* buildWaitForTransactionsReady(faucetUrl);
 		const rpc: Endpoint = { host: rpcUrl };
-		const faucet: Endpoint | undefined =
-			faucetUrl !== undefined ? { host: faucetUrl } : undefined;
+		const faucet: Endpoint | undefined = faucetUrl !== undefined ? { host: faucetUrl } : undefined;
 		const graphql: Endpoint | undefined =
 			graphqlUrl !== undefined ? { host: graphqlUrl } : undefined;
 		return {

@@ -324,9 +324,7 @@ export const deepbookLocalDeploy = <
 				// pattern, but here we actually probe — the cost of a
 				// second create-pools-abort on resume is the entire
 				// reason this cache exists.
-				const verifyCached = (
-					payload: CachedDeepbookPools,
-				): Effect.Effect<boolean, never> =>
+				const verifyCached = (payload: CachedDeepbookPools): Effect.Effect<boolean, never> =>
 					Effect.gen(function* () {
 						for (const p of payload.pools) {
 							const fetched = yield* Effect.tryPromise({
@@ -489,9 +487,7 @@ export const deepbookLocalDeploy = <
 				captured: { registryId, adminCapId },
 			});
 
-			const poolIds = new Map<string, string>(
-				Object.values(pools).map((p) => [p.name, p.poolId]),
-			);
+			const poolIds = new Map<string, string>(Object.values(pools).map((p) => [p.name, p.poolId]));
 			const findPool = makeFindPool(name, pools);
 
 			// SDK-aligned view. `DEEP_TREASURY_ID` is the locally-minted DEEP

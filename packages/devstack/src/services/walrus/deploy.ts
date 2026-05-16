@@ -143,9 +143,8 @@ export const deployContracts = (args: {
 		// `Host:` header to each node's pinned in-network IP. Two
 		// parallel stacks of the same app advertise disjoint hostnames
 		// and never trample each other's on-chain committee record.
-		const publicHosts = Array.from(
-			{ length: args.nodeCount },
-			(_, i) => routerHostname(args.identity, `walrus-node-${i}`),
+		const publicHosts = Array.from({ length: args.nodeCount }, (_, i) =>
+			routerHostname(args.identity, `walrus-node-${i}`),
 		).join(' ');
 		// Pinned subnet IPs that the storage-node containers will claim
 		// at startup (see `startStorageNodes`). deploy-walrus.sh requires

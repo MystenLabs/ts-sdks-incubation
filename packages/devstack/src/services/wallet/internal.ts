@@ -104,19 +104,17 @@ export const walletApp = <const Name extends string = 'wallet-app'>(
 			// when it's already bound by another process.
 			const allocator = yield* PortAllocator;
 			const preferredPort = options.port ?? 5180;
-			const port = yield* allocator
-				.allocate(preferredPort)
-				.pipe(
-					Effect.catchTag('PortAllocatorError', (cause) =>
-						Effect.fail(
-							new WalletAppError({
-								phase: 'listen',
-								message: `wallet-app: could not allocate port near ${preferredPort}: ${cause.message}`,
-								cause,
-							}),
-						),
+			const port = yield* allocator.allocate(preferredPort).pipe(
+				Effect.catchTag('PortAllocatorError', (cause) =>
+					Effect.fail(
+						new WalletAppError({
+							phase: 'listen',
+							message: `wallet-app: could not allocate port near ${preferredPort}: ${cause.message}`,
+							cause,
+						}),
 					),
-				);
+				),
+			);
 			// HIGH-SEC1: default to `127.0.0.1` so signing endpoints aren't
 			// exposed to other devices on the LAN. Modern Docker Desktop
 			// on macOS routes `host.docker.internal` traffic through the
@@ -211,7 +209,7 @@ export const walletApp = <const Name extends string = 'wallet-app'>(
 				return yield* Effect.fail(
 					new WalletAppError({
 						phase: 'listen',
-						message: 'wallet-app: router entrypoint \'wallet\' not registered',
+						message: "wallet-app: router entrypoint 'wallet' not registered",
 					}),
 				);
 			}

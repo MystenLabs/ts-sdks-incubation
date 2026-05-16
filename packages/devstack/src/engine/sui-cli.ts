@@ -107,7 +107,11 @@ interface BuildMoveJson {
 
 export const buildMove = (
 	opts: BuildMoveOptions,
-): Effect.Effect<BuildMoveResult, SuiCliError, ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem> =>
+): Effect.Effect<
+	BuildMoveResult,
+	SuiCliError,
+	ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem
+> =>
 	// Context.Reference with a defaultValue keeps `SuiBuildImage` out of the R
 	// channel — callers that haven't provided it transparently get the `undefined`
 	// default (host-CLI mode).
@@ -127,12 +131,7 @@ export const buildMove = (
 		yield* Effect.annotateCurrentSpan({
 			'sui.op': 'build',
 			'sui.path': opts.path,
-			'sui.build.mode':
-				image === undefined
-					? 'host'
-					: containerReachable
-						? 'exec'
-						: 'container',
+			'sui.build.mode': image === undefined ? 'host' : containerReachable ? 'exec' : 'container',
 			...(image !== undefined ? { 'sui.build.image': image.tag } : {}),
 		});
 
@@ -164,9 +163,7 @@ export const buildMove = (
 				? yield* containerOpt.value.runBuild(opts.path)
 				: yield* runWithCapture(
 						spawner,
-						image !== undefined
-							? containerBuildCmd(image.tag, opts.path)
-							: hostBuildCmd(opts),
+						image !== undefined ? containerBuildCmd(image.tag, opts.path) : hostBuildCmd(opts),
 						'sui move build',
 					);
 
@@ -201,15 +198,16 @@ export const buildMove = (
 		// know what sui actually printed.
 		const trailing = extractTrailingJson(captured.stdout);
 		const built = yield* parseJson<BuildMoveJson>(trailing, 'sui move build').pipe(
-			Effect.mapError((err) =>
-				new SuiCliError({
-					op: err.op,
-					message: err.message,
-					stdout: captured.stdout,
-					stderr: captured.stderr,
-					exitCode: captured.exitCode,
-					cause: err.cause,
-				}),
+			Effect.mapError(
+				(err) =>
+					new SuiCliError({
+						op: err.op,
+						message: err.message,
+						stdout: captured.stdout,
+						stderr: captured.stderr,
+						exitCode: captured.exitCode,
+						cause: err.cause,
+					}),
 			),
 		);
 		return { modules: built.modules, dependencies: built.dependencies };
@@ -551,14 +549,10 @@ const scrubMoveLock = (
 	lockPath: string,
 ): Effect.Effect<boolean, never> =>
 	Effect.gen(function* () {
-		const readResult = yield* fs
-			.readFileString(lockPath, 'utf8')
-			.pipe(
-				Effect.map((s) => ({ ok: true as const, contents: s })),
-				Effect.catch((cause) =>
-					Effect.succeed({ ok: false as const, cause }),
-				),
-			);
+		const readResult = yield* fs.readFileString(lockPath, 'utf8').pipe(
+			Effect.map((s) => ({ ok: true as const, contents: s })),
+			Effect.catch((cause) => Effect.succeed({ ok: false as const, cause })),
+		);
 		if (!readResult.ok) {
 			// Surface the cause as a warning rather than silently
 			// no-op'ing. Host-mode publish would otherwise embed stale
@@ -616,9 +610,7 @@ const stripPinnedSectionsFromMoveLock = (
 		let dir = packagePath;
 		for (let i = 0; i < 6; i++) {
 			const importsDir = path.join(dir, '.devstack', 'imports');
-			const importsExists = yield* fs
-				.exists(importsDir)
-				.pipe(Effect.orElseSucceed(() => false));
+			const importsExists = yield* fs.exists(importsDir).pipe(Effect.orElseSucceed(() => false));
 			if (importsExists) {
 				yield* scrubLockFilesUnder(fs, importsDir).pipe(Effect.ignore);
 				return;
@@ -659,9 +651,7 @@ const scrubLockFileIfPresent = (
 	Effect.gen(function* () {
 		const exists = yield* fs.exists(lockPath).pipe(Effect.orElseSucceed(() => false));
 		if (!exists) return;
-		const contents = yield* fs
-			.readFileString(lockPath)
-			.pipe(Effect.orElseSucceed(() => undefined));
+		const contents = yield* fs.readFileString(lockPath).pipe(Effect.orElseSucceed(() => undefined));
 		if (contents === undefined) return;
 		const scrubbed = stripPinnedSections(contents);
 		if (scrubbed === contents) return;

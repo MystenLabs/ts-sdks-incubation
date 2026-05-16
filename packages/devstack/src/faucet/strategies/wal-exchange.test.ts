@@ -16,9 +16,7 @@ import { walExchangeStrategy } from './wal-exchange.js';
 const VALID_ADDR = '0x' + 'd'.repeat(64);
 const VALID_OBJ = '0x' + 'e'.repeat(64);
 
-const stubAccount = (
-	signAndExecute: Account['signAndExecute'],
-): Account => ({
+const stubAccount = (signAndExecute: Account['signAndExecute']): Account => ({
 	name: 'admin',
 	address: VALID_ADDR,
 	scheme: 'ed25519',
@@ -29,26 +27,33 @@ const stubAccount = (
 });
 
 describe('walExchangeStrategy', () => {
-	it.effect('dispatches the swap via the admin signer with the default payment when amount is 0n', () =>
-		Effect.gen(function* () {
-			let txInvoked = false;
-			const account = stubAccount((tx) =>
-				Effect.sync(() => {
-					expect(tx).toBeInstanceOf(Transaction);
-					txInvoked = true;
-					return { digest: 'digest-x', effects: undefined, objectChanges: [], balanceChanges: undefined };
-				}),
-			);
-			const strategy = walExchangeStrategy({
-				exchange: { objectId: VALID_OBJ, packageId: VALID_OBJ },
-				signer: account,
-				defaultPaymentMist: 500_000_000n,
-			});
-			expect(strategy.coinType).toBe('WAL');
+	it.effect(
+		'dispatches the swap via the admin signer with the default payment when amount is 0n',
+		() =>
+			Effect.gen(function* () {
+				let txInvoked = false;
+				const account = stubAccount((tx) =>
+					Effect.sync(() => {
+						expect(tx).toBeInstanceOf(Transaction);
+						txInvoked = true;
+						return {
+							digest: 'digest-x',
+							effects: undefined,
+							objectChanges: [],
+							balanceChanges: undefined,
+						};
+					}),
+				);
+				const strategy = walExchangeStrategy({
+					exchange: { objectId: VALID_OBJ, packageId: VALID_OBJ },
+					signer: account,
+					defaultPaymentMist: 500_000_000n,
+				});
+				expect(strategy.coinType).toBe('WAL');
 
-			yield* strategy.request({ address: VALID_ADDR, amount: 0n });
-			expect(txInvoked).toBe(true);
-		}),
+				yield* strategy.request({ address: VALID_ADDR, amount: 0n });
+				expect(txInvoked).toBe(true);
+			}),
 	);
 
 	it.effect('honors a non-zero amount as the SUI MIST payment', () =>
@@ -57,7 +62,12 @@ describe('walExchangeStrategy', () => {
 			const account = stubAccount(() =>
 				Effect.sync(() => {
 					txInvoked = true;
-					return { digest: 'digest-y', effects: undefined, objectChanges: [], balanceChanges: undefined };
+					return {
+						digest: 'digest-y',
+						effects: undefined,
+						objectChanges: [],
+						balanceChanges: undefined,
+					};
 				}),
 			);
 			const strategy = walExchangeStrategy({
@@ -83,9 +93,7 @@ describe('walExchangeStrategy', () => {
 				signer: account,
 				defaultPaymentMist: 500_000_000n,
 			});
-			const exit = yield* Effect.exit(
-				strategy.request({ address: VALID_ADDR, amount: 0n }),
-			);
+			const exit = yield* Effect.exit(strategy.request({ address: VALID_ADDR, amount: 0n }));
 			expect(Exit.isFailure(exit)).toBe(true);
 			if (Exit.isFailure(exit)) {
 				const opt = Cause.findErrorOption(exit.cause);

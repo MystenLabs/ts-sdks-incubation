@@ -43,7 +43,7 @@ const stubSui: Layer.Layer<SuiTag> = Layer.succeed(SuiTag, {
 	// wallet-app never asks the chain to be funds-transferable; resolve
 	// immediately so the stub mirrors the mainnet/no-faucet branch.
 	waitForTransactionsReady: () => Effect.void,
-		runtime: 'bundled',
+	runtime: 'bundled',
 });
 
 // Build a stub account tag. The wallet-app reads `address` to key the
@@ -125,38 +125,40 @@ const identityLayer = Layer.succeed(Identity, {
 });
 
 describe('walletApp router hostname', () => {
-	it.effect('endpoint URL uses the stack-scoped router hostname on the wallet entrypoint port', () =>
-		Effect.gen(function* () {
-			const acct = stubAccountTag('alice');
-			const PREFERRED = 41_817;
-			const app = walletApp({ accounts: [acct], port: PREFERRED });
-			const baseLayer = Layer.mergeAll(
-				stubSui,
-				identityLayer,
-				PortAllocatorLive,
-				EndpointRegistryLive,
-			);
-			const userLayer = Layer.provideMerge(app.__layer, acct.__layer);
-			const stackResolved = Layer.provide(userLayer, baseLayer);
+	it.effect(
+		'endpoint URL uses the stack-scoped router hostname on the wallet entrypoint port',
+		() =>
+			Effect.gen(function* () {
+				const acct = stubAccountTag('alice');
+				const PREFERRED = 41_817;
+				const app = walletApp({ accounts: [acct], port: PREFERRED });
+				const baseLayer = Layer.mergeAll(
+					stubSui,
+					identityLayer,
+					PortAllocatorLive,
+					EndpointRegistryLive,
+				);
+				const userLayer = Layer.provideMerge(app.__layer, acct.__layer);
+				const stackResolved = Layer.provide(userLayer, baseLayer);
 
-			const value = yield* Effect.scoped(
-				Effect.gen(function* () {
-					return yield* app;
-				}).pipe(Effect.provide(stackResolved as Layer.Layer<unknown, unknown, never>)),
-			);
+				const value = yield* Effect.scoped(
+					Effect.gen(function* () {
+						return yield* app;
+					}).pipe(Effect.provide(stackResolved as Layer.Layer<unknown, unknown, never>)),
+				);
 
-			// Identity-derived router URL: `wallet.<app>.localhost:5180`
-			// (main stack). The pairing token is preserved on `pairUrl`,
-			// post-C13 in the URL fragment so it stays out of server
-			// logs and referrer headers.
-			expect(value.url).toBe('http://wallet.wallet-test.localhost:5180');
-			expect(value.pairUrl.startsWith('http://wallet.wallet-test.localhost:5180/#token=')).toBe(
-				true,
-			);
-			// `localPort` carries the actual 127.0.0.1 binding for callers
-			// that need it (e.g. the finalizer test below).
-			expect(typeof value.localPort).toBe('number');
-		}),
+				// Identity-derived router URL: `wallet.<app>.localhost:5180`
+				// (main stack). The pairing token is preserved on `pairUrl`,
+				// post-C13 in the URL fragment so it stays out of server
+				// logs and referrer headers.
+				expect(value.url).toBe('http://wallet.wallet-test.localhost:5180');
+				expect(value.pairUrl.startsWith('http://wallet.wallet-test.localhost:5180/#token=')).toBe(
+					true,
+				);
+				// `localPort` carries the actual 127.0.0.1 binding for callers
+				// that need it (e.g. the finalizer test below).
+				expect(typeof value.localPort).toBe('number');
+			}),
 	);
 });
 

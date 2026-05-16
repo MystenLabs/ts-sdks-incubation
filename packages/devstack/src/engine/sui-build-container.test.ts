@@ -63,9 +63,7 @@ describe('toContainerPath', () => {
 			'/Users/me/app',
 			'/Users/me/app/.devstack/imports/mystenlabs_deepbookv3@v7.0.0/packages/deepbook',
 		);
-		expect(out).toBe(
-			'/host/.devstack/imports/mystenlabs_deepbookv3@v7.0.0/packages/deepbook',
-		);
+		expect(out).toBe('/host/.devstack/imports/mystenlabs_deepbookv3@v7.0.0/packages/deepbook');
 	});
 
 	it('returns undefined when hostPath escapes the app dir (parent reference)', () => {
@@ -118,10 +116,7 @@ interface InspectResponse {
 
 const FAKE_RUN_STDOUT = 'abcdef0123\n';
 
-const makeFakeSpawner = (
-	recorder: Array<SpawnRecord>,
-	inspect: InspectResponse | null,
-) => {
+const makeFakeSpawner = (recorder: Array<SpawnRecord>, inspect: InspectResponse | null) => {
 	const respondTo = (
 		args: ReadonlyArray<string>,
 	): { stdout: string; stderr: string; exitCode: number } => {
@@ -225,9 +220,7 @@ describe('SuiBuildContainerLive — adopt-or-create', () => {
 				yield* SuiBuildContainer;
 			}).pipe(
 				Effect.provide(SuiBuildContainerLive),
-				Effect.provide(
-					makeFakeSpawner(recorder, { running: true, image: 'devstack/sui:1.71.0' }),
-				),
+				Effect.provide(makeFakeSpawner(recorder, { running: true, image: 'devstack/sui:1.71.0' })),
 				Effect.provide(imageLayer),
 				Effect.provide(identityLayer),
 				Effect.scoped,
@@ -253,16 +246,12 @@ describe('SuiBuildContainerLive — adopt-or-create', () => {
 				yield* SuiBuildContainer;
 			}).pipe(
 				Effect.provide(SuiBuildContainerLive),
-				Effect.provide(
-					makeFakeSpawner(recorder, { running: false, image: 'devstack/sui:1.71.0' }),
-				),
+				Effect.provide(makeFakeSpawner(recorder, { running: false, image: 'devstack/sui:1.71.0' })),
 				Effect.provide(imageLayer),
 				Effect.provide(identityLayer),
 				Effect.scoped,
 			);
-			expect(recorder.some((r) => r.args[0] === 'start' && r.args[1] === EXPECTED_NAME)).toBe(
-				true,
-			);
+			expect(recorder.some((r) => r.args[0] === 'start' && r.args[1] === EXPECTED_NAME)).toBe(true);
 			expect(recorder.some((r) => r.args[0] === 'run')).toBe(false);
 			// Only `rm` allowed is the finalizer-emitted one at scope
 			// close. Pre-run rm would mean we mistook the stopped image
@@ -282,9 +271,7 @@ describe('SuiBuildContainerLive — adopt-or-create', () => {
 				yield* SuiBuildContainer;
 			}).pipe(
 				Effect.provide(SuiBuildContainerLive),
-				Effect.provide(
-					makeFakeSpawner(recorder, { running: true, image: 'devstack/sui:1.71.0' }),
-				),
+				Effect.provide(makeFakeSpawner(recorder, { running: true, image: 'devstack/sui:1.71.0' })),
 				Effect.provide(otherImageLayer),
 				Effect.provide(identityLayer),
 				Effect.scoped,

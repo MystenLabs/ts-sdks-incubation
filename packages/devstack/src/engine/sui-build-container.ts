@@ -77,9 +77,7 @@ export interface SuiBuildContainerShape {
 	 *  parse the trailing JSON exactly the same way it does for the
 	 *  `docker run --rm` fallback. Preconditions: `canExec(hostPath)`
 	 *  is true. */
-	readonly runBuild: (
-		hostPath: string,
-	) => Effect.Effect<SuiCliCapture, SuiCliError>;
+	readonly runBuild: (hostPath: string) => Effect.Effect<SuiCliCapture, SuiCliError>;
 	/** Run `sui move summary --path <hostPath>` inside the container.
 	 *  Used by the bindings codegen emitter — pre-fix it shelled out to
 	 *  the HOST `sui` binary, which produces a different summary schema
@@ -87,15 +85,12 @@ export interface SuiBuildContainerShape {
 	 *  the container ensures the summary's shape matches what
 	 *  `@mysten/codegen` expects. Preconditions: `canExec(hostPath)`
 	 *  is true. */
-	readonly runSummary: (
-		hostPath: string,
-	) => Effect.Effect<SuiCliCapture, SuiCliError>;
+	readonly runSummary: (hostPath: string) => Effect.Effect<SuiCliCapture, SuiCliError>;
 }
 
-export class SuiBuildContainer extends Context.Service<
-	SuiBuildContainer,
-	SuiBuildContainerShape
->()('@devstack/SuiBuildContainer') {}
+export class SuiBuildContainer extends Context.Service<SuiBuildContainer, SuiBuildContainerShape>()(
+	'@devstack/SuiBuildContainer',
+) {}
 
 // Container name format: `devstack-<app>-build`. Keyed by `app` only
 // because the build container is network-agnostic (sui-cli's `move
@@ -159,10 +154,7 @@ const dockerRm = (spawner: Spawner, name: string): Effect.Effect<void, never> =>
 		).pipe(Effect.ignore);
 	});
 
-const dockerStart = (
-	spawner: Spawner,
-	name: string,
-): Effect.Effect<void, SuiCliError> =>
+const dockerStart = (spawner: Spawner, name: string): Effect.Effect<void, SuiCliError> =>
 	Effect.gen(function* () {
 		const captured = yield* runWithCapture(
 			spawner,
@@ -310,13 +302,7 @@ const runBuildInside = (
 		// `engine/sui-cli.ts:containerBuildCmd` for full rationale.
 		`exec sui move build --path ${shellQuote(containerPath)} -e testnet --no-tree-shaking --dump-bytecode-as-base64 --with-unpublished-dependencies`,
 	].join('; ');
-	const cmd = ChildProcess.make('docker', [
-		'exec',
-		containerName,
-		'sh',
-		'-c',
-		innerScript,
-	]);
+	const cmd = ChildProcess.make('docker', ['exec', containerName, 'sh', '-c', innerScript]);
 	return runWithCapture(spawner, cmd, 'docker exec (sui move build)');
 };
 
@@ -352,10 +338,7 @@ const runSummaryInside = (
 // Exported for direct unit-test coverage of the translation matrix —
 // edge cases (Windows backslashes, app-dir trailing slash, parent
 // references) live in the test file rather than in this module's body.
-export const toContainerPath = (
-	appDir: string,
-	hostPath: string,
-): string | undefined => {
+export const toContainerPath = (appDir: string, hostPath: string): string | undefined => {
 	const rel = path.relative(appDir, hostPath);
 	if (rel.startsWith('..') || path.isAbsolute(rel)) return undefined;
 	// Posix-joined under `/host`. On Windows the host-side path uses
@@ -405,10 +388,7 @@ export const SuiBuildContainerLive = Layer.effect(
 		// went away mid-shutdown) shouldn't fail the supervisor's
 		// teardown sequence. The image gets reaped by the host docker's
 		// own cleanup pass eventually.
-		yield* Scope.addFinalizer(
-			cleanupScope,
-			dockerRm(spawner, containerName),
-		);
+		yield* Scope.addFinalizer(cleanupScope, dockerRm(spawner, containerName));
 
 		return {
 			appDir,

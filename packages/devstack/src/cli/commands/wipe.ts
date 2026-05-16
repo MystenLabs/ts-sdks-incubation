@@ -66,9 +66,7 @@ const appFlag = Flag.string('app').pipe(
 );
 
 const resolveAppName = (override: Option.Option<string>): string =>
-	Option.getOrElse(override, () =>
-		deriveAppName(process.env.DEVSTACK_APP_DIR ?? process.cwd()),
-	);
+	Option.getOrElse(override, () => deriveAppName(process.env.DEVSTACK_APP_DIR ?? process.cwd()));
 
 const yesFlag = Flag.boolean('yes').pipe(
 	Flag.withDescription('Required. Confirms the wipe.'),
@@ -138,7 +136,9 @@ export const wipeCommand = Command.make(
 				const imageCount = result.removedImages.length;
 				parts.push(`removed ${imageCount} image${imageCount === 1 ? '' : 's'}`);
 			}
-			yield* Console.log(`devstack wipe (app=${resolvedApp}, stack=${resolvedStack}): ${parts.join(', ')}.`);
+			yield* Console.log(
+				`devstack wipe (app=${resolvedApp}, stack=${resolvedStack}): ${parts.join(', ')}.`,
+			);
 		}),
 ).pipe(
 	Command.withDescription(

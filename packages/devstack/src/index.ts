@@ -103,10 +103,7 @@ export {
 // `result.objectChanges`. Most uses are subsumed by `Package`'s
 // declarative `capture:` field; these stay for advanced callbacks that
 // need the full programmatic form.
-export {
-	pickCreatedByTypeIncludes,
-	pickCreatedByTypeSuffix,
-} from './engine/sui-helpers.js';
+export { pickCreatedByTypeIncludes, pickCreatedByTypeSuffix } from './engine/sui-helpers.js';
 // Canonical deployment registry (testnet/mainnet seal/walrus/deepbook
 // package ids). The `Seal()`/`Walrus()`/`Deepbook()` factories consult
 // this internally when the resolved network is testnet/mainnet —

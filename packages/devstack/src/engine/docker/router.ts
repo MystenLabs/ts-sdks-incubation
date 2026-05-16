@@ -495,9 +495,7 @@ let traefikRouterIpCache: string | null = null;
  * primitive that would consume this, so the failure mode is a bug
  * upstream, not a transient).
  */
-export const getTraefikRouterIp = (
-	spawner: Spawner,
-): Effect.Effect<string, DockerError> =>
+export const getTraefikRouterIp = (spawner: Spawner): Effect.Effect<string, DockerError> =>
 	Effect.gen(function* () {
 		if (traefikRouterIpCache !== null) return traefikRouterIpCache;
 		const ip = yield* inspectContainerIp(spawner, ROUTER_CONTAINER, ROUTER_NETWORK);
@@ -512,4 +510,3 @@ export const getTraefikRouterIp = (
 export const resetTraefikRouterIpCacheForTesting = (): void => {
 	traefikRouterIpCache = null;
 };
-

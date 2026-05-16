@@ -89,4 +89,3 @@ describe('file-provider lifecycle', () => {
 		}),
 	);
 });
-

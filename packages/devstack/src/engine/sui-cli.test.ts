@@ -141,17 +141,10 @@ describe('stripPinnedSections', () => {
 	});
 
 	it('leaves a file without any pinned/env sections unchanged', () => {
-		const input = [
-			'[move]',
-			'version = 4',
-			'',
-			'[[move.dependencies]]',
-			'name = "Sui"',
-		].join('\n');
+		const input = ['[move]', 'version = 4', '', '[[move.dependencies]]', 'name = "Sui"'].join('\n');
 		expect(stripPinnedSections(input)).toBe(input);
 	});
 });
-
 
 // -----------------------------------------------------------------------------
 // shellQuote
@@ -183,7 +176,7 @@ describe('shellQuote', () => {
 		expect(shellQuote('hello world')).toBe(`'hello world'`);
 	});
 
-	it("escapes a single embedded apostrophe via the close/escape/reopen trick", () => {
+	it('escapes a single embedded apostrophe via the close/escape/reopen trick', () => {
 		// `it's` → `'it'\''s'`. The `'\''` is: close the open quote,
 		// emit a literal `'` via backslash escape, then reopen.
 		expect(shellQuote("it's")).toBe(`'it'\\''s'`);

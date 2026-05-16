@@ -51,9 +51,7 @@ export interface WalExchangeStrategyOptions {
  * — `walrusLocalCluster` registers an instance automatically when at
  * least one `seedAccounts` is declared.
  */
-export const walExchangeStrategy = (
-	opts: WalExchangeStrategyOptions,
-): FaucetStrategy =>
+export const walExchangeStrategy = (opts: WalExchangeStrategyOptions): FaucetStrategy =>
 	defineStrategy({
 		coinType: 'WAL',
 		request: ({ address, amount }) =>

@@ -51,12 +51,7 @@ export const dockerLogsTail = (
 	Effect.scoped(
 		Effect.gen(function* () {
 			const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-			const cmd = ChildProcess.make('docker', [
-				'logs',
-				'--tail',
-				String(lines),
-				containerName,
-			]);
+			const cmd = ChildProcess.make('docker', ['logs', '--tail', String(lines), containerName]);
 			const handle = yield* spawner.spawn(cmd);
 			const [stdout, stderr] = yield* Effect.all(
 				[
@@ -81,15 +76,9 @@ export const dockerWait = (
 		Effect.gen(function* () {
 			const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 			const cmd = ChildProcess.make('docker', ['wait', containerName]);
-			const handle = yield* spawner
-				.spawn(cmd)
-				.pipe(Effect.mapError(dockerError('docker wait')));
-			const stdout = yield* Stream.decodeText(Stream.orDie(handle.stdout)).pipe(
-				Stream.mkString,
-			);
-			const code = yield* handle.exitCode.pipe(
-				Effect.mapError(dockerError('docker wait')),
-			);
+			const handle = yield* spawner.spawn(cmd).pipe(Effect.mapError(dockerError('docker wait')));
+			const stdout = yield* Stream.decodeText(Stream.orDie(handle.stdout)).pipe(Stream.mkString);
+			const code = yield* handle.exitCode.pipe(Effect.mapError(dockerError('docker wait')));
 			if (code !== 0) {
 				return yield* Effect.fail(
 					new DockerError({
@@ -132,10 +121,12 @@ export const awaitContainerReady = (opts: {
 				),
 			),
 		),
-		Effect.catchTag('DockerError', () =>
-			// `docker wait` itself failed — degrade gracefully, let the
-			// probe branch take the wheel.
-			Effect.never as Effect.Effect<never, ReadyProbeError>,
+		Effect.catchTag(
+			'DockerError',
+			() =>
+				// `docker wait` itself failed — degrade gracefully, let the
+				// probe branch take the wheel.
+				Effect.never as Effect.Effect<never, ReadyProbeError>,
 		),
 	);
 	return Effect.raceAll([probeBranch, exitBranch]).pipe(

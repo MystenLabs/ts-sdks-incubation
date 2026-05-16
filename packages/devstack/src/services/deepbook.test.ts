@@ -47,8 +47,7 @@ type _ExpectedDeepbookPackageIds = {
 // Compile-time assertion: our `packageIds` satisfies SDK's
 // `DeepbookPackageIds` shape. Breaks the build if a future edit drops
 // SDK compat (a renamed field, a wrong type, etc).
-type _DeepbookCheck =
-	DeepbookCore['packageIds'] extends _ExpectedDeepbookPackageIds ? true : never;
+type _DeepbookCheck = DeepbookCore['packageIds'] extends _ExpectedDeepbookPackageIds ? true : never;
 const _deepbookCheck: _DeepbookCheck = true;
 void _deepbookCheck;
 
@@ -437,9 +436,10 @@ describe('deepbookLocalDeploy — create-pools resume cache', () => {
 			// hit the dying signer). That's an orthogonal non-
 			// idempotency concern, out of scope for the create-pools
 			// cache fix.
-			const compositeLayers = (
-				member.__layers as ReadonlyArray<Layer.Layer<any, any, any>>
-			).slice(0, -3);
+			const compositeLayers = (member.__layers as ReadonlyArray<Layer.Layer<any, any, any>>).slice(
+				0,
+				-3,
+			);
 			const memberLayer = compositeLayers.reduce<Layer.Layer<any, any, any>>(
 				(acc, layer) => Layer.provideMerge(layer, acc),
 				Layer.empty as unknown as Layer.Layer<any, any, any>,
@@ -559,19 +559,17 @@ describe('deepbookLocalDeploy — create-pools resume cache', () => {
 			// See the happy-path test for why we slice off the trailing
 			// three layers (the interface bindings + market-maker BM
 			// mint).
-			const compositeLayers = (
-				member.__layers as ReadonlyArray<Layer.Layer<any, any, any>>
-			).slice(0, -3);
+			const compositeLayers = (member.__layers as ReadonlyArray<Layer.Layer<any, any, any>>).slice(
+				0,
+				-3,
+			);
 			const memberLayer = compositeLayers.reduce<Layer.Layer<any, any, any>>(
 				(acc, layer) => Layer.provideMerge(layer, acc),
 				Layer.empty as unknown as Layer.Layer<any, any, any>,
 			);
 			const exit = yield* Effect.gen(function* () {
 				return yield* member;
-			}).pipe(
-				Effect.provide(Layer.provide(memberLayer, supportLayer)),
-				Effect.exit,
-			);
+			}).pipe(Effect.provide(Layer.provide(memberLayer, supportLayer)), Effect.exit);
 
 			// Stale verification path → invalidate cache → re-enter
 			// create-pools → mock signer dies. We don't care about the

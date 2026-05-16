@@ -136,7 +136,11 @@ export const prettyError = (value: unknown): string => {
 			// Each reason is `{ _tag: 'Fail' | 'Die' | 'Interrupt', error?, defect? }`.
 			// Recurse into whichever payload carries the inner value so a
 			// tagged error inside a Fail still gets our structured render.
-			const r = reason as { readonly _tag: string; readonly error?: unknown; readonly defect?: unknown };
+			const r = reason as {
+				readonly _tag: string;
+				readonly error?: unknown;
+				readonly defect?: unknown;
+			};
 			if (r._tag === 'Fail' && r.error !== undefined) return prettyError(r.error);
 			if (r._tag === 'Die' && r.defect !== undefined) return prettyError(r.defect);
 			if (r._tag === 'Interrupt') return 'Interrupted';
@@ -160,7 +164,7 @@ export const prettyError = (value: unknown): string => {
 const DOCKER_DOWN_TELLS: ReadonlyArray<string> = [
 	'Cannot connect to the Docker daemon',
 	'connect ENOENT /var/run/docker.sock',
-	"Is the docker daemon running",
+	'Is the docker daemon running',
 	'docker: command not found',
 ];
 

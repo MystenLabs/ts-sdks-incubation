@@ -36,9 +36,7 @@ afterEach(() => {
 
 // Pull a FaucetError out of an Exit.Failure regardless of where it
 // lands in the Cause tree (same shape `accounts.test.ts` uses).
-const extractFaucetError = (
-	exit: Exit.Exit<unknown, unknown>,
-): FaucetError | undefined => {
+const extractFaucetError = (exit: Exit.Exit<unknown, unknown>): FaucetError | undefined => {
 	if (!Exit.isFailure(exit)) return undefined;
 	const cause = (exit as unknown as { cause: Cause.Cause<unknown> }).cause;
 	const opt = Cause.findErrorOption(cause);
@@ -95,11 +93,9 @@ describe('requestFundsOnce', () => {
 
 	it.effect('surfaces fetch rejection (network error) as a FaucetError', () =>
 		Effect.gen(function* () {
-			installFetch(
-				(async () => {
-					throw new Error('ECONNREFUSED 127.0.0.1:9123');
-				}) as typeof fetch,
-			);
+			installFetch((async () => {
+				throw new Error('ECONNREFUSED 127.0.0.1:9123');
+			}) as typeof fetch);
 			const exit = yield* requestFundsOnce(OPTS).pipe(Effect.exit);
 			expect(Exit.isFailure(exit)).toBe(true);
 			const err = extractFaucetError(exit);
@@ -155,12 +151,10 @@ describe('requestFunds — configurable retry budget', () => {
 			// clock fired".
 			Effect.gen(function* () {
 				let calls = 0;
-				installFetch(
-					(async () => {
-						calls += 1;
-						throw new Error('ECONNREFUSED 127.0.0.1:9123');
-					}) as typeof fetch,
-				);
+				installFetch((async () => {
+					calls += 1;
+					throw new Error('ECONNREFUSED 127.0.0.1:9123');
+				}) as typeof fetch);
 				const started = Date.now();
 				const exit = yield* requestFunds({
 					...OPTS,
@@ -188,11 +182,9 @@ describe('requestFunds — configurable retry budget', () => {
 		// 90s default — that's the user-visible signal that the knob is
 		// wired through.
 		Effect.gen(function* () {
-			installFetch(
-				(async () => {
-					throw new Error('ECONNREFUSED 127.0.0.1:9123');
-				}) as typeof fetch,
-			);
+			installFetch((async () => {
+				throw new Error('ECONNREFUSED 127.0.0.1:9123');
+			}) as typeof fetch);
 			const exit = yield* requestFunds({
 				...OPTS,
 				timeoutMs: 100,

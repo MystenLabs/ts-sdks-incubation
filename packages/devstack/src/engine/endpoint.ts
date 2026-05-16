@@ -76,10 +76,7 @@ export interface Endpoint {
  *                     for code that runs in either context (test
  *                     helpers, ad-hoc tools).
  */
-export const endpointUrl = (
-	e: Endpoint,
-	ctx: 'host' | 'container' | 'auto',
-): string => {
+export const endpointUrl = (e: Endpoint, ctx: 'host' | 'container' | 'auto'): string => {
 	if (ctx === 'host') return e.host;
 	if (ctx === 'container') {
 		if (e.container === undefined) {

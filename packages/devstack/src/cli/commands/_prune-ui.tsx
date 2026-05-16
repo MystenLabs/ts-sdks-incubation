@@ -26,11 +26,7 @@
 
 import { Box, Text, useApp, useInput } from 'ink';
 import React, { useEffect, useMemo, useState } from 'react';
-import type {
-	InventoryRow,
-	InventoryTotals,
-	RouterInfo,
-} from '../../engine/docker/inventory.js';
+import type { InventoryRow, InventoryTotals, RouterInfo } from '../../engine/docker/inventory.js';
 import {
 	formatBytes,
 	renderTotals,
@@ -71,12 +67,7 @@ const initialSelection = (rows: ReadonlyArray<InventoryRow>): ReadonlySet<string
 	return out;
 };
 
-export function PruneApp({
-	rows,
-	router,
-	onSubmit,
-	onQuit,
-}: PruneAppProps): React.ReactElement {
+export function PruneApp({ rows, router, onSubmit, onQuit }: PruneAppProps): React.ReactElement {
 	const inkApp = useApp();
 	const [cursor, setCursor] = useState(0);
 	const [selected, setSelected] = useState<ReadonlySet<string>>(() => initialSelection(rows));
@@ -285,7 +276,7 @@ function RouterRow({ router }: { readonly router: RouterInfo }): React.ReactElem
 	if (!router.present) {
 		return (
 			<Box>
-				<Text dimColor>  [router] devstack-traefik — not running</Text>
+				<Text dimColor> [router] devstack-traefik — not running</Text>
 			</Box>
 		);
 	}
@@ -296,7 +287,7 @@ function RouterRow({ router }: { readonly router: RouterInfo }): React.ReactElem
 			: `${router.activeBackends} backend${router.activeBackends === 1 ? '' : 's'} across ${router.apps.length} app${router.apps.length === 1 ? '' : 's'}`;
 	return (
 		<Box>
-			<Text dimColor>  [router] devstack-traefik </Text>
+			<Text dimColor> [router] devstack-traefik </Text>
 			<Text color={stateColor}>{router.running ? 'running' : 'stopped'}</Text>
 			<Text dimColor> — {usedBy} (use --include-router to remove)</Text>
 		</Box>

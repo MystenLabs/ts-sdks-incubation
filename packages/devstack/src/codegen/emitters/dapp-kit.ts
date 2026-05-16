@@ -66,10 +66,7 @@ const renderMvrOverrides = (ctx: CodegenContext): string => {
 	return `{\n${lines.join(',\n')},\n}`;
 };
 
-const renderFile = (
-	ctx: CodegenContext,
-	opts: Required<DappKitEmitterOptions>,
-): string => {
+const renderFile = (ctx: CodegenContext, opts: Required<DappKitEmitterOptions>): string => {
 	const flavor = FLAVOR_IMPORTS[opts.flavor];
 	const mvrOverrides = renderMvrOverrides(ctx);
 	const registerBlock =
@@ -120,10 +117,7 @@ export const dAppKit = createDAppKit({
 ${registerBlock}`;
 };
 
-const writeFile = (
-	outputPath: string,
-	contents: string,
-): Effect.Effect<void, CodegenError> =>
+const writeFile = (outputPath: string, contents: string): Effect.Effect<void, CodegenError> =>
 	Effect.tryPromise({
 		try: async () => {
 			await fs.mkdir(path.dirname(outputPath), { recursive: true });

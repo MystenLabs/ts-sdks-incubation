@@ -199,8 +199,7 @@ interface StaleLock {
 	readonly acquiredAt: string | undefined;
 }
 
-const isLockFile = (name: string): boolean =>
-	name === 'state.json.lock' || name.endsWith('.lock');
+const isLockFile = (name: string): boolean => name === 'state.json.lock' || name.endsWith('.lock');
 
 // Walk one directory looking for `*.lock` files. Returns them as
 // absolute paths. Non-recursive — locks live one directory deep
@@ -238,9 +237,7 @@ const readLockBody = (
 	acquiredAt: string | undefined;
 }> =>
 	Effect.gen(function* () {
-		const text = yield* fs
-			.readFileString(path)
-			.pipe(Effect.orElseSucceed(() => ''));
+		const text = yield* fs.readFileString(path).pipe(Effect.orElseSucceed(() => ''));
 		if (text.trim().length === 0) {
 			return { pid: undefined, startedAt: '', host: '', acquiredAt: undefined };
 		}
@@ -257,8 +254,7 @@ const readLockBody = (
 					: undefined;
 			const startedAt = typeof parsed.startedAt === 'string' ? parsed.startedAt : '';
 			const host = typeof parsed.host === 'string' ? parsed.host : '';
-			const acquiredAt =
-				typeof parsed.acquiredAt === 'string' ? parsed.acquiredAt : undefined;
+			const acquiredAt = typeof parsed.acquiredAt === 'string' ? parsed.acquiredAt : undefined;
 			return { pid, startedAt, host, acquiredAt };
 		} catch {
 			return { pid: undefined, startedAt: '', host: '', acquiredAt: undefined };
@@ -336,12 +332,10 @@ const removeStaleLocks = (
 			) {
 				continue;
 			}
-			const ok = yield* fs
-				.remove(lock.path)
-				.pipe(
-					Effect.as(true),
-					Effect.orElseSucceed(() => false),
-				);
+			const ok = yield* fs.remove(lock.path).pipe(
+				Effect.as(true),
+				Effect.orElseSucceed(() => false),
+			);
 			if (ok) removed.push(lock.path);
 		}
 		return removed as ReadonlyArray<string>;
@@ -367,120 +361,119 @@ export const doctorCommand = Command.make(
 	'doctor',
 	{ cleanLocks: cleanLocksFlag, stateDirOverride: stateDirOverrideFlag },
 	({ cleanLocks, stateDirOverride }) =>
-	Effect.gen(function* () {
-		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-		const fs = yield* FileSystem.FileSystem;
-		const docker = yield* checkDocker(spawner);
-		const sui = yield* checkSui(spawner);
-		const ports: Array<Check> = [];
-		for (const p of COMMON_PORTS) {
-			ports.push(yield* checkPort(p));
-		}
-
-		// Stale state-store locks: each `.devstack/**/state.json.lock`
-		// whose holder pid is dead blocks the next `pnpm dev` for that
-		// stack with a misleading "already running (pid <dead>)" error.
-		// We REPORT them by default and only mutate disk under
-		// `--clean-locks` — the prior auto-clean was safe in theory
-		// (an orphan can't race itself) but a doctor + mid-write
-		// supervisor on the same machine could still misclassify a
-		// holder mid-rewrite, and we'd rather a `--clean-locks` opt-in
-		// than a defensible-but-surprising default.
-		//
-		// Honor --state-dir override AND DEVSTACK_STATE_DIR — the latter
-		// is read at action-time so a fixture exporting it after CLI
-		// import sees the override.
-		const appDir = process.env.DEVSTACK_APP_DIR ?? process.cwd();
-		const stateDir = Option.match(stateDirOverride, {
-			onSome: (s) => (s.startsWith('/') ? s : joinPath(appDir, s)),
-			onNone: () => {
-				const env = process.env.DEVSTACK_STATE_DIR;
-				if (env !== undefined) return env.startsWith('/') ? env : joinPath(appDir, env);
-				return joinPath(appDir, '.devstack');
-			},
-		});
-		const staleLocks = yield* findStaleLocks(fs, stateDir);
-		const removedLocks = cleanLocks
-			? yield* removeStaleLocks(fs, staleLocks)
-			: ([] as ReadonlyArray<string>);
-		const lockCheck: Check =
-			staleLocks.length === 0
-				? { name: 'State-store locks', ok: true, required: false, detail: 'no stale locks' }
-				: !cleanLocks
-					? {
-							name: 'State-store locks',
-							ok: false,
-							required: false,
-							detail: `${staleLocks.length} stale lock${staleLocks.length === 1 ? '' : 's'} found — re-run with --clean-locks to remove`,
-						}
-					: {
-						name: 'State-store locks',
-						ok: removedLocks.length === staleLocks.length,
-						required: false,
-						detail:
-							removedLocks.length === staleLocks.length
-								? `removed ${removedLocks.length} stale lock${removedLocks.length === 1 ? '' : 's'}`
-								: `removed ${removedLocks.length}/${staleLocks.length} stale lock${staleLocks.length === 1 ? '' : 's'} (rest still held or filesystem error)`,
-					};
-
-		const all: Array<Check> = [docker, sui, lockCheck, ...ports];
-		yield* Console.log('Checks');
-		for (const c of all) {
-			yield* Console.log(renderCheck(c));
-		}
-		// One detail line per cleaned lock so the user can audit what
-		// got removed without re-running with a verbose flag.
-		if (removedLocks.length > 0) {
-			for (const lock of staleLocks) {
-				if (!removedLocks.includes(lock.path)) continue;
-				const pidLabel = lock.pid !== undefined ? `pid ${lock.pid}` : 'unreadable holder';
-				const ageLabel =
-					lock.acquiredAt !== undefined ? `, acquired ${lock.acquiredAt}` : '';
-				yield* Console.log(`      └─ ${lock.path} (${pidLabel}${ageLabel})`);
+		Effect.gen(function* () {
+			const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+			const fs = yield* FileSystem.FileSystem;
+			const docker = yield* checkDocker(spawner);
+			const sui = yield* checkSui(spawner);
+			const ports: Array<Check> = [];
+			for (const p of COMMON_PORTS) {
+				ports.push(yield* checkPort(p));
 			}
-		}
 
-		// Inventory only runs when the docker daemon is reachable —
-		// otherwise `collectInventory` would emit empty rows and the
-		// section would be noise. Doctor's exit-code semantics are
-		// unchanged: docker-down still fails the command.
-		if (docker.ok) {
-			yield* Console.log('');
-			yield* Console.log('Inventory');
-			const rows = yield* collectInventory();
-			if (rows.length === 0) {
-				yield* Console.log('  (no devstack-labelled resources)');
-			} else {
-				for (const row of rows) {
-					yield* Console.log(renderInventoryRow(row));
+			// Stale state-store locks: each `.devstack/**/state.json.lock`
+			// whose holder pid is dead blocks the next `pnpm dev` for that
+			// stack with a misleading "already running (pid <dead>)" error.
+			// We REPORT them by default and only mutate disk under
+			// `--clean-locks` — the prior auto-clean was safe in theory
+			// (an orphan can't race itself) but a doctor + mid-write
+			// supervisor on the same machine could still misclassify a
+			// holder mid-rewrite, and we'd rather a `--clean-locks` opt-in
+			// than a defensible-but-surprising default.
+			//
+			// Honor --state-dir override AND DEVSTACK_STATE_DIR — the latter
+			// is read at action-time so a fixture exporting it after CLI
+			// import sees the override.
+			const appDir = process.env.DEVSTACK_APP_DIR ?? process.cwd();
+			const stateDir = Option.match(stateDirOverride, {
+				onSome: (s) => (s.startsWith('/') ? s : joinPath(appDir, s)),
+				onNone: () => {
+					const env = process.env.DEVSTACK_STATE_DIR;
+					if (env !== undefined) return env.startsWith('/') ? env : joinPath(appDir, env);
+					return joinPath(appDir, '.devstack');
+				},
+			});
+			const staleLocks = yield* findStaleLocks(fs, stateDir);
+			const removedLocks = cleanLocks
+				? yield* removeStaleLocks(fs, staleLocks)
+				: ([] as ReadonlyArray<string>);
+			const lockCheck: Check =
+				staleLocks.length === 0
+					? { name: 'State-store locks', ok: true, required: false, detail: 'no stale locks' }
+					: !cleanLocks
+						? {
+								name: 'State-store locks',
+								ok: false,
+								required: false,
+								detail: `${staleLocks.length} stale lock${staleLocks.length === 1 ? '' : 's'} found — re-run with --clean-locks to remove`,
+							}
+						: {
+								name: 'State-store locks',
+								ok: removedLocks.length === staleLocks.length,
+								required: false,
+								detail:
+									removedLocks.length === staleLocks.length
+										? `removed ${removedLocks.length} stale lock${removedLocks.length === 1 ? '' : 's'}`
+										: `removed ${removedLocks.length}/${staleLocks.length} stale lock${staleLocks.length === 1 ? '' : 's'} (rest still held or filesystem error)`,
+							};
+
+			const all: Array<Check> = [docker, sui, lockCheck, ...ports];
+			yield* Console.log('Checks');
+			for (const c of all) {
+				yield* Console.log(renderCheck(c));
+			}
+			// One detail line per cleaned lock so the user can audit what
+			// got removed without re-running with a verbose flag.
+			if (removedLocks.length > 0) {
+				for (const lock of staleLocks) {
+					if (!removedLocks.includes(lock.path)) continue;
+					const pidLabel = lock.pid !== undefined ? `pid ${lock.pid}` : 'unreadable holder';
+					const ageLabel = lock.acquiredAt !== undefined ? `, acquired ${lock.acquiredAt}` : '';
+					yield* Console.log(`      └─ ${lock.path} (${pidLabel}${ageLabel})`);
 				}
+			}
+
+			// Inventory only runs when the docker daemon is reachable —
+			// otherwise `collectInventory` would emit empty rows and the
+			// section would be noise. Doctor's exit-code semantics are
+			// unchanged: docker-down still fails the command.
+			if (docker.ok) {
 				yield* Console.log('');
-				yield* Console.log(renderTotals(totalsFor(rows)));
-				// Compact running / repo-gone summary line. Only mentions
-				// repo-gone when there's at least one — otherwise the
-				// hint below is the only call to action and the line
-				// stays quiet.
-				const runningCount = rows.filter((r) => r.runningPid !== undefined).length;
-				const repoGoneCount = rows.filter((r) => r.classification === 'repo-gone').length;
-				yield* Console.log(
-					`Total: ${rows.length} stack${rows.length === 1 ? '' : 's'}. ${runningCount} running. ${repoGoneCount} with missing repo directory.`,
-				);
-				if (repoGoneCount > 0) {
+				yield* Console.log('Inventory');
+				const rows = yield* collectInventory();
+				if (rows.length === 0) {
+					yield* Console.log('  (no devstack-labelled resources)');
+				} else {
+					for (const row of rows) {
+						yield* Console.log(renderInventoryRow(row));
+					}
 					yield* Console.log('');
+					yield* Console.log(renderTotals(totalsFor(rows)));
+					// Compact running / repo-gone summary line. Only mentions
+					// repo-gone when there's at least one — otherwise the
+					// hint below is the only call to action and the line
+					// stays quiet.
+					const runningCount = rows.filter((r) => r.runningPid !== undefined).length;
+					const repoGoneCount = rows.filter((r) => r.classification === 'repo-gone').length;
 					yield* Console.log(
-						`Run \`devstack prune --repo-gone --yes\` to clean ${repoGoneCount} stack${repoGoneCount === 1 ? '' : 's'} whose project is gone.`,
+						`Total: ${rows.length} stack${rows.length === 1 ? '' : 's'}. ${runningCount} running. ${repoGoneCount} with missing repo directory.`,
 					);
+					if (repoGoneCount > 0) {
+						yield* Console.log('');
+						yield* Console.log(
+							`Run \`devstack prune --repo-gone --yes\` to clean ${repoGoneCount} stack${repoGoneCount === 1 ? '' : 's'} whose project is gone.`,
+						);
+					}
 				}
 			}
-		}
 
-		const failedRequired = all.filter((c) => c.required && !c.ok);
-		if (failedRequired.length > 0) {
-			yield* Console.log('');
-			yield* Console.log(`${failedRequired.length} required check(s) failed.`);
-			return yield* Effect.fail(new Error('doctor: required checks failed'));
-		}
-	}),
+			const failedRequired = all.filter((c) => c.required && !c.ok);
+			if (failedRequired.length > 0) {
+				yield* Console.log('');
+				yield* Console.log(`${failedRequired.length} required check(s) failed.`);
+				return yield* Effect.fail(new Error('doctor: required checks failed'));
+			}
+		}),
 ).pipe(
 	Command.withDescription('Preflight checks + inventory of devstack-labelled docker resources'),
 );

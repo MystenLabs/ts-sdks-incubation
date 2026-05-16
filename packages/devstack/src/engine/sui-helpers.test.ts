@@ -53,9 +53,7 @@ describe('pickCreatedByTypeSuffix', () => {
 
 describe('pickCreatedByTypeIncludes', () => {
 	it('matches generic types via substring (e.g. TreasuryCap<...>)', () => {
-		const changes = [
-			created('0xtcap', '0x2::coin::TreasuryCap<0xabc::mock_usdc::MOCK_USDC>'),
-		];
+		const changes = [created('0xtcap', '0x2::coin::TreasuryCap<0xabc::mock_usdc::MOCK_USDC>')];
 		expect(pickCreatedByTypeIncludes(changes, '::coin::TreasuryCap<')).toBe('0xtcap');
 	});
 

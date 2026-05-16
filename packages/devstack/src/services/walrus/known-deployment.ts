@@ -72,7 +72,7 @@ export const walrusKnownDeployment = (options: WalrusKnownDeploymentOptions): St
 		throw new Error(
 			`walrusKnownDeployment: Walrus ${network} committee has 100+ nodes and isn't ` +
 				'statically registered. Pass ' +
-				"`walrusKnownDeployment({ network, nodes: [...] })` with the explicit " +
+				'`walrusKnownDeployment({ network, nodes: [...] })` with the explicit ' +
 				'committee list, OR use `walrusLocalCluster()` for local testing.',
 		);
 	}

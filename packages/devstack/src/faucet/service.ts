@@ -61,9 +61,7 @@ export interface Faucet {
 
 /** Canonical Faucet tag. The service is auto-included by `devstack(...)`
  *  so primitives can `yield* FaucetTag` without the user wiring it. */
-export class FaucetTag extends Context.Service<FaucetTag, Faucet>()(
-	'@devstack/Faucet',
-) {}
+export class FaucetTag extends Context.Service<FaucetTag, Faucet>()('@devstack/Faucet') {}
 
 /** Live implementation. Strategies live in a per-instance `Ref<Map>`
  *  keyed by `coinType`. Concurrent `register` calls are safe via

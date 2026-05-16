@@ -116,9 +116,7 @@ describe('migrateV3ToV4 — endpoints', () => {
 
 	it('groups seal-key-server under services.seal', () => {
 		const v3 = {
-			endpoints: [
-				{ name: 'seal-key-server', url: 'http://seal.hello.localhost:7443' },
-			],
+			endpoints: [{ name: 'seal-key-server', url: 'http://seal.hello.localhost:7443' }],
 		};
 		expect(migrateV3ToV4(v3).services.seal).toEqual({
 			keyServer: { url: 'http://seal.hello.localhost:7443' },
@@ -165,7 +163,11 @@ describe('migrateV3ToV4 — endpoints', () => {
 	it('preserves pairUrl as alternates[0]', () => {
 		const v3 = {
 			endpoints: [
-				{ name: 'sui-rpc', url: 'http://sui.hello.localhost:9000', pairUrl: 'http://127.0.0.1:9000' },
+				{
+					name: 'sui-rpc',
+					url: 'http://sui.hello.localhost:9000',
+					pairUrl: 'http://127.0.0.1:9000',
+				},
 			],
 		};
 		expect(migrateV3ToV4(v3).services.sui?.rpc).toEqual({
@@ -200,7 +202,12 @@ describe('migrateV3ToV4 — packages/accounts/coins', () => {
 	});
 
 	it('converts accounts array to record', () => {
-		const v3 = { accounts: [{ name: 'alice', address: '0x1' }, { name: 'bob', address: '0x2' }] };
+		const v3 = {
+			accounts: [
+				{ name: 'alice', address: '0x1' },
+				{ name: 'bob', address: '0x2' },
+			],
+		};
 		expect(migrateV3ToV4(v3).accounts).toEqual({
 			alice: { address: '0x1' },
 			bob: { address: '0x2' },

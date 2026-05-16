@@ -111,9 +111,9 @@ const seedTokens = Action('wallet.seedTokens', {
 				const treasuryCapId = (spec.pkg.captured as Record<string, string> | undefined)
 					?.treasuryCapId;
 				if (treasuryCapId === undefined) {
-					yield* (Effect.die(
+					yield* Effect.die(
 						`seedTokens: package '${spec.pkg.name}' missing captured.treasuryCapId`,
-					) as Effect.Effect<void, never, never>);
+					) as Effect.Effect<void, never, never>;
 					return;
 				}
 				const target = `${spec.pkg.packageId}::${spec.module}::mint`;

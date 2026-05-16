@@ -168,9 +168,7 @@ export const walrusLocalCluster = <const Name extends string = 'walrus'>(
 		// callback that no-ops outside an engine and pushes into the
 		// LOCAL_CLUSTER_KEY entry otherwise.
 		const pushPhase = (phase: string): Effect.Effect<void> =>
-			engineOpt._tag === 'Some'
-				? engineOpt.value.setPhase(LOCAL_CLUSTER_KEY, phase)
-				: Effect.void;
+			engineOpt._tag === 'Some' ? engineOpt.value.setPhase(LOCAL_CLUSTER_KEY, phase) : Effect.void;
 
 		const acquired = yield* acquireLocalCluster({
 			name,
@@ -205,9 +203,7 @@ export const walrusLocalCluster = <const Name extends string = 'walrus'>(
 		}
 
 		const exchangeIds =
-			acquired.deploy.exchangeObject !== undefined
-				? [acquired.deploy.exchangeObject]
-				: undefined;
+			acquired.deploy.exchangeObject !== undefined ? [acquired.deploy.exchangeObject] : undefined;
 		const networkShape: WalrusNetwork = {
 			systemObjectId: acquired.deploy.systemObject,
 			stakingPoolId: acquired.deploy.stakingObject,

@@ -110,9 +110,7 @@ export const manifestCommand = Command.make(
 			}
 			const extraKeys = Object.keys(extras);
 			if (extraKeys.length > 0) {
-				yield* Console.log(
-					`  extras: ${extraKeys.length} key${extraKeys.length === 1 ? '' : 's'}`,
-				);
+				yield* Console.log(`  extras: ${extraKeys.length} key${extraKeys.length === 1 ? '' : 's'}`);
 				for (const key of extraKeys) {
 					yield* Console.log(`    ${key}`);
 				}

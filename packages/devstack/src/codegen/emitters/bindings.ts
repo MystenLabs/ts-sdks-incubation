@@ -43,9 +43,7 @@ interface Target {
 	readonly mvrPlaceholder: string;
 }
 
-const collectTargets = (
-	ctx: CodegenContext,
-): Effect.Effect<ReadonlyArray<Target>> =>
+const collectTargets = (ctx: CodegenContext): Effect.Effect<ReadonlyArray<Target>> =>
 	Effect.gen(function* () {
 		// Map keeps the first-seen sourcePath around so we can name BOTH
 		// the original and the duplicate in the warning. A bare `Set`
@@ -250,9 +248,7 @@ const runEmit = (
 				}),
 			{ concurrency: 'unbounded' },
 		).pipe(
-			Effect.tapError(() =>
-				Effect.promise(() => fs.rm(staging, { recursive: true, force: true })),
-			),
+			Effect.tapError(() => Effect.promise(() => fs.rm(staging, { recursive: true, force: true }))),
 		);
 
 		yield* codegen;
@@ -326,9 +322,7 @@ type FingerprintResult =
 	| { readonly _tag: 'ok'; readonly mtime: number }
 	| { readonly _tag: 'err'; readonly cause: unknown };
 
-const computeFingerprint = (
-	targets: ReadonlyArray<Target>,
-): Effect.Effect<string | undefined> =>
+const computeFingerprint = (targets: ReadonlyArray<Target>): Effect.Effect<string | undefined> =>
 	Effect.gen(function* () {
 		const hash = crypto.createHash('sha256');
 		for (const t of targets) {
@@ -379,9 +373,7 @@ async function maxSourceMtime(root: string): Promise<number> {
 				await walk(full);
 			} else if (
 				entry.isFile() &&
-				(entry.name.endsWith('.move') ||
-					entry.name === 'Move.toml' ||
-					entry.name === 'Move.lock')
+				(entry.name.endsWith('.move') || entry.name === 'Move.toml' || entry.name === 'Move.lock')
 			) {
 				const stat = await fs.stat(full);
 				if (stat.mtimeMs > max) max = stat.mtimeMs;

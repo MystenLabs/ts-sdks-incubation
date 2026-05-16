@@ -336,9 +336,7 @@ export const run = (
 		// on Linux can dial the host loopback. Docker Desktop already
 		// provides this entry on Mac/Windows, where re-declaring it is
 		// harmless. Caller can opt out by passing an explicit empty array.
-		const addHosts: ReadonlyArray<string> = opts.addHosts ?? [
-			'host.docker.internal:host-gateway',
-		];
+		const addHosts: ReadonlyArray<string> = opts.addHosts ?? ['host.docker.internal:host-gateway'];
 		const bindAddress = opts.bindAddress ?? '127.0.0.1';
 
 		// Reuse-if-healthy: when an existing container with this name is
@@ -501,13 +499,7 @@ export const run = (
 							.pipe(Effect.ignore),
 					),
 				);
-				yield* attachLogFollower(
-					spawner,
-					action.containerId,
-					name,
-					opts.onOutputLine,
-					reuseScope,
-				);
+				yield* attachLogFollower(spawner, action.containerId, name, opts.onOutputLine, reuseScope);
 				const hostPorts = yield* inspectHostPorts(spawner, action.containerId);
 				return { containerId: action.containerId, name, reused: true, hostPorts };
 			}
@@ -689,7 +681,7 @@ export const run = (
 			? { ...(recreatePorts as Record<number, number>) }
 			: useAutoAllocate
 				? yield* inspectHostPorts(spawner, containerId)
-				: { ...(opts.ports ?? {}) };
+				: { ...opts.ports };
 		return { containerId, name, reused: false, hostPorts };
 	}).pipe(Effect.withSpan('Docker.run'));
 
@@ -957,9 +949,11 @@ const inspectHostPorts = (
 			'{{json .NetworkSettings.Ports}}',
 			containerId,
 		]);
-		const runtimeCap = yield* runCapturing(spawner, runtimeCmd, 'docker inspect ports (runtime)').pipe(
-			Effect.catchTag('DockerError', () => Effect.succeed(null)),
-		);
+		const runtimeCap = yield* runCapturing(
+			spawner,
+			runtimeCmd,
+			'docker inspect ports (runtime)',
+		).pipe(Effect.catchTag('DockerError', () => Effect.succeed(null)));
 		if (runtimeCap !== null && runtimeCap.exitCode === 0) {
 			const raw = runtimeCap.stdout.trim();
 			if (raw.length > 0 && raw !== 'null' && raw !== '{}') {

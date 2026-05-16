@@ -17,7 +17,7 @@ createRoot(rootEl).render(
 	<StrictMode>
 		<QueryClientProvider client={queryClient}>
 			<DAppKitProvider dAppKit={dAppKit}>
-					<App />
+				<App />
 			</DAppKitProvider>
 		</QueryClientProvider>
 	</StrictMode>,

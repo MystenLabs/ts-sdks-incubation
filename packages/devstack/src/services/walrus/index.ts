@@ -20,7 +20,4 @@
 // Context.Service tag any more.
 
 export { walrusLocalCluster, type WalrusLocalClusterOptions } from './local-cluster.js';
-export {
-	walrusKnownDeployment,
-	type WalrusKnownDeploymentOptions,
-} from './known-deployment.js';
+export { walrusKnownDeployment, type WalrusKnownDeploymentOptions } from './known-deployment.js';

@@ -94,9 +94,7 @@ const includeImagesFlag = Flag.boolean('include-images').pipe(
 );
 
 const repoGoneFlag = Flag.boolean('repo-gone').pipe(
-	Flag.withDescription(
-		'Remove every stack whose recorded repoPath no longer exists on disk',
-	),
+	Flag.withDescription('Remove every stack whose recorded repoPath no longer exists on disk'),
 	Flag.withDefault(false),
 );
 
@@ -254,9 +252,7 @@ const printInventory = (rows: ReadonlyArray<InventoryRow>) =>
 		// bucket. Showing usage (how many backends, how many apps)
 		// helps the user decide whether `--include-router` would
 		// disrupt active work.
-		const router = yield* collectRouterInfo().pipe(
-			Effect.orElseSucceed(() => undefined),
-		);
+		const router = yield* collectRouterInfo().pipe(Effect.orElseSucceed(() => undefined));
 		if (router !== undefined) {
 			yield* Console.log(renderRouterRow(router));
 		}
@@ -365,16 +361,12 @@ const maybePruneImages = (enabled: boolean, dryRun: boolean) =>
 // Mount the Ink picker, await the user's choice, then return the
 // selected rows. We unmount BEFORE resolving so the calling Effect
 // can stream `Console.log` lines without fighting Ink for the TTY.
-const runInteractivePicker = (
-	rows: ReadonlyArray<InventoryRow>,
-) =>
+const runInteractivePicker = (rows: ReadonlyArray<InventoryRow>) =>
 	Effect.gen(function* () {
 		// Pull the router info BEFORE mounting Ink so the row appears
 		// in the first frame. Best-effort: a failing docker query just
 		// elides the row.
-		const router = yield* collectRouterInfo().pipe(
-			Effect.orElseSucceed(() => undefined),
-		);
+		const router = yield* collectRouterInfo().pipe(Effect.orElseSucceed(() => undefined));
 		return yield* Effect.callback<ReadonlyArray<InventoryRow>>((resume) => {
 			const instance = render(
 				React.createElement(PruneApp, {
@@ -420,9 +412,7 @@ export const pruneCommand = Command.make(
 			// Surface a one-line deprecation warning when the legacy form
 			// is used so callers can migrate before it's removed.
 			if (args.abandoned) {
-				yield* Console.error(
-					'devstack prune: --abandoned is deprecated; use --repo-gone instead',
-				);
+				yield* Console.error('devstack prune: --abandoned is deprecated; use --repo-gone instead');
 			}
 			const repoGone = args.repoGone || args.abandoned;
 			const mode = yield* resolveMode({
@@ -500,9 +490,7 @@ export const pruneCommand = Command.make(
 				// Every row whose supervisor is not running. Use with
 				// care — this includes idle stacks the user might still
 				// want.
-				const orphans = rows.filter(
-					(r) => r.runningPid === undefined || !isPidAlive(r.runningPid),
-				);
+				const orphans = rows.filter((r) => r.runningPid === undefined || !isPidAlive(r.runningPid));
 				yield* runBulkMode({ label: 'all-orphans', rows: orphans, args });
 				return;
 			}

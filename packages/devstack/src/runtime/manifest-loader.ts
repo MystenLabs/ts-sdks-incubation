@@ -229,7 +229,9 @@ export function fromManifest(raw: unknown, opts: FromManifestOptions = {}): Mani
 		try {
 			parsed = JSON.parse(raw, jsonBigintReviver);
 		} catch (cause) {
-			throw new TypeError(`fromManifest: failed to parse string input as JSON: ${(cause as Error).message}`);
+			throw new TypeError(
+				`fromManifest: failed to parse string input as JSON: ${(cause as Error).message}`,
+			);
 		}
 	} else {
 		parsed = raw;

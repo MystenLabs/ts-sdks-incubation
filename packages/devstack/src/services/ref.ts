@@ -21,7 +21,4 @@ export type AccountRef<Name extends string = string> = Ref<
 export type PackageRef<
 	Name extends string = string,
 	Captured extends Record<string, unknown> = Record<string, unknown>,
-> = Ref<
-	Name,
-	import('./package/internal.js').Package & { readonly captured: Captured }
->;
+> = Ref<Name, import('./package/internal.js').Package & { readonly captured: Captured }>;

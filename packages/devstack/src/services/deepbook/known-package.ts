@@ -33,7 +33,8 @@ export interface DeepbookKnownPackageOptions {
  * separately for makers running against a known package.
  */
 export const deepbookKnownPackage = (opts: DeepbookKnownPackageOptions) => {
-	const deployment = opts.network !== undefined ? knownDeployments.deepbook[opts.network] : undefined;
+	const deployment =
+		opts.network !== undefined ? knownDeployments.deepbook[opts.network] : undefined;
 	const packageId = opts.packageId ?? deployment?.packageId;
 	const registryId = opts.registryId ?? deployment?.registryId;
 

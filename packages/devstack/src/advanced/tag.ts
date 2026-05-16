@@ -275,9 +275,7 @@ const withEngineLifecycle = <A, E, R>(
 				exit._tag === 'Success'
 					? engine.markReady(
 							name,
-							classification.display !== undefined
-								? classification.display(exit.value)
-								: undefined,
+							classification.display !== undefined ? classification.display(exit.value) : undefined,
 						)
 					: Effect.gen(function* () {
 							yield* engine.markFailed(name, exit.cause);
@@ -430,12 +428,7 @@ export const tag = <const Name extends string, A, E = never, R = never>(
 		extras.__watchPaths = options.watch;
 	}
 	if (options.hidden === true) extras.__hidden = true;
-	return Object.assign(T, extras) as unknown as Ref<
-		Name,
-		A,
-		Exclude<R, Scope.Scope>,
-		E
-	>;
+	return Object.assign(T, extras) as unknown as Ref<Name, A, Exclude<R, Scope.Scope>, E>;
 };
 
 // composeTag — `tag` for composite primitives. Pass the inner tags

@@ -105,7 +105,7 @@ export const Action = <const Name extends string, R = never, E = unknown>(
 			if (cacheKeyEff !== undefined) {
 				const sui = yield* SuiTag;
 				const state = yield* StateStore;
-				const userKey = yield* (cacheKeyEff as Effect.Effect<string, unknown, never>);
+				const userKey = yield* cacheKeyEff as Effect.Effect<string, unknown, never>;
 				const fullKey = `tx/${name}/${sui.chainId}/${signer.address}/${userKey}`;
 				const cached = yield* state.get<TxResult>(fullKey);
 				if (Option.isSome(cached)) {
@@ -132,15 +132,13 @@ export const Action = <const Name extends string, R = never, E = unknown>(
 					);
 					yield* state.remove(fullKey).pipe(Effect.ignore);
 				}
-				yield* Effect.logInfo(
-					`Action(${name}): cache miss — key=${userKey} (will sign+execute)`,
-				);
+				yield* Effect.logInfo(`Action(${name}): cache miss — key=${userKey} (will sign+execute)`);
 				yield* setPhase('building');
 				const t = new Transaction();
 				if (opts.gasBudget !== undefined) {
 					t.setGasBudget(opts.gasBudget);
 				}
-				yield* (opts.build(t) as Effect.Effect<void, unknown, never>);
+				yield* opts.build(t) as Effect.Effect<void, unknown, never>;
 				yield* setPhase('executing');
 				const result = yield* signer.signAndExecute(t).pipe(
 					Effect.mapError(
@@ -161,7 +159,7 @@ export const Action = <const Name extends string, R = never, E = unknown>(
 			if (opts.gasBudget !== undefined) {
 				t.setGasBudget(opts.gasBudget);
 			}
-			yield* (opts.build(t) as Effect.Effect<void, unknown, never>);
+			yield* opts.build(t) as Effect.Effect<void, unknown, never>;
 			yield* setPhase('executing');
 			const result = yield* signer.signAndExecute(t).pipe(
 				Effect.mapError(

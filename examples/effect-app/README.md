@@ -17,16 +17,16 @@ import { Account, devstack, Sui } from '@mysten-incubation/devstack';
 const isProduction = process.env.NODE_ENV === 'production';
 
 const alice = isProduction
-    ? Account('alice', { from: 'env', key: 'ALICE_PRIVATE_KEY' })
-    : Account('alice', { from: 'ephemeral-funded' });
+	? Account('alice', { from: 'env', key: 'ALICE_PRIVATE_KEY' })
+	: Account('alice', { from: 'ephemeral-funded' });
 
 const sui = Sui();
 
 const program = Effect.gen(function* () {
-    const s = yield* sui;
-    const a = yield* alice;
-    yield* Effect.log(`sui ${s.network} @ ${s.rpc.host}`);
-    yield* Effect.log(`alice ${a.address}`);
+	const s = yield* sui;
+	const a = yield* alice;
+	yield* Effect.log(`sui ${s.network} @ ${s.rpc.host}`);
+	yield* Effect.log(`alice ${a.address}`);
 });
 
 const stack = devstack(sui, alice);
@@ -51,7 +51,7 @@ The two axes that vary by env are orthogonal:
 
 The `devstack(...)` handle exposes:
 
-- `.run()` / `.runMain()` — a *runner*. Composes the stack, attaches
+- `.run()` / `.runMain()` — a _runner_. Composes the stack, attaches
   a TUI / plain renderer, file watcher, signal handlers, restart loop.
   That's the shape `devstack up` uses, and the shape
   `examples/wallet` / `examples/arena` use in their

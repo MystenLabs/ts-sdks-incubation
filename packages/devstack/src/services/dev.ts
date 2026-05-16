@@ -16,11 +16,7 @@
 //     hatch for tools that need a different bind port).
 
 import { Effect } from 'effect';
-import {
-	hostProcess,
-	type HostProcessOptions,
-	type ReadyProbe,
-} from './dev/internal.js';
+import { hostProcess, type HostProcessOptions, type ReadyProbe } from './dev/internal.js';
 import type { Ref } from '../advanced/tag.js';
 
 export interface DevOptions<E = never, R = never> {

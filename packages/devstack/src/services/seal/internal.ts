@@ -275,7 +275,8 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 		// keygen) emitted a given line. The engine may not be wired
 		// (standalone tests), in which case the callback is a no-op.
 		const engineOpt = yield* Effect.serviceOption(EngineHandle);
-		const makeSealOutputSink = (label: string): Docker.OutputLineCallback =>
+		const makeSealOutputSink =
+			(label: string): Docker.OutputLineCallback =>
 			(level, line) =>
 				engineOpt._tag === 'None'
 					? Effect.void
@@ -470,18 +471,16 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 		const fs = yield* FileSystem.FileSystem;
 		const path = yield* Path.Path;
 
-		const configDir = yield* fs
-			.makeTempDirectoryScoped({ prefix: `devstack-seal-${name}-` })
-			.pipe(
-				Effect.mapError(
-					(cause) =>
-						new SealError({
-							phase: 'config-render',
-							message: `seal(${name}): could not create temp dir for config: ${cause.message}`,
-							cause,
-						}),
-				),
-			);
+		const configDir = yield* fs.makeTempDirectoryScoped({ prefix: `devstack-seal-${name}-` }).pipe(
+			Effect.mapError(
+				(cause) =>
+					new SealError({
+						phase: 'config-render',
+						message: `seal(${name}): could not create temp dir for config: ${cause.message}`,
+						cause,
+					}),
+			),
+		);
 		const configPath = path.join(configDir, 'key-server-config.yaml');
 		// Container-side sui RPC URL. Prefer the docker-DNS alias
 		// (`http://sui-localnet:9000`) populated by `suiLocalnet`; fall

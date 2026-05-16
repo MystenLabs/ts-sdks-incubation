@@ -47,11 +47,11 @@ export const isPidAlive = (pid: number): boolean => {
 export const processStartTime = (pid: number): string | undefined => {
 	if (process.platform === 'win32') {
 		try {
-			const out = execFileSync(
-				'tasklist',
-				['/fi', `PID eq ${pid}`, '/fo', 'csv', '/nh'],
-				{ encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] },
-			);
+			const out = execFileSync('tasklist', ['/fi', `PID eq ${pid}`, '/fo', 'csv', '/nh'], {
+				encoding: 'utf8',
+				timeout: 2000,
+				stdio: ['ignore', 'pipe', 'ignore'],
+			});
 			return out.trim().startsWith('"') ? '' : undefined;
 		} catch {
 			return undefined;
