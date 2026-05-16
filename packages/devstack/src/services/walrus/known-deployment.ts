@@ -1,6 +1,6 @@
 // `walrusKnownDeployment()` — pure-config handle pointing at a known
-// testnet/mainnet deployment. Provides `WalrusNetwork`, `WalrusNodes`,
-// and (when URLs are available) `WalrusProxy`. No `WalrusAdmin` — we
+// testnet/mainnet deployment. Provides `WalrusNetworkTag`, `WalrusNodesTag`,
+// and (when URLs are available) `WalrusProxyTag`. No `WalrusAdminTag` — we
 // never have admin power over a network we didn't boot.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -8,13 +8,13 @@
 import { Layer } from 'effect';
 import type { StackMember } from '../../engine/supervisor.js';
 import {
-	WalrusNetwork,
-	WalrusNodes,
-	WalrusProxy,
-	type WalrusNetworkShape,
+	WalrusNetworkTag,
+	WalrusNodesTag,
+	WalrusProxyTag,
+	type WalrusNetwork,
 	type WalrusNodeInfo,
-	type WalrusNodesShape,
-	type WalrusProxyShape,
+	type WalrusNodes,
+	type WalrusProxy,
 } from '../walrus.js';
 import { knownDeployments, type KnownNetwork } from '../../engine/known-deployments.js';
 
@@ -77,7 +77,7 @@ export const walrusKnownDeployment = (options: WalrusKnownDeploymentOptions): St
 		);
 	}
 
-	const networkShape: WalrusNetworkShape = {
+	const networkShape: WalrusNetwork = {
 		systemObjectId,
 		stakingPoolId,
 		subsidiesPackageId,
@@ -94,23 +94,23 @@ export const walrusKnownDeployment = (options: WalrusKnownDeploymentOptions): St
 			...(exchangeIds !== undefined ? { exchangeIds: [...exchangeIds] } : {}),
 		},
 	};
-	const nodesShape: WalrusNodesShape = { nodes };
+	const nodesShape: WalrusNodes = { nodes };
 
 	// Proxy is only provided when at least one of the URLs is reachable.
 	// Without any URLs the consumer can't talk to walrus, so we'd rather
-	// leave `WalrusProxy` unsatisfied (surfacing as ServiceNotFound) than
+	// leave `WalrusProxyTag` unsatisfied (surfacing as ServiceNotFound) than
 	// hand them back empty strings that would 404 at the first blob op.
 	const hasProxy =
 		proxyUrl !== undefined && aggregatorUrl !== undefined && publisherUrl !== undefined;
 
-	const networkLayer = Layer.succeed(WalrusNetwork, networkShape);
-	const nodesLayer = Layer.succeed(WalrusNodes, nodesShape);
+	const networkLayer = Layer.succeed(WalrusNetworkTag, networkShape);
+	const nodesLayer = Layer.succeed(WalrusNodesTag, nodesShape);
 	const proxyLayer = hasProxy
-		? Layer.succeed(WalrusProxy, {
+		? Layer.succeed(WalrusProxyTag, {
 				proxyUrl: proxyUrl,
 				aggregatorUrl: aggregatorUrl,
 				publisherUrl: publisherUrl,
-			} satisfies WalrusProxyShape)
+			} satisfies WalrusProxy)
 		: undefined;
 
 	const layers: Array<Layer.Layer<any, any, any>> = [networkLayer, nodesLayer];

@@ -102,6 +102,18 @@ export interface HostProcessOptions<Name extends string, E, R> {
 	 */
 	readonly port?: { readonly preferred: number };
 	/**
+	 * Optional template hooks. When `port:` is set, the supervisor passes
+	 * the allocator-resolved port through these renderers before spawning,
+	 * so callers can write `{port}` placeholders in command/args/probe
+	 * URLs without threading the actual port through manually. Skipped
+	 * entirely when `port:` is unset.
+	 */
+	readonly portTemplate?: {
+		readonly renderCommand?: (cmd: string, port: number) => string;
+		readonly renderArg?: (arg: string, port: number) => string;
+		readonly renderReady?: (probe: ReadyProbe, port: number) => ReadyProbe;
+	};
+	/**
 	 * Per-line output sink for the spawned process's stdout (`info`)
 	 * and stderr (`warn`). Wired by callers that want vite / generic
 	 * dev-server output to surface in the supervisor TUI without
@@ -156,16 +168,37 @@ export const hostProcess = <const Name extends string, E = never, R = never>(
 			const portEnv: Record<string, string> =
 				allocatedPort === undefined ? {} : { PORT: String(allocatedPort) };
 
+			// 1b. Template substitution: when `port:` is set, run the
+			//     allocator-resolved port through the caller's `{port}`
+			//     renderers so command/args/probe-URL stay in sync without
+			//     the user duplicating the port literal across fields.
+			const tpl = options.portTemplate;
+			const resolvedCommand: string =
+				allocatedPort !== undefined && tpl?.renderCommand !== undefined
+					? tpl.renderCommand(options.command, allocatedPort)
+					: options.command;
+			const resolvedArgs: ReadonlyArray<string> =
+				allocatedPort !== undefined && tpl?.renderArg !== undefined && options.args !== undefined
+					? options.args.map((arg) => tpl.renderArg!(arg, allocatedPort))
+					: (options.args ?? []);
+
 			// When `port:` is set but no readyProbe was given, derive a
 			// default HTTP probe against the allocated port. Saves the
 			// caller from threading the port through twice — common case
-			// for dev servers (vite, next, etc.) that bind `$PORT`.
-			const resolvedReadyProbe: ReadyProbe | undefined =
+			// for dev servers (vite, next, etc.) that bind `$PORT`. If the
+			// caller supplied a probe with `{port}` placeholders, render it.
+			const probeBeforeTemplate: ReadyProbe | undefined =
 				options.readyProbe !== undefined
 					? options.readyProbe
 					: allocatedPort !== undefined
 						? { kind: 'http', url: `http://localhost:${allocatedPort}`, timeoutMs: 60_000 }
 						: undefined;
+			const resolvedReadyProbe: ReadyProbe | undefined =
+				probeBeforeTemplate !== undefined &&
+				allocatedPort !== undefined &&
+				tpl?.renderReady !== undefined
+					? tpl.renderReady(probeBeforeTemplate, allocatedPort)
+					: probeBeforeTemplate;
 
 			// 2. Resolve dependsOn — yield* each tag for ordering. Values
 			//    are unused here; the engine just needs the R-channel edges.
@@ -178,7 +211,7 @@ export const hostProcess = <const Name extends string, E = never, R = never>(
 			//    spawner's `spawn` attaches a Scope finalizer that kills the
 			//    process when the enclosing scope closes.
 			const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-			const cmd = ChildProcess.make(options.command, options.args ?? [], {
+			const cmd = ChildProcess.make(resolvedCommand, resolvedArgs, {
 				// User-supplied `env` wins last so callers can override
 				// `PORT` if they explicitly need a different value, but the
 				// allocator's choice is the default whenever `port:` is set.

@@ -1,8 +1,8 @@
 // CLI surface for devstack.
 //
 // `devstack up [config-path]` is the primary entry — it dynamic-imports the
-// user's `devstack.config.ts`, expects the default export to be a `Devstack`
-// (from `defineDevstack`), and hands control to its `run()` method which
+// user's `devstack.config.ts`, expects the default export to be a
+// `DevstackHandle` (from `defineDevstack`), and hands control to its `run()` method which
 // blocks on Layer.launch until SIGINT/SIGTERM.
 //
 // `apply`, `status`, `snapshot`, `wipe`, `stack`, `doctor`, `manifest` are
@@ -62,7 +62,7 @@ const loadDevstack = (configPath: string) =>
 			| undefined;
 		if (!devstack || typeof devstack.launchEffect !== 'function') {
 			return yield* Effect.fail(
-				new Error(`${configPath} must default-export a Devstack (from defineDevstack)`),
+				new Error(`${configPath} must default-export a DevstackHandle (from devstack(...) or defineDevstack)`),
 			);
 		}
 		return devstack as {
@@ -78,14 +78,37 @@ const rendererFlag = Flag.choice('renderer', ['tui', 'plain', 'silent'] as const
 	),
 );
 
+const networkFlag = Flag.choice('network', ['localnet', 'testnet', 'mainnet'] as const).pipe(
+	Flag.optional,
+	Flag.withDescription(
+		'Target Sui network. Sets DEVSTACK_NETWORK before loading the config so every ' +
+			'factory (Sui, Seal, Walrus, Deepbook) sees the same value. Defaults to localnet.',
+	),
+);
+
+/** Set the network env var before importing the user's config. Every
+ *  network-aware factory reads it at construction time, so this must
+ *  run BEFORE `loadDevstack` calls `import(...)` on the config. */
+const applyNetworkOverride = (network: Option.Option<'localnet' | 'testnet' | 'mainnet'>): void => {
+	Option.match(network, {
+		onNone: () => undefined,
+		onSome: (n) => {
+			process.env.DEVSTACK_NETWORK = n;
+			return undefined;
+		},
+	});
+};
+
 const upCommand = Command.make(
 	'up',
 	{
 		configPath: Argument.string('config-path').pipe(Argument.optional),
 		renderer: rendererFlag,
+		network: networkFlag,
 	},
-	({ configPath, renderer }) =>
+	({ configPath, renderer, network }) =>
 		Effect.gen(function* () {
+			applyNetworkOverride(network);
 			const resolved = Option.getOrElse(configPath, () => './devstack.config.ts');
 			const devstack = yield* loadDevstack(resolved);
 			const overrides: RunOverrides = Option.match(renderer, {

@@ -184,13 +184,13 @@ export const gitFetch = <const Name extends string>(options: GitFetchOptions<Nam
 			return { path: finalPath, ref: options.ref, sha } satisfies GitFetched;
 		}).pipe(Effect.withSpan(`gitFetch(${options.name})`)),
 		{
-			kind: 'action',
-			displayTitle: `git.${options.name}`,
-			display: (s) => ({
-				title: `git.${options.name}`,
-				primary: s.path,
-				extras: [`@${options.ref}`],
-			}),
+			// Hidden from the TUI: the clone is a cache-warming detail whose
+			// only useful artifact (the local path) is consumed by the parent
+			// primitive that yielded this tag. Surfacing it as a row added
+			// noise without actionable state — the path is a long state-dir
+			// hash, and a failure here propagates through the consumer's
+			// own failure row.
+			hidden: true,
 		},
 	);
 

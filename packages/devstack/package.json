@@ -33,10 +33,6 @@
 			"types": "./dist/advanced/index.d.mts",
 			"import": "./dist/advanced/index.mjs"
 		},
-		"./services": {
-			"types": "./dist/services/index.d.mts",
-			"import": "./dist/services/index.mjs"
-		},
 		"./runtime": {
 			"types": "./dist/runtime/service.d.mts",
 			"import": "./dist/runtime/service.mjs"

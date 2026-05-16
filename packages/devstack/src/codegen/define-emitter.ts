@@ -30,7 +30,7 @@ export interface CodegenPackage {
 	 *  emitted bindings stay portable across networks. */
 	readonly mvrPlaceholder: string;
 	/** Absolute path to the Move source root. Present for packages
-	 *  produced by `Package(..., source)` (i.e. `LocalPackageShape`);
+	 *  produced by `Package(..., source)` (i.e. `LocalPackage`);
 	 *  undefined for `KnownPackage(...)`. Emitters that need source —
 	 *  `BindingsEmitter` for `sui move summary` — filter to entries
 	 *  where this is defined. */

@@ -22,10 +22,12 @@ import { Identity } from '../engine/identity.js';
 import { EndpointRegistry } from '../engine/registries.js';
 import { routerHostname, routerId } from '../engine/router-hostname.js';
 import { SuiBuildImage } from '../engine/sui-cli.js';
+import { SuiBuildContainerLive } from '../engine/sui-build-container.js';
 import { dockerImage } from '../advanced/plugin-author/index.js';
 import { provide, setPhase, type Ref } from '../advanced/tag.js';
 import type { StackMember } from '../engine/supervisor.js';
 import { SuiError } from '../engine/errors.js';
+import { resolveNetwork } from '../engine/network.js';
 
 // -----------------------------------------------------------------------------
 // Constants
@@ -106,7 +108,7 @@ export type SuiNetwork = 'localnet' | 'testnet' | 'mainnet';
  *    call this method first. Resolves immediately on networks without a
  *    faucet (mainnet, suiCustom without `faucet`) where the chain is
  *    presumed always-transferable by definition. */
-export interface SuiShape {
+export interface Sui {
 	readonly network: 'localnet' | 'testnet' | 'mainnet' | 'devnet' | (string & {});
 	readonly rpc: Endpoint;
 	readonly faucet?: Endpoint;
@@ -120,20 +122,20 @@ export interface SuiShape {
  *  `Sui(opts?)` in this file can take the public-surface name. The
  *  Context key (`'@devstack/Sui'`) is unchanged, so any layer keyed
  *  against the legacy `Sui` class identity continues to resolve. */
-export class SuiTag extends Context.Service<SuiTag, SuiShape>()('@devstack/Sui') {}
+export class SuiTag extends Context.Service<SuiTag, Sui>()('@devstack/Sui') {}
 
-/** Runtime-validation mirror of `Endpoint`. Used by `SuiShapeSchema`. */
+/** Runtime-validation mirror of `Endpoint`. Used by `SuiSchema`. */
 export const EndpointSchema = Schema.Struct({
 	host: Schema.String,
 	container: Schema.optional(Schema.String),
 	containerNetworks: Schema.optional(Schema.Array(Schema.String)),
 });
 
-/** Runtime-validation mirror of `SuiShape`. Use
- *  `Schema.decode(SuiShapeSchema)` to validate a hand-rolled
+/** Runtime-validation mirror of `Sui`. Use
+ *  `Schema.decode(SuiSchema)` to validate a hand-rolled
  *  `Layer.succeed(SuiTag, ...)`. `client` and `waitForTransactionsReady`
  *  are closures / live objects so they're typed as `Unknown`. */
-export const SuiShapeSchema = Schema.Struct({
+export const SuiSchema = Schema.Struct({
 	network: Schema.String,
 	rpc: EndpointSchema,
 	faucet: Schema.optional(EndpointSchema),
@@ -175,7 +177,7 @@ const FAUCET_PROBE_RECIPIENT = '0xf0bef0bef0bef0bef0bef0bef0bef0bef0bef0bef0bef0
  * Faucet ready-probe. POST a real funding request and verify the
  * response body is `status: "Success"` (or at least NOT a body-level
  * `status: { Failure }`). Exported for unit tests; production callers
- * invoke it via the `waitForTransactionsReady` method on `SuiShape`,
+ * invoke it via the `waitForTransactionsReady` method on `Sui`,
  * which wraps this in a retry/timeout budget and maps the rejection
  * into a typed `SuiError`.
  *
@@ -474,7 +476,7 @@ const buildLocalnet = (options: SuiLocalnetOptions): StackMember => {
 				client,
 				chainId,
 				waitForTransactionsReady,
-			} satisfies SuiShape;
+			} satisfies Sui;
 		}
 
 		// Localnet container — start the vendored sui image with embedded
@@ -761,7 +763,7 @@ const buildLocalnet = (options: SuiLocalnetOptions): StackMember => {
 			client,
 			chainId,
 			waitForTransactionsReady,
-		} satisfies SuiShape;
+		} satisfies Sui;
 	})();
 
 	const tag = provide(SuiTag, build, {
@@ -799,9 +801,22 @@ const buildLocalnet = (options: SuiLocalnetOptions): StackMember => {
 			}),
 		);
 	}
+	// When we have a SuiBuildImage to drive `sui move build`, ALSO bring
+	// up a long-lived per-stack build container so the publishMove path
+	// can `docker exec` into it instead of paying `docker run --rm`
+	// container-spawn overhead on every publish. The container survives
+	// across `r` hot-restart cycles (finalizer on `LongLivedScope`) so
+	// the second cycle's first publish is just as fast as the first
+	// cycle's second. `buildMove` falls back to per-build `docker run
+	// --rm` if the service isn't provided OR the source path is outside
+	// the bind-mounted app dir.
 	const layers: ReadonlyArray<Layer.Layer<any, any, any>> =
 		buildImageLayer !== undefined
-			? [...baseLayers, buildImageLayer as Layer.Layer<any, any, any>]
+			? [
+					...baseLayers,
+					buildImageLayer as Layer.Layer<any, any, any>,
+					SuiBuildContainerLive as Layer.Layer<any, any, any>,
+				]
 			: baseLayers;
 	return Object.assign(tag, { __layers: layers });
 };
@@ -829,7 +844,7 @@ const buildTestnet = (options: SuiTestnetOptions): StackMember => {
 			client,
 			chainId,
 			waitForTransactionsReady,
-		} satisfies SuiShape;
+		} satisfies Sui;
 	})();
 
 	return provide(SuiTag, build, {
@@ -868,7 +883,7 @@ const buildMainnet = (options: SuiMainnetOptions): StackMember => {
 			client,
 			chainId,
 			waitForTransactionsReady,
-		} satisfies SuiShape;
+		} satisfies Sui;
 	})();
 
 	return provide(SuiTag, build, {
@@ -896,7 +911,7 @@ const buildCustom = (options: SuiCustomOptions): StackMember => {
 		// `SuiJsonRpcClient` expects a known `network` literal; pass
 		// 'localnet' as the wire-level default to suppress its internal
 		// chain-id mismatch warning. The surface-level `network` we return
-		// in `SuiShape` is the caller-supplied label.
+		// in `Sui` is the caller-supplied label.
 		const client = new SuiJsonRpcClient({ url: rpcUrl, network: 'localnet' });
 		yield* EndpointRegistry.publish({ name: 'sui-rpc', url: rpcUrl, kind: 'rpc' });
 		if (faucetUrl !== undefined) {
@@ -920,7 +935,7 @@ const buildCustom = (options: SuiCustomOptions): StackMember => {
 			client,
 			chainId,
 			waitForTransactionsReady,
-		} satisfies SuiShape;
+		} satisfies Sui;
 	})();
 
 	return provide(SuiTag, build, {
@@ -935,12 +950,15 @@ const buildCustom = (options: SuiCustomOptions): StackMember => {
 // -----------------------------------------------------------------------------
 
 /** The canonical sui factory. Returns a Ref that's both an Effect Layer
- *  and an Effect tag (`yield* Sui` gives the `SuiShape`).
+ *  and an Effect tag (`yield* Sui` gives the `Sui`).
  *
- *  Defaults to localnet. Pass `{ network: 'testnet' }` to switch nets, or
- *  `{ network: { rpc, faucet } }` for a custom RPC. */
-export const Sui = (opts: SuiOptions = {}): Ref<'@devstack/Sui', SuiShape> => {
-	const net = opts.network ?? 'localnet';
+ *  Defaults to whatever `DEVSTACK_NETWORK` resolves to (`localnet` when
+ *  unset). The CLI `--network` flag and the `devstack({ network })`
+ *  config option both flow through that env var. Pass `{ network: {
+ *  rpc, faucet } }` for a custom RPC (corporate fullnode, pinned fork);
+ *  pass `{ network: 'testnet' }` to pin in code regardless of env var. */
+export const Sui = (opts: SuiOptions = {}): Ref<'@devstack/Sui', Sui> => {
+	const net = opts.network ?? resolveNetwork();
 	let member: StackMember;
 	if (typeof net === 'object') {
 		const customOpts: SuiCustomOptions = {
@@ -957,6 +975,6 @@ export const Sui = (opts: SuiOptions = {}): Ref<'@devstack/Sui', SuiShape> => {
 	}
 	return Object.assign(member, { __kind: 'service' as const }) as unknown as Ref<
 		'@devstack/Sui',
-		SuiShape
+		Sui
 	>;
 };

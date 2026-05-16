@@ -6,12 +6,12 @@
 // caller can compose order: it typically `needs:` the deploy ref + a
 // seed-tokens action so balances are present before the first tick.
 //
-// This file also carries the **DeepbookCore** (read-side) /
-// **DeepbookAdmin** (local-only) / **DeepbookMarketMakerTag** (local-only,
+// This file also carries the **DeepbookCoreTag** (read-side) /
+// **DeepbookAdminTag** (local-only) / **DeepbookMarketMakerTag** (local-only,
 // renamed so the factory `DeepbookMarketMaker(opts)` can take the
 // public-surface name) Context.Service tags. Split along the capability
 // axis so future known-package factories can produce a strict subset
-// (`DeepbookCore` only) without faking an admin cap.
+// (`DeepbookCoreTag` only) without faking an admin cap.
 
 import { Context, Effect, Schema } from 'effect';
 import {
@@ -21,9 +21,10 @@ import {
 	type DeepbookKnownPackageOptions,
 } from './deepbook/index.js';
 import { DeepbookError } from '../engine/errors.js';
+import { resolveNetwork } from '../engine/network.js';
 
 // -----------------------------------------------------------------------------
-// DeepbookCore — read-side view
+// DeepbookCoreTag — read-side view
 // -----------------------------------------------------------------------------
 
 /** Resolved pool descriptor returned by `findPool`. Mirrors the fields
@@ -46,13 +47,13 @@ export interface DeepbookPoolRef {
  *  - `poolIds` is a flat name → id map. The current primitive yields a
  *    richer `Record<string, DeepbookPool>`; this contract narrows to
  *    the minimal lookup surface so known-package factories that don't
- *    own the pool specs can still produce a `DeepbookCore` value.
+ *    own the pool specs can still produce a `DeepbookCoreTag` value.
  *  - `findPool` is a typed lookup that fails when the pool isn't
  *    declared on this deployment. Lifts the lookup out of consumer
  *    code so the "pool not declared" error stays consistent across
  *    primitives.
  */
-export interface DeepbookCoreShape {
+export interface DeepbookCore {
 	readonly packageId: string;
 	readonly registryId: string;
 	/**
@@ -80,36 +81,36 @@ export interface DeepbookCoreShape {
 	}) => Effect.Effect<DeepbookPoolRef, DeepbookError>;
 }
 
-export class DeepbookCore extends Context.Service<DeepbookCore, DeepbookCoreShape>()(
-	'@devstack/DeepbookCore',
+export class DeepbookCoreTag extends Context.Service<DeepbookCoreTag, DeepbookCore>()(
+	'@devstack/DeepbookCoreTag',
 ) {}
 
 // -----------------------------------------------------------------------------
-// DeepbookAdmin — local-only admin capabilities
+// DeepbookAdminTag — local-only admin capabilities
 // -----------------------------------------------------------------------------
 
 /** Local-only admin capabilities. Remote `deepbookKnownPackage`
- *  factories will NOT produce a `DeepbookAdmin` layer, so any code
+ *  factories will NOT produce a `DeepbookAdminTag` layer, so any code
  *  that depends on it is type-checked away from running against a
  *  remote Deepbook deployment we don't own the admin cap for.
  *
  *  Empty contract today — Phase 6a will fill it with real admin
  *  operations (upgrade-cap rotation, package admin tx helpers). Kept
  *  as a placeholder so consumer types can already say "I need
- *  DeepbookAdmin" and pick up the fields once they arrive without
+ *  DeepbookAdminTag" and pick up the fields once they arrive without
  *  another rename pass. */
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
-export interface DeepbookAdminShape {}
+export interface DeepbookAdmin {}
 
-export class DeepbookAdmin extends Context.Service<DeepbookAdmin, DeepbookAdminShape>()(
-	'@devstack/DeepbookAdmin',
+export class DeepbookAdminTag extends Context.Service<DeepbookAdminTag, DeepbookAdmin>()(
+	'@devstack/DeepbookAdminTag',
 ) {}
 
 // -----------------------------------------------------------------------------
 // DeepbookMarketMakerTag — local-only market-making capabilities
 // -----------------------------------------------------------------------------
 
-/** Local-only market-making capabilities. Sits next to `DeepbookAdmin`
+/** Local-only market-making capabilities. Sits next to `DeepbookAdminTag`
  *  rather than under it because a consumer that just wants to nudge a
  *  book shouldn't have to depend on the admin surface (upgrade-cap
  *  rotation et al). Known-package factories may still produce this if
@@ -121,7 +122,7 @@ export class DeepbookAdmin extends Context.Service<DeepbookAdmin, DeepbookAdminS
  *  - `tickPool` posts a single round of POST_ONLY orders on the named
  *    pool. Surface for tooling that wants to nudge the book without
  *    instantiating a full market-maker fiber. */
-export interface DeepbookMarketMakerShape {
+export interface DeepbookMarketMaker {
 	readonly balanceManagerId: string;
 	readonly tickPool: (
 		poolName: string,
@@ -135,17 +136,17 @@ export interface DeepbookMarketMakerShape {
  *  is unchanged. */
 export class DeepbookMarketMakerTag extends Context.Service<
 	DeepbookMarketMakerTag,
-	DeepbookMarketMakerShape
+	DeepbookMarketMaker
 >()('@devstack/DeepbookMarketMaker') {}
 
 // -----------------------------------------------------------------------------
 // Schemas
 // -----------------------------------------------------------------------------
 
-// `DeepbookCoreShape` carries an Effect value (`findPool`) — omit a
+// `DeepbookCore` carries an Effect value (`findPool`) — omit a
 // Schema mirror for now; structural validation isn't useful when most
-// of the surface is closures. Same applies to `DeepbookMarketMakerShape`
-// (carries `tickPool`) and the currently-empty `DeepbookAdminShape`.
+// of the surface is closures. Same applies to `DeepbookMarketMaker`
+// (carries `tickPool`) and the currently-empty `DeepbookAdmin`.
 //
 // The pool ref *is* a plain record, so it gets a Schema for callers
 // that want to validate `findPool` results round-tripped through JSON.
@@ -163,29 +164,33 @@ export const DeepbookPoolRefSchema = Schema.Struct({
 // -----------------------------------------------------------------------------
 
 export interface DeepbookOptions {
-	/** Which Deepbook source. `'auto'` picks `'local'` by default. */
-	readonly mode?: 'auto' | 'local' | 'known';
-	/** Pass-through extras for the local-deploy path. See
-	 *  `DeepbookLocalDeployOptions` for the full surface. */
+	/** Pass-through extras for the local-deploy path (signer, move
+	 *  package path, pools). See `DeepbookLocalDeployOptions` for the
+	 *  full surface. Ignored on testnet/mainnet — the canonical
+	 *  Deepbook deployment is already on chain there. */
 	readonly local?: Record<string, unknown>;
-	/** Pass-through extras for the known-package path. */
-	readonly known?: DeepbookKnownPackageOptions;
+	/** Override the canonical Deepbook registry for testnet/mainnet.
+	 *  Used when pinning to a private fork; most users leave this unset
+	 *  and let the factory wire to Mysten's public Deepbook. */
+	readonly override?: DeepbookKnownPackageOptions;
 	/** Override tag name. Defaults to `'deepbook'`. */
 	readonly name?: string;
 }
 
-const resolveMode = (opts: DeepbookOptions): 'local' | 'known' => {
-	if (opts.mode === 'local' || opts.mode === 'known') return opts.mode;
-	return 'local';
-};
-
-/** Deepbook factory. Returns a single Ref that resolves to the deployed
- *  package id + pool map. Pair with {@link DeepbookMarketMaker} when
- *  continuous liquidity is needed. */
+/** Deepbook factory. Picks local-deploy on localnet and the canonical
+ *  remote deployment on testnet/mainnet — single source of truth is
+ *  `DEVSTACK_NETWORK` (set by the CLI `--network` flag or via
+ *  `devstack({ network })`). Returns a Ref that resolves to the
+ *  deployed package id + pool map. Pair with {@link DeepbookMarketMaker}
+ *  when continuous liquidity is needed. */
 export const Deepbook = (opts: DeepbookOptions = {}) => {
-	const mode = resolveMode(opts);
-	if (mode === 'known') {
-		return Object.assign(deepbookKnownPackage(opts.known ?? {}), { __kind: 'service' as const });
+	const network = resolveNetwork();
+	if (network !== 'localnet') {
+		const knownOpts: DeepbookKnownPackageOptions = {
+			network,
+			...(opts.override ?? {}),
+		};
+		return Object.assign(deepbookKnownPackage(knownOpts), { __kind: 'service' as const });
 	}
 	const localOpts = {
 		...(opts.name !== undefined ? { name: opts.name } : {}),

@@ -6,12 +6,12 @@
 //   - `walrusLocalCluster(opts)`   — full local boot. Builds the
 //     wrapper image, deploys contracts on local sui, registers nodes,
 //     fronts them via nginx, funds seed accounts. Provides ALL FOUR
-//     interfaces (`WalrusNetwork`, `WalrusNodes`, `WalrusProxy`,
-//     `WalrusAdmin`).
+//     interfaces (`WalrusNetworkTag`, `WalrusNodesTag`, `WalrusProxyTag`,
+//     `WalrusAdminTag`).
 //   - `walrusKnownDeployment(opts)` — pure-config handle pointing at a
-//     known testnet/mainnet deployment. Provides only `WalrusNetwork`,
-//     `WalrusNodes`, and (when URLs are available) `WalrusProxy`. No
-//     `WalrusAdmin` — we never have admin power over a network we
+//     known testnet/mainnet deployment. Provides only `WalrusNetworkTag`,
+//     `WalrusNodesTag`, and (when URLs are available) `WalrusProxyTag`. No
+//     `WalrusAdminTag` — we never have admin power over a network we
 //     didn't boot.
 //
 // The legacy `Walrus` composite tag is gone — yield the narrow tags

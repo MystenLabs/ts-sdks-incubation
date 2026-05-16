@@ -17,16 +17,18 @@
 // Doesn't construct an engine. Safe to run any time. Exits 0 unless docker
 // is unreachable.
 
-import { Console, Effect } from 'effect';
+import { Console, Effect, FileSystem } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { Command } from 'effect/unstable/cli';
 import { createServer } from 'node:net';
 import {
 	collectInventory,
+	isPidAlive,
 	renderInventoryRow,
 	renderTotals,
 	totalsFor,
 } from '../../engine/docker/inventory.js';
+import { join as joinPath } from 'node:path';
 
 type Spawner = ReturnType<typeof ChildProcessSpawner.make>;
 
@@ -116,19 +118,191 @@ const renderCheck = (c: Check): string => {
 	return `  ${tag} ${c.name}${reqTag}${detail}`;
 };
 
+// Find every `*.lock` file under `<root>/.devstack/` whose holder pid is
+// dead and remove it. Stale locks are orphans: the supervisor that
+// wrote them is gone, but its `state.json.lock` was never deleted
+// (e.g. SIGKILL skipped the scope finalizer, the machine power-cycled,
+// or a Docker Desktop hang killed the host process). Without cleanup,
+// the next `pnpm dev` for that stack fails with a misleading
+// "stack 'main' is already running (pid <dead>)" message.
+//
+// We only consider `<root>/.devstack/` — explicitly NOT
+// `~/.devstack/` — because:
+//   1. Per-repo locks live here; the global registry doesn't carry
+//      O_EXCL lock files.
+//   2. Walking the user's home for `*.lock` overreaches doctor's
+//      scope ("preflight for THIS app").
+//
+// `DEVSTACK_APP_DIR` env override is honored to mirror the rest of
+// the toolchain.
+interface StaleLock {
+	readonly path: string;
+	readonly pid: number | undefined;
+	/** Parsed `acquiredAt` ISO string, when available. Surfaces in the
+	 *  detail line so the user can correlate against e.g. their last
+	 *  laptop restart. */
+	readonly acquiredAt: string | undefined;
+}
+
+const isLockFile = (name: string): boolean =>
+	name === 'state.json.lock' || name.endsWith('.lock');
+
+// Walk one directory looking for `*.lock` files. Returns them as
+// absolute paths. Non-recursive — locks live one directory deep
+// (`.devstack/stacks/<stack>/state.json.lock`,
+//  `.devstack/networks/<network>.lock`).
+const listLockFiles = (
+	fs: FileSystem.FileSystem,
+	dir: string,
+): Effect.Effect<ReadonlyArray<string>> =>
+	Effect.gen(function* () {
+		const exists = yield* fs.exists(dir).pipe(Effect.catch(() => Effect.succeed(false)));
+		if (!exists) return [];
+		const entries = yield* fs
+			.readDirectory(dir)
+			.pipe(Effect.catch(() => Effect.succeed([] as ReadonlyArray<string>)));
+		const out: Array<string> = [];
+		for (const entry of entries) {
+			const full = joinPath(dir, entry);
+			const stat = yield* fs.stat(full).pipe(
+				Effect.map((s) => s.type),
+				Effect.catch(() => Effect.succeed('Unknown' as const)),
+			);
+			if (stat === 'File' && isLockFile(entry)) out.push(full);
+		}
+		return out as ReadonlyArray<string>;
+	});
+
+const readLockBody = (
+	fs: FileSystem.FileSystem,
+	path: string,
+): Effect.Effect<{ pid: number | undefined; acquiredAt: string | undefined }> =>
+	Effect.gen(function* () {
+		const text = yield* fs
+			.readFileString(path)
+			.pipe(Effect.catch(() => Effect.succeed('')));
+		if (text.trim().length === 0) return { pid: undefined, acquiredAt: undefined };
+		try {
+			const parsed = JSON.parse(text) as { pid?: unknown; acquiredAt?: unknown };
+			const pid =
+				typeof parsed.pid === 'number' && Number.isFinite(parsed.pid)
+					? parsed.pid
+					: undefined;
+			const acquiredAt =
+				typeof parsed.acquiredAt === 'string' ? parsed.acquiredAt : undefined;
+			return { pid, acquiredAt };
+		} catch {
+			return { pid: undefined, acquiredAt: undefined };
+		}
+	});
+
+const findStaleLocks = (
+	fs: FileSystem.FileSystem,
+	appDir: string,
+): Effect.Effect<ReadonlyArray<StaleLock>> =>
+	Effect.gen(function* () {
+		const devstackDir = joinPath(appDir, '.devstack');
+		const candidates: Array<string> = [];
+		// Per-stack localnet locks: `.devstack/stacks/<stack>/state.json.lock`.
+		const stacksDir = joinPath(devstackDir, 'stacks');
+		const stacksEntries = yield* fs
+			.readDirectory(stacksDir)
+			.pipe(Effect.catch(() => Effect.succeed([] as ReadonlyArray<string>)));
+		for (const stack of stacksEntries) {
+			const stackDir = joinPath(stacksDir, stack);
+			const inner = yield* listLockFiles(fs, stackDir);
+			for (const p of inner) candidates.push(p);
+		}
+		// Live-net locks: `.devstack/networks/<network>.lock`.
+		const netsDir = joinPath(devstackDir, 'networks');
+		const netLocks = yield* listLockFiles(fs, netsDir);
+		for (const p of netLocks) candidates.push(p);
+		// Legacy flat lock: `.devstack/state.json.lock`.
+		const flatLock = joinPath(devstackDir, 'state.json.lock');
+		const flatExists = yield* fs.exists(flatLock).pipe(Effect.catch(() => Effect.succeed(false)));
+		if (flatExists) candidates.push(flatLock);
+
+		const out: Array<StaleLock> = [];
+		for (const path of candidates) {
+			const body = yield* readLockBody(fs, path);
+			// A lock is "stale" if the pid is missing/unreadable (the body
+			// is corrupt — no holder to defer to) OR the pid is dead.
+			// Either way, removing it is safe: the original supervisor is
+			// definitionally not around to race us.
+			const stale = body.pid === undefined || !isPidAlive(body.pid);
+			if (stale) {
+				out.push({ path, pid: body.pid, acquiredAt: body.acquiredAt });
+			}
+		}
+		return out as ReadonlyArray<StaleLock>;
+	});
+
+const removeStaleLocks = (
+	fs: FileSystem.FileSystem,
+	locks: ReadonlyArray<StaleLock>,
+): Effect.Effect<ReadonlyArray<string>> =>
+	Effect.gen(function* () {
+		const removed: Array<string> = [];
+		for (const lock of locks) {
+			const ok = yield* fs
+				.remove(lock.path)
+				.pipe(
+					Effect.as(true),
+					Effect.catch(() => Effect.succeed(false)),
+				);
+			if (ok) removed.push(lock.path);
+		}
+		return removed as ReadonlyArray<string>;
+	});
+
 export const doctorCommand = Command.make('doctor', {}, () =>
 	Effect.gen(function* () {
 		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+		const fs = yield* FileSystem.FileSystem;
 		const docker = yield* checkDocker(spawner);
 		const sui = yield* checkSui(spawner);
 		const ports: Array<Check> = [];
 		for (const p of COMMON_PORTS) {
 			ports.push(yield* checkPort(p));
 		}
-		const all: Array<Check> = [docker, sui, ...ports];
+
+		// Stale state-store locks: each `.devstack/**/state.json.lock`
+		// whose holder pid is dead blocks the next `pnpm dev` for that
+		// stack with a misleading "already running (pid <dead>)" error.
+		// Doctor auto-cleans them — they're definitionally orphans, so
+		// removing them can't race a live supervisor. (A live holder
+		// is by definition not stale.)
+		const appDir = process.env.DEVSTACK_APP_DIR ?? process.cwd();
+		const staleLocks = yield* findStaleLocks(fs, appDir);
+		const removedLocks = yield* removeStaleLocks(fs, staleLocks);
+		const lockCheck: Check =
+			staleLocks.length === 0
+				? { name: 'State-store locks', ok: true, required: false, detail: 'no stale locks' }
+				: {
+						name: 'State-store locks',
+						ok: removedLocks.length === staleLocks.length,
+						required: false,
+						detail:
+							removedLocks.length === staleLocks.length
+								? `removed ${removedLocks.length} stale lock${removedLocks.length === 1 ? '' : 's'}`
+								: `removed ${removedLocks.length}/${staleLocks.length} stale lock${staleLocks.length === 1 ? '' : 's'} (filesystem error on the rest)`,
+					};
+
+		const all: Array<Check> = [docker, sui, lockCheck, ...ports];
 		yield* Console.log('Checks');
 		for (const c of all) {
 			yield* Console.log(renderCheck(c));
+		}
+		// One detail line per cleaned lock so the user can audit what
+		// got removed without re-running with a verbose flag.
+		if (removedLocks.length > 0) {
+			for (const lock of staleLocks) {
+				if (!removedLocks.includes(lock.path)) continue;
+				const pidLabel = lock.pid !== undefined ? `pid ${lock.pid}` : 'unreadable holder';
+				const ageLabel =
+					lock.acquiredAt !== undefined ? `, acquired ${lock.acquiredAt}` : '';
+				yield* Console.log(`      └─ ${lock.path} (${pidLabel}${ageLabel})`);
+			}
 		}
 
 		// Inventory only runs when the docker daemon is reachable —

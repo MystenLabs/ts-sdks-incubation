@@ -4,14 +4,14 @@ The minimal-but-real starting point for a new devstack-backed Sui app.
 
 ```
 _template/
-├── devstack.config.ts        # plugins + accounts + setup actions
+├── devstack.config.ts        # Refs: accounts, packages, actions, wallet, dev
 ├── package.json              # dev/build/test/e2e scripts
-├── playwright.config.ts      # via defineDevstackPlaywrightConfig
+├── playwright.config.ts      # stock playwright + setupDevstack global setup
 ├── tsconfig.json             # composite refs to app + node
 ├── tsconfig.app.json         # extends @mysten-incubation/tsconfig/react
 ├── tsconfig.node.json        # for vite/vitest/playwright configs
 ├── vite.config.ts            # vite + devstack vite plugin + tailwind
-├── vitest.config.ts          # via defineDevstackVitestConfig
+├── vitest.config.ts          # stock vitest + withDevstack fixture
 ├── index.html
 ├── e2e/mint.spec.ts          # connect-and-mint flow
 ├── move/hello/               # one Move package with one entry function
@@ -37,4 +37,4 @@ _template/
 5. `pnpm install` then `pnpm dev`.
 
 For a guided scaffold, run
-`pnpm create @mysten-incubation/devstackpp <your-app>` instead.
+`pnpm create @mysten-incubation/devstack-app <your-app>` instead.

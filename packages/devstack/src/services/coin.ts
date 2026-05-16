@@ -31,8 +31,8 @@ export interface RegisterCoinResult {
 	readonly decimals: number;
 	readonly fullCoinType: string;
 	/**
-	 * SDK-aligned projection — see `CoinShape['sdkCoin']`. Pass directly
-	 * to `@mysten/deepbook-v3` utilities that accept the SDK's `Coin`
+	 * SDK-aligned projection — see `Coin['sdkCoin']`. Pass directly
+	 * to `@mysten/deepbook-v3` utilities that accept the SDK's `CoinTag`
 	 * shape.
 	 */
 	readonly sdkCoin: {

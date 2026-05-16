@@ -1,0 +1,101 @@
+---
+title: dapp-kit integration
+description: One line in your frontend wires createDAppKit against the running devstack — networks, MVR overrides, and connected dev wallet all from the manifest.
+---
+
+dapp-kit usually wants a bunch of dev-environment-specific config:
+which network is the default, what RPC URL goes with `'localnet'`,
+which MVR placeholders map to which package ids, and which wallets
+are available. In a hand-wired setup, every one of those has to
+update when you regenesis the chain, when you republish, when you
+switch networks.
+
+The `@mysten-incubation/devstack/dapp-kit` subpath turns that into
+one call.
+
+## Setup
+
+```ts
+// src/dapp-kit.ts
+import { createDevstackDappKit } from '@mysten-incubation/devstack/dapp-kit';
+import { manifest } from './generated/manifest.js';
+
+export const { dAppKit } = await createDevstackDappKit({ manifest });
+
+declare module '@mysten/dapp-kit-react' {
+  interface Register {
+    dAppKit: typeof dAppKit;
+  }
+}
+```
+
+That's the whole frontend wiring. Use `useDAppKit()`,
+`useCurrentAccount()`, and friends as normal.
+
+What `createDevstackDappKit` reads from the manifest:
+
+- **`services.sui.rpc.url`** → the `localnet` RPC URL.
+- **`packages.*.mvr`** → MVR placeholder overrides, spread into the
+  `SuiGrpcClient`'s `mvr.overrides` so
+  `namedPackagesPlugin` resolves placeholders to live packageIds.
+- **`app.wallet`** → the dev wallet's URL, so it registers as a
+  connectable wallet.
+- **`services.walrus`** → walrus aggregator + publisher URLs for the
+  `@mysten/walrus` browser client.
+
+## Network is set by the supervisor
+
+`createDevstackDappKit` reads the network from the manifest's
+`services.sui.network` field — whatever `--network` the supervisor
+booted with. `pnpm dev` defaults to localnet; `devstack up --network
+testnet` makes the kit a testnet kit. No per-network user wiring,
+and no `additionalNetworks` array to keep in sync.
+
+It throws if the manifest doesn't carry a `services.sui` entry (the
+supervisor hasn't reached sui bring-up yet).
+
+The wallet it wires is the devstack dev wallet — useful during
+development against any network, but **not what you want to ship to
+production**. For production deploys, swap `dapp-kit.ts` for a
+hand-written call to `createDAppKit({...})` with real wallet
+adapters (Slush, Suiet, etc.). You can still read packageIds and
+endpoints out of the manifest via `fromManifest` and
+`mvrOverridesFromManifest` at build time.
+
+The `createDappKitConfig(manifest, opts)` helper exposed from this
+subpath is what `createDevstackDappKit` uses under the hood — call
+it directly when you want to spread its `defaultNetwork` /
+`networks` / `createClient` triple into a hand-rolled
+`createDAppKit({...})` with your own wallet adapters.
+
+## Manifest from the browser
+
+The dapp-kit subpath also re-exports `fromManifest` and the manifest
+types — the same shapes the server-side `@mysten-incubation/devstack`
+package uses, but importable from a browser bundle without pulling
+in the Node-only factory graph.
+
+```ts
+import { fromManifest, type Manifest } from '@mysten-incubation/devstack/dapp-kit';
+
+const m: Manifest = fromManifest(rawJson);
+const aliceAddress = m.accounts.alice.address;
+```
+
+## Connecting via the dev wallet
+
+Once `Wallet({ accounts: [...] })` is in your devstack, the dev
+wallet shows up as **Dev Wallet** in dapp-kit's connect modal. It
+exposes one wallet with one entry per `Account(...)` Ref.
+
+In tests, `connectAs(page, 'alice')` clicks that modal and switches
+the active account — see
+[testing-playwright](./testing-playwright).
+
+## Reference
+
+- [Services reference — Wallet](../reference/services#wallet) — what
+  Wallet exposes and how to configure it.
+- [Codegen reference — DappKitEmitter](../reference/codegen#dappkitemitter) —
+  the source generator that builds the local-side companion to
+  `createDevstackDappKit`.

@@ -1,0 +1,139 @@
+---
+title: Codegen
+description: Move → TypeScript bindings and a pre-wired dapp-kit factory that always match the freshly-published package id.
+---
+
+The packageId of every Move package you publish changes every time
+the chain regenerates. The TypeScript types your app uses to call
+that Move code have to match. Stitching that together by hand —
+hard-coded ids, regen scripts, drift between Move and TS — is one of
+the biggest sources of friction in a Sui app.
+
+Devstack runs codegen as a Ref. When a package republishes, codegen
+re-emits. When you read the resulting bindings, the types and the
+on-chain ids are guaranteed to agree.
+
+## Move → TypeScript bindings (the default)
+
+The `Codegen` Ref runs a list of emitters against your resolved
+package set. With no `emitters` field, it defaults to the Move → TS
+bindings emitter — the 90% case:
+
+```ts
+import { Codegen } from '@mysten-incubation/devstack';
+
+const codegen = Codegen({
+  output: './src/generated',
+  packages: [hello, world],
+});
+
+export default devstack(/* ... */, codegen);
+```
+
+Output lands at `<output>/bindings/<package-name>/`. Atomic dir swap
+means your dev server never sees a half-written tree mid-cycle.
+
+`KnownPackage(...)` entries are silently skipped — the bindings
+emitter needs Move source.
+
+## DappKit: typed dapp-kit factory
+
+For a generated dapp-kit module, use the `DappKit` facade — it wraps
+`Codegen({ emitters: [DappKitEmitter(...)] })`:
+
+```ts
+import { DappKit } from '@mysten-incubation/devstack';
+
+const dappKit = DappKit({
+  output: './src/generated',
+  packages: [hello, deepbookV3],
+  flavor: 'react',
+});
+```
+
+Output lands at `<output>/dapp-kit/index.ts`. Your app imports it
+directly:
+
+```ts
+// src/dapp-kit.ts
+import { createDevstackDappKit } from '@mysten-incubation/devstack/dapp-kit';
+import { manifest } from './generated/manifest.js';
+
+export const { dAppKit } = await createDevstackDappKit({ manifest });
+```
+
+Flavors:
+
+- `'core'` — only `@mysten/dapp-kit-core` imports.
+- `'react'` (default) — adds the `declare module '@mysten/dapp-kit-react'`
+  `Register` block so `useDAppKit()` infers the right type.
+
+See [dapp-kit integration](./dapp-kit) for the full frontend wiring.
+
+## Multiple emitters
+
+To run both bindings and dapp-kit (or your own emitters), pass them
+explicitly. The bindings emitter and dapp-kit emitter both live under
+`@mysten-incubation/devstack/advanced`:
+
+```ts
+import { Codegen } from '@mysten-incubation/devstack';
+import { BindingsEmitter, DappKitEmitter } from '@mysten-incubation/devstack/advanced';
+
+Codegen({
+  output: './src/generated',
+  packages: [hello, deepbookV3],
+  emitters: [BindingsEmitter(), DappKitEmitter({ flavor: 'react' })],
+});
+```
+
+## Writing your own emitter
+
+`defineEmitter({ name, emit })` is the contract. The `emit` callback
+receives a `CodegenContext` carrying every package's
+`{ name, packageId, mvrPlaceholder, sourcePath?, captured? }`. Filter
+on `sourcePath` if you need Move source; otherwise consume every
+entry.
+
+```ts
+import { Effect } from 'effect';
+import { Codegen } from '@mysten-incubation/devstack';
+import { defineEmitter, CodegenError } from '@mysten-incubation/devstack/advanced';
+import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
+
+const VersionList = defineEmitter({
+  name: 'version-list',
+  emit: (ctx) =>
+    Effect.gen(function* () {
+      const out = path.join(ctx.outputDir, 'versions.txt');
+      const lines = ctx.packages.map((p) => `${p.name}: ${p.packageId}`).sort();
+      yield* Effect.tryPromise({
+        try: () => fs.writeFile(out, lines.join('\n') + '\n', 'utf-8'),
+        catch: (cause) =>
+          new CodegenError({ emitter: 'version-list', phase: 'write', message: `failed to write ${out}`, cause }),
+      });
+    }),
+});
+
+Codegen({ output: './src/generated', packages: [hello], emitters: [VersionList] });
+```
+
+## Per-package opt-out
+
+Skip a specific package from every `Codegen(...)` in the stack:
+
+```ts
+const internalHelper = Package('internal-helper', './move/internal', {
+  signer: publisher,
+  codegen: false,
+});
+```
+
+## Reference
+
+- [Codegen reference](../reference/codegen) — every option, the
+  `CodegenContext` / `CodegenPackage` shapes, and the
+  `CodegenError` taxonomy.
+- [Services reference — Package](../reference/services#package) — the
+  `capture:` and `coins:` fields that downstream emitters consume.

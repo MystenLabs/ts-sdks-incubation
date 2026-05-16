@@ -442,6 +442,15 @@ function NodeTable({
 	);
 }
 
+// Sections whose `ready` rows we fold into a single compact summary line
+// (the bulk of a steady-state stack's clutter). Failed / in-flight rows
+// still render as full rows so the user can see what's happening. We
+// only fold when there are enough done rows for the saving to be worth
+// the loss of per-row detail (the resolved primary/extras still live in
+// the global log buffer and `manifest.json`).
+const COLLAPSED_SECTIONS: ReadonlySet<string> = new Set(['actions']);
+const COLLAPSE_THRESHOLD = 2;
+
 function GroupSection({
 	label,
 	entries,
@@ -450,14 +459,60 @@ function GroupSection({
 	readonly entries: ReadonlyArray<TuiEntry>;
 }): React.ReactElement {
 	const headerColor = sectionColor(label);
+	const collapsible = COLLAPSED_SECTIONS.has(label);
+	const ready = collapsible ? entries.filter((e) => e.status === 'ready') : [];
+	const others = collapsible ? entries.filter((e) => e.status !== 'ready') : entries;
+	const shouldCollapse = collapsible && ready.length > COLLAPSE_THRESHOLD;
 	return (
 		<Box flexDirection='column'>
 			<Text bold color={headerColor}>
 				{headerLabel(label)}
 			</Text>
-			{entries.map((e) => (
+			{others.map((e) => (
 				<NodeRow key={e.key} entry={e} />
 			))}
+			{shouldCollapse ? (
+				<CollapsedReadyRow entries={ready} />
+			) : (
+				ready.map((e) => <NodeRow key={e.key} entry={e} />)
+			)}
+		</Box>
+	);
+}
+
+// Compact one-line replacement for a run of `ready` rows. Uses the same
+// glyph + status word as a full row so the eye reads it as a single
+// done-row; the names list keeps each primitive identifiable without
+// consuming N lines of vertical space.
+function CollapsedReadyRow({
+	entries,
+}: {
+	readonly entries: ReadonlyArray<TuiEntry>;
+}): React.ReactElement {
+	// Sample the action status word — for the actions section this reads
+	// `done`; for any future section we wire into the collapse mechanism
+	// it falls back to `ready` per `statusWord`.
+	const sample = entries[0]!;
+	const word = statusWord(sample);
+	const color = STATUS_COLOR.ready;
+	const glyph = STATUS_GLYPH.ready;
+	const names = entries.map((e) => parseTitle(entryTitle(e)).name).join(', ');
+	return (
+		<Box>
+			<Box width={1}>
+				<Text> </Text>
+			</Box>
+			<Box width={3}>
+				<Text color={color}>{glyph}</Text>
+			</Box>
+			<Box width={NAME_WIDTH}>
+				<Text dimColor>{`${word} (${entries.length})`}</Text>
+			</Box>
+			<Box flexGrow={1}>
+				<Text dimColor wrap='wrap'>
+					{names}
+				</Text>
+			</Box>
 		</Box>
 	);
 }

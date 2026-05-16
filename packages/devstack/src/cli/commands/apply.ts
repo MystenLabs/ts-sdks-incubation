@@ -42,20 +42,36 @@ const loadDevstack = (configPath: string) =>
 		const devstack = mod.default as Partial<DevstackLike> | undefined;
 		if (!devstack || typeof devstack.layer === 'undefined') {
 			return yield* Effect.fail(
-				new Error(`${configPath} must default-export a Devstack (from defineDevstack)`),
+				new Error(`${configPath} must default-export a DevstackHandle (from devstack(...) or defineDevstack)`),
 			);
 		}
 		return devstack as DevstackLike;
 	});
+
+const networkFlag = Flag.choice('network', ['localnet', 'testnet', 'mainnet'] as const).pipe(
+	Flag.optional,
+	Flag.withDescription(
+		'Target Sui network. Sets DEVSTACK_NETWORK before loading the config so every ' +
+			'factory (Sui, Seal, Walrus, Deepbook) sees the same value. Defaults to localnet.',
+	),
+);
 
 export const applyCommand = Command.make(
 	'apply',
 	{
 		configPath: Argument.string('config-path').pipe(Argument.optional),
 		json: Flag.boolean('json'),
+		network: networkFlag,
 	},
-	({ configPath, json }) =>
+	({ configPath, json, network }) =>
 		Effect.gen(function* () {
+			Option.match(network, {
+				onNone: () => undefined,
+				onSome: (n) => {
+					process.env.DEVSTACK_NETWORK = n;
+					return undefined;
+				},
+			});
 			const resolved = Option.getOrElse(configPath, () => './devstack.config.ts');
 			const devstack = yield* loadDevstack(resolved);
 

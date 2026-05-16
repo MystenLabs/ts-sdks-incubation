@@ -1,8 +1,7 @@
 // DappKit(opts) — convenience facade for the dapp-kit codegen emitter.
-// Mirrors the Bindings facade: wraps `Codegen({ emitters:
-// [DappKitEmitter(...)] })` so the single-purpose "I want a generated
-// dapp-kit config file" case doesn't need the user to declare a
-// separate `Codegen({...})` ref.
+// Wraps `Codegen({ emitters: [DappKitEmitter(...)] })` so the
+// single-purpose "I want a generated dapp-kit config file" case doesn't
+// need the user to declare a separate `Codegen({...})` ref.
 //
 // Replaces the runtime `createDevstackDappKit(...)` path under
 // `@mysten-incubation/devstack/dapp-kit`. The runtime path stays

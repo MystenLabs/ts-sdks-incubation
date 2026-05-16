@@ -6,8 +6,15 @@
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Effect } from 'effect';
-import { devstack, pickCreatedByTypeSuffix } from '@mysten-incubation/devstack';
-import { Account, Action, Dev, Package, Wallet } from '@mysten-incubation/devstack/services';
+import {
+	Account,
+	Action,
+	Dev,
+	devstack,
+	Package,
+	pickCreatedByTypeSuffix,
+	Wallet,
+} from '@mysten-incubation/devstack';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONNECT_FOUR_DIR = resolve(HERE, 'move/connect_four');
@@ -44,7 +51,7 @@ const wallet = Wallet({
 
 const dev = Dev({
 	command: 'pnpm',
-	args: ['exec', 'vite', '--host', '0.0.0.0', '--strictPort'],
+	args: ['exec', 'vite', '--host', '0.0.0.0', '--strictPort', '--port', '{port}'],
 	port: 5176,
 	needs: [connectFour, openLobby, wallet],
 });

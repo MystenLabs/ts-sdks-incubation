@@ -3,7 +3,7 @@
 // Returns a typed Ref usable directly as a signer in `Package` / `Action`
 // / `Wallet`. The Ref is simultaneously an Effect Layer (composed into
 // the stack by `devstack(...)`) and an Effect tag (`yield* alice` returns
-// the resolved `AccountShape`).
+// the resolved `Account`).
 //
 // A spec's `from:` discriminator selects how the keypair is acquired:
 //
@@ -81,7 +81,7 @@ import type { AccountRef } from './ref.js';
  *  - `signPersonalMessage` retains the `{ signature, bytes }` shape
  *    because the dapp-kit personal-message flow needs both halves.
  */
-export interface AccountShape {
+export interface Account {
 	readonly name: string;
 	readonly address: string;
 	readonly scheme: 'ed25519' | 'secp256k1' | 'secp256r1';
@@ -99,15 +99,15 @@ export interface AccountShape {
  *  configuration. Consumers (`Package({signer})`, `Seal({signer})`, …)
  *  accept any value matching this shape. */
 /* eslint-disable @typescript-eslint/no-explicit-any */
-export type AccountTag = Ref<any, AccountShape, any, AccountError>;
+export type AccountTag = Ref<any, Account, any, AccountError>;
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
-/** Runtime-validation mirror of `AccountShape`. Use
- *  `Schema.decode(AccountShapeSchema)` to validate a hand-rolled
+/** Runtime-validation mirror of `Account`. Use
+ *  `Schema.decode(AccountSchema)` to validate a hand-rolled
  *  per-name account tag value, or in tests where you want to assert the
  *  shape on yield. Signing functions are closures (not Schema-validatable)
  *  so they're typed as `Unknown` here. */
-export const AccountShapeSchema = Schema.Struct({
+export const AccountSchema = Schema.Struct({
 	name: Schema.String,
 	address: Schema.String,
 	scheme: Schema.Literals(['ed25519', 'secp256k1', 'secp256r1']),
@@ -245,7 +245,7 @@ export type AccountSpec =
 
 /** Factory for a single named account. The returned Ref is both an
  *  Effect Layer (composed into the merged stack by `devstack(...)`) and
- *  an Effect tag (`yield* alice` returns the resolved `AccountShape`).
+ *  an Effect tag (`yield* alice` returns the resolved `Account`).
  *
  *  Default source: `'ephemeral-funded'` — generate a fresh keypair,
  *  persist it under `.devstack/stacks/<stack>/.keys/<name>.key`, and

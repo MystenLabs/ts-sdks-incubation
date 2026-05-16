@@ -108,7 +108,7 @@ describe('Sui(opts?) factory shapes', () => {
 		}),
 	);
 
-	it.effect('Sui({ network: { rpc } }) carries an explicit RPC through to SuiShape', () =>
+	it.effect('Sui({ network: { rpc } }) carries an explicit RPC through to Sui', () =>
 		Effect.gen(function* () {
 			const restore = stubChainIdFetch();
 			try {

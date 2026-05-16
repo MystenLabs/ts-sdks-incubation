@@ -125,11 +125,3 @@ export class DeepbookError extends Schema.TaggedErrorClass<DeepbookError>()('Dee
 	cause: Schema.optional(Schema.Defect),
 }) {}
 
-export class BindingsError extends Schema.TaggedErrorClass<BindingsError>()('BindingsError', {
-	// `phase` names the bindings lifecycle step that failed: 'codegen' covers
-	// the `@mysten/codegen` invocation (incl. its implicit `sui move summary`),
-	// 'write' covers fs operations around output dir creation / staging swap.
-	phase: Schema.Literals(['codegen', 'write']),
-	message: Schema.String,
-	cause: Schema.optional(Schema.Defect),
-}) {}

@@ -31,7 +31,7 @@
 /** Sui network identifier used as the key into each per-service map. */
 export type KnownNetwork = 'testnet' | 'mainnet' | 'devnet';
 
-/** SDK-aligned coin entry. Mirrors `@mysten/deepbook-v3`'s `Coin` shape
+/** SDK-aligned coin entry. Mirrors `@mysten/deepbook-v3`'s `CoinTag` shape
  *  (`packages/deepbook-v3/src/types/coin.ts` upstream); the optional
  *  Pyth fields are surfaced verbatim so consumers can pass values from
  *  here directly to deepbook's `DeepBookClient`. */
@@ -68,7 +68,7 @@ export interface DeepbookPythConfig {
 /** DeepBook v3 canonical addresses on a given network. Field names use
  *  camelCase in the registry (TypeScript convention); the deepbook
  *  factories project them to SCREAMING_SNAKE_CASE for the SDK-ready
- *  `packageIds` view on `DeepbookCoreShape`.
+ *  `packageIds` view on `DeepbookCore`.
  *
  *  Static `coins` / `pools` / `marginPools` / `pyth` maps are snapshots
  *  of the corresponding `testnet*` / `mainnet*` constants in

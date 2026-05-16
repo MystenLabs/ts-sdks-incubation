@@ -24,10 +24,10 @@ import { EngineLive } from '../engine/engine.js';
 import { AccountRegistryLive } from '../engine/registries.js';
 import { LeasingLive } from '../engine/leasing.js';
 import { StateStoreConfig } from '../engine/state-store.js';
-import { SuiTag, type SuiShape } from './sui.js';
+import { SuiTag, type Sui } from './sui.js';
 import { AccountError, SuiError } from '../engine/errors.js';
 import { Account } from './account.js';
-import { FaucetTag, type FaucetShape } from '../faucet/service.js';
+import { FaucetTag, type Faucet } from '../faucet/service.js';
 
 // Mock SuiTag — `client` is opaque to the discriminator branches and
 // only matters at sign-time, which we don't exercise here. Faucet URL
@@ -43,7 +43,7 @@ const mockSui = (faucetUrl: string | undefined): Layer.Layer<SuiTag> =>
 		faucet: faucetUrl !== undefined ? { host: faucetUrl } : undefined,
 		// The branches under test never call into `client`; cast through
 		// unknown so we don't have to wire a real SuiJsonRpcClient up.
-		client: {} as unknown as SuiShape['client'],
+		client: {} as unknown as Sui['client'],
 		waitForTransactionsReady: () => Effect.void,
 	});
 
@@ -267,7 +267,7 @@ describe('Account(name, opts?) — source discriminator', () => {
 			const FaucetWithRecording: Layer.Layer<FaucetTag> = Layer.effect(
 				FaucetTag,
 				Effect.sync(
-					(): FaucetShape => ({
+					(): Faucet => ({
 						register: () => Effect.void,
 						requestCoin: (coinType, address, amount) =>
 							Effect.sync(() => {
@@ -338,7 +338,7 @@ describe('Account(name, opts?) — source discriminator', () => {
 					rpc: { host: 'http://localhost:9000' },
 					chainId: 'test-chain',
 					faucet: { host: 'http://localhost:9123' },
-					client: {} as unknown as SuiShape['client'],
+					client: {} as unknown as Sui['client'],
 					waitForTransactionsReady: () =>
 						Effect.fail(
 							new SuiError({

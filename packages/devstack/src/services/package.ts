@@ -11,9 +11,9 @@
 //
 // This file also carries the **Package / LocalPackage** Context.Service
 // tags (renamed `PackageTag` / `LocalPackageTag` so the factory name
-// can occupy `Package`) and the **Coin** Context.Service tag + the
+// can occupy `Package`) and the **CoinTag** Context.Service tag + the
 // `toSdkCoin` projection used by `register-coin` / `publish-move` /
-// the manifest emitter. The Coin tag lives here because every coin
+// the manifest emitter. The CoinTag tag lives here because every coin
 // originates from a published Package's coin registry.
 
 import { Context, Schema } from 'effect';
@@ -30,7 +30,7 @@ import type { Ref } from '../advanced/tag.js';
  *  `knownPackage` factory satisfy this — known packages on a remote
  *  network won't have an upgrade cap visible to the dev (hence
  *  `upgradeCapId: string | undefined`). */
-export interface PackageShape {
+export interface Package {
 	readonly name: string;
 	readonly packageId: string;
 	readonly upgradeCapId: string | undefined;
@@ -44,7 +44,7 @@ export interface PackageShape {
  *  Renamed `PackageTag` (not `Package`) so the factory `Package(...)`
  *  in this file owns the public-surface name. The Context key
  *  (`'@devstack/Package'`) is unchanged. */
-export class PackageTag extends Context.Service<PackageTag, PackageShape>()(
+export class PackageTag extends Context.Service<PackageTag, Package>()(
 	'@devstack/Package',
 ) {}
 
@@ -59,7 +59,7 @@ export class PackageTag extends Context.Service<PackageTag, PackageShape>()(
  *      (e.g. deepbook's `registryId`/`adminCapId`). Open record so the
  *      shape stays composable; concrete types tighten at call sites.
  */
-export interface LocalPackageShape extends PackageShape {
+export interface LocalPackage extends Package {
 	readonly sourcePath: string;
 	readonly mvrPlaceholder: string;
 	readonly captured: Record<string, unknown> | undefined;
@@ -67,24 +67,24 @@ export interface LocalPackageShape extends PackageShape {
 
 /** Renamed `LocalPackageTag` for symmetry with `PackageTag`. Context
  *  key (`'@devstack/LocalPackage'`) is unchanged. */
-export class LocalPackageTag extends Context.Service<LocalPackageTag, LocalPackageShape>()(
+export class LocalPackageTag extends Context.Service<LocalPackageTag, LocalPackage>()(
 	'@devstack/LocalPackage',
 ) {}
 
-/** Runtime-validation mirror of `PackageShape`. Use
- *  `Schema.decode(PackageShapeSchema)` to validate a `Layer.succeed(PackageTag, ...)`
+/** Runtime-validation mirror of `Package`. Use
+ *  `Schema.decode(PackageSchema)` to validate a `Layer.succeed(PackageTag, ...)`
  *  you wrote yourself, or in tests where you want to assert the shape on yield. */
-export const PackageShapeSchema = Schema.Struct({
+export const PackageSchema = Schema.Struct({
 	name: Schema.String,
 	packageId: Schema.String,
 	upgradeCapId: Schema.UndefinedOr(Schema.String),
 });
 
-/** Runtime-validation mirror of `LocalPackageShape`. Use
- *  `Schema.decode(LocalPackageShapeSchema)` to validate a hand-rolled
+/** Runtime-validation mirror of `LocalPackage`. Use
+ *  `Schema.decode(LocalPackageSchema)` to validate a hand-rolled
  *  `Layer.succeed(LocalPackageTag, ...)`, or in tests where you want to
  *  assert the shape on yield. */
-export const LocalPackageShapeSchema = Schema.Struct({
+export const LocalPackageSchema = Schema.Struct({
 	name: Schema.String,
 	packageId: Schema.String,
 	upgradeCapId: Schema.UndefinedOr(Schema.String),
@@ -94,7 +94,7 @@ export const LocalPackageShapeSchema = Schema.Struct({
 });
 
 // -----------------------------------------------------------------------------
-// Coin contract
+// CoinTag contract
 // -----------------------------------------------------------------------------
 
 /** Minimal coin contract. `fullCoinType` is the on-chain
@@ -102,23 +102,23 @@ export const LocalPackageShapeSchema = Schema.Struct({
  *  tx builders) splice into transactions.
  *
  *  `sdkCoin` is the SDK-aligned projection consumed verbatim by
- *  `@mysten/deepbook-v3` (and any other SDK that accepts a `Coin` value
+ *  `@mysten/deepbook-v3` (and any other SDK that accepts a `CoinTag` value
  *  with `{ address, type, scalar }`). Derived from our fields:
  *    - `address` = the package portion of `fullCoinType` (text before `::`)
  *    - `type`    = `fullCoinType`
  *    - `scalar`  = `10 ** decimals`
  *
  *  Pyth fields (`feed`, `currencyId`, `priceInfoObjectId`) on the SDK's
- *  `Coin` shape are intentionally out of scope here — consumers that
+ *  `CoinTag` shape are intentionally out of scope here — consumers that
  *  need them override per-coin in their own config layered on top.
  */
-export interface CoinShape {
+export interface Coin {
 	readonly name: string;
 	readonly fullCoinType: string;
 	readonly decimals: number;
 	/**
 	 * SDK-ready coin entry. Pass directly to deepbook / dapp-kit utilities
-	 * that consume `@mysten/deepbook-v3`'s `Coin` shape.
+	 * that consume `@mysten/deepbook-v3`'s `CoinTag` shape.
 	 */
 	readonly sdkCoin: {
 		readonly address: string;
@@ -127,7 +127,7 @@ export interface CoinShape {
 	};
 }
 
-export class Coin extends Context.Service<Coin, CoinShape>()('@devstack/Coin') {}
+export class CoinTag extends Context.Service<CoinTag, Coin>()('@devstack/CoinTag') {}
 
 /**
  * Build the `sdkCoin` projection from our `(fullCoinType, decimals)`
@@ -138,7 +138,7 @@ export class Coin extends Context.Service<Coin, CoinShape>()('@devstack/Coin') {
 export const toSdkCoin = (opts: {
 	readonly fullCoinType: string;
 	readonly decimals: number;
-}): CoinShape['sdkCoin'] => {
+}): Coin['sdkCoin'] => {
 	const sep = opts.fullCoinType.indexOf('::');
 	const address = sep === -1 ? opts.fullCoinType : opts.fullCoinType.slice(0, sep);
 	return {
@@ -148,11 +148,11 @@ export const toSdkCoin = (opts: {
 	};
 };
 
-/** Runtime-validation mirror of `CoinShape`. Use
- *  `Schema.decode(CoinShapeSchema)` to validate a hand-rolled
- *  `Layer.succeed(Coin, ...)`, or in tests where you want to assert the
+/** Runtime-validation mirror of `Coin`. Use
+ *  `Schema.decode(CoinSchema)` to validate a hand-rolled
+ *  `Layer.succeed(CoinTag, ...)`, or in tests where you want to assert the
  *  shape on yield. */
-export const CoinShapeSchema = Schema.Struct({
+export const CoinSchema = Schema.Struct({
 	name: Schema.String,
 	fullCoinType: Schema.String,
 	decimals: Schema.Number,
@@ -189,7 +189,7 @@ export interface PackageOptions<
 	readonly mvr?: string;
 	/** Object-id capture. See {@link CaptureSpec}. */
 	readonly capture?: CaptureSpec<TCaptured>;
-	/** Coin specs to register against the published package. */
+	/** CoinTag specs to register against the published package. */
 	readonly coins?: TCoins;
 	/** Opt out of codegen for this package, or supply a per-package
 	 *  emitter list that overrides the stack-level `Codegen({ emitters })`.
@@ -218,7 +218,7 @@ const compileCapture = <TCaptured>(
 
 /** Publishing factory. Returns a Ref carrying the published-package
  *  shape (id, captured, coins). Pass the ref into `Action({ needs: [pkg] })`
- *  or `Bindings({...})` to make the publish a prerequisite. */
+ *  or `Codegen({...})` to make the publish a prerequisite. */
 export const Package = <
 	const N extends string,
 	TCaptured = undefined,

@@ -1,0 +1,15 @@
+{
+	"title": "Features",
+	"pages": [
+		"local-dev",
+		"accounts-and-wallet",
+		"coins-and-funding",
+		"codegen",
+		"dapp-kit",
+		"testing-vitest",
+		"testing-playwright",
+		"services",
+		"live-networks",
+		"plugins"
+	]
+}

@@ -8,14 +8,14 @@
 // Unlike `Package(name, source, opts)`, `KnownPackage` doesn't run
 // `sui client publish` — there's no Move source on disk, no
 // `sourcePath`, no on-chain side effect. The resulting Ref satisfies
-// `PackageShape` (not `LocalPackageShape`) so the type system rules
+// `Package` (not `LocalPackage`) so the type system rules
 // out passing a KnownPackage where a Move-source-required emitter
 // (e.g. `BindingsEmitter`) expects it.
 
 import { Effect } from 'effect';
 import { tag } from '../advanced/tag.js';
 import { PackageRegistry } from '../engine/registries.js';
-import type { PackageShape } from './package.js';
+import type { Package } from './package.js';
 
 export interface KnownPackageOptions {
 	/** On-chain package id this name resolves to. */
@@ -34,7 +34,7 @@ export interface KnownPackageOptions {
  *  any package the user didn't publish themselves but wants threaded
  *  through `Codegen` / `Action({ needs })` / cross-reference flows. */
 export const KnownPackage = <const N extends string>(name: N, opts: KnownPackageOptions) => {
-	const shape: PackageShape = {
+	const shape: Package = {
 		name,
 		packageId: opts.packageId,
 		upgradeCapId: opts.upgradeCapId,
@@ -57,7 +57,7 @@ export const KnownPackage = <const N extends string>(name: N, opts: KnownPackage
 		{
 			kind: 'package',
 			displayTitle: `packages.${name}`,
-			display: (s: PackageShape) => ({
+			display: (s: Package) => ({
 				title: `packages.${s.name}`,
 				primary: s.packageId,
 				extras: ['known'],

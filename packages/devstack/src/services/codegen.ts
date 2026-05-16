@@ -1,28 +1,30 @@
-// Codegen(opts) — the centralized codegen Ref. Runs a list of emitter
+// Codegen(opts) — the canonical codegen Ref. Runs a list of emitter
 // plug-ins against the resolved Package set at acquire time.
 //
 // Architecture:
-//   - User declares `Codegen({ output, emitters: [...] })` once at the
-//     top of the stack.
+//   - User declares `Codegen({ output, packages })` once at the
+//     top of the stack. With no `emitters` field, `BindingsEmitter()`
+//     (Move → TS bindings via `@mysten/codegen`) is used by default,
+//     which is what 90% of stacks want.
+//   - For multiple emitters or per-emitter options, pass them
+//     explicitly: `Codegen({ ..., emitters: [BindingsEmitter(),
+//     DappKitEmitter({ flavor: 'react' })] })`.
 //   - Each Package(...) the stack contains feeds into Codegen's context
 //     (unless it sets `{ codegen: false }`).
 //   - Each emitter sees the same `{ packages, outputDir }` context and
 //     writes to its own subdirectory under `outputDir`.
 //
 // Built-in emitters: `BindingsEmitter` (Move → TS bindings) and
-// (Phase 3g) `DappKitEmitter`. User emitters drop in alongside via
-// `defineEmitter({ name, emit })`.
-//
-// `Codegen` itself doesn't auto-include any emitter — explicit is the
-// rule. Most users will write `Codegen({ output: 'src/sui', emitters:
-// [BindingsEmitter()] })`.
+// `DappKitEmitter` (React/Vue hooks). User emitters drop in alongside
+// via `defineEmitter({ name, emit })`.
 
 import * as path from 'node:path';
 import { Effect } from 'effect';
 import { tag, setPhase, type Ref } from '../advanced/tag.js';
 import type { Emitter, CodegenContext, CodegenPackage } from '../codegen/define-emitter.js';
+import { BindingsEmitter } from '../codegen/emitters/bindings.js';
 import { CodegenError } from '../codegen/errors.js';
-import type { PackageShape, LocalPackageShape } from './package.js';
+import type { Package, LocalPackage } from './package.js';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -32,14 +34,23 @@ export interface CodegenOptions {
 	 *  (`<output>/bindings/`, `<output>/dapp-kit/`, …) so multiple
 	 *  emitters coexist without collision. */
 	readonly output: string;
-	/** Emitter plug-ins to run. Run in declaration order; one emitter's
-	 *  output isn't visible to another (each emitter is independent). */
-	readonly emitters: ReadonlyArray<Emitter>;
-	/** Package refs to emit for. When omitted, defaults to the empty
-	 *  list — pass `packages: [pkg1, pkg2]` explicitly. The Phase 6
-	 *  default-provider step will auto-include every `Package(...)` in
-	 *  the stack that doesn't opt out via `{ codegen: false }`. */
+	/** Package refs to emit for. `Package(...)` refs emit fully;
+	 *  `KnownPackage(...)` refs are silently skipped at emit time by
+	 *  emitters that need Move source (e.g. `BindingsEmitter`). The
+	 *  type is loose because TS treats the shape parameter as invariant
+	 *  on `Ref`; the emitter validates package shape at runtime.
+	 *
+	 *  Defaults to `[]` — Phase-6 default-provider auto-includes every
+	 *  `Package(...)` in the stack that doesn't opt out via
+	 *  `{ codegen: false }`, so most users omit this. */
 	readonly packages?: ReadonlyArray<Ref<any, any, any, any>>;
+	/** Emitter plug-ins to run. Run in declaration order; one emitter's
+	 *  output isn't visible to another (each emitter is independent).
+	 *  Defaults to `[BindingsEmitter()]` — Move → TS bindings via
+	 *  `@mysten/codegen`, which is what most stacks want. Override to
+	 *  add DappKitEmitter, swap in user emitters, or change emitter
+	 *  options. */
+	readonly emitters?: ReadonlyArray<Emitter>;
 	/** Override tag name. Defaults to `'codegen'`. */
 	readonly name?: string;
 }
@@ -48,7 +59,7 @@ export interface CodegenOptions {
  *  emitter consumes. Local packages carry `sourcePath`; remote/known
  *  packages don't (emitters that need source filter to entries where
  *  it's defined). */
-const toCodegenPackage = (pkg: PackageShape | LocalPackageShape): CodegenPackage => {
+const toCodegenPackage = (pkg: Package | LocalPackage): CodegenPackage => {
 	const base: { name: string; packageId: string; mvrPlaceholder: string } = {
 		name: pkg.name,
 		packageId: pkg.packageId,
@@ -57,7 +68,7 @@ const toCodegenPackage = (pkg: PackageShape | LocalPackageShape): CodegenPackage
 				? pkg.mvrPlaceholder
 				: pkg.name,
 	};
-	const local = 'sourcePath' in pkg ? (pkg as LocalPackageShape) : undefined;
+	const local = 'sourcePath' in pkg ? (pkg as LocalPackage) : undefined;
 	if (local !== undefined) {
 		const withSource: CodegenPackage = {
 			...base,
@@ -74,6 +85,7 @@ const toCodegenPackage = (pkg: PackageShape | LocalPackageShape): CodegenPackage
 export const Codegen = (opts: CodegenOptions) => {
 	const name = opts.name ?? 'codegen';
 	const packageRefs = opts.packages ?? [];
+	const emitters = opts.emitters ?? [BindingsEmitter()];
 	return tag(
 		`codegen/${name}` as const,
 		Effect.gen(function* () {
@@ -99,10 +111,10 @@ export const Codegen = (opts: CodegenOptions) => {
 			yield* Effect.annotateCurrentSpan({
 				'codegen.output': outputDir,
 				'codegen.packages': resolved.map((p) => p.name).join(','),
-				'codegen.emitters': opts.emitters.map((e) => e.name).join(','),
+				'codegen.emitters': emitters.map((e) => e.name).join(','),
 			});
 
-			for (const emitter of opts.emitters) {
+			for (const emitter of emitters) {
 				yield* setPhase(`emit: ${emitter.name}`);
 				yield* emitter.emit(ctx).pipe(
 					Effect.mapError((cause) => {
@@ -117,7 +129,7 @@ export const Codegen = (opts: CodegenOptions) => {
 				);
 			}
 
-			return { outputDir, emitters: opts.emitters.map((e) => e.name) };
+			return { outputDir, emitters: emitters.map((e) => e.name) };
 		}).pipe(Effect.withSpan(`codegen(${name})`)),
 		{
 			kind: 'app',

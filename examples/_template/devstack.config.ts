@@ -8,14 +8,7 @@
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Effect } from 'effect';
-import { devstack } from '@mysten-incubation/devstack';
-import {
-	Account,
-	Action,
-	Dev,
-	Package,
-	Wallet,
-} from '@mysten-incubation/devstack/services';
+import { Account, Action, Dev, devstack, Package, Wallet } from '@mysten-incubation/devstack';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HELLO_DIR = resolve(HERE, 'move/hello');
@@ -48,8 +41,8 @@ const wallet = Wallet({
 // `Devstack.app.dev` in the runtime accessor.
 const dev = Dev({
 	command: 'pnpm',
-	args: ['exec', 'vite', '--port', '5179'],
-	ready: { kind: 'http', url: 'http://localhost:5179', timeoutMs: 60_000 },
+	args: ['exec', 'vite', '--port', '{port}'],
+	port: 5179,
 	needs: [hello, wallet],
 });
 

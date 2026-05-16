@@ -4,8 +4,7 @@
 
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { devstack } from '@mysten-incubation/devstack';
-import { Account, Dev, Package, Wallet } from '@mysten-incubation/devstack/services';
+import { Account, Dev, devstack, Package, Wallet } from '@mysten-incubation/devstack';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MANAGED_COIN_DIR = resolve(HERE, 'move/managed_coin');
@@ -37,7 +36,7 @@ const wallet = Wallet({
 
 const dev = Dev({
 	command: 'pnpm',
-	args: ['exec', 'vite', '--host', '0.0.0.0', '--strictPort'],
+	args: ['exec', 'vite', '--host', '0.0.0.0', '--strictPort', '--port', '{port}'],
 	port: 5173,
 	needs: [managedCoin, wallet],
 });

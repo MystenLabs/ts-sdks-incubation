@@ -13,17 +13,17 @@ import { layer as NodeFileSystemLayer } from '@effect/platform-node/NodeFileSyst
 import { describe, expect, it } from '@effect/vitest';
 import { EngineLive } from '../engine/engine.js';
 import {
-	WalrusAdmin,
-	WalrusNetwork,
-	WalrusNodes,
-	type WalrusNetworkShape,
+	WalrusAdminTag,
+	WalrusNetworkTag,
+	WalrusNodesTag,
+	type WalrusNetwork,
 } from './walrus.js';
 import { knownDeployments } from '../engine/known-deployments.js';
 import { routerHostname, routerId } from '../engine/router-hostname.js';
 import { walrusKnownDeployment } from './walrus/index.js';
 
 // -----------------------------------------------------------------------------
-// Type-level shape compatibility — `WalrusNetworkShape.packageConfig`
+// Type-level shape compatibility — `WalrusNetwork.packageConfig`
 // must remain structurally assignable to `@mysten/walrus`'s
 // `WalrusPackageConfig`. We don't take a runtime dep on `@mysten/walrus`
 // (it's a peer dep — consumers bring it), so we mirror the SDK type
@@ -36,7 +36,7 @@ type _ExpectedWalrusPackageConfig = {
 	exchangeIds?: string[];
 };
 type _WalrusPackageConfigCheck =
-	WalrusNetworkShape['packageConfig'] extends _ExpectedWalrusPackageConfig ? true : never;
+	WalrusNetwork['packageConfig'] extends _ExpectedWalrusPackageConfig ? true : never;
 const _walrusPackageConfigCheck: _WalrusPackageConfigCheck = true;
 void _walrusPackageConfigCheck;
 
@@ -90,7 +90,7 @@ describe('walrus storage-node router hostnames', () => {
 });
 
 describe('walrusKnownDeployment', () => {
-	it.effect('provides WalrusNetwork + WalrusNodes from a network lookup with explicit nodes', () =>
+	it.effect('provides WalrusNetworkTag + WalrusNodesTag from a network lookup with explicit nodes', () =>
 		Effect.gen(function* () {
 			// The registry intentionally omits `nodes` (testnet has 100+,
 			// dynamically fetched from the staking pool by @mysten/walrus).
@@ -99,8 +99,8 @@ describe('walrusKnownDeployment', () => {
 			const member = walrusKnownDeployment({ network: 'testnet', nodes: [] });
 
 			const { network, nodes } = yield* Effect.gen(function* () {
-				const n = yield* WalrusNetwork;
-				const ns = yield* WalrusNodes;
+				const n = yield* WalrusNetworkTag;
+				const ns = yield* WalrusNodesTag;
 				return { network: n, nodes: ns };
 			}).pipe(Effect.provide(Layer.provide(member.__layer, TestBaseLayer)));
 
@@ -120,17 +120,17 @@ describe('walrusKnownDeployment', () => {
 		}),
 	);
 
-	it.effect('does NOT provide WalrusAdmin', () =>
+	it.effect('does NOT provide WalrusAdminTag', () =>
 		Effect.gen(function* () {
 			const member = walrusKnownDeployment({ network: 'testnet', nodes: [] });
 
-			// Yielding `WalrusAdmin` against a known-deployment-only layer
+			// Yielding `WalrusAdminTag` against a known-deployment-only layer
 			// surfaces as a runtime resolution failure — no admin layer to
 			// satisfy the dependency. Cast through unknown because the
-			// layer's `R` channel doesn't expose WalrusAdmin (correct at
+			// layer's `R` channel doesn't expose WalrusAdminTag (correct at
 			// the type level — we're exercising the runtime fallback).
-			const program: Effect.Effect<'resolved', never, WalrusAdmin> = Effect.gen(function* () {
-				yield* WalrusAdmin;
+			const program: Effect.Effect<'resolved', never, WalrusAdminTag> = Effect.gen(function* () {
+				yield* WalrusAdminTag;
 				return 'resolved' as const;
 			});
 			const exit = yield* (program as unknown as Effect.Effect<'resolved', unknown, never>).pipe(
@@ -151,7 +151,7 @@ describe('walrusKnownDeployment', () => {
 			});
 
 			const network = yield* Effect.gen(function* () {
-				return yield* WalrusNetwork;
+				return yield* WalrusNetworkTag;
 			}).pipe(Effect.provide(Layer.provide(member.__layer, TestBaseLayer)));
 			expect(network.systemObjectId).toBe('0xCAFE');
 		}),

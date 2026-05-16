@@ -17,6 +17,12 @@
 // }
 // ```
 //
+// The kit's network follows the manifest's `services.sui.network` field
+// — which the supervisor populated from `--network` (or
+// `DEVSTACK_NETWORK`) at boot. So `pnpm dev` on localnet produces a
+// localnet kit; `devstack up --network testnet` produces a testnet
+// kit. No per-network user wiring.
+//
 // Ships from the `/dapp-kit` subpath alongside the other dapp-kit-coupled
 // helpers; CLI / supervisor consumers don't pull this in. Pairs with
 // the server-side `walletApp(...)` primitive in the main package — the
@@ -33,7 +39,7 @@ import { fromManifest } from '../runtime/manifest-loader.js';
 // dragging shape types through .d.ts paths.
 type Network = 'localnet' | 'testnet' | 'mainnet';
 
-export interface LocalnetMvrOverrides {
+export interface DevstackMvrOverrides {
 	packages: Record<string, string>;
 }
 
@@ -44,10 +50,14 @@ export interface LocalnetMvrOverrides {
  * `SuiGrpcClient`'s `mvr.overrides` so the SDK's `namedPackagesPlugin`
  * resolves placeholders to live `packageId`s at transaction-build time.
  *
- * `localnetDappKitConfig(manifest)` does this automatically — most
+ * Network-agnostic — the package ids come from whatever network the
+ * supervisor published to, so the overrides are valid on localnet,
+ * testnet, or mainnet alike.
+ *
+ * `createDappKitConfig(manifest)` does this automatically — most
  * apps don't call it directly.
  */
-export function localnetMvrOverrides(manifest: unknown): LocalnetMvrOverrides {
+export function mvrOverridesFromManifest(manifest: unknown): DevstackMvrOverrides {
 	const packages: Record<string, string> = {};
 	if (manifest === null || manifest === undefined || typeof manifest !== 'object') {
 		return { packages };
@@ -61,70 +71,81 @@ export function localnetMvrOverrides(manifest: unknown): LocalnetMvrOverrides {
 	return { packages };
 }
 
-export interface LocalnetDappKitConfig {
-	defaultNetwork: 'localnet';
+export interface DevstackDappKitConfig {
+	/** The network the manifest declares `services.sui` is running on.
+	 *  This is whatever `--network` (or `DEVSTACK_NETWORK`) resolved to
+	 *  on the supervisor side. */
+	defaultNetwork: Network;
+	/** A single-element list (just `defaultNetwork`). dapp-kit wants the
+	 *  array shape, but the kit only knows about the one network the
+	 *  manifest pinned. */
 	networks: Network[];
 	createClient: (network: Network) => SuiGrpcClient;
 	enableBurnerWallet: boolean;
 }
 
-export interface LocalnetDappKitConfigOptions {
+export interface DevstackDappKitConfigOptions {
 	/** Override the resolved RPC URL. Defaults to the manifest's
-	 * `sui-rpc` endpoint. Use when the dev server proxies the RPC. */
-	localnetRpcUrl?: string;
-	/** Extra networks beyond `'localnet'`. */
-	additionalNetworks?: Network[];
-	/** Per-network RPC URLs for any `additionalNetworks`. */
-	networks?: Partial<Record<Network, string>>;
+	 *  `services.sui.rpc` endpoint. Use when the dev server proxies the
+	 *  RPC. */
+	rpcUrl?: string;
 	/** Pass-through to dapp-kit. Default true. */
 	enableBurnerWallet?: boolean;
 }
 
 /**
- * Localnet-specific config inputs for `createDAppKit(...)`. Reads the
- * manifest to find the sui-rpc URL, then returns the
+ * dapp-kit `createDAppKit(...)` config built from the devstack manifest.
+ * Reads the network and RPC URL out of `services.sui` and returns the
  * `defaultNetwork` / `networks` / `createClient` triple.
  *
- * Throws if the manifest doesn't carry a sui-rpc endpoint (the stack
- * hasn't reached the localnet bring-up step).
+ * Throws if the manifest doesn't carry a `services.sui` entry (the
+ * stack hasn't reached the sui bring-up step).
  */
-export function localnetDappKitConfig(
+export function createDappKitConfig(
 	manifest: unknown,
-	opts: LocalnetDappKitConfigOptions = {},
-): LocalnetDappKitConfig {
-	let resolvedRpcUrl: string | undefined = opts.localnetRpcUrl;
-	if (resolvedRpcUrl === undefined && manifest !== null && manifest !== undefined && typeof manifest === 'object') {
-		resolvedRpcUrl = fromManifest(manifest).services.sui?.rpc.url;
+	opts: DevstackDappKitConfigOptions = {},
+): DevstackDappKitConfig {
+	let resolvedRpcUrl: string | undefined = opts.rpcUrl;
+	let network: Network = 'localnet';
+	if (manifest !== null && manifest !== undefined && typeof manifest === 'object') {
+		const sui = fromManifest(manifest).services.sui;
+		if (sui !== undefined) {
+			if (resolvedRpcUrl === undefined) resolvedRpcUrl = sui.rpc.url;
+			network = normalizeNetwork(sui.network) ?? 'localnet';
+		}
 	}
-	const localnetRpcUrl = resolvedRpcUrl;
-	if (localnetRpcUrl === undefined) {
+	const rpcUrl = resolvedRpcUrl;
+	if (rpcUrl === undefined) {
 		throw new Error(
-			'localnetDappKitConfig: no localnetRpcUrl provided and no sui service in manifest. ' +
-				'Has `devstack up` reached the sui plugin?',
+			'createDappKitConfig: no rpcUrl provided and no sui service in manifest. ' +
+				'Has the supervisor reached the sui bring-up step?',
 		);
 	}
-	const networks: Network[] = Array.from(
-		new Set<Network>(['localnet', ...(opts.additionalNetworks ?? [])]),
-	);
-	const mvrOverrides = localnetMvrOverrides(manifest);
+	const overrides = mvrOverridesFromManifest(manifest);
+	const mvr =
+		Object.keys(overrides.packages).length > 0
+			? { overrides: { packages: overrides.packages } }
+			: undefined;
 	return {
-		defaultNetwork: 'localnet',
-		networks,
-		createClient: (network: Network) => {
-			const url = network === 'localnet' ? localnetRpcUrl : opts.networks?.[network];
-			if (url === undefined) {
+		defaultNetwork: network,
+		networks: [network],
+		createClient: (requested: Network) => {
+			if (requested !== network) {
 				throw new Error(
-					`localnetDappKitConfig: no RPC URL for network '${network}'. Pass via { networks: { ${network}: '...' } }.`,
+					`createDappKitConfig: kit is configured for '${network}' only; ` +
+						`createClient called with '${requested}'. The manifest pins one network — ` +
+						`re-run the supervisor with --network=${requested} to switch.`,
 				);
 			}
-			const mvr =
-				network === 'localnet' && Object.keys(mvrOverrides.packages).length > 0
-					? { overrides: { packages: mvrOverrides.packages } }
-					: undefined;
-			return new SuiGrpcClient({ network, baseUrl: url, mvr });
+			return new SuiGrpcClient({ network, baseUrl: rpcUrl, mvr });
 		},
 		enableBurnerWallet: opts.enableBurnerWallet ?? true,
 	};
+}
+
+function normalizeNetwork(raw: string): Network | undefined {
+	if (raw === 'localnet' || raw === 'testnet' || raw === 'mainnet') return raw;
+	return undefined;
 }
 
 export interface CreateDevstackDappKitOptions {
@@ -145,7 +166,7 @@ export interface CreateDevstackDappKitOptions {
 }
 
 /** The dapp-kit type `createDevstackDappKit` returns. */
-export type DevstackDappKit = DAppKit<('localnet' | 'testnet' | 'mainnet')[], SuiGrpcClient>;
+export type DevstackDappKit = DAppKit<Network[], SuiGrpcClient>;
 
 function shouldExposeForPlaywright(): boolean {
 	const env = (import.meta as { env?: { DEV?: boolean; MODE?: string } }).env;
@@ -156,15 +177,17 @@ function shouldExposeForPlaywright(): boolean {
 }
 
 /**
- * Construct a dapp-kit instance wired up for devstack: localnet
- * network config, MVR overrides for `publishMove`-emitted placeholders,
- * and the devstack burner-wallet adapter.
+ * Construct a dapp-kit instance wired up for devstack: the network
+ * declared in the manifest, MVR overrides for `publishMove`-emitted
+ * placeholders, and the devstack burner-wallet adapter.
  *
- * **Localnet only.** This factory throws when the manifest doesn't
- * carry a sui-rpc endpoint. For production deploys, swap
- * `dapp-kit.ts` for a hand-written setup that calls `createDAppKit`
- * directly with a real wallet adapter (Slush, Suiet, etc.) and only
- * the live-net manifest fields the app actually needs.
+ * Throws when the manifest doesn't carry a `services.sui` entry (the
+ * supervisor hasn't reached sui bring-up yet).
+ *
+ * For production deploys, swap `dapp-kit.ts` for a hand-written setup
+ * that calls `createDAppKit` directly with a real wallet adapter
+ * (Slush, Suiet, etc.) and your own RPC selection. The devstack burner
+ * wallet is for development and testing only.
  */
 export async function createDevstackDappKit(
 	opts: CreateDevstackDappKitOptions,
@@ -174,7 +197,7 @@ export async function createDevstackDappKit(
 		opts.manifest as Parameters<typeof createDevstackAdapterFromManifest>[0],
 	);
 	const dAppKit = createDAppKit({
-		...localnetDappKitConfig(opts.manifest),
+		...createDappKitConfig(opts.manifest),
 		walletInitializers: [
 			devWalletInitializer({
 				adapters: devstackAdapter ? [devstackAdapter] : [],

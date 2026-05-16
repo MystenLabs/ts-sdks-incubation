@@ -10,16 +10,17 @@
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Effect } from 'effect';
-import { devstack, registerCoin } from '@mysten-incubation/devstack';
 import {
 	Account,
 	Action,
 	Deepbook,
 	DeepbookMarketMaker,
 	Dev,
+	devstack,
 	Package,
+	registerCoin,
 	Wallet,
-} from '@mysten-incubation/devstack/services';
+} from '@mysten-incubation/devstack';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const USDC_DIR = resolve(HERE, 'move/mock_usdc');
@@ -190,7 +191,7 @@ const wallet = Wallet({
 
 const dev = Dev({
 	command: 'pnpm',
-	args: ['exec', 'vite', '--host', '0.0.0.0', '--strictPort'],
+	args: ['exec', 'vite', '--host', '0.0.0.0', '--strictPort', '--port', '{port}'],
 	port: 5174,
 	needs: [usdc, weth, seedTokens, deepbook, wallet],
 });
@@ -214,13 +215,13 @@ export default devstack(
 		// the swap card can fetch live liquidity without re-resolving
 		// pool ids from on-chain state.
 		extras: Effect.gen(function* () {
-			const live = yield* deepbook;
-			// `live.pools` is typed off the deepbook factory's pool generics;
-			// the wallet config widens to `unknown` once Refs are erased via
-			// the Deepbook factory's option-shape cast, so we project per-pool
-			// here with an explicit shape rather than relying on inference.
+			// `Deepbook` is a discriminated union (known | local). This config
+			// always uses the local branch, which carries a `pools` record off
+			// the pool generics. Cast to the local-branch shape so per-pool
+			// projection compiles without re-deriving the generics.
 			type Pool = { name: string; poolId: string; base: string; quote: string };
-			const pools = Object.values(live.pools as Record<string, Pool>).map((p) => ({
+			const live = (yield* deepbook) as { readonly pools: Record<string, Pool> };
+			const pools = Object.values(live.pools).map((p) => ({
 				name: p.name,
 				poolId: p.poolId,
 				baseCoinType: p.base,

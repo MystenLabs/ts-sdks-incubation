@@ -11,7 +11,7 @@ import type { Transaction, TransactionObjectArgument } from '@mysten/sui/transac
 import { type Ref } from '../../advanced/tag.js';
 import { DeepbookError } from '../../engine/errors.js';
 import {
-	type DeepbookCoreShape,
+	type DeepbookCore,
 	type DeepbookPoolRef,
 } from '../deepbook.js';
 
@@ -106,7 +106,7 @@ export const resolveCoinRef = (ref: string | AnyCoinTag) =>
 export const makeFindPool = (
 	factoryName: string,
 	pools: Record<string, DeepbookPool>,
-): DeepbookCoreShape['findPool'] => {
+): DeepbookCore['findPool'] => {
 	const byBaseQuote = new Map<string, DeepbookPoolRef>();
 	for (const p of Object.values(pools)) {
 		byBaseQuote.set(`${p.base}|${p.quote}`, {

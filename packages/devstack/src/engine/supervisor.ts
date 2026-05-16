@@ -57,6 +57,7 @@ import {
 } from './registries.js';
 import { StateStoreConfig, StateStoreLive } from './state-store.js';
 import type { SuiNetwork } from '../services/sui.js';
+import { resolveNetwork } from './network.js';
 import type { TagKind } from '../advanced/tag.js';
 import { startPlainRenderer } from '../tui/plain.js';
 import { SHUTDOWN_LOG_MESSAGE, startTuiOnce, TuiLoggerLayer, type TuiMount } from '../tui/index.js';
@@ -171,7 +172,11 @@ export interface RunOverrides {
 	readonly renderer?: RendererKind;
 }
 
-export interface Devstack {
+/** The handle `defineDevstack(...)` / `devstack(...)` return — distinct
+ *  from the `Devstack` Effect Service in `runtime/service.ts`. The handle
+ *  is the runner (`run`, `runMain`, `layer`); the Service is what app
+ *  code does `yield* Devstack` on to read the live manifest. */
+export interface DevstackHandle {
 	readonly layer: Layer.Layer<any, any, any>;
 	readonly config: DevstackConfig;
 	/** Launch the stack and wait until interrupted. Resolves on clean shutdown. */
@@ -253,7 +258,7 @@ const composeBootstrapLayer = (
 		readonly stateDir?: string;
 	} = {
 		stack: resolveStackName(opts.stackName),
-		network: opts.network ?? 'localnet',
+		network: opts.network ?? resolveNetwork(),
 		...(opts.stateDir !== undefined ? { stateDir: opts.stateDir } : {}),
 	};
 	const StateStoreConfigLive = Layer.succeed(StateStoreConfig, stateStoreConfig);
@@ -380,6 +385,48 @@ export const ownersFor = (
 	);
 };
 
+// File-system noise filter — paths that change as a side effect of a
+// build but aren't user-authored source. Move builds rewrite
+// `Move.lock` on every invocation (the post-build env-update step,
+// plus the in-container `pinned`-section scrub) AND populate
+// `build/`. Both look like real file changes to `fs.watch`, but
+// neither should trigger a hot-restart — the restart would re-run
+// the same build that just produced the change, and we'd spin
+// forever on a single edit. Mirrors the v3 `.gitignore`-style
+// suppression in the v3 watcher.
+//
+// Matched against the changed path's basename and any segment in
+// the path, so `move/mock_usdc/build/x.mv` and `move/mock_usdc/Move.lock`
+// both match.
+const WATCH_IGNORED_NAMES: ReadonlySet<string> = new Set([
+	'Move.lock',
+	'build',
+	'.DS_Store',
+	'node_modules',
+	'.git',
+]);
+
+// Files that the in-container `Move.lock` scrub stages as an atomic
+// rename target. The awk pipeline writes `Move.lock.new`, then
+// `mv Move.lock.new Move.lock`, so `fs.watch` sees the intermediate
+// briefly. Also matches the generic `*.swp`/`*.swx` editor-swap
+// artifacts that overlap the typical Move source tree.
+const isIgnoredBasename = (name: string): boolean => {
+	if (WATCH_IGNORED_NAMES.has(name)) return true;
+	if (name === 'Move.lock.new') return true;
+	if (name.endsWith('.swp') || name.endsWith('.swx') || name.endsWith('~')) return true;
+	return false;
+};
+
+// Exported for unit tests. Production usage is the watcher fiber only.
+export const isIgnoredWatchPath = (changedPath: string): boolean => {
+	const segments = changedPath.split(nodePath.sep);
+	for (const seg of segments) {
+		if (isIgnoredBasename(seg)) return true;
+	}
+	return false;
+};
+
 // File-watcher fiber. When `hotRestart` is on, events are debounced 250ms
 // and the trailing edge signals the engine; coalescing avoids tearing the
 // stack down once per character of a multi-keystroke save. Otherwise we
@@ -392,7 +439,16 @@ const watchPathFiber = (
 ): Effect.Effect<void, never, FileWatcher | import('effect/Scope').Scope> =>
 	Effect.gen(function* () {
 		const watcher = yield* FileWatcher;
-		const stream = watcher.watch(path);
+		// Filter transient build artifacts BEFORE debounce. If we filtered
+		// after, the trailing-edge event could be a Move.lock change whose
+		// debounce window also swallowed a real source.move edit — and
+		// then we'd drop the legitimate restart. Filtering upstream means
+		// the debounce window only contains events that COULD trigger a
+		// restart, so the trailing edge represents the most recent real
+		// change.
+		const stream = watcher
+			.watch(path)
+			.pipe(Stream.filter((event) => !isIgnoredWatchPath(event.path)));
 		const drained = hotRestart
 			? Stream.runForEach(stream.pipe(Stream.debounce('250 millis')), (event) =>
 					Effect.gen(function* () {
@@ -508,7 +564,7 @@ export const composeInfraLayer = (
 		readonly stateDir?: string;
 	} = {
 		stack: resolveStackName(opts.stackName),
-		network: opts.network ?? 'localnet',
+		network: opts.network ?? resolveNetwork(),
 		...(opts.stateDir !== undefined ? { stateDir: opts.stateDir } : {}),
 	};
 	const StateStoreConfigLive = Layer.succeed(StateStoreConfig, stateStoreConfig);
@@ -622,7 +678,7 @@ export const composeStackLayer = (
 		readonly stateDir?: string;
 	} = {
 		stack: resolveStackName(opts.stackName),
-		network: opts.network ?? 'localnet',
+		network: opts.network ?? resolveNetwork(),
 		...(opts.stateDir !== undefined ? { stateDir: opts.stateDir } : {}),
 	};
 	const StateStoreConfigLive = Layer.succeed(StateStoreConfig, stateStoreConfig);
@@ -688,7 +744,7 @@ export const composeStackLayer = (
 	return fullLayer as Layer.Layer<unknown, unknown, never>;
 };
 
-export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfig): Devstack => {
+export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfig): DevstackHandle => {
 	const config: DevstackConfig = Array.isArray(input)
 		? { stack: input }
 		: (input as DevstackConfig);
@@ -725,14 +781,19 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 		readonly key: string;
 		readonly kind?: TagKind;
 		readonly title?: string;
-	}> = config.stack.map((m, i) => {
+	}> = config.stack.flatMap((m, i) => {
+		// Hidden tags (e.g. `gitFetch`) opt out of the dashboard entirely —
+		// see `ProvideOptions.hidden`. Skipping the seed keeps the row from
+		// flashing during the pending → acquiring → ready transition; the
+		// matching `withEngineLifecycle` skip prevents any later auto-register.
+		if ((m as { __hidden?: boolean }).__hidden === true) return [];
 		const key = (m as { key?: string }).key ?? `stack[${i}]`;
 		const kind = (m as { __kind?: TagKind }).__kind;
 		const title = (m as { __displayTitle?: string }).__displayTitle;
 		const entry: { key: string; kind?: TagKind; title?: string } = { key };
 		if (kind !== undefined) entry.kind = kind;
 		if (title !== undefined) entry.title = title;
-		return entry;
+		return [entry];
 	});
 
 	// Watch set = explicit `config.watch` plus every primitive that
