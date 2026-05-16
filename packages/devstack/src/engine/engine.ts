@@ -398,8 +398,19 @@ export const EngineLive: Layer.Layer<EngineHandle> = Layer.effect(
 		const setBuildStatus = (status: BuildStatus) => setHeader({ buildStatus: status });
 
 		const requestRestart = Effect.gen(function* () {
-			const deferred = yield* Ref.get(restartSignal);
-			yield* Deferred.succeed(deferred, void 0);
+			// Atomic capture-and-replace. The previous read-then-succeed
+			// could race `resetRestartSignal`: if the launch loop swapped
+			// in a fresh deferred between our `Ref.get` and our
+			// `Deferred.succeed`, we'd succeed an orphan deferred and the
+			// new one would never wake — losing the restart request.
+			// `Ref.getAndSet` does the swap in one critical section, so
+			// the deferred we hand to `Deferred.succeed` is guaranteed to
+			// no longer be in the ref. A concurrent reset that fires
+			// after our swap will see our `fresh`, replace it again, and
+			// neither side loses a wake-up.
+			const fresh = yield* Deferred.make<void>();
+			const old = yield* Ref.getAndSet(restartSignal, fresh);
+			yield* Deferred.succeed(old, void 0);
 		});
 
 		const resetRestartSignal = Effect.gen(function* () {

@@ -50,18 +50,33 @@ export class FileWatcher extends Context.Service<FileWatcher, FileWatcherShape>(
 // -----------------------------------------------------------------------------
 
 // Translate node's `fs.watch` event type to our normalized ChangeEvent kind.
-// fs.watch emits 'change' for content updates and 'rename' for create/delete
-// (it can't tell add from remove without an extra stat). For v1 we collapse
-// 'rename' to 'change' and let the engine do its own classification if it
-// cares. Callers that need add/remove disambiguation can stat the path.
+// FSWatcher's documented surface emits a single `'change'` event with an
+// `eventType` arg of either `'change'` (content modified) or `'rename'`
+// (file created, deleted, or renamed). We map 'rename' to ChangeEvent
+// `'add'` because the supervisor's downstream classification only cares
+// that SOMETHING changed at the path; we don't stat the file to
+// distinguish add-vs-remove, but emitting a non-'change' kind helps
+// downstream filters (and future consumers) reason about it. Some Node
+// versions ALSO emit a separate top-level `'rename'` event (this is
+// the surface the @types/node FSWatcher signature exposes); we
+// subscribe to both so a platform that splits them doesn't drop
+// rename-fired creates of new `.move` files.
 const toChangeEvent = (
-	_eventType: string,
+	eventType: string,
 	filename: string | null,
 	rootPath: string,
 ): ChangeEvent => {
 	const path = filename === null || filename.length === 0 ? rootPath : filename;
-	return { kind: 'change', path };
+	const kind: ChangeEvent['kind'] = eventType === 'rename' ? 'add' : 'change';
+	return { kind, path };
 };
+
+const filenameToString = (filename: string | Buffer | null): string | null =>
+	typeof filename === 'string'
+		? filename
+		: filename instanceof Buffer
+			? filename.toString('utf8')
+			: null;
 
 export const FileWatcherLive: Layer.Layer<FileWatcher> = Layer.succeed(FileWatcher, {
 	watch: (path: string) =>
@@ -77,15 +92,20 @@ export const FileWatcherLive: Layer.Layer<FileWatcher> = Layer.succeed(FileWatch
 						}),
 				});
 
-				watcher.on('change', (eventType, filename) => {
-					const name =
-						typeof filename === 'string'
-							? filename
-							: filename instanceof Buffer
-								? filename.toString('utf8')
-								: null;
-					Queue.offerUnsafe(queue, toChangeEvent(eventType, name, path));
-				});
+				const onEvent = (eventType: string, filename: string | Buffer | null): void => {
+					Queue.offerUnsafe(queue, toChangeEvent(eventType, filenameToString(filename), path));
+				};
+				// Subscribe to both event names. FSWatcher historically
+				// fires a single 'change' event with the eventType arg
+				// discriminating, but @types/node also documents a
+				// separate 'rename' listener and some platform/Node
+				// versions split the surfaces. Subscribing to both is
+				// idempotent for the common path and load-bearing for
+				// the split-event platforms — without the 'rename'
+				// listener, `touch new.move` doesn't trigger restart on
+				// those Node builds.
+				watcher.on('change', onEvent);
+				watcher.on('rename', onEvent);
 
 				watcher.on('error', (err) => {
 					Queue.failCauseUnsafe(
