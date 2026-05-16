@@ -128,11 +128,16 @@ export const releasePortLock = (port: number, dir: string = defaultPortLockDir()
 };
 
 const isPortFree = async (port: number): Promise<boolean> => {
-	const [wildcardOk, loopbackOk] = await Promise.all([
-		bindProbe(port, '0.0.0.0'),
-		bindProbe(port, '127.0.0.1'),
-	]);
-	return wildcardOk && loopbackOk;
+	// MUST be sequential, not parallel: on Linux, a `0.0.0.0:port`
+	// bind covers `127.0.0.1:port`, so a concurrent `127.0.0.1:port`
+	// probe would always EADDRINUSE while the wildcard probe still
+	// holds the port. macOS allows the two binds to coexist, which
+	// masked the bug locally; CI (Ubuntu runner) failed every
+	// allocate. Probe wildcard first, fully close it, then probe
+	// loopback.
+	const wildcardOk = await bindProbe(port, '0.0.0.0');
+	if (!wildcardOk) return false;
+	return bindProbe(port, '127.0.0.1');
 };
 
 export const PortAllocatorLive: Layer.Layer<PortAllocator> = Layer.effect(
