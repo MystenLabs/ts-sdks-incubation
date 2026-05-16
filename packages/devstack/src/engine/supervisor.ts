@@ -60,7 +60,7 @@ import type { SuiNetwork } from '../services/sui.js';
 import { resolveNetwork } from './network.js';
 import type { TagKind } from '../advanced/tag.js';
 import { startPlainRenderer } from '../tui/plain.js';
-import { SHUTDOWN_LOG_MESSAGE, startTuiOnce, TuiLoggerLayer, type TuiMount } from '../tui/index.js';
+import { SHUTDOWN_LOG_MESSAGE, startTuiOnce, TuiLoggerLayer } from '../tui/index.js';
 
 // Structural shape of a stack member — anything carrying `__layer` (or
 // a flattened `__layers` for composites). Once Phase 3b finishes
@@ -875,43 +875,58 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 	const buildLaunchEffect = (overrides: RunOverrides): Effect.Effect<void, unknown, never> => {
 		const renderer = overrides.renderer ?? resolveRenderer(config);
 
-		// Single iteration. Per-primitive scope topology:
+		// The user-stack layer's identity is stable across cycles
+		// (`config` is closed-over, not derived from per-cycle state),
+		// so hoist it out of `runOnce`. Inside `runOnce` we re-pass it
+		// to `Layer.buildWithMemoMap`; the MemoMap reuses already-built
+		// entries for shared infra services and only rebuilds the
+		// per-cycle childScope state. Pre-fix, building the layer in
+		// the runOnce body created a NEW `Layer.succeed(StateStoreConfig,
+		// ...)` instance per cycle whose layer key was fresh, defeating
+		// MemoMap dedupe for the StateStore acquire (HIGH-S3).
+		const userStackLayer = composeStackLayer(config.stack, {
+			stackName: config.stackName,
+			network: config.network,
+			stateDir: config.stateDir,
+			platformLayer: undefined,
+		});
+
+		// Per-cycle iteration. Now strictly per-cycle work — bootstrap,
+		// traefik ensure, watcher fibers, SIGUSR2 install, TUI mount,
+		// and plain-renderer fork all live on the outer LongLivedScope
+		// (post-C4 / HIGH-S1). Topology:
 		//
-		//   supervisorScope ── runOnce's own Effect.scoped scope
+		//   longLivedScope ── outer launch scope (lives for runMain)
 		//     │
-		//     ├── infraCtx        (registries, engine, state-store,
-		//     │                    identity, platform) — built once, lives
-		//     │                    for the whole iteration; tears down on
-		//     │                    full restart or Ctrl-C
+		//     ├── bootstrapCtx     (engine + watchers + StateStore +
+		//     │                     Identity + platform) — built ONCE,
+		//     │                     survives `r` / file-watch cycles
 		//     │
-		//     ├── childScope[A]   (Sui)            ─┐
-		//     ├── childScope[B]   (accountAlice)    ├─ each forked off
-		//     ├── childScope[C]   (publishMove)     │  supervisorScope;
-		//     ├── …                                 ┘  closes on per-
-		//     │                                        primitive failure
-		//     │                                        or retry-cycle
+		//     ├── watcher fibers + SIGUSR2 handler — installed once
 		//     │
-		//     └── restart-await fiber — blocks on the engine's restart
-		//                               signal; returns from runOnce
-		//                               (which tears the supervisor scope
-		//                               down for a full restart cycle)
+		//     └── supervisorScope ── runOnce's per-cycle scope
+		//           │
+		//           ├── childScope[A]   (Sui)            ─┐
+		//           ├── childScope[B]   (accountAlice)    ├─ each forked
+		//           ├── childScope[C]   (publishMove)     │  off
+		//           │                                     ┘  supervisorScope
+		//           │
+		//           └── restart-await fiber — blocks on engine's restart
+		//                                     signal; returns from runOnce
 		//
 		// Per-primitive failures only collapse the relevant childScope,
 		// leaving the supervisor and sibling primitives running. The user
 		// sees the failed row stay red, presses `r`, and a fresh
 		// childScope re-runs that primitive's acquire — siblings stay
-		// green throughout.
+		// green throughout. Bootstrap services (engine, StateStore,
+		// watchers) are stable across cycles because the per-cycle
+		// scope no longer owns them.
 		const runOnce = (
 			cycle: number,
-			tuiMount: TuiMount | undefined,
-			currentEngineRef: Ref.Ref<EngineHandleShape | undefined>,
+			engine: EngineShape,
+			memoMap: Layer.MemoMap,
 		) =>
 			Effect.gen(function* () {
-				// Fresh MemoMap per iteration so every restart re-evaluates the
-				// infra Live layers. Shared across the bootstrap and infra
-				// builds so EngineHandle / StateStore / etc. are the SAME
-				// instance the per-primitive fibers consume.
-				const memoMap = yield* Layer.makeMemoMap;
 				const supervisorScope = yield* Effect.scope;
 
 				// Per-cycle claim set: every container `Docker.run` either adopts
@@ -926,92 +941,6 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 				// Sui genesis → new chain id → publishMove cache miss → NEW
 				// packageId on every process restart.
 				const claimedRef = yield* Ref.make<Set<string>>(new Set<string>());
-
-				// Bootstrap engine + file watcher + platform + StateStore +
-				// Identity. This is the supervisor's resource pool — stays
-				// alive for the entire iteration, surviving per-primitive
-				// failures. The state-store acquire fires HERE (its build is
-				// what opens `state.json.lock` via O_EXCL), so a competing
-				// supervisor on the same <stack, network> fails loudly via
-				// `StateStoreLockedError` BEFORE we touch docker. Per-
-				// primitive fibers Effect.provideContext(bootstrapCtx ⊕
-				// infraCtx) so they can `yield* EngineHandle` / `yield*
-				// StateStore` / etc.
-				const bootstrapCtx = yield* Layer.buildWithMemoMap(
-					bootstrapLayer,
-					memoMap,
-					supervisorScope,
-				);
-				const engine: EngineShape = Context.get(bootstrapCtx, EngineHandle);
-
-				// Ensure the shared Traefik router is up BEFORE any
-				// primitive starts. The router is the cross-stack
-				// reverse-proxy that binds the well-known host ports
-				// (9000 sui-rpc, 9123 faucet, 9185 walrus, etc.) and
-				// dispatches by Host header to per-stack backends.
-				// Idempotent: skipped if a healthy traefik is already
-				// running. Best-effort: a failure here logs a warning
-				// and continues — primitives that don't opt into the
-				// `traefik` label set still work over direct ports.
-				// `DEVSTACK_NO_ROUTER=1` skips traefik boot entirely —
-				// used by unit tests that don't go through docker,
-				// and as an emergency switch for users that don't
-				// want the shared router. Capped at 10s so a docker
-				// daemon hang doesn't block the supervisor.
-				if (process.env.DEVSTACK_NO_ROUTER !== '1') {
-					yield* (
-						ensureRouter.pipe(
-							Effect.provide(bootstrapCtx as any),
-							Effect.timeoutOrElse({
-								duration: '10 seconds',
-								orElse: () =>
-									Effect.logWarning(
-										'devstack: traefik router boot timed out after 10s — continuing without it',
-									),
-							}),
-							Effect.catch((cause: any) =>
-								Effect.logWarning(
-									`devstack: traefik router boot failed: ${(cause as { message?: string })?.message ?? String(cause)} — falling back to direct ports for any traefik-aware primitives`,
-								),
-							),
-						) as Effect.Effect<void, never, never>
-					);
-				}
-
-				// Best-effort: announce ourselves to the global registry so
-				// `devstack doctor` / `devstack prune` on any host shell can
-				// see this (app, stack, network) even from inside a different
-				// cwd — and, more importantly, still see it AFTER the repo
-				// gets `rm -rf`'d. The registry I/O is wrapped in
-				// `Effect.ignore` so a corrupt / locked registry file never
-				// blocks supervisor boot. The scope finalizer below clears
-				// our pid on clean shutdown so post-mortem `classify` drops
-				// us out of the `active` bucket without us having to be
-				// alive to write again.
-				const registryNetwork: RegistryNetwork = headerNetwork;
-				const registryRepoPath = process.env.DEVSTACK_APP_DIR ?? process.cwd();
-				yield* registry
-					.upsert({
-						app: headerApp,
-						stack: headerStack,
-						network: registryNetwork,
-						repoPath: registryRepoPath,
-						pid: process.pid,
-					})
-					.pipe(Effect.ignore);
-				yield* Effect.addFinalizer(() =>
-					registry.clearPid(headerApp, headerStack, registryNetwork).pipe(Effect.ignore),
-				);
-
-				// Publish this cycle's engine to the outer launch effect so an
-				// `Effect.onInterrupt` over there can flip `buildStatus` to
-				// `shutting-down` + append the user-facing teardown log line on
-				// SIGINT from outside the TUI (terminal Ctrl-C, external kill).
-				// Cleared on cycle teardown so a between-cycle interrupt doesn't
-				// poke a stale engine — currentRef stays undefined until the next
-				// cycle's bootstrap completes.
-				yield* Ref.set(currentEngineRef, engine);
-				yield* Effect.addFinalizer(() => Ref.set(currentEngineRef, undefined));
 
 				yield* engine.setHeader({
 					app: headerApp,
@@ -1046,43 +975,16 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 				yield* engine.resetRestartSignal;
 				yield* engine.seedTags(seedEntries);
 
-				// Re-point the long-lived ink mount at this cycle's fresh engine.
-				// MUST happen AFTER seedTags so the proxy's first eager snapshot
-				// already carries the new cycle's pending rows — without that the
-				// user would see a frame of empty state between the old cycle's
-				// terminal statuses and the new cycle's seeded rows. The plain
-				// renderer is rebuilt each cycle: it's a one-line-per-event
-				// stream, no layout state to preserve across cycles.
-				if (renderer === 'tui' && tuiMount !== undefined) {
-					yield* tuiMount.install(engine);
-				} else if (renderer === 'plain') {
-					const tuiSource = Ref.get(engine.tuiState);
-					yield* startPlainRenderer(tuiSource).pipe(Effect.provide(bootstrapCtx));
-				}
-
 				const loggerLayer = renderer === 'tui' ? TuiLoggerLayer(engine) : Layer.empty;
-
-				yield* installSignalRestart('SIGUSR2', engine);
-
-				if (watchPaths.length > 0) {
-					for (const path of watchPaths) {
-						yield* watchPathFiber(path, engine, hotRestart, watchOwners).pipe(
-							Effect.provide(bootstrapCtx),
-						);
-					}
-				}
 
 				// Build the full user stack as one composed Layer. Dependency
 				// wiring relies on Effect's Layer runtime ordering — providers
 				// complete before their consumers' acquires run. We catch any
 				// acquire failure here so the TUI stays alive (red rows + log
-				// entries) and `r` can trigger a full restart.
-				const userStackLayer = composeStackLayer(config.stack, {
-					stackName: config.stackName,
-					network: config.network,
-					stateDir: config.stateDir,
-					platformLayer: undefined,
-				});
+				// entries) and `r` can trigger a full restart. The memoMap
+				// holds bootstrap entries built once on longLivedScope, so the
+				// user-stack layer's references to shared infra (EngineHandle,
+				// StateStore, etc.) hit the cache instead of rebuilding.
 				const buildSucceeded = yield* Layer.buildWithMemoMap(
 					userStackLayer as Layer.Layer<unknown, unknown, never>,
 					memoMap,
@@ -1186,30 +1088,107 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 			// reuse-if-healthy probe in `Docker.run` finds them on the
 			// next iteration, chain id stays stable, publishMove cache
 			// hits, packageIds stay stable across restarts.
+			//
+			// Bootstrap (engine + StateStore + Identity + watchers +
+			// SIGUSR2 + traefik) ALSO lives on this scope (C4 / HIGH-S1).
+			// Pre-fix the bootstrap acquired on the per-cycle scope, so
+			// every `r` re-opened the state.json.lock + re-mounted
+			// watcher fibers + re-installed the SIGUSR2 handler —
+			// expensive, and made the StateStore lock a transient
+			// resource that could briefly release between cycles and
+			// let a sibling supervisor in.
 			const longLived = yield* Effect.scope;
 
-			// Mount ink ONCE for the entire runMain lifetime. Each restart
-			// cycle re-points it at the fresh engine via `tuiMount.install`;
-			// the panel updates in-place across cycles instead of the
-			// previous cycle's frame being committed to terminal scrollback
-			// and the next cycle rendering below it (the symptom of
-			// mounting per-cycle: visually-stacked panels look like
-			// duplicated output, not an in-place update).
-			const tuiMount = renderer === 'tui' ? yield* startTuiOnce() : undefined;
+			// Single MemoMap held for the supervisor's lifetime. The
+			// bootstrap layer's entries are built into it once on
+			// `longLived`; per-cycle `runOnce` calls
+			// `Layer.buildWithMemoMap(userStackLayer, memoMap, supervisorScope)`
+			// which reuses the cached bootstrap entries and builds the
+			// user-stack entries fresh on the per-cycle scope.
+			const memoMap = yield* Layer.makeMemoMap;
 
-			// Tracks the cycle engine currently running so the
-			// `onInterrupt` handler below can flip `buildStatus` to
-			// `shutting-down` + append the user-facing teardown log line
-			// when SIGINT arrives from outside the TUI (terminal Ctrl-C,
-			// external kill). `runOnce` writes its engine here as soon as
-			// bootstrap completes and clears it on cycle teardown.
-			const currentEngineRef = yield* Ref.make<EngineHandleShape | undefined>(undefined);
+			const bootstrapCtx = yield* Layer.buildWithMemoMap(
+				bootstrapLayer,
+				memoMap,
+				longLived,
+			);
+			const engine: EngineShape = Context.get(bootstrapCtx, EngineHandle);
+
+			// Registry announce + clearPid finalizer — both belong on the
+			// long-lived scope so a `pnpm dev` whose lock survived a
+			// crashed cycle still tells `devstack doctor` we're alive.
+			const registryNetwork: RegistryNetwork = headerNetwork;
+			const registryRepoPath = process.env.DEVSTACK_APP_DIR ?? process.cwd();
+			yield* registry
+				.upsert({
+					app: headerApp,
+					stack: headerStack,
+					network: registryNetwork,
+					repoPath: registryRepoPath,
+					pid: process.pid,
+				})
+				.pipe(Effect.ignore);
+			yield* Effect.addFinalizer(() =>
+				registry.clearPid(headerApp, headerStack, registryNetwork).pipe(Effect.ignore),
+			);
+
+			// Ensure the shared Traefik router is up BEFORE any
+			// primitive starts, ONCE for the whole supervisor lifetime.
+			// Memoizing here removes the per-cycle ensure-router cost on
+			// `r` (the previous per-cycle ensure was a no-op against a
+			// healthy traefik, but still cost a `docker inspect`).
+			if (process.env.DEVSTACK_NO_ROUTER !== '1') {
+				yield* (
+					ensureRouter.pipe(
+						Effect.provide(bootstrapCtx as any),
+						Effect.timeoutOrElse({
+							duration: '10 seconds',
+							orElse: () =>
+								Effect.logWarning(
+									'devstack: traefik router boot timed out after 10s — continuing without it',
+								),
+						}),
+						Effect.catch((cause: any) =>
+							Effect.logWarning(
+								`devstack: traefik router boot failed: ${(cause as { message?: string })?.message ?? String(cause)} — falling back to direct ports for any traefik-aware primitives`,
+							),
+						),
+					) as Effect.Effect<void, never, never>
+				);
+			}
+
+			// Mount ink ONCE for the entire runMain lifetime. The engine
+			// is stable across cycles now, so the install happens once
+			// here too (pre-fix the install was redone every cycle
+			// because each cycle had a fresh engine). The plain
+			// renderer fork is also on longLived for the same reason.
+			const tuiMount = renderer === 'tui' ? yield* startTuiOnce() : undefined;
+			if (tuiMount !== undefined) {
+				yield* tuiMount.install(engine);
+			} else if (renderer === 'plain') {
+				const tuiSource = Ref.get(engine.tuiState);
+				yield* startPlainRenderer(tuiSource).pipe(Effect.provide(bootstrapCtx));
+			}
+
+			// SIGUSR2 handler + watcher fibers on longLived too (HIGH-S1).
+			// The engine they target is stable, so the per-cycle re-install
+			// was just churn; worse, the per-cycle install + scope-finalizer
+			// detach meant a SIGUSR2 arriving between cycles could land on
+			// no handler and the process would die from the default action.
+			yield* installSignalRestart('SIGUSR2', engine);
+			if (watchPaths.length > 0) {
+				for (const path of watchPaths) {
+					yield* watchPathFiber(path, engine, hotRestart, watchOwners).pipe(
+						Effect.provide(bootstrapCtx),
+					);
+				}
+			}
 
 			const launchLoop = Effect.gen(function* () {
 				let cycle = 0;
 				while (true) {
 					cycle += 1;
-					const again = yield* runOnce(cycle, tuiMount, currentEngineRef).pipe(
+					const again = yield* runOnce(cycle, engine, memoMap).pipe(
 						Effect.provideService(LongLivedScope, longLived),
 					);
 					if (!again) return;
@@ -1217,22 +1196,22 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 			});
 
 			// `Effect.onInterrupt` runs synchronously BEFORE scope teardown
-			// continues — that's the only window where the per-cycle engine
-			// is still alive and ink's poll loop is still ticking. We flip
-			// the build-status + post the teardown log line + sleep 150ms
-			// to let one ink frame render before the docker-rm finalizers
-			// freeze the event loop. Plain renderer's 500ms tick may miss
-			// the flash on a short shutdown — that's fine; the log line
-			// itself prints either way since `appendLog` writes synchronously
-			// into the engine's Ref and the plain renderer flushes its diff
-			// on each tick BEFORE checking whether to exit.
+			// continues — that's the only window where the engine and ink's
+			// poll loop are still alive. We flip the build-status + post
+			// the teardown log line + sleep 150ms to let one ink frame
+			// render before the docker-rm finalizers freeze the event
+			// loop. Plain renderer's 500ms tick may miss the flash on a
+			// short shutdown — that's fine; the log line itself prints
+			// either way since `appendLog` writes synchronously into the
+			// engine's Ref and the plain renderer flushes its diff on
+			// each tick BEFORE checking whether to exit. `engine` here
+			// is the stable long-lived engine (post-Phase A reorg) so
+			// no currentRef indirection is needed.
 			yield* launchLoop.pipe(
 				Effect.onInterrupt(() =>
 					Effect.gen(function* () {
-						const current = yield* Ref.get(currentEngineRef);
-						if (current === undefined) return;
-						yield* current.setBuildStatus('shutting-down');
-						yield* current.appendLog({
+						yield* engine.setBuildStatus('shutting-down');
+						yield* engine.appendLog({
 							ts: Date.now(),
 							level: 'info',
 							message: SHUTDOWN_LOG_MESSAGE,
