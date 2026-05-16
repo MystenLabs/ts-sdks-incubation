@@ -1,51 +1,47 @@
 ---
 title: State and snapshots
-description: What survives across hot-restart, graceful shutdown, host reboot, and explicit teardown — plus how to capture and restore labeled snapshots of a running stack.
+description:
+  What survives across hot-restart, graceful shutdown, host reboot, and explicit teardown — plus how
+  to capture and restore labeled snapshots of a running stack.
 ---
 
-A devstack run accumulates state in a few places: the chain (validator
-RocksDB), per-stack state files (chain ids, package ids, walrus deploy
-outputs, account keys), and the supervisor's in-memory caches. The
-default behavior is to **preserve everything that's expensive to
-regenerate** across restarts and graceful shutdowns, so the next
-`pnpm dev` lights up instantly instead of paying the cold-boot cost
-again.
+A devstack run accumulates state in a few places: the chain (validator RocksDB), per-stack state
+files (chain ids, package ids, walrus deploy outputs, account keys), and the supervisor's in-memory
+caches. The default behavior is to **preserve everything that's expensive to regenerate** across
+restarts and graceful shutdowns, so the next `pnpm dev` lights up instantly instead of paying the
+cold-boot cost again.
 
-This page maps what survives what, where on disk it lives, and the
-explicit teardown verbs.
+This page maps what survives what, where on disk it lives, and the explicit teardown verbs.
 
 ## What survives what
 
-| Operation | Long-lived containers (sui, walrus, …) | Per-stack state (`.devstack/stacks/<stack>/`) | Account keys | Manifest |
-| --- | --- | --- | --- | --- |
-| File save (`.move` edit) | **kept** | **kept** | kept | re-emitted |
-| Press `r` (full restart) | **kept** | **kept** | kept | re-emitted |
-| Press `q` / Ctrl-C | stopped | **kept** | kept | kept on disk |
-| Next `pnpm dev` | restarted (chain id stable from RocksDB volume) | **kept** | **same address** | re-emitted |
-| `devstack stack down [name]` | stopped | **kept** | kept | kept on disk |
-| `devstack stack drop <name> --yes` | not touched | **removed** | **destroyed** | removed |
-| `devstack wipe --yes` | killed + volumes removed | **removed** | **destroyed** | removed |
-| `devstack prune` | killed + volumes removed (per stack you confirm) | **removed** | **destroyed** | removed |
+| Operation                          | Long-lived containers (sui, walrus, …)           | Per-stack state (`.devstack/stacks/<stack>/`) | Account keys     | Manifest     |
+| ---------------------------------- | ------------------------------------------------ | --------------------------------------------- | ---------------- | ------------ |
+| File save (`.move` edit)           | **kept**                                         | **kept**                                      | kept             | re-emitted   |
+| Press `r` (full restart)           | **kept**                                         | **kept**                                      | kept             | re-emitted   |
+| Press `q` / Ctrl-C                 | stopped                                          | **kept**                                      | kept             | kept on disk |
+| Next `pnpm dev`                    | restarted (chain id stable from RocksDB volume)  | **kept**                                      | **same address** | re-emitted   |
+| `devstack stack down [name]`       | stopped                                          | **kept**                                      | kept             | kept on disk |
+| `devstack stack drop <name> --yes` | not touched                                      | **removed**                                   | **destroyed**    | removed      |
+| `devstack wipe --yes`              | killed + volumes removed                         | **removed**                                   | **destroyed**    | removed      |
+| `devstack prune`                   | killed + volumes removed (per stack you confirm) | **removed**                                   | **destroyed**    | removed      |
 
-The key point: **`q` and `r` are non-destructive**, **`stack down` is
-non-destructive**, and **everything that destroys state requires
-`--yes`**.
+The key point: **`q` and `r` are non-destructive**, **`stack down` is non-destructive**, and
+**everything that destroys state requires `--yes`**.
 
 ## What "long-lived" means in practice
 
-When the supervisor boots, it creates a long-lived scope that carries
-all containers safe to reuse across cycles — the Sui localnet, the
-walrus storage nodes, the indexer DB. Press `r` or save a file:
+When the supervisor boots, it creates a long-lived scope that carries all containers safe to reuse
+across cycles — the Sui localnet, the walrus storage nodes, the indexer DB. Press `r` or save a
+file:
 
-- The per-cycle supervisor scope tears down. The Refs that own
-  per-cycle work (`Action`, `publishMove`, `Codegen`) re-acquire.
-- The long-lived scope stays alive. The Sui validator's RocksDB
-  isn't touched, the chain id stays stable, and the next cycle's
-  `publishMove` cache hits — packageIds don't move.
+- The per-cycle supervisor scope tears down. The Refs that own per-cycle work (`Action`,
+  `publishMove`, `Codegen`) re-acquire.
+- The long-lived scope stays alive. The Sui validator's RocksDB isn't touched, the chain id stays
+  stable, and the next cycle's `publishMove` cache hits — packageIds don't move.
 
-Press `q` or Ctrl-C: the long-lived scope tears down too. Containers
-stop (but their named docker volumes survive). Next `pnpm dev`
-restarts the same containers, the validator picks up where it left
+Press `q` or Ctrl-C: the long-lived scope tears down too. Containers stop (but their named docker
+volumes survive). Next `pnpm dev` restarts the same containers, the validator picks up where it left
 off, and the chain id is the same.
 
 ## Where state lives on disk
@@ -75,47 +71,40 @@ off, and the chain id is the same.
                                    (used by `devstack prune` to find stale ones)
 ```
 
-Plus: every container devstack creates is labelled `devstack.app=<app>`
-and `devstack.stack=<stack>`, and every named volume the same way.
-That's how `wipe` and `prune` find what belongs to which stack
-without walking the entire docker daemon.
+Plus: every container devstack creates is labelled `devstack.app=<app>` and
+`devstack.stack=<stack>`, and every named volume the same way. That's how `wipe` and `prune` find
+what belongs to which stack without walking the entire docker daemon.
 
 ## What lives in `state.json`
 
 The state store is a flat key/value file written atomically (tempfile
-+ rename). Typical contents:
 
-- `publishMove(<name>)/<sourceHash>/<chainId>` — the resolved
-  `Package` shape. A no-op rebuild (same source, same chain) hits
-  this and skips the publish entirely.
-- `walrus/deploy/<chainId>/<sourceHash>` — the walrus deploy outputs
-  (packageId, system object, exchange object).
-- `walrus/seed-wal/<chainId>/<exchangeObjectId>/<address>` — per-account
-  WAL seed status (so a press-`r` cycle doesn't re-swap on every
-  restart).
-- `seal/key-server/<chainId>` — the Seal key server keypair +
-  registration object id.
+- rename). Typical contents:
 
-Each entry folds the chain id into its key, so a chain regenesis
-(`wipe`) misses the cache naturally — there's no manual cache
-invalidation step.
+* `publishMove(<name>)/<sourceHash>/<chainId>` — the resolved `Package` shape. A no-op rebuild (same
+  source, same chain) hits this and skips the publish entirely.
+* `walrus/deploy/<chainId>/<sourceHash>` — the walrus deploy outputs (packageId, system object,
+  exchange object).
+* `walrus/seed-wal/<chainId>/<exchangeObjectId>/<address>` — per-account WAL seed status (so a
+  press-`r` cycle doesn't re-swap on every restart).
+* `seal/key-server/<chainId>` — the Seal key server keypair + registration object id.
+
+Each entry folds the chain id into its key, so a chain regenesis (`wipe`) misses the cache naturally
+— there's no manual cache invalidation step.
 
 ## Snapshots
 
-`devstack snapshot` captures `state.json` (and optionally container
-state) as a labeled archive under `.devstack/snapshots/<id>/`.
-Useful when:
+`devstack snapshot` captures `state.json` (and optionally container state) as a labeled archive
+under `.devstack/snapshots/<id>/`. Useful when:
 
 - You want to rewind a flaky e2e run to a known-good chain state.
-- You want to share a reproducible chain state with a teammate (zip
-  the snapshot dir, git LFS it, whatever).
-- You're about to do something destructive and want a rollback
-  point.
+- You want to share a reproducible chain state with a teammate (zip the snapshot dir, git LFS it,
+  whatever).
+- You're about to do something destructive and want a rollback point.
 
 ### `devstack snapshot save [--label <name>]`
 
-Captures the current `state.json`. The id format is
-`YYYYMMDDTHHMMSS` plus an optional label suffix:
+Captures the current `state.json`. The id format is `YYYYMMDDTHHMMSS` plus an optional label suffix:
 
 ```bash
 devstack snapshot save                    # → 20260515T160230
@@ -123,9 +112,8 @@ devstack snapshot save --label before-migration
                                          # → 20260515T160245-before-migration
 ```
 
-The save is fast — it's a file copy. Container state is **not**
-captured by default (the chain RocksDB volume can be many MB to
-hundreds of MB).
+The save is fast — it's a file copy. Container state is **not** captured by default (the chain
+RocksDB volume can be many MB to hundreds of MB).
 
 ### `devstack snapshot list`
 
@@ -140,9 +128,8 @@ snapshots in .devstack/snapshots:
 
 ### `devstack snapshot restore [<id-or-label>]`
 
-Copies the snapshot's `state.json` back over the live one. Defaults
-to the newest snapshot when no argument is given. Prefix matches
-work, so the label suffix alone is usually enough:
+Copies the snapshot's `state.json` back over the live one. Defaults to the newest snapshot when no
+argument is given. Prefix matches work, so the label suffix alone is usually enough:
 
 ```bash
 devstack snapshot restore                       # newest
@@ -150,13 +137,11 @@ devstack snapshot restore before-migration      # match by label
 devstack snapshot restore 20260515T160230       # match by full id
 ```
 
-Restore the snapshot **before** running `pnpm dev`. The supervisor
-reads `state.json` at boot — if you restore mid-session, the running
-supervisor still holds the old state in memory.
+Restore the snapshot **before** running `pnpm dev`. The supervisor reads `state.json` at boot — if
+you restore mid-session, the running supervisor still holds the old state in memory.
 
-If the snapshot was saved with container tarballs, those get
-`docker load`ed too. You're responsible for re-running the loaded
-images (devstack doesn't auto-start them).
+If the snapshot was saved with container tarballs, those get `docker load`ed too. You're responsible
+for re-running the loaded images (devstack doesn't auto-start them).
 
 ### `devstack snapshot delete <id-or-label>`
 
@@ -166,31 +151,28 @@ Removes the snapshot directory.
 
 ### `devstack stack down [<name>]`
 
-Stops every container labelled with the stack but **keeps the state
-dir**. Use when you want to free CPU/memory but keep the option to
-resume:
+Stops every container labelled with the stack but **keeps the state dir**. Use when you want to free
+CPU/memory but keep the option to resume:
 
 ```bash
 devstack stack down             # active or 'main'
 devstack stack down feature-x   # specific stack
 ```
 
-Next `pnpm dev` restarts the same containers and resumes from the
-same `state.json` — chain id stable, packages not republished,
-account keys reused.
+Next `pnpm dev` restarts the same containers and resumes from the same `state.json` — chain id
+stable, packages not republished, account keys reused.
 
 ### `devstack stack drop <name> --yes`
 
-Removes `.devstack/stacks/<name>/` entirely (`state.json`, `.keys/`,
-snapshots, manifest). **Does not touch docker.** Pair with `stack
-down` if you also want the containers gone, or use `wipe` for both
-in one step.
+Removes `.devstack/stacks/<name>/` entirely (`state.json`, `.keys/`, snapshots, manifest). **Does
+not touch docker.** Pair with `stack down` if you also want the containers gone, or use `wipe` for
+both in one step.
 
 ### `devstack wipe --yes`
 
-The full per-stack teardown: kills every `<app>+<stack>`-labelled
-container, removes the corresponding networks and named volumes,
-removes the on-disk state. Next `pnpm dev` is a fresh genesis.
+The full per-stack teardown: kills every `<app>+<stack>`-labelled container, removes the
+corresponding networks and named volumes, removes the on-disk state. Next `pnpm dev` is a fresh
+genesis.
 
 ```bash
 devstack wipe --yes                   # default app + active stack
@@ -200,35 +182,30 @@ devstack wipe --yes --no-stop         # only on-disk state, leave docker alone
 devstack wipe --yes --images          # also remove devstack-* image tags
 ```
 
-The label-scoped targeting means `wipe` is safe to run while another
-stack on a different app is up — it won't touch resources that
-aren't tagged with the matching `app + stack` pair.
+The label-scoped targeting means `wipe` is safe to run while another stack on a different app is up
+— it won't touch resources that aren't tagged with the matching `app + stack` pair.
 
 ### `devstack prune`
 
-Cross-stack cleanup. Reads `~/.devstack/registry.json` to find every
-stack ever booted on this host, then offers an interactive picker
-(or non-interactive `--repo-gone --yes`, `--all-orphans --yes`
-modes). **Refuses to prune any stack with a live supervisor**
-(checked via the lock file's `pid` + `kill(pid, 0)`).
+Cross-stack cleanup. Reads `~/.devstack/registry.json` to find every stack ever booted on this host,
+then offers an interactive picker (or non-interactive `--repo-gone --yes`, `--all-orphans --yes`
+modes). **Refuses to prune any stack with a live supervisor** (checked via the lock file's `pid` +
+`kill(pid, 0)`).
 
-Use when you've cleaned up several repos and want to reclaim the
-docker volumes they left behind.
+Use when you've cleaned up several repos and want to reclaim the docker volumes they left behind.
 
 ## Multi-stack and parallel work
 
-Every container, every state file, and every named volume is keyed
-on `<app, stack, network>`. Two checkouts of the same repo, or one
-repo running localnet + testnet side by side, won't collide:
+Every container, every state file, and every named volume is keyed on `<app, stack, network>`. Two
+checkouts of the same repo, or one repo running localnet + testnet side by side, won't collide:
 
 ```bash
 DEVSTACK_STACK=feature-branch pnpm dev    # separate state, separate containers
 devstack up --network testnet             # separate state file under .devstack/networks/
 ```
 
-The `state.json.lock` per stack prevents two supervisors from racing
-the same state file — a second `pnpm dev` against the same stack
-fails fast with `StateStoreLockedError` and identifies the running
+The `state.json.lock` per stack prevents two supervisors from racing the same state file — a second
+`pnpm dev` against the same stack fails fast with `StateStoreLockedError` and identifies the running
 supervisor's pid.
 
 ## Reference
@@ -236,5 +213,5 @@ supervisor's pid.
 - [CLI reference — snapshot](../reference/cli#devstack-snapshot)
 - [CLI reference — stack](../reference/cli#devstack-stack)
 - [CLI reference — wipe](../reference/cli#devstack-wipe)
-- [Internals — lifecycle](../internals/lifecycle) — supervisor scopes,
-  long-lived scope, what survives press-`r`
+- [Internals — lifecycle](../internals/lifecycle) — supervisor scopes, long-lived scope, what
+  survives press-`r`

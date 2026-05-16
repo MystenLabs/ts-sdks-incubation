@@ -1,20 +1,20 @@
 ---
 title: Devstack
-description: One config gives you a full Sui development environment — localnet, packages, accounts, types, dev server, tests, and the live-network promotion path.
+description:
+  One config gives you a full Sui development environment — localnet, packages, accounts, types, dev
+  server, tests, and the live-network promotion path.
 ---
 
-Building a Sui app means juggling a lot of moving pieces. You need a
-local network running, your Move packages compiled and published,
-funded accounts to sign with, TypeScript bindings that match the
-freshly published package id, a wallet your dev server can talk to,
-e2e tests that drive a real browser, and — eventually — the same app
-pointed at testnet or mainnet without rewriting half the config.
+Building a Sui app means juggling a lot of moving pieces. You need a local network running, your
+Move packages compiled and published, funded accounts to sign with, TypeScript bindings that match
+the freshly published package id, a wallet your dev server can talk to, e2e tests that drive a real
+browser, and — eventually — the same app pointed at testnet or mainnet without rewriting half the
+config.
 
 Devstack is one tool that owns all of it.
 
-You describe what your app depends on in a single config file.
-Devstack boots it, keeps it in sync as you edit, wires your frontend
-and your tests to the running stack, and re-targets the same config
+You describe what your app depends on in a single config file. Devstack boots it, keeps it in sync
+as you edit, wires your frontend and your tests to the running stack, and re-targets the same config
 at live networks when you ship.
 
 ## A small example
@@ -32,87 +32,71 @@ const codegen = Codegen({ packages: [hello], output: './src/generated' });
 
 const wallet = Wallet({ accounts: [publisher, alice, bob] });
 const dev = Dev({
-  command: 'pnpm',
-  args: ['exec', 'vite', '--port', '{port}'],
-  port: 5173,
-  needs: [hello, codegen],
+	command: 'pnpm',
+	args: ['exec', 'vite', '--port', '{port}'],
+	port: 5173,
+	needs: [hello, codegen],
 });
 
 export default devstack(publisher, alice, bob, hello, codegen, wallet, dev);
 ```
 
-Then `pnpm dev` brings the whole stack up. By the time the TUI
-settles, you have:
+Then `pnpm dev` brings the whole stack up. By the time the TUI settles, you have:
 
 - A **Sui localnet** running with faucet, indexer, and GraphQL.
-- Three **funded accounts** (`publisher`, `alice`, `bob`) with stable
-  addresses that survive restarts.
-- Your **Move package published** under a stable package id, captured
-  objects pulled out of the publish receipt, and re-published when you
-  edit `.move` files.
-- **TypeScript bindings** emitted into `./src/generated/` so your app
-  imports `move::hello::greet` directly with the right types.
-- A **dev wallet UI** exposing all three accounts to your browser —
-  no MetaMask-style extension setup, no keypair copy-paste.
-- Your **Vite dev server** at a stable URL (`http://dev.<app>.localhost`)
-  that doesn't fight for ports across restarts.
-- A **manifest sidecar** (`.devstack/manifest.json`) carrying every
-  resolved endpoint, package id, and account address — the single
-  source of truth your frontend, tests, and Playwright config read
+- Three **funded accounts** (`publisher`, `alice`, `bob`) with stable addresses that survive
+  restarts.
+- Your **Move package published** under a stable package id, captured objects pulled out of the
+  publish receipt, and re-published when you edit `.move` files.
+- **TypeScript bindings** emitted into `./src/generated/` so your app imports `move::hello::greet`
+  directly with the right types.
+- A **dev wallet UI** exposing all three accounts to your browser — no MetaMask-style extension
+  setup, no keypair copy-paste.
+- Your **Vite dev server** at a stable URL (`http://dev.<app>.localhost`) that doesn't fight for
+  ports across restarts.
+- A **manifest sidecar** (`.devstack/manifest.json`) carrying every resolved endpoint, package id,
+  and account address — the single source of truth your frontend, tests, and Playwright config read
   from.
 
-Edit a `.move` file: devstack re-publishes, re-emits bindings, and
-your Vite dev server hot-reloads. Run `pnpm test`: vitest hits the
-same stack with the same accounts. Run `pnpm test:e2e`: Playwright
-drives a real browser against the same dev server with `connectAs`
-helpers for in-test account switching. Run `devstack up --network testnet`
-and the same config runs against the public testnet RPC.
+Edit a `.move` file: devstack re-publishes, re-emits bindings, and your Vite dev server hot-reloads.
+Run `pnpm test`: vitest hits the same stack with the same accounts. Run `pnpm test:e2e`: Playwright
+drives a real browser against the same dev server with `connectAs` helpers for in-test account
+switching. Run `devstack up --network testnet` and the same config runs against the public testnet
+RPC.
 
 ## What devstack does
 
-The feature pages below each lead with the problem they solve and end
-with the config knobs you need.
+The feature pages below each lead with the problem they solve and end with the config knobs you
+need.
 
-- **[Local development](./features/local-dev)** — boot localnet,
-  publish packages, run a dev server, hot-restart on every edit.
-- **[Accounts and the dev wallet](./features/accounts-and-wallet)** —
-  named accounts with stable addresses and a built-in wallet UI for
-  the browser.
-- **[Coins and funding](./features/coins-and-funding)** — declare
-  custom coins on your Move packages, surface them in the manifest,
-  and fund accounts (with an honest map of what's auto vs manual
-  today).
-- **[Codegen](./features/codegen)** — Move → TypeScript bindings and
-  a pre-wired dapp-kit factory that always points at the live package
-  ids.
-- **[dapp-kit integration](./features/dapp-kit)** — one-line setup
-  that reads the manifest and wires `createDAppKit({ ... })` with the
-  right networks, MVR overrides, and connected wallets.
-- **[Vitest](./features/testing-vitest)** — `yield*` any Ref from
-  inside a test against the same stack your dev session uses.
-- **[Playwright](./features/testing-playwright)** — `globalSetup`
-  boots the stack, `webServer` and `baseURL` read the manifest,
-  `connectAs(page, 'alice')` switches accounts mid-test.
-- **[Walrus, Seal, and Deepbook](./features/services)** — composite
-  Refs that boot the upstream infra locally and re-target the same
-  shape against known testnet / mainnet deployments.
-- **[State and snapshots](./features/state-and-snapshots)** — what
-  survives across hot-restart, graceful shutdown, and host reboot,
-  plus `devstack snapshot save / restore` for checkpointing chain
-  state.
-- **[Live networks](./features/live-networks)** — same config,
-  `--network testnet`, env-sourced accounts, `KnownPackage(...)`
-  for third-party deps.
-- **[Plugins](./features/plugins)** — drop in any docker-backed
-  service, host process, or one-shot transaction as a Ref. No plugin
-  registry, no manifest format — just a function that returns a Ref.
+- **[Local development](./features/local-dev)** — boot localnet, publish packages, run a dev server,
+  hot-restart on every edit.
+- **[Accounts and the dev wallet](./features/accounts-and-wallet)** — named accounts with stable
+  addresses and a built-in wallet UI for the browser.
+- **[Coins and funding](./features/coins-and-funding)** — declare custom coins on your Move
+  packages, surface them in the manifest, and fund accounts (with an honest map of what's auto vs
+  manual today).
+- **[Codegen](./features/codegen)** — Move → TypeScript bindings and a pre-wired dapp-kit factory
+  that always points at the live package ids.
+- **[dapp-kit integration](./features/dapp-kit)** — one-line setup that reads the manifest and wires
+  `createDAppKit({ ... })` with the right networks, MVR overrides, and connected wallets.
+- **[Vitest](./features/testing-vitest)** — `yield*` any Ref from inside a test against the same
+  stack your dev session uses.
+- **[Playwright](./features/testing-playwright)** — `globalSetup` boots the stack, `webServer` and
+  `baseURL` read the manifest, `connectAs(page, 'alice')` switches accounts mid-test.
+- **[Walrus, Seal, and Deepbook](./features/services)** — composite Refs that boot the upstream
+  infra locally and re-target the same shape against known testnet / mainnet deployments.
+- **[State and snapshots](./features/state-and-snapshots)** — what survives across hot-restart,
+  graceful shutdown, and host reboot, plus `devstack snapshot save / restore` for checkpointing
+  chain state.
+- **[Live networks](./features/live-networks)** — same config, `--network testnet`, env-sourced
+  accounts, `KnownPackage(...)` for third-party deps.
+- **[Plugins](./features/plugins)** — drop in any docker-backed service, host process, or one-shot
+  transaction as a Ref. No plugin registry, no manifest format — just a function that returns a Ref.
 
 ## Where to go next
 
-- **[Quickstart](./quickstart)** — scaffold a fresh app and walk
-  through the first `pnpm dev`.
-- **[CLI reference](./reference/cli)** — `devstack up`, `apply`,
-  `stack`, `wipe`, `doctor`, `prune`.
-- **[Internals](./internals/refs-and-tags)** — how Refs and the
-  supervisor work, for plugin authors and people debugging weird
-  acquisition behavior.
+- **[Quickstart](./quickstart)** — scaffold a fresh app and walk through the first `pnpm dev`.
+- **[CLI reference](./reference/cli)** — `devstack up`, `apply`, `stack`, `wipe`, `doctor`, `prune`.
+- **[Internals](./internals/refs-and-tags)** — how Refs and the supervisor work, for plugin authors
+  and people debugging weird acquisition behavior.

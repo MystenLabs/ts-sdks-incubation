@@ -1,0 +1,6 @@
+.next/
+.source/
+.turbo/
+.vercel/
+node_modules/
+dist/

@@ -1,109 +1,95 @@
 ---
 title: Refs and tags
-description: The substrate every devstack factory and plugin is built on. Read this when writing a plugin or debugging acquisition order.
+description:
+  The substrate every devstack factory and plugin is built on. Read this when writing a plugin or
+  debugging acquisition order.
 ---
 
-You can build, test, and ship a devstack app without reading this
-page. Refs and tags are the substrate — they explain *why* the
-built-in factories compose the way they do and *how* to write your
-own plugins. Reach for this page when you're writing under
-`@mysten-incubation/devstack/advanced` or debugging an unexpected
-acquisition order.
+You can build, test, and ship a devstack app without reading this page. Refs and tags are the
+substrate — they explain _why_ the built-in factories compose the way they do and _how_ to write
+your own plugins. Reach for this page when you're writing under
+`@mysten-incubation/devstack/advanced` or debugging an unexpected acquisition order.
 
 ## What a Ref is
 
 A **Ref** is a typed value with three faces:
 
 1. **A configuration value.** Pass it into another factory:
-   `Package('hello', './move/hello', { signer: alice })`. TypeScript
-   checks that `alice` is an account-shaped Ref.
-2. **An Effect Layer.** `devstack(...)` composes every Ref's layer
-   into the supervisor's runtime graph. Dependencies are wired
-   automatically — `hello`'s body yields `alice`, so `alice` must
+   `Package('hello', './move/hello', { signer: alice })`. TypeScript checks that `alice` is an
+   account-shaped Ref.
+2. **An Effect Layer.** `devstack(...)` composes every Ref's layer into the supervisor's runtime
+   graph. Dependencies are wired automatically — `hello`'s body yields `alice`, so `alice` must
    build first.
-3. **A yieldable tag.** Inside any Effect (`Action.build`, a custom
-   emitter, your own helper), `yield* alice` resolves to the
-   resolved `Account` — address, scheme, signing closures.
+3. **A yieldable tag.** Inside any Effect (`Action.build`, a custom emitter, your own helper),
+   `yield* alice` resolves to the resolved `Account` — address, scheme, signing closures.
 
-You rarely build Refs by hand. Every factory exported from
-`@mysten-incubation/devstack` (`Sui`, `Account`, `Package`,
-`Walrus`, `Seal`, `Deepbook`, `Dev`, `Wallet`, …) returns one. When
-you do need to build your own — a custom plugin, a one-off — reach
-for `tag(name, body, opts?)` from the `/advanced` subpath:
+You rarely build Refs by hand. Every factory exported from `@mysten-incubation/devstack` (`Sui`,
+`Account`, `Package`, `Walrus`, `Seal`, `Deepbook`, `Dev`, `Wallet`, …) returns one. When you do
+need to build your own — a custom plugin, a one-off — reach for `tag(name, body, opts?)` from the
+`/advanced` subpath:
 
 ```ts
 import { Effect } from 'effect';
 import { tag } from '@mysten-incubation/devstack/advanced';
 
 const greeting = tag('greeting', Effect.succeed({ hello: 'world' }), {
-  kind: 'app',
-  displayTitle: 'greeting',
+	kind: 'app',
+	displayTitle: 'greeting',
 });
 ```
 
-The result is a Ref. Pass it to `devstack(...)`, yield it elsewhere,
-or hand it to `Action({ needs: [greeting] })`.
+The result is a Ref. Pass it to `devstack(...)`, yield it elsewhere, or hand it to
+`Action({ needs: [greeting] })`.
 
 ## The two verbs: `tag` and `provide`
 
 There are exactly two ways to make a Ref:
 
-- **`tag(name, body, opts?)`** — create a fresh tag class inline.
-  Use this for one-off Refs that don't implement a shared interface.
-  `Action(...)`, custom plugin Refs, per-account tags — all built
-  with `tag`.
-- **`provide(TagClass, body, opts?)`** — implement an existing
-  `Context.Service` class. Use this when your factory is one of
-  several implementations of a shared interface — `Sui` is one
-  Context.Service (`SuiTag`); `Sui({ network: 'testnet' })` and
-  `Sui({ network: 'mainnet' })` are two implementations of it.
+- **`tag(name, body, opts?)`** — create a fresh tag class inline. Use this for one-off Refs that
+  don't implement a shared interface. `Action(...)`, custom plugin Refs, per-account tags — all
+  built with `tag`.
+- **`provide(TagClass, body, opts?)`** — implement an existing `Context.Service` class. Use this
+  when your factory is one of several implementations of a shared interface — `Sui` is one
+  Context.Service (`SuiTag`); `Sui({ network: 'testnet' })` and `Sui({ network: 'mainnet' })` are
+  two implementations of it.
 
-The distinction matters at the type level. Two `Action('foo', …)`
-calls in the same stack are different tags (different
-`tag('foo', …)` identities). Two `Sui(...)` calls would both call
-`provide(SuiTag, …)` — they'd target the **same** tag, and devstack
-warns at runtime that you've registered two implementations.
+The distinction matters at the type level. Two `Action('foo', …)` calls in the same stack are
+different tags (different `tag('foo', …)` identities). Two `Sui(...)` calls would both call
+`provide(SuiTag, …)` — they'd target the **same** tag, and devstack warns at runtime that you've
+registered two implementations.
 
 ## Composing inner Refs
 
-`Walrus()`, `Deepbook()`, and `Seal()` are composite Refs: their
-body yields several inner tags (`WalrusNodesTag`, `WalrusProxyTag`,
-`WalrusAdminTag`, `SealKeyServerTag`, `SealKeyManagerTag`,
-`DeepbookCoreTag`, `DeepbookAdminTag`) so consumers can request
-exactly the slice they need:
+`Walrus()`, `Deepbook()`, and `Seal()` are composite Refs: their body yields several inner tags
+(`WalrusNodesTag`, `WalrusProxyTag`, `WalrusAdminTag`, `SealKeyServerTag`, `SealKeyManagerTag`,
+`DeepbookCoreTag`, `DeepbookAdminTag`) so consumers can request exactly the slice they need:
 
 ```ts
 import { Effect } from 'effect';
 import { WalrusNodesTag, WalrusProxyTag } from '@mysten-incubation/devstack';
 
 const uploadBlob = Effect.gen(function* () {
-  const nodes = yield* WalrusNodesTag;
-  const proxy = yield* WalrusProxyTag;
-  // ...
+	const nodes = yield* WalrusNodesTag;
+	const proxy = yield* WalrusProxyTag;
+	// ...
 });
 ```
 
-If you're writing your own composite, `composeTag(name, body,
-innerTags)` does the inner-layer flattening for you. See
-[advanced reference](../reference/advanced).
+If you're writing your own composite, `composeTag(name, body, innerTags)` does the inner-layer
+flattening for you. See [advanced reference](../reference/advanced).
 
 ## Refs that mutate their canonical class
 
-Internally, `provide(TagClass, …)` mutates `TagClass` via
-`Object.assign` so the Context.Service class itself becomes a
-yieldable Ref. That's why `yield* SuiTag` works without you ever
-calling a separate `.layer()` accessor — the tag class carries its
-own layer.
+Internally, `provide(TagClass, …)` mutates `TagClass` via `Object.assign` so the Context.Service
+class itself becomes a yieldable Ref. That's why `yield* SuiTag` works without you ever calling a
+separate `.layer()` accessor — the tag class carries its own layer.
 
-You almost never write this pattern; it's the substrate that lets
-factory Refs and bare tag classes coexist in the same `devstack(...)`
-stack.
+You almost never write this pattern; it's the substrate that lets factory Refs and bare tag classes
+coexist in the same `devstack(...)` stack.
 
 ## Where to go next
 
-- [Lifecycle](./lifecycle) — how the supervisor acquires, watches,
-  and tears down Refs.
-- [Advanced reference](../reference/advanced) — the primitives
-  `/advanced` exposes for plugin authors.
-- [Plugins](../features/plugins) — a worked example of writing a
-  Ref end-to-end.
+- [Lifecycle](./lifecycle) — how the supervisor acquires, watches, and tears down Refs.
+- [Advanced reference](../reference/advanced) — the primitives `/advanced` exposes for plugin
+  authors.
+- [Plugins](../features/plugins) — a worked example of writing a Ref end-to-end.
