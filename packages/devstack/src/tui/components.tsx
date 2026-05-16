@@ -92,13 +92,15 @@ const BUILD_STATUS_COLOR: Record<BuildStatus, string | undefined> = {
 // keep in lockstep with the keys produced by `parseTitle`'s `<group>`.
 // Unknown groups fall through to `magenta` so a new primitive still
 // gets a distinct tint until it's added here.
+// `red` deliberately omitted: the `failed` status badge is rendered
+// red, and a section heading also tinted red would mislead the eye
+// into reading the section as failed when only one row inside is.
 const SECTION_COLORS: ReadonlyArray<string> = [
 	'cyan',
 	'green',
 	'yellow',
 	'magenta',
 	'blue',
-	'red',
 	'cyanBright',
 	'greenBright',
 ];

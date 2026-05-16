@@ -324,13 +324,19 @@ export const EngineLive: Layer.Layer<EngineHandle> = Layer.effect(
 
 		const markReady = (name: string, display?: TuiDisplay) =>
 			Ref.update(tuiState, (s) => {
-				// Terminal transitions clear the sub-phase: a row that's
-				// already `ready` showing `(running genesis)` next to its
-				// URL would be confusing — the phase narration only makes
-				// sense alongside the `acquiring` badge.
+				// Terminal transitions clear the sub-phase AND the last
+				// transient log line. A row that's already `ready`
+				// showing `(running genesis)` next to its URL would be
+				// confusing — the phase narration only makes sense
+				// alongside the `acquiring` badge. Same for `lastLog`:
+				// a debug line emitted mid-acquire would otherwise stick
+				// around in the row's detail column AND mask the
+				// resolved primary URL (the field the user actually
+				// needs after ready).
 				const patch: Partial<TuiEntry> = {
 					status: 'ready',
 					phase: undefined,
+					lastLog: undefined,
 					...(display?.title !== undefined ? { title: display.title } : {}),
 					...(display?.primary !== undefined ? { primary: display.primary } : {}),
 					...(display?.extras !== undefined ? { extras: display.extras } : {}),
