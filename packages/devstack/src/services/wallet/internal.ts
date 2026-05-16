@@ -7,6 +7,7 @@
 // defense.
 
 import { randomBytes } from 'node:crypto';
+import * as nodeFs from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { join as joinPath } from 'node:path';
 import { Effect } from 'effect';
@@ -20,6 +21,7 @@ import {
 } from '../../engine/docker/router.js';
 import { routerHostname, routerId } from '../../engine/router-hostname.js';
 import { EndpointRegistry } from '../../engine/registries.js';
+import { RUNTIME_DIR_NAME, servicePath } from '../../engine/service-paths.js';
 import { StateStoreConfig } from '../../engine/state-store.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
 import { tag, setPhase, type Ref } from '../../advanced/tag.js';
@@ -127,7 +129,6 @@ export const walletApp = <const Name extends string = 'wallet-app'>(
 			// CSRF defense (mandatory Origin header on signing endpoints,
 			// Phase 8 / C12) does the actual heavy lifting either way.
 			const bindAddress = options.bindAddress ?? '127.0.0.1';
-			const token = randomBytesHex(16);
 			// Auto-derive the routed dev-server origin from Identity so
 			// non-`main` stacks don't have to enumerate
 			// `test.dev.<app>.localhost` in user config. Each routed
@@ -135,6 +136,27 @@ export const walletApp = <const Name extends string = 'wallet-app'>(
 			// stack development) is allowed; user-supplied extras are
 			// merged on top.
 			const identity = yield* Identity;
+			// Pre-resolve the token path so we can read-existing-or-mint.
+			// Snapshot restore extracts a previous run's token verbatim;
+			// reading it instead of always re-minting means the browser-
+			// side pairing the user already completed before the snapshot
+			// keeps working without a re-pair UX after restore.
+			const stateStoreCfgOpt = yield* Effect.serviceOption(StateStoreConfig);
+			const tokenPath =
+				stateStoreCfgOpt._tag === 'Some'
+					? yield* servicePath('wallet', 'token').pipe(
+							Effect.provideService(StateStoreConfig, stateStoreCfgOpt.value),
+						)
+					: joinPath(
+							process.env.DEVSTACK_APP_DIR ?? process.cwd(),
+							'.devstack',
+							'stacks',
+							identity.stack,
+							RUNTIME_DIR_NAME,
+							'wallet',
+							'token',
+						);
+			const token = yield* readExistingTokenOrMint(tokenPath);
 			const devHostname = routerHostname(identity, 'dev');
 			const devEntrypoint = routerEntrypoint('vite');
 			const defaultAllowedOrigins: ReadonlyArray<string> = [
@@ -217,47 +239,11 @@ export const walletApp = <const Name extends string = 'wallet-app'>(
 			// the hash is replaced.
 			const pairUrl = `${url}/#token=${token}`;
 
-			// Phase E: write the raw token to a sibling 0o600 file under
-			// the stack's state dir. Filesystem-local tooling (CI
-			// fixtures, Playwright globalSetup helpers, future
-			// devstack-cli wrappers) can read this instead of parsing
-			// the fragment off `app.wallet.alternates[0]` in the
-			// manifest. The manifest pairUrl still carries the token
-			// for the browser-side adapter pairing flow — the browser
-			// can't read 0o600 files, so the sibling file is a
-			// supplement, not a replacement.
-			//
-			// `StateStoreConfig` is optional here so unit tests that
-			// build the wallet primitive without the full supervisor
-			// stack (no state-store wiring) still work; falls back to
-			// the env-derived path the rest of the toolchain uses.
-			const stateStoreCfgOpt = yield* Effect.serviceOption(StateStoreConfig);
-			const stackStateDir =
-				stateStoreCfgOpt._tag === 'Some'
-					? (stateStoreCfgOpt.value.stateDir ??
-						joinPath(
-							process.env.DEVSTACK_APP_DIR ?? process.cwd(),
-							'.devstack',
-							'stacks',
-							stateStoreCfgOpt.value.stack,
-						))
-					: joinPath(
-							process.env.DEVSTACK_APP_DIR ?? process.cwd(),
-							'.devstack',
-							'stacks',
-							identity.stack,
-						);
-			const tokenPath = joinPath(stackStateDir, 'wallet.token');
-			yield* Effect.tryPromise({
-				try: () => writeFileAtomic(tokenPath, token, { mode: 0o600 }),
-				catch: (cause) => cause,
-			}).pipe(
-				Effect.catch((cause) =>
-					Effect.logWarning(
-						`walletApp: failed to write sibling token file at ${tokenPath} (continuing; manifest pairUrl still carries the token): ${stringifyCause(cause)}`,
-					),
-				),
-			);
+			// Token persistence is handled inline at boot via
+			// `readExistingTokenOrMint`: if the file is already present
+			// (warm start or snapshot restore) we reuse the same token
+			// so existing dev-wallet pairings keep working; otherwise we
+			// mint a fresh one and write it.
 
 			yield* EndpointRegistry.publish({
 				name: 'wallet-app',
@@ -532,3 +518,60 @@ const sendJson = (res: ServerResponse, status: number, body: unknown): void => {
 };
 
 const randomBytesHex = (n: number): string => randomBytes(n).toString('hex');
+
+const TOKEN_HEX_RE = /^[0-9a-f]+$/;
+
+/** Reuse the existing wallet token if `runtime/wallet/token` is on disk;
+ *  otherwise mint a fresh 16-byte hex token and write it (mode 0o600).
+ *
+ *  Persistence rationale: the dev-wallet adapter pairs against
+ *  `pairUrl?token=...` once per session and stashes the token in
+ *  sessionStorage. If we re-mint the token every boot, every restart
+ *  (and every snapshot restore) invalidates the pairing — the user gets
+ *  a "wallet not paired" UX even though they completed the pairing
+ *  moments ago. Reading the existing file means warm starts AND
+ *  snapshot restores reuse the same token, so the existing pairing
+ *  keeps working. Snapshot save tars the file under
+ *  `runtime/wallet/token`, restore puts it back, this read-existing
+ *  path finds it.
+ *
+ *  Failures fall back to minting a fresh token + best-effort write.
+ *  Logged at warn level rather than failing the supervisor — without
+ *  the file, the manifest pairUrl still carries the token via the URL
+ *  fragment, so the browser-side flow degrades to "must pair every
+ *  boot" rather than breaking entirely. */
+const readExistingTokenOrMint = (tokenPath: string): Effect.Effect<string, never, never> =>
+	Effect.gen(function* () {
+		const existing = yield* Effect.tryPromise({
+			try: () => nodeFs.readFile(tokenPath, 'utf8'),
+			catch: () => undefined,
+		}).pipe(Effect.catch(() => Effect.succeed(undefined as string | undefined)));
+		if (typeof existing === 'string') {
+			const trimmed = existing.trim();
+			// Sanity-check the on-disk shape: 32 hex chars (= randomBytesHex(16)).
+			// Anything else triggers a re-mint — guards against truncated
+			// writes or unrelated junk that happened to land at this path.
+			if (trimmed.length === 32 && TOKEN_HEX_RE.test(trimmed)) {
+				return trimmed;
+			}
+		}
+		const token = randomBytesHex(16);
+		yield* Effect.tryPromise({
+			try: () => writeFileAtomic(tokenPath, token, { mode: 0o600 }),
+			catch: (cause) => cause,
+		}).pipe(
+			Effect.catch((cause) =>
+				// Log the PATH, not the token. `stringifyCause` only ever
+				// sees the underlying I/O error (ENOSPC, EROFS, etc.) —
+				// the token string is never passed to it. The pairUrl
+				// fragment is the only place the token transits, and that
+				// goes only to the manifest (0o600 on the file too, via
+				// writeFileAtomicIfChanged elsewhere).
+				Effect.logWarning(
+					`walletApp: failed to write token file at ${tokenPath} ` +
+						`(continuing; manifest pairUrl still carries the token): ${stringifyCause(cause)}`,
+				),
+			),
+		);
+		return token;
+	});

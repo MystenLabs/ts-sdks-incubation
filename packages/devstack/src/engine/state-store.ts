@@ -292,11 +292,27 @@ export const StateStoreLive: Layer.Layer<StateStore, StateStoreLockedError, File
 		//      between two peers' renames, letting both believe they
 		//      owned the lock.)
 		//
-		// Bounded retry count keeps a thundering herd of stale-lock
-		// reclaimers from looping forever in pathological cases.
-		const MAX_RECLAIM_ATTEMPTS = 5;
+		// Bounded retry count + jittered backoff keeps a thundering herd
+		// of stale-lock reclaimers from looping forever AND prevents the
+		// pathological case where N peers all retry on the same tick.
+		// Pre-fix: 5 attempts with no delay → legitimate stale-lock
+		// recovery could fail when 3+ supervisors started simultaneously.
+		// Now: 20 attempts with 50ms × 1.5^attempt × jitter [0.5, 1.5],
+		// total worst-case ~30s before giving up — well past any
+		// realistic kernel-mediated O_EXCL race.
+		const MAX_RECLAIM_ATTEMPTS = 20;
+		const BASE_BACKOFF_MS = 50;
+		const BACKOFF_GROWTH = 1.5;
 		let acquiredBody: LockBody | undefined;
 		for (let attempt = 0; attempt < MAX_RECLAIM_ATTEMPTS; attempt++) {
+			if (attempt > 0) {
+				// Equal-jitter exponential: half-fixed, half-random, so
+				// every retry has at least some delay but distributes
+				// peak load across the [0.5x, 1.5x] window.
+				const nominal = BASE_BACKOFF_MS * BACKOFF_GROWTH ** (attempt - 1);
+				const jitter = nominal * (0.5 + Math.random());
+				yield* Effect.sleep(`${Math.floor(jitter)} millis`);
+			}
 			const body = buildOwnBody();
 			const serialized = serializeBody(body);
 
@@ -497,19 +513,26 @@ export const StateStoreLive: Layer.Layer<StateStore, StateStoreLockedError, File
 			),
 		);
 
+		// `put` + `remove` carry spans so a slow disk (cross-mount NFS,
+		// encrypted home dir) surfaces in tracing as an attributable hot
+		// path. `get` is in-memory only — no span.
 		return {
 			get: <T>(key: string) =>
 				Ref.get(ref).pipe(
 					Effect.map((m) => (m.has(key) ? Option.some(m.get(key) as T) : Option.none<T>())),
 				),
 			put: <T>(key: string, value: T) =>
-				Ref.update(ref, (m) => new Map(m).set(key, value)).pipe(Effect.andThen(persistAndWarn)),
+				Ref.update(ref, (m) => new Map(m).set(key, value))
+					.pipe(Effect.andThen(persistAndWarn))
+					.pipe(Effect.withSpan('StateStore.put', { attributes: { 'state.key': key } })),
 			remove: (key: string) =>
 				Ref.update(ref, (m) => {
 					const next = new Map(m);
 					next.delete(key);
 					return next;
-				}).pipe(Effect.andThen(persistAndWarn)),
+				})
+					.pipe(Effect.andThen(persistAndWarn))
+					.pipe(Effect.withSpan('StateStore.remove', { attributes: { 'state.key': key } })),
 		};
 	}),
 );

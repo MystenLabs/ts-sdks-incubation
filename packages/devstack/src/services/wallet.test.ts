@@ -58,7 +58,7 @@ const stubAccountTag = (name: string): Ref<string, Account, never, never> =>
 			name,
 			address: '0xstub',
 			publicKey: new Uint8Array(32),
-			scheme: 'ED25519',
+			scheme: 'ed25519',
 			signAndExecute: () =>
 				Effect.die('stub account: signAndExecute should not be called in this test'),
 			signTransaction: () =>

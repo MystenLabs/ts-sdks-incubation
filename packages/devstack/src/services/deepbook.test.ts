@@ -287,7 +287,7 @@ const makeDyingSigner = (address: string) => {
 		name: 'mock-signer',
 		address,
 		publicKey: new Uint8Array(new ArrayBuffer(0)),
-		scheme: 'ED25519',
+		scheme: 'ed25519',
 		signAndExecute: () =>
 			Effect.die('mock-signer.signAndExecute called — cache regression') as never,
 		signTransaction: () =>

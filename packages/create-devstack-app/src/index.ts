@@ -143,12 +143,13 @@ function shouldSkip(path: string): boolean {
 }
 
 function rewriteName(appDir: string, name: string): void {
+	// `devstack(...refs)` derives the app name from `package.json#name`, so
+	// rewriting only that field propagates the new name through every CLI
+	// command, manifest emission, and docker label automatically.
 	for (const file of walk(appDir)) {
 		const rel = file.slice(appDir.length + 1);
 		if (rel === 'package.json') {
 			rewritePackageJson(file, name);
-		} else if (rel === 'devstack.config.ts') {
-			rewriteText(file, [{ from: /app:\s*'_template'/, to: `app: '${name}'` }]);
 		}
 	}
 }
@@ -160,12 +161,6 @@ function rewritePackageJson(path: string, name: string): void {
 	json.private = true;
 	if (json.version === undefined) json.version = '0.0.0';
 	writeFileSync(path, `${JSON.stringify(json, null, '\t')}\n`);
-}
-
-function rewriteText(path: string, edits: Array<{ from: RegExp; to: string }>): void {
-	let text = readFileSync(path, 'utf8');
-	for (const e of edits) text = text.replace(e.from, e.to);
-	writeFileSync(path, text);
 }
 
 function* walk(dir: string): IterableIterator<string> {

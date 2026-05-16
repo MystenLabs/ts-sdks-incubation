@@ -1,31 +1,41 @@
 name: Devstack E2E
 
-# Two-stage matrix CI for the example apps backed by devstack:
+# End-to-end smoke for the snapshot save → wipe → restore loop, matching
+# the runbook A documented in
+# `packages/devstack/test-setup/snapshot-smoke/README.md`.
 #
-#   1. seed:  per-example, brings up the stack cold, captures a snapshot,
-#             pushes seed images to GHCR. Snapshot bundle (small — manifest
-#             + keys + walrus configs) cached via `actions/cache`; seed
-#             container images flow through GHCR.
-#   2. e2e:   matrix of (example × shard). Each restores the snapshot
-#             bundle from cache + pulls seed images from GHCR via
-#             `devstack snapshot restore`, then runs the example app's
-#             playwright suite.
+# Two-stage matrix:
 #
-# Cold-cache CI run pays the full ~75 s seed cost per example once; warm
-# runs (cache hit on the snapshot bundle) restore in <15 s. Shards
-# parallelize across both axes.
+#   1. seed:  per-example, brings the stack up via `pnpm devstack apply`
+#             (one-shot reconcile + manifest write), takes a snapshot
+#             with `pnpm devstack snapshot save`, uploads the snapshot
+#             directory as a build artifact. The snapshot contains the
+#             full writable layer of every container (Phase 2 of the
+#             snapshot redesign: chain state + indexer DB in the
+#             writable layer, captured by `docker commit + save`) plus
+#             the canonical `runtime/` dir (account keys, wallet token,
+#             seal master-key, walrus deploy outputs).
+#
+#   2. e2e:   matrix of (example × shard). Downloads the artifact,
+#             extracts to `.devstack/snapshots/`, runs `devstack
+#             snapshot restore baseline`, then runs the example app's
+#             playwright suite against the restored stack.
+#
+# v3 used `snapshot save --push <registry>` + `snapshot restore --pull`
+# for cross-job container image sharing. v4 inlines container tarballs
+# inside the snapshot bundle so a single artifact upload is sufficient —
+# the bundle is fully self-contained. Future Phase 6 may re-add the
+# registry path for the cross-machine case (sharing snapshots between
+# developers), at which point the seed job could additionally push.
 
 on:
-  # Manual-only trigger: the v4 redesign (e0252e92) removed the
-  # `snapshot hash` / `snapshot save --push <registry>` /
-  # `snapshot restore --pull` subcommands this workflow depends on.
-  # Re-enable on `pull_request` once those land back in the v4 CLI.
-  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [main]
 
-# Permissions for GHCR push from the seed job.
+# Permissions: read-only, no GHCR push required for v4 inline-bundle path.
 permissions:
   contents: read
-  packages: write
 
 jobs:
   seed:
@@ -34,17 +44,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        example: [arena, private-content, token-studio, wallet]
-    outputs:
-      arena-snapshot-id: ${{ steps.export.outputs.arena }}
-      private-content-snapshot-id: ${{ steps.export.outputs.private-content }}
-      token-studio-snapshot-id: ${{ steps.export.outputs.token-studio }}
-      wallet-snapshot-id: ${{ steps.export.outputs.wallet }}
+        # Phase 4.3 starts with the sui-only example (`arena`) plus one
+        # walrus-bearing example (`private-content`) — runbooks A + B
+        # from the snapshot smoke playbook. Adding more examples to the
+        # matrix is a one-line change once they're proven stable.
+        example: [arena, private-content]
     steps:
       - name: Checkout
         uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # pin@v4.1.1
       - uses: pnpm/action-setup@a3252b78c470c02df07e9d59298aecedc3ccdd6d # pin@v3.0.0
-      - name: Install Nodejs
+      - name: Install Node.js
         uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8 # pin@v4.0.2
         with:
           node-version: '24'
@@ -53,31 +62,34 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Build devstack
         run: pnpm turbo build --filter @mysten-incubation/devstack
-      - name: Compute snapshot id
-        id: hash
+
+      - name: Apply stack (boot + write state + tear down)
+        working-directory: examples/${{ matrix.example }}
+        run: pnpm devstack apply
+
+      - name: Capture snapshot
+        working-directory: examples/${{ matrix.example }}
+        # `apply` exits after Layer.build's scope closes, leaving the
+        # containers stopped with their writable layer intact. The
+        # snapshot CLI uses `docker ps -a` so stopped containers are
+        # still committed + saved into the snapshot bundle.
+        run: pnpm devstack snapshot save baseline
+
+      - name: Show snapshot contents (debug)
         working-directory: examples/${{ matrix.example }}
         run: |
-          ID=$(pnpm devstack snapshot hash)
-          echo "id=$ID" >> $GITHUB_OUTPUT
-      - name: Export snapshot id
-        id: export
-        run: echo "${{ matrix.example }}=${{ steps.hash.outputs.id }}" >> $GITHUB_OUTPUT
-      - name: Cache snapshot bundle
-        id: cache
-        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # pin@v4.2.0
+          echo '--- snapshots/ tree ---'
+          find .devstack/snapshots -maxdepth 4 -type f -exec ls -la {} +
+          echo '--- meta.json ---'
+          find .devstack/snapshots -name meta.json -exec cat {} \;
+
+      - name: Upload snapshot artifact
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # pin@v4.6.0
         with:
+          name: devstack-snapshot-${{ matrix.example }}
           path: examples/${{ matrix.example }}/.devstack/snapshots
-          key: devstack-snapshot-${{ runner.arch }}-${{ matrix.example }}-${{ steps.hash.outputs.id }}
-      - name: Log in to GHCR
-        if: steps.cache.outputs.cache-hit != 'true'
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-      - name: Cold seed + capture snapshot
-        if: steps.cache.outputs.cache-hit != 'true'
-        working-directory: examples/${{ matrix.example }}
-        run: |
-          pnpm devstack up
-          pnpm devstack snapshot save baseline --push ghcr.io/${{ github.repository_owner }}/devstack-snapshots
-          pnpm devstack stack down
+          retention-days: 3
+          if-no-files-found: error
 
   e2e:
     name: E2E · ${{ matrix.example }} shard ${{ matrix.shard }}
@@ -86,13 +98,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        example: [arena, private-content, token-studio, wallet]
+        example: [arena, private-content]
         shard: [1, 2]
     steps:
       - name: Checkout
         uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # pin@v4.1.1
       - uses: pnpm/action-setup@a3252b78c470c02df07e9d59298aecedc3ccdd6d # pin@v3.0.0
-      - name: Install Nodejs
+      - name: Install Node.js
         uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8 # pin@v4.0.2
         with:
           node-version: '24'
@@ -101,29 +113,40 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Build devstack
         run: pnpm turbo build --filter @mysten-incubation/devstack
-      - name: Resolve snapshot id
-        id: snapshot
-        run: |
-          case "${{ matrix.example }}" in
-            arena)           ID="${{ needs.seed.outputs.arena-snapshot-id }}" ;;
-            private-content) ID="${{ needs.seed.outputs.private-content-snapshot-id }}" ;;
-            token-studio)    ID="${{ needs.seed.outputs.token-studio-snapshot-id }}" ;;
-            wallet)          ID="${{ needs.seed.outputs.wallet-snapshot-id }}" ;;
-            *) echo "unknown example ${{ matrix.example }}"; exit 1 ;;
-          esac
-          echo "id=$ID" >> $GITHUB_OUTPUT
-      - name: Restore snapshot bundle
-        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # pin@v4.2.0
+
+      - name: Download snapshot artifact
+        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # pin@v4.1.9
         with:
+          name: devstack-snapshot-${{ matrix.example }}
           path: examples/${{ matrix.example }}/.devstack/snapshots
-          key: devstack-snapshot-${{ runner.arch }}-${{ matrix.example }}-${{ steps.snapshot.outputs.id }}
-      - name: Log in to GHCR (for snapshot pull)
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
       - name: Restore snapshot
         working-directory: examples/${{ matrix.example }}
+        # Brings `state.json` back into place, untars `runtime/` to its
+        # original paths (preserving mode bits — 0o600 keys + token),
+        # and `docker load`s every committed container image. The next
+        # `up` adopts them via the reuse-if-image-matches probe in
+        # `Docker.run`.
         run: pnpm devstack snapshot restore baseline
+
       - name: Install playwright browsers
         run: pnpm --filter @mysten-incubation/${{ matrix.example }} exec playwright install --with-deps chromium
+
       - name: Run e2e tests (shard ${{ matrix.shard }}/2)
         working-directory: examples/${{ matrix.example }}
+        # Playwright's webServer config calls `pnpm dev` under the
+        # hood; `dev` runs `devstack up`, which adopts the restored
+        # containers via the reuse-if-image-matches probe. The tests
+        # assert against the chain state captured at snapshot time.
         run: pnpm test:e2e --shard ${{ matrix.shard }}/2
+
+      - name: Upload playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # pin@v4.6.0
+        with:
+          name: playwright-report-${{ matrix.example }}-shard-${{ matrix.shard }}
+          path: |
+            examples/${{ matrix.example }}/playwright-report
+            examples/${{ matrix.example }}/test-results
+          retention-days: 7
+          if-no-files-found: ignore

@@ -36,6 +36,9 @@ const wallet = Wallet({
 	allowedOrigins: ['http://localhost:5179'],
 });
 
+// User app dev server — pinned to the port Playwright's webServer config
+// uses. Sits in the APP section of the TUI and shows up under
+// `Devstack.app.dev` in the runtime accessor.
 const dev = Dev({
 	command: 'pnpm',
 	args: ['exec', 'vite', '--port', '{port}'],

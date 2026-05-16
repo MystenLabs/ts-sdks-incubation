@@ -108,6 +108,28 @@ export const dockerImage = <const Name extends string>(options: DockerImageOptio
 					.digest('hex')
 					.slice(0, 12);
 				const tag = `devstack-${options.name}:${treeHash}-${configHash}`;
+
+				// Short-circuit: if the tag is already on the daemon, the
+				// build is a no-op by construction (content-addressed →
+				// same hash means same Dockerfile + context + buildArgs →
+				// identical layers). Skipping the `docker build` call
+				// entirely avoids two failure modes:
+				//   1. The build cache rebuilds + re-tags, so a tag we
+				//      retagged at snapshot.restore (pointing the
+				//      content-addressed tag at the snapshot image) gets
+				//      overwritten — chain state silently lost.
+				//   2. Even on the warm-cache happy path, `docker build`
+				//      takes seconds; an `image inspect` is sub-millisecond.
+				const cached = yield* Docker.imageExists(tag);
+				if (cached !== undefined) {
+					yield* Effect.annotateCurrentSpan({
+						'dockerImage.tag': tag,
+						'dockerImage.digest': cached.digest,
+						'dockerImage.cached': true,
+					});
+					return { tag, digest: cached.digest } satisfies DockerImage;
+				}
+
 				const buildOpts: Docker.DockerBuildOptions = {
 					context: options.build.context,
 					tag,
@@ -131,6 +153,7 @@ export const dockerImage = <const Name extends string>(options: DockerImageOptio
 				yield* Effect.annotateCurrentSpan({
 					'dockerImage.tag': result.tag,
 					'dockerImage.digest': result.digest,
+					'dockerImage.cached': false,
 				});
 				return { tag: result.tag, digest: result.digest } satisfies DockerImage;
 			}

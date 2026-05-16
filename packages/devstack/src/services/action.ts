@@ -74,9 +74,13 @@ export interface ActionOptions<Name extends string, R, E = unknown> {
  *  the underlying chain naturally misses the cache (the cached
  *  objectChanges reference object ids that no longer exist). When set,
  *  the on-chain side effects of this action are assumed to persist
- *  across `docker rm` (the localnet image should be on a named volume)
- *  — otherwise a stale cached result will reference objects the freshly-
- *  genesised chain no longer has. */
+ *  across cycle teardown — Phase 2 of the snapshot redesign puts chain
+ *  state in the writable layer (preserved by `docker stop`, captured by
+ *  `docker commit`), so cached results stay valid across `r` / Ctrl-C
+ *  but NOT across `devstack stack down --force` or `wipe` (which discard
+ *  the layer). A stale cached result against a freshly-genesised chain
+ *  references objects that no longer exist; the chainId fold prevents
+ *  reuse. */
 export const Action = <const Name extends string, R = never, E = unknown>(
 	name: Name,
 	opts: ActionOptions<Name, R, E>,

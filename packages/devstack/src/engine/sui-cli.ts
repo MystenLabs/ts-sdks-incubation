@@ -272,15 +272,34 @@ const containerBuildCmd = (imageTag: string, hostPath: string): ChildProcess.Com
 	// HIGH-R5: same hardening as the docker-exec path in
 	// sui-build-container.ts. `-type f` rejects symlinks so a
 	// malicious `Move.lock -> /etc/passwd` symlink in the source tree
-	// doesn't get scrubbed; `awk -i inplace` (gawk extension; the
-	// mysten/sui base image ships gawk) edits the file in place
+	// doesn't get scrubbed; `gawk -i inplace` edits the file in place
 	// instead of going through `> $1.new && mv $1.new $1`. The
 	// pre-fix shell pattern, when run as root inside the container
 	// against bind-mounted source, would have followed any symlink
 	// target on the host filesystem.
+	//
+	// Explicit `gawk` (not `awk`) because Ubuntu's default `awk` is
+	// mawk, which doesn't support the `-i inplace` flag — the
+	// `sui-image/Dockerfile` adds gawk via apt for this reason. A real-
+	// Docker round-trip test (`engine/snapshot.docker.test.ts`) caught
+	// this; the publishMove state-store cache hit path masked it on
+	// every warm-start dev run.
+	//
+	// /root/.move/git holds sui-cli's content-addressed dep cache.
+	// Upstream Move.lock files inside it pin testnet/mainnet env
+	// addresses; on localnet that crashes the build with `Active
+	// environment 'localnet' does not correspond to any of
+	// environments defined for the package`. The host scrub
+	// (`stripPinnedSectionsFromMoveLock`) used to handle this — but
+	// it's bypassed entirely on container builds (line 150-152) since
+	// the bind-mounted ~/.move is the source of truth. The
+	// `[ -d /root/.move/git ]` guard avoids a `find` error on a
+	// first-ever build before any deps have been cached.
 	const scrub =
 		`find /workspace -type f -name Move.lock -not -path '*/node_modules/*' -not -path '*/.git/*' ` +
-		`-exec awk -i inplace -f /tmp/scrub-move-lock.awk {} ';'`;
+		`-exec gawk -i inplace -f /tmp/scrub-move-lock.awk {} ';' ; ` +
+		`[ -d /root/.move/git ] && find /root/.move/git -type f -name Move.lock -not -path '*/.git/*' ` +
+		`-exec gawk -i inplace -f /tmp/scrub-move-lock.awk {} ';' || true`;
 	// `pkgName` lands inside the in-container `sh -c` script as part of
 	// `--path /workspace/<name>`. Shell-quote so a malicious package
 	// name (e.g. one containing `$(…)` or `;`) can't escape the script
@@ -288,11 +307,33 @@ const containerBuildCmd = (imageTag: string, hostPath: string): ChildProcess.Com
 	// container write access to the user's source dir and `~/.move`,
 	// so unquoted interpolation here would be a real foot-gun even
 	// though the container itself is ephemeral.
+	// `-e testnet` — sui-cli ≥ 1.71 requires the build env to match one
+	// of the package's resolved `[pinned.<env>.*]` sections. Without
+	// `-e`, the CLI's active env defaults to `localnet`, but the Sui
+	// framework dep only ships pinned metadata for testnet + mainnet,
+	// so cold-cache builds fail with "Active environment 'localnet'
+	// does not correspond to any of environments defined for the
+	// package". testnet is a safe choice: the build's output bytecode
+	// uses symbolic addresses that are resolved at publish time, so
+	// pinning to testnet vs mainnet vs localnet produces identical
+	// bytecode for our purposes. The actual publish tx (driven later
+	// by `publishMove`) lands on whatever network devstack is wired
+	// to. This was caught by `engine/snapshot.docker.test.ts`'s
+	// always-cold-cache round-trip; the publishMove state-store
+	// cache hit masked it on every warm-start dev run.
 	const innerScript = [
 		'set -e',
 		stageAwk,
 		scrub,
-		`exec sui move build --path /workspace/${shellQuote(pkgName)} --dump-bytecode-as-base64 --with-unpublished-dependencies`,
+		// `--no-tree-shaking` keeps the build offline. Without it, sui-cli
+		// tries to confirm each dependency's published digest by RPC to
+		// the configured env's fullnode (testnet here) — the build
+		// container has no network for that lookup, so the build fails
+		// with `Failed to fetch package MoveStdlib: tcp connect error`.
+		// We don't need tree-shaking for our use case: the publish tx
+		// downstream runs against devstack's localnet RPC and submits
+		// the full bytecode regardless.
+		`exec sui move build --path /workspace/${shellQuote(pkgName)} -e testnet --no-tree-shaking --dump-bytecode-as-base64 --with-unpublished-dependencies`,
 	].join('; ');
 	const moveHome = path.join(os.homedir(), '.move');
 	const dockerArgs = [
@@ -334,6 +375,12 @@ const hostBuildCmd = (opts: BuildMoveOptions): ChildProcess.Command =>
 			'build',
 			'--path',
 			opts.path,
+			// `-e testnet --no-tree-shaking` mirrors the in-container
+			// path. See the comment in `containerBuildCmd` for the
+			// rationale on each flag.
+			'-e',
+			'testnet',
+			'--no-tree-shaking',
 			'--dump-bytecode-as-base64',
 			'--with-unpublished-dependencies',
 		],
@@ -504,16 +551,39 @@ const scrubMoveLock = (
 	lockPath: string,
 ): Effect.Effect<boolean, never> =>
 	Effect.gen(function* () {
-		const contents = yield* fs
+		const readResult = yield* fs
 			.readFileString(lockPath, 'utf8')
-			.pipe(Effect.catch(() => Effect.succeed<string | undefined>(undefined)));
-		if (contents === undefined) return false;
+			.pipe(
+				Effect.map((s) => ({ ok: true as const, contents: s })),
+				Effect.catch((cause) =>
+					Effect.succeed({ ok: false as const, cause }),
+				),
+			);
+		if (!readResult.ok) {
+			// Surface the cause as a warning rather than silently
+			// no-op'ing. Host-mode publish would otherwise embed stale
+			// pinned IDs from an unreadable lockfile and fail on chain
+			// with no breadcrumb pointing here.
+			yield* Effect.logWarning(
+				`scrubMoveLock: could not read ${lockPath} (${(readResult.cause as { message?: string })?.message ?? 'unknown'}); pinned-env stripping skipped — host-mode publish may embed stale ids`,
+			);
+			return false;
+		}
+		const cleaned = stripPinnedSections(readResult.contents);
+		if (cleaned === readResult.contents) return false;
 
-		const cleaned = stripPinnedSections(contents);
-		if (cleaned === contents) return false;
-
-		yield* fs.writeFileString(lockPath, cleaned).pipe(Effect.ignore);
-		return true;
+		const writeOk = yield* fs.writeFileString(lockPath, cleaned).pipe(
+			Effect.map(() => true),
+			Effect.catch((cause) =>
+				Effect.gen(function* () {
+					yield* Effect.logWarning(
+						`scrubMoveLock: stripped pinned-env sections in memory but could not write ${lockPath} (${(cause as { message?: string })?.message ?? 'unknown'})`,
+					);
+					return false;
+				}),
+			),
+		);
+		return writeOk;
 	});
 
 // Strip Move.lock v4 `[pinned.<env>.<pkg>]` sections from any Move.lock

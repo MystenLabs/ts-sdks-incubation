@@ -9,46 +9,12 @@
 //
 // Useful for CI: bring the stack up, write state + manifest, exit clean.
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
-
 import { Console, Effect, Layer, Option } from 'effect';
 import { Argument, Command, Flag } from 'effect/unstable/cli';
-import { resolve as resolvePath } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { prettyError } from '../../engine/pretty-error.js';
 import { AlreadyReportedError } from '../already-reported.js';
 import { applyNetworkOverride, networkFlag } from '../flags.js';
-
-// Preserve the underlying cause on `Error.cause` so the CLI's top-level
-// `tapCause` renderer can walk the full chain instead of collapsing to the
-// outer `Error.toString()`. The single-line summary keeps the legacy
-// `Error.message` shape that callers and the JSON path read.
-const wrapCause = (message: string, cause: unknown): Error => {
-	const err = new Error(`${message}: ${prettyError(cause).split('\n')[0]}`);
-	(err as Error & { cause?: unknown }).cause = cause;
-	return err;
-};
-
-interface DevstackLike {
-	readonly layer: Layer.Layer<any, any, any>;
-}
-
-const loadDevstack = (configPath: string) =>
-	Effect.gen(function* () {
-		const absolute = resolvePath(process.cwd(), configPath);
-		const url = pathToFileURL(absolute).href;
-		const mod = yield* Effect.tryPromise({
-			try: () => import(url) as Promise<{ default?: unknown }>,
-			catch: (cause) => wrapCause(`failed to load ${configPath}`, cause),
-		}).pipe(Effect.withSpan('cli.loadConfig', { attributes: { configPath } }));
-		const devstack = mod.default as Partial<DevstackLike> | undefined;
-		if (!devstack || typeof devstack.layer === 'undefined') {
-			return yield* Effect.fail(
-				new Error(`${configPath} must default-export a DevstackHandle (from devstack(...) or defineDevstack)`),
-			);
-		}
-		return devstack as DevstackLike;
-	});
+import { loadConfigModule, requireLayer } from '../loaders.js';
 
 export const applyCommand = Command.make(
 	'apply',
@@ -61,7 +27,7 @@ export const applyCommand = Command.make(
 		Effect.gen(function* () {
 			applyNetworkOverride(network);
 			const resolved = Option.getOrElse(configPath, () => './devstack.config.ts');
-			const devstack = yield* loadDevstack(resolved);
+			const devstack = yield* loadConfigModule(resolved, requireLayer);
 
 			// `Layer.build` inside `Effect.scoped` acquires every primitive,
 			// then closes the scope on exit — that's what fires the manifest

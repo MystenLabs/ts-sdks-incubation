@@ -289,15 +289,26 @@ const runBuildInside = (
 	// against a bind-mounted source tree, would have followed any
 	// symlink target on the host filesystem.
 	const scrubRoot = `${containerPath}/..`;
+	// Explicit `gawk` (not `awk`) — the sui-image's default awk is
+	// mawk which doesn't support `-i inplace`. `[ -d /root/.move/git ]`
+	// also scrubs the dep cache so freshly-downloaded testnet-pinned
+	// upstream Move.locks don't trip the env-mismatch check.
 	const scrub =
 		`find ${shellQuote(scrubRoot)} -maxdepth 4 -type f -name Move.lock ` +
 		`-not -path '*/node_modules/*' -not -path '*/.git/*' ` +
-		`-exec awk -i inplace -f /tmp/scrub-move-lock.awk {} ';'`;
+		`-exec gawk -i inplace -f /tmp/scrub-move-lock.awk {} ';' ; ` +
+		`[ -d /root/.move/git ] && find /root/.move/git -type f -name Move.lock -not -path '*/.git/*' ` +
+		`-exec gawk -i inplace -f /tmp/scrub-move-lock.awk {} ';' || true`;
 	const innerScript = [
 		'set -e',
 		stageAwk,
 		scrub,
-		`exec sui move build --path ${shellQuote(containerPath)} --dump-bytecode-as-base64 --with-unpublished-dependencies`,
+		// `-e testnet --no-tree-shaking` — sui-cli ≥ 1.71 requires `-e`,
+		// and `--no-tree-shaking` keeps the build offline (the tree-
+		// shaking pass otherwise tries to RPC the configured env's
+		// fullnode to confirm dep digests). See
+		// `engine/sui-cli.ts:containerBuildCmd` for full rationale.
+		`exec sui move build --path ${shellQuote(containerPath)} -e testnet --no-tree-shaking --dump-bytecode-as-base64 --with-unpublished-dependencies`,
 	].join('; ');
 	const cmd = ChildProcess.make('docker', [
 		'exec',
@@ -326,6 +337,11 @@ const runSummaryInside = (
 		'summary',
 		'--path',
 		containerPath,
+		// Match `runBuildInside`'s env flag — `sui move summary` resolves
+		// deps via the same `[pinned.<env>.*]` Move.lock entries, so the
+		// same env-mismatch failure mode applies.
+		'-e',
+		'testnet',
 	]);
 	return runWithCapture(spawner, cmd, 'docker exec (sui move summary)');
 };

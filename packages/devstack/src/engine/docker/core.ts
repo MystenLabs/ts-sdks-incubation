@@ -1043,32 +1043,61 @@ export const inspectContainerIp = (
 // No-op when `traefik` is undefined or empty so callers that don't
 // want router exposure pay nothing.
 //
-// Best-effort across the entire flow: a `docker network connect`
-// failure (e.g. already attached → exit 1, which is fine), an
-// inspect-IP failure (network not settled within retry budget), or a
-// YAML write failure (rare — `~/.devstack` perms) is logged but does
-// NOT fail `Docker.run`. The container is up; direct-port debugging
-// still works. The router just won't dispatch to it until next boot.
+// Two distinct failure regimes:
+//   1. `docker network connect` non-zero exit — tolerated. The most
+//      common non-zero is "endpoint already exists" (idempotent
+//      reattach on adopt path) or "no such network" (caller hasn't
+//      started traefik). Both should leave the container running
+//      with direct-port access intact.
+//   2. `inspectContainerIp` failing AFTER a successful network
+//      connect — promoted to a hard `DockerError`. This is the
+//      "network attach didn't settle inside the retry budget"
+//      regime, and silently swallowing it leaves the container
+//      live but unreachable through the router YAMLs we promised
+//      to write. Surface it so the user sees a clear failure
+//      instead of a half-broken endpoint.
+// YAML write failures stay best-effort (rare, ~/.devstack perms).
 const materializeRouterEntries = (
 	spawner: Spawner,
 	containerId: string,
 	traefik: ReadonlyArray<RouterLabel> | undefined,
 	reuseScope: Scope,
-): Effect.Effect<void, never> =>
+): Effect.Effect<void, DockerError> =>
 	Effect.gen(function* () {
 		const entries = traefik ?? [];
 		if (entries.length === 0) return;
-		yield* spawner
+		// Capture the connect exit code so we can distinguish "connect
+		// failed" (tolerated — caller hasn't enabled traefik, or the
+		// endpoint already exists on the adopt path) from "connect
+		// succeeded but inspect-ip failed" (hard error, the router
+		// promise is now half-broken). `spawner.exitCode` can also fail
+		// with a `PlatformError` if `docker` can't be spawned at all;
+		// fold that into the same tolerated path with a sentinel so the
+		// type stays `never` for spawn failures.
+		const connectExit: number | null = yield* spawner
 			.exitCode(ChildProcess.make('docker', ['network', 'connect', ROUTER_NETWORK, containerId]))
-			.pipe(Effect.ignore);
-		const ip: string | null = yield* inspectContainerIp(spawner, containerId, ROUTER_NETWORK).pipe(
-			Effect.catch((cause: DockerError) =>
-				Effect.logWarning(
-					`devstack: router file-provider skipped for ${containerId} — ${cause.message}`,
-				).pipe(Effect.as(null)),
+			.pipe(Effect.catchCause(() => Effect.succeed(null)));
+		if (connectExit === null || connectExit !== 0) {
+			yield* Effect.logWarning(
+				`devstack: router file-provider skipped for ${containerId} — ` +
+					`'docker network connect ${ROUTER_NETWORK}' ` +
+					(connectExit === null ? 'failed to spawn' : `exited ${connectExit}`),
+			);
+			return;
+		}
+		// Connect succeeded — from here, inspect-ip failure means the
+		// router promise can't be honored. Fail the outer `Docker.run`.
+		const ip = yield* inspectContainerIp(spawner, containerId, ROUTER_NETWORK).pipe(
+			Effect.mapError(
+				(cause) =>
+					new DockerError({
+						op: 'docker network connect / inspect ip',
+						message:
+							`traefik routing for ${containerId} failed: ` +
+							`network attach succeeded but IP did not settle — ${cause.message}`,
+					}),
 			),
 		);
-		if (ip === null) return;
 		for (const entry of entries) {
 			const wrote: boolean = yield* writeFileProvider({
 				id: entry.id,
@@ -1136,6 +1165,23 @@ const ensureLabeledVolume = (
 		).pipe(Effect.ignore);
 	});
 
+// INVARIANT — `docker rm -f` is reserved for paths where the container's
+// writable layer is intentionally being discarded:
+//   - `removeContainerIfExists` (below): name-collision cleanup after a
+//     hard crash. The stale container is unadoptable by definition.
+//   - `engine/docker/sweep.ts`: `devstack wipe` / `prune` — user explicitly
+//     opted in via `--yes`.
+//   - `engine/docker/router.ts`: traefik router — no useful state.
+//   - `engine/sui-build-container.ts`: build container — no state.
+//   - `cli/commands/stack.ts:downCommand` only with the `--force` flag.
+// Long-running stateful containers (sui localnet, indexer-db, walrus nodes)
+// MUST go through the `docker stop` finalizer registered at the top of
+// `Docker.run` so their writable layer survives the next `up`. Chain
+// state lives in the writable layer (Phase 2 of the snapshot redesign
+// dropped the named volumes that previously held it), so `rm -f` on those
+// containers would force a fresh genesis on resume and break the
+// `docker commit`-based snapshot capture surface.
+//
 // Force-remove a container by exact name if one exists. Returns `true` if
 // docker reported a match, `false` otherwise. Used by `Docker.run` so a
 // stale container from a crashed prior run doesn't make every restart

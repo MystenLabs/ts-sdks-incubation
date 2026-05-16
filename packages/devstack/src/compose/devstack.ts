@@ -80,7 +80,17 @@ const manifestRef = (
  *
  *  Variadic — pass any number of Refs (or arrays of Refs from composite
  *  factories like `Deepbook(...)`). The last argument may be an options
- *  object. */
+ *  object.
+ *
+ *  **Plugin authors who need to compose Refs with explicit dependency
+ *  wiring** (e.g. one Ref consuming another's output before the
+ *  supervisor builds the Layer graph) can reach for `defineDevstack`
+ *  from `@mysten-incubation/devstack/advanced`. That entry-point exposes
+ *  the same handle shape but accepts a fully-built Layer instead of
+ *  inferring it from the Refs — useful when you want to inject custom
+ *  state-store keys or pre-compute a Ref's value at config-load time.
+ *  Most consumers should NOT need it; `devstack(...)` covers the
+ *  intended use case. */
 export function devstack(
 	...args: ReadonlyArray<DevstackRefInput | DevstackComposeOptions>
 ): DevstackHandle {

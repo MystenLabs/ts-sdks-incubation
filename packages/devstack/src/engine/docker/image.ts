@@ -45,6 +45,29 @@ export const pull = (
 	}).pipe(Effect.withSpan('Docker.pull'));
 
 // -----------------------------------------------------------------------------
+// imageExists — best-effort "is this tag known to the daemon?"
+//
+// Returns `{ digest }` if the tag is present, undefined otherwise.
+// Used by `dockerImage({build})` to short-circuit the build when a
+// content-addressed tag is already on disk — without this, `docker build`
+// runs unconditionally and (even though layer-cached) re-tags the image
+// to the freshly-built content. That re-tag destroys snapshot.restore's
+// `docker tag <snap> <originalImage>` step, dropping snapshot chain
+// state back to a fresh-genesis world.
+// -----------------------------------------------------------------------------
+
+export const imageExists = (
+	tag: string,
+): Effect.Effect<{ digest: string } | undefined, never, ChildProcessSpawner.ChildProcessSpawner> =>
+	Effect.gen(function* () {
+		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+		const cmd = ChildProcess.make('docker', ['image', 'inspect', '-f', '{{.Id}}', tag]);
+		const out = yield* spawner.string(cmd).pipe(Effect.orElseSucceed(() => ''));
+		const digest = out.trim();
+		return digest.length === 0 ? undefined : { digest };
+	}).pipe(Effect.withSpan('Docker.imageExists'));
+
+// -----------------------------------------------------------------------------
 // Build — build an image from a local context, return tag + digest
 // -----------------------------------------------------------------------------
 
@@ -187,3 +210,62 @@ export const loadImage = (
 		}
 		return { tag: match[1] };
 	}).pipe(Effect.withSpan('Docker.loadImage'));
+
+// -----------------------------------------------------------------------------
+// tagImage — alias an existing image under a new tag.
+//
+// Used by `snapshot.restore` so a `docker load`-ed snapshot image
+// (named `devstack-snap:<id>-<name>`) ALSO carries the supervisor's
+// expected content-addressed base tag (e.g. `devstack-sui.image:<hash>`).
+// When the supervisor's next `dockerImage({build})` resolves that tag,
+// docker reports "tag already exists" → build short-circuits → the
+// loaded snapshot content is used. Without this retag the snapshot
+// image sits unused and the supervisor builds a fresh base image,
+// running a new genesis against it — chain state lost.
+// -----------------------------------------------------------------------------
+
+export const tagImage = (
+	source: string,
+	target: string,
+): Effect.Effect<void, DockerError, ChildProcessSpawner.ChildProcessSpawner> =>
+	Effect.gen(function* () {
+		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+		yield* Effect.annotateCurrentSpan({
+			'docker.op': 'tag',
+			'docker.source': source,
+			'docker.target': target,
+		});
+		yield* runCapturingOrFail(
+			spawner,
+			ChildProcess.make('docker', ['tag', source, target]),
+			'docker tag',
+		);
+	}).pipe(Effect.withSpan('Docker.tagImage'));
+
+// -----------------------------------------------------------------------------
+// inspectContainerImage — read the image tag a container was created from.
+//
+// `docker inspect --format '{{.Config.Image}}'` returns the tag STRING
+// the user passed to `docker run -i <tag>` (or `docker create -i <tag>`),
+// NOT the image content hash. That's exactly what we want for
+// snapshot.save: by recording the supervisor's content-addressed tag at
+// commit time, restore can retag the loaded snapshot image back to that
+// same string so the supervisor's name-then-image probe in `Docker.run`
+// finds a match.
+// -----------------------------------------------------------------------------
+
+export const inspectContainerImage = (
+	containerId: string,
+): Effect.Effect<string | undefined, never, ChildProcessSpawner.ChildProcessSpawner> =>
+	Effect.gen(function* () {
+		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+		const cmd = ChildProcess.make('docker', [
+			'inspect',
+			'--format',
+			'{{.Config.Image}}',
+			containerId,
+		]);
+		const out = yield* spawner.string(cmd).pipe(Effect.orElseSucceed(() => ''));
+		const trimmed = out.trim();
+		return trimmed.length === 0 ? undefined : trimmed;
+	}).pipe(Effect.withSpan('Docker.inspectContainerImage'));

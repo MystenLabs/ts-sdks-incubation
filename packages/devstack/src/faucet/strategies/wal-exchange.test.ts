@@ -21,7 +21,7 @@ const stubAccount = (
 ): Account => ({
 	name: 'admin',
 	address: VALID_ADDR,
-	scheme: 'ED25519',
+	scheme: 'ed25519',
 	publicKey: new Uint8Array(),
 	signAndExecute,
 	signTransaction: () => Effect.die('not used'),

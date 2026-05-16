@@ -36,6 +36,12 @@ import { App } from './components.js';
 export interface TuiMount {
 	readonly proxy: EngineHandleShape;
 	readonly install: (engine: EngineHandleShape) => Effect.Effect<void>;
+	/** One-shot synchronous render coordinator. Called by the supervisor in
+	 *  `onInterrupt` to land the final 'shutting-down' state on screen
+	 *  BEFORE docker-rm finalizers stall the event loop. Re-syncs
+	 *  `stableState` from the currently-installed engine then waits a
+	 *  short fixed budget (~20ms) for React to commit. */
+	readonly flush: Effect.Effect<void>;
 }
 
 const makeNoopProxy = (
@@ -86,7 +92,8 @@ const makeNoopProxy = (
 		// own restartSignal, not the proxy's.
 		restartSignal: placeholderRestartSignal,
 		requestRestart,
-		resetRestartSignal: noop,
+		armRestartSignal: noop,
+		clearChangedTags: noop,
 		// Proxy doesn't track watch-event attribution — the per-cycle
 		// engine does. `<App>` doesn't read these either; only the
 		// launch loop's cycle-start log reads `changedTags`, and that
@@ -183,7 +190,28 @@ export const startTuiOnce = (): Effect.Effect<TuiMount, never, Scope> =>
 				yield* Ref.set(currentRef, engine);
 			});
 
-		return { proxy, install };
+		// One-shot synchronous render coordinator. The supervisor calls
+		// this in `onInterrupt` so the final 'shutting-down' state lands
+		// on screen BEFORE the docker-rm-finalizers stall the event loop.
+		// Without coordination the 50ms poll tick had to win a race
+		// against the finalizers; on slow terminals or under load it
+		// could lose.
+		const flush = Effect.gen(function* () {
+			const current = yield* Ref.get(currentRef);
+			if (current === undefined) return;
+			// Skip the next-poll-tick wait: snapshot the engine's tuiState
+			// and write it to stableState directly. Ink schedules its
+			// render synchronously on the Ref change; the short sleep
+			// after gives the React tree a couple of event-loop turns to
+			// commit + flush stdout writes before the caller's finalizers
+			// fire. 20ms is well under one polling interval and ink's own
+			// frame budget, so it's effectively free.
+			const snapshot = yield* Ref.get(current.tuiState);
+			yield* Ref.set(stableState, snapshot);
+			yield* Effect.sleep('20 millis');
+		});
+
+		return { proxy, install, flush };
 	}).pipe(Effect.withSpan('Tui.startOnce'));
 
 /**

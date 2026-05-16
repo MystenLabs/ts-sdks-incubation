@@ -18,8 +18,15 @@ ARG TARGETARCH
 
 RUN apt-get update \
 	&& apt-get install -y --no-install-recommends \
-		ca-certificates curl git \
+		ca-certificates curl git gawk \
 	&& rm -rf /var/lib/apt/lists/*
+# gawk is required by the in-container Move.lock scrub
+# (`engine/sui-cli.ts:containerBuildCmd` uses `gawk -i inplace`, a gawk-
+# only extension that Ubuntu's default mawk doesn't support). Without
+# this, builds that miss the publishMove state-store cache fail with
+# `awk: not an option: -i`. The cache hit path masked the problem on
+# warm-start, but a fresh apply or snapshot-restore-then-publish always
+# tripped it.
 
 RUN set -eux; \
 	case "$TARGETARCH" in \

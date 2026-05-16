@@ -173,18 +173,20 @@ The code-emit Ref. With no `emitters` field, defaults to `[BindingsEmitter()]` (
 via `@mysten/codegen`). Override `emitters` to combine multiple emitters or swap in user emitters.
 
 ```ts
-// Default: bindings only.
-Codegen({ packages: [hello, world], output: './src/generated' });
+// Default: bindings emitter + ./src/generated/ output.
+Codegen({ packages: [hello, world] });
 
 // Explicit: bindings + dapp-kit emitter. Both live under /advanced.
 import { BindingsEmitter, DappKitEmitter } from '@mysten-incubation/devstack/advanced';
 
 Codegen({
-	output: './src/generated',
 	packages: [hello, deepbookV3],
 	emitters: [BindingsEmitter(), DappKitEmitter({ flavor: 'react' })],
 });
 ```
+
+`output` is optional and defaults to `./src/generated/`. Override only when you need a non-standard
+path (rare).
 
 See [Codegen reference](./codegen) for the emitter plug-in interface.
 
@@ -195,10 +197,12 @@ Convenience facade over `Codegen({ emitters: [DappKitEmitter()] })`.
 ```ts
 DappKit({
 	packages: [hello],
-	output: './src/generated',
 	flavor: 'react', // default
 });
 ```
+
+Same `output` default as `Codegen` (`./src/generated/`); generated file lands at
+`./src/generated/dapp-kit/index.ts`.
 
 The emitted file lives at `<output>/dapp-kit/index.ts` and is what your `main.tsx` imports. See
 [Codegen reference](./codegen) for the flavor options.

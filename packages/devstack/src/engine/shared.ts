@@ -31,11 +31,19 @@ export interface Account {
 	readonly name: string;
 	readonly address: string;
 	readonly publicKey: Uint8Array;
-	readonly scheme: 'ED25519' | 'Secp256k1' | 'Secp256r1';
+	// Lowercased to match @mysten/sui's `decodeSuiPrivateKey(…).schema.toLowerCase()`
+	// and the on-chain Move type conventions. The runtime impl calls
+	// `signer.getKeyScheme().toLowerCase()` in services/account.ts.
+	readonly scheme: 'ed25519' | 'secp256k1' | 'secp256r1';
 	signAndExecute(
 		transaction: Transaction,
 		options?: SignAndExecuteOptions,
 	): Effect.Effect<TxResult, SignAndExecuteError>;
+	// Takes pre-built tx bytes (the dapp-kit wallet adapter ships them
+	// to the wallet server as base64; the server decodes once and hands
+	// the Uint8Array to this method). Returns the @mysten/sui Signer's
+	// native `{ bytes, signature }` shape so callers can forward to
+	// `executeTransactionBlock` without re-serialization.
 	signTransaction(
 		transactionBytes: Uint8Array,
 	): Effect.Effect<{ signature: string; bytes: string }, SignAndExecuteError>;

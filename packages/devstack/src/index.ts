@@ -53,6 +53,7 @@ export {
 	type WalletOptions,
 	Codegen,
 	type CodegenOptions,
+	DEFAULT_CODEGEN_OUTPUT,
 	DappKit,
 	type DappKitRefOptions,
 	KnownPackage,

@@ -23,8 +23,11 @@ export interface DappKitRefOptions {
 	 *  fixed id. */
 	readonly packages?: ReadonlyArray<Ref<any, any, any, any>>;
 	/** Output directory. The generated file lands at
-	 *  `<output>/dapp-kit/index.ts`. */
-	readonly output: string;
+	 *  `<output>/dapp-kit/index.ts`. Defaults to `./src/generated` —
+	 *  same canonical default as `Codegen({...})`, so a single
+	 *  `<output>/dapp-kit/` lives alongside `<output>/bindings/` under
+	 *  one importable source root. */
+	readonly output?: string;
 	/** Dapp-kit flavor to import from. Defaults to `'react'`. */
 	readonly flavor?: DappKitFlavor;
 	/** Override the localnet RPC URL baked into the generated file. */
@@ -43,7 +46,7 @@ export interface DappKitRefOptions {
  *       emitters: [DappKitEmitter({...})],
  *     })
  */
-export const DappKit = (opts: DappKitRefOptions) => {
+export const DappKit = (opts: DappKitRefOptions = {}) => {
 	const emitterOpts: DappKitEmitterOptions = {
 		...(opts.flavor !== undefined ? { flavor: opts.flavor } : {}),
 		...(opts.localnetRpcUrl !== undefined ? { localnetRpcUrl: opts.localnetRpcUrl } : {}),
@@ -52,7 +55,11 @@ export const DappKit = (opts: DappKitRefOptions) => {
 			: {}),
 	};
 	return Codegen({
-		output: opts.output,
+		// `output` flows through Codegen's own optional default
+		// (`./src/generated`) when the caller omits it. Passing through
+		// `opts.output` either way keeps `Codegen` as the single source
+		// of truth for the default path.
+		...(opts.output !== undefined ? { output: opts.output } : {}),
 		emitters: [DappKitEmitter(emitterOpts)],
 		...(opts.packages !== undefined ? { packages: opts.packages } : {}),
 		name: opts.name ?? 'dapp-kit',

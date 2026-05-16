@@ -3,21 +3,52 @@ title: Codegen
 description: The Codegen Ref and its plug-in emitter interface.
 ---
 
-`Codegen({ output, packages, emitters? })` runs a list of **emitters** against a resolved package
-set. With no `emitters` field, defaults to `[BindingsEmitter()]` — the Move → TS bindings emitter
-(90% case).
+`Codegen({ output?, packages?, emitters? })` runs a list of **emitters** against a resolved package
+set. Every option has a sensible default — calling `Codegen()` with no arguments uses the canonical
+output path, no explicit package list (defaults to `[]`; auto-fill from `Package(...)` in the stack
+is on the roadmap), and `[BindingsEmitter()]` (the Move → TS bindings emitter — the 90% case).
 
 This page is the reference. For the task-shaped intro see the
 [codegen feature page](../features/codegen).
 
-## Default behavior
+## Output convention
+
+**Default: `./src/generated/`** — exported as `DEFAULT_CODEGEN_OUTPUT` from the main barrel for
+tooling that needs to mirror the default (linters, build scripts, monorepo config). The path is
+resolved against `process.cwd()` at codegen time.
+
+Each emitter writes to its own subdirectory under that root:
+
+```
+./src/generated/
+  bindings/<package-name>/...   ← BindingsEmitter
+  dapp-kit/index.ts             ← DappKitEmitter (or the DappKit() facade)
+```
+
+This lives in a normal `src/`-typed source dir so app code can import it directly:
+
+```ts
+import { Lobby } from './generated/bindings/connect_four/game.js';
+import { useDAppKit } from './generated/dapp-kit/index.js';
+```
+
+**`.devstack/` is intentionally NOT used.** That dot-dir is reserved for non-importable runtime
+state (account keys, wallet tokens, walrus deploy outputs, etc.) and is invisible to TS tooling +
+lint configs by convention. See [state and snapshots](../features/state-and-snapshots) for the full
+split.
+
+## Zero-config
 
 ```ts
 import { Codegen } from '@mysten-incubation/devstack';
 
-Codegen({ output: './src/generated', packages: [hello, world] });
-// equivalent to: emitters: [BindingsEmitter()]
+Codegen();
+// equivalent to:
+// Codegen({ output: './src/generated', packages: [], emitters: [BindingsEmitter()] })
 ```
+
+Override individual fields as needed; omit the rest. Re-running with the same inputs is idempotent
+— the bindings emitter fingerprints sources and skips the regen when nothing has moved.
 
 ## Built-in emitters
 
@@ -33,13 +64,13 @@ import { Codegen } from '@mysten-incubation/devstack';
 import { BindingsEmitter } from '@mysten-incubation/devstack/advanced';
 
 Codegen({
-	output: './src/generated',
 	packages: [hello, world],
 	emitters: [BindingsEmitter({ importExtension: '.ts' })],
 });
 ```
 
-Output lands at `<output>/bindings/<package-name>/`. Local packages emit fully; `KnownPackage(...)`
+Output lands at `<output>/bindings/<package-name>/` — with the default output, that's
+`./src/generated/bindings/<package-name>/`. Local packages emit fully; `KnownPackage(...)`
 entries are silently skipped — bindings need the upstream Move source to feed `sui move summary`.
 
 Atomic dir swap (stage → rename existing aside → rename staging in) means a Vite dev server never
@@ -56,7 +87,6 @@ import { Codegen } from '@mysten-incubation/devstack';
 import { DappKitEmitter } from '@mysten-incubation/devstack/advanced';
 
 Codegen({
-	output: './src/generated',
 	packages: [hello, deepbookV3],
 	emitters: [DappKitEmitter({ flavor: 'react' })],
 });
@@ -102,7 +132,6 @@ const VersionListEmitter = defineEmitter({
 
 // Drop into any `Codegen({...})`:
 Codegen({
-	output: './src/generated',
 	packages: [hello],
 	emitters: [VersionListEmitter],
 });
