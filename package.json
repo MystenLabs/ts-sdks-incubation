@@ -22,7 +22,8 @@
 	"manypkg": {
 		"ignoredRules": [
 			"INTERNAL_MISMATCH",
-			"ROOT_HAS_DEV_DEPENDENCIES"
+			"ROOT_HAS_DEV_DEPENDENCIES",
+			"INVALID_DEV_AND_PEER_DEPENDENCY_RELATIONSHIP"
 		]
 	},
 	"pnpm": {
@@ -42,7 +43,7 @@
 		"oxlint": "1.39.0",
 		"prettier": "^3.7.4",
 		"prettier-plugin-tailwindcss": "^0.7.2",
-		"tsdown": "0.20.0-beta.1",
+		"tsdown": "^0.21.10",
 		"tsx": "^4.21.0",
 		"turbo": "^2.7.4",
 		"typescript": "^5.9.3"
