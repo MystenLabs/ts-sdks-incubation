@@ -89,7 +89,12 @@ function resolveEndpoint(
 			throw err;
 		}
 	})();
-	const manifest = fromManifest(JSON.parse(raw));
+	// Pass the raw string so `fromManifest` can apply `jsonBigintReviver`
+	// — `JSON.parse(raw)` would coerce `{__bigint:"…"}` shapes into bare
+	// objects, which downstream consumers (a future SuiManifest carrying
+	// chainId or gas budgets in bigint form) would then read as the
+	// wrong type.
+	const manifest = fromManifest(raw);
 	// Project the v4 manifest's nested endpoints into a flat
 	// `{name → url}` lookup so callers reach for canonical short names
 	// like `dev-server`, `sui-rpc`, `wallet-app`. The mapping mirrors

@@ -43,6 +43,7 @@ import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import * as nodeFs from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join as joinPath } from 'node:path';
+import { writeFileAtomic } from '../../engine/atomic-write.js';
 import { DockerError } from '../../engine/errors.js';
 import { runCapturing, runCapturingOrFail, inspectContainerIp, type Spawner } from './core.js';
 
@@ -339,8 +340,46 @@ export interface FileProviderEntry {
 const routerMiddlewares = (entry: FileProviderEntry): string =>
 	entry.cors === true ? '      middlewares: ["devstack-cors@file"]\n' : '';
 
-export const renderFileProvider = (entry: FileProviderEntry): string =>
-	[
+// FileProviderEntry fields land inside backtick-quoted Host() rules and
+// double-quoted YAML strings. Reject any character that could break out
+// of those quotings before we splice them in. Hostnames, ids, and
+// entrypoints are all controlled by upstream factories; any failure here
+// is a programming error in the caller, not a transient.
+const SAFE_ID_RE = /^[A-Za-z0-9._-]+$/;
+const SAFE_HOSTNAME_RE = /^[A-Za-z0-9.-]+$/;
+const SAFE_ENTRYPOINT_RE = /^[A-Za-z0-9_-]+$/;
+// `upstreamUrl` lands inside a double-quoted YAML scalar; reject `"` /
+// backslash / control chars that would break the quoting. Other URL
+// special chars (`:`, `/`, `?`, `=`, `&`) are fine.
+const validateUpstreamUrl = (url: string): void => {
+	if (url.length === 0) throw new Error('router: upstreamUrl must not be empty');
+	for (const ch of url) {
+		const code = ch.charCodeAt(0);
+		if (code < 0x20 || code === 0x7f) {
+			throw new Error(`router: upstreamUrl contains control char (U+${code.toString(16)})`);
+		}
+		if (ch === '"' || ch === '\\') {
+			throw new Error(`router: upstreamUrl contains forbidden char ${ch}`);
+		}
+	}
+};
+
+const validateEntry = (entry: FileProviderEntry): void => {
+	if (!SAFE_ID_RE.test(entry.id)) {
+		throw new Error(`router: id '${entry.id}' contains forbidden chars`);
+	}
+	if (!SAFE_HOSTNAME_RE.test(entry.hostname)) {
+		throw new Error(`router: hostname '${entry.hostname}' contains forbidden chars`);
+	}
+	if (!SAFE_ENTRYPOINT_RE.test(entry.entrypoint)) {
+		throw new Error(`router: entrypoint '${entry.entrypoint}' contains forbidden chars`);
+	}
+	validateUpstreamUrl(entry.upstreamUrl);
+};
+
+export const renderFileProvider = (entry: FileProviderEntry): string => {
+	validateEntry(entry);
+	return [
 		'http:',
 		'  routers:',
 		`    ${entry.id}:`,
@@ -357,6 +396,7 @@ export const renderFileProvider = (entry: FileProviderEntry): string =>
 	]
 		.filter((line) => line !== '')
 		.join('\n');
+};
 
 // Singleton CORS middleware YAML. Written to `~/.devstack/traefik/dynamic/_devstack-cors.yml`
 // once at router boot — the leading underscore sorts it ahead of
@@ -386,7 +426,11 @@ const writeCorsMiddleware = (): Effect.Effect<void, DockerError> =>
 		yield* ensureDynamicDir();
 		const path = joinPath(routerDynamicDir(), '_devstack-cors.yml');
 		yield* Effect.tryPromise({
-			try: () => nodeFs.writeFile(path, CORS_MIDDLEWARE_YAML, 'utf8'),
+			// Atomic via tmp + rename so traefik's file-provider watcher
+			// never observes a half-written YAML body. A torn read on
+			// startup makes traefik refuse to load any subsequent updates
+			// from the same file until something else mutates it.
+			try: () => writeFileAtomic(path, CORS_MIDDLEWARE_YAML),
 			catch: (cause) =>
 				new DockerError({
 					op: 'router.file-provider',
@@ -401,7 +445,12 @@ export const writeFileProvider = (entry: FileProviderEntry): Effect.Effect<strin
 		yield* ensureDynamicDir();
 		const path = joinPath(routerDynamicDir(), `${entry.id}.yml`);
 		yield* Effect.tryPromise({
-			try: () => nodeFs.writeFile(path, renderFileProvider(entry), 'utf8'),
+			// Atomic write — see writeCorsMiddleware. `renderFileProvider`
+			// validates `entry` and throws synchronously if any field
+			// contains a YAML-breaking character, so a programming error
+			// in the caller surfaces as a tagged DockerError instead of
+			// an unparseable YAML body landing on disk.
+			try: () => writeFileAtomic(path, renderFileProvider(entry)),
 			catch: (cause) =>
 				new DockerError({
 					op: 'router.file-provider',

@@ -48,13 +48,43 @@ const gitFetchError =
 
 export interface GitFetchOptions<Name extends string> {
 	readonly name: Name;
-	/** Passed verbatim to `git clone`. Treat as trusted input — no
-	 *  transport allowlist is enforced, so arbitrary git transports
-	 *  (https, ssh, git, file, ext::…) are accepted. */
+	/** Passed to `git clone` after a transport allowlist check. Only
+	 *  `https://`, `git://`, and `ssh://` URLs (plus the conventional
+	 *  `git@host:owner/repo.git` SCP-style shorthand) are accepted.
+	 *  `ext::` (arbitrary command), `file://` (local-only, surprising
+	 *  in CI), and bare `-`-prefixed strings (which `git` interprets
+	 *  as flags) are rejected at the boundary so a config-time typo or
+	 *  malicious upstream cache entry can't smuggle a different
+	 *  transport. */
 	readonly repo: string;
 	readonly ref: string; // tag, sha, or branch
 	readonly subdirectory?: string; // path within the repo
 }
+
+// Treat the SCP-style `git@host:owner/repo.git` shorthand as `ssh://`
+// for transport-allowlist purposes — it's the canonical form a
+// `pnpm exec` user copies from a GitHub clone button.
+const SCP_STYLE_REPO_RE = /^[\w.-]+@[\w.-]+:[\w./-]+(?:\.git)?$/;
+const ALLOWED_TRANSPORTS: ReadonlyArray<string> = ['https://', 'http://', 'git://', 'ssh://'];
+
+const validateRepoUrl = (repo: string): void => {
+	if (repo.length === 0) {
+		throw new Error('gitFetch: repo must not be empty');
+	}
+	if (repo.startsWith('-')) {
+		// `git clone -<flag> ...` would parse this as a flag instead of
+		// a positional arg, even with `--` separators in some envs.
+		throw new Error(`gitFetch: repo '${repo}' starts with '-' (rejected to avoid CLI flag injection)`);
+	}
+	if (SCP_STYLE_REPO_RE.test(repo)) return;
+	for (const transport of ALLOWED_TRANSPORTS) {
+		if (repo.startsWith(transport)) return;
+	}
+	throw new Error(
+		`gitFetch: repo '${repo}' uses a disallowed transport. ` +
+			`Allowed: https://, http://, git://, ssh://, or git@host:owner/repo.git.`,
+	);
+};
 
 export interface GitFetched {
 	readonly path: string; // absolute path to the (optionally subdirectory'd) checkout
@@ -71,8 +101,13 @@ type Fs = ReturnType<typeof FileSystem.make>;
 // Factory
 // -----------------------------------------------------------------------------
 
-export const gitFetch = <const Name extends string>(options: GitFetchOptions<Name>) =>
-	tag(
+export const gitFetch = <const Name extends string>(options: GitFetchOptions<Name>) => {
+	// Validate the repo URL synchronously at factory construction so a
+	// disallowed transport surfaces at config-load time (where the
+	// stack trace points at the user's `gitFetch({...})` call) rather
+	// than at acquire time deep inside an Effect chain.
+	validateRepoUrl(options.repo);
+	return tag(
 		options.name,
 		Effect.gen(function* () {
 			const fs = yield* FileSystem.FileSystem;
@@ -193,6 +228,7 @@ export const gitFetch = <const Name extends string>(options: GitFetchOptions<Nam
 			hidden: true,
 		},
 	);
+};
 
 // -----------------------------------------------------------------------------
 // Helpers

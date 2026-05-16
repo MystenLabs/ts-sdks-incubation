@@ -38,6 +38,31 @@ export interface IdentityShape {
 
 export class Identity extends Context.Service<Identity, IdentityShape>()('@devstack/Identity') {}
 
+// `<app>` and `<stack>` flow into docker container names + labels +
+// filesystem paths under `.devstack/stacks/<stack>/`. Allow lowercase
+// alphanumeric + `._-`, must start with a letter or digit, max 64 chars.
+// Disallowing `..`, `/`, and shell-meaningful characters at the
+// boundary stops typos from traversing directories or breaking docker's
+// `--label key=value` parser later.
+const IDENTITY_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+
+const requireValidIdentityName = (kind: 'app' | 'stack', value: string): void => {
+	if (!IDENTITY_NAME_RE.test(value)) {
+		throw new TypeError(
+			`Identity: ${kind} '${value}' is invalid — must match ${IDENTITY_NAME_RE.source}`,
+		);
+	}
+};
+
+/** Validate an `IdentityShape` at the construction boundary. Call from
+ *  any compose path that builds an Identity — the supervisor reads
+ *  these strings as labels / paths and a malformed value surfaces as
+ *  an inscrutable docker or filesystem error far downstream. */
+export const validateIdentity = (identity: IdentityShape): void => {
+	requireValidIdentityName('app', identity.app);
+	requireValidIdentityName('stack', identity.stack);
+};
+
 // Derive the app name from `<appDir>/package.json#name` (stripping any
 // npm scope like `@foo/`), falling back to `basename(appDir)`. Mirrors
 // v3 `packages/devstack/src/cli/env.ts:168-198` but synchronous so it

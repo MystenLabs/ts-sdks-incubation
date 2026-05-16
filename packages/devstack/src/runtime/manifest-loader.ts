@@ -12,6 +12,7 @@
 // preserved for one release behind a feature flag; v4 consumers see one
 // shape regardless.
 
+import { jsonBigintReviver } from '../engine/json-bigint.js';
 import {
 	type Manifest,
 	type EndpointEntry,
@@ -56,6 +57,14 @@ const isV4 = (raw: unknown): raw is Manifest => {
 	if (typeof raw !== 'object' || raw === null) return false;
 	const r = raw as { version?: unknown };
 	return r.version === 4;
+};
+
+/** Quick test for "this JSON is a v3 manifest." Either `version === 3`
+ *  or no `version` field at all (the original unversioned shape). */
+const isV3 = (raw: unknown): raw is ManifestV3Shape => {
+	if (typeof raw !== 'object' || raw === null) return false;
+	const r = raw as { version?: unknown };
+	return r.version === undefined || r.version === 3;
 };
 
 /** Build a v4 `EndpointEntry` from a v3 endpoint record. v3's `pairUrl`
@@ -173,12 +182,37 @@ export function migrateV3ToV4(v3: ManifestV3Shape): Manifest {
 	};
 }
 
-/** Read a manifest blob (v3 or v4) and return the v4 shape. Throws on
- *  malformed input (non-object root, missing required v4 fields). */
+/** Read a manifest blob (v3 or v4) and return the v4 shape.
+ *
+ *  Accepts either a parsed object OR a raw JSON string; strings are
+ *  parsed with `jsonBigintReviver` so `{__bigint: "123"}` round-trips
+ *  back to a `bigint` instead of an object literal — consumers
+ *  expecting bigint shapes (Coin scalars, gas budgets) get the right
+ *  type without remembering to wire the reviver themselves.
+ *
+ *  Rejects unknown versions explicitly. A future `version === 5`
+ *  manifest must NOT silently fall into the v3 migrator (which would
+ *  drop fields and reshape the rest); fail loudly so the caller knows
+ *  to upgrade their devstack package. */
 export function fromManifest(raw: unknown): Manifest {
-	if (raw === null || typeof raw !== 'object') {
-		throw new TypeError('fromManifest: expected an object, got ' + typeof raw);
+	let parsed: unknown;
+	if (typeof raw === 'string') {
+		try {
+			parsed = JSON.parse(raw, jsonBigintReviver);
+		} catch (cause) {
+			throw new TypeError(`fromManifest: failed to parse string input as JSON: ${(cause as Error).message}`);
+		}
+	} else {
+		parsed = raw;
 	}
-	if (isV4(raw)) return raw;
-	return migrateV3ToV4(raw as ManifestV3Shape);
+	if (parsed === null || typeof parsed !== 'object') {
+		throw new TypeError('fromManifest: expected an object, got ' + typeof parsed);
+	}
+	if (isV4(parsed)) return parsed;
+	if (isV3(parsed)) return migrateV3ToV4(parsed);
+	const version = (parsed as { version?: unknown }).version;
+	throw new TypeError(
+		`fromManifest: unknown manifest version ${JSON.stringify(version)} ` +
+			`(supported: 3, 4). Update @mysten-incubation/devstack.`,
+	);
 }
