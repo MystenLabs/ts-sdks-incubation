@@ -80,6 +80,16 @@ export interface SuiBuildContainerShape {
 	readonly runBuild: (
 		hostPath: string,
 	) => Effect.Effect<SuiCliCapture, SuiCliError>;
+	/** Run `sui move summary --path <hostPath>` inside the container.
+	 *  Used by the bindings codegen emitter — pre-fix it shelled out to
+	 *  the HOST `sui` binary, which produces a different summary schema
+	 *  than the build container's pinned `sui` (C7). Routing through
+	 *  the container ensures the summary's shape matches what
+	 *  `@mysten/codegen` expects. Preconditions: `canExec(hostPath)`
+	 *  is true. */
+	readonly runSummary: (
+		hostPath: string,
+	) => Effect.Effect<SuiCliCapture, SuiCliError>;
 }
 
 export class SuiBuildContainer extends Context.Service<
@@ -278,6 +288,27 @@ const runBuildInside = (
 	return runWithCapture(spawner, cmd, 'docker exec (sui move build)');
 };
 
+// Run `sui move summary` inside the build container against
+// `/host/<rel>`. Mirrors `runBuildInside`'s shape minus the Move.lock
+// scrub — `summary` doesn't mutate the package's lockfile, so the
+// scrub is unnecessary noise here.
+const runSummaryInside = (
+	spawner: Spawner,
+	containerName: string,
+	containerPath: string,
+): Effect.Effect<SuiCliCapture, SuiCliError> => {
+	const cmd = ChildProcess.make('docker', [
+		'exec',
+		containerName,
+		'sui',
+		'move',
+		'summary',
+		'--path',
+		containerPath,
+	]);
+	return runWithCapture(spawner, cmd, 'docker exec (sui move summary)');
+};
+
 // Translate a host path to its container view through the `/host`
 // bind-mount. Returns `undefined` when the path is outside `appDir`
 // (which means the caller must fall back to a per-build `docker run`).
@@ -358,6 +389,20 @@ export const SuiBuildContainerLive = Layer.effect(
 					);
 				}
 				return runBuildInside(spawner, containerName, containerPath);
+			},
+			runSummary: (hostPath: string) => {
+				const containerPath = toContainerPath(appDir, hostPath);
+				if (containerPath === undefined) {
+					return Effect.fail(
+						new SuiCliError({
+							op: 'SuiBuildContainer.runSummary',
+							message:
+								`host path ${hostPath} is outside the bind-mounted app dir ${appDir}; ` +
+								`caller must fall back to host sui. Use canExec() to check first.`,
+						}),
+					);
+				}
+				return runSummaryInside(spawner, containerName, containerPath);
 			},
 		};
 	}),

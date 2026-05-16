@@ -41,6 +41,14 @@ export interface DappKitEmitterOptions {
 	 *  Set `false` to emit a config that wires only the user's own
 	 *  wallets. */
 	readonly enableBurnerWallet?: boolean;
+	/** Path to the manifest JSON that should be copied next to the
+	 *  emitted `index.ts` so its `import './manifest.json'` resolves.
+	 *  Defaults to `<DEVSTACK_STATE_DIR ?? '.devstack'>/stacks/<DEVSTACK_STACK
+	 *  ?? 'main'>/manifest.json`, falling back to the legacy flat
+	 *  `<state-dir>/manifest.json`. Only consulted when
+	 *  `enableBurnerWallet: true` (the manifest import only appears in
+	 *  that branch). */
+	readonly manifestPath?: string;
 }
 
 const FLAVOR_IMPORTS: Record<DappKitFlavor, { core: string; module: string }> = {
@@ -138,23 +146,106 @@ const writeFile = (
 			}),
 	});
 
+// Discover the on-disk manifest path with the same precedence the
+// playwright `webServer` helper uses: explicit override → stack-scoped
+// path → legacy flat path. Returns the first path that exists, or
+// undefined if none.
+const discoverManifestPath = async (override: string | undefined): Promise<string | undefined> => {
+	if (override !== undefined) {
+		try {
+			await fs.access(override);
+			return override;
+		} catch {
+			return undefined;
+		}
+	}
+	const stateDir = process.env.DEVSTACK_STATE_DIR ?? '.devstack';
+	const stack = process.env.DEVSTACK_STACK ?? 'main';
+	const candidates = [
+		path.resolve(stateDir, 'stacks', stack, 'manifest.json'),
+		path.resolve(stateDir, 'manifest.json'),
+	];
+	for (const candidate of candidates) {
+		try {
+			await fs.access(candidate);
+			return candidate;
+		} catch {
+			// fall through to next candidate
+		}
+	}
+	return undefined;
+};
+
 /** Build a `DappKitEmitter` plug-in instance. Drop into
  *  `Codegen({ emitters: [DappKitEmitter()] })` or surface alongside
  *  `BindingsEmitter`. */
 export const DappKitEmitter = (opts: DappKitEmitterOptions = {}): Emitter => {
-	const resolved: Required<DappKitEmitterOptions> = {
+	const resolved = {
 		flavor: opts.flavor ?? 'react',
 		localnetRpcUrl: opts.localnetRpcUrl ?? 'http://localhost:9000',
 		enableBurnerWallet: opts.enableBurnerWallet ?? true,
-	};
+		manifestPath: opts.manifestPath,
+	} as const;
 	return defineEmitter({
 		name: 'dapp-kit',
 		emit: (ctx) =>
 			Effect.gen(function* () {
 				const outDir = path.join(ctx.outputDir, 'dapp-kit');
 				const filePath = path.join(outDir, 'index.ts');
-				const contents = renderFile(ctx, resolved);
+				const contents = renderFile(ctx, {
+					flavor: resolved.flavor,
+					localnetRpcUrl: resolved.localnetRpcUrl,
+					enableBurnerWallet: resolved.enableBurnerWallet,
+					manifestPath: resolved.manifestPath ?? '',
+				});
 				yield* writeFile(filePath, contents);
+				// C11: emit `<outDir>/manifest.json` as a sibling of
+				// `index.ts` so the generated code's `import './manifest.json'`
+				// resolves at TS-build time. Only required when burner
+				// wallet wiring is enabled (only that branch emits the
+				// import). Best-effort: if the manifest can't be located
+				// (e.g. emit ran before the supervisor wrote it on a
+				// truly fresh stack), skip with a warning so the
+				// generated TS still compiles when the manifest lands
+				// later in the same dev session.
+				if (resolved.enableBurnerWallet) {
+					const manifestSrc = yield* Effect.tryPromise({
+						try: () => discoverManifestPath(resolved.manifestPath),
+						catch: () => undefined,
+					}).pipe(Effect.orElseSucceed(() => undefined));
+					if (manifestSrc === undefined) {
+						yield* Effect.logWarning(
+							`DappKitEmitter: manifest not found yet — generated dapp-kit/index.ts ` +
+								`will fail to compile until the supervisor writes ` +
+								`<DEVSTACK_STATE_DIR>/stacks/<stack>/manifest.json. ` +
+								`Pass \`manifestPath\` explicitly to silence this warning.`,
+						);
+						return;
+					}
+					const manifestDst = path.join(outDir, 'manifest.json');
+					yield* Effect.tryPromise({
+						try: async () => {
+							await fs.mkdir(outDir, { recursive: true });
+							const body = await fs.readFile(manifestSrc, 'utf-8');
+							let existing: string | undefined;
+							try {
+								existing = await fs.readFile(manifestDst, 'utf-8');
+							} catch {
+								// missing — fall through to write
+							}
+							if (existing !== body) {
+								await fs.writeFile(manifestDst, body, 'utf-8');
+							}
+						},
+						catch: (cause) =>
+							new CodegenError({
+								emitter: 'dapp-kit',
+								phase: 'write',
+								message: `failed to copy manifest from ${manifestSrc} to ${manifestDst}: ${String(cause)}`,
+								cause,
+							}),
+					});
+				}
 			}),
 	});
 };
