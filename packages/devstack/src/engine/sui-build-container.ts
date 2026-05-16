@@ -267,11 +267,21 @@ const runBuildInside = (
 	// Scope the scrub to the package + sibling deps (one level up so
 	// `{ local = "../<dep>" }` references survive). Skips `.git` and
 	// `node_modules` like the Stage 1 path.
+	//
+	// HIGH-R5: hardening against symlink-following root writes from
+	// container to host. `-type f` skips symlinks (so a malicious
+	// `Move.lock -> /etc/passwd` symlink in the source tree doesn't
+	// get scrubbed), and `awk -i inplace` (gawk extension; available
+	// in the mysten/sui base image's gawk) edits the file in-place
+	// instead of going through `> $1.new && mv $1.new $1`. The
+	// pre-fix shell pattern, when run as root inside the container
+	// against a bind-mounted source tree, would have followed any
+	// symlink target on the host filesystem.
 	const scrubRoot = `${containerPath}/..`;
 	const scrub =
-		`find ${shellQuote(scrubRoot)} -maxdepth 4 -name Move.lock ` +
+		`find ${shellQuote(scrubRoot)} -maxdepth 4 -type f -name Move.lock ` +
 		`-not -path '*/node_modules/*' -not -path '*/.git/*' ` +
-		`-exec sh -c 'awk -f /tmp/scrub-move-lock.awk "$1" > "$1.new" && mv "$1.new" "$1"' _ {} ';'`;
+		`-exec awk -i inplace -f /tmp/scrub-move-lock.awk {} ';'`;
 	const innerScript = [
 		'set -e',
 		stageAwk,

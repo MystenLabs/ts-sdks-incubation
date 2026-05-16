@@ -406,9 +406,18 @@ const containerBuildCmd = (imageTag: string, hostPath: string): ChildProcess.Com
 	const stageAwk =
 		`printf '%s\\n%s\\n%s\\n' '/^\\[pinned\\./ { skip=1; next }' ` +
 		`'/^\\[/ && !/^\\[pinned\\./ { skip=0 }' '!skip { print }' > /tmp/scrub-move-lock.awk`;
+	// HIGH-R5: same hardening as the docker-exec path in
+	// sui-build-container.ts. `-type f` rejects symlinks so a
+	// malicious `Move.lock -> /etc/passwd` symlink in the source tree
+	// doesn't get scrubbed; `awk -i inplace` (gawk extension; the
+	// mysten/sui base image ships gawk) edits the file in place
+	// instead of going through `> $1.new && mv $1.new $1`. The
+	// pre-fix shell pattern, when run as root inside the container
+	// against bind-mounted source, would have followed any symlink
+	// target on the host filesystem.
 	const scrub =
-		`find /workspace -name Move.lock -not -path '*/node_modules/*' -not -path '*/.git/*' ` +
-		`-exec sh -c 'awk -f /tmp/scrub-move-lock.awk "$1" > "$1.new" && mv "$1.new" "$1"' _ {} ';'`;
+		`find /workspace -type f -name Move.lock -not -path '*/node_modules/*' -not -path '*/.git/*' ` +
+		`-exec awk -i inplace -f /tmp/scrub-move-lock.awk {} ';'`;
 	// `pkgName` lands inside the in-container `sh -c` script as part of
 	// `--path /workspace/<name>`. Shell-quote so a malicious package
 	// name (e.g. one containing `$(…)` or `;`) can't escape the script

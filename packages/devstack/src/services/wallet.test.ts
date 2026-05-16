@@ -145,9 +145,11 @@ describe('walletApp router hostname', () => {
 			);
 
 			// Identity-derived router URL: `wallet.<app>.localhost:5180`
-			// (main stack). The pairing token is preserved on `pairUrl`.
+			// (main stack). The pairing token is preserved on `pairUrl`,
+			// post-C13 in the URL fragment so it stays out of server
+			// logs and referrer headers.
 			expect(value.url).toBe('http://wallet.wallet-test.localhost:5180');
-			expect(value.pairUrl.startsWith('http://wallet.wallet-test.localhost:5180/?token=')).toBe(
+			expect(value.pairUrl.startsWith('http://wallet.wallet-test.localhost:5180/#token=')).toBe(
 				true,
 			);
 			// `localPort` carries the actual 127.0.0.1 binding for callers
