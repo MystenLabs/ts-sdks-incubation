@@ -149,6 +149,42 @@ export const deepbookLocalDeploy = <
 	const name = (options.name ?? 'deepbook') as Name;
 	const specs = options.pools ?? ([] as ReadonlyArray<DeepbookPoolSpec>);
 
+	// Pool-spec validation at config-load time. Surfaces a clear typed
+	// error with the user's `Deepbook({ local: { pools: [...] } })` site
+	// in the stack trace instead of an inscrutable Move-side abort
+	// when the create-pool tx fires against an out-of-range argument.
+	// The Move side enforces these same invariants downstream
+	// (`tickSize > 0`, `lotSize > 0`, `minSize >= lotSize`); catching
+	// them up front saves a chain round-trip + an unclear MoveAbort
+	// message. Pool name must be non-empty + unique within the array.
+	const seenNames = new Set<string>();
+	for (const spec of specs) {
+		if (spec.name.length === 0) {
+			throw new TypeError(`deepbookLocalDeploy: pool name must be non-empty`);
+		}
+		if (seenNames.has(spec.name)) {
+			throw new TypeError(
+				`deepbookLocalDeploy: duplicate pool name '${spec.name}' — each pool must have a unique name`,
+			);
+		}
+		seenNames.add(spec.name);
+		if (spec.tickSize <= 0n) {
+			throw new TypeError(
+				`deepbookLocalDeploy: pool '${spec.name}' tickSize must be > 0 (got ${spec.tickSize})`,
+			);
+		}
+		if (spec.lotSize <= 0n) {
+			throw new TypeError(
+				`deepbookLocalDeploy: pool '${spec.name}' lotSize must be > 0 (got ${spec.lotSize})`,
+			);
+		}
+		if (spec.minSize < spec.lotSize) {
+			throw new TypeError(
+				`deepbookLocalDeploy: pool '${spec.name}' minSize must be >= lotSize (got minSize=${spec.minSize}, lotSize=${spec.lotSize})`,
+			);
+		}
+	}
+
 	// The publish tag is a sibling primitive; we yield it inside our
 	// scoped acquire to chain its package id + captured registry/admin-cap
 	// ids forward into the create-pool transactions. Built lazily so the

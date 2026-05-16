@@ -475,6 +475,7 @@ export const acquireLocalCluster = (args: {
 			rpcUrl: sui.rpc.host,
 			walrusPackageId: deploy.walrusPackageId,
 			exchangeObject: deploy.exchangeObject,
+			network: sui.network,
 		});
 
 		// -------------------------------------------------------------
