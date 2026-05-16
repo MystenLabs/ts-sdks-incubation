@@ -4,4 +4,3 @@
 .vercel/
 node_modules/
 dist/
-next-env.d.ts
