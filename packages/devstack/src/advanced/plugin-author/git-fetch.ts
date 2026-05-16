@@ -152,6 +152,25 @@ export const gitFetch = <const Name extends string>(options: GitFetchOptions<Nam
 				//    for tags / branches); fall back to a full clone +
 				//    checkout if the ref is a sha or the host rejects
 				//    shallow.
+				//
+				// Phase G: GC sibling refHash dirs under the same `parentDir`
+				// before cloning. A moving branch ref (`ref: 'main'`) cuts a
+				// new refHash on every upstream advance — without GC each new
+				// fetch leaves the prior clone parked under `<parentDir>/<old-hash>`
+				// forever. Bound the cache to "one entry per (repo, name)" by
+				// removing any sibling that's not us. Best-effort: a failure
+				// here never blocks the clone.
+				const siblingsToGc = yield* fs
+					.readDirectory(parentDir)
+					.pipe(
+						Effect.map((entries) => entries.filter((e) => e !== refHash)),
+						Effect.catch(() => Effect.succeed([] as ReadonlyArray<string>)),
+					);
+				for (const sibling of siblingsToGc) {
+					yield* fs
+						.remove(path.join(parentDir, sibling), { recursive: true, force: true })
+						.pipe(Effect.catch(() => Effect.void));
+				}
 				yield* fs
 					.remove(cloneDir, { recursive: true, force: true })
 					.pipe(Effect.catch(() => Effect.void));

@@ -344,8 +344,13 @@ async function maxSourceMtime(root: string): Promise<number> {
 
 /** Return a `BindingsEmitter` plug-in instance. Pass into
  *  `Codegen({ emitters: [BindingsEmitter()] })` or a per-Package
- *  emitter override. */
-export const BindingsEmitter = (opts: BindingsEmitterOptions = {}): Emitter => {
+ *  emitter override. The emitter's `R` widens to
+ *  `ChildProcessSpawner` (we shell out to `sui move summary` /
+ *  the build container); `Codegen({...})` provides that service
+ *  via `NodeServicesLayer` by default. */
+export const BindingsEmitter = (
+	opts: BindingsEmitterOptions = {},
+): Emitter<ChildProcessSpawner.ChildProcessSpawner> => {
 	const importExtension = opts.importExtension ?? '.ts';
 	return defineEmitter({
 		name: 'bindings',
