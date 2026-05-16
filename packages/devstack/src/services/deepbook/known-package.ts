@@ -1,6 +1,6 @@
-// `deepbookKnownPackage(opts)` — point `DeepbookCore` at an already-
+// `deepbookKnownPackage(opts)` — point `DeepbookCoreTag` at an already-
 // deployed deepbook-v3 instance (canonical testnet/mainnet, or any
-// caller-supplied id pair). Does NOT provide `DeepbookAdmin` (we don't
+// caller-supplied id pair). Does NOT provide `DeepbookAdminTag` (we don't
 // own the cap) or `DeepbookMarketMaker` (no balance manager to set up
 // here). Stack `deepbookMarketMaker(...)` separately for makers running
 // against a known package.
@@ -9,9 +9,8 @@
 
 import { Effect } from 'effect';
 import { provide } from '../../advanced/tag.js';
-import { DeepbookCore, type DeepbookCoreShape } from '../deepbook.js';
+import { DeepbookCoreTag, type DeepbookCore } from '../deepbook.js';
 import { knownDeployments, type KnownNetwork } from '../../engine/known-deployments.js';
-import type { StackMember } from '../../engine/supervisor.js';
 import { makeFindPool, type DeepbookPool } from './internal.js';
 
 export interface DeepbookKnownPackageOptions {
@@ -27,13 +26,13 @@ export interface DeepbookKnownPackageOptions {
 }
 
 /**
- * Point `DeepbookCore` at an already-deployed deepbook-v3 instance
+ * Point `DeepbookCoreTag` at an already-deployed deepbook-v3 instance
  * (canonical testnet/mainnet, or any caller-supplied id pair). Does NOT
- * provide `DeepbookAdmin` (we don't own the cap) or `DeepbookMarketMaker`
+ * provide `DeepbookAdminTag` (we don't own the cap) or `DeepbookMarketMaker`
  * (no balance manager to set up here). Stack `deepbookMarketMaker(...)`
  * separately for makers running against a known package.
  */
-export const deepbookKnownPackage = (opts: DeepbookKnownPackageOptions): StackMember => {
+export const deepbookKnownPackage = (opts: DeepbookKnownPackageOptions) => {
 	const deployment = opts.network !== undefined ? knownDeployments.deepbook[opts.network] : undefined;
 	const packageId = opts.packageId ?? deployment?.packageId;
 	const registryId = opts.registryId ?? deployment?.registryId;
@@ -50,7 +49,7 @@ export const deepbookKnownPackage = (opts: DeepbookKnownPackageOptions): StackMe
 	// camelCase entry when the caller passed `network`; falls back to
 	// explicit ids (with empty strings + undefineds for the optional
 	// fields) when only `packageId`/`registryId` were supplied.
-	const packageIds: DeepbookCoreShape['packageIds'] = {
+	const packageIds: DeepbookCore['packageIds'] = {
 		DEEPBOOK_PACKAGE_ID: packageId,
 		REGISTRY_ID: registryId,
 		DEEP_TREASURY_ID: deployment?.deepTreasuryId ?? '',
@@ -78,8 +77,8 @@ export const deepbookKnownPackage = (opts: DeepbookKnownPackageOptions): StackMe
 	const poolIds = new Map<string, string>(staticPools.map((p) => [p.name, p.poolId]));
 	const findPool = makeFindPool('deepbookKnownPackage', fakeDeepbookPools);
 
-	const { __layer, key, __kind, __displayTitle } = provide(
-		DeepbookCore,
+	return provide(
+		DeepbookCoreTag,
 		Effect.gen(function* () {
 			yield* Effect.annotateCurrentSpan({
 				'deepbook.packageId': packageId,
@@ -92,7 +91,7 @@ export const deepbookKnownPackage = (opts: DeepbookKnownPackageOptions): StackMe
 				packageIds,
 				poolIds,
 				findPool,
-			} satisfies DeepbookCoreShape;
+			} satisfies DeepbookCore;
 		}).pipe(Effect.withSpan('deepbookKnownPackage')),
 		{
 			kind: 'service',
@@ -100,5 +99,4 @@ export const deepbookKnownPackage = (opts: DeepbookKnownPackageOptions): StackMe
 			display: (s) => ({ title: 'deepbook.known', primary: s.packageId }),
 		},
 	);
-	return { __layer, key, __kind, __displayTitle };
 };

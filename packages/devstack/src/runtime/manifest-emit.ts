@@ -30,11 +30,17 @@ export interface EmitManifestOptions {
 	/** Extras to splice into `app.extras`. Same three-form discriminator
 	 *  the v3 `manifest()` factory accepts: plain object, sync function,
 	 *  or `Effect`. Sync functions are evaluated once at acquire time;
-	 *  Effects are yielded. */
+	 *  Effects are yielded — the Effect runs in the gather-manifest scope
+	 *  where every stack Ref / tag is already in context, so the R channel
+	 *  is `any`: yield whichever Refs / tag classes you composed with
+	 *  `devstack(...)` (e.g. `yield* SealKeyServerTag`, `yield* alice`).
+	 *  Missing services surface as Effect's ServiceNotFound at runtime. */
 	readonly extras?:
 		| Record<string, unknown>
-		| (() => Record<string, unknown>)
-		| Effect.Effect<Record<string, unknown>, never, never>;
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		| (() => Record<string, unknown> | Effect.Effect<Record<string, unknown>, any, any>)
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		| Effect.Effect<Record<string, unknown>, any, any>;
 	/** Interval at which to re-snapshot during the stack's lifetime.
 	 *  v3 uses 500ms; keep the same default for parity. */
 	readonly tickInterval?: `${number} millis`;
@@ -61,16 +67,24 @@ const resolveLegacyPath = (outputPath: string): string | undefined => {
 
 /** Resolve `extras` from one of the three accepted shapes. Plain
  *  object → returned as-is. Sync function → called once. Effect →
- *  yielded. */
+ *  yielded. R is `any` because the user's Effect can yield any tag
+ *  in stack scope (e.g. `SealKeyServerTag`, an `Account` ref) — the
+ *  caller (`emitManifestV4`) runs this inside the gather-manifest
+ *  scope where every stack service is already provided. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const resolveExtras = (
 	raw: EmitManifestOptions['extras'],
-): Effect.Effect<Record<string, unknown>, never, never> =>
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+): Effect.Effect<Record<string, unknown>, any, any> =>
 	raw === undefined
 		? Effect.succeed({})
 		: Effect.isEffect(raw)
 			? raw
 			: typeof raw === 'function'
-				? Effect.sync(raw)
+				? (() => {
+						const v = raw();
+						return Effect.isEffect(v) ? v : Effect.succeed(v);
+					})()
 				: Effect.succeed(raw);
 
 /** Write the v4 manifest to disk, idempotently. Skips the write entirely

@@ -18,10 +18,12 @@ import { buildMove, scrubCachedMoveLocks } from '../../engine/sui-cli.js';
 import { PackageRegistry, CoinRegistry } from '../../engine/registries.js';
 import { StateStore } from '../../engine/state-store.js';
 import { PublishError } from '../../engine/errors.js';
-import type { LocalPackageShape } from '../package.js';
+import type { LocalPackage } from '../package.js';
 import { toSdkCoin } from '../package.js';
 import type { Account, SuiObjectChange } from '../../engine/shared.js';
-import { pickCreatedByTypeSuffix } from '../../engine/sui-helpers.js';
+import { pickCreatedByTypeIncludes, pickCreatedByTypeSuffix } from '../../engine/sui-helpers.js';
+import { FaucetTag } from '../../faucet/service.js';
+import { treasuryCapMintStrategy } from '../../faucet/strategies/treasury-cap-mint.js';
 
 // Content-hash the Move source tree under `sourcePath`. Hashes every
 // `.move` file plus `Move.toml`, ignoring build/output/hidden dirs so
@@ -84,7 +86,7 @@ export interface CoinSpec {
 export interface PublishedCoin extends CoinSpec {
 	readonly fullCoinType: string;
 	/**
-	 * SDK-aligned projection — see `CoinShape['sdkCoin']`. Same value
+	 * SDK-aligned projection — see `Coin['sdkCoin']`. Same value
 	 * `registerCoin` emits, so downstream consumers can read either tag
 	 * shape uniformly.
 	 */
@@ -93,14 +95,23 @@ export interface PublishedCoin extends CoinSpec {
 		readonly type: string;
 		readonly scalar: number;
 	};
+	/**
+	 * TreasuryCap object id captured from the publish's `objectChanges`.
+	 * Surfaces here so downstream consumers (custom mint flows, the
+	 * auto-registered TreasuryCap mint faucet strategy) can address the
+	 * cap without re-querying chain state. `undefined` when no cap was
+	 * created (rare — typically means the coin's `init` doesn't follow
+	 * the standard `coin::create_currency` pattern).
+	 */
+	readonly treasuryCapId?: string;
 }
 
 // Per-call shape returned by `publishMove`. Carries the universal
-// `LocalPackageShape` fields (so the per-name tag satisfies the
+// `LocalPackage` fields (so the per-name tag satisfies the
 // `LocalPackageTag` contract in `services/package.ts` structurally) plus
 // `coins` — a typed record of the published coin specs the caller
-// declared. `bindings` keys off `LocalPackageShape` so a known-package
-// tag (which only satisfies `PackageShape`) is rejected at compose time.
+// declared. `bindings` keys off `LocalPackage` so a known-package
+// tag (which only satisfies `Package`) is rejected at compose time.
 export interface Package<
 	TCaptured = undefined,
 	TCoins extends Record<string, PublishedCoin> = Record<string, PublishedCoin>,
@@ -114,7 +125,7 @@ export interface Package<
 	readonly mvrPlaceholder: string;
 }
 
-// Compile-time guard: if a future edit ever drops a `LocalPackageShape`
+// Compile-time guard: if a future edit ever drops a `LocalPackage`
 // field from `Package`, this check breaks and `bindings`' input type
 // stops accepting `publishMove` tags. The check uses the most-permissive
 // instantiation (`captured: Record<string, unknown> | undefined`) because
@@ -123,7 +134,7 @@ export interface Package<
 type _LocalPackageCompatibilityCheck = Package<
 	Record<string, unknown> | undefined,
 	Record<string, PublishedCoin>
-> extends LocalPackageShape
+> extends LocalPackage
 	? true
 	: never;
 const _localPackageCompatibilityCheck: _LocalPackageCompatibilityCheck = true;
@@ -179,7 +190,7 @@ export interface PublishMoveOptions<
 	readonly capture?: (changes: ReadonlyArray<SuiObjectChange>) => TCaptured;
 	/**
 	 * Optional coin specs to register against the published package.
-	 * Each entry surfaces in the `CoinRegistry` (manifest + `Coin` tag
+	 * Each entry surfaces in the `CoinRegistry` (manifest + `CoinTag` tag
 	 * for downstream consumers) without the caller having to add a
 	 * separate `registerCoin` primitive. The `module` + `type` fields
 	 * key into the published package's coin types.
@@ -188,6 +199,38 @@ export interface PublishMoveOptions<
 }
 
 const UPGRADE_CAP_TYPE_SUFFIX = '0x2::package::UpgradeCap';
+
+// Register a `treasuryCapMintStrategy` per coin so
+// `Account({ funding: { '<pkgId>::module::TYPE': amount } })` mints
+// directly off the publisher's TreasuryCap. Re-runs on every supervisor
+// cycle (Faucet's strategy registry is in-memory per cycle), and runs
+// on both cache-miss and cache-hit publish paths.
+//
+// Best-effort: if no `Faucet` is in scope (rare — only unit tests that
+// build the publish layer without `devstack(...)`) the registration is
+// a noop. Coins missing a `treasuryCapId` (e.g. a custom init that
+// doesn't follow `coin::create_currency`) are skipped — funding such a
+// coin via `Account({ funding })` will surface a clean "no strategy
+// registered" error pointing the user at `defineStrategy`.
+const registerMintStrategies = (
+	signer: Account,
+	coins: ReadonlyArray<PublishedCoin>,
+): Effect.Effect<void, never, never> =>
+	Effect.gen(function* () {
+		const faucetOpt = yield* Effect.serviceOption(FaucetTag);
+		if (faucetOpt._tag !== 'Some') return;
+		const faucet = faucetOpt.value;
+		for (const coin of coins) {
+			if (coin.treasuryCapId === undefined) continue;
+			yield* faucet.register(
+				treasuryCapMintStrategy({
+					coinType: coin.fullCoinType,
+					treasuryCapId: coin.treasuryCapId,
+					signer,
+				}),
+			);
+		}
+	});
 
 export const publishMove = <
 	const Name extends string,
@@ -272,6 +315,7 @@ export const publishMove = <
 						sdkCoin: coin.sdkCoin,
 					});
 				}
+				yield* registerMintStrategies(signer, Object.values(hit.coins));
 				return hit;
 			}
 			yield* Effect.annotateCurrentSpan({
@@ -391,10 +435,21 @@ export const publishMove = <
 			const coins = {} as Record<string, PublishedCoin>;
 			for (const spec of coinSpecs) {
 				const fullCoinType = `${packageId}::${spec.module}::${spec.type}`;
+				// Find the per-coin TreasuryCap. Coin module init via
+				// `coin::create_currency` emits a `TreasuryCap<<fullCoinType>>`
+				// owned by the publisher; locating it here lets us auto-register
+				// a mint strategy below. `pickCreatedByTypeIncludes` matches the
+				// generic-with-args form like
+				// `0x2::coin::TreasuryCap<0xPKG::module::TYPE>`.
+				const treasuryCapId = pickCreatedByTypeIncludes(
+					result.objectChanges,
+					`0x2::coin::TreasuryCap<${fullCoinType}>`,
+				);
 				coins[spec.name] = {
 					...spec,
 					fullCoinType,
 					sdkCoin: toSdkCoin({ fullCoinType, decimals: spec.decimals }),
+					...(treasuryCapId !== undefined ? { treasuryCapId } : {}),
 				};
 			}
 
@@ -414,6 +469,7 @@ export const publishMove = <
 					sdkCoin: coin.sdkCoin,
 				});
 			}
+			yield* registerMintStrategies(signer, Object.values(coins));
 
 			const result_: Package<TCaptured, CoinsRecord<TCoins>> = {
 				name: options.name,

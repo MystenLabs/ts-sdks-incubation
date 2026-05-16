@@ -5,7 +5,7 @@
 //   provide(TagClass, build)      — primary. Given an EXISTING
 //                                   Context.Service class (typically
 //                                   imported from a `src/services/` tag
-//                                   class like `SuiTag` / `SealKeyServer`),
+//                                   class like `SuiTag` / `SealKeyServerTag`),
 //                                   mutate it into a yieldable Ref by
 //                                   stamping `__layer` / `key` onto it.
 //                                   Multiple factories (`suiLocalnet`,
@@ -129,6 +129,17 @@ export interface ProvideOptions<A> {
 	 * a flicker on resolve. */
 	readonly displayTitle?: string;
 	/**
+	 * Hide this tag from the TUI dashboard. The build still runs and the
+	 * value still resolves — the only effect is suppressing the row
+	 * (no `markAcquiring`/`markReady`/`markFailed`/seed entry). Use for
+	 * cache-warming primitives whose existence as a dedicated row adds
+	 * clutter without surfacing actionable state (e.g. `gitFetch` of
+	 * upstream Move sources). A failure inside a hidden tag still
+	 * propagates through its consumer's failure path, so user-visible
+	 * errors aren't lost.
+	 */
+	readonly hidden?: boolean;
+	/**
 	 * Filesystem paths (directories or files) whose content changes should
 	 * trigger a hot-restart of the devstack. Aggregated by `defineDevstack`
 	 * alongside the top-level `config.watch` so primitive authors can
@@ -191,6 +202,8 @@ export interface Ref<Name extends string, A, R = never, E = never> extends Conte
 	/** Paths the tag's author wants watched for hot-restart. See `ProvideOptions.watch`.
 	 * Aggregated by `devstack(...)` into the runtime watch set. */
 	readonly __watchPaths?: ReadonlyArray<string>;
+	/** When `true`, the tag does not surface as a TUI row. See `ProvideOptions.hidden`. */
+	readonly __hidden?: boolean;
 }
 
 /**
@@ -218,6 +231,7 @@ const withEngineLifecycle = <A, E, R>(
 		readonly kind?: TagKind;
 		readonly display?: (shape: A) => TuiDisplay;
 		readonly displayTitle?: string;
+		readonly hidden?: boolean;
 	},
 ): Effect.Effect<A, E, R> =>
 	Effect.gen(function* () {
@@ -228,6 +242,14 @@ const withEngineLifecycle = <A, E, R>(
 			// reference. The reference's defaultValue covers the
 			// no-provider case too — this is belt-and-braces for clarity.
 			return yield* build.pipe(Effect.provideService(CurrentTagKey, name));
+		}
+		// Hidden tags: the engine never sees this tag, so it can't render a
+		// row for it. The build still runs and the value still resolves —
+		// failures propagate through the consumer's normal failure path.
+		// CurrentTagKey is intentionally left at the empty default so any
+		// `setPhase` inside the body is a noop (we have no row to update).
+		if (classification.hidden === true) {
+			return yield* build.pipe(Effect.provideService(CurrentTagKey, ''));
 		}
 		const engine = engineOpt.value;
 		yield* engine.markAcquiring(name, classification.kind);
@@ -316,6 +338,7 @@ export const provide = <T extends AnyTagClass, A, E = never, R = never>(
 	readonly __kind?: TagKind;
 	readonly __displayTitle?: string;
 	readonly __watchPaths?: ReadonlyArray<string>;
+	readonly __hidden?: boolean;
 } => {
 	const wrapped = withEngineLifecycle(TagClass.key, build, options);
 	// `Layer.effect`'s key is `Context.Key<I, S>`. The `as any` here is
@@ -331,12 +354,14 @@ export const provide = <T extends AnyTagClass, A, E = never, R = never>(
 		__kind?: TagKind;
 		__displayTitle?: string;
 		__watchPaths?: ReadonlyArray<string>;
+		__hidden?: boolean;
 	} = { __layer: layer, key: TagClass.key };
 	if (options.kind !== undefined) extras.__kind = options.kind;
 	if (options.displayTitle !== undefined) extras.__displayTitle = options.displayTitle;
 	if (options.watch !== undefined && options.watch.length > 0) {
 		extras.__watchPaths = options.watch;
 	}
+	if (options.hidden === true) extras.__hidden = true;
 	// Mutate the canonical class so it doubles as a yieldable StackMember.
 	return Object.assign(TagClass, extras) as unknown as T & typeof extras;
 };
@@ -354,7 +379,7 @@ export interface TagOptions<A> extends ProvideOptions<A> {
  * Create a one-off tag from an Effect — the right primitive when you're
  * NOT implementing a shared interface (per-account tags from `Account()`,
  * custom plugins, `Action`, etc.). For factories that target an
- * interface tag class in `src/services/` (e.g. `SuiTag`, `SealKeyServer`),
+ * interface tag class in `src/services/` (e.g. `SuiTag`, `SealKeyServerTag`),
  * use {@link provide} instead. For composites that build inner tags
  * inline, use {@link composeTag}.
  */
@@ -369,6 +394,7 @@ export const tag = <const Name extends string, A, E = never, R = never>(
 		...(options.display !== undefined ? { display: options.display } : {}),
 		...(options.displayTitle !== undefined ? { displayTitle: options.displayTitle } : {}),
 		...(options.watch !== undefined ? { watch: options.watch } : {}),
+		...(options.hidden === true ? { hidden: true } : {}),
 	};
 	const { __layer, key } = provide(T, build, provideOpts);
 	// Order matters: `composeStackLayer` folds left-to-right with
@@ -392,6 +418,7 @@ export const tag = <const Name extends string, A, E = never, R = never>(
 		__kind?: TagKind;
 		__displayTitle?: string;
 		__watchPaths?: ReadonlyArray<string>;
+		__hidden?: boolean;
 	} = {
 		__layer,
 		__layers,
@@ -402,6 +429,7 @@ export const tag = <const Name extends string, A, E = never, R = never>(
 	if (options.watch !== undefined && options.watch.length > 0) {
 		extras.__watchPaths = options.watch;
 	}
+	if (options.hidden === true) extras.__hidden = true;
 	return Object.assign(T, extras) as unknown as Ref<
 		Name,
 		A,
@@ -483,7 +511,7 @@ export interface ComposeLayersOptions {
 	 *  can consume inner-tag services) but before `projections`. */
 	readonly primary: Layer.Layer<any, any, any>;
 	/** Thin projection layers that read from `primary` to satisfy
-	 *  additional interface tags (e.g. `SealKeyServer` + `SealKeyManager`
+	 *  additional interface tags (e.g. `SealKeyServerTag` + `SealKeyManagerTag`
 	 *  both reading from the internal seal tag). Go last because they
 	 *  consume `primary`'s output. */
 	readonly projections?: ReadonlyArray<Layer.Layer<any, any, any>>;

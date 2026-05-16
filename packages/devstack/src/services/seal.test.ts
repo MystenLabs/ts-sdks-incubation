@@ -1,6 +1,6 @@
 // Compile-time + runtime smoke that `sealKnownKeyServer` provides
-// `SealKeyServer` from a known-deployment lookup, and that it does NOT
-// carry a `SealKeyManager` layer (we don't own the master key). We
+// `SealKeyServerTag` from a known-deployment lookup, and that it does NOT
+// carry a `SealKeyManagerTag` layer (we don't own the master key). We
 // exercise the factory's own `__layer` directly to keep the test off the
 // filesystem — the full `provideDevstack` path drags in `StateStoreLive`,
 // which acquires a real lock file. The other half of the matrix
@@ -12,8 +12,8 @@ import { layer as NodeFileSystemLayer } from '@effect/platform-node/NodeFileSyst
 import { describe, expect, it } from '@effect/vitest';
 import { EngineLive } from '../engine/engine.js';
 import {
-	SealKeyManager,
-	SealKeyServer,
+	SealKeyManagerTag,
+	SealKeyServerTag,
 	type SealKeyServerEntry,
 } from './seal.js';
 import { knownDeployments } from '../engine/known-deployments.js';
@@ -48,12 +48,12 @@ void _sealKeyServerEntryCheck;
 const TestBaseLayer = Layer.mergeAll(EngineLive, NodeFileSystemLayer, EndpointRegistryLive);
 
 describe('sealKnownKeyServer', () => {
-	it.effect('provides SealKeyServer from a network lookup', () =>
+	it.effect('provides SealKeyServerTag from a network lookup', () =>
 		Effect.gen(function* () {
 			const member = sealKnownKeyServer({ network: 'testnet' });
 
 			const keyServer = yield* Effect.gen(function* () {
-				return yield* SealKeyServer;
+				return yield* SealKeyServerTag;
 			}).pipe(Effect.provide(Layer.provide(member.__layer, TestBaseLayer)));
 
 			const expected = knownDeployments.seal.testnet!;
@@ -68,18 +68,18 @@ describe('sealKnownKeyServer', () => {
 		}),
 	);
 
-	it.effect('does NOT provide SealKeyManager', () =>
+	it.effect('does NOT provide SealKeyManagerTag', () =>
 		Effect.gen(function* () {
 			const member = sealKnownKeyServer({ network: 'testnet' });
 
-			// Yielding `SealKeyManager` against a known-key-server-only
+			// Yielding `SealKeyManagerTag` against a known-key-server-only
 			// layer surfaces as a runtime resolution failure — we don't
 			// own the master key, so there's no manager layer. Cast
 			// through unknown because the layer's `R` channel doesn't
-			// expose SealKeyManager (correct at the type level — we're
+			// expose SealKeyManagerTag (correct at the type level — we're
 			// exercising the runtime fallback).
-			const program: Effect.Effect<'resolved', never, SealKeyManager> = Effect.gen(function* () {
-				yield* SealKeyManager;
+			const program: Effect.Effect<'resolved', never, SealKeyManagerTag> = Effect.gen(function* () {
+				yield* SealKeyManagerTag;
 				return 'resolved' as const;
 			});
 			const exit = yield* (program as unknown as Effect.Effect<'resolved', unknown, never>).pipe(
@@ -99,7 +99,7 @@ describe('sealKnownKeyServer', () => {
 			});
 
 			const keyServer = yield* Effect.gen(function* () {
-				return yield* SealKeyServer;
+				return yield* SealKeyServerTag;
 			}).pipe(Effect.provide(Layer.provide(member.__layer, TestBaseLayer)));
 			expect(keyServer.keyServerUrl).toBe('https://custom.example/key-server');
 		}),

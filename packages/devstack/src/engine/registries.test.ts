@@ -145,6 +145,38 @@ describe('engine hooks', () => {
 		}).pipe(Effect.provide(EngineLive)),
 	);
 
+	it.effect('hidden: true skips engine entries (no row), but build still runs', () =>
+		Effect.gen(function* () {
+			// `gitFetch` and other cache-warming primitives mark themselves
+			// `hidden: true` so they don't surface as TUI rows — the row
+			// added clutter without actionable state. The build body must
+			// still execute (the consumer relies on the resolved value).
+			let buildRan = false;
+			const hiddenTag = tag(
+				'hidden-thing',
+				Effect.sync(() => {
+					buildRan = true;
+					return { ok: true } as const;
+				}),
+				{ hidden: true },
+			);
+			const engine = yield* EngineHandle;
+			// Deliberately skip seeding `hidden-thing` to mirror what the
+			// supervisor does (seedEntries flatMap filters __hidden).
+			yield* engine.seedTags([{ key: 'visible' }]);
+
+			yield* Layer.build(hiddenTag.__layer).pipe(Effect.scoped);
+
+			expect(buildRan).toBe(true);
+			const state = yield* Ref.get(engine.tuiState);
+			// No row should have been auto-registered for the hidden key.
+			expect(state.entries.find((e) => e.key === 'hidden-thing')).toBeUndefined();
+			// `__hidden` is stamped on the Ref so the supervisor's seed pass
+			// can filter it out before reaching the engine.
+			expect((hiddenTag as { readonly __hidden?: boolean }).__hidden).toBe(true);
+		}).pipe(Effect.provide(EngineLive)),
+	);
+
 	it.effect('appendLog trims the buffer to LOG_BUFFER_LIMIT so long runs stay bounded', () =>
 		Effect.gen(function* () {
 			const engine = yield* EngineHandle;

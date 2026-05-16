@@ -6,85 +6,80 @@
 // (`signer: alice`) for type-checked cross-references, then into
 // `devstack(...)` to compose the running stack.
 //
-// Phase-4 cleanup: the per-service Context.Service tag classes and their
-// Schema mirrors moved here from `src/interfaces/`. Tags that collide
-// with a factory name (`Sui`, `Package`, `LocalPackage`,
-// `DeepbookMarketMaker`) carry a `Tag` suffix; the underlying Context
-// key (`'@devstack/<name>'`) is unchanged.
+// Naming rule:
+//   - Factories take the plain noun (`Sui`, `Account`, `Package`, …).
+//   - Context.Service tag classes carry a `Tag` suffix (`SuiTag`,
+//     `AccountTag`, `PackageTag`, `CoinTag`, …). The underlying Context
+//     key (`'@devstack/<Tag>'`) is the runtime identity.
+//   - Shape types take the plain noun (`Sui`, `Account`, `Coin`,
+//     `WalrusNetwork`, …). Where a factory shares the same noun, the
+//     type and value coexist via TS's separate type/value namespaces.
 
 // ── Factories ──
-export { Sui, type SuiOptions, type SuiShape, SuiTag, EndpointSchema, SuiShapeSchema } from './sui.js';
+export { Sui, type SuiOptions, SuiTag, EndpointSchema, SuiSchema } from './sui.js';
 export {
 	Seal,
 	type SealOptions,
 	type SealKeyServerEntry,
-	type SealKeyServerShape,
-	SealKeyServer,
-	type SealKeyManagerShape,
-	SealKeyManager,
+	type SealKeyServer,
+	SealKeyServerTag,
+	type SealKeyManager,
+	SealKeyManagerTag,
 	SealKeyServerEntrySchema,
-	SealKeyServerShapeSchema,
+	SealKeyServerSchema,
 } from './seal.js';
 export {
 	Walrus,
 	type WalrusOptions,
-	type WalrusNetworkShape,
-	WalrusNetwork,
+	type WalrusNetwork,
+	WalrusNetworkTag,
 	type WalrusNodeInfo,
-	type WalrusNodesShape,
-	WalrusNodes,
-	type WalrusProxyShape,
-	WalrusProxy,
-	type WalrusAdminShape,
-	WalrusAdmin,
-	WalrusNetworkShapeSchema,
+	type WalrusNodes,
+	WalrusNodesTag,
+	type WalrusProxy,
+	WalrusProxyTag,
+	type WalrusAdmin,
+	WalrusAdminTag,
+	WalrusNetworkSchema,
 	WalrusNodeInfoSchema,
-	WalrusNodesShapeSchema,
-	WalrusProxyShapeSchema,
+	WalrusNodesSchema,
+	WalrusProxySchema,
 } from './walrus.js';
 export {
 	Deepbook,
 	DeepbookMarketMaker,
 	type DeepbookOptions,
 	type DeepbookPoolRef,
-	type DeepbookCoreShape,
-	DeepbookCore,
-	type DeepbookAdminShape,
-	DeepbookAdmin,
-	type DeepbookMarketMakerShape,
+	type DeepbookCore,
+	DeepbookCoreTag,
+	type DeepbookAdmin,
+	DeepbookAdminTag,
 	DeepbookMarketMakerTag,
 	DeepbookPoolRefSchema,
 } from './deepbook.js';
-export {
-	Account,
-	type AccountShape,
-	type AccountTag,
-	AccountShapeSchema,
-} from './account.js';
+export { Account, type AccountTag, AccountSchema } from './account.js';
 export {
 	Package,
 	type PackageOptions,
 	type CaptureSpec,
-	type PackageShape,
 	PackageTag,
-	type LocalPackageShape,
+	type LocalPackage,
 	LocalPackageTag,
-	PackageShapeSchema,
-	LocalPackageShapeSchema,
-	type CoinShape,
-	Coin,
+	PackageSchema,
+	LocalPackageSchema,
+	type Coin,
+	CoinTag,
 	toSdkCoin,
-	CoinShapeSchema,
+	CoinSchema,
 } from './package.js';
 export { Action, type ActionOptions } from './action.js';
 export { Dev, type DevOptions } from './dev.js';
 export { Wallet, type WalletOptions } from './wallet.js';
-export { Bindings, type BindingsRefOptions } from './bindings.js';
 export { Codegen, type CodegenOptions } from './codegen.js';
 export { DappKit, type DappKitRefOptions } from './dapp-kit.js';
 export { KnownPackage, type KnownPackageOptions } from './known-package.js';
 export { Faucet, type FaucetOptions } from '../faucet/factory.js';
-export { FaucetTag, type FaucetStrategy, type FaucetShape } from '../faucet/service.js';
+export { FaucetTag, type FaucetStrategy } from '../faucet/service.js';
 export { suiHttpStrategy } from '../faucet/strategies/sui-http.js';
 export { defineStrategy } from '../faucet/strategies/internal.js';
 export { FaucetRequestError } from '../faucet/errors.js';

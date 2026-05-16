@@ -3,8 +3,14 @@ title: Services
 description: Every built-in Ref factory.
 ---
 
-Every factory below returns a [Ref](../concepts/refs-and-tags). Pass
+Every factory below returns a [Ref](../internals/refs-and-tags). Pass
 them into `devstack(...)` to compose the stack.
+
+For task-shaped guidance ("how do I run a dev server?", "how do I
+fund an account?"), start with a feature page like
+[local-dev](../features/local-dev) or
+[accounts-and-wallet](../features/accounts-and-wallet). This page is
+the API surface — every option, every shape, every default.
 
 ## `Sui(opts?)`
 
@@ -19,7 +25,7 @@ Sui({ network: { rpc: 'https://example.com', faucet: 'https://example.com/faucet
 Sui({ localnet: { rpcUrl: 'http://localhost:9000' } });  // wrap your own
 ```
 
-Yields `SuiShape`: `{ network, rpc, faucet?, graphql?, client, chainId,
+Yields `Sui`: `{ network, rpc, faucet?, graphql?, client, chainId,
 waitForTransactionsReady }`.
 
 ## `Account(name, opts?)`
@@ -48,7 +54,7 @@ Source discriminators:
   instance. HSMs, remote signers, browser-connected wallets — devstack
   never asks for `getSecretKey()` on this branch.
 
-The optional `funding` field works on **any** source. Coin keys are
+The optional `funding` field works on **any** source. CoinTag keys are
 short names for built-ins (`'SUI'`, `'WAL'`) or fully-qualified Move
 types for user coins. See [Faucet reference](./faucet) for the
 strategy registry that backs it.
@@ -70,7 +76,7 @@ const hello = Package('hello', './move/hello', {
 });
 ```
 
-Yields `LocalPackageShape`: `{ name, packageId, upgradeCapId,
+Yields `LocalPackage`: `{ name, packageId, upgradeCapId,
 sourcePath, mvrPlaceholder, captured }`.
 
 `captured` is whatever the `capture` callback returned (declarative
@@ -88,8 +94,8 @@ const deepbookV3 = KnownPackage('deepbook', {
 });
 ```
 
-Yields `PackageShape` (no `sourcePath`/`captured`). `Codegen` /
-`Bindings` emitters that need source skip it; emitters that just need
+Yields `Package` (no `sourcePath`/`captured`). `Codegen` /
+`Codegen`'s bindings emitter skips entries without source; emitters that just need
 the id (DappKit, custom emitters) consume it.
 
 ## `Action(name, opts)`
@@ -120,20 +126,27 @@ every cycle (rare — usually a bug).
 
 ## `Walrus(opts?)`, `Seal(opts?)`, `Deepbook(opts?)`
 
-Composite Refs that boot the underlying infra and surface four narrow
-interfaces apiece. Default `mode: 'local'` boots a full local cluster;
-`mode: 'known'` resolves a Ref against a pinned remote deployment.
+Composite Refs that surface four narrow interfaces apiece. Each
+factory inspects `DEVSTACK_NETWORK` (set by the CLI `--network` flag,
+the `devstack({ network })` config option, or the env var directly)
+and branches: on localnet it boots a full local cluster; on
+testnet/mainnet it wires to Mysten's canonical remote deployment.
 
 ```ts
-Walrus();                                   // localnet cluster
-Walrus({ mode: 'known' });                  // resolve testnet
-Seal({ signer: alice });                    // localnet keygen
-Deepbook();                                 // localnet deploy
-DeepbookMarketMaker({ pools: [...] });      // continuous liquidity
+Walrus();                                   // local cluster on localnet, canonical remote otherwise
+Walrus({ local: { nodeCount: 4 } });        // tune the local cluster (ignored on live nets)
+Walrus({ override: { packageId, ... } });   // pin a non-canonical deployment on live nets
+
+Seal({ signer: alice });                    // signer used only on localnet
+Deepbook({ local: { signer, ... } });       // local-deploy fields used only on localnet
+DeepbookMarketMaker({ pools: [...] });      // continuous liquidity (any network)
 ```
 
 Yield the narrow inner tags directly when you only need a slice —
-`yield* WalrusNodes`, `yield* SealKeyServer`, `yield* DeepbookAdmin`.
+`yield* WalrusNodesTag`, `yield* SealKeyServerTag`, `yield* DeepbookCoreTag`.
+The admin-side tags (`WalrusAdminTag`, `SealKeyManagerTag`,
+`DeepbookAdminTag`) only exist on localnet — yielding them from code
+that may run against testnet/mainnet will fail at acquire time.
 
 ## `Dev(opts)`
 
@@ -166,27 +179,20 @@ Exposes a localhost HTTP API that signs transactions with the
 resolved accounts' keypairs. Allowed origins, port, and bind address
 are configurable.
 
-## `Bindings(opts)`
-
-Convenience facade over `Codegen({ emitters: [BindingsEmitter()] })`.
-
-```ts
-Bindings({
-	packages: [hello, world],
-	output: './src/generated',
-	importExtension: '.ts',                  // default
-});
-```
-
-See [Codegen reference](./codegen) for the full plug-in interface.
-
 ## `Codegen(opts)`
 
-The general-purpose code-emit Ref. Run any combination of emitters
-(built-in `BindingsEmitter`, `DappKitEmitter`, or user emitters)
-against the resolved package set.
+The code-emit Ref. With no `emitters` field, defaults to
+`[BindingsEmitter()]` (Move → TS bindings via `@mysten/codegen`).
+Override `emitters` to combine multiple emitters or swap in user
+emitters.
 
 ```ts
+// Default: bindings only.
+Codegen({ packages: [hello, world], output: './src/generated' });
+
+// Explicit: bindings + dapp-kit emitter. Both live under /advanced.
+import { BindingsEmitter, DappKitEmitter } from '@mysten-incubation/devstack/advanced';
+
 Codegen({
 	output: './src/generated',
 	packages: [hello, deepbookV3],
@@ -194,7 +200,7 @@ Codegen({
 });
 ```
 
-See [Codegen reference](./codegen).
+See [Codegen reference](./codegen) for the emitter plug-in interface.
 
 ## `DappKit(opts)`
 

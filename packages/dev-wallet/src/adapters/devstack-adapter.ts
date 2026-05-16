@@ -271,18 +271,45 @@ export function parseDevstackToken(pairedUrl: string | undefined): string | null
 	}
 }
 
-/**
- * Convenience: read the `wallet-app` entry from a devstack manifest and
- * build a configured adapter, or return `null` when the entry isn't
- * present (no `walletApp.create(...)` in the stack, or it hasn't come
- * up yet).
- *
- * Reads `manifest.endpoints` for `{ name: 'wallet-app', url, pairUrl }`.
- */
-export function createDevstackAdapterFromManifest(manifest: {
+/** v3-shape input — flat `endpoints` array. Kept around for one
+ *  release while consumers migrate to v4. */
+interface ManifestV3Shape {
 	endpoints?: ReadonlyArray<{ name: string; url: string; pairUrl?: string }>;
-}): DevstackSignerAdapter | null {
-	const endpoint = manifest.endpoints?.find((e) => e.name === 'wallet-app');
+}
+
+/** v4-shape input — wallet endpoint lives at `app.wallet.{url, alternates}`.
+ *  Mirrors `AppManifest` from `@mysten-incubation/devstack` without
+ *  importing it (dev-wallet doesn't depend on devstack — circular). */
+interface ManifestV4Shape {
+	app?: {
+		wallet?: {
+			url: string;
+			alternates?: ReadonlyArray<string>;
+		};
+	};
+}
+
+/**
+ * Convenience: read the wallet-app endpoint off a devstack manifest and
+ * build a configured adapter, or return `null` when the entry isn't
+ * present (no `Wallet(...)` in the stack, or it hasn't come up yet).
+ *
+ * Accepts both v3 manifests (`endpoints[]` array with `name: 'wallet-app'`)
+ * and v4 manifests (`app.wallet: { url, alternates }`). The v4 entry's
+ * first `alternates` URL is the paired URL carrying the `?token=…`
+ * parameter; v3 carries it in `pairUrl`.
+ */
+export function createDevstackAdapterFromManifest(
+	manifest: ManifestV3Shape | ManifestV4Shape,
+): DevstackSignerAdapter | null {
+	const v4 = (manifest as ManifestV4Shape).app?.wallet;
+	if (v4 !== undefined) {
+		return new DevstackSignerAdapter({
+			serverOrigin: v4.url,
+			token: parseDevstackToken(v4.alternates?.[0]),
+		});
+	}
+	const endpoint = (manifest as ManifestV3Shape).endpoints?.find((e) => e.name === 'wallet-app');
 	if (endpoint !== undefined) {
 		return new DevstackSignerAdapter({
 			serverOrigin: endpoint.url,

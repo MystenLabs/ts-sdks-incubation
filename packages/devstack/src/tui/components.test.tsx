@@ -92,6 +92,77 @@ describe('App', () => {
 		unmount();
 	});
 
+	it('actions section: three+ ready rows collapse into one compact summary line', async () => {
+		// The wallet stack's actions section can crowd the dashboard with
+		// publishMove + Action + pool-init rows. Once they're all `done`,
+		// the section folds into a single `done (N): name1, name2, …` line
+		// so steady-state stacks read at a glance.
+		const engine = await buildEngine();
+		await Effect.runPromise(
+			engine.seedTags([
+				{ key: 'publish.mock_usdc', kind: 'action' },
+				{ key: 'publish.mock_weth', kind: 'action' },
+				{ key: 'tx.seedTokens', kind: 'action' },
+			]),
+		);
+		for (const k of ['publish.mock_usdc', 'publish.mock_weth', 'tx.seedTokens']) {
+			await Effect.runPromise(engine.markAcquiring(k, 'action'));
+			await Effect.runPromise(engine.markReady(k, { title: k.replace(/\./, '.') }));
+		}
+		const { lastFrame, unmount } = inkRender(
+			React.createElement(App, { engine, onQuit: () => undefined, pollIntervalMs: 10 }),
+		);
+		await flush();
+		const frame = lastFrame() ?? '';
+		expect(frame).toContain('Actions');
+		expect(frame).toContain('done (3)');
+		const normalized = frame.replace(/\s+/g, ' ');
+		expect(normalized).toContain('mock_usdc');
+		expect(normalized).toContain('mock_weth');
+		expect(normalized).toContain('seedTokens');
+		// `done` appears once in the summary cell, NOT three times as
+		// individual row status words.
+		expect(frame.match(/\bdone\b/g)?.length ?? 0).toBe(1);
+		unmount();
+	});
+
+	it('actions section: in-flight row stays full while ready siblings collapse', async () => {
+		// Failed/in-flight rows still need to surface their state — only the
+		// done rows fold. This keeps the user's attention pinned on what's
+		// actually happening without losing context about which siblings
+		// already finished.
+		const engine = await buildEngine();
+		await Effect.runPromise(
+			engine.seedTags([
+				{ key: 'publish.a', kind: 'action' },
+				{ key: 'publish.b', kind: 'action' },
+				{ key: 'publish.c', kind: 'action' },
+				{ key: 'tx.slow', kind: 'action' },
+			]),
+		);
+		await Effect.runPromise(engine.markAcquiring('publish.a', 'action'));
+		await Effect.runPromise(engine.markReady('publish.a', { title: 'publish.a' }));
+		await Effect.runPromise(engine.markAcquiring('publish.b', 'action'));
+		await Effect.runPromise(engine.markReady('publish.b', { title: 'publish.b' }));
+		await Effect.runPromise(engine.markAcquiring('publish.c', 'action'));
+		await Effect.runPromise(engine.markReady('publish.c', { title: 'publish.c' }));
+		// Leave `tx.slow` in acquiring with a phase set so it renders as a
+		// full row.
+		await Effect.runPromise(engine.markAcquiring('tx.slow', 'action'));
+		await Effect.runPromise(engine.setPhase('tx.slow', 'executing'));
+
+		const { lastFrame, unmount } = inkRender(
+			React.createElement(App, { engine, onQuit: () => undefined, pollIntervalMs: 10 }),
+		);
+		await flush();
+		const frame = lastFrame() ?? '';
+		const normalized = frame.replace(/\s+/g, ' ');
+		expect(normalized).toContain('slow');
+		expect(normalized).toContain('executing');
+		expect(frame).toContain('done (3)');
+		unmount();
+	});
+
 	it('failed entry surfaces the short error in the row and the full walk in the log tail', async () => {
 		const engine = await buildEngine();
 		await Effect.runPromise(engine.seedTags([{ key: '@devstack/Sui', kind: 'service' }]));

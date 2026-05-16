@@ -1,13 +1,15 @@
-// Walrus(opts?) — canonical Walrus factory. Auto-picks local-cluster on
-// localnet (full node committee + aggregator/publisher + on-chain
-// registration) and known-deployment on testnet/mainnet (read-only
-// handle pointing at the public Walrus network).
+// Walrus(opts?) — canonical Walrus factory. Picks local-cluster (full
+// node committee + aggregator/publisher + on-chain registration) when
+// the resolved network is localnet, and the canonical remote
+// deployment (read-only handle pointing at the public Walrus network)
+// on testnet/mainnet. Network is resolved from `DEVSTACK_NETWORK`
+// (set by the CLI `--network` flag).
 //
-// This file also carries the **WalrusNetwork** / **WalrusNodes** /
-// **WalrusProxy** / **WalrusAdmin** Context.Service tags, split along
+// This file also carries the **WalrusNetworkTag** / **WalrusNodesTag** /
+// **WalrusProxyTag** / **WalrusAdminTag** Context.Service tags, split along
 // the capability axis so future remote factories can produce a strict
-// subset (`WalrusNetwork + WalrusProxy` for blob uploads;
-// `+ WalrusAdmin` for cluster-side capabilities).
+// subset (`WalrusNetworkTag + WalrusProxyTag` for blob uploads;
+// `+ WalrusAdminTag` for cluster-side capabilities).
 
 import { Context, Effect, Schema } from 'effect';
 import {
@@ -17,10 +19,11 @@ import {
 	type WalrusLocalClusterOptions,
 } from './walrus/index.js';
 import { WalrusError } from '../engine/errors.js';
+import { resolveNetwork } from '../engine/network.js';
 import type { StackMember } from '../engine/supervisor.js';
 
 // -----------------------------------------------------------------------------
-// WalrusNetwork — on-chain identifiers
+// WalrusNetworkTag — on-chain identifiers
 // -----------------------------------------------------------------------------
 
 /** Fields every Walrus-network-producing factory must surface. These
@@ -41,7 +44,7 @@ import type { StackMember } from '../engine/supervisor.js';
  *  - `exchangeIds` carries WAL exchange contracts when the network
  *    exposes them — testnet today, mainnet does not.
  */
-export interface WalrusNetworkShape {
+export interface WalrusNetwork {
 	readonly systemObjectId: string;
 	readonly stakingPoolId: string;
 	readonly subsidiesPackageId: string | undefined;
@@ -67,12 +70,12 @@ export interface WalrusNetworkShape {
 	};
 }
 
-export class WalrusNetwork extends Context.Service<WalrusNetwork, WalrusNetworkShape>()(
-	'@devstack/WalrusNetwork',
+export class WalrusNetworkTag extends Context.Service<WalrusNetworkTag, WalrusNetwork>()(
+	'@devstack/WalrusNetworkTag',
 ) {}
 
 // -----------------------------------------------------------------------------
-// WalrusNodes — storage-node committee
+// WalrusNodesTag — storage-node committee
 // -----------------------------------------------------------------------------
 
 /** Per-node descriptor. `nodeId` is the on-chain registered storage-
@@ -89,16 +92,16 @@ export interface WalrusNodeInfo {
 /** Committee view. `walrusLocalDeploy` knows every node it spun up;
  *  `walrusTestnet`-style factories may surface an empty array when the
  *  set isn't enumerable. */
-export interface WalrusNodesShape {
+export interface WalrusNodes {
 	readonly nodes: ReadonlyArray<WalrusNodeInfo>;
 }
 
-export class WalrusNodes extends Context.Service<WalrusNodes, WalrusNodesShape>()(
-	'@devstack/WalrusNodes',
+export class WalrusNodesTag extends Context.Service<WalrusNodesTag, WalrusNodes>()(
+	'@devstack/WalrusNodesTag',
 ) {}
 
 // -----------------------------------------------------------------------------
-// WalrusProxy — aggregator/publisher endpoints
+// WalrusProxyTag — aggregator/publisher endpoints
 // -----------------------------------------------------------------------------
 
 /** Walrus aggregator + publisher URLs. The local primitive collapses
@@ -109,23 +112,23 @@ export class WalrusNodes extends Context.Service<WalrusNodes, WalrusNodesShape>(
  *  `proxyUrl` is the "front door" URL — what a SDK client should dial
  *  by default. For the local primitive it's identical to the
  *  aggregator/publisher URLs. */
-export interface WalrusProxyShape {
+export interface WalrusProxy {
 	readonly proxyUrl: string;
 	readonly aggregatorUrl: string;
 	readonly publisherUrl: string;
 }
 
-export class WalrusProxy extends Context.Service<WalrusProxy, WalrusProxyShape>()(
-	'@devstack/WalrusProxy',
+export class WalrusProxyTag extends Context.Service<WalrusProxyTag, WalrusProxy>()(
+	'@devstack/WalrusProxyTag',
 ) {}
 
 // -----------------------------------------------------------------------------
-// WalrusAdmin — local-only capabilities
+// WalrusAdminTag — local-only capabilities
 // -----------------------------------------------------------------------------
 
 /** Capabilities only available when WE booted the cluster. Remote
  *  `walrusKnownDeployment`-style factories will NOT produce a
- *  `WalrusAdmin` layer, so any code that depends on it is type-checked
+ *  `WalrusAdminTag` layer, so any code that depends on it is type-checked
  *  away from running against testnet/mainnet.
  *
  *  - `waitForCommittee` blocks until every storage node passes its
@@ -134,7 +137,7 @@ export class WalrusProxy extends Context.Service<WalrusProxy, WalrusProxyShape>(
  *  - `seedWal` swaps SUI for WAL on the named account via the
  *    on-chain `wal_exchange::exchange_all_for_wal` Move call. Mirrors
  *    the current primitive's `seedWalForAccounts` helper. */
-export interface WalrusAdminShape {
+export interface WalrusAdmin {
 	readonly waitForCommittee: Effect.Effect<void, WalrusError>;
 	readonly seedWal: (account: {
 		readonly address: string;
@@ -142,19 +145,19 @@ export interface WalrusAdminShape {
 	}) => Effect.Effect<void, WalrusError>;
 }
 
-export class WalrusAdmin extends Context.Service<WalrusAdmin, WalrusAdminShape>()(
-	'@devstack/WalrusAdmin',
+export class WalrusAdminTag extends Context.Service<WalrusAdminTag, WalrusAdmin>()(
+	'@devstack/WalrusAdminTag',
 ) {}
 
 // -----------------------------------------------------------------------------
 // Schemas
 // -----------------------------------------------------------------------------
 
-/** Runtime-validation mirror of `WalrusNetworkShape`. Use
- *  `Schema.decode(WalrusNetworkShapeSchema)` to validate a hand-rolled
- *  `Layer.succeed(WalrusNetwork, ...)`, or in tests where you want to
+/** Runtime-validation mirror of `WalrusNetwork`. Use
+ *  `Schema.decode(WalrusNetworkSchema)` to validate a hand-rolled
+ *  `Layer.succeed(WalrusNetworkTag, ...)`, or in tests where you want to
  *  assert the shape on yield. */
-export const WalrusNetworkShapeSchema = Schema.Struct({
+export const WalrusNetworkSchema = Schema.Struct({
 	systemObjectId: Schema.String,
 	stakingPoolId: Schema.String,
 	subsidiesPackageId: Schema.UndefinedOr(Schema.String),
@@ -179,25 +182,25 @@ export const WalrusNodeInfoSchema = Schema.Struct({
 	url: Schema.String,
 });
 
-/** Runtime-validation mirror of `WalrusNodesShape`. Use
- *  `Schema.decode(WalrusNodesShapeSchema)` to validate a hand-rolled
- *  `Layer.succeed(WalrusNodes, ...)`, or in tests where you want to
+/** Runtime-validation mirror of `WalrusNodes`. Use
+ *  `Schema.decode(WalrusNodesSchema)` to validate a hand-rolled
+ *  `Layer.succeed(WalrusNodesTag, ...)`, or in tests where you want to
  *  assert the shape on yield. */
-export const WalrusNodesShapeSchema = Schema.Struct({
+export const WalrusNodesSchema = Schema.Struct({
 	nodes: Schema.Array(WalrusNodeInfoSchema),
 });
 
-/** Runtime-validation mirror of `WalrusProxyShape`. Use
- *  `Schema.decode(WalrusProxyShapeSchema)` to validate a hand-rolled
- *  `Layer.succeed(WalrusProxy, ...)`, or in tests where you want to
+/** Runtime-validation mirror of `WalrusProxy`. Use
+ *  `Schema.decode(WalrusProxySchema)` to validate a hand-rolled
+ *  `Layer.succeed(WalrusProxyTag, ...)`, or in tests where you want to
  *  assert the shape on yield. */
-export const WalrusProxyShapeSchema = Schema.Struct({
+export const WalrusProxySchema = Schema.Struct({
 	proxyUrl: Schema.String,
 	aggregatorUrl: Schema.String,
 	publisherUrl: Schema.String,
 });
 
-// `WalrusAdminShape` carries Effect values which aren't Schema-validatable;
+// `WalrusAdmin` carries Effect values which aren't Schema-validatable;
 // omit a Schema mirror — admin layers are always produced in-process and
 // never round-trip through serialization.
 
@@ -206,27 +209,30 @@ export const WalrusProxyShapeSchema = Schema.Struct({
 // -----------------------------------------------------------------------------
 
 export interface WalrusOptions {
-	/** Which Walrus source. `'auto'` (default) picks based on the
-	 *  surrounding `Sui` network. `'local'` forces the in-process cluster;
-	 *  `'known'` forces a remote handle. */
-	readonly mode?: 'auto' | 'local' | 'known';
-	/** Pass-through extras for the local-cluster path. */
+	/** Pass-through extras for the local-cluster path. Ignored on
+	 *  testnet/mainnet (the canonical Walrus deployment is already
+	 *  running). */
 	readonly local?: WalrusLocalClusterOptions;
-	/** Pass-through extras for the known-deployment path. */
-	readonly known?: WalrusKnownDeploymentOptions;
+	/** Override the canonical Walrus registry for testnet/mainnet. Used
+	 *  when pinning to a private deployment or a non-canonical
+	 *  packageId. Most users leave this unset and let the factory wire
+	 *  to the public Walrus network. */
+	readonly override?: WalrusKnownDeploymentOptions;
 }
 
-const resolveMode = (opts: WalrusOptions): 'local' | 'known' => {
-	if (opts.mode === 'local' || opts.mode === 'known') return opts.mode;
-	return 'local';
-};
-
-/** Walrus factory. Returns a Ref carrying the walrus network + proxy
- *  contracts. */
+/** Walrus factory. Picks the local-cluster path on localnet and the
+ *  canonical remote deployment on testnet/mainnet — single source of
+ *  truth is `DEVSTACK_NETWORK` (set by the CLI `--network` flag or via
+ *  `devstack({ network })`). Returns a Ref carrying the network +
+ *  proxy contracts. */
 export const Walrus = (opts: WalrusOptions = {}): StackMember => {
-	const mode = resolveMode(opts);
-	if (mode === 'known') {
-		return Object.assign(walrusKnownDeployment(opts.known ?? {}), { __kind: 'service' as const });
+	const network = resolveNetwork();
+	if (network !== 'localnet') {
+		const knownOpts: WalrusKnownDeploymentOptions = {
+			network,
+			...(opts.override ?? {}),
+		};
+		return Object.assign(walrusKnownDeployment(knownOpts), { __kind: 'service' as const });
 	}
 	return Object.assign(walrusLocalCluster(opts.local ?? {}), { __kind: 'service' as const });
 };

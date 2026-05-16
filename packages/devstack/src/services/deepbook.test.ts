@@ -1,5 +1,5 @@
 // Compile-time + runtime smoke that `deepbookKnownPackage` provides
-// `DeepbookCore` (so consumers `yield* DeepbookCore` resolve against it)
+// `DeepbookCoreTag` (so consumers `yield* DeepbookCoreTag` resolve against it)
 // and that it does NOT carry an admin layer. We exercise the factory's
 // own `__layer` directly to keep the test off the filesystem — the full
 // `provideDevstack` path drags in `StateStoreLive`, which acquires a
@@ -24,8 +24,8 @@ import { EngineLive } from '../engine/engine.js';
 import { LeasingLive } from '../engine/leasing.js';
 import { PackageRegistryLive, CoinRegistryLive } from '../engine/registries.js';
 import { StateStore, StateStoreConfig, StateStoreLive } from '../engine/state-store.js';
-import { DeepbookAdmin, DeepbookCore, type DeepbookCoreShape } from './deepbook.js';
-import { SuiTag as Sui, type SuiShape } from './sui.js';
+import { DeepbookAdminTag, DeepbookCoreTag, type DeepbookCore } from './deepbook.js';
+import { SuiTag, type Sui } from './sui.js';
 import type { Account, SignAndExecuteError } from '../engine/shared.js';
 import { tag } from '../advanced/tag.js';
 import { deepbookKnownPackage, deepbookLocalDeploy } from './deepbook/index.js';
@@ -48,7 +48,7 @@ type _ExpectedDeepbookPackageIds = {
 // `DeepbookPackageIds` shape. Breaks the build if a future edit drops
 // SDK compat (a renamed field, a wrong type, etc).
 type _DeepbookCheck =
-	DeepbookCoreShape['packageIds'] extends _ExpectedDeepbookPackageIds ? true : never;
+	DeepbookCore['packageIds'] extends _ExpectedDeepbookPackageIds ? true : never;
 const _deepbookCheck: _DeepbookCheck = true;
 void _deepbookCheck;
 
@@ -60,7 +60,7 @@ void _deepbookCheck;
 const TestBaseLayer = Layer.mergeAll(EngineLive, NodeFileSystemLayer);
 
 describe('deepbookKnownPackage', () => {
-	it.effect('provides DeepbookCore from a network lookup', () =>
+	it.effect('provides DeepbookCoreTag from a network lookup', () =>
 		Effect.gen(function* () {
 			const member = deepbookKnownPackage({
 				network: 'testnet',
@@ -75,7 +75,7 @@ describe('deepbookKnownPackage', () => {
 			});
 
 			const core = yield* Effect.gen(function* () {
-				return yield* DeepbookCore;
+				return yield* DeepbookCoreTag;
 			}).pipe(Effect.provide(Layer.provide(member.__layer, TestBaseLayer)));
 
 			// Canonical testnet ids from `knownDeployments.deepbook.testnet`.
@@ -97,17 +97,17 @@ describe('deepbookKnownPackage', () => {
 		}),
 	);
 
-	it.effect('does NOT provide DeepbookAdmin', () =>
+	it.effect('does NOT provide DeepbookAdminTag', () =>
 		Effect.gen(function* () {
 			const member = deepbookKnownPackage({ network: 'testnet' });
 
-			// Yielding `DeepbookAdmin` against a known-package-only layer
+			// Yielding `DeepbookAdminTag` against a known-package-only layer
 			// surfaces as a runtime resolution failure — there's no admin
 			// layer to satisfy the dependency. Cast through unknown because
-			// the layer's `R` channel doesn't expose DeepbookAdmin (correct
+			// the layer's `R` channel doesn't expose DeepbookAdminTag (correct
 			// at the type level — we're exercising the runtime fallback).
-			const program: Effect.Effect<'resolved', never, DeepbookAdmin> = Effect.gen(function* () {
-				yield* DeepbookAdmin;
+			const program: Effect.Effect<'resolved', never, DeepbookAdminTag> = Effect.gen(function* () {
+				yield* DeepbookAdminTag;
 				return 'resolved' as const;
 			});
 			const exit = yield* (program as unknown as Effect.Effect<'resolved', unknown, never>).pipe(
@@ -128,7 +128,7 @@ describe('deepbookKnownPackage', () => {
 			});
 
 			const core = yield* Effect.gen(function* () {
-				return yield* DeepbookCore;
+				return yield* DeepbookCoreTag;
 			}).pipe(Effect.provide(Layer.provide(member.__layer, TestBaseLayer)));
 			expect(core.packageId).toBe('0xCAFE');
 			expect(core.registryId).toBe('0xBEEF');
@@ -219,8 +219,8 @@ const mkTmpDir = (label: string) =>
 // touches (verification step). Stub it to always resolve so a cache hit
 // is trusted; the BAD path (where the chain object is gone) is covered
 // by the second `it.effect` below.
-const makeMockSuiOk = (chainId: string): Layer.Layer<Sui> =>
-	Layer.succeed(Sui, {
+const makeMockSuiOk = (chainId: string): Layer.Layer<SuiTag> =>
+	Layer.succeed(SuiTag, {
 		network: 'localnet',
 		rpc: { host: 'http://localhost:9000' },
 		chainId,
@@ -231,12 +231,12 @@ const makeMockSuiOk = (chainId: string): Layer.Layer<Sui> =>
 					object: { objectId: _args.objectId } as unknown,
 				}),
 			},
-		} as unknown as SuiShape['client'],
+		} as unknown as Sui['client'],
 		waitForTransactionsReady: () => Effect.void,
 	});
 
-const makeMockSuiMissingObject = (chainId: string): Layer.Layer<Sui> =>
-	Layer.succeed(Sui, {
+const makeMockSuiMissingObject = (chainId: string): Layer.Layer<SuiTag> =>
+	Layer.succeed(SuiTag, {
 		network: 'localnet',
 		rpc: { host: 'http://localhost:9000' },
 		chainId,
@@ -247,7 +247,7 @@ const makeMockSuiMissingObject = (chainId: string): Layer.Layer<Sui> =>
 					throw new Error('object not found');
 				},
 			},
-		} as unknown as SuiShape['client'],
+		} as unknown as Sui['client'],
 		waitForTransactionsReady: () => Effect.void,
 	});
 
@@ -417,7 +417,7 @@ describe('deepbookLocalDeploy — create-pools resume cache', () => {
 			//
 			// We drop the trailing three layers (`coreLayer` /
 			// `adminLayer` / `marketMakerLayer`) — those are the
-			// `DeepbookCore` / `DeepbookAdmin` / `DeepbookMarketMaker`
+			// `DeepbookCoreTag` / `DeepbookAdminTag` / `DeepbookMarketMaker`
 			// interface bindings, and the market-maker layer mints a
 			// BalanceManager upfront (a separate tx that would also
 			// hit the dying signer). That's an orthogonal non-

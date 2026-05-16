@@ -28,7 +28,7 @@
 import { createHash } from 'node:crypto';
 import { Effect, Option } from 'effect';
 import { Transaction } from '@mysten/sui/transactions';
-import { type WalrusAdminShape } from '../walrus.js';
+import { type WalrusAdmin } from '../walrus.js';
 import * as Docker from '../../engine/docker.js';
 import { EngineHandle } from '../../engine/engine.js';
 import { Identity } from '../../engine/identity.js';
@@ -38,6 +38,8 @@ import { type Ref } from '../../advanced/tag.js';
 import { WalrusError } from '../../engine/errors.js';
 import type { Account } from '../../engine/shared.js';
 import { SuiTag, suiNetworkName } from '../sui.js';
+import { FaucetTag } from '../../faucet/service.js';
+import { walExchangeStrategy } from '../../faucet/strategies/wal-exchange.js';
 import { buildWrapperImage } from './image.js';
 import { deployContracts, resolveExchange } from './deploy.js';
 import { startStorageNodes } from './nodes.js';
@@ -497,7 +499,34 @@ export const acquireLocalCluster = (args: {
 		const proxyUrl = nodes[0]!.rpcUrl;
 
 		// -------------------------------------------------------------
-		// 7. Seed accounts — swap SUI for WAL on each declared signer.
+		// 7a. Register WAL auto-strategy on Faucet so any account can
+		//     ask for WAL via `Account({ funding: { WAL } })` without
+		//     being on `seedAccounts`. Uses `seedAccounts[0]` as the
+		//     admin signer (the same account that pays for the deploy
+		//     phase). Skipped when no seed accounts are declared — in
+		//     that case the user must register their own strategy
+		//     explicitly via `Faucet({ strategies: [...] })`.
+		// -------------------------------------------------------------
+		if (exchange !== undefined && seedAccounts.length > 0) {
+			const faucetOpt = yield* Effect.serviceOption(FaucetTag);
+			if (faucetOpt._tag === 'Some') {
+				yield* faucetOpt.value.register(
+					walExchangeStrategy({
+						exchange: { objectId: exchange.objectId, packageId: exchange.packageId },
+						signer: seedAccounts[0]!,
+						defaultPaymentMist: args.seedPaymentMist,
+					}),
+				);
+			}
+		}
+
+		// -------------------------------------------------------------
+		// 7b. Seed accounts — eagerly swap SUI for WAL on each declared
+		//     signer (so they're funded before downstream Refs that
+		//     depend on the cluster start using them). Equivalent to
+		//     calling `Faucet.requestCoin('WAL', addr, paymentMist)` for
+		//     each, but kept inline to preserve the state-store
+		//     idempotency path that skips already-funded accounts.
 		// -------------------------------------------------------------
 		if (exchange !== undefined && seedAccounts.length > 0) {
 			yield* seedWalForAccounts({
@@ -548,7 +577,7 @@ export const acquireLocalCluster = (args: {
 export { EngineHandle };
 
 // -----------------------------------------------------------------------------
-// WalrusAdmin construction
+// WalrusAdminTag construction
 // -----------------------------------------------------------------------------
 
 // Build the admin shape from the local-cluster acquire state. `waitForCommittee`
@@ -562,7 +591,7 @@ export const makeAdminShape = (args: {
 	readonly exchange: ExchangeState | undefined;
 	readonly defaultSeedPaymentMist: bigint;
 	readonly seedAccountsByAddress: ReadonlyMap<string, Account>;
-}): WalrusAdminShape => ({
+}): WalrusAdmin => ({
 	waitForCommittee: Effect.void,
 	seedWal: (req) =>
 		Effect.gen(function* () {
@@ -627,7 +656,7 @@ const registerCommittee = (args: {
 // -----------------------------------------------------------------------------
 
 // Kept co-located with the orchestrator + `makeAdminShape` because the
-// swap is reused on the ad-hoc `WalrusAdmin.seedWal` path too.
+// swap is reused on the ad-hoc `WalrusAdminTag.seedWal` path too.
 //
 // Resume idempotency: every supervisor cycle previously re-ran the swap
 // → each seed account accumulated +0.5 WAL per restart. We cache the
@@ -714,7 +743,7 @@ const swapSuiForWalCached = (args: {
 // Returns 0 on any error so the cache-verify path falls through to a
 // re-swap cleanly (better to over-seed than under-seed). The cast to
 // `{ getBalance }` keeps this resilient to test mocks that satisfy
-// `SuiShape` with a minimal `client` (`.core` only) — those land in
+// `Sui` with a minimal `client` (`.core` only) — those land in
 // the catch branch and we re-seed, which is the safer default.
 const probeWalBalance = (args: {
 	address: string;

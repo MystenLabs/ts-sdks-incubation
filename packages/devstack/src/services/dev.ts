@@ -3,6 +3,17 @@
 // fronting it and a stack-scoped hostname." Power users wanting custom
 // command/env/readyProbe combinations can still reach for the lower-
 // level `hostProcess` under `advanced.*`.
+//
+// Port handling:
+//   - `port:` is the PREFERRED public port. `PortAllocator` reserves it
+//     (scanning forward if a sibling stack already bound it), exposes the
+//     actual allocated port as `$PORT` in the spawned env, and templates
+//     `{port}` placeholders inside `command` / `args` with the allocated
+//     value. The default `ready:` URL derives from the allocated port
+//     too, so a single port: line cascades through command/env/probe and
+//     multiple stacks boot side-by-side without collisions.
+//   - User-supplied `env.PORT` wins over the allocator's value (escape
+//     hatch for tools that need a different bind port).
 
 import { Effect } from 'effect';
 import {
@@ -13,12 +24,20 @@ import {
 import type { Ref } from '../advanced/tag.js';
 
 export interface DevOptions<E = never, R = never> {
-	/** Command to run. */
+	/** Command to run. `{port}` placeholders are substituted with the
+	 *  allocator-resolved port (only when `port:` is set). */
 	readonly command: string;
-	/** CLI args. */
+	/** CLI args. Each element supports `{port}` placeholder substitution
+	 *  (only when `port:` is set). Use this instead of duplicating the
+	 *  port number in the command — `args: ['--port', '{port}']` always
+	 *  matches whichever port the allocator actually reserved. */
 	readonly args?: ReadonlyArray<string>;
-	/** Preferred host port. Allocated via `PortAllocator` so multiple
-	 *  stacks of the same app don't collide. */
+	/** Preferred public host port. Allocated via `PortAllocator` so
+	 *  multiple stacks of the same app don't collide. The allocated value
+	 *  is exposed as `$PORT` and substituted into `{port}` placeholders
+	 *  in `command` / `args` / `ready.url`. Defaults the `ready:` probe to
+	 *  an HTTP GET on `http://localhost:<allocatedPort>` when no probe is
+	 *  supplied. */
 	readonly port?: number;
 	/** Working directory. Defaults to `process.cwd()`. */
 	readonly cwd?: string;
@@ -26,7 +45,8 @@ export interface DevOptions<E = never, R = never> {
 	 *  derive env from resolved upstream services (e.g.
 	 *  `env: ctx => ({ INDEXER_URL: ctx.refs(indexer).url })`). */
 	readonly env?: Record<string, string> | Effect.Effect<Record<string, string>, E, R>;
-	/** Ready probe — defaults to HTTP GET on the allocated port. */
+	/** Ready probe — defaults to HTTP GET on the allocated port when
+	 *  `port:` is set. HTTP probe URLs support `{port}` substitution. */
 	readonly ready?: ReadyProbe;
 	/** Refs this dev server depends on (must be acquired first). Accepts
 	 *  any Ref or StackMember — the supervisor yields each for ordering. */
@@ -35,12 +55,31 @@ export interface DevOptions<E = never, R = never> {
 	readonly name?: string;
 }
 
+const PORT_TEMPLATE = /\{port\}/g;
+
+const renderTemplate = (value: string, port: number): string =>
+	value.replace(PORT_TEMPLATE, String(port));
+
+/** Substitute `{port}` placeholders in a ready probe's URL. Other probe
+ *  shapes (`log`, `tcp`) don't carry a templatable URL field, so pass
+ *  through unchanged. */
+const renderReadyProbe = (probe: ReadyProbe, port: number): ReadyProbe => {
+	if (probe.kind !== 'http') return probe;
+	if (!PORT_TEMPLATE.test(probe.url)) return probe;
+	return { ...probe, url: renderTemplate(probe.url, port) };
+};
+
 /** The dev-server factory. Returns a Ref that, once acquired, runs the
  *  command, registers a traefik route for it under `dev.<app>.localhost`,
- *  and publishes the URL into the endpoint registry (`frontend.dev-server`
- *  in the v3 manifest; routed to `app.dev` in v4). */
+ *  and publishes the URL into the endpoint registry. */
 export const Dev = <E = never, R = never>(opts: DevOptions<E, R>) => {
 	const name = opts.name ?? 'frontend.dev-server';
+
+	// When `port:` is set, templates in `command` / `args` / `ready.url`
+	// substitute against the allocator-resolved port. We don't know the
+	// allocated port at factory-construction time (it depends on sibling
+	// stacks), so we defer the substitution to `hostProcess`'s own port
+	// hook via the `portTemplate` field (added on the internal layer).
 	const hostOpts: HostProcessOptions<string, E, R> = {
 		name,
 		command: opts.command,
@@ -51,7 +90,16 @@ export const Dev = <E = never, R = never>(opts: DevOptions<E, R>) => {
 		...(opts.needs !== undefined
 			? { dependsOn: opts.needs as ReadonlyArray<Ref<any, any, any, any>> }
 			: {}),
-		...(opts.port !== undefined ? { port: { preferred: opts.port } } : {}),
+		...(opts.port !== undefined
+			? {
+					port: { preferred: opts.port },
+					portTemplate: {
+						renderArg: renderTemplate,
+						renderCommand: renderTemplate,
+						renderReady: renderReadyProbe,
+					},
+				}
+			: {}),
 		endpoint: { name: 'dev-server', kind: 'dev-server' },
 		traefik: { service: 'dev', entrypoint: 'vite' },
 	};

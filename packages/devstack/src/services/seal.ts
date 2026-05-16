@@ -1,13 +1,12 @@
-// Seal(opts?) — canonical Seal factory. Auto-picks the local-keygen
-// path on localnet (full container + master key + chain registration)
-// and the known-key-server path on testnet/mainnet (read-only handle
-// pointing at Mysten's public Seal deployment).
+// Seal(opts?) — canonical Seal factory. Picks the local-keygen path
+// (full container + master key + chain registration) when the resolved
+// network is localnet, and the known-key-server path (read-only handle
+// pointing at Mysten's public Seal deployment) on testnet/mainnet.
+// The same config works against any network — the CLI `--network`
+// flag flips this at runtime.
 //
-// Mode override: `{ mode: 'local' }` or `{ mode: 'known' }` forces a
-// specific path regardless of the surrounding network.
-//
-// This file also carries the **SealKeyServer** (network-side view) and
-// **SealKeyManager** (local-only admin capabilities) Context.Service
+// This file also carries the **SealKeyServerTag** (network-side view) and
+// **SealKeyManagerTag** (local-only admin capabilities) Context.Service
 // tags, split along the capability axis so future remote factories can
 // produce a strict subset of the surface.
 
@@ -19,19 +18,20 @@ import {
 	type SealLocalKeygenOptions,
 } from './seal/internal.js';
 import { SealError } from '../engine/errors.js';
+import { resolveNetwork } from '../engine/network.js';
 import type { Account } from '../engine/shared.js';
 import type { Ref } from '../advanced/tag.js';
 import type { StackMember } from '../engine/supervisor.js';
 
 // -----------------------------------------------------------------------------
-// SealKeyServer — network-side view
+// SealKeyServerTag — network-side view
 // -----------------------------------------------------------------------------
 
 /**
  * SDK-ready key-server config for a single seal key server. Mirrors
  * `@mysten/seal`'s `KeyServerConfig` structurally — duplicated here
  * rather than imported so `@mysten/seal` stays a peer dep. Multiple
- * entries are aggregated into `SealKeyServerShape.serverConfigs`.
+ * entries are aggregated into `SealKeyServer.serverConfigs`.
  *
  *  - `objectId` is the on-chain `KeyServer` object id (the local-keygen
  *    primitive exposes this as `keyServer.id`).
@@ -58,7 +58,7 @@ export interface SealKeyServerEntry {
 }
 
 /** Network-side view every Seal-key-server factory must surface. */
-export interface SealKeyServerShape {
+export interface SealKeyServer {
 	/**
 	 * SDK-ready array of key-server configs. Pass directly to
 	 * `new SealClient({ suiClient, serverConfigs: sealKeyServer.serverConfigs })`.
@@ -86,16 +86,16 @@ export interface SealKeyServerShape {
 	readonly objectId: string;
 }
 
-export class SealKeyServer extends Context.Service<SealKeyServer, SealKeyServerShape>()(
-	'@devstack/SealKeyServer',
+export class SealKeyServerTag extends Context.Service<SealKeyServerTag, SealKeyServer>()(
+	'@devstack/SealKeyServerTag',
 ) {}
 
 // -----------------------------------------------------------------------------
-// SealKeyManager — local-only capabilities
+// SealKeyManagerTag — local-only capabilities
 // -----------------------------------------------------------------------------
 
 /** Local-only Seal admin capabilities. Remote `sealKnownKeyServer`
- *  factories will NOT produce a `SealKeyManager` layer, so any code
+ *  factories will NOT produce a `SealKeyManagerTag` layer, so any code
  *  that depends on it is type-checked away from running against
  *  testnet/mainnet.
  *
@@ -106,13 +106,13 @@ export class SealKeyServer extends Context.Service<SealKeyServer, SealKeyServerS
  *  - `rotate` regenerates the master key, re-registers the key server
  *    on chain, and re-stages the env-file. Implementations may
  *    short-circuit if the underlying cache is fresh. */
-export interface SealKeyManagerShape {
+export interface SealKeyManager {
 	readonly masterKeyEnvFile: string;
 	readonly rotate: Effect.Effect<void, SealError>;
 }
 
-export class SealKeyManager extends Context.Service<SealKeyManager, SealKeyManagerShape>()(
-	'@devstack/SealKeyManager',
+export class SealKeyManagerTag extends Context.Service<SealKeyManagerTag, SealKeyManager>()(
+	'@devstack/SealKeyManagerTag',
 ) {}
 
 // -----------------------------------------------------------------------------
@@ -128,17 +128,17 @@ export const SealKeyServerEntrySchema = Schema.Struct({
 	aggregatorUrl: Schema.optional(Schema.String),
 });
 
-/** Runtime-validation mirror of `SealKeyServerShape`. Use
- *  `Schema.decode(SealKeyServerShapeSchema)` to validate a hand-rolled
- *  `Layer.succeed(SealKeyServer, ...)`, or in tests where you want to
+/** Runtime-validation mirror of `SealKeyServer`. Use
+ *  `Schema.decode(SealKeyServerSchema)` to validate a hand-rolled
+ *  `Layer.succeed(SealKeyServerTag, ...)`, or in tests where you want to
  *  assert the shape on yield. */
-export const SealKeyServerShapeSchema = Schema.Struct({
+export const SealKeyServerSchema = Schema.Struct({
 	serverConfigs: Schema.Array(SealKeyServerEntrySchema),
 	keyServerUrl: Schema.String,
 	objectId: Schema.String,
 });
 
-// `SealKeyManagerShape` carries an Effect value (`rotate`) which isn't
+// `SealKeyManager` carries an Effect value (`rotate`) which isn't
 // Schema-validatable; omit a Schema mirror — manager layers are always
 // produced in-process and never round-trip through serialization.
 
@@ -147,41 +147,45 @@ export const SealKeyServerShapeSchema = Schema.Struct({
 // -----------------------------------------------------------------------------
 
 export interface SealOptions {
-	/** Which Seal source to use. `'auto'` (default) picks based on the
-	 *  surrounding `Sui` network — local on localnet, known otherwise.
-	 *  `'local'` forces the in-process keygen + container; `'known'`
-	 *  forces a remote handle. */
-	readonly mode?: 'auto' | 'local' | 'known';
-	/** Signer used to publish the Seal Move package on the local-keygen
-	 *  path. Required for `mode: 'local'` (or `'auto'` resolving to local).
-	 *  Ignored on `mode: 'known'`. */
+	/** Signer used to publish the Seal Move package on localnet. Required
+	 *  on localnet (where the local-keygen path runs); ignored on
+	 *  testnet/mainnet (the canonical remote key server is already
+	 *  deployed). */
 	readonly signer?: Ref<any, Account, any, any>;
-	/** Pass-through extras for the local-keygen path. */
+	/** Pass-through extras for the local-keygen path. Ignored when the
+	 *  resolved network is testnet/mainnet. */
 	readonly local?: Omit<SealLocalKeygenOptions<string>, 'name' | 'signer'>;
-	/** Pass-through extras for the known-key-server path. */
-	readonly known?: SealKnownKeyServerOptions;
+	/** Override the canonical key-server registry for testnet/mainnet.
+	 *  Used when pinning to a private fork or a non-canonical deployment;
+	 *  most users leave this unset and let the factory wire to
+	 *  Mysten's public Seal deployment. */
+	readonly override?: SealKnownKeyServerOptions;
 	/** Override tag name. Defaults to `'seal'`. */
 	readonly name?: string;
 }
 
-/** Resolve the seal mode from opts + ambient network. For Phase 2 the
- *  resolution is mode-only — once Phase 6 hooks default-resolution into
- *  `devstack(...)`, `'auto'` consults the merged Sui layer's network
- *  field. Until then `'auto'` defaults to `'local'`. */
-const resolveMode = (opts: SealOptions): 'local' | 'known' => {
-	if (opts.mode === 'local' || opts.mode === 'known') return opts.mode;
-	return 'local';
-};
-
-/** Seal factory. Returns a Ref carrying the seal-key-server contract. */
+/** Seal factory. Picks local-keygen on localnet and the canonical
+ *  remote key server on testnet/mainnet — single source of truth is
+ *  `DEVSTACK_NETWORK` (set by the CLI `--network` flag or via
+ *  `devstack({ network })`). Returns a Ref carrying
+ *  `SealKeyServerTag`. */
 export const Seal = (opts: SealOptions = {}): StackMember => {
-	const mode = resolveMode(opts);
-	if (mode === 'known') {
-		return Object.assign(sealKnownKeyServer(opts.known ?? {}), { __kind: 'service' as const });
+	const network = resolveNetwork();
+	if (network !== 'localnet') {
+		// Remote path: wire to canonical (or user-overridden) deployment.
+		const knownOpts: SealKnownKeyServerOptions = {
+			network,
+			...(opts.override ?? {}),
+		};
+		return Object.assign(sealKnownKeyServer(knownOpts), { __kind: 'service' as const });
 	}
+	// Local path: spin up our own key server. Signer publishes the Seal
+	// Move package and pays the registration tx.
 	if (opts.signer === undefined) {
 		throw new Error(
-			'Seal({ mode: \'local\' }) requires a `signer:` ref. Pass an Account ref or switch to mode: \'known\'.',
+			'Seal() on localnet requires a `signer:` ref to publish the Seal Move package. ' +
+				'Pass an Account ref, or run with --network testnet / --network mainnet to use ' +
+				"the canonical remote key server.",
 		);
 	}
 	const localOpts: SealLocalKeygenOptions<string> = {

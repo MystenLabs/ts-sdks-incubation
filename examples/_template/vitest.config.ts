@@ -5,10 +5,10 @@ import { defineConfig } from 'vitest/config';
 // user-owned. For chain-mode integration tests, bind the devstack to
 // `@effect/vitest`'s `it.layer` via `withDevstack`:
 //
-//   import { defineDevstack, suiLocalnet } from '@mysten-incubation/devstack';
+//   import { devstack, Sui } from '@mysten-incubation/devstack';
 //   import { withDevstack } from '@mysten-incubation/devstack/vitest';
-//   const devstack = defineDevstack([suiLocalnet()]);
-//   withDevstack(devstack)('suite', (it) => {
+//   const stack = devstack(Sui());
+//   withDevstack(stack)('suite', (it) => {
 //     it.effect('reads sui', () => Effect.gen(function* () { /* ... */ }));
 //   });
 export default defineConfig({

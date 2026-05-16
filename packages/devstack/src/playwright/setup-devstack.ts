@@ -29,7 +29,7 @@
 
 import { Effect, Exit, Scope } from 'effect';
 import { buildWithScope } from 'effect/Layer';
-import type { Devstack } from '../engine/supervisor.js';
+import type { DevstackHandle } from '../engine/supervisor.js';
 
 export interface DevstackPlaywrightFixture {
 	/** Wire into `playwright.config.ts` `globalSetup`. Returns once every
@@ -42,7 +42,7 @@ export interface DevstackPlaywrightFixture {
 	readonly globalTeardown: () => Promise<void>;
 }
 
-export const setupDevstack = (devstack: Devstack): DevstackPlaywrightFixture => {
+export const setupDevstack = (handle: DevstackHandle): DevstackPlaywrightFixture => {
 	let scope: Scope.Closeable | undefined;
 
 	return {
@@ -63,7 +63,7 @@ export const setupDevstack = (devstack: Devstack): DevstackPlaywrightFixture => 
 			// when the static type doesn't reflect that. Cast to `never`
 			// at the runPromise boundary; missing services surface as
 			// ServiceNotFound at runtime, same as the production `run()`.
-			const build = buildWithScope(devstack.layer, made) as Effect.Effect<any, any, never>;
+			const build = buildWithScope(handle.layer, made) as Effect.Effect<any, any, never>;
 			try {
 				await Effect.runPromise(build);
 			} catch (err) {

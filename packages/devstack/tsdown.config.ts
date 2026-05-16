@@ -6,7 +6,15 @@ import { defineConfig } from 'tsdown';
 // `new URL('../../<asset>/', import.meta.url)` in both source and built
 // outputs.
 const main = defineConfig({
-	entry: ['src/index.ts', 'src/cli/main.ts', 'src/advanced/index.ts'],
+	entry: [
+		'src/index.ts',
+		'src/cli/main.ts',
+		'src/advanced/index.ts',
+		// v4 runtime accessor: separate subpath (`./runtime`) but rides
+		// the main bundle's tree-shaking so its `dist/runtime/*.mjs`
+		// outputs stay consistent with what `src/index.ts` reaches.
+		'src/runtime/service.ts',
+	],
 	format: 'esm',
 	dts: true,
 	outDir: 'dist',
@@ -37,17 +45,7 @@ const main = defineConfig({
 // package.json). Re-investigate once rolldown-plugin-dts fixes the
 // upstream bug.
 const fixtures = defineConfig({
-	entry: [
-		'src/vitest/index.ts',
-		'src/playwright/index.ts',
-		'src/dapp-kit/index.ts',
-		// Phase-2 subpaths: the Ref-based factory barrel and the v4
-		// runtime accessor. Pulled as entries so the bundler doesn't
-		// tree-shake them out of `dist/` even when nothing in the main
-		// index imports them.
-		'src/services/index.ts',
-		'src/runtime/service.ts',
-	],
+	entry: ['src/vitest/index.ts', 'src/playwright/index.ts', 'src/dapp-kit/index.ts'],
 	format: 'esm',
 	dts: false,
 	outDir: 'dist',

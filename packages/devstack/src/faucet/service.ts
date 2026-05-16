@@ -26,7 +26,7 @@ import { FaucetRequestError } from './errors.js';
 
 /** A faucet strategy for one coin type. */
 export interface FaucetStrategy {
-	/** Coin discriminator. The convention is short canonical names for
+	/** CoinTag discriminator. The convention is short canonical names for
 	 *  built-in coins (`'SUI'`, `'WAL'`) and fully-qualified Move types
 	 *  (`'0xpkg::module::Name'`) for user coins. */
 	readonly coinType: string;
@@ -41,7 +41,7 @@ export interface FaucetStrategy {
 }
 
 /** Faucet service shape. */
-export interface FaucetShape {
+export interface Faucet {
 	/** Register a strategy. Later registrations for the same `coinType`
 	 *  shadow earlier ones — useful for tests that want to stub a
 	 *  built-in strategy with a deterministic fake. */
@@ -61,7 +61,7 @@ export interface FaucetShape {
 
 /** Canonical Faucet tag. The service is auto-included by `devstack(...)`
  *  so primitives can `yield* FaucetTag` without the user wiring it. */
-export class FaucetTag extends Context.Service<FaucetTag, FaucetShape>()(
+export class FaucetTag extends Context.Service<FaucetTag, Faucet>()(
 	'@devstack/Faucet',
 ) {}
 
@@ -72,7 +72,7 @@ export const FaucetLive: Layer.Layer<FaucetTag> = Layer.effect(
 	FaucetTag,
 	Effect.gen(function* () {
 		const strategies = yield* Ref.make<Map<string, FaucetStrategy>>(new Map());
-		const shape: FaucetShape = {
+		const shape: Faucet = {
 			register: (strategy) =>
 				Ref.update(strategies, (m) => {
 					const next = new Map(m);

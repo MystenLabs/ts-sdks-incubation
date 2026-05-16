@@ -8,7 +8,7 @@
 //    and `layer` for Effect-native consumers.
 // 2. **Ref factories** — `Sui`, `Seal`, `Walrus`, `Deepbook`,
 //    `DeepbookMarketMaker`, `Account`, `Package`, `Action`, `Dev`,
-//    `Wallet`, `Bindings`. Each returns a typed Ref usable as a
+//    `Wallet`, `Codegen`. Each returns a typed Ref usable as a
 //    cross-reference in other factories and yieldable inside Effects.
 // 3. **Runtime accessors** — `Devstack` Effect Service for in-Effect
 //    reads, `fromManifest` for browser / non-Effect consumers, plus the
@@ -22,8 +22,15 @@ export {
 	type DevstackComposeOptions,
 	type DevstackRefInput,
 } from './compose/devstack.js';
+// `DevstackHandle` is the run-handle `devstack(...)` returns. Re-exported
+// so the inferred type of `export default devstack(...)` is nameable
+// without dipping into the engine subpath.
+export type { DevstackHandle } from './engine/supervisor.js';
 
 // ── Ref factories ──
+// `Sui`, `Account`, `Package`, `DeepbookMarketMaker`, `Faucet` re-export
+// both the factory function (value) and the shape (type) under the same
+// name; TS's separate type/value namespaces lets them coexist.
 export {
 	Sui,
 	type SuiOptions,
@@ -44,39 +51,22 @@ export {
 	type DevOptions,
 	Wallet,
 	type WalletOptions,
-	Bindings,
-	type BindingsRefOptions,
 	Codegen,
 	type CodegenOptions,
+	DappKit,
+	type DappKitRefOptions,
 	KnownPackage,
 	type KnownPackageOptions,
 	Faucet,
 	type FaucetOptions,
 	FaucetTag,
-	type FaucetStrategy,
-	type FaucetShape,
-	suiHttpStrategy,
-	defineStrategy,
-	FaucetRequestError,
-	defineEmitter,
-	type Emitter,
-	type CodegenContext,
-	type CodegenPackage,
-	BindingsEmitter,
-	type BindingsEmitterOptions,
-	DappKit,
-	type DappKitRefOptions,
-	DappKitEmitter,
-	type DappKitEmitterOptions,
-	type DappKitFlavor,
-	CodegenError,
 	type Ref,
 	type AccountRef,
 	type PackageRef,
 } from './services/index.js';
 
 // ── Runtime accessor ──
-export { Devstack, DevstackLive, gatherManifest } from './runtime/service.js';
+export { Devstack, DevstackLive } from './runtime/service.js';
 export { fromManifest } from './runtime/manifest-loader.js';
 export type {
 	Manifest,
@@ -116,8 +106,10 @@ export {
 	pickCreatedByTypeIncludes,
 	pickCreatedByTypeSuffix,
 } from './engine/sui-helpers.js';
-// Known-network deployment registry (testnet seal/walrus/deepbook
-// packages). Useful for hand-rolled `Seal({ mode: 'known' })` configs.
+// Canonical deployment registry (testnet/mainnet seal/walrus/deepbook
+// package ids). The `Seal()`/`Walrus()`/`Deepbook()` factories consult
+// this internally when the resolved network is testnet/mainnet —
+// surfaced here for `override:` use cases and custom factories.
 export {
 	knownDeployments,
 	type DeepbookDeployment,
@@ -132,7 +124,6 @@ export {
 // callbacks and Effect-native consumers.
 export {
 	AccountError,
-	BindingsError,
 	DeepbookError,
 	DockerError,
 	HostProcessError,
@@ -148,10 +139,8 @@ export {
 // `Transaction` is `@mysten/sui/transactions`'s builder — re-exported
 // for convenience so `Action.build` callbacks don't need a separate
 // dep import. `SuiObjectChange` is the shape `Action`'s
-// `expose:`/`capture:` callbacks consume. The others are the per-call
-// shapes returned by yielding the corresponding Ref inside an Effect.
+// `expose:`/`capture:` callbacks consume.
 export type {
-	Account as AccountShape,
 	SignAndExecuteError,
 	SignAndExecuteOptions,
 	SuiObjectChange,
@@ -164,32 +153,26 @@ export type {
 // Canonical Context.Service tags every factory's underlying Layer
 // targets. Used inside `Action.build`/`extras` callbacks when the user
 // wants the narrow contract shape rather than the composite Ref shape
-// (e.g. `yield* SealKeyServer` for just the key-server URL + object id,
+// (e.g. `yield* SealKeyServerTag` for just the key-server URL + object id,
 // vs `yield* seal` for the full composite). Rare in user configs; most
 // of the time you yield the local Ref instead.
+//
+// Admin-side tags (`WalrusAdminTag`, `SealKeyManagerTag`,
+// `DeepbookAdminTag`) live under `/advanced` — those are privileged
+// operations the high-level factories don't surface.
 export {
-	type SuiShape,
-	type PackageShape,
-	type LocalPackageShape,
-	Coin,
-	type CoinShape,
-	WalrusNetwork,
-	type WalrusNetworkShape,
-	WalrusNodes,
-	type WalrusNodesShape,
-	WalrusProxy,
-	type WalrusProxyShape,
-	WalrusAdmin,
-	type WalrusAdminShape,
-	SealKeyServer,
-	type SealKeyServerShape,
-	SealKeyManager,
-	type SealKeyManagerShape,
-	DeepbookCore,
-	type DeepbookCoreShape,
-	DeepbookAdmin,
-	type DeepbookAdminShape,
-	type DeepbookMarketMakerShape,
+	CoinTag,
+	type Coin,
+	WalrusNetworkTag,
+	type WalrusNetwork,
+	WalrusNodesTag,
+	type WalrusNodes,
+	WalrusProxyTag,
+	type WalrusProxy,
+	SealKeyServerTag,
+	type SealKeyServer,
+	DeepbookCoreTag,
+	type DeepbookCore,
 } from './services/index.js';
 
 // `TagIdentity<Name>` is the per-name structural Service type Refs

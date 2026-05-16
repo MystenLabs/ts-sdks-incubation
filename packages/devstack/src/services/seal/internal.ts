@@ -1,25 +1,25 @@
 // Seal — Phase 6c multi-impl primitive.
 //
 // Two factories, both targeting the narrow interface tag classes in
-// `src/services/seal.ts` (`SealKeyServer` + `SealKeyManager`):
+// `src/services/seal.ts` (`SealKeyServerTag` + `SealKeyManagerTag`):
 //
 //   sealLocalKeygen(opts) — full local stack. Builds the seal image,
 //     runs `seal-cli genkey`, publishes the seal Move package,
 //     registers a KeyServer on chain, renders the key-server config
 //     yaml, starts the key-server container, then surfaces BOTH
-//     `SealKeyServer` (read surface — anyone with the URL can verify
-//     signatures) and `SealKeyManager` (local-only admin — master-key
+//     `SealKeyServerTag` (read surface — anyone with the URL can verify
+//     signatures) and `SealKeyManagerTag` (local-only admin — master-key
 //     env-file path + rotate Effect).
 //   sealKnownKeyServer(opts) — read-only handle for a Mysten-run public
-//     key server (e.g. testnet). Provides ONLY `SealKeyServer`; we
-//     don't own the master key so there's no `SealKeyManager` to
+//     key server (e.g. testnet). Provides ONLY `SealKeyServerTag`; we
+//     don't own the master key so there's no `SealKeyManagerTag` to
 //     produce. Defaults pulled from `knownDeployments.seal`.
 //
 // Topology for `sealLocalKeygen`: a single Effect.gen body runs all
 // phases (port-alloc, image, keygen, publish, register, config-render,
 // container, ready) and lands in a private `SealLocalKeygenInternal`
 // tag. Two thin projection layers then read from it to satisfy
-// `SealKeyServer` and `SealKeyManager`. The internal tag is what the
+// `SealKeyServerTag` and `SealKeyManagerTag`. The internal tag is what the
 // engine lifecycle hooks key on, so the TUI shows ONE acquiring entry
 // per `sealLocalKeygen()` rather than two (one per interface).
 //
@@ -51,10 +51,10 @@ import { dockerImage } from '../../advanced/plugin-author/index.js';
 import { gitFetch } from '../../advanced/plugin-author/index.js';
 import { EndpointRegistry, PackageRegistry } from '../../engine/registries.js';
 import {
-	SealKeyManager,
-	SealKeyServer,
-	type SealKeyManagerShape,
-	type SealKeyServerShape,
+	SealKeyManagerTag,
+	SealKeyServerTag,
+	type SealKeyManager,
+	type SealKeyServer,
 } from '../seal.js';
 import { composeLayers, provide, setPhase, type Ref } from '../../advanced/tag.js';
 import type { StackMember } from '../../engine/supervisor.js';
@@ -123,7 +123,7 @@ interface PersistedBlsKeypair {
 
 // Aggregate shape carried by the projection back into `manifest.packages`
 // (the on-disk JSON entry). Consumers writing Effect code should yield the
-// narrow `SealKeyServer` / `SealKeyManager` tags directly rather than
+// narrow `SealKeyServerTag` / `SealKeyManagerTag` tags directly rather than
 // destructuring this shape.
 export interface SealLocalKeygenShape {
 	readonly packageId: string;
@@ -170,18 +170,18 @@ export interface SealLocalKeygenOptions<Name extends string> {
 }
 
 // Combined intermediate shape produced by the heavy acquire effect.
-// Drives both projection layers (`SealKeyServer` + `SealKeyManager`)
+// Drives both projection layers (`SealKeyServerTag` + `SealKeyManagerTag`)
 // from a single resolved value.
 interface SealLocalKeygenInternalShape {
-	readonly keyServer: SealKeyServerShape;
-	readonly keyManager: SealKeyManagerShape;
+	readonly keyServer: SealKeyServer;
+	readonly keyManager: SealKeyManager;
 	readonly packageId: string;
 }
 
 /**
  * Local-only seal stack: builds + runs the seal key-server, owns the
  * master key, registers a KeyServer on chain. Provides both
- * `SealKeyServer` (read surface) and `SealKeyManager` (local admin).
+ * `SealKeyServerTag` (read surface) and `SealKeyManagerTag` (local admin).
  *
  * Return type is the plain `StackMember`. The `key` field on the
  * returned StackMember is the engine-internal lookup key
@@ -242,8 +242,8 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 				})
 			: undefined;
 
-	// Private "internal" tag class. Both the `SealKeyServer` and
-	// `SealKeyManager` projection layers read from it. Kept inside the
+	// Private "internal" tag class. Both the `SealKeyServerTag` and
+	// `SealKeyManagerTag` projection layers read from it. Kept inside the
 	// factory closure (Context key folds in `name`) so two
 	// `sealLocalKeygen()` calls in the same stack don't share state.
 	class SealLocalKeygenInternal extends Context.Service<
@@ -262,7 +262,7 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 		const stateStore = yield* StateStore;
 		const identity = yield* Identity;
 		// Captured at acquire time so the closure-bound `rotate` Effect
-		// can pre-provide it. Required because the `SealKeyManagerShape`
+		// can pre-provide it. Required because the `SealKeyManager`
 		// interface declares `rotate: Effect.Effect<void, SealError>` with
 		// R = never — the consumer holding the manager shape isn't
 		// expected to provide ChildProcessSpawner / FileSystem / etc.
@@ -683,9 +683,9 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 		// `pnpm dev` resumes against the rotated keys.
 		//
 		// IMPORTANT — in-memory staleness: callers that already captured
-		// `SealKeyServer`'s shape (objectId / serverConfigs) by yielding
+		// `SealKeyServerTag`'s shape (objectId / serverConfigs) by yielding
 		// the tag BEFORE rotate hold pre-rotation values. The Layer
-		// caches `SealKeyServer`, so re-yielding inside the same scope
+		// caches `SealKeyServerTag`, so re-yielding inside the same scope
 		// returns the same cached shape too. To pick up the new identity
 		// the stack needs to be hot-restarted (`r` in the TUI / SIGUSR2 /
 		// a watched-file edit). Until then, the rotated key-server is
@@ -908,7 +908,7 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 	});
 
 	const keyServerLayer = Layer.effect(
-		SealKeyServer,
+		SealKeyServerTag,
 		Effect.gen(function* () {
 			const internal = yield* SealLocalKeygenInternal;
 			return internal.keyServer;
@@ -916,7 +916,7 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 	);
 
 	const keyManagerLayer = Layer.effect(
-		SealKeyManager,
+		SealKeyManagerTag,
 		Effect.gen(function* () {
 			const internal = yield* SealLocalKeygenInternal;
 			return internal.keyManager;
@@ -940,17 +940,24 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 	// same key here collapses both into a single TUI row. The field is
 	// the engine-internal lookup key, NOT the user-facing primitive
 	// name; the public label is carried by `__displayTitle` / `display`.
-	return {
-		__layer: internalLayer,
+	// `provide(SealLocalKeygenInternal, …)` above mutated the class with
+	// `__layer` and `key`. Augment it with the composite `__layers` (so
+	// the supervisor merges inner + projection layers, not just the
+	// internal one) and return the class itself rather than a fresh
+	// POJO. The class is a yieldable `Context.Service`, so callers that
+	// pass `seal` into `Dev({ needs: [seal] })` (or any other
+	// `dependsOn`-style ordering edge) get a `yield* seal` that resolves
+	// against the internal tag — without the class wrapper they'd hit
+	// "object is not iterable" on the dependent's first acquire.
+	return Object.assign(SealLocalKeygenInternal, {
 		__layers: composeLayers({
 			inner: [sealImage, sourceFetch, publish],
 			primary: internalLayer,
 			projections: [keyServerLayer, keyManagerLayer],
 		}),
-		key: SealLocalKeygenInternal.key,
 		__kind: 'service' as const,
 		__displayTitle: 'seal.local',
-	};
+	}) as unknown as StackMember;
 };
 
 // -----------------------------------------------------------------------------
@@ -969,8 +976,8 @@ export interface SealKnownKeyServerOptions {
 
 /**
  * Read-only handle for a public seal key-server (e.g. Mysten's testnet
- * deployment). Provides ONLY `SealKeyServer` — we don't own the master
- * key, so there's no `SealKeyManager` layer to produce.
+ * deployment). Provides ONLY `SealKeyServerTag` — we don't own the master
+ * key, so there's no `SealKeyManagerTag` layer to produce.
  */
 export const sealKnownKeyServer = (options: SealKnownKeyServerOptions = {}): StackMember => {
 	const name = options.name ?? 'seal';
@@ -1003,10 +1010,10 @@ export const sealKnownKeyServer = (options: SealKnownKeyServerOptions = {}): Sta
 			serverConfigs: [{ objectId, weight: 1 }],
 			keyServerUrl,
 			objectId,
-		} satisfies SealKeyServerShape;
+		} satisfies SealKeyServer;
 	})();
 
-	const { __layer, __kind, __displayTitle } = provide(SealKeyServer, build, {
+	const { __layer, __kind, __displayTitle } = provide(SealKeyServerTag, build, {
 		kind: 'service',
 		displayTitle: 'seal.known',
 		display: (s) => ({ title: 'seal.known', primary: s.keyServerUrl }),

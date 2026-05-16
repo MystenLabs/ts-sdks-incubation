@@ -1,23 +1,22 @@
-// Bindings + Codegen plug-in shape. The v4 emitter interface lets
-// `Bindings` accept a mixed `Package | KnownPackage` list — packages
-// without `sourcePath` are skipped at emit time rather than rejected
-// at compose time, so a config that asks for bindings against a
-// known-package alongside a local-package compiles fine and produces
-// bindings only for the local one.
+// Codegen shape. With no `emitters` field, Codegen defaults to
+// `[BindingsEmitter()]` (Move → TS bindings via `@mysten/codegen`),
+// which is what 90% of stacks want; mixed `Package | KnownPackage`
+// lists compose at type-check time and the bindings emitter silently
+// skips KnownPackage entries (no `sourcePath`) at runtime.
 
 import { Effect } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 import { tag } from '../advanced/tag.js';
-import { Bindings } from './bindings.js';
+import { Codegen } from './codegen.js';
 import { defineEmitter, type Emitter } from '../codegen/define-emitter.js';
 import { KnownPackage } from './known-package.js';
-import type { LocalPackageShape } from './package.js';
+import type { LocalPackage } from './package.js';
 
-describe('Bindings shape', () => {
+describe('Codegen shape', () => {
 	it('accepts a Package | KnownPackage mixed list at compose time', () => {
 		const localTag = tag(
 			'local',
-			Effect.succeed<LocalPackageShape>({
+			Effect.succeed<LocalPackage>({
 				name: 'local',
 				packageId: '0x1',
 				upgradeCapId: undefined,
@@ -28,12 +27,13 @@ describe('Bindings shape', () => {
 		);
 		const knownTag = KnownPackage('known', { packageId: '0x2' });
 
+		// No `emitters` field — Codegen defaults to BindingsEmitter().
 		// Both refs satisfy the `Package | KnownPackage` constraint on
-		// `Bindings.packages`. The emitter silently skips the known one at
+		// `packages`. The emitter silently skips the known one at
 		// runtime (no `sourcePath`). Pure type-discipline check — we don't
 		// actually need to acquire the resulting tag.
-		const ref = Bindings({ packages: [localTag, knownTag], output: './out' });
-		expect(ref.key).toBe('codegen/bindings');
+		const ref = Codegen({ packages: [localTag, knownTag], output: './out' });
+		expect(ref.key).toBe('codegen/codegen');
 	});
 });
 
@@ -65,4 +65,3 @@ describe('defineEmitter', () => {
 		expect(sourceOnly.name).toBe('source-only');
 	});
 });
-

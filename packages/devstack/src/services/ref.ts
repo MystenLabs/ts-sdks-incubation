@@ -8,7 +8,7 @@
 import type { Ref } from '../advanced/tag.js';
 
 /** Type-narrowed shorthand for account refs. The shape parameter is
- *  pinned to the canonical `AccountShape` so factory signatures can
+ *  pinned to the canonical `Account` so factory signatures can
  *  declare `signer: AccountRef` instead of repeating the full generic. */
 export type AccountRef<Name extends string = string> = Ref<
 	Name,

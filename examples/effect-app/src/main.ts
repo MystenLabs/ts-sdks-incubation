@@ -1,15 +1,17 @@
-// Minimal Effect program consuming Devstack services via the v4 Ref API.
+// Minimal Effect program consuming Devstack services via the Ref API.
 //
 // The same `program` runs against a freshly-spun localnet in dev and a
-// remote testnet RPC in prod — only the network parameter passed to
-// `Sui({ network })` and the `from:` parameter on `Account(...)` change.
-// The new Ref API lets cross-references stay typed values (`yield* alice`)
-// while the environment dial flips the implementation under the hood.
+// remote testnet RPC in prod. Network is selected via the
+// `DEVSTACK_NETWORK` env var (or the `devstack --network <kind>` CLI
+// flag) — `Sui()` reads it at construction time, so the same
+// `Sui()` call resolves to whichever network is active. Only the
+// `from:` parameter on `Account(...)` flips on env, because account
+// sources are intrinsically environment-shaped (ephemeral keypair vs
+// env-supplied key).
 
 import { Effect } from 'effect';
 import { runMain } from '@effect/platform-node/NodeRuntime';
-import { devstack } from '@mysten-incubation/devstack';
-import { Account, Sui } from '@mysten-incubation/devstack/services';
+import { Account, devstack, Sui } from '@mysten-incubation/devstack';
 
 const isProduction = process.env.NODE_ENV === 'production';
 
@@ -17,7 +19,7 @@ export const alice = isProduction
 	? Account('alice', { from: 'env', key: 'ALICE_PRIVATE_KEY' })
 	: Account('alice', { from: 'ephemeral-funded' });
 
-export const sui = isProduction ? Sui({ network: 'testnet' }) : Sui({ network: 'localnet' });
+export const sui = Sui();
 
 /**
  * Pure connect-and-print program. Depends on the local `sui` + `alice`

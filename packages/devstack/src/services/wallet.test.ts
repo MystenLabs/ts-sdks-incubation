@@ -23,7 +23,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Effect, Layer } from 'effect';
 import { afterEach, beforeEach, describe, expect, it } from '@effect/vitest';
-import { SuiTag as Sui, type SuiShape } from '../services/sui.js';
+import { SuiTag, type Sui } from '../services/sui.js';
 import { Identity } from '../engine/identity.js';
 import { PortAllocatorLive } from '../engine/port-allocator.js';
 import { EndpointRegistryLive } from '../engine/registries.js';
@@ -35,11 +35,11 @@ import { walletApp } from './wallet/internal.js';
 // chain to be ready before binding its HTTP server). The shape's
 // fields are never read by the wallet-app body, so a minimal cast
 // through `unknown` is fine.
-const stubSui: Layer.Layer<Sui> = Layer.succeed(Sui, {
+const stubSui: Layer.Layer<SuiTag> = Layer.succeed(SuiTag, {
 	network: 'localnet',
 	rpc: { host: 'http://localhost:9000' },
 	chainId: 'test-chain',
-	client: {} as unknown as SuiShape['client'],
+	client: {} as unknown as Sui['client'],
 	// wallet-app never asks the chain to be funds-transferable; resolve
 	// immediately so the stub mirrors the mainnet/no-faucet branch.
 	waitForTransactionsReady: () => Effect.void,

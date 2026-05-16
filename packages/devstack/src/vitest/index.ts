@@ -3,14 +3,14 @@
 // can `yield*` whichever primitive tags the devstack provides without
 // re-deriving a Layer each time.
 //
-//   import { defineDevstack, suiLocalnet } from '@mysten-incubation/devstack';
+//   import { devstack, Sui } from '@mysten-incubation/devstack';
 //   import { withDevstack } from '@mysten-incubation/devstack/vitest';
 //
-//   const devstack = defineDevstack([suiLocalnet()]);
+//   const stack = devstack(Sui());
 //
-//   withDevstack(devstack)('my suite', (it) => {
+//   withDevstack(stack)('my suite', (it) => {
 //     it.effect('reads sui', () => Effect.gen(function* () {
-//       const s = yield* Sui;
+//       const s = yield* SuiTag;
 //       // ...
 //     }));
 //   });
@@ -30,13 +30,13 @@
 
 import type { Layer } from 'effect';
 import { it as effectIt } from '@effect/vitest';
-import type { Devstack } from '../engine/supervisor.js';
+import type { DevstackHandle } from '../engine/supervisor.js';
 
 // Bind a devstack to `@effect/vitest`'s `it.layer(...)`. Returns the
 // curried `(name?, body)` describe-binder so tests in the body can
-// `yield*` services from the stack directly. The devstack's layer
-// carries `R = any` by design (see `define-devstack.ts`) — we cast to
+// `yield*` services from the stack directly. The handle's layer
+// carries `R = any` by design (see `engine/supervisor.ts`) — we cast to
 // the `never` requirement that `it.layer` expects; any unmet service
 // surfaces at runtime via Effect's ServiceNotFound, same as `run()`.
-export const withDevstack = (devstack: Devstack) =>
-	effectIt.layer(devstack.layer as Layer.Layer<any, any, never>);
+export const withDevstack = (handle: DevstackHandle) =>
+	effectIt.layer(handle.layer as Layer.Layer<any, any, never>);

@@ -1,0 +1,203 @@
+---
+title: Quickstart
+description: Scaffold a fresh devstack app and walk through your first pnpm dev.
+---
+
+This walkthrough takes you from an empty directory to a running app
+with a localnet, funded accounts, a published Move package, generated
+TypeScript bindings, a dev wallet, and a Vite dev server.
+
+## Scaffold
+
+```bash
+pnpm create devstack-app my-app
+cd my-app
+pnpm install
+```
+
+The scaffold lands these files:
+
+- `devstack.config.ts` — the single source of truth for your stack.
+- `move/hello/` — a tiny Move package you can edit, replace, or
+  expand.
+- `src/main.tsx` — a React app that reads
+  `./generated/manifest.ts` and renders an account selector.
+- `src/dapp-kit.ts` — the one-line `createDevstackDappKit({ manifest })`
+  call that wires `@mysten/dapp-kit-react` to the running stack.
+- `vite.config.ts`, `vitest.config.ts`, `playwright.config.ts` — each
+  already pointed at the devstack manifest.
+- `e2e/smoke.spec.ts` — a sample Playwright test using `connectAs`.
+
+## Boot the stack
+
+```bash
+pnpm dev
+```
+
+`pnpm dev` runs `devstack up`. A TUI shows every Ref in your config
+move through `pending → acquiring → ready`. On a cold start the
+heavy bits (the localnet image, walrus and seal if you use them)
+take a few minutes; everything cached afterwards lights up in
+seconds.
+
+When the TUI settles you have:
+
+- A localnet at `http://sui.<app>.localhost:9000`.
+- `publisher`, `alice`, `bob` accounts funded from the faucet, with
+  stable addresses persisted under `.devstack/`.
+- `hello` published — its `packageId` is in
+  `.devstack/manifest.json` and on the `hello` row in the TUI.
+- TypeScript bindings emitted to `src/generated/bindings/hello/`.
+- The dev wallet UI at `http://wallet.<app>.localhost`.
+- Your Vite dev server at `http://dev.<app>.localhost`, ready to
+  open in a browser.
+
+Open the dev server URL. The app loads, you click **Connect**, the
+dev wallet shows `publisher`, `alice`, and `bob` as accounts, and
+the app starts making real RPC calls against your localnet.
+
+### Keybindings
+
+While `devstack up` is running:
+
+- `r` — full restart (containers stay alive on the long-lived scope
+  so localnet and walrus reattach instantly).
+- `q` — graceful shutdown.
+- `Ctrl-C` — same as `q`, also works when stdout isn't a TTY.
+
+## Edit a Move file
+
+Change anything under `./move/hello/sources/`. Devstack notices,
+republishes `hello`, re-emits bindings, and your Vite dev server
+HMRs the new types into the running browser session.
+
+The TUI log narrates each step:
+
+```
+file change at ./move/hello/sources/hello.move — owned by packages.hello
+hello · acquiring · publishing
+hello · ready · packageId=0x9c1b…  (cycle 2)
+bindings · acquiring · emitting
+bindings · ready
+```
+
+Accounts, the localnet itself, and any sibling Refs that didn't
+depend on `hello` stay running across the cycle.
+
+## Run a vitest test
+
+```bash
+pnpm test
+```
+
+The sample test uses `withDevstack(config)` to bind the same stack
+into `@effect/vitest`, so your test bodies can `yield*` any Ref the
+config declared:
+
+```ts
+import { Effect } from 'effect';
+import { expect } from 'vitest';
+import { withDevstack } from '@mysten-incubation/devstack/vitest';
+import stack, { alice, hello } from '../devstack.config.js';
+
+withDevstack(stack)('balances', (it) => {
+  it.effect('alice is funded and hello is published', () =>
+    Effect.gen(function* () {
+      const a = yield* alice;
+      const pkg = yield* hello;
+      expect(a.address).toMatch(/^0x/);
+      expect(pkg.packageId).toMatch(/^0x/);
+    }),
+  );
+});
+```
+
+`yield* alice` and `yield* hello` resolve to the same shapes the
+supervisor exposed at boot. Re-export your Refs from
+`devstack.config.ts` (alongside the default `devstack(...)` handle)
+to make them reachable.
+
+Same stack, same accounts, same package ids. Nothing is mocked.
+
+## Run a Playwright test
+
+```bash
+pnpm test:e2e
+```
+
+`playwright.config.ts` wires Playwright's `globalSetup` / `globalTeardown`
+to devstack, and reads the dev-server URL from the manifest:
+
+```ts
+import { defineConfig } from '@playwright/test';
+import { baseURL, webServer, setupDevstack } from '@mysten-incubation/devstack/playwright';
+import stack from './devstack.config.ts';
+
+const fixture = setupDevstack(stack);
+
+export default defineConfig({
+  globalSetup: fixture.globalSetup,
+  globalTeardown: fixture.globalTeardown,
+  webServer: webServer({ endpoint: 'dev-server' }),
+  use: { baseURL: baseURL({ endpoint: 'dev-server' }) },
+});
+```
+
+In a test, `connectAs` flips the dev wallet to whichever account the
+test needs:
+
+```ts
+import { test, expect, connectAs } from '@mysten-incubation/devstack/playwright';
+
+test('alice can sign in', async ({ page }) => {
+  await page.goto('/');
+  await connectAs(page, 'alice');
+  await expect(page.getByText(/Connected as.*alice/i)).toBeVisible();
+});
+```
+
+## Anatomy of `devstack.config.ts`
+
+The generated config is short:
+
+```ts
+import { Account, Dev, devstack, Package, Wallet } from '@mysten-incubation/devstack';
+
+export const publisher = Account('publisher');
+export const alice = Account('alice');
+export const bob = Account('bob');
+
+export const hello = Package('hello', './move/hello', { signer: publisher });
+
+const wallet = Wallet({ accounts: [publisher, alice, bob] });
+const dev = Dev({
+  command: 'pnpm',
+  args: ['exec', 'vite'],
+  port: 5173,
+  needs: [hello, wallet],
+});
+
+export default devstack(publisher, alice, bob, hello, wallet, dev);
+```
+
+Every named binding is a **Ref** — a typed handle that doubles as a
+configuration value (`signer: publisher`), an Effect-yieldable tag
+(`yield* hello` inside any Effect resolves to the live `packageId`,
+`captured` objects, …), and a layer the supervisor composes into the
+runtime graph.
+
+You almost never write Refs by hand. The factories exported from
+`@mysten-incubation/devstack` cover the built-in shapes. For custom
+services, [Plugins](./features/plugins) shows how to wrap your own.
+
+## Where to go next
+
+Pick the feature that matches what you're building:
+
+- [Local development](./features/local-dev) — boot, edit, hot-restart
+- [Accounts and wallet](./features/accounts-and-wallet) — accounts, funding, dev wallet
+- [Codegen](./features/codegen) — Move → TS bindings
+- [dapp-kit](./features/dapp-kit) — frontend wiring
+- [Vitest](./features/testing-vitest) — unit tests against the real stack
+- [Playwright](./features/testing-playwright) — browser tests
+- [Live networks](./features/live-networks) — testnet / mainnet

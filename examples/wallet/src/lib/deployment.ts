@@ -1,6 +1,6 @@
 // App-level projection of the devstack manifest. Joins the
 // endpoint URLs, the registered mock-coin tokens, and the deepbook
-// pools (from `manifest.extras.deepbookPools`) into the views the
+// pools (from `manifest.app.extras.deepbookPools`) into the views the
 // wallet UI reads — coin specs (with derived symbols), pool views
 // (with base/quote symbols joined), and a flat account map.
 
@@ -34,8 +34,8 @@ const SUI_COIN: CoinSpec = {
 	decimals: 9,
 };
 
-const coinsFromTokens: CoinSpec[] = manifest.coins.map((t) => ({
-	symbol: t.name.toUpperCase(),
+const coinsFromTokens: CoinSpec[] = Object.entries(manifest.coins).map(([name, t]) => ({
+	symbol: name.toUpperCase(),
 	coinType: t.type,
 	decimals: t.decimals,
 }));
@@ -45,7 +45,7 @@ const allCoins: readonly CoinSpec[] = [SUI_COIN, ...coinsFromTokens];
 const symbolFor = (coinType: string): string =>
 	allCoins.find((c) => c.coinType === coinType)?.symbol ?? coinType.split('::').pop() ?? '?';
 
-const deepbookPoolsExtra = manifest.extras.deepbookPools as { pools: DeepbookPool[] } | undefined;
+const deepbookPoolsExtra = manifest.app.extras.deepbookPools as { pools: DeepbookPool[] } | undefined;
 const rawPools = deepbookPoolsExtra?.pools ?? [];
 
 const pools: readonly PoolView[] = rawPools.map((p) => ({
@@ -57,15 +57,17 @@ const pools: readonly PoolView[] = rawPools.map((p) => ({
 	quoteSymbol: symbolFor(p.quoteCoinType),
 }));
 
-const deepbookPkg = manifest.packages.find((p) => p.name === 'deepbook');
+const deepbookPkg = manifest.packages.deepbook;
 
 export const deployment = {
-	rpcUrl: manifest.endpoints.find((e) => e.name === 'sui-rpc')?.url ?? '',
-	faucetUrl: manifest.endpoints.find((e) => e.name === 'sui-faucet')?.url,
-	accounts: Object.fromEntries(manifest.accounts.map((a) => [a.name, a.address])),
+	rpcUrl: manifest.services.sui?.rpc.url ?? '',
+	faucetUrl: manifest.services.sui?.faucet?.url,
+	accounts: Object.fromEntries(
+		Object.entries(manifest.accounts).map(([name, a]) => [name, a.address]),
+	),
 	coins: allCoins,
 	pools,
-	deepbookPackageId: deepbookPkg?.packageId,
+	deepbookPackageId: deepbookPkg?.id,
 	deepbookRegistryId: deepbookPkg?.captured?.registryId,
 } as const;
 

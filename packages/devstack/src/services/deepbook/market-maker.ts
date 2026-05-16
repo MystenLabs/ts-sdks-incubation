@@ -1,5 +1,5 @@
 // `deepbookMarketMaker(opts)` — long-running grid market-maker.
-// Composes against `DeepbookCore` regardless of which factory provided
+// Composes against `DeepbookCoreTag` regardless of which factory provided
 // it (local-deploy or known-package), then forks a refresh loop into
 // the surrounding scope.
 
@@ -12,7 +12,7 @@ import { SuiTag } from '../sui.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
 import { StateStore } from '../../engine/state-store.js';
 import { DeepbookError } from '../../engine/errors.js';
-import { DeepbookCore, type DeepbookPoolRef } from '../deepbook.js';
+import { DeepbookCoreTag, type DeepbookPoolRef } from '../deepbook.js';
 import type { Account, SuiObjectChange } from '../../engine/shared.js';
 import {
 	ORDER_TYPE_POST_ONLY,
@@ -82,7 +82,7 @@ export interface DeepbookMarketMakerOptions<Name extends string> {
 }
 
 /**
- * Long-running grid market-maker. Composes against `DeepbookCore`
+ * Long-running grid market-maker. Composes against `DeepbookCoreTag`
  * regardless of which factory provided it (local-deploy or
  * known-package), then forks a refresh loop into the surrounding scope.
  */
@@ -97,7 +97,7 @@ export const deepbookMarketMaker = <const Name extends string>(
 			}
 			const sui = yield* SuiTag;
 			const signer = yield* options.signer;
-			const core = yield* DeepbookCore;
+			const core = yield* DeepbookCoreTag;
 			const state = yield* StateStore;
 
 			const levels = options.levels ?? 3;

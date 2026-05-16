@@ -8,7 +8,7 @@
 import { Effect, type Scope } from 'effect';
 import {
 	defineDevstack,
-	type Devstack,
+	type DevstackHandle,
 	type DevstackConfig,
 	type StackMember,
 } from '../engine/supervisor.js';
@@ -36,7 +36,7 @@ export interface DevstackComposeOptions extends Omit<DevstackConfig, 'stack'> {
 	 *  record. Spliced into `.devstack/manifest.json`'s `extras` slot.
 	 *  Use this when downstream consumers (dev wallet panels, frontend
 	 *  app code) need on-disk values projected from `yield*`-able Refs
-	 *  (`SealKeyServer`, an action's resolved `TxResult`, etc.). */
+	 *  (`SealKeyServerTag`, an action's resolved `TxResult`, etc.). */
 	readonly extras?: EmitManifestOptions['extras'];
 }
 
@@ -69,8 +69,8 @@ const manifestRef = (
 	}) as unknown as StackMember;
 };
 
-/** Compose a devstack from typed Refs. Returns the same `Devstack`
- *  handle `defineDevstack(...)` returns (`run` / `runMain` / `layer`).
+/** Compose a devstack from typed Refs. Returns the same `DevstackHandle`
+ *  `defineDevstack(...)` returns (`run` / `runMain` / `layer`).
  *
  *  ```ts
  *  const alice = Account('alice');
@@ -83,7 +83,7 @@ const manifestRef = (
  *  object. */
 export function devstack(
 	...args: ReadonlyArray<DevstackRefInput | DevstackComposeOptions>
-): Devstack {
+): DevstackHandle {
 	// Split out the trailing options object (if any) from the leading refs.
 	let opts: DevstackComposeOptions = {};
 	const refArgs = [...args];

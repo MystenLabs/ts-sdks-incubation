@@ -33,6 +33,7 @@ import { Context, Effect, FileSystem, Schema, Stream } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { inheritedHostEnv } from './safe-env.js';
 import { stringifyCause } from './stringify-cause.js';
+import { SuiBuildContainer } from './sui-build-container.js';
 
 // Optional sui-tools image reference. When `suiLocalnet` builds its
 // vendored `sui-image/` it provides the resulting tag here so `buildMove`
@@ -251,10 +252,24 @@ export const buildMove = (
 		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 		const fs = yield* FileSystem.FileSystem;
 		const image = yield* SuiBuildImage;
+		// Prefer the long-lived per-stack build container when present:
+		// `docker exec` instead of `docker run --rm` per build cuts
+		// per-publish overhead from ~700-1000ms to ~50-100ms. Provided
+		// automatically by `suiLocalnet` alongside `SuiBuildImage`;
+		// `Effect.serviceOption` keeps the dependency optional so
+		// stand-alone callers and live-net configs work unchanged.
+		const containerOpt = yield* Effect.serviceOption(SuiBuildContainer);
+		const containerReachable =
+			containerOpt._tag === 'Some' && containerOpt.value.canExec(opts.path);
 		yield* Effect.annotateCurrentSpan({
 			'sui.op': 'build',
 			'sui.path': opts.path,
-			'sui.build.mode': image !== undefined ? 'container' : 'host',
+			'sui.build.mode':
+				image === undefined
+					? 'host'
+					: containerReachable
+						? 'exec'
+						: 'container',
 			...(image !== undefined ? { 'sui.build.image': image.tag } : {}),
 		});
 
@@ -277,18 +292,20 @@ export const buildMove = (
 		// available, host-installed sui otherwise. The host fallback is
 		// fragile post-devnet-v1.71.0 because newer sui's renamed `--json`
 		// to `--json-errors`; the in-container build sidesteps the skew
-		// entirely.
-		const cmd =
-			image !== undefined
-				? containerBuildCmd(image.tag, opts.path)
-				: hostBuildCmd(opts);
-
-		// Capture stdout, stderr, AND exitCode in one shot. The previous
-		// `spawner.string(cmd)` swallowed stderr and exitCode, which made
-		// the failure mode `JSON.parse('')` → "Unexpected end of JSON input"
-		// — useless for debugging WHY `sui move build` actually failed
-		// (deps it couldn't resolve, container missing, etc.).
-		const captured = yield* runWithCapture(spawner, cmd, 'sui move build');
+		// entirely. Three paths:
+		//   1. exec — long-lived per-stack container, `docker exec` (fastest)
+		//   2. container — fresh `docker run --rm` (Stage 1 fallback)
+		//   3. host — host-installed `sui` CLI (no image available)
+		const captured =
+			containerReachable && containerOpt._tag === 'Some'
+				? yield* containerOpt.value.runBuild(opts.path)
+				: yield* runWithCapture(
+						spawner,
+						image !== undefined
+							? containerBuildCmd(image.tag, opts.path)
+							: hostBuildCmd(opts),
+						'sui move build',
+					);
 
 		// Non-zero exit ALWAYS fails before the JSON parse — a build that
 		// errored out gives us its stderr verbatim instead of the opaque
@@ -344,33 +361,36 @@ export const buildMove = (
 // localnet config) before exec'ing `sui "$@"`. For a one-shot move
 // build we don't need genesis — override the entrypoint to call `sui`
 // directly so stderr contains only build output, not genesis init logs.
-// The host source path is bind-mounted at `/workspace`; build is purely
-// local (no network). `--rm` reaps the container on exit.
+//
+// Bind-mount strategy (intentional revert from the tar-pipe approach
+// that was here briefly):
+//   - The package's PARENT directory is bind-mounted at `/workspace` so
+//     sibling `{ local = "../token" }` deps still resolve. Build target
+//     remains `--path /workspace/<package-name>`.
+//   - `${HOME}/.move` is bind-mounted at `/root/.move` so sui-cli's
+//     content-addressed git-deps cache (`~/.move/git/<repo>@<sha>/…`)
+//     persists across builds. Without this, every fresh `--rm` container
+//     re-fetches the edition-2024 auto-deps (Sui, MoveStdlib, Bridge,
+//     DeepBook, SuiSystem) from GitHub — the dominant per-publish cost
+//     a v4 user notices vs v3. The cache is SHA-keyed and append-only,
+//     so concurrent readers/writers across containers are safe.
+//
+// Trade-offs:
+//   - `build/` outputs leak back to the host's source dir (same as v3
+//     host-CLI mode). Within an app, two stacks (e.g.
+//     `DEVSTACK_STACK=main` and `DEVSTACK_STACK=test`) building the
+//     SAME source path concurrently can race on `build/`. The
+//     state-store lock prevents two supervisors per `(stack, network)`
+//     tuple, but does not synchronize across stacks. Accepted: the
+//     primary use case is one stack at a time per app.
+//   - Across apps, source paths live under each app's own dir (or its
+//     `.devstack/` cache), so no app-to-app mount sharing.
+//   - The in-container `Move.lock` scrub mutates host Move.lock files
+//     under the source tree — same effect as host-mode
+//     `stripPinnedSectionsFromMoveLock`. Idempotent on subsequent runs.
 const containerBuildCmd = (imageTag: string, hostPath: string): ChildProcess.Command => {
-	// Stream the package's PARENT directory into the container via tar
-	// over stdin instead of bind-mounting. The bind-mount approach
-	// shipped `build/` and `Move.lock` mutations back to the host
-	// source dir — fatal for multi-stack concurrency where two
-	// supervisors built the same cached source tree in parallel and
-	// trampled each other's outputs ("Directory not empty (os 39)").
-	// Hermetic copy-into-container leaves the host source pristine.
-	//
-	// Parent (not the package itself) so sibling `{ local = "../token" }`
-	// deps still resolve from /workspace once untarred. Build target
-	// remains `--path /workspace/<package-name>`.
 	const parent = path.dirname(hostPath);
 	const pkgName = path.basename(hostPath);
-	// Inside-container `build/` + `node_modules/` cleanup post-untar.
-	// We can't reliably exclude these at tar time: bsdtar (the host's
-	// default on macOS) anchors `--exclude` patterns so they only
-	// match top-level entries, missing nested `seal/build/` etc.
-	// Stale `.mv` bytecode in those dirs makes sui-cli throw
-	// "stream did not contain valid UTF-8" when it walks the source
-	// looking for `.move` files. Clean inside the container with GNU
-	// find where path-globbing actually works.
-	const cleanup =
-		`(find /workspace -name build -type d -prune -exec rm -rf {} + 2>/dev/null || true) && ` +
-		`(find /workspace -name node_modules -type d -prune -exec rm -rf {} + 2>/dev/null || true)`;
 	// Inside-container Move.lock scrub: `[pinned.<env>.<pkg>]` sections
 	// in upstream Move.locks (deepbook's `token` dep, walrus, etc.) pin
 	// the build to testnet/mainnet package ids that don't exist on a
@@ -383,51 +403,50 @@ const containerBuildCmd = (imageTag: string, hostPath: string): ChildProcess.Com
 	// blocks, which produced `duplicate key 'source' in table 'move'`
 	// TOML errors when their bodies were appended to the preceding
 	// `[move]` table.) Idempotent on already-scrubbed locks.
-	//
-	// The awk program is materialized via printf so we avoid embedding
-	// the awk single-quoted body inside a `find -exec sh -c '…'` (the
-	// triple-nested single-quoting would survive `shellQuote` of
-	// `innerScript` only by accident).
 	const stageAwk =
 		`printf '%s\\n%s\\n%s\\n' '/^\\[pinned\\./ { skip=1; next }' ` +
 		`'/^\\[/ && !/^\\[pinned\\./ { skip=0 }' '!skip { print }' > /tmp/scrub-move-lock.awk`;
 	const scrub =
 		`find /workspace -name Move.lock -not -path '*/node_modules/*' -not -path '*/.git/*' ` +
 		`-exec sh -c 'awk -f /tmp/scrub-move-lock.awk "$1" > "$1.new" && mv "$1.new" "$1"' _ {} ';'`;
+	// `pkgName` lands inside the in-container `sh -c` script as part of
+	// `--path /workspace/<name>`. Shell-quote so a malicious package
+	// name (e.g. one containing `$(…)` or `;`) can't escape the script
+	// and run commands inside the container. The bind-mounts grant the
+	// container write access to the user's source dir and `~/.move`,
+	// so unquoted interpolation here would be a real foot-gun even
+	// though the container itself is ephemeral.
 	const innerScript = [
 		'set -e',
-		'mkdir -p /workspace',
-		'cd /workspace',
-		// GNU tar inside the container warns on macOS xattr extended
-		// headers (`LIBARCHIVE.xattr.com.apple.provenance`) but
-		// extracts the underlying files correctly. Those warnings are
-		// non-fatal noise on stderr.
-		'tar -xf -',
-		cleanup,
 		stageAwk,
 		scrub,
-		`exec sui move build --path /workspace/${pkgName} --dump-bytecode-as-base64 --with-unpublished-dependencies`,
+		`exec sui move build --path /workspace/${shellQuote(pkgName)} --dump-bytecode-as-base64 --with-unpublished-dependencies`,
 	].join('; ');
-	// `--no-mac-metadata` strips the AppleDouble/`com.apple.*` xattrs
-	// bsdtar embeds by default — without it, GNU tar inside the
-	// container untars files whose attribute bytes confuse sui-cli's
-	// source walker ("Failed to build Move modules: stream did not
-	// contain valid UTF-8."). bsdtar-only flag; we only inject it on
-	// darwin where bsdtar is the default. Linux GNU tar has no macOS
-	// metadata to strip and would reject the unknown flag.
-	const macTarOpts = process.platform === 'darwin' ? '--no-mac-metadata' : '';
-	// `pipefail` so a tar failure (unreadable source, permission denied)
-	// propagates instead of being masked by docker's success exit. `; `
-	// separates the pipefail setting from the actual pipeline; a plain
-	// space would make `set` swallow the tar argv.
-	const outerScript = `set -o pipefail; tar ${macTarOpts} -cf - -C ${shellQuote(parent)} . | docker run --rm -i --entrypoint sh ${shellQuote(imageTag)} -c ${shellQuote(innerScript)}`;
-	return ChildProcess.make('sh', ['-c', outerScript]);
+	const moveHome = path.join(os.homedir(), '.move');
+	const dockerArgs = [
+		'run',
+		'--rm',
+		'-i',
+		'-v',
+		`${parent}:/workspace`,
+		'-v',
+		`${moveHome}:/root/.move`,
+		'--entrypoint',
+		'sh',
+		imageTag,
+		'-c',
+		innerScript,
+	];
+	return ChildProcess.make('docker', dockerArgs);
 };
 
 // POSIX single-quote escape for arbitrary string values embedded in a
 // shell command. Wraps in `'…'` and escapes embedded single quotes via
-// the standard `'\''` trick. Exported for sui-cli.test.ts; the sole
-// production caller is `containerBuildCmd` above.
+// the standard `'\''` trick. Used inside `containerBuildCmd` to quote
+// the package name in the in-container `sh -c` script — the bind-mount
+// gives the container write access to the host source dir and
+// `~/.move`, so unquoted interpolation would be a real foot-gun if a
+// caller passed a path with shell metachars.
 export const shellQuote = (s: string): string => `'${s.replaceAll("'", "'\\''")}'`;
 
 // Compose the argv for a host-`sui` `move build`. Same flags as the
@@ -504,8 +523,9 @@ const extractTrailingJson = (text: string): string => {
 
 // Captured output of one `sui` invocation. Mirrors `DockerExecResult` in
 // docker.ts — separate types because shared infra would couple two
-// otherwise-independent modules.
-interface SuiCliCapture {
+// otherwise-independent modules. Exported so the long-lived build
+// container (`sui-build-container.ts`) returns the same shape.
+export interface SuiCliCapture {
 	readonly exitCode: number;
 	readonly stdout: string;
 	readonly stderr: string;
@@ -516,9 +536,9 @@ interface SuiCliCapture {
 // reason a failing `sui move build` failed (compile errors, missing
 // deps, host-vs-localnet version skew, etc. land on stderr). Mapped
 // errors carry the same `op` prefix that downstream callers stamp.
-type Spawner = ReturnType<typeof ChildProcessSpawner.make>;
+export type Spawner = ReturnType<typeof ChildProcessSpawner.make>;
 
-const runWithCapture = (
+export const runWithCapture = (
 	spawner: Spawner,
 	cmd: ChildProcess.Command,
 	op: string,

@@ -12,7 +12,7 @@ with another tool.
 ## Tag primitives
 
 - **`tag(name, body, opts?)`** — create a one-off Ref. See
-  [refs-and-tags](../concepts/refs-and-tags).
+  [refs-and-tags](../internals/refs-and-tags).
 - **`provide(TagClass, body, opts?)`** — implement an existing
   Context.Service class. Use when your factory is one of several
   implementations of a shared interface tag (e.g.  a custom Sui
@@ -43,12 +43,16 @@ with another tool.
 - **`hostScript(opts)`** — one-shot host process (not in docker).
   Capture stdout, enforce timeout/SIGTERM/SIGKILL.
 
-## Known deployments
+## Canonical deployments
 
 `knownDeployments` carries the testnet + mainnet package ids for
-walrus, seal, deepbook. Use when wiring a `Walrus({mode: 'known'})` /
-`Seal({mode: 'known'})` / `Deepbook({mode: 'known'})` against a known
-network.
+walrus, seal, deepbook. The `Walrus()` / `Seal()` / `Deepbook()`
+factories consult this registry automatically when the resolved
+network is testnet or mainnet — most users never touch it directly.
+
+Reach for it when overriding individual ids in `override:`, when
+authoring a custom factory that needs canonical deployment data, or
+when computing chain-aware paths in app code:
 
 ```ts
 import { knownDeployments } from '@mysten-incubation/devstack';

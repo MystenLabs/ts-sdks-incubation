@@ -1,7 +1,7 @@
 // `walrusLocalCluster()` — full local boot. Builds the wrapper image,
 // deploys contracts on local sui, registers nodes, fronts them via
 // nginx, funds seed accounts. Provides all four narrow interfaces
-// (`WalrusNetwork`, `WalrusNodes`, `WalrusProxy`, `WalrusAdmin`).
+// (`WalrusNetworkTag`, `WalrusNodesTag`, `WalrusProxyTag`, `WalrusAdminTag`).
 //
 // Acquire-phase mechanics (image build → deploy one-shot → node
 // committee → exchange discovery → nginx proxy → seed-account swap)
@@ -14,15 +14,15 @@
 import { Context, Effect, Layer } from 'effect';
 import type { StackMember } from '../../engine/supervisor.js';
 import {
-	WalrusAdmin,
-	WalrusNetwork,
-	WalrusNodes,
-	WalrusProxy,
-	type WalrusAdminShape,
-	type WalrusNetworkShape,
+	WalrusAdminTag,
+	WalrusNetworkTag,
+	WalrusNodesTag,
+	WalrusProxyTag,
+	type WalrusAdmin,
+	type WalrusNetwork,
 	type WalrusNodeInfo,
-	type WalrusNodesShape,
-	type WalrusProxyShape,
+	type WalrusNodes,
+	type WalrusProxy,
 } from '../walrus.js';
 import { dockerImage, gitFetch } from '../../advanced/plugin-author/index.js';
 import { composeLayers, type Ref } from '../../advanced/tag.js';
@@ -208,7 +208,7 @@ export const walrusLocalCluster = <const Name extends string = 'walrus'>(
 			acquired.deploy.exchangeObject !== undefined
 				? [acquired.deploy.exchangeObject]
 				: undefined;
-		const networkShape: WalrusNetworkShape = {
+		const networkShape: WalrusNetwork = {
 			systemObjectId: acquired.deploy.systemObject,
 			stakingPoolId: acquired.deploy.stakingObject,
 			subsidiesPackageId: undefined,
@@ -229,10 +229,10 @@ export const walrusLocalCluster = <const Name extends string = 'walrus'>(
 		// Local nodes don't surface a registered `nodeId` or `publicKey`
 		// today — the upstream `deploy-system-contract` writes only the
 		// committee size + chain ids into the deploy summary, not the
-		// per-node BLS keys. Stable synthetic ids let `WalrusNodesShape`
+		// per-node BLS keys. Stable synthetic ids let `WalrusNodes`
 		// stay honest about what we can observe; future work could read
 		// the `staking_pool` object on chain to fill these in.
-		const nodesShape: WalrusNodesShape = {
+		const nodesShape: WalrusNodes = {
 			nodes: acquired.nodes.map(
 				(n): WalrusNodeInfo => ({
 					nodeId: `walrus-node-${n.index}`,
@@ -242,28 +242,28 @@ export const walrusLocalCluster = <const Name extends string = 'walrus'>(
 			),
 		};
 
-		const proxyShape: WalrusProxyShape = {
+		const proxyShape: WalrusProxy = {
 			proxyUrl: acquired.proxyUrl,
 			aggregatorUrl: acquired.proxyUrl,
 			publisherUrl: acquired.proxyUrl,
 		};
 
-		const adminShape: WalrusAdminShape = makeAdminShape({
+		const adminShape: WalrusAdmin = makeAdminShape({
 			nodes: acquired.nodes,
 			exchange: acquired.exchange,
 			defaultSeedPaymentMist: acquired.seedPaymentMist,
 			seedAccountsByAddress: new Map(acquired.seedAccounts.map((a) => [a.address, a] as const)),
 		});
 
-		return Context.make(WalrusNetwork, networkShape).pipe(
-			Context.add(WalrusNodes, nodesShape),
-			Context.add(WalrusProxy, proxyShape),
-			Context.add(WalrusAdmin, adminShape),
+		return Context.make(WalrusNetworkTag, networkShape).pipe(
+			Context.add(WalrusNodesTag, nodesShape),
+			Context.add(WalrusProxyTag, proxyShape),
+			Context.add(WalrusAdminTag, adminShape),
 		);
 	})();
 
 	const combinedLayer = Layer.effectContext(acquireAndProject) as Layer.Layer<
-		WalrusNetwork | WalrusNodes | WalrusProxy | WalrusAdmin,
+		WalrusNetworkTag | WalrusNodesTag | WalrusProxyTag | WalrusAdminTag,
 		WalrusError,
 		any
 	>;

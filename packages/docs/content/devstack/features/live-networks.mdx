@@ -1,0 +1,164 @@
+---
+title: Live networks
+description: The same devstack.config.ts works against localnet, testnet, and mainnet. Network is selected at runtime; factories branch internally.
+---
+
+Promoting a Sui app from localnet to testnet or mainnet usually means
+maintaining parallel configs and praying they stay in sync. RPC URLs
+change. Faucet-funded keys turn into env-sourced keys. Locally-built
+deps become pinned remote packages. Every divergence is a place where
+staging looks different from prod, and dev looks different from both.
+
+Devstack runs the same `devstack.config.ts` against every network.
+The same `Seal()`, `Walrus()`, `Deepbook()`, and `Sui()` calls resolve
+to local infra on localnet and to the canonical remote deployment on
+testnet / mainnet — the factory body branches internally on the
+resolved network. The shapes downstream code consumes (packageIds,
+endpoints, account addresses) stay identical.
+
+## Switching networks
+
+Set the network at runtime — either via the CLI flag or via the env
+var. Both flow through `DEVSTACK_NETWORK`:
+
+```bash
+devstack up                      # localnet (default)
+devstack up --network testnet    # testnet — no docker, canonical remote services
+devstack up --network mainnet    # mainnet
+```
+
+```bash
+# Equivalent for tooling that doesn't go through the CLI:
+DEVSTACK_NETWORK=testnet pnpm dev
+```
+
+The CLI sets `DEVSTACK_NETWORK` before importing the config, so every
+factory call inside `devstack.config.ts` sees the same value at
+construction time. No branching needed in the config:
+
+```ts
+import {
+  Account,
+  devstack,
+  Package,
+  Seal,
+  Sui,
+  Walrus,
+} from '@mysten-incubation/devstack';
+
+const alice = Account('alice', { from: 'env', key: 'ALICE_PRIVATE_KEY' });
+
+const hello = Package('hello', './move/hello', { signer: alice });
+
+export default devstack(
+  Sui(),                       // localnet by default; testnet/mainnet via --network
+  Walrus(),                    // local cluster on localnet; canonical testnet/mainnet otherwise
+  Seal({ signer: alice }),     // local key server on localnet; canonical remote otherwise
+  alice,
+  hello,
+);
+```
+
+When you flip the CLI flag, every composite Ref in this config
+re-routes:
+
+- **Localnet** — `Walrus()` boots a 4-node cluster; `Seal({ signer })`
+  publishes the Seal Move package and runs a local key server;
+  `Sui()` spins up a localnet container.
+- **Testnet / mainnet** — `Walrus()` and `Seal()` wire to Mysten's
+  canonical deployment; `Sui()` is an RPC-only handle pointing at
+  the public fullnode. No docker.
+
+The mental model for live networks: most of your stack doesn't boot.
+You're really just publishing your Move package (and maybe seeding
+some actions) against the live chain.
+
+## Account sources change
+
+The one place a network swap genuinely changes the config is account
+sources. `ephemeral-funded` makes no sense on testnet — the address
+changes every run, and there's no faucet you control. Use `env` or
+`keystore` instead:
+
+```ts
+const isLive = process.env.DEVSTACK_NETWORK && process.env.DEVSTACK_NETWORK !== 'localnet';
+
+const alice = Account('alice', isLive
+  ? { from: 'env', key: 'ALICE_PRIVATE_KEY' }
+  : { from: 'ephemeral-funded' });
+```
+
+## State isolation
+
+State files partition per network so artifacts don't collide:
+
+- **localnet** — `.devstack/stacks/<stack>/state.json` (per stack name).
+- **testnet / mainnet** — `.devstack/networks/<network>.json` (one
+  slot per network — there's only one testnet).
+
+Container labels and docker network names also fold the network in,
+so switching networks doesn't accidentally adopt the wrong containers.
+
+## Custom RPC / corporate fullnodes
+
+For corporate fullnodes, pinned forks, or air-gapped mirrors, pass a
+custom RPC at the Sui factory:
+
+```ts
+Sui({ network: { rpc: 'https://internal.example/sui', faucet: 'https://internal.example/faucet' } });
+```
+
+This still respects `DEVSTACK_NETWORK` for downstream factories
+(Walrus, Seal, Deepbook), so a custom-RPC localnet pairs with local
+Walrus/Seal/Deepbook, and a custom-RPC testnet pairs with canonical
+remote deployments.
+
+## Pinning third-party packages
+
+For packages your app reads but doesn't publish (deepbook, an oracle,
+a partner protocol), use `KnownPackage` — works on any network:
+
+```ts
+import { KnownPackage } from '@mysten-incubation/devstack';
+
+const partner = KnownPackage('partner', {
+  packageId: '0x...',
+  mvrPlaceholder: '@mvr/partner',
+});
+```
+
+`KnownPackage` is `Package`-shaped — it yields the same `Package`
+(minus the `sourcePath` / `captured` fields). Codegen emitters that
+need source skip it; emitters that just need the id (`DappKitEmitter`,
+custom emitters) consume it normally.
+
+## Migration checklist
+
+When promoting a localnet config to live:
+
+1. **Run with `--network testnet`** (or set `DEVSTACK_NETWORK=testnet`).
+   `Sui()`, `Walrus()`, `Seal()`, `Deepbook()` all re-route to the
+   canonical remote deployment automatically.
+2. **Accounts** — swap `'ephemeral-funded'` for `'env'` or
+   `'keystore'`. Move funding to your CI / deploy pipeline.
+3. **Stack name** — set `DEVSTACK_STACK` per environment so
+   artifacts don't collide.
+
+## Codegen against live data
+
+`Codegen` works the same against any network. It reads whichever
+package Refs you declared — mix `Package(...)` (local source) and
+`KnownPackage(...)` (pinned id) freely.
+
+The default bindings emitter emits for entries with a `sourcePath`
+and skips the rest. The `DappKitEmitter` (used by `DappKit({...})`)
+consumes every entry, so MVR overrides in the emitted dapp-kit
+module cover both local and known packages.
+
+## Reference
+
+- [Services reference — Sui](../reference/services#sui) — every
+  Sui factory option.
+- [Services reference — Account sources](../reference/services#account) —
+  every `from:` discriminator.
+- [CLI reference — `--network`](../reference/cli) — the flag plumbing.

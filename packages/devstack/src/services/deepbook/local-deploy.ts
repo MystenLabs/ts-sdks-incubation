@@ -1,6 +1,6 @@
 // `deepbookLocalDeploy(opts)` — publish the deepbook-v3 Move package +
 // create the requested whitelisted pools. Provides all three interface
-// tags (`DeepbookCore`, `DeepbookAdmin`, `DeepbookMarketMaker`) because
+// tags (`DeepbookCoreTag`, `DeepbookAdminTag`, `DeepbookMarketMaker`) because
 // the local deploy owns the admin cap and can mint a BalanceManager.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -16,10 +16,10 @@ import { StateStore } from '../../engine/state-store.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
 import { DeepbookError } from '../../engine/errors.js';
 import {
-	DeepbookAdmin,
-	DeepbookCore,
+	DeepbookAdminTag,
+	DeepbookCoreTag,
 	DeepbookMarketMakerTag,
-	type DeepbookCoreShape,
+	type DeepbookCore,
 } from '../deepbook.js';
 import type { Account, SuiObjectChange } from '../../engine/shared.js';
 import {
@@ -120,11 +120,11 @@ export interface DeepbookLocalDeployOptions<
 
 // Local-deploy carries the rich per-pool record (tick/lot/min) so the
 // composite tag can satisfy `yield* db` for legacy consumers projecting
-// pools into manifest extras. The interface `DeepbookCore` itself only
+// pools into manifest extras. The interface `DeepbookCoreTag` itself only
 // surfaces poolIds + findPool.
 export interface DeepbookLocalDeployShape<
 	TPools extends Record<string, DeepbookPool> = Record<string, DeepbookPool>,
-> extends DeepbookCoreShape {
+> extends DeepbookCore {
 	readonly adminCapId: string;
 	readonly pools: TPools;
 }
@@ -135,7 +135,7 @@ type PoolsRecord<T extends ReadonlyArray<DeepbookPoolSpec>> = {
 
 /**
  * Publish a vendored deepbook-v3 package, create whitelisted pools, and
- * surface `DeepbookCore`, `DeepbookAdmin`, and `DeepbookMarketMaker`
+ * surface `DeepbookCoreTag`, `DeepbookAdminTag`, and `DeepbookMarketMaker`
  * interfaces for downstream consumers. The factory's own composite tag
  * yields the rich shape (incl. `adminCapId` + per-pool record) so
  * configs that read `.pools` for manifest projection keep working.
@@ -462,7 +462,7 @@ export const deepbookLocalDeploy = <
 				MARGIN_PACKAGE_ID: undefined,
 				MARGIN_REGISTRY_ID: undefined,
 				LIQUIDATION_PACKAGE_ID: undefined,
-			} satisfies DeepbookCoreShape['packageIds'];
+			} satisfies DeepbookCore['packageIds'];
 
 			return {
 				packageId,
@@ -509,10 +509,10 @@ export const deepbookLocalDeploy = <
 	// The three interface layers all depend on the composite tag. Each
 	// derives its slice of the rich shape and binds it to the canonical
 	// Context key. Stacking the local-deploy member satisfies every
-	// downstream consumer of `DeepbookCore` / `DeepbookAdmin` /
+	// downstream consumer of `DeepbookCoreTag` / `DeepbookAdminTag` /
 	// `DeepbookMarketMaker` from a single config entry.
 	const coreLayer = provide(
-		DeepbookCore,
+		DeepbookCoreTag,
 		Effect.gen(function* () {
 			const db = yield* composite;
 			return {
@@ -521,12 +521,12 @@ export const deepbookLocalDeploy = <
 				packageIds: db.packageIds,
 				poolIds: db.poolIds,
 				findPool: db.findPool,
-			} satisfies DeepbookCoreShape;
+			} satisfies DeepbookCore;
 		}),
 	).__layer;
 
 	const adminLayer = provide(
-		DeepbookAdmin,
+		DeepbookAdminTag,
 		Effect.gen(function* () {
 			yield* composite;
 			return {} as const;
