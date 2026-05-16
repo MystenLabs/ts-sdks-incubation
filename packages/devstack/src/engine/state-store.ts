@@ -207,7 +207,7 @@ export const StateStoreLive: Layer.Layer<StateStore, StateStoreLockedError, File
 		// Ensure the containing dir exists before any lock / write op.
 		yield* fs
 			.makeDirectory(paths.dir, { recursive: true })
-			.pipe(Effect.catch(() => Effect.void));
+			.pipe(Effect.ignore);
 
 		// Best-effort tighten of any pre-existing state file written by an older
 		// devstack run with a permissive umask. chmod is a no-op on Windows /
@@ -217,10 +217,10 @@ export const StateStoreLive: Layer.Layer<StateStore, StateStoreLockedError, File
 			.pipe(
 				Effect.flatMap((present) =>
 					present
-						? fs.chmod(paths.file, 0o600).pipe(Effect.catch(() => Effect.void))
+						? fs.chmod(paths.file, 0o600).pipe(Effect.ignore)
 						: Effect.void,
 				),
-				Effect.catch(() => Effect.void),
+				Effect.ignore,
 			);
 
 		// --- Lock acquisition ---------------------------------------------------
@@ -304,7 +304,7 @@ export const StateStoreLive: Layer.Layer<StateStore, StateStoreLockedError, File
 				.writeFileString(paths.lock, serialized, { flag: 'wx' })
 				.pipe(
 					Effect.as(true),
-					Effect.catch(() => Effect.succeed(false)),
+					Effect.orElseSucceed(() => false),
 				);
 			if (exclusive) {
 				acquiredBody = body;
@@ -332,7 +332,7 @@ export const StateStoreLive: Layer.Layer<StateStore, StateStoreLockedError, File
 			// Tempfile name still includes `${hostname}.${pid}.${uuid}` so
 			// any peer reclaimer on an NFS-shared `.devstack/` whose
 			// reclaim attempt is in flight can't collide on tmp paths.
-			yield* fs.remove(paths.lock, { force: true }).pipe(Effect.catch(() => Effect.void));
+			yield* fs.remove(paths.lock, { force: true }).pipe(Effect.ignore);
 			// Drop a tmp probe with the hostname-tagged name to match the
 			// long-lived holder's `host` field convention; we never use the
 			// file's content here (the loop's next iteration will do its
@@ -341,9 +341,9 @@ export const StateStoreLive: Layer.Layer<StateStore, StateStoreLockedError, File
 			// errors (ENOSPC, EROFS) before the next O_EXCL attempt.
 			const probe = `${paths.lock}.tmp.${ownHost}.${process.pid}.${randomUUID()}`;
 			yield* fs.writeFileString(probe, serialized).pipe(
-				Effect.catch(() => Effect.void),
+				Effect.ignore,
 			);
-			yield* fs.remove(probe, { force: true }).pipe(Effect.catch(() => Effect.void));
+			yield* fs.remove(probe, { force: true }).pipe(Effect.ignore);
 			// Continue the loop — next iteration retries the O_EXCL write
 			// against a now-clear lock path.
 		}
@@ -366,7 +366,7 @@ export const StateStoreLive: Layer.Layer<StateStore, StateStoreLockedError, File
 				if (current?.instanceId === ownBody.instanceId) {
 					yield* fs
 						.remove(paths.lock, { force: true })
-						.pipe(Effect.catch(() => Effect.void));
+						.pipe(Effect.ignore);
 				}
 			}),
 		);
@@ -480,11 +480,11 @@ export const StateStoreLive: Layer.Layer<StateStore, StateStoreLockedError, File
 				() => fs.rename(tmp, paths.file),
 				(_, exit) =>
 					exit._tag === 'Failure'
-						? fs.remove(tmp, { force: true }).pipe(Effect.catch(() => Effect.void))
+						? fs.remove(tmp, { force: true }).pipe(Effect.ignore)
 						: Effect.void,
 			);
 			// Best-effort — chmod is a no-op on Windows / some filesystems.
-			yield* fs.chmod(paths.file, 0o600).pipe(Effect.catch(() => Effect.void));
+			yield* fs.chmod(paths.file, 0o600).pipe(Effect.ignore);
 		});
 
 		// Run `persist` and log any failure as a warning. Used by the

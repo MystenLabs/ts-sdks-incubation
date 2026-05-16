@@ -24,7 +24,7 @@ const tryReadJson = (filePath: string): Effect.Effect<ParsedFile, never, FileSys
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem;
 		const absolute = resolvePath(process.cwd(), filePath);
-		const exists = yield* fs.exists(filePath).pipe(Effect.catch(() => Effect.succeed(false)));
+		const exists = yield* fs.exists(filePath).pipe(Effect.orElseSucceed(() => false));
 		if (!exists) return { path: absolute, exists: false };
 		const raw = yield* fs.readFileString(filePath).pipe(
 			Effect.map((txt) => ({ ok: true as const, txt })),

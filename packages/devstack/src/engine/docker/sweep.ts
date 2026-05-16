@@ -65,7 +65,7 @@ export const dockerOrphanSweep = (
 			'--filter',
 			`label=devstack.stack=${stack}`,
 		]);
-		const idsText = yield* spawner.string(lsCmd).pipe(Effect.catch(() => Effect.succeed('')));
+		const idsText = yield* spawner.string(lsCmd).pipe(Effect.orElseSucceed(() => ''));
 		const ids = idsText
 			.split('\n')
 			.map((s) => s.trim())
@@ -87,7 +87,7 @@ export const dockerOrphanSweep = (
 				.exitCode(ChildProcess.make('docker', ['rm', '-f', id]))
 				.pipe(
 					Effect.map(() => true),
-					Effect.catch(() => Effect.succeed(false)),
+					Effect.orElseSucceed(() => false),
 				);
 			if (ok) removed.push(id);
 		}
@@ -114,7 +114,7 @@ export const dockerOrphanSweep = (
 			'--filter',
 			`label=devstack.stack=${stack}`,
 		]);
-		const netIdsText = yield* spawner.string(lsNetCmd).pipe(Effect.catch(() => Effect.succeed('')));
+		const netIdsText = yield* spawner.string(lsNetCmd).pipe(Effect.orElseSucceed(() => ''));
 		const netIds = netIdsText
 			.split('\n')
 			.map((s) => s.trim())
@@ -124,7 +124,7 @@ export const dockerOrphanSweep = (
 				.exitCode(ChildProcess.make('docker', ['network', 'rm', id]))
 				.pipe(
 					Effect.map(() => true),
-					Effect.catch(() => Effect.succeed(false)),
+					Effect.orElseSucceed(() => false),
 				);
 			if (ok) removed.push(id);
 		}

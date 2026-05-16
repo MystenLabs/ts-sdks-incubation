@@ -68,7 +68,7 @@ export const dockerLogsTail = (
 			yield* handle.exitCode;
 			return [stdout, stderr].filter((s) => s.length > 0).join('\n');
 		}),
-	).pipe(Effect.catch(() => Effect.succeed('')));
+	).pipe(Effect.orElseSucceed(() => ''));
 
 /**
  * Block until `docker wait <name>` returns; resolves to the container's

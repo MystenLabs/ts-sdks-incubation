@@ -573,7 +573,7 @@ const acquireEphemeral = (
 		const keysDir = `${baseDir}/.keys`;
 		const keyPath = `${keysDir}/${name}.key`;
 
-		const exists = yield* fs.exists(keyPath).pipe(Effect.catch(() => Effect.succeed(false)));
+		const exists = yield* fs.exists(keyPath).pipe(Effect.orElseSucceed(() => false));
 		if (exists) {
 			const raw = yield* fs.readFileString(keyPath).pipe(
 				Effect.mapError(
@@ -592,7 +592,7 @@ const acquireEphemeral = (
 			return yield* decodeKeypair(name, raw.trim());
 		}
 
-		yield* fs.makeDirectory(keysDir, { recursive: true }).pipe(Effect.catch(() => Effect.void));
+		yield* fs.makeDirectory(keysDir, { recursive: true }).pipe(Effect.ignore);
 		yield* bestEffortChmod(fs, keysDir, 0o700);
 
 		const keypair = Ed25519Keypair.generate();
@@ -845,6 +845,6 @@ const bestEffortChmod = (
 			Effect.tryPromise({
 				try: () => nodeFs.chmod(path, mode),
 				catch: () => undefined,
-			}).pipe(Effect.catch(() => Effect.void)),
+			}).pipe(Effect.ignore),
 		),
 	);

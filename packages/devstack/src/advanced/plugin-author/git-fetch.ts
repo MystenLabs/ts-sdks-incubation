@@ -169,11 +169,11 @@ export const gitFetch = <const Name extends string>(options: GitFetchOptions<Nam
 				for (const sibling of siblingsToGc) {
 					yield* fs
 						.remove(path.join(parentDir, sibling), { recursive: true, force: true })
-						.pipe(Effect.catch(() => Effect.void));
+						.pipe(Effect.ignore);
 				}
 				yield* fs
 					.remove(cloneDir, { recursive: true, force: true })
-					.pipe(Effect.catch(() => Effect.void));
+					.pipe(Effect.ignore);
 				yield* fs.makeDirectory(parentDir, { recursive: true }).pipe(Effect.mapError(mapErr));
 
 				const shallowOk = yield* runGit(spawner, [
@@ -185,7 +185,7 @@ export const gitFetch = <const Name extends string>(options: GitFetchOptions<Nam
 					options.ref,
 					options.repo,
 					cloneDir,
-				]).pipe(Effect.catch(() => Effect.succeed(false)));
+				]).pipe(Effect.orElseSucceed(() => false));
 
 				if (!shallowOk) {
 					// Shallow clone failed (ref is a sha, server refused,
@@ -193,7 +193,7 @@ export const gitFetch = <const Name extends string>(options: GitFetchOptions<Nam
 					// checkout.
 					yield* fs
 						.remove(cloneDir, { recursive: true, force: true })
-						.pipe(Effect.catch(() => Effect.void));
+						.pipe(Effect.ignore);
 					yield* runGit(spawner, ['clone', '--quiet', options.repo, cloneDir]).pipe(
 						Effect.mapError(mapErr),
 					);
@@ -263,7 +263,7 @@ const checkCachedHead = (
 	dir: string,
 ): Effect.Effect<string | undefined, GitFetchError> =>
 	Effect.gen(function* () {
-		const exists = yield* fs.exists(dir).pipe(Effect.catch(() => Effect.succeed(false)));
+		const exists = yield* fs.exists(dir).pipe(Effect.orElseSucceed(() => false));
 		if (!exists) return undefined;
 		const sha = yield* captureGit(spawner, ['-C', dir, 'rev-parse', 'HEAD']);
 		return sha.length > 0 ? sha : undefined;

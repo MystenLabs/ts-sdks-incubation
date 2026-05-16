@@ -44,7 +44,7 @@ export const manifestCommand = Command.make(
 			const filePath = Option.getOrElse(path, defaultManifestPath);
 			const absolute = resolvePath(process.cwd(), filePath);
 
-			const exists = yield* fs.exists(filePath).pipe(Effect.catch(() => Effect.succeed(false)));
+			const exists = yield* fs.exists(filePath).pipe(Effect.orElseSucceed(() => false));
 			if (!exists) {
 				yield* Console.error(
 					`manifest not found at ${absolute}\n` +

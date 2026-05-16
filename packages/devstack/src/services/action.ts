@@ -126,7 +126,7 @@ export const Action = <const Name extends string, R = never, E = unknown>(
 						`Action(${name}): cache hit but probe found stale on-chain state ` +
 							`(${probeProbe}); evicting and re-firing — key=${userKey}`,
 					);
-					yield* state.remove(fullKey).pipe(Effect.catch(() => Effect.void));
+					yield* state.remove(fullKey).pipe(Effect.ignore);
 				}
 				yield* Effect.logInfo(
 					`Action(${name}): cache miss — key=${userKey} (will sign+execute)`,

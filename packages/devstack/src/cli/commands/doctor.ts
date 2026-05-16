@@ -211,7 +211,7 @@ const listLockFiles = (
 	dir: string,
 ): Effect.Effect<ReadonlyArray<string>> =>
 	Effect.gen(function* () {
-		const exists = yield* fs.exists(dir).pipe(Effect.catch(() => Effect.succeed(false)));
+		const exists = yield* fs.exists(dir).pipe(Effect.orElseSucceed(() => false));
 		if (!exists) return [];
 		const entries = yield* fs
 			.readDirectory(dir)
@@ -240,7 +240,7 @@ const readLockBody = (
 	Effect.gen(function* () {
 		const text = yield* fs
 			.readFileString(path)
-			.pipe(Effect.catch(() => Effect.succeed('')));
+			.pipe(Effect.orElseSucceed(() => ''));
 		if (text.trim().length === 0) {
 			return { pid: undefined, startedAt: '', host: '', acquiredAt: undefined };
 		}
@@ -287,7 +287,7 @@ const findStaleLocks = (
 		for (const p of netLocks) candidates.push(p);
 		// Legacy flat lock: `.devstack/state.json.lock`.
 		const flatLock = joinPath(devstackDir, 'state.json.lock');
-		const flatExists = yield* fs.exists(flatLock).pipe(Effect.catch(() => Effect.succeed(false)));
+		const flatExists = yield* fs.exists(flatLock).pipe(Effect.orElseSucceed(() => false));
 		if (flatExists) candidates.push(flatLock);
 
 		const out: Array<StaleLock> = [];
@@ -340,7 +340,7 @@ const removeStaleLocks = (
 				.remove(lock.path)
 				.pipe(
 					Effect.as(true),
-					Effect.catch(() => Effect.succeed(false)),
+					Effect.orElseSucceed(() => false),
 				);
 			if (ok) removed.push(lock.path);
 		}

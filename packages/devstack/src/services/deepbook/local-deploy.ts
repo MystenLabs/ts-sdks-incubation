@@ -334,7 +334,7 @@ export const deepbookLocalDeploy = <
 								catch: (cause) => cause,
 							}).pipe(
 								Effect.map((res) => res as unknown as { objectType?: unknown }),
-								Effect.catch(() => Effect.succeed(undefined)),
+								Effect.orElseSucceed(() => undefined),
 							);
 							if (fetched === undefined) return false;
 							// HIGH-C4: assert the resolved object's `objectType`

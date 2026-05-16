@@ -518,13 +518,13 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 		const masterKeyEnvFile = path.join(sealStateDir, 'master-key.env');
 		yield* fs
 			.makeDirectory(sealStateDir, { recursive: true })
-			.pipe(Effect.catch(() => Effect.void));
+			.pipe(Effect.ignore);
 		yield* fs.chmod(sealStateDir, 0o700).pipe(
 			Effect.catch(() =>
 				Effect.tryPromise({
 					try: () => nodeFs.chmod(sealStateDir, 0o700),
 					catch: () => undefined,
-				}).pipe(Effect.catch(() => Effect.void)),
+				}).pipe(Effect.ignore),
 			),
 		);
 		yield* fs.writeFileString(masterKeyEnvFile, `MASTER_KEY=${masterKey}\n`).pipe(
@@ -542,7 +542,7 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 				Effect.tryPromise({
 					try: () => nodeFs.chmod(masterKeyEnvFile, 0o600),
 					catch: () => undefined,
-				}).pipe(Effect.catch(() => Effect.void)),
+				}).pipe(Effect.ignore),
 			),
 		);
 		const sealScope = yield* Effect.scope;
@@ -551,7 +551,7 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 			Effect.tryPromise({
 				try: () => nodeFs.unlink(masterKeyEnvFile),
 				catch: () => undefined,
-			}).pipe(Effect.catch(() => Effect.void)),
+			}).pipe(Effect.ignore),
 		);
 
 		// 7. Long-running key-server container. Scope-managed: the
@@ -812,7 +812,7 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 					Effect.tryPromise({
 						try: () => nodeFs.chmod(masterKeyEnvFile, 0o600),
 						catch: () => undefined,
-					}).pipe(Effect.catch(() => Effect.void)),
+					}).pipe(Effect.ignore),
 				),
 			);
 
