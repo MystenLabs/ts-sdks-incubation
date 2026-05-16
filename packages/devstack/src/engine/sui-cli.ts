@@ -27,8 +27,6 @@
 
 import * as os from 'node:os';
 import * as path from 'node:path';
-import type { SuiObjectChange, SuiTransactionBlockResponse } from '@mysten/sui/jsonRpc';
-import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { Context, Effect, FileSystem, Schema, Stream } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { inheritedHostEnv } from './safe-env.js';
@@ -47,8 +45,7 @@ import { SuiBuildContainer } from './sui-build-container.js';
 // Default `undefined` means "no image available — fall back to host
 // `sui`". `suiTestnet` / `suiMainnet` / `suiCustom` leave the default in
 // place; only `suiLocalnet` populates it. The reference is consumed by
-// `buildMove` only; `publishPackage` (unused by `publishMove`, kept for
-// test/dry-run use) still shells out to host `sui client publish`.
+// `buildMove` only.
 export const SuiBuildImage = Context.Reference<{ readonly tag: string } | undefined>(
 	'@devstack/SuiBuildImage',
 	{ defaultValue: () => undefined },
@@ -87,140 +84,6 @@ const suiCliError =
 			: raw;
 		return new SuiCliError({ op, message: friendly, cause });
 	};
-
-// -----------------------------------------------------------------------------
-// publishPackage
-// -----------------------------------------------------------------------------
-
-export interface PublishPackageOptions {
-	readonly path: string;
-	readonly rpcUrl: string;
-	readonly faucetUrl?: string;
-	readonly signerHex: string;
-	readonly gasBudget?: bigint;
-	readonly mvrPlaceholder?: string;
-}
-
-export interface PublishPackageResult {
-	readonly packageId: string;
-	readonly upgradeCapId: string | undefined;
-	readonly digest: string;
-	readonly objectChanges: ReadonlyArray<SuiObjectChange>;
-}
-
-const UPGRADE_CAP_TYPE_SUFFIX = '0x2::package::UpgradeCap';
-
-export const publishPackage = (
-	opts: PublishPackageOptions,
-): Effect.Effect<PublishPackageResult, SuiCliError, ChildProcessSpawner.ChildProcessSpawner> =>
-	Effect.gen(function* () {
-		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-
-		const address = yield* deriveAddress(opts.signerHex);
-		yield* Effect.annotateCurrentSpan({
-			'sui.op': 'publish',
-			'sui.path': opts.path,
-			'sui.address': address,
-		});
-
-		const env = cliEnv(opts);
-
-		// Best-effort: switch the active address to the publisher. The
-		// caller is responsible for making sure the secret is in the
-		// keystore; we tolerate a missing alias by failing loud below
-		// when `sui client publish` itself errors.
-		const switchCmd = ChildProcess.make('sui', ['client', 'switch', '--address', address], {
-			env,
-		});
-		yield* spawner.exitCode(switchCmd).pipe(Effect.mapError(suiCliError('sui client switch')));
-
-		const publishArgs: Array<string> = [
-			'client',
-			'publish',
-			'--skip-fetch-latest-git-deps',
-			// Inline unpublished deps' bytecode so sui-cli's package
-			// resolver doesn't try to look them up on-chain. Required for
-			// vendored Move trees (e.g. deepbook + token) on a fresh
-			// localnet. Pairs with `scrubCachedMoveLocks` which strips
-			// `[env.testnet]` / `[env.mainnet]` entries that would
-			// otherwise short-circuit the resolver back to a chain id.
-			'--with-unpublished-dependencies',
-		];
-		if (opts.gasBudget !== undefined) {
-			publishArgs.push('--gas-budget', opts.gasBudget.toString());
-		}
-		publishArgs.push(opts.path);
-
-		const publishCmd = ChildProcess.make('sui', publishArgs, { env });
-		const captured = yield* runWithCapture(spawner, publishCmd, 'sui client publish');
-
-		// Fail-fast on non-zero exit so a build/compile failure surfaces the
-		// CLI's stderr instead of an opaque JSON-parse error on empty stdout.
-		if (captured.exitCode !== 0) {
-			return yield* Effect.fail(
-				new SuiCliError({
-					op: 'sui client publish',
-					message: formatCliFailure('sui client publish', captured),
-					stdout: captured.stdout,
-					stderr: captured.stderr,
-					exitCode: captured.exitCode,
-				}),
-			);
-		}
-
-		const response = yield* parseJson<SuiTransactionBlockResponse>(
-			captured.stdout,
-			'sui client publish',
-		).pipe(
-			Effect.mapError((err) =>
-				new SuiCliError({
-					op: err.op,
-					message: err.message,
-					stdout: captured.stdout,
-					stderr: captured.stderr,
-					exitCode: captured.exitCode,
-					cause: err.cause,
-				}),
-			),
-		);
-
-		if (response.effects?.status.status !== 'success') {
-			const detail = response.effects?.status.error ?? 'unknown';
-			return yield* Effect.fail(
-				new SuiCliError({
-					op: 'sui client publish',
-					message: `publish tx failed: ${detail}`,
-				}),
-			);
-		}
-
-		const objectChanges = (response.objectChanges ?? []) as ReadonlyArray<SuiObjectChange>;
-		const published = objectChanges.find(
-			(c): c is Extract<SuiObjectChange, { type: 'published' }> => c.type === 'published',
-		);
-		if (published === undefined) {
-			return yield* Effect.fail(
-				new SuiCliError({
-					op: 'sui client publish',
-					message: 'no `published` change in result',
-				}),
-			);
-		}
-
-		const upgradeCapId = objectChanges.find(
-			(c): c is Extract<SuiObjectChange, { type: 'created' }> =>
-				c.type === 'created' &&
-				typeof c.objectType === 'string' &&
-				c.objectType.endsWith(UPGRADE_CAP_TYPE_SUFFIX),
-		)?.objectId;
-
-		return {
-			packageId: published.packageId,
-			upgradeCapId,
-			digest: response.digest,
-			objectChanges,
-		};
-	}).pipe(Effect.withSpan('SuiCli.publishPackage'));
 
 // -----------------------------------------------------------------------------
 // buildMove
@@ -491,32 +354,6 @@ const cliEnv = (opts: { rpcUrl: string; faucetUrl?: string }): Record<string, st
 	if (opts.faucetUrl !== undefined) env.SUI_FAUCET_URL = opts.faucetUrl;
 	return env;
 };
-
-// Derive the Sui address (0x-prefixed) from an Ed25519 hex secret key.
-// Accepts an optional `0x` prefix on the hex. Wrapped in `Effect.try`
-// so an invalid hex string surfaces as `SuiCliError` rather than a
-// defect.
-const deriveAddress = (signerHex: string): Effect.Effect<string, SuiCliError> =>
-	Effect.try({
-		try: () => {
-			const hex = signerHex.startsWith('0x') ? signerHex.slice(2) : signerHex;
-			if (hex.length !== 64) {
-				throw new Error(
-					`expected a 32-byte (64-hex-char) Ed25519 secret, got ${hex.length} hex chars`,
-				);
-			}
-			const bytes = new Uint8Array(32);
-			for (let i = 0; i < 32; i++) {
-				const byte = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-				if (Number.isNaN(byte)) {
-					throw new Error(`invalid hex char at byte ${i}`);
-				}
-				bytes[i] = byte;
-			}
-			return Ed25519Keypair.fromSecretKey(bytes).toSuiAddress();
-		},
-		catch: suiCliError('deriveAddress'),
-	});
 
 // `sui move build --json` writes pure JSON to stdout, but other
 // subcommands occasionally emit progress lines first. Find the last

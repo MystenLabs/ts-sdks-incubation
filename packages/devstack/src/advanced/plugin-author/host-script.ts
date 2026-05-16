@@ -15,7 +15,6 @@ export interface HostScriptOptions<Name extends string, E, R> {
 	readonly args?: ReadonlyArray<string>;
 	readonly env?: Record<string, string> | Effect.Effect<Record<string, string>, E, R>;
 	readonly cwd?: string;
-	readonly captureStdout?: boolean;
 	readonly dependsOn?: ReadonlyArray<Ref<any, any, any, any>>;
 	/**
 	 * Wall-clock budget for the entire spawn. On expiry the spawner's

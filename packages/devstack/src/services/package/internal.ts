@@ -278,7 +278,25 @@ export const publishMove = <
 			// at runtime. Sanitize the package name into a valid MVR slug so
 			// `connect_four` becomes `connect-four`. Callers can still pin
 			// an exact `mvrPlaceholder` via options.
-			const mvrSlug = options.name.toLowerCase().replace(/[^a-z0-9-]+/g, '-');
+			//
+			// Phase D refinements:
+			//   - Collapse runs of `-` so `foo__bar` doesn't become `foo--bar`.
+			//   - Strip leading/trailing `-` so `_foo_` doesn't become `-foo-`.
+			//   - Prepend `pkg-` when the slug starts with a digit (npm scope
+			//     rules + MVR convention treat digit-leading names as
+			//     suspicious).
+			//   - Fall back to `pkg` when the slug collapses to empty (a name
+			//     consisting only of separators like `___`).
+			const mvrSlug = (() => {
+				let s = options.name
+					.toLowerCase()
+					.replace(/[^a-z0-9-]+/g, '-')
+					.replace(/-+/g, '-')
+					.replace(/^-+|-+$/g, '');
+				if (s.length === 0) s = 'pkg';
+				if (/^[0-9]/.test(s)) s = `pkg-${s}`;
+				return s;
+			})();
 			const mvrPlaceholder = options.mvrPlaceholder ?? `@local/${mvrSlug}`;
 			const sourceHash = yield* hashMoveSources(options.path);
 			const cacheKey = `publishMove/${options.name}/${sourceHash}/${sui.chainId}`;

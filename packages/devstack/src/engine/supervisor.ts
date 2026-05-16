@@ -46,7 +46,7 @@ import {
 	type EngineHandleShape,
 } from './engine.js';
 import { FileWatcher, FileWatcherLive } from './file-watcher.js';
-import { Identity, deriveAppName } from './identity.js';
+import { Identity, deriveAppName, validateIdentity } from './identity.js';
 import { LeasingLive } from './leasing.js';
 import { registry, type RegistryNetwork } from './registry.js';
 import { PortAllocatorLive } from './port-allocator.js';
@@ -266,11 +266,19 @@ const composeBootstrapLayer = (
 	// from the resulting layer so user primitives can still
 	// `yield* StateStoreConfig` from inside their build body.
 	const StateStoreFullLive = Layer.provideMerge(StateStoreLive, StateStoreConfigLive);
-	const IdentityLive = Layer.succeed(Identity, {
+	const identityShape = {
 		app: deriveAppName(),
 		stack: stateStoreConfig.stack,
 		network: stateStoreConfig.network,
-	});
+	};
+	// Phase D: validate `app` + `stack` at the Identity-construction
+	// boundary. The strings flow into docker container names + labels
+	// + filesystem paths under `.devstack/stacks/<stack>/`; rejecting
+	// `..`, `/`, and other shell-meaningful characters here surfaces
+	// the bad config at supervisor boot rather than as an inscrutable
+	// docker / filesystem error downstream.
+	validateIdentity(identityShape);
+	const IdentityLive = Layer.succeed(Identity, identityShape);
 	const platform: Layer.Layer<unknown, unknown, never> =
 		opts.platformLayer ?? (NodeServicesLayer as Layer.Layer<unknown, unknown, never>);
 	// Layer-order (innermost → outermost):
@@ -586,11 +594,19 @@ export const composeInfraLayer = (
 	};
 	const StateStoreConfigLive = Layer.succeed(StateStoreConfig, stateStoreConfig);
 	const StateStoreFullLive = Layer.provideMerge(StateStoreLive, StateStoreConfigLive);
-	const IdentityLive = Layer.succeed(Identity, {
+	const identityShape = {
 		app: deriveAppName(),
 		stack: stateStoreConfig.stack,
 		network: stateStoreConfig.network,
-	});
+	};
+	// Phase D: validate `app` + `stack` at the Identity-construction
+	// boundary. The strings flow into docker container names + labels
+	// + filesystem paths under `.devstack/stacks/<stack>/`; rejecting
+	// `..`, `/`, and other shell-meaningful characters here surfaces
+	// the bad config at supervisor boot rather than as an inscrutable
+	// docker / filesystem error downstream.
+	validateIdentity(identityShape);
+	const IdentityLive = Layer.succeed(Identity, identityShape);
 	// `infraOverrides` (when set) is merged LAST so `Layer.mergeAll`'s
 	// later-wins semantics shadow any duplicate tag in `InfraLiveCore`
 	// (e.g. a deterministic `PortAllocator` for integration tests).
