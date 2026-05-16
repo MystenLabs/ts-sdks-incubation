@@ -42,9 +42,7 @@ export interface TreasuryCapMintStrategyOptions {
  * registers an instance automatically for each coin in
  * `Package({ coins })`.
  */
-export const treasuryCapMintStrategy = (
-	opts: TreasuryCapMintStrategyOptions,
-): FaucetStrategy =>
+export const treasuryCapMintStrategy = (opts: TreasuryCapMintStrategyOptions): FaucetStrategy =>
 	defineStrategy({
 		coinType: opts.coinType,
 		request: ({ address, amount }) =>
@@ -56,11 +54,7 @@ export const treasuryCapMintStrategy = (
 				tx.moveCall({
 					target: '0x2::coin::mint_and_transfer',
 					typeArguments: [opts.coinType],
-					arguments: [
-						tx.object(opts.treasuryCapId),
-						tx.pure.u64(amount),
-						tx.pure.address(address),
-					],
+					arguments: [tx.object(opts.treasuryCapId), tx.pure.u64(amount), tx.pure.address(address)],
 				});
 				yield* opts.signer.signAndExecute(tx).pipe(
 					Effect.mapError(

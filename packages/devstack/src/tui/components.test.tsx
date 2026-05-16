@@ -44,9 +44,7 @@ describe('App', () => {
 
 	it('renders a service entry with title + primary URL + ready badge', async () => {
 		const engine = await buildEngine();
-		await Effect.runPromise(
-			engine.seedTags([{ key: '@devstack/Sui', kind: 'service' }]),
-		);
+		await Effect.runPromise(engine.seedTags([{ key: '@devstack/Sui', kind: 'service' }]));
 		await Effect.runPromise(engine.markAcquiring('@devstack/Sui', 'service'));
 		await Effect.runPromise(
 			engine.markReady('@devstack/Sui', {
@@ -207,9 +205,7 @@ describe('App', () => {
 		await Effect.runPromise(engine.markAcquiring('@devstack/Sui', 'service'));
 		const { Cause } = await import('effect');
 		const shortMsg = 'connect ECONNREFUSED 127.0.0.1:9000';
-		await Effect.runPromise(
-			engine.markFailed('@devstack/Sui', Cause.fail(new Error(shortMsg))),
-		);
+		await Effect.runPromise(engine.markFailed('@devstack/Sui', Cause.fail(new Error(shortMsg))));
 
 		const { lastFrame, unmount } = inkRender(
 			React.createElement(App, { engine, onQuit: () => undefined, pollIntervalMs: 10 }),
@@ -467,9 +463,7 @@ describe('App', () => {
 			'Error response from daemon: invalid pool request: Pool overlaps with ' +
 			'other one on this address space. ' +
 			'The full text is sufficiently long to demand truncation across both layers.';
-		await Effect.runPromise(
-			engine.markFailed('@devstack/Sui', Cause.fail(new Error(longError))),
-		);
+		await Effect.runPromise(engine.markFailed('@devstack/Sui', Cause.fail(new Error(longError))));
 		const { lastFrame, unmount } = inkRender(
 			React.createElement(App, { engine, onQuit: () => undefined, pollIntervalMs: 10 }),
 		);
@@ -539,9 +533,7 @@ describe('App', () => {
 			engine.seedTags([{ key: 'sui.localnet', kind: 'service', title: 'sui.localnet' }]),
 		);
 		await Effect.runPromise(engine.markAcquiring('sui.localnet', 'service'));
-		await Effect.runPromise(
-			engine.setPhase('sui.localnet', 'awaiting rpc + faucet + graphql'),
-		);
+		await Effect.runPromise(engine.setPhase('sui.localnet', 'awaiting rpc + faucet + graphql'));
 
 		const { lastFrame, unmount } = inkRender(
 			React.createElement(App, { engine, onQuit: () => undefined, pollIntervalMs: 10 }),
@@ -558,10 +550,12 @@ describe('App', () => {
 		// `dev-server`) land under the synthetic `Other` header so they
 		// have a place to sit alongside the prefixed groups.
 		const engine = await buildEngine();
-		await Effect.runPromise(Ref.update(engine.tuiState, (s) => ({
-			...s,
-			entries: [{ key: 'mystery', kind: 'other' as const, status: 'ready' as const }],
-		})));
+		await Effect.runPromise(
+			Ref.update(engine.tuiState, (s) => ({
+				...s,
+				entries: [{ key: 'mystery', kind: 'other' as const, status: 'ready' as const }],
+			})),
+		);
 		const { lastFrame, unmount } = inkRender(
 			React.createElement(App, { engine, onQuit: () => undefined, pollIntervalMs: 10 }),
 		);

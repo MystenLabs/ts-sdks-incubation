@@ -188,13 +188,13 @@ export const Deepbook = (opts: DeepbookOptions = {}) => {
 	if (network !== 'localnet') {
 		const knownOpts: DeepbookKnownPackageOptions = {
 			network,
-			...(opts.override ?? {}),
+			...opts.override,
 		};
 		return Object.assign(deepbookKnownPackage(knownOpts), { __kind: 'service' as const });
 	}
 	const localOpts = {
 		...(opts.name !== undefined ? { name: opts.name } : {}),
-		...(opts.local ?? {}),
+		...opts.local,
 	} as Parameters<typeof deepbookLocalDeploy>[0];
 	return Object.assign(deepbookLocalDeploy(localOpts), { __kind: 'service' as const });
 };

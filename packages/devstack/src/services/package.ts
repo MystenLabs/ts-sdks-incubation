@@ -44,9 +44,7 @@ export interface Package {
  *  Renamed `PackageTag` (not `Package`) so the factory `Package(...)`
  *  in this file owns the public-surface name. The Context key
  *  (`'@devstack/Package'`) is unchanged. */
-export class PackageTag extends Context.Service<PackageTag, Package>()(
-	'@devstack/Package',
-) {}
+export class PackageTag extends Context.Service<PackageTag, Package>()('@devstack/Package') {}
 
 /** Refined shape for packages WE publish from local sources. Adds the
  *  fields that are only meaningful in that mode:
@@ -178,10 +176,7 @@ export type CaptureSpec<TCaptured> =
 	 *  the declarative form isn't expressive enough. */
 	| ((changes: ReadonlyArray<SuiObjectChange>) => TCaptured);
 
-export interface PackageOptions<
-	TCaptured,
-	TCoins extends ReadonlyArray<CoinSpec>,
-> {
+export interface PackageOptions<TCaptured, TCoins extends ReadonlyArray<CoinSpec>> {
 	/** Account that signs the publish transaction and ends up holding
 	 *  the resulting `UpgradeCap`. */
 	readonly signer: Ref<any, Account, any, any>;

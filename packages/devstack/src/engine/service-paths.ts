@@ -113,9 +113,7 @@ export const ExtraRuntimePathsLive: Layer.Layer<ExtraRuntimePaths, never, never>
 					}
 					if (!resolvePath(absolutePath).startsWith('/')) {
 						return yield* Effect.die(
-							new Error(
-								`ExtraRuntimePaths.addExtra: '${absolutePath}' is not absolute`,
-							),
+							new Error(`ExtraRuntimePaths.addExtra: '${absolutePath}' is not absolute`),
 						);
 					}
 					yield* Ref.update(ref, (current) => {
@@ -164,12 +162,10 @@ export const servicePath = (
 /** Resolve the canonical runtime root for the active stack/network.
  *  The snapshot save / restore pipeline calls this to know which
  *  directory tree to tar / extract. */
-export const runtimeRoot: Effect.Effect<string, never, StateStoreConfig> = Effect.gen(
-	function* () {
-		const cfg = yield* StateStoreConfig;
-		return resolveRuntimeRoot(cfg);
-	},
-);
+export const runtimeRoot: Effect.Effect<string, never, StateStoreConfig> = Effect.gen(function* () {
+	const cfg = yield* StateStoreConfig;
+	return resolveRuntimeRoot(cfg);
+});
 
 /** Schema-validated path shape for snapshot manifest. The save/restore
  *  pipeline reads this from `<snapshot>/meta.json` so a future migration

@@ -12,12 +12,7 @@ import { Effect, Exit, Layer } from 'effect';
 import { layer as NodeFileSystemLayer } from '@effect/platform-node/NodeFileSystem';
 import { describe, expect, it } from '@effect/vitest';
 import { EngineLive } from '../engine/engine.js';
-import {
-	WalrusAdminTag,
-	WalrusNetworkTag,
-	WalrusNodesTag,
-	type WalrusNetwork,
-} from './walrus.js';
+import { WalrusAdminTag, WalrusNetworkTag, WalrusNodesTag, type WalrusNetwork } from './walrus.js';
 import { knownDeployments } from '../engine/known-deployments.js';
 import { routerHostname, routerId } from '../engine/router-hostname.js';
 import { walrusKnownDeployment } from './walrus/index.js';
@@ -35,8 +30,9 @@ type _ExpectedWalrusPackageConfig = {
 	stakingPoolId: string;
 	exchangeIds?: string[];
 };
-type _WalrusPackageConfigCheck =
-	WalrusNetwork['packageConfig'] extends _ExpectedWalrusPackageConfig ? true : never;
+type _WalrusPackageConfigCheck = WalrusNetwork['packageConfig'] extends _ExpectedWalrusPackageConfig
+	? true
+	: never;
 const _walrusPackageConfigCheck: _WalrusPackageConfigCheck = true;
 void _walrusPackageConfigCheck;
 
@@ -90,34 +86,36 @@ describe('walrus storage-node router hostnames', () => {
 });
 
 describe('walrusKnownDeployment', () => {
-	it.effect('provides WalrusNetworkTag + WalrusNodesTag from a network lookup with explicit nodes', () =>
-		Effect.gen(function* () {
-			// The registry intentionally omits `nodes` (testnet has 100+,
-			// dynamically fetched from the staking pool by @mysten/walrus).
-			// Pass an explicit (empty) committee here so the factory
-			// doesn't throw; the chain-state fields come from the lookup.
-			const member = walrusKnownDeployment({ network: 'testnet', nodes: [] });
+	it.effect(
+		'provides WalrusNetworkTag + WalrusNodesTag from a network lookup with explicit nodes',
+		() =>
+			Effect.gen(function* () {
+				// The registry intentionally omits `nodes` (testnet has 100+,
+				// dynamically fetched from the staking pool by @mysten/walrus).
+				// Pass an explicit (empty) committee here so the factory
+				// doesn't throw; the chain-state fields come from the lookup.
+				const member = walrusKnownDeployment({ network: 'testnet', nodes: [] });
 
-			const { network, nodes } = yield* Effect.gen(function* () {
-				const n = yield* WalrusNetworkTag;
-				const ns = yield* WalrusNodesTag;
-				return { network: n, nodes: ns };
-			}).pipe(Effect.provide(Layer.provide(member.__layer, TestBaseLayer)));
+				const { network, nodes } = yield* Effect.gen(function* () {
+					const n = yield* WalrusNetworkTag;
+					const ns = yield* WalrusNodesTag;
+					return { network: n, nodes: ns };
+				}).pipe(Effect.provide(Layer.provide(member.__layer, TestBaseLayer)));
 
-			const expected = knownDeployments.walrus.testnet!;
-			expect(network.systemObjectId).toBe(expected.systemObjectId);
-			expect(network.stakingPoolId).toBe(expected.stakingPoolId);
-			expect(network.subsidiesPackageId).toBe(expected.subsidiesPackageId);
-			expect(network.exchangeIds).toEqual(expected.exchangeIds);
-			expect(network.network).toBe('testnet');
-			expect(nodes.nodes.length).toBe(0);
-			// SDK-ready packageConfig — values mirror the top-level fields
-			// and the shape is the one `@mysten/walrus`'s WalrusClient
-			// takes verbatim.
-			expect(network.packageConfig.systemObjectId).toBe(expected.systemObjectId);
-			expect(network.packageConfig.stakingPoolId).toBe(expected.stakingPoolId);
-			expect(network.packageConfig.exchangeIds).toEqual(expected.exchangeIds);
-		}),
+				const expected = knownDeployments.walrus.testnet!;
+				expect(network.systemObjectId).toBe(expected.systemObjectId);
+				expect(network.stakingPoolId).toBe(expected.stakingPoolId);
+				expect(network.subsidiesPackageId).toBe(expected.subsidiesPackageId);
+				expect(network.exchangeIds).toEqual(expected.exchangeIds);
+				expect(network.network).toBe('testnet');
+				expect(nodes.nodes.length).toBe(0);
+				// SDK-ready packageConfig — values mirror the top-level fields
+				// and the shape is the one `@mysten/walrus`'s WalrusClient
+				// takes verbatim.
+				expect(network.packageConfig.systemObjectId).toBe(expected.systemObjectId);
+				expect(network.packageConfig.stakingPoolId).toBe(expected.stakingPoolId);
+				expect(network.packageConfig.exchangeIds).toEqual(expected.exchangeIds);
+			}),
 	);
 
 	it.effect('does NOT provide WalrusAdminTag', () =>

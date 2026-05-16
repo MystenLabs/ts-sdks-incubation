@@ -203,11 +203,8 @@ export const deepbookMarketMaker = <const Name extends string>(
 							pool,
 							spec: {
 								sizePerLevel:
-									typeof spec.sizePerLevel === 'function'
-										? spec.sizePerLevel()
-										: spec.sizePerLevel,
-								midPrice:
-									typeof spec.midPrice === 'function' ? spec.midPrice() : spec.midPrice,
+									typeof spec.sizePerLevel === 'function' ? spec.sizePerLevel() : spec.sizePerLevel,
+								midPrice: typeof spec.midPrice === 'function' ? spec.midPrice() : spec.midPrice,
 								preDeposit: spec.preDeposit,
 							},
 						})),
@@ -241,9 +238,7 @@ export const deepbookMarketMaker = <const Name extends string>(
 					// drift is observable.
 					const mid = typeof spec.midPrice === 'function' ? spec.midPrice() : spec.midPrice;
 					const sizeBase =
-						typeof spec.sizePerLevel === 'function'
-							? spec.sizePerLevel()
-							: spec.sizePerLevel;
+						typeof spec.sizePerLevel === 'function' ? spec.sizePerLevel() : spec.sizePerLevel;
 					const tickSize = spec.tickSize;
 
 					for (let i = 1; i <= levels; i++) {

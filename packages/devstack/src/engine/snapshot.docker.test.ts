@@ -114,143 +114,129 @@ const readPackageIds = (stateFile: string): ReadonlyArray<string> => {
 	return ids;
 };
 
-describe.skipIf(!DOCKER_OK)(
-	'snapshot end-to-end against real Docker (examples/arena)',
-	() => {
-		// Unique per test invocation. Survives parallel vitest workers,
-		// the developer's interactive `main` stack, and previous runs of
-		// this same test that may not have torn down cleanly. The 8-hex
-		// suffix is small enough to fit comfortably in container names
-		// (docker caps at 63 chars).
-		const STACK = `test-snap-${randomBytes(4).toString('hex')}`;
-		const env: NodeJS.ProcessEnv = {
-			...process.env,
-			DEVSTACK_STACK: STACK,
-		};
-		const stateFile = resolvePath(ARENA_DIR, '.devstack', 'stacks', STACK, 'state.json');
+describe.skipIf(!DOCKER_OK)('snapshot end-to-end against real Docker (examples/arena)', () => {
+	// Unique per test invocation. Survives parallel vitest workers,
+	// the developer's interactive `main` stack, and previous runs of
+	// this same test that may not have torn down cleanly. The 8-hex
+	// suffix is small enough to fit comfortably in container names
+	// (docker caps at 63 chars).
+	const STACK = `test-snap-${randomBytes(4).toString('hex')}`;
+	const env: NodeJS.ProcessEnv = {
+		...process.env,
+		DEVSTACK_STACK: STACK,
+	};
+	const stateFile = resolvePath(ARENA_DIR, '.devstack', 'stacks', STACK, 'state.json');
 
-		// Use a per-run label suffix derived from the stack id so two
-		// concurrent runs (or a leftover snapshot from a previously
-		// crashed run) don't produce ambiguous matches on `restore`.
-		const LABEL = `t${randomBytes(3).toString('hex')}`;
-		const SNAPSHOT_DIR = resolvePath(ARENA_DIR, '.devstack', 'snapshots');
+	// Use a per-run label suffix derived from the stack id so two
+	// concurrent runs (or a leftover snapshot from a previously
+	// crashed run) don't produce ambiguous matches on `restore`.
+	const LABEL = `t${randomBytes(3).toString('hex')}`;
+	const SNAPSHOT_DIR = resolvePath(ARENA_DIR, '.devstack', 'snapshots');
 
-		// One serial flow — splitting into separate `it` blocks would
-		// require fragile shared state across tests + extra cleanup.
-		// A 60s integration test is a single assertion target.
-		it(
-			'apply → snapshot save → wipe → snapshot restore → apply preserves chain identity',
-			async () => {
-				try {
-					// Pre-cleanup: drop any stale snapshot dirs that share
-					// our run-suffix shape (paranoia — `randomBytes(3)` ⇒
-					// 16M unique labels, vanishingly unlikely to collide,
-					// but a crash mid-test could leave a partial snapshot
-					// that prevents the next test from running).
-					const { rmSync, existsSync, readdirSync } = require('node:fs') as typeof import('node:fs');
-					if (existsSync(SNAPSHOT_DIR)) {
-						for (const entry of readdirSync(SNAPSHOT_DIR)) {
-							if (entry.endsWith(`-${LABEL}`)) {
-								rmSync(resolvePath(SNAPSHOT_DIR, entry), {
-									recursive: true,
-									force: true,
-								});
-							}
-						}
-					}
-					// 1. Fresh apply against the unique stack. Builds the
-					// custom postgres image first time (~30s); subsequent
-					// runs hit docker layer cache (~2s).
-					const apply1 = await runCli(ARENA_DIR, env, ['apply']);
-					expect(apply1.exitCode, `apply #1 failed:\n${apply1.stderr}`).toBe(0);
-					expect(apply1.stdout).toContain('apply ok');
-
-					const pre = readPackageIds(stateFile);
-					expect(pre.length).toBeGreaterThan(0);
-
-					// 2. Save snapshot. Captures `state.json` + `runtime/`
-					// tar + `docker commit + save` of both arena containers.
-					const save = await runCli(ARENA_DIR, env, [
-						'snapshot',
-						'save',
-						'--label',
-						LABEL,
-					]);
-					expect(save.exitCode, `snapshot save failed:\n${save.stderr}`).toBe(0);
-					expect(save.stdout).toMatch(new RegExp(`saved snapshot \\S+-${LABEL}`));
-
-					// 3. Wipe — destroys containers (rm -f via wipe path)
-					// AND the on-disk state. The snapshot dir survives by
-					// design (wipe's `--keep-snapshots` semantics — even
-					// when not passed explicitly, snapshots aren't
-					// auto-removed since they may span stacks).
-					const wipe = await runCli(ARENA_DIR, env, ['wipe', '--yes']);
-					expect(wipe.exitCode, `wipe failed:\n${wipe.stderr}`).toBe(0);
-
-					// 4. Restore from the snapshot. Loads container tars +
-					// retags to the supervisor's content-addressed base
-					// image tags + extracts runtime/ + copies state.json
-					// back.
-					const restore = await runCli(ARENA_DIR, env, [
-						'snapshot',
-						'restore',
-						LABEL,
-					]);
-					expect(restore.exitCode, `restore failed:\n${restore.stderr}`).toBe(0);
-					expect(restore.stdout).toContain('runtime/ extracted');
-					expect(restore.stdout).toMatch(/loaded images:.*devstack-snap:/);
-
-					// 5. Apply against the restored state. With the retag
-					// in place, the supervisor's dockerImage cache-skip
-					// finds the retagged image, decideRunAction goes
-					// through `fresh` (no container with this name
-					// exists post-wipe), and `docker run` creates a new
-					// container from the snapshot image — chain state
-					// already in /root/.sui at first boot. The entrypoint's
-					// `if [ ! -d /root/.sui/sui_config ]` guard skips
-					// genesis. publishMove + Action hit the state-store
-					// cache because chainId matches.
-					const apply2 = await runCli(ARENA_DIR, env, ['apply']);
-					expect(apply2.exitCode, `apply #2 failed:\n${apply2.stderr}`).toBe(0);
-					expect(apply2.stdout).toContain('apply ok');
-					// The cache-hit log line is the smoking gun: if it's
-					// absent, the supervisor saw a different chainId
-					// (fresh genesis) and the snapshot's content was lost.
-					expect(apply2.stdout).toMatch(
-						/publishMove\(connect_four\): cache hit/,
-					);
-					expect(apply2.stdout).toMatch(/Action\(arena\.openLobby\): cache hit/);
-
-					// 6. Assert: packageId identical to pre-snapshot. This
-					// is what catches the four bugs the original v4
-					// design shipped with — any of them would flip the
-					// chainId and re-publish to a new packageId.
-					const post = readPackageIds(stateFile);
-					expect(post).toContain(pre[0]);
-				} finally {
-					// Best-effort cleanup. Even if assertions failed, drop
-					// the test stack's containers + on-disk state AND the
-					// snapshot dirs this run produced so the next run
-					// starts clean. Errors here are swallowed — the test
-					// result is what matters, not the cleanup.
-					await runCli(ARENA_DIR, env, ['wipe', '--yes']).catch(() => undefined);
-					const { rmSync, existsSync, readdirSync } = require('node:fs') as typeof import('node:fs');
-					if (existsSync(SNAPSHOT_DIR)) {
-						for (const entry of readdirSync(SNAPSHOT_DIR)) {
-							if (entry.endsWith(`-${LABEL}`)) {
-								rmSync(resolvePath(SNAPSHOT_DIR, entry), {
-									recursive: true,
-									force: true,
-								});
-							}
+	// One serial flow — splitting into separate `it` blocks would
+	// require fragile shared state across tests + extra cleanup.
+	// A 60s integration test is a single assertion target.
+	it(
+		'apply → snapshot save → wipe → snapshot restore → apply preserves chain identity',
+		async () => {
+			try {
+				// Pre-cleanup: drop any stale snapshot dirs that share
+				// our run-suffix shape (paranoia — `randomBytes(3)` ⇒
+				// 16M unique labels, vanishingly unlikely to collide,
+				// but a crash mid-test could leave a partial snapshot
+				// that prevents the next test from running).
+				const { rmSync, existsSync, readdirSync } = require('node:fs') as typeof import('node:fs');
+				if (existsSync(SNAPSHOT_DIR)) {
+					for (const entry of readdirSync(SNAPSHOT_DIR)) {
+						if (entry.endsWith(`-${LABEL}`)) {
+							rmSync(resolvePath(SNAPSHOT_DIR, entry), {
+								recursive: true,
+								force: true,
+							});
 						}
 					}
 				}
-			},
-			TEST_TIMEOUT_MS,
-		);
-	},
-);
+				// 1. Fresh apply against the unique stack. Builds the
+				// custom postgres image first time (~30s); subsequent
+				// runs hit docker layer cache (~2s).
+				const apply1 = await runCli(ARENA_DIR, env, ['apply']);
+				expect(apply1.exitCode, `apply #1 failed:\n${apply1.stderr}`).toBe(0);
+				expect(apply1.stdout).toContain('apply ok');
+
+				const pre = readPackageIds(stateFile);
+				expect(pre.length).toBeGreaterThan(0);
+
+				// 2. Save snapshot. Captures `state.json` + `runtime/`
+				// tar + `docker commit + save` of both arena containers.
+				const save = await runCli(ARENA_DIR, env, ['snapshot', 'save', '--label', LABEL]);
+				expect(save.exitCode, `snapshot save failed:\n${save.stderr}`).toBe(0);
+				expect(save.stdout).toMatch(new RegExp(`saved snapshot \\S+-${LABEL}`));
+
+				// 3. Wipe — destroys containers (rm -f via wipe path)
+				// AND the on-disk state. The snapshot dir survives by
+				// design (wipe's `--keep-snapshots` semantics — even
+				// when not passed explicitly, snapshots aren't
+				// auto-removed since they may span stacks).
+				const wipe = await runCli(ARENA_DIR, env, ['wipe', '--yes']);
+				expect(wipe.exitCode, `wipe failed:\n${wipe.stderr}`).toBe(0);
+
+				// 4. Restore from the snapshot. Loads container tars +
+				// retags to the supervisor's content-addressed base
+				// image tags + extracts runtime/ + copies state.json
+				// back.
+				const restore = await runCli(ARENA_DIR, env, ['snapshot', 'restore', LABEL]);
+				expect(restore.exitCode, `restore failed:\n${restore.stderr}`).toBe(0);
+				expect(restore.stdout).toContain('runtime/ extracted');
+				expect(restore.stdout).toMatch(/loaded images:.*devstack-snap:/);
+
+				// 5. Apply against the restored state. With the retag
+				// in place, the supervisor's dockerImage cache-skip
+				// finds the retagged image, decideRunAction goes
+				// through `fresh` (no container with this name
+				// exists post-wipe), and `docker run` creates a new
+				// container from the snapshot image — chain state
+				// already in /root/.sui at first boot. The entrypoint's
+				// `if [ ! -d /root/.sui/sui_config ]` guard skips
+				// genesis. publishMove + Action hit the state-store
+				// cache because chainId matches.
+				const apply2 = await runCli(ARENA_DIR, env, ['apply']);
+				expect(apply2.exitCode, `apply #2 failed:\n${apply2.stderr}`).toBe(0);
+				expect(apply2.stdout).toContain('apply ok');
+				// The cache-hit log line is the smoking gun: if it's
+				// absent, the supervisor saw a different chainId
+				// (fresh genesis) and the snapshot's content was lost.
+				expect(apply2.stdout).toMatch(/publishMove\(connect_four\): cache hit/);
+				expect(apply2.stdout).toMatch(/Action\(arena\.openLobby\): cache hit/);
+
+				// 6. Assert: packageId identical to pre-snapshot. This
+				// is what catches the four bugs the original v4
+				// design shipped with — any of them would flip the
+				// chainId and re-publish to a new packageId.
+				const post = readPackageIds(stateFile);
+				expect(post).toContain(pre[0]);
+			} finally {
+				// Best-effort cleanup. Even if assertions failed, drop
+				// the test stack's containers + on-disk state AND the
+				// snapshot dirs this run produced so the next run
+				// starts clean. Errors here are swallowed — the test
+				// result is what matters, not the cleanup.
+				await runCli(ARENA_DIR, env, ['wipe', '--yes']).catch(() => undefined);
+				const { rmSync, existsSync, readdirSync } = require('node:fs') as typeof import('node:fs');
+				if (existsSync(SNAPSHOT_DIR)) {
+					for (const entry of readdirSync(SNAPSHOT_DIR)) {
+						if (entry.endsWith(`-${LABEL}`)) {
+							rmSync(resolvePath(SNAPSHOT_DIR, entry), {
+								recursive: true,
+								force: true,
+							});
+						}
+					}
+				}
+			}
+		},
+		TEST_TIMEOUT_MS,
+	);
+});
 
 // Stamp at suite-load so the dev sees this in `pnpm test` output when
 // Docker is missing, instead of silently passing zero assertions.
@@ -261,4 +247,3 @@ if (!DOCKER_OK) {
 			'Start Docker Desktop / dockerd to enable.',
 	);
 }
-

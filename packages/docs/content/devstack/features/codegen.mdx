@@ -26,21 +26,21 @@ const codegen = Codegen({ packages: [hello, world] });
 export default devstack(/* ... */, codegen);
 ```
 
-`output` is optional and defaults to `./src/generated/` — a normal `src/`-typed source dir
-picked up by TypeScript + Vite without extra wiring. Bindings land at
+`output` is optional and defaults to `./src/generated/` — a normal `src/`-typed source dir picked up
+by TypeScript + Vite without extra wiring. Bindings land at
 `./src/generated/bindings/<package-name>/`; app code imports directly:
 
 ```ts
 import { Lobby } from './generated/bindings/connect_four/game.js';
 ```
 
-Atomic dir swap means your dev server never sees a half-written tree mid-cycle.
-`KnownPackage(...)` entries are silently skipped — the bindings emitter needs Move source.
+Atomic dir swap means your dev server never sees a half-written tree mid-cycle. `KnownPackage(...)`
+entries are silently skipped — the bindings emitter needs Move source.
 
 **Why `src/generated/` and not `.devstack/`?** The `.devstack/` dot-dir is reserved for
 non-importable runtime state (account keys, wallet tokens, walrus deploy outputs, etc.) and is
-deliberately invisible to TS tooling. Importable generated code belongs in a normal source dir.
-See [state and snapshots](./state-and-snapshots) for the full split.
+deliberately invisible to TS tooling. Importable generated code belongs in a normal source dir. See
+[state and snapshots](./state-and-snapshots) for the full split.
 
 ## DappKit: typed dapp-kit factory
 

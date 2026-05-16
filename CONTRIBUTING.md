@@ -45,7 +45,7 @@ pnpm lint:fix
 ## Commits + PRs
 
 - Imperative mood subject line, ≤ 70 chars (`fix: …`, `feat: …`, etc. optional).
-- Body explains the *why* — the diff already tells the *what*.
+- Body explains the _why_ — the diff already tells the _what_.
 - For changes that touch the published packages (`@mysten-incubation/dev-wallet`), add a
   changeset: `pnpm changeset` (see [the changesets docs](https://github.com/changesets/changesets)
   for the version-bump conventions).

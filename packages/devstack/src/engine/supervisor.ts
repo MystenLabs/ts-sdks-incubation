@@ -50,11 +50,7 @@ import { Identity, deriveAppName, validateIdentity } from './identity.js';
 import { LeasingLive } from './leasing.js';
 import { registry, type RegistryNetwork } from './registry.js';
 import { PortAllocatorLive } from './port-allocator.js';
-import {
-	AccountRegistryLive,
-	CoinRegistryLive,
-	PackageRegistryLive,
-} from './registries.js';
+import { AccountRegistryLive, CoinRegistryLive, PackageRegistryLive } from './registries.js';
 import { StateStoreConfig, StateStoreLive } from './state-store.js';
 import type { SuiNetwork } from '../services/sui.js';
 import { resolveNetwork } from './network.js';
@@ -479,9 +475,7 @@ const watchPathFiber = (
 					Effect.gen(function* () {
 						const { changed, reason } = yield* hashFileIfChanged(event.path);
 						if (!changed) {
-							yield* Effect.logDebug(
-								`file change at ${event.path} ignored (${reason})`,
-							);
+							yield* Effect.logDebug(`file change at ${event.path} ignored (${reason})`);
 							return;
 						}
 						// Attribution: resolve the changed path back to the
@@ -777,7 +771,9 @@ export const composeStackLayer = (
 	return fullLayer as Layer.Layer<unknown, unknown, never>;
 };
 
-export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfig): DevstackHandle => {
+export const defineDevstack = (
+	input: ReadonlyArray<StackMember> | DevstackConfig,
+): DevstackHandle => {
 	const config: DevstackConfig = Array.isArray(input)
 		? { stack: input }
 		: (input as DevstackConfig);
@@ -937,11 +933,7 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 		// green throughout. Bootstrap services (engine, StateStore,
 		// watchers) are stable across cycles because the per-cycle
 		// scope no longer owns them.
-		const runOnce = (
-			cycle: number,
-			engine: EngineShape,
-			memoMap: Layer.MemoMap,
-		) =>
+		const runOnce = (cycle: number, engine: EngineShape, memoMap: Layer.MemoMap) =>
 			Effect.gen(function* () {
 				const supervisorScope = yield* Effect.scope;
 
@@ -982,9 +974,7 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 				if (cycle > 1) {
 					const triggers = yield* Ref.get(engine.changedTags);
 					if (triggers.length > 0) {
-						yield* Effect.logInfo(
-							`devstack cycle ${cycle} triggered by ${triggers.join(', ')}`,
-						);
+						yield* Effect.logInfo(`devstack cycle ${cycle} triggered by ${triggers.join(', ')}`);
 					}
 				}
 
@@ -1134,11 +1124,7 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 			// user-stack entries fresh on the per-cycle scope.
 			const memoMap = yield* Layer.makeMemoMap;
 
-			const bootstrapCtx = yield* Layer.buildWithMemoMap(
-				bootstrapLayer,
-				memoMap,
-				longLived,
-			);
+			const bootstrapCtx = yield* Layer.buildWithMemoMap(bootstrapLayer, memoMap, longLived);
 			const engine: EngineShape = Context.get(bootstrapCtx, EngineHandle);
 
 			// Registry announce + clearPid finalizer — both belong on the
@@ -1165,23 +1151,21 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 			// `r` (the previous per-cycle ensure was a no-op against a
 			// healthy traefik, but still cost a `docker inspect`).
 			if (process.env.DEVSTACK_NO_ROUTER !== '1') {
-				yield* (
-					ensureRouter.pipe(
-						Effect.provide(bootstrapCtx as any),
-						Effect.timeoutOrElse({
-							duration: '10 seconds',
-							orElse: () =>
-								Effect.logWarning(
-									'devstack: traefik router boot timed out after 10s — continuing without it',
-								),
-						}),
-						Effect.catch((cause: any) =>
+				yield* ensureRouter.pipe(
+					Effect.provide(bootstrapCtx as any),
+					Effect.timeoutOrElse({
+						duration: '10 seconds',
+						orElse: () =>
 							Effect.logWarning(
-								`devstack: traefik router boot failed: ${(cause as { message?: string })?.message ?? String(cause)} — falling back to direct ports for any traefik-aware primitives`,
+								'devstack: traefik router boot timed out after 10s — continuing without it',
 							),
+					}),
+					Effect.catch((cause: any) =>
+						Effect.logWarning(
+							`devstack: traefik router boot failed: ${(cause as { message?: string })?.message ?? String(cause)} — falling back to direct ports for any traefik-aware primitives`,
 						),
-					) as Effect.Effect<void, never, never>
-				);
+					),
+				) as Effect.Effect<void, never, never>;
 			}
 
 			// Mount ink ONCE for the entire runMain lifetime. The engine
@@ -1200,9 +1184,7 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 				rendererFlush = tuiMount.flush;
 			} else if (renderer === 'plain') {
 				const tuiSource = Ref.get(engine.tuiState);
-				const plainHandle = yield* startPlainRenderer(tuiSource).pipe(
-					Effect.provide(bootstrapCtx),
-				);
+				const plainHandle = yield* startPlainRenderer(tuiSource).pipe(Effect.provide(bootstrapCtx));
 				rendererFlush = plainHandle.flush as Effect.Effect<void>;
 			}
 

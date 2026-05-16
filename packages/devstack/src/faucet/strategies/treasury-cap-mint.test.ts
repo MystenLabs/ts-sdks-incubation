@@ -16,9 +16,7 @@ const VALID_ADDR = '0x' + 'd'.repeat(64);
 const VALID_OBJ = '0x' + 'e'.repeat(64);
 const COIN_TYPE = `0x${'a'.repeat(64)}::usdc::USDC`;
 
-const stubAccount = (
-	signAndExecute: Account['signAndExecute'],
-): Account => ({
+const stubAccount = (signAndExecute: Account['signAndExecute']): Account => ({
 	name: 'admin',
 	address: VALID_ADDR,
 	scheme: 'ed25519',
@@ -83,9 +81,7 @@ describe('treasuryCapMintStrategy', () => {
 				treasuryCapId: VALID_OBJ,
 				signer,
 			});
-			const exit = yield* Effect.exit(
-				strategy.request({ address: VALID_ADDR, amount: 100n }),
-			);
+			const exit = yield* Effect.exit(strategy.request({ address: VALID_ADDR, amount: 100n }));
 			expect(Exit.isFailure(exit)).toBe(true);
 			if (Exit.isFailure(exit)) {
 				const opt = Cause.findErrorOption(exit.cause);

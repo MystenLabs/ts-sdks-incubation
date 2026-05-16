@@ -45,7 +45,9 @@ const allCoins: readonly CoinSpec[] = [SUI_COIN, ...coinsFromTokens];
 const symbolFor = (coinType: string): string =>
 	allCoins.find((c) => c.coinType === coinType)?.symbol ?? coinType.split('::').pop() ?? '?';
 
-const deepbookPoolsExtra = manifest.app.extras.deepbookPools as { pools: DeepbookPool[] } | undefined;
+const deepbookPoolsExtra = manifest.app.extras.deepbookPools as
+	| { pools: DeepbookPool[] }
+	| undefined;
 const rawPools = deepbookPoolsExtra?.pools ?? [];
 
 const pools: readonly PoolView[] = rawPools.map((p) => ({

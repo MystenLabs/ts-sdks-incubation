@@ -28,9 +28,7 @@ interface MockFs {
 // (so we can assert path-precedence) and emulates `wx` O_EXCL semantics
 // (so we can assert the lock protocol). Only the ops touched by
 // StateStoreLive are modeled — everything else stays noop.
-const makeMockFs = (
-	opts: { readonly failRenameFor?: (path: string) => boolean } = {},
-): MockFs => {
+const makeMockFs = (opts: { readonly failRenameFor?: (path: string) => boolean } = {}): MockFs => {
 	const files = new Map<string, string>();
 	const callsRef = { current: [] as FsCall[] };
 
@@ -50,9 +48,7 @@ const makeMockFs = (
 		readFileString: (path) => {
 			callsRef.current.push({ op: 'readFileString', path });
 			const v = files.get(path);
-			return v === undefined
-				? Effect.die(`mock: read missing ${path}`)
-				: Effect.succeed(v);
+			return v === undefined ? Effect.die(`mock: read missing ${path}`) : Effect.succeed(v);
 		},
 		writeFileString: (path, data, options) => {
 			const flag = options?.flag;
@@ -119,7 +115,9 @@ describe('state-store path precedence', () => {
 		Effect.gen(function* () {
 			const fs = makeMockFs();
 			yield* Effect.provide(
-				Layer.build(Layer.provide(StateStoreLive, configLayer({ stack: 'main', network: 'localnet' }))),
+				Layer.build(
+					Layer.provide(StateStoreLive, configLayer({ stack: 'main', network: 'localnet' })),
+				),
 				fs.layer,
 			);
 			const expected = `${process.cwd()}/.devstack/stacks/main/state.json.lock`;
@@ -132,7 +130,9 @@ describe('state-store path precedence', () => {
 			process.env.DEVSTACK_APP_DIR = '/tmp/custom-app';
 			const fs = makeMockFs();
 			yield* Effect.provide(
-				Layer.build(Layer.provide(StateStoreLive, configLayer({ stack: 's1', network: 'localnet' }))),
+				Layer.build(
+					Layer.provide(StateStoreLive, configLayer({ stack: 's1', network: 'localnet' })),
+				),
 				fs.layer,
 			);
 			expect(lockPathFrom(fs.calls)).toBe('/tmp/custom-app/.devstack/stacks/s1/state.json.lock');
@@ -160,7 +160,9 @@ describe('state-store path precedence', () => {
 			process.env.DEVSTACK_APP_DIR = '/tmp/app';
 			const fs = makeMockFs();
 			yield* Effect.provide(
-				Layer.build(Layer.provide(StateStoreLive, configLayer({ stack: 'main', network: 'testnet' }))),
+				Layer.build(
+					Layer.provide(StateStoreLive, configLayer({ stack: 'main', network: 'testnet' })),
+				),
 				fs.layer,
 			);
 			// Live-net layout: one file per network, no stack dimension.
@@ -262,30 +264,32 @@ describe('state-store atomic write', () => {
 		}),
 	);
 
-	it.effect('lock body carries pid, host, instanceId — required for cross-process arbitration', () =>
-		Effect.gen(function* () {
-			const fs = makeMockFs();
-			const layer = Layer.provide(StateStoreLive, configLayer({ stack: 's', network: 'localnet' }));
-			// The lock body must be inspected while the scope is open — the
-			// finalizer wipes the file on teardown, which is correct behavior
-			// but means we need to read it from inside the providing scope.
-			yield* Effect.gen(function* () {
-				yield* StateStore;
-				const lockWrite = fs.calls.find(
-					(c) => c.op === 'writeFileString' && c.flag === 'wx' && c.path.endsWith('.lock'),
+	it.effect(
+		'lock body carries pid, host, instanceId — required for cross-process arbitration',
+		() =>
+			Effect.gen(function* () {
+				const fs = makeMockFs();
+				const layer = Layer.provide(
+					StateStoreLive,
+					configLayer({ stack: 's', network: 'localnet' }),
 				);
-				expect(lockWrite).toBeDefined();
-				const body = JSON.parse(fs.files.get(lockWrite!.path) ?? '{}') as Record<
-					string,
-					unknown
-				>;
-				expect(body.pid).toBe(process.pid);
-				expect(typeof body.host).toBe('string');
-				expect(typeof body.instanceId).toBe('string');
-				// UUID shape — sanity check that randomUUID() is actually called.
-				expect((body.instanceId as string).length).toBeGreaterThanOrEqual(32);
-			}).pipe(Effect.provide(layer), Effect.provide(fs.layer));
-		}),
+				// The lock body must be inspected while the scope is open — the
+				// finalizer wipes the file on teardown, which is correct behavior
+				// but means we need to read it from inside the providing scope.
+				yield* Effect.gen(function* () {
+					yield* StateStore;
+					const lockWrite = fs.calls.find(
+						(c) => c.op === 'writeFileString' && c.flag === 'wx' && c.path.endsWith('.lock'),
+					);
+					expect(lockWrite).toBeDefined();
+					const body = JSON.parse(fs.files.get(lockWrite!.path) ?? '{}') as Record<string, unknown>;
+					expect(body.pid).toBe(process.pid);
+					expect(typeof body.host).toBe('string');
+					expect(typeof body.instanceId).toBe('string');
+					// UUID shape — sanity check that randomUUID() is actually called.
+					expect((body.instanceId as string).length).toBeGreaterThanOrEqual(32);
+				}).pipe(Effect.provide(layer), Effect.provide(fs.layer));
+			}),
 	);
 
 	it.effect(
@@ -302,9 +306,7 @@ describe('state-store atomic write', () => {
 				// AND the lock body is on disk before any other work runs.
 				yield* Effect.gen(function* () {
 					yield* StateStore;
-					const wxWrites = fs.calls.filter(
-						(c) => c.op === 'writeFileString' && c.flag === 'wx',
-					);
+					const wxWrites = fs.calls.filter((c) => c.op === 'writeFileString' && c.flag === 'wx');
 					expect(wxWrites).toHaveLength(1);
 					expect(fs.files.has(wxWrites[0]!.path)).toBe(true);
 				}).pipe(Effect.provide(layer), Effect.provide(fs.layer));

@@ -55,7 +55,9 @@ describe('defineEmitter', () => {
 			emit: (ctx) =>
 				Effect.gen(function* () {
 					const locals = ctx.packages.filter(
-						(p): p is import('../codegen/define-emitter.js').CodegenPackage & {
+						(
+							p,
+						): p is import('../codegen/define-emitter.js').CodegenPackage & {
 							readonly sourcePath: string;
 						} => p.sourcePath !== undefined,
 					);

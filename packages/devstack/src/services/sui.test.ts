@@ -153,37 +153,35 @@ describe('Sui(opts?) factory shapes', () => {
 	// The localnet-with-external-rpcUrl branch — the user pre-booted
 	// their own sui-localnet and just wants devstack to wrap it.
 	// `graphqlUrl` is plumbed through when supplied.
-	it.effect(
-		'Sui({ localnet: { rpcUrl, graphqlUrl } }) surfaces graphqlUrl on SuiTag',
-		() =>
-			Effect.gen(function* () {
-				const restore = stubChainIdFetch();
-				try {
-					const member = Sui({
-						localnet: {
-							rpcUrl: 'http://localhost:9000',
-							graphqlUrl: 'http://localhost:9125/graphql',
-						},
-					});
-					const sui = yield* Effect.gen(function* () {
-						return yield* member;
-					}).pipe(Effect.provide(Layer.provide(member.__layer, TestBaseLayer)));
-					expect(sui.faucet).toBeUndefined();
-					yield* sui.waitForTransactionsReady();
-					expect(sui.network).toBe('localnet');
-					expect(sui.rpc.host).toBe('http://localhost:9000');
-					expect(sui.graphql?.host).toBe('http://localhost:9125/graphql');
-					// Externally-managed RPC: no per-stack docker network, no
-					// container-side URL on any endpoint.
-					expect(sui.rpc.container).toBeUndefined();
-					expect(sui.graphql?.container).toBeUndefined();
-				} finally {
-					restore();
-				}
-			}),
+	it.effect('Sui({ localnet: { rpcUrl, graphqlUrl } }) surfaces graphqlUrl on SuiTag', () =>
+		Effect.gen(function* () {
+			const restore = stubChainIdFetch();
+			try {
+				const member = Sui({
+					localnet: {
+						rpcUrl: 'http://localhost:9000',
+						graphqlUrl: 'http://localhost:9125/graphql',
+					},
+				});
+				const sui = yield* Effect.gen(function* () {
+					return yield* member;
+				}).pipe(Effect.provide(Layer.provide(member.__layer, TestBaseLayer)));
+				expect(sui.faucet).toBeUndefined();
+				yield* sui.waitForTransactionsReady();
+				expect(sui.network).toBe('localnet');
+				expect(sui.rpc.host).toBe('http://localhost:9000');
+				expect(sui.graphql?.host).toBe('http://localhost:9125/graphql');
+				// Externally-managed RPC: no per-stack docker network, no
+				// container-side URL on any endpoint.
+				expect(sui.rpc.container).toBeUndefined();
+				expect(sui.graphql?.container).toBeUndefined();
+			} finally {
+				restore();
+			}
+		}),
 	);
 
-	it.effect("Sui({ localnet: { rpcUrl } }) without graphqlUrl leaves it undefined", () =>
+	it.effect('Sui({ localnet: { rpcUrl } }) without graphqlUrl leaves it undefined', () =>
 		Effect.gen(function* () {
 			const restore = stubChainIdFetch();
 			try {

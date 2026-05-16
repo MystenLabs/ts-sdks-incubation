@@ -234,9 +234,7 @@ const dropCommand = Command.make(
 				yield* Console.log(`stack '${name}': nothing to drop (no dir at ${stackDir})`);
 				return;
 			}
-			yield* fs
-				.remove(stackDir, { recursive: true, force: true })
-				.pipe(Effect.ignore);
+			yield* fs.remove(stackDir, { recursive: true, force: true }).pipe(Effect.ignore);
 			yield* Console.log(`stack '${name}': removed ${stackDir}`);
 		}),
 ).pipe(Command.withDescription('Delete the per-stack state directory. Requires --yes.'));
@@ -282,10 +280,7 @@ const takeDownContainers = (spawner: Spawner, stack: string, force: boolean) =>
 			.filter((s) => s.length > 0);
 		const affected: Array<string> = [];
 		for (const id of ids) {
-			const cmd = ChildProcess.make(
-				'docker',
-				force ? ['rm', '-f', id] : ['stop', id],
-			);
+			const cmd = ChildProcess.make('docker', force ? ['rm', '-f', id] : ['stop', id]);
 			const ok = yield* spawner.string(cmd).pipe(
 				Effect.map(() => true),
 				Effect.orElseSucceed(() => false),

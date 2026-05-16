@@ -25,7 +25,10 @@ export const writeFileAtomic = async (
 ): Promise<void> => {
 	const dir = path.dirname(target);
 	await fs.mkdir(dir, { recursive: true });
-	const tmp = path.join(dir, `.${path.basename(target)}.tmp.${crypto.randomBytes(6).toString('hex')}`);
+	const tmp = path.join(
+		dir,
+		`.${path.basename(target)}.tmp.${crypto.randomBytes(6).toString('hex')}`,
+	);
 	try {
 		await fs.writeFile(tmp, body, options?.mode !== undefined ? { mode: options.mode } : undefined);
 		await fs.rename(tmp, target);

@@ -240,12 +240,8 @@ describe('computeClassification', () => {
 
 	it("returns 'running' for a row with a live runningPid (regardless of registry)", () => {
 		// process.pid is always alive while the test runs.
-		expect(computeClassification({ entry: undefined, runningPid: process.pid })).toBe(
-			'running',
-		);
-		expect(computeClassification({ entry: regEntry(), runningPid: process.pid })).toBe(
-			'running',
-		);
+		expect(computeClassification({ entry: undefined, runningPid: process.pid })).toBe('running');
+		expect(computeClassification({ entry: regEntry(), runningPid: process.pid })).toBe('running');
 	});
 
 	it("returns 'repo-gone' when the registry has an entry and the repoPath does not exist", () => {

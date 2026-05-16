@@ -165,9 +165,7 @@ const appFlag = Flag.string('app').pipe(
 );
 
 const resolveAppName = (override: Option.Option<string>): string =>
-	Option.getOrElse(override, () =>
-		deriveAppName(process.env.DEVSTACK_APP_DIR ?? process.cwd()),
-	);
+	Option.getOrElse(override, () => deriveAppName(process.env.DEVSTACK_APP_DIR ?? process.cwd()));
 
 const resolveStack = (
 	fs: FileSystem.FileSystem,
@@ -343,9 +341,7 @@ const deleteCommand = Command.make(
 			const entries = yield* listSnapshots({ dir: snapshotsDir });
 			const target = findMatch(entries, ref);
 			if (target.ambiguous) {
-				yield* Console.error(
-					`snapshot reference '${ref}' is ambiguous; pass the full id`,
-				);
+				yield* Console.error(`snapshot reference '${ref}' is ambiguous; pass the full id`);
 				return yield* Effect.fail(new Error('ambiguous snapshot reference'));
 			}
 			if (target.match === undefined) {

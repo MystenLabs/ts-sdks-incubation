@@ -1,9 +1,8 @@
 # @mysten-incubation/create-devstack-app
 
-> ⚠️ **Prototype.** Not published to npm. The scaffolder produces an installable
-> `package.json` (workspace/catalog specifiers are resolved at build time), but the
-> actual `pnpm install` only succeeds once `@mysten-incubation/devstack` is published,
-> which has no near-term plan.
+> ⚠️ **Prototype.** Not published to npm. The scaffolder produces an installable `package.json`
+> (workspace/catalog specifiers are resolved at build time), but the actual `pnpm install` only
+> succeeds once `@mysten-incubation/devstack` is published, which has no near-term plan.
 
 Scaffold a new devstack-backed Sui app from the canonical template.
 

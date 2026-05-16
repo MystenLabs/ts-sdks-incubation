@@ -245,18 +245,12 @@ const resolveDetail = (entry: TuiEntry): Detail | null => {
 	// the full phase, a primitive that sits in "starting" for a minute
 	// reads as hung. The full phase lives in the detail slot only when
 	// nothing else (`lastLog`, `primary`) is competing for it.
-	if (
-		entry.status === 'acquiring' &&
-		entry.phase !== undefined &&
-		entry.phase.length > 0
-	) {
+	if (entry.status === 'acquiring' && entry.phase !== undefined && entry.phase.length > 0) {
 		return { text: truncate(entry.phase), dim: true };
 	}
 	if (entry.primary !== undefined && entry.primary.length > 0) {
 		const extras =
-			entry.extras !== undefined && entry.extras.length > 0
-				? ` (${entry.extras.join(', ')})`
-				: '';
+			entry.extras !== undefined && entry.extras.length > 0 ? ` (${entry.extras.join(', ')})` : '';
 		// Don't truncate — IDs (packageId, address, digest) and URLs are
 		// load-bearing for copy-paste. The `<Text wrap='wrap'>` in NodeRow
 		// flows overflow onto a second line in the detail column rather
@@ -286,7 +280,9 @@ export function App(props: AppProps): React.ReactElement {
 	const pollIntervalMs = props.pollIntervalMs ?? 100;
 
 	useEffect(() => {
-		Effect.runPromise(Ref.get(props.engine.tuiState)).then(setState).catch(() => {});
+		Effect.runPromise(Ref.get(props.engine.tuiState))
+			.then(setState)
+			.catch(() => {});
 		const interval = setInterval(() => {
 			Effect.runPromise(Ref.get(props.engine.tuiState))
 				.then(setState)
@@ -347,10 +343,8 @@ export function App(props: AppProps): React.ReactElement {
 
 	return (
 		<>
-			<Static items={staticLogs}>
-				{({ id, log }) => <LogLine key={id} log={log} />}
-			</Static>
-			<Box flexDirection='column'>
+			<Static items={staticLogs}>{({ id, log }) => <LogLine key={id} log={log} />}</Static>
+			<Box flexDirection="column">
 				<Header header={state.header} />
 				<NodeTable entries={state.entries} />
 				<Footer />
@@ -361,12 +355,10 @@ export function App(props: AppProps): React.ReactElement {
 
 function Header({ header }: { readonly header: TuiHeader }): React.ReactElement {
 	const network =
-		header.network === 'localnet'
-			? `localnet (stack=${header.stack})`
-			: header.network;
+		header.network === 'localnet' ? `localnet (stack=${header.stack})` : header.network;
 	const buildColor = BUILD_STATUS_COLOR[header.buildStatus];
 	return (
-		<Box paddingX={1} borderStyle='round' borderColor='gray'>
+		<Box paddingX={1} borderStyle="round" borderColor="gray">
 			<Text bold>{header.app || 'devstack'}</Text>
 			<Text> · </Text>
 			<Text>{network}</Text>
@@ -378,11 +370,7 @@ function Header({ header }: { readonly header: TuiHeader }): React.ReactElement 
 	);
 }
 
-function NodeTable({
-	entries,
-}: {
-	readonly entries: ReadonlyArray<TuiEntry>;
-}): React.ReactElement {
+function NodeTable({ entries }: { readonly entries: ReadonlyArray<TuiEntry> }): React.ReactElement {
 	if (entries.length === 0) {
 		return (
 			<Box paddingX={1}>
@@ -436,7 +424,7 @@ function NodeTable({
 		pushBucket(group, entry);
 	}
 	return (
-		<Box flexDirection='column' paddingX={1}>
+		<Box flexDirection="column" paddingX={1}>
 			{bucketOrder.map((group) => (
 				<GroupSection key={group} label={group} entries={buckets.get(group) ?? []} />
 			))}
@@ -477,7 +465,7 @@ function GroupSection({
 		: entries;
 	const shouldCollapse = collapsible && ready.length > COLLAPSE_THRESHOLD;
 	return (
-		<Box flexDirection='column'>
+		<Box flexDirection="column">
 			<Text bold color={headerColor}>
 				{headerLabel(label)}
 			</Text>
@@ -522,7 +510,7 @@ function CollapsedReadyRow({
 				<Text dimColor>{`${word} (${entries.length})`}</Text>
 			</Box>
 			<Box flexGrow={1}>
-				<Text dimColor wrap='wrap'>
+				<Text dimColor wrap="wrap">
 					{names}
 				</Text>
 			</Box>
@@ -544,7 +532,7 @@ function NodeRow({ entry }: { readonly entry: TuiEntry }): React.ReactElement {
 			: resolveDetail(entry);
 	const { name } = parseTitle(entryTitle(entry));
 	return (
-		<Box flexDirection='column'>
+		<Box flexDirection="column">
 			<Box>
 				<Box width={1}>
 					<Text> </Text>
@@ -566,11 +554,11 @@ function NodeRow({ entry }: { readonly entry: TuiEntry }): React.ReactElement {
 							// Full IDs/URLs in `primary` may exceed the row width;
 							// wrap rather than truncate so the user can still read
 							// + copy the trailing characters.
-							<Text color={detail.color} wrap='wrap'>
+							<Text color={detail.color} wrap="wrap">
 								{detail.text}
 							</Text>
 						) : (
-							<Text dimColor={detail.dim === true} wrap='wrap'>
+							<Text dimColor={detail.dim === true} wrap="wrap">
 								{detail.text}
 							</Text>
 						)
@@ -583,10 +571,7 @@ function NodeRow({ entry }: { readonly entry: TuiEntry }): React.ReactElement {
 						// Label column is fixed width so URLs line up across
 						// endpoints. The bullet is dim grey so the row glyph
 						// (✓ / ✗ / ⊙) stays visually dominant.
-						const labelWidth = Math.max(
-							8,
-							...(entry.endpoints ?? []).map((e) => e.label.length),
-						);
+						const labelWidth = Math.max(8, ...(entry.endpoints ?? []).map((e) => e.label.length));
 						return (
 							<Box key={ep.label} paddingLeft={4 + 3 + 1}>
 								<Box width={2}>
@@ -595,7 +580,7 @@ function NodeRow({ entry }: { readonly entry: TuiEntry }): React.ReactElement {
 								<Box width={labelWidth + 2}>
 									<Text dimColor>{ep.label}</Text>
 								</Box>
-								<Text color='cyan' wrap='wrap'>
+								<Text color="cyan" wrap="wrap">
 									{ep.url}
 								</Text>
 							</Box>
@@ -658,7 +643,7 @@ function LogLine({ log }: { readonly log: TuiLog }): React.ReactElement {
 function Footer(): React.ReactElement {
 	return (
 		<Box paddingX={1} marginTop={1}>
-			<Text dimColor>[r]estart  [q]uit  Ctrl-C to exit</Text>
+			<Text dimColor>[r]estart [q]uit Ctrl-C to exit</Text>
 		</Box>
 	);
 }

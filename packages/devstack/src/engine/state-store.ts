@@ -197,7 +197,11 @@ const parseLockBody = (raw: string): LockBody | undefined => {
 // Live layer
 // -----------------------------------------------------------------------------
 
-export const StateStoreLive: Layer.Layer<StateStore, StateStoreLockedError, FileSystem.FileSystem | StateStoreConfig> = Layer.effect(
+export const StateStoreLive: Layer.Layer<
+	StateStore,
+	StateStoreLockedError,
+	FileSystem.FileSystem | StateStoreConfig
+> = Layer.effect(
 	StateStore,
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem;
@@ -205,23 +209,17 @@ export const StateStoreLive: Layer.Layer<StateStore, StateStoreLockedError, File
 		const paths = resolvePaths(cfg);
 
 		// Ensure the containing dir exists before any lock / write op.
-		yield* fs
-			.makeDirectory(paths.dir, { recursive: true })
-			.pipe(Effect.ignore);
+		yield* fs.makeDirectory(paths.dir, { recursive: true }).pipe(Effect.ignore);
 
 		// Best-effort tighten of any pre-existing state file written by an older
 		// devstack run with a permissive umask. chmod is a no-op on Windows /
 		// some filesystems, so swallow failures.
-		yield* fs
-			.exists(paths.file)
-			.pipe(
-				Effect.flatMap((present) =>
-					present
-						? fs.chmod(paths.file, 0o600).pipe(Effect.ignore)
-						: Effect.void,
-				),
-				Effect.ignore,
-			);
+		yield* fs.exists(paths.file).pipe(
+			Effect.flatMap((present) =>
+				present ? fs.chmod(paths.file, 0o600).pipe(Effect.ignore) : Effect.void,
+			),
+			Effect.ignore,
+		);
 
 		// --- Lock acquisition ---------------------------------------------------
 
@@ -239,8 +237,7 @@ export const StateStoreLive: Layer.Layer<StateStore, StateStoreLockedError, File
 			instanceId: randomUUID(),
 		});
 
-		const serializeBody = (body: LockBody): string =>
-			`${JSON.stringify(body, null, 2)}\n`;
+		const serializeBody = (body: LockBody): string => `${JSON.stringify(body, null, 2)}\n`;
 
 		const readExistingHolder = (): Effect.Effect<LockBody | undefined> =>
 			fs.readFileString(paths.lock).pipe(
@@ -316,12 +313,10 @@ export const StateStoreLive: Layer.Layer<StateStore, StateStoreLockedError, File
 			const body = buildOwnBody();
 			const serialized = serializeBody(body);
 
-			const exclusive = yield* fs
-				.writeFileString(paths.lock, serialized, { flag: 'wx' })
-				.pipe(
-					Effect.as(true),
-					Effect.orElseSucceed(() => false),
-				);
+			const exclusive = yield* fs.writeFileString(paths.lock, serialized, { flag: 'wx' }).pipe(
+				Effect.as(true),
+				Effect.orElseSucceed(() => false),
+			);
 			if (exclusive) {
 				acquiredBody = body;
 				break;
@@ -356,9 +351,7 @@ export const StateStoreLive: Layer.Layer<StateStore, StateStoreLockedError, File
 			// liveness check for the directory and surfaces filesystem
 			// errors (ENOSPC, EROFS) before the next O_EXCL attempt.
 			const probe = `${paths.lock}.tmp.${ownHost}.${process.pid}.${randomUUID()}`;
-			yield* fs.writeFileString(probe, serialized).pipe(
-				Effect.ignore,
-			);
+			yield* fs.writeFileString(probe, serialized).pipe(Effect.ignore);
 			yield* fs.remove(probe, { force: true }).pipe(Effect.ignore);
 			// Continue the loop — next iteration retries the O_EXCL write
 			// against a now-clear lock path.
@@ -380,9 +373,7 @@ export const StateStoreLive: Layer.Layer<StateStore, StateStoreLockedError, File
 			Effect.gen(function* () {
 				const current = yield* readExistingHolder();
 				if (current?.instanceId === ownBody.instanceId) {
-					yield* fs
-						.remove(paths.lock, { force: true })
-						.pipe(Effect.ignore);
+					yield* fs.remove(paths.lock, { force: true }).pipe(Effect.ignore);
 				}
 			}),
 		);
@@ -456,9 +447,7 @@ export const StateStoreLive: Layer.Layer<StateStore, StateStoreLockedError, File
 				// detect it by tag so a corrupt-cache fallback doesn't
 				// mask a real version mismatch.
 				Effect.catch((err) =>
-					err instanceof StateStoreMigrationError
-						? Effect.fail(err)
-						: Effect.succeed(empty),
+					err instanceof StateStoreMigrationError ? Effect.fail(err) : Effect.succeed(empty),
 				),
 			);
 
@@ -476,11 +465,7 @@ export const StateStoreLive: Layer.Layer<StateStore, StateStoreLockedError, File
 		const persist: Effect.Effect<void, PlatformError.PlatformError> = Effect.gen(function* () {
 			const m = yield* Ref.get(ref);
 			const data = Object.fromEntries(m);
-			const body = JSON.stringify(
-				{ version: CURRENT_VERSION, data },
-				jsonBigintReplacer,
-				2,
-			);
+			const body = JSON.stringify({ version: CURRENT_VERSION, data }, jsonBigintReplacer, 2);
 			// Tempfile name carries pid+time+random so two writers in the
 			// same process (concurrent put/remove inside this layer) plus
 			// any cross-process writer with the same pid space never
@@ -508,9 +493,7 @@ export const StateStoreLive: Layer.Layer<StateStore, StateStoreLockedError, File
 		// callers — but unlike the previous silent-swallow behavior we
 		// at least surface the cause via the logger.
 		const persistAndWarn: Effect.Effect<void> = persist.pipe(
-			Effect.catchCause((cause) =>
-				Effect.logWarning('state-store: persist failed', cause),
-			),
+			Effect.catchCause((cause) => Effect.logWarning('state-store: persist failed', cause)),
 		);
 
 		// `put` + `remove` carry spans so a slow disk (cross-mount NFS,

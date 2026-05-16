@@ -22,10 +22,7 @@ export {
 	type DeepbookLocalDeployOptions,
 	type DeepbookLocalDeployShape,
 } from './local-deploy.js';
-export {
-	deepbookKnownPackage,
-	type DeepbookKnownPackageOptions,
-} from './known-package.js';
+export { deepbookKnownPackage, type DeepbookKnownPackageOptions } from './known-package.js';
 export {
 	deepbookMarketMaker,
 	type DeepbookMarketMakerHandle,

@@ -484,10 +484,7 @@ export const acquireLocalCluster = (args: {
 		// reachability in that case).
 		const stripTrailingSlash = (u: string): string => u.replace(/\/+$/, '');
 		const nodeFaucetBase = stripTrailingSlash(
-			sui.faucet?.container ??
-				sui.rpc.container ??
-				sui.faucet?.host ??
-				sui.rpc.host,
+			sui.faucet?.container ?? sui.rpc.container ?? sui.faucet?.host ?? sui.rpc.host,
 		);
 		const nodeFaucetUrl = `${nodeFaucetBase}/v1/gas`;
 		const nodes = yield* startStorageNodes({

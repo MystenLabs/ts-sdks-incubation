@@ -10,10 +10,7 @@ import { Effect } from 'effect';
 import type { Transaction, TransactionObjectArgument } from '@mysten/sui/transactions';
 import { type Ref } from '../../advanced/tag.js';
 import { DeepbookError } from '../../engine/errors.js';
-import {
-	type DeepbookCore,
-	type DeepbookPoolRef,
-} from '../deepbook.js';
+import { type DeepbookCore, type DeepbookPoolRef } from '../deepbook.js';
 
 // -----------------------------------------------------------------------------
 // Constants
@@ -164,10 +161,7 @@ export function depositPreDeposits(args: DepositArgs): void {
 		const baseAmount = explicit?.base ?? DEFAULT_PREDEPOSIT_MULTIPLIER * sizeBase;
 		const quoteAmount =
 			explicit?.quote ?? (DEFAULT_PREDEPOSIT_MULTIPLIER * sizeBase * mid) / 1_000_000_000n + 1n;
-		totalsByCoinType.set(
-			pool.baseType,
-			(totalsByCoinType.get(pool.baseType) ?? 0n) + baseAmount,
-		);
+		totalsByCoinType.set(pool.baseType, (totalsByCoinType.get(pool.baseType) ?? 0n) + baseAmount);
 		totalsByCoinType.set(
 			pool.quoteType,
 			(totalsByCoinType.get(pool.quoteType) ?? 0n) + quoteAmount,

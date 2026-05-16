@@ -18,7 +18,7 @@ const buildEngine = (): Effect.Effect<EngineHandleShape> =>
 	});
 
 describe('EngineHandle.setPhase', () => {
-	it.effect('updates the entry\'s phase while it is acquiring', () =>
+	it.effect("updates the entry's phase while it is acquiring", () =>
 		Effect.gen(function* () {
 			const engine = yield* buildEngine();
 			yield* engine.seedTags([{ key: 'sui.localnet', kind: 'service' }]);
@@ -123,39 +123,43 @@ describe('EngineHandle restart signaling — request / arm / process-during', ()
 		}),
 	);
 
-	it.effect('concurrent requestRestart calls coalesce into a single wake (Deferred.succeed is idempotent)', () =>
-		Effect.gen(function* () {
-			const engine = yield* buildEngine();
-			const d = yield* Ref.get(engine.restartSignal);
+	it.effect(
+		'concurrent requestRestart calls coalesce into a single wake (Deferred.succeed is idempotent)',
+		() =>
+			Effect.gen(function* () {
+				const engine = yield* buildEngine();
+				const d = yield* Ref.get(engine.restartSignal);
 
-			// Fire many concurrent requests against the same deferred.
-			yield* Effect.all(
-				Array.from({ length: 8 }, () => engine.requestRestart),
-				{ concurrency: 'unbounded' },
-			);
+				// Fire many concurrent requests against the same deferred.
+				yield* Effect.all(
+					Array.from({ length: 8 }, () => engine.requestRestart),
+					{ concurrency: 'unbounded' },
+				);
 
-			// Only one wake-up is observed (idempotent succeed); the
-			// deferred is resolved exactly once.
-			yield* Deferred.await(d);
-			expect(yield* Deferred.isDone(d)).toBe(true);
-		}),
+				// Only one wake-up is observed (idempotent succeed); the
+				// deferred is resolved exactly once.
+				yield* Deferred.await(d);
+				expect(yield* Deferred.isDone(d)).toBe(true);
+			}),
 	);
 
-	it.effect('armRestartSignal installs a fresh deferred without disturbing the previously resolved one', () =>
-		Effect.gen(function* () {
-			const engine = yield* buildEngine();
-			const before = yield* Ref.get(engine.restartSignal);
-			yield* engine.requestRestart;
+	it.effect(
+		'armRestartSignal installs a fresh deferred without disturbing the previously resolved one',
+		() =>
+			Effect.gen(function* () {
+				const engine = yield* buildEngine();
+				const before = yield* Ref.get(engine.restartSignal);
+				yield* engine.requestRestart;
 
-			yield* engine.armRestartSignal;
-			const after = yield* Ref.get(engine.restartSignal);
+				yield* engine.armRestartSignal;
+				const after = yield* Ref.get(engine.restartSignal);
 
-			// Fresh deferred installed; previously-resolved deferred stays
-			// resolved so any fiber that captured it pre-arm still wakes.
-			expect(after).not.toBe(before);
-			yield* Deferred.await(before);
-			expect(yield* Deferred.isDone(after)).toBe(false);
-		}),
+				// Fresh deferred installed; previously-resolved deferred stays
+				// resolved so any fiber that captured it pre-arm still wakes.
+				expect(after).not.toBe(before);
+				yield* Deferred.await(before);
+				expect(yield* Deferred.isDone(after)).toBe(false);
+			}),
 	);
 
 	it.effect('regression: request during processing wakes the next cycle (no lost signal)', () =>

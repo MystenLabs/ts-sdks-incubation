@@ -150,7 +150,7 @@ export const hostProcess = <const Name extends string, E = never, R = never>(
 			//     sibling stack) and inject it as `$PORT` so scripts can
 			//     bind to it. Multiple stacks of the same example boot
 			//     side-by-side without hardcoded collisions.
-			const allocatedPort: number | undefined = yield* (options.port !== undefined
+			const allocatedPort: number | undefined = yield* options.port !== undefined
 				? Effect.gen(function* () {
 						const allocator = yield* PortAllocator;
 						return yield* allocator.allocate(options.port!.preferred).pipe(
@@ -164,7 +164,7 @@ export const hostProcess = <const Name extends string, E = never, R = never>(
 							),
 						);
 					})
-				: Effect.succeed(undefined));
+				: Effect.succeed(undefined);
 			const portEnv: Record<string, string> =
 				allocatedPort === undefined ? {} : { PORT: String(allocatedPort) };
 
@@ -253,22 +253,17 @@ export const hostProcess = <const Name extends string, E = never, R = never>(
 				// an interrupt but can't observe it (no yield point
 				// while waiting for next chunk), and scope teardown
 				// hangs.
-				yield* addScopeFinalizer(
-					scope,
-					Effect.uninterruptible(handle.kill().pipe(Effect.ignore)),
-				);
+				yield* addScopeFinalizer(scope, Effect.uninterruptible(handle.kill().pipe(Effect.ignore)));
 				if (resolvedReadyProbe?.kind !== 'log') {
-					yield* drainLinesWithCallback(
-						Stream.orDie(handle.stdout),
-						'info',
-						onOutputLine,
-					).pipe(Effect.ignore, Effect.forkIn(scope));
+					yield* drainLinesWithCallback(Stream.orDie(handle.stdout), 'info', onOutputLine).pipe(
+						Effect.ignore,
+						Effect.forkIn(scope),
+					);
 				}
-				yield* drainLinesWithCallback(
-					Stream.orDie(handle.stderr),
-					'warn',
-					onOutputLine,
-				).pipe(Effect.ignore, Effect.forkIn(scope));
+				yield* drainLinesWithCallback(Stream.orDie(handle.stderr), 'warn', onOutputLine).pipe(
+					Effect.ignore,
+					Effect.forkIn(scope),
+				);
 			}
 
 			// 4. Wait for ready probe if provided.
@@ -348,8 +343,7 @@ export const hostProcess = <const Name extends string, E = never, R = never>(
 			// 6. Register endpoint if requested. URL only meaningful for
 			//    HTTP probes — TCP/log don't yield a URL on their own.
 			//    Prefer the router-fronted URL when one was derived above.
-			const probeUrl =
-				resolvedReadyProbe?.kind === 'http' ? resolvedReadyProbe.url : undefined;
+			const probeUrl = resolvedReadyProbe?.kind === 'http' ? resolvedReadyProbe.url : undefined;
 			const url = routerUrl ?? probeUrl;
 			if (options.endpoint !== undefined && url !== undefined) {
 				yield* EndpointRegistry.publish({

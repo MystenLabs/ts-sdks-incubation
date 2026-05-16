@@ -124,4 +124,3 @@ export class DeepbookError extends Schema.TaggedErrorClass<DeepbookError>()('Dee
 	message: Schema.String,
 	cause: Schema.optional(Schema.Defect),
 }) {}
-

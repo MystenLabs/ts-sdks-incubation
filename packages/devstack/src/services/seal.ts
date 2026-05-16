@@ -175,7 +175,7 @@ export const Seal = (opts: SealOptions = {}): StackMember => {
 		// Remote path: wire to canonical (or user-overridden) deployment.
 		const knownOpts: SealKnownKeyServerOptions = {
 			network,
-			...(opts.override ?? {}),
+			...opts.override,
 		};
 		return Object.assign(sealKnownKeyServer(knownOpts), { __kind: 'service' as const });
 	}
@@ -185,13 +185,13 @@ export const Seal = (opts: SealOptions = {}): StackMember => {
 		throw new Error(
 			'Seal() on localnet requires a `signer:` ref to publish the Seal Move package. ' +
 				'Pass an Account ref, or run with --network testnet / --network mainnet to use ' +
-				"the canonical remote key server.",
+				'the canonical remote key server.',
 		);
 	}
 	const localOpts: SealLocalKeygenOptions<string> = {
 		signer: opts.signer,
 		...(opts.name !== undefined ? { name: opts.name } : {}),
-		...(opts.local ?? {}),
+		...opts.local,
 	};
 	return Object.assign(sealLocalKeygen(localOpts), { __kind: 'service' as const });
 };

@@ -83,12 +83,10 @@ export const dockerOrphanSweep = (
 				return false;
 			})();
 			if (isClaimed) continue;
-			const ok = yield* spawner
-				.exitCode(ChildProcess.make('docker', ['rm', '-f', id]))
-				.pipe(
-					Effect.map(() => true),
-					Effect.orElseSucceed(() => false),
-				);
+			const ok = yield* spawner.exitCode(ChildProcess.make('docker', ['rm', '-f', id])).pipe(
+				Effect.map(() => true),
+				Effect.orElseSucceed(() => false),
+			);
 			if (ok) removed.push(id);
 		}
 
@@ -120,12 +118,10 @@ export const dockerOrphanSweep = (
 			.map((s) => s.trim())
 			.filter((s) => s.length > 0);
 		for (const id of netIds) {
-			const ok = yield* spawner
-				.exitCode(ChildProcess.make('docker', ['network', 'rm', id]))
-				.pipe(
-					Effect.map(() => true),
-					Effect.orElseSucceed(() => false),
-				);
+			const ok = yield* spawner.exitCode(ChildProcess.make('docker', ['network', 'rm', id])).pipe(
+				Effect.map(() => true),
+				Effect.orElseSucceed(() => false),
+			);
 			if (ok) removed.push(id);
 		}
 		return removed as ReadonlyArray<string>;

@@ -101,7 +101,10 @@ export function App() {
 					<h1 className="text-base font-semibold leading-tight">Devstack template</h1>
 					<p className="text-xs text-neutral-500 leading-tight">
 						{me ? (
-							<>Connected as <span className="capitalize">{me.label ?? me.address.slice(0, 8)}</span></>
+							<>
+								Connected as{' '}
+								<span className="capitalize">{me.label ?? me.address.slice(0, 8)}</span>
+							</>
 						) : (
 							'starting point for a new app'
 						)}

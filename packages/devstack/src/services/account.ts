@@ -57,11 +57,7 @@ import { FaucetTag } from '../faucet/service.js';
 import { StateStoreConfig } from '../engine/state-store.js';
 import { servicePath } from '../engine/service-paths.js';
 import { stringifyCause } from '../engine/stringify-cause.js';
-import type {
-	Account as AccountValue,
-	SignAndExecuteError,
-	TxResult,
-} from '../engine/shared.js';
+import type { Account as AccountValue, SignAndExecuteError, TxResult } from '../engine/shared.js';
 import type { AccountRef } from './ref.js';
 
 // -----------------------------------------------------------------------------

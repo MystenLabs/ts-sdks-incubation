@@ -60,9 +60,7 @@ const ensureNoLiveHolder = (
 		const startedAt = typeof body.startedAt === 'string' ? body.startedAt : '';
 		const host = typeof body.host === 'string' ? body.host : '';
 		if (!isHolderLive({ pid, startedAt, host })) return;
-		return yield* Effect.fail(
-			new PruneStackBlockedError({ app, stack, lockPath, holderPid: pid }),
-		);
+		return yield* Effect.fail(new PruneStackBlockedError({ app, stack, lockPath, holderPid: pid }));
 	});
 
 type Spawner = ReturnType<typeof ChildProcessSpawner.make>;
@@ -321,22 +319,16 @@ const removeStateOnDisk = (
 				for (const entry of entries) {
 					if (entry === 'snapshots') continue;
 					const full = joinPath(stackDir, entry);
-					yield* fs
-						.remove(full, { recursive: true, force: true })
-						.pipe(Effect.ignore);
+					yield* fs.remove(full, { recursive: true, force: true }).pipe(Effect.ignore);
 					removed.push(full);
 				}
 			} else {
-				yield* fs
-					.remove(stackDir, { recursive: true, force: true })
-					.pipe(Effect.ignore);
+				yield* fs.remove(stackDir, { recursive: true, force: true }).pipe(Effect.ignore);
 				removed.push(stackDir);
 			}
 		}
 		const flatStateFile = joinPath(stateDir, 'state.json');
-		const flatExists = yield* fs
-			.exists(flatStateFile)
-			.pipe(Effect.orElseSucceed(() => false));
+		const flatExists = yield* fs.exists(flatStateFile).pipe(Effect.orElseSucceed(() => false));
 		if (flatExists) {
 			yield* fs.remove(flatStateFile, { force: true }).pipe(Effect.ignore);
 			removed.push(flatStateFile);

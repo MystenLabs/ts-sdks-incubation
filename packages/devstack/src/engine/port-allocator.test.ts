@@ -119,33 +119,35 @@ describe('PortAllocator.allocate — dual-host probe', () => {
 });
 
 describe('PortAllocator.release', () => {
-	it.effect('release removes the port from the held set so a subsequent allocate returns it again', () =>
-		// Use a single allocator instance — the held set lives in its
-		// Ref, so two `Effect.provide(PortAllocatorLive)` chains would
-		// each get their own (empty) set and the second allocate would
-		// trivially succeed. We exercise the same instance to prove
-		// release flips the bit.
-		Effect.gen(function* () {
-			const allocator = yield* PortAllocator;
-			const preferred = nextPort();
+	it.effect(
+		'release removes the port from the held set so a subsequent allocate returns it again',
+		() =>
+			// Use a single allocator instance — the held set lives in its
+			// Ref, so two `Effect.provide(PortAllocatorLive)` chains would
+			// each get their own (empty) set and the second allocate would
+			// trivially succeed. We exercise the same instance to prove
+			// release flips the bit.
+			Effect.gen(function* () {
+				const allocator = yield* PortAllocator;
+				const preferred = nextPort();
 
-			const first = yield* allocator.allocate(preferred);
-			expect(first).toBe(preferred);
+				const first = yield* allocator.allocate(preferred);
+				expect(first).toBe(preferred);
 
-			// While `preferred` is held: requesting it again must scan
-			// forward. (Same allocator, same held set.)
-			const concurrent = yield* allocator.allocate(preferred);
-			expect(concurrent).toBeGreaterThan(preferred);
+				// While `preferred` is held: requesting it again must scan
+				// forward. (Same allocator, same held set.)
+				const concurrent = yield* allocator.allocate(preferred);
+				expect(concurrent).toBeGreaterThan(preferred);
 
-			// Release the original — now the held set is empty for
-			// `preferred`. The third allocate should claim it again.
-			yield* allocator.release(first);
-			const reclaimed = yield* allocator.allocate(preferred);
-			expect(reclaimed).toBe(preferred);
-		}).pipe(
-			// Build the layer once and share its Ref across yields.
-			Effect.provide(Layer.fresh(PortAllocatorLive)),
-		),
+				// Release the original — now the held set is empty for
+				// `preferred`. The third allocate should claim it again.
+				yield* allocator.release(first);
+				const reclaimed = yield* allocator.allocate(preferred);
+				expect(reclaimed).toBe(preferred);
+			}).pipe(
+				// Build the layer once and share its Ref across yields.
+				Effect.provide(Layer.fresh(PortAllocatorLive)),
+			),
 	);
 });
 
@@ -248,7 +250,6 @@ describe('reallocatePortsOnConflict — shared helper', () => {
 			),
 	);
 });
-
 
 // -----------------------------------------------------------------------------
 // claimPortLock / releasePortLock — cross-process file lock
@@ -397,7 +398,6 @@ describe('claimPortLock / releasePortLock — file lock', () => {
 		expect(() => releasePortLock(port, lockDir)).not.toThrow();
 	});
 });
-
 
 // -----------------------------------------------------------------------------
 // Two concurrent allocate() calls in the same process

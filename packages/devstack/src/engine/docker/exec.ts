@@ -314,9 +314,7 @@ export const runOneShot = (
 			Effect.ensuring(
 				keepOneShot
 					? Effect.void
-					: spawner
-							.exitCode(ChildProcess.make('docker', ['rm', '-f', name]))
-							.pipe(Effect.ignore),
+					: spawner.exitCode(ChildProcess.make('docker', ['rm', '-f', name])).pipe(Effect.ignore),
 			),
 		);
 	}).pipe(Effect.withSpan('Docker.runOneShot'));

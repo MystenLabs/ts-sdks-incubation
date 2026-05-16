@@ -807,10 +807,7 @@ interface OutputSpawnerOpts {
 	readonly exitCode?: number;
 }
 
-const makeOutputSpawnerLayer = (
-	recorder: Array<SpawnRecord>,
-	output: OutputSpawnerOpts,
-) => {
+const makeOutputSpawnerLayer = (recorder: Array<SpawnRecord>, output: OutputSpawnerOpts) => {
 	const spawn = (command: ChildProcess.Command) => {
 		if (command._tag !== 'StandardCommand') {
 			return Effect.die(new Error('unexpected piped command'));
@@ -843,92 +840,75 @@ const makeOutputSpawnerLayer = (
 };
 
 describe('Docker.runOneShot onOutputLine', () => {
-	it.effect(
-		'invokes the callback once per stdout line (info) and stderr line (warn)',
-		() =>
-			Effect.gen(function* () {
-				const recorder: Array<SpawnRecord> = [];
-				const captured: Array<{ level: string; line: string }> = [];
-				const spawnerLayer = makeOutputSpawnerLayer(recorder, {
-					stdout: 'step 1: starting\nstep 2: working\nstep 3: done\n',
-					stderr: 'warning: deprecated flag\nerror: connection refused\n',
-					exitCode: 0,
-				});
+	it.effect('invokes the callback once per stdout line (info) and stderr line (warn)', () =>
+		Effect.gen(function* () {
+			const recorder: Array<SpawnRecord> = [];
+			const captured: Array<{ level: string; line: string }> = [];
+			const spawnerLayer = makeOutputSpawnerLayer(recorder, {
+				stdout: 'step 1: starting\nstep 2: working\nstep 3: done\n',
+				stderr: 'warning: deprecated flag\nerror: connection refused\n',
+				exitCode: 0,
+			});
 
-				const result = yield* Docker.runOneShot({
-					name: 'one-shot-stream',
-					image: 'busybox:latest',
-					args: ['true'],
-					onOutputLine: (level, line) =>
-						Effect.sync(() => {
-							captured.push({ level, line });
-						}),
-				}).pipe(Effect.provide(spawnerLayer), Effect.provide(identityLayer));
+			const result = yield* Docker.runOneShot({
+				name: 'one-shot-stream',
+				image: 'busybox:latest',
+				args: ['true'],
+				onOutputLine: (level, line) =>
+					Effect.sync(() => {
+						captured.push({ level, line });
+					}),
+			}).pipe(Effect.provide(spawnerLayer), Effect.provide(identityLayer));
 
-				expect(result.exitCode).toBe(0);
-				const stdoutLines = captured
-					.filter((e) => e.level === 'info')
-					.map((e) => e.line);
-				expect(stdoutLines).toEqual([
-					'step 1: starting',
-					'step 2: working',
-					'step 3: done',
-				]);
-				const stderrLines = captured
-					.filter((e) => e.level === 'warn')
-					.map((e) => e.line);
-				expect(stderrLines).toEqual([
-					'warning: deprecated flag',
-					'error: connection refused',
-				]);
-			}),
+			expect(result.exitCode).toBe(0);
+			const stdoutLines = captured.filter((e) => e.level === 'info').map((e) => e.line);
+			expect(stdoutLines).toEqual(['step 1: starting', 'step 2: working', 'step 3: done']);
+			const stderrLines = captured.filter((e) => e.level === 'warn').map((e) => e.line);
+			expect(stderrLines).toEqual(['warning: deprecated flag', 'error: connection refused']);
+		}),
 	);
 
-	it.effect(
-		'preserves the accumulated stdout/stderr strings on the result',
-		() =>
-			Effect.gen(function* () {
-				const recorder: Array<SpawnRecord> = [];
-				const spawnerLayer = makeOutputSpawnerLayer(recorder, {
-					stdout: 'line-a\nline-b\n',
-					stderr: 'err-a\nerr-b\n',
-					exitCode: 0,
-				});
+	it.effect('preserves the accumulated stdout/stderr strings on the result', () =>
+		Effect.gen(function* () {
+			const recorder: Array<SpawnRecord> = [];
+			const spawnerLayer = makeOutputSpawnerLayer(recorder, {
+				stdout: 'line-a\nline-b\n',
+				stderr: 'err-a\nerr-b\n',
+				exitCode: 0,
+			});
 
-				const result = yield* Docker.runOneShot({
-					name: 'one-shot-accumulate',
-					image: 'busybox:latest',
-					args: ['true'],
-					// Sink that never fires — we just want to assert the
-					// accumulated strings carry the full captured output
-					// even when streaming is wired up.
-					onOutputLine: () => Effect.void,
-				}).pipe(Effect.provide(spawnerLayer), Effect.provide(identityLayer));
+			const result = yield* Docker.runOneShot({
+				name: 'one-shot-accumulate',
+				image: 'busybox:latest',
+				args: ['true'],
+				// Sink that never fires — we just want to assert the
+				// accumulated strings carry the full captured output
+				// even when streaming is wired up.
+				onOutputLine: () => Effect.void,
+			}).pipe(Effect.provide(spawnerLayer), Effect.provide(identityLayer));
 
-				expect(result.stdout).toBe('line-a\nline-b');
-				expect(result.stderr).toBe('err-a\nerr-b');
-			}),
+			expect(result.stdout).toBe('line-a\nline-b');
+			expect(result.stderr).toBe('err-a\nerr-b');
+		}),
 	);
 
-	it.effect(
-		'absent callback preserves the historical decode-to-string behavior',
-		() =>
-			Effect.gen(function* () {
-				const recorder: Array<SpawnRecord> = [];
-				const spawnerLayer = makeOutputSpawnerLayer(recorder, {
-					stdout: 'plain stdout output\n',
-					stderr: '',
-					exitCode: 0,
-				});
+	it.effect('absent callback preserves the historical decode-to-string behavior', () =>
+		Effect.gen(function* () {
+			const recorder: Array<SpawnRecord> = [];
+			const spawnerLayer = makeOutputSpawnerLayer(recorder, {
+				stdout: 'plain stdout output\n',
+				stderr: '',
+				exitCode: 0,
+			});
 
-				const result = yield* Docker.runOneShot({
-					name: 'one-shot-no-callback',
-					image: 'busybox:latest',
-					args: ['true'],
-				}).pipe(Effect.provide(spawnerLayer), Effect.provide(identityLayer));
+			const result = yield* Docker.runOneShot({
+				name: 'one-shot-no-callback',
+				image: 'busybox:latest',
+				args: ['true'],
+			}).pipe(Effect.provide(spawnerLayer), Effect.provide(identityLayer));
 
-				expect(result.exitCode).toBe(0);
-				expect(result.stdout).toContain('plain stdout output');
-			}),
+			expect(result.exitCode).toBe(0);
+			expect(result.stdout).toContain('plain stdout output');
+		}),
 	);
 });
