@@ -17,17 +17,17 @@
 // Doesn't construct an engine. Safe to run any time. Exits 0 unless docker
 // is unreachable.
 
-import { Console, Effect, FileSystem } from 'effect';
+import { Console, Effect, FileSystem, Option } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
-import { Command } from 'effect/unstable/cli';
+import { Command, Flag } from 'effect/unstable/cli';
 import { createServer } from 'node:net';
 import {
 	collectInventory,
-	isPidAlive,
 	renderInventoryRow,
 	renderTotals,
 	totalsFor,
 } from '../../engine/docker/inventory.js';
+import { isHolderLive } from '../../engine/process-liveness.js';
 import { join as joinPath } from 'node:path';
 
 type Spawner = ReturnType<typeof ChildProcessSpawner.make>;
@@ -150,6 +150,8 @@ const renderCheck = (c: Check): string => {
 interface StaleLock {
 	readonly path: string;
 	readonly pid: number | undefined;
+	readonly startedAt: string;
+	readonly host: string;
 	/** Parsed `acquiredAt` ISO string, when available. Surfaces in the
 	 *  detail line so the user can correlate against e.g. their last
 	 *  laptop restart. */
@@ -188,32 +190,45 @@ const listLockFiles = (
 const readLockBody = (
 	fs: FileSystem.FileSystem,
 	path: string,
-): Effect.Effect<{ pid: number | undefined; acquiredAt: string | undefined }> =>
+): Effect.Effect<{
+	pid: number | undefined;
+	startedAt: string;
+	host: string;
+	acquiredAt: string | undefined;
+}> =>
 	Effect.gen(function* () {
 		const text = yield* fs
 			.readFileString(path)
 			.pipe(Effect.catch(() => Effect.succeed('')));
-		if (text.trim().length === 0) return { pid: undefined, acquiredAt: undefined };
+		if (text.trim().length === 0) {
+			return { pid: undefined, startedAt: '', host: '', acquiredAt: undefined };
+		}
 		try {
-			const parsed = JSON.parse(text) as { pid?: unknown; acquiredAt?: unknown };
+			const parsed = JSON.parse(text) as {
+				pid?: unknown;
+				startedAt?: unknown;
+				host?: unknown;
+				acquiredAt?: unknown;
+			};
 			const pid =
-				typeof parsed.pid === 'number' && Number.isFinite(parsed.pid)
+				typeof parsed.pid === 'number' && Number.isFinite(parsed.pid) && parsed.pid > 0
 					? parsed.pid
 					: undefined;
+			const startedAt = typeof parsed.startedAt === 'string' ? parsed.startedAt : '';
+			const host = typeof parsed.host === 'string' ? parsed.host : '';
 			const acquiredAt =
 				typeof parsed.acquiredAt === 'string' ? parsed.acquiredAt : undefined;
-			return { pid, acquiredAt };
+			return { pid, startedAt, host, acquiredAt };
 		} catch {
-			return { pid: undefined, acquiredAt: undefined };
+			return { pid: undefined, startedAt: '', host: '', acquiredAt: undefined };
 		}
 	});
 
 const findStaleLocks = (
 	fs: FileSystem.FileSystem,
-	appDir: string,
+	devstackDir: string,
 ): Effect.Effect<ReadonlyArray<StaleLock>> =>
 	Effect.gen(function* () {
-		const devstackDir = joinPath(appDir, '.devstack');
 		const candidates: Array<string> = [];
 		// Per-stack localnet locks: `.devstack/stacks/<stack>/state.json.lock`.
 		const stacksDir = joinPath(devstackDir, 'stacks');
@@ -238,12 +253,24 @@ const findStaleLocks = (
 		for (const path of candidates) {
 			const body = yield* readLockBody(fs, path);
 			// A lock is "stale" if the pid is missing/unreadable (the body
-			// is corrupt — no holder to defer to) OR the pid is dead.
-			// Either way, removing it is safe: the original supervisor is
-			// definitionally not around to race us.
-			const stale = body.pid === undefined || !isPidAlive(body.pid);
+			// is corrupt — no holder to defer to) OR the pid+startedAt
+			// pair fails the start-time-aware liveness check (defends
+			// against PID-reuse — a reused pid that happens to be alive
+			// but with a different start time should NOT be treated as
+			// the original holder). Cross-host holders are conservatively
+			// classified as live so we don't blow away a peer's lock on
+			// a shared filesystem.
+			const stale =
+				body.pid === undefined ||
+				!isHolderLive({ pid: body.pid, startedAt: body.startedAt, host: body.host });
 			if (stale) {
-				out.push({ path, pid: body.pid, acquiredAt: body.acquiredAt });
+				out.push({
+					path,
+					pid: body.pid,
+					startedAt: body.startedAt,
+					host: body.host,
+					acquiredAt: body.acquiredAt,
+				});
 			}
 		}
 		return out as ReadonlyArray<StaleLock>;
@@ -256,6 +283,18 @@ const removeStaleLocks = (
 	Effect.gen(function* () {
 		const removed: Array<string> = [];
 		for (const lock of locks) {
+			// Re-verify the holder is dead immediately before unlink. The
+			// findStaleLocks pass and the unlink can race a supervisor
+			// that just woke up and rewrote the lock body; checking again
+			// here keeps the window between observation and mutation as
+			// narrow as a single read.
+			const body = yield* readLockBody(fs, lock.path);
+			if (
+				body.pid !== undefined &&
+				isHolderLive({ pid: body.pid, startedAt: body.startedAt, host: body.host })
+			) {
+				continue;
+			}
 			const ok = yield* fs
 				.remove(lock.path)
 				.pipe(
@@ -267,7 +306,26 @@ const removeStaleLocks = (
 		return removed as ReadonlyArray<string>;
 	});
 
-export const doctorCommand = Command.make('doctor', {}, () =>
+const cleanLocksFlag = Flag.boolean('clean-locks').pipe(
+	Flag.withDescription(
+		'Remove dead state-store lock files (default: report only). Required ' +
+			'before doctor will mutate disk state under .devstack/.',
+	),
+	Flag.withDefault(false),
+);
+
+const stateDirOverrideFlag = Flag.string('state-dir').pipe(
+	Flag.withDescription(
+		'Override DEVSTACK_STATE_DIR for the stale-lock walk. Defaults to ' +
+			'<DEVSTACK_APP_DIR>/.devstack/.',
+	),
+	Flag.optional,
+);
+
+export const doctorCommand = Command.make(
+	'doctor',
+	{ cleanLocks: cleanLocksFlag, stateDirOverride: stateDirOverrideFlag },
+	({ cleanLocks, stateDirOverride }) =>
 	Effect.gen(function* () {
 		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 		const fs = yield* FileSystem.FileSystem;
@@ -281,23 +339,47 @@ export const doctorCommand = Command.make('doctor', {}, () =>
 		// Stale state-store locks: each `.devstack/**/state.json.lock`
 		// whose holder pid is dead blocks the next `pnpm dev` for that
 		// stack with a misleading "already running (pid <dead>)" error.
-		// Doctor auto-cleans them — they're definitionally orphans, so
-		// removing them can't race a live supervisor. (A live holder
-		// is by definition not stale.)
+		// We REPORT them by default and only mutate disk under
+		// `--clean-locks` — the prior auto-clean was safe in theory
+		// (an orphan can't race itself) but a doctor + mid-write
+		// supervisor on the same machine could still misclassify a
+		// holder mid-rewrite, and we'd rather a `--clean-locks` opt-in
+		// than a defensible-but-surprising default.
+		//
+		// Honor --state-dir override AND DEVSTACK_STATE_DIR — the latter
+		// is read at action-time so a fixture exporting it after CLI
+		// import sees the override.
 		const appDir = process.env.DEVSTACK_APP_DIR ?? process.cwd();
-		const staleLocks = yield* findStaleLocks(fs, appDir);
-		const removedLocks = yield* removeStaleLocks(fs, staleLocks);
+		const stateDir = Option.match(stateDirOverride, {
+			onSome: (s) => (s.startsWith('/') ? s : joinPath(appDir, s)),
+			onNone: () => {
+				const env = process.env.DEVSTACK_STATE_DIR;
+				if (env !== undefined) return env.startsWith('/') ? env : joinPath(appDir, env);
+				return joinPath(appDir, '.devstack');
+			},
+		});
+		const staleLocks = yield* findStaleLocks(fs, stateDir);
+		const removedLocks = cleanLocks
+			? yield* removeStaleLocks(fs, staleLocks)
+			: ([] as ReadonlyArray<string>);
 		const lockCheck: Check =
 			staleLocks.length === 0
 				? { name: 'State-store locks', ok: true, required: false, detail: 'no stale locks' }
-				: {
+				: !cleanLocks
+					? {
+							name: 'State-store locks',
+							ok: false,
+							required: false,
+							detail: `${staleLocks.length} stale lock${staleLocks.length === 1 ? '' : 's'} found — re-run with --clean-locks to remove`,
+						}
+					: {
 						name: 'State-store locks',
 						ok: removedLocks.length === staleLocks.length,
 						required: false,
 						detail:
 							removedLocks.length === staleLocks.length
 								? `removed ${removedLocks.length} stale lock${removedLocks.length === 1 ? '' : 's'}`
-								: `removed ${removedLocks.length}/${staleLocks.length} stale lock${staleLocks.length === 1 ? '' : 's'} (filesystem error on the rest)`,
+								: `removed ${removedLocks.length}/${staleLocks.length} stale lock${staleLocks.length === 1 ? '' : 's'} (rest still held or filesystem error)`,
 					};
 
 		const all: Array<Check> = [docker, sui, lockCheck, ...ports];

@@ -37,12 +37,16 @@ describe('json-bigint', () => {
 		expect(roundTrip(payload)).toEqual(payload);
 	});
 
-	it('throws on invalid {__bigint: <non-numeric>} payloads (no silent swallow)', () => {
-		// The reviver passes the tagged string straight to `BigInt(...)`,
-		// which throws SyntaxError. We assert that surface here so a future
-		// refactor that adds a try/catch doesn't introduce silent corruption.
+	it('returns the tagged value untouched on invalid {__bigint: <non-numeric>}', () => {
+		// Pre-fix the reviver passed the string straight to `BigInt(...)`,
+		// which threw SyntaxError. That throw bubbled out of `JSON.parse`
+		// and was then `Effect.catch`-swallowed by the state-store loader
+		// into an empty record — silently dropping the entire on-disk
+		// state. Catching here returns the tagged shape verbatim so the
+		// state-store sees the malformed value as-is and can decide what
+		// to do (current behavior: ignore unknown shapes during read).
 		const raw = JSON.stringify({ __bigint: 'not-a-number' });
-		expect(() => JSON.parse(raw, jsonBigintReviver)).toThrow(SyntaxError);
+		expect(JSON.parse(raw, jsonBigintReviver)).toEqual({ __bigint: 'not-a-number' });
 	});
 
 	it('leaves look-alike tags untouched (only exact __bigint:string matches)', () => {

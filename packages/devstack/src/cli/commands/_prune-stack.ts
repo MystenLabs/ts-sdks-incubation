@@ -10,10 +10,60 @@
 // with attached endpoints we couldn't kill) never aborts the others.
 // The returned `PruneResult` carries the counts the caller renders.
 
-import { Effect, FileSystem } from 'effect';
+import { Data, Effect, FileSystem } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { join as joinPath } from 'node:path';
+import { isHolderLive } from '../../engine/process-liveness.js';
 import { registry, type RegistryNetwork } from '../../engine/registry.js';
+
+export class PruneStackBlockedError extends Data.TaggedError('PruneStackBlockedError')<{
+	readonly app: string;
+	readonly stack: string;
+	readonly lockPath: string;
+	readonly holderPid: number;
+}> {}
+
+// Inspect the per-stack state.json.lock; if it carries a live holder
+// (start-time-aware liveness defends against PID reuse, cross-host
+// holders are conservatively treated as live), refuse to prune. The
+// caller's `--yes` confirmation gates user intent; this gate prevents
+// the user from accidentally tearing state out from under a live
+// supervisor that's still mid-write.
+const readJsonOpt = (fs: Fs, path: string): Effect.Effect<unknown> =>
+	fs.readFileString(path).pipe(
+		Effect.flatMap((txt) =>
+			Effect.try({ try: () => JSON.parse(txt) as unknown, catch: () => undefined }).pipe(
+				Effect.catch(() => Effect.succeed(undefined)),
+			),
+		),
+		Effect.catch(() => Effect.succeed(undefined)),
+	);
+
+const ensureNoLiveHolder = (
+	fs: Fs,
+	app: string,
+	stack: string,
+	stateDir: string,
+): Effect.Effect<void, PruneStackBlockedError> =>
+	Effect.gen(function* () {
+		const lockPath = joinPath(stateDir, 'stacks', stack, 'state.json.lock');
+		const exists = yield* fs.exists(lockPath).pipe(Effect.catch(() => Effect.succeed(false)));
+		if (!exists) return;
+		const parsed = yield* readJsonOpt(fs, lockPath);
+		if (parsed === undefined || typeof parsed !== 'object' || parsed === null) return;
+		const body = parsed as { pid?: unknown; startedAt?: unknown; host?: unknown };
+		const pid =
+			typeof body.pid === 'number' && Number.isFinite(body.pid) && body.pid > 0
+				? body.pid
+				: undefined;
+		if (pid === undefined) return;
+		const startedAt = typeof body.startedAt === 'string' ? body.startedAt : '';
+		const host = typeof body.host === 'string' ? body.host : '';
+		if (!isHolderLive({ pid, startedAt, host })) return;
+		return yield* Effect.fail(
+			new PruneStackBlockedError({ app, stack, lockPath, holderPid: pid }),
+		);
+	});
 
 type Spawner = ReturnType<typeof ChildProcessSpawner.make>;
 type Fs = ReturnType<typeof FileSystem.make>;
@@ -313,13 +363,19 @@ export const pruneStack = (
 	options: PruneStackOptions,
 ): Effect.Effect<
 	PruneStackResult,
-	never,
+	PruneStackBlockedError,
 	FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner
 > =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem;
 		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 		const stateDir = resolveStateDir(options.stateDir);
+
+		// State-store lock check at the lowest mutating layer. Both `wipe`
+		// and `prune` already do similar live-supervisor checks in their
+		// own paths, but centralizing here ensures any future caller of
+		// pruneStack inherits the same defense.
+		yield* ensureNoLiveHolder(fs, options.app, options.stack, stateDir);
 
 		let killedContainers: ReadonlyArray<string> = [];
 		let removedNetworks: ReadonlyArray<string> = [];
