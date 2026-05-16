@@ -116,6 +116,18 @@ export interface Sui {
 	readonly client: SuiJsonRpcClient;
 	readonly chainId: string;
 	readonly waitForTransactionsReady: () => Effect.Effect<void, SuiError>;
+	/**
+	 * Discriminator for the runtime shape of the chain backing this Sui.
+	 * `'bundled'` = the vendored sui-localnet container devstack starts
+	 * (full control over genesis + chain id + indexer); `'external'` =
+	 * a user-supplied RPC (any chain id, no docker control, no
+	 * indexer assumptions). `network` stays at the user's configured
+	 * value (`'localnet'` even when wrapping an external RPC) so
+	 * KnownPackage / dapp-kit network-name lookups behave consistently;
+	 * downstream policy that needs to know "are we running a real
+	 * localnet container?" branches on `runtime` instead. HIGH-T4.
+	 */
+	readonly runtime: 'bundled' | 'external';
 }
 
 /** Canonical Sui service tag. Named `SuiTag` (not `Sui`) so the factory
@@ -494,6 +506,7 @@ const buildLocalnet = (options: SuiLocalnetOptions): StackMember => {
 				client,
 				chainId,
 				waitForTransactionsReady,
+				runtime: 'external',
 			} satisfies Sui;
 		}
 
@@ -781,6 +794,7 @@ const buildLocalnet = (options: SuiLocalnetOptions): StackMember => {
 			client,
 			chainId,
 			waitForTransactionsReady,
+			runtime: 'bundled',
 		} satisfies Sui;
 	})();
 
@@ -869,6 +883,7 @@ const buildTestnet = (options: SuiTestnetOptions): StackMember => {
 			client,
 			chainId,
 			waitForTransactionsReady,
+			runtime: 'external',
 		} satisfies Sui;
 	})();
 
@@ -908,6 +923,7 @@ const buildMainnet = (options: SuiMainnetOptions): StackMember => {
 			client,
 			chainId,
 			waitForTransactionsReady,
+			runtime: 'external',
 		} satisfies Sui;
 	})();
 
@@ -960,6 +976,7 @@ const buildCustom = (options: SuiCustomOptions): StackMember => {
 			client,
 			chainId,
 			waitForTransactionsReady,
+			runtime: 'external',
 		} satisfies Sui;
 	})();
 

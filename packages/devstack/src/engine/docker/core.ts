@@ -907,47 +907,80 @@ const inspectContainer = (
 // arg is ignored by `docker start` — only `docker run` honors it).
 // Returns an empty record on any inspect failure so callers can fall
 // back to their caller-supplied ports.
+type PortBindings = Record<string, ReadonlyArray<{ HostPort?: string }> | null>;
+
+const parsePortBindings = (raw: string): Record<number, number> => {
+	let parsed: PortBindings;
+	try {
+		parsed = JSON.parse(raw) as PortBindings;
+	} catch {
+		return {};
+	}
+	const out: Record<number, number> = {};
+	for (const [key, bindings] of Object.entries(parsed)) {
+		const containerPort = Number.parseInt(key.split('/')[0] ?? '', 10);
+		if (!Number.isFinite(containerPort)) continue;
+		if (bindings === null || bindings.length === 0) continue;
+		const hostPortStr = bindings[0]?.HostPort;
+		if (hostPortStr === undefined) continue;
+		const hostPort = Number.parseInt(hostPortStr, 10);
+		if (!Number.isFinite(hostPort)) continue;
+		out[hostPort] = containerPort;
+	}
+	return out;
+};
+
 const inspectHostPorts = (
 	spawner: Spawner,
 	containerId: string,
 ): Effect.Effect<Record<number, number>, never> =>
 	Effect.gen(function* () {
-		// `.NetworkSettings.Ports` is the runtime-resolved view, populated
-		// when the container is running. Shape:
-		//   { "9000/tcp": [ { HostIp: "127.0.0.1", HostPort: "9001" } ], ... }
-		// `.HostConfig.PortBindings` is the same shape but from config;
-		// inspecting a STOPPED container has the runtime view empty, so
-		// we read PortBindings instead. Falls back if both empty.
-		const cmd = ChildProcess.make('docker', [
+		// Two views, two inspect targets:
+		//   1. `.NetworkSettings.Ports` — the runtime view, populated when
+		//      the container is RUNNING. Shape:
+		//        { "9000/tcp": [ { HostIp: "127.0.0.1", HostPort: "9001" } ] }
+		//   2. `.HostConfig.PortBindings` — the config view, populated for
+		//      both running and stopped containers but reflects what the
+		//      caller ASKED FOR (not what docker actually granted; if
+		//      docker assigned a different port via `-p 0:9000`, this
+		//      view still shows the original request).
+		//
+		// Try (1) FIRST on the assumption that the container is running
+		// (the common path for `inspectHostPorts` callers — adopt-on-warm-
+		// start probes a healthy container). Fall back to (2) when the
+		// runtime view is empty (stopped container). Reading (1) first
+		// also catches the auto-allocate case (`-p 0:9000`) honestly —
+		// (2) would return `0` whereas (1) returns the granted port.
+		const runtimeCmd = ChildProcess.make('docker', [
+			'inspect',
+			'--format',
+			'{{json .NetworkSettings.Ports}}',
+			containerId,
+		]);
+		const runtimeCap = yield* runCapturing(spawner, runtimeCmd, 'docker inspect ports (runtime)').pipe(
+			Effect.catchTag('DockerError', () => Effect.succeed(null)),
+		);
+		if (runtimeCap !== null && runtimeCap.exitCode === 0) {
+			const raw = runtimeCap.stdout.trim();
+			if (raw.length > 0 && raw !== 'null' && raw !== '{}') {
+				const parsed = parsePortBindings(raw);
+				if (Object.keys(parsed).length > 0) return parsed;
+			}
+		}
+		// Fallback: config view (stopped container).
+		const configCmd = ChildProcess.make('docker', [
 			'inspect',
 			'--format',
 			'{{json .HostConfig.PortBindings}}',
 			containerId,
 		]);
-		const captured = yield* runCapturing(spawner, cmd, 'docker inspect ports').pipe(
+		const configCap = yield* runCapturing(spawner, configCmd, 'docker inspect ports (config)').pipe(
 			Effect.catchTag('DockerError', () => Effect.succeed(null)),
 		);
-		if (captured === null || captured.exitCode !== 0) return {};
-		const raw = captured.stdout.trim();
+		if (configCap === null || configCap.exitCode !== 0) return {};
+		const raw = configCap.stdout.trim();
 		if (raw.length === 0 || raw === 'null' || raw === '{}') return {};
-		type PortBindings = Record<string, ReadonlyArray<{ HostPort?: string }> | null>;
-		const parsed: PortBindings = yield* Effect.try({
-			try: () => JSON.parse(raw) as PortBindings,
-			catch: () => undefined,
-		}).pipe(Effect.catch(() => Effect.succeed({} as PortBindings)));
-		const out: Record<number, number> = {};
-		for (const [key, bindings] of Object.entries(parsed)) {
-			// key is like "9000/tcp"
-			const containerPort = Number.parseInt(key.split('/')[0] ?? '', 10);
-			if (!Number.isFinite(containerPort)) continue;
-			if (bindings === null || bindings.length === 0) continue;
-			const hostPortStr = bindings[0]?.HostPort;
-			if (hostPortStr === undefined) continue;
-			const hostPort = Number.parseInt(hostPortStr, 10);
-			if (!Number.isFinite(hostPort)) continue;
-			out[hostPort] = containerPort;
-		}
-		return out;
+		return parsePortBindings(raw);
 	});
 
 // Resolve a container's IP address on a specific docker network. Used

@@ -45,6 +45,7 @@ const mockSui = (faucetUrl: string | undefined): Layer.Layer<SuiTag> =>
 		// unknown so we don't have to wire a real SuiJsonRpcClient up.
 		client: {} as unknown as Sui['client'],
 		waitForTransactionsReady: () => Effect.void,
+		runtime: 'bundled',
 	});
 
 // `StateStoreConfig` is provided by the supervisor in production; tests
@@ -346,6 +347,7 @@ describe('Account(name, opts?) — source discriminator', () => {
 								message: 'chain never became funds-transferable',
 							}),
 						),
+					runtime: 'bundled',
 				});
 				const alice = Account('alice', { from: 'ephemeral-funded' });
 				const exit = yield* Effect.gen(function* () {

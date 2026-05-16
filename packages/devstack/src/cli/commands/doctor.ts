@@ -64,6 +64,29 @@ const checkDocker = (spawner: Spawner): Effect.Effect<Check> =>
 		return { name: 'Docker daemon', ok: true, required: true, detail: `server ${out.text}` };
 	});
 
+// Match the pinned `DEFAULT_SUI_VERSION` from `services/sui.ts` so
+// doctor's drift hint stays in sync without importing the engine
+// (the CLI is a thin entrypoint; pulling in the engine here would
+// drag in the whole supervisor surface).
+const PINNED_SUI_VERSION_TAG = 'devnet-v1.71.0';
+
+// Parse the major.minor.patch out of either form of `sui --version`
+// output (`sui 1.71.0-abcdef` or `sui 1.71.0`). Returns undefined when
+// the string doesn't match — drift detection silently skips in that
+// case rather than printing a misleading warning.
+const parseSuiSemver = (text: string): string | undefined => {
+	const match = text.match(/(\d+)\.(\d+)\.(\d+)/);
+	if (match === null) return undefined;
+	return `${match[1]}.${match[2]}.${match[3]}`;
+};
+
+const compareMinor = (a: string, b: string): number => {
+	const [aM, am] = a.split('.').map(Number) as [number, number, number];
+	const [bM, bm] = b.split('.').map(Number) as [number, number, number];
+	if (aM !== bM) return aM - bM;
+	return am - bm;
+};
+
 const checkSui = (spawner: Spawner): Effect.Effect<Check> =>
 	Effect.gen(function* () {
 		const cmd = ChildProcess.make('sui', ['--version']);
@@ -80,6 +103,24 @@ const checkSui = (spawner: Spawner): Effect.Effect<Check> =>
 					? 'sui not found on PATH — see https://docs.sui.io/guides/developer/getting-started/sui-install'
 					: `\`sui --version\` failed: ${out.text}`,
 			};
+		}
+		// Drift check: parse the host sui's semver and compare against the
+		// pinned build-container tag. A patch difference is fine; a minor
+		// or major difference is a warning so users see the mismatch
+		// before they hit a "schema diverged" failure in `sui move build`
+		// or `sui move summary` against vendored Move sources.
+		const hostSemver = parseSuiSemver(out.text);
+		const pinnedSemver = parseSuiSemver(PINNED_SUI_VERSION_TAG);
+		if (hostSemver !== undefined && pinnedSemver !== undefined) {
+			const drift = Math.abs(compareMinor(hostSemver, pinnedSemver));
+			if (drift > 0) {
+				return {
+					name: 'Sui CLI',
+					ok: true,
+					required: false,
+					detail: `${out.text} (drift: build container pinned at ${PINNED_SUI_VERSION_TAG}; bindings codegen routes through it, but ad-hoc \`sui\` calls may diverge)`,
+				};
+			}
 		}
 		return { name: 'Sui CLI', ok: true, required: false, detail: out.text };
 	});
