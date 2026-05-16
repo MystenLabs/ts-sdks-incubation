@@ -29,26 +29,22 @@ import {
 // -----------------------------------------------------------------------------
 
 describe('containerNameFor', () => {
-	it('produces `devstack-<app>-<stack>-build` per the user-facing contract', () => {
-		// Per-`(app, stack)` naming is what isolates concurrent
-		// stacks within the same app from sharing build state — a
-		// regression that dropped one of the two segments would
-		// silently re-collide the containers.
-		expect(containerNameFor({ app: 'wallet', stack: 'main' })).toBe(
-			'devstack-wallet-main-build',
-		);
-		expect(containerNameFor({ app: 'wallet', stack: 'test' })).toBe(
-			'devstack-wallet-test-build',
-		);
+	it('produces `devstack-<app>-build` per the user-facing contract', () => {
+		// Per-`app` naming (stack-agnostic) so flipping
+		// `DEVSTACK_STACK` against an already-warm container reuses
+		// the same `~/.move` cache + container instead of paying a
+		// cold image-pull + container-start cost.
+		expect(containerNameFor({ app: 'wallet', stack: 'main' })).toBe('devstack-wallet-build');
+		expect(containerNameFor({ app: 'wallet', stack: 'test' })).toBe('devstack-wallet-build');
 	});
 
-	it('does not include the network dimension', () => {
-		// `sui move build` is network-agnostic (it only compiles bytecode,
-		// no chain reads). Keying by network would force a new container
-		// every time the user toggled `network:` in their config; the
-		// build image is the same either way.
+	it('does not include the network or stack dimension', () => {
+		// `sui move build` is network-agnostic (only compiles
+		// bytecode) AND stack-agnostic (bind-mount path is per-app,
+		// not per-stack). Two stacks against the same app share the
+		// same container and serialize their builds through it.
 		const a = containerNameFor({ app: 'wallet', stack: 'main' });
-		const b = containerNameFor({ app: 'wallet', stack: 'main' });
+		const b = containerNameFor({ app: 'wallet', stack: 'test' });
 		expect(a).toBe(b);
 	});
 });
@@ -181,7 +177,10 @@ const imageLayer = Layer.succeed(SuiBuildImage, { tag: 'devstack/sui:1.71.0' });
 
 const otherImageLayer = Layer.succeed(SuiBuildImage, { tag: 'devstack/sui:2.0.0' });
 
-const EXPECTED_NAME = 'devstack-walletapp-main-build';
+// Container name is now `devstack-<app>-build` (post-Phase 9 perf
+// fix); the previous `<app>-<stack>-build` shape forced a fresh
+// image-pull every time DEVSTACK_STACK changed.
+const EXPECTED_NAME = 'devstack-walletapp-build';
 
 describe('SuiBuildContainerLive — adopt-or-create', () => {
 	it.effect('creates a fresh detached container when none exists with that name', () => {

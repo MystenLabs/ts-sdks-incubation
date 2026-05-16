@@ -37,22 +37,33 @@ export class FaucetError extends Schema.TaggedErrorClass<FaucetError>()('FaucetE
 // Public API
 // -----------------------------------------------------------------------------
 
-// Bounded exponential backoff. Default schedule (40 attempts × 500ms
-// initial × 1.5 growth) is paired with the default 90s wall-clock
-// budget at the call site — long enough to absorb a cold sui-localnet
-// boot where the faucet binary needs ~30-60s after its HTTP socket
-// opens before it can actually submit transactions (during that
-// window it returns 503 / Internal). Callers can override both via
-// `requestFunds`'s `maxAttempts` / `initialDelayMs` / `timeoutMs`
-// opts — useful in CI where a clearly-broken faucet should fail fast
-// instead of burning the full 90s × N-accounts budget.
-const DEFAULT_MAX_ATTEMPTS = 40;
+// Bounded exponential backoff with jitter. Default schedule (15
+// attempts × 500ms initial × 1.5 growth + jitter) is paired with the
+// 90s wall-clock budget at the call site — long enough to absorb a
+// cold sui-localnet boot where the faucet binary needs ~30-60s after
+// its HTTP socket opens before it can actually submit transactions
+// (during that window it returns 503 / Internal). Callers can
+// override all three via `requestFunds`'s
+// `maxAttempts` / `initialDelayMs` / `timeoutMs` opts.
+//
+// C14: pre-fix this was 40 attempts with no jitter. Each retry burned
+// ~5s through the per-fetch timeout, so a fully unhealthy faucet
+// dragged out the cold path well past its 90s budget AND every
+// account's retry schedule landed on the same wall-clock tick,
+// thundering-herd hammering the faucet. Jitter spreads those, and
+// the lower attempt count fail-fasts the broken-faucet case while
+// the budget still covers the legitimate cold-start path.
+const DEFAULT_MAX_ATTEMPTS = 15;
 const DEFAULT_INITIAL_DELAY_MS = 500;
 const DEFAULT_TIMEOUT_MS = 90_000;
 const BACKOFF_FACTOR = 1.5;
 
 const makeFaucetRetrySchedule = (initialDelayMs: number, maxAttempts: number) =>
 	Schedule.exponential(`${initialDelayMs} millis`, BACKOFF_FACTOR).pipe(
+		// `Schedule.jittered` multiplies each delay by a random factor
+		// in [0.8, 1.2) (Effect v4 default) so concurrent account
+		// retries don't synchronize on the wall clock.
+		Schedule.jittered,
 		Schedule.both(Schedule.recurs(maxAttempts)),
 	);
 

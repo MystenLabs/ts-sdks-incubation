@@ -97,16 +97,27 @@ export class SuiBuildContainer extends Context.Service<
 	SuiBuildContainerShape
 >()('@devstack/SuiBuildContainer') {}
 
-// Container name format: `devstack-<app>-<stack>-build`. Per `(app,
-// stack)` — network is not part of the name because the build container
-// is network-agnostic (sui-cli's `move build` is purely local). Two
-// stacks against the same app (e.g. `main` vs `test`) get DIFFERENT
-// build containers so they don't share bind-mounts when running
-// concurrently — the user explicitly opted into that isolation.
+// Container name format: `devstack-<app>-build`. Keyed by `app` only
+// because the build container is network-agnostic (sui-cli's `move
+// build` only compiles bytecode, never touches a chain) AND
+// stack-agnostic (the bind-mount path is the same regardless of
+// `<stack>` since the source tree lives under `<appDir>` per app, not
+// per stack). Sharing one container per app means flipping
+// `DEVSTACK_STACK=test pnpm test` against an already-warm `main` stack
+// reuses the same `~/.move` cache + the same running container
+// instead of paying a fresh image-pull + container-start cost. The
+// trade-off: concurrent Move builds across stacks of the same app
+// serialize through one container (the `docker exec` calls queue);
+// for fully parallel builds, run from separate checkouts so the
+// app identity differs.
 // Exported for direct unit-test coverage; production callers only
 // observe the resulting name indirectly via `docker inspect` records.
-export const containerNameFor = (identity: { app: string; stack: string }): string =>
-	`devstack-${identity.app}-${identity.stack}-build`;
+//
+// `stack` is kept on the parameter shape so call sites that already
+// thread an `Identity` don't need to be re-typed; we just don't read
+// it.
+export const containerNameFor = (identity: { app: string; stack?: string }): string =>
+	`devstack-${identity.app}-build`;
 
 interface InspectResult {
 	readonly running: boolean;
