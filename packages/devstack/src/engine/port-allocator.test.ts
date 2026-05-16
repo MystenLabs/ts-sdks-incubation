@@ -18,7 +18,7 @@ import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { Effect, Layer } from 'effect';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from '@effect/vitest';
+import { afterEach, describe, expect, it } from '@effect/vitest';
 import {
 	claimPortLock,
 	PortAllocator,
@@ -27,19 +27,10 @@ import {
 } from './port-allocator.js';
 import { reallocatePortsOnConflict } from './docker/port-conflict.js';
 
-// Isolate every test in this file from the host-wide `~/.devstack/ports`
-// rendezvous dir. CI re-uses $HOME across worker invocations, so a lock
-// left over from a previous run (or a sibling test file) can poison the
-// 100-port scan window and surface as "No free port found in [N, N+100]".
-// `DEVSTACK_PORT_LOCK_DIR` redirects defaultPortLockDir() to a fresh tmp.
-const ISOLATED_LOCK_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'devstack-portlocks-'));
-beforeAll(() => {
-	process.env.DEVSTACK_PORT_LOCK_DIR = ISOLATED_LOCK_DIR;
-});
-afterAll(() => {
-	delete process.env.DEVSTACK_PORT_LOCK_DIR;
-	fs.rmSync(ISOLATED_LOCK_DIR, { recursive: true, force: true });
-});
+// Note: vitest's `setupFiles` (see vitest.config.ts) routes
+// `defaultPortLockDir()` at a tmpdir for the whole run, so neither this
+// file nor any sibling test stomps the host-wide `~/.devstack/ports/`
+// rendezvous dir.
 
 // Pick a port that's almost certainly free on developer machines. We
 // don't probe with `isPortFree` here because the whole point is to
