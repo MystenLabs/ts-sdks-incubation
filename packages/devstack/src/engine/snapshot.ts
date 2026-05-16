@@ -241,7 +241,7 @@ export const list = (opts?: {
 		const results: Array<{ id: string; createdAt: number }> = [];
 		for (const id of entries) {
 			const metaPath = path.join(snapshotsDir, id, META_FILE_NAME);
-			const metaExists = yield* fs.exists(metaPath).pipe(Effect.catch(() => Effect.succeed(false)));
+			const metaExists = yield* fs.exists(metaPath).pipe(Effect.orElseSucceed(() => false));
 			if (!metaExists) continue;
 			const parsed = yield* fs.readFileString(metaPath).pipe(
 				Effect.flatMap((txt) =>
@@ -250,7 +250,7 @@ export const list = (opts?: {
 						catch: (cause) => cause,
 					}),
 				),
-				Effect.catch(() => Effect.succeed(undefined)),
+				Effect.orElseSucceed(() => undefined),
 			);
 			if (!parsed || typeof parsed.createdAt !== 'number') continue;
 			results.push({ id, createdAt: parsed.createdAt });

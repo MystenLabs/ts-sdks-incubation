@@ -462,7 +462,7 @@ export const scrubCachedMoveLocks = (
 		const fs = yield* FileSystem.FileSystem;
 		const root = path.join(os.homedir(), '.move', 'git');
 
-		const rootExists = yield* fs.exists(root).pipe(Effect.catch(() => Effect.succeed(false)));
+		const rootExists = yield* fs.exists(root).pipe(Effect.orElseSucceed(() => false));
 		if (!rootExists) {
 			yield* Effect.annotateCurrentSpan({ 'sui.scrub.root.missing': true });
 			return;
@@ -512,7 +512,7 @@ const scrubMoveLock = (
 		const cleaned = stripPinnedSections(contents);
 		if (cleaned === contents) return false;
 
-		yield* fs.writeFileString(lockPath, cleaned).pipe(Effect.catch(() => Effect.void));
+		yield* fs.writeFileString(lockPath, cleaned).pipe(Effect.ignore);
 		return true;
 	});
 
@@ -548,7 +548,7 @@ const stripPinnedSectionsFromMoveLock = (
 			const importsDir = path.join(dir, '.devstack', 'imports');
 			const importsExists = yield* fs
 				.exists(importsDir)
-				.pipe(Effect.catch(() => Effect.succeed(false)));
+				.pipe(Effect.orElseSucceed(() => false));
 			if (importsExists) {
 				yield* scrubLockFilesUnder(fs, importsDir).pipe(Effect.ignore);
 				return;
@@ -572,7 +572,7 @@ const scrubLockFilesUnder = (
 		for (const name of entries) {
 			if (name === 'node_modules' || name === '.git') continue;
 			const full = path.join(dir, name);
-			const info = yield* fs.stat(full).pipe(Effect.catch(() => Effect.succeed(undefined)));
+			const info = yield* fs.stat(full).pipe(Effect.orElseSucceed(() => undefined));
 			if (info === undefined) continue;
 			if (info.type === 'Directory') {
 				yield* scrubLockFilesUnder(fs, full);
@@ -587,15 +587,15 @@ const scrubLockFileIfPresent = (
 	lockPath: string,
 ): Effect.Effect<void, never, never> =>
 	Effect.gen(function* () {
-		const exists = yield* fs.exists(lockPath).pipe(Effect.catch(() => Effect.succeed(false)));
+		const exists = yield* fs.exists(lockPath).pipe(Effect.orElseSucceed(() => false));
 		if (!exists) return;
 		const contents = yield* fs
 			.readFileString(lockPath)
-			.pipe(Effect.catch(() => Effect.succeed(undefined)));
+			.pipe(Effect.orElseSucceed(() => undefined));
 		if (contents === undefined) return;
 		const scrubbed = stripPinnedSections(contents);
 		if (scrubbed === contents) return;
-		yield* fs.writeFileString(lockPath, scrubbed).pipe(Effect.catch(() => Effect.void));
+		yield* fs.writeFileString(lockPath, scrubbed).pipe(Effect.ignore);
 	});
 
 // Exported for unit tests; production callers go through

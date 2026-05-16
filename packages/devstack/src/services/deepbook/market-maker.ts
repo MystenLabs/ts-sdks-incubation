@@ -160,7 +160,7 @@ export const deepbookMarketMaker = <const Name extends string>(
 					catch: (cause) => cause,
 				}).pipe(
 					Effect.as(true),
-					Effect.catch(() => Effect.succeed(false)),
+					Effect.orElseSucceed(() => false),
 				);
 				if (verified) {
 					yield* Effect.annotateCurrentSpan({
@@ -172,7 +172,7 @@ export const deepbookMarketMaker = <const Name extends string>(
 					yield* Effect.annotateCurrentSpan({
 						'deepbook.marketMaker.balanceManager.cache': 'stale',
 					});
-					yield* state.remove(cacheKey).pipe(Effect.catch(() => Effect.void));
+					yield* state.remove(cacheKey).pipe(Effect.ignore);
 				}
 			} else {
 				yield* Effect.annotateCurrentSpan({
@@ -315,7 +315,7 @@ export const deepbookMarketMaker = <const Name extends string>(
 						.put(cacheKey, {
 							balanceManagerId: bmObj.objectId,
 						} satisfies CachedBalanceManager)
-						.pipe(Effect.catch(() => Effect.void));
+						.pipe(Effect.ignore);
 				}
 			}).pipe(Effect.withSpan('deepbookMarketMaker.tick'));
 

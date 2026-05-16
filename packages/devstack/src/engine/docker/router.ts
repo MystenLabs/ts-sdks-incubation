@@ -465,7 +465,7 @@ export const removeFileProvider = (id: string): Effect.Effect<void, never> =>
 	Effect.tryPromise({
 		try: () => nodeFs.unlink(joinPath(routerDynamicDir(), `${id}.yml`)),
 		catch: () => undefined,
-	}).pipe(Effect.catch(() => Effect.void));
+	}).pipe(Effect.ignore);
 
 // -----------------------------------------------------------------------------
 // Memoized traefik IP — used by host-side diagnostics / debug surfaces

@@ -94,7 +94,7 @@ const listContainers = (spawner: Spawner): Effect.Effect<ReadonlyArray<RawContai
 			'--format',
 			'{{.ID}}\t{{.Label "devstack.app"}}\t{{.Label "devstack.stack"}}\t{{.Names}}\t{{.State}}\t{{.Status}}',
 		]);
-		const out = yield* spawner.string(cmd).pipe(Effect.catch(() => Effect.succeed('')));
+		const out = yield* spawner.string(cmd).pipe(Effect.orElseSucceed(() => ''));
 		const rows: Array<RawContainer> = [];
 		for (const line of out.split('\n')) {
 			const trimmed = line.trim();
@@ -147,7 +147,7 @@ const listNetworks = (spawner: Spawner): Effect.Effect<ReadonlyArray<RawNetwork>
 			'--filter',
 			'label=devstack.app',
 		]);
-		const idsText = yield* spawner.string(lsCmd).pipe(Effect.catch(() => Effect.succeed('')));
+		const idsText = yield* spawner.string(lsCmd).pipe(Effect.orElseSucceed(() => ''));
 		const ids = idsText
 			.split('\n')
 			.map((s) => s.trim())
@@ -160,7 +160,7 @@ const listNetworks = (spawner: Spawner): Effect.Effect<ReadonlyArray<RawNetwork>
 			'{{.Id}}\t{{.Name}}\t{{index .Labels "devstack.app"}}\t{{index .Labels "devstack.stack"}}',
 			...ids,
 		]);
-		const out = yield* spawner.string(inspectCmd).pipe(Effect.catch(() => Effect.succeed('')));
+		const out = yield* spawner.string(inspectCmd).pipe(Effect.orElseSucceed(() => ''));
 		const rows: Array<RawNetwork> = [];
 		for (const line of out.split('\n')) {
 			const trimmed = line.trim();
@@ -195,7 +195,7 @@ const listVolumes = (spawner: Spawner): Effect.Effect<ReadonlyArray<RawVolume>> 
 			'--filter',
 			'label=devstack.app',
 		]);
-		const namesText = yield* spawner.string(lsCmd).pipe(Effect.catch(() => Effect.succeed('')));
+		const namesText = yield* spawner.string(lsCmd).pipe(Effect.orElseSucceed(() => ''));
 		const names = namesText
 			.split('\n')
 			.map((s) => s.trim())
@@ -211,7 +211,7 @@ const listVolumes = (spawner: Spawner): Effect.Effect<ReadonlyArray<RawVolume>> 
 			'{{.Name}}\t{{index .Labels "devstack.app"}}\t{{index .Labels "devstack.stack"}}',
 			...names,
 		]);
-		const out = yield* spawner.string(inspectCmd).pipe(Effect.catch(() => Effect.succeed('')));
+		const out = yield* spawner.string(inspectCmd).pipe(Effect.orElseSucceed(() => ''));
 		const rows: Array<RawVolume> = [];
 		for (const line of out.split('\n')) {
 			const trimmed = line.trim();
@@ -246,7 +246,7 @@ interface RawVolume {
 const fetchVolumeSizes = (spawner: Spawner): Effect.Effect<ReadonlyMap<string, number>> =>
 	Effect.gen(function* () {
 		const cmd = ChildProcess.make('docker', ['system', 'df', '-v', '--format', '{{json .}}']);
-		const out = yield* spawner.string(cmd).pipe(Effect.catch(() => Effect.succeed('')));
+		const out = yield* spawner.string(cmd).pipe(Effect.orElseSucceed(() => ''));
 		const sizes = new Map<string, number>();
 		if (out.trim().length === 0) return sizes;
 		// `docker system df --format` emits one JSON object per line on
@@ -340,7 +340,7 @@ const listLabelledImages = (
 			'--format',
 			'{{.ID}}\t{{.Repository}}:{{.Tag}}\t{{.Size}}',
 		]);
-		const out = yield* spawner.string(cmd).pipe(Effect.catch(() => Effect.succeed('')));
+		const out = yield* spawner.string(cmd).pipe(Effect.orElseSucceed(() => ''));
 		const rows: Array<{ id: string; tag: string; sizeBytes: number | undefined }> = [];
 		const seen = new Set<string>();
 		for (const line of out.split('\n')) {
@@ -362,7 +362,7 @@ const listLabelledImages = (
 const inUseImageRefs = (spawner: Spawner): Effect.Effect<ReadonlySet<string>> =>
 	Effect.gen(function* () {
 		const cmd = ChildProcess.make('docker', ['ps', '-a', '--format', '{{.Image}}\t{{.ImageID}}']);
-		const out = yield* spawner.string(cmd).pipe(Effect.catch(() => Effect.succeed('')));
+		const out = yield* spawner.string(cmd).pipe(Effect.orElseSucceed(() => ''));
 		const refs = new Set<string>();
 		for (const line of out.split('\n')) {
 			const trimmed = line.trim();
@@ -391,10 +391,10 @@ const countUnlabelledOrphans = (spawner: Spawner): Effect.Effect<number> =>
 			'{{.ID}}',
 			'devstack-*',
 		]);
-		const all = yield* spawner.string(allCmd).pipe(Effect.catch(() => Effect.succeed('')));
+		const all = yield* spawner.string(allCmd).pipe(Effect.orElseSucceed(() => ''));
 		const labelled = yield* spawner
 			.string(labelledCmd)
-			.pipe(Effect.catch(() => Effect.succeed('')));
+			.pipe(Effect.orElseSucceed(() => ''));
 		const allIds = new Set(
 			all
 				.split('\n')
@@ -499,13 +499,13 @@ export const enumerateStateLocations = (
 		const out: Array<StateLocation> = [];
 		for (const root of roots) {
 			const devstackDir = joinPath(root, '.devstack');
-			const exists = yield* fs.exists(devstackDir).pipe(Effect.catch(() => Effect.succeed(false)));
+			const exists = yield* fs.exists(devstackDir).pipe(Effect.orElseSucceed(() => false));
 			if (!exists) continue;
 			// Per-stack layout.
 			const stacksRoot = joinPath(devstackDir, 'stacks');
 			const stacksExists = yield* fs
 				.exists(stacksRoot)
-				.pipe(Effect.catch(() => Effect.succeed(false)));
+				.pipe(Effect.orElseSucceed(() => false));
 			if (stacksExists) {
 				const entries = yield* fs
 					.readDirectory(stacksRoot)
@@ -514,7 +514,7 @@ export const enumerateStateLocations = (
 					const stackDir = joinPath(stacksRoot, entry);
 					const isDir = yield* fs.stat(stackDir).pipe(
 						Effect.map((s) => s.type === 'Directory'),
-						Effect.catch(() => Effect.succeed(false)),
+						Effect.orElseSucceed(() => false),
 					);
 					if (!isDir) continue;
 					const lockPath = joinPath(stackDir, 'state.json.lock');
@@ -527,7 +527,7 @@ export const enumerateStateLocations = (
 			// matching how the rest of the toolchain treats unspecified
 			// stack names.
 			const flat = joinPath(devstackDir, 'state.json');
-			const flatExists = yield* fs.exists(flat).pipe(Effect.catch(() => Effect.succeed(false)));
+			const flatExists = yield* fs.exists(flat).pipe(Effect.orElseSucceed(() => false));
 			if (flatExists) {
 				const lockPath = joinPath(devstackDir, 'state.json.lock');
 				const pid = yield* readLockPid(fs, lockPath);
@@ -543,9 +543,9 @@ export const enumerateStateLocations = (
 
 const readLockPid = (fs: Fs, lockPath: string): Effect.Effect<number | undefined> =>
 	Effect.gen(function* () {
-		const exists = yield* fs.exists(lockPath).pipe(Effect.catch(() => Effect.succeed(false)));
+		const exists = yield* fs.exists(lockPath).pipe(Effect.orElseSucceed(() => false));
 		if (!exists) return undefined;
-		const text = yield* fs.readFileString(lockPath).pipe(Effect.catch(() => Effect.succeed('')));
+		const text = yield* fs.readFileString(lockPath).pipe(Effect.orElseSucceed(() => ''));
 		if (text.trim().length === 0) return undefined;
 		try {
 			const parsed = JSON.parse(text) as { pid?: unknown };
@@ -849,7 +849,7 @@ export const collectRouterInfo = (): Effect.Effect<
 			'{{.State.Running}}',
 			ROUTER_CONTAINER,
 		]);
-		const inspectOut = yield* spawner.string(inspectCmd).pipe(Effect.catch(() => Effect.succeed('')));
+		const inspectOut = yield* spawner.string(inspectCmd).pipe(Effect.orElseSucceed(() => ''));
 		const trimmed = inspectOut.trim();
 		const present = trimmed.length > 0;
 		const running = trimmed === 'true';
@@ -867,7 +867,7 @@ export const collectRouterInfo = (): Effect.Effect<
 		]);
 		const backendsOut = yield* spawner
 			.string(backendsCmd)
-			.pipe(Effect.catch(() => Effect.succeed('')));
+			.pipe(Effect.orElseSucceed(() => ''));
 		const lines = backendsOut
 			.split('\n')
 			.map((s) => s.trim())

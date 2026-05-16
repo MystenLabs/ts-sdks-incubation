@@ -33,10 +33,10 @@ const readJsonOpt = (fs: Fs, path: string): Effect.Effect<unknown> =>
 	fs.readFileString(path).pipe(
 		Effect.flatMap((txt) =>
 			Effect.try({ try: () => JSON.parse(txt) as unknown, catch: () => undefined }).pipe(
-				Effect.catch(() => Effect.succeed(undefined)),
+				Effect.orElseSucceed(() => undefined),
 			),
 		),
-		Effect.catch(() => Effect.succeed(undefined)),
+		Effect.orElseSucceed(() => undefined),
 	);
 
 const ensureNoLiveHolder = (
@@ -47,7 +47,7 @@ const ensureNoLiveHolder = (
 ): Effect.Effect<void, PruneStackBlockedError> =>
 	Effect.gen(function* () {
 		const lockPath = joinPath(stateDir, 'stacks', stack, 'state.json.lock');
-		const exists = yield* fs.exists(lockPath).pipe(Effect.catch(() => Effect.succeed(false)));
+		const exists = yield* fs.exists(lockPath).pipe(Effect.orElseSucceed(() => false));
 		if (!exists) return;
 		const parsed = yield* readJsonOpt(fs, lockPath);
 		if (parsed === undefined || typeof parsed !== 'object' || parsed === null) return;
@@ -133,7 +133,7 @@ const killDevstackContainers = (
 			'--filter',
 			`label=devstack.stack=${stack}`,
 		]);
-		const idsText = yield* spawner.string(lsCmd).pipe(Effect.catch(() => Effect.succeed('')));
+		const idsText = yield* spawner.string(lsCmd).pipe(Effect.orElseSucceed(() => ''));
 		const ids = idsText
 			.split('\n')
 			.map((s) => s.trim())
@@ -143,7 +143,7 @@ const killDevstackContainers = (
 			const rmCmd = ChildProcess.make('docker', ['rm', '-f', id]);
 			const ok = yield* spawner.string(rmCmd).pipe(
 				Effect.map(() => true),
-				Effect.catch(() => Effect.succeed(false)),
+				Effect.orElseSucceed(() => false),
 			);
 			if (ok) killed.push(id);
 		}
@@ -165,7 +165,7 @@ const removeDevstackNetworks = (
 			'--filter',
 			`label=devstack.stack=${stack}`,
 		]);
-		const idsText = yield* spawner.string(lsCmd).pipe(Effect.catch(() => Effect.succeed('')));
+		const idsText = yield* spawner.string(lsCmd).pipe(Effect.orElseSucceed(() => ''));
 		const ids = idsText
 			.split('\n')
 			.map((s) => s.trim())
@@ -175,7 +175,7 @@ const removeDevstackNetworks = (
 			const rmCmd = ChildProcess.make('docker', ['network', 'rm', id]);
 			const ok = yield* spawner.string(rmCmd).pipe(
 				Effect.map(() => true),
-				Effect.catch(() => Effect.succeed(false)),
+				Effect.orElseSucceed(() => false),
 			);
 			if (ok) removed.push(id);
 		}
@@ -197,7 +197,7 @@ const removeDevstackVolumes = (
 			'--filter',
 			`label=devstack.stack=${stack}`,
 		]);
-		const namesText = yield* spawner.string(lsCmd).pipe(Effect.catch(() => Effect.succeed('')));
+		const namesText = yield* spawner.string(lsCmd).pipe(Effect.orElseSucceed(() => ''));
 		const names = namesText
 			.split('\n')
 			.map((s) => s.trim())
@@ -207,7 +207,7 @@ const removeDevstackVolumes = (
 			const rmCmd = ChildProcess.make('docker', ['volume', 'rm', n]);
 			const ok = yield* spawner.string(rmCmd).pipe(
 				Effect.map(() => true),
-				Effect.catch(() => Effect.succeed(false)),
+				Effect.orElseSucceed(() => false),
 			);
 			if (ok) removed.push(n);
 		}
@@ -222,7 +222,7 @@ const removeDevstackImages = (spawner: Spawner): Effect.Effect<ReadonlyArray<str
 			'{{.Repository}}:{{.Tag}}',
 			'devstack-*',
 		]);
-		const out = yield* spawner.string(lsCmd).pipe(Effect.catch(() => Effect.succeed('')));
+		const out = yield* spawner.string(lsCmd).pipe(Effect.orElseSucceed(() => ''));
 		const tags = out
 			.split('\n')
 			.map((s) => s.trim())
@@ -232,7 +232,7 @@ const removeDevstackImages = (spawner: Spawner): Effect.Effect<ReadonlyArray<str
 			const rmiCmd = ChildProcess.make('docker', ['rmi', tag]);
 			const ok = yield* spawner.string(rmiCmd).pipe(
 				Effect.map(() => true),
-				Effect.catch(() => Effect.succeed(false)),
+				Effect.orElseSucceed(() => false),
 			);
 			if (ok) removed.push(tag);
 		}
@@ -264,14 +264,14 @@ export const removeLabelledImagesNotInUse = (): Effect.Effect<
 			'--format',
 			'{{.ID}}\t{{.Repository}}:{{.Tag}}',
 		]);
-		const out = yield* spawner.string(lsCmd).pipe(Effect.catch(() => Effect.succeed('')));
+		const out = yield* spawner.string(lsCmd).pipe(Effect.orElseSucceed(() => ''));
 		const inUseCmd = ChildProcess.make('docker', [
 			'ps',
 			'-a',
 			'--format',
 			'{{.Image}}\t{{.ImageID}}',
 		]);
-		const inUseRaw = yield* spawner.string(inUseCmd).pipe(Effect.catch(() => Effect.succeed('')));
+		const inUseRaw = yield* spawner.string(inUseCmd).pipe(Effect.orElseSucceed(() => ''));
 		const inUse = new Set<string>();
 		for (const line of inUseRaw.split('\n')) {
 			const trimmed = line.trim();
@@ -294,7 +294,7 @@ export const removeLabelledImagesNotInUse = (): Effect.Effect<
 			const rmiCmd = ChildProcess.make('docker', ['rmi', target]);
 			const ok = yield* spawner.string(rmiCmd).pipe(
 				Effect.map(() => true),
-				Effect.catch(() => Effect.succeed(false)),
+				Effect.orElseSucceed(() => false),
 			);
 			if (ok) removed.push(target);
 		}
@@ -312,7 +312,7 @@ const removeStateOnDisk = (
 	Effect.gen(function* () {
 		const removed: Array<string> = [];
 		const stackDir = joinPath(stateDir, 'stacks', stack);
-		const stackExists = yield* fs.exists(stackDir).pipe(Effect.catch(() => Effect.succeed(false)));
+		const stackExists = yield* fs.exists(stackDir).pipe(Effect.orElseSucceed(() => false));
 		if (stackExists) {
 			if (keepSnapshots) {
 				const entries = yield* fs
@@ -323,22 +323,22 @@ const removeStateOnDisk = (
 					const full = joinPath(stackDir, entry);
 					yield* fs
 						.remove(full, { recursive: true, force: true })
-						.pipe(Effect.catch(() => Effect.void));
+						.pipe(Effect.ignore);
 					removed.push(full);
 				}
 			} else {
 				yield* fs
 					.remove(stackDir, { recursive: true, force: true })
-					.pipe(Effect.catch(() => Effect.void));
+					.pipe(Effect.ignore);
 				removed.push(stackDir);
 			}
 		}
 		const flatStateFile = joinPath(stateDir, 'state.json');
 		const flatExists = yield* fs
 			.exists(flatStateFile)
-			.pipe(Effect.catch(() => Effect.succeed(false)));
+			.pipe(Effect.orElseSucceed(() => false));
 		if (flatExists) {
-			yield* fs.remove(flatStateFile, { force: true }).pipe(Effect.catch(() => Effect.void));
+			yield* fs.remove(flatStateFile, { force: true }).pipe(Effect.ignore);
 			removed.push(flatStateFile);
 		}
 		return removed as ReadonlyArray<string>;
@@ -351,9 +351,9 @@ const removeExtraStateDirs = (
 	Effect.gen(function* () {
 		const removed: Array<string> = [];
 		for (const dir of dirs) {
-			const exists = yield* fs.exists(dir).pipe(Effect.catch(() => Effect.succeed(false)));
+			const exists = yield* fs.exists(dir).pipe(Effect.orElseSucceed(() => false));
 			if (!exists) continue;
-			yield* fs.remove(dir, { recursive: true, force: true }).pipe(Effect.catch(() => Effect.void));
+			yield* fs.remove(dir, { recursive: true, force: true }).pipe(Effect.ignore);
 			removed.push(dir);
 		}
 		return removed as ReadonlyArray<string>;

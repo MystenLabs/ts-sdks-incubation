@@ -52,9 +52,9 @@ const requireValidStackName = (name: string): Effect.Effect<void, Error> =>
 const readActiveStack = (fs: Fs): Effect.Effect<Option.Option<string>> =>
 	Effect.gen(function* () {
 		const activePath = joinPath(stateDir(), ACTIVE_FILE);
-		const exists = yield* fs.exists(activePath).pipe(Effect.catch(() => Effect.succeed(false)));
+		const exists = yield* fs.exists(activePath).pipe(Effect.orElseSucceed(() => false));
 		if (!exists) return Option.none<string>();
-		const txt = yield* fs.readFileString(activePath).pipe(Effect.catch(() => Effect.succeed('')));
+		const txt = yield* fs.readFileString(activePath).pipe(Effect.orElseSucceed(() => ''));
 		const trimmed = txt.trim();
 		return trimmed.length === 0 ? Option.none<string>() : Option.some(trimmed);
 	});
@@ -78,7 +78,7 @@ const listCommand = Command.make('list', {}, () =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem;
 		const stacksRoot = joinPath(stateDir(), 'stacks');
-		const rootExists = yield* fs.exists(stacksRoot).pipe(Effect.catch(() => Effect.succeed(false)));
+		const rootExists = yield* fs.exists(stacksRoot).pipe(Effect.orElseSucceed(() => false));
 		if (!rootExists) {
 			yield* Console.log(`no stacks yet — run \`devstack up\` or \`devstack stack new <name>\``);
 			return;
@@ -91,7 +91,7 @@ const listCommand = Command.make('list', {}, () =>
 			const full = joinPath(stacksRoot, entry);
 			const info = yield* fs.stat(full).pipe(
 				Effect.map((s) => s.type === 'Directory'),
-				Effect.catch(() => Effect.succeed(false)),
+				Effect.orElseSucceed(() => false),
 			);
 			if (info) dirs.push(entry);
 		}
@@ -144,7 +144,7 @@ const useCommand = Command.make(
 			yield* requireValidStackName(name);
 			const fs = yield* FileSystem.FileSystem;
 			const stackDir = joinPath(stateDir(), 'stacks', name);
-			yield* fs.makeDirectory(stackDir, { recursive: true }).pipe(Effect.catch(() => Effect.void));
+			yield* fs.makeDirectory(stackDir, { recursive: true }).pipe(Effect.ignore);
 			const previous = yield* readActiveStack(fs);
 			yield* writeActiveStack(fs, name);
 			if (Option.isNone(previous)) {
@@ -210,14 +210,14 @@ const dropCommand = Command.make(
 			}
 			const fs = yield* FileSystem.FileSystem;
 			const stackDir = joinPath(stateDir(), 'stacks', name);
-			const exists = yield* fs.exists(stackDir).pipe(Effect.catch(() => Effect.succeed(false)));
+			const exists = yield* fs.exists(stackDir).pipe(Effect.orElseSucceed(() => false));
 			if (!exists) {
 				yield* Console.log(`stack '${name}': nothing to drop (no dir at ${stackDir})`);
 				return;
 			}
 			yield* fs
 				.remove(stackDir, { recursive: true, force: true })
-				.pipe(Effect.catch(() => Effect.void));
+				.pipe(Effect.ignore);
 			yield* Console.log(`stack '${name}': removed ${stackDir}`);
 		}),
 ).pipe(Command.withDescription('Delete the per-stack state directory. Requires --yes.'));
@@ -241,7 +241,7 @@ const stopDevstackContainers = (spawner: Spawner, stack: string) =>
 			'--filter',
 			`label=devstack.stack=${stack}`,
 		]);
-		const idsText = yield* spawner.string(lsCmd).pipe(Effect.catch(() => Effect.succeed('')));
+		const idsText = yield* spawner.string(lsCmd).pipe(Effect.orElseSucceed(() => ''));
 		const ids = idsText
 			.split('\n')
 			.map((s) => s.trim())
@@ -251,7 +251,7 @@ const stopDevstackContainers = (spawner: Spawner, stack: string) =>
 			const rmCmd = ChildProcess.make('docker', ['rm', '-f', id]);
 			const ok = yield* spawner.string(rmCmd).pipe(
 				Effect.map(() => true),
-				Effect.catch(() => Effect.succeed(false)),
+				Effect.orElseSucceed(() => false),
 			);
 			if (ok) killed.push(id);
 		}

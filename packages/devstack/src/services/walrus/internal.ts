@@ -718,7 +718,7 @@ const swapSuiForWalCached = (args: {
 				'walrus.seed.account': args.account.name,
 				'walrus.seed.balance': ok.toString(),
 			});
-			yield* state.remove(cacheKey).pipe(Effect.catch(() => Effect.void));
+			yield* state.remove(cacheKey).pipe(Effect.ignore);
 		} else {
 			yield* Effect.annotateCurrentSpan({
 				'walrus.seed.cache': 'miss',
@@ -736,7 +736,7 @@ const swapSuiForWalCached = (args: {
 		// regardless. Falling back to re-swap on the next cycle is a
 		// minor inefficiency, not a correctness bug. Catches any
 		// state-store IO defect.
-		yield* state.put(cacheKey, toCache).pipe(Effect.catch(() => Effect.void));
+		yield* state.put(cacheKey, toCache).pipe(Effect.ignore);
 		void args.walrusPackageId;
 	});
 

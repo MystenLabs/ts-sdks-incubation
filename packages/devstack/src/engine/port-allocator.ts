@@ -148,7 +148,7 @@ export const PortAllocatorLive: Layer.Layer<PortAllocator> = Layer.effect(
 					const free = yield* Effect.tryPromise({
 						try: () => isPortFree(port),
 						catch: () => new PortAllocatorError({ preferred, message: `probe failed for ${port}` }),
-					}).pipe(Effect.catch(() => Effect.succeed(false)));
+					}).pipe(Effect.orElseSucceed(() => false));
 					if (!free) continue;
 					// Cross-process reservation: only one allocator at a
 					// time can claim `<port>.lock` in `~/.devstack/ports/`.

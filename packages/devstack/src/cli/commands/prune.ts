@@ -255,7 +255,7 @@ const printInventory = (rows: ReadonlyArray<InventoryRow>) =>
 		// helps the user decide whether `--include-router` would
 		// disrupt active work.
 		const router = yield* collectRouterInfo().pipe(
-			Effect.catch(() => Effect.succeed(undefined)),
+			Effect.orElseSucceed(() => undefined),
 		);
 		if (router !== undefined) {
 			yield* Console.log(renderRouterRow(router));
@@ -330,13 +330,13 @@ const maybePruneRouter = (enabled: boolean, dryRun: boolean) =>
 			.exitCode(ChildProcess.make('docker', ['rm', '-f', ROUTER_CONTAINER]))
 			.pipe(
 				Effect.map(() => true),
-				Effect.catch(() => Effect.succeed(false)),
+				Effect.orElseSucceed(() => false),
 			);
 		const rmNetwork = yield* spawner
 			.exitCode(ChildProcess.make('docker', ['network', 'rm', ROUTER_NETWORK]))
 			.pipe(
 				Effect.map(() => true),
-				Effect.catch(() => Effect.succeed(false)),
+				Effect.orElseSucceed(() => false),
 			);
 		yield* Console.log(
 			`removed router: container=${rmContainer ? 'yes' : 'no'}, network=${rmNetwork ? 'yes' : 'no'}`,
@@ -373,7 +373,7 @@ const runInteractivePicker = (
 		// in the first frame. Best-effort: a failing docker query just
 		// elides the row.
 		const router = yield* collectRouterInfo().pipe(
-			Effect.catch(() => Effect.succeed(undefined)),
+			Effect.orElseSucceed(() => undefined),
 		);
 		return yield* Effect.callback<ReadonlyArray<InventoryRow>>((resume) => {
 			const instance = render(
