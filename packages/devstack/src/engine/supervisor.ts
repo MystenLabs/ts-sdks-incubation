@@ -404,6 +404,16 @@ const WATCH_IGNORED_NAMES: ReadonlySet<string> = new Set([
 	'.DS_Store',
 	'node_modules',
 	'.git',
+	// Frontend / TS toolchain side-effects that fire on every save:
+	'.next',
+	'dist',
+	'target',
+	'.turbo',
+	'coverage',
+	'.vite',
+	'.cache',
+	// Editor / IDE atomic-save intermediaries:
+	'4913', // vim's "atomic save probe" temp file
 ]);
 
 // Files that the in-container `Move.lock` scrub stages as an atomic
@@ -415,6 +425,13 @@ const isIgnoredBasename = (name: string): boolean => {
 	if (WATCH_IGNORED_NAMES.has(name)) return true;
 	if (name === 'Move.lock.new') return true;
 	if (name.endsWith('.swp') || name.endsWith('.swx') || name.endsWith('~')) return true;
+	// TS incremental build info files (`*.tsbuildinfo`) get rewritten
+	// by `tsc --build` on every save in a watch-typecheck loop.
+	if (name.endsWith('.tsbuildinfo')) return true;
+	// Emacs lock files (`#filename#`) and JetBrains atomic-save
+	// intermediaries (`___jb_tmp___...`).
+	if (name.startsWith('#') && name.endsWith('#')) return true;
+	if (name.startsWith('___jb_tmp___')) return true;
 	return false;
 };
 

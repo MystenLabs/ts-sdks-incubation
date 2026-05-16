@@ -319,17 +319,18 @@ describe('App', () => {
 
 	it('R (capital) keypress triggers engine.requestRestart (full restart)', async () => {
 		const engine = await buildEngine();
+		// Capture the deferred BEFORE the keypress — `requestRestart`
+		// atomically rotates the ref to a fresh deferred and succeeds
+		// the captured one (HIGH-S2 fix). Capturing afterward would
+		// land on the new unsignaled deferred and the await would hang.
+		const { Deferred } = await import('effect');
+		const captured = await Effect.runPromise(Ref.get(engine.restartSignal));
 		const { stdin, unmount } = inkRender(
 			React.createElement(App, { engine, onQuit: () => undefined, pollIntervalMs: 10 }),
 		);
 		await flush();
 		stdin.write('R');
-		// requestRestart resolves the restartSignal deferred currently held
-		// by the engine's Ref. Poll with a short timeout; if the deferred
-		// never fires this rejects.
-		const { Deferred } = await import('effect');
-		const signal = await Effect.runPromise(Ref.get(engine.restartSignal));
-		await Effect.runPromise(Effect.timeout(Deferred.await(signal), '500 millis'));
+		await Effect.runPromise(Effect.timeout(Deferred.await(captured), '500 millis'));
 		unmount();
 	});
 

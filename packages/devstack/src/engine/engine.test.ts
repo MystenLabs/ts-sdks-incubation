@@ -92,17 +92,17 @@ describe('EngineHandle.setPhase', () => {
 describe('EngineHandle.requestRestart — Deferred signaling', () => {
 	// Hot-restart triggers (file watcher, SIGUSR2, TUI `r`) all converge
 	// on `requestRestart`. The launch loop awaits `restartSignal`'s
-	// current Deferred; `requestRestart` succeeds it. Pinning two
-	// invariants here:
+	// current Deferred; `requestRestart` atomically swaps in a fresh
+	// Deferred and succeeds the old one. The atomic swap closes the
+	// HIGH-S2 race in which `Ref.get`-then-`Deferred.succeed` could
+	// straddle a `resetRestartSignal` and signal an orphan Deferred.
+	// Pinning two invariants here:
 	//
-	//   1. A second `requestRestart` against the same already-succeeded
-	//      Deferred is a noop (Deferred.succeed is idempotent). Without
-	//      this, a flurry of fs.watch events arriving inside the 250ms
-	//      debounce window would each try to "re-fire" the signal —
-	//      harmless because the launch loop is already racing toward
-	//      teardown, but the test pins it so a future refactor that
-	//      replaced the Deferred with a Queue / Stream doesn't
-	//      accidentally double-queue.
+	//   1. A flurry of `requestRestart` calls each succeeds the prior
+	//      Deferred (waking the launch loop) and replaces it with a
+	//      fresh one. The launch loop only awaits the deferred it
+	//      captured at cycle-top, so additional rotations only matter
+	//      when the next cycle reads the ref fresh.
 	//
 	//   2. After `resetRestartSignal` swaps in a fresh Deferred, the
 	//      previous (already-succeeded) one stays resolved — the launch
@@ -110,21 +110,27 @@ describe('EngineHandle.requestRestart — Deferred signaling', () => {
 	//      a stale Deferred reference must remain valid for an in-flight
 	//      `Deferred.await`.
 
-	it.effect('a second requestRestart against the same Deferred is a noop', () =>
+	it.effect('requestRestart atomically swaps in a fresh Deferred and succeeds the old one', () =>
 		Effect.gen(function* () {
 			const engine = yield* buildEngine();
 			const before = yield* Ref.get(engine.restartSignal);
 
 			yield* engine.requestRestart;
-			yield* engine.requestRestart;
 
-			// Same Deferred, both succeeded. `Deferred.await` resolves
-			// immediately on the second succeed without throwing.
+			// `before` has been succeeded by the swap.
 			yield* Deferred.await(before);
-			const after = yield* Ref.get(engine.restartSignal);
-			// Ref still holds the same Deferred — requestRestart doesn't
-			// rotate it; only resetRestartSignal does.
-			expect(after).toBe(before);
+			// The ref now holds a NEW unsignaled Deferred (the swap
+			// installed it before succeeding `before`).
+			const afterFirst = yield* Ref.get(engine.restartSignal);
+			expect(afterFirst).not.toBe(before);
+			expect(yield* Deferred.isDone(afterFirst)).toBe(false);
+
+			// A second requestRestart succeeds `afterFirst` and rotates
+			// in yet another fresh Deferred.
+			yield* engine.requestRestart;
+			yield* Deferred.await(afterFirst);
+			const afterSecond = yield* Ref.get(engine.restartSignal);
+			expect(afterSecond).not.toBe(afterFirst);
 		}),
 	);
 
