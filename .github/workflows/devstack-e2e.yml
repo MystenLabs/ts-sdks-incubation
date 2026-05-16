@@ -16,10 +16,11 @@ name: Devstack E2E
 # parallelize across both axes.
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+  # Manual-only trigger: the v4 redesign (e0252e92) removed the
+  # `snapshot hash` / `snapshot save --push <registry>` /
+  # `snapshot restore --pull` subcommands this workflow depends on.
+  # Re-enable on `pull_request` once those land back in the v4 CLI.
+  workflow_dispatch:
 
 # Permissions for GHCR push from the seed job.
 permissions:
