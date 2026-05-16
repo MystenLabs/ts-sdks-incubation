@@ -304,6 +304,10 @@ export const resolveExchange = (args: {
 	rpcUrl: string;
 	walrusPackageId: string;
 	exchangeObject: string | undefined;
+	/** Sui network name (`'localnet'` | `'testnet'` | …). Plumbed through
+	 *  from the caller's `SuiTag.network` so wrapped-external-RPC setups
+	 *  don't get a hard-coded `'localnet'` client mismatch warning. */
+	network?: string;
 }): Effect.Effect<ExchangeState | undefined, WalrusError> =>
 	Effect.fn('walrus.exchange')(function* () {
 		if (args.exchangeObject === undefined) {
@@ -311,17 +315,48 @@ export const resolveExchange = (args: {
 			// seed-account swaps will short-circuit on the same check.
 			return undefined;
 		}
-		const client = new SuiJsonRpcClient({ url: args.rpcUrl, network: 'localnet' });
+		// Cast to the `SuiJsonRpcClient` network literal — the underlying
+		// client only uses this for chain-id mismatch warnings, not for
+		// behavior. Pass through whatever the caller supplied so a
+		// localnet-wrapping-testnet user doesn't see a misleading
+		// "expected localnet, got testnet" warning during exchange probe.
+		const network = (args.network ?? 'localnet') as 'localnet' | 'testnet' | 'mainnet' | 'devnet';
+		const client = new SuiJsonRpcClient({ url: args.rpcUrl, network });
 		const info = yield* Effect.tryPromise({
 			try: () => client.core.getObject({ objectId: args.exchangeObject! }),
-			catch: (cause) =>
-				new WalrusError({
-					phase: 'exchange',
-					message: `walrus.exchange: getObject failed: ${stringifyCause(cause)}`,
-					cause,
-				}),
-		});
-		const exchangeType = info.object.type;
+			catch: (cause) => cause,
+		}).pipe(
+			Effect.map((res) => ({ kind: 'found' as const, info: res })),
+			Effect.catch((cause) => {
+				// Cache-resume probe: pre-fix a wiped chain made the
+				// `getObject` fail loudly, which halted the entire walrus
+				// composite. Now we log and return `'missing'` so the
+				// caller can degrade gracefully (faucet WAL strategy
+				// just doesn't register; downstream WAL funding fails
+				// later with a clearer "no WAL strategy" error instead
+				// of an inscrutable boot-time exchange-probe failure).
+				const message = (cause as { message?: string }).message ?? String(cause);
+				if (/not\s*found|does\s*not\s*exist|OBJECT_NOT_FOUND/i.test(message)) {
+					return Effect.succeed({ kind: 'missing' as const });
+				}
+				return Effect.fail(
+					new WalrusError({
+						phase: 'exchange',
+						message: `walrus.exchange: getObject failed: ${stringifyCause(cause)}`,
+						cause,
+					}),
+				);
+			}),
+		);
+		if (info.kind === 'missing') {
+			yield* Effect.logWarning(
+				`walrus.exchange: cached exchangeObject ${args.exchangeObject} not found on chain — ` +
+					`assuming a fresh genesis since the cache was written. WAL faucet wiring skipped this cycle; ` +
+					`re-running deploy will mint a new exchange on the next cold path.`,
+			);
+			return undefined;
+		}
+		const exchangeType = info.info.object.type;
 		const packageId = exchangeType.split('::')[0];
 		if (packageId === undefined || !packageId.startsWith('0x')) {
 			return yield* Effect.fail(
