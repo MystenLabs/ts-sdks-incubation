@@ -216,10 +216,20 @@ const mkTmpDir = (label: string) =>
 	}).pipe(Effect.orDie);
 
 // `client.core.getObject` is the only chain probe the cache-hit path
-// touches (verification step). Stub it to always resolve so a cache hit
-// is trusted; the BAD path (where the chain object is gone) is covered
-// by the second `it.effect` below.
-const makeMockSuiOk = (chainId: string): Layer.Layer<SuiTag> =>
+// touches (verification step). Stub it to always resolve with the
+// expected `objectType` so a cache hit is trusted; the BAD path
+// (where the chain object is gone) is covered by the second
+// `it.effect` below.
+//
+// `objectTypeFor(objectId)` returns the matching `Pool<base, quote>`
+// type so verifyCached's post-HIGH-C4 objectType assertion succeeds.
+// Defaults to `${packageId}::pool::Pool<0x2::sui::SUI,
+// ${packageId}::usdc::USDC>` (the test fixture's only pool); pass
+// an override for richer scenarios.
+const makeMockSuiOk = (
+	chainId: string,
+	objectTypeFor?: (objectId: string) => string,
+): Layer.Layer<SuiTag> =>
 	Layer.succeed(SuiTag, {
 		network: 'localnet',
 		rpc: { host: 'http://localhost:9000' },
@@ -229,6 +239,7 @@ const makeMockSuiOk = (chainId: string): Layer.Layer<SuiTag> =>
 			core: {
 				getObject: async (_args: { objectId: string }) => ({
 					object: { objectId: _args.objectId } as unknown,
+					objectType: objectTypeFor?.(_args.objectId),
 				}),
 			},
 		} as unknown as Sui['client'],
@@ -365,9 +376,10 @@ describe('deepbookLocalDeploy — create-pools resume cache', () => {
 				],
 			});
 
+			const expectedPoolType = `${fakePackageId}::pool::Pool<${baseType}, ${quoteType}>`;
 			const supportLayer = Layer.mergeAll(
 				CacheBaseLayer,
-				makeMockSuiOk(chainId),
+				makeMockSuiOk(chainId, () => expectedPoolType),
 				Layer.provideMerge(
 					Layer.provide(StateStoreLive, mockStateConfig(tmpdir)),
 					NodeFileSystemLayer,

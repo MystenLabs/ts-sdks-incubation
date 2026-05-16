@@ -293,14 +293,26 @@ export const deepbookLocalDeploy = <
 				): Effect.Effect<boolean, never> =>
 					Effect.gen(function* () {
 						for (const p of payload.pools) {
-							const ok = yield* Effect.tryPromise({
+							const fetched = yield* Effect.tryPromise({
 								try: () => sui.client.core.getObject({ objectId: p.poolId }),
 								catch: (cause) => cause,
 							}).pipe(
-								Effect.as(true),
-								Effect.catch(() => Effect.succeed(false)),
+								Effect.map((res) => res as unknown as { objectType?: unknown }),
+								Effect.catch(() => Effect.succeed(undefined)),
 							);
-							if (!ok) return false;
+							if (fetched === undefined) return false;
+							// HIGH-C4: assert the resolved object's `objectType`
+							// matches `<packageId>::pool::Pool<base, quote>` for
+							// THIS spec. Pre-fix the existence check alone would
+							// pass for an unrelated pool object that happened to
+							// be at the cached id (e.g. a regenesis that reused
+							// the address space, or the cache having been
+							// written for a different coin pair under the same
+							// poolsHash collision). Mismatch invalidates.
+							const expectedType = `${packageId}::pool::Pool<${p.base}, ${p.quote}>`;
+							const actualType =
+								typeof fetched.objectType === 'string' ? fetched.objectType : undefined;
+							if (actualType !== expectedType) return false;
 						}
 						return true;
 					});
