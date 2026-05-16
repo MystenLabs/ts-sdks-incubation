@@ -56,13 +56,23 @@ export const startStorageNodes = (args: {
 	faucetUrl: string;
 }) =>
 	Effect.fn('walrus.nodes')(function* () {
-		const nodes: Array<NodeState> = [];
-		for (let i = 0; i < args.nodeCount; i++) {
-			const containerIp = `${args.subnetPrefix}.${WALRUS_NODE_IP_BASE + i}`;
-			const containerName = `walrus-${args.name}-node-${i}`;
-			const nodeHostname = `dryrun-node-${i}`;
-			const publicHostname = routerHostname(args.identity, `walrus-node-${i}`);
-			const onOutputLine = yield* makeNodeOutputSink(`walrus.node-${i}`);
+		// HIGH-V4: boot all N storage nodes in parallel instead of
+		// serially. A 4-node committee previously paid `N × perNode`
+		// wall-clock for the ready probe loop; running the
+		// docker-run + network-attach + ready-probe per node as a
+		// single Effect inside `Effect.all({concurrency: 'unbounded'})`
+		// brings cold cluster boot down to ~max(perNode). Each node's
+		// pipeline is independent (separate container name, IP, ready
+		// probe); the result order is preserved by `Effect.all` on an
+		// indexed array.
+		const indices = Array.from({ length: args.nodeCount }, (_, i) => i);
+		const bootOne = (i: number) =>
+			Effect.gen(function* () {
+				const containerIp = `${args.subnetPrefix}.${WALRUS_NODE_IP_BASE + i}`;
+				const containerName = `walrus-${args.name}-node-${i}`;
+				const nodeHostname = `dryrun-node-${i}`;
+				const publicHostname = routerHostname(args.identity, `walrus-node-${i}`);
+				const onOutputLine = yield* makeNodeOutputSink(`walrus.node-${i}`);
 
 			// Container readiness is probed in-network (we exec `wget` /
 			// `nc` into the container) instead of via a host port —
@@ -176,7 +186,7 @@ export const startStorageNodes = (args: {
 				),
 			);
 
-			nodes.push({
+			return {
 				index: i,
 				containerIp,
 				// Router-fronted URL on the well-known walrus entrypoint
@@ -185,7 +195,12 @@ export const startStorageNodes = (args: {
 				// per-stack container by `Host:` header.
 				rpcUrl: `http://${publicHostname}:${args.routerEntrypointPort}`,
 				publicHostname,
-			});
-		}
+			} satisfies NodeState;
+		});
+
+		const nodes = yield* Effect.all(
+			indices.map(bootOne),
+			{ concurrency: 'unbounded' },
+		);
 		return nodes;
 	})();

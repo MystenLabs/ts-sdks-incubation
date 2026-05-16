@@ -267,6 +267,13 @@ const buildWaitForTransactionsReady = (
 // Resolve the chain identifier from a ready-to-talk JSON-RPC client.
 // Downstream primitives fold this into their `StateStore` cache keys so
 // on-chain artifacts re-derive when the chain underneath them is wiped.
+//
+// 30s wall-clock budget: a healthy localnet RPC responds in <1s and
+// a public testnet/mainnet endpoint in <5s. A wedged RPC (DNS hang,
+// connection-stuck-on-SYN) would otherwise block supervisor boot
+// indefinitely; failing at 30s surfaces as a typed `SuiError` whose
+// message is actionable instead of an inscrutable hang.
+const FETCH_CHAIN_ID_TIMEOUT_MS = 30_000;
 const fetchChainId = (client: SuiJsonRpcClient): Effect.Effect<string, SuiError> =>
 	Effect.gen(function* () {
 		const chainId = yield* Effect.tryPromise({
@@ -277,7 +284,18 @@ const fetchChainId = (client: SuiJsonRpcClient): Effect.Effect<string, SuiError>
 					message: 'failed to fetch chain identifier',
 					cause,
 				}),
-		});
+		}).pipe(
+			Effect.timeoutOrElse({
+				duration: `${FETCH_CHAIN_ID_TIMEOUT_MS} millis`,
+				orElse: () =>
+					Effect.fail(
+						new SuiError({
+							phase: 'fetch-chainId',
+							message: `fetchChainId timed out after ${FETCH_CHAIN_ID_TIMEOUT_MS}ms; the RPC may be unreachable or wedged`,
+						}),
+					),
+			}),
+		);
 		yield* Effect.annotateCurrentSpan({ 'sui.chainId': chainId });
 		return chainId;
 	});
@@ -789,10 +807,17 @@ const buildLocalnet = (options: SuiLocalnetOptions): StackMember => {
 		localnetImage !== undefined ? [...localnetImage.__layers, tag.__layer] : [tag.__layer];
 
 	let buildImageLayer: Layer.Any | undefined;
-	if (options.image !== undefined) {
+	// HIGH-T5: when the user supplies their own `rpcUrl`, we're
+	// wrapping an external RPC — there's no localnet container to
+	// build against, and the per-stack `SuiBuildContainer` would
+	// just sit idle wasting docker resources. Skip both the build
+	// image layer and the container layer in that case. Move builds
+	// against a wrapped external RPC use the host `sui` directly.
+	const isExternalRpc = options.rpcUrl !== undefined;
+	if (options.image !== undefined && !isExternalRpc) {
 		const pinned = options.image;
 		buildImageLayer = Layer.succeed(SuiBuildImage, { tag: pinned });
-	} else if (localnetImage !== undefined) {
+	} else if (localnetImage !== undefined && !isExternalRpc) {
 		buildImageLayer = Layer.effect(
 			SuiBuildImage,
 			Effect.gen(function* () {
@@ -802,7 +827,7 @@ const buildLocalnet = (options: SuiLocalnetOptions): StackMember => {
 		);
 	}
 	// When we have a SuiBuildImage to drive `sui move build`, ALSO bring
-	// up a long-lived per-stack build container so the publishMove path
+	// up a long-lived per-app build container so the publishMove path
 	// can `docker exec` into it instead of paying `docker run --rm`
 	// container-spawn overhead on every publish. The container survives
 	// across `r` hot-restart cycles (finalizer on `LongLivedScope`) so
