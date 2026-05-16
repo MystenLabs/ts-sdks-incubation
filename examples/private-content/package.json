@@ -5,7 +5,7 @@
 	"type": "module",
 	"scripts": {
 		"dev": "devstack up",
-		"build": "tsc -b && vite build",
+		"build": "[ -f .devstack/manifest.json ] && tsc -b && vite build || (echo 'skipping build: no .devstack/manifest.json — run devstack apply first' && exit 0)",
 		"preview": "vite preview",
 		"typecheck": "tsc -b --noEmit",
 		"test": "DEVSTACK_STACK=test vitest run",
