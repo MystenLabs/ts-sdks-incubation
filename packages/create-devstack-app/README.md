@@ -9,7 +9,7 @@ Scaffold a new devstack-backed Sui app from the canonical template.
 
 ```bash
 # Once devstack publishes:
-pnpm create @mysten-incubation/devstackpp my-app
+pnpm create @mysten-incubation/devstack-app my-app
 cd my-app
 pnpm dev
 ```
@@ -26,7 +26,7 @@ The scaffolder:
 ## Options
 
 ```
-pnpm create @mysten-incubation/devstackpp <name> [options]
+pnpm create @mysten-incubation/devstack-app <name> [options]
 
   <name>              App name. Lowercase, dash-separated, starts with a letter.
 

@@ -10,7 +10,6 @@ wallet/
 ├── devstack.config.ts       # localnet + 2x mock coin publish + deepbook + market-maker + wallet-app + vite
 ├── move/mock_usdc + mock_weth/  # Move packages: managed coins with mint entry
 ├── e2e/
-│   ├── panels.spec.ts       # dev-wallet drawer: faucet panel mints custom token
 │   ├── send-sui.spec.ts     # alice sends SUI and mUSDC to bob; balances move
 │   └── swap.spec.ts         # DeepBook v3 swap exercise against the live maker
 └── src/                     # React UI: balances, send, swap cards
@@ -30,6 +29,6 @@ pnpm test:e2e     # full Playwright run against a fresh test stack
 pnpm test:watch   # vitest in watch mode
 ```
 
-The three e2e specs run serially and exercise the dev-wallet panels,
-native + non-SUI sends, and DeepBook swaps against alice's continuous
-market-maker — all with no mocks.
+Both e2e specs run serially and exercise native + non-SUI sends and
+DeepBook swaps against alice's continuous market-maker — all with no
+mocks.

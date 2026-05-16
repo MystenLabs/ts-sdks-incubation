@@ -9,6 +9,7 @@
 		"testing-vitest",
 		"testing-playwright",
 		"services",
+		"state-and-snapshots",
 		"live-networks",
 		"plugins"
 	]

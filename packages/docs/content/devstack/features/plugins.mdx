@@ -12,50 +12,58 @@ This is the same surface the built-in factories (`Sui`, `Walrus`,
 `Account`, `Dev`, …) use internally. Reading their source is the
 fastest way to ground the patterns below in real code.
 
-## A Redis sidecar
+## A vendored Move dependency
+
+A common need is depending on a Move package that isn't on a known
+network — pinned to a git ref, built once, then handed to `Package`
+or used as a publish dependency. `gitFetch` + `dockerOneShot` cover
+both halves, both with content-hash caching across cycles:
 
 ```ts
-// my-app/devstack/redis.ts
-import { Effect, Context } from 'effect';
-import { tag, dockerContainer, setPhase } from '@mysten-incubation/devstack/advanced';
+// my-app/devstack/vendored.ts
+import { Effect } from 'effect';
+import {
+  tag,
+  gitFetch,
+  dockerOneShot,
+  setPhase,
+} from '@mysten-incubation/devstack/advanced';
 
-export interface RedisShape {
-  readonly url: string;
-  readonly host: string;
-  readonly port: number;
+export interface VendoredMoveShape {
+  readonly sourcePath: string;
+  readonly buildOutput: string;
 }
 
-export class RedisTag extends Context.Service<RedisTag, RedisShape>()(
-  '@my-app/Redis',
-) {}
-
-export interface RedisOptions {
-  readonly version?: string;
-  readonly port?: number;
-}
-
-export const Redis = (opts: RedisOptions = {}) =>
+export const VendoredMove = () =>
   tag(
-    'redis',
+    'vendored-move',
     Effect.gen(function* () {
-      yield* setPhase('starting');
-      const handle = yield* dockerContainer({
-        name: 'redis',
-        image: `redis:${opts.version ?? '7-alpine'}`,
-        ports: { 6379: opts.port ?? 6379 },
-        ready: { kind: 'tcp', port: 6379 },
+      yield* setPhase('fetching');
+      const fetched = yield* gitFetch({
+        name: 'vendored-move-src',
+        repo: 'https://github.com/example/move-lib.git',
+        ref: 'v1.2.3',
+        subdirectory: 'packages/lib',
       });
-      const port = handle.hostPorts[6379];
+
+      yield* setPhase('building');
+      const build = yield* dockerOneShot({
+        name: 'vendored-move-build',
+        image: 'mysten/sui:1.71.0',
+        mounts: [{ host: fetched.path, container: '/work' }],
+        args: ['move', 'build', '--path', '/work'],
+        captureStdout: true,
+      });
+
       return {
-        url: `redis://localhost:${port}`,
-        host: 'localhost',
-        port,
-      } satisfies RedisShape;
+        sourcePath: fetched.path,
+        buildOutput: build.stdout,
+      } satisfies VendoredMoveShape;
     }),
     {
-      kind: 'service',
-      displayTitle: 'redis',
-      display: (s) => ({ title: 'redis', primary: s.url }),
+      kind: 'action',
+      displayTitle: 'vendored-move',
+      display: (s) => ({ title: 'vendored-move', primary: s.sourcePath }),
     },
   );
 ```
@@ -63,16 +71,16 @@ export const Redis = (opts: RedisOptions = {}) =>
 Drop it into your stack:
 
 ```ts
-import { Account, devstack, Sui } from '@mysten-incubation/devstack';
-import { Redis } from './devstack/redis.js';
+import { Account, devstack } from '@mysten-incubation/devstack';
+import { VendoredMove } from './devstack/vendored.js';
 
-export default devstack(Sui(), Account('alice'), Redis());
+export default devstack(Account('alice'), VendoredMove());
 ```
 
-The TUI shows a `redis` row alongside built-ins, `yield* RedisTag`
-works anywhere inside your stack, and the supervisor handles
-acquisition order, the ready probe, hot-restart on the watched paths
-you declare, and the `docker rm -f` finalizer on shutdown.
+Both `gitFetch` and `dockerOneShot` cache their work by content hash
+— the second `pnpm dev` against an unchanged `ref:` skips the clone
+and the build entirely. A change to either inputs invalidates and
+re-runs only what's affected.
 
 ## Anatomy
 
@@ -82,15 +90,19 @@ A plugin function does three things:
    the sui docker network. `yield* alice` if it signs as that
    account. The supervisor uses those yields to order acquisition.
 2. **Acquire its own resources.** Reach for `dockerImage`,
-   `dockerOneShot`, `dockerContainer`, `gitFetch`, or `hostScript`
-   from the `/advanced` subpath — or roll your own Effect that
-   returns the shape you want.
+   `dockerOneShot`, `gitFetch`, or `hostScript` from the `/advanced`
+   subpath — or roll your own Effect that returns the shape you want.
 3. **Return the resolved shape.** Whatever value `yield* myThing`
    should produce.
 
 The `tag(...)` wrap takes care of engine lifecycle (`pending` →
 `acquiring` → `ready`), the TUI projection (`kind` / `displayTitle`
 / `display`), and optional file-watch declarations (`watch: [...]`).
+
+For a custom long-running docker service (a Redis sidecar, your own
+indexer, a mock external API) there's no generic helper today —
+read the source of `Sui()`, `Walrus()`, or `Dev()` for the bare
+pattern that wraps `Docker.run` directly inside a `tag(...)` body.
 
 ## When to use `provide`
 
@@ -124,16 +136,39 @@ the pattern.
 Declare any path your plugin reads from disk via `{ watch }`:
 
 ```ts
-return tag('redis', body, {
+return tag('config', body, {
   kind: 'service',
-  watch: ['./redis.conf'],
+  watch: ['./config.toml'],
 });
 ```
 
-When `./redis.conf` changes, the supervisor logs `file change at
-./redis.conf — owned by redis — restarting`, the plugin's child
+When `./config.toml` changes, the supervisor logs `file change at
+./config.toml — owned by config — restarting`, the plugin's child
 scope tears down, and the next cycle re-acquires it. Sibling Refs
 stay alive.
+
+The watcher ignores transient build artifacts before debouncing —
+`Move.lock`, `build/`, `node_modules/`, `.git/`, `.DS_Store`, editor
+swap files (`*.swp`, `*.swx`, `*~`), and the `Move.lock.new` rename
+target the in-container scrub stages. So a Move build's own writes
+don't loop the supervisor, and editor saves don't trigger phantom
+restarts.
+
+## Hiding internal-only Refs
+
+For cache-warming or dependency-fetch primitives whose existence as
+a TUI row adds clutter without surfacing actionable state (e.g.
+`gitFetch` of an upstream Move source you only consume), pass
+`hidden: true`:
+
+```ts
+return tag('upstream-cache', body, { kind: 'service', hidden: true });
+```
+
+The Ref still acquires, the value still resolves, and `yield*` works
+as normal — only the TUI row is suppressed. Failures inside a hidden
+Ref still propagate to the consumer's failure path so user-visible
+errors aren't lost.
 
 ## Reference
 

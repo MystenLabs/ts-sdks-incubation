@@ -10,7 +10,7 @@ TypeScript bindings, a dev wallet, and a Vite dev server.
 ## Scaffold
 
 ```bash
-pnpm create devstack-app my-app
+pnpm create @mysten-incubation/devstack-app my-app
 cd my-app
 pnpm install
 ```
@@ -26,7 +26,7 @@ The scaffold lands these files:
   call that wires `@mysten/dapp-kit-react` to the running stack.
 - `vite.config.ts`, `vitest.config.ts`, `playwright.config.ts` — each
   already pointed at the devstack manifest.
-- `e2e/smoke.spec.ts` — a sample Playwright test using `connectAs`.
+- `e2e/mint.spec.ts` — a sample Playwright test using `connectAs`.
 
 ## Boot the stack
 
@@ -125,23 +125,27 @@ Same stack, same accounts, same package ids. Nothing is mocked.
 pnpm test:e2e
 ```
 
-`playwright.config.ts` wires Playwright's `globalSetup` / `globalTeardown`
-to devstack, and reads the dev-server URL from the manifest:
+`playwright.config.ts` reads the dev-server URL from the manifest and
+delegates stack bring-up to `pnpm dev` (the default `webServer.command`).
+For tests that should bring the stack up themselves — typical in CI —
+swap `webServer({ ... })` for the `setupDevstack(stack)` fixture and
+wire its `globalSetup` / `globalTeardown` instead.
 
 ```ts
-import { defineConfig } from '@playwright/test';
-import { baseURL, webServer, setupDevstack } from '@mysten-incubation/devstack/playwright';
-import stack from './devstack.config.ts';
-
-const fixture = setupDevstack(stack);
+import { defineConfig, devices } from '@playwright/test';
+import { webServer } from '@mysten-incubation/devstack/playwright';
 
 export default defineConfig({
-  globalSetup: fixture.globalSetup,
-  globalTeardown: fixture.globalTeardown,
-  webServer: webServer({ endpoint: 'dev-server' }),
-  use: { baseURL: baseURL({ endpoint: 'dev-server' }) },
+  testDir: './e2e',
+  fullyParallel: false,
+  workers: 1,
+  webServer: webServer({ endpoint: 'dev-server', timeout: 300_000 }),
+  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
 });
 ```
+
+The default `command: 'pnpm dev'` means a fresh `pnpm test:e2e` will
+launch the supervisor itself if no manifest is present yet.
 
 In a test, `connectAs` flips the dev wallet to whichever account the
 test needs:

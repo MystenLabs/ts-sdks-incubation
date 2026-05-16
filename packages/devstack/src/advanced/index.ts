@@ -7,8 +7,10 @@
 // 1. **Tag substrate** — `tag`, `provide`, `composeTag`, `composeLayers`,
 //    `setPhase`, `Ref`, `TagIdentity`. The primitive every factory uses.
 // 2. **Plugin-author helpers** — `dockerImage`, `gitFetch`, `hostScript`,
-//    `dockerOneShot`, `HostProcess`, `DockerContainer`. Common shapes a
-//    custom factory will reach for.
+//    `dockerOneShot`. Common shapes a custom factory will reach for.
+//    Long-running services (the `Sui()`, `Walrus()`, `Dev()` shape)
+//    aren't covered by a generic helper today; reach for the in-tree
+//    factories or read their source for the bare `tag()` pattern.
 // 3. **Codegen plugin-author surface** — `defineEmitter`, `BindingsEmitter`,
 //    `DappKitEmitter`, `CodegenError`, the `CodegenContext` /
 //    `CodegenPackage` shapes. Use when you need to compose emitters
