@@ -51,10 +51,17 @@ export interface DeepbookMarketMakerPoolSpec<
 	readonly quote: Quote;
 	readonly tickSize: bigint;
 	/** Mid price in the pool's quote units (same scale as `tickSize`).
-	 *  Each tick reposts a POST_ONLY grid centred here. */
-	readonly midPrice: bigint;
-	/** Order size per level in BASE units. */
-	readonly sizePerLevel: bigint;
+	 *  Each tick reposts a POST_ONLY grid centred here.
+	 *
+	 *  Function form is re-evaluated each tick — pass `() => currentMid`
+	 *  if you want price to track an external feed (e.g. an oracle Ref
+	 *  observed via a SynchronizedRef) without restarting the
+	 *  supervisor. The `bigint` form is captured once at construction
+	 *  and works for static grids. */
+	readonly midPrice: bigint | (() => bigint);
+	/** Order size per level in BASE units. Same dynamic-vs-static
+	 *  semantics as `midPrice`. */
+	readonly sizePerLevel: bigint | (() => bigint);
 	/** Optional per-pool predeposit override. Without an override the maker
 	 *  deposits `100 * sizePerLevel` base + the quote-equivalent at
 	 *  `midPrice`. */
@@ -184,11 +191,26 @@ export const deepbookMarketMaker = <const Name extends string>(
 						target: `${core.packageId}::balance_manager::new`,
 						arguments: [],
 					});
+					// Pre-resolve dynamic fields once for the initial deposit
+					// math; depositPreDeposits' DepositArgs takes flat
+					// bigints. Subsequent ticks evaluate them per-tick at
+					// the order-placement loop below.
 					depositPreDeposits({
 						t,
 						bm,
 						packageId: core.packageId,
-						quotedPools,
+						quotedPools: quotedPools.map(({ spec, pool }) => ({
+							pool,
+							spec: {
+								sizePerLevel:
+									typeof spec.sizePerLevel === 'function'
+										? spec.sizePerLevel()
+										: spec.sizePerLevel,
+								midPrice:
+									typeof spec.midPrice === 'function' ? spec.midPrice() : spec.midPrice,
+								preDeposit: spec.preDeposit,
+							},
+						})),
 					});
 				} else {
 					bm = t.object(balanceManagerId!);
@@ -211,8 +233,17 @@ export const deepbookMarketMaker = <const Name extends string>(
 						});
 					}
 
-					const mid = spec.midPrice;
-					const sizeBase = spec.sizePerLevel;
+					// C9: re-resolve the dynamic fields each tick. Pre-fix
+					// the loop closed over `spec.midPrice` once at primitive
+					// construction; a config change (or any external mid
+					// driver) was invisible until supervisor restart.
+					// Function-form options now get evaluated per tick so
+					// drift is observable.
+					const mid = typeof spec.midPrice === 'function' ? spec.midPrice() : spec.midPrice;
+					const sizeBase =
+						typeof spec.sizePerLevel === 'function'
+							? spec.sizePerLevel()
+							: spec.sizePerLevel;
 					const tickSize = spec.tickSize;
 
 					for (let i = 1; i <= levels; i++) {

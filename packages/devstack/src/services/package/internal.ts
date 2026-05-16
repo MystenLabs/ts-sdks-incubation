@@ -48,7 +48,21 @@ const hashMoveSources = (sourcePath: string) =>
 					const stat = yield* fs.stat(full);
 					if (stat.type === 'Directory') {
 						yield* walk(full);
-					} else if (stat.type === 'File' && (name.endsWith('.move') || name === 'Move.toml')) {
+					} else if (
+						stat.type === 'File' &&
+						(name.endsWith('.move') ||
+							name === 'Move.toml' ||
+							// HIGH-C1: include Move.lock in the digest. The
+							// lockfile carries resolved dependency package ids
+							// (git pins, on-chain addresses) — a dependency
+							// upgrade or relocation is invisible to a hash
+							// that only walks `.move` + `Move.toml`, leaving
+							// the package's bytecode addressing the wrong
+							// upstream. Hashing the lockfile makes the cache
+							// key honest about every input that affects the
+							// resulting package id.
+							name === 'Move.lock')
+					) {
 						const rel = path.relative(sourcePath, full);
 						const content = yield* fs.readFile(full);
 						hash.update(rel + '\0');
@@ -68,6 +82,10 @@ const hashMoveSources = (sourcePath: string) =>
 				),
 			);
 		yield* walk(sourcePath);
+		// Stays at 16 hex chars to preserve compatibility with the
+		// state-store entries written by older devstack versions; HIGH-C1
+		// only widens the INPUT set (now includes Move.lock) without
+		// changing the hash width.
 		const digest = hash.digest('hex').slice(0, 16);
 		yield* Effect.annotateCurrentSpan({
 			'publishMove.sourcePath': sourcePath,
@@ -432,6 +450,26 @@ export const publishMove = <
 			const captured = options.capture ? options.capture(result.objectChanges) : undefined;
 
 			const coinSpecs = options.coins ?? ([] as ReadonlyArray<CoinSpec>);
+			// HIGH-C2: refuse duplicate coin names within one Package's
+			// `coins:` list. Two specs with the same `name` would each
+			// `CoinRegistry.publish(...)` the same key — the second
+			// silently overwrites the first, leaving the manifest +
+			// CoinTag lookups pointing at whichever entry happened to
+			// register last. Surface the conflict at config-load time
+			// where the user can fix it instead of letting it become a
+			// debugging mystery during e2e.
+			const seenCoinNames = new Set<string>();
+			for (const spec of coinSpecs) {
+				if (seenCoinNames.has(spec.name)) {
+					return yield* Effect.fail(
+						new PublishError({
+							stage: 'register-coins',
+							message: `publishMove '${options.name}': duplicate coin name '${spec.name}' in coins[]; each coin must have a unique name within a package`,
+						}),
+					);
+				}
+				seenCoinNames.add(spec.name);
+			}
 			const coins = {} as Record<string, PublishedCoin>;
 			for (const spec of coinSpecs) {
 				const fullCoinType = `${packageId}::${spec.module}::${spec.type}`;
