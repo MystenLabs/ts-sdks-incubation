@@ -28,7 +28,7 @@
 		"fumadocs-typescript": "5.0.1",
 		"fumadocs-ui": "16.4.7",
 		"gray-matter": "^4.0.3",
-		"next": "^16.1.6",
+		"next": "^16.2.6",
 		"react": "catalog:",
 		"react-dom": "catalog:"
 	},
