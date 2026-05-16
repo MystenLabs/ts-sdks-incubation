@@ -74,7 +74,11 @@ const bindProbe = (port: number, host: string): Promise<boolean> =>
 // `defaultPortLockDir` is computed lazily so tests can pass an
 // isolated tmpdir (no host-wide lock pollution); the allocator below
 // falls through to the default.
-export const defaultPortLockDir = (): string => path.join(os.homedir(), '.devstack', 'ports');
+// Lazy-evaluated so tests (and forked CI workers) can swap the
+// rendezvous dir via `DEVSTACK_PORT_LOCK_DIR` without poisoning each
+// other's locks. Without an override falls back to the per-user dir.
+export const defaultPortLockDir = (): string =>
+	process.env.DEVSTACK_PORT_LOCK_DIR ?? path.join(os.homedir(), '.devstack', 'ports');
 const portLockPath = (dir: string, port: number): string => path.join(dir, `${port}.lock`);
 // `true` if successfully claimed; `false` if another LIVE process holds the lock.
 // Treats stale locks (referenced pid no longer exists) as reusable: we delete
