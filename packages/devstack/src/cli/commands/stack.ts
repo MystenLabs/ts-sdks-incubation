@@ -17,6 +17,7 @@ import { Console, Effect, FileSystem, Option } from 'effect';
 import { Argument, Command, Flag } from 'effect/unstable/cli';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { join as joinPath } from 'node:path';
+import { writeFileAtomic } from '../../engine/atomic-write.js';
 import { prettyError } from '../../engine/pretty-error.js';
 
 // Preserve the underlying cause on `Error.cause` so the CLI's top-level
@@ -58,13 +59,18 @@ const readActiveStack = (fs: Fs): Effect.Effect<Option.Option<string>> =>
 		return trimmed.length === 0 ? Option.none<string>() : Option.some(trimmed);
 	});
 
-const writeActiveStack = (fs: Fs, name: string): Effect.Effect<void, Error> =>
+const writeActiveStack = (_fs: Fs, name: string): Effect.Effect<void, Error> =>
 	Effect.gen(function* () {
-		yield* fs.makeDirectory(stateDir(), { recursive: true }).pipe(Effect.catch(() => Effect.void));
 		const activePath = joinPath(stateDir(), ACTIVE_FILE);
-		yield* fs
-			.writeFileString(activePath, name)
-			.pipe(Effect.mapError((cause) => wrapCause(`failed to write ${activePath}`, cause)));
+		// Atomic via tmp + rename so a concurrent reader (the supervisor
+		// resolving its stack name during boot) never sees an empty or
+		// half-written `.devstack/active`. `writeFileAtomic` mkdir-p's
+		// the parent directory, so a separate `makeDirectory` is no
+		// longer needed.
+		yield* Effect.tryPromise({
+			try: () => writeFileAtomic(activePath, name),
+			catch: (cause) => wrapCause(`failed to write ${activePath}`, cause),
+		});
 	});
 
 // `devstack stack list` — read-only walk of `<DEVSTACK_STATE_DIR>/stacks/`.

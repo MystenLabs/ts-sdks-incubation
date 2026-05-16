@@ -18,6 +18,7 @@ import {
 	PackageRegistry,
 } from '../engine/registries.js';
 import { jsonBigintReplacer } from '../engine/json-bigint.js';
+import { writeFileAtomicIfChanged } from '../engine/atomic-write.js';
 import { ManifestError } from '../engine/errors.js';
 import type { Manifest } from './manifest-schema.js';
 import { gatherManifest } from './service.js';
@@ -87,10 +88,16 @@ const resolveExtras = (
 					})()
 				: Effect.succeed(raw);
 
-/** Write the v4 manifest to disk, idempotently. Skips the write entirely
- *  when the rendered body matches what's already on disk (keeps Vite's
- *  HMR watcher quiet on no-op re-runs). Permission 0o600 since the file
- *  may carry sensitive extras. */
+/** Write the v4 manifest to disk, idempotently AND atomically. The
+ *  atomic-write (tmp + rename) is the load-bearing piece: every
+ *  reader of `manifest.json` (`fromManifest`, `playwright/web-server`,
+ *  `dapp-kit`) does a synchronous `readFileSync`, which races a
+ *  truncate-and-rewrite badly — a mid-write read yields an empty or
+ *  partial buffer that fails `JSON.parse`. `rename(2)` is atomic on
+ *  the same filesystem, so concurrent readers either see the old or
+ *  the new content. Skips the rename when the body matches what's
+ *  already on disk (keeps Vite's HMR watcher quiet on no-op re-runs).
+ *  Permission 0o600 since the file may carry sensitive extras. */
 const writeManifestFile = (
 	outputPath: string,
 	legacyPath: string | undefined,
@@ -98,32 +105,12 @@ const writeManifestFile = (
 ): Effect.Effect<boolean, ManifestError> =>
 	Effect.tryPromise({
 		try: async (): Promise<boolean> => {
-			let didWrite = false;
-			let existing: string | undefined;
-			try {
-				existing = await fs.readFile(outputPath, 'utf-8');
-			} catch {
-				// missing — fall through
-			}
-			if (existing !== body) {
-				await fs.mkdir(path.dirname(outputPath), { recursive: true });
-				await fs.writeFile(outputPath, body, 'utf-8');
-				didWrite = true;
-			}
+			const wroteCanonical = await writeFileAtomicIfChanged(outputPath, body, { mode: 0o600 });
+			let wroteLegacy = false;
 			if (legacyPath !== undefined) {
-				let legacyExisting: string | undefined;
-				try {
-					legacyExisting = await fs.readFile(legacyPath, 'utf-8');
-				} catch {
-					// missing — fall through
-				}
-				if (legacyExisting !== body) {
-					await fs.mkdir(path.dirname(legacyPath), { recursive: true });
-					await fs.writeFile(legacyPath, body, 'utf-8');
-					didWrite = true;
-				}
+				wroteLegacy = await writeFileAtomicIfChanged(legacyPath, body, { mode: 0o600 });
 			}
-			return didWrite;
+			return wroteCanonical || wroteLegacy;
 		},
 		catch: (cause) =>
 			new ManifestError({
@@ -166,9 +153,19 @@ export const emitManifestV4 = (
 				),
 			);
 			if (wrote) {
+				// `writeFileAtomicIfChanged` already passes `mode: 0o600` for
+				// new files, but rename-over-existing keeps the prior file's
+				// mode bits. Re-chmod both paths defensively so a manifest
+				// file created earlier without the 0o600 mode is tightened
+				// next tick.
 				yield* Effect.tryPromise(() => fs.chmod(outputPath, 0o600)).pipe(
 					Effect.ignore({ log: true }),
 				);
+				if (legacyPath !== undefined) {
+					yield* Effect.tryPromise(() => fs.chmod(legacyPath, 0o600)).pipe(
+						Effect.ignore({ log: true }),
+					);
+				}
 			}
 			return data;
 		});

@@ -251,10 +251,34 @@ export type AccountSpec =
  *  persist it under `.devstack/stacks/<stack>/.keys/<name>.key`, and
  *  request faucet funding. Pass `{ from: 'env', key: '...' }` or
  *  `{ from: 'keystore', alias: '...' }` for non-localnet stacks. */
+// Allowed shape for `Account(name)`: lowercase alphanumeric + dot /
+// underscore / hyphen, must start with a letter or digit, max 64 chars.
+// The string flows into:
+//   - the per-Ref tag id (`account/${name}`), which has to be unique
+//     across the stack;
+//   - the on-disk path `.devstack/stacks/<stack>/.keys/<name>.key`;
+//   - the manifest-side `accounts.<name>.address` lookup key;
+//   - docker labels like `devstack.account=<name>` for stack pruning.
+// Allowing `..`, `/`, spaces, or other shell-meaningful characters
+// would let a typo silently traverse a directory or break docker's
+// label parser. Validate at the factory boundary so the failure is
+// loud and points at the user's config rather than surfacing as an
+// inscrutable filesystem or docker error later.
+const ACCOUNT_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+const validateAccountName = (name: string): void => {
+	if (!ACCOUNT_NAME_RE.test(name)) {
+		throw new TypeError(
+			`Account: name '${name}' is invalid — must match ${ACCOUNT_NAME_RE.source} ` +
+				`(lowercase alphanumeric + ._- ; must start with a letter or digit; max 64 chars)`,
+		);
+	}
+};
+
 export const Account = <const N extends string>(
 	name: N,
 	opts?: AccountSpec,
 ): AccountRef<`account/${N}`> => {
+	validateAccountName(name);
 	// Backwards-compat: the bare `{}` form (without a `from:` key)
 	// means "ephemeral-funded with defaults". Branch here so the rest of
 	// the body can treat `source` as a fully-discriminated `AccountSource`.
@@ -567,16 +591,50 @@ const acquireEphemeral = (
 			decodeSuiPrivateKey(keypair.getSecretKey()).secretKey,
 			'ED25519',
 		);
-		yield* fs.writeFileString(keyPath, serialized).pipe(
-			Effect.mapError(
-				(cause) =>
-					new AccountError({
-						phase: 'write-key',
-						message: `Account: failed to write key file for '${name}' at ${keyPath}`,
-						cause,
-					}),
-			),
-		);
+		// O_EXCL write so two concurrent first-time `acquireEphemeral(name)`
+		// calls (e.g. parallel test fixtures, or two stacks of the same app
+		// booted in a tight loop) can't both win — without this each one
+		// generates its OWN keypair and the second `writeFileString` clobbers
+		// the first, leaving the loser with a Keypair whose secret isn't on
+		// disk. With `flag: 'wx'` the loser sees `EEXIST`, falls into the
+		// re-read path, and uses the winner's persisted key.
+		const writeResult = yield* Effect.tryPromise({
+			try: async () => {
+				try {
+					await nodeFs.writeFile(keyPath, serialized, { flag: 'wx', mode: 0o600 });
+					return { kind: 'wrote' as const };
+				} catch (err) {
+					if ((err as { code?: string }).code === 'EEXIST') {
+						return { kind: 'exists' as const };
+					}
+					throw err;
+				}
+			},
+			catch: (cause) =>
+				new AccountError({
+					phase: 'write-key',
+					message: `Account: failed to write key file for '${name}' at ${keyPath}`,
+					cause,
+				}),
+		});
+
+		if (writeResult.kind === 'exists') {
+			// Concurrent winner already wrote a key; read theirs and discard
+			// the keypair we just generated.
+			const raw = yield* fs.readFileString(keyPath).pipe(
+				Effect.mapError(
+					(cause) =>
+						new AccountError({
+							phase: 'load-key',
+							message: `Account: lost write race for '${name}' at ${keyPath} but failed to read winner's key`,
+							cause,
+						}),
+				),
+			);
+			yield* bestEffortChmod(fs, keyPath, 0o600);
+			return yield* decodeKeypair(name, raw.trim());
+		}
+
 		yield* bestEffortChmod(fs, keyPath, 0o600);
 		return keypair;
 	});
