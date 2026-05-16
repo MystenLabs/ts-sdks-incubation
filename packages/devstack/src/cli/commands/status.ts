@@ -6,9 +6,10 @@ import { Console, Effect, FileSystem } from 'effect';
 import { Command, Flag } from 'effect/unstable/cli';
 import { resolve as resolvePath } from 'node:path';
 
-const STATE_DIR = process.env.DEVSTACK_STATE_DIR ?? '.devstack';
-const STATE_FILE = `${STATE_DIR}/state.json`;
-const MANIFEST_FILE = `${STATE_DIR}/manifest.json`;
+// Action-time env reads — see manifest.ts for the rationale.
+const stateDir = (): string => process.env.DEVSTACK_STATE_DIR ?? '.devstack';
+const stateFile = (): string => `${stateDir()}/state.json`;
+const manifestFile = (): string => `${stateDir()}/manifest.json`;
 
 interface ParsedFile {
 	readonly path: string;
@@ -46,8 +47,8 @@ export const statusCommand = Command.make(
 	},
 	({ json }) =>
 		Effect.gen(function* () {
-			const state = yield* tryReadJson(STATE_FILE);
-			const manifest = yield* tryReadJson(MANIFEST_FILE);
+			const state = yield* tryReadJson(stateFile());
+			const manifest = yield* tryReadJson(manifestFile());
 
 			if (json) {
 				yield* Console.log(

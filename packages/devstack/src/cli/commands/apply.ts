@@ -16,6 +16,8 @@ import { Argument, Command, Flag } from 'effect/unstable/cli';
 import { resolve as resolvePath } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { prettyError } from '../../engine/pretty-error.js';
+import { AlreadyReportedError } from '../already-reported.js';
+import { applyNetworkOverride, networkFlag } from '../flags.js';
 
 // Preserve the underlying cause on `Error.cause` so the CLI's top-level
 // `tapCause` renderer can walk the full chain instead of collapsing to the
@@ -48,14 +50,6 @@ const loadDevstack = (configPath: string) =>
 		return devstack as DevstackLike;
 	});
 
-const networkFlag = Flag.choice('network', ['localnet', 'testnet', 'mainnet'] as const).pipe(
-	Flag.optional,
-	Flag.withDescription(
-		'Target Sui network. Sets DEVSTACK_NETWORK before loading the config so every ' +
-			'factory (Sui, Seal, Walrus, Deepbook) sees the same value. Defaults to localnet.',
-	),
-);
-
 export const applyCommand = Command.make(
 	'apply',
 	{
@@ -65,13 +59,7 @@ export const applyCommand = Command.make(
 	},
 	({ configPath, json, network }) =>
 		Effect.gen(function* () {
-			Option.match(network, {
-				onNone: () => undefined,
-				onSome: (n) => {
-					process.env.DEVSTACK_NETWORK = n;
-					return undefined;
-				},
-			});
+			applyNetworkOverride(network);
 			const resolved = Option.getOrElse(configPath, () => './devstack.config.ts');
 			const devstack = yield* loadDevstack(resolved);
 
@@ -85,7 +73,9 @@ export const applyCommand = Command.make(
 			// Render success/failure ourselves so `--json` can emit a
 			// structured summary instead of letting the CLI runtime swallow
 			// the error through its default handler. The Effect still fails
-			// at the end on error so the process exits non-zero.
+			// at the end on error so the process exits non-zero — but we
+			// raise `AlreadyReportedError` instead of re-failing with the
+			// raw cause so the top-level `tapCause` doesn't double-print.
 			const reportAndRethrow = (cause: unknown) =>
 				Effect.gen(function* () {
 					if (json) {
@@ -104,7 +94,7 @@ export const applyCommand = Command.make(
 					} else {
 						yield* Console.error(`apply failed:\n${prettyError(cause)}`);
 					}
-					return yield* Effect.fail(cause as Error);
+					return yield* Effect.fail(new AlreadyReportedError({ cause }));
 				});
 
 			yield* buildEffect.pipe(Effect.catch(reportAndRethrow));

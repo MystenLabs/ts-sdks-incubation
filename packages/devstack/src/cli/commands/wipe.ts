@@ -31,7 +31,7 @@
 // interactive selection across every stack on the machine) reach for
 // `devstack prune` instead — same teardown logic, broader scope.
 
-import { Console, Effect } from 'effect';
+import { Console, Effect, Option } from 'effect';
 import { Command, Flag } from 'effect/unstable/cli';
 import { deriveAppName } from '../../engine/identity.js';
 import { pruneStack } from './_prune-stack.js';
@@ -41,19 +41,22 @@ const stackFlag = Flag.string('stack').pipe(
 	Flag.withDefault('main'),
 );
 
-// Default to `deriveAppName(<appDir>)` so a bare `devstack wipe --yes`
-// behaves intuitively: it only touches THIS app's containers/networks/
-// volumes, mirroring how `defineDevstack` infers `Identity.app` from
-// the same `package.json#name`. Without an `--app` filter, wipe would
-// match `devstack.stack=main` across EVERY repo on the machine that
-// uses devstack — a footgun if a developer is running two apps side
-// by side.
+// Optional + resolved at action-time so `DEVSTACK_APP_DIR` overrides
+// applied via a fixture or shell wrapper after this module's import
+// are honored. Without this we'd freeze whichever cwd / env was set
+// the moment the CLI was loaded — surprising in tests that change
+// cwd between subcommand invocations.
 const appFlag = Flag.string('app').pipe(
 	Flag.withDescription(
 		"App identifier (default: <appDir>/package.json#name's basename, matching `defineDevstack`)",
 	),
-	Flag.withDefault(deriveAppName(process.env.DEVSTACK_APP_DIR ?? process.cwd())),
+	Flag.optional,
 );
+
+const resolveAppName = (override: Option.Option<string>): string =>
+	Option.getOrElse(override, () =>
+		deriveAppName(process.env.DEVSTACK_APP_DIR ?? process.cwd()),
+	);
 
 const yesFlag = Flag.boolean('yes').pipe(
 	Flag.withDescription('Required. Confirms the wipe.'),
@@ -94,8 +97,9 @@ export const wipeCommand = Command.make(
 				return yield* Effect.fail(new Error('wipe: --yes required'));
 			}
 
+			const resolvedApp = resolveAppName(app);
 			const result = yield* pruneStack({
-				app,
+				app: resolvedApp,
 				stack,
 				keepSnapshots,
 				noStop,
@@ -121,7 +125,7 @@ export const wipeCommand = Command.make(
 				const imageCount = result.removedImages.length;
 				parts.push(`removed ${imageCount} image${imageCount === 1 ? '' : 's'}`);
 			}
-			yield* Console.log(`devstack wipe (app=${app}, stack=${stack}): ${parts.join(', ')}.`);
+			yield* Console.log(`devstack wipe (app=${resolvedApp}, stack=${stack}): ${parts.join(', ')}.`);
 		}),
 ).pipe(
 	Command.withDescription(

@@ -8,6 +8,7 @@
 
 import { Console, Effect, FileSystem, Option, Path } from 'effect';
 import { Argument, Command, Flag } from 'effect/unstable/cli';
+import { randomBytes } from 'node:crypto';
 import { prettyError } from '../../engine/pretty-error.js';
 import { list as listSnapshots, restore, snapshot } from '../../engine/snapshot.js';
 
@@ -20,23 +21,29 @@ const wrapCause = (message: string, cause: unknown): Error => {
 	return err;
 };
 
-// Mirror the constants in `internal/snapshot.ts` — we only need them in
-// `delete` because `snapshot()` / `restore()` / `list()` accept `dir`
-// via their options.
-const STATE_DIR = process.env.DEVSTACK_STATE_DIR ?? '.devstack';
-const DEFAULT_SNAPSHOTS_DIR = `${STATE_DIR}/snapshots`;
+// Action-time reads of DEVSTACK_STATE_DIR — see manifest.ts for the
+// rationale. The engine `snapshot()` / `restore()` / `list()` helpers
+// accept a `dir` override; we pass `defaultSnapshotsDir()` explicitly
+// so they don't fall back to their own module-load capture either.
+const stateDir = (): string => process.env.DEVSTACK_STATE_DIR ?? '.devstack';
+const defaultSnapshotsDir = (): string => `${stateDir()}/snapshots`;
 
-// Derive a chronologically-sortable id from the wall clock. Matches the
-// shape v3 used (`YYYYMMDDTHHMMSS`, UTC).
+// Derive a chronologically-sortable id from the wall clock plus a
+// short random suffix so two saves within the same wall-clock second
+// (a fixture saving + restoring back-to-back, a user mashing the
+// `save` button) produce distinct ids instead of one silently
+// overwriting the other.
 const makeId = (label: Option.Option<string>): string => {
 	const d = new Date();
 	const pad = (n: number) => String(n).padStart(2, '0');
 	const base =
 		`${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}` +
 		`T${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}`;
+	const suffix = randomBytes(2).toString('hex'); // 4 hex chars
+	const stamp = `${base}-${suffix}`;
 	return Option.match(label, {
-		onNone: () => base,
-		onSome: (l) => `${base}-${l}`,
+		onNone: () => stamp,
+		onSome: (l) => `${stamp}-${l}`,
 	});
 };
 
@@ -72,7 +79,8 @@ const saveCommand = Command.make(
 	({ label }) =>
 		Effect.gen(function* () {
 			const id = makeId(label);
-			const result = yield* snapshot({ id });
+			const dir = defaultSnapshotsDir();
+			const result = yield* snapshot({ id, dir });
 			yield* Console.log(`saved snapshot ${id}`);
 			yield* Console.log(`  → ${result.path}`);
 		}),
@@ -85,9 +93,10 @@ const restoreCommand = Command.make(
 	},
 	({ ref }) =>
 		Effect.gen(function* () {
-			const entries = yield* listSnapshots();
+			const dir = defaultSnapshotsDir();
+			const entries = yield* listSnapshots({ dir });
 			if (entries.length === 0) {
-				yield* Console.error(`no snapshots in ${DEFAULT_SNAPSHOTS_DIR}`);
+				yield* Console.error(`no snapshots in ${dir}`);
 				return yield* Effect.fail(new Error('no snapshots to restore'));
 			}
 
@@ -109,7 +118,7 @@ const restoreCommand = Command.make(
 				return yield* Effect.fail(new Error('no matching snapshot'));
 			}
 
-			const result = yield* restore({ id: target.match.id });
+			const result = yield* restore({ id: target.match.id, dir });
 			yield* Console.log(`restored snapshot ${target.match.id}`);
 			if (result.loadedImages.length > 0) {
 				yield* Console.log(`  loaded images: ${result.loadedImages.join(', ')}`);
@@ -119,12 +128,13 @@ const restoreCommand = Command.make(
 
 const listCommand = Command.make('list', {}, () =>
 	Effect.gen(function* () {
-		const entries = yield* listSnapshots();
+		const dir = defaultSnapshotsDir();
+		const entries = yield* listSnapshots({ dir });
 		if (entries.length === 0) {
-			yield* Console.log(`no snapshots in ${DEFAULT_SNAPSHOTS_DIR}`);
+			yield* Console.log(`no snapshots in ${dir}`);
 			return;
 		}
-		yield* Console.log(`snapshots in ${DEFAULT_SNAPSHOTS_DIR}:`);
+		yield* Console.log(`snapshots in ${dir}:`);
 		// List newest-first — matches v3's UX and matches typical
 		// `git log`-style chronology.
 		for (let i = entries.length - 1; i >= 0; i--) {
@@ -144,7 +154,8 @@ const deleteCommand = Command.make(
 		Effect.gen(function* () {
 			const fs = yield* FileSystem.FileSystem;
 			const path = yield* Path.Path;
-			const entries = yield* listSnapshots();
+			const snapshotsDir = defaultSnapshotsDir();
+			const entries = yield* listSnapshots({ dir: snapshotsDir });
 			const target = findMatch(entries, ref);
 			if (target.ambiguous) {
 				yield* Console.error(
@@ -156,10 +167,10 @@ const deleteCommand = Command.make(
 				yield* Console.error(`no snapshot matching '${ref}'`);
 				return yield* Effect.fail(new Error('no matching snapshot'));
 			}
-			const dir = path.join(DEFAULT_SNAPSHOTS_DIR, target.match.id);
+			const targetDir = path.join(snapshotsDir, target.match.id);
 			yield* fs
-				.remove(dir, { recursive: true, force: true })
-				.pipe(Effect.mapError((cause) => wrapCause(`failed to remove ${dir}`, cause)));
+				.remove(targetDir, { recursive: true, force: true })
+				.pipe(Effect.mapError((cause) => wrapCause(`failed to remove ${targetDir}`, cause)));
 			yield* Console.log(`deleted snapshot ${target.match.id}`);
 		}),
 ).pipe(Command.withDescription('Delete a snapshot directory'));

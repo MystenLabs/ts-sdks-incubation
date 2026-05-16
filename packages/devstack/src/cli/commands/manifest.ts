@@ -15,8 +15,12 @@ import { Console, Effect, FileSystem, Option } from 'effect';
 import { Argument, Command, Flag } from 'effect/unstable/cli';
 import { resolve as resolvePath } from 'node:path';
 
-const STATE_DIR = process.env.DEVSTACK_STATE_DIR ?? '.devstack';
-const DEFAULT_MANIFEST_PATH = `${STATE_DIR}/manifest.json`;
+// Read DEVSTACK_STATE_DIR at action-time so a test that sets it via
+// `process.env` after module-load (or a `.env` loader, or a fixture
+// shell wrapper) sees the override. Resolving once at module-eval
+// freezes whatever was set at the moment the CLI was imported.
+const stateDir = (): string => process.env.DEVSTACK_STATE_DIR ?? '.devstack';
+const defaultManifestPath = (): string => `${stateDir()}/manifest.json`;
 
 interface ManifestSummary {
 	readonly packages?: ReadonlyArray<{ name: string; packageId: string }>;
@@ -37,7 +41,7 @@ export const manifestCommand = Command.make(
 	({ path, json }) =>
 		Effect.gen(function* () {
 			const fs = yield* FileSystem.FileSystem;
-			const filePath = Option.getOrElse(path, () => DEFAULT_MANIFEST_PATH);
+			const filePath = Option.getOrElse(path, defaultManifestPath);
 			const absolute = resolvePath(process.cwd(), filePath);
 
 			const exists = yield* fs.exists(filePath).pipe(Effect.catch(() => Effect.succeed(false)));
