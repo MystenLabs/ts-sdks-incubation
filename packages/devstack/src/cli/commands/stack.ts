@@ -28,7 +28,9 @@ const wrapCause = (message: string, cause: unknown): Error => {
 	return err;
 };
 
-const STATE_DIR = process.env.DEVSTACK_STATE_DIR ?? '.devstack';
+// Read DEVSTACK_STATE_DIR at action-time so any per-test or shell
+// override applied after module-load is honored.
+const stateDir = (): string => process.env.DEVSTACK_STATE_DIR ?? '.devstack';
 
 const ACTIVE_FILE = 'active';
 
@@ -48,7 +50,7 @@ const requireValidStackName = (name: string): Effect.Effect<void, Error> =>
 
 const readActiveStack = (fs: Fs): Effect.Effect<Option.Option<string>> =>
 	Effect.gen(function* () {
-		const activePath = joinPath(STATE_DIR, ACTIVE_FILE);
+		const activePath = joinPath(stateDir(), ACTIVE_FILE);
 		const exists = yield* fs.exists(activePath).pipe(Effect.catch(() => Effect.succeed(false)));
 		if (!exists) return Option.none<string>();
 		const txt = yield* fs.readFileString(activePath).pipe(Effect.catch(() => Effect.succeed('')));
@@ -58,18 +60,18 @@ const readActiveStack = (fs: Fs): Effect.Effect<Option.Option<string>> =>
 
 const writeActiveStack = (fs: Fs, name: string): Effect.Effect<void, Error> =>
 	Effect.gen(function* () {
-		yield* fs.makeDirectory(STATE_DIR, { recursive: true }).pipe(Effect.catch(() => Effect.void));
-		const activePath = joinPath(STATE_DIR, ACTIVE_FILE);
+		yield* fs.makeDirectory(stateDir(), { recursive: true }).pipe(Effect.catch(() => Effect.void));
+		const activePath = joinPath(stateDir(), ACTIVE_FILE);
 		yield* fs
 			.writeFileString(activePath, name)
 			.pipe(Effect.mapError((cause) => wrapCause(`failed to write ${activePath}`, cause)));
 	});
 
-// `devstack stack list` — read-only walk of `<STATE_DIR>/stacks/`.
+// `devstack stack list` — read-only walk of `<DEVSTACK_STATE_DIR>/stacks/`.
 const listCommand = Command.make('list', {}, () =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem;
-		const stacksRoot = joinPath(STATE_DIR, 'stacks');
+		const stacksRoot = joinPath(stateDir(), 'stacks');
 		const rootExists = yield* fs.exists(stacksRoot).pipe(Effect.catch(() => Effect.succeed(false)));
 		if (!rootExists) {
 			yield* Console.log(`no stacks yet — run \`devstack up\` or \`devstack stack new <name>\``);
@@ -114,7 +116,7 @@ const newCommand = Command.make(
 		Effect.gen(function* () {
 			yield* requireValidStackName(name);
 			const fs = yield* FileSystem.FileSystem;
-			const stackDir = joinPath(STATE_DIR, 'stacks', name);
+			const stackDir = joinPath(stateDir(), 'stacks', name);
 			yield* fs
 				.makeDirectory(stackDir, { recursive: true })
 				.pipe(Effect.mapError((cause) => wrapCause(`failed to create ${stackDir}`, cause)));
@@ -126,7 +128,7 @@ const newCommand = Command.make(
 		}),
 ).pipe(Command.withDescription('Create the per-stack state directory (idempotent)'));
 
-// `devstack stack use <name>` — write `<STATE_DIR>/active`. mkdir-p's the
+// `devstack stack use <name>` — write `<DEVSTACK_STATE_DIR>/active`. mkdir-p's the
 // target dir on the way through, mirroring v3.
 const useCommand = Command.make(
 	'use',
@@ -135,7 +137,7 @@ const useCommand = Command.make(
 		Effect.gen(function* () {
 			yield* requireValidStackName(name);
 			const fs = yield* FileSystem.FileSystem;
-			const stackDir = joinPath(STATE_DIR, 'stacks', name);
+			const stackDir = joinPath(stateDir(), 'stacks', name);
 			yield* fs.makeDirectory(stackDir, { recursive: true }).pipe(Effect.catch(() => Effect.void));
 			const previous = yield* readActiveStack(fs);
 			yield* writeActiveStack(fs, name);
@@ -201,7 +203,7 @@ const dropCommand = Command.make(
 				return yield* Effect.fail(new Error('stack drop: --yes required'));
 			}
 			const fs = yield* FileSystem.FileSystem;
-			const stackDir = joinPath(STATE_DIR, 'stacks', name);
+			const stackDir = joinPath(stateDir(), 'stacks', name);
 			const exists = yield* fs.exists(stackDir).pipe(Effect.catch(() => Effect.succeed(false)));
 			if (!exists) {
 				yield* Console.log(`stack '${name}': nothing to drop (no dir at ${stackDir})`);

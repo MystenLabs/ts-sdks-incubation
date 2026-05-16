@@ -18,11 +18,13 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { Cause, Effect, Option } from 'effect';
-import { Argument, Command, Flag } from 'effect/unstable/cli';
+import { Argument, Command } from 'effect/unstable/cli';
 import { resolve as resolvePath } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { RendererKind, RunOverrides } from '../engine/supervisor.js';
 import { prettyError } from '../engine/pretty-error.js';
+import { causeHasAlreadyReported } from './already-reported.js';
+import { applyNetworkOverride, networkFlag, rendererFlag } from './flags.js';
 import { applyCommand } from './commands/apply.js';
 import { doctorCommand } from './commands/doctor.js';
 import { manifestCommand } from './commands/manifest.js';
@@ -69,35 +71,6 @@ const loadDevstack = (configPath: string) =>
 			launchEffect: (overrides?: RunOverrides) => Effect.Effect<void, unknown, never>;
 		};
 	});
-
-const rendererFlag = Flag.choice('renderer', ['tui', 'plain', 'silent'] as const).pipe(
-	Flag.optional,
-	Flag.withDescription(
-		'Status renderer: tui (in-terminal), plain (line-per-event to stderr), or silent. ' +
-			'Defaults to tui on a TTY, plain otherwise.',
-	),
-);
-
-const networkFlag = Flag.choice('network', ['localnet', 'testnet', 'mainnet'] as const).pipe(
-	Flag.optional,
-	Flag.withDescription(
-		'Target Sui network. Sets DEVSTACK_NETWORK before loading the config so every ' +
-			'factory (Sui, Seal, Walrus, Deepbook) sees the same value. Defaults to localnet.',
-	),
-);
-
-/** Set the network env var before importing the user's config. Every
- *  network-aware factory reads it at construction time, so this must
- *  run BEFORE `loadDevstack` calls `import(...)` on the config. */
-const applyNetworkOverride = (network: Option.Option<'localnet' | 'testnet' | 'mainnet'>): void => {
-	Option.match(network, {
-		onNone: () => undefined,
-		onSome: (n) => {
-			process.env.DEVSTACK_NETWORK = n;
-			return undefined;
-		},
-	});
-};
 
 const upCommand = Command.make(
 	'up',
@@ -165,6 +138,11 @@ export const rootCommand = Command.make('devstack').pipe(
 export const cli = Command.run(rootCommand, { version: VERSION }).pipe(
 	Effect.tapCause((cause: Cause.Cause<unknown>) =>
 		Effect.sync(() => {
+			// Subcommands that already printed a human-readable error
+			// (e.g. `apply` writing `apply failed: …` itself) tag their
+			// final `Effect.fail` with `AlreadyReportedError`. Skip our
+			// own pretty-print so the user sees one error, not two.
+			if (causeHasAlreadyReported(cause)) return;
 			const rendered = prettyError(cause);
 			if (rendered.trim().length > 0) {
 				// eslint-disable-next-line no-console

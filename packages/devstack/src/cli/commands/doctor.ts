@@ -84,10 +84,8 @@ const checkSui = (spawner: Spawner): Effect.Effect<Check> =>
 		return { name: 'Sui CLI', ok: true, required: false, detail: out.text };
 	});
 
-// Try to bind 0.0.0.0:port. EADDRINUSE → bound; clean close → free. Note we
-// use 0.0.0.0 to catch both v4 and v6 listeners (vs 127.0.0.1 which can
-// race past a ::1 binding) — matches the prompt's spec.
-const isPortBound = (port: number): Effect.Effect<boolean> =>
+// Try to bind {addr}:port. EADDRINUSE → bound; clean close → free.
+const tryBind = (port: number, addr: string): Effect.Effect<boolean> =>
 	Effect.callback<boolean>((resume) => {
 		const server = createServer();
 		server.unref();
@@ -95,9 +93,23 @@ const isPortBound = (port: number): Effect.Effect<boolean> =>
 			const code = (err as { code?: string }).code;
 			resume(Effect.succeed(code === 'EADDRINUSE'));
 		});
-		server.listen(port, '0.0.0.0', () => {
+		server.listen(port, addr, () => {
 			server.close(() => resume(Effect.succeed(false)));
 		});
+	});
+
+// Probe BOTH `0.0.0.0` and `127.0.0.1`. Either bind failing means the
+// port is unavailable to a freshly-launched docker `--publish`. A bare
+// `0.0.0.0` probe alone misses processes that bound `127.0.0.1`
+// explicitly (some local dev servers do); a bare `127.0.0.1` probe
+// misses `::1`-only listeners and races past dual-stack binds. Mirror
+// the engine's port-allocator probe so doctor's accounting matches
+// what the supervisor will actually see at acquire time.
+const isPortBound = (port: number): Effect.Effect<boolean> =>
+	Effect.gen(function* () {
+		const wildcardBound = yield* tryBind(port, '0.0.0.0');
+		if (wildcardBound) return true;
+		return yield* tryBind(port, '127.0.0.1');
 	});
 
 const checkPort = (port: number): Effect.Effect<Check> =>
