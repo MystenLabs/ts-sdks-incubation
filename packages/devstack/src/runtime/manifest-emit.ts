@@ -7,7 +7,7 @@
 // Phase 2's `Manifest` factory in `services/` calls it. Phase 6 deletes
 // the v3 emitter and this becomes the sole writer.
 
-import { Effect, Schedule, Scope } from 'effect';
+import { Effect, Schedule, Schema, Scope } from 'effect';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { Identity } from '../engine/identity.js';
@@ -20,8 +20,17 @@ import {
 import { jsonBigintReplacer } from '../engine/json-bigint.js';
 import { writeFileAtomicIfChanged } from '../engine/atomic-write.js';
 import { ManifestError } from '../engine/errors.js';
-import type { Manifest } from './manifest-schema.js';
+import { ManifestV4, type Manifest } from './manifest-schema.js';
 import { gatherManifest } from './service.js';
+
+/** Encode the v4 manifest through `Schema.encodeUnknownSync(ManifestV4)`
+ *  before serializing. This is a load-bearing guard: a bug in
+ *  `gatherManifest` (or any future emitter feeding it) that produces a
+ *  shape mismatch with the schema fails HERE at write time, surfacing
+ *  the offending field path in the ParseError — instead of silently
+ *  writing JSON that `fromManifest`'s downstream consumers then crash
+ *  on at read time, far from the bug's origin. */
+const encodeManifestV4 = Schema.encodeUnknownSync(ManifestV4);
 
 export interface EmitManifestOptions {
 	/** Override the on-disk path. Defaults to `.devstack/manifest.json`
@@ -143,7 +152,21 @@ export const emitManifestV4 = (
 
 		const snapshotAndWrite = Effect.gen(function* () {
 			const data = yield* gatherManifest(extras);
-			const body = JSON.stringify(data, jsonBigintReplacer, 2);
+			// Encode through the schema BEFORE `JSON.stringify` so a shape
+			// mismatch from `gatherManifest` (typo, missing required
+			// field, wrong type on a renamed key) surfaces here as a
+			// `ManifestError` with the offending field path — not as
+			// invalid JSON that crashes `fromManifest`'s consumers downstream.
+			const encoded = yield* Effect.try({
+				try: () => encodeManifestV4(data),
+				catch: (cause) =>
+					new ManifestError({
+						phase: 'write',
+						message: `manifest v4 schema encode failed before write to ${outputPath}`,
+						cause,
+					}),
+			});
+			const body = JSON.stringify(encoded, jsonBigintReplacer, 2);
 			const wrote = yield* writeManifestFile(outputPath, legacyPath, body).pipe(
 				Effect.catch((err) =>
 					Effect.logWarning(`manifest(v4): ${err.message}`).pipe(

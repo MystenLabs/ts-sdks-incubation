@@ -28,7 +28,7 @@ const alice = Account('alice');
 const bob = Account('bob');
 
 const hello = Package('hello', './move/hello', { signer: publisher });
-const codegen = Codegen({ packages: [hello], output: './src/generated' });
+const codegen = Codegen({ packages: [hello] });
 
 const wallet = Wallet({ accounts: [publisher, alice, bob] });
 const dev = Dev({

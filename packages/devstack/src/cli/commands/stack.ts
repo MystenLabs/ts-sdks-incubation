@@ -18,16 +18,7 @@ import { Argument, Command, Flag } from 'effect/unstable/cli';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { join as joinPath } from 'node:path';
 import { writeFileAtomic } from '../../engine/atomic-write.js';
-import { prettyError } from '../../engine/pretty-error.js';
-
-// Preserve the underlying cause on `Error.cause` so the CLI's top-level
-// `tapCause` renderer can walk the full chain (PlatformError → ENOENT path,
-// etc.) instead of flattening to the outer `Error.toString()`.
-const wrapCause = (message: string, cause: unknown): Error => {
-	const err = new Error(`${message}: ${prettyError(cause).split('\n')[0]}`);
-	(err as Error & { cause?: unknown }).cause = cause;
-	return err;
-};
+import { wrapCause } from '../loaders.js';
 
 // Read DEVSTACK_STATE_DIR at action-time so any per-test or shell
 // override applied after module-load is honored.
@@ -157,37 +148,65 @@ const useCommand = Command.make(
 		}),
 ).pipe(Command.withDescription('Set the active stack by writing .devstack/active'));
 
-// `devstack stack down [<name>]` — best-effort stop containers for the
-// named stack (defaults to active or 'main'). State on disk is preserved
-// so a follow-up `up` resumes. Filters on `label=devstack.stack=<stack>`,
-// which `Docker.run` stamps on every container (see
-// `internal/docker.ts` + `internal/identity.ts`).
+// `devstack stack down [<name>]` — stop containers for the named stack
+// (defaults to active or 'main'). Uses `docker stop`, NOT `docker rm -f`:
+// the container's writable layer survives so a follow-up `devstack up`
+// resumes via the reuse-if-image-matches probe in `engine/docker/core.ts`
+// (~1s warm start). This invariant is load-bearing for snapshots — chain
+// state now lives in the writable layer (Phase 2.1 + Phase 2.2 of the
+// snapshot redesign dropped the named volumes that previously held it),
+// so anything that `docker rm` here would lose that state and force a
+// genesis rebuild.
+//
+// `--force` opts into the legacy destructive behavior (`docker rm -f`).
+// Use that only when you specifically want to throw the writable layer
+// away — typically right before `devstack wipe`, or in CI scripts that
+// preserve named volumes but rebuild from scratch on every run.
+//
+// Filters on `label=devstack.stack=<stack>`, which `Docker.run` stamps
+// on every container (see `engine/docker/core.ts` + `engine/identity.ts`).
 const downCommand = Command.make(
 	'down',
 	{
 		name: Argument.string('name')
 			.pipe(Argument.withDescription('Stack name (defaults to active or "main")'))
 			.pipe(Argument.optional),
+		force: Flag.boolean('force').pipe(
+			Flag.withDescription(
+				'Destructively `docker rm -f` instead of `docker stop`. Loses the writable ' +
+					'layer (chain state, indexer DB). Use only when you intend to start from a ' +
+					'clean container next time.',
+			),
+			Flag.withDefault(false),
+		),
 	},
-	({ name }) =>
+	({ name, force }) =>
 		Effect.gen(function* () {
 			const fs = yield* FileSystem.FileSystem;
 			const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 			const resolved = yield* resolveStackName(fs, name);
-			yield* Console.log(`stack '${resolved}': stopping containers`);
-			const killed = yield* stopDevstackContainers(spawner, resolved);
-			if (killed.length === 0) {
-				yield* Console.log(`stack '${resolved}': nothing running to stop`);
+			const verb = force ? 'removing' : 'stopping';
+			const pastVerb = force ? 'removed' : 'stopped';
+			yield* Console.log(`stack '${resolved}': ${verb} containers${force ? ' (--force)' : ''}`);
+			const affected = yield* takeDownContainers(spawner, resolved, force);
+			if (affected.length === 0) {
+				yield* Console.log(`stack '${resolved}': nothing running to ${force ? 'remove' : 'stop'}`);
 			} else {
-				for (const id of killed) {
-					yield* Console.log(`  stopped ${id.slice(0, 12)}`);
+				for (const id of affected) {
+					yield* Console.log(`  ${pastVerb} ${id.slice(0, 12)}`);
 				}
 				yield* Console.log(
-					`(state kept; run \`devstack up\` to resume, or \`devstack stack drop\` to clear)`,
+					force
+						? `(writable layer destroyed; run \`devstack up\` to rebuild from image)`
+						: `(state kept; run \`devstack up\` to resume, or \`devstack stack drop\` to clear)`,
 				);
 			}
 		}),
-).pipe(Command.withDescription('Stop containers but preserve on-disk state'));
+).pipe(
+	Command.withDescription(
+		'Stop containers but preserve the writable layer (--force to `docker rm -f` instead)',
+	),
+);
 
 // `devstack stack drop <name>` — wipe the named stack. Requires --yes.
 const dropCommand = Command.make(
@@ -225,15 +244,30 @@ const dropCommand = Command.make(
 const resolveStackName = (fs: Fs, provided: Option.Option<string>): Effect.Effect<string> =>
 	Effect.gen(function* () {
 		if (Option.isSome(provided)) return provided.value;
+		// Mirror `engine/supervisor.ts:567` precedence: arg > DEVSTACK_STACK
+		// env > .devstack/active > 'main'. Without the env-var step, a
+		// `DEVSTACK_STACK=foo devstack stack down` couldn't target the
+		// stack the supervisor was actually running against.
+		const envStack = process.env.DEVSTACK_STACK;
+		if (envStack !== undefined && envStack.length > 0) return envStack;
 		const active = yield* readActiveStack(fs);
 		return Option.getOrElse(active, () => 'main');
 	});
 
-// Label-filter enumerate-then-rm. Mirrors `wipe`'s
-// `killDevstackContainers` — `Docker.run` stamps every container with
-// `devstack.stack=<stack>` so a stop here is scoped to the named stack
-// instead of clobbering siblings.
-const stopDevstackContainers = (spawner: Spawner, stack: string) =>
+// Label-filter enumerate-then-(stop|remove). `Docker.run` stamps every
+// container with `devstack.stack=<stack>` so this is scoped to the named
+// stack and never clobbers siblings.
+//
+// `force=false` (default): `docker stop` — preserves the writable layer
+// so a follow-up `devstack up` adopts the existing container via the
+// reuse-if-image-matches probe (~1s resume). This is what the snapshot
+// design depends on: chain state lives in the writable layer (Phase 2),
+// so `docker rm` here would force a fresh genesis on next boot.
+//
+// `force=true`: `docker rm -f` — destroys the container including its
+// writable layer. Equivalent to the pre-Phase 2 behavior of `stack down`.
+// Use only when starting from a clean container is the goal.
+const takeDownContainers = (spawner: Spawner, stack: string, force: boolean) =>
 	Effect.gen(function* () {
 		const lsCmd = ChildProcess.make('docker', [
 			'ps',
@@ -246,16 +280,19 @@ const stopDevstackContainers = (spawner: Spawner, stack: string) =>
 			.split('\n')
 			.map((s) => s.trim())
 			.filter((s) => s.length > 0);
-		const killed: Array<string> = [];
+		const affected: Array<string> = [];
 		for (const id of ids) {
-			const rmCmd = ChildProcess.make('docker', ['rm', '-f', id]);
-			const ok = yield* spawner.string(rmCmd).pipe(
+			const cmd = ChildProcess.make(
+				'docker',
+				force ? ['rm', '-f', id] : ['stop', id],
+			);
+			const ok = yield* spawner.string(cmd).pipe(
 				Effect.map(() => true),
 				Effect.orElseSucceed(() => false),
 			);
-			if (ok) killed.push(id);
+			if (ok) affected.push(id);
 		}
-		return killed as ReadonlyArray<string>;
+		return affected as ReadonlyArray<string>;
 	});
 
 export const stackCommand = Command.make('stack').pipe(

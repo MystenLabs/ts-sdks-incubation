@@ -42,8 +42,16 @@ const main = defineConfig({
 // own d.mts. We sidestep the bundler by emitting these subpaths' dts
 // with a separate `tsc --emitDeclarationOnly` step driven by
 // `tsconfig.subpaths.json` (see the `build:dts-subpaths` script in
-// package.json). Re-investigate once rolldown-plugin-dts fixes the
-// upstream bug.
+// package.json).
+//
+// **Re-investigate periodically:** check the rolldown-plugin-dts
+// release notes on every quarterly dependency bump. When the postcss
+// export-resolution bug is fixed upstream we can:
+//   1. flip `dts: true` here,
+//   2. delete `tsconfig.subpaths.json` + `scripts/finalize-subpath-dts.ts`,
+//   3. drop the `build:dts-subpaths` script from package.json.
+// Track at https://github.com/rolldown/rolldown — search for issues
+// matching "AcceptedPlugin" or "postcss d.mts" before re-attempting.
 const fixtures = defineConfig({
 	entry: ['src/vitest/index.ts', 'src/playwright/index.ts', 'src/dapp-kit/index.ts'],
 	format: 'esm',

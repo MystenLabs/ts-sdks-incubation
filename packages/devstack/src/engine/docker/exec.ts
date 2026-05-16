@@ -288,6 +288,18 @@ export const runOneShot = (
 			}),
 		);
 
+		// Belt-and-suspenders cleanup. The inner `Effect.scoped` registers a
+		// `docker rm -f <name>` finalizer that is the PRIMARY teardown
+		// path — it fires on normal completion, on interruption, and on
+		// the timeout below interrupting `work`. But `Effect.timeoutOrElse`
+		// is permitted to surface the `orElse` failure before the inner
+		// scope's finalizer has been observed to complete, so on the
+		// timeout path a container could (in principle) outlive this
+		// function. The `Effect.ensuring` below re-issues `docker rm -f`
+		// AFTER `timeoutOrElse` resolves either way. On the happy path
+		// the container is already gone — `docker rm -f` on a missing
+		// name exits non-zero, which we ignore. Honors the same
+		// `DEVSTACK_KEEP_ONESHOT` opt-out as the primary finalizer.
 		return yield* work.pipe(
 			Effect.timeoutOrElse({
 				duration: `${timeoutMs} millis`,
@@ -299,5 +311,12 @@ export const runOneShot = (
 						}),
 					),
 			}),
+			Effect.ensuring(
+				keepOneShot
+					? Effect.void
+					: spawner
+							.exitCode(ChildProcess.make('docker', ['rm', '-f', name]))
+							.pipe(Effect.ignore),
+			),
 		);
 	}).pipe(Effect.withSpan('Docker.runOneShot'));

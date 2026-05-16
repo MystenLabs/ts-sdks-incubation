@@ -26,6 +26,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { createHash } from 'node:crypto';
+import * as nodeFs from 'node:fs/promises';
 import { Effect, Option } from 'effect';
 import { Transaction } from '@mysten/sui/transactions';
 import { type WalrusAdmin } from '../walrus.js';
@@ -33,6 +34,7 @@ import * as Docker from '../../engine/docker.js';
 import { EngineHandle } from '../../engine/engine.js';
 import { Identity } from '../../engine/identity.js';
 import { EndpointRegistry, PackageRegistry } from '../../engine/registries.js';
+import { servicePath } from '../../engine/service-paths.js';
 import { StateStore } from '../../engine/state-store.js';
 import { type Ref } from '../../advanced/tag.js';
 import { WalrusError } from '../../engine/errors.js';
@@ -352,16 +354,16 @@ export const acquireLocalCluster = (args: {
 		const cached = yield* state.get<CachedDeployState>(deployStateKey);
 		// Output dir is keyed by `(identity.app, identity.stack,
 		// identity.network, args.name)` so two parallel stacks of the
-		// same app don't trample each other's on-disk deploy state. The
-		// default `<stack='main', network='localnet'>` keeps the
-		// pre-change `.devstack/walrus/${name}/deploy` path byte-
-		// identical so existing walrus state is still resumable.
-		const outputDirBase =
-			identity.stack === 'main'
-				? `${process.cwd()}/.devstack/walrus/${args.name}/deploy`
-				: `${process.cwd()}/.devstack/walrus/${identity.stack}/${args.name}/deploy`;
-		const outputDir =
-			identity.network === 'localnet' ? outputDirBase : `${outputDirBase}-${identity.network}`;
+		// Walrus deploy outputs live under `runtime/walrus/<name>/deploy/`
+		// (per-walrus-instance subdir so multiple `Walrus(...)` refs in
+		// the same stack don't collide). Phase 3 of the snapshot redesign
+		// moved this off the pre-existing `.devstack/walrus/<stack>/<name>`
+		// layout so `snapshot save` captures it as part of the canonical
+		// runtime tarball; the network-aware suffix is no longer needed
+		// because `servicePath` already scopes by network (localnet ->
+		// `.devstack/stacks/<stack>/runtime/...`, live nets ->
+		// `.devstack/networks/<network>/runtime/...`).
+		const outputDir = yield* servicePath('walrus', args.name, 'deploy');
 
 		// Per-stack sui docker network — only meaningful when the sui
 		// primitive runs a container (i.e. `suiLocalnet` without an
@@ -379,6 +381,44 @@ export const acquireLocalCluster = (args: {
 
 		let deploy: DeployState;
 		if (Option.isSome(cached)) {
+			// State-store gate present → this stack has previously deployed
+			// walrus against the current chainId. Trust the cache AND the
+			// host-side `outputDir` contents (node configs + private keys
+			// that `walrus-deploy` wrote on the original deploy). The
+			// snapshot save/restore pipeline tars `runtime/walrus/<name>/`
+			// so a restored stack lands here with both the state-store
+			// gate AND the directory contents — the storage-node phase
+			// downstream mounts `outputDir` and reads them.
+			//
+			// **Crash detector:** if the gate is present but the directory
+			// is missing or empty, we've hit one of:
+			//   - a manual `rm -rf` of `.devstack/stacks/<stack>/runtime/`
+			//   - a corrupted snapshot extract
+			//   - a partial migration from a pre-Phase-3 layout
+			// Re-deploying on top of a chain that already has registered
+			// nodes (under previously-minted keys) would mint NEW keys
+			// and break the committee. Fail loudly so the user knows to
+			// restore from a complete snapshot or `wipe` and start fresh.
+			const deployFile = `${outputDir}/deploy`;
+			const deployFileExists = yield* Effect.tryPromise({
+				try: () => nodeFs.access(deployFile).then(() => true),
+				catch: () => false,
+			}).pipe(Effect.catch(() => Effect.succeed(false)));
+			if (deployFileExists !== true) {
+				return yield* Effect.fail(
+					new WalrusError({
+						phase: 'deploy',
+						message:
+							`walrus(${args.name}): state-store says walrus is already deployed ` +
+							`against chainId=${sui.chainId}, but the host-side deploy outputs at ` +
+							`${outputDir} are missing or empty. This typically means a partial ` +
+							`snapshot restore or a manual delete of the runtime/ dir. Either ` +
+							`restore from a complete snapshot (one captured with this chain ` +
+							`state still live) or run \`devstack wipe --yes\` to discard the ` +
+							`stale state-store entry and start fresh.`,
+					}),
+				);
+			}
 			yield* Effect.annotateCurrentSpan({
 				'walrus.deploy.cache': 'hit',
 				'walrus.packageId': cached.value.walrusPackageId,

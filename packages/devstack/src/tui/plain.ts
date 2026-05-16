@@ -4,6 +4,16 @@
 // written to stderr so stdout stays clean for piping JSON / log
 // harvesters.
 //
+// **Best-effort writes.** Each tick's stream write is piped through
+// `Effect.ignore`, so failures — most commonly `EPIPE` when the consumer
+// closes the pipe partway (e.g. piping `--renderer plain` output to
+// `head -1` or to a process that exits early) — are silently dropped.
+// The supervisor keeps running; the consumer just sees fewer lines.
+// This is intentional: a closed pipe shouldn't crash a long-running dev
+// loop. If you need every line guaranteed delivered, switch to
+// `--renderer silent` and emit your own structured log from inside
+// services.
+//
 // Polls the same `TuiState` source as the TUI on a fixed cadence and
 // diffs against the previous snapshot. Tag status changes, new endpoints,
 // and new log entries each emit one line. We poll instead of subscribing
@@ -128,7 +138,10 @@ export const startPlainRenderer = Effect.fn('PlainRenderer.start')(function* (
 
 	// Track the previous snapshot across ticks. A plain mutable closure is
 	// fine here — the tick effect runs on a single forked fiber, no
-	// concurrent readers.
+	// concurrent readers. `flush` also reads it, but flush is invoked
+	// from the supervisor's onInterrupt path (no concurrent tick — by
+	// that point the launchLoop is already interrupted and the periodic
+	// fiber is on its way down).
 	let previous: TuiState | undefined;
 
 	const tick = source.pipe(
@@ -146,4 +159,12 @@ export const startPlainRenderer = Effect.fn('PlainRenderer.start')(function* (
 	);
 
 	yield* Effect.forkScoped(tick.pipe(Effect.repeat(REFRESH)));
+
+	// One-shot synchronous render coordinator. Supervisor calls this in
+	// onInterrupt so the final 'shutting-down' line lands on stderr
+	// BEFORE docker-rm finalizers freeze the event loop. The 500ms
+	// REFRESH tick is too coarse to rely on for shutdown framing — the
+	// previous design slept 150ms (less than a tick) and could miss the
+	// shutdown frame entirely on a tick boundary.
+	return { flush: tick };
 });

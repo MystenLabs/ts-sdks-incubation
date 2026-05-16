@@ -21,18 +21,26 @@ field, it defaults to the Move → TS bindings emitter — the 90% case:
 ```ts
 import { Codegen } from '@mysten-incubation/devstack';
 
-const codegen = Codegen({
-  output: './src/generated',
-  packages: [hello, world],
-});
+const codegen = Codegen({ packages: [hello, world] });
 
 export default devstack(/* ... */, codegen);
 ```
 
-Output lands at `<output>/bindings/<package-name>/`. Atomic dir swap means your dev server never
-sees a half-written tree mid-cycle.
+`output` is optional and defaults to `./src/generated/` — a normal `src/`-typed source dir
+picked up by TypeScript + Vite without extra wiring. Bindings land at
+`./src/generated/bindings/<package-name>/`; app code imports directly:
 
+```ts
+import { Lobby } from './generated/bindings/connect_four/game.js';
+```
+
+Atomic dir swap means your dev server never sees a half-written tree mid-cycle.
 `KnownPackage(...)` entries are silently skipped — the bindings emitter needs Move source.
+
+**Why `src/generated/` and not `.devstack/`?** The `.devstack/` dot-dir is reserved for
+non-importable runtime state (account keys, wallet tokens, walrus deploy outputs, etc.) and is
+deliberately invisible to TS tooling. Importable generated code belongs in a normal source dir.
+See [state and snapshots](./state-and-snapshots) for the full split.
 
 ## DappKit: typed dapp-kit factory
 
@@ -43,13 +51,13 @@ For a generated dapp-kit module, use the `DappKit` facade — it wraps
 import { DappKit } from '@mysten-incubation/devstack';
 
 const dappKit = DappKit({
-	output: './src/generated',
 	packages: [hello, deepbookV3],
 	flavor: 'react',
 });
 ```
 
-Output lands at `<output>/dapp-kit/index.ts`. Your app imports it directly:
+Same `output` default as `Codegen` — generated file lands at `./src/generated/dapp-kit/index.ts`,
+alongside `./src/generated/bindings/`. Your app imports it directly:
 
 ```ts
 // src/dapp-kit.ts
@@ -77,7 +85,6 @@ import { Codegen } from '@mysten-incubation/devstack';
 import { BindingsEmitter, DappKitEmitter } from '@mysten-incubation/devstack/advanced';
 
 Codegen({
-	output: './src/generated',
 	packages: [hello, deepbookV3],
 	emitters: [BindingsEmitter(), DappKitEmitter({ flavor: 'react' })],
 });
@@ -115,7 +122,7 @@ const VersionList = defineEmitter({
 		}),
 });
 
-Codegen({ output: './src/generated', packages: [hello], emitters: [VersionList] });
+Codegen({ packages: [hello], emitters: [VersionList] });
 ```
 
 ## Per-package opt-out

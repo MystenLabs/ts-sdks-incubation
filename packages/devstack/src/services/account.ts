@@ -38,8 +38,6 @@ import * as nodeFs from 'node:fs/promises';
 import * as nodeOs from 'node:os';
 import * as nodePath from 'node:path';
 import { Effect, FileSystem, Schema } from 'effect';
-import type { Transaction } from '@mysten/sui/transactions';
-import type { SuiTransactionBlockResponse } from '@mysten/sui/jsonRpc';
 import {
 	decodeSuiPrivateKey,
 	encodeSuiPrivateKey,
@@ -57,6 +55,7 @@ import { Leasing } from '../engine/leasing.js';
 import { requestFunds } from '../engine/faucet.js';
 import { FaucetTag } from '../faucet/service.js';
 import { StateStoreConfig } from '../engine/state-store.js';
+import { servicePath } from '../engine/service-paths.js';
 import { stringifyCause } from '../engine/stringify-cause.js';
 import type {
 	Account as AccountValue,
@@ -72,28 +71,32 @@ import type { AccountRef } from './ref.js';
 /** Per-account-instance shape. Every per-name account Ref produced by
  *  `Account(name, opts?)` yields a value satisfying this contract.
  *
- *  - `scheme` is lowercased to match the on-chain Move type conventions
- *    and the lowercase form `@mysten/sui` exposes via
- *    `decodeSuiPrivateKey(...).schema.toLowerCase()`.
- *  - `signAndExecute` returns the raw `SuiTransactionBlockResponse`;
- *    consumers that need a wrapper can project it themselves.
- *  - `signTransaction` returns the base64-encoded signature string.
- *  - `signPersonalMessage` retains the `{ signature, bytes }` shape
- *    because the dapp-kit personal-message flow needs both halves.
+ *  Re-exported from `engine/shared.ts` so internal services (which import
+ *  from `engine/shared.js`) and user code (which imports from this module)
+ *  agree on the type. The two used to be separately authored and drifted:
+ *  scheme casing, signing return shape, and signing error tags all
+ *  diverged before this consolidation.
+ *
+ *  Lifecycle notes:
+ *  - `scheme` is lowercased to match @mysten/sui's
+ *    `decodeSuiPrivateKey(...).schema.toLowerCase()` and the on-chain Move
+ *    type conventions.
+ *  - `signAndExecute` returns the engine's `TxResult` projection (digest +
+ *    effects + objectChanges + balanceChanges) AFTER waitForTransaction,
+ *    so a follow-up tx referencing a created object never races the
+ *    indexer.
+ *  - `signTransaction` takes pre-built tx bytes (the dapp-kit adapter
+ *    base64-encodes them; the wallet server decodes once and forwards
+ *    the Uint8Array) and returns the @mysten/sui Signer's native
+ *    `{ bytes, signature }` shape.
+ *  - `signPersonalMessage` returns the same `{ signature, bytes }` shape
+ *    because dapp-kit personal-message flows need both halves.
+ *  - **Signing failures surface as `SignAndExecuteError`, NOT `AccountError`.**
+ *    `AccountError` is the *acquisition* error reported when yielding the
+ *    `AccountRef` (faucet failed, keystore unreadable, etc.); see
+ *    `AccountTag` below.
  */
-export interface Account {
-	readonly name: string;
-	readonly address: string;
-	readonly scheme: 'ed25519' | 'secp256k1' | 'secp256r1';
-	readonly publicKey: Uint8Array;
-	readonly signAndExecute: (
-		tx: Transaction,
-	) => Effect.Effect<SuiTransactionBlockResponse, AccountError>;
-	readonly signTransaction: (tx: Transaction) => Effect.Effect<string, AccountError>;
-	readonly signPersonalMessage: (
-		message: Uint8Array,
-	) => Effect.Effect<{ readonly signature: string; readonly bytes: string }, AccountError>;
-}
+export type Account = AccountValue;
 
 /** Reference type for downstream consumers that take an account tag as
  *  configuration. Consumers (`Package({signer})`, `Seal({signer})`, …)
@@ -559,18 +562,17 @@ const acquireSigner = (
 	}
 };
 
-// Persist the bech32 secret key under `.devstack/stacks/<stack>/.keys/<name>.key`
-// (mode 0o600, dir 0o700) so warm starts keep a stable address.
+// Persist the bech32 secret key under `runtime/accounts/<name>.key`
+// (mode 0o600, dir 0o700) so warm starts keep a stable address. The
+// canonical `runtime/` dir (Phase 3 of the snapshot redesign) means
+// `snapshot save` tars these keys verbatim and restore puts them back
+// at the same path on the target machine.
 const acquireEphemeral = (
 	name: string,
 ): Effect.Effect<Keypair, AccountError, AcquireRequirements> =>
 	Effect.gen(function* () {
-		const cfg = yield* StateStoreConfig;
 		const fs = yield* FileSystem.FileSystem;
-		const baseDir =
-			cfg.stateDir ??
-			`${process.env.DEVSTACK_APP_DIR ?? process.cwd()}/.devstack/stacks/${cfg.stack}`;
-		const keysDir = `${baseDir}/.keys`;
+		const keysDir = yield* servicePath('accounts');
 		const keyPath = `${keysDir}/${name}.key`;
 
 		const exists = yield* fs.exists(keyPath).pipe(Effect.orElseSucceed(() => false));

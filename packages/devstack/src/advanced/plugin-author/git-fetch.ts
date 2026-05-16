@@ -86,6 +86,33 @@ const validateRepoUrl = (repo: string): void => {
 	);
 };
 
+// Defense-in-depth ref validator. git would reject these at clone time
+// anyway, but failing here points the stack trace at the user's
+// `gitFetch({ref: ...})` config rather than deep inside the Effect chain
+// where the error is harder to attribute. Conservative — rejects
+// obvious malformed refs (empty, whitespace-bearing, leading `-` flag
+// injection, embedded refs like `@@`) and trusts git's
+// `check-ref-format` to catch the rest at clone time.
+const VALID_REF_CHARS = /^[A-Za-z0-9_/.@+\-=:]+$/;
+const validateRef = (ref: string): void => {
+	if (ref.length === 0) {
+		throw new Error('gitFetch: ref must not be empty');
+	}
+	if (ref.startsWith('-')) {
+		throw new Error(`gitFetch: ref '${ref}' starts with '-' (rejected to avoid CLI flag injection)`);
+	}
+	if (!VALID_REF_CHARS.test(ref)) {
+		throw new Error(
+			`gitFetch: ref '${ref}' contains characters outside the allowed set ` +
+				`(alphanumeric, _ / . @ + - = :). Git would reject this anyway; flagging at ` +
+				`factory-construction time so the stack trace points at the user config.`,
+		);
+	}
+	if (ref.includes('@@')) {
+		throw new Error(`gitFetch: ref '${ref}' contains '@@' (typo for '@'?)`);
+	}
+};
+
 export interface GitFetched {
 	readonly path: string; // absolute path to the (optionally subdirectory'd) checkout
 	readonly ref: string;
@@ -102,11 +129,12 @@ type Fs = ReturnType<typeof FileSystem.make>;
 // -----------------------------------------------------------------------------
 
 export const gitFetch = <const Name extends string>(options: GitFetchOptions<Name>) => {
-	// Validate the repo URL synchronously at factory construction so a
-	// disallowed transport surfaces at config-load time (where the
-	// stack trace points at the user's `gitFetch({...})` call) rather
-	// than at acquire time deep inside an Effect chain.
+	// Validate the repo URL + ref synchronously at factory construction
+	// so disallowed values surface at config-load time (where the stack
+	// trace points at the user's `gitFetch({...})` call) rather than at
+	// acquire time deep inside an Effect chain.
 	validateRepoUrl(options.repo);
+	validateRef(options.ref);
 	return tag(
 		options.name,
 		Effect.gen(function* () {

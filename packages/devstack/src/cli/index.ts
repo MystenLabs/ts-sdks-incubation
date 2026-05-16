@@ -19,12 +19,11 @@
 
 import { Cause, Effect, Option } from 'effect';
 import { Argument, Command } from 'effect/unstable/cli';
-import { resolve as resolvePath } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import type { RendererKind, RunOverrides } from '../engine/supervisor.js';
 import { prettyError } from '../engine/pretty-error.js';
 import { causeHasAlreadyReported } from './already-reported.js';
 import { applyNetworkOverride, networkFlag, rendererFlag } from './flags.js';
+import { loadConfigModule, requireLaunchEffect } from './loaders.js';
 import { applyCommand } from './commands/apply.js';
 import { doctorCommand } from './commands/doctor.js';
 import { manifestCommand } from './commands/manifest.js';
@@ -37,41 +36,6 @@ import packageJson from '../../package.json' with { type: 'json' };
 
 const VERSION = packageJson.version;
 
-// `loadDevstack` and `up` previously wrapped failures with `new Error(\`...: ${String(cause)}\`)`,
-// which flattens any structured cause (DockerError stderr/exitCode, SuiError
-// phase, …) into a bare class-name + message. We instead keep the original
-// cause intact in `Error.cause` and let the top-level `Cause`-aware reporter
-// walk the full chain via `prettyError`.
-const wrapCause = (prefix: string, cause: unknown): Error => {
-	const err = new Error(`${prefix}: ${prettyError(cause).split('\n')[0]}`);
-	(err as Error & { cause?: unknown }).cause = cause;
-	return err;
-};
-
-const loadDevstack = (configPath: string) =>
-	Effect.gen(function* () {
-		const absolute = resolvePath(process.cwd(), configPath);
-		const url = pathToFileURL(absolute).href;
-		const mod = yield* Effect.tryPromise({
-			try: () => import(url) as Promise<{ default?: unknown }>,
-			catch: (cause) => wrapCause(`failed to load ${configPath}`, cause),
-		}).pipe(Effect.withSpan('cli.loadConfig', { attributes: { configPath } }));
-		const devstack = mod.default as
-			| {
-					run?: (overrides?: RunOverrides) => Promise<void>;
-					launchEffect?: (overrides?: RunOverrides) => Effect.Effect<void, unknown, never>;
-			  }
-			| undefined;
-		if (!devstack || typeof devstack.launchEffect !== 'function') {
-			return yield* Effect.fail(
-				new Error(`${configPath} must default-export a DevstackHandle (from devstack(...) or defineDevstack)`),
-			);
-		}
-		return devstack as {
-			launchEffect: (overrides?: RunOverrides) => Effect.Effect<void, unknown, never>;
-		};
-	});
-
 const upCommand = Command.make(
 	'up',
 	{
@@ -83,7 +47,7 @@ const upCommand = Command.make(
 		Effect.gen(function* () {
 			applyNetworkOverride(network);
 			const resolved = Option.getOrElse(configPath, () => './devstack.config.ts');
-			const devstack = yield* loadDevstack(resolved);
+			const devstack = yield* loadConfigModule(resolved, requireLaunchEffect);
 			const overrides: RunOverrides = Option.match(renderer, {
 				onNone: () => ({}),
 				onSome: (kind: RendererKind) => ({ renderer: kind }),

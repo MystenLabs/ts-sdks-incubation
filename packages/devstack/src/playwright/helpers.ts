@@ -44,7 +44,16 @@ export async function connectAs(page: Page, label: string): Promise<void> {
 		}
 		const slot = globalThis as { __devstackDAppKit__?: DevstackDappKit };
 		const kit = slot.__devstackDAppKit__;
-		if (kit === undefined) throw new Error('connectAs: globalThis.__devstackDAppKit__ missing');
+		if (kit === undefined) {
+			throw new Error(
+				'connectAs: globalThis.__devstackDAppKit__ missing. ' +
+					'Check that `createDevstackDappKit` runs on this page — it auto-exposes ' +
+					'the slot under Vite dev/preview or when PLAYWRIGHT=1 is set. Production ' +
+					'builds intentionally omit the exposure; if you need to run Playwright ' +
+					'against a production build, export your dAppKit instance manually onto ' +
+					'globalThis.__devstackDAppKit__ from your app entry.',
+			);
+		}
 		const wallet = kit.stores.$wallets.get().find((w) => w.name === 'Dev Wallet');
 		if (wallet === undefined) throw new Error('connectAs: Dev Wallet not registered');
 		const account = wallet.accounts.find(

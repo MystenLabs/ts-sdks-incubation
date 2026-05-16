@@ -28,12 +28,27 @@ import type { Package, LocalPackage } from './package.js';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+/** Canonical default output directory for `Codegen({})`. Imported by
+ *  app code (`import ... from './generated/bindings/...'`) so it lives in
+ *  a normal `src/`-typed source dir, NOT under the `.devstack/` dot-dir
+ *  (which is reserved for non-importable runtime state — see the
+ *  invariant comment in `engine/service-paths.ts`). The relative form
+ *  resolves against the example app's `process.cwd()` at codegen time. */
+export const DEFAULT_CODEGEN_OUTPUT = './src/generated';
+
 export interface CodegenOptions {
 	/** Output directory. Resolved relative to `process.cwd()` if not
 	 *  absolute. Each emitter writes under a subdirectory of this path
 	 *  (`<output>/bindings/`, `<output>/dapp-kit/`, …) so multiple
-	 *  emitters coexist without collision. */
-	readonly output: string;
+	 *  emitters coexist without collision.
+	 *
+	 *  Defaults to `./src/generated` — a normal source dir picked up by
+	 *  TypeScript's `include` patterns and Vite's resolve graph, so app
+	 *  code can `import { useFoo } from './generated/dapp-kit/foo.js'`
+	 *  without extra wiring. The `.devstack/` dot-dir is intentionally
+	 *  NOT used here: that path is reserved for non-importable runtime
+	 *  state (account keys, wallet tokens, walrus deploy outputs, etc.). */
+	readonly output?: string;
 	/** Package refs to emit for. `Package(...)` refs emit fully;
 	 *  `KnownPackage(...)` refs are silently skipped at emit time by
 	 *  emitters that need Move source (e.g. `BindingsEmitter`). The
@@ -81,17 +96,23 @@ const toCodegenPackage = (pkg: Package | LocalPackage): CodegenPackage => {
 };
 
 /** The Codegen Ref. Returns a tag whose value is the resolved
- *  `CodegenContext` (after every emitter has run). */
-export const Codegen = (opts: CodegenOptions) => {
+ *  `CodegenContext` (after every emitter has run).
+ *
+ *  Zero-config: `Codegen({})` (or just `Codegen()`) uses every default —
+ *  `output: './src/generated'`, `packages: []` (auto-fill TBD), and
+ *  `emitters: [BindingsEmitter()]`. Most stacks should call it that
+ *  way and let the defaults do their job. */
+export const Codegen = (opts: CodegenOptions = {}) => {
 	const name = opts.name ?? 'codegen';
 	const packageRefs = opts.packages ?? [];
 	const emitters = opts.emitters ?? [BindingsEmitter()];
+	const output = opts.output ?? DEFAULT_CODEGEN_OUTPUT;
 	return tag(
 		`codegen/${name}` as const,
 		Effect.gen(function* () {
-			const outputDir = path.isAbsolute(opts.output)
-				? opts.output
-				: path.resolve(process.cwd(), opts.output);
+			const outputDir = path.isAbsolute(output)
+				? output
+				: path.resolve(process.cwd(), output);
 
 			yield* setPhase('resolving packages');
 			const resolved: Array<CodegenPackage> = [];

@@ -1,25 +1,30 @@
 // `devstack snapshot <save|restore|list|delete>` — wraps
-// `internal/snapshot.ts` with a thin CLI surface. Snapshot ids are
-// timestamp-based (UTC, second resolution); an optional `--label` is
-// appended via a hyphen to disambiguate ids saved within the same
-// second. `restore` accepts either the raw id or a prefix / label.
+// `internal/snapshot.ts` with a thin CLI surface.
+//
+// Save flow (Phase 3.6 of the snapshot redesign):
+//   1. Resolve active stack via `.devstack/active` (or `--stack <name>`).
+//   2. Enumerate containers labelled `devstack.stack=<stack>` via
+//      `docker ps`. Their `{id, name}` tuples feed into the engine
+//      `snapshot()` which `docker commit + save`s each into the
+//      snapshot dir.
+//   3. The engine also tars the canonical `runtime/<service>/...` dir
+//      and any opt-in extras registered via `ServicePaths.addExtra`.
+//   4. `state.json` is copied verbatim.
+//
+// Snapshot ids are timestamp-based (UTC, second resolution); an
+// optional `--label` is appended via a hyphen to disambiguate ids
+// saved within the same second. `restore` accepts either the raw id
+// or a prefix / label.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { Console, Effect, FileSystem, Option, Path } from 'effect';
 import { Argument, Command, Flag } from 'effect/unstable/cli';
+import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { randomBytes } from 'node:crypto';
-import { prettyError } from '../../engine/pretty-error.js';
+import { wrapCause } from '../loaders.js';
+import { deriveAppName } from '../../engine/identity.js';
 import { list as listSnapshots, restore, snapshot } from '../../engine/snapshot.js';
-
-// Preserve the underlying cause on `Error.cause` so the CLI's top-level
-// `tapCause` renderer can walk the full chain rather than collapsing to the
-// outer `Error.toString()`.
-const wrapCause = (message: string, cause: unknown): Error => {
-	const err = new Error(`${message}: ${prettyError(cause).split('\n')[0]}`);
-	(err as Error & { cause?: unknown }).cause = cause;
-	return err;
-};
 
 // Action-time reads of DEVSTACK_STATE_DIR — see manifest.ts for the
 // rationale. The engine `snapshot()` / `restore()` / `list()` helpers
@@ -27,6 +32,24 @@ const wrapCause = (message: string, cause: unknown): Error => {
 // so they don't fall back to their own module-load capture either.
 const stateDir = (): string => process.env.DEVSTACK_STATE_DIR ?? '.devstack';
 const defaultSnapshotsDir = (): string => `${stateDir()}/snapshots`;
+
+// Resolve the active stack the way `cli/commands/stack.ts` does. The
+// snapshot pipeline scopes EVERY path it reads (state.json, runtime/,
+// container labels) by this stack name, so this is the load-bearing
+// step.
+const ACTIVE_FILE = 'active';
+const readActiveStack = (
+	fs: FileSystem.FileSystem,
+	path: Path.Path,
+): Effect.Effect<Option.Option<string>> =>
+	Effect.gen(function* () {
+		const activePath = path.join(stateDir(), ACTIVE_FILE);
+		const exists = yield* fs.exists(activePath).pipe(Effect.orElseSucceed(() => false));
+		if (!exists) return Option.none<string>();
+		const txt = yield* fs.readFileString(activePath).pipe(Effect.orElseSucceed(() => ''));
+		const trimmed = txt.trim();
+		return trimmed.length === 0 ? Option.none<string>() : Option.some(trimmed);
+	});
 
 // Derive a chronologically-sortable id from the wall clock plus a
 // short random suffix so two saves within the same wall-clock second
@@ -53,16 +76,21 @@ const makeId = (label: Option.Option<string>): string => {
 // right entry; ambiguous matches (two entries sharing a label) refuse
 // to choose.
 const findMatch = (
-	entries: ReadonlyArray<{ id: string; createdAt: number }>,
+	entries: ReadonlyArray<{ id: string; createdAt: number; stack?: string; network?: string }>,
 	ref: string,
-): { match?: { id: string; createdAt: number }; ambiguous: boolean } => {
+): {
+	match?: { id: string; createdAt: number; stack?: string; network?: string };
+	ambiguous: boolean;
+} => {
 	const exact = entries.find((e) => e.id === ref);
 	if (exact !== undefined) return { match: exact, ambiguous: false };
-	const labelMatches = entries.filter((e) => {
-		const dash = e.id.indexOf('-');
-		if (dash === -1) return false;
-		return e.id.slice(dash + 1) === ref;
-	});
+	// Id format: `<YYYYMMDD>T<HHMMSS>-<rand4hex>[-<label>]`. The label,
+	// when present, is the tail after the LAST dash — `endsWith('-' + ref)`
+	// matches whatever the user passed as `--label` at save time.
+	// Pre-fix used `indexOf('-')` (first dash) which sliced `<rand>-<label>`
+	// and never matched against just `<label>` — restore by label always
+	// failed.
+	const labelMatches = entries.filter((e) => e.id.endsWith(`-${ref}`));
 	if (labelMatches.length === 1) return { match: labelMatches[0], ambiguous: false };
 	if (labelMatches.length > 1) return { ambiguous: true };
 	const prefix = entries.filter((e) => e.id.startsWith(ref));
@@ -71,28 +99,159 @@ const findMatch = (
 	return { ambiguous: false };
 };
 
+// Label-filter enumerate of containers for THIS (app, stack) — INCLUDING
+// stopped ones (`-a`). Both labels are required: filtering on stack
+// alone would clobber sibling apps' containers when multiple examples
+// in the same monorepo use the default `stack=main` (same mistake the
+// pre-Phase-2 `wipe` command had — see `cli/commands/wipe.ts` for the
+// canonical pattern).
+//
+// After `devstack apply` exits, the `docker stop` finalizer Phase 2.3
+// registered leaves the containers stopped but still on disk with a
+// complete writable layer; `docker commit` works against either state,
+// so the snapshot pipeline picks up both running (Ctrl-C-during-`up`
+// save) and stopped (`apply` + `save`) containers. Returns `{ id, name }`
+// tuples — `id` is the full container id for `docker commit`, `name`
+// is the docker --name (`<app>-sui-localnet`, `<app>-sui-indexer-db`,
+// `<app>-walrus-<n>-node-0`, …) which we use to build the snapshot's
+// per-container tar filename. Failures (daemon down, permission denied)
+// surface as an empty list rather than aborting; the engine `snapshot()`
+// then captures state-only and the user sees no containers section in
+// the resulting meta.json.
+const listContainersForAppStack = (
+	spawner: ReturnType<typeof ChildProcessSpawner.make>,
+	app: string,
+	stack: string,
+): Effect.Effect<ReadonlyArray<{ id: string; name: string }>> =>
+	Effect.gen(function* () {
+		const cmd = ChildProcess.make('docker', [
+			'ps',
+			'-a',
+			'--filter',
+			`label=devstack.app=${app}`,
+			'--filter',
+			`label=devstack.stack=${stack}`,
+			'--format',
+			'{{.ID}}\t{{.Names}}',
+		]);
+		const text = yield* spawner.string(cmd).pipe(Effect.orElseSucceed(() => ''));
+		const out: Array<{ id: string; name: string }> = [];
+		for (const line of text.split('\n')) {
+			const trimmed = line.trim();
+			if (trimmed.length === 0) continue;
+			const tab = trimmed.indexOf('\t');
+			if (tab === -1) continue;
+			const id = trimmed.slice(0, tab);
+			const name = trimmed.slice(tab + 1);
+			if (id.length > 0 && name.length > 0) out.push({ id, name });
+		}
+		return out;
+	});
+
+const stackFlag = Flag.string('stack').pipe(
+	Flag.withDescription('Stack to snapshot (default: active stack, or "main")'),
+	Flag.optional,
+);
+
+// Mirrors `cli/commands/wipe.ts`'s `--app` flag — both default to the
+// app name derived from the working dir's `package.json#name`. Required
+// for the `(app, stack)` label filter that scopes container enumeration
+// to THIS app's containers, not sibling apps that share `stack=main`.
+const appFlag = Flag.string('app').pipe(
+	Flag.withDescription(
+		"App identifier for container scoping (default: <appDir>/package.json#name's basename, matching `defineDevstack`)",
+	),
+	Flag.optional,
+);
+
+const resolveAppName = (override: Option.Option<string>): string =>
+	Option.getOrElse(override, () =>
+		deriveAppName(process.env.DEVSTACK_APP_DIR ?? process.cwd()),
+	);
+
+const resolveStack = (
+	fs: FileSystem.FileSystem,
+	path: Path.Path,
+	override: Option.Option<string>,
+): Effect.Effect<string> =>
+	Effect.gen(function* () {
+		if (Option.isSome(override)) return override.value;
+		// Mirror `engine/supervisor.ts:567` precedence: `--stack` flag >
+		// `DEVSTACK_STACK` env > `.devstack/active` > 'main'. The env-var
+		// fallback was previously missing, which made `DEVSTACK_STACK=foo
+		// devstack snapshot save` resolve `main` while the supervisor
+		// already running against `foo` — save captured the wrong stack.
+		const envStack = process.env.DEVSTACK_STACK;
+		if (envStack !== undefined && envStack.length > 0) return envStack;
+		const active = yield* readActiveStack(fs, path);
+		return Option.getOrElse(active, () => 'main');
+	});
+
 const saveCommand = Command.make(
 	'save',
 	{
 		label: Flag.string('label').pipe(Flag.optional),
+		stack: stackFlag,
+		app: appFlag,
+		includeImages: Flag.boolean('include-images').pipe(
+			Flag.withDescription(
+				'Include `docker commit + save` of running containers (default true). ' +
+					'Pass `--no-include-images` for a state-only snapshot — smaller artifact ' +
+					'at the cost of needing the next `up` to rebuild chain state from genesis.',
+			),
+			Flag.withDefault(true),
+		),
 	},
-	({ label }) =>
+	({ label, stack, app, includeImages }) =>
 		Effect.gen(function* () {
+			const fs = yield* FileSystem.FileSystem;
+			const path = yield* Path.Path;
+			const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+			const resolvedStack = yield* resolveStack(fs, path, stack);
+			const resolvedApp = resolveAppName(app);
 			const id = makeId(label);
 			const dir = defaultSnapshotsDir();
-			const result = yield* snapshot({ id, dir });
+			const containers = includeImages
+				? yield* listContainersForAppStack(spawner, resolvedApp, resolvedStack)
+				: [];
+			yield* Console.log(
+				`saving snapshot ${id} (app=${resolvedApp}, stack=${resolvedStack}, ${containers.length} container${containers.length === 1 ? '' : 's'})`,
+			);
+			const result = yield* snapshot({
+				id,
+				dir,
+				app: resolvedApp,
+				stack: resolvedStack,
+				containers,
+			});
 			yield* Console.log(`saved snapshot ${id}`);
 			yield* Console.log(`  → ${result.path}`);
+			if (result.runtimeTar !== undefined) {
+				yield* Console.log(`  runtime: ${result.runtimeTar}`);
+			}
+			if (result.containerTars.length > 0) {
+				yield* Console.log(`  containers: ${result.containerTars.length} tar(s)`);
+			}
+			if (result.extrasTars.length > 0) {
+				yield* Console.log(`  extras: ${result.extrasTars.length} tar(s)`);
+			}
 		}),
-).pipe(Command.withDescription('Capture state.json (and optional container tars) into a snapshot'));
+).pipe(
+	Command.withDescription(
+		'Capture state.json + runtime/ + container images into a snapshot for the active stack',
+	),
+);
 
 const restoreCommand = Command.make(
 	'restore',
 	{
 		ref: Argument.string('id-or-label').pipe(Argument.optional),
+		stack: stackFlag,
 	},
-	({ ref }) =>
+	({ ref, stack }) =>
 		Effect.gen(function* () {
+			const fs = yield* FileSystem.FileSystem;
+			const path = yield* Path.Path;
 			const dir = defaultSnapshotsDir();
 			const entries = yield* listSnapshots({ dir });
 			if (entries.length === 0) {
@@ -118,13 +277,35 @@ const restoreCommand = Command.make(
 				return yield* Effect.fail(new Error('no matching snapshot'));
 			}
 
-			const result = yield* restore({ id: target.match.id, dir });
-			yield* Console.log(`restored snapshot ${target.match.id}`);
+			// Resolve target stack: explicit `--stack` > meta-recorded
+			// stack > active-stack > 'main'. Restoring a snapshot saved
+			// for stack A into stack B is intentionally allowed (operator
+			// might want to clone a known-good world into a fresh stack)
+			// but emits a warning.
+			const resolvedStack = yield* resolveStack(fs, path, stack);
+			const metaStack = target.match.stack;
+			if (metaStack !== undefined && metaStack !== resolvedStack) {
+				yield* Console.error(
+					`warning: snapshot was saved for stack '${metaStack}' but restoring into '${resolvedStack}'`,
+				);
+			}
+			const result = yield* restore({
+				id: target.match.id,
+				dir,
+				stack: resolvedStack,
+			});
+			yield* Console.log(`restored snapshot ${target.match.id} into stack '${resolvedStack}'`);
+			if (result.runtimeRestored) {
+				yield* Console.log(`  runtime/ extracted`);
+			}
 			if (result.loadedImages.length > 0) {
 				yield* Console.log(`  loaded images: ${result.loadedImages.join(', ')}`);
 			}
+			if (result.extrasRestored.length > 0) {
+				yield* Console.log(`  extras restored: ${result.extrasRestored.join(', ')}`);
+			}
 		}),
-).pipe(Command.withDescription('Restore state.json (and container images) from a snapshot'));
+).pipe(Command.withDescription('Restore state.json + runtime/ + container images from a snapshot'));
 
 const listCommand = Command.make('list', {}, () =>
 	Effect.gen(function* () {
@@ -140,7 +321,11 @@ const listCommand = Command.make('list', {}, () =>
 		for (let i = entries.length - 1; i >= 0; i--) {
 			const entry = entries[i]!;
 			const when = new Date(entry.createdAt).toISOString();
-			yield* Console.log(`  ${entry.id}  (${when})`);
+			const meta =
+				entry.stack !== undefined
+					? `  [stack=${entry.stack}${entry.network !== undefined ? `, network=${entry.network}` : ''}]`
+					: '';
+			yield* Console.log(`  ${entry.id}  (${when})${meta}`);
 		}
 	}),
 ).pipe(Command.withDescription('List available snapshots'));
@@ -176,6 +361,8 @@ const deleteCommand = Command.make(
 ).pipe(Command.withDescription('Delete a snapshot directory'));
 
 export const snapshotCommand = Command.make('snapshot').pipe(
-	Command.withDescription('Capture / restore labeled snapshots of `.devstack/state.json`'),
+	Command.withDescription(
+		'Capture / restore labeled snapshots of state.json + runtime/ + container images',
+	),
 	Command.withSubcommands([saveCommand, restoreCommand, listCommand, deleteCommand]),
 );

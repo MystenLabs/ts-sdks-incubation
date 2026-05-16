@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import type { PlaywrightTestConfig } from '@playwright/test';
+import { discoverManifestPath } from '../runtime/discover-manifest.js';
 import { fromManifest } from '../runtime/manifest-loader.js';
 
 type PlaywrightWebServer = NonNullable<PlaywrightTestConfig['webServer']>;
@@ -73,7 +74,12 @@ function resolveEndpoint(
 	endpoint: string,
 	manifestPathOpt: string | undefined,
 ): { readonly url: string; readonly name: string } {
-	const manifestPath = manifestPathOpt ?? discoverManifestPath();
+	// Discover via the shared helper, then fall back to the canonical
+	// flat path on miss so the ENOENT branch below can surface the
+	// playwright-flavored "run devstack up first" message.
+	const manifestPath =
+		discoverManifestPath({ override: manifestPathOpt }) ??
+		resolve(process.cwd(), '.devstack', 'manifest.json');
 	const raw = (() => {
 		try {
 			return readFileSync(manifestPath, 'utf8');
@@ -127,35 +133,3 @@ function resolveEndpoint(
 	return { name: endpoint, url };
 }
 
-// Walk up from cwd looking for a manifest file. Check the v4-flat
-// layout first (`.devstack/manifest.json`), then the v3-style per-stack
-// layout (`.devstack/stacks/<stack>/manifest.json`). The fallback path
-// returned on miss points at the v4-flat location so the eventual
-// error message guides the user to the canonical spot.
-function discoverManifestPath(): string {
-	const stack = process.env.DEVSTACK_STACK ?? 'main';
-	let dir = process.cwd();
-	while (true) {
-		// Stack-scoped path FIRST so `DEVSTACK_STACK=test` playwright
-		// reads its own stack's manifest even when a sibling concurrent
-		// stack has overwritten the legacy flat `.devstack/manifest.json`
-		// more recently. Flat path remains the fallback for single-stack
-		// `main` setups.
-		const candidates = [
-			join(dir, '.devstack', 'stacks', stack, 'manifest.json'),
-			join(dir, '.devstack', 'manifest.json'),
-		];
-		for (const candidate of candidates) {
-			try {
-				readFileSync(candidate, 'utf8');
-				return candidate;
-			} catch (err) {
-				if ((err as { code?: string }).code !== 'ENOENT') throw err;
-			}
-		}
-		const parent = dirname(dir);
-		if (parent === dir) break;
-		dir = parent;
-	}
-	return resolve(process.cwd(), '.devstack', 'manifest.json');
-}

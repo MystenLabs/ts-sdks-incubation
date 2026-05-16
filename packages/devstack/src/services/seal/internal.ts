@@ -31,7 +31,6 @@
 
 import * as nodeFs from 'node:fs/promises';
 import { Context, Effect, FileSystem, Layer, Option, Path } from 'effect';
-import { addFinalizer } from 'effect/Scope';
 import { ChildProcessSpawner } from 'effect/unstable/process';
 import { Transaction } from '@mysten/sui/transactions';
 import * as Docker from '../../engine/docker.js';
@@ -44,7 +43,8 @@ import {
 import { Identity } from '../../engine/identity.js';
 import { routerEntrypoint } from '../../engine/docker/router.js';
 import { routerHostname, routerId } from '../../engine/router-hostname.js';
-import { StateStore, StateStoreConfig } from '../../engine/state-store.js';
+import { servicePath } from '../../engine/service-paths.js';
+import { StateStore } from '../../engine/state-store.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
 import { buildMove } from '../../engine/sui-cli.js';
 import { dockerImage } from '../../advanced/plugin-author/index.js';
@@ -504,21 +504,22 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 			),
 		);
 
-		// Stage the master key in an env-file under the state dir, then
-		// hand docker `--env-file` instead of `-e MASTER_KEY=…`. The
-		// `-e` form surfaces the value in host process env (PID-visible)
-		// and in `docker inspect` output; routing through a 0o600 file
-		// confines it to the file, the container's env, and whatever
-		// the daemon does with it. The file is removed on scope close.
-		const stateCfg = yield* StateStoreConfig;
-		const stateBaseDir =
-			stateCfg.stateDir ??
-			`${process.env.DEVSTACK_APP_DIR ?? process.cwd()}/.devstack/stacks/${stateCfg.stack}`;
-		const sealStateDir = path.join(stateBaseDir, '.seal');
+		// Stage the master key in an env-file under the canonical runtime
+		// dir at `runtime/seal/master-key.env`, then hand docker
+		// `--env-file` instead of `-e MASTER_KEY=…`. The `-e` form
+		// surfaces the value in host process env (PID-visible) and in
+		// `docker inspect` output; routing through a 0o600 file confines
+		// it to the file, the container's env, and whatever the daemon
+		// does with it.
+		//
+		// Phase 3 of the snapshot redesign moved this from the legacy
+		// `.seal/` hidden dir to `runtime/seal/` so `snapshot save` tars
+		// it (along with the BLS keypair recorded in state-store) — restore
+		// gets a complete seal world without re-running keygen. See the
+		// state-store gate at `seal/master-key-written:<chainId>` (Phase
+		// 3.3) which prevents re-emission on restore.
+		const sealStateDir = yield* servicePath('seal');
 		const masterKeyEnvFile = path.join(sealStateDir, 'master-key.env');
-		yield* fs
-			.makeDirectory(sealStateDir, { recursive: true })
-			.pipe(Effect.ignore);
 		yield* fs.chmod(sealStateDir, 0o700).pipe(
 			Effect.catch(() =>
 				Effect.tryPromise({
@@ -545,14 +546,15 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 				}).pipe(Effect.ignore),
 			),
 		);
-		const sealScope = yield* Effect.scope;
-		yield* addFinalizer(
-			sealScope,
-			Effect.tryPromise({
-				try: () => nodeFs.unlink(masterKeyEnvFile),
-				catch: () => undefined,
-			}).pipe(Effect.ignore),
-		);
+		// Pre-Phase-3 design unlinked this file on scope close — fine
+		// for the "secret never touches disk after the supervisor exits"
+		// threat model but incompatible with snapshots: a `snapshot save`
+		// + `stack down` + `snapshot restore` round-trip would lose the
+		// master key, and the seal key-server would refuse to start
+		// against the chain-registered public key. The file is now kept
+		// on disk between cycles; `devstack wipe` is the canonical place
+		// to nuke it (along with the rest of `runtime/seal/`). On-disk
+		// perms (0o600 + 0o700 parent dir) keep it confined to the owner.
 
 		// 7. Long-running key-server container. Scope-managed: the
 		//    Docker.run finalizer `docker rm -f`s on shutdown.

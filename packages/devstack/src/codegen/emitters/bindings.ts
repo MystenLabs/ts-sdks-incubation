@@ -43,21 +43,39 @@ interface Target {
 	readonly mvrPlaceholder: string;
 }
 
-const collectTargets = (ctx: CodegenContext): ReadonlyArray<Target> => {
-	const seen = new Set<string>();
-	const targets: Array<Target> = [];
-	for (const pkg of ctx.packages) {
-		if (pkg.sourcePath === undefined) continue; // skip KnownPackage entries
-		if (seen.has(pkg.name)) continue;
-		seen.add(pkg.name);
-		targets.push({
-			name: pkg.name,
-			sourcePath: pkg.sourcePath,
-			mvrPlaceholder: pkg.mvrPlaceholder,
-		});
-	}
-	return targets.sort((a, b) => a.name.localeCompare(b.name));
-};
+const collectTargets = (
+	ctx: CodegenContext,
+): Effect.Effect<ReadonlyArray<Target>> =>
+	Effect.gen(function* () {
+		// Map keeps the first-seen sourcePath around so we can name BOTH
+		// the original and the duplicate in the warning. A bare `Set`
+		// silently dropped the second package, the fingerprint walk
+		// later mismatched the on-disk tree forever, and every
+		// supervisor cycle re-emitted bindings (HMR storm). Warn loudly
+		// so the offending package gets renamed.
+		const seenByName = new Map<string, string | undefined>();
+		const targets: Array<Target> = [];
+		for (const pkg of ctx.packages) {
+			if (pkg.sourcePath === undefined) continue; // skip KnownPackage entries
+			if (seenByName.has(pkg.name)) {
+				const original = seenByName.get(pkg.name);
+				yield* Effect.logWarning(
+					`BindingsEmitter: duplicate package name '${pkg.name}' — keeping ` +
+						`first (${original ?? 'unknown source'}) and skipping ` +
+						`duplicate (${pkg.sourcePath}). Rename one of the packages ` +
+						`to avoid an HMR re-emit storm.`,
+				);
+				continue;
+			}
+			seenByName.set(pkg.name, pkg.sourcePath);
+			targets.push({
+				name: pkg.name,
+				sourcePath: pkg.sourcePath,
+				mvrPlaceholder: pkg.mvrPlaceholder,
+			});
+		}
+		return targets.sort((a, b) => a.name.localeCompare(b.name));
+	});
 
 const runEmit = (
 	ctx: CodegenContext,
@@ -65,7 +83,7 @@ const runEmit = (
 ): Effect.Effect<void, CodegenError, ChildProcessSpawner.ChildProcessSpawner> =>
 	Effect.gen(function* () {
 		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-		const targets = collectTargets(ctx);
+		const targets = yield* collectTargets(ctx);
 		if (targets.length === 0) return;
 
 		const outputAbs = path.join(ctx.outputDir, 'bindings');
@@ -91,6 +109,20 @@ const runEmit = (
 				'bindings.fingerprint': fingerprint,
 			});
 			return;
+		}
+		if (fingerprint === undefined) {
+			// `computeFingerprint` returned undefined: one of the source
+			// trees couldn't be statted (missing, perms). With no
+			// fingerprint we can't short-circuit, so every cycle does a
+			// full `sui move summary` + atomic dir swap — on a CI runner
+			// with restricted perms this thrashes the build. Warn loudly
+			// so the perms / missing path gets fixed.
+			yield* Effect.logWarning(
+				`BindingsEmitter: cache disabled — could not compute source ` +
+					`fingerprint for ${outputAbs} (one of the source trees is ` +
+					`unreadable or missing). See preceding 'maxSourceMtime' ` +
+					`warnings for the specific path.`,
+			);
 		}
 		yield* Effect.annotateCurrentSpan({
 			'bindings.cache': fingerprint === undefined ? 'unknown' : 'miss',
@@ -290,6 +322,10 @@ const runEmit = (
 		}
 	});
 
+type FingerprintResult =
+	| { readonly _tag: 'ok'; readonly mtime: number }
+	| { readonly _tag: 'err'; readonly cause: unknown };
+
 const computeFingerprint = (
 	targets: ReadonlyArray<Target>,
 ): Effect.Effect<string | undefined> =>
@@ -297,17 +333,31 @@ const computeFingerprint = (
 		const hash = crypto.createHash('sha256');
 		for (const t of targets) {
 			hash.update(`${t.name}\0${t.sourcePath}\0${t.mvrPlaceholder}\0`);
-			const maxMtime = yield* Effect.tryPromise({
-				try: () => maxSourceMtime(t.sourcePath),
-				catch: () => undefined,
-			}).pipe(Effect.orElseSucceed(() => undefined));
-			if (maxMtime === undefined) {
+			// Catch inside the Promise so we can name the underlying
+			// failure reason in the warning below. Returning a tagged
+			// `FingerprintResult` keeps the error in the success channel
+			// (so `tryPromise`'s catch never fires) and avoids needing
+			// `Effect.either` / `Effect.exit` which would widen the
+			// requirement channel.
+			const result: FingerprintResult = yield* Effect.promise(() =>
+				maxSourceMtime(t.sourcePath).then(
+					(mtime): FingerprintResult => ({ _tag: 'ok', mtime }),
+					(cause): FingerprintResult => ({ _tag: 'err', cause }),
+				),
+			);
+			if (result._tag === 'err') {
 				// A tree we couldn't stat (missing source dir, perms): refuse
 				// to short-circuit and let the emit pipeline surface the
-				// underlying error with a clearer message.
+				// underlying error with a clearer message. Warn so the
+				// reason ends up in the supervisor log rather than being
+				// silently dropped.
+				yield* Effect.logWarning(
+					`BindingsEmitter: maxSourceMtime failed for target '${t.name}' ` +
+						`at ${t.sourcePath}: ${stringifyCause(result.cause)}`,
+				);
 				return undefined;
 			}
-			hash.update(String(maxMtime));
+			hash.update(String(result.mtime));
 			hash.update('\0');
 		}
 		return hash.digest('hex').slice(0, 24);

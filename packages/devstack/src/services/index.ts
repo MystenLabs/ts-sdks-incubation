@@ -75,7 +75,7 @@ export {
 export { Action, type ActionOptions } from './action.js';
 export { Dev, type DevOptions } from './dev.js';
 export { Wallet, type WalletOptions } from './wallet.js';
-export { Codegen, type CodegenOptions } from './codegen.js';
+export { Codegen, type CodegenOptions, DEFAULT_CODEGEN_OUTPUT } from './codegen.js';
 export { DappKit, type DappKitRefOptions } from './dapp-kit.js';
 export { KnownPackage, type KnownPackageOptions } from './known-package.js';
 export { Faucet, type FaucetOptions } from '../faucet/factory.js';

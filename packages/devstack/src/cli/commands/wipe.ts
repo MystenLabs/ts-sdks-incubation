@@ -36,10 +36,22 @@ import { Command, Flag } from 'effect/unstable/cli';
 import { deriveAppName } from '../../engine/identity.js';
 import { pruneStack } from './_prune-stack.js';
 
+// Default reads `DEVSTACK_STACK` at action time (NOT at module load —
+// tests + shell wrappers set the env after the binary's `import` graph
+// has resolved). Mirrors `engine/supervisor.ts:567`'s precedence: `--stack`
+// flag > DEVSTACK_STACK > 'main'. Without this, `DEVSTACK_STACK=foo
+// devstack wipe --yes` would wipe `main` while the supervisor was
+// running against `foo` — destructive cross-stack surprise.
 const stackFlag = Flag.string('stack').pipe(
-	Flag.withDescription('Per-stack name (default: main)'),
-	Flag.withDefault('main'),
+	Flag.withDescription('Per-stack name (default: DEVSTACK_STACK env or "main")'),
+	Flag.withDefault(''),
 );
+
+const resolveStackFlag = (raw: string): string => {
+	if (raw.length > 0) return raw;
+	const env = process.env.DEVSTACK_STACK;
+	return env !== undefined && env.length > 0 ? env : 'main';
+};
 
 // Optional + resolved at action-time so `DEVSTACK_APP_DIR` overrides
 // applied via a fixture or shell wrapper after this module's import
@@ -98,9 +110,10 @@ export const wipeCommand = Command.make(
 			}
 
 			const resolvedApp = resolveAppName(app);
+			const resolvedStack = resolveStackFlag(stack);
 			const result = yield* pruneStack({
 				app: resolvedApp,
-				stack,
+				stack: resolvedStack,
 				keepSnapshots,
 				noStop,
 				removeImages: images,
@@ -125,7 +138,7 @@ export const wipeCommand = Command.make(
 				const imageCount = result.removedImages.length;
 				parts.push(`removed ${imageCount} image${imageCount === 1 ? '' : 's'}`);
 			}
-			yield* Console.log(`devstack wipe (app=${resolvedApp}, stack=${stack}): ${parts.join(', ')}.`);
+			yield* Console.log(`devstack wipe (app=${resolvedApp}, stack=${resolvedStack}): ${parts.join(', ')}.`);
 		}),
 ).pipe(
 	Command.withDescription(

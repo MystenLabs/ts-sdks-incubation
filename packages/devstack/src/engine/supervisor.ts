@@ -988,7 +988,12 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 					}
 				}
 
-				yield* engine.resetRestartSignal;
+				// `clearChangedTags` only — `armRestartSignal` already ran at
+				// the end of the previous cycle (right after wake) so any
+				// `requestRestart` that landed during cycle-N+1 setup has
+				// already succeeded the fresh deferred and will be observed
+				// at this cycle's await.
+				yield* engine.clearChangedTags;
 				yield* engine.seedTags(seedEntries);
 
 				const loggerLayer = renderer === 'tui' ? TuiLoggerLayer(engine) : Layer.empty;
@@ -1089,6 +1094,12 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 				// (full restart), Shift+R, SIGUSR2, file watch, or Ctrl-C.
 				const signal = yield* Ref.get(engine.restartSignal);
 				yield* Deferred.await(signal);
+				// Atomically swap in a fresh deferred BEFORE any restart
+				// processing. Any `requestRestart` that lands between this
+				// arm and the next cycle's `Deferred.await` will succeed the
+				// fresh deferred and be observed immediately — no
+				// lost-wake-up race during cycle teardown / setup.
+				yield* engine.armRestartSignal;
 				yield* engine.setBuildStatus('restarting');
 				return true;
 			}).pipe(Effect.scoped, Effect.withSpan('Devstack.launch'));
@@ -1178,12 +1189,21 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 			// here too (pre-fix the install was redone every cycle
 			// because each cycle had a fresh engine). The plain
 			// renderer fork is also on longLived for the same reason.
+			// Capture the active renderer's `flush` so the onInterrupt
+			// path can drive ONE explicit render of the final state
+			// (replaces the previous arbitrary `Effect.sleep('150 millis')`,
+			// which could miss the plain renderer's 500ms tick).
+			let rendererFlush: Effect.Effect<void> = Effect.void;
 			const tuiMount = renderer === 'tui' ? yield* startTuiOnce() : undefined;
 			if (tuiMount !== undefined) {
 				yield* tuiMount.install(engine);
+				rendererFlush = tuiMount.flush;
 			} else if (renderer === 'plain') {
 				const tuiSource = Ref.get(engine.tuiState);
-				yield* startPlainRenderer(tuiSource).pipe(Effect.provide(bootstrapCtx));
+				const plainHandle = yield* startPlainRenderer(tuiSource).pipe(
+					Effect.provide(bootstrapCtx),
+				);
+				rendererFlush = plainHandle.flush as Effect.Effect<void>;
 			}
 
 			// SIGUSR2 handler + watcher fibers on longLived too (HIGH-S1).
@@ -1212,17 +1232,17 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 			});
 
 			// `Effect.onInterrupt` runs synchronously BEFORE scope teardown
-			// continues — that's the only window where the engine and ink's
-			// poll loop are still alive. We flip the build-status + post
-			// the teardown log line + sleep 150ms to let one ink frame
-			// render before the docker-rm finalizers freeze the event
-			// loop. Plain renderer's 500ms tick may miss the flash on a
-			// short shutdown — that's fine; the log line itself prints
-			// either way since `appendLog` writes synchronously into the
-			// engine's Ref and the plain renderer flushes its diff on
-			// each tick BEFORE checking whether to exit. `engine` here
-			// is the stable long-lived engine (post-Phase A reorg) so
-			// no currentRef indirection is needed.
+			// continues — that's the only window where the engine and the
+			// renderer (ink or plain) are still alive. Flip the build-status,
+			// post the teardown log line, then explicitly drive ONE renderer
+			// flush so the final 'shutting-down' state is on screen BEFORE
+			// the docker-rm finalizers freeze the event loop.
+			//
+			// Pre-fix: a fixed `Effect.sleep('150 millis')`. Worked for ink
+			// (50ms poll, three chances to catch the state) but plain's
+			// 500ms tick could miss it entirely on a tick boundary.
+			// The explicit flush is bounded, scoped to the active renderer,
+			// and free when no renderer is attached (silent default `Effect.void`).
 			yield* launchLoop.pipe(
 				Effect.onInterrupt(() =>
 					Effect.gen(function* () {
@@ -1232,7 +1252,7 @@ export const defineDevstack = (input: ReadonlyArray<StackMember> | DevstackConfi
 							level: 'info',
 							message: SHUTDOWN_LOG_MESSAGE,
 						});
-						yield* Effect.sleep('150 millis');
+						yield* rendererFlush;
 					}),
 				),
 			);

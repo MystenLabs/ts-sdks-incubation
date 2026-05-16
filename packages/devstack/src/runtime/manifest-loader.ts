@@ -22,6 +22,14 @@ import {
 	type AppManifest,
 } from './manifest-schema.js';
 
+/** The highest manifest schema version this build of devstack natively
+ *  understands. Bump when a new top-level shape lands AND its loader
+ *  branch is in place. Forward-compat: manifests with a higher version
+ *  emit a warning and fall through to best-effort decoding so a
+ *  newer-supervisor / older-consumer mix doesn't hard-crash on
+ *  unrecognized optional fields. */
+const EXPECTED_VERSION = 4;
+
 /** What v3 manifests look like on disk. Kept as a structural shape (not
  *  a Schema) because v3 manifests are read-only inputs to the migrator —
  *  no encoding round-trip required. Optional everywhere so a partial
@@ -57,6 +65,15 @@ const isV4 = (raw: unknown): raw is Manifest => {
 	if (typeof raw !== 'object' || raw === null) return false;
 	const r = raw as { version?: unknown };
 	return r.version === 4;
+};
+
+/** Returns the numeric `version` field if it's a finite number, or
+ *  `undefined` otherwise. Used by the forward-compat branch to decide
+ *  whether a future-version manifest should be best-effort decoded. */
+const numericVersion = (raw: unknown): number | undefined => {
+	if (typeof raw !== 'object' || raw === null) return undefined;
+	const r = raw as { version?: unknown };
+	return typeof r.version === 'number' && Number.isFinite(r.version) ? r.version : undefined;
 };
 
 /** Quick test for "this JSON is a v3 manifest." Either `version === 3`
@@ -182,6 +199,17 @@ export function migrateV3ToV4(v3: ManifestV3Shape): Manifest {
 	};
 }
 
+/** Options for `fromManifest()`. */
+export interface FromManifestOptions {
+	/** When `true`, hard-rejects ANY version that isn't exactly v4 (after
+	 *  v3 → v4 migration). Use this in CI safeguards or other contexts
+	 *  where a version skew is itself a bug. Default `false` —
+	 *  newer-than-known manifests log a warning and fall through to
+	 *  best-effort decoding so an older consumer doesn't crash on a
+	 *  newer supervisor's optional-field additions. */
+	readonly strict?: boolean;
+}
+
 /** Read a manifest blob (v3 or v4) and return the v4 shape.
  *
  *  Accepts either a parsed object OR a raw JSON string; strings are
@@ -190,11 +218,12 @@ export function migrateV3ToV4(v3: ManifestV3Shape): Manifest {
  *  expecting bigint shapes (Coin scalars, gas budgets) get the right
  *  type without remembering to wire the reviver themselves.
  *
- *  Rejects unknown versions explicitly. A future `version === 5`
- *  manifest must NOT silently fall into the v3 migrator (which would
- *  drop fields and reshape the rest); fail loudly so the caller knows
- *  to upgrade their devstack package. */
-export function fromManifest(raw: unknown): Manifest {
+ *  Forward-compat: a manifest with `version > EXPECTED_VERSION` is
+ *  best-effort decoded (the schema's added/optional fields are simply
+ *  ignored by typed readers) with a warning, unless `opts.strict` is
+ *  set. A `version < EXPECTED_VERSION` falls into the v3 → v4 migrator;
+ *  versions we don't have a migrator for hard-fail. */
+export function fromManifest(raw: unknown, opts: FromManifestOptions = {}): Manifest {
 	let parsed: unknown;
 	if (typeof raw === 'string') {
 		try {
@@ -210,9 +239,43 @@ export function fromManifest(raw: unknown): Manifest {
 	}
 	if (isV4(parsed)) return parsed;
 	if (isV3(parsed)) return migrateV3ToV4(parsed);
-	const version = (parsed as { version?: unknown }).version;
+
+	const version = numericVersion(parsed);
+	const rawVersion = (parsed as { version?: unknown }).version;
+
+	// Forward-compat: a future manifest version we don't know about.
+	// Without strict mode we treat it as v4 (optional/added fields the
+	// schema doesn't know will be ignored by downstream typed readers,
+	// which is the load-bearing property here — a newer supervisor
+	// writing `version: 5` with a few extra `services.*` fields
+	// shouldn't crash an older example app's `fromManifest` call). With
+	// strict mode (CI), fail loudly so the version skew surfaces.
+	if (version !== undefined && version > EXPECTED_VERSION) {
+		if (opts.strict) {
+			throw new TypeError(
+				`fromManifest: manifest version ${version} is newer than this build supports ` +
+					`(expected ${EXPECTED_VERSION}). Update @mysten-incubation/devstack ` +
+					`or pass { strict: false } to opt into best-effort forward-compat decoding.`,
+			);
+		}
+		console.warn(
+			`[devstack] fromManifest: newer manifest version ${version}, treating as v${EXPECTED_VERSION}. ` +
+				`Unknown fields will be ignored. Update @mysten-incubation/devstack to read the new shape natively.`,
+		);
+		// Stamp `version: EXPECTED_VERSION` so the returned object
+		// satisfies the v4 `Manifest` type, then trust the structural
+		// overlap with v4 to carry the rest. Downstream typed reads
+		// (services.sui.rpc.url, packages[name].id, etc.) just work
+		// because v4's required fields are unlikely to disappear in a
+		// minor version bump; if they DO disappear, the consumer hits
+		// a `TypeError` on field access, not a silent miscompute.
+		return { ...(parsed as Manifest), version: EXPECTED_VERSION };
+	}
+
+	// Unknown / non-numeric / older-than-v3 version. No migrator
+	// covers this, so error regardless of strict mode.
 	throw new TypeError(
-		`fromManifest: unknown manifest version ${JSON.stringify(version)} ` +
-			`(supported: 3, 4). Update @mysten-incubation/devstack.`,
+		`fromManifest: unknown manifest version ${JSON.stringify(rawVersion)} ` +
+			`(supported: 3, ${EXPECTED_VERSION}). Update @mysten-incubation/devstack.`,
 	);
 }

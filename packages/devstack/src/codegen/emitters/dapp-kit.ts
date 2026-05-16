@@ -25,6 +25,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { Effect } from 'effect';
+import { discoverManifestPath } from '../../runtime/discover-manifest.js';
 import { CodegenError } from '../errors.js';
 import { defineEmitter, type CodegenContext, type Emitter } from '../define-emitter.js';
 
@@ -146,36 +147,6 @@ const writeFile = (
 			}),
 	});
 
-// Discover the on-disk manifest path with the same precedence the
-// playwright `webServer` helper uses: explicit override → stack-scoped
-// path → legacy flat path. Returns the first path that exists, or
-// undefined if none.
-const discoverManifestPath = async (override: string | undefined): Promise<string | undefined> => {
-	if (override !== undefined) {
-		try {
-			await fs.access(override);
-			return override;
-		} catch {
-			return undefined;
-		}
-	}
-	const stateDir = process.env.DEVSTACK_STATE_DIR ?? '.devstack';
-	const stack = process.env.DEVSTACK_STACK ?? 'main';
-	const candidates = [
-		path.resolve(stateDir, 'stacks', stack, 'manifest.json'),
-		path.resolve(stateDir, 'manifest.json'),
-	];
-	for (const candidate of candidates) {
-		try {
-			await fs.access(candidate);
-			return candidate;
-		} catch {
-			// fall through to next candidate
-		}
-	}
-	return undefined;
-};
-
 /** Build a `DappKitEmitter` plug-in instance. Drop into
  *  `Codegen({ emitters: [DappKitEmitter()] })` or surface alongside
  *  `BindingsEmitter`. */
@@ -209,10 +180,9 @@ export const DappKitEmitter = (opts: DappKitEmitterOptions = {}): Emitter => {
 				// generated TS still compiles when the manifest lands
 				// later in the same dev session.
 				if (resolved.enableBurnerWallet) {
-					const manifestSrc = yield* Effect.tryPromise({
-						try: () => discoverManifestPath(resolved.manifestPath),
-						catch: () => undefined,
-					}).pipe(Effect.orElseSucceed(() => undefined));
+					const manifestSrc = yield* Effect.sync(() =>
+						discoverManifestPath({ override: resolved.manifestPath }),
+					);
 					if (manifestSrc === undefined) {
 						yield* Effect.logWarning(
 							`DappKitEmitter: manifest not found yet — generated dapp-kit/index.ts ` +

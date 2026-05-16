@@ -51,10 +51,17 @@ const LOCAL_GRAPHQL_PORT = 9125;
 
 // Postgres sidecar that backs `sui start --with-indexer`'s database.
 // The sui CLI requires a real postgres URL — there's no embedded
-// option — so we run a `postgres:16-alpine` on the same per-stack
-// docker network. Only the sui process talks to it (via the in-network
-// alias); no host port mapping.
-const SUI_INDEXER_DB_IMAGE = 'postgres:16-alpine';
+// option — so we run a postgres container on the same per-stack docker
+// network. Only the sui process talks to it (via the in-network alias);
+// no host port mapping.
+//
+// The image is built from `packages/devstack/postgres-image/Dockerfile`
+// (Phase 2.2 of the snapshot redesign) — upstream postgres declares
+// `VOLUME /var/lib/postgresql/data`, which docker excludes from
+// `docker commit`. The vendored Dockerfile relocates PGDATA to
+// `/pgdata` (off the inherited VOLUME) so the indexer's schema + rows
+// land in the writable layer and ride snapshots correctly.
+const SUI_INDEXER_DB_BASE_VERSION = '16-alpine';
 const SUI_INDEXER_DB_NETWORK_ALIAS = 'sui-indexer-db';
 const SUI_LOCALNET_NETWORK_ALIAS = 'sui-localnet';
 const SUI_INDEXER_DB_USER = 'sui';
@@ -460,6 +467,23 @@ const buildLocalnet = (options: SuiLocalnetOptions): StackMember => {
 				})
 			: undefined;
 
+	// Sibling tag for the indexer-db postgres image. Vendored Dockerfile
+	// in `postgres-image/` overrides `PGDATA` to `/pgdata` so the writable
+	// layer captures the indexer schema + row data (the upstream
+	// `postgres:*` image declares VOLUME on the default PGDATA, which
+	// `docker commit` excludes). Built lazily — only when the sui
+	// primitive actually starts an indexer (i.e. always, today; the
+	// option to skip the indexer entirely is a future-proofing path).
+	const indexerDbContext = new URL('../../postgres-image/', import.meta.url).pathname;
+	const indexerDbImage = dockerImage({
+		name: 'sui.indexer-db.image',
+		build: {
+			context: indexerDbContext,
+			dockerfile: 'Dockerfile',
+			buildArgs: { POSTGRES_VERSION: SUI_INDEXER_DB_BASE_VERSION },
+		},
+	});
+
 	const build = Effect.fn('suiLocalnet')(function* () {
 		// Localnet with externally-managed RPC. Caller pre-booted their own
 		// sui-localnet (and possibly faucet / graphql) and asks devstack to
@@ -572,20 +596,18 @@ const buildLocalnet = (options: SuiLocalnetOptions): StackMember => {
 			),
 		);
 
-		// Postgres sidecar — internal only, no host port mapping. Named
-		// volume on `/var/lib/postgresql/data` so the indexer's populated
-		// schema + row data survives `docker rm -f` on Ctrl-C. Volume
-		// name is per-(app, stack, network).
-		const indexerDbBase =
-			identity.stack === 'main'
-				? `devstack-${identity.app}-sui-indexer-db`
-				: `devstack-${identity.app}-${identity.stack}-sui-indexer-db`;
-		const indexerDbVolume =
-			identity.network === 'localnet' ? indexerDbBase : `${indexerDbBase}-${identity.network}`;
+		// Postgres sidecar — internal only, no host port mapping. Indexer
+		// state (schema + rows) lives in the writable layer at `/pgdata`
+		// (the vendored Dockerfile relocates PGDATA off the upstream
+		// VOLUME, so `docker commit` captures it for snapshots). Cycle
+		// teardown via `docker stop` keeps the layer for the next `up` to
+		// resume. Old per-(app, stack) named volumes from the pre-Phase-2
+		// layout are swept by `devstack wipe`.
+		const indexerDbImageTag = yield* indexerDbImage;
 		yield* setPhase('starting indexer-db');
 		const indexerDb = yield* Docker.run({
 			name: 'sui.indexer-db',
-			image: SUI_INDEXER_DB_IMAGE,
+			image: indexerDbImageTag.tag,
 			env: {
 				POSTGRES_USER: SUI_INDEXER_DB_USER,
 				POSTGRES_PASSWORD: SUI_INDEXER_DB_PASSWORD,
@@ -593,7 +615,6 @@ const buildLocalnet = (options: SuiLocalnetOptions): StackMember => {
 			},
 			network: networkName,
 			networkAlias: SUI_INDEXER_DB_NETWORK_ALIAS,
-			mounts: [{ host: indexerDbVolume, container: '/var/lib/postgresql/data' }],
 			detach: true,
 		}).pipe(
 			Effect.catchTag('DockerError', (cause) =>
@@ -608,14 +629,16 @@ const buildLocalnet = (options: SuiLocalnetOptions): StackMember => {
 		);
 		yield* awaitIndexerDbReady(indexerDb.containerId);
 
-		// Named volume mounted at `/root/.sui` so chain state survives
-		// `docker rm`. Volume name is per-(app, stack, network).
-		const suiDataBase =
-			identity.stack === 'main'
-				? `devstack-${identity.app}-sui-data`
-				: `devstack-${identity.app}-${identity.stack}-sui-data`;
-		const suiDataVolume =
-			identity.network === 'localnet' ? suiDataBase : `${suiDataBase}-${identity.network}`;
+		// Chain state lives in the writable layer at `/root/.sui`.
+		// Pre-Phase 2 this was a named volume (`devstack-<app>-sui-data`)
+		// so `docker rm` would preserve state — but volumes are excluded
+		// from `docker commit`, breaking the snapshot capture surface.
+		// Now: `docker stop` on cycle teardown keeps the writable layer
+		// for the next `up` to resume via the reuse-if-image-matches probe
+		// (~1s warm start), and `docker commit` of the running container
+		// captures chain state in full for `devstack snapshot save`.
+		// `wipe` still cleans up old per-stack volumes if they exist from
+		// the previous layout.
 		yield* setPhase('starting localnet');
 		const localnetRunResult = yield* Docker.run({
 			name: 'sui.localnet',
@@ -629,7 +652,6 @@ const buildLocalnet = (options: SuiLocalnetOptions): StackMember => {
 			...(ports !== undefined ? { ports } : {}),
 			network: networkName,
 			networkAlias: SUI_LOCALNET_NETWORK_ALIAS,
-			mounts: [{ host: suiDataVolume, container: '/root/.sui' }],
 			detach: true,
 			traefik: [
 				{
@@ -813,12 +835,17 @@ const buildLocalnet = (options: SuiLocalnetOptions): StackMember => {
 			};
 		},
 	});
-	// Surface the sibling image layer alongside our own. We also surface
-	// a `SuiBuildImage` reference so downstream `buildMove` callers
-	// dispatch `sui move build` INTO the localnet image rather than
-	// against the host `sui` CLI.
-	const baseLayers: ReadonlyArray<Layer.Layer<any, any, any>> =
-		localnetImage !== undefined ? [...localnetImage.__layers, tag.__layer] : [tag.__layer];
+	// Surface sibling image layers alongside our own — the indexer-db
+	// postgres image always builds (only the optional caller-pinned sui
+	// localnet image skips its layer when `options.image` is set). We also
+	// surface a `SuiBuildImage` reference so downstream `buildMove`
+	// callers dispatch `sui move build` INTO the localnet image rather
+	// than against the host `sui` CLI.
+	const baseLayers: ReadonlyArray<Layer.Layer<any, any, any>> = [
+		...indexerDbImage.__layers,
+		...(localnetImage !== undefined ? localnetImage.__layers : []),
+		tag.__layer,
+	];
 
 	let buildImageLayer: Layer.Any | undefined;
 	// HIGH-T5: when the user supplies their own `rpcUrl`, we're
