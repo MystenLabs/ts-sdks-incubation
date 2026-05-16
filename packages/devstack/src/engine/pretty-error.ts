@@ -144,7 +144,34 @@ export const prettyError = (value: unknown): string => {
 		});
 		return rendered.join('\n');
 	}
-	if (isTaggedError(value)) return renderTaggedError(value);
-	if (value instanceof Error) return renderError(value);
+	if (isTaggedError(value)) return augmentDockerDownHint(renderTaggedError(value), value);
+	if (value instanceof Error) return augmentDockerDownHint(renderError(value), value);
 	return String(value);
+};
+
+// Cross-cutting friendly hint when the rendered text matches one of
+// the tells of a docker daemon being down. The supervisor's first
+// failure in this scenario is usually a buried `connect ENOENT
+// /var/run/docker.sock` or "Cannot connect to the Docker daemon" —
+// the user spends minutes trying to figure out what `DockerError
+// (run): pull access denied: connect ECONNREFUSED` actually means.
+// Front-loading the hint keeps the diagnostic close to what the
+// user has to fix.
+const DOCKER_DOWN_TELLS: ReadonlyArray<string> = [
+	'Cannot connect to the Docker daemon',
+	'connect ENOENT /var/run/docker.sock',
+	"Is the docker daemon running",
+	'docker: command not found',
+];
+
+const augmentDockerDownHint = (rendered: string, source: unknown): string => {
+	const text =
+		rendered + ' ' + (typeof source === 'object' && source !== null ? JSON.stringify(source) : '');
+	if (!DOCKER_DOWN_TELLS.some((tell) => text.includes(tell))) return rendered;
+	return [
+		'Docker daemon unreachable. Start Docker Desktop / colima / your daemon and re-run.',
+		'  (`docker version` should print a server version when the daemon is healthy.)',
+		'',
+		rendered,
+	].join('\n');
 };
