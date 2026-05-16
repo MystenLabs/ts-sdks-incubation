@@ -9,8 +9,41 @@ import { Transaction } from '@mysten/sui/transactions';
 import { tag, setPhase, type Ref } from '../advanced/tag.js';
 import { PublishError } from '../engine/errors.js';
 import { StateStore } from '../engine/state-store.js';
-import { SuiTag } from './sui.js';
-import type { Account, TxResult } from '../engine/shared.js';
+import { SuiTag, type Sui } from './sui.js';
+import type { Account, SuiObjectChange, TxResult } from '../engine/shared.js';
+
+// Probe the first created object id from a cached TxResult. Returns
+// `'valid'` when the object resolves on-chain, a short tag string
+// otherwise (`'no-objects'` if the result captured zero creations —
+// nothing to probe, treat as valid; `'object-missing'` if the
+// lookup 404s; `'probe-error'` for any other failure, which we
+// conservatively treat as valid so a transient RPC blip doesn't
+// invalidate cache and force unnecessary re-fires).
+const probeCachedTx = (
+	sui: Sui,
+	cached: TxResult,
+): Effect.Effect<'valid' | 'no-objects' | 'object-missing' | 'probe-error'> =>
+	Effect.gen(function* () {
+		const created = cached.objectChanges.find(
+			(c): c is Extract<SuiObjectChange, { type: 'created' }> => c.type === 'created',
+		);
+		if (created === undefined) return 'no-objects';
+		const result = yield* Effect.tryPromise({
+			try: () => sui.client.core.getObject({ objectId: created.objectId }),
+			catch: (cause) => cause,
+		}).pipe(
+			Effect.map(() => 'valid' as const),
+			Effect.catch((cause) => {
+				const code = (cause as { code?: string }).code;
+				const message = (cause as { message?: string }).message ?? '';
+				if (code === 'OBJECT_NOT_FOUND' || /not\s*found|does\s*not\s*exist/i.test(message)) {
+					return Effect.succeed('object-missing' as const);
+				}
+				return Effect.succeed('probe-error' as const);
+			}),
+		);
+		return result;
+	});
 
 export interface ActionOptions<Name extends string, R, E = unknown> {
 	/** Account that signs the action. */
@@ -72,10 +105,28 @@ export const Action = <const Name extends string, R = never, E = unknown>(
 				const fullKey = `tx/${name}/${sui.chainId}/${signer.address}/${userKey}`;
 				const cached = yield* state.get<TxResult>(fullKey);
 				if (Option.isSome(cached)) {
+					// HIGH-C3: probe the cached result against the chain before
+					// returning it. `cacheKey` folds in chainId so a regenesis
+					// would miss the cache — but a `devstack wipe` that
+					// preserves cached state (snapshot restore against a
+					// freshly-genesised chain, or a corrupted state.json that
+					// kept the entry but the chain volume is gone) would
+					// otherwise return a TxResult whose object ids no longer
+					// exist on chain. Probing one created object catches that
+					// case loudly: re-fire the action instead of returning a
+					// dangling reference.
+					const probeProbe = yield* probeCachedTx(sui, cached.value);
+					if (probeProbe === 'valid') {
+						yield* Effect.logInfo(
+							`Action(${name}): cache hit — key=${userKey} digest=${cached.value.digest}`,
+						);
+						return cached.value;
+					}
 					yield* Effect.logInfo(
-						`Action(${name}): cache hit — key=${userKey} digest=${cached.value.digest}`,
+						`Action(${name}): cache hit but probe found stale on-chain state ` +
+							`(${probeProbe}); evicting and re-firing — key=${userKey}`,
 					);
-					return cached.value;
+					yield* state.remove(fullKey).pipe(Effect.catch(() => Effect.void));
 				}
 				yield* Effect.logInfo(
 					`Action(${name}): cache miss — key=${userKey} (will sign+execute)`,

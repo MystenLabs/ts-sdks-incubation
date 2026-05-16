@@ -193,17 +193,48 @@ export const gatherManifest = (
 // -----------------------------------------------------------------------------
 
 /** The canonical runtime accessor. `yield* Devstack` returns the live
- *  v4 manifest snapshot built from the same registries `manifest()` reads.
+ *  v4 manifest — a thunk that re-snapshots the registries on every call
+ *  so consumers see late-registered services (e.g. a wallet endpoint
+ *  that boots AFTER an Action's body has already yielded `Devstack`).
  *
- *  Static — captured once at scope-acquire. For live-updating consumers
- *  (the rare watcher case), yield individual per-Ref tags from
- *  `advanced.*` instead. */
-export class Devstack extends Context.Service<Devstack, Manifest>()('@devstack/Devstack') {}
+ *  HIGH-C6: pre-fix `Devstack` captured a single `gatherManifest()`
+ *  result at scope-acquire. Any service registered after that point
+ *  was invisible to downstream consumers. Returning a value that
+ *  re-gathers keeps the API single-yield while making it honest about
+ *  the registry's live state.
+ *
+ *  The value is callable: `yield* Devstack` returns `{ snapshot,
+ *  current }` where `snapshot` is the manifest at the moment of the
+ *  yield and `current()` re-gathers on demand. Existing call sites
+ *  that read `m.services.sui.rpc.url` still work via `snapshot` —
+ *  consumers that need live state call `current()` afterward. */
+export interface DevstackShape {
+	/** Manifest snapshot taken at the moment `yield* Devstack` resolved.
+	 *  Suitable for one-shot reads. */
+	readonly snapshot: Manifest;
+	/** Re-gather the manifest from the live registries. Use when the
+	 *  consumer needs to observe services registered after the yield. */
+	readonly current: Effect.Effect<
+		Manifest,
+		never,
+		PackageRegistry | EndpointRegistry | AccountRegistry | CoinRegistry | Identity
+	>;
+}
 
-/** Live layer for `Devstack`. Builds from the registries at scope-
- *  acquire and exposes the snapshot to downstream `yield* Devstack`. */
+export class Devstack extends Context.Service<Devstack, DevstackShape>()('@devstack/Devstack') {}
+
+/** Live layer for `Devstack`. Captures the eager snapshot for the
+ *  common one-shot path and stashes a re-gather Effect for live
+ *  consumers. The re-gather requires the same registry services that
+ *  built the eager snapshot, so this layer's R channel is unchanged. */
 export const DevstackLive: Layer.Layer<
 	Devstack,
 	never,
 	PackageRegistry | EndpointRegistry | AccountRegistry | CoinRegistry | Identity
-> = Layer.effect(Devstack, gatherManifest());
+> = Layer.effect(
+	Devstack,
+	Effect.gen(function* () {
+		const snapshot = yield* gatherManifest();
+		return { snapshot, current: gatherManifest() } satisfies DevstackShape;
+	}),
+);
