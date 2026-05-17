@@ -19,9 +19,10 @@ The scaffold lands these files:
 
 - `devstack.config.ts` — the single source of truth for your stack.
 - `move/hello/` — a tiny Move package you can edit, replace, or expand.
-- `src/main.tsx` — a React app that reads `./generated/manifest.ts` and renders an account selector.
-- `src/dapp-kit.ts` — the one-line `createDevstackDappKit({ manifest })` call that wires
-  `@mysten/dapp-kit-react` to the running stack.
+- `src/main.tsx` — a React app that reads from `./generated/` (typed `accounts`, `packages`,
+  `services`, `extras`) and renders an account selector.
+- `src/dapp-kit.ts` — three lines that spread the generated `devstackDappKitConfig` into
+  `createDAppKit` and export the resulting `dAppKit`.
 - `vite.config.ts`, `vitest.config.ts`, `playwright.config.ts` — each already pointed at the
   devstack manifest.
 - `e2e/mint.spec.ts` — a sample Playwright test using `connectAs`.
@@ -154,7 +155,7 @@ test('alice can sign in', async ({ page }) => {
 The generated config is short:
 
 ```ts
-import { Account, Dev, devstack, Package, Wallet } from '@mysten-incubation/devstack';
+import { Account, Codegen, Dev, devstack, Package, Wallet } from '@mysten-incubation/devstack';
 
 export const publisher = Account('publisher');
 export const alice = Account('alice');
@@ -163,14 +164,22 @@ export const bob = Account('bob');
 export const hello = Package('hello', './move/hello', { signer: publisher });
 
 const wallet = Wallet({ accounts: [publisher, alice, bob] });
+
+// Emit Move bindings + typed stack handles + dapp-kit config into
+// `src/generated/`. Defaults wire BindingsEmitter + StackHandleEmitter
+// + DappKitConfigEmitter; pass `emitters: [...]` to customize.
+const codegen = Codegen({ packages: [hello] });
+
 const dev = Dev({
 	command: 'pnpm',
 	args: ['exec', 'vite'],
 	port: 5173,
-	needs: [hello, wallet],
+	// `needs: [..., codegen]` makes vite wait for the first codegen pass
+	// so `./generated/` exists when the dev server starts importing it.
+	needs: [hello, wallet, codegen],
 });
 
-export default devstack(publisher, alice, bob, hello, wallet, dev);
+export default devstack(publisher, alice, bob, hello, wallet, codegen, dev);
 ```
 
 Every named binding is a **Ref** — a typed handle that doubles as a configuration value

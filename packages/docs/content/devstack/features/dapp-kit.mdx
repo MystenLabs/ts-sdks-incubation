@@ -1,25 +1,34 @@
 ---
 title: dapp-kit integration
 description:
-  One line in your frontend wires createDAppKit against the running devstack — networks, MVR
-  overrides, and connected dev wallet all from the manifest.
+  A three-line `src/dapp-kit.ts` spreads the generated devstack config into `createDAppKit` — RPC
+  URL, MVR overrides, and dev wallet adapter all baked in at codegen time.
 ---
 
-dapp-kit usually wants a bunch of dev-environment-specific config: which network is the default,
-what RPC URL goes with `'localnet'`, which MVR placeholders map to which package ids, and which
-wallets are available. In a hand-wired setup, every one of those has to update when you regenesis
-the chain, when you republish, when you switch networks.
+dapp-kit wants a bunch of dev-environment-specific config: which network is the default, what RPC
+URL goes with `'localnet'`, which MVR placeholders map to which package ids, and which wallets are
+available. In a hand-wired setup, every one of those has to update when you regenesis the chain,
+when you republish, when you switch networks.
 
-The `@mysten-incubation/devstack/dapp-kit` subpath turns that into one call.
+Devstack solves this by **emitting** the dapp-kit config from `Codegen()` into your project, then
+you spread it into a hand-written `createDAppKit({...})` call in `src/dapp-kit.ts`. You stay in
+charge of the kit's construction — devstack stays out of your production bundle.
 
 ## Setup
 
 ```ts
-// src/dapp-kit.ts
-import { createDevstackDappKit } from '@mysten-incubation/devstack/dapp-kit';
-import { manifest } from './generated/manifest.js';
+// src/dapp-kit.ts (user-owned, hand-written)
+import { createDAppKit } from '@mysten/dapp-kit-react';
+import { devstackDappKitConfig } from './generated/dapp-kit-config.js';
 
-export const { dAppKit } = await createDevstackDappKit({ manifest });
+export const dAppKit = createDAppKit({
+	...devstackDappKitConfig,
+	// app-specific overrides go here (real wallet adapters for production,
+	// custom RPC selection, etc.)
+});
+
+// Expose for the playwright `connectAs` helper.
+(globalThis as { __devstackDAppKit__?: typeof dAppKit }).__devstackDAppKit__ = dAppKit;
 
 declare module '@mysten/dapp-kit-react' {
 	interface Register {
@@ -30,41 +39,62 @@ declare module '@mysten/dapp-kit-react' {
 
 That's the whole frontend wiring. Use `useDAppKit()`, `useCurrentAccount()`, and friends as normal.
 
-What `createDevstackDappKit` reads from the manifest:
+The generated `devstackDappKitConfig` carries:
 
-- **`services.sui.rpc.url`** → the `localnet` RPC URL.
-- **`packages.*.mvr`** → MVR placeholder overrides, spread into the `SuiGrpcClient`'s
-  `mvr.overrides` so `namedPackagesPlugin` resolves placeholders to live packageIds.
-- **`app.wallet`** → the dev wallet's URL, so it registers as a connectable wallet.
-- **`services.walrus`** → walrus aggregator + publisher URLs for the `@mysten/walrus` browser
-  client.
+- **`defaultNetwork` / `networks`** — the network the supervisor pinned (`'localnet'` by default).
+- **`createClient`** — a `SuiGrpcClient` factory baked with the resolved RPC URL and MVR overrides
+  built from every `Package(...)` that emitted an `mvrPlaceholder`.
+- **`walletInitializers`** — the devstack burner-wallet adapter wired to the resolved accounts.
 
 ## Network is set by the supervisor
 
-`createDevstackDappKit` reads the network from the manifest's `services.sui.network` field —
-whatever `--network` the supervisor booted with. `pnpm dev` defaults to localnet;
-`devstack up --network testnet` makes the kit a testnet kit. No per-network user wiring, and no
-`additionalNetworks` array to keep in sync.
+The generated config reads the network from the manifest's `services.sui.network` field — whatever
+`--network` the supervisor booted with. `pnpm dev` defaults to localnet;
+`devstack up --network testnet` regenerates the config for testnet. No per-network user wiring, and
+no `additionalNetworks` array to keep in sync.
 
-It throws if the manifest doesn't carry a `services.sui` entry (the supervisor hasn't reached sui
-bring-up yet).
+The wallet baked in is the devstack dev wallet — useful during development against any network, but
+**not what you want to ship to production**. For production deploys, override `walletInitializers`
+in your `createDAppKit({...})` spread with your real wallet initializers (Slush, Suiet, etc.):
 
-The wallet it wires is the devstack dev wallet — useful during development against any network, but
-**not what you want to ship to production**. For production deploys, swap `dapp-kit.ts` for a
-hand-written call to `createDAppKit({...})` with real wallet adapters (Slush, Suiet, etc.). You can
-still read packageIds and endpoints out of the manifest via `fromManifest` and
-`mvrOverridesFromManifest` at build time.
+```ts
+import { createDAppKit } from '@mysten/dapp-kit-react';
+import { devstackDappKitConfig } from './generated/dapp-kit-config.js';
+import { slushWalletInitializer } from '@mysten/slush-wallet';
 
-The `createDappKitConfig(manifest, opts)` helper exposed from this subpath is what
-`createDevstackDappKit` uses under the hood — call it directly when you want to spread its
-`defaultNetwork` / `networks` / `createClient` triple into a hand-rolled `createDAppKit({...})` with
-your own wallet adapters.
+export const dAppKit = createDAppKit({
+	...devstackDappKitConfig,
+	walletInitializers: import.meta.env.PROD
+		? [slushWalletInitializer()]
+		: devstackDappKitConfig.walletInitializers,
+});
+```
+
+## Customising the burner wallet
+
+The generated config exports a `devstackWalletInitializer(opts)` factory for apps that want to tweak
+the burner-wallet behaviour (headless mounting, auto-approve, …) without rebuilding the adapter from
+scratch:
+
+```ts
+import { createDAppKit } from '@mysten/dapp-kit-react';
+import { devstackDappKitConfig, devstackWalletInitializer } from './generated/dapp-kit-config.js';
+
+// Drop the wallet's panel UI from the production bundle (~30KB saving).
+const headlessInit = devstackWalletInitializer({ mountUI: false });
+
+export const dAppKit = createDAppKit({
+	...devstackDappKitConfig,
+	walletInitializers: headlessInit ? [headlessInit] : [],
+});
+```
 
 ## Manifest from the browser
 
-The dapp-kit subpath also re-exports `fromManifest` and the manifest types — the same shapes the
-server-side `@mysten-incubation/devstack` package uses, but importable from a browser bundle without
-pulling in the Node-only factory graph.
+The `@mysten-incubation/devstack/dapp-kit` subpath also re-exports `fromManifest` and the manifest
+types — the same shapes the server-side `@mysten-incubation/devstack` package uses, but importable
+from a browser bundle without pulling in the Node-only factory graph. Reach for it when you have a
+raw manifest JSON blob (a snapshot, an out-of-band fetch) and need to decode it:
 
 ```ts
 import { fromManifest, type Manifest } from '@mysten-incubation/devstack/dapp-kit';
@@ -72,6 +102,9 @@ import { fromManifest, type Manifest } from '@mysten-incubation/devstack/dapp-ki
 const m: Manifest = fromManifest(rawJson);
 const aliceAddress = m.accounts.alice.address;
 ```
+
+In normal app code you reach for the generated handles instead (`accounts`, `services`, `packages`,
+`extras`, `captured`) — they're literal-typed and never require a decode step.
 
 ## Connecting via the dev wallet
 
@@ -85,5 +118,7 @@ In tests, `connectAs(page, 'alice')` clicks that modal and switches the active a
 
 - [Services reference — Wallet](../reference/services#wallet) — what Wallet exposes and how to
   configure it.
-- [Codegen reference — DappKitEmitter](../reference/codegen#dappkitemitter) — the source generator
-  that builds the local-side companion to `createDevstackDappKit`.
+- [Codegen reference — DappKitConfigEmitter](../reference/codegen#dappkitconfigemitter) — the
+  emitter that produces `devstackDappKitConfig`.
+- [Codegen feature page](./codegen) — the full set of emitted handles (`accounts`, `services`,
+  `packages`, `extras`, `captured`).

@@ -46,8 +46,12 @@ const uploadBlob = Effect.gen(function* () {
 });
 ```
 
-The frontend gets walrus client options pre-wired via `createDevstackDappKit` — see
-[dapp-kit](./dapp-kit).
+The frontend reads the walrus publisher / aggregator URLs from the generated `services.walrus`
+handle and the walrus package's captured system + staking object ids from
+`captured["walrus.walrus"]`. Pass them to `localnetWalrusOptions(...)` from
+`@mysten-incubation/devstack/dapp-kit` to build a `WalrusClient`. See
+[the private-content example](https://github.com/mysten-labs/ts-sdks-incubation/tree/main/examples/private-content/src/lib/walrus.ts)
+for the wiring.
 
 ## Seal
 
@@ -176,17 +180,16 @@ Deepbook.
 ### Frontend wiring
 
 `DeepbookCoreTag` projects the deployed `packageId` and pool ids into the manifest under
-`services.deepbook`. The browser-side `@mysten/deepbook-v3` `DeepBookClient` consumes those ids
-directly:
+`services.deepbook`, which `StackHandleEmitter` surfaces as the generated `services` handle:
 
 ```ts
 import { DeepBookClient } from '@mysten/deepbook-v3';
-import { manifest } from './generated/manifest.js';
+import { services } from './generated/services.js';
 
 const client = new DeepBookClient({
 	client: suiClient,
 	address: currentAccount.address,
-	packageIds: manifest.services.deepbook.packageIds,
+	packageIds: services.deepbook?.packageIds,
 });
 ```
 
