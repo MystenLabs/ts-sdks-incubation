@@ -673,10 +673,11 @@ export const composeStackLayer = (
 		const key = (member as { key?: string }).key;
 		if (key === undefined) continue;
 		if (seenKeys.has(key)) {
-			Effect.runSync(
-				Effect.logWarning(
-					`Devstack: duplicate service detected: ${key}. Last one wins. Composing two implementations of the same interface (e.g. both suiLocalnet() and suiTestnet()) is almost certainly a bug.`,
-				),
+			// Plain console.warn — we're inside synchronous layer assembly,
+			// outside any Effect/fiber context, so `Effect.logWarning` would
+			// require a `runSync` that bypasses the TUI's logger sink anyway.
+			console.warn(
+				`Devstack: duplicate service detected: ${key}. Last one wins. Composing two implementations of the same interface (e.g. both suiLocalnet() and suiTestnet()) is almost certainly a bug.`,
 			);
 		}
 		seenKeys.add(key);
