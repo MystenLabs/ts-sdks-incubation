@@ -17,6 +17,7 @@ export {
 	parseDevstackToken,
 	createDevstackAdapterFromManifest,
 	type DevstackSignerAdapterOptions,
+	type DevstackAdapterManifest,
 } from './devstack-adapter.js';
 export { WebCryptoSignerAdapter } from './webcrypto-adapter.js';
 export { PasskeySignerAdapter } from './passkey-adapter.js';

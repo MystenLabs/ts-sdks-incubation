@@ -1,11 +1,8 @@
-// Default-provider registry. Phase 2 implements the auto-Sui fill: if
-// the user passes refs that require sui (any Account/Package/Action)
-// and no `Sui(...)` ref is in the merge, devstack synthesizes a
-// localnet `Sui()` automatically.
-//
-// Phase 6 will extend this with capability-keyed defaults
-// (`capability:seal-key-server` → `Seal()`, etc.) and apply-time
-// invariant validation (ephemeral-funded + testnet).
+// Default-provider registry. If the user passes refs that require sui
+// (any Account/Package/Action) and no `Sui(...)` ref is in the merge,
+// devstack synthesizes a localnet `Sui()` automatically. Today this is
+// the only auto-fill; capability-keyed defaults (e.g.
+// `capability:seal-key-server` → `Seal()`) would slot in here.
 
 import { Sui as SuiFactory } from '../services/sui.js';
 import type { StackMember } from '../engine/supervisor.js';

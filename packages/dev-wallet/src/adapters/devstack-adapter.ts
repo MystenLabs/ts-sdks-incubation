@@ -293,10 +293,14 @@ interface ManifestV3Shape {
 	endpoints?: ReadonlyArray<{ name: string; url: string; pairUrl?: string }>;
 }
 
-/** v4-shape input — wallet endpoint lives at `app.wallet.{url, alternates}`.
- *  Mirrors `AppManifest` from `@mysten-incubation/devstack` without
- *  importing it (dev-wallet doesn't depend on devstack — circular). */
-interface ManifestV4Shape {
+/** Narrow v4-shape input — the only field the adapter consumes is
+ *  `app.wallet.{url, alternates}`. Codegen emits exactly this shape so
+ *  generated `dapp-kit-config.ts` doesn't have to fabricate placeholder
+ *  manifest fields (`stack.app`, `coins`, etc.) just to satisfy the
+ *  full `Manifest` type. Mirrors a slice of `AppManifest` from
+ *  `@mysten-incubation/devstack` without importing it (dev-wallet
+ *  doesn't depend on devstack — circular). */
+export interface DevstackAdapterManifest {
 	app?: {
 		wallet?: {
 			url: string;
@@ -311,14 +315,17 @@ interface ManifestV4Shape {
  * present (no `Wallet(...)` in the stack, or it hasn't come up yet).
  *
  * Accepts both v3 manifests (`endpoints[]` array with `name: 'wallet-app'`)
- * and v4 manifests (`app.wallet: { url, alternates }`). The v4 entry's
- * first `alternates` URL is the paired URL carrying the `?token=…`
- * parameter; v3 carries it in `pairUrl`.
+ * and v4 manifests (`app.wallet: { url, alternates }`) — the v4 entry's
+ * first `alternates` URL is the paired URL carrying the `#token=…`
+ * fragment; v3 carries it in `pairUrl`. The full v4 `Manifest` shape
+ * is structurally compatible with {@link DevstackAdapterManifest}, so
+ * `createDevstackAdapterFromManifest(devstackManifest)` typechecks
+ * without a cast.
  */
 export function createDevstackAdapterFromManifest(
-	manifest: ManifestV3Shape | ManifestV4Shape,
+	manifest: DevstackAdapterManifest | ManifestV3Shape,
 ): DevstackSignerAdapter | null {
-	const v4 = (manifest as ManifestV4Shape).app?.wallet;
+	const v4 = (manifest as DevstackAdapterManifest).app?.wallet;
 	if (v4 !== undefined) {
 		return new DevstackSignerAdapter({
 			serverOrigin: v4.url,

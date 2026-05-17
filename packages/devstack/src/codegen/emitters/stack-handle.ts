@@ -162,8 +162,7 @@ export type PackageName = keyof typeof packages;
 /** Build a `StackHandleEmitter` plug-in instance. Drop into
  *  `Codegen({ emitters: [StackHandleEmitter()] })` or — typically —
  *  let `Codegen()`'s defaults register it. */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export const StackHandleEmitter = (_opts: StackHandleEmitterOptions = {}): Emitter<any> =>
+export const StackHandleEmitter = (_opts: StackHandleEmitterOptions = {}): Emitter =>
 	defineEmitter({
 		name: 'stack-handle',
 		emit: (ctx) =>
@@ -189,12 +188,5 @@ export const StackHandleEmitter = (_opts: StackHandleEmitterOptions = {}): Emitt
 					path.join(ctx.outputDir, 'packages.ts'),
 					renderPackages(data.packages),
 				);
-				// R is widened to `any` inside the Effect.gen via resolveExtras's
-				// user-extras Effect; cast back to `never` at the emitter boundary
-				// because Codegen provides the union of (PackageRegistry |
-				// EndpointRegistry | AccountRegistry | CoinRegistry | Identity |
-				// Extras) and whatever the user's extras Effect needs — both
-				// satisfied at runtime by the supervisor's infra + user stack.
-				// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			}) as Effect.Effect<void, CodegenError, any>,
+			}),
 	});

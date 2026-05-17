@@ -22,8 +22,10 @@ export interface DockerImageOptions<Name extends string> {
 }
 
 // Directories that should never participate in the context-tree hash:
-// build outputs, dependency caches, and the devstack scratch dir. Matches
-// the v3 list so a same-source tree hashes identically across runners.
+// build outputs, dependency caches, and the devstack scratch dir.
+// Keeping this list stable across runners is what makes the resulting
+// content-addressed tag reproducible — any change here busts every
+// downstream image tag.
 const SKIP_DIRS = new Set(['.git', 'node_modules', '.devstack', 'dist', '.next', 'target']);
 
 // Walk `contextPath` and content-hash every file, skipping `SKIP_DIRS`.

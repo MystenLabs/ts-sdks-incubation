@@ -74,8 +74,7 @@ const renderConfig = (args: {
 	network: string;
 	rpcUrl: string;
 	mvrOverrides: ReadonlyArray<readonly [string, string]>;
-	accounts: Record<string, { address: string }>;
-	packages: Record<string, { id: string; mvr?: string; captured?: Record<string, unknown> }>;
+	wallet: { url: string; alternates?: ReadonlyArray<string> } | undefined;
 	enableBurnerWallet: boolean;
 }): string => {
 	const mvrLines = args.mvrOverrides.map(
@@ -83,28 +82,25 @@ const renderConfig = (args: {
 	);
 	const mvrBlock = mvrLines.length === 0 ? '{}' : `{\n${mvrLines.join('\n')}\n}`;
 
-	// Minimal manifest subset for `createDevstackAdapterFromManifest`.
-	// We bake it in as a JSON literal so the generated module doesn't
-	// need to import the runtime devstack helpers — the dev-wallet
-	// adapter accepts the v4 manifest shape directly.
-	const adapterManifest = {
-		version: 4,
-		stack: { name: 'main', network: args.network, app: 'app' },
-		services: { sui: { network: args.network, rpc: { url: args.rpcUrl } } },
-		packages: args.packages,
-		accounts: args.accounts,
-		coins: {},
-		app: { extras: {} },
-	};
+	// Narrow input for `createDevstackAdapterFromManifest` — the adapter
+	// only consumes `app.wallet.{url, alternates}`. We bake it in as a
+	// JSON literal so the generated module doesn't need to import the
+	// runtime devstack helpers. Apps with no `Wallet(...)` in their
+	// stack get `app: {}` and the adapter returns `null` (no burner
+	// wallet wiring); apps that DO declare a wallet endpoint get its
+	// URL + paired-URL surfaced here.
+	const adapterManifest: { app: { wallet?: { url: string; alternates?: ReadonlyArray<string> } } } =
+		args.wallet !== undefined ? { app: { wallet: args.wallet } } : { app: {} };
 
 	const adapterBlock = args.enableBurnerWallet
 		? `import { devWalletInitializer, type DevWalletInitializerConfig } from '@mysten-incubation/dev-wallet';
-import { createDevstackAdapterFromManifest } from '@mysten-incubation/dev-wallet/adapters';
+import {
+\tcreateDevstackAdapterFromManifest,
+\ttype DevstackAdapterManifest,
+} from '@mysten-incubation/dev-wallet/adapters';
 
-const adapterManifest = ${JSON.stringify(adapterManifest, null, '\t')} as const;
-const devstackAdapter = createDevstackAdapterFromManifest(
-\tadapterManifest as Parameters<typeof createDevstackAdapterFromManifest>[0],
-);
+const adapterManifest: DevstackAdapterManifest = ${JSON.stringify(adapterManifest, null, '\t')};
+const devstackAdapter = createDevstackAdapterFromManifest(adapterManifest);
 
 /** Build a devstack burner-wallet initializer with custom options
  *  (e.g. \`{ mountUI: false }\` for headless production bundles).
@@ -159,8 +155,7 @@ export const devstackDappKitConfig = {
 /** Build a `DappKitConfigEmitter` plug-in instance. Drop into
  *  `Codegen({ emitters: [DappKitConfigEmitter()] })` or — typically —
  *  let `Codegen()`'s defaults register it. */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export const DappKitConfigEmitter = (opts: DappKitConfigEmitterOptions = {}): Emitter<any> => {
+export const DappKitConfigEmitter = (opts: DappKitConfigEmitterOptions = {}): Emitter => {
 	const resolved = {
 		enableBurnerWallet: opts.enableBurnerWallet ?? true,
 	} as const;
@@ -191,13 +186,11 @@ export const DappKitConfigEmitter = (opts: DappKitConfigEmitterOptions = {}): Em
 					network: sui.network,
 					rpcUrl: sui.rpc.url,
 					mvrOverrides,
-					accounts: data.accounts,
-					packages: data.packages,
+					wallet: data.app.wallet,
 					enableBurnerWallet: resolved.enableBurnerWallet,
 				});
 
 				yield* writeIfChanged(path.join(ctx.outputDir, 'dapp-kit-config.ts'), contents);
-				// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			}) as Effect.Effect<void, CodegenError, any>,
+			}),
 	});
 };

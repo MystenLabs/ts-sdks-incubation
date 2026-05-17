@@ -59,19 +59,23 @@ export interface CodegenContext {
  *
  *  The `R` parameter declares which infra services the emitter pulls
  *  from the surrounding scope. `Codegen({...})` provides the standard
- *  infra (`NodeServicesLayer` + per-stack identity), so emitters that
- *  only consume those baseline services can leave `R` at its default
- *  `never`. Emitters that need additional services (a custom
- *  IndexerClient, say) widen the generic at the `defineEmitter` call
- *  site; consumers compose the resulting layer normally.
+ *  infra (`NodeServicesLayer` + per-stack identity + the registry
+ *  services that back `gatherManifest`), so most emitters reach for
+ *  more than `never` worth of services — the registries, the user's
+ *  `Extras` Effect (whose R is `any` by construction), and so on.
+ *  Defaulting `R` to `any` lets emitter authors write straightforward
+ *  `Effect.gen` bodies without sprinkling `as Effect<..., any>` casts
+ *  at the boundary. Emitters that want to be strict about their
+ *  service requirements can pin `R` explicitly (e.g.
+ *  `Emitter<ChildProcessSpawner>` on `BindingsEmitter`) and TS will
+ *  enforce it at the `defineEmitter` call site.
  *
- *  `Codegen` accepts a heterogeneous emitter array via
- *  `ReadonlyArray<Emitter<any>>` (see services/codegen.ts) so the
- *  type guidance flows back the other way: a single emitter call
- *  site with the wrong R fails to typecheck against the strict
- *  `Codegen` provider set, but the array doesn't need an explicit
- *  union annotation. */
-export interface Emitter<R = never> {
+ *  `Codegen` iterates emitters as `ReadonlyArray<Emitter>` (see
+ *  services/codegen.ts); the runtime always provides every R any
+ *  built-in emitter could need, so the loose default is sound for the
+ *  array-iteration site. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export interface Emitter<R = any> {
 	readonly name: string;
 	readonly emit: (ctx: CodegenContext) => Effect.Effect<void, CodegenError, R>;
 }
@@ -81,7 +85,7 @@ export interface Emitter<R = never> {
  *  TS infers the right shape for `emitters: [...]` arrays without an
  *  explicit annotation at the call site.
  *
- *  Defaults `R` to `never` so emitters that don't reach for any extra
- *  services typecheck cleanly. Callers needing services widen the
- *  generic implicitly via the return type of the inner Effect. */
-export const defineEmitter = <R = never>(e: Emitter<R>): Emitter<R> => e;
+ *  Defaults `R` to `any` to match `Emitter`'s default — see the note
+ *  on `Emitter` for why. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const defineEmitter = <R = any>(e: Emitter<R>): Emitter<R> => e;

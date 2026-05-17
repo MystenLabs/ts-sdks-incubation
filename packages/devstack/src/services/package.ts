@@ -171,9 +171,9 @@ export type CaptureSpec<TCaptured> =
 	 *  picks the first created object whose type contains the substring.
 	 *  Result is a `Record<key, string>` of object ids. */
 	| Record<string, string>
-	/** Callback form (v3-compatible): receives the full
-	 *  `objectChanges` array, returns whatever shape you like. Used when
-	 *  the declarative form isn't expressive enough. */
+	/** Callback form: receives the full `objectChanges` array, returns
+	 *  whatever shape you like. Used when the declarative form isn't
+	 *  expressive enough. */
 	| ((changes: ReadonlyArray<SuiObjectChange>) => TCaptured);
 
 export interface PackageOptions<TCaptured, TCoins extends ReadonlyArray<CoinSpec>> {
