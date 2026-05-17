@@ -22,7 +22,7 @@ import {
 	EndpointRegistry,
 	PackageRegistry,
 } from '../engine/registries.js';
-import { toSdkCoin } from '../services/package.js';
+import { toSdkCoin } from './sdk-coin.js';
 import type {
 	AppManifest,
 	EndpointEntry,

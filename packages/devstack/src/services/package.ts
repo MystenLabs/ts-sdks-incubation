@@ -127,24 +127,10 @@ export interface Coin {
 
 export class CoinTag extends Context.Service<CoinTag, Coin>()('@devstack/CoinTag') {}
 
-/**
- * Build the `sdkCoin` projection from our `(fullCoinType, decimals)`
- * pair. Exported because `registerCoin`, `publishMove({coins})`, and
- * the manifest emitter all need the same derivation — sharing a helper
- * keeps the projection consistent.
- */
-export const toSdkCoin = (opts: {
-	readonly fullCoinType: string;
-	readonly decimals: number;
-}): Coin['sdkCoin'] => {
-	const sep = opts.fullCoinType.indexOf('::');
-	const address = sep === -1 ? opts.fullCoinType : opts.fullCoinType.slice(0, sep);
-	return {
-		address,
-		type: opts.fullCoinType,
-		scalar: 10 ** opts.decimals,
-	};
-};
+// `toSdkCoin` moved to `runtime/sdk-coin.ts` (the manifest's SdkCoinEntry
+// is the canonical destination). Re-exported for back-compat so existing
+// imports `from '../services/package.js'` keep working.
+export { toSdkCoin } from '../runtime/sdk-coin.js';
 
 /** Runtime-validation mirror of `Coin`. Use
  *  `Schema.decode(CoinSchema)` to validate a hand-rolled

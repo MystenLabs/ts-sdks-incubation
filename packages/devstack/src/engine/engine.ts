@@ -30,7 +30,7 @@ import type {
 	TuiHeader,
 	TuiLog,
 	TuiState,
-} from '../tui/render.js';
+} from './tui-state.js';
 import type { TagKind, TuiDisplay } from '../advanced/tag.js';
 
 // -----------------------------------------------------------------------------
