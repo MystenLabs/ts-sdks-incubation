@@ -6,8 +6,9 @@ import { useMutation, useQueryClient, type UseMutationResult } from '@tanstack/r
 import { useState } from 'react';
 import { packages } from './generated/packages.js';
 
-const helloPackageId = packages.hello?.id ?? '0x0';
-const isDeployed = helloPackageId !== '0x0';
+// Codegen runs before Dev (`needs: [..., codegen]`), so this file
+// existing implies hello is published — no `isDeployed` guard needed.
+const helloPackageId = packages.hello.id;
 
 interface UseSignAndExecuteOptions {
 	invalidateKeys?: ReadonlyArray<readonly unknown[]>;
@@ -71,7 +72,6 @@ function useSignAndExecute(
 }
 
 export function App() {
-	const deployed = isDeployed;
 	const me = useCurrentAccount();
 	const { mutateAsync, isPending } = useSignAndExecute();
 	const [lastDigest, setLastDigest] = useState<string | null>(null);
@@ -113,55 +113,36 @@ export function App() {
 			</header>
 
 			<main className="flex-1 px-6 py-8 max-w-3xl mx-auto w-full space-y-6">
-				{!deployed ? (
-					<NotDeployed />
-				) : (
-					<Card title="Greeting" subtitle="Calls hello::mint with the connected account as sender">
-						<div className="space-y-3">
-							<p className="text-xs text-neutral-500">
-								Package:{' '}
-								<span className="font-mono break-all" data-testid="package-id">
-									{helloPackageId}
-								</span>
+				<Card title="Greeting" subtitle="Calls hello::mint with the connected account as sender">
+					<div className="space-y-3">
+						<p className="text-xs text-neutral-500">
+							Package:{' '}
+							<span className="font-mono break-all" data-testid="package-id">
+								{helloPackageId}
+							</span>
+						</p>
+						<button
+							type="button"
+							data-testid="mint-button"
+							disabled={!me || isPending}
+							onClick={onMint}
+							className="w-full rounded-md bg-emerald-600 hover:bg-emerald-700 disabled:bg-neutral-400 text-white text-sm font-medium py-2"
+						>
+							{isPending ? 'Submitting…' : me ? 'Send greeting' : 'Connect a wallet first'}
+						</button>
+						{error && (
+							<p className="text-sm text-red-600 dark:text-red-400" data-testid="mint-error">
+								{error}
 							</p>
-							<button
-								type="button"
-								data-testid="mint-button"
-								disabled={!me || isPending}
-								onClick={onMint}
-								className="w-full rounded-md bg-emerald-600 hover:bg-emerald-700 disabled:bg-neutral-400 text-white text-sm font-medium py-2"
-							>
-								{isPending ? 'Submitting…' : me ? 'Send greeting' : 'Connect a wallet first'}
-							</button>
-							{error && (
-								<p className="text-sm text-red-600 dark:text-red-400" data-testid="mint-error">
-									{error}
-								</p>
-							)}
-							{lastDigest && (
-								<p className="text-xs text-neutral-500 break-all" data-testid="mint-tx">
-									Last tx: <span className="font-mono">{lastDigest}</span>
-								</p>
-							)}
-						</div>
-					</Card>
-				)}
+						)}
+						{lastDigest && (
+							<p className="text-xs text-neutral-500 break-all" data-testid="mint-tx">
+								Last tx: <span className="font-mono">{lastDigest}</span>
+							</p>
+						)}
+					</div>
+				</Card>
 			</main>
-		</div>
-	);
-}
-
-function NotDeployed() {
-	return (
-		<div className="text-center py-16">
-			<h2 className="text-2xl font-semibold mb-3">No deployment found</h2>
-			<p className="text-neutral-600 dark:text-neutral-400 max-w-md mx-auto">
-				Run{' '}
-				<code className="px-1.5 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800 font-mono text-sm">
-					pnpm dev
-				</code>{' '}
-				to bring up the localnet and publish the <code>hello</code> package.
-			</p>
 		</div>
 	);
 }

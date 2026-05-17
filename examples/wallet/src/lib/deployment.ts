@@ -61,7 +61,11 @@ const allCoins: readonly CoinSpec[] = [SUI_COIN, ...coinsFromTokens];
 const symbolFor = (coinType: string): string =>
 	allCoins.find((c) => c.coinType === coinType)?.symbol ?? coinType.split('::').pop() ?? '?';
 
-const deepbookPoolsExtra = (extras as { deepbookPools?: { pools: DeepbookPool[] } }).deepbookPools;
+// Cast through `unknown`: the literal-typed `extras` carries `readonly`
+// tuples, but the consumer projection is happier with a mutable view.
+const deepbookPoolsExtra = (
+	extras as unknown as { deepbookPools?: { pools: DeepbookPool[] } }
+).deepbookPools;
 const rawPools = deepbookPoolsExtra?.pools ?? [];
 
 const pools: readonly PoolView[] = rawPools.map((p) => ({
