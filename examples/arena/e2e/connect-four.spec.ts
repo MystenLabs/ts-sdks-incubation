@@ -18,17 +18,16 @@ import { Transaction } from '@mysten/sui/transactions';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const stack = process.env.DEVSTACK_STACK ?? 'test';
-// v4 emits the manifest at `.devstack/manifest.json` (flat layout);
-// per-account keys still live under `.devstack/stacks/<stack>/.keys/`
-// because the accounts primitive scopes them per-stack on disk.
-const manifestPath = join(here, '..', '.devstack', 'manifest.json');
-const keysDir = join(here, '..', '.devstack', 'stacks', stack, '.keys');
+// v4 manifest lives at `.devstack/stacks/<stack>/manifest.json`. Account
+// keys persist alongside under `runtime/accounts/<name>.key`.
+const manifestPath = join(here, '..', '.devstack', 'stacks', stack, 'manifest.json');
+const keysDir = join(here, '..', '.devstack', 'stacks', stack, 'runtime', 'accounts');
 
-interface RawManifest {
-	packages: Array<{ name: string; packageId: string }>;
-	accounts: Array<{ name: string; address: string }>;
-	endpoints: Array<{ name: string; url: string }>;
-	extras: { openLobbyId?: string };
+interface RawManifestV4 {
+	readonly services: { readonly sui?: { readonly rpc: { readonly url: string } } };
+	readonly packages: Record<string, { readonly id: string }>;
+	readonly accounts: Record<string, { readonly address: string }>;
+	readonly app: { readonly extras: { readonly openLobbyId?: string } };
 }
 
 interface ResolvedManifest {
@@ -39,18 +38,22 @@ interface ResolvedManifest {
 }
 
 function loadManifest(): ResolvedManifest {
-	const raw = JSON.parse(readFileSync(manifestPath, 'utf8')) as RawManifest;
-	const rpcUrl = raw.endpoints.find((s) => s.name === 'sui-rpc')?.url;
-	if (rpcUrl === undefined) throw new Error('sui-rpc missing from manifest');
-	const connectFour = raw.packages.find((p) => p.name === 'connect_four');
+	const raw = JSON.parse(readFileSync(manifestPath, 'utf8')) as RawManifestV4;
+	const rpcUrl = raw.services.sui?.rpc.url;
+	if (rpcUrl === undefined) throw new Error('services.sui.rpc missing from manifest');
+	const connectFour = raw.packages.connect_four;
 	if (connectFour === undefined) throw new Error('connect_four package missing from manifest');
-	const openLobbyId = raw.extras.openLobbyId;
-	if (openLobbyId === undefined) throw new Error('openLobbyId missing from manifest.extras');
-	const openLobby = { objectId: openLobbyId };
+	const openLobbyId = raw.app.extras.openLobbyId;
+	if (openLobbyId === undefined) throw new Error('openLobbyId missing from manifest.app.extras');
 	const accounts: Record<string, string> = Object.fromEntries(
-		raw.accounts.map((a) => [a.name, a.address]),
+		Object.entries(raw.accounts).map(([name, a]) => [name, a.address]),
 	);
-	return { rpcUrl, accounts, connectFour, openLobby };
+	return {
+		rpcUrl,
+		accounts,
+		connectFour: { packageId: connectFour.id },
+		openLobby: { objectId: openLobbyId },
+	};
 }
 
 function loadKey(name: string): Ed25519Keypair {
