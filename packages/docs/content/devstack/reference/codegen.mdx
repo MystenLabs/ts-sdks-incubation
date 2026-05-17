@@ -1,12 +1,13 @@
 ---
 title: Codegen
-description: The Codegen Ref and its plug-in emitter interface.
+description: The Codegen Ref and its three built-in emitters.
 ---
 
 `Codegen({ output?, packages?, emitters? })` runs a list of **emitters** against a resolved package
-set. Every option has a sensible default — calling `Codegen()` with no arguments uses the canonical
-output path, no explicit package list (defaults to `[]`; auto-fill from `Package(...)` in the stack
-is on the roadmap), and `[BindingsEmitter()]` (the Move → TS bindings emitter — the 90% case).
+set + the live registries (accounts, services, coins, extras). Every option has a sensible default —
+calling `Codegen()` with no arguments uses the canonical output path, no explicit package list
+(defaults to `[]`; auto-fill from `Package(...)` in the stack is on the roadmap), and all three
+built-in emitters.
 
 This page is the reference. For the task-shaped intro see the
 [codegen feature page](../features/codegen).
@@ -17,19 +18,25 @@ This page is the reference. For the task-shaped intro see the
 tooling that needs to mirror the default (linters, build scripts, monorepo config). The path is
 resolved against `process.cwd()` at codegen time.
 
-Each emitter writes to its own subdirectory under that root:
+The three built-in emitters write to:
 
 ```
 ./src/generated/
   bindings/<package-name>/...   ← BindingsEmitter
-  dapp-kit/index.ts             ← DappKitEmitter (or the DappKit() facade)
+  accounts.ts                   ← StackHandleEmitter
+  services.ts                   ← StackHandleEmitter
+  extras.ts                     ← StackHandleEmitter
+  captured.ts                   ← StackHandleEmitter
+  packages.ts                   ← StackHandleEmitter
+  dapp-kit-config.ts            ← DappKitConfigEmitter
 ```
 
-This lives in a normal `src/`-typed source dir so app code can import it directly:
+App code imports them directly:
 
 ```ts
 import { Lobby } from './generated/bindings/connect_four/game.js';
-import { useDAppKit } from './generated/dapp-kit/index.js';
+import { accounts } from './generated/accounts.js';
+import { devstackDappKitConfig } from './generated/dapp-kit-config.js';
 ```
 
 **`.devstack/` is intentionally NOT used.** That dot-dir is reserved for non-importable runtime
@@ -42,18 +49,23 @@ split.
 ```ts
 import { Codegen } from '@mysten-incubation/devstack';
 
-Codegen();
+Codegen({ packages: [hello] });
 // equivalent to:
-// Codegen({ output: './src/generated', packages: [], emitters: [BindingsEmitter()] })
+// Codegen({
+//   output: './src/generated',
+//   packages: [hello],
+//   emitters: [BindingsEmitter(), StackHandleEmitter(), DappKitConfigEmitter()],
+// })
 ```
 
 Override individual fields as needed; omit the rest. Re-running with the same inputs is idempotent —
-the bindings emitter fingerprints sources and skips the regen when nothing has moved.
+the bindings emitter fingerprints sources and skips the regen when nothing has moved, and the other
+emitters skip writes when the rendered bytes match what's on disk.
 
 ## Built-in emitters
 
-The two built-in emitters live under `@mysten-incubation/devstack/advanced` (plug-in author
-surface). The high-level `Codegen` factory and the `DappKit` facade cover most users.
+The three built-in emitters live under `@mysten-incubation/devstack/advanced` (plug-in author
+surface). The high-level `Codegen` factory's defaults cover most users.
 
 ### `BindingsEmitter`
 
@@ -61,45 +73,68 @@ Move → TypeScript bindings via `@mysten/codegen`.
 
 ```ts
 import { Codegen } from '@mysten-incubation/devstack';
-import { BindingsEmitter } from '@mysten-incubation/devstack/advanced';
+import { BindingsEmitter, StackHandleEmitter } from '@mysten-incubation/devstack/advanced';
 
 Codegen({
 	packages: [hello, world],
-	emitters: [BindingsEmitter({ importExtension: '.ts' })],
+	emitters: [BindingsEmitter({ importExtension: '.ts' }), StackHandleEmitter()],
 });
 ```
 
-Output lands at `<output>/bindings/<package-name>/` — with the default output, that's
-`./src/generated/bindings/<package-name>/`. Local packages emit fully; `KnownPackage(...)` entries
-are silently skipped — bindings need the upstream Move source to feed `sui move summary`.
+Output lands at `<output>/bindings/<package-name>/`. Local packages emit fully; `KnownPackage(...)`
+entries are silently skipped — bindings need the upstream Move source to feed `sui move summary`.
 
 Atomic dir swap (stage → rename existing aside → rename staging in) means a Vite dev server never
 sees a half-written tree mid-cycle.
 
-### `DappKitEmitter`
+### `StackHandleEmitter`
 
-Generate a TS module that wires `createDAppKit({...})` against the manifest. For the simple case use
-the `DappKit({...})` facade in the main barrel; reach for the emitter directly when combining with
-other emitters.
+Reads the live registries (accounts, services, coins, packages) + the resolved `Extras` service and
+emits five files of named, literal-typed handles:
+
+| File          | Shape                                                                            |
+| ------------- | -------------------------------------------------------------------------------- |
+| `accounts.ts` | `export const accounts = { alice: '0x…', … } as const`                           |
+| `services.ts` | `export const services = { sui: { rpc: { url } }, … } as const`                  |
+| `extras.ts`   | `export const extras = { …user-defined… } as const`                              |
+| `captured.ts` | `export const captured = { mock_usdc: { treasuryCapId: '0x…' }, … } as const`    |
+| `packages.ts` | `export const packages = { hello: { id: '0x…', mvr: '@local/hello' } } as const` |
+
+`packages.ts` is the escape hatch for raw ids — prefer MVR-resolved targets
+(`tx.moveCall({ target: '@local/hello::hello::mint' })`, which dapp-kit handles via the baked-in
+overrides) and the typed bindings under `./bindings/<pkg>/` over raw `packages.<name>.id` lookups.
+
+The emitter has no options today — it reads everything from the registries.
+
+### `DappKitConfigEmitter`
+
+Emits `<output>/dapp-kit-config.ts` — a partial `createDAppKit(...)` config the user's hand-written
+`src/dapp-kit.ts` spreads into the kit constructor.
 
 ```ts
 import { Codegen } from '@mysten-incubation/devstack';
-import { DappKitEmitter } from '@mysten-incubation/devstack/advanced';
+import { DappKitConfigEmitter } from '@mysten-incubation/devstack/advanced';
 
 Codegen({
 	packages: [hello, deepbookV3],
-	emitters: [DappKitEmitter({ flavor: 'react' })],
+	emitters: [DappKitConfigEmitter({ enableBurnerWallet: false })],
 });
 ```
 
-Flavors:
+Options:
 
-- `'core'` — imports only `@mysten/dapp-kit-core`.
-- `'react'` (default) — adds the `declare module '@mysten/dapp-kit-react'` `Register` block so
-  `useDAppKit()` infers the correct type.
+- **`enableBurnerWallet`** (default `true`) — wire the devstack dev-wallet adapter into
+  `walletInitializers`. Set `false` for an emitted config with no wallet pre-wired (your
+  `dapp-kit.ts` provides real wallet initializers).
 
-Output lands at `<output>/dapp-kit/index.ts`. MVR overrides are sorted alphabetically and the writer
-skips no-op writes (existing bytes == new bytes), so file watchers don't trip spurious HMR cycles.
+The emitted config exports:
+
+- `devstackDappKitConfig` — `{ defaultNetwork, networks, createClient, walletInitializers }` ready
+  to spread into `createDAppKit({ ...devstackDappKitConfig })`.
+- `devstackWalletInitializer(opts)` — factory for building a burner-wallet initializer with custom
+  options (`{ mountUI: false }`, etc.) when the user wants to override the default.
+
+See [dapp-kit integration](../features/dapp-kit) for the consumer side.
 
 ## Writing your own emitter
 
@@ -130,10 +165,11 @@ const VersionListEmitter = defineEmitter({
 		}),
 });
 
-// Drop into any `Codegen({...})`:
+// Drop into any `Codegen({...})` — the defaults DON'T apply when you
+// pass `emitters: [...]` explicitly, so include the built-ins you want:
 Codegen({
 	packages: [hello],
-	emitters: [VersionListEmitter],
+	emitters: [BindingsEmitter(), StackHandleEmitter(), VersionListEmitter],
 });
 ```
 
@@ -155,6 +191,10 @@ interface CodegenPackage {
 ```
 
 Filter on `sourcePath` if your emitter needs the Move source tree; otherwise consume every entry.
+
+Emitters that need to read the runtime extras (`devstack({ extras })`) yield the `Extras` service
+and `resolveExtras` from `@mysten-incubation/devstack/advanced` — see `StackHandleEmitter`'s source
+for the pattern.
 
 ## Per-Package opt-out
 

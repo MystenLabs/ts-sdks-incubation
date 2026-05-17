@@ -1,92 +1,164 @@
 ---
 title: Codegen
 description:
-  Move → TypeScript bindings and a pre-wired dapp-kit factory that always match the
-  freshly-published package id.
+  Move → TypeScript bindings, typed stack handles (accounts, services, extras, captured, packages),
+  and a partial dapp-kit config — all emitted under `./src/generated/` and always matching the
+  freshly-published state.
 ---
 
 The packageId of every Move package you publish changes every time the chain regenerates. The
-TypeScript types your app uses to call that Move code have to match. Stitching that together by hand
-— hard-coded ids, regen scripts, drift between Move and TS — is one of the biggest sources of
-friction in a Sui app.
+TypeScript types your app uses to call that Move code have to match. The accounts, the service
+endpoints, the captured object ids all change at the same time. Stitching that together by hand —
+hard-coded ids, regen scripts, drift between Move and TS — is one of the biggest sources of friction
+in a Sui app.
 
-Devstack runs codegen as a Ref. When a package republishes, codegen re-emits. When you read the
-resulting bindings, the types and the on-chain ids are guaranteed to agree.
+Devstack runs codegen as a Ref. When a package republishes (or a service endpoint moves, or an
+extras Effect re-resolves), codegen re-emits. When you read the generated handles, the values and
+the on-chain state are guaranteed to agree.
 
-## Move → TypeScript bindings (the default)
+## What gets emitted
 
-The `Codegen` Ref runs a list of emitters against your resolved package set. With no `emitters`
-field, it defaults to the Move → TS bindings emitter — the 90% case:
+`Codegen({ packages })` runs three built-in emitters by default and writes everything under
+`./src/generated/`:
+
+```
+src/generated/
+  bindings/<pkg>/          ← Move → TS bindings (BindingsEmitter)
+  accounts.ts              ← `accounts.alice` typed map (StackHandleEmitter)
+  services.ts              ← `services.sui.rpc.url` typed handle (StackHandleEmitter)
+  extras.ts                ← typed literal of `devstack({ extras })` (StackHandleEmitter)
+  captured.ts              ← per-package captured ids (StackHandleEmitter)
+  packages.ts              ← raw package-id escape hatch (StackHandleEmitter)
+  dapp-kit-config.ts       ← partial DAppKit config (DappKitConfigEmitter)
+```
+
+App code consumes those directly:
+
+```ts
+import { Lobby } from './generated/bindings/connect_four/game.js';
+import { accounts } from './generated/accounts.js';
+import { services } from './generated/services.js';
+import { extras } from './generated/extras.js';
+import { captured } from './generated/captured.js';
+```
+
+No `import { manifest } from ...` — the raw manifest is a dev-only artifact that never enters your
+app's runtime. The handles are literal-typed (`as const`), so `accounts.alice` narrows to its exact
+string at every consumer.
+
+## Wiring it up
 
 ```ts
 import { Codegen } from '@mysten-incubation/devstack';
 
 const codegen = Codegen({ packages: [hello, world] });
 
-export default devstack(/* ... */, codegen);
+const dev = Dev({
+	command: 'pnpm',
+	args: ['exec', 'vite'],
+	port: 5173,
+	// vite waits for the first codegen pass so `./generated/` exists
+	// when the dev server starts importing it.
+	needs: [hello, wallet, codegen],
+});
+
+export default devstack(/* ... */, codegen, dev);
 ```
 
-`output` is optional and defaults to `./src/generated/` — a normal `src/`-typed source dir picked up
-by TypeScript + Vite without extra wiring. Bindings land at
-`./src/generated/bindings/<package-name>/`; app code imports directly:
-
-```ts
-import { Lobby } from './generated/bindings/connect_four/game.js';
-```
-
-Atomic dir swap means your dev server never sees a half-written tree mid-cycle. `KnownPackage(...)`
-entries are silently skipped — the bindings emitter needs Move source.
+`output` defaults to `./src/generated/` — a normal `src/`-typed dir picked up by TypeScript + Vite
+without extra wiring. Atomic dir swap means your dev server never sees a half-written tree
+mid-cycle.
 
 **Why `src/generated/` and not `.devstack/`?** The `.devstack/` dot-dir is reserved for
-non-importable runtime state (account keys, wallet tokens, walrus deploy outputs, etc.) and is
+non-importable runtime state (account keys, wallet tokens, walrus deploy outputs) and is
 deliberately invisible to TS tooling. Importable generated code belongs in a normal source dir. See
 [state and snapshots](./state-and-snapshots) for the full split.
 
-## DappKit: typed dapp-kit factory
+## Move bindings
 
-For a generated dapp-kit module, use the `DappKit` facade — it wraps
-`Codegen({ emitters: [DappKitEmitter(...)] })`:
+Bindings land at `./src/generated/bindings/<package-name>/`. `KnownPackage(...)` entries are
+silently skipped — the bindings emitter needs Move source.
 
 ```ts
-import { DappKit } from '@mysten-incubation/devstack';
+import * as connectFour from './generated/bindings/connect_four/game.js';
 
-const dappKit = DappKit({
-	packages: [hello, deepbookV3],
-	flavor: 'react',
+const tx = new Transaction();
+const lobby = connectFour.createLobby(tx);
+```
+
+## Typed stack handles
+
+`StackHandleEmitter` reads the live registries (the same source `gatherManifest()` uses) and emits
+five files of named, literal-typed handles. Apps reach for these by name instead of walking the raw
+manifest:
+
+```ts
+import { accounts } from './generated/accounts.js';
+import { services } from './generated/services.js';
+import { extras } from './generated/extras.js';
+import { captured } from './generated/captured.js';
+import { packages } from './generated/packages.js';
+
+// Display alice's address.
+console.log(accounts.alice);
+
+// Open an RPC client against the local sui node.
+const rpcUrl = services.sui?.rpc.url;
+
+// Read a user-defined extras value (typed literal).
+const openLobbyId = extras.openLobbyId;
+
+// Reach for a captured TreasuryCap to mint test funds.
+const treasuryCapId = captured.mock_usdc?.treasuryCapId;
+
+// Escape hatch for raw package ids (use MVR via dapp-kit when possible).
+const helloPackageId = packages.hello?.id;
+```
+
+`packages.ts` is the escape hatch — most app code should use MVR-prefixed targets like
+`tx.moveCall({ target: '@local/hello::hello::mint' })` and let dApp-Kit resolve the placeholder via
+the MVR overrides baked into the generated `devstackDappKitConfig`. Reach for the raw `id` only when
+MVR can't express the call (struct type strings, error labels).
+
+## Partial dapp-kit config
+
+`DappKitConfigEmitter` emits a `devstackDappKitConfig` value that the user-written `src/dapp-kit.ts`
+spreads into `createDAppKit`. The config carries the resolved network, an `SuiGrpcClient` factory
+with MVR overrides + RPC URL pre-baked, and the dev-wallet adapter wired to the resolved accounts.
+
+```ts
+// src/dapp-kit.ts (user-owned)
+import { createDAppKit } from '@mysten/dapp-kit-react';
+import { devstackDappKitConfig } from './generated/dapp-kit-config.js';
+
+export const dAppKit = createDAppKit({
+	...devstackDappKitConfig,
+	// app-specific overrides
 });
 ```
 
-Same `output` default as `Codegen` — generated file lands at `./src/generated/dapp-kit/index.ts`,
-alongside `./src/generated/bindings/`. Your app imports it directly:
-
-```ts
-// src/dapp-kit.ts
-import { createDevstackDappKit } from '@mysten-incubation/devstack/dapp-kit';
-import { manifest } from './generated/manifest.js';
-
-export const { dAppKit } = await createDevstackDappKit({ manifest });
-```
-
-Flavors:
-
-- `'core'` — only `@mysten/dapp-kit-core` imports.
-- `'react'` (default) — adds the `declare module '@mysten/dapp-kit-react'` `Register` block so
-  `useDAppKit()` infers the right type.
-
 See [dapp-kit integration](./dapp-kit) for the full frontend wiring.
 
-## Multiple emitters
+## Custom emitter sets
 
-To run both bindings and dapp-kit (or your own emitters), pass them explicitly. The bindings emitter
-and dapp-kit emitter both live under `@mysten-incubation/devstack/advanced`:
+To run a custom set of emitters, pass them explicitly. The built-ins live under
+`@mysten-incubation/devstack/advanced`:
 
 ```ts
 import { Codegen } from '@mysten-incubation/devstack';
-import { BindingsEmitter, DappKitEmitter } from '@mysten-incubation/devstack/advanced';
+import {
+	BindingsEmitter,
+	StackHandleEmitter,
+	DappKitConfigEmitter,
+} from '@mysten-incubation/devstack/advanced';
 
 Codegen({
 	packages: [hello, deepbookV3],
-	emitters: [BindingsEmitter(), DappKitEmitter({ flavor: 'react' })],
+	emitters: [
+		BindingsEmitter(),
+		StackHandleEmitter(),
+		DappKitConfigEmitter({ enableBurnerWallet: false }),
+	],
 });
 ```
 
@@ -122,8 +194,11 @@ const VersionList = defineEmitter({
 		}),
 });
 
-Codegen({ packages: [hello], emitters: [VersionList] });
+Codegen({ packages: [hello], emitters: [BindingsEmitter(), VersionList] });
 ```
+
+When you pass `emitters: [...]` explicitly the defaults DON'T apply — include `BindingsEmitter()`
+and the others you still want.
 
 ## Per-package opt-out
 

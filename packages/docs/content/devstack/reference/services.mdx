@@ -88,8 +88,9 @@ const deepbookV3 = KnownPackage('deepbook', {
 });
 ```
 
-Yields `Package` (no `sourcePath`/`captured`). `Codegen` / `Codegen`'s bindings emitter skips
-entries without source; emitters that just need the id (DappKit, custom emitters) consume it.
+Yields `Package` (no `sourcePath`/`captured`). `BindingsEmitter` skips entries without source;
+emitters that just need the id (`DappKitConfigEmitter`, `StackHandleEmitter`, custom emitters)
+consume it normally.
 
 ## `Action(name, opts)`
 
@@ -169,40 +170,34 @@ origins, port, and bind address are configurable.
 
 ## `Codegen(opts)`
 
-The code-emit Ref. With no `emitters` field, defaults to `[BindingsEmitter()]` (Move → TS bindings
-via `@mysten/codegen`). Override `emitters` to combine multiple emitters or swap in user emitters.
+The code-emit Ref. With no `emitters` field, defaults to all three built-in emitters —
+`BindingsEmitter` (Move → TS bindings), `StackHandleEmitter` (typed
+`accounts`/`services`/`extras`/`captured`/`packages` handles), and `DappKitConfigEmitter`
+(`devstackDappKitConfig` partial). Override `emitters` to swap per-emitter options or add custom
+emitters.
 
 ```ts
-// Default: bindings emitter + ./src/generated/ output.
+// Default: all three built-ins + ./src/generated/ output.
 Codegen({ packages: [hello, world] });
 
-// Explicit: bindings + dapp-kit emitter. Both live under /advanced.
-import { BindingsEmitter, DappKitEmitter } from '@mysten-incubation/devstack/advanced';
+// Explicit: customise per-emitter options. Built-ins live under /advanced.
+import {
+	BindingsEmitter,
+	StackHandleEmitter,
+	DappKitConfigEmitter,
+} from '@mysten-incubation/devstack/advanced';
 
 Codegen({
 	packages: [hello, deepbookV3],
-	emitters: [BindingsEmitter(), DappKitEmitter({ flavor: 'react' })],
+	emitters: [
+		BindingsEmitter(),
+		StackHandleEmitter(),
+		DappKitConfigEmitter({ enableBurnerWallet: false }),
+	],
 });
 ```
 
 `output` is optional and defaults to `./src/generated/`. Override only when you need a non-standard
 path (rare).
 
-See [Codegen reference](./codegen) for the emitter plug-in interface.
-
-## `DappKit(opts)`
-
-Convenience facade over `Codegen({ emitters: [DappKitEmitter()] })`.
-
-```ts
-DappKit({
-	packages: [hello],
-	flavor: 'react', // default
-});
-```
-
-Same `output` default as `Codegen` (`./src/generated/`); generated file lands at
-`./src/generated/dapp-kit/index.ts`.
-
-The emitted file lives at `<output>/dapp-kit/index.ts` and is what your `main.tsx` imports. See
-[Codegen reference](./codegen) for the flavor options.
+See [Codegen reference](./codegen) for the emitter plug-in interface and the full output layout.

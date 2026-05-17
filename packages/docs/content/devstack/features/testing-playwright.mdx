@@ -78,9 +78,15 @@ test('alice can sign in', async ({ page }) => {
 ```
 
 `connectAs(page, label)` clicks the dapp-kit connect button, picks the dev wallet, and switches the
-active dapp-kit account to the one labelled `label`. It uses a small browser-side bridge that
-`createDevstackDappKit` mounts on `globalThis.__devstackDAppKit__` in dev / preview / `PLAYWRIGHT=1`
-mode.
+active dapp-kit account to the one labelled `label`. It uses a small browser-side bridge — your
+`src/dapp-kit.ts` exposes the kit on `globalThis.__devstackDAppKit__` right after
+`createDAppKit({ ...devstackDappKitConfig })`:
+
+```ts
+(globalThis as { __devstackDAppKit__?: typeof dAppKit }).__devstackDAppKit__ = dAppKit;
+```
+
+The scaffolded `dapp-kit.ts` already does this; production builds can guard it behind an env check.
 
 For multi-account flows (alice grants bob a capability, bob acts on it), clear localStorage and
 `connectAs` again — dapp-kit persists the connected wallet across page loads:

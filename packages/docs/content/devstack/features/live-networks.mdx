@@ -116,7 +116,7 @@ const partner = KnownPackage('partner', {
 
 `KnownPackage` is `Package`-shaped — it yields the same `Package` (minus the `sourcePath` /
 `captured` fields). Codegen emitters that need source skip it; emitters that just need the id
-(`DappKitEmitter`, custom emitters) consume it normally.
+(`DappKitConfigEmitter`, `StackHandleEmitter`, custom emitters) consume it normally.
 
 ## Migration checklist
 
@@ -133,9 +133,9 @@ When promoting a localnet config to live:
 `Codegen` works the same against any network. It reads whichever package Refs you declared — mix
 `Package(...)` (local source) and `KnownPackage(...)` (pinned id) freely.
 
-The default bindings emitter emits for entries with a `sourcePath` and skips the rest. The
-`DappKitEmitter` (used by `DappKit({...})`) consumes every entry, so MVR overrides in the emitted
-dapp-kit module cover both local and known packages.
+`BindingsEmitter` emits for entries with a `sourcePath` and skips the rest. `DappKitConfigEmitter`
+and `StackHandleEmitter` consume every entry, so MVR overrides in the generated `dapp-kit-config.ts`
+and `packages.<name>.id` lookups in `packages.ts` cover both local and known packages.
 
 ## Reference
 
