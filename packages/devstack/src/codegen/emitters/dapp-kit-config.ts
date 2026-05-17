@@ -102,15 +102,22 @@ import {
 const adapterManifest: DevstackAdapterManifest = ${JSON.stringify(adapterManifest, null, '\t')};
 const devstackAdapter = createDevstackAdapterFromManifest(adapterManifest);
 
-/** Build a devstack burner-wallet initializer with custom options
- *  (e.g. \`{ mountUI: false }\` for headless production bundles).
- *  Returns \`null\` when the manifest has no accounts the adapter can
- *  bind to. */
+/** Build a devstack burner-wallet initializer. Defaults to
+ *  \`autoConnect: true\` + \`autoApprove: true\` so playwright/e2e flows
+ *  stay non-interactive and the wallet auto-binds to the resolved
+ *  accounts on first page load. Pass \`{ mountUI: false }\` to drop the
+ *  panel UI from production bundles (~30KB saving) or override
+ *  autoConnect/autoApprove for prod. */
 export const devstackWalletInitializer = (
 \topts: Omit<DevWalletInitializerConfig, 'adapters'> = {},
 ): ReturnType<typeof devWalletInitializer> | null =>
 \tdevstackAdapter
-\t\t? devWalletInitializer({ ...opts, adapters: [devstackAdapter] })
+\t\t? devWalletInitializer({
+\t\t\t\tautoConnect: true,
+\t\t\t\tautoApprove: true,
+\t\t\t\t...opts,
+\t\t\t\tadapters: [devstackAdapter],
+\t\t\t})
 \t\t: null;
 
 const defaultWalletInitializer = devstackWalletInitializer();

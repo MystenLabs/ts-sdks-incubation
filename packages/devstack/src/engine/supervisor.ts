@@ -923,6 +923,7 @@ export const defineDevstack = (
 			stackName: config.stackName,
 			network: config.network,
 			stateDir: config.stateDir,
+			extras: config.extras,
 			platformLayer: undefined,
 		});
 

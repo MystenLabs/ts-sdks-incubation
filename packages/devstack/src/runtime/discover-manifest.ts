@@ -17,12 +17,11 @@
 //      over everything, including explicit `override` arguments).
 //   2. `override` argument (caller-explicit).
 //   3. Walk up from `opts.cwd ?? process.cwd()`; at each directory,
-//      check the stack-scoped path
-//      `<state-dir>/stacks/<stack>/manifest.json` FIRST, then the
-//      legacy-flat `<state-dir>/manifest.json`. Stack-scoped wins at
-//      each level so a `DEVSTACK_STACK=test` reader doesn't pick up a
-//      `main` stack's manifest that happened to have been written more
-//      recently to the flat path.
+//      check `<state-dir>/stacks/<stack>/manifest.json`. Stack-scoped
+//      ONLY — the supervisor never writes to the flat
+//      `<state-dir>/manifest.json` path, so a hit there could only be
+//      stale data from a removed stack, which would silently steer
+//      callers at the wrong URLs / package ids.
 //
 // `state-dir` defaults to `process.env.DEVSTACK_STATE_DIR ?? '.devstack'`.
 // `stack` defaults to `process.env.DEVSTACK_STACK ?? 'main'`.
@@ -99,27 +98,25 @@ export function discoverManifestPath(opts: DiscoverManifestPathOptions = {}): st
 	const startDir = opts.cwd ?? process.cwd();
 	let dir = resolve(startDir);
 	while (true) {
-		// Stack-scoped FIRST so a concurrent `DEVSTACK_STACK=test` reader
-		// doesn't pick up the legacy-flat `main` manifest a sibling stack
-		// may have written more recently.
-		const candidates = [
-			join(dir, stateDir, 'stacks', stack, 'manifest.json'),
-			join(dir, stateDir, 'manifest.json'),
-		];
-		for (const candidate of candidates) {
-			if (existsSync(candidate)) return candidate;
-		}
+		// Stack-scoped only. The supervisor writes ONLY to
+		// `<state-dir>/stacks/<stack>/manifest.json`; a hit at the flat
+		// `<state-dir>/manifest.json` could only be stale data from a
+		// pre-refactor run or a removed stack, and silently returning it
+		// would steer playwright / dapp-kit / status readers at the wrong
+		// URLs.
+		const candidate = join(dir, stateDir, 'stacks', stack, 'manifest.json');
+		if (existsSync(candidate)) return candidate;
 		const parent = dirname(dir);
 		if (parent === dir) break;
 		dir = parent;
 	}
 	if (opts.required === true) {
-		const expected = resolve(startDir, stateDir, 'manifest.json');
+		const expected = resolve(startDir, stateDir, 'stacks', stack, 'manifest.json');
 		throw new Error(
 			`devstack: no manifest.json found walking up from ${startDir} ` +
-				`(looked for ${stateDir}/stacks/${stack}/manifest.json and ${stateDir}/manifest.json ` +
-				`at each level). Run \`devstack up\` (or \`devstack apply\`) — ` +
-				`it writes the manifest to ${expected}.`,
+				`(looked for ${stateDir}/stacks/${stack}/manifest.json at each level). ` +
+				`Run \`devstack up\` (or \`devstack apply\`) — it writes the manifest to ` +
+				`${expected}.`,
 		);
 	}
 	return undefined;
