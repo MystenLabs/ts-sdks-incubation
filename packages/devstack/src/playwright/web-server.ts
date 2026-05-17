@@ -46,6 +46,22 @@ export function webServer(opts: WebServerOptions): PlaywrightWebServerSingle {
 		url: ep.url,
 		timeout: opts.timeout ?? 120_000,
 		reuseExistingServer: !process.env.CI,
+		// Stamp `PLAYWRIGHT=1` into the supervisor's env so configs that
+		// want e2e-specific behavior (the most common: `hotRestart: false`
+		// — codegen's first-cycle `sui move build` touches files inside
+		// the Move source dir and trips the watcher, restarting vite
+		// mid-test) can branch on it. User-supplied `env` wins.
+		env: { PLAYWRIGHT: '1', ...(opts.extend as { env?: Record<string, string> } | undefined)?.env },
+		// Playwright spawns the command via `shell: true`, so the shell
+		// owns the whole supervisor / Dev / vite process tree. Default
+		// shutdown is SIGKILL on the shell — reparents every descendant
+		// to init with no cleanup, leaving orphan vite processes that
+		// hold ports for hours. `gracefulShutdown` switches to SIGTERM
+		// first (with a 10s budget) so pnpm propagates to the supervisor,
+		// the supervisor's NodeRuntime runs Effect finalizers, the Dev
+		// primitive's spawner sends SIGTERM to vite's process group,
+		// and everything actually exits.
+		gracefulShutdown: { signal: 'SIGTERM', timeout: 10_000 },
 		...opts.extend,
 	};
 }

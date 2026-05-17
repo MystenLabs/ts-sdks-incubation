@@ -38,14 +38,19 @@ class AuthError extends Error {
 	}
 }
 
-function publicKeyForScheme(base64: string, scheme: SignatureScheme): PublicKey {
+function publicKeyForScheme(base64: string, scheme: SignatureScheme | string): PublicKey {
 	const bytes = fromBase64(base64);
-	switch (scheme) {
-		case 'ED25519':
+	// The devstack server's wallet-app endpoint surfaces the scheme in
+	// the lowercase form it standardised at the Account boundary
+	// (`'ed25519'`, `'secp256k1'`, `'secp256r1'`). The Sui SDK's
+	// `SignatureScheme` union is mixed-case (`'ED25519'`, `'Secp256k1'`,
+	// …). Normalise to lowercase before matching so either casing parses.
+	switch (String(scheme).toLowerCase()) {
+		case 'ed25519':
 			return new Ed25519PublicKey(bytes);
-		case 'Secp256k1':
+		case 'secp256k1':
 			return new Secp256k1PublicKey(bytes);
-		case 'Secp256r1':
+		case 'secp256r1':
 			return new Secp256r1PublicKey(bytes);
 		default:
 			throw new Error(`Unsupported key scheme: ${scheme}`);
