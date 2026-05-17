@@ -28,7 +28,7 @@
 import { Context } from 'effect';
 import { readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
-import type { SuiNetwork } from '../services/sui.js';
+import type { SuiNetwork } from './network.js';
 
 export interface IdentityShape {
 	readonly app: string;

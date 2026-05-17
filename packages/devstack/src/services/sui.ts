@@ -83,10 +83,10 @@ const INTERNAL_GRAPHQL_URL = `http://${SUI_LOCALNET_NETWORK_ALIAS}:${LOCAL_GRAPH
 // Contract
 // -----------------------------------------------------------------------------
 
-/** Three-network literal alias used by engine / state-store / supervisor.
- *  Exported because those callers fold the value into per-network cache
- *  paths + warm-restart resume keys. */
-export type SuiNetwork = 'localnet' | 'testnet' | 'mainnet';
+// `SuiNetwork` moved to engine/network.ts (the substrate is the primary
+// consumer for cache paths / resume keys / identity). Re-exported here
+// so user-facing imports remain on the high-level services module.
+export type { SuiNetwork } from '../engine/network.js';
 
 /** Shape every Sui-producing factory must satisfy.
  *

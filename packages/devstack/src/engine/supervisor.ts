@@ -53,8 +53,7 @@ import { PortAllocatorLive } from './port-allocator.js';
 import { AccountRegistryLive, CoinRegistryLive, PackageRegistryLive } from './registries.js';
 import { StateStoreConfig, StateStoreLive } from './state-store.js';
 import { ExtrasLive } from '../runtime/extras.js';
-import type { SuiNetwork } from '../services/sui.js';
-import { resolveNetwork } from './network.js';
+import { resolveNetwork, type SuiNetwork } from './network.js';
 import type { TagKind } from '../advanced/tag.js';
 import { startPlainRenderer } from '../tui/plain.js';
 import { SHUTDOWN_LOG_MESSAGE, startTuiOnce, TuiLoggerLayer } from '../tui/index.js';
@@ -232,6 +231,54 @@ const InfraLiveCore = Layer.provideMerge(
 	),
 );
 
+// Shared infra recipe — config-derived StateStore + Identity layers used
+// by BOTH `composeBootstrapLayer` and `composeStackLayer`. Centralised so
+// the two call sites can't drift; in particular the `validateIdentity`
+// guard (Phase D — rejects `..`, `/`, shell-meaningful characters in
+// app/stack names before they flow into docker labels / filesystem
+// paths) fires identically on both paths.
+//
+// `Layer.provideMerge` (not `provide`) on `StateStoreLive` re-exports
+// `StateStoreConfig` from the resulting layer so user primitives can
+// still `yield* StateStoreConfig` from inside their build body. A plain
+// `Layer.provide` hides the config, and the acquire body fails with
+// `ServiceNotFound: @devstack/StateStoreConfig` — silent until a
+// user-facing primitive happens to consume it.
+const buildBaseInfra = (
+	opts: StackComposeOptions,
+): {
+	readonly stateStoreConfig: {
+		readonly stack: string;
+		readonly network: SuiNetwork;
+		readonly stateDir?: string;
+	};
+	readonly StateStoreFullLive: Layer.Layer<unknown, unknown, never>;
+	readonly IdentityLive: Layer.Layer<Identity, never, never>;
+} => {
+	const stateStoreConfig: {
+		readonly stack: string;
+		readonly network: SuiNetwork;
+		readonly stateDir?: string;
+	} = {
+		stack: resolveStackName(opts.stackName),
+		network: opts.network ?? resolveNetwork(),
+		...(opts.stateDir !== undefined ? { stateDir: opts.stateDir } : {}),
+	};
+	const StateStoreConfigLive = Layer.succeed(StateStoreConfig, stateStoreConfig);
+	const StateStoreFullLive = Layer.provideMerge(
+		StateStoreLive,
+		StateStoreConfigLive,
+	) as Layer.Layer<unknown, unknown, never>;
+	const identityShape = {
+		app: deriveAppName(),
+		stack: stateStoreConfig.stack,
+		network: stateStoreConfig.network,
+	};
+	validateIdentity(identityShape);
+	const IdentityLive = Layer.succeed(Identity, identityShape);
+	return { stateStoreConfig, StateStoreFullLive, IdentityLive };
+};
+
 // Bootstrap = just enough to drive the TUI + watchers + signal handlers
 // BEFORE the user stack starts acquiring. We want a primitive failure
 // during `Layer.build(fullLayer)` to surface in the TUI (red `failed` +
@@ -256,35 +303,9 @@ const InfraLiveCore = Layer.provideMerge(
 const composeBootstrapLayer = (
 	opts: StackComposeOptions = {},
 ): Layer.Layer<unknown, unknown, never> => {
-	const stateStoreConfig: {
-		readonly stack: string;
-		readonly network: SuiNetwork;
-		readonly stateDir?: string;
-	} = {
-		stack: resolveStackName(opts.stackName),
-		network: opts.network ?? resolveNetwork(),
-		...(opts.stateDir !== undefined ? { stateDir: opts.stateDir } : {}),
-	};
-	const StateStoreConfigLive = Layer.succeed(StateStoreConfig, stateStoreConfig);
-	// `Layer.provideMerge` (not `provide`) re-exports `StateStoreConfig`
-	// from the resulting layer so user primitives can still
-	// `yield* StateStoreConfig` from inside their build body.
-	const StateStoreFullLive = Layer.provideMerge(StateStoreLive, StateStoreConfigLive);
-	const identityShape = {
-		app: deriveAppName(),
-		stack: stateStoreConfig.stack,
-		network: stateStoreConfig.network,
-	};
-	// Phase D: validate `app` + `stack` at the Identity-construction
-	// boundary. The strings flow into docker container names + labels
-	// + filesystem paths under `.devstack/stacks/<stack>/`; rejecting
-	// `..`, `/`, and other shell-meaningful characters here surfaces
-	// the bad config at supervisor boot rather than as an inscrutable
-	// docker / filesystem error downstream.
-	validateIdentity(identityShape);
-	const IdentityLive = Layer.succeed(Identity, identityShape);
+	const { StateStoreFullLive, IdentityLive } = buildBaseInfra(opts);
 	const platform: Layer.Layer<unknown, unknown, never> =
-		opts.platformLayer ?? (NodeServicesLayer as Layer.Layer<unknown, unknown, never>);
+		opts.platformLayer ?? (PlatformLive as Layer.Layer<unknown, unknown, never>);
 	// Layer-order (innermost → outermost):
 	//   1. StateStoreLive consumes FileSystem + StateStoreConfig — those
 	//      have to be visible when it builds.
@@ -525,9 +546,9 @@ const watchPathFiber = (
 
 /**
  * Subset of `DevstackConfig` knobs that affect layer composition (vs the
- * runner-side TUI / watcher knobs). Used by both `defineDevstack` and
- * `provideDevstack` so the latter can reuse the composition step without
- * dragging in the run-loop surface.
+ * runner-side TUI / watcher knobs). Consumed by `defineDevstack` via
+ * `composeStackLayer`; the bootstrap path uses the same shape so the
+ * `validateIdentity` guard and stack/network resolution stay in sync.
  */
 export interface StackComposeOptions {
 	readonly stackName?: string;
@@ -575,84 +596,18 @@ const resolveStackName = (configured: string | undefined): string =>
 	configured ?? process.env.DEVSTACK_STACK ?? 'main';
 
 /**
- * Compose JUST the infra+platform half of the devstack graph (registries,
- * engine, state store, identity, Node platform services). The result has
- * `RIn = never` and `ROut = unknown` — everything user-stack primitives
- * may consume. Per-primitive launch loops (`defineDevstack.runOnce`)
- * build this once at the supervisor scope and reuse it as the seed
- * Context for every per-primitive child scope, so a primitive failure
- * only tears down ITS resources (not the shared infra).
- *
- * `provideDevstack` and `composeStackLayer` continue to build a single
- * fused layer including the user stack; this helper is only needed when
- * the caller wants to fork user-stack acquisition into per-primitive
- * child scopes.
- */
-export const composeInfraLayer = (
-	opts: StackComposeOptions = {},
-): Layer.Layer<unknown, unknown, never> => {
-	const stateStoreConfig: {
-		readonly stack: string;
-		readonly network: SuiNetwork;
-		readonly stateDir?: string;
-	} = {
-		stack: resolveStackName(opts.stackName),
-		network: opts.network ?? resolveNetwork(),
-		...(opts.stateDir !== undefined ? { stateDir: opts.stateDir } : {}),
-	};
-	const StateStoreConfigLive = Layer.succeed(StateStoreConfig, stateStoreConfig);
-	const StateStoreFullLive = Layer.provideMerge(StateStoreLive, StateStoreConfigLive);
-	const identityShape = {
-		app: deriveAppName(),
-		stack: stateStoreConfig.stack,
-		network: stateStoreConfig.network,
-	};
-	// validate `app` + `stack` at the Identity-construction boundary.
-	// The strings flow into docker container names + labels + filesystem
-	// paths under `.devstack/stacks/<stack>/`; rejecting `..`, `/`, and
-	// other shell-meaningful characters here surfaces the bad config at
-	// supervisor boot rather than as an inscrutable docker / filesystem
-	// error downstream.
-	validateIdentity(identityShape);
-	const IdentityLive = Layer.succeed(Identity, identityShape);
-	const ExtrasInfraLive = ExtrasLive(opts.extras);
-	// `infraOverrides` (when set) is merged LAST so `Layer.mergeAll`'s
-	// later-wins semantics shadow any duplicate tag in `InfraLiveCore`
-	// (e.g. a deterministic `PortAllocator` for integration tests).
-	const InfraLive =
-		opts.infraOverrides !== undefined
-			? Layer.mergeAll(
-					InfraLiveCore,
-					StateStoreFullLive,
-					IdentityLive,
-					ExtrasInfraLive,
-					opts.infraOverrides as Layer.Layer<any, any, any>,
-				)
-			: Layer.mergeAll(InfraLiveCore, StateStoreFullLive, IdentityLive, ExtrasInfraLive);
-	// `platformLayer` accepts a `Layer<unknown,…>` (the "strongest layer"
-	// interpretation — provides ALL services). The default `PlatformLive`
-	// is a narrower `Layer<NodeServices,…>`; we cast to the wider shape
-	// since callers consume the composed layer via `Context.get(tag)` at
-	// runtime and accept ServiceNotFound for absent tags. Going through
-	// the same widening type as `platformLayer` (not `Layer<any,any,any>`)
-	// keeps E + RIn precise.
-	const platform: Layer.Layer<unknown, unknown, never> =
-		opts.platformLayer ?? (PlatformLive as Layer.Layer<unknown, unknown, never>);
-	return Layer.provideMerge(InfraLive, platform) as Layer.Layer<unknown, unknown, never>;
-};
-
-/**
  * Compose a user-supplied `stack` into the fully-resolved Devstack
  * Layer: every tag's `__layer(s)` merged together, then wrapped with
- * infrastructure (engine, registries, state store, identity) and
- * platform (Node FileSystem / Path / ChildProcessSpawner / Stdio /
+ * infrastructure (engine, registries, state store, identity, extras)
+ * and platform (Node FileSystem / Path / ChildProcessSpawner / Stdio /
  * Terminal) layers. Returned as `Layer<unknown, unknown, never>` because
  * each primitive contributes its own service / error vocabulary; the
  * caller resolves services from Context at runtime.
  *
- * Shared between `defineDevstack` (which wraps the result in a launch
- * loop) and `provideDevstack` (which hands it straight to
- * `Effect.provide`).
+ * Consumed by `defineDevstack`, which wraps the result in a launch
+ * loop. The base infra (StateStore + Identity) is built via the same
+ * `buildBaseInfra` helper the bootstrap layer uses, so the lock-first
+ * invariant and identity validation stay in sync between paths.
  */
 export const composeStackLayer = (
 	stack: ReadonlyArray<StackMember>,
@@ -713,39 +668,16 @@ export const composeStackLayer = (
 		seed as Layer.Layer<any, any, any>,
 	);
 
-	// Per-devstack state-store identity. Reads from config with sane
-	// defaults, then provides itself as a Layer so StateStoreLive can
-	// `yield* StateStoreConfig` to compute the path.
-	const stateStoreConfig: {
-		readonly stack: string;
-		readonly network: SuiNetwork;
-		readonly stateDir?: string;
-	} = {
-		stack: resolveStackName(opts.stackName),
-		network: opts.network ?? resolveNetwork(),
-		...(opts.stateDir !== undefined ? { stateDir: opts.stateDir } : {}),
-	};
-	const StateStoreConfigLive = Layer.succeed(StateStoreConfig, stateStoreConfig);
-	// `Layer.provideMerge` (not `provide`) re-exports `StateStoreConfig`
-	// from the resulting layer so user primitives (e.g. `accounts`'s
-	// `ephemeral-funded` branch resolving the on-disk keystore path) can
-	// `yield* StateStoreConfig` inside their body. A plain `Layer.provide`
-	// hides the config, and the acquire body fails with `ServiceNotFound:
-	// @devstack/StateStoreConfig` — silent until a user-facing primitive
-	// happens to consume it.
-	const StateStoreFullLive = Layer.provideMerge(StateStoreLive, StateStoreConfigLive);
+	// Per-devstack state-store + identity. Built via the shared
+	// `buildBaseInfra` helper so this path stays consistent with
+	// `composeBootstrapLayer`'s identity validation + lock-file invariant.
 	// `Identity` flows the resolved `<app, stack, network>` triple into
 	// `Docker.run` so every container we launch gets stamped with
 	// `--label devstack.app=... --label devstack.stack=... --label
 	// devstack.action=...` and so the container/compose-project name
-	// includes the network suffix on non-localnet (preventing collisions
-	// when the same `<app, stack>` runs against testnet AND localnet).
-	// `wipe` / `stack down` filter on these labels.
-	const IdentityLive = Layer.succeed(Identity, {
-		app: deriveAppName(),
-		stack: stateStoreConfig.stack,
-		network: stateStoreConfig.network,
-	});
+	// includes the network suffix on non-localnet. `wipe` / `stack down`
+	// filter on these labels.
+	const { StateStoreFullLive, IdentityLive } = buildBaseInfra(opts);
 	// `Extras` holds the user's raw `app.extras` input (undefined when
 	// `devstack({ extras })` wasn't set). manifest-emit + codegen yield
 	// it and resolve on their own time, inside their own scope where
@@ -780,14 +712,15 @@ export const composeStackLayer = (
 	// `that`'s outputs, which would leave `fullLayer` only exposing
 	// `userLayer`'s service tags — `Context.get(ctx, EngineHandle)` in
 	// the run loop, and `yield* FileSystem.FileSystem` from consumer
-	// code that provides `fullLayer` directly (e.g. provideDevstack),
-	// would both ServiceNotFound at runtime. provideMerge keeps the
-	// internal wiring intact while still re-exporting upward.
+	// code that resolves services from `fullLayer` directly, would both
+	// ServiceNotFound at runtime. provideMerge keeps the internal wiring
+	// intact while still re-exporting upward.
 	const withInfra = Layer.provideMerge(userLayer, InfraLive);
-	// See `composeInfraLayer`: platformLayer is typed as the widest
-	// `Layer<unknown,…>` shape because the caller resolves services from
-	// the composed layer via `Context.get(tag)` at runtime. PlatformLive
-	// narrows to NodeServices; the cast widens (no `any` round-trip).
+	// platformLayer is typed as the widest `Layer<unknown,…>` shape because
+	// the caller resolves services from the composed layer via
+	// `Context.get(tag)` at runtime and accepts ServiceNotFound for absent
+	// tags. The default `PlatformLive` is a narrower `Layer<NodeServices,…>`;
+	// the cast widens (no `any` round-trip).
 	const platform: Layer.Layer<unknown, unknown, never> =
 		opts.platformLayer ?? (PlatformLive as Layer.Layer<unknown, unknown, never>);
 	const fullLayer = Layer.provideMerge(withInfra, platform);
@@ -897,11 +830,11 @@ export const defineDevstack = (
 	// Bootstrap layer for the supervisor: engine + filewatcher + platform
 	// + state-store + identity. Built once per `defineDevstack` so the
 	// state-store lock identity (path + instanceId derived inside its
-	// build body) stays consistent across cycles. Memo-map sharing between
-	// bootstrap and the user-stack build means a second StateStore acquire
-	// (via composeStackLayer's redundant wiring, kept for the
-	// provideDevstack path) is a memoised no-op — only one lock-file write
-	// per supervisor.
+	// build body) stays consistent across cycles. Both this layer and the
+	// user-stack `fullLayer` build their StateStore + Identity via
+	// `buildBaseInfra`; the shared memo-map between bootstrap and stack
+	// builds means the second acquire is a memoised no-op — only one
+	// lock-file write per supervisor.
 	const bootstrapLayer = composeBootstrapLayer({
 		stackName: config.stackName,
 		network: config.network,

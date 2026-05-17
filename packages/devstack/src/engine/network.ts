@@ -18,7 +18,12 @@
 //   - pass an explicit `Sui({ network: { rpc, faucet } })` for custom
 //     RPCs (corporate fullnodes, pinned forks).
 
-import type { SuiNetwork } from '../services/sui.js';
+/** Three-network literal alias. Lives in `engine/` because the substrate
+ *  (state-store cache paths, identity, supervisor, network resolution)
+ *  is the primary consumer; `services/sui.ts` re-exports it for
+ *  back-compat so user-facing types still come from the high-level
+ *  module. */
+export type SuiNetwork = 'localnet' | 'testnet' | 'mainnet';
 
 const KNOWN_NETWORKS: ReadonlyArray<SuiNetwork> = ['localnet', 'testnet', 'mainnet'];
 

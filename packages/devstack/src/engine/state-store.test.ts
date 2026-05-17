@@ -4,7 +4,7 @@
 
 import { Effect, FileSystem, Layer, Option } from 'effect';
 import { afterEach, beforeEach, describe, expect, it } from '@effect/vitest';
-import type { SuiNetwork } from '../services/sui.js';
+import type { SuiNetwork } from './network.js';
 import { StateStore, StateStoreConfig, StateStoreLive } from './state-store.js';
 
 // ---------------------------------------------------------------------------
