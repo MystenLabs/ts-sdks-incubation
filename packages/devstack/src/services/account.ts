@@ -37,7 +37,7 @@
 import * as nodeFs from 'node:fs/promises';
 import * as nodeOs from 'node:os';
 import * as nodePath from 'node:path';
-import { Effect, FileSystem, Schema } from 'effect';
+import { Effect, FileSystem, Schedule, Schema } from 'effect';
 import {
 	decodeSuiPrivateKey,
 	encodeSuiPrivateKey,
@@ -449,6 +449,19 @@ export const Account = <const N extends string>(
 							cause,
 						}),
 					}).pipe(
+						// `signAndExecuteTransaction` calls `dryRunTransactionBlock`
+						// internally to estimate gas. The dry-run uses a different
+						// consistency layer than the fullnode's `getObject`, so a
+						// just-published package can still trip "Dependent package
+						// not found on-chain" here even though `publishMove`'s
+						// post-publish poll for `getObject` succeeded. Bounded retry
+						// on that specific message — anything else (unfunded
+						// account, invalid args, etc.) fails fast.
+						Effect.retry({
+							times: 6,
+							schedule: Schedule.spaced('300 millis'),
+							while: (err) => /Dependent package not found on-chain/i.test(err.message),
+						}),
 						Effect.flatMap(
 							(r): Effect.Effect<TxResult, SignAndExecuteError> =>
 								r.effects?.status?.status === 'success'

@@ -73,40 +73,41 @@ describe('discoverManifestPath', () => {
 		expect(discoverManifestPath({ cwd: tmp, override: manifest })).toBe(resolve(manifest));
 	});
 
-	it('prefers the stack-scoped path over the legacy-flat path at the same level', () => {
+	it('finds the stack-scoped manifest at the cwd level', () => {
 		const stackPath = join(tmp, '.devstack', 'stacks', 'main', 'manifest.json');
-		const flatPath = join(tmp, '.devstack', 'manifest.json');
 		mkdirSync(join(tmp, '.devstack', 'stacks', 'main'), { recursive: true });
 		writeFileSync(stackPath, '{}');
-		writeFileSync(flatPath, '{}');
 		expect(discoverManifestPath({ cwd: tmp })).toBe(stackPath);
+	});
+
+	it('ignores a stale flat manifest — only stack-scoped paths count', () => {
+		// The supervisor never writes to `.devstack/manifest.json` since
+		// the codegen redesign — any hit there is leftover from older
+		// runs (or a removed snapshot stack) and would steer callers at
+		// the wrong URLs / package ids.
+		const flatPath = join(tmp, '.devstack', 'manifest.json');
+		mkdirSync(join(tmp, '.devstack'), { recursive: true });
+		writeFileSync(flatPath, '{}');
+		expect(discoverManifestPath({ cwd: tmp })).toBeUndefined();
 	});
 
 	it('honors the DEVSTACK_STACK env var when picking the stack-scoped path', () => {
 		const stackPath = join(tmp, '.devstack', 'stacks', 'test', 'manifest.json');
 		mkdirSync(join(tmp, '.devstack', 'stacks', 'test'), { recursive: true });
 		writeFileSync(stackPath, '{}');
-		// `main` flat path also present — would tempt a buggy reader.
-		mkdirSync(join(tmp, '.devstack'), { recursive: true });
+		// Stale flat manifest also present — must NOT be returned.
 		writeFileSync(join(tmp, '.devstack', 'manifest.json'), '{}');
 		process.env.DEVSTACK_STACK = 'test';
 		expect(discoverManifestPath({ cwd: tmp })).toBe(stackPath);
 	});
 
-	it('falls back to the legacy-flat path when no stack-scoped manifest exists', () => {
-		const flatPath = join(tmp, '.devstack', 'manifest.json');
-		mkdirSync(join(tmp, '.devstack'), { recursive: true });
-		writeFileSync(flatPath, '{}');
-		expect(discoverManifestPath({ cwd: tmp })).toBe(flatPath);
-	});
-
-	it('walks up from a nested cwd to find the manifest at a parent dir', () => {
-		const flatPath = join(tmp, '.devstack', 'manifest.json');
-		mkdirSync(join(tmp, '.devstack'), { recursive: true });
-		writeFileSync(flatPath, '{}');
+	it('walks up from a nested cwd to find the stack-scoped manifest at a parent dir', () => {
+		const stackPath = join(tmp, '.devstack', 'stacks', 'main', 'manifest.json');
+		mkdirSync(join(tmp, '.devstack', 'stacks', 'main'), { recursive: true });
+		writeFileSync(stackPath, '{}');
 		const nested = join(tmp, 'apps', 'web', 'src');
 		mkdirSync(nested, { recursive: true });
-		expect(discoverManifestPath({ cwd: nested })).toBe(flatPath);
+		expect(discoverManifestPath({ cwd: nested })).toBe(stackPath);
 	});
 
 	it('returns undefined when no candidate exists anywhere up the tree', () => {
@@ -129,9 +130,9 @@ describe('discoverManifestPath', () => {
 
 	it('honors an explicit stateDir option that overrides .devstack', () => {
 		const stateDir = '.custom-state';
-		const flatPath = join(tmp, stateDir, 'manifest.json');
-		mkdirSync(join(tmp, stateDir), { recursive: true });
-		writeFileSync(flatPath, '{}');
-		expect(discoverManifestPath({ cwd: tmp, stateDir })).toBe(flatPath);
+		const stackPath = join(tmp, stateDir, 'stacks', 'main', 'manifest.json');
+		mkdirSync(join(tmp, stateDir, 'stacks', 'main'), { recursive: true });
+		writeFileSync(stackPath, '{}');
+		expect(discoverManifestPath({ cwd: tmp, stateDir })).toBe(stackPath);
 	});
 });
