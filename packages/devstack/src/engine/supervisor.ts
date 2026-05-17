@@ -52,6 +52,7 @@ import { registry, type RegistryNetwork } from './registry.js';
 import { PortAllocatorLive } from './port-allocator.js';
 import { AccountRegistryLive, CoinRegistryLive, PackageRegistryLive } from './registries.js';
 import { StateStoreConfig, StateStoreLive } from './state-store.js';
+import { ExtrasLive } from '../runtime/extras.js';
 import type { SuiNetwork } from '../services/sui.js';
 import { resolveNetwork } from './network.js';
 import type { TagKind } from '../advanced/tag.js';
@@ -111,6 +112,13 @@ export type RendererKind = 'tui' | 'plain' | 'silent';
 
 export interface DevstackConfig {
 	readonly stack: ReadonlyArray<StackMember>;
+	/**
+	 * Raw `app.extras` input passed through to the `Extras` runtime
+	 * service. Both `manifest-emit` and the codegen `StackHandleEmitter`
+	 * yield `Extras` and `resolveExtras(...)` to project a single
+	 * resolved record into the manifest + generated `extras.ts`.
+	 */
+	readonly extras?: import('../runtime/extras.js').ExtrasInput;
 	readonly stateDir?: string;
 	/**
 	 * Logical stack name — partitions persisted state under
@@ -526,6 +534,12 @@ export interface StackComposeOptions {
 	readonly network?: SuiNetwork;
 	readonly stateDir?: string;
 	/**
+	 * Raw `app.extras` input. Provided as the `Extras` runtime service
+	 * inside the infra layer so manifest emit + the codegen stack-handle
+	 * emitter can yield the same value and resolve it on their own time.
+	 */
+	readonly extras?: import('../runtime/extras.js').ExtrasInput;
+	/**
 	 * Override the outer Platform layer (FileSystem / Path /
 	 * ChildProcessSpawner / Stdio / Terminal). Intended for integration
 	 * tests that want to swap the real Node spawner for an in-memory
@@ -593,14 +607,15 @@ export const composeInfraLayer = (
 		stack: stateStoreConfig.stack,
 		network: stateStoreConfig.network,
 	};
-	// Phase D: validate `app` + `stack` at the Identity-construction
-	// boundary. The strings flow into docker container names + labels
-	// + filesystem paths under `.devstack/stacks/<stack>/`; rejecting
-	// `..`, `/`, and other shell-meaningful characters here surfaces
-	// the bad config at supervisor boot rather than as an inscrutable
-	// docker / filesystem error downstream.
+	// validate `app` + `stack` at the Identity-construction boundary.
+	// The strings flow into docker container names + labels + filesystem
+	// paths under `.devstack/stacks/<stack>/`; rejecting `..`, `/`, and
+	// other shell-meaningful characters here surfaces the bad config at
+	// supervisor boot rather than as an inscrutable docker / filesystem
+	// error downstream.
 	validateIdentity(identityShape);
 	const IdentityLive = Layer.succeed(Identity, identityShape);
+	const ExtrasInfraLive = ExtrasLive(opts.extras);
 	// `infraOverrides` (when set) is merged LAST so `Layer.mergeAll`'s
 	// later-wins semantics shadow any duplicate tag in `InfraLiveCore`
 	// (e.g. a deterministic `PortAllocator` for integration tests).
@@ -610,9 +625,10 @@ export const composeInfraLayer = (
 					InfraLiveCore,
 					StateStoreFullLive,
 					IdentityLive,
+					ExtrasInfraLive,
 					opts.infraOverrides as Layer.Layer<any, any, any>,
 				)
-			: Layer.mergeAll(InfraLiveCore, StateStoreFullLive, IdentityLive);
+			: Layer.mergeAll(InfraLiveCore, StateStoreFullLive, IdentityLive, ExtrasInfraLive);
 	// `platformLayer` accepts a `Layer<unknown,…>` (the "strongest layer"
 	// interpretation — provides ALL services). The default `PlatformLive`
 	// is a narrower `Layer<NodeServices,…>`; we cast to the wider shape
@@ -729,6 +745,11 @@ export const composeStackLayer = (
 		stack: stateStoreConfig.stack,
 		network: stateStoreConfig.network,
 	});
+	// `Extras` holds the user's raw `app.extras` input (undefined when
+	// `devstack({ extras })` wasn't set). manifest-emit + codegen yield
+	// it and resolve on their own time, inside their own scope where
+	// the refs the user's extras Effect depends on are already acquired.
+	const ExtrasInfraLive = ExtrasLive(opts.extras);
 	// `infraOverrides` (when set) is merged LAST so `Layer.mergeAll`'s
 	// later-wins semantics shadow any duplicate tag in `InfraLiveCore`
 	// (e.g. a deterministic `PortAllocator` for integration tests).
@@ -738,9 +759,10 @@ export const composeStackLayer = (
 					InfraLiveCore,
 					StateStoreFullLive,
 					IdentityLive,
+					ExtrasInfraLive,
 					opts.infraOverrides as Layer.Layer<any, any, any>,
 				)
-			: Layer.mergeAll(InfraLiveCore, StateStoreFullLive, IdentityLive);
+			: Layer.mergeAll(InfraLiveCore, StateStoreFullLive, IdentityLive, ExtrasInfraLive);
 
 	// Layer-order rationale (innermost → outermost):
 	//   1. `userLayer` consumes infra (Engine, registries, StateStore,
@@ -782,6 +804,7 @@ export const defineDevstack = (
 		stackName: config.stackName,
 		network: config.network,
 		stateDir: config.stateDir,
+		extras: config.extras,
 	});
 
 	// Identity values used for the pre-build orphan sweep below. Mirrors

@@ -1,9 +1,9 @@
 // Browser-side walrus integration. Builds a vanilla `WalrusClient`
-// against the live manifest. `localnetWalrusOptions(manifest)` returns
-// the localnet-specific bits — a `packageConfig` derived from the
-// manifest's walrus package + a fetch override that translates the
-// on-chain storage-node URLs (docker-internal IPs) to host-mapped
-// plain-HTTP. On testnet/mainnet the same call would drop the spread.
+// against the localnet walrus package, sourcing the system + staking
+// object ids from the generated `captured.ts` (populated by the
+// `Walrus({...})` plugin's register step). On testnet/mainnet drop
+// `localnetWalrusOptions` from the spread and configure
+// `WalrusClient` against the real network.
 
 import { localnetWalrusOptions } from '@mysten-incubation/devstack/dapp-kit';
 import type { ClientWithCoreApi } from '@mysten/sui/client';
@@ -14,7 +14,25 @@ import { WalrusClient } from '@mysten/walrus';
 // and returns `index.html`. Pattern matches the walrus SDK README.
 import walrusWasmUrl from '@mysten/walrus-wasm/web/walrus_wasm_bg.wasm?url';
 
-import { manifest } from '../generated/manifest.js';
+import { captured } from '../generated/captured.js';
+
+const walrusCaptured = (
+	captured as Record<string, { systemObject?: string; stakingObject?: string } | undefined>
+)['walrus.walrus'];
+if (
+	walrusCaptured === undefined ||
+	walrusCaptured.systemObject === undefined ||
+	walrusCaptured.stakingObject === undefined
+) {
+	throw new Error(
+		'walrus not deployed yet — `captured["walrus.walrus"]` is missing systemObject/stakingObject. ' +
+			'Has the supervisor finished bringing walrus up?',
+	);
+}
+const walrusOpts = localnetWalrusOptions({
+	systemObjectId: walrusCaptured.systemObject,
+	stakingPoolId: walrusCaptured.stakingObject,
+});
 
 const DEFAULT_EPOCHS = 1;
 
@@ -25,7 +43,7 @@ async function getClient(suiClient: ClientWithCoreApi): Promise<WalrusClient> {
 	if (cachedClient !== null && cachedSuiClient === suiClient) return cachedClient;
 	const client = new WalrusClient({
 		suiClient,
-		...localnetWalrusOptions(manifest),
+		...walrusOpts,
 		wasmUrl: walrusWasmUrl,
 	});
 	cachedClient = client;

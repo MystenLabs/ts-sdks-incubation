@@ -6,7 +6,7 @@ import { Field } from '../ui/Field.js';
 import { useMemo, useState } from 'react';
 
 import { dAppKit } from '../dapp-kit.js';
-import * as vault from '../generated/sui/vault/vault.js';
+import * as vault from '../generated/bindings/vault/vault.js';
 import { stringToBytes } from '../lib/format.js';
 import { useSignAndExecute } from '../lib/queries.js';
 import { encryptForSealId, freshSealId } from '../lib/seal.js';

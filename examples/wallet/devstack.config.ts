@@ -13,6 +13,7 @@ import { Effect } from 'effect';
 import {
 	Account,
 	Action,
+	Codegen,
 	Deepbook,
 	DeepbookMarketMaker,
 	Dev,
@@ -189,11 +190,13 @@ const wallet = Wallet({
 	allowedOrigins: ['http://dev.wallet.localhost:5175', 'http://localhost:5174'],
 });
 
+const codegen = Codegen({ packages: [usdc, weth] });
+
 const dev = Dev({
 	command: 'pnpm',
 	args: ['exec', 'vite', '--host', '0.0.0.0', '--strictPort', '--port', '{port}'],
 	port: 5174,
-	needs: [usdc, weth, seedTokens, deepbook, wallet],
+	needs: [usdc, weth, seedTokens, deepbook, wallet, codegen],
 });
 
 export default devstack(
@@ -209,6 +212,7 @@ export default devstack(
 	deepbook,
 	maker,
 	wallet,
+	codegen,
 	dev,
 	{
 		// Project the deepbook pools into a UI-friendly extras blob so

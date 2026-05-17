@@ -9,6 +9,7 @@ import { Effect } from 'effect';
 import {
 	Account,
 	Action,
+	Codegen,
 	Dev,
 	devstack,
 	Package,
@@ -49,14 +50,16 @@ const wallet = Wallet({
 	allowedOrigins: ['http://dev.arena.localhost:5175', 'http://localhost:5176'],
 });
 
+const codegen = Codegen({ packages: [connectFour] });
+
 const dev = Dev({
 	command: 'pnpm',
 	args: ['exec', 'vite', '--host', '0.0.0.0', '--strictPort', '--port', '{port}'],
 	port: 5176,
-	needs: [connectFour, openLobby, wallet],
+	needs: [connectFour, openLobby, wallet, codegen],
 });
 
-export default devstack(publisher, alice, bob, connectFour, openLobby, wallet, dev, {
+export default devstack(publisher, alice, bob, connectFour, openLobby, wallet, codegen, dev, {
 	// Surface the seeded Lobby id so the frontend can pivot a fresh
 	// browser session onto an existing game without scanning chain
 	// state. Resolved as an Effect so `openLobby`'s post-acquire

@@ -54,8 +54,6 @@ export {
 	Codegen,
 	type CodegenOptions,
 	DEFAULT_CODEGEN_OUTPUT,
-	DappKit,
-	type DappKitRefOptions,
 	KnownPackage,
 	type KnownPackageOptions,
 	Faucet,

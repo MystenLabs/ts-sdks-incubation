@@ -11,10 +11,11 @@
 //    Long-running services (the `Sui()`, `Walrus()`, `Dev()` shape)
 //    aren't covered by a generic helper today; reach for the in-tree
 //    factories or read their source for the bare `tag()` pattern.
-// 3. **Codegen plugin-author surface** — `defineEmitter`, `BindingsEmitter`,
-//    `DappKitEmitter`, `CodegenError`, the `CodegenContext` /
-//    `CodegenPackage` shapes. Use when you need to compose emitters
-//    explicitly (multi-emitter, custom emitter, swapped options).
+// 3. **Codegen plugin-author surface** — `defineEmitter`,
+//    `BindingsEmitter`, `DappKitConfigEmitter`, `StackHandleEmitter`,
+//    `CodegenError`, the `CodegenContext` / `CodegenPackage` shapes.
+//    Use when you need to compose emitters explicitly (custom emitter,
+//    swapped per-emitter options).
 // 4. **Faucet plugin-author surface** — `FaucetStrategy`, `defineStrategy`,
 //    `suiHttpStrategy`, `FaucetRequestError`. Use when writing a custom
 //    faucet strategy (e.g. a CI-specific RPC fund spigot).
@@ -61,10 +62,13 @@ export {
 export { CodegenError } from '../codegen/errors.js';
 export { BindingsEmitter, type BindingsEmitterOptions } from '../codegen/emitters/bindings.js';
 export {
-	DappKitEmitter,
-	type DappKitEmitterOptions,
-	type DappKitFlavor,
-} from '../codegen/emitters/dapp-kit.js';
+	DappKitConfigEmitter,
+	type DappKitConfigEmitterOptions,
+} from '../codegen/emitters/dapp-kit-config.js';
+export {
+	StackHandleEmitter,
+	type StackHandleEmitterOptions,
+} from '../codegen/emitters/stack-handle.js';
 
 // ── 4. Faucet plugin-author surface ──
 export { type FaucetStrategy } from '../faucet/service.js';

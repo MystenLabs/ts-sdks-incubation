@@ -1,8 +1,13 @@
 // App-level projection of the devstack manifest. Surfaces the
 // vault package, the seal key server (via `app.extras`), the walrus
-// daemon URL, and a flat account name → address map.
+// daemon URL, and a flat account name → address map — all sourced
+// from the generated stack handles so app code never touches the
+// raw manifest.
 
-import { manifest } from '../generated/manifest.js';
+import { accounts } from '../generated/accounts.js';
+import { extras } from '../generated/extras.js';
+import { packages } from '../generated/packages.js';
+import { services } from '../generated/services.js';
 
 export interface SealView {
 	keyServerObjectId: string;
@@ -15,11 +20,11 @@ interface SealKeyServerExtras {
 	url: string;
 }
 
-const sealKeyServer = manifest.app.extras.sealKeyServer as SealKeyServerExtras | undefined;
-// `sealLocalKeygen` registers the published seal package under
-// `<name>.publish` (default name `seal`), so the manifest entry is
-// `seal.publish`, not `seal`.
-const sealPackage = manifest.packages['seal.publish'];
+const sealKeyServer = (extras as { sealKeyServer?: SealKeyServerExtras }).sealKeyServer;
+// `Seal({ signer })` publishes the seal package under the `seal.publish`
+// name (composite ref), so the manifest entry is `seal.publish` rather
+// than `seal`.
+const sealPackage = (packages as Record<string, { id: string } | undefined>)['seal.publish'];
 
 const seal: SealView | undefined =
 	sealKeyServer !== undefined && sealPackage !== undefined
@@ -31,13 +36,11 @@ const seal: SealView | undefined =
 		: undefined;
 
 export const deployment = {
-	rpcUrl: manifest.services.sui?.rpc.url ?? '',
-	faucetUrl: manifest.services.sui?.faucet?.url,
-	walrusDaemonUrl: manifest.services.walrus?.publisher.url,
-	accounts: Object.fromEntries(
-		Object.entries(manifest.accounts).map(([name, a]) => [name, a.address]),
-	),
-	vaultPackageId: manifest.packages['vault']?.id,
+	rpcUrl: services.sui?.rpc.url ?? '',
+	faucetUrl: services.sui?.faucet?.url,
+	walrusDaemonUrl: services.walrus?.publisher.url,
+	accounts,
+	vaultPackageId: packages.vault?.id,
 	seal,
 } as const;
 

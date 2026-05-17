@@ -8,7 +8,15 @@
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Effect } from 'effect';
-import { Account, Action, Dev, devstack, Package, Wallet } from '@mysten-incubation/devstack';
+import {
+	Account,
+	Action,
+	Codegen,
+	Dev,
+	devstack,
+	Package,
+	Wallet,
+} from '@mysten-incubation/devstack';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HELLO_DIR = resolve(HERE, 'move/hello');
@@ -36,14 +44,20 @@ const wallet = Wallet({
 	allowedOrigins: ['http://localhost:5179'],
 });
 
+// Emit Move bindings + typed stack handles (accounts/services/extras/
+// captured) + dapp-kit config into `src/generated/`. Defaults wire
+// the three built-in emitters; pass `emitters: [...]` to customize.
+const codegen = Codegen({ packages: [hello] });
+
 // User app dev server — pinned to the port Playwright's webServer config
 // uses. Sits in the APP section of the TUI and shows up under
-// `Devstack.app.dev` in the runtime accessor.
+// `Devstack.app.dev` in the runtime accessor. `needs: [..., codegen]`
+// makes vite wait for the first codegen pass before serving.
 const dev = Dev({
 	command: 'pnpm',
 	args: ['exec', 'vite', '--port', '{port}'],
 	port: 5179,
-	needs: [hello, wallet],
+	needs: [hello, wallet, codegen],
 });
 
-export default devstack(alice, bob, hello, mintGreeting, wallet, dev);
+export default devstack(alice, bob, hello, mintGreeting, wallet, codegen, dev);

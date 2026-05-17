@@ -2,27 +2,38 @@
 // plug-ins against the resolved Package set at acquire time.
 //
 // Architecture:
-//   - User declares `Codegen({ output, packages })` once at the
-//     top of the stack. With no `emitters` field, `BindingsEmitter()`
-//     (Move → TS bindings via `@mysten/codegen`) is used by default,
-//     which is what 90% of stacks want.
-//   - For multiple emitters or per-emitter options, pass them
-//     explicitly: `Codegen({ ..., emitters: [BindingsEmitter(),
-//     DappKitEmitter({ flavor: 'react' })] })`.
-//   - Each Package(...) the stack contains feeds into Codegen's context
-//     (unless it sets `{ codegen: false }`).
-//   - Each emitter sees the same `{ packages, outputDir }` context and
-//     writes to its own subdirectory under `outputDir`.
+//   - User declares `Codegen({ packages })` (or just `Codegen()`) in
+//     their devstack.config.ts. The defaults
+//     (`[BindingsEmitter(), StackHandleEmitter(), DappKitConfigEmitter()]`)
+//     emit Move bindings, typed stack handles (`accounts.ts`,
+//     `services.ts`, `extras.ts`, `captured.ts`), and a partial
+//     dapp-kit config — everything an app needs to wire up against a
+//     localnet without consuming the raw manifest at runtime.
+//   - For per-emitter options, pass them explicitly:
+//     `Codegen({ ..., emitters: [BindingsEmitter(),
+//     DappKitConfigEmitter({ flavor: 'core' })] })`.
+//   - Each Package(...) the stack contains feeds into Codegen's
+//     context (unless it sets `{ codegen: false }`).
+//   - Each emitter sees the same `{ packages, outputDir }` context.
 //
-// Built-in emitters: `BindingsEmitter` (Move → TS bindings) and
-// `DappKitEmitter` (React/Vue hooks). User emitters drop in alongside
-// via `defineEmitter({ name, emit })`.
+// Built-in emitters:
+//   - `BindingsEmitter`     → `<outputDir>/bindings/<pkg>/...`
+//                              (Move → TS via `@mysten/codegen`)
+//   - `StackHandleEmitter`  → `<outputDir>/accounts.ts`,
+//                              `services.ts`, `extras.ts`, `captured.ts`
+//   - `DappKitConfigEmitter` → `<outputDir>/dapp-kit-config.ts`
+//                              (partial config the user's `dapp-kit.ts`
+//                               spreads into `createDAppKit(...)`)
+//
+// User emitters drop in alongside via `defineEmitter({ name, emit })`.
 
 import * as path from 'node:path';
 import { Effect } from 'effect';
 import { tag, setPhase, type Ref } from '../advanced/tag.js';
 import type { Emitter, CodegenContext, CodegenPackage } from '../codegen/define-emitter.js';
 import { BindingsEmitter } from '../codegen/emitters/bindings.js';
+import { DappKitConfigEmitter } from '../codegen/emitters/dapp-kit-config.js';
+import { StackHandleEmitter } from '../codegen/emitters/stack-handle.js';
 import { CodegenError } from '../codegen/errors.js';
 import type { Package, LocalPackage } from './package.js';
 
@@ -61,10 +72,12 @@ export interface CodegenOptions {
 	readonly packages?: ReadonlyArray<Ref<any, any, any, any>>;
 	/** Emitter plug-ins to run. Run in declaration order; one emitter's
 	 *  output isn't visible to another (each emitter is independent).
-	 *  Defaults to `[BindingsEmitter()]` — Move → TS bindings via
-	 *  `@mysten/codegen`, which is what most stacks want. Override to
-	 *  add DappKitEmitter, swap in user emitters, or change emitter
-	 *  options. */
+	 *  Defaults to `[BindingsEmitter(), StackHandleEmitter(),
+	 *  DappKitConfigEmitter()]` — Move → TS bindings, typed stack
+	 *  handles (`accounts.ts`, `services.ts`, `extras.ts`, `captured.ts`),
+	 *  and a partial dApp-Kit config the user's hand-written
+	 *  `dapp-kit.ts` spreads into `createDAppKit(...)`. Override to add
+	 *  custom emitters or swap per-emitter options. */
 	readonly emitters?: ReadonlyArray<Emitter>;
 	/** Override tag name. Defaults to `'codegen'`. */
 	readonly name?: string;
@@ -103,7 +116,11 @@ const toCodegenPackage = (pkg: Package | LocalPackage): CodegenPackage => {
 export const Codegen = (opts: CodegenOptions = {}) => {
 	const name = opts.name ?? 'codegen';
 	const packageRefs = opts.packages ?? [];
-	const emitters = opts.emitters ?? [BindingsEmitter()];
+	const emitters = opts.emitters ?? [
+		BindingsEmitter(),
+		StackHandleEmitter(),
+		DappKitConfigEmitter(),
+	];
 	const output = opts.output ?? DEFAULT_CODEGEN_OUTPUT;
 	return tag(
 		`codegen/${name}` as const,

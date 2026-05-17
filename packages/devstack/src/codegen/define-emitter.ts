@@ -8,8 +8,9 @@
 // surface which emitter failed.
 //
 // Built-in emitters: `BindingsEmitter` (Move → TS bindings via
-// `@mysten/codegen`), `DappKitEmitter` (Phase 3g — emits a dapp-kit
-// config file consumers spread into `createNetworkConfig`).
+// `@mysten/codegen`), `StackHandleEmitter` (accounts/services/extras/
+// captured handles), `DappKitConfigEmitter` (partial dapp-kit config
+// the user's hand-written `dapp-kit.ts` spreads).
 //
 // User emitters: `defineEmitter({ name, emit })` returns the same
 // shape — drop the result into `Codegen({ emitters: [...] })` and it

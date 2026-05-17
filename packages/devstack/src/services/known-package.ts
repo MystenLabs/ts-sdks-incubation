@@ -1,9 +1,9 @@
 // KnownPackage(name, opts) — declare a remote/well-known Move package
 // without publishing one from local source. Lets `Codegen` emitters
-// (`DappKitEmitter`, future user emitters) reference packages whose id
-// is fixed on the target network — testnet deepbook, mainnet seal,
-// vendored utility packages — and surface them in generated code
-// alongside locally-deployed packages.
+// (`DappKitConfigEmitter`, future user emitters) reference packages
+// whose id is fixed on the target network — testnet deepbook, mainnet
+// seal, vendored utility packages — and surface them in generated
+// code alongside locally-deployed packages.
 //
 // Unlike `Package(name, source, opts)`, `KnownPackage` doesn't run
 // `sui client publish` — there's no Move source on disk, no
