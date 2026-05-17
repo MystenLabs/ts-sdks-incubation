@@ -4,10 +4,9 @@ import { ConnectButton } from '@mysten/dapp-kit-react/ui';
 import { Transaction } from '@mysten/sui/transactions';
 import { useMutation, useQueryClient, type UseMutationResult } from '@tanstack/react-query';
 import { useState } from 'react';
-import { manifest } from './generated/manifest.js';
+import { packages } from './generated/packages.js';
 
-const helloPackage = manifest.packages?.find((p) => p.name === 'hello');
-const helloPackageId = helloPackage?.packageId ?? '0x0';
+const helloPackageId = packages.hello?.id ?? '0x0';
 const isDeployed = helloPackageId !== '0x0';
 
 interface UseSignAndExecuteOptions {

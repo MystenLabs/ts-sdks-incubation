@@ -1,17 +1,21 @@
 // App-level projection of the devstack manifest. Surfaces the
 // connect_four package id and the openLobby shared object the UI
-// reaches for, plus a flat account name → address map.
+// reaches for, plus a flat account name → address map — all sourced
+// from the generated stack handles (`./generated/{accounts,services,
+// extras,packages}.ts`) so app code never touches the raw manifest.
 
-import { manifest } from '../generated/manifest.js';
-
-const accountMap = Object.fromEntries(manifest.accounts.map((a) => [a.name, a.address]));
+import { accounts } from '../generated/accounts.js';
+import { extras } from '../generated/extras.js';
+import { packages } from '../generated/packages.js';
+import { services } from '../generated/services.js';
 
 export const deployment = {
-	rpcUrl: manifest.endpoints.find((e) => e.name === 'sui-rpc')?.url ?? '',
-	faucetUrl: manifest.endpoints.find((e) => e.name === 'sui-faucet')?.url,
-	accounts: accountMap,
-	connectFourPackageId: manifest.packages.find((p) => p.name === 'connect_four')?.packageId,
-	openLobbyId: manifest.extras.openLobbyId as string | undefined,
+	rpcUrl: services.sui?.rpc.url ?? '',
+	faucetUrl: services.sui?.faucet?.url,
+	accounts,
+	connectFourPackageId: packages.connect_four?.id,
+	openLobbyId:
+		'openLobbyId' in extras ? (extras as { openLobbyId?: string }).openLobbyId : undefined,
 } as const;
 
 export const isDeployed: boolean =

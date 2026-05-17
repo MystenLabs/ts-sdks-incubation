@@ -13,7 +13,8 @@ import {
 	type StackMember,
 } from '../engine/supervisor.js';
 import { tag } from '../advanced/tag.js';
-import { emitManifestV4, type EmitManifestOptions } from '../runtime/manifest-emit.js';
+import { emitManifestV4 } from '../runtime/manifest-emit.js';
+import type { Extras, ExtrasInput } from '../runtime/extras.js';
 import type { ManifestError } from '../engine/errors.js';
 import {
 	type AccountRegistry,
@@ -32,12 +33,13 @@ export type DevstackRefInput = StackMember | ReadonlyArray<StackMember>;
 
 /** Optional knobs accepted as the LAST argument to `devstack(...)`. */
 export interface DevstackComposeOptions extends Omit<DevstackConfig, 'stack'> {
-	/** Manifest extras: plain record, sync function, or Effect yielding a
-	 *  record. Spliced into `.devstack/manifest.json`'s `extras` slot.
-	 *  Use this when downstream consumers (dev wallet panels, frontend
-	 *  app code) need on-disk values projected from `yield*`-able Refs
-	 *  (`SealKeyServerTag`, an action's resolved `TxResult`, etc.). */
-	readonly extras?: EmitManifestOptions['extras'];
+	/** App extras: plain record, sync function, or Effect yielding a
+	 *  record. Spliced into the manifest's `app.extras` slot AND
+	 *  surfaced as the typed `extras` export from generated codegen
+	 *  (`./generated/extras.ts`). Use this when downstream consumers
+	 *  need values projected from `yield*`-able Refs (`SealKeyServerTag`,
+	 *  an action's resolved `TxResult`, etc.). */
+	readonly extras?: ExtrasInput;
 }
 
 const isOptions = (x: unknown): x is DevstackComposeOptions => {
@@ -50,12 +52,18 @@ const isOptions = (x: unknown): x is DevstackComposeOptions => {
  *  member with `__kind: 'app'`, gets a `manifest` row in the TUI, and
  *  rides the engine lifecycle. The body delegates to `emitManifestV4`
  *  which handles the file-write + tick-interval logic. */
-const manifestRef = (extras: DevstackComposeOptions['extras']): StackMember => {
+const manifestRef = (): StackMember => {
 	const body: Effect.Effect<
 		Manifest,
 		ManifestError,
-		PackageRegistry | EndpointRegistry | AccountRegistry | CoinRegistry | Identity | Scope.Scope
-	> = emitManifestV4(extras !== undefined ? { extras } : {});
+		| PackageRegistry
+		| EndpointRegistry
+		| AccountRegistry
+		| CoinRegistry
+		| Identity
+		| Extras
+		| Scope.Scope
+	> = emitManifestV4();
 	return tag('manifest', body, {
 		kind: 'app',
 		displayTitle: 'manifest',
@@ -114,16 +122,11 @@ export function devstack(
 	const withFaucet: ReadonlyArray<StackMember> = [...flat, Faucet() as unknown as StackMember];
 
 	// Auto-include the v4 manifest emitter.
-	const withManifest: ReadonlyArray<StackMember> = [...withFaucet, manifestRef(opts.extras)];
+	const withManifest: ReadonlyArray<StackMember> = [...withFaucet, manifestRef()];
 
 	// Default-provider fill. Auto-adds `Sui()` when missing; extends with
 	// capability-keyed defaults.
 	const filled = fillDefaults(withManifest);
 
-	// Drop the compose-only knobs before forwarding so `defineDevstack`
-	// doesn't see an unknown field.
-	const { extras: _drop, ...forwardedOpts } = opts;
-	void _drop;
-
-	return defineDevstack({ stack: filled, ...forwardedOpts });
+	return defineDevstack({ stack: filled, ...opts });
 }

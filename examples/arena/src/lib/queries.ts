@@ -9,7 +9,10 @@ import {
 } from '@tanstack/react-query';
 
 import { deployment } from './deployment.js';
-import { Game as GameStruct, Lobby as LobbyStruct } from '../generated/sui/connect_four/game.js';
+import {
+	Game as GameStruct,
+	Lobby as LobbyStruct,
+} from '../generated/bindings/connect_four/game.js';
 
 export interface UseSignAndExecuteOptions {
 	invalidateKeys?: ReadonlyArray<readonly unknown[]>;

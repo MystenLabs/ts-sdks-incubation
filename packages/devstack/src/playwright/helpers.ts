@@ -12,14 +12,13 @@ import { type Locator, type Page, expect } from '@playwright/test';
  * retarget without rebuilding the connection.
  *
  * Apps using this helper must expose their dAppKit instance on
- * `globalThis.__devstackDAppKit__` from their `dapp-kit.ts`:
+ * `globalThis.__devstackDAppKit__` from their `dapp-kit.ts`. The
+ * generated example apps do this in their hand-written `dapp-kit.ts`
+ * (which spreads the generated `devstackDappKitConfig`) right after
+ * `createDAppKit(...)`:
  *
- *     export const dAppKit = createDAppKit({ ... });
+ *     export const { dAppKit } = createDAppKit({ ...devstackDappKitConfig });
  *     (globalThis as { __devstackDAppKit__?: typeof dAppKit }).__devstackDAppKit__ = dAppKit;
- *
- * `createDevstackDappKit` from `@mysten-incubation/devstack/dapp-kit`
- * sets this slot automatically when running under Vite dev / preview /
- * `PLAYWRIGHT=1`.
  */
 export async function connectAs(page: Page, label: string): Promise<void> {
 	await page.goto('/');
@@ -47,11 +46,8 @@ export async function connectAs(page: Page, label: string): Promise<void> {
 		if (kit === undefined) {
 			throw new Error(
 				'connectAs: globalThis.__devstackDAppKit__ missing. ' +
-					'Check that `createDevstackDappKit` runs on this page — it auto-exposes ' +
-					'the slot under Vite dev/preview or when PLAYWRIGHT=1 is set. Production ' +
-					'builds intentionally omit the exposure; if you need to run Playwright ' +
-					'against a production build, export your dAppKit instance manually onto ' +
-					'globalThis.__devstackDAppKit__ from your app entry.',
+					'Add `(globalThis as { __devstackDAppKit__?: typeof dAppKit }).__devstackDAppKit__ = dAppKit;` ' +
+					'to your `dapp-kit.ts` right after `createDAppKit({ ...devstackDappKitConfig })`.',
 			);
 		}
 		const wallet = kit.stores.$wallets.get().find((w) => w.name === 'Dev Wallet');

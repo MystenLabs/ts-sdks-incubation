@@ -9,7 +9,7 @@ import {
 } from '@tanstack/react-query';
 
 import { deployment } from './deployment.js';
-import { Cap as CapStruct, File as FileStruct } from '../generated/sui/vault/vault.js';
+import { Cap as CapStruct, File as FileStruct } from '../generated/bindings/vault/vault.js';
 import { bytesToHex } from './format.js';
 import { bytesToBlobId } from './walrus.js';
 

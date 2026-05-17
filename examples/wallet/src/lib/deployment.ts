@@ -1,10 +1,13 @@
-// App-level projection of the devstack manifest. Joins the
-// endpoint URLs, the registered mock-coin tokens, and the deepbook
-// pools (from `manifest.app.extras.deepbookPools`) into the views the
-// wallet UI reads — coin specs (with derived symbols), pool views
-// (with base/quote symbols joined), and a flat account map.
+// App-level projection of the devstack manifest. Joins the endpoint
+// URLs, the registered mock-coin tokens, and the deepbook pools (from
+// `extras.deepbookPools`) into the views the wallet UI reads —
+// coin specs (with derived symbols), pool views (with base/quote
+// symbols joined), and a flat account name → address map.
 
-import { manifest } from '../generated/manifest.js';
+import { accounts } from '../generated/accounts.js';
+import { extras } from '../generated/extras.js';
+import { packages } from '../generated/packages.js';
+import { services } from '../generated/services.js';
 
 export interface CoinSpec {
 	symbol: string;
@@ -34,20 +37,31 @@ const SUI_COIN: CoinSpec = {
 	decimals: 9,
 };
 
-const coinsFromTokens: CoinSpec[] = Object.entries(manifest.coins).map(([name, t]) => ({
-	symbol: name.toUpperCase(),
-	coinType: t.type,
-	decimals: t.decimals,
-}));
+// The wallet stack registers coins via `Package({ coins: [...] })`
+// — they land in the manifest's `coins` record. We import that
+// dynamically from `services` siblings via the codegen handle, but
+// since the wallet app's `coins` are well-known at codegen time, we
+// inline them here directly (sourced from the same registration in
+// `devstack.config.ts`).
+const coinsFromTokens: CoinSpec[] = [
+	{
+		symbol: 'MUSDC',
+		coinType: `${packages.mock_usdc?.id ?? '0x0'}::mock_usdc::MOCK_USDC`,
+		decimals: 6,
+	},
+	{
+		symbol: 'MWETH',
+		coinType: `${packages.mock_weth?.id ?? '0x0'}::mock_weth::MOCK_WETH`,
+		decimals: 8,
+	},
+];
 
 const allCoins: readonly CoinSpec[] = [SUI_COIN, ...coinsFromTokens];
 
 const symbolFor = (coinType: string): string =>
 	allCoins.find((c) => c.coinType === coinType)?.symbol ?? coinType.split('::').pop() ?? '?';
 
-const deepbookPoolsExtra = manifest.app.extras.deepbookPools as
-	| { pools: DeepbookPool[] }
-	| undefined;
+const deepbookPoolsExtra = (extras as { deepbookPools?: { pools: DeepbookPool[] } }).deepbookPools;
 const rawPools = deepbookPoolsExtra?.pools ?? [];
 
 const pools: readonly PoolView[] = rawPools.map((p) => ({
@@ -59,18 +73,21 @@ const pools: readonly PoolView[] = rawPools.map((p) => ({
 	quoteSymbol: symbolFor(p.quoteCoinType),
 }));
 
-const deepbookPkg = manifest.packages.deepbook;
+const deepbookPkg = (
+	packages as Record<string, { id: string; captured?: Record<string, unknown> } | undefined>
+).deepbook;
 
 export const deployment = {
-	rpcUrl: manifest.services.sui?.rpc.url ?? '',
-	faucetUrl: manifest.services.sui?.faucet?.url,
-	accounts: Object.fromEntries(
-		Object.entries(manifest.accounts).map(([name, a]) => [name, a.address]),
-	),
+	rpcUrl: services.sui?.rpc.url ?? '',
+	faucetUrl: services.sui?.faucet?.url,
+	accounts,
 	coins: allCoins,
 	pools,
 	deepbookPackageId: deepbookPkg?.id,
-	deepbookRegistryId: deepbookPkg?.captured?.registryId,
+	deepbookRegistryId:
+		typeof deepbookPkg?.captured?.registryId === 'string'
+			? deepbookPkg.captured.registryId
+			: undefined,
 } as const;
 
 export const isDeployed: boolean = Object.keys(deployment.accounts).length > 0;

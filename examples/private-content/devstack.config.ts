@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { Effect } from 'effect';
 import {
 	Account,
+	Codegen,
 	Dev,
 	devstack,
 	Package,
@@ -44,16 +45,18 @@ const wallet = Wallet({
 	allowedOrigins: ['http://dev.private-content.localhost:5175', 'http://localhost:5175'],
 });
 
+const codegen = Codegen({ packages: [vault] });
+
 const dev = Dev({
 	command: 'pnpm',
 	args: ['exec', 'vite', '--host', '0.0.0.0', '--strictPort', '--port', '{port}'],
 	port: 5170,
 	// Pin the dev-server behind seal's acquire so the seal-aware browser
 	// client can issue SessionKey calls immediately on page load.
-	needs: [vault, seal, wallet],
+	needs: [vault, seal, wallet, codegen],
 });
 
-export default devstack(publisher, alice, bob, walrus, seal, vault, wallet, dev, {
+export default devstack(publisher, alice, bob, walrus, seal, vault, wallet, codegen, dev, {
 	// Project the Seal key server's id + URL into the manifest so the
 	// frontend can wire SessionKey + SealClient against this local
 	// server. Resolved as an Effect so the live values reach the

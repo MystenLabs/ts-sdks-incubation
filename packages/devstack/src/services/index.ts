@@ -76,7 +76,6 @@ export { Action, type ActionOptions } from './action.js';
 export { Dev, type DevOptions } from './dev.js';
 export { Wallet, type WalletOptions } from './wallet.js';
 export { Codegen, type CodegenOptions, DEFAULT_CODEGEN_OUTPUT } from './codegen.js';
-export { DappKit, type DappKitRefOptions } from './dapp-kit.js';
 export { KnownPackage, type KnownPackageOptions } from './known-package.js';
 export { Faucet, type FaucetOptions } from '../faucet/factory.js';
 export { FaucetTag, type FaucetStrategy } from '../faucet/service.js';
@@ -92,9 +91,12 @@ export {
 export { CodegenError } from '../codegen/errors.js';
 export { BindingsEmitter, type BindingsEmitterOptions } from '../codegen/emitters/bindings.js';
 export {
-	DappKitEmitter,
-	type DappKitEmitterOptions,
-	type DappKitFlavor,
-} from '../codegen/emitters/dapp-kit.js';
+	DappKitConfigEmitter,
+	type DappKitConfigEmitterOptions,
+} from '../codegen/emitters/dapp-kit-config.js';
+export {
+	StackHandleEmitter,
+	type StackHandleEmitterOptions,
+} from '../codegen/emitters/stack-handle.js';
 export { type AccountRef, type PackageRef } from './ref.js';
 export { type Ref } from '../advanced/tag.js';

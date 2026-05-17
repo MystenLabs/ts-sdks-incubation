@@ -4,7 +4,7 @@ import { Field } from '../ui/Field.js';
 import { useState } from 'react';
 
 import { deployment } from '../lib/deployment.js';
-import * as managedCoin from '../generated/sui/managed_coin/managed_coin.js';
+import * as managedCoin from '../generated/bindings/managed_coin/managed_coin.js';
 import { TREASURY_CAP_ID, parseStudioAmount, shortAddress } from '../lib/coin.js';
 import { useInvalidateCoinReads, useSignAndExecute } from '../lib/queries.js';
 

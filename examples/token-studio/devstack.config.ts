@@ -4,7 +4,7 @@
 
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Account, Dev, devstack, Package, Wallet } from '@mysten-incubation/devstack';
+import { Account, Codegen, Dev, devstack, Package, Wallet } from '@mysten-incubation/devstack';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MANAGED_COIN_DIR = resolve(HERE, 'move/managed_coin');
@@ -34,11 +34,13 @@ const wallet = Wallet({
 	allowedOrigins: ['http://dev.token-studio.localhost:5175', 'http://localhost:5173'],
 });
 
+const codegen = Codegen({ packages: [managedCoin] });
+
 const dev = Dev({
 	command: 'pnpm',
 	args: ['exec', 'vite', '--host', '0.0.0.0', '--strictPort', '--port', '{port}'],
 	port: 5173,
-	needs: [managedCoin, wallet],
+	needs: [managedCoin, wallet, codegen],
 });
 
-export default devstack(alice, bob, carol, managedCoin, wallet, dev);
+export default devstack(alice, bob, carol, managedCoin, wallet, codegen, dev);

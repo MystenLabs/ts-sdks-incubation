@@ -98,13 +98,6 @@ const repoGoneFlag = Flag.boolean('repo-gone').pipe(
 	Flag.withDefault(false),
 );
 
-// Hidden alias kept for one release to ease the rename from `--abandoned`
-// to `--repo-gone`. Same semantics; resolved in `resolveMode` below.
-const abandonedAliasFlag = Flag.boolean('abandoned').pipe(
-	Flag.withDescription('Deprecated alias for --repo-gone'),
-	Flag.withDefault(false),
-);
-
 const appFilterFlag = Flag.string('app').pipe(
 	Flag.withDescription(
 		'Filter all modes (list / interactive / --repo-gone / --all-orphans) by app name',
@@ -400,25 +393,16 @@ export const pruneCommand = Command.make(
 		images: imagesFlag,
 		includeImages: includeImagesFlag,
 		repoGone: repoGoneFlag,
-		abandoned: abandonedAliasFlag,
 		appFilter: appFilterFlag,
 		dryRun: dryRunFlag,
 		includeRouter: includeRouterFlag,
 	},
 	(args) =>
 		Effect.gen(function* () {
-			// `--abandoned` is the legacy spelling; route it to
-			// `--repo-gone` so the rest of the resolver stays single-path.
-			// Surface a one-line deprecation warning when the legacy form
-			// is used so callers can migrate before it's removed.
-			if (args.abandoned) {
-				yield* Console.error('devstack prune: --abandoned is deprecated; use --repo-gone instead');
-			}
-			const repoGone = args.repoGone || args.abandoned;
 			const mode = yield* resolveMode({
 				list: args.list,
 				target: args.target,
-				repoGone,
+				repoGone: args.repoGone,
 				allOrphans: args.allOrphans,
 				interactive: args.interactive,
 			});

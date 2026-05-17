@@ -3,7 +3,7 @@ import { Card } from '../ui/Card.js';
 import { useState } from 'react';
 
 import { deployment } from '../lib/deployment.js';
-import * as connectFour from '../generated/sui/connect_four/game.js';
+import * as connectFour from '../generated/bindings/connect_four/game.js';
 import { labelFor, shortAddress } from '../lib/format.js';
 import { type ArenaLobby, useSignAndExecute } from '../lib/queries.js';
 

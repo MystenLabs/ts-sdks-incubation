@@ -215,31 +215,6 @@ export const startTuiOnce = (): Effect.Effect<TuiMount, never, Scope> =>
 	}).pipe(Effect.withSpan('Tui.startOnce'));
 
 /**
- * @deprecated Use `startTuiOnce` at the outer scope and `install` per
- * cycle instead. Mounting ink inside the per-cycle scope causes the
- * previous cycle's panel to be committed to scrollback on restart and
- * the next cycle's panel to render below it, producing stacked output.
- *
- * Retained as a no-op shim only because external test fixtures import
- * it — production code (`defineDevstack`) goes through `startTuiOnce`.
- */
-export const startTui = (engine: EngineHandleShape): Effect.Effect<void, never, Scope> =>
-	Effect.gen(function* () {
-		const onQuit = (): void => {
-			process.kill(process.pid, 'SIGINT');
-		};
-		const instance = render(React.createElement(App, { engine, onQuit }), {
-			exitOnCtrlC: false,
-			patchConsole: true,
-		});
-		yield* Effect.addFinalizer(() =>
-			Effect.sync(() => {
-				instance.unmount();
-			}),
-		);
-	}).pipe(Effect.withSpan('Tui.start'));
-
-/**
  * Logger layer that redirects `Effect.log*` calls into `engine.appendLog`.
  *
  * Without this, Effect's default logger writes to stderr in parallel

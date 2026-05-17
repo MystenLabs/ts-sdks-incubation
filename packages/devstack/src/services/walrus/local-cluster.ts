@@ -49,14 +49,6 @@ export interface WalrusLocalClusterOptions<Name extends string = 'walrus'> {
 	readonly name?: Name;
 	readonly nodeCount?: number;
 	readonly seedAccounts?: ReadonlyArray<Ref<any, Account, any, any>>;
-	/**
-	 * @deprecated No longer honored. The shared Traefik router binds
-	 * the walrus entrypoint port (9185) once on the host and routes by
-	 * `Host:` header to each per-stack backend, so there is no per-
-	 * stack proxy port to allocate. Kept on the options shape for
-	 * back-compat; callers can safely drop it.
-	 */
-	readonly proxyPort?: number;
 	/** Pinned walrus release tag. Drives both the `git clone --branch` in
 	 *  the upstream Dockerfile and the matching Move-source fetch.
 	 *  Default `walrus-v1.39.0`. */
