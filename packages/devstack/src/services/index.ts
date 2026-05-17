@@ -1,10 +1,15 @@
-// `@mysten-incubation/devstack/services` barrel. The canonical factory
-// surface for the new Ref-based API.
+// `@mysten-incubation/devstack/services` — INTERNAL barrel. Consumed by
+// the root `src/index.ts` and by `src/advanced/index.ts`; not a public
+// subpath itself. Holds the factory surface (Ref-producing functions),
+// the canonical interface tag classes, and the shape/Schema types each
+// factory ships.
 //
-// Every export here returns a `Ref` (a typed value that's simultaneously
-// a Layer and an Effect tag). Pass the result into other factories
-// (`signer: alice`) for type-checked cross-references, then into
-// `devstack(...)` to compose the running stack.
+// Codegen emitters (BindingsEmitter, …) and faucet strategies
+// (suiHttpStrategy, defineStrategy, FaucetRequestError, …) deliberately
+// live ONLY on `/advanced` — they're plugin-author surface, not part of
+// the high-level Ref-factory pillar this barrel curates. The advanced
+// barrel imports them directly from `../codegen/...` / `../faucet/...`,
+// so re-exporting them here would duplicate without adding reach.
 //
 // Naming rule:
 //   - Factories take the plain noun (`Sui`, `Account`, `Package`, …).
@@ -78,25 +83,6 @@ export { Wallet, type WalletOptions } from './wallet.js';
 export { Codegen, type CodegenOptions, DEFAULT_CODEGEN_OUTPUT } from './codegen.js';
 export { KnownPackage, type KnownPackageOptions } from './known-package.js';
 export { Faucet, type FaucetOptions } from '../faucet/factory.js';
-export { FaucetTag, type FaucetStrategy } from '../faucet/service.js';
-export { suiHttpStrategy } from '../faucet/strategies/sui-http.js';
-export { defineStrategy } from '../faucet/strategies/internal.js';
-export { FaucetRequestError } from '../faucet/errors.js';
-export {
-	defineEmitter,
-	type Emitter,
-	type CodegenContext,
-	type CodegenPackage,
-} from '../codegen/define-emitter.js';
-export { CodegenError } from '../codegen/errors.js';
-export { BindingsEmitter, type BindingsEmitterOptions } from '../codegen/emitters/bindings.js';
-export {
-	DappKitConfigEmitter,
-	type DappKitConfigEmitterOptions,
-} from '../codegen/emitters/dapp-kit-config.js';
-export {
-	StackHandleEmitter,
-	type StackHandleEmitterOptions,
-} from '../codegen/emitters/stack-handle.js';
+export { FaucetTag } from '../faucet/service.js';
 export { type AccountRef, type PackageRef } from './ref.js';
 export { type Ref } from '../advanced/tag.js';

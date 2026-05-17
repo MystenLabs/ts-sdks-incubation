@@ -10,10 +10,11 @@ const main = defineConfig({
 		'src/index.ts',
 		'src/cli/main.ts',
 		'src/advanced/index.ts',
-		// v4 runtime accessor: separate subpath (`./runtime`) but rides
-		// the main bundle's tree-shaking so its `dist/runtime/*.mjs`
-		// outputs stay consistent with what `src/index.ts` reaches.
-		'src/runtime/service.ts',
+		// Runtime accessor + manifest types: separate subpath (`./runtime`),
+		// rides the main bundle's tree-shaking so the consumer-facing
+		// `dist/runtime/*.mjs` outputs stay consistent with what
+		// `src/index.ts` reaches.
+		'src/runtime/index.ts',
 	],
 	format: 'esm',
 	dts: true,
