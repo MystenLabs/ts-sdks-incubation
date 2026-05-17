@@ -1,26 +1,29 @@
-// `devstack manifest` — print the current `.devstack/manifest.json`.
+// `devstack manifest` — print the current devstack manifest.json.
 // Default: human-readable summary (endpoints / packages / accounts / coins
 // / extras), mirroring the `status` command's shape. `--json` emits the
-// raw JSON unchanged. `--path` overrides the default path (defaults to
-// `${DEVSTACK_STATE_DIR}/manifest.json`).
+// raw JSON unchanged. `--path` overrides the discovered path.
 //
 // Read-only — does NOT build any layers, so it's safe against a live stack.
-// Stack scoping note: the `manifest` primitive writes to
-// `.devstack/stacks/<stack>/manifest.json` on non-main stacks, but the
-// CLI doesn't know the user's stack without loading the config. We use
-// the main-stack default and accept `--path` for non-main reads, matching
-// `status`'s precedent.
+//
+// Path resolution: routes through `discoverManifestPath()` so the
+// `DEVSTACK_MANIFEST_PATH` env var, `DEVSTACK_STACK`, and walk-up from cwd
+// are all honored — matching how the runtime / playwright fixtures find
+// the same file. The supervisor writes to
+// `<stateDir>/stacks/<stack>/manifest.json`, never the legacy flat path.
 
 import { Console, Effect, FileSystem, Option } from 'effect';
 import { Argument, Command, Flag } from 'effect/unstable/cli';
 import { resolve as resolvePath } from 'node:path';
+import { discoverManifestPath } from '../../runtime/discover-manifest.js';
 
-// Read DEVSTACK_STATE_DIR at action-time so a test that sets it via
-// `process.env` after module-load (or a `.env` loader, or a fixture
-// shell wrapper) sees the override. Resolving once at module-eval
-// freezes whatever was set at the moment the CLI was imported.
+// Read env at action-time so a test that sets it via `process.env` after
+// module-load (or a `.env` loader, or a fixture shell wrapper) sees the
+// override. Resolving once at module-eval freezes whatever was set at the
+// moment the CLI was imported.
 const stateDir = (): string => process.env.DEVSTACK_STATE_DIR ?? '.devstack';
-const defaultManifestPath = (): string => `${stateDir()}/manifest.json`;
+const stackName = (): string => process.env.DEVSTACK_STACK ?? 'main';
+const defaultManifestPath = (): string =>
+	discoverManifestPath() ?? `${stateDir()}/stacks/${stackName()}/manifest.json`;
 
 interface ManifestSummary {
 	readonly packages?: ReadonlyArray<{ name: string; packageId: string }>;

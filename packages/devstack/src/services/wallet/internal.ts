@@ -10,7 +10,7 @@ import { randomBytes } from 'node:crypto';
 import * as nodeFs from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { join as joinPath } from 'node:path';
-import { Effect } from 'effect';
+import { Context, Effect } from 'effect';
 import { writeFileAtomic } from '../../engine/atomic-write.js';
 import { Identity } from '../../engine/identity.js';
 import { PortAllocator } from '../../engine/port-allocator.js';
@@ -167,8 +167,25 @@ export const walletApp = <const Name extends string = 'wallet-app'>(
 			];
 
 			yield* setPhase('starting http server');
+			// Capture the supervisor's Context once so signing handlers can
+			// run their Account effects via `Effect.runPromiseWith(ctx)` —
+			// otherwise each request runs on a fresh default runtime, losing
+			// the TUI logger sink, tracer, and any FiberRefs the supervisor
+			// had set. `Effect.context<never>()` type-claims an empty context
+			// but at runtime returns the full current fiber context (see
+			// effect internals: `getContext = withFiber((fiber) => fiber.context)`),
+			// which is what we want to thread to a long-lived HTTP handler.
+			const supervisorCtx = yield* Effect.context<never>();
 			const server = yield* Effect.tryPromise({
-				try: () => startHttpServer(port, bindAddress, token, allowedOrigins, accountsByAddress),
+				try: () =>
+					startHttpServer(
+						port,
+						bindAddress,
+						token,
+						allowedOrigins,
+						accountsByAddress,
+						supervisorCtx,
+					),
 				catch: (cause) =>
 					new WalletAppError({
 						phase: 'listen',
@@ -308,6 +325,7 @@ const startHttpServer = (
 	token: string,
 	allowedOrigins: ReadonlyArray<string>,
 	accountsByAddress: ReadonlyMap<string, Account>,
+	supervisorCtx: Context.Context<never>,
 ): Promise<Server> => {
 	const expectedAuth = `Bearer ${token}`;
 	return new Promise((resolve, reject) => {
@@ -356,11 +374,11 @@ const startHttpServer = (
 					return;
 				}
 				if (req.method === 'POST' && req.url === '/api/v1/devstack/sign-transaction') {
-					void handleSignTransaction(req, res, accountsByAddress);
+					void handleSignTransaction(req, res, accountsByAddress, supervisorCtx);
 					return;
 				}
 				if (req.method === 'POST' && req.url === '/api/v1/devstack/sign-personal-message') {
-					void handleSignPersonalMessage(req, res, accountsByAddress);
+					void handleSignPersonalMessage(req, res, accountsByAddress, supervisorCtx);
 					return;
 				}
 				res.writeHead(404, { 'content-type': 'application/json' });
@@ -392,6 +410,7 @@ const handleSignTransaction = async (
 	req: IncomingMessage,
 	res: ServerResponse,
 	accountsByAddress: ReadonlyMap<string, Account>,
+	supervisorCtx: Context.Context<never>,
 ): Promise<void> => {
 	let body: Record<string, unknown>;
 	try {
@@ -427,7 +446,13 @@ const handleSignTransaction = async (
 		return;
 	}
 	try {
-		const result = await Effect.runPromise(account.signTransaction(bytes));
+		const result = await Effect.runPromiseWith(supervisorCtx)(
+			account.signTransaction(bytes).pipe(
+				Effect.withSpan('wallet.sign-transaction', {
+					attributes: { 'account.name': account.name, 'account.address': account.address },
+				}),
+			),
+		);
 		sendJson(res, 200, { suiSignature: result.signature, txBytes: result.bytes });
 	} catch (cause) {
 		sendJson(res, 500, {
@@ -440,6 +465,7 @@ const handleSignPersonalMessage = async (
 	req: IncomingMessage,
 	res: ServerResponse,
 	accountsByAddress: ReadonlyMap<string, Account>,
+	supervisorCtx: Context.Context<never>,
 ): Promise<void> => {
 	let body: Record<string, unknown>;
 	try {
@@ -475,7 +501,13 @@ const handleSignPersonalMessage = async (
 		return;
 	}
 	try {
-		const result = await Effect.runPromise(account.signPersonalMessage(bytes));
+		const result = await Effect.runPromiseWith(supervisorCtx)(
+			account.signPersonalMessage(bytes).pipe(
+				Effect.withSpan('wallet.sign-personal-message', {
+					attributes: { 'account.name': account.name, 'account.address': account.address },
+				}),
+			),
+		);
 		sendJson(res, 200, { signature: result.signature, bytes: result.bytes });
 	} catch (cause) {
 		sendJson(res, 500, {
