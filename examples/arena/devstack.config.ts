@@ -60,6 +60,12 @@ const dev = Dev({
 });
 
 export default devstack(publisher, alice, bob, connectFour, openLobby, wallet, codegen, dev, {
+	// Disable hot-restart under playwright. Codegen + `sui move build`
+	// touch files inside `move/connect_four/` during the first cycle,
+	// which trips the file watcher's restart — playwright's webServer
+	// then races vite's brief death against the test's first navigation
+	// and intermittently sees a 502.
+	hotRestart: process.env.PLAYWRIGHT === '1' ? false : undefined,
 	// Surface the seeded Lobby id so the frontend can pivot a fresh
 	// browser session onto an existing game without scanning chain
 	// state. Resolved as an Effect so `openLobby`'s post-acquire
