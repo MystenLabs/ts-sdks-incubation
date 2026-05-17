@@ -63,9 +63,8 @@ const symbolFor = (coinType: string): string =>
 
 // Cast through `unknown`: the literal-typed `extras` carries `readonly`
 // tuples, but the consumer projection is happier with a mutable view.
-const deepbookPoolsExtra = (
-	extras as unknown as { deepbookPools?: { pools: DeepbookPool[] } }
-).deepbookPools;
+const deepbookPoolsExtra = (extras as unknown as { deepbookPools?: { pools: DeepbookPool[] } })
+	.deepbookPools;
 const rawPools = deepbookPoolsExtra?.pools ?? [];
 
 const pools: readonly PoolView[] = rawPools.map((p) => ({

@@ -8,12 +8,11 @@
 // "served from a live Effect" and "read from manifest.json" by swapping
 // `yield* Devstack` for `fromManifest(...)` with no other changes.
 //
-// Implementation reads the same registries that `manifest()` reads
-// (`PackageRegistry`, `EndpointRegistry`, `AccountRegistry`,
-// `CoinRegistry`) plus the `Identity` service for stack/network/app
-// fields. The internal `gatherManifest` helper is exported so the v4
-// manifest emitter can reuse the same gather logic without duplicating
-// the structured-conversion step.
+// Implementation reads `PackageRegistry`, `EndpointRegistry`,
+// `AccountRegistry`, `CoinRegistry` plus the `Identity` service for
+// stack/network/app fields. The internal `gatherManifest` helper is
+// exported so the manifest emitter (`manifest-emit.ts`) can reuse the
+// same gather logic without duplicating the structured-conversion step.
 
 import { Context, Effect, Layer } from 'effect';
 import { Identity } from '../engine/identity.js';
@@ -34,14 +33,15 @@ import type {
 } from './manifest-schema.js';
 
 // -----------------------------------------------------------------------------
-// Endpoint name conventions — v3 registry → v4 structured manifest
+// Endpoint name conventions — flat registry → structured manifest
 // -----------------------------------------------------------------------------
-// During Phase 1+2 we still gather from the legacy flat `EndpointRegistry`
-// (records like `{name: 'sui-rpc', url: ...}`). Phase-2 factories may
-// emit richer records directly; until they do, the converter below maps
-// well-known v3 names into v4's structured fields. Names not in this
-// map are silently dropped from the structured shape — Phase 6 deletes
-// the converter once every factory has migrated to structured emission.
+// Factories publish endpoint records into the flat `EndpointRegistry`
+// (`{name: 'sui-rpc', url: ...}`). The converters below map the
+// well-known names into the structured `services` fields of the
+// manifest. Names not in this map are silently dropped from the
+// structured shape — add them here when a new built-in factory wants
+// its endpoint to surface under `services.*` rather than appearing
+// only in the flat list.
 
 const SUI_FIELDS: Record<string, keyof Omit<SuiManifest, 'network' | 'chainId'>> = {
 	'sui-rpc': 'rpc',
@@ -107,14 +107,14 @@ const groupApp = (
 // gatherManifest — read registries + Identity, return v4 Manifest shape
 // -----------------------------------------------------------------------------
 
-/** Read every devstack registry and build the v4 `Manifest` shape. Pure
+/** Read every devstack registry and build the `Manifest` shape. Pure
  *  Effect computation against the canonical registries — no IO. Used by
  *  both `Devstack` (live snapshot) and `runtime/manifest-emit.ts` (disk
  *  write).
  *
- *  `extras` is the user-supplied extras blob from the (future) `manifest`
- *  factory; this gathers from the registries only. Callers needing
- *  extras pass them in directly. */
+ *  `extras` is the user-supplied extras blob resolved from the `Extras`
+ *  service; this function gathers from the registries only. Callers
+ *  needing extras pass them in directly. */
 export const gatherManifest = (
 	extras: Record<string, unknown> = {},
 ): Effect.Effect<
@@ -129,8 +129,8 @@ export const gatherManifest = (
 		const accts = yield* AccountRegistry;
 		const coinsReg = yield* CoinRegistry;
 
-		// Dedupe by name (last-wins). v3 emits the same dedupe behaviour
-		// because HMR-style re-runs re-register the same name.
+		// Dedupe by name (last-wins). HMR-style re-runs re-register the
+		// same name, so the last write per name should win.
 		const rawPkgs = yield* pkgs.snapshot;
 		const rawEps = yield* eps.snapshot;
 		const rawAccts = yield* accts.snapshot;
@@ -146,8 +146,9 @@ export const gatherManifest = (
 		const sui = groupSui(endpoints, identity.network);
 		const seal = groupSeal(endpoints);
 		const walrus = groupWalrus(endpoints);
-		// deepbook is populated by the (future) v4 deepbook factory directly,
-		// not from the flat endpoint registry; left absent here.
+		// deepbook is populated by the deepbook factory directly via its
+		// own manifest contribution, not from the flat endpoint registry,
+		// so it's intentionally absent here.
 		const services: Manifest['services'] = {
 			...(sui !== undefined ? { sui } : {}),
 			...(seal !== undefined ? { seal } : {}),

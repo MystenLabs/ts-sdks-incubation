@@ -15,16 +15,16 @@
 //     }));
 //   });
 //
-// Divergences from v3's harness:
-//   - No `setup` / `teardown`. v3 exposed those for `vitest globalSetup`
-//     bring-up; v4's Effect-native model puts the layer behind
-//     `it.layer` (via `withDevstack`), and out-of-band bring-up is
-//     covered by `setupDevstack` in `../playwright/setup-devstack.ts`
-//     (Playwright globalSetup/globalTeardown — works for any
-//     out-of-test acquire/release boundary).
-//   - No `getNodeState`. v4 layers don't expose per-node acquire status
-//     outside the engine; if a primitive needs to publish state, it
-//     does so via its tag's shape or via `StateStore` (internal).
+// Notes:
+//   - There is no `setup` / `teardown` surface here. Acquire/release
+//     is owned by `it.layer` (via `withDevstack`). Out-of-band bring-up
+//     for non-Effect harnesses is covered by `setupDevstack` in
+//     `../playwright/setup-devstack.ts` (Playwright
+//     globalSetup/globalTeardown — works for any acquire/release
+//     boundary that lives outside an `it.effect` body).
+//   - Per-node acquire status is intentionally not exposed outside the
+//     engine. If a primitive needs to publish state, it does so via
+//     its tag's shape or via `StateStore` (internal).
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

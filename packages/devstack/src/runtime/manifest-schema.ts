@@ -2,11 +2,8 @@
 // `.devstack/manifest.json` shape, the `Devstack` Effect Service shape,
 // and the `fromManifest(json)` POJO accessor.
 //
-// v4 reorganizes v3's flat arrays (`endpoints[]`, `packages[]`,
-// `accounts[]`, `coins[]`) into records keyed by name and sections by
-// user intent (`services`, `packages`, `accounts`, `app`, `coins`). The
-// v3 → v4 in-memory migration lives in `manifest-loader.ts`; both
-// shapes are readable for one release, then v3 is deleted in Phase 6.
+// The shape is organised as records keyed by name and sections grouped
+// by user intent (`services`, `packages`, `accounts`, `app`, `coins`).
 //
 // Endpoints render as full traefik-routed hostnames (e.g.
 // `http://sui.<app>.localhost:9000`) in the canonical `url` field. The
@@ -20,8 +17,9 @@ import { Schema } from 'effect';
 // Endpoint entry — the canonical { url, alternates? } shape used everywhere
 // -----------------------------------------------------------------------------
 
-/** A reachable URL plus optional fallback forms. Replaces v3's
- *  `{name, url, kind?, pairUrl?}` flat entries. */
+/** A reachable URL plus optional fallback forms. The `alternates`
+ *  array carries loopback-style URLs for callers that can't resolve
+ *  `*.localhost` wildcards. */
 export const EndpointEntry = Schema.Struct({
 	url: Schema.String,
 	alternates: Schema.optional(Schema.Array(Schema.String)),
@@ -145,11 +143,7 @@ export type StackIdentity = typeof StackIdentity.Type;
 /** The v4 manifest schema. The on-disk shape of `.devstack/manifest.json`
  *  written by `runtime/manifest-emit.ts` and read by
  *  `runtime/manifest-loader.ts`. Same shape drives the `Devstack` Effect
- *  Service.
- *
- *  v3 manifests on disk are migrated to v4 in-memory by the loader; v3
- *  emission can be re-enabled behind a feature flag for one release and
- *  is removed in Phase 6. */
+ *  Service. */
 export const ManifestV4 = Schema.Struct({
 	version: Schema.Literal(4),
 	stack: StackIdentity,

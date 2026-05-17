@@ -183,9 +183,10 @@ export interface Ref<Name extends string, A, R = never, E = never> extends Conte
 	A
 > {
 	readonly key: Name;
-	// The tag's own layer — the Layer.effect-wrapped producer. Retained
-	// for backward compat with consumers that read `__layer` directly
-	// (e.g. accounts.ts, sui.ts).
+	// The tag's own layer — the Layer.effect-wrapped producer. Internal:
+	// `accounts.ts` and `sui.ts` read it directly today; new call sites
+	// should compose via `composeLayers` instead of reaching for this
+	// field.
 	readonly __layer: Layer.Layer<TagIdentity<Name>, E, R>;
 	// Transitively-flattened layer list: this tag's own layer plus every
 	// inner layer it composes. defineDevstack mergeAll's this list per

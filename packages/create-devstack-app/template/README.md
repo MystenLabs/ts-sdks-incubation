@@ -26,11 +26,15 @@ _template/
 ## Stand up a new app from this template
 
 1. Copy the directory: `cp -r examples/_template examples/<your-app>`.
-2. Replace `_template` with your app name in `package.json` and `devstack.config.ts`.
-3. Pick non-conflicting port hints in `devstack.config.ts` and `vite.config.ts` (other examples
-   occupy 9000-9999 + 5173-5176; the per-stack port allocator handles collisions at runtime, but
-   pinned preferences are kinder to operators).
-4. Rename `move/hello/` to your package name and update the address in `move/<pkg>/Move.toml`.
+2. Replace `_template` with your app name in `package.json` and
+   `devstack.config.ts`.
+3. Pick non-conflicting port hints in `devstack.config.ts` and
+   `vite.config.ts` (other examples occupy 9000-9999 + 5173-5176; the
+   per-stack port allocator handles collisions at runtime, but pinned
+   preferences are kinder to operators).
+4. Rename `move/hello/` to your package name and update the address in
+   `move/<pkg>/Move.toml`.
 5. `pnpm install` then `pnpm dev`.
 
-For a guided scaffold, run `pnpm create @mysten-incubation/devstack-app <your-app>` instead.
+For a guided scaffold, run
+`pnpm create @mysten-incubation/devstack-app <your-app>` instead.

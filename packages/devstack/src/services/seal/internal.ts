@@ -1,4 +1,4 @@
-// Seal — Phase 6c multi-impl primitive.
+// Seal — multi-impl primitive.
 //
 // Two factories, both targeting the narrow interface tag classes in
 // `src/services/seal.ts` (`SealKeyServerTag` + `SealKeyManagerTag`):
@@ -67,10 +67,9 @@ import type { Account, SuiObjectChange } from '../../engine/shared.js';
 // Constants
 // -----------------------------------------------------------------------------
 
-// Upstream key-server binds 2024 inside the container by default. v3
-// allocates a host port dynamically and threads it through register +
-// container; we do the same via `PortAllocator` so two stacks can
-// co-exist without colliding on 2024.
+// Upstream key-server binds 2024 inside the container by default. The
+// Traefik router dispatches by `Host:` header so two stacks coexist on
+// the same external port — no per-stack dynamic allocation needed.
 const DEFAULT_KEY_SERVER_PORT = 2024;
 const DEFAULT_READY_TIMEOUT_MS = 60_000;
 
@@ -161,7 +160,7 @@ export interface SealLocalKeygenOptions<Name extends string> {
 	 *  can coexist. */
 	readonly hostPort?: number;
 	/** Ready-probe timeout for the key-server's HTTP endpoint. Default
-	 *  60s — matches the v3 default. */
+	 *  60s. */
 	readonly readyTimeoutMs?: number;
 	/** On-chain `KeyServer.name` field. Default `devstack-local`. */
 	readonly keyServerName?: string;
@@ -511,12 +510,10 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 		// it to the file, the container's env, and whatever the daemon
 		// does with it.
 		//
-		// Phase 3 of the snapshot redesign moved this from the legacy
-		// `.seal/` hidden dir to `runtime/seal/` so `snapshot save` tars
-		// it (along with the BLS keypair recorded in state-store) — restore
-		// gets a complete seal world without re-running keygen. See the
-		// state-store gate at `seal/master-key-written:<chainId>` (Phase
-		// 3.3) which prevents re-emission on restore.
+		// Living under `runtime/seal/` (not a hidden dir) is load-bearing
+		// for snapshots: `snapshot save` tars `runtime/` so the master
+		// key + BLS keypair (recorded in state-store) ride along, and
+		// restore gets a complete seal world without re-running keygen.
 		const sealStateDir = yield* servicePath('seal');
 		const masterKeyEnvFile = path.join(sealStateDir, 'master-key.env');
 		yield* fs.chmod(sealStateDir, 0o700).pipe(
@@ -545,15 +542,16 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 				}).pipe(Effect.ignore),
 			),
 		);
-		// Pre-Phase-3 design unlinked this file on scope close — fine
-		// for the "secret never touches disk after the supervisor exits"
-		// threat model but incompatible with snapshots: a `snapshot save`
-		// + `stack down` + `snapshot restore` round-trip would lose the
-		// master key, and the seal key-server would refuse to start
-		// against the chain-registered public key. The file is now kept
-		// on disk between cycles; `devstack wipe` is the canonical place
-		// to nuke it (along with the rest of `runtime/seal/`). On-disk
-		// perms (0o600 + 0o700 parent dir) keep it confined to the owner.
+		// The master-key env-file is intentionally NOT unlinked on scope
+		// close. Unlinking would give the "secret never touches disk
+		// after the supervisor exits" property but break snapshots: a
+		// `snapshot save` + `stack down` + `snapshot restore` round-trip
+		// would lose the master key, and the seal key-server would refuse
+		// to start against the chain-registered public key. The file is
+		// kept on disk between cycles; `devstack wipe` is the canonical
+		// place to nuke it (along with the rest of `runtime/seal/`).
+		// On-disk perms (0o600 + 0o700 parent dir) keep it confined to
+		// the owner.
 
 		// 7. Long-running key-server container. Scope-managed: the
 		//    Docker.run finalizer `docker rm -f`s on shutdown.
@@ -1101,7 +1099,7 @@ const publishSealMoveInline = (args: {
 	})();
 
 // -----------------------------------------------------------------------------
-// Helpers (ported verbatim from v3)
+// Helpers
 // -----------------------------------------------------------------------------
 
 /** Render the seal key-server's CONFIG_PATH yaml. Env-only mode silently

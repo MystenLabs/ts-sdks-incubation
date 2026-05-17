@@ -89,8 +89,10 @@ describe('fromManifest — forward-compat (version > EXPECTED_VERSION)', () => {
 		expect(() => fromManifest(garbage, { strict: false })).toThrow(/unknown manifest version/);
 		expect(() => fromManifest(garbage, { strict: true })).toThrow(/unknown manifest version/);
 	});
+});
 
-	it('hard-rejects a v3 manifest (migration support removed pre-1.0)', () => {
+describe('fromManifest — v3 manifests are no longer supported', () => {
+	it('hard-rejects a v3-shaped manifest (migration support removed pre-1.0)', () => {
 		const v3 = {
 			packages: [{ name: 'hello', packageId: '0xabc' }],
 			endpoints: [{ name: 'sui-rpc', url: 'http://sui.localhost:9000' }],

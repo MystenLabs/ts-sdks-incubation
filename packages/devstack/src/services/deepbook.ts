@@ -94,11 +94,10 @@ export class DeepbookCoreTag extends Context.Service<DeepbookCoreTag, DeepbookCo
  *  that depends on it is type-checked away from running against a
  *  remote Deepbook deployment we don't own the admin cap for.
  *
- *  Empty contract today — Phase 6a will fill it with real admin
- *  operations (upgrade-cap rotation, package admin tx helpers). Kept
- *  as a placeholder so consumer types can already say "I need
- *  DeepbookAdminTag" and pick up the fields once they arrive without
- *  another rename pass. */
+ *  Empty contract today — kept as a placeholder so consumer types can
+ *  already declare "I need DeepbookAdminTag" and pick up real admin
+ *  operations (upgrade-cap rotation, package admin tx helpers) once
+ *  they're added, without another rename pass. */
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export interface DeepbookAdmin {}
 

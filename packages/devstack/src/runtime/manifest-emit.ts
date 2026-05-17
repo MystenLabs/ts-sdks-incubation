@@ -1,7 +1,7 @@
-// v4 manifest emitter — writes `.devstack/manifest.json`. Reads from
-// the registries via `gatherManifest()` and the resolved app-extras
-// blob via the `Extras` service, then serializes to disk using the
-// idempotent-write + chmod pattern.
+// Manifest emitter — writes `.devstack/manifest.json`. Reads from the
+// registries via `gatherManifest()` and the resolved app-extras blob via
+// the `Extras` service, then serializes to disk using the idempotent-write
+// + chmod pattern.
 
 import { Effect, Schedule, Schema, Scope } from 'effect';
 import * as fs from 'node:fs/promises';

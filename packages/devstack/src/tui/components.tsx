@@ -21,8 +21,8 @@ import type {
 } from './render.js';
 
 /** The five user-intent sections the TUI groups by. Excludes 'other',
- *  which is the catchall for legacy/hand-rolled refs that fall through
- *  to `parseTitle`'s display-prefix grouping. */
+ *  which is the catchall for hand-rolled refs that fall through to
+ *  `parseTitle`'s display-prefix grouping. */
 type TuiEntryKindLabel = Exclude<TuiEntryKind, 'other'>;
 
 const emptyState: TuiState = {
@@ -36,9 +36,9 @@ const emptyState: TuiState = {
 // from the q-keypress handler and the launch effect's `onInterrupt` hook so
 // the user sees identical copy whether they pressed `q` in the TUI, hit
 // Ctrl-C in the terminal, or this process received an external SIGINT.
-// Phase 4 vocabulary scrub: "container" disappears from user-visible copy;
-// background-service framing replaces the docker-leaky "reusable containers"
-// language. `devstack wipe --yes` remains the path to a full local reset.
+// "container" is intentionally absent from user-visible copy — the public
+// vocabulary is "background services". `devstack wipe --yes` is the
+// documented path to a full local reset.
 export const SHUTDOWN_LOG_MESSAGE =
 	'Shutting down. Sui and other background services stay warm for a fast next start. Run `pnpm exec devstack wipe --yes` to clear all local state.';
 
@@ -383,8 +383,8 @@ function NodeTable({ entries }: { readonly entries: ReadonlyArray<TuiEntry> }): 
 	// The fixed `SECTION_ORDER` below drives the visual order — services
 	// first (URLs the user dials), then artifacts (packages, accounts),
 	// then transactions, then the user's own app surface. Entries with
-	// `kind: 'other'` fall back to the legacy `parseTitle` heuristic so
-	// hand-rolled v3-style refs still render under a recognizable label.
+	// `kind: 'other'` fall back to the `parseTitle` heuristic so
+	// hand-rolled refs (no `__kind`) still render under a recognizable label.
 	const SECTION_ORDER: ReadonlyArray<TuiEntryKindLabel> = [
 		'service',
 		'package',
@@ -416,8 +416,8 @@ function NodeTable({ entries }: { readonly entries: ReadonlyArray<TuiEntry> }): 
 			if (entry.kind === section) pushBucket(SECTION_HEADER[section], entry);
 		}
 	}
-	// Second pass: legacy 'other' entries grouped by parseTitle's display
-	// prefix (or the synthetic UNGROUPED bucket).
+	// Second pass: 'other' entries (refs with no `__kind`) grouped by
+	// parseTitle's display prefix, or the synthetic UNGROUPED bucket.
 	for (const entry of entries) {
 		if (SECTION_ORDER.includes(entry.kind as TuiEntryKindLabel)) continue;
 		const { group } = parseTitle(entryTitle(entry));
