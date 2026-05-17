@@ -84,10 +84,24 @@ export const emitManifestV4 = (
 	Effect.gen(function* () {
 		const identity = yield* Identity;
 		const outputPath = resolveOutputPath(identity, options.output);
+
+		// Resolve the user's extras Effect ONCE at acquire time, not
+		// per-tick. Two reasons:
+		//   1. The user's Effect can yield user-defined refs (`yield*
+		//      alice`, `yield* openLobby`) — those refs are only
+		//      satisfied in the supervisor's acquire scope, not in the
+		//      forked slow-tick scope. Yielding them inside the tick
+		//      loop fails silently (swallowed by `Effect.ignore({log})`)
+		//      and `app.extras` stays `{}` forever.
+		//   2. Extras is a one-shot snapshot of post-acquire state by
+		//      design — re-running each tick would surface noise from
+		//      transient errors during re-evaluation. The state-change
+		//      story for `app.extras` is "snapshot + replay on next
+		//      `r`", same as the rest of the manifest.
 		const extrasInput = yield* Extras;
+		const extras = yield* resolveExtras(extrasInput);
 
 		const snapshotAndWrite = Effect.gen(function* () {
-			const extras = yield* resolveExtras(extrasInput);
 			const data = yield* gatherManifest(extras);
 			// Encode through the schema BEFORE `JSON.stringify` so a shape
 			// mismatch from `gatherManifest` (typo, missing required
