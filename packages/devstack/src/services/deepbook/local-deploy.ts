@@ -11,7 +11,7 @@ import { Transaction } from '@mysten/sui/transactions';
 import { tag, provide, type Ref } from '../../advanced/tag.js';
 import { SuiTag } from '../sui.js';
 import { publishMove, pickCreatedByTypeSuffix } from '../package/internal.js';
-import { publishPackage } from '../../engine/registries.js';
+import { publishDeepbookState, publishPackage } from '../../engine/registries.js';
 import { StateStore } from '../../engine/state-store.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
 import { DeepbookError } from '../../engine/errors.js';
@@ -485,6 +485,18 @@ export const deepbookLocalDeploy = <
 				packageId,
 				upgradeCapId: pkg.upgradeCapId,
 				captured: { registryId, adminCapId },
+			});
+
+			yield* publishDeepbookState({
+				name,
+				packageId,
+				registryId,
+				pools: Object.fromEntries(
+					Object.values(pools).map((p) => [
+						p.name,
+						{ poolId: p.poolId, baseType: p.base, quoteType: p.quote },
+					]),
+				),
 			});
 
 			const poolIds = new Map<string, string>(Object.values(pools).map((p) => [p.name, p.poolId]));

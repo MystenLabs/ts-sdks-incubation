@@ -19,7 +19,7 @@ import { routerEntrypoint } from '../engine/docker/router.js';
 import type { Endpoint } from '../engine/endpoint.js';
 import { stringifyCause } from '../engine/stringify-cause.js';
 import { Identity } from '../engine/identity.js';
-import { publishEndpoint } from '../engine/registries.js';
+import { publishEndpoint, publishSuiState } from '../engine/registries.js';
 import { routerHostname, routerId } from '../engine/router-hostname.js';
 import { SuiBuildImage } from '../engine/sui-cli.js';
 import { SuiBuildContainerLive } from '../engine/sui-build-container.js';
@@ -510,6 +510,7 @@ const buildLocalnet = (options: SuiLocalnetOptions): StackMember => {
 				});
 			}
 			const chainId = yield* fetchChainId(client);
+			yield* publishSuiState({ name: 'sui.localnet', chainId });
 			const waitForTransactionsReady =
 				faucetUrl !== undefined
 					? yield* buildWaitForTransactionsReady(faucetUrl)
@@ -789,6 +790,7 @@ const buildLocalnet = (options: SuiLocalnetOptions): StackMember => {
 		});
 
 		const chainId = yield* fetchChainId(client);
+		yield* publishSuiState({ name: 'sui.localnet', chainId });
 		const waitForTransactionsReady = yield* buildWaitForTransactionsReady(faucetUrl);
 
 		// Endpoints carry both the routed host URL and the docker-DNS
@@ -910,6 +912,7 @@ const buildTestnet = (options: SuiTestnetOptions): StackMember => {
 			kind: 'graphql',
 		});
 		const chainId = yield* fetchChainId(client);
+		yield* publishSuiState({ name: 'sui.testnet', chainId });
 		const waitForTransactionsReady = yield* buildWaitForTransactionsReady(faucetUrl);
 		// Live-net handles have no docker presence.
 		const rpc: Endpoint = { host: rpcUrl };
@@ -957,6 +960,7 @@ const buildMainnet = (options: SuiMainnetOptions): StackMember => {
 			kind: 'graphql',
 		});
 		const chainId = yield* fetchChainId(client);
+		yield* publishSuiState({ name: 'sui.mainnet', chainId });
 		const waitForTransactionsReady = yield* buildWaitForTransactionsReady(undefined);
 		const rpc: Endpoint = { host: rpcUrl };
 		const graphql: Endpoint = { host: graphqlUrl };
@@ -1016,6 +1020,7 @@ const buildCustom = (options: SuiCustomOptions): StackMember => {
 			});
 		}
 		const chainId = yield* fetchChainId(client);
+		yield* publishSuiState({ name: `sui.${network}`, chainId });
 		const waitForTransactionsReady = yield* buildWaitForTransactionsReady(faucetUrl);
 		const rpc: Endpoint = { host: rpcUrl };
 		const faucet: Endpoint | undefined = faucetUrl !== undefined ? { host: faucetUrl } : undefined;

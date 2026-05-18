@@ -12,6 +12,7 @@ import { Effect, Exit, Layer } from 'effect';
 import { layer as NodeFileSystemLayer } from '@effect/platform-node/NodeFileSystem';
 import { describe, expect, it } from '@effect/vitest';
 import { EngineLive } from '../engine/engine.js';
+import { WalrusStateRegistryLive } from '../engine/registries.js';
 import { WalrusAdminTag, WalrusNetworkTag, WalrusNodesTag, type WalrusNetwork } from './walrus.js';
 import { knownDeployments } from '../engine/known-deployments.js';
 import { routerHostname, routerId } from '../engine/router-hostname.js';
@@ -39,7 +40,7 @@ void _walrusPackageConfigCheck;
 // `provide` wraps the build with engine lifecycle hooks; tests need
 // `EngineLive` (and `EngineLive` itself needs `NodeFileSystemLayer` via
 // StateStore — but only if we touch StateStore, which we don't here).
-const TestBaseLayer = Layer.mergeAll(EngineLive, NodeFileSystemLayer);
+const TestBaseLayer = Layer.mergeAll(EngineLive, NodeFileSystemLayer, WalrusStateRegistryLive);
 
 // Stack-scoped hostnames the walrus deploy phase plugs into
 // `WALRUS_PUBLIC_HOSTS` (and that nodes register on chain as their

@@ -9,6 +9,7 @@
 
 import { Effect } from 'effect';
 import { provide } from '../../advanced/tag.js';
+import { publishDeepbookState } from '../../engine/registries.js';
 import { DeepbookCoreTag, type DeepbookCore } from '../deepbook.js';
 import { knownDeployments, type KnownNetwork } from '../../engine/known-deployments.js';
 import { makeFindPool, type DeepbookPool } from './internal.js';
@@ -85,6 +86,17 @@ export const deepbookKnownPackage = (opts: DeepbookKnownPackageOptions) => {
 				'deepbook.packageId': packageId,
 				'deepbook.registryId': registryId,
 				'deepbook.poolCount': staticPools.length,
+			});
+			yield* publishDeepbookState({
+				name: opts.network ?? 'deepbookKnownPackage',
+				packageId,
+				registryId,
+				pools: Object.fromEntries(
+					staticPools.map((p) => [
+						p.name,
+						{ poolId: p.poolId, baseType: p.baseType, quoteType: p.quoteType },
+					]),
+				),
 			});
 			return {
 				packageId,

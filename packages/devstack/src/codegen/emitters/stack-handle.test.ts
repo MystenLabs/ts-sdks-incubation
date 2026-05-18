@@ -17,9 +17,13 @@ import {
 	AccountRegistry,
 	AccountRegistryLive,
 	CoinRegistryLive,
+	DeepbookStateRegistryLive,
 	EndpointRegistryLive,
 	PackageRegistry,
 	PackageRegistryLive,
+	SealStateRegistryLive,
+	SuiStateRegistryLive,
+	WalrusStateRegistryLive,
 } from '../../engine/registries.js';
 import { ExtrasLive } from '../../engine/extras.js';
 import { StackHandleEmitter } from './stack-handle.js';
@@ -36,6 +40,10 @@ const RegistriesLive = Layer.mergeAll(
 	EndpointRegistryLive,
 	AccountRegistryLive,
 	CoinRegistryLive,
+	SuiStateRegistryLive,
+	SealStateRegistryLive,
+	WalrusStateRegistryLive,
+	DeepbookStateRegistryLive,
 );
 
 const seedRegistries = Effect.gen(function* () {

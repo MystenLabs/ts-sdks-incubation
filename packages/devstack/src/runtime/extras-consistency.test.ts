@@ -20,8 +20,12 @@ import { Identity } from '../engine/identity.js';
 import {
 	AccountRegistryLive,
 	CoinRegistryLive,
+	DeepbookStateRegistryLive,
 	EndpointRegistryLive,
 	PackageRegistryLive,
+	SealStateRegistryLive,
+	SuiStateRegistryLive,
+	WalrusStateRegistryLive,
 } from '../engine/registries.js';
 import { StackHandleEmitter } from '../codegen/emitters/stack-handle.js';
 import type { CodegenContext } from '../codegen/define-emitter.js';
@@ -38,6 +42,10 @@ const RegistriesLive = Layer.mergeAll(
 	EndpointRegistryLive,
 	AccountRegistryLive,
 	CoinRegistryLive,
+	SuiStateRegistryLive,
+	SealStateRegistryLive,
+	WalrusStateRegistryLive,
+	DeepbookStateRegistryLive,
 );
 
 describe('ExtrasResolved consistency', () => {

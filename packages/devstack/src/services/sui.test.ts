@@ -11,13 +11,19 @@ import { Cause, Effect, Exit, Layer, Option } from 'effect';
 import { layer as NodeFileSystemLayer } from '@effect/platform-node/NodeFileSystem';
 import { afterEach, beforeEach, describe, expect, it } from '@effect/vitest';
 import { EngineLive } from '../engine/engine.js';
-import { EndpointRegistryLive } from '../engine/registries.js';
+import { EndpointRegistryLive, SuiStateRegistryLive } from '../engine/registries.js';
 import { Sui, faucetReadyProbe } from './sui.js';
 
 // EndpointRegistry is required by every Sui factory body (publish calls
-// for `sui-rpc` / `sui-faucet` / `sui-graphql`). EngineLive backs the
-// lifecycle wrap applied by `provide`.
-const TestBaseLayer = Layer.mergeAll(EngineLive, NodeFileSystemLayer, EndpointRegistryLive);
+// for `sui-rpc` / `sui-faucet` / `sui-graphql`). SuiStateRegistry holds
+// the chainId published alongside. EngineLive backs the lifecycle wrap
+// applied by `provide`.
+const TestBaseLayer = Layer.mergeAll(
+	EngineLive,
+	NodeFileSystemLayer,
+	EndpointRegistryLive,
+	SuiStateRegistryLive,
+);
 
 // `SuiJsonRpcClient.getChainIdentifier` calls `getCheckpoint({id:'0'})`
 // then base58-decodes `result.digest` and hex-encodes the first 4 bytes.

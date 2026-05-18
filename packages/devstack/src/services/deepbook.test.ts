@@ -22,7 +22,11 @@ import { layer as NodeFileSystemLayer } from '@effect/platform-node/NodeFileSyst
 import { describe, expect, it } from '@effect/vitest';
 import { EngineLive } from '../engine/engine.js';
 import { LeasingLive } from '../engine/leasing.js';
-import { PackageRegistryLive, CoinRegistryLive } from '../engine/registries.js';
+import {
+	CoinRegistryLive,
+	DeepbookStateRegistryLive,
+	PackageRegistryLive,
+} from '../engine/registries.js';
 import { StateStore, StateStoreConfig, StateStoreLive } from '../engine/state-store.js';
 import { DeepbookAdminTag, DeepbookCoreTag, type DeepbookCore } from './deepbook.js';
 import { SuiTag, type Sui } from './sui.js';
@@ -56,7 +60,7 @@ void _deepbookCheck;
 // StateStore — but only if we touch StateStore, which we don't here).
 // `EngineLive` is a pure in-memory Ref, so it satisfies the wrap with
 // no fs touch.
-const TestBaseLayer = Layer.mergeAll(EngineLive, NodeFileSystemLayer);
+const TestBaseLayer = Layer.mergeAll(EngineLive, NodeFileSystemLayer, DeepbookStateRegistryLive);
 
 describe('deepbookKnownPackage', () => {
 	it.effect('provides DeepbookCoreTag from a network lookup', () =>
@@ -312,6 +316,7 @@ const CacheBaseLayer = Layer.mergeAll(
 	LeasingLive,
 	PackageRegistryLive,
 	CoinRegistryLive,
+	DeepbookStateRegistryLive,
 );
 
 describe('deepbookLocalDeploy — create-pools resume cache', () => {

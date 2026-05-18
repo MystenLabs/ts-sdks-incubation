@@ -61,7 +61,15 @@ import { Identity, deriveAppName, validateIdentity } from './identity.js';
 import { LeasingLive } from './leasing.js';
 import { Registry, RegistryLive, type RegistryNetwork } from './registry.js';
 import { PortAllocatorLive } from './port-allocator.js';
-import { AccountRegistryLive, CoinRegistryLive, PackageRegistryLive } from './registries.js';
+import {
+	AccountRegistryLive,
+	CoinRegistryLive,
+	DeepbookStateRegistryLive,
+	PackageRegistryLive,
+	SealStateRegistryLive,
+	SuiStateRegistryLive,
+	WalrusStateRegistryLive,
+} from './registries.js';
 import { StateStore, StateStoreConfig, StateStoreLive } from './state-store.js';
 import { ExtrasLive } from './extras.js';
 import { resolveNetwork, type SuiNetwork } from './network.js';
@@ -284,6 +292,10 @@ const InfraLiveCore = Layer.provideMerge(
 		PackageRegistryLive,
 		AccountRegistryLive,
 		CoinRegistryLive,
+		SuiStateRegistryLive,
+		SealStateRegistryLive,
+		WalrusStateRegistryLive,
+		DeepbookStateRegistryLive,
 		PortAllocatorLive,
 		LeasingLive,
 		FileWatcherLive,

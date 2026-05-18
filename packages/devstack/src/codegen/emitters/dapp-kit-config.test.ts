@@ -15,10 +15,14 @@ import {
 	AccountRegistry,
 	AccountRegistryLive,
 	CoinRegistryLive,
+	DeepbookStateRegistryLive,
 	EndpointRegistry,
 	EndpointRegistryLive,
 	PackageRegistry,
 	PackageRegistryLive,
+	SealStateRegistryLive,
+	SuiStateRegistryLive,
+	WalrusStateRegistryLive,
 } from '../../engine/registries.js';
 import { ExtrasLive } from '../../engine/extras.js';
 import { EndpointName } from '../../runtime/endpoint-names.js';
@@ -36,6 +40,10 @@ const RegistriesLive = Layer.mergeAll(
 	EndpointRegistryLive,
 	AccountRegistryLive,
 	CoinRegistryLive,
+	SuiStateRegistryLive,
+	SealStateRegistryLive,
+	WalrusStateRegistryLive,
+	DeepbookStateRegistryLive,
 );
 
 const seedSuiAndPackages = Effect.gen(function* () {

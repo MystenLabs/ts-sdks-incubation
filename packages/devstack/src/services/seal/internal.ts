@@ -49,7 +49,12 @@ import { stringifyCause } from '../../engine/stringify-cause.js';
 import { buildMove } from '../../engine/sui-cli.js';
 import { dockerImage } from '../../advanced/plugin-author/index.js';
 import { gitFetch } from '../../advanced/plugin-author/index.js';
-import { PackageRegistry, publishEndpoint, publishPackage } from '../../engine/registries.js';
+import {
+	PackageRegistry,
+	publishEndpoint,
+	publishPackage,
+	publishSealState,
+} from '../../engine/registries.js';
 import { EndpointName } from '../../runtime/endpoint-names.js';
 import {
 	SealKeyManagerTag,
@@ -673,6 +678,7 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 			url: keyServerUrl,
 			kind: 'seal-key-server',
 		});
+		yield* publishSealState({ name, objectId: keyServerObjectId });
 
 		// Key rotation: regenerate the BLS keypair, register a NEW on-chain
 		// KeyServerV2 Independent (the upstream contract has no in-place
@@ -1002,6 +1008,7 @@ export const sealKnownKeyServer = (options: SealKnownKeyServerOptions = {}): Sta
 			url: keyServerUrl,
 			kind: 'seal-key-server',
 		});
+		yield* publishSealState({ name, objectId });
 		// SDK-ready array. Known-mode wraps the single registry entry
 		// in a one-element `serverConfigs` array with weight 1 today;
 		// multi-server known stacks (t-of-n committees) would extend

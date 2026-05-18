@@ -19,8 +19,12 @@ import type { ManifestError } from '../engine/errors.js';
 import {
 	type AccountRegistry,
 	type CoinRegistry,
+	type DeepbookStateRegistry,
 	type EndpointRegistry,
 	type PackageRegistry,
+	type SealStateRegistry,
+	type SuiStateRegistry,
+	type WalrusStateRegistry,
 } from '../engine/registries.js';
 import type { Identity } from '../engine/identity.js';
 import type { Manifest } from '../runtime/manifest-schema.js';
@@ -66,6 +70,10 @@ const manifestRef = (): StackMember => {
 		| EndpointRegistry
 		| AccountRegistry
 		| CoinRegistry
+		| SuiStateRegistry
+		| SealStateRegistry
+		| WalrusStateRegistry
+		| DeepbookStateRegistry
 		| Identity
 		| ExtrasResolved
 		| Scope.Scope

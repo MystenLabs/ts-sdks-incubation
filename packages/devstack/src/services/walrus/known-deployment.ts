@@ -17,6 +17,7 @@ import {
 	type WalrusProxy,
 } from '../walrus.js';
 import { knownDeployments, type KnownNetwork } from '../../engine/known-deployments.js';
+import { publishWalrusState } from '../../engine/registries.js';
 
 export interface WalrusKnownDeploymentOptions {
 	readonly network?: KnownNetwork;
@@ -115,6 +116,11 @@ export const walrusKnownDeployment = (options: WalrusKnownDeploymentOptions): St
 
 	const layers: Array<Layer.Layer<any, any, any>> = [networkLayer, nodesLayer];
 	if (proxyLayer !== undefined) layers.push(proxyLayer);
+
+	const publishLayer = Layer.effectDiscard(
+		publishWalrusState({ name: KNOWN_DEPLOYMENT_KEY, systemObjectId }),
+	) as unknown as Layer.Layer<any, any, any>;
+	layers.push(publishLayer);
 
 	const combinedLayer = Layer.mergeAll(
 		...(layers as [Layer.Layer<any, any, any>, ...Array<Layer.Layer<any, any, any>>]),

@@ -19,9 +19,13 @@ import {
 	AccountRegistry,
 	AccountRegistryLive,
 	CoinRegistryLive,
+	DeepbookStateRegistryLive,
 	EndpointRegistry,
 	EndpointRegistryLive,
 	PackageRegistryLive,
+	SealStateRegistryLive,
+	SuiStateRegistryLive,
+	WalrusStateRegistryLive,
 } from '../engine/registries.js';
 import { ExtrasLive } from '../engine/extras.js';
 import { EndpointName } from './endpoint-names.js';
@@ -38,6 +42,10 @@ const RegistriesLive = Layer.mergeAll(
 	EndpointRegistryLive,
 	AccountRegistryLive,
 	CoinRegistryLive,
+	SuiStateRegistryLive,
+	SealStateRegistryLive,
+	WalrusStateRegistryLive,
+	DeepbookStateRegistryLive,
 );
 
 describe('emitManifestV4', () => {

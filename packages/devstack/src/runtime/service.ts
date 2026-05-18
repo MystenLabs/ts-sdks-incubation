@@ -21,13 +21,22 @@ import { Identity } from '../engine/identity.js';
 import {
 	AccountRegistry,
 	CoinRegistry,
+	DeepbookStateRegistry,
 	EndpointRegistry,
 	PackageRegistry,
+	SealStateRegistry,
+	SuiStateRegistry,
+	WalrusStateRegistry,
+	type DeepbookStateRecord,
+	type SealStateRecord,
+	type SuiStateRecord,
+	type WalrusStateRecord,
 } from '../engine/registries.js';
 import { EndpointName } from './endpoint-names.js';
 import { toSdkCoin } from './sdk-coin.js';
 import type {
 	AppManifest,
+	DeepbookManifest,
 	EndpointEntry,
 	Manifest,
 	SealManifest,
@@ -45,6 +54,12 @@ import type {
 // structured shape — add them here (and to `endpoint-names.ts`) when a
 // new built-in factory wants its endpoint to surface under `services.*`
 // rather than appearing only in the flat list.
+//
+// `chainId`, `seal.objectId`, `walrus.systemObjectId`, and the deepbook
+// block are NOT endpoints — they live in their own per-service state
+// registries (`SuiStateRegistry`, `SealStateRegistry`, etc.). The
+// service factories publish into those at acquire time; the group*
+// helpers below fold the latest state into the structured manifest.
 
 const SUI_FIELDS: Record<string, keyof Omit<SuiManifest, 'network' | 'chainId'>> = {
 	[EndpointName.SUI_RPC]: 'rpc',
@@ -66,10 +81,14 @@ const toEndpointEntry = (e: FlatEndpoint): EndpointEntry =>
 const groupSui = (
 	endpoints: ReadonlyArray<FlatEndpoint>,
 	network: string,
+	state: SuiStateRecord | undefined,
 ): SuiManifest | undefined => {
 	const rpc = endpoints.find((e) => e.name === EndpointName.SUI_RPC);
 	if (rpc === undefined) return undefined;
 	let out: SuiManifest = { network, rpc: toEndpointEntry(rpc) };
+	if (state !== undefined) {
+		out = { ...out, chainId: state.chainId };
+	}
 	for (const e of endpoints) {
 		const field = SUI_FIELDS[e.name];
 		if (field !== undefined && field !== 'rpc') {
@@ -79,16 +98,35 @@ const groupSui = (
 	return out;
 };
 
-const groupSeal = (endpoints: ReadonlyArray<FlatEndpoint>): SealManifest | undefined => {
+const groupSeal = (
+	endpoints: ReadonlyArray<FlatEndpoint>,
+	state: SealStateRecord | undefined,
+): SealManifest | undefined => {
 	const ks = endpoints.find((e) => e.name === EndpointName.SEAL_KEY_SERVER);
-	return ks !== undefined ? { keyServer: toEndpointEntry(ks) } : undefined;
+	if (ks === undefined) return undefined;
+	return state !== undefined
+		? { keyServer: toEndpointEntry(ks), objectId: state.objectId }
+		: { keyServer: toEndpointEntry(ks) };
 };
 
-const groupWalrus = (endpoints: ReadonlyArray<FlatEndpoint>): WalrusManifest | undefined => {
+const groupWalrus = (
+	endpoints: ReadonlyArray<FlatEndpoint>,
+	state: WalrusStateRecord | undefined,
+): WalrusManifest | undefined => {
 	const agg = endpoints.find((e) => e.name === EndpointName.WALRUS_AGGREGATOR);
 	const pub = endpoints.find((e) => e.name === EndpointName.WALRUS_PUBLISHER);
 	if (agg === undefined || pub === undefined) return undefined;
-	return { aggregator: toEndpointEntry(agg), publisher: toEndpointEntry(pub) };
+	const base: WalrusManifest = { aggregator: toEndpointEntry(agg), publisher: toEndpointEntry(pub) };
+	return state !== undefined ? { ...base, systemObjectId: state.systemObjectId } : base;
+};
+
+const groupDeepbook = (state: DeepbookStateRecord | undefined): DeepbookManifest | undefined => {
+	if (state === undefined) return undefined;
+	return {
+		packageId: state.packageId,
+		pools: state.pools,
+		...(state.registryId !== undefined ? { registryId: state.registryId } : {}),
+	};
 };
 
 const groupApp = (
@@ -123,7 +161,15 @@ export const gatherManifest = (
 ): Effect.Effect<
 	Manifest,
 	never,
-	PackageRegistry | EndpointRegistry | AccountRegistry | CoinRegistry | Identity
+	| PackageRegistry
+	| EndpointRegistry
+	| AccountRegistry
+	| CoinRegistry
+	| SuiStateRegistry
+	| SealStateRegistry
+	| WalrusStateRegistry
+	| DeepbookStateRegistry
+	| Identity
 > =>
 	Effect.gen(function* () {
 		const identity = yield* Identity;
@@ -131,6 +177,10 @@ export const gatherManifest = (
 		const eps = yield* EndpointRegistry;
 		const accts = yield* AccountRegistry;
 		const coinsReg = yield* CoinRegistry;
+		const suiState = yield* SuiStateRegistry;
+		const sealState = yield* SealStateRegistry;
+		const walrusState = yield* WalrusStateRegistry;
+		const deepbookState = yield* DeepbookStateRegistry;
 
 		// Dedupe by name (last-wins). HMR-style re-runs re-register the
 		// same name, so the last write per name should win.
@@ -138,24 +188,33 @@ export const gatherManifest = (
 		const rawEps = yield* eps.snapshot;
 		const rawAccts = yield* accts.snapshot;
 		const rawCoins = yield* coinsReg.snapshot;
+		const rawSuiState = yield* suiState.snapshot;
+		const rawSealState = yield* sealState.snapshot;
+		const rawWalrusState = yield* walrusState.snapshot;
+		const rawDeepbookState = yield* deepbookState.snapshot;
 
 		const dedupedPkgs = new Map(rawPkgs.map((p) => [p.name, p]));
 		const dedupedEps = new Map(rawEps.map((e) => [e.name, e]));
 		const dedupedAccts = new Map(rawAccts.map((a) => [a.name, a]));
 		const dedupedCoins = new Map(rawCoins.map((c) => [c.name, c]));
+		// Per-service state registries hold at most one record per stack;
+		// take the last write (matches the dedupe-by-name semantics above).
+		const lastSuiState = rawSuiState[rawSuiState.length - 1];
+		const lastSealState = rawSealState[rawSealState.length - 1];
+		const lastWalrusState = rawWalrusState[rawWalrusState.length - 1];
+		const lastDeepbookState = rawDeepbookState[rawDeepbookState.length - 1];
 
 		const endpoints = [...dedupedEps.values()];
 
-		const sui = groupSui(endpoints, identity.network);
-		const seal = groupSeal(endpoints);
-		const walrus = groupWalrus(endpoints);
-		// deepbook is populated by the deepbook factory directly via its
-		// own manifest contribution, not from the flat endpoint registry,
-		// so it's intentionally absent here.
+		const sui = groupSui(endpoints, identity.network, lastSuiState);
+		const seal = groupSeal(endpoints, lastSealState);
+		const walrus = groupWalrus(endpoints, lastWalrusState);
+		const deepbook = groupDeepbook(lastDeepbookState);
 		const services: Manifest['services'] = {
 			...(sui !== undefined ? { sui } : {}),
 			...(seal !== undefined ? { seal } : {}),
 			...(walrus !== undefined ? { walrus } : {}),
+			...(deepbook !== undefined ? { deepbook } : {}),
 		};
 
 		const packages: Record<string, Manifest['packages'][string]> = {};
@@ -217,7 +276,15 @@ export interface DevstackShape {
 	readonly current: () => Effect.Effect<
 		Manifest,
 		never,
-		PackageRegistry | EndpointRegistry | AccountRegistry | CoinRegistry | Identity
+		| PackageRegistry
+		| EndpointRegistry
+		| AccountRegistry
+		| CoinRegistry
+		| SuiStateRegistry
+		| SealStateRegistry
+		| WalrusStateRegistry
+		| DeepbookStateRegistry
+		| Identity
 	>;
 }
 

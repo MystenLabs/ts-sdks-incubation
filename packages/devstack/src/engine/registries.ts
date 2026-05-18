@@ -39,6 +39,46 @@ export interface AccountRecord {
 	readonly address: string;
 }
 
+// Per-service state registries — singletons in practice (one Sui, one
+// Seal, one Walrus, one Deepbook per stack), but kept array-shaped with
+// a `name` field for symmetry with the rest of the registries. Last-
+// write-wins per name; `gatherManifest` reads the snapshot to populate
+// the corresponding `services.*` fields in the manifest.
+
+export interface SuiStateRecord {
+	readonly name: string;
+	readonly chainId: string;
+}
+
+export interface SealStateRecord {
+	readonly name: string;
+	/** On-chain `KeyServer` object id (BLS public key + URL). Surfaced
+	 *  in `services.seal.objectId` so consumers can pass it to
+	 *  `SealClient`'s `serverConfigs`. */
+	readonly objectId: string;
+}
+
+export interface WalrusStateRecord {
+	readonly name: string;
+	/** Walrus system object id — the on-chain registry the storage
+	 *  protocol reads committee + epoch state from. Surfaced in
+	 *  `services.walrus.systemObjectId`. */
+	readonly systemObjectId: string;
+}
+
+export interface DeepbookPoolStateEntry {
+	readonly poolId: string;
+	readonly baseType: string;
+	readonly quoteType: string;
+}
+
+export interface DeepbookStateRecord {
+	readonly name: string;
+	readonly packageId: string;
+	readonly registryId?: string;
+	readonly pools: Record<string, DeepbookPoolStateEntry>;
+}
+
 export interface CoinRecord {
 	readonly name: string;
 	readonly type: string;
@@ -80,6 +120,26 @@ export class CoinRegistry extends Context.Service<CoinRegistry, RegistryShape<Co
 	'@devstack/CoinRegistry',
 ) {}
 
+export class SuiStateRegistry extends Context.Service<
+	SuiStateRegistry,
+	RegistryShape<SuiStateRecord>
+>()('@devstack/SuiStateRegistry') {}
+
+export class SealStateRegistry extends Context.Service<
+	SealStateRegistry,
+	RegistryShape<SealStateRecord>
+>()('@devstack/SealStateRegistry') {}
+
+export class WalrusStateRegistry extends Context.Service<
+	WalrusStateRegistry,
+	RegistryShape<WalrusStateRecord>
+>()('@devstack/WalrusStateRegistry') {}
+
+export class DeepbookStateRegistry extends Context.Service<
+	DeepbookStateRegistry,
+	RegistryShape<DeepbookStateRecord>
+>()('@devstack/DeepbookStateRegistry') {}
+
 // Write-side helpers — sugar for `(yield* X).register(entry)` with a
 // clearer call site. Free functions instead of static class members so
 // the call sites tree-shake and the types stay honest (no
@@ -107,6 +167,38 @@ export const publishAccount = (entry: AccountRecord): Effect.Effect<void, never,
 export const publishCoin = (entry: CoinRecord): Effect.Effect<void, never, CoinRegistry> =>
 	Effect.gen(function* () {
 		const reg = yield* CoinRegistry;
+		yield* reg.register(entry);
+	});
+
+export const publishSuiState = (
+	entry: SuiStateRecord,
+): Effect.Effect<void, never, SuiStateRegistry> =>
+	Effect.gen(function* () {
+		const reg = yield* SuiStateRegistry;
+		yield* reg.register(entry);
+	});
+
+export const publishSealState = (
+	entry: SealStateRecord,
+): Effect.Effect<void, never, SealStateRegistry> =>
+	Effect.gen(function* () {
+		const reg = yield* SealStateRegistry;
+		yield* reg.register(entry);
+	});
+
+export const publishWalrusState = (
+	entry: WalrusStateRecord,
+): Effect.Effect<void, never, WalrusStateRegistry> =>
+	Effect.gen(function* () {
+		const reg = yield* WalrusStateRegistry;
+		yield* reg.register(entry);
+	});
+
+export const publishDeepbookState = (
+	entry: DeepbookStateRecord,
+): Effect.Effect<void, never, DeepbookStateRegistry> =>
+	Effect.gen(function* () {
+		const reg = yield* DeepbookStateRegistry;
 		yield* reg.register(entry);
 	});
 
@@ -157,10 +249,30 @@ export const CoinRegistryLive: Layer.Layer<CoinRegistry> = Layer.effect(
 	CoinRegistry,
 	makeRegistryLive<CoinRecord>(),
 );
+export const SuiStateRegistryLive: Layer.Layer<SuiStateRegistry> = Layer.effect(
+	SuiStateRegistry,
+	makeRegistryLive<SuiStateRecord>(),
+);
+export const SealStateRegistryLive: Layer.Layer<SealStateRegistry> = Layer.effect(
+	SealStateRegistry,
+	makeRegistryLive<SealStateRecord>(),
+);
+export const WalrusStateRegistryLive: Layer.Layer<WalrusStateRegistry> = Layer.effect(
+	WalrusStateRegistry,
+	makeRegistryLive<WalrusStateRecord>(),
+);
+export const DeepbookStateRegistryLive: Layer.Layer<DeepbookStateRegistry> = Layer.effect(
+	DeepbookStateRegistry,
+	makeRegistryLive<DeepbookStateRecord>(),
+);
 
 export const RegistriesLive = Layer.mergeAll(
 	PackageRegistryLive,
 	EndpointRegistryLive,
 	AccountRegistryLive,
 	CoinRegistryLive,
+	SuiStateRegistryLive,
+	SealStateRegistryLive,
+	WalrusStateRegistryLive,
+	DeepbookStateRegistryLive,
 );

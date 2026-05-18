@@ -33,7 +33,7 @@ import { type WalrusAdmin } from '../walrus.js';
 import * as Docker from '../../engine/docker.js';
 import { EngineHandle } from '../../engine/engine.js';
 import { Identity } from '../../engine/identity.js';
-import { publishEndpoint, publishPackage } from '../../engine/registries.js';
+import { publishEndpoint, publishPackage, publishWalrusState } from '../../engine/registries.js';
 import { EndpointName } from '../../runtime/endpoint-names.js';
 import { servicePath } from '../../engine/service-paths.js';
 import { StateStore } from '../../engine/state-store.js';
@@ -608,6 +608,7 @@ export const acquireLocalCluster = (args: {
 				kind: 'walrus-node',
 			});
 		}
+		yield* publishWalrusState({ name: args.name, systemObjectId: deploy.systemObject });
 
 		return {
 			deploy,

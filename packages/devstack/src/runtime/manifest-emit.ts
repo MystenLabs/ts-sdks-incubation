@@ -10,8 +10,12 @@ import { Identity } from '../engine/identity.js';
 import {
 	AccountRegistry,
 	CoinRegistry,
+	DeepbookStateRegistry,
 	EndpointRegistry,
 	PackageRegistry,
+	SealStateRegistry,
+	SuiStateRegistry,
+	WalrusStateRegistry,
 } from '../engine/registries.js';
 import { jsonBigintReplacer } from '../engine/json-bigint.js';
 import { writeFileAtomicIfChanged } from '../engine/atomic-write.js';
@@ -77,6 +81,10 @@ export const emitManifestV4 = (
 	| EndpointRegistry
 	| AccountRegistry
 	| CoinRegistry
+	| SuiStateRegistry
+	| SealStateRegistry
+	| WalrusStateRegistry
+	| DeepbookStateRegistry
 	| Identity
 	| ExtrasResolved
 	| Scope.Scope

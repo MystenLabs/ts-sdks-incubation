@@ -17,10 +17,14 @@ import {
 	AccountRegistryLive,
 	CoinRegistry,
 	CoinRegistryLive,
+	DeepbookStateRegistryLive,
 	EndpointRegistry,
 	EndpointRegistryLive,
 	PackageRegistry,
 	PackageRegistryLive,
+	SealStateRegistryLive,
+	SuiStateRegistryLive,
+	WalrusStateRegistryLive,
 } from '../engine/registries.js';
 import { EndpointName } from './endpoint-names.js';
 import { Devstack, DevstackLive, gatherManifest } from './service.js';
@@ -79,6 +83,10 @@ const RegistriesLive = Layer.mergeAll(
 	EndpointRegistryLive,
 	AccountRegistryLive,
 	CoinRegistryLive,
+	SuiStateRegistryLive,
+	SealStateRegistryLive,
+	WalrusStateRegistryLive,
+	DeepbookStateRegistryLive,
 );
 
 describe('Devstack service — gatherManifest', () => {

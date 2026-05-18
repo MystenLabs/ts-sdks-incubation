@@ -13,7 +13,7 @@ import { describe, expect, it } from '@effect/vitest';
 import { EngineLive } from '../engine/engine.js';
 import { SealKeyManagerTag, SealKeyServerTag, type SealKeyServerEntry } from './seal.js';
 import { knownDeployments } from '../engine/known-deployments.js';
-import { EndpointRegistryLive } from '../engine/registries.js';
+import { EndpointRegistryLive, SealStateRegistryLive } from '../engine/registries.js';
 import { sealKnownKeyServer } from './seal/internal.js';
 
 // -----------------------------------------------------------------------------
@@ -39,7 +39,12 @@ void _sealKeyServerEntryCheck;
 // `EndpointRegistry.publish`, so we add the in-memory `EndpointRegistry`
 // layer to the base — without it the build trips `ServiceNotFound`
 // before the projection ever runs.
-const TestBaseLayer = Layer.mergeAll(EngineLive, NodeFileSystemLayer, EndpointRegistryLive);
+const TestBaseLayer = Layer.mergeAll(
+	EngineLive,
+	NodeFileSystemLayer,
+	EndpointRegistryLive,
+	SealStateRegistryLive,
+);
 
 describe('sealKnownKeyServer', () => {
 	it.effect('provides SealKeyServerTag from a network lookup', () =>
