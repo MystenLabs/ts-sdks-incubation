@@ -33,7 +33,12 @@ import { treasuryCapMintStrategy } from '../../faucet/strategies/treasury-cap-mi
 // the cache and triggers a re-publish, while a no-op rebuild reuses
 // the previously published packageId (which downstream caches key
 // off).
-const hashMoveSources = (sourcePath: string) =>
+//
+// Exported for test-only use — production callers go through
+// `publishMove`. The function is the load-bearing cache-key derivation
+// for snapshot-restore correctness, so `internal.test.ts` pins its
+// invariants directly.
+export const hashMoveSources = (sourcePath: string) =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem;
 		const hash = crypto.createHash('sha256');
