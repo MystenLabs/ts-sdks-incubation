@@ -169,17 +169,9 @@ export interface RegistryShape {
 	/** Insert a new entry or refresh `lastSeen` / `pid` / `chainId` on an existing one. */
 	readonly upsert: (input: UpsertInput) => Effect.Effect<void>;
 	/** Strip the `pid` field on clean shutdown so classify() drops the row out of `active`. */
-	readonly clearPid: (
-		app: string,
-		stack: string,
-		network: RegistryNetwork,
-	) => Effect.Effect<void>;
+	readonly clearPid: (app: string, stack: string, network: RegistryNetwork) => Effect.Effect<void>;
 	/** Drop the entry entirely — called by `wipe` / `prune` after teardown. */
-	readonly remove: (
-		app: string,
-		stack: string,
-		network: RegistryNetwork,
-	) => Effect.Effect<void>;
+	readonly remove: (app: string, stack: string, network: RegistryNetwork) => Effect.Effect<void>;
 }
 
 export class Registry extends Context.Service<Registry, RegistryShape>()('@devstack/Registry') {}
@@ -214,9 +206,9 @@ export const RegistryLive: Layer.Layer<Registry, never, FileSystem.FileSystem> =
 				const tmp = `${path}.tmp.${process.pid}.${Date.now()}.${randomUUID().slice(0, 8)}`;
 				const body = `${JSON.stringify(next, null, 2)}\n`;
 				yield* fs.writeFileString(tmp, body, { mode: 0o644 });
-				yield* fs.rename(tmp, path).pipe(
-					Effect.tapError(() => fs.remove(tmp, { force: true }).pipe(Effect.ignore)),
-				);
+				yield* fs
+					.rename(tmp, path)
+					.pipe(Effect.tapError(() => fs.remove(tmp, { force: true }).pipe(Effect.ignore)));
 				yield* fs.chmod(path, 0o644).pipe(Effect.ignore);
 			});
 

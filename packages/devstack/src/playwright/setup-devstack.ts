@@ -72,9 +72,7 @@ export const setupDevstack = (handle: DevstackHandle): DevstackPlaywrightFixture
 			// `Scope.close` started a new runtime — finalizers couldn't
 			// observe interruption state or coordinate with the
 			// acquire's leftover work.
-			await Effect.runPromise(
-				build.pipe(Effect.tapCause(() => Scope.close(made, Exit.void))),
-			);
+			await Effect.runPromise(build.pipe(Effect.tapCause(() => Scope.close(made, Exit.void))));
 			scope = made;
 		},
 

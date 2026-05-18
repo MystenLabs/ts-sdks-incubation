@@ -360,9 +360,7 @@ export const Codegen = (opts: CodegenOptions = {}) => {
 						// the old tree back so the consumer isn't left
 						// with a missing outputDir.
 						if (outputExists) {
-							yield* Effect.promise(() =>
-								fs.rename(backupDir, outputDir).catch(() => undefined),
-							);
+							yield* Effect.promise(() => fs.rename(backupDir, outputDir).catch(() => undefined));
 						}
 						yield* Effect.promise(() => fs.rm(stagingDir, { recursive: true, force: true }));
 					}),

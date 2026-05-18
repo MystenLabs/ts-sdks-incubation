@@ -33,15 +33,23 @@ import type { CodegenContext } from '../define-emitter.js';
 // the run produced output, so this satisfies the "write something" contract
 // without invoking the real generator.
 vi.mock('@mysten/codegen', () => ({
-	generateFromPackageSummary: vi.fn(async ({ outputDir, package: pkg }: { outputDir: string; package: { packageName: string } }) => {
-		const fs = await import('node:fs/promises');
-		await fs.mkdir(joinPath(outputDir, pkg.packageName), { recursive: true });
-		await fs.writeFile(
-			joinPath(outputDir, pkg.packageName, 'index.ts'),
-			`// mocked codegen output for ${pkg.packageName}\nexport const generated = true;\n`,
-			'utf-8',
-		);
-	}),
+	generateFromPackageSummary: vi.fn(
+		async ({
+			outputDir,
+			package: pkg,
+		}: {
+			outputDir: string;
+			package: { packageName: string };
+		}) => {
+			const fs = await import('node:fs/promises');
+			await fs.mkdir(joinPath(outputDir, pkg.packageName), { recursive: true });
+			await fs.writeFile(
+				joinPath(outputDir, pkg.packageName, 'index.ts'),
+				`// mocked codegen output for ${pkg.packageName}\nexport const generated = true;\n`,
+				'utf-8',
+			);
+		},
+	),
 }));
 
 // Import AFTER the mock so the bindings emitter resolves to the stubbed
@@ -51,7 +59,9 @@ const { BindingsEmitter } = await import('./bindings.js');
 // Spawner stub — `sui move summary` becomes a no-op that exits 0. The
 // bindings emitter only reads the exitCode; the actual summary file is
 // produced by the mocked `generateFromPackageSummary` above.
-const makeStubSpawner = (calls: Array<ReadonlyArray<string>>): Layer.Layer<ChildProcessSpawner.ChildProcessSpawner> => {
+const makeStubSpawner = (
+	calls: Array<ReadonlyArray<string>>,
+): Layer.Layer<ChildProcessSpawner.ChildProcessSpawner> => {
 	const spawn = (command: ChildProcess.Command) => {
 		if (command._tag !== 'StandardCommand') {
 			return Effect.die(new Error('bindings.test: unexpected piped command'));
@@ -116,7 +126,9 @@ describe('BindingsEmitter — happy path', () => {
 	it.effect('emits a bindings dir containing the codegen output for the local package', () =>
 		Effect.gen(function* () {
 			const spawnerCalls: Array<ReadonlyArray<string>> = [];
-			yield* BindingsEmitter().emit(ctx()).pipe(Effect.provide(makeStubSpawner(spawnerCalls)));
+			yield* BindingsEmitter()
+				.emit(ctx())
+				.pipe(Effect.provide(makeStubSpawner(spawnerCalls)));
 
 			// Final bindings dir landed under <outputDir>/bindings/<packageName>
 			const expected = joinPath(outputDir, 'bindings', 'demo', 'index.ts');
@@ -133,15 +145,16 @@ describe('BindingsEmitter — happy path', () => {
 	it.effect('staging dir is removed after a successful run', () =>
 		Effect.gen(function* () {
 			const spawnerCalls: Array<ReadonlyArray<string>> = [];
-			yield* BindingsEmitter().emit(ctx()).pipe(Effect.provide(makeStubSpawner(spawnerCalls)));
+			yield* BindingsEmitter()
+				.emit(ctx())
+				.pipe(Effect.provide(makeStubSpawner(spawnerCalls)));
 
 			// `bindings.ts` stages to `<outputDir>/bindings.staging-<rand>`
 			// and renames to `<outputDir>/bindings`. After a clean run no
 			// staging or discard sibling should remain.
 			const siblings = require('node:fs').readdirSync(outputDir);
 			const stagingOrDiscard = siblings.filter(
-				(e: string) =>
-					e.startsWith('bindings.staging-') || e.startsWith('bindings.discarding-'),
+				(e: string) => e.startsWith('bindings.staging-') || e.startsWith('bindings.discarding-'),
 			);
 			expect(stagingOrDiscard).toEqual([]);
 			expect(siblings).toContain('bindings');
@@ -161,7 +174,9 @@ describe('BindingsEmitter — happy path', () => {
 				'utf-8',
 			);
 			const spawnerCalls: Array<ReadonlyArray<string>> = [];
-			yield* BindingsEmitter().emit(ctx()).pipe(Effect.provide(makeStubSpawner(spawnerCalls)));
+			yield* BindingsEmitter()
+				.emit(ctx())
+				.pipe(Effect.provide(makeStubSpawner(spawnerCalls)));
 
 			// The new mocked output is present.
 			expect(existsSync(joinPath(outputDir, 'bindings', 'demo', 'index.ts'))).toBe(true);
@@ -199,26 +214,28 @@ describe('BindingsEmitter — fingerprint short-circuit', () => {
 		],
 	});
 
-	it.live('second emit with identical inputs skips spawn AND leaves bindings/ mtime untouched', () =>
-		Effect.gen(function* () {
-			const spawnerCalls: Array<ReadonlyArray<string>> = [];
-			const spawnerLayer = makeStubSpawner(spawnerCalls);
+	it.live(
+		'second emit with identical inputs skips spawn AND leaves bindings/ mtime untouched',
+		() =>
+			Effect.gen(function* () {
+				const spawnerCalls: Array<ReadonlyArray<string>> = [];
+				const spawnerLayer = makeStubSpawner(spawnerCalls);
 
-			yield* BindingsEmitter().emit(ctx()).pipe(Effect.provide(spawnerLayer));
-			expect(spawnerCalls).toHaveLength(1);
+				yield* BindingsEmitter().emit(ctx()).pipe(Effect.provide(spawnerLayer));
+				expect(spawnerCalls).toHaveLength(1);
 
-			const bindingsDir = joinPath(outputDir, 'bindings');
-			const beforeMtime = statSync(bindingsDir).mtimeMs;
+				const bindingsDir = joinPath(outputDir, 'bindings');
+				const beforeMtime = statSync(bindingsDir).mtimeMs;
 
-			// Wait one tick so a swap-induced mtime bump would be measurable.
-			yield* Effect.sleep('50 millis');
+				// Wait one tick so a swap-induced mtime bump would be measurable.
+				yield* Effect.sleep('50 millis');
 
-			yield* BindingsEmitter().emit(ctx()).pipe(Effect.provide(spawnerLayer));
+				yield* BindingsEmitter().emit(ctx()).pipe(Effect.provide(spawnerLayer));
 
-			// Fingerprint matched → no spawn, no swap.
-			expect(spawnerCalls).toHaveLength(1);
-			expect(statSync(bindingsDir).mtimeMs).toBe(beforeMtime);
-		}),
+				// Fingerprint matched → no spawn, no swap.
+				expect(spawnerCalls).toHaveLength(1);
+				expect(statSync(bindingsDir).mtimeMs).toBe(beforeMtime);
+			}),
 	);
 
 	it.effect('editing a .move file invalidates the fingerprint (re-spawns + re-swaps)', () =>
@@ -266,9 +283,7 @@ describe('BindingsEmitter — package filtering', () => {
 			yield* BindingsEmitter()
 				.emit({
 					outputDir,
-					packages: [
-						{ name: 'known', packageId: '0xfeed', mvrPlaceholder: '@known/x' },
-					],
+					packages: [{ name: 'known', packageId: '0xfeed', mvrPlaceholder: '@known/x' }],
 				})
 				.pipe(Effect.provide(makeStubSpawner(spawnerCalls)));
 
@@ -278,7 +293,7 @@ describe('BindingsEmitter — package filtering', () => {
 		}),
 	);
 
-	it.effect("duplicate package names: first wins, duplicate is skipped (no HMR storm)", () =>
+	it.effect('duplicate package names: first wins, duplicate is skipped (no HMR storm)', () =>
 		Effect.gen(function* () {
 			// Second tmpdir simulating a colliding `Package('demo', ...)` in
 			// the user's config — load-bearing for the

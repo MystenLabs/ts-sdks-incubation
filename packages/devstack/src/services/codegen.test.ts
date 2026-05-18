@@ -4,14 +4,7 @@
 // lists compose at type-check time and the bindings emitter silently
 // skips KnownPackage entries (no `sourcePath`) at runtime.
 
-import {
-	existsSync,
-	mkdtempSync,
-	readdirSync,
-	readFileSync,
-	rmSync,
-	writeFileSync,
-} from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join as joinPath } from 'node:path';
 import { Effect, Layer } from 'effect';

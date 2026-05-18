@@ -428,10 +428,7 @@ describe('snapshot() pause/commit/unpause ordering', () => {
 				stack: 'main',
 				containers: [{ id: 'cid-runner', name: 'sui-localnet' }],
 				skipRuntime: true,
-			}).pipe(
-				Effect.provide(spawnerLayer),
-				Effect.provide(NodeServicesLayer),
-			);
+			}).pipe(Effect.provide(spawnerLayer), Effect.provide(NodeServicesLayer));
 
 			const pauseIdx = recorder.findIndex(
 				(r) => r.args[0] === 'pause' && r.args[1] === 'cid-runner',

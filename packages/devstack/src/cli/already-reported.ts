@@ -17,9 +17,7 @@ export class AlreadyReportedError extends Data.TaggedError('AlreadyReportedError
  *  already been emitted — the top-level `tapCause` in `cli/index.ts`
  *  short-circuits its own rendering when it sees this sentinel, so the
  *  user sees one error, not two. */
-export const failAlreadyReported = (
-	message: string,
-): Effect.Effect<never, AlreadyReportedError> =>
+export const failAlreadyReported = (message: string): Effect.Effect<never, AlreadyReportedError> =>
 	Effect.gen(function* () {
 		yield* Console.error(message);
 		return yield* Effect.fail(new AlreadyReportedError({ cause: message }));

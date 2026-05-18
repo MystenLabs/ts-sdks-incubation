@@ -131,9 +131,7 @@ describe('emitManifestV4', () => {
 				app: { wallet?: { url: string } };
 			};
 			expect(parsed.app.wallet?.url).toBe('http://wallet.test:5180');
-		}).pipe(
-			Effect.provide(Layer.mergeAll(RegistriesLive, IdentityLive, ExtrasLive(undefined))),
-		),
+		}).pipe(Effect.provide(Layer.mergeAll(RegistriesLive, IdentityLive, ExtrasLive(undefined)))),
 	);
 
 	it.effect('honors the explicit output path override', () =>

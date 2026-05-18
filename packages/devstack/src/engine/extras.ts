@@ -81,9 +81,7 @@ export class ExtrasResolved extends Context.Service<
  *  at infra-layer build time — the cache is closed over by the
  *  resulting Effect, so subsequent `yield*`s from consumers reuse the
  *  first evaluation's result. */
-export const ExtrasLive = (
-	raw: ExtrasInput | undefined,
-): Layer.Layer<Extras | ExtrasResolved> => {
+export const ExtrasLive = (raw: ExtrasInput | undefined): Layer.Layer<Extras | ExtrasResolved> => {
 	const rawLayer = Layer.succeed(Extras, raw);
 	const resolvedLayer = Layer.effect(
 		ExtrasResolved,

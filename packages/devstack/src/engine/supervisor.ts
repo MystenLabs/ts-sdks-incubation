@@ -32,7 +32,18 @@
 import * as crypto from 'node:crypto';
 import * as nodeFs from 'node:fs/promises';
 import * as nodePath from 'node:path';
-import { Context, Effect, FileSystem, Layer, Path, Queue, Ref, Stdio, Stream, Terminal } from 'effect';
+import {
+	Context,
+	Effect,
+	FileSystem,
+	Layer,
+	Path,
+	Queue,
+	Ref,
+	Stdio,
+	Stream,
+	Terminal,
+} from 'effect';
 import { layer as NodeServicesLayer } from '@effect/platform-node/NodeServices';
 import { runMain as nodeRunMain } from '@effect/platform-node/NodeRuntime';
 import { ChildProcessSpawner } from 'effect/unstable/process';

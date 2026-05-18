@@ -293,8 +293,7 @@ export function App(props: AppProps): React.ReactElement {
 		// "did anything change" check. Without this guard React was
 		// scheduling a rerender 10×/sec on a quiet stack even though
 		// the Ref hadn't moved.
-		const apply = (next: TuiState): void =>
-			setState((prev) => (prev === next ? prev : next));
+		const apply = (next: TuiState): void => setState((prev) => (prev === next ? prev : next));
 		Effect.runPromise(Ref.get(props.engine.tuiState))
 			.then(apply)
 			.catch(() => {});

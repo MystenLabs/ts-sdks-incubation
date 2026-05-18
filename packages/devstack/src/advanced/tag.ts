@@ -277,11 +277,7 @@ const withEngineLifecycle = <A, E, R>(
 			classification.lifecycle === 'long-lived' ? yield* LongLivedScope : undefined;
 		const liftedBuild: Effect.Effect<A, E, R> =
 			longLivedScope !== undefined
-				? (build.pipe(Effect.provideService(Scope.Scope, longLivedScope)) as Effect.Effect<
-						A,
-						E,
-						R
-					>)
+				? (build.pipe(Effect.provideService(Scope.Scope, longLivedScope)) as Effect.Effect<A, E, R>)
 				: build;
 		const engineOpt = yield* Effect.serviceOption(EngineHandle);
 		if (engineOpt._tag === 'None') {

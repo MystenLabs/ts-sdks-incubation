@@ -52,62 +52,58 @@ describe('tag() lifecycle option', () => {
 			}),
 	);
 
-	itEffect.effect(
-		"'per-cycle' (default) attaches the finalizer to the per-cycle scope",
-		() =>
-			Effect.gen(function* () {
-				const finalizerFired = yield* Ref.make(false);
-				const longLived = yield* Scope.make();
+	itEffect.effect("'per-cycle' (default) attaches the finalizer to the per-cycle scope", () =>
+		Effect.gen(function* () {
+			const finalizerFired = yield* Ref.make(false);
+			const longLived = yield* Scope.make();
 
-				const sample = tag(
-					'lifecycle-per-cycle',
-					Effect.gen(function* () {
-						yield* Effect.addFinalizer(() => Ref.set(finalizerFired, true));
-						return { ok: true };
-					}),
-					// no lifecycle → defaults to per-cycle
-				);
+			const sample = tag(
+				'lifecycle-per-cycle',
+				Effect.gen(function* () {
+					yield* Effect.addFinalizer(() => Ref.set(finalizerFired, true));
+					return { ok: true };
+				}),
+				// no lifecycle → defaults to per-cycle
+			);
 
-				const perCycle = yield* Scope.make();
-				yield* Effect.scoped(Layer.build(sample.__layer)).pipe(
-					Scope.provide(perCycle),
-					Effect.provideService(LongLivedScope, longLived),
-				);
+			const perCycle = yield* Scope.make();
+			yield* Effect.scoped(Layer.build(sample.__layer)).pipe(
+				Scope.provide(perCycle),
+				Effect.provideService(LongLivedScope, longLived),
+			);
 
-				// Closing per-cycle fires the finalizer immediately even though
-				// LongLivedScope is in context — the lifecycle redirect only
-				// fires when explicitly opted in.
-				yield* Scope.close(perCycle, Exit.void);
-				expect(yield* Ref.get(finalizerFired)).toBe(true);
+			// Closing per-cycle fires the finalizer immediately even though
+			// LongLivedScope is in context — the lifecycle redirect only
+			// fires when explicitly opted in.
+			yield* Scope.close(perCycle, Exit.void);
+			expect(yield* Ref.get(finalizerFired)).toBe(true);
 
-				yield* Scope.close(longLived, Exit.void);
-			}),
+			yield* Scope.close(longLived, Exit.void);
+		}),
 	);
 
-	itEffect.effect(
-		"'long-lived' without LongLivedScope falls back to per-cycle",
-		() =>
-			Effect.gen(function* () {
-				const finalizerFired = yield* Ref.make(false);
+	itEffect.effect("'long-lived' without LongLivedScope falls back to per-cycle", () =>
+		Effect.gen(function* () {
+			const finalizerFired = yield* Ref.make(false);
 
-				const sample = tag(
-					'lifecycle-long-lived-no-outer',
-					Effect.gen(function* () {
-						yield* Effect.addFinalizer(() => Ref.set(finalizerFired, true));
-						return { ok: true };
-					}),
-					{ lifecycle: 'long-lived' },
-				);
+			const sample = tag(
+				'lifecycle-long-lived-no-outer',
+				Effect.gen(function* () {
+					yield* Effect.addFinalizer(() => Ref.set(finalizerFired, true));
+					return { ok: true };
+				}),
+				{ lifecycle: 'long-lived' },
+			);
 
-				// No LongLivedScope provided (defaultValue undefined) → fall back
-				// to the per-cycle scope. Matches standalone-test ergonomics:
-				// every long-lived tag works without a supervisor wrapper.
-				const perCycle = yield* Scope.make();
-				yield* Effect.scoped(Layer.build(sample.__layer)).pipe(Scope.provide(perCycle));
+			// No LongLivedScope provided (defaultValue undefined) → fall back
+			// to the per-cycle scope. Matches standalone-test ergonomics:
+			// every long-lived tag works without a supervisor wrapper.
+			const perCycle = yield* Scope.make();
+			yield* Effect.scoped(Layer.build(sample.__layer)).pipe(Scope.provide(perCycle));
 
-				yield* Scope.close(perCycle, Exit.void);
-				expect(yield* Ref.get(finalizerFired)).toBe(true);
-			}),
+			yield* Scope.close(perCycle, Exit.void);
+			expect(yield* Ref.get(finalizerFired)).toBe(true);
+		}),
 	);
 });
 

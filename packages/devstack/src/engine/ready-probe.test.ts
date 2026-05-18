@@ -46,7 +46,9 @@ const closeServer = (server: net.Server | http.Server): Promise<void> =>
 
 // Wait until an HTTP server is listening — `listen` is async, the test
 // uses `await` semantics via Promise so the probe can dial immediately.
-const listenHttp = (handler: http.RequestListener): Promise<{ server: http.Server; port: number }> =>
+const listenHttp = (
+	handler: http.RequestListener,
+): Promise<{ server: http.Server; port: number }> =>
 	new Promise((resolve, reject) => {
 		const server = http.createServer(handler);
 		// Same rationale as listenTcp: probe-side sockets can end mid-response
@@ -141,7 +143,7 @@ describe('awaitReady — HTTP probe', () => {
 		}),
 	);
 
-	it.live("rejects every 503 attempt and surfaces ReadyProbeError(timed out) on budget", () =>
+	it.live('rejects every 503 attempt and surfaces ReadyProbeError(timed out) on budget', () =>
 		Effect.gen(function* () {
 			// Each attempt fails fast with a `status N !== 200` ReadyProbeError
 			// — the retry policy catches each one and re-attempts until the
@@ -177,48 +179,50 @@ describe('awaitReady — HTTP probe', () => {
 		}),
 	);
 
-	it.live("a single httpAttempt() pre-retry surfaces status N !== expected with body in detail", () =>
-		Effect.gen(function* () {
-			// Reach past the outer retry/timeout wrapper by hand-building a
-			// short-budget probe whose first attempt completes before the
-			// retry backoff can re-fire. The retry-first-failure branch
-			// still wraps the single attempt's ReadyProbeError in 'timed out',
-			// so we instead drive the underlying attempt by forcing the budget
-			// to be SHORTER than the first 200ms backoff — but we need the
-			// 503 detail. The test above already pins that the retry loop
-			// fires; this one pins the message shape the underlying
-			// `httpAttempt` produces by giving the probe ample budget and
-			// flipping to 200 on the SECOND request, then inspecting calls.
-			// (We don't directly observe the 503-shaped ReadyProbeError today
-			// — the retry wrapper swallows it. That's an intentional design
-			// choice noted in the source comments.)
-			let calls = 0;
-			const { server, port } = yield* Effect.promise(() =>
-				listenHttp((_req, res) => {
-					calls += 1;
-					if (calls === 1) {
-						res.writeHead(503);
-						res.end('warming up');
-					} else {
-						res.writeHead(200);
-						res.end('ok');
-					}
-				}),
-			);
-			try {
-				const probe: HttpReadyProbe = {
-					kind: 'http',
-					url: `http://127.0.0.1:${port}/`,
-					timeoutMs: 2_000,
-				};
-				yield* awaitReady(probe);
-				// The 503 must have been observed at least once before the
-				// retry succeeded.
-				expect(calls).toBeGreaterThanOrEqual(2);
-			} finally {
-				yield* Effect.promise(() => closeServer(server));
-			}
-		}),
+	it.live(
+		'a single httpAttempt() pre-retry surfaces status N !== expected with body in detail',
+		() =>
+			Effect.gen(function* () {
+				// Reach past the outer retry/timeout wrapper by hand-building a
+				// short-budget probe whose first attempt completes before the
+				// retry backoff can re-fire. The retry-first-failure branch
+				// still wraps the single attempt's ReadyProbeError in 'timed out',
+				// so we instead drive the underlying attempt by forcing the budget
+				// to be SHORTER than the first 200ms backoff — but we need the
+				// 503 detail. The test above already pins that the retry loop
+				// fires; this one pins the message shape the underlying
+				// `httpAttempt` produces by giving the probe ample budget and
+				// flipping to 200 on the SECOND request, then inspecting calls.
+				// (We don't directly observe the 503-shaped ReadyProbeError today
+				// — the retry wrapper swallows it. That's an intentional design
+				// choice noted in the source comments.)
+				let calls = 0;
+				const { server, port } = yield* Effect.promise(() =>
+					listenHttp((_req, res) => {
+						calls += 1;
+						if (calls === 1) {
+							res.writeHead(503);
+							res.end('warming up');
+						} else {
+							res.writeHead(200);
+							res.end('ok');
+						}
+					}),
+				);
+				try {
+					const probe: HttpReadyProbe = {
+						kind: 'http',
+						url: `http://127.0.0.1:${port}/`,
+						timeoutMs: 2_000,
+					};
+					yield* awaitReady(probe);
+					// The 503 must have been observed at least once before the
+					// retry succeeded.
+					expect(calls).toBeGreaterThanOrEqual(2);
+				} finally {
+					yield* Effect.promise(() => closeServer(server));
+				}
+			}),
 	);
 
 	it.live('honors a custom expected status (probe.status)', () =>
@@ -243,37 +247,39 @@ describe('awaitReady — HTTP probe', () => {
 		}),
 	);
 
-	it.live("retries while the server returns a non-matching status, then succeeds when it flips", () =>
-		Effect.gen(function* () {
-			// Track each request the probe makes. The first two responses
-			// are 503; subsequent ones are 200. The probe MUST poll more
-			// than once and eventually succeed — a single-shot implementation
-			// would fail here.
-			let calls = 0;
-			const { server, port } = yield* Effect.promise(() =>
-				listenHttp((_req, res) => {
-					calls += 1;
-					if (calls <= 2) {
-						res.writeHead(503);
-						res.end('still warming up');
-					} else {
-						res.writeHead(200);
-						res.end('ok');
-					}
-				}),
-			);
-			try {
-				const probe: HttpReadyProbe = {
-					kind: 'http',
-					url: `http://127.0.0.1:${port}/`,
-					timeoutMs: 4_000,
-				};
-				yield* awaitReady(probe);
-				expect(calls).toBeGreaterThanOrEqual(3);
-			} finally {
-				yield* Effect.promise(() => closeServer(server));
-			}
-		}),
+	it.live(
+		'retries while the server returns a non-matching status, then succeeds when it flips',
+		() =>
+			Effect.gen(function* () {
+				// Track each request the probe makes. The first two responses
+				// are 503; subsequent ones are 200. The probe MUST poll more
+				// than once and eventually succeed — a single-shot implementation
+				// would fail here.
+				let calls = 0;
+				const { server, port } = yield* Effect.promise(() =>
+					listenHttp((_req, res) => {
+						calls += 1;
+						if (calls <= 2) {
+							res.writeHead(503);
+							res.end('still warming up');
+						} else {
+							res.writeHead(200);
+							res.end('ok');
+						}
+					}),
+				);
+				try {
+					const probe: HttpReadyProbe = {
+						kind: 'http',
+						url: `http://127.0.0.1:${port}/`,
+						timeoutMs: 4_000,
+					};
+					yield* awaitReady(probe);
+					expect(calls).toBeGreaterThanOrEqual(3);
+				} finally {
+					yield* Effect.promise(() => closeServer(server));
+				}
+			}),
 	);
 
 	it.live('times out as ReadyProbeError(message=fetch failed) against a dead URL', () =>

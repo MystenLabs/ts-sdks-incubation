@@ -17,9 +17,7 @@ import type { DevstackHandle } from '../engine/supervisor.js';
 // A tiny test-local service tag — we don't need anything from it, but
 // `Layer.effect` requires a Context tag to assemble a layer around an
 // acquire body.
-class CounterTag extends Context.Service<CounterTag, { readonly n: number }>()(
-	'@test/Counter',
-) {}
+class CounterTag extends Context.Service<CounterTag, { readonly n: number }>()('@test/Counter') {}
 
 class OtherTag extends Context.Service<OtherTag, { readonly n: number }>()('@test/Other') {}
 

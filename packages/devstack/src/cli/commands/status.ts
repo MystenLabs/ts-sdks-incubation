@@ -9,8 +9,7 @@ import { discoverManifestPath } from '../../runtime/discover-manifest.js';
 import { resolveStackFromEnv, stateDir } from '../stack-resolution.js';
 
 // Action-time env reads — see manifest.ts for the rationale.
-const stateFile = (): string =>
-	`${stateDir()}/stacks/${resolveStackFromEnv(undefined)}/state.json`;
+const stateFile = (): string => `${stateDir()}/stacks/${resolveStackFromEnv(undefined)}/state.json`;
 // Walks up via discoverManifestPath so `devstack status` works from any
 // subdir; falls back to the conventional stack-scoped path so the human
 // "(missing)" branch still prints a useful absolute path.

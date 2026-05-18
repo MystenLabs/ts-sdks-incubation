@@ -81,8 +81,7 @@ const mockSuiLayer = (
 		chainId: opts.chainId ?? 'mock-chain-A',
 		client: {
 			core: {
-				getObject:
-					opts.getObject ?? (() => Promise.resolve({ data: { objectId: '0xdead' } })),
+				getObject: opts.getObject ?? (() => Promise.resolve({ data: { objectId: '0xdead' } })),
 			},
 		} as unknown as Sui['client'],
 		waitForTransactionsReady: () => Effect.void,

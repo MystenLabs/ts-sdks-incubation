@@ -30,16 +30,8 @@ const writeFile = (root: string, rel: string, body: string) => {
 const seedMoveTree = (root: string) => {
 	writeFile(root, 'Move.toml', '[package]\nname = "demo"\nversion = "0.0.1"\n');
 	writeFile(root, 'Move.lock', '[move]\nversion = 3\n');
-	writeFile(
-		root,
-		'sources/demo.move',
-		'module demo::demo { public fun hello() {} }',
-	);
-	writeFile(
-		root,
-		'sources/helper.move',
-		'module demo::helper { public fun ok(): bool { true } }',
-	);
+	writeFile(root, 'sources/demo.move', 'module demo::demo { public fun hello() {} }');
+	writeFile(root, 'sources/helper.move', 'module demo::helper { public fun ok(): bool { true } }');
 };
 
 describe('hashMoveSources', () => {
@@ -164,33 +156,35 @@ describe('hashMoveSources', () => {
 		}).pipe(Effect.provide(NodeFileSystemLayer)),
 	);
 
-	it.effect('digest is order-independent (sibling rename keeps digest stable if content unchanged)', () =>
-		Effect.gen(function* () {
-			// Two trees with the same files in different filesystem-listing
-			// order MUST produce the same digest. We can't directly control
-			// readdir order, but we CAN assert that the inner `.sort()` call
-			// makes the digest insensitive to filename swaps that preserve
-			// the (relpath, content) set.
-			const before = yield* hashMoveSources(root);
+	it.effect(
+		'digest is order-independent (sibling rename keeps digest stable if content unchanged)',
+		() =>
+			Effect.gen(function* () {
+				// Two trees with the same files in different filesystem-listing
+				// order MUST produce the same digest. We can't directly control
+				// readdir order, but we CAN assert that the inner `.sort()` call
+				// makes the digest insensitive to filename swaps that preserve
+				// the (relpath, content) set.
+				const before = yield* hashMoveSources(root);
 
-			// Add a new file then a sibling — the resulting set is two new
-			// entries either way, but in a different order on disk.
-			writeFile(root, 'sources/aa.move', 'module a {}');
-			writeFile(root, 'sources/zz.move', 'module z {}');
-			const baseline = yield* hashMoveSources(root);
+				// Add a new file then a sibling — the resulting set is two new
+				// entries either way, but in a different order on disk.
+				writeFile(root, 'sources/aa.move', 'module a {}');
+				writeFile(root, 'sources/zz.move', 'module z {}');
+				const baseline = yield* hashMoveSources(root);
 
-			// Now re-create the same files in reverse order — fs entry
-			// order may differ but the digest must not.
-			rmSync(joinPath(root, 'sources/aa.move'));
-			rmSync(joinPath(root, 'sources/zz.move'));
-			writeFile(root, 'sources/zz.move', 'module z {}');
-			writeFile(root, 'sources/aa.move', 'module a {}');
-			const reverse = yield* hashMoveSources(root);
+				// Now re-create the same files in reverse order — fs entry
+				// order may differ but the digest must not.
+				rmSync(joinPath(root, 'sources/aa.move'));
+				rmSync(joinPath(root, 'sources/zz.move'));
+				writeFile(root, 'sources/zz.move', 'module z {}');
+				writeFile(root, 'sources/aa.move', 'module a {}');
+				const reverse = yield* hashMoveSources(root);
 
-			expect(baseline).toBe(reverse);
-			// And neither equals `before` — the new files DID participate.
-			expect(baseline).not.toBe(before);
-		}).pipe(Effect.provide(NodeFileSystemLayer)),
+				expect(baseline).toBe(reverse);
+				// And neither equals `before` — the new files DID participate.
+				expect(baseline).not.toBe(before);
+			}).pipe(Effect.provide(NodeFileSystemLayer)),
 	);
 });
 

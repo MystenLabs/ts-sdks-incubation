@@ -128,9 +128,7 @@ describe('fromManifest — Schema validation of v4 payloads', () => {
 	};
 
 	it('strict mode: malformed v4 fails hard with a ParseError', () => {
-		expect(() => fromManifest(malformedV4, { strict: true })).toThrow(
-			/failed Schema validation/,
-		);
+		expect(() => fromManifest(malformedV4, { strict: true })).toThrow(/failed Schema validation/);
 	});
 
 	it('non-strict default: malformed v4 warns and returns best-effort shape', () => {
