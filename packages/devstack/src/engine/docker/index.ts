@@ -42,6 +42,9 @@ export {
 export {
 	exec,
 	commitContainer,
+	pauseContainer,
+	unpauseContainer,
+	inspectContainerRunning,
 	restartContainer,
 	runOneShot,
 	type DockerCommitResult,

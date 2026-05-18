@@ -27,6 +27,7 @@
 //
 // User emitters drop in alongside via `defineEmitter({ name, emit })`.
 
+import * as crypto from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { Effect } from 'effect';
@@ -36,6 +37,7 @@ import { BindingsEmitter } from '../codegen/emitters/bindings.js';
 import { DappKitConfigEmitter } from '../codegen/emitters/dapp-kit-config.js';
 import { StackHandleEmitter } from '../codegen/emitters/stack-handle.js';
 import { CodegenError } from '../codegen/errors.js';
+import { stringifyCause } from '../engine/stringify-cause.js';
 import { writeFileAtomic } from '../engine/atomic-write.js';
 import type { Package, LocalPackage } from './package.js';
 
@@ -45,21 +47,34 @@ dapp-kit-config.ts
 extras.ts
 `;
 
-/** Ensure `<outputDir>/.gitignore` exists so the sensitive emitter
- *  outputs (`dapp-kit-config.ts`, `extras.ts`) don't end up in a user's
- *  git history. If a `.gitignore` already exists with different content
- *  we leave it alone — the user may have customized it. */
-const ensureGitignore = (outputDir: string): Effect.Effect<void, CodegenError> =>
+/** Read the existing `.gitignore` at `outputDir`, returning `undefined`
+ *  if missing. Used by the atomic-swap pipeline to preserve a user-
+ *  customized `.gitignore` across the rename — otherwise the swap would
+ *  promote staging (no `.gitignore`) and destroy the user's edits. */
+const readExistingGitignore = (outputDir: string): Effect.Effect<string | undefined> =>
+	Effect.promise(async () => {
+		try {
+			return await fs.readFile(path.join(outputDir, '.gitignore'), 'utf-8');
+		} catch {
+			return undefined;
+		}
+	});
+
+/** Write `<outputDir>/.gitignore`. When `existing` is supplied the
+ *  caller has already established the user's pre-existing content
+ *  (typically from a `readExistingGitignore` pass before the atomic
+ *  swap); we write that back so user customizations survive. When
+ *  `existing` is undefined we drop the default body so the sensitive
+ *  emitter outputs (`dapp-kit-config.ts` carries a wallet bearer token,
+ *  `extras.ts` carries user-supplied secrets) don't land in a
+ *  consumer's git history. */
+const writeGitignore = (
+	outputDir: string,
+	existing: string | undefined,
+): Effect.Effect<void, CodegenError> =>
 	Effect.tryPromise({
 		try: async () => {
-			const target = path.join(outputDir, '.gitignore');
-			try {
-				await fs.access(target);
-				return;
-			} catch {
-				// missing — fall through and write
-			}
-			await writeFileAtomic(target, GITIGNORE_BODY);
+			await writeFileAtomic(path.join(outputDir, '.gitignore'), existing ?? GITIGNORE_BODY);
 		},
 		catch: (cause) =>
 			new CodegenError({
@@ -160,11 +175,12 @@ export const Codegen = (opts: CodegenOptions = {}) => {
 		Effect.gen(function* () {
 			const outputDir = path.isAbsolute(output) ? output : path.resolve(process.cwd(), output);
 
-			// Drop a `.gitignore` next to the emitter outputs so the
-			// sensitive files (`dapp-kit-config.ts` carries a wallet
-			// bearer token, `extras.ts` carries user-supplied secrets)
-			// don't end up in a consumer's git history.
-			yield* ensureGitignore(outputDir);
+			// Snapshot any user-customized `.gitignore` so we can put it
+			// back at the same path after the atomic swap below. If the
+			// user previously hand-edited `.gitignore` it lives at
+			// `outputDir/.gitignore`; the swap is going to rename
+			// `outputDir` aside and would otherwise destroy that file.
+			const existingGitignore = yield* readExistingGitignore(outputDir);
 
 			yield* setPhase('resolving packages');
 			const resolved: Array<CodegenPackage> = [];
@@ -205,9 +221,42 @@ export const Codegen = (opts: CodegenOptions = {}) => {
 				emitterNamesSeen.add(emitter.name);
 			}
 
-			const ctx: CodegenContext = { packages: resolved, outputDir };
+			// All emitters write into a staging dir under a random
+			// suffix. After every emitter succeeds we atomically swap
+			// staging into the final `outputDir` (rename existing
+			// aside, rename staging in, drop the displaced tree). On
+			// ANY emitter failure the staging dir is removed and the
+			// pre-existing `outputDir` is left untouched — no partial
+			// state ever lands in the consumer's source tree.
+			const stagingSuffix = `${process.pid}-${crypto.randomBytes(6).toString('hex')}`;
+			const stagingDir = `${outputDir}.staging-${stagingSuffix}`;
+			const backupDir = `${outputDir}.backup-${stagingSuffix}`;
+
+			yield* Effect.tryPromise({
+				try: () => fs.rm(stagingDir, { recursive: true, force: true }),
+				catch: (cause) =>
+					new CodegenError({
+						emitter: 'codegen',
+						phase: 'write',
+						message: `failed to clear staging dir ${stagingDir}: ${stringifyCause(cause)}`,
+						cause,
+					}),
+			});
+			yield* Effect.tryPromise({
+				try: () => fs.mkdir(stagingDir, { recursive: true }),
+				catch: (cause) =>
+					new CodegenError({
+						emitter: 'codegen',
+						phase: 'write',
+						message: `failed to create staging dir ${stagingDir}: ${stringifyCause(cause)}`,
+						cause,
+					}),
+			});
+
+			const ctx: CodegenContext = { packages: resolved, outputDir: stagingDir };
 			yield* Effect.annotateCurrentSpan({
 				'codegen.output': outputDir,
+				'codegen.staging': stagingDir,
 				'codegen.packages': resolved.map((p) => p.name).join(','),
 				'codegen.emitters': emitters.map((e) => e.name).join(','),
 			});
@@ -215,27 +264,124 @@ export const Codegen = (opts: CodegenOptions = {}) => {
 			// Serial emit (concurrency: 1). Per-emitter locking is on the
 			// long-tail wishlist; until then, serial avoids the
 			// `~/.move` and bind-mount races between concurrent
-			// `sui move {build,summary}` invocations.
-			for (const emitter of emitters) {
-				yield* setPhase(`emit: ${emitter.name}`);
-				yield* emitter.emit(ctx).pipe(
-					Effect.mapError((cause) => {
-						if (cause instanceof CodegenError) {
-							// Preserve the emitter's `phase` rather than
-							// re-wrapping into 'generate' — the original
-							// classification (e.g. 'write' for atomic
-							// dir-swap failures) is more diagnostic.
-							return cause;
-						}
-						return new CodegenError({
-							emitter: emitter.name,
-							phase: 'generate',
-							message: `emitter '${emitter.name}' failed`,
-							cause,
-						});
+			// `sui move {build,summary}` invocations. On failure, drop
+			// the staging dir and propagate — `outputDir` is untouched.
+			const runEmitters = Effect.gen(function* () {
+				for (const emitter of emitters) {
+					yield* setPhase(`emit: ${emitter.name}`);
+					yield* emitter.emit(ctx).pipe(
+						Effect.mapError((cause) => {
+							if (cause instanceof CodegenError) {
+								// Preserve the emitter's `phase` rather than
+								// re-wrapping into 'generate' — the original
+								// classification (e.g. 'write' for atomic
+								// dir-swap failures) is more diagnostic.
+								return cause;
+							}
+							return new CodegenError({
+								emitter: emitter.name,
+								phase: 'generate',
+								message: `emitter '${emitter.name}' failed`,
+								cause,
+							});
+						}),
+					);
+				}
+			}).pipe(
+				Effect.tapError(() =>
+					Effect.promise(() => fs.rm(stagingDir, { recursive: true, force: true })),
+				),
+			);
+
+			yield* runEmitters;
+
+			// Atomic swap: rename existing `outputDir` to a backup,
+			// rename `stagingDir` in, then remove the backup. Same-FS
+			// renames are atomic on POSIX so a Vite dev server watching
+			// `outputDir` never observes a half-emitted tree. If the
+			// pre-swap rename fails after the staging dir was created we
+			// remove the staging dir; if the second rename fails we
+			// restore from backup so the consumer's `outputDir` is
+			// always either fully-old or fully-new.
+			yield* Effect.tryPromise({
+				try: () => fs.mkdir(path.dirname(outputDir), { recursive: true }),
+				catch: (cause) =>
+					new CodegenError({
+						emitter: 'codegen',
+						phase: 'write',
+						message: `failed to create parent of ${outputDir}: ${stringifyCause(cause)}`,
+						cause,
 					}),
+			});
+
+			const outputExists = yield* Effect.tryPromise({
+				try: async () => {
+					try {
+						await fs.access(outputDir);
+						return true;
+					} catch {
+						return false;
+					}
+				},
+				catch: () => false,
+			}).pipe(Effect.orElseSucceed(() => false));
+
+			if (outputExists) {
+				yield* Effect.tryPromise({
+					try: () => fs.rename(outputDir, backupDir),
+					catch: (cause) =>
+						new CodegenError({
+							emitter: 'codegen',
+							phase: 'write',
+							message: `failed to move existing ${outputDir} aside: ${stringifyCause(cause)}`,
+							cause,
+						}),
+				}).pipe(
+					Effect.tapError(() =>
+						Effect.promise(() => fs.rm(stagingDir, { recursive: true, force: true })),
+					),
 				);
 			}
+
+			yield* Effect.tryPromise({
+				try: () => fs.rename(stagingDir, outputDir),
+				catch: (cause) =>
+					new CodegenError({
+						emitter: 'codegen',
+						phase: 'write',
+						message: `failed to promote staging into ${outputDir}: ${stringifyCause(cause)}`,
+						cause,
+					}),
+			}).pipe(
+				Effect.tapError(() =>
+					Effect.gen(function* () {
+						// Best-effort restore: if we successfully moved the
+						// old tree aside but couldn't promote staging, put
+						// the old tree back so the consumer isn't left
+						// with a missing outputDir.
+						if (outputExists) {
+							yield* Effect.promise(() =>
+								fs.rename(backupDir, outputDir).catch(() => undefined),
+							);
+						}
+						yield* Effect.promise(() => fs.rm(stagingDir, { recursive: true, force: true }));
+					}),
+				),
+			);
+
+			if (outputExists) {
+				yield* Effect.promise(() => fs.rm(backupDir, { recursive: true, force: true }));
+			}
+
+			// Drop a `.gitignore` next to the emitter outputs so the
+			// sensitive files (`dapp-kit-config.ts` carries a wallet
+			// bearer token, `extras.ts` carries user-supplied secrets)
+			// don't end up in a consumer's git history. Written AFTER
+			// the atomic swap so the `.gitignore` lives at the final
+			// `outputDir` and doesn't ride the staging-tree promotion.
+			// Preserves a user-customized `.gitignore` by writing back
+			// the snapshot we captured before the swap.
+			yield* writeGitignore(outputDir, existingGitignore);
 
 			return { outputDir, emitters: emitters.map((e) => e.name) };
 		}).pipe(Effect.withSpan(`codegen(${name})`)),
