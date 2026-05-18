@@ -2,10 +2,13 @@
 // arg flattening, the auto-Sui default-fill, the auto-manifest
 // inclusion, and the opts-trailing detection.
 
-import { describe, expect, it } from 'vitest';
+import { Effect } from 'effect';
+import { describe, expect, it, vi } from 'vitest';
 import { devstack } from './devstack.js';
 import { Account } from '../services/account.js';
 import { Package } from '../services/package.js';
+import { Faucet } from '../faucet/factory.js';
+import type { FaucetStrategy } from '../faucet/service.js';
 
 describe('devstack(...) composition', () => {
 	it('returns a handle with `layer`, `run`, and `runMain`', () => {
@@ -48,5 +51,53 @@ describe('devstack(...) composition', () => {
 		const fakeRef = { __layer: alice.__layer, renderer: 'silent' };
 		const handle = devstack(alice, fakeRef as unknown as typeof alice);
 		expect(handle.layer).toBeDefined();
+	});
+
+	it('does NOT auto-append a Faucet when the user supplied one', () => {
+		// `composeStackLayer` warns on duplicate keys (later-wins merge
+		// would otherwise drop the user's strategies). A user-supplied
+		// Faucet must suppress the auto-append so no duplicate warning
+		// fires.
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		try {
+			const customStrategy: FaucetStrategy = {
+				coinType: 'MYCOIN',
+				request: () => Effect.void,
+			};
+			const alice = Account('alice');
+			const handle = devstack(Faucet({ strategies: [customStrategy] }), alice);
+			expect(handle.layer).toBeDefined();
+			expect(warn).not.toHaveBeenCalled();
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	it('still auto-appends a Faucet when the user did NOT supply one', () => {
+		// Sanity check that the dedup gate doesn't over-fire. With no
+		// user-supplied Faucet, the auto-Faucet must still land.
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		try {
+			const alice = Account('alice');
+			const handle = devstack(alice);
+			expect(handle.layer).toBeDefined();
+			expect(warn).not.toHaveBeenCalled();
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	it('honors a custom-named user Faucet (Faucet({ name: ... }))', () => {
+		// Dedup keys on the `faucet/` prefix so any user Faucet — even
+		// one renamed via `name` — suppresses the auto-append.
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		try {
+			const alice = Account('alice');
+			const handle = devstack(Faucet({ name: 'custom' }), alice);
+			expect(handle.layer).toBeDefined();
+			expect(warn).not.toHaveBeenCalled();
+		} finally {
+			warn.mockRestore();
+		}
 	});
 });

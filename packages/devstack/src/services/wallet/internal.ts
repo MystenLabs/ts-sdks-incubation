@@ -277,6 +277,7 @@ export const walletApp = <const Name extends string = typeof EndpointName.WALLET
 		}).pipe(Effect.withSpan(`walletApp(${name})`)),
 		{
 			kind: 'service',
+			lifecycle: 'per-cycle',
 			displayTitle: 'wallet',
 			// Redact the token from the TUI primary so a screen
 			// recording / scrollback / over-the-shoulder doesn't leak

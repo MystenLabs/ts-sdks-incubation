@@ -387,6 +387,7 @@ export const Codegen = (opts: CodegenOptions = {}) => {
 		}).pipe(Effect.withSpan(`codegen(${name})`)),
 		{
 			kind: 'app',
+			lifecycle: 'per-cycle',
 			displayTitle: `codegen.${name}`,
 			display: (s: { readonly outputDir: string; readonly emitters: ReadonlyArray<string> }) => ({
 				title: `codegen.${name}`,

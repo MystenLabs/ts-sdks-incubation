@@ -61,7 +61,7 @@ interface FlatEndpoint {
 }
 
 const toEndpointEntry = (e: FlatEndpoint): EndpointEntry =>
-	e.pairUrl !== undefined ? { url: e.url, alternates: [e.pairUrl] } : { url: e.url };
+	e.pairUrl !== undefined ? { url: e.url, pairUrl: e.pairUrl } : { url: e.url };
 
 const groupSui = (
 	endpoints: ReadonlyArray<FlatEndpoint>,

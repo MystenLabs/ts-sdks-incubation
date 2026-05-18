@@ -528,6 +528,7 @@ export const Account = <const N extends string>(
 		})(),
 		{
 			kind: 'account',
+			lifecycle: 'per-cycle',
 			displayTitle: `accounts.${name}`,
 			// Full address in `primary` — users routinely copy-paste it
 			// into faucet UIs, explorers, and tx scripts. The dashboard

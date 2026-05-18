@@ -175,6 +175,7 @@ export const Action = <const Name extends string, R = never, E = unknown>(
 		}).pipe(Effect.withSpan(`Action(${name})`)),
 		{
 			kind: 'action',
+			lifecycle: 'per-cycle',
 			displayTitle: `tx.${name}`,
 			display: (s: TxResult) => ({
 				title: `tx.${name}`,

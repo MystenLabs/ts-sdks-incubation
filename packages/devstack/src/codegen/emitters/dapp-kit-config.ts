@@ -86,7 +86,7 @@ const renderConfig = (args: {
 	network: string;
 	rpcUrl: string;
 	mvrOverrides: ReadonlyArray<readonly [string, string]>;
-	wallet: { url: string; alternates?: ReadonlyArray<string> } | undefined;
+	wallet: { url: string; pairUrl?: string } | undefined;
 	enableBurnerWallet: boolean;
 }): string => {
 	const mvrLines = args.mvrOverrides.map(
@@ -95,13 +95,13 @@ const renderConfig = (args: {
 	const mvrBlock = mvrLines.length === 0 ? '{}' : `{\n${mvrLines.join('\n')}\n}`;
 
 	// Narrow input for `createDevstackAdapterFromManifest` — the adapter
-	// only consumes `app.wallet.{url, alternates}`. We bake it in as a
+	// only consumes `app.wallet.{url, pairUrl}`. We bake it in as a
 	// JSON literal so the generated module doesn't need to import the
 	// runtime devstack helpers. Apps with no `Wallet(...)` in their
 	// stack get `app: {}` and the adapter returns `null` (no burner
 	// wallet wiring); apps that DO declare a wallet endpoint get its
 	// URL + paired-URL surfaced here.
-	const adapterManifest: { app: { wallet?: { url: string; alternates?: ReadonlyArray<string> } } } =
+	const adapterManifest: { app: { wallet?: { url: string; pairUrl?: string } } } =
 		args.wallet !== undefined ? { app: { wallet: args.wallet } } : { app: {} };
 
 	const adapterBlock = args.enableBurnerWallet

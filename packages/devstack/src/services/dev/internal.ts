@@ -364,6 +364,7 @@ export const hostProcess = <const Name extends string, E = never, R = never>(
 		}).pipe(Effect.withSpan(`hostProcess(${options.name})`)),
 		{
 			kind: 'service',
+			lifecycle: 'per-cycle',
 			displayTitle: options.name,
 			display: (s) => ({
 				title: options.name,

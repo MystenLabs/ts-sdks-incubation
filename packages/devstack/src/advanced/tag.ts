@@ -50,8 +50,9 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-import { Cause, Context, Effect, Layer, type Scope } from 'effect';
+import { Cause, Context, Effect, Layer, Scope } from 'effect';
 import { EngineHandle } from '../engine/engine.js';
+import { LongLivedScope } from '../engine/long-lived-scope.js';
 import { prettyError } from '../engine/pretty-error.js';
 
 // Per-build "what tag am I inside" reference. `withEngineLifecycle`
@@ -115,6 +116,26 @@ export interface TuiDisplay {
 }
 
 /**
+ * Lifecycle classification for a tag's resources.
+ *
+ * - `'per-cycle'` (default): the build's `Effect.acquireRelease` /
+ *   `Effect.addFinalizer` resources attach to the per-cycle supervisor
+ *   scope. On `r` hot-restart, all resources release and the build re-runs
+ *   on the next cycle from a clean slate. Use for primitives that produce
+ *   per-cycle artifacts (publishMove → new packageId per cycle is itself
+ *   per-cycle, but the underlying Sui container survives; package itself
+ *   is the per-cycle wrapper). Most things are per-cycle.
+ *
+ * - `'long-lived'`: the build's resources attach to the outer
+ *   `LongLivedScope` instead. Resources survive `r` hot-restart and only
+ *   release on process exit / Ctrl-C / `q`. Use for expensive infra users
+ *   want to reuse across cycles (Sui localnet container, walrus storage
+ *   nodes, indexer DB). When `LongLivedScope` is absent (standalone tests),
+ *   falls back to per-cycle scope automatically.
+ */
+export type TagLifecycle = 'per-cycle' | 'long-lived';
+
+/**
  * Optional knobs for `provide` / `tag`. `kind` classifies the row into
  * the Services or Actions section; `display` projects the resolved
  * value into the user-facing fields. `displayTitle` is a static
@@ -128,6 +149,15 @@ export interface ProvideOptions<A> {
 	 * before `display(value)` runs. Should match the title `display` emits to avoid
 	 * a flicker on resolve. */
 	readonly displayTitle?: string;
+	/**
+	 * Lifecycle classification — see {@link TagLifecycle}. When set to
+	 * `'long-lived'`, the build effect runs with the ambient `Scope`
+	 * substituted to `LongLivedScope`'s value (when present), so any
+	 * `Effect.acquireRelease` / `Scope.addFinalizer` inside the build
+	 * attaches to the long-lived scope and survives `r` hot-restart.
+	 * Defaults to `'per-cycle'`.
+	 */
+	readonly lifecycle?: TagLifecycle;
 	/**
 	 * Hide this tag from the TUI dashboard. The build still runs and the
 	 * value still resolves — the only effect is suppressing the row
@@ -233,16 +263,33 @@ const withEngineLifecycle = <A, E, R>(
 		readonly display?: (shape: A) => TuiDisplay;
 		readonly displayTitle?: string;
 		readonly hidden?: boolean;
+		readonly lifecycle?: TagLifecycle;
 	},
 ): Effect.Effect<A, E, R> =>
 	Effect.gen(function* () {
+		// Lifecycle: when `'long-lived'` and `LongLivedScope` is present,
+		// substitute the ambient `Scope` with the long-lived one so the
+		// build's `Effect.acquireRelease` / `Scope.addFinalizer` resources
+		// attach to a scope that survives per-cycle teardown. Standalone
+		// callers (unit tests) leave `LongLivedScope` undefined and the
+		// build keeps the per-cycle Layer scope, matching prior behavior.
+		const longLivedScope =
+			classification.lifecycle === 'long-lived' ? yield* LongLivedScope : undefined;
+		const liftedBuild: Effect.Effect<A, E, R> =
+			longLivedScope !== undefined
+				? (build.pipe(Effect.provideService(Scope.Scope, longLivedScope)) as Effect.Effect<
+						A,
+						E,
+						R
+					>)
+				: build;
 		const engineOpt = yield* Effect.serviceOption(EngineHandle);
 		if (engineOpt._tag === 'None') {
 			// Still pin CurrentTagKey so `setPhase` calls inside the body
 			// land on the no-engine branch without crashing on a missing
 			// reference. The reference's defaultValue covers the
 			// no-provider case too — this is belt-and-braces for clarity.
-			return yield* build.pipe(Effect.provideService(CurrentTagKey, name));
+			return yield* liftedBuild.pipe(Effect.provideService(CurrentTagKey, name));
 		}
 		// Hidden tags: the engine never sees this tag, so it can't render a
 		// row for it. The build still runs and the value still resolves —
@@ -250,7 +297,7 @@ const withEngineLifecycle = <A, E, R>(
 		// CurrentTagKey is intentionally left at the empty default so any
 		// `setPhase` inside the body is a noop (we have no row to update).
 		if (classification.hidden === true) {
-			return yield* build.pipe(Effect.provideService(CurrentTagKey, ''));
+			return yield* liftedBuild.pipe(Effect.provideService(CurrentTagKey, ''));
 		}
 		const engine = engineOpt.value;
 		yield* engine.markAcquiring(name, classification.kind);
@@ -271,7 +318,7 @@ const withEngineLifecycle = <A, E, R>(
 		// on the row; the log carries the multi-line stderr+phase tree the
 		// user needs to debug — and lives in only ONE place (no per-row
 		// duplicate, no umbrella "stack failed" suffix).
-		return yield* build.pipe(
+		return yield* liftedBuild.pipe(
 			Effect.onExit((exit) =>
 				exit._tag === 'Success'
 					? engine.markReady(
@@ -394,6 +441,7 @@ export const tag = <const Name extends string, A, E = never, R = never>(
 		...(options.displayTitle !== undefined ? { displayTitle: options.displayTitle } : {}),
 		...(options.watch !== undefined ? { watch: options.watch } : {}),
 		...(options.hidden === true ? { hidden: true } : {}),
+		...(options.lifecycle !== undefined ? { lifecycle: options.lifecycle } : {}),
 	};
 	const { __layer, key } = provide(T, build, provideOpts);
 	// Order matters: `composeStackLayer` folds left-to-right with
@@ -466,6 +514,7 @@ export const composeTag = <const Name extends string, A, E = never, R = never>(
 		...(options.kind !== undefined ? { kind: options.kind } : {}),
 		...(options.display !== undefined ? { display: options.display } : {}),
 		...(options.displayTitle !== undefined ? { displayTitle: options.displayTitle } : {}),
+		...(options.lifecycle !== undefined ? { lifecycle: options.lifecycle } : {}),
 	};
 	return tag(name, build, merged);
 };

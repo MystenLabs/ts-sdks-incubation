@@ -7,22 +7,25 @@
 //
 // Endpoints render as full traefik-routed hostnames (e.g.
 // `http://sui.<app>.localhost:9000`) in the canonical `url` field. The
-// optional `alternates` array carries loopback-style URLs for callers
-// that can't resolve `*.localhost` wildcards. This is consumed by the
-// TUI (shows `url` only) and the manifest (serializes both).
+// optional `pairUrl` carries a paired form for callers that need a
+// secondary URL alongside the primary (e.g. the wallet pairing URL with
+// a `#token=` fragment). The TUI shows `url` only; the manifest
+// serializes both.
 
 import { Schema } from 'effect';
 
 // -----------------------------------------------------------------------------
-// Endpoint entry — the canonical { url, alternates? } shape used everywhere
+// Endpoint entry — the canonical { url, pairUrl? } shape used everywhere
 // -----------------------------------------------------------------------------
 
-/** A reachable URL plus optional fallback forms. The `alternates`
- *  array carries loopback-style URLs for callers that can't resolve
- *  `*.localhost` wildcards. */
+/** A reachable URL plus an optional paired URL. The `pairUrl` is a
+ *  typed secondary URL — used by the wallet endpoint to carry the
+ *  `#token=<hex>` fragment without conflating "alternate hostnames" with
+ *  "paired URL with auth payload" the way the prior `alternates` array
+ *  did. */
 export const EndpointEntry = Schema.Struct({
 	url: Schema.String,
-	alternates: Schema.optional(Schema.Array(Schema.String)),
+	pairUrl: Schema.optional(Schema.String),
 });
 export type EndpointEntry = typeof EndpointEntry.Type;
 

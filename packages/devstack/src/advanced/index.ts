@@ -33,6 +33,7 @@ export {
 	type Ref,
 	type TagIdentity,
 	type TagKind,
+	type TagLifecycle,
 	type TuiDisplay,
 	type ProvideOptions,
 	type TagOptions,
@@ -48,6 +49,14 @@ export {
 	shortId,
 	CurrentTagKey,
 } from './tag.js';
+// `LongLivedScope` — the outer-scope reference plugin-author tags target
+// when they want `lifecycle: 'long-lived'` semantics for resources that
+// should survive `r` hot-restart (containers, file handles, etc.). Tags
+// with `lifecycle: 'long-lived'` get the Scope substitution automatically;
+// expose the reference here so primitive authors who need explicit access
+// (e.g. for `Scope.addFinalizer(longLived, …)` patterns inside custom
+// services) can reach it without poking at `../engine/long-lived-scope.js`.
+export { LongLivedScope } from '../engine/long-lived-scope.js';
 
 // Plugin-author entry. `devstack(...)` is the canonical surface; reach for
 // `defineDevstack` when you want to pre-build the Layer graph (custom

@@ -125,7 +125,16 @@ export function devstack(
 	// `SuiTag` to register the built-in SUI HTTP strategy; missing Sui
 	// (rare — only in tests that override the default provider) leaves
 	// the registry empty until the user registers their own strategies.
-	const withFaucet: ReadonlyArray<StackMember> = [...flat, Faucet() as unknown as StackMember];
+	// Skip the auto-append when the user already supplied a Faucet (any
+	// `Faucet({...})`) — otherwise the empty auto-Faucet's layer would
+	// shadow the user's via later-wins merge and silently drop their
+	// custom strategies.
+	const userSuppliedFaucet = flat.some((r) =>
+		((r as { key?: string }).key ?? '').startsWith('faucet/'),
+	);
+	const withFaucet: ReadonlyArray<StackMember> = userSuppliedFaucet
+		? flat
+		: [...flat, Faucet() as unknown as StackMember];
 
 	// Auto-include the v4 manifest emitter.
 	const withManifest: ReadonlyArray<StackMember> = [...withFaucet, manifestRef()];

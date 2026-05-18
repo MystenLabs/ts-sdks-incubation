@@ -826,6 +826,7 @@ const buildLocalnet = (options: SuiLocalnetOptions): StackMember => {
 
 	const tag = provide(SuiTag, build, {
 		kind: 'service',
+		lifecycle: 'long-lived',
 		displayTitle: 'sui.localnet',
 		display: (s) => {
 			const endpoints: Array<{ readonly label: string; readonly url: string }> = [
@@ -928,6 +929,7 @@ const buildTestnet = (options: SuiTestnetOptions): StackMember => {
 
 	return provide(SuiTag, build, {
 		kind: 'service',
+		lifecycle: 'long-lived',
 		displayTitle: 'sui.testnet',
 		display: (s) => {
 			const endpoints: Array<{ readonly label: string; readonly url: string }> = [
@@ -972,6 +974,7 @@ const buildMainnet = (options: SuiMainnetOptions): StackMember => {
 
 	return provide(SuiTag, build, {
 		kind: 'service',
+		lifecycle: 'long-lived',
 		displayTitle: 'sui.mainnet',
 		display: (s) => {
 			const endpoints: Array<{ readonly label: string; readonly url: string }> = [
@@ -1032,6 +1035,7 @@ const buildCustom = (options: SuiCustomOptions): StackMember => {
 
 	return provide(SuiTag, build, {
 		kind: 'service',
+		lifecycle: 'long-lived',
 		displayTitle: `sui.${options.network ?? 'custom'}`,
 		display: (s) => ({ title: `sui.${s.network}`, primary: s.rpc.host }),
 	});

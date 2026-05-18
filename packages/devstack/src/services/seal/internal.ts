@@ -903,6 +903,7 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 	// value extractions, not lifecycle-tracked.
 	const { __layer: internalLayer } = provide(SealLocalKeygenInternal, acquire, {
 		kind: 'service',
+		lifecycle: 'long-lived',
 		displayTitle: 'seal.local',
 		display: (s) => ({ title: 'seal.local', primary: s.keyServer.keyServerUrl }),
 	});
@@ -1015,6 +1016,7 @@ export const sealKnownKeyServer = (options: SealKnownKeyServerOptions = {}): Sta
 
 	const { __layer, __kind, __displayTitle } = provide(SealKeyServerTag, build, {
 		kind: 'service',
+		lifecycle: 'long-lived',
 		displayTitle: 'seal.known',
 		display: (s) => ({ title: 'seal.known', primary: s.keyServerUrl }),
 	});

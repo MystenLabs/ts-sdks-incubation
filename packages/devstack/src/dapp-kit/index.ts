@@ -7,32 +7,19 @@
 //   - `localnetWalrusOptions(manifest)` — browser-side WalrusClient
 //     options for localnet (translates docker-internal storage-node
 //     URLs to host-mapped form, sets the localnet packageConfig).
-//   - `fromManifest(json)` + the typed `Manifest` shape — browser-safe
-//     accessor that doesn't pull the Node-only factory graph into the
-//     bundle.
 //
 // The dapp-kit instance itself is constructed in user code (each
 // example's `src/dapp-kit.ts`) by spreading the generated
 // `devstackDappKitConfig` from `./generated/dapp-kit-config.js` into
 // `createDAppKit(...)`. There's no runtime `createDevstackDappKit`
 // helper any more — the generated config replaces it.
+//
+// Manifest accessors (`fromManifest`) and the typed `Manifest` shape
+// are NOT re-exported here. Generated browser code (`./generated/`) is
+// fully self-contained: the dapp-kit-config and stack-handle emitters
+// bake every value as a static literal at codegen time, so browser
+// code never reads `.devstack/manifest.json` at runtime. Server-side
+// callers that need `fromManifest` import it from the package root
+// (`@mysten-incubation/devstack`) directly.
 
 export { localnetWalrusOptions, type LocalnetWalrusOptions } from './walrus.js';
-
-// Browser-safe manifest accessor + types. Re-exported here so apps can
-// reach the typed manifest from a subpath that doesn't drag the Node-
-// only factory graph (`Sui`, `Walrus`, `Seal`, the docker engine, …)
-// into their bundle. Importing these from the package root works on
-// the server but trips Vite's `node:path` externalization warning in
-// the browser; this subpath is the supported browser surface.
-export { fromManifest } from '../runtime/manifest-loader.js';
-export type {
-	Manifest,
-	ManifestEncoded,
-	AppManifest,
-	DeepbookManifest,
-	SealManifest,
-	ServicesManifest,
-	SuiManifest,
-	WalrusManifest,
-} from '../runtime/manifest-schema.js';

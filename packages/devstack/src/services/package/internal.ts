@@ -552,6 +552,7 @@ export const publishMove = <
 		}).pipe(Effect.withSpan(`publishMove(${options.name})`)),
 		{
 			kind: 'action',
+			lifecycle: 'per-cycle',
 			displayTitle: `publish.${options.name}`,
 			// Auto-watch the Move source tree. An edit to a `.move` file
 			// (or `Move.toml`) under `options.path` triggers a hot-restart;

@@ -292,14 +292,8 @@ export function parseDevstackToken(pairedUrl: string | undefined): string | null
 	}
 }
 
-/** v3-shape input — flat `endpoints` array. Kept around for one
- *  release while consumers migrate to v4. */
-interface ManifestV3Shape {
-	endpoints?: ReadonlyArray<{ name: string; url: string; pairUrl?: string }>;
-}
-
 /** Narrow v4-shape input — the only field the adapter consumes is
- *  `app.wallet.{url, alternates}`. Codegen emits exactly this shape so
+ *  `app.wallet.{url, pairUrl}`. Codegen emits exactly this shape so
  *  generated `dapp-kit-config.ts` doesn't have to fabricate placeholder
  *  manifest fields (`stack.app`, `coins`, etc.) just to satisfy the
  *  full `Manifest` type. Mirrors a slice of `AppManifest` from
@@ -309,7 +303,7 @@ export interface DevstackAdapterManifest {
 	app?: {
 		wallet?: {
 			url: string;
-			alternates?: ReadonlyArray<string>;
+			pairUrl?: string;
 		};
 	};
 }
@@ -319,30 +313,20 @@ export interface DevstackAdapterManifest {
  * build a configured adapter, or return `null` when the entry isn't
  * present (no `Wallet(...)` in the stack, or it hasn't come up yet).
  *
- * Accepts both v3 manifests (`endpoints[]` array with `name: 'wallet-app'`)
- * and v4 manifests (`app.wallet: { url, alternates }`) — the v4 entry's
- * first `alternates` URL is the paired URL carrying the `#token=…`
- * fragment; v3 carries it in `pairUrl`. The full v4 `Manifest` shape
- * is structurally compatible with {@link DevstackAdapterManifest}, so
+ * The wallet entry's `pairUrl` carries the `#token=…` fragment used to
+ * extract the bearer token. The full v4 `Manifest` shape from
+ * `@mysten-incubation/devstack` is structurally compatible with
+ * {@link DevstackAdapterManifest}, so
  * `createDevstackAdapterFromManifest(devstackManifest)` typechecks
  * without a cast.
  */
 export function createDevstackAdapterFromManifest(
-	manifest: DevstackAdapterManifest | ManifestV3Shape,
+	manifest: DevstackAdapterManifest,
 ): DevstackSignerAdapter | null {
-	const v4 = (manifest as DevstackAdapterManifest).app?.wallet;
-	if (v4 !== undefined) {
-		return new DevstackSignerAdapter({
-			serverOrigin: v4.url,
-			token: parseDevstackToken(v4.alternates?.[0]),
-		});
-	}
-	const endpoint = (manifest as ManifestV3Shape).endpoints?.find((e) => e.name === 'wallet-app');
-	if (endpoint !== undefined) {
-		return new DevstackSignerAdapter({
-			serverOrigin: endpoint.url,
-			token: parseDevstackToken(endpoint.pairUrl),
-		});
-	}
-	return null;
+	const wallet = manifest.app?.wallet;
+	if (wallet === undefined) return null;
+	return new DevstackSignerAdapter({
+		serverOrigin: wallet.url,
+		token: parseDevstackToken(wallet.pairUrl),
+	});
 }
