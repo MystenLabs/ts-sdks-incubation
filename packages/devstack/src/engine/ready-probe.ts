@@ -147,8 +147,20 @@ const tcpAttempt = (probe: TcpReadyProbe): Effect.Effect<void, ReadyProbeError> 
 	Effect.callback<void, ReadyProbeError>((resume) => {
 		const host = probe.host ?? 'localhost';
 		const socket = net.createConnection({ host, port: probe.port });
+		// Swallow post-success errors. After we resolve `connect` we
+		// `socket.end()` which sends FIN; the peer may RST in response
+		// (Node servers do this on certain shutdown timings) and the
+		// socket would then emit 'error' with no listener attached,
+		// crashing the process. Keep this listener for the lifetime of
+		// the socket so a benign ECONNRESET during teardown stays a
+		// no-op. The probe's pre-success path uses `onError` (below)
+		// to surface real connect failures.
+		const onPostSuccessError = (_cause: Error) => {
+			// nothing — connect already resolved
+		};
 		const onConnect = () => {
 			socket.removeListener('error', onError);
+			socket.on('error', onPostSuccessError);
 			socket.end();
 			resume(Effect.void);
 		};
@@ -173,6 +185,7 @@ const tcpAttempt = (probe: TcpReadyProbe): Effect.Effect<void, ReadyProbeError> 
 		return Effect.sync(() => {
 			socket.removeListener('connect', onConnect);
 			socket.removeListener('error', onError);
+			socket.removeListener('error', onPostSuccessError);
 			socket.destroy();
 		});
 	});
