@@ -63,6 +63,27 @@ export const validateIdentity = (identity: IdentityShape): void => {
 	requireValidIdentityName('stack', identity.stack);
 };
 
+// Single source of truth for the docker label keys devstack stamps on
+// containers, networks, and volumes. Every `--label <key>=<value>` arg
+// and every `--filter label=<key>=…` arg passed to the docker CLI
+// flows through these constants so the wire-level contract is defined
+// in exactly one place. Sweep / wipe / snapshot all enumerate our
+// resources by ANDing filters on these same keys.
+//
+// NOTE: `devstack.router=true` is a separate router-only label stamped
+// by `engine/docker/router.ts` on the cross-stack traefik router and
+// is deliberately NOT a member of `DockerLabel` — `DockerLabel` covers
+// the per-`<app,stack>` resource labels; ROUTER is a singleton flag on
+// a single shared container with a different lifecycle.
+export const DockerLabel = {
+	APP: 'devstack.app',
+	STACK: 'devstack.stack',
+	NETWORK: 'devstack.network',
+	ACTION: 'devstack.action',
+} as const;
+
+export type DockerLabelKey = (typeof DockerLabel)[keyof typeof DockerLabel];
+
 // Derive the app name from `<appDir>/package.json#name` (stripping any
 // npm scope like `@foo/`), falling back to `basename(appDir)`. Mirrors
 // v3 `packages/devstack/src/cli/env.ts:168-198` but synchronous so it

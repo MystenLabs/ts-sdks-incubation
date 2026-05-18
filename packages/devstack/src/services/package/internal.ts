@@ -12,7 +12,7 @@ import { Effect, FileSystem, Option, Schedule } from 'effect';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import { Transaction } from '@mysten/sui/transactions';
-import { tag, setPhase, type Ref } from '../../advanced/tag.js';
+import { tag, setPhase, type LayeredTag } from '../../advanced/tag.js';
 import { SuiTag } from '../sui.js';
 import { buildMove, scrubCachedMoveLocks } from '../../engine/sui-cli.js';
 import { publishCoin, publishPackage } from '../../engine/registries.js';
@@ -22,8 +22,8 @@ import type { LocalPackage } from '../package.js';
 import { toSdkCoin } from '../package.js';
 import type { Account, SuiObjectChange } from '../../engine/shared.js';
 import { pickCreatedByTypeIncludes, pickCreatedByTypeSuffix } from '../../engine/sui-helpers.js';
-import { FaucetTag } from '../../faucet/service.js';
-import { treasuryCapMintStrategy } from '../../faucet/strategies/treasury-cap-mint.js';
+import { FaucetTag } from '../faucet/index.js';
+import { treasuryCapMintStrategy } from '../faucet/strategies/treasury-cap-mint.js';
 
 // Content-hash the Move source tree under `sourcePath`. Hashes every
 // `.move` file plus `Move.toml`, ignoring build/output/hidden dirs so
@@ -77,7 +77,7 @@ export const hashMoveSources = (sourcePath: string) =>
 				Effect.catchTag('PlatformError', (cause) =>
 					Effect.fail(
 						new PublishError({
-							stage: 'hash',
+							phase: 'hash',
 							message: `hashMoveSources '${sourcePath}': ${cause.message}`,
 							cause,
 						}),
@@ -188,7 +188,7 @@ export interface PublishMoveOptions<
 	 * the resulting `UpgradeCap`. The tag is yielded for ordering, so
 	 * `signer` is always funded by the time the publish fires.
 	 */
-	readonly signer: Ref<any, Account, any, any>;
+	readonly signer: LayeredTag<any, Account, any, any>;
 	/**
 	 * Optional override for the Move-Resolved-Reference placeholder
 	 * (the `[addresses]` table key in `Move.toml`). Defaults to `name`.
@@ -230,7 +230,8 @@ const UPGRADE_CAP_TYPE_SUFFIX = '0x2::package::UpgradeCap';
 // a noop. Coins missing a `treasuryCapId` (e.g. a custom init that
 // doesn't follow `coin::create_currency`) are skipped — funding such a
 // coin via `Account({ funding })` will surface a clean "no strategy
-// registered" error pointing the user at `defineStrategy`.
+// registered" error pointing the user at the `FaucetStrategy` literal
+// shape on `/advanced`.
 const registerMintStrategies = (
 	signer: Account,
 	coins: ReadonlyArray<PublishedCoin>,
@@ -300,7 +301,7 @@ export const publishMove = <
 			})();
 			const mvrPlaceholder = options.mvrPlaceholder ?? `@local/${mvrSlug}`;
 			const sourceHash = yield* hashMoveSources(options.path);
-			const cacheKey = `publishMove/${options.name}/${sourceHash}/${sui.chainId}`;
+			const cacheKey = `publishMove/v1/${options.name}/${sourceHash}/${sui.chainId}`;
 			const cached = yield* state.get<Package<TCaptured, CoinsRecord<TCoins>>>(cacheKey);
 			if (Option.isSome(cached)) {
 				yield* Effect.logInfo(
@@ -370,7 +371,7 @@ export const publishMove = <
 				Effect.catchTag('SuiCliError', (cause) =>
 					Effect.fail(
 						new PublishError({
-							stage: 'scrub',
+							phase: 'scrub',
 							message: `publishMove(${options.name}): scrub failed`,
 							cause,
 						}),
@@ -393,7 +394,7 @@ export const publishMove = <
 				Effect.catchTag('SuiCliError', (cause) =>
 					Effect.fail(
 						new PublishError({
-							stage: 'build',
+							phase: 'build',
 							message: `publishMove(${options.name}): build failed`,
 							cause,
 						}),
@@ -410,7 +411,7 @@ export const publishMove = <
 				Effect.catchTag('SignAndExecuteError', (cause) =>
 					Effect.fail(
 						new PublishError({
-							stage: 'publish-tx',
+							phase: 'publish-tx',
 							message: `publishMove(${options.name}): publish tx failed`,
 							cause,
 						}),
@@ -425,7 +426,7 @@ export const publishMove = <
 			if (published === undefined) {
 				return yield* Effect.fail(
 					new PublishError({
-						stage: 'parse',
+						phase: 'parse',
 						message: `publishMove(${options.name}): no 'published' change in result`,
 					}),
 				);
@@ -440,18 +441,17 @@ export const publishMove = <
 			// Poll `getObject(packageId)` until it returns; back off
 			// exponentially up to 10s total.
 			yield* Effect.gen(function* () {
-				const response = yield* Effect.tryPromise({
-					try: () => sui.client.getObject({ id: packageId, options: {} }),
-					catch: (cause) => new Error(String(cause)),
+				// Phase -1 (gRPC migration): the gRPC `client.core.getObject(
+				// {objectId})` throws when the fullnode hasn't ingested the
+				// publish checkpoint yet, instead of the JSON-RPC tagged
+				// `{error: 'notExists', data: undefined}` payload. The
+				// surrounding retry/timeout pipeline below already handles
+				// the failure case identically to the old "tagged-error"
+				// branch, so we just let `tryPromise` capture the throw.
+				yield* Effect.tryPromise({
+					try: () => sui.client.core.getObject({ objectId: packageId }),
+					catch: (cause) => new Error(`package not yet on-chain: ${String(cause)}`),
 				});
-				// getObject returns {error: 'notExists'} (not a throw) when the
-				// fullnode hasn't ingested the publish checkpoint yet. Treat
-				// that as a retryable not-yet-ready signal.
-				if (response.error !== undefined && response.data === undefined) {
-					return yield* Effect.fail(
-						new Error(`package not yet on-chain: ${JSON.stringify(response.error)}`),
-					);
-				}
 			}).pipe(
 				Effect.retry(Schedule.spaced('200 millis')),
 				Effect.timeoutOrElse({
@@ -459,7 +459,7 @@ export const publishMove = <
 					orElse: () =>
 						Effect.fail(
 							new PublishError({
-								stage: 'parse',
+								phase: 'parse',
 								message: `publishMove(${options.name}): publish tx succeeded but package ${packageId} did not become queryable within 10s`,
 							}),
 						),
@@ -484,7 +484,7 @@ export const publishMove = <
 				if (seenCoinNames.has(spec.name)) {
 					return yield* Effect.fail(
 						new PublishError({
-							stage: 'register-coins',
+							phase: 'register-coins',
 							message: `publishMove '${options.name}': duplicate coin name '${spec.name}' in coins[]; each coin must have a unique name within a package`,
 						}),
 					);

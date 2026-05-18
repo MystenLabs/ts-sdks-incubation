@@ -14,6 +14,8 @@ import * as fs from 'node:fs';
 import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { hostname } from 'node:os';
+import { isHolderLive, processStartTime, type LockHolder } from './process-liveness.js';
 
 export interface PortAllocatorShape {
 	/** Reserve a port near the preferred. If preferred is in use, scan forward up to maxScan. */
@@ -80,6 +82,50 @@ const bindProbe = (port: number, host: string): Promise<boolean> =>
 export const defaultPortLockDir = (): string =>
 	process.env.DEVSTACK_PORT_LOCK_DIR ?? path.join(os.homedir(), '.devstack', 'ports');
 const portLockPath = (dir: string, port: number): string => path.join(dir, `${port}.lock`);
+
+// Lock body is JSON `{ pid, startedAt, host }` — Theme 6c upgraded from
+// the bare-pid format so PID reuse on long-uptime machines can't trick
+// stale-recovery. Self-holder is cached because `processStartTime`
+// shells out to `ps`; we don't want O(allocations) forks.
+let cachedSelfHolder: LockHolder | undefined;
+const selfHolder = (): LockHolder => {
+	if (cachedSelfHolder === undefined) {
+		cachedSelfHolder = {
+			pid: process.pid,
+			startedAt: processStartTime(process.pid) ?? '',
+			host: hostname(),
+		};
+	}
+	return cachedSelfHolder;
+};
+
+const serializeHolder = (h: LockHolder): string =>
+	JSON.stringify({ pid: h.pid, startedAt: h.startedAt, host: h.host });
+
+// Parse the lock body. Returns undefined for stale-format (e.g. the
+// pre-Theme-6c bare-pid format) or malformed JSON; the caller treats
+// undefined as "reclaim it, the prior writer used an obsolete schema".
+const parseHolder = (raw: string): LockHolder | undefined => {
+	try {
+		const obj = JSON.parse(raw.trim()) as unknown;
+		if (
+			obj !== null &&
+			typeof obj === 'object' &&
+			'pid' in obj &&
+			'startedAt' in obj &&
+			'host' in obj &&
+			typeof (obj as { pid: unknown }).pid === 'number' &&
+			typeof (obj as { startedAt: unknown }).startedAt === 'string' &&
+			typeof (obj as { host: unknown }).host === 'string'
+		) {
+			return obj as LockHolder;
+		}
+		return undefined;
+	} catch {
+		return undefined;
+	}
+};
+
 // `true` if successfully claimed; `false` if another LIVE process holds the lock.
 // Treats stale locks (referenced pid no longer exists) as reusable: we delete
 // the stale file and retry the create. Exported for unit tests; production
@@ -87,7 +133,7 @@ const portLockPath = (dir: string, port: number): string => path.join(dir, `${po
 export const claimPortLock = (port: number, dir: string = defaultPortLockDir()): boolean => {
 	try {
 		fs.mkdirSync(dir, { recursive: true });
-		fs.writeFileSync(portLockPath(dir, port), String(process.pid), { flag: 'wx' });
+		fs.writeFileSync(portLockPath(dir, port), serializeHolder(selfHolder()), { flag: 'wx' });
 		return true;
 	} catch (err) {
 		if ((err as NodeJS.ErrnoException).code !== 'EEXIST') return false;
@@ -105,19 +151,12 @@ export const claimPortLock = (port: number, dir: string = defaultPortLockDir()):
 	} catch (err) {
 		return (err as NodeJS.ErrnoException).code === 'ENOENT' ? attemptReclaim(port, dir) : false;
 	}
-	const pid = Number.parseInt(raw.trim(), 10);
-	if (Number.isFinite(pid) && pid > 0) {
-		try {
-			process.kill(pid, 0);
-			return false; // pid alive → another supervisor really holds it
-		} catch (sigErr) {
-			const code = (sigErr as NodeJS.ErrnoException).code;
-			// EPERM = foreign-user holder, treat as alive (matches process-liveness).
-			if (code !== 'ESRCH') return false;
-		}
+	const holder = parseHolder(raw);
+	if (holder === undefined) {
+		// Stale-format (pre-Theme-6c bare pid) or corrupt JSON — reclaim.
+		return attemptReclaim(port, dir);
 	}
-	// Either pid is dead (ESRCH) or content is malformed (NaN/empty).
-	// Both are documented stale-reclaim paths.
+	if (isHolderLive(holder)) return false;
 	return attemptReclaim(port, dir);
 };
 
@@ -128,7 +167,7 @@ const attemptReclaim = (port: number, dir: string): boolean => {
 		if ((err as NodeJS.ErrnoException).code !== 'ENOENT') return false;
 	}
 	try {
-		fs.writeFileSync(portLockPath(dir, port), String(process.pid), { flag: 'wx' });
+		fs.writeFileSync(portLockPath(dir, port), serializeHolder(selfHolder()), { flag: 'wx' });
 		return true;
 	} catch {
 		return false;
@@ -136,10 +175,21 @@ const attemptReclaim = (port: number, dir: string): boolean => {
 };
 export const releasePortLock = (port: number, dir: string = defaultPortLockDir()): void => {
 	try {
-		const raw = fs.readFileSync(portLockPath(dir, port), 'utf8').trim();
+		const raw = fs.readFileSync(portLockPath(dir, port), 'utf8');
+		const holder = parseHolder(raw);
 		// Only delete if WE wrote the lock — defensive against a racing
-		// process that already cleaned ours and wrote its own pid.
-		if (raw === String(process.pid)) fs.unlinkSync(portLockPath(dir, port));
+		// process that already cleaned ours and wrote its own holder.
+		// Stale-format / unparsable body: someone else wrote it (we always
+		// write JSON now), so leave it alone.
+		if (holder === undefined) return;
+		const me = selfHolder();
+		if (
+			holder.pid === me.pid &&
+			holder.startedAt === me.startedAt &&
+			holder.host === me.host
+		) {
+			fs.unlinkSync(portLockPath(dir, port));
+		}
 	} catch {
 		// missing / unreadable: nothing to do
 	}

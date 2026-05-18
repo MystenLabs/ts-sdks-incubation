@@ -82,7 +82,7 @@ export const dockerWait = (
 			if (code !== 0) {
 				return yield* Effect.fail(
 					new DockerError({
-						op: 'docker wait',
+						phase: 'docker wait',
 						message: `docker wait ${containerName} exit ${code}`,
 					}),
 				);

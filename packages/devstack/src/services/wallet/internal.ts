@@ -24,10 +24,11 @@ import { publishEndpoint } from '../../engine/registries.js';
 import { RUNTIME_DIR_NAME, servicePath } from '../../engine/service-paths.js';
 import { StateStoreConfig } from '../../engine/state-store.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
-import { tag, setPhase, type Ref } from '../../advanced/tag.js';
+import { tag, setPhase, type LayeredTag } from '../../advanced/tag.js';
 import { WalletAppError } from '../../engine/errors.js';
 import type { Account } from '../../engine/shared.js';
 import { EndpointName } from '../../runtime/endpoint-names.js';
+import { WalletHttpPath } from './protocol.js';
 import { SuiTag } from '../sui.js';
 
 export interface WalletApp {
@@ -53,7 +54,7 @@ export interface WalletAppOptions<Name extends string> {
 	 * before the server accepts traffic) and the resolved `Account`
 	 * value is keyed by address into the sign handler.
 	 */
-	readonly accounts: ReadonlyArray<Ref<any, Account, any, any>>;
+	readonly accounts: ReadonlyArray<LayeredTag<any, Account, any, any>>;
 	/**
 	 * Extra CORS origins to accept on the signing endpoints, on top of
 	 * the auto-derived `http://dev.<app>.localhost` (and stack-scoped
@@ -332,8 +333,75 @@ const startHttpServer = (
 	const expectedAuth = `Bearer ${token}`;
 	return new Promise((resolve, reject) => {
 		const server = createServer((req, res) => {
+			// 8-char hex correlation-id stamped on every entry/exit/error
+			// log for this request, and propagated into child Effects'
+			// logs via `Effect.annotateLogs({ walletRequestId })` at each
+			// dispatch boundary. The annotation key registry is deferred
+			// — string keys for now.
+			const requestId = randomBytes(4).toString('hex');
+			const startedAtMs = Date.now();
+			// `runLog` runs a fire-and-forget log Effect under the captured
+			// supervisor context (so it lands on the same logger sink the
+			// supervisor uses — TUI vs plain) with the per-request
+			// annotations applied. Structured fields ride on
+			// `Effect.annotateLogs`, not as positional log-message args,
+			// because in Effect v4 `logInfo(...message)` renders trailing
+			// args as message text rather than as structured data.
+			// Errors swallowed: logging must never take down the HTTP
+			// listener.
+			const baseAnnotations = {
+				walletRequestId: requestId,
+				walletMethod: req.method ?? '',
+				walletPath: req.url ?? '',
+			};
+			const runLog = (eff: Effect.Effect<void>): void => {
+				Effect.runPromiseWith(supervisorCtx)(
+					eff.pipe(Effect.annotateLogs(baseAnnotations)),
+				).catch(() => {});
+			};
+			// Exit hook: `res.end` always fires `finish`, including for
+			// the early-return forbidden-origin / bad-bearer / 404 paths
+			// below, so we get exit logging for rejected requests for
+			// free without needing to instrument each branch.
+			res.on('finish', () => {
+				runLog(
+					Effect.logInfo('wallet response').pipe(
+						Effect.annotateLogs({
+							walletStatus: res.statusCode,
+							walletDurationMs: Date.now() - startedAtMs,
+						}),
+					),
+				);
+			});
+			res.on('error', (err) => {
+				runLog(
+					Effect.logWarning('wallet request error').pipe(
+						Effect.annotateLogs({ error: String(err) }),
+					),
+				);
+			});
+			// Likewise the underlying request stream — a client abort
+			// during body read surfaces here, not on `res`. Without
+			// this hook the error logs only fire for response-write
+			// failures.
+			req.on('error', (err) => {
+				runLog(
+					Effect.logWarning('wallet request error').pipe(
+						Effect.annotateLogs({ error: String(err) }),
+					),
+				);
+			});
+			const logEntry = (originAllowed: boolean, bearerValid: boolean): void => {
+				runLog(
+					Effect.logInfo('wallet request').pipe(
+						Effect.annotateLogs({ originAllowed, bearerValid }),
+					),
+				);
+			};
 			const origin = req.headers.origin;
+			const originAllowed = origin === undefined || allowedOrigins.includes(origin);
 			if (origin !== undefined && !allowedOrigins.includes(origin)) {
+				logEntry(false, false);
 				res.writeHead(403, { 'content-type': 'text/plain' });
 				res.end('forbidden origin');
 				return;
@@ -344,6 +412,7 @@ const startHttpServer = (
 				res.setHeader('access-control-allow-methods', 'GET,POST,OPTIONS');
 			}
 			if (req.method === 'OPTIONS') {
+				logEntry(originAllowed, false);
 				res.writeHead(204);
 				res.end();
 				return;
@@ -357,36 +426,51 @@ const startHttpServer = (
 				// Origin on the signing path closes that bypass; the
 				// allowlist still gates which origins are acceptable.
 				if (origin === undefined) {
+					logEntry(false, false);
 					res.writeHead(403, { 'content-type': 'text/plain' });
 					res.end('Origin header required');
 					return;
 				}
 				const auth = req.headers.authorization;
-				if (auth === undefined || !safeBearerEquals(auth, expectedAuth)) {
+				// `bearerValid` is the only fact about the token that
+				// transits the log line. The token bytes themselves
+				// never appear: `auth` and `expectedAuth` flow only
+				// into `safeBearerEquals` (which returns a boolean),
+				// and no log call below references either string.
+				const bearerValid = auth !== undefined && safeBearerEquals(auth, expectedAuth);
+				logEntry(originAllowed, bearerValid);
+				if (!bearerValid) {
 					res.writeHead(401, { 'content-type': 'application/json' });
 					res.end(JSON.stringify({ error: 'unauthorized' }));
 					return;
 				}
-				if (req.method === 'GET' && req.url === '/api/v1/devstack/health') {
+				if (req.method === 'GET' && req.url === WalletHttpPath.HEALTH) {
 					sendJson(res, 200, { ok: true });
 					return;
 				}
-				if (req.method === 'GET' && req.url === '/api/v1/devstack/accounts') {
+				if (req.method === 'GET' && req.url === WalletHttpPath.ACCOUNTS) {
 					handleAccounts(res, accountsByAddress);
 					return;
 				}
-				if (req.method === 'POST' && req.url === '/api/v1/devstack/sign-transaction') {
-					void handleSignTransaction(req, res, accountsByAddress, supervisorCtx);
+				if (req.method === 'POST' && req.url === WalletHttpPath.SIGN_TX) {
+					void handleSignTransaction(req, res, accountsByAddress, supervisorCtx, requestId);
 					return;
 				}
-				if (req.method === 'POST' && req.url === '/api/v1/devstack/sign-personal-message') {
-					void handleSignPersonalMessage(req, res, accountsByAddress, supervisorCtx);
+				if (req.method === 'POST' && req.url === WalletHttpPath.SIGN_PERSONAL_MESSAGE) {
+					void handleSignPersonalMessage(
+						req,
+						res,
+						accountsByAddress,
+						supervisorCtx,
+						requestId,
+					);
 					return;
 				}
 				res.writeHead(404, { 'content-type': 'application/json' });
 				res.end(JSON.stringify({ error: `no route for ${req.method} ${req.url}` }));
 				return;
 			}
+			logEntry(originAllowed, false);
 			res.writeHead(404);
 			res.end('not found');
 		});
@@ -413,6 +497,7 @@ const handleSignTransaction = async (
 	res: ServerResponse,
 	accountsByAddress: ReadonlyMap<string, Account>,
 	supervisorCtx: Context.Context<never>,
+	requestId: string,
 ): Promise<void> => {
 	let body: Record<string, unknown>;
 	try {
@@ -453,10 +538,19 @@ const handleSignTransaction = async (
 				Effect.withSpan('wallet.sign-transaction', {
 					attributes: { 'account.name': account.name, 'account.address': account.address },
 				}),
+				Effect.annotateLogs({ walletRequestId: requestId }),
 			),
 		);
 		sendJson(res, 200, { suiSignature: result.signature, txBytes: result.bytes });
 	} catch (cause) {
+		Effect.runPromiseWith(supervisorCtx)(
+			Effect.logWarning('wallet request error').pipe(
+				Effect.annotateLogs({
+					walletRequestId: requestId,
+					error: `signTransaction failed: ${stringifyCause(cause)}`,
+				}),
+			),
+		).catch(() => {});
 		sendJson(res, 500, {
 			error: `signTransaction failed: ${stringifyCause(cause)}`,
 		});
@@ -468,6 +562,7 @@ const handleSignPersonalMessage = async (
 	res: ServerResponse,
 	accountsByAddress: ReadonlyMap<string, Account>,
 	supervisorCtx: Context.Context<never>,
+	requestId: string,
 ): Promise<void> => {
 	let body: Record<string, unknown>;
 	try {
@@ -508,10 +603,19 @@ const handleSignPersonalMessage = async (
 				Effect.withSpan('wallet.sign-personal-message', {
 					attributes: { 'account.name': account.name, 'account.address': account.address },
 				}),
+				Effect.annotateLogs({ walletRequestId: requestId }),
 			),
 		);
 		sendJson(res, 200, { signature: result.signature, bytes: result.bytes });
 	} catch (cause) {
+		Effect.runPromiseWith(supervisorCtx)(
+			Effect.logWarning('wallet request error').pipe(
+				Effect.annotateLogs({
+					walletRequestId: requestId,
+					error: `signPersonalMessage failed: ${stringifyCause(cause)}`,
+				}),
+			),
+		).catch(() => {});
 		sendJson(res, 500, {
 			error: `signPersonalMessage failed: ${stringifyCause(cause)}`,
 		});

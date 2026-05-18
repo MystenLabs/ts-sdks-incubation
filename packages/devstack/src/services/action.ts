@@ -1,12 +1,12 @@
 // Action(name, opts) — post-publish setup tx. The build callback
 // receives a raw `Transaction` builder; its return Effect's `E` channel
-// widens to whatever the yielded Refs propagate (e.g. `PublishError`
+// widens to whatever the yielded LayeredTags propagate (e.g. `PublishError`
 // from a `Package` ref), and the supervisor catches errors at the
 // engine level so users don't have to `catchTag` inside every action.
 
 import { Effect, Option } from 'effect';
 import { Transaction } from '@mysten/sui/transactions';
-import { tag, setPhase, type Ref } from '../advanced/tag.js';
+import { tag, setPhase, type LayeredTag } from '../advanced/tag.js';
 import { PublishError } from '../engine/errors.js';
 import { StateStore } from '../engine/state-store.js';
 import { SuiTag, type Sui } from './sui.js';
@@ -47,15 +47,15 @@ const probeCachedTx = (
 
 export interface ActionOptions<Name extends string, R, E = unknown> {
 	/** Account that signs the action. */
-	readonly signer: Ref<any, Account, any, any>;
+	readonly signer: LayeredTag<any, Account, any, any>;
 	/** Refs this action depends on. Yielded for ordering before `build`
 	 *  runs. Typically a list of `Package` refs whose ids the action
 	 *  references in `moveCall` targets. */
-	readonly needs?: ReadonlyArray<Ref<any, any, any, any>>;
+	readonly needs?: ReadonlyArray<LayeredTag<any, any, any, any>>;
 	/** Optional gas budget for the transaction. */
 	readonly gasBudget?: bigint;
 	/** Build the transaction. Receives a fresh `Transaction` builder. The
-	 *  return Effect's `E` channel widens to whatever the yielded Refs
+	 *  return Effect's `E` channel widens to whatever the yielded LayeredTags
 	 *  propagate; the supervisor catches errors at the engine level. */
 	readonly build: (transaction: Transaction) => Effect.Effect<void, E, R>;
 	/** Optional cache key. Two accepted forms:
@@ -67,7 +67,7 @@ export interface ActionOptions<Name extends string, R, E = unknown> {
 	readonly _name?: Name;
 }
 
-/** Action factory. Returns a Ref that runs the supplied transaction once
+/** Action factory. Returns a LayeredTag that runs the supplied transaction once
  *  per chain (when `cacheKey` is set) or every cycle (when omitted).
  *
  *  Cache key folds in `sui.chainId` + `signer.address`, so a regenesis of
@@ -106,7 +106,7 @@ export const Action = <const Name extends string, R = never, E = unknown>(
 				const sui = yield* SuiTag;
 				const state = yield* StateStore;
 				const userKey = yield* cacheKeyEff as Effect.Effect<string, unknown, never>;
-				const fullKey = `tx/${name}/${sui.chainId}/${signer.address}/${userKey}`;
+				const fullKey = `tx/v1/${name}/${sui.chainId}/${signer.address}/${userKey}`;
 				const cached = yield* state.get<TxResult>(fullKey);
 				if (Option.isSome(cached)) {
 					// HIGH-C3: probe the cached result against the chain before
@@ -144,7 +144,7 @@ export const Action = <const Name extends string, R = never, E = unknown>(
 					Effect.mapError(
 						(cause) =>
 							new PublishError({
-								stage: 'publish-tx',
+								phase: 'publish-tx',
 								message: `Action(${name}): sign+execute failed`,
 								cause,
 							}),
@@ -165,7 +165,7 @@ export const Action = <const Name extends string, R = never, E = unknown>(
 				Effect.mapError(
 					(cause) =>
 						new PublishError({
-							stage: 'publish-tx',
+							phase: 'publish-tx',
 							message: `Action(${name}): sign+execute failed`,
 							cause,
 						}),

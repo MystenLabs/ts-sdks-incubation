@@ -36,9 +36,6 @@ interface TaggedErrorLike {
 	readonly message?: unknown;
 	readonly cause?: unknown;
 	readonly phase?: unknown;
-	readonly stage?: unknown;
-	readonly op?: unknown;
-	readonly command?: unknown;
 	readonly stderr?: unknown;
 	readonly stdout?: unknown;
 	readonly exitCode?: unknown;
@@ -66,16 +63,7 @@ const isCause = (value: unknown): value is CauseLike =>
 
 const renderTaggedError = (value: TaggedErrorLike): string => {
 	const header = (() => {
-		const qualifier =
-			typeof value.phase === 'string'
-				? `(${value.phase})`
-				: typeof value.stage === 'string'
-					? `(${value.stage})`
-					: typeof value.op === 'string'
-						? `(${value.op})`
-						: typeof value.command === 'string'
-							? `(${value.command})`
-							: '';
+		const qualifier = typeof value.phase === 'string' ? `(${value.phase})` : '';
 		const message = typeof value.message === 'string' ? value.message : '';
 		return qualifier ? `${value._tag} ${qualifier}: ${message}` : `${value._tag}: ${message}`;
 	})();
@@ -120,8 +108,8 @@ const renderError = (value: Error): string => {
  * Render `value` as a multi-line human-readable error tree.
  *
  * Walks our tagged errors (DockerError, SuiError, WalrusError, SealError,
- * DeepbookError, …) — including their `phase` / `op` / `stage` / `command`
- * qualifiers and embedded `stderr` / `stdout` / `exitCode` — then recurses
+ * DeepbookError, …) — including their `phase` qualifier and embedded
+ * `stderr` / `stdout` / `exitCode` — then recurses
  * into the `cause` field. For Effect `Cause` values, defers to
  * `Cause.pretty()` after rendering each `Fail` reason individually so our
  * tagged-error formatting still applies. Plain `Error`s render with stack;
@@ -192,9 +180,6 @@ export interface CauseJson {
 	readonly _tag?: string;
 	readonly message?: string;
 	readonly phase?: string;
-	readonly stage?: string;
-	readonly op?: string;
-	readonly command?: string;
 	readonly exitCode?: number;
 	readonly stderr?: string;
 	readonly stdout?: string;
@@ -218,9 +203,6 @@ const taggedErrorToJson = (value: TaggedErrorLike): CauseJson => {
 	const out: Record<string, unknown> = { _tag: value._tag };
 	if (typeof value.message === 'string') out.message = value.message;
 	if (typeof value.phase === 'string') out.phase = value.phase;
-	if (typeof value.stage === 'string') out.stage = value.stage;
-	if (typeof value.op === 'string') out.op = value.op;
-	if (typeof value.command === 'string') out.command = value.command;
 	if (typeof value.exitCode === 'number') out.exitCode = value.exitCode;
 	const stderr = truncatedString(value.stderr);
 	if (stderr !== undefined) out.stderr = stderr;

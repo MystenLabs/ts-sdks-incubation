@@ -17,7 +17,7 @@
 // Doesn't construct an engine. Safe to run any time. Exits 0 unless docker
 // is unreachable.
 
-import { Console, Effect, FileSystem, Option } from 'effect';
+import { Console, Effect, FileSystem } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { Command, Flag } from 'effect/unstable/cli';
 import { createServer } from 'node:net';
@@ -29,6 +29,7 @@ import {
 } from '../../engine/docker/inventory.js';
 import { isHolderLive } from '../../engine/process-liveness.js';
 import { join as joinPath } from 'node:path';
+import { resolveStateDir } from '../stack-resolution.js';
 
 type Spawner = ReturnType<typeof ChildProcessSpawner.make>;
 
@@ -384,15 +385,7 @@ export const doctorCommand = Command.make(
 			// Honor --state-dir override AND DEVSTACK_STATE_DIR — the latter
 			// is read at action-time so a fixture exporting it after CLI
 			// import sees the override.
-			const appDir = process.env.DEVSTACK_APP_DIR ?? process.cwd();
-			const stateDir = Option.match(stateDirOverride, {
-				onSome: (s) => (s.startsWith('/') ? s : joinPath(appDir, s)),
-				onNone: () => {
-					const env = process.env.DEVSTACK_STATE_DIR;
-					if (env !== undefined) return env.startsWith('/') ? env : joinPath(appDir, env);
-					return joinPath(appDir, '.devstack');
-				},
-			});
+			const stateDir = resolveStateDir({ override: stateDirOverride });
 			const staleLocks = yield* findStaleLocks(fs, stateDir);
 			const removedLocks = cleanLocks
 				? yield* removeStaleLocks(fs, staleLocks)

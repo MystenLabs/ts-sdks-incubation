@@ -79,6 +79,11 @@ export function useSignAndExecute(
 // queryEvents). FRICTION: dapp-kit's createClient picks one transport for
 // all reads — we need both gRPC (for getObject + tx submit) and JSON-RPC
 // (for the tx-history lookup), so we instantiate a parallel client here.
+// Phase -1 (gRPC migration) leaves this site on JSON-RPC: the SDK ships
+// no `queryTransactionBlocks` equivalent on `SuiGrpcClient` yet, and the
+// Connect Four post-join spawned-Game discovery flow has no alternative
+// that doesn't change the on-chain contract. Tracked as a follow-up;
+// `examples/` is outside the Phase -1.10 oxlint ban scope.
 const jsonRpcClient = new SuiJsonRpcClient({ url: deployment.rpcUrl, network: 'localnet' });
 
 export interface ArenaLobby {

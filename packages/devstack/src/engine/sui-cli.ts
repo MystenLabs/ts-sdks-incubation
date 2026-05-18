@@ -30,6 +30,7 @@ import * as path from 'node:path';
 import { Context, Effect, FileSystem, Schema, Stream } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { inheritedHostEnv } from './safe-env.js';
+import { SuiCliPhases } from './phases.js';
 import { prettyError } from './pretty-error.js';
 import { SuiBuildContainer } from './sui-build-container.js';
 
@@ -56,7 +57,11 @@ export const SuiBuildImage = Context.Reference<{ readonly tag: string } | undefi
 // -----------------------------------------------------------------------------
 
 export class SuiCliError extends Schema.TaggedErrorClass<SuiCliError>()('SuiCliError', {
-	op: Schema.String,
+	// `phase` names the sui CLI invocation that failed. Closed set in
+	// `engine/phases.ts` (`SuiCliPhases`). Kept in lockstep with the other
+	// engine errors so pretty-error.ts's single `.phase` accessor renders
+	// SuiCliError uniformly.
+	phase: Schema.Literals(SuiCliPhases),
 	message: Schema.String,
 	// Optional captured streams + exit code from the sui CLI invocation
 	// that produced this failure. pretty-error.ts surfaces these when
@@ -69,7 +74,7 @@ export class SuiCliError extends Schema.TaggedErrorClass<SuiCliError>()('SuiCliE
 }) {}
 
 const suiCliError =
-	(op: string) =>
+	(phase: SuiCliError['phase']) =>
 	(cause: unknown): SuiCliError => {
 		// ENOENT on spawn means the `sui` binary isn't reachable on the
 		// child's PATH. Surface a setup-actionable message rather than the
@@ -84,7 +89,7 @@ const suiCliError =
 		const message = isENOENT
 			? `sui CLI not found on PATH. Install from https://github.com/MystenLabs/sui/releases or via \`cargo install --locked --git https://github.com/MystenLabs/sui.git sui\`.`
 			: summary;
-		return new SuiCliError({ op, message, cause });
+		return new SuiCliError({ phase, message, cause });
 	};
 
 // -----------------------------------------------------------------------------
@@ -186,7 +191,7 @@ export const buildMove = (
 			}
 			return yield* Effect.fail(
 				new SuiCliError({
-					op: 'sui move build',
+					phase: 'sui move build',
 					message: formatCliFailure('sui move build', captured),
 					stdout: captured.stdout,
 					stderr: captured.stderr,
@@ -203,7 +208,7 @@ export const buildMove = (
 			Effect.mapError(
 				(err) =>
 					new SuiCliError({
-						op: err.op,
+						phase: err.phase,
 						message: err.message,
 						stdout: captured.stdout,
 						stderr: captured.stderr,
@@ -434,7 +439,7 @@ export type Spawner = ReturnType<typeof ChildProcessSpawner.make>;
 export const runWithCapture = (
 	spawner: Spawner,
 	cmd: ChildProcess.Command,
-	op: string,
+	op: SuiCliError['phase'],
 ): Effect.Effect<SuiCliCapture, SuiCliError> =>
 	Effect.scoped(
 		Effect.gen(function* () {
@@ -474,10 +479,13 @@ const truncateForError = (text: string): string => {
 };
 
 // Parse JSON inside an Effect so decoding failures map to `SuiCliError`.
-const parseJson = <T>(text: string, op: string): Effect.Effect<T, SuiCliError> =>
+const parseJson = <T>(
+	text: string,
+	phase: SuiCliError['phase'],
+): Effect.Effect<T, SuiCliError> =>
 	Effect.try({
 		try: () => JSON.parse(text) as T,
-		catch: suiCliError(`${op} (json parse)`),
+		catch: suiCliError(phase),
 	});
 
 // -----------------------------------------------------------------------------

@@ -28,6 +28,16 @@ RUN apt-get update \
 # warm-start, but a fresh apply or snapshot-restore-then-publish always
 # tripped it.
 
+# Sui release-tarball fetch. NOTE: a near-identical block lives in
+# `../walrus-image/wrapper.Dockerfile` (sui-fetch stage). The two are
+# intentionally NOT extracted to a shared base — destinations differ
+# (`/usr/local/bin/` here vs `/sui-bin/sui` there) and `dockerImage`'s
+# content-addressed hash walks the whole build context, so widening
+# context to a sibling `_base/` dir would couple unrelated images'
+# cache keys. Version bumps happen via `DEFAULT_SUI_VERSION` in
+# `src/services/sui.ts` + `src/services/walrus/internal.ts`, NOT here.
+# If you edit the curl/tar logic below, mirror the change in
+# `../walrus-image/wrapper.Dockerfile`.
 RUN set -eux; \
 	case "$TARGETARCH" in \
 		arm64) SUI_PLATFORM=ubuntu-aarch64 ;; \

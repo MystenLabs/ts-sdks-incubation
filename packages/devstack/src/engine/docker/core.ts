@@ -7,7 +7,7 @@ import { Effect, Ref } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { addFinalizer, type Scope } from 'effect/Scope';
 import { DockerError } from '../../engine/errors.js';
-import { Identity } from '../identity.js';
+import { DockerLabel, Identity } from '../identity.js';
 import { LongLivedScope } from '../long-lived-scope.js';
 import { ClaimedContainers } from './sweep.js';
 import {
@@ -61,7 +61,7 @@ export const dockerError =
 	(op: string) =>
 	(cause: unknown): DockerError =>
 		new DockerError({
-			op,
+			phase: op,
 			message: op,
 			cause,
 		});
@@ -289,9 +289,9 @@ export const run = (
 		// compose up` emits (verified via `docker inspect` against a real
 		// compose-managed container).
 		const baseLabels: Array<string> = [
-			`devstack.app=${identity.app}`,
-			`devstack.stack=${identity.stack}`,
-			`devstack.action=${primitiveName}`,
+			`${DockerLabel.APP}=${identity.app}`,
+			`${DockerLabel.STACK}=${identity.stack}`,
+			`${DockerLabel.ACTION}=${primitiveName}`,
 			`com.docker.compose.project=${composeProject}`,
 			`com.docker.compose.service=${primitiveName}`,
 			`com.docker.compose.container-number=1`,
@@ -314,7 +314,7 @@ export const run = (
 		if (opts.ip !== undefined && opts.network === undefined) {
 			return yield* Effect.fail(
 				new DockerError({
-					op: 'docker run',
+					phase: 'docker run',
 					message: `'ip' requires 'network' to be set (name=${name})`,
 				}),
 			);
@@ -326,7 +326,7 @@ export const run = (
 		if (opts.networkAlias !== undefined && opts.network === undefined) {
 			return yield* Effect.fail(
 				new DockerError({
-					op: 'docker run',
+					phase: 'docker run',
 					message: `'networkAlias' requires 'network' to be set (name=${name})`,
 				}),
 			);
@@ -611,7 +611,7 @@ export const run = (
 		if (captured.exitCode !== 0 || containerId.length === 0) {
 			return yield* Effect.fail(
 				new DockerError({
-					op: 'docker run',
+					phase: 'docker run',
 					message: summarize(
 						'docker run',
 						captured.exitCode,
@@ -1018,7 +1018,7 @@ export const inspectContainerIp = (
 		}
 		return yield* Effect.fail(
 			new DockerError({
-				op: 'docker inspect ip',
+				phase: 'docker inspect ip',
 				message:
 					`failed to resolve IP for container ${containerId} on network ` +
 					`'${networkName}' after ${ROUTER_IP_RETRY_ATTEMPTS} attempts (` +
@@ -1085,7 +1085,7 @@ const materializeRouterEntries = (
 			Effect.mapError(
 				(cause) =>
 					new DockerError({
-						op: 'docker network connect / inspect ip',
+						phase: 'docker network connect / inspect ip',
 						message:
 							`traefik routing for ${containerId} failed: ` +
 							`network attach succeeded but IP did not settle — ${cause.message}`,
@@ -1150,9 +1150,9 @@ const ensureLabeledVolume = (
 				'volume',
 				'create',
 				'--label',
-				`devstack.app=${app}`,
+				`${DockerLabel.APP}=${app}`,
 				'--label',
-				`devstack.stack=${stack}`,
+				`${DockerLabel.STACK}=${stack}`,
 				name,
 			]),
 			'docker volume create',
@@ -1255,7 +1255,7 @@ export const runCapturingOrFail = (
 		if (captured.exitCode !== 0) {
 			return yield* Effect.fail(
 				new DockerError({
-					op,
+					phase: op,
 					message: summarize(op, captured.exitCode, captured.stdout, captured.stderr),
 					stdout: truncate(captured.stdout),
 					stderr: truncate(captured.stderr),

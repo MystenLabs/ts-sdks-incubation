@@ -12,7 +12,7 @@ import { causeToJson, prettyError } from './pretty-error.js';
 describe('prettyError', () => {
 	it('renders a tagged error with op + stderr + exitCode', () => {
 		const docker = new DockerError({
-			op: 'docker run',
+			phase: 'docker run',
 			message: 'docker run — exit 125 — stderr: pull access denied for mystenlabs/sui-tools',
 			stderr: 'pull access denied for mystenlabs/sui-tools',
 			exitCode: 125,
@@ -25,7 +25,7 @@ describe('prettyError', () => {
 
 	it('recurses into the cause chain so wrappers expose root details', () => {
 		const root = new DockerError({
-			op: 'docker run',
+			phase: 'docker run',
 			message: 'docker run — exit 125 — stderr: pull access denied',
 			stderr: 'pull access denied for mystenlabs/sui-tools',
 			exitCode: 125,
@@ -45,7 +45,7 @@ describe('prettyError', () => {
 
 	it('chains three levels deep without flattening the middle hop', () => {
 		const docker = new DockerError({
-			op: 'docker pull',
+			phase: 'docker pull',
 			message: 'docker pull — exit 1 — stderr: rate limit',
 			stderr: 'rate limit',
 			exitCode: 1,
@@ -56,12 +56,12 @@ describe('prettyError', () => {
 			cause: docker,
 		});
 		const outer = new SuiError({
-			phase: 'walrus-bootstrap',
+			phase: 'network-create',
 			message: 'walrus dependency unavailable',
 			cause: walrus,
 		});
 		const rendered = prettyError(outer);
-		expect(rendered).toContain('SuiError (walrus-bootstrap)');
+		expect(rendered).toContain('SuiError (network-create)');
 		expect(rendered).toContain('WalrusError (image)');
 		expect(rendered).toContain('DockerError (docker pull)');
 		expect(rendered).toContain('rate limit');
@@ -76,7 +76,7 @@ describe('prettyError', () => {
 
 	it('renders Effect Cause.fail by recursing into the Fail reason', () => {
 		const docker = new DockerError({
-			op: 'docker run',
+			phase: 'docker run',
 			message: 'docker run — exit 125 — stderr: image not found',
 			stderr: 'image not found',
 			exitCode: 125,
@@ -102,7 +102,7 @@ describe('prettyError', () => {
 	it('truncates oversized stderr to keep the render bounded', () => {
 		const big = 'x'.repeat(20_000);
 		const docker = new DockerError({
-			op: 'docker run',
+			phase: 'docker run',
 			message: 'oversized',
 			stderr: big,
 			exitCode: 1,
@@ -119,7 +119,7 @@ describe('prettyError', () => {
 		// field. Pretty-error walks the chain and surfaces every layer's
 		// structured fields.
 		const docker = new DockerError({
-			op: 'docker run',
+			phase: 'docker run',
 			message: 'pull access denied for mystenlabs/sui-tools',
 			stderr: 'unauthorized',
 			exitCode: 125,
@@ -146,7 +146,7 @@ describe('prettyError', () => {
 describe('causeToJson', () => {
 	it('preserves the full structured chain (DockerError wrapping a SuiError)', () => {
 		const docker = new DockerError({
-			op: 'docker run',
+			phase: 'docker run',
 			message: 'pull access denied',
 			stderr: 'unauthorized',
 			exitCode: 125,
@@ -162,14 +162,14 @@ describe('causeToJson', () => {
 		expect(json.message).toBe('failed to start sui localnet');
 		expect(json.cause).toBeDefined();
 		expect(json.cause!._tag).toBe('DockerError');
-		expect(json.cause!.op).toBe('docker run');
+		expect(json.cause!.phase).toBe('docker run');
 		expect(json.cause!.exitCode).toBe(125);
 		expect(json.cause!.stderr).toBe('unauthorized');
 	});
 
 	it('walks Effect Cause.fail by recursing into the Fail reason', () => {
 		const docker = new DockerError({
-			op: 'docker pull',
+			phase: 'docker pull',
 			message: 'rate limit',
 			exitCode: 1,
 		});
@@ -186,7 +186,7 @@ describe('causeToJson', () => {
 
 	it('truncates oversized stderr the same way prettyError does', () => {
 		const big = 'y'.repeat(20_000);
-		const docker = new DockerError({ op: 'docker run', message: 'oversized', stderr: big });
+		const docker = new DockerError({ phase: 'docker run', message: 'oversized', stderr: big });
 		const json = causeToJson(docker);
 		expect(json.stderr).toContain('[truncated]');
 		expect(json.stderr!.length).toBeLessThan(big.length);
@@ -204,7 +204,7 @@ describe('causeToJson', () => {
 		// `_tag` / `exitCode` / `stderr` without parsing a multi-line
 		// rendered string.
 		const docker = new DockerError({
-			op: 'docker run',
+			phase: 'docker run',
 			message: 'denied',
 			stderr: 'unauthorized',
 			exitCode: 125,

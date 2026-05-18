@@ -6,7 +6,7 @@
 //                                   Context.Service class (typically
 //                                   imported from a `src/services/` tag
 //                                   class like `SuiTag` / `SealKeyServerTag`),
-//                                   mutate it into a yieldable Ref by
+//                                   mutate it into a yieldable LayeredTag by
 //                                   stamping `__layer` / `key` onto it.
 //                                   Multiple factories (`suiLocalnet`,
 //                                   `suiTestnet`, …) can each call
@@ -20,24 +20,9 @@
 //                                   plugins). Internally just creates a
 //                                   throwaway class and calls provide.
 //
-//   composeTag(name, build, inner) — sugar around `tag` for composite
-//                                   primitives that expose a single outer
-//                                   tag whose body yields from inner
-//                                   sibling tags. Use this when you want
-//                                   the inner siblings to surface as
-//                                   engine entries alongside the outer.
-//                                   When you DON'T need a new outer tag
-//                                   (e.g. a multi-interface acquire body
-//                                   like walrusLocalCluster, or one with
-//                                   thin projection layers like
-//                                   sealLocalKeygen), use `composeLayers`
-//                                   directly to assemble the Ref's
-//                                   `__layers` array without inventing a
-//                                   throwaway outer class.
-//
 //   composeLayers({primary, inner, projections}) — assemble a
 //                                   provider-before-consumer ordered
-//                                   layer list for a multi-layer Ref.
+//                                   layer list for a multi-layer LayeredTag.
 //                                   Replaces the comment-heavy hand-
 //                                   rolled `__layers` arrays primitives
 //                                   used to maintain.
@@ -65,6 +50,16 @@ import { prettyError } from '../engine/pretty-error.js';
 export const CurrentTagKey = Context.Reference<string>('@devstack/CurrentTagKey', {
 	defaultValue: () => '',
 });
+
+/**
+ * Unique-symbol brand stamped onto every stack member (the struct
+ * `provide` / `tag` returns). Discriminates a devstack tag from a plain
+ * options object at runtime without resorting to a string-keyed field
+ * check. Lives alongside the existing `__layer` (which remains the
+ * actual Layer producer consumed elsewhere) — the brand exists purely
+ * for type-safe runtime narrowing.
+ */
+export const DevstackTagBrand: unique symbol = Symbol.for('@devstack/tag-brand');
 
 /**
  * Push a sub-phase narration onto the surrounding tag's entry — e.g.
@@ -199,16 +194,16 @@ export const shortId = (id: string): string => {
 	return `${prefix}…${suffix}`;
 };
 
-// User-visible shape of a tag (Ref). Extends Context.Service so it's
+// User-visible shape of a tag (LayeredTag). Extends Context.Service so it's
 // yieldable with the right Effect prototype. Carries R/E as phantom
 // parameters so devstack(...) can verify graph closure.
 /**
  * Type-parameterized tag. `Name` is the tag's identity key, `A` is the
  * value shape consumers `yield*` to receive, `R` and `E` track required
  * services and possible errors. Plugin authors writing dependencies
- * typically use `Ref<any, YourShape, any, any>`.
+ * typically use `LayeredTag<any, YourShape, any, any>`.
  */
-export interface Ref<Name extends string, A, R = never, E = never> extends Context.Service<
+export interface LayeredTag<Name extends string, A, R = never, E = never> extends Context.Service<
 	TagIdentity<Name>,
 	A
 > {
@@ -235,6 +230,11 @@ export interface Ref<Name extends string, A, R = never, E = never> extends Conte
 	readonly __watchPaths?: ReadonlyArray<string>;
 	/** When `true`, the tag does not surface as a TUI row. See `ProvideOptions.hidden`. */
 	readonly __hidden?: boolean;
+	/** Unique-symbol brand identifying this object as a devstack stack
+	 *  member. Stamped by `provide` / `tag`; checked at runtime by
+	 *  variadic entry points (`devstack(...)`) to discriminate a LayeredTag
+	 *  from a plain options object. */
+	readonly [DevstackTagBrand]: true;
 }
 
 /**
@@ -347,7 +347,7 @@ const summarizeCauseForLog = (cause: Cause.Cause<unknown>): string => prettyErro
 // Minimum surface we need from a Context.Service class to build a Layer
 // against it: a Context.Key (Layer.effect's first arg) plus the runtime
 // `key: string` we read in withEngineLifecycle. Both `provide`'s
-// `TagClass` and `Ref` shapes satisfy this.
+// `TagClass` and `LayeredTag` shapes satisfy this.
 type AnyTagClass = Context.Key<any, any> & { readonly key: string };
 
 /**
@@ -362,7 +362,7 @@ type AnyTagClass = Context.Key<any, any> & { readonly key: string };
  * applied, but no new tag class is created — the caller owns the tag.
  *
  * `provide` mutates `TagClass` via `Object.assign` so the canonical
- * Context.Service class itself doubles as a yieldable `Ref` — gaining
+ * Context.Service class itself doubles as a yieldable `LayeredTag` — gaining
  * `__layer` / `key` / `__kind` / `__displayTitle` / `__watchPaths` while
  * keeping its `[Symbol.iterator]` (so `yield* TagClass` continues to
  * work). One canonical tag per stack means one provide call per
@@ -397,7 +397,8 @@ export const provide = <T extends AnyTagClass, A, E = never, R = never>(
 		__displayTitle?: string;
 		__watchPaths?: ReadonlyArray<string>;
 		__hidden?: boolean;
-	} = { __layer: layer, key: TagClass.key };
+		[DevstackTagBrand]: true;
+	} = { __layer: layer, key: TagClass.key, [DevstackTagBrand]: true as const };
 	if (options.kind !== undefined) extras.__kind = options.kind;
 	if (options.displayTitle !== undefined) extras.__displayTitle = options.displayTitle;
 	if (options.watch !== undefined && options.watch.length > 0) {
@@ -410,8 +411,9 @@ export const provide = <T extends AnyTagClass, A, E = never, R = never>(
 
 // Optional knobs for `tag`. `extraLayers` lets composite primitives
 // surface their inner tags' layers without the caller having to know
-// about the `__layers` field. Prefer `composeTag` over passing this by
-// hand — it's the same shape but with the inner-tag flattening built in.
+// about the `__layers` field. Prefer `composeLayers` for primitives
+// that compose multiple inner tags into a single LayeredTag — it returns the
+// `__layers` array directly without an intermediary outer-tag class.
 // `kind` + `display` flow through to the engine for TUI sectioning.
 export interface TagOptions<A> extends ProvideOptions<A> {
 	readonly extraLayers?: ReadonlyArray<Layer.Layer<any, any, any>>;
@@ -422,14 +424,14 @@ export interface TagOptions<A> extends ProvideOptions<A> {
  * NOT implementing a shared interface (per-account tags from `Account()`,
  * custom plugins, `Action`, etc.). For factories that target an
  * interface tag class in `src/services/` (e.g. `SuiTag`, `SealKeyServerTag`),
- * use {@link provide} instead. For composites that build inner tags
- * inline, use {@link composeTag}.
+ * use {@link provide} instead. For composites that aggregate multiple
+ * inner tags into one LayeredTag, use {@link composeLayers}.
  */
 export const tag = <const Name extends string, A, E = never, R = never>(
 	name: Name,
 	build: Effect.Effect<A, E, R>,
 	options: TagOptions<A> = {},
-): Ref<Name, A, Exclude<R, Scope.Scope>, E> => {
+): LayeredTag<Name, A, Exclude<R, Scope.Scope>, E> => {
 	class T extends Context.Service<TagIdentity<Name>, A>()(name as Name) {}
 	const provideOpts: ProvideOptions<A> = {
 		...(options.kind !== undefined ? { kind: options.kind } : {}),
@@ -451,7 +453,7 @@ export const tag = <const Name extends string, A, E = never, R = never>(
 		__layer,
 	];
 	// The Object.assign result is typed as the throwaway `typeof T`, which
-	// TS can't bridge to `Ref<Name, …>` even though both share the
+	// TS can't bridge to `LayeredTag<Name, …>` even though both share the
 	// same `TagIdentity<Name>`. Funnel through `unknown` to land on the
 	// public type — the runtime shape is identical.
 	const extras: {
@@ -462,10 +464,12 @@ export const tag = <const Name extends string, A, E = never, R = never>(
 		__displayTitle?: string;
 		__watchPaths?: ReadonlyArray<string>;
 		__hidden?: boolean;
+		[DevstackTagBrand]: true;
 	} = {
 		__layer,
 		__layers,
 		key,
+		[DevstackTagBrand]: true as const,
 	};
 	if (options.kind !== undefined) extras.__kind = options.kind;
 	if (options.displayTitle !== undefined) extras.__displayTitle = options.displayTitle;
@@ -473,52 +477,13 @@ export const tag = <const Name extends string, A, E = never, R = never>(
 		extras.__watchPaths = options.watch;
 	}
 	if (options.hidden === true) extras.__hidden = true;
-	return Object.assign(T, extras) as unknown as Ref<Name, A, Exclude<R, Scope.Scope>, E>;
-};
-
-// composeTag — `tag` for composite primitives. Pass the inner tags
-// the body yields; the returned tag's `__layers` includes its own layer
-// plus the flattened transitive layers of every inner tag, so
-// devstack(...) picks them all up from a single stack-member entry.
-//
-// The inner-tag yields inside `build` still need their R channel
-// satisfied — that happens at Layer.build time via mergeAll, exactly as
-// it does for tags listed at the top level of `config.stack`. composeTag
-// just makes sure those layers actually reach mergeAll.
-/**
- * Composite-tag helper. Aggregates inner tags' `__layers` into the outer
- * tag's transitive layer list. Use this when you need a single outer tag
- * whose body yields from inner sibling tags AND you want the siblings to
- * surface as engine entries alongside the outer. For multi-interface
- * acquire bodies (a single body producing several interface layers via
- * `Layer.effectContext` or thin projection layers), use
- * {@link composeLayers} directly — it assembles the `__layers` array
- * without inventing a throwaway outer tag class.
- *
- * The outer tag is built via `tag` so it carries its own throwaway
- * identity.
- */
-export const composeTag = <const Name extends string, A, E = never, R = never>(
-	name: Name,
-	build: Effect.Effect<A, E, R>,
-	innerTags: ReadonlyArray<HasLayers>,
-	options: ProvideOptions<A> = {},
-): Ref<Name, A, Exclude<R, Scope.Scope>, E> => {
-	const extraLayers = flattenInnerLayers(innerTags);
-	const merged: TagOptions<A> = {
-		extraLayers,
-		...(options.kind !== undefined ? { kind: options.kind } : {}),
-		...(options.display !== undefined ? { display: options.display } : {}),
-		...(options.displayTitle !== undefined ? { displayTitle: options.displayTitle } : {}),
-		...(options.lifecycle !== undefined ? { lifecycle: options.lifecycle } : {}),
-	};
-	return tag(name, build, merged);
+	return Object.assign(T, extras) as unknown as LayeredTag<Name, A, Exclude<R, Scope.Scope>, E>;
 };
 
 // Anything that exposes a layer or a transitive layer list — the shape
-// `composeLayers` and `composeTag` accept for the `inner` slot. Tags
-// produced by `provide` / `tag` / `composeTag` satisfy this, as do
-// Refs returned by composite primitives.
+// `composeLayers` accepts for the `inner` slot. Tags produced by
+// `provide` / `tag` satisfy this, as do LayeredTags returned by composite
+// primitives.
 interface HasLayers {
 	readonly __layer?: Layer.Layer<any, any, any>;
 	readonly __layers?: ReadonlyArray<Layer.Layer<any, any, any>>;
@@ -546,7 +511,7 @@ export interface ComposeLayersOptions {
 	 *  conditional inclusion (`[image, source, publish]` where some are
 	 *  only defined on certain branches) without a separate `push` loop. */
 	readonly inner?: ReadonlyArray<HasLayers | undefined>;
-	/** The primary layer for this Ref. Goes after `inner` (so its body
+	/** The primary layer for this LayeredTag. Goes after `inner` (so its body
 	 *  can consume inner-tag services) but before `projections`. */
 	readonly primary: Layer.Layer<any, any, any>;
 	/** Thin projection layers that read from `primary` to satisfy
@@ -558,7 +523,7 @@ export interface ComposeLayersOptions {
 
 /**
  * Build a provider-before-consumer ordered `__layers` array for a
- * multi-layer Ref. Replaces the comment-heavy hand-rolled
+ * multi-layer LayeredTag. Replaces the comment-heavy hand-rolled
  * `[...inner.__layers, primary, ...projections]` pattern in
  * walrus / seal / deepbook with a single call.
  *
@@ -578,6 +543,6 @@ export const composeLayers = (
 ];
 
 // Phantom extractors for devstack(...).
-export type TagRequires<T> = T extends Ref<any, any, infer R, any> ? R : never;
-export type TagErrors<T> = T extends Ref<any, any, any, infer E> ? E : never;
-export type TagProvides<T> = T extends Ref<infer N, any, any, any> ? TagIdentity<N> : never;
+export type TagRequires<T> = T extends LayeredTag<any, any, infer R, any> ? R : never;
+export type TagErrors<T> = T extends LayeredTag<any, any, any, infer E> ? E : never;
+export type TagProvides<T> = T extends LayeredTag<infer N, any, any, any> ? TagIdentity<N> : never;

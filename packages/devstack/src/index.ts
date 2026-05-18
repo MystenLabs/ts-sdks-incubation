@@ -2,13 +2,13 @@
 //
 // Three pillars surface here:
 //
-// 1. **`devstack(...refs)`** — the canonical entry. Variadic over Refs;
+// 1. **`devstack(...refs)`** — the canonical entry. Variadic over LayeredTags;
 //    auto-fills default providers (`Sui()` when missing); writes the
 //    manifest sidecar. Returns a runnable handle with `run()`, `runMain()`,
 //    and `layer` for Effect-native consumers.
-// 2. **Ref factories** — `Sui`, `Seal`, `Walrus`, `Deepbook`,
+// 2. **LayeredTag factories** — `Sui`, `Seal`, `Walrus`, `Deepbook`,
 //    `DeepbookMarketMaker`, `Account`, `Package`, `Action`, `Dev`,
-//    `Wallet`, `Codegen`. Each returns a typed Ref usable as a
+//    `Wallet`, `Codegen`. Each returns a typed LayeredTag usable as a
 //    cross-reference in other factories and yieldable inside Effects.
 // 3. **Runtime accessors** — `Devstack` Effect Service for in-Effect
 //    reads, `fromManifest` for browser / non-Effect consumers, plus the
@@ -27,7 +27,7 @@ export {
 // without dipping into the engine subpath.
 export type { DevstackHandle } from './engine/supervisor.js';
 
-// ── Ref factories ──
+// ── LayeredTag factories ──
 // `Sui`, `Account`, `Package`, `DeepbookMarketMaker`, `Faucet` re-export
 // both the factory function (value) and the shape (type) under the same
 // name; TS's separate type/value namespaces lets them coexist.
@@ -59,13 +59,16 @@ export {
 	Faucet,
 	type FaucetOptions,
 	FaucetTag,
-	type Ref,
-	type AccountRef,
-	type PackageRef,
+	type LayeredTag,
 } from './services/index.js';
 
 // ── Runtime accessor ──
 export { Devstack, DevstackLive } from './runtime/service.js';
+// Wire-level HTTP path contract for the wallet-app server. Re-exported
+// for sibling packages (notably `@mysten-incubation/dev-wallet`) that
+// need to read these paths back to construct fetch URLs against a
+// running devstack.
+export { WalletHttpPath, type WalletHttpPathValue } from './services/wallet/protocol.js';
 export { fromManifest } from './runtime/manifest-loader.js';
 export type {
 	Manifest,
@@ -91,7 +94,7 @@ export type {
 // need a runtime-resolved coin type) can reference it by ref. The new
 // `Package({ coins })` field auto-registers in the common case; reach
 // for `registerCoin` when you need to register a coin from an already-
-// published package or want a separate Ref to compose against.
+// published package or want a separate LayeredTag to compose against.
 export {
 	registerCoin,
 	type RegisterCoinOptions,
@@ -102,17 +105,16 @@ export {
 // declarative `capture:` field; these stay for advanced callbacks that
 // need the full programmatic form.
 export { pickCreatedByTypeIncludes, pickCreatedByTypeSuffix } from './engine/sui-helpers.js';
-// Canonical deployment registry (testnet/mainnet seal/walrus/deepbook
-// package ids). The `Seal()`/`Walrus()`/`Deepbook()` factories consult
-// this internally when the resolved network is testnet/mainnet —
-// surfaced here for `override:` use cases and custom factories.
-export {
-	knownDeployments,
-	type DeepbookDeployment,
-	type KnownDeployments,
-	type KnownNetwork,
-	type SealDeployment,
-	type WalrusDeployment,
+// Canonical deployment registry per-network sub-shapes. The
+// `knownDeployments` value + `KnownDeployments` / `KnownNetwork` types
+// it's indexed by live under `/advanced` — that's plugin-author surface
+// for custom factories that need to default the `network:` shape. The
+// per-service deployment record types stay here so app code can spell
+// out `override:` literals against them without reaching into `/advanced`.
+export type {
+	DeepbookDeployment,
+	SealDeployment,
+	WalrusDeployment,
 } from './engine/known-deployments.js';
 
 // ── Tagged error types ──
@@ -130,6 +132,8 @@ export {
 	WalletAppError,
 	WalrusError,
 } from './engine/errors.js';
+export { CodegenError } from './codegen/errors.js';
+export { FaucetRequestError } from './services/faucet/index.js';
 
 // ── Shared utility types ──
 // `Transaction` is `@mysten/sui/transactions`'s builder — re-exported
@@ -148,10 +152,10 @@ export type {
 // ── Interface tag classes ──
 // Canonical Context.Service tags every factory's underlying Layer
 // targets. Used inside `Action.build`/`extras` callbacks when the user
-// wants the narrow contract shape rather than the composite Ref shape
+// wants the narrow contract shape rather than the composite LayeredTag shape
 // (e.g. `yield* SealKeyServerTag` for just the key-server URL + object id,
 // vs `yield* seal` for the full composite). Rare in user configs; most
-// of the time you yield the local Ref instead.
+// of the time you yield the local LayeredTag instead.
 //
 // Admin-side tags (`WalrusAdminTag`, `SealKeyManagerTag`,
 // `DeepbookAdminTag`) live under `/advanced` — those are privileged
@@ -171,8 +175,8 @@ export {
 	type DeepbookCore,
 } from './services/index.js';
 
-// `TagIdentity<Name>` is the per-name structural Service type Refs
-// carry on their `R` channel. Re-exported so consumers of yielded Refs
+// `TagIdentity<Name>` is the per-name structural Service type LayeredTags
+// carry on their `R` channel. Re-exported so consumers of yielded LayeredTags
 // get nameable inferred types — without it, `tsc --declaration`
 // (composite projects, the example apps' typecheck mode) trips TS2742.
 export type { TagIdentity } from './advanced/tag.js';

@@ -6,7 +6,7 @@ import { Effect } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import type { Scope } from 'effect/Scope';
 import { DockerError } from '../../engine/errors.js';
-import { Identity } from '../identity.js';
+import { DockerLabel, Identity } from '../identity.js';
 import { composeProjectName, runCapturing, runCapturingOrFail } from './core.js';
 
 export const networkCreate = (
@@ -62,8 +62,8 @@ export const networkCreate = (
 		createArgs.push('--label', `com.docker.compose.project=${composeProject}`);
 		createArgs.push('--label', `com.docker.compose.network=${name}`);
 		createArgs.push('--label', `com.docker.compose.version=2.0.0`);
-		createArgs.push('--label', `devstack.app=${identity.app}`);
-		createArgs.push('--label', `devstack.stack=${identity.stack}`);
+		createArgs.push('--label', `${DockerLabel.APP}=${identity.app}`);
+		createArgs.push('--label', `${DockerLabel.STACK}=${identity.stack}`);
 		if (options?.subnet !== undefined) {
 			createArgs.push('--subnet', options.subnet);
 			if (options.gateway !== undefined) {
@@ -110,7 +110,7 @@ export const networkConnect = (
 		}
 		return yield* Effect.fail(
 			new DockerError({
-				op: 'docker network connect',
+				phase: 'docker network connect',
 				message: `failed to connect container ${containerId} to network '${networkName}': ${captured.stderr.trim()}`,
 				stdout: captured.stdout,
 				stderr: captured.stderr,

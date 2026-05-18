@@ -13,7 +13,7 @@
 // readiness on localnet.
 
 import { Context, Effect, Layer, Ref as EffectRef, Schedule, Schema } from 'effect';
-import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
+import { SuiGrpcClient } from '@mysten/sui/grpc';
 import * as Docker from '../engine/docker.js';
 import { routerEntrypoint } from '../engine/docker/router.js';
 import type { Endpoint } from '../engine/endpoint.js';
@@ -24,7 +24,7 @@ import { routerHostname, routerId } from '../engine/router-hostname.js';
 import { SuiBuildImage } from '../engine/sui-cli.js';
 import { SuiBuildContainerLive } from '../engine/sui-build-container.js';
 import { dockerImage } from '../advanced/plugin-author/index.js';
-import { provide, setPhase, type Ref } from '../advanced/tag.js';
+import { provide, setPhase, type LayeredTag } from '../advanced/tag.js';
 import type { StackMember } from '../engine/supervisor.js';
 import { SuiError } from '../engine/errors.js';
 import { resolveNetwork } from '../engine/network.js';
@@ -102,6 +102,16 @@ export type { SuiNetwork } from '../engine/network.js';
  *    read `.host`; container-side callers (one-shot scripts, key-
  *    server config files, walrus storage-node env) read `.container`
  *    and attach to one of `.containerNetworks`.
+ *
+ *    Asymmetry note: the INPUT options (`Sui*Options.rpcUrl`,
+ *    `faucetUrl`, `graphqlUrl`) take bare URL strings — that's all the
+ *    caller can supply for an external chain. The OUTPUT `rpc` /
+ *    `faucet` / `graphql` fields on this contract are structured
+ *    `Endpoint`s because devstack-managed services additionally carry
+ *    a docker-DNS form and the per-stack networks on which it
+ *    resolves. To recover a URL string from the output, read
+ *    `endpoint.host` (host-side) or use `endpointUrl(endpoint, ctx)`
+ *    from `../engine/endpoint.js` for context-aware selection.
  *  - `faucet` is optional because mainnet has no faucet and testnet's
  *    faucet may be unreachable in restricted networks; localnet always
  *    surfaces one.
@@ -121,7 +131,7 @@ export interface Sui {
 	readonly rpc: Endpoint;
 	readonly faucet?: Endpoint;
 	readonly graphql?: Endpoint;
-	readonly client: SuiJsonRpcClient;
+	readonly client: SuiGrpcClient;
 	readonly chainId: string;
 	readonly waitForTransactionsReady: () => Effect.Effect<void, SuiError>;
 	/**
@@ -140,9 +150,9 @@ export interface Sui {
 
 /** Canonical Sui service tag. Named `SuiTag` (not `Sui`) so the factory
  *  `Sui(opts?)` in this file can take the public-surface name. The
- *  Context key (`'@devstack/Sui'`) is unchanged, so any layer keyed
+ *  Context key (`'@devstack/SuiTag'`) is unchanged, so any layer keyed
  *  against the legacy `Sui` class identity continues to resolve. */
-export class SuiTag extends Context.Service<SuiTag, Sui>()('@devstack/Sui') {}
+export class SuiTag extends Context.Service<SuiTag, Sui>()('@devstack/SuiTag') {}
 
 /** Runtime-validation mirror of `Endpoint`. Used by `SuiSchema`. */
 export const EndpointSchema = Schema.Struct({
@@ -292,10 +302,10 @@ const buildWaitForTransactionsReady = (
 // indefinitely; failing at 30s surfaces as a typed `SuiError` whose
 // message is actionable instead of an inscrutable hang.
 const FETCH_CHAIN_ID_TIMEOUT_MS = 30_000;
-const fetchChainId = (client: SuiJsonRpcClient): Effect.Effect<string, SuiError> =>
+const fetchChainId = (client: SuiGrpcClient): Effect.Effect<string, SuiError> =>
 	Effect.gen(function* () {
 		const chainId = yield* Effect.tryPromise({
-			try: () => client.getChainIdentifier(),
+			try: () => client.core.getChainIdentifier().then((r) => r.chainIdentifier),
 			catch: (cause) =>
 				new SuiError({
 					phase: 'fetch-chainId',
@@ -493,7 +503,7 @@ const buildLocalnet = (options: SuiLocalnetOptions): StackMember => {
 			const rpcUrl = options.rpcUrl;
 			const faucetUrl = options.faucetUrl;
 			const graphqlUrl = options.graphqlUrl;
-			const client = new SuiJsonRpcClient({ url: rpcUrl, network: 'localnet' });
+			const client = new SuiGrpcClient({ baseUrl: rpcUrl, network: 'localnet' });
 			yield* publishEndpoint({ name: EndpointName.SUI_RPC, url: rpcUrl, kind: 'rpc' });
 			if (faucetUrl !== undefined) {
 				yield* publishEndpoint({
@@ -690,7 +700,7 @@ const buildLocalnet = (options: SuiLocalnetOptions): StackMember => {
 		const rpcUrl = `http://${rpcHostname}:${rpcEntrypointPort}`;
 		const faucetUrl = `http://${faucetHostname}:${faucetEntrypointPort}`;
 		const graphqlUrl = `http://${graphqlHostname}:${graphqlEntrypointPort}/graphql`;
-		const client = new SuiJsonRpcClient({ url: rpcUrl, network: 'localnet' });
+		const client = new SuiGrpcClient({ baseUrl: rpcUrl, network: 'localnet' });
 
 		// Gate `SuiTag` readiness on ALL three endpoints actually serving:
 		//   - JSON-RPC: real method call (bare GET returns 405)
@@ -709,7 +719,7 @@ const buildLocalnet = (options: SuiLocalnetOptions): StackMember => {
 		const seen = yield* EffectRef.make(new Set<ProbeKey>());
 		const markSeen = (k: ProbeKey) => EffectRef.update(seen, (s) => new Set(s).add(k));
 		const rpcProbe = Effect.tryPromise({
-			try: () => client.getChainIdentifier(),
+			try: () => client.core.getChainIdentifier(),
 			catch: (cause) => new Error(`rpc: ${stringifyCause(cause)}`),
 		}).pipe(
 			Effect.tap(() => markSeen('rpc')),
@@ -899,7 +909,7 @@ const buildTestnet = (options: SuiTestnetOptions): StackMember => {
 		const rpcUrl = options.rpcUrl ?? 'https://fullnode.testnet.sui.io:443';
 		const faucetUrl = options.faucetUrl ?? 'https://faucet.testnet.sui.io';
 		const graphqlUrl = options.graphqlUrl ?? 'https://sui-testnet.mystenlabs.com/graphql';
-		const client = new SuiJsonRpcClient({ url: rpcUrl, network: 'testnet' });
+		const client = new SuiGrpcClient({ baseUrl: rpcUrl, network: 'testnet' });
 		yield* publishEndpoint({ name: EndpointName.SUI_RPC, url: rpcUrl, kind: 'rpc' });
 		yield* publishEndpoint({
 			name: EndpointName.SUI_FAUCET,
@@ -952,7 +962,7 @@ const buildMainnet = (options: SuiMainnetOptions): StackMember => {
 	const build = Effect.fn('suiMainnet')(function* () {
 		const rpcUrl = options.rpcUrl ?? 'https://fullnode.mainnet.sui.io:443';
 		const graphqlUrl = options.graphqlUrl ?? 'https://sui-mainnet.mystenlabs.com/graphql';
-		const client = new SuiJsonRpcClient({ url: rpcUrl, network: 'mainnet' });
+		const client = new SuiGrpcClient({ baseUrl: rpcUrl, network: 'mainnet' });
 		yield* publishEndpoint({ name: EndpointName.SUI_RPC, url: rpcUrl, kind: 'rpc' });
 		yield* publishEndpoint({
 			name: EndpointName.SUI_GRAPHQL,
@@ -999,11 +1009,11 @@ const buildCustom = (options: SuiCustomOptions): StackMember => {
 		const faucetUrl = options.faucetUrl;
 		const graphqlUrl = options.graphqlUrl;
 		const network = options.network ?? 'custom';
-		// `SuiJsonRpcClient` expects a known `network` literal; pass
-		// 'localnet' as the wire-level default to suppress its internal
-		// chain-id mismatch warning. The surface-level `network` we return
-		// in `Sui` is the caller-supplied label.
-		const client = new SuiJsonRpcClient({ url: rpcUrl, network: 'localnet' });
+		// `SuiGrpcClient` accepts arbitrary `network` strings (the
+		// `Network` type is `... | (string & {})`), so we pass the
+		// caller-supplied label directly. The surface-level `network`
+		// we return in `Sui` is the same string.
+		const client = new SuiGrpcClient({ baseUrl: rpcUrl, network });
 		yield* publishEndpoint({ name: EndpointName.SUI_RPC, url: rpcUrl, kind: 'rpc' });
 		if (faucetUrl !== undefined) {
 			yield* publishEndpoint({
@@ -1050,7 +1060,7 @@ const buildCustom = (options: SuiCustomOptions): StackMember => {
 // Factory
 // -----------------------------------------------------------------------------
 
-/** The canonical sui factory. Returns a Ref that's both an Effect Layer
+/** The canonical sui factory. Returns a LayeredTag that's both an Effect Layer
  *  and an Effect tag (`yield* Sui` gives the `Sui`).
  *
  *  Defaults to whatever `DEVSTACK_NETWORK` resolves to (`localnet` when
@@ -1058,7 +1068,7 @@ const buildCustom = (options: SuiCustomOptions): StackMember => {
  *  config option both flow through that env var. Pass `{ network: {
  *  rpc, faucet } }` for a custom RPC (corporate fullnode, pinned fork);
  *  pass `{ network: 'testnet' }` to pin in code regardless of env var. */
-export const Sui = (opts: SuiOptions = {}): Ref<'@devstack/Sui', Sui> => {
+export const Sui = (opts: SuiOptions = {}): LayeredTag<'@devstack/SuiTag', Sui> => {
 	const net = opts.network ?? resolveNetwork();
 	let member: StackMember;
 	if (typeof net === 'object') {
@@ -1074,8 +1084,8 @@ export const Sui = (opts: SuiOptions = {}): Ref<'@devstack/Sui', Sui> => {
 	} else {
 		member = buildLocalnet(opts.localnet ?? {});
 	}
-	return Object.assign(member, { __kind: 'service' as const }) as unknown as Ref<
-		'@devstack/Sui',
+	return Object.assign(member, { __kind: 'service' as const }) as unknown as LayeredTag<
+		'@devstack/SuiTag',
 		Sui
 	>;
 };

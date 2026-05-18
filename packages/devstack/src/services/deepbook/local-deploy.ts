@@ -8,9 +8,10 @@
 import * as crypto from 'node:crypto';
 import { Effect, Layer, Option } from 'effect';
 import { Transaction } from '@mysten/sui/transactions';
-import { tag, provide, type Ref } from '../../advanced/tag.js';
+import { tag, provide, type LayeredTag } from '../../advanced/tag.js';
 import { SuiTag } from '../sui.js';
-import { publishMove, pickCreatedByTypeSuffix } from '../package/internal.js';
+import { publishMove } from '../package/internal.js';
+import { pickCreatedByTypeSuffix } from '../../engine/sui-helpers.js';
 import { publishDeepbookState, publishPackage } from '../../engine/registries.js';
 import { StateStore } from '../../engine/state-store.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
@@ -106,7 +107,7 @@ export interface DeepbookLocalDeployOptions<
 	TPools extends ReadonlyArray<DeepbookPoolSpec>,
 > {
 	readonly name?: Name;
-	readonly signer: Ref<any, Account, any, any>;
+	readonly signer: LayeredTag<any, Account, any, any>;
 	/** Filesystem path to a vendored deepbook-v3 Move package. The
 	 *  `@mysten/deepbook-v3` npm package does not currently ship compiled
 	 *  bytecode + dependency manifest in a form we can submit directly via
@@ -115,7 +116,7 @@ export interface DeepbookLocalDeployOptions<
 	 *  submodule). */
 	readonly movePackagePath?: string;
 	readonly pools?: TPools;
-	readonly dependsOn?: ReadonlyArray<Ref<any, any, any, any>>;
+	readonly dependsOn?: ReadonlyArray<LayeredTag<any, any, any, any>>;
 }
 
 // Local-deploy carries the rich per-pool record (tick/lot/min) so the
@@ -435,11 +436,8 @@ export const deepbookLocalDeploy = <
 						// objectType keeps multi-pool tx output deterministic.
 						for (const { spec, base, quote } of resolvedSpecs) {
 							const expected = `${packageId}::pool::Pool<${base}, ${quote}>`;
-							const found = result.objectChanges.find(
-								(c): c is Extract<SuiObjectChange, { type: 'created' }> =>
-									c.type === 'created' && 'objectType' in c && c.objectType === expected,
-							);
-							if (found === undefined) {
+							const poolId = pickCreatedByTypeSuffix(result.objectChanges, expected);
+							if (poolId === undefined) {
 								return yield* Effect.fail(
 									new DeepbookError({
 										phase: 'create-pools',
@@ -451,7 +449,7 @@ export const deepbookLocalDeploy = <
 							}
 							pools[spec.name] = {
 								name: spec.name,
-								poolId: found.objectId,
+								poolId,
 								base,
 								quote,
 								tickSize: spec.tickSize,
@@ -622,11 +620,8 @@ export const deepbookLocalDeploy = <
 					),
 				);
 				const bmType = `${db.packageId}::balance_manager::BalanceManager`;
-				const created = result.objectChanges.find(
-					(c): c is Extract<SuiObjectChange, { type: 'created' }> =>
-						c.type === 'created' && 'objectType' in c && c.objectType === bmType,
-				);
-				if (created === undefined) {
+				const createdId = pickCreatedByTypeSuffix(result.objectChanges, bmType);
+				if (createdId === undefined) {
 					return yield* Effect.fail(
 						new DeepbookError({
 							phase: 'market-maker-tick',
@@ -636,7 +631,7 @@ export const deepbookLocalDeploy = <
 						}),
 					);
 				}
-				balanceManagerId = created.objectId;
+				balanceManagerId = createdId;
 				return balanceManagerId;
 			});
 

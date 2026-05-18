@@ -24,6 +24,14 @@ export { Devstack, DevstackLive, type DevstackShape, gatherManifest } from './se
 // factories publish into the registry and consumers read back.
 export { EndpointName, type EndpointNameValue } from './endpoint-names.js';
 
+// 1b'. Wallet-app HTTP path contract. Co-located with `EndpointName` —
+// `EndpointName.WALLET_APP` names the endpoint; `WalletHttpPath` names
+// the routes the endpoint exposes.
+export {
+	WalletHttpPath,
+	type WalletHttpPathValue,
+} from '../services/wallet/protocol.js';
+
 // 1c. Extras service — re-exported from engine/ so plugin authors keep
 // importing it from the runtime barrel even though it lives in engine/.
 export {

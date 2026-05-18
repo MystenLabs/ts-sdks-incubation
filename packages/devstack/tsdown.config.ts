@@ -54,7 +54,12 @@ const main = defineConfig({
 // Track at https://github.com/rolldown/rolldown — search for issues
 // matching "AcceptedPlugin" or "postcss d.mts" before re-attempting.
 const fixtures = defineConfig({
-	entry: ['src/vitest/index.ts', 'src/playwright/index.ts', 'src/dapp-kit/index.ts'],
+	entry: [
+		'src/vitest/index.ts',
+		'src/playwright/index.ts',
+		'src/vite/index.ts',
+		'src/dapp-kit/index.ts',
+	],
 	format: 'esm',
 	dts: false,
 	outDir: 'dist',

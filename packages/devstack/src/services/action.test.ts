@@ -17,7 +17,7 @@ import { Action } from './action.js';
 import { SuiTag, type Sui } from './sui.js';
 import { StateStore, type StateStoreShape } from '../engine/state-store.js';
 import type { Account, SuiObjectChange, TxResult } from '../engine/shared.js';
-import { tag, type Ref as TagRef } from '../advanced/tag.js';
+import { tag, type LayeredTag } from '../advanced/tag.js';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -125,20 +125,20 @@ const makeMockSigner = (address: string): { signer: Account; signCalls: Array<un
 	return { signer, signCalls };
 };
 
-// Action's `opts.signer` expects a yieldable Ref. `tag(...)` produces
+// Action's `opts.signer` expects a yieldable LayeredTag. `tag(...)` produces
 // one without dragging in the AccountRegistry.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const accountRef = (signer: Account): TagRef<any, Account, never, never> =>
-	tag('test-account', Effect.succeed(signer)) as unknown as TagRef<any, Account, never, never>;
+const accountRef = (signer: Account): LayeredTag<any, Account, never, never> =>
+	tag('test-account', Effect.succeed(signer)) as unknown as LayeredTag<any, Account, never, never>;
 
 // Build a full provided layer for the action and yield it. Encapsulates
 // the layer-composition boilerplate so each test reads as
 // "given action X, when acquired with these layers, then ...".
 //
 // `action` is typed as `any` because the per-name TagIdentity brand
-// (`Ref<'k', ...>` vs `Ref<'regen', ...>`) varies across tests; tightening
+// (`LayeredTag<'k', ...>` vs `LayeredTag<'regen', ...>`) varies across tests; tightening
 // it would force every caller to re-annotate. `accRef` mirrors that
-// looseness since it's the same kind of Ref.
+// looseness since it's the same kind of LayeredTag.
 const acquireAction = <A>(
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	action: any,
@@ -185,9 +185,9 @@ describe('Action — cache miss', () => {
 
 			expect(buildRuns).toBe(1);
 			expect(signCalls).toHaveLength(1);
-			// Persisted under `tx/<name>/<chainId>/<address>/<userKey>`.
+			// Persisted under `tx/v1/<name>/<chainId>/<address>/<userKey>`.
 			expect(state.puts).toHaveLength(1);
-			expect(state.puts[0]!.key).toBe(`tx/do-thing/mock-chain-A/${signer.address}/k1`);
+			expect(state.puts[0]!.key).toBe(`tx/v1/do-thing/mock-chain-A/${signer.address}/k1`);
 			expect((state.puts[0]!.value as TxResult).digest).toBe(result.digest);
 		}),
 	);
@@ -292,7 +292,7 @@ describe('Action — cache hit', () => {
 				],
 				balanceChanges: undefined,
 			};
-			state.seed(`tx/cached-stale/mock-chain-A/${signer.address}/stable`, cached);
+			state.seed(`tx/v1/cached-stale/mock-chain-A/${signer.address}/stable`, cached);
 
 			const sui = mockSuiLayer({
 				getObject: () => {
@@ -307,7 +307,7 @@ describe('Action — cache hit', () => {
 			expect(buildRuns).toBe(1);
 			expect(signCalls).toHaveLength(1);
 			// Evict + re-persist.
-			expect(state.removes).toContain(`tx/cached-stale/mock-chain-A/${signer.address}/stable`);
+			expect(state.removes).toContain(`tx/v1/cached-stale/mock-chain-A/${signer.address}/stable`);
 			expect(state.puts).toHaveLength(1);
 		}),
 	);
@@ -331,8 +331,8 @@ describe('Action — cache key invalidation', () => {
 
 			expect(signCalls).toHaveLength(2);
 			expect(state.puts).toHaveLength(2);
-			expect(state.puts[0]!.key).toBe(`tx/k/mock-chain-A/${signer.address}/v1`);
-			expect(state.puts[1]!.key).toBe(`tx/k/mock-chain-A/${signer.address}/v2`);
+			expect(state.puts[0]!.key).toBe(`tx/v1/k/mock-chain-A/${signer.address}/v1`);
+			expect(state.puts[1]!.key).toBe(`tx/v1/k/mock-chain-A/${signer.address}/v2`);
 		}),
 	);
 
@@ -366,8 +366,8 @@ describe('Action — cache key invalidation', () => {
 
 			expect(signCalls).toHaveLength(2);
 			expect(state.puts.map((p) => p.key)).toEqual([
-				`tx/regen/chain-A/${signer.address}/same`,
-				`tx/regen/chain-B/${signer.address}/same`,
+				`tx/v1/regen/chain-A/${signer.address}/same`,
+				`tx/v1/regen/chain-B/${signer.address}/same`,
 			]);
 		}),
 	);
@@ -398,7 +398,7 @@ describe('Action — cacheKey as Effect', () => {
 
 			expect(yield* Ref.get(counter)).toBe(1);
 			expect(state.puts).toHaveLength(1);
-			expect(state.puts[0]!.key).toBe(`tx/eff-key/mock-chain-A/${signer.address}/eff-derived`);
+			expect(state.puts[0]!.key).toBe(`tx/v1/eff-key/mock-chain-A/${signer.address}/eff-derived`);
 		}),
 	);
 

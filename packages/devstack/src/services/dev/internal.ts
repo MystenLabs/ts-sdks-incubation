@@ -20,7 +20,7 @@ import { drainLinesWithCallback, type OutputLineCallback } from '../../engine/do
 import { routerHostname, routerId } from '../../engine/router-hostname.js';
 import { inheritedHostEnv } from '../../engine/safe-env.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
-import { tag, setPhase, type Ref } from '../../advanced/tag.js';
+import { tag, setPhase, type LayeredTag } from '../../advanced/tag.js';
 import {
 	awaitReady,
 	type HttpReadyProbe,
@@ -79,7 +79,7 @@ export interface HostProcessOptions<Name extends string, E, R> {
 	readonly env?: Record<string, string> | Effect.Effect<Record<string, string>, E, R>;
 	readonly cwd?: string;
 	readonly readyProbe?: ReadyProbe;
-	readonly dependsOn?: ReadonlyArray<Ref<any, any, any, any>>;
+	readonly dependsOn?: ReadonlyArray<LayeredTag<any, any, any, any>>;
 	readonly endpoint?: { readonly name: string; readonly kind?: string };
 	/**
 	 * Optional Traefik router exposure. When set, the primitive
@@ -157,7 +157,7 @@ export const hostProcess = <const Name extends string, E = never, R = never>(
 							Effect.mapError(
 								(cause) =>
 									new HostProcessError({
-										command: options.command,
+										phase: options.command,
 										message: `hostProcess(${options.name}): could not allocate port near ${options.port!.preferred}: ${cause.message}`,
 										cause,
 									}),
@@ -222,7 +222,7 @@ export const hostProcess = <const Name extends string, E = never, R = never>(
 				Effect.mapError(
 					(cause) =>
 						new HostProcessError({
-							command: options.command,
+							phase: options.command,
 							message: `hostProcess: failed to spawn '${options.command}': ${stringifyCause(cause)}`,
 							cause,
 						}),
@@ -290,7 +290,7 @@ export const hostProcess = <const Name extends string, E = never, R = never>(
 					Effect.mapError(
 						(cause) =>
 							new HostProcessError({
-								command: options.command,
+								phase: options.command,
 								message: `hostProcess: ready probe failed for '${options.name}'`,
 								cause,
 							}),
@@ -314,7 +314,7 @@ export const hostProcess = <const Name extends string, E = never, R = never>(
 				if (upstreamPort === undefined) {
 					return yield* Effect.fail(
 						new HostProcessError({
-							command: options.command,
+							phase: options.command,
 							message: `hostProcess(${options.name}): traefik requires either \`port: { preferred }\` or \`traefik.localPort\`.`,
 						}),
 					);
@@ -325,7 +325,7 @@ export const hostProcess = <const Name extends string, E = never, R = never>(
 				if (entrypoint === undefined) {
 					return yield* Effect.fail(
 						new HostProcessError({
-							command: options.command,
+							phase: options.command,
 							message: `hostProcess(${options.name}): router entrypoint '${options.traefik.entrypoint}' not registered`,
 						}),
 					);

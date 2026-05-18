@@ -115,3 +115,49 @@ When creating PRs, follow the template in `.github/PULL_REQUEST_TEMPLATE.md`:
 
 - Include a description of the changes
 - Check the appropriate checkbox in the AI Assistance Notice section
+
+## Engineering style
+
+Three layers of guidance, in order:
+
+1. **Tool-usage skills** — invoke these whenever the trigger matches; they're
+   not optional reading.
+   - `.claude/skills/running-vitest/SKILL.md` — how to run `pnpm test`, filter
+     to a single file/case, iterate on failures without re-running the whole
+     suite, and read browser-test output. Use any time you invoke vitest — the
+     idiomatic flags here are not the vitest defaults.
+2. **Package-specific style** — each package has its own `AGENTS.md` covering
+   its substrate, public-surface rules, and cookbooks. Currently:
+   [`packages/devstack/AGENTS.md`](packages/devstack/AGENTS.md). Read the one
+   for the package you're editing before opening a PR. Package-specific
+   AGENTS.md files name the further skills (e.g. `writing-effect`) that apply
+   inside that package.
+3. **Repo-wide habits** — the short list below. Anything more concrete belongs
+   in a package AGENTS.md, not here.
+
+### Repo-wide habits
+
+- **Reuse before re-implementation.** Grep for the concept first; search costs
+  less than a duplicate. If two callsites already do the same thing inline,
+  extract before adding a third.
+- **Structured errors with identity context.** Errors crossing a module
+  boundary identify *which named thing* they're about (account name, package
+  name, etc.) so the catcher doesn't have to parse the message. The concrete
+  shape (tagged classes, exception subclasses, …) is up to each package's
+  AGENTS.md.
+- **Shared strings are constants.** Any string two modules must agree on
+  becomes an exported constant or a literal-union type, and the value is
+  pinned by a test so a rename surfaces as a test failure.
+- **Validate at boundaries.** File reads, env vars, HTTP bodies, inter-process
+  decodes go through a validator. Internal calls trust their types.
+- **Version persisted state.** Anything written to disk and read back carries
+  a version (in the key, the filename, or a `version` field). New sites start
+  at `v1`. Decode failure becomes a miss + warn, not a crash.
+- **Browser-safe means browser-safe.** No `node:*` imports — direct or
+  transitive — from anything a browser bundle can reach. Split via
+  `package.json` `exports` subpaths, not via docstring claims.
+- **Tests verify contracts.** Round-trip every encode/decode pair. For
+  generated code, have at least one test that actually imports a generated
+  symbol — string-match assertions alone don't prove it compiles.
+- **Prototype-stage discipline.** As covered in "Project status" above: no
+  shims, no `@deprecated`, no v2-alongside-v1. Renames are atomic.

@@ -60,5 +60,23 @@
 				"tsx": "always"
 			}
 		]
-	}
+	},
+	"overrides": [
+		{
+			"files": ["packages/devstack/src/**/*.ts", "packages/dev-wallet/src/**/*.ts"],
+			"rules": {
+				"no-restricted-imports": [
+					"error",
+					{
+						"paths": [
+							{
+								"name": "@mysten/sui/jsonRpc",
+								"message": "Phase -1: devstack + dev-wallet internals use gRPC exclusively. Import from '@mysten/sui/grpc' or '@mysten/sui/client' (transport-neutral types) instead. See packages/devstack/notes/sui-fork-integration.md § Phase -1."
+							}
+						]
+					}
+				]
+			}
+		}
+	]
 }

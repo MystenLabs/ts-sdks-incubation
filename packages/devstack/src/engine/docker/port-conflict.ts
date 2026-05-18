@@ -65,7 +65,7 @@ export const reallocatePortsOnConflict =
 					Effect.mapError(
 						(cause) =>
 							new DockerError({
-								op,
+								phase: op,
 								message: `${op}: could not re-allocate host port near ${hostPort} after port conflict: ${cause.message}`,
 								cause,
 							}),

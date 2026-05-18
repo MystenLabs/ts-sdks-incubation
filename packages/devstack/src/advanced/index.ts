@@ -1,11 +1,11 @@
 // `@mysten-incubation/devstack/advanced` — escape hatch surface for
 // plugin authors and Effect-native consumers who need to drop below
-// the high-level Ref factories.
+// the high-level LayeredTag factories.
 //
-// Roughly seven groups, in increasing distance from the common path:
+// Roughly six groups, in increasing distance from the common path:
 //
-// 1. **Tag substrate** — `tag`, `provide`, `composeTag`, `composeLayers`,
-//    `setPhase`, `Ref`, `TagIdentity`. The primitive every factory uses.
+// 1. **Tag substrate** — `tag`, `provide`, `composeLayers`, `setPhase`,
+//    `LayeredTag`, `TagIdentity`. The primitive every factory uses.
 // 2. **Plugin-author helpers** — `dockerImage`, `gitFetch`, `hostScript`,
 //    `dockerOneShot`. Common shapes a custom factory will reach for.
 //    Long-running services (the `Sui()`, `Walrus()`, `Dev()` shape)
@@ -16,21 +16,18 @@
 //    `CodegenError`, the `CodegenContext` / `CodegenPackage` shapes.
 //    Use when you need to compose emitters explicitly (custom emitter,
 //    swapped per-emitter options).
-// 4. **Faucet plugin-author surface** — `FaucetStrategy`, `defineStrategy`,
+// 4. **Faucet plugin-author surface** — `FaucetStrategy`,
 //    `suiHttpStrategy`, `FaucetRequestError`. Use when writing a custom
 //    faucet strategy (e.g. a CI-specific RPC fund spigot).
 // 5. **Low-level interface tags** — `SuiTag`. Yield from inside a plugin
 //    or test body when you need the resolved sui shape directly.
-// 6. **Internal manifest accessor** — `gatherManifest`. Composes the
-//    live `Manifest` snapshot from the running registries; the
-//    `Devstack` Service uses this internally.
-// 7. **Admin-side interface tags** — `WalrusAdminTag`, `SealKeyManagerTag`,
+// 6. **Admin-side interface tags** — `WalrusAdminTag`, `SealKeyManagerTag`,
 //    `DeepbookAdminTag`. Privileged ops (rotate seal key, post admin
 //    liquidity, …) the high-level factories don't surface.
 
 // ── 1. Tag substrate ──
 export {
-	type Ref,
+	type LayeredTag,
 	type TagIdentity,
 	type TagKind,
 	type TagLifecycle,
@@ -43,7 +40,6 @@ export {
 	type TagProvides,
 	provide,
 	tag,
-	composeTag,
 	composeLayers,
 	setPhase,
 	shortId,
@@ -60,7 +56,7 @@ export { LongLivedScope } from '../engine/long-lived-scope.js';
 
 // Plugin-author entry. `devstack(...)` is the canonical surface; reach for
 // `defineDevstack` when you want to pre-build the Layer graph (custom
-// state-store keys, etc.) and skip the Ref-flatten/default-fill pipeline.
+// state-store keys, etc.) and skip the LayeredTag-flatten/default-fill pipeline.
 // `composeStackLayer` exposes just the layer composition step for
 // fixtures and integration tests that drive the engine themselves.
 export {
@@ -77,6 +73,20 @@ export {
 // ── 2. Plugin-author helpers ──
 export * from './plugin-author/index.js';
 
+// Canonical testnet/mainnet seal/walrus/deepbook deployment registry.
+// Plugin-author surface for custom factories that want to default the
+// `network: 'testnet' | 'mainnet'` shape the in-tree `Seal()` / `Walrus()`
+// / `Deepbook()` factories use — not user surface (app configs reach for
+// the high-level factories, which consult this internally). The
+// per-deployment record types (`SealDeployment`, `WalrusDeployment`,
+// `DeepbookDeployment`) stay on the root barrel so `override:` literals
+// don't need an `/advanced` import.
+export {
+	knownDeployments,
+	type KnownDeployments,
+	type KnownNetwork,
+} from '../engine/known-deployments.js';
+
 // ── 3. Codegen plugin-author surface ──
 export {
 	defineEmitter,
@@ -90,25 +100,20 @@ export {
 	DappKitConfigEmitter,
 	type DappKitConfigEmitterOptions,
 } from '../codegen/emitters/dapp-kit-config.js';
-export {
-	StackHandleEmitter,
-	type StackHandleEmitterOptions,
-} from '../codegen/emitters/stack-handle.js';
+export { StackHandleEmitter } from '../codegen/emitters/stack-handle.js';
 
 // ── 4. Faucet plugin-author surface ──
-export { type FaucetStrategy } from '../faucet/service.js';
-export { suiHttpStrategy } from '../faucet/strategies/sui-http.js';
+export { type FaucetStrategy, FaucetRequestError } from '../services/faucet/index.js';
+export { suiHttpStrategy } from '../services/faucet/strategies/sui-http.js';
 export {
 	walExchangeStrategy,
 	type WalExchangeHandle,
 	type WalExchangeStrategyOptions,
-} from '../faucet/strategies/wal-exchange.js';
+} from '../services/faucet/strategies/wal-exchange.js';
 export {
 	treasuryCapMintStrategy,
 	type TreasuryCapMintStrategyOptions,
-} from '../faucet/strategies/treasury-cap-mint.js';
-export { defineStrategy } from '../faucet/strategies/internal.js';
-export { FaucetRequestError } from '../faucet/errors.js';
+} from '../services/faucet/strategies/treasury-cap-mint.js';
 
 // ── 5. Low-level interface tag escape hatches ──
 // `SuiTag` is the narrow contract every `Sui()` implementation targets.
@@ -119,10 +124,7 @@ export { FaucetRequestError } from '../faucet/errors.js';
 // runs inside the supervisor and wants the resolved value.
 export { SuiTag, type Sui } from '../services/sui.js';
 
-// ── 6. Internal manifest accessor ──
-export { gatherManifest } from '../runtime/service.js';
-
-// ── 7. Admin-side interface tag classes (rarely yielded by app code) ──
+// ── 6. Admin-side interface tag classes (rarely yielded by app code) ──
 // Local-only admin caps. Reach for these when you need to perform
 // privileged operations (rotate seal key, post liquidity from the
 // admin cap, etc.) that the high-level factories don't surface.

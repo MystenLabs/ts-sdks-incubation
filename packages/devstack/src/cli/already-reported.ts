@@ -6,11 +6,14 @@
 // The original cause is preserved on the sentinel for tooling that
 // inspects causes (telemetry, future `--debug`).
 
-import { Cause, Console, Data, Effect } from 'effect';
+import { Cause, Console, Effect, Schema } from 'effect';
 
-export class AlreadyReportedError extends Data.TaggedError('AlreadyReportedError')<{
-	readonly cause: unknown;
-}> {}
+export class AlreadyReportedError extends Schema.TaggedErrorClass<AlreadyReportedError>()(
+	'AlreadyReportedError',
+	{
+		cause: Schema.Defect,
+	},
+) {}
 
 /** Print `message` to stderr, then fail with `AlreadyReportedError`.
  *  Use this from CLI subcommands after a human-readable diagnostic has

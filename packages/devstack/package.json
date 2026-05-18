@@ -43,6 +43,10 @@
 		"./playwright": {
 			"types": "./dist/playwright/index.d.mts",
 			"import": "./dist/playwright/index.mjs"
+		},
+		"./vite": {
+			"types": "./dist/vite/index.d.mts",
+			"import": "./dist/vite/index.mjs"
 		}
 	},
 	"sideEffects": false,
@@ -70,11 +74,14 @@
 		"@mysten/dapp-kit-core": "catalog:",
 		"@mysten/dapp-kit-react": "catalog:",
 		"@playwright/test": "catalog:",
+		"@tailwindcss/vite": "catalog:",
 		"@types/node": "catalog:",
 		"@types/react": "catalog:",
+		"@vitejs/plugin-react": "catalog:",
 		"ink-testing-library": "^4.0.0",
 		"tsdown": "^0.21.10",
 		"typescript": "catalog:",
+		"vite": "catalog:",
 		"vitest": "^4.1.6"
 	},
 	"peerDependencies": {
@@ -83,7 +90,10 @@
 		"@mysten/dapp-kit-core": "catalog:",
 		"@mysten/dapp-kit-react": "catalog:",
 		"@mysten/sui": "catalog:",
-		"@playwright/test": "catalog:"
+		"@playwright/test": "catalog:",
+		"@tailwindcss/vite": "catalog:",
+		"@vitejs/plugin-react": "catalog:",
+		"vite": "catalog:"
 	},
 	"peerDependenciesMeta": {
 		"@effect/vitest": {
@@ -99,6 +109,15 @@
 			"optional": true
 		},
 		"@playwright/test": {
+			"optional": true
+		},
+		"@tailwindcss/vite": {
+			"optional": true
+		},
+		"@vitejs/plugin-react": {
+			"optional": true
+		},
+		"vite": {
 			"optional": true
 		}
 	}

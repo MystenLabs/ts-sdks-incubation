@@ -47,6 +47,7 @@ import { servicePath } from '../../engine/service-paths.js';
 import { StateStore } from '../../engine/state-store.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
 import { buildMove } from '../../engine/sui-cli.js';
+import { pickCreatedByTypeSuffix } from '../../engine/sui-helpers.js';
 import { dockerImage } from '../../advanced/plugin-author/index.js';
 import { gitFetch } from '../../advanced/plugin-author/index.js';
 import {
@@ -62,7 +63,7 @@ import {
 	type SealKeyManager,
 	type SealKeyServer,
 } from '../seal.js';
-import { composeLayers, provide, setPhase, type Ref } from '../../advanced/tag.js';
+import { composeLayers, provide, setPhase, type LayeredTag } from '../../advanced/tag.js';
 import type { StackMember } from '../../engine/supervisor.js';
 import { SuiTag, suiNetworkName } from '../sui.js';
 import { publishMove } from '../package/internal.js';
@@ -112,8 +113,8 @@ const DEFAULT_SEAL_MOVE_SUBDIR = 'move/seal';
 // use site so a regenesis of the underlying chain naturally misses the
 // cache — the keypair is regenerated and re-registered against the
 // fresh chain rather than pinning to a stale on-chain KeyServer object.
-const STATE_KEY_BLS_KEYPAIR_PREFIX = 'seal/bls-keypair';
-const STATE_KEY_KEY_SERVER_ID_PREFIX = 'seal/key-server-id';
+const STATE_KEY_BLS_KEYPAIR_PREFIX = 'seal/bls-keypair/v1';
+const STATE_KEY_KEY_SERVER_ID_PREFIX = 'seal/key-server-id/v1';
 
 // Persisted shape for the BLS keypair cache entry. Two hex blobs round-
 // tripped as-is through the StateStore JSON layer.
@@ -144,7 +145,7 @@ export interface SealLocalKeygenShape {
 
 export interface SealLocalKeygenOptions<Name extends string> {
 	readonly name?: Name;
-	readonly signer: Ref<any, Account, any, any>;
+	readonly signer: LayeredTag<any, Account, any, any>;
 	/** Skip the local image build and use a pre-built key-server image
 	 *  tag instead. When unset (the default) we build from the vendored
 	 *  Dockerfile under `packages/devstack/seal-image/`, fetching
@@ -171,7 +172,7 @@ export interface SealLocalKeygenOptions<Name extends string> {
 	/** On-chain `KeyServer.name` field. Default `devstack-local`. */
 	readonly keyServerName?: string;
 	/** Explicit ordering edges. Same shape as walrus/deepbook. */
-	readonly dependsOn?: ReadonlyArray<Ref<any, any, any, any>>;
+	readonly dependsOn?: ReadonlyArray<LayeredTag<any, any, any, any>>;
 }
 
 // Combined intermediate shape produced by the heavy acquire effect.
@@ -444,14 +445,11 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 				),
 			);
 
-			const created = result.objectChanges.find(
-				(c): c is Extract<SuiObjectChange, { type: 'created' }> =>
-					c.type === 'created' &&
-					'objectType' in c &&
-					typeof c.objectType === 'string' &&
-					c.objectType.endsWith('::key_server::KeyServer'),
+			const createdId = pickCreatedByTypeSuffix(
+				result.objectChanges,
+				'::key_server::KeyServer',
 			);
-			if (created === undefined) {
+			if (createdId === undefined) {
 				return yield* Effect.fail(
 					new SealError({
 						phase: 'register',
@@ -461,8 +459,8 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 					}),
 				);
 			}
-			yield* stateStore.put<string>(keyServerIdKey, created.objectId);
-			return created.objectId;
+			yield* stateStore.put<string>(keyServerIdKey, createdId);
+			return createdId;
 		}).pipe(Effect.withSpan('seal.register'));
 
 		// 6. Render the CONFIG_PATH yaml to a scoped temp dir + mount
@@ -765,14 +763,11 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 						}),
 				),
 			);
-			const created = registerResult.objectChanges.find(
-				(c): c is Extract<SuiObjectChange, { type: 'created' }> =>
-					c.type === 'created' &&
-					'objectType' in c &&
-					typeof c.objectType === 'string' &&
-					c.objectType.endsWith('::key_server::KeyServer'),
+			const newObjectId = pickCreatedByTypeSuffix(
+				registerResult.objectChanges,
+				'::key_server::KeyServer',
 			);
-			if (created === undefined) {
+			if (newObjectId === undefined) {
 				return yield* Effect.fail(
 					new SealError({
 						phase: 'rotate',
@@ -782,7 +777,6 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 					}),
 				);
 			}
-			const newObjectId = created.objectId;
 
 			// 3. Re-render yaml + env-file with the new identity. Both are
 			//    bind-mounted into the container — overwriting in place is
@@ -1090,13 +1084,10 @@ const publishSealMoveInline = (args: {
 			);
 		}
 
-		const upgradeCapId = result.objectChanges.find(
-			(c): c is Extract<SuiObjectChange, { type: 'created' }> =>
-				c.type === 'created' &&
-				'objectType' in c &&
-				typeof c.objectType === 'string' &&
-				c.objectType.endsWith('0x2::package::UpgradeCap'),
-		)?.objectId;
+		const upgradeCapId = pickCreatedByTypeSuffix(
+			result.objectChanges,
+			'0x2::package::UpgradeCap',
+		);
 
 		yield* publishPackage({
 			name: `${args.name}.publish`,

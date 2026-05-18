@@ -32,6 +32,11 @@ import type { Layer } from 'effect';
 import { it as effectIt } from '@effect/vitest';
 import type { DevstackHandle } from '../engine/supervisor.js';
 
+export {
+	defineDevstackVitestConfig,
+	type DevstackVitestConfigOptions,
+} from './define-config.js';
+
 // Bind a devstack to `@effect/vitest`'s `it.layer(...)`. Returns the
 // curried `(name?, body)` describe-binder so tests in the body can
 // `yield*` services from the stack directly. The handle's layer

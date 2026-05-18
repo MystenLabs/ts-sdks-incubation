@@ -11,7 +11,7 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-import { Context, Effect, Layer } from 'effect';
+import { Context, Effect, Layer, Scope } from 'effect';
 import type { StackMember } from '../../engine/supervisor.js';
 import {
 	WalrusAdminTag,
@@ -25,8 +25,9 @@ import {
 	type WalrusProxy,
 } from '../walrus.js';
 import { dockerImage, gitFetch } from '../../advanced/plugin-author/index.js';
-import { composeLayers, type Ref } from '../../advanced/tag.js';
+import { composeLayers, type LayeredTag } from '../../advanced/tag.js';
 import { WalrusError } from '../../engine/errors.js';
+import { LongLivedScope } from '../../engine/long-lived-scope.js';
 import type { Account } from '../../engine/shared.js';
 import {
 	acquireLocalCluster,
@@ -48,7 +49,7 @@ import {
 export interface WalrusLocalClusterOptions<Name extends string = 'walrus'> {
 	readonly name?: Name;
 	readonly nodeCount?: number;
-	readonly seedAccounts?: ReadonlyArray<Ref<any, Account, any, any>>;
+	readonly seedAccounts?: ReadonlyArray<LayeredTag<any, Account, any, any>>;
 	/** Pinned walrus release tag. Drives both the `git clone --branch` in
 	 *  the upstream Dockerfile and the matching Move-source fetch.
 	 *  Default `walrus-v1.39.0`. */
@@ -138,7 +139,24 @@ export const walrusLocalCluster = <const Name extends string = 'walrus'>(
 	// returns a Context populated with all four interface keys plus the
 	// legacy `Walrus` aggregate so a single `Layer.effectContext` covers
 	// every consumer shape downstream code might reach for.
+	//
+	// Lifecycle: walrus's storage-node committee + nginx proxy are
+	// expensive to bootstrap (O(60–120s) per boot — image build, contract
+	// deploy, committee genesis, seed-account swap). We want them to
+	// survive `r` hot-restart cycles, like sui localnet and postgres do
+	// via `provide(..., { lifecycle: 'long-lived' })`. `provide` is the
+	// canonical knob but it targets a single Context.Service class; here
+	// we publish four interface tags from one acquire body, so we mirror
+	// `withEngineLifecycle`'s scope-substitution behavior directly:
+	// resolve `LongLivedScope` once at the top of the body and substitute
+	// it for the ambient `Scope.Scope` so every `Effect.acquireRelease` /
+	// `Scope.addFinalizer` inside `acquireLocalCluster` (Docker.run,
+	// nginx config writes, etc.) registers on the long-lived scope. When
+	// `LongLivedScope` is absent (standalone tests), the build keeps the
+	// per-cycle Layer scope, matching how `provide(..., 'long-lived')`
+	// degrades.
 	const acquireAndProject = Effect.fn(`walrusLocalCluster(${name})`)(function* () {
+		const longLivedScope = yield* LongLivedScope;
 		// Engine lifecycle is wired manually here rather than through
 		// `provide` because we're producing a multi-service Context
 		// from a single body. `EngineHandle` is satisfied by InfraLive
@@ -162,7 +180,7 @@ export const walrusLocalCluster = <const Name extends string = 'walrus'>(
 		const pushPhase = (phase: string): Effect.Effect<void> =>
 			engineOpt._tag === 'Some' ? engineOpt.value.setPhase(LOCAL_CLUSTER_KEY, phase) : Effect.void;
 
-		const acquired = yield* acquireLocalCluster({
+		const acquireEffect = acquireLocalCluster({
 			name,
 			nodeCount,
 			containerApiPort,
@@ -173,8 +191,8 @@ export const walrusLocalCluster = <const Name extends string = 'walrus'>(
 			walrusVersion,
 			suiVersion,
 			dockerContext,
-			upstreamImage: upstreamImage as Ref<any, any, any, any>,
-			moveSource: moveSource as Ref<any, any, any, any> | undefined,
+			upstreamImage: upstreamImage as LayeredTag<any, any, any, any>,
+			moveSource: moveSource as LayeredTag<any, any, any, any> | undefined,
 			movePackagePath: options.movePackagePath,
 			seedAccountTags,
 			pushPhase,
@@ -185,6 +203,18 @@ export const walrusLocalCluster = <const Name extends string = 'walrus'>(
 					: Effect.void,
 			),
 		);
+		// Lifecycle substitution: when `LongLivedScope` is present, run
+		// the acquire under that scope so Docker.run finalizers (storage
+		// nodes, nginx proxy, deploy one-shot, network) survive `r`
+		// hot-restart. When absent (standalone tests / no supervisor),
+		// fall through to the ambient per-cycle Layer scope. Mirrors the
+		// `withEngineLifecycle` substitution inside `provide()` — the
+		// canonical path can't be used here because this body publishes
+		// four interface tags from one acquire, not a single tag value.
+		const acquired =
+			longLivedScope !== undefined
+				? yield* acquireEffect.pipe(Effect.provideService(Scope.Scope, longLivedScope))
+				: yield* acquireEffect;
 
 		if (engineOpt._tag === 'Some') {
 			yield* engineOpt.value.markReady(LOCAL_CLUSTER_KEY, {

@@ -15,23 +15,18 @@
 //   `action`, `tx`, etc. Creates a throwaway Context.Service class
 //   internally; sugar over `provide`.
 //
-// - `composeTag(name, build, innerTags)` — composite-tag sugar. Use
-//   when you want a single outer tag whose body yields from inner
-//   sibling tags. Aggregates the inner tags' layers automatically.
-//
 // - `composeLayers({primary, inner, projections})` — for multi-layer
-//   StackMembers that DON'T want a new outer tag class. Used by
-//   walrusLocalCluster (multi-interface acquire body) and
+//   StackMembers that aggregate sibling inner tags into one LayeredTag. Used
+//   by walrusLocalCluster (multi-interface acquire body) and
 //   sealLocalKeygen (internal tag + two projection layers) to assemble
 //   their `__layers` arrays without hand-rolling ordering.
 export {
 	provide,
 	tag,
-	composeTag,
 	composeLayers,
 	setPhase,
 	type ComposeLayersOptions,
-	type Ref,
+	type LayeredTag,
 	type TagIdentity,
 	type TagOptions,
 	type TagRequires,

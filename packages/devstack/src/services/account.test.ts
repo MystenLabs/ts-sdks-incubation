@@ -27,7 +27,7 @@ import { StateStoreConfig } from '../engine/state-store.js';
 import { SuiTag, type Sui } from './sui.js';
 import { AccountError, SuiError } from '../engine/errors.js';
 import { Account } from './account.js';
-import { FaucetTag, type Faucet } from '../faucet/service.js';
+import { FaucetTag, type Faucet } from './faucet/index.js';
 
 // Mock SuiTag — `client` is opaque to the discriminator branches and
 // only matters at sign-time, which we don't exercise here. Faucet URL

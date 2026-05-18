@@ -19,7 +19,7 @@
 
 import { Effect, FileSystem } from 'effect';
 import { ChildProcessSpawner } from 'effect/unstable/process';
-import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
+import type { SuiGrpcClient } from '@mysten/sui/grpc';
 import * as Docker from '../../engine/docker.js';
 import type { Endpoint } from '../../engine/endpoint.js';
 import { EngineHandle } from '../../engine/engine.js';
@@ -300,13 +300,14 @@ const parseDeployFile = (
 // -----------------------------------------------------------------------------
 
 export const resolveExchange = (args: {
-	rpcUrl: string;
+	/** Supervisor's `Sui.client`. Plumbed through from the walrus
+	 *  primitive instead of constructing a fresh `SuiGrpcClient` here so
+	 *  there's one chain-talking client per stack (same transport, same
+	 *  MVR overrides, same cache state). Phase -1 (gRPC migration)
+	 *  collapses the previous independent-`SuiJsonRpcClient` seam. */
+	client: SuiGrpcClient;
 	walrusPackageId: string;
 	exchangeObject: string | undefined;
-	/** Sui network name (`'localnet'` | `'testnet'` | …). Plumbed through
-	 *  from the caller's `SuiTag.network` so wrapped-external-RPC setups
-	 *  don't get a hard-coded `'localnet'` client mismatch warning. */
-	network?: string;
 }): Effect.Effect<ExchangeState | undefined, WalrusError> =>
 	Effect.fn('walrus.exchange')(function* () {
 		if (args.exchangeObject === undefined) {
@@ -314,15 +315,8 @@ export const resolveExchange = (args: {
 			// seed-account swaps will short-circuit on the same check.
 			return undefined;
 		}
-		// Cast to the `SuiJsonRpcClient` network literal — the underlying
-		// client only uses this for chain-id mismatch warnings, not for
-		// behavior. Pass through whatever the caller supplied so a
-		// localnet-wrapping-testnet user doesn't see a misleading
-		// "expected localnet, got testnet" warning during exchange probe.
-		const network = (args.network ?? 'localnet') as 'localnet' | 'testnet' | 'mainnet' | 'devnet';
-		const client = new SuiJsonRpcClient({ url: args.rpcUrl, network });
 		const info = yield* Effect.tryPromise({
-			try: () => client.core.getObject({ objectId: args.exchangeObject! }),
+			try: () => args.client.core.getObject({ objectId: args.exchangeObject! }),
 			catch: (cause) => cause,
 		}).pipe(
 			Effect.map((res) => ({ kind: 'found' as const, info: res })),

@@ -1,9 +1,9 @@
 // Account(name, opts?) — single-named account factory.
 //
-// Returns a typed Ref usable directly as a signer in `Package` / `Action`
-// / `Wallet`. The Ref is simultaneously an Effect Layer (composed into
-// the stack by `devstack(...)`) and an Effect tag (`yield* alice` returns
-// the resolved `Account`).
+// Returns a typed LayeredTag usable directly as a signer in `Package` /
+// `Action` / `Wallet`. The LayeredTag is simultaneously an Effect Layer
+// (composed into the stack by `devstack(...)`) and an Effect tag
+// (`yield* alice` returns the resolved `Account`).
 //
 // A spec's `from:` discriminator selects how the keypair is acquired:
 //
@@ -47,24 +47,30 @@ import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { Secp256k1Keypair } from '@mysten/sui/keypairs/secp256k1';
 import { Secp256r1Keypair } from '@mysten/sui/keypairs/secp256r1';
 import type { Keypair, Signer } from '@mysten/sui/cryptography';
-import { tag, setPhase, type Ref } from '../advanced/tag.js';
+import type { SuiClientTypes } from '@mysten/sui/client';
+import { tag, setPhase, type LayeredTag } from '../advanced/tag.js';
 import { SuiTag } from './sui.js';
 import { AccountError } from '../engine/errors.js';
 import { publishAccount } from '../engine/registries.js';
 import { Leasing } from '../engine/leasing.js';
 import { requestFunds } from '../engine/faucet.js';
-import { FaucetTag } from '../faucet/service.js';
+import { FaucetTag } from './faucet/index.js';
 import { StateStoreConfig } from '../engine/state-store.js';
 import { servicePath } from '../engine/service-paths.js';
 import { stringifyCause } from '../engine/stringify-cause.js';
-import type { Account as AccountValue, SignAndExecuteError, TxResult } from '../engine/shared.js';
-import type { AccountRef } from './ref.js';
+import type {
+	Account as AccountValue,
+	BalanceChange,
+	SignAndExecuteError,
+	SuiObjectChange,
+	TxResult,
+} from '../engine/shared.js';
 
 // -----------------------------------------------------------------------------
 // Contract
 // -----------------------------------------------------------------------------
 
-/** Per-account-instance shape. Every per-name account Ref produced by
+/** Per-account-instance shape. Every per-name account LayeredTag produced by
  *  `Account(name, opts?)` yields a value satisfying this contract.
  *
  *  Re-exported from `engine/shared.ts` so internal services (which import
@@ -89,17 +95,9 @@ import type { AccountRef } from './ref.js';
  *    because dapp-kit personal-message flows need both halves.
  *  - **Signing failures surface as `SignAndExecuteError`, NOT `AccountError`.**
  *    `AccountError` is the *acquisition* error reported when yielding the
- *    `AccountRef` (faucet failed, keystore unreadable, etc.); see
- *    `AccountTag` below.
+ *    per-name account tag (faucet failed, keystore unreadable, etc.).
  */
 export type Account = AccountValue;
-
-/** Reference type for downstream consumers that take an account tag as
- *  configuration. Consumers (`Package({signer})`, `Seal({signer})`, …)
- *  accept any value matching this shape. */
-/* eslint-disable @typescript-eslint/no-explicit-any */
-export type AccountTag = Ref<any, Account, any, AccountError>;
-/* eslint-enable @typescript-eslint/no-explicit-any */
 
 /** Runtime-validation mirror of `Account`. Use
  *  `Schema.decode(AccountSchema)` to validate a hand-rolled
@@ -124,20 +122,33 @@ export const AccountSchema = Schema.Struct({
  * Per-account source discriminator. Selects how the keypair backing
  * the per-name account tag is acquired. See module header for the
  * full lifecycle of each source.
+ *
+ * Naming note: `from:` is the DISCRIMINATOR (always a string literal
+ * naming the branch — `'env'`, `'keystore'`, `'signer'`, …). The
+ * per-branch payload field carries the actual material:
+ *   - `from: 'env'` pairs with `key: string` (env-var name)
+ *   - `from: 'keystore'` pairs with `alias: string` (alias / address)
+ *   - `from: 'inline'` pairs with `privateKey: string` (bech32 literal)
+ *   - `from: 'signer'` pairs with `signer: Signer` (live signer object)
+ * So `from: 'signer'` and the `signer:` payload field are intentionally
+ * different shapes: one is the tag selecting the variant, the other is
+ * the carrier for the actual `@mysten/sui` `Signer` instance.
  */
 export type AccountSource =
 	| {
 			readonly from: 'ephemeral-funded';
-			/** Reserved for a future faucet-amount knob. Today's localnet
-			 *  faucet ignores it — funding is a fixed amount per request —
-			 *  but accepting the field now keeps the spec stable across
-			 *  the eventual server-side change. */
-			readonly initialBalanceSui?: number;
 			/** Wall-clock budget for the faucet funding request, including
 			 *  all retries. Defaults to 90_000 (90s) — sized for a cold
 			 *  sui-localnet boot. CI configs pointed at a clearly-broken
 			 *  faucet can lower this so failure surfaces in seconds
-			 *  instead of minutes-per-account. */
+			 *  instead of minutes-per-account.
+			 *
+			 *  Bounds the faucet funding POST (with retries) — distinct
+			 *  from the various `readyTimeoutMs` options on service
+			 *  factories (`Sui*Options.readyTimeoutMs`, etc.), which
+			 *  bound the socket-level "is the HTTP server bound" probe.
+			 *  This one assumes the faucet HTTP server is already
+			 *  listening and bounds the actual funding request. */
 			readonly faucetTimeoutMs?: number;
 			/** Maximum number of faucet retry attempts before giving up
 			 *  (the initial attempt plus `faucetMaxAttempts` retries).
@@ -242,7 +253,7 @@ export type AccountSpec =
 // Factory
 // -----------------------------------------------------------------------------
 
-/** Factory for a single named account. The returned Ref is both an
+/** Factory for a single named account. The returned LayeredTag is both an
  *  Effect Layer (composed into the merged stack by `devstack(...)`) and
  *  an Effect tag (`yield* alice` returns the resolved `Account`).
  *
@@ -253,7 +264,7 @@ export type AccountSpec =
 // Allowed shape for `Account(name)`: lowercase alphanumeric + dot /
 // underscore / hyphen, must start with a letter or digit, max 64 chars.
 // The string flows into:
-//   - the per-Ref tag id (`account/${name}`), which has to be unique
+//   - the per-LayeredTag tag id (`account/${name}`), which has to be unique
 //     across the stack;
 //   - the on-disk path `.devstack/stacks/<stack>/.keys/<name>.key`;
 //   - the manifest-side `accounts.<name>.address` lookup key;
@@ -276,7 +287,7 @@ const validateAccountName = (name: string): void => {
 export const Account = <const N extends string>(
 	name: N,
 	opts?: AccountSpec,
-): AccountRef<`account/${N}`> => {
+): LayeredTag<`account/${N}`, AccountValue> => {
 	validateAccountName(name);
 	// Backwards-compat: the bare `{}` form (without a `from:` key)
 	// means "ephemeral-funded with defaults". Branch here so the rest of
@@ -429,6 +440,18 @@ export const Account = <const N extends string>(
 			// and one fails with LockedSharedObject. `withExclusive` holds
 			// the permit for the lifetime of the work effect and releases
 			// it automatically on success, failure, or interrupt.
+			//
+			// Phase -1 (gRPC migration): the underlying wire call is the
+			// gRPC `transactionExecutionService.executeTransaction` via
+			// `client.core.executeTransaction`. We mirror the dev-wallet
+			// pattern: build the tx to BCS bytes, sign once, submit. The
+			// SDK's `SuiGrpcClient.signAndExecuteTransaction` does exactly
+			// this internally (see core.ts::signAndExecuteTransaction); we
+			// inline it here so the retry/wait/typed-error pipeline stays
+			// in one place. `objectChanges` / legacy effects fields are
+			// folded back into the devstack-internal `TxResult` shape by
+			// `mapGrpcTxResult` so callers downstream of `Account()` see
+			// no surface change.
 			const signAndExecute = (transaction: Parameters<AccountValue['signAndExecute']>[0]) =>
 				leasing.withExclusive(
 					address,
@@ -437,10 +460,10 @@ export const Account = <const N extends string>(
 							sui.client.signAndExecuteTransaction({
 								signer,
 								transaction,
-								options: {
-									showEffects: true,
-									showObjectChanges: true,
-									showBalanceChanges: true,
+								include: {
+									effects: true,
+									balanceChanges: true,
+									objectTypes: true,
 								},
 							}),
 						catch: (cause): SignAndExecuteError => ({
@@ -449,50 +472,53 @@ export const Account = <const N extends string>(
 							cause,
 						}),
 					}).pipe(
-						// `signAndExecuteTransaction` calls `dryRunTransactionBlock`
-						// internally to estimate gas. The dry-run uses a different
-						// consistency layer than the fullnode's `getObject`, so a
-						// just-published package can still trip "Dependent package
-						// not found on-chain" here even though `publishMove`'s
-						// post-publish poll for `getObject` succeeded. Bounded retry
-						// on that specific message — anything else (unfunded
-						// account, invalid args, etc.) fails fast.
+						// `signAndExecuteTransaction` resolves gas via the gRPC
+						// transaction plugin (`core.executeTransaction` →
+						// `resolveTransactionData` in core-resolver.ts). When a
+						// freshly-published package is read against a node whose
+						// state diverges from the fullnode's tx-execution index,
+						// gRPC surfaces the same "Dependent package not found
+						// on-chain" message JSON-RPC did. Bounded retry on that
+						// specific message preserves the historical behavior —
+						// anything else (unfunded account, invalid args, etc.)
+						// fails fast.
 						Effect.retry({
 							times: 6,
 							schedule: Schedule.spaced('300 millis'),
 							while: (err) => /Dependent package not found on-chain/i.test(err.message),
 						}),
-						Effect.flatMap(
-							(r): Effect.Effect<TxResult, SignAndExecuteError> =>
-								r.effects?.status?.status === 'success'
-									? Effect.tryPromise({
-											// Block until the RPC's indexer has the tx's
-											// effects visible. Without this, a follow-up tx
-											// that references an object created here (e.g.
-											// a `publish` → `tx.moveCall(${packageId}::…)`
-											// sequence) can race the indexer and fail with
-											// "Dependent package not found on-chain" even
-											// though the publish reported success.
-											try: () => sui.client.waitForTransaction({ digest: r.digest }),
-											catch: (cause): SignAndExecuteError => ({
-												_tag: 'SignAndExecuteError',
-												message: `Account: waitForTransaction failed for '${name}': ${stringifyCause(cause)}`,
-												cause,
-											}),
-										}).pipe(
-											Effect.as({
-												digest: r.digest,
-												effects: r.effects,
-												objectChanges: r.objectChanges ?? [],
-												balanceChanges: r.balanceChanges,
-											}),
-										)
-									: Effect.fail({
-											_tag: 'SignAndExecuteError',
-											message:
-												r.effects?.status?.error ?? `Account: unknown tx failure for '${name}'`,
-										}),
-						),
+						Effect.flatMap((r): Effect.Effect<TxResult, SignAndExecuteError> => {
+							const inner = r.Transaction ?? r.FailedTransaction;
+							if (inner === undefined) {
+								return Effect.fail({
+									_tag: 'SignAndExecuteError' as const,
+									message: `Account: '${name}' tx returned neither Transaction nor FailedTransaction`,
+								});
+							}
+							if (!inner.status.success) {
+								return Effect.fail({
+									_tag: 'SignAndExecuteError' as const,
+									message:
+										inner.status.error?.message ??
+										`Account: unknown tx failure for '${name}'`,
+								});
+							}
+							// Block until the RPC's indexer has the tx's
+							// effects visible. Without this, a follow-up tx
+							// that references an object created here (e.g.
+							// a `publish` → `tx.moveCall(${packageId}::…)`
+							// sequence) can race the indexer and fail with
+							// "Dependent package not found on-chain" even
+							// though the publish reported success.
+							return Effect.tryPromise({
+								try: () => sui.client.waitForTransaction({ digest: inner.digest }),
+								catch: (cause): SignAndExecuteError => ({
+									_tag: 'SignAndExecuteError',
+									message: `Account: waitForTransaction failed for '${name}': ${stringifyCause(cause)}`,
+									cause,
+								}),
+							}).pipe(Effect.as(mapGrpcTxResult(inner)));
+						}),
 					),
 				);
 
@@ -543,7 +569,7 @@ export const Account = <const N extends string>(
 	// base layer.
 	return Object.assign(accountTag, {
 		__kind: 'account' as const,
-	}) as unknown as AccountRef<`account/${N}`>;
+	}) as unknown as LayeredTag<`account/${N}`, AccountValue>;
 };
 
 // -----------------------------------------------------------------------------
@@ -860,3 +886,79 @@ const bestEffortChmod = (
 			}).pipe(Effect.ignore),
 		),
 	);
+
+// -----------------------------------------------------------------------------
+// gRPC → devstack TxResult adapter (Phase -1)
+// -----------------------------------------------------------------------------
+
+// Synthesize the legacy `SuiObjectChange[]` shape from a gRPC
+// `Transaction` envelope. Pre-Phase-1, JSON-RPC returned `objectChanges`
+// directly; gRPC returns the lower-level `effects.changedObjects[]`
+// keyed by `idOperation` + `outputState`, plus a `objectTypes` map of
+// objectId → moveType. We fold both into the narrow union devstack
+// consumers expect:
+//
+//   - `idOperation === 'Created'`           → `{type: 'created'}`
+//   - `idOperation === 'Deleted'`           → `{type: 'deleted'}`
+//   - `outputState === 'PackageWrite'`      → `{type: 'published', packageId: objectId}`
+//   - `idOperation === 'None'` && `outputState === 'ObjectWrite'`
+//                                            → `{type: 'mutated'}`
+//
+// The `objectType` lookup falls back to `''` when the type map doesn't
+// carry the id (rare — typically only for system-side `0x5`-style
+// objects the executor mutates as part of consensus advance). Callers
+// that filter on `objectType.endsWith(...)` skip those rows safely.
+const deriveObjectChanges = (
+	changedObjects: ReadonlyArray<SuiClientTypes.ChangedObject>,
+	objectTypes: Record<string, string> | undefined,
+): ReadonlyArray<SuiObjectChange> => {
+	const out: SuiObjectChange[] = [];
+	for (const change of changedObjects) {
+		if (change.outputState === 'PackageWrite') {
+			out.push({ type: 'published', packageId: change.objectId });
+			continue;
+		}
+		const objectType = objectTypes?.[change.objectId] ?? '';
+		if (change.idOperation === 'Created') {
+			out.push({ type: 'created', objectId: change.objectId, objectType });
+		} else if (change.idOperation === 'Deleted') {
+			out.push({ type: 'deleted', objectId: change.objectId, objectType });
+		} else if (
+			change.idOperation === 'None' &&
+			change.outputState === 'ObjectWrite'
+		) {
+			out.push({ type: 'mutated', objectId: change.objectId, objectType });
+		}
+	}
+	return out;
+};
+
+const mapBalanceChanges = (
+	input: ReadonlyArray<SuiClientTypes.BalanceChange> | undefined,
+): ReadonlyArray<BalanceChange> | undefined => {
+	if (input === undefined) return undefined;
+	return input.map((b) => ({ address: b.address, coinType: b.coinType, amount: b.amount }));
+};
+
+const mapGrpcTxResult = (
+	inner: SuiClientTypes.Transaction<{
+		readonly effects: true;
+		readonly balanceChanges: true;
+		readonly objectTypes: true;
+	}>,
+): TxResult => ({
+	digest: inner.digest,
+	effects: {
+		status: {
+			status: inner.status.success ? 'success' : 'failure',
+			...(inner.status.error?.message !== undefined
+				? { error: inner.status.error.message }
+				: {}),
+		},
+	},
+	objectChanges: deriveObjectChanges(
+		inner.effects?.changedObjects ?? [],
+		inner.objectTypes,
+	),
+	balanceChanges: mapBalanceChanges(inner.balanceChanges),
+});

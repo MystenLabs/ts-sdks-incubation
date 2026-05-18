@@ -4,9 +4,12 @@
 // the rest of devstack stays usable without them.
 //
 // What lives here:
-//   - `localnetWalrusOptions(manifest)` — browser-side WalrusClient
-//     options for localnet (translates docker-internal storage-node
-//     URLs to host-mapped form, sets the localnet packageConfig).
+//   - `localnetWalrusOptions({ systemObjectId, stakingPoolId })` —
+//     builds the `packageConfig` (systemObjectId + stakingPoolId) for
+//     `new WalrusClient(...)` and sets `storageNodeUrlScheme: 'http'`
+//     since devstack storage nodes serve plain HTTP. The object ids
+//     are sourced from the generated `captured.ts` in user code and
+//     passed in directly.
 //
 // The dapp-kit instance itself is constructed in user code (each
 // example's `src/dapp-kit.ts`) by spreading the generated

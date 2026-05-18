@@ -36,7 +36,7 @@ export const pull = (
 		if (digest.length === 0) {
 			return yield* Effect.fail(
 				new DockerError({
-					op: 'docker pull',
+					phase: 'docker pull',
 					message: `docker image inspect returned empty digest for ${image}`,
 				}),
 			);
@@ -131,7 +131,7 @@ export const build = (
 		if (digest.length === 0) {
 			return yield* Effect.fail(
 				new DockerError({
-					op: 'docker build',
+					phase: 'docker build',
 					message: `docker image inspect returned empty digest for ${opts.tag}`,
 				}),
 			);
@@ -202,7 +202,7 @@ export const loadImage = (
 		if (!match) {
 			return yield* Effect.fail(
 				new DockerError({
-					op: 'docker load',
+					phase: 'docker load',
 					message: `docker load produced no "Loaded image:" line for ${tarPath}`,
 					stdout,
 				}),

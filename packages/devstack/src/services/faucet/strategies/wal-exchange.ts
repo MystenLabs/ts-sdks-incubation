@@ -21,10 +21,8 @@
 
 import { Effect } from 'effect';
 import { Transaction } from '@mysten/sui/transactions';
-import { FaucetRequestError } from '../errors.js';
-import { defineStrategy } from './internal.js';
-import type { FaucetStrategy } from '../service.js';
-import type { Account } from '../../engine/shared.js';
+import { FaucetRequestError, type FaucetStrategy } from '../index.js';
+import type { Account } from '../../../engine/shared.js';
 
 /** Resolved walrus-exchange handle. Mirrors the internal `ExchangeState`
  *  shape from `services/walrus/internal.ts` — repeated here to avoid
@@ -51,34 +49,33 @@ export interface WalExchangeStrategyOptions {
  * — `walrusLocalCluster` registers an instance automatically when at
  * least one `seedAccounts` is declared.
  */
-export const walExchangeStrategy = (opts: WalExchangeStrategyOptions): FaucetStrategy =>
-	defineStrategy({
-		coinType: 'WAL',
-		request: ({ address, amount }) =>
-			Effect.gen(function* () {
-				const paymentMist = amount > 0n ? amount : opts.defaultPaymentMist;
-				const tx = new Transaction();
-				const paymentCoin = tx.coin({
-					balance: paymentMist,
-					type: '0x2::sui::SUI',
-					useGasCoin: true,
-				});
-				const walCoin = tx.moveCall({
-					target: `${opts.exchange.packageId}::wal_exchange::exchange_all_for_wal`,
-					arguments: [tx.object(opts.exchange.objectId), paymentCoin],
-				});
-				tx.transferObjects([walCoin], tx.pure.address(address));
-				yield* opts.signer.signAndExecute(tx).pipe(
-					Effect.mapError(
-						(cause) =>
-							new FaucetRequestError({
-								coinType: 'WAL',
-								address,
-								amount,
-								message: `WAL exchange swap failed for ${address}: ${cause.message}`,
-								cause,
-							}),
-					),
-				);
-			}),
-	});
+export const walExchangeStrategy = (opts: WalExchangeStrategyOptions): FaucetStrategy => ({
+	coinType: 'WAL',
+	request: ({ address, amount }) =>
+		Effect.gen(function* () {
+			const paymentMist = amount > 0n ? amount : opts.defaultPaymentMist;
+			const tx = new Transaction();
+			const paymentCoin = tx.coin({
+				balance: paymentMist,
+				type: '0x2::sui::SUI',
+				useGasCoin: true,
+			});
+			const walCoin = tx.moveCall({
+				target: `${opts.exchange.packageId}::wal_exchange::exchange_all_for_wal`,
+				arguments: [tx.object(opts.exchange.objectId), paymentCoin],
+			});
+			tx.transferObjects([walCoin], tx.pure.address(address));
+			yield* opts.signer.signAndExecute(tx).pipe(
+				Effect.mapError(
+					(cause) =>
+						new FaucetRequestError({
+							coinType: 'WAL',
+							address,
+							amount,
+							message: `WAL exchange swap failed for ${address}: ${cause.message}`,
+							cause,
+						}),
+				),
+			);
+		}),
+});

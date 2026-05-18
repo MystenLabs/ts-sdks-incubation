@@ -20,7 +20,7 @@ import { Context, Schema } from 'effect';
 import { publishMove, type CoinSpec, type PublishMoveOptions } from './package/internal.js';
 import { pickCreatedByTypeIncludes } from '../engine/sui-helpers.js';
 import type { Account, SuiObjectChange } from '../engine/shared.js';
-import type { Ref } from '../advanced/tag.js';
+import type { LayeredTag } from '../advanced/tag.js';
 
 // -----------------------------------------------------------------------------
 // Package contracts
@@ -43,13 +43,15 @@ export interface Package {
  *
  *  Renamed `PackageTag` (not `Package`) so the factory `Package(...)`
  *  in this file owns the public-surface name. The Context key
- *  (`'@devstack/Package'`) is unchanged. */
-export class PackageTag extends Context.Service<PackageTag, Package>()('@devstack/Package') {}
+ *  (`'@devstack/PackageTag'`) is unchanged. */
+export class PackageTag extends Context.Service<PackageTag, Package>()('@devstack/PackageTag') {}
 
 /** Refined shape for packages WE publish from local sources. Adds the
  *  fields that are only meaningful in that mode:
  *    - `sourcePath` — root of the Move package on disk (used by
- *      `bindings` for `sui move summary`).
+ *      `bindings` for `sui move summary`). Echoes the `path` argument
+ *      the caller passed positionally to `Package(name, path, opts)`,
+ *      resolved to the form downstream emitters consume.
  *    - `mvrPlaceholder` — name `bindings` emits in generated code
  *      instead of the chain-specific `packageId`.
  *    - `captured` — opaque per-package object ids the caller's
@@ -64,9 +66,9 @@ export interface LocalPackage extends Package {
 }
 
 /** Renamed `LocalPackageTag` for symmetry with `PackageTag`. Context
- *  key (`'@devstack/LocalPackage'`) is unchanged. */
+ *  key (`'@devstack/LocalPackageTag'`) is unchanged. */
 export class LocalPackageTag extends Context.Service<LocalPackageTag, LocalPackage>()(
-	'@devstack/LocalPackage',
+	'@devstack/LocalPackageTag',
 ) {}
 
 /** Runtime-validation mirror of `Package`. Use
@@ -165,7 +167,7 @@ export type CaptureSpec<TCaptured> =
 export interface PackageOptions<TCaptured, TCoins extends ReadonlyArray<CoinSpec>> {
 	/** Account that signs the publish transaction and ends up holding
 	 *  the resulting `UpgradeCap`. */
-	readonly signer: Ref<any, Account, any, any>;
+	readonly signer: LayeredTag<any, Account, any, any>;
 	/** Override the MVR placeholder. Defaults to `@local/<slug-of-name>`. */
 	readonly mvr?: string;
 	/** Object-id capture. See {@link CaptureSpec}. */
@@ -197,9 +199,18 @@ const compileCapture = <TCaptured>(
 	};
 };
 
-/** Publishing factory. Returns a Ref carrying the published-package
+/** Publishing factory. Returns a LayeredTag carrying the published-package
  *  shape (id, captured, coins). Pass the ref into `Action({ needs: [pkg] })`
- *  or `Codegen({...})` to make the publish a prerequisite. */
+ *  or `Codegen({...})` to make the publish a prerequisite.
+ *
+ *  Argument-vs-output naming: the positional `path` you pass here is the
+ *  filesystem path to the Move package root (directory containing
+ *  `Move.toml`). It surfaces on the resolved `LocalPackage` value as
+ *  `sourcePath` — the resolved (and conventionally absolute) form the
+ *  `bindings` emitter and the `sui move summary` invocation read back.
+ *  The asymmetry mirrors the input/output split elsewhere in devstack
+ *  (`Sui*Options.rpcUrl` → `Sui.rpc.host`): inputs accept the raw
+ *  string the user types, outputs name the role the value plays. */
 export const Package = <
 	const N extends string,
 	TCaptured = undefined,
@@ -217,7 +228,7 @@ export const Package = <
 		...(opts.capture !== undefined ? { capture: compileCapture<TCaptured>(opts.capture)! } : {}),
 		...(opts.coins !== undefined ? { coins: opts.coins } : {}),
 	};
-	// `codegen: false` is stamped onto the Ref object so any `Codegen(...)`
+	// `codegen: false` is stamped onto the LayeredTag object so any `Codegen(...)`
 	// in the stack that reads its `packages` list can filter this entry out.
 	// `true` (the default) is omitted — Codegen treats absence as opt-in.
 	const codegenExclude = opts.codegen === false;

@@ -20,7 +20,7 @@
 		"@mysten-incubation/devstack": "^0.0.0",
 		"@mysten/dapp-kit-core": "^1.3.0",
 		"@mysten/dapp-kit-react": "^2.0.1",
-		"@mysten/sui": "^2.16.0",
+		"@mysten/sui": "^2.17.0",
 		"@mysten/wallet-standard": "^0.20.1",
 		"@tanstack/react-query": "^5.100.0",
 		"effect": "4.0.0-beta.65",

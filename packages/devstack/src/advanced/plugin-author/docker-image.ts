@@ -58,7 +58,7 @@ const hashLocalTree = (contextPath: string) =>
 				Effect.catchTag('PlatformError', (cause) =>
 					Effect.fail(
 						new DockerError({
-							op: 'dockerImage',
+							phase: 'dockerImage',
 							message: `hashLocalTree '${contextPath}'`,
 							cause,
 						}),
@@ -83,7 +83,7 @@ export const dockerImage = <const Name extends string>(options: DockerImageOptio
 					Effect.catchTag('DockerError', (cause) =>
 						Effect.fail(
 							new DockerError({
-								op: 'dockerImage',
+								phase: 'dockerImage',
 								message: `dockerImage '${options.name}': pull failed`,
 								cause,
 							}),
@@ -145,7 +145,7 @@ export const dockerImage = <const Name extends string>(options: DockerImageOptio
 					Effect.catchTag('DockerError', (cause) =>
 						Effect.fail(
 							new DockerError({
-								op: 'dockerImage',
+								phase: 'dockerImage',
 								message: `dockerImage '${options.name}': build failed`,
 								cause,
 							}),
@@ -162,7 +162,7 @@ export const dockerImage = <const Name extends string>(options: DockerImageOptio
 
 			return yield* Effect.fail(
 				new DockerError({
-					op: 'dockerImage',
+					phase: 'dockerImage',
 					message: `dockerImage '${options.name}': must specify either 'pull' or 'build'`,
 				}),
 			);

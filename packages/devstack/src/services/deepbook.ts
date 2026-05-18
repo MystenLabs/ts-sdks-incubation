@@ -1,5 +1,5 @@
 // Deepbook(opts) — canonical Deepbook factory. Picks local-deploy or
-// known-package based on `mode`. Returns a single Ref carrying the
+// known-package based on `mode`. Returns a single LayeredTag carrying the
 // resolved deepbook deployment (package id, pools).
 //
 // Market-making is a separate factory (`DeepbookMarketMaker`) so the
@@ -179,7 +179,7 @@ export interface DeepbookOptions {
 /** Deepbook factory. Picks local-deploy on localnet and the canonical
  *  remote deployment on testnet/mainnet — single source of truth is
  *  `DEVSTACK_NETWORK` (set by the CLI `--network` flag or via
- *  `devstack({ network })`). Returns a Ref that resolves to the
+ *  `devstack({ network })`). Returns a LayeredTag that resolves to the
  *  deployed package id + pool map. Pair with {@link DeepbookMarketMaker}
  *  when continuous liquidity is needed. */
 export const Deepbook = (opts: DeepbookOptions = {}) => {

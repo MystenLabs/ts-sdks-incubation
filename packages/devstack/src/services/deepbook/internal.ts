@@ -8,7 +8,7 @@
 
 import { Effect } from 'effect';
 import type { Transaction, TransactionObjectArgument } from '@mysten/sui/transactions';
-import { type Ref } from '../../advanced/tag.js';
+import { type LayeredTag } from '../../advanced/tag.js';
 import { DeepbookError } from '../../engine/errors.js';
 import { type DeepbookCore, type DeepbookPoolRef } from '../deepbook.js';
 
@@ -45,13 +45,15 @@ export const DEFAULT_PREDEPOSIT_MULTIPLIER = 100n;
 //
 // `Context.Service` is invariant in its value parameter, so a coin
 // tag with a richer shape (extra `name` / `packageId` fields from
-// `registerCoin`) isn't assignable to `Ref<any, { fullCoinType:
+// `registerCoin`) isn't assignable to `LayeredTag<any, { fullCoinType:
 // string }, any, any>`. The pool spec's coin slots accept any tag
 // (`AnyCoinTag`); the `fullCoinType` field is read structurally
 // inside the body.
-export type DeepbookCoinRef = string | Ref<any, { readonly fullCoinType: string }, any, any>;
+export type DeepbookCoinRef =
+	| string
+	| LayeredTag<any, { readonly fullCoinType: string }, any, any>;
 
-export type AnyCoinTag = Ref<any, any, any, any>;
+export type AnyCoinTag = LayeredTag<any, any, any, any>;
 
 export interface DeepbookPoolSpec<
 	Base extends string | AnyCoinTag = string | AnyCoinTag,

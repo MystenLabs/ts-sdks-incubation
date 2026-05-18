@@ -25,6 +25,7 @@ import { Effect, FileSystem } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { existsSync } from 'node:fs';
 import { join as joinPath } from 'node:path';
+import { DockerLabel } from '../identity.js';
 import { isPidAlive as isPidAliveShared } from '../process-liveness.js';
 import { Registry, type RegistryEntry } from '../registry.js';
 import { ROUTER_CONTAINER, ROUTER_NETWORK } from './router.js';
@@ -90,9 +91,9 @@ const listContainers = (spawner: Spawner): Effect.Effect<ReadonlyArray<RawContai
 			'ps',
 			'-a',
 			'--filter',
-			'label=devstack.app',
+			`label=${DockerLabel.APP}`,
 			'--format',
-			'{{.ID}}\t{{.Label "devstack.app"}}\t{{.Label "devstack.stack"}}\t{{.Names}}\t{{.State}}\t{{.Status}}',
+			`{{.ID}}\t{{.Label "${DockerLabel.APP}"}}\t{{.Label "${DockerLabel.STACK}"}}\t{{.Names}}\t{{.State}}\t{{.Status}}`,
 		]);
 		const out = yield* spawner.string(cmd).pipe(Effect.orElseSucceed(() => ''));
 		const rows: Array<RawContainer> = [];
@@ -145,7 +146,7 @@ const listNetworks = (spawner: Spawner): Effect.Effect<ReadonlyArray<RawNetwork>
 			'ls',
 			'-q',
 			'--filter',
-			'label=devstack.app',
+			`label=${DockerLabel.APP}`,
 		]);
 		const idsText = yield* spawner.string(lsCmd).pipe(Effect.orElseSucceed(() => ''));
 		const ids = idsText
@@ -157,7 +158,7 @@ const listNetworks = (spawner: Spawner): Effect.Effect<ReadonlyArray<RawNetwork>
 			'network',
 			'inspect',
 			'--format',
-			'{{.Id}}\t{{.Name}}\t{{index .Labels "devstack.app"}}\t{{index .Labels "devstack.stack"}}',
+			`{{.Id}}\t{{.Name}}\t{{index .Labels "${DockerLabel.APP}"}}\t{{index .Labels "${DockerLabel.STACK}"}}`,
 			...ids,
 		]);
 		const out = yield* spawner.string(inspectCmd).pipe(Effect.orElseSucceed(() => ''));
@@ -193,7 +194,7 @@ const listVolumes = (spawner: Spawner): Effect.Effect<ReadonlyArray<RawVolume>> 
 			'ls',
 			'-q',
 			'--filter',
-			'label=devstack.app',
+			`label=${DockerLabel.APP}`,
 		]);
 		const namesText = yield* spawner.string(lsCmd).pipe(Effect.orElseSucceed(() => ''));
 		const names = namesText
@@ -208,7 +209,7 @@ const listVolumes = (spawner: Spawner): Effect.Effect<ReadonlyArray<RawVolume>> 
 			'volume',
 			'inspect',
 			'--format',
-			'{{.Name}}\t{{index .Labels "devstack.app"}}\t{{index .Labels "devstack.stack"}}',
+			`{{.Name}}\t{{index .Labels "${DockerLabel.APP}"}}\t{{index .Labels "${DockerLabel.STACK}"}}`,
 			...names,
 		]);
 		const out = yield* spawner.string(inspectCmd).pipe(Effect.orElseSucceed(() => ''));
@@ -861,7 +862,7 @@ export const collectRouterInfo = (): Effect.Effect<
 			'--filter',
 			'label=traefik.enable=true',
 			'--format',
-			'{{.Label "devstack.app"}}',
+			`{{.Label "${DockerLabel.APP}"}}`,
 		]);
 		const backendsOut = yield* spawner.string(backendsCmd).pipe(Effect.orElseSucceed(() => ''));
 		const lines = backendsOut

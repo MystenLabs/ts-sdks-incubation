@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
-import { basename, resolve } from 'node:path';
 import type { PlaywrightTestConfig } from '@playwright/test';
+import { conventionalUrl } from '../runtime/conventional-routes.js';
 import { discoverManifestPath } from '../runtime/discover-manifest.js';
 import { EndpointName } from '../runtime/endpoint-names.js';
 import { fromManifest } from '../runtime/manifest-loader.js';
@@ -107,8 +107,9 @@ function resolveEndpoint(
 				`[devstack/playwright] no manifest at <state-dir>/stacks/<stack>/manifest.json ` +
 					`and endpoint '${endpoint}' has no conventional URL fallback. ` +
 					`Run \`devstack apply\` first to write a manifest, or use one of the ` +
-					`supported endpoints (dev-server, wallet-app, sui-rpc, sui-faucet, ` +
-					`sui-graphql, walrus-aggregator, walrus-publisher, seal-key-server).`,
+					`supported endpoints (frontend.dev-server, dev-server, wallet-app, ` +
+					`sui-rpc, sui-faucet, sui-graphql, walrus-aggregator, walrus-publisher, ` +
+					`seal-key-server).`,
 			);
 		}
 		return { name: endpoint, url: fallback };
@@ -165,49 +166,3 @@ function resolveEndpoint(
 	}
 	return { name: endpoint, url };
 }
-
-/** Endpoint → (router-service-name, traefik entrypoint port) mapping.
- *  Matches the supervisor's wire-up in `services/{dev,wallet,sui,walrus,
- *  seal}` — each routes via `<stack>.<service>.<app>.localhost:<port>`
- *  on the matching traefik entrypoint. Used when the manifest doesn't
- *  exist yet so `webServer({ endpoint })` can still produce a URL for
- *  playwright's config-load step. */
-const CONVENTIONAL_ROUTES: Record<string, { service: string; port: number }> = {
-	[EndpointName.DEV_SERVER_FALLBACK]: { service: 'dev', port: 5175 },
-	[EndpointName.WALLET_APP]: { service: 'wallet', port: 5180 },
-	[EndpointName.SUI_RPC]: { service: 'sui', port: 9000 },
-	[EndpointName.SUI_FAUCET]: { service: 'faucet', port: 9123 },
-	[EndpointName.SUI_GRAPHQL]: { service: 'graphql', port: 9125 },
-	[EndpointName.WALRUS_AGGREGATOR]: { service: 'walrus-agg', port: 9185 },
-	[EndpointName.WALRUS_PUBLISHER]: { service: 'walrus-pub', port: 9185 },
-	[EndpointName.SEAL_KEY_SERVER]: { service: 'seal', port: 2024 },
-};
-
-const conventionalUrl = (endpoint: string): string | undefined => {
-	const route = CONVENTIONAL_ROUTES[endpoint];
-	if (route === undefined) return undefined;
-	const stack = process.env.DEVSTACK_STACK ?? 'main';
-	const app = readAppName(process.cwd()) ?? basename(process.cwd());
-	const host =
-		stack === 'main'
-			? `${route.service}.${app}.localhost`
-			: `${stack}.${route.service}.${app}.localhost`;
-	return `http://${host}:${route.port}`;
-};
-
-/** Read the `name` field out of `<dir>/package.json`. Returns the
- *  un-scoped basename so `@org/foo` → `foo`. Mirrors `deriveAppName`
- *  in the engine so the conventional URL fallback matches the
- *  supervisor's eventual routing. */
-const readAppName = (dir: string): string | undefined => {
-	try {
-		const pkg = JSON.parse(readFileSync(resolve(dir, 'package.json'), 'utf8')) as {
-			name?: string;
-		};
-		if (typeof pkg.name !== 'string') return undefined;
-		const stripped = pkg.name.replace(/^@[^/]+\//, '').replace(/^[^a-zA-Z0-9]+/, '');
-		return stripped.length > 0 ? stripped : undefined;
-	} catch {
-		return undefined;
-	}
-};

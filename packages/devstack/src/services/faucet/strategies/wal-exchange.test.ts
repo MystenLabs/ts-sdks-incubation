@@ -9,8 +9,8 @@
 import { Cause, Effect, Exit, Option } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 import { Transaction } from '@mysten/sui/transactions';
-import type { Account } from '../../engine/shared.js';
-import { FaucetRequestError } from '../errors.js';
+import type { Account } from '../../../engine/shared.js';
+import { FaucetRequestError } from '../index.js';
 import { walExchangeStrategy } from './wal-exchange.js';
 
 const VALID_ADDR = '0x' + 'd'.repeat(64);

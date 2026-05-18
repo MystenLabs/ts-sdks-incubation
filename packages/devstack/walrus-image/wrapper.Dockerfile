@@ -15,6 +15,15 @@ ARG BASE_IMAGE
 ARG SUI_VERSION
 ARG TARGETARCH
 
+# Sui release-tarball fetch (builder stage). NOTE: a near-identical
+# block lives in `../sui-image/Dockerfile`. The two are intentionally
+# NOT extracted to a shared base — destinations differ (`/sui-bin/sui`
+# here vs `/usr/local/bin/` there) and `dockerImage`'s content-addressed
+# hash walks the whole build context, so widening context to a sibling
+# `_base/` dir would couple unrelated images' cache keys. Version bumps
+# happen via `DEFAULT_SUI_VERSION` in `src/services/sui.ts` +
+# `src/services/walrus/internal.ts`, NOT here. If you edit the curl/tar
+# logic below, mirror the change in `../sui-image/Dockerfile`.
 FROM ubuntu:24.04 AS sui-fetch
 ARG SUI_VERSION
 ARG TARGETARCH

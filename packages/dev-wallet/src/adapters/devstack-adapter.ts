@@ -17,6 +17,7 @@ import { fromBase64, toBase64 } from '@mysten/sui/utils';
 import type { ManagedAccount } from '../types.js';
 import { BaseSignerAdapter } from './base-adapter.js';
 import { buildManagedAccount } from './build-managed-account.js';
+import { DEVSTACK_WALLET_HTTP_PATH } from './devstack-paths.js';
 
 const DEVSTACK_WALLET_FEATURES = [
 	'sui:signTransaction',
@@ -108,7 +109,7 @@ export class DevstackProxySigner extends Signer {
 		if (this.#authToken !== null) {
 			headers['Authorization'] = `Bearer ${this.#authToken}`;
 		}
-		const res = await fetch(`${this.#serverOrigin}/api/v1/devstack/sign-transaction`, {
+		const res = await fetch(`${this.#serverOrigin}${DEVSTACK_WALLET_HTTP_PATH.SIGN_TX}`, {
 			method: 'POST',
 			headers,
 			body: JSON.stringify({
@@ -138,14 +139,17 @@ export class DevstackProxySigner extends Signer {
 		if (this.#authToken !== null) {
 			headers['Authorization'] = `Bearer ${this.#authToken}`;
 		}
-		const res = await fetch(`${this.#serverOrigin}/api/v1/devstack/sign-personal-message`, {
-			method: 'POST',
-			headers,
-			body: JSON.stringify({
-				address: this.#address,
-				messageBytes: toBase64(bytes),
-			}),
-		});
+		const res = await fetch(
+			`${this.#serverOrigin}${DEVSTACK_WALLET_HTTP_PATH.SIGN_PERSONAL_MESSAGE}`,
+			{
+				method: 'POST',
+				headers,
+				body: JSON.stringify({
+					address: this.#address,
+					messageBytes: toBase64(bytes),
+				}),
+			},
+		);
 		if (!res.ok) {
 			const body = await res.json().catch(() => ({}));
 			const message = (body as { error?: unknown }).error;
@@ -180,16 +184,12 @@ export interface DevstackSignerAdapterOptions {
  * shipping their private keys into the frontend bundle. All signing happens
  * server-side via the `walletApp()` plugin.
  *
- * The simplest construction reads the manifest's `wallet-app` endpoint:
+ * The simplest construction uses devstack's generated `dapp-kit-config.ts`,
+ * which bakes the wallet adapter wiring at codegen time — apps spread
+ * `devstackDappKitConfig` into `createDAppKit(...)` and never touch the
+ * adapter directly.
  *
- * ```ts
- * import { manifest } from './generated/manifest.js';
- * import { createDevstackAdapterFromManifest } from '@mysten-incubation/dev-wallet/adapters';
- *
- * const adapter = createDevstackAdapterFromManifest(manifest);
- * ```
- *
- * Or thread the URL + token in manually (e.g. from a non-manifest source):
+ * To construct one manually (e.g. from a non-manifest source):
  *
  * ```ts
  * const adapter = new DevstackSignerAdapter({
@@ -241,7 +241,9 @@ export class DevstackSignerAdapter extends BaseSignerAdapter {
 		if (this.#authToken !== null) {
 			headers['Authorization'] = `Bearer ${this.#authToken}`;
 		}
-		const res = await fetch(`${this.#serverOrigin}/api/v1/devstack/accounts`, { headers });
+		const res = await fetch(`${this.#serverOrigin}${DEVSTACK_WALLET_HTTP_PATH.ACCOUNTS}`, {
+			headers,
+		});
 		if (res.status === 401 || res.status === 403) throw new AuthError();
 		if (!res.ok) {
 			throw new Error(`Failed to fetch devstack accounts: ${res.statusText}`);

@@ -223,7 +223,7 @@ export interface WalrusOptions {
 /** Walrus factory. Picks the local-cluster path on localnet and the
  *  canonical remote deployment on testnet/mainnet — single source of
  *  truth is `DEVSTACK_NETWORK` (set by the CLI `--network` flag or via
- *  `devstack({ network })`). Returns a Ref carrying the network +
+ *  `devstack({ network })`). Returns a LayeredTag carrying the network +
  *  proxy contracts. */
 export const Walrus = (opts: WalrusOptions = {}): StackMember => {
 	const network = resolveNetwork();

@@ -12,9 +12,11 @@
 // devstack wipe` cleared `main`").
 
 import { Effect, FileSystem, Option, Path } from 'effect';
+import * as nodePath from 'node:path';
 
 export const STATE_DIR_ENV = 'DEVSTACK_STATE_DIR';
 export const STACK_NAME_ENV = 'DEVSTACK_STACK';
+export const APP_DIR_ENV = 'DEVSTACK_APP_DIR';
 const DEFAULT_STATE_DIR = '.devstack';
 const ACTIVE_FILE = 'active';
 const DEFAULT_STACK = 'main';
@@ -23,6 +25,31 @@ const DEFAULT_STACK = 'main';
  *  time so per-test or shell-wrapper overrides applied after module
  *  load take effect. */
 export const stateDir = (): string => process.env[STATE_DIR_ENV] ?? DEFAULT_STATE_DIR;
+
+/** Resolve the app dir from `DEVSTACK_APP_DIR` or `process.cwd()`.
+ *  Read at call time to mirror the rest of the toolchain (per-test or
+ *  shell-wrapper overrides applied after CLI import take effect). */
+export const resolveAppDir = (): string => process.env[APP_DIR_ENV] ?? process.cwd();
+
+/** Resolve the state directory using the canonical CLI precedence:
+ *  explicit `--state-dir` override → `DEVSTACK_STATE_DIR` env →
+ *  `<appDir>/.devstack`. Relative paths are resolved against `appDir`
+ *  (defaults to `resolveAppDir()`); absolute paths are returned as-is.
+ *  `appDir` itself is the caller's responsibility — most CLI commands
+ *  compute it once at action entry and may want to reuse the same
+ *  value across multiple resolutions. */
+export const resolveStateDir = (args: {
+	readonly override: Option.Option<string>;
+	readonly appDir?: string;
+}): string => {
+	const appDir = args.appDir ?? resolveAppDir();
+	const resolve = (raw: string): string =>
+		nodePath.isAbsolute(raw) ? raw : nodePath.join(appDir, raw);
+	if (Option.isSome(args.override)) return resolve(args.override.value);
+	const env = process.env[STATE_DIR_ENV];
+	if (env !== undefined && env.length > 0) return resolve(env);
+	return nodePath.join(appDir, DEFAULT_STATE_DIR);
+};
 
 /** Read `<DEVSTACK_STATE_DIR>/active`, or `None` if missing/empty. */
 export const readActiveStack = (

@@ -7,8 +7,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { devstack } from './devstack.js';
 import { Account } from '../services/account.js';
 import { Package } from '../services/package.js';
-import { Faucet } from '../faucet/factory.js';
-import type { FaucetStrategy } from '../faucet/service.js';
+import { Faucet } from '../services/faucet/index.js';
+import type { FaucetStrategy } from '../services/faucet/index.js';
 
 describe('devstack(...) composition', () => {
 	it('returns a handle with `layer`, `run`, and `runMain`', () => {

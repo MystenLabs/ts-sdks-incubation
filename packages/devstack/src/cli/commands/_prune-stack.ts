@@ -10,18 +10,23 @@
 // with attached endpoints we couldn't kill) never aborts the others.
 // The returned `PruneResult` carries the counts the caller renders.
 
-import { Data, Effect, FileSystem } from 'effect';
+import { Effect, FileSystem, Option, Schema } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { join as joinPath } from 'node:path';
+import { DockerLabel } from '../../engine/identity.js';
 import { isHolderLive } from '../../engine/process-liveness.js';
 import { Registry, type RegistryNetwork } from '../../engine/registry.js';
+import { resolveStateDir } from '../stack-resolution.js';
 
-export class PruneStackBlockedError extends Data.TaggedError('PruneStackBlockedError')<{
-	readonly app: string;
-	readonly stack: string;
-	readonly lockPath: string;
-	readonly holderPid: number;
-}> {}
+export class PruneStackBlockedError extends Schema.TaggedErrorClass<PruneStackBlockedError>()(
+	'PruneStackBlockedError',
+	{
+		app: Schema.String,
+		stack: Schema.String,
+		lockPath: Schema.String,
+		holderPid: Schema.Number,
+	},
+) {}
 
 // Inspect the per-stack state.json.lock; if it carries a live holder
 // (start-time-aware liveness defends against PID reuse, cross-host
@@ -107,14 +112,6 @@ export interface PruneStackResult {
 	readonly removedImages: ReadonlyArray<string>;
 }
 
-export const resolveStateDir = (override?: string): string => {
-	if (override !== undefined && override.length > 0) return override;
-	const envOverride = process.env.DEVSTACK_STATE_DIR;
-	if (envOverride !== undefined && envOverride.length > 0) return envOverride;
-	const appDir = process.env.DEVSTACK_APP_DIR ?? process.cwd();
-	return joinPath(appDir, '.devstack');
-};
-
 // `docker ps -aq --filter label=devstack.app=<app> --filter
 // label=devstack.stack=<stack>` then `docker rm -f` each.
 const killDevstackContainers = (
@@ -127,9 +124,9 @@ const killDevstackContainers = (
 			'ps',
 			'-aq',
 			'--filter',
-			`label=devstack.app=${app}`,
+			`label=${DockerLabel.APP}=${app}`,
 			'--filter',
-			`label=devstack.stack=${stack}`,
+			`label=${DockerLabel.STACK}=${stack}`,
 		]);
 		const idsText = yield* spawner.string(lsCmd).pipe(Effect.orElseSucceed(() => ''));
 		const ids = idsText
@@ -159,9 +156,9 @@ const removeDevstackNetworks = (
 			'ls',
 			'-q',
 			'--filter',
-			`label=devstack.app=${app}`,
+			`label=${DockerLabel.APP}=${app}`,
 			'--filter',
-			`label=devstack.stack=${stack}`,
+			`label=${DockerLabel.STACK}=${stack}`,
 		]);
 		const idsText = yield* spawner.string(lsCmd).pipe(Effect.orElseSucceed(() => ''));
 		const ids = idsText
@@ -191,9 +188,9 @@ const removeDevstackVolumes = (
 			'ls',
 			'-q',
 			'--filter',
-			`label=devstack.app=${app}`,
+			`label=${DockerLabel.APP}=${app}`,
 			'--filter',
-			`label=devstack.stack=${stack}`,
+			`label=${DockerLabel.STACK}=${stack}`,
 		]);
 		const namesText = yield* spawner.string(lsCmd).pipe(Effect.orElseSucceed(() => ''));
 		const names = namesText
@@ -362,7 +359,9 @@ export const pruneStack = (
 		const fs = yield* FileSystem.FileSystem;
 		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 		const registry = yield* Registry;
-		const stateDir = resolveStateDir(options.stateDir);
+		const stateDir = resolveStateDir({
+			override: options.stateDir !== undefined ? Option.some(options.stateDir) : Option.none(),
+		});
 
 		// State-store lock check at the lowest mutating layer. Both `wipe`
 		// and `prune` already do similar live-supervisor checks in their

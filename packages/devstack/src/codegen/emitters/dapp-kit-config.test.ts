@@ -142,6 +142,12 @@ describe('DappKitConfigEmitter', () => {
 			expect(body).toContain('"url": "http://wallet.test-app.localhost:5180"');
 			expect(body).toContain('createDevstackAdapterFromManifest');
 			expect(body).toContain('devstackWalletInitializer');
+			// Theme 3d invariant — the generated module imports NO Manifest
+			// types from devstack or dev-wallet. The wallet shape is a baked
+			// literal whose type TS infers; structural compatibility with
+			// `DevstackAdapterManifest` is checked at the call site.
+			expect(body).not.toContain('DevstackAdapterManifest');
+			expect(body).not.toContain("from '@mysten-incubation/devstack");
 		}).pipe(Effect.provide(Layer.mergeAll(RegistriesLive, IdentityLive, ExtrasLive(undefined)))),
 	);
 

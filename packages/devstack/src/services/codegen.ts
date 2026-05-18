@@ -1,4 +1,4 @@
-// Codegen(opts) — the canonical codegen Ref. Runs a list of emitter
+// Codegen(opts) — the canonical codegen LayeredTag. Runs a list of emitter
 // plug-ins against the resolved Package set at acquire time.
 //
 // Architecture:
@@ -31,7 +31,7 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { Effect } from 'effect';
-import { tag, setPhase, type Ref } from '../advanced/tag.js';
+import { tag, setPhase, type LayeredTag } from '../advanced/tag.js';
 import type { Emitter, CodegenContext, CodegenPackage } from '../codegen/define-emitter.js';
 import { BindingsEmitter } from '../codegen/emitters/bindings.js';
 import { DappKitConfigEmitter } from '../codegen/emitters/dapp-kit-config.js';
@@ -112,12 +112,12 @@ export interface CodegenOptions {
 	 *  `KnownPackage(...)` refs are silently skipped at emit time by
 	 *  emitters that need Move source (e.g. `BindingsEmitter`). The
 	 *  type is loose because TS treats the shape parameter as invariant
-	 *  on `Ref`; the emitter validates package shape at runtime.
+	 *  on `LayeredTag`; the emitter validates package shape at runtime.
 	 *
 	 *  Defaults to `[]` — Phase-6 default-provider auto-includes every
 	 *  `Package(...)` in the stack that doesn't opt out via
 	 *  `{ codegen: false }`, so most users omit this. */
-	readonly packages?: ReadonlyArray<Ref<any, any, any, any>>;
+	readonly packages?: ReadonlyArray<LayeredTag<any, any, any, any>>;
 	/** Emitter plug-ins to run. Run in declaration order; one emitter's
 	 *  output isn't visible to another (each emitter is independent).
 	 *  Defaults to `[BindingsEmitter(), StackHandleEmitter(),
@@ -131,7 +131,7 @@ export interface CodegenOptions {
 	readonly name?: string;
 }
 
-/** Resolve a Package Ref's value into the `CodegenPackage` shape every
+/** Resolve a Package LayeredTag's value into the `CodegenPackage` shape every
  *  emitter consumes. Local packages carry `sourcePath`; remote/known
  *  packages don't (emitters that need source filter to entries where
  *  it's defined). */
@@ -154,7 +154,7 @@ const toCodegenPackage = (pkg: Package | LocalPackage): CodegenPackage => {
 	return base;
 };
 
-/** The Codegen Ref. Returns a tag whose value is the resolved
+/** The Codegen LayeredTag. Returns a tag whose value is the resolved
  *  `CodegenContext` (after every emitter has run).
  *
  *  Zero-config: `Codegen({})` (or just `Codegen()`) uses every default —
@@ -188,7 +188,7 @@ export const Codegen = (opts: CodegenOptions = {}) => {
 			for (const ref of packageRefs) {
 				// Skip refs that opted out of codegen at construction time
 				// via `Package(..., { codegen: false })`. The flag is stamped
-				// onto the Ref itself so we can read it without acquiring.
+				// onto the LayeredTag itself so we can read it without acquiring.
 				if ((ref as { __codegenExclude?: boolean }).__codegenExclude === true) continue;
 				const pkg = yield* ref;
 				if (seen.has(pkg.name)) continue;

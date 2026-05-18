@@ -25,6 +25,7 @@ import {
 	PortAllocatorLive,
 	releasePortLock,
 } from './port-allocator.js';
+import { processStartTime } from './process-liveness.js';
 import { reallocatePortsOnConflict } from './docker/port-conflict.js';
 
 // Note: vitest's `setupFiles` (see vitest.config.ts) routes
@@ -287,12 +288,15 @@ describe('claimPortLock / releasePortLock — file lock', () => {
 		}
 	});
 
-	it('claims a fresh port and writes our pid to the lock file', () => {
+	it('claims a fresh port and writes our holder JSON to the lock file', () => {
 		setupTmpDir();
 		const port = 50_001;
 		expect(claimPortLock(port, lockDir)).toBe(true);
 		const written = fs.readFileSync(path.join(lockDir, `${port}.lock`), 'utf8').trim();
-		expect(written).toBe(String(process.pid));
+		const parsed = JSON.parse(written) as { pid: number; startedAt: string; host: string };
+		expect(parsed.pid).toBe(process.pid);
+		expect(typeof parsed.startedAt).toBe('string');
+		expect(typeof parsed.host).toBe('string');
 	});
 
 	it('rejects re-claiming our own port (idempotence is NOT a goal — caller already holds it)', () => {
@@ -313,53 +317,83 @@ describe('claimPortLock / releasePortLock — file lock', () => {
 
 	it('reclaims a stale lock written by a dead pid', () => {
 		// Simulate a previous supervisor crash: write a lock file with
-		// a pid that's guaranteed to be dead, then claim. The `kill(0)`
-		// probe should throw ESRCH; the function deletes the stale
-		// file and writes our own.
+		// a pid that's guaranteed to be dead, then claim. `isHolderLive`
+		// reports dead; the function deletes the stale file and writes
+		// our own.
 		setupTmpDir();
 		const port = 50_003;
 		// Dead pid: we use a max-int pid that no real process can hold.
 		// Linux MAX_PID is typically 2^22; macOS goes a bit higher;
 		// either way 2^31 - 1 is comfortably out of range.
 		const deadPid = 2_147_483_646;
-		fs.writeFileSync(path.join(lockDir, `${port}.lock`), String(deadPid));
+		const staleHolder = { pid: deadPid, startedAt: '', host: os.hostname() };
+		fs.writeFileSync(path.join(lockDir, `${port}.lock`), JSON.stringify(staleHolder));
 
 		expect(claimPortLock(port, lockDir)).toBe(true);
 
-		// The lock file should now contain OUR pid, not the dead one.
-		const reclaimed = fs.readFileSync(path.join(lockDir, `${port}.lock`), 'utf8').trim();
-		expect(reclaimed).toBe(String(process.pid));
+		// The lock file should now contain OUR holder, not the dead one.
+		const reclaimed = JSON.parse(
+			fs.readFileSync(path.join(lockDir, `${port}.lock`), 'utf8').trim(),
+		) as { pid: number };
+		expect(reclaimed.pid).toBe(process.pid);
+	});
+
+	it('reclaims a stale-format lock (pre-Theme-6c bare pid body)', () => {
+		// Pre-Theme-6c locks stored just `String(pid)`. The new
+		// parseHolder rejects that as malformed → reclaim. We are
+		// unreleased; no migration concern.
+		setupTmpDir();
+		const port = 50_010;
+		fs.writeFileSync(path.join(lockDir, `${port}.lock`), String(process.pid));
+
+		expect(claimPortLock(port, lockDir)).toBe(true);
+
+		const reclaimed = JSON.parse(
+			fs.readFileSync(path.join(lockDir, `${port}.lock`), 'utf8').trim(),
+		) as { pid: number };
+		expect(reclaimed.pid).toBe(process.pid);
 	});
 
 	it('refuses to reclaim a lock when the referenced pid is alive', () => {
-		// Use the test runner's own pid as the "live" holder. It IS
-		// alive (we're running in it), so `kill(0)` succeeds and the
-		// claim fails. Real-world equivalent: another supervisor is
-		// actually running and holding the port.
+		// Use the test runner's own pid as the "live" holder, with the
+		// matching startedAt so isHolderLive returns true. Real-world
+		// equivalent: another supervisor is actually running and holding
+		// the port.
 		setupTmpDir();
 		const port = 50_004;
-		fs.writeFileSync(path.join(lockDir, `${port}.lock`), String(process.pid));
+		// Build a holder for THIS process; processStartTime call must
+		// match what the allocator's selfHolder cached. We re-read it
+		// here to keep startedAt synchronized.
+		const liveHolder = {
+			pid: process.pid,
+			startedAt: processStartTime(process.pid) ?? '',
+			host: os.hostname(),
+		};
+		const written = JSON.stringify(liveHolder);
+		fs.writeFileSync(path.join(lockDir, `${port}.lock`), written);
 
 		// Note: process.pid IS alive. The claim should reject.
 		expect(claimPortLock(port, lockDir)).toBe(false);
 
 		// Lock file is untouched.
 		const stillThere = fs.readFileSync(path.join(lockDir, `${port}.lock`), 'utf8').trim();
-		expect(stillThere).toBe(String(process.pid));
+		expect(stillThere).toBe(written);
 	});
 
 	it('reclaims an unreadable / corrupt lock file by overwriting it', () => {
-		// Lock file exists but contains garbage (not a number) — the
-		// pid parse fails and we treat it as stale.
+		// Lock file exists but contains garbage (not JSON) — parseHolder
+		// fails and we treat it as stale.
 		setupTmpDir();
 		const port = 50_005;
-		fs.writeFileSync(path.join(lockDir, `${port}.lock`), 'not-a-pid-at-all');
+		fs.writeFileSync(path.join(lockDir, `${port}.lock`), 'not-a-holder-at-all');
 
 		expect(claimPortLock(port, lockDir)).toBe(true);
 
-		// Overwritten with our pid.
-		const reclaimed = fs.readFileSync(path.join(lockDir, `${port}.lock`), 'utf8').trim();
-		expect(reclaimed).toBe(String(process.pid));
+		// Overwritten with our holder JSON.
+		const reclaimed = JSON.parse(
+			fs.readFileSync(path.join(lockDir, `${port}.lock`), 'utf8').trim(),
+		) as { pid: number };
+		expect(reclaimed.pid).toBe(process.pid);
 	});
 
 	// C1: a lock file we CAN'T READ (EACCES on a multi-user box, EIO on
@@ -473,8 +507,14 @@ describe('PortAllocator.allocate — in-process race guard', () => {
 			const dir = process.env.DEVSTACK_PORT_LOCK_DIR;
 			expect(dir).toBeTruthy();
 			const siblingPid = process.ppid;
+			const siblingHolder = {
+				pid: siblingPid,
+				startedAt: processStartTime(siblingPid) ?? '',
+				host: os.hostname(),
+			};
+			const siblingBody = JSON.stringify(siblingHolder);
 			const siblingLockPath = path.join(dir as string, `${preferred}.lock`);
-			fs.writeFileSync(siblingLockPath, String(siblingPid));
+			fs.writeFileSync(siblingLockPath, siblingBody);
 
 			const [a, b] = yield* Effect.all(
 				[allocator.allocate(preferred), allocator.allocate(preferred)],
@@ -483,7 +523,7 @@ describe('PortAllocator.allocate — in-process race guard', () => {
 			expect(a).not.toBe(b);
 			// Sibling's lock at `preferred` survives untouched.
 			expect(fs.existsSync(siblingLockPath)).toBe(true);
-			expect(fs.readFileSync(siblingLockPath, 'utf8').trim()).toBe(String(siblingPid));
+			expect(fs.readFileSync(siblingLockPath, 'utf8').trim()).toBe(siblingBody);
 
 			// Neither fiber returned `preferred` (the sibling holds it).
 			expect(a).not.toBe(preferred);
@@ -493,10 +533,14 @@ describe('PortAllocator.allocate — in-process race guard', () => {
 			// our pid. If the loser had grabbed the file lock pre-CAS
 			// (old ordering) and then released it on rollback, this read
 			// would race with that release and could ENOENT.
-			const readLock = (port: number) =>
-				fs.readFileSync(path.join(dir as string, `${port}.lock`), 'utf8').trim();
-			expect(readLock(a)).toBe(String(process.pid));
-			expect(readLock(b)).toBe(String(process.pid));
+			const readLockPid = (port: number) =>
+				(
+					JSON.parse(
+						fs.readFileSync(path.join(dir as string, `${port}.lock`), 'utf8').trim(),
+					) as { pid: number }
+				).pid;
+			expect(readLockPid(a)).toBe(process.pid);
+			expect(readLockPid(b)).toBe(process.pid);
 		}).pipe(Effect.provide(Layer.fresh(PortAllocatorLive))),
 	);
 });

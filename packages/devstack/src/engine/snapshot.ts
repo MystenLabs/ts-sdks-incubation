@@ -43,6 +43,7 @@
 import { Effect, FileSystem, Path, Schema } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import * as Docker from './docker.js';
+import { DockerLabel } from './identity.js';
 import { RUNTIME_DIR_NAME } from './service-paths.js';
 
 // Mirror state-store.ts: env var overrides, default to `.devstack`.
@@ -54,14 +55,14 @@ const CONTAINERS_DIR_NAME = 'containers';
 const EXTRAS_DIR_NAME = 'extras';
 const DEFAULT_SNAPSHOTS_DIR = `${STATE_DIR}/snapshots`;
 
-// v3 (current): adds `app` to top-level + `originalImage` per container.
-//   Without `originalImage`, restore can't retag the loaded snapshot
-//   image back to the supervisor's content-addressed base tag — so the
-//   supervisor's `Docker.run` reuse probe sees a name match but image
-//   mismatch and recreates from a fresh base image, running a brand-new
-//   genesis. Chain state is lost. v2 snapshots are still readable by
-//   `list()` but won't restore container content correctly.
-const META_VERSION = 3;
+// Snapshot meta schema version. Closed literal — older versions are
+// not supported. `app` at top-level and `originalImage` per container
+// are both load-bearing: without `originalImage`, restore can't retag
+// the loaded snapshot image back to the supervisor's content-addressed
+// base tag, so the supervisor's `Docker.run` reuse probe sees a name
+// match but image mismatch and recreates from a fresh base image,
+// running a brand-new genesis (chain state lost).
+const META_VERSION = 3 as const;
 
 export class SnapshotError extends Schema.TaggedErrorClass<SnapshotError>()('SnapshotError', {
 	message: Schema.String,
@@ -75,8 +76,8 @@ const ContainerEntry = Schema.Struct({
 	 *  supervisor's content-addressed `devstack-*.image:<hash>` tag).
 	 *  Restore retags the loaded snapshot image to this string so the
 	 *  next `Docker.run`'s name+image match probe finds the snapshot's
-	 *  content. Optional for backwards-compat with v2 snapshots. */
-	originalImage: Schema.optional(Schema.String),
+	 *  content. */
+	originalImage: Schema.String,
 });
 
 const ExtraEntry = Schema.Struct({
@@ -85,18 +86,18 @@ const ExtraEntry = Schema.Struct({
 });
 
 const SnapshotMeta = Schema.Struct({
-	version: Schema.optional(Schema.Number),
+	version: Schema.Literal(META_VERSION),
 	createdAt: Schema.Number,
-	stack: Schema.optional(Schema.String),
+	stack: Schema.String,
 	/** Devstack app identity at save time. Needed at restore time to
 	 *  scope the pre-restore `docker rm -f` to THIS app's stale
 	 *  containers (so a sibling app's stack=main containers aren't
-	 *  nuked). Optional for backwards-compat with v2 snapshots. */
-	app: Schema.optional(Schema.String),
-	network: Schema.optional(Schema.String),
+	 *  nuked). */
+	app: Schema.String,
+	network: Schema.String,
 	containers: Schema.optional(Schema.Array(ContainerEntry)),
 	extras: Schema.optional(Schema.Array(ExtraEntry)),
-	runtimeIncluded: Schema.optional(Schema.Boolean),
+	runtimeIncluded: Schema.Boolean,
 });
 type SnapshotMeta = typeof SnapshotMeta.Type;
 
@@ -109,7 +110,7 @@ const wrapDockerError =
 	(context: string) =>
 	(cause: Docker.DockerError): SnapshotError =>
 		new SnapshotError({
-			message: `${context}: ${cause.op} failed — ${cause.message}`,
+			message: `${context}: ${cause.phase} failed — ${cause.message}`,
 			cause,
 		});
 
@@ -228,9 +229,9 @@ const preCleanupApp = (
 			'ps',
 			'-aq',
 			'--filter',
-			`label=devstack.app=${app}`,
+			`label=${DockerLabel.APP}=${app}`,
 			'--filter',
-			`label=devstack.stack=${stack}`,
+			`label=${DockerLabel.STACK}=${stack}`,
 		]);
 		const text = yield* spawner.string(lsCmd).pipe(Effect.orElseSucceed(() => ''));
 		const ids = text
@@ -256,7 +257,7 @@ export const snapshot = (opts: {
 	/** Devstack app identity at save time. Stored in meta.json so
 	 *  restore can scope the pre-load `docker rm -f` to THIS app's
 	 *  containers (sibling apps that share `stack=main` are unaffected). */
-	app?: string;
+	app: string;
 	/** Stack identity. Defaults to 'main'. */
 	stack?: string;
 	/** Network for path scoping. Defaults to 'localnet'. */
@@ -349,7 +350,7 @@ export const snapshot = (opts: {
 		// tidy for state-only snapshots).
 		const containers = opts.containers ?? [];
 		const containerTars: Array<string> = [];
-		const containerEntries: Array<{ id: string; name: string; originalImage?: string }> = [];
+		const containerEntries: Array<{ id: string; name: string; originalImage: string }> = [];
 		if (containers.length > 0) {
 			yield* fs
 				.makeDirectory(containersDir, { recursive: true })
@@ -358,6 +359,13 @@ export const snapshot = (opts: {
 				const imageName = `devstack-snap:${opts.id}-${container.name}`;
 				const tarPath = path.join(containersDir, `${container.name}.tar`);
 				const originalImage = yield* Docker.inspectContainerImage(container.id);
+				if (originalImage === undefined) {
+					return yield* Effect.fail(
+						new SnapshotError({
+							message: `failed to inspect container ${container.name} (${container.id}): docker reported no image tag`,
+						}),
+					);
+				}
 				// Pause the container around `docker commit` so the
 				// resulting image captures a quiescent writable layer.
 				// Without this, RocksDB / postgres mid-WAL-fsync at
@@ -389,7 +397,7 @@ export const snapshot = (opts: {
 				containerEntries.push({
 					id: container.id,
 					name: container.name,
-					...(originalImage !== undefined ? { originalImage } : {}),
+					originalImage,
 				});
 			}
 		}
@@ -430,7 +438,7 @@ export const snapshot = (opts: {
 			version: META_VERSION,
 			createdAt: Date.now(),
 			stack,
-			...(opts.app !== undefined ? { app: opts.app } : {}),
+			app: opts.app,
 			network,
 			runtimeIncluded: runtimeTar !== undefined,
 			...(containerEntries.length > 0 ? { containers: containerEntries } : {}),
@@ -501,11 +509,10 @@ export const restore = (opts: {
 		// snapshot image. Nuking first guarantees the next `apply`
 		// goes through `fresh` and uses the snapshot's content. Best-
 		// effort: docker daemon down, no matching containers, or
-		// permission errors don't fail the restore.
-		const metaApp = meta?.app;
-		const metaStack = meta?.stack;
-		if (metaApp !== undefined && metaStack !== undefined) {
-			yield* preCleanupApp(spawner, metaApp, metaStack).pipe(Effect.ignore);
+		// permission errors don't fail the restore. Skipped when meta
+		// is unreadable (the only legitimate case post-v3).
+		if (meta !== undefined) {
+			yield* preCleanupApp(spawner, meta.app, meta.stack).pipe(Effect.ignore);
 		}
 
 		// 1. state.json — copy back over the live state-store file.
@@ -553,9 +560,9 @@ export const restore = (opts: {
 				.pipe(Effect.mapError(wrapError(`failed to read ${containersDir}`)));
 			// Index meta.containers by `name` so we can look up
 			// `originalImage` per tarball without a quadratic search.
-			const byName = new Map<string, { originalImage?: string }>();
+			const byName = new Map<string, string>();
 			for (const c of meta?.containers ?? []) {
-				byName.set(c.name, c.originalImage !== undefined ? { originalImage: c.originalImage } : {});
+				byName.set(c.name, c.originalImage);
 			}
 			for (const entry of entries) {
 				if (!entry.endsWith('.tar')) continue;
@@ -564,16 +571,14 @@ export const restore = (opts: {
 					Effect.mapError(wrapDockerError(`failed to load image from ${tarPath}`)),
 				);
 				loadedImages.push(tag);
-				// Retag to originalImage if recorded. Best-effort: an
-				// older v2 snapshot won't have it and falls back to
-				// "loaded but unused" (recreates from a fresh base
-				// image, runs new genesis — explicit upgrade path is
-				// "wipe + re-snapshot under v3").
+				// Retag to originalImage so the supervisor's next
+				// `dockerImage({build})` finds the snapshot's content
+				// under the expected content-addressed tag.
 				const containerName = entry.replace(/\.tar$/, '');
-				const meta_c = byName.get(containerName);
-				if (meta_c?.originalImage !== undefined) {
-					yield* Docker.tagImage(tag, meta_c.originalImage).pipe(
-						Effect.mapError(wrapDockerError(`failed to retag ${tag} -> ${meta_c.originalImage}`)),
+				const originalImage = byName.get(containerName);
+				if (originalImage !== undefined) {
+					yield* Docker.tagImage(tag, originalImage).pipe(
+						Effect.mapError(wrapDockerError(`failed to retag ${tag} -> ${originalImage}`)),
 					);
 				}
 			}
@@ -666,15 +671,15 @@ export const list = (opts?: {
 			.readDirectory(snapshotsDir)
 			.pipe(Effect.mapError(wrapError(`failed to read ${snapshotsDir}`)));
 
-		const results: Array<{ id: string; createdAt: number; stack?: string; network?: string }> = [];
+		const results: Array<{ id: string; createdAt: number; stack: string; network: string }> = [];
 		for (const id of entries) {
 			const meta = yield* readMeta(fs, path.join(snapshotsDir, id, META_FILE_NAME));
 			if (meta === undefined) continue;
 			results.push({
 				id,
 				createdAt: meta.createdAt,
-				...(meta.stack !== undefined ? { stack: meta.stack } : {}),
-				...(meta.network !== undefined ? { network: meta.network } : {}),
+				stack: meta.stack,
+				network: meta.network,
 			});
 		}
 

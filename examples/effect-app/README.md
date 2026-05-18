@@ -1,5 +1,13 @@
 # effect-app
 
+> **Effect-native alternative pattern.** This example composes devstack
+> from an Effect Layer composition directly inside an Effect program —
+> no `devstack.config.ts`, no codegen. **Most apps should use the
+> canonical shape** — see `examples/_template/` for the
+> `devstack.config.ts` + generated-code path. Reach for this pattern
+> when you already have an Effect program and want to embed
+> devstack-managed services in its Layer composition.
+
 Minimal Effect program consuming Devstack via the Ref API. The same
 program runs against a freshly-spun localnet in dev and a remote
 testnet RPC in prod — the network is picked up from

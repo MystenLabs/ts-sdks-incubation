@@ -94,7 +94,7 @@ const SHUTDOWN_LOG_MESSAGE =
 // `Ref<...>` and this alias collapses; for now it survives because the
 // primitives' hand-rolled returns (`walrusLocalCluster`, `sealLocalKeygen`,
 // …) carry `{__layer, __layers, key}` directly without going through
-// `tag`/`provide`/`composeTag`, so they don't satisfy `Ref`'s
+// `tag`/`provide`, so they don't satisfy `Ref`'s
 // Context.Service brand.
 export interface StackMember {
 	readonly __layer: Layer.Layer<any, any, any>;

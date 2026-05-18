@@ -7,6 +7,12 @@
 // are skipped — bindings need the upstream Move source to feed `sui
 // move summary`.
 //
+// Manifest-contract exception: this emitter reads `ctx.packages`
+// directly rather than `gatherManifest()`. `sourcePath` is source-tree
+// data (where the user's Move package lives on disk), not runtime
+// state from a registry, so it deliberately stays outside the manifest
+// schema. Every other emitter reads through `gatherManifest()`.
+//
 // Atomic dir swap (stage → rename existing aside → rename staging in)
 // so a Vite dev server never observes a half-written tree mid-cycle.
 

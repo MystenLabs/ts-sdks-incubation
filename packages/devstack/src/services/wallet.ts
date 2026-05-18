@@ -5,13 +5,13 @@
 
 import { walletApp, type WalletAppOptions } from './wallet/internal.js';
 import type { Account } from '../engine/shared.js';
-import type { Ref } from '../advanced/tag.js';
+import type { LayeredTag } from '../advanced/tag.js';
 
 export interface WalletOptions {
 	/** Account refs whose signers the wallet UI exposes. Each is yielded
 	 *  for ordering so accounts are funded before the wallet accepts
 	 *  signing requests. */
-	readonly accounts: ReadonlyArray<Ref<any, Account, any, any>>;
+	readonly accounts: ReadonlyArray<LayeredTag<any, Account, any, any>>;
 	/** Extra CORS origins, on top of the auto-derived
 	 *  `http://dev.<app>.localhost` and `http://localhost`. */
 	readonly allowedOrigins?: ReadonlyArray<string>;
@@ -23,7 +23,7 @@ export interface WalletOptions {
 	readonly name?: string;
 }
 
-/** Wallet UI factory. Returns a Ref. */
+/** Wallet UI factory. Returns a LayeredTag. */
 export const Wallet = (opts: WalletOptions) => {
 	const walletOpts: WalletAppOptions<string> = {
 		accounts: opts.accounts,

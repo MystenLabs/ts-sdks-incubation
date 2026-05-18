@@ -85,6 +85,32 @@ export interface RouterEntrypoint {
 	readonly name: string;
 	readonly port: number;
 }
+// NOTE: these are traefik entrypoint names — a separate contract from
+// `runtime/endpoint-names.ts`'s `EndpointName` registry. Three values
+// (`sui-rpc`, `sui-faucet`, `sui-graphql`) coincidentally match because
+// the supervisor uses the same string for both labels; the rest
+// (`walrus`, `seal`, `wallet`, `vite`) intentionally differ. Don't
+// import `EndpointName` here — the registries serve different audiences.
+/**
+ * Static routing table for in-stack services that need a dedicated
+ * proxy hop through the shared traefik router. Each entry declares one
+ * traefik entrypoint: a `name` (string, must match the value upstream
+ * primitives pass as `RouterLabel.entrypoint` / `FileProviderEntry.entrypoint`)
+ * and a `port` (number, the loopback host port the entrypoint binds and
+ * the address traefik listens on inside the container). Both fields are
+ * required; there are no optional fields.
+ *
+ * The list is closed today: devstack ships a fixed traefik image and the
+ * entrypoint set is baked in at build time, not user-extensible. If a
+ * plugin author needs to register a custom entrypoint at runtime, this
+ * is the contract their data must satisfy — but no such hook exists yet.
+ *
+ * Consumed at:
+ *   - `routerEntrypoint` (line 124) — lookup by name for label validation.
+ *   - `runRouterFresh` port-publish loop (line 268) — generates `-p` flags.
+ *   - `runRouterFresh` entrypoint-address loop (line 298) — generates
+ *     `--entrypoints.<name>.address=:<port>` traefik flags.
+ */
 export const ROUTER_ENTRYPOINTS: ReadonlyArray<RouterEntrypoint> = [
 	{ name: 'sui-rpc', port: 9000 },
 	{ name: 'sui-faucet', port: 9123 },
@@ -186,7 +212,7 @@ const ensureDynamicDir = (): Effect.Effect<void, DockerError> =>
 		try: () => nodeFs.mkdir(routerDynamicDir(), { recursive: true }),
 		catch: (cause) =>
 			new DockerError({
-				op: 'router.dynamic-dir',
+				phase: 'router.dynamic-dir',
 				message: `failed to ensure traefik dynamic dir at ${routerDynamicDir()}`,
 				cause,
 			}),
@@ -433,7 +459,7 @@ const writeCorsMiddleware = (): Effect.Effect<void, DockerError> =>
 			try: () => writeFileAtomic(path, CORS_MIDDLEWARE_YAML),
 			catch: (cause) =>
 				new DockerError({
-					op: 'router.file-provider',
+					phase: 'router.file-provider',
 					message: `failed to write cors middleware YAML at ${path}`,
 					cause,
 				}),
@@ -453,7 +479,7 @@ export const writeFileProvider = (entry: FileProviderEntry): Effect.Effect<strin
 			try: () => writeFileAtomic(path, renderFileProvider(entry)),
 			catch: (cause) =>
 				new DockerError({
-					op: 'router.file-provider',
+					phase: 'router.file-provider',
 					message: `failed to write file-provider YAML at ${path}`,
 					cause,
 				}),

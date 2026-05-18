@@ -2,7 +2,7 @@ import { Effect, Stream } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { inheritedHostEnv } from '../../engine/safe-env.js';
 import { HostProcessError } from '../../engine/errors.js';
-import { tag, type Ref } from '../tag.js';
+import { tag, type LayeredTag } from '../tag.js';
 
 export interface HostScriptResult {
 	readonly exitCode: number;
@@ -15,7 +15,7 @@ export interface HostScriptOptions<Name extends string, E, R> {
 	readonly args?: ReadonlyArray<string>;
 	readonly env?: Record<string, string> | Effect.Effect<Record<string, string>, E, R>;
 	readonly cwd?: string;
-	readonly dependsOn?: ReadonlyArray<Ref<any, any, any, any>>;
+	readonly dependsOn?: ReadonlyArray<LayeredTag<any, any, any, any>>;
 	/**
 	 * Wall-clock budget for the entire spawn. On expiry the spawner's
 	 * finalizer SIGTERMs the child, then SIGKILLs after `gracePeriodMs` if
@@ -73,7 +73,7 @@ export const hostScript = <const Name extends string, E = never, R = never>(
 
 			const mapError = (cause: unknown): HostProcessError =>
 				new HostProcessError({
-					command: options.command,
+					phase: options.command,
 					message: `hostScript '${options.name}'`,
 					cause,
 				});
@@ -96,7 +96,7 @@ export const hostScript = <const Name extends string, E = never, R = never>(
 					orElse: () =>
 						Effect.fail(
 							new HostProcessError({
-								command: options.command,
+								phase: options.command,
 								message: `hostScript '${options.name}' timed out after ${timeoutMs}ms`,
 							}),
 						),

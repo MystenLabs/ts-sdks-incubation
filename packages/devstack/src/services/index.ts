@@ -1,24 +1,32 @@
 // `@mysten-incubation/devstack/services` — INTERNAL barrel. Consumed by
 // the root `src/index.ts` and by `src/advanced/index.ts`; not a public
-// subpath itself. Holds the factory surface (Ref-producing functions),
+// subpath itself. Holds the factory surface (LayeredTag-producing functions),
 // the canonical interface tag classes, and the shape/Schema types each
 // factory ships.
 //
 // Codegen emitters (BindingsEmitter, …) and faucet strategies
-// (suiHttpStrategy, defineStrategy, FaucetRequestError, …) deliberately
+// (suiHttpStrategy, FaucetRequestError, …) deliberately
 // live ONLY on `/advanced` — they're plugin-author surface, not part of
-// the high-level Ref-factory pillar this barrel curates. The advanced
+// the high-level LayeredTag-factory pillar this barrel curates. The advanced
 // barrel imports them directly from `../codegen/...` / `../faucet/...`,
 // so re-exporting them here would duplicate without adding reach.
 //
 // Naming rule:
 //   - Factories take the plain noun (`Sui`, `Account`, `Package`, …).
-//   - Context.Service tag classes carry a `Tag` suffix (`SuiTag`,
-//     `AccountTag`, `PackageTag`, `CoinTag`, …). The underlying Context
-//     key (`'@devstack/<Tag>'`) is the runtime identity.
+//   - `<Name>Tag` (PascalCase class) — a bare `Context.Service` class.
+//     Singleton services declare these (e.g., `SuiTag`, `FaucetTag`,
+//     `PackageTag`, `CoinTag`). The underlying Context key
+//     (`'@devstack/<Tag>'`) is the runtime identity. Effect-native pattern.
+//   - `LayeredTag<Name, A, R, E>` (from `'../advanced/tag.js'`) — the
+//     user-facing yieldable bundle every factory returns. Composition of
+//     Tag + bundled Layer + UI metadata (`__kind`, `__displayTitle`,
+//     `__watchPaths`, brand symbol). Yield it inside an Effect to get the
+//     resolved shape; pass it as `signer`/`needs`/etc. to compose stacks.
 //   - Shape types take the plain noun (`Sui`, `Account`, `Coin`,
 //     `WalrusNetwork`, …). Where a factory shares the same noun, the
 //     type and value coexist via TS's separate type/value namespaces.
+//   - No alias for a factory's return type — reach for
+//     `ReturnType<typeof Factory>` if you need to spell it.
 
 // ── Factories ──
 export { Sui, type SuiOptions, SuiTag } from './sui.js';
@@ -55,7 +63,7 @@ export {
 	DeepbookAdminTag,
 	DeepbookMarketMakerTag,
 } from './deepbook.js';
-export { Account, type AccountTag } from './account.js';
+export { Account } from './account.js';
 export {
 	Package,
 	type PackageOptions,
@@ -72,7 +80,5 @@ export { Dev, type DevOptions } from './dev.js';
 export { Wallet, type WalletOptions } from './wallet.js';
 export { Codegen, type CodegenOptions, DEFAULT_CODEGEN_OUTPUT } from './codegen.js';
 export { KnownPackage, type KnownPackageOptions } from './known-package.js';
-export { Faucet, type FaucetOptions } from '../faucet/factory.js';
-export { FaucetTag } from '../faucet/service.js';
-export { type AccountRef, type PackageRef } from './ref.js';
-export { type Ref } from '../advanced/tag.js';
+export { Faucet, type FaucetOptions, FaucetTag } from './faucet/index.js';
+export { type LayeredTag } from '../advanced/tag.js';

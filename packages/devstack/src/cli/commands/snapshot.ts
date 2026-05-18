@@ -25,7 +25,7 @@ import { randomBytes } from 'node:crypto';
 import { wrapCause } from '../loaders.js';
 import { failAlreadyReported } from '../already-reported.js';
 import { resolveStack, stateDir } from '../stack-resolution.js';
-import { deriveAppName } from '../../engine/identity.js';
+import { deriveAppName, DockerLabel } from '../../engine/identity.js';
 import { list as listSnapshots, restore, snapshot } from '../../engine/snapshot.js';
 
 // Action-time reads of DEVSTACK_STATE_DIR — see manifest.ts for the
@@ -111,9 +111,9 @@ const listContainersForAppStack = (
 			'ps',
 			'-a',
 			'--filter',
-			`label=devstack.app=${app}`,
+			`label=${DockerLabel.APP}=${app}`,
 			'--filter',
-			`label=devstack.stack=${stack}`,
+			`label=${DockerLabel.STACK}=${stack}`,
 			'--format',
 			'{{.ID}}\t{{.Names}}',
 		]);

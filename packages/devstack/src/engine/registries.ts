@@ -17,7 +17,7 @@
 // then returns the underlying registry service.
 
 import { Context, Effect, Layer, Ref as EffectRef } from 'effect';
-import type { Ref, TagIdentity } from '../advanced/tag.js';
+import type { LayeredTag, TagIdentity } from '../advanced/tag.js';
 
 export interface PackageRecord {
 	readonly name: string;
@@ -210,7 +210,7 @@ export const publishDeepbookState = (
 const makeRequire =
 	<I, T>(service: Context.Service<I, RegistryShape<T>>) =>
 	<Name extends string, A, R, E>(
-		tag: Ref<Name, A, R, E>,
+		tag: LayeredTag<Name, A, R, E>,
 	): Effect.Effect<RegistryShape<T>, E, R | TagIdentity<Name> | I> =>
 		Effect.gen(function* () {
 			yield* tag;

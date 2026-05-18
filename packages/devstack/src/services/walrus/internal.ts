@@ -37,12 +37,12 @@ import { publishEndpoint, publishPackage, publishWalrusState } from '../../engin
 import { EndpointName } from '../../runtime/endpoint-names.js';
 import { servicePath } from '../../engine/service-paths.js';
 import { StateStore } from '../../engine/state-store.js';
-import { type Ref } from '../../advanced/tag.js';
+import { type LayeredTag } from '../../advanced/tag.js';
 import { WalrusError } from '../../engine/errors.js';
 import type { Account } from '../../engine/shared.js';
 import { SuiTag, suiNetworkName } from '../sui.js';
-import { FaucetTag } from '../../faucet/service.js';
-import { walExchangeStrategy } from '../../faucet/strategies/wal-exchange.js';
+import { FaucetTag } from '../faucet/index.js';
+import { walExchangeStrategy } from '../faucet/strategies/wal-exchange.js';
 import { buildWrapperImage } from './image.js';
 import { deployContracts, resolveExchange } from './deploy.js';
 import { startStorageNodes } from './nodes.js';
@@ -247,10 +247,10 @@ export const acquireLocalCluster = (args: {
 	readonly walrusVersion: string;
 	readonly suiVersion: string;
 	readonly dockerContext: string;
-	readonly upstreamImage: Ref<any, any, any, any>;
-	readonly moveSource: Ref<any, any, any, any> | undefined;
+	readonly upstreamImage: LayeredTag<any, any, any, any>;
+	readonly moveSource: LayeredTag<any, any, any, any> | undefined;
 	readonly movePackagePath: string | undefined;
-	readonly seedAccountTags: ReadonlyArray<Ref<any, Account, any, any>>;
+	readonly seedAccountTags: ReadonlyArray<LayeredTag<any, Account, any, any>>;
 	readonly pushPhase: (phase: string) => Effect.Effect<void>;
 }): Effect.Effect<LocalClusterAcquired, WalrusError, any> =>
 	Effect.gen(function* () {
@@ -507,13 +507,16 @@ export const acquireLocalCluster = (args: {
 		// 5. Exchange object — resolve the wal_exchange package id by
 		//    reading the exchange object's `.type` on chain.
 		// -------------------------------------------------------------
-		// `resolveExchange` issues a `getObject` RPC from the host
-		// supervisor — use `rpc.host` (the routed URL).
+		// Phase -1 (gRPC migration): reuse the supervisor's `Sui.client`
+		// rather than instantiating a fresh JSON-RPC client. The two are
+		// equivalent on the wire (same RPC port) but the seam violation
+		// kept independent client state — content addressing, MVR
+		// overrides, the protobuf transport — that diverged from the
+		// rest of devstack the moment any of those grew configuration.
 		const exchange = yield* resolveExchange({
-			rpcUrl: sui.rpc.host,
+			client: sui.client,
 			walrusPackageId: deploy.walrusPackageId,
 			exchangeObject: deploy.exchangeObject,
-			network: sui.network,
 		});
 
 		// -------------------------------------------------------------
@@ -787,30 +790,34 @@ const swapSuiForWalCached = (args: {
 		void args.walrusPackageId;
 	});
 
-// Read a single account's WAL balance via `SuiJsonRpcClient.getBalance`.
-// Returns 0 on any error so the cache-verify path falls through to a
-// re-swap cleanly (better to over-seed than under-seed). The cast to
-// `{ getBalance }` keeps this resilient to test mocks that satisfy
-// `Sui` with a minimal `client` (`.core` only) — those land in
-// the catch branch and we re-seed, which is the safer default.
+// Read a single account's WAL balance via `client.core.listCoins` and
+// sum across the returned page(s). Returns 0 on any error so the
+// cache-verify path falls through to a re-swap cleanly (better to
+// over-seed than under-seed). Phase -1 (gRPC migration): the sui-fork
+// upstream `todo!()`s `getBalance` (mitigated by Phase 1's adapter
+// guard), and the gRPC `getBalance` shape changed materially; summing
+// `listCoins` is the lowest-common-denominator path that works on
+// both localnet and fork modes. Single-page (default limit) is
+// sufficient: any seed-funded address has fewer than ~50 WAL coin
+// objects in practice.
 const probeWalBalance = (args: {
 	address: string;
 	walType: string;
 }): Effect.Effect<bigint, WalrusError, SuiTag> =>
 	Effect.gen(function* () {
 		const sui = yield* SuiTag;
-		const client = sui.client as unknown as {
-			readonly getBalance?: (a: {
-				owner: string;
-				coinType: string;
-			}) => Promise<{ totalBalance: string }>;
-		};
-		if (typeof client.getBalance !== 'function') {
+		// Defensive: test mocks may satisfy `Sui` with a minimal `client`
+		// (`.core` only) or no `listCoins` at all. Treat the absence the
+		// same way the old `getBalance` cast did — re-seed (returning
+		// 0 here) is the safer default.
+		const core = (sui.client as unknown as { readonly core?: unknown }).core;
+		const listCoins = (core as { readonly listCoins?: unknown } | undefined)?.listCoins;
+		if (typeof listCoins !== 'function') {
 			return 0n;
 		}
-		const raw = yield* Effect.tryPromise({
+		const response = yield* Effect.tryPromise({
 			try: () =>
-				client.getBalance!({
+				sui.client.core.listCoins({
 					owner: args.address,
 					coinType: args.walType,
 				}),
@@ -821,11 +828,17 @@ const probeWalBalance = (args: {
 					cause,
 				}),
 		});
-		try {
-			return BigInt(raw.totalBalance);
-		} catch {
-			return 0n;
+		let sum = 0n;
+		for (const coin of response.objects) {
+			try {
+				sum += BigInt(coin.balance);
+			} catch {
+				// Skip an unparseable balance string rather than fail the
+				// whole probe — over-seeding on a glitched coin row is
+				// the safer fallback.
+			}
 		}
+		return sum;
 	});
 
 const swapSuiForWal = (

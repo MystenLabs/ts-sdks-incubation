@@ -236,11 +236,11 @@ describe('EngineHandle.markFailed root-cause extraction', () => {
 			const engine = yield* buildEngine();
 			yield* engine.seedTags([{ key: 'publish.demo', kind: 'action' }]);
 			const root = new SuiCliError({
-				op: 'sui move build',
+				phase: 'sui move build',
 				message: "sui move build exited 2: error: unexpected argument '--json' found",
 			});
 			const wrapped = new PublishError({
-				stage: 'build',
+				phase: 'build',
 				message: 'publishMove(demo): build failed',
 				cause: root,
 			});
@@ -261,7 +261,7 @@ describe('EngineHandle.markFailed root-cause extraction', () => {
 			const engine = yield* buildEngine();
 			yield* engine.seedTags([{ key: 'sui.localnet', kind: 'service' }]);
 			const docker = new DockerError({
-				op: 'docker run',
+				phase: 'docker run',
 				message: 'docker run — exit 125',
 				stderr: 'Error response from daemon: pull access denied',
 				exitCode: 125,

@@ -17,7 +17,7 @@
 
 import { Effect } from 'effect';
 import { hostProcess, type HostProcessOptions, type ReadyProbe } from './dev/internal.js';
-import type { Ref } from '../advanced/tag.js';
+import type { LayeredTag } from '../advanced/tag.js';
 import { EndpointName } from '../runtime/endpoint-names.js';
 
 export interface DevOptions<E = never, R = never> {
@@ -46,8 +46,8 @@ export interface DevOptions<E = never, R = never> {
 	 *  `port:` is set. HTTP probe URLs support `{port}` substitution. */
 	readonly ready?: ReadyProbe;
 	/** Refs this dev server depends on (must be acquired first). Accepts
-	 *  any Ref or StackMember — the supervisor yields each for ordering. */
-	readonly needs?: ReadonlyArray<Ref<any, any, any, any> | { readonly __layer: unknown }>;
+	 *  any LayeredTag or StackMember — the supervisor yields each for ordering. */
+	readonly needs?: ReadonlyArray<LayeredTag<any, any, any, any> | { readonly __layer: unknown }>;
 	/** Override tag name. Defaults to `'frontend.dev-server'`. */
 	readonly name?: string;
 }
@@ -66,7 +66,7 @@ const renderReadyProbe = (probe: ReadyProbe, port: number): ReadyProbe => {
 	return { ...probe, url: renderTemplate(probe.url, port) };
 };
 
-/** The dev-server factory. Returns a Ref that, once acquired, runs the
+/** The dev-server factory. Returns a LayeredTag that, once acquired, runs the
  *  command, registers a traefik route for it under `dev.<app>.localhost`,
  *  and publishes the URL into the endpoint registry. */
 export const Dev = <E = never, R = never>(opts: DevOptions<E, R>) => {
@@ -85,7 +85,7 @@ export const Dev = <E = never, R = never>(opts: DevOptions<E, R>) => {
 		...(opts.env !== undefined ? { env: opts.env } : {}),
 		...(opts.ready !== undefined ? { readyProbe: opts.ready } : {}),
 		...(opts.needs !== undefined
-			? { dependsOn: opts.needs as ReadonlyArray<Ref<any, any, any, any>> }
+			? { dependsOn: opts.needs as ReadonlyArray<LayeredTag<any, any, any, any>> }
 			: {}),
 		...(opts.port !== undefined
 			? {

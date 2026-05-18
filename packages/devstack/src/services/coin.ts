@@ -1,5 +1,5 @@
 import { Effect } from 'effect';
-import { tag, setPhase, type Ref } from '../advanced/tag.js';
+import { tag, setPhase, type LayeredTag } from '../advanced/tag.js';
 import { publishCoin } from '../engine/registries.js';
 import { toSdkCoin } from '../services/package.js';
 
@@ -50,7 +50,7 @@ export interface RegisterCoinResult {
 // to carry `packageId`.
 export interface RegisterCoinOptions<P extends { readonly packageId: string }> {
 	readonly name: string;
-	readonly package: Ref<any, P, any, any>;
+	readonly package: LayeredTag<any, P, any, any>;
 	readonly module: string;
 	readonly type: string;
 	readonly decimals: number;

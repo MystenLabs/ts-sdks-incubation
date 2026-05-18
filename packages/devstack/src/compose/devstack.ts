@@ -5,17 +5,18 @@
 // manifest emitter so the on-disk `.devstack/manifest.json` lands as a
 // scoped side effect of acquiring the stack.
 
-import { Effect, type Scope } from 'effect';
+import { Effect, Layer, Ref, type Scope } from 'effect';
 import {
 	defineDevstack,
 	type DevstackHandle,
 	type DevstackConfig,
 	type StackMember,
 } from '../engine/supervisor.js';
-import { tag } from '../advanced/tag.js';
+import { DevstackTagBrand, tag } from '../advanced/tag.js';
 import { emitManifestV4 } from '../runtime/manifest-emit.js';
 import type { ExtrasInput, ExtrasResolved } from '../engine/extras.js';
 import type { ManifestError } from '../engine/errors.js';
+import type { EngineHandleShape } from '../engine/engine.js';
 import {
 	type AccountRegistry,
 	type CoinRegistry,
@@ -26,11 +27,70 @@ import {
 	type SuiStateRegistry,
 	type WalrusStateRegistry,
 } from '../engine/registries.js';
+import type {
+	RendererFactory,
+	RendererKind,
+	RendererMount,
+	RendererMountDeps,
+	RendererResolver,
+} from '../engine/renderer.js';
+import { silentRendererFactory } from '../engine/renderer.js';
 import type { Identity } from '../engine/identity.js';
 import type { Manifest } from '../runtime/manifest-schema.js';
-import { Faucet } from '../faucet/factory.js';
+import { Faucet } from '../services/faucet/index.js';
+import { startPlainRenderer } from '../tui/plain.js';
+import { startTuiOnce, TuiLoggerLayer } from '../tui/index.js';
 import { fillDefaults } from './defaults.js';
-import { defaultRendererResolver } from './renderer-factories.js';
+
+// Concrete renderer factories — bridge between `engine/renderer.ts`'s
+// abstract `RendererFactory` contract and the concrete TUI / plain
+// renderers in `tui/`. Lives here (not in `engine/`) so the supervisor
+// itself stays out of the upward import chain into `tui/`.
+
+/** TUI factory — mounts ink ONCE for the supervisor lifetime via
+ *  `startTuiOnce()`, then redirects the cycle engine into the (stable)
+ *  proxy on every `install()`. Logger layer routes `Effect.log*` into
+ *  the engine's bounded log buffer so log output stays serialised with
+ *  the dashboard frames. */
+const tuiRendererFactory: RendererFactory = {
+	kind: 'tui',
+	mount: (_deps: RendererMountDeps) =>
+		Effect.gen(function* () {
+			const mount = yield* startTuiOnce();
+			return {
+				install: mount.install,
+				flush: mount.flush,
+			} satisfies RendererMount;
+		}),
+	loggerLayer: (engine: EngineHandleShape) => TuiLoggerLayer(engine),
+};
+
+/** Plain renderer factory — starts the line-per-event diff loop ONCE
+ *  on the supervisor's outer scope; the cycle engine is read directly
+ *  from `tuiStateRef` so `install()` is a no-op. The default Effect
+ *  logger continues to write through Logger's default sink (plain text
+ *  on stderr) — no engine-buffer redirection. */
+const plainRendererFactory: RendererFactory = {
+	kind: 'plain',
+	mount: (deps: RendererMountDeps) =>
+		Effect.gen(function* () {
+			const handle = yield* startPlainRenderer(Ref.get(deps.tuiStateRef));
+			return {
+				install: () => Effect.void,
+				flush: handle.flush as Effect.Effect<void>,
+			} satisfies RendererMount;
+		}),
+	loggerLayer: () => Layer.empty,
+};
+
+/** Default resolver — maps each `RendererKind` to the matching
+ *  concrete factory. Wired into `defineDevstack` below so the
+ *  supervisor doesn't need to import anything from `tui/`. */
+const defaultRendererResolver: RendererResolver = (kind: RendererKind): RendererFactory => {
+	if (kind === 'tui') return tuiRendererFactory;
+	if (kind === 'plain') return plainRendererFactory;
+	return silentRendererFactory;
+};
 
 /** A single ref or an array of refs (from composite factories). The
  *  variadic `devstack(...args)` accepts both. */
@@ -48,12 +108,15 @@ export interface DevstackComposeOptions extends Omit<DevstackConfig, 'stack'> {
 }
 
 const isOptions = (x: unknown): x is DevstackComposeOptions => {
-	// Refs (StackMembers) always carry a `__layer` and arrive as plain
-	// objects (never arrays — those are flattened composite Ref groups).
+	// Refs (StackMembers) always carry the `DevstackTagBrand` symbol and
+	// arrive as plain objects (never arrays — those are flattened
+	// composite Ref groups). The brand is a unique symbol stamped by
+	// `provide` / `tag`, so this discriminates a Ref from a plain
+	// options object without relying on a stringly-typed field.
 	return (
 		typeof x === 'object' &&
 		x !== null &&
-		!('__layer' in (x as Record<string, unknown>)) &&
+		!(DevstackTagBrand in (x as Record<symbol, unknown>)) &&
 		!Array.isArray(x)
 	);
 };

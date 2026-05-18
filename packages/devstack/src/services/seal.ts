@@ -20,7 +20,7 @@ import {
 import { SealError } from '../engine/errors.js';
 import { resolveNetwork } from '../engine/network.js';
 import type { Account } from '../engine/shared.js';
-import type { Ref } from '../advanced/tag.js';
+import type { LayeredTag } from '../advanced/tag.js';
 import type { StackMember } from '../engine/supervisor.js';
 
 // -----------------------------------------------------------------------------
@@ -151,7 +151,7 @@ export interface SealOptions {
 	 *  on localnet (where the local-keygen path runs); ignored on
 	 *  testnet/mainnet (the canonical remote key server is already
 	 *  deployed). */
-	readonly signer?: Ref<any, Account, any, any>;
+	readonly signer?: LayeredTag<any, Account, any, any>;
 	/** Pass-through extras for the local-keygen path. Ignored when the
 	 *  resolved network is testnet/mainnet. */
 	readonly local?: Omit<SealLocalKeygenOptions<string>, 'name' | 'signer'>;
@@ -167,7 +167,7 @@ export interface SealOptions {
 /** Seal factory. Picks local-keygen on localnet and the canonical
  *  remote key server on testnet/mainnet — single source of truth is
  *  `DEVSTACK_NETWORK` (set by the CLI `--network` flag or via
- *  `devstack({ network })`). Returns a Ref carrying
+ *  `devstack({ network })`). Returns a LayeredTag carrying
  *  `SealKeyServerTag`. */
 export const Seal = (opts: SealOptions = {}): StackMember => {
 	const network = resolveNetwork();

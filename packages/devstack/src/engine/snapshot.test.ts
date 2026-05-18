@@ -82,6 +82,7 @@ describe('snapshot() / restore() — state-only round-trip', () => {
 			const result = yield* snapshot({
 				id: 'baseline',
 				dir: join(stateDir, 'snapshots'),
+				app: 'test-app',
 				stack: 'main',
 				containers: [],
 			});
@@ -113,12 +114,14 @@ describe('snapshot() / restore() — state-only round-trip', () => {
 			yield* snapshot({
 				id: 'first',
 				dir: join(stateDir, 'snapshots'),
+				app: 'test-app',
 				stack: 'main',
 				containers: [],
 			});
 			yield* snapshot({
 				id: 'second',
 				dir: join(stateDir, 'snapshots'),
+				app: 'test-app',
 				stack: 'main',
 				containers: [],
 			});
@@ -183,6 +186,7 @@ describe('snapshot() / restore() — runtime/ tar round-trip', () => {
 			yield* snapshot({
 				id: 'rt',
 				dir: join(stateDir, 'snapshots'),
+				app: 'test-app',
 				stack: 'main',
 				containers: [],
 			});
@@ -222,6 +226,7 @@ describe('snapshot() / restore() — runtime/ tar round-trip', () => {
 			const result = yield* snapshot({
 				id: 'no-rt',
 				dir: join(stateDir, 'snapshots'),
+				app: 'test-app',
 				stack: 'main',
 				containers: [],
 				skipRuntime: true,
@@ -236,6 +241,7 @@ describe('snapshot() / restore() — runtime/ tar round-trip', () => {
 			const result = yield* snapshot({
 				id: 'empty',
 				dir: join(stateDir, 'snapshots'),
+				app: 'test-app',
 				stack: 'main',
 				containers: [],
 			});
@@ -281,6 +287,7 @@ describe('snapshot() / restore() — extras round-trip', () => {
 			yield* snapshot({
 				id: 'ext',
 				dir: join(stateDir, 'snapshots'),
+				app: 'test-app',
 				stack: 'main',
 				containers: [],
 				extras: [{ key: 'foo', path: extrasDir }],
@@ -311,6 +318,7 @@ describe('snapshot() / restore() — extras round-trip', () => {
 			const result = yield* snapshot({
 				id: 'missing',
 				dir: join(stateDir, 'snapshots'),
+				app: 'test-app',
 				stack: 'main',
 				containers: [],
 				extras: [{ key: 'gone', path: missing }],
@@ -425,6 +433,7 @@ describe('snapshot() pause/commit/unpause ordering', () => {
 			yield* snapshot({
 				id: 'pause-ok',
 				dir: join(stateDir, 'snapshots'),
+				app: 'test-app',
 				stack: 'main',
 				containers: [{ id: 'cid-runner', name: 'sui-localnet' }],
 				skipRuntime: true,
@@ -453,6 +462,7 @@ describe('snapshot() pause/commit/unpause ordering', () => {
 			const exit = yield* snapshot({
 				id: 'pause-failcommit',
 				dir: join(stateDir, 'snapshots'),
+				app: 'test-app',
 				stack: 'main',
 				containers: [{ id: 'cid-runner', name: 'sui-localnet' }],
 				skipRuntime: true,
@@ -476,6 +486,7 @@ describe('snapshot() pause/commit/unpause ordering', () => {
 			yield* snapshot({
 				id: 'pause-stopped',
 				dir: join(stateDir, 'snapshots'),
+				app: 'test-app',
 				stack: 'main',
 				containers: [{ id: 'cid-stopped', name: 'sui-localnet' }],
 				skipRuntime: true,

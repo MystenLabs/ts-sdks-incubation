@@ -20,6 +20,7 @@ import { join as joinPath } from 'node:path';
 import { writeFileAtomic } from '../../engine/atomic-write.js';
 import { failAlreadyReported } from '../already-reported.js';
 import { wrapCause } from '../loaders.js';
+import { DockerLabel } from '../../engine/identity.js';
 import { readActiveStack, resolveStack, stateDir } from '../stack-resolution.js';
 
 const ACTIVE_FILE = 'active';
@@ -248,7 +249,7 @@ const takeDownContainers = (spawner: Spawner, stack: string, force: boolean) =>
 			'ps',
 			'-aq',
 			'--filter',
-			`label=devstack.stack=${stack}`,
+			`label=${DockerLabel.STACK}=${stack}`,
 		]);
 		const idsText = yield* spawner.string(lsCmd).pipe(Effect.orElseSucceed(() => ''));
 		const ids = idsText

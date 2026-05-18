@@ -7,13 +7,14 @@
 
 import { Effect, Option, Schedule } from 'effect';
 import { Transaction, type TransactionObjectArgument } from '@mysten/sui/transactions';
-import { tag, type Ref } from '../../advanced/tag.js';
+import { tag, type LayeredTag } from '../../advanced/tag.js';
 import { SuiTag } from '../sui.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
 import { StateStore } from '../../engine/state-store.js';
 import { DeepbookError } from '../../engine/errors.js';
 import { DeepbookCoreTag, type DeepbookPoolRef } from '../deepbook.js';
-import type { Account, SuiObjectChange } from '../../engine/shared.js';
+import type { Account } from '../../engine/shared.js';
+import { pickCreatedByTypeSuffix } from '../../engine/sui-helpers.js';
 import {
 	ORDER_TYPE_POST_ONLY,
 	SELF_MATCHING_ALLOWED,
@@ -77,7 +78,7 @@ export interface DeepbookMarketMakerHandle {
 
 export interface DeepbookMarketMakerOptions<Name extends string> {
 	readonly name: Name;
-	readonly signer: Ref<any, Account, any, any>;
+	readonly signer: LayeredTag<any, Account, any, any>;
 	readonly pools: ReadonlyArray<DeepbookMarketMakerPoolSpec>;
 	/** Levels per side. Default 3 (so 6 orders per pool per tick). */
 	readonly levels?: number;
@@ -85,7 +86,7 @@ export interface DeepbookMarketMakerOptions<Name extends string> {
 	readonly tickSpacing?: number;
 	/** Refresh cadence in ms. Default 10_000 (10 s). */
 	readonly refreshMs?: number;
-	readonly dependsOn?: ReadonlyArray<Ref<any, any, any, any>>;
+	readonly dependsOn?: ReadonlyArray<LayeredTag<any, any, any, any>>;
 }
 
 /**
@@ -286,11 +287,8 @@ export const deepbookMarketMaker = <const Name extends string>(
 
 				if (creating) {
 					const bmType = `${core.packageId}::balance_manager::BalanceManager`;
-					const bmObj = result.objectChanges.find(
-						(c): c is Extract<SuiObjectChange, { type: 'created' }> =>
-							c.type === 'created' && 'objectType' in c && c.objectType === bmType,
-					);
-					if (bmObj === undefined) {
+					const bmId = pickCreatedByTypeSuffix(result.objectChanges, bmType);
+					if (bmId === undefined) {
 						return yield* Effect.fail(
 							new DeepbookError({
 								phase: 'market-maker-tick',
@@ -300,7 +298,7 @@ export const deepbookMarketMaker = <const Name extends string>(
 							}),
 						);
 					}
-					balanceManagerId = bmObj.objectId;
+					balanceManagerId = bmId;
 					// Best-effort cache write — the BalanceManager already
 					// exists on chain; a state-store IO failure just means
 					// the next supervisor cycle re-mints (same orphan we
@@ -308,7 +306,7 @@ export const deepbookMarketMaker = <const Name extends string>(
 					// crashing a running maker).
 					yield* state
 						.put(cacheKey, {
-							balanceManagerId: bmObj.objectId,
+							balanceManagerId: bmId,
 						} satisfies CachedBalanceManager)
 						.pipe(Effect.ignore);
 				}

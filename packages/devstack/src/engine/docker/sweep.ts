@@ -5,6 +5,7 @@
 
 import { Context, Effect, Ref } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
+import { DockerLabel } from '../identity.js';
 import { composeProjectName } from './core.js';
 
 // Set of container IDs this process has adopted-or-created. Populated by
@@ -61,9 +62,9 @@ export const dockerOrphanSweep = (
 			'--filter',
 			`label=com.docker.compose.project=${composeProject}`,
 			'--filter',
-			`label=devstack.app=${app}`,
+			`label=${DockerLabel.APP}=${app}`,
 			'--filter',
-			`label=devstack.stack=${stack}`,
+			`label=${DockerLabel.STACK}=${stack}`,
 		]);
 		const idsText = yield* spawner.string(lsCmd).pipe(Effect.orElseSucceed(() => ''));
 		const ids = idsText
@@ -108,9 +109,9 @@ export const dockerOrphanSweep = (
 			'--filter',
 			`label=com.docker.compose.project=${composeProject}`,
 			'--filter',
-			`label=devstack.app=${app}`,
+			`label=${DockerLabel.APP}=${app}`,
 			'--filter',
-			`label=devstack.stack=${stack}`,
+			`label=${DockerLabel.STACK}=${stack}`,
 		]);
 		const netIdsText = yield* spawner.string(lsNetCmd).pipe(Effect.orElseSucceed(() => ''));
 		const netIds = netIdsText

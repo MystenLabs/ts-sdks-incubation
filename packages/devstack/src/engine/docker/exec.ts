@@ -150,7 +150,7 @@ export const commitContainer = (
 		if (digest.length === 0) {
 			return yield* Effect.fail(
 				new DockerError({
-					op: 'docker commit',
+					phase: 'docker commit',
 					message: `docker image inspect returned empty digest for ${imageName}`,
 				}),
 			);
@@ -372,7 +372,7 @@ export const runOneShot = (
 				orElse: () =>
 					Effect.fail(
 						new DockerError({
-							op,
+							phase: op,
 							message: `docker run (one-shot) '${name}' timed out after ${timeoutMs}ms`,
 						}),
 					),

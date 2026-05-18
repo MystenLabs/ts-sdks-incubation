@@ -160,7 +160,7 @@ describe('deepbookKnownPackage', () => {
 // never reached and the tag yields the cached pool shape. If the cache
 // regresses, the die surfaces as a defect and `Exit.isFailure` flips.
 //
-// The publishMove cache key is `publishMove/<name>/<sourceHash>/<chainId>`;
+// The publishMove cache key is `publishMove/v1/<name>/<sourceHash>/<chainId>`;
 // `sourceHash` is the first 16 hex chars of sha256 over (sorted)
 // `<relpath>\0<content>\0` records for every `.move` + `Move.toml` file
 // under the source dir. With a single `Move.toml` fixture the hash is
@@ -341,7 +341,7 @@ describe('deepbookLocalDeploy — create-pools resume cache', () => {
 			}).pipe(Effect.orDie);
 
 			const sourceHash = computePublishMoveSourceHash('Move.toml', moveTomlContent);
-			const publishMoveKey = `publishMove/deepbook.publish/${sourceHash}/${chainId}`;
+			const publishMoveKey = `publishMove/v1/deepbook.publish/${sourceHash}/${chainId}`;
 
 			// Pool spec — match `deepbookLocalDeploy`'s `specs` shape so the
 			// resolvedSpecs sent into `hashPoolSpecs` round-trip to the same
@@ -487,7 +487,7 @@ describe('deepbookLocalDeploy — create-pools resume cache', () => {
 			}).pipe(Effect.orDie);
 
 			const sourceHash = computePublishMoveSourceHash('Move.toml', moveTomlContent);
-			const publishMoveKey = `publishMove/deepbook.publish/${sourceHash}/${chainId}`;
+			const publishMoveKey = `publishMove/v1/deepbook.publish/${sourceHash}/${chainId}`;
 			const baseType = '0x2::sui::SUI';
 			const quoteType = `${fakePackageId}::usdc::USDC`;
 			const poolSpec = {

@@ -8,8 +8,8 @@ import { Sui as SuiFactory } from '../services/sui.js';
 import type { StackMember } from '../engine/supervisor.js';
 
 /** The canonical Context key for the Sui tag. Matches the key on
- *  `SuiTag` in `services/sui.ts` (`@devstack/Sui`). */
-const SUI_TAG_KEY = '@devstack/Sui';
+ *  `SuiTag` in `services/sui.ts` (`@devstack/SuiTag`). */
+const SUI_TAG_KEY = '@devstack/SuiTag';
 
 /** Auto-fill missing required providers. Today: Sui. Returns the
  *  refs the user passed plus any synthesized defaults. */

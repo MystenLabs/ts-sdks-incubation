@@ -7,7 +7,7 @@
 //
 // Unlike `Package(name, source, opts)`, `KnownPackage` doesn't run
 // `sui client publish` — there's no Move source on disk, no
-// `sourcePath`, no on-chain side effect. The resulting Ref satisfies
+// `sourcePath`, no on-chain side effect. The resulting LayeredTag satisfies
 // `Package` (not `LocalPackage`) so the type system rules
 // out passing a KnownPackage where a Move-source-required emitter
 // (e.g. `BindingsEmitter`) expects it.
@@ -29,7 +29,7 @@ export interface KnownPackageOptions {
 	readonly upgradeCapId?: string;
 }
 
-/** Declare a `Package`-shaped Ref backed by a fixed on-chain
+/** Declare a `Package`-shaped LayeredTag backed by a fixed on-chain
  *  `packageId`. Useful for referencing testnet/mainnet packages, or
  *  any package the user didn't publish themselves but wants threaded
  *  through `Codegen` / `Action({ needs })` / cross-reference flows. */

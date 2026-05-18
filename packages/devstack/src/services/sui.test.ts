@@ -3,13 +3,14 @@
 // booting a real sui-localnet container under unit tests would just
 // turn vitest red on machines without Docker. The other three branches
 // (localnet-with-external-rpcUrl, testnet, mainnet, custom) only fetch
-// `chainIdentifier` against their `rpcUrl` — we stub global `fetch` for
-// the duration of each test so the assertion targets configuration
-// logic, not network behavior.
+// `chainIdentifier` against their `rpcUrl` — we stub the gRPC client's
+// chainIdentifier resolver so each test targets configuration logic,
+// not protobuf-over-http wire behavior.
 
 import { Cause, Effect, Exit, Layer, Option } from 'effect';
 import { layer as NodeFileSystemLayer } from '@effect/platform-node/NodeFileSystem';
-import { afterEach, beforeEach, describe, expect, it } from '@effect/vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from '@effect/vitest';
+import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { EngineLive } from '../engine/engine.js';
 import { EndpointRegistryLive, SuiStateRegistryLive } from '../engine/registries.js';
 import { Sui, faucetReadyProbe } from './sui.js';
@@ -25,35 +26,62 @@ const TestBaseLayer = Layer.mergeAll(
 	SuiStateRegistryLive,
 );
 
-// `SuiJsonRpcClient.getChainIdentifier` calls `getCheckpoint({id:'0'})`
-// then base58-decodes `result.digest` and hex-encodes the first 4 bytes.
-// Any valid base58 string of >=4 bytes makes the call resolve — pinning
-// to a known checkpoint-zero-style digest keeps the stub realistic.
-const STUB_CHECKPOINT_DIGEST = '4btiuiMPvEENsttpZC7CZ53DruC3MAgfznDbASZ7DR6S';
+// Phase -1 (gRPC migration): the Sui factory's chain-id resolution flows
+// through `client.core.getChainIdentifier()`, which on `SuiGrpcClient`
+// calls `ledgerService.getServiceInfo({})` over protobuf-encoded
+// gRPC-web. Stubbing the wire format is fiddly and orthogonal to what
+// these tests assert (config plumbing). Instead, intercept the
+// constructor and swap `client.core.getChainIdentifier` for a stub.
+// `core` is an instance field set in the `SuiGrpcClient` constructor
+// (not a prototype getter), so we patch each freshly-constructed
+// instance via a `Proxy` on the class. The closure restores the
+// original constructor on cleanup.
+const STUB_CHAIN_ID = 'test-chain-id';
 
 const stubChainIdFetch = (): (() => void) => {
-	const original = globalThis.fetch;
-	globalThis.fetch = (async () =>
-		new Response(
-			JSON.stringify({
-				jsonrpc: '2.0',
-				id: 1,
-				result: {
-					digest: STUB_CHECKPOINT_DIGEST,
-					sequenceNumber: '0',
-					epoch: '0',
-					networkTotalTransactions: '0',
-					timestampMs: '0',
-					previousDigest: null,
-					transactions: [],
-					checkpointCommitments: [],
-					validatorSignature: '',
-				},
-			}),
-			{ status: 200, headers: { 'content-type': 'application/json' } },
-		)) as typeof fetch;
+	const originalCtor = SuiGrpcClient.prototype.constructor;
+	const originalGetChainId = (SuiGrpcClient.prototype as unknown as {
+		core?: { getChainIdentifier?: unknown };
+	}).core?.getChainIdentifier;
+	void originalCtor;
+	void originalGetChainId;
+	// Patch every SuiGrpcClient instance's `core.getChainIdentifier`
+	// post-construction by hooking the `core` setter. `core` is
+	// assigned via `this.core = new GrpcCoreClient(...)` in the
+	// constructor — a Proxy on `Reflect.construct` lets us replace
+	// the just-built instance's `core.getChainIdentifier` before the
+	// caller sees it.
+	const SuiGrpcClientCtor = SuiGrpcClient as unknown as new (...args: unknown[]) => SuiGrpcClient;
+	const patched = new Proxy(SuiGrpcClientCtor, {
+		construct(target, argArray, newTarget) {
+			const instance = Reflect.construct(target, argArray, newTarget) as SuiGrpcClient;
+			const coreSlot = instance.core as unknown as {
+				getChainIdentifier: () => Promise<{ chainIdentifier: string }>;
+			};
+			coreSlot.getChainIdentifier = async () => ({ chainIdentifier: STUB_CHAIN_ID });
+			return instance;
+		},
+	});
+	// Replace the export at the module level. Because `services/sui.ts`
+	// imports `SuiGrpcClient` at load time, we can't swap the binding
+	// in place — instead, spy on the prototype's `core` accessor by
+	// observing every fresh client constructed through it. Since
+	// `core` is assigned in the constructor body, the cleanest path
+	// is to spy on `GrpcCoreClient.prototype.getChainIdentifier`.
+	void patched;
+	// Pull the GrpcCoreClient class off a probe instance.
+	const probe = new SuiGrpcClient({
+		baseUrl: 'http://__stub__',
+		network: 'localnet',
+	});
+	const grpcCoreProto = Object.getPrototypeOf(probe.core) as {
+		getChainIdentifier: () => Promise<{ chainIdentifier: string }>;
+	};
+	const spy = vi
+		.spyOn(grpcCoreProto, 'getChainIdentifier')
+		.mockResolvedValue({ chainIdentifier: STUB_CHAIN_ID });
 	return () => {
-		globalThis.fetch = original;
+		spy.mockRestore();
 	};
 };
 

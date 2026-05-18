@@ -164,7 +164,7 @@ const dockerStart = (spawner: Spawner, name: string): Effect.Effect<void, SuiCli
 		if (captured.exitCode !== 0) {
 			return yield* Effect.fail(
 				new SuiCliError({
-					op: 'docker start (build container)',
+					phase: 'docker start (build container)',
 					message: `failed to start build container '${name}': ${captured.stderr.trim() || captured.stdout.trim()}`,
 					stdout: captured.stdout,
 					stderr: captured.stderr,
@@ -210,7 +210,7 @@ const dockerRunDetached = (
 		if (captured.exitCode !== 0) {
 			return yield* Effect.fail(
 				new SuiCliError({
-					op: 'docker run -d (build container)',
+					phase: 'docker run -d (build container)',
 					message: `failed to start build container '${name}': ${captured.stderr.trim() || captured.stdout.trim()}`,
 					stdout: captured.stdout,
 					stderr: captured.stderr,
@@ -364,7 +364,7 @@ export const SuiBuildContainerLive = Layer.effect(
 			// container against an unknown image.
 			return yield* Effect.fail(
 				new SuiCliError({
-					op: 'SuiBuildContainer acquire',
+					phase: 'SuiBuildContainer acquire',
 					message:
 						'SuiBuildContainerLive requires SuiBuildImage to be provided (set by suiLocalnet).',
 				}),
@@ -398,7 +398,7 @@ export const SuiBuildContainerLive = Layer.effect(
 				if (containerPath === undefined) {
 					return Effect.fail(
 						new SuiCliError({
-							op: 'SuiBuildContainer.runBuild',
+							phase: 'SuiBuildContainer.runBuild',
 							message:
 								`host path ${hostPath} is outside the bind-mounted app dir ${appDir}; ` +
 								`caller must fall back to docker run --rm. Use canExec() to check first.`,
@@ -412,7 +412,7 @@ export const SuiBuildContainerLive = Layer.effect(
 				if (containerPath === undefined) {
 					return Effect.fail(
 						new SuiCliError({
-							op: 'SuiBuildContainer.runSummary',
+							phase: 'SuiBuildContainer.runSummary',
 							message:
 								`host path ${hostPath} is outside the bind-mounted app dir ${appDir}; ` +
 								`caller must fall back to host sui. Use canExec() to check first.`,
