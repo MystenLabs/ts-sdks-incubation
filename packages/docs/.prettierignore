@@ -1,0 +1,4 @@
+.source/
+.next/
+dist/
+next-env.d.ts

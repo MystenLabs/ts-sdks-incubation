@@ -36,6 +36,18 @@ pnpm turbo build --filter=@mysten-incubation/dev-wallet
 pnpm --filter @mysten-incubation/docs dev
 ```
 
+## Preview releases
+
+Every pull request publishes per-commit tarballs of each public package to
+[pkg.pr.new](https://pkg.pr.new). The `pkg.pr.new` bot comments on the PR with
+install URLs — they look like:
+
+```bash
+pnpm add https://pkg.pr.new/@mysten-incubation/dev-wallet@<commit-or-pr-sha>
+```
+
+Use these to try a change in a downstream app before it lands on `main`.
+
 ## Contributing
 
 Changes require [changesets](https://github.com/changesets/changesets) for version management. Run `pnpm changeset` to create one.

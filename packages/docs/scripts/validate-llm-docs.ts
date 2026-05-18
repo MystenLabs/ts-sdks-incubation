@@ -7,7 +7,6 @@
  * and that all MDX files are referenced in their parent meta.json.
  */
 
-import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import { findMdxFiles, readMetaJson, readMdxFrontmatter } from './docs-utils.js';
