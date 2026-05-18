@@ -28,6 +28,7 @@ import { provide, setPhase, type Ref } from '../advanced/tag.js';
 import type { StackMember } from '../engine/supervisor.js';
 import { SuiError } from '../engine/errors.js';
 import { resolveNetwork } from '../engine/network.js';
+import { EndpointName } from '../runtime/endpoint-names.js';
 
 // -----------------------------------------------------------------------------
 // Constants
@@ -493,17 +494,17 @@ const buildLocalnet = (options: SuiLocalnetOptions): StackMember => {
 			const faucetUrl = options.faucetUrl;
 			const graphqlUrl = options.graphqlUrl;
 			const client = new SuiJsonRpcClient({ url: rpcUrl, network: 'localnet' });
-			yield* EndpointRegistry.publish({ name: 'sui-rpc', url: rpcUrl, kind: 'rpc' });
+			yield* EndpointRegistry.publish({ name: EndpointName.SUI_RPC, url: rpcUrl, kind: 'rpc' });
 			if (faucetUrl !== undefined) {
 				yield* EndpointRegistry.publish({
-					name: 'sui-faucet',
+					name: EndpointName.SUI_FAUCET,
 					url: faucetUrl,
 					kind: 'faucet',
 				});
 			}
 			if (graphqlUrl !== undefined) {
 				yield* EndpointRegistry.publish({
-					name: 'sui-graphql',
+					name: EndpointName.SUI_GRAPHQL,
 					url: graphqlUrl,
 					kind: 'graphql',
 				});
@@ -772,11 +773,19 @@ const buildLocalnet = (options: SuiLocalnetOptions): StackMember => {
 			}),
 		);
 
-		yield* EndpointRegistry.publish({ name: 'sui-rpc', url: rpcUrl, kind: 'rpc' });
-		yield* EndpointRegistry.publish({ name: 'sui-faucet', url: faucetUrl, kind: 'faucet' });
-		yield* EndpointRegistry.publish({ name: 'sui-graphql', url: graphqlUrl, kind: 'graphql' });
+		yield* EndpointRegistry.publish({ name: EndpointName.SUI_RPC, url: rpcUrl, kind: 'rpc' });
 		yield* EndpointRegistry.publish({
-			name: 'sui-indexer-db',
+			name: EndpointName.SUI_FAUCET,
+			url: faucetUrl,
+			kind: 'faucet',
+		});
+		yield* EndpointRegistry.publish({
+			name: EndpointName.SUI_GRAPHQL,
+			url: graphqlUrl,
+			kind: 'graphql',
+		});
+		yield* EndpointRegistry.publish({
+			name: EndpointName.SUI_INDEXER_DB,
 			url: SUI_INDEXER_DATABASE_URL,
 			kind: 'internal',
 		});
@@ -890,9 +899,17 @@ const buildTestnet = (options: SuiTestnetOptions): StackMember => {
 		const faucetUrl = options.faucetUrl ?? 'https://faucet.testnet.sui.io';
 		const graphqlUrl = options.graphqlUrl ?? 'https://sui-testnet.mystenlabs.com/graphql';
 		const client = new SuiJsonRpcClient({ url: rpcUrl, network: 'testnet' });
-		yield* EndpointRegistry.publish({ name: 'sui-rpc', url: rpcUrl, kind: 'rpc' });
-		yield* EndpointRegistry.publish({ name: 'sui-faucet', url: faucetUrl, kind: 'faucet' });
-		yield* EndpointRegistry.publish({ name: 'sui-graphql', url: graphqlUrl, kind: 'graphql' });
+		yield* EndpointRegistry.publish({ name: EndpointName.SUI_RPC, url: rpcUrl, kind: 'rpc' });
+		yield* EndpointRegistry.publish({
+			name: EndpointName.SUI_FAUCET,
+			url: faucetUrl,
+			kind: 'faucet',
+		});
+		yield* EndpointRegistry.publish({
+			name: EndpointName.SUI_GRAPHQL,
+			url: graphqlUrl,
+			kind: 'graphql',
+		});
 		const chainId = yield* fetchChainId(client);
 		const waitForTransactionsReady = yield* buildWaitForTransactionsReady(faucetUrl);
 		// Live-net handles have no docker presence.
@@ -933,8 +950,12 @@ const buildMainnet = (options: SuiMainnetOptions): StackMember => {
 		const rpcUrl = options.rpcUrl ?? 'https://fullnode.mainnet.sui.io:443';
 		const graphqlUrl = options.graphqlUrl ?? 'https://sui-mainnet.mystenlabs.com/graphql';
 		const client = new SuiJsonRpcClient({ url: rpcUrl, network: 'mainnet' });
-		yield* EndpointRegistry.publish({ name: 'sui-rpc', url: rpcUrl, kind: 'rpc' });
-		yield* EndpointRegistry.publish({ name: 'sui-graphql', url: graphqlUrl, kind: 'graphql' });
+		yield* EndpointRegistry.publish({ name: EndpointName.SUI_RPC, url: rpcUrl, kind: 'rpc' });
+		yield* EndpointRegistry.publish({
+			name: EndpointName.SUI_GRAPHQL,
+			url: graphqlUrl,
+			kind: 'graphql',
+		});
 		const chainId = yield* fetchChainId(client);
 		const waitForTransactionsReady = yield* buildWaitForTransactionsReady(undefined);
 		const rpc: Endpoint = { host: rpcUrl };
@@ -978,12 +999,20 @@ const buildCustom = (options: SuiCustomOptions): StackMember => {
 		// chain-id mismatch warning. The surface-level `network` we return
 		// in `Sui` is the caller-supplied label.
 		const client = new SuiJsonRpcClient({ url: rpcUrl, network: 'localnet' });
-		yield* EndpointRegistry.publish({ name: 'sui-rpc', url: rpcUrl, kind: 'rpc' });
+		yield* EndpointRegistry.publish({ name: EndpointName.SUI_RPC, url: rpcUrl, kind: 'rpc' });
 		if (faucetUrl !== undefined) {
-			yield* EndpointRegistry.publish({ name: 'sui-faucet', url: faucetUrl, kind: 'faucet' });
+			yield* EndpointRegistry.publish({
+				name: EndpointName.SUI_FAUCET,
+				url: faucetUrl,
+				kind: 'faucet',
+			});
 		}
 		if (graphqlUrl !== undefined) {
-			yield* EndpointRegistry.publish({ name: 'sui-graphql', url: graphqlUrl, kind: 'graphql' });
+			yield* EndpointRegistry.publish({
+				name: EndpointName.SUI_GRAPHQL,
+				url: graphqlUrl,
+				kind: 'graphql',
+			});
 		}
 		const chainId = yield* fetchChainId(client);
 		const waitForTransactionsReady = yield* buildWaitForTransactionsReady(faucetUrl);

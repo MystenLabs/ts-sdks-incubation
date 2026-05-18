@@ -21,7 +21,7 @@
 //     type and value coexist via TS's separate type/value namespaces.
 
 // ── Factories ──
-export { Sui, type SuiOptions, SuiTag, EndpointSchema, SuiSchema } from './sui.js';
+export { Sui, type SuiOptions, SuiTag } from './sui.js';
 export {
 	Seal,
 	type SealOptions,
@@ -30,8 +30,6 @@ export {
 	SealKeyServerTag,
 	type SealKeyManager,
 	SealKeyManagerTag,
-	SealKeyServerEntrySchema,
-	SealKeyServerSchema,
 } from './seal.js';
 export {
 	Walrus,
@@ -45,10 +43,6 @@ export {
 	WalrusProxyTag,
 	type WalrusAdmin,
 	WalrusAdminTag,
-	WalrusNetworkSchema,
-	WalrusNodeInfoSchema,
-	WalrusNodesSchema,
-	WalrusProxySchema,
 } from './walrus.js';
 export {
 	Deepbook,
@@ -60,9 +54,8 @@ export {
 	type DeepbookAdmin,
 	DeepbookAdminTag,
 	DeepbookMarketMakerTag,
-	DeepbookPoolRefSchema,
 } from './deepbook.js';
-export { Account, type AccountTag, AccountSchema } from './account.js';
+export { Account, type AccountTag } from './account.js';
 export {
 	Package,
 	type PackageOptions,
@@ -70,12 +63,9 @@ export {
 	PackageTag,
 	type LocalPackage,
 	LocalPackageTag,
-	PackageSchema,
-	LocalPackageSchema,
 	type Coin,
 	CoinTag,
 	toSdkCoin,
-	CoinSchema,
 } from './package.js';
 export { Action, type ActionOptions } from './action.js';
 export { Dev, type DevOptions } from './dev.js';

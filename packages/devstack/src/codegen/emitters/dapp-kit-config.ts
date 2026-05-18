@@ -28,7 +28,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { Effect } from 'effect';
-import { Extras, resolveExtras } from '../../runtime/extras.js';
+import { ExtrasResolved } from '../../engine/extras.js';
 import { gatherManifest } from '../../runtime/service.js';
 import { CodegenError } from '../errors.js';
 import { defineEmitter, type Emitter } from '../define-emitter.js';
@@ -183,8 +183,7 @@ export const DappKitConfigEmitter = (opts: DappKitConfigEmitterOptions = {}): Em
 		name: 'dapp-kit-config',
 		emit: (ctx) =>
 			Effect.gen(function* () {
-				const extrasInput = yield* Extras;
-				const extras = yield* resolveExtras(extrasInput);
+				const extras = yield* yield* ExtrasResolved;
 				const data = yield* gatherManifest(extras);
 
 				const sui = data.services.sui;

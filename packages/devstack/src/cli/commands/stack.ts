@@ -13,16 +13,14 @@
 // stable so apps can opt in to multi-stack flows as soon as the runtime
 // supports them.
 
-import { Console, Effect, FileSystem, Option } from 'effect';
+import { Console, Effect, FileSystem, Option, Path } from 'effect';
 import { Argument, Command, Flag } from 'effect/unstable/cli';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { join as joinPath } from 'node:path';
 import { writeFileAtomic } from '../../engine/atomic-write.js';
+import { failAlreadyReported } from '../already-reported.js';
 import { wrapCause } from '../loaders.js';
-
-// Read DEVSTACK_STATE_DIR at action-time so any per-test or shell
-// override applied after module-load is honored.
-const stateDir = (): string => process.env.DEVSTACK_STATE_DIR ?? '.devstack';
+import { readActiveStack, resolveStack, stateDir } from '../stack-resolution.js';
 
 const ACTIVE_FILE = 'active';
 
@@ -39,16 +37,6 @@ const requireValidStackName = (name: string): Effect.Effect<void, Error> =>
 					`stack: name '${name}' is invalid (must be lowercase + digits + ._-, 1-64 chars)`,
 				),
 			);
-
-const readActiveStack = (fs: Fs): Effect.Effect<Option.Option<string>> =>
-	Effect.gen(function* () {
-		const activePath = joinPath(stateDir(), ACTIVE_FILE);
-		const exists = yield* fs.exists(activePath).pipe(Effect.orElseSucceed(() => false));
-		if (!exists) return Option.none<string>();
-		const txt = yield* fs.readFileString(activePath).pipe(Effect.orElseSucceed(() => ''));
-		const trimmed = txt.trim();
-		return trimmed.length === 0 ? Option.none<string>() : Option.some(trimmed);
-	});
 
 const writeActiveStack = (_fs: Fs, name: string): Effect.Effect<void, Error> =>
 	Effect.gen(function* () {
@@ -68,6 +56,7 @@ const writeActiveStack = (_fs: Fs, name: string): Effect.Effect<void, Error> =>
 const listCommand = Command.make('list', {}, () =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem;
+		const path = yield* Path.Path;
 		const stacksRoot = joinPath(stateDir(), 'stacks');
 		const rootExists = yield* fs.exists(stacksRoot).pipe(Effect.orElseSucceed(() => false));
 		if (!rootExists) {
@@ -87,7 +76,7 @@ const listCommand = Command.make('list', {}, () =>
 			if (info) dirs.push(entry);
 		}
 		dirs.sort();
-		const active = yield* readActiveStack(fs);
+		const active = yield* readActiveStack(fs, path);
 		if (dirs.length === 0) {
 			yield* Console.log(`no stacks under ${stacksRoot}`);
 			return;
@@ -134,9 +123,10 @@ const useCommand = Command.make(
 		Effect.gen(function* () {
 			yield* requireValidStackName(name);
 			const fs = yield* FileSystem.FileSystem;
+			const path = yield* Path.Path;
 			const stackDir = joinPath(stateDir(), 'stacks', name);
 			yield* fs.makeDirectory(stackDir, { recursive: true }).pipe(Effect.ignore);
-			const previous = yield* readActiveStack(fs);
+			const previous = yield* readActiveStack(fs, path);
 			yield* writeActiveStack(fs, name);
 			if (Option.isNone(previous)) {
 				yield* Console.log(`stack '${name}': now active (no prior default)`);
@@ -183,8 +173,9 @@ const downCommand = Command.make(
 	({ name, force }) =>
 		Effect.gen(function* () {
 			const fs = yield* FileSystem.FileSystem;
+			const path = yield* Path.Path;
 			const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-			const resolved = yield* resolveStackName(fs, name);
+			const resolved = yield* resolveStack(fs, path, name);
 			const verb = force ? 'removing' : 'stopping';
 			const pastVerb = force ? 'removed' : 'stopped';
 			yield* Console.log(`stack '${resolved}': ${verb} containers${force ? ' (--force)' : ''}`);
@@ -222,10 +213,9 @@ const dropCommand = Command.make(
 		Effect.gen(function* () {
 			yield* requireValidStackName(name);
 			if (!yes) {
-				yield* Console.error(
+				return yield* failAlreadyReported(
 					'devstack stack drop: --yes is required (refusing to drop without explicit confirmation)',
 				);
-				return yield* Effect.fail(new Error('stack drop: --yes required'));
 			}
 			const fs = yield* FileSystem.FileSystem;
 			const stackDir = joinPath(stateDir(), 'stacks', name);
@@ -238,19 +228,6 @@ const dropCommand = Command.make(
 			yield* Console.log(`stack '${name}': removed ${stackDir}`);
 		}),
 ).pipe(Command.withDescription('Delete the per-stack state directory. Requires --yes.'));
-
-const resolveStackName = (fs: Fs, provided: Option.Option<string>): Effect.Effect<string> =>
-	Effect.gen(function* () {
-		if (Option.isSome(provided)) return provided.value;
-		// Mirror `engine/supervisor.ts:567` precedence: arg > DEVSTACK_STACK
-		// env > .devstack/active > 'main'. Without the env-var step, a
-		// `DEVSTACK_STACK=foo devstack stack down` couldn't target the
-		// stack the supervisor was actually running against.
-		const envStack = process.env.DEVSTACK_STACK;
-		if (envStack !== undefined && envStack.length > 0) return envStack;
-		const active = yield* readActiveStack(fs);
-		return Option.getOrElse(active, () => 'main');
-	});
 
 // Label-filter enumerate-then-(stop|remove). `Docker.run` stamps every
 // container with `devstack.stack=<stack>` so this is scoped to the named

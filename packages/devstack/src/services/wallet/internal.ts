@@ -27,6 +27,7 @@ import { stringifyCause } from '../../engine/stringify-cause.js';
 import { tag, setPhase, type Ref } from '../../advanced/tag.js';
 import { WalletAppError } from '../../engine/errors.js';
 import type { Account } from '../../engine/shared.js';
+import { EndpointName } from '../../runtime/endpoint-names.js';
 import { SuiTag } from '../sui.js';
 
 export interface WalletApp {
@@ -78,10 +79,10 @@ export interface WalletAppOptions<Name extends string> {
 	readonly bindAddress?: string;
 }
 
-export const walletApp = <const Name extends string = 'wallet-app'>(
+export const walletApp = <const Name extends string = typeof EndpointName.WALLET_APP>(
 	options: WalletAppOptions<Name>,
 ) => {
-	const name = (options.name ?? 'wallet-app') as Name;
+	const name = (options.name ?? EndpointName.WALLET_APP) as Name;
 	return tag(
 		name,
 		Effect.gen(function* () {
@@ -261,7 +262,7 @@ export const walletApp = <const Name extends string = 'wallet-app'>(
 			// mint a fresh one and write it.
 
 			yield* EndpointRegistry.publish({
-				name: 'wallet-app',
+				name: EndpointName.WALLET_APP,
 				url,
 				kind: 'wallet',
 				pairUrl,
@@ -270,7 +271,7 @@ export const walletApp = <const Name extends string = 'wallet-app'>(
 			return {
 				url,
 				pairUrl,
-				endpoint: { name: 'wallet-app', url },
+				endpoint: { name: EndpointName.WALLET_APP, url },
 				localPort: port,
 			} satisfies WalletApp;
 		}).pipe(Effect.withSpan(`walletApp(${name})`)),

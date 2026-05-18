@@ -16,7 +16,6 @@
 
 import { Cause, Context, Effect, Layer, Queue, Schema, Scope, Stream } from 'effect';
 import * as fs from 'node:fs';
-import { stringifyCause } from './stringify-cause.js';
 
 // -----------------------------------------------------------------------------
 // Public types
@@ -87,7 +86,7 @@ export const FileWatcherLive: Layer.Layer<FileWatcher> = Layer.succeed(FileWatch
 					catch: (cause) =>
 						new FileWatcherError({
 							path,
-							message: `failed to watch ${path}: ${stringifyCause(cause)}`,
+							message: `failed to watch ${path}`,
 							cause,
 						}),
 				});

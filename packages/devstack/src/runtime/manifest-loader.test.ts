@@ -2,6 +2,7 @@
 // best-effort decoding.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { EndpointName } from './endpoint-names.js';
 import { fromManifest } from './manifest-loader.js';
 import type { Manifest } from './manifest-schema.js';
 
@@ -95,7 +96,7 @@ describe('fromManifest — v3 manifests are no longer supported', () => {
 	it('hard-rejects a v3-shaped manifest (migration support removed pre-1.0)', () => {
 		const v3 = {
 			packages: [{ name: 'hello', packageId: '0xabc' }],
-			endpoints: [{ name: 'sui-rpc', url: 'http://sui.localhost:9000' }],
+			endpoints: [{ name: EndpointName.SUI_RPC, url: 'http://sui.localhost:9000' }],
 			accounts: [{ name: 'alice', address: '0x123' }],
 		};
 		expect(() => fromManifest(v3)).toThrow(/unknown manifest version/);

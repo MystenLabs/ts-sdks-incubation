@@ -23,7 +23,8 @@ import {
 	EndpointRegistryLive,
 	PackageRegistryLive,
 } from '../engine/registries.js';
-import { ExtrasLive } from './extras.js';
+import { ExtrasLive } from '../engine/extras.js';
+import { EndpointName } from './endpoint-names.js';
 import { emitManifestV4 } from './manifest-emit.js';
 
 const IdentityLive = Layer.succeed(Identity, {
@@ -55,7 +56,7 @@ describe('emitManifestV4', () => {
 			// Seed registries with a minimal sui-rpc + alice account.
 			const eps = yield* EndpointRegistry;
 			const accts = yield* AccountRegistry;
-			yield* eps.register({ name: 'sui-rpc', url: 'http://sui.test:9000', kind: 'rpc' });
+			yield* eps.register({ name: EndpointName.SUI_RPC, url: 'http://sui.test:9000', kind: 'rpc' });
 			yield* accts.register({ name: 'alice', address: '0x1' });
 
 			yield* emitManifestV4({ output: outputPath() });
@@ -119,7 +120,7 @@ describe('emitManifestV4', () => {
 
 			// Late registration — after acquire returned, before scope close.
 			yield* eps.register({
-				name: 'wallet-app',
+				name: EndpointName.WALLET_APP,
 				url: 'http://wallet.test:5180',
 			});
 

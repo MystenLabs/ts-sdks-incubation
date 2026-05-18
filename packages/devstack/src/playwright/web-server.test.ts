@@ -9,6 +9,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join as joinPath } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { EndpointName } from '../runtime/endpoint-names.js';
 import { baseURL, webServer } from './web-server.js';
 
 // Narrow the union return type of webServer() — Playwright's webServer
@@ -82,7 +83,9 @@ describe('playwright web-server helpers', () => {
 				manifestPath,
 				JSON.stringify(v4Manifest({ suiRpcUrl: 'http://sui.test:9000' })),
 			);
-			expect(single(webServer({ endpoint: 'sui-rpc' })).url).toBe('http://sui.test:9000');
+			expect(single(webServer({ endpoint: EndpointName.SUI_RPC })).url).toBe(
+				'http://sui.test:9000',
+			);
 		});
 
 		it('cold-start: with no manifest on disk, falls back to the conventional URL', () => {
@@ -108,7 +111,9 @@ describe('playwright web-server helpers', () => {
 
 		it('throws when the endpoint is not in the manifest', () => {
 			writeFileSync(manifestPath, JSON.stringify(v4Manifest({ devUrl: 'http://dev.test:5175' })));
-			expect(() => webServer({ endpoint: 'wallet-app' })).toThrow(/no endpoint 'wallet-app'/);
+			expect(() => webServer({ endpoint: EndpointName.WALLET_APP })).toThrow(
+				/no endpoint 'wallet-app'/,
+			);
 		});
 
 		it('throws on cold-start when the endpoint has no conventional fallback', () => {
@@ -146,7 +151,7 @@ describe('playwright web-server helpers', () => {
 				manifestPath,
 				JSON.stringify(v4Manifest({ walletUrl: 'http://wallet.test:5180' })),
 			);
-			expect(baseURL({ endpoint: 'wallet-app' })).toBe('http://wallet.test:5180');
+			expect(baseURL({ endpoint: EndpointName.WALLET_APP })).toBe('http://wallet.test:5180');
 		});
 
 		it('mirrors webServer cold-start fallback when no manifest exists', () => {

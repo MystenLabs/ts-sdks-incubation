@@ -34,6 +34,7 @@ import * as Docker from '../../engine/docker.js';
 import { EngineHandle } from '../../engine/engine.js';
 import { Identity } from '../../engine/identity.js';
 import { EndpointRegistry, PackageRegistry } from '../../engine/registries.js';
+import { EndpointName } from '../../runtime/endpoint-names.js';
 import { servicePath } from '../../engine/service-paths.js';
 import { StateStore } from '../../engine/state-store.js';
 import { type Ref } from '../../advanced/tag.js';
@@ -590,8 +591,16 @@ export const acquireLocalCluster = (args: {
 			},
 		});
 
-		yield* EndpointRegistry.publish({ name: 'walrus-aggregator', url: proxyUrl, kind: 'http' });
-		yield* EndpointRegistry.publish({ name: 'walrus-publisher', url: proxyUrl, kind: 'http' });
+		yield* EndpointRegistry.publish({
+			name: EndpointName.WALRUS_AGGREGATOR,
+			url: proxyUrl,
+			kind: 'http',
+		});
+		yield* EndpointRegistry.publish({
+			name: EndpointName.WALRUS_PUBLISHER,
+			url: proxyUrl,
+			kind: 'http',
+		});
 		for (const node of nodes) {
 			yield* EndpointRegistry.publish({
 				name: `walrus-node-${node.index}`,

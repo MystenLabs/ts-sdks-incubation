@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
 import type { PlaywrightTestConfig } from '@playwright/test';
 import { discoverManifestPath } from '../runtime/discover-manifest.js';
+import { EndpointName } from '../runtime/endpoint-names.js';
 import { fromManifest } from '../runtime/manifest-loader.js';
 
 type PlaywrightWebServer = NonNullable<PlaywrightTestConfig['webServer']>;
@@ -140,20 +141,20 @@ function resolveEndpoint(
 	const flat: Record<string, string> = {};
 	const sui = manifest.services.sui;
 	if (sui !== undefined) {
-		flat['sui-rpc'] = sui.rpc.url;
-		if (sui.faucet !== undefined) flat['sui-faucet'] = sui.faucet.url;
-		if (sui.graphql !== undefined) flat['sui-graphql'] = sui.graphql.url;
-		if (sui.indexerDb !== undefined) flat['sui-indexer-db'] = sui.indexerDb.url;
+		flat[EndpointName.SUI_RPC] = sui.rpc.url;
+		if (sui.faucet !== undefined) flat[EndpointName.SUI_FAUCET] = sui.faucet.url;
+		if (sui.graphql !== undefined) flat[EndpointName.SUI_GRAPHQL] = sui.graphql.url;
+		if (sui.indexerDb !== undefined) flat[EndpointName.SUI_INDEXER_DB] = sui.indexerDb.url;
 	}
 	const seal = manifest.services.seal;
-	if (seal !== undefined) flat['seal-key-server'] = seal.keyServer.url;
+	if (seal !== undefined) flat[EndpointName.SEAL_KEY_SERVER] = seal.keyServer.url;
 	const walrus = manifest.services.walrus;
 	if (walrus !== undefined) {
-		flat['walrus-aggregator'] = walrus.aggregator.url;
-		flat['walrus-publisher'] = walrus.publisher.url;
+		flat[EndpointName.WALRUS_AGGREGATOR] = walrus.aggregator.url;
+		flat[EndpointName.WALRUS_PUBLISHER] = walrus.publisher.url;
 	}
-	if (manifest.app.dev !== undefined) flat['dev-server'] = manifest.app.dev.url;
-	if (manifest.app.wallet !== undefined) flat['wallet-app'] = manifest.app.wallet.url;
+	if (manifest.app.dev !== undefined) flat[EndpointName.DEV_SERVER_FALLBACK] = manifest.app.dev.url;
+	if (manifest.app.wallet !== undefined) flat[EndpointName.WALLET_APP] = manifest.app.wallet.url;
 	const url = flat[endpoint];
 	if (url === undefined) {
 		const available = Object.keys(flat).join(', ') || '<none>';
@@ -172,14 +173,14 @@ function resolveEndpoint(
  *  exist yet so `webServer({ endpoint })` can still produce a URL for
  *  playwright's config-load step. */
 const CONVENTIONAL_ROUTES: Record<string, { service: string; port: number }> = {
-	'dev-server': { service: 'dev', port: 5175 },
-	'wallet-app': { service: 'wallet', port: 5180 },
-	'sui-rpc': { service: 'sui', port: 9000 },
-	'sui-faucet': { service: 'faucet', port: 9123 },
-	'sui-graphql': { service: 'graphql', port: 9125 },
-	'walrus-aggregator': { service: 'walrus-agg', port: 9185 },
-	'walrus-publisher': { service: 'walrus-pub', port: 9185 },
-	'seal-key-server': { service: 'seal', port: 2024 },
+	[EndpointName.DEV_SERVER_FALLBACK]: { service: 'dev', port: 5175 },
+	[EndpointName.WALLET_APP]: { service: 'wallet', port: 5180 },
+	[EndpointName.SUI_RPC]: { service: 'sui', port: 9000 },
+	[EndpointName.SUI_FAUCET]: { service: 'faucet', port: 9123 },
+	[EndpointName.SUI_GRAPHQL]: { service: 'graphql', port: 9125 },
+	[EndpointName.WALRUS_AGGREGATOR]: { service: 'walrus-agg', port: 9185 },
+	[EndpointName.WALRUS_PUBLISHER]: { service: 'walrus-pub', port: 9185 },
+	[EndpointName.SEAL_KEY_SERVER]: { service: 'seal', port: 2024 },
 };
 
 const conventionalUrl = (endpoint: string): string | undefined => {

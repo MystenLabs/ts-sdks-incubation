@@ -1,18 +1,20 @@
 // `Devstack` — the canonical runtime accessor for app code.
 //
 // `yield* Devstack` in any Effect program (after `devstack(...).layer`
-// is provided) returns a typed snapshot of the running stack: services,
-// packages, accounts, coins, and app endpoints, all keyed by the names
-// declared in the user's config. The shape mirrors `Manifest` (the
-// on-disk schema) field-for-field so app code can move between
+// is provided) returns a typed accessor for the running stack:
+// services, packages, accounts, coins, and app endpoints, all keyed by
+// the names declared in the user's config. The shape mirrors `Manifest`
+// (the on-disk schema) field-for-field so app code can move between
 // "served from a live Effect" and "read from manifest.json" by swapping
-// `yield* Devstack` for `fromManifest(...)` with no other changes.
+// `yield* (yield* Devstack).current()` for `fromManifest(...)` with no
+// other changes.
 //
 // Implementation reads `PackageRegistry`, `EndpointRegistry`,
 // `AccountRegistry`, `CoinRegistry` plus the `Identity` service for
 // stack/network/app fields. The internal `gatherManifest` helper is
-// exported so the manifest emitter (`manifest-emit.ts`) can reuse the
-// same gather logic without duplicating the structured-conversion step.
+// exported so the manifest emitter (`runtime/manifest-emit.ts`) can
+// reuse the same gather logic without duplicating the structured-
+// conversion step.
 
 import { Context, Effect, Layer } from 'effect';
 import { Identity } from '../engine/identity.js';
@@ -22,6 +24,7 @@ import {
 	EndpointRegistry,
 	PackageRegistry,
 } from '../engine/registries.js';
+import { EndpointName } from './endpoint-names.js';
 import { toSdkCoin } from './sdk-coin.js';
 import type {
 	AppManifest,
@@ -36,18 +39,18 @@ import type {
 // Endpoint name conventions — flat registry → structured manifest
 // -----------------------------------------------------------------------------
 // Factories publish endpoint records into the flat `EndpointRegistry`
-// (`{name: 'sui-rpc', url: ...}`). The converters below map the
-// well-known names into the structured `services` fields of the
+// (`{name: EndpointName.SUI_RPC, url: ...}`). The converters below map
+// the well-known names into the structured `services` fields of the
 // manifest. Names not in this map are silently dropped from the
-// structured shape — add them here when a new built-in factory wants
-// its endpoint to surface under `services.*` rather than appearing
-// only in the flat list.
+// structured shape — add them here (and to `endpoint-names.ts`) when a
+// new built-in factory wants its endpoint to surface under `services.*`
+// rather than appearing only in the flat list.
 
 const SUI_FIELDS: Record<string, keyof Omit<SuiManifest, 'network' | 'chainId'>> = {
-	'sui-rpc': 'rpc',
-	'sui-faucet': 'faucet',
-	'sui-graphql': 'graphql',
-	'sui-indexer-db': 'indexerDb',
+	[EndpointName.SUI_RPC]: 'rpc',
+	[EndpointName.SUI_FAUCET]: 'faucet',
+	[EndpointName.SUI_GRAPHQL]: 'graphql',
+	[EndpointName.SUI_INDEXER_DB]: 'indexerDb',
 };
 
 interface FlatEndpoint {
@@ -64,7 +67,7 @@ const groupSui = (
 	endpoints: ReadonlyArray<FlatEndpoint>,
 	network: string,
 ): SuiManifest | undefined => {
-	const rpc = endpoints.find((e) => e.name === 'sui-rpc');
+	const rpc = endpoints.find((e) => e.name === EndpointName.SUI_RPC);
 	if (rpc === undefined) return undefined;
 	let out: SuiManifest = { network, rpc: toEndpointEntry(rpc) };
 	for (const e of endpoints) {
@@ -77,13 +80,13 @@ const groupSui = (
 };
 
 const groupSeal = (endpoints: ReadonlyArray<FlatEndpoint>): SealManifest | undefined => {
-	const ks = endpoints.find((e) => e.name === 'seal-key-server');
+	const ks = endpoints.find((e) => e.name === EndpointName.SEAL_KEY_SERVER);
 	return ks !== undefined ? { keyServer: toEndpointEntry(ks) } : undefined;
 };
 
 const groupWalrus = (endpoints: ReadonlyArray<FlatEndpoint>): WalrusManifest | undefined => {
-	const agg = endpoints.find((e) => e.name === 'walrus-aggregator');
-	const pub = endpoints.find((e) => e.name === 'walrus-publisher');
+	const agg = endpoints.find((e) => e.name === EndpointName.WALRUS_AGGREGATOR);
+	const pub = endpoints.find((e) => e.name === EndpointName.WALRUS_PUBLISHER);
 	if (agg === undefined || pub === undefined) return undefined;
 	return { aggregator: toEndpointEntry(agg), publisher: toEndpointEntry(pub) };
 };
@@ -93,9 +96,9 @@ const groupApp = (
 	extras: Record<string, unknown>,
 ): AppManifest => {
 	const dev =
-		endpoints.find((e) => e.name === 'frontend.dev-server') ??
-		endpoints.find((e) => e.name === 'dev-server');
-	const wallet = endpoints.find((e) => e.name === 'wallet-app');
+		endpoints.find((e) => e.name === EndpointName.DEV_SERVER_PRIMARY) ??
+		endpoints.find((e) => e.name === EndpointName.DEV_SERVER_FALLBACK);
+	const wallet = endpoints.find((e) => e.name === EndpointName.WALLET_APP);
 	return {
 		extras,
 		...(dev !== undefined ? { dev: toEndpointEntry(dev) } : {}),
@@ -112,9 +115,9 @@ const groupApp = (
  *  both `Devstack` (live snapshot) and `runtime/manifest-emit.ts` (disk
  *  write).
  *
- *  `extras` is the user-supplied extras blob resolved from the `Extras`
- *  service; this function gathers from the registries only. Callers
- *  needing extras pass them in directly. */
+ *  `extras` is the user-supplied extras blob resolved from the
+ *  `ExtrasResolved` service; this function gathers from the registries
+ *  only. Callers needing extras pass them in directly. */
 export const gatherManifest = (
 	extras: Record<string, unknown> = {},
 ): Effect.Effect<
@@ -196,29 +199,22 @@ export const gatherManifest = (
 // Devstack Effect Service
 // -----------------------------------------------------------------------------
 
-/** The canonical runtime accessor. `yield* Devstack` returns the live
- *  v4 manifest — a thunk that re-snapshots the registries on every call
- *  so consumers see late-registered services (e.g. a wallet endpoint
- *  that boots AFTER an Action's body has already yielded `Devstack`).
+/** The canonical runtime accessor. `yield* Devstack` returns a thunk
+ *  that re-snapshots the registries on demand — late-registered
+ *  services (e.g. a wallet endpoint that boots AFTER an Action's body
+ *  has already yielded `Devstack`) become visible by calling
+ *  `current()`. The layer build is non-eager: we don't capture a
+ *  snapshot at acquire-time, so registries seeded after the layer
+ *  builds are reflected on every subsequent `current()` call.
  *
- *  HIGH-C6: pre-fix `Devstack` captured a single `gatherManifest()`
- *  result at scope-acquire. Any service registered after that point
- *  was invisible to downstream consumers. Returning a value that
- *  re-gathers keeps the API single-yield while making it honest about
- *  the registry's live state.
- *
- *  The value is callable: `yield* Devstack` returns `{ snapshot,
- *  current }` where `snapshot` is the manifest at the moment of the
- *  yield and `current()` re-gathers on demand. Existing call sites
- *  that read `m.services.sui.rpc.url` still work via `snapshot` —
- *  consumers that need live state call `current()` afterward. */
+ *  ```ts
+ *  const dev = yield* Devstack;
+ *  const manifest = yield* dev.current();
+ *  ``` */
 export interface DevstackShape {
-	/** Manifest snapshot taken at the moment `yield* Devstack` resolved.
-	 *  Suitable for one-shot reads. */
-	readonly snapshot: Manifest;
-	/** Re-gather the manifest from the live registries. Use when the
-	 *  consumer needs to observe services registered after the yield. */
-	readonly current: Effect.Effect<
+	/** Re-gather the manifest from the live registries. Use whenever a
+	 *  fresh manifest snapshot is needed; cheap (pure registry read). */
+	readonly current: () => Effect.Effect<
 		Manifest,
 		never,
 		PackageRegistry | EndpointRegistry | AccountRegistry | CoinRegistry | Identity
@@ -227,18 +223,9 @@ export interface DevstackShape {
 
 export class Devstack extends Context.Service<Devstack, DevstackShape>()('@devstack/Devstack') {}
 
-/** Live layer for `Devstack`. Captures the eager snapshot for the
- *  common one-shot path and stashes a re-gather Effect for live
- *  consumers. The re-gather requires the same registry services that
- *  built the eager snapshot, so this layer's R channel is unchanged. */
-export const DevstackLive: Layer.Layer<
-	Devstack,
-	never,
-	PackageRegistry | EndpointRegistry | AccountRegistry | CoinRegistry | Identity
-> = Layer.effect(
-	Devstack,
-	Effect.gen(function* () {
-		const snapshot = yield* gatherManifest();
-		return { snapshot, current: gatherManifest() } satisfies DevstackShape;
-	}),
-);
+/** Live layer for `Devstack`. Non-eager: `current()` calls
+ *  `gatherManifest` on each invocation so registries seeded AFTER the
+ *  layer builds are reflected. */
+export const DevstackLive: Layer.Layer<Devstack, never, never> = Layer.succeed(Devstack, {
+	current: () => gatherManifest(),
+});

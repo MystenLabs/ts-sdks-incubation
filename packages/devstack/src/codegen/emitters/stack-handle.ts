@@ -28,7 +28,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { Effect } from 'effect';
-import { Extras, resolveExtras } from '../../runtime/extras.js';
+import { ExtrasResolved } from '../../engine/extras.js';
 import { gatherManifest } from '../../runtime/service.js';
 import { jsonBigintReplacer } from '../../engine/json-bigint.js';
 import { CodegenError } from '../errors.js';
@@ -180,8 +180,7 @@ export const StackHandleEmitter = (_opts: StackHandleEmitterOptions = {}): Emitt
 		name: 'stack-handle',
 		emit: (ctx) =>
 			Effect.gen(function* () {
-				const extrasInput = yield* Extras;
-				const extras = yield* resolveExtras(extrasInput);
+				const extras = yield* yield* ExtrasResolved;
 				const data = yield* gatherManifest(extras);
 
 				yield* writeIfChanged(

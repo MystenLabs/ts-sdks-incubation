@@ -34,6 +34,8 @@
 import { Console, Effect, Option } from 'effect';
 import { Command, Flag } from 'effect/unstable/cli';
 import { deriveAppName } from '../../engine/identity.js';
+import { failAlreadyReported } from '../already-reported.js';
+import { resolveStackFromEnv } from '../stack-resolution.js';
 import { pruneStack } from './_prune-stack.js';
 
 // Default reads `DEVSTACK_STACK` at action time (NOT at module load —
@@ -47,11 +49,8 @@ const stackFlag = Flag.string('stack').pipe(
 	Flag.withDefault(''),
 );
 
-const resolveStackFlag = (raw: string): string => {
-	if (raw.length > 0) return raw;
-	const env = process.env.DEVSTACK_STACK;
-	return env !== undefined && env.length > 0 ? env : 'main';
-};
+const resolveStackFlag = (raw: string): string =>
+	resolveStackFromEnv(raw.length > 0 ? raw : undefined);
 
 // Optional + resolved at action-time so `DEVSTACK_APP_DIR` overrides
 // applied via a fixture or shell wrapper after this module's import
@@ -101,10 +100,9 @@ export const wipeCommand = Command.make(
 	({ stack, app, yes, keepSnapshots, noStop, images }) =>
 		Effect.gen(function* () {
 			if (!yes) {
-				yield* Console.error(
+				return yield* failAlreadyReported(
 					'devstack wipe: --yes is required (refusing to wipe without explicit confirmation)',
 				);
-				return yield* Effect.fail(new Error('wipe: --yes required'));
 			}
 
 			const resolvedApp = resolveAppName(app);

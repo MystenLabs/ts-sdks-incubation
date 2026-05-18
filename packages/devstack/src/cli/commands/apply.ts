@@ -11,7 +11,7 @@
 
 import { Console, Effect, Layer, Option } from 'effect';
 import { Argument, Command, Flag } from 'effect/unstable/cli';
-import { prettyError } from '../../engine/pretty-error.js';
+import { causeToJson, prettyError } from '../../engine/pretty-error.js';
 import { AlreadyReportedError } from '../already-reported.js';
 import { applyNetworkOverride, networkFlag } from '../flags.js';
 import { loadConfigModule, requireLayer } from '../loaders.js';
@@ -45,16 +45,17 @@ export const applyCommand = Command.make(
 			const reportAndRethrow = (cause: unknown) =>
 				Effect.gen(function* () {
 					if (json) {
-						// Multi-line cause tree per-entry so a stderr-bearing
-						// `DockerError` nested under a `SuiError` lands in the
-						// CLI's `--json` output without being collapsed to a
-						// single class name.
+						// Structured JSON cause tree so a stderr-bearing
+						// `DockerError` nested under a `SuiError` rides through
+						// with `_tag` / `stderr` / `exitCode` / `phase`
+						// preserved as fields — consumers can match on them
+						// without parsing a multi-line string.
 						yield* Console.log(
 							JSON.stringify({
 								ok: false,
 								command: 'apply',
 								configPath: resolved,
-								errors: [prettyError(cause)],
+								error: causeToJson(cause),
 							}),
 						);
 					} else {

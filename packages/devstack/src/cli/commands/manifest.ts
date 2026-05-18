@@ -15,15 +15,15 @@ import { Console, Effect, FileSystem, Option } from 'effect';
 import { Argument, Command, Flag } from 'effect/unstable/cli';
 import { resolve as resolvePath } from 'node:path';
 import { discoverManifestPath } from '../../runtime/discover-manifest.js';
+import { failAlreadyReported } from '../already-reported.js';
+import { resolveStackFromEnv, stateDir } from '../stack-resolution.js';
 
 // Read env at action-time so a test that sets it via `process.env` after
 // module-load (or a `.env` loader, or a fixture shell wrapper) sees the
 // override. Resolving once at module-eval freezes whatever was set at the
 // moment the CLI was imported.
-const stateDir = (): string => process.env.DEVSTACK_STATE_DIR ?? '.devstack';
-const stackName = (): string => process.env.DEVSTACK_STACK ?? 'main';
 const defaultManifestPath = (): string =>
-	discoverManifestPath() ?? `${stateDir()}/stacks/${stackName()}/manifest.json`;
+	discoverManifestPath() ?? `${stateDir()}/stacks/${resolveStackFromEnv(undefined)}/manifest.json`;
 
 interface ManifestSummary {
 	readonly packages?: ReadonlyArray<{ name: string; packageId: string }>;
@@ -49,11 +49,10 @@ export const manifestCommand = Command.make(
 
 			const exists = yield* fs.exists(filePath).pipe(Effect.orElseSucceed(() => false));
 			if (!exists) {
-				yield* Console.error(
+				return yield* failAlreadyReported(
 					`manifest not found at ${absolute}\n` +
 						`  run \`devstack apply\` or \`devstack up\` to write it`,
 				);
-				return yield* Effect.fail(new Error('manifest not found'));
 			}
 
 			const raw = yield* fs.readFileString(filePath).pipe(
@@ -73,8 +72,9 @@ export const manifestCommand = Command.make(
 			try {
 				parsed = JSON.parse(raw) as ManifestSummary;
 			} catch (cause) {
-				yield* Console.error(`failed to parse manifest at ${absolute}: ${String(cause)}`);
-				return yield* Effect.fail(new Error('manifest parse failure'));
+				return yield* failAlreadyReported(
+					`failed to parse manifest at ${absolute}: ${String(cause)}`,
+				);
 			}
 
 			yield* Console.log(`devstack manifest`);

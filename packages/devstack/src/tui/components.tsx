@@ -266,6 +266,13 @@ const resolveDetail = (entry: TuiEntry): Detail | null => {
 export interface AppProps {
 	readonly engine: EngineHandleShape;
 	readonly onQuit: () => void;
+	/** Synchronous "flush the engine's tuiState into the rendered tree
+	 *  before the next event-loop turn" hook. The TUI mount in
+	 *  `tui/index.ts` wires this to its `flush` Effect so the q-handler
+	 *  can land the final 'shutting-down' frame on screen without the
+	 *  prior hardcoded 150ms sleep. Optional so the ink-testing-library
+	 *  tests can call `<App>` without a mount. */
+	readonly onFlush?: () => void;
 	/** Poll cadence for the engine's TuiState Ref. Lower in tests to
 	 *  drive deterministic snapshots without burning real time. */
 	readonly pollIntervalMs?: number;
@@ -280,12 +287,20 @@ export function App(props: AppProps): React.ReactElement {
 	const pollIntervalMs = props.pollIntervalMs ?? 100;
 
 	useEffect(() => {
+		// Reference-equality short-circuit: the engine mints a fresh
+		// TuiState object on every mutation (`Ref.update` returns a
+		// `{...s, ...}` spread), so `prev === next` is an accurate
+		// "did anything change" check. Without this guard React was
+		// scheduling a rerender 10×/sec on a quiet stack even though
+		// the Ref hadn't moved.
+		const apply = (next: TuiState): void =>
+			setState((prev) => (prev === next ? prev : next));
 		Effect.runPromise(Ref.get(props.engine.tuiState))
-			.then(setState)
+			.then(apply)
 			.catch(() => {});
 		const interval = setInterval(() => {
 			Effect.runPromise(Ref.get(props.engine.tuiState))
-				.then(setState)
+				.then(apply)
 				.catch(() => {});
 		}, pollIntervalMs);
 		return () => clearInterval(interval);
@@ -297,8 +312,11 @@ export function App(props: AppProps): React.ReactElement {
 			// process: the scope-teardown finalizers (`docker rm -f`, etc.)
 			// hold the event loop uninterruptibly, so without an explicit
 			// pre-kill render tick the header freezes on `[running]` and
-			// reads as a hang. The 150ms sleep is long enough for the
-			// ink poll interval (default 100ms) to pick up the new state.
+			// reads as a hang. `onFlush` (when wired by the TUI mount)
+			// is a synchronous "land this state in the rendered tree
+			// before the next event-loop turn" hook, replacing the
+			// prior hardcoded 150ms sleep that had to win a race
+			// against the docker-rm finalizers.
 			Effect.runFork(
 				Effect.gen(function* () {
 					yield* props.engine.setBuildStatus('shutting-down');
@@ -307,10 +325,10 @@ export function App(props: AppProps): React.ReactElement {
 						level: 'info',
 						message: SHUTDOWN_LOG_MESSAGE,
 					});
-					yield* Effect.sleep('150 millis');
 				}).pipe(
 					Effect.tap(() =>
 						Effect.sync(() => {
+							if (props.onFlush !== undefined) props.onFlush();
 							props.onQuit();
 							inkApp.exit();
 						}),

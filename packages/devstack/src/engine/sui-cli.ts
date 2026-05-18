@@ -30,7 +30,7 @@ import * as path from 'node:path';
 import { Context, Effect, FileSystem, Schema, Stream } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { inheritedHostEnv } from './safe-env.js';
-import { stringifyCause } from './stringify-cause.js';
+import { prettyError } from './pretty-error.js';
 import { SuiBuildContainer } from './sui-build-container.js';
 
 // Optional sui-tools image reference. When `suiLocalnet` builds its
@@ -71,18 +71,20 @@ export class SuiCliError extends Schema.TaggedErrorClass<SuiCliError>()('SuiCliE
 const suiCliError =
 	(op: string) =>
 	(cause: unknown): SuiCliError => {
-		const raw = stringifyCause(cause);
 		// ENOENT on spawn means the `sui` binary isn't reachable on the
 		// child's PATH. Surface a setup-actionable message rather than the
 		// opaque `NotFound: ChildProcess.spawn` Node error. Mismatched
 		// versions between a host-installed `sui` and the localnet
 		// container's binary can also produce subtle build/publish errors —
-		// flag that too so the user knows where to look.
-		const isENOENT = raw.includes('ENOENT') || raw.includes('NotFound');
-		const friendly = isENOENT
-			? `sui CLI not found on PATH. Install from https://github.com/MystenLabs/sui/releases or via \`cargo install --locked --git https://github.com/MystenLabs/sui.git sui\`. (Original: ${raw})`
-			: raw;
-		return new SuiCliError({ op, message: friendly, cause });
+		// flag that too so the user knows where to look. The full structured
+		// chain still rides through `cause` so the top-level reporter walks
+		// it via `pretty-error.ts`.
+		const summary = prettyError(cause).split('\n')[0] ?? '';
+		const isENOENT = summary.includes('ENOENT') || summary.includes('NotFound');
+		const message = isENOENT
+			? `sui CLI not found on PATH. Install from https://github.com/MystenLabs/sui/releases or via \`cargo install --locked --git https://github.com/MystenLabs/sui.git sui\`.`
+			: summary;
+		return new SuiCliError({ op, message, cause });
 	};
 
 // -----------------------------------------------------------------------------

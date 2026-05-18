@@ -52,11 +52,22 @@ import { registry, type RegistryNetwork } from './registry.js';
 import { PortAllocatorLive } from './port-allocator.js';
 import { AccountRegistryLive, CoinRegistryLive, PackageRegistryLive } from './registries.js';
 import { StateStoreConfig, StateStoreLive } from './state-store.js';
-import { ExtrasLive } from '../runtime/extras.js';
+import { ExtrasLive } from './extras.js';
 import { resolveNetwork, type SuiNetwork } from './network.js';
+import {
+	type RendererFactory,
+	type RendererKind,
+	type RendererResolver,
+	silentRendererFactory,
+} from './renderer.js';
 import type { TagKind } from '../advanced/tag.js';
-import { startPlainRenderer } from '../tui/plain.js';
-import { SHUTDOWN_LOG_MESSAGE, startTuiOnce, TuiLoggerLayer } from '../tui/index.js';
+
+// Shutdown copy surfaced via `engine.appendLog` in `onInterrupt`. A
+// peer copy lives in `tui/components.tsx` for the q-keypress feedback
+// path; both can drift independently — the constant is duplicated
+// deliberately so the supervisor doesn't import upward into `tui/`.
+const SHUTDOWN_LOG_MESSAGE =
+	'Shutting down. Sui and other background services stay warm for a fast next start. Run `pnpm exec devstack wipe --yes` to clear all local state.';
 
 // Structural shape of a stack member — anything carrying `__layer` (or
 // a flattened `__layers` for composites). Once Phase 3b finishes
@@ -107,17 +118,19 @@ export interface StackMember {
 	readonly __watchPaths?: ReadonlyArray<string>;
 }
 
-export type RendererKind = 'tui' | 'plain' | 'silent';
+export type { RendererKind };
 
 export interface DevstackConfig {
 	readonly stack: ReadonlyArray<StackMember>;
 	/**
-	 * Raw `app.extras` input passed through to the `Extras` runtime
-	 * service. Both `manifest-emit` and the codegen `StackHandleEmitter`
-	 * yield `Extras` and `resolveExtras(...)` to project a single
-	 * resolved record into the manifest + generated `extras.ts`.
+	 * Raw `app.extras` input passed through to the `Extras` /
+	 * `ExtrasResolved` runtime services. Resolved once at infra-layer
+	 * build time so `manifest-emit`, the codegen `StackHandleEmitter`,
+	 * and `DappKitConfigEmitter` see the same record even when the
+	 * input is non-pure (`() => ({ ts: Date.now() })`, registry-reading
+	 * Effects).
 	 */
-	readonly extras?: import('../runtime/extras.js').ExtrasInput;
+	readonly extras?: import('./extras.js').ExtrasInput;
 	readonly stateDir?: string;
 	/**
 	 * Logical stack name — partitions persisted state under
@@ -140,8 +153,29 @@ export interface DevstackConfig {
 	 * one-line-per-event stream is too noisy.
 	 *
 	 * The CLI `--renderer` flag (if set) overrides this.
+	 *
+	 * A `RendererKind` is resolved to a concrete `RendererFactory` via
+	 * `rendererResolver`. `compose/devstack.ts` wires the default
+	 * resolver (which knows about `tui/`); `engine/supervisor.ts`
+	 * itself never imports tui modules.
 	 */
 	readonly renderer?: RendererKind;
+	/**
+	 * Resolves a `RendererKind` string into a concrete factory. Wired
+	 * by `compose/devstack.ts` (which imports `tui/`) so the supervisor
+	 * doesn't need an upward dependency on the renderer modules. Tests
+	 * and advanced callers can pass their own resolver to swap in a
+	 * fake renderer.
+	 */
+	readonly rendererResolver?: RendererResolver;
+	/**
+	 * Pre-resolved renderer factory. Wins over `renderer` /
+	 * `rendererResolver` when set — `defineDevstack` uses it directly
+	 * without consulting the resolver. Use this when the caller has a
+	 * concrete factory in hand (e.g. a test harness wiring an in-memory
+	 * renderer).
+	 */
+	readonly rendererFactory?: RendererFactory;
 	/**
 	 * Filesystem paths to observe for changes. When `hotRestart` is on
 	 * (the default whenever `watch` is set), a change debounced to 250ms
@@ -158,14 +192,35 @@ export interface DevstackConfig {
 	readonly hotRestart?: boolean;
 }
 
-const resolveRenderer = (config: DevstackConfig): RendererKind => {
+const resolveRendererKind = (config: DevstackConfig): RendererKind => {
 	if (config.renderer !== undefined) return config.renderer;
 	return process.stdout.isTTY === true ? 'tui' : 'plain';
+};
+
+/** Resolve a renderer factory from the config + per-run overrides.
+ *  Precedence: explicit override factory → override kind via resolver →
+ *  config factory → config kind via resolver → default kind via
+ *  resolver. Missing resolver short-circuits to `silentRendererFactory`
+ *  — calls into the supervisor that don't pass a resolver (rare; mostly
+ *  tests) effectively run renderer-less. */
+const resolveRendererFactory = (
+	config: DevstackConfig,
+	overrides: RunOverrides,
+): RendererFactory => {
+	if (overrides.rendererFactory !== undefined) return overrides.rendererFactory;
+	const resolver = config.rendererResolver;
+	if (overrides.renderer !== undefined) {
+		return resolver !== undefined ? resolver(overrides.renderer) : silentRendererFactory;
+	}
+	if (config.rendererFactory !== undefined) return config.rendererFactory;
+	if (resolver === undefined) return silentRendererFactory;
+	return resolver(resolveRendererKind(config));
 };
 
 /** Overrides applied at `run()` time, layered on top of `DevstackConfig`. */
 export interface RunOverrides {
 	readonly renderer?: RendererKind;
+	readonly rendererFactory?: RendererFactory;
 }
 
 /** The handle `defineDevstack(...)` / `devstack(...)` return — distinct
@@ -548,11 +603,12 @@ export interface StackComposeOptions {
 	readonly network?: SuiNetwork;
 	readonly stateDir?: string;
 	/**
-	 * Raw `app.extras` input. Provided as the `Extras` runtime service
-	 * inside the infra layer so manifest emit + the codegen stack-handle
-	 * emitter can yield the same value and resolve it on their own time.
+	 * Raw `app.extras` input. Resolved once at infra-layer build time
+	 * into `ExtrasResolved` so manifest emit + codegen emitters
+	 * (`StackHandleEmitter`, `DappKitConfigEmitter`) all see the same
+	 * record even when the input is non-pure.
 	 */
-	readonly extras?: import('../runtime/extras.js').ExtrasInput;
+	readonly extras?: import('./extras.js').ExtrasInput;
 	/**
 	 * Override the outer Platform layer (FileSystem / Path /
 	 * ChildProcessSpawner / Stdio / Terminal). Intended for integration
@@ -835,7 +891,8 @@ export const defineDevstack = (
 	});
 
 	const buildLaunchEffect = (overrides: RunOverrides): Effect.Effect<void, unknown, never> => {
-		const renderer = overrides.renderer ?? resolveRenderer(config);
+		const rendererFactory = resolveRendererFactory(config, overrides);
+		const rendererKind = rendererFactory.kind;
 
 		// The user-stack layer's identity is stable across cycles
 		// (`config` is closed-over, not derived from per-cycle state),
@@ -937,7 +994,7 @@ export const defineDevstack = (
 				yield* engine.clearChangedTags;
 				yield* engine.seedTags(seedEntries);
 
-				const loggerLayer = renderer === 'tui' ? TuiLoggerLayer(engine) : Layer.empty;
+				const loggerLayer = rendererFactory.loggerLayer(engine);
 
 				// Build the full user stack as one composed Layer. Dependency
 				// wiring relies on Effect's Layer runtime ordering — providers
@@ -963,7 +1020,7 @@ export const defineDevstack = (
 						// not flush in time before the fast-fail Effect.fail
 						// exits the process, leaving the appendLog'd line stuck
 						// in the engine's Ref. stderr write is synchronous.
-						if (renderer !== 'tui') {
+						if (rendererKind !== 'tui') {
 							process.stderr.write(`stack acquire failed:\n${rendered}\n`);
 						}
 						return engine
@@ -1019,12 +1076,12 @@ export const defineDevstack = (
 				// docker state. The bootstrap scope's finalizers (state-store
 				// lock release, file-watcher cleanup) still run on the way
 				// out because `Effect.fail` exits via the scoped supervisor.
-				if (cycle === 1 && !buildSucceeded && renderer !== 'tui') {
+				if (cycle === 1 && !buildSucceeded && rendererKind !== 'tui') {
 					yield* engine.setBuildStatus('shutting-down');
 					return yield* Effect.fail(
 						new Error(
 							'devstack: stack acquire failed on first cycle ' +
-								`(renderer=${renderer}); exiting non-zero. See log above for the underlying cause.`,
+								`(renderer=${rendererKind}); exiting non-zero. See log above for the underlying cause.`,
 						),
 					);
 				}
@@ -1119,25 +1176,27 @@ export const defineDevstack = (
 				) as Effect.Effect<void, never, never>;
 			}
 
-			// Mount ink ONCE for the entire runMain lifetime. The engine
-			// is stable across cycles now, so the install happens once
-			// here too (pre-fix the install was redone every cycle
-			// because each cycle had a fresh engine). The plain
-			// renderer fork is also on longLived for the same reason.
-			// Capture the active renderer's `flush` so the onInterrupt
-			// path can drive ONE explicit render of the final state
-			// (replaces the previous arbitrary `Effect.sleep('150 millis')`,
-			// which could miss the plain renderer's 500ms tick).
-			let rendererFlush: Effect.Effect<void> = Effect.void;
-			const tuiMount = renderer === 'tui' ? yield* startTuiOnce() : undefined;
-			if (tuiMount !== undefined) {
-				yield* tuiMount.install(engine);
-				rendererFlush = tuiMount.flush;
-			} else if (renderer === 'plain') {
-				const tuiSource = Ref.get(engine.tuiState);
-				const plainHandle = yield* startPlainRenderer(tuiSource).pipe(Effect.provide(bootstrapCtx));
-				rendererFlush = plainHandle.flush as Effect.Effect<void>;
-			}
+			// Mount the renderer ONCE for the entire runMain lifetime.
+			// Both ink (TUI) and the plain renderer fork live on the
+			// outer `longLived` scope so they survive `r` / file-watch
+			// cycles instead of being torn down between cycles. The
+			// per-cycle `install(engine)` swaps the cycle's engine into
+			// the (stable) renderer proxy — for ink this redirects the
+			// ink components' reads + `r`-keypress restarts; for plain /
+			// silent it's a no-op (the renderer reads `engine.tuiState`
+			// directly).
+			//
+			// `flush` is captured so the `onInterrupt` path can drive
+			// ONE explicit render of the final 'shutting-down' state
+			// BEFORE docker-rm finalizers freeze the event loop
+			// (replaces the previous arbitrary `Effect.sleep('150
+			// millis')`, which could miss the plain renderer's 500ms
+			// tick).
+			const rendererMount = yield* rendererFactory
+				.mount({ tuiStateRef: engine.tuiState })
+				.pipe(Effect.provide(bootstrapCtx));
+			yield* rendererMount.install(engine);
+			const rendererFlush = rendererMount.flush;
 
 			// SIGUSR2 handler + watcher fibers on longLived too (HIGH-S1).
 			// The engine they target is stable, so the per-cycle re-install

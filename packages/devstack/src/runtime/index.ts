@@ -20,6 +20,21 @@
 // 1. Runtime accessor
 export { Devstack, DevstackLive, type DevstackShape, gatherManifest } from './service.js';
 
+// 1b. Endpoint name constants — single source of truth for the strings
+// factories publish into the registry and consumers read back.
+export { EndpointName, type EndpointNameValue } from './endpoint-names.js';
+
+// 1c. Extras service — re-exported from engine/ so plugin authors keep
+// importing it from the runtime barrel even though it lives in engine/.
+export {
+	Extras,
+	ExtrasResolved,
+	ExtrasLive,
+	ExtrasEmpty,
+	resolveExtras,
+	type ExtrasInput,
+} from '../engine/extras.js';
+
 // 2. Manifest schema + types
 export {
 	type AccountEntry,

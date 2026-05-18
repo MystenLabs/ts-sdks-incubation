@@ -7,7 +7,7 @@
 import { Cause } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 import { DockerError, SuiError, WalrusError } from '../engine/errors.js';
-import { prettyError } from './pretty-error.js';
+import { causeToJson, prettyError } from './pretty-error.js';
 
 describe('prettyError', () => {
 	it('renders a tagged error with op + stderr + exitCode', () => {
@@ -110,5 +110,109 @@ describe('prettyError', () => {
 		const rendered = prettyError(docker);
 		expect(rendered).toContain('[truncated]');
 		expect(rendered.length).toBeLessThan(big.length);
+	});
+
+	it('renders an inner cause whose chain came through `cause:` on the tagged error (no flattened message)', () => {
+		// Mirrors the post-stringify-cause-sweep pattern: callers stop
+		// wrapping inner failures into their own `message` string and
+		// instead pass the raw inner via the tagged error's `cause:`
+		// field. Pretty-error walks the chain and surfaces every layer's
+		// structured fields.
+		const docker = new DockerError({
+			op: 'docker run',
+			message: 'pull access denied for mystenlabs/sui-tools',
+			stderr: 'unauthorized',
+			exitCode: 125,
+		});
+		const sui = new SuiError({
+			phase: 'sui-up',
+			message: 'failed to start sui localnet',
+			cause: docker,
+		});
+		const rendered = prettyError(sui);
+		// SuiError's `message` is the short summary the user reads
+		// first; the DockerError underneath is what they action.
+		expect(rendered).toContain('SuiError (sui-up): failed to start sui localnet');
+		expect(rendered).toContain('DockerError (docker run): pull access denied');
+		expect(rendered).toContain('exitCode: 125');
+		expect(rendered).toContain('stderr: unauthorized');
+		// Confirm we did NOT collapse the inner DockerError's message
+		// into the SuiError's own message string — the structured
+		// fields are reachable separately.
+		expect(rendered).not.toContain('failed to start sui localnet: DockerError');
+	});
+});
+
+describe('causeToJson', () => {
+	it('preserves the full structured chain (DockerError wrapping a SuiError)', () => {
+		const docker = new DockerError({
+			op: 'docker run',
+			message: 'pull access denied',
+			stderr: 'unauthorized',
+			exitCode: 125,
+		});
+		const sui = new SuiError({
+			phase: 'sui-up',
+			message: 'failed to start sui localnet',
+			cause: docker,
+		});
+		const json = causeToJson(sui);
+		expect(json._tag).toBe('SuiError');
+		expect(json.phase).toBe('sui-up');
+		expect(json.message).toBe('failed to start sui localnet');
+		expect(json.cause).toBeDefined();
+		expect(json.cause!._tag).toBe('DockerError');
+		expect(json.cause!.op).toBe('docker run');
+		expect(json.cause!.exitCode).toBe(125);
+		expect(json.cause!.stderr).toBe('unauthorized');
+	});
+
+	it('walks Effect Cause.fail by recursing into the Fail reason', () => {
+		const docker = new DockerError({
+			op: 'docker pull',
+			message: 'rate limit',
+			exitCode: 1,
+		});
+		const cause = Cause.fail(docker);
+		const json = causeToJson(cause);
+		expect(json._tag).toBe('Cause');
+		expect(json.reasons).toBeDefined();
+		expect(json.reasons!.length).toBe(1);
+		const first = json.reasons![0]!;
+		expect(first._tag).toBe('Fail');
+		expect(first.cause!._tag).toBe('DockerError');
+		expect(first.cause!.exitCode).toBe(1);
+	});
+
+	it('truncates oversized stderr the same way prettyError does', () => {
+		const big = 'y'.repeat(20_000);
+		const docker = new DockerError({ op: 'docker run', message: 'oversized', stderr: big });
+		const json = causeToJson(docker);
+		expect(json.stderr).toContain('[truncated]');
+		expect(json.stderr!.length).toBeLessThan(big.length);
+	});
+
+	it('falls back to {_tag, message} for plain Errors', () => {
+		const json = causeToJson(new Error('boom'));
+		expect(json._tag).toBe('Error');
+		expect(json.message).toBe('boom');
+	});
+
+	it('returns the structured walk through JSON.stringify/parse round-trip', () => {
+		// The whole point of the walker: a `--json`-mode consumer can
+		// JSON.stringify the output and downstream code can match on
+		// `_tag` / `exitCode` / `stderr` without parsing a multi-line
+		// rendered string.
+		const docker = new DockerError({
+			op: 'docker run',
+			message: 'denied',
+			stderr: 'unauthorized',
+			exitCode: 125,
+		});
+		const sui = new SuiError({ phase: 'sui-up', message: 'failed', cause: docker });
+		const round = JSON.parse(JSON.stringify(causeToJson(sui))) as Record<string, unknown>;
+		expect(round._tag).toBe('SuiError');
+		expect((round.cause as Record<string, unknown>)._tag).toBe('DockerError');
+		expect((round.cause as Record<string, unknown>).exitCode).toBe(125);
 	});
 });

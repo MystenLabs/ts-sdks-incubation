@@ -44,6 +44,7 @@ import {
 } from '../../engine/docker/inventory.js';
 import { ROUTER_CONTAINER, ROUTER_NETWORK } from '../../engine/docker/router.js';
 import { registry } from '../../engine/registry.js';
+import { AlreadyReportedError, failAlreadyReported } from '../already-reported.js';
 import { pruneStack, removeLabelledImagesNotInUse, type PruneStackResult } from './_prune-stack.js';
 import { PruneApp } from './_prune-ui.js';
 
@@ -139,16 +140,14 @@ const resolveMode = (input: {
 	readonly repoGone: boolean;
 	readonly allOrphans: boolean;
 	readonly interactive: boolean;
-}): Effect.Effect<Mode, Error> =>
+}): Effect.Effect<Mode, AlreadyReportedError> =>
 	Effect.gen(function* () {
 		if (input.list) return { kind: 'list' } as const;
 		if (Option.isSome(input.target)) {
 			const m = TARGET_RE.exec(input.target.value);
 			if (m === null) {
-				return yield* Effect.fail(
-					new Error(
-						`prune: target '${input.target.value}' must be '<app>/<stack>' (e.g. 'arena/main')`,
-					),
+				return yield* failAlreadyReported(
+					`prune: target '${input.target.value}' must be '<app>/<stack>' (e.g. 'arena/main')`,
 				);
 			}
 			const [, app, stack] = m as unknown as [string, string, string];
@@ -284,10 +283,9 @@ const runBulkMode = (input: {
 			return;
 		}
 		if (!input.args.yes && !input.args.dryRun) {
-			yield* Console.error(
+			return yield* failAlreadyReported(
 				`devstack prune --${input.label}: --yes (or --dry-run) is required to remove ${input.rows.length} stack${input.rows.length === 1 ? '' : 's'}`,
 			);
-			return yield* Effect.fail(new Error('prune: --yes required'));
 		}
 		const totals = totalsFor(input.rows);
 		yield* Console.log(
@@ -429,17 +427,15 @@ export const pruneCommand = Command.make(
 
 			if (mode.kind === 'target') {
 				if (!args.yes && !args.dryRun) {
-					yield* Console.error(
+					return yield* failAlreadyReported(
 						`devstack prune: --yes (or --dry-run) is required to prune ${mode.app}/${mode.stack}`,
 					);
-					return yield* Effect.fail(new Error('prune: --yes required'));
 				}
 				const running = findRunningRow(allRows, mode.app, mode.stack);
 				if (running !== undefined) {
-					yield* Console.error(
+					return yield* failAlreadyReported(
 						`prune: refusing to remove ${mode.app}/${mode.stack} — supervisor is running (pid ${running.runningPid}). Stop it first.`,
 					);
-					return yield* Effect.fail(new Error('prune: target supervisor still running'));
 				}
 				const matchingInventory = allRows.find((r) => r.app === mode.app && r.stack === mode.stack);
 				if (args.dryRun) {
@@ -482,10 +478,9 @@ export const pruneCommand = Command.make(
 			// Default: interactive picker. Hard requirement on a real TTY
 			// so a CI shell can't hang waiting for keypresses.
 			if (process.stdin.isTTY !== true) {
-				yield* Console.error(
+				return yield* failAlreadyReported(
 					'devstack prune: interactive mode requires a TTY. Use `--list`, `<app>/<stack> --yes`, `--repo-gone --yes`, or `--all-orphans --yes`.',
 				);
-				return yield* Effect.fail(new Error('prune: interactive mode without TTY'));
 			}
 			if (rows.length === 0) {
 				yield* Console.log('(no devstack-labelled resources to prune)');

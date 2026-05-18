@@ -238,6 +238,13 @@ export const hostProcess = <const Name extends string, E = never, R = never>(
 			// between two consumers of the same underlying OS pipe — the
 			// log probe already has the bytes; the supervisor sees the
 			// matched line through its own narration path.
+			//
+			// Known limitation (no test): in scope-teardown the forked
+			// drainer fibers can park on the still-open pipe between
+			// `handle.kill()` and child exit, leaving the scope close
+			// briefly uninterruptible. Real usage tears down via SIGINT
+			// (closes pipes synchronously) or after the child exits,
+			// so we haven't hit it outside synthetic short-lived tests.
 			const onOutputLine = options.onOutputLine;
 			if (onOutputLine !== undefined) {
 				const scope = yield* Effect.scope;
