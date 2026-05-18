@@ -11,13 +11,13 @@
  *   "build:docs": "tsx scripts/build-docs.ts --all"
  */
 
-import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
+import prettier from 'prettier';
+
 import { EXCLUDED_SUBDIRS, findMdxFiles, generateSectionIndex, processFile } from './docs-utils.js';
 
-const npxCmd = process.platform === 'win32' ? 'npx.cmd' : 'npx';
 const SCRIPTS_DIR = new URL('.', import.meta.url).pathname;
 const DOCS_PKG_DIR = path.resolve(SCRIPTS_DIR, '..');
 const CONTENT_DIR = path.join(DOCS_PKG_DIR, 'content');
@@ -77,10 +77,28 @@ async function buildSectionDocs(
 	const sectionIndex = generateSectionIndex(contentRoot, '.', '#', excludedSubdirs);
 	fs.writeFileSync(path.join(outputDir, 'llms-index.md'), sectionIndex);
 
-	// Format generated files with prettier
-	execFileSync(npxCmd, ['prettier', '--write', `${outputDir}/**/*.md`], { stdio: 'ignore' });
+	// Format generated files with prettier (Node API — avoids the `npx prettier`
+	// resolution-flakiness we saw in CI when the binary isn't symlinked into a
+	// path npx expects).
+	await formatMarkdownDir(outputDir);
 
 	return processed;
+}
+
+async function formatMarkdownDir(dir: string): Promise<void> {
+	if (!fs.existsSync(dir)) return;
+	const walk = (d: string): string[] =>
+		fs.readdirSync(d, { withFileTypes: true }).flatMap((entry) => {
+			const p = path.join(d, entry.name);
+			if (entry.isDirectory()) return walk(p);
+			return entry.isFile() && entry.name.endsWith('.md') ? [p] : [];
+		});
+	const config = (await prettier.resolveConfig(dir)) ?? {};
+	for (const file of walk(dir)) {
+		const src = fs.readFileSync(file, 'utf8');
+		const out = await prettier.format(src, { ...config, filepath: file });
+		if (out !== src) fs.writeFileSync(file, out);
+	}
 }
 
 /** --all mode: build docs for every content section into dist/ and generate the full index. */
