@@ -47,16 +47,24 @@ export {
 export { gitFetch, GitFetchError, type GitFetched, type GitFetchOptions } from './git-fetch.js';
 export { hostScript, type HostScriptOptions, type HostScriptResult } from './host-script.js';
 
-// Registries — surfaced so plugin-author code can `publish(...)` /
-// `requiring(...)` without reaching into `../internal/`. The `Live`
-// layers and the bare `RegistryShape` snapshot interface stay internal;
-// authors should treat each registry as a black box and use the typed
-// helpers.
+// Registries — surfaced so plugin-author code can call the `publish*`
+// write helpers and the `require*` ordering helpers without reaching
+// into `../internal/`. The `Live` layers and the bare `RegistryShape`
+// snapshot interface stay internal; authors should treat each registry
+// as a black box and use the typed helpers.
 export {
 	AccountRegistry,
 	CoinRegistry,
 	EndpointRegistry,
 	PackageRegistry,
+	publishAccount,
+	publishCoin,
+	publishEndpoint,
+	publishPackage,
+	requireAccountRegistry,
+	requireCoinRegistry,
+	requireEndpointRegistry,
+	requirePackageRegistry,
 	type AccountRecord,
 	type CoinRecord,
 	type EndpointRecord,

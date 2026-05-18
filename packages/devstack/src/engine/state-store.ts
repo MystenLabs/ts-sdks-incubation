@@ -242,7 +242,7 @@ export const StateStoreLive: Layer.Layer<
 		const readExistingHolder = (): Effect.Effect<LockBody | undefined> =>
 			fs.readFileString(paths.lock).pipe(
 				Effect.map((raw) => parseLockBody(raw)),
-				Effect.catch(() => Effect.succeed<LockBody | undefined>(undefined)),
+				Effect.orElseSucceed(() => undefined as LockBody | undefined),
 			);
 
 		const failLocked = (holder: LockBody | undefined) => {
@@ -397,7 +397,7 @@ export const StateStoreLive: Layer.Layer<
 										const parsed = yield* Effect.try({
 											try: () => JSON.parse(txt, jsonBigintReviver) as unknown,
 											catch: (cause) => cause,
-										}).pipe(Effect.catch(() => Effect.succeed<unknown>(empty)));
+										}).pipe(Effect.orElseSucceed(() => empty as unknown));
 
 										// Legacy: bare record, no `version` wrapper. Treat as v1
 										// payload and rewrap on next write.

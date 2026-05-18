@@ -171,7 +171,7 @@ export const gitFetch = <const Name extends string>(options: GitFetchOptions<Nam
 			//    .git, partial clone, foreign tree) falls through to a
 			//    fresh clone.
 			const cachedSha = yield* checkCachedHead(spawner, fs, cloneDir).pipe(
-				Effect.catch(() => Effect.succeed<string | undefined>(undefined)),
+				Effect.orElseSucceed(() => undefined as string | undefined),
 			);
 
 			let sha: string;
@@ -193,7 +193,7 @@ export const gitFetch = <const Name extends string>(options: GitFetchOptions<Nam
 				// here never blocks the clone.
 				const siblingsToGc = yield* fs.readDirectory(parentDir).pipe(
 					Effect.map((entries) => entries.filter((e) => e !== refHash)),
-					Effect.catch(() => Effect.succeed([] as ReadonlyArray<string>)),
+					Effect.orElseSucceed(() => [] as ReadonlyArray<string>),
 				);
 				for (const sibling of siblingsToGc) {
 					yield* fs

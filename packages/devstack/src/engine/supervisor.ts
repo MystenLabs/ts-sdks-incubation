@@ -32,7 +32,7 @@
 import * as crypto from 'node:crypto';
 import * as nodeFs from 'node:fs/promises';
 import * as nodePath from 'node:path';
-import { Context, Effect, Layer, Queue, Ref, Stream } from 'effect';
+import { Context, Effect, FileSystem, Layer, Path, Queue, Ref, Stdio, Stream, Terminal } from 'effect';
 import { layer as NodeServicesLayer } from '@effect/platform-node/NodeServices';
 import { runMain as nodeRunMain } from '@effect/platform-node/NodeRuntime';
 import { ChildProcessSpawner } from 'effect/unstable/process';
@@ -48,10 +48,10 @@ import {
 import { FileWatcher, FileWatcherLive } from './file-watcher.js';
 import { Identity, deriveAppName, validateIdentity } from './identity.js';
 import { LeasingLive } from './leasing.js';
-import { registry, type RegistryNetwork } from './registry.js';
+import { Registry, RegistryLive, type RegistryNetwork } from './registry.js';
 import { PortAllocatorLive } from './port-allocator.js';
 import { AccountRegistryLive, CoinRegistryLive, PackageRegistryLive } from './registries.js';
-import { StateStoreConfig, StateStoreLive } from './state-store.js';
+import { StateStore, StateStoreConfig, StateStoreLive } from './state-store.js';
 import { ExtrasLive } from './extras.js';
 import { resolveNetwork, type SuiNetwork } from './network.js';
 import {
@@ -348,9 +348,28 @@ const buildBaseInfra = (
 // memo-map shared with the user-stack build re-uses these — no duplicate
 // `EngineLive` instance, no orphan `restartSignal` Deferred, and only
 // ONE StateStore acquire (and therefore one lock-file write).
+
+// Services the bootstrap layer is guaranteed to provide. Spelled out so
+// `Context.get(bootstrapCtx, X)` and `Effect.provide(bootstrapCtx)` are
+// type-checked: a missing wiring (e.g. `RegistryLive` dropped from the
+// merge) becomes a compile error at the consumer site instead of a
+// runtime `ServiceNotFound`.
+type BootstrapServices =
+	| EngineHandle
+	| FileWatcher
+	| StateStore
+	| StateStoreConfig
+	| Identity
+	| Registry
+	| ChildProcessSpawner.ChildProcessSpawner
+	| FileSystem.FileSystem
+	| Path.Path
+	| Stdio.Stdio
+	| Terminal.Terminal;
+
 const composeBootstrapLayer = (
 	opts: StackComposeOptions = {},
-): Layer.Layer<unknown, unknown, never> => {
+): Layer.Layer<BootstrapServices, unknown, never> => {
 	const { StateStoreFullLive, IdentityLive } = buildBaseInfra(opts);
 	const platform: Layer.Layer<unknown, unknown, never> =
 		opts.platformLayer ?? (PlatformLive as Layer.Layer<unknown, unknown, never>);
@@ -368,8 +387,13 @@ const composeBootstrapLayer = (
 		FileWatcherLive,
 		StateStoreFullLive,
 		IdentityLive,
+		RegistryLive,
 	);
-	return Layer.provideMerge(bootstrapCore, platform) as Layer.Layer<unknown, unknown, never>;
+	return Layer.provideMerge(bootstrapCore, platform) as Layer.Layer<
+		BootstrapServices,
+		unknown,
+		never
+	>;
 };
 
 type EngineShape = EngineHandleShape;
@@ -1139,6 +1163,7 @@ export const defineDevstack = (
 
 			const bootstrapCtx = yield* Layer.buildWithMemoMap(bootstrapLayer, memoMap, longLived);
 			const engine: EngineShape = Context.get(bootstrapCtx, EngineHandle);
+			const registry = Context.get(bootstrapCtx, Registry);
 
 			// Registry announce + clearPid finalizer — both belong on the
 			// long-lived scope so a `pnpm dev` whose lock survived a
@@ -1165,7 +1190,7 @@ export const defineDevstack = (
 			// healthy traefik, but still cost a `docker inspect`).
 			if (process.env.DEVSTACK_NO_ROUTER !== '1') {
 				yield* ensureRouter.pipe(
-					Effect.provide(bootstrapCtx as any),
+					Effect.provide(bootstrapCtx),
 					Effect.timeoutOrElse({
 						duration: '10 seconds',
 						orElse: () =>
@@ -1173,12 +1198,12 @@ export const defineDevstack = (
 								'devstack: traefik router boot timed out after 10s — continuing without it',
 							),
 					}),
-					Effect.catch((cause: any) =>
+					Effect.catch((cause) =>
 						Effect.logWarning(
 							`devstack: traefik router boot failed: ${(cause as { message?: string })?.message ?? String(cause)} — falling back to direct ports for any traefik-aware primitives`,
 						),
 					),
-				) as Effect.Effect<void, never, never>;
+				);
 			}
 
 			// Mount the renderer ONCE for the entire runMain lifetime.

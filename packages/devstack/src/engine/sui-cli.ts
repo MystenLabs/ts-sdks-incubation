@@ -632,7 +632,7 @@ const scrubLockFilesUnder = (
 	Effect.gen(function* () {
 		const entries = yield* fs
 			.readDirectory(dir)
-			.pipe(Effect.catch(() => Effect.succeed<ReadonlyArray<string>>([])));
+			.pipe(Effect.orElseSucceed(() => [] as ReadonlyArray<string>));
 		for (const name of entries) {
 			if (name === 'node_modules' || name === '.git') continue;
 			const full = path.join(dir, name);

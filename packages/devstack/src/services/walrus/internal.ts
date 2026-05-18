@@ -33,7 +33,7 @@ import { type WalrusAdmin } from '../walrus.js';
 import * as Docker from '../../engine/docker.js';
 import { EngineHandle } from '../../engine/engine.js';
 import { Identity } from '../../engine/identity.js';
-import { EndpointRegistry, PackageRegistry } from '../../engine/registries.js';
+import { publishEndpoint, publishPackage } from '../../engine/registries.js';
 import { EndpointName } from '../../runtime/endpoint-names.js';
 import { servicePath } from '../../engine/service-paths.js';
 import { StateStore } from '../../engine/state-store.js';
@@ -404,7 +404,7 @@ export const acquireLocalCluster = (args: {
 			const deployFileExists = yield* Effect.tryPromise({
 				try: () => nodeFs.access(deployFile).then(() => true),
 				catch: () => false,
-			}).pipe(Effect.catch(() => Effect.succeed(false)));
+			}).pipe(Effect.orElseSucceed(() => false));
 			if (deployFileExists !== true) {
 				return yield* Effect.fail(
 					new WalrusError({
@@ -580,7 +580,7 @@ export const acquireLocalCluster = (args: {
 		// 8. Registries — record the walrus package + endpoints so
 		//    the manifest export picks them up.
 		// -------------------------------------------------------------
-		yield* PackageRegistry.publish({
+		yield* publishPackage({
 			name: `walrus.${args.name}`,
 			packageId: deploy.walrusPackageId,
 			mvrPlaceholder: '@local/walrus',
@@ -591,18 +591,18 @@ export const acquireLocalCluster = (args: {
 			},
 		});
 
-		yield* EndpointRegistry.publish({
+		yield* publishEndpoint({
 			name: EndpointName.WALRUS_AGGREGATOR,
 			url: proxyUrl,
 			kind: 'http',
 		});
-		yield* EndpointRegistry.publish({
+		yield* publishEndpoint({
 			name: EndpointName.WALRUS_PUBLISHER,
 			url: proxyUrl,
 			kind: 'http',
 		});
 		for (const node of nodes) {
-			yield* EndpointRegistry.publish({
+			yield* publishEndpoint({
 				name: `walrus-node-${node.index}`,
 				url: node.rpcUrl,
 				kind: 'walrus-node',
@@ -749,7 +749,7 @@ const swapSuiForWalCached = (args: {
 			const ok = yield* probeWalBalance({
 				address: args.account.address,
 				walType,
-			}).pipe(Effect.catch(() => Effect.succeed(0n)));
+			}).pipe(Effect.orElseSucceed(() => 0n));
 			if (ok >= SEED_WAL_BALANCE_FLOOR_FROST) {
 				yield* Effect.annotateCurrentSpan({
 					'walrus.seed.cache': 'hit',

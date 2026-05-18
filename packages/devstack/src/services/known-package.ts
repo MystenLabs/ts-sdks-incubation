@@ -14,7 +14,7 @@
 
 import { Effect } from 'effect';
 import { tag } from '../advanced/tag.js';
-import { PackageRegistry } from '../engine/registries.js';
+import { publishPackage } from '../engine/registries.js';
 import type { Package } from './package.js';
 
 export interface KnownPackageOptions {
@@ -46,7 +46,7 @@ export const KnownPackage = <const N extends string>(name: N, opts: KnownPackage
 			// up alongside `Package(...)` entries. Without this, downstream
 			// readers (dapp-kit, frontend bindings imports) would only see
 			// locally-deployed packages.
-			yield* PackageRegistry.publish({
+			yield* publishPackage({
 				name,
 				packageId: opts.packageId,
 				...(opts.upgradeCapId !== undefined ? { upgradeCapId: opts.upgradeCapId } : {}),

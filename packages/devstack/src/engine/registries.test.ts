@@ -5,14 +5,17 @@ import {
 	EndpointRegistryLive,
 	PackageRegistry,
 	PackageRegistryLive,
+	publishEndpoint,
+	publishPackage,
+	requireEndpointRegistry,
 } from './registries.js';
 import { EngineHandle, EngineLive } from './engine.js';
 import { tag } from '../advanced/tag.js';
 
 describe('registries', () => {
-	it.effect('publish writes through to register', () =>
+	it.effect('publishEndpoint writes through to register', () =>
 		Effect.gen(function* () {
-			yield* EndpointRegistry.publish({ name: 'ep-a', url: 'http://a', kind: 'http' });
+			yield* publishEndpoint({ name: 'ep-a', url: 'http://a', kind: 'http' });
 			const reg = yield* EndpointRegistry;
 			const xs = yield* reg.snapshot;
 			expect(xs).toHaveLength(1);
@@ -20,22 +23,22 @@ describe('registries', () => {
 		}).pipe(Effect.provide(EndpointRegistryLive)),
 	);
 
-	it.effect('requiring(tag) yields the tag first, then resolves the registry', () =>
+	it.effect('requireEndpointRegistry(tag) yields the tag first, then resolves the registry', () =>
 		Effect.gen(function* () {
 			// Publisher tag — registers an endpoint as part of its build.
 			const publisher = tag(
 				'publisher',
 				Effect.gen(function* () {
-					yield* EndpointRegistry.publish({ name: 'from-publisher', url: 'http://pub' });
+					yield* publishEndpoint({ name: 'from-publisher', url: 'http://pub' });
 					return { ok: true } as const;
 				}),
 			);
 
-			// Reader uses `requiring(publisher)` — the call yields the
-			// publisher (running its build) before resolving the registry,
+			// Reader uses `requireEndpointRegistry(publisher)` — the call yields
+			// the publisher (running its build) before resolving the registry,
 			// so the snapshot is non-empty by the time we read it.
 			const names = yield* Effect.gen(function* () {
-				const reg = yield* EndpointRegistry.requiring(publisher);
+				const reg = yield* requireEndpointRegistry(publisher);
 				const xs = yield* reg.snapshot;
 				return xs.map((x) => x.name);
 			}).pipe(Effect.provide(publisher.__layer), Effect.provide(EndpointRegistryLive));
@@ -43,9 +46,9 @@ describe('registries', () => {
 		}),
 	);
 
-	it.effect('publish on PackageRegistry also works', () =>
+	it.effect('publishPackage works', () =>
 		Effect.gen(function* () {
-			yield* PackageRegistry.publish({ name: 'pkg-a', packageId: '0xdead' });
+			yield* publishPackage({ name: 'pkg-a', packageId: '0xdead' });
 			const reg = yield* PackageRegistry;
 			const xs = yield* reg.snapshot;
 			expect(xs[0]?.packageId).toBe('0xdead');

@@ -214,13 +214,13 @@ const listLockFiles = (
 		if (!exists) return [];
 		const entries = yield* fs
 			.readDirectory(dir)
-			.pipe(Effect.catch(() => Effect.succeed([] as ReadonlyArray<string>)));
+			.pipe(Effect.orElseSucceed(() => [] as ReadonlyArray<string>));
 		const out: Array<string> = [];
 		for (const entry of entries) {
 			const full = joinPath(dir, entry);
 			const stat = yield* fs.stat(full).pipe(
 				Effect.map((s) => s.type),
-				Effect.catch(() => Effect.succeed('Unknown' as const)),
+				Effect.orElseSucceed(() => 'Unknown' as const),
 			);
 			if (stat === 'File' && isLockFile(entry)) out.push(full);
 		}
@@ -271,7 +271,7 @@ const findStaleLocks = (
 		const stacksDir = joinPath(devstackDir, 'stacks');
 		const stacksEntries = yield* fs
 			.readDirectory(stacksDir)
-			.pipe(Effect.catch(() => Effect.succeed([] as ReadonlyArray<string>)));
+			.pipe(Effect.orElseSucceed(() => [] as ReadonlyArray<string>));
 		for (const stack of stacksEntries) {
 			const stackDir = joinPath(stacksDir, stack);
 			const inner = yield* listLockFiles(fs, stackDir);

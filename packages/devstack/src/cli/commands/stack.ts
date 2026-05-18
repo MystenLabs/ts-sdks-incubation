@@ -65,7 +65,7 @@ const listCommand = Command.make('list', {}, () =>
 		}
 		const entries = yield* fs
 			.readDirectory(stacksRoot)
-			.pipe(Effect.catch(() => Effect.succeed([] as ReadonlyArray<string>)));
+			.pipe(Effect.orElseSucceed(() => [] as ReadonlyArray<string>));
 		const dirs: Array<string> = [];
 		for (const entry of entries) {
 			const full = joinPath(stacksRoot, entry);

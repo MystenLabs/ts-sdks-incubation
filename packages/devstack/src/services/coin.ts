@@ -1,6 +1,6 @@
 import { Effect } from 'effect';
 import { tag, setPhase, type Ref } from '../advanced/tag.js';
-import { CoinRegistry } from '../engine/registries.js';
+import { publishCoin } from '../engine/registries.js';
 import { toSdkCoin } from '../services/package.js';
 
 // Projects a published Move coin module into the manifest's `coins:`
@@ -73,7 +73,7 @@ export const registerCoin = <P extends { readonly packageId: string }>(
 			});
 
 			yield* setPhase('registering');
-			yield* CoinRegistry.publish({
+			yield* publishCoin({
 				name: options.name,
 				type: fullCoinType,
 				decimals: options.decimals,

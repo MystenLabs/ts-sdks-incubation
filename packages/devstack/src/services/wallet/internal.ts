@@ -20,7 +20,7 @@ import {
 	writeFileProvider,
 } from '../../engine/docker/router.js';
 import { routerHostname, routerId } from '../../engine/router-hostname.js';
-import { EndpointRegistry } from '../../engine/registries.js';
+import { publishEndpoint } from '../../engine/registries.js';
 import { RUNTIME_DIR_NAME, servicePath } from '../../engine/service-paths.js';
 import { StateStoreConfig } from '../../engine/state-store.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
@@ -261,7 +261,7 @@ export const walletApp = <const Name extends string = typeof EndpointName.WALLET
 			// so existing dev-wallet pairings keep working; otherwise we
 			// mint a fresh one and write it.
 
-			yield* EndpointRegistry.publish({
+			yield* publishEndpoint({
 				name: EndpointName.WALLET_APP,
 				url,
 				kind: 'wallet',
@@ -576,7 +576,7 @@ const readExistingTokenOrMint = (tokenPath: string): Effect.Effect<string, never
 		const existing = yield* Effect.tryPromise({
 			try: () => nodeFs.readFile(tokenPath, 'utf8'),
 			catch: () => undefined,
-		}).pipe(Effect.catch(() => Effect.succeed(undefined as string | undefined)));
+		}).pipe(Effect.orElseSucceed(() => undefined as string | undefined));
 		if (typeof existing === 'string') {
 			const trimmed = existing.trim();
 			// Sanity-check the on-disk shape: 32 hex chars (= randomBytesHex(16)).

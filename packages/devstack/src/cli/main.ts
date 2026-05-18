@@ -15,10 +15,13 @@
 //     (no `console.error(Cause.pretty(...))`) — `cli/index.ts` already did
 //     that in our preferred format.
 
-import { Cause, Effect, Exit } from 'effect';
+import { Cause, Effect, Exit, Layer } from 'effect';
 import { layer as NodeServicesLayer } from '@effect/platform-node/NodeServices';
 import { runMain } from '@effect/platform-node/NodeRuntime';
+import { RegistryLive } from '../engine/registry.js';
 import { cli } from './index.js';
+
+const CliPlatform = Layer.provideMerge(RegistryLive, NodeServicesLayer);
 
 // Custom teardown so a Ctrl-C / `q`-keypress quit exits cleanly with 0
 // instead of 130. Without this `pnpm dev` users see
@@ -26,7 +29,7 @@ import { cli } from './index.js';
 // shutdown — `pnpm` reads any non-zero as a failure regardless of
 // signal semantics. Real failures (non-interrupted causes) exit 1; the
 // error itself was already rendered by `cli/index.ts`'s `tapCause`.
-runMain(cli.pipe(Effect.provide(NodeServicesLayer)), {
+runMain(cli.pipe(Effect.provide(CliPlatform)), {
 	disableErrorReporting: true,
 	teardown: (exit, onExit) => {
 		if (Exit.isSuccess(exit)) {

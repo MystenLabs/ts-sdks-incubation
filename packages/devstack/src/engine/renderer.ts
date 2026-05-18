@@ -20,7 +20,7 @@
 // `compose/devstack`) pick a factory by `RendererKind` and pass it
 // down via `RunOverrides.rendererFactory`.
 
-import { Effect, Layer, type Ref } from 'effect';
+import { Effect, Layer, type Ref, type Scope, type Stdio } from 'effect';
 import type { EngineHandleShape } from './engine.js';
 import type { TuiState } from './tui-state.js';
 
@@ -43,20 +43,22 @@ export interface RendererMountDeps {
 	readonly tuiStateRef: Ref.Ref<TuiState>;
 }
 
+/** Platform services a renderer factory may consume during `mount`. The
+ *  supervisor provides the bootstrap context (which carries `NodeServices`)
+ *  at the mount call site, so any required service from this union is in
+ *  scope. Constraining `mount`'s `R` to this set (rather than `any`) lets
+ *  the supervisor's `Effect.provide(bootstrapCtx)` actually narrow the R
+ *  channel to `never` — the previous `any` defeated `Exclude<…>`. */
+export type RendererMountServices = Stdio.Stdio | Scope.Scope;
+
 /** Factory that knows how to start a renderer of a particular kind.
  *  The supervisor receives one of these via `DevstackConfig` /
- *  `RunOverrides` and calls `mount(...)` exactly once per launch.
- *
- *  The Effect's `R` channel is `unknown` because concrete factories may
- *  consume platform services (e.g. `Stdio.Stdio` for the plain
- *  renderer's stderr sink). The supervisor provides the bootstrap
- *  context at the mount call site so any required platform service is
- *  in scope. */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ *  `RunOverrides` and calls `mount(...)` exactly once per launch. */
 export interface RendererFactory {
 	readonly kind: RendererKind;
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	readonly mount: (deps: RendererMountDeps) => Effect.Effect<RendererMount, never, any>;
+	readonly mount: (
+		deps: RendererMountDeps,
+	) => Effect.Effect<RendererMount, never, RendererMountServices>;
 	/** Per-cycle logger layer. TUI returns a custom sink writing to the
 	 *  engine's log buffer; plain / silent return `Layer.empty`. */
 	readonly loggerLayer: (engine: EngineHandleShape) => Layer.Layer<never, never, never>;

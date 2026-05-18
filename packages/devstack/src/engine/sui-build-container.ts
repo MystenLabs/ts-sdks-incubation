@@ -135,7 +135,7 @@ const inspectContainer = (
 			name,
 		]);
 		const captured = yield* runWithCapture(spawner, cmd, 'docker inspect (build container)').pipe(
-			Effect.catch(() => Effect.succeed(null)),
+			Effect.orElseSucceed(() => null),
 		);
 		if (captured === null || captured.exitCode !== 0) return null;
 		const parts = captured.stdout.trim().split('|');

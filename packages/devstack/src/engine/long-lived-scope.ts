@@ -20,10 +20,19 @@
 //
 // `defineDevstack.buildLaunchEffect` provides this reference at the
 // outermost `Effect.scoped` boundary so every nested effect sees the
-// same scope. Default fall-back is `undefined`, in which case
-// `Docker.run` registers on `Effect.scope` (the current scope) and
-// behaves as before — useful for the standalone tests that exercise
-// `Docker.run` directly without a surrounding devstack lifecycle.
+// same scope.
+//
+// Why `Scope | undefined` (NOT a plain `Reference<Scope>`):
+// `Docker.run` and `SuiBuildContainerLive` also run from standalone
+// tests that exercise them WITHOUT a surrounding devstack lifecycle
+// (e.g. `src/engine/docker.test.ts`, `src/engine/sui-build-container.test.ts`).
+// Those tests provide no supervisor, so this reference must have a
+// `defaultValue: undefined` and consumers must `?? Effect.scope` to
+// fall back to their own scope. Making this a non-optional reference
+// would force every standalone test to fabricate and provide a
+// long-lived scope just to satisfy the type — significant friction for
+// zero behavioral benefit, since the standalone path explicitly wants
+// finalizers on the test's own scope.
 
 import { Context } from 'effect';
 import type { Scope } from 'effect/Scope';

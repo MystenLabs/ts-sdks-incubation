@@ -14,7 +14,7 @@ import { Data, Effect, FileSystem } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { join as joinPath } from 'node:path';
 import { isHolderLive } from '../../engine/process-liveness.js';
-import { registry, type RegistryNetwork } from '../../engine/registry.js';
+import { Registry, type RegistryNetwork } from '../../engine/registry.js';
 
 export class PruneStackBlockedError extends Data.TaggedError('PruneStackBlockedError')<{
 	readonly app: string;
@@ -315,7 +315,7 @@ const removeStateOnDisk = (
 			if (keepSnapshots) {
 				const entries = yield* fs
 					.readDirectory(stackDir)
-					.pipe(Effect.catch(() => Effect.succeed([] as ReadonlyArray<string>)));
+					.pipe(Effect.orElseSucceed(() => [] as ReadonlyArray<string>));
 				for (const entry of entries) {
 					if (entry === 'snapshots') continue;
 					const full = joinPath(stackDir, entry);
@@ -356,11 +356,12 @@ export const pruneStack = (
 ): Effect.Effect<
 	PruneStackResult,
 	PruneStackBlockedError,
-	FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner
+	FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner | Registry
 > =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem;
 		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+		const registry = yield* Registry;
 		const stateDir = resolveStateDir(options.stateDir);
 
 		// State-store lock check at the lowest mutating layer. Both `wipe`

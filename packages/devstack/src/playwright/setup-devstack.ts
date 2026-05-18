@@ -64,15 +64,17 @@ export const setupDevstack = (handle: DevstackHandle): DevstackPlaywrightFixture
 			// at the runPromise boundary; missing services surface as
 			// ServiceNotFound at runtime, same as the production `run()`.
 			const build = buildWithScope(handle.layer, made) as Effect.Effect<any, any, never>;
-			try {
-				await Effect.runPromise(build);
-			} catch (err) {
-				// Acquisition failed partway — close any finalizers that
-				// did register before re-raising, so the failure doesn't
-				// leak half-started subprocesses.
-				await Effect.runPromise(Scope.close(made, Exit.void)).catch(() => undefined);
-				throw err;
-			}
+			// One runtime drives both acquire AND on-failure release
+			// through the same fiber. The previous shape ran them in
+			// two separate `Effect.runPromise` calls, which meant any
+			// in-flight finalizer registered by `buildWithScope` lived
+			// on a fiber that had already exited by the time
+			// `Scope.close` started a new runtime — finalizers couldn't
+			// observe interruption state or coordinate with the
+			// acquire's leftover work.
+			await Effect.runPromise(
+				build.pipe(Effect.tapCause(() => Scope.close(made, Exit.void))),
+			);
 			scope = made;
 		},
 
