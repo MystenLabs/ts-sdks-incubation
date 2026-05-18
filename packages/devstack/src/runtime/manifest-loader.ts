@@ -7,8 +7,12 @@
 //   - Non-Effect TS code (post-run inspection tools, tests) that wants
 //     a typed read of the running stack.
 
+import { Result, Schema, SchemaIssue } from 'effect';
 import { jsonBigintReviver } from '../engine/json-bigint.js';
-import { type Manifest } from './manifest-schema.js';
+import { ManifestV4, type Manifest } from './manifest-schema.js';
+
+const decodeManifestV4 = Schema.decodeUnknownResult(ManifestV4);
+const formatSchemaIssue = SchemaIssue.makeFormatterDefault();
 
 /** The highest manifest schema version this build of devstack natively
  *  understands. Forward-compat: manifests with a higher version emit a
@@ -16,13 +20,6 @@ import { type Manifest } from './manifest-schema.js';
  *  / older-consumer mix doesn't hard-crash on unrecognized optional
  *  fields. */
 const EXPECTED_VERSION = 4;
-
-/** Quick test for "this JSON is v4." */
-const isV4 = (raw: unknown): raw is Manifest => {
-	if (typeof raw !== 'object' || raw === null) return false;
-	const r = raw as { version?: unknown };
-	return r.version === 4;
-};
 
 /** Returns the numeric `version` field if it's a finite number, or
  *  `undefined` otherwise. Used by the forward-compat branch to decide
@@ -72,10 +69,32 @@ export function fromManifest(raw: unknown, opts: FromManifestOptions = {}): Mani
 	if (parsed === null || typeof parsed !== 'object') {
 		throw new TypeError('fromManifest: expected an object, got ' + typeof parsed);
 	}
-	if (isV4(parsed)) return parsed;
 
 	const version = numericVersion(parsed);
 	const rawVersion = (parsed as { version?: unknown }).version;
+
+	// Version === 4: Schema-validate the full payload. In strict mode
+	// the ParseError surfaces as a TypeError. In non-strict mode we
+	// warn via the logger and fall through to a best-effort cast — the
+	// caller's type narrows correctly downstream and only the offending
+	// fields will read back as malformed values. Without this Schema
+	// check, any v4-tagged garbage previously passed straight through
+	// `as Manifest`.
+	if (version === EXPECTED_VERSION) {
+		const decoded = decodeManifestV4(parsed);
+		if (Result.isSuccess(decoded)) return decoded.success;
+		const reason = formatSchemaIssue(decoded.failure);
+		if (opts.strict) {
+			throw new TypeError(
+				`fromManifest: v${EXPECTED_VERSION} manifest failed Schema validation:\n${reason}`,
+			);
+		}
+		console.warn(
+			`[devstack] fromManifest: v${EXPECTED_VERSION} manifest failed Schema validation, ` +
+				`returning best-effort shape — typed reads of malformed fields may surprise:\n${reason}`,
+		);
+		return parsed as Manifest;
+	}
 
 	// Forward-compat: a future manifest version we don't know about.
 	// Without strict mode we treat it as v4 (optional/added fields the

@@ -362,6 +362,30 @@ describe('claimPortLock / releasePortLock — file lock', () => {
 		expect(reclaimed).toBe(String(process.pid));
 	});
 
+	// C1: a lock file we CAN'T READ (EACCES on a multi-user box, EIO on
+	// a flaky disk, etc.) must NOT be treated as stale. The holder might
+	// still be alive — we simply can't see them. Mirrors state-store +
+	// process-liveness which both default to "alive" on read failure.
+	it('refuses to reclaim a lock file when readFileSync throws EACCES', () => {
+		setupTmpDir();
+		const port = 50_009;
+		const otherPid = 2_147_483_644;
+		const lockPath = path.join(lockDir, `${port}.lock`);
+		fs.writeFileSync(lockPath, String(otherPid));
+		// Root sees through chmod 000; skip the assertion path then.
+		if (typeof process.getuid === 'function' && process.getuid() === 0) return;
+		fs.chmodSync(lockPath, 0o000);
+		try {
+			expect(claimPortLock(port, lockDir)).toBe(false);
+			// File must NOT have been unlinked or rewritten.
+			fs.chmodSync(lockPath, 0o644);
+			const stillThere = fs.readFileSync(lockPath, 'utf8').trim();
+			expect(stillThere).toBe(String(otherPid));
+		} finally {
+			fs.chmodSync(lockPath, 0o644);
+		}
+	});
+
 	it('release deletes a lock we wrote', () => {
 		setupTmpDir();
 		const port = 50_006;
@@ -426,6 +450,53 @@ describe('PortAllocator.allocate — in-process race guard', () => {
 			// the CAS first); the other scanned forward to preferred+1
 			// (or higher if external state intervened).
 			expect([a, b]).toContain(preferred);
+		}).pipe(Effect.provide(Layer.fresh(PortAllocatorLive))),
+	);
+
+	// S1: file lock must be claimed AFTER the in-process CAS succeeds.
+	// Reasoning: if a fiber writes the file lock BEFORE running the
+	// in-memory CAS, the CAS loser then calls `releasePortLock` to undo
+	// its own file-lock write — but if the new lock-acquisition ordering
+	// is wrong, that release path can stomp on a peer's lock. We assert
+	// the post-state invariant: every port returned by a concurrent
+	// allocate has a file lock on disk containing OUR pid, AND a
+	// pre-existing sibling-supervisor lock at `preferred` is untouched.
+	it.effect("S1: concurrent allocate must not touch a sibling supervisor's file lock", () =>
+		Effect.gen(function* () {
+			const allocator = yield* PortAllocator;
+			const preferred = nextPort();
+
+			// Simulate a sibling supervisor process: pre-write a file
+			// lock at `preferred` containing a different-but-alive pid
+			// (our parent's pid — guaranteed alive). Both fibers below
+			// must refuse the claim AND must not unlink this file.
+			const dir = process.env.DEVSTACK_PORT_LOCK_DIR;
+			expect(dir).toBeTruthy();
+			const siblingPid = process.ppid;
+			const siblingLockPath = path.join(dir as string, `${preferred}.lock`);
+			fs.writeFileSync(siblingLockPath, String(siblingPid));
+
+			const [a, b] = yield* Effect.all(
+				[allocator.allocate(preferred), allocator.allocate(preferred)],
+				{ concurrency: 'unbounded' },
+			);
+			expect(a).not.toBe(b);
+			// Sibling's lock at `preferred` survives untouched.
+			expect(fs.existsSync(siblingLockPath)).toBe(true);
+			expect(fs.readFileSync(siblingLockPath, 'utf8').trim()).toBe(String(siblingPid));
+
+			// Neither fiber returned `preferred` (the sibling holds it).
+			expect(a).not.toBe(preferred);
+			expect(b).not.toBe(preferred);
+
+			// Each fiber's reported port has a live file lock owned by
+			// our pid. If the loser had grabbed the file lock pre-CAS
+			// (old ordering) and then released it on rollback, this read
+			// would race with that release and could ENOENT.
+			const readLock = (port: number) =>
+				fs.readFileSync(path.join(dir as string, `${port}.lock`), 'utf8').trim();
+			expect(readLock(a)).toBe(String(process.pid));
+			expect(readLock(b)).toBe(String(process.pid));
 		}).pipe(Effect.provide(Layer.fresh(PortAllocatorLive))),
 	);
 });

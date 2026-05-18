@@ -92,24 +92,42 @@ export const claimPortLock = (port: number, dir: string = defaultPortLockDir()):
 	} catch (err) {
 		if ((err as NodeJS.ErrnoException).code !== 'EEXIST') return false;
 	}
-	// Lock exists: check if its pid is alive. `kill(pid, 0)` throws ESRCH for dead.
+	// Lock exists: only reclaim if we can prove the holder is gone.
+	// ENOENT here = the file vanished between EEXIST and read (a peer
+	// just released); the unlink-then-rewrite below will succeed
+	// (unlink ENOENT is the only failure mode and we re-try the wx
+	// create). EACCES / EIO / EPERM / any other read failure = we
+	// CANNOT prove the holder is dead; mirror state-store + process-
+	// liveness and treat the holder as alive (refuse the claim).
+	let raw: string;
 	try {
-		const raw = fs.readFileSync(portLockPath(dir, port), 'utf8').trim();
-		const pid = Number.parseInt(raw, 10);
-		if (Number.isFinite(pid) && pid > 0) {
-			try {
-				process.kill(pid, 0);
-				return false; // pid alive → another supervisor really holds it
-			} catch (sigErr) {
-				if ((sigErr as NodeJS.ErrnoException).code !== 'ESRCH') return false;
-				// pid is dead — fall through to delete + reclaim
-			}
-		}
-	} catch {
-		// Unreadable lock file: treat as stale and try to overwrite
+		raw = fs.readFileSync(portLockPath(dir, port), 'utf8');
+	} catch (err) {
+		return (err as NodeJS.ErrnoException).code === 'ENOENT' ? attemptReclaim(port, dir) : false;
 	}
+	const pid = Number.parseInt(raw.trim(), 10);
+	if (Number.isFinite(pid) && pid > 0) {
+		try {
+			process.kill(pid, 0);
+			return false; // pid alive → another supervisor really holds it
+		} catch (sigErr) {
+			const code = (sigErr as NodeJS.ErrnoException).code;
+			// EPERM = foreign-user holder, treat as alive (matches process-liveness).
+			if (code !== 'ESRCH') return false;
+		}
+	}
+	// Either pid is dead (ESRCH) or content is malformed (NaN/empty).
+	// Both are documented stale-reclaim paths.
+	return attemptReclaim(port, dir);
+};
+
+const attemptReclaim = (port: number, dir: string): boolean => {
 	try {
 		fs.unlinkSync(portLockPath(dir, port));
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== 'ENOENT') return false;
+	}
+	try {
 		fs.writeFileSync(portLockPath(dir, port), String(process.pid), { flag: 'wx' });
 		return true;
 	} catch {
@@ -159,24 +177,31 @@ export const PortAllocatorLive: Layer.Layer<PortAllocator> = Layer.effect(
 						catch: () => new PortAllocatorError({ preferred, message: `probe failed for ${port}` }),
 					}).pipe(Effect.orElseSucceed(() => false));
 					if (!free) continue;
-					// Cross-process reservation: only one allocator at a
-					// time can claim `<port>.lock` in `~/.devstack/ports/`.
-					// Without this, two parallel supervisors both probe
-					// the same port as free and both spawn against it.
-					if (!claimPortLock(port)) continue;
-					// Re-check + insert atomically via Ref.modify so two
-					// concurrent allocate calls in THIS process can't
-					// claim the same port either.
+					// Phase 1 (in-process CAS): atomically reserve in the
+					// held set. MUST run before the cross-process file
+					// lock — otherwise two concurrent fibers in this
+					// process both claim the same file lock, the loser's
+					// `releasePortLock` then unlinks the WINNER's file,
+					// and a third sibling supervisor can grab the port
+					// from under us.
 					const claimed = yield* Ref.modify(ref, (s) => {
 						if (s.has(port)) return [false, s] as const;
 						const next = new Set(s);
 						next.add(port);
 						return [true, next] as const;
 					});
-					if (claimed) return port;
-					// Lost the local race — release the file lock so the
-					// other in-process winner doesn't get stranded.
-					releasePortLock(port);
+					if (!claimed) continue;
+					// Phase 2 (cross-process file lock): only one
+					// supervisor host-wide can own `<port>.lock`. If a
+					// sibling process holds it, roll back the in-memory
+					// reservation and scan forward.
+					if (claimPortLock(port)) return port;
+					yield* Ref.update(ref, (s) => {
+						if (!s.has(port)) return s;
+						const next = new Set(s);
+						next.delete(port);
+						return next;
+					});
 				}
 				return yield* Effect.fail(
 					new PortAllocatorError({

@@ -358,9 +358,30 @@ export const snapshot = (opts: {
 				const imageName = `devstack-snap:${opts.id}-${container.name}`;
 				const tarPath = path.join(containersDir, `${container.name}.tar`);
 				const originalImage = yield* Docker.inspectContainerImage(container.id);
-				yield* Docker.commitContainer(container.id, imageName).pipe(
+				// Pause the container around `docker commit` so the
+				// resulting image captures a quiescent writable layer.
+				// Without this, RocksDB / postgres mid-WAL-fsync at
+				// commit time produces snapshots that need recovery on
+				// next boot or fail to open entirely. `docker pause`
+				// errors on a stopped container, so skip the pause when
+				// the container isn't currently running (already
+				// quiescent in that case). The unpause is registered via
+				// `Effect.ensuring` so it fires on both success and
+				// failure of the commit.
+				const isRunning = yield* Docker.inspectContainerRunning(container.id);
+				const commit = Docker.commitContainer(container.id, imageName).pipe(
 					Effect.mapError(wrapDockerError(`failed to commit container ${container.name}`)),
 				);
+				if (isRunning === true) {
+					yield* Docker.pauseContainer(container.id).pipe(
+						Effect.mapError(wrapDockerError(`failed to pause container ${container.name}`)),
+					);
+					yield* commit.pipe(
+						Effect.ensuring(Docker.unpauseContainer(container.id).pipe(Effect.ignore)),
+					);
+				} else {
+					yield* commit;
+				}
 				yield* Docker.saveImage(imageName, tarPath).pipe(
 					Effect.mapError(wrapDockerError(`failed to save image ${imageName}`)),
 				);

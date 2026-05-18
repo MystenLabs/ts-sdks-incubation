@@ -38,7 +38,8 @@
 import { mkdtempSync, rmSync, chmodSync, writeFileSync, statSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Effect } from 'effect';
+import { Effect, Layer, Sink, Stream } from 'effect';
+import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { layer as NodeServicesLayer } from '@effect/platform-node/NodeServices';
 import { afterEach, beforeEach, describe, expect, it } from '@effect/vitest';
 import { list, restore, snapshot } from './snapshot.js';
@@ -324,3 +325,168 @@ describe('snapshot() / restore() — extras round-trip', () => {
 // here as a marker for the explicit mode-preservation invariant the
 // runtime tar test asserts.
 void chmodSync;
+
+// -----------------------------------------------------------------------------
+// snapshot() pauses the container around `docker commit` so the
+// captured writable layer is quiescent (no RocksDB / postgres mid-WAL-
+// fsync corruption). Uses a stub `ChildProcessSpawner` that records every
+// docker invocation so we can assert ordering.
+// -----------------------------------------------------------------------------
+
+interface SpawnRecord {
+	readonly args: ReadonlyArray<string>;
+}
+
+interface StubSpawnerOpts {
+	/** Whether `docker inspect --format '{{.State.Running}}' <id>` should
+	 *  report `true` (running) or `false` (stopped). */
+	readonly running: boolean;
+	/** Fail `docker commit` to verify unpause still runs. Defaults to
+	 *  false (commit succeeds). */
+	readonly commitFails?: boolean;
+}
+
+const makeStubSpawnerLayer = (recorder: Array<SpawnRecord>, opts: StubSpawnerOpts) => {
+	const respondTo = (
+		args: ReadonlyArray<string>,
+	): { stdout: string; stderr: string; exitCode: number } => {
+		if (args[0] === 'inspect') {
+			const formatIdx = args.indexOf('--format');
+			const fmt = formatIdx >= 0 ? args[formatIdx + 1] : undefined;
+			if (fmt === '{{.State.Running}}') {
+				return { stdout: `${opts.running}\n`, stderr: '', exitCode: 0 };
+			}
+			if (fmt === '{{.Config.Image}}') {
+				return { stdout: 'devstack-sui:abc123\n', stderr: '', exitCode: 0 };
+			}
+			return { stdout: '', stderr: '', exitCode: 0 };
+		}
+		// `docker image inspect -f {{.Id}} <imageName>` — argv[0] is
+		// 'image', not 'inspect'. Used by `commitContainer` to read the
+		// digest after `docker commit`.
+		if (args[0] === 'image' && args[1] === 'inspect') {
+			return { stdout: 'sha256:deadbeef\n', stderr: '', exitCode: 0 };
+		}
+		if (args[0] === 'commit') {
+			return opts.commitFails === true
+				? { stdout: '', stderr: 'commit boom', exitCode: 1 }
+				: { stdout: '', stderr: '', exitCode: 0 };
+		}
+		return { stdout: '', stderr: '', exitCode: 0 };
+	};
+
+	const spawn = (command: ChildProcess.Command) => {
+		if (command._tag !== 'StandardCommand') {
+			return Effect.die(new Error('unexpected piped command in test'));
+		}
+		recorder.push({ args: [...command.args] });
+		const { stdout, stderr, exitCode } = respondTo(command.args);
+		const encoder = new TextEncoder();
+		const handle = ChildProcessSpawner.makeHandle({
+			pid: ChildProcessSpawner.ProcessId(4242),
+			exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(exitCode)),
+			isRunning: Effect.succeed(false),
+			kill: () => Effect.void,
+			stdin: Sink.drain as never,
+			stdout: Stream.succeed(encoder.encode(stdout)),
+			stderr: stderr.length > 0 ? Stream.succeed(encoder.encode(stderr)) : Stream.empty,
+			all: Stream.succeed(encoder.encode(stdout)),
+			getInputFd: () => Sink.drain as never,
+			getOutputFd: () => Stream.empty,
+			unref: Effect.succeed(Effect.void),
+		});
+		return Effect.succeed(handle);
+	};
+
+	return Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, ChildProcessSpawner.make(spawn));
+};
+
+describe('snapshot() pause/commit/unpause ordering', () => {
+	let stateDir: string;
+	let prevEnv: string | undefined;
+
+	beforeEach(() => {
+		stateDir = mkdtempSync(join(tmpdir(), 'devstack-snapshot-pause-test-'));
+		prevEnv = process.env.DEVSTACK_STATE_DIR;
+		process.env.DEVSTACK_STATE_DIR = stateDir;
+	});
+
+	afterEach(() => {
+		if (prevEnv === undefined) delete process.env.DEVSTACK_STATE_DIR;
+		else process.env.DEVSTACK_STATE_DIR = prevEnv;
+		rmSync(stateDir, { recursive: true, force: true });
+	});
+
+	it.effect('pauses the container before commit and unpauses after', () =>
+		Effect.gen(function* () {
+			const recorder: Array<SpawnRecord> = [];
+			const spawnerLayer = makeStubSpawnerLayer(recorder, { running: true });
+
+			yield* snapshot({
+				id: 'pause-ok',
+				dir: join(stateDir, 'snapshots'),
+				stack: 'main',
+				containers: [{ id: 'cid-runner', name: 'sui-localnet' }],
+				skipRuntime: true,
+			}).pipe(
+				Effect.provide(spawnerLayer),
+				Effect.provide(NodeServicesLayer),
+			);
+
+			const pauseIdx = recorder.findIndex(
+				(r) => r.args[0] === 'pause' && r.args[1] === 'cid-runner',
+			);
+			const commitIdx = recorder.findIndex(
+				(r) => r.args[0] === 'commit' && r.args[1] === 'cid-runner',
+			);
+			const unpauseIdx = recorder.findIndex(
+				(r) => r.args[0] === 'unpause' && r.args[1] === 'cid-runner',
+			);
+			expect(pauseIdx).toBeGreaterThanOrEqual(0);
+			expect(commitIdx).toBeGreaterThan(pauseIdx);
+			expect(unpauseIdx).toBeGreaterThan(commitIdx);
+		}),
+	);
+
+	it.effect('unpauses even when commit fails', () =>
+		Effect.gen(function* () {
+			const recorder: Array<SpawnRecord> = [];
+			const spawnerLayer = makeStubSpawnerLayer(recorder, { running: true, commitFails: true });
+
+			const exit = yield* snapshot({
+				id: 'pause-failcommit',
+				dir: join(stateDir, 'snapshots'),
+				stack: 'main',
+				containers: [{ id: 'cid-runner', name: 'sui-localnet' }],
+				skipRuntime: true,
+			})
+				.pipe(Effect.provide(spawnerLayer), Effect.provide(NodeServicesLayer))
+				.pipe(Effect.flip);
+			expect(exit.message).toContain('failed to commit container');
+
+			expect(recorder.some((r) => r.args[0] === 'pause' && r.args[1] === 'cid-runner')).toBe(true);
+			expect(recorder.some((r) => r.args[0] === 'unpause' && r.args[1] === 'cid-runner')).toBe(
+				true,
+			);
+		}),
+	);
+
+	it.effect('skips pause/unpause when the container is already stopped', () =>
+		Effect.gen(function* () {
+			const recorder: Array<SpawnRecord> = [];
+			const spawnerLayer = makeStubSpawnerLayer(recorder, { running: false });
+
+			yield* snapshot({
+				id: 'pause-stopped',
+				dir: join(stateDir, 'snapshots'),
+				stack: 'main',
+				containers: [{ id: 'cid-stopped', name: 'sui-localnet' }],
+				skipRuntime: true,
+			}).pipe(Effect.provide(spawnerLayer), Effect.provide(NodeServicesLayer));
+
+			expect(recorder.some((r) => r.args[0] === 'pause')).toBe(false);
+			expect(recorder.some((r) => r.args[0] === 'unpause')).toBe(false);
+			expect(recorder.some((r) => r.args[0] === 'commit')).toBe(true);
+		}),
+	);
+});

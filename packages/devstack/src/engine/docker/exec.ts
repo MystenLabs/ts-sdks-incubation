@@ -45,6 +45,72 @@ export const exec = (
 	}).pipe(Effect.withSpan('Docker.exec'));
 
 // -----------------------------------------------------------------------------
+// pauseContainer / unpauseContainer — freeze a running container's
+// processes so a `docker commit` captures a quiescent writable layer.
+//
+// `docker commit` is NOT quiescent on its own: it tars the container's
+// RW layer while the workload's processes keep mutating it. For a chain-
+// state daemon (sui's RocksDB, postgres's WAL) that's mid-fsync, the
+// resulting image can include a torn WAL or a corrupt SST and need
+// recovery on next boot — or fail to open entirely. Pausing first sends
+// `SIGSTOP` to every process inside the container via the freezer
+// cgroup, which guarantees no I/O is in flight when the commit runs.
+//
+// `docker pause` errors on a stopped container; callers should gate on
+// container state via `inspectContainerRunning` and skip the pause when
+// the container is already stopped (committing a stopped container is
+// already quiescent).
+// -----------------------------------------------------------------------------
+
+export const pauseContainer = (
+	containerId: string,
+): Effect.Effect<void, DockerError, ChildProcessSpawner.ChildProcessSpawner> =>
+	Effect.gen(function* () {
+		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+		yield* Effect.annotateCurrentSpan({ 'docker.op': 'pause', 'docker.container': containerId });
+		yield* runCapturingOrFail(
+			spawner,
+			ChildProcess.make('docker', ['pause', containerId]),
+			'docker pause',
+		);
+	}).pipe(Effect.withSpan('Docker.pauseContainer'));
+
+export const unpauseContainer = (
+	containerId: string,
+): Effect.Effect<void, DockerError, ChildProcessSpawner.ChildProcessSpawner> =>
+	Effect.gen(function* () {
+		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+		yield* Effect.annotateCurrentSpan({ 'docker.op': 'unpause', 'docker.container': containerId });
+		yield* runCapturingOrFail(
+			spawner,
+			ChildProcess.make('docker', ['unpause', containerId]),
+			'docker unpause',
+		);
+	}).pipe(Effect.withSpan('Docker.unpauseContainer'));
+
+// `docker inspect --format '{{.State.Running}}' <id>` — read whether a
+// container is currently running. Returns `undefined` when the container
+// doesn't exist (inspect exits non-zero). Used by `snapshot.save` to
+// skip the pause/unpause around `docker commit` for already-stopped
+// containers (pause errors on those).
+export const inspectContainerRunning = (
+	containerId: string,
+): Effect.Effect<boolean | undefined, never, ChildProcessSpawner.ChildProcessSpawner> =>
+	Effect.gen(function* () {
+		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+		const cmd = ChildProcess.make('docker', [
+			'inspect',
+			'--format',
+			'{{.State.Running}}',
+			containerId,
+		]);
+		const out = yield* spawner.string(cmd).pipe(Effect.orElseSucceed(() => ''));
+		const trimmed = out.trim();
+		if (trimmed.length === 0) return undefined;
+		return trimmed === 'true';
+	}).pipe(Effect.withSpan('Docker.inspectContainerRunning'));
+
+// -----------------------------------------------------------------------------
 // commitContainer — snapshot a running container into a new image
 // -----------------------------------------------------------------------------
 
