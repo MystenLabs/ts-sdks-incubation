@@ -28,9 +28,10 @@ Subsequent runs hit Docker layer cache and complete in seconds.
 ## Adding a new example
 
 The [`_template/`](./_template) directory carries the canonical
-boilerplate every new example needs — one Move package, a `setup:`
-block doing one publish + one transaction, a single-Card UI with a
-mint button, and an e2e spec exercising the connect-and-mint flow.
+boilerplate every new example needs — one `Package(...)` Ref publishing
+one Move package, one `Action(...)` Ref doing one post-publish
+transaction, a single-Card UI with a mint button, and an e2e spec
+exercising the connect-and-mint flow.
 
 The fastest path:
 

@@ -65,12 +65,19 @@ devstack stack new <name>                    # create the per-stack state dir
 devstack stack new <name> --set-active       # also write .devstack/active
 devstack stack use <name>                    # mark `<name>` as active (writes .devstack/active)
 devstack stack down [<name>]                 # stop containers; KEEP on-disk state (default: active stack)
+devstack stack down [<name>] --force         # `docker rm -f` instead of stop — destroys writable layer
 devstack stack drop <name> --yes             # remove .devstack/stacks/<name>/ (no docker)
 ```
 
-`stack down` is non-destructive: it kills every container labelled `devstack.stack=<name>` (or
-active / `'main'` if no name given) but preserves `.devstack/stacks/<name>/` and the named volumes
-the containers were using. Next `devstack up` resumes from the same state.
+`stack down` is non-destructive by default: it `docker stop`s every container labelled
+`devstack.stack=<name>` (or active / `'main'` if no name given) so the writable layer survives and
+the next `devstack up` resumes via the reuse-if-image-matches probe (~1s warm start). On-disk state
+under `.devstack/stacks/<name>/` is preserved either way.
+
+`--force` opts into the legacy destructive behavior (`docker rm -f`), throwing the writable layer
+away — chain state and indexer DB are lost, so the next `up` rebuilds from genesis. Use only when a
+clean container is the goal (right before `devstack wipe`, or in CI scripts that intentionally start
+from scratch).
 
 `stack drop` removes only the on-disk state dir — pair with `stack down` first if you also want the
 containers and volumes gone, or use `devstack wipe` for both in one step.
@@ -84,13 +91,23 @@ Capture and restore labeled snapshots of the per-stack `state.json`. Useful for 
 e2e run, sharing a chain state with a teammate, or checkpointing before a migration.
 
 ```bash
-devstack snapshot save                          # auto id: 20260515T160230
+devstack snapshot save                          # auto id: 20260515T160230-<rand>
 devstack snapshot save --label before-migration # adds label suffix
+devstack snapshot save --no-include-images      # state-only; skip docker commit + save
+devstack snapshot save --stack feature-x        # snapshot a specific stack (default: active stack)
 devstack snapshot list                          # newest-first
 devstack snapshot restore                       # default: newest snapshot
 devstack snapshot restore before-migration      # match by label / prefix
+devstack snapshot restore --stack feature-x     # restore into a specific stack
 devstack snapshot delete <id-or-label>          # remove a snapshot dir
 ```
+
+`--include-images` is on by default — `save` `docker commit + save`s each container labelled
+`devstack.stack=<stack>` into the snapshot dir. Pass `--no-include-images` for a state-only snapshot
+(smaller, but the next `up` rebuilds chain state from genesis).
+
+`--stack <name>` overrides the active-stack default for both `save` and `restore`. Both also honor
+`DEVSTACK_STACK`.
 
 Snapshots live under `.devstack/snapshots/<id>/`. By default they capture only `state.json` (a fast
 file copy); container tarballs are an opt-in. **Restore before running `devstack up`** — the

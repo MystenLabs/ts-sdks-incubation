@@ -79,6 +79,7 @@
 		"vitest": "^4.0.17"
 	},
 	"peerDependencies": {
+		"@effect/vitest": "catalog:",
 		"@mysten-incubation/dev-wallet": "workspace:*",
 		"@mysten/dapp-kit-core": "catalog:",
 		"@mysten/dapp-kit-react": "catalog:",
@@ -86,6 +87,9 @@
 		"@playwright/test": "catalog:"
 	},
 	"peerDependenciesMeta": {
+		"@effect/vitest": {
+			"optional": true
+		},
 		"@mysten-incubation/dev-wallet": {
 			"optional": true
 		},

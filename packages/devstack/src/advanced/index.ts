@@ -49,6 +49,22 @@ export {
 	CurrentTagKey,
 } from './tag.js';
 
+// Plugin-author entry. `devstack(...)` is the canonical surface; reach for
+// `defineDevstack` when you want to pre-build the Layer graph (custom
+// state-store keys, etc.) and skip the Ref-flatten/default-fill pipeline.
+// `composeStackLayer` exposes just the layer composition step for
+// fixtures and integration tests that drive the engine themselves.
+export {
+	defineDevstack,
+	composeStackLayer,
+	type DevstackHandle,
+	type DevstackConfig,
+	type StackMember,
+	type StackComposeOptions,
+	type RendererKind,
+	type RunOverrides,
+} from '../engine/supervisor.js';
+
 // ── 2. Plugin-author helpers ──
 export * from './plugin-author/index.js';
 

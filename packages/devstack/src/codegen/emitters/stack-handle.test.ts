@@ -72,11 +72,17 @@ describe('StackHandleEmitter', () => {
 			yield* seedRegistries;
 			yield* StackHandleEmitter().emit(ctx());
 
-			const accounts = readFileSync(joinPath(outputDir, 'accounts.ts'), 'utf-8');
-			const services = readFileSync(joinPath(outputDir, 'services.ts'), 'utf-8');
-			const extras = readFileSync(joinPath(outputDir, 'extras.ts'), 'utf-8');
-			const captured = readFileSync(joinPath(outputDir, 'captured.ts'), 'utf-8');
-			const packages = readFileSync(joinPath(outputDir, 'packages.ts'), 'utf-8');
+			const accountsPath = joinPath(outputDir, 'accounts.ts');
+			const servicesPath = joinPath(outputDir, 'services.ts');
+			const extrasPath = joinPath(outputDir, 'extras.ts');
+			const capturedPath = joinPath(outputDir, 'captured.ts');
+			const packagesPath = joinPath(outputDir, 'packages.ts');
+
+			const accounts = readFileSync(accountsPath, 'utf-8');
+			const services = readFileSync(servicesPath, 'utf-8');
+			const extras = readFileSync(extrasPath, 'utf-8');
+			const captured = readFileSync(capturedPath, 'utf-8');
+			const packages = readFileSync(packagesPath, 'utf-8');
 
 			// Each file carries the generated-header marker so a cleanup tool
 			// (and a reader scanning the file) can see it's machine-written.
@@ -99,6 +105,17 @@ describe('StackHandleEmitter', () => {
 			expect(captured).toContain('"treasuryCap": "0x111"');
 			// arena has no captured — must NOT appear in captured.ts.
 			expect(captured).not.toContain('"arena"');
+
+			// `extras.ts` is sensitive (carries user-supplied app.extras).
+			// Chmod 0o600 + DO-NOT-COMMIT banner. The non-sensitive
+			// siblings keep 0o644.
+			expect(extras.startsWith('// generated — DO NOT COMMIT (contains app.extras values)')).toBe(
+				true,
+			);
+			expect(statSync(extrasPath).mode & 0o777).toBe(0o600);
+			for (const p of [accountsPath, servicesPath, capturedPath, packagesPath]) {
+				expect(statSync(p).mode & 0o777).toBe(0o644);
+			}
 		}).pipe(Effect.provide(Layer.mergeAll(RegistriesLive, IdentityLive, ExtrasLive(undefined)))),
 	);
 
