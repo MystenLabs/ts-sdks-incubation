@@ -1,13 +1,15 @@
 ---
 name: writing-effect
-description: Use when writing or reviewing Effect-TS code (any file importing from "effect" or "@effect/*"). Covers Effect.gen, services via Effect.Service, Schema, error handling with catchTag/catchTags, observability via withSpan/annotateCurrentSpan, and testing with @effect/vitest's it.effect. Targets Effect v4 beta. Defers authoritative answers to the vendored Effect v4 source at repos/effect-v4/.
+description: Use when writing or reviewing Effect-TS code (any file importing from "effect" or "@effect/*"). Covers Effect.gen, services via Effect.Service, Schema, error handling with catchTag/catchTags, observability via withSpan/annotateCurrentSpan, and testing with @effect/vitest's it.effect. Targets Effect v4 beta. Defers authoritative answers to the Effect v4 source cloned at `.repos/effect-v4/` by `scripts/setup-repos.sh`.
 ---
 
 # Writing Effect
 
-Effect-TS coding guide for this monorepo. **Authoritative source**: the Effect v4 source is vendored at `repos/effect-v4/` (via `git subtree`). When you need to verify an API, grep `repos/effect-v4/packages/effect/src/` and `repos/effect-v4/packages/platform-node/src/` directly — docs lag the beta, source doesn't. The vendored repo's own `AGENTS.md` and `LLMS.md` are worth a skim. The web docs at [`https://effect.website/llms-full.txt`](https://effect.website/llms-full.txt) are useful too but may be v3-flavored in places.
+Effect-TS coding guide for this monorepo. **Authoritative source**: clone Effect v4 source into `.repos/effect-v4/` by running `pnpm setup:repos` (or `bash scripts/setup-repos.sh`) — matches the convention Effect itself uses (see [`effect-ts/effect-smol/scripts/worktree-setup.sh`](https://github.com/effect-ts/effect-smol/blob/main/scripts/worktree-setup.sh) and that repo's `AGENTS.md`, which explicitly points agents at `.repos/effect-v4`). `.repos/` is gitignored, so it stays out of PRs and never appears in `pkg.pr.new` tarballs.
 
-Rules for the vendored repo: read-only, don't import from it in our source (use the `effect@beta` / `@effect/platform-node@beta` npm packages instead). To refresh: `git subtree pull --prefix=repos/effect-v4 https://github.com/Effect-TS/effect-smol.git main --squash`.
+When you need to verify an API, grep `.repos/effect-v4/packages/effect/src/` and `.repos/effect-v4/packages/platform-node/src/` directly — docs lag the beta, source doesn't. The cloned repo's own `AGENTS.md` and `LLMS.md` are worth a skim. The web docs at [`https://effect.website/llms-full.txt`](https://effect.website/llms-full.txt) are useful too but may be v3-flavored in places.
+
+If `.repos/effect-v4/` is missing, run `pnpm setup:repos` and try again. To refresh to upstream `main`, re-run the same command — it fast-forwards in place. Rules for the cloned repo: read-only, don't import from it in our source (use the `effect@beta` / `@effect/platform-node@beta` npm packages instead, both pinned in the workspace catalog).
 
 ## Version
 
@@ -20,7 +22,7 @@ This monorepo targets **Effect v4 beta** (pinned in `pnpm-workspace.yaml` catalo
 - **HTTP / HttpApi / RPC**: `effect/unstable/http`, `effect/unstable/httpapi`, `effect/unstable/rpc`.
 - **Vitest**: `@effect/vitest`. The v4 API differs from v3: use `it.effect` (it already includes a `Scope` — no separate `it.scoped`). The package re-exports all of vitest, so import `describe`, `expect`, `it` from `@effect/vitest`. No `assert` export — use `expect`. Never use `Effect.runSync` inside `it`.
 
-When this guide conflicts with what the vendored `repos/effect-v4/` source shows, trust the source and update this skill.
+When this guide conflicts with what the cloned `.repos/effect-v4/` source shows, trust the source and update this skill.
 
 ## Repo conventions
 
@@ -198,4 +200,4 @@ describe('My Effect tests', () => {
 
 ## When in doubt
 
-Grep `repos/effect-v4/packages/effect/src/` (and `repos/effect-v4/packages/platform-node/src/` for the Node bindings). The vendored source is the source of truth.
+Grep `.repos/effect-v4/packages/effect/src/` (and `.repos/effect-v4/packages/platform-node/src/` for the Node bindings). The cloned source is the source of truth — if missing, run `pnpm setup:repos`.

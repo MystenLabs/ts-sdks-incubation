@@ -6,6 +6,7 @@
 		"test": "turbo run test",
 		"test:e2e": "turbo run test:e2e --concurrency=1",
 		"changeset-version": "pnpm changeset version",
+		"setup:repos": "bash scripts/setup-repos.sh",
 		"prettier:check": "prettier -c --ignore-unknown .",
 		"prettier:fix": "prettier -w --ignore-unknown .",
 		"oxlint:check": "oxlint --ignore-pattern='repos/**' .",

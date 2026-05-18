@@ -27,6 +27,11 @@ then the packages are workspace-only.
 pnpm install
 pnpm turbo build
 
+# Optional: clone reference repos (Effect v4 source) for agent grounding.
+# Required by the `writing-effect` skill; safe to skip if you're not editing
+# Effect-TS code. `.repos/` is gitignored — never committed, never published.
+pnpm setup:repos
+
 # After a package rename (e.g. devstack-effect → devstack), node_modules/.bin shims
 # can stay pinned to the old name and surface as `Cannot find module
 # '@mysten-incubation/<old-name>/dist/cli/main.mjs'`. Refresh with:

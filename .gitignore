@@ -72,3 +72,9 @@ packages/*/docs/
 
 # Packed tarballs (`pnpm pack` / `npm pack`)
 *.tgz
+
+# Reference repositories cloned by `scripts/setup-repos.sh` for coding-agent
+# grounding (Effect v4 source, etc.). Matches Effect's own convention — see
+# https://github.com/effect-ts/effect-smol/blob/main/scripts/worktree-setup.sh
+# and that repo's AGENTS.md.
+.repos/
