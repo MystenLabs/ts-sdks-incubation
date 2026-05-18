@@ -26,7 +26,10 @@ function forceSideEffects(): Plugin {
 
 /** Copy bookmarklet.js from dev-wallet package build output after build. */
 function copyBookmarklet(): Plugin {
-	const src = resolve(import.meta.dirname, '../../packages/dev-wallet/dist/standalone/bookmarklet.js');
+	const src = resolve(
+		import.meta.dirname,
+		'../../packages/dev-wallet/dist/standalone/bookmarklet.js',
+	);
 	return {
 		name: 'copy-bookmarklet',
 		closeBundle() {

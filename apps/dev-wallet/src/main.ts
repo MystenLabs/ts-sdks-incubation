@@ -166,7 +166,7 @@ async function handlePopupRequest(hash: string) {
 					detail?.selectedAddresses ? { selectedAddresses: detail.selectedAddresses } : undefined,
 				);
 				window.close();
-			} catch (error) {
+			} catch {
 				handling = false;
 			}
 		});
