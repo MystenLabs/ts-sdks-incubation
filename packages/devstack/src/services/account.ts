@@ -50,7 +50,7 @@ import type { Keypair, Signer } from '@mysten/sui/cryptography';
 import { tag, setPhase, type Ref } from '../advanced/tag.js';
 import { SuiTag } from './sui.js';
 import { AccountError } from '../engine/errors.js';
-import { AccountRegistry } from '../engine/registries.js';
+import { publishAccount } from '../engine/registries.js';
 import { Leasing } from '../engine/leasing.js';
 import { requestFunds } from '../engine/faucet.js';
 import { FaucetTag } from '../faucet/service.js';
@@ -422,7 +422,7 @@ export const Account = <const N extends string>(
 				}
 			}
 
-			yield* AccountRegistry.publish({ name, address });
+			yield* publishAccount({ name, address });
 
 			// Serialize tx submission per-address. Two parallel sign+execute
 			// calls from the same signer race the gas-coin object's version
@@ -708,7 +708,7 @@ const acquireFromKeystore = (
 
 		for (const entry of entries) {
 			const candidate = yield* decodeKeypair(name, entry).pipe(
-				Effect.catch(() => Effect.succeed<Keypair | undefined>(undefined)),
+				Effect.orElseSucceed(() => undefined as Keypair | undefined),
 			);
 			if (candidate === undefined) continue;
 			const candidateAddress = candidate.getPublicKey().toSuiAddress();
@@ -800,14 +800,14 @@ const resolveAliasAddress = (
 		const raw = yield* Effect.tryPromise({
 			try: () => nodeFs.readFile(aliasesPath, 'utf8'),
 			catch: () => undefined,
-		}).pipe(Effect.catch(() => Effect.succeed<string | undefined>(undefined)));
+		}).pipe(Effect.orElseSucceed(() => undefined as string | undefined));
 		if (raw === undefined) return undefined;
 
 		const parsed = yield* Effect.try({
 			try: () =>
 				JSON.parse(raw) as Array<{ readonly alias: string; readonly public_key_base64: string }>,
 			catch: () => undefined,
-		}).pipe(Effect.catch(() => Effect.succeed<unknown>(undefined)));
+		}).pipe(Effect.orElseSucceed(() => undefined as unknown));
 		if (!Array.isArray(parsed)) return undefined;
 
 		const match = parsed.find((entry) => entry?.alias === alias);
@@ -815,7 +815,7 @@ const resolveAliasAddress = (
 
 		for (const entry of entries) {
 			const candidate = yield* decodeKeypair('keystore-resolve', entry).pipe(
-				Effect.catch(() => Effect.succeed<Keypair | undefined>(undefined)),
+				Effect.orElseSucceed(() => undefined as Keypair | undefined),
 			);
 			if (candidate === undefined) continue;
 			// The alias file's `public_key_base64` encodes `flag || pubkey`.

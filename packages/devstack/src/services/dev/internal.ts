@@ -29,7 +29,7 @@ import {
 	type ReadyProbe,
 	type TcpReadyProbe,
 } from '../../engine/ready-probe.js';
-import { EndpointRegistry } from '../../engine/registries.js';
+import { publishEndpoint } from '../../engine/registries.js';
 import { HostProcessError } from '../../engine/errors.js';
 
 // Re-export the canonical probe types from `internal/ready-probe.ts` so users
@@ -353,7 +353,7 @@ export const hostProcess = <const Name extends string, E = never, R = never>(
 			const probeUrl = resolvedReadyProbe?.kind === 'http' ? resolvedReadyProbe.url : undefined;
 			const url = routerUrl ?? probeUrl;
 			if (options.endpoint !== undefined && url !== undefined) {
-				yield* EndpointRegistry.publish({
+				yield* publishEndpoint({
 					name: options.endpoint.name,
 					url,
 					kind: options.endpoint.kind,

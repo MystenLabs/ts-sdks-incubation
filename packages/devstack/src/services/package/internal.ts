@@ -15,7 +15,7 @@ import { Transaction } from '@mysten/sui/transactions';
 import { tag, setPhase, type Ref } from '../../advanced/tag.js';
 import { SuiTag } from '../sui.js';
 import { buildMove, scrubCachedMoveLocks } from '../../engine/sui-cli.js';
-import { PackageRegistry, CoinRegistry } from '../../engine/registries.js';
+import { publishCoin, publishPackage } from '../../engine/registries.js';
 import { StateStore } from '../../engine/state-store.js';
 import { PublishError } from '../../engine/errors.js';
 import type { LocalPackage } from '../package.js';
@@ -332,7 +332,7 @@ export const publishMove = <
 				// engine invocation and a cache hit must still surface the
 				// package + coins to downstream consumers (mvr resolver,
 				// status command, etc.).
-				yield* PackageRegistry.publish({
+				yield* publishPackage({
 					name: options.name,
 					packageId: hit.packageId,
 					upgradeCapId: hit.upgradeCapId,
@@ -340,7 +340,7 @@ export const publishMove = <
 					captured: hit.captured as Record<string, unknown> | undefined,
 				});
 				for (const coin of Object.values(hit.coins) as ReadonlyArray<PublishedCoin>) {
-					yield* CoinRegistry.publish({
+					yield* publishCoin({
 						name: coin.name,
 						type: coin.fullCoinType,
 						decimals: coin.decimals,
@@ -468,7 +468,7 @@ export const publishMove = <
 			const coinSpecs = options.coins ?? ([] as ReadonlyArray<CoinSpec>);
 			// HIGH-C2: refuse duplicate coin names within one Package's
 			// `coins:` list. Two specs with the same `name` would each
-			// `CoinRegistry.publish(...)` the same key — the second
+			// `publishCoin(...)` the same key — the second
 			// silently overwrites the first, leaving the manifest +
 			// CoinTag lookups pointing at whichever entry happened to
 			// register last. Surface the conflict at config-load time
@@ -507,7 +507,7 @@ export const publishMove = <
 				};
 			}
 
-			yield* PackageRegistry.publish({
+			yield* publishPackage({
 				name: options.name,
 				packageId,
 				upgradeCapId,
@@ -516,7 +516,7 @@ export const publishMove = <
 			});
 
 			for (const coin of Object.values(coins)) {
-				yield* CoinRegistry.publish({
+				yield* publishCoin({
 					name: coin.name,
 					type: coin.fullCoinType,
 					decimals: coin.decimals,

@@ -26,7 +26,7 @@ import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { existsSync } from 'node:fs';
 import { join as joinPath } from 'node:path';
 import { isPidAlive as isPidAliveShared } from '../process-liveness.js';
-import { registry, type RegistryEntry } from '../registry.js';
+import { Registry, type RegistryEntry } from '../registry.js';
 import { ROUTER_CONTAINER, ROUTER_NETWORK } from './router.js';
 
 type Spawner = ReturnType<typeof ChildProcessSpawner.make>;
@@ -505,7 +505,7 @@ export const enumerateStateLocations = (
 			if (stacksExists) {
 				const entries = yield* fs
 					.readDirectory(stacksRoot)
-					.pipe(Effect.catch(() => Effect.succeed([] as ReadonlyArray<string>)));
+					.pipe(Effect.orElseSucceed(() => [] as ReadonlyArray<string>));
 				for (const entry of entries) {
 					const stackDir = joinPath(stacksRoot, entry);
 					const isDir = yield* fs.stat(stackDir).pipe(
@@ -568,11 +568,12 @@ export const collectInventory = (
 ): Effect.Effect<
 	ReadonlyArray<InventoryRow>,
 	never,
-	FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner
+	FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner | Registry
 > =>
 	Effect.gen(function* () {
 		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 		const fs = yield* FileSystem.FileSystem;
+		const registry = yield* Registry;
 
 		const [containers, networks, volumes, sizes] = yield* Effect.all(
 			[
@@ -638,7 +639,7 @@ export const collectInventory = (
 		// wants to GC. Registry-only entries whose repo still exists
 		// are stale bookkeeping and silently elided here; `prune`
 		// strips them from the registry in its own GC pass.
-		const registrySnapshot = yield* registry.read();
+		const registrySnapshot = yield* registry.read;
 		const registryByKey = new Map<string, RegistryEntry>();
 		for (const entry of registrySnapshot.stacks) {
 			registryByKey.set(`${entry.app}/${entry.stack}`, entry);

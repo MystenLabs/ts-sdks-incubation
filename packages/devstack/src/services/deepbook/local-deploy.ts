@@ -11,7 +11,7 @@ import { Transaction } from '@mysten/sui/transactions';
 import { tag, provide, type Ref } from '../../advanced/tag.js';
 import { SuiTag } from '../sui.js';
 import { publishMove, pickCreatedByTypeSuffix } from '../package/internal.js';
-import { PackageRegistry } from '../../engine/registries.js';
+import { publishPackage } from '../../engine/registries.js';
 import { StateStore } from '../../engine/state-store.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
 import { DeepbookError } from '../../engine/errors.js';
@@ -480,7 +480,7 @@ export const deepbookLocalDeploy = <
 				}
 			}
 
-			yield* PackageRegistry.publish({
+			yield* publishPackage({
 				name,
 				packageId,
 				upgradeCapId: pkg.upgradeCapId,

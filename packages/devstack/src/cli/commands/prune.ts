@@ -43,7 +43,7 @@ import {
 	type InventoryRow,
 } from '../../engine/docker/inventory.js';
 import { ROUTER_CONTAINER, ROUTER_NETWORK } from '../../engine/docker/router.js';
-import { registry } from '../../engine/registry.js';
+import { Registry } from '../../engine/registry.js';
 import { AlreadyReportedError, failAlreadyReported } from '../already-reported.js';
 import { pruneStack, removeLabelledImagesNotInUse, type PruneStackResult } from './_prune-stack.js';
 import { PruneApp } from './_prune-ui.js';
@@ -167,7 +167,8 @@ const resolveMode = (input: {
 // the candidates here from the registry directly.
 const gcStaleRegistryEntries = (rows: ReadonlyArray<InventoryRow>) =>
 	Effect.gen(function* () {
-		const reg = yield* registry.read();
+		const registry = yield* Registry;
+		const reg = yield* registry.read;
 		const presentKeys = new Set(rows.map((r) => `${r.app}/${r.stack}`));
 		for (const entry of reg.stacks) {
 			const key = `${entry.app}/${entry.stack}`;

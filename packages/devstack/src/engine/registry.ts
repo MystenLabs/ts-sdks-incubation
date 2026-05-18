@@ -34,32 +34,11 @@
 // `define-devstack.ts` + `_prune-stack.ts`).
 
 import { randomUUID } from 'node:crypto';
-import {
-	chmodSync,
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	renameSync,
-	unlinkSync,
-	writeFileSync,
-} from 'node:fs';
+import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { Effect } from 'effect';
+import { Context, Effect, FileSystem, Layer, PlatformError, Schedule } from 'effect';
 import { isPidAlive } from './process-liveness.js';
-
-// -----------------------------------------------------------------------------
-// Types
-// -----------------------------------------------------------------------------
-//
-// Runtime validation lives in `readSync` (the field-by-field check
-// before we trust JSON.parse output). We could plumb `Schema.decode`
-// through here, but the entry shape is small and stable, the I/O is
-// synchronous (registry sits on the supervisor-boot critical path),
-// and the file is human-readable enough that a corrupt-by-hand entry
-// should drop quietly to the floor rather than crash the supervisor.
-// Hand-rolled validators mirror `state-store.ts`'s same defensive
-// load path.
 
 export type RegistryNetwork = 'localnet' | 'testnet' | 'mainnet' | 'custom';
 
@@ -74,16 +53,12 @@ export interface RegistryEntry {
 	readonly pid?: number;
 }
 
-export interface Registry {
+export interface RegistryFile {
 	readonly version: 1;
 	readonly stacks: ReadonlyArray<RegistryEntry>;
 }
 
 export type Classification = 'active' | 'dormant' | 'stale' | 'abandoned';
-
-// -----------------------------------------------------------------------------
-// Paths
-// -----------------------------------------------------------------------------
 
 const CURRENT_VERSION = 1 as const;
 
@@ -99,11 +74,7 @@ export const registryFilePath = (): string => {
 
 const STALE_THRESHOLD_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
-// -----------------------------------------------------------------------------
-// Pure helpers (kept testable without Effect)
-// -----------------------------------------------------------------------------
-
-const emptyRegistry = (): Registry => ({ version: CURRENT_VERSION, stacks: [] });
+const emptyRegistry = (): RegistryFile => ({ version: CURRENT_VERSION, stacks: [] });
 
 const sameStack = (
 	a: { readonly app: string; readonly stack: string; readonly network: string },
@@ -134,22 +105,11 @@ export const classifyEntry = (
 	return 'dormant';
 };
 
-// -----------------------------------------------------------------------------
-// File I/O (synchronous — registry is small, we sit on the critical path
-// of supervisor boot, and going through Effect's FileSystem service would
-// require the caller to thread `FileSystem` through `defineDevstack`'s
-// `Effect.ignore` wrappers. Sync I/O against a single small file is
-// faster than the layer wiring would be.)
-// -----------------------------------------------------------------------------
-
-const readSync = (path: string): Registry => {
-	if (!existsSync(path)) return emptyRegistry();
-	let raw: string;
-	try {
-		raw = readFileSync(path, 'utf8');
-	} catch {
-		return emptyRegistry();
-	}
+// Validate a JSON-parsed registry candidate, dropping malformed entries
+// rather than failing the read. Registry reads are best-effort: a
+// corrupt-by-hand entry should fall to the floor, not crash supervisor
+// boot. Same defensive load shape as `state-store.ts`.
+const parseRegistry = (raw: string): RegistryFile => {
 	if (raw.trim().length === 0) return emptyRegistry();
 	let parsed: unknown;
 	try {
@@ -159,15 +119,7 @@ const readSync = (path: string): Registry => {
 	}
 	if (parsed === null || typeof parsed !== 'object') return emptyRegistry();
 	const obj = parsed as { version?: unknown; stacks?: unknown };
-	if (obj.version !== CURRENT_VERSION) {
-		// Newer-than-current version: refuse to write. We don't throw
-		// here — registry reads are best-effort, returning an empty
-		// registry is preferable to crashing supervisor boot. The
-		// follow-up upsert is a no-op (we won't clobber a newer file
-		// because `writeSync` re-reads the version stamp before
-		// writing).
-		return emptyRegistry();
-	}
+	if (obj.version !== CURRENT_VERSION) return emptyRegistry();
 	if (!Array.isArray(obj.stacks)) return emptyRegistry();
 	const stacks: Array<RegistryEntry> = [];
 	for (const candidate of obj.stacks) {
@@ -203,63 +155,6 @@ const readSync = (path: string): Registry => {
 	return { version: CURRENT_VERSION, stacks };
 };
 
-const writeSync = (path: string, reg: Registry): void => {
-	const dir = dirname(path);
-	if (!existsSync(dir)) {
-		mkdirSync(dir, { recursive: true, mode: 0o755 });
-	}
-	// Same tempfile + rename protocol as state-store. Random suffix
-	// guards two writers in different processes with the same pid space
-	// (e.g. inside a container) from colliding on the temp path.
-	const tmp = `${path}.tmp.${process.pid}.${Date.now()}.${randomUUID().slice(0, 8)}`;
-	const body = `${JSON.stringify(reg, null, 2)}\n`;
-	writeFileSync(tmp, body, { mode: 0o644 });
-	try {
-		renameSync(tmp, path);
-	} catch (err) {
-		// Best-effort cleanup of the tempfile if rename failed.
-		try {
-			unlinkSync(tmp);
-		} catch {
-			/* ignore */
-		}
-		throw err;
-	}
-	try {
-		chmodSync(path, 0o644);
-	} catch {
-		/* no-op on Windows / non-POSIX */
-	}
-};
-
-// -----------------------------------------------------------------------------
-// Read-modify-write loop. Bounded retries on transient errors (rename
-// race, temp-path collision). The window between read and write is
-// small; under normal conditions we hit the success path on the first
-// attempt.
-// -----------------------------------------------------------------------------
-
-const MAX_WRITE_ATTEMPTS = 3;
-
-const mutateSync = (path: string, mutate: (current: Registry) => Registry): void => {
-	let lastErr: unknown;
-	for (let i = 0; i < MAX_WRITE_ATTEMPTS; i += 1) {
-		const current = readSync(path);
-		const next = mutate(current);
-		try {
-			writeSync(path, next);
-			return;
-		} catch (err) {
-			lastErr = err;
-		}
-	}
-	throw lastErr ?? new Error('registry: write failed after retries');
-};
-
-// -----------------------------------------------------------------------------
-// Public API
-// -----------------------------------------------------------------------------
-
 export interface UpsertInput {
 	readonly app: string;
 	readonly stack: string;
@@ -269,13 +164,71 @@ export interface UpsertInput {
 	readonly chainId?: string;
 }
 
-export const registry = {
-	read: (): Effect.Effect<Registry> => Effect.sync(() => readSync(registryFilePath())),
-
+export interface RegistryShape {
+	readonly read: Effect.Effect<RegistryFile>;
 	/** Insert a new entry or refresh `lastSeen` / `pid` / `chainId` on an existing one. */
-	upsert: (input: UpsertInput): Effect.Effect<void> =>
-		Effect.sync(() => {
-			mutateSync(registryFilePath(), (current) => {
+	readonly upsert: (input: UpsertInput) => Effect.Effect<void>;
+	/** Strip the `pid` field on clean shutdown so classify() drops the row out of `active`. */
+	readonly clearPid: (
+		app: string,
+		stack: string,
+		network: RegistryNetwork,
+	) => Effect.Effect<void>;
+	/** Drop the entry entirely — called by `wipe` / `prune` after teardown. */
+	readonly remove: (
+		app: string,
+		stack: string,
+		network: RegistryNetwork,
+	) => Effect.Effect<void>;
+}
+
+export class Registry extends Context.Service<Registry, RegistryShape>()('@devstack/Registry') {}
+
+// Read-modify-write loop. Bounded retries on transient errors (rename
+// race, temp-path collision). The window between read and write is
+// small; under normal conditions we hit the success path on the first
+// attempt.
+const MAX_WRITE_ATTEMPTS = 3;
+
+export const RegistryLive: Layer.Layer<Registry, never, FileSystem.FileSystem> = Layer.effect(
+	Registry,
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem;
+
+		const read: Effect.Effect<RegistryFile> = Effect.gen(function* () {
+			const path = registryFilePath();
+			const exists = yield* fs.exists(path).pipe(Effect.orElseSucceed(() => false));
+			if (!exists) return emptyRegistry();
+			const raw = yield* fs.readFileString(path).pipe(Effect.orElseSucceed(() => ''));
+			return parseRegistry(raw);
+		});
+
+		const writeOnce = (next: RegistryFile): Effect.Effect<void, PlatformError.PlatformError> =>
+			Effect.gen(function* () {
+				const path = registryFilePath();
+				const dir = dirname(path);
+				yield* fs.makeDirectory(dir, { recursive: true, mode: 0o755 }).pipe(Effect.ignore);
+				// Same tempfile + rename protocol as state-store. Random suffix
+				// guards two writers in different processes with the same pid
+				// space (e.g. inside a container) from colliding on the temp path.
+				const tmp = `${path}.tmp.${process.pid}.${Date.now()}.${randomUUID().slice(0, 8)}`;
+				const body = `${JSON.stringify(next, null, 2)}\n`;
+				yield* fs.writeFileString(tmp, body, { mode: 0o644 });
+				yield* fs.rename(tmp, path).pipe(
+					Effect.tapError(() => fs.remove(tmp, { force: true }).pipe(Effect.ignore)),
+				);
+				yield* fs.chmod(path, 0o644).pipe(Effect.ignore);
+			});
+
+		const mutate = (mutator: (current: RegistryFile) => RegistryFile): Effect.Effect<void> =>
+			read.pipe(
+				Effect.flatMap((current) => writeOnce(mutator(current))),
+				Effect.retry(Schedule.recurs(MAX_WRITE_ATTEMPTS - 1)),
+				Effect.orDie,
+			);
+
+		const upsert: RegistryShape['upsert'] = (input) =>
+			mutate((current) => {
 				const now = new Date().toISOString();
 				const existing = current.stacks.find((e) => sameStack(e, input));
 				const merged: RegistryEntry = {
@@ -297,12 +250,9 @@ export const registry = {
 					.concat(merged);
 				return { version: CURRENT_VERSION, stacks };
 			});
-		}),
 
-	/** Strip the `pid` field on clean shutdown so classify() drops the row out of `active`. */
-	clearPid: (app: string, stack: string, network: RegistryNetwork): Effect.Effect<void> =>
-		Effect.sync(() => {
-			mutateSync(registryFilePath(), (current) => {
+		const clearPid: RegistryShape['clearPid'] = (app, stack, network) =>
+			mutate((current) => {
 				const stacks = current.stacks.map((e) => {
 					if (!sameStack(e, { app, stack, network })) return e;
 					const { pid: _drop, ...rest } = e;
@@ -310,16 +260,13 @@ export const registry = {
 				});
 				return { version: CURRENT_VERSION, stacks };
 			});
-		}),
 
-	/** Drop the entry entirely — called by `wipe` / `prune` after teardown. */
-	remove: (app: string, stack: string, network: RegistryNetwork): Effect.Effect<void> =>
-		Effect.sync(() => {
-			mutateSync(registryFilePath(), (current) => ({
+		const remove: RegistryShape['remove'] = (app, stack, network) =>
+			mutate((current) => ({
 				version: CURRENT_VERSION,
 				stacks: current.stacks.filter((e) => !sameStack(e, { app, stack, network })),
 			}));
-		}),
 
-	classify: classifyEntry,
-};
+		return { read, upsert, clearPid, remove };
+	}),
+);

@@ -242,6 +242,18 @@ export const startTuiOnce = (): Effect.Effect<TuiMount, never, Scope> =>
  * frame writes and the layout tears. Routing everything through the
  * engine's bounded buffer keeps log delivery serialized through the
  * single source-of-truth Ref the ink components subscribe to.
+ *
+ * `Effect.runSync` here is genuine: `Logger.make`'s sink is
+ * synchronous (Effect's logging pipeline calls it inside fiber
+ * context, not Effect context), so the sink cannot `yield*` an Effect.
+ * We considered offering each record to a Queue and draining under a
+ * forked Effect, but that introduces a fiber-scheduling race where the
+ * drain may be interrupted before consuming if the layer's scope is
+ * short-lived (tests, ad-hoc `Effect.provide`). The runSync defect
+ * concern (`Scope closed` during supervisor shutdown) is addressed by
+ * the `catchCause` swallow — the wrapped Effect is `Ref.update`, which
+ * is `Effect.sync` and never registers finalizers, so the surface for
+ * defects is narrow.
  */
 export const TuiLoggerLayer = (engine: EngineHandleShape): Layer.Layer<never, never, never> => {
 	const tuiLogger = Logger.make(({ logLevel, message, date }) => {
@@ -250,15 +262,6 @@ export const TuiLoggerLayer = (engine: EngineHandleShape): Layer.Layer<never, ne
 			: typeof message === 'string'
 				? message
 				: JSON.stringify(message);
-		// `Effect.runSync` of a Ref-update normally can't fail — but if
-		// the engine's tuiState Ref is bound to a torn-down scope (the
-		// supervisor is mid-shutdown and a late Logger emit races the
-		// scope finalizer) the runSync surfaces a `Scope closed`
-		// defect that bubbles out as an uncaught exception and crashes
-		// the supervisor process. Wrap with `catchCause` returning
-		// `void` so defects (the typed errors in our Logger pipeline
-		// is `never`) are swallowed — the log is the side-effect;
-		// losing it during shutdown is fine.
 		Effect.runSync(
 			engine
 				.appendLog({

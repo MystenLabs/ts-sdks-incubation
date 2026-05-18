@@ -49,7 +49,7 @@ import { stringifyCause } from '../../engine/stringify-cause.js';
 import { buildMove } from '../../engine/sui-cli.js';
 import { dockerImage } from '../../advanced/plugin-author/index.js';
 import { gitFetch } from '../../advanced/plugin-author/index.js';
-import { EndpointRegistry, PackageRegistry } from '../../engine/registries.js';
+import { PackageRegistry, publishEndpoint, publishPackage } from '../../engine/registries.js';
 import { EndpointName } from '../../runtime/endpoint-names.js';
 import {
 	SealKeyManagerTag,
@@ -668,7 +668,7 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 		//    endpoint so the manifest exposes it alongside sui-rpc /
 		//    sui-faucet.
 		void (yield* PackageRegistry);
-		yield* EndpointRegistry.publish({
+		yield* publishEndpoint({
 			name: EndpointName.SEAL_KEY_SERVER,
 			url: keyServerUrl,
 			kind: 'seal-key-server',
@@ -996,7 +996,7 @@ export const sealKnownKeyServer = (options: SealKnownKeyServerOptions = {}): Sta
 	}
 
 	const build = Effect.fn(`sealKnownKeyServer(${name})`)(function* () {
-		yield* EndpointRegistry.publish({
+		yield* publishEndpoint({
 			name: EndpointName.SEAL_KEY_SERVER,
 			url: keyServerUrl,
 			kind: 'seal-key-server',
@@ -1089,7 +1089,7 @@ const publishSealMoveInline = (args: {
 				c.objectType.endsWith('0x2::package::UpgradeCap'),
 		)?.objectId;
 
-		yield* PackageRegistry.publish({
+		yield* publishPackage({
 			name: `${args.name}.publish`,
 			packageId: published.packageId,
 			upgradeCapId,

@@ -119,7 +119,7 @@ export const requestFundsOnce = (opts: {
 			const body = yield* Effect.tryPromise({
 				try: () => response.text(),
 				catch: () => undefined,
-			}).pipe(Effect.catch(() => Effect.succeed<string | undefined>(undefined)));
+			}).pipe(Effect.orElseSucceed(() => undefined as string | undefined));
 			return yield* Effect.fail(
 				new FaucetError({
 					url: opts.faucetUrl,

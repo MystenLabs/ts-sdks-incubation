@@ -12,14 +12,14 @@
 // primitives, and the `faucetReadyProbe` that gates funds-transferable
 // readiness on localnet.
 
-import { Context, Effect, Layer, Schedule, Schema } from 'effect';
+import { Context, Effect, Layer, Ref as EffectRef, Schedule, Schema } from 'effect';
 import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
 import * as Docker from '../engine/docker.js';
 import { routerEntrypoint } from '../engine/docker/router.js';
 import type { Endpoint } from '../engine/endpoint.js';
 import { stringifyCause } from '../engine/stringify-cause.js';
 import { Identity } from '../engine/identity.js';
-import { EndpointRegistry } from '../engine/registries.js';
+import { publishEndpoint } from '../engine/registries.js';
 import { routerHostname, routerId } from '../engine/router-hostname.js';
 import { SuiBuildImage } from '../engine/sui-cli.js';
 import { SuiBuildContainerLive } from '../engine/sui-build-container.js';
@@ -494,16 +494,16 @@ const buildLocalnet = (options: SuiLocalnetOptions): StackMember => {
 			const faucetUrl = options.faucetUrl;
 			const graphqlUrl = options.graphqlUrl;
 			const client = new SuiJsonRpcClient({ url: rpcUrl, network: 'localnet' });
-			yield* EndpointRegistry.publish({ name: EndpointName.SUI_RPC, url: rpcUrl, kind: 'rpc' });
+			yield* publishEndpoint({ name: EndpointName.SUI_RPC, url: rpcUrl, kind: 'rpc' });
 			if (faucetUrl !== undefined) {
-				yield* EndpointRegistry.publish({
+				yield* publishEndpoint({
 					name: EndpointName.SUI_FAUCET,
 					url: faucetUrl,
 					kind: 'faucet',
 				});
 			}
 			if (graphqlUrl !== undefined) {
-				yield* EndpointRegistry.publish({
+				yield* publishEndpoint({
 					name: EndpointName.SUI_GRAPHQL,
 					url: graphqlUrl,
 					kind: 'graphql',
@@ -704,16 +704,14 @@ const buildLocalnet = (options: SuiLocalnetOptions): StackMember => {
 		const probeFetch = (url: string, init: RequestInit) =>
 			fetch(url, { ...init, signal: AbortSignal.timeout(PROBE_FETCH_TIMEOUT_MS) });
 
-		const probeStatus: { rpc: boolean; faucet: boolean; graphql: boolean } = {
-			rpc: false,
-			faucet: false,
-			graphql: false,
-		};
+		type ProbeKey = 'rpc' | 'faucet' | 'graphql';
+		const seen = yield* EffectRef.make(new Set<ProbeKey>());
+		const markSeen = (k: ProbeKey) => EffectRef.update(seen, (s) => new Set(s).add(k));
 		const rpcProbe = Effect.tryPromise({
 			try: () => client.getChainIdentifier(),
 			catch: (cause) => new Error(`rpc: ${stringifyCause(cause)}`),
 		}).pipe(
-			Effect.tap(() => Effect.sync(() => (probeStatus.rpc = true))),
+			Effect.tap(() => markSeen('rpc')),
 			Effect.withSpan('sui.probe.rpc'),
 		);
 		// Cheap socket-level liveness check. We deliberately do NOT POST
@@ -728,7 +726,7 @@ const buildLocalnet = (options: SuiLocalnetOptions): StackMember => {
 			},
 			catch: (cause) => new Error(`faucet: ${stringifyCause(cause)}`),
 		}).pipe(
-			Effect.tap(() => Effect.sync(() => (probeStatus.faucet = true))),
+			Effect.tap(() => markSeen('faucet')),
 			Effect.withSpan('sui.probe.faucet'),
 		);
 		const graphqlProbe = Effect.tryPromise({
@@ -742,7 +740,7 @@ const buildLocalnet = (options: SuiLocalnetOptions): StackMember => {
 				}),
 			catch: (cause) => new Error(`graphql: ${stringifyCause(cause)}`),
 		}).pipe(
-			Effect.tap(() => Effect.sync(() => (probeStatus.graphql = true))),
+			Effect.tap(() => markSeen('graphql')),
 			Effect.withSpan('sui.probe.graphql'),
 		);
 		yield* Effect.all([rpcProbe, faucetProbe, graphqlProbe], {
@@ -752,39 +750,39 @@ const buildLocalnet = (options: SuiLocalnetOptions): StackMember => {
 			Effect.timeoutOrElse({
 				duration: `${readyTimeoutMs} millis`,
 				orElse: () =>
-					Docker.dockerLogsTail(localnetRunResult.name).pipe(
-						Effect.flatMap((tail) => {
-							const stillFailing = (['rpc', 'faucet', 'graphql'] as const).filter(
-								(k) => !probeStatus[k],
-							);
-							const lagSummary =
-								stillFailing.length === 0
-									? 'all three probes succeeded at least once individually but never together'
-									: `never-succeeded: ${stillFailing.join(', ')}`;
-							return Effect.fail(
-								new SuiError({
-									phase: 'ready-probe',
-									message: `sui localnet did not become fully ready within ${readyTimeoutMs}ms (rpc=${probeStatus.rpc} faucet=${probeStatus.faucet} graphql=${probeStatus.graphql}); ${lagSummary}; sui-rpc=${rpcUrl} faucet=${faucetUrl} graphql=${graphqlUrl}`,
-									stderr: tail.length > 0 ? tail : undefined,
-								}),
-							);
-						}),
-					),
+					Effect.gen(function* () {
+						const observed = yield* EffectRef.get(seen);
+						const tail = yield* Docker.dockerLogsTail(localnetRunResult.name);
+						const stillFailing = (['rpc', 'faucet', 'graphql'] as const).filter(
+							(k) => !observed.has(k),
+						);
+						const lagSummary =
+							stillFailing.length === 0
+								? 'all three probes succeeded at least once individually but never together'
+								: `never-succeeded: ${stillFailing.join(', ')}`;
+						return yield* Effect.fail(
+							new SuiError({
+								phase: 'ready-probe',
+								message: `sui localnet did not become fully ready within ${readyTimeoutMs}ms (rpc=${observed.has('rpc')} faucet=${observed.has('faucet')} graphql=${observed.has('graphql')}); ${lagSummary}; sui-rpc=${rpcUrl} faucet=${faucetUrl} graphql=${graphqlUrl}`,
+								stderr: tail.length > 0 ? tail : undefined,
+							}),
+						);
+					}),
 			}),
 		);
 
-		yield* EndpointRegistry.publish({ name: EndpointName.SUI_RPC, url: rpcUrl, kind: 'rpc' });
-		yield* EndpointRegistry.publish({
+		yield* publishEndpoint({ name: EndpointName.SUI_RPC, url: rpcUrl, kind: 'rpc' });
+		yield* publishEndpoint({
 			name: EndpointName.SUI_FAUCET,
 			url: faucetUrl,
 			kind: 'faucet',
 		});
-		yield* EndpointRegistry.publish({
+		yield* publishEndpoint({
 			name: EndpointName.SUI_GRAPHQL,
 			url: graphqlUrl,
 			kind: 'graphql',
 		});
-		yield* EndpointRegistry.publish({
+		yield* publishEndpoint({
 			name: EndpointName.SUI_INDEXER_DB,
 			url: SUI_INDEXER_DATABASE_URL,
 			kind: 'internal',
@@ -899,13 +897,13 @@ const buildTestnet = (options: SuiTestnetOptions): StackMember => {
 		const faucetUrl = options.faucetUrl ?? 'https://faucet.testnet.sui.io';
 		const graphqlUrl = options.graphqlUrl ?? 'https://sui-testnet.mystenlabs.com/graphql';
 		const client = new SuiJsonRpcClient({ url: rpcUrl, network: 'testnet' });
-		yield* EndpointRegistry.publish({ name: EndpointName.SUI_RPC, url: rpcUrl, kind: 'rpc' });
-		yield* EndpointRegistry.publish({
+		yield* publishEndpoint({ name: EndpointName.SUI_RPC, url: rpcUrl, kind: 'rpc' });
+		yield* publishEndpoint({
 			name: EndpointName.SUI_FAUCET,
 			url: faucetUrl,
 			kind: 'faucet',
 		});
-		yield* EndpointRegistry.publish({
+		yield* publishEndpoint({
 			name: EndpointName.SUI_GRAPHQL,
 			url: graphqlUrl,
 			kind: 'graphql',
@@ -950,8 +948,8 @@ const buildMainnet = (options: SuiMainnetOptions): StackMember => {
 		const rpcUrl = options.rpcUrl ?? 'https://fullnode.mainnet.sui.io:443';
 		const graphqlUrl = options.graphqlUrl ?? 'https://sui-mainnet.mystenlabs.com/graphql';
 		const client = new SuiJsonRpcClient({ url: rpcUrl, network: 'mainnet' });
-		yield* EndpointRegistry.publish({ name: EndpointName.SUI_RPC, url: rpcUrl, kind: 'rpc' });
-		yield* EndpointRegistry.publish({
+		yield* publishEndpoint({ name: EndpointName.SUI_RPC, url: rpcUrl, kind: 'rpc' });
+		yield* publishEndpoint({
 			name: EndpointName.SUI_GRAPHQL,
 			url: graphqlUrl,
 			kind: 'graphql',
@@ -999,16 +997,16 @@ const buildCustom = (options: SuiCustomOptions): StackMember => {
 		// chain-id mismatch warning. The surface-level `network` we return
 		// in `Sui` is the caller-supplied label.
 		const client = new SuiJsonRpcClient({ url: rpcUrl, network: 'localnet' });
-		yield* EndpointRegistry.publish({ name: EndpointName.SUI_RPC, url: rpcUrl, kind: 'rpc' });
+		yield* publishEndpoint({ name: EndpointName.SUI_RPC, url: rpcUrl, kind: 'rpc' });
 		if (faucetUrl !== undefined) {
-			yield* EndpointRegistry.publish({
+			yield* publishEndpoint({
 				name: EndpointName.SUI_FAUCET,
 				url: faucetUrl,
 				kind: 'faucet',
 			});
 		}
 		if (graphqlUrl !== undefined) {
-			yield* EndpointRegistry.publish({
+			yield* publishEndpoint({
 				name: EndpointName.SUI_GRAPHQL,
 				url: graphqlUrl,
 				kind: 'graphql',
