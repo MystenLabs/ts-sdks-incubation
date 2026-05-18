@@ -76,6 +76,29 @@ Yields `LocalPackage`: `{ name, packageId, upgradeCapId, sourcePath, mvrPlacehol
 `captured` is whatever the `capture` callback returned (declarative form: `Record<key, objectId>`;
 callback form: whatever you return).
 
+## `registerCoin(opts)`
+
+Register a coin against an already-published `Package` ref. Use when a `Package`'s `coins:` shortcut
+doesn't fit — most often when the publishing package is owned by someone else (a vendored library, a
+known testnet token) or when you need a separate `CoinTag`-shaped Ref to compose against.
+
+```ts
+import { registerCoin } from '@mysten-incubation/devstack';
+
+const partner = registerCoin({
+	name: 'partner',
+	package: partnerPkg, // any resolved `Package` ref
+	module: 'partner_coin',
+	type: 'PARTNER',
+	decimals: 8,
+});
+```
+
+Yields a `CoinTag`-shaped Ref that resolves to `{ name, type, decimals, sdkCoin }` after the
+referenced package publishes. Threads into the manifest's `coins` record the same way
+`Package({ coins })` does, and the resulting Ref is yieldable as a `quote:` / `base:` value on
+`Deepbook({ local: { pools } })` pool specs.
+
 ## `KnownPackage(name, opts)`
 
 A `Package`-shaped Ref backed by a fixed on-chain id — for referencing testnet/mainnet packages
@@ -167,6 +190,24 @@ Wallet({ accounts: [alice, bob] });
 
 Exposes a localhost HTTP API that signs transactions with the resolved accounts' keypairs. Allowed
 origins, port, and bind address are configurable.
+
+## `Faucet(opts?)`
+
+The per-coin funding-strategy registry that backs `Account({ funding })`. `devstack(...)`
+auto-mounts a `Faucet()` Ref — explicit `Faucet({ strategies: [...] })` is only needed when you want
+to register additional strategies (a `KnownPackage` coin, a partner faucet, a custom AMM bridge).
+
+```ts
+import { Faucet } from '@mysten-incubation/devstack';
+import { partnerStrategy } from './strategies/partner.js';
+
+Faucet({ strategies: [partnerStrategy] });
+```
+
+User-supplied strategies append to the registry alongside the auto-registered ones
+(`suiHttpStrategy` from `Sui()`, `walExchangeStrategy` from `Walrus({ local })`,
+`treasuryCapMintStrategy` per `Package({ coins })`). See the [Faucet reference](./faucet) for
+built-in strategies, `defineStrategy`, and the `FaucetRequestError` taxonomy.
 
 ## `Codegen(opts)`
 

@@ -6,7 +6,7 @@ The minimal-but-real starting point for a new devstack-backed Sui app.
 _template/
 ├── devstack.config.ts        # Refs: accounts, packages, actions, wallet, dev
 ├── package.json              # dev/build/test/e2e scripts
-├── playwright.config.ts      # stock playwright + setupDevstack global setup
+├── playwright.config.ts      # webServer({ endpoint: 'dev-server' }) from devstack/playwright
 ├── tsconfig.json             # composite refs to app + node
 ├── tsconfig.app.json         # extends @mysten-incubation/tsconfig/react
 ├── tsconfig.node.json        # for vite/vitest/playwright configs
@@ -18,7 +18,7 @@ _template/
 └── src/
     ├── App.tsx               # Card + ConnectButton + mint button
     ├── main.tsx              # <DAppKitProvider> wiring
-    ├── dapp-kit.ts           # createDevstackDappKit({ manifest })
+    ├── dapp-kit.ts           # createDAppKit({ ...devstackDappKitConfig })
     ├── index.css             # tailwind import + theme
     └── vite-env.d.ts         # /// <reference types="vite/client" />
 ```

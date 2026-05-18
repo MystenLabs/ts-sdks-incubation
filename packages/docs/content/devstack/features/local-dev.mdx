@@ -70,6 +70,22 @@ adopts the same containers — so restart isn't a 30-second cold boot every time
 
 You can also force a full restart yourself with `r` in the TUI, or graceful shutdown with `q`.
 
+### Disable hot-restart for stable test runs
+
+Hot-restart on file change is the right default for editing, but it's a hazard under playwright:
+codegen and `sui move build` touch files inside `move/<pkg>/` during the first cycle, the watcher
+fires, and the dev server's brief death races a navigation in the test runner. Pass
+`hotRestart: false` to opt out:
+
+```ts
+export default devstack(/* ...refs */, {
+	hotRestart: process.env.PLAYWRIGHT === '1' ? false : undefined,
+});
+```
+
+`hotRestart` only governs file-watch-driven restarts. User-driven restarts (TUI `r` keypress,
+SIGUSR2) always recycle.
+
 ## Per-Ref failures don't take down siblings
 
 If one Ref fails (your Move package has a build error, say), the TUI turns that row red and shows

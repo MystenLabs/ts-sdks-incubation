@@ -17,7 +17,7 @@ export interface WalletOptions {
 	readonly allowedOrigins?: ReadonlyArray<string>;
 	/** Preferred host port. Defaults to 5180. */
 	readonly port?: number;
-	/** Interface to bind. Defaults to `'0.0.0.0'`. */
+	/** Interface to bind. Defaults to the security-hardened `'127.0.0.1'` loopback. */
 	readonly bindAddress?: string;
 	/** Override tag name. Defaults to `'wallet-app'`. */
 	readonly name?: string;

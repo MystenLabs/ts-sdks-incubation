@@ -4,8 +4,12 @@
 // lists compose at type-check time and the bindings emitter silently
 // skips KnownPackage entries (no `sourcePath`) at runtime.
 
-import { Effect } from 'effect';
-import { describe, expect, it } from '@effect/vitest';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join as joinPath } from 'node:path';
+import { Effect, Layer } from 'effect';
+import { afterEach, beforeEach, describe, expect, it } from '@effect/vitest';
+import { EngineLive } from '../engine/engine.js';
 import { tag } from '../advanced/tag.js';
 import { Codegen } from './codegen.js';
 import { defineEmitter, type Emitter } from '../codegen/define-emitter.js';
@@ -66,4 +70,46 @@ describe('defineEmitter', () => {
 		});
 		expect(sourceOnly.name).toBe('source-only');
 	});
+});
+
+describe('Codegen .gitignore', () => {
+	let outputDir: string;
+	beforeEach(() => {
+		outputDir = mkdtempSync(joinPath(tmpdir(), 'devstack-codegen-gitignore-'));
+	});
+	afterEach(() => {
+		rmSync(outputDir, { recursive: true, force: true });
+	});
+
+	const buildCodegen = (overrideOutput?: string) => {
+		const ref = Codegen({ output: overrideOutput ?? outputDir, emitters: [] });
+		return Layer.build(ref.__layer).pipe(Effect.scoped, Effect.provide(EngineLive));
+	};
+
+	it.effect('drops a .gitignore covering dapp-kit-config.ts and extras.ts', () =>
+		Effect.gen(function* () {
+			yield* buildCodegen();
+			const gitignorePath = joinPath(outputDir, '.gitignore');
+			expect(existsSync(gitignorePath)).toBe(true);
+			const body = readFileSync(gitignorePath, 'utf-8');
+			expect(body).toContain('dapp-kit-config.ts');
+			expect(body).toContain('extras.ts');
+			expect(body).toContain('@mysten-incubation/devstack');
+		}),
+	);
+
+	it.effect('leaves an existing user-customized .gitignore alone', () =>
+		Effect.gen(function* () {
+			const gitignorePath = joinPath(outputDir, '.gitignore');
+			const userBody = '# my custom ignores\nfoo.ts\nbar/\n';
+			writeFileSync(gitignorePath, userBody, 'utf-8');
+
+			yield* buildCodegen();
+
+			// User content is preserved verbatim — devstack must not stomp
+			// a hand-edited ignore file even if it's missing the entries
+			// the default would have added.
+			expect(readFileSync(gitignorePath, 'utf-8')).toBe(userBody);
+		}),
+	);
 });

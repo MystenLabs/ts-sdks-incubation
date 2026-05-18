@@ -120,6 +120,29 @@ const helloPackageId = packages.hello?.id;
 the MVR overrides baked into the generated `devstackDappKitConfig`. Reach for the raw `id` only when
 MVR can't express the call (struct type strings, error labels).
 
+## App-defined `extras`
+
+`devstack({ extras })` is the user-controlled slot for values that need to surface in the manifest
+(and the generated `extras.ts` handle) but don't come from a built-in Ref. Pass a plain record, a
+sync function, or an Effect yielding a record — the supervisor evaluates it after every Ref resolves
+and splices the result into `app.extras` on the manifest.
+
+```ts
+export default devstack(/* ...refs */, openLobby, codegen, dev, {
+	extras: Effect.gen(function* () {
+		const r = yield* openLobby;
+		const openLobbyId = pickCreatedByTypeSuffix(r.objectChanges, '::game::Lobby');
+		return openLobbyId === undefined ? {} : { openLobbyId };
+	}),
+});
+```
+
+The returned record's keys land on the typed `extras` export from `./src/generated/extras.ts` —
+`extras.openLobbyId` narrows to the resolved string literal. Use this whenever a downstream consumer
+(the frontend, a playwright test, another emitter) needs a value projected from a `yield*`-able Ref:
+`SealKeyServerTag`, an `Action`'s `TxResult.objectChanges`, a `Deepbook` pool record, anything the
+manifest doesn't already expose.
+
 ## Partial dapp-kit config
 
 `DappKitConfigEmitter` emits a `devstackDappKitConfig` value that the user-written `src/dapp-kit.ts`

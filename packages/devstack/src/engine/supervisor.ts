@@ -143,12 +143,6 @@ export interface DevstackConfig {
 	 */
 	readonly renderer?: RendererKind;
 	/**
-	 * @deprecated Prefer `renderer`. `tui: true` maps to `renderer: 'tui'`
-	 * and `tui: false` maps to `renderer: 'plain'`. When both are set,
-	 * `renderer` wins.
-	 */
-	readonly tui?: boolean;
-	/**
 	 * Filesystem paths to observe for changes. When `hotRestart` is on
 	 * (the default whenever `watch` is set), a change debounced to 250ms
 	 * tears down the running stack and re-launches from scratch.
@@ -166,7 +160,6 @@ export interface DevstackConfig {
 
 const resolveRenderer = (config: DevstackConfig): RendererKind => {
 	if (config.renderer !== undefined) return config.renderer;
-	if (config.tui !== undefined) return config.tui ? 'tui' : 'plain';
 	return process.stdout.isTTY === true ? 'tui' : 'plain';
 };
 

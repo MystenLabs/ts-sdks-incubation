@@ -158,13 +158,13 @@ them.
 
 ## Manifest output
 
-For every coin declared via `Package({ coins })` or `registerCoin`, the manifest carries:
+For every coin declared via `Package({ coins })` or `registerCoin`, the manifest carries an entry
+under the top-level `coins` record (keyed by coin name):
 
 ```json
 {
-	"coins": [
-		{
-			"name": "usdc",
+	"coins": {
+		"usdc": {
 			"type": "0xabc::usdc::USDC",
 			"decimals": 6,
 			"sdkCoin": {
@@ -173,7 +173,7 @@ For every coin declared via `Package({ coins })` or `registerCoin`, the manifest
 				"scalar": 1000000
 			}
 		}
-	]
+	}
 }
 ```
 
