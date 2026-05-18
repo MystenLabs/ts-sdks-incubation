@@ -5,6 +5,7 @@
 
 import { Effect, Schedule, Schema, Scope } from 'effect';
 import * as fs from 'node:fs/promises';
+import { ExtrasResolved } from '../engine/extras.js';
 import { Identity } from '../engine/identity.js';
 import {
 	AccountRegistry,
@@ -15,7 +16,6 @@ import {
 import { jsonBigintReplacer } from '../engine/json-bigint.js';
 import { writeFileAtomicIfChanged } from '../engine/atomic-write.js';
 import { ManifestError } from '../engine/errors.js';
-import { Extras, resolveExtras } from './extras.js';
 import { ManifestV4, type Manifest } from './manifest-schema.js';
 import { gatherManifest } from './service.js';
 
@@ -78,28 +78,23 @@ export const emitManifestV4 = (
 	| AccountRegistry
 	| CoinRegistry
 	| Identity
-	| Extras
+	| ExtrasResolved
 	| Scope.Scope
 > =>
 	Effect.gen(function* () {
 		const identity = yield* Identity;
 		const outputPath = resolveOutputPath(identity, options.output);
 
-		// Resolve the user's extras Effect ONCE at acquire time, not
-		// per-tick. Two reasons:
-		//   1. The user's Effect can yield user-defined refs (`yield*
-		//      alice`, `yield* openLobby`) — those refs are only
-		//      satisfied in the supervisor's acquire scope, not in the
-		//      forked slow-tick scope. Yielding them inside the tick
-		//      loop fails silently (swallowed by `Effect.ignore({log})`)
-		//      and `app.extras` stays `{}` forever.
-		//   2. Extras is a one-shot snapshot of post-acquire state by
-		//      design — re-running each tick would surface noise from
-		//      transient errors during re-evaluation. The state-change
-		//      story for `app.extras` is "snapshot + replay on next
-		//      `r`", same as the rest of the manifest.
-		const extrasInput = yield* Extras;
-		const extras = yield* resolveExtras(extrasInput);
+		// `ExtrasResolved` carries a memoized Effect — `yield*` it to
+		// obtain the resolver, then `yield*` the resolver to evaluate
+		// (or hit cache). Memoization is per-supervisor-cycle so every
+		// artifact (manifest.json, generated extras.ts, dapp-kit config)
+		// carries the same record even when the user's input is non-pure
+		// (`() => ({ ts: Date.now() })`, registry-reading Effects).
+		// Resolution runs LATE — inside this consumer's scope — so the
+		// user's input can yield user-stack tags (`arena.openLobby`,
+		// etc.) that aren't visible at infra-layer build time.
+		const extras = yield* yield* ExtrasResolved;
 
 		const snapshotAndWrite = Effect.gen(function* () {
 			const data = yield* gatherManifest(extras);

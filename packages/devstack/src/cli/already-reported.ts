@@ -6,11 +6,24 @@
 // The original cause is preserved on the sentinel for tooling that
 // inspects causes (telemetry, future `--debug`).
 
-import { Cause, Data } from 'effect';
+import { Cause, Console, Data, Effect } from 'effect';
 
 export class AlreadyReportedError extends Data.TaggedError('AlreadyReportedError')<{
 	readonly cause: unknown;
 }> {}
+
+/** Print `message` to stderr, then fail with `AlreadyReportedError`.
+ *  Use this from CLI subcommands after a human-readable diagnostic has
+ *  already been emitted — the top-level `tapCause` in `cli/index.ts`
+ *  short-circuits its own rendering when it sees this sentinel, so the
+ *  user sees one error, not two. */
+export const failAlreadyReported = (
+	message: string,
+): Effect.Effect<never, AlreadyReportedError> =>
+	Effect.gen(function* () {
+		yield* Console.error(message);
+		return yield* Effect.fail(new AlreadyReportedError({ cause: message }));
+	});
 
 /** Returns true if `cause` carries any `AlreadyReportedError` failure.
  *  Walks `cause.reasons` (the v4 flat-array model) and matches by

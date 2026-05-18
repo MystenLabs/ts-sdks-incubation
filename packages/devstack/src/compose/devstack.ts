@@ -14,7 +14,7 @@ import {
 } from '../engine/supervisor.js';
 import { tag } from '../advanced/tag.js';
 import { emitManifestV4 } from '../runtime/manifest-emit.js';
-import type { Extras, ExtrasInput } from '../runtime/extras.js';
+import type { ExtrasInput, ExtrasResolved } from '../engine/extras.js';
 import type { ManifestError } from '../engine/errors.js';
 import {
 	type AccountRegistry,
@@ -26,6 +26,7 @@ import type { Identity } from '../engine/identity.js';
 import type { Manifest } from '../runtime/manifest-schema.js';
 import { Faucet } from '../faucet/factory.js';
 import { fillDefaults } from './defaults.js';
+import { defaultRendererResolver } from './renderer-factories.js';
 
 /** A single ref or an array of refs (from composite factories). The
  *  variadic `devstack(...args)` accepts both. */
@@ -43,9 +44,14 @@ export interface DevstackComposeOptions extends Omit<DevstackConfig, 'stack'> {
 }
 
 const isOptions = (x: unknown): x is DevstackComposeOptions => {
-	if (x === null || typeof x !== 'object') return false;
-	// Refs (StackMembers) always carry a `__layer`. Options objects don't.
-	return !('__layer' in (x as Record<string, unknown>));
+	// Refs (StackMembers) always carry a `__layer` and arrive as plain
+	// objects (never arrays — those are flattened composite Ref groups).
+	return (
+		typeof x === 'object' &&
+		x !== null &&
+		!('__layer' in (x as Record<string, unknown>)) &&
+		!Array.isArray(x)
+	);
 };
 
 /** Wrap the v4 manifest emitter in a `tag()` so it surfaces as a stack
@@ -61,7 +67,7 @@ const manifestRef = (): StackMember => {
 		| AccountRegistry
 		| CoinRegistry
 		| Identity
-		| Extras
+		| ExtrasResolved
 		| Scope.Scope
 	> = emitManifestV4();
 	return tag('manifest', body, {
@@ -128,5 +134,14 @@ export function devstack(
 	// capability-keyed defaults.
 	const filled = fillDefaults(withManifest);
 
-	return defineDevstack({ stack: filled, ...opts });
+	// Wire the default renderer resolver so the supervisor can map a
+	// `RendererKind` (from `config.renderer` or the CLI `--renderer`
+	// override) to a concrete factory without itself importing `tui/`.
+	// User-supplied `rendererResolver` / `rendererFactory` still win
+	// (later spread overrides the default).
+	return defineDevstack({
+		stack: filled,
+		rendererResolver: defaultRendererResolver,
+		...opts,
+	});
 }

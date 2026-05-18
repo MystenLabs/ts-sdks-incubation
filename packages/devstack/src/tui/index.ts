@@ -147,22 +147,61 @@ export const startTuiOnce = (): Effect.Effect<TuiMount, never, Scope> =>
 		const onQuit = (): void => {
 			process.kill(process.pid, 'SIGINT');
 		};
-		const instance = render(React.createElement(App, { engine: proxy, onQuit }), {
-			exitOnCtrlC: false,
-			patchConsole: true,
+
+		// One-shot synchronous render coordinator. The supervisor calls
+		// this in `onInterrupt` so the final 'shutting-down' state lands
+		// on screen BEFORE the docker-rm-finalizers stall the event loop.
+		// Without coordination the 50ms poll tick had to win a race
+		// against the finalizers; on slow terminals or under load it
+		// could lose. Defined BEFORE `render(...)` so the q-handler can
+		// reach it through the `<App>` `onFlush` prop without the
+		// awkward forward-reference dance.
+		const flush = Effect.gen(function* () {
+			const current = yield* Ref.get(currentRef);
+			if (current === undefined) return;
+			// Skip the next-poll-tick wait: snapshot the engine's tuiState
+			// and write it to stableState directly. Ink schedules its
+			// render synchronously on the Ref change; the short sleep
+			// after gives the React tree a couple of event-loop turns to
+			// commit + flush stdout writes before the caller's finalizers
+			// fire. 20ms is well under one polling interval and ink's own
+			// frame budget, so it's effectively free.
+			const snapshot = yield* Ref.get(current.tuiState);
+			yield* Ref.set(stableState, snapshot);
+			yield* Effect.sleep('20 millis');
 		});
+
+		// `patchConsole: false` — let stray `console.*` from a user's
+		// `devstack.config.ts` (or a transitive dep) hit stderr. Ink's
+		// console-patch swallowed them silently into an internal buffer
+		// that we never surfaced, which made debugging a misbehaving
+		// config opaque ("nothing prints"). Stderr writes can interleave
+		// with ink frames during the brief moments around config
+		// loading; we accept that as the cost of debuggability.
+		const instance = render(
+			React.createElement(App, {
+				engine: proxy,
+				onQuit,
+				onFlush: () => Effect.runSync(flush),
+			}),
+			{
+				exitOnCtrlC: false,
+				patchConsole: false,
+			},
+		);
 		yield* Effect.addFinalizer(() =>
 			Effect.sync(() => {
 				instance.unmount();
 			}),
 		);
 
-		// Sync fiber: copies the currently-installed engine's tuiState into
-		// the proxy's stable Ref on a 50ms tick. Polling (vs subscribe) keeps
-		// the engine's Ref API simple — no SubscriptionRef churn — and 50ms
-		// is well under the 100ms tick the `<App>` component itself uses, so
-		// in practice the proxy's snapshot is always at-most-one-tick stale
-		// relative to the live engine.
+		// Sync fiber: copies the currently-installed engine's tuiState
+		// into the proxy's stable Ref on a 50ms tick. Polling (vs a
+		// SubscriptionRef) keeps the engine's Ref API simple; the
+		// reference-equality short-circuit below means we only fire a
+		// state write when the engine actually mutated the Ref. A
+		// quiet stack costs one Ref.get per tick (no React rerender).
+		let lastSnapshot: import('./render.js').TuiState | undefined;
 		yield* Effect.forkScoped(
 			Effect.forever(
 				Effect.gen(function* () {
@@ -170,6 +209,14 @@ export const startTuiOnce = (): Effect.Effect<TuiMount, never, Scope> =>
 					const current = yield* Ref.get(currentRef);
 					if (current === undefined) return;
 					const snapshot = yield* Ref.get(current.tuiState);
+					// The engine mints a fresh TuiState object on every
+					// mutation (`Ref.update` returns `{...s, ...}`), so
+					// reference equality is a cheap, accurate "did anything
+					// change" check. Without this guard the React poller
+					// below was firing setState 10×/sec on an unchanged
+					// Ref, costing real cycles on a quiet stack.
+					if (snapshot === lastSnapshot) return;
+					lastSnapshot = snapshot;
 					yield* Ref.set(stableState, snapshot);
 				}),
 			),
@@ -187,29 +234,9 @@ export const startTuiOnce = (): Effect.Effect<TuiMount, never, Scope> =>
 				// would see a frame of "wrong" rows before the next sync.
 				const snapshot = yield* Ref.get(engine.tuiState);
 				yield* Ref.set(stableState, snapshot);
+				lastSnapshot = snapshot;
 				yield* Ref.set(currentRef, engine);
 			});
-
-		// One-shot synchronous render coordinator. The supervisor calls
-		// this in `onInterrupt` so the final 'shutting-down' state lands
-		// on screen BEFORE the docker-rm-finalizers stall the event loop.
-		// Without coordination the 50ms poll tick had to win a race
-		// against the finalizers; on slow terminals or under load it
-		// could lose.
-		const flush = Effect.gen(function* () {
-			const current = yield* Ref.get(currentRef);
-			if (current === undefined) return;
-			// Skip the next-poll-tick wait: snapshot the engine's tuiState
-			// and write it to stableState directly. Ink schedules its
-			// render synchronously on the Ref change; the short sleep
-			// after gives the React tree a couple of event-loop turns to
-			// commit + flush stdout writes before the caller's finalizers
-			// fire. 20ms is well under one polling interval and ink's own
-			// frame budget, so it's effectively free.
-			const snapshot = yield* Ref.get(current.tuiState);
-			yield* Ref.set(stableState, snapshot);
-			yield* Effect.sleep('20 millis');
-		});
 
 		return { proxy, install, flush };
 	}).pipe(Effect.withSpan('Tui.startOnce'));

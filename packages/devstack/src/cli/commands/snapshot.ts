@@ -23,6 +23,8 @@ import { Argument, Command, Flag } from 'effect/unstable/cli';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { randomBytes } from 'node:crypto';
 import { wrapCause } from '../loaders.js';
+import { failAlreadyReported } from '../already-reported.js';
+import { resolveStack, stateDir } from '../stack-resolution.js';
 import { deriveAppName } from '../../engine/identity.js';
 import { list as listSnapshots, restore, snapshot } from '../../engine/snapshot.js';
 
@@ -30,26 +32,7 @@ import { list as listSnapshots, restore, snapshot } from '../../engine/snapshot.
 // rationale. The engine `snapshot()` / `restore()` / `list()` helpers
 // accept a `dir` override; we pass `defaultSnapshotsDir()` explicitly
 // so they don't fall back to their own module-load capture either.
-const stateDir = (): string => process.env.DEVSTACK_STATE_DIR ?? '.devstack';
 const defaultSnapshotsDir = (): string => `${stateDir()}/snapshots`;
-
-// Resolve the active stack the way `cli/commands/stack.ts` does. The
-// snapshot pipeline scopes EVERY path it reads (state.json, runtime/,
-// container labels) by this stack name, so this is the load-bearing
-// step.
-const ACTIVE_FILE = 'active';
-const readActiveStack = (
-	fs: FileSystem.FileSystem,
-	path: Path.Path,
-): Effect.Effect<Option.Option<string>> =>
-	Effect.gen(function* () {
-		const activePath = path.join(stateDir(), ACTIVE_FILE);
-		const exists = yield* fs.exists(activePath).pipe(Effect.orElseSucceed(() => false));
-		if (!exists) return Option.none<string>();
-		const txt = yield* fs.readFileString(activePath).pipe(Effect.orElseSucceed(() => ''));
-		const trimmed = txt.trim();
-		return trimmed.length === 0 ? Option.none<string>() : Option.some(trimmed);
-	});
 
 // Derive a chronologically-sortable id from the wall clock plus a
 // short random suffix so two saves within the same wall-clock second
@@ -167,24 +150,6 @@ const appFlag = Flag.string('app').pipe(
 const resolveAppName = (override: Option.Option<string>): string =>
 	Option.getOrElse(override, () => deriveAppName(process.env.DEVSTACK_APP_DIR ?? process.cwd()));
 
-const resolveStack = (
-	fs: FileSystem.FileSystem,
-	path: Path.Path,
-	override: Option.Option<string>,
-): Effect.Effect<string> =>
-	Effect.gen(function* () {
-		if (Option.isSome(override)) return override.value;
-		// Mirror `engine/supervisor.ts:567` precedence: `--stack` flag >
-		// `DEVSTACK_STACK` env > `.devstack/active` > 'main'. The env-var
-		// fallback was previously missing, which made `DEVSTACK_STACK=foo
-		// devstack snapshot save` resolve `main` while the supervisor
-		// already running against `foo` — save captured the wrong stack.
-		const envStack = process.env.DEVSTACK_STACK;
-		if (envStack !== undefined && envStack.length > 0) return envStack;
-		const active = yield* readActiveStack(fs, path);
-		return Option.getOrElse(active, () => 'main');
-	});
-
 const saveCommand = Command.make(
 	'save',
 	{
@@ -253,8 +218,7 @@ const restoreCommand = Command.make(
 			const dir = defaultSnapshotsDir();
 			const entries = yield* listSnapshots({ dir });
 			if (entries.length === 0) {
-				yield* Console.error(`no snapshots in ${dir}`);
-				return yield* Effect.fail(new Error('no snapshots to restore'));
+				return yield* failAlreadyReported(`no snapshots in ${dir}`);
 			}
 
 			// Default: newest entry (entries are sorted ascending by
@@ -265,14 +229,14 @@ const restoreCommand = Command.make(
 			});
 
 			if (target.ambiguous) {
-				yield* Console.error(
+				return yield* failAlreadyReported(
 					`snapshot reference is ambiguous; pass the full id (use \`devstack snapshot list\`)`,
 				);
-				return yield* Effect.fail(new Error('ambiguous snapshot reference'));
 			}
 			if (target.match === undefined) {
-				yield* Console.error(`no snapshot matching '${Option.getOrElse(ref, () => '')}'`);
-				return yield* Effect.fail(new Error('no matching snapshot'));
+				return yield* failAlreadyReported(
+					`no snapshot matching '${Option.getOrElse(ref, () => '')}'`,
+				);
 			}
 
 			// Resolve target stack: explicit `--stack` > meta-recorded
@@ -341,12 +305,12 @@ const deleteCommand = Command.make(
 			const entries = yield* listSnapshots({ dir: snapshotsDir });
 			const target = findMatch(entries, ref);
 			if (target.ambiguous) {
-				yield* Console.error(`snapshot reference '${ref}' is ambiguous; pass the full id`);
-				return yield* Effect.fail(new Error('ambiguous snapshot reference'));
+				return yield* failAlreadyReported(
+					`snapshot reference '${ref}' is ambiguous; pass the full id`,
+				);
 			}
 			if (target.match === undefined) {
-				yield* Console.error(`no snapshot matching '${ref}'`);
-				return yield* Effect.fail(new Error('no matching snapshot'));
+				return yield* failAlreadyReported(`no snapshot matching '${ref}'`);
 			}
 			const targetDir = path.join(snapshotsDir, target.match.id);
 			yield* fs

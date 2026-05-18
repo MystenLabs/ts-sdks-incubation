@@ -15,7 +15,6 @@ import * as crypto from 'node:crypto';
 import * as path from 'node:path';
 import { Effect, FileSystem, Schema, Stream } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
-import { stringifyCause } from '../../engine/stringify-cause.js';
 import { tag } from '../tag.js';
 
 // -----------------------------------------------------------------------------
@@ -38,7 +37,7 @@ const gitFetchError =
 	(name: string) =>
 	(cause: unknown): GitFetchError =>
 		new GitFetchError({
-			message: `gitFetch '${name}': ${stringifyCause(cause)}`,
+			message: `gitFetch '${name}' failed`,
 			cause,
 		});
 
@@ -307,7 +306,7 @@ const runGit = (
 			const cmd = ChildProcess.make('git', [...args]);
 			const mapSpawnErr = (cause: unknown): GitFetchError =>
 				new GitFetchError({
-					message: `git ${args.join(' ')} failed: ${stringifyCause(cause)}`,
+					message: `git ${args.join(' ')} failed`,
 					cause,
 				});
 			const handle = yield* spawner.spawn(cmd).pipe(Effect.mapError(mapSpawnErr));
@@ -346,7 +345,7 @@ const captureGit = (
 			const cmd = ChildProcess.make('git', [...args]);
 			const mapSpawnErr = (cause: unknown): GitFetchError =>
 				new GitFetchError({
-					message: `git ${args.join(' ')} failed: ${stringifyCause(cause)}`,
+					message: `git ${args.join(' ')} failed`,
 					cause,
 				});
 			const handle = yield* spawner.spawn(cmd).pipe(Effect.mapError(mapSpawnErr));

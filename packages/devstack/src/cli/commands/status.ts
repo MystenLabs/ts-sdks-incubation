@@ -6,16 +6,16 @@ import { Console, Effect, FileSystem } from 'effect';
 import { Command, Flag } from 'effect/unstable/cli';
 import { resolve as resolvePath } from 'node:path';
 import { discoverManifestPath } from '../../runtime/discover-manifest.js';
+import { resolveStackFromEnv, stateDir } from '../stack-resolution.js';
 
 // Action-time env reads — see manifest.ts for the rationale.
-const stateDir = (): string => process.env.DEVSTACK_STATE_DIR ?? '.devstack';
-const stackName = (): string => process.env.DEVSTACK_STACK ?? 'main';
-const stateFile = (): string => `${stateDir()}/stacks/${stackName()}/state.json`;
+const stateFile = (): string =>
+	`${stateDir()}/stacks/${resolveStackFromEnv(undefined)}/state.json`;
 // Walks up via discoverManifestPath so `devstack status` works from any
 // subdir; falls back to the conventional stack-scoped path so the human
 // "(missing)" branch still prints a useful absolute path.
 const manifestFile = (): string =>
-	discoverManifestPath() ?? `${stateDir()}/stacks/${stackName()}/manifest.json`;
+	discoverManifestPath() ?? `${stateDir()}/stacks/${resolveStackFromEnv(undefined)}/manifest.json`;
 
 interface ParsedFile {
 	readonly path: string;

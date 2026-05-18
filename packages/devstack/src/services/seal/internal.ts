@@ -50,6 +50,7 @@ import { buildMove } from '../../engine/sui-cli.js';
 import { dockerImage } from '../../advanced/plugin-author/index.js';
 import { gitFetch } from '../../advanced/plugin-author/index.js';
 import { EndpointRegistry, PackageRegistry } from '../../engine/registries.js';
+import { EndpointName } from '../../runtime/endpoint-names.js';
 import {
 	SealKeyManagerTag,
 	SealKeyServerTag,
@@ -668,7 +669,7 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 		//    sui-faucet.
 		void (yield* PackageRegistry);
 		yield* EndpointRegistry.publish({
-			name: 'seal-key-server',
+			name: EndpointName.SEAL_KEY_SERVER,
 			url: keyServerUrl,
 			kind: 'seal-key-server',
 		});
@@ -996,7 +997,7 @@ export const sealKnownKeyServer = (options: SealKnownKeyServerOptions = {}): Sta
 
 	const build = Effect.fn(`sealKnownKeyServer(${name})`)(function* () {
 		yield* EndpointRegistry.publish({
-			name: 'seal-key-server',
+			name: EndpointName.SEAL_KEY_SERVER,
 			url: keyServerUrl,
 			kind: 'seal-key-server',
 		});

@@ -21,7 +21,7 @@ import {
 	PackageRegistry,
 	PackageRegistryLive,
 } from '../../engine/registries.js';
-import { ExtrasLive } from '../../runtime/extras.js';
+import { ExtrasLive } from '../../engine/extras.js';
 import { StackHandleEmitter } from './stack-handle.js';
 import type { CodegenContext } from '../define-emitter.js';
 

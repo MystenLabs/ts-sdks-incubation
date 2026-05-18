@@ -29,4 +29,24 @@ describe('devstack(...) composition', () => {
 		const handle = devstack(alice, { renderer: 'silent' });
 		expect(handle.layer).toBeDefined();
 	});
+
+	it('recognizes a plain options object (no `__layer`) as options, not a ref', () => {
+		// If the options branch is missed, `defineDevstack` will reject the
+		// trailing object as a StackMember and throw. A successful handle
+		// build is evidence the options branch fired.
+		const alice = Account('alice');
+		const opts = { renderer: 'silent' as const, extras: { hello: 'world' } };
+		const handle = devstack(alice, opts);
+		expect(handle.layer).toBeDefined();
+	});
+
+	it('treats an object with `__layer` as a ref even when it shares option-shaped keys', () => {
+		// Fake ref shaped like an options object but carrying the
+		// `__layer` brand. `isOptions` must skip this and pass it
+		// through to the stack-member flatten path.
+		const alice = Account('alice');
+		const fakeRef = { __layer: alice.__layer, renderer: 'silent' };
+		const handle = devstack(alice, fakeRef as unknown as typeof alice);
+		expect(handle.layer).toBeDefined();
+	});
 });

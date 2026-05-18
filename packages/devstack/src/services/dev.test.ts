@@ -176,16 +176,6 @@ describe('hostProcess with traefik option', () => {
 });
 
 // -----------------------------------------------------------------------------
-// `hostProcess({ onOutputLine })` — per-line streaming sink
-// -----------------------------------------------------------------------------
-//
-// Spawned-process stdout/stderr currently surface to the TUI only when a
-// `log` readyProbe matches a regex. The `onOutputLine` opt lets callers
-// stream every line (e.g. vite output) into the supervisor's log channel
-// without authoring a regex probe — what the supervisor relies on to
-// pipe a step's narration into TUI / plain renderers.
-
-// -----------------------------------------------------------------------------
 // `hostProcess({ traefik })` — port-source validation
 // -----------------------------------------------------------------------------
 //
@@ -244,66 +234,3 @@ describe('hostProcess({ traefik }) port-source validation', () => {
 	);
 });
 
-describe('hostProcess with onOutputLine', () => {
-	// SKIPPED: scope teardown hangs because the forked Stream.runFold drainer
-	// fiber is parked on the child's still-open stdout pipe at scope-close
-	// time, and the interrupt doesn't propagate through the read until the
-	// child actually exits. The handle.kill() finalizer is registered LIFO-
-	// first to mitigate, but Node's SIGTERM-handling + Stream's read-pull
-	// scheduling combine to leave a window where the fiber is uninterruptible.
-	// Real-world usage (vite, wallet-app) doesn't hit this because their
-	// scope tears down well after the child has exited or via SIGINT which
-	// closes pipes synchronously. Re-enable when we have a deterministic
-	// way to close the pipe before the fiber settles — likely needs an
-	// explicit Stream.race with a "scope closing" signal.
-	it.skip('streams stdout lines to the callback as the process emits them', () =>
-		Effect.gen(function* () {
-			const listener = yield* Effect.promise(openListener);
-
-			const captured: Array<{ level: string; line: string }> = [];
-			// Short-lived child: emits two stdout lines then exits
-			// after a tiny delay. We deliberately don't keep the child
-			// alive — the test only cares that the callback fires for
-			// each line, and a short-lived child lets the scoped
-			// teardown finish quickly without depending on SIGTERM
-			// kill propagation through the fork-in-scope drainer.
-			const hp = hostProcess({
-				name: 'frontend.dev-server',
-				command: process.execPath,
-				args: [
-					'-e',
-					"console.log('vite: starting'); console.log('vite: ready in 200ms'); setTimeout(() => process.exit(0), 500)",
-				],
-				readyProbe: {
-					kind: 'tcp',
-					host: '127.0.0.1',
-					port: listener.port,
-					timeoutMs: 5_000,
-				},
-				onOutputLine: (level, line) =>
-					Effect.sync(() => {
-						captured.push({ level, line });
-					}),
-			});
-
-			const baseLayer = Layer.mergeAll(identityLayer, NodeServicesLayer, EndpointRegistryLive);
-			const stackResolved = Layer.provide(hp.__layer, baseLayer);
-			yield* Effect.scoped(
-				Effect.gen(function* () {
-					yield* hp;
-					// Wait for the child to flush its lines through
-					// the drainer and then exit naturally. Avoiding
-					// a longer wait keeps the test snappy; the child
-					// exits well before the timeout via
-					// `process.exit(0)`.
-					yield* Effect.sleep('300 millis');
-				}).pipe(Effect.provide(stackResolved as Layer.Layer<unknown, unknown, never>)),
-			);
-
-			const stdoutLines = captured.filter((e) => e.level === 'info').map((e) => e.line);
-			expect(stdoutLines).toContain('vite: starting');
-			expect(stdoutLines).toContain('vite: ready in 200ms');
-
-			yield* Effect.promise(listener.close);
-		}));
-});

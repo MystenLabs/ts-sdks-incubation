@@ -271,9 +271,12 @@ describe('App', () => {
 
 	it('q keypress invokes onQuit after the shutdown-feedback flush', async () => {
 		// onQuit fires inside the q-handler AFTER setBuildStatus('shutting-down')
-		// + appendLog + a 150ms sleep so ink has time to render the flash
-		// before the process-kill freezes the event loop. Allow ~300ms for
-		// the fork to settle.
+		// + appendLog. The 150ms hardcoded sleep is gone — the TUI mount
+		// passes an `onFlush` callback that writes the engine snapshot
+		// into stableState before `onQuit`. ink-testing-library skips
+		// the mount, so `onFlush` is `undefined` and the path is purely
+		// "write the Ref, then quit". 100ms is plenty for the
+		// Effect.runFork to drain.
 		const engine = await buildEngine();
 		const onQuit = vi.fn();
 		const { stdin, unmount } = inkRender(
@@ -281,7 +284,7 @@ describe('App', () => {
 		);
 		await flush();
 		stdin.write('q');
-		await flush(300);
+		await flush(100);
 		expect(onQuit).toHaveBeenCalledTimes(1);
 		unmount();
 	});

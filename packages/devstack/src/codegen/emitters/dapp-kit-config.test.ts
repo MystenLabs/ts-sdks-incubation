@@ -20,7 +20,8 @@ import {
 	PackageRegistry,
 	PackageRegistryLive,
 } from '../../engine/registries.js';
-import { ExtrasLive } from '../../runtime/extras.js';
+import { ExtrasLive } from '../../engine/extras.js';
+import { EndpointName } from '../../runtime/endpoint-names.js';
 import { DappKitConfigEmitter } from './dapp-kit-config.js';
 import type { CodegenContext } from '../define-emitter.js';
 
@@ -40,7 +41,11 @@ const RegistriesLive = Layer.mergeAll(
 const seedSuiAndPackages = Effect.gen(function* () {
 	const eps = yield* EndpointRegistry;
 	const pkgs = yield* PackageRegistry;
-	yield* eps.register({ name: 'sui-rpc', url: 'http://sui.test-app.localhost:9000', kind: 'rpc' });
+	yield* eps.register({
+		name: EndpointName.SUI_RPC,
+		url: 'http://sui.test-app.localhost:9000',
+		kind: 'rpc',
+	});
 	yield* pkgs.register({
 		name: 'connect_four',
 		packageId: '0xabc',
@@ -56,7 +61,10 @@ const seedSuiAndPackages = Effect.gen(function* () {
 const seedWalletEndpoint = Effect.gen(function* () {
 	const eps = yield* EndpointRegistry;
 	const accts = yield* AccountRegistry;
-	yield* eps.register({ name: 'wallet-app', url: 'http://wallet.test-app.localhost:5180' });
+	yield* eps.register({
+		name: EndpointName.WALLET_APP,
+		url: 'http://wallet.test-app.localhost:5180',
+	});
 	yield* accts.register({ name: 'alice', address: '0x1' });
 });
 

@@ -179,3 +179,100 @@ const augmentDockerDownHint = (rendered: string, source: unknown): string => {
 		rendered,
 	].join('\n');
 };
+
+// -----------------------------------------------------------------------------
+// causeToJson — structured walker for machine-readable output
+// -----------------------------------------------------------------------------
+
+/** Recursive JSON projection of a tagged error / Cause / Error chain.
+ *  Mirrors what `prettyError` surfaces visually, but as structured fields
+ *  so `--json` consumers can match on `_tag` / `exitCode` / `stderr` /
+ *  `phase` without parsing a multi-line string. */
+export interface CauseJson {
+	readonly _tag?: string;
+	readonly message?: string;
+	readonly phase?: string;
+	readonly stage?: string;
+	readonly op?: string;
+	readonly command?: string;
+	readonly exitCode?: number;
+	readonly stderr?: string;
+	readonly stdout?: string;
+	readonly detail?: string;
+	readonly stack?: string;
+	readonly cause?: CauseJson;
+	readonly reasons?: ReadonlyArray<CauseJson>;
+	readonly value?: unknown;
+}
+
+const truncatedString = (value: unknown): string | undefined => {
+	if (typeof value !== 'string') return undefined;
+	const trimmed = value.trim();
+	if (trimmed.length === 0) return undefined;
+	return trimmed.length > RENDER_FIELD_TRUNC
+		? `${trimmed.slice(0, RENDER_FIELD_TRUNC)}…[truncated]`
+		: trimmed;
+};
+
+const taggedErrorToJson = (value: TaggedErrorLike): CauseJson => {
+	const out: Record<string, unknown> = { _tag: value._tag };
+	if (typeof value.message === 'string') out.message = value.message;
+	if (typeof value.phase === 'string') out.phase = value.phase;
+	if (typeof value.stage === 'string') out.stage = value.stage;
+	if (typeof value.op === 'string') out.op = value.op;
+	if (typeof value.command === 'string') out.command = value.command;
+	if (typeof value.exitCode === 'number') out.exitCode = value.exitCode;
+	const stderr = truncatedString(value.stderr);
+	if (stderr !== undefined) out.stderr = stderr;
+	const stdout = truncatedString(value.stdout);
+	if (stdout !== undefined) out.stdout = stdout;
+	const detail = truncatedString(value.detail);
+	if (detail !== undefined) out.detail = detail;
+	if (value.cause !== undefined && value.cause !== null) {
+		out.cause = causeToJson(value.cause);
+	}
+	return out as CauseJson;
+};
+
+const errorToJson = (value: Error): CauseJson => {
+	const out: Record<string, unknown> = {
+		_tag: value.name,
+		message: value.message,
+	};
+	if (value.stack !== undefined) out.stack = value.stack;
+	const inner = (value as Error & { cause?: unknown }).cause;
+	if (inner !== undefined && inner !== null) {
+		out.cause = causeToJson(inner);
+	}
+	return out as CauseJson;
+};
+
+/** Project a value (tagged error, Effect `Cause`, plain `Error`,
+ *  anything) into a structured JSON shape. Used by `apply --json` so
+ *  the structured `_tag` / `stderr` / `exitCode` / `phase` fields ride
+ *  through to consumers instead of being flattened into a single
+ *  string. */
+export const causeToJson = (value: unknown): CauseJson => {
+	if (value === undefined || value === null) return { value: null };
+	if (isCause(value)) {
+		const reasons = (value as CauseLike).reasons.map((reason): CauseJson => {
+			const r = reason as {
+				readonly _tag: string;
+				readonly error?: unknown;
+				readonly defect?: unknown;
+			};
+			if (r._tag === 'Fail' && r.error !== undefined) {
+				return { _tag: 'Fail', cause: causeToJson(r.error) };
+			}
+			if (r._tag === 'Die' && r.defect !== undefined) {
+				return { _tag: 'Die', cause: causeToJson(r.defect) };
+			}
+			if (r._tag === 'Interrupt') return { _tag: 'Interrupt' };
+			return { _tag: r._tag };
+		});
+		return { _tag: 'Cause', reasons };
+	}
+	if (isTaggedError(value)) return taggedErrorToJson(value);
+	if (value instanceof Error) return errorToJson(value);
+	return { value };
+};

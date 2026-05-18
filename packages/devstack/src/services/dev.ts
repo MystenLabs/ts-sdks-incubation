@@ -18,6 +18,7 @@
 import { Effect } from 'effect';
 import { hostProcess, type HostProcessOptions, type ReadyProbe } from './dev/internal.js';
 import type { Ref } from '../advanced/tag.js';
+import { EndpointName } from '../runtime/endpoint-names.js';
 
 export interface DevOptions<E = never, R = never> {
 	/** Command to run. `{port}` placeholders are substituted with the
@@ -69,7 +70,7 @@ const renderReadyProbe = (probe: ReadyProbe, port: number): ReadyProbe => {
  *  command, registers a traefik route for it under `dev.<app>.localhost`,
  *  and publishes the URL into the endpoint registry. */
 export const Dev = <E = never, R = never>(opts: DevOptions<E, R>) => {
-	const name = opts.name ?? 'frontend.dev-server';
+	const name = opts.name ?? EndpointName.DEV_SERVER_PRIMARY;
 
 	// When `port:` is set, templates in `command` / `args` / `ready.url`
 	// substitute against the allocator-resolved port. We don't know the
@@ -96,7 +97,7 @@ export const Dev = <E = never, R = never>(opts: DevOptions<E, R>) => {
 					},
 				}
 			: {}),
-		endpoint: { name: 'dev-server', kind: 'dev-server' },
+		endpoint: { name: EndpointName.DEV_SERVER_FALLBACK, kind: 'dev-server' },
 		traefik: { service: 'dev', entrypoint: 'vite' },
 	};
 	return Object.assign(hostProcess(hostOpts), { __kind: 'app' as const });
