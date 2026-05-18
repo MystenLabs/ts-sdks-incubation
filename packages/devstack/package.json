@@ -13,7 +13,6 @@
 	"bugs": {
 		"url": "https://github.com/MystenLabs/ts-sdks-incubation/issues"
 	},
-	"private": true,
 	"type": "module",
 	"main": "./dist/index.mjs",
 	"types": "./dist/index.d.mts",
