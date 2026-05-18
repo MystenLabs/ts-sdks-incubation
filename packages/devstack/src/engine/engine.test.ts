@@ -5,7 +5,7 @@
 // isolation: phase narration + the implicit clear-on-terminal logic that
 // keeps `(running genesis)` from sticking to a `ready` row.
 
-import { Cause, Context, Deferred, Effect, Layer, Ref } from 'effect';
+import { Cause, Context, Effect, Fiber, Layer, Ref } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 import { EngineHandle, EngineLive, type EngineHandleShape } from './engine.js';
 import { DockerError, PublishError } from '../engine/errors.js';
@@ -89,106 +89,94 @@ describe('EngineHandle.setPhase', () => {
 	);
 });
 
-describe('EngineHandle restart signaling — request / arm / process-during', () => {
+describe('EngineHandle restart signaling — Queue.dropping semantics', () => {
 	// Hot-restart triggers (file watcher, SIGUSR2, TUI `r`) all converge
-	// on `requestRestart`. The launch loop awaits the current Deferred,
-	// then calls `armRestartSignal` IMMEDIATELY after wake to swap in a
-	// fresh one before any processing. The split between request (just
-	// succeeds the current deferred) and arm (only the loop swaps) closes
-	// the lost-wake-up race the previous swap-in-request design had:
+	// on `requestRestart`. The launch loop yields `awaitRestart` between
+	// cycles. Both are backed by a single `Queue.dropping(1)`:
 	//
-	//   OLD bug: `requestRestart` swapped in a fresh deferred AND
-	//   succeeded the old one. A request that landed between wake and
-	//   the loop's next read would swap in a deferred that the loop's
-	//   later reset would overwrite — the succeed went to a deferred no
-	//   one was awaiting. Lost wake-up.
+	//   - `requestRestart` (offer): non-blocking. If the queue already
+	//     has one pending wake, the offer is silently dropped — concurrent
+	//     requests coalesce into a single wake.
+	//   - `awaitRestart` (take): blocks if the queue is empty, returns
+	//     immediately if a wake has been buffered.
 	//
-	//   NEW: only the loop swaps (via `armRestartSignal`, atomically
-	//   right after wake). A request that lands during processing
-	//   succeeds the FRESHLY ARMED deferred, and the loop's next await
-	//   observes it instantly. No orphan deferreds.
+	//   OLD bug (Ref<Deferred> + separate arm):
+	//     loop wakes from Deferred.await, then runs `Ref.set` with a
+	//     fresh deferred. A `requestRestart` that lands BETWEEN the wake
+	//     and the arm reads the just-succeeded deferred (no-op) and the
+	//     wake is lost. Pressing `r` once does nothing; pressing twice
+	//     works.
+	//
+	//   NEW (queue):
+	//     no separate "currently armed" reference exists. A request
+	//     landing in the wake → next-take gap is preserved inside the
+	//     queue and the next take returns immediately. The bug is
+	//     structurally impossible.
 
-	it.effect('requestRestart succeeds the current deferred without swapping', () =>
+	it.live('awaitRestart blocks when no request is pending', () =>
 		Effect.gen(function* () {
 			const engine = yield* buildEngine();
-			const before = yield* Ref.get(engine.restartSignal);
-
-			yield* engine.requestRestart;
-			yield* Deferred.await(before);
-
-			// Ref still holds the SAME deferred — request doesn't swap.
-			const after = yield* Ref.get(engine.restartSignal);
-			expect(after).toBe(before);
-			expect(yield* Deferred.isDone(after)).toBe(true);
+			// Fork the await; it should still be running after a short tick.
+			const fiber = yield* Effect.forkChild(engine.awaitRestart);
+			yield* Effect.sleep('20 millis');
+			expect(fiber.pollUnsafe()).toBeUndefined();
+			yield* Fiber.interrupt(fiber);
 		}),
 	);
 
-	it.effect(
-		'concurrent requestRestart calls coalesce into a single wake (Deferred.succeed is idempotent)',
-		() =>
-			Effect.gen(function* () {
-				const engine = yield* buildEngine();
-				const d = yield* Ref.get(engine.restartSignal);
-
-				// Fire many concurrent requests against the same deferred.
-				yield* Effect.all(
-					Array.from({ length: 8 }, () => engine.requestRestart),
-					{ concurrency: 'unbounded' },
-				);
-
-				// Only one wake-up is observed (idempotent succeed); the
-				// deferred is resolved exactly once.
-				yield* Deferred.await(d);
-				expect(yield* Deferred.isDone(d)).toBe(true);
-			}),
-	);
-
-	it.effect(
-		'armRestartSignal installs a fresh deferred without disturbing the previously resolved one',
-		() =>
-			Effect.gen(function* () {
-				const engine = yield* buildEngine();
-				const before = yield* Ref.get(engine.restartSignal);
-				yield* engine.requestRestart;
-
-				yield* engine.armRestartSignal;
-				const after = yield* Ref.get(engine.restartSignal);
-
-				// Fresh deferred installed; previously-resolved deferred stays
-				// resolved so any fiber that captured it pre-arm still wakes.
-				expect(after).not.toBe(before);
-				yield* Deferred.await(before);
-				expect(yield* Deferred.isDone(after)).toBe(false);
-			}),
-	);
-
-	it.effect('regression: request during processing wakes the next cycle (no lost signal)', () =>
-		// Simulates the wake → arm → request-lands → next-await sequence
-		// that the OLD code mishandled. The fresh deferred armed
-		// immediately after wake must be the one that the request
-		// succeeds, and the next await must observe that success.
+	it.effect('requestRestart wakes a pending awaitRestart', () =>
 		Effect.gen(function* () {
 			const engine = yield* buildEngine();
-			const cycleN = yield* Ref.get(engine.restartSignal);
-
-			// Cycle N: a request lands, loop wakes.
+			const fiber = yield* Effect.forkChild(engine.awaitRestart);
 			yield* engine.requestRestart;
-			yield* Deferred.await(cycleN);
+			yield* Fiber.join(fiber);
+		}),
+	);
 
-			// Loop arms a fresh deferred BEFORE doing any restart work.
-			yield* engine.armRestartSignal;
-			const cycleNplus1 = yield* Ref.get(engine.restartSignal);
-			expect(cycleNplus1).not.toBe(cycleN);
-			expect(yield* Deferred.isDone(cycleNplus1)).toBe(false);
+	it.live('concurrent requestRestart calls coalesce into a single wake', () =>
+		Effect.gen(function* () {
+			const engine = yield* buildEngine();
 
-			// A new request lands during cycle N+1 setup (between arm and
-			// the next await). It succeeds the freshly armed deferred.
+			// Fire many concurrent requests against an empty queue.
+			yield* Effect.all(
+				Array.from({ length: 8 }, () => engine.requestRestart),
+				{ concurrency: 'unbounded' },
+			);
+
+			// First take wakes immediately on the buffered request.
+			yield* engine.awaitRestart;
+
+			// A second take MUST block — only one wake was preserved, not
+			// eight. If concurrent offers had each enqueued an entry the
+			// take below would return immediately.
+			const fiber = yield* Effect.forkChild(engine.awaitRestart);
+			yield* Effect.sleep('20 millis');
+			expect(fiber.pollUnsafe()).toBeUndefined();
+			yield* Fiber.interrupt(fiber);
+		}),
+	);
+
+	it.effect('regression: request during the wake → next-await gap is NOT lost', () =>
+		// Simulates the wake → process → next-await sequence the OLD
+		// Ref<Deferred> code mishandled. The queue absorbs the request
+		// that fires during the inter-cycle gap; the next await returns
+		// immediately on it.
+		Effect.gen(function* () {
+			const engine = yield* buildEngine();
+
+			// Cycle N: a request lands and the loop wakes.
+			yield* engine.requestRestart;
+			yield* engine.awaitRestart;
+
+			// Between wake and the next await: a new request lands. With
+			// the OLD design this would have succeeded the already-resolved
+			// deferred (no-op) and been lost. With the queue the wake is
+			// preserved in the queue's internal buffer.
 			yield* engine.requestRestart;
 
-			// The next cycle's await observes the success immediately —
-			// the wake-up is NOT lost.
-			yield* Deferred.await(cycleNplus1);
-			expect(yield* Deferred.isDone(cycleNplus1)).toBe(true);
+			// Cycle N+1's await observes the wake immediately. We use a
+			// short timeout to fail loudly rather than hang the suite.
+			yield* engine.awaitRestart.pipe(Effect.timeout('1 second'));
 		}),
 	);
 });

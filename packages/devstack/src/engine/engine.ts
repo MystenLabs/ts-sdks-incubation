@@ -14,13 +14,13 @@
 //      without a Service-shaped tag in front of them (today: nothing,
 //      retained for the manifest sidecar's benefit only).
 //
-// In addition to TUI state, the engine carries a `restartSignal` that the
+// In addition to TUI state, the engine carries a restart signal that the
 // file-watcher (Feature 2: hot-restart) and the TUI keypress / SIGUSR2
 // handlers (Feature 3: force-run) push into to request a teardown +
 // rebuild of the whole devstack. `defineDevstack.launchEffect` reads the
-// signal in its outer loop.
+// signal in its outer loop via `awaitRestart`.
 
-import { Cause, Context, Deferred, Effect, Layer, Ref } from 'effect';
+import { Cause, Context, Effect, Layer, Queue, Ref } from 'effect';
 import { EndpointRegistry, type EndpointRecord, type RegistryShape } from './registries.js';
 import type {
 	BuildStatus,
@@ -111,30 +111,21 @@ export interface EngineHandleShape {
 	/** Bump the build-status. Surfaces in the header tint + footer copy. */
 	readonly setBuildStatus: (status: BuildStatus) => Effect.Effect<void>;
 	/**
-	 * Resolved when something has asked the devstack to restart (file change,
-	 * TUI keypress, SIGUSR2). `defineDevstack` awaits this inside its outer
-	 * launch loop and calls `armRestartSignal` immediately after the await
-	 * to swap in a fresh Deferred for the next iteration. The split between
-	 * `requestRestart` (succeed only) and `armRestartSignal` (swap only)
-	 * eliminates the lost-wake-up race a single swap-in-request design had:
-	 * a request landing between the previous wake and the next await now
-	 * succeeds the FRESHLY-ARMED deferred, and the next await observes it
-	 * immediately rather than awaiting an orphan.
+	 * Block until something has asked the devstack to restart (file change,
+	 * TUI keypress, SIGUSR2). `defineDevstack` yields this in its outer
+	 * launch loop between cycles. Backed by a `Queue.dropping(1)`, so a
+	 * `requestRestart` that lands between consecutive `awaitRestart` calls
+	 * is preserved in the queue and the next await returns immediately.
+	 * Closes the lost-wake-up window the previous `Ref<Deferred>` design
+	 * had between `Deferred.await` returning and a separate `Ref.set` of
+	 * a fresh deferred (the window where `requestRestart` would land on
+	 * the just-succeeded deferred and be lost).
 	 */
-	readonly restartSignal: Ref.Ref<Deferred.Deferred<void>>;
-	/** Request a full restart. Succeeds the current Deferred (idempotent on a
-	 * second call against the same already-succeeded Deferred). Does NOT swap
-	 * in a fresh one — that's the launch loop's job via `armRestartSignal`,
-	 * called atomically right after wake, so a request landing during cycle
-	 * teardown / setup lands on the freshly-armed deferred and is observed
-	 * on the next await. */
+	readonly awaitRestart: Effect.Effect<void>;
+	/** Request a full restart. Non-blocking: offers into the dropping queue
+	 * — if a request is already pending, the offer is silently dropped
+	 * (coalesces concurrent requests into a single wake). */
 	readonly requestRestart: Effect.Effect<void>;
-	/** Swap in a fresh Deferred for the next iteration. Called by the launch
-	 * loop IMMEDIATELY after `Deferred.await` returns, before any restart
-	 * processing — any `requestRestart` that lands during processing
-	 * succeeds this fresh Deferred, and the next cycle's `Deferred.await`
-	 * observes the success instantly. */
-	readonly armRestartSignal: Effect.Effect<void>;
 	/**
 	 * Tags that triggered the pending restart, by primitive key. Populated by
 	 * the file-watcher fiber when an event resolves to one or more primitives
@@ -147,9 +138,7 @@ export interface EngineHandleShape {
 	 */
 	readonly changedTags: Ref.Ref<ReadonlyArray<string>>;
 	/** Clear the `changedTags` ref. Called by the launch loop at the top of
-	 * each cycle, AFTER reading `changedTags` for diagnostic logging. Split
-	 * from `armRestartSignal` so the trigger attribution from the previous
-	 * cycle is readable up until the diagnostic log emits. */
+	 * each cycle, AFTER reading `changedTags` for diagnostic logging. */
 	readonly clearChangedTags: Effect.Effect<void>;
 	/** Add primitive keys to `changedTags`. De-duped. */
 	readonly notifyChangedTags: (keys: ReadonlyArray<string>) => Effect.Effect<void>;
@@ -293,15 +282,18 @@ export const EngineLive: Layer.Layer<EngineHandle> = Layer.effect(
 	EngineHandle,
 	Effect.gen(function* () {
 		const tuiState = yield* Ref.make<TuiState>(emptyState);
-		// Boxed in a Ref so the launch loop can swap in a fresh Deferred per
-		// iteration without rebuilding the whole EngineLive layer — keeping
-		// the EngineHandle identity stable across hot-restart cycles is what
-		// lets the TUI keep rendering through the teardown / rebuild.
-		const restartSignal = yield* Ref.make(yield* Deferred.make<void>());
+		// `Queue.dropping(1)` of unit values: the producer side
+		// (`requestRestart`) offers non-blockingly and the queue's internal
+		// state preserves the pending wake across the consumer's
+		// `take`/process gap. Lost-wake-up is impossible because the queue
+		// itself is the synchronisation primitive — there's no separate
+		// "currently armed" deferred reference that can fall out of sync
+		// with what the loop is awaiting.
+		const restartQueue = yield* Queue.dropping<void>(1);
 		// Attribution of which primitive(s) the most recent file-watch event
 		// resolved to. The watcher fiber writes here BEFORE firing
 		// `requestRestart`; the next cycle's launch reads it for diagnostic
-		// logging. Cleared on `resetRestartSignal` so each cycle starts with
+		// logging. Cleared on `clearChangedTags` so each cycle starts with
 		// fresh attribution.
 		const changedTags = yield* Ref.make<ReadonlyArray<string>>([]);
 		const notifyChangedTags = (keys: ReadonlyArray<string>) =>
@@ -422,33 +414,17 @@ export const EngineLive: Layer.Layer<EngineHandle> = Layer.effect(
 
 		const setBuildStatus = (status: BuildStatus) => setHeader({ buildStatus: status });
 
-		const requestRestart = Effect.gen(function* () {
-			// Read the current deferred and succeed it. `Deferred.succeed` is
-			// idempotent: a second succeed on an already-succeeded deferred
-			// is a no-op (Effect's contract). Coalescing multiple concurrent
-			// requests into one wake-up is intended — the next cycle's
-			// acquire phase re-reads disk so all changes are picked up.
-			//
-			// We deliberately do NOT swap in a fresh deferred here (an
-			// earlier version did). Swapping in requestRestart races against
-			// the loop's wake-and-arm: a request landing between wake and
-			// arm would succeed a deferred no longer in the ref, losing the
-			// wake-up. Letting only the loop arm a fresh deferred (via
-			// `armRestartSignal`) keeps the ref consistent with what the
-			// loop is awaiting.
-			const current = yield* Ref.get(restartSignal);
-			yield* Deferred.succeed(current, void 0);
-		});
+		// Offer is non-blocking. With `Queue.dropping(1)`, a second offer
+		// while the queue is full silently returns false and is discarded
+		// — exactly the "coalesce concurrent requests into one wake"
+		// semantic we want.
+		const requestRestart = Queue.offer(restartQueue, void 0).pipe(Effect.asVoid);
 
-		const armRestartSignal = Effect.gen(function* () {
-			// Called by the loop immediately after wake, before any restart
-			// processing. Any `requestRestart` call that lands during
-			// processing will succeed this fresh deferred, and the next
-			// `Deferred.await` in the loop will observe the success
-			// immediately — no lost wake-ups across cycles.
-			const fresh = yield* Deferred.make<void>();
-			yield* Ref.set(restartSignal, fresh);
-		});
+		// `Queue.take` blocks if the queue is empty and returns
+		// immediately if a `requestRestart` had landed since the previous
+		// take. The queue itself is the synchronisation primitive — no
+		// separate Ref/Deferred to fall out of sync.
+		const awaitRestart = Queue.take(restartQueue).pipe(Effect.asVoid);
 
 		const clearChangedTags = Effect.gen(function* () {
 			// Watch-event attribution is consumed by the diagnostic log at
@@ -471,9 +447,8 @@ export const EngineLive: Layer.Layer<EngineHandle> = Layer.effect(
 			setHeader,
 			setBuildStatus,
 			setPhase,
-			restartSignal,
+			awaitRestart,
 			requestRestart,
-			armRestartSignal,
 			clearChangedTags,
 			changedTags,
 			notifyChangedTags,

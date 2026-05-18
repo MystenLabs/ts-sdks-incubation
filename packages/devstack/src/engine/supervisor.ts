@@ -32,7 +32,7 @@
 import * as crypto from 'node:crypto';
 import * as nodeFs from 'node:fs/promises';
 import * as nodePath from 'node:path';
-import { Context, Deferred, Effect, Layer, Ref, Stream } from 'effect';
+import { Context, Effect, Layer, Queue, Ref, Stream } from 'effect';
 import { layer as NodeServicesLayer } from '@effect/platform-node/NodeServices';
 import { runMain as nodeRunMain } from '@effect/platform-node/NodeRuntime';
 import { ChildProcessSpawner } from 'effect/unstable/process';
@@ -374,33 +374,42 @@ const composeBootstrapLayer = (
 
 type EngineShape = EngineHandleShape;
 
-// Process-level signal listener that drives a restart. Installed inside
-// the per-iteration scope so the finalizer removes it on teardown — a
-// stale listener pointing at a torn-down engine would otherwise no-op
-// silently after a hot-restart cycle.
+// Bridge a POSIX signal into an Effect stream. Each signal becomes one
+// emitted unit value; the consumer runs `engine.requestRestart` per
+// event inside the supervisor's fiber tree (so the handler shows up in
+// the tracer / logger and is interrupted by scope teardown). The
+// stream's `Stream.callback` register block installs the `process.on`
+// listener and an `Effect.addFinalizer` that removes it; running the
+// stream via `Effect.forkScoped` ties everything to the surrounding
+// scope so listener-detach + in-flight handler interrupt happen
+// automatically on teardown.
 //
 // Effect v4 doesn't expose POSIX signal handling in core or
 // `@effect/platform-node` (only SIGINT/SIGTERM are wired into
-// `NodeRuntime.runMain` internally). So we keep the raw `process.on`
-// for SIGUSR2 plus a scope finalizer to detach. If a future Effect API
-// surfaces signal streams, this becomes a one-line swap.
+// `NodeRuntime.runMain` internally). Once it does, this can collapse to
+// a one-line swap to whichever API surfaces.
 const installSignalRestart = (
 	signal: NodeJS.Signals,
 	engine: EngineShape,
 ): Effect.Effect<void, never, import('effect/Scope').Scope> =>
-	Effect.gen(function* () {
-		const handler = () => {
-			// Fire-and-forget: the Deferred holds the cross-fiber connection,
-			// so we don't need to await runtime resolution here.
-			Effect.runFork(engine.requestRestart);
-		};
-		process.on(signal, handler);
-		yield* Effect.addFinalizer(() =>
-			Effect.sync(() => {
-				process.off(signal, handler);
+	Effect.forkScoped(
+		Stream.callback<void>((queue) =>
+			Effect.gen(function* () {
+				const handler = () => {
+					Queue.offerUnsafe(queue, void 0);
+				};
+				process.on(signal, handler);
+				yield* Effect.addFinalizer(() =>
+					Effect.sync(() => {
+						process.off(signal, handler);
+					}),
+				);
 			}),
-		);
-	});
+		).pipe(
+			Stream.runForEach(() => engine.requestRestart),
+			Effect.withSpan('Devstack.signalRestart', { attributes: { signal } }),
+		),
+	).pipe(Effect.asVoid);
 
 // Per-file content-hash cache. Shared across all watcher fibers so a
 // `fs.watch` event for a path we've already hashed compares against the
@@ -986,11 +995,10 @@ export const defineDevstack = (
 					}
 				}
 
-				// `clearChangedTags` only — `armRestartSignal` already ran at
-				// the end of the previous cycle (right after wake) so any
-				// `requestRestart` that landed during cycle-N+1 setup has
-				// already succeeded the fresh deferred and will be observed
-				// at this cycle's await.
+				// `clearChangedTags` only — the restart queue absorbs any
+				// `requestRestart` that landed during cycle-N+1 setup, so
+				// the next `awaitRestart` below will return immediately on
+				// a request that landed during teardown / setup.
 				yield* engine.clearChangedTags;
 				yield* engine.seedTags(seedEntries);
 
@@ -1090,14 +1098,11 @@ export const defineDevstack = (
 
 				// Block on the full-restart signal until the user presses r
 				// (full restart), Shift+R, SIGUSR2, file watch, or Ctrl-C.
-				const signal = yield* Ref.get(engine.restartSignal);
-				yield* Deferred.await(signal);
-				// Atomically swap in a fresh deferred BEFORE any restart
-				// processing. Any `requestRestart` that lands between this
-				// arm and the next cycle's `Deferred.await` will succeed the
-				// fresh deferred and be observed immediately — no
-				// lost-wake-up race during cycle teardown / setup.
-				yield* engine.armRestartSignal;
+				// The queue absorbs any `requestRestart` that fires during
+				// the teardown/setup gap before the next cycle's await —
+				// no lost-wake-up race even when a producer fires between
+				// take returning and the next take being scheduled.
+				yield* engine.awaitRestart;
 				yield* engine.setBuildStatus('restarting');
 				return true;
 			}).pipe(Effect.scoped, Effect.withSpan('Devstack.launch'));

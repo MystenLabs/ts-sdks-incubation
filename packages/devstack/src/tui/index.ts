@@ -14,7 +14,7 @@
 // transition instead of a fresh panel rendered below the now-frozen
 // previous cycle's panel in scrollback.
 
-import { Deferred, Effect, Layer, Logger, Ref } from 'effect';
+import { Effect, Layer, Logger, Ref } from 'effect';
 import type { Scope } from 'effect/Scope';
 import { render } from 'ink';
 import React from 'react';
@@ -47,13 +47,12 @@ export interface TuiMount {
 const makeNoopProxy = (
 	currentRef: Ref.Ref<EngineHandleShape | undefined>,
 	stableState: Ref.Ref<import('./render.js').TuiState>,
-	placeholderRestartSignal: Ref.Ref<Deferred.Deferred<void>>,
 	placeholderChangedTags: Ref.Ref<ReadonlyArray<string>>,
 ): EngineHandleShape => {
 	const noop = Effect.void;
 	// `<App>` invokes `requestRestart` directly on key `r`/`R`; we forward
-	// to whichever cycle engine is currently installed so the active cycle's
-	// restartSignal Deferred resolves and `runOnce` unblocks.
+	// to whichever cycle engine is currently installed so the active
+	// cycle's restart queue receives the offer and `awaitRestart` returns.
 	const requestRestart = Effect.gen(function* () {
 		const current = yield* Ref.get(currentRef);
 		if (current !== undefined) yield* current.requestRestart;
@@ -87,12 +86,12 @@ const makeNoopProxy = (
 		setEntryTitle: () => noop,
 		setHeader: () => noop,
 		setBuildStatus,
-		// Real type, never resolved — `<App>` doesn't read this; only the
-		// per-cycle launch loop does, and it reads the live cycle engine's
-		// own restartSignal, not the proxy's.
-		restartSignal: placeholderRestartSignal,
+		// `<App>` doesn't read awaitRestart; only the per-cycle launch
+		// loop does, and it reads the live cycle engine's own queue, not
+		// the proxy's. Provided as `Effect.never` to satisfy the contract
+		// without delivering any spurious wakes.
+		awaitRestart: Effect.never,
 		requestRestart,
-		armRestartSignal: noop,
 		clearChangedTags: noop,
 		// Proxy doesn't track watch-event attribution — the per-cycle
 		// engine does. `<App>` doesn't read these either; only the
@@ -135,14 +134,8 @@ export const startTuiOnce = (): Effect.Effect<TuiMount, never, Scope> =>
 			header: { app: '', stack: 'main', network: 'localnet', buildStatus: 'idle', cycle: 0 },
 		});
 		const currentRef = yield* Ref.make<EngineHandleShape | undefined>(undefined);
-		const placeholderRestartSignal = yield* Ref.make(yield* Deferred.make<void>());
 		const placeholderChangedTags = yield* Ref.make<ReadonlyArray<string>>([]);
-		const proxy = makeNoopProxy(
-			currentRef,
-			stableState,
-			placeholderRestartSignal,
-			placeholderChangedTags,
-		);
+		const proxy = makeNoopProxy(currentRef, stableState, placeholderChangedTags);
 
 		const onQuit = (): void => {
 			process.kill(process.pid, 'SIGINT');

@@ -356,18 +356,14 @@ describe('App', () => {
 
 	it('R (capital) keypress triggers engine.requestRestart (full restart)', async () => {
 		const engine = await buildEngine();
-		// Capture the deferred BEFORE the keypress — `requestRestart`
-		// atomically rotates the ref to a fresh deferred and succeeds
-		// the captured one (HIGH-S2 fix). Capturing afterward would
-		// land on the new unsignaled deferred and the await would hang.
-		const { Deferred } = await import('effect');
-		const captured = await Effect.runPromise(Ref.get(engine.restartSignal));
 		const { stdin, unmount } = inkRender(
 			React.createElement(App, { engine, onQuit: () => undefined, pollIntervalMs: 10 }),
 		);
 		await flush();
 		stdin.write('R');
-		await Effect.runPromise(Effect.timeout(Deferred.await(captured), '500 millis'));
+		// The keypress offers into the engine's restart queue; the test
+		// observes the wake via `awaitRestart` with a short timeout.
+		await Effect.runPromise(Effect.timeout(engine.awaitRestart, '500 millis'));
 		unmount();
 	});
 
@@ -376,14 +372,12 @@ describe('App', () => {
 		// a full stack restart via requestRestart. True per-primitive retry
 		// would need a per-primitive scope architecture.
 		const engine = await buildEngine();
-		const { Deferred } = await import('effect');
-		const restartBefore = await Effect.runPromise(Ref.get(engine.restartSignal));
 		const { stdin, unmount } = inkRender(
 			React.createElement(App, { engine, onQuit: () => undefined, pollIntervalMs: 10 }),
 		);
 		await flush();
 		stdin.write('r');
-		await Effect.runPromise(Effect.timeout(Deferred.await(restartBefore), '500 millis'));
+		await Effect.runPromise(Effect.timeout(engine.awaitRestart, '500 millis'));
 		unmount();
 	});
 
