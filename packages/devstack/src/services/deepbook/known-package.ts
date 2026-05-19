@@ -108,6 +108,7 @@ export const deepbookKnownPackage = (opts: DeepbookKnownPackageOptions) => {
 		}).pipe(Effect.withSpan('deepbookKnownPackage')),
 		{
 			kind: 'service',
+			plugin: 'deepbook',
 			displayTitle: 'deepbook.known',
 			display: (s) => ({ title: 'deepbook.known', primary: s.packageId }),
 		},

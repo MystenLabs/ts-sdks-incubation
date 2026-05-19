@@ -20,6 +20,7 @@ import {
 } from './walrus/index.js';
 import { WalrusError } from '../engine/errors.js';
 import { resolveNetwork } from '../engine/network.js';
+import { resolveDeploymentNetwork } from '../engine/known-deployments.js';
 import type { StackMember } from '../engine/supervisor.js';
 
 // -----------------------------------------------------------------------------
@@ -39,15 +40,12 @@ import type { StackMember } from '../engine/supervisor.js';
  *  - `stakingPoolId` is the on-chain staking-pool object id. The
  *    local-cluster primitive captures `stakingObject` from the deploy
  *    summary — same thing, renamed for the contract.
- *  - `subsidiesPackageId` is optional because localnet deploys don't
- *    register a subsidies package; testnet/mainnet may or may not.
  *  - `exchangeIds` carries WAL exchange contracts when the network
  *    exposes them — testnet today, mainnet does not.
  */
 export interface WalrusNetwork {
 	readonly systemObjectId: string;
 	readonly stakingPoolId: string;
-	readonly subsidiesPackageId: string | undefined;
 	readonly exchangeIds: ReadonlyArray<string> | undefined;
 	readonly network: 'localnet' | 'testnet' | 'mainnet' | (string & {});
 
@@ -160,7 +158,6 @@ export class WalrusAdminTag extends Context.Service<WalrusAdminTag, WalrusAdmin>
 export const WalrusNetworkSchema = Schema.Struct({
 	systemObjectId: Schema.String,
 	stakingPoolId: Schema.String,
-	subsidiesPackageId: Schema.UndefinedOr(Schema.String),
 	exchangeIds: Schema.UndefinedOr(Schema.Array(Schema.String)),
 	network: Schema.String,
 	packageConfig: Schema.Struct({
@@ -224,12 +221,24 @@ export interface WalrusOptions {
  *  canonical remote deployment on testnet/mainnet — single source of
  *  truth is `DEVSTACK_NETWORK` (set by the CLI `--network` flag or via
  *  `devstack({ network })`). Returns a LayeredTag carrying the network +
- *  proxy contracts. */
+ *  proxy contracts.
+ *
+ *  Fork mode (Phase 3, D5): when the resolved network is a `*-fork`
+ *  variant, routes to `walrusKnownDeployment` against the WRAPPED
+ *  upstream's real Walrus deployment. The local-cluster path requires
+ *  GraphQL + JSON-RPC against the chain (which sui-fork does not
+ *  expose), so it's not a viable option on fork stacks; explicit
+ *  `walrusLocalCluster()` composition under fork mode trips a
+ *  structured `ForkIncompatibleError` at factory time. */
 export const Walrus = (opts: WalrusOptions = {}): StackMember => {
 	const network = resolveNetwork();
 	if (network !== 'localnet') {
+		// `network` is one of `testnet | mainnet | *-fork`. Fork variants
+		// resolve to their upstream's `KnownNetwork` key via
+		// `resolveDeploymentNetwork`; live nets pass through.
+		const knownNetwork = resolveDeploymentNetwork(network);
 		const knownOpts: WalrusKnownDeploymentOptions = {
-			network,
+			...(knownNetwork !== undefined ? { network: knownNetwork } : {}),
 			...opts.override,
 		};
 		return Object.assign(walrusKnownDeployment(knownOpts), { __kind: 'service' as const });

@@ -65,6 +65,23 @@ export class DevWalletSigningModal extends LitElement {
 				display: flex;
 				flex-direction: column;
 			}
+
+			/* Phase 4 P4.19 — footnote rendered when the active account
+			   is in fork-mode impersonation. Visually distinct so users
+			   don't conflate this with a real signature flow. */
+			.fork-footnote {
+				padding: 8px 16px;
+				background: rgba(234, 179, 8, 0.12);
+				border-top: 1px solid rgba(234, 179, 8, 0.35);
+				font-size: 11px;
+				color: var(--dev-wallet-muted-foreground);
+				line-height: 1.4;
+			}
+
+			.fork-footnote strong {
+				color: #92400e;
+				font-weight: var(--dev-wallet-font-weight-semibold);
+			}
 		`,
 	];
 
@@ -76,6 +93,12 @@ export class DevWalletSigningModal extends LitElement {
 
 	@property({ type: String })
 	walletName = 'Dev Wallet';
+
+	/** Phase 4 P4.19 — when the active account's `source === 'impersonate'`,
+	 *  the parent flips this on and the modal renders a footnote
+	 *  explaining no real signature will be produced. */
+	@property({ type: Boolean })
+	impersonation = false;
 
 	#handleDialogCancel = (e: Event) => {
 		e.preventDefault();
@@ -114,6 +137,14 @@ export class DevWalletSigningModal extends LitElement {
 						@reject=${this.#handleReject}
 					></dev-wallet-signing>
 				</div>
+				${this.impersonation
+					? html`<div class="fork-footnote" part="fork-footnote">
+							<strong>Fork-only:</strong> this account is in
+							<em>impersonation</em> mode. The fork accepts the transaction with an
+							empty signature (no real private key signs it), so it would be
+							rejected by mainnet / testnet / devnet validators.
+						</div>`
+					: nothing}
 			</dialog>
 		`;
 	}

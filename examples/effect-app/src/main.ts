@@ -1,11 +1,12 @@
-// Minimal Effect program consuming Devstack services via the Ref API.
+// Minimal Effect program consuming devstack services via the
+// LayeredTag API.
 //
 // The same `program` runs against a freshly-spun localnet in dev and a
 // remote testnet RPC in prod. Network is selected via the
 // `DEVSTACK_NETWORK` env var (or the `devstack --network <kind>` CLI
 // flag) — `Sui()` reads it at construction time, so the same
 // `Sui()` call resolves to whichever network is active. Only the
-// `from:` parameter on `Account(...)` flips on env, because account
+// `kind:` parameter on `Account(...)` flips on env, because account
 // sources are intrinsically environment-shaped (ephemeral keypair vs
 // env-supplied key).
 
@@ -16,8 +17,8 @@ import { Account, devstack, Sui } from '@mysten-incubation/devstack';
 const isProduction = process.env.NODE_ENV === 'production';
 
 export const alice = isProduction
-	? Account('alice', { from: 'env', key: 'ALICE_PRIVATE_KEY' })
-	: Account('alice', { from: 'ephemeral-funded' });
+	? Account('alice', { kind: 'env', key: 'ALICE_PRIVATE_KEY' })
+	: Account('alice', { kind: 'ephemeral-funded' });
 
 export const sui = Sui();
 

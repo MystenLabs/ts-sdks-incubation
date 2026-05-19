@@ -2,14 +2,122 @@ import { Schema } from 'effect';
 
 import {
 	AccountPhases,
+	DeepbookIndexerPhases,
 	DeepbookPhases,
+	DeepbookServerPhases,
 	ManifestPhases,
+	PostgresPhases,
 	PublishPhases,
+	PythPhases,
 	SealPhases,
 	SuiPhases,
 	WalletAppPhases,
 	WalrusPhases,
 } from './phases.js';
+
+/**
+ * Raised when a caller invokes a `SuiGrpcClient` method that is not
+ * supported by `sui-fork` (R1 / R3 / R11 mitigations).
+ *
+ * `surface` names the unsupported method (e.g. `'getBalance'`,
+ * `'listBalances'`, `'getCoinInfo'`, `'simulate_transaction'`). The
+ * fork's `sui_fork::store` implementation panics (`todo!()`) on these
+ * paths — see `crates/sui-fork/src/store.rs:1198,1206,1214`. We wrap
+ * the client with a Proxy in `buildFork` that throws this error
+ * BEFORE the wire call so the fork process stays up.
+ *
+ * `hint` carries a one-line workaround (e.g. for `getBalance`: "use
+ * `client.core.listCoins({ owner, coinType })` and sum the response").
+ */
+export class ForkUnsupportedError extends Schema.TaggedErrorClass<ForkUnsupportedError>()(
+	'ForkUnsupportedError',
+	{
+		surface: Schema.String,
+		message: Schema.String,
+		hint: Schema.optional(Schema.String),
+		cause: Schema.optional(Schema.Defect),
+	},
+) {}
+
+/**
+ * Raised when the on-disk fork meta or seed manifest disagrees with the
+ * caller's current configuration (R6 mitigation).
+ *
+ * `sui-fork` writes a write-once `seed_manifest.json` on first boot
+ * (`crates/sui-fork/src/seed.rs:128,144,153`). Re-booting the same data
+ * dir with a different `--address` / `--object` / `--checkpoint` / `--network`
+ * set fails inside the binary with a non-actionable Rust panic message.
+ *
+ * Devstack mirrors that contract at a higher layer: `apply` writes
+ * `.devstack/stacks/<stack>/sui-fork/meta.json` on first boot of a fork
+ * stack with a `configHash` of the relevant `SuiForkOptions` fields, and
+ * compares the current config's hash against the on-disk hash on every
+ * subsequent boot. A mismatch raises this error with an actionable
+ * "run `devstack wipe --keep-upstream-cache && devstack apply`" recipe
+ * so the user knows the resolution path.
+ *
+ * `metaPath` carries the on-disk meta.json path; `previous` / `current`
+ * carry the disagreeing config snapshots (upstream / checkpoint /
+ * config-hash digest) so the CLI's typed-catch branch can render a
+ * structured diff.
+ */
+export class SeedManifestMismatchError extends Schema.TaggedErrorClass<SeedManifestMismatchError>()(
+	'SeedManifestMismatchError',
+	{
+		metaPath: Schema.String,
+		message: Schema.String,
+		previous: Schema.optional(
+			Schema.Struct({
+				upstream: Schema.optional(Schema.String),
+				checkpoint: Schema.optional(Schema.Number),
+				configHash: Schema.optional(Schema.String),
+			}),
+		),
+		current: Schema.optional(
+			Schema.Struct({
+				upstream: Schema.optional(Schema.String),
+				checkpoint: Schema.optional(Schema.Number),
+				configHash: Schema.optional(Schema.String),
+			}),
+		),
+		cause: Schema.optional(Schema.Defect),
+	},
+) {}
+
+/**
+ * Raised when a plugin variant that requires capabilities `sui-fork`
+ * doesn't provide is composed against a fork-mode `Sui()` (D5
+ * mitigation; Phase 3 P3.5).
+ *
+ * Today the local-cluster variants of Walrus + Seal need full JSON-RPC,
+ * a live Sui chain client baked into their binaries, and (for Walrus)
+ * GraphQL — none of which `sui-fork` exposes. Composing
+ * `walrusLocalCluster()` or `sealLocalKeygen()` on a `*-fork` network
+ * therefore fails at factory time with this error, rather than letting
+ * the supervisor get partway up before the underlying binary blows up
+ * with an unrelated chain-client / RPC mismatch.
+ *
+ * `variant` names the offending factory (e.g. `'walrusLocalCluster'`,
+ * `'sealLocalKeygen'`); `network` carries the offending `*-fork`
+ * literal; `hint` is a one-line workaround pointing at the
+ * known-deployment alternative (`Walrus()` / `Seal()` on fork mode
+ * auto-pick that path).
+ *
+ * Phase 5 (D5 follow-up) explores putting a GraphQL indexer in front of
+ * the fork to unlock the local-cluster paths; once that lands, this
+ * error becomes the structured signal that the user is composing an
+ * older, non-shimmed variant.
+ */
+export class ForkIncompatibleError extends Schema.TaggedErrorClass<ForkIncompatibleError>()(
+	'ForkIncompatibleError',
+	{
+		variant: Schema.String,
+		network: Schema.String,
+		message: Schema.String,
+		hint: Schema.optional(Schema.String),
+		cause: Schema.optional(Schema.Defect),
+	},
+) {}
 
 export class SuiError extends Schema.TaggedErrorClass<SuiError>()('SuiError', {
 	// `phase` names the lifecycle step that failed. Closed set in
@@ -162,6 +270,66 @@ export class DeepbookError extends Schema.TaggedErrorClass<DeepbookError>()('Dee
 	// `pool` names the deepbook pool the failure was for. Optional —
 	// publish/setup phases that aren't pool-scoped leave it unset.
 	pool: Schema.optional(Schema.String),
+	// Phase 4 — margin extensions. `marginAsset` names the margin pool's
+	// asset (e.g. `'USDC'`, `'SUI'`) when a margin-side failure is
+	// asset-scoped (`new_coin_type_data_from_currency`, `create_margin_pool`).
+	// `feed` carries the Pyth feed hex id when a margin failure resolves
+	// down to an unknown / mis-pinned price feed. Both optional — non-
+	// margin phases leave them unset.
+	marginAsset: Schema.optional(Schema.String),
+	feed: Schema.optional(Schema.String),
 	message: Schema.String,
 	cause: Schema.optional(Schema.Defect),
 }) {}
+
+export class PythError extends Schema.TaggedErrorClass<PythError>()('PythError', {
+	// `phase` names the pyth lifecycle step that failed. Closed set in
+	// `engine/phases.ts` (`PythPhases`).
+	phase: Schema.optional(Schema.Literals(PythPhases)),
+	// `feed` names the specific Pyth feed (mainnet hex id) the failure
+	// was for. Optional — publish/setup phases that aren't feed-scoped
+	// leave it unset.
+	feed: Schema.optional(Schema.String),
+	message: Schema.String,
+	cause: Schema.optional(Schema.Defect),
+}) {}
+
+export class PostgresError extends Schema.TaggedErrorClass<PostgresError>()('PostgresError', {
+	// `phase` names the postgres lifecycle step that failed. Closed set
+	// in `engine/phases.ts` (`PostgresPhases`).
+	phase: Schema.optional(Schema.Literals(PostgresPhases)),
+	// `database` names the specific logical database (e.g. `'deepbook'`)
+	// the failure was for. Optional.
+	database: Schema.optional(Schema.String),
+	message: Schema.String,
+	stderr: Schema.optional(Schema.String),
+	stdout: Schema.optional(Schema.String),
+	exitCode: Schema.optional(Schema.Number),
+	cause: Schema.optional(Schema.Defect),
+}) {}
+
+export class DeepbookIndexerError extends Schema.TaggedErrorClass<DeepbookIndexerError>()(
+	'DeepbookIndexerError',
+	{
+		phase: Schema.optional(Schema.Literals(DeepbookIndexerPhases)),
+		message: Schema.String,
+		stderr: Schema.optional(Schema.String),
+		stdout: Schema.optional(Schema.String),
+		exitCode: Schema.optional(Schema.Number),
+		cause: Schema.optional(Schema.Defect),
+	},
+) {}
+
+export class DeepbookServerError extends Schema.TaggedErrorClass<DeepbookServerError>()(
+	'DeepbookServerError',
+	{
+		// `phase` names the deepbook-server lifecycle step that failed.
+		// Closed set in `engine/phases.ts` (`DeepbookServerPhases`).
+		phase: Schema.optional(Schema.Literals(DeepbookServerPhases)),
+		message: Schema.String,
+		stderr: Schema.optional(Schema.String),
+		stdout: Schema.optional(Schema.String),
+		exitCode: Schema.optional(Schema.Number),
+		cause: Schema.optional(Schema.Defect),
+	},
+) {}

@@ -6,16 +6,7 @@ import { defineConfig } from 'tsdown';
 // `new URL('../../<asset>/', import.meta.url)` in both source and built
 // outputs.
 const main = defineConfig({
-	entry: [
-		'src/index.ts',
-		'src/cli/main.ts',
-		'src/advanced/index.ts',
-		// Runtime accessor + manifest types: separate subpath (`./runtime`),
-		// rides the main bundle's tree-shaking so the consumer-facing
-		// `dist/runtime/*.mjs` outputs stay consistent with what
-		// `src/index.ts` reaches.
-		'src/runtime/index.ts',
-	],
+	entry: ['src/index.ts', 'src/cli/main.ts', 'src/advanced/index.ts'],
 	format: 'esm',
 	dts: true,
 	outDir: 'dist',

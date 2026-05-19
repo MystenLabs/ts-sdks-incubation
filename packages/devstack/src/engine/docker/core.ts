@@ -7,9 +7,9 @@ import { Effect, Ref } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { addFinalizer, type Scope } from 'effect/Scope';
 import { DockerError } from '../../engine/errors.js';
+import { EngineHandle } from '../engine.js';
 import { DockerLabel, Identity } from '../identity.js';
-import { LongLivedScope } from '../long-lived-scope.js';
-import { ClaimedContainers } from './sweep.js';
+import { ClaimedContainers, StopFinalizerScope } from './sweep.js';
 import {
 	ROUTER_NETWORK,
 	removeFileProvider,
@@ -153,27 +153,6 @@ export interface DockerRunOptions {
 	 */
 	readonly networkAlias?: string;
 	/**
-	 * Callback invoked when the resume path detects a port-conflict
-	 * stderr (`isPortConflictStderr` matched) AND the dispatcher is
-	 * about to recreate the container. The current `opts.ports`
-	 * (host → container) is passed in; the resolved record REPLACES
-	 * `opts.ports` for the recreate's `-p <bind>:<host>:<container>`
-	 * mappings.
-	 *
-	 * `Docker.run` itself is allocator-agnostic. Primitives that
-	 * allocate via `PortAllocator` wire this callback through
-	 * `reallocatePortsOnConflict` (see `./port-conflict.ts`) so a
-	 * resume-after-pause that finds the preferred host port held by
-	 * another stack SHIFTS to the next free preferred-style slot
-	 * (9000 → 9001 → 9002) instead of landing on a random ephemeral
-	 * port. When omitted, `Docker.run` falls back to today's behavior:
-	 * pass `-p <bind>::<container>` so docker auto-allocates the host
-	 * port and read it back via `inspectHostPorts`.
-	 */
-	readonly onPortConflict?: (
-		conflictingPorts: Readonly<Record<number, number>>,
-	) => Effect.Effect<Readonly<Record<number, number>>, DockerError, never>;
-	/**
 	 * Traefik router exposure. When set, `Docker.run` ALSO attaches the
 	 * container to the shared `devstack-router` docker network (in
 	 * addition to the per-stack `network`) and stamps the traefik
@@ -201,10 +180,10 @@ export interface DockerRunOptions {
 	 * Per-line output sink. When set, after the container is up
 	 * `Docker.run` spawns a `docker logs --follow <id>` child whose
 	 * stdout/stderr lines flow through `cb`. Lifecycle is bound to the
-	 * `reuseScope` finalizer (the LongLivedScope when present, else the
-	 * caller's per-cycle scope) — closing the scope kills the
-	 * docker-logs child, so the supervisor stops streaming when the
-	 * container is stopped/removed at teardown.
+	 * `reuseScope` finalizer (the calling primitive's own layer scope)
+	 * — closing the scope kills the docker-logs child, so the
+	 * supervisor stops streaming when the container is stopped/removed
+	 * at teardown.
 	 *
 	 * stdout lines arrive as `'info'`, stderr lines as `'warn'`.
 	 * Lines are pushed unconditionally; the callback is responsible
@@ -212,6 +191,35 @@ export interface DockerRunOptions {
 	 * are swallowed.
 	 */
 	readonly onOutputLine?: OutputLineCallback;
+	/**
+	 * Grace period in seconds for the cycle-teardown `docker stop` finalizer.
+	 * Maps to `docker stop --time <N>`: docker sends SIGTERM, waits up to
+	 * `<N>` seconds for the container to exit cleanly, then sends SIGKILL.
+	 *
+	 * Defaults to docker's own default (10s), which is enough for stateless
+	 * services. Sui's localnet validator needs more — 10s SIGKILLs it
+	 * mid-checkpoint-flush (exit 137), and the next `up` cycle has to
+	 * re-warm consensus state, surfacing as a ~10–20s "awaiting chain
+	 * funds-transferable" + faucet 5xx churn. With 30s, the validator
+	 * flushes cleanly and the warm resume completes in ~5s.
+	 *
+	 * Set per-container at the call site; primitives that know their workload's
+	 * shutdown profile should bump this above the default. Indexer-db,
+	 * walrus nodes, seal key-server — all benefit from a longer grace.
+	 */
+	readonly stopGraceSeconds?: number;
+	/**
+	 * Engine tag-key the stop finalizer should update during teardown.
+	 * When set, the finalizer fires `engine.markStopping(key)` before
+	 * `docker stop` runs and `engine.markStopped(key)` once `docker stop`
+	 * returns — surfacing per-row teardown progress in the TUI so the
+	 * Footer's "waiting on N containers" count drops as docker confirms
+	 * each container exit, instead of staring static at the original count
+	 * for the whole teardown window. When omitted (no engine in the
+	 * runtime context, or the caller doesn't want row updates), the
+	 * finalizer behaves as before — just stop the container silently.
+	 */
+	readonly engineTagKey?: string;
 }
 
 export interface DockerRunResult {
@@ -342,18 +350,17 @@ export const run = (
 		// Reuse-if-healthy: when an existing container with this name is
 		// already running the SAME image, skip recreation and adopt it.
 		// Sui localnet etc. are expensive to bring up (fresh genesis →
-		// NEW chain id → publishMove cache miss → NEW packageId), so on
-		// `r` we want the previous cycle's container to live across the
-		// supervisor-scope teardown. The finalizer goes on the
-		// `LongLivedScope` (the outer launch-loop scope provided by
-		// `defineDevstack`) instead of the current per-cycle scope: `r`
-		// only tears the per-cycle scope down, so a long-lived finalizer
-		// survives. Ctrl-C tears down the outer scope too → finalizer
-		// fires → container reaped. Standalone callers that haven't
-		// provided `LongLivedScope` fall back to `Effect.scope`, matching
-		// the previous behavior.
-		const longLivedScope = yield* LongLivedScope;
-		const reuseScope = longLivedScope ?? scope;
+		// NEW chain id → publishMove cache miss → NEW packageId). After
+		// the per-primitive-scope refactor (Phase 2 of selective-restart),
+		// the ambient `scope` IS the calling primitive's own layer scope
+		// — created once by Effect's MemoMap and reused across cycles as
+		// long as the primitive isn't in a selectively-invalidated set.
+		// `r` (full rebuild) cascades through the supervisor's outer
+		// scope, releasing every primitive's resources in dep order;
+		// targeted watch-fires release ONLY the affected primitives'
+		// scopes via `engine.invalidateSubset`. Either way the docker
+		// stop / rm finalizer lands on this scope.
+		const reuseScope = scope;
 		const claimedRef = yield* ClaimedContainers;
 		const claim = (id: string): Effect.Effect<void> =>
 			claimedRef === undefined ? Effect.void : Ref.update(claimedRef, (s) => new Set(s).add(id));
@@ -373,10 +380,7 @@ export const run = (
 		// Auto-allocate variant: pass only the container port so docker
 		// picks an ephemeral host port. The actual binding is read back
 		// via `inspectHostPorts` after `docker run` returns. Used by the
-		// resume-fallback when stderr matched a port-conflict pattern AND
-		// no `onPortConflict` callback was supplied — back-compat for
-		// callers that haven't wired allocator-driven preferred-port
-		// recovery yet.
+		// resume-fallback when stderr matched a port-conflict pattern.
 		const portArgsAuto = (): Array<string> => {
 			const out: Array<string> = [];
 			for (const containerPort of Object.values(opts.ports ?? {})) {
@@ -384,6 +388,78 @@ export const run = (
 			}
 			return out;
 		};
+
+		// Resolve EngineHandle BEFORE the finalizer is registered. Effect's
+		// scope-finalizer machinery runs the registered effect with an
+		// EMPTY context — services in the outer call's scope are NOT
+		// carried forward. Capturing the resolved handle here closes it
+		// into the finalizer's closure so the finalizer can call
+		// `markStopping`/`markStopped` without re-resolving (which would
+		// hit None and silently no-op, leaving the TUI rows static during
+		// teardown).
+		const engineOptForFinalizer =
+			opts.engineTagKey !== undefined
+				? yield* Effect.serviceOption(EngineHandle)
+				: undefined;
+		const engineForFinalizer =
+			engineOptForFinalizer !== undefined && engineOptForFinalizer._tag === 'Some'
+				? engineOptForFinalizer.value
+				: undefined;
+
+		// Resolve the optional `StopFinalizerScope` override. When a
+		// composite primitive (e.g. walrus's 4-node committee) wants its
+		// children's docker stops to fire in PARALLEL at teardown — not
+		// serially on the calling layer's single sequential scope — it
+		// forks a parallel-strategy child of its own scope and provides
+		// it here. Default is undefined → use the caller's `reuseScope`
+		// (the historical behavior), so every non-opting-in primitive
+		// keeps its container's stop bound to its own layer scope (which
+		// is exactly what selective-restart wants: closing one primitive's
+		// scope still tears down that primitive's container).
+		const stopScopeOverride = yield* Effect.serviceOption(StopFinalizerScope);
+		const stopFinalizerScope =
+			stopScopeOverride._tag === 'Some' && stopScopeOverride.value !== undefined
+				? stopScopeOverride.value
+				: reuseScope;
+
+		// Cycle-teardown finalizer for `docker stop`. Centralized so all
+		// three branches (adopt / resume / fresh+recreate) honor
+		// `opts.stopGraceSeconds` consistently. Uninterruptible — scope
+		// teardown fires under fiber interruption (SIGINT path); without
+		// this wrap the stop subprocess gets killed mid-flight and the
+		// container is left in an indeterminate state.
+		const stopFinalizer = (id: string): Effect.Effect<void, never> =>
+			addFinalizer(
+				stopFinalizerScope,
+				Effect.uninterruptible(
+					Effect.gen(function* () {
+						const tagKey = opts.engineTagKey;
+						// `markStopping` BEFORE the stop subprocess fires so the
+						// row visibly flips ready → stopping the moment teardown
+						// begins. Footer count excludes this row immediately.
+						if (engineForFinalizer !== undefined && tagKey) {
+							yield* engineForFinalizer.markStopping(tagKey).pipe(Effect.ignore);
+						}
+						yield* spawner
+							.exitCode(
+								ChildProcess.make(
+									'docker',
+									opts.stopGraceSeconds !== undefined
+										? ['stop', '--time', String(opts.stopGraceSeconds), id]
+										: ['stop', id],
+								),
+							)
+							.pipe(Effect.ignore);
+						// `markStopped` AFTER docker confirms the container exited
+						// (even on a `--time` SIGKILL fallback — the row reflects
+						// that the container is no longer there, not that it
+						// shut down cleanly). Footer's "waiting on N" drops.
+						if (engineForFinalizer !== undefined && tagKey) {
+							yield* engineForFinalizer.markStopped(tagKey).pipe(Effect.ignore);
+						}
+					}),
+				),
+			);
 
 		// Decide what to do based on the inspect probe — pure function,
 		// see `decideRunAction` below. The dispatcher executes the
@@ -411,14 +487,7 @@ export const run = (
 			// Finalizer: stop (don't remove) so the container's on-disk
 			// state survives until the next pnpm dev resumes it. `devstack
 			// wipe` is the only way to remove containers + volumes.
-			yield* addFinalizer(
-				reuseScope,
-				Effect.uninterruptible(
-					spawner
-						.exitCode(ChildProcess.make('docker', ['stop', action.containerId]))
-						.pipe(Effect.ignore),
-				),
-			);
+			yield* stopFinalizer(action.containerId);
 			// Stream this container's combined output into the
 			// supervisor's log channel for as long as the reuseScope is
 			// alive. No-op when the caller didn't supply a sink.
@@ -449,6 +518,35 @@ export const run = (
 
 		if (action.kind === 'resume') {
 			yield* Effect.logInfo(`devstack: resuming stopped container '${name}'`);
+			// Unclean-shutdown alert. If the container's previous run ended
+			// in SIGKILL (exit 137), docker's stop-grace expired before the
+			// workload could clean up. For stateful services — particularly
+			// Sui (the validator's RocksDB checkpoint store) — this can
+			// leave the on-disk state inconsistent in a way the next start
+			// can't recover from: the validator appears healthy at the
+			// socket level (RPC + faucet bind) but rejects every transfer
+			// tx with `{Failure: Internal}`, leading to a ~2-minute timeout
+			// chain (90s funds-transferable wait + 90s faucet retry budget)
+			// before failing with a generic-looking error several screens
+			// later.
+			//
+			// Logged at ERROR severity so the user sees it loudly in the
+			// log panel as the cycle starts. We do NOT auto-recreate: many
+			// workloads (Postgres WAL replay, walrus RocksDB rebuild) DO
+			// recover cleanly from 137, and force-recreating would
+			// needlessly nuke chain state. The supervisor proceeds with
+			// the resume; downstream probe errors reference this alert so
+			// the user has a clear path to "I should wipe".
+			if (inspected !== null && inspected.lastExitCode === 137) {
+				yield* Effect.logError(
+					`! UNCLEAN PRIOR SHUTDOWN: '${name}' was force-killed (exit 137) before it ` +
+						`finished writing state to disk. ` +
+						`SYMPTOM: services start (sockets bind, ready-probes pass) but their ` +
+						`operations fail persistently — typically Sui's faucet returns ` +
+						`"Failure: Internal" for every transfer attempt and accounts can't fund. ` +
+						`RECOVERY: pnpm exec devstack wipe --yes && pnpm exec devstack up`,
+				);
+			}
 			// Capture exit code + stderr — `docker start` can fail for
 			// real reasons (port already in use on the host, the image's
 			// tag was pruned out from under it, runtime config drift).
@@ -491,14 +589,7 @@ export const run = (
 				});
 				yield* claim(action.containerId);
 				yield* materializeRouterEntries(spawner, action.containerId, opts.traefik, reuseScope);
-				yield* addFinalizer(
-					reuseScope,
-					Effect.uninterruptible(
-						spawner
-							.exitCode(ChildProcess.make('docker', ['stop', action.containerId]))
-							.pipe(Effect.ignore),
-					),
-				);
+				yield* stopFinalizer(action.containerId);
 				yield* attachLogFollower(spawner, action.containerId, name, opts.onOutputLine, reuseScope);
 				const hostPorts = yield* inspectHostPorts(spawner, action.containerId);
 				return { containerId: action.containerId, name, reused: true, hostPorts };
@@ -512,46 +603,19 @@ export const run = (
 		//   - `recreate` from an image-mismatch eviction (decision-time):
 		//     same — the caller's ports are still authoritative; the old
 		//     container is gone so there's nothing to conflict with.
-		//   - `recreate` from a resume-fallback promotion: depends on
-		//     WHY `docker start` failed. If stderr indicated a port
-		//     conflict (something else holds the host port now), the
-		//     caller's preferred host port is stale. Two sub-cases:
-		//
-		//       a. `onPortConflict` callback supplied — ask the primitive
-		//          (which owns the `PortAllocator`) for a fresh
-		//          host→container map. The recreate path uses those as
-		//          full `<bind>:<host>:<container>` mappings so the new
-		//          binding is the next free preferred port (9000 → 9001
-		//          → …) instead of a random ephemeral. `result.hostPorts`
-		//          reflects the callback's mapping directly.
-		//       b. No callback — drop `opts.ports` and pass
-		//          `-p <bind>::<container>` so docker auto-allocates an
-		//          ephemeral host port. Read it back via
-		//          `inspectHostPorts`. This is the pre-existing
-		//          back-compat path for callers that haven't wired
-		//          allocator-driven recovery.
+		//   - `recreate` from a resume-fallback promotion where stderr
+		//     indicated a port conflict (something else holds the host
+		//     port now): drop `opts.ports` and pass
+		//     `-p <bind>::<container>` so docker auto-allocates an
+		//     ephemeral host port. Read it back via `inspectHostPorts`.
 		//
 		//     For every other failure class (OCI runtime error, missing
 		//     image layer, daemon hiccup) the caller's ports are still
 		//     correct and re-allocating would silently move the endpoint
 		//     out from under callers that already published URLs at
 		//     primitive-init time.
-		let recreatePorts: Record<number, number> | null = null;
-		if (resumePortConflict && opts.onPortConflict !== undefined && opts.ports !== undefined) {
-			const fresh = yield* opts.onPortConflict(opts.ports);
-			recreatePorts = { ...fresh };
-			yield* Effect.logInfo(
-				`devstack: '${name}' recreate using re-allocated ports ` +
-					`${JSON.stringify(recreatePorts)} (was ${JSON.stringify(opts.ports)})`,
-			);
-		}
-		const useCallbackPorts = recreatePorts !== null;
-		const useAutoAllocate = resumePortConflict && recreatePorts === null;
-		const portArgs = useCallbackPorts
-			? portArgsFor(recreatePorts as Record<number, number>)
-			: useAutoAllocate
-				? portArgsAuto()
-				: portArgsFor({ ...opts.ports });
+		const useAutoAllocate = resumePortConflict;
+		const portArgs = useAutoAllocate ? portArgsAuto() : portArgsFor({ ...opts.ports });
 		const args = buildRunArgs({
 			detach,
 			name,
@@ -599,11 +663,7 @@ export const run = (
 			'docker.op': 'run',
 			'docker.name': name,
 			'docker.recreate': resumePortConflict,
-			'docker.recreate.portStrategy': useCallbackPorts
-				? 'callback'
-				: useAutoAllocate
-					? 'auto'
-					: 'caller',
+			'docker.recreate.portStrategy': useAutoAllocate ? 'auto' : 'caller',
 		});
 
 		const captured = yield* runCapturing(spawner, cmd, 'docker run');
@@ -654,34 +714,24 @@ export const run = (
 		// stop subprocess gets killed mid-flight, leaving the
 		// container in an indeterminate state.
 		//
-		// Registered on the `LongLivedScope` (when provided by
-		// `defineDevstack`) so per-cycle teardown on `r` doesn't stop
-		// reusable containers — see the reuse-if-healthy comment above.
+		// Registered on the primitive's own layer scope — `r` cascades
+		// through the supervisor's outer scope to every primitive, but
+		// targeted watch-fires only release the affected primitives'
+		// scopes; see the reuse-if-healthy comment above.
 		yield* claim(containerId);
-		yield* addFinalizer(
-			reuseScope,
-			Effect.uninterruptible(
-				spawner.exitCode(ChildProcess.make('docker', ['stop', containerId])).pipe(Effect.ignore),
-			),
-		);
+		yield* stopFinalizer(containerId);
 		// Stream this fresh container's combined output through the
 		// supervisor's sink (when supplied) until the reuseScope closes.
 		yield* attachLogFollower(spawner, containerId, name, opts.onOutputLine, reuseScope);
 
 		// Host-port report:
-		//   - callback-driven recreate: the callback authored the binding,
-		//     we passed it verbatim as `-p <bind>:<host>:<container>` to
-		//     docker; report it back. Skips an `inspect` round-trip on the
-		//     happy path.
 		//   - auto-allocate recreate: docker chose an ephemeral host port,
 		//     read the actual binding back via `inspect`.
 		//   - normal `fresh`/`recreate`: caller's `opts.ports` were
 		//     honored exactly.
-		const hostPorts: Record<number, number> = useCallbackPorts
-			? { ...(recreatePorts as Record<number, number>) }
-			: useAutoAllocate
-				? yield* inspectHostPorts(spawner, containerId)
-				: { ...opts.ports };
+		const hostPorts: Record<number, number> = useAutoAllocate
+			? yield* inspectHostPorts(spawner, containerId)
+			: { ...opts.ports };
 		return { containerId, name, reused: false, hostPorts };
 	}).pipe(Effect.withSpan('Docker.run'));
 
@@ -701,6 +751,76 @@ export const run = (
 // path that misses the first millisecond of output, but that's the
 // same as what `docker logs -f` would emit on a tight race and is
 // acceptable for the supervisor's narration role.
+// Process-global registry of containers we already have a follower fiber
+// running for. Across hot-restart cycles, `Docker.run`'s adopt path is
+// called fresh each cycle and used to fork a fresh `docker logs -f`
+// follower onto the per-primitive `reuseScope` — without dedupe, you
+// accumulate one orphaned follower subprocess per container per cycle,
+// so after a few `r` presses you'd see 10+ idle `docker logs -f`
+// children. Tracked by containerId because that's stable across cycles
+// (an adopted container has the same id as before). Entry is cleared
+// by the inner Effect.scoped's finalizer when the follower's scope
+// closes (primitive scope teardown), so on a fresh `up` after a clean
+// exit the next attach re-forks correctly.
+const ATTACHED_FOLLOWERS = new Set<string>();
+
+// Parse a structured-log line for its embedded level + clean message body.
+// Container workloads built on Rust's `tracing` crate (walrus, sui, seal —
+// every Mysten-published binary) write `info!()` / `warn!()` to *stderr*,
+// not stdout. Without parsing, the supervisor's blanket "stdout = info /
+// stderr = warn" classification re-labels every INFO line as `warn`,
+// flooding the TUI's warning level with what's actually routine narration.
+//
+// Two upstream tracing-subscriber formatters we see in the wild:
+//   1. Text:  `2026-05-19T05:50:27.166Z  INFO span: module: message`
+//   2. JSON:  `{"timestamp":"2026-05-19T05:50:27.166Z","level":"INFO",
+//             "fields":{"message":"...", ...}, ...}`
+//
+// For both, we extract the level and a cleaner message body (stripping the
+// duplicate timestamp + level prefix in the text case; lifting `fields.message`
+// in the JSON case). Lines that don't match either format pass through with
+// the stream's default level — so plain `console.log` / `eprintln!` output
+// from older / non-tracing services still surfaces normally.
+const TEXT_TRACING_RE =
+	/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z?)\s+(TRACE|DEBUG|INFO|WARN|WARNING|ERROR|FATAL)\s+(.+)$/;
+export const normalizeLogLine = (
+	defaultLevel: OutputLineLevel,
+	rawLine: string,
+): { readonly level: OutputLineLevel; readonly line: string } => {
+	// JSON-tracing path. Quick prefix check avoids JSON.parse on every line.
+	if (rawLine.length > 0 && rawLine.charCodeAt(0) === 0x7b /* '{' */) {
+		try {
+			const parsed = JSON.parse(rawLine) as {
+				readonly level?: unknown;
+				readonly fields?: { readonly message?: unknown };
+			};
+			const lvl = typeof parsed.level === 'string' ? parsed.level.toLowerCase() : undefined;
+			const msg =
+				typeof parsed.fields?.message === 'string' ? parsed.fields.message : undefined;
+			if (lvl !== undefined && msg !== undefined) {
+				return { level: levelOrDefault(lvl, defaultLevel), line: msg };
+			}
+		} catch {
+			// fall through to text-prefix attempt then raw passthrough
+		}
+	}
+	const m = TEXT_TRACING_RE.exec(rawLine);
+	if (m !== null) {
+		return {
+			level: levelOrDefault(m[2]!.toLowerCase(), defaultLevel),
+			line: m[3]!,
+		};
+	}
+	return { level: defaultLevel, line: rawLine };
+};
+const levelOrDefault = (parsed: string, fallback: OutputLineLevel): OutputLineLevel => {
+	if (parsed === 'trace' || parsed === 'debug') return 'info';
+	if (parsed === 'info') return 'info';
+	if (parsed === 'warn' || parsed === 'warning') return 'warn';
+	if (parsed === 'error' || parsed === 'fatal') return 'error';
+	return fallback;
+};
+
 const attachLogFollower = (
 	spawner: Spawner,
 	containerId: string,
@@ -710,6 +830,10 @@ const attachLogFollower = (
 ): Effect.Effect<void, never> =>
 	Effect.gen(function* () {
 		if (cb === undefined) return;
+		// Synchronous dedupe before the fork — Set.add is atomic so two
+		// near-simultaneous attach calls can't both pass the check.
+		if (ATTACHED_FOLLOWERS.has(containerId)) return;
+		ATTACHED_FOLLOWERS.add(containerId);
 		const sinceSecs = Math.floor(Date.now() / 1000).toString();
 		const op = `docker logs -f ${displayName}`;
 		// `Effect.forkIn(scope)` registers the cancellation on the
@@ -720,16 +844,35 @@ const attachLogFollower = (
 		// join on the drainer's natural exit (only when `docker logs
 		// -f` itself closes), defeating the purpose of forking.
 		yield* Effect.gen(function* () {
+			// Registry cleanup runs when the follower's scope closes —
+			// either supervisor shutdown or targeted selective-restart
+			// of the owning primitive. Synchronous Set.delete; no I/O to
+			// fail.
+			yield* Effect.addFinalizer(() =>
+				Effect.sync(() => {
+					ATTACHED_FOLLOWERS.delete(containerId);
+				}),
+			);
 			const followCmd = ChildProcess.make(
 				'docker',
 				['logs', '-f', '--since', sinceSecs, containerId],
 				{ killSignal: 'SIGTERM' },
 			);
 			const handle = yield* spawner.spawn(followCmd).pipe(Effect.mapError(dockerError(op)));
+			// Wrap `cb` so each line is parsed for its embedded structured-log
+			// level + cleaner message body before forwarding to the engine.
+			// Stdout AND stderr both default to 'info' — Rust tracing
+			// containers (walrus, sui, seal) write info/debug to stderr too,
+			// so the previous "stderr = warn" blanket misclassified ~95% of
+			// container log volume.
+			const parsedCb: OutputLineCallback = (defaultLevel, rawLine) => {
+				const { level, line } = normalizeLogLine(defaultLevel, rawLine);
+				return cb(level, line);
+			};
 			yield* Effect.all(
 				[
-					drainLinesWithCallback(handle.stdout, 'info', cb).pipe(Effect.ignore),
-					drainLinesWithCallback(handle.stderr, 'warn', cb).pipe(Effect.ignore),
+					drainLinesWithCallback(handle.stdout, 'info', parsedCb).pipe(Effect.ignore),
+					drainLinesWithCallback(handle.stderr, 'info', parsedCb).pipe(Effect.ignore),
 					handle.exitCode.pipe(Effect.ignore),
 				],
 				{ concurrency: 'unbounded' },
@@ -754,6 +897,15 @@ export interface InspectResult {
 	readonly running: boolean;
 	readonly image: string;
 	readonly containerId: string;
+	/** Exit code from the container's previous run, when known. `137` ==
+	 *  SIGKILL — usually because docker's `stop --time` grace expired
+	 *  before the workload could clean up. Stateful containers (validators,
+	 *  databases) that hit this can come back wedged; surfaced so the
+	 *  adopt/resume path can warn the user proactively instead of letting
+	 *  them discover it 2+ minutes later when downstream probes exhaust
+	 *  their retry budgets. `undefined` for a never-run container or
+	 *  when the inspect format can't be parsed. */
+	readonly lastExitCode?: number;
 }
 
 /**
@@ -875,10 +1027,15 @@ const inspectContainer = (
 	name: string,
 ): Effect.Effect<InspectResult | null, never> =>
 	Effect.gen(function* () {
+		// `.State.ExitCode` is meaningful both for stopped containers (the
+		// exit code of their last run) and for running containers (0 until
+		// they exit again). We include it so the adopt/resume path can
+		// detect a prior SIGKILL (`137`) and surface a wedge warning
+		// before downstream probes exhaust their retry budgets.
 		const cmd = ChildProcess.make('docker', [
 			'inspect',
 			'--format',
-			'{{.State.Running}}|{{.Config.Image}}|{{.Id}}',
+			'{{.State.Running}}|{{.Config.Image}}|{{.Id}}|{{.State.ExitCode}}',
 			name,
 		]);
 		const captured = yield* runCapturing(spawner, cmd, 'docker inspect').pipe(
@@ -887,10 +1044,22 @@ const inspectContainer = (
 		if (captured === null || captured.exitCode !== 0) return null;
 		const line = captured.stdout.trim();
 		const parts = line.split('|');
-		if (parts.length !== 3) return null;
-		const [runningStr, image, containerId] = parts as [string, string, string];
+		if (parts.length !== 4) return null;
+		const [runningStr, image, containerId, exitCodeStr] = parts as [
+			string,
+			string,
+			string,
+			string,
+		];
 		if (image.length === 0 || containerId.length === 0) return null;
-		return { running: runningStr === 'true', image, containerId };
+		const exitCodeParsed = Number.parseInt(exitCodeStr, 10);
+		const lastExitCode = Number.isFinite(exitCodeParsed) ? exitCodeParsed : undefined;
+		return {
+			running: runningStr === 'true',
+			image,
+			containerId,
+			...(lastExitCode !== undefined ? { lastExitCode } : {}),
+		};
 	});
 
 // Read the host-port bindings of an existing container as
@@ -1060,22 +1229,47 @@ const materializeRouterEntries = (
 	Effect.gen(function* () {
 		const entries = traefik ?? [];
 		if (entries.length === 0) return;
-		// Capture the connect exit code so we can distinguish "connect
-		// failed" (tolerated — caller hasn't enabled traefik, or the
-		// endpoint already exists on the adopt path) from "connect
-		// succeeded but inspect-ip failed" (hard error, the router
-		// promise is now half-broken). `spawner.exitCode` can also fail
-		// with a `PlatformError` if `docker` can't be spawned at all;
-		// fold that into the same tolerated path with a sentinel so the
-		// type stays `never` for spawn failures.
-		const connectExit: number | null = yield* spawner
-			.exitCode(ChildProcess.make('docker', ['network', 'connect', ROUTER_NETWORK, containerId]))
-			.pipe(Effect.catchCause(() => Effect.succeed(null)));
-		if (connectExit === null || connectExit !== 0) {
+		// `docker network connect` outcomes:
+		//   - exit 0                                  → freshly attached this call
+		//   - "endpoint … already exists in network"  → already attached (adopt-path
+		//                                                resume of a still-attached
+		//                                                container). Idempotent: the
+		//                                                container IS on the network,
+		//                                                we just need its current IP
+		//                                                so the YAML can be rewritten.
+		//   - "Error response from daemon: network <ROUTER_NETWORK> not found"
+		//                                              → caller hasn't started traefik
+		//                                                yet. Skip YAML — no router to
+		//                                                serve it. Container keeps
+		//                                                direct-port access.
+		//   - spawn failure                            → tolerated; skip YAML.
+		// Use `runCapturing` so we can read stderr and distinguish the
+		// idempotent "already exists" case from a real network outage. A
+		// previous version used `exitCode` only and silently dropped the
+		// rewrite on EVERY non-zero exit — that meant adopted containers
+		// kept whatever IP was in the YAML from their first-ever run,
+		// surfacing as 502 Bad Gateway after a docker daemon restart
+		// re-IPed the container.
+		const connectResult = yield* runCapturing(
+			spawner,
+			ChildProcess.make('docker', ['network', 'connect', ROUTER_NETWORK, containerId]),
+			'docker network connect',
+		).pipe(Effect.catchCause(() => Effect.succeed(null)));
+		const alreadyAttached =
+			connectResult !== null &&
+			connectResult.exitCode !== 0 &&
+			/already exists in network/i.test(connectResult.stderr);
+		if (
+			connectResult === null ||
+			(connectResult.exitCode !== 0 && !alreadyAttached)
+		) {
+			const detail =
+				connectResult === null
+					? 'failed to spawn'
+					: `exited ${connectResult.exitCode} (${connectResult.stderr.trim().slice(0, 200)})`;
 			yield* Effect.logWarning(
 				`devstack: router file-provider skipped for ${containerId} — ` +
-					`'docker network connect ${ROUTER_NETWORK}' ` +
-					(connectExit === null ? 'failed to spawn' : `exited ${connectExit}`),
+					`'docker network connect ${ROUTER_NETWORK}' ${detail}`,
 			);
 			return;
 		}
@@ -1093,12 +1287,18 @@ const materializeRouterEntries = (
 			),
 		);
 		for (const entry of entries) {
+			// `protocol` defaults to `'http'` so existing entrypoints
+			// (sui-rpc, walrus, vite, …) keep emitting `http://…`
+			// URLs verbatim. `sui-fork`'s gRPC entrypoint sets
+			// `protocol: 'h2c'` so Traefik dials HTTP/2 cleartext.
+			const scheme = entry.protocol ?? 'http';
 			const wrote: boolean = yield* writeFileProvider({
 				id: entry.id,
 				hostname: entry.hostname,
 				entrypoint: entry.entrypoint,
-				upstreamUrl: `http://${ip}:${entry.servicePort}`,
+				upstreamUrl: `${scheme}://${ip}:${entry.servicePort}`,
 				cors: entry.cors,
+				...(entry.protocol !== undefined ? { protocol: entry.protocol } : {}),
 			}).pipe(
 				Effect.as(true),
 				Effect.catch((cause: DockerError) =>
@@ -1285,8 +1485,14 @@ export const decodeStream = <E>(stream: Stream.Stream<Uint8Array, E>): Effect.Ef
 // passes it through — keeping the docker / host-process modules free of
 // engine-layer dependencies.
 
-/** stdout lines arrive as `'info'`, stderr lines as `'warn'`. */
-export type OutputLineLevel = 'info' | 'warn';
+/** Log level surfaced to the TUI for a single container output line.
+ * Default classification: stdout → `'info'`, stderr → `'info'` (NOT `'warn'`
+ * — Rust tracing-style loggers write INFO/DEBUG to stderr too; classifying
+ * all stderr as warn floods the warning level with routine narration).
+ * `normalizeLogLine` parses the line's embedded level (text or JSON
+ * tracing-subscriber format) and upgrades to `'warn'` / `'error'` when
+ * the line says so. */
+export type OutputLineLevel = 'info' | 'warn' | 'error';
 
 /**
  * Per-line sink invoked from a streaming drain. The implementation

@@ -11,9 +11,10 @@ import { Transaction } from '@mysten/sui/transactions';
 import { tag, provide, type LayeredTag } from '../../advanced/tag.js';
 import { SuiTag } from '../sui.js';
 import { publishMove } from '../package/internal.js';
-import { pickCreatedByTypeSuffix } from '../../engine/sui-helpers.js';
+import { pickCreatedByType } from '../../engine/sui-helpers.js';
 import { publishDeepbookState, publishPackage } from '../../engine/registries.js';
 import { StateStore } from '../../engine/state-store.js';
+import { StateStoreKeys } from '../../engine/state-store-keys.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
 import { DeepbookError } from '../../engine/errors.js';
 import {
@@ -35,17 +36,17 @@ import {
 	type DeepbookPoolSpec,
 } from './internal.js';
 
-// StateStore key prefix for the cached create-pools output. Versioned
-// so a future schema bump invalidates stale caches automatically. The
-// full key folds in `Sui.chainId` (regenesis ⇒ different chainId ⇒
-// miss), the deepbook `packageId` (republish ⇒ different packageId
-// ⇒ miss), and a hash of the requested pool specs (reconfigure ⇒
-// miss). Without this cache, `pool::create_pool_admin` aborts in
-// `registry::register_pool` (function 13) on every resume because
-// (base, quote) was already registered by the previous boot —
-// chain state survives `pnpm dev` restarts but the primitive
-// didn't know it.
-const STATE_KEY_POOLS_PREFIX = 'deepbook/pools/v1';
+// State-store key for the cached create-pools output moved to
+// `engine/state-store-keys.ts` as part of Phase 5.1 of
+// `notes/api-simplification.md`. Canonical builder:
+// `StateStoreKeys.deepbookPools({chainId, packageId, poolsHash})`.
+// The full key still folds in `Sui.chainId` (regenesis ⇒ miss),
+// the deepbook `packageId` (republish ⇒ miss), and a hash of the
+// requested pool specs (reconfigure ⇒ miss). Without this cache,
+// `pool::create_pool_admin` aborts in `registry::register_pool`
+// on every resume because (base, quote) was already registered by
+// the previous boot — chain state survives `pnpm dev` restarts but the
+// primitive didn't know it.
 
 // Subset of `DeepbookPool` we persist into `StateStore`. Echoes the
 // runtime pool record verbatim — the captured `poolId` is the load-
@@ -113,8 +114,13 @@ export interface DeepbookLocalDeployOptions<
 	 *  bytecode + dependency manifest in a form we can submit directly via
 	 *  `Transaction.publish`, so callers vendor the source themselves
 	 *  (typically via a monorepo-level `gitFetch` step or a checked-in
-	 *  submodule). */
+	 *  submodule).
+	 *
+	 *  Mutually exclusive with `vendor`. */
 	readonly movePackagePath?: string;
+	/** A vendored sources ref from `vendorDeepbook(...)`. When set, the
+	 *  factory reads `(yield* vendor).deepbook` as the package source. */
+	readonly vendor?: LayeredTag<any, { readonly deepbook: string }, any, any>;
 	readonly pools?: TPools;
 	readonly dependsOn?: ReadonlyArray<LayeredTag<any, any, any, any>>;
 }
@@ -149,6 +155,12 @@ export const deepbookLocalDeploy = <
 ) => {
 	const name = (options.name ?? 'deepbook') as Name;
 	const specs = options.pools ?? ([] as ReadonlyArray<DeepbookPoolSpec>);
+
+	if (options.movePackagePath !== undefined && options.vendor !== undefined) {
+		throw new TypeError(
+			`deepbookLocalDeploy: \`movePackagePath\` and \`vendor\` are mutually exclusive`,
+		);
+	}
 
 	// Pool-spec validation at config-load time. Surfaces a clear typed
 	// error with the user's `Deepbook({ local: { pools: [...] } })` site
@@ -189,8 +201,12 @@ export const deepbookLocalDeploy = <
 	// The publish tag is a sibling primitive; we yield it inside our
 	// scoped acquire to chain its package id + captured registry/admin-cap
 	// ids forward into the create-pool transactions. Built lazily so the
-	// producer fails at start (not at module-eval) when `movePackagePath`
-	// is omitted.
+	// producer fails at start (not at module-eval) when neither
+	// `movePackagePath` nor `vendor` is supplied. When `vendor` is the
+	// source, the path is read from the resolved vendor Ref at acquire
+	// time (see body below); the publish tag construction needs a path
+	// up-front, so we use a sentinel `.<vendor>` placeholder that the
+	// dynamic vendor branch shortcuts.
 	const publish =
 		options.movePackagePath !== undefined
 			? publishMove({
@@ -198,8 +214,12 @@ export const deepbookLocalDeploy = <
 					path: options.movePackagePath,
 					signer: options.signer,
 					capture: (changes) => {
-						const registryId = pickCreatedByTypeSuffix(changes, DEEPBOOK_REGISTRY_TYPE_SUFFIX);
-						const adminCapId = pickCreatedByTypeSuffix(changes, DEEPBOOK_ADMIN_CAP_TYPE_SUFFIX);
+						const registryId = pickCreatedByType(changes, {
+							suffix: DEEPBOOK_REGISTRY_TYPE_SUFFIX,
+						});
+						const adminCapId = pickCreatedByType(changes, {
+							suffix: DEEPBOOK_ADMIN_CAP_TYPE_SUFFIX,
+						});
 						// DEEP `TreasuryCap` is `0x2::coin::TreasuryCap<{pkg}::deep::DEEP>`.
 						// We can't spell the full type here — the inner packageId is
 						// exactly what we're capturing — so match by the two stable
@@ -240,13 +260,22 @@ export const deepbookLocalDeploy = <
 			yield* Effect.annotateCurrentSpan({ 'sui.chainId': sui.chainId });
 
 			if (publish === undefined) {
+				// `vendor` option support is wired (type-level + option
+				// validation) in Phase 0; the runtime wiring through
+				// publishMove is deferred to Phase 4 when the wallet
+				// migration would consume it. Today, callers should keep
+				// using `movePackagePath` until the vendor flow lands.
 				return yield* Effect.fail(
 					new DeepbookError({
 						phase: 'publish',
 						message:
-							`deepbookLocalDeploy(${name}): \`movePackagePath\` is required to publish ` +
-							'the deepbook-v3 Move package. Vendor the source (e.g. via `gitFetch` ' +
-							'or a checked-in submodule) and pass the directory path.',
+							`deepbookLocalDeploy(${name}): either \`movePackagePath\` or \`vendor\` ` +
+							`is required to publish the deepbook-v3 Move package. ` +
+							(options.vendor !== undefined
+								? `(\`vendor\` runtime flow is deferred to Phase 4; use \`movePackagePath\` ` +
+									`with the materialized vendor.deepbook directory.)`
+								: 'Vendor the source (e.g. via `gitFetch` or `vendorDeepbook(...)`) ' +
+									'and pass the directory path.'),
 					}),
 				);
 			}
@@ -311,7 +340,11 @@ export const deepbookLocalDeploy = <
 						stable: spec.stable ?? false,
 					})),
 				);
-				const cacheKey = `${STATE_KEY_POOLS_PREFIX}/${sui.chainId}/${packageId}/${poolsHash}`;
+				const cacheKey = StateStoreKeys.deepbookPools({
+					chainId: sui.chainId,
+					packageId,
+					poolsHash,
+				});
 				const cached = yield* state.get<CachedDeepbookPools>(cacheKey);
 
 				// Best-effort verification — confirm each cached pool object
@@ -436,7 +469,7 @@ export const deepbookLocalDeploy = <
 						// objectType keeps multi-pool tx output deterministic.
 						for (const { spec, base, quote } of resolvedSpecs) {
 							const expected = `${packageId}::pool::Pool<${base}, ${quote}>`;
-							const poolId = pickCreatedByTypeSuffix(result.objectChanges, expected);
+							const poolId = pickCreatedByType(result.objectChanges, { suffix: expected });
 							if (poolId === undefined) {
 								return yield* Effect.fail(
 									new DeepbookError({
@@ -548,6 +581,7 @@ export const deepbookLocalDeploy = <
 		{
 			...(publish !== undefined ? { extraLayers: [publish.__layer] } : {}),
 			kind: 'action' as const,
+			plugin: 'deepbook',
 			displayTitle: `publish.${name}`,
 			display: (s: DeepbookLocalDeployShape) => {
 				const poolCount = Object.keys(s.pools).length;
@@ -620,7 +654,7 @@ export const deepbookLocalDeploy = <
 					),
 				);
 				const bmType = `${db.packageId}::balance_manager::BalanceManager`;
-				const createdId = pickCreatedByTypeSuffix(result.objectChanges, bmType);
+				const createdId = pickCreatedByType(result.objectChanges, { suffix: bmType });
 				if (createdId === undefined) {
 					return yield* Effect.fail(
 						new DeepbookError({

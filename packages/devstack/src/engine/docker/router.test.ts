@@ -20,7 +20,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { it as itEffect } from '@effect/vitest';
-import { renderFileProvider, removeFileProvider, writeFileProvider } from './router.js';
+import {
+	defineEntrypoint,
+	listEntrypoints,
+	renderFileProvider,
+	removeFileProvider,
+	routerEntrypoint,
+	writeFileProvider,
+} from './router.js';
 
 describe('renderFileProvider', () => {
 	it('renders the canonical YAML shape for a host-process backend', () => {
@@ -88,4 +95,51 @@ describe('file-provider lifecycle', () => {
 			}
 		}),
 	);
+});
+
+describe('defineEntrypoint / routerEntrypoint registry', () => {
+	it('pre-registers the in-tree entrypoints (sui-rpc, walrus, …)', () => {
+		// These are registered at module-load time in router.ts. The
+		// registry is a global singleton — the assertion has to hold by
+		// the time any test runs.
+		expect(routerEntrypoint('sui-rpc')).toEqual({ name: 'sui-rpc', port: 9000 });
+		expect(routerEntrypoint('walrus')).toEqual({ name: 'walrus', port: 9185 });
+		expect(routerEntrypoint('sui-grpc')).toEqual({
+			name: 'sui-grpc',
+			port: 50051,
+			defaultProtocol: 'h2c',
+		});
+	});
+
+	it('returns undefined for unknown names', () => {
+		expect(routerEntrypoint('this-name-does-not-exist-anywhere')).toBeUndefined();
+	});
+
+	it('defineEntrypoint is idempotent on identical (name, port, defaultProtocol)', () => {
+		// Calling twice with the same payload must not throw — supports
+		// hot-restart of an out-of-tree plugin that re-imports its module.
+		expect(() =>
+			defineEntrypoint({ name: 'custom-test-idempotent', port: 18001 }),
+		).not.toThrow();
+		expect(() =>
+			defineEntrypoint({ name: 'custom-test-idempotent', port: 18001 }),
+		).not.toThrow();
+		expect(routerEntrypoint('custom-test-idempotent')?.port).toBe(18001);
+	});
+
+	it('defineEntrypoint rejects a conflicting (name, different port)', () => {
+		defineEntrypoint({ name: 'custom-test-conflict', port: 18002 });
+		expect(() =>
+			defineEntrypoint({ name: 'custom-test-conflict', port: 18003 }),
+		).toThrowError(/conflicts with prior registration/);
+	});
+
+	it('listEntrypoints includes every registered entrypoint', () => {
+		const names = listEntrypoints().map((e) => e.name);
+		expect(names).toContain('sui-rpc');
+		expect(names).toContain('walrus');
+		expect(names).toContain('seal');
+		expect(names).toContain('vite');
+		expect(names).toContain('deepbook-server');
+	});
 });

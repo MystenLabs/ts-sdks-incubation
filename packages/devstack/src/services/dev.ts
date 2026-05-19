@@ -100,5 +100,5 @@ export const Dev = <E = never, R = never>(opts: DevOptions<E, R>) => {
 		endpoint: { name: EndpointName.DEV_SERVER_FALLBACK, kind: 'dev-server' },
 		traefik: { service: 'dev', entrypoint: 'vite' },
 	};
-	return Object.assign(hostProcess(hostOpts), { __kind: 'app' as const });
+	return Object.assign(hostProcess(hostOpts), { __kind: 'app' as const, __pluginName: 'dev' });
 };

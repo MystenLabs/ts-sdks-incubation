@@ -3,36 +3,36 @@
 // fallback when no manifest exists on disk yet (e.g. Playwright's
 // `webServer({ endpoint })` resolving at config-load time before
 // `devstack up` has materialized a stack). The `CONVENTIONAL_ROUTES` table
-// is in lockstep with each primitive's `traefik.entrypoints=<name>` label —
-// when the supervisor wires the real stack, the URL it publishes converges
-// with what this map computes.
+// is derived from each endpoint's `defineEndpoint(...)` declaration in
+// `runtime/endpoint-names.ts` — when the supervisor wires the real stack,
+// the URL it publishes converges with what this map computes.
 
 import { readFileSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
-import { EndpointName } from './endpoint-names.js';
+import {
+	type ConventionalRoute,
+	listEndpointDeclarations,
+} from '../engine/define-endpoint.js';
+// Side-effect import: registering the endpoint declarations populates
+// `listEndpointDeclarations()`. The conventional-route table reads that
+// registry, so it must run AFTER endpoint-names.ts has executed at
+// module-init time.
+import './endpoint-names.js';
 
 /** Endpoint → (router-service-name, traefik entrypoint port) mapping.
- *  Matches the supervisor's wire-up in `services/{dev,wallet,sui,walrus,
- *  seal}` — each routes via `<stack>.<service>.<app>.localhost:<port>`
- *  on the matching traefik entrypoint. Used when the manifest doesn't
- *  exist yet so `webServer({ endpoint })` can still produce a URL for
- *  playwright's config-load step. */
-export const CONVENTIONAL_ROUTES: Record<string, { service: string; port: number }> = {
-	// Both names route to the same dev service. `DEV_SERVER_PRIMARY` is the
-	// canonical lookup key in the manifest (see `runtime/service.ts`'s
-	// `groupApp`); `DEV_SERVER_FALLBACK` is what the built-in `Dev()`
-	// factory publishes today. Listing both lets cold-start succeed for
-	// either name.
-	[EndpointName.DEV_SERVER_PRIMARY]: { service: 'dev', port: 5175 },
-	[EndpointName.DEV_SERVER_FALLBACK]: { service: 'dev', port: 5175 },
-	[EndpointName.WALLET_APP]: { service: 'wallet', port: 5180 },
-	[EndpointName.SUI_RPC]: { service: 'sui', port: 9000 },
-	[EndpointName.SUI_FAUCET]: { service: 'faucet', port: 9123 },
-	[EndpointName.SUI_GRAPHQL]: { service: 'graphql', port: 9125 },
-	[EndpointName.WALRUS_AGGREGATOR]: { service: 'walrus-agg', port: 9185 },
-	[EndpointName.WALRUS_PUBLISHER]: { service: 'walrus-pub', port: 9185 },
-	[EndpointName.SEAL_KEY_SERVER]: { service: 'seal', port: 2024 },
-};
+ *  Derived from `defineEndpoint(...)` declarations — each entry that
+ *  carries a `conventional: {service, port}` block surfaces here. Used
+ *  when the manifest doesn't exist yet so `webServer({ endpoint })` can
+ *  still produce a URL for playwright's config-load step. */
+export const CONVENTIONAL_ROUTES: Record<string, ConventionalRoute> = (() => {
+	const out: Record<string, ConventionalRoute> = {};
+	for (const d of listEndpointDeclarations()) {
+		if (d.conventional !== undefined) {
+			out[d.name] = d.conventional;
+		}
+	}
+	return out;
+})();
 
 /** Read the `name` field out of `<dir>/package.json`. Returns the
  *  un-scoped basename so `@org/foo` → `foo`. Mirrors `deriveAppName`

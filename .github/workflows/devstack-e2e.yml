@@ -44,11 +44,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Phase 4.3 starts with the sui-only example (`arena`) plus one
-        # walrus-bearing example (`private-content`) — runbooks A + B
-        # from the snapshot smoke playbook. Adding more examples to the
-        # matrix is a one-line change once they're proven stable.
-        example: [arena, private-content]
+        # Phase 4.3 started with the sui-only example (`arena`) plus
+        # the walrus-bearing example (`private-content`). Phase 5 of
+        # the deepbook plugin expansion adds `deepbook-full` — the
+        # reference app exercising vendor + Postgres + Pyth + Indexer
+        # + Server + Margin + bps-grid maker. Runbook D in the snapshot
+        # smoke playbook.
+        example: [arena, private-content, deepbook-full]
     steps:
       - name: Checkout
         uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # pin@v4.1.1
@@ -98,7 +100,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        example: [arena, private-content]
+        example: [arena, private-content, deepbook-full]
         shard: [1, 2]
     steps:
       - name: Checkout
@@ -150,3 +152,79 @@ jobs:
             examples/${{ matrix.example }}/test-results
           retention-days: 7
           if-no-files-found: ignore
+
+  # P5.17 — Docker integration shards. Runs the L3 `*.docker.test.ts`
+  # suite (Postgres + Pyth + Indexer + Server + Margin + bps-grid maker
+  # + vendor) gated behind `DEVSTACK_INTEGRATION_TESTS=1`. Sharded 4-way
+  # on `ubuntu-latest-large` so the heaviest tests (image pulls +
+  # container boot) parallelize cleanly. Pre-pulls `postgres:16-alpine`
+  # + the deepbook indexer + server images at start to keep the per-shard
+  # critical path under the 30-min timeout.
+  docker-integration:
+    name: Docker integration · shard ${{ matrix.shard }}/4
+    runs-on: ubuntu-latest-large
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # pin@v4.1.1
+      - uses: pnpm/action-setup@a3252b78c470c02df07e9d59298aecedc3ccdd6d # pin@v3.0.0
+      - name: Install Node.js
+        uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8 # pin@v4.0.2
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build devstack
+        run: pnpm turbo build --filter @mysten-incubation/devstack
+
+      - name: Pre-pull docker images
+        run: |
+          docker pull postgres:16-alpine || true
+          # Deepbook indexer + server images come from the pairing table
+          # at `services/deepbook/images.ts`. Best-effort pull so the
+          # first L3 test that uses them doesn't pay the cold-pull cost
+          # against the shard's 30-min budget.
+          docker pull mysten/deepbook-indexer:v7.0.0 || true
+          docker pull mysten/deepbook-server:v7.0.0 || true
+
+      - name: Run L3 docker tests (shard ${{ matrix.shard }}/4)
+        working-directory: packages/devstack
+        env:
+          DEVSTACK_INTEGRATION_TESTS: '1'
+        # Run only `*.docker.test.ts` files; vitest's `--shard` distributes
+        # them across 4 workers. The full L3 suite covers Postgres + Pyth
+        # + Indexer + Server + Margin + maker + vendor + codegen.
+        run: pnpm vitest run --testNamePattern docker --shard ${{ matrix.shard }}/4
+
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # pin@v4.6.0
+        with:
+          name: docker-integration-shard-${{ matrix.shard }}-failure
+          # P5.18 — capture container state + manifests + state.json
+          # files reachable on the runner so the failure is reproducible
+          # from the artifact alone.
+          path: |
+            packages/devstack/test-results/
+            packages/devstack/.devstack/
+            examples/*/.devstack/manifest.json
+            examples/*/.devstack/stacks/*/manifest.json
+            examples/*/.devstack/stacks/*/state.json
+            /tmp/docker-ps.txt
+            /tmp/docker-logs/
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Capture container state on failure
+        if: failure()
+        run: |
+          docker ps -a > /tmp/docker-ps.txt 2>&1 || true
+          mkdir -p /tmp/docker-logs
+          for c in $(docker ps -a --format '{{.Names}}'); do
+            docker logs "$c" > "/tmp/docker-logs/${c}.log" 2>&1 || true
+          done

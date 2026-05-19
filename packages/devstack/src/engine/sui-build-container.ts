@@ -23,11 +23,13 @@
 //     name is already running the SAME image we adopt it; if the image
 //     drifted (user bumped `suiVersion`) we `docker rm -f` + recreate.
 //
-//   - Release: registered on `LongLivedScope` when present, falling
-//     back to the layer-build scope otherwise. Mirrors how `Docker.run`
-//     parks reusable containers across `r` hot-restarts: the per-cycle
-//     scope tears down but the build container survives, ready for the
-//     next cycle's first publish.
+//   - Release: registered on the SuiBuildContainer layer's own scope.
+//     Effect's MemoMap forks one scope per Layer.effect, so this
+//     primitive's scope persists across cycles for as long as the
+//     supervisor's outer scope stays alive — `r` (full rebuild)
+//     cascades through the outer scope releasing every primitive in
+//     dep order, while a targeted selective-restart only releases the
+//     affected primitives.
 //
 // Trade-offs:
 //
@@ -51,7 +53,7 @@ import * as path from 'node:path';
 import { Context, Effect, Layer, Scope } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { Identity } from './identity.js';
-import { LongLivedScope } from './long-lived-scope.js';
+import { resolveAppDir } from './resolve-app-dir.js';
 import {
 	runWithCapture,
 	shellQuote,
@@ -370,15 +372,15 @@ export const SuiBuildContainerLive = Layer.effect(
 				}),
 			);
 		}
-		const longLivedScope = yield* LongLivedScope;
-		const currentScope = yield* Effect.scope;
-		// Attach the cleanup finalizer to the LongLivedScope (when
-		// provided) so the container survives per-cycle scope teardown.
-		// Otherwise fall back to the current scope, matching standalone
-		// callers' expectations.
-		const cleanupScope = longLivedScope ?? currentScope;
+		// Attach the cleanup finalizer to the SuiBuildContainer layer's
+		// own scope (the ambient `Scope` here, forked by Effect's
+		// MemoMap). Selective-restart releases this scope only if
+		// SuiBuildContainer is in the affected set; `r` cascades
+		// through the supervisor's outer scope and releases every
+		// primitive's scope.
+		const cleanupScope = yield* Effect.scope;
 
-		const appDir = process.env.DEVSTACK_APP_DIR ?? process.cwd();
+		const appDir = resolveAppDir();
 		const moveHome = path.join(os.homedir(), '.move');
 		const containerName = containerNameFor(identity);
 

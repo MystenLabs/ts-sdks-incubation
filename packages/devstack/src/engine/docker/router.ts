@@ -33,9 +33,9 @@
 //     is a singleton.
 //   - The finalizer is a `docker stop` (NOT rm) so the next `pnpm
 //     dev` resumes it in ~1s. `docker stop` runs only when the
-//     LongLivedScope tears down (Ctrl-C / signal), and even then is
-//     a no-op-on-already-stopped — so the router survives across
-//     multiple supervisors and across `r` hot-restart cycles.
+//     outer launch scope tears down (Ctrl-C / signal), and even
+//     then is a no-op-on-already-stopped — so the router survives
+//     across multiple supervisors and across `r` hot-restart cycles.
 //   - Full teardown is the job of `devstack prune --include-router`.
 
 import { Effect } from 'effect';
@@ -84,45 +84,127 @@ export const routerDynamicDir = (): string =>
 export interface RouterEntrypoint {
 	readonly name: string;
 	readonly port: number;
+	/**
+	 * Default wire protocol Traefik uses when dialing upstreams attached
+	 * to this entrypoint. `RouterLabel.protocol` / `FileProviderEntry.protocol`
+	 * can override per-route; this is what the materializer falls back to
+	 * when the route doesn't specify one. Today every in-tree entrypoint
+	 * defaults `'http'` except `sui-grpc` (h2c); the field is included so
+	 * `dockerContainer` plugin authors registering a gRPC entrypoint can
+	 * make every consumer dial h2c without each one having to remember.
+	 */
+	readonly defaultProtocol?: 'http' | 'h2c';
 }
+
+// -----------------------------------------------------------------------------
+// Entrypoint registry — pluggable via `defineEntrypoint`
+// -----------------------------------------------------------------------------
+//
+// In-tree services pre-register their entrypoints at module init via the
+// `defineEntrypoint` calls below; out-of-tree plugin authors (Phase 3 of the
+// API-simplification plan: `dockerContainer`) call `defineEntrypoint` from
+// their own module top-level so their entrypoint is present before
+// `ensureRouter` runs.
+//
 // NOTE: these are traefik entrypoint names — a separate contract from
 // `runtime/endpoint-names.ts`'s `EndpointName` registry. Three values
 // (`sui-rpc`, `sui-faucet`, `sui-graphql`) coincidentally match because
 // the supervisor uses the same string for both labels; the rest
-// (`walrus`, `seal`, `wallet`, `vite`) intentionally differ. Don't
+// (`walrus`, `seal`, `wallet`, `vite`, …) intentionally differ. Don't
 // import `EndpointName` here — the registries serve different audiences.
-/**
- * Static routing table for in-stack services that need a dedicated
- * proxy hop through the shared traefik router. Each entry declares one
- * traefik entrypoint: a `name` (string, must match the value upstream
- * primitives pass as `RouterLabel.entrypoint` / `FileProviderEntry.entrypoint`)
- * and a `port` (number, the loopback host port the entrypoint binds and
- * the address traefik listens on inside the container). Both fields are
- * required; there are no optional fields.
- *
- * The list is closed today: devstack ships a fixed traefik image and the
- * entrypoint set is baked in at build time, not user-extensible. If a
- * plugin author needs to register a custom entrypoint at runtime, this
- * is the contract their data must satisfy — but no such hook exists yet.
- *
- * Consumed at:
- *   - `routerEntrypoint` (line 124) — lookup by name for label validation.
- *   - `runRouterFresh` port-publish loop (line 268) — generates `-p` flags.
- *   - `runRouterFresh` entrypoint-address loop (line 298) — generates
- *     `--entrypoints.<name>.address=:<port>` traefik flags.
- */
-export const ROUTER_ENTRYPOINTS: ReadonlyArray<RouterEntrypoint> = [
-	{ name: 'sui-rpc', port: 9000 },
-	{ name: 'sui-faucet', port: 9123 },
-	{ name: 'sui-graphql', port: 9125 },
-	{ name: 'walrus', port: 9185 },
-	{ name: 'seal', port: 2024 },
-	{ name: 'wallet', port: 5180 },
-	{ name: 'vite', port: 5175 },
-];
+//
+// Consumed at:
+//   - `routerEntrypoint` — lookup by name for label validation.
+//   - `runRouterFresh` port-publish loop — generates `-p` flags.
+//   - `runRouterFresh` entrypoint-address loop — generates
+//     `--entrypoints.<name>.address=:<port>` traefik flags.
+//
+// Registration races: callers must register BEFORE `ensureRouter` runs.
+// `ensureRouter` reads the registry once at boot — if a plugin adds an
+// entrypoint after the router is already started, the traefik container
+// won't know about it and the route will 404 until a recreate. We
+// don't enforce this at the type level (module load order is naturally
+// before supervisor boot); a `defineEntrypoint` after `ensureRouter`'s
+// runRouterFresh is a programming error the plugin author needs to fix.
 
+const entrypoints = new Map<string, RouterEntrypoint>();
+
+/**
+ * Register a new router entrypoint. Plugin-author primitive surfaced
+ * through `@mysten-incubation/devstack/advanced` so `dockerContainer`
+ * users can add their own traefik entrypoint without editing the closed
+ * array that used to live here.
+ *
+ * Idempotent on `(name, port)`: re-registering the same entry is a
+ * no-op so module reloads under `pnpm dev` don't throw. Conflicting
+ * registration (same name, different port) throws synchronously — the
+ * registry is single source of truth, silently overwriting would let
+ * two callers fight over the same name and both lose.
+ */
+export const defineEntrypoint = (entry: RouterEntrypoint): void => {
+	const existing = entrypoints.get(entry.name);
+	if (existing !== undefined) {
+		if (existing.port !== entry.port || existing.defaultProtocol !== entry.defaultProtocol) {
+			throw new Error(
+				`router: defineEntrypoint('${entry.name}') conflicts with prior registration ` +
+					`(have port=${existing.port} defaultProtocol=${existing.defaultProtocol ?? 'http'}, ` +
+					`new port=${entry.port} defaultProtocol=${entry.defaultProtocol ?? 'http'})`,
+			);
+		}
+		return;
+	}
+	entrypoints.set(entry.name, entry);
+};
+
+/**
+ * Lookup the registered entrypoint for `name`. Returns `undefined` if no
+ * entrypoint matches — primitives that depend on a known entrypoint
+ * should treat undefined as a hard error and fail with a typed
+ * `*Error({phase: 'router-entrypoint'})`, not silently fall through.
+ */
 export const routerEntrypoint = (name: string): RouterEntrypoint | undefined =>
-	ROUTER_ENTRYPOINTS.find((e) => e.name === name);
+	entrypoints.get(name);
+
+/**
+ * Snapshot of all currently-registered entrypoints. Read by
+ * `runRouterFresh` to compose the router `docker run` flags. Returned
+ * as a fresh array so the caller can't mutate the registry by
+ * accident.
+ */
+export const listEntrypoints = (): ReadonlyArray<RouterEntrypoint> =>
+	Array.from(entrypoints.values());
+
+// In-tree entrypoint registrations. Each call is the canonical place to
+// declare a port that's bound by the shared traefik container. Plugin
+// authors call `defineEntrypoint` from their own module so their
+// registration lands at module load time (before `ensureRouter`).
+defineEntrypoint({ name: 'sui-rpc', port: 9000 });
+defineEntrypoint({ name: 'sui-faucet', port: 9123 });
+defineEntrypoint({ name: 'sui-graphql', port: 9125 });
+// `sui-grpc` is the data-plane + admin port for `sui-fork` (the
+// `sui-rpc-api` tonic server registers BOTH `sui.rpc.v2.*` and
+// `sui.forking.v1alpha.ForkingService` on the same listener — see
+// `crates/sui-fork/src/startup.rs:192-198`). Picked 50051 to align
+// with the canonical gRPC well-known port (and because it's free
+// in the existing port map). Routes default to `protocol: 'h2c'` so
+// Traefik forwards HTTP/2 cleartext through to the fork container;
+// every other entrypoint inherits the `'http'` default.
+defineEntrypoint({ name: 'sui-grpc', port: 50051, defaultProtocol: 'h2c' });
+defineEntrypoint({ name: 'walrus', port: 9185 });
+defineEntrypoint({ name: 'seal', port: 2024 });
+defineEntrypoint({ name: 'wallet', port: 5180 });
+defineEntrypoint({ name: 'vite', port: 5175 });
+// Phase 2 — DeepBook indexer Prometheus metrics endpoint. The Rust
+// indexer binary exposes /metrics on port 9184 (sandbox parity).
+defineEntrypoint({ name: 'deepbook-indexer-metrics', port: 9184 });
+// Phase 3 — DeepBook server REST API + Prometheus metrics. The Rust
+// server binary exposes the REST API on 9008 (sandbox parity) and
+// /metrics on 9186 — picked because 9184 is owned by the indexer's
+// metrics and 9185 is owned by walrus's storage REST. (The plan
+// originally proposed 9185 for the server metrics, but walrus already
+// holds that port; 9186 keeps the metrics flowing without collision.)
+defineEntrypoint({ name: 'deepbook-server', port: 9008 });
+defineEntrypoint({ name: 'deepbook-server-metrics', port: 9186 });
 
 // Idempotent: probe for the router container; if running, return.
 // Otherwise ensure the network exists, then create + start the
@@ -264,8 +346,9 @@ const inspectRouter = (
 const runRouterFresh = (spawner: Spawner): Effect.Effect<void, DockerError> =>
 	Effect.gen(function* () {
 		const dynDir = routerDynamicDir();
+		const eps = listEntrypoints();
 		const portFlags: Array<string> = [];
-		for (const ep of ROUTER_ENTRYPOINTS) {
+		for (const ep of eps) {
 			portFlags.push('-p', `127.0.0.1:${ep.port}:${ep.port}`);
 		}
 		// Traefik dashboard on 8080 — local debug surface; off-host
@@ -295,7 +378,7 @@ const runRouterFresh = (spawner: Spawner): Effect.Effect<void, DockerError> =>
 			'--providers.file.directory=/etc/traefik/dynamic',
 			'--providers.file.watch=true',
 		];
-		for (const ep of ROUTER_ENTRYPOINTS) {
+		for (const ep of eps) {
 			args.push(`--entrypoints.${ep.name}.address=:${ep.port}`);
 		}
 
@@ -317,7 +400,8 @@ export interface RouterLabel {
 	readonly id: string;
 	/** Hostname that should match (e.g. `sui.arena.localhost`). */
 	readonly hostname: string;
-	/** Entrypoint name (must match one in `ROUTER_ENTRYPOINTS`). */
+	/** Entrypoint name (must match a name registered via
+	 *  `defineEntrypoint`). */
 	readonly entrypoint: string;
 	/** Internal container port the upstream service is bound to. */
 	readonly servicePort: number;
@@ -328,6 +412,16 @@ export interface RouterLabel {
 	 * dev-server — walrus storage nodes, primarily. Default `false`.
 	 */
 	readonly cors?: boolean;
+	/**
+	 * Wire-level protocol Traefik should speak to the upstream. Defaults
+	 * to `'http'` (HTTP/1.1 + opportunistic HTTP/2 over TLS upgrade —
+	 * what every JSON/REST backend wants). Set `'h2c'` for gRPC
+	 * upstreams that serve HTTP/2 cleartext on a bare TCP port (no TLS,
+	 * no Upgrade header). `sui-fork` is the primary consumer — its
+	 * gRPC server speaks h2c so Traefik must dial it as `h2c://…`
+	 * instead of plain `http://…`. Other entrypoints unchanged.
+	 */
+	readonly protocol?: 'http' | 'h2c';
 }
 
 // File-provider YAML body for host processes (vite, wallet-app) that
@@ -357,6 +451,18 @@ export interface FileProviderEntry {
 	 * access. Default `false`.
 	 */
 	readonly cors?: boolean;
+	/**
+	 * Wire-level protocol Traefik should speak to the upstream service.
+	 * Default `'http'` (HTTP/1.1, the existing behavior). Set `'h2c'`
+	 * when the backend is an HTTP/2 cleartext server (no TLS, no
+	 * Upgrade header) — Traefik needs the `h2c://` URL scheme to
+	 * negotiate HTTP/2 directly with the upstream. `sui-fork`'s gRPC
+	 * server is the only `'h2c'` consumer in-tree today; other
+	 * entrypoints inherit the `'http'` default. Set on the matching
+	 * `RouterLabel`; `materializeRouterEntries` in `docker/core.ts`
+	 * threads it through to this struct.
+	 */
+	readonly protocol?: 'http' | 'h2c';
 }
 
 // Middleware reference list for a router. When `cors === true`, point

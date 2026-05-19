@@ -28,6 +28,7 @@ import { join as joinPath } from 'node:path';
 import { DockerLabel } from '../identity.js';
 import { isPidAlive as isPidAliveShared } from '../process-liveness.js';
 import { Registry, type RegistryEntry } from '../registry.js';
+import { resolveAppDir } from '../resolve-app-dir.js';
 import { ROUTER_CONTAINER, ROUTER_NETWORK } from './router.js';
 
 type Spawner = ReturnType<typeof ChildProcessSpawner.make>;
@@ -624,7 +625,7 @@ export const collectInventory = (
 
 		// Map (app, stack) buckets to inventory rows + look up state dirs
 		// and running pids per row.
-		const cwd = process.env.DEVSTACK_APP_DIR ?? process.cwd();
+		const cwd = resolveAppDir();
 		const roots = options.roots !== undefined ? options.roots : ([cwd] as ReadonlyArray<string>);
 
 		// Enumerate state dirs ONCE across all roots — the result is

@@ -8,14 +8,37 @@
 //
 // Span: `walrus.nodes` (preserved).
 
-import { Effect } from 'effect';
+import { Effect, Scope } from 'effect';
 import * as Docker from '../../engine/docker.js';
+import { StopFinalizerScope } from '../../engine/docker/sweep.js';
 import { EngineHandle } from '../../engine/engine.js';
 import type { IdentityShape } from '../../engine/identity.js';
-import { routerHostname, routerId } from '../../engine/router-hostname.js';
+import { routerHostname } from '../../engine/router-hostname.js';
+import { runDockerContainer } from '../../advanced/plugin-author/docker-container.js';
 import { WalrusError } from '../../engine/errors.js';
 import type { NodeState } from './internal.js';
 import { WALRUS_NODE_IP_BASE } from './internal.js';
+
+// Per-level ranking for the min-level filter below. info < warn < error,
+// so a min='warn' threshold suppresses INFO and lets WARN+ERROR through.
+const LEVEL_RANK: Record<Docker.OutputLineLevel, number> = { info: 0, warn: 1, error: 2 };
+
+// Walrus storage nodes emit ~5–20 INFO lines per second per node (checkpoint
+// downloader, garbage collector phases, sync progress) — totally normal
+// runtime narration that's useful in `docker logs <node>` for debugging
+// but noise in the TUI log panel where it pushes more important lines off
+// screen. Default min-level = 'warn' suppresses INFO from the supervisor's
+// sink WITHOUT silencing the container itself — the stderr stream still
+// flows freely, and `docker logs private-content-walrus-walrus-node-0`
+// shows everything. Override with `DEVSTACK_LOG_LEVEL=info` (or trace /
+// debug — both map to info) when you actively want the firehose in the TUI.
+const resolveMinLevel = (defaultMin: Docker.OutputLineLevel): Docker.OutputLineLevel => {
+	const env = process.env.DEVSTACK_LOG_LEVEL?.toLowerCase();
+	if (env === 'trace' || env === 'debug' || env === 'info') return 'info';
+	if (env === 'warn' || env === 'warning') return 'warn';
+	if (env === 'error' || env === 'fatal') return 'error';
+	return defaultMin;
+};
 
 // Per-line sink: tag each line with the storage-node label so the
 // TUI tail makes attribution obvious. No-op when no engine is wired
@@ -23,12 +46,15 @@ import { WALRUS_NODE_IP_BASE } from './internal.js';
 const makeNodeOutputSink = (label: string): Effect.Effect<Docker.OutputLineCallback> =>
 	Effect.gen(function* () {
 		const engineOpt = yield* Effect.serviceOption(EngineHandle);
-		return (level, line) =>
-			engineOpt._tag === 'None'
+		const minRank = LEVEL_RANK[resolveMinLevel('warn')];
+		return (level, line) => {
+			if (LEVEL_RANK[level] < minRank) return Effect.void;
+			return engineOpt._tag === 'None'
 				? Effect.void
 				: engineOpt.value
 						.appendLog({ ts: Date.now(), level, message: `[${label}] ${line}` })
 						.pipe(Effect.ignore);
+		};
 	});
 
 export const startStorageNodes = (args: {
@@ -52,6 +78,14 @@ export const startStorageNodes = (args: {
 	subnetPrefix: string;
 	identity: IdentityShape;
 	faucetUrl: string;
+	/** Engine row key all node stop-finalizers target so per-row teardown
+	 * progress (✓ ready → ⊘ stopping → ⊠ stopped) lands on the single
+	 * `walrus.cluster` row instead of spawning N phantom rows in the
+	 * TUI's "Other" section. Passed by the caller (walrus/local-cluster.ts)
+	 * because that file builds its tag via `Layer.effectContext` directly,
+	 * which means `withEngineLifecycle` never runs and the usual
+	 * `CurrentTagKey` ambient default isn't available. */
+	engineTagKey: string;
 }) =>
 	Effect.fn('walrus.nodes')(function* () {
 		// HIGH-V4: boot all N storage nodes in parallel instead of
@@ -63,6 +97,19 @@ export const startStorageNodes = (args: {
 		// pipeline is independent (separate container name, IP, ready
 		// probe); the result order is preserved by `Effect.all` on an
 		// indexed array.
+		//
+		// Parallel stop-scope for symmetric teardown: at shutdown, each
+		// node's docker-stop finalizer would otherwise fire in series
+		// on this composite primitive's single layer scope (~N × 20s
+		// grace = 80s for a 4-node cluster, dominating perceived
+		// shutdown wall time). Forking a parallel-strategy child here
+		// and providing it as `StopFinalizerScope` for the per-node
+		// `Docker.run` calls below routes their stop finalizers to a
+		// sibling-fanout scope — `docker stop`s fire concurrently when
+		// the cluster's outer scope closes. Acquire stays serial within
+		// each node; only teardown parallelizes.
+		const clusterScope = yield* Effect.scope;
+		const nodeStopScope = yield* Scope.fork(clusterScope, 'parallel');
 		const indices = Array.from({ length: args.nodeCount }, (_, i) => i);
 		const bootOne = (i: number) =>
 			Effect.gen(function* () {
@@ -85,11 +132,16 @@ export const startStorageNodes = (args: {
 				// `args.suiNetwork` (via `Docker.networkConnect` below) so
 				// the in-container `WALRUS_FAUCET_URL` (`http://sui-localnet
 				// :9123/v1/gas`) resolves via docker DNS.
-				const runResult = yield* Docker.run({
-					name: containerName,
-					image: args.image,
+				// `runDockerContainer({tag})` reuses the pre-built walrus
+				// wrapper image — the image was materialized once in
+				// `internal.ts::acquireLocalCluster` (via `buildWrapperImage`)
+				// and threaded through here as `args.image`. Routing
+				// `name: 'walrus-node-N'` keeps the per-node hostname
+				// stable for the chain-registered committee record.
+				const runResult = yield* runDockerContainer(containerName, {
+					image: { tag: args.image },
 					args: ['/bin/bash', '-c', '/opt/walrus/scripts/run-walrus.sh'],
-					mounts: [{ host: args.deployDir, container: '/opt/walrus/outputs' }],
+					mounts: [{ source: args.deployDir, target: '/opt/walrus/outputs' }],
 					// `--hostname` so the container's actual hostname matches
 					// the chain-registered name. `WALRUS_FAUCET_URL` is the
 					// docker-DNS sui-localnet faucet URL (see
@@ -99,17 +151,9 @@ export const startStorageNodes = (args: {
 					ip: containerIp,
 					hostname: nodeHostname,
 					networkAlias: `walrus-node-${i}.localhost`,
-					detach: true,
-					// Per-node traefik router entry. `id` is
-					// `<app>-<stack>-walrus-node-N`; `hostname` is the
-					// stack-scoped hostname the deploy phase registered on
-					// chain; `entrypoint: walrus` resolves to the well-known
-					// 9185 port (see `ROUTER_ENTRYPOINTS`); `servicePort` is
-					// the in-container port the storage node binds on.
-					traefik: [
+					routing: [
 						{
-							id: routerId(args.identity, `walrus-node-${i}`),
-							hostname: publicHostname,
+							name: `walrus-node-${i}`,
 							entrypoint: 'walrus',
 							servicePort: args.containerApiPort,
 							// Walrus storage-node REST API doesn't emit CORS
@@ -125,12 +169,43 @@ export const startStorageNodes = (args: {
 					// peer-config / WAL-fund mishaps that surface as recurring
 					// log lines rather than container exits.
 					onOutputLine,
-				}).pipe(
+					// Storage nodes maintain RocksDB-backed state at
+					// `/opt/walrus/outputs/<node>/storage` — needs >10s to
+					// flush + checkpoint on `docker stop`. Without this they
+					// get SIGKILL'd and the next start runs RocksDB
+					// log-replay before serving, slowing committee readiness.
+					stopGraceSeconds: 20,
+					// All 4 storage-node stop finalizers target the SAME
+					// engine row (the `walrus.cluster` aggregate the user
+					// sees). `runDockerContainer`'s usual default — read
+					// `CurrentTagKey` from the enclosing `withEngineLifecycle`
+					// wrapper — doesn't fire here because walrus-local-cluster
+					// is composed via `Layer.effectContext` directly (not via
+					// `tag()`/`provide()`), so the wrapper never runs and
+					// `CurrentTagKey` stays at its empty-string default.
+					// Without this explicit pass-through the fallback would
+					// hand the container name through, creating 4 phantom
+					// `walrus-walrus-node-N` rows in the TUI's "Other"
+					// section AND leaving the real `walrus.cluster` row
+					// stuck on `ready` through teardown. The last node's
+					// `markStopped` wins so the row's final state matches
+					// the actual container set.
+					engineTagKey: args.engineTagKey,
+				}).effect.pipe(
 					Effect.catchTag('DockerError', (cause) =>
 						Effect.fail(
 							new WalrusError({
 								phase: 'nodes',
 								message: `walrus.nodes: failed to start storage node ${i}: ${cause.message}`,
+								cause,
+							}),
+						),
+					),
+					Effect.catchTag('ReadyProbeError', (cause) =>
+						Effect.fail(
+							new WalrusError({
+								phase: 'nodes',
+								message: `walrus.nodes: storage node ${i} failed ready probe: ${cause.message}`,
 								cause,
 							}),
 						),
@@ -196,6 +271,8 @@ export const startStorageNodes = (args: {
 				} satisfies NodeState;
 			});
 
-		const nodes = yield* Effect.all(indices.map(bootOne), { concurrency: 'unbounded' });
+		const nodes = yield* Effect.all(indices.map(bootOne), { concurrency: 'unbounded' }).pipe(
+			Effect.provideService(StopFinalizerScope, nodeStopScope),
+		);
 		return nodes;
 	})();

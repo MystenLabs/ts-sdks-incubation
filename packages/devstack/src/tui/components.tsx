@@ -6,7 +6,7 @@
 // cursor/clear/diff plumbing so we don't hand-roll any ANSI; that
 // responsibility moves entirely out of our codebase.
 
-import { Box, Static, Text, useApp, useInput } from 'ink';
+import { Box, Static, Text, useInput } from 'ink';
 import React, { useEffect, useState } from 'react';
 import type { EngineHandleShape } from '../engine/engine.js';
 import { Effect, Ref } from 'effect';
@@ -18,7 +18,7 @@ import type {
 	TuiHeader,
 	TuiLog,
 	TuiState,
-} from './render.js';
+} from '../engine/tui-state.js';
 
 /** The five user-intent sections the TUI groups by. Excludes 'other',
  *  which is the catchall for hand-rolled refs that fall through to
@@ -70,6 +70,10 @@ const STATUS_GLYPH: Record<TagStatus, string> = {
 	acquiring: '⊙',
 	ready: '✓',
 	failed: '✗',
+	// Teardown glyphs — ⊘ "in progress" and ⊠ "terminated". Dim greys
+	// (set below) keep them visually subordinate to live rows.
+	stopping: '⊘',
+	stopped: '⊠',
 };
 
 const STATUS_COLOR: Record<TagStatus, string | undefined> = {
@@ -77,6 +81,10 @@ const STATUS_COLOR: Record<TagStatus, string | undefined> = {
 	acquiring: 'cyan',
 	ready: 'green',
 	failed: 'red',
+	// Yellow while in-flight, grey once done — matches the BUILD_STATUS_COLOR
+	// 'shutting-down' tint for visual continuity with the header.
+	stopping: 'yellow',
+	stopped: undefined,
 };
 
 const BUILD_STATUS_COLOR: Record<BuildStatus, string | undefined> = {
@@ -88,10 +96,10 @@ const BUILD_STATUS_COLOR: Record<BuildStatus, string | undefined> = {
 };
 
 // Per-section/per-source color so the eye can scan which lines come
-// from which service without re-reading every label. Stable mapping —
-// keep in lockstep with the keys produced by `parseTitle`'s `<group>`.
-// Unknown groups fall through to `magenta` so a new primitive still
-// gets a distinct tint until it's added here.
+// from which service without re-reading every label. Used for the section
+// headers (`services`, `packages`, …) and log-line source prefixes — both
+// of those are group-name driven. Plugin-colored row chips use the
+// separate `pluginColor()` map below.
 // `red` deliberately omitted: the `failed` status badge is rendered
 // red, and a section heading also tinted red would mislead the eye
 // into reading the section as failed when only one row inside is.
@@ -118,6 +126,54 @@ const sectionColor = (group: string): string => {
 	}
 	const color = SECTION_COLORS[h % SECTION_COLORS.length] ?? 'magenta';
 	SECTION_COLOR_CACHE.set(key, color);
+	return color;
+};
+
+// Predefined plugin→color map for in-tree services. The user learns the
+// legend once ("blue = walrus") and it stays consistent across runs,
+// across stacks, and across examples. Out-of-tree plugins fall back to a
+// name-hash against the same palette so they still get a stable color,
+// just not a memorable one. The ordering also drives same-plugin row
+// adjacency in `GroupSection` — services within a section render in
+// PLUGIN_ORDER first, then by their original config-position.
+const PLUGIN_COLOR_MAP: ReadonlyMap<string, string> = new Map([
+	['sui', 'cyan'],
+	['walrus', 'blue'],
+	['seal', 'magenta'],
+	['deepbook', 'green'],
+	['coin', 'yellow'],
+	['wallet', 'cyanBright'],
+	['move', 'greenBright'],
+	['codegen', 'greenBright'],
+	['pyth', 'magenta'],
+	['postgres', 'blue'],
+	// Generic primitives keep colors but no strong identity. They tend to
+	// share sections rather than dominate them.
+	['account', 'yellow'],
+	['action', 'yellow'],
+	['dev', 'cyan'],
+]);
+const PLUGIN_ORDER: ReadonlyMap<string, number> = new Map(
+	Array.from(PLUGIN_COLOR_MAP.keys()).map((p, i) => [p, i]),
+);
+const PLUGIN_COLOR_CACHE = new Map<string, string>();
+const pluginColor = (plugin: string): string => {
+	const key = plugin.toLowerCase();
+	const fromMap = PLUGIN_COLOR_MAP.get(key);
+	if (fromMap !== undefined) return fromMap;
+	const cached = PLUGIN_COLOR_CACHE.get(key);
+	if (cached !== undefined) return cached;
+	// Same FNV-1a hash as sectionColor so an external plugin's color is
+	// stable across runs. Hash the plugin name (not group name) so an
+	// out-of-tree plugin with multiple services keeps a consistent color
+	// across its own rows.
+	let h = 0x811c9dc5;
+	for (let i = 0; i < key.length; i++) {
+		h = (h ^ key.charCodeAt(i)) >>> 0;
+		h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+	}
+	const color = SECTION_COLORS[h % SECTION_COLORS.length] ?? 'magenta';
+	PLUGIN_COLOR_CACHE.set(key, color);
 	return color;
 };
 
@@ -168,7 +224,15 @@ const phraseStatusWord = (phase: string): string => {
 };
 
 const statusWord = (entry: TuiEntry): string => {
-	if (entry.status === 'ready' && entry.kind === 'action') return 'done';
+	// "ready" only applies to live primitives the user can dial (services
+	// with running processes/containers/sockets). Everything else — accounts
+	// that produced an address, packages that published a packageId, actions
+	// that executed a tx, codegen that emitted files, the manifest sidecar
+	// — is one-shot work that COMPLETED, not a live thing standing by.
+	// "done" reads as "this is finished", which matches what's actually true
+	// for those rows. Previously only `action` got the "done" word; widening
+	// to the full set of one-shot kinds.
+	if (entry.status === 'ready' && entry.kind !== 'service') return 'done';
 	if (entry.status === 'acquiring') {
 		return entry.phase !== undefined && entry.phase.length > 0
 			? phraseStatusWord(entry.phase)
@@ -248,6 +312,16 @@ const resolveDetail = (entry: TuiEntry): Detail | null => {
 	if (entry.status === 'acquiring' && entry.phase !== undefined && entry.phase.length > 0) {
 		return { text: truncate(entry.phase), dim: true };
 	}
+	// Multi-endpoint primitives (sui's rpc/faucet/graphql) render the
+	// FIRST endpoint inline in the detail column so the row reads the
+	// same width as single-URL rows; continuation endpoints are rendered
+	// as additional rows in `NodeRow` aligned under the detail column
+	// (see the `restEndpoints` block there). Keeps the per-endpoint
+	// label visible without breaking the row-per-primitive scan.
+	if (entry.endpoints !== undefined && entry.endpoints.length > 0) {
+		const first = entry.endpoints[0]!;
+		return { text: `${first.label}  ${first.url}`, color: 'cyan' };
+	}
 	if (entry.primary !== undefined && entry.primary.length > 0) {
 		const extras =
 			entry.extras !== undefined && entry.extras.length > 0 ? ` (${entry.extras.join(', ')})` : '';
@@ -283,7 +357,6 @@ export interface AppProps {
 // already faster than the eye can perceive flicker.
 export function App(props: AppProps): React.ReactElement {
 	const [state, setState] = useState<TuiState>(emptyState);
-	const inkApp = useApp();
 	const pollIntervalMs = props.pollIntervalMs ?? 100;
 
 	useEffect(() => {
@@ -307,15 +380,21 @@ export function App(props: AppProps): React.ReactElement {
 
 	useInput((input, key) => {
 		if (input === 'q' || input === 'Q') {
-			// Flash the shutdown status + log line BEFORE killing the
-			// process: the scope-teardown finalizers (`docker rm -f`, etc.)
-			// hold the event loop uninterruptibly, so without an explicit
-			// pre-kill render tick the header freezes on `[running]` and
-			// reads as a hang. `onFlush` (when wired by the TUI mount)
-			// is a synchronous "land this state in the rendered tree
-			// before the next event-loop turn" hook, replacing the
-			// prior hardcoded 150ms sleep that had to win a race
-			// against the docker-rm finalizers.
+			// Flash the shutdown status + log line, then ask the supervisor
+			// to shut down via the in-process `requestShutdown` signal.
+			// Previously this called `process.kill(process.pid, 'SIGINT')`
+			// to drive shutdown through NodeRuntime.runMain's signal
+			// handler, but that lost a race with `inkApp.exit()`'s stdin
+			// detach in practice — the SIGINT would arrive but the
+			// supervisor's interruptible await had already moved past the
+			// scheduling boundary, so the loop stayed parked at
+			// `awaitRestart` and only a real terminal Ctrl-C (which sends
+			// SIGINT to the foreground process group) could unwedge it.
+			// `requestShutdown` is a Deferred the supervisor races against
+			// `awaitRestart`; when it fires, the launch loop returns
+			// cleanly and the outer Effect.scoped tears down all
+			// finalizers. `inkApp.exit()` stays so the terminal restores
+			// to a normal prompt while finalizers run in the background.
 			Effect.runFork(
 				Effect.gen(function* () {
 					yield* props.engine.setBuildStatus('shutting-down');
@@ -324,12 +403,12 @@ export function App(props: AppProps): React.ReactElement {
 						level: 'info',
 						message: SHUTDOWN_LOG_MESSAGE,
 					});
+					yield* props.engine.requestShutdown;
 				}).pipe(
 					Effect.tap(() =>
 						Effect.sync(() => {
 							if (props.onFlush !== undefined) props.onFlush();
 							props.onQuit();
-							inkApp.exit();
 						}),
 					),
 				),
@@ -364,7 +443,7 @@ export function App(props: AppProps): React.ReactElement {
 			<Box flexDirection="column">
 				<Header header={state.header} />
 				<NodeTable entries={state.entries} />
-				<Footer />
+				<Footer header={state.header} entries={state.entries} />
 			</Box>
 		</>
 	);
@@ -458,6 +537,28 @@ function NodeTable({ entries }: { readonly entries: ReadonlyArray<TuiEntry> }): 
 const COLLAPSED_SECTIONS: ReadonlySet<string> = new Set(['actions']);
 const COLLAPSE_THRESHOLD = 2;
 
+// Sort within a section so same-plugin rows are visually adjacent. Plugin
+// order = PLUGIN_ORDER ranking (sui < walrus < seal < …), with unknown
+// plugins after known and undefined-plugin entries last. Within a plugin,
+// preserve input order so an author's config-position is the tiebreaker.
+const sortByPlugin = (entries: ReadonlyArray<TuiEntry>): ReadonlyArray<TuiEntry> => {
+	const positioned = entries.map((entry, position) => ({ entry, position }));
+	positioned.sort((a, b) => {
+		const ap = a.entry.plugin?.toLowerCase();
+		const bp = b.entry.plugin?.toLowerCase();
+		if (ap === bp) return a.position - b.position;
+		if (ap === undefined) return 1;
+		if (bp === undefined) return -1;
+		const ar = PLUGIN_ORDER.get(ap) ?? Number.MAX_SAFE_INTEGER;
+		const br = PLUGIN_ORDER.get(bp) ?? Number.MAX_SAFE_INTEGER;
+		if (ar !== br) return ar - br;
+		// Both unknown to the predefined map: lexical so external plugins
+		// at least cluster consistently.
+		return ap < bp ? -1 : ap > bp ? 1 : a.position - b.position;
+	});
+	return positioned.map((p) => p.entry);
+};
+
 function GroupSection({
 	label,
 	entries,
@@ -474,12 +575,16 @@ function GroupSection({
 	// the URL the user actually needs.
 	const hasVisibleEndpoints = (e: TuiEntry): boolean =>
 		e.endpoints !== undefined && e.endpoints.length > 0;
+	// Same-plugin adjacency: applied per-section so sui's rows cluster, then
+	// walrus's, etc. Done BEFORE the ready/others split so the action-fold
+	// collapse still operates on a consistent ordering.
+	const sortedEntries = sortByPlugin(entries);
 	const ready = collapsible
-		? entries.filter((e) => e.status === 'ready' && !hasVisibleEndpoints(e))
+		? sortedEntries.filter((e) => e.status === 'ready' && !hasVisibleEndpoints(e))
 		: [];
 	const others = collapsible
-		? entries.filter((e) => e.status !== 'ready' || hasVisibleEndpoints(e))
-		: entries;
+		? sortedEntries.filter((e) => e.status !== 'ready' || hasVisibleEndpoints(e))
+		: sortedEntries;
 	const shouldCollapse = collapsible && ready.length > COLLAPSE_THRESHOLD;
 	return (
 		<Box flexDirection="column">
@@ -538,16 +643,44 @@ function CollapsedReadyRow({
 function NodeRow({ entry }: { readonly entry: TuiEntry }): React.ReactElement {
 	const glyph = STATUS_GLYPH[entry.status];
 	const color = STATUS_COLOR[entry.status];
-	// `endpoints`-bearing rows render the URLs on dedicated indented lines
-	// below the row; the detail column is suppressed to avoid duplicating
-	// the same URL. Failure rows still resolve `detail` from `error` so the
-	// short failure summary lands on the row even when endpoints were
-	// previously populated.
-	const detail =
-		entry.endpoints !== undefined && entry.endpoints.length > 0 && entry.status !== 'failed'
-			? null
-			: resolveDetail(entry);
+	// `endpoints`-bearing primitives now render their URLs joined into the
+	// detail column (see `resolveDetail`) — inline with the rest of the
+	// dashboard's single-URL layout. The previous design rendered each
+	// endpoint on its own indented sub-line below the row, which broke
+	// the row-per-primitive scannability and ate vertical space; with the
+	// joined-detail approach NodeRow no longer needs a separate sub-line
+	// block, and the layout stays uniform across single-URL and
+	// multi-URL rows.
+	const detail = resolveDetail(entry);
 	const { name } = parseTitle(entryTitle(entry));
+	// Plugin chip: `[<plugin>]` in the plugin's color, between the status
+	// glyph and the row name. Same-plugin rows share a color the user can
+	// learn ("blue = walrus"); out-of-tree plugins get a stable hash-derived
+	// color. Plugin-less rows skip the chip entirely so the layout doesn't
+	// reserve dead space for entries without attribution.
+	const chip = entry.plugin !== undefined ? `[${entry.plugin}] ` : '';
+	const chipColor = entry.plugin !== undefined ? pluginColor(entry.plugin) : undefined;
+	// Selective-restart hook: when this row is in the affected set of a
+	// watch-driven cascade AND it's mid-re-acquire, render the status word
+	// in `inverse` so the eye can trace which rows are flipping vs. the
+	// rest of the dashboard (which keeps its `ready` glyphs steady). Once
+	// the row reaches `ready` the engine clears `selectiveRestart` and the
+	// inverse fades — the per-row "did this restart fire because of MY
+	// edit?" question is answerable at a glance. Distinct from
+	// full-rebuild `r`: that route doesn't set `selectiveRestart`, so
+	// every row stays in plain-color `acquiring`.
+	const selective = entry.selectiveRestart === true && entry.status === 'acquiring';
+	// Continuation rows for multi-endpoint primitives (sui's rpc/faucet/
+	// graphql). `resolveDetail` puts endpoint #0 inline in the detail
+	// column; #1+ render here, aligned UNDER the detail column so the
+	// per-endpoint label/url pairs line up with the first endpoint
+	// (instead of running off the left margin). Endpoint width matches
+	// the row's left prefix (1 + 3 + NAME_WIDTH + STATUS_WIDTH).
+	const restEndpoints =
+		entry.endpoints !== undefined && entry.endpoints.length > 1
+			? entry.endpoints.slice(1)
+			: undefined;
+	const DETAIL_COLUMN_INDENT = 1 + 3 + NAME_WIDTH + STATUS_WIDTH;
 	return (
 		<Box flexDirection="column">
 			<Box>
@@ -558,10 +691,11 @@ function NodeRow({ entry }: { readonly entry: TuiEntry }): React.ReactElement {
 					<Text color={color}>{glyph}</Text>
 				</Box>
 				<Box width={NAME_WIDTH}>
+					{chip.length > 0 ? <Text color={chipColor}>{chip}</Text> : null}
 					<Text>{name}</Text>
 				</Box>
 				<Box width={STATUS_WIDTH}>
-					<Text color={color} dimColor={entry.status === 'pending'}>
+					<Text color={color} dimColor={entry.status === 'pending'} inverse={selective}>
 						{statusWord(entry)}
 					</Text>
 				</Box>
@@ -582,27 +716,19 @@ function NodeRow({ entry }: { readonly entry: TuiEntry }): React.ReactElement {
 					) : null}
 				</Box>
 			</Box>
-			{entry.endpoints !== undefined && entry.endpoints.length > 0
-				? entry.endpoints.map((ep) => {
-						// Labelled tree below the row: ` • <label>  <url>`.
-						// Label column is fixed width so URLs line up across
-						// endpoints. The bullet is dim grey so the row glyph
-						// (✓ / ✗ / ⊙) stays visually dominant.
-						const labelWidth = Math.max(8, ...(entry.endpoints ?? []).map((e) => e.label.length));
-						return (
-							<Box key={ep.label} paddingLeft={4 + 3 + 1}>
-								<Box width={2}>
-									<Text dimColor>•</Text>
-								</Box>
-								<Box width={labelWidth + 2}>
-									<Text dimColor>{ep.label}</Text>
-								</Box>
+			{restEndpoints !== undefined
+				? restEndpoints.map((ep) => (
+						<Box key={ep.label}>
+							<Box width={DETAIL_COLUMN_INDENT}>
+								<Text> </Text>
+							</Box>
+							<Box flexGrow={1}>
 								<Text color="cyan" wrap="wrap">
-									{ep.url}
+									{`${ep.label}  ${ep.url}`}
 								</Text>
 							</Box>
-						);
-					})
+						</Box>
+					))
 				: null}
 		</Box>
 	);
@@ -629,35 +755,161 @@ const parseLogSource = (
 	return { source: groupKey, rest: message.slice(match[0].length) };
 };
 
+// Cap on how many continuation lines a single log entry can render in
+// the TUI panel. A walrus storage-node dumping its StorageNodeConfig
+// (~200 lines of nested Rust struct debug) or sui's checkpoint trace
+// would otherwise push everything else off-screen on each emission.
+// Errors that need the full body (the pretty-printed cause trees we
+// added explicit support for) almost always fit in <12 lines; anything
+// beyond that is debug-spam that belongs in `docker logs <container>`.
+const MAX_LOG_CONTINUATION_LINES = 12;
+
+// Per-line length cap for routine container logs (INFO/WARN). Walrus +
+// sui dump structured JSON-per-line (`{"timestamp":…,"level":"INFO",
+// "fields":{"message":"…huge config dump…"}, "target":"…"}`) that's
+// useful for `docker logs` debugging but unreadable in a TUI strip.
+// Capping at 240 chars keeps the most-recent N entries visible without
+// requiring the user to scroll a single entry to read the next one.
+// ERROR/FATAL stay uncapped so the UNCLEAN PRIOR SHUTDOWN body, faucet
+// 500-with-payload responses, and stack-acquire-failed cause trees all
+// surface in full — those are the lines the user MUST see.
+const INFO_LOG_MAX_CHARS = 240;
+const capInfoLine = (level: string, line: string): string => {
+	const lvl = level.toLowerCase();
+	if (lvl === 'error' || lvl === 'fatal') return line;
+	if (line.length <= INFO_LOG_MAX_CHARS) return line;
+	return `${line.slice(0, INFO_LOG_MAX_CHARS - 1)}…`;
+};
+
 function LogLine({ log }: { readonly log: TuiLog }): React.ReactElement {
 	const color = levelColor(log.level);
-	const firstLine = log.message.split('\n')[0] ?? log.message;
+	// Split on newlines so multi-line bodies (pretty-printed cause trees,
+	// stack-acquire-failed dumps) render in full — fixing the
+	// `.split('\n')[0]` truncation that silently dropped everything after
+	// the first line. Continuation lines wrap via ink's `wrap='wrap'`
+	// instead of the previous hard-truncate at 120 chars.
+	//
+	// Two caps applied:
+	//  - Per-line chars (INFO_LOG_MAX_CHARS=240) for INFO/WARN to keep
+	//    container JSON-log soup from dominating the panel. ERROR/FATAL
+	//    stay uncapped so the actionable bits (recovery commands, full
+	//    cause walks) stay readable.
+	//  - Continuation count (MAX_LOG_CONTINUATION_LINES=12) so a verbose
+	//    multi-line dump can't push everything else off-screen; surface
+	//    the overflow count so the user knows there's more in `docker logs`.
+	const lines = log.message.split('\n');
+	const firstLine = lines[0] ?? log.message;
+	const restLines = lines.slice(1);
+	const visibleRest = restLines.slice(0, MAX_LOG_CONTINUATION_LINES);
+	const hiddenLineCount = restLines.length - visibleRest.length;
 	const { source, rest } = parseLogSource(firstLine);
 	const srcColor = source !== undefined ? sectionColor(source) : undefined;
+	const capLine = (s: string) => capInfoLine(log.level, s);
+	// Continuation lines align under the message column ("HH:MM:SS " +
+	// "LEVEL " = 15 chars) so they read as one entry instead of unanchored
+	// continuation text.
+	const indent = ' '.repeat(15);
 	return (
-		<Text>
-			<Text dimColor>{formatTime(log.ts)}</Text>
-			<Text> </Text>
-			{color !== undefined ? (
-				<Text color={color}>{log.level.padEnd(5)}</Text>
-			) : (
-				<Text dimColor>{log.level.padEnd(5)}</Text>
-			)}
-			<Text> </Text>
-			{source !== undefined && srcColor !== undefined ? (
-				<>
-					<Text color={srcColor}>{source}</Text>
-					<Text dimColor>: </Text>
-					<Text>{truncate(rest, 120)}</Text>
-				</>
-			) : (
-				<Text>{truncate(firstLine, 120)}</Text>
-			)}
-		</Text>
+		<Box flexDirection="column">
+			<Box>
+				<Text dimColor>{formatTime(log.ts)} </Text>
+				{color !== undefined ? (
+					<Text color={color}>{log.level.padEnd(5)} </Text>
+				) : (
+					<Text dimColor>{log.level.padEnd(5)} </Text>
+				)}
+				<Box flexGrow={1}>
+					{source !== undefined && srcColor !== undefined ? (
+						<>
+							<Text color={srcColor}>{source}</Text>
+							<Text dimColor>: </Text>
+							<Text wrap="wrap">{capLine(rest)}</Text>
+						</>
+					) : (
+						<Text wrap="wrap">{capLine(firstLine)}</Text>
+					)}
+				</Box>
+			</Box>
+			{visibleRest.map((line, i) => (
+				<Box key={i}>
+					<Text dimColor>{indent}</Text>
+					<Box flexGrow={1}>
+						{color !== undefined ? (
+							<Text color={color} wrap="wrap">
+								{capLine(line)}
+							</Text>
+						) : (
+							<Text wrap="wrap">{capLine(line)}</Text>
+						)}
+					</Box>
+				</Box>
+			))}
+			{hiddenLineCount > 0 ? (
+				<Box>
+					<Text dimColor>{indent}</Text>
+					<Text dimColor>
+						… {hiddenLineCount} more line{hiddenLineCount === 1 ? '' : 's'} suppressed
+						(check `docker logs` for full output)
+					</Text>
+				</Box>
+			) : null}
+		</Box>
 	);
 }
 
-function Footer(): React.ReactElement {
+function Footer({
+	header,
+	entries,
+}: {
+	readonly header: TuiHeader;
+	readonly entries: ReadonlyArray<TuiEntry>;
+}): React.ReactElement {
+	if (header.buildStatus === 'shutting-down') {
+		// Pending = rows whose long-lived resource hasn't finished teardown
+		// yet. We track this directly via the engine's `markStopping` /
+		// `markStopped` hooks (fired by Docker.run's stop finalizer), so
+		// the count decrements as docker confirms each container exit
+		// instead of staying static for the whole teardown window. A row
+		// in 'stopping' state still has work in flight; 'stopped' means
+		// docker returned. Both are excluded from the count.
+		const pending = entries.filter(
+			(e) =>
+				e.status === 'ready' &&
+				(e.kind === 'service' || e.kind === 'package'),
+		);
+		// De-dupe the plugin list — multi-row plugins (e.g. walrus has 4
+		// storage-node rows, sui has localnet + faucet rows) would otherwise
+		// surface their plugin name N times, like
+		// `(walrus, walrus, walrus, walrus, sui, sui)`. Dedupe in insertion
+		// order so the same plugins always read the same way across cycles.
+		const pluginsSeen = new Set<string>();
+		const plugins: Array<string> = [];
+		for (const e of pending) {
+			const name = e.plugin ?? parseTitle(entryTitle(e)).group;
+			if (!pluginsSeen.has(name)) {
+				pluginsSeen.add(name);
+				plugins.push(name);
+			}
+		}
+		// "service" is honest (containers, host processes, action handlers
+		// all surface as a TuiEntry with kind='service'); the previous
+		// "container" copy lied for host processes (wallet, dev-server),
+		// composite rows whose sub-containers map to docker (walrus
+		// cluster), and shared-container rows (sui faucet served by
+		// sui-localnet's container).
+		const detail =
+			pending.length === 0
+				? 'releasing resources…'
+				: `waiting on ${pending.length} service${pending.length === 1 ? '' : 's'}` +
+					` from ${plugins.length} plugin${plugins.length === 1 ? '' : 's'}` +
+					` (${plugins.join(', ')})`;
+		return (
+			<Box paddingX={1} marginTop={1}>
+				<Text color="yellow">Shutting down — </Text>
+				<Text dimColor>{detail}</Text>
+			</Box>
+		);
+	}
 	return (
 		<Box paddingX={1} marginTop={1}>
 			<Text dimColor>[r]estart [q]uit Ctrl-C to exit</Text>

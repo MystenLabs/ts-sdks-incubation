@@ -19,6 +19,7 @@ import {
 } from './seal/internal.js';
 import { SealError } from '../engine/errors.js';
 import { resolveNetwork } from '../engine/network.js';
+import { resolveDeploymentNetwork } from '../engine/known-deployments.js';
 import type { Account } from '../engine/shared.js';
 import type { LayeredTag } from '../advanced/tag.js';
 import type { StackMember } from '../engine/supervisor.js';
@@ -38,8 +39,6 @@ import type { StackMember } from '../engine/supervisor.js';
  *  - `weight` is the server's quorum weight. Local-deploy stacks publish
  *    a single server with weight 1; known-mode stacks default to 1 per
  *    entry today.
- *  - `apiKeyName` / `apiKey` are optional credentials for paid public
- *    key-servers (e.g. Mysten testnet's premium tier).
  *  - `aggregatorUrl` is an optional client-side override for the
  *    `@mysten/seal` aggregator endpoint.
  *
@@ -52,8 +51,6 @@ import type { StackMember } from '../engine/supervisor.js';
 export interface SealKeyServerEntry {
 	readonly objectId: string;
 	readonly weight: number;
-	readonly apiKeyName?: string;
-	readonly apiKey?: string;
 	readonly aggregatorUrl?: string;
 }
 
@@ -123,8 +120,6 @@ export class SealKeyManagerTag extends Context.Service<SealKeyManagerTag, SealKe
 export const SealKeyServerEntrySchema = Schema.Struct({
 	objectId: Schema.String,
 	weight: Schema.Number,
-	apiKeyName: Schema.optional(Schema.String),
-	apiKey: Schema.optional(Schema.String),
 	aggregatorUrl: Schema.optional(Schema.String),
 });
 
@@ -168,13 +163,25 @@ export interface SealOptions {
  *  remote key server on testnet/mainnet — single source of truth is
  *  `DEVSTACK_NETWORK` (set by the CLI `--network` flag or via
  *  `devstack({ network })`). Returns a LayeredTag carrying
- *  `SealKeyServerTag`. */
+ *  `SealKeyServerTag`.
+ *
+ *  Fork mode (Phase 3, D5): when the resolved network is a `*-fork`
+ *  variant, routes to `sealKnownKeyServer` against the WRAPPED
+ *  upstream's published key server. The local-keygen path requires a
+ *  full chain client inside the key-server binary (JSON-RPC bound),
+ *  which sui-fork does not expose; explicit `sealLocalKeygen()`
+ *  composition under fork mode trips a structured
+ *  `ForkIncompatibleError` at factory time. */
 export const Seal = (opts: SealOptions = {}): StackMember => {
 	const network = resolveNetwork();
 	if (network !== 'localnet') {
+		// `network` is one of `testnet | mainnet | *-fork`. Fork variants
+		// resolve to their upstream's `KnownNetwork` key via
+		// `resolveDeploymentNetwork`; live nets pass through.
+		const knownNetwork = resolveDeploymentNetwork(network);
 		// Remote path: wire to canonical (or user-overridden) deployment.
 		const knownOpts: SealKnownKeyServerOptions = {
-			network,
+			...(knownNetwork !== undefined ? { network: knownNetwork } : {}),
 			...opts.override,
 		};
 		return Object.assign(sealKnownKeyServer(knownOpts), { __kind: 'service' as const });

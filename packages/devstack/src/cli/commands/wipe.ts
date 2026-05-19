@@ -31,11 +31,12 @@
 // interactive selection across every stack on the machine) reach for
 // `devstack prune` instead — same teardown logic, broader scope.
 
+import { promises as nodeFs } from 'node:fs';
 import { Console, Effect, Option } from 'effect';
 import { Command, Flag } from 'effect/unstable/cli';
 import { deriveAppName } from '../../engine/identity.js';
 import { failAlreadyReported } from '../already-reported.js';
-import { resolveStackFromEnv } from '../stack-resolution.js';
+import { resolveAppDir, resolveForkCacheRoot, resolveStackFromEnv } from '../stack-resolution.js';
 import { pruneStack } from './_prune-stack.js';
 
 // Default reads `DEVSTACK_STACK` at action time (NOT at module load —
@@ -65,7 +66,7 @@ const appFlag = Flag.string('app').pipe(
 );
 
 const resolveAppName = (override: Option.Option<string>): string =>
-	Option.getOrElse(override, () => deriveAppName(process.env.DEVSTACK_APP_DIR ?? process.cwd()));
+	Option.getOrElse(override, () => deriveAppName(resolveAppDir()));
 
 const yesFlag = Flag.boolean('yes').pipe(
 	Flag.withDescription('Required. Confirms the wipe.'),
@@ -87,6 +88,33 @@ const imagesFlag = Flag.boolean('images').pipe(
 	Flag.withDefault(false),
 );
 
+// Phase 4 P4.5 — keep the shared `.devstack/sui-fork-cache/` intact by
+// default. Wiping a fork stack should leave the warmed upstream state
+// (object 0x5 + dynamic fields + every fetched object) so the next
+// `apply` doesn't pay the cold-start GraphQL warming cost again. Pass
+// `--also-upstream-cache` for a full reset.
+//
+// Mutually exclusive in spirit with `--keep-upstream-cache`, but for
+// human ergonomics we accept both flags; `--keep-upstream-cache` is
+// the explicit default-affirming form that the `SeedManifestMismatchError`
+// recipe instructs the user to run.
+const alsoUpstreamCacheFlag = Flag.boolean('also-upstream-cache').pipe(
+	Flag.withDescription(
+		'Also remove `.devstack/sui-fork-cache/` — the shared warmed upstream cache that survives ' +
+			'a normal wipe so the next fork-mode `apply` doesn\'t re-warm system state.',
+	),
+	Flag.withDefault(false),
+);
+
+const keepUpstreamCacheFlag = Flag.boolean('keep-upstream-cache').pipe(
+	Flag.withDescription(
+		'Explicitly affirm the default: preserve `.devstack/sui-fork-cache/`. Surfaced so the ' +
+			'`SeedManifestMismatchError` recipe (`devstack wipe --keep-upstream-cache && devstack apply`) ' +
+			'reads naturally even though `--also-upstream-cache` defaults to false.',
+	),
+	Flag.withDefault(false),
+);
+
 export const wipeCommand = Command.make(
 	'wipe',
 	{
@@ -96,12 +124,19 @@ export const wipeCommand = Command.make(
 		keepSnapshots: keepSnapshotsFlag,
 		noStop: noStopFlag,
 		images: imagesFlag,
+		alsoUpstreamCache: alsoUpstreamCacheFlag,
+		keepUpstreamCache: keepUpstreamCacheFlag,
 	},
-	({ stack, app, yes, keepSnapshots, noStop, images }) =>
+	({ stack, app, yes, keepSnapshots, noStop, images, alsoUpstreamCache, keepUpstreamCache }) =>
 		Effect.gen(function* () {
 			if (!yes) {
 				return yield* failAlreadyReported(
 					'devstack wipe: --yes is required (refusing to wipe without explicit confirmation)',
+				);
+			}
+			if (alsoUpstreamCache && keepUpstreamCache) {
+				return yield* failAlreadyReported(
+					'devstack wipe: --also-upstream-cache and --keep-upstream-cache are mutually exclusive',
 				);
 			}
 
@@ -114,6 +149,24 @@ export const wipeCommand = Command.make(
 				noStop,
 				removeImages: images,
 			});
+
+			// Optional upstream-cache pass. Default keeps the cache so a
+			// `wipe` against a fork stack doesn't force the next `apply`
+			// to re-warm upstream system state from scratch (R10 — first-
+			// boot serial GraphQL reads). `--also-upstream-cache` drops
+			// the cache for a full reset.
+			let removedCachePath: string | undefined;
+			if (alsoUpstreamCache) {
+				const cacheRoot = resolveForkCacheRoot();
+				const removed = yield* Effect.tryPromise({
+					try: async () => {
+						await nodeFs.rm(cacheRoot, { recursive: true, force: true });
+						return true;
+					},
+					catch: () => false,
+				}).pipe(Effect.orElseSucceed(() => false));
+				if (removed) removedCachePath = cacheRoot;
+			}
 
 			// Single summary line — the prior per-id `console.log` spam
 			// scaled badly when a wipe across a busy app removed dozens of
@@ -133,6 +186,9 @@ export const wipeCommand = Command.make(
 			if (images) {
 				const imageCount = result.removedImages.length;
 				parts.push(`removed ${imageCount} image${imageCount === 1 ? '' : 's'}`);
+			}
+			if (removedCachePath !== undefined) {
+				parts.push(`removed upstream cache ${removedCachePath}`);
 			}
 			yield* Console.log(
 				`devstack wipe (app=${resolvedApp}, stack=${resolvedStack}): ${parts.join(', ')}.`,

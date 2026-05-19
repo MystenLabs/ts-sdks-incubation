@@ -19,12 +19,12 @@ import { baseURL, webServer } from './web-server.js';
 type SingleServer = Extract<ReturnType<typeof webServer>, { command?: string }>;
 const single = (cfg: ReturnType<typeof webServer>): SingleServer => cfg as SingleServer;
 
-const v4Manifest = (overrides?: {
+const v5Manifest = (overrides?: {
 	devUrl?: string;
 	walletUrl?: string;
 	suiRpcUrl?: string;
 }): unknown => ({
-	version: 4,
+	version: 5,
 	stack: { name: 'main', network: 'localnet', app: 'test-app' },
 	services: {
 		sui: {
@@ -67,7 +67,7 @@ describe('playwright web-server helpers', () => {
 
 	describe('webServer()', () => {
 		it('resolves dev-server URL from manifest + stamps PLAYWRIGHT=1 + 10s SIGTERM', () => {
-			writeFileSync(manifestPath, JSON.stringify(v4Manifest({ devUrl: 'http://dev.test:5175' })));
+			writeFileSync(manifestPath, JSON.stringify(v5Manifest({ devUrl: 'http://dev.test:5175' })));
 			const cfg = single(webServer({ endpoint: 'dev-server' }));
 			expect(cfg.url).toBe('http://dev.test:5175');
 			expect(cfg.command).toBe('pnpm dev');
@@ -81,7 +81,7 @@ describe('playwright web-server helpers', () => {
 		it('resolves sui-rpc URL via the nested services.sui.rpc projection', () => {
 			writeFileSync(
 				manifestPath,
-				JSON.stringify(v4Manifest({ suiRpcUrl: 'http://sui.test:9000' })),
+				JSON.stringify(v5Manifest({ suiRpcUrl: 'http://sui.test:9000' })),
 			);
 			expect(single(webServer({ endpoint: EndpointName.SUI_RPC })).url).toBe(
 				'http://sui.test:9000',
@@ -110,7 +110,7 @@ describe('playwright web-server helpers', () => {
 		});
 
 		it('throws when the endpoint is not in the manifest', () => {
-			writeFileSync(manifestPath, JSON.stringify(v4Manifest({ devUrl: 'http://dev.test:5175' })));
+			writeFileSync(manifestPath, JSON.stringify(v5Manifest({ devUrl: 'http://dev.test:5175' })));
 			expect(() => webServer({ endpoint: EndpointName.WALLET_APP })).toThrow(
 				/no endpoint 'wallet-app'/,
 			);
@@ -130,7 +130,7 @@ describe('playwright web-server helpers', () => {
 		});
 
 		it('respects opts.command / opts.timeout / opts.extend', () => {
-			writeFileSync(manifestPath, JSON.stringify(v4Manifest({ devUrl: 'http://dev.test:5175' })));
+			writeFileSync(manifestPath, JSON.stringify(v5Manifest({ devUrl: 'http://dev.test:5175' })));
 			const cfg = single(
 				webServer({
 					endpoint: 'dev-server',
@@ -149,7 +149,7 @@ describe('playwright web-server helpers', () => {
 		it('returns the bare URL string for the named endpoint', () => {
 			writeFileSync(
 				manifestPath,
-				JSON.stringify(v4Manifest({ walletUrl: 'http://wallet.test:5180' })),
+				JSON.stringify(v5Manifest({ walletUrl: 'http://wallet.test:5180' })),
 			);
 			expect(baseURL({ endpoint: EndpointName.WALLET_APP })).toBe('http://wallet.test:5180');
 		});

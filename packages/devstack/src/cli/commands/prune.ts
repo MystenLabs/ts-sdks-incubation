@@ -25,7 +25,7 @@
 // stack's `state.json.lock`, `kill(pid, 0)` for liveness, and skip the
 // row with `skipped: <app>/<stack> (running pid <N>)` on the way past.
 
-import { existsSync } from 'node:fs';
+import { existsSync, promises as nodeFs } from 'node:fs';
 import { Console, Effect, Option } from 'effect';
 import { Argument, Command, Flag } from 'effect/unstable/cli';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
@@ -45,6 +45,7 @@ import {
 import { ROUTER_CONTAINER, ROUTER_NETWORK } from '../../engine/docker/router.js';
 import { Registry } from '../../engine/registry.js';
 import { AlreadyReportedError, failAlreadyReported } from '../already-reported.js';
+import { resolveForkCacheRoot } from '../stack-resolution.js';
 import { pruneStack, removeLabelledImagesNotInUse, type PruneStackResult } from './_prune-stack.js';
 import { PruneApp } from './_prune-ui.js';
 
@@ -114,6 +115,19 @@ const dryRunFlag = Flag.boolean('dry-run').pipe(
 const includeRouterFlag = Flag.boolean('include-router').pipe(
 	Flag.withDescription(
 		'Also stop + remove the shared Traefik router container and its network (devstack-traefik / devstack-router)',
+	),
+	Flag.withDefault(false),
+);
+
+// Phase 4 P4.7 — global cleanup of `.devstack/sui-fork-cache/<chainId>/`
+// directories whose chainId is no longer referenced by any active fork
+// stack. Distinct from `wipe --also-upstream-cache` (which clears the
+// cache wholesale for ONE stack's wipe); this scans referenced chain
+// ids across every fork stack on the machine and only removes orphans.
+const includeForkCacheFlag = Flag.boolean('include-fork-cache').pipe(
+	Flag.withDescription(
+		'Also remove orphaned entries under `.devstack/sui-fork-cache/` whose chainId is not ' +
+			'referenced by any active fork-mode stack',
 	),
 	Flag.withDefault(false),
 );
@@ -265,6 +279,7 @@ interface BulkModeArgs {
 	readonly images: boolean;
 	readonly includeImages: boolean;
 	readonly includeRouter: boolean;
+	readonly includeForkCache: boolean;
 	readonly dryRun: boolean;
 	readonly yes: boolean;
 }
@@ -299,6 +314,80 @@ const runBulkMode = (input: {
 		});
 		yield* maybePruneImages(input.args.includeImages, input.args.dryRun);
 		yield* maybePruneRouter(input.args.includeRouter, input.args.dryRun);
+		yield* maybePruneForkCache(input.args.includeForkCache, input.args.dryRun);
+	});
+
+// `--include-fork-cache` post-pass. Walks `.devstack/sui-fork-cache/`
+// and removes per-chainId directories that no active fork stack
+// references. The referenced set is derived from each
+// `.devstack/stacks/<stack>/sui-fork/meta.json`'s recorded chainId +
+// upstream (the upstream literal doubles as a fallback cache key for
+// meta.json files written before chainId was persisted there).
+const maybePruneForkCache = (
+	enabled: boolean,
+	dryRun: boolean,
+): Effect.Effect<void, never, never> =>
+	Effect.gen(function* () {
+		if (!enabled) return;
+		const cacheRoot = resolveForkCacheRoot();
+		const stateRoot = cacheRoot.replace(/\/sui-fork-cache$/, '');
+		const referenced = yield* Effect.promise(async () => {
+			const out = new Set<string>();
+			try {
+				const stacksDir = `${stateRoot}/stacks`;
+				const stacks = await nodeFs.readdir(stacksDir);
+				for (const stack of stacks) {
+					try {
+						const meta = await nodeFs.readFile(
+							`${stacksDir}/${stack}/sui-fork/meta.json`,
+							'utf8',
+						);
+						const parsed = JSON.parse(meta) as { upstream?: string; chainId?: string };
+						if (parsed.chainId !== undefined) out.add(parsed.chainId);
+						if (parsed.upstream !== undefined) out.add(parsed.upstream);
+					} catch {
+						// best-effort
+					}
+				}
+			} catch {
+				// no stacks dir; referenced stays empty
+			}
+			return out;
+		});
+		const entries = yield* Effect.promise(async () => {
+			try {
+				return await nodeFs.readdir(cacheRoot);
+			} catch {
+				return [] as ReadonlyArray<string>;
+			}
+		});
+		const orphans = entries.filter((e) => !referenced.has(e));
+		if (orphans.length === 0) {
+			yield* Console.log(`fork cache: no orphan entries (kept ${entries.length})`);
+			return;
+		}
+		if (dryRun) {
+			for (const o of orphans) {
+				yield* Console.log(`would remove fork cache ${cacheRoot}/${o}`);
+			}
+			return;
+		}
+		let removed = 0;
+		for (const o of orphans) {
+			const ok = yield* Effect.promise(async () => {
+				try {
+					await nodeFs.rm(`${cacheRoot}/${o}`, { recursive: true, force: true });
+					return true;
+				} catch {
+					return false;
+				}
+			});
+			if (ok) removed += 1;
+		}
+		yield* Console.log(
+			`fork cache: removed ${removed} orphan ${removed === 1 ? 'entry' : 'entries'} ` +
+				`(kept ${entries.length - removed})`,
+		);
 	});
 
 // `--include-router` post-pass. Removes the cross-stack singleton
@@ -395,6 +484,7 @@ export const pruneCommand = Command.make(
 		appFilter: appFilterFlag,
 		dryRun: dryRunFlag,
 		includeRouter: includeRouterFlag,
+		includeForkCache: includeForkCacheFlag,
 	},
 	(args) =>
 		Effect.gen(function* () {
@@ -458,6 +548,7 @@ export const pruneCommand = Command.make(
 				yield* Console.log(renderPruneResult(mode.app, mode.stack, result));
 				yield* maybePruneImages(args.includeImages, args.dryRun);
 				yield* maybePruneRouter(args.includeRouter, args.dryRun);
+				yield* maybePruneForkCache(args.includeForkCache, args.dryRun);
 				return;
 			}
 
@@ -506,6 +597,7 @@ export const pruneCommand = Command.make(
 				dryRun: args.dryRun,
 			});
 			yield* maybePruneImages(args.includeImages, args.dryRun);
+			yield* maybePruneForkCache(args.includeForkCache, args.dryRun);
 		}),
 ).pipe(
 	Command.withDescription(

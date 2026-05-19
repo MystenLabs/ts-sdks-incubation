@@ -311,6 +311,129 @@ describe('dev-wallet-accounts component', () => {
 		expect(avatars[1].textContent?.trim()).toBe('2');
 		expect(avatars[2].textContent?.trim()).toBe('3');
 	});
+
+	// Phase 4 P4.T12 — accounts panel renders an annotated, disabled
+	// "+ Add" button when the network is a fork variant (no faucet to
+	// fund a fresh account; impersonation seeds are fixed at apply
+	// time).
+	it('P4.T12: + Add button disabled + annotated on fork network', async () => {
+		const adapter = new InMemorySignerAdapter();
+		const el = document.createElement('dev-wallet-accounts') as DevWalletAccounts;
+		el.accounts = [];
+		el.adapters = [adapter];
+		el.network = 'mainnet-fork';
+		container.appendChild(el);
+		await waitForUpdate(el);
+
+		const addBtn = el.shadowRoot!.querySelector(
+			'[part="add-button"]',
+		) as HTMLButtonElement | null;
+		expect(addBtn).not.toBeNull();
+		expect(addBtn!.disabled).toBe(true);
+		expect(addBtn!.textContent).toContain('+ Add');
+		expect(addBtn!.textContent).toContain('fork');
+		expect(addBtn!.title.toLowerCase()).toContain('fork');
+	});
+});
+
+// --- Network Badge (Phase 4 P4.T12) ---
+
+describe('dev-wallet-network-badge component (Phase 4 P4.T12)', () => {
+	let container: HTMLElement;
+
+	beforeEach(() => {
+		container = document.createElement('div');
+		document.body.appendChild(container);
+	});
+
+	afterEach(() => {
+		container.remove();
+	});
+
+	it('renders the standard label for a non-fork network', async () => {
+		const el = document.createElement('dev-wallet-network-badge') as HTMLElement & {
+			active: string;
+			networks: string[];
+			updateComplete: Promise<boolean>;
+		};
+		el.active = 'testnet';
+		el.networks = ['localnet', 'testnet'];
+		container.appendChild(el);
+		await waitForUpdate(el);
+		const badge = el.shadowRoot!.querySelector('[part="trigger"]') as HTMLButtonElement;
+		expect(badge).not.toBeNull();
+		expect(badge.classList.contains('fork')).toBe(false);
+		expect(badge.textContent?.toLowerCase()).toContain('testnet');
+		expect(el.shadowRoot!.querySelector('.fork-tag')).toBeNull();
+	});
+
+	it('renders the fork stripe + label when active is a -fork variant', async () => {
+		const el = document.createElement('dev-wallet-network-badge') as HTMLElement & {
+			active: string;
+			networks: string[];
+			updateComplete: Promise<boolean>;
+		};
+		el.active = 'mainnet-fork';
+		el.networks = ['mainnet-fork', 'mainnet', 'testnet'];
+		container.appendChild(el);
+		await waitForUpdate(el);
+		const badge = el.shadowRoot!.querySelector('[part="trigger"]') as HTMLButtonElement;
+		expect(badge).not.toBeNull();
+		expect(badge.classList.contains('fork')).toBe(true);
+		// Base label drops the `-fork` suffix; `fork` tag span sits
+		// alongside, so the rendered button contains both pieces.
+		expect(badge.textContent).toContain('mainnet');
+		const tag = el.shadowRoot!.querySelector('.fork-tag');
+		expect(tag).not.toBeNull();
+		expect(tag!.textContent?.toLowerCase()).toContain('fork');
+		expect(badge.getAttribute('title')?.toLowerCase()).toContain('no real');
+	});
+});
+
+// --- Signing Modal fork-mode footnote (Phase 4 P4.T12) ---
+
+describe('dev-wallet-signing-modal fork footnote (Phase 4 P4.T12)', () => {
+	let container: HTMLElement;
+
+	beforeEach(() => {
+		container = document.createElement('div');
+		document.body.appendChild(container);
+	});
+
+	afterEach(() => {
+		container.remove();
+	});
+
+	it('renders the impersonation footnote when impersonation=true', async () => {
+		const el = document.createElement('dev-wallet-signing-modal') as DevWalletSigningModal;
+		el.impersonation = true;
+		// The modal needs a `request` to render past its early `nothing`
+		// return — supply a minimal mock that satisfies the shape.
+		el.request = {
+			id: 'req-1',
+			features: ['sui:signTransaction'],
+			payload: { type: 'sui:signTransaction', input: { transaction: { toJSON: async () => '{}' } } },
+		} as unknown as DevWalletSigningModal['request'];
+		container.appendChild(el);
+		await waitForUpdate(el);
+		const footnote = el.shadowRoot!.querySelector('[part="fork-footnote"]');
+		expect(footnote).not.toBeNull();
+		expect(footnote!.textContent?.toLowerCase()).toContain('fork');
+		expect(footnote!.textContent?.toLowerCase()).toContain('impersonation');
+	});
+
+	it('hides the footnote on real accounts', async () => {
+		const el = document.createElement('dev-wallet-signing-modal') as DevWalletSigningModal;
+		el.impersonation = false;
+		el.request = {
+			id: 'req-1',
+			features: ['sui:signTransaction'],
+			payload: { type: 'sui:signTransaction', input: { transaction: { toJSON: async () => '{}' } } },
+		} as unknown as DevWalletSigningModal['request'];
+		container.appendChild(el);
+		await waitForUpdate(el);
+		expect(el.shadowRoot!.querySelector('[part="fork-footnote"]')).toBeNull();
+	});
 });
 
 // --- New Account Dialog ---

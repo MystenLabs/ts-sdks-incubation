@@ -13,9 +13,9 @@ import {
 	Dev,
 	devstack,
 	Package,
-	pickCreatedByTypeSuffix,
 	Wallet,
 } from '@mysten-incubation/devstack';
+import { pickCreatedByType } from '@mysten-incubation/devstack/advanced';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONNECT_FOUR_DIR = resolve(HERE, 'move/connect_four');
@@ -72,7 +72,7 @@ export default devstack(publisher, alice, bob, connectFour, openLobby, wallet, c
 	// objectChanges are yielded before serialization.
 	extras: Effect.gen(function* () {
 		const r = yield* openLobby;
-		const openLobbyId = pickCreatedByTypeSuffix(r.objectChanges, '::game::Lobby');
+		const openLobbyId = pickCreatedByType(r.objectChanges, { suffix: '::game::Lobby' });
 		return openLobbyId === undefined ? {} : { openLobbyId };
 	}),
 });

@@ -3,6 +3,8 @@
 // evolve. The `*Known*` factories default to these values; consumers can
 // override per call.
 
+import type { SuiNetwork } from './network.js';
+
 /**
  * Static registry of well-known on-chain deployments for testnet / mainnet.
  *
@@ -30,6 +32,37 @@
 
 /** Sui network identifier used as the key into each per-service map. */
 export type KnownNetwork = 'testnet' | 'mainnet' | 'devnet';
+
+/** Translate a `SuiNetwork` literal to the corresponding `KnownNetwork`
+ *  key used as the lookup index into the per-service deployment maps.
+ *
+ *  - The three live-net literals (`'testnet'` / `'mainnet'` / `'devnet'`)
+ *    pass through unchanged. ('devnet' isn't a `SuiNetwork` literal today
+ *    — only its fork variant `'devnet-fork'` is reachable — but the
+ *    function accepts the broader `SuiNetwork` union for symmetry.)
+ *  - Fork variants (`'mainnet-fork'` / `'testnet-fork'` / `'devnet-fork'`)
+ *    are translated to their upstream live-net counterpart so a
+ *    `*KnownPackage(...)` / `*KnownDeployment(...)` factory composed
+ *    on a fork stack looks up the wrapped chain's real addresses.
+ *  - `'localnet'` returns `undefined` — there's no canonical deployment
+ *    for a locally-published-from-source devnet. Callers that need to
+ *    target a specific deployment from localnet must pass the network
+ *    literal explicitly.
+ *
+ *  Pair with `stripForkSuffix(network)` in `engine/network.ts` —
+ *  `stripForkSuffix` widens the result to `SuiNetwork`, whereas this
+ *  helper narrows to the deployment-lookup key (and returns `undefined`
+ *  for localnet). Used by the Phase-3 `Deepbook()` / `Walrus()` /
+ *  `Seal()` fork branches.
+ */
+export const resolveDeploymentNetwork = (network: SuiNetwork): KnownNetwork | undefined => {
+	if (network === 'mainnet' || network === 'testnet') return network;
+	if (network === 'mainnet-fork') return 'mainnet';
+	if (network === 'testnet-fork') return 'testnet';
+	if (network === 'devnet-fork') return 'devnet';
+	// 'localnet' — no canonical deployment.
+	return undefined;
+};
 
 /** SDK-aligned coin entry. Mirrors `@mysten/deepbook-v3`'s `CoinTag` shape
  *  (`packages/deepbook-v3/src/types/coin.ts` upstream); the optional
@@ -99,13 +132,6 @@ export interface WalrusDeployment {
 	 */
 	readonly systemObjectId: string;
 	readonly stakingPoolId: string;
-	/**
-	 * Subsidies is an admin/governance concern; the `@mysten/walrus` SDK
-	 * does not surface a hardcoded subsidies package id. Both registered
-	 * networks leave this `undefined` — typical blob-read/write consumers
-	 * never need it.
-	 */
-	readonly subsidiesPackageId: string | undefined;
 	/** WAL exchange contracts (testnet only). Mainnet doesn't expose these in the SDK. */
 	readonly exchangeIds?: ReadonlyArray<string>;
 	/**
@@ -140,8 +166,10 @@ export interface KnownDeployments {
 export const knownDeployments: KnownDeployments = {
 	deepbook: {
 		// Sourced from `packages/devstack/src/plugins/deepbook.ts`, copied
-		// originally from `@mysten/deepbook-v3/utils/constants.ts`.
-		// TODO: confirm against the latest Mysten registry.
+		// originally from `@mysten/deepbook-v3/utils/constants.ts`. Verified
+		// 2026-05-13 against the sibling ts-sdks checkout at
+		// `/Users/michaelhayes/code/ts-sdks/packages/deepbook-v3/src/utils/constants.ts`
+		// (P1.20). Re-verify on `@mysten/deepbook-v3` version bumps.
 		testnet: {
 			packageId: '0x22be4cade64bf2d02412c7e8d0e8beea2f78828b948118d46735315409371a3c',
 			registryId: '0x7c256edbda983a2cd6f946655f4bf3f00a41043993781f8674a7046e8c0e11d1',
@@ -374,7 +402,6 @@ export const knownDeployments: KnownDeployments = {
 		testnet: {
 			systemObjectId: '0x6c2547cbbc38025cf3adac45f63cb0a8d12ecf777cdc75a4971612bf97fdf6af',
 			stakingPoolId: '0xbe46180321c30aab2f8b3501e24048377287fa708018a5b7c2792b35fe339ee3',
-			subsidiesPackageId: undefined,
 			exchangeIds: [
 				'0xf4d164ea2def5fe07dc573992a029e010dba09b1a8dcbc44c5c2e79567f39073',
 				'0x19825121c52080bb1073662231cfea5c0e4d905fd13e95f21e9a018f2ef41862',
@@ -387,7 +414,6 @@ export const knownDeployments: KnownDeployments = {
 		mainnet: {
 			systemObjectId: '0x2134d52768ea07e8c43570ef975eb3e4c27a39fa6396bef985b5abc58d03ddd2',
 			stakingPoolId: '0x10b9d30c28448939ce6c4d6c6e0ffce4a7f8a4ada8248bdad09ef8b70e4a3904',
-			subsidiesPackageId: undefined,
 			aggregatorUrl: 'https://aggregator.walrus.space',
 			publisherUrl: 'https://publisher.walrus.space',
 		},

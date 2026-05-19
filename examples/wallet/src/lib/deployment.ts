@@ -1,11 +1,18 @@
 // App-level projection of the devstack manifest. Joins the endpoint
-// URLs, the registered mock-coin tokens, and the deepbook pools (from
-// `extras.deepbookPools`) into the views the wallet UI reads —
-// coin specs (with derived symbols), pool views (with base/quote
-// symbols joined), and a flat account name → address map.
+// URLs, the registered mock-coin tokens, and the deepbook pools (now
+// sourced from the codegen-emitted `deepbookConfig`) into the views the
+// wallet UI reads — coin specs (with derived symbols), pool views (with
+// base/quote symbols joined), and a flat account name → address map.
+//
+// Phase 5 of the deepbook plugin expansion moved the deepbook pool +
+// coin + packageIds projection from the hand-written `extras.deepbookPools`
+// shape into the codegen-emitted `generated/deepbook-config.ts`. This
+// file consumes `deepbookConfig` directly — no more manifest-traversal
+// dance for pool ids or treasury caps. See
+// packages/devstack/notes/deepbook-plugin-expansion.md § P5.13.
 
 import { accounts } from '../generated/accounts.js';
-import { extras } from '../generated/extras.js';
+import { deepbookConfig } from '../generated/deepbook-config.js';
 import { packages } from '../generated/packages.js';
 import { services } from '../generated/services.js';
 
@@ -24,57 +31,47 @@ export interface PoolView {
 	quoteSymbol: string;
 }
 
-interface DeepbookPool {
-	name: string;
-	poolId: string;
-	baseCoinType: string;
-	quoteCoinType: string;
-}
-
 const SUI_COIN: CoinSpec = {
 	symbol: 'SUI',
 	coinType: '0x2::sui::SUI',
 	decimals: 9,
 };
 
-// The wallet stack registers coins via `Package({ coins: [...] })`
-// — they land in the manifest's `coins` record. We import that
-// dynamically from `services` siblings via the codegen handle, but
-// since the wallet app's `coins` are well-known at codegen time, we
-// inline them here directly (sourced from the same registration in
-// `devstack.config.ts`).
-const coinsFromTokens: CoinSpec[] = [
-	{
-		symbol: 'MUSDC',
-		coinType: `${packages.mock_usdc?.id ?? '0x0'}::mock_usdc::MOCK_USDC`,
-		decimals: 6,
+// The wallet stack registers coins automatically via `Package(...)`
+// coin auto-discovery — they land in the manifest's `coins` record.
+// Decimals aren't on `deepbookConfig.coins` (the SDK uses `scalar`
+// instead, which is `10^decimals`), so we derive
+// `decimals = log10(scalar)` for the wallet UI's formatting needs.
+const decimalsFromScalar = (scalar: number): number => Math.round(Math.log10(scalar));
+
+const coinsFromConfig: CoinSpec[] = Object.entries(deepbookConfig.coins)
+	.filter(([symbol]) => symbol !== 'SUI')
+	.map(([symbol, c]) => ({
+		symbol,
+		coinType: c.type,
+		decimals: decimalsFromScalar(c.scalar),
+	}));
+
+const allCoins: readonly CoinSpec[] = [SUI_COIN, ...coinsFromConfig];
+
+// `deepbookConfig.pools` is alias-keyed with `{address, baseCoin, quoteCoin}`
+// where `baseCoin` / `quoteCoin` are SDK symbol keys. Map them back to
+// fully-qualified Move types for the wallet UI's per-pool balance row
+// lookups.
+const pools: readonly PoolView[] = Object.entries(deepbookConfig.pools).map(
+	([alias, p]: [string, { address: string; baseCoin: string; quoteCoin: string }]) => {
+		const baseCoin = (deepbookConfig.coins as Record<string, { type: string }>)[p.baseCoin];
+		const quoteCoin = (deepbookConfig.coins as Record<string, { type: string }>)[p.quoteCoin];
+		return {
+			alias,
+			poolId: p.address,
+			baseCoinType: baseCoin?.type ?? '',
+			quoteCoinType: quoteCoin?.type ?? '',
+			baseSymbol: p.baseCoin,
+			quoteSymbol: p.quoteCoin,
+		};
 	},
-	{
-		symbol: 'MWETH',
-		coinType: `${packages.mock_weth?.id ?? '0x0'}::mock_weth::MOCK_WETH`,
-		decimals: 8,
-	},
-];
-
-const allCoins: readonly CoinSpec[] = [SUI_COIN, ...coinsFromTokens];
-
-const symbolFor = (coinType: string): string =>
-	allCoins.find((c) => c.coinType === coinType)?.symbol ?? coinType.split('::').pop() ?? '?';
-
-// Cast through `unknown`: the literal-typed `extras` carries `readonly`
-// tuples, but the consumer projection is happier with a mutable view.
-const deepbookPoolsExtra = (extras as unknown as { deepbookPools?: { pools: DeepbookPool[] } })
-	.deepbookPools;
-const rawPools = deepbookPoolsExtra?.pools ?? [];
-
-const pools: readonly PoolView[] = rawPools.map((p) => ({
-	alias: p.name,
-	poolId: p.poolId,
-	baseCoinType: p.baseCoinType,
-	quoteCoinType: p.quoteCoinType,
-	baseSymbol: symbolFor(p.baseCoinType),
-	quoteSymbol: symbolFor(p.quoteCoinType),
-}));
+);
 
 const deepbookPkg = (
 	packages as Record<string, { id: string; captured?: Record<string, unknown> } | undefined>
@@ -86,11 +83,8 @@ export const deployment = {
 	accounts,
 	coins: allCoins,
 	pools,
-	deepbookPackageId: deepbookPkg?.id,
-	deepbookRegistryId:
-		typeof deepbookPkg?.captured?.registryId === 'string'
-			? deepbookPkg.captured.registryId
-			: undefined,
+	deepbookPackageId: deepbookPkg?.id ?? deepbookConfig.packageIds.DEEPBOOK_PACKAGE_ID,
+	deepbookRegistryId: deepbookConfig.packageIds.REGISTRY_ID,
 } as const;
 
 export const isDeployed: boolean = Object.keys(deployment.accounts).length > 0;

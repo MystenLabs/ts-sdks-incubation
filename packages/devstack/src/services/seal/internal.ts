@@ -42,13 +42,14 @@ import {
 } from '../../engine/known-deployments.js';
 import { Identity } from '../../engine/identity.js';
 import { routerEntrypoint } from '../../engine/docker/router.js';
-import { routerHostname, routerId } from '../../engine/router-hostname.js';
+import { routerHostname } from '../../engine/router-hostname.js';
 import { servicePath } from '../../engine/service-paths.js';
 import { StateStore } from '../../engine/state-store.js';
+import { StateStoreKeys } from '../../engine/state-store-keys.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
 import { buildMove } from '../../engine/sui-cli.js';
-import { pickCreatedByTypeSuffix } from '../../engine/sui-helpers.js';
-import { dockerImage } from '../../advanced/plugin-author/index.js';
+import { pickCreatedByType } from '../../engine/sui-helpers.js';
+import { dockerImage, runDockerContainer } from '../../advanced/plugin-author/index.js';
 import { gitFetch } from '../../advanced/plugin-author/index.js';
 import {
 	PackageRegistry,
@@ -67,7 +68,8 @@ import { composeLayers, provide, setPhase, type LayeredTag } from '../../advance
 import type { StackMember } from '../../engine/supervisor.js';
 import { SuiTag, suiNetworkName } from '../sui.js';
 import { publishMove } from '../package/internal.js';
-import { SealError } from '../../engine/errors.js';
+import { ForkIncompatibleError, SealError } from '../../engine/errors.js';
+import { resolveNetwork } from '../../engine/network.js';
 import type { Account, SuiObjectChange } from '../../engine/shared.js';
 
 // -----------------------------------------------------------------------------
@@ -93,6 +95,23 @@ const DEFAULT_SEAL_VERSION = 'seal-v0.6.6';
 const SEAL_KEYGEN_ENTRYPOINT = 'seal-cli';
 const SEAL_KEYGEN_ARGS = ['genkey'] as const;
 
+// Per-level filter for the container output sink — mirrors the pattern in
+// `services/walrus/{nodes,deploy}.ts`. The seal key-server emits routine
+// INFO narration (`/v1/*` request acks, periodic health checks, master-key
+// load confirmations) that's useful in `docker logs` for debugging but
+// noise in the TUI log panel. Default min-level = 'warn' suppresses INFO
+// from the supervisor's sink WITHOUT silencing the container stream.
+// Override via `DEVSTACK_LOG_LEVEL=info` (also accepts trace/debug → info,
+// warning → warn, fatal → error) to surface everything in the TUI.
+const LEVEL_RANK: Record<Docker.OutputLineLevel, number> = { info: 0, warn: 1, error: 2 };
+const resolveMinLevel = (defaultMin: Docker.OutputLineLevel): Docker.OutputLineLevel => {
+	const env = process.env.DEVSTACK_LOG_LEVEL?.toLowerCase();
+	if (env === 'trace' || env === 'debug' || env === 'info') return 'info';
+	if (env === 'warn' || env === 'warning') return 'warn';
+	if (env === 'error' || env === 'fatal') return 'error';
+	return defaultMin;
+};
+
 // Boneh-Franklin BLS12-381 — the only `KEY_TYPE` accepted by upstream
 // (`seal/move/seal/sources/key_server.move`).
 const KEY_TYPE_BONEH_FRANKLIN_BLS12381 = 0;
@@ -109,12 +128,12 @@ const KEY_TYPE_BONEH_FRANKLIN_BLS12381 = 0;
 const DEFAULT_SEAL_REPO = 'https://github.com/MystenLabs/seal';
 const DEFAULT_SEAL_MOVE_SUBDIR = 'move/seal';
 
-// StateStore key prefixes. The full keys fold in `Sui.chainId` at the
-// use site so a regenesis of the underlying chain naturally misses the
-// cache — the keypair is regenerated and re-registered against the
-// fresh chain rather than pinning to a stale on-chain KeyServer object.
-const STATE_KEY_BLS_KEYPAIR_PREFIX = 'seal/bls-keypair/v1';
-const STATE_KEY_KEY_SERVER_ID_PREFIX = 'seal/key-server-id/v1';
+// State-store keys for seal moved to `engine/state-store-keys.ts` as
+// part of Phase 5.1 of `notes/api-simplification.md`. Canonical
+// builders: `StateStoreKeys.sealBlsKeypair({chainId})` and
+// `StateStoreKeys.sealKeyServerId({chainId})`. The chainId fold-in
+// is preserved so a regenesis of the underlying chain misses the
+// cache and forces a fresh keypair + on-chain registration.
 
 // Persisted shape for the BLS keypair cache entry. Two hex blobs round-
 // tripped as-is through the StateStore JSON layer.
@@ -161,11 +180,6 @@ export interface SealLocalKeygenOptions<Name extends string> {
 	 *  unset we `gitFetch` `MystenLabs/seal` at `version` and use the
 	 *  `move/seal` subdir. Setting this skips the fetch entirely. */
 	readonly movePackagePath?: string;
-	/** Preferred host port the key-server binds on the host. Default 2024
-	 *  (matches upstream's container default). The actual bound port is
-	 *  obtained from `PortAllocator.allocate(preferred)`, so two stacks
-	 *  can coexist. */
-	readonly hostPort?: number;
 	/** Ready-probe timeout for the key-server's HTTP endpoint. Default
 	 *  60s. */
 	readonly readyTimeoutMs?: number;
@@ -202,9 +216,27 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 ): StackMember => {
 	const name = (options.name ?? 'seal') as Name;
 	const version = options.version ?? DEFAULT_SEAL_VERSION;
-	const preferredHostPort = options.hostPort ?? DEFAULT_KEY_SERVER_PORT;
 	const readyTimeoutMs = options.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
 	const keyServerName = options.keyServerName ?? 'devstack-local';
+
+	// D5 / Phase 3 P3.5: sealLocalKeygen runs the key-server binary which
+	// dials the chain via a baked-in client. Fork mode doesn't expose the
+	// surfaces the binary expects (JSON-RPC + possibly GraphQL — Phase 5
+	// P5.3 audits the exact dependency). Refuse composition at factory
+	// time so failures are actionable.
+	const resolvedNetwork = resolveNetwork();
+	if (resolvedNetwork.endsWith('-fork')) {
+		throw new ForkIncompatibleError({
+			variant: 'sealLocalKeygen',
+			network: resolvedNetwork,
+			message:
+				`sealLocalKeygen is incompatible with fork mode (${resolvedNetwork}) — ` +
+				`the key-server binary's chain client is bound to JSON-RPC, which sui-fork does ` +
+				`not expose. Use \`Seal()\` (which auto-routes to the known-key-server branch ` +
+				`in fork mode) or \`sealKnownKeyServer({network})\` directly.`,
+			hint: `replace sealLocalKeygen() with Seal() or sealKnownKeyServer({network: '${resolvedNetwork.replace('-fork', '')}'})`,
+		});
+	}
 
 	// Sibling tags. Image: caller-supplied `options.image` wins (pure
 	// pull of a pre-built tag), otherwise we build from the vendored
@@ -281,21 +313,24 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 		// keygen) emitted a given line. The engine may not be wired
 		// (standalone tests), in which case the callback is a no-op.
 		const engineOpt = yield* Effect.serviceOption(EngineHandle);
+		const minRank = LEVEL_RANK[resolveMinLevel('warn')];
 		const makeSealOutputSink =
 			(label: string): Docker.OutputLineCallback =>
-			(level, line) =>
-				engineOpt._tag === 'None'
+			(level, line) => {
+				if (LEVEL_RANK[level] < minRank) return Effect.void;
+				return engineOpt._tag === 'None'
 					? Effect.void
 					: engineOpt.value
 							.appendLog({ ts: Date.now(), level, message: `[${label}] ${line}` })
 							.pipe(Effect.ignore);
+			};
 
 		// Fold the chain identifier into both StateStore keys. A
 		// regenesis of the underlying chain flips `sui.chainId`,
 		// naturally missing the cache and forcing a fresh keypair +
 		// on-chain registration against the new chain state.
-		const blsKeypairKey = `${STATE_KEY_BLS_KEYPAIR_PREFIX}/${sui.chainId}`;
-		const keyServerIdKey = `${STATE_KEY_KEY_SERVER_ID_PREFIX}/${sui.chainId}`;
+		const blsKeypairKey = StateStoreKeys.sealBlsKeypair({ chainId: sui.chainId });
+		const keyServerIdKey = StateStoreKeys.sealKeyServerId({ chainId: sui.chainId });
 
 		// 1. Router exposure — derive the stack-scoped hostname and the
 		//    well-known seal entrypoint port (2024). The on-chain
@@ -304,10 +339,7 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 		//    (register). No `PortAllocator.allocate` — two stacks of the
 		//    same app coexist on `seal.<app>.localhost:2024` (main) and
 		//    `<stack>.seal.<app>.localhost:2024` (non-main) because the
-		//    Traefik router dispatches by `Host:` header. `preferredHostPort`
-		//    is kept on the options shape for back-compat but is ignored
-		//    on the router path.
-		void preferredHostPort;
+		//    Traefik router dispatches by `Host:` header.
 		const sealHostname = routerHostname(identity, 'seal');
 		const sealEntrypointInfo = routerEntrypoint('seal');
 		if (sealEntrypointInfo === undefined) {
@@ -445,10 +477,9 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 				),
 			);
 
-			const createdId = pickCreatedByTypeSuffix(
-				result.objectChanges,
-				'::key_server::KeyServer',
-			);
+			const createdId = pickCreatedByType(result.objectChanges, {
+				suffix: '::key_server::KeyServer',
+			});
 			if (createdId === undefined) {
 				return yield* Effect.fail(
 					new SealError({
@@ -557,23 +588,14 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 		// On-disk perms (0o600 + 0o700 parent dir) keep it confined to
 		// the owner.
 
-		// 7. Long-running key-server container. Scope-managed: the
-		//    Docker.run finalizer `docker rm -f`s on shutdown.
+		// 7. Long-running key-server container. `runDockerContainer`
+		//    owns the spawn, the `docker stop` finalizer on this
+		//    primitive's own layer scope, the traefik file-provider
+		//    materialization, AND the `/health` ready probe (raced
+		//    against `docker wait` so a crashed container surfaces its
+		//    log tail instead of timing out blind).
 		yield* setPhase('starting key server');
 		const keyServerContainerName = `seal-${name}-key-server`;
-		// `onPortConflict` releases the conflicting host port and
-		// re-allocates with the same value as preferred, so a
-		// resume-after-pause where another stack now holds 2024
-		// shifts to 2025 (etc) instead of landing on a random
-		// ephemeral. Note: the on-chain KeyServer registration above
-		// pinned `keyServerUrl` to the originally-allocated port — if
-		// `onPortConflict` actually fires on a resume, downstream
-		// dApps still resolve via the registry, so the manifest is
-		// updated but the on-chain `key_server_object_id` still
-		// points at the original URL. Acceptable: on a port shift,
-		// callers using the manifest's published `seal-key-server`
-		// endpoint hit the right port; the chain-level handle is
-		// authoritative for cryptographic identity, not for routing.
 		// Per-stack sui network the key-server joins so docker DNS
 		// resolves the `sui-localnet` alias referenced from
 		// `node_url`. The first entry of `rpc.containerNetworks` is
@@ -591,35 +613,53 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 			sui.rpc.container !== undefined
 				? (sui.rpc.containerNetworks?.[0] ?? suiNetworkName(identity))
 				: undefined;
-		yield* Docker.run({
-			name: keyServerContainerName,
-			image: imageTag,
+		yield* runDockerContainer(keyServerContainerName, {
+			image: { tag: imageTag },
 			env: {
 				CONFIG_PATH: '/etc/seal/key-server-config.yaml',
 				RUST_LOG: 'info',
 			},
 			envFiles: [masterKeyEnvFile],
-			mounts: [{ host: configPath, container: '/etc/seal/key-server-config.yaml' }],
-			detach: true,
+			mounts: [
+				{ source: configPath, target: '/etc/seal/key-server-config.yaml' },
+			],
 			...(suiNet !== undefined ? { network: suiNet } : {}),
 			// Single router entry for the key-server. The on-chain
 			// `KeyServer.url` registered above MUST match this hostname:port
 			// — the SDK reads the chain to discover the endpoint.
-			traefik: [
+			// `routing[].name = 'seal'` ↔ same router id / hostname the
+			// previous `routerId(identity, 'seal')` callsite minted.
+			routing: [
 				{
-					id: routerId(identity, 'seal'),
-					hostname: sealHostname,
+					name: 'seal',
 					entrypoint: 'seal',
 					servicePort: DEFAULT_KEY_SERVER_PORT,
 				},
 			],
+			// `/health` returns `{name,version,status:"up"}` once the
+			// binary has bound and parsed CONFIG_PATH; failure to load
+			// surfaces as a non-200 because the binary exits before
+			// the endpoint starts accepting traffic. The `/v1/*`
+			// endpoints require a `Client-Sdk-Version` header and
+			// reject the bare ready probe with 400. `awaitExit: true`
+			// (default) races against `docker wait` so a crash during
+			// boot surfaces the log tail instead of timing out blind.
+			ready: {
+				kind: 'http',
+				url: `${keyServerUrl}/health`,
+				timeoutMs: readyTimeoutMs,
+			},
 			// Stream the key-server's docker-logs into the supervisor.
 			// Catches the `RUST_LOG=info` lines that document
 			// `CONFIG_PATH` parse failures, master-key load issues, and
 			// per-request errors — all of which were previously invisible
 			// to the user until they manually ran `docker logs`.
 			onOutputLine: makeSealOutputSink(`seal.${name}.key-server`),
-		}).pipe(
+			// Key-server is mostly stateless (in-memory key material loaded
+			// from envFile), but a clean SIGTERM lets in-flight `/v1/*`
+			// requests finish vs being torn mid-decrypt. 15s is comfortable.
+			stopGraceSeconds: 15,
+		}).effect.pipe(
 			Effect.catchTag('DockerError', (cause) =>
 				Effect.fail(
 					new SealError({
@@ -629,31 +669,6 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 					}),
 				),
 			),
-		);
-		// (key-server container is a fire-and-forget detach; scope
-		// finalizer takes care of teardown — no captured run-result.)
-
-		// 8. Ready probe — `/health` returns a simple
-		//    `{name,version,status:"up"}` payload once the binary has
-		//    bound and parsed CONFIG_PATH; failure to load surfaces as
-		//    a non-200 because the binary exits before the endpoint
-		//    starts accepting traffic. The `/v1/*` endpoints require a
-		//    `Client-Sdk-Version` header and reject the bare ready probe
-		//    with 400.
-		//
-		// `Docker.awaitContainerReady` races the probe against
-		// `docker wait` so if the key-server crashes (bad CONFIG_PATH,
-		// unreachable sui node_url, missing master-key envfile), we
-		// surface the container's stderr instead of waiting out the
-		// full timeout with a generic "timed out" error.
-		yield* Docker.awaitContainerReady({
-			containerName: keyServerContainerName,
-			probe: {
-				kind: 'http',
-				url: `${keyServerUrl}/health`,
-				timeoutMs: readyTimeoutMs,
-			},
-		}).pipe(
 			Effect.catchTag('ReadyProbeError', (cause) =>
 				Effect.fail(
 					new SealError({
@@ -763,10 +778,9 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 						}),
 				),
 			);
-			const newObjectId = pickCreatedByTypeSuffix(
-				registerResult.objectChanges,
-				'::key_server::KeyServer',
-			);
+			const newObjectId = pickCreatedByType(registerResult.objectChanges, {
+				suffix: '::key_server::KeyServer',
+			});
 			if (newObjectId === undefined) {
 				return yield* Effect.fail(
 					new SealError({
@@ -903,7 +917,7 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 	// value extractions, not lifecycle-tracked.
 	const { __layer: internalLayer } = provide(SealLocalKeygenInternal, acquire, {
 		kind: 'service',
-		lifecycle: 'long-lived',
+		plugin: 'seal',
 		displayTitle: 'seal.local',
 		display: (s) => ({ title: 'seal.local', primary: s.keyServer.keyServerUrl }),
 	});
@@ -957,6 +971,7 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 			projections: [keyServerLayer, keyManagerLayer],
 		}),
 		__kind: 'service' as const,
+		__pluginName: 'seal',
 		__displayTitle: 'seal.local',
 	}) as unknown as StackMember;
 };
@@ -1017,7 +1032,7 @@ export const sealKnownKeyServer = (options: SealKnownKeyServerOptions = {}): Sta
 
 	const { __layer, __kind, __displayTitle } = provide(SealKeyServerTag, build, {
 		kind: 'service',
-		lifecycle: 'long-lived',
+		plugin: 'seal',
 		displayTitle: 'seal.known',
 		display: (s) => ({ title: 'seal.known', primary: s.keyServerUrl }),
 	});
@@ -1084,10 +1099,9 @@ const publishSealMoveInline = (args: {
 			);
 		}
 
-		const upgradeCapId = pickCreatedByTypeSuffix(
-			result.objectChanges,
-			'0x2::package::UpgradeCap',
-		);
+		const upgradeCapId = pickCreatedByType(result.objectChanges, {
+			suffix: '0x2::package::UpgradeCap',
+		});
 
 		yield* publishPackage({
 			name: `${args.name}.publish`,

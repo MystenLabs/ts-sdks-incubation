@@ -5,8 +5,9 @@
 import { Console, Effect, FileSystem } from 'effect';
 import { Command, Flag } from 'effect/unstable/cli';
 import { resolve as resolvePath } from 'node:path';
+import { readForkMeta } from '../../engine/sui-fork/meta.js';
 import { discoverManifestPath } from '../../runtime/discover-manifest.js';
-import { resolveStackFromEnv, stateDir } from '../stack-resolution.js';
+import { resolveForkMetaPath, resolveStackFromEnv, stateDir } from '../stack-resolution.js';
 
 // Action-time env reads — see manifest.ts for the rationale.
 const stateFile = (): string => `${stateDir()}/stacks/${resolveStackFromEnv(undefined)}/state.json`;
@@ -55,6 +56,44 @@ export const statusCommand = Command.make(
 			const state = yield* tryReadJson(stateFile());
 			const manifest = yield* tryReadJson(manifestFile());
 
+			// Phase 4 P4.9 — surface the per-stack `sui-fork/meta.json`
+			// fields under a dedicated `chain:` section so operators
+			// can read the fork's upstream + checkpoint + configHash
+			// without booting any layers. The block stays absent for
+			// non-fork stacks (no meta.json on disk).
+			const stack = resolveStackFromEnv(undefined);
+			const forkMetaPath = resolveForkMetaPath({ stack });
+			const forkMeta = yield* readForkMeta(forkMetaPath);
+
+			// Build the chain block for JSON / human render. Pulls chainId
+			// from manifest.services.sui (set by the supervisor at
+			// acquire time) and the fork-mode static fields from
+			// meta.json (upstream + forkedAtCheckpoint when the user
+			// pinned it). `lastCheckpoint` / `clockMs` are dynamic
+			// runtime values — sourced live via `devstack fork status`,
+			// not from disk — so this section omits them.
+			const manifestSui = (manifest.content as
+				| { services?: { sui?: { network?: string; chainId?: string } } }
+				| undefined)?.services?.sui;
+			const chainBlock =
+				manifestSui !== undefined || forkMeta !== undefined
+					? {
+							...(manifestSui?.chainId !== undefined ? { chainId: manifestSui.chainId } : {}),
+							...(manifestSui?.network !== undefined ? { network: manifestSui.network } : {}),
+							...(forkMeta !== undefined
+								? {
+										upstream: forkMeta.upstream,
+										...(forkMeta.checkpoint !== undefined
+											? { forkedAt: forkMeta.checkpoint }
+											: {}),
+										configHash: forkMeta.configHash,
+										seedAddresses: forkMeta.seedAddresses,
+										seedObjects: forkMeta.seedObjects,
+									}
+								: {}),
+						}
+					: undefined;
+
 			if (json) {
 				yield* Console.log(
 					JSON.stringify({
@@ -71,6 +110,7 @@ export const statusCommand = Command.make(
 							...(manifest.content !== undefined ? { content: manifest.content } : {}),
 							...(manifest.parseError !== undefined ? { error: manifest.parseError } : {}),
 						},
+						...(chainBlock !== undefined ? { chain: chainBlock } : {}),
 					}),
 				);
 				return;
@@ -87,6 +127,36 @@ export const statusCommand = Command.make(
 			yield* Console.log(`  manifest: ${manifest.path} ${manifest.exists ? '' : '(missing)'}`);
 			if (manifest.parseError !== undefined) {
 				yield* Console.log(`    ! ${manifest.parseError}`);
+			}
+
+			if (chainBlock !== undefined) {
+				yield* Console.log(`  chain:`);
+				if (chainBlock.chainId !== undefined) {
+					yield* Console.log(`    chainId:    ${chainBlock.chainId}`);
+				}
+				if (chainBlock.network !== undefined) {
+					yield* Console.log(`    network:    ${chainBlock.network}`);
+				}
+				if (chainBlock.upstream !== undefined) {
+					yield* Console.log(`    upstream:   ${chainBlock.upstream}`);
+				}
+				if (chainBlock.forkedAt !== undefined) {
+					yield* Console.log(`    forkedAt:   ${chainBlock.forkedAt}`);
+				}
+				if (chainBlock.configHash !== undefined) {
+					yield* Console.log(`    configHash: ${chainBlock.configHash}`);
+				}
+				if (chainBlock.seedAddresses !== undefined && chainBlock.seedAddresses.length > 0) {
+					yield* Console.log(`    seedAddresses: ${chainBlock.seedAddresses.join(', ')}`);
+				}
+				if (chainBlock.seedObjects !== undefined && chainBlock.seedObjects.length > 0) {
+					yield* Console.log(`    seedObjects:   ${chainBlock.seedObjects.join(', ')}`);
+				}
+				if (forkMeta !== undefined) {
+					yield* Console.log(
+						`    (lastCheckpoint / clockMs are runtime values — see \`devstack fork status\`)`,
+					);
+				}
 			}
 
 			const manifestContent = manifest.content as

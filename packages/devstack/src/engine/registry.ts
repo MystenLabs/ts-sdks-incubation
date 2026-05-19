@@ -40,7 +40,19 @@ import { dirname, join } from 'node:path';
 import { Context, Effect, FileSystem, Layer, PlatformError, Schedule } from 'effect';
 import { isPidAlive } from './process-liveness.js';
 
-export type RegistryNetwork = 'localnet' | 'testnet' | 'mainnet' | 'custom';
+// Widen to match `SuiNetwork`'s fork variants — registry entries cross
+// process boundaries (`devstack doctor`/`prune` read the file long
+// after the supervisor exits) so the on-disk shape needs to capture
+// the variant string verbatim. `'custom'` stays for legacy v3 entries
+// and the suiCustom escape hatch.
+export type RegistryNetwork =
+	| 'localnet'
+	| 'testnet'
+	| 'mainnet'
+	| 'mainnet-fork'
+	| 'testnet-fork'
+	| 'devnet-fork'
+	| 'custom';
 
 export interface RegistryEntry {
 	readonly app: string;

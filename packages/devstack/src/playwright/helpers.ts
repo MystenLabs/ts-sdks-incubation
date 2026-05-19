@@ -74,21 +74,3 @@ export async function selectAccount(select: Locator, name: string): Promise<void
 	if (!value) throw new Error(`No option matching ${name}`);
 	await select.selectOption(value);
 }
-
-/**
- * Wait for a `data-testid="balance-<name>"` cell's text to match a predicate.
- * Useful for verifying that a tx invalidated and refetched a balance query.
- */
-export async function waitForBalanceUpdate(
-	page: Page,
-	name: string,
-	predicate: (text: string) => boolean,
-	opts: { timeout?: number } = {},
-): Promise<void> {
-	const cell = page.getByTestId(`balance-${name}`);
-	await expect
-		.poll(async () => predicate((await cell.textContent()) ?? ''), {
-			timeout: opts.timeout ?? 10_000,
-		})
-		.toBe(true);
-}

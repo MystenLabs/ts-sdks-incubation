@@ -623,4 +623,104 @@ describe('App', () => {
 		expect(normalized).toContain(fullId);
 		unmount();
 	});
+
+	// Phase 5 — selective-restart visual cue. The plan calls for the dim-
+	// animation hook to light up the affected rows so the user can visually
+	// trace a watch-fire cascade. We assert two invariants:
+	//   - `markSelectiveRestart({k})` flips ONLY k's row into the "affected"
+	//     visual state — siblings stay calm.
+	//   - `markReady(k)` clears the flag, so the cue dies once the row
+	//     finishes re-acquiring (no stale highlight).
+	// The full data-binding (real dep graph → affected set) lands in P2;
+	// this test pins the surface so P2 can't accidentally break it.
+	it('selective-restart: flag flips on markSelectiveRestart and clears on markReady', async () => {
+		const engine = await buildEngine();
+		await Effect.runPromise(
+			engine.seedTags([
+				{ key: '@devstack/Sui', kind: 'service' },
+				{ key: 'publish.vault', kind: 'action' },
+				{ key: 'codegen', kind: 'action' },
+			]),
+		);
+		// Seed all three rows into a `ready` baseline, then fire a watch-
+		// driven invalidation on publish.vault + codegen.
+		for (const k of ['@devstack/Sui', 'publish.vault', 'codegen']) {
+			await Effect.runPromise(engine.markAcquiring(k));
+			await Effect.runPromise(engine.markReady(k, { title: k }));
+		}
+		await Effect.runPromise(
+			engine.markSelectiveRestart(new Set(['publish.vault', 'codegen'])),
+		);
+		// Move the affected rows to `acquiring`; Sui should NOT be touched
+		// because it's outside the affected set.
+		await Effect.runPromise(engine.markAcquiring('publish.vault'));
+		await Effect.runPromise(engine.markAcquiring('codegen'));
+
+		// Snapshot directly off the engine ref — the visual cue is a
+		// rendering of `selectiveRestart`, but the engine state is the
+		// source of truth and is what P2 will read.
+		const stateAfterFire = await Effect.runPromise(Ref.get(engine.tuiState));
+		const vaultEntry = stateAfterFire.entries.find((e) => e.key === 'publish.vault');
+		const codegenEntry = stateAfterFire.entries.find((e) => e.key === 'codegen');
+		const suiEntry = stateAfterFire.entries.find((e) => e.key === '@devstack/Sui');
+		expect(vaultEntry?.selectiveRestart).toBe(true);
+		expect(codegenEntry?.selectiveRestart).toBe(true);
+		expect(suiEntry?.selectiveRestart).toBeUndefined();
+		// Sui's row should still be `ready` — no flicker.
+		expect(suiEntry?.status).toBe('ready');
+
+		// Drive the affected rows through to `ready` again and confirm the
+		// flag clears so the next watch-fire starts from a clean slate.
+		await Effect.runPromise(engine.markReady('publish.vault', { title: 'publish.vault' }));
+		await Effect.runPromise(engine.markReady('codegen', { title: 'codegen' }));
+		const stateAfterReady = await Effect.runPromise(Ref.get(engine.tuiState));
+		for (const k of ['publish.vault', 'codegen']) {
+			const e = stateAfterReady.entries.find((x) => x.key === k);
+			expect(e?.status).toBe('ready');
+			expect(e?.selectiveRestart).toBeUndefined();
+		}
+	});
+
+	it('selective-restart: unknown keys are silently dropped (no ghost row)', async () => {
+		// The dep graph may carry a key the engine didn't seed (out-of-date
+		// graph, stack reshuffle between cycles). markSelectiveRestart
+		// should NOT auto-register a fresh row for that key — the UX hint
+		// fails closed, not noisy.
+		const engine = await buildEngine();
+		await Effect.runPromise(engine.seedTags([{ key: 'publish.vault', kind: 'action' }]));
+		await Effect.runPromise(
+			engine.markSelectiveRestart(new Set(['publish.vault', 'ghost.key'])),
+		);
+		const state = await Effect.runPromise(Ref.get(engine.tuiState));
+		expect(state.entries).toHaveLength(1);
+		expect(state.entries[0]?.key).toBe('publish.vault');
+		expect(state.entries[0]?.selectiveRestart).toBe(true);
+	});
+
+	it('selective-restart: re-acquire reflows the row through acquiring → ready', async () => {
+		// P5.T2: confirm `markAcquiring` → `markReady` row transitions still
+		// fire correctly on a selective re-acquire path (the same path P3's
+		// invalidateSubset will drive through tag.ts's withEngineLifecycle).
+		// Pre-Phase-2 we can't exercise the real Layer re-build, but the
+		// row-state mechanism is identical, so this pins the engine-side
+		// invariant the rendering layer counts on.
+		const engine = await buildEngine();
+		await Effect.runPromise(engine.seedTags([{ key: 'publish.vault', kind: 'action' }]));
+		await Effect.runPromise(engine.markAcquiring('publish.vault'));
+		await Effect.runPromise(engine.markReady('publish.vault', { title: 'publish.vault' }));
+
+		// Simulate a selective re-acquire.
+		await Effect.runPromise(engine.markSelectiveRestart(new Set(['publish.vault'])));
+		await Effect.runPromise(engine.markAcquiring('publish.vault'));
+		const mid = await Effect.runPromise(Ref.get(engine.tuiState));
+		const midEntry = mid.entries.find((e) => e.key === 'publish.vault');
+		expect(midEntry?.status).toBe('acquiring');
+		expect(midEntry?.selectiveRestart).toBe(true);
+
+		await Effect.runPromise(engine.markReady('publish.vault', { title: 'publish.vault' }));
+		const after = await Effect.runPromise(Ref.get(engine.tuiState));
+		const afterEntry = after.entries.find((e) => e.key === 'publish.vault');
+		expect(afterEntry?.status).toBe('ready');
+		expect(afterEntry?.selectiveRestart).toBeUndefined();
+	});
 });

@@ -53,9 +53,9 @@ export interface HostProcessTraefikConfig {
 	 */
 	readonly service: string;
 	/**
-	 * Router entrypoint name (one of `ROUTER_ENTRYPOINTS`'s `name`
-	 * values, e.g. `'vite'`, `'wallet'`). Drives the well-known host
-	 * port traefik binds for the public URL.
+	 * Router entrypoint name (one of the names registered via
+	 * `defineEntrypoint`, e.g. `'vite'`, `'wallet'`). Drives the
+	 * well-known host port traefik binds for the public URL.
 	 */
 	readonly entrypoint: string;
 	/**
@@ -364,7 +364,7 @@ export const hostProcess = <const Name extends string, E = never, R = never>(
 		}).pipe(Effect.withSpan(`hostProcess(${options.name})`)),
 		{
 			kind: 'service',
-			lifecycle: 'per-cycle',
+			plugin: 'dev',
 			displayTitle: options.name,
 			display: (s) => ({
 				title: options.name,

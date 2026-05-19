@@ -93,7 +93,7 @@ const runCli = async (
 };
 
 // `arena`'s state.json packs publishMove entries keyed by
-// `publishMove/v1/<name>/<sourceHash>/<chainIdShort>`. The packageId is
+// `publishMove/v2/<name>/<sourceHash>/<chainIdShort>`. The packageId is
 // the same value across cycles as long as the chain identity (and
 // therefore the publish tx digest cache) is preserved. We assert
 // EXACT equality post-restore; that's what proves chain state ride-
@@ -107,7 +107,7 @@ const readPackageIds = (stateFile: string): ReadonlyArray<string> => {
 	const parsed = JSON.parse(raw) as { data?: Record<string, unknown> };
 	const ids: Array<string> = [];
 	for (const [key, value] of Object.entries(parsed.data ?? {})) {
-		if (!key.startsWith('publishMove/v1/connect_four/')) continue;
+		if (!key.startsWith('publishMove/v2/connect_four/')) continue;
 		const v = value as Partial<ConnectFourPublish>;
 		if (typeof v.packageId === 'string') ids.push(v.packageId);
 	}

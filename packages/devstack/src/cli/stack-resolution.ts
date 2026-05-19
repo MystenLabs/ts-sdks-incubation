@@ -16,7 +16,6 @@ import * as nodePath from 'node:path';
 
 export const STATE_DIR_ENV = 'DEVSTACK_STATE_DIR';
 export const STACK_NAME_ENV = 'DEVSTACK_STACK';
-export const APP_DIR_ENV = 'DEVSTACK_APP_DIR';
 const DEFAULT_STATE_DIR = '.devstack';
 const ACTIVE_FILE = 'active';
 const DEFAULT_STACK = 'main';
@@ -26,10 +25,14 @@ const DEFAULT_STACK = 'main';
  *  load take effect. */
 export const stateDir = (): string => process.env[STATE_DIR_ENV] ?? DEFAULT_STATE_DIR;
 
-/** Resolve the app dir from `DEVSTACK_APP_DIR` or `process.cwd()`.
- *  Read at call time to mirror the rest of the toolchain (per-test or
- *  shell-wrapper overrides applied after CLI import take effect). */
-export const resolveAppDir = (): string => process.env[APP_DIR_ENV] ?? process.cwd();
+// `resolveAppDir` + `APP_DIR_ENV` live in `engine/resolve-app-dir.ts`
+// so engine-internal modules (state-store, service-paths, snapshot,
+// docker inventory) don't have to import upward through `cli/`. The
+// `cli/stack-resolution.ts` re-export keeps the historic import path
+// working for CLI consumers.
+import { APP_DIR_ENV as APP_DIR_ENV_RAW, resolveAppDir } from '../engine/resolve-app-dir.js';
+export { resolveAppDir };
+export const APP_DIR_ENV = APP_DIR_ENV_RAW;
 
 /** Resolve the state directory using the canonical CLI precedence:
  *  explicit `--state-dir` override → `DEVSTACK_STATE_DIR` env →
@@ -89,4 +92,32 @@ export const resolveStackFromEnv = (override: string | undefined): string => {
 	const env = process.env[STACK_NAME_ENV];
 	if (env !== undefined && env.length > 0) return env;
 	return DEFAULT_STACK;
+};
+
+/** Per-stack fork data directory — `.devstack/stacks/<stack>/sui-fork/data/`.
+ *  Mirrors `engine/sui-fork/meta.ts:resolveForkDataDir` but lives here so
+ *  CLI subcommands (`devstack fork status`, `devstack fork cache list`,
+ *  doctor's fork-data-dir size check) can resolve without depending on
+ *  the engine surface.
+ *
+ *  Phase 4 P4.3 / P4.15 path layout. */
+export const resolveForkDataDir = (args: { readonly stack: string }): string => {
+	const stateRoot = resolveStateDir({ override: Option.none() });
+	return nodePath.join(stateRoot, 'stacks', args.stack, 'sui-fork', 'data');
+};
+
+/** Per-stack fork meta path — `.devstack/stacks/<stack>/sui-fork/meta.json`.
+ *  The CLI's fork subcommands + doctor read this for the static config-hash
+ *  side; live runtime state (last checkpoint, clock) comes from the
+ *  running container's gRPC. */
+export const resolveForkMetaPath = (args: { readonly stack: string }): string => {
+	const stateRoot = resolveStateDir({ override: Option.none() });
+	return nodePath.join(stateRoot, 'stacks', args.stack, 'sui-fork', 'meta.json');
+};
+
+/** Shared upstream cache root — `.devstack/sui-fork-cache/`. Per-chainId
+ *  subdirectories are written by the supervisor at acquire time. */
+export const resolveForkCacheRoot = (): string => {
+	const stateRoot = resolveStateDir({ override: Option.none() });
+	return nodePath.join(stateRoot, 'sui-fork-cache');
 };

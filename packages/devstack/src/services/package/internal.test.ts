@@ -189,7 +189,7 @@ describe('hashMoveSources', () => {
 });
 
 // publishMove folds chainId into the StateStore cache key directly:
-//   cacheKey = `publishMove/v1/${name}/${sourceHash}/${chainId}`
+//   cacheKey = `publishMove/v2/${name}/${sourceHash}/${chainId}`
 // (see services/package/internal.ts ~line 304). We pin that contract
 // shape here so a future refactor that drops chainId from the key would
 // fail this test — a regenesis MUST miss the cache.
@@ -197,12 +197,12 @@ describe('publishMove cacheKey shape (chainId fold)', () => {
 	it('encodes sourceHash + chainId so distinct chains never share a cache slot', () => {
 		const name = 'demo';
 		const sourceHash = 'abcdef0123456789';
-		const keyA = `publishMove/v1/${name}/${sourceHash}/chain-A`;
-		const keyB = `publishMove/v1/${name}/${sourceHash}/chain-B`;
+		const keyA = `publishMove/v2/${name}/${sourceHash}/chain-A`;
+		const keyB = `publishMove/v2/${name}/${sourceHash}/chain-B`;
 		expect(keyA).not.toBe(keyB);
 		// Both encode the same source — proving the chainId is what makes
 		// them distinct (not e.g. an accidental name suffix).
-		expect(keyA.startsWith(`publishMove/v1/${name}/${sourceHash}/`)).toBe(true);
-		expect(keyB.startsWith(`publishMove/v1/${name}/${sourceHash}/`)).toBe(true);
+		expect(keyA.startsWith(`publishMove/v2/${name}/${sourceHash}/`)).toBe(true);
+		expect(keyB.startsWith(`publishMove/v2/${name}/${sourceHash}/`)).toBe(true);
 	});
 });

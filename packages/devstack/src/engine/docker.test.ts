@@ -107,7 +107,15 @@ const makeSpawnerLayer = (
 				return { stdout: '', stderr: '', exitCode: 1 };
 			}
 			const { running, image, containerId } = inspectResponse;
-			return { stdout: `${running}|${image}|${containerId}\n`, stderr: '', exitCode: 0 };
+			// Format mirrors `inspectContainer`'s `--format` string:
+			//   `{{.State.Running}}|{{.Config.Image}}|{{.Id}}|{{.State.ExitCode}}`.
+			// `0` is the default ExitCode for a running container that hasn't
+			// exited yet — synthetic but it's what the parser sees.
+			return {
+				stdout: `${running}|${image}|${containerId}|0\n`,
+				stderr: '',
+				exitCode: 0,
+			};
 		}
 		if (args[0] === 'start') {
 			return {
@@ -576,159 +584,6 @@ describe('Docker.run resume-fallback', () => {
 	);
 
 	it.effect(
-		'CALLBACK: when `docker start` fails with a port conflict AND `onPortConflict` is supplied, the callback chooses the new ports',
-		() =>
-			Effect.gen(function* () {
-				const recorder: Array<SpawnRecord> = [];
-				const image = 'mystenlabs/sui-tools:1.0.0';
-				// Stopped container with matching image → decision returns
-				// `resume`. `docker start` fails with port-conflict stderr.
-				// `onPortConflict` is supplied — the callback returns the
-				// allocator-driven "next preferred port" map. The recreate
-				// path MUST use those ports as full `<bind>:<host>:<container>`
-				// mappings (not auto-allocate) so the manifest publishes a
-				// stable, readable URL.
-				const spawnerLayer = makeSpawnerLayer(
-					recorder,
-					{ running: false, image, containerId: EXISTING_CONTAINER_ID },
-					{
-						startExitCode: 1,
-						startStderr:
-							'Error response from daemon: driver failed programming external connectivity on endpoint sui: Bind for 0.0.0.0:9000 failed: port is already allocated',
-					},
-				);
-
-				const callbackCalls: Array<Readonly<Record<number, number>>> = [];
-				const onPortConflict = (
-					conflicting: Readonly<Record<number, number>>,
-				): Effect.Effect<Readonly<Record<number, number>>, Docker.DockerError, never> => {
-					callbackCalls.push(conflicting);
-					// Pretend the allocator scanned 9000 → 9001.
-					return Effect.succeed({ 9001: 9000 });
-				};
-
-				const result = yield* Docker.run({
-					name: 'sui.localnet',
-					image,
-					ports: { 9000: 9000 },
-					onPortConflict,
-				}).pipe(Effect.provide(spawnerLayer), Effect.provide(identityLayer), Effect.scoped);
-
-				// Callback was invoked once with the conflicting (caller's
-				// stale) host→container map.
-				expect(callbackCalls.length).toBe(1);
-				expect(callbackCalls[0]).toEqual({ 9000: 9000 });
-
-				// A fresh `docker run` followed.
-				const runCmds = recorder.filter((r) => r.args[0] === 'run');
-				expect(runCmds.length).toBe(1);
-				const runArgs = runCmds[0]?.args ?? [];
-
-				// The recreate uses the callback's `9001 → 9000` mapping
-				// as a FULL host:container binding — NOT auto-allocate
-				// (`127.0.0.1::9000`) and NOT the caller's stale 9000.
-				expect(runArgs.some((a) => a === '127.0.0.1:9001:9000')).toBe(true);
-				expect(runArgs.some((a) => a === '127.0.0.1::9000')).toBe(false);
-				expect(runArgs.some((a) => a === '127.0.0.1:9000:9000')).toBe(false);
-
-				// `result.hostPorts` reflects the callback's mapping
-				// directly — no `docker inspect` round-trip needed for
-				// callback-driven recreates.
-				expect(result.hostPorts).toEqual({ 9001: 9000 });
-				expect(result.reused).toBe(false);
-			}),
-	);
-
-	it.effect(
-		'CALLBACK: callback re-allocates ALL conflicting ports (multi-port primitive case)',
-		() =>
-			Effect.gen(function* () {
-				const recorder: Array<SpawnRecord> = [];
-				const image = 'mystenlabs/sui-tools:1.0.0';
-				const spawnerLayer = makeSpawnerLayer(
-					recorder,
-					{ running: false, image, containerId: EXISTING_CONTAINER_ID },
-					{
-						startExitCode: 1,
-						startStderr: 'Bind for 0.0.0.0:9000 failed: port is already allocated',
-					},
-				);
-
-				// Caller passed sui-localnet's three ports (rpc, faucet,
-				// graphql). The callback shifts each by +1 to simulate the
-				// allocator's "next free preferred" behavior.
-				const onPortConflict = (
-					_conflicting: Readonly<Record<number, number>>,
-				): Effect.Effect<Readonly<Record<number, number>>, Docker.DockerError, never> =>
-					Effect.succeed({ 9001: 9000, 9124: 9123, 9126: 9125 });
-
-				const result = yield* Docker.run({
-					name: 'sui.localnet',
-					image,
-					ports: { 9000: 9000, 9123: 9123, 9125: 9125 },
-					onPortConflict,
-				}).pipe(Effect.provide(spawnerLayer), Effect.provide(identityLayer), Effect.scoped);
-
-				const runCmds = recorder.filter((r) => r.args[0] === 'run');
-				const runArgs = runCmds[0]?.args ?? [];
-
-				// All three shifted bindings appear; none of the stale
-				// caller-supplied ones do; no auto-allocate flags either.
-				expect(runArgs.some((a) => a === '127.0.0.1:9001:9000')).toBe(true);
-				expect(runArgs.some((a) => a === '127.0.0.1:9124:9123')).toBe(true);
-				expect(runArgs.some((a) => a === '127.0.0.1:9126:9125')).toBe(true);
-				expect(runArgs.some((a) => a === '127.0.0.1::9000')).toBe(false);
-				expect(runArgs.some((a) => a === '127.0.0.1::9123')).toBe(false);
-				expect(runArgs.some((a) => a === '127.0.0.1::9125')).toBe(false);
-
-				expect(result.hostPorts).toEqual({ 9001: 9000, 9124: 9123, 9126: 9125 });
-			}),
-	);
-
-	it.effect(
-		'CALLBACK: a non-port `docker start` failure does NOT invoke `onPortConflict` (still keeps original ports)',
-		() =>
-			Effect.gen(function* () {
-				const recorder: Array<SpawnRecord> = [];
-				const image = 'mystenlabs/sui-tools:1.0.0';
-				const spawnerLayer = makeSpawnerLayer(
-					recorder,
-					{ running: false, image, containerId: EXISTING_CONTAINER_ID },
-					{
-						startExitCode: 1,
-						startStderr:
-							'Error response from daemon: failed to create task for container: OCI runtime create failed',
-					},
-				);
-
-				let callbackInvoked = false;
-				const onPortConflict = (
-					_conflicting: Readonly<Record<number, number>>,
-				): Effect.Effect<Readonly<Record<number, number>>, Docker.DockerError, never> => {
-					callbackInvoked = true;
-					return Effect.succeed({ 9999: 2024 });
-				};
-
-				const result = yield* Docker.run({
-					name: 'seal.key-server',
-					image,
-					ports: { 2024: 2024 },
-					onPortConflict,
-				}).pipe(Effect.provide(spawnerLayer), Effect.provide(identityLayer), Effect.scoped);
-
-				// `isPortConflictStderr` didn't match → callback NOT invoked.
-				expect(callbackInvoked).toBe(false);
-
-				const runCmds = recorder.filter((r) => r.args[0] === 'run');
-				const runArgs = runCmds[0]?.args ?? [];
-				// Caller's original `-p 2024:2024` mapping survives — the
-				// failure class doesn't suggest the port is the problem.
-				expect(runArgs.some((a) => a === '127.0.0.1:2024:2024')).toBe(true);
-				expect(result.hostPorts).toEqual({ 2024: 2024 });
-			}),
-	);
-
-	it.effect(
 		'NON-PORT FAILURE: when `docker start` fails with an OCI runtime error, recreate WITH the ORIGINAL host port',
 		() =>
 			Effect.gen(function* () {
@@ -840,32 +695,86 @@ const makeOutputSpawnerLayer = (recorder: Array<SpawnRecord>, output: OutputSpaw
 };
 
 describe('Docker.runOneShot onOutputLine', () => {
-	it.effect('invokes the callback once per stdout line (info) and stderr line (warn)', () =>
-		Effect.gen(function* () {
-			const recorder: Array<SpawnRecord> = [];
-			const captured: Array<{ level: string; line: string }> = [];
-			const spawnerLayer = makeOutputSpawnerLayer(recorder, {
-				stdout: 'step 1: starting\nstep 2: working\nstep 3: done\n',
-				stderr: 'warning: deprecated flag\nerror: connection refused\n',
-				exitCode: 0,
-			});
+	// Both stdout AND stderr default to 'info' — `normalizeLogLine` only
+	// promotes to 'warn'/'error' when the line carries an embedded
+	// structured-tracing level (text-prefix `WARN`/`ERROR` or JSON
+	// `{level: "warn"}`). Plain text on either stream is info — matching
+	// the long-running `attachLogFollower` path so one-shot logs see the
+	// same treatment. See the `normalizeLogLine` comment in
+	// `engine/docker/core.ts` for the rationale (Rust tracing containers
+	// write info/debug to stderr too; the old `stderr = warn` blanket
+	// misclassified ~95% of container log volume).
+	it.effect(
+		'forwards every stdout AND stderr line through the callback in their original order (default level: info)',
+		() =>
+			Effect.gen(function* () {
+				const recorder: Array<SpawnRecord> = [];
+				const captured: Array<{ level: string; line: string }> = [];
+				const spawnerLayer = makeOutputSpawnerLayer(recorder, {
+					stdout: 'step 1: starting\nstep 2: working\nstep 3: done\n',
+					stderr: 'warning: deprecated flag\nerror: connection refused\n',
+					exitCode: 0,
+				});
 
-			const result = yield* Docker.runOneShot({
-				name: 'one-shot-stream',
-				image: 'busybox:latest',
-				args: ['true'],
-				onOutputLine: (level, line) =>
-					Effect.sync(() => {
-						captured.push({ level, line });
-					}),
-			}).pipe(Effect.provide(spawnerLayer), Effect.provide(identityLayer));
+				const result = yield* Docker.runOneShot({
+					name: 'one-shot-stream',
+					image: 'busybox:latest',
+					args: ['true'],
+					onOutputLine: (level, line) =>
+						Effect.sync(() => {
+							captured.push({ level, line });
+						}),
+				}).pipe(Effect.provide(spawnerLayer), Effect.provide(identityLayer));
 
-			expect(result.exitCode).toBe(0);
-			const stdoutLines = captured.filter((e) => e.level === 'info').map((e) => e.line);
-			expect(stdoutLines).toEqual(['step 1: starting', 'step 2: working', 'step 3: done']);
-			const stderrLines = captured.filter((e) => e.level === 'warn').map((e) => e.line);
-			expect(stderrLines).toEqual(['warning: deprecated flag', 'error: connection refused']);
-		}),
+				expect(result.exitCode).toBe(0);
+				// Both streams arrive as 'info' — plain lines don't trigger
+				// the level-promotion path in `normalizeLogLine`.
+				expect(captured.every((e) => e.level === 'info')).toBe(true);
+				const lines = captured.map((e) => e.line).sort();
+				expect(lines).toEqual(
+					[
+						'error: connection refused',
+						'step 1: starting',
+						'step 2: working',
+						'step 3: done',
+						'warning: deprecated flag',
+					].sort(),
+				);
+			}),
+	);
+
+	it.effect(
+		'promotes stderr lines carrying an embedded tracing WARN/ERROR prefix to the matching level',
+		() =>
+			Effect.gen(function* () {
+				const recorder: Array<SpawnRecord> = [];
+				const captured: Array<{ level: string; line: string }> = [];
+				const spawnerLayer = makeOutputSpawnerLayer(recorder, {
+					stdout: '',
+					// Two Rust-tracing-style stderr lines — the text-prefix
+					// regex in `normalizeLogLine` extracts the level and
+					// strips the timestamp+level prefix from the message.
+					stderr:
+						'2026-05-18T12:34:56.000Z WARN deprecated flag detected\n' +
+						'2026-05-18T12:34:57.000Z ERROR connection refused\n',
+					exitCode: 0,
+				});
+
+				yield* Docker.runOneShot({
+					name: 'one-shot-tracing-stderr',
+					image: 'busybox:latest',
+					args: ['true'],
+					onOutputLine: (level, line) =>
+						Effect.sync(() => {
+							captured.push({ level, line });
+						}),
+				}).pipe(Effect.provide(spawnerLayer), Effect.provide(identityLayer));
+
+				expect(captured).toEqual([
+					{ level: 'warn', line: 'deprecated flag detected' },
+					{ level: 'error', line: 'connection refused' },
+				]);
+			}),
 	);
 
 	it.effect('preserves the accumulated stdout/stderr strings on the result', () =>

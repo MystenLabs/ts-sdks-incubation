@@ -25,8 +25,8 @@ import { Account, devstack, Sui } from '@mysten-incubation/devstack';
 const isProduction = process.env.NODE_ENV === 'production';
 
 const alice = isProduction
-	? Account('alice', { from: 'env', key: 'ALICE_PRIVATE_KEY' })
-	: Account('alice', { from: 'ephemeral-funded' });
+	? Account('alice', { kind: 'env', key: 'ALICE_PRIVATE_KEY' })
+	: Account('alice', { kind: 'ephemeral-funded' });
 
 const sui = Sui();
 

@@ -20,6 +20,29 @@ export const ClaimedContainers = Context.Reference<Ref.Ref<Set<string>> | undefi
 	{ defaultValue: () => undefined },
 );
 
+// Optional scope override for `Docker.run`'s `docker stop` finalizer.
+// Default `undefined`: stops register on the calling primitive's own
+// layer scope (the historical behavior). When set in the runtime
+// context, the stop finalizer registers HERE instead — used by
+// composite primitives whose internals spawn N sibling containers that
+// can stop independently (the canonical case is walrus's 4-storage-node
+// committee). The composite forks a parallel-strategy child of its own
+// reuseScope, provides it via this reference for the duration of the
+// per-container `Docker.run` loop, and the parallel close fans the
+// `docker stop`s out concurrently at teardown — instead of the N×grace
+// serial close that would otherwise dominate composite shutdown.
+//
+// NOT a global "all docker stops everywhere": only composites that
+// know their N children are stop-independent opt in. Single-container
+// primitives (sui-localnet, seal-key-server, the indexer-db sidecar)
+// keep registering on their own layer scope so selective-restart can
+// still close one primitive's container without disturbing siblings.
+import type * as Scope from 'effect/Scope';
+export const StopFinalizerScope = Context.Reference<Scope.Scope | undefined>(
+	'@devstack/StopFinalizerScope',
+	{ defaultValue: () => undefined },
+);
+
 // Post-`Layer.build` orphan sweep. Enumerates every container labelled with
 // this stack's compose-project tag and `docker rm -f`s any that the current
 // process did NOT adopt-or-create (i.e. its `containerId` is absent from

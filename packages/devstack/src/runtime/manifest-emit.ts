@@ -20,17 +20,17 @@ import {
 import { jsonBigintReplacer } from '../engine/json-bigint.js';
 import { writeFileAtomicIfChanged } from '../engine/atomic-write.js';
 import { ManifestError } from '../engine/errors.js';
-import { ManifestV4, type Manifest } from './manifest-schema.js';
+import { ManifestV5, type Manifest } from './manifest-schema.js';
 import { gatherManifest } from './service.js';
 
-/** Encode the v4 manifest through `Schema.encodeUnknownSync(ManifestV4)`
+/** Encode the v5 manifest through `Schema.encodeUnknownSync(ManifestV5)`
  *  before serializing. This is a load-bearing guard: a bug in
  *  `gatherManifest` (or any future emitter feeding it) that produces a
  *  shape mismatch with the schema fails HERE at write time, surfacing
  *  the offending field path in the ParseError — instead of silently
- *  writing JSON that `fromManifest`'s downstream consumers then crash
- *  on at read time, far from the bug's origin. */
-const encodeManifestV4 = Schema.encodeUnknownSync(ManifestV4);
+ *  writing JSON that downstream consumers then crash on at read time,
+ *  far from the bug's origin. */
+const encodeManifest = Schema.encodeUnknownSync(ManifestV5);
 
 export interface EmitManifestOptions {
 	/** Override the on-disk path. Defaults to
@@ -46,7 +46,7 @@ const resolveOutputPath = (
 	override: string | undefined,
 ): string => override ?? `.devstack/stacks/${identity.stack}/manifest.json`;
 
-/** Write the v4 manifest to disk, idempotently AND atomically. The
+/** Write the manifest to disk, idempotently AND atomically. The
  *  atomic-write (tmp + rename) is load-bearing: every reader of
  *  `manifest.json` does a `readFileSync`, which races a
  *  truncate-and-rewrite badly. `rename(2)` is atomic on the same
@@ -67,12 +67,12 @@ const writeManifestFile = (
 			}),
 	});
 
-/** Emit a v4 manifest. Eager write at acquire, slow-tick re-snapshot
+/** Emit the manifest. Eager write at acquire, slow-tick re-snapshot
  *  during the lifetime, final flush on finalize. Returns the eager
  *  snapshot for downstream callers that want to inspect what landed
  *  first. Reads `extras` from the `Extras` service so the value is
  *  shared with codegen's StackHandleEmitter. */
-export const emitManifestV4 = (
+export const emitManifest = (
 	options: EmitManifestOptions = {},
 ): Effect.Effect<
 	Manifest,
@@ -113,18 +113,18 @@ export const emitManifestV4 = (
 			// invalid JSON that crashes downstream consumers far from
 			// the bug's origin.
 			const encoded = yield* Effect.try({
-				try: () => encodeManifestV4(data),
+				try: () => encodeManifest(data),
 				catch: (cause) =>
 					new ManifestError({
 						phase: 'write',
-						message: `manifest v4 schema encode failed before write to ${outputPath}`,
+						message: `manifest schema encode failed before write to ${outputPath}`,
 						cause,
 					}),
 			});
 			const body = JSON.stringify(encoded, jsonBigintReplacer, 2);
 			const wrote = yield* writeManifestFile(outputPath, body).pipe(
 				Effect.catch((err) =>
-					Effect.logWarning(`manifest(v4): ${err.message}`).pipe(
+					Effect.logWarning(`manifest: ${err.message}`).pipe(
 						Effect.annotateLogs({ cause: err.cause }),
 						Effect.as(false),
 					),
@@ -143,7 +143,7 @@ export const emitManifestV4 = (
 		});
 
 		// Eager write — dapp-kit reads the manifest at dev-server start.
-		const eager = yield* snapshotAndWrite.pipe(Effect.withSpan('manifest-v4.write'));
+		const eager = yield* snapshotAndWrite.pipe(Effect.withSpan('manifest.write'));
 
 		// Slow-tick re-snapshot for late registrations (the wallet's
 		// endpoint, for example, can land after the manifest factory has
@@ -153,13 +153,13 @@ export const emitManifestV4 = (
 			snapshotAndWrite.pipe(
 				Effect.ignore({ log: true }),
 				Effect.repeat(Schedule.spaced(options.tickInterval ?? '500 millis')),
-				Effect.withSpan('manifest-v4.watch'),
+				Effect.withSpan('manifest.watch'),
 			),
 		);
 
 		// Final flush — captures any teardown-time mutations.
 		yield* Effect.addFinalizer(() =>
-			snapshotAndWrite.pipe(Effect.withSpan('manifest-v4.finalize'), Effect.orDie),
+			snapshotAndWrite.pipe(Effect.withSpan('manifest.finalize'), Effect.orDie),
 		);
 
 		return eager;

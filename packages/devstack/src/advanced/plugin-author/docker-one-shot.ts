@@ -3,6 +3,7 @@ import * as crypto from 'node:crypto';
 import { cacheGet, cachePut } from '../../engine/cache.js';
 import * as Docker from '../../engine/docker.js';
 import { DockerError } from '../../engine/errors.js';
+import { StateStoreKeys } from '../../engine/state-store-keys.js';
 import { tag, type LayeredTag } from '../tag.js';
 
 export interface DockerOneShotResult {
@@ -81,7 +82,10 @@ export const dockerOneShot = <const Name extends string, E = never, R = never>(
 					),
 				)
 				.digest('hex');
-			const stateKey = `dockerOneShot/${options.name}/${cacheKey}`;
+			const stateKey = StateStoreKeys.dockerOneShot({
+				name: options.name,
+				inputsHash: cacheKey,
+			});
 
 			const cached = yield* cacheGet<DockerOneShotResult>(stateKey);
 			if (Option.isSome(cached)) {

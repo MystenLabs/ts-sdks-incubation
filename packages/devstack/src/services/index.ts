@@ -67,7 +67,6 @@ export { Account } from './account.js';
 export {
 	Package,
 	type PackageOptions,
-	type CaptureSpec,
 	PackageTag,
 	type LocalPackage,
 	LocalPackageTag,
@@ -75,6 +74,33 @@ export {
 	CoinTag,
 	toSdkCoin,
 } from './package.js';
+export {
+	Pyth,
+	PythTag,
+	PythPusher,
+	pythMid,
+	SUI_PRICE_FEED_ID,
+	DEEP_PRICE_FEED_ID,
+	USDC_PRICE_FEED_ID,
+} from './pyth.js';
+export { Postgres, PostgresTag, type PostgresOptions, type Postgres as PostgresShape } from './postgres.js';
+export type {
+	PythOptions,
+	PythShape,
+	PythPriceInfo,
+	PythMid,
+	PythMidOptions,
+	PythMidScale,
+	PythPusherHandle,
+	PythPusherOptions,
+	PythPusherSource,
+	PythPriceFeedId,
+	PythPriceInfoSpec,
+	PythPriceUpdate,
+	PythLocalDeployOptions,
+	PythLocalDeployFeedSpec,
+	PythKnownPackageOptions,
+} from './pyth.js';
 export { Action, type ActionOptions } from './action.js';
 export { Dev, type DevOptions } from './dev.js';
 export { Wallet, type WalletOptions } from './wallet.js';

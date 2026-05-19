@@ -26,6 +26,7 @@ import { applyNetworkOverride, networkFlag, rendererFlag } from './flags.js';
 import { loadConfigModule, requireLaunchEffect } from './loaders.js';
 import { applyCommand } from './commands/apply.js';
 import { doctorCommand } from './commands/doctor.js';
+import { forkCommand } from './commands/fork.js';
 import { manifestCommand } from './commands/manifest.js';
 import { pruneCommand } from './commands/prune.js';
 import { snapshotCommand } from './commands/snapshot.js';
@@ -82,6 +83,7 @@ export const rootCommand = Command.make('devstack').pipe(
 		wipeCommand,
 		pruneCommand,
 		stackCommand,
+		forkCommand,
 		doctorCommand,
 		manifestCommand,
 		versionCommand,

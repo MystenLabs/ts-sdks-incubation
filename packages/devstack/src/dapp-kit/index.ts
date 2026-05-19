@@ -17,12 +17,11 @@
 // `createDAppKit(...)`. There's no runtime `createDevstackDappKit`
 // helper any more — the generated config replaces it.
 //
-// Manifest accessors (`fromManifest`) and the typed `Manifest` shape
-// are NOT re-exported here. Generated browser code (`./generated/`) is
-// fully self-contained: the dapp-kit-config and stack-handle emitters
-// bake every value as a static literal at codegen time, so browser
-// code never reads `.devstack/manifest.json` at runtime. Server-side
-// callers that need `fromManifest` import it from the package root
-// (`@mysten-incubation/devstack`) directly.
+// The typed `Manifest` shape is NOT re-exported here. Generated browser
+// code (`./generated/`) is fully self-contained: the dapp-kit-config
+// and stack-handle emitters bake every value as a static literal at
+// codegen time, so browser code never reads `.devstack/manifest.json`
+// at runtime. Server-side callers that need the typed shape import it
+// from the package root (`@mysten-incubation/devstack`) directly.
 
 export { localnetWalrusOptions, type LocalnetWalrusOptions } from './walrus.js';

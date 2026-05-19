@@ -26,8 +26,6 @@ import { sealKnownKeyServer } from './seal/internal.js';
 type _ExpectedKeyServerConfig = {
 	objectId: string;
 	weight: number;
-	apiKeyName?: string;
-	apiKey?: string;
 	aggregatorUrl?: string;
 };
 type _SealKeyServerEntryCheck = SealKeyServerEntry extends _ExpectedKeyServerConfig ? true : never;

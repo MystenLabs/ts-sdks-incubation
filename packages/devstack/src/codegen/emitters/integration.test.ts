@@ -24,11 +24,16 @@ import {
 	AccountRegistry,
 	AccountRegistryLive,
 	CoinRegistryLive,
+	DeepbookIndexerStateRegistryLive,
+	DeepbookMarginStateRegistryLive,
+	DeepbookServerStateRegistryLive,
 	DeepbookStateRegistryLive,
 	EndpointRegistry,
 	EndpointRegistryLive,
 	PackageRegistry,
 	PackageRegistryLive,
+	PostgresStateRegistryLive,
+	PythStateRegistryLive,
 	SealStateRegistryLive,
 	SuiStateRegistryLive,
 	WalrusStateRegistryLive,
@@ -57,6 +62,11 @@ const RegistriesLive = Layer.mergeAll(
 	SealStateRegistryLive,
 	WalrusStateRegistryLive,
 	DeepbookStateRegistryLive,
+	PythStateRegistryLive,
+	PostgresStateRegistryLive,
+	DeepbookIndexerStateRegistryLive,
+	DeepbookServerStateRegistryLive,
+	DeepbookMarginStateRegistryLive,
 );
 
 // Stub manifest — minimal but enough that both emitters produce every

@@ -21,9 +21,11 @@ import { PublishError } from '../../engine/errors.js';
 import type { LocalPackage } from '../package.js';
 import { toSdkCoin } from '../package.js';
 import type { Account, SuiObjectChange } from '../../engine/shared.js';
-import { pickCreatedByTypeIncludes, pickCreatedByTypeSuffix } from '../../engine/sui-helpers.js';
+import { pickCreatedByType } from '../../engine/sui-helpers.js';
 import { FaucetTag } from '../faucet/index.js';
 import { treasuryCapMintStrategy } from '../faucet/strategies/treasury-cap-mint.js';
+import { discoverCoinsFromPublish } from '../coin/discovery.js';
+import { fetchCoinMetadataMany, type OnchainCoinMetadata } from '../coin/loader.js';
 
 // Content-hash the Move source tree under `sourcePath`. Hashes every
 // `.move` file plus `Move.toml`, ignoring build/output/hidden dirs so
@@ -97,19 +99,24 @@ export const hashMoveSources = (sourcePath: string) =>
 		return digest;
 	}).pipe(Effect.withSpan('publishMove.hash-sources'));
 
-export interface CoinSpec {
+// `PublishedCoin` is the runtime shape every entry of `pkg.coins[<key>]`
+// satisfies. `name` is the registry key (the discovered symbol, or
+// witness fallback when there's no CoinMetadata). `module` / `type` /
+// `decimals` are derived from the publish receipt + the on-chain
+// CoinMetadata respectively. Internal-only; downstream consumers reach
+// for the shape through `Coin.fromPackage(pkg, witness)` or the
+// `CoinValue` returned by `Coin('SYMBOL')`.
+export interface PublishedCoin {
 	readonly name: string;
 	readonly module: string;
 	readonly type: string;
 	readonly decimals: number;
-}
-
-export interface PublishedCoin extends CoinSpec {
 	readonly fullCoinType: string;
 	/**
-	 * SDK-aligned projection — see `Coin['sdkCoin']`. Same value
-	 * `registerCoin` emits, so downstream consumers can read either tag
-	 * shape uniformly.
+	 * SDK-aligned projection — see `Coin['sdkCoin']`. Same shape every
+	 * `Coin(...)` factory ref carries, so downstream consumers can read
+	 * either the per-coin tag or the package's `coins.<key>` field
+	 * uniformly.
 	 */
 	readonly sdkCoin: {
 		readonly address: string;
@@ -125,23 +132,32 @@ export interface PublishedCoin extends CoinSpec {
 	 * the standard `coin::create_currency` pattern).
 	 */
 	readonly treasuryCapId?: string;
+	// Populated when `discoverCoinsFromPublish` matches a
+	// `CoinMetadata<<fullCoinType>>` to this coin AND
+	// `CoinMetadataLoader.getMany` returns a payload. A flaky RPC at
+	// publish time degrades to "fields undefined" (warning logged); the
+	// next supervisor cycle picks them up.
+	readonly metadataId?: string;
+	readonly treasuryCapOwner?: string;
+	readonly publisherOwnsCap?: boolean;
+	readonly symbol?: string;
+	readonly displayName?: string;
+	readonly iconUrl?: string;
+	readonly packageId?: string;
 }
 
 // Per-call shape returned by `publishMove`. Carries the universal
 // `LocalPackage` fields (so the per-name tag satisfies the
 // `LocalPackageTag` contract in `services/package.ts` structurally) plus
-// `coins` — a typed record of the published coin specs the caller
-// declared. `bindings` keys off `LocalPackage` so a known-package
-// tag (which only satisfies `Package`) is rejected at compose time.
-export interface Package<
-	TCaptured = undefined,
-	TCoins extends Record<string, PublishedCoin> = Record<string, PublishedCoin>,
-> {
+// `coins` — the auto-discovered record of every coin the publish
+// created. `bindings` keys off `LocalPackage` so a known-package tag
+// (which only satisfies `Package`) is rejected at compose time.
+export interface Package<TCaptured = undefined> {
 	readonly name: string;
 	readonly packageId: string;
 	readonly upgradeCapId: string | undefined;
 	readonly captured: TCaptured;
-	readonly coins: TCoins;
+	readonly coins: Record<string, PublishedCoin>;
 	readonly sourcePath: string;
 	readonly mvrPlaceholder: string;
 }
@@ -153,21 +169,15 @@ export interface Package<
 // concrete `TCaptured` choices the caller's `capture` lambda produces
 // flow through structurally at the call site.
 type _LocalPackageCompatibilityCheck =
-	Package<Record<string, unknown> | undefined, Record<string, PublishedCoin>> extends LocalPackage
-		? true
-		: never;
+	Package<Record<string, unknown> | undefined> extends LocalPackage ? true : never;
 const _localPackageCompatibilityCheck: _LocalPackageCompatibilityCheck = true;
 void _localPackageCompatibilityCheck;
 
-type CoinsRecord<T extends ReadonlyArray<CoinSpec>> = {
-	readonly [K in T[number]['name']]: PublishedCoin;
-};
-
-export interface PublishMoveOptions<
-	Name extends string,
-	TCaptured,
-	TCoins extends ReadonlyArray<CoinSpec>,
-> {
+// `PublishMoveOptions` carries the kitchen-sink shape `publishMove`
+// accepts. The user-facing `Package(name, path, opts)` and
+// `PackageWithCapture(name, path, opts)` factories each project into a
+// subset of these fields; this interface stays internal.
+export interface PublishMoveOptions<Name extends string, TCaptured> {
 	/**
 	 * Tag name. Used for the per-call tag (downstream consumers
 	 * `yield*` it), the manifest entry, and the Move address
@@ -201,20 +211,14 @@ export interface PublishMoveOptions<
 	 * Optional projection over the publish transaction's
 	 * `objectChanges`. The returned record is exposed on the resolved
 	 * tag as `captured` and serialized into the manifest's
-	 * `packages[].captured`. Use for object ids the package creates
-	 * during publish (treasury caps, admin caps, registry singletons)
-	 * that downstream consumers need to address. Pair with the
-	 * `pickCreatedByType*` helpers from `./sui-helpers.ts`.
+	 * `packages[].captured`. The user-facing `Package(...)` factory
+	 * does NOT expose this; the `/advanced` `PackageWithCapture(...)`
+	 * factory does. Used for unusual cases (DAO patterns, custom init
+	 * that creates non-standard shared objects) where coin
+	 * auto-discovery alone isn't enough. Pair with the
+	 * `pickCreatedByType` helper from `./sui-helpers.ts`.
 	 */
 	readonly capture?: (changes: ReadonlyArray<SuiObjectChange>) => TCaptured;
-	/**
-	 * Optional coin specs to register against the published package.
-	 * Each entry surfaces in the `CoinRegistry` (manifest + `CoinTag` tag
-	 * for downstream consumers) without the caller having to add a
-	 * separate `registerCoin` primitive. The `module` + `type` fields
-	 * key into the published package's coin types.
-	 */
-	readonly coins?: TCoins;
 }
 
 const UPGRADE_CAP_TYPE_SUFFIX = '0x2::package::UpgradeCap';
@@ -242,6 +246,12 @@ const registerMintStrategies = (
 		const faucet = faucetOpt.value;
 		for (const coin of coins) {
 			if (coin.treasuryCapId === undefined) continue;
+			// Skip mint registration for coins whose TreasuryCap isn't
+			// held by the publisher (DAO patterns, shared caps). The coin
+			// is still recorded in `coins` so reads (balance display,
+			// Coin('SYMBOL') resolution) work — only mint via faucet is
+			// gated.
+			if (coin.publisherOwnsCap === false) continue;
 			yield* faucet.register(
 				treasuryCapMintStrategy({
 					coinType: coin.fullCoinType,
@@ -252,12 +262,8 @@ const registerMintStrategies = (
 		}
 	});
 
-export const publishMove = <
-	const Name extends string,
-	TCaptured = undefined,
-	const TCoins extends ReadonlyArray<CoinSpec> = [],
->(
-	options: PublishMoveOptions<Name, TCaptured, TCoins>,
+export const publishMove = <const Name extends string, TCaptured = undefined>(
+	options: PublishMoveOptions<Name, TCaptured>,
 ) =>
 	tag(
 		options.name,
@@ -301,8 +307,8 @@ export const publishMove = <
 			})();
 			const mvrPlaceholder = options.mvrPlaceholder ?? `@local/${mvrSlug}`;
 			const sourceHash = yield* hashMoveSources(options.path);
-			const cacheKey = `publishMove/v1/${options.name}/${sourceHash}/${sui.chainId}`;
-			const cached = yield* state.get<Package<TCaptured, CoinsRecord<TCoins>>>(cacheKey);
+			const cacheKey = `publishMove/v2/${options.name}/${sourceHash}/${sui.chainId}`;
+			const cached = yield* state.get<Package<TCaptured>>(cacheKey);
 			if (Option.isSome(cached)) {
 				yield* Effect.logInfo(
 					`publishMove(${options.name}): cache hit — chainId=${sui.chainId} sourceHash=${sourceHash} packageId=${cached.value.packageId}`,
@@ -316,21 +322,8 @@ export const publishMove = <
 				// the cached payload — they're host-specific so we don't
 				// persist them, but downstream primitives (bindings) need
 				// them on the yielded shape.
-				//
-				// Cache entries written before `sdkCoin` landed lack the field;
-				// backfill defensively so existing on-disk caches survive a
-				// version bump without a forced wipe.
-				const cachedCoins = cached.value.coins as Record<string, PublishedCoin>;
-				const rehydratedCoins = {} as Record<string, PublishedCoin>;
-				for (const [k, c] of Object.entries(cachedCoins)) {
-					rehydratedCoins[k] = {
-						...c,
-						sdkCoin: c.sdkCoin ?? toSdkCoin({ fullCoinType: c.fullCoinType, decimals: c.decimals }),
-					};
-				}
-				const hit: Package<TCaptured, CoinsRecord<TCoins>> = {
+				const hit: Package<TCaptured> = {
 					...cached.value,
-					coins: rehydratedCoins as CoinsRecord<TCoins>,
 					sourcePath: options.path,
 					mvrPlaceholder,
 				};
@@ -351,6 +344,12 @@ export const publishMove = <
 						type: coin.fullCoinType,
 						decimals: coin.decimals,
 						sdkCoin: coin.sdkCoin,
+						...(coin.symbol !== undefined ? { symbol: coin.symbol } : {}),
+						...(coin.displayName !== undefined ? { displayName: coin.displayName } : {}),
+						...(coin.iconUrl !== undefined ? { iconUrl: coin.iconUrl } : {}),
+						...(coin.treasuryCapId !== undefined ? { treasuryCapId: coin.treasuryCapId } : {}),
+						...(coin.metadataId !== undefined ? { metadataId: coin.metadataId } : {}),
+						...(coin.packageId !== undefined ? { packageId: coin.packageId } : {}),
 					});
 				}
 				yield* registerMintStrategies(signer, Object.values(hit.coins));
@@ -466,50 +465,79 @@ export const publishMove = <
 				}),
 			);
 
-			const upgradeCapId = pickCreatedByTypeSuffix(result.objectChanges, UPGRADE_CAP_TYPE_SUFFIX);
+			const upgradeCapId = pickCreatedByType(result.objectChanges, {
+				suffix: UPGRADE_CAP_TYPE_SUFFIX,
+			});
 
 			const captured = options.capture ? options.capture(result.objectChanges) : undefined;
 
-			const coinSpecs = options.coins ?? ([] as ReadonlyArray<CoinSpec>);
-			// HIGH-C2: refuse duplicate coin names within one Package's
-			// `coins:` list. Two specs with the same `name` would each
-			// `publishCoin(...)` the same key — the second
-			// silently overwrites the first, leaving the manifest +
-			// CoinTag lookups pointing at whichever entry happened to
-			// register last. Surface the conflict at config-load time
-			// where the user can fix it instead of letting it become a
-			// debugging mystery during e2e.
-			const seenCoinNames = new Set<string>();
-			for (const spec of coinSpecs) {
-				if (seenCoinNames.has(spec.name)) {
-					return yield* Effect.fail(
-						new PublishError({
-							phase: 'register-coins',
-							message: `publishMove '${options.name}': duplicate coin name '${spec.name}' in coins[]; each coin must have a unique name within a package`,
-						}),
-					);
-				}
-				seenCoinNames.add(spec.name);
-			}
+			// Coin auto-discovery is the single source. Every coin the
+			// publish receipt creates surfaces as a `PublishedCoin` entry
+			// keyed by the on-chain CoinMetadata symbol (when present) or
+			// the witness type name (when the publish didn't follow the
+			// standard `coin::create_currency` pattern).
+			const discovered = discoverCoinsFromPublish(result.objectChanges, signer.address);
+
+			// Fetch CoinMetadata for every discovered coin. One concurrent
+			// RPC batch; on transient failure individual entries degrade to
+			// "no metadata" and the publishMove pipeline keeps going.
+			const allCoinTypes = discovered.map((d) => d.coinType);
+			const metadataByType: ReadonlyMap<string, OnchainCoinMetadata> =
+				allCoinTypes.length > 0
+					? yield* fetchCoinMetadataMany(sui.client, allCoinTypes)
+					: new Map();
+
 			const coins = {} as Record<string, PublishedCoin>;
-			for (const spec of coinSpecs) {
-				const fullCoinType = `${packageId}::${spec.module}::${spec.type}`;
-				// Find the per-coin TreasuryCap. Coin module init via
-				// `coin::create_currency` emits a `TreasuryCap<<fullCoinType>>`
-				// owned by the publisher; locating it here lets us auto-register
-				// a mint strategy below. `pickCreatedByTypeIncludes` matches the
-				// generic-with-args form like
-				// `0x2::coin::TreasuryCap<0xPKG::module::TYPE>`.
-				const treasuryCapId = pickCreatedByTypeIncludes(
-					result.objectChanges,
-					`0x2::coin::TreasuryCap<${fullCoinType}>`,
-				);
-				coins[spec.name] = {
-					...spec,
-					fullCoinType,
-					sdkCoin: toSdkCoin({ fullCoinType, decimals: spec.decimals }),
-					...(treasuryCapId !== undefined ? { treasuryCapId } : {}),
+			for (const disc of discovered) {
+				const md = metadataByType.get(disc.coinType);
+				// Symbol-keyed naming: prefer the on-chain CoinMetadata
+				// symbol; fall back to the coin's witness type name when
+				// the publish didn't emit a CoinMetadata. Either form is
+				// addressable through `Coin('SYMBOL')` (case-insensitive
+				// lookup against both the symbol and the witness).
+				const key =
+					md?.symbol !== undefined && md.symbol.length > 0 ? md.symbol : disc.witnessName;
+				// Decimals authority: on-chain RPC value; falls back to 0
+				// when the coin didn't emit a CoinMetadata (rare custom
+				// init bypassing `coin::create_currency`).
+				const decimals = md?.decimals ?? 0;
+				const coin: PublishedCoin = {
+					name: key,
+					module: disc.moduleName,
+					type: disc.witnessName,
+					decimals,
+					fullCoinType: disc.coinType,
+					sdkCoin: toSdkCoin({ fullCoinType: disc.coinType, decimals }),
+					packageId,
+					...(disc.treasuryCapId !== undefined ? { treasuryCapId: disc.treasuryCapId } : {}),
+					...(disc.treasuryCapOwner !== undefined
+						? { treasuryCapOwner: disc.treasuryCapOwner }
+						: {}),
+					publisherOwnsCap: disc.publisherOwnsCap,
+					...(disc.metadataId !== undefined ? { metadataId: disc.metadataId } : {}),
+					...(md?.symbol !== undefined && md.symbol.length > 0
+						? { symbol: md.symbol }
+						: {}),
+					...(md?.name !== undefined && md.name.length > 0
+						? { displayName: md.name }
+						: {}),
+					...(md?.iconUrl !== undefined ? { iconUrl: md.iconUrl } : {}),
 				};
+				// Collision guard: two coins in one package publishing the
+				// same on-chain symbol. Discovery sorts deterministically
+				// by coinType so the second occurrence is dropped with a
+				// warning — this is a Move-source bug the developer
+				// should fix (each coin's CoinMetadata symbol should be
+				// unique within a package).
+				if (coins[key] !== undefined) {
+					yield* Effect.logWarning(
+						`publishMove(${options.name}): coin key collision on '${key}' (existing: ${coins[key].fullCoinType}, ` +
+							`incoming: ${coin.fullCoinType}) — keeping the first. Each coin's CoinMetadata ` +
+							`symbol should be unique within a package.`,
+					);
+					continue;
+				}
+				coins[key] = coin;
 			}
 
 			yield* publishPackage({
@@ -526,16 +554,22 @@ export const publishMove = <
 					type: coin.fullCoinType,
 					decimals: coin.decimals,
 					sdkCoin: coin.sdkCoin,
+					...(coin.symbol !== undefined ? { symbol: coin.symbol } : {}),
+					...(coin.displayName !== undefined ? { displayName: coin.displayName } : {}),
+					...(coin.iconUrl !== undefined ? { iconUrl: coin.iconUrl } : {}),
+					...(coin.treasuryCapId !== undefined ? { treasuryCapId: coin.treasuryCapId } : {}),
+					...(coin.metadataId !== undefined ? { metadataId: coin.metadataId } : {}),
+					...(coin.packageId !== undefined ? { packageId: coin.packageId } : {}),
 				});
 			}
 			yield* registerMintStrategies(signer, Object.values(coins));
 
-			const result_: Package<TCaptured, CoinsRecord<TCoins>> = {
+			const result_: Package<TCaptured> = {
 				name: options.name,
 				packageId,
 				upgradeCapId,
 				captured: captured as TCaptured,
-				coins: coins as unknown as CoinsRecord<TCoins>,
+				coins,
 				sourcePath: options.path,
 				mvrPlaceholder,
 			};
@@ -552,7 +586,7 @@ export const publishMove = <
 		}).pipe(Effect.withSpan(`publishMove(${options.name})`)),
 		{
 			kind: 'action',
-			lifecycle: 'per-cycle',
+			plugin: 'move',
 			displayTitle: `publish.${options.name}`,
 			// Auto-watch the Move source tree. An edit to a `.move` file
 			// (or `Move.toml`) under `options.path` triggers a hot-restart;
@@ -579,8 +613,3 @@ export const publishMove = <
 			},
 		},
 	);
-
-// Capture helpers — moved to `sui-helpers.ts` so they can be imported by
-// configs that don't otherwise touch publish-move. Re-exported here for
-// back-compat with the previous import path used internally.
-export { pickCreatedByTypeIncludes, pickCreatedByTypeSuffix } from '../../engine/sui-helpers.js';

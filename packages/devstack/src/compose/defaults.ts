@@ -1,9 +1,19 @@
-// Default-provider registry. If the user passes refs that require sui
-// (any Account/Package/Action) and no `Sui(...)` ref is in the merge,
-// devstack synthesizes a localnet `Sui()` automatically. Today this is
-// the only auto-fill; capability-keyed defaults (e.g.
-// `capability:seal-key-server` → `Seal()`) would slot in here.
+// Default-provider registry. Two implicit refs land on every
+// `devstack(...)` call when missing:
+//
+// - `Sui()` — the localnet provider every per-account / per-package /
+//   per-action ref transitively depends on. Auto-fills when the user
+//   doesn't supply their own `Sui(...)`.
+// - `Faucet()` — the dispatch service `Account({ funding })` and the
+//   dev-wallet UI's "Get <symbol>" panel both consume. Auto-fills when
+//   the user doesn't supply their own `Faucet(...)` (rare; plugin
+//   authors registering custom strategies via `Faucet({ strategies })`
+//   on `/advanced`). The auto-included Faucet best-effort registers
+//   the built-in SUI HTTP strategy when `SuiTag.faucet` is available;
+//   per-coin TreasuryCap mint strategies auto-register from
+//   `Package(...)` publish via the coin-discovery pass.
 
+import { Faucet as FaucetFactory } from '../services/faucet/index.js';
 import { Sui as SuiFactory } from '../services/sui.js';
 import type { StackMember } from '../engine/supervisor.js';
 
@@ -11,10 +21,15 @@ import type { StackMember } from '../engine/supervisor.js';
  *  `SuiTag` in `services/sui.ts` (`@devstack/SuiTag`). */
 const SUI_TAG_KEY = '@devstack/SuiTag';
 
-/** Auto-fill missing required providers. Today: Sui. Returns the
+/** Auto-fill missing required providers. Today: Sui + Faucet. Returns the
  *  refs the user passed plus any synthesized defaults. */
 export const fillDefaults = (refs: ReadonlyArray<StackMember>): ReadonlyArray<StackMember> => {
 	const hasSui = refs.some((r) => (r as { key?: string }).key === SUI_TAG_KEY);
-	if (hasSui) return refs;
-	return [SuiFactory(), ...refs];
+	const hasFaucet = refs.some((r) =>
+		((r as { key?: string }).key ?? '').startsWith('faucet/'),
+	);
+	const out: Array<StackMember> = [...refs];
+	if (!hasSui) out.unshift(SuiFactory());
+	if (!hasFaucet) out.push(FaucetFactory() as unknown as StackMember);
+	return out;
 };

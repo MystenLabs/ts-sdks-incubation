@@ -18,13 +18,15 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+import { promises as nodeFs } from 'node:fs';
+import { join as joinPath } from 'node:path';
 import { Console, Effect, FileSystem, Option, Path } from 'effect';
 import { Argument, Command, Flag } from 'effect/unstable/cli';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { randomBytes } from 'node:crypto';
 import { wrapCause } from '../loaders.js';
 import { failAlreadyReported } from '../already-reported.js';
-import { resolveStack, stateDir } from '../stack-resolution.js';
+import { resolveAppDir, resolveForkDataDir, resolveStack, stateDir } from '../stack-resolution.js';
 import { deriveAppName, DockerLabel } from '../../engine/identity.js';
 import { list as listSnapshots, restore, snapshot } from '../../engine/snapshot.js';
 
@@ -148,7 +150,32 @@ const appFlag = Flag.string('app').pipe(
 );
 
 const resolveAppName = (override: Option.Option<string>): string =>
-	Option.getOrElse(override, () => deriveAppName(process.env.DEVSTACK_APP_DIR ?? process.cwd()));
+	Option.getOrElse(override, () => deriveAppName(resolveAppDir()));
+
+// Threshold above which `--include-fork-data` flips OFF by default
+// (Phase 4 P4.8). 1GB is the canonical break-even — below it, capturing
+// the fork data is essentially free (snapshot is tar-compressed and
+// `docker commit` already captures the writable layer where chain
+// state lives). Above it, the snapshot artifact balloons faster than
+// the rebuild cost saved, so we opt out by default with a printed hint.
+const FORK_DATA_DEFAULT_INCLUDE_THRESHOLD = 1 * 1024 * 1024 * 1024;
+
+const safeDirSize = async (root: string): Promise<number> => {
+	try {
+		const stat = await nodeFs.stat(root);
+		if (stat.isDirectory()) {
+			let total = 0;
+			const entries = await nodeFs.readdir(root);
+			for (const entry of entries) {
+				total += await safeDirSize(joinPath(root, entry));
+			}
+			return total;
+		}
+		return stat.size;
+	} catch {
+		return 0;
+	}
+};
 
 const saveCommand = Command.make(
 	'save',
@@ -164,8 +191,21 @@ const saveCommand = Command.make(
 			),
 			Flag.withDefault(true),
 		),
+		// Phase 4 P4.8 — gate the per-stack `sui-fork/data/` capture.
+		// Three-state: explicit on (`--include-fork-data`), explicit off
+		// (`--no-include-fork-data`), or auto-by-threshold (default,
+		// `--include-fork-data` flips false above 1GB with a printed
+		// hint). Mirrors `--include-images`'s default-on / opt-out shape.
+		includeForkData: Flag.boolean('include-fork-data').pipe(
+			Flag.withDescription(
+				'Include `.devstack/stacks/<stack>/sui-fork/data/` in the snapshot as an extras tar. ' +
+					'Default: auto — include when the data dir is under ' +
+					`${Math.round(FORK_DATA_DEFAULT_INCLUDE_THRESHOLD / (1024 * 1024 * 1024))}GB, exclude above (with a printed hint).`,
+			),
+			Flag.optional,
+		),
 	},
-	({ label, stack, app, includeImages }) =>
+	({ label, stack, app, includeImages, includeForkData }) =>
 		Effect.gen(function* () {
 			const fs = yield* FileSystem.FileSystem;
 			const path = yield* Path.Path;
@@ -177,6 +217,36 @@ const saveCommand = Command.make(
 			const containers = includeImages
 				? yield* listContainersForAppStack(spawner, resolvedApp, resolvedStack)
 				: [];
+
+			// Resolve the optional fork-data extras entry. The fork data
+			// dir only exists for fork-mode stacks (created by `buildFork`
+			// during apply); a missing directory means "not a fork stack"
+			// and we silently skip without warning. Above-threshold,
+			// auto-mode flips to false with a printed hint so the user
+			// knows the data was excluded.
+			const forkDataDir = resolveForkDataDir({ stack: resolvedStack });
+			const forkDataBytes = yield* Effect.promise(() => safeDirSize(forkDataDir));
+			const extras: Array<{ key: string; path: string }> = [];
+			let includeForkDataResolved = Option.getOrUndefined(includeForkData);
+			if (forkDataBytes === 0) {
+				// No fork data on disk (not a fork stack OR fresh first-
+				// boot pre-meta). Treat as a no-op regardless of the
+				// flag's setting.
+				includeForkDataResolved = false;
+			} else if (includeForkDataResolved === undefined) {
+				includeForkDataResolved = forkDataBytes < FORK_DATA_DEFAULT_INCLUDE_THRESHOLD;
+				if (!includeForkDataResolved) {
+					yield* Console.log(
+						`note: fork data dir ${forkDataDir} is ${Math.round(forkDataBytes / (1024 * 1024))} MiB — ` +
+							`above the ${Math.round(FORK_DATA_DEFAULT_INCLUDE_THRESHOLD / (1024 * 1024 * 1024))} GB auto-include threshold; ` +
+							`pass --include-fork-data to capture it anyway.`,
+					);
+				}
+			}
+			if (includeForkDataResolved) {
+				extras.push({ key: 'sui-fork-data', path: forkDataDir });
+			}
+
 			yield* Console.log(
 				`saving snapshot ${id} (app=${resolvedApp}, stack=${resolvedStack}, ${containers.length} container${containers.length === 1 ? '' : 's'})`,
 			);
@@ -186,6 +256,7 @@ const saveCommand = Command.make(
 				app: resolvedApp,
 				stack: resolvedStack,
 				containers,
+				...(extras.length > 0 ? { extras } : {}),
 			});
 			yield* Console.log(`saved snapshot ${id}`);
 			yield* Console.log(`  → ${result.path}`);

@@ -1,6 +1,6 @@
 // `@mysten-incubation/devstack` — public barrel.
 //
-// Three pillars surface here:
+// Two pillars surface here:
 //
 // 1. **`devstack(...refs)`** — the canonical entry. Variadic over LayeredTags;
 //    auto-fills default providers (`Sui()` when missing); writes the
@@ -10,9 +10,10 @@
 //    `DeepbookMarketMaker`, `Account`, `Package`, `Action`, `Dev`,
 //    `Wallet`, `Codegen`. Each returns a typed LayeredTag usable as a
 //    cross-reference in other factories and yieldable inside Effects.
-// 3. **Runtime accessors** — `Devstack` Effect Service for in-Effect
-//    reads, `fromManifest` for browser / non-Effect consumers, plus the
-//    full v4 `Manifest` schema types.
+//
+// Plus the `Manifest` schema types — the on-disk
+// `.devstack/manifest.json` shape every consumer reads. Browser-side
+// readers parse the JSON directly; codegen bakes values as literals.
 //
 // Escape hatches for plugin authors live under `@mysten-incubation/devstack/advanced`.
 
@@ -28,9 +29,13 @@ export {
 export type { DevstackHandle } from './engine/supervisor.js';
 
 // ── LayeredTag factories ──
-// `Sui`, `Account`, `Package`, `DeepbookMarketMaker`, `Faucet` re-export
+// `Sui`, `Account`, `Package`, `DeepbookMarketMaker` re-export
 // both the factory function (value) and the shape (type) under the same
 // name; TS's separate type/value namespaces lets them coexist.
+//
+// `Faucet` is auto-mounted by `devstack(...)`; users no longer call it
+// explicitly. Plugin authors writing custom faucet strategies reach for
+// it (along with the strategy primitives) via `/advanced`.
 export {
 	Sui,
 	type SuiOptions,
@@ -44,7 +49,6 @@ export {
 	Account,
 	Package,
 	type PackageOptions,
-	type CaptureSpec,
 	Action,
 	type ActionOptions,
 	Dev,
@@ -56,23 +60,52 @@ export {
 	DEFAULT_CODEGEN_OUTPUT,
 	KnownPackage,
 	type KnownPackageOptions,
-	Faucet,
-	type FaucetOptions,
-	FaucetTag,
 	type LayeredTag,
+	Postgres,
+	type PostgresOptions,
+	PostgresTag,
+	Pyth,
+	type PythOptions,
+	PythTag,
+	PythPusher,
+	pythMid,
+	SUI_PRICE_FEED_ID,
+	DEEP_PRICE_FEED_ID,
+	USDC_PRICE_FEED_ID,
 } from './services/index.js';
+// Phase 4-5 deepbook surface — exposed from the root barrel so the
+// reference example app (`examples/deepbook-full`) can `import
+// { DeepbookMargin, DeepbookIndexer, DeepbookServer, VendorDeepbook, ... }`
+// without dipping into `/services`.
+export {
+	DeepbookMargin,
+	DeepbookIndexer,
+	DeepbookServer,
+	DeepbookMintDEEP,
+	DeepbookMintUSDC,
+	VendorDeepbook,
+} from './services/deepbook.js';
+export {
+	USDC_MARGIN_DEFAULTS,
+	SUI_MARGIN_DEFAULTS,
+	DEFAULT_POOL_RISK_CONFIG,
+} from './services/deepbook.js';
 
-// ── Runtime accessor ──
-export { Devstack, DevstackLive } from './runtime/service.js';
+// ── Manifest schema types ──
+// The on-disk `.devstack/manifest.json` shape every consumer reads.
+// Browser-side readers parse the JSON directly; codegen bakes values as
+// literals at build time, so non-Effect runtime callers don't need a
+// loader helper. Effect-native producers (the supervisor, codegen
+// emitters) use `gatherManifest()` on `/advanced` for the in-Effect
+// snapshot.
+//
 // Wire-level HTTP path contract for the wallet-app server. Re-exported
 // for sibling packages (notably `@mysten-incubation/dev-wallet`) that
 // need to read these paths back to construct fetch URLs against a
 // running devstack.
 export { WalletHttpPath, type WalletHttpPathValue } from './services/wallet/protocol.js';
-export { fromManifest } from './runtime/manifest-loader.js';
 export type {
 	Manifest,
-	ManifestEncoded,
 	AccountEntry,
 	AppManifest,
 	CoinEntry,
@@ -89,33 +122,25 @@ export type {
 } from './runtime/manifest-schema.js';
 
 // ── Helpers users routinely reach for ──
-// Coin registration: passes a published `Package` ref + module/type
-// into the CoinRegistry so deepbook pools (and other consumers that
-// need a runtime-resolved coin type) can reference it by ref. The new
-// `Package({ coins })` field auto-registers in the common case; reach
-// for `registerCoin` when you need to register a coin from an already-
-// published package or want a separate LayeredTag to compose against.
+// Coin handles: `Coin('SYMBOL')` (registry lookup), `Coin.fromPackage(pkg,
+// 'WITNESS')` (per-package), `Coin('0x...::T')` (bare on-chain coin type,
+// for live-net), `Coin.builtin('sui')` (canonical builtin). Coin
+// auto-discovery in `Package(...)` populates the registry directly, so
+// the user only needs a yieldable handle to address the discovered coin.
 export {
-	registerCoin,
-	type RegisterCoinOptions,
-	type RegisterCoinResult,
+	Coin,
+	type CoinFactory,
+	type CoinValue,
+	type BuiltinCoinName,
+	CoinNotFoundError,
+	CoinAmbiguousError,
 } from './services/coin.js';
-// Object-id pickers for `Action.build` callbacks that project from
-// `result.objectChanges`. Most uses are subsumed by `Package`'s
-// declarative `capture:` field; these stay for advanced callbacks that
-// need the full programmatic form.
-export { pickCreatedByTypeIncludes, pickCreatedByTypeSuffix } from './engine/sui-helpers.js';
-// Canonical deployment registry per-network sub-shapes. The
-// `knownDeployments` value + `KnownDeployments` / `KnownNetwork` types
-// it's indexed by live under `/advanced` — that's plugin-author surface
-// for custom factories that need to default the `network:` shape. The
-// per-service deployment record types stay here so app code can spell
-// out `override:` literals against them without reaching into `/advanced`.
-export type {
-	DeepbookDeployment,
-	SealDeployment,
-	WalrusDeployment,
-} from './engine/known-deployments.js';
+// Object-id pickers (`pickCreatedByType(changes, {suffix|includes|prefix})`)
+// live on `/advanced` — plugin-author surface for `Action.build`
+// callbacks that project from `result.objectChanges`. User configs reach
+// for `Package(...)`'s coin auto-discovery and `PackageWithCapture` on
+// `/advanced` for declarative captures; the picker is the escape hatch
+// for the programmatic form.
 
 // ── Tagged error types ──
 // Surfaced for `catchTag`-style handling in custom Action build
@@ -135,45 +160,17 @@ export {
 export { CodegenError } from './codegen/errors.js';
 export { FaucetRequestError } from './services/faucet/index.js';
 
-// ── Shared utility types ──
-// `Transaction` is `@mysten/sui/transactions`'s builder — re-exported
-// for convenience so `Action.build` callbacks don't need a separate
-// dep import. `SuiObjectChange` is the shape `Action`'s
-// `expose:`/`capture:` callbacks consume.
-export type {
-	SignAndExecuteError,
-	SignAndExecuteOptions,
-	SuiObjectChange,
-	SuiTransactionBlockResponse,
-	Transaction,
-	TxResult,
-} from './engine/shared.js';
-
 // ── Interface tag classes ──
-// Canonical Context.Service tags every factory's underlying Layer
-// targets. Used inside `Action.build`/`extras` callbacks when the user
-// wants the narrow contract shape rather than the composite LayeredTag shape
-// (e.g. `yield* SealKeyServerTag` for just the key-server URL + object id,
-// vs `yield* seal` for the full composite). Rare in user configs; most
-// of the time you yield the local LayeredTag instead.
+// Canonical Context.Service tag for the seal key server — the only
+// interface tag with an example consumer (`examples/private-content`).
+// Other interface tags (`CoinTag`, `WalrusNetworkTag`, `WalrusNodesTag`,
+// `WalrusProxyTag`, `DeepbookCoreTag`) live under `/advanced` — they're
+// plugin-author surface rather than typical app-config reach.
 //
 // Admin-side tags (`WalrusAdminTag`, `SealKeyManagerTag`,
-// `DeepbookAdminTag`) live under `/advanced` — those are privileged
-// operations the high-level factories don't surface.
-export {
-	CoinTag,
-	type Coin,
-	WalrusNetworkTag,
-	type WalrusNetwork,
-	WalrusNodesTag,
-	type WalrusNodes,
-	WalrusProxyTag,
-	type WalrusProxy,
-	SealKeyServerTag,
-	type SealKeyServer,
-	DeepbookCoreTag,
-	type DeepbookCore,
-} from './services/index.js';
+// `DeepbookAdminTag`) likewise live under `/advanced` — those are
+// privileged operations the high-level factories don't surface.
+export { SealKeyServerTag, type SealKeyServer } from './services/index.js';
 
 // `TagIdentity<Name>` is the per-name structural Service type LayeredTags
 // carry on their `R` channel. Re-exported so consumers of yielded LayeredTags

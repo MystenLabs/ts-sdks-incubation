@@ -1,6 +1,5 @@
-// Manifest v4 schema — single source of truth for the on-disk
-// `.devstack/manifest.json` shape, the `Devstack` Effect Service shape,
-// and the `fromManifest(json)` POJO accessor.
+// Manifest v5 schema — single source of truth for the on-disk
+// `.devstack/manifest.json` shape and every typed reader.
 //
 // The shape is organised as records keyed by name and sections grouped
 // by user intent (`services`, `packages`, `accounts`, `app`, `coins`).
@@ -63,18 +62,88 @@ export const DeepbookPoolEntry = Schema.Struct({
 });
 export type DeepbookPoolEntry = typeof DeepbookPoolEntry.Type;
 
+export const DeepbookIndexerManifest = Schema.Struct({
+	metrics: EndpointEntry,
+});
+export type DeepbookIndexerManifest = typeof DeepbookIndexerManifest.Type;
+
+// Phase 3 — DeepBook server. The REST endpoint (`rest`) is the
+// consumer-facing surface (codegen-emitted into deepbook-config); the
+// metrics endpoint mirrors the indexer's Prometheus shape.
+export const DeepbookServerManifest = Schema.Struct({
+	rest: EndpointEntry,
+	metrics: EndpointEntry,
+});
+export type DeepbookServerManifest = typeof DeepbookServerManifest.Type;
+
+// Phase 4 — DeepBook margin. Captures the published margin +
+// liquidation package ids, the MarginRegistry shared object, and the
+// per-asset MarginPool object ids. `registeredPools` enumerates the
+// deepbook pool ids the margin registry was told about (parity with
+// sandbox's `register_deepbook_pool` calls).
+export const DeepbookMarginPoolEntry = Schema.Struct({
+	label: Schema.String,
+	assetType: Schema.String,
+	marginPoolId: Schema.String,
+});
+export type DeepbookMarginPoolEntry = typeof DeepbookMarginPoolEntry.Type;
+
+export const DeepbookMarginManifest = Schema.Struct({
+	packageId: Schema.String,
+	liquidationPackageId: Schema.String,
+	registryId: Schema.String,
+	adminCapId: Schema.String,
+	maintainerCapId: Schema.optional(Schema.String),
+	marginPools: Schema.Array(DeepbookMarginPoolEntry),
+	registeredPools: Schema.Array(Schema.String),
+});
+export type DeepbookMarginManifest = typeof DeepbookMarginManifest.Type;
+
 export const DeepbookManifest = Schema.Struct({
 	packageId: Schema.String,
 	registryId: Schema.optional(Schema.String),
 	pools: Schema.Record(Schema.String, DeepbookPoolEntry),
+	indexer: Schema.optional(DeepbookIndexerManifest),
+	server: Schema.optional(DeepbookServerManifest),
+	margin: Schema.optional(DeepbookMarginManifest),
 });
 export type DeepbookManifest = typeof DeepbookManifest.Type;
+
+export const PythPriceInfoEntry = Schema.Struct({
+	label: Schema.String,
+	feedId: Schema.String,
+	priceInfoObjectId: Schema.String,
+});
+export type PythPriceInfoEntry = typeof PythPriceInfoEntry.Type;
+
+export const PythManifest = Schema.Struct({
+	packageId: Schema.String,
+	pythStateId: Schema.optional(Schema.String),
+	wormholeStateId: Schema.optional(Schema.String),
+	/** Pyth feed-id (mainnet hex) → PriceInfoObject id. */
+	priceInfoObjectIds: Schema.Record(Schema.String, Schema.String),
+	/** Friendly label → feed-id. */
+	feeds: Schema.Record(Schema.String, Schema.String),
+});
+export type PythManifest = typeof PythManifest.Type;
+
+export const PostgresManifest = Schema.Struct({
+	user: Schema.String,
+	endpoint: EndpointEntry,
+	containerNetwork: Schema.String,
+	networkAlias: Schema.String,
+	databases: Schema.Array(Schema.String),
+	// `password` deliberately omitted — `groupPostgres` strips it.
+});
+export type PostgresManifest = typeof PostgresManifest.Type;
 
 export const ServicesManifest = Schema.Struct({
 	sui: Schema.optional(SuiManifest),
 	seal: Schema.optional(SealManifest),
 	walrus: Schema.optional(WalrusManifest),
 	deepbook: Schema.optional(DeepbookManifest),
+	pyth: Schema.optional(PythManifest),
+	postgres: Schema.optional(PostgresManifest),
 });
 export type ServicesManifest = typeof ServicesManifest.Type;
 
@@ -114,6 +183,12 @@ export const CoinEntry = Schema.Struct({
 	type: Schema.String,
 	decimals: Schema.Number,
 	sdkCoin: SdkCoinEntry,
+	symbol: Schema.optional(Schema.String),
+	displayName: Schema.optional(Schema.String),
+	iconUrl: Schema.optional(Schema.String),
+	treasuryCapId: Schema.optional(Schema.String),
+	metadataId: Schema.optional(Schema.String),
+	packageId: Schema.optional(Schema.String),
 });
 export type CoinEntry = typeof CoinEntry.Type;
 
@@ -140,15 +215,14 @@ export const StackIdentity = Schema.Struct({
 export type StackIdentity = typeof StackIdentity.Type;
 
 // -----------------------------------------------------------------------------
-// Top-level Manifest v4
+// Top-level Manifest v5
 // -----------------------------------------------------------------------------
 
-/** The v4 manifest schema. The on-disk shape of `.devstack/manifest.json`
- *  written by `runtime/manifest-emit.ts` and read by
- *  `runtime/manifest-loader.ts`. Same shape drives the `Devstack` Effect
- *  Service. */
-export const ManifestV4 = Schema.Struct({
-	version: Schema.Literal(4),
+/** The v5 manifest schema. The on-disk shape of `.devstack/manifest.json`
+ *  written by `runtime/manifest-emit.ts` and consumed by codegen
+ *  emitters via `gatherManifest()`. */
+export const ManifestV5 = Schema.Struct({
+	version: Schema.Literal(5),
 	stack: StackIdentity,
 	services: ServicesManifest,
 	packages: Schema.Record(Schema.String, PackageEntry),
@@ -157,11 +231,6 @@ export const ManifestV4 = Schema.Struct({
 	app: AppManifest,
 });
 
-/** The fully-typed v4 manifest. Use this as the type for any code that
+/** The fully-typed manifest (v5). Use this as the type for any code that
  *  consumes a parsed manifest. */
-export type Manifest = typeof ManifestV4.Type;
-
-/** Decoded form: identical to `Manifest`. Kept distinct in case the
- *  Schema later introduces transformations (e.g. bigint coercion on
- *  `coins[*].decimals` for chains that need it). */
-export type ManifestEncoded = typeof ManifestV4.Encoded;
+export type Manifest = typeof ManifestV5.Type;

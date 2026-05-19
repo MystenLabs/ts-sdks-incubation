@@ -298,6 +298,16 @@ export const removeLabelledImagesNotInUse = (): Effect.Effect<
 
 // Two layouts: per-stack (<stateDir>/stacks/<stack>/) and flat
 // (<stateDir>/state.json). Best-effort: missing paths are silent.
+//
+// Extras-aware traversal (Phase 4 P4.6): the shared upstream cache
+// `<stateDir>/sui-fork-cache/` lives at the state-root level, NOT under
+// `stacks/<stack>/`, so it's already out of scope for this function.
+// Per-stack `sui-fork/` (data dir + meta.json + seed-manifest.json +
+// data.lock) lives inside `<stateDir>/stacks/<stack>/sui-fork/` and IS
+// removed alongside the rest of the per-stack state — that's the
+// correct contract for `wipe`: per-stack data goes, shared cache stays.
+// `--also-upstream-cache` in `wipe.ts` is the explicit knob for clearing
+// the shared cache in one pass.
 const removeStateOnDisk = (
 	fs: Fs,
 	stateDir: string,
@@ -330,6 +340,12 @@ const removeStateOnDisk = (
 			yield* fs.remove(flatStateFile, { force: true }).pipe(Effect.ignore);
 			removed.push(flatStateFile);
 		}
+		// Defensive: explicitly verify the shared upstream cache at
+		// `<stateDir>/sui-fork-cache/` is NOT under the loop above. If a
+		// future layout change moves the cache under `stacks/<stack>/`, the
+		// integration test in P4.T7 (`wipe.fork-keeps-cache.docker.test.ts`)
+		// catches the regression. No-op today; documents the invariant.
+		void joinPath(stateDir, 'sui-fork-cache');
 		return removed as ReadonlyArray<string>;
 	});
 

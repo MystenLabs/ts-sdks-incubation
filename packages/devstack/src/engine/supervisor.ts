@@ -40,6 +40,7 @@ import {
 	Path,
 	Queue,
 	Ref,
+	Scope,
 	Stdio,
 	Stream,
 	Terminal,
@@ -47,9 +48,15 @@ import {
 import { layer as NodeServicesLayer } from '@effect/platform-node/NodeServices';
 import { runMain as nodeRunMain } from '@effect/platform-node/NodeRuntime';
 import { ChildProcessSpawner } from 'effect/unstable/process';
+import { minimatch } from 'minimatch';
+import {
+	buildDepGraph,
+	computeDownstreamClosure,
+	type DepGraph,
+	type DownstreamClosure,
+} from './dep-graph.js';
 import { ClaimedContainers, dockerOrphanSweep, ensureRouter } from './docker.js';
 import { prettyError } from './pretty-error.js';
-import { LongLivedScope } from './long-lived-scope.js';
 import {
 	EngineHandle,
 	EngineLive,
@@ -61,11 +68,17 @@ import { Identity, deriveAppName, validateIdentity } from './identity.js';
 import { LeasingLive } from './leasing.js';
 import { Registry, RegistryLive, type RegistryNetwork } from './registry.js';
 import { PortAllocatorLive } from './port-allocator.js';
+import { resolveAppDir } from './resolve-app-dir.js';
 import {
 	AccountRegistryLive,
 	CoinRegistryLive,
+	DeepbookIndexerStateRegistryLive,
+	DeepbookMarginStateRegistryLive,
+	DeepbookServerStateRegistryLive,
 	DeepbookStateRegistryLive,
 	PackageRegistryLive,
+	PostgresStateRegistryLive,
+	PythStateRegistryLive,
 	SealStateRegistryLive,
 	SuiStateRegistryLive,
 	WalrusStateRegistryLive,
@@ -135,6 +148,13 @@ export interface StackMember {
 	 * stack restart; selective per-primitive tear-down is future work.
 	 */
 	readonly __watchPaths?: ReadonlyArray<string>;
+	/**
+	 * Plugin attribution — drives the leading `[plugin]` chip in the TUI and
+	 * the row's section color. Mirrors the `plugin` option passed to
+	 * `provide` / `tag`. See `ProvideOptions.plugin` for the canonical
+	 * in-tree names.
+	 */
+	readonly __pluginName?: string;
 }
 
 export type { RendererKind };
@@ -205,7 +225,7 @@ export interface DevstackConfig {
 	 * Enable hot-restart on `watch` events + on user-triggered force-run
 	 * (TUI `r` keypress, or SIGUSR2 to the process). Defaults to `true`
 	 * when `watch` is set and `false` otherwise — explicit `false` keeps
-	 * the legacy log-only behavior for `watch` users who don't want
+	 * the log-only behavior for `watch` users who don't want
 	 * teardown-on-edit.
 	 */
 	readonly hotRestart?: boolean;
@@ -242,10 +262,9 @@ export interface RunOverrides {
 	readonly rendererFactory?: RendererFactory;
 }
 
-/** The handle `defineDevstack(...)` / `devstack(...)` return — distinct
- *  from the `Devstack` Effect Service in `runtime/service.ts`. The handle
- *  is the runner (`run`, `runMain`, `layer`); the Service is what app
- *  code does `yield* Devstack` on to read the live manifest. */
+/** The handle `defineDevstack(...)` / `devstack(...)` return. The handle
+ *  carries the `Layer` graph (consumable by Effect-native callers) plus
+ *  the `run` / `runMain` entry points the CLI invokes. */
 export interface DevstackHandle {
 	readonly layer: Layer.Layer<any, any, any>;
 	readonly config: DevstackConfig;
@@ -296,6 +315,15 @@ const InfraLiveCore = Layer.provideMerge(
 		SealStateRegistryLive,
 		WalrusStateRegistryLive,
 		DeepbookStateRegistryLive,
+		// State registries added after the per-service-state-registries fold
+		// (commit 2bbbe44e) — `runtime/service.ts::gatherManifest` requires
+		// these at finalization, so codegen and manifest-emit fail with
+		// `Service not found: @devstack/<name>` when they're missing here.
+		PythStateRegistryLive,
+		PostgresStateRegistryLive,
+		DeepbookIndexerStateRegistryLive,
+		DeepbookServerStateRegistryLive,
+		DeepbookMarginStateRegistryLive,
 		PortAllocatorLive,
 		LeasingLive,
 		FileWatcherLive,
@@ -495,15 +523,104 @@ const hashFileIfChanged = (
 // attribute file-change events back to the primitive that declared the
 // path via `provide({watch})` / `tag({watch})` so the supervisor
 // can (a) log "the publishMove(hello) primitive owns this file — that's
-// what triggered the restart" and (b) propagate the changed keys forward
-// via `engine.notifyChangedTags` for downstream diagnostics. A single
-// path may have multiple owners (two primitives watching overlapping
-// directories), so attribution is a `ReadonlyArray`.
+// what triggered the restart" and (b) drive the affected-set computation
+// in `formatRestartCascade` that feeds `engine.invalidateSubset` for the
+// targeted, watch-driven re-acquire path. A single path may have multiple
+// owners (two primitives watching overlapping directories), so
+// attribution is a `ReadonlyArray`.
 export interface WatchOwner {
 	readonly key: string;
 	readonly title: string;
 	readonly absolutePath: string;
 }
+
+// `DownstreamClosure` (transitive-downstream closure from Phase 1's
+// dep-graph derivation) is imported from `engine/dep-graph.ts` above
+// and re-exported here so the Phase-5 diagnostic surface (which
+// originally landed against a forward-declared placeholder) and its
+// tests can keep their existing `import {...} from './supervisor.js'`
+// shape. Semantics: `downstream.get(k)` is the set of primitive keys
+// that transitively depend on `k`. The owner key itself is NOT
+// included; callers union `{owner.key} ∪ downstream.get(owner.key)`
+// to build the full affected set.
+export type { DownstreamClosure } from './dep-graph.js';
+
+// Heavy-infra reboot-cost annotations (R4 mitigation). When the affected
+// set of a selective restart includes one of these primitives, the watch-
+// fire log line surfaces the expected reboot cost so the operator can
+// decide whether to roll forward or Ctrl-C + edit. Keys are matched against
+// each affected primitive's key via a prefix test; the value is a
+// human-readable cost phrase suitable for inline log embedding.
+//
+// Hardcoded list keeps the wiring honest: there's no opt-out flag the user
+// can pass to suppress these warnings. If a dep graph routes Sui/Walrus
+// downstream of a watch-fire, that's a graph bug — fix the graph, don't
+// silence the warning. See `formatRestartCascade` for the rendering shape.
+const HEAVY_INFRA_COSTS: ReadonlyMap<string, string> = new Map([
+	['@devstack/SuiTag', 'Sui — ~90s reboot expected'],
+	['@devstack/WalrusNetworkTag', 'Walrus — ~60s reboot expected'],
+	['@devstack/SealKeyServerTag', 'Seal — ~30s reboot expected'],
+	['@devstack/SealKeyManagerTag', 'Seal — ~30s reboot expected'],
+]);
+
+// Resolve the affected set's heavy-infra members into operator-readable
+// cost phrases. Returns `[]` when none match — the caller appends to the
+// log line only when non-empty.
+const heavyInfraWarnings = (affected: ReadonlySet<string>): ReadonlyArray<string> => {
+	const out: string[] = [];
+	for (const key of affected) {
+		const cost = HEAVY_INFRA_COSTS.get(key);
+		if (cost !== undefined && !out.includes(cost)) out.push(cost);
+	}
+	return out;
+};
+
+// Format the watch-fire log line so the operator sees both *who* owns the
+// changed path and *what else* will re-acquire transitively. The shape:
+//
+//   "file change at <path> (kind=…, <reason>) — owned by <titles>
+//      — restarting (N downstream: <names>) [affected: <heavy-infra warn>]"
+//
+// `downstreamClosure === undefined` (Phase 1 not yet wired) collapses the
+// cascade enumeration to just the owners, preserving today's log shape
+// modulo wording. P2 lands the real graph and the cascade enumeration
+// goes live without touching this helper.
+//
+// Returns both the log message AND the affected-set (owners ∪ downstream)
+// — supervisor wires the latter into `engine.markSelectiveRestart` for the
+// TUI dim-animation hook. Co-locating the two derivations here means
+// a future change to the cascade computation can't desync the log line
+// from the TUI signal.
+//
+// Exported for unit tests; the watch fiber is the only production caller.
+export const formatRestartCascade = (
+	owners: ReadonlyArray<WatchOwner>,
+	downstreamClosure: DownstreamClosure | undefined,
+): { readonly message: string; readonly affected: ReadonlySet<string> } => {
+	const ownerTitles = owners.map((o) => o.title).join(', ');
+	const affected = new Set<string>();
+	const downstreamKeys = new Set<string>();
+	for (const o of owners) {
+		affected.add(o.key);
+		const ds = downstreamClosure?.get(o.key);
+		if (ds !== undefined) {
+			for (const k of ds) {
+				affected.add(k);
+				downstreamKeys.add(k);
+			}
+		}
+	}
+	const cascade =
+		downstreamKeys.size > 0
+			? ` (${downstreamKeys.size} downstream: ${Array.from(downstreamKeys).join(', ')})`
+			: '';
+	const warnings = heavyInfraWarnings(affected);
+	const warn = warnings.length > 0 ? ` — affected: ${warnings.join('; ')}` : '';
+	return {
+		message: `— owned by ${ownerTitles} — restarting${cascade}${warn}`,
+		affected,
+	};
+};
 
 // Resolve a changed file path back to the primitive(s) that own it.
 // Absolute-path comparison handles the common case where the primitive
@@ -522,87 +639,165 @@ export const ownersFor = (
 	);
 };
 
-// File-system noise filter — paths that change as a side effect of a
-// build but aren't user-authored source. Move builds rewrite
-// `Move.lock` on every invocation (the post-build env-update step,
-// plus the in-container `pinned`-section scrub) AND populate
-// `build/`. Both look like real file changes to `fs.watch`, but
-// neither should trigger a hot-restart — the restart would re-run
-// the same build that just produced the change, and we'd spin
-// forever on a single edit. Mirrors the v3 `.gitignore`-style
-// suppression in the v3 watcher.
+// Built-in exclude patterns — always applied to every watch set so users don't
+// have to repeat them on every primitive. Pattern syntax is the same `.gitignore`
+// subset documented on `ProvideOptions.watch`: `**` matches any path segments,
+// `*` matches anything except `/`, basenames anchored with `**/` match anywhere.
 //
-// Matched against the changed path's basename and any segment in
-// the path, so `move/mock_usdc/build/x.mv` and `move/mock_usdc/Move.lock`
-// both match.
-const WATCH_IGNORED_NAMES: ReadonlySet<string> = new Set([
-	'Move.lock',
-	'build',
-	'.DS_Store',
-	'node_modules',
-	'.git',
-	// Frontend / TS toolchain side-effects that fire on every save:
-	'.next',
-	'dist',
-	'target',
-	'.turbo',
-	'coverage',
-	'.vite',
-	'.cache',
-	// Editor / IDE atomic-save intermediaries:
-	'4913', // vim's "atomic save probe" temp file
-]);
+// Covers four classes of noise:
+//   - Build outputs that the primitive's own acquire-cycle writes back to a
+//     watched tree (`Move.lock`, `build/`, `package_summaries/`, `dist/`,
+//     `target/`, `.next/`, `.turbo/`, …). Without filtering, these self-trigger
+//     a hot-restart → re-publish → write same outputs → loop.
+//   - Devstack's own state dir (`.devstack/`). Snapshot capture, state-store
+//     entries, port-allocator locks, codegen `.gitignore` all live here.
+//   - Conventional codegen output (`generated/`). `Codegen({})` atomic-renames
+//     `<out>.staging-…` → `<out>` each cycle; the rename surfaces as an fs
+//     event. Users overriding `output:` to a non-`generated` basename get the
+//     same protection via a negation pattern in the primitive's own `watch:`.
+//   - Editor / IDE atomic-save intermediaries (vim's swap, JetBrains atomic
+//     save, emacs lock files, TS `*.tsbuildinfo`).
+//
+// Always-applied negation patterns; primitive authors don't need to repeat
+// them. A user who actively wants to react to a `dist/` file change (very
+// unusual) would have to declare a positive watch outside the always-excluded
+// scope.
+export const DEFAULT_WATCH_EXCLUDES: ReadonlyArray<string> = [
+	// Build outputs (Move + Node + Rust + Next + Turbo + Vite + cache dirs)
+	'**/build/**',
+	'**/dist/**',
+	'**/target/**',
+	'**/.next/**',
+	'**/.turbo/**',
+	'**/.cache/**',
+	'**/.vite/**',
+	'**/coverage/**',
+	'**/node_modules/**',
+	// Move toolchain (rewritten on every `sui move build`)
+	'**/Move.lock',
+	'**/Move.lock.new',
+	// `sui move build` shells out to gawk to scrub the `pinned` section
+	// of `Move.lock`; gawk writes to `Move.lock.gawk.<random>` first
+	// and atomically renames over `Move.lock`. The intermediate file's
+	// random suffix means we can't enumerate it ahead of time —
+	// glob-match instead. Without this, every Move build's gawk temp
+	// triggers a hot-restart → republish → another gawk temp → loop.
+	'**/Move.lock.gawk.*',
+	'**/package_summaries/**',
+	// Devstack's own state + conventional codegen output
+	'**/.devstack/**',
+	'**/generated/**',
+	// VCS metadata
+	'**/.git/**',
+	// macOS noise
+	'**/.DS_Store',
+	// Editor / IDE atomic-save intermediaries
+	'**/*.swp',
+	'**/*.swx',
+	'**/*~',
+	'**/*.tsbuildinfo',
+	'**/#*#', // emacs lock files
+	'**/___jb_tmp___*', // JetBrains atomic save
+	'**/4913', // vim's "atomic save probe" temp file
+];
 
-// Files that the in-container `Move.lock` scrub stages as an atomic
-// rename target. The awk pipeline writes `Move.lock.new`, then
-// `mv Move.lock.new Move.lock`, so `fs.watch` sees the intermediate
-// briefly. Also matches the generic `*.swp`/`*.swx` editor-swap
-// artifacts that overlap the typical Move source tree.
-const isIgnoredBasename = (name: string): boolean => {
-	if (WATCH_IGNORED_NAMES.has(name)) return true;
-	if (name === 'Move.lock.new') return true;
-	if (name.endsWith('.swp') || name.endsWith('.swx') || name.endsWith('~')) return true;
-	// TS incremental build info files (`*.tsbuildinfo`) get rewritten
-	// by `tsc --build` on every save in a watch-typecheck loop.
-	if (name.endsWith('.tsbuildinfo')) return true;
-	// Emacs lock files (`#filename#`) and JetBrains atomic-save
-	// intermediaries (`___jb_tmp___...`).
-	if (name.startsWith('#') && name.endsWith('#')) return true;
-	if (name.startsWith('___jb_tmp___')) return true;
-	return false;
+/**
+ * Compile a primitive/config watch pattern array into a single filter function.
+ *
+ * Patterns follow the `.gitignore` subset documented on `ProvideOptions.watch`:
+ *  - Bare paths (no `*`/`?`) are include prefixes — they match the path and
+ *    everything beneath it.
+ *  - Leading `!` negates (`!**\/build/**`).
+ *  - `**` / `*` / `?` glob wildcards via `minimatch`.
+ *
+ * A path triggers restart iff some positive pattern matches AND no negation
+ * pattern matches. Built-in {@link DEFAULT_WATCH_EXCLUDES} are always prepended
+ * to the negation set so callers don't repeat `node_modules`, `.git`, etc.
+ *
+ * Returns a function — call it on absolute paths only. Relative paths from
+ * `fs.watch` should be joined against the watch root before passing in.
+ *
+ * Exported for unit tests; the watcher fiber is the only production caller.
+ */
+export const compileWatchFilter = (
+	patterns: ReadonlyArray<string>,
+	cwd: string = process.cwd(),
+): ((absPath: string) => boolean) => {
+	const includes: string[] = [];
+	const excludes: string[] = [...DEFAULT_WATCH_EXCLUDES];
+	const hasGlobMeta = (s: string): boolean => /[*?[\]{}]/.test(s);
+	const resolveOne = (raw: string): string => {
+		// Anchored-anywhere (`**/...`) and absolute patterns pass through.
+		if (raw.startsWith('**/') || nodePath.isAbsolute(raw)) return raw;
+		// Bare relative paths resolve against cwd; relative globs do too.
+		return nodePath.resolve(cwd, raw);
+	};
+	for (const raw of patterns) {
+		const isNeg = raw.startsWith('!');
+		const body = isNeg ? raw.slice(1) : raw;
+		const resolved = resolveOne(body);
+		const target = isNeg ? excludes : includes;
+		if (hasGlobMeta(resolved)) {
+			target.push(resolved);
+		} else {
+			// Bare dir/path: match the path itself AND its descendants.
+			target.push(resolved);
+			target.push(`${resolved}/**`);
+		}
+	}
+	return (absPath: string): boolean => {
+		if (excludes.some((p) => minimatch(absPath, p, { dot: true }))) return false;
+		return includes.some((p) => minimatch(absPath, p, { dot: true }));
+	};
 };
 
-// Exported for unit tests. Production usage is the watcher fiber only.
-export const isIgnoredWatchPath = (changedPath: string): boolean => {
-	const segments = changedPath.split(nodePath.sep);
-	for (const seg of segments) {
-		if (isIgnoredBasename(seg)) return true;
-	}
-	return false;
+/**
+ * Back-compat shim for the old basename-only filter. Returns true when the
+ * path matches one of {@link DEFAULT_WATCH_EXCLUDES} — used by the few call
+ * sites that just want to know "is this noise?" without the full positive-set
+ * machinery (notably the existing supervisor.test.ts coverage).
+ *
+ * New call sites should use {@link compileWatchFilter} so they get the
+ * positive-set semantics too.
+ */
+export const isIgnoredWatchPath = (absOrRelPath: string): boolean => {
+	const abs = nodePath.isAbsolute(absOrRelPath)
+		? absOrRelPath
+		: nodePath.resolve(process.cwd(), absOrRelPath);
+	return DEFAULT_WATCH_EXCLUDES.some((p) => minimatch(abs, p, { dot: true }));
 };
 
 // File-watcher fiber. When `hotRestart` is on, events are debounced 250ms
 // and the trailing edge signals the engine; coalescing avoids tearing the
 // stack down once per character of a multi-keystroke save. Otherwise we
 // just log so users see the wiring is alive.
+//
+// `watchFilter` is the compiled positive/negation predicate built from
+// every primitive's `__watchPaths` + `config.watch` + `DEFAULT_WATCH_EXCLUDES`
+// at compose time. The watcher receives ALL fs events for `path`'s subtree
+// (recursive fs.watch) and trusts the filter to decide which events warrant
+// a restart. Filtering before debounce so an excluded write can't swallow
+// a real source edit in the same window.
 const watchPathFiber = (
 	path: string,
 	engine: EngineShape,
 	hotRestart: boolean,
 	owners: ReadonlyArray<WatchOwner>,
+	watchFilter: (absPath: string) => boolean,
+	downstreamClosure: DownstreamClosure | undefined,
 ): Effect.Effect<void, never, FileWatcher | import('effect/Scope').Scope> =>
 	Effect.gen(function* () {
 		const watcher = yield* FileWatcher;
-		// Filter transient build artifacts BEFORE debounce. If we filtered
-		// after, the trailing-edge event could be a Move.lock change whose
-		// debounce window also swallowed a real source.move edit — and
-		// then we'd drop the legitimate restart. Filtering upstream means
-		// the debounce window only contains events that COULD trigger a
-		// restart, so the trailing edge represents the most recent real
-		// change.
-		const stream = watcher
-			.watch(path)
-			.pipe(Stream.filter((event) => !isIgnoredWatchPath(event.path)));
+		const stream = watcher.watch(path).pipe(
+			Stream.filter((event) => {
+				// fs.watch emits filenames relative to the watch root; join
+				// before passing to the absolute-path filter.
+				const abs = nodePath.isAbsolute(event.path)
+					? event.path
+					: nodePath.join(path, event.path);
+				return watchFilter(abs);
+			}),
+		);
 		const drained = hotRestart
 			? Stream.runForEach(stream.pipe(Stream.debounce('250 millis')), (event) =>
 					Effect.gen(function* () {
@@ -613,24 +808,53 @@ const watchPathFiber = (
 						}
 						// Attribution: resolve the changed path back to the
 						// primitives that declared it. Bare `config.watch`
-						// entries surface as "(unowned)" — the restart still
-						// fires, the diagnostic just notes the trigger wasn't
-						// associated with any specific primitive.
+						// entries surface as "(unowned)" — those paths can't
+						// be tied to a specific primitive, so we fall back to
+						// a full `requestRestart` for them (the user wired
+						// them up via `config.watch` and asked for a restart
+						// trigger, but didn't tell us which primitive owns
+						// them). Per-primitive `__watchPaths` declarations
+						// take the targeted `invalidateSubset` path.
 						const matched = ownersFor(event.path, owners);
 						if (matched.length > 0) {
-							const labels = matched.map((o) => o.title).join(', ');
+							// Co-derive the log message and the affected set
+							// in one place so the diagnostic line, the TUI
+							// dim-animation signal, and `invalidateSubset`
+							// can't disagree about which primitives are in
+							// scope. The helper takes the
+							// `downstreamClosure` from Phase 1 and unions
+							// `{owner.key} ∪ downstream[owner.key]` across
+							// every matched owner; the resulting `affected`
+							// set is the input to both the TUI signal and
+							// the engine's selective teardown.
+							const { message, affected } = formatRestartCascade(matched, downstreamClosure);
 							yield* Effect.logInfo(
-								`file change at ${event.path} (kind=${event.kind}, ${reason}) ` +
-									`— owned by ${labels} — restarting`,
+								`file change at ${event.path} (kind=${event.kind}, ${reason}) ${message}`,
 							);
-							yield* engine.notifyChangedTags(matched.map((o) => o.key));
+							yield* engine.markSelectiveRestart(affected);
+							// Targeted teardown: close the scopes of the
+							// affected primitives and evict their shadow-cache
+							// entries. The next consumer's `yield*` re-enters
+							// the Layer build, which allocates a fresh
+							// per-primitive scope and re-runs the build body.
+							// Siblings outside `affected` keep their value,
+							// their scope, and their TUI row state.
+							yield* engine.invalidateSubset(affected);
 						} else {
 							yield* Effect.logInfo(
 								`file change at ${event.path} (kind=${event.kind}, ${reason}) ` +
 									`— unowned watch path — restarting`,
 							);
+							// Unowned watch path: no primitive declared this
+							// via `__watchPaths`, so we can't compute an
+							// affected set. Fall back to a full restart —
+							// the user explicitly wired this path via
+							// `config.watch` so a coarse restart is the
+							// honest semantic (we don't know what consumer
+							// to invalidate; assume the whole stack might
+							// depend on it).
+							yield* engine.requestRestart;
 						}
-						yield* engine.requestRestart;
 					}),
 				)
 			: Stream.runForEach(stream, (event) =>
@@ -745,7 +969,7 @@ export const composeStackLayer = (
 
 	// Prefer `__layers` (transitively-flattened) when a composite tag
 	// supplies it; fall back to the single `__layer` for tags built via
-	// the legacy `tag(name, build)` shape or the hand-rolled `Sui`
+	// the simple `tag(name, build)` shape or the hand-rolled `Sui`
 	// canonical pattern in `sui.ts`.
 	const stackLayers = stack.flatMap((m) => m.__layers ?? [m.__layer]);
 	// Fold the user stack with `provideMerge` so each layer can consume
@@ -872,6 +1096,7 @@ export const defineDevstack = (
 		readonly key: string;
 		readonly kind?: TagKind;
 		readonly title?: string;
+		readonly plugin?: string;
 	}> = config.stack.flatMap((m, i) => {
 		// Hidden tags (e.g. `gitFetch`) opt out of the dashboard entirely —
 		// see `ProvideOptions.hidden`. Skipping the seed keeps the row from
@@ -881,52 +1106,82 @@ export const defineDevstack = (
 		const key = (m as { key?: string }).key ?? `stack[${i}]`;
 		const kind = (m as { __kind?: TagKind }).__kind;
 		const title = (m as { __displayTitle?: string }).__displayTitle;
-		const entry: { key: string; kind?: TagKind; title?: string } = { key };
+		const plugin = (m as { __pluginName?: string }).__pluginName;
+		const entry: { key: string; kind?: TagKind; title?: string; plugin?: string } = { key };
 		if (kind !== undefined) entry.kind = kind;
 		if (title !== undefined) entry.title = title;
+		if (plugin !== undefined) entry.plugin = plugin;
 		return [entry];
 	});
 
 	// Watch set = explicit `config.watch` plus every primitive that
-	// declared paths via `provide({watch})` / `tag({watch})`.
-	// `publishMove` uses this to auto-watch its Move source tree so a
-	// `.move` edit triggers a hot-restart (which cascades through
-	// `bindings` regen + frontend HMR) without the user having to repeat
-	// the Move path in `config.watch`. De-dupe so a path that appears in
-	// both config.watch and a primitive's `__watchPaths` doesn't get two
-	// fs.watch handles.
+	// declared paths via `provide({watch})` / `tag({watch})`. `publishMove`
+	// auto-watches its Move source tree so a `.move` edit triggers a
+	// hot-restart (which cascades through `bindings` regen + frontend HMR)
+	// without the user having to repeat the Move path in `config.watch`.
+	// `Codegen` declares its output dir as a `!`-negation so the
+	// atomic-rename swap each cycle doesn't loop the watcher.
 	//
-	// `watchOwners` carries the reverse index — for each
-	// primitive-declared path, who declared it. Used by the watcher fiber
-	// to attribute file-change events back to their owning primitive and
-	// log diagnostic output ("publishMove(hello) — restarting"). Paths
-	// from `config.watch` are deliberately NOT in `watchOwners` — they
-	// surface in the diagnostic as "unowned watch path" so the user can
-	// tell at a glance whether the restart came from a primitive's
-	// declared input or from a config-level catch-all path. Selective
-	// per-primitive Layer-cache invalidation (so unchanged primitives
-	// skip their build effect across cycles) requires Effect MemoMap
-	// surgery that isn't appropriate to attempt in-session — the
-	// attribution surface here is the foundation that the future
-	// implementation will key on.
+	// Three derived structures:
+	//   - `rawWatchPatterns`: the full gitignore-style spec — positives
+	//     and `!`-negations from every source. Fed into `compileWatchFilter`
+	//     so DEFAULT_WATCH_EXCLUDES are layered in for free.
+	//   - `watchRoots`: concrete dirs we call `fs.watch` on. Derived from
+	//     bare positive patterns (no glob meta). Glob-only or negation-only
+	//     patterns contribute to the filter but not to the set of roots —
+	//     they piggyback on whatever other pattern provided a concrete root.
+	//   - `watchOwners`: per-primitive attribution metadata so the diagnostic
+	//     log can say "owned by publish.vault" instead of a bare path.
+	//     Only bare positive paths participate; primitives that declare
+	//     only globs or negations surface as "(unowned)" in the diagnostic.
+	//     Selective per-primitive Layer-cache invalidation (so unchanged
+	//     primitives skip rebuild) is tracked as a separate plan — the
+	//     attribution surface here is the foundation it will key on.
+	const hasGlobMeta = (s: string): boolean => /[*?[\]{}]/.test(s);
+	const rawWatchPatterns: ReadonlyArray<string> = [
+		...(config.watch ?? []),
+		...config.stack.flatMap(
+			(m) => (m as { __watchPaths?: ReadonlyArray<string> }).__watchPaths ?? [],
+		),
+	];
+	const watchFilter = compileWatchFilter(rawWatchPatterns);
 	const watchOwners: ReadonlyArray<WatchOwner> = config.stack.flatMap((m, i) => {
 		const paths = (m as { __watchPaths?: ReadonlyArray<string> }).__watchPaths ?? [];
 		if (paths.length === 0) return [];
 		const key = (m as { key?: string }).key ?? `stack[${i}]`;
 		const title = (m as { __displayTitle?: string }).__displayTitle ?? key;
-		return paths.map((p) => ({
-			key,
-			title,
-			absolutePath: nodePath.resolve(process.cwd(), p),
-		}));
+		return paths
+			.filter((p) => !p.startsWith('!') && !hasGlobMeta(p))
+			.map((p) => ({
+				key,
+				title,
+				absolutePath: nodePath.resolve(process.cwd(), p),
+			}));
 	});
-	const aggregatedPrimitiveWatch = watchOwners.map((o) => o.absolutePath);
-	const watchPaths = Array.from(new Set([...(config.watch ?? []), ...aggregatedPrimitiveWatch]));
+	const watchRoots = Array.from(
+		new Set(
+			rawWatchPatterns
+				.filter((p) => !p.startsWith('!') && !hasGlobMeta(p))
+				.map((p) => (nodePath.isAbsolute(p) ? p : nodePath.resolve(process.cwd(), p))),
+		),
+	);
+	// Static dep graph (Phase 1 of selective-restart). Built once per
+	// supervisor lifetime — `config.stack` is static across hot-restart
+	// cycles, so the graph (and its closure) is too. Phase 2 wires the
+	// closure into the watch fiber so the diagnostic + TUI surface (P5)
+	// enumerates the downstream cascade and warns on heavy-infra entries;
+	// Phase 3 wires it into `engine.invalidateSubset` for targeted
+	// invalidation. `depGraph` itself is kept around for Phase 3's
+	// per-primitive scope re-acquire logic, which keys on the upstream
+	// edges to decide which primitives the watch-fire must invalidate.
+	const depGraph: DepGraph = buildDepGraph(config.stack);
+	const downstreamClosure: DownstreamClosure = computeDownstreamClosure(depGraph);
+	void depGraph;
 	// `hotRestart` only governs FILE-WATCH-driven restarts. User-driven
 	// restarts (TUI `r` key, SIGUSR2) ALWAYS recycle — pressing `r` is the
 	// explicit "I want to restart" gesture and would be inexplicable if the
 	// flag silently turned it into a quit.
-	const hotRestart = config.hotRestart ?? watchPaths.length > 0;
+	const hotRestart = config.hotRestart ?? watchRoots.length > 0;
 
 	const headerApp = deriveAppName();
 	const headerStack = resolveStackName(config.stackName);
@@ -967,12 +1222,12 @@ export const defineDevstack = (
 			platformLayer: undefined,
 		});
 
-		// Per-cycle iteration. Now strictly per-cycle work — bootstrap,
+		// Per-cycle iteration. Strictly per-cycle work — bootstrap,
 		// traefik ensure, watcher fibers, SIGUSR2 install, TUI mount,
-		// and plain-renderer fork all live on the outer LongLivedScope
-		// (post-C4 / HIGH-S1). Topology:
+		// and plain-renderer fork all live on the outer launch scope.
+		// Topology:
 		//
-		//   longLivedScope ── outer launch scope (lives for runMain)
+		//   longLived ── outer launch scope (lives for runMain)
 		//     │
 		//     ├── bootstrapCtx     (engine + watchers + StateStore +
 		//     │                     Identity + platform) — built ONCE,
@@ -986,20 +1241,54 @@ export const defineDevstack = (
 		//           ├── childScope[B]   (accountAlice)    ├─ each forked
 		//           ├── childScope[C]   (publishMove)     │  off
 		//           │                                     ┘  supervisorScope
+		//           │                                     by Effect's MemoMap
+		//           │                                     (one scope per
+		//           │                                     Layer.effect — see
+		//           │                                     `withEngineLifecycle`).
 		//           │
 		//           └── restart-await fiber — blocks on engine's restart
 		//                                     signal; returns from runOnce
 		//
-		// Per-primitive failures only collapse the relevant childScope,
-		// leaving the supervisor and sibling primitives running. The user
-		// sees the failed row stay red, presses `r`, and a fresh
-		// childScope re-runs that primitive's acquire — siblings stay
-		// green throughout. Bootstrap services (engine, StateStore,
-		// watchers) are stable across cycles because the per-cycle
-		// scope no longer owns them.
-		const runOnce = (cycle: number, engine: EngineShape, memoMap: Layer.MemoMap) =>
-			Effect.gen(function* () {
-				const supervisorScope = yield* Effect.scope;
+		// `r` (full rebuild) closes `supervisorScope`, cascading finalize
+		// to every primitive in finalize order. Selective watch-fires
+		// (Phase 3 of selective-restart) release ONLY the primitives in
+		// the affected closure via `engine.invalidateSubset`, leaving
+		// siblings and bootstrap services untouched. Bootstrap services
+		// (engine, StateStore, watchers) are stable across cycles because
+		// they live on `longLived`, not on the per-cycle scope.
+		const runOnce = (cycle: number, engine: EngineShape, memoMap: Layer.MemoMap) => {
+			// Apply the renderer's logger layer to the WHOLE per-cycle body
+			// so every `Effect.log*` call inside the cycle (build effects,
+			// orphan-sweep status, restart-trigger diagnostics, …) goes
+			// through `engine.appendLog` and lands in the TUI log panel.
+			// Previously this layer was scoped only to `Layer.buildWithMemoMap`
+			// (line ~1178 below) so calls outside the build (notably the
+			// orphan-sweep `swept N orphan container(s)` line) fell through
+			// to Effect's default logger and printed to stderr in the
+			// `[HH:MM:SS.mmm] INFO (#1): …` format, breaking the TUI layout.
+			const loggerLayer = rendererFactory.loggerLayer(engine);
+			return Effect.gen(function* () {
+				// Fork a parallel-finalizer child of the ambient per-cycle
+				// scope. This is THE scope every primitive's layer-build
+				// effect runs on (each primitive's `Effect.scope` resolves
+				// to a child of this) — so `docker stop` finalizers
+				// registered by Docker.run land on per-primitive scopes
+				// that are children of this parent. Without the parallel
+				// strategy here, scope-close fires those per-primitive
+				// finalizers SEQUENTIALLY: each container's `docker stop
+				// --time N` blocks the next, so net teardown = sum(grace)
+				// instead of max(grace). Verified in plain-mode logs:
+				// seal's `ready → stopping` fired 15s after SIGINT
+				// (seal grace), walrus's another 15s later, sui's another
+				// after that — totaling ~45s when parallel would be ~30s.
+				// Parallel here keeps Layer-build's ACQUIRE ordering intact
+				// (dependencies build before dependents, sequentially); only
+				// RELEASE fires concurrently. Safe for docker workloads
+				// because containers stop independently — there's no
+				// inter-container dependency at the OS level even when
+				// there's one at the Layer level.
+				const supervisorAmbient = yield* Effect.scope;
+				const supervisorScope = yield* Scope.fork(supervisorAmbient, 'parallel');
 
 				// Per-cycle claim set: every container `Docker.run` either adopts
 				// (reuse-if-healthy hit) or creates is appended here. After the
@@ -1022,34 +1311,15 @@ export const defineDevstack = (
 					cycle,
 				});
 
-				// Diagnostic surface: which primitive(s) triggered this
-				// restart, if any. Populated by the watcher fiber before it
-				// fired `requestRestart`. Cleared by `resetRestartSignal`
-				// below, so this is the only point in the cycle where the
-				// attribution from the previous cycle's trigger is still
-				// readable. Empty on cycle 1 (no prior trigger) and on
-				// user-driven restarts (TUI `r`, SIGUSR2) since those skip
-				// `notifyChangedTags`. Surfaced as a log line rather than a
-				// TUI section to keep the dashboard layout unchanged; the
-				// TUI watcher will pick this up if/when selective per-
-				// primitive Layer-cache invalidation lands and the row's
-				// rebuild status needs to be differentiated from a clean-
-				// slate acquire.
-				if (cycle > 1) {
-					const triggers = yield* Ref.get(engine.changedTags);
-					if (triggers.length > 0) {
-						yield* Effect.logInfo(`devstack cycle ${cycle} triggered by ${triggers.join(', ')}`);
-					}
-				}
-
-				// `clearChangedTags` only — the restart queue absorbs any
-				// `requestRestart` that landed during cycle-N+1 setup, so
-				// the next `awaitRestart` below will return immediately on
-				// a request that landed during teardown / setup.
-				yield* engine.clearChangedTags;
+				// Watch-driven selective restart (Phase 3) handles its
+				// attribution inline at the watch fiber — the watch fiber
+				// logs the cascade message and calls `invalidateSubset`
+				// directly, without going through the full cycle restart.
+				// User-driven `r` / SIGUSR2 land here on the next cycle but
+				// carry no attribution by design (the user gesture is
+				// "rebuild everything; I don't owe you a reason"). No
+				// `changedTags` surface to clear or read.
 				yield* engine.seedTags(seedEntries);
-
-				const loggerLayer = rendererFactory.loggerLayer(engine);
 
 				// Build the full user stack as one composed Layer. Dependency
 				// wiring relies on Effect's Layer runtime ordering — providers
@@ -1059,42 +1329,80 @@ export const defineDevstack = (
 				// holds bootstrap entries built once on longLivedScope, so the
 				// user-stack layer's references to shared infra (EngineHandle,
 				// StateStore, etc.) hit the cache instead of rebuilding.
-				const buildSucceeded = yield* Layer.buildWithMemoMap(
-					userStackLayer as Layer.Layer<unknown, unknown, never>,
-					memoMap,
-					supervisorScope,
-				).pipe(
-					Effect.provide(loggerLayer as Layer.Layer<unknown, never, never>),
-					Effect.provideService(ClaimedContainers, claimedRef),
-					Effect.as(true),
-					Effect.catchCause((cause) => {
-						const rendered = prettyError(cause);
-						// Belt-and-braces: write the cause directly to stderr so a
-						// CI fast-fail or a piped `pnpm dev > log` invocation can
-						// see what failed. The plain renderer's 500ms poll may
-						// not flush in time before the fast-fail Effect.fail
-						// exits the process, leaving the appendLog'd line stuck
-						// in the engine's Ref. stderr write is synchronous.
-						if (rendererKind !== 'tui') {
-							process.stderr.write(`stack acquire failed:\n${rendered}\n`);
-						}
-						return engine
-							.appendLog({
-								ts: Date.now(),
-								level: 'error',
-								message: `stack acquire failed:\n${rendered}`,
-							})
-							.pipe(Effect.as(false));
-					}),
+				// `loggerLayer` is provided at the runOnce boundary below so
+				// every `Effect.log*` inside the cycle (including the build's
+				// own narration) gets routed into the TUI log panel.
+				// Race the layer build against `awaitShutdown` so a `q`
+				// press during acquire short-circuits the entire build
+				// instead of blocking until the slowest primitive's
+				// retry budget exhausts (sui ready-probe = 60s, walrus
+				// genesis = 90s, etc.). Previously the supervisor only
+				// consulted the shutdown signal AFTER the build returned
+				// — so mid-startup `q` waited up to ~max(per-primitive
+				// budget) before anything started tearing down. With
+				// the race, shutdown wins → the build effect is
+				// interrupted (Effect.race interrupts the losing branch
+				// per Effect.ts docs), Layer's machinery rolls back the
+				// primitives acquired so far on `supervisorScope`, and
+				// teardown proceeds via the same scope-close path a
+				// post-ready `q` uses.
+				type BuildOutcome = 'ok' | 'failed' | 'interrupted';
+				const buildOutcome: BuildOutcome = yield* Effect.race(
+					Layer.buildWithMemoMap(
+						userStackLayer as Layer.Layer<unknown, unknown, never>,
+						memoMap,
+						supervisorScope,
+					).pipe(
+						Effect.provideService(ClaimedContainers, claimedRef),
+						Effect.as('ok' as const),
+						Effect.catchCause((cause) => {
+							const rendered = prettyError(cause);
+							// Belt-and-braces: write the cause directly to stderr
+							// so a CI fast-fail or a piped `pnpm dev > log`
+							// invocation can see what failed. The plain
+							// renderer's 500ms poll may not flush in time before
+							// the fast-fail Effect.fail exits the process,
+							// leaving the appendLog'd line stuck in the engine's
+							// Ref. stderr write is synchronous.
+							if (rendererKind !== 'tui') {
+								process.stderr.write(`stack acquire failed:\n${rendered}\n`);
+							}
+							return engine
+								.appendLog({
+									ts: Date.now(),
+									level: 'error',
+									message: `stack acquire failed:\n${rendered}`,
+								})
+								.pipe(Effect.as('failed' as const));
+						}),
+					),
+					engine.awaitShutdown.pipe(Effect.as('interrupted' as const)),
 				);
+				const buildSucceeded = buildOutcome === 'ok';
+
+				// User-initiated shutdown mid-build: skip both the orphan
+				// sweep (claimedRef is incomplete — sweeping would destroy
+				// healthy containers from sibling stacks) AND the CI
+				// fast-fail (a user `q` is not a stack failure). Return
+				// cleanly so the launch loop exits and the outer
+				// `Effect.scoped` tears down accumulated finalizers.
+				// `invalidateAll` first so partial-build primitives' docker
+				// stops fire concurrently — see the q-race exit below for
+				// the rationale.
+				if (buildOutcome === 'interrupted') {
+					yield* engine.setBuildStatus('shutting-down');
+					yield* engine.invalidateAll;
+					return false;
+				}
 
 				// Post-build orphan sweep. Removes any compose-project-labelled
 				// container that THIS process did NOT adopt-or-create during the
 				// layer build — i.e. containers whose primitives were dropped
 				// from the config, or that were left behind by a crashed prior
-				// process. Skipping this on later cycles (`r`) keeps long-lived
-				// containers from being reaped between cycles when their
-				// finalizer lives on `LongLivedScope`. Best-effort throughout.
+				// process. Restricted to cycle 1 so a watch-fire's targeted
+				// invalidation (Phase 3) doesn't sweep a primitive that wasn't
+				// in the invalidated set but also wasn't claimed this cycle.
+				// Best-effort throughout.
 				//
 				// CRITICAL: only sweep on successful build. A failed build
 				// (e.g. state-store locked by a sibling supervisor, primitive
@@ -1149,32 +1457,81 @@ export const defineDevstack = (
 				// the teardown/setup gap before the next cycle's await —
 				// no lost-wake-up race even when a producer fires between
 				// take returning and the next take being scheduled.
-				yield* engine.awaitRestart;
+				// Race restart vs shutdown. `r`-key (or watch trigger /
+				// SIGUSR2) fires `requestRestart`; `q`-key fires
+				// `requestShutdown` directly without going through SIGINT.
+				// Whichever wins decides whether the launch loop iterates
+				// or exits cleanly. Ctrl-C still works through
+				// NodeRuntime.runMain's separate signal handler that
+				// interrupts this fiber from outside.
+				const reason = yield* Effect.race(
+					engine.awaitRestart.pipe(Effect.as('restart' as const)),
+					engine.awaitShutdown.pipe(Effect.as('shutdown' as const)),
+				);
+				if (reason === 'shutdown') {
+					yield* engine.setBuildStatus('shutting-down');
+					// Concurrently close every registered primitive scope so
+					// each container's `docker stop` finalizer fires in
+					// parallel. Without this, the outer `Effect.scoped`
+					// cascade would close primitives via the user-stack's
+					// `Layer.provideMerge` chain — and that chain is a
+					// nested tree of sequential fromBuild scopes, so docker
+					// stops would fire one primitive at a time in LIFO
+					// order (seal 15s → walrus 20s → sui 30s ≈ 65s of
+					// serial waits in the worst case). `invalidateAll`
+					// bypasses the cascade: every primitive's per-Layer
+					// scope is closed concurrently, the slow `docker stop`s
+					// run as one parallel batch (~max(grace) ≈ 30s), and the
+					// later cascade is a no-op against already-Closed
+					// scopes.
+					yield* engine.invalidateAll;
+					return false;
+				}
 				yield* engine.setBuildStatus('restarting');
 				return true;
-			}).pipe(Effect.scoped, Effect.withSpan('Devstack.launch'));
+			}).pipe(
+				Effect.provide(loggerLayer as Layer.Layer<unknown, never, never>),
+				Effect.scoped,
+				Effect.withSpan('Devstack.launch'),
+			);
+		};
 
 		return Effect.gen(function* () {
 			// Capture the outer launch scope — lives for the entire
 			// runMain lifetime, only torn down on Ctrl-C / process exit.
-			// Provided to `runOnce` as `LongLivedScope` so reusable docker
-			// containers (Sui, indexer-db, walrus) register their
-			// `docker rm -f` finalizer here instead of the per-cycle
-			// supervisor scope. Result: `r` (which only tears the
-			// per-cycle scope down) leaves containers running, the
-			// reuse-if-healthy probe in `Docker.run` finds them on the
-			// next iteration, chain id stays stable, publishMove cache
-			// hits, packageIds stay stable across restarts.
-			//
 			// Bootstrap (engine + StateStore + Identity + watchers +
-			// SIGUSR2 + traefik) ALSO lives on this scope (C4 / HIGH-S1).
-			// Pre-fix the bootstrap acquired on the per-cycle scope, so
-			// every `r` re-opened the state.json.lock + re-mounted
-			// watcher fibers + re-installed the SIGUSR2 handler —
-			// expensive, and made the StateStore lock a transient
-			// resource that could briefly release between cycles and
-			// let a sibling supervisor in.
-			const longLived = yield* Effect.scope;
+			// SIGUSR2 + traefik) lives here so they survive `r` (which
+			// only tears the per-cycle scope down) — pre-C4 the bootstrap
+			// was acquired on the per-cycle scope, so every `r` re-opened
+			// the state.json.lock + re-mounted watcher fibers +
+			// re-installed the SIGUSR2 handler, plus the StateStore lock
+			// briefly released between cycles and let a sibling supervisor
+			// in. Per Phase 2 of selective-restart, user-stack primitives
+			// build against the per-cycle supervisorScope (each Layer's
+			// own scope forked by Effect's MemoMap) — `r` cascades through
+			// every primitive in the stack; selective watch-fires release
+			// only the affected primitives' scopes.
+			// Fork a parallel-finalizer child of the ambient (runMain) scope.
+			// Effect's default `Scope` runs finalizers SEQUENTIALLY at
+			// teardown — with 6+ long-lived containers each carrying a
+			// `docker stop --time N` finalizer (sui=30s, indexer-db=20s,
+			// walrus×4=20s each, seal=15s), serial teardown is ~145s in
+			// the worst case. That matched the user's "shutdown still
+			// isn't working" / "still timing out" perception perfectly:
+			// each `markStopping` fired only AFTER the previous container's
+			// docker-stop completed, so the TUI showed exactly one row
+			// transition every 20–30s.
+			//
+			// "parallel" runs all registered finalizers concurrently — net
+			// teardown drops from ~sum(grace) to ~max(grace) (~30s for a
+			// healthy stack, even less when sui exits cleanly within the
+			// grace window). Order-sensitive finalizers (state-store lock
+			// release, ink unmount, bootstrap teardown) are individually
+			// `Effect.uninterruptible` so they still complete-or-not as
+			// units; parallel just removes the serial-blocking between
+			// finalizers that don't depend on each other.
+			const ambient = yield* Effect.scope;
+			const longLived = yield* Scope.fork(ambient, 'parallel');
 
 			// Single MemoMap held for the supervisor's lifetime. The
 			// bootstrap layer's entries are built into it once on
@@ -1192,7 +1549,7 @@ export const defineDevstack = (
 			// long-lived scope so a `pnpm dev` whose lock survived a
 			// crashed cycle still tells `devstack doctor` we're alive.
 			const registryNetwork: RegistryNetwork = headerNetwork;
-			const registryRepoPath = process.env.DEVSTACK_APP_DIR ?? process.cwd();
+			const registryRepoPath = resolveAppDir();
 			yield* registry
 				.upsert({
 					app: headerApp,
@@ -1257,11 +1614,21 @@ export const defineDevstack = (
 			// detach meant a SIGUSR2 arriving between cycles could land on
 			// no handler and the process would die from the default action.
 			yield* installSignalRestart('SIGUSR2', engine);
-			if (watchPaths.length > 0) {
-				for (const path of watchPaths) {
-					yield* watchPathFiber(path, engine, hotRestart, watchOwners).pipe(
-						Effect.provide(bootstrapCtx),
-					);
+			if (watchRoots.length > 0) {
+				// Wire the static downstream closure (computed once at compose
+				// time from the dep graph in Phase 1) into every watch fiber.
+				// Lights up the cascade enumeration in `formatRestartCascade`
+				// (Phase 5) and the heavy-infra reboot-cost warning. Phase 3
+				// uses the same closure to drive `engine.invalidateSubset`.
+				for (const root of watchRoots) {
+					yield* watchPathFiber(
+						root,
+						engine,
+						hotRestart,
+						watchOwners,
+						watchFilter,
+						downstreamClosure,
+					).pipe(Effect.provide(bootstrapCtx));
 				}
 			}
 
@@ -1269,9 +1636,7 @@ export const defineDevstack = (
 				let cycle = 0;
 				while (true) {
 					cycle += 1;
-					const again = yield* runOnce(cycle, engine, memoMap).pipe(
-						Effect.provideService(LongLivedScope, longLived),
-					);
+					const again = yield* runOnce(cycle, engine, memoMap);
 					if (!again) return;
 				}
 			});
@@ -1298,6 +1663,19 @@ export const defineDevstack = (
 							message: SHUTDOWN_LOG_MESSAGE,
 						});
 						yield* rendererFlush;
+						// Concurrently close every registered primitive scope
+						// (matches the q-race exit in `runOnce`). The outer
+						// scope cascade would close them sequentially via the
+						// `Layer.provideMerge` chain, blocking each `docker
+						// stop` finalizer on the previous one's grace window.
+						// Closing here in parallel makes Ctrl-C tear the stack
+						// down in ~max(grace) instead of ~sum(grace), and Sui
+						// in particular gets its full 30s grace timer from
+						// T=0 rather than waiting on seal+walrus first (which
+						// was causing sui-localnet to SIGKILL at exit 137 —
+						// the "dirty shutdown" alert that surfaced on the
+						// next `up`).
+						yield* engine.invalidateAll;
 					}),
 				),
 			);

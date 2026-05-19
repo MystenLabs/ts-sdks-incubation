@@ -1,11 +1,8 @@
 import { DeepBookClient } from '@mysten/deepbook-v3';
-import type { CoinMap, PoolMap } from '@mysten/deepbook-v3';
 import type { ClientWithCoreApi } from '@mysten/sui/client';
 import { Transaction } from '@mysten/sui/transactions';
 
-import { deployment } from './deployment.js';
-
-const SUI_COIN_TYPE = '0x2::sui::SUI';
+import { deepbookConfig } from '../generated/deepbook-config.js';
 
 /**
  * Build a transaction that sends `amount` (raw base units) of `coinType` to
@@ -30,17 +27,16 @@ export async function buildSendTx(args: {
 }
 
 /**
- * Memoized DeepBook SDK client. Built lazily from the manifest the first
- * time a swap fires — re-keyed per `(suiClient, sender)` because the SDK
- * stamps the sender on every produced tx via `setSenderIfNotSet` (the
- * actual signer is still the wallet, but the SDK uses this for things
- * like pre-flight balance lookups).
+ * Memoized DeepBook SDK client. Built lazily from the codegen-emitted
+ * `deepbookConfig` the first time a swap fires — re-keyed per
+ * `(suiClient, sender)` because the SDK stamps the sender on every
+ * produced tx via `setSenderIfNotSet`.
  *
- * The SDK takes a coin/pool registry keyed by symbol/alias rather than by
- * type/objectId; we project the wallet's `deployment` shape into those
- * keys here. Localnet has no pre-baked coin map (the upstream
- * `mainnetCoins` / `testnetCoins` defaults reference real-network coin
- * objects), so we provide our own.
+ * Phase 5 of the deepbook plugin expansion replaced ~70 lines of manual
+ * coin/pool/packageIds projection with `...deepbookConfig`. The shape
+ * mirrors `@mysten/deepbook-v3`'s `CoinMap` / `PoolMap` /
+ * `DeepbookPackageIds` exports verbatim — see
+ * packages/devstack/notes/deepbook-plugin-expansion.md § P5.14.
  */
 let cached: { suiClient: ClientWithCoreApi; sender: string; client: DeepBookClient } | null = null;
 
@@ -48,68 +44,18 @@ function getDeepBookClient(suiClient: ClientWithCoreApi, sender: string): DeepBo
 	if (cached !== null && cached.suiClient === suiClient && cached.sender === sender) {
 		return cached.client;
 	}
-	const { deepbookPackageId, deepbookRegistryId } = deployment;
-	if (deepbookPackageId === undefined) {
-		throw new Error('deepbook package not in manifest — run `pnpm localnet:up`');
-	}
-	if (deepbookRegistryId === undefined) {
-		throw new Error('deepbook registry id not captured in manifest');
-	}
 
-	// Coin map keyed by symbol. SUI + DEEP land first; everything else
-	// flows from the registry's coin tokens. `--with-unpublished-deps`
-	// bakes the `token` sub-package under the parent address, so DEEP
-	// lives at the deepbook package id. DEEP_SCALAR is 1e6 per the SDK
-	// constants — the SDK uses it to convert human-readable values into
-	// on-chain u64 (we always pass `bigint`, which the SDK uses raw).
-	const coins: CoinMap = {
-		SUI: { address: '0x2', type: SUI_COIN_TYPE, scalar: 1_000_000_000 },
-		DEEP: {
-			address: deepbookPackageId,
-			type: `${deepbookPackageId}::deep::DEEP`,
-			scalar: 1_000_000,
-		},
-	};
-	for (const c of deployment.coins) {
-		if (c.coinType === SUI_COIN_TYPE) continue;
-		const address = c.coinType.split('::')[0];
-		if (address === undefined) continue;
-		coins[c.symbol] = { address, type: c.coinType, scalar: 10 ** c.decimals };
-	}
-
-	// Pool map keyed by alias. The SDK looks coins up by symbol, so we
-	// reverse-map our pool's coin types into the symbols above. A pool
-	// whose base/quote coin isn't in the wallet's deployment surface is
-	// a bug in the manifest projection — fail loudly.
-	const symbolByType = new Map<string, string>();
-	for (const [key, v] of Object.entries(coins)) symbolByType.set(v.type, key);
-	const pools: PoolMap = {};
-	for (const p of deployment.pools) {
-		const baseSymbol = symbolByType.get(p.baseCoinType);
-		const quoteSymbol = symbolByType.get(p.quoteCoinType);
-		if (baseSymbol === undefined || quoteSymbol === undefined) {
-			throw new Error(`pool ${p.alias}: ${p.baseCoinType} / ${p.quoteCoinType} not in coin map`);
-		}
-		pools[p.alias] = { address: p.poolId, baseCoin: baseSymbol, quoteCoin: quoteSymbol };
-	}
-
+	// `network: 'localnet'` is rejected by the SDK's default-config branch
+	// (the SDK only ships mainnet/testnet defaults), so we provide explicit
+	// `packageIds` / `coins` / `pools` from `deepbookConfig`. The network
+	// field is just metadata at this point.
 	const client = new DeepBookClient({
 		client: suiClient,
 		address: sender,
-		// `network: 'localnet'` is rejected by the default-config branch
-		// (the SDK only ships mainnet/testnet defaults), so we provide an
-		// explicit `packageIds` and the network field is just metadata.
 		network: 'localnet',
-		coins,
-		pools,
-		packageIds: {
-			DEEPBOOK_PACKAGE_ID: deepbookPackageId,
-			REGISTRY_ID: deepbookRegistryId,
-			// DEEP_TREASURY_ID is unused for the whitelisted-pool swap
-			// path (`deepAmount: 0` produces a zero `Coin<DEEP>` via
-			// `coinWithBalance`, which never touches the treasury).
-			DEEP_TREASURY_ID: '0x0',
-		},
+		coins: deepbookConfig.coins,
+		pools: deepbookConfig.pools,
+		packageIds: deepbookConfig.packageIds,
 	});
 
 	cached = { suiClient, sender, client };

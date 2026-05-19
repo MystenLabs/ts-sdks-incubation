@@ -14,6 +14,7 @@ import {
 	dockerError,
 	drainLinesWithCallback,
 	generateContainerName,
+	normalizeLogLine,
 	runCapturingOrFail,
 	type DockerExecResult,
 	type OutputLineCallback,
@@ -334,16 +335,32 @@ export const runOneShot = (
 				// output as it arrives (instead of waiting on exit).
 				// We still accumulate the full text so `WalrusError`-style
 				// errors can include the captured stdout/stderr verbatim.
-				const stdoutEff =
+				//
+				// Both streams default to 'info' (NOT stderr=warn) — Rust
+				// tracing-style emitters (walrus.deploy, seal.keygen, etc.)
+				// write INFO to stderr by default, and labelling all stderr
+				// as warn floods the supervisor's warning level. Each line
+				// runs through `normalizeLogLine` so the embedded structured
+				// level (text or JSON tracing-subscriber format) wins when
+				// present — matching the `attachLogFollower` long-running
+				// container path so one-shot logs see the same treatment.
+				const parsedCb: OutputLineCallback | undefined =
 					onOutputLine === undefined
+						? undefined
+						: (defaultLevel, rawLine) => {
+								const { level, line } = normalizeLogLine(defaultLevel, rawLine);
+								return onOutputLine(level, line);
+							};
+				const stdoutEff =
+					parsedCb === undefined
 						? decodeStream(handle.stdout).pipe(Effect.mapError(dockerError(op)))
-						: drainLinesWithCallback(handle.stdout, 'info', onOutputLine).pipe(
+						: drainLinesWithCallback(handle.stdout, 'info', parsedCb).pipe(
 								Effect.mapError(dockerError(op)),
 							);
 				const stderrEff =
-					onOutputLine === undefined
+					parsedCb === undefined
 						? decodeStream(handle.stderr).pipe(Effect.mapError(dockerError(op)))
-						: drainLinesWithCallback(handle.stderr, 'warn', onOutputLine).pipe(
+						: drainLinesWithCallback(handle.stderr, 'info', parsedCb).pipe(
 								Effect.mapError(dockerError(op)),
 							);
 				const [stdoutText, stderrText, code] = yield* Effect.all(

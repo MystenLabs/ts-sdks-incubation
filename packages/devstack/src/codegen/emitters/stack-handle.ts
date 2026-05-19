@@ -10,6 +10,11 @@
 //                                handles transparently) and Move bindings over raw ids.
 //                                Reach for `packages.<name>.id` only for things MVR can't
 //                                express (struct type strings, error labels).
+//   <outputDir>/coins.ts      — `export const coins = { mUSDC: { type, symbol, decimals, treasuryCapId?, metadataId?, ... } } as const`
+//                                Populated by coin auto-discovery on every publish. Apps
+//                                read `coins.mUSDC.treasuryCapId` for mint flows, `coins.mUSDC.type`
+//                                for tx-builder typeArguments, `coins.mUSDC.decimals` for UI
+//                                formatting.
 //
 // Why these handles instead of `import { manifest } from ...`:
 //   - Apps reach for semantically-named values (`accounts.alice`,
@@ -106,6 +111,27 @@ export const captured = ${body} as const;
 `;
 };
 
+const renderCoins = (
+	coins: Record<string, Record<string, unknown>>,
+): string => {
+	const entries = Object.entries(coins).sort(([a], [b]) => a.localeCompare(b));
+	const body =
+		entries.length === 0
+			? '{}'
+			: `{\n${entries.map(([name, entry]) => `\t${JSON.stringify(name)}: ${jsonLiteral(entry)},`).join('\n')}\n}`;
+	return `${HEADER}
+// Per-coin metadata — coin type + decimals + sdkCoin + optional discovery
+// fields (\`symbol\`, \`displayName\`, \`iconUrl\`, \`treasuryCapId\`,
+// \`metadataId\`, \`packageId\`). Populated by coin auto-discovery on every
+// \`Package(...)\` publish; the symbol key matches what \`Coin('SYMBOL')\`
+// resolves to at runtime.
+
+export const coins = ${body} as const;
+
+export type CoinName = keyof typeof coins;
+`;
+};
+
 const renderPackages = (
 	packages: Record<string, { id: string; upgradeCapId?: string; mvr?: string }>,
 ): string => {
@@ -170,6 +196,11 @@ export const StackHandleEmitter = (): Emitter =>
 				yield* writeIfChanged(
 					path.join(ctx.outputDir, 'packages.ts'),
 					renderPackages(data.packages),
+					{ emitter: 'stack-handle' },
+				);
+				yield* writeIfChanged(
+					path.join(ctx.outputDir, 'coins.ts'),
+					renderCoins(data.coins as Record<string, Record<string, unknown>>),
 					{ emitter: 'stack-handle' },
 				);
 			}),

@@ -11,7 +11,7 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-import { Context, Effect, Layer, Scope } from 'effect';
+import { Context, Effect, Layer } from 'effect';
 import type { StackMember } from '../../engine/supervisor.js';
 import {
 	WalrusAdminTag,
@@ -26,8 +26,8 @@ import {
 } from '../walrus.js';
 import { dockerImage, gitFetch } from '../../advanced/plugin-author/index.js';
 import { composeLayers, type LayeredTag } from '../../advanced/tag.js';
-import { WalrusError } from '../../engine/errors.js';
-import { LongLivedScope } from '../../engine/long-lived-scope.js';
+import { ForkIncompatibleError, WalrusError } from '../../engine/errors.js';
+import { resolveNetwork } from '../../engine/network.js';
 import type { Account } from '../../engine/shared.js';
 import {
 	acquireLocalCluster,
@@ -83,6 +83,27 @@ export const walrusLocalCluster = <const Name extends string = 'walrus'>(
 	const epochDuration = options.epochDuration ?? DEFAULT_EPOCH_DURATION;
 	const readyTimeoutMs = options.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
 	const seedPaymentMist = options.seedPaymentMist ?? DEFAULT_SEED_WAL_PAYMENT_MIST;
+
+	// D5 / Phase 3 P3.5: walrusLocalCluster needs GraphQL + JSON-RPC,
+	// neither of which sui-fork exposes today. Composing this variant on
+	// a fork stack would let the supervisor partway through image build
+	// before the cluster's storage nodes fail to dial the chain — fail
+	// fast at factory time instead so the structured error names the
+	// known-deployment alternative.
+	const resolvedNetwork = resolveNetwork();
+	if (resolvedNetwork.endsWith('-fork')) {
+		throw new ForkIncompatibleError({
+			variant: 'walrusLocalCluster',
+			network: resolvedNetwork,
+			message:
+				`walrusLocalCluster is incompatible with fork mode (${resolvedNetwork}) — ` +
+				`the local cluster's storage nodes need GraphQL + JSON-RPC against the wrapped ` +
+				`chain, which sui-fork does not expose. Use \`Walrus()\` (which auto-routes to ` +
+				`the known-deployment branch in fork mode) or \`walrusKnownDeployment({network})\` ` +
+				`directly, pointing at the wrapped upstream.`,
+			hint: `replace walrusLocalCluster() with Walrus() or walrusKnownDeployment({network: '${resolvedNetwork.replace('-fork', '')}'})`,
+		});
+	}
 
 	if (nodeCount < 1) {
 		throw new Error('walrusLocalCluster: nodeCount must be at least 1');
@@ -140,23 +161,15 @@ export const walrusLocalCluster = <const Name extends string = 'walrus'>(
 	// legacy `Walrus` aggregate so a single `Layer.effectContext` covers
 	// every consumer shape downstream code might reach for.
 	//
-	// Lifecycle: walrus's storage-node committee + nginx proxy are
-	// expensive to bootstrap (O(60–120s) per boot — image build, contract
-	// deploy, committee genesis, seed-account swap). We want them to
-	// survive `r` hot-restart cycles, like sui localnet and postgres do
-	// via `provide(..., { lifecycle: 'long-lived' })`. `provide` is the
-	// canonical knob but it targets a single Context.Service class; here
-	// we publish four interface tags from one acquire body, so we mirror
-	// `withEngineLifecycle`'s scope-substitution behavior directly:
-	// resolve `LongLivedScope` once at the top of the body and substitute
-	// it for the ambient `Scope.Scope` so every `Effect.acquireRelease` /
-	// `Scope.addFinalizer` inside `acquireLocalCluster` (Docker.run,
-	// nginx config writes, etc.) registers on the long-lived scope. When
-	// `LongLivedScope` is absent (standalone tests), the build keeps the
-	// per-cycle Layer scope, matching how `provide(..., 'long-lived')`
-	// degrades.
+	// Lifecycle (Phase 2 of selective-restart): the ambient `Scope.Scope`
+	// is this composite tag's own primitive scope — Effect's MemoMap
+	// forks one scope per Layer.effect. Docker.run finalizers inside
+	// `acquireLocalCluster` (storage nodes, nginx proxy, deploy one-shot,
+	// network) attach to that scope automatically. `r` (full rebuild)
+	// cascades through the supervisor's outer scope and releases every
+	// primitive; a targeted watch-fire only releases the primitives in
+	// the affected closure via `engine.invalidateSubset`.
 	const acquireAndProject = Effect.fn(`walrusLocalCluster(${name})`)(function* () {
-		const longLivedScope = yield* LongLivedScope;
 		// Engine lifecycle is wired manually here rather than through
 		// `provide` because we're producing a multi-service Context
 		// from a single body. `EngineHandle` is satisfied by InfraLive
@@ -203,18 +216,11 @@ export const walrusLocalCluster = <const Name extends string = 'walrus'>(
 					: Effect.void,
 			),
 		);
-		// Lifecycle substitution: when `LongLivedScope` is present, run
-		// the acquire under that scope so Docker.run finalizers (storage
-		// nodes, nginx proxy, deploy one-shot, network) survive `r`
-		// hot-restart. When absent (standalone tests / no supervisor),
-		// fall through to the ambient per-cycle Layer scope. Mirrors the
-		// `withEngineLifecycle` substitution inside `provide()` — the
-		// canonical path can't be used here because this body publishes
-		// four interface tags from one acquire, not a single tag value.
-		const acquired =
-			longLivedScope !== undefined
-				? yield* acquireEffect.pipe(Effect.provideService(Scope.Scope, longLivedScope))
-				: yield* acquireEffect;
+		// Run the acquire under this composite tag's primitive scope —
+		// Docker.run finalizers attach to it automatically, and selective
+		// invalidation releases just this scope when walrus is in the
+		// affected set.
+		const acquired = yield* acquireEffect;
 
 		if (engineOpt._tag === 'Some') {
 			yield* engineOpt.value.markReady(LOCAL_CLUSTER_KEY, {
@@ -229,7 +235,6 @@ export const walrusLocalCluster = <const Name extends string = 'walrus'>(
 		const networkShape: WalrusNetwork = {
 			systemObjectId: acquired.deploy.systemObject,
 			stakingPoolId: acquired.deploy.stakingObject,
-			subsidiesPackageId: undefined,
 			exchangeIds,
 			network: 'localnet',
 			// SDK-ready view. Pass directly to `new WalrusClient({
@@ -300,6 +305,7 @@ export const walrusLocalCluster = <const Name extends string = 'walrus'>(
 		}),
 		key: LOCAL_CLUSTER_KEY,
 		__kind: 'service' as const,
+		__pluginName: 'walrus',
 		__displayTitle: 'walrus.cluster',
 	};
 };

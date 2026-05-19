@@ -44,6 +44,7 @@ import { Effect, FileSystem, Path, Schema } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import * as Docker from './docker.js';
 import { DockerLabel } from './identity.js';
+import { resolveAppDir } from './resolve-app-dir.js';
 import { RUNTIME_DIR_NAME } from './service-paths.js';
 
 // Mirror state-store.ts: env var overrides, default to `.devstack`.
@@ -56,13 +57,22 @@ const EXTRAS_DIR_NAME = 'extras';
 const DEFAULT_SNAPSHOTS_DIR = `${STATE_DIR}/snapshots`;
 
 // Snapshot meta schema version. Closed literal — older versions are
-// not supported. `app` at top-level and `originalImage` per container
-// are both load-bearing: without `originalImage`, restore can't retag
-// the loaded snapshot image back to the supervisor's content-addressed
+// rejected outright (Phase 5.2 of `notes/api-simplification.md` made
+// this break-and-replace: no v3 fallback decoder, the loader fails on
+// any version that isn't current).
+//
+// `app` at top-level and `originalImage` per container are both
+// load-bearing: without `originalImage`, restore can't retag the
+// loaded snapshot image back to the supervisor's content-addressed
 // base tag, so the supervisor's `Docker.run` reuse probe sees a name
 // match but image mismatch and recreates from a fresh base image,
 // running a brand-new genesis (chain state lost).
-const META_VERSION = 3 as const;
+//
+// v4 (current): moved per-service fields (`chainId`, fork upstream /
+// checkpoint) off the flat top-level into a typed `services` bucket
+// extended via TypeScript declaration merging — see
+// `SnapshotMetaServices` below. v3-shaped files are not parseable.
+const META_VERSION = 4 as const;
 
 export class SnapshotError extends Schema.TaggedErrorClass<SnapshotError>()('SnapshotError', {
 	message: Schema.String,
@@ -85,6 +95,46 @@ const ExtraEntry = Schema.Struct({
 	path: Schema.String,
 });
 
+// -----------------------------------------------------------------------------
+// SnapshotMetaServices — typed, declaration-mergeable per-service bucket
+// -----------------------------------------------------------------------------
+//
+// In-tree services declare their slice directly on the interface
+// below; out-of-tree plugins extend it via TypeScript's module
+// declaration merging from their own source.
+//
+// Example (out-of-tree plugin, in its own .ts file):
+//
+//   declare module '@mysten-incubation/devstack/advanced' {
+//     interface SnapshotMetaServices {
+//       myPlugin: { foo: string };
+//     }
+//   }
+//
+// Then `services: {myPlugin: {foo: 'bar'}}` at the `snapshot()` call
+// site and `readServiceMeta(meta, 'myPlugin')` at restore — both
+// fully typed.
+//
+// Runtime side: the JSON writer is permissive (accepts anything the
+// merged interface ends up with); the JSON reader returns the raw
+// shape and casts via the TS slice. There's no `Effect.Schema`
+// validation at the bucket boundary — TS typing at producer +
+// consumer sites is the only discipline (single direction; no
+// migration). When the on-disk record disagrees with the current TS
+// shape, callers should treat the slice as missing and re-derive.
+export interface SnapshotMetaServices {
+	/**
+	 * Sui chain meta. `chainId` is the checkpoint-0 digest captured at
+	 * snapshot time. `restore` matches it against the running stack's
+	 * `Sui.chainId` and refuses a cross-chain restore (would corrupt
+	 * downstream lookup tables — publishMove cache, KnownPackage,
+	 * dapp-kit MVR — that key on chain id).
+	 */
+	readonly sui?: { readonly chainId: string };
+}
+
+const ServicesBucketSchema = Schema.Record(Schema.String, Schema.Unknown);
+
 const SnapshotMeta = Schema.Struct({
 	version: Schema.Literal(META_VERSION),
 	createdAt: Schema.Number,
@@ -98,8 +148,53 @@ const SnapshotMeta = Schema.Struct({
 	containers: Schema.optional(Schema.Array(ContainerEntry)),
 	extras: Schema.optional(Schema.Array(ExtraEntry)),
 	runtimeIncluded: Schema.Boolean,
+	/** Per-service meta slices. Each service that participates in the
+	 *  snapshot's restore-time validation contributes via TypeScript
+	 *  declaration merging on `SnapshotMetaServices` — see the
+	 *  in-tree example in `services/sui.ts`. The runtime shape is a
+	 *  permissive `Record<string, unknown>` so an out-of-tree plugin
+	 *  whose slice declaration isn't in this build still round-trips
+	 *  cleanly; type narrowing happens at the consumer call site
+	 *  (`readServiceMeta('foo')`). */
+	services: Schema.optional(ServicesBucketSchema),
 });
 type SnapshotMeta = typeof SnapshotMeta.Type;
+
+/**
+ * Type-narrowed view of `SnapshotMeta.services`. Plugin authors get
+ * autocomplete + return-type checking when they call into
+ * `readServiceMeta('sui')` etc., because the TS interface above is
+ * the source of narrowing.
+ */
+export type SnapshotMetaServicesShape = Partial<SnapshotMetaServices>;
+
+/**
+ * Construct a typed entry for the `services` bucket. The caller
+ * supplies the slice name + payload and TS enforces the payload
+ * matches the declaration-merged shape.
+ *
+ * Used at `snapshot()` save sites to assemble the bucket without a
+ * `as` cast.
+ */
+export const buildServicesBucket = (
+	entries: Partial<SnapshotMetaServices>,
+): Record<string, unknown> => ({ ...entries } as Record<string, unknown>);
+
+/**
+ * Read a typed slice off a parsed `SnapshotMeta.services` bucket. Returns
+ * `undefined` when the slice is absent (snapshot was taken before the
+ * service participated, plugin not loaded at save time, etc.). The
+ * caller is responsible for treating undefined as "no record" and
+ * re-deriving from on-chain state.
+ */
+export const readServiceMeta = <K extends keyof SnapshotMetaServices>(
+	meta: SnapshotMeta | undefined,
+	name: K,
+): SnapshotMetaServices[K] | undefined => {
+	if (meta === undefined || meta.services === undefined) return undefined;
+	const slice = (meta.services as Record<string, unknown>)[name as string];
+	return slice as SnapshotMetaServices[K] | undefined;
+};
 
 const wrapError = (message: string) => (cause: unknown) => new SnapshotError({ message, cause });
 
@@ -136,8 +231,12 @@ const resolveStackPaths = (stack: string, network: string, pathSvc: Path.Path): 
 			runtimeDir: pathSvc.join(envOverride, RUNTIME_DIR_NAME),
 		};
 	}
-	const appDir = process.env.DEVSTACK_APP_DIR ?? process.cwd();
-	if (network === 'localnet') {
+	const appDir = resolveAppDir();
+	// Mirror `state-store.ts:resolvePaths` — local-like networks
+	// (localnet + `*-fork` variants) own per-stack state, live nets
+	// share one file per network. Inline the check so this module stays
+	// pure-string and doesn't depend on `SuiNetwork`'s literal type.
+	if (network === 'localnet' || network.endsWith('-fork')) {
 		const base = pathSvc.join(appDir, '.devstack', 'stacks', stack);
 		return {
 			stateFile: pathSvc.join(base, STATE_FILE_NAME),
@@ -277,6 +376,15 @@ export const snapshot = (opts: {
 	 *  dir is large and the caller intends to manage its capture
 	 *  separately. */
 	skipRuntime?: boolean;
+	/** Per-service meta slices captured at save time. Each entry must
+	 *  match the corresponding `SnapshotMetaServices[K]` shape — see
+	 *  the declaration-merging convention at the top of this file. The
+	 *  CLI snapshot command populates `services.sui = {chainId}` from
+	 *  the running stack's `Sui.chainId`; out-of-tree plugins add their
+	 *  own slices here.
+	 *
+	 *  Restore consults the bucket via `readServiceMeta(meta, name)`. */
+	services?: Partial<SnapshotMetaServices>;
 }): Effect.Effect<
 	{
 		path: string;
@@ -434,6 +542,10 @@ export const snapshot = (opts: {
 		// snapshot. `restore` reads it back to know which subset of
 		// the four passes to run AND which app+stack labels to scope
 		// its pre-load cleanup to.
+		const servicesBucket =
+			opts.services !== undefined && Object.keys(opts.services).length > 0
+				? buildServicesBucket(opts.services)
+				: undefined;
 		const meta: SnapshotMeta = {
 			version: META_VERSION,
 			createdAt: Date.now(),
@@ -443,6 +555,7 @@ export const snapshot = (opts: {
 			runtimeIncluded: runtimeTar !== undefined,
 			...(containerEntries.length > 0 ? { containers: containerEntries } : {}),
 			...(extras.length > 0 ? { extras: extras.map((e) => ({ key: e.key, path: e.path })) } : {}),
+			...(servicesBucket !== undefined ? { services: servicesBucket } : {}),
 		};
 		yield* fs
 			.writeFileString(metaDst, JSON.stringify(meta, null, 2))
@@ -463,6 +576,11 @@ export const restore = (opts: {
 	 *  only, the caller can intentionally restore across stacks. */
 	stack?: string;
 	network?: string;
+	/** Current stack's chain identifier. When set AND
+	 *  `meta.services.sui.chainId` is set AND they don't match,
+	 *  `restore` fails with a typed error. Caller passes the running
+	 *  stack's `Sui.chainId`. */
+	expectedChainId?: string;
 }): Effect.Effect<
 	{
 		loadedImages: ReadonlyArray<string>;
@@ -499,6 +617,32 @@ export const restore = (opts: {
 		// label filter), the container restore pass (originalImage
 		// retag), and the extras pass (recorded paths).
 		const meta = yield* readMeta(fs, path.join(source, META_FILE_NAME));
+
+		// Chain guard. When the caller passes the running stack's
+		// chainId AND the snapshot recorded `services.sui.chainId`,
+		// refuse a cross-chain restore. Silent retag of images under
+		// a divergent chain id would leave downstream lookups
+		// (publishMove cache, KnownPackage, dapp-kit MVR) pointing at
+		// addresses that don't exist on the running chain — a class
+		// of bug that's near-impossible to debug from the surfaced
+		// symptom. Skipped when either side is unset (meta from a
+		// snapshot whose Sui factory hadn't yet declared its slice or
+		// callers that don't care).
+		if (meta !== undefined) {
+			const sui = readServiceMeta(meta, 'sui');
+			if (
+				opts.expectedChainId !== undefined &&
+				sui?.chainId !== undefined &&
+				sui.chainId !== opts.expectedChainId
+			) {
+				return yield* new SnapshotError({
+					message:
+						`snapshot ${opts.id} chainId mismatch: meta=${sui.chainId} ` +
+						`current=${opts.expectedChainId}. Refusing restore — the snapshot was ` +
+						`captured from a different chain and would corrupt the running stack.`,
+				});
+			}
+		}
 
 		// PRE-CLEANUP — before loading any tars, `docker rm -f` any
 		// containers belonging to (meta.app, meta.stack). Reason: the
@@ -652,7 +796,16 @@ const readMeta = (
 export const list = (opts?: {
 	dir?: string;
 }): Effect.Effect<
-	ReadonlyArray<{ id: string; createdAt: number; stack?: string; network?: string }>,
+	ReadonlyArray<{
+		id: string;
+		createdAt: number;
+		stack?: string;
+		network?: string;
+		/** Raw per-service meta bucket, as read off `meta.json`. Use
+		 *  `readServiceMeta`-style accessors on the consumer side to
+		 *  narrow to a specific service's slice. */
+		services?: Record<string, unknown>;
+	}>,
 	SnapshotError,
 	FileSystem.FileSystem | Path.Path
 > =>
@@ -671,7 +824,13 @@ export const list = (opts?: {
 			.readDirectory(snapshotsDir)
 			.pipe(Effect.mapError(wrapError(`failed to read ${snapshotsDir}`)));
 
-		const results: Array<{ id: string; createdAt: number; stack: string; network: string }> = [];
+		const results: Array<{
+			id: string;
+			createdAt: number;
+			stack: string;
+			network: string;
+			services?: Record<string, unknown>;
+		}> = [];
 		for (const id of entries) {
 			const meta = yield* readMeta(fs, path.join(snapshotsDir, id, META_FILE_NAME));
 			if (meta === undefined) continue;
@@ -680,6 +839,9 @@ export const list = (opts?: {
 				createdAt: meta.createdAt,
 				stack: meta.stack,
 				network: meta.network,
+				...(meta.services !== undefined
+					? { services: meta.services as Record<string, unknown> }
+					: {}),
 			});
 		}
 

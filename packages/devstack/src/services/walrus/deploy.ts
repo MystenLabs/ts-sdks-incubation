@@ -35,15 +35,33 @@ import { WALRUS_NODE_IP_BASE } from './internal.js';
 // tagged with the primitive label so a multi-step boot's TUI tail
 // reads e.g. `[walrus.deploy] WAL exchange registered ...` instead
 // of an unattributed sea of `docker run` output.
+// Per-level filter, mirroring `services/walrus/nodes.ts`. Walrus's deploy
+// container emits ~50 INFO lines per boot (config generation, on-chain
+// registration, WAL faucet draws); useful in `docker logs` but noise in
+// the TUI. Default min-level = 'warn' suppresses INFO from the supervisor's
+// sink WITHOUT silencing the container stream. Override via
+// `DEVSTACK_LOG_LEVEL=info`.
+const LEVEL_RANK: Record<Docker.OutputLineLevel, number> = { info: 0, warn: 1, error: 2 };
+const resolveMinLevel = (defaultMin: Docker.OutputLineLevel): Docker.OutputLineLevel => {
+	const env = process.env.DEVSTACK_LOG_LEVEL?.toLowerCase();
+	if (env === 'trace' || env === 'debug' || env === 'info') return 'info';
+	if (env === 'warn' || env === 'warning') return 'warn';
+	if (env === 'error' || env === 'fatal') return 'error';
+	return defaultMin;
+};
+
 const makeOutputLineSink = (label: string): Effect.Effect<Docker.OutputLineCallback> =>
 	Effect.gen(function* () {
 		const engineOpt = yield* Effect.serviceOption(EngineHandle);
-		return (level, line) =>
-			engineOpt._tag === 'None'
+		const minRank = LEVEL_RANK[resolveMinLevel('warn')];
+		return (level, line) => {
+			if (LEVEL_RANK[level] < minRank) return Effect.void;
+			return engineOpt._tag === 'None'
 				? Effect.void
 				: engineOpt.value
 						.appendLog({ ts: Date.now(), level, message: `[${label}] ${line}` })
 						.pipe(Effect.ignore);
+		};
 	});
 
 // -----------------------------------------------------------------------------

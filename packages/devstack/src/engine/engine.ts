@@ -20,7 +20,7 @@
 // rebuild of the whole devstack. `defineDevstack.launchEffect` reads the
 // signal in its outer loop via `awaitRestart`.
 
-import { Cause, Context, Effect, Layer, Queue, Ref } from 'effect';
+import { Cause, Context, Deferred, Effect, Exit, Layer, Queue, Ref, Scope } from 'effect';
 import { EndpointRegistry, type EndpointRecord, type RegistryShape } from './registries.js';
 import type {
 	BuildStatus,
@@ -68,6 +68,19 @@ export interface EngineHandleShape {
 	 */
 	readonly markFailed: (name: string, cause: Cause.Cause<unknown>) => Effect.Effect<void>;
 	/**
+	 * Flip a tag ready → stopping. Called by long-lived primitives'
+	 * stop finalizers BEFORE `docker stop` fires so the TUI can render
+	 * the row as in-flight teardown (yellow "stopping" badge), and the
+	 * Footer's "waiting on N containers" count excludes the row.
+	 */
+	readonly markStopping: (name: string) => Effect.Effect<void>;
+	/**
+	 * Flip a tag stopping → stopped. Called by long-lived primitives'
+	 * stop finalizers AFTER `docker stop` returns. Row renders dim/grey
+	 * to confirm the container is gone; Footer count drops by one.
+	 */
+	readonly markStopped: (name: string) => Effect.Effect<void>;
+	/**
 	 * Safety net: flip any leftover `pending` / `acquiring` tag to `ready`.
 	 * Called by `defineDevstack` after `Layer.build` completes in case a
 	 * primitive used a hand-rolled Layer that bypassed the `tag` wrap.
@@ -87,6 +100,7 @@ export interface EngineHandleShape {
 			readonly key: string;
 			readonly kind?: TagKind;
 			readonly title?: string;
+			readonly plugin?: string;
 		}>,
 	) => Effect.Effect<void>;
 	/**
@@ -111,37 +125,149 @@ export interface EngineHandleShape {
 	/** Bump the build-status. Surfaces in the header tint + footer copy. */
 	readonly setBuildStatus: (status: BuildStatus) => Effect.Effect<void>;
 	/**
-	 * Block until something has asked the devstack to restart (file change,
-	 * TUI keypress, SIGUSR2). `defineDevstack` yields this in its outer
-	 * launch loop between cycles. Backed by a `Queue.dropping(1)`, so a
-	 * `requestRestart` that lands between consecutive `awaitRestart` calls
-	 * is preserved in the queue and the next await returns immediately.
-	 * Closes the lost-wake-up window the previous `Ref<Deferred>` design
-	 * had between `Deferred.await` returning and a separate `Ref.set` of
-	 * a fresh deferred (the window where `requestRestart` would land on
-	 * the just-succeeded deferred and be lost).
+	 * Block until the user has asked the devstack to do a FULL rebuild
+	 * (TUI `r` keypress, SIGUSR2). `defineDevstack` yields this in its
+	 * outer launch loop between cycles. Backed by a `Queue.dropping(1)`,
+	 * so a `requestRestart` that lands between consecutive `awaitRestart`
+	 * calls is preserved in the queue and the next await returns
+	 * immediately. Closes the lost-wake-up window the previous
+	 * `Ref<Deferred>` design had between `Deferred.await` returning and a
+	 * separate `Ref.set` of a fresh deferred.
+	 *
+	 * File-change-driven restarts do NOT go through this surface — Phase
+	 * 3 of selective-restart routes watch-fires through
+	 * `invalidateSubset` instead. The `r` gesture is the explicit "tear
+	 * down everything" path; watch-fires are surgical.
 	 */
 	readonly awaitRestart: Effect.Effect<void>;
-	/** Request a full restart. Non-blocking: offers into the dropping queue
-	 * — if a request is already pending, the offer is silently dropped
-	 * (coalesces concurrent requests into a single wake). */
+	/** Request a FULL restart (the user-driven `r` gesture and SIGUSR2).
+	 * Non-blocking: offers into the dropping queue — if a request is
+	 * already pending, the offer is silently dropped (coalesces concurrent
+	 * requests into a single wake). Watch-fires should NOT call this;
+	 * they use `invalidateSubset` for targeted teardown. */
 	readonly requestRestart: Effect.Effect<void>;
 	/**
-	 * Tags that triggered the pending restart, by primitive key. Populated by
-	 * the file-watcher fiber when an event resolves to one or more primitives
-	 * via their declared `__watchPaths`; read by the next cycle's launch
-	 * effect for diagnostic / status-surfacing purposes. Empty when the
-	 * trigger was the TUI `r` key, SIGUSR2, or a watch event whose path
-	 * didn't match any primitive (a path from `config.watch` rather than a
-	 * primitive-declared watch). Cleared by `clearChangedTags` so a fresh
-	 * cycle starts with no inherited attribution.
+	 * Block until something has asked the devstack to shut down (TUI `q`
+	 * press). One-shot: backed by a `Deferred<void>` so multiple awaits
+	 * resolve once `requestShutdown` fires. The supervisor races this
+	 * against `awaitRestart`; if shutdown wins, the launch loop returns
+	 * cleanly and the outer scope tears down all finalizers in-process,
+	 * without going through SIGINT (which had race issues delivering
+	 * to NodeRuntime's handler after ink unmounted stdin). Ctrl-C still
+	 * works via NodeRuntime.runMain's separate signal handler.
 	 */
-	readonly changedTags: Ref.Ref<ReadonlyArray<string>>;
-	/** Clear the `changedTags` ref. Called by the launch loop at the top of
-	 * each cycle, AFTER reading `changedTags` for diagnostic logging. */
-	readonly clearChangedTags: Effect.Effect<void>;
-	/** Add primitive keys to `changedTags`. De-duped. */
-	readonly notifyChangedTags: (keys: ReadonlyArray<string>) => Effect.Effect<void>;
+	readonly awaitShutdown: Effect.Effect<void>;
+	/** Request a clean shutdown of the supervisor. Idempotent: subsequent
+	 * calls are no-ops once the underlying Deferred has been completed. */
+	readonly requestShutdown: Effect.Effect<void>;
+	/**
+	 * Light up the *affected set* for a selective restart: every entry whose
+	 * key is in `keys` gets `selectiveRestart = true`. Drives the dim-animation
+	 * hook in the TUI so the user can visually trace the cascade. Unknown
+	 * keys are silently dropped (we don't auto-register; the watcher fiber
+	 * passes keys derived from the dep graph, which is built from the same
+	 * stack members the engine seeded). Keys NOT in the set are left alone
+	 * — flag clearing happens automatically on `markReady` / `markFailed`,
+	 * so this method is purely additive.
+	 *
+	 * Watch-fire driven; user-initiated `r` (full rebuild) is NOT a selective
+	 * restart and does not call this. Calling with an empty set is a no-op.
+	 */
+	readonly markSelectiveRestart: (keys: ReadonlySet<string>) => Effect.Effect<void>;
+	/**
+	 * Record the primitive's ambient layer scope (the Scope forked by
+	 * Effect's MemoMap inside `Layer.effect`) on the engine so the
+	 * supervisor can close it selectively. Called once per primitive
+	 * at the top of `withEngineLifecycle`; subsequent calls for the
+	 * same key overwrite (the watcher fiber may rebuild a primitive
+	 * mid-cycle via Phase 3's `engine.invalidateSubset`, at which
+	 * point Effect's MemoMap forks a fresh scope and re-registers).
+	 *
+	 * Internal — exposed on `EngineHandle` because the `withEngineLifecycle`
+	 * wrap lives inside `provide` (which doesn't have a separate
+	 * supervisor channel), but callers outside the wrap shouldn't poke
+	 * at this surface.
+	 */
+	readonly registerPrimitiveScope: (
+		key: string,
+		scope: Scope.Scope,
+	) => Effect.Effect<void>;
+	/**
+	 * Close the recorded primitive scope for `key` and drop the entry.
+	 * Runs every finalizer the primitive's build attached to its
+	 * scope (containers via `Docker.run`'s `stopFinalizer`, files,
+	 * background fibers). Silently no-ops when `key` isn't registered
+	 * (e.g. the primitive failed before `registerPrimitiveScope` ran).
+	 *
+	 * Used by Phase 3's `engine.invalidateSubset` to release just the
+	 * affected primitives without touching siblings. The `r` user
+	 * gesture closes the supervisor's outer scope, which cascades
+	 * through every primitive's scope automatically — `r` does NOT
+	 * call this method.
+	 *
+	 * Internal — Phase 3 wires this to `invalidateSubset`. Not part of
+	 * the public/advanced surface.
+	 */
+	readonly closePrimitiveScope: (key: string) => Effect.Effect<void>;
+	/**
+	 * Watch-fire-driven, targeted invalidation. For every key in `keys`:
+	 *   1. Close the primitive's scope (runs container `docker stop`,
+	 *      file finalizers, background fibers — same teardown as a full
+	 *      `r` would do, just scoped to one primitive).
+	 *   2. Evict the shadow-cache entry so the next consumer's `yield*`
+	 *      forces a fresh Layer build (which allocates a new scope via
+	 *      Effect's MemoMap and re-runs the primitive's body).
+	 *
+	 * Callers (the watch fiber in `supervisor.ts`) compute the affected
+	 * set as `{ownerKey} ∪ downstreamClosure[ownerKey]` for every owner
+	 * matched against the changed path — owners + transitive consumers.
+	 * Primitives NOT in the set keep their value, their scope, and their
+	 * TUI row state untouched.
+	 *
+	 * Differs from `requestRestart`: `r` (the user gesture) closes the
+	 * supervisor's outer scope, which cascades through every primitive's
+	 * scope automatically. `invalidateSubset` is the watch-driven path,
+	 * and is the ONLY surface that touches primitives selectively.
+	 *
+	 * Unknown keys are silently dropped (no error — the dep graph + the
+	 * engine's scope registry might disagree if a primitive failed
+	 * before reaching `registerPrimitiveScope`, but that's not a fatal
+	 * condition; a missing scope just means there's nothing to close).
+	 * An empty set is a no-op (`yield* engine.markSelectiveRestart` and
+	 * `engine.requestRestart` shouldn't fire at all for an empty
+	 * affected set — supervisor handles that decision).
+	 */
+	readonly invalidateSubset: (keys: ReadonlySet<string>) => Effect.Effect<void>;
+	/**
+	 * Close every registered primitive scope CONCURRENTLY. Called by the
+	 * supervisor's shutdown path (q-keypress race + SIGINT `onInterrupt`)
+	 * to bypass the sequential close cascade that the user-stack's
+	 * `Layer.provideMerge` chain otherwise imposes — each primitive's
+	 * `docker stop` (sui=30s, walrus=20s, seal=15s, …) runs as the long
+	 * pole of its layer-scope close, so serial teardown is sum(grace) ≈
+	 * 65s+ while the parallel variant is max(grace) ≈ 30s.
+	 *
+	 * Idempotent: closing a scope twice is a no-op for the second call
+	 * (Scope marks Closed on first close), so the supervisor invoking
+	 * this BEFORE the outer scope cascade is safe — the cascade fires
+	 * later, but every primitive scope is already Closed.
+	 */
+	readonly invalidateAll: Effect.Effect<void>;
+	/**
+	 * Internal shadow-cache surface — exposed for tests only. The map
+	 * mirrors Effect's MemoMap by tag identity; eviction operates on
+	 * the shadow cache only. The MemoMap is treated as a black box and
+	 * is NOT mutated by `invalidateSubset` (per
+	 * `notes/selective-restart.md` § "Decisions baked into this plan").
+	 *
+	 * Production callers should never read this — they use
+	 * `invalidateSubset` to evict and let the engine's
+	 * `registerPrimitiveScope` re-populate. The Ref is exported only
+	 * so the engine.test.ts shadow-cache-shape assertions can inspect
+	 * eviction semantics without poking at private state through
+	 * unsafe casts.
+	 */
+	readonly _shadowCache: Ref.Ref<ReadonlyMap<string, unknown>>;
 }
 
 export class EngineHandle extends Context.Service<EngineHandle, EngineHandleShape>()(
@@ -152,6 +278,15 @@ export class EngineHandle extends Context.Service<EngineHandle, EngineHandleShap
 // sessions (or noisy hot-restart cycles) shouldn't grow the Ref without
 // limit; the TUI only renders the trailing tail anyway.
 const LOG_BUFFER_LIMIT = 200;
+
+// Sentinel value stored in the shadow cache to mark "this primitive
+// has been built and is live in the MemoMap." We only ever check
+// presence (`Map.has` / `Map.delete`), so the value is opaque — the
+// engine doesn't get to peek at primitives' resolved shapes (those
+// live in the MemoMap entry the consumer's `yield*` resolves
+// against). Symbol-typed so a future bug that tries to read it as a
+// real value fails loudly rather than silently corrupting state.
+const SHADOW_CACHE_PRESENT: unique symbol = Symbol('@devstack/shadow-cache-present');
 
 const defaultHeader: TuiHeader = Object.freeze({
 	app: '',
@@ -290,19 +425,14 @@ export const EngineLive: Layer.Layer<EngineHandle> = Layer.effect(
 		// "currently armed" deferred reference that can fall out of sync
 		// with what the loop is awaiting.
 		const restartQueue = yield* Queue.dropping<void>(1);
-		// Attribution of which primitive(s) the most recent file-watch event
-		// resolved to. The watcher fiber writes here BEFORE firing
-		// `requestRestart`; the next cycle's launch reads it for diagnostic
-		// logging. Cleared on `clearChangedTags` so each cycle starts with
-		// fresh attribution.
-		const changedTags = yield* Ref.make<ReadonlyArray<string>>([]);
-		const notifyChangedTags = (keys: ReadonlyArray<string>) =>
-			Ref.update(changedTags, (existing) => {
-				if (keys.length === 0) return existing;
-				const merged = new Set([...existing, ...keys]);
-				return Array.from(merged);
-			});
-
+		// One-shot shutdown signal. The supervisor's launch loop races this
+		// against `awaitRestart`; if shutdown wins, the loop returns and the
+		// outer Effect.scoped tears down all finalizers in-process. Replaces
+		// the previous q-handler dependency on `process.kill(SIGINT)`, which
+		// could lose the race with ink's stdin detach during `inkApp.exit()`
+		// (NodeRuntime's SIGINT handler installed but the supervisor fiber
+		// had already moved past the interruptible await point).
+		const shutdownSignal = yield* Deferred.make<void>();
 		// Re-seeding clears the previous run's terminal statuses so a
 		// hot-restart cycle starts every tag fresh at `pending`. The
 		// caller pre-classifies each member as service/action so the TUI
@@ -314,6 +444,7 @@ export const EngineLive: Layer.Layer<EngineHandle> = Layer.effect(
 				readonly key: string;
 				readonly kind?: TagKind;
 				readonly title?: string;
+				readonly plugin?: string;
 			}>,
 		) =>
 			Ref.update(tuiState, (s) => ({
@@ -324,6 +455,7 @@ export const EngineLive: Layer.Layer<EngineHandle> = Layer.effect(
 						kind: toEntryKind(e.kind),
 						status: 'pending' as const,
 						...(e.title !== undefined ? { title: e.title } : {}),
+						...(e.plugin !== undefined ? { plugin: e.plugin } : {}),
 					}),
 				),
 			}));
@@ -343,15 +475,20 @@ export const EngineLive: Layer.Layer<EngineHandle> = Layer.effect(
 				// a debug line emitted mid-acquire would otherwise stick
 				// around in the row's detail column AND mask the
 				// resolved primary URL (the field the user actually
-				// needs after ready).
+				// needs after ready). Also clears `selectiveRestart` so
+				// the cascade animation only lights up the row while it's
+				// actually re-acquiring; the next watch-fire will set it
+				// again if this primitive is in the affected set.
 				const patch: Partial<TuiEntry> = {
 					status: 'ready',
 					phase: undefined,
 					lastLog: undefined,
+					selectiveRestart: undefined,
 					...(display?.title !== undefined ? { title: display.title } : {}),
 					...(display?.primary !== undefined ? { primary: display.primary } : {}),
 					...(display?.extras !== undefined ? { extras: display.extras } : {}),
 					...(display?.endpoints !== undefined ? { endpoints: display.endpoints } : {}),
+					...(display?.plugin !== undefined ? { plugin: display.plugin } : {}),
 				};
 				return updateEntry(s, name, patch);
 			});
@@ -361,9 +498,54 @@ export const EngineLive: Layer.Layer<EngineHandle> = Layer.effect(
 				updateEntry(s, name, {
 					status: 'failed',
 					phase: undefined,
+					selectiveRestart: undefined,
 					error: summarizeCause(cause),
 				}),
 			);
+
+		// Teardown transitions. Both are best-effort — a row that's not in
+		// state (e.g. a primitive that never reached `ready`) gets a fresh
+		// pending-shaped entry rather than failing. The TUI's Footer
+		// "waiting on N containers" count subtracts `stopping` + `stopped`
+		// rows so the user sees containers fall off as docker confirms the
+		// exit; row rendering greys out stopped rows so the dashboard
+		// gracefully decays during teardown instead of staring static.
+		const markStopping = (name: string) =>
+			Ref.update(tuiState, (s) =>
+				updateEntry(s, name, {
+					status: 'stopping',
+					phase: undefined,
+					lastLog: undefined,
+					selectiveRestart: undefined,
+				}),
+			);
+		const markStopped = (name: string) =>
+			Ref.update(tuiState, (s) =>
+				updateEntry(s, name, {
+					status: 'stopped',
+					phase: undefined,
+					lastLog: undefined,
+					selectiveRestart: undefined,
+				}),
+			);
+
+		// Light up the affected set for a selective restart. See the
+		// EngineHandleShape JSDoc for semantics. Set-based input keeps the
+		// call-site free of de-dupe concerns (the watcher fiber unions
+		// owner ∪ downstreamClosure[ownerKey], which can produce overlaps
+		// across multiple matched owners).
+		const markSelectiveRestart = (keys: ReadonlySet<string>) =>
+			Ref.update(tuiState, (s) => {
+				if (keys.size === 0) return s;
+				// Only touch rows the engine already knows about. Unknown keys
+				// (e.g. an out-of-date dep graph carrying a stale entry) are
+				// silently dropped — selective-restart is a UX hint, not a
+				// correctness gate, so a missing row shouldn't spawn a ghost.
+				return {
+					...s,
+					entries: s.entries.map((t) => (keys.has(t.key) ? { ...t, selectiveRestart: true } : t)),
+				};
+			});
 
 		// Silently drop updates for unknown keys: phases are pure
 		// narration over an existing acquire, so a stray
@@ -426,12 +608,161 @@ export const EngineLive: Layer.Layer<EngineHandle> = Layer.effect(
 		// separate Ref/Deferred to fall out of sync.
 		const awaitRestart = Queue.take(restartQueue).pipe(Effect.asVoid);
 
-		const clearChangedTags = Effect.gen(function* () {
-			// Watch-event attribution is consumed by the diagnostic log at
-			// the top of each cycle, then cleared here so the next cycle
-			// doesn't mis-attribute a user-driven restart (TUI `r`,
-			// SIGUSR2) to the previous watcher's triggers.
-			yield* Ref.set(changedTags, []);
+		const awaitShutdown = Deferred.await(shutdownSignal);
+		// `Deferred.done` is idempotent — second calls after the first
+		// success are no-ops, so the q-handler can fire this without
+		// worrying about double-press or signal handler overlap.
+		const requestShutdown = Deferred.done(shutdownSignal, Exit.void).pipe(Effect.asVoid);
+
+		// Per-primitive scope registry — Phase 2 of selective-restart.
+		// `withEngineLifecycle` (in `advanced/tag.ts`) calls
+		// `registerPrimitiveScope(name, primitiveScope)` at the top of
+		// every build so the supervisor knows where each primitive's
+		// finalizers live; Phase 3's `engine.invalidateSubset` calls
+		// `closePrimitiveScope(key)` to release just the affected
+		// primitives without touching siblings.
+		//
+		// The map's lifetime is the engine's lifetime — `EngineLive`'s
+		// build runs on the outer launch scope, so the map persists
+		// across `r` hot-restart cycles. Entries removed on
+		// `closePrimitiveScope`; re-population happens automatically
+		// because the next consumer's `yield*` re-enters the layer build
+		// (forced by Phase 3's shadow-cache eviction).
+		const primitiveScopes = yield* Ref.make<ReadonlyMap<string, Scope.Scope>>(new Map());
+		const registerPrimitiveScope = (key: string, scope: Scope.Scope): Effect.Effect<void> =>
+			Effect.gen(function* () {
+				yield* Ref.update(primitiveScopes, (m) => {
+					const next = new Map(m);
+					next.set(key, scope);
+					return next;
+				});
+				// Shadow-cache parallel write: every primitive build that
+				// makes it past `registerPrimitiveScope` is, by
+				// construction, present in Effect's MemoMap (the Layer
+				// build forked the scope we just registered). We mark the
+				// entry "live" — the value itself is opaque (we only need
+				// the presence/absence bit for eviction semantics; the
+				// real value lives in the MemoMap entry the consumer's
+				// `yield*` resolves against). Sentinel rather than the
+				// real value because the engine doesn't get to see the
+				// primitive's resolved shape — `withEngineLifecycle` runs
+				// at the *top* of the build, before the body runs and
+				// before the value exists.
+				yield* Ref.update(shadowCache, (m) => {
+					const next = new Map(m);
+					next.set(key, SHADOW_CACHE_PRESENT);
+					return next;
+				});
+			});
+		const closePrimitiveScope = (key: string): Effect.Effect<void> =>
+			Effect.gen(function* () {
+				const current = yield* Ref.get(primitiveScopes);
+				const scope = current.get(key);
+				if (scope === undefined) return;
+				// Drop the entry BEFORE closing so a concurrent re-acquire
+				// can re-register without observing a stale scope. Order
+				// matters: dropping after `Scope.close` would let a watcher
+				// that fired during teardown see the closed scope as
+				// "still registered" and skip the close on its turn.
+				yield* Ref.update(primitiveScopes, (m) => {
+					const next = new Map(m);
+					next.delete(key);
+					return next;
+				});
+				yield* Scope.close(scope, Exit.void);
+			});
+
+		// Shadow cache — Phase 3 of selective-restart.
+		//
+		// What this is: a parallel `Map<tagKey, unknown>` mirroring Effect's
+		// MemoMap entries by tag identity. Eviction operates on this map ONLY
+		// — the MemoMap is treated as a black box and is never mutated by
+		// `invalidateSubset` (per `notes/selective-restart.md` § "Decisions
+		// baked into this plan": MemoMap key extraction is rejected as too
+		// fragile to internal Effect changes).
+		//
+		// Why: closing a primitive's scope releases its resources, but on
+		// its own that doesn't force the next consumer's `yield*` to
+		// re-acquire — Effect's MemoMap would replay the cached build
+		// result from a closed scope. Evicting the shadow-cache entry is
+		// the signal the supervisor uses to know "this entry is dirty;
+		// the next cycle's `Layer.buildWithMemoMap` must re-execute its
+		// Layer.effect body and allocate a fresh primitive scope."
+		//
+		// How it stays in sync with MemoMap:
+		//   - Populated when `registerPrimitiveScope` lands (parallel
+		//     write — every successful Layer.effect build that registers
+		//     a scope also writes its shadow-cache entry).
+		//   - Evicted on `closePrimitiveScope` (via `invalidateSubset`).
+		//     The next watch-fire that re-targets this primitive walks
+		//     through `Layer.buildWithMemoMap` which calls the Layer's
+		//     `build` again; that re-fires the wrap which re-registers,
+		//     re-populating the shadow cache. The MemoMap entry is
+		//     evicted in lockstep when the supervisor's outer scope
+		//     closes (every cycle, between `r` cycles); the shadow cache
+		//     just gives us the per-cycle granularity the MemoMap lacks.
+		//
+		// Lifetime: same as the engine — `EngineLive`'s build runs on the
+		// outer launch scope, so the map persists across `r` hot-restart
+		// cycles. `r` itself doesn't read or write this map; it closes
+		// the supervisor's outer scope, which cascades into a new MemoMap
+		// for the next cycle (the cleanest invalidation surface), so
+		// shadow cache continues to mirror reality.
+		//
+		// Value shape: `unknown` because the engine doesn't model the
+		// resolved shape of each primitive. In practice the only operation
+		// we run on the map is presence/absence (`.has` / `.delete`), so a
+		// sentinel is sufficient — we never read the value.
+		const shadowCache = yield* Ref.make<ReadonlyMap<string, unknown>>(new Map());
+
+		const invalidateSubset = (keys: ReadonlySet<string>): Effect.Effect<void> =>
+			Effect.gen(function* () {
+				if (keys.size === 0) return;
+				yield* Effect.logInfo(
+					`[shutdown-debug] invalidateSubset start keys=${Array.from(keys).join(',')}`,
+				);
+				// Per key: evict the shadow-cache entry BEFORE closing the
+				// scope — symmetric with `closePrimitiveScope`'s "drop before
+				// close", so a re-acquire concurrent with teardown sees
+				// consistent state (shadow absent → re-acquire needed; scope
+				// absent → register a fresh one).
+				//
+				// Closes fire CONCURRENTLY (`Effect.all` with unbounded
+				// concurrency). Each primitive's `docker stop` (registered on
+				// that primitive's layer scope via `Docker.run`'s
+				// `stopFinalizer`) is the slow long pole — running them
+				// sequentially compounds grace windows (sui=30s + walrus=20s
+				// + seal=15s = ~65s worst case). With per-key concurrency,
+				// teardown of N primitives takes ~max(grace_i) instead of
+				// ~sum(grace_i). Critical for shutdown path where the
+				// supervisor invokes this with every registered key — see
+				// `invalidateAll`. Ref.update is atomic so the shadow-cache
+				// writes don't race.
+				yield* Effect.all(
+					Array.from(keys, (key) =>
+						Effect.gen(function* () {
+							yield* Ref.update(shadowCache, (m) => {
+								const next = new Map(m);
+								next.delete(key);
+								return next;
+							});
+							yield* closePrimitiveScope(key);
+						}),
+					),
+					{ concurrency: 'unbounded', discard: true },
+				);
+			});
+
+		// All-keys variant — used by the supervisor's shutdown path to tear
+		// down every registered primitive concurrently, bypassing the
+		// sequential cascade that `Layer.provideMerge`'s nested fromBuild
+		// scopes would otherwise impose on docker-stop finalizers.
+		const invalidateAll: Effect.Effect<void> = Effect.gen(function* () {
+			const scopes = yield* Ref.get(primitiveScopes);
+			const keys = new Set(scopes.keys());
+			yield* Effect.logInfo(`[shutdown-debug] invalidateAll firing for ${keys.size} primitives`);
+			yield* invalidateSubset(keys);
+			yield* Effect.logInfo(`[shutdown-debug] invalidateAll complete`);
 		});
 
 		return {
@@ -439,6 +770,8 @@ export const EngineLive: Layer.Layer<EngineHandle> = Layer.effect(
 			markAcquiring,
 			markReady,
 			markFailed,
+			markStopping,
+			markStopped,
 			markAllReady,
 			seedTags,
 			appendLog,
@@ -449,9 +782,17 @@ export const EngineLive: Layer.Layer<EngineHandle> = Layer.effect(
 			setPhase,
 			awaitRestart,
 			requestRestart,
-			clearChangedTags,
-			changedTags,
-			notifyChangedTags,
+			awaitShutdown,
+			requestShutdown,
+			markSelectiveRestart,
+			registerPrimitiveScope,
+			closePrimitiveScope,
+			invalidateSubset,
+			invalidateAll,
+			// Internal — exported on the shape only for tests. Production
+			// callers use `invalidateSubset` (write) and never read the
+			// shadow cache directly.
+			_shadowCache: shadowCache,
 		};
 	}),
 );

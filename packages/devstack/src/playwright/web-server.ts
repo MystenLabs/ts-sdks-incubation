@@ -3,7 +3,7 @@ import type { PlaywrightTestConfig } from '@playwright/test';
 import { conventionalUrl } from '../runtime/conventional-routes.js';
 import { discoverManifestPath } from '../runtime/discover-manifest.js';
 import { EndpointName } from '../runtime/endpoint-names.js';
-import { fromManifest } from '../runtime/manifest-loader.js';
+import type { Manifest } from '../runtime/manifest-schema.js';
 
 type PlaywrightWebServer = NonNullable<PlaywrightTestConfig['webServer']>;
 type PlaywrightWebServerSingle =
@@ -129,12 +129,11 @@ function resolveEndpoint(
 			throw err;
 		}
 	})();
-	// Pass the raw string so `fromManifest` can apply `jsonBigintReviver`
-	// — `JSON.parse(raw)` would coerce `{__bigint:"…"}` shapes into bare
-	// objects, which downstream consumers (a future SuiManifest carrying
-	// chainId or gas budgets in bigint form) would then read as the
-	// wrong type.
-	const manifest = fromManifest(raw);
+	// v5 manifest is all-strings — no bigint fields in the schema, so a
+	// plain `JSON.parse` is sound. If a future schema folds bigint
+	// fields (gas budgets, on-chain numeric scalars), wire the
+	// `jsonBigintReviver` from `engine/json-bigint.ts` here.
+	const manifest = JSON.parse(raw) as Manifest;
 	// Project the v4 manifest's nested endpoints into a flat
 	// `{name → url}` lookup so callers reach for canonical short names
 	// like `dev-server`, `sui-rpc`, `wallet-app`. The mapping mirrors

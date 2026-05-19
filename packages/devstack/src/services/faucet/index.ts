@@ -213,6 +213,7 @@ export const Faucet = (opts: FaucetOptions = {}): LayeredTag<'faucet', unknown, 
 		}),
 		{
 			kind: 'service',
+			plugin: 'sui',
 			displayTitle: `faucet.${name}`,
 			display: () => ({ title: `faucet.${name}` }),
 		},

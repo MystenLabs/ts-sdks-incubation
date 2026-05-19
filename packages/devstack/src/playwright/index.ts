@@ -1,4 +1,4 @@
-export { connectAs, selectAccount, waitForBalanceUpdate } from './helpers.js';
+export { connectAs, selectAccount } from './helpers.js';
 export { setupDevstack, type DevstackPlaywrightFixture } from './setup-devstack.js';
 export { baseURL, webServer, type BaseURLOptions, type WebServerOptions } from './web-server.js';
 export {

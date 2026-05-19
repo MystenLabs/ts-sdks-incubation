@@ -30,6 +30,7 @@
 import { existsSync, mkdirSync } from 'node:fs';
 import { join, resolve as resolvePath } from 'node:path';
 import { Context, Effect, Layer, Ref, Schema } from 'effect';
+import { resolveAppDir } from './resolve-app-dir.js';
 import { StateStoreConfig, type StateStoreConfigShape } from './state-store.js';
 
 /** Name of the canonical per-stack subdirectory holding service-owned
@@ -69,8 +70,13 @@ const resolveRuntimeRoot = (cfg: StateStoreConfigShape): string => {
 	if (cfg.stateDir !== undefined && cfg.stateDir.length > 0) {
 		return join(cfg.stateDir, RUNTIME_DIR_NAME);
 	}
-	const appDir = process.env.DEVSTACK_APP_DIR ?? process.cwd();
-	if (cfg.network === 'localnet') {
+	const appDir = resolveAppDir();
+	// Same local-like routing as state-store + snapshot — fork variants
+	// own per-stack writable runtime state under
+	// `.devstack/stacks/<stack>/`. Keeping the check inline (vs.
+	// importing `isLocalLikeNetwork`) avoids a runtime dep edge from
+	// this module to `engine/network.ts`.
+	if (cfg.network === 'localnet' || cfg.network.endsWith('-fork')) {
 		return join(appDir, '.devstack', 'stacks', cfg.stack, RUNTIME_DIR_NAME);
 	}
 	return join(appDir, '.devstack', 'networks', cfg.network, RUNTIME_DIR_NAME);

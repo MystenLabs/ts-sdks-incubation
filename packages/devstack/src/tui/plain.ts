@@ -25,7 +25,7 @@
 // a fake sink via `Stdio.layerTest({ stderr: ... })`.
 
 import { Effect, Schedule, Stdio, Stream } from 'effect';
-import type { TagStatus, TuiEntry, TuiLog, TuiState } from './render.js';
+import type { TagStatus, TuiEntry, TuiLog, TuiState } from '../engine/tui-state.js';
 
 const REFRESH = Schedule.spaced('500 millis');
 
@@ -42,11 +42,13 @@ const pad = (s: string, width: number): string => {
 	return s + ' '.repeat(width - s.length);
 };
 
-// Render status as 'done' for completed actions, 'ready' for healthy
-// services — same convention as the TUI dashboard so log scrapers and
-// the live screen stay in sync.
+// Mirrors `tui/components.tsx::statusWord`: services stay "ready" (live
+// dialable processes/containers/sockets), everything else (accounts,
+// packages, actions, app artifacts like codegen output + manifest) reads
+// "done" because their work is one-shot and finished. Keeps log scrapers
+// and the live screen on the same vocabulary.
 const statusWord = (entry: TuiEntry, status: TagStatus): string => {
-	if (status === 'ready' && entry.kind === 'action') return 'done';
+	if (status === 'ready' && entry.kind !== 'service') return 'done';
 	return status;
 };
 

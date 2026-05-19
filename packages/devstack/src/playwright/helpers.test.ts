@@ -1,8 +1,8 @@
-// Playwright `helpers.ts` exposes three functions: connectAs,
-// selectAccount, waitForBalanceUpdate. Every one of them interacts with
-// a real Playwright `Page` / `Locator` (locator queries, in-browser
-// `evaluate`, polling assertions). A useful end-to-end test requires a
-// real headless browser, which is what the examples' e2e suites cover.
+// Playwright `helpers.ts` exposes two functions: connectAs and
+// selectAccount. Both interact with a real Playwright `Page` / `Locator`
+// (locator queries, in-browser `evaluate`). A useful end-to-end test
+// requires a real headless browser, which is what the examples' e2e
+// suites cover.
 //
 // What this file pins:
 //   - Module exports — guards against accidental renames during refactors.
@@ -16,7 +16,6 @@
 // browser):
 //   - `connectAs` happy-path (clicks + waits + `evaluate`).
 //   - `selectAccount` happy-path (filter().getAttribute()).
-//   - `waitForBalanceUpdate` polling cadence.
 // These are exercised by the example apps' playwright e2e suites that
 // run against a live dev wallet.
 
@@ -32,10 +31,9 @@ const helpersSource = readFileSync(
 );
 
 describe('playwright/helpers — public surface', () => {
-	it('exposes connectAs, selectAccount, waitForBalanceUpdate', () => {
+	it('exposes connectAs and selectAccount', () => {
 		expect(typeof helpers.connectAs).toBe('function');
 		expect(typeof helpers.selectAccount).toBe('function');
-		expect(typeof helpers.waitForBalanceUpdate).toBe('function');
 	});
 
 	it('connectAs accepts (page, label) — arity 2', () => {
@@ -47,12 +45,6 @@ describe('playwright/helpers — public surface', () => {
 
 	it('selectAccount accepts (select, name) — arity 2', () => {
 		expect(helpers.selectAccount.length).toBe(2);
-	});
-
-	it('waitForBalanceUpdate accepts (page, name, predicate, opts?) — arity 3', () => {
-		// JS Function.length ignores optional trailing args, so a defaulted
-		// `opts = {}` parameter doesn't count. The required prefix is 3.
-		expect(helpers.waitForBalanceUpdate.length).toBe(3);
 	});
 });
 
@@ -80,20 +72,5 @@ describe('playwright/helpers — selector contracts', () => {
 		// helpers + the example-app's dapp-kit.ts in lockstep would
 		// produce a confusing "kit is undefined" runtime error.
 		expect(helpersSource).toContain('__devstackDAppKit__');
-	});
-
-	it('waitForBalanceUpdate keys off `data-testid="balance-<name>"`', () => {
-		// The example apps' UI emits `<td data-testid="balance-alice">…</td>`
-		// — keep the prefix stable so a refactor that changes the testid
-		// flag a rename here.
-		expect(helpersSource).toContain('balance-');
-		expect(helpersSource).toContain('getByTestId');
-	});
-
-	it('waitForBalanceUpdate default timeout is 10s (poll budget for chain finality)', () => {
-		// The poll budget gates how long a flaky tx propagation can take
-		// before a test starts failing. 10s is the value the example
-		// apps rely on; a silent change here would cascade into flaky e2e.
-		expect(helpersSource).toMatch(/timeout:\s*opts\.timeout\s*\?\?\s*10_000/);
 	});
 });

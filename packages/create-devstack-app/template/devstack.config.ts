@@ -50,9 +50,9 @@ const wallet = Wallet({
 const codegen = Codegen({ packages: [hello] });
 
 // User app dev server — pinned to the port Playwright's webServer config
-// uses. Sits in the APP section of the TUI and shows up under
-// `Devstack.app.dev` in the runtime accessor. `needs: [..., codegen]`
-// makes vite wait for the first codegen pass before serving.
+// uses. Sits in the APP section of the TUI and surfaces as `app.dev` in
+// the on-disk `manifest.json`. `needs: [..., codegen]` makes vite wait
+// for the first codegen pass before serving.
 const dev = Dev({
 	command: 'pnpm',
 	args: ['exec', 'vite', '--port', '{port}'],

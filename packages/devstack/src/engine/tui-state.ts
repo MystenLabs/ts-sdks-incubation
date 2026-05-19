@@ -6,11 +6,31 @@
 //
 // Renderers under `tui/` (ink components, plain text renderer) import
 // these types as inputs. The reverse — engine importing tui/ — would
-// invert the dependency. Previously these types sat in `tui/render.ts`
-// with engine/engine.ts importing them back; `tui/render.ts` is now a
-// re-export shim for back-compat.
+// invert the dependency.
 
-export type TagStatus = 'pending' | 'acquiring' | 'ready' | 'failed';
+/**
+ * Per-tag lifecycle status.
+ *
+ *   `pending` → `acquiring` → `ready` | `failed`
+ *
+ * Plus two terminal teardown states for visible shutdown progress:
+ *
+ *   `ready` → `stopping` → `stopped`
+ *
+ * `stopping` fires when the primitive's stop finalizer is in flight
+ * (`docker stop <id>` running in the background); `stopped` fires once
+ * that finalizer returns. The TUI Footer's "waiting on N containers"
+ * count subtracts both so the user sees containers fall off as docker
+ * confirms the exit, instead of staring at a static "N" for the whole
+ * teardown window.
+ */
+export type TagStatus =
+	| 'pending'
+	| 'acquiring'
+	| 'ready'
+	| 'failed'
+	| 'stopping'
+	| 'stopped';
 
 export type TuiEntryKind = 'service' | 'package' | 'account' | 'action' | 'app' | 'other';
 
@@ -25,6 +45,12 @@ export interface TuiEntry {
 	readonly key: string;
 	readonly kind: TuiEntryKind;
 	readonly status: TagStatus;
+	/** Plugin attribution for the row — drives the leading `[plugin]` chip
+	 * and the row's section color (so all services from one plugin share a
+	 * color the user can learn). Service factories populate this in their
+	 * `display`; the engine forwards it onto the entry. Falls back to the
+	 * key's first slash-segment when absent (best-effort). */
+	readonly plugin?: string;
 	/** Optional sub-phase surfaced while `status === 'acquiring'`. */
 	readonly phase?: string;
 	/** Short (~60 char) one-line error summary the dashboard row can render
@@ -46,6 +72,16 @@ export interface TuiEntry {
 	 * entry in the detail column when the primitive has no `error`, `phase`,
 	 * or `primary` to show. */
 	readonly lastLog?: string;
+	/** True iff this entry is currently in the *affected set* of a selective
+	 * restart — i.e. a watch-fire targeted its owner or a transitive consumer.
+	 * Drives the dim-animation hook in the TUI so the user can visually trace
+	 * the cascade without having to read the log line. Set by
+	 * `engine.markSelectiveRestart`; cleared automatically on `markReady` /
+	 * `markFailed`, so the flag only lives across the affected re-acquire
+	 * window. Distinct from `status === 'acquiring'` because the latter also
+	 * fires on user-driven `r` / first-cycle launch, neither of which is a
+	 * cascade. */
+	readonly selectiveRestart?: boolean;
 }
 
 export interface TuiHeader {

@@ -32,10 +32,6 @@
 			"types": "./dist/advanced/index.d.mts",
 			"import": "./dist/advanced/index.mjs"
 		},
-		"./runtime": {
-			"types": "./dist/runtime/index.d.mts",
-			"import": "./dist/runtime/index.mjs"
-		},
 		"./vitest": {
 			"types": "./dist/vitest/index.d.mts",
 			"import": "./dist/vitest/index.mjs"
@@ -65,6 +61,7 @@
 		"@mysten/sui": "catalog:",
 		"effect": "catalog:",
 		"ink": "^7.0.0",
+		"minimatch": "^10.2.5",
 		"react": "catalog:"
 	},
 	"devDependencies": {

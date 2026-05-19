@@ -8,9 +8,9 @@
 // reads through `gatherManifest`'s extras argument).
 //
 // Lives in `engine/` rather than `runtime/` so the supervisor can wire
-// it without an upward dependency on `runtime/`. The public surface is
-// re-exported from the `runtime/` barrel so plugin / emitter authors
-// keep importing it from the same place.
+// it without an upward dependency on `runtime/`. The `ExtrasInput` type
+// is re-exported from `/advanced` so plugin authors composing devstack
+// via `defineDevstack(...)` can spell the shape they pass through.
 //
 // HIGH: `ExtrasResolved` carries a memoized Effect — the user's input
 // runs at most once across all consumers. The memoization is created

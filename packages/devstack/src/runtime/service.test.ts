@@ -1,13 +1,6 @@
-// Integration test for the `Devstack` Effect Service. Stands up the
-// registries + Identity, publishes a representative set of records,
-// runs `gatherManifest()` (the core logic `DevstackLive` wraps as a
-// Layer.succeed-of-thunk) and asserts the v4 shape comes back as
-// expected.
-//
-// `Devstack` is now non-eager: `yield* Devstack` returns a `{current()}`
-// thunk that re-gathers on demand. The `late registration` test below
-// covers the supervisor's real-world acquire order — registries seeded
-// AFTER the Devstack layer built still surface through `current()`.
+// Integration test for `gatherManifest`. Stands up the registries +
+// Identity, publishes a representative set of records, runs
+// `gatherManifest()` and asserts the v5 shape comes back as expected.
 
 import { Effect, Layer } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
@@ -17,17 +10,22 @@ import {
 	AccountRegistryLive,
 	CoinRegistry,
 	CoinRegistryLive,
+	DeepbookIndexerStateRegistryLive,
+	DeepbookMarginStateRegistryLive,
+	DeepbookServerStateRegistryLive,
 	DeepbookStateRegistryLive,
 	EndpointRegistry,
 	EndpointRegistryLive,
 	PackageRegistry,
 	PackageRegistryLive,
+	PostgresStateRegistryLive,
+	PythStateRegistryLive,
 	SealStateRegistryLive,
 	SuiStateRegistryLive,
 	WalrusStateRegistryLive,
 } from '../engine/registries.js';
 import { EndpointName } from './endpoint-names.js';
-import { Devstack, DevstackLive, gatherManifest } from './service.js';
+import { gatherManifest } from './service.js';
 
 const IdentityLive = Layer.succeed(Identity, {
 	app: 'svc-test',
@@ -87,15 +85,20 @@ const RegistriesLive = Layer.mergeAll(
 	SealStateRegistryLive,
 	WalrusStateRegistryLive,
 	DeepbookStateRegistryLive,
+	PythStateRegistryLive,
+	PostgresStateRegistryLive,
+	DeepbookIndexerStateRegistryLive,
+	DeepbookServerStateRegistryLive,
+	DeepbookMarginStateRegistryLive,
 );
 
-describe('Devstack service — gatherManifest', () => {
-	it.effect('builds a v4 snapshot from seeded registries', () =>
+describe('gatherManifest', () => {
+	it.effect('builds a v5 snapshot from seeded registries', () =>
 		Effect.gen(function* () {
 			yield* seedAll;
 			const ds = yield* gatherManifest();
 
-			expect(ds.version).toBe(4);
+			expect(ds.version).toBe(5);
 			expect(ds.stack).toEqual({ name: 'main', network: 'localnet', app: 'svc-test' });
 
 			expect(ds.services.sui?.rpc.url).toBe('http://sui.svc-test.localhost:9000');
@@ -139,22 +142,19 @@ describe('Devstack service — gatherManifest', () => {
 		}).pipe(Effect.provide(Layer.mergeAll(RegistriesLive, IdentityLive))),
 	);
 
-	// HIGH-C6 regression: `Devstack.current()` must reflect registries
-	// seeded AFTER `DevstackLive` builds. The previous shape eagerly
-	// captured a snapshot at layer-build time, so any service registered
-	// later (the wallet primitive's endpoint, an Action's lazy captured
-	// id) was invisible to downstream `yield* Devstack` consumers.
-	it.effect('current() reflects late eps.register calls', () =>
+	// HIGH-C6 regression: subsequent `gatherManifest()` calls must
+	// reflect registries seeded AFTER prior calls. Each call walks the
+	// live registries fresh; the manifest emitter's slow-tick re-snapshot
+	// relies on this property to surface late-registered services (the
+	// wallet primitive's endpoint, an Action's lazy captured id).
+	it.effect('gatherManifest reflects late eps.register calls', () =>
 		Effect.gen(function* () {
-			const dev = yield* Devstack;
-			// Build-time: registries are empty. The thunk must NOT have
-			// captured this state.
-			const empty = yield* dev.current();
+			// First call: registries are empty.
+			const empty = yield* gatherManifest();
 			expect(empty.services.sui).toBeUndefined();
 			expect(empty.app.wallet).toBeUndefined();
 
-			// Late registration — after `yield* Devstack` already
-			// resolved, before any `current()` consumer sees it.
+			// Late registration — after the first snapshot already ran.
 			const eps = yield* EndpointRegistry;
 			yield* eps.register({
 				name: EndpointName.SUI_RPC,
@@ -166,10 +166,10 @@ describe('Devstack service — gatherManifest', () => {
 				url: 'http://wallet.svc-test.localhost:5180',
 			});
 
-			const refreshed = yield* dev.current();
+			const refreshed = yield* gatherManifest();
 			expect(refreshed.services.sui?.rpc.url).toBe('http://sui.svc-test.localhost:9000');
 			expect(refreshed.app.wallet?.url).toBe('http://wallet.svc-test.localhost:5180');
-		}).pipe(Effect.provide(Layer.mergeAll(DevstackLive, RegistriesLive, IdentityLive))),
+		}).pipe(Effect.provide(Layer.mergeAll(RegistriesLive, IdentityLive))),
 	);
 });
 

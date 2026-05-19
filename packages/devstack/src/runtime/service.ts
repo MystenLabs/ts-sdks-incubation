@@ -1,33 +1,38 @@
-// `Devstack` — the canonical runtime accessor for app code.
+// `gatherManifest` — read every devstack registry + Identity and build
+// the `Manifest` shape used by the on-disk `.devstack/manifest.json`,
+// the codegen emitters, and any Effect-native consumer that wants a
+// live snapshot.
 //
-// `yield* Devstack` in any Effect program (after `devstack(...).layer`
-// is provided) returns a typed accessor for the running stack:
-// services, packages, accounts, coins, and app endpoints, all keyed by
-// the names declared in the user's config. The shape mirrors `Manifest`
-// (the on-disk schema) field-for-field so app code can move between
-// "served from a live Effect" and "read from manifest.json" by swapping
-// `yield* (yield* Devstack).current()` for `fromManifest(...)` with no
-// other changes.
-//
-// Implementation reads `PackageRegistry`, `EndpointRegistry`,
-// `AccountRegistry`, `CoinRegistry` plus the `Identity` service for
-// stack/network/app fields. The internal `gatherManifest` helper is
-// exported so the manifest emitter (`runtime/manifest-emit.ts`) can
-// reuse the same gather logic without duplicating the structured-
-// conversion step.
+// Reads `PackageRegistry`, `EndpointRegistry`, `AccountRegistry`,
+// `CoinRegistry` plus the per-service state registries and the
+// `Identity` service for stack/network/app fields. Shared by the
+// manifest emitter (`runtime/manifest-emit.ts`) and the codegen
+// emitters (`codegen/emitters/`) so the structured-conversion step
+// lives in one place.
 
-import { Context, Effect, Layer } from 'effect';
+import { Effect } from 'effect';
+import { findEndpointDeclaration } from '../engine/define-endpoint.js';
 import { Identity } from '../engine/identity.js';
 import {
 	AccountRegistry,
 	CoinRegistry,
+	DeepbookIndexerStateRegistry,
+	DeepbookMarginStateRegistry,
+	DeepbookServerStateRegistry,
 	DeepbookStateRegistry,
 	EndpointRegistry,
 	PackageRegistry,
+	PostgresStateRegistry,
+	PythStateRegistry,
 	SealStateRegistry,
 	SuiStateRegistry,
 	WalrusStateRegistry,
+	type DeepbookIndexerStateRecord,
+	type DeepbookMarginStateRecord,
+	type DeepbookServerStateRecord,
 	type DeepbookStateRecord,
+	type PostgresStateRecord,
+	type PythStateRecord,
 	type SealStateRecord,
 	type SuiStateRecord,
 	type WalrusStateRecord,
@@ -36,9 +41,14 @@ import { EndpointName } from './endpoint-names.js';
 import { toSdkCoin } from './sdk-coin.js';
 import type {
 	AppManifest,
+	DeepbookIndexerManifest,
 	DeepbookManifest,
+	DeepbookMarginManifest,
+	DeepbookServerManifest,
 	EndpointEntry,
 	Manifest,
+	PostgresManifest,
+	PythManifest,
 	SealManifest,
 	SuiManifest,
 	WalrusManifest,
@@ -61,11 +71,19 @@ import type {
 // service factories publish into those at acquire time; the group*
 // helpers below fold the latest state into the structured manifest.
 
-const SUI_FIELDS: Record<string, keyof Omit<SuiManifest, 'network' | 'chainId'>> = {
-	[EndpointName.SUI_RPC]: 'rpc',
-	[EndpointName.SUI_FAUCET]: 'faucet',
-	[EndpointName.SUI_GRAPHQL]: 'graphql',
-	[EndpointName.SUI_INDEXER_DB]: 'indexerDb',
+/** Derive the manifest-leaf field name an endpoint projects into, given
+ *  a `services.X.<leaf>` or `app.<leaf>` prefix. Reads the endpoint's
+ *  `defineEndpoint(...)` declaration via the lookup registry — when a
+ *  new endpoint is declared with `manifestField: { path: '...' }` the
+ *  groupers pick it up automatically. Returns `undefined` for ad-hoc
+ *  endpoints (no declaration, flat-only) or for declarations whose
+ *  manifest path doesn't sit under the requested prefix. */
+const manifestLeafUnder = (endpointName: string, prefix: string): string | undefined => {
+	const decl = findEndpointDeclaration(endpointName);
+	if (decl?.manifestField === undefined) return undefined;
+	const path = decl.manifestField.path;
+	const head = `${prefix}.`;
+	return path.startsWith(head) ? path.slice(head.length) : undefined;
 };
 
 interface FlatEndpoint {
@@ -89,10 +107,14 @@ const groupSui = (
 	if (state !== undefined) {
 		out = { ...out, chainId: state.chainId };
 	}
+	// Derive every `services.sui.<field>` projection from the
+	// `defineEndpoint(...)` declarations — no hand-rolled SUI_FIELDS
+	// table. Adding a new SUI sub-endpoint becomes a one-line
+	// `defineEndpoint({manifestField: {path: 'services.sui.X'}})`.
 	for (const e of endpoints) {
-		const field = SUI_FIELDS[e.name];
-		if (field !== undefined && field !== 'rpc') {
-			out = { ...out, [field]: toEndpointEntry(e) };
+		const field = manifestLeafUnder(e.name, 'services.sui');
+		if (field !== undefined && field !== 'rpc' && field !== 'network' && field !== 'chainId') {
+			out = { ...out, [field as keyof SuiManifest]: toEndpointEntry(e) };
 		}
 	}
 	return out;
@@ -120,12 +142,65 @@ const groupWalrus = (
 	return state !== undefined ? { ...base, systemObjectId: state.systemObjectId } : base;
 };
 
-const groupDeepbook = (state: DeepbookStateRecord | undefined): DeepbookManifest | undefined => {
+const groupDeepbook = (
+	state: DeepbookStateRecord | undefined,
+	indexer: DeepbookIndexerStateRecord | undefined,
+	server: DeepbookServerStateRecord | undefined,
+	margin: DeepbookMarginStateRecord | undefined,
+): DeepbookManifest | undefined => {
 	if (state === undefined) return undefined;
+	const indexerManifest: DeepbookIndexerManifest | undefined =
+		indexer !== undefined ? { metrics: { url: indexer.metricsUrl } } : undefined;
+	const serverManifest: DeepbookServerManifest | undefined =
+		server !== undefined
+			? { rest: { url: server.restUrl }, metrics: { url: server.metricsUrl } }
+			: undefined;
+	const marginManifest: DeepbookMarginManifest | undefined =
+		margin !== undefined
+			? {
+					packageId: margin.packageId,
+					liquidationPackageId: margin.liquidationPackageId,
+					registryId: margin.registryId,
+					adminCapId: margin.adminCapId,
+					...(margin.maintainerCapId !== undefined
+						? { maintainerCapId: margin.maintainerCapId }
+						: {}),
+					marginPools: margin.marginPools,
+					registeredPools: margin.registeredPools,
+				}
+			: undefined;
 	return {
 		packageId: state.packageId,
 		pools: state.pools,
 		...(state.registryId !== undefined ? { registryId: state.registryId } : {}),
+		...(indexerManifest !== undefined ? { indexer: indexerManifest } : {}),
+		...(serverManifest !== undefined ? { server: serverManifest } : {}),
+		...(marginManifest !== undefined ? { margin: marginManifest } : {}),
+	};
+};
+
+const groupPyth = (state: PythStateRecord | undefined): PythManifest | undefined => {
+	if (state === undefined) return undefined;
+	return {
+		packageId: state.packageId,
+		...(state.pythStateId !== undefined ? { pythStateId: state.pythStateId } : {}),
+		...(state.wormholeStateId !== undefined ? { wormholeStateId: state.wormholeStateId } : {}),
+		priceInfoObjectIds: state.priceInfoObjectIds,
+		feeds: state.feeds,
+	};
+};
+
+const groupPostgres = (state: PostgresStateRecord | undefined): PostgresManifest | undefined => {
+	if (state === undefined) return undefined;
+	// Strip credentials before serializing — `url` carries the password.
+	// Manifest readers (consumer apps, codegen) get the endpoint host +
+	// alias + db list; the password stays in-memory only.
+	return {
+		user: state.user,
+		endpoint: { url: state.endpoint },
+		containerNetwork: state.containerNetwork,
+		networkAlias: state.networkAlias,
+		databases: state.databases,
 	};
 };
 
@@ -145,13 +220,14 @@ const groupApp = (
 };
 
 // -----------------------------------------------------------------------------
-// gatherManifest — read registries + Identity, return v4 Manifest shape
+// gatherManifest — read registries + Identity, return v5 Manifest shape
 // -----------------------------------------------------------------------------
 
 /** Read every devstack registry and build the `Manifest` shape. Pure
  *  Effect computation against the canonical registries — no IO. Used by
- *  both `Devstack` (live snapshot) and `runtime/manifest-emit.ts` (disk
- *  write).
+ *  `runtime/manifest-emit.ts` (disk write) and the codegen emitters
+ *  (live snapshot for `<output>/extras.ts`, `dapp-kit-config.ts`,
+ *  `stack-handle.ts`, etc.).
  *
  *  `extras` is the user-supplied extras blob resolved from the
  *  `ExtrasResolved` service; this function gathers from the registries
@@ -169,6 +245,11 @@ export const gatherManifest = (
 	| SealStateRegistry
 	| WalrusStateRegistry
 	| DeepbookStateRegistry
+	| PythStateRegistry
+	| PostgresStateRegistry
+	| DeepbookIndexerStateRegistry
+	| DeepbookServerStateRegistry
+	| DeepbookMarginStateRegistry
 	| Identity
 > =>
 	Effect.gen(function* () {
@@ -181,6 +262,11 @@ export const gatherManifest = (
 		const sealState = yield* SealStateRegistry;
 		const walrusState = yield* WalrusStateRegistry;
 		const deepbookState = yield* DeepbookStateRegistry;
+		const pythState = yield* PythStateRegistry;
+		const postgresState = yield* PostgresStateRegistry;
+		const indexerState = yield* DeepbookIndexerStateRegistry;
+		const serverState = yield* DeepbookServerStateRegistry;
+		const marginState = yield* DeepbookMarginStateRegistry;
 
 		// Dedupe by name (last-wins). HMR-style re-runs re-register the
 		// same name, so the last write per name should win.
@@ -192,6 +278,11 @@ export const gatherManifest = (
 		const rawSealState = yield* sealState.snapshot;
 		const rawWalrusState = yield* walrusState.snapshot;
 		const rawDeepbookState = yield* deepbookState.snapshot;
+		const rawPythState = yield* pythState.snapshot;
+		const rawPostgresState = yield* postgresState.snapshot;
+		const rawIndexerState = yield* indexerState.snapshot;
+		const rawServerState = yield* serverState.snapshot;
+		const rawMarginState = yield* marginState.snapshot;
 
 		const dedupedPkgs = new Map(rawPkgs.map((p) => [p.name, p]));
 		const dedupedEps = new Map(rawEps.map((e) => [e.name, e]));
@@ -203,18 +294,32 @@ export const gatherManifest = (
 		const lastSealState = rawSealState[rawSealState.length - 1];
 		const lastWalrusState = rawWalrusState[rawWalrusState.length - 1];
 		const lastDeepbookState = rawDeepbookState[rawDeepbookState.length - 1];
+		const lastPythState = rawPythState[rawPythState.length - 1];
+		const lastPostgresState = rawPostgresState[rawPostgresState.length - 1];
+		const lastIndexerState = rawIndexerState[rawIndexerState.length - 1];
+		const lastServerState = rawServerState[rawServerState.length - 1];
+		const lastMarginState = rawMarginState[rawMarginState.length - 1];
 
 		const endpoints = [...dedupedEps.values()];
 
 		const sui = groupSui(endpoints, identity.network, lastSuiState);
 		const seal = groupSeal(endpoints, lastSealState);
 		const walrus = groupWalrus(endpoints, lastWalrusState);
-		const deepbook = groupDeepbook(lastDeepbookState);
+		const deepbook = groupDeepbook(
+			lastDeepbookState,
+			lastIndexerState,
+			lastServerState,
+			lastMarginState,
+		);
+		const pyth = groupPyth(lastPythState);
+		const postgres = groupPostgres(lastPostgresState);
 		const services: Manifest['services'] = {
 			...(sui !== undefined ? { sui } : {}),
 			...(seal !== undefined ? { seal } : {}),
 			...(walrus !== undefined ? { walrus } : {}),
 			...(deepbook !== undefined ? { deepbook } : {}),
+			...(pyth !== undefined ? { pyth } : {}),
+			...(postgres !== undefined ? { postgres } : {}),
 		};
 
 		const packages: Record<string, Manifest['packages'][string]> = {};
@@ -234,17 +339,31 @@ export const gatherManifest = (
 
 		const coins: Record<string, Manifest['coins'][string]> = {};
 		for (const c of dedupedCoins.values()) {
+			// Project the registry record into the manifest's CoinEntry
+			// shape. Every optional field the publish-discovery pass
+			// folded into the record (`symbol`, `displayName`, `iconUrl`,
+			// `treasuryCapId`, `metadataId`, `packageId`) surfaces
+			// directly; entries without those fields (custom `publishCoin`
+			// calls from unit tests) still emit a valid `CoinEntry`. The
+			// compose entry's emit-time schema validation catches a typo
+			// in a new field name at write time, not at read time.
 			coins[c.name] = {
 				type: c.type,
 				decimals: c.decimals,
 				sdkCoin: c.sdkCoin ?? toSdkCoin({ fullCoinType: c.type, decimals: c.decimals }),
+				...(c.symbol !== undefined ? { symbol: c.symbol } : {}),
+				...(c.displayName !== undefined ? { displayName: c.displayName } : {}),
+				...(c.iconUrl !== undefined ? { iconUrl: c.iconUrl } : {}),
+				...(c.treasuryCapId !== undefined ? { treasuryCapId: c.treasuryCapId } : {}),
+				...(c.metadataId !== undefined ? { metadataId: c.metadataId } : {}),
+				...(c.packageId !== undefined ? { packageId: c.packageId } : {}),
 			};
 		}
 
 		const app = groupApp(endpoints, extras);
 
 		return {
-			version: 4 as const,
+			version: 5 as const,
 			stack: { name: identity.stack, network: identity.network, app: identity.app },
 			services,
 			packages,
@@ -254,45 +373,3 @@ export const gatherManifest = (
 		};
 	});
 
-// -----------------------------------------------------------------------------
-// Devstack Effect Service
-// -----------------------------------------------------------------------------
-
-/** The canonical runtime accessor. `yield* Devstack` returns a thunk
- *  that re-snapshots the registries on demand — late-registered
- *  services (e.g. a wallet endpoint that boots AFTER an Action's body
- *  has already yielded `Devstack`) become visible by calling
- *  `current()`. The layer build is non-eager: we don't capture a
- *  snapshot at acquire-time, so registries seeded after the layer
- *  builds are reflected on every subsequent `current()` call.
- *
- *  ```ts
- *  const dev = yield* Devstack;
- *  const manifest = yield* dev.current();
- *  ``` */
-export interface DevstackShape {
-	/** Re-gather the manifest from the live registries. Use whenever a
-	 *  fresh manifest snapshot is needed; cheap (pure registry read). */
-	readonly current: () => Effect.Effect<
-		Manifest,
-		never,
-		| PackageRegistry
-		| EndpointRegistry
-		| AccountRegistry
-		| CoinRegistry
-		| SuiStateRegistry
-		| SealStateRegistry
-		| WalrusStateRegistry
-		| DeepbookStateRegistry
-		| Identity
-	>;
-}
-
-export class Devstack extends Context.Service<Devstack, DevstackShape>()('@devstack/Devstack') {}
-
-/** Live layer for `Devstack`. Non-eager: `current()` calls
- *  `gatherManifest` on each invocation so registries seeded AFTER the
- *  layer builds are reflected. */
-export const DevstackLive: Layer.Layer<Devstack, never, never> = Layer.succeed(Devstack, {
-	current: () => gatherManifest(),
-});

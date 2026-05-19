@@ -14,12 +14,12 @@ import {
 	Account,
 	Action,
 	Codegen,
+	Coin,
 	Deepbook,
 	DeepbookMarketMaker,
 	Dev,
 	devstack,
 	Package,
-	registerCoin,
 	Wallet,
 } from '@mysten-incubation/devstack';
 
@@ -47,47 +47,25 @@ const alice = Account('alice');
 const bob = Account('bob');
 const carol = Account('carol');
 
-// `capture:` keyed form maps result-key → type-substring. Each entry
-// picks the first created object whose type contains the substring and
-// surfaces it on the resolved Package as `pkg.captured.<key>`. The
-// faucet panel reads `captured.treasuryCapId` to mint test funds.
-const COIN_CAPTURE = {
-	treasuryCapId: '::coin::TreasuryCap<',
-	metadataId: '::coin::CoinMetadata<',
-	upgradeCapId: '0x2::package::UpgradeCap',
-} as const;
-
-const usdc = Package('mock_usdc', USDC_DIR, {
-	signer: publisher,
-	capture: COIN_CAPTURE,
-	coins: [{ name: 'musdc', module: 'mock_usdc', type: 'MOCK_USDC', decimals: 6 }],
-});
-
-const weth = Package('mock_weth', WETH_DIR, {
-	signer: publisher,
-	capture: COIN_CAPTURE,
-	coins: [{ name: 'mweth', module: 'mock_weth', type: 'MOCK_WETH', decimals: 8 }],
-});
+// Coin auto-discovery surfaces every coin the publish creates as
+// `pkg.coins[<symbol>]` (the on-chain CoinMetadata symbol). For the two
+// mock coins below the symbols are `mUSDC` and `mWETH`. The
+// per-treasury-cap mint strategy registers automatically with the
+// auto-included Faucet, so dev-wallet's "Get mUSDC" / "Get mWETH"
+// buttons work end-to-end without explicit faucet wiring.
+const usdc = Package('mock_usdc', USDC_DIR, { signer: publisher });
+const weth = Package('mock_weth', WETH_DIR, { signer: publisher });
 
 // Coin refs surface the runtime Move type so deepbook pools can
 // reference locally-published coins without static knowledge of the
-// post-publish package id. `registerCoin` re-registers the coin in the
-// CoinRegistry and returns a Coin ref usable as `quote:` on pool specs.
-const musdc = registerCoin({
-	name: 'musdc',
-	package: usdc,
-	module: 'mock_usdc',
-	type: 'MOCK_USDC',
-	decimals: 6,
-});
-
-const mweth = registerCoin({
-	name: 'mweth',
-	package: weth,
-	module: 'mock_weth',
-	type: 'MOCK_WETH',
-	decimals: 8,
-});
+// post-publish package id. `Coin.fromPackage(pkg, witness)` yields the
+// publishing Package first (forcing the dependency edge) then reads the
+// auto-discovered coin record off `pkg.coins`. The witness name is the
+// Move type from `coin::create_currency<W>` — case-insensitive lookup
+// matches either the witness (`'MOCK_USDC'`) or the canonical symbol
+// (`'mUSDC'`).
+const musdc = Coin.fromPackage(usdc, 'MOCK_USDC');
+const mweth = Coin.fromPackage(weth, 'MOCK_WETH');
 
 const seedTokens = Action('wallet.seedTokens', {
 	signer: publisher,
@@ -105,15 +83,20 @@ const seedTokens = Action('wallet.seedTokens', {
 				bob: b.address,
 				carol: c.address,
 			};
+			// `pkg.coins[<symbol>]` is populated by coin auto-discovery —
+			// the symbol is what each Move source's `coin::create_currency`
+			// declares as the third byte-string argument (`b"mUSDC"`,
+			// `b"mWETH"`). Each entry carries the resolved `treasuryCapId`
+			// captured from the publish receipt.
 			for (const spec of [
-				{ pkg: usdcPkg, module: 'mock_usdc', distribution: USDC_DISTRIBUTION },
-				{ pkg: wethPkg, module: 'mock_weth', distribution: WETH_DISTRIBUTION },
+				{ pkg: usdcPkg, symbol: 'mUSDC', module: 'mock_usdc', distribution: USDC_DISTRIBUTION },
+				{ pkg: wethPkg, symbol: 'mWETH', module: 'mock_weth', distribution: WETH_DISTRIBUTION },
 			]) {
-				const treasuryCapId = (spec.pkg.captured as Record<string, string> | undefined)
-					?.treasuryCapId;
+				const coin = spec.pkg.coins[spec.symbol];
+				const treasuryCapId = coin?.treasuryCapId;
 				if (treasuryCapId === undefined) {
 					yield* Effect.die(
-						`seedTokens: package '${spec.pkg.name}' missing captured.treasuryCapId`,
+						`seedTokens: package '${spec.pkg.name}' missing coins.${spec.symbol}.treasuryCapId`,
 					) as Effect.Effect<void, never, never>;
 					return;
 				}
@@ -164,6 +147,7 @@ const deepbook = Deepbook({
 const maker = DeepbookMarketMaker({
 	name: 'deepbook.maker',
 	signer: alice,
+	strategy: { kind: 'bps', spreadBps: 10, levelSpacingBps: 100, levels: 3 },
 	pools: [
 		{
 			name: 'sui_usdc',
@@ -199,6 +183,13 @@ const dev = Dev({
 	needs: [usdc, weth, seedTokens, deepbook, wallet, codegen],
 });
 
+// No `extras:` block — the codegen `DeepbookConfigEmitter` now emits
+// `src/generated/deepbook-config.ts` with the typed pool + coin +
+// packageIds projection. Consumers (`src/lib/transactions.ts`) import
+// `deepbookConfig` directly and spread it into
+// `client.$extend(deepbook(...))`. The previous manual `extras.deepbookPools`
+// projection was deleted in Phase 5 of the deepbook plugin expansion
+// (see packages/devstack/notes/deepbook-plugin-expansion.md § P5.12).
 export default devstack(
 	publisher,
 	alice,
@@ -214,24 +205,4 @@ export default devstack(
 	wallet,
 	codegen,
 	dev,
-	{
-		// Project the deepbook pools into a UI-friendly extras blob so
-		// the swap card can fetch live liquidity without re-resolving
-		// pool ids from on-chain state.
-		extras: Effect.gen(function* () {
-			// `Deepbook` is a discriminated union (known | local). This config
-			// always uses the local branch, which carries a `pools` record off
-			// the pool generics. Cast to the local-branch shape so per-pool
-			// projection compiles without re-deriving the generics.
-			type Pool = { name: string; poolId: string; base: string; quote: string };
-			const live = (yield* deepbook) as { readonly pools: Record<string, Pool> };
-			const pools = Object.values(live.pools).map((p) => ({
-				name: p.name,
-				poolId: p.poolId,
-				baseCoinType: p.base,
-				quoteCoinType: p.quote,
-			}));
-			return { deepbookPools: { pools } };
-		}),
-	},
 );

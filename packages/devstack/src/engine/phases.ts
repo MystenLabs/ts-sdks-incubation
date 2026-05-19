@@ -27,6 +27,28 @@ export const SuiPhases = [
 	'fetch-chainId',
 	'indexer-ready',
 	'wait-for-transactions-ready',
+	// Fork-mode lifecycle phases (Phase 1 of sui-fork integration).
+	// `fork-lock`           — acquiring/releasing the per-stack data-dir
+	//                         file lock that prevents two `sui-fork`
+	//                         containers from trampling the same on-disk
+	//                         state (R5 mitigation).
+	// `fork-status`         — `ForkingService.GetStatus` round trip used
+	//                         to derive `forkedAtCheckpoint` / `upstream`.
+	// `fork-advance-clock`  — `ForkingService.AdvanceClock` wrapper.
+	// `fork-advance-checkpoint` — `ForkingService.AdvanceCheckpoint` wrapper.
+	// `fork-impersonate`    — `executeImpersonated` helper failures
+	//                         (Phase 2 — empty-signature txs).
+	// `fork-unsupported`    — Adapter-guard rejections for surfaces sui-fork
+	//                         doesn't support (`getBalance` etc.; R1).
+	// `fork-meta`           — `.devstack/stacks/<stack>/sui-fork/meta.json`
+	//                         consistency gate (Phase 4 P4.16 / R6 mitigation).
+	'fork-lock',
+	'fork-status',
+	'fork-advance-clock',
+	'fork-advance-checkpoint',
+	'fork-impersonate',
+	'fork-unsupported',
+	'fork-meta',
 ] as const;
 export type SuiPhase = (typeof SuiPhases)[number];
 
@@ -74,8 +96,54 @@ export const DeepbookPhases = [
 	'market-maker-tick',
 	'deepbook',
 	'deepbookMarketMaker',
+	// Phase 4 — margin lifecycle additions
+	'margin-publish',
+	'margin-setup',
+	'margin-pools',
+	'margin-seed',
 ] as const;
 export type DeepbookPhase = (typeof DeepbookPhases)[number];
+
+export const PythPhases = [
+	'publish',
+	'create-feeds',
+	'pusher-fetch',
+	'pusher-update',
+	'pyth',
+] as const;
+export type PythPhase = (typeof PythPhases)[number];
+
+export const PostgresPhases = [
+	'image',
+	'port-alloc',
+	'container',
+	'ready',
+	'createdb',
+	'postgres',
+] as const;
+export type PostgresPhase = (typeof PostgresPhases)[number];
+
+export const DeepbookIndexerPhases = [
+	'image',
+	'port-alloc',
+	'container',
+	'ready',
+	'indexer',
+] as const;
+export type DeepbookIndexerPhase = (typeof DeepbookIndexerPhases)[number];
+
+// Phase 3 — DeepBook server (REST API) lifecycle phases. Mirrors the
+// indexer's shape; the only meaningful difference is that the server
+// has a ready probe against `/` returning 200 (the indexer's metrics
+// endpoint is the closest equivalent).
+export const DeepbookServerPhases = [
+	'image',
+	'port-alloc',
+	'container',
+	'ready',
+	'server',
+] as const;
+export type DeepbookServerPhase = (typeof DeepbookServerPhases)[number];
 
 export const SuiCliPhases = [
 	'sui move build',

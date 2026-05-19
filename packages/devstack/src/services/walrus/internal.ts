@@ -37,6 +37,7 @@ import { publishEndpoint, publishPackage, publishWalrusState } from '../../engin
 import { EndpointName } from '../../runtime/endpoint-names.js';
 import { servicePath } from '../../engine/service-paths.js';
 import { StateStore } from '../../engine/state-store.js';
+import { StateStoreKeys } from '../../engine/state-store-keys.js';
 import { type LayeredTag } from '../../advanced/tag.js';
 import { WalrusError } from '../../engine/errors.js';
 import type { Account } from '../../engine/shared.js';
@@ -125,31 +126,12 @@ export const subnetForStack = (
 	return { subnet: `${prefix}.0/24`, prefix };
 };
 
-// StateStore key prefix for the cached deploy summary. Versioned so
-// future schema bumps invalidate stale caches automatically. The full
-// key folds in `Sui.chainId` (see use site below) so a regenesis of
-// the underlying chain (`--force-regenesis`) naturally misses the
-// cache and re-runs the deploy one-shot against the fresh chain
-// state instead of pinning to stale package ids.
-//
-// The v3 prefix bump corresponds to the router migration: a v2-shaped
-// cached deploy advertises non-stack-scoped `walrus-node-N.localhost`
-// hostnames as each node's `network_address` on chain, but the
-// post-router primitive registers stack-scoped
-// `walrus-node-N.<app>.localhost` (main) / `<stack>.walrus-node-N.<app>.localhost`
-// (non-main). A v2 cache would mis-route the SDK on the next boot —
-// the v3 prefix invalidates those stale caches automatically.
-const STATE_KEY_DEPLOY_PREFIX = 'walrus/deploy-output/v3';
-
-// StateStore key prefix for the cached seedWal swap results. Keyed by
-// `(chainId, exchange.objectId, account.address)` so:
-//   - regenesis flips `chainId` ⇒ miss ⇒ fresh swap
-//   - a different exchange object ⇒ miss
-//   - per-account isolation so adding a new seed account doesn't
-//     trample the others' cache
-// The cached value records the swap tx digest for debugging; the swap
-// is verified via a balance probe on cache hit (see `swapSuiForWal`).
-const STATE_KEY_SEED_WAL_PREFIX = 'walrus/seed-wal/v1';
+// State-store key prefixes for walrus moved to `engine/state-store-keys.ts`
+// as part of Phase 5.1 of `notes/api-simplification.md`. The canonical
+// builders are `StateStoreKeys.walrusDeployOutput({chainId})` and
+// `StateStoreKeys.walrusSeedWal({chainId, exchangeObjectId, accountAddress})`.
+// Bumping the `v<N>` segment (e.g. when the router migration retired the
+// v2 walrus-deploy shape) is now a one-line edit in `state-store-keys.ts`.
 
 // Minimum WAL balance (in FROST, WAL's smallest unit) we accept as
 // proof the cached swap actually settled. Set well below
@@ -351,7 +333,7 @@ export const acquireLocalCluster = (args: {
 		//    to the per-stack backend. A regenesis still flips
 		//    `chainId` and misses the cache.
 		// -------------------------------------------------------------
-		const deployStateKey = `${STATE_KEY_DEPLOY_PREFIX}/${sui.chainId}`;
+		const deployStateKey = StateStoreKeys.walrusDeployOutput({ chainId: sui.chainId });
 		const cached = yield* state.get<CachedDeployState>(deployStateKey);
 		// Output dir is keyed by `(identity.app, identity.stack,
 		// identity.network, args.name)` so two parallel stacks of the
@@ -501,6 +483,10 @@ export const acquireLocalCluster = (args: {
 			subnetPrefix: walrusSubnetPrefix,
 			identity,
 			faucetUrl: nodeFaucetUrl,
+			// Route all 4 node stop-finalizers' markStopping/markStopped to
+			// the aggregate walrus-cluster row in the TUI. See the matching
+			// comment on `startStorageNodes`'s `engineTagKey` param.
+			engineTagKey: LOCAL_CLUSTER_KEY,
 		});
 
 		// -------------------------------------------------------------
@@ -742,7 +728,11 @@ const swapSuiForWalCached = (args: {
 	Effect.gen(function* () {
 		const sui = yield* SuiTag;
 		const state = yield* StateStore;
-		const cacheKey = `${STATE_KEY_SEED_WAL_PREFIX}/${sui.chainId}/${args.exchange.objectId}/${args.account.address}`;
+		const cacheKey = StateStoreKeys.walrusSeedWal({
+			chainId: sui.chainId,
+			exchangeObjectId: args.exchange.objectId,
+			accountAddress: args.account.address,
+		});
 		const cached = yield* state.get<CachedSeedWalSwap>(cacheKey);
 
 		if (Option.isSome(cached)) {

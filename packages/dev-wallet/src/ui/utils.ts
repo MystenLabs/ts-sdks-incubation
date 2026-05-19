@@ -63,7 +63,21 @@ export const NETWORK_COLORS: Record<string, string> = {
 	testnet: '#22c55e',
 	devnet: '#3b82f6',
 	localnet: '#6b7280',
+	// Fork variants render an amber stripe so the operator can't mistake
+	// a forked stack for the real upstream at a glance. Same hue family
+	// as the mainnet orange but pushed warmer/yellower for contrast.
+	// Phase 4 P4.17 of `notes/sui-fork-integration.md`.
+	'mainnet-fork': '#eab308',
+	'testnet-fork': '#eab308',
+	'devnet-fork': '#eab308',
 };
+
+/** Returns true when the network literal names a fork-mode runtime.
+ *  Used by the badge + accounts panel + signing modal to surface the
+ *  "no real chain" caveat — Phase 4 P4.17-P4.20. */
+export function isForkNetwork(network: string): boolean {
+	return network.endsWith('-fork');
+}
 
 export interface PairableAdapter {
 	readonly isPaired: boolean;

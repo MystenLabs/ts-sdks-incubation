@@ -25,8 +25,7 @@ export type { Transaction };
  * this stable union from gRPC results in `account.ts`. The fields here
  * are the strict subset that downstream primitives actually consume:
  *
- *   - `pickCreatedByTypeSuffix` / `pickCreatedByTypeIncludes` read
- *     `type === 'created'` + `objectType`.
+ *   - `pickCreatedByType` reads `type === 'created'` + `objectType`.
  *   - `publishMove` looks for `type === 'published'` to extract
  *     `packageId`.
  *   - `services/seal/internal.ts` / `services/deepbook/local-deploy.ts`
@@ -43,11 +42,23 @@ export type SuiObjectChange =
 			readonly type: 'created';
 			readonly objectId: string;
 			readonly objectType: string;
+			/**
+			 * Address-owner of the object post-creation, when it has one.
+			 * Populated from gRPC's `outputOwner.AddressOwner`; coins/caps
+			 * transferred to a shared/object/immutable owner at publish time
+			 * land here as `undefined`. Surfaced for the coin-discovery pass
+			 * (Phase 0 of `notes/coin-auto-discovery.md`) — a `TreasuryCap`
+			 * not owned by the publisher signs as "read-only coin" and skips
+			 * mint-strategy registration.
+			 */
+			readonly owner?: string;
 	  }
 	| {
 			readonly type: 'mutated';
 			readonly objectId: string;
 			readonly objectType: string;
+			/** See `created.owner` — same semantics. */
+			readonly owner?: string;
 	  }
 	| {
 			readonly type: 'deleted';
@@ -124,6 +135,16 @@ export interface Account {
 	// and the on-chain Move type conventions. The runtime impl calls
 	// `signer.getKeyScheme().toLowerCase()` in services/account.ts.
 	readonly scheme: 'ed25519' | 'secp256k1' | 'secp256r1';
+	/**
+	 * Where the account's signing material comes from. Optional —
+	 * pre-Phase-4 callers don't set it. The wallet server's
+	 * `handleAccounts` surfaces it to the browser-side adapter so the
+	 * accounts panel can render an "(impersonation)" label on
+	 * fork-mode accounts (Phase 4 P4.18). `'impersonate'` means devstack
+	 * holds NO keys for this address — every signing request routes
+	 * through `executeImpersonated` instead.
+	 */
+	readonly source?: 'real' | 'impersonate';
 	signAndExecute(
 		transaction: Transaction,
 		options?: SignAndExecuteOptions,

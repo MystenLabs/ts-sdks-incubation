@@ -6,10 +6,9 @@
 // Lives in `runtime/` because the manifest's `SdkCoinEntry` is the
 // canonical destination — the projection is what bridges our internal
 // `(fullCoinType, decimals)` storage to the on-disk + on-snapshot
-// `sdkCoin` shape. Previously sat in `services/package.ts`, which had
-// `runtime/service.ts` importing back into `services/` — an inverted
-// edge across the architectural boundary. Re-exported from
-// `services/package.ts` for back-compat.
+// `sdkCoin` shape. Re-exported from `services/package.ts` so service
+// code that builds Coin entries imports from the same module as
+// `Coin` / `CoinTag`.
 
 export interface SdkCoin {
 	readonly address: string;

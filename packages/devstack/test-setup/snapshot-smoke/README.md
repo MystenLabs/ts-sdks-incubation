@@ -119,19 +119,30 @@ was unlinked on scope close, which would have made restore unable to start the k
 
 ---
 
-## D. deepbook (pools)
+## D. deepbook full stack (pools + margin + indexer + server + pyth)
 
-**Example:** `examples/wallet`.
+**Example:** `examples/deepbook-full` (P5.T0b — added in Phase 5 of the deepbook plugin expansion).
+`examples/wallet` covers the simpler core-pools-only path; deepbook-full exercises every primitive.
 
-1. Boot. Wait for the deepbook market maker row to be ready.
-2. Note all pool object IDs from the manifest:
+1. Boot `examples/deepbook-full`. Wait for the deepbook market maker row + the indexer / server rows
+   to be ready.
+2. Note the full deepbook state surface:
    ```
-   jq '.deepbook' .devstack/manifest.json
+   jq '.services.deepbook' .devstack/manifest.json
    ```
-3. Place an order via the example UI. Read the order book to confirm the order landed.
-4. `snapshot save deepbook-checkpoint`. Tear down + wipe. Restore.
-5. Boot again. Re-read the manifest's pool IDs. **Assert: identical IDs** (state-store cache hit →
-   no re-register on chain). Order book should also reflect the previously-placed order.
+   This includes pool ids, indexer metrics URL, server REST URL, margin pool ids, and the registered
+   pools list. Also note the pyth state:
+   ```
+   jq '.services.pyth' .devstack/manifest.json
+   ```
+3. Place a limit order via the Trading UI. Read the order book through `/ticker` to confirm the
+   order landed. Mint 100 DEEP via the Mint UI; record alice's DEEP balance.
+4. `snapshot save deepbook-full-checkpoint`. Tear down + wipe. Restore.
+5. Boot again. Re-read the manifest's pool ids, indexer + server URLs, margin pool ids, and pyth
+   state. **Assert: identical IDs** (state-store cache hit → no re-publish, no re-create on chain).
+   The order book and minted DEEP balance from step 3 must also be preserved (chain state survived
+   the snapshot cycle). The codegen-emitted `src/generated/deepbook-config.ts` must be byte-identical
+   to the pre-snapshot version (P5.T10 in the plan).
 
 ---
 

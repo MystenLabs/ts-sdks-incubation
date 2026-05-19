@@ -27,13 +27,67 @@ export interface KnownPackageOptions {
 	 *  visible to the consumer (the cap lives in whoever deployed the
 	 *  package's account), so this is rarely set. */
 	readonly upgradeCapId?: string;
+	/**
+	 * Optional seed-object ids the package depends on at runtime
+	 * (Walrus' system object, Deepbook's registry/pools, etc.). When
+	 * the supervisor runs a sui-fork stack, these are auto-merged into
+	 * `Sui({fork:{seed:{objects: [...]}}})` so the fork pre-fetches
+	 * them on first boot — without this, the fork's per-read GraphQL
+	 * dial-out would either error or silently degrade to
+	 * `ObjectNotFound` (R2). On non-fork stacks (live nets, localnet)
+	 * this field is ignored. Phase 3 P3.7 of
+	 * `notes/sui-fork-integration.md`.
+	 */
+	readonly seedObjects?: ReadonlyArray<string>;
 }
+
+/** Module-level set of seed objects accumulated by every `KnownPackage`
+ *  declared in the current process. `Sui({fork:{...}})`'s `buildFork`
+ *  reads this at acquire time and unions it with the user-supplied
+ *  `fork.seed.objects` so KnownPackage-declared objects flow through
+ *  to the fork's `--object` seed flags automatically.
+ *
+ *  Lives at module scope (not in a registry) because the consumer is
+ *  the *factory* layer of `Sui()` — registries are only available
+ *  inside Effect contexts during acquire. The factory needs the values
+ *  at composition time so the fork meta-consistency gate (P4.16) can
+ *  digest them as part of the config hash.
+ *
+ *  Order of declarations matters: KnownPackages declared BEFORE the
+ *  `Sui()` call see their seed objects merged; KnownPackages declared
+ *  AFTER `Sui()` do not (the fork has already digested its seed list
+ *  by then). Document this in the example app. */
+const accumulatedSeedObjects = new Set<string>();
+
+/** Snapshot the accumulated seed-object set. Used by `services/sui.ts`'s
+ *  `buildFork` to merge into the fork's `--object` flags. Returns a
+ *  fresh array so subsequent `addKnownPackageSeedObject` calls don't
+ *  mutate the caller's view. */
+export const collectKnownPackageSeedObjects = (): ReadonlyArray<string> => [
+	...accumulatedSeedObjects,
+];
+
+/** Clear the accumulated set. Called at the top of each `devstack(...)`
+ *  compose so two `devstack(...)` invocations in the same process
+ *  (e.g. test files) don't leak state. */
+export const clearKnownPackageSeedObjects = (): void => {
+	accumulatedSeedObjects.clear();
+};
 
 /** Declare a `Package`-shaped LayeredTag backed by a fixed on-chain
  *  `packageId`. Useful for referencing testnet/mainnet packages, or
  *  any package the user didn't publish themselves but wants threaded
  *  through `Codegen` / `Action({ needs })` / cross-reference flows. */
 export const KnownPackage = <const N extends string>(name: N, opts: KnownPackageOptions) => {
+	// Eagerly accumulate seed objects so the `Sui()` factory (which
+	// closures over `fork.seed.objects` at composition time) sees them
+	// regardless of compose order — the supervisor doesn't acquire
+	// Sui until every factory has run. Same-id duplicates are absorbed
+	// by `Set`.
+	if (opts.seedObjects !== undefined) {
+		for (const obj of opts.seedObjects) accumulatedSeedObjects.add(obj);
+	}
+
 	const shape: Package = {
 		name,
 		packageId: opts.packageId,
@@ -56,6 +110,7 @@ export const KnownPackage = <const N extends string>(name: N, opts: KnownPackage
 		}),
 		{
 			kind: 'package',
+			plugin: 'move',
 			displayTitle: `packages.${name}`,
 			display: (s: Package) => ({
 				title: `packages.${s.name}`,

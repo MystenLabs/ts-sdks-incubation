@@ -4,10 +4,11 @@
 // Architecture:
 //   - User declares `Codegen({ packages })` (or just `Codegen()`) in
 //     their devstack.config.ts. The defaults
-//     (`[BindingsEmitter(), StackHandleEmitter(), DappKitConfigEmitter()]`)
-//     emit Move bindings, typed stack handles (`accounts.ts`,
-//     `services.ts`, `extras.ts`, `captured.ts`), and a partial
-//     dapp-kit config — everything an app needs to wire up against a
+//     (`[BindingsEmitter(), StackHandleEmitter(), DappKitConfigEmitter(),
+//     DeepbookConfigEmitter()]`) emit Move bindings, typed stack
+//     handles (`accounts.ts`, `services.ts`, `extras.ts`,
+//     `captured.ts`), a partial dapp-kit config, and a typed
+//     `deepbookConfig` — everything an app needs to wire up against a
 //     localnet without consuming the raw manifest at runtime.
 //   - For per-emitter options, pass them explicitly:
 //     `Codegen({ ..., emitters: [BindingsEmitter(),
@@ -24,6 +25,10 @@
 //   - `DappKitConfigEmitter` → `<outputDir>/dapp-kit-config.ts`
 //                              (partial config the user's `dapp-kit.ts`
 //                               spreads into `createDAppKit(...)`)
+//   - `DeepbookConfigEmitter` → `<outputDir>/deepbook-config.ts`
+//                              (typed deepbookConfig the user spreads
+//                               into `client.$extend(deepbook(...))`;
+//                               no-op for stacks without deepbook)
 //
 // User emitters drop in alongside via `defineEmitter({ name, emit })`.
 
@@ -35,8 +40,10 @@ import { tag, setPhase, type LayeredTag } from '../advanced/tag.js';
 import type { Emitter, CodegenContext, CodegenPackage } from '../codegen/define-emitter.js';
 import { BindingsEmitter } from '../codegen/emitters/bindings.js';
 import { DappKitConfigEmitter } from '../codegen/emitters/dapp-kit-config.js';
+import { DeepbookConfigEmitter } from '../codegen/emitters/deepbook-config.js';
 import { StackHandleEmitter } from '../codegen/emitters/stack-handle.js';
 import { CodegenError } from '../codegen/errors.js';
+import { displayPath } from '../engine/display-path.js';
 import { stringifyCause } from '../engine/stringify-cause.js';
 import { writeFileAtomic } from '../engine/atomic-write.js';
 import type { Package, LocalPackage } from './package.js';
@@ -121,11 +128,14 @@ export interface CodegenOptions {
 	/** Emitter plug-ins to run. Run in declaration order; one emitter's
 	 *  output isn't visible to another (each emitter is independent).
 	 *  Defaults to `[BindingsEmitter(), StackHandleEmitter(),
-	 *  DappKitConfigEmitter()]` — Move → TS bindings, typed stack
-	 *  handles (`accounts.ts`, `services.ts`, `extras.ts`, `captured.ts`),
-	 *  and a partial dApp-Kit config the user's hand-written
-	 *  `dapp-kit.ts` spreads into `createDAppKit(...)`. Override to add
-	 *  custom emitters or swap per-emitter options. */
+	 *  DappKitConfigEmitter(), DeepbookConfigEmitter()]` — Move → TS
+	 *  bindings, typed stack handles (`accounts.ts`, `services.ts`,
+	 *  `extras.ts`, `captured.ts`), a partial dApp-Kit config the user's
+	 *  hand-written `dapp-kit.ts` spreads into `createDAppKit(...)`, and
+	 *  a typed `deepbookConfig` consumers spread into
+	 *  `client.$extend(deepbook(...))`. The deepbook emitter is a no-op
+	 *  on stacks without `services.deepbook` in the manifest. Override
+	 *  to add custom emitters or swap per-emitter options. */
 	readonly emitters?: ReadonlyArray<Emitter>;
 	/** Override tag name. Defaults to `'codegen'`. */
 	readonly name?: string;
@@ -168,6 +178,7 @@ export const Codegen = (opts: CodegenOptions = {}) => {
 		BindingsEmitter(),
 		StackHandleEmitter(),
 		DappKitConfigEmitter(),
+		DeepbookConfigEmitter(),
 	];
 	const output = opts.output ?? DEFAULT_CODEGEN_OUTPUT;
 	return tag(
@@ -385,13 +396,25 @@ export const Codegen = (opts: CodegenOptions = {}) => {
 		}).pipe(Effect.withSpan(`codegen(${name})`)),
 		{
 			kind: 'app',
-			lifecycle: 'per-cycle',
+			plugin: 'codegen',
 			displayTitle: `codegen.${name}`,
 			display: (s: { readonly outputDir: string; readonly emitters: ReadonlyArray<string> }) => ({
 				title: `codegen.${name}`,
-				primary: s.outputDir,
+				primary: displayPath(s.outputDir),
 				extras: [`${s.emitters.length} emitter${s.emitters.length === 1 ? '' : 's'}`],
 			}),
+			// Negation-only watch declaration: codegen WRITES to `output` each
+			// cycle via an atomic rename, so any watcher set up by some OTHER
+			// primitive (or `config.watch`) that happens to be an ancestor of
+			// `output` must NOT trigger a hot-restart from those writes — that
+			// would loop. `output` is resolved eagerly so the supervisor sees
+			// the absolute path. (The `generated` basename is also in
+			// DEFAULT_WATCH_EXCLUDES, so the default `./src/generated` works
+			// without this; the negation here covers users who override
+			// `output:` to a different basename.)
+			watch: [
+				`!${path.isAbsolute(output) ? output : path.resolve(process.cwd(), output)}/**`,
+			],
 		},
 	);
 };

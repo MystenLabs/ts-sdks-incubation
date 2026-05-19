@@ -36,9 +36,10 @@ import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { Context, Effect, FileSystem, Layer, Option, PlatformError, Ref, Schema } from 'effect';
-import type { SuiNetwork } from './network.js';
+import { isLocalLikeNetwork, type SuiNetwork } from './network.js';
 import { jsonBigintReplacer, jsonBigintReviver } from './json-bigint.js';
 import { isHolderLive as isHolderLiveImpl, processStartTime } from './process-liveness.js';
+import { resolveAppDir } from './resolve-app-dir.js';
 
 export interface StateStoreShape {
 	readonly get: <T = unknown>(key: string) => Effect.Effect<Option.Option<T>>;
@@ -134,8 +135,15 @@ const resolvePaths = (cfg: StateStoreConfigShape): ResolvedPaths => {
 		};
 	}
 
-	const appDir = process.env.DEVSTACK_APP_DIR ?? process.cwd();
-	if (cfg.network === 'localnet') {
+	const appDir = resolveAppDir();
+	// Local-like networks (localnet + any `*-fork` variant) keep per-
+	// stack mutable state under `.devstack/stacks/<stack>/`. A fork
+	// has writable chain state that diverges from the upstream the
+	// moment any tx is accepted; sharing the live-net cache file
+	// across stacks would silently cross-contaminate published-package
+	// caches between two forks of the same upstream. See D1 in
+	// `notes/sui-fork-integration.md`.
+	if (isLocalLikeNetwork(cfg.network)) {
 		const dir = join(appDir, '.devstack', 'stacks', cfg.stack);
 		return {
 			dir,
@@ -369,13 +377,26 @@ export const StateStoreLive: Layer.Layer<
 		// Lock release on scope teardown. Only delete if our `instanceId`
 		// is still in the file (defensive — another process may have
 		// detected ours as stale and overwritten it during this run).
+		//
+		// `Effect.uninterruptible`: scope teardown fires under fiber
+		// interruption (SIGINT/SIGTERM path). Without the wrap, the
+		// read-then-remove sequence can be cut short — typically after
+		// the read but before the unlink — leaving the lock file in
+		// place, and the next `up` against the same stack fails with
+		// `StateStoreLockedError` referencing a pid that's already
+		// dead. The user has to manually `rm` the file to recover.
+		// Inside the wrap the finalizer runs to completion before scope
+		// teardown moves on; the existing `Effect.ignore` on `fs.remove`
+		// still tolerates a daemon transient or pre-removed file.
 		yield* Effect.addFinalizer(() =>
-			Effect.gen(function* () {
-				const current = yield* readExistingHolder();
-				if (current?.instanceId === ownBody.instanceId) {
-					yield* fs.remove(paths.lock, { force: true }).pipe(Effect.ignore);
-				}
-			}),
+			Effect.uninterruptible(
+				Effect.gen(function* () {
+					const current = yield* readExistingHolder();
+					if (current?.instanceId === ownBody.instanceId) {
+						yield* fs.remove(paths.lock, { force: true }).pipe(Effect.ignore);
+					}
+				}),
+			),
 		);
 
 		// --- Initial load -------------------------------------------------------

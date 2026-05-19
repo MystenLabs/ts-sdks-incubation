@@ -9,6 +9,7 @@ import { Transaction } from '@mysten/sui/transactions';
 import { tag, setPhase, type LayeredTag } from '../advanced/tag.js';
 import { PublishError } from '../engine/errors.js';
 import { StateStore } from '../engine/state-store.js';
+import { StateStoreKeys } from '../engine/state-store-keys.js';
 import { SuiTag, type Sui } from './sui.js';
 import type { Account, SuiObjectChange, TxResult } from '../engine/shared.js';
 
@@ -106,7 +107,12 @@ export const Action = <const Name extends string, R = never, E = unknown>(
 				const sui = yield* SuiTag;
 				const state = yield* StateStore;
 				const userKey = yield* cacheKeyEff as Effect.Effect<string, unknown, never>;
-				const fullKey = `tx/v1/${name}/${sui.chainId}/${signer.address}/${userKey}`;
+				const fullKey = StateStoreKeys.actionTx({
+					actionName: name,
+					chainId: sui.chainId,
+					signerAddress: signer.address,
+					userKey,
+				});
 				const cached = yield* state.get<TxResult>(fullKey);
 				if (Option.isSome(cached)) {
 					// HIGH-C3: probe the cached result against the chain before
@@ -175,7 +181,7 @@ export const Action = <const Name extends string, R = never, E = unknown>(
 		}).pipe(Effect.withSpan(`Action(${name})`)),
 		{
 			kind: 'action',
-			lifecycle: 'per-cycle',
+			plugin: 'action',
 			displayTitle: `tx.${name}`,
 			display: (s: TxResult) => ({
 				title: `tx.${name}`,

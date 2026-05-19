@@ -5,7 +5,7 @@ import { css, html, LitElement } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 
 import { dropdownItemStyles, sharedStyles } from './styles.js';
-import { NETWORK_COLORS } from './utils.js';
+import { isForkNetwork, NETWORK_COLORS } from './utils.js';
 import './dev-wallet-dropdown.js';
 
 @customElement('dev-wallet-network-badge')
@@ -30,6 +30,29 @@ export class DevWalletNetworkBadge extends LitElement {
 				background: var(--dev-wallet-secondary);
 				cursor: pointer;
 				transition: background 0.15s;
+			}
+
+			/* Phase 4 P4.17 — amber stripe + fork label when the
+			   active network is a *-fork variant. The stripe is
+			   diagonal-hatched so it survives dark + light themes
+			   without depending on a separate badge background. */
+			.badge.fork {
+				background-image: repeating-linear-gradient(
+					45deg,
+					rgba(234, 179, 8, 0.18),
+					rgba(234, 179, 8, 0.18) 4px,
+					transparent 4px,
+					transparent 8px
+				);
+			}
+
+			.fork-tag {
+				color: #92400e;
+				font-weight: var(--dev-wallet-font-weight-bold);
+				font-size: 10px;
+				margin-left: 4px;
+				text-transform: uppercase;
+				letter-spacing: 0.5px;
 			}
 
 			.badge:hover {
@@ -65,19 +88,28 @@ export class DevWalletNetworkBadge extends LitElement {
 
 	override render() {
 		const color = NETWORK_COLORS[this.active] ?? NETWORK_COLORS['localnet'];
+		const fork = isForkNetwork(this.active);
+		// Phase 4 P4.17 — when `meta.runtime: 'forked'` flows through
+		// (codegen emits the network literal as e.g. `'mainnet-fork'`),
+		// the badge surfaces an amber-hatched stripe + a `(fork)`
+		// label so the user can't mistake the wallet panel for one
+		// pointed at real upstream funds.
+		const baseLabel = fork ? this.active.replace(/-fork$/, '') : this.active;
 
 		return html`
 			<dev-wallet-dropdown .open=${this._open} @close=${() => (this._open = false)}>
 				<button
 					slot="trigger"
-					class="badge"
+					class=${fork ? 'badge fork' : 'badge'}
 					part="trigger"
 					aria-expanded=${this._open}
 					aria-haspopup="listbox"
+					title=${fork ? `sui-fork stack — no real ${baseLabel} funds at risk` : ''}
 					@click=${() => (this._open = !this._open)}
 				>
 					<span class="dot" style="background: ${color}"></span>
-					${this.active}
+					${baseLabel}
+					${fork ? html`<span class="fork-tag">fork</span>` : ''}
 					<svg
 						class="chevron"
 						viewBox="0 0 24 24"

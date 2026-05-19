@@ -8,7 +8,13 @@ import { customElement, property, state } from 'lit/decorators.js';
 import type { SignerAdapter } from '../types.js';
 import { CopyController } from './copy-controller.js';
 import { actionButtonStyles, sectionHeaderStyles, sharedStyles } from './styles.js';
-import { emitEvent, findAdapterForAddress, formatAddress, getErrorMessage } from './utils.js';
+import {
+	emitEvent,
+	findAdapterForAddress,
+	formatAddress,
+	getErrorMessage,
+	isForkNetwork,
+} from './utils.js';
 import './dev-wallet-new-account.js';
 
 @customElement('dev-wallet-accounts')
@@ -277,6 +283,14 @@ export class DevWalletAccounts extends LitElement {
 	@property({ type: String })
 	activeAddress = '';
 
+	/** Phase 4 P4.20 — when set to a `*-fork` literal, the panel
+	 *  surfaces a warning on the "+ Add" button (or hides it outright
+	 *  when no fork-compatible funding path exists). Fork stacks have
+	 *  no faucet; arbitrary fresh accounts can't be funded without an
+	 *  impersonation seed already configured at the supervisor level. */
+	@property({ type: String })
+	network = '';
+
 	@state()
 	private _dialogOpen = false;
 
@@ -307,12 +321,29 @@ export class DevWalletAccounts extends LitElement {
 					a.listAvailableAccounts),
 		);
 
+		// Phase 4 P4.20 — fork-mode networks have no faucet, and the
+		// supervisor's impersonation seed set is fixed at apply time.
+		// We can't fund a fresh account from the browser side, so the
+		// "+ Add" button either renders disabled with a tooltip
+		// (canAdd still true because the adapter contract supports
+		// account creation) or — pragmatically — stays clickable but
+		// surfaces a warning marker on the button.
+		const fork = this.network !== '' && isForkNetwork(this.network);
+
 		return html`
 			<div class="accounts-header">
 				<h3 class="section-header">Accounts</h3>
 				${canAdd
-					? html`<button class="add-btn" part="add-button" @click=${this.#openDialog}>
-							+ Add
+					? html`<button
+							class="add-btn"
+							part="add-button"
+							?disabled=${fork}
+							title=${fork
+								? `Disabled on ${this.network}: fork networks have no faucet — fund seed addresses via Sui({fork:{seed:{addresses}}}) instead.`
+								: ''}
+							@click=${this.#openDialog}
+						>
+							+ Add${fork ? ' (fork: no faucet)' : ''}
 						</button>`
 					: nothing}
 			</div>

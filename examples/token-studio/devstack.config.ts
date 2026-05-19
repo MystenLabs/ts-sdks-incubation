@@ -13,21 +13,13 @@ const alice = Account('alice');
 const bob = Account('bob');
 const carol = Account('carol');
 
-// `capture:` keyed form maps result-key → type-substring. Each entry
-// picks the first created object whose type contains the substring and
-// surfaces it on the resolved Package as `pkg.captured.<key>`. The
-// token-studio frontend reads these ids to mint / burn / freeze the
-// managed coin — without capturing them at publish time, every UI
-// action would have to walk the publisher's owned objects.
-const managedCoin = Package('managed_coin', MANAGED_COIN_DIR, {
-	signer: alice,
-	capture: {
-		treasuryCapId: '::coin::TreasuryCap<',
-		metadataId: '::coin::CoinMetadata<',
-		upgradeCapId: '0x2::package::UpgradeCap',
-	},
-	coins: [{ name: 'managed_coin', module: 'managed_coin', type: 'MANAGED_COIN', decimals: 6 }],
-});
+// Coin auto-discovery surfaces the `STUDIO` coin under
+// `pkg.coins.STUDIO` (the symbol declared in the Move source's
+// `coin::create_currency` call). The TreasuryCap and CoinMetadata
+// object ids land on `pkg.coins.STUDIO.{treasuryCapId, metadataId}`;
+// the codegen-emitted `generated/coins.ts` (P5) projects the same
+// fields into a typed app-level record the frontend reads.
+const managedCoin = Package('managed_coin', MANAGED_COIN_DIR, { signer: alice });
 
 const wallet = Wallet({
 	accounts: [alice, bob, carol],

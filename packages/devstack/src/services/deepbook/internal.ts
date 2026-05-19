@@ -18,8 +18,23 @@ import { type DeepbookCore, type DeepbookPoolRef } from '../deepbook.js';
 
 export const SUI_CLOCK_OBJECT_ID = '0x6';
 
+// Sui system shared `CoinRegistry` object id — well-known framework
+// shared object holding the `0x2::coin_registry` state. Used by the
+// margin path for the `finalize_registration` / `migrate_legacy_metadata`
+// flows (R11). Hardcoded — the on-chain id is stable across networks.
+export const COIN_REGISTRY_OBJECT_ID = '0xc';
+
 export const DEEPBOOK_REGISTRY_TYPE_SUFFIX = '::registry::Registry';
 export const DEEPBOOK_ADMIN_CAP_TYPE_SUFFIX = '::registry::DeepbookAdminCap';
+
+// Phase 4 — type-suffix constants used by the margin factory to extract
+// captured object ids from publish receipts. Follow the same convention
+// as the deepbook constants above: `<pkg>::<module>::<TypeName>`.
+export const MARGIN_REGISTRY_TYPE_SUFFIX = '::margin_registry::MarginRegistry';
+export const MARGIN_ADMIN_CAP_TYPE_SUFFIX = '::margin_registry::MarginAdminCap';
+export const MARGIN_MAINTAINER_CAP_TYPE_SUFFIX = '::margin_registry::MaintainerCap';
+export const MARGIN_POOL_TYPE_PREFIX = '::margin_pool::MarginPool';
+export const MARGIN_SUPPLIER_CAP_TYPE_SUFFIX = '::margin_pool::SupplierCap';
 
 // `pool::place_limit_order` order types. POST_ONLY rejects any order that
 // would cross the book — required for makers; without it a maker would
@@ -38,17 +53,16 @@ export const DEFAULT_PREDEPOSIT_MULTIPLIER = 100n;
 
 // `base` / `quote` accept either a literal Move type string
 // (`0x2::sui::SUI`) or a tag whose yielded value carries
-// `fullCoinType` — the shape `registerCoin` produces. The tag form
-// lets pools reference coins published earlier in the same devstack,
-// where the on-chain id (and therefore the full Move type) isn't
-// known until the publish step resolves at runtime.
+// `fullCoinType` — the shape every `Coin(...)` factory ref produces.
+// The tag form lets pools reference coins published earlier in the
+// same devstack, where the on-chain id (and therefore the full Move
+// type) isn't known until the publish step resolves at runtime.
 //
 // `Context.Service` is invariant in its value parameter, so a coin
-// tag with a richer shape (extra `name` / `packageId` fields from
-// `registerCoin`) isn't assignable to `LayeredTag<any, { fullCoinType:
-// string }, any, any>`. The pool spec's coin slots accept any tag
-// (`AnyCoinTag`); the `fullCoinType` field is read structurally
-// inside the body.
+// tag with a richer shape (the auto-discovered fields on `CoinValue`)
+// isn't assignable to `LayeredTag<any, { fullCoinType: string }, any,
+// any>`. The pool spec's coin slots accept any tag (`AnyCoinTag`);
+// the `fullCoinType` field is read structurally inside the body.
 export type DeepbookCoinRef =
 	| string
 	| LayeredTag<any, { readonly fullCoinType: string }, any, any>;
@@ -146,6 +160,80 @@ interface DepositArgs {
 		readonly pool: DeepbookPoolRef;
 	}>;
 }
+
+// -----------------------------------------------------------------------------
+// bps grid math (P0.3 — port from deepbook-sandbox/grid-strategy.ts:46-153)
+// -----------------------------------------------------------------------------
+
+/** Round `value` down to the nearest multiple of `step`. Step must be > 0;
+ *  callers ensure that at the spec-validation layer.  */
+export const alignToTickSize = (value: bigint, tickSize: bigint): bigint => {
+	if (tickSize <= 0n) return value;
+	return value - (value % tickSize);
+};
+
+/** Round `size` down to the nearest multiple of `lotSize`. Mirrors the
+ *  sandbox helper of the same name — DeepBook v3 rejects orders whose
+ *  size doesn't divide evenly by the pool's lot_size. */
+export const alignToLotSize = (size: bigint, lotSize: bigint): bigint => {
+	if (lotSize <= 0n) return size;
+	return size - (size % lotSize);
+};
+
+/** Compute the grid offsets for a basis-points strategy. Returns one
+ *  entry per level per side; the maker iterates over both sides and
+ *  places a POST_ONLY limit order for each. Mirrors the sandbox grid
+ *  formula at `sandbox/scripts/market-maker/grid-strategy.ts:46-153`:
+ *  for level i ∈ [1..levels], the spread from mid (in bps) is
+ *  `spreadBps + (i - 1) * levelSpacingBps`. Tick-aligned for chain
+ *  acceptance.  */
+export interface GridLevelInput {
+	readonly mid: bigint;
+	readonly sizeBase: bigint;
+	readonly tickSize: bigint;
+	readonly lotSize: bigint;
+	readonly levels: number;
+	readonly spreadBps: number;
+	readonly levelSpacingBps: number;
+}
+
+export interface GridLevels {
+	readonly bids: ReadonlyArray<{ readonly price: bigint; readonly size: bigint }>;
+	readonly asks: ReadonlyArray<{ readonly price: bigint; readonly size: bigint }>;
+}
+
+export const calculateGridLevels = (input: GridLevelInput): GridLevels => {
+	const { mid, sizeBase, tickSize, lotSize } = input;
+	const levels = Math.max(0, input.levels);
+	const spreadBps = Math.max(0, input.spreadBps);
+	const levelSpacingBps = Math.max(0, input.levelSpacingBps);
+
+	const sizeAligned = alignToLotSize(sizeBase, lotSize);
+
+	const bids: Array<{ price: bigint; size: bigint }> = [];
+	const asks: Array<{ price: bigint; size: bigint }> = [];
+
+	for (let i = 1; i <= levels; i++) {
+		// Sandbox formula: spreadBps + (i - 1) * levelSpacingBps.
+		const totalBps = BigInt(spreadBps) + BigInt(i - 1) * BigInt(levelSpacingBps);
+		// `mid * totalBps / 10_000`, rounded to nearest tick.
+		const rawOffset = (mid * totalBps) / 10_000n;
+		const offset = alignToTickSize(rawOffset, tickSize);
+		// Effective offset is at least one tick so each level differs.
+		const effectiveOffset = offset === 0n ? tickSize : offset;
+
+		const bidPrice = alignToTickSize(mid - effectiveOffset, tickSize);
+		const askPrice = alignToTickSize(mid + effectiveOffset, tickSize);
+		if (bidPrice > 0n) bids.push({ price: bidPrice, size: sizeAligned });
+		asks.push({ price: askPrice, size: sizeAligned });
+	}
+
+	return { bids, asks };
+};
+
+// -----------------------------------------------------------------------------
+// Helpers (cont.)
+// -----------------------------------------------------------------------------
 
 // Sum required base/quote deposits across pools, then issue one
 // `balance_manager::deposit<T>` per coin type. v3's `useGasCoin: true`

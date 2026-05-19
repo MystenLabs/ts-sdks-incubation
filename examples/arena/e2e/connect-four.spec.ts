@@ -18,12 +18,12 @@ import { Transaction } from '@mysten/sui/transactions';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const stack = process.env.DEVSTACK_STACK ?? 'test';
-// v4 manifest lives at `.devstack/stacks/<stack>/manifest.json`. Account
+// Manifest lives at `.devstack/stacks/<stack>/manifest.json`. Account
 // keys persist alongside under `runtime/accounts/<name>.key`.
 const manifestPath = join(here, '..', '.devstack', 'stacks', stack, 'manifest.json');
 const keysDir = join(here, '..', '.devstack', 'stacks', stack, 'runtime', 'accounts');
 
-interface RawManifestV4 {
+interface RawManifest {
 	readonly services: { readonly sui?: { readonly rpc: { readonly url: string } } };
 	readonly packages: Record<string, { readonly id: string }>;
 	readonly accounts: Record<string, { readonly address: string }>;
@@ -38,7 +38,7 @@ interface ResolvedManifest {
 }
 
 function loadManifest(): ResolvedManifest {
-	const raw = JSON.parse(readFileSync(manifestPath, 'utf8')) as RawManifestV4;
+	const raw = JSON.parse(readFileSync(manifestPath, 'utf8')) as RawManifest;
 	const rpcUrl = raw.services.sui?.rpc.url;
 	if (rpcUrl === undefined) throw new Error('services.sui.rpc missing from manifest');
 	const connectFour = raw.packages.connect_four;

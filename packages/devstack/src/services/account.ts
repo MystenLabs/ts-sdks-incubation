@@ -5,7 +5,7 @@
 // (composed into the stack by `devstack(...)`) and an Effect tag
 // (`yield* alice` returns the resolved `Account`).
 //
-// A spec's `from:` discriminator selects how the keypair is acquired:
+// A spec's `kind:` discriminator selects how the keypair is acquired:
 //
 //   - 'ephemeral-funded' (default) — generate a fresh Ed25519 keypair,
 //     persist it under `.devstack/stacks/<stack>/.keys/<name>.key` so
@@ -27,7 +27,7 @@
 //     or anywhere the secret material lives outside this process.
 //     devstack never calls `getSecretKey()` on this branch.
 //
-// The bare `{}` form is treated as `{from: 'ephemeral-funded'}` so
+// The bare `{}` form is treated as `{kind: 'ephemeral-funded'}` so
 // callers without a discriminator keep working without code edits.
 //
 // Only `ephemeral-funded` writes to disk and only `ephemeral-funded`
@@ -48,8 +48,9 @@ import { Secp256k1Keypair } from '@mysten/sui/keypairs/secp256k1';
 import { Secp256r1Keypair } from '@mysten/sui/keypairs/secp256r1';
 import type { Keypair, Signer } from '@mysten/sui/cryptography';
 import type { SuiClientTypes } from '@mysten/sui/client';
+import { Transaction } from '@mysten/sui/transactions';
 import { tag, setPhase, type LayeredTag } from '../advanced/tag.js';
-import { SuiTag } from './sui.js';
+import { SuiTag, type Sui } from './sui.js';
 import { AccountError } from '../engine/errors.js';
 import { publishAccount } from '../engine/registries.js';
 import { Leasing } from '../engine/leasing.js';
@@ -123,20 +124,20 @@ export const AccountSchema = Schema.Struct({
  * the per-name account tag is acquired. See module header for the
  * full lifecycle of each source.
  *
- * Naming note: `from:` is the DISCRIMINATOR (always a string literal
+ * Naming note: `kind:` is the DISCRIMINATOR (always a string literal
  * naming the branch — `'env'`, `'keystore'`, `'signer'`, …). The
  * per-branch payload field carries the actual material:
- *   - `from: 'env'` pairs with `key: string` (env-var name)
- *   - `from: 'keystore'` pairs with `alias: string` (alias / address)
- *   - `from: 'inline'` pairs with `privateKey: string` (bech32 literal)
- *   - `from: 'signer'` pairs with `signer: Signer` (live signer object)
- * So `from: 'signer'` and the `signer:` payload field are intentionally
+ *   - `kind: 'env'` pairs with `key: string` (env-var name)
+ *   - `kind: 'keystore'` pairs with `alias: string` (alias / address)
+ *   - `kind: 'inline'` pairs with `privateKey: string` (bech32 literal)
+ *   - `kind: 'signer'` pairs with `signer: Signer` (live signer object)
+ * So `kind: 'signer'` and the `signer:` payload field are intentionally
  * different shapes: one is the tag selecting the variant, the other is
  * the carrier for the actual `@mysten/sui` `Signer` instance.
  */
 export type AccountSource =
 	| {
-			readonly from: 'ephemeral-funded';
+			readonly kind: 'ephemeral-funded';
 			/** Wall-clock budget for the faucet funding request, including
 			 *  all retries. Defaults to 90_000 (90s) — sized for a cold
 			 *  sui-localnet boot. CI configs pointed at a clearly-broken
@@ -158,7 +159,7 @@ export type AccountSource =
 			readonly faucetMaxAttempts?: number;
 	  }
 	| {
-			readonly from: 'keystore';
+			readonly kind: 'keystore';
 			/** Alias name (from `sui.aliases`) or the on-chain address. The
 			 *  factory tries the alias file first, then falls back to a
 			 *  by-address match. */
@@ -175,7 +176,7 @@ export type AccountSource =
 			 * is unambiguous. The value never appears in logs, spans, or error
 			 * messages — only the variable's name is referenced.
 			 */
-			readonly from: 'env';
+			readonly kind: 'env';
 			/** `process.env` variable holding a `suiprivkey1...` bech32 string. */
 			readonly key: string;
 			/** Reserved for a future raw-hex form. Today the value is always
@@ -192,7 +193,7 @@ export type AccountSource =
 			 * in your history. For production code, use `'env'` (load from an env var)
 			 * or `'keystore'` (load from `~/.sui/sui_config/sui.keystore`).
 			 */
-			readonly from: 'inline';
+			readonly kind: 'inline';
 			/** Bech32 `suiprivkey1...` literal. */
 			readonly privateKey: string;
 	  }
@@ -209,7 +210,7 @@ export type AccountSource =
 			 * `signTransaction` / `signPersonalMessage` /
 			 * `signAndExecuteTransaction` methods are called directly.
 			 */
-			readonly from: 'signer';
+			readonly kind: 'signer';
 			/** Any concrete implementation of `@mysten/sui/cryptography`'s
 			 *  `Signer` abstract class. */
 			readonly signer: Signer;
@@ -217,11 +218,34 @@ export type AccountSource =
 			 *  is called. Useful for signers whose address is more expensive to
 			 *  derive than to memoise. */
 			readonly address?: string;
+	  }
+	| {
+			/**
+			 * Fork-mode impersonation: execute txs AS `sender` without
+			 * possessing its private key. Devstack does NOT call any
+			 * signing function for this branch — the per-account
+			 * `signTransaction` / `signPersonalMessage` closures throw
+			 * synchronously, and `signAndExecute` routes through
+			 * `executeImpersonated` (empty-signature gRPC submit).
+			 *
+			 * Only valid when `sui.runtime === 'forked'` AND `sender`
+			 * appears in `sui.fork.seed.addresses` (or you can prove the
+			 * fork has it in its owned-object index via `--object`
+			 * seeds). The auto-promotion in `Account()` builds this
+			 * branch implicitly when the user passes a bare `Account('alice')`
+			 * against a fork-mode stack with seed addresses configured —
+			 * see Phase 2 of `notes/sui-fork-integration.md`.
+			 */
+			readonly kind: 'impersonate';
+			/** The address to execute as. Must appear in the fork's
+			 *  seed manifest's owned-object index (typically by being
+			 *  listed in `Sui({fork:{seed:{addresses}}})`). */
+			readonly sender: string;
 	  };
 
 /**
  * Optional cross-cutting funding spec. After the keypair is resolved
- * (whichever `from:` branch ran), the Account body iterates these
+ * (whichever `kind:` branch ran), the Account body iterates these
  * entries and dispatches each to the ambient `Faucet` service's
  * `requestCoin(coinType, address, amount)`. Strategies registered
  * against the Faucet (built-in: SUI HTTP; user-registered: WAL swap,
@@ -231,7 +255,7 @@ export type AccountSource =
  * adds to whatever the source branch did. Useful for:
  *   - Adding non-SUI coins to any account (`WAL` for walrus uploads,
  *     a project-specific stablecoin, …);
- *   - Topping up a `from: 'env'` / `'keystore'` account at boot.
+ *   - Topping up a `kind: 'env'` / `'keystore'` account at boot.
  *
  * Keys are coin discriminators — short names for built-ins (`'SUI'`,
  * `'WAL'`) or fully-qualified Move types for user coins.
@@ -240,8 +264,8 @@ export type AccountFunding = Record<string, bigint>;
 
 /**
  * Per-account spec accepted by `Account(name, opts?)`. Discriminated by
- * `from:` (see {@link AccountSource}). The bare `{}` form is accepted
- * and treated as `{from: 'ephemeral-funded'}`. The optional cross-cutting
+ * `kind:` (see {@link AccountSource}). The bare `{}` form is accepted
+ * and treated as `{kind: 'ephemeral-funded'}`. The optional cross-cutting
  * `funding` field works on any branch and dispatches through the
  * ambient `Faucet` service.
  */
@@ -259,8 +283,8 @@ export type AccountSpec =
  *
  *  Default source: `'ephemeral-funded'` — generate a fresh keypair,
  *  persist it under `.devstack/stacks/<stack>/.keys/<name>.key`, and
- *  request faucet funding. Pass `{ from: 'env', key: '...' }` or
- *  `{ from: 'keystore', alias: '...' }` for non-localnet stacks. */
+ *  request faucet funding. Pass `{ kind: 'env', key: '...' }` or
+ *  `{ kind: 'keystore', alias: '...' }` for non-localnet stacks. */
 // Allowed shape for `Account(name)`: lowercase alphanumeric + dot /
 // underscore / hyphen, must start with a letter or digit, max 64 chars.
 // The string flows into:
@@ -289,12 +313,16 @@ export const Account = <const N extends string>(
 	opts?: AccountSpec,
 ): LayeredTag<`account/${N}`, AccountValue> => {
 	validateAccountName(name);
-	// Backwards-compat: the bare `{}` form (without a `from:` key)
+	// Ergonomic shorthand: the bare `{}` form (without a `kind:` key)
 	// means "ephemeral-funded with defaults". Branch here so the rest of
 	// the body can treat `source` as a fully-discriminated `AccountSource`.
-	const source: AccountSource =
-		opts !== undefined && 'from' in opts ? (opts as AccountSource) : { from: 'ephemeral-funded' };
-	// Cross-cutting funding spec. Independent of the `from:` branch —
+	// Auto-promotion to fork-aware funding happens INSIDE the body when
+	// the `kind`-omitted case meets fork mode (we need the `Sui` tag to
+	// be resolved before we can know the runtime).
+	const initialSource: AccountSource =
+		opts !== undefined && 'kind' in opts ? (opts as AccountSource) : { kind: 'ephemeral-funded' };
+	const kindOmitted = opts === undefined || !('kind' in opts);
+	// Cross-cutting funding spec. Independent of the `kind:` branch —
 	// dispatched through `Faucet.requestCoin` after the keypair resolves.
 	const funding: AccountFunding =
 		opts !== undefined && 'funding' in opts && opts.funding !== undefined ? opts.funding : {};
@@ -302,23 +330,50 @@ export const Account = <const N extends string>(
 	const accountTag = tag(
 		`account/${name}` as const,
 		Effect.fn(`account(${name})`)(function* () {
-			yield* Effect.annotateCurrentSpan({
-				'account.name': name,
-				'account.source': source.from,
-			});
 			const sui = yield* SuiTag;
 			const leasing = yield* Leasing;
 
-			if (source.from === 'keystore' || source.from === 'env' || source.from === 'inline') {
+			// Auto-promotion for bare `Account('alice')` against a
+			// fork-mode stack: stay with a real ephemeral keypair (so
+			// signTransaction works for downstream tx submission) BUT
+			// switch funding from "POST faucet" to "impersonate a seed
+			// sender to transfer SUI". The `source` discriminator stays
+			// `ephemeral-funded` — the funding branch below decides
+			// which path to use based on `sui.runtime`.
+			const source: AccountSource = initialSource;
+			yield* Effect.annotateCurrentSpan({
+				'account.name': name,
+				'account.source': source.kind,
+				'sui.runtime': sui.runtime,
+			});
+
+			if (source.kind === 'keystore' || source.kind === 'env' || source.kind === 'inline') {
 				yield* setPhase('loading keystore');
-			} else if (source.from === 'signer') {
+			} else if (source.kind === 'signer') {
 				yield* setPhase('binding signer');
+			} else if (source.kind === 'impersonate') {
+				yield* setPhase('binding impersonation slot');
+				// Refuse impersonation outside fork mode — the empty-
+				// signature path only works against `sui-fork`.
+				if (sui.runtime !== 'forked') {
+					return yield* Effect.fail(
+						new AccountError({
+							phase: 'fund',
+							message:
+								`Account: '${name}' uses {kind: 'impersonate'} but sui.runtime is ` +
+								`'${sui.runtime}'. Impersonation only works on fork-mode networks ` +
+								`(Sui({network: 'mainnet-fork' | 'testnet-fork' | 'devnet-fork'})).`,
+						}),
+					);
+				}
 			}
 			const signer = yield* acquireSigner(name, source);
 			const address =
-				source.from === 'signer' && source.address !== undefined
+				source.kind === 'signer' && source.address !== undefined
 					? source.address
-					: signer.toSuiAddress();
+					: source.kind === 'impersonate'
+						? source.sender
+						: signer.toSuiAddress();
 			// HIGH-SEC3: lowercase the scheme at the boundary. The
 			// contract claims `'ed25519' | 'secp256k1' | 'secp256r1'`
 			// but `signer.getKeyScheme()` returns the mixed-case Sui SDK
@@ -332,18 +387,39 @@ export const Account = <const N extends string>(
 
 			yield* Effect.annotateCurrentSpan({ 'account.address': address });
 
-			if (source.from === 'ephemeral-funded') {
-				if (sui.faucet === undefined) {
-					return yield* Effect.fail(
-						new AccountError({
-							phase: 'fund',
-							message:
-								`Account: '${name}' is ephemeral-funded but the configured Sui has no ` +
-								`faucet. Use {from: 'keystore'|'env'|'inline'} for accounts on this ` +
-								`network, or pick the default localnet which exposes a faucet.`,
-						}),
-					);
-				}
+			if (source.kind === 'ephemeral-funded') {
+				// Fork-mode auto-promotion. When `sui.runtime === 'forked'`,
+				// the chain has no faucet — but `sui.fork.impersonate` lets
+				// us send SUI from a seeded sender. Refuse if the user
+				// hasn't configured any seed addresses (we don't have a
+				// default seed address; the user's stack must specify one
+				// via `Sui({fork:{seed:{addresses}}})`).
+				if (sui.runtime === 'forked' && sui.fork !== undefined) {
+					if (!kindOmitted) {
+						// User explicitly asked for ephemeral-funded on a
+						// fork. The HTTP faucet path doesn't exist on fork
+						// mode; promote them to the impersonate-funded
+						// path with a hint in the error if their seed
+						// addresses are empty.
+					}
+					yield* setPhase('fork-impersonate funding');
+					yield* fundEphemeralOnFork({
+						name,
+						sui,
+						newAddress: address,
+					});
+				} else {
+					if (sui.faucet === undefined) {
+						return yield* Effect.fail(
+							new AccountError({
+								phase: 'fund',
+								message:
+									`Account: '${name}' is ephemeral-funded but the configured Sui has no ` +
+									`faucet. Use {kind: 'keystore'|'env'|'inline'} for accounts on this ` +
+									`network, or pick the default localnet which exposes a faucet.`,
+							}),
+						);
+					}
 				// Host-side faucet — runs in the supervisor process, not inside a container.
 				const faucetUrl = sui.faucet.host;
 				// Before the first faucet POST, ask the Sui primitive to
@@ -403,6 +479,7 @@ export const Account = <const N extends string>(
 						),
 					),
 				);
+				} // end faucet-funded path (sui.runtime !== 'forked')
 			}
 
 			// Cross-cutting funding pass. Dispatches each declared coin
@@ -452,7 +529,61 @@ export const Account = <const N extends string>(
 			// folded back into the devstack-internal `TxResult` shape by
 			// `mapGrpcTxResult` so callers downstream of `Account()` see
 			// no surface change.
-			const signAndExecute = (transaction: Parameters<AccountValue['signAndExecute']>[0]) =>
+			// Branch for impersonation accounts — no signer needed, the
+			// fork executes the tx AS `address` via empty-signature
+			// submit. The downstream API surface (return type, retry
+			// behavior, wait-for-tx) matches the signed path so callers
+			// of `account.signAndExecute(tx)` don't branch on
+			// `account.source`.
+			const signAndExecuteImpersonate = (
+				transaction: Parameters<AccountValue['signAndExecute']>[0],
+			) =>
+				leasing.withExclusive(
+					address,
+					Effect.gen(function* () {
+						if (sui.fork === undefined) {
+							return yield* Effect.fail({
+								_tag: 'SignAndExecuteError' as const,
+								message:
+									`Account: '${name}' is in impersonate mode but sui.fork is undefined ` +
+									`(supervisor wiring bug — sui.runtime should be 'forked').`,
+							} satisfies SignAndExecuteError);
+						}
+						const result = yield* sui.fork
+							.impersonate(address, transaction as unknown as Parameters<NonNullable<typeof sui.fork>['impersonate']>[1])
+							.pipe(
+								Effect.mapError(
+									(cause): SignAndExecuteError => ({
+										_tag: 'SignAndExecuteError',
+										message: `Account: impersonate failed for '${name}': ${cause.message}`,
+										cause,
+									}),
+								),
+							);
+						// Wait for the indexer to see the digest before
+						// returning, matching the signed path's behavior.
+						yield* Effect.tryPromise({
+							try: () => sui.client.waitForTransaction({ digest: result.digest }),
+							catch: (cause): SignAndExecuteError => ({
+								_tag: 'SignAndExecuteError',
+								message: `Account: waitForTransaction failed for '${name}': ${stringifyCause(cause)}`,
+								cause,
+							}),
+						});
+						// Return a minimal TxResult — the gRPC response
+						// path doesn't carry rich object-change info on the
+						// fork's executor today. Callers that need it
+						// re-query via `client.core.getTransaction({digest})`.
+						return {
+							digest: result.digest,
+							effects: undefined as unknown as TxResult['effects'],
+							objectChanges: [] as ReadonlyArray<SuiObjectChange>,
+							balanceChanges: undefined as unknown as ReadonlyArray<BalanceChange>,
+						} satisfies TxResult;
+					}),
+				);
+
+			const signAndExecuteSigned = (transaction: Parameters<AccountValue['signAndExecute']>[0]) =>
 				leasing.withExclusive(
 					address,
 					Effect.tryPromise({
@@ -522,6 +653,13 @@ export const Account = <const N extends string>(
 					),
 				);
 
+			// Dispatch to the impersonation path when the account is in
+			// impersonate mode; otherwise the standard signed path. The
+			// public closure is `signAndExecute` either way so callers
+			// don't need to branch on `account.source`.
+			const signAndExecute =
+				source.kind === 'impersonate' ? signAndExecuteImpersonate : signAndExecuteSigned;
+
 			const signTransaction = (transactionBytes: Uint8Array) =>
 				Effect.tryPromise({
 					try: () => signer.signTransaction(transactionBytes),
@@ -547,6 +685,13 @@ export const Account = <const N extends string>(
 				address,
 				publicKey: signer.getPublicKey().toRawBytes(),
 				scheme,
+				// Phase 4 P4.18 — surface the source discriminator so the
+				// wallet server's `handleAccounts` can render an
+				// "(impersonation)" label on the accounts panel without
+				// re-routing through the account spec. `'impersonate'`
+				// means we hold NO keys; everything else is a real
+				// signer (keystore / env / inline / signer / ephemeral).
+				source: source.kind === 'impersonate' ? 'impersonate' : 'real',
 				signAndExecute,
 				signTransaction,
 				signPersonalMessage,
@@ -554,7 +699,7 @@ export const Account = <const N extends string>(
 		})(),
 		{
 			kind: 'account',
-			lifecycle: 'per-cycle',
+			plugin: 'account',
 			displayTitle: `accounts.${name}`,
 			// Full address in `primary` — users routinely copy-paste it
 			// into faucet UIs, explorers, and tx scripts. The dashboard
@@ -569,6 +714,7 @@ export const Account = <const N extends string>(
 	// base layer.
 	return Object.assign(accountTag, {
 		__kind: 'account' as const,
+		__pluginName: 'account',
 	}) as unknown as LayeredTag<`account/${N}`, AccountValue>;
 };
 
@@ -584,7 +730,7 @@ const acquireSigner = (
 	name: string,
 	source: AccountSource,
 ): Effect.Effect<Signer, AccountError, AcquireRequirements> => {
-	switch (source.from) {
+	switch (source.kind) {
 		case 'ephemeral-funded':
 			return acquireEphemeral(name);
 		case 'keystore':
@@ -595,8 +741,146 @@ const acquireSigner = (
 			return decodeKeypair(name, source.privateKey);
 		case 'signer':
 			return Effect.succeed(source.signer);
+		case 'impersonate':
+			// No real keypair — return a no-op signer whose `toSuiAddress()`
+			// returns the declared sender. The per-account closure layer
+			// (`signTransaction` / `signPersonalMessage`) throws when called;
+			// only `signAndExecute` succeeds, routed through the
+			// impersonation path in the Account body.
+			return Effect.succeed(makeImpersonateSigner(source.sender));
 	}
 };
+
+/**
+ * Synthetic `Signer` for fork-mode impersonation accounts. Carries the
+ * declared sender as its address but refuses to sign — devstack never
+ * needs the secret key on the impersonate branch (the fork executes
+ * empty-signature txs natively). `signTransaction` /
+ * `signPersonalMessage` throw to surface accidental usage from a
+ * caller that bypassed the per-account `signAndExecute` wrapping.
+ */
+const makeImpersonateSigner = (sender: string): Signer => {
+	const synthetic: Partial<Signer> & { toSuiAddress: () => string } = {
+		toSuiAddress: () => sender,
+		getKeyScheme: () => 'ED25519' as SignatureScheme,
+		// `getPublicKey` returns a synthetic-looking PublicKey-shaped
+		// object — the SDK accesses `toRawBytes()` to populate
+		// `publicKey` on the AccountValue; we feed a 32-byte zero
+		// buffer because there's no real public key to surface.
+		getPublicKey: () =>
+			({
+				toRawBytes: () => new Uint8Array(32),
+				toSuiAddress: () => sender,
+				toBase64: () => '',
+			}) as unknown as ReturnType<Signer['getPublicKey']>,
+		// Refuse signing — surface a clear error if any caller
+		// reaches here without the impersonation routing.
+		signTransaction: () => {
+			throw new Error(
+				`Account: signer for '${sender}' is an impersonation placeholder. ` +
+					`signTransaction is not callable on the impersonate branch — devstack ` +
+					`routes through executeImpersonated (empty-signature gRPC submit). ` +
+					`If you see this, a caller bypassed Account.signAndExecute.`,
+			);
+		},
+		signPersonalMessage: () => {
+			throw new Error(
+				`Account: signer for '${sender}' is an impersonation placeholder. ` +
+					`signPersonalMessage is meaningless on the impersonate branch (the fork's ` +
+					`impersonation works at the tx level only).`,
+			);
+		},
+		signWithIntent: () => {
+			throw new Error(
+				`Account: signer for '${sender}' is an impersonation placeholder. signWithIntent ` +
+					`is not callable.`,
+			);
+		},
+	};
+	return synthetic as Signer;
+};
+
+// -----------------------------------------------------------------------------
+// Fork-mode ephemeral funding
+// -----------------------------------------------------------------------------
+//
+// `sui-fork` has no faucet (R1 — the underlying simulacrum executor
+// doesn't expose a SUI dispenser at HTTP). Instead, we use
+// `sui.fork.impersonate(seedAddress, paySuiTx)` to transfer SUI from a
+// seed address to the newly-generated ephemeral keypair. The seed
+// addresses come from `Sui({fork:{seed:{addresses}}})` — devstack
+// passes them to `sui-fork start --address ...` at container boot,
+// which populates the fork's owned-object index so subsequent
+// `pay_sui` calls have gas coins to draw from.
+
+/** Default initial funding amount (in MIST) for a fork-mode ephemeral
+ *  account. 1 SUI is enough for any realistic dev-mode tx; the fork's
+ *  gas pool is fictional anyway. */
+const FORK_EPHEMERAL_FUNDING_AMOUNT = 1_000_000_000n; // 1 SUI
+
+const fundEphemeralOnFork = (input: {
+	readonly name: string;
+	readonly sui: Sui;
+	readonly newAddress: string;
+}): Effect.Effect<void, AccountError> =>
+	Effect.gen(function* () {
+		const { sui, newAddress, name } = input;
+		const fork = sui.fork;
+		if (fork === undefined) {
+			return yield* Effect.fail(
+				new AccountError({
+					phase: 'fund',
+					account: name,
+					message:
+						`Account: '${name}': fork-mode funding requires sui.fork to be defined ` +
+						`(supervisor wiring bug — sui.runtime should be 'forked').`,
+				}),
+			);
+		}
+		const seedAddresses = fork.seedAddresses;
+		if (seedAddresses.length === 0) {
+			return yield* Effect.fail(
+				new AccountError({
+					phase: 'fund',
+					account: name,
+					message:
+						`Account: '${name}' on fork mode requires at least one seed address. ` +
+						`Configure via Sui({fork: {seed: {addresses: ['0x...']}}}) so devstack can ` +
+						`impersonate a funded sender to transfer SUI to the new ephemeral account. ` +
+						`See Phase 2 of notes/sui-fork-integration.md (OD1) for the canonical pattern.`,
+				}),
+			);
+		}
+		// Pick the first seed address as the funding source. Multiple
+		// seeds are useful for impersonation diversity but funding only
+		// needs one (the impersonated `pay_sui` draws from whatever
+		// owned objects the seed has — which sui-fork pre-fetched at
+		// boot via `--address` on the entrypoint).
+		const seed = seedAddresses[0]!;
+		// Build a pay_sui tx: split off `FORK_EPHEMERAL_FUNDING_AMOUNT`
+		// from the gas coin and transfer to `newAddress`. The fork's
+		// executor uses the impersonated sender's owned objects as the
+		// gas coin selection pool (the seed manifest pre-populated this
+		// at boot time via `--address` on the entrypoint script).
+		const tx = new Transaction();
+		const [coin] = tx.splitCoins(tx.gas, [tx.pure.u64(FORK_EPHEMERAL_FUNDING_AMOUNT)]);
+		tx.transferObjects([coin!], tx.pure.address(newAddress));
+
+		yield* fork.impersonate(seed, tx).pipe(
+			Effect.catchTag('SuiError', (cause) =>
+				Effect.fail(
+					new AccountError({
+						phase: 'fund',
+						account: name,
+						message:
+							`Account: '${name}' fork-mode funding via impersonation of ${seed} failed: ` +
+							cause.message,
+						cause,
+					}),
+				),
+			),
+		);
+	});
 
 // Persist the bech32 secret key under `runtime/accounts/<name>.key`
 // (mode 0o600, dir 0o700) so warm starts keep a stable address. The
@@ -693,7 +977,7 @@ const acquireEphemeral = (
 // callers can supply either form transparently.
 const acquireFromKeystore = (
 	name: string,
-	source: Extract<AccountSource, { from: 'keystore' }>,
+	source: Extract<AccountSource, { kind: 'keystore' }>,
 ): Effect.Effect<Keypair, AccountError> =>
 	Effect.gen(function* () {
 		const keystorePath = source.path ?? defaultKeystorePath();
@@ -759,7 +1043,7 @@ const acquireFromKeystore = (
 
 const acquireFromEnv = (
 	name: string,
-	source: Extract<AccountSource, { from: 'env' }>,
+	source: Extract<AccountSource, { kind: 'env' }>,
 ): Effect.Effect<Keypair, AccountError> =>
 	Effect.gen(function* () {
 		const raw = process.env[source.key];
@@ -908,6 +1192,20 @@ const bestEffortChmod = (
 // carry the id (rare — typically only for system-side `0x5`-style
 // objects the executor mutates as part of consensus advance). Callers
 // that filter on `objectType.endsWith(...)` skip those rows safely.
+// Project gRPC's `outputOwner` (`ObjectOwner | null`) down to the
+// optional address-owner string the devstack `SuiObjectChange` projection
+// carries. Returns `undefined` for shared/object/immutable/unknown owners
+// — those map to "no plain address owner" in downstream consumers
+// (notably the coin-discovery pass at Phase 0 of
+// `notes/coin-auto-discovery.md`).
+const addressOwner = (
+	outputOwner: SuiClientTypes.ObjectOwner | null | undefined,
+): string | undefined => {
+	if (outputOwner === null || outputOwner === undefined) return undefined;
+	if (outputOwner.$kind === 'AddressOwner') return outputOwner.AddressOwner;
+	return undefined;
+};
+
 const deriveObjectChanges = (
 	changedObjects: ReadonlyArray<SuiClientTypes.ChangedObject>,
 	objectTypes: Record<string, string> | undefined,
@@ -919,15 +1217,26 @@ const deriveObjectChanges = (
 			continue;
 		}
 		const objectType = objectTypes?.[change.objectId] ?? '';
+		const owner = addressOwner(change.outputOwner);
 		if (change.idOperation === 'Created') {
-			out.push({ type: 'created', objectId: change.objectId, objectType });
+			out.push({
+				type: 'created',
+				objectId: change.objectId,
+				objectType,
+				...(owner !== undefined ? { owner } : {}),
+			});
 		} else if (change.idOperation === 'Deleted') {
 			out.push({ type: 'deleted', objectId: change.objectId, objectType });
 		} else if (
 			change.idOperation === 'None' &&
 			change.outputState === 'ObjectWrite'
 		) {
-			out.push({ type: 'mutated', objectId: change.objectId, objectType });
+			out.push({
+				type: 'mutated',
+				objectId: change.objectId,
+				objectType,
+				...(owner !== undefined ? { owner } : {}),
+			});
 		}
 	}
 	return out;

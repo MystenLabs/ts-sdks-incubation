@@ -1,7 +1,7 @@
 // `devstack(...refs)` — the canonical entry. Variadic over Refs (and
 // arrays of Refs from composite factories like `Deepbook(...)`),
 // flattens to a single `StackMember[]`, runs the default-provider fill
-// step, then delegates to `defineDevstack(...)`. Auto-includes the v4
+// step, then delegates to `defineDevstack(...)`. Auto-includes the
 // manifest emitter so the on-disk `.devstack/manifest.json` lands as a
 // scoped side effect of acquiring the stack.
 
@@ -13,7 +13,7 @@ import {
 	type StackMember,
 } from '../engine/supervisor.js';
 import { DevstackTagBrand, tag } from '../advanced/tag.js';
-import { emitManifestV4 } from '../runtime/manifest-emit.js';
+import { emitManifest } from '../runtime/manifest-emit.js';
 import type { ExtrasInput, ExtrasResolved } from '../engine/extras.js';
 import type { ManifestError } from '../engine/errors.js';
 import type { EngineHandleShape } from '../engine/engine.js';
@@ -37,7 +37,6 @@ import type {
 import { silentRendererFactory } from '../engine/renderer.js';
 import type { Identity } from '../engine/identity.js';
 import type { Manifest } from '../runtime/manifest-schema.js';
-import { Faucet } from '../services/faucet/index.js';
 import { startPlainRenderer } from '../tui/plain.js';
 import { startTuiOnce, TuiLoggerLayer } from '../tui/index.js';
 import { fillDefaults } from './defaults.js';
@@ -80,7 +79,13 @@ const plainRendererFactory: RendererFactory = {
 				flush: handle.flush as Effect.Effect<void>,
 			} satisfies RendererMount;
 		}),
-	loggerLayer: () => Layer.empty,
+	// Route `Effect.log*` calls through `engine.appendLog` (same
+	// machinery the TUI uses), so plain-mode emits log lines through
+	// `tui/plain.ts::formatLogLine` (`[HH:MM:SS] LEVEL message`) — in
+	// step with the per-tag status lines — instead of letting Effect's
+	// default `Logger.consoleLogger` interleave its
+	// `[HH:MM:SS.mmm] INFO (#fiber): message` format on stderr.
+	loggerLayer: (engine: EngineHandleShape) => TuiLoggerLayer(engine),
 };
 
 /** Default resolver — maps each `RendererKind` to the matching
@@ -121,9 +126,9 @@ const isOptions = (x: unknown): x is DevstackComposeOptions => {
 	);
 };
 
-/** Wrap the v4 manifest emitter in a `tag()` so it surfaces as a stack
+/** Wrap the manifest emitter in a `tag()` so it surfaces as a stack
  *  member with `__kind: 'app'`, gets a `manifest` row in the TUI, and
- *  rides the engine lifecycle. The body delegates to `emitManifestV4`
+ *  rides the engine lifecycle. The body delegates to `emitManifest`
  *  which handles the file-write + tick-interval logic. */
 const manifestRef = (): StackMember => {
 	const body: Effect.Effect<
@@ -140,7 +145,7 @@ const manifestRef = (): StackMember => {
 		| Identity
 		| ExtrasResolved
 		| Scope.Scope
-	> = emitManifestV4();
+	> = emitManifest();
 	return tag('manifest', body, {
 		kind: 'app',
 		displayTitle: 'manifest',
@@ -191,27 +196,12 @@ export function devstack(
 		}
 	}
 
-	// Auto-include the Faucet service so `Account({ funding })` always
-	// finds a Faucet in scope. The Faucet ref's body best-effort yields
-	// `SuiTag` to register the built-in SUI HTTP strategy; missing Sui
-	// (rare — only in tests that override the default provider) leaves
-	// the registry empty until the user registers their own strategies.
-	// Skip the auto-append when the user already supplied a Faucet (any
-	// `Faucet({...})`) — otherwise the empty auto-Faucet's layer would
-	// shadow the user's via later-wins merge and silently drop their
-	// custom strategies.
-	const userSuppliedFaucet = flat.some((r) =>
-		((r as { key?: string }).key ?? '').startsWith('faucet/'),
-	);
-	const withFaucet: ReadonlyArray<StackMember> = userSuppliedFaucet
-		? flat
-		: [...flat, Faucet() as unknown as StackMember];
+	// Auto-include the manifest emitter. `Sui()` + `Faucet()`
+	// defaults land via `fillDefaults` below.
+	const withManifest: ReadonlyArray<StackMember> = [...flat, manifestRef()];
 
-	// Auto-include the v4 manifest emitter.
-	const withManifest: ReadonlyArray<StackMember> = [...withFaucet, manifestRef()];
-
-	// Default-provider fill. Auto-adds `Sui()` when missing; extends with
-	// capability-keyed defaults.
+	// Default-provider fill — auto-adds `Sui()` and `Faucet()` when
+	// missing.
 	const filled = fillDefaults(withManifest);
 
 	// Wire the default renderer resolver so the supervisor can map a

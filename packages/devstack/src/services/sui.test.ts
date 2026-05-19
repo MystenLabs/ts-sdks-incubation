@@ -317,3 +317,13 @@ describe('faucetReadyProbe', () => {
 		}),
 	);
 });
+
+describe('EndpointName.SUI_CHECKPOINT_VOLUME (P2.T6)', () => {
+	// The constant exists in `endpoint-names.ts` so future indexer wiring
+	// can read it. The corresponding sui-side publish is the sui-fork
+	// agent's responsibility; this test asserts the name shape only.
+	it('uses the conventional name format', async () => {
+		const { EndpointName } = await import('../runtime/endpoint-names.js');
+		expect(EndpointName.SUI_CHECKPOINT_VOLUME).toBe('sui-checkpoint-volume');
+	});
+});

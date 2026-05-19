@@ -17,10 +17,15 @@ import {
 	AccountRegistry,
 	AccountRegistryLive,
 	CoinRegistryLive,
+	DeepbookIndexerStateRegistryLive,
+	DeepbookMarginStateRegistryLive,
+	DeepbookServerStateRegistryLive,
 	DeepbookStateRegistryLive,
 	EndpointRegistryLive,
 	PackageRegistry,
 	PackageRegistryLive,
+	PostgresStateRegistryLive,
+	PythStateRegistryLive,
 	SealStateRegistryLive,
 	SuiStateRegistryLive,
 	WalrusStateRegistryLive,
@@ -44,6 +49,11 @@ const RegistriesLive = Layer.mergeAll(
 	SealStateRegistryLive,
 	WalrusStateRegistryLive,
 	DeepbookStateRegistryLive,
+	PythStateRegistryLive,
+	PostgresStateRegistryLive,
+	DeepbookIndexerStateRegistryLive,
+	DeepbookServerStateRegistryLive,
+	DeepbookMarginStateRegistryLive,
 );
 
 const seedRegistries = Effect.gen(function* () {

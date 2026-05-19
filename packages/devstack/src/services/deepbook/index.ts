@@ -28,4 +28,49 @@ export {
 	type DeepbookMarketMakerHandle,
 	type DeepbookMarketMakerOptions,
 	type DeepbookMarketMakerPoolSpec,
+	type DeepbookMarketMakerStrategy,
 } from './market-maker.js';
+export {
+	DeepbookMintDEEP,
+	DeepbookMintUSDC,
+	type DeepbookMintDEEPOptions,
+	type DeepbookMintUSDCOptions,
+} from './mint.js';
+export { vendorDeepbook, type VendorDeepbookOptions, type VendoredDeepbookSources } from './vendor.js';
+export {
+	DeepbookIndexer,
+	DeepbookIndexerTag,
+	type DeepbookIndexerOptions,
+	type DeepbookIndexer as DeepbookIndexerShape,
+} from './indexer.js';
+export {
+	DeepbookServer,
+	DeepbookServerTag,
+	type DeepbookServerOptions,
+	type DeepbookServer as DeepbookServerShape,
+} from './server.js';
+export {
+	deepbookMargin,
+	DeepbookMarginTag,
+	DEFAULT_POOL_RISK_CONFIG,
+	USDC_MARGIN_DEFAULTS,
+	SUI_MARGIN_DEFAULTS,
+	type DeepbookMarginOptions,
+	type DeepbookMargin as DeepbookMarginShape,
+	type DeepbookMarginAssetConfig,
+	type DeepbookMarginPoolRegistration,
+	type DeepbookMarginPoolRiskConfig,
+	type DeepbookMarginPool,
+} from './margin.js';
+export {
+	deepbookMarginSeed,
+	type DeepbookMarginSeedOptions,
+	type DeepbookMarginSeedAmount,
+	type DeepbookMarginSeedResult,
+} from './margin-seed.js';
+export {
+	DEEPBOOK_IMAGES,
+	DEFAULT_DEEPBOOK_MOVE_VERSION,
+	getDeepbookImages,
+	type DeepbookImagePair,
+} from './images.js';

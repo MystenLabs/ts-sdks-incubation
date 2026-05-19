@@ -105,12 +105,12 @@ describe('Account(name, opts?) — source discriminator', () => {
 		}),
 	);
 
-	it.effect("explicit from: 'ephemeral-funded' matches the bare form", () =>
+	it.effect("explicit kind: 'ephemeral-funded' matches the bare form", () =>
 		Effect.gen(function* () {
 			const tmpdir = yield* mkTmpDir('explicit');
 			const restore = stubFaucet();
 			try {
-				const bob = Account('bob', { from: 'ephemeral-funded' });
+				const bob = Account('bob', { kind: 'ephemeral-funded' });
 				const resolved = yield* Effect.gen(function* () {
 					return yield* bob;
 				}).pipe(
@@ -128,7 +128,7 @@ describe('Account(name, opts?) — source discriminator', () => {
 				expect(resolved.address.startsWith('0x')).toBe(true);
 				// Warm-start: re-yielding the SAME Ref (new acquisition) under
 				// the same stateDir should recover the persisted address.
-				const bob2 = Account('bob', { from: 'ephemeral-funded' });
+				const bob2 = Account('bob', { kind: 'ephemeral-funded' });
 				const resolved2 = yield* Effect.gen(function* () {
 					return yield* bob2;
 				}).pipe(
@@ -150,7 +150,7 @@ describe('Account(name, opts?) — source discriminator', () => {
 		}),
 	);
 
-	it.effect("from: 'inline' loads a literal suiprivkey", () =>
+	it.effect("kind: 'inline' loads a literal suiprivkey", () =>
 		Effect.gen(function* () {
 			// Generate a known keypair off-stack so the test can assert
 			// address equality without relying on RNG.
@@ -161,7 +161,7 @@ describe('Account(name, opts?) — source discriminator', () => {
 				'ED25519',
 			);
 
-			const guest = Account('guest', { from: 'inline', privateKey: bech32 });
+			const guest = Account('guest', { kind: 'inline', privateKey: bech32 });
 			const resolved = yield* Effect.gen(function* () {
 				return yield* guest;
 			}).pipe(
@@ -174,7 +174,7 @@ describe('Account(name, opts?) — source discriminator', () => {
 		}),
 	);
 
-	it.effect("from: 'inline' carries through scheme for Secp256k1", () =>
+	it.effect("kind: 'inline' carries through scheme for Secp256k1", () =>
 		Effect.gen(function* () {
 			const kp = Secp256k1Keypair.generate();
 			const expectedAddress = kp.getPublicKey().toSuiAddress();
@@ -182,7 +182,7 @@ describe('Account(name, opts?) — source discriminator', () => {
 				decodeSuiPrivateKey(kp.getSecretKey()).secretKey,
 				'Secp256k1',
 			);
-			const oracle = Account('oracle', { from: 'inline', privateKey: bech32 });
+			const oracle = Account('oracle', { kind: 'inline', privateKey: bech32 });
 			const resolved = yield* Effect.gen(function* () {
 				return yield* oracle;
 			}).pipe(
@@ -195,7 +195,7 @@ describe('Account(name, opts?) — source discriminator', () => {
 		}),
 	);
 
-	it.effect("from: 'env' reads process.env[key]", () =>
+	it.effect("kind: 'env' reads process.env[key]", () =>
 		Effect.gen(function* () {
 			const kp = Ed25519Keypair.generate();
 			const bech32 = encodeSuiPrivateKey(
@@ -206,7 +206,7 @@ describe('Account(name, opts?) — source discriminator', () => {
 			const envKey = 'DEVSTACK_TEST_ENV_KEY';
 			process.env[envKey] = bech32;
 			try {
-				const ci = Account('ci', { from: 'env', key: envKey });
+				const ci = Account('ci', { kind: 'env', key: envKey });
 				const resolved = yield* Effect.gen(function* () {
 					return yield* ci;
 				}).pipe(
@@ -221,13 +221,13 @@ describe('Account(name, opts?) — source discriminator', () => {
 		}),
 	);
 
-	it.effect("from: 'signer' uses the supplied Signer directly", () =>
+	it.effect("kind: 'signer' uses the supplied Signer directly", () =>
 		Effect.gen(function* () {
 			// A real Keypair satisfies the Signer interface; using one here
 			// keeps the test independent of any HSM/remote-signer fixture
 			// while exercising the same code path.
 			const kp = Ed25519Keypair.generate();
-			const ext = Account('ext', { from: 'signer', signer: kp });
+			const ext = Account('ext', { kind: 'signer', signer: kp });
 			const resolved = yield* Effect.gen(function* () {
 				return yield* ext;
 			}).pipe(
@@ -243,11 +243,11 @@ describe('Account(name, opts?) — source discriminator', () => {
 		}),
 	);
 
-	it.effect("from: 'signer' honors a caller-supplied address override", () =>
+	it.effect("kind: 'signer' honors a caller-supplied address override", () =>
 		Effect.gen(function* () {
 			const kp = Ed25519Keypair.generate();
 			const override = '0xdeadbeef';
-			const ext = Account('ext-pinned', { from: 'signer', signer: kp, address: override });
+			const ext = Account('ext-pinned', { kind: 'signer', signer: kp, address: override });
 			const resolved = yield* Effect.gen(function* () {
 				return yield* ext;
 			}).pipe(
@@ -281,7 +281,7 @@ describe('Account(name, opts?) — source discriminator', () => {
 			const kp = Ed25519Keypair.generate();
 			const expectedAddress = kp.getPublicKey().toSuiAddress();
 			const a = Account('funded', {
-				from: 'signer',
+				kind: 'signer',
 				signer: kp,
 				funding: { SUI: 100n, WAL: 50n },
 			});
@@ -302,11 +302,11 @@ describe('Account(name, opts?) — source discriminator', () => {
 		}),
 	);
 
-	it.effect("from: 'env' fails AccountError when the env var is missing", () =>
+	it.effect("kind: 'env' fails AccountError when the env var is missing", () =>
 		Effect.gen(function* () {
 			const envKey = 'DEVSTACK_TEST_MISSING_ENV';
 			delete process.env[envKey];
-			const ci = Account('ci', { from: 'env', key: envKey });
+			const ci = Account('ci', { kind: 'env', key: envKey });
 			const exit = yield* Effect.gen(function* () {
 				return yield* ci;
 			}).pipe(
@@ -326,7 +326,7 @@ describe('Account(name, opts?) — source discriminator', () => {
 	);
 
 	it.effect(
-		"from: 'ephemeral-funded' surfaces AccountError(fund) when waitForTransactionsReady fails",
+		"kind: 'ephemeral-funded' surfaces AccountError(fund) when waitForTransactionsReady fails",
 		() =>
 			Effect.gen(function* () {
 				const tmpdir = yield* mkTmpDir('wait-fails');
@@ -349,7 +349,7 @@ describe('Account(name, opts?) — source discriminator', () => {
 						),
 					runtime: 'bundled',
 				});
-				const alice = Account('alice', { from: 'ephemeral-funded' });
+				const alice = Account('alice', { kind: 'ephemeral-funded' });
 				const exit = yield* Effect.gen(function* () {
 					return yield* alice;
 				}).pipe(
@@ -373,10 +373,10 @@ describe('Account(name, opts?) — source discriminator', () => {
 			}),
 	);
 
-	it.effect("from: 'ephemeral-funded' fails AccountError when Sui has no faucetUrl", () =>
+	it.effect("kind: 'ephemeral-funded' fails AccountError when Sui has no faucetUrl", () =>
 		Effect.gen(function* () {
 			const tmpdir = yield* mkTmpDir('nofaucet');
-			const alice = Account('alice', { from: 'ephemeral-funded' });
+			const alice = Account('alice', { kind: 'ephemeral-funded' });
 			const exit = yield* Effect.gen(function* () {
 				return yield* alice;
 			}).pipe(

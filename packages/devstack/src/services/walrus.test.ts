@@ -106,7 +106,6 @@ describe('walrusKnownDeployment', () => {
 				const expected = knownDeployments.walrus.testnet!;
 				expect(network.systemObjectId).toBe(expected.systemObjectId);
 				expect(network.stakingPoolId).toBe(expected.stakingPoolId);
-				expect(network.subsidiesPackageId).toBe(expected.subsidiesPackageId);
 				expect(network.exchangeIds).toEqual(expected.exchangeIds);
 				expect(network.network).toBe('testnet');
 				expect(nodes.nodes.length).toBe(0);

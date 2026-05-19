@@ -15,9 +15,17 @@
 // to thread the upstream tag through the R channel: the call yields
 // `tag` first (forcing the ordering at the type level and at runtime),
 // then returns the underlying registry service.
+//
+// Cookbook
+// --------
+// Adding a new registry is three lines: declare the record interface,
+// declare the `Context.Service` tag class, destructure `defineRegistry`
+// for the Live layer + `publish` / `require` wrappers. See
+// `engine/define-registry.ts` for the contract.
 
-import { Context, Effect, Layer, Ref as EffectRef } from 'effect';
-import type { LayeredTag, TagIdentity } from '../advanced/tag.js';
+import { Context, Layer } from 'effect';
+import { defineRegistry } from './define-registry.js';
+export { type RegistryShape, makeRegistryLive } from './define-registry.js';
 
 export interface PackageRecord {
 	readonly name: string;
@@ -79,6 +87,76 @@ export interface DeepbookStateRecord {
 	readonly pools: Record<string, DeepbookPoolStateEntry>;
 }
 
+export interface PythStateRecord {
+	readonly name: string;
+	readonly packageId: string;
+	readonly pythStateId?: string;
+	readonly wormholeStateId?: string;
+	/** Pyth feed-id (mainnet hex) → on-chain PriceInfoObject id. */
+	readonly priceInfoObjectIds: Record<string, string>;
+	/** Friendly label (e.g. `'SUI'`, `'DEEP'`) → feed-id. */
+	readonly feeds: Record<string, string>;
+}
+
+export interface PostgresStateRecord {
+	readonly name: string;
+	readonly user: string;
+	/** Connection URL with credentials, e.g.
+	 *  `postgres://devstack:<pw>@<alias>:5432/<db>`. NOT persisted to
+	 *  manifest — `password` is stripped at the manifest grouper. */
+	readonly url: string;
+	readonly endpoint: string;
+	readonly containerNetwork: string;
+	readonly networkAlias: string;
+	readonly databases: ReadonlyArray<string>;
+}
+
+export interface DeepbookIndexerStateRecord {
+	readonly name: string;
+	readonly metricsUrl: string;
+	readonly databaseUrl: string;
+	readonly containerNetwork: string;
+	readonly networkAlias: string;
+}
+
+// Phase 3 — DeepBook server state. Captures both the REST URL (the
+// primary consumer-facing endpoint that the codegen emitter projects)
+// and the Prometheus metrics URL (matches the indexer's shape). The
+// server is stateless against the writable layer; everything it serves
+// is read on demand from the postgres + chain RPC pair, so the record
+// only carries dial info — no captured object ids.
+export interface DeepbookServerStateRecord {
+	readonly name: string;
+	readonly restUrl: string;
+	readonly metricsUrl: string;
+	readonly databaseUrl: string;
+	readonly containerNetwork: string;
+	readonly networkAlias: string;
+}
+
+// Phase 4 — DeepBook margin state. Captures the published margin +
+// liquidation package ids, the MarginRegistry + MaintainerCap shared
+// objects created by the margin Move source, and the per-asset
+// MarginPool object ids the factory creates as part of its single
+// batched setup tx. `registeredPools` carries the deepbook pool ids
+// the factory registered against the margin registry (sandbox parity).
+export interface DeepbookMarginPoolStateEntry {
+	readonly label: string;
+	readonly assetType: string;
+	readonly marginPoolId: string;
+}
+
+export interface DeepbookMarginStateRecord {
+	readonly name: string;
+	readonly packageId: string;
+	readonly liquidationPackageId: string;
+	readonly registryId: string;
+	readonly adminCapId: string;
+	readonly maintainerCapId?: string;
+	readonly marginPools: ReadonlyArray<DeepbookMarginPoolStateEntry>;
+	readonly registeredPools: ReadonlyArray<string>;
+}
+
 export interface CoinRecord {
 	readonly name: string;
 	readonly type: string;
@@ -94,12 +172,60 @@ export interface CoinRecord {
 		readonly type: string;
 		readonly scalar: number;
 	};
+	// Coin-auto-discovery fields. The publish-discovery pass folds its
+	// findings here directly — no separate user-spec'd `coins:` loop.
+	// Fields are optional because some coins (custom init that bypasses
+	// `coin::create_currency`, snapshot-restored entries) won't have a
+	// full payload to surface.
+
+	/** Canonical CoinMetadata symbol (e.g. `'mUSDC'`). Populated from
+	 *  `client.core.getCoinMetadata`'s payload at publish time. The
+	 *  Phase-3 `Coin('SYMBOL')` factory looks this up via a symbol-keyed
+	 *  index over the registry snapshot. Optional because coins minted
+	 *  via a custom init that bypasses `coin::create_currency` have no
+	 *  on-chain metadata. */
+	readonly symbol?: string;
+	/** Human-readable coin name (e.g. `'Mock USD Coin'`). Surfaces in
+	 *  the dev-wallet UI's balance row alongside `symbol`. Named
+	 *  `displayName` (not `name`) because the existing `CoinRecord.name`
+	 *  field is the registry key (user-supplied tag like `'musdc'`); a
+	 *  field collision would be a footgun for downstream `coin.name`
+	 *  readers. The manifest emit + the Phase-5 generated coin record
+	 *  surface this as `coin.displayName`. */
+	readonly displayName?: string;
+	/** Optional icon URL the CoinMetadata carries. Populates dev-wallet
+	 *  UI thumbnails when present. Stripped to `undefined` when the
+	 *  on-chain field is empty / null. */
+	readonly iconUrl?: string;
+	/** TreasuryCap object id captured from the publish receipt. Same
+	 *  value Phase-0 `discoverCoinsFromPublish` surfaces; folded here so
+	 *  faucet auto-registration + Phase-3 `Coin('SYMBOL')` resolve mint
+	 *  capability without re-querying chain state. `undefined` for
+	 *  coins where the publish didn't produce a cap (read-only coin
+	 *  case: cap was transferred or burned in init). */
+	readonly treasuryCapId?: string;
+	/** CoinMetadata object id. The dev-wallet UI used to fetch this
+	 *  via `client.core.getCoinMetadata` per coin at boot time; once
+	 *  this field is populated in the manifest the UI can skip that
+	 *  RPC waterfall. `undefined` for coins without on-chain
+	 *  metadata. */
+	readonly metadataId?: string;
+	/** The publishing package's id. Stored here so the symbol-keyed
+	 *  registry collision fallback (`${packageId.slice(0,6)}.${witness}`)
+	 *  doesn't have to re-parse from `type`. Optional because hand-rolled
+	 *  `publishCoin` callers (unit tests) don't always supply it; the
+	 *  discovery path in `publishMove` always does. */
+	readonly packageId?: string;
 }
 
-export interface RegistryShape<T> {
-	readonly register: (entry: T) => Effect.Effect<void>;
-	readonly snapshot: Effect.Effect<ReadonlyArray<T>>;
-}
+import type { RegistryShape } from './define-registry.js';
+
+// -----------------------------------------------------------------------------
+// Registry tag classes — one per registry. The class identity is the
+// canonical narrow-type for `yield* X`, so every consumer reading the
+// snapshot gets `RegistryShape<X>` (not the erased `RegistryShape<unknown>`).
+// `defineRegistry(...)` below absorbs the Live + publish + require dance.
+// -----------------------------------------------------------------------------
 
 export class PackageRegistry extends Context.Service<
 	PackageRegistry,
@@ -140,131 +266,117 @@ export class DeepbookStateRegistry extends Context.Service<
 	RegistryShape<DeepbookStateRecord>
 >()('@devstack/DeepbookStateRegistry') {}
 
-// Write-side helpers — sugar for `(yield* X).register(entry)` with a
-// clearer call site. Free functions instead of static class members so
-// the call sites tree-shake and the types stay honest (no
-// `Object.assign(service as any, …)`).
-export const publishPackage = (entry: PackageRecord): Effect.Effect<void, never, PackageRegistry> =>
-	Effect.gen(function* () {
-		const reg = yield* PackageRegistry;
-		yield* reg.register(entry);
-	});
+export class PythStateRegistry extends Context.Service<
+	PythStateRegistry,
+	RegistryShape<PythStateRecord>
+>()('@devstack/PythStateRegistry') {}
 
-export const publishEndpoint = (
-	entry: EndpointRecord,
-): Effect.Effect<void, never, EndpointRegistry> =>
-	Effect.gen(function* () {
-		const reg = yield* EndpointRegistry;
-		yield* reg.register(entry);
-	});
+export class PostgresStateRegistry extends Context.Service<
+	PostgresStateRegistry,
+	RegistryShape<PostgresStateRecord>
+>()('@devstack/PostgresStateRegistry') {}
 
-export const publishAccount = (entry: AccountRecord): Effect.Effect<void, never, AccountRegistry> =>
-	Effect.gen(function* () {
-		const reg = yield* AccountRegistry;
-		yield* reg.register(entry);
-	});
+export class DeepbookIndexerStateRegistry extends Context.Service<
+	DeepbookIndexerStateRegistry,
+	RegistryShape<DeepbookIndexerStateRecord>
+>()('@devstack/DeepbookIndexerStateRegistry') {}
 
-export const publishCoin = (entry: CoinRecord): Effect.Effect<void, never, CoinRegistry> =>
-	Effect.gen(function* () {
-		const reg = yield* CoinRegistry;
-		yield* reg.register(entry);
-	});
+export class DeepbookServerStateRegistry extends Context.Service<
+	DeepbookServerStateRegistry,
+	RegistryShape<DeepbookServerStateRecord>
+>()('@devstack/DeepbookServerStateRegistry') {}
 
-export const publishSuiState = (
-	entry: SuiStateRecord,
-): Effect.Effect<void, never, SuiStateRegistry> =>
-	Effect.gen(function* () {
-		const reg = yield* SuiStateRegistry;
-		yield* reg.register(entry);
-	});
+export class DeepbookMarginStateRegistry extends Context.Service<
+	DeepbookMarginStateRegistry,
+	RegistryShape<DeepbookMarginStateRecord>
+>()('@devstack/DeepbookMarginStateRegistry') {}
 
-export const publishSealState = (
-	entry: SealStateRecord,
-): Effect.Effect<void, never, SealStateRegistry> =>
-	Effect.gen(function* () {
-		const reg = yield* SealStateRegistry;
-		yield* reg.register(entry);
-	});
+// -----------------------------------------------------------------------------
+// Live layers + publish + require — produced by `defineRegistry` so the
+// per-registry boilerplate (Layer.effect + free-function wrappers) lives
+// in one place. Tag identity stays narrow because the class declarations
+// above carry it; the factory is type-erased over the record type.
+// -----------------------------------------------------------------------------
 
-export const publishWalrusState = (
-	entry: WalrusStateRecord,
-): Effect.Effect<void, never, WalrusStateRegistry> =>
-	Effect.gen(function* () {
-		const reg = yield* WalrusStateRegistry;
-		yield* reg.register(entry);
-	});
+export const {
+	Live: PackageRegistryLive,
+	publish: publishPackage,
+	require: requirePackageRegistry,
+} = defineRegistry<PackageRegistry, PackageRecord>(PackageRegistry);
 
-export const publishDeepbookState = (
-	entry: DeepbookStateRecord,
-): Effect.Effect<void, never, DeepbookStateRegistry> =>
-	Effect.gen(function* () {
-		const reg = yield* DeepbookStateRegistry;
-		yield* reg.register(entry);
-	});
+// EndpointRegistry's Live layer also seeds the EngineHandle observer in
+// `engine/engine.ts` (the `EndpointRegistryWithEngineLive` variant). The
+// supervisor wires that variant in; this `Live` is the plain registry
+// path used by direct tests that don't need engine hooks.
+export const {
+	Live: EndpointRegistryLive,
+	publish: publishEndpoint,
+	require: requireEndpointRegistry,
+} = defineRegistry<EndpointRegistry, EndpointRecord>(EndpointRegistry);
 
-// Read-side helpers — yield the upstream publisher `tag` first so the
-// runtime forces a dependency edge on it before resolving the registry.
-// Reading a registry without yielding the publisher is a race under
-// `Layer.build`, and the `require*` helpers lift that constraint into
-// the R channel so misuse fails to type-check.
-const makeRequire =
-	<I, T>(service: Context.Service<I, RegistryShape<T>>) =>
-	<Name extends string, A, R, E>(
-		tag: LayeredTag<Name, A, R, E>,
-	): Effect.Effect<RegistryShape<T>, E, R | TagIdentity<Name> | I> =>
-		Effect.gen(function* () {
-			yield* tag;
-			return yield* service;
-		}) as Effect.Effect<RegistryShape<T>, E, R | TagIdentity<Name> | I>;
+export const {
+	Live: AccountRegistryLive,
+	publish: publishAccount,
+	require: requireAccountRegistry,
+} = defineRegistry<AccountRegistry, AccountRecord>(AccountRegistry);
 
-export const requirePackageRegistry = makeRequire<PackageRegistry, PackageRecord>(PackageRegistry);
-export const requireEndpointRegistry = makeRequire<EndpointRegistry, EndpointRecord>(
-	EndpointRegistry,
-);
-export const requireAccountRegistry = makeRequire<AccountRegistry, AccountRecord>(AccountRegistry);
-export const requireCoinRegistry = makeRequire<CoinRegistry, CoinRecord>(CoinRegistry);
+export const {
+	Live: CoinRegistryLive,
+	publish: publishCoin,
+	require: requireCoinRegistry,
+} = defineRegistry<CoinRegistry, CoinRecord>(CoinRegistry);
 
-const makeRegistryLive = <T>() =>
-	Effect.gen(function* () {
-		const ref = yield* EffectRef.make<ReadonlyArray<T>>([]);
-		return {
-			register: (entry: T) => EffectRef.update(ref, (xs) => [...xs, entry]),
-			snapshot: EffectRef.get(ref),
-		};
-	});
-
-export const PackageRegistryLive: Layer.Layer<PackageRegistry> = Layer.effect(
-	PackageRegistry,
-	makeRegistryLive<PackageRecord>(),
-);
-export const EndpointRegistryLive: Layer.Layer<EndpointRegistry> = Layer.effect(
-	EndpointRegistry,
-	makeRegistryLive<EndpointRecord>(),
-);
-export const AccountRegistryLive: Layer.Layer<AccountRegistry> = Layer.effect(
-	AccountRegistry,
-	makeRegistryLive<AccountRecord>(),
-);
-export const CoinRegistryLive: Layer.Layer<CoinRegistry> = Layer.effect(
-	CoinRegistry,
-	makeRegistryLive<CoinRecord>(),
-);
-export const SuiStateRegistryLive: Layer.Layer<SuiStateRegistry> = Layer.effect(
+export const { Live: SuiStateRegistryLive, publish: publishSuiState } = defineRegistry<
 	SuiStateRegistry,
-	makeRegistryLive<SuiStateRecord>(),
-);
-export const SealStateRegistryLive: Layer.Layer<SealStateRegistry> = Layer.effect(
+	SuiStateRecord
+>(SuiStateRegistry);
+
+export const { Live: SealStateRegistryLive, publish: publishSealState } = defineRegistry<
 	SealStateRegistry,
-	makeRegistryLive<SealStateRecord>(),
-);
-export const WalrusStateRegistryLive: Layer.Layer<WalrusStateRegistry> = Layer.effect(
+	SealStateRecord
+>(SealStateRegistry);
+
+export const { Live: WalrusStateRegistryLive, publish: publishWalrusState } = defineRegistry<
 	WalrusStateRegistry,
-	makeRegistryLive<WalrusStateRecord>(),
-);
-export const DeepbookStateRegistryLive: Layer.Layer<DeepbookStateRegistry> = Layer.effect(
+	WalrusStateRecord
+>(WalrusStateRegistry);
+
+export const { Live: DeepbookStateRegistryLive, publish: publishDeepbookState } = defineRegistry<
 	DeepbookStateRegistry,
-	makeRegistryLive<DeepbookStateRecord>(),
-);
+	DeepbookStateRecord
+>(DeepbookStateRegistry);
+
+export const { Live: PythStateRegistryLive, publish: publishPythState } = defineRegistry<
+	PythStateRegistry,
+	PythStateRecord
+>(PythStateRegistry);
+
+export const { Live: PostgresStateRegistryLive, publish: publishPostgresState } = defineRegistry<
+	PostgresStateRegistry,
+	PostgresStateRecord
+>(PostgresStateRegistry);
+
+export const { Live: DeepbookIndexerStateRegistryLive, publish: publishDeepbookIndexerState } =
+	defineRegistry<DeepbookIndexerStateRegistry, DeepbookIndexerStateRecord>(
+		DeepbookIndexerStateRegistry,
+	);
+
+export const { Live: DeepbookServerStateRegistryLive, publish: publishDeepbookServerState } =
+	defineRegistry<DeepbookServerStateRegistry, DeepbookServerStateRecord>(
+		DeepbookServerStateRegistry,
+	);
+
+export const { Live: DeepbookMarginStateRegistryLive, publish: publishDeepbookMarginState } =
+	defineRegistry<DeepbookMarginStateRegistry, DeepbookMarginStateRecord>(
+		DeepbookMarginStateRegistry,
+	);
+
+// -----------------------------------------------------------------------------
+// Bundled Live layer — every registry the platform wires by default.
+// Engine-aware variants (e.g. `EndpointRegistryWithEngineLive` in
+// `engine.ts`) replace specific entries via `Layer.mergeAll`'s
+// later-wins semantics.
+// -----------------------------------------------------------------------------
 
 export const RegistriesLive = Layer.mergeAll(
 	PackageRegistryLive,
@@ -275,4 +387,9 @@ export const RegistriesLive = Layer.mergeAll(
 	SealStateRegistryLive,
 	WalrusStateRegistryLive,
 	DeepbookStateRegistryLive,
+	PythStateRegistryLive,
+	PostgresStateRegistryLive,
+	DeepbookIndexerStateRegistryLive,
+	DeepbookServerStateRegistryLive,
+	DeepbookMarginStateRegistryLive,
 );

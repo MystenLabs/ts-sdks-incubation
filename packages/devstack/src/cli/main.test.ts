@@ -30,6 +30,7 @@ describe('CLI surface', () => {
 			'wipe',
 			'prune',
 			'stack',
+			'fork',
 			'doctor',
 			'manifest',
 			'version',
@@ -64,5 +65,36 @@ describe('CLI surface', () => {
 			.find((c) => c.name === 'stack');
 		expect(stack, '`stack` command must be registered on the root').toBeDefined();
 		expect(collectSubcommandNames(stack!)).toEqual(['list', 'new', 'use', 'down', 'drop']);
+	});
+
+	it('exposes every `fork` subcommand (Phase 4 P4.1)', () => {
+		const fork = rootCommand.subcommands
+			.flatMap((g) => g.commands)
+			.find((c) => c.name === 'fork');
+		expect(fork, '`fork` command must be registered on the root').toBeDefined();
+		// Verbs (`status`, `advance-clock`, `advance-checkpoint`,
+		// `replay-to`) sit at the top of the subtree; `seed` + `cache`
+		// each carry their own sub-sub commands (`list`, `diff` /
+		// `list`, `prune`). The test walks the top-level only —
+		// per-noun subcommands are exercised below.
+		const got = collectSubcommandNames(fork!);
+		expect(got).toEqual([
+			'status',
+			'advance-clock',
+			'advance-checkpoint',
+			'replay-to',
+			'seed',
+			'cache',
+		]);
+		const seed = fork!.subcommands
+			.flatMap((g) => g.commands)
+			.find((c) => c.name === 'seed');
+		expect(seed, '`fork seed` must be registered').toBeDefined();
+		expect(collectSubcommandNames(seed!)).toEqual(['list', 'diff']);
+		const cache = fork!.subcommands
+			.flatMap((g) => g.commands)
+			.find((c) => c.name === 'cache');
+		expect(cache, '`fork cache` must be registered').toBeDefined();
+		expect(collectSubcommandNames(cache!)).toEqual(['list', 'prune']);
 	});
 });

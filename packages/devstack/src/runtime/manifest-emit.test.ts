@@ -1,4 +1,4 @@
-// emitManifestV4 — covers the producer half of the manifest contract:
+// emitManifest — covers the producer half of the manifest contract:
 //   - eager write at acquire (consumer must be able to read immediately)
 //   - 0o600 permissions (manifest may carry sensitive extras)
 //   - schema encode happens BEFORE serialize (typo in registry surfaces
@@ -19,17 +19,22 @@ import {
 	AccountRegistry,
 	AccountRegistryLive,
 	CoinRegistryLive,
+	DeepbookIndexerStateRegistryLive,
+	DeepbookMarginStateRegistryLive,
+	DeepbookServerStateRegistryLive,
 	DeepbookStateRegistryLive,
 	EndpointRegistry,
 	EndpointRegistryLive,
 	PackageRegistryLive,
+	PostgresStateRegistryLive,
+	PythStateRegistryLive,
 	SealStateRegistryLive,
 	SuiStateRegistryLive,
 	WalrusStateRegistryLive,
 } from '../engine/registries.js';
 import { ExtrasLive } from '../engine/extras.js';
 import { EndpointName } from './endpoint-names.js';
-import { emitManifestV4 } from './manifest-emit.js';
+import { emitManifest } from './manifest-emit.js';
 
 const IdentityLive = Layer.succeed(Identity, {
 	app: 'test-app',
@@ -46,9 +51,20 @@ const RegistriesLive = Layer.mergeAll(
 	SealStateRegistryLive,
 	WalrusStateRegistryLive,
 	DeepbookStateRegistryLive,
+	// Phase-1-era addition (concurrent-track) — gatherManifest now reads
+	// PythState/PostgresState/DeepbookIndexerState. Tests provide empty
+	// Live layers so the manifest emit doesn't blow up on a missing
+	// service. Phase-3/4 — `gatherManifest` now also reads
+	// DeepbookServerState + DeepbookMarginState; tests provide their
+	// empty Live layers for the same reason.
+	PythStateRegistryLive,
+	PostgresStateRegistryLive,
+	DeepbookIndexerStateRegistryLive,
+	DeepbookServerStateRegistryLive,
+	DeepbookMarginStateRegistryLive,
 );
 
-describe('emitManifestV4', () => {
+describe('emitManifest', () => {
 	let outputDir: string;
 	beforeEach(() => {
 		outputDir = mkdtempSync(joinPath(tmpdir(), 'devstack-manifest-emit-'));
@@ -59,7 +75,7 @@ describe('emitManifestV4', () => {
 
 	const outputPath = (): string => joinPath(outputDir, 'manifest.json');
 
-	it.effect('eager-writes a v4 manifest on acquire (consumers can read immediately)', () =>
+	it.effect('eager-writes a v5 manifest on acquire (consumers can read immediately)', () =>
 		Effect.gen(function* () {
 			// Seed registries with a minimal sui-rpc + alice account.
 			const eps = yield* EndpointRegistry;
@@ -67,9 +83,9 @@ describe('emitManifestV4', () => {
 			yield* eps.register({ name: EndpointName.SUI_RPC, url: 'http://sui.test:9000', kind: 'rpc' });
 			yield* accts.register({ name: 'alice', address: '0x1' });
 
-			yield* emitManifestV4({ output: outputPath() });
+			yield* emitManifest({ output: outputPath() });
 
-			// File exists immediately after acquire; content matches v4 shape.
+			// File exists immediately after acquire; content matches v5 shape.
 			const body = readFileSync(outputPath(), 'utf-8');
 			const parsed = JSON.parse(body) as {
 				version: number;
@@ -77,7 +93,7 @@ describe('emitManifestV4', () => {
 				services?: { sui?: { rpc?: { url: string } } };
 				accounts: Record<string, { address: string }>;
 			};
-			expect(parsed.version).toBe(4);
+			expect(parsed.version).toBe(5);
 			expect(parsed.stack).toEqual({ name: 'main', network: 'localnet', app: 'test-app' });
 			expect(parsed.services?.sui?.rpc?.url).toBe('http://sui.test:9000');
 			expect(parsed.accounts['alice']).toEqual({ address: '0x1' });
@@ -89,7 +105,7 @@ describe('emitManifestV4', () => {
 
 	it.effect('writes the manifest with mode 0o600 (extras may be sensitive)', () =>
 		Effect.gen(function* () {
-			yield* emitManifestV4({ output: outputPath() });
+			yield* emitManifest({ output: outputPath() });
 			const mode = statSync(outputPath()).mode & 0o777;
 			expect(mode).toBe(0o600);
 		}).pipe(
@@ -100,7 +116,7 @@ describe('emitManifestV4', () => {
 
 	it.effect('propagates Extras into app.extras', () =>
 		Effect.gen(function* () {
-			yield* emitManifestV4({ output: outputPath() });
+			yield* emitManifest({ output: outputPath() });
 			const parsed = JSON.parse(readFileSync(outputPath(), 'utf-8')) as {
 				app: { extras: Record<string, unknown> };
 			};
@@ -124,7 +140,7 @@ describe('emitManifestV4', () => {
 			// any post-tick mutation on teardown.
 			const scope = yield* Scope.make();
 			const eps = yield* EndpointRegistry;
-			yield* Scope.provide(emitManifestV4({ output: outputPath() }), scope);
+			yield* Scope.provide(emitManifest({ output: outputPath() }), scope);
 
 			// Late registration — after acquire returned, before scope close.
 			yield* eps.register({
@@ -145,8 +161,8 @@ describe('emitManifestV4', () => {
 	it.effect('honors the explicit output path override', () =>
 		Effect.gen(function* () {
 			const custom = joinPath(outputDir, 'custom', 'manifest.json');
-			yield* emitManifestV4({ output: custom });
-			expect(readFileSync(custom, 'utf-8')).toContain('"version": 4');
+			yield* emitManifest({ output: custom });
+			expect(readFileSync(custom, 'utf-8')).toContain('"version": 5');
 		}).pipe(
 			Effect.scoped,
 			Effect.provide(Layer.mergeAll(RegistriesLive, IdentityLive, ExtrasLive(undefined))),

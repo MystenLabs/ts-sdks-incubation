@@ -46,8 +46,8 @@ export interface TuiMount {
 
 const makeNoopProxy = (
 	currentRef: Ref.Ref<EngineHandleShape | undefined>,
-	stableState: Ref.Ref<import('./render.js').TuiState>,
-	placeholderChangedTags: Ref.Ref<ReadonlyArray<string>>,
+	stableState: Ref.Ref<import('../engine/tui-state.js').TuiState>,
+	placeholderShadowCache: Ref.Ref<ReadonlyMap<string, unknown>>,
 ): EngineHandleShape => {
 	const noop = Effect.void;
 	// `<App>` invokes `requestRestart` directly on key `r`/`R`; we forward
@@ -73,13 +73,31 @@ const makeNoopProxy = (
 			const current = yield* Ref.get(currentRef);
 			if (current !== undefined) yield* current.appendLog(entry);
 		});
+	// Q-handler in `<App>` calls `requestShutdown` on the proxy; forward
+	// to the live cycle engine so its supervisor's race(awaitRestart,
+	// awaitShutdown) resolves and the launch loop returns cleanly.
+	const requestShutdown = Effect.gen(function* () {
+		const current = yield* Ref.get(currentRef);
+		if (current !== undefined) yield* current.requestShutdown;
+	});
 	return {
 		tuiState: stableState,
 		markAcquiring: () => noop,
 		markReady: () => noop,
 		setPhase: () => noop,
 		markFailed: () => noop,
+		markStopping: () => noop,
+		markStopped: () => noop,
 		markAllReady: noop,
+		markSelectiveRestart: () => noop,
+		registerPrimitiveScope: () => noop,
+		closePrimitiveScope: () => noop,
+		invalidateSubset: () => noop,
+		invalidateAll: noop,
+		// `<App>` doesn't read the shadow cache. Provided as a stable
+		// empty Ref so the proxy satisfies the EngineHandleShape contract
+		// without a runtime read panicking on a missing field.
+		_shadowCache: placeholderShadowCache,
 		seedTags: () => noop,
 		appendLog,
 		appendTagLog: () => noop,
@@ -92,14 +110,12 @@ const makeNoopProxy = (
 		// without delivering any spurious wakes.
 		awaitRestart: Effect.never,
 		requestRestart,
-		clearChangedTags: noop,
-		// Proxy doesn't track watch-event attribution — the per-cycle
-		// engine does. `<App>` doesn't read these either; only the
-		// launch loop's cycle-start log reads `changedTags`, and that
-		// reads the live cycle engine's own Ref. Provided as no-ops to
-		// satisfy the EngineHandleShape contract.
-		changedTags: placeholderChangedTags,
-		notifyChangedTags: () => noop,
+		// `<App>` doesn't await shutdown; only the per-cycle launch loop
+		// races it against awaitRestart. Provided as `Effect.never` so the
+		// race can never resolve on the proxy itself — only the live cycle
+		// engine's own Deferred.
+		awaitShutdown: Effect.never,
+		requestShutdown,
 	};
 };
 
@@ -127,17 +143,28 @@ const makeNoopProxy = (
  */
 export const startTuiOnce = (): Effect.Effect<TuiMount, never, Scope> =>
 	Effect.gen(function* () {
-		const stableState = yield* Ref.make<import('./render.js').TuiState>({
+		const stableState = yield* Ref.make<import('../engine/tui-state.js').TuiState>({
 			entries: [],
 			endpoints: [],
 			logs: [],
 			header: { app: '', stack: 'main', network: 'localnet', buildStatus: 'idle', cycle: 0 },
 		});
 		const currentRef = yield* Ref.make<EngineHandleShape | undefined>(undefined);
-		const placeholderChangedTags = yield* Ref.make<ReadonlyArray<string>>([]);
-		const proxy = makeNoopProxy(currentRef, stableState, placeholderChangedTags);
+		const placeholderShadowCache = yield* Ref.make<ReadonlyMap<string, unknown>>(new Map());
+		const proxy = makeNoopProxy(currentRef, stableState, placeholderShadowCache);
 
 		const onQuit = (): void => {
+			// Fire SIGINT in addition to the in-process `requestShutdown`
+			// Deferred that the q-handler already resolved on the engine.
+			// `requestShutdown` only unblocks the supervisor's race at the
+			// awaitRestart-vs-awaitShutdown point, which is reached AFTER
+			// `Layer.buildWithMemoMap` completes. If the user pressed `q`
+			// mid-build (e.g. while accounts are still retrying the faucet),
+			// the build is still in flight and `awaitShutdown` isn't observed
+			// until the slowest primitive resolves (~90s for a faucet retry
+			// budget). SIGINT bypasses that — NodeRuntime.runMain interrupts
+			// the supervisor fiber, propagating through the Layer.build's
+			// interruptible boundaries and triggering immediate teardown.
 			process.kill(process.pid, 'SIGINT');
 		};
 
@@ -194,7 +221,7 @@ export const startTuiOnce = (): Effect.Effect<TuiMount, never, Scope> =>
 		// reference-equality short-circuit below means we only fire a
 		// state write when the engine actually mutated the Ref. A
 		// quiet stack costs one Ref.get per tick (no React rerender).
-		let lastSnapshot: import('./render.js').TuiState | undefined;
+		let lastSnapshot: import('../engine/tui-state.js').TuiState | undefined;
 		yield* Effect.forkScoped(
 			Effect.forever(
 				Effect.gen(function* () {
@@ -285,4 +312,4 @@ export type {
 	TuiLog,
 	TuiState,
 	TagStatus,
-} from './render.js';
+} from '../engine/tui-state.js';

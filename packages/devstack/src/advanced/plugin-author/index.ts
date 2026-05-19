@@ -29,11 +29,19 @@ export {
 	type LayeredTag,
 	type TagIdentity,
 	type TagOptions,
-	type TagRequires,
-	type TagErrors,
-	type TagProvides,
 } from '../tag.js';
 export { dockerImage, type DockerImage, type DockerImageOptions } from './docker-image.js';
+export {
+	dockerContainer,
+	runDockerContainer,
+	type DockerContainerImage,
+	type DockerContainerMount,
+	type DockerContainerRouting,
+	type DockerContainerEndpoint,
+	type DockerContainerOptions,
+	type DockerContainerOptionsInput,
+	type DockerContainerHandle,
+} from './docker-container.js';
 export {
 	dockerOneShot,
 	type DockerOneShotOptions,
@@ -70,3 +78,16 @@ export {
 // that need to memoize expensive setup work (e.g. dockerOneShot keygen).
 // Pluging authors should NOT import StateStore directly.
 export { cacheGet, cachePut, cacheRemove } from '../../engine/cache.js';
+
+// Router entrypoint registry — plugin authors that surface a new
+// traefik entrypoint port (e.g. a Prometheus-metrics-only endpoint)
+// register it via `defineEntrypoint(...)` from their module top
+// level so the registration lands before the supervisor boots
+// traefik. `routerEntrypoint(name)` reads back a registered entry
+// (port + default protocol) for downstream URL composition.
+export {
+	defineEntrypoint,
+	listEntrypoints,
+	routerEntrypoint,
+	type RouterEntrypoint,
+} from '../../engine/docker/router.js';

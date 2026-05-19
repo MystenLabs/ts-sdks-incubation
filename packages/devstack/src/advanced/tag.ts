@@ -37,7 +37,6 @@
 
 import { Cause, Context, Effect, Layer, Scope } from 'effect';
 import { EngineHandle } from '../engine/engine.js';
-import { LongLivedScope } from '../engine/long-lived-scope.js';
 import { prettyError } from '../engine/pretty-error.js';
 
 // Per-build "what tag am I inside" reference. `withEngineLifecycle`
@@ -108,27 +107,13 @@ export interface TuiDisplay {
 	 * the row. When present, the dashboard suppresses `primary` to avoid
 	 * duplicating the same URL. */
 	readonly endpoints?: ReadonlyArray<{ readonly label: string; readonly url: string }>;
+	/** Plugin name attribution — drives the leading `[plugin]` chip and the
+	 * row's section color in the TUI. All services from the same plugin
+	 * share a color so the user can scan by source ("blue = walrus"). In-tree
+	 * plugins use a stable predefined map (see `tui/components.tsx`
+	 * `pluginColor`); out-of-tree plugins fall back to a name-hash. */
+	readonly plugin?: string;
 }
-
-/**
- * Lifecycle classification for a tag's resources.
- *
- * - `'per-cycle'` (default): the build's `Effect.acquireRelease` /
- *   `Effect.addFinalizer` resources attach to the per-cycle supervisor
- *   scope. On `r` hot-restart, all resources release and the build re-runs
- *   on the next cycle from a clean slate. Use for primitives that produce
- *   per-cycle artifacts (publishMove → new packageId per cycle is itself
- *   per-cycle, but the underlying Sui container survives; package itself
- *   is the per-cycle wrapper). Most things are per-cycle.
- *
- * - `'long-lived'`: the build's resources attach to the outer
- *   `LongLivedScope` instead. Resources survive `r` hot-restart and only
- *   release on process exit / Ctrl-C / `q`. Use for expensive infra users
- *   want to reuse across cycles (Sui localnet container, walrus storage
- *   nodes, indexer DB). When `LongLivedScope` is absent (standalone tests),
- *   falls back to per-cycle scope automatically.
- */
-export type TagLifecycle = 'per-cycle' | 'long-lived';
 
 /**
  * Optional knobs for `provide` / `tag`. `kind` classifies the row into
@@ -144,15 +129,13 @@ export interface ProvideOptions<A> {
 	 * before `display(value)` runs. Should match the title `display` emits to avoid
 	 * a flicker on resolve. */
 	readonly displayTitle?: string;
-	/**
-	 * Lifecycle classification — see {@link TagLifecycle}. When set to
-	 * `'long-lived'`, the build effect runs with the ambient `Scope`
-	 * substituted to `LongLivedScope`'s value (when present), so any
-	 * `Effect.acquireRelease` / `Scope.addFinalizer` inside the build
-	 * attaches to the long-lived scope and survives `r` hot-restart.
-	 * Defaults to `'per-cycle'`.
-	 */
-	readonly lifecycle?: TagLifecycle;
+	/** Plugin attribution — drives the leading `[plugin]` chip in the TUI and
+	 * the row's section color (so all rows from one plugin share a color the
+	 * user can learn). In-tree services pass their plugin's short name
+	 * (`'sui'`, `'walrus'`, `'seal'`, `'deepbook'`, `'coin'`, `'wallet'`,
+	 * `'move'`). Out-of-tree plugins pass any short string; the TUI falls
+	 * back to a name-hash palette for plugins not in its predefined map. */
+	readonly plugin?: string;
 	/**
 	 * Hide this tag from the TUI dashboard. The build still runs and the
 	 * value still resolves — the only effect is suppressing the row
@@ -165,34 +148,36 @@ export interface ProvideOptions<A> {
 	 */
 	readonly hidden?: boolean;
 	/**
-	 * Filesystem paths (directories or files) whose content changes should
-	 * trigger a hot-restart of the devstack. Aggregated by `defineDevstack`
-	 * alongside the top-level `config.watch` so primitive authors can
-	 * declare what they care about without forcing every config to repeat
-	 * those paths. `publishMove` uses this to auto-watch its Move source
-	 * tree; user code typically doesn't need to set it directly.
+	 * `.gitignore`-style patterns describing what should trigger a
+	 * hot-restart of the devstack. Aggregated by `defineDevstack` alongside
+	 * the top-level `config.watch`, then matched against fs events with
+	 * gitignore semantics: an event fires iff it matches a positive
+	 * pattern AND does not match any `!`-negated pattern.
+	 *
+	 * `publishMove` declares the package's Move source tree this way;
+	 * `Codegen` declares its output directory as a `!`-negation so the
+	 * atomic-rename swap on each cycle doesn't loop the watcher.
+	 *
+	 * Pattern syntax (subset of `.gitignore`):
+	 *  - Bare path (no `*`/`?`/`!`) is a prefix include: `move/vault`
+	 *    matches `move/vault` and everything beneath it.
+	 *  - Leading `!` negates: `!**\/build/**` excludes `build/` anywhere.
+	 *  - `*` matches anything except `/`. `?` matches one char.
+	 *  - `**` matches zero or more path segments.
+	 *  - Trailing `/` matches the directory and its contents.
+	 *  - Relative patterns resolve against `process.cwd()` at compose
+	 *    time; absolute patterns are used as-is. (Negation patterns
+	 *    apply globally regardless of which positive pattern picked
+	 *    the path up.)
 	 *
 	 * Today this triggers a FULL-STACK restart (re-acquires every
-	 * primitive, including expensive ones like the walrus committee).
-	 * Selective per-primitive tear-down driven by which paths changed
-	 * is tracked as future work — the `__watchPaths` field on the
+	 * primitive). Selective per-primitive tear-down driven by which paths
+	 * changed is tracked as future work — the `__watchPaths` field on the
 	 * resulting tag is the surface that future implementation will key
 	 * on, so declaring paths here today is forward-compatible.
 	 */
 	readonly watch?: ReadonlyArray<string>;
 }
-
-/**
- * Truncate a long on-chain id (Sui addresses, package ids, digests) to
- * the `0xabc…123` shape the dashboard uses. Inputs shorter than the cut
- * are returned unchanged.
- */
-export const shortId = (id: string): string => {
-	if (id.length <= 12) return id;
-	const prefix = id.startsWith('0x') ? id.slice(0, 5) : id.slice(0, 5);
-	const suffix = id.slice(-3);
-	return `${prefix}…${suffix}`;
-};
 
 // User-visible shape of a tag (LayeredTag). Extends Context.Service so it's
 // yieldable with the right Effect prototype. Carries R/E as phantom
@@ -225,9 +210,15 @@ export interface LayeredTag<Name extends string, A, R = never, E = never> extend
 	 * the `displayTitle` option passed to `provide` / `tag`. Absence →
 	 * fall back to the tag's key. */
 	readonly __displayTitle?: string;
-	/** Paths the tag's author wants watched for hot-restart. See `ProvideOptions.watch`.
-	 * Aggregated by `devstack(...)` into the runtime watch set. */
+	/** `.gitignore`-style watch patterns (positive includes + `!`-negations).
+	 * See `ProvideOptions.watch`. Aggregated by `devstack(...)` into the
+	 * runtime watch set, compiled against `DEFAULT_WATCH_EXCLUDES` in
+	 * `supervisor.ts::compileWatchFilter`. */
 	readonly __watchPaths?: ReadonlyArray<string>;
+	/** Plugin attribution — see `ProvideOptions.plugin`. Stamped onto the
+	 * stack member so the supervisor's seed pass can color/sort entries
+	 * before the build body even runs. */
+	readonly __pluginName?: string;
 	/** When `true`, the tag does not surface as a TUI row. See `ProvideOptions.hidden`. */
 	readonly __hidden?: boolean;
 	/** Unique-symbol brand identifying this object as a devstack stack
@@ -250,6 +241,18 @@ export interface LayeredTag<Name extends string, A, R = never, E = never> extend
  * who add `Effect.withSpan('<tag>.<phase>')` inside `build` — the engine
  * doesn't peek at spans yet (Wave 10+).
  *
+ * Per-primitive scope (Phase 2 of selective-restart): every Layer built
+ * by `Layer.effect(TagClass, build)` already gets its own scope via
+ * Effect's MemoMap (see `memoMapBuild` in `effect/Layer.ts`). The wrap
+ * captures that ambient scope and registers it with the engine so the
+ * supervisor can close just one primitive's resources on a watch-fire
+ * (Phase 3's `engine.invalidateSubset`). Resources allocated by the
+ * build body (containers via `Docker.run`, files via `Effect.acquireRelease`,
+ * …) attach to this scope automatically — there is no per-primitive
+ * lifecycle escape hatch anymore; every primitive's resources stay
+ * alive up to the supervisor's outer scope, and selective invalidation
+ * is the only way to release them before that outer scope closes.
+ *
  * If a tag is built outside a devstack (e.g. inside a unit test that
  * provides only the tag's layer), `EngineHandle` would be a missing
  * dependency, so we resolve it via `Effect.serviceOption` and fall back
@@ -263,29 +266,24 @@ const withEngineLifecycle = <A, E, R>(
 		readonly display?: (shape: A) => TuiDisplay;
 		readonly displayTitle?: string;
 		readonly hidden?: boolean;
-		readonly lifecycle?: TagLifecycle;
 	},
 ): Effect.Effect<A, E, R> =>
 	Effect.gen(function* () {
-		// Lifecycle: when `'long-lived'` and `LongLivedScope` is present,
-		// substitute the ambient `Scope` with the long-lived one so the
-		// build's `Effect.acquireRelease` / `Scope.addFinalizer` resources
-		// attach to a scope that survives per-cycle teardown. Standalone
-		// callers (unit tests) leave `LongLivedScope` undefined and the
-		// build keeps the per-cycle Layer scope, matching prior behavior.
-		const longLivedScope =
-			classification.lifecycle === 'long-lived' ? yield* LongLivedScope : undefined;
-		const liftedBuild: Effect.Effect<A, E, R> =
-			longLivedScope !== undefined
-				? (build.pipe(Effect.provideService(Scope.Scope, longLivedScope)) as Effect.Effect<A, E, R>)
-				: build;
+		// The ambient `Scope` here is the per-primitive layer scope that
+		// `memoMapBuild` forked off the supervisor scope. Capturing it
+		// lets the engine close just this one primitive's resources when
+		// Phase 3's `engine.invalidateSubset` fires for `name` — its
+		// finalizers (container `docker stop`, files, etc.) release
+		// without touching siblings. Registration is a noop outside a
+		// devstack (engine absent — standalone tests).
+		const primitiveScope = yield* Effect.scope;
 		const engineOpt = yield* Effect.serviceOption(EngineHandle);
 		if (engineOpt._tag === 'None') {
 			// Still pin CurrentTagKey so `setPhase` calls inside the body
 			// land on the no-engine branch without crashing on a missing
 			// reference. The reference's defaultValue covers the
 			// no-provider case too — this is belt-and-braces for clarity.
-			return yield* liftedBuild.pipe(Effect.provideService(CurrentTagKey, name));
+			return yield* build.pipe(Effect.provideService(CurrentTagKey, name));
 		}
 		// Hidden tags: the engine never sees this tag, so it can't render a
 		// row for it. The build still runs and the value still resolves —
@@ -293,9 +291,10 @@ const withEngineLifecycle = <A, E, R>(
 		// CurrentTagKey is intentionally left at the empty default so any
 		// `setPhase` inside the body is a noop (we have no row to update).
 		if (classification.hidden === true) {
-			return yield* liftedBuild.pipe(Effect.provideService(CurrentTagKey, ''));
+			return yield* build.pipe(Effect.provideService(CurrentTagKey, ''));
 		}
 		const engine = engineOpt.value;
+		yield* engine.registerPrimitiveScope(name, primitiveScope);
 		yield* engine.markAcquiring(name, classification.kind);
 		// Seed the row's title BEFORE the build body runs so the dashboard
 		// shows `accounts.alice` instead of the raw key `account/alice` while
@@ -314,7 +313,7 @@ const withEngineLifecycle = <A, E, R>(
 		// on the row; the log carries the multi-line stderr+phase tree the
 		// user needs to debug — and lives in only ONE place (no per-row
 		// duplicate, no umbrella "stack failed" suffix).
-		return yield* liftedBuild.pipe(
+		return yield* build.pipe(
 			Effect.onExit((exit) =>
 				exit._tag === 'Success'
 					? engine.markReady(
@@ -380,6 +379,7 @@ export const provide = <T extends AnyTagClass, A, E = never, R = never>(
 	readonly __kind?: TagKind;
 	readonly __displayTitle?: string;
 	readonly __watchPaths?: ReadonlyArray<string>;
+	readonly __pluginName?: string;
 	readonly __hidden?: boolean;
 } => {
 	const wrapped = withEngineLifecycle(TagClass.key, build, options);
@@ -396,6 +396,7 @@ export const provide = <T extends AnyTagClass, A, E = never, R = never>(
 		__kind?: TagKind;
 		__displayTitle?: string;
 		__watchPaths?: ReadonlyArray<string>;
+		__pluginName?: string;
 		__hidden?: boolean;
 		[DevstackTagBrand]: true;
 	} = { __layer: layer, key: TagClass.key, [DevstackTagBrand]: true as const };
@@ -404,6 +405,7 @@ export const provide = <T extends AnyTagClass, A, E = never, R = never>(
 	if (options.watch !== undefined && options.watch.length > 0) {
 		extras.__watchPaths = options.watch;
 	}
+	if (options.plugin !== undefined) extras.__pluginName = options.plugin;
 	if (options.hidden === true) extras.__hidden = true;
 	// Mutate the canonical class so it doubles as a yieldable StackMember.
 	return Object.assign(TagClass, extras) as unknown as T & typeof extras;
@@ -438,8 +440,8 @@ export const tag = <const Name extends string, A, E = never, R = never>(
 		...(options.display !== undefined ? { display: options.display } : {}),
 		...(options.displayTitle !== undefined ? { displayTitle: options.displayTitle } : {}),
 		...(options.watch !== undefined ? { watch: options.watch } : {}),
+		...(options.plugin !== undefined ? { plugin: options.plugin } : {}),
 		...(options.hidden === true ? { hidden: true } : {}),
-		...(options.lifecycle !== undefined ? { lifecycle: options.lifecycle } : {}),
 	};
 	const { __layer, key } = provide(T, build, provideOpts);
 	// Order matters: `composeStackLayer` folds left-to-right with
@@ -463,6 +465,7 @@ export const tag = <const Name extends string, A, E = never, R = never>(
 		__kind?: TagKind;
 		__displayTitle?: string;
 		__watchPaths?: ReadonlyArray<string>;
+		__pluginName?: string;
 		__hidden?: boolean;
 		[DevstackTagBrand]: true;
 	} = {
@@ -476,6 +479,7 @@ export const tag = <const Name extends string, A, E = never, R = never>(
 	if (options.watch !== undefined && options.watch.length > 0) {
 		extras.__watchPaths = options.watch;
 	}
+	if (options.plugin !== undefined) extras.__pluginName = options.plugin;
 	if (options.hidden === true) extras.__hidden = true;
 	return Object.assign(T, extras) as unknown as LayeredTag<Name, A, Exclude<R, Scope.Scope>, E>;
 };
@@ -533,6 +537,36 @@ export interface ComposeLayersOptions {
  * sibling tags' layers feed `primary`'s body, and `primary`'s output
  * feeds the projection layers' bodies, so the canonical order is
  * `inner → primary → projections`.
+ *
+ * Single-tag vs composite-tag rule
+ * ---
+ * Reach for `composeLayers` (composite-tag shape — `primary` + zero or
+ * more `projections`) when admin and read capabilities must be
+ * type-separable in user code: Walrus splits into
+ * `WalrusNetworkTag` (read-only) and the writable layer; Seal splits
+ * into `SealKeyServerTag` + `SealKeyManagerTag`; Deepbook follows the
+ * same pattern. The projection layers consume `primary`'s resolved
+ * value and republish it into a narrower interface tag, so a consumer
+ * yielding the read-only tag can't accidentally call admin methods.
+ *
+ * Use the single-tag shape (`tag(...)` / `provide(...)` with no
+ * `composeLayers` call) when the resolved value is one cohesive bundle
+ * with no admin / read split — `Sui()`, `Faucet()`, `Account()`,
+ * `Package()`. The composite shape adds the projection-layer overhead
+ * for no API win when there's nothing to separate.
+ *
+ * Discriminator naming: tagged-union options on factories use `kind:`
+ * as the discriminator field (`AccountSpec` is the precedent —
+ * `{kind: 'env', key: ...}`, `{kind: 'keystore', alias: ...}`). New
+ * tagged-union options in `/advanced` follow the same rule; don't
+ * introduce a new discriminator name (`from`, `type`, `mode`, `tag`).
+ *
+ * Per-job factories with a single semantic that dispatch on input
+ * shape — `Coin('SYMBOL')`, `Coin.fromPackage(pkg, witness)`,
+ * `Coin('0x...::T')`, `Coin.builtin('sui')` — do NOT use a
+ * discriminator field. The input shape selects the branch and TS
+ * narrows automatically. Use that precedent when "this thing has one
+ * job; overload on input shape" applies.
  */
 export const composeLayers = (
 	opts: ComposeLayersOptions,
@@ -542,7 +576,3 @@ export const composeLayers = (
 	...(opts.projections ?? []),
 ];
 
-// Phantom extractors for devstack(...).
-export type TagRequires<T> = T extends LayeredTag<any, any, infer R, any> ? R : never;
-export type TagErrors<T> = T extends LayeredTag<any, any, any, infer E> ? E : never;
-export type TagProvides<T> = T extends LayeredTag<infer N, any, any, any> ? TagIdentity<N> : never;

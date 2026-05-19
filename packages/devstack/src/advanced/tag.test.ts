@@ -1,119 +1,62 @@
-// Unit tests for the tag substrate's `lifecycle` option.
+// Unit tests for the tag substrate's lifecycle wrap.
 //
-// `lifecycle: 'long-lived'` redirects a build's `Scope`-attached finalizers
-// to the ambient `LongLivedScope` reference (when present) instead of the
-// per-cycle scope `Layer.effect` would otherwise hand to the build. This
-// is the mechanism the auto-attached Docker.run / SuiBuildContainer
-// finalizers already use internally; the `lifecycle` option exposes it as
-// a declarative knob plugin-author tags can opt into.
+// Per Phase 2 of selective-restart, every primitive's resources attach
+// to its own layer scope automatically — there is no `lifecycle` option
+// anymore. These tests pin:
+//
+//   1. The build's `Effect.addFinalizer` attaches to the ambient Layer
+//      scope (the per-primitive scope Effect's MemoMap forks for each
+//      Layer.effect).
+//   2. The shape of a `tag` return value (key, __layer, __layers).
+//   3. The deletion of the `lifecycle` field — a meta-test using
+//      `@ts-expect-error` so a future re-introduction fails typecheck.
 
 import { Effect, Exit, Layer, Ref, Scope } from 'effect';
 import { describe, expect, it } from 'vitest';
 import { it as itEffect } from '@effect/vitest';
 import { tag } from './tag.js';
-import { LongLivedScope } from '../engine/long-lived-scope.js';
 
-describe('tag() lifecycle option', () => {
-	itEffect.effect(
-		"'long-lived' attaches the build's finalizer to LongLivedScope, not the per-cycle scope",
-		() =>
-			Effect.gen(function* () {
-				const finalizerFired = yield* Ref.make(false);
-
-				const longLived = yield* Scope.make();
-
-				const sample = tag(
-					'lifecycle-long-lived',
-					Effect.gen(function* () {
-						yield* Effect.addFinalizer(() => Ref.set(finalizerFired, true));
-						return { ok: true };
-					}),
-					{ lifecycle: 'long-lived' },
-				);
-
-				// Build the layer inside a per-cycle scope; provide LongLivedScope
-				// so the lifecycle redirect kicks in. The build returns its value
-				// and the per-cycle scope keeps Layer-internal bookkeeping, but
-				// the user's finalizer should now belong to longLived.
-				const perCycle = yield* Scope.make();
-				yield* Effect.scoped(Layer.build(sample.__layer)).pipe(
-					Scope.provide(perCycle),
-					Effect.provideService(LongLivedScope, longLived),
-				);
-
-				// Per-cycle scope closes; finalizer must NOT fire because it's
-				// attached to longLived.
-				yield* Scope.close(perCycle, Exit.void);
-				expect(yield* Ref.get(finalizerFired)).toBe(false);
-
-				// longLived closes; finalizer fires.
-				yield* Scope.close(longLived, Exit.void);
-				expect(yield* Ref.get(finalizerFired)).toBe(true);
-			}),
-	);
-
-	itEffect.effect("'per-cycle' (default) attaches the finalizer to the per-cycle scope", () =>
-		Effect.gen(function* () {
-			const finalizerFired = yield* Ref.make(false);
-			const longLived = yield* Scope.make();
-
-			const sample = tag(
-				'lifecycle-per-cycle',
-				Effect.gen(function* () {
-					yield* Effect.addFinalizer(() => Ref.set(finalizerFired, true));
-					return { ok: true };
-				}),
-				// no lifecycle → defaults to per-cycle
-			);
-
-			const perCycle = yield* Scope.make();
-			yield* Effect.scoped(Layer.build(sample.__layer)).pipe(
-				Scope.provide(perCycle),
-				Effect.provideService(LongLivedScope, longLived),
-			);
-
-			// Closing per-cycle fires the finalizer immediately even though
-			// LongLivedScope is in context — the lifecycle redirect only
-			// fires when explicitly opted in.
-			yield* Scope.close(perCycle, Exit.void);
-			expect(yield* Ref.get(finalizerFired)).toBe(true);
-
-			yield* Scope.close(longLived, Exit.void);
-		}),
-	);
-
-	itEffect.effect("'long-lived' without LongLivedScope falls back to per-cycle", () =>
+describe('tag() lifecycle wrap', () => {
+	itEffect.effect("build's finalizer attaches to the ambient (per-primitive) scope", () =>
 		Effect.gen(function* () {
 			const finalizerFired = yield* Ref.make(false);
 
 			const sample = tag(
-				'lifecycle-long-lived-no-outer',
+				'lifecycle-default',
 				Effect.gen(function* () {
 					yield* Effect.addFinalizer(() => Ref.set(finalizerFired, true));
 					return { ok: true };
 				}),
-				{ lifecycle: 'long-lived' },
 			);
 
-			// No LongLivedScope provided (defaultValue undefined) → fall back
-			// to the per-cycle scope. Matches standalone-test ergonomics:
-			// every long-lived tag works without a supervisor wrapper.
+			// Build the layer inside a fresh per-cycle scope.
 			const perCycle = yield* Scope.make();
 			yield* Effect.scoped(Layer.build(sample.__layer)).pipe(Scope.provide(perCycle));
 
+			// Closing the per-cycle scope fires the finalizer — there is no
+			// long-lived escape hatch anymore.
 			yield* Scope.close(perCycle, Exit.void);
 			expect(yield* Ref.get(finalizerFired)).toBe(true);
 		}),
 	);
 });
 
-// A trivial smoke test that the lifecycle option doesn't break the
-// existing tag shape (key, __layer, __layers).
-describe('tag() shape with lifecycle option', () => {
-	it("a 'long-lived' tag still surfaces __layer and __layers", () => {
-		const t = tag('shape', Effect.succeed({ ok: true }), { lifecycle: 'long-lived' });
+// A trivial smoke test that the tag shape stays intact: key, __layer, __layers.
+describe('tag() shape', () => {
+	it('surfaces __layer and __layers', () => {
+		const t = tag('shape', Effect.succeed({ ok: true }));
 		expect(t.key).toBe('shape');
 		expect(t.__layer).toBeDefined();
 		expect(t.__layers.length).toBeGreaterThan(0);
+	});
+
+	it('rejects `lifecycle` at the type level (P2.T3 — option deletion meta-test)', () => {
+		// Type-level negative assertion: the `lifecycle` field used to be
+		// part of `TagOptions` / `ProvideOptions`; Phase 2 of selective-restart
+		// deleted it. If a future change re-adds it the `@ts-expect-error`
+		// directive flags as unused, surfacing the regression at typecheck.
+		// @ts-expect-error — `lifecycle` is no longer a valid TagOption.
+		void tag('lifecycle-removed', Effect.succeed({ ok: true }), { lifecycle: 'long-lived' });
+		expect(true).toBe(true);
 	});
 });

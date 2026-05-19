@@ -14,6 +14,7 @@ import { Context, Effect } from 'effect';
 import { writeFileAtomic } from '../../engine/atomic-write.js';
 import { Identity } from '../../engine/identity.js';
 import { PortAllocator } from '../../engine/port-allocator.js';
+import { resolveAppDir } from '../../engine/resolve-app-dir.js';
 import {
 	routerEntrypoint,
 	removeFileProvider,
@@ -45,9 +46,7 @@ export interface WalletApp {
 	readonly localPort: number;
 }
 
-export interface WalletAppOptions<Name extends string> {
-	/** Tag name for this primitive. Defaults to `'wallet-app'`. */
-	readonly name?: Name;
+export interface WalletAppOptions {
 	/**
 	 * Accounts whose signers the wallet exposes for browser-driven
 	 * signing. Each tag is yielded for ordering (so accounts are funded
@@ -80,10 +79,8 @@ export interface WalletAppOptions<Name extends string> {
 	readonly bindAddress?: string;
 }
 
-export const walletApp = <const Name extends string = typeof EndpointName.WALLET_APP>(
-	options: WalletAppOptions<Name>,
-) => {
-	const name = (options.name ?? EndpointName.WALLET_APP) as Name;
+export const walletApp = (options: WalletAppOptions) => {
+	const name = EndpointName.WALLET_APP;
 	return tag(
 		name,
 		Effect.gen(function* () {
@@ -148,7 +145,7 @@ export const walletApp = <const Name extends string = typeof EndpointName.WALLET
 							Effect.provideService(StateStoreConfig, stateStoreCfgOpt.value),
 						)
 					: joinPath(
-							process.env.DEVSTACK_APP_DIR ?? process.cwd(),
+							resolveAppDir(),
 							'.devstack',
 							'stacks',
 							identity.stack,
@@ -278,7 +275,7 @@ export const walletApp = <const Name extends string = typeof EndpointName.WALLET
 		}).pipe(Effect.withSpan(`walletApp(${name})`)),
 		{
 			kind: 'service',
-			lifecycle: 'per-cycle',
+			plugin: 'wallet',
 			displayTitle: 'wallet',
 			// Redact the token from the TUI primary so a screen
 			// recording / scrollback / over-the-shoulder doesn't leak
@@ -488,6 +485,12 @@ const handleAccounts = (
 		address: a.address,
 		scheme: a.scheme,
 		publicKey: Buffer.from(a.publicKey).toString('base64'),
+		// Phase 4 P4.18 — propagate the `source` discriminator to the
+		// browser-side wallet adapter so the accounts panel can render
+		// an "(impersonation)" badge on fork-mode impersonation slots.
+		// Optional + default `'real'` for backward compat with older
+		// `Account` interface consumers.
+		source: a.source ?? 'real',
 	}));
 	sendJson(res, 200, { accounts });
 };

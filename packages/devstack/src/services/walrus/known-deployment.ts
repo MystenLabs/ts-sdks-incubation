@@ -23,7 +23,6 @@ export interface WalrusKnownDeploymentOptions {
 	readonly network?: KnownNetwork;
 	readonly systemObjectId?: string;
 	readonly stakingPoolId?: string;
-	readonly subsidiesPackageId?: string;
 	readonly exchangeIds?: ReadonlyArray<string>;
 	readonly nodes?: ReadonlyArray<WalrusNodeInfo>;
 	readonly aggregatorUrl?: string;
@@ -43,7 +42,6 @@ export const walrusKnownDeployment = (options: WalrusKnownDeploymentOptions): St
 
 	const systemObjectId = options.systemObjectId ?? known?.systemObjectId;
 	const stakingPoolId = options.stakingPoolId ?? known?.stakingPoolId;
-	const subsidiesPackageId = options.subsidiesPackageId ?? known?.subsidiesPackageId;
 	const exchangeIds = options.exchangeIds ?? known?.exchangeIds;
 	const nodes = options.nodes ?? known?.nodes;
 	const aggregatorUrl = options.aggregatorUrl ?? known?.aggregatorUrl;
@@ -81,7 +79,6 @@ export const walrusKnownDeployment = (options: WalrusKnownDeploymentOptions): St
 	const networkShape: WalrusNetwork = {
 		systemObjectId,
 		stakingPoolId,
-		subsidiesPackageId,
 		exchangeIds,
 		network,
 		// SDK-ready view. Real testnet/mainnet values flow straight
@@ -130,6 +127,7 @@ export const walrusKnownDeployment = (options: WalrusKnownDeploymentOptions): St
 		__layers: layers,
 		key: KNOWN_DEPLOYMENT_KEY,
 		__kind: 'service' as const,
+		__pluginName: 'walrus',
 		__displayTitle: `walrus.${network}`,
 	};
 };

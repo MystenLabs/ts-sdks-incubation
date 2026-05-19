@@ -2,6 +2,10 @@
 // `walletApp(...)`. The plan's "always explicit" rule lives here:
 // `devstack(...)` does NOT auto-mount a wallet; users opt in by
 // constructing this ref and passing it to `devstack(...)`.
+//
+// Singleton: one wallet per stack. The tag name is the canonical
+// `EndpointName.WALLET_APP` ('wallet-app'). Multiple wallets per stack
+// are not supported; use separate stacks for separate wallet UIs.
 
 import { walletApp, type WalletAppOptions } from './wallet/internal.js';
 import type { Account } from '../engine/shared.js';
@@ -19,18 +23,16 @@ export interface WalletOptions {
 	readonly port?: number;
 	/** Interface to bind. Defaults to the security-hardened `'127.0.0.1'` loopback. */
 	readonly bindAddress?: string;
-	/** Override tag name. Defaults to `'wallet-app'`. */
-	readonly name?: string;
 }
 
-/** Wallet UI factory. Returns a LayeredTag. */
+/** Wallet UI factory. Singleton — one per stack. Returns a LayeredTag
+ *  pinned to the canonical `EndpointName.WALLET_APP` tag name. */
 export const Wallet = (opts: WalletOptions) => {
-	const walletOpts: WalletAppOptions<string> = {
+	const walletOpts: WalletAppOptions = {
 		accounts: opts.accounts,
 		...(opts.allowedOrigins !== undefined ? { allowedOrigins: opts.allowedOrigins } : {}),
 		...(opts.port !== undefined ? { port: opts.port } : {}),
 		...(opts.bindAddress !== undefined ? { bindAddress: opts.bindAddress } : {}),
-		...(opts.name !== undefined ? { name: opts.name } : {}),
 	};
-	return Object.assign(walletApp(walletOpts), { __kind: 'app' as const });
+	return Object.assign(walletApp(walletOpts), { __kind: 'app' as const, __pluginName: 'wallet' });
 };

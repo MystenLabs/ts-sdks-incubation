@@ -20,16 +20,21 @@ import { Identity } from '../engine/identity.js';
 import {
 	AccountRegistryLive,
 	CoinRegistryLive,
+	DeepbookIndexerStateRegistryLive,
+	DeepbookMarginStateRegistryLive,
+	DeepbookServerStateRegistryLive,
 	DeepbookStateRegistryLive,
 	EndpointRegistryLive,
 	PackageRegistryLive,
+	PostgresStateRegistryLive,
+	PythStateRegistryLive,
 	SealStateRegistryLive,
 	SuiStateRegistryLive,
 	WalrusStateRegistryLive,
 } from '../engine/registries.js';
 import { StackHandleEmitter } from '../codegen/emitters/stack-handle.js';
 import type { CodegenContext } from '../codegen/define-emitter.js';
-import { emitManifestV4 } from './manifest-emit.js';
+import { emitManifest } from './manifest-emit.js';
 
 const IdentityLive = Layer.succeed(Identity, {
 	app: 'extras-test',
@@ -46,6 +51,11 @@ const RegistriesLive = Layer.mergeAll(
 	SealStateRegistryLive,
 	WalrusStateRegistryLive,
 	DeepbookStateRegistryLive,
+	PythStateRegistryLive,
+	PostgresStateRegistryLive,
+	DeepbookIndexerStateRegistryLive,
+	DeepbookServerStateRegistryLive,
+	DeepbookMarginStateRegistryLive,
 );
 
 describe('ExtrasResolved consistency', () => {
@@ -81,7 +91,7 @@ describe('ExtrasResolved consistency', () => {
 			// the `ExtrasResolved` value via the layer build cache.
 			const result = yield* Effect.gen(function* () {
 				const manifestPath = joinPath(outputDir, 'manifest.json');
-				yield* emitManifestV4({ output: manifestPath });
+				yield* emitManifest({ output: manifestPath });
 				const ctx: CodegenContext = { packages: [], outputDir };
 				yield* StackHandleEmitter().emit(ctx);
 
