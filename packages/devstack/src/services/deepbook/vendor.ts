@@ -65,8 +65,16 @@ export interface VendoredDeepbookSources {
 
 export interface VendorDeepbookOptions {
 	readonly name?: string;
-	/** Git ref (tag, branch, sha) to clone. Defaults to `'main'`. */
+	/** Git ref (tag, branch, sha) for the **deepbook** repo clone.
+	 *  Defaults to `'main'`. */
 	readonly ref?: string;
+	/** Git ref for the **sandbox** repo clone. Defaults to whatever
+	 *  `ref` resolves to if the sandbox carries the same tag, but the
+	 *  sandbox's tag namespace is independent of deepbookv3's (it
+	 *  uses `v0.x` whereas deepbookv3 ships `v7.x`+). Set this
+	 *  explicitly when pinning `ref` to a deepbook-only tag — e.g.
+	 *  `ref: 'v7.0.0'` + `sandboxRef: 'main'`. Defaults to `'main'`. */
+	readonly sandboxRef?: string;
 	/** Override the deepbook upstream repo. Defaults to MystenLabs/deepbookv3. */
 	readonly deepbookRepo?: string;
 	/** Override the sandbox upstream repo. Defaults to MystenLabs/deepbook-sandbox. */
@@ -155,12 +163,14 @@ const copyDir = async (src: string, dst: string): Promise<void> => {
 export const vendorDeepbook = (opts: VendorDeepbookOptions = {}) => {
 	const name = opts.name ?? 'vendorDeepbook';
 	const ref = opts.ref ?? 'main';
+	const sandboxRef = opts.sandboxRef ?? 'main';
 	const deepbookRepo = opts.deepbookRepo ?? DEFAULT_DEEPBOOK_REPO;
 	const sandboxRepo = opts.sandboxRepo ?? DEFAULT_SANDBOX_REPO;
 
 	// Sibling tags for the two upstream clones. Distinct names so the
 	// gitFetch cache layout (`.devstack/git/<name>/<refHash>`) doesn't
-	// collide.
+	// collide. Refs are independent — deepbookv3 uses `v7.x`-style
+	// tags, sandbox uses `v0.x` tags, so they cannot share a ref.
 	const deepbookFetch = gitFetch({
 		name: `${name}.deepbook` as const,
 		repo: deepbookRepo,
@@ -169,7 +179,7 @@ export const vendorDeepbook = (opts: VendorDeepbookOptions = {}) => {
 	const sandboxFetch = gitFetch({
 		name: `${name}.sandbox` as const,
 		repo: sandboxRepo,
-		ref,
+		ref: sandboxRef,
 	});
 
 	const composite = tag(
