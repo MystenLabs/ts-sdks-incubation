@@ -56,7 +56,8 @@ import {
 	type DownstreamClosure,
 } from './dep-graph.js';
 import { contentHash } from './content-hash.js';
-import { ClaimedContainers, dockerOrphanSweep, ensureRouter } from './docker.js';
+import { ClaimedContainers, dockerOrphanSweep } from './docker.js';
+import { bootstrapRouterFor } from './router-bootstrap.js';
 import { prettyError } from './pretty-error.js';
 import {
 	EngineHandle,
@@ -1916,23 +1917,10 @@ export const defineDevstack = (
 			// Memoizing here removes the per-cycle ensure-router cost on
 			// `r` (the previous per-cycle ensure was a no-op against a
 			// healthy traefik, but still cost a `docker inspect`).
-			if (process.env.DEVSTACK_NO_ROUTER !== '1') {
-				yield* ensureRouter.pipe(
-					Effect.provide(bootstrapCtx),
-					Effect.timeoutOrElse({
-						duration: '10 seconds',
-						orElse: () =>
-							Effect.logWarning(
-								'devstack: traefik router boot timed out after 10s — continuing without it',
-							),
-					}),
-					Effect.catch((cause) =>
-						Effect.logWarning(
-							`devstack: traefik router boot failed: ${(cause as { message?: string })?.message ?? String(cause)} — falling back to direct ports for any traefik-aware primitives`,
-						),
-					),
-				);
-			}
+			// `devstack apply` uses the same helper so a fresh CI runner
+			// (no `devstack-router` network from a prior `up`) has the
+			// network created before any primitive tries to attach.
+			yield* bootstrapRouterFor('up').pipe(Effect.provide(bootstrapCtx));
 
 			// Mount the renderer ONCE for the entire runMain lifetime.
 			// Both ink (TUI) and the plain renderer fork live on the

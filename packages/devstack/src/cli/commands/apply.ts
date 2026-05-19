@@ -11,8 +11,10 @@
 
 import { Cause, Console, Effect, Layer, Option } from 'effect';
 import { Argument, Command, Flag } from 'effect/unstable/cli';
+import { layer as NodeServicesLayer } from '@effect/platform-node/NodeServices';
 import { SeedManifestMismatchError } from '../../engine/errors.js';
 import { causeToJson, prettyError } from '../../engine/pretty-error.js';
+import { bootstrapRouterFor } from '../../engine/router-bootstrap.js';
 import { AlreadyReportedError } from '../already-reported.js';
 import { applyNetworkOverride, networkFlag } from '../flags.js';
 import { loadConfigModule, requireLayer } from '../loaders.js';
@@ -77,6 +79,27 @@ export const applyCommand = Command.make(
 			applyNetworkOverride(network);
 			const resolved = Option.getOrElse(configPath, () => './devstack.config.ts');
 			const devstack = yield* loadConfigModule(resolved, requireLayer);
+
+			// Bring up the shared traefik router BEFORE building the user
+			// stack. On a fresh CI runner (no prior `devstack up` on this
+			// host) the `devstack-router` docker network does NOT exist
+			// yet — `ensureRouter` is what creates it. Skipping this step
+			// causes per-primitive `docker network connect devstack-router`
+			// calls to fail silently inside Docker.run's traefik wiring
+			// (only logged as WARN), after which traefik-fronted ready-probes
+			// time out 60s later because the manifest URLs are unreachable.
+			//
+			// `up` does the same thing inside the long-running supervisor
+			// (`runDevstack` at supervisor.ts ~ ensureRouter call) — the
+			// helper is shared so the two paths can't drift on the
+			// timeout / fallback / opt-out envelope.
+			//
+			// We supply `NodeServicesLayer` here directly (rather than
+			// composing the full bootstrap layer) because `ensureRouter`
+			// only needs `ChildProcessSpawner` — pulling in the rest of
+			// the bootstrap services would couple `apply` to identity /
+			// state-store / engine wiring it doesn't otherwise need.
+			yield* bootstrapRouterFor('apply').pipe(Effect.provide(NodeServicesLayer));
 
 			// `Layer.build` inside `Effect.scoped` acquires every primitive,
 			// then closes the scope on exit — that's what fires the manifest
