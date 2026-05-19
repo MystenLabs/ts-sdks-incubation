@@ -35,20 +35,24 @@ export interface ServiceProjection<I, TState, TView, TContext> {
 }
 
 /** Build the projection's `read` Effect: yield the registry, snapshot
- *  it, take the last record, run `project`. Returns the spec extended
- *  with `read` so callers either consume `read` directly (single
- *  projection) or `project` + `name` via a table loop. */
-export const defineServiceProjection = <I, TState, TView, TContext>(
-	spec: ServiceProjection<I, TState, TView, TContext>,
-): ServiceProjection<I, TState, TView, TContext> & {
-	readonly read: (ctx: TContext) => Effect.Effect<TView | undefined, never, I>;
-} => ({
-	...spec,
-	read: (ctx) =>
-		Effect.gen(function* () {
-			const reg = yield* spec.registry;
-			const raw = yield* reg.snapshot;
-			const state = raw[raw.length - 1];
-			return spec.project({ state, ctx });
-		}),
-});
+ *  it, take the last record, run `project`. Curried on `TContext` so
+ *  the caller pins the shared context shape once; `TState`/`TView`/`I`
+ *  still infer from the spec. Returns the spec extended with `read` so
+ *  callers either consume `read` directly (single projection) or
+ *  `project` + `name` via a table loop. */
+export const defineServiceProjection =
+	<TContext>() =>
+	<I, TState, TView>(
+		spec: ServiceProjection<I, TState, TView, TContext>,
+	): ServiceProjection<I, TState, TView, TContext> & {
+		readonly read: (ctx: TContext) => Effect.Effect<TView | undefined, never, I>;
+	} => ({
+		...spec,
+		read: (ctx) =>
+			Effect.gen(function* () {
+				const reg = yield* spec.registry;
+				const raw = yield* reg.snapshot;
+				const state = raw[raw.length - 1];
+				return spec.project({ state, ctx });
+			}),
+	});

@@ -617,8 +617,13 @@ export const deepbookLocalDeploy = <
 		//      cycle).
 		register: ({ value, deps: { publish: pkg } }) =>
 			Effect.gen(function* () {
-				const poolsRecord = buildPoolsRecord(value.pools);
-				const poolIds = buildPoolIds(value.pools);
+				// Snapshot the cached array shape BEFORE the rich-field
+				// mutation below — `rich.pools = poolsRecord` overwrites
+				// `value.pools` and the deepbook-state-registry payload
+				// downstream needs the array form.
+				const cachedPoolsArray = value.pools;
+				const poolsRecord = buildPoolsRecord(cachedPoolsArray);
+				const poolIds = buildPoolIds(cachedPoolsArray);
 				const findPool = makeFindPool(name, poolsRecord);
 				const packageIds = buildPackageIds({
 					packageId: value.packageId,
@@ -674,7 +679,7 @@ export const deepbookLocalDeploy = <
 					packageId: value.packageId,
 					registryId: value.registryId,
 					pools: Object.fromEntries(
-						value.pools.map((p) => [
+						cachedPoolsArray.map((p) => [
 							p.name,
 							{ poolId: p.poolId, baseType: p.base, quoteType: p.quote },
 						]),

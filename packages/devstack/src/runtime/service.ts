@@ -82,7 +82,7 @@ interface ProjectionContext {
 // Service projections — one declarative entry per `services.*` view.
 // -----------------------------------------------------------------------------
 
-const suiProjection = defineServiceProjection({
+const suiProjection = defineServiceProjection<ProjectionContext>()({
 	name: 'sui',
 	registry: SuiStateRegistry,
 	project: ({ state, ctx }): SuiManifest | undefined => {
@@ -100,7 +100,7 @@ const suiProjection = defineServiceProjection({
 	},
 });
 
-const sealProjection = defineServiceProjection({
+const sealProjection = defineServiceProjection<ProjectionContext>()({
 	name: 'seal',
 	registry: SealStateRegistry,
 	project: ({ state, ctx }): SealManifest | undefined => {
@@ -112,7 +112,7 @@ const sealProjection = defineServiceProjection({
 	},
 });
 
-const walrusProjection = defineServiceProjection({
+const walrusProjection = defineServiceProjection<ProjectionContext>()({
 	name: 'walrus',
 	registry: WalrusStateRegistry,
 	project: ({ state, ctx }): WalrusManifest | undefined => {
@@ -127,7 +127,7 @@ const walrusProjection = defineServiceProjection({
 	},
 });
 
-const pythProjection = defineServiceProjection({
+const pythProjection = defineServiceProjection<ProjectionContext>()({
 	name: 'pyth',
 	registry: PythStateRegistry,
 	project: ({ state }): PythManifest | undefined => {
@@ -142,7 +142,7 @@ const pythProjection = defineServiceProjection({
 	},
 });
 
-const postgresProjection = defineServiceProjection({
+const postgresProjection = defineServiceProjection<ProjectionContext>()({
 	name: 'postgres',
 	registry: PostgresStateRegistry,
 	project: ({ state }): PostgresManifest | undefined => {
