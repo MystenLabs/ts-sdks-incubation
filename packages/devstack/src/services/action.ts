@@ -194,6 +194,14 @@ export const Action = <const Name extends string, R = never, E = unknown>(
 						}
 					: {}),
 			}),
+			// Phase B (notes/parallel-graph-resolution.md §3.2): the body
+			// yields `opts.signer` (Account ref) plus every `opts.needs`
+			// ref for ordering. SuiTag is also yielded on the cache-key
+			// path. Lift all of them into upstreams so the topological
+			// scheduler places this action strictly after its providers —
+			// otherwise it lands in level 0 alongside the signer and
+			// fails with "Service not found: account/<name>".
+			upstreamKeys: [SuiTag.key, opts.signer, ...(opts.needs ?? [])],
 		},
 	);
 };

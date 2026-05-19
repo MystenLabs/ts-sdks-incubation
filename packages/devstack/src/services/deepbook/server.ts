@@ -285,6 +285,18 @@ export const DeepbookServer = <const Name extends string = 'deepbook-server'>(
 				primary: s.rest,
 				extras: [s.metrics],
 			}),
+			// Phase B (notes/parallel-graph-resolution.md §3.2): yields
+			// `opts.postgres`, `opts.sui`, `opts.deepbook`, and optionally
+			// `opts.margin` + `opts.dependsOn`. Lift all of them into the
+			// upstream-deps list so the topo scheduler places the server
+			// strictly after its providers.
+			upstreamKeys: [
+				opts.postgres,
+				opts.sui,
+				opts.deepbook,
+				...(opts.margin !== undefined ? [opts.margin] : []),
+				...(opts.dependsOn ?? []),
+			],
 		},
 	);
 

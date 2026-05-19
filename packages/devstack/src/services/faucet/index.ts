@@ -251,6 +251,15 @@ export const Faucet = (opts: FaucetOptions = {}): LayeredTag<'faucet', unknown, 
 			displayTitle: `faucet.${name}`,
 			display: () => ({ title: `faucet.${name}` }),
 			...(opts.hidden === true ? { hidden: true } : {}),
+			// Phase B (notes/parallel-graph-resolution.md §3.2): the body
+			// reads `SuiTag` via `Effect.serviceOption` (an optional fold;
+			// safe whether or not Sui is in the stack). Declare an empty
+			// upstream set so the scheduler treats this as a true leaf
+			// and silences the "missing __upstreamKeys" warning. The
+			// optional yield doesn't impose a hard ordering edge — sibling
+			// stack members that depend on the faucet declare it in
+			// their own `upstreamKeys`.
+			upstreamKeys: [],
 		},
 	) as unknown as LayeredTag<'faucet', unknown, never, never>;
 };

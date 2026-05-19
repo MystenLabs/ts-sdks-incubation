@@ -283,6 +283,15 @@ export const walletApp = (options: WalletAppOptions) => {
 			// still in the manifest under `app.wallet.pairUrl` for
 			// programmatic consumers.
 			display: (s) => ({ title: 'wallet', primary: redactToken(s.pairUrl) }),
+			// Phase B (notes/parallel-graph-resolution.md §3.2): the body
+			// yields `SuiTag` then iterates `options.accounts`, yielding
+			// each Account ref to resolve its address+signer. Lift both
+			// into upstreams so the topological scheduler places the
+			// wallet strictly after Sui + all account members — otherwise
+			// the wallet lands in level 0 and fails with
+			// "Service not found: account/<name>" on the first account
+			// yield.
+			upstreamKeys: [SuiTag.key, ...options.accounts],
 		},
 	);
 };

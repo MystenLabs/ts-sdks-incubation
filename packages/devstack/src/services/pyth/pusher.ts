@@ -319,6 +319,15 @@ export const PythPusher = <const Name extends string>(opts: PythPusherOptions<Na
 				title: `pyth.pusher.${opts.name}`,
 				primary: `${opts.refreshMs ?? DEFAULT_PUSHER_REFRESH_MS}ms`,
 			}),
+			// Phase B (notes/parallel-graph-resolution.md §3.2): yields
+			// SuiTag, the signer Account ref, the pyth composite, and
+			// iterates `dependsOn`. Lift them all into upstreams.
+			upstreamKeys: [
+				SuiTag.key,
+				opts.signer,
+				opts.pyth,
+				...(opts.dependsOn ?? []),
+			],
 		},
 	);
 

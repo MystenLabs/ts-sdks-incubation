@@ -129,8 +129,28 @@ const isOptions = (x: unknown): x is DevstackComposeOptions => {
 /** Wrap the manifest emitter in a `tag()` so it surfaces as a stack
  *  member with `__kind: 'app'`, gets a `manifest` row in the TUI, and
  *  rides the engine lifecycle. The body delegates to `emitManifest`
- *  which handles the file-write + tick-interval logic. */
-const manifestRef = (): StackMember => {
+ *  which handles the file-write + tick-interval logic.
+ *
+ *  `siblingKeys` is the list of every OTHER keyed stack member in the
+ *  composed stack. Manifest declares them as upstreams for two reasons:
+ *
+ *    1. Registries (PackageRegistry, EndpointRegistry, AccountRegistry,
+ *       …) are populated as side-effects of sibling builds. The tick
+ *       loop absorbs late registrations, but ordering manifest last
+ *       gives the first emit a complete snapshot.
+ *    2. CRITICAL: `ExtrasResolved` carries a memoized Effect that may
+ *       yield any user-stack ref (e.g. arena's `extras` yields
+ *       `arena.openLobby`). The consumer must run in a scope where
+ *       those refs are bound. Putting manifest at the highest
+ *       topological level (every sibling is an upstream) guarantees
+ *       every ref the extras Effect could possibly reference is
+ *       visible at `yield*` time — otherwise the topo scheduler lands
+ *       manifest in level 0 and the extras yield throws
+ *       "Service not found: <ref>".
+ */
+const manifestRef = (
+	siblingKeys: ReadonlyArray<string>,
+): StackMember => {
 	const body: Effect.Effect<
 		Manifest,
 		ManifestError,
@@ -149,6 +169,7 @@ const manifestRef = (): StackMember => {
 	return tag('manifest', body, {
 		kind: 'app',
 		displayTitle: 'manifest',
+		upstreamKeys: siblingKeys,
 	}) as unknown as StackMember;
 };
 
@@ -197,8 +218,50 @@ export function devstack(
 	}
 
 	// Auto-include the manifest emitter. `Sui()` + `Faucet()`
-	// defaults land via `fillDefaults` below.
-	const withManifest: ReadonlyArray<StackMember> = [...flat, manifestRef()];
+	// defaults land via `fillDefaults` below. Manifest declares every
+	// sibling's key as upstream so the topo scheduler places it at the
+	// highest level — covers the user-extras case where the Effect
+	// `yield*`s arbitrary refs in user-stack scope.
+	const siblingKeys: ReadonlyArray<string> = flat.flatMap((m) => {
+		const k = (m as { key?: string }).key;
+		return k === undefined ? [] : [k];
+	});
+
+	// `Codegen(...)` members also consume `ExtrasResolved` (via the
+	// `StackHandleEmitter` / `DappKitConfigEmitter` / `DeepbookConfigEmitter`
+	// emitters), so they need the same sibling-keys treatment as manifest:
+	// the user's extras Effect can `yield*` ANY user-stack ref, and
+	// codegen has to run in a scope where every such ref is bound. Patch
+	// `__upstreamKeys` in place — Codegen's factory already declared the
+	// explicit `packages:` list; we extend that with siblings so the topo
+	// scheduler lifts codegen above any extras-referenced ref. Detected by
+	// key prefix (`codegen/`) which the Codegen factory pins at
+	// construction time.
+	//
+	// CYCLE GUARD: a Dev member typically lists Codegen in its `needs:`
+	// (codegen WRITES bindings that dev consumes). Pushing Dev into
+	// codegen's upstreams would form a cycle — skip any sibling that
+	// already names THIS codegen member as an upstream. Symmetric one-way
+	// edges still flow: codegen → packages → accounts.
+	for (const m of flat) {
+		const key = (m as { key?: string }).key;
+		if (key === undefined || !key.startsWith('codegen/')) continue;
+		const existing =
+			(m as { __upstreamKeys?: ReadonlyArray<string> }).__upstreamKeys ?? [];
+		const additions: string[] = [];
+		for (const sib of flat) {
+			const sibKey = (sib as { key?: string }).key;
+			if (sibKey === undefined || sibKey === key) continue;
+			const sibUpstream =
+				(sib as { __upstreamKeys?: ReadonlyArray<string> }).__upstreamKeys ?? [];
+			if (sibUpstream.includes(key)) continue; // cycle would form
+			additions.push(sibKey);
+		}
+		const merged = Array.from(new Set([...existing, ...additions]));
+		(m as { __upstreamKeys: ReadonlyArray<string> }).__upstreamKeys = merged;
+	}
+
+	const withManifest: ReadonlyArray<StackMember> = [...flat, manifestRef(siblingKeys)];
 
 	// Default-provider fill — auto-adds `Sui()` and `Faucet()` when
 	// missing.

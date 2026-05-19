@@ -370,6 +370,14 @@ export const hostProcess = <const Name extends string, E = never, R = never>(
 				title: options.name,
 				primary: s.url ?? `pid ${s.pid}`,
 			}),
+			// Phase B (notes/parallel-graph-resolution.md §3.2): the body
+			// iterates `options.dependsOn`, yielding each ref purely for
+			// ordering. Lift them into upstreams so the topological
+			// scheduler places this host process strictly after its
+			// declared providers — otherwise it lands in level 0 and the
+			// `yield* tag` of any non-leaf upstream (e.g. a wallet ref
+			// that depends on accounts) fails with "Service not found".
+			upstreamKeys: options.dependsOn ?? [],
 		},
 	);
 

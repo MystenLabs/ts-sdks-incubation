@@ -312,6 +312,16 @@ export const deepbookMarginSeed = <const Name extends string = 'deepbook-margin-
 				primary: s.supplierCapId,
 				extras: [`${s.seededAmounts.length} pool${s.seededAmounts.length === 1 ? '' : 's'}`],
 			}),
+			// Phase B (notes/parallel-graph-resolution.md §3.2): the body
+			// yields SuiTag, the signer Account ref, and the margin
+			// composite, plus iterates `dependsOn`. Lift them so the topo
+			// scheduler places this composite strictly after all providers.
+			upstreamKeys: [
+				SuiTag.key,
+				options.signer,
+				options.margin,
+				...(options.dependsOn ?? []),
+			],
 		},
 	);
 

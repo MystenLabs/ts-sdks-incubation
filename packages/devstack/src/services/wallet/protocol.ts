@@ -28,6 +28,17 @@ export const WalletHttpPath = {
 	ACCOUNTS: '/api/v1/devstack/accounts',
 	SIGN_TX: '/api/v1/devstack/sign-transaction',
 	SIGN_PERSONAL_MESSAGE: '/api/v1/devstack/sign-personal-message',
+	// Fork-control relay — added 2026-05-19 alongside the dev-wallet
+	// fork panel (sui-fork-phase-5 Subtopic 6). The browser-side
+	// adapter uses these to drive `ForkControl` admin RPCs through the
+	// wallet-app server (advanceClock, advanceCheckpoint, status,
+	// impersonation slots). Server-side routes are stub 501s pending
+	// the relay wiring (P5.8.4); the keys live here so the dev-wallet
+	// adapter stays in lock-step with the protocol sync test.
+	FORK_STATUS: '/api/v1/devstack/fork/status',
+	FORK_ADVANCE_CLOCK: '/api/v1/devstack/fork/advance-clock',
+	FORK_ADVANCE_CHECKPOINT: '/api/v1/devstack/fork/advance-checkpoint',
+	FORK_IMPERSONATIONS: '/api/v1/devstack/fork/impersonations',
 } as const;
 
 export type WalletHttpPathValue = (typeof WalletHttpPath)[keyof typeof WalletHttpPath];

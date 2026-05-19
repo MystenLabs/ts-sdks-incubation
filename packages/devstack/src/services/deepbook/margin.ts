@@ -911,6 +911,20 @@ export const deepbookMargin = <const Name extends string = 'deepbook-margin'>(
 				primary: s.packageId,
 				extras: [`${s.marginPools.length} pool${s.marginPools.length === 1 ? '' : 's'}`],
 			}),
+			// Phase B (notes/parallel-graph-resolution.md §3.2): the body
+			// yields SuiTag, the signer Account ref, pyth, deepbook, the
+			// two publishMove tags, and iterates `dependsOn`. Lift them
+			// all so the topo scheduler places this composite strictly
+			// after every provider.
+			upstreamKeys: [
+				SuiTag.key,
+				options.signer,
+				options.pyth,
+				options.deepbook,
+				...(marginPublish !== undefined ? [marginPublish] : []),
+				...(liquidationPublish !== undefined ? [liquidationPublish] : []),
+				...(options.dependsOn ?? []),
+			],
 		},
 	);
 

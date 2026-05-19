@@ -342,6 +342,15 @@ export const pythLocalDeploy = <const Name extends string = 'pyth'>(
 				primary: s.packageId,
 				extras: [`${s.priceInfos.length} feed${s.priceInfos.length === 1 ? '' : 's'}`],
 			}),
+			// Phase B (notes/parallel-graph-resolution.md §3.2): yields
+			// SuiTag, the signer Account ref, the publishMove tag, and
+			// iterates `dependsOn`. Lift them all into upstreams.
+			upstreamKeys: [
+				SuiTag.key,
+				opts.signer,
+				...(publish !== undefined ? [publish] : []),
+				...(opts.dependsOn ?? []),
+			],
 		},
 	);
 

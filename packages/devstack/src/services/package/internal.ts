@@ -616,6 +616,17 @@ export const publishMove = <const Name extends string, TCaptured = undefined>(
 			kind: 'action',
 			plugin: 'move',
 			displayTitle: `publish.${options.name}`,
+			// Phase B (notes/parallel-graph-resolution.md §3.2): the body
+			// yields `options.signer` (an Account ref) and `SuiTag`. SuiTag
+			// is a composite already in the dep graph; the signer account
+			// MUST be lifted into upstreams so the topological scheduler
+			// places `publishMove` strictly after its account. Without
+			// this, both land in level 0 and the `yield* options.signer`
+			// fails with "Service not found: account/<name>" because the
+			// account's layer hasn't been built into the current level
+			// yet. SuiTag is also listed so a stack with the testnet/fork
+			// variant (different upstreamKeys) still orders correctly.
+			upstreamKeys: [SuiTag.key, options.signer],
 			// Auto-watch the Move source tree. An edit to a `.move` file
 			// (or `Move.toml`) under `options.path` triggers a hot-restart;
 			// the existing `hashMoveSources` cache fold ensures only a real

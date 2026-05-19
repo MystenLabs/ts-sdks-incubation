@@ -234,6 +234,17 @@ export const DeepbookIndexer = <const Name extends string = 'deepbook-indexer'>(
 				title: `deepbook.indexer.${name}`,
 				primary: s.metrics,
 			}),
+			// Phase B (notes/parallel-graph-resolution.md §3.2): yields
+			// postgres, sui, deepbook, optional margin, and iterates
+			// `dependsOn`. Lift them all into upstreams so the topo
+			// scheduler places the indexer strictly after its providers.
+			upstreamKeys: [
+				opts.postgres,
+				opts.sui,
+				opts.deepbook,
+				...(opts.margin !== undefined ? [opts.margin] : []),
+				...(opts.dependsOn ?? []),
+			],
 		},
 	);
 

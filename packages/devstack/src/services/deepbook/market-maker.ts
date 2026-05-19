@@ -462,6 +462,20 @@ export const deepbookMarketMaker = <const Name extends string>(
 				title: `deepbook.${options.name}`,
 				primary: `${options.pools.length} pool${options.pools.length === 1 ? '' : 's'}`,
 			}),
+			// Phase B (notes/parallel-graph-resolution.md §3.2): the body
+			// yields SuiTag, `options.signer`, and `DeepbookCoreTag`
+			// (a Context.Service, not a stack-member key — so it stays
+			// off the upstream list and is satisfied via the un-keyed
+			// composite interface layer). Iterates `options.dependsOn`
+			// for ordering. Coin refs go through `resolveCoinRef` which
+			// `yield*`s a CoinTag — also a Context.Service, not a stack
+			// member, so it's satisfied through the global CoinRegistry
+			// rather than topology ordering. Lift what IS a stack member.
+			upstreamKeys: [
+				SuiTag.key,
+				options.signer,
+				...(options.dependsOn ?? []),
+			],
 		},
 	);
 

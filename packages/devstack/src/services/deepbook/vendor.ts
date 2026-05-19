@@ -36,6 +36,7 @@ import { existsSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { Effect } from 'effect';
 import { tag, type LayeredTag } from '../../advanced/tag.js';
+import type { StackMember } from '../../engine/supervisor.js';
 import { gitFetch } from '../../advanced/plugin-author/git-fetch.js';
 import { DeepbookError } from '../../engine/errors.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
@@ -261,21 +262,30 @@ export const vendorDeepbook = (opts: VendorDeepbookOptions = {}) => {
 				primary: s.ref,
 				extras: [s.root],
 			}),
+			// Phase B (notes/parallel-graph-resolution.md §3.2 + §6.4): the
+			// inner sibling gitFetch tags (deepbookFetch + sandboxFetch)
+			// are LIFTED to top-level members via `__extraMembers` below,
+			// so the topo scheduler treats them as their own dep-graph
+			// nodes (level 0 leaves) and can build them in parallel with
+			// other gitFetches in the stack. The composite declares them
+			// in `upstreamKeys` so it's strictly ordered after both
+			// fetches — otherwise the body's `yield* deepbookFetch` fails
+			// with "Service not found: vendorDeepbook.deepbook".
+			upstreamKeys: [deepbookFetch, sandboxFetch, ...(opts.dependsOn ?? [])],
 		},
 	);
 
-	// Hybrid return — usable as a StackMember inside `defineDevstack`
-	// AND yieldable as the composite tag. Includes the composite's own
-	// layer plus the two gitFetch layers so they all participate in the
-	// layer graph.
-	const __layers: ReadonlyArray<any> = [
-		composite.__layer,
-		...composite.__layers,
-		deepbookFetch.__layer,
-		...(deepbookFetch.__layers ?? []),
-		sandboxFetch.__layer,
-		...(sandboxFetch.__layers ?? []),
-	];
+	// `__layers` carries ONLY the composite's own primary slice now (the
+	// inner fetch layers ride up via `__extraMembers` as top-level stack
+	// members). Mirrors walrus local-cluster's Phase-D lift pattern —
+	// without this slimming, the composite would double-build its inner
+	// tags (once at its own level, once at level 0 via the lift); Effect's
+	// MemoMap would dedupe at runtime but the topo scheduler would still
+	// account for them twice in level emission.
+	const __layers: ReadonlyArray<any> = [composite.__layer, ...composite.__layers];
 
-	return Object.assign(composite, { __layers });
+	return Object.assign(composite, {
+		__layers,
+		__extraMembers: [deepbookFetch, sandboxFetch] as unknown as ReadonlyArray<StackMember>,
+	});
 };

@@ -591,6 +591,18 @@ export const deepbookLocalDeploy = <
 					...(poolCount > 0 ? { extras: [`${poolCount} pool${poolCount === 1 ? '' : 's'}`] } : {}),
 				};
 			},
+			// Phase B (notes/parallel-graph-resolution.md §3.2): the body
+			// iterates `options.dependsOn`, yields SuiTag, the signer
+			// Account ref, and the inner publishMove tag. Lift them all
+			// into upstreams so the topo scheduler places this composite
+			// strictly after its providers — otherwise it lands in level
+			// 0 and yields fail with "Service not found".
+			upstreamKeys: [
+				SuiTag.key,
+				options.signer,
+				...(publish !== undefined ? [publish] : []),
+				...(options.dependsOn ?? []),
+			],
 		},
 	);
 
