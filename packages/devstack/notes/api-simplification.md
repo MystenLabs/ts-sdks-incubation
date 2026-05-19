@@ -1,5 +1,11 @@
 # API Simplification (devstack) — historical archive
 
+## Status (2026-05-19)
+
+Historical archive. Phases 1, 2, 4 fully shipped; §11/§12 decisions all settled. Retained for the
+§10 finding ledger, §11 Open Questions resolution log, §12 Flips, and §15 Decision log only. No
+open work tracked here — see `notes/post-launch-sweep.md` for remaining closeout items.
+
 **Status (2026-05-19): TRIMMED.** Phases 1, 2, 4 implementation is complete; Phase 3, 5, 6 sections
 have been removed (sections §5, §7, §8). All §11 Open Questions and §12 Flips have been DECIDED;
 verification status of each is recorded in `notes/post-launch-sweep.md` §8 (confirmed shipped) and

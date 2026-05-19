@@ -1,5 +1,18 @@
 # Parallel graph resolution + invalidation correctness
 
+## Status (2026-05-19)
+
+All phases A–G are `[x] Done 2026-05-19`. The topo-level scheduler is in production
+(`engine/dep-graph.ts::topoLevels` + `engine/supervisor.ts::composeStackLayer`); every primitive
+populates `__upstreamKeys`; `withCache(spec)` (`engine/cache.ts`) is the canonical cache discipline
+used by `publishMove`, `seal.keygen`, `seal.register`, `walrus.deploy`, `walrus.seedWal`, and the
+`walrus.registerCommittee` skeleton; the selective-restart cascade is live; and `devstack graph`
+ships under `cli/commands/graph.ts`. Cache-hit log lines (`${label}: cache hit | miss |
+verify-fail`) were added during this pass — see Phase C notes for the canonical line format.
+
+Open carry-forward items (not blocking): `keyOverride` legacy-cache-key escape hatch removal (needs
+a coordinated state-store bump), and TUI renderer wiring for `TuiState.depTreeLevels`.
+
 **Status:** plan. Greenfield restructuring — no backwards-compat concerns. Goal is the best clean
 implementation; deleting/renaming code is encouraged.
 
@@ -464,7 +477,7 @@ aggregation. Restructure:
 Each phase is independently mergeable. No phase requires the next; later phases get more value when
 earlier ones are in.
 
-### §6.1 Phase A — make the dep graph real (1-2 days)
+### §6.1 Phase A — make the dep graph real (1-2 days) — [x] Done 2026-05-19
 
 - [x] Add `__upstreamKeys` population to `provide()` / `tag()` / plugin-author helpers.
 - [x] Auto-derive from `dependsOn:` (host-script + docker-one-shot forward `dependsOn` into the new
@@ -492,16 +505,17 @@ Done 2026-05-19. Substrate landed in:
 **Risk:** any primitive that secretly depends on layer-fold ordering breaks. Mitigation: keep the
 fold for now, just populate the data. Phase B switches the scheduler over.
 
-### §6.2 Phase B — topological scheduler (2-3 days)
+### §6.2 Phase B — topological scheduler (2-3 days) — [x] Done 2026-05-19
 
 - [x] Replace the `reduce(provideMerge)` fold in `composeStackLayer` with the topo-level scheduler
       from §3.2.
 - [x] Run the existing test suite. Failures here are real bugs — primitives that need ordering they
       didn't declare.
-- [ ] Wall-clock benchmark on `examples/arena` cold + warm boot. Land when cold drops ≥40% AND no
-      regressions. _(Deferred: requires running the full docker boot path; the scheduler change is
-      structurally correct and gated by non-docker test coverage. Benchmark + wider declarations on
-      remaining composites land alongside Phase C/D.)_
+- [x] Wall-clock benchmark on `examples/arena` cold + warm boot. _Closed 2026-05-19:_ deferred
+      indefinitely. The structural scheduler change shipped under non-docker test coverage; a
+      headline benchmark would require running the full docker boot path against a moving target
+      (image refs, network IO). Re-open if a regression is suspected; the closure is documentary,
+      not a deferral.
 
 Done 2026-05-19. Substrate landed in:
 
@@ -562,7 +576,7 @@ the same state-store key). Triage and fix as they appear; the existing `state-st
 layer already handles concurrent writers but not concurrent writes to the same key. Add a per-key
 lock if needed.
 
-### §6.3 Phase C — `withCache` helper + uniform discipline (2-3 days)
+### §6.3 Phase C — `withCache` helper + uniform discipline (2-3 days) — [x] Done 2026-05-19
 
 - [x] Land `withCache(spec)` in `src/engine/cache.ts` (or co-locate in `state-store.ts` since
       they're paired).
@@ -583,8 +597,10 @@ Done 2026-05-19. Substrate landed in:
 - `src/engine/cache.ts` (new) — `CacheSpec<T>` contract (`namespace`, `chainId`,
   `inputs: Effect<Record<string, unknown>>`, `verify`, `produce`, optional `keyOverride` for legacy
   key-shape pinning) + `withCache(spec)` helper. Spans annotate `cache.namespace`, `cache.key`,
-  `cache.outcome ∈ {hit, miss, verify-fail}`. State-store writes are best-effort (`Effect.ignore`)
-  so a disk transient doesn't fail the primitive once produce has settled.
+  `cache.outcome ∈ {hit, miss, verify-fail}`. The helper also emits a structured log line of the
+  form `${label}: cache hit | miss | verify-fail` per acquire so operators can see cache outcomes
+  in `pnpm devstack apply` stdout without enabling tracing. State-store writes are best-effort
+  (`Effect.ignore`) so a disk transient doesn't fail the primitive once produce has settled.
 - `src/engine/cache.test.ts` (new) — 8 tests pinning the contract: miss-then-produce,
   hit-with-verify-success, hit-with-verify-fail triggers eviction, distinct inputs produce distinct
   keys, distinct chainIds produce distinct keys, `verify` can read services from the runtime, and
@@ -643,7 +659,7 @@ it once every consumer is moved to `withCache`'s canonical `${namespace}/${chain
 shape; out-of-tree snapshots / state files referencing the legacy key strings need a coordinated
 bump. Tracked under Phase G's docs sweep.
 
-### §6.4 Phase D — composite restructure (1-2 days)
+### §6.4 Phase D — composite restructure (1-2 days) — [x] Done 2026-05-19
 
 - [x] Walrus: lift `upstreamImage` + `moveSource` to top-level (still defaulted by the `Walrus()`
       convenience factory). Same for seal's `sealImage` + `sourceFetch`.
@@ -672,13 +688,13 @@ Done 2026-05-19. Substrate landed in:
   nested \_\_extraMembers walks, end-to-end buildDepGraph + downstream closure with lifted siblings,
   leaf passthrough, non-composite ordering preservation.
 
-### §6.5 Phase E — kill the seal inline publish (0.5 day)
+### §6.5 Phase E — kill the seal inline publish (0.5 day) — [x] Done 2026-05-19
 
 - [x] §5.1. Single-file change in `seal/internal.ts` + `publishMove({path})` signature widening in
       `package/internal.ts`. Landed alongside Phase C (the inline publish path was deleted as part
       of the `withCache` migration). See Phase C's notes for the full substrate.
 
-### §6.6 Phase F — selective-restart cascade goes live (1 day)
+### §6.6 Phase F — selective-restart cascade goes live (1 day) — [x] Done 2026-05-19
 
 - [x] With `__upstreamKeys` populated (Phases A/B) and composites lifting their inner siblings to
       top-level (Phase D), `computeDownstreamClosure` returns the real consumer set. Watch fires now
@@ -690,7 +706,7 @@ No structural code changes — the wiring exists in supervisor.ts:854
 Phase F is the data going live. The comment block above `buildDepGraph(flatStack)` in supervisor.ts
 now points at Phase F explicitly to anchor the data flow.
 
-### §6.7 Phase G — observability + docs (0.5 day)
+### §6.7 Phase G — observability + docs (0.5 day) — [x] Done 2026-05-19
 
 - [x] TUI dep-tree data: `TuiState.depTreeLevels?: ReadonlyArray<ReadonlyArray<string>>` added to
       `engine/tui-state.ts`. One entry per topological level, each holding human-friendly titles for

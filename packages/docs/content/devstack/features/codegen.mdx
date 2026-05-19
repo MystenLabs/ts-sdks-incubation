@@ -131,7 +131,7 @@ and splices the result into `app.extras` on the manifest.
 export default devstack(/* ...refs */, openLobby, codegen, dev, {
 	extras: Effect.gen(function* () {
 		const r = yield* openLobby;
-		const openLobbyId = pickCreatedByTypeSuffix(r.objectChanges, '::game::Lobby');
+		const openLobbyId = pickCreatedByType(r.objectChanges, { suffix: '::game::Lobby' });
 		return openLobbyId === undefined ? {} : { openLobbyId };
 	}),
 });

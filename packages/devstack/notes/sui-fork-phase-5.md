@@ -1,11 +1,43 @@
 # Sui-fork Phase 5 — exploration plan
 
+## Status (2026-05-19)
+
+Per the walrus/seal audit in `notes/sui-fork-phase-5-walrus-seal-audit.md`:
+
+- **Subtopic 1 (Walrus-on-fork via GraphQL shim) — DEFERRED, upstream-blocked.** Audit concluded
+  the GraphQL shim does NOT unblock walrus; walrus's `DualClient` uses JSON-RPC + gRPC, no
+  GraphQL. All P5.1.* and P5.T1* tasks remain checked-as-deferred awaiting walrus's gRPC
+  migration (`WALRUS_GRPC_MIGRATION_LEVEL=100` default). Factory-time `ForkIncompatibleError`
+  guard in `services/walrus/local-cluster.ts` stays authoritative.
+- **Subtopic 2 (Seal-on-fork audit) — DEFERRED, upstream-blocked.** Seal's
+  `check_policy.dry_run_transaction_block` is JSON-RPC-bound; fork's `simulate_transaction`
+  returns `"unsupported"`. P5.3.1 + P5.3.2 done; P5.4.x deferred. The
+  `ForkIncompatibleError({variant: 'sealLocalKeygen'})` guard in `services/seal/internal.ts`
+  stays authoritative; no bespoke `SealForkBlocked` class added.
+- **Subtopic 3 (Auto-tick clock) — SHIPPED.** `autoTick: boolean | { intervalMs: number }` on
+  `SuiForkOptions`; `runAutoTickClock` fiber in `engine/sui-fork/control.ts`; `runtime.autoTickMs`
+  persisted in `ForkMeta` (excluded from `configHash`). Test gates P5.T2a/b remain docker-gated
+  (need `examples/fork-greeting/`).
+- **Subtopic 4 (Parallel stacks) — SHIPPED.** Per-stack scoping audited + locked in
+  `engine/sui-fork/parallel.test.ts` + `parallel.docker.test.ts`; seal sibling at
+  `services/seal/parallel-stack.{test,docker.test}.ts`.
+- **Subtopic 5 (Cold-start optimization) — BLOCKED on upstream rust-side work.** Devstack-side
+  no-op until the baked-state image ships; pin lives in `services/sui.ts` alongside the other
+  Sui image constants (no separate `engine/sui-fork/images.ts`).
+- **Subtopic 6 (Dev-wallet fork controls) — UI tasks open.** Stub 501 routes
+  (`FORK_STATUS`, `FORK_ADVANCE_CLOCK`, `FORK_ADVANCE_CHECKPOINT`, `FORK_IMPERSONATIONS`) live on
+  `WalletHttpPath` in `services/wallet/protocol.ts`; actual handlers + UI land in P5.8.4 / P5.9.
+- **Subtopic 7 (Subscriptions) — SHIPPED.** `subscribeCheckpoints` +
+  `subscribeCheckpointsWithFallback` in `engine/sui-fork/control.ts`; `devstack fork status
+  --follow` streams `ForkCheckpointEvent`s. P5.10.T3 docker-gated test remains.
+
 **Status:** Draft (2026-05-19). Greenfield exploration follow-up to `notes/sui-fork-integration.md`
 (Phases −1..4 substantially complete). Split from `notes/post-launch-sweep.md` per closeout-sweep
 §10 decision 5.
 
 **Gate:** Wave 4 §6.3 of `post-launch-sweep.md` (the `examples/fork-greeting/` example app scaffold)
-should land first so this plan has a real harness.
+has landed (`examples/fork-greeting/` is now in the tree) — Subtopic 3's P5.T2a/b can be exercised
+once the docker harness is brought online.
 
 ---
 

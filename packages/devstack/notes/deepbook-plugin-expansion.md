@@ -1,5 +1,13 @@
 # deepbook plugin expansion plan
 
+## Status (2026-05-19)
+
+Phases 0–5 implementation shipped; L1 unit gates green. Phase 6 back-compat removal remains open.
+The two test-gate items still tracked are the L3 per-pool BM docker regression + the
+`examples/deepbook-full` manual E2E (both in `post-launch-sweep.md` Wave 4 §6.1, gated on
+`DEVSTACK_INTEGRATION_TESTS=1`). Risk register, design decisions D1–D11, snapshot/wipe tables, and
+glossary remain authoritative when touching the deepbook surface.
+
 Living design doc + progress tracker. **This file is self-contained** — a fresh Claude/dev session
 should be able to pick up work by reading from the top and finding the first unchecked task in the
 current phase.

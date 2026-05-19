@@ -1,5 +1,12 @@
 # sui-fork integration plan
 
+## Status (2026-05-19)
+
+Phases −1..4 shipped; remaining test gates docker-gated and tracked in `post-launch-sweep.md` Wave
+4. Phase 5 exploration plan is split to `notes/sui-fork-phase-5.md` (auto-tick + subscriptions
+shipped; walrus/seal on-fork upstream-blocked; dev-wallet fork controls open). Risk register, D1–D6,
+file paths, and glossary preserved here as the authoritative reference.
+
 Living design doc + progress tracker. **This file is self-contained** — a fresh Claude/dev session
 should be able to pick up work by reading from the top and finding the first unchecked task in the
 current phase.

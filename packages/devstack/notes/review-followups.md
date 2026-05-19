@@ -1,5 +1,16 @@
 # Architecture-review follow-ups — closeout from 2026-05-19 review
 
+## Status (2026-05-19)
+
+Waves 1 + 8 substantially shipped (one-line surface fixes + maintainer decisions). DeepBook + Postgres
+single-source-of-truth refactor (Wave 2), override-field hygiene (Wave 3), documentation rollout (Wave
+4), typed-error consolidation (Wave 5), and the synthesis/05 deletion sweep (Wave 6) are still in
+flight or partially landed. The 8 open structural decisions in §10 gate Waves 2/3/5/6. Note: this
+plan references several files deleted in the synthesis/05 sweep (`engine/host-gateway.ts`,
+`engine/cache.ts` (the original ~28-LoC stub — recreated since for `withCache`),
+`runtime/endpoint-names.ts::dev_server_fallback`) — those references are historical and the deletion
+checkbox is `[x]` against them.
+
 **Status:** Plan ready for kickoff (2026-05-19). Synthesis of every finding from the multi-agent
 architectural review at `.review-findings/` (REVIEW.md + 6 syntheses + 31 underlying reports).
 
@@ -137,6 +148,13 @@ docker/, services/). Delete the file.
 > Done 2026-05-19: removed `engine/cache.ts`; `docker-one-shot.ts` now yields `StateStore` directly
 > and calls `store.get` / `store.put`. Also dropped the stale `cacheGet/cachePut/cacheRemove`
 > re-export from `advanced/plugin-author/index.ts`.
+>
+> **Note (2026-05-19 docs pass):** A NEW `engine/cache.ts` was subsequently re-created later that
+> day to host the `withCache(spec)` helper for the parallel-graph-resolution Phase C uniform cache
+> discipline — see `notes/parallel-graph-resolution.md`. The new file shares the path but is a
+> different abstraction (Cache-key contract with `verify` probe) and is unrelated to the deleted
+> `cacheGet/cachePut/cacheRemove` shape. Both deletions (original) and re-introduction (new
+> contract) are intentional.
 
 **Files:**
 

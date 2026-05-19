@@ -1,5 +1,13 @@
 # Post-launch sweep — closeout + Phase 5 exploration
 
+## Status (2026-05-19)
+
+Waves 1–3 mostly shipped; remaining Wave 4 items are docker-gated suites (deepbook L3 §6.1,
+sui-fork local sweep §6.2, fork-greeting harness §6.3 — `examples/fork-greeting/` now scaffolded —
+P-1.T5 live-net gRPC suite §6.4, P-1.T3 playwright re-run §6.5). All §10 decisions remain settled
+(W12 HOF, structural Signer, manual-only cache GC, no new CI, Wave 5 split). Wave 5 lives in
+`sui-fork-phase-5.md`.
+
 **Status:** Plan ready for kickoff (2026-05-19). Synthesis of remaining work across all five prior
 plans (api-simplification, coin-auto-discovery, deepbook-plugin-expansion, selective-restart,
 sui-fork-integration)
@@ -502,7 +510,7 @@ alongside.
 - **No CI workflow** per §10 decision 4 — manual run only. **Wall:** ~30–45min docker (parallel with
   §6.1 deepbook if Docker resources allow). **Parallel:** ❌ sequential (Docker-bound)
 
-### 4.3 — `examples/fork-greeting/` example app scaffold (P2.T6) — M
+### 4.3 — `examples/fork-greeting/` example app scaffold (P2.T6) — M — [x] 2026-05-19
 
 **Action:** New example app demonstrating:
 
@@ -511,6 +519,12 @@ alongside.
 - `from: 'impersonate'` path for an arbitrary mainnet address
 - Optional: walrus integration (unblocks P3.T9) **Coordinate:** unblocks `walrus-on-fork` work in
   Wave 5 (P5.1–P5.2). **Parallel:** ✅ standalone
+
+**Done 2026-05-19:** `examples/fork-greeting/` scaffolded with `devstack.config.ts`, Vite frontend,
+Move package, playwright + vitest configs. Unblocks sui-fork Phase 5 Subtopic 3's P5.T2a/b docker
+gate (auto-tick clock + advance-clock round-trip against a live Move `clock::timestamp_ms()`).
+Walrus integration intentionally omitted (Subtopic 1 still upstream-blocked per
+`sui-fork-phase-5-walrus-seal-audit.md`).
 
 ### 4.4 — Sui-fork P-1.T5: Live-net gRPC suite (new tests) — S
 

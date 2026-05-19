@@ -1,5 +1,11 @@
 # sui-fork Phase 5 — walrus & seal on-fork audit
 
+## Status (2026-05-19)
+
+Audit is the authoritative source for Subtopic 1 + Subtopic 2 deferral. No state change since
+initial publication — both primitives stay upstream-blocked. Re-open when the unblock criteria in
+§4 fire.
+
 **Status:** Audit (2026-05-19). Closes `sui-fork-phase-5.md` Subtopic 1 (P5.1) and Subtopic 2 (P5.3)
 with a shared finding: both primitives are **upstream-blocked on the same JSON-RPC dependency**, so
 the devstack-side implementation work (`SuiGraphQLShim` service factory, walrus rewire, seal-on-fork
