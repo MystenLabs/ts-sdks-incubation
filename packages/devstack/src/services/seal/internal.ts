@@ -68,13 +68,14 @@ import { routerEntrypoint } from '../../engine/docker/router.js';
 import { routerHostname } from '../../engine/router-hostname.js';
 import { servicePath } from '../../engine/service-paths.js';
 import { StateStore } from '../../engine/state-store.js';
-import { withCache, buildCacheKey } from '../../engine/cache.js';
+import { buildCacheKey } from '../../engine/cache.js';
 import { contentHash } from '../../engine/content-hash.js';
 import { jsonBigintReplacer } from '../../engine/json-bigint.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
 import { pickCreatedByType } from '../../engine/sui-helpers.js';
 import { dockerImage, runDockerContainer } from '../../advanced/plugin-author/index.js';
 import { gitFetch } from '../../advanced/plugin-author/index.js';
+import { onChainArtifact } from '../../engine/on-chain-artifact.js';
 import { PackageRegistry, publishEndpoint, publishSealState } from '../../engine/registries.js';
 import { EndpointName } from '../../runtime/endpoint-names.js';
 import {
@@ -85,7 +86,7 @@ import {
 } from '../seal.js';
 import { composeLayers, provide, setPhase, type LayeredTag } from '../../advanced/tag.js';
 import type { StackMember } from '../../engine/supervisor.js';
-import { SuiTag, suiNetworkName, type Sui } from '../sui.js';
+import { SuiTag, suiNetworkName } from '../sui.js';
 import { publishMove } from '../package/internal.js';
 import { ForkIncompatibleError, SealError } from '../../engine/errors.js';
 import { resolveNetwork } from '../../engine/network.js';
@@ -313,6 +314,258 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 		signer: options.signer,
 	});
 
+	// Per-line output sink — funnels seal-cli / key-server output into the
+	// supervisor's TUI log tail. The `<label>` prefix disambiguates which
+	// seal phase (keygen / container / rotate keygen) emitted a given
+	// line. The engine may not be wired (standalone tests), in which case
+	// the callback is a no-op. Built as an Effect so callers can resolve
+	// the engine option once per primitive scope.
+	const makeSinkE = (label: string): Effect.Effect<Docker.OutputLineCallback> =>
+		Effect.gen(function* () {
+			const engineOpt = yield* Effect.serviceOption(EngineHandle);
+			const minRank = LEVEL_RANK[resolveMinLevel('warn')];
+			return (level, line) => {
+				if (LEVEL_RANK[level] < minRank) return Effect.void;
+				return engineOpt._tag === 'None'
+					? Effect.void
+					: engineOpt.value
+							.appendLog({ ts: Date.now(), level, message: `[${label}] ${line}` })
+							.pipe(Effect.ignore);
+			};
+		});
+
+	// Factory-level cross-reference for the B8 cascade (per
+	// `notes/integration-contract-redesign.md` §3.5). `sealInputsHash` is
+	// the inputs-hash slot the keypair's verify probes to find the sibling
+	// keyServer cache entry. Computed once at factory time so the keypair's
+	// verify body re-derives a byte-identical `buildCacheKey` to read from
+	// state-store directly — no `withCache` indirection, no
+	// `state.remove(otherKey)` side-effect, per RS5 ("cross-primitive
+	// invalidation flows through verify dependencies, not eviction
+	// side-effects").
+	const sealInputsHash = contentHash(JSON.stringify({ name }, jsonBigintReplacer), {
+		length: 16,
+	});
+
+	// BLS keypair: off-chain blob produced by `seal-cli genkey`. The
+	// resolved value is the persisted hex pair; the master-key.env file
+	// the daemon consumes is materialised by the outer acquire body on
+	// every cycle so a missing file is self-healing.
+	//
+	// Verify discipline (B8 cascade per integration-contract-redesign §3.5):
+	//
+	//   1. **Basic structure check** — both hex fields non-empty.
+	//      Defensive against an upstream state-store corruption or a
+	//      future serialisation drift.
+	//   2. **Sibling key-server cache lookup** — read the
+	//      `seal/key-server-id` state-store entry directly (via
+	//      `buildCacheKey` against `sealInputsHash`) and probe its
+	//      on-chain object via `chain.getObject`. Two outcomes:
+	//        - sibling absent in state-store → keypair is fine (no prior
+	//          registration to invalidate).
+	//        - sibling present + chain object present → keypair is fine.
+	//        - sibling present + chain object missing → keypair MUST
+	//          re-derive (chain regenesis / wipe). The key-server's own
+	//          verify will independently evict its entry on the next
+	//          acquire step — no `state.remove(otherKey)` side effect
+	//          here. That's the substrate's intended pattern: each
+	//          primitive owns its own cache; cross-primitive invalidation
+	//          flows through verify dependencies, not eviction
+	//          side-effects.
+	//   3. **File existence** — `runtime/seal/master-key.env` must
+	//      exist. Lost env-file (e.g. partial snapshot restore) →
+	//      re-derive so the outer acquire rewrites a fresh file aligned
+	//      with the new keypair.
+	//
+	// `display` exists only to anchor `T` to `PersistedBlsKeypair` for
+	// type inference; `hidden: true` keeps the dashboard from rendering
+	// the keypair primitive (the master key MUST NOT leak to the TUI).
+	const keypair = onChainArtifact({
+		name: `${name}.keypair` as const,
+		kind: 'service',
+		plugin: 'seal',
+		hidden: true,
+		displayTitle: `seal.${name}.keypair`,
+		display: (_kp: PersistedBlsKeypair) => ({ title: `seal.${name}.keypair`, primary: '' }),
+		namespace: 'seal/bls-keypair',
+		label: `seal.${name}.keygen`,
+		upstream: { sealImage },
+		inputs: () => Effect.succeed({ name }),
+		verify: ({ cached, chain }) =>
+			Effect.gen(function* () {
+				// (1) Basic structure check — guard against corrupted /
+				// drifted persisted shape.
+				if (
+					typeof cached.masterKey !== 'string' ||
+					cached.masterKey.length === 0 ||
+					typeof cached.publicKey !== 'string' ||
+					cached.publicKey.length === 0
+				) {
+					return undefined;
+				}
+				// (2) B8 cascade — read the sibling register-cache entry
+				// directly via `state.get`. If absent, keypair is fine; if
+				// present, probe the on-chain object via ChainProbe.
+				const sui = yield* SuiTag;
+				const stateStore = yield* StateStore;
+				const keyServerKey = buildCacheKey({
+					namespace: 'seal/key-server-id',
+					chainId: sui.chainId,
+					inputsHash: sealInputsHash,
+				});
+				const cachedKeyServerId = yield* stateStore.get<string>(keyServerKey);
+				if (Option.isSome(cachedKeyServerId)) {
+					const probed = yield* chain.getObject(cachedKeyServerId.value);
+					if (probed === undefined) {
+						// Chain object missing — keypair must re-derive.
+						// keyServer's own verify will evict its entry
+						// independently on the next acquire step.
+						return undefined;
+					}
+				}
+				// (3) File-existence check on the master-key.env file the
+				// daemon consumes. Lost env-file means restart-of-stack
+				// would need a fresh write anyway, but more importantly
+				// state-store recorded an env file that the host no
+				// longer holds — re-derive so the outer acquire writes a
+				// fresh aligned pair.
+				const sealStateDir = yield* servicePath('seal');
+				const path = yield* Path.Path;
+				const fs = yield* FileSystem.FileSystem;
+				const masterKeyEnvFile = path.join(sealStateDir, 'master-key.env');
+				const fileOk = yield* fs.exists(masterKeyEnvFile).pipe(Effect.orElseSucceed(() => false));
+				if (!fileOk) {
+					return undefined;
+				}
+				return cached;
+			}),
+		produce: ({ sealImage: img }) =>
+			Effect.gen(function* () {
+				const sink = yield* makeSinkE(`seal.${name}.keygen`);
+				const result = yield* Docker.runOneShot({
+					name: `seal.${name}.keygen`,
+					image: img.tag,
+					entrypoint: SEAL_KEYGEN_ENTRYPOINT,
+					args: [...SEAL_KEYGEN_ARGS],
+					onOutputLine: sink,
+				}).pipe(
+					Effect.catchTag('DockerError', (cause) =>
+						Effect.fail(
+							new SealError({
+								phase: 'keygen',
+								message: `seal(${name}): keygen container failed: ${cause.message}`,
+								cause,
+							}),
+						),
+					),
+				);
+				if (result.exitCode !== 0) {
+					// Redact `Master key:` lines from stdout/stderr. A failed
+					// keygen that still echoed the master before exiting non-
+					// zero would otherwise embed the secret in a SealError
+					// visible to logs / traces / user terminals.
+					return yield* Effect.fail(
+						new SealError({
+							phase: 'keygen',
+							message: `seal(${name}): keygen container exited ${result.exitCode}`,
+							stderr: redactMasterKey(result.stderr),
+							stdout: redactMasterKey(result.stdout),
+							exitCode: result.exitCode,
+						}),
+					);
+				}
+				return parseSealKeygenOutput(result.stdout) satisfies PersistedBlsKeypair;
+			}),
+	});
+
+	// Routed key-server URL. Resolved at factory time via an Effect so the
+	// `keyServer` produce body can `yield*` it without re-deriving identity
+	// inside every produce closure. `routerEntrypoint('seal')` is read
+	// eagerly because the entrypoint registry is populated at module-load
+	// time; only `Identity` (per-stack) needs runtime resolution.
+	const resolveKeyServerUrl: Effect.Effect<string, SealError, Identity> = Effect.gen(function* () {
+		const identity = yield* Identity;
+		const sealHostname = routerHostname(identity, 'seal');
+		const sealEntrypointInfo = routerEntrypoint('seal');
+		if (sealEntrypointInfo === undefined) {
+			return yield* Effect.fail(
+				new SealError({
+					phase: 'port-alloc',
+					message: `seal(${name}): router entrypoint 'seal' not registered`,
+				}),
+			);
+		}
+		return `http://${sealHostname}:${sealEntrypointInfo.port}`;
+	});
+
+	// On-chain KeyServer object id. Upstream: signer (signs the register
+	// tx), keypair (publicKey threaded into the move call), publish
+	// (packageId for the move target).
+	//
+	// Verify discipline: confirm the cached object still resolves on chain
+	// via `ChainProbe.getObject` (substrate-provided, lenient — transient
+	// RPC failures over-derive on the next cycle). The keypair's verify
+	// above runs first in the topo order and already triggers a B8 cascade
+	// when the chain object disappears, so by the time we hit our own
+	// verify either the cache is valid OR our `chain.getObject` independently
+	// catches the same hole (belt-and-braces).
+	const keyServer = onChainArtifact({
+		name: `${name}.keyServer` as const,
+		kind: 'service',
+		plugin: 'seal',
+		hidden: true,
+		displayTitle: `seal.${name}.register`,
+		// `display` pins the generic `T = string` (the on-chain object id).
+		// Hidden so the dashboard never renders this row.
+		display: (id: string) => ({ title: `seal.${name}.register`, primary: id }),
+		namespace: 'seal/key-server-id',
+		label: `seal.${name}.register`,
+		upstream: { signer: options.signer, keypair, publish },
+		inputs: ({ signer, keypair: kp }) =>
+			Effect.succeed({ name, signerAddress: signer.address, publicKey: kp.publicKey }),
+		verify: ({ cached, chain }) =>
+			chain.getObject(cached).pipe(Effect.map((o) => (o !== undefined ? cached : undefined))),
+		produce: ({ signer, keypair: kp, publish: pkg }) =>
+			Effect.gen(function* () {
+				const keyServerUrl = yield* resolveKeyServerUrl;
+				const tx = new Transaction();
+				const pkBytes = decodeHex(kp.publicKey);
+				tx.moveCall({
+					target: `${pkg.packageId}::key_server::create_and_transfer_v2_independent_server`,
+					arguments: [
+						tx.pure.string(keyServerName),
+						tx.pure.string(keyServerUrl),
+						tx.pure.u8(KEY_TYPE_BONEH_FRANKLIN_BLS12381),
+						tx.pure.vector('u8', Array.from(pkBytes)),
+					],
+				});
+				const result = yield* signer.signAndExecute(tx).pipe(
+					Effect.mapError(
+						(cause) =>
+							new SealError({
+								phase: 'register',
+								message: `seal(${name}): KeyServer register tx failed: ${cause.message}`,
+								cause,
+							}),
+					),
+				);
+				const createdId = pickCreatedByType(result.objectChanges, {
+					suffix: '::key_server::KeyServer',
+				});
+				if (createdId === undefined) {
+					return yield* Effect.fail(
+						new SealError({
+							phase: 'register',
+							message:
+								`seal(${name}): KeyServer object missing from objectChanges ` +
+								`(digest=${result.digest})`,
+						}),
+					);
+				}
+				return createdId;
+			}),
+	});
+
 	// Private "internal" tag class. Both the `SealKeyServerTag` and
 	// `SealKeyManagerTag` projection layers read from it. Kept inside the
 	// factory closure (Context key folds in `name`) so two
@@ -358,48 +611,35 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 							.pipe(Effect.ignore);
 			};
 
-		// State-store cache keys for keygen + register. Derived via
-		// `buildCacheKey` so they're byte-identical to the keys
-		// `withCache(spec)` writes below; this lets the cross-cache
-		// eviction in the keygen verify probe AND `rotate` reach into
-		// the entries directly without going through `withCache`. The
-		// `chainId` fold-in is implicit — a regenesis of the chain
-		// flips it, naturally missing the cache and forcing a fresh
-		// keypair + on-chain registration against the new chain state.
-		const nameInputsHash = contentHash(JSON.stringify({ name }, jsonBigintReplacer), {
-			length: 16,
-		});
+		// State-store cache keys for the rotate path. The `keypair` /
+		// `keyServer` onChainArtifact tags handle their own
+		// withCache-mediated read/write through the substrate; `rotate`
+		// bypasses that to write fresh values directly after a successful
+		// rotation. Cache-key shape (namespace + chainId + sealInputsHash)
+		// MUST be byte-identical to what `onChainArtifact` derives
+		// internally — both go through `buildCacheKey` with the same
+		// `sealInputsHash = contentHash({name})` factory-time slot.
 		const blsKeypairKey = buildCacheKey({
 			namespace: 'seal/bls-keypair',
 			chainId: sui.chainId,
-			inputsHash: nameInputsHash,
+			inputsHash: sealInputsHash,
 		});
 		const keyServerIdKey = buildCacheKey({
 			namespace: 'seal/key-server-id',
 			chainId: sui.chainId,
-			inputsHash: nameInputsHash,
+			inputsHash: sealInputsHash,
 		});
 
 		// 1. Router exposure — derive the stack-scoped hostname and the
-		//    well-known seal entrypoint port (2024). The on-chain
-		//    `KeyServer` object's URL needs to match where the daemon
-		//    actually serves, so we resolve both here before step 5
-		//    (register). No `PortAllocator.allocate` — two stacks of the
-		//    same app coexist on `seal.<app>.localhost:2024` (main) and
+		//    routed key-server URL. `resolveKeyServerUrl` (factory-level)
+		//    yields `Identity` so the port is the well-known seal
+		//    entrypoint (2024) plus the per-stack subdomain. No
+		//    `PortAllocator.allocate` — two stacks of the same app
+		//    coexist on `seal.<app>.localhost:2024` (main) and
 		//    `<stack>.seal.<app>.localhost:2024` (non-main) because the
 		//    Traefik router dispatches by `Host:` header.
 		const sealHostname = routerHostname(identity, 'seal');
-		const sealEntrypointInfo = routerEntrypoint('seal');
-		if (sealEntrypointInfo === undefined) {
-			return yield* Effect.fail(
-				new SealError({
-					phase: 'port-alloc',
-					message: `seal(${name}): router entrypoint 'seal' not registered`,
-				}),
-			);
-		}
-		const sealEntrypointPort = sealEntrypointInfo.port;
-		const keyServerUrl = `http://${sealHostname}:${sealEntrypointPort}`;
+		const keyServerUrl = yield* resolveKeyServerUrl;
 		yield* Effect.annotateCurrentSpan({ 'seal.hostname': sealHostname });
 
 		// 2. Ensure the key-server image is present. Builds from the
@@ -412,77 +652,16 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 		}).pipe(Effect.withSpan('SealImage'));
 		const imageTag = resolvedImage.tag;
 
-		// 3. Keygen — `seal-cli genkey` one-shot + stdout parse, cached
-		//    in the StateStore so warm restarts skip the docker call
-		//    entirely. The cache lives at `seal/bls-keypair/<chainId>/...`
-		//    so a regenesis misses cleanly.
-		//
-		//    Verify probe (§4.2): the keypair itself is off-chain, but a
-		//    matching on-chain `KeyServer` object exists when we've
-		//    previously registered. We piggy-back the cached keyServerId
-		//    here — if the recorded object is missing on chain, the
-		//    register cache is stale and so is the keypair (a fresh
-		//    registration needs a fresh keypair). Eviction cascades: we
-		//    remove the register cache here so the next step also misses
-		//    and re-registers. Closes the §2.5 keyServer-survived-chain-
-		//    regenesis hole.
+		// 3. Keygen — defer to the `keypair` onChainArtifact. The substrate's
+		//    withCache + B8-cascade verify discipline lives there; yielding
+		//    here returns either a cached value (verify-pass) or a freshly
+		//    produced one (cache-miss / verify-fail). The Effect's MemoMap
+		//    dedupes against the inner-layer instance composeLayers built.
 		yield* setPhase('generating master key');
-		const { masterKey, publicKey } = yield* withCache({
-			namespace: 'seal/bls-keypair',
-			chainId: sui.chainId,
-			inputs: Effect.succeed({ name }),
-			verify: (cachedKeypair: PersistedBlsKeypair) =>
-				Effect.gen(function* () {
-					const cachedKeyServerId = yield* stateStore.get<string>(keyServerIdKey);
-					if (Option.isNone(cachedKeyServerId)) {
-						// No prior registration — keypair will be used to
-						// register fresh. Trust the cached value.
-						return cachedKeypair;
-					}
-					const ok = yield* probeObjectExists(sui.client, cachedKeyServerId.value);
-					if (ok) return cachedKeypair;
-					// Object missing on chain — register cache is stale.
-					// Evict it here so the register withCache below also
-					// misses and re-runs.
-					yield* stateStore.remove(keyServerIdKey).pipe(Effect.ignore);
-					return undefined;
-				}),
-			produce: Effect.gen(function* () {
-				const result = yield* Docker.runOneShot({
-					name: `seal.${name}.keygen`,
-					image: imageTag,
-					entrypoint: SEAL_KEYGEN_ENTRYPOINT,
-					args: [...SEAL_KEYGEN_ARGS],
-					onOutputLine: makeSealOutputSink(`seal.${name}.keygen`),
-				}).pipe(
-					Effect.catchTag('DockerError', (cause) =>
-						Effect.fail(
-							new SealError({
-								phase: 'keygen',
-								message: `seal(${name}): keygen container failed: ${cause.message}`,
-								cause,
-							}),
-						),
-					),
-				);
-				if (result.exitCode !== 0) {
-					// Redact `Master key:` lines from stdout/stderr. A failed
-					// keygen that still echoed the master before exiting non-
-					// zero would otherwise embed the secret in a SealError
-					// visible to logs / traces / user terminals.
-					return yield* Effect.fail(
-						new SealError({
-							phase: 'keygen',
-							message: `seal(${name}): keygen container exited ${result.exitCode}`,
-							stderr: redactMasterKey(result.stderr),
-							stdout: redactMasterKey(result.stdout),
-							exitCode: result.exitCode,
-						}),
-					);
-				}
-				return parseSealKeygenOutput(result.stdout) satisfies PersistedBlsKeypair;
-			}),
-		}).pipe(Effect.withSpan('SealKeygen'));
+		// Only `masterKey` is consumed downstream (env-file write); the
+		// `publicKey` is threaded into the `keyServer` produce body via
+		// its own upstream resolution.
+		const { masterKey } = yield* keypair;
 
 		// 4. Publish the seal Move package. Always goes through
 		//    `publishMove` so the gitFetch-vendored path inherits the
@@ -496,67 +675,14 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 		}).pipe(Effect.withSpan('SealPublish'));
 		const packageId = pkg.packageId;
 
-		// 5. Register the key server on chain — single Move call. URL
-		//    MUST match the URL the container will later bind on; the
-		//    allocated host port from step 1 satisfies that.
-		//
-		//    Verify probe (§4.2): confirm the cached `KeyServer` object
-		//    still resolves on chain. The keygen verify above already
-		//    eagerly evicts this key when its piggy-backed probe sees a
-		//    missing object — by the time we get here, the cache is
-		//    either valid OR has been pre-cleared. The local probe is
-		//    still load-bearing for the case where the chain object was
-		//    deleted between the two withCache calls (vanishingly rare,
-		//    but cheap to guard).
-		const keyServerObjectId = yield* withCache({
-			namespace: 'seal/key-server-id',
-			chainId: sui.chainId,
-			inputs: Effect.succeed({ name }),
-			verify: (cachedId: string) =>
-				Effect.gen(function* () {
-					const ok = yield* probeObjectExists(sui.client, cachedId);
-					return ok ? cachedId : undefined;
-				}),
-			produce: Effect.gen(function* () {
-				const tx = new Transaction();
-				const pkBytes = decodeHex(publicKey);
-				tx.moveCall({
-					target: `${packageId}::key_server::create_and_transfer_v2_independent_server`,
-					arguments: [
-						tx.pure.string(keyServerName),
-						tx.pure.string(keyServerUrl),
-						tx.pure.u8(KEY_TYPE_BONEH_FRANKLIN_BLS12381),
-						tx.pure.vector('u8', Array.from(pkBytes)),
-					],
-				});
-
-				const result = yield* signer.signAndExecute(tx).pipe(
-					Effect.mapError(
-						(cause) =>
-							new SealError({
-								phase: 'register',
-								message: `seal(${name}): KeyServer register tx failed: ${cause.message}`,
-								cause,
-							}),
-					),
-				);
-
-				const createdId = pickCreatedByType(result.objectChanges, {
-					suffix: '::key_server::KeyServer',
-				});
-				if (createdId === undefined) {
-					return yield* Effect.fail(
-						new SealError({
-							phase: 'register',
-							message:
-								`seal(${name}): KeyServer object missing from objectChanges ` +
-								`(digest=${result.digest})`,
-						}),
-					);
-				}
-				return createdId;
-			}),
-		}).pipe(Effect.withSpan('SealRegister'));
+		// 5. Register the key server on chain — defer to the `keyServer`
+		//    onChainArtifact. Its verify probe is the substrate-provided
+		//    `chain.getObject(cached)` round-trip per RS2 (probe stable
+		//    ids); on cache hit the existing object id surfaces, on
+		//    miss / verify-fail the register Move call re-runs against
+		//    the current keypair + publish.
+		yield* setPhase('registering on-chain key-server');
+		const keyServerObjectId = yield* keyServer;
 
 		// 6. Render the CONFIG_PATH yaml to a scoped temp dir + mount
 		//    it into the container. `makeTempDirectoryScoped` cleans up
@@ -984,22 +1110,26 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 	// so the topological-level scheduler in `composeStackLayer` puts
 	// seal at
 	// the right level (strictly after sui + signer + inner image / source
-	// / publish tags + any explicit dependsOn edges). Inner sibling tags
-	// — `sealImage`, `sourceFetch`, `publish` — also enter the upstream
-	// list so the inner layers settle before seal's acquire body
-	// resolves them via `yield* sealImage` / `yield* sourceFetch` /
-	// `yield* publish`. Conditional siblings pass `undefined` and are
-	// dropped by `resolveUpstreamKeys`.
+	// / publish / keypair / keyServer tags + any explicit dependsOn edges).
+	// Inner sibling tags — `sealImage`, `sourceFetch`, `publish`,
+	// `keypair`, `keyServer` — enter the upstream list so the inner
+	// layers settle before seal's acquire body resolves them via
+	// `yield* sealImage` / `yield* sourceFetch` / `yield* publish` /
+	// `yield* keypair` / `yield* keyServer`. Conditional siblings pass
+	// `undefined` and are dropped by `resolveUpstreamKeys`.
 	// `SuiTag` is the canonical Context.Service class, not a LayeredTag,
 	// so reach for its `key` directly. Inner sibling tags feed in via
-	// their `.key` strings. `publish` is unconditional; `sourceFetch`
-	// is still conditional on whether the caller vendored a Move path.
+	// their `.key` strings. `publish`, `keypair`, `keyServer` are
+	// unconditional; `sourceFetch` is still conditional on whether the
+	// caller vendored a Move path.
 	const upstreamKeys: Array<LayeredTag<any, any, any, any> | string> = [
 		SuiTag.key,
 		options.signer,
 		sealImage,
 		...(sourceFetch !== undefined ? [sourceFetch] : []),
 		publish,
+		keypair,
+		keyServer,
 		...(options.dependsOn ?? []),
 	];
 	const { __layer: internalLayer } = provide(SealLocalKeygenInternal, acquire, {
@@ -1069,7 +1199,13 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 		sourceFetch !== undefined ? [sealImage, sourceFetch] : [sealImage];
 	return Object.assign(SealLocalKeygenInternal, {
 		__layers: composeLayers({
-			inner: [publish],
+			// Order: `publish` → `keypair` → `keyServer`. `keyServer`'s
+			// upstream record names `keypair` (and `publish`), so its layer
+			// must follow theirs. Effect's MemoMap dedupes the `yield*
+			// keypair` inside `keyServer`'s body against the inner-layer
+			// instance built here. `composeLayers` drops `undefined`
+			// entries so conditional siblings stay safe.
+			inner: [publish, keypair, keyServer],
 			primary: internalLayer,
 			projections: [keyServerLayer, keyManagerLayer],
 		}),
@@ -1147,25 +1283,11 @@ export const sealKnownKeyServer = (options: SealKnownKeyServerOptions = {}): Sta
 // Helpers
 // -----------------------------------------------------------------------------
 
-/** Probe whether `objectId` is currently resolvable on chain. Returns
- *  `true` when `client.core.getObject` succeeds; `false` on any error
- *  (object missing, RPC transient, network down). Used by the seal
- *  withCache verify probes (§4.2 of `notes/parallel-graph-resolution.md`)
- *  so a stale cache entry — chain regenesis, snapshot mismatch,
- *  user-initiated rotation — gets invalidated cleanly instead of
- *  silently feeding downstream consumers a dead reference.
- *
- *  Conservatively falls back to `false` on any failure: over-deriving
- *  on the next produce cycle is cheaper than booting against a broken
- *  cache entry. */
-const probeObjectExists = (client: Sui['client'], objectId: string): Effect.Effect<boolean> =>
-	Effect.tryPromise({
-		try: () => client.core.getObject({ objectId }),
-		catch: (cause) => cause,
-	}).pipe(
-		Effect.as(true),
-		Effect.orElseSucceed(() => false),
-	);
+// Note: the `probeObjectExists` helper that lived here pre-migration is
+// gone — its callers (the two inline `withCache` blocks) now route through
+// `onChainArtifact`'s substrate-provided `ChainProbe.getObject`, which is
+// the same lenient `getObject → Option<obj>` shape with Schema validation
+// at the boundary.
 
 /** Render the seal key-server's CONFIG_PATH yaml. Env-only mode silently
  *  forces `network: Testnet` + a public-fullnode URL, so for sui-localnet
