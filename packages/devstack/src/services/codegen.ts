@@ -42,6 +42,7 @@ import { DappKitConfigEmitter } from '../codegen/emitters/dapp-kit-config.js';
 import { DeepbookConfigEmitter } from '../codegen/emitters/deepbook-config.js';
 import { StackHandleEmitter } from '../codegen/emitters/stack-handle.js';
 import { CodegenError } from '../codegen/errors.js';
+import { fsOp } from '../codegen/helpers.js';
 import { displayPath } from '../engine/display-path.js';
 import { stageAndSwap, StageAndSwapError } from '../engine/stage-and-swap.js';
 import { writeFileAtomic } from '../engine/atomic-write.js';
@@ -78,18 +79,10 @@ const writeGitignore = (
 	outputDir: string,
 	existing: string | undefined,
 ): Effect.Effect<void, CodegenError> =>
-	Effect.tryPromise({
-		try: async () => {
-			await writeFileAtomic(path.join(outputDir, '.gitignore'), existing ?? GITIGNORE_BODY);
-		},
-		catch: (cause) =>
-			new CodegenError({
-				emitter: 'codegen',
-				phase: 'write',
-				message: `failed to write .gitignore under ${outputDir}: ${String(cause)}`,
-				cause,
-			}),
-	});
+	fsOp(
+		{ emitter: 'codegen', phase: 'write', message: `failed to write .gitignore under ${outputDir}` },
+		() => writeFileAtomic(path.join(outputDir, '.gitignore'), existing ?? GITIGNORE_BODY),
+	);
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

@@ -27,17 +27,7 @@ import { stringifyCause } from '../../engine/stringify-cause.js';
 import { SuiBuildContainer } from '../../engine/sui-build-container.js';
 import { CodegenError } from '../errors.js';
 import { defineEmitter, type CodegenContext, type Emitter } from '../define-emitter.js';
-
-// Per-output-dir cache of the last input fingerprint we successfully
-// emitted. HIGH-C5: pre-fix, every supervisor cycle re-ran the full
-// `sui move summary` + `generateFromPackageSummary` pipeline + atomic
-// dir swap, even when no Move source had changed — Vite's watcher
-// then fired HMR reloads on every restart. The fingerprint is
-// `sha256(target name + sourcePath + mvrPlaceholder + max mtime
-// across .move/.toml/.lock files in sourcePath)`. Module-local map
-// keyed by the absolute output path so two Codegen Refs writing to
-// different dirs don't share state.
-const lastEmitFingerprint = new Map<string, string>();
+import { fsOp } from '../helpers.js';
 
 export interface BindingsEmitterOptions {
 	/** Import-extension flavor in generated code. Defaults to `'.ts'`. */
@@ -85,6 +75,7 @@ const collectTargets = (ctx: CodegenContext): Effect.Effect<ReadonlyArray<Target
 const runEmit = (
 	ctx: CodegenContext,
 	importExtension: '.ts' | '.js' | '',
+	cache: Map<string, string>,
 ): Effect.Effect<void, CodegenError, ChildProcessSpawner.ChildProcessSpawner> =>
 	Effect.gen(function* () {
 		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -108,7 +99,7 @@ const runEmit = (
 		// emit avoids a wasted `sui move summary` run AND avoids
 		// firing Vite's HMR via the atomic dir swap.
 		const fingerprint = yield* computeFingerprint(targets);
-		if (fingerprint !== undefined && lastEmitFingerprint.get(outputAbs) === fingerprint) {
+		if (fingerprint !== undefined && cache.get(outputAbs) === fingerprint) {
 			yield* Effect.annotateCurrentSpan({
 				'bindings.cache': 'hit',
 				'bindings.fingerprint': fingerprint,
@@ -188,8 +179,13 @@ const runEmit = (
 									),
 								);
 							}
-							yield* Effect.tryPromise({
-								try: () =>
+							yield* fsOp(
+								{
+									emitter: 'bindings',
+									phase: 'generate',
+									message: `${t.name}: codegen failed`,
+								},
+								() =>
 									generateFromPackageSummary({
 										package: {
 											path: t.sourcePath,
@@ -200,31 +196,22 @@ const runEmit = (
 										outputDir: staging,
 										importExtension,
 									}),
-								catch: (cause) =>
-									new CodegenError({
-										emitter: 'bindings',
-										phase: 'generate',
-										message: `${t.name}: codegen failed: ${stringifyCause(cause)}`,
-										cause,
-									}),
-							});
+							);
 							// `generateFromPackageSummary` returns void on success but
 							// silently emits nothing if the package's Move.toml lacks
 							// an [addresses] entry matching its summary subdir. Probe
 							// the staging path so we fail loudly here rather than
-							// landing a half-empty tree.
+							// landing a half-empty tree. Any probe failure (perms,
+							// missing parent) is treated as "didn't write" so the
+							// error message below points at the codegen layer
+							// instead of the access syscall.
 							const expected = path.join(staging, t.name);
-							const wrote = yield* Effect.tryPromise({
-								try: async () => {
-									try {
-										await fs.access(expected);
-										return true;
-									} catch {
-										return false;
-									}
-								},
-								catch: () => false,
-							}).pipe(Effect.orElseSucceed(() => false));
+							const wrote = yield* Effect.promise(() =>
+								fs.access(expected).then(
+									() => true,
+									() => false,
+								),
+							);
 							if (!wrote) {
 								return yield* Effect.fail(
 									new CodegenError({
@@ -256,7 +243,7 @@ const runEmit = (
 		// upstream (codegen, swap, post-swap rm) leaves the cache
 		// invalid and forces a re-emit next cycle.
 		if (fingerprint !== undefined) {
-			lastEmitFingerprint.set(outputAbs, fingerprint);
+			cache.set(outputAbs, fingerprint);
 		}
 	});
 
@@ -331,13 +318,23 @@ async function maxSourceMtime(root: string): Promise<number> {
  *  emitter override. The emitter's `R` widens to
  *  `ChildProcessSpawner` (we shell out to `sui move summary` /
  *  the build container); `Codegen({...})` provides that service
- *  via `NodeServicesLayer` by default. */
+ *  via `NodeServicesLayer` by default.
+ *
+ *  The fingerprint short-circuit cache is closure-scoped so each
+ *  `BindingsEmitter()` call gets its own. The cache doesn't survive
+ *  across processes — that's intentional: cold start always re-emits,
+ *  and the source-mtime probe in `computeFingerprint` remains the
+ *  authoritative invalidation signal. Per-instance scoping also keeps
+ *  test runs isolated (the previous module-global Map leaked state
+ *  across tests). Emit is serialised by `Codegen()` (concurrency: 1
+ *  in `services/codegen.ts`), so an unsynchronised Map suffices. */
 export const BindingsEmitter = (
 	opts: BindingsEmitterOptions = {},
 ): Emitter<ChildProcessSpawner.ChildProcessSpawner> => {
 	const importExtension = opts.importExtension ?? '.ts';
+	const cache = new Map<string, string>();
 	return defineEmitter({
 		name: 'bindings',
-		emit: (ctx) => runEmit(ctx, importExtension),
+		emit: (ctx) => runEmit(ctx, importExtension, cache),
 	});
 };

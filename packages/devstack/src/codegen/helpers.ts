@@ -1,7 +1,33 @@
 import { Effect } from 'effect';
 import * as fs from 'node:fs/promises';
 import { writeFileAtomicIfChanged } from '../engine/atomic-write.js';
+import { stringifyCause } from '../engine/stringify-cause.js';
+import type { CodegenPhase } from '../engine/phases.js';
 import { CodegenError } from './errors.js';
+
+/** Curry a `() => Promise<T>` into an `Effect<T, CodegenError>`, mapping
+ *  any thrown cause to a `CodegenError` tagged with the supplied
+ *  emitter + phase. Replaces the per-callsite `Effect.tryPromise({ try,
+ *  catch: cause => new CodegenError(...) })` lattice that emitters
+ *  previously repeated for every fs op.
+ *
+ *  `message` is the human-readable summary that gets `: <stringifyCause>`
+ *  appended; `cause` is threaded into the structured error so the top-
+ *  level pretty-error walker still sees the underlying defect. */
+export const fsOp = <T>(
+	opts: { readonly emitter: string; readonly phase: CodegenPhase; readonly message: string },
+	body: () => Promise<T>,
+): Effect.Effect<T, CodegenError> =>
+	Effect.tryPromise({
+		try: body,
+		catch: (cause) =>
+			new CodegenError({
+				emitter: opts.emitter,
+				phase: opts.phase,
+				message: `${opts.message}: ${stringifyCause(cause)}`,
+				cause,
+			}),
+	});
 
 /** Idempotent write — read existing contents, skip the write if
  *  identical, and explicitly chmod afterwards (fs.writeFile's mode
@@ -20,8 +46,9 @@ export const writeIfChanged = (
 	options: { emitter: string; mode?: 0o600 | 0o644 },
 ): Effect.Effect<void, CodegenError> => {
 	const mode = options.mode ?? 0o644;
-	return Effect.tryPromise({
-		try: async () => {
+	return fsOp(
+		{ emitter: options.emitter, phase: 'write', message: `failed to write ${outputPath}` },
+		async () => {
 			await writeFileAtomicIfChanged(outputPath, contents, { mode });
 			// Explicit chmod: writeFileAtomicIfChanged only sets `mode` when
 			// it actually writes; on a no-op (content unchanged) we still
@@ -29,12 +56,5 @@ export const writeIfChanged = (
 			// run left them wrong. Cheap on warm paths (one syscall).
 			await fs.chmod(outputPath, mode);
 		},
-		catch: (cause) =>
-			new CodegenError({
-				emitter: options.emitter,
-				phase: 'write',
-				message: `failed to write ${outputPath}: ${String(cause)}`,
-				cause,
-			}),
-	});
+	);
 };

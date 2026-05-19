@@ -221,7 +221,12 @@ describe('BindingsEmitter — fingerprint short-circuit', () => {
 				const spawnerCalls: Array<ReadonlyArray<string>> = [];
 				const spawnerLayer = makeStubSpawner(spawnerCalls);
 
-				yield* BindingsEmitter().emit(ctx()).pipe(Effect.provide(spawnerLayer));
+				// Single emitter instance — the fingerprint short-circuit
+				// lives in a closure-scoped Ref, so re-using the same
+				// emitter is how a long-lived supervisor consumes it.
+				const emitter = BindingsEmitter();
+
+				yield* emitter.emit(ctx()).pipe(Effect.provide(spawnerLayer));
 				expect(spawnerCalls).toHaveLength(1);
 
 				const bindingsDir = joinPath(outputDir, 'bindings');
@@ -230,7 +235,7 @@ describe('BindingsEmitter — fingerprint short-circuit', () => {
 				// Wait one tick so a swap-induced mtime bump would be measurable.
 				yield* Effect.sleep('50 millis');
 
-				yield* BindingsEmitter().emit(ctx()).pipe(Effect.provide(spawnerLayer));
+				yield* emitter.emit(ctx()).pipe(Effect.provide(spawnerLayer));
 
 				// Fingerprint matched → no spawn, no swap.
 				expect(spawnerCalls).toHaveLength(1);
@@ -243,7 +248,9 @@ describe('BindingsEmitter — fingerprint short-circuit', () => {
 			const spawnerCalls: Array<ReadonlyArray<string>> = [];
 			const spawnerLayer = makeStubSpawner(spawnerCalls);
 
-			yield* BindingsEmitter().emit(ctx()).pipe(Effect.provide(spawnerLayer));
+			const emitter = BindingsEmitter();
+
+			yield* emitter.emit(ctx()).pipe(Effect.provide(spawnerLayer));
 			expect(spawnerCalls).toHaveLength(1);
 
 			// Touch a source file with a measurably-later mtime so the
@@ -254,8 +261,26 @@ describe('BindingsEmitter — fingerprint short-circuit', () => {
 			const future = Date.now() / 1000 + 5;
 			fs.utimesSync(filePath, future, future);
 
-			yield* BindingsEmitter().emit(ctx()).pipe(Effect.provide(spawnerLayer));
+			yield* emitter.emit(ctx()).pipe(Effect.provide(spawnerLayer));
 			// Spawned again — fingerprint differs.
+			expect(spawnerCalls).toHaveLength(2);
+		}),
+	);
+
+	it.live('two BindingsEmitter() instances do not share fingerprint state', () =>
+		Effect.gen(function* () {
+			// Per-instance Ref means the second emitter sees an empty
+			// cache and re-emits even when nothing on disk changed. This
+			// pins the bug-class fix: pre-refactor a module-global Map
+			// leaked across instances (and across tests).
+			const spawnerCalls: Array<ReadonlyArray<string>> = [];
+			const spawnerLayer = makeStubSpawner(spawnerCalls);
+
+			yield* BindingsEmitter().emit(ctx()).pipe(Effect.provide(spawnerLayer));
+			expect(spawnerCalls).toHaveLength(1);
+
+			// A fresh emitter — its cache is empty by construction.
+			yield* BindingsEmitter().emit(ctx()).pipe(Effect.provide(spawnerLayer));
 			expect(spawnerCalls).toHaveLength(2);
 		}),
 	);
