@@ -62,6 +62,7 @@ const PUBLIC_EXPORTS = [
 	'HostProcessError',
 	'ManifestDiscoveryError',
 	'ManifestError',
+	'ManifestShapeError',
 	'PublishError',
 	'SealError',
 	'SuiError',

@@ -21,10 +21,7 @@ import { SuiTag, type Sui } from '../sui.js';
 import { DeepbookCoreTag, type DeepbookCore } from '../deepbook.js';
 import type { Account, SignAndExecuteError, TxResult } from '../../engine/shared.js';
 import { calculateGridLevels } from './internal.js';
-import {
-	deepbookMarketMaker,
-	STATE_KEY_BALANCE_MANAGER_PREFIX_INTERNAL,
-} from './market-maker.js';
+import { deepbookMarketMaker, STATE_KEY_BALANCE_MANAGER_PREFIX_INTERNAL } from './market-maker.js';
 
 describe('calculateGridLevels (bps strategy)', () => {
 	it('produces tick-aligned prices at the expected bps offsets', () => {
@@ -284,10 +281,12 @@ effectDescribe('deepbookMarketMaker — cancel-resilient resume (Bug A)', () => 
 				const handle = yield* Effect.scoped(
 					Effect.gen(function* () {
 						// eslint-disable-next-line @typescript-eslint/no-explicit-any
-						return yield* (maker as any);
-					}).pipe(
-						Effect.provide(Layer.provide(memberLayer, supportLayer)),
-					) as Effect.Effect<{ pid: number }, unknown, never>,
+						return yield* maker as any;
+					}).pipe(Effect.provide(Layer.provide(memberLayer, supportLayer))) as Effect.Effect<
+						{ pid: number },
+						unknown,
+						never
+					>,
 				);
 				expect(handle.pid).toBe(0);
 
@@ -298,5 +297,162 @@ effectDescribe('deepbookMarketMaker — cancel-resilient resume (Bug A)', () => 
 				expect(calls[0]?.phase).toBe('cancel');
 				expect(calls[1]?.phase).toBe('place');
 			}),
+	);
+
+	effectIt.effect('place-tx BalanceTooLow abort recreates BalanceManager and retries', () =>
+		Effect.gen(function* () {
+			const tmpdir = yield* mkTmpDir('place-recreate');
+			const chainId = 'test-chain-mm-recreate';
+			const packageId = '0xDEEPB00D';
+			const cachedBmId = '0xBALANCEMGR_INCONSISTENT';
+
+			const baseKey = `${STATE_KEY_BALANCE_MANAGER_PREFIX_INTERNAL}/${chainId}/${packageId}/0xCAFE`;
+			const cacheKey = `${baseKey}/sui_usdc`;
+
+			// Three-call sequence:
+			//   call 0: cancel-stale tx succeeds (steady-state cancel on resumed
+			//           BM — Move-side process_cancel had no `owed` drift).
+			//   call 1: place tx aborts with EBalanceManagerBalanceTooLow at
+			//           place_limit_order — the BM's free balance doesn't cover
+			//           the lock even after cancel cleared its orders (the dev-
+			//           resume edge case where the snapshot left the BM ledger
+			//           inconsistent with the on-chain account state).
+			//   call 2: retry place tx after recreate succeeds (newlyCreated
+			//           branch mints a fresh BM with pre-deposit; we don't
+			//           require capturing the BM id here since the in-memory
+			//           map is what the catch handler clears, and the recovery
+			//           path falls back to the freshly-issued BM via the
+			//           initial-tick newlyCreated flow).
+			const calls: Array<{ phase: 'cancel' | 'place'; outcome: 'ok' | 'abort' }> = [];
+			const signer: Account = {
+				name: 'alice',
+				address: '0xCAFE',
+				publicKey: new Uint8Array(new ArrayBuffer(0)),
+				scheme: 'ed25519',
+				signAndExecute: vi.fn((_t: unknown) => {
+					const idx = calls.length;
+					if (idx === 0) {
+						calls.push({ phase: 'cancel', outcome: 'ok' });
+						return Effect.succeed({
+							digest: '0xCANCEL',
+							effects: { status: { status: 'success' } },
+							objectChanges: [],
+							balanceChanges: undefined,
+						} satisfies TxResult);
+					}
+					if (idx === 1) {
+						calls.push({ phase: 'place', outcome: 'abort' });
+						return Effect.fail({
+							_tag: 'SignAndExecuteError',
+							message:
+								"Transaction resolution failed: MoveAbort in 3rd command, abort code: 3, in '0xDEEPB00D::balance_manager::withdraw_with_proof'",
+						} satisfies SignAndExecuteError) as never;
+					}
+					calls.push({ phase: 'place', outcome: 'ok' });
+					return Effect.succeed({
+						digest: '0xPLACE',
+						effects: { status: { status: 'success' } },
+						// newlyCreated path captures from objectChanges. Synthesize
+						// a BalanceManager `created` change so the post-place
+						// state-store write succeeds (otherwise the maker fails
+						// the `createdBmIds.length < newlyCreated.size` invariant).
+						objectChanges: [
+							{
+								type: 'created',
+								sender: '0xCAFE',
+								owner: { AddressOwner: '0xCAFE' },
+								objectType: `${packageId}::balance_manager::BalanceManager`,
+								objectId: '0xFRESH_BM',
+								version: '1',
+								digest: 'aa',
+								// eslint-disable-next-line @typescript-eslint/no-explicit-any
+							} as any,
+						],
+						balanceChanges: undefined,
+					} satisfies TxResult);
+				}),
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+				signTransaction: (() =>
+					Effect.fail({
+						_tag: 'SignAndExecuteError',
+						message: 'unreachable',
+					} satisfies SignAndExecuteError)) as any,
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+				signPersonalMessage: (() =>
+					Effect.fail({
+						_tag: 'SignAndExecuteError',
+						message: 'unreachable',
+					} satisfies SignAndExecuteError)) as any,
+			};
+			const signerTag = tag('alice', Effect.succeed(signer));
+
+			const maker = deepbookMarketMaker({
+				name: 'deepbook.maker',
+				signer: signerTag,
+				strategy: { kind: 'bps', spreadBps: 10, levelSpacingBps: 100, levels: 1 },
+				pools: [
+					{
+						name: 'sui_usdc',
+						base: '0x2::sui::SUI',
+						quote: `${packageId}::usdc::USDC`,
+						tickSize: 1_000n,
+						midPrice: 3_500_000n,
+						sizePerLevel: 1_000_000_000n,
+					},
+				],
+			});
+
+			const supportLayer = Layer.mergeAll(
+				TestBaseLayer,
+				makeMockSuiOk(chainId),
+				Layer.provideMerge(
+					Layer.provide(StateStoreLive, mockStateConfig(tmpdir)),
+					NodeFileSystemLayer,
+				),
+				signerTag.__layer,
+				makeMockDeepbookCore(packageId),
+			);
+
+			yield* Effect.gen(function* () {
+				const state = yield* StateStore;
+				yield* state.put(cacheKey, { balanceManagerId: cachedBmId });
+			}).pipe(Effect.provide(supportLayer));
+
+			const memberLayer = (
+				maker.__layers as ReadonlyArray<Layer.Layer<unknown, unknown, unknown>>
+			).reduce<Layer.Layer<unknown, unknown, unknown>>(
+				(acc, l) => Layer.provideMerge(l, acc),
+				Layer.empty as unknown as Layer.Layer<unknown, unknown, unknown>,
+			);
+			const handle = yield* Effect.scoped(
+				Effect.gen(function* () {
+					// eslint-disable-next-line @typescript-eslint/no-explicit-any
+					return yield* maker as any;
+				}).pipe(Effect.provide(Layer.provide(memberLayer, supportLayer))) as Effect.Effect<
+					{ pid: number },
+					unknown,
+					never
+				>,
+			);
+			expect(handle.pid).toBe(0);
+
+			// Three submissions: cancel ok, place abort, place ok after recreate.
+			expect(calls.length).toBe(3);
+			expect(calls[0]).toEqual({ phase: 'cancel', outcome: 'ok' });
+			expect(calls[1]).toEqual({ phase: 'place', outcome: 'abort' });
+			expect(calls[2]).toEqual({ phase: 'place', outcome: 'ok' });
+
+			// Cache was invalidated + rewritten with the fresh id from the retry.
+			const fresh = yield* Effect.gen(function* () {
+				const state = yield* StateStore;
+				return yield* state.get(cacheKey);
+			}).pipe(Effect.provide(supportLayer));
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			expect((fresh as any)._tag).toBe('Some');
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			expect(((fresh as any).value as { balanceManagerId: string }).balanceManagerId).toBe(
+				'0xFRESH_BM',
+			);
+		}),
 	);
 });
