@@ -138,10 +138,7 @@ export const graphCommand = Command.make(
 	{
 		configPath: Argument.string('config-path').pipe(Argument.optional),
 		// Format selection. Accepts `text` (default) / `mermaid` / `dot`.
-		// Effect-CLI doesn't ship a `Flag.choice` helper here; we accept
-		// `Flag.string` and validate at the top of the action so the
-		// error message names the legal set instead of failing later.
-		format: Flag.string('format').pipe(
+		format: Flag.choice('format', ['text', 'mermaid', 'dot'] as const).pipe(
 			Flag.withDescription(
 				'Output format: text (default), mermaid, or dot (Graphviz). Pipe to `dot -Tsvg` for an image.',
 			),
@@ -224,12 +221,7 @@ export const graphCommand = Command.make(
 				return;
 			}
 
-			const formatStr = Option.getOrElse(format, () => 'text');
-			if (formatStr !== 'text' && formatStr !== 'mermaid' && formatStr !== 'dot') {
-				return yield* failAlreadyReported(
-					`devstack graph: unknown format '${formatStr}' (legal: text, mermaid, dot)`,
-				);
-			}
+			const formatStr = Option.getOrElse(format, () => 'text' as const);
 
 			if (useJson) {
 				const levels = topoLevels(graph);

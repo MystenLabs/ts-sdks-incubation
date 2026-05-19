@@ -34,8 +34,13 @@ import {
 	successEnvelope,
 } from '../envelope.js';
 import { EX_SNAPSHOT_NOT_FOUND, EX_USAGE, EX_CONFIRM_REQUIRED } from '../exit-codes.js';
-import { resolveAppDir, resolveForkDataDir, resolveStack, stateDir } from '../stack-resolution.js';
-import { deriveAppName, DockerLabel } from '../../engine/identity.js';
+import {
+	resolveAppName,
+	resolveForkDataDir,
+	resolveStack,
+	stateDir,
+} from '../stack-resolution.js';
+import { DockerLabel } from '../../engine/identity.js';
 import { list as listSnapshots, restore, snapshot } from '../../engine/snapshot.js';
 
 // Action-time reads of DEVSTACK_STATE_DIR — see manifest.ts for the
@@ -155,9 +160,6 @@ const appFlag = Flag.string('app').pipe(
 	),
 	Flag.optional,
 );
-
-const resolveAppName = (override: Option.Option<string>): string =>
-	Option.getOrElse(override, () => deriveAppName(resolveAppDir()));
 
 // Threshold above which `--include-fork-data` flips OFF by default.
 // 1GB is the canonical break-even — below it, capturing the fork data

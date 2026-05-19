@@ -13,6 +13,7 @@
 
 import { Effect, FileSystem, Option, Path } from 'effect';
 import * as nodePath from 'node:path';
+import { deriveAppName } from '../engine/identity.js';
 
 export const STATE_DIR_ENV = 'DEVSTACK_STATE_DIR';
 export const STACK_NAME_ENV = 'DEVSTACK_STACK';
@@ -83,6 +84,13 @@ export const resolveStack = (
 		const active = yield* readActiveStack(fs, path);
 		return Option.getOrElse(active, () => DEFAULT_STACK);
 	});
+
+/** Resolve the app identifier honoring an explicit `--app` override.
+ *  Falls back to the basename of the resolved app dir's `package.json#name`
+ *  (the same value `defineDevstack` uses). Used by snapshot / wipe /
+ *  status to scope docker label filters to THIS app. */
+export const resolveAppName = (override: Option.Option<string>): string =>
+	Option.getOrElse(override, () => deriveAppName(resolveAppDir()));
 
 /** Env-only resolution — for callsites that don't have FileSystem in
  *  scope (e.g. `wipe.ts` resolving the default for its `--stack` flag).

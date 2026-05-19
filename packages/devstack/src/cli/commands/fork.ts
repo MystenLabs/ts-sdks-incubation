@@ -39,7 +39,6 @@ import { Argument, Command, Flag } from 'effect/unstable/cli';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { promises as nodeFs } from 'node:fs';
 import { join as joinPath } from 'node:path';
-import { Registry } from '../../engine/registry.js';
 import {
 	subscribeCheckpointsWithFallback,
 	type ForkCheckpointEvent,
@@ -1040,9 +1039,3 @@ export const _internal = {
 	collectReferencedChainIds,
 	collectCacheEntries,
 };
-
-// `Registry` is only re-exported here so the `_internal` block keeps
-// the type import chain reachable for downstream tooling that needs to
-// stub the running stack's gRPC endpoint. The CLI itself doesn't read
-// from the registry — manifest lookup is the canonical path.
-void Registry;

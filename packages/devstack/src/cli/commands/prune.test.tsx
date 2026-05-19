@@ -1,9 +1,8 @@
 // Smoke coverage for the `prune` CLI surface.
 //
 // Two layers:
-//   1. Pure helpers — `selectableKeys` from the Ink component module —
-//      so the "select all orphans" path doesn't quietly include a
-//      running supervisor's row.
+//   1. Pure helpers — the "select all orphans" predicate inlined below —
+//      so the path doesn't quietly include a running supervisor's row.
 //   2. Ink picker — render with `ink-testing-library`, drive a few
 //      keystrokes, assert the rendered frame surfaces the right
 //      selection state. Mirrors the pattern in `tui/components.test.tsx`.
@@ -11,8 +10,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render as inkRender } from 'ink-testing-library';
 import React from 'react';
-import { PruneApp, selectableKeys } from './_prune-ui.js';
+import { PruneApp } from './_prune-ui.js';
 import type { InventoryRow } from '../../engine/docker/inventory.js';
+
+// Inline mirror of the selectable-row predicate used by `_prune-ui.tsx`:
+// non-running rows are selectable, identified by `<app>/<stack>` keys.
+const selectableKeys = (rows: ReadonlyArray<InventoryRow>): ReadonlyArray<string> =>
+	rows.filter((r) => r.runningPid === undefined).map((r) => `${r.app}/${r.stack}`);
 
 const row = (overrides: Partial<InventoryRow> = {}): InventoryRow => ({
 	app: 'arena',

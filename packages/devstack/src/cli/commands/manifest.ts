@@ -54,8 +54,6 @@ export const manifestCommand = Command.make(
 					yield* Console.log(`  path: ${ctx.manifestPath}`);
 
 					const m = ctx.manifest;
-					const eps = Object.entries(m.services).flatMap(([_svc, _block]) => [] as never[]);
-					void eps; // structured rendering below
 					const pkgs = Object.entries(m.packages);
 					const accts = Object.entries(m.accounts);
 					const coins = Object.entries(m.coins);

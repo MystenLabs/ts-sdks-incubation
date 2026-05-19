@@ -1,32 +1,10 @@
-// Shared loader utilities for CLI subcommands.
-//
-// Three previously duplicated patterns are consolidated here:
-//
-//   1. `wrapCause(message, cause)` — wrap an arbitrary cause into a new
-//      `Error` whose `.message` is a single-line summary AND whose `.cause`
-//      retains the original tagged-error chain. The top-level `tapCause`
-//      reporter in `cli/index.ts` walks `Error.cause` recursively so
-//      structured errors (DockerError stderr, SuiError phase, …) are
-//      surfaced verbatim instead of collapsing to the outer class name.
-//
-//   2. `loadConfigModule(configPath, validate)` — resolve a user config
-//      path against CWD, fail fast with a clear error if the file is
-//      missing (`fs.existsSync` guard runs BEFORE the dynamic import so the
-//      user sees "config not found at /abs/path" instead of a Node ERR_MODULE_NOT_FOUND
-//      stack trace), then dynamic-import the module and validate the
-//      default export.
-//
-//   3. Two narrow validators for the two known config shapes:
-//      - `requireLaunchEffect` for `devstack up`'s
-//        `defineDevstack()`-returned handle (needs `.launchEffect()`)
-//      - `requireLayer` for `devstack apply`'s scoped Layer.build path
-//        (needs `.layer`)
-//
-// Before this consolidation, each subcommand reimplemented its own
-// `wrapCause` + `loadDevstack`; the implementations drifted slightly
-// (apply's path didn't include the `Error.withSpan` annotation, prune's
-// didn't preserve `cause` at all). Anyone adding a new subcommand that
-// loads a config now has one obvious place to import from.
+// Shared loader utilities for CLI subcommands: `wrapCause`,
+// `loadConfigModule`, plus two narrow default-export validators
+// (`requireLaunchEffect` for `up`'s handle, `requireLayer` for `apply`'s
+// scoped `Layer.build` path). `loadConfigModule` resolves the config
+// path against CWD, fails fast when missing (synchronous existsSync
+// probe BEFORE the dynamic import so the user sees a path-shaped error
+// instead of a Node `ERR_MODULE_NOT_FOUND` URL).
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -53,23 +31,6 @@ export interface DevstackLaunchable {
 	launchEffect: (overrides?: RunOverrides) => Effect.Effect<void, unknown, never>;
 }
 
-export const requireLaunchEffect = (configPath: string, mod: unknown): DevstackLaunchable => {
-	const d = (mod as { default?: unknown } | undefined)?.default as
-		| Partial<DevstackLaunchable>
-		| undefined;
-	if (!d || typeof d.launchEffect !== 'function') {
-		throw new ConfigLoadError({
-			phase: 'validate',
-			configPath,
-			expected: 'DevstackHandle (from devstack(...) or defineDevstack)',
-			message:
-				`${configPath} must default-export a DevstackHandle ` +
-				`(from devstack(...) or defineDevstack)`,
-		});
-	}
-	return d as DevstackLaunchable;
-};
-
 /** Validator: the config's default export must expose `layer`.
  *  Matches what `devstack(...)` / `defineDevstack()` expose for
  *  `Layer.build`-based callers like `devstack apply`. */
@@ -77,20 +38,32 @@ export interface DevstackLayered {
 	layer: Layer.Layer<any, any, any>;
 }
 
+// Shared throw-shape for both validators below — same `ConfigLoadError`
+// shape, same human message, only the asserted field name differs.
+const failMissingField = (configPath: string): never => {
+	throw new ConfigLoadError({
+		phase: 'validate',
+		configPath,
+		expected: 'DevstackHandle (from devstack(...) or defineDevstack)',
+		message:
+			`${configPath} must default-export a DevstackHandle ` +
+			`(from devstack(...) or defineDevstack)`,
+	});
+};
+
+export const requireLaunchEffect = (configPath: string, mod: unknown): DevstackLaunchable => {
+	const d = (mod as { default?: unknown } | undefined)?.default as
+		| Partial<DevstackLaunchable>
+		| undefined;
+	if (!d || typeof d.launchEffect !== 'function') failMissingField(configPath);
+	return d as DevstackLaunchable;
+};
+
 export const requireLayer = (configPath: string, mod: unknown): DevstackLayered => {
 	const d = (mod as { default?: unknown } | undefined)?.default as
 		| Partial<DevstackLayered>
 		| undefined;
-	if (!d || typeof d.layer === 'undefined') {
-		throw new ConfigLoadError({
-			phase: 'validate',
-			configPath,
-			expected: 'DevstackHandle (from devstack(...) or defineDevstack)',
-			message:
-				`${configPath} must default-export a DevstackHandle ` +
-				`(from devstack(...) or defineDevstack)`,
-		});
-	}
+	if (!d || typeof d.layer === 'undefined') failMissingField(configPath);
 	return d as DevstackLayered;
 };
 

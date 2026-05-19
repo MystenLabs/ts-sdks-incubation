@@ -21,7 +21,7 @@
 //     prompting.
 
 import { Console, Effect } from 'effect';
-import { EX_OK, type ExitCode } from './exit-codes.js';
+import { type ExitCode } from './exit-codes.js';
 
 /** Stable envelope shape version. Bump on breaking changes. */
 export const ENVELOPE_SCHEMA_VERSION = 1 as const;
@@ -94,16 +94,6 @@ export const errorEnvelope = (input: {
 /** Emit an envelope as a single JSON line on stdout. */
 export const emitEnvelope = (envelope: Envelope<unknown>): Effect.Effect<void> =>
 	Console.log(JSON.stringify(envelope));
-
-/** Convenience: emit a successful envelope and return its exit code (0). */
-export const emitSuccess = <T>(input: {
-	readonly command: string;
-	readonly data?: T;
-	readonly hints?: ReadonlyArray<string>;
-	readonly elapsedMs: number;
-	readonly dryRun?: boolean;
-}): Effect.Effect<ExitCode> =>
-	emitEnvelope(successEnvelope(input)).pipe(Effect.map(() => EX_OK));
 
 /** Detect whether the caller wants JSON output. Honors the `--json`
  *  flag AND the `DEVSTACK_JSON=1` env var so wrapper scripts can flip

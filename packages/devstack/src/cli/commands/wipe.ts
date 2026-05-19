@@ -33,15 +33,14 @@
 import { promises as nodeFs } from 'node:fs';
 import * as nodeOs from 'node:os';
 import * as nodePath from 'node:path';
-import { Console, Effect, Option } from 'effect';
+import { Console, Effect } from 'effect';
 import { Command, Flag } from 'effect/unstable/cli';
-import { deriveAppName } from '../../engine/identity.js';
 import { sweepStaleGitLocks } from '../../engine/sui-build-container.js';
 import { failAlreadyReported } from '../already-reported.js';
 import { promptConfirm, promptTypeToConfirm } from '../cli-prompt.js';
 import { emitEnvelope, errorEnvelope, jsonModeEnabled, successEnvelope } from '../envelope.js';
 import { EX_USAGE, EX_CONFIRM_REQUIRED } from '../exit-codes.js';
-import { resolveAppDir, resolveForkCacheRoot, resolveStackFromEnv } from '../stack-resolution.js';
+import { resolveAppName, resolveForkCacheRoot, resolveStackFromEnv } from '../stack-resolution.js';
 import { pruneStack } from './_prune-stack.js';
 
 // Default reads `DEVSTACK_STACK` at action time (NOT at module load —
@@ -69,9 +68,6 @@ const appFlag = Flag.string('app').pipe(
 	),
 	Flag.optional,
 );
-
-const resolveAppName = (override: Option.Option<string>): string =>
-	Option.getOrElse(override, () => deriveAppName(resolveAppDir()));
 
 const yesFlag = Flag.boolean('yes').pipe(
 	Flag.withDescription(

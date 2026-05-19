@@ -29,7 +29,6 @@ import React, { useEffect, useMemo, useState } from 'react';
 import type { InventoryRow, InventoryTotals, RouterInfo } from '../../engine/docker/inventory.js';
 import {
 	formatBytes,
-	renderTotals,
 	shortRepoPath,
 	summarizeContainers,
 	totalsFor,
@@ -294,10 +293,3 @@ function RouterRow({ router }: { readonly router: RouterInfo }): React.ReactElem
 	);
 }
 
-// Test-only helper. Returns the keys of every selectable row so the
-// `prune.test.ts` suite can assert the "select all orphans" path
-// without rendering ink.
-export const selectableKeys = (rows: ReadonlyArray<InventoryRow>): ReadonlyArray<string> =>
-	rows.filter((r) => r.runningPid === undefined).map(rowKey);
-
-export { renderTotals };

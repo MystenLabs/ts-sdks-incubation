@@ -133,9 +133,11 @@ export const applyCommand = Command.make(
 			// `Layer.build` inside `Effect.scoped` acquires every primitive,
 			// then closes the scope on exit — that's what fires the manifest
 			// finalizer (and every other teardown registered during acquire).
-			const buildEffect = Effect.gen(function* () {
-				yield* Layer.build(devstack.layer);
-			}).pipe(Effect.scoped) as Effect.Effect<void, unknown, never>;
+			const buildEffect = Layer.build(devstack.layer).pipe(Effect.scoped) as Effect.Effect<
+				unknown,
+				unknown,
+				never
+			>;
 
 			// Render success/failure ourselves so `--json` can emit a
 			// structured summary instead of letting the CLI runtime swallow
