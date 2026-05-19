@@ -3,12 +3,10 @@
 // the codegen emitters, and any Effect-native consumer that wants a
 // live snapshot.
 //
-// Reads `PackageRegistry`, `EndpointRegistry`, `AccountRegistry`,
-// `CoinRegistry` plus the per-service state registries and the
-// `Identity` service for stack/network/app fields. Shared by the
-// manifest emitter (`runtime/manifest-emit.ts`) and the codegen
-// emitters (`codegen/emitters/`) so the structured-conversion step
-// lives in one place.
+// Per-service projections are declared via `defineServiceProjection`
+// (engine/service-projection.ts). Adding a new service is one entry in
+// the table below — the last-record-from-snapshot + dedupe-by-name
+// boilerplate lives in the helper, not in this file.
 
 import { Effect } from 'effect';
 import { findEndpointDeclaration } from '../engine/define-endpoint.js';
@@ -31,12 +29,8 @@ import {
 	type DeepbookMarginStateRecord,
 	type DeepbookServerStateRecord,
 	type DeepbookStateRecord,
-	type PostgresStateRecord,
-	type PythStateRecord,
-	type SealStateRecord,
-	type SuiStateRecord,
-	type WalrusStateRecord,
 } from '../engine/registries.js';
+import { defineServiceProjection } from '../engine/service-projection.js';
 import { EndpointName } from './endpoint-names.js';
 import { toSdkCoin } from './sdk-coin.js';
 import type {
@@ -54,30 +48,10 @@ import type {
 	WalrusManifest,
 } from './manifest-schema.js';
 
-// -----------------------------------------------------------------------------
-// Endpoint name conventions — flat registry → structured manifest
-// -----------------------------------------------------------------------------
-// Factories publish endpoint records into the flat `EndpointRegistry`
-// (`{name: EndpointName.SUI_RPC, url: ...}`). The converters below map
-// the well-known names into the structured `services` fields of the
-// manifest. Names not in this map are silently dropped from the
-// structured shape — add them here (and to `endpoint-names.ts`) when a
-// new built-in factory wants its endpoint to surface under `services.*`
-// rather than appearing only in the flat list.
-//
-// `chainId`, `seal.objectId`, `walrus.systemObjectId`, and the deepbook
-// block are NOT endpoints — they live in their own per-service state
-// registries (`SuiStateRegistry`, `SealStateRegistry`, etc.). The
-// service factories publish into those at acquire time; the group*
-// helpers below fold the latest state into the structured manifest.
-
-/** Derive the manifest-leaf field name an endpoint projects into, given
- *  a `services.X.<leaf>` or `app.<leaf>` prefix. Reads the endpoint's
- *  `defineEndpoint(...)` declaration via the lookup registry — when a
- *  new endpoint is declared with `manifestField: { path: '...' }` the
- *  groupers pick it up automatically. Returns `undefined` for ad-hoc
- *  endpoints (no declaration, flat-only) or for declarations whose
- *  manifest path doesn't sit under the requested prefix. */
+// Derive the manifest-leaf field name an endpoint projects into, given
+// a `services.X.<leaf>` prefix. Reads the endpoint's `defineEndpoint(...)`
+// declaration via the lookup registry — adding a new endpoint with
+// `manifestField: { path: '...' }` is automatically picked up.
 const manifestLeafUnder = (endpointName: string, prefix: string): string | undefined => {
 	const decl = findEndpointDeclaration(endpointName);
 	if (decl?.manifestField === undefined) return undefined;
@@ -96,55 +70,102 @@ interface FlatEndpoint {
 const toEndpointEntry = (e: FlatEndpoint): EndpointEntry =>
 	e.pairUrl !== undefined ? { url: e.url, pairUrl: e.pairUrl } : { url: e.url };
 
-const groupSui = (
-	endpoints: ReadonlyArray<FlatEndpoint>,
-	network: string,
-	state: SuiStateRecord | undefined,
-): SuiManifest | undefined => {
-	const rpc = endpoints.find((e) => e.name === EndpointName.SUI_RPC);
-	if (rpc === undefined) return undefined;
-	let out: SuiManifest = { network, rpc: toEndpointEntry(rpc) };
-	if (state !== undefined) {
-		out = { ...out, chainId: state.chainId };
-	}
-	// Derive every `services.sui.<field>` projection from the
-	// `defineEndpoint(...)` declarations — no hand-rolled SUI_FIELDS
-	// table. Adding a new SUI sub-endpoint becomes a one-line
-	// `defineEndpoint({manifestField: {path: 'services.sui.X'}})`.
-	for (const e of endpoints) {
-		const field = manifestLeafUnder(e.name, 'services.sui');
-		if (field !== undefined && field !== 'rpc' && field !== 'network' && field !== 'chainId') {
-			out = { ...out, [field as keyof SuiManifest]: toEndpointEntry(e) };
+// Cross-cutting inputs every projection reads. Tag-typed registry state
+// is threaded by the helper itself; only inputs shared across
+// projections live here.
+interface ProjectionContext {
+	readonly endpoints: ReadonlyArray<FlatEndpoint>;
+	readonly network: string;
+}
+
+// -----------------------------------------------------------------------------
+// Service projections — one declarative entry per `services.*` view.
+// -----------------------------------------------------------------------------
+
+const suiProjection = defineServiceProjection({
+	name: 'sui',
+	registry: SuiStateRegistry,
+	project: ({ state, ctx }): SuiManifest | undefined => {
+		const rpc = ctx.endpoints.find((e) => e.name === EndpointName.SUI_RPC);
+		if (rpc === undefined) return undefined;
+		let out: SuiManifest = { network: ctx.network, rpc: toEndpointEntry(rpc) };
+		if (state !== undefined) out = { ...out, chainId: state.chainId };
+		for (const e of ctx.endpoints) {
+			const field = manifestLeafUnder(e.name, 'services.sui');
+			if (field !== undefined && field !== 'rpc' && field !== 'network' && field !== 'chainId') {
+				out = { ...out, [field as keyof SuiManifest]: toEndpointEntry(e) };
+			}
 		}
-	}
-	return out;
-};
+		return out;
+	},
+});
 
-const groupSeal = (
-	endpoints: ReadonlyArray<FlatEndpoint>,
-	state: SealStateRecord | undefined,
-): SealManifest | undefined => {
-	const ks = endpoints.find((e) => e.name === EndpointName.SEAL_KEY_SERVER);
-	if (ks === undefined) return undefined;
-	return state !== undefined
-		? { keyServer: toEndpointEntry(ks), objectId: state.objectId }
-		: { keyServer: toEndpointEntry(ks) };
-};
+const sealProjection = defineServiceProjection({
+	name: 'seal',
+	registry: SealStateRegistry,
+	project: ({ state, ctx }): SealManifest | undefined => {
+		const ks = ctx.endpoints.find((e) => e.name === EndpointName.SEAL_KEY_SERVER);
+		if (ks === undefined) return undefined;
+		return state !== undefined
+			? { keyServer: toEndpointEntry(ks), objectId: state.objectId }
+			: { keyServer: toEndpointEntry(ks) };
+	},
+});
 
-const groupWalrus = (
-	endpoints: ReadonlyArray<FlatEndpoint>,
-	state: WalrusStateRecord | undefined,
-): WalrusManifest | undefined => {
-	const agg = endpoints.find((e) => e.name === EndpointName.WALRUS_AGGREGATOR);
-	const pub = endpoints.find((e) => e.name === EndpointName.WALRUS_PUBLISHER);
-	if (agg === undefined || pub === undefined) return undefined;
-	const base: WalrusManifest = {
-		aggregator: toEndpointEntry(agg),
-		publisher: toEndpointEntry(pub),
-	};
-	return state !== undefined ? { ...base, systemObjectId: state.systemObjectId } : base;
-};
+const walrusProjection = defineServiceProjection({
+	name: 'walrus',
+	registry: WalrusStateRegistry,
+	project: ({ state, ctx }): WalrusManifest | undefined => {
+		const agg = ctx.endpoints.find((e) => e.name === EndpointName.WALRUS_AGGREGATOR);
+		const pub = ctx.endpoints.find((e) => e.name === EndpointName.WALRUS_PUBLISHER);
+		if (agg === undefined || pub === undefined) return undefined;
+		const base: WalrusManifest = {
+			aggregator: toEndpointEntry(agg),
+			publisher: toEndpointEntry(pub),
+		};
+		return state !== undefined ? { ...base, systemObjectId: state.systemObjectId } : base;
+	},
+});
 
+const pythProjection = defineServiceProjection({
+	name: 'pyth',
+	registry: PythStateRegistry,
+	project: ({ state }): PythManifest | undefined => {
+		if (state === undefined) return undefined;
+		return {
+			packageId: state.packageId,
+			...(state.pythStateId !== undefined ? { pythStateId: state.pythStateId } : {}),
+			...(state.wormholeStateId !== undefined ? { wormholeStateId: state.wormholeStateId } : {}),
+			priceInfoObjectIds: state.priceInfoObjectIds,
+			feeds: state.feeds,
+		};
+	},
+});
+
+const postgresProjection = defineServiceProjection({
+	name: 'postgres',
+	registry: PostgresStateRegistry,
+	project: ({ state }): PostgresManifest | undefined => {
+		if (state === undefined) return undefined;
+		// `state.endpoint` is guaranteed plain (no credentials) by the
+		// registry-shape contract; password lives in `state.password` and
+		// is never copied here. Surfacing the password is impossible by
+		// construction, not by a per-call strip step.
+		return {
+			user: state.user,
+			endpoint: { url: state.endpoint },
+			containerNetwork: state.containerNetwork,
+			networkAlias: state.networkAlias,
+			databases: state.databases,
+		};
+	},
+});
+
+// Deepbook reads four state registries (state, indexer, server, margin)
+// so it doesn't fit the single-registry `defineServiceProjection` shape.
+// It stays as a free function until a multi-registry projection variant
+// lands (or the integration-contract redesign collapses deepbook's four
+// registries into one).
 const groupDeepbook = (
 	state: DeepbookStateRecord | undefined,
 	indexer: DeepbookIndexerStateRecord | undefined,
@@ -179,33 +200,6 @@ const groupDeepbook = (
 		...(indexerManifest !== undefined ? { indexer: indexerManifest } : {}),
 		...(serverManifest !== undefined ? { server: serverManifest } : {}),
 		...(marginManifest !== undefined ? { margin: marginManifest } : {}),
-	};
-};
-
-const groupPyth = (state: PythStateRecord | undefined): PythManifest | undefined => {
-	if (state === undefined) return undefined;
-	return {
-		packageId: state.packageId,
-		...(state.pythStateId !== undefined ? { pythStateId: state.pythStateId } : {}),
-		...(state.wormholeStateId !== undefined ? { wormholeStateId: state.wormholeStateId } : {}),
-		priceInfoObjectIds: state.priceInfoObjectIds,
-		feeds: state.feeds,
-	};
-};
-
-const groupPostgres = (state: PostgresStateRecord | undefined): PostgresManifest | undefined => {
-	if (state === undefined) return undefined;
-	// `state.endpoint` is guaranteed plain (no credentials) by the
-	// registry-shape contract — the password lives in `state.password`,
-	// which the grouper intentionally never copies into the manifest.
-	// Surfacing the password is impossible by construction here, not by
-	// a per-call strip step.
-	return {
-		user: state.user,
-		endpoint: { url: state.endpoint },
-		containerNetwork: state.containerNetwork,
-		networkAlias: state.networkAlias,
-		databases: state.databases,
 	};
 };
 
@@ -261,12 +255,7 @@ export const gatherManifest = (
 		const eps = yield* EndpointRegistry;
 		const accts = yield* AccountRegistry;
 		const coinsReg = yield* CoinRegistry;
-		const suiState = yield* SuiStateRegistry;
-		const sealState = yield* SealStateRegistry;
-		const walrusState = yield* WalrusStateRegistry;
 		const deepbookState = yield* DeepbookStateRegistry;
-		const pythState = yield* PythStateRegistry;
-		const postgresState = yield* PostgresStateRegistry;
 		const indexerState = yield* DeepbookIndexerStateRegistry;
 		const serverState = yield* DeepbookServerStateRegistry;
 		const marginState = yield* DeepbookMarginStateRegistry;
@@ -277,12 +266,7 @@ export const gatherManifest = (
 		const rawEps = yield* eps.snapshot;
 		const rawAccts = yield* accts.snapshot;
 		const rawCoins = yield* coinsReg.snapshot;
-		const rawSuiState = yield* suiState.snapshot;
-		const rawSealState = yield* sealState.snapshot;
-		const rawWalrusState = yield* walrusState.snapshot;
 		const rawDeepbookState = yield* deepbookState.snapshot;
-		const rawPythState = yield* pythState.snapshot;
-		const rawPostgresState = yield* postgresState.snapshot;
 		const rawIndexerState = yield* indexerState.snapshot;
 		const rawServerState = yield* serverState.snapshot;
 		const rawMarginState = yield* marginState.snapshot;
@@ -291,31 +275,29 @@ export const gatherManifest = (
 		const dedupedEps = new Map(rawEps.map((e) => [e.name, e]));
 		const dedupedAccts = new Map(rawAccts.map((a) => [a.name, a]));
 		const dedupedCoins = new Map(rawCoins.map((c) => [c.name, c]));
-		// Per-service state registries hold at most one record per stack;
-		// take the last write (matches the dedupe-by-name semantics above).
-		const lastSuiState = rawSuiState[rawSuiState.length - 1];
-		const lastSealState = rawSealState[rawSealState.length - 1];
-		const lastWalrusState = rawWalrusState[rawWalrusState.length - 1];
 		const lastDeepbookState = rawDeepbookState[rawDeepbookState.length - 1];
-		const lastPythState = rawPythState[rawPythState.length - 1];
-		const lastPostgresState = rawPostgresState[rawPostgresState.length - 1];
 		const lastIndexerState = rawIndexerState[rawIndexerState.length - 1];
 		const lastServerState = rawServerState[rawServerState.length - 1];
 		const lastMarginState = rawMarginState[rawMarginState.length - 1];
 
 		const endpoints = [...dedupedEps.values()];
+		const projectionCtx: ProjectionContext = { endpoints, network: identity.network };
 
-		const sui = groupSui(endpoints, identity.network, lastSuiState);
-		const seal = groupSeal(endpoints, lastSealState);
-		const walrus = groupWalrus(endpoints, lastWalrusState);
+		// Each `defineServiceProjection` entry hides its own
+		// `yield* Registry → snapshot → last record` step. Order matches
+		// the historical hand-rolled order so snapshot diffs stay stable.
+		const sui = yield* suiProjection.read(projectionCtx);
+		const seal = yield* sealProjection.read(projectionCtx);
+		const walrus = yield* walrusProjection.read(projectionCtx);
 		const deepbook = groupDeepbook(
 			lastDeepbookState,
 			lastIndexerState,
 			lastServerState,
 			lastMarginState,
 		);
-		const pyth = groupPyth(lastPythState);
-		const postgres = groupPostgres(lastPostgresState);
+		const pyth = yield* pythProjection.read(projectionCtx);
+		const postgres = yield* postgresProjection.read(projectionCtx);
+
 		const services: Manifest['services'] = {
 			...(sui !== undefined ? { sui } : {}),
 			...(seal !== undefined ? { seal } : {}),
@@ -342,14 +324,6 @@ export const gatherManifest = (
 
 		const coins: Record<string, Manifest['coins'][string]> = {};
 		for (const c of dedupedCoins.values()) {
-			// Project the registry record into the manifest's CoinEntry
-			// shape. Every optional field the publish-discovery pass
-			// folded into the record (`symbol`, `displayName`, `iconUrl`,
-			// `treasuryCapId`, `metadataId`, `packageId`) surfaces
-			// directly; entries without those fields (custom `publishCoin`
-			// calls from unit tests) still emit a valid `CoinEntry`. The
-			// compose entry's emit-time schema validation catches a typo
-			// in a new field name at write time, not at read time.
 			coins[c.name] = {
 				type: c.type,
 				decimals: c.decimals,

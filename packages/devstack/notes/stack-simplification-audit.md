@@ -184,7 +184,7 @@ LoC of new substrate; net **−2 400 LoC**. See §5 for the per-area math.
 
 ### 2.4 Runtime — manifest + endpoints
 
-#### E16. `runtime/service.ts` `groupApp` / `groupSui` / `groupDeepbook` are 5 hand-rolled projections
+#### E16. `runtime/service.ts` `groupApp` / `groupSui` / `groupDeepbook` are 5 hand-rolled projections — DONE
 
 |               |                                                                                                                                                                                                                                                                                                                                                                   |
 | ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -193,6 +193,7 @@ LoC of new substrate; net **−2 400 LoC**. See §5 for the per-area math.
 | **Redesign**  | A `defineServiceProjection` API:<br>`defineServiceProjection({name: 'sui', stateRegistry: SuiStateRegistry, endpoints: ['sui-rpc', 'sui-faucet', 'sui-graphql'], project: (state, endpoints) => SuiManifest})`. The 5 projections become 5 declarations of ~10 lines each; `gatherManifest`'s 13 `yield* X` calls collapse to one loop over the projection table. |
 | **LoC Δ**     | `runtime/service.ts` 378 → ~200 (−180).                                                                                                                                                                                                                                                                                                                           |
 | **Bug class** | "Added new field to state registry, forgot to surface in grouper" (the deepbook indexer/server fields had this lag for two PRs).                                                                                                                                                                                                                                  |
+| **Status**    | DONE 2026-05-19. Helper landed at `engine/service-projection.ts` (54 LoC); single-registry services migrated: `sui`, `seal`, `walrus`, `pyth`, `postgres` (5 of 5). Each becomes a `defineServiceProjection({name, registry, project})` entry consuming a thin `ProjectionContext` (`{endpoints, network}`). The helper absorbs `yield* Registry → snapshot → last-record` per service, dropping ~24 LoC of state-snapshot lines from `gatherManifest`. **Deepbook stays group-style** (4 registries); a follow-up multi-registry variant collapses it. `groupApp` stays as a free function (no state registry). LoC headline came in flat (`service.ts` 378→350, helper +54; net +27) — the structural win is "adding a service is 1 table entry, not 4 edits". |
 
 #### E17. `runtime/manifest-emit.ts` slow-tick re-snapshot + final flush
 
@@ -542,7 +543,7 @@ integration-contract plan landing first (so we don't fight on `containerPrimitiv
 | E9 (TagMetadata)                  |          −70 |
 | E10 (EngineHandle split)          |          +30 |
 | E13 (one prettyError)             |          −30 |
-| E16 (manifest projection table)   |         −180 |
+| E16 (manifest projection table)   |         −180 (landed ~flat; structural win — see §2.4 E16 status) |
 | E17 (mutate-driven manifest emit) |          −30 |
 | E18 (discover-manifest collapse)  |          −30 |
 | E19 (readStackContext)            |          −90 |
