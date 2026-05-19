@@ -42,17 +42,6 @@ describe('StateStoreKeys — canonical key shapes', () => {
 		).toBe('coin/mint/0xchain/0xcap/0xrec/1000000000');
 	});
 
-	it('actionTx: tx/<actionName>/<chainId>/<signer>/<userKey>', () => {
-		expect(
-			StateStoreKeys.actionTx({
-				actionName: 'mint-batch',
-				chainId: '0xchain',
-				signerAddress: '0xalice',
-				userKey: 'k1',
-			}),
-		).toBe('tx/mint-batch/0xchain/0xalice/k1');
-	});
-
 	it('walrusDeployOutput: walrus/deploy-output/<chainId>', () => {
 		expect(StateStoreKeys.walrusDeployOutput({ chainId: '0xchain' })).toBe(
 			'walrus/deploy-output/0xchain',

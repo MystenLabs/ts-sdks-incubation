@@ -19,6 +19,7 @@ import {
 import { Stream } from 'effect';
 import {
 	captureCommand,
+	captureCommandStreaming,
 	type CaptureError,
 	decodeStream as decodeStreamShared,
 } from '../capture-command.js';
@@ -1317,6 +1318,40 @@ export const runCapturingOrFail = (
 ): Effect.Effect<string, DockerError> =>
 	Effect.gen(function* () {
 		const captured = yield* runCapturing(spawner, cmd, op);
+		if (captured.exitCode !== 0) {
+			return yield* Effect.fail(
+				new DockerError({
+					phase: op,
+					message: summarize(op, captured.exitCode, captured.stdout, captured.stderr),
+					stdout: truncate(captured.stdout),
+					stderr: truncate(captured.stderr),
+					exitCode: captured.exitCode,
+				}),
+			);
+		}
+		return captured.stdout;
+	});
+
+// Streaming sibling of `runCapturingOrFail`. Routes through
+// `captureCommandStreaming` so the caller observes stdout one line at a
+// time via `onStdoutLine` while still getting the same `DockerError`-on-
+// non-zero-exit envelope. Used by `Docker.pull` to surface layer-by-layer
+// progress as `docker pull` emits "<hash>: Pulling fs layer" /
+// "<hash>: Pull complete" lines without delaying the captured-stdout
+// fall-back path used by the error envelope.
+export const runCapturingStreamingOrFail = (
+	spawner: Spawner,
+	cmd: ChildProcess.Command,
+	op: string,
+	onStdoutLine: (line: string) => Effect.Effect<void>,
+): Effect.Effect<string, DockerError> =>
+	Effect.gen(function* () {
+		const captured = yield* captureCommandStreaming(spawner, cmd, {
+			op,
+			onStdoutLine,
+			stdoutTruncate: Infinity,
+			stderrTruncate: Infinity,
+		}).pipe(Effect.mapError(captureToDockerError(op)));
 		if (captured.exitCode !== 0) {
 			return yield* Effect.fail(
 				new DockerError({

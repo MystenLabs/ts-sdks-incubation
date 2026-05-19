@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { describe as effectDescribe, it as effectIt } from '@effect/vitest';
 import { Effect, Layer } from 'effect';
 import { layer as NodeFileSystemLayer } from '@effect/platform-node/NodeFileSystem';
+import { ChainProbeLive } from '../../engine/chain-probe.js';
 import { EngineLive } from '../../engine/engine.js';
 import { LeasingLive } from '../../engine/leasing.js';
 import {
@@ -123,7 +124,12 @@ const mkTmpDir = (label: string) =>
 		catch: (cause) => new Error(`failed to create tmpdir: ${String(cause)}`),
 	}).pipe(Effect.orDie);
 
-const makeMockSuiOk = (chainId: string): Layer.Layer<SuiTag> =>
+// `client.core.getObject` returns the full shape `ChainProbe`'s Schema
+// validator expects: `{object: {objectId, type, version, owner}}`. The
+// market-maker's verify probe (Phase C, B3 fix) requires BOTH existence
+// AND `owner.address === signer.address`, so we set AddressOwner
+// pointing at the test signer's address.
+const makeMockSuiOk = (chainId: string, signerAddress = '0xCAFE'): Layer.Layer<SuiTag> =>
 	Layer.succeed(SuiTag, {
 		network: 'localnet',
 		rpc: { host: 'http://localhost:9000' },
@@ -132,7 +138,12 @@ const makeMockSuiOk = (chainId: string): Layer.Layer<SuiTag> =>
 		client: {
 			core: {
 				getObject: async (args: { objectId: string }) => ({
-					object: { objectId: args.objectId } as unknown,
+					object: {
+						objectId: args.objectId,
+						type: '0xDEEPB00C::balance_manager::BalanceManager',
+						version: '1',
+						owner: { $kind: 'AddressOwner' as const, AddressOwner: signerAddress },
+					} as unknown,
 				}),
 			},
 		} as unknown as Sui['client'],
@@ -256,6 +267,7 @@ effectDescribe('deepbookMarketMaker — cancel-resilient resume (Bug A)', () => 
 				const supportLayer = Layer.mergeAll(
 					TestBaseLayer,
 					makeMockSuiOk(chainId),
+					Layer.provide(ChainProbeLive, makeMockSuiOk(chainId)),
 					Layer.provideMerge(
 						Layer.provide(StateStoreLive, mockStateConfig(tmpdir)),
 						NodeFileSystemLayer,
@@ -403,6 +415,7 @@ effectDescribe('deepbookMarketMaker — cancel-resilient resume (Bug A)', () => 
 			const supportLayer = Layer.mergeAll(
 				TestBaseLayer,
 				makeMockSuiOk(chainId),
+				Layer.provide(ChainProbeLive, makeMockSuiOk(chainId)),
 				Layer.provideMerge(
 					Layer.provide(StateStoreLive, mockStateConfig(tmpdir)),
 					NodeFileSystemLayer,

@@ -64,6 +64,7 @@ const noopChainProbe: typeof ChainProbe.Service = {
 	getObject: () => Effect.succeed(undefined),
 	getObjectStrict: () => Effect.succeed(undefined),
 	objectsMatchTypes: () => Effect.succeed(true),
+	getTransaction: () => Effect.succeed(undefined),
 };
 const provideChainProbe = (impl: typeof ChainProbe.Service = noopChainProbe) =>
 	Effect.provide(Layer.succeed(ChainProbe, impl));

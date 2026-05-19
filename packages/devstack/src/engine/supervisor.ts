@@ -95,6 +95,7 @@ import {
 	silentRendererFactory,
 } from './renderer.js';
 import type { TagKind } from '../advanced/tag.js';
+import type { TuiEntry, TuiState } from './tui-state.js';
 
 // Shutdown copy surfaced via `engine.appendLog` in `onInterrupt`. A
 // peer copy lives in `tui/components.tsx` for the q-keypress feedback
@@ -673,6 +674,53 @@ export const ownersFor = (
 	return owners.filter(
 		(o) => abs === o.absolutePath || abs.startsWith(o.absolutePath + nodePath.sep),
 	);
+};
+
+// Format a multi-line summary of every entry currently in `acquiring`, drawn
+// from the same `TuiState.entries` array that drives the plain renderer and
+// the ink dashboard. On SIGTERM the supervisor flushes this to stderr so the
+// operator knows WHAT was mid-flight when the shutdown began — without it,
+// `force-killed 0 container(s)` on the second signal reads as "everything
+// was clean" when the truth is "we never got far enough to spawn a
+// container" (e.g. a long `docker pull` blocked under `runCapturingOrFail`,
+// the exact failure mode that drives `long-acquire-progress.md` §3.4).
+//
+// Returns an empty string when no tag is acquiring — callers should treat
+// empty as "skip the summary line" rather than emitting an empty preamble.
+// When non-empty, the returned string includes a trailing newline so
+// concatenation with the existing force-kill line stays clean.
+//
+// Phase rendering matches the user-facing example in §3.4 of
+// `long-acquire-progress.md`:
+//
+//   devstack: shutdown initiated. 3 tag(s) still acquiring:
+//     - sui.fork.image           phase=pulling 4/12 layers
+//     - walrus.contracts.publish phase=publish-tx
+//     - seal.local.keygen        (no phase)
+//
+// Key column is left-padded to 26 chars (matches the `pad(key, 28)` used by
+// the plain renderer minus the leading two-space indent) so eyes can scan
+// the `phase=` column.
+//
+// Pure — no engine refs, no I/O. The signal handler computes the snapshot
+// synchronously via `Ref.getUnsafe(engine.tuiState)` and threads the entries
+// through here. Exported for unit tests; the supervisor's signal handler is
+// the only production caller.
+export const formatShutdownAcquiringSummary = (
+	entries: ReadonlyArray<TuiEntry>,
+	preamble: string = 'devstack: shutdown initiated.',
+): string => {
+	const acquiring = entries.filter((e) => e.status === 'acquiring');
+	if (acquiring.length === 0) return '';
+	const keyWidth = Math.max(...acquiring.map((e) => e.key.length), 0);
+	const padKey = (s: string): string =>
+		s.length >= keyWidth ? s : s + ' '.repeat(keyWidth - s.length);
+	const lines = acquiring.map((e) => {
+		const phase = e.phase ?? '';
+		const right = phase.length > 0 ? `phase=${phase}` : '(no phase)';
+		return `  - ${padKey(e.key)} ${right}`;
+	});
+	return `${preamble} ${acquiring.length} tag(s) still acquiring:\n${lines.join('\n')}\n`;
 };
 
 // Built-in exclude patterns — always applied to every watch set so users don't
@@ -1812,8 +1860,62 @@ export const defineDevstack = (
 			// when the user is asking us NOT to).
 			const installHardKillHandler = Effect.sync(() => {
 				let signalCount = 0;
+				// First-SIGTERM snapshot: captured the first time the user
+				// asks us to shut down so the second-signal force-kill
+				// message can echo back what was actually mid-flight when
+				// the operator decided to bail. Reading the state ONCE on
+				// the first signal (instead of re-reading on the second)
+				// avoids a confusing race where the in-flight `markStopping`
+				// finalizers chase entries off `acquiring` between the two
+				// Ctrl-Cs — the operator's mental model when they hit Ctrl-C
+				// twice is "what was running when I gave up?", not "what's
+				// still in flight ~now~".
+				let firstSnapshot: ReadonlyArray<TuiEntry> = [];
+				const readEntries = (): ReadonlyArray<TuiEntry> => {
+					try {
+						// Sync read into the same Ref the plain renderer
+						// and ink dashboard poll — guarantees the summary
+						// reflects exactly what the operator was just
+						// staring at on screen, not a re-derived shadow.
+						// Re-derivation would silently miss state the
+						// renderers DO see (phase strings set via
+						// `setPhase`, kind/title overrides), which is
+						// exactly the desync the plan warns about.
+						const snap = Ref.getUnsafe(engine.tuiState) as TuiState;
+						return snap.entries;
+					} catch {
+						return [];
+					}
+				};
 				const onSecondSignal = (sig: NodeJS.Signals) => {
 					signalCount += 1;
+					if (signalCount === 1) {
+						// First SIGTERM — Effect's NodeRuntime.runMain handler
+						// will interrupt the supervisor fiber on the same
+						// signal (Node delivers the signal to every listener),
+						// kicking off normal scope teardown. We piggyback here
+						// to emit the "shutdown initiated" summary BEFORE
+						// that teardown starts wiping `acquiring` rows so the
+						// operator sees the snapshot of what was mid-flight
+						// at the moment of the signal. We also stash the same
+						// snapshot in `firstSnapshot` for the second-signal
+						// force-kill path below.
+						try {
+							const entries = readEntries();
+							firstSnapshot = entries;
+							const summary = formatShutdownAcquiringSummary(entries);
+							if (summary.length > 0) {
+								// Leading newline mirrors the second-signal
+								// message — keeps the line clear of whatever
+								// the renderer just printed.
+								process.stderr.write(`\n${summary}`);
+							}
+						} catch {
+							// Best-effort observability — never block the
+							// real teardown path on a logging failure.
+						}
+						return;
+					}
 					if (signalCount < 2) return;
 					try {
 						// Enumerate every container our identity owns, then
@@ -1845,8 +1947,17 @@ export const defineDevstack = (
 						if (ids.length > 0) {
 							cp.spawnSync('docker', ['kill', ...ids], { stdio: 'ignore' });
 						}
+						// Re-emit the first-SIGTERM snapshot alongside the
+						// force-kill line. The snapshot is captured at the
+						// FIRST signal (not re-read now) so the message
+						// matches what the operator saw when they decided
+						// to bail — see `firstSnapshot` comment above.
+						const summary = formatShutdownAcquiringSummary(
+							firstSnapshot,
+							'devstack: at first signal,',
+						);
 						process.stderr.write(
-							`\ndevstack: force-killed ${ids.length} container(s) on second ${sig} — exiting.\n`,
+							`\ndevstack: force-killed ${ids.length} container(s) on second ${sig} — exiting.\n${summary}`,
 						);
 					} catch {
 						// Best-effort: even if `docker ps` / `docker kill`

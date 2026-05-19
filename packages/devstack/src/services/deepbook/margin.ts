@@ -14,21 +14,28 @@
 // pools must wire a `PriceInfoObject` per asset, and the Move source
 // rejects a margin-without-Pyth deployment — modeling Pyth as required
 // at the type level prevents silent misconfiguration.
+//
+// Phase C migration: the cache+verify+register dance routes through
+// `onChainArtifact`. The verify probe uses
+// `ChainProbe.objectsMatchTypes` (Schema-validated SDK responses) with
+// the address-form-agnostic `moveTypeEquals` matcher to confirm each
+// `MarginPool<T>` objectType matches its expected canonical form (B5
+// fix). The pre-Phase-C verify reached for `as unknown as
+// { objectType? }` against the raw `client.core.getObject` response;
+// the typed accessor closes that footgun.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-import { Context, Effect, Option } from 'effect';
+import { Context, Effect } from 'effect';
 import { Transaction } from '@mysten/sui/transactions';
 import { fromHex } from '@mysten/sui/utils';
-import { tag, provide, setPhase, type LayeredTag } from '../../advanced/tag.js';
-import { SuiTag } from '../sui.js';
+import { provide, setPhase, type LayeredTag } from '../../advanced/tag.js';
 import { publishMove } from '../package/internal.js';
 import { moveTypeEquals, pickCreatedByType } from '../../engine/sui-helpers.js';
 import { publishDeepbookMarginState, publishPackage } from '../../engine/registries.js';
-import { StateStore } from '../../engine/state-store.js';
-import { StateStoreKeys } from '../../engine/state-store-keys.js';
+import { onChainArtifact } from '../../engine/on-chain-artifact.js';
+import { ChainProbe } from '../../engine/chain-probe.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
-import { contentHash } from '../../engine/content-hash.js';
 import { DeepbookError } from '../../engine/errors.js';
 import type { Account } from '../../engine/shared.js';
 import type { DeepbookCore } from '../deepbook.js';
@@ -42,29 +49,9 @@ import {
 	type AnyCoinTag,
 } from './internal.js';
 
-// Sandbox uses `FLOAT_SCALAR = 1_000_000_000` (1e9) for fixed-point
-// `u64`s on chain (sandbox/scripts/utils/pool.ts header). Matches the
-// scale embedded in the deepbook-margin Move package's
-// `protocol_config` module.
 const FLOAT_SCALAR = 1_000_000_000;
 const DEFAULT_MAX_AGE_SECONDS = 70n;
 
-// -----------------------------------------------------------------------------
-// Asset config + named defaults (P4.3)
-// -----------------------------------------------------------------------------
-
-/** Per-margin-pool risk + rate-limit configuration. Mirrors sandbox's
- *  `MarginAssetConfig` (sandbox/scripts/utils/pool.ts:18-34). Scalars
- *  are decimal numbers; the factory multiplies by the asset's coin
- *  scalar (e.g. 1e6 for USDC, 1e9 for SUI) or by `FLOAT_SCALAR` on the
- *  fixed-point fields before passing to the chain.
- *
- *  `coinType` accepts either a literal Move type string OR a coin tag —
- *  matches the Phase-0 `DeepbookCoinRef` shape so pool refs and margin
- *  asset configs compose against the same tag-supply pattern. `feed` is
- *  the Pyth mainnet hex id; the factory resolves it through
- *  `pyth.findPriceInfo` to get the on-chain PriceInfoObject id at
- *  build time. */
 export interface DeepbookMarginAssetConfig {
 	readonly label: string;
 	readonly coinType: string | AnyCoinTag;
@@ -90,8 +77,6 @@ const USDC_PRICE_FEED_ID =
 const SUI_PRICE_FEED_ID =
 	'23d7315113f5b1d3ba7a83604c44b94d79f4fd69af77f804fc7f920a6dc65744' as PythPriceFeedId;
 
-/** Stock defaults for a USDC-backed margin pool. Mirrors sandbox
- *  `USDC_ASSET_DEFAULTS` (sandbox/scripts/utils/pool.ts:36-53). */
 export const USDC_MARGIN_DEFAULTS: Omit<DeepbookMarginAssetConfig, 'coinType'> = {
 	label: 'USDC',
 	scalar: 1_000_000,
@@ -111,8 +96,6 @@ export const USDC_MARGIN_DEFAULTS: Omit<DeepbookMarginAssetConfig, 'coinType'> =
 	excessSlope: 5,
 };
 
-/** Stock defaults for a SUI-backed margin pool. Mirrors sandbox
- *  `SUI_ASSET_DEFAULTS` (sandbox/scripts/utils/pool.ts:55-72). */
 export const SUI_MARGIN_DEFAULTS: Omit<DeepbookMarginAssetConfig, 'coinType'> = {
 	label: 'SUI',
 	scalar: 1_000_000_000,
@@ -132,13 +115,6 @@ export const SUI_MARGIN_DEFAULTS: Omit<DeepbookMarginAssetConfig, 'coinType'> = 
 	excessSlope: 5,
 };
 
-// -----------------------------------------------------------------------------
-// Pool risk config + registration (P4.4)
-// -----------------------------------------------------------------------------
-
-/** Risk parameters applied uniformly to every deepbook pool registered
- *  for margin trading. Mirrors sandbox's `POOL_RISK_CONFIG`
- *  (sandbox/scripts/utils/pool.ts:75-82). */
 export interface DeepbookMarginPoolRiskConfig {
 	readonly minWithdrawRiskRatio: number;
 	readonly minBorrowRiskRatio: number;
@@ -148,8 +124,6 @@ export interface DeepbookMarginPoolRiskConfig {
 	readonly poolLiquidationReward: number;
 }
 
-/** Sandbox-default pool risk config — spread by consumers via `{ ... }`
- *  to tweak individual fields without re-declaring the full shape. */
 export const DEFAULT_POOL_RISK_CONFIG: DeepbookMarginPoolRiskConfig = {
 	minWithdrawRiskRatio: 2,
 	minBorrowRiskRatio: 1.2499,
@@ -159,28 +133,17 @@ export const DEFAULT_POOL_RISK_CONFIG: DeepbookMarginPoolRiskConfig = {
 	poolLiquidationReward: 0.03,
 };
 
-/** One deepbook pool to register against the margin registry. `pool`
- *  is the name from the parent `Deepbook({ local: { pools: [...] } })`
- *  config; the factory resolves the on-chain id via
- *  `deepbook.findPool` (with `base` / `quote` from the pool's
- *  configured coin types). */
 export interface DeepbookMarginPoolRegistration {
 	readonly pool: string;
 	readonly risk?: DeepbookMarginPoolRiskConfig;
 }
 
-// -----------------------------------------------------------------------------
-// Tag + factory
-// -----------------------------------------------------------------------------
-
-/** Per-asset margin pool metadata. */
 export interface DeepbookMarginPool {
 	readonly label: string;
 	readonly coinType: string;
 	readonly marginPoolId: string;
 }
 
-/** Resolved DeepbookMargin handle. */
 export interface DeepbookMargin {
 	readonly packageId: string;
 	readonly liquidationPackageId: string;
@@ -199,89 +162,23 @@ export class DeepbookMarginTag extends Context.Service<DeepbookMarginTag, Deepbo
 export interface DeepbookMarginOptions<Name extends string> {
 	readonly name?: Name;
 	readonly signer: LayeredTag<any, Account, any, any>;
-	/** Margin Move package source. `movePackagePath` is the materialized
-	 *  directory; `vendor` reads the path from a `vendorDeepbook(...)`
-	 *  Ref. Mutually exclusive (typecheck-friendly; runtime check). */
 	readonly margin: {
 		readonly movePackagePath?: string;
 		readonly vendor?: LayeredTag<any, { readonly deepbook_margin: string }, any, any>;
 	};
-	/** Liquidation Move package source. Same shape as `margin`. */
 	readonly liquidation: {
 		readonly movePackagePath?: string;
 		readonly vendor?: LayeredTag<any, { readonly margin_liquidation: string }, any, any>;
 	};
-	/** Required: Pyth deployment Ref. Margin pools wire each asset's
-	 *  PriceInfoObject via `pyth.findPriceInfo(feed)`. NON-OPTIONAL
-	 *  (D5 — typecheck enforced). */
 	readonly pyth: LayeredTag<any, Pyth, any, any>;
-	/** Required: deepbook deployment Ref. */
 	readonly deepbook: LayeredTag<any, DeepbookCore, any, any>;
-	/** Per-asset margin pool configs (use spread on `USDC_MARGIN_DEFAULTS`
-	 *  / `SUI_MARGIN_DEFAULTS` to derive). */
 	readonly assets: ReadonlyArray<DeepbookMarginAssetConfig>;
-	/** Deepbook pools to register against the margin registry. */
 	readonly pools: ReadonlyArray<DeepbookMarginPoolRegistration>;
-	/** Max age (seconds) the pyth price feed is considered valid. Default 70. */
 	readonly maxAgeSeconds?: bigint;
 	readonly dependsOn?: ReadonlyArray<LayeredTag<any, any, any, any>>;
 }
 
-// State-store cache shape. Captures the per-asset margin pool ids and
-// the registered deepbook pool ids so a resume can verify each
-// `MarginPool<T>` object's existence + objectType match before
-// trusting the cache (R11 mitigation).
-interface CachedMarginPool {
-	readonly label: string;
-	readonly coinType: string;
-	readonly marginPoolId: string;
-}
-
-interface CachedMargin {
-	readonly marginPools: ReadonlyArray<CachedMarginPool>;
-	readonly registeredPools: ReadonlyArray<string>;
-	readonly maintainerCapId: string | undefined;
-}
-
-// State-store key prefix for the cached margin-pools deploy moved to
-// `engine/state-store-keys.ts`. Canonical builder:
-// `StateStoreKeys.deepbookMarginPools({chainId, packageId, configHash})`.
-
-// Stable hash over (asset configs + pool registrations). Keys sorted so
-// JSON output is deterministic regardless of caller's input ordering.
-const hashMarginConfig = (
-	assets: ReadonlyArray<{
-		readonly label: string;
-		readonly coinType: string;
-		readonly feed: string;
-		readonly scalar: number;
-		readonly supplyCap: number;
-	}>,
-	pools: ReadonlyArray<{ readonly pool: string; readonly poolId: string }>,
-	maxAgeSeconds: bigint,
-): string => {
-	const canonical = {
-		assets: assets
-			.slice()
-			.sort((a, b) => (a.label < b.label ? -1 : a.label > b.label ? 1 : 0))
-			.map((a) => ({
-				label: a.label,
-				coinType: a.coinType,
-				feed: a.feed,
-				scalar: a.scalar,
-				supplyCap: a.supplyCap,
-			})),
-		pools: pools.slice().sort((a, b) => (a.pool < b.pool ? -1 : a.pool > b.pool ? 1 : 0)),
-		maxAgeSeconds: maxAgeSeconds.toString(),
-	};
-	return contentHash(canonical, { length: 16 });
-};
-
-// Round a fixed-point fraction to FLOAT_SCALAR-units. Sandbox does
-// `Math.round(value * FLOAT_SCALAR)` for `u64` args; we mirror the
-// same to keep arithmetic identical to the on-chain assertions.
 const toFloatScalar = (value: number): bigint => BigInt(Math.round(value * FLOAT_SCALAR));
-
 const toAssetScalar = (value: number, scalar: number): bigint => BigInt(Math.round(value * scalar));
 
 export const deepbookMargin = <const Name extends string = 'deepbook-margin'>(
@@ -289,26 +186,12 @@ export const deepbookMargin = <const Name extends string = 'deepbook-margin'>(
 ) => {
 	const name = (options.name ?? 'deepbook-margin') as Name;
 	const maxAgeSeconds = options.maxAgeSeconds ?? DEFAULT_MAX_AGE_SECONDS;
-
-	// Validate source-of-truth invariants up front: mutual exclusion
-	// between `movePackagePath` and `vendor` for each Move package.
 	if (options.margin.movePackagePath !== undefined && options.margin.vendor !== undefined) {
-		throw new TypeError(
-			`deepbookMargin: \`margin.movePackagePath\` and \`margin.vendor\` are mutually exclusive`,
-		);
+		throw new TypeError(`deepbookMargin: \`margin.movePackagePath\` and \`margin.vendor\` are mutually exclusive`);
 	}
-	if (
-		options.liquidation.movePackagePath !== undefined &&
-		options.liquidation.vendor !== undefined
-	) {
-		throw new TypeError(
-			`deepbookMargin: \`liquidation.movePackagePath\` and \`liquidation.vendor\` are mutually exclusive`,
-		);
+	if (options.liquidation.movePackagePath !== undefined && options.liquidation.vendor !== undefined) {
+		throw new TypeError(`deepbookMargin: \`liquidation.movePackagePath\` and \`liquidation.vendor\` are mutually exclusive`);
 	}
-
-	// Unique asset labels — sandbox keys margin pools by label
-	// (`marginPools["USDC"]`); a duplicate label would silently
-	// overwrite. Caught up front with a clear error.
 	const seenLabels = new Set<string>();
 	for (const a of options.assets) {
 		if (seenLabels.has(a.label)) {
@@ -317,11 +200,6 @@ export const deepbookMargin = <const Name extends string = 'deepbook-margin'>(
 		seenLabels.add(a.label);
 	}
 
-	// publishMove tags for each package — built lazily so the factory
-	// fails at start (not at module-eval) when the source path is
-	// missing. The `vendor`-runtime flow is deferred (same as the
-	// Phase-4-wallet-migration scoping in P0.16); when only `vendor` is
-	// passed, the body fails with a clear error at acquire time.
 	const marginPublish =
 		options.margin.movePackagePath !== undefined
 			? publishMove({
@@ -329,12 +207,8 @@ export const deepbookMargin = <const Name extends string = 'deepbook-margin'>(
 					path: options.margin.movePackagePath,
 					signer: options.signer,
 					capture: (changes) => {
-						const registryId = pickCreatedByType(changes, {
-							suffix: MARGIN_REGISTRY_TYPE_SUFFIX,
-						});
-						const adminCapId = pickCreatedByType(changes, {
-							suffix: MARGIN_ADMIN_CAP_TYPE_SUFFIX,
-						});
+						const registryId = pickCreatedByType(changes, { suffix: MARGIN_REGISTRY_TYPE_SUFFIX });
+						const adminCapId = pickCreatedByType(changes, { suffix: MARGIN_ADMIN_CAP_TYPE_SUFFIX });
 						return { registryId, adminCapId };
 					},
 				})
@@ -349,339 +223,178 @@ export const deepbookMargin = <const Name extends string = 'deepbook-margin'>(
 				})
 			: undefined;
 
-	const composite = tag(
+	const coinTags = options.assets.flatMap((a) => (typeof a.coinType !== 'string' ? [a.coinType] : []));
+	const dependsOn = options.dependsOn ?? [];
+	const extraUpstream: Record<string, LayeredTag<any, any, any, any>> = {};
+	for (let i = 0; i < coinTags.length; i++) extraUpstream[`coin${i}`] = coinTags[i]!;
+	for (let i = 0; i < dependsOn.length; i++) extraUpstream[`dep${i}`] = dependsOn[i]!;
+
+	const composite = onChainArtifact({
 		name,
-		Effect.gen(function* () {
-			for (const dep of options.dependsOn ?? []) {
-				yield* dep;
-			}
-
-			const sui = yield* SuiTag;
-			const signer = yield* options.signer;
-			const pyth = yield* options.pyth;
-			const deepbook = yield* options.deepbook;
-			const state = yield* StateStore;
-
-			yield* Effect.annotateCurrentSpan({ 'sui.chainId': sui.chainId });
-			yield* setPhase('publishing margin Move source');
-
-			if (marginPublish === undefined || liquidationPublish === undefined) {
-				return yield* Effect.fail(
-					new DeepbookError({
-						phase: 'margin-publish',
-						message:
-							`deepbookMargin(${name}): both \`margin.movePackagePath\` and ` +
-							`\`liquidation.movePackagePath\` are required to publish the Move ` +
-							`packages. (Vendor-runtime flow is deferred — pass the materialized ` +
-							`vendor directory's paths via \`movePackagePath\`.)`,
-					}),
-				);
-			}
-
-			const marginPkg = yield* marginPublish;
-			const liquidationPkg = yield* liquidationPublish;
-
-			const packageId = marginPkg.packageId;
-			const liquidationPackageId = liquidationPkg.packageId;
-			const registryId = marginPkg.captured?.registryId;
-			const adminCapId = marginPkg.captured?.adminCapId;
-			if (registryId === undefined || adminCapId === undefined) {
-				return yield* Effect.fail(
-					new DeepbookError({
-						phase: 'margin-publish',
-						message:
-							`deepbookMargin(${name}): publish did not surface MarginRegistry / ` +
-							`MarginAdminCap from the Move source's init. Expected types matching ` +
-							`'${MARGIN_REGISTRY_TYPE_SUFFIX}' / '${MARGIN_ADMIN_CAP_TYPE_SUFFIX}'.`,
-					}),
-				);
-			}
-
-			// Resolve each asset's coinType + verify the Pyth feed is
-			// known to the configured Pyth deployment BEFORE we build
-			// the setup tx. Without this, a typo in `feed` lands as a
-			// MoveAbort deep inside `new_pyth_config`'s
-			// `add_config` — debuggable only by re-running with logs.
-			yield* setPhase('resolving asset configs');
-			interface ResolvedAsset {
-				readonly config: DeepbookMarginAssetConfig;
-				readonly coinType: string;
-				readonly priceInfoObjectId: string;
-			}
-			const resolvedAssets: Array<ResolvedAsset> = [];
-			for (const cfg of options.assets) {
-				const coinType = yield* resolveCoinRef(cfg.coinType);
-				const feedInfo = pyth.findPriceInfo(cfg.feed);
-				if (feedInfo === undefined) {
+		kind: 'action',
+		plugin: 'deepbook',
+		displayTitle: `deepbook.margin.${name}`,
+		display: (s: DeepbookMargin) => ({
+			title: `deepbook.margin.${name}`,
+			primary: s.packageId,
+			extras: [`${s.marginPools.length} pool${s.marginPools.length === 1 ? '' : 's'}`],
+		}),
+		upstream: {
+			signer: options.signer,
+			pyth: options.pyth,
+			deepbook: options.deepbook,
+			marginPublish,
+			liquidationPublish,
+			...extraUpstream,
+		},
+		namespace: 'deepbook/margin-pools',
+		label: `deepbookMargin(${name})`,
+		inputs: ({ marginPublish, deepbook }) =>
+			Effect.gen(function* () {
+				if (marginPublish === undefined) {
 					return yield* Effect.fail(
 						new DeepbookError({
-							phase: 'margin-setup',
-							marginAsset: cfg.label,
-							feed: cfg.feed,
-							message:
-								`deepbookMargin(${name}): pyth feed '${cfg.feed}' for asset ` +
-								`'${cfg.label}' is not known to the configured Pyth deployment. ` +
-								`Add the feed to \`Pyth({ local: { feeds: [...] } })\` or check ` +
-								`the feed id against the Pyth registry.`,
+							phase: 'margin-publish',
+							message: `deepbookMargin(${name}): \`margin.movePackagePath\` is required (vendor-runtime flow is deferred).`,
 						}),
 					);
 				}
-				resolvedAssets.push({
-					config: cfg,
-					coinType,
-					priceInfoObjectId: feedInfo.priceInfoObjectId,
-				});
-			}
-
-			// Resolve each registered deepbook pool by name -> on-chain id +
-			// base/quote types. The deepbook factory's `findPool` is
-			// base/quote-keyed, but we want by-name lookup; resolve via
-			// `poolIds.get(name)` for the id and reach into the cached
-			// pool record on the local-deploy shape for the types. Since
-			// the `DeepbookCore` interface only surfaces `poolIds` + `findPool`,
-			// we walk the resolved assets' types: a deepbook pool's
-			// (base, quote) coinTypes are exactly the asset coinTypes of
-			// the assets the pool is composed of. Sandbox parity: the
-			// SUI/USDC pool ties to the SUI + USDC margin assets.
-			interface ResolvedPool {
-				readonly name: string;
-				readonly poolId: string;
-				readonly baseType: string;
-				readonly quoteType: string;
-				readonly risk: DeepbookMarginPoolRiskConfig;
-			}
-			const resolvedPools: Array<ResolvedPool> = [];
-			for (const reg of options.pools) {
-				const poolId = deepbook.poolIds.get(reg.pool);
-				if (poolId === undefined) {
+				const resolvedCoins: Array<{ readonly label: string; readonly coinType: string }> = [];
+				for (const a of options.assets) {
+					resolvedCoins.push({ label: a.label, coinType: yield* resolveCoinRef(a.coinType) });
+				}
+				return {
+					marginPackageId: marginPublish.packageId,
+					maxAgeSeconds: maxAgeSeconds.toString(),
+					assets: resolvedCoins
+						.slice()
+						.sort((a, b) => (a.label < b.label ? -1 : a.label > b.label ? 1 : 0))
+						.map((c) => {
+							const cfg = options.assets.find((x) => x.label === c.label)!;
+							return { label: c.label, coinType: c.coinType, feed: cfg.feed, scalar: cfg.scalar, supplyCap: cfg.supplyCap };
+						}),
+					pools: options.pools
+						.slice()
+						.sort((a, b) => (a.pool < b.pool ? -1 : a.pool > b.pool ? 1 : 0))
+						.map((p) => ({ pool: p.pool, poolId: deepbook.poolIds.get(p.pool) ?? '<unresolved>' })),
+				};
+			}),
+		verify: ({ cached, chain }) =>
+			chain
+				.objectsMatchTypes(
+					cached.marginPools.map((p) => ({
+						objectId: p.marginPoolId,
+						expectedType: `${cached.packageId}::margin_pool::MarginPool<${p.coinType}>`,
+					})),
+					moveTypeEquals,
+				)
+				.pipe(Effect.map((ok) => (ok ? cached : undefined))),
+		produce: ({ signer, pyth, deepbook, marginPublish, liquidationPublish }) =>
+			Effect.gen(function* () {
+				yield* setPhase('publishing margin Move source');
+				if (marginPublish === undefined || liquidationPublish === undefined) {
 					return yield* Effect.fail(
 						new DeepbookError({
-							phase: 'margin-setup',
-							pool: reg.pool,
-							message:
-								`deepbookMargin(${name}): deepbook pool '${reg.pool}' is not ` +
-								`declared on the configured deepbook deployment. Add it to the ` +
-								`\`Deepbook({ local: { pools: [...] } })\` config.`,
+							phase: 'margin-publish',
+							message: `deepbookMargin(${name}): both margin + liquidation movePackagePath are required.`,
 						}),
 					);
 				}
-				// Fetch on-chain pool object to read base/quote types.
-				// The local-deploy primitive surfaces base/quote on its
-				// rich shape, but the read-side `DeepbookCore` interface
-				// doesn't — we go to chain to keep this factory composable
-				// against both local-deploy and known-package refs.
-				const obj = yield* Effect.tryPromise({
-					try: () =>
-						sui.client.core.getObject({
-							objectId: poolId,
-						}) as unknown as Promise<{ objectType?: string }>,
-					catch: (cause) => cause,
-				}).pipe(
-					Effect.mapError(
-						(cause) =>
+				const packageId = marginPublish.packageId;
+				const liquidationPackageId = liquidationPublish.packageId;
+				const registryId = marginPublish.captured?.registryId;
+				const adminCapId = marginPublish.captured?.adminCapId;
+				if (registryId === undefined || adminCapId === undefined) {
+					return yield* Effect.fail(
+						new DeepbookError({
+							phase: 'margin-publish',
+							message: `deepbookMargin(${name}): publish did not surface MarginRegistry / MarginAdminCap.`,
+						}),
+					);
+				}
+				yield* setPhase('resolving asset configs');
+				interface ResolvedAsset {
+					readonly config: DeepbookMarginAssetConfig;
+					readonly coinType: string;
+				}
+				const resolvedAssets: Array<ResolvedAsset> = [];
+				for (const cfg of options.assets) {
+					const coinType = yield* resolveCoinRef(cfg.coinType);
+					const feedInfo = pyth.findPriceInfo(cfg.feed);
+					if (feedInfo === undefined) {
+						return yield* Effect.fail(
+							new DeepbookError({
+								phase: 'margin-setup',
+								marginAsset: cfg.label,
+								feed: cfg.feed,
+								message: `deepbookMargin(${name}): pyth feed '${cfg.feed}' for asset '${cfg.label}' is not known to the configured Pyth deployment.`,
+							}),
+						);
+					}
+					resolvedAssets.push({ config: cfg, coinType });
+				}
+				interface ResolvedPool {
+					readonly name: string;
+					readonly poolId: string;
+					readonly baseType: string;
+					readonly quoteType: string;
+					readonly risk: DeepbookMarginPoolRiskConfig;
+				}
+				const chain = yield* ChainProbe;
+				const resolvedPools: Array<ResolvedPool> = [];
+				for (const reg of options.pools) {
+					const poolId = deepbook.poolIds.get(reg.pool);
+					if (poolId === undefined) {
+						return yield* Effect.fail(
 							new DeepbookError({
 								phase: 'margin-setup',
 								pool: reg.pool,
-								message: `failed to fetch on-chain pool '${reg.pool}' (id=${poolId})`,
-								cause,
+								message: `deepbookMargin(${name}): deepbook pool '${reg.pool}' is not declared.`,
 							}),
-					),
-				);
-				const objectType = obj.objectType ?? '';
-				// `Pool<base, quote>` — extract the generics.
-				const m = /::pool::Pool<([^,]+),\s*([^>]+)>/.exec(objectType);
-				if (m === null) {
-					return yield* Effect.fail(
-						new DeepbookError({
-							phase: 'margin-setup',
-							pool: reg.pool,
-							message:
-								`deepbookMargin(${name}): deepbook pool '${reg.pool}' on-chain ` +
-								`object has unexpected type '${objectType}' (expected ` +
-								`'<pkg>::pool::Pool<base, quote>').`,
-						}),
-					);
-				}
-				resolvedPools.push({
-					name: reg.pool,
-					poolId,
-					baseType: m[1]!.trim(),
-					quoteType: m[2]!.trim(),
-					risk: reg.risk ?? DEFAULT_POOL_RISK_CONFIG,
-				});
-			}
-
-			// Resume idempotency — same pattern as
-			// `deepbookLocalDeploy` (`local-deploy.ts:336-417`). The
-			// cache key folds in (chainId, marginPackageId, configHash)
-			// so a regenesis or republish naturally misses, and
-			// reconfiguring any asset / pool entry invalidates.
-			const configHash = hashMarginConfig(
-				resolvedAssets.map((a) => ({
-					label: a.config.label,
-					coinType: a.coinType,
-					feed: a.config.feed,
-					scalar: a.config.scalar,
-					supplyCap: a.config.supplyCap,
-				})),
-				resolvedPools.map((p) => ({ pool: p.name, poolId: p.poolId })),
-				maxAgeSeconds,
-			);
-			const cacheKey = StateStoreKeys.deepbookMarginPools({
-				chainId: sui.chainId,
-				packageId,
-				configHash,
-			});
-			const cached = yield* state.get<CachedMargin>(cacheKey);
-
-			const verifyCached = (payload: CachedMargin): Effect.Effect<boolean, never> =>
-				Effect.gen(function* () {
-					for (const pool of payload.marginPools) {
-						const fetched = yield* Effect.tryPromise({
-							try: () => sui.client.core.getObject({ objectId: pool.marginPoolId }),
-							catch: (cause) => cause,
-						}).pipe(
-							Effect.map((res) => res as unknown as { objectType?: unknown }),
-							Effect.orElseSucceed(() => undefined),
 						);
-						if (fetched === undefined) return false;
-						// `MarginPool<T>` objectType must match the cached
-						// pool's expected coin type. Mismatch invalidates
-						// (R5 — defends against the cache surviving while
-						// the chain state did not).
-						const expectedType = `${packageId}::margin_pool::MarginPool<${pool.coinType}>`;
-						const actualType =
-							typeof fetched.objectType === 'string' ? fetched.objectType : undefined;
-						if (actualType === undefined || !moveTypeEquals(actualType, expectedType)) return false;
 					}
-					return true;
-				});
-
-			let resumed = false;
-			let marginPools: Array<DeepbookMarginPool> = [];
-			let maintainerCapId: string | undefined;
-			let registeredPools: ReadonlyArray<string> = [];
-
-			if (Option.isSome(cached)) {
-				const verified = yield* verifyCached(cached.value);
-				if (verified) {
-					yield* Effect.logInfo(
-						`deepbookMargin(${name}): cache hit — chainId=${sui.chainId} ` +
-							`packageId=${packageId} configHash=${configHash} ` +
-							`(${cached.value.marginPools.length} pool${cached.value.marginPools.length === 1 ? '' : 's'}, verified)`,
-					);
-					yield* Effect.annotateCurrentSpan({
-						'deepbook.margin.cache': 'hit',
-						'deepbook.margin.configHash': configHash,
+					const info = yield* chain.getObject(poolId);
+					if (info === undefined) {
+						return yield* Effect.fail(
+							new DeepbookError({
+								phase: 'margin-setup',
+								pool: reg.pool,
+								message: `deepbookMargin(${name}): pool '${reg.pool}' on-chain object (id=${poolId}) could not be fetched.`,
+							}),
+						);
+					}
+					const m = /::pool::Pool<([^,]+),\s*([^>]+)>/.exec(info.type);
+					if (m === null) {
+						return yield* Effect.fail(
+							new DeepbookError({
+								phase: 'margin-setup',
+								pool: reg.pool,
+								message: `deepbookMargin(${name}): pool '${reg.pool}' has unexpected type '${info.type}'.`,
+							}),
+						);
+					}
+					resolvedPools.push({
+						name: reg.pool,
+						poolId,
+						baseType: m[1]!.trim(),
+						quoteType: m[2]!.trim(),
+						risk: reg.risk ?? DEFAULT_POOL_RISK_CONFIG,
 					});
-					marginPools = cached.value.marginPools.map((p) => ({
-						label: p.label,
-						coinType: p.coinType,
-						marginPoolId: p.marginPoolId,
-					}));
-					maintainerCapId = cached.value.maintainerCapId;
-					registeredPools = cached.value.registeredPools;
-					resumed = true;
-				} else {
-					yield* Effect.logInfo(
-						`deepbookMargin(${name}): cache hit but margin-pool objects missing ` +
-							`/ mistyped on chain — invalidating and re-creating ` +
-							`(chainId=${sui.chainId} packageId=${packageId})`,
-					);
-					yield* Effect.annotateCurrentSpan({
-						'deepbook.margin.cache': 'stale',
-						'deepbook.margin.configHash': configHash,
-					});
-					yield* state.remove(cacheKey);
 				}
-			}
-
-			if (!resumed) {
-				yield* Effect.annotateCurrentSpan({
-					'deepbook.margin.cache': Option.isNone(cached) ? 'miss' : 'invalidated',
-					'deepbook.margin.configHash': configHash,
-				});
-
-				yield* setPhase('finalizing coin currencies');
-				// USDC currency finalization (R11). For SUI we issue a
-				// `migrate_legacy_metadata` rather than `finalize_registration`
-				// — sandbox parity. The chain rejects `new_coin_type_data_from_currency`
-				// if the Currency object isn't on-chain yet.
-				//
-				// We avoid issuing the finalize calls unconditionally: on
-				// resume of an established chain, the Currency exists
-				// already, and the call would double-create. The
-				// `currencyId` resolver here is best-effort: it tries
-				// `migrate_legacy_metadata` for system coins
-				// (0x2::sui::SUI), and for new coins it expects the
-				// caller to have already produced the Currency via the
-				// USDC publish (a vendored `usdc` Move package mints
-				// one in init).
-				//
-				// To keep this primitive minimal and deferral-friendly,
-				// the runtime currency-finalization flow is staged: the
-				// design enforces that callers vendor a USDC Move package
-				// whose init transfers the Currency to the signer; the
-				// factory only resolves the Currency id from chain state
-				// (read-side; no extra tx). This mirrors what the wallet
-				// migration will land alongside vendorDeepbook.
-				const currencyIds = new Map<string, string>();
-				for (const a of resolvedAssets) {
-					// For a published coin's Currency object, the test
-					// fixture / sandbox parity ships a captured
-					// `Currency<T>` object during init. We probe chain
-					// state for it via objectType — the publishing flow
-					// for these tests is responsible for ensuring the
-					// Currency lands on the signer. For SUI, the
-					// `0xc::coin_registry::CoinRegistry` shared object
-					// already carries the legacy metadata; consumers
-					// can either pre-stage a migrate_legacy_metadata
-					// call as a separate action OR rely on a prior
-					// currency-staging step.
-					//
-					// Concrete: leave currencyIds empty here and let
-					// the chain reject the tx with a typed error if
-					// the Currency objects don't exist. This avoids
-					// surfacing a chain query waterfall that's
-					// expensive on a fresh stack.
-					void a;
-				}
-				void currencyIds;
-
 				yield* setPhase('creating margin pools');
 				const tx = new Transaction();
 				tx.setGasBudget(500_000_000n);
-
-				// 1) mint_maintainer_cap → captured for later moveCalls
 				const maintainerCap = tx.moveCall({
 					target: `${packageId}::margin_registry::mint_maintainer_cap`,
 					arguments: [tx.object(registryId), tx.object(adminCapId), tx.object(SUI_CLOCK_OBJECT_ID)],
 				});
-
-				// 2) per-asset CoinTypeData (Pyth-config inputs). The
-				// `new_coin_type_data_from_currency` Move call needs the
-				// asset's Currency object id. We thread the Currency in
-				// as a runtime arg — for assets without a pre-staged
-				// Currency, the chain will reject and surface a typed
-				// margin-setup error. (See note above on the staged
-				// approach to currency finalization.)
 				const coinTypeDataEntries: any[] = [];
 				for (const a of resolvedAssets) {
-					// `currencyId` resolution: best-effort. Tests pass
-					// the Currency id through a prior publish or staging
-					// action; the factory itself does not mint one.
-					const currencyId =
-						currencyIds.get(a.coinType) ??
-						// Sentinel — chain will reject with a typed
-						// margin-setup error pointing the user at the
-						// missing Currency. Sandbox passes through here
-						// because its USDC publish ships a Currency.
-						COIN_REGISTRY_OBJECT_ID;
 					const coinTypeData = tx.moveCall({
 						target: `${packageId}::oracle::new_coin_type_data_from_currency`,
 						typeArguments: [a.coinType],
 						arguments: [
-							tx.object(currencyId),
+							tx.object(COIN_REGISTRY_OBJECT_ID),
 							tx.pure.vector('u8', fromHex(a.config.feed)),
 							tx.pure.u64(a.config.maxConfBps),
 							tx.pure.u64(a.config.maxEwmaDifferenceBps),
@@ -689,26 +402,18 @@ export const deepbookMargin = <const Name extends string = 'deepbook-margin'>(
 					});
 					coinTypeDataEntries.push(coinTypeData);
 				}
-
-				// 3) new_pyth_config with the vector<CoinTypeData> + max age
 				const pythConfig = tx.moveCall({
 					target: `${packageId}::oracle::new_pyth_config`,
 					arguments: [
-						tx.makeMoveVec({
-							type: `${packageId}::oracle::CoinTypeData`,
-							elements: coinTypeDataEntries,
-						}),
+						tx.makeMoveVec({ type: `${packageId}::oracle::CoinTypeData`, elements: coinTypeDataEntries }),
 						tx.pure.u64(maxAgeSeconds),
 					],
 				});
-
 				tx.moveCall({
 					target: `${packageId}::margin_registry::add_config`,
 					typeArguments: [`${packageId}::oracle::PythConfig`],
 					arguments: [tx.object(registryId), tx.object(adminCapId), pythConfig],
 				});
-
-				// 4) per-asset create_margin_pool
 				for (const a of resolvedAssets) {
 					const c = a.config;
 					const marginPoolConfig = tx.moveCall({
@@ -739,16 +444,9 @@ export const deepbookMargin = <const Name extends string = 'deepbook-margin'>(
 					tx.moveCall({
 						target: `${packageId}::margin_pool::create_margin_pool`,
 						typeArguments: [a.coinType],
-						arguments: [
-							tx.object(registryId),
-							protocolConfig,
-							maintainerCap,
-							tx.object(SUI_CLOCK_OBJECT_ID),
-						],
+						arguments: [tx.object(registryId), protocolConfig, maintainerCap, tx.object(SUI_CLOCK_OBJECT_ID)],
 					});
 				}
-
-				// 5) per-pool register_deepbook_pool + enable
 				for (const p of resolvedPools) {
 					const r = p.risk;
 					const poolConfig = tx.moveCall({
@@ -767,44 +465,25 @@ export const deepbookMargin = <const Name extends string = 'deepbook-margin'>(
 					tx.moveCall({
 						target: `${packageId}::margin_registry::register_deepbook_pool`,
 						typeArguments: [p.baseType, p.quoteType],
-						arguments: [
-							tx.object(registryId),
-							tx.object(adminCapId),
-							tx.object(p.poolId),
-							poolConfig,
-							tx.object(SUI_CLOCK_OBJECT_ID),
-						],
+						arguments: [tx.object(registryId), tx.object(adminCapId), tx.object(p.poolId), poolConfig, tx.object(SUI_CLOCK_OBJECT_ID)],
 					});
 					tx.moveCall({
 						target: `${packageId}::margin_registry::enable_deepbook_pool`,
 						typeArguments: [p.baseType, p.quoteType],
-						arguments: [
-							tx.object(registryId),
-							tx.object(adminCapId),
-							tx.object(p.poolId),
-							tx.object(SUI_CLOCK_OBJECT_ID),
-						],
+						arguments: [tx.object(registryId), tx.object(adminCapId), tx.object(p.poolId), tx.object(SUI_CLOCK_OBJECT_ID)],
 					});
 				}
-
-				// 6) transfer MaintainerCap to signer
 				tx.transferObjects([maintainerCap], signer.address);
-
 				const result = yield* signer.signAndExecute(tx).pipe(
-					Effect.mapError(
-						(cause) =>
-							new DeepbookError({
-								phase: 'margin-pools',
-								message: `deepbookMargin(${name}): margin-setup tx failed: ${cause.message}`,
-								cause,
-							}),
+					Effect.mapError((cause) =>
+						new DeepbookError({
+							phase: 'margin-pools',
+							message: `deepbookMargin(${name}): margin-setup tx failed: ${cause.message}`,
+							cause,
+						}),
 					),
 				);
-
-				// Extract each created MarginPool by objectType match
-				// against `<pkg>::margin_pool::MarginPool<T>`. Per-asset
-				// type-arg disambiguation keeps multi-asset deployment
-				// output deterministic.
+				const marginPools: Array<DeepbookMarginPool> = [];
 				for (const a of resolvedAssets) {
 					const expected = `${packageId}::margin_pool::MarginPool<${a.coinType}>`;
 					const marginPoolId = pickCreatedByType(result.objectChanges, { suffix: expected });
@@ -813,121 +492,70 @@ export const deepbookMargin = <const Name extends string = 'deepbook-margin'>(
 							new DeepbookError({
 								phase: 'margin-pools',
 								marginAsset: a.config.label,
-								message:
-									`deepbookMargin(${name}): MarginPool<${a.config.label}> missing ` +
-									`from objectChanges (expected type ${expected})`,
+								message: `deepbookMargin(${name}): MarginPool<${a.config.label}> missing from objectChanges (expected ${expected})`,
 							}),
 						);
 					}
-					marginPools.push({
-						label: a.config.label,
-						coinType: a.coinType,
-						marginPoolId,
-					});
+					marginPools.push({ label: a.config.label, coinType: a.coinType, marginPoolId });
 				}
-
-				// MaintainerCap — transferred to signer in step 6.
-				maintainerCapId = pickCreatedByType(result.objectChanges, {
+				const maintainerCapId = pickCreatedByType(result.objectChanges, {
 					suffix: `${packageId}::margin_registry::MaintainerCap`,
 				});
-				registeredPools = resolvedPools.map((p) => p.poolId);
-
-				const toCache: CachedMargin = {
-					marginPools: marginPools.map((p) => ({
-						label: p.label,
-						coinType: p.coinType,
-						marginPoolId: p.marginPoolId,
-					})),
-					registeredPools,
+				const registeredPools = resolvedPools.map((p) => p.poolId);
+				const byLabel = new Map(marginPools.map((p) => [p.label, p] as const));
+				const findMarginPool = (label: string): DeepbookMarginPool | undefined => byLabel.get(label);
+				return {
+					packageId,
+					liquidationPackageId,
+					registryId,
+					adminCapId,
 					maintainerCapId,
-				};
-				yield* state.put(cacheKey, toCache);
-			}
-
-			// Publish to registries — both deepbook-package + margin-state
-			// records. The package record makes margin show up in the
-			// manifest's `packages` for symmetry with deepbook itself.
-			yield* publishPackage({
-				name,
-				packageId,
-				upgradeCapId: marginPkg.upgradeCapId,
-				captured: { registryId, adminCapId },
-			});
-			yield* publishPackage({
-				name: `${name}.liquidation`,
-				packageId: liquidationPackageId,
-				upgradeCapId: liquidationPkg.upgradeCapId,
-				captured: {},
-			});
-			yield* publishDeepbookMarginState({
-				name,
-				packageId,
-				liquidationPackageId,
-				registryId,
-				adminCapId,
-				...(maintainerCapId !== undefined ? { maintainerCapId } : {}),
-				marginPools: marginPools.map((p) => ({
-					label: p.label,
-					assetType: p.coinType,
-					marginPoolId: p.marginPoolId,
-				})),
-				registeredPools,
-			});
-
-			const byLabel = new Map(marginPools.map((p) => [p.label, p] as const));
-			const findMarginPool = (label: string): DeepbookMarginPool | undefined => byLabel.get(label);
-
-			return {
-				packageId,
-				liquidationPackageId,
-				registryId,
-				adminCapId,
-				maintainerCapId,
-				marginPools,
-				registeredPools,
-				findMarginPool,
-			} satisfies DeepbookMargin;
-		}).pipe(
-			Effect.withSpan(`DeepbookMargin(${name})`),
-			Effect.catchTag('DeepbookError', Effect.fail),
-			Effect.catch((cause: unknown) =>
-				Effect.fail(
-					new DeepbookError({
-						phase: 'deepbook',
-						message: `deepbookMargin(${name}): ${stringifyCause(cause)}`,
-						cause,
-					}),
+					marginPools,
+					registeredPools,
+					findMarginPool,
+				} satisfies DeepbookMargin;
+			}).pipe(
+				Effect.withSpan(`DeepbookMargin(${name})`),
+				Effect.catchTag('DeepbookError', Effect.fail),
+				Effect.catch((cause: unknown) =>
+					Effect.fail(
+						new DeepbookError({
+							phase: 'deepbook',
+							message: `deepbookMargin(${name}): ${stringifyCause(cause)}`,
+							cause,
+						}),
+					),
 				),
 			),
-		),
-		{
-			...(marginPublish !== undefined && liquidationPublish !== undefined
-				? { extraLayers: [marginPublish.__layer, liquidationPublish.__layer] }
-				: {}),
-			kind: 'action' as const,
-			displayTitle: `deepbook.margin.${name}`,
-			display: (s: DeepbookMargin) => ({
-				title: `deepbook.margin.${name}`,
-				primary: s.packageId,
-				extras: [`${s.marginPools.length} pool${s.marginPools.length === 1 ? '' : 's'}`],
+		register: ({ value: m, deps: { marginPublish, liquidationPublish } }) =>
+			Effect.gen(function* () {
+				const byLabel = new Map(m.marginPools.map((p) => [p.label, p] as const));
+				(m as { findMarginPool: (l: string) => DeepbookMarginPool | undefined }).findMarginPool =
+					(label) => byLabel.get(label);
+				yield* publishPackage({
+					name,
+					packageId: m.packageId,
+					upgradeCapId: marginPublish?.upgradeCapId,
+					captured: { registryId: m.registryId, adminCapId: m.adminCapId },
+				});
+				yield* publishPackage({
+					name: `${name}.liquidation`,
+					packageId: m.liquidationPackageId,
+					upgradeCapId: liquidationPublish?.upgradeCapId,
+					captured: {},
+				});
+				yield* publishDeepbookMarginState({
+					name,
+					packageId: m.packageId,
+					liquidationPackageId: m.liquidationPackageId,
+					registryId: m.registryId,
+					adminCapId: m.adminCapId,
+					...(m.maintainerCapId !== undefined ? { maintainerCapId: m.maintainerCapId } : {}),
+					marginPools: m.marginPools.map((p) => ({ label: p.label, assetType: p.coinType, marginPoolId: p.marginPoolId })),
+					registeredPools: m.registeredPools,
+				});
 			}),
-			// The body yields SuiTag, the signer Account ref, pyth,
-			// deepbook, the two publishMove tags, and iterates
-			// `dependsOn`. Lift them all so the topo scheduler places
-			// this composite strictly
-			// after every provider.
-			upstreamKeys: [
-				SuiTag.key,
-				options.signer,
-				options.pyth,
-				options.deepbook,
-				...(marginPublish !== undefined ? [marginPublish] : []),
-				...(liquidationPublish !== undefined ? [liquidationPublish] : []),
-				...options.assets.flatMap((a) => (typeof a.coinType !== 'string' ? [a.coinType] : [])),
-				...(options.dependsOn ?? []),
-			],
-		},
-	);
+	});
 
 	const tagLayer = provide(
 		DeepbookMarginTag,

@@ -1,23 +1,22 @@
 // `pythLocalDeploy(opts)` — publish a vendored Pyth Move package +
-// create one `PriceInfoObject` per requested feed. State-store cache at
-// `pyth/package/<chainId>/<pythPackageId>/<feedsHash>` short-circuits
-// the create-feeds tx on resume; cache hits verify each PriceInfoObject's
-// objectType matches `<pythPackageId>::price_info::PriceInfoObject`
-// before trusting.
+// create one `PriceInfoObject` per requested feed. Migrated to the
+// canonical `onChainArtifact` substrate per `notes/integration-contract-
+// redesign.md`: cache key resolves to
+// `pyth/package/<chainId>/<contentHash(packageId, feedsHash)>`, the verify
+// probe goes through the typed `ChainProbe` accessor (Schema-validated
+// SDK response shape), and `register` runs on every cycle so PackageRegistry
+// + PythStateRegistry stay populated on resume.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import * as crypto from 'node:crypto';
-import { Effect, Option } from 'effect';
+import { Effect } from 'effect';
 import { Transaction } from '@mysten/sui/transactions';
-import { tag, provide, type LayeredTag } from '../../advanced/tag.js';
-import { SuiTag } from '../sui.js';
-import { publishMove } from '../package/internal.js';
+import { provide, type LayeredTag } from '../../advanced/tag.js';
+import { publishMove, type Package } from '../package/internal.js';
+import { onChainArtifact } from '../../engine/on-chain-artifact.js';
 import { moveTypeEquals, pickCreatedByType } from '../../engine/sui-helpers.js';
 import { publishPackage, publishPythState, type PythStateRecord } from '../../engine/registries.js';
-import { StateStore } from '../../engine/state-store.js';
-import { StateStoreKeys } from '../../engine/state-store-keys.js';
-import { stringifyCause } from '../../engine/stringify-cause.js';
 import { PythError } from '../../engine/errors.js';
 import { PythTag, type PythPriceInfo, type Pyth } from './tag.js';
 import type { Account } from '../../engine/shared.js';
@@ -28,24 +27,14 @@ import {
 	type PythPriceInfoSpec,
 } from './shared.js';
 
-// State-store key prefix for pyth-package moved to
-// `engine/state-store-keys.ts`. Canonical builder:
+// State-store key prefix for pyth-package. Canonical builder is
 // `StateStoreKeys.pythPackage({chainId, packageId, feedsHash})`. The
-// prefix is also re-exported below as `STATE_KEY_PYTH_PREFIX_INTERNAL`
-// for the pyth tests that lock the on-disk shape.
+// prefix is re-exported below as `STATE_KEY_PYTH_PREFIX_INTERNAL` for the
+// pyth tests that lock the on-disk shape. With `onChainArtifact` the
+// actual cache key is `pyth/package/<chainId>/<contentHash(inputs)>` —
+// the namespace stays `'pyth/package'` (bare, no version segment) per
+// the §8.5 cache-shape rules in the redesign doc.
 const STATE_KEY_PYTH_PREFIX = 'pyth/package';
-
-interface CachedPythPriceInfo {
-	readonly feedId: PythPriceFeedId;
-	readonly priceInfoObjectId: string;
-	readonly label: string;
-}
-interface CachedPyth {
-	readonly packageId: string;
-	readonly pythStateId: string | undefined;
-	readonly wormholeStateId: string | undefined;
-	readonly priceInfos: ReadonlyArray<CachedPythPriceInfo>;
-}
 
 const PYTH_STATE_TYPE_SUFFIX = '::state::State';
 const WORMHOLE_STATE_TYPE_SUFFIX = '::wormhole_state::WormholeState';
@@ -65,6 +54,12 @@ const hashFeedSpecs = (specs: ReadonlyArray<PythLocalDeployFeedSpec>): string =>
 		}));
 	return crypto.createHash('sha256').update(JSON.stringify(canonical)).digest('hex').slice(0, 16);
 };
+
+interface CachedPythPriceInfo {
+	readonly feedId: PythPriceFeedId;
+	readonly priceInfoObjectId: string;
+	readonly label: string;
+}
 
 export interface PythLocalDeployFeedSpec {
 	/** Friendly label like `'SUI'`, `'DEEP'`. Used as a registry key
@@ -89,6 +84,11 @@ export interface PythLocalDeployOptions<Name extends string> {
 }
 
 const CLOCK_OBJECT_ID = '0x6';
+
+type CapturedPyth = {
+	readonly pythStateId: string | undefined;
+	readonly wormholeStateId: string | undefined;
+};
 
 export const pythLocalDeploy = <const Name extends string = 'pyth'>(
 	opts: PythLocalDeployOptions<Name>,
@@ -120,110 +120,125 @@ export const pythLocalDeploy = <const Name extends string = 'pyth'>(
 					})
 				: undefined;
 
-	const publish =
+	const publish: LayeredTag<any, Package<CapturedPyth>, any, any> | undefined =
 		publishPath !== undefined
-			? publishMove({
+			? (publishMove({
 					name: `${name}.publish` as const,
 					path: publishPath,
 					signer: opts.signer,
-					capture: (changes) => {
+					capture: (changes): CapturedPyth => {
 						const pythStateId = pickCreatedByType(changes, { suffix: PYTH_STATE_TYPE_SUFFIX });
 						const wormholeStateId = pickCreatedByType(changes, {
 							suffix: WORMHOLE_STATE_TYPE_SUFFIX,
 						});
 						return { pythStateId, wormholeStateId };
 					},
-				})
+				}) as LayeredTag<any, Package<CapturedPyth>, any, any>)
 			: undefined;
 
-	const composite = tag(
+	// dependsOn is folded into the upstream record under stable aliases.
+	// The substrate auto-flattens `upstream` into the resulting tag's
+	// `__upstreamKeys` so the topo scheduler orders dependencies before
+	// this primitive — declaring them all up here in one record is the
+	// single source of truth (per the redesign's §3.1 "the dep
+	// declaration IS the dep graph").
+	const dependsOnRecord: Record<string, LayeredTag<any, any, any, any>> = {};
+	(opts.dependsOn ?? []).forEach((dep, i) => {
+		dependsOnRecord[`dependsOn_${i}`] = dep;
+	});
+
+	const composite = onChainArtifact({
 		name,
-		Effect.gen(function* () {
-			for (const dep of opts.dependsOn ?? []) {
-				yield* dep;
-			}
-			const sui = yield* SuiTag;
-			const signer = yield* opts.signer;
-			const state = yield* StateStore;
+		kind: 'service' as const,
+		plugin: 'pyth',
+		displayTitle: `pyth.${name}`,
+		display: (s: Pyth) => ({
+			title: `pyth.${name}`,
+			primary: s.packageId,
+			extras: [`${s.priceInfos.length} feed${s.priceInfos.length === 1 ? '' : 's'}`],
+		}),
 
-			if (publish === undefined) {
-				return yield* Effect.fail(
-					new PythError({
-						phase: 'publish',
-						message:
-							`pythLocalDeploy(${name}): either \`movePackagePath\` or \`vendor\` ` +
-							`is required to publish the Pyth Move package.`,
-					}),
-				);
-			}
+		// `signer` + the publishMove sibling are real upstreams. `vendor`
+		// is included whenever set so the topo scheduler orders the vendor
+		// gitFetch before publishMove's `path:` Effect resolves it.
+		// `dependsOn` entries flatten in under generated aliases.
+		upstream: {
+			signer: opts.signer,
+			publish,
+			...(opts.vendor !== undefined ? { vendor: opts.vendor } : {}),
+			...dependsOnRecord,
+		},
 
-			const pkg = yield* Effect.gen(function* () {
-				return yield* publish;
-			}).pipe(Effect.withSpan('PythPublish'));
+		namespace: STATE_KEY_PYTH_PREFIX,
+		label: `pythLocalDeploy(${name})`,
 
-			const packageId = pkg.packageId;
-			const pythStateId = pkg.captured?.pythStateId as string | undefined;
-			const wormholeStateId = pkg.captured?.wormholeStateId as string | undefined;
-
-			const feedsHash = hashFeedSpecs(opts.feeds);
-			const cacheKey = StateStoreKeys.pythPackage({
-				chainId: sui.chainId,
-				packageId,
-				feedsHash,
-			});
-			const cached = yield* state.get<CachedPyth>(cacheKey);
-
-			const verifyOnChain = (
-				candidate: string,
-				expectedType: string,
-			): Effect.Effect<boolean, never> =>
-				Effect.tryPromise({
-					try: () => sui.client.core.getObject({ objectId: candidate }),
-					catch: (cause) => cause,
-				}).pipe(
-					Effect.map((res) => {
-						const t = (res as unknown as { objectType?: unknown }).objectType;
-						return typeof t === 'string' && t === expectedType;
-					}),
-					Effect.orElseSucceed(() => false),
-				);
-
-			let priceInfos: Array<PythPriceInfo> = [];
-			let resumed = false;
-			if (Option.isSome(cached)) {
-				const expectedType = `${packageId}${PRICE_INFO_OBJECT_TYPE_SUFFIX}`;
-				let allValid = true;
-				for (const p of cached.value.priceInfos) {
-					const ok = yield* verifyOnChain(p.priceInfoObjectId, expectedType);
-					if (!ok) {
-						allValid = false;
-						break;
-					}
-				}
-				if (allValid) {
-					yield* Effect.logInfo(
-						`pythLocalDeploy(${name}): cache hit — chainId=${sui.chainId} packageId=${packageId} (${cached.value.priceInfos.length} feeds)`,
+		// Canonical hashable inputs. Folds packageId (from the resolved
+		// publish) + the feedSpecs hash, so a re-publish or a different
+		// requested feed set invalidates the cache.
+		//
+		// `publish === undefined` (no `movePackagePath` AND no `vendor`)
+		// surfaces here as a clean PythError — the factory body itself
+		// must construct successfully (per the existing
+		// "delegated to runtime" test contract) but the build fails at
+		// acquire time.
+		inputs: ({ publish: pkg }) =>
+			Effect.gen(function* () {
+				if (pkg === undefined) {
+					return yield* Effect.fail(
+						new PythError({
+							phase: 'publish',
+							message:
+								`pythLocalDeploy(${name}): either \`movePackagePath\` or \`vendor\` ` +
+								`is required to publish the Pyth Move package.`,
+						}),
 					);
-					yield* Effect.annotateCurrentSpan({
-						'pyth.cache': 'hit',
-						'pyth.feedCount': cached.value.priceInfos.length,
-					});
-					priceInfos = cached.value.priceInfos.map((p) => ({
-						label: p.label,
-						feedId: p.feedId,
-						priceInfoObjectId: p.priceInfoObjectId,
-					}));
-					resumed = true;
-				} else {
-					yield* Effect.logInfo(
-						`pythLocalDeploy(${name}): cache hit but PriceInfoObjects missing/wrong-type on chain — invalidating`,
-					);
-					yield* Effect.annotateCurrentSpan({ 'pyth.cache': 'stale' });
-					yield* state.remove(cacheKey).pipe(Effect.ignore);
 				}
-			}
+				return {
+					packageId: pkg.packageId,
+					feedsHash: hashFeedSpecs(opts.feeds),
+				};
+			}),
 
-			if (!resumed) {
+		// §4.2 verify probe: every cached PriceInfoObject id must still
+		// resolve on chain AND its `type` must match
+		// `<packageId>::price_info::PriceInfoObject`. `ChainProbe` does the
+		// schema-validated read; a transient RPC failure surfaces as
+		// `undefined` for that object (and the cache invalidates). Per
+		// RS2 we probe STABLE identifiers — the priceInfoObjectIds came
+		// straight from the produce body's objectChanges.
+		verify: ({ cached, chain }) =>
+			Effect.gen(function* () {
+				const expectedType = `${cached.packageId}${PRICE_INFO_OBJECT_TYPE_SUFFIX}`;
+				const ok = yield* chain.objectsMatchTypes(
+					cached.priceInfos.map((p) => ({
+						objectId: p.priceInfoObjectId,
+						expectedType,
+					})),
+					moveTypeEquals,
+				);
+				return ok ? cached : undefined;
+			}),
+
+		// Fresh-create body — runs only on cache miss / verify-fail.
+		// Resolves the publish package (guaranteed non-undefined here:
+		// `inputs` already failed for the no-publish case before the cache
+		// look-up), then builds one batched `create_price_feeds` tx.
+		produce: ({ publish: pkg, signer }) =>
+			Effect.gen(function* () {
+				if (pkg === undefined) {
+					// Unreachable in practice — `inputs` fails first. Kept
+					// for type narrowing.
+					return yield* Effect.fail(
+						new PythError({
+							phase: 'publish',
+							message: `pythLocalDeploy(${name}): publish is required`,
+						}),
+					);
+				}
+				const packageId = pkg.packageId;
+				const pythStateId = pkg.captured?.pythStateId;
+				const wormholeStateId = pkg.captured?.wormholeStateId;
+
 				if (pythStateId === undefined) {
 					return yield* Effect.fail(
 						new PythError({
@@ -235,7 +250,7 @@ export const pythLocalDeploy = <const Name extends string = 'pyth'>(
 						}),
 					);
 				}
-				yield* Effect.annotateCurrentSpan({ 'pyth.cache': 'miss' });
+
 				const t = new Transaction();
 				t.setGasBudget(500_000_000n);
 				for (const feed of opts.feeds) {
@@ -276,13 +291,20 @@ export const pythLocalDeploy = <const Name extends string = 'pyth'>(
 						}),
 					);
 				}
-				priceInfos = opts.feeds.map((feed, i) => ({
+				const priceInfos: ReadonlyArray<CachedPythPriceInfo> = opts.feeds.map((feed, i) => ({
 					label: feed.label,
 					feedId: feed.feedId,
 					priceInfoObjectId: createdIds[i]!,
 				}));
 
-				const toCache: CachedPyth = {
+				// Returned shape is `Pyth`-typed so the resulting LayeredTag's
+				// resolved value satisfies the `Pyth` interface (PythPusher /
+				// pythMid consumers `yield* opts.pyth` and read
+				// `findPriceInfo`). The lookup methods are reattached in
+				// `register` — on a cache miss they ride along here too, on
+				// a cache hit they're attached after `state.get` rehydrates
+				// the JSON-serializable subset.
+				const fresh: Pyth = {
 					packageId,
 					pythStateId,
 					wormholeStateId,
@@ -291,91 +313,99 @@ export const pythLocalDeploy = <const Name extends string = 'pyth'>(
 						feedId: p.feedId,
 						priceInfoObjectId: p.priceInfoObjectId,
 					})),
+					findPriceInfo: (feed) => priceInfos.find((p) => p.feedId === feed),
+					findPriceInfoByLabel: (label) => priceInfos.find((p) => p.label === label),
 				};
-				yield* state.put(cacheKey, toCache);
-			}
-
-			yield* publishPackage({
-				name,
-				packageId,
-				upgradeCapId: pkg.upgradeCapId,
-				captured: { pythStateId, wormholeStateId },
-			});
-
-			const priceInfoObjectIds: Record<string, string> = {};
-			const feedsByLabel: Record<string, PythPriceFeedId> = {};
-			for (const p of priceInfos) {
-				priceInfoObjectIds[p.feedId] = p.priceInfoObjectId;
-				feedsByLabel[p.label] = p.feedId;
-			}
-			yield* publishPythState({
-				name,
-				packageId,
-				...(pythStateId !== undefined ? { pythStateId } : {}),
-				...(wormholeStateId !== undefined ? { wormholeStateId } : {}),
-				priceInfoObjectIds,
-				feeds: feedsByLabel,
-			} satisfies PythStateRecord);
-
-			const findPriceInfo = (feed: PythPriceFeedId): PythPriceInfo | undefined => {
-				return priceInfos.find((p) => p.feedId === feed);
-			};
-
-			const findPriceInfoByLabel = (label: string): PythPriceInfo | undefined => {
-				return priceInfos.find((p) => p.label === label);
-			};
-
-			return {
-				packageId,
-				pythStateId,
-				wormholeStateId,
-				priceInfos,
-				findPriceInfo,
-				findPriceInfoByLabel,
-			} satisfies Pyth;
-		}).pipe(
-			Effect.withSpan(`PythLocalDeploy(${name})`),
-			Effect.catchTag('PythError', Effect.fail),
-			Effect.catch((cause: unknown) =>
-				Effect.fail(
-					new PythError({
-						phase: 'pyth',
-						message: `pythLocalDeploy(${name}): ${stringifyCause(cause)}`,
-						cause,
-					}),
-				),
-			),
-		),
-		{
-			...(publish !== undefined ? { extraLayers: [publish.__layer] } : {}),
-			kind: 'service' as const,
-			plugin: 'pyth',
-			displayTitle: `pyth.${name}`,
-			display: (s: Pyth) => ({
-				title: `pyth.${name}`,
-				primary: s.packageId,
-				extras: [`${s.priceInfos.length} feed${s.priceInfos.length === 1 ? '' : 's'}`],
+				return fresh;
 			}),
-			// Yields SuiTag, the signer Account ref, the publishMove tag,
-			// and iterates `dependsOn`. Lift them all into upstreams.
-			// When
-			// `opts.vendor` is set, the publishMove `path:` Effect yields
-			// the vendor tag too — lift it so the topo scheduler orders
-			// the vendor build before the publish runs.
-			upstreamKeys: [
-				SuiTag.key,
-				opts.signer,
-				...(publish !== undefined ? [publish] : []),
-				...(opts.vendor !== undefined ? [opts.vendor] : []),
-				...(opts.dependsOn ?? []),
-			],
-		},
-	);
 
+		// `register` runs on EVERY cycle (hit AND miss) AFTER the value
+		// resolves but BEFORE downstream consumers see it. Two roles:
+		//
+		//   1. Re-attach `findPriceInfo` / `findPriceInfoByLabel` methods
+		//      onto `value`. The cached payload (`CachedPyth`) is plain
+		//      data so it can JSON-roundtrip cleanly; the consumer-facing
+		//      `Pyth` shape carries lookup methods. We mutate in place
+		//      because the substrate returns `value` after `register`
+		//      runs (per `onChainArtifact`'s contract), so this is the
+		//      single point where the cache-hit and cache-miss paths
+		//      converge on the same observable shape — matches
+		//      `publishMove`'s host-local-field-mutation pattern.
+		//   2. Re-publish the package to PackageRegistry + per-feed
+		//      PriceInfoObjects to PythStateRegistry, so resume + cold
+		//      start are observably identical from the consumer side
+		//      (registries live in-memory per supervisor cycle).
+		register: ({ value }) =>
+			Effect.gen(function* () {
+				const findPriceInfo = (feed: PythPriceFeedId): PythPriceInfo | undefined =>
+					value.priceInfos.find((p) => p.feedId === feed);
+				const findPriceInfoByLabel = (label: string): PythPriceInfo | undefined =>
+					value.priceInfos.find((p) => p.label === label);
+				(value as unknown as { findPriceInfo: typeof findPriceInfo }).findPriceInfo =
+					findPriceInfo;
+				(
+					value as unknown as { findPriceInfoByLabel: typeof findPriceInfoByLabel }
+				).findPriceInfoByLabel = findPriceInfoByLabel;
+
+				const priceInfoObjectIds: Record<string, string> = {};
+				const feedsByLabel: Record<string, PythPriceFeedId> = {};
+				for (const p of value.priceInfos) {
+					priceInfoObjectIds[p.feedId] = p.priceInfoObjectId;
+					feedsByLabel[p.label] = p.feedId;
+				}
+				// The publishMove sibling already published itself to the
+				// PackageRegistry during its own `register` step — we
+				// re-publish here under the pyth name so a status query
+				// targeting `name` (the friendly name in the user's stack
+				// file) resolves to the same packageId. We don't carry
+				// `upgradeCapId` in our cache payload — the publishMove
+				// sibling's own publishPackage already carries it under
+				// `${name}.publish` for that exact use case.
+				yield* publishPackage({
+					name,
+					packageId: value.packageId,
+					upgradeCapId: undefined,
+					captured: {
+						pythStateId: value.pythStateId,
+						wormholeStateId: value.wormholeStateId,
+					},
+				});
+				yield* publishPythState({
+					name,
+					packageId: value.packageId,
+					...(value.pythStateId !== undefined ? { pythStateId: value.pythStateId } : {}),
+					...(value.wormholeStateId !== undefined
+						? { wormholeStateId: value.wormholeStateId }
+						: {}),
+					priceInfoObjectIds,
+					feeds: feedsByLabel,
+				} satisfies PythStateRecord);
+			}),
+	});
+
+	// Surface a `PythTag` projection over the per-name composite so
+	// downstream services (PythPusher, deepbookMargin) can `yield* PythTag`
+	// instead of having to know the per-name tag identity.
 	const tagLayer = provide(
 		PythTag,
 		Effect.gen(function* () {
-			return yield* composite;
+			const out = yield* composite;
+			const findPriceInfo = (feed: PythPriceFeedId): PythPriceInfo | undefined =>
+				out.priceInfos.find((p) => p.feedId === feed);
+			const findPriceInfoByLabel = (label: string): PythPriceInfo | undefined =>
+				out.priceInfos.find((p) => p.label === label);
+			return {
+				packageId: out.packageId,
+				pythStateId: out.pythStateId,
+				wormholeStateId: out.wormholeStateId,
+				priceInfos: out.priceInfos.map((p) => ({
+					label: p.label,
+					feedId: p.feedId,
+					priceInfoObjectId: p.priceInfoObjectId,
+				})),
+				findPriceInfo,
+				findPriceInfoByLabel,
+			} satisfies Pyth;
 		}),
 	).__layer;
 

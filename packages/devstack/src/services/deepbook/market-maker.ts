@@ -2,6 +2,18 @@
 // Composes against `DeepbookCoreTag` regardless of which factory provided
 // it (local-deploy or known-package), then forks a refresh loop into
 // the surrounding scope.
+//
+// Phase C migration: the per-pool BalanceManager verify probe routes
+// through `ChainProbe.getObject` — Schema-validated SDK response shape
+// — and checks BOTH existence AND owner-matches-signer (bug B3, where
+// a snapshot/wipe could leave the cache pointing at a BM the chain no
+// longer recognised but the existence-only check still passed).
+// `onChainArtifact` itself isn't a natural fit for the maker as a
+// whole: the outer service is a long-running fiber (not a one-shot
+// artifact), and the per-pool BM-mint tx is batched together with the
+// place tx in the existing `newlyCreated` flow so the maker stays
+// single-tx-per-tick in steady state. The verify-probe upgrade alone
+// closes B3 without architectural overhaul.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -11,6 +23,7 @@ import { tag, type LayeredTag } from '../../advanced/tag.js';
 import { SuiTag } from '../sui.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
 import { StateStore } from '../../engine/state-store.js';
+import { ChainProbe } from '../../engine/chain-probe.js';
 import { moveTypeEquals } from '../../engine/sui-helpers.js';
 import { DeepbookError } from '../../engine/errors.js';
 import { DeepbookCoreTag, type DeepbookPoolRef } from '../deepbook.js';
@@ -172,14 +185,19 @@ export const deepbookMarketMaker = <const Name extends string>(
 
 			const cacheKeyFor = (poolName: string): string => `${baseKey}/${poolName}`;
 
+			// Verify-probe (Phase C, B3 fix). Pre-Phase-C used a raw
+			// `client.core.getObject` Promise and only checked existence —
+			// a snapshot/wipe could leave the cache pointing at an object
+			// the chain no longer recognised but a returned `{type:
+			// undefined}` shape (or a different object on the same id
+			// path) would silently pass. The typed `ChainProbe.getObject`
+			// returns a Schema-validated `{type, owner, version}` shape,
+			// and we additionally require `owner.address === signer.address`.
+			const probe = yield* ChainProbe;
 			const verifyOnChain = (candidate: string): Effect.Effect<boolean, never> =>
-				Effect.tryPromise({
-					try: () => sui.client.core.getObject({ objectId: candidate }),
-					catch: (cause) => cause,
-				}).pipe(
-					Effect.as(true),
-					Effect.orElseSucceed(() => false),
-				);
+				probe
+					.getObject(candidate)
+					.pipe(Effect.map((info) => info !== undefined && info.owner.address === signer.address));
 
 			// Pre-load any cached ids, one per pool name. Mutates
 			// `balanceManagerIds` so the tick loop's "creating?" check fires

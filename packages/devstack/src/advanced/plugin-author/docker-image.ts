@@ -3,7 +3,7 @@ import { Effect, FileSystem } from 'effect';
 import { contentHash, createContentHasher, digestHex } from '../../engine/content-hash.js';
 import * as Docker from '../../engine/docker.js';
 import { DockerError } from '../../engine/errors.js';
-import { tag } from '../tag.js';
+import { setPhase, tag } from '../tag.js';
 
 export interface DockerImage {
 	readonly tag: string;
@@ -79,6 +79,13 @@ export const dockerImage = <const Name extends string>(options: DockerImageOptio
 			});
 
 			if (options.pull !== undefined) {
+				// Coarse phase narration — fires within milliseconds of the
+				// pull starting so the plain renderer's `acquiring(phase)`
+				// row reflects what's actually happening (a long docker
+				// pull) before the per-layer streaming parser inside
+				// `Docker.pull` starts emitting `pulling N/M layers`. See
+				// `notes/long-acquire-progress.md §3.2A`.
+				yield* setPhase(`pulling ${options.pull}`);
 				const { digest } = yield* Docker.pull(options.pull).pipe(
 					Effect.catchTag('DockerError', (cause) =>
 						Effect.fail(
@@ -129,6 +136,10 @@ export const dockerImage = <const Name extends string>(options: DockerImageOptio
 					return { tag, digest: cached.digest } satisfies DockerImage;
 				}
 
+				// Coarse phase narration — only on a cache miss; if the tag
+				// short-circuited above there's no work to narrate. See
+				// `notes/long-acquire-progress.md §3.2A`.
+				yield* setPhase(`building ${options.name}`);
 				const buildOpts: Docker.DockerBuildOptions = {
 					context: options.build.context,
 					tag,

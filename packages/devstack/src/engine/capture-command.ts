@@ -22,6 +22,10 @@
 //   - `captureCommandOrFail` is the "or-fail-on-non-zero-exit" variant
 //     used by docker's `runCapturingOrFail` and equivalent — the
 //     non-zero-exit case becomes a CaptureError with `exitCode` set.
+//   - `captureCommandStreaming` is the sibling variant added by
+//     `notes/long-acquire-progress.md §3.2B` — same drain shape but the
+//     caller observes stdout one line at a time via `onStdoutLine` as
+//     it arrives. Motivated by `docker pull`'s layer-progress lines.
 
 import { Effect, Schema, Stream } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
@@ -101,6 +105,26 @@ export interface CaptureOptions {
 	readonly stdoutTruncate?: number;
 }
 
+/**
+ * Options for `captureCommandStreaming`. Extends `CaptureOptions` with the
+ * per-line callback the streaming variant exists to provide.
+ */
+export interface CaptureStreamingOptions extends CaptureOptions {
+	/**
+	 * Invoked once per stdout line as the child emits output, with the
+	 * line stripped of its trailing newline. Buffered across chunk
+	 * boundaries by `Stream.splitLines`, so a `\n` split across two
+	 * byte chunks isn't double-counted. Errors inside the callback are
+	 * caught and ignored — narration must never abort the capture path.
+	 *
+	 * The full stdout is still captured into `CaptureResult.stdout` (the
+	 * callback observes; it does not replace the captured-stdout buffer)
+	 * so downstream error envelopes keep the same shape as the
+	 * non-streaming variant.
+	 */
+	readonly onStdoutLine: (line: string) => Effect.Effect<void>;
+}
+
 // -----------------------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------------------
@@ -169,6 +193,110 @@ export const captureCommand = (
 			};
 		}),
 	);
+};
+
+// -----------------------------------------------------------------------------
+// captureCommandStreaming
+// -----------------------------------------------------------------------------
+
+/**
+ * Streaming sibling of `captureCommand`. Same drain + exit-code shape,
+ * but the caller observes stdout one line at a time as it arrives via
+ * `opts.onStdoutLine`. The captured-stdout string is still folded back
+ * into `CaptureResult.stdout` so the error envelope downstream wrappers
+ * build looks identical to the non-streaming path.
+ *
+ * Use this for subprocesses whose long-running output carries progress
+ * the operator wants to see while the process runs — `docker pull` layer
+ * tickers are the motivating case. For one-shot captures where you only
+ * care about the final stdout, prefer `captureCommand`.
+ *
+ * Implementation notes:
+ *   - The line stream uses `Stream.splitLines` so a `\n` split across
+ *     byte chunks doesn't fire the callback twice with truncated halves.
+ *   - The callback runs through `Effect.ignore` — if narration fails
+ *     (e.g. the engine handle isn't bound in a unit-test), the capture
+ *     still completes. The whole point of the streaming variant is the
+ *     callback observes; it must not be load-bearing.
+ *   - Stderr drains via the same whole-string path as `captureCommand`;
+ *     no use case has surfaced for streaming stderr lines and folding it
+ *     in would double this surface for no current consumer.
+ */
+export const captureCommandStreaming = (
+	spawner: SpawnerService,
+	cmd: ChildProcess.Command,
+	opts: CaptureStreamingOptions,
+): Effect.Effect<CaptureResult, CaptureError> => {
+	const op = opOf(cmd, opts.op);
+	const stderrLimit = opts.stderrTruncate ?? DEFAULT_STDERR_TRUNC;
+	const stdoutLimit = opts.stdoutTruncate ?? Infinity;
+	const onStdoutLine = opts.onStdoutLine;
+	const mapSpawn = (cause: unknown): CaptureError =>
+		new CaptureError({ op, stdout: '', stderr: '', cause });
+	return Effect.scoped(
+		Effect.gen(function* () {
+			const handle = yield* spawner.spawn(cmd).pipe(Effect.mapError(mapSpawn));
+			const stdoutLines = handle.stdout.pipe(
+				Stream.decodeText(),
+				Stream.splitLines,
+				Stream.tap((line) => onStdoutLine(line).pipe(Effect.ignore)),
+			);
+			// `Stream.runFold` rebuilds the full stdout text by joining the
+			// per-line tail with `\n`. We deliberately do not append a
+			// trailing newline — the captured string mirrors what the
+			// existing `decodeStream(Stream.mkString)` path produces when
+			// the child's last write happens to omit one. Callers that
+			// need the trailing newline reliably are already using
+			// `captureCommand` (the non-streaming path).
+			const foldStdout = Stream.runFold(
+				stdoutLines,
+				() => '',
+				(acc, line) => (acc.length === 0 ? line : `${acc}\n${line}`),
+			);
+			const [stdoutText, stderrText, code] = yield* Effect.all(
+				[
+					foldStdout.pipe(Effect.mapError(mapSpawn)),
+					decodeStream(handle.stderr).pipe(Effect.mapError(mapSpawn)),
+					handle.exitCode.pipe(Effect.mapError(mapSpawn)),
+				],
+				{ concurrency: 'unbounded' },
+			);
+			return {
+				exitCode: code as number,
+				stdout: truncateTo(stdoutText, stdoutLimit),
+				stderr: truncateTo(stderrText, stderrLimit),
+			};
+		}),
+	);
+};
+
+/**
+ * `captureCommandStreaming` variant that promotes a non-zero exit into a
+ * `CaptureError`, mirroring `captureCommandOrFail`. Used by wrappers that
+ * want both incremental narration AND the "non-zero exit is fatal"
+ * shape (e.g. `docker pull` — must observe layer progress, must fail
+ * loudly on a daemon-side error).
+ */
+export const captureCommandStreamingOrFail = (
+	spawner: SpawnerService,
+	cmd: ChildProcess.Command,
+	opts: CaptureStreamingOptions,
+): Effect.Effect<CaptureResult, CaptureError> => {
+	const op = opOf(cmd, opts.op);
+	return Effect.gen(function* () {
+		const result = yield* captureCommandStreaming(spawner, cmd, opts);
+		if (result.exitCode !== 0) {
+			return yield* Effect.fail(
+				new CaptureError({
+					op,
+					exitCode: result.exitCode,
+					stdout: result.stdout,
+					stderr: result.stderr,
+				}),
+			);
+		}
+		return result;
+	});
 };
 
 /**

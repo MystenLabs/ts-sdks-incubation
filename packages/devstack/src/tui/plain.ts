@@ -23,6 +23,14 @@
 //
 // stderr writes go through Effect's `Stdio` service so tests can swap in
 // a fake sink via `Stdio.layerTest({ stderr: ... })`.
+//
+// On top of the diff pass: a per-tag heartbeat. Any tag that stays in
+// `acquiring` for ≥ HEARTBEAT_INTERVAL_MS without further status/phase
+// changes gets a "still acquiring [Ns]" line every interval thereafter.
+// This is the universal floor that surfaces silent long-runs (e.g.
+// `docker pull` against a fresh cache where the wrapping primitive emits
+// no `setPhase` updates of its own). See
+// `packages/devstack/notes/long-acquire-progress.md` §3.1.
 
 import { Effect, Schedule, Stdio, Stream } from 'effect';
 import type { TagStatus, TuiEntry, TuiLog, TuiState } from '../engine/tui-state.js';
@@ -83,8 +91,120 @@ const formatLogLine = (entry: TuiLog): string => {
 	return `[${formatTime(entry.ts)}] ${entry.level.toUpperCase()} ${entry.message}`;
 };
 
+// Heartbeat cadence for the "still acquiring" line. Tags stuck in
+// `acquiring` for ≥ HEARTBEAT_INTERVAL_MS get a line every
+// HEARTBEAT_INTERVAL_MS thereafter so the operator has a visible signal
+// that progress is being made (or at least that the supervisor is alive)
+// even when the underlying primitive emits no `setPhase` updates.
+//
+// 15s matches the "look something is happening every few tens of seconds"
+// intuition called out in `notes/long-acquire-progress.md` §6. Not
+// configurable yet — defer to a follow-up if CI vs interactive use
+// diverges.
+/** @internal — exported only so `plain.test.ts` can assert against it. */
+export const HEARTBEAT_INTERVAL_MS = 15_000;
+
+/**
+ * Per-tag heartbeat bookkeeping. One entry per tag currently in
+ * `acquiring`. Cleared on transition out so re-acquires (after a hot
+ * restart) start a fresh clock.
+ *
+ * @internal — exported only for `plain.test.ts`.
+ */
+export interface HeartbeatEntry {
+	readonly startedAt: number;
+	/** Next scheduled emit time. Bumped by exactly
+	 * `HEARTBEAT_INTERVAL_MS` after each emit so a late tick catches up
+	 * by one heartbeat, not many. */
+	nextEmitAt: number;
+}
+
+/** @internal — exported only for `plain.test.ts`. */
+export type HeartbeatState = Map<string, HeartbeatEntry>;
+
+const formatHeartbeatLine = (
+	now: number,
+	key: string,
+	entry: TuiEntry,
+	startedAt: number,
+): string => {
+	const seconds = Math.floor((now - startedAt) / 1000);
+	const phaseTail = entry.phase !== undefined ? ` (phase=${entry.phase})` : '';
+	return `[${formatTime(now)}] ${pad(key, 28)} [${seconds}s] still acquiring${phaseTail}`;
+};
+
+interface HeartbeatResult {
+	readonly lines: ReadonlyArray<string>;
+}
+
+/**
+ * Update heartbeat state against a new TuiState snapshot and emit any
+ * lines due this tick.
+ *
+ * Caller passes:
+ *   - `state` — the heartbeat map; mutated in place (entries added on
+ *     first sighting in `acquiring`, removed on transition out).
+ *   - `next` — the latest snapshot.
+ *   - `now` — current time.
+ *   - `suppressed` — keys that emitted a status/phase transition line
+ *     this tick; we skip their heartbeat to avoid double-emission.
+ *
+ * Returns the heartbeat lines (zero or more, ordered by entry index).
+ *
+ * Pure-modulo-Map-mutation: deterministic given inputs + initial state.
+ * Tested directly in `plain.test.ts`.
+ *
+ * @internal — exported only for `plain.test.ts`.
+ */
+export const computeHeartbeats = (
+	state: HeartbeatState,
+	next: TuiState,
+	now: number,
+	suppressed: ReadonlySet<string>,
+): HeartbeatResult => {
+	const lines: Array<string> = [];
+	const liveKeys = new Set<string>();
+
+	for (const entry of next.entries) {
+		if (entry.status !== 'acquiring') continue;
+		liveKeys.add(entry.key);
+
+		let hb = state.get(entry.key);
+		if (hb === undefined) {
+			// First sighting in `acquiring`. Anchor the clock at `now`.
+			hb = { startedAt: now, nextEmitAt: now + HEARTBEAT_INTERVAL_MS };
+			state.set(entry.key, hb);
+			continue;
+		}
+
+		// Skip if a transition line already covered this key this tick —
+		// the diff pass already told the operator something happened, no
+		// need to also say "still acquiring".
+		if (suppressed.has(entry.key)) continue;
+
+		if (now >= hb.nextEmitAt) {
+			lines.push(formatHeartbeatLine(now, entry.key, entry, hb.startedAt));
+			// Bump by exactly one interval — a tick that fires N intervals
+			// late still emits exactly one line so we don't dump a backlog
+			// after a stop-the-world GC pause.
+			hb.nextEmitAt += HEARTBEAT_INTERVAL_MS;
+		}
+	}
+
+	// Drop bookkeeping for tags no longer in `acquiring` (transitioned to
+	// ready / failed / stopping / stopped, or removed from the stack).
+	for (const key of state.keys()) {
+		if (!liveKeys.has(key)) state.delete(key);
+	}
+
+	return { lines };
+};
+
 interface DiffResult {
 	readonly lines: ReadonlyArray<string>;
+	/** Keys whose status or phase changed this tick — passed to the
+	 * heartbeat pass so it can suppress duplicates. */
+	readonly transitioned: ReadonlySet<string>;
 }
 
 const indexByKey = (xs: ReadonlyArray<TuiEntry>): ReadonlyMap<string, TuiEntry> => {
@@ -95,6 +215,7 @@ const indexByKey = (xs: ReadonlyArray<TuiEntry>): ReadonlyMap<string, TuiEntry> 
 
 const diffState = (prev: TuiState | undefined, next: TuiState, now: number): DiffResult => {
 	const lines: Array<string> = [];
+	const transitioned = new Set<string>();
 
 	const prevEntries = indexByKey(prev?.entries ?? []);
 	for (const entry of next.entries) {
@@ -104,6 +225,7 @@ const diffState = (prev: TuiState | undefined, next: TuiState, now: number): Dif
 			// otherwise wait for the actual transition.
 			if (entry.status !== 'pending') {
 				lines.push(formatEntryLine(now, entry.key, 'init', entry.status, entry));
+				transitioned.add(entry.key);
 			}
 			continue;
 		}
@@ -111,6 +233,7 @@ const diffState = (prev: TuiState | undefined, next: TuiState, now: number): Dif
 		// long-running primitives can surface sub-phase progress.
 		if (before.status !== entry.status || before.phase !== entry.phase) {
 			lines.push(formatEntryLine(now, entry.key, before.status, entry.status, entry));
+			transitioned.add(entry.key);
 		}
 	}
 
@@ -123,7 +246,7 @@ const diffState = (prev: TuiState | undefined, next: TuiState, now: number): Dif
 		}
 	}
 
-	return { lines };
+	return { lines, transitioned };
 };
 
 /**
@@ -146,10 +269,19 @@ export const startPlainRenderer = Effect.fn('PlainRenderer.start')(function* (
 	// fiber is on its way down).
 	let previous: TuiState | undefined;
 
+	// Per-tag heartbeat clocks. Same single-fiber rationale as `previous`.
+	// One timer-free sweep per tick: each tick we walk this map and emit
+	// any line whose `nextEmitAt` has passed. Avoids a second forked
+	// fiber and keeps the cadence pinned to the 500ms render tick.
+	const heartbeats: HeartbeatState = new Map();
+
 	const tick = source.pipe(
 		Effect.flatMap((state) => {
-			const { lines } = diffState(previous, state, Date.now());
+			const now = Date.now();
+			const { lines: diffLines, transitioned } = diffState(previous, state, now);
 			previous = state;
+			const { lines: hbLines } = computeHeartbeats(heartbeats, state, now, transitioned);
+			const lines = diffLines.length === 0 ? hbLines : [...diffLines, ...hbLines];
 			if (lines.length === 0) return Effect.void;
 			// Concatenated single-frame write — one Sink invocation per tick
 			// instead of one per line. Failures (e.g. EPIPE on a closed pipe)

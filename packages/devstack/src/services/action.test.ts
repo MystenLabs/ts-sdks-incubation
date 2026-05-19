@@ -1,20 +1,27 @@
-// Action(name, opts) — cache hit / miss / invalidation behavior.
+// Action(name, opts) — cache hit / miss / invalidation behavior under
+// the `onChainArtifact` substrate.
 //
-// The cache key folds `sui.chainId` + `signer.address` with the user-
-// supplied `cacheKey` (string or Effect form). On a hit the cached
-// TxResult is probed against the chain; if the probe says `'valid'` we
-// short-circuit and skip build + sign + execute. On miss we run the
-// build, sign, execute, and persist the result.
+// Phase C migration shifted Action onto the unified
+// publish-cache-verify-register shape:
 //
-// The `snapshot.docker.test.ts` integration verifies the hit-log appears
-// in stdout against a real localnet; this file unit-tests the branches
-// directly with mock Sui + an in-memory StateStore.
+//   - Namespace is bare `'action'` (Phase B contract); per-instance
+//     distinction comes from the hashed inputs (name + signer.address +
+//     needs[].key + optional `cacheKey`).
+//   - Cache key shape is `action/<chainId>/<inputsHash>` (the canonical
+//     `withCache` layout) — NOT the prior bespoke
+//     `tx/<name>/<chainId>/<address>/<userKey>` shape.
+//   - Verify probes `ChainProbe.getTransaction(cached.digest)` — if the
+//     digest no longer resolves the entry evicts and the action re-fires.
+//   - Every `Action(...)` is cached now (the previous "no cacheKey →
+//     always run" branch is gone). Tests that exercised the un-cached
+//     branch now assert the cache-hit behaviour instead.
 
 import { Effect, Layer, Option, Ref } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { Action } from './action.js';
 import { SuiTag, type Sui } from './sui.js';
+import { ChainProbe } from '../engine/chain-probe.js';
 import { StateStore, type StateStoreShape } from '../engine/state-store.js';
 import type { Account, SuiObjectChange, TxResult } from '../engine/shared.js';
 import { tag, type LayeredTag } from '../advanced/tag.js';
@@ -24,13 +31,12 @@ import { tag, type LayeredTag } from '../advanced/tag.js';
 // ---------------------------------------------------------------------------
 
 // In-memory StateStore. Captures every put/remove call so tests can assert
-// which side of the cache branch fired. The real impl serializes via
-// JSON+bigint, but the cache path only round-trips JSON-shaped TxResults
-// so a Map roundtrip is behaviorally identical.
+// which side of the cache branch fired.
 interface MockStateStore {
 	readonly layer: Layer.Layer<StateStore>;
 	readonly puts: Array<{ key: string; value: unknown }>;
 	readonly removes: Array<string>;
+	readonly gets: Array<string>;
 	readonly seed: (key: string, value: unknown) => void;
 }
 
@@ -38,13 +44,15 @@ const makeMockStateStore = (): MockStateStore => {
 	const data = new Map<string, unknown>();
 	const puts: Array<{ key: string; value: unknown }> = [];
 	const removes: Array<string> = [];
+	const gets: Array<string> = [];
 	const impl: StateStoreShape = {
 		get: <T = unknown>(key: string) =>
-			Effect.sync(() =>
-				data.has(key)
+			Effect.sync(() => {
+				gets.push(key);
+				return data.has(key)
 					? (Option.some(data.get(key) as T) as Option.Option<T>)
-					: (Option.none() as Option.Option<T>),
-			),
+					: (Option.none() as Option.Option<T>);
+			}),
 		put: <T>(key: string, value: T) =>
 			Effect.sync(() => {
 				puts.push({ key, value });
@@ -60,32 +68,37 @@ const makeMockStateStore = (): MockStateStore => {
 		layer: Layer.succeed(StateStore, impl),
 		puts,
 		removes,
+		gets,
 		seed: (k, v) => data.set(k, v),
 	};
 };
 
-// Mock Sui. `client.core.getObject` is the only client field
-// `probeCachedTx` touches; the rest is unused by the action surface.
-// `getObject` returns success → `'valid'`; throw with
-// `code: 'OBJECT_NOT_FOUND'` → `'object-missing'`; throw with anything
-// else → `'probe-error'`.
-const mockSuiLayer = (
-	opts: {
-		readonly chainId?: string;
-		readonly getObject?: () => Promise<unknown>;
-	} = {},
-): Layer.Layer<SuiTag> =>
+// Mock Sui. `client.core` is empty — the chain probe layer below decides
+// whether `getTransaction` resolves; the action surface only consults Sui
+// for `chainId`.
+const mockSuiLayer = (chainId: string = 'mock-chain-A'): Layer.Layer<SuiTag> =>
 	Layer.succeed(SuiTag, {
 		network: 'localnet',
 		rpc: { host: 'http://localhost:9000' },
-		chainId: opts.chainId ?? 'mock-chain-A',
-		client: {
-			core: {
-				getObject: opts.getObject ?? (() => Promise.resolve({ data: { objectId: '0xdead' } })),
-			},
-		} as unknown as Sui['client'],
+		chainId,
+		client: { core: {} } as unknown as Sui['client'],
 		waitForTransactionsReady: () => Effect.void,
 		runtime: 'bundled',
+	});
+
+// Mock ChainProbe — `getTransaction` is the only surface verify probes
+// the action calls. Defaults to "digest resolves" (returns the digest),
+// which makes cache hits pass verify. Tests that want verify-fail pass
+// `getTransaction: () => Effect.succeed(undefined)` to force a re-fire.
+const mockChainProbeLayer = (
+	overrides: Partial<typeof ChainProbe.Service> = {},
+): Layer.Layer<ChainProbe> =>
+	Layer.succeed(ChainProbe, {
+		getObject: () => Effect.succeed(undefined),
+		getObjectStrict: () => Effect.succeed(undefined),
+		objectsMatchTypes: () => Effect.succeed(true),
+		getTransaction: (digest: string) => Effect.succeed({ digest }),
+		...overrides,
 	});
 
 // Minimal mock signer satisfying `Account` shape that records every
@@ -134,11 +147,6 @@ const accountRef = (signer: Account): LayeredTag<any, Account, never, never> =>
 // Build a full provided layer for the action and yield it. Encapsulates
 // the layer-composition boilerplate so each test reads as
 // "given action X, when acquired with these layers, then ...".
-//
-// `action` is typed as `any` because the per-name TagIdentity brand
-// (`LayeredTag<'k', ...>` vs `LayeredTag<'regen', ...>`) varies across tests; tightening
-// it would force every caller to re-annotate. `accRef` mirrors that
-// looseness since it's the same kind of LayeredTag.
 const acquireAction = <A>(
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	action: any,
@@ -146,6 +154,7 @@ const acquireAction = <A>(
 	accRef: any,
 	suiLayer: Layer.Layer<SuiTag>,
 	stateLayer: Layer.Layer<StateStore>,
+	probeLayer: Layer.Layer<ChainProbe> = mockChainProbeLayer(),
 ): Effect.Effect<A, unknown, never> =>
 	Effect.gen(function* () {
 		return yield* action;
@@ -153,7 +162,12 @@ const acquireAction = <A>(
 		Effect.provide(
 			Layer.provide(
 				action.__layer,
-				Layer.mergeAll(suiLayer, stateLayer, Layer.provide(accRef.__layer, suiLayer)),
+				Layer.mergeAll(
+					suiLayer,
+					stateLayer,
+					probeLayer,
+					Layer.provide(accRef.__layer, suiLayer),
+				),
 			),
 		),
 	) as Effect.Effect<A, unknown, never>;
@@ -185,14 +199,17 @@ describe('Action — cache miss', () => {
 
 			expect(buildRuns).toBe(1);
 			expect(signCalls).toHaveLength(1);
-			// Persisted under `tx/<name>/<chainId>/<address>/<userKey>`.
+			// One persisted entry under the canonical `action/<chainId>/<hash>`
+			// shape. Cache-key derivation is opaque (content-hash of inputs);
+			// the assertion below pins the prefix shape without coupling to
+			// the hash itself.
 			expect(state.puts).toHaveLength(1);
-			expect(state.puts[0]!.key).toBe(`tx/do-thing/mock-chain-A/${signer.address}/k1`);
+			expect(state.puts[0]!.key).toMatch(/^action\/mock-chain-A\/[0-9a-f]{16}$/);
 			expect((state.puts[0]!.value as TxResult).digest).toBe(result.digest);
 		}),
 	);
 
-	it.effect('without cacheKey, build + sign run unconditionally and nothing is persisted', () =>
+	it.effect('every Action is cached — omitting cacheKey still persists a TxResult', () =>
 		Effect.gen(function* () {
 			const kp = Ed25519Keypair.generate();
 			const { signer, signCalls } = makeMockSigner(kp.getPublicKey().toSuiAddress());
@@ -211,10 +228,15 @@ describe('Action — cache miss', () => {
 			const sui = mockSuiLayer();
 			yield* acquireAction<TxResult>(action, accRef, sui, state.layer);
 
+			// Behaviour change from the pre-substrate shape: every Action
+			// goes through the cache now. Idempotency against
+			// `(name, signer.address, needs[].key)` is the load-bearing
+			// property; callers that need to force a re-fire pass a
+			// dynamic `cacheKey`.
 			expect(buildRuns).toBe(1);
 			expect(signCalls).toHaveLength(1);
-			// Nothing persisted in the no-cacheKey branch.
-			expect(state.puts).toHaveLength(0);
+			expect(state.puts).toHaveLength(1);
+			expect(state.puts[0]!.key).toMatch(/^action\/mock-chain-A\/[0-9a-f]{16}$/);
 		}),
 	);
 });
@@ -255,7 +277,7 @@ describe('Action — cache hit', () => {
 		}),
 	);
 
-	it.effect('cache hit evicts the entry and re-runs when the probe sees a missing object', () =>
+	it.effect('cache hit evicts the entry and re-runs when getTransaction returns undefined', () =>
 		Effect.gen(function* () {
 			const kp = Ed25519Keypair.generate();
 			const { signer, signCalls } = makeMockSigner(kp.getPublicKey().toSuiAddress());
@@ -272,42 +294,39 @@ describe('Action — cache hit', () => {
 			});
 
 			const state = makeMockStateStore();
-			// Pre-populate with a TxResult whose object id "doesn't exist".
-			// `probeCachedTx` calls `getObject`; we configure it to throw
-			// OBJECT_NOT_FOUND so the cache entry is treated as stale and
-			// evicted.
-			const cached: TxResult = {
-				digest: 'stale-digest',
-				effects: { status: { status: 'success' } },
-				objectChanges: [
-					{
-						type: 'created',
-						objectId: '0xstale',
-						sender: signer.address,
-						owner: { AddressOwner: signer.address },
-						objectType: '0x2::object::ID',
-						digest: 'd',
-						version: '1',
-					} as unknown as SuiObjectChange,
-				],
-				balanceChanges: undefined,
-			};
-			state.seed(`tx/cached-stale/mock-chain-A/${signer.address}/stable`, cached);
+			// Pre-populate with a stale TxResult under what we expect the
+			// substrate to derive as the key. Use a wildcard probe via the
+			// state seed indirection — seed at the SAME key the action will
+			// compute by running it once with a verify-pass mock, capturing
+			// the key, then resetting.
+			const sui = mockSuiLayer();
+			const primeRun = yield* acquireAction<TxResult>(action, accRef, sui, state.layer);
+			// `primeRun` has the same digest as the cached entry seeded
+			// during this first-run pass.
+			void primeRun;
+			expect(state.puts).toHaveLength(1);
+			const cachedKey = state.puts[0]!.key;
 
-			const sui = mockSuiLayer({
-				getObject: () => {
-					const err = new Error('not found');
-					(err as Error & { code?: string }).code = 'OBJECT_NOT_FOUND';
-					return Promise.reject(err);
-				},
-			});
-			yield* acquireAction<TxResult>(action, accRef, sui, state.layer);
+			// Reset call counters; second cycle uses a verify-fail probe so
+			// the cached entry must evict and the action re-fires.
+			signCalls.length = 0;
+			state.puts.length = 0;
+			state.removes.length = 0;
+			buildRuns = 0;
 
-			// Build ran (cache evicted), sign ran (action fired fresh).
+			yield* acquireAction<TxResult>(
+				action,
+				accRef,
+				sui,
+				state.layer,
+				mockChainProbeLayer({ getTransaction: () => Effect.succeed(undefined) }),
+			);
+
+			// Verify-fail path: build ran (re-fire), sign ran, the stale
+			// entry was removed and the fresh result re-persisted.
 			expect(buildRuns).toBe(1);
 			expect(signCalls).toHaveLength(1);
-			// Evict + re-persist.
-			expect(state.removes).toContain(`tx/cached-stale/mock-chain-A/${signer.address}/stable`);
+			expect(state.removes).toContain(cachedKey);
 			expect(state.puts).toHaveLength(1);
 		}),
 	);
@@ -331,8 +350,11 @@ describe('Action — cache key invalidation', () => {
 
 			expect(signCalls).toHaveLength(2);
 			expect(state.puts).toHaveLength(2);
-			expect(state.puts[0]!.key).toBe(`tx/k/mock-chain-A/${signer.address}/v1`);
-			expect(state.puts[1]!.key).toBe(`tx/k/mock-chain-A/${signer.address}/v2`);
+			// Two distinct keys under the canonical
+			// `action/<chainId>/<hash>` shape.
+			expect(state.puts[0]!.key).not.toBe(state.puts[1]!.key);
+			expect(state.puts[0]!.key).toMatch(/^action\/mock-chain-A\/[0-9a-f]{16}$/);
+			expect(state.puts[1]!.key).toMatch(/^action\/mock-chain-A\/[0-9a-f]{16}$/);
 		}),
 	);
 
@@ -350,25 +372,16 @@ describe('Action — cache key invalidation', () => {
 
 			const state = makeMockStateStore();
 			// First chain.
-			yield* acquireAction<TxResult>(
-				action,
-				accRef,
-				mockSuiLayer({ chainId: 'chain-A' }),
-				state.layer,
-			);
+			yield* acquireAction<TxResult>(action, accRef, mockSuiLayer('chain-A'), state.layer);
 			// Second chain (regenesis).
-			yield* acquireAction<TxResult>(
-				action,
-				accRef,
-				mockSuiLayer({ chainId: 'chain-B' }),
-				state.layer,
-			);
+			yield* acquireAction<TxResult>(action, accRef, mockSuiLayer('chain-B'), state.layer);
 
 			expect(signCalls).toHaveLength(2);
-			expect(state.puts.map((p) => p.key)).toEqual([
-				`tx/regen/chain-A/${signer.address}/same`,
-				`tx/regen/chain-B/${signer.address}/same`,
-			]);
+			// `chainId` lives in the middle slot of the canonical key
+			// shape — two distinct chainIds carry two distinct keys.
+			expect(state.puts).toHaveLength(2);
+			expect(state.puts[0]!.key).toMatch(/^action\/chain-A\/[0-9a-f]{16}$/);
+			expect(state.puts[1]!.key).toMatch(/^action\/chain-B\/[0-9a-f]{16}$/);
 		}),
 	);
 });
@@ -398,7 +411,7 @@ describe('Action — cacheKey as Effect', () => {
 
 			expect(yield* Ref.get(counter)).toBe(1);
 			expect(state.puts).toHaveLength(1);
-			expect(state.puts[0]!.key).toBe(`tx/eff-key/mock-chain-A/${signer.address}/eff-derived`);
+			expect(state.puts[0]!.key).toMatch(/^action\/mock-chain-A\/[0-9a-f]{16}$/);
 		}),
 	);
 

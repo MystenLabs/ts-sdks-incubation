@@ -95,6 +95,16 @@ export interface ObjectInfo {
 }
 
 /**
+ * Validated subset of `client.core.getTransaction(...)`'s response. Verify
+ * probes that want to confirm "the side effect's receipt still resolves
+ * on this chain" use `digest` as the stable identifier (per RS2 in the
+ * integration-contract redesign — probe stable ids, not derived shapes).
+ */
+export interface TransactionInfo {
+	readonly digest: string;
+}
+
+/**
  * Surfaced by `ChainProbe` when the underlying RPC call fails for a
  * non-"not found" reason (network, gRPC unimplemented, schema-validation
  * fail). The default accessors map all of these to `undefined` at the
@@ -166,6 +176,19 @@ export class ChainProbe extends Context.Service<
 			}>,
 			match?: (actual: string, expected: string) => boolean,
 		) => Effect.Effect<boolean>;
+
+		/**
+		 * Fetch a transaction record by digest. Returns `undefined` for
+		 * any RPC failure or missing transaction — the "did the side
+		 * effect's receipt still resolve?" verify-probe shape (per RS2:
+		 * probes that consume stable identifiers from `produce`'s output
+		 * are the recommended shape).
+		 *
+		 * Defensive against partial gRPC client mocks that omit
+		 * `core.getTransaction` — treats absence the same way an RPC
+		 * error would (returns `undefined`).
+		 */
+		readonly getTransaction: (digest: string) => Effect.Effect<TransactionInfo | undefined>;
 	}
 >()('@devstack/ChainProbe') {}
 
@@ -270,6 +293,24 @@ export const ChainProbeLive: Layer.Layer<ChainProbe, never, SuiTag> = Layer.effe
 				return true;
 			});
 
-		return { getObject, getObjectStrict, objectsMatchTypes } as const;
+		const getTransaction = (digest: string): Effect.Effect<TransactionInfo | undefined> =>
+			Effect.gen(function* () {
+				// Defensive: test mocks may satisfy `Sui` with a minimal
+				// `client.core` that omits `getTransaction`. Treat absence
+				// the same way an RPC error would — return `undefined` so
+				// verify-fail triggers a safe re-fire.
+				const core = (sui.client as unknown as { readonly core?: unknown }).core;
+				const fn = (core as { readonly getTransaction?: unknown } | undefined)?.getTransaction;
+				if (typeof fn !== 'function') return undefined;
+				return yield* Effect.tryPromise({
+					try: () => sui.client.core.getTransaction({ digest }),
+					catch: (cause) => cause,
+				}).pipe(
+					Effect.map(() => ({ digest }) as TransactionInfo),
+					Effect.orElseSucceed(() => undefined),
+				);
+			});
+
+		return { getObject, getObjectStrict, objectsMatchTypes, getTransaction } as const;
 	}),
 );

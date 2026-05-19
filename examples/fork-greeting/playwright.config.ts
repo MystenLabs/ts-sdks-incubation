@@ -1,8 +1,7 @@
 import { defineDevstackPlaywrightConfig } from '@mysten-incubation/devstack/playwright';
 
-// `pnpm dev` (the devstack supervisor) owns stack bring-up + writes the
-// manifest. Fork-mode boot adds ~30–60s on top of localnet for the
-// upstream system-state warm — the supervisor's own readyTimeoutMs
-// covers that, and playwright's 300s default webServer timeout is
-// already generous enough.
-export default defineDevstackPlaywrightConfig();
+// 900s timeout — fork-mode's first-run cold start pulls `mysten/sui-tools`
+// (hundreds of MB) and warms the upstream system-state on top of
+// localnet bring-up; that can blow past playwright's 300s default. Warm
+// runs take seconds.
+export default defineDevstackPlaywrightConfig({ timeout: 900_000 });

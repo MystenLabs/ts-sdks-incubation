@@ -41,18 +41,6 @@ export const StateStoreKeys = {
 		`coin/mint/${input.chainId}/${input.treasuryCapId}/${input.recipient}/${input.amount.toString()}`,
 
 	/**
-	 * Cached `Action(...)`-produced TxResult. Keyed by action name,
-	 * chainId, signer address, and user-supplied `cacheKey` (which
-	 * the action factory accepts as `string | Effect<string>`).
-	 */
-	actionTx: (input: {
-		readonly actionName: string;
-		readonly chainId: string;
-		readonly signerAddress: string;
-		readonly userKey: string;
-	}): string => `tx/${input.actionName}/${input.chainId}/${input.signerAddress}/${input.userKey}`,
-
-	/**
 	 * Walrus on-chain deploy output (package id + system / staking
 	 * object ids + epoch parameters). One per chain — the deploy
 	 * surface bakes everything into a single record so the cycle

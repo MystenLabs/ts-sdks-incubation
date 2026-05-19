@@ -2,12 +2,18 @@
 // Each shells out via the shared `runCapturingOrFail` helper so the
 // error envelope (truncated stdout/stderr in `DockerError.message`)
 // matches the rest of the slice.
+//
+// `pull` is the one outlier — it routes through the streaming sibling
+// `runCapturingStreamingOrFail` so the `docker pull` per-layer progress
+// lines can be parsed and surfaced via `setPhase` while the pull runs.
+// See `notes/long-acquire-progress.md §3.2B`.
 
 import { isAbsolute, resolve } from 'node:path';
 import { Effect } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
+import { setPhase } from '../../advanced/tag.js';
 import { DockerError } from '../../engine/errors.js';
-import { runCapturingOrFail } from './core.js';
+import { runCapturingOrFail, runCapturingStreamingOrFail } from './core.js';
 
 // -----------------------------------------------------------------------------
 // Pull — ensure image present, return digest
@@ -17,6 +23,104 @@ export interface DockerPullResult {
 	readonly digest: string;
 }
 
+// Pure parser state for `docker pull`'s line-oriented progress output.
+// Held in a small closure inside `Docker.pull` and advanced one line at
+// a time; the streaming subprocess helper passes each stdout line through
+// `parseDockerPullLine` and forwards a `setPhase(...)` only when the
+// phase string actually changes. See `notes/long-acquire-progress.md §3.2B`.
+export interface DockerPullProgress {
+	/** Layer hashes that have surfaced a "Pulling fs layer" line. */
+	readonly layersSeen: ReadonlySet<string>;
+	/** Layer hashes that have surfaced a "Pull complete" line. */
+	readonly layersComplete: ReadonlySet<string>;
+}
+
+export const initialDockerPullProgress = (): DockerPullProgress => ({
+	layersSeen: new Set<string>(),
+	layersComplete: new Set<string>(),
+});
+
+// Match e.g. `abc123def456: Pulling fs layer`. The hash is allowed to be
+// any non-whitespace token so future docker output that uses something
+// other than a 12-hex prefix still parses.
+const LAYER_PULL_RE = /^(\S+):\s*Pulling fs layer\s*$/;
+const LAYER_COMPLETE_RE = /^(\S+):\s*Pull complete\s*$/;
+// `Status: Downloaded newer image for <image>` and `Status: Image is up
+// to date for <image>` both close out the pull; we collapse them to a
+// single "complete" phase so the row settles before `dockerImage`
+// finishes the inspect leg.
+const STATUS_LINE_RE = /^Status:\s*(?:Downloaded newer image|Image is up to date) for\s+(\S+)\s*$/;
+
+/**
+ * Advance the parser state by one stdout line. Returns the next state
+ * AND an optional phase string to surface via `setPhase`. Pure — no
+ * Effect — so callers can test it with an in-memory replay of canned
+ * `docker pull` output.
+ *
+ * Phase strings follow the §3.2B plan:
+ *   - first "Pulling fs layer" → `pulling 0/1 layers (<image>)`
+ *   - each new layer seen      → `pulling 0/N layers (<image>)`
+ *   - each "Pull complete"     → `pulling K/N layers (<image>)`
+ *   - terminal Status: line    → `pulling N/N layers (<image>)`
+ *
+ * The image name is plumbed in by the caller because `docker pull`'s
+ * per-layer lines don't carry it — only the closing Status: line does.
+ */
+export const parseDockerPullLine = (
+	state: DockerPullProgress,
+	line: string,
+	image: string,
+): { readonly state: DockerPullProgress; readonly phase?: string } => {
+	const pullMatch = LAYER_PULL_RE.exec(line);
+	if (pullMatch !== null) {
+		const hash = pullMatch[1];
+		if (state.layersSeen.has(hash)) return { state };
+		const layersSeen = new Set(state.layersSeen);
+		layersSeen.add(hash);
+		const nextState: DockerPullProgress = { layersSeen, layersComplete: state.layersComplete };
+		return {
+			state: nextState,
+			phase: `pulling ${state.layersComplete.size}/${layersSeen.size} layers (${image})`,
+		};
+	}
+	const completeMatch = LAYER_COMPLETE_RE.exec(line);
+	if (completeMatch !== null) {
+		const hash = completeMatch[1];
+		if (state.layersComplete.has(hash)) return { state };
+		const layersComplete = new Set(state.layersComplete);
+		layersComplete.add(hash);
+		// If a "Pull complete" arrives without a preceding "Pulling fs
+		// layer" (cached layer, or out-of-order on a fast pull), still
+		// count the hash as a seen layer so denominators stay sensible.
+		const layersSeen = state.layersSeen.has(hash)
+			? state.layersSeen
+			: new Set(state.layersSeen).add(hash);
+		const nextState: DockerPullProgress = { layersSeen, layersComplete };
+		return {
+			state: nextState,
+			phase: `pulling ${layersComplete.size}/${layersSeen.size} layers (${image})`,
+		};
+	}
+	if (STATUS_LINE_RE.exec(line) !== null) {
+		// Closing line — coerce denominators to match (so a partial
+		// counter doesn't get stuck at e.g. 3/4 forever) and emit one
+		// last phase. Useful when docker reports "Image is up to date"
+		// with NO layer lines preceding it.
+		const total = Math.max(state.layersSeen.size, state.layersComplete.size, 1);
+		const layersSeen = new Set(state.layersSeen);
+		const layersComplete = new Set(state.layersComplete);
+		// Pad seen up to total if the only signal was "Image is up to date".
+		while (layersSeen.size < total) layersSeen.add(`__synth-${layersSeen.size}`);
+		while (layersComplete.size < total) layersComplete.add(`__synth-${layersComplete.size}`);
+		const nextState: DockerPullProgress = { layersSeen, layersComplete };
+		return {
+			state: nextState,
+			phase: `pulling ${total}/${total} layers (${image})`,
+		};
+	}
+	return { state };
+};
+
 export const pull = (
 	image: string,
 ): Effect.Effect<DockerPullResult, DockerError, ChildProcessSpawner.ChildProcessSpawner> =>
@@ -24,7 +128,23 @@ export const pull = (
 		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 		yield* Effect.annotateCurrentSpan({ 'docker.image': image });
 
-		yield* runCapturingOrFail(spawner, ChildProcess.make('docker', ['pull', image]), 'docker pull');
+		// Per-pull mutable progress closure. The streaming helper hands us
+		// each `docker pull` stdout line; we advance `parseDockerPullLine`
+		// (pure) and route the emitted phase string (if any) through
+		// `setPhase`. Outside an engine-wrapped build `setPhase` is a
+		// noop, so this is safe to keep on the unconditional pull path —
+		// no guard needed.
+		let progress = initialDockerPullProgress();
+		yield* runCapturingStreamingOrFail(
+			spawner,
+			ChildProcess.make('docker', ['pull', image]),
+			'docker pull',
+			(line) => {
+				const next = parseDockerPullLine(progress, line, image);
+				progress = next.state;
+				return next.phase !== undefined ? setPhase(next.phase) : Effect.void;
+			},
+		);
 
 		const stdout = yield* runCapturingOrFail(
 			spawner,

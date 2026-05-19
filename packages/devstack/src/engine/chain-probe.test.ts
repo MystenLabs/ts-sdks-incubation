@@ -203,6 +203,7 @@ describe('ChainProbe.objectsMatchTypes (helper composition)', () => {
 					}
 					return true;
 				}),
+			getTransaction: () => Effect.succeed(undefined),
 		});
 
 	it.effect('returns true when every (id, expectedType) matches', () =>
@@ -248,6 +249,82 @@ describe('ChainProbe.objectsMatchTypes (helper composition)', () => {
 			);
 			expect(result).toBe(true);
 		}).pipe(Effect.provide(stubProbe({ '0xa': 'actual-different' }))),
+	);
+});
+
+describe('ChainProbe.getTransaction (live layer)', () => {
+	const makeFakeSuiWithGetTx = (
+		getTransaction: (input: { digest: string }) => Promise<unknown> | undefined,
+	): Sui =>
+		({
+			network: 'localnet',
+			rpc: { host: 'http://127.0.0.1:9000' },
+			chainId: 'chain-a',
+			runtime: 'bundled',
+			client: { core: { getObject: async () => undefined, getTransaction } } as unknown as Sui['client'],
+			waitForTransactionsReady: () => Effect.void,
+		}) as unknown as Sui;
+
+	it.effect('returns the digest when the SDK resolves a transaction', () =>
+		Effect.gen(function* () {
+			const probe = yield* ChainProbe;
+			const info = yield* probe.getTransaction('0xabc');
+			expect(info).toEqual({ digest: '0xabc' });
+		}).pipe(
+			Effect.provide(
+				ChainProbeLive.pipe(
+					Layer.provide(
+						Layer.succeed(SuiTag, makeFakeSuiWithGetTx(async () => ({ transaction: { digest: '0xabc' } }))),
+					),
+				),
+			),
+		),
+	);
+
+	it.effect('returns undefined on RPC failure', () =>
+		Effect.gen(function* () {
+			const probe = yield* ChainProbe;
+			const info = yield* probe.getTransaction('0xmissing');
+			expect(info).toBeUndefined();
+		}).pipe(
+			Effect.provide(
+				ChainProbeLive.pipe(
+					Layer.provide(
+						Layer.succeed(
+							SuiTag,
+							makeFakeSuiWithGetTx(async () => {
+								throw new Error('not found');
+							}),
+						),
+					),
+				),
+			),
+		),
+	);
+
+	it.effect('returns undefined when the SDK client omits getTransaction (partial mock)', () =>
+		Effect.gen(function* () {
+			const probe = yield* ChainProbe;
+			const info = yield* probe.getTransaction('0xabc');
+			expect(info).toBeUndefined();
+		}).pipe(
+			Effect.provide(
+				ChainProbeLive.pipe(
+					Layer.provide(
+						Layer.succeed(SuiTag, {
+							network: 'localnet',
+							rpc: { host: 'http://127.0.0.1:9000' },
+							chainId: 'chain-a',
+							runtime: 'bundled',
+							// `core` is missing `getTransaction` entirely — the live
+							// layer must degrade gracefully.
+							client: { core: { getObject: async () => undefined } } as unknown as Sui['client'],
+							waitForTransactionsReady: () => Effect.void,
+						} as unknown as Sui),
+					),
+				),
+			),
+		),
 	);
 });
 

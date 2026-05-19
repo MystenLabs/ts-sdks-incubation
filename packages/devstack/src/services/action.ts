@@ -3,48 +3,21 @@
 // widens to whatever the yielded LayeredTags propagate (e.g. `PublishError`
 // from a `Package` ref), and the supervisor catches errors at the
 // engine level so users don't have to `catchTag` inside every action.
+//
+// Phase C migration target — runs through `onChainArtifact(spec)` so the
+// cache/verify/register discipline matches every other on-chain primitive
+// (publishMove, deepbookLocalDeploy, walrus deploy, etc.). The user-
+// facing positional surface `Action(name, opts)` is unchanged; the
+// substrate underneath collapsed the bespoke `cacheKey` + `probeCachedTx`
+// shape into the standard `(namespace, inputs, verify, produce, register)`
+// shape.
 
-import { Effect, Option } from 'effect';
+import { Effect } from 'effect';
 import { Transaction } from '@mysten/sui/transactions';
-import { tag, setPhase, type LayeredTag } from '../advanced/tag.js';
+import { setPhase, type LayeredTag } from '../advanced/tag.js';
 import { PublishError } from '../engine/errors.js';
-import { StateStore } from '../engine/state-store.js';
-import { StateStoreKeys } from '../engine/state-store-keys.js';
-import { SuiTag, type Sui } from './sui.js';
-import type { Account, SuiObjectChange, TxResult } from '../engine/shared.js';
-
-// Probe the first created object id from a cached TxResult. Returns
-// `'valid'` when the object resolves on-chain, a short tag string
-// otherwise (`'no-objects'` if the result captured zero creations —
-// nothing to probe, treat as valid; `'object-missing'` if the
-// lookup 404s; `'probe-error'` for any other failure, which we
-// conservatively treat as valid so a transient RPC blip doesn't
-// invalidate cache and force unnecessary re-fires).
-const probeCachedTx = (
-	sui: Sui,
-	cached: TxResult,
-): Effect.Effect<'valid' | 'no-objects' | 'object-missing' | 'probe-error'> =>
-	Effect.gen(function* () {
-		const created = cached.objectChanges.find(
-			(c): c is Extract<SuiObjectChange, { type: 'created' }> => c.type === 'created',
-		);
-		if (created === undefined) return 'no-objects';
-		const result = yield* Effect.tryPromise({
-			try: () => sui.client.core.getObject({ objectId: created.objectId }),
-			catch: (cause) => cause,
-		}).pipe(
-			Effect.map(() => 'valid' as const),
-			Effect.catch((cause) => {
-				const code = (cause as { code?: string }).code;
-				const message = (cause as { message?: string }).message ?? '';
-				if (code === 'OBJECT_NOT_FOUND' || /not\s*found|does\s*not\s*exist/i.test(message)) {
-					return Effect.succeed('object-missing' as const);
-				}
-				return Effect.succeed('probe-error' as const);
-			}),
-		);
-		return result;
-	});
+import { onChainArtifact } from '../engine/on-chain-artifact.js';
+import type { Account, TxResult } from '../engine/shared.js';
 
 export interface ActionOptions<Name extends string, R, E = unknown> {
 	/** Account that signs the action. */
@@ -59,29 +32,46 @@ export interface ActionOptions<Name extends string, R, E = unknown> {
 	 *  return Effect's `E` channel widens to whatever the yielded LayeredTags
 	 *  propagate; the supervisor catches errors at the engine level. */
 	readonly build: (transaction: Transaction) => Effect.Effect<void, E, R>;
-	/** Optional cache key. Two accepted forms:
-	 *    - `Effect<string>` — full programmatic control.
-	 *    - `string` — literal key; folded with chain id + signer address. */
+	/** Optional per-action discriminator folded into the cache key. Two
+	 *  accepted forms:
+	 *    - `Effect<string>` — full programmatic control. Yielded at
+	 *      acquire time.
+	 *    - `string` — literal key.
+	 *
+	 *  When omitted, the cache key still distinguishes per-action
+	 *  instance via `(name, signer.address, needs[].key)` — i.e. two
+	 *  distinct `Action(name, ...)` factories with the same name+signer
+	 *  +needs collide intentionally. Set this when you have two actions
+	 *  with the same identity but different desired cache slots
+	 *  (e.g. seeding versioned game state). */
 	readonly cacheKey?: Effect.Effect<string, unknown, unknown> | string;
 	/** Reserved for the typed `_name` parameter; defaults to the action's
 	 *  `name`. */
 	readonly _name?: Name;
 }
 
-/** Action factory. Returns a LayeredTag that runs the supplied transaction once
- *  per chain (when `cacheKey` is set) or every cycle (when omitted).
+/** Action factory. Returns a LayeredTag that runs the supplied transaction
+ *  through the `onChainArtifact` substrate: cache key folds in
+ *  `sui.chainId` + the signer's address + every `needs[].key` + the
+ *  optional `cacheKey`. On a hit the cached `TxResult` is verified via
+ *  `ChainProbe.getTransaction(digest)` — if the digest no longer resolves
+ *  (regenesis, snapshot mismatch) the entry evicts and the action
+ *  re-fires.
  *
- *  Cache key folds in `sui.chainId` + `signer.address`, so a regenesis of
- *  the underlying chain naturally misses the cache (the cached
- *  objectChanges reference object ids that no longer exist). When set,
- *  the on-chain side effects of this action are assumed to persist
- *  across cycle teardown — chain state lives in the writable layer
- *  (preserved by `docker stop`, captured by
+ *  Cache lifetime: persists across cycle teardown — chain state lives in
+ *  the writable layer (preserved by `docker stop`, captured by
  *  `docker commit`), so cached results stay valid across `r` / Ctrl-C
  *  but NOT across `devstack stack down --force` or `wipe` (which discard
- *  the layer). A stale cached result against a freshly-genesised chain
- *  references objects that no longer exist; the chainId fold prevents
- *  reuse. */
+ *  the layer). A regenesis flips `sui.chainId` and naturally misses the
+ *  cache.
+ *
+ *  Behaviour change vs the prior bespoke shape: every `Action(...)` is
+ *  now cached. The previous "no cacheKey → run unconditionally every
+ *  cycle" branch is gone — set `cacheKey: Effect.sync(() => uuid())` (or
+ *  similar) at the call site if you need to force a re-fire on every
+ *  cycle. In practice every observed call site is idempotent against the
+ *  resolved package id; the change moves the implicit "I am idempotent"
+ *  property into the typed cache-key shape. */
 export const Action = <const Name extends string, R = never, E = unknown>(
 	name: Name,
 	opts: ActionOptions<Name, R, E>,
@@ -93,52 +83,90 @@ export const Action = <const Name extends string, R = never, E = unknown>(
 				? Effect.succeed(opts.cacheKey)
 				: opts.cacheKey;
 
-	return tag(
-		name,
-		Effect.gen(function* () {
-			for (const dep of opts.needs ?? []) {
-				yield* dep;
-			}
-			const signer = yield* opts.signer;
+	// `needs` is a positional array; the substrate wants a typed record.
+	// Synthesize stable alias keys (`need0`, `need1`, …) so each entry
+	// participates in `__upstreamKeys` auto-flattening without forcing
+	// callers to name them. The build callback yields needs itself via
+	// closure capture, so the synthetic alias is only an identity hook.
+	const needs = opts.needs ?? [];
+	const needsRecord: Record<string, LayeredTag<any, any, any, any>> = {};
+	for (let i = 0; i < needs.length; i++) {
+		needsRecord[`need${i}`] = needs[i]!;
+	}
+	// `upstream` carries `signer` (typed alias used by the inputs body) plus
+	// every need (positional alias purely for `__upstreamKeys` flattening).
+	// The substrate yields each entry at acquire time, so by the time `build`
+	// runs every needed ref has been resolved and registered.
+	const upstream = { signer: opts.signer, ...needsRecord } as {
+		readonly signer: LayeredTag<any, Account, any, any>;
+	} & Record<string, LayeredTag<any, any, any, any>>;
 
-			// Cache-key path. Compute key first; on a hit, return the prior
-			// TxResult and skip build + sign + execute entirely.
-			if (cacheKeyEff !== undefined) {
-				const sui = yield* SuiTag;
-				const state = yield* StateStore;
-				const userKey = yield* cacheKeyEff as Effect.Effect<string, unknown, never>;
-				const fullKey = StateStoreKeys.actionTx({
-					actionName: name,
-					chainId: sui.chainId,
-					signerAddress: signer.address,
-					userKey,
-				});
-				const cached = yield* state.get<TxResult>(fullKey);
-				if (Option.isSome(cached)) {
-					// HIGH-C3: probe the cached result against the chain before
-					// returning it. `cacheKey` folds in chainId so a regenesis
-					// would miss the cache — but a `devstack wipe` that
-					// preserves cached state (snapshot restore against a
-					// freshly-genesised chain, or a corrupted state.json that
-					// kept the entry but the chain volume is gone) would
-					// otherwise return a TxResult whose object ids no longer
-					// exist on chain. Probing one created object catches that
-					// case loudly: re-fire the action instead of returning a
-					// dangling reference.
-					const probeProbe = yield* probeCachedTx(sui, cached.value);
-					if (probeProbe === 'valid') {
-						yield* Effect.logInfo(
-							`Action(${name}): cache hit — key=${userKey} digest=${cached.value.digest}`,
-						);
-						return cached.value;
+	return onChainArtifact({
+		name,
+		kind: 'action',
+		plugin: 'action',
+		displayTitle: `tx.${name}`,
+		display: (s: TxResult) => ({
+			title: `tx.${name}`,
+			primary: `digest ${s.digest}`,
+			...(s.objectChanges.length > 0
+				? {
+						extras: [
+							`${s.objectChanges.length} object${s.objectChanges.length === 1 ? '' : 's'}`,
+						],
 					}
-					yield* Effect.logInfo(
-						`Action(${name}): cache hit but probe found stale on-chain state ` +
-							`(${probeProbe}); evicting and re-firing — key=${userKey}`,
-					);
-					yield* state.remove(fullKey).pipe(Effect.ignore);
-				}
-				yield* Effect.logInfo(`Action(${name}): cache miss — key=${userKey} (will sign+execute)`);
+				: {}),
+		}),
+
+		// Bare namespace per Phase B contract — `chainId` and the hashed
+		// inputs (folded from name + signer.address + needs[].key + the
+		// optional `cacheKey`) supply the per-instance distinction.
+		namespace: 'action',
+		label: `Action(${name})`,
+
+		upstream,
+
+		// Hashable inputs — fold the action's identity (`name`), the
+		// signer's address, every need's tag key, and the user-supplied
+		// `cacheKey` (when set) into a deterministic record. Builder /
+		// gasBudget are NOT hashed: the build callback is an arbitrary
+		// closure and the substrate cannot canonicalize a function body.
+		// Callers that mutate the build body in a way that should miss
+		// the cache pass a fresh `cacheKey` value.
+		inputs: ({ signer }) =>
+			Effect.gen(function* () {
+				const userKey =
+					cacheKeyEff === undefined
+						? undefined
+						: yield* (cacheKeyEff as Effect.Effect<string, unknown, never>);
+				return {
+					name,
+					signer: signer.address,
+					needs: needs.map((n) => n.key),
+					...(userKey !== undefined ? { userKey } : {}),
+				};
+			}),
+
+		// Verify the cached TxResult's digest still resolves on chain
+		// via `ChainProbe.getTransaction(digest)`. Per RS2 — probe stable
+		// identifiers, not derived shapes. A regenesis flips
+		// `sui.chainId` and misses the cache outright; a snapshot-resume
+		// against a chain where the digest no longer exists surfaces here
+		// as verify-undefined and the next `produce` re-fires cleanly.
+		// The probe is lenient (`ChainProbe.getTransaction` returns
+		// `undefined` for any RPC failure) so transient blips don't
+		// invalidate the cache.
+		verify: ({ cached, chain }) =>
+			chain
+				.getTransaction(cached.digest)
+				.pipe(Effect.map((tx) => (tx !== undefined ? cached : undefined))),
+
+		// Fresh-fire body — runs on cache miss / verify-fail. Builds the
+		// transaction (via the user's `build` callback), then signs and
+		// executes against the resolved signer. Errors bubble through
+		// `PublishError` so the supervisor's error surface stays narrow.
+		produce: ({ signer }) =>
+			Effect.gen(function* () {
 				yield* setPhase('building');
 				const t = new Transaction();
 				if (opts.gasBudget !== undefined) {
@@ -146,7 +174,7 @@ export const Action = <const Name extends string, R = never, E = unknown>(
 				}
 				yield* opts.build(t) as Effect.Effect<void, unknown, never>;
 				yield* setPhase('executing');
-				const result = yield* signer.signAndExecute(t).pipe(
+				return yield* signer.signAndExecute(t).pipe(
 					Effect.mapError(
 						(cause) =>
 							new PublishError({
@@ -156,52 +184,10 @@ export const Action = <const Name extends string, R = never, E = unknown>(
 							}),
 					),
 				);
-				yield* state.put(fullKey, result);
-				return result satisfies TxResult;
-			}
-
-			yield* setPhase('building');
-			const t = new Transaction();
-			if (opts.gasBudget !== undefined) {
-				t.setGasBudget(opts.gasBudget);
-			}
-			yield* opts.build(t) as Effect.Effect<void, unknown, never>;
-			yield* setPhase('executing');
-			const result = yield* signer.signAndExecute(t).pipe(
-				Effect.mapError(
-					(cause) =>
-						new PublishError({
-							phase: 'publish-tx',
-							message: `Action(${name}): sign+execute failed`,
-							cause,
-						}),
-				),
-			);
-			return result satisfies TxResult;
-		}).pipe(Effect.withSpan(`Action(${name})`)),
-		{
-			kind: 'action',
-			plugin: 'action',
-			displayTitle: `tx.${name}`,
-			display: (s: TxResult) => ({
-				title: `tx.${name}`,
-				primary: `digest ${s.digest}`,
-				...(s.objectChanges.length > 0
-					? {
-							extras: [
-								`${s.objectChanges.length} object${s.objectChanges.length === 1 ? '' : 's'}`,
-							],
-						}
-					: {}),
 			}),
-			// The body
-			// yields `opts.signer` (Account ref) plus every `opts.needs`
-			// ref for ordering. SuiTag is also yielded on the cache-key
-			// path. Lift all of them into upstreams so the topological
-			// scheduler places this action strictly after its providers —
-			// otherwise it lands in level 0 alongside the signer and
-			// fails with "Service not found: account/<name>".
-			upstreamKeys: [SuiTag.key, opts.signer, ...(opts.needs ?? [])],
-		},
-	);
+
+		// Action doesn't populate any in-process registries (no
+		// PackageRegistry / CoinRegistry equivalent for ad-hoc txs), so
+		// `register` is omitted. The substrate treats absence as a noop.
+	});
 };
