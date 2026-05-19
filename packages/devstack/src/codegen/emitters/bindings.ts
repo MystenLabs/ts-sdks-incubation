@@ -16,13 +16,13 @@
 // Atomic dir swap (stage → rename existing aside → rename staging in)
 // so a Vite dev server never observes a half-written tree mid-cycle.
 
-import * as crypto from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { Effect } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { generateFromPackageSummary } from '@mysten/codegen';
 import { createContentHasher, digestHex } from '../../engine/content-hash.js';
+import { stageAndSwap, StageAndSwapError } from '../../engine/stage-and-swap.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
 import { SuiBuildContainer } from '../../engine/sui-build-container.js';
 import { CodegenError } from '../errors.js';
@@ -134,33 +134,6 @@ const runEmit = (
 			'bindings.fingerprint': fingerprint ?? 'undefined',
 		});
 
-		// Random staging suffix instead of `process.pid`. Two stacks of
-		// the same app forked from a parent supervisor would otherwise
-		// collide on the staging dir name (same pid post-fork on
-		// platforms that report the parent pid for forked workers).
-		const staging = `${outputAbs}.staging-${crypto.randomBytes(6).toString('hex')}`;
-
-		yield* Effect.tryPromise({
-			try: () => fs.rm(staging, { recursive: true, force: true }),
-			catch: (cause) =>
-				new CodegenError({
-					emitter: 'bindings',
-					phase: 'write',
-					message: `failed to clear staging dir ${staging}: ${stringifyCause(cause)}`,
-					cause,
-				}),
-		});
-		yield* Effect.tryPromise({
-			try: () => fs.mkdir(staging, { recursive: true }),
-			catch: (cause) =>
-				new CodegenError({
-					emitter: 'bindings',
-					phase: 'write',
-					message: `failed to create staging dir ${staging}: ${stringifyCause(cause)}`,
-					cause,
-				}),
-		});
-
 		// C7: prefer the SuiBuildContainer's pinned `sui` for `sui move
 		// summary`. The host `sui` may be a different version than the
 		// build container's pinned `sui`, and the resulting summary
@@ -170,152 +143,114 @@ const runEmit = (
 		// build container provisioned at all).
 		const buildContainerOpt = yield* Effect.serviceOption(SuiBuildContainer);
 
-		const codegen = Effect.forEach(
-			targets,
-			(t) =>
-				Effect.gen(function* () {
-					yield* Effect.annotateCurrentSpan({ 'bindings.target': t.name });
-					yield* Effect.logInfo(`sui move summary -> ${t.name}`);
-					if (buildContainerOpt._tag === 'Some' && buildContainerOpt.value.canExec(t.sourcePath)) {
-						yield* buildContainerOpt.value.runSummary(t.sourcePath).pipe(
-							Effect.mapError(
-								(cause) =>
-									new CodegenError({
-										emitter: 'bindings',
-										phase: 'generate',
-										message: `${t.name}: sui move summary (in build container) failed: ${stringifyCause(cause)}`,
-										cause,
-									}),
-							),
-						);
-					} else {
-						const summaryCmd = ChildProcess.make('sui', ['move', 'summary'], {
-							cwd: t.sourcePath,
-						});
-						yield* spawner.exitCode(summaryCmd).pipe(
-							Effect.mapError(
-								(cause) =>
-									new CodegenError({
-										emitter: 'bindings',
-										phase: 'generate',
-										message: `${t.name}: sui move summary (host fallback) failed: ${stringifyCause(cause)}`,
-										cause,
-									}),
-							),
-						);
-					}
-					yield* Effect.tryPromise({
-						try: () =>
-							generateFromPackageSummary({
-								package: {
-									path: t.sourcePath,
-									package: t.mvrPlaceholder,
-									packageName: t.name,
-								},
-								prune: true,
-								outputDir: staging,
-								importExtension,
-							}),
-						catch: (cause) =>
-							new CodegenError({
-								emitter: 'bindings',
-								phase: 'generate',
-								message: `${t.name}: codegen failed: ${stringifyCause(cause)}`,
-								cause,
-							}),
-					});
-					// `generateFromPackageSummary` returns void on success but
-					// silently emits nothing if the package's Move.toml lacks
-					// an [addresses] entry matching its summary subdir. Probe
-					// the staging path so we fail loudly here rather than
-					// landing a half-empty tree.
-					const expected = path.join(staging, t.name);
-					const wrote = yield* Effect.tryPromise({
-						try: async () => {
-							try {
-								await fs.access(expected);
-								return true;
-							} catch {
-								return false;
+		// Stage every target's bindings into a sibling dir, then
+		// atomically promote into `outputAbs`. `stageAndSwap` owns the
+		// staging-dir lifecycle (random suffix, mkdir, cleanup on
+		// failure, rollback on rename failure) so this emit body only
+		// has to populate the staging tree.
+		yield* stageAndSwap({
+			target: outputAbs,
+			stage: (staging) =>
+				Effect.forEach(
+					targets,
+					(t) =>
+						Effect.gen(function* () {
+							yield* Effect.annotateCurrentSpan({ 'bindings.target': t.name });
+							yield* Effect.logInfo(`sui move summary -> ${t.name}`);
+							if (
+								buildContainerOpt._tag === 'Some' &&
+								buildContainerOpt.value.canExec(t.sourcePath)
+							) {
+								yield* buildContainerOpt.value.runSummary(t.sourcePath).pipe(
+									Effect.mapError(
+										(cause) =>
+											new CodegenError({
+												emitter: 'bindings',
+												phase: 'generate',
+												message: `${t.name}: sui move summary (in build container) failed: ${stringifyCause(cause)}`,
+												cause,
+											}),
+									),
+								);
+							} else {
+								const summaryCmd = ChildProcess.make('sui', ['move', 'summary'], {
+									cwd: t.sourcePath,
+								});
+								yield* spawner.exitCode(summaryCmd).pipe(
+									Effect.mapError(
+										(cause) =>
+											new CodegenError({
+												emitter: 'bindings',
+												phase: 'generate',
+												message: `${t.name}: sui move summary (host fallback) failed: ${stringifyCause(cause)}`,
+												cause,
+											}),
+									),
+								);
 							}
-						},
-						catch: () => false,
-					}).pipe(Effect.orElseSucceed(() => false));
-					if (!wrote) {
-						return yield* Effect.fail(
-							new CodegenError({
-								emitter: 'bindings',
-								phase: 'generate',
-								message:
-									`${t.name}: generateFromPackageSummary returned without writing ${expected}. ` +
-									`Common cause: ${t.name}'s Move.toml is missing an [addresses] block matching the package's summary subdir.`,
-							}),
-						);
-					}
-				}),
-			{ concurrency: 'unbounded' },
-		).pipe(
-			Effect.tapError(() => Effect.promise(() => fs.rm(staging, { recursive: true, force: true }))),
-		);
-
-		yield* codegen;
-
-		// Atomic promote: rename existing output aside, rename staging
-		// into place, clean up the displaced tree. Vite dev servers
-		// watching the output dir never see a half-empty intermediate
-		// state.
-		const discard = `${outputAbs}.discarding-${process.pid}`;
-		yield* Effect.tryPromise({
-			try: () => fs.mkdir(path.dirname(outputAbs), { recursive: true }),
-			catch: (cause) =>
-				new CodegenError({
-					emitter: 'bindings',
-					phase: 'write',
-					message: `failed to create parent of ${outputAbs}: ${stringifyCause(cause)}`,
-					cause,
-				}),
-		});
-		const outputExists = yield* Effect.tryPromise({
-			try: async () => {
-				try {
-					await fs.access(outputAbs);
-					return true;
-				} catch {
-					return false;
-				}
-			},
-			catch: () => false,
-		}).pipe(Effect.orElseSucceed(() => false));
-		if (outputExists) {
-			yield* Effect.tryPromise({
-				try: () => fs.rm(discard, { recursive: true, force: true }),
-				catch: () => undefined,
-			}).pipe(Effect.ignore({ log: true }));
-			yield* Effect.tryPromise({
-				try: () => fs.rename(outputAbs, discard),
-				catch: (cause) =>
+							yield* Effect.tryPromise({
+								try: () =>
+									generateFromPackageSummary({
+										package: {
+											path: t.sourcePath,
+											package: t.mvrPlaceholder,
+											packageName: t.name,
+										},
+										prune: true,
+										outputDir: staging,
+										importExtension,
+									}),
+								catch: (cause) =>
+									new CodegenError({
+										emitter: 'bindings',
+										phase: 'generate',
+										message: `${t.name}: codegen failed: ${stringifyCause(cause)}`,
+										cause,
+									}),
+							});
+							// `generateFromPackageSummary` returns void on success but
+							// silently emits nothing if the package's Move.toml lacks
+							// an [addresses] entry matching its summary subdir. Probe
+							// the staging path so we fail loudly here rather than
+							// landing a half-empty tree.
+							const expected = path.join(staging, t.name);
+							const wrote = yield* Effect.tryPromise({
+								try: async () => {
+									try {
+										await fs.access(expected);
+										return true;
+									} catch {
+										return false;
+									}
+								},
+								catch: () => false,
+							}).pipe(Effect.orElseSucceed(() => false));
+							if (!wrote) {
+								return yield* Effect.fail(
+									new CodegenError({
+										emitter: 'bindings',
+										phase: 'generate',
+										message:
+											`${t.name}: generateFromPackageSummary returned without writing ${expected}. ` +
+											`Common cause: ${t.name}'s Move.toml is missing an [addresses] block matching the package's summary subdir.`,
+									}),
+								);
+							}
+						}),
+					{ concurrency: 'unbounded', discard: true },
+				),
+		}).pipe(
+			Effect.catchTag('StageAndSwapError', (err: StageAndSwapError) =>
+				Effect.fail(
 					new CodegenError({
 						emitter: 'bindings',
 						phase: 'write',
-						message: `failed to rename existing output aside: ${stringifyCause(cause)}`,
-						cause,
+						message: err.message,
+						cause: err.cause,
 					}),
-			});
-		}
-		yield* Effect.tryPromise({
-			try: () => fs.rename(staging, outputAbs),
-			catch: (cause) =>
-				new CodegenError({
-					emitter: 'bindings',
-					phase: 'write',
-					message: `failed to promote staging into ${outputAbs}: ${stringifyCause(cause)}`,
-					cause,
-				}),
-		});
-		yield* Effect.tryPromise({
-			try: () => fs.rm(discard, { recursive: true, force: true }),
-			catch: () => undefined,
-		}).pipe(Effect.ignore({ log: true }));
+				),
+			),
+		);
 
 		// Stash the fingerprint AFTER the swap landed so a failure
 		// upstream (codegen, swap, post-swap rm) leaves the cache

@@ -32,7 +32,6 @@
 //
 // User emitters drop in alongside via `defineEmitter({ name, emit })`.
 
-import * as crypto from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { Effect } from 'effect';
@@ -44,7 +43,7 @@ import { DeepbookConfigEmitter } from '../codegen/emitters/deepbook-config.js';
 import { StackHandleEmitter } from '../codegen/emitters/stack-handle.js';
 import { CodegenError } from '../codegen/errors.js';
 import { displayPath } from '../engine/display-path.js';
-import { stringifyCause } from '../engine/stringify-cause.js';
+import { stageAndSwap, StageAndSwapError } from '../engine/stage-and-swap.js';
 import { writeFileAtomic } from '../engine/atomic-write.js';
 import type { Package, LocalPackage } from './package.js';
 
@@ -232,155 +231,64 @@ export const Codegen = (opts: CodegenOptions = {}) => {
 				emitterNamesSeen.add(emitter.name);
 			}
 
-			// All emitters write into a staging dir under a random
-			// suffix. After every emitter succeeds we atomically swap
-			// staging into the final `outputDir` (rename existing
-			// aside, rename staging in, drop the displaced tree). On
-			// ANY emitter failure the staging dir is removed and the
-			// pre-existing `outputDir` is left untouched — no partial
-			// state ever lands in the consumer's source tree.
-			const stagingSuffix = `${process.pid}-${crypto.randomBytes(6).toString('hex')}`;
-			const stagingDir = `${outputDir}.staging-${stagingSuffix}`;
-			const backupDir = `${outputDir}.backup-${stagingSuffix}`;
-
-			yield* Effect.tryPromise({
-				try: () => fs.rm(stagingDir, { recursive: true, force: true }),
-				catch: (cause) =>
-					new CodegenError({
-						emitter: 'codegen',
-						phase: 'write',
-						message: `failed to clear staging dir ${stagingDir}: ${stringifyCause(cause)}`,
-						cause,
-					}),
-			});
-			yield* Effect.tryPromise({
-				try: () => fs.mkdir(stagingDir, { recursive: true }),
-				catch: (cause) =>
-					new CodegenError({
-						emitter: 'codegen',
-						phase: 'write',
-						message: `failed to create staging dir ${stagingDir}: ${stringifyCause(cause)}`,
-						cause,
-					}),
-			});
-
-			const ctx: CodegenContext = { packages: resolved, outputDir: stagingDir };
 			yield* Effect.annotateCurrentSpan({
 				'codegen.output': outputDir,
-				'codegen.staging': stagingDir,
 				'codegen.packages': resolved.map((p) => p.name).join(','),
 				'codegen.emitters': emitters.map((e) => e.name).join(','),
 			});
 
-			// Serial emit (concurrency: 1). Per-emitter locking is on the
-			// long-tail wishlist; until then, serial avoids the
+			// All emitters write into a staging dir; on success
+			// `stageAndSwap` atomically promotes it into `outputDir`
+			// (rename existing aside, rename staging in, drop the
+			// displaced tree). On ANY emitter failure the staging dir is
+			// removed and `outputDir` is left untouched — no partial
+			// state ever lands in the consumer's source tree. POSIX
+			// same-FS rename(2) is atomic, so a Vite dev server watching
+			// `outputDir` never observes a half-emitted tree.
+			//
+			// Serial emit (concurrency: 1). Per-emitter locking is on
+			// the long-tail wishlist; until then, serial avoids the
 			// `~/.move` and bind-mount races between concurrent
-			// `sui move {build,summary}` invocations. On failure, drop
-			// the staging dir and propagate — `outputDir` is untouched.
-			const runEmitters = Effect.gen(function* () {
-				for (const emitter of emitters) {
-					yield* setPhase(`emit: ${emitter.name}`);
-					yield* emitter.emit(ctx).pipe(
-						Effect.mapError((cause) => {
-							if (cause instanceof CodegenError) {
-								// Preserve the emitter's `phase` rather than
-								// re-wrapping into 'generate' — the original
-								// classification (e.g. 'write' for atomic
-								// dir-swap failures) is more diagnostic.
-								return cause;
-							}
-							return new CodegenError({
-								emitter: emitter.name,
-								phase: 'generate',
-								message: `emitter '${emitter.name}' failed`,
-								cause,
-							});
-						}),
-					);
-				}
-			}).pipe(
-				Effect.tapError(() =>
-					Effect.promise(() => fs.rm(stagingDir, { recursive: true, force: true })),
-				),
-			);
-
-			yield* runEmitters;
-
-			// Atomic swap: rename existing `outputDir` to a backup,
-			// rename `stagingDir` in, then remove the backup. Same-FS
-			// renames are atomic on POSIX so a Vite dev server watching
-			// `outputDir` never observes a half-emitted tree. If the
-			// pre-swap rename fails after the staging dir was created we
-			// remove the staging dir; if the second rename fails we
-			// restore from backup so the consumer's `outputDir` is
-			// always either fully-old or fully-new.
-			yield* Effect.tryPromise({
-				try: () => fs.mkdir(path.dirname(outputDir), { recursive: true }),
-				catch: (cause) =>
-					new CodegenError({
-						emitter: 'codegen',
-						phase: 'write',
-						message: `failed to create parent of ${outputDir}: ${stringifyCause(cause)}`,
-						cause,
+			// `sui move {build,summary}` invocations.
+			yield* stageAndSwap({
+				target: outputDir,
+				stage: (stagingDir) =>
+					Effect.gen(function* () {
+						const ctx: CodegenContext = { packages: resolved, outputDir: stagingDir };
+						for (const emitter of emitters) {
+							yield* setPhase(`emit: ${emitter.name}`);
+							yield* emitter.emit(ctx).pipe(
+								Effect.mapError((cause) => {
+									if (cause instanceof CodegenError) {
+										// Preserve the emitter's `phase` rather
+										// than re-wrapping into 'generate' — the
+										// original classification (e.g. 'write'
+										// for atomic dir-swap failures) is more
+										// diagnostic.
+										return cause;
+									}
+									return new CodegenError({
+										emitter: emitter.name,
+										phase: 'generate',
+										message: `emitter '${emitter.name}' failed`,
+										cause,
+									});
+								}),
+							);
+						}
 					}),
-			});
-
-			const outputExists = yield* Effect.tryPromise({
-				try: async () => {
-					try {
-						await fs.access(outputDir);
-						return true;
-					} catch {
-						return false;
-					}
-				},
-				catch: () => false,
-			}).pipe(Effect.orElseSucceed(() => false));
-
-			if (outputExists) {
-				yield* Effect.tryPromise({
-					try: () => fs.rename(outputDir, backupDir),
-					catch: (cause) =>
+			}).pipe(
+				Effect.catchTag('StageAndSwapError', (err: StageAndSwapError) =>
+					Effect.fail(
 						new CodegenError({
 							emitter: 'codegen',
 							phase: 'write',
-							message: `failed to move existing ${outputDir} aside: ${stringifyCause(cause)}`,
-							cause,
+							message: err.message,
+							cause: err.cause,
 						}),
-				}).pipe(
-					Effect.tapError(() =>
-						Effect.promise(() => fs.rm(stagingDir, { recursive: true, force: true })),
 					),
-				);
-			}
-
-			yield* Effect.tryPromise({
-				try: () => fs.rename(stagingDir, outputDir),
-				catch: (cause) =>
-					new CodegenError({
-						emitter: 'codegen',
-						phase: 'write',
-						message: `failed to promote staging into ${outputDir}: ${stringifyCause(cause)}`,
-						cause,
-					}),
-			}).pipe(
-				Effect.tapError(() =>
-					Effect.gen(function* () {
-						// Best-effort restore: if we successfully moved the
-						// old tree aside but couldn't promote staging, put
-						// the old tree back so the consumer isn't left
-						// with a missing outputDir.
-						if (outputExists) {
-							yield* Effect.promise(() => fs.rename(backupDir, outputDir).catch(() => undefined));
-						}
-						yield* Effect.promise(() => fs.rm(stagingDir, { recursive: true, force: true }));
-					}),
 				),
 			);
-
-			if (outputExists) {
-				yield* Effect.promise(() => fs.rm(backupDir, { recursive: true, force: true }));
-			}
 
 			// Drop a `.gitignore` next to the emitter outputs so the
 			// sensitive files (`dapp-kit-config.ts` carries a wallet
