@@ -386,6 +386,10 @@ Use the in-tree helper rather than inlining a near-copy.
 | Sync filesystem lock with stale-PID reclaim    | `engine/file-lock.ts` `tryClaimLockSync` / `releaseLockSync` — wraps the wx-mode acquire + `process-liveness.ts` stale check. Port allocator + sui-fork data lock both use it. State-store's lock has its own Effect-platform retry loop (jittered exponential backoff) and stays distinct |
 | New devstack registry                          | `engine/define-registry.ts` `defineRegistry<I, T>(Tag)` — produces `{Live, publish, require}` from a `Context.Service` class declaration                                                                                                                                                   |
 | New devstack endpoint                          | `engine/define-endpoint.ts` `defineEndpoint({name, conventional?, manifestField?, publishedBy?})` — one site drives conventional-route lookup + manifest grouper                                                                                                                           |
+| Wrap a `LayeredTag` as a service factory       | `advanced/make-service.ts` `makeService(name, body)` — stamps `__kind`/`__pluginName` so the supervisor + TUI categorise it correctly. Reach for it when authoring a new built-in or plugin-author-grade factory                                                                           |
+| Map `DockerError` into your error type         | `engine/docker/wrap.ts` `wrapDocker(makeError)` — combinator for converting docker subprocess failures into a service's tagged-error shape inside an `Effect.gen` body                                                                                                                     |
+| Content-addressed cache around a build step    | `engine/cache.ts` `withCache(spec)` — wrap any cache-keyed compute with a `verify` probe; failures of `verify` evict the cache entry and re-run. Used by the package publish, walrus deploy, and seal keygen caches today                                                                  |
+| Compute a content hash (sha256 → hex)          | `engine/content-hash.ts` `contentHash(input, options?)` / streaming `createContentHasher()` — the canonical hasher for cache keys, replacing several inline `createHash('sha256')` callsites                                                                                               |
 | Write-if-changed for emitter output            | Local `writeIfChanged` in `codegen/emitters/{stack-handle,dapp-kit-config}.ts` — duplicated today; extract to `codegen/` if your emitter would be the third caller                                                                                                                         |
 
 ## CLI conventions
@@ -402,6 +406,15 @@ Three reporting patterns; the rule is whichever you pick, don't double-print:
 
 Stack resolution always goes through `cli/stack-resolution.ts` — no inline
 flag-vs-env-vs-active-file precedence chains.
+
+### Underscore-prefixed files (`_*.ts`)
+
+A file in `cli/commands/` whose basename starts with `_` is a **helper module, not a registered
+command**. Today the only example is `cli/commands/_prune-stack.ts`, which factors out the
+container/volume sweep used by `down`, `wipe`, and `reset`. The underscore signals to the reader
+(and to future tooling that walks the commands directory) that the module isn't wired into the
+top-level command registry in `cli/index.ts` — it exists only to be imported by sibling commands. If
+you add another such helper, keep the same `_` prefix so the convention stays grep-able.
 
 ## Codegen contract
 
@@ -471,6 +484,25 @@ pnpm --filter @mysten-incubation/devstack exec vitest run src/engine/snapshot.do
 contend on the same host Docker daemon and port range, and twenty agents each spinning containers is
 a worst case. Sub-agents default to the fast subset; the full suite (including docker) runs once at
 the end as a single verification pass.
+
+### Test harnesses (`testkit` files)
+
+The `*.testkit.ts` filename suffix marks a **non-test test harness** — a module that boots real
+infrastructure (containers, scope-scoped resources, pinned upstream state) for other test files to
+borrow, but doesn't itself declare `describe` / `it` blocks. They sit alongside the modules they
+support and follow this contract:
+
+- Their default export (or named helper) returns an Effect that acquires the harness — typically
+  wrapped in a `Scope` so the per-test scope cascades the teardown.
+- They `expose Scope finalizers` so the daemon is left clean on pass OR fail.
+- They are **not** discovered by vitest's default include glob (which is `*.test.ts`), so they don't
+  cost CI time on their own.
+- The current example is `engine/sui-fork.testkit.ts` — boots a `sui-fork` container at a pinned
+  testnet checkpoint and surfaces a `SuiGrpcClient` + `ForkControl` adapter. Every fork-mode
+  integration test goes through this harness rather than calling `Docker.run` directly.
+
+If you find yourself spawning the same infra in multiple `*.test.ts` files, extract it into a
+sibling `*.testkit.ts` and re-export the harness rather than copy-pasting setup code.
 
 ### Add a new endpoint
 

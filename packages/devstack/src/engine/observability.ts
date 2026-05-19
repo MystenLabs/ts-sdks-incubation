@@ -2,10 +2,11 @@
 //
 // Span-name convention (AGENTS.md "Errors / observability"): PascalCase
 // service-domain names. Examples that conform: `SuiBoot`,
-// `WalrusPublishPackage`, `SealKeyServer`, `PackagePublish`. Examples
-// that don't (legacy): `manifest.write`, `git-fetch`, `dockerImage(name)`.
-// New code uses the PascalCase form; legacy spans get migrated as
-// their files are touched.
+// `WalrusPublishPackage`, `SealKeyServer`, `PackagePublish`,
+// `ManifestWrite`, `DockerImage(name)`. New code uses this form; all
+// `Effect.withSpan(...)` callsites were swept to PascalCase in one
+// batch (Wave 4 §6.2). `Effect.fn(...)` span labels remain on the
+// "migrate as files are touched" cadence.
 //
 // Annotation-key convention: service-name prefix, dot-separated path.
 // `sui.chainId`, `walrus.epoch`, `package.name`, `account.address`.

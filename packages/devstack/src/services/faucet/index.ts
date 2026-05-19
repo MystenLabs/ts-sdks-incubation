@@ -29,6 +29,32 @@
 //   - the `FaucetRequestError` tagged error every strategy surfaces.
 // Strategy implementations live under `./strategies/` so this file stays
 // focused on the contract.
+//
+// **Lifecycle classification** (post-launch sweep §3.7 / W15):
+//   - **Ambient:** YES. `fillDefaults` auto-mounts `Faucet()` on every
+//     stack the user didn't explicitly add one to, so primitives can
+//     `yield* FaucetTag` without the user wiring it (contrast:
+//     `Wallet`, which is explicit-only). The auto-included instance is
+//     `hidden: true` in the dashboard; user-supplied `Faucet({...})`
+//     is visible.
+//   - **Cardinality:** one Faucet per stack. Names other than the
+//     default `'faucet'` would let multiple coexist, but no caller
+//     does this in practice.
+//   - **Process model:** in-memory only. No docker container, no host
+//     process, no socket — the `FaucetTag` value is just a
+//     `Ref<Map<coinType, FaucetStrategy>>` plus dispatch closure built
+//     by `Layer.build(FaucetLive)` at acquire time.
+//   - **Per-cycle vs long-lived state:** strategies are **per-cycle**.
+//     `FaucetLive` builds a fresh `Ref<Map>` inside the tag's Effect
+//     so the registry's lifetime equals the tag's scope; the SUI HTTP
+//     strategy is re-registered every cycle from the resolved
+//     `SuiTag.faucet.host`, and caller-supplied `strategies:` are
+//     re-yielded every cycle. **Nothing in the Faucet itself is long-
+//     lived** — the underlying funding sources (SUI HTTP faucet,
+//     walrus exchange, TreasuryCap) hold the durable state.
+//   - **Snapshot participation:** none. No own state-store keys, no
+//     filesystem state. Strategies are pure dispatchers; durability
+//     lives in the underlying chain / sui-faucet container.
 
 import { Context, Effect, Layer, Ref, Schema } from 'effect';
 import { tag, type LayeredTag } from '../../advanced/tag.js';
@@ -181,6 +207,14 @@ export interface FaucetOptions {
 	readonly strategies?: ReadonlyArray<FaucetStrategy>;
 	/** Override tag name. Defaults to `'faucet'`. */
 	readonly name?: string;
+	/** Suppress the dashboard row. The auto-included `Faucet()` that
+	 *  `fillDefaults` adds when the user didn't supply one is hidden by
+	 *  default — its presence is an internal contract (every stack has
+	 *  a faucet so `Account({ funding })` finds something to dispatch
+	 *  through), not something the user typed and would expect to see
+	 *  in the TUI. Users who explicitly add `Faucet({...})` get a
+	 *  visible row by default. */
+	readonly hidden?: boolean;
 }
 
 /** The Faucet LayeredTag. Yields `FaucetTag`. */
@@ -216,6 +250,7 @@ export const Faucet = (opts: FaucetOptions = {}): LayeredTag<'faucet', unknown, 
 			plugin: 'sui',
 			displayTitle: `faucet.${name}`,
 			display: () => ({ title: `faucet.${name}` }),
+			...(opts.hidden === true ? { hidden: true } : {}),
 		},
 	) as unknown as LayeredTag<'faucet', unknown, never, never>;
 };

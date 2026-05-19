@@ -1,6 +1,6 @@
-import { createHash } from 'node:crypto';
 import * as path from 'node:path';
 import { Effect, FileSystem } from 'effect';
+import { contentHash, createContentHasher, digestHex } from '../../engine/content-hash.js';
 import * as Docker from '../../engine/docker.js';
 import { DockerError } from '../../engine/errors.js';
 import { tag } from '../tag.js';
@@ -36,7 +36,7 @@ const SKIP_DIRS = new Set(['.git', 'node_modules', '.devstack', 'dist', '.next',
 const hashLocalTree = (contextPath: string) =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem;
-		const hash = createHash('sha256');
+		const hash = createContentHasher();
 		const walk = (dir: string): Effect.Effect<void, DockerError, FileSystem.FileSystem> =>
 			Effect.gen(function* () {
 				const entries = (yield* fs.readDirectory(dir)).slice().sort();
@@ -66,7 +66,7 @@ const hashLocalTree = (contextPath: string) =>
 				),
 			);
 		yield* walk(contextPath);
-		return hash.digest('hex').slice(0, 12);
+		return digestHex(hash, { length: 12 });
 	});
 
 export const dockerImage = <const Name extends string>(options: DockerImageOptions<Name>) =>
@@ -105,10 +105,7 @@ export const dockerImage = <const Name extends string>(options: DockerImageOptio
 				// our cached tag whenever any tracked file changes, while
 				// docker's own layer cache still handles partial rebuilds.
 				const treeHash = yield* hashLocalTree(options.build.context);
-				const configHash = createHash('sha256')
-					.update(JSON.stringify(options.build))
-					.digest('hex')
-					.slice(0, 12);
+				const configHash = contentHash(options.build, { length: 12 });
 				const tag = `devstack-${options.name}:${treeHash}-${configHash}`;
 
 				// Short-circuit: if the tag is already on the daemon, the
@@ -166,10 +163,15 @@ export const dockerImage = <const Name extends string>(options: DockerImageOptio
 					message: `dockerImage '${options.name}': must specify either 'pull' or 'build'`,
 				}),
 			);
-		}).pipe(Effect.withSpan(`dockerImage(${options.name})`)),
+		}).pipe(Effect.withSpan(`DockerImage(${options.name})`)),
 		{
 			kind: 'action',
 			displayTitle: `image.${options.name}`,
 			display: (s) => ({ title: `image.${options.name}`, primary: s.tag }),
+			// Leaf in the dep graph — `dockerImage` reads the docker daemon
+			// directly; it has no in-stack upstream tags. Explicit empty
+			// satisfies the Phase A compose-time invariant ("declared no
+			// upstreams" vs "forgot to declare").
+			upstreamKeys: [],
 		},
 	);

@@ -7,7 +7,7 @@ import { customElement, property } from 'lit/decorators.js';
 import { sharedStyles } from './styles.js';
 
 /** Built-in tab ids. */
-export type BuiltinTabId = 'assets' | 'objects' | 'settings';
+export type BuiltinTabId = 'assets' | 'objects' | 'fork' | 'settings';
 export type TabId = BuiltinTabId;
 
 interface TabSpec {
@@ -50,9 +50,32 @@ const SETTINGS_ICON = html`<svg
 	/>
 </svg>`;
 
+// Phase 5 Subtopic 6 — fork-controls tab icon. Branching shape signals
+// the "fork" semantic without overlapping with the existing wallet
+// glyphs; rendered only when the active manifest's `meta.runtime`
+// resolves to `'forked'` (see `wallet-controller.renderTabBar`).
+const FORK_ICON = html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+	<circle cx="6" cy="6" r="2" />
+	<circle cx="6" cy="18" r="2" />
+	<circle cx="18" cy="12" r="2" />
+	<path d="M6 8v8" />
+	<path d="M6 12h6" />
+	<path d="M12 12l4-2" />
+	<path d="M12 12l4 2" />
+</svg>`;
+
 const BUILTIN_TABS: TabSpec[] = [
 	{ id: 'assets', label: 'Assets', icon: ASSETS_ICON },
 	{ id: 'objects', label: 'Objects', icon: OBJECTS_ICON },
+	{ id: 'settings', label: 'Settings', icon: SETTINGS_ICON },
+];
+
+/** Built-in tabs plus the fork-controls tab. Returned when the host
+ *  controller signals fork-mode availability via the `showFork` prop. */
+const TABS_WITH_FORK: TabSpec[] = [
+	{ id: 'assets', label: 'Assets', icon: ASSETS_ICON },
+	{ id: 'objects', label: 'Objects', icon: OBJECTS_ICON },
+	{ id: 'fork', label: 'Fork', icon: FORK_ICON },
 	{ id: 'settings', label: 'Settings', icon: SETTINGS_ICON },
 ];
 
@@ -107,8 +130,16 @@ export class DevWalletTabBar extends LitElement {
 	@property({ type: String })
 	active: TabId = 'assets';
 
+	/** Phase 5 Subtopic 6 — when true, the bar surfaces a "Fork" tab
+	 *  between Objects and Settings. The host controller toggles this
+	 *  on whenever the active stack's manifest reports
+	 *  `meta.runtime === 'forked'`. Off by default so bundled-mode
+	 *  apps don't accidentally expose admin RPCs. */
+	@property({ type: Boolean, attribute: 'show-fork' })
+	showFork = false;
+
 	override render() {
-		const tabs: TabSpec[] = BUILTIN_TABS;
+		const tabs: TabSpec[] = this.showFork ? TABS_WITH_FORK : BUILTIN_TABS;
 		return html`
 			<nav class="tab-bar" part="tab-bar" role="tablist" aria-label="Wallet navigation">
 				${tabs.map(

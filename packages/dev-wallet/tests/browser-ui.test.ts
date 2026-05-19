@@ -48,6 +48,7 @@ beforeAll(async () => {
 	await import('../src/ui/dev-wallet-network-badge.js');
 	await import('../src/ui/dev-wallet-new-account.js');
 	await import('../src/ui/dev-wallet-tab-bar.js');
+	await import('../src/ui/dev-wallet-fork-panel.js');
 });
 
 // --- Signing Component ---
@@ -672,6 +673,92 @@ describe('dev-wallet-balances component', () => {
 			{ timeout: 5_000 },
 		);
 	});
+
+	it('skips per-coin getCoinMetadata RPC when the generated `coins` record covers the type', async () => {
+		// Phase 4 §4.6 — when consumers pass the generated `coins` constant
+		// from devstack codegen, the UI should render metadata-driven
+		// labels/decimals without hitting `getCoinMetadata` at all.
+		const getCoinMetadata = vi.fn(() => Promise.reject(new Error('should not be called')));
+		const el = document.createElement('dev-wallet-balances') as DevWalletBalances;
+		el.address = testAddress;
+		el.coins = {
+			mUSDC: {
+				type: '0xabc::mock_usdc::MOCK_USDC',
+				decimals: 6,
+				symbol: 'mUSDC',
+			},
+		};
+		el.client = {
+			core: {
+				listBalances: () =>
+					Promise.resolve({
+						balances: [{ coinType: '0xabc::mock_usdc::MOCK_USDC', balance: '2500000' }],
+						hasNextPage: false,
+						cursor: null,
+					}),
+				getCoinMetadata,
+			},
+		} as any;
+		container.appendChild(el);
+
+		await vi.waitFor(
+			async () => {
+				await el.updateComplete;
+				const items = el.shadowRoot!.querySelectorAll('.balance-item');
+				expect(items.length).toBeGreaterThan(0);
+			},
+			{ timeout: 5_000 },
+		);
+
+		expect(getCoinMetadata).not.toHaveBeenCalled();
+		const symbol = el.shadowRoot!.querySelector('.balance-symbol');
+		expect(symbol?.textContent).toBe('mUSDC');
+		const amount = el.shadowRoot!.querySelector('.balance-amount');
+		expect(amount!.textContent!.trim()).toBe('2.5');
+	});
+
+	it('falls back to getCoinMetadata RPC for coin types not covered by `coins`', async () => {
+		const getCoinMetadata = vi.fn(() =>
+			Promise.resolve({
+				coinMetadata: {
+					decimals: 9,
+					symbol: 'UNKNOWN',
+					name: 'Unknown',
+					description: '',
+					id: null,
+					iconUrl: null,
+				},
+			}),
+		);
+		const el = document.createElement('dev-wallet-balances') as DevWalletBalances;
+		el.address = testAddress;
+		el.coins = {}; // empty record — every coinType is "unknown" to the seed
+		el.client = {
+			core: {
+				listBalances: () =>
+					Promise.resolve({
+						balances: [{ coinType: '0xdef::other::OTHER', balance: '1000000000' }],
+						hasNextPage: false,
+						cursor: null,
+					}),
+				getCoinMetadata,
+			},
+		} as any;
+		container.appendChild(el);
+
+		await vi.waitFor(
+			async () => {
+				await el.updateComplete;
+				const items = el.shadowRoot!.querySelectorAll('.balance-item');
+				expect(items.length).toBeGreaterThan(0);
+			},
+			{ timeout: 5_000 },
+		);
+
+		expect(getCoinMetadata).toHaveBeenCalledTimes(1);
+		const symbol = el.shadowRoot!.querySelector('.balance-symbol');
+		expect(symbol?.textContent).toBe('UNKNOWN');
+	});
 });
 
 // --- Panel Component ---
@@ -1046,5 +1133,225 @@ describe('full UI signing flow', { timeout: 120_000 }, () => {
 
 		const result2 = await result2Promise;
 		expect(result2.bytes).toBe(toBase64(msg2));
+	});
+});
+
+// --- Fork Controls Panel (Phase 5 Subtopic 6 — P5.8.T1, P5.8.T2, P5.9.T1) ---
+
+import type { DevWalletForkPanel } from '../src/ui/dev-wallet-fork-panel.js';
+import type { DevWalletTabBar } from '../src/ui/dev-wallet-tab-bar.js';
+
+/** Build a stub relay that satisfies the `ForkRelay` shape consumed by
+ *  the panel — typed as `any` so the test can vend the same vi.fn
+ *  signature without recreating the full HTTP client. */
+function createFakeRelay() {
+	const status = {
+		checkpoint: 42n,
+		clockMs: 1717171717171n,
+		autoTickMs: 1000,
+		upstream: 'mainnet',
+	};
+	const slots = [
+		{ address: '0xaaaaaaaaaaaaaa00', label: 'whale', active: false },
+		{ address: '0xbbbbbbbbbbbbbb11', active: true },
+	];
+	return {
+		serverOrigin: 'http://stub',
+		getStatus: vi.fn().mockResolvedValue({ ok: true, value: status }),
+		advanceClock: vi.fn().mockResolvedValue({
+			ok: true,
+			value: { ...status, clockMs: status.clockMs + 60_000n },
+		}),
+		advanceCheckpoint: vi.fn().mockResolvedValue({
+			ok: true,
+			value: { ...status, checkpoint: status.checkpoint + 1n },
+		}),
+		listImpersonations: vi.fn().mockResolvedValue({ ok: true, value: slots }),
+		setImpersonation: vi.fn(async (address: string, active: boolean) => ({
+			ok: true,
+			value: slots.map((s) => (s.address === address ? { ...s, active } : s)),
+		})),
+	};
+}
+
+describe('dev-wallet-fork-panel component (Phase 5 P5.8/P5.9)', () => {
+	let container: HTMLElement;
+
+	beforeEach(() => {
+		container = document.createElement('div');
+		document.body.appendChild(container);
+	});
+
+	afterEach(() => {
+		container.remove();
+	});
+
+	it('renders an empty state when no relay is bound', async () => {
+		const el = document.createElement('dev-wallet-fork-panel') as DevWalletForkPanel;
+		container.appendChild(el);
+		await waitForUpdate(el);
+		const empty = el.shadowRoot!.querySelector('[part="empty-state"]');
+		expect(empty).not.toBeNull();
+		expect(empty!.textContent?.toLowerCase()).toContain('fork controls');
+	});
+
+	it('renders fork status from the relay (P5.8.T2 read path)', async () => {
+		const relay = createFakeRelay();
+		const el = document.createElement('dev-wallet-fork-panel') as DevWalletForkPanel;
+		(el as any).relay = relay;
+		(el as any).upstream = 'mainnet';
+		container.appendChild(el);
+		// Wait for the initial refresh chain (status + slots) to settle.
+		await el.refresh();
+		await waitForUpdate(el);
+		const checkpoint = el.shadowRoot!.querySelector('[part="status-checkpoint"]');
+		const clock = el.shadowRoot!.querySelector('[part="status-clock"]');
+		const autoTick = el.shadowRoot!.querySelector('[part="status-auto-tick"]');
+		expect(checkpoint?.textContent).toContain('42');
+		expect(clock?.textContent).toContain('1717171717171');
+		expect(autoTick?.textContent).toContain('1000ms');
+		expect(relay.getStatus).toHaveBeenCalled();
+		expect(relay.listImpersonations).toHaveBeenCalled();
+	});
+
+	it('advance-clock button invokes the relay (P5.8.T2)', async () => {
+		const relay = createFakeRelay();
+		const el = document.createElement('dev-wallet-fork-panel') as DevWalletForkPanel;
+		(el as any).relay = relay;
+		container.appendChild(el);
+		await el.refresh();
+		await waitForUpdate(el);
+
+		const button = el.shadowRoot!.querySelector(
+			'[part="advance-clock-button"]',
+		) as HTMLButtonElement;
+		expect(button).not.toBeNull();
+		button.click();
+		// Drain the click → fetch round trip.
+		await waitForUpdate(el);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		await waitForUpdate(el);
+		expect(relay.advanceClock).toHaveBeenCalledWith(1000);
+	});
+
+	it('rejects non-positive clock inputs without dispatching', async () => {
+		const relay = createFakeRelay();
+		const el = document.createElement('dev-wallet-fork-panel') as DevWalletForkPanel;
+		(el as any).relay = relay;
+		container.appendChild(el);
+		await el.refresh();
+		await waitForUpdate(el);
+
+		const input = el.shadowRoot!.querySelector('[part="advance-clock-input"]') as HTMLInputElement;
+		input.value = '-1';
+		input.dispatchEvent(new Event('input'));
+		await waitForUpdate(el);
+		const button = el.shadowRoot!.querySelector(
+			'[part="advance-clock-button"]',
+		) as HTMLButtonElement;
+		expect(button.disabled).toBe(true);
+	});
+
+	it('advance-checkpoint button invokes the relay with the parsed count', async () => {
+		const relay = createFakeRelay();
+		const el = document.createElement('dev-wallet-fork-panel') as DevWalletForkPanel;
+		(el as any).relay = relay;
+		container.appendChild(el);
+		await el.refresh();
+		await waitForUpdate(el);
+
+		const input = el.shadowRoot!.querySelector(
+			'[part="advance-checkpoint-input"]',
+		) as HTMLInputElement;
+		input.value = '3';
+		input.dispatchEvent(new Event('input'));
+		await waitForUpdate(el);
+
+		const button = el.shadowRoot!.querySelector(
+			'[part="advance-checkpoint-button"]',
+		) as HTMLButtonElement;
+		button.click();
+		await waitForUpdate(el);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		await waitForUpdate(el);
+		expect(relay.advanceCheckpoint).toHaveBeenCalledWith(3);
+	});
+
+	it('renders impersonation slots and dispatches change event on toggle (P5.9.T1)', async () => {
+		const relay = createFakeRelay();
+		const el = document.createElement('dev-wallet-fork-panel') as DevWalletForkPanel;
+		(el as any).relay = relay;
+		container.appendChild(el);
+		await el.refresh();
+		await waitForUpdate(el);
+
+		const slotItems = el.shadowRoot!.querySelectorAll('[part~="slot-item"]');
+		expect(slotItems.length).toBe(2);
+
+		const listener = vi.fn();
+		el.addEventListener('fork-impersonation-changed', listener);
+
+		// Click the first slot's toggle button.
+		const toggle = slotItems[0].querySelector('[part="slot-toggle"]') as HTMLButtonElement;
+		expect(toggle).not.toBeNull();
+		toggle.click();
+		await waitForUpdate(el);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		await waitForUpdate(el);
+
+		expect(relay.setImpersonation).toHaveBeenCalledWith('0xaaaaaaaaaaaaaa00', true);
+		expect(listener).toHaveBeenCalledTimes(1);
+		const detail = (listener.mock.calls[0][0] as CustomEvent).detail as {
+			address: string;
+			active: boolean;
+		};
+		expect(detail.address).toBe('0xaaaaaaaaaaaaaa00');
+		expect(detail.active).toBe(true);
+	});
+
+	it('surfaces relay errors as inline error states', async () => {
+		const relay = createFakeRelay();
+		relay.getStatus = vi.fn().mockResolvedValue({ ok: false, error: 'gRPC offline' });
+		const el = document.createElement('dev-wallet-fork-panel') as DevWalletForkPanel;
+		(el as any).relay = relay;
+		container.appendChild(el);
+		await el.refresh();
+		await waitForUpdate(el);
+		const error = el.shadowRoot!.querySelector('[part="status-error"]');
+		expect(error?.textContent).toContain('gRPC offline');
+	});
+});
+
+describe('dev-wallet-tab-bar fork tab gating (Phase 5 P5.8.5)', () => {
+	let container: HTMLElement;
+
+	beforeEach(() => {
+		container = document.createElement('div');
+		document.body.appendChild(container);
+	});
+
+	afterEach(() => {
+		container.remove();
+	});
+
+	it('hides the Fork tab by default (bundled mode)', async () => {
+		const el = document.createElement('dev-wallet-tab-bar') as DevWalletTabBar;
+		container.appendChild(el);
+		await waitForUpdate(el);
+		const labels = Array.from(el.shadowRoot!.querySelectorAll('button.tab')).map(
+			(b) => b.textContent?.trim().toLowerCase() ?? '',
+		);
+		expect(labels.some((l) => l.includes('fork'))).toBe(false);
+	});
+
+	it('renders the Fork tab when showFork is true (P5.8.T1)', async () => {
+		const el = document.createElement('dev-wallet-tab-bar') as DevWalletTabBar;
+		(el as any).showFork = true;
+		container.appendChild(el);
+		await waitForUpdate(el);
+		const labels = Array.from(el.shadowRoot!.querySelectorAll('button.tab')).map(
+			(b) => b.textContent?.trim().toLowerCase() ?? '',
+		);
+		expect(labels.some((l) => l.includes('fork'))).toBe(true);
 	});
 });

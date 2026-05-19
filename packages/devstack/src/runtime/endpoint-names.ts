@@ -65,17 +65,6 @@ const dev_server_primary = defineEndpoint({
 	publishedBy: 'Dev()',
 });
 
-// Both names route to the same dev service. `DEV_SERVER_PRIMARY` is the
-// canonical lookup key in the manifest (see `runtime/service.ts`'s
-// `groupApp`); `DEV_SERVER_FALLBACK` is what the built-in `Dev()`
-// factory publishes today.
-const dev_server_fallback = defineEndpoint({
-	name: 'dev-server',
-	conventional: { service: 'dev', port: 5175 },
-	manifestField: { path: 'app.dev' },
-	publishedBy: 'Dev()',
-});
-
 const seal_key_server = defineEndpoint({
 	name: 'seal-key-server',
 	conventional: { service: 'seal', port: 2024 },
@@ -97,36 +86,39 @@ const walrus_publisher = defineEndpoint({
 	publishedBy: 'Walrus()',
 });
 
-// Phase 2 — Postgres + DeepBook indexer
+// Phase 2 — Postgres
 const postgres = defineEndpoint({
 	name: 'postgres',
 	manifestField: { path: 'services.postgres.endpoint' },
 	publishedBy: 'Postgres()',
 });
 
-const deepbook_indexer_metrics = defineEndpoint({
-	name: 'deepbook-indexer-metrics',
-	manifestField: { path: 'services.deepbook.indexer.metrics' },
-	publishedBy: 'Deepbook() (when indexer enabled)',
-});
-
+// Flat-only-internal endpoint name. **No `manifestField:` and no
+// `conventional:` route on purpose** — this name addresses a Docker
+// volume (not an HTTP endpoint), so neither the manifest grouper nor
+// the traefik conventional-route table would do anything sensible with
+// it. The constant exists so the deepbook indexer can read
+// `EndpointName.SUI_CHECKPOINT_VOLUME` rather than hard-coding the
+// string — when the sui factory eventually publishes the volume (the
+// sui-fork agent's work), the indexer's `LOCAL_CHECKPOINTS_DIR` mount
+// will resolve via this name.
+//
+// Don't delete this even though no current factory publishes it; the
+// sui-fork integration plan in `packages/devstack/notes/sui-fork-integration.md`
+// reaches for it. See Wave 6.5 (`notes/review-followups.md` §8.5) for
+// the explicit "keep as flat-only-internal" decision.
 const sui_checkpoint_volume = defineEndpoint({
 	name: 'sui-checkpoint-volume',
 	publishedBy: 'Sui() (when indexer enabled)',
 });
 
-// Phase 3 — DeepBook server (REST API + Prometheus metrics)
-const deepbook_server_rest = defineEndpoint({
-	name: 'deepbook-server',
-	manifestField: { path: 'services.deepbook.server.rest' },
-	publishedBy: 'Deepbook() (when server enabled)',
-});
-
-const deepbook_server_metrics = defineEndpoint({
-	name: 'deepbook-server-metrics',
-	manifestField: { path: 'services.deepbook.server.metrics' },
-	publishedBy: 'Deepbook() (when server enabled)',
-});
+// DeepBook indexer + server URLs are intentionally NOT declared here —
+// the per-service state registries (`DeepbookIndexerStateRegistry`,
+// `DeepbookServerStateRegistry`) own those URLs, and `groupDeepbook`
+// in `runtime/service.ts` reads them directly from state. Adding
+// `defineEndpoint(...)` declarations for them would duplicate the
+// source of truth between flat-endpoint records and per-service state
+// records (the Wave-2 fix from `.review-findings/` Tier A.1).
 
 /** Canonical endpoint name constants. Each value is the `.name` of a
  *  `defineEndpoint(...)` declaration above. The object keeps a flat
@@ -139,15 +131,11 @@ export const EndpointName = {
 	SUI_INDEXER_DB: sui_indexer_db.name,
 	WALLET_APP: wallet_app.name,
 	DEV_SERVER_PRIMARY: dev_server_primary.name,
-	DEV_SERVER_FALLBACK: dev_server_fallback.name,
 	SEAL_KEY_SERVER: seal_key_server.name,
 	WALRUS_AGGREGATOR: walrus_aggregator.name,
 	WALRUS_PUBLISHER: walrus_publisher.name,
 	POSTGRES: postgres.name,
-	DEEPBOOK_INDEXER_METRICS: deepbook_indexer_metrics.name,
 	SUI_CHECKPOINT_VOLUME: sui_checkpoint_volume.name,
-	DEEPBOOK_SERVER_REST: deepbook_server_rest.name,
-	DEEPBOOK_SERVER_METRICS: deepbook_server_metrics.name,
 } as const;
 
 export type EndpointNameValue = (typeof EndpointName)[keyof typeof EndpointName];

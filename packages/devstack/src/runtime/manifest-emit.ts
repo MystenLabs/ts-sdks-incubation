@@ -143,7 +143,7 @@ export const emitManifest = (
 		});
 
 		// Eager write — dapp-kit reads the manifest at dev-server start.
-		const eager = yield* snapshotAndWrite.pipe(Effect.withSpan('manifest.write'));
+		const eager = yield* snapshotAndWrite.pipe(Effect.withSpan('ManifestWrite'));
 
 		// Slow-tick re-snapshot for late registrations (the wallet's
 		// endpoint, for example, can land after the manifest factory has
@@ -153,13 +153,13 @@ export const emitManifest = (
 			snapshotAndWrite.pipe(
 				Effect.ignore({ log: true }),
 				Effect.repeat(Schedule.spaced(options.tickInterval ?? '500 millis')),
-				Effect.withSpan('manifest.watch'),
+				Effect.withSpan('ManifestWatch'),
 			),
 		);
 
 		// Final flush — captures any teardown-time mutations.
 		yield* Effect.addFinalizer(() =>
-			snapshotAndWrite.pipe(Effect.withSpan('manifest.finalize'), Effect.orDie),
+			snapshotAndWrite.pipe(Effect.withSpan('ManifestFinalize'), Effect.orDie),
 		);
 
 		return eager;

@@ -434,5 +434,5 @@ export const pruneStack = (
 			removedImages,
 		};
 	}).pipe(
-		Effect.withSpan('prune.stack', { attributes: { app: options.app, stack: options.stack } }),
+		Effect.withSpan('PruneStack', { attributes: { app: options.app, stack: options.stack } }),
 	);

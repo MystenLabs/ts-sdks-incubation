@@ -19,6 +19,7 @@ import {
 	PackageRegistry,
 	PackageRegistryLive,
 	PostgresStateRegistryLive,
+	publishPostgresState,
 	PythStateRegistryLive,
 	SealStateRegistryLive,
 	SuiStateRegistryLive,
@@ -171,6 +172,32 @@ describe('gatherManifest', () => {
 			expect(refreshed.app.wallet?.url).toBe('http://wallet.svc-test.localhost:5180');
 		}).pipe(Effect.provide(Layer.mergeAll(RegistriesLive, IdentityLive))),
 	);
+
+	// Wave-2 invariant: the manifest's postgres endpoint URL must be
+	// plain (no `<user>:<password>@` segment). The split lives at the
+	// registry-shape level — `PostgresStateRecord.endpoint` is
+	// guaranteed plain by construction, so the grouper has nothing to
+	// strip. A regression here would mean someone re-introduced the
+	// credentialed URL in the state record.
+	it.effect('manifest postgres endpoint URL never contains credentials', () =>
+		Effect.gen(function* () {
+			yield* publishPostgresState({
+				name: 'postgres',
+				user: 'devstack',
+				password: 'pgcred-secret',
+				endpoint: 'postgres://postgres-main:5432',
+				containerNetwork: 'devstack-app-main-postgres',
+				networkAlias: 'postgres-main',
+				databases: ['deepbook'],
+			});
+
+			const ds = yield* gatherManifest();
+			const url = ds.services.postgres?.endpoint.url;
+			expect(url).toBeDefined();
+			expect(url).not.toContain('@');
+			expect(url).not.toContain('pgcred-secret');
+		}).pipe(Effect.provide(Layer.mergeAll(RegistriesLive, IdentityLive))),
+	);
 });
 
 // Lock down the EndpointName string values so a typo in
@@ -187,7 +214,6 @@ describe('EndpointName constants', () => {
 		expect(EndpointName.SUI_INDEXER_DB).toBe('sui-indexer-db');
 		expect(EndpointName.WALLET_APP).toBe('wallet-app');
 		expect(EndpointName.DEV_SERVER_PRIMARY).toBe('frontend.dev-server');
-		expect(EndpointName.DEV_SERVER_FALLBACK).toBe('dev-server');
 		expect(EndpointName.SEAL_KEY_SERVER).toBe('seal-key-server');
 		expect(EndpointName.WALRUS_AGGREGATOR).toBe('walrus-aggregator');
 		expect(EndpointName.WALRUS_PUBLISHER).toBe('walrus-publisher');

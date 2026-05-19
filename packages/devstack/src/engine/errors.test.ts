@@ -19,6 +19,7 @@
 import { describe, expect, it } from 'vitest';
 import {
 	AccountError,
+	ConfigLoadError,
 	DeepbookError,
 	DeepbookIndexerError,
 	DeepbookServerError,
@@ -26,6 +27,7 @@ import {
 	ForkIncompatibleError,
 	ForkUnsupportedError,
 	HostProcessError,
+	ManifestDiscoveryError,
 	ManifestError,
 	PostgresError,
 	PublishError,
@@ -86,6 +88,8 @@ const allErrors: ReadonlyArray<{ name: string; cls: unknown }> = [
 	{ name: 'PostgresError', cls: PostgresError },
 	{ name: 'DeepbookIndexerError', cls: DeepbookIndexerError },
 	{ name: 'DeepbookServerError', cls: DeepbookServerError },
+	{ name: 'ManifestDiscoveryError', cls: ManifestDiscoveryError },
+	{ name: 'ConfigLoadError', cls: ConfigLoadError },
 ];
 
 const phaseAst = (cls: unknown): ASTNode | undefined => {

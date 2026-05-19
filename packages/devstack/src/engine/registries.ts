@@ -101,10 +101,16 @@ export interface PythStateRecord {
 export interface PostgresStateRecord {
 	readonly name: string;
 	readonly user: string;
-	/** Connection URL with credentials, e.g.
-	 *  `postgres://devstack:<pw>@<alias>:5432/<db>`. NOT persisted to
-	 *  manifest — `password` is stripped at the manifest grouper. */
-	readonly url: string;
+	/** Password for the configured `user`. Held in-memory only — the
+	 *  manifest grouper never copies this into `services.postgres.*`.
+	 *  In-process consumers needing a credentialed URL pair this with
+	 *  `endpoint` (or read `Postgres.url(db)` directly off the resolved
+	 *  service value). */
+	readonly password: string;
+	/** Plain endpoint URL (no credentials), e.g.
+	 *  `postgres://<alias>:5432`. Safe to surface in the manifest as-is
+	 *  — the password split is enforced at the registry shape, not at
+	 *  the grouper. */
 	readonly endpoint: string;
 	readonly containerNetwork: string;
 	readonly networkAlias: string;

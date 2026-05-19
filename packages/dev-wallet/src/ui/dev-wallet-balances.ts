@@ -6,7 +6,8 @@ import { css, html, LitElement, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 
 import { sectionHeaderStyles, sharedStyles, stateStyles } from './styles.js';
-import { formatCoinBalance, getCoinSymbol } from './utils.js';
+import type { CoinManifestEntry, CoinRecord } from './utils.js';
+import { formatCoinBalance, getCoinSymbol, indexCoinsByType, lookupCoinByType } from './utils.js';
 
 interface CoinBalance {
 	coinType: string;
@@ -62,6 +63,13 @@ export class DevWalletBalances extends LitElement {
 	@property({ attribute: false })
 	client: ClientWithCoreApi | null = null;
 
+	/** Optional pre-seeded coin metadata — pass the generated `coins`
+	 *  constant from devstack codegen (`src/generated/coins.ts`) to skip
+	 *  per-coin `getCoinMetadata` RPC waterfalls on UI load. Unknown coin
+	 *  types fall through to an RPC fetch as before. */
+	@property({ attribute: false })
+	coins: CoinRecord | null = null;
+
 	@state()
 	private _balances: CoinBalance[] = [];
 
@@ -74,6 +82,8 @@ export class DevWalletBalances extends LitElement {
 	#lastFetchedAddress = '';
 	#lastFetchedClient: ClientWithCoreApi | null = null;
 	#fetchGeneration = 0;
+	#coinIndex: ReadonlyMap<string, CoinManifestEntry> = new Map();
+	#lastCoinsRef: CoinRecord | null = null;
 
 	/** Re-fetch balances for the current address/client. */
 	refresh() {
@@ -83,6 +93,10 @@ export class DevWalletBalances extends LitElement {
 	}
 
 	override willUpdate(changedProperties: Map<string, unknown>) {
+		if (changedProperties.has('coins') && this.coins !== this.#lastCoinsRef) {
+			this.#coinIndex = indexCoinsByType(this.coins);
+			this.#lastCoinsRef = this.coins;
+		}
 		if (
 			(changedProperties.has('address') || changedProperties.has('client')) &&
 			this.address &&
@@ -137,21 +151,35 @@ export class DevWalletBalances extends LitElement {
 
 			if (generation !== this.#fetchGeneration) return;
 
+			// Pre-seed metadata from the generated `coins` record. Each
+			// balance with a known coinType skips the per-coin RPC entirely;
+			// only the (typically empty) remainder hits the network.
+			const preseeded = balances.map((b) => lookupCoinByType(this.#coinIndex, b.coinType));
 			const metadataResults = await Promise.all(
-				balances.map((b) =>
-					this.client!.core.getCoinMetadata({ coinType: b.coinType }).catch(() => null),
-				),
+				balances.map((b, i) => {
+					if (preseeded[i] !== undefined) return null;
+					return this.client!.core.getCoinMetadata({ coinType: b.coinType }).catch(() => null);
+				}),
 			);
 
 			if (generation !== this.#fetchGeneration) return;
-			this._balances = balances.map(
-				(b, i): CoinBalance => ({
+			this._balances = balances.map((b, i): CoinBalance => {
+				const seed = preseeded[i];
+				if (seed !== undefined) {
+					return {
+						coinType: b.coinType,
+						symbol: seed.symbol ?? getCoinSymbol(b.coinType),
+						totalBalance: b.balance,
+						decimals: seed.decimals,
+					};
+				}
+				return {
 					coinType: b.coinType,
 					symbol: metadataResults[i]?.coinMetadata?.symbol ?? getCoinSymbol(b.coinType),
 					totalBalance: b.balance,
 					decimals: metadataResults[i]?.coinMetadata?.decimals ?? 0,
-				}),
-			);
+				};
+			});
 		} catch {
 			if (generation !== this.#fetchGeneration) return;
 			this._error = 'Failed to load balances';

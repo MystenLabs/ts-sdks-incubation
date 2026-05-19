@@ -1,0 +1,12 @@
+{
+	"extends": "@mysten-incubation/tsconfig/node.json",
+	"compilerOptions": {
+		"composite": true,
+		"noEmit": true,
+		"tsBuildInfoFile": "./node_modules/.tmp/tsconfig.tsbuildinfo",
+		"verbatimModuleSyntax": true,
+		"moduleResolution": "bundler",
+		"module": "ESNext"
+	},
+	"include": ["devstack.config.ts", "redis-plugin.ts"]
+}

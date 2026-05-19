@@ -5,7 +5,7 @@
 // the friendly label set in the deploy options.
 
 import { Context } from 'effect';
-import type { PythPriceFeedId } from './internal.js';
+import type { PythPriceFeedId } from './shared.js';
 
 /** One resolved Pyth feed: the immutable `feedId` (mainnet hex),
  *  the on-chain `PriceInfoObject` id, and the friendly label set at

@@ -21,8 +21,7 @@ import { runDockerContainer } from '../../advanced/plugin-author/docker-containe
 import { Identity } from '../../engine/identity.js';
 import { DeepbookIndexerError } from '../../engine/errors.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
-import { publishDeepbookIndexerState, publishEndpoint } from '../../engine/registries.js';
-import { EndpointName } from '../../runtime/endpoint-names.js';
+import { publishDeepbookIndexerState } from '../../engine/registries.js';
 import { DEFAULT_DEEPBOOK_MOVE_VERSION, getDeepbookImages } from './images.js';
 import type { DeepbookCore } from '../deepbook.js';
 import type { DeepbookMargin } from './margin.js';
@@ -193,11 +192,11 @@ export const DeepbookIndexer = <const Name extends string = 'deepbook-indexer'>(
 
 			const metricsUrl = `http://${metricsHostname}:${routerEntrypointInfo.port}/metrics`;
 
-			yield* publishEndpoint({
-				name: EndpointName.DEEPBOOK_INDEXER_METRICS,
-				url: metricsUrl,
-				kind: 'rpc',
-			});
+			// URL ownership: the indexer's metrics URL is published only
+			// into the per-service state registry below.
+			// `runtime/service.ts::groupDeepbook` reads it from there to
+			// surface `services.deepbook.indexer.metrics` in the manifest;
+			// no flat-endpoint declaration exists (Wave-2 dual-write fix).
 
 			yield* publishDeepbookIndexerState({
 				name,

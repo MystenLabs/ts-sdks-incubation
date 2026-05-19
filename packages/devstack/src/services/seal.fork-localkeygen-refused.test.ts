@@ -3,9 +3,13 @@
 // hint pointing at the known-key-server alternative. Pure-unit test
 // (no Docker, no supervisor).
 //
-// The fork incompatibility is structural: the seal key-server binary
-// is JSON-RPC-bound (D5 in `notes/sui-fork-integration.md`; full audit
-// at Phase 5 P5.3), and sui-fork doesn't expose JSON-RPC.
+// The fork incompatibility is structural: the seal key-server binary's
+// `SuiRpcClient` (see `crates/key-server/src/sui_rpc_client.rs`) carries
+// BOTH a `sui_sdk::SuiClient` (JSON-RPC) and a `sui_rpc::client::Client`
+// (gRPC); `check_policy.dry_run_transaction_block` is JSON-RPC-bound and
+// the fork's own `simulate_transaction` returns "unsupported" (R3 of
+// `notes/sui-fork-integration.md`). Full audit:
+// `notes/sui-fork-phase-5-walrus-seal-audit.md` §2.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { sealLocalKeygen } from './seal/internal.js';

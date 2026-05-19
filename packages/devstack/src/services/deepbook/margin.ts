@@ -17,7 +17,6 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-import * as crypto from 'node:crypto';
 import { Context, Effect, Option } from 'effect';
 import { Transaction } from '@mysten/sui/transactions';
 import { fromHex } from '@mysten/sui/utils';
@@ -29,6 +28,7 @@ import { publishDeepbookMarginState, publishPackage } from '../../engine/registr
 import { StateStore } from '../../engine/state-store.js';
 import { StateStoreKeys } from '../../engine/state-store-keys.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
+import { contentHash } from '../../engine/content-hash.js';
 import { DeepbookError } from '../../engine/errors.js';
 import type { Account } from '../../engine/shared.js';
 import type { DeepbookCore } from '../deepbook.js';
@@ -274,7 +274,7 @@ const hashMarginConfig = (
 		pools: pools.slice().sort((a, b) => (a.pool < b.pool ? -1 : a.pool > b.pool ? 1 : 0)),
 		maxAgeSeconds: maxAgeSeconds.toString(),
 	};
-	return crypto.createHash('sha256').update(JSON.stringify(canonical)).digest('hex').slice(0, 16);
+	return contentHash(canonical, { length: 16 });
 };
 
 // Round a fixed-point fraction to FLOAT_SCALAR-units. Sandbox does
@@ -888,7 +888,7 @@ export const deepbookMargin = <const Name extends string = 'deepbook-margin'>(
 				findMarginPool,
 			} satisfies DeepbookMargin;
 		}).pipe(
-			Effect.withSpan(`deepbookMargin(${name})`),
+			Effect.withSpan(`DeepbookMargin(${name})`),
 			Effect.catchTag('DeepbookError', Effect.fail),
 			Effect.catch((cause: unknown) =>
 				Effect.fail(

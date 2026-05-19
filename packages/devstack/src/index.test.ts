@@ -34,11 +34,11 @@ const PUBLIC_EXPORTS = [
 	'Package',
 	'Postgres',
 	'PostgresTag',
-	// Phase 1 — Pyth oracle primitives
+	// Phase 1 — Pyth oracle primitives. `pythMid` is plugin-author
+	// surface; lives on `/advanced` only (Wave 6.3).
 	'Pyth',
 	'PythTag',
 	'PythPusher',
-	'pythMid',
 	'SUI_PRICE_FEED_ID',
 	'DEEP_PRICE_FEED_ID',
 	'USDC_PRICE_FEED_ID',
@@ -55,10 +55,12 @@ const PUBLIC_EXPORTS = [
 	'CodegenError',
 	'CoinAmbiguousError',
 	'CoinNotFoundError',
+	'ConfigLoadError',
 	'DeepbookError',
 	'DockerError',
 	'FaucetRequestError',
 	'HostProcessError',
+	'ManifestDiscoveryError',
 	'ManifestError',
 	'PublishError',
 	'SealError',

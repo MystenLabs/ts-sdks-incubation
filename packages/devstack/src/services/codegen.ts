@@ -393,7 +393,7 @@ export const Codegen = (opts: CodegenOptions = {}) => {
 			yield* writeGitignore(outputDir, existingGitignore);
 
 			return { outputDir, emitters: emitters.map((e) => e.name) };
-		}).pipe(Effect.withSpan(`codegen(${name})`)),
+		}).pipe(Effect.withSpan(`Codegen(${name})`)),
 		{
 			kind: 'app',
 			plugin: 'codegen',

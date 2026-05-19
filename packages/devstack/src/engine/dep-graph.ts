@@ -284,3 +284,79 @@ export const reachableConsumers = (
 	closure: DownstreamClosure,
 	ownerKey: string,
 ): ReadonlySet<string> => closure.get(ownerKey) ?? new Set<string>();
+
+/**
+ * Group dep-graph nodes into topological levels: level 0 holds every
+ * node with no upstream edges (leaves); level N holds every node whose
+ * upstream set is fully contained in levels < N. The Phase B
+ * scheduler folds these into `Layer.provideMerge(Layer.mergeAll(level), acc)`
+ * so siblings in the same level build in parallel and each level's
+ * outputs are visible to subsequent levels.
+ *
+ * Properties:
+ *   - **Stable order within a level**: members keep their input-stack
+ *     order, so the supervisor's "first declared wins" duplicate-key
+ *     semantics + TUI seed ordering survive the level grouping.
+ *   - **Pure / synchronous**: same shape as `buildDepGraph` /
+ *     `computeDownstreamClosure`; runs once at compose time.
+ *   - **No cycle handling**: callers feed the result of `buildDepGraph`,
+ *     which already throws `DepGraphError({phase: 'cycle'})` on a
+ *     cyclic upstream set. The Kahn-style level emission below assumes
+ *     a DAG; a cycle would leave nodes unscheduled and silently drop
+ *     them, so we assert by construction (the upstream graph is
+ *     acyclic).
+ *
+ * Returns the levels in build order: level 0 first. Empty graph
+ * returns an empty array. Order-of-emission within a level mirrors the
+ * order keys were inserted into the graph (which itself mirrors the
+ * stack member order).
+ */
+export const topoLevels = (graph: DepGraph): ReadonlyArray<ReadonlyArray<string>> => {
+	// Track the unscheduled count of upstream edges per node. As we
+	// emit a level, we decrement the count for every node that depended
+	// on a now-scheduled key.
+	const remainingUpstream = new Map<string, number>();
+	const order: string[] = []; // input order, used to stabilise per-level emission.
+	for (const [key, node] of graph) {
+		remainingUpstream.set(key, node.upstreamKeys.length);
+		order.push(key);
+	}
+
+	// Reverse-index: consumers[K] = nodes that list K as an upstream.
+	const consumers = new Map<string, Array<string>>();
+	for (const key of graph.keys()) consumers.set(key, []);
+	for (const [consumer, node] of graph) {
+		for (const upstream of node.upstreamKeys) {
+			const arr = consumers.get(upstream);
+			if (arr !== undefined) arr.push(consumer);
+		}
+	}
+
+	const scheduled = new Set<string>();
+	const levels: Array<ReadonlyArray<string>> = [];
+	while (scheduled.size < graph.size) {
+		const level: string[] = [];
+		// Emit in input order so two parallel-eligible siblings render
+		// in the order the user wrote them — keeps the TUI predictable.
+		for (const key of order) {
+			if (scheduled.has(key)) continue;
+			if ((remainingUpstream.get(key) ?? 0) === 0) {
+				level.push(key);
+			}
+		}
+		if (level.length === 0) {
+			// All remaining nodes still have unresolved upstreams — a
+			// cycle slipped past `buildDepGraph` (shouldn't happen; that
+			// function throws on cycles). Bail rather than infinite-loop.
+			break;
+		}
+		for (const key of level) {
+			scheduled.add(key);
+			for (const consumer of consumers.get(key) ?? []) {
+				remainingUpstream.set(consumer, (remainingUpstream.get(consumer) ?? 1) - 1);
+			}
+		}
+		levels.push(level);
+	}
+	return levels;
+};

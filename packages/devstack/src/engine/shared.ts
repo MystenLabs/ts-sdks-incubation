@@ -127,6 +127,22 @@ export interface SignAndExecuteError {
 	readonly cause?: unknown;
 }
 
+/**
+ * The resolved per-account contract every per-name account `LayeredTag`
+ * produced by `Account(name, opts?)` yields.
+ *
+ * **Signer conformance** — this shape mirrors `@mysten/sui/cryptography`'s
+ * abstract `Signer` class surface (`sign{Transaction,PersonalMessage}` /
+ * `getKeyScheme` (as `scheme`) / `getPublicKey` (as `publicKey`) /
+ * `toSuiAddress` (as `address`)) but in the Effect idiom — every signing
+ * closure returns an `Effect<..., SignAndExecuteError>` rather than the
+ * SDK's `Promise<...>`. Plugin authors writing factories that need a
+ * structural-Signer can either accept `DevstackSigner` (the SDK's raw
+ * `Signer` class — see `/advanced` re-export) for non-Effect callsites,
+ * or `LayeredTag<any, Account, any, any>` for Effect-native ones. The
+ * `'signer'` branch of `AccountSpec` accepts a raw `Signer` and adapts
+ * it to this Effect-flavored contract internally.
+ */
 export interface Account {
 	readonly name: string;
 	readonly address: string;

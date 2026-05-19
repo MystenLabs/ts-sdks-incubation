@@ -8,7 +8,7 @@ import { layer as NodeFileSystemLayer } from '@effect/platform-node/NodeFileSyst
 import { EngineLive } from '../../engine/engine.js';
 import { PythStateRegistryLive } from '../../engine/registries.js';
 import { PythTag } from './tag.js';
-import { pythKnownPackage } from './known-package.js';
+import { pythKnownPackage } from './known-deployment.js';
 
 const TestBaseLayer = Layer.mergeAll(EngineLive, NodeFileSystemLayer, PythStateRegistryLive);
 

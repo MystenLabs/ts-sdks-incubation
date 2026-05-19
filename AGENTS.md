@@ -73,13 +73,15 @@ preparing for a release.
 
 - **packages/** - Published incubation packages and shared internal config
   - **dev-wallet/** - Development wallet for Sui dApp testing (Lit UI, multi-adapter, popup wallet)
-  - **devstack/** - Declarative reconciler + plugin harness for fully-seeded Sui local development
-  - **devstack-wallet-panels/** - Lit panels (Faucet/Packages/Network) for the dev-wallet panel API
+  - **devstack/** - Effect-Layer-based supervisor for fully-seeded Sui local development (localnet,
+    Walrus, Seal, DeepBook, Pyth, Move publish, codegen, dev wallet, dev server)
+  - **create-devstack-app/** - Scaffolder for new devstack-backed apps
   - **docs/** - Documentation site (fumadocs + Next.js); content under `content/<package>/`
   - **tsconfig/** - Shared internal TypeScript configurations (not published)
 - **apps/** - First-party consumer apps (e.g. the hosted dev-wallet)
 - **examples/** - Worked example apps that exercise the packages end-to-end
-  - **arena**, **private-content**, **token-studio**, **wallet**
+  - **\_template**, **arena**, **deepbook-full**, **effect-app**, **fork-greeting**,
+    **plugin-author-redis**, **private-content**, **token-studio**, **wallet**
 
 ### Documentation
 

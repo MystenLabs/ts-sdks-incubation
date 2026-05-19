@@ -50,9 +50,14 @@ RUN apt-get update \
 
 COPY --from=bin-fetch /tmp/seal-cli   /usr/local/bin/seal-cli
 COPY --from=bin-fetch /tmp/key-server /usr/local/bin/key-server
+COPY entrypoint.sh /usr/local/bin/devstack-seal-entrypoint.sh
+RUN chmod +x /usr/local/bin/devstack-seal-entrypoint.sh
 
-# Default to running the key-server. The keygen step overrides the
-# entrypoint via `docker run --entrypoint seal-cli ... genkey` to mint
-# the BLS12-381 master/public key pair the key-server then loads via
-# its `MASTER_KEY` env.
-ENTRYPOINT ["/usr/local/bin/key-server"]
+# Default to running the key-server through a shell wrapper that
+# traps docker's SIGTERM and forwards SIGINT to the key-server as a
+# non-PID-1 child. See `entrypoint.sh` for the rationale (workaround
+# for seal's missing tokio signal handler — same shape as the
+# sui-image entrypoint). The keygen step overrides the entrypoint
+# via `docker run --entrypoint seal-cli ... genkey` so this wrapper
+# only ever wraps the long-running key-server container.
+ENTRYPOINT ["/usr/local/bin/devstack-seal-entrypoint.sh"]

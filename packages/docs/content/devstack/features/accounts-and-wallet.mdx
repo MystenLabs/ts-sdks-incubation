@@ -37,13 +37,13 @@ Default behavior:
 
 ## Other key sources
 
-`Account(name, opts)` accepts a discriminator that controls where the key comes from:
+`Account(name, opts)` accepts a `kind:` discriminator that controls where the key comes from:
 
 ```ts
-Account('mike', { from: 'keystore', alias: 'mike' }); // ~/.sui/sui_config/sui.keystore
-Account('ci', { from: 'env', key: 'ALICE_PRIVATE_KEY' }); // process.env[key]
-Account('demo', { from: 'inline', privateKey: 'suiprivkey1...' }); // literal — tests/demos only
-Account('hsm', { from: 'signer', signer: myHardwareSigner }); // any @mysten/sui Signer
+Account('mike', { kind: 'keystore', alias: 'mike' }); // ~/.sui/sui_config/sui.keystore
+Account('ci', { kind: 'env', key: 'ALICE_PRIVATE_KEY' }); // process.env[key]
+Account('demo', { kind: 'inline', privateKey: 'suiprivkey1...' }); // literal — tests/demos only
+Account('hsm', { kind: 'signer', signer: myHardwareSigner }); // any @mysten/sui Signer
 ```
 
 The default `'ephemeral-funded'` source is the right choice for localnet. Switch to `'env'` or
@@ -65,8 +65,8 @@ Account('alice', {
 
 Each entry is dispatched through the `Faucet` service's per-coin strategy registry. SUI works out of
 the box (via the localnet faucet), WAL works when `Walrus()` is in the stack (the walrus local
-cluster auto-registers a swap strategy), and any user coin declared via `Package({ coins })` works
-because `publishMove` auto-registers a TreasuryCap mint strategy. Coins from `KnownPackage(...)`
+cluster auto-registers a swap strategy), and any user coin discovered from a `Package(...)` publish
+works because the publish auto-registers a TreasuryCap mint strategy. Coins from `KnownPackage(...)`
 need a hand-written `defineStrategy`.
 
 See [Coins and funding](./coins-and-funding) for the full picture, including the auto/manual table

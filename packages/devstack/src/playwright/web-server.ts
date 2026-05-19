@@ -10,7 +10,7 @@ type PlaywrightWebServerSingle =
 	PlaywrightWebServer extends Array<infer U> ? U : PlaywrightWebServer;
 
 export interface WebServerOptions {
-	/** Manifest endpoint name to use as the dev server URL (e.g. `'dev-server'`). */
+	/** Manifest endpoint name to use as the dev server URL (e.g. `'frontend.dev-server'`). */
 	endpoint: string;
 	/** Path to the manifest JSON sidecar. Default: walk up from cwd
 	 * looking for `.devstack/manifest.json` (v4 default), falling back
@@ -107,8 +107,8 @@ function resolveEndpoint(
 				`[devstack/playwright] no manifest at <state-dir>/stacks/<stack>/manifest.json ` +
 					`and endpoint '${endpoint}' has no conventional URL fallback. ` +
 					`Run \`devstack apply\` first to write a manifest, or use one of the ` +
-					`supported endpoints (frontend.dev-server, dev-server, wallet-app, ` +
-					`sui-rpc, sui-faucet, sui-graphql, walrus-aggregator, walrus-publisher, ` +
+					`supported endpoints (frontend.dev-server, wallet-app, sui-rpc, ` +
+					`sui-faucet, sui-graphql, walrus-aggregator, walrus-publisher, ` +
 					`seal-key-server).`,
 			);
 		}
@@ -153,7 +153,7 @@ function resolveEndpoint(
 		flat[EndpointName.WALRUS_AGGREGATOR] = walrus.aggregator.url;
 		flat[EndpointName.WALRUS_PUBLISHER] = walrus.publisher.url;
 	}
-	if (manifest.app.dev !== undefined) flat[EndpointName.DEV_SERVER_FALLBACK] = manifest.app.dev.url;
+	if (manifest.app.dev !== undefined) flat[EndpointName.DEV_SERVER_PRIMARY] = manifest.app.dev.url;
 	if (manifest.app.wallet !== undefined) flat[EndpointName.WALLET_APP] = manifest.app.wallet.url;
 	const url = flat[endpoint];
 	if (url === undefined) {

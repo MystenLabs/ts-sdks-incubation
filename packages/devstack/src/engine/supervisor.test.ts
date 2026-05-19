@@ -19,11 +19,14 @@ import * as nodePath from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
 	compileWatchFilter,
+	flattenStackMembers,
 	formatRestartCascade,
 	isIgnoredWatchPath,
 	type DownstreamClosure,
+	type StackMember,
 	type WatchOwner,
 } from './supervisor.js';
+import { buildDepGraph, computeDownstreamClosure } from './dep-graph.js';
 
 const abs = (rel: string): string => nodePath.resolve(process.cwd(), rel);
 
@@ -266,5 +269,98 @@ describe('formatRestartCascade — Phase 5 diagnostic surface', () => {
 		const affectedSuffix = message.slice(message.indexOf('affected:'));
 		const sealWarningOccurrences = (affectedSuffix.match(/Seal/g) ?? []).length;
 		expect(sealWarningOccurrences).toBe(1);
+	});
+});
+
+// Phase D (`notes/parallel-graph-resolution.md` §6.4) lifts composites'
+// parallelizable inner siblings (`upstreamImage`, `moveSource`,
+// `sealImage`, `sourceFetch`) to top-level via `__extraMembers`. The
+// flatten happens once at compose time so the dep graph, watch-set
+// aggregation, seed pass, and topo scheduler all see the same canonical
+// member set.
+// Tests treat StackMember as a structural record; the `__layer` field is
+// load-bearing only at compose time (`composeStackLayer` reads each
+// member's layer slice), not for `flattenStackMembers` / `buildDepGraph`
+// which read only `__extraMembers`, `key`, `__upstreamKeys`. Mint
+// `Partial<StackMember>`-shaped records and cast through `unknown` to
+// satisfy the readonly invariants on the public interface without
+// inventing a fake `__layer`.
+const fakeMember = (m: Partial<StackMember>): StackMember => m as unknown as StackMember;
+
+describe('flattenStackMembers — Phase D composite restructure', () => {
+	it("expands a composite's __extraMembers to top-level after the parent", () => {
+		const upstreamImage = fakeMember({ key: 'walrus.image.upstream' });
+		const moveSource = fakeMember({ key: 'walrus.move-source' });
+		const composite = fakeMember({
+			key: 'walrusLocalCluster',
+			__extraMembers: [upstreamImage, moveSource],
+		});
+		const out = flattenStackMembers([composite]);
+		// Order: composite first, then extras in declaration order. The
+		// topo scheduler doesn't care about input order (Kahn-style
+		// emission), but downstream consumers — duplicate-key guard, seed
+		// pass, the TUI dep-tree — read input order, so the helper is
+		// deterministic about it.
+		expect(out.map((m) => m.key)).toEqual([
+			'walrusLocalCluster',
+			'walrus.image.upstream',
+			'walrus.move-source',
+		]);
+	});
+
+	it('walks nested __extraMembers (composite inside __extraMembers)', () => {
+		// Defensive: if a future composite contributes another composite
+		// in its extras, the flatten reaches the inner siblings too. Pre-
+		// fix this would have stopped at the first level and the deeper
+		// siblings would have been invisible to the dep graph.
+		const innerLeaf = fakeMember({ key: 'inner.leaf' });
+		const innerComposite = fakeMember({
+			key: 'inner.composite',
+			__extraMembers: [innerLeaf],
+		});
+		const outerComposite = fakeMember({
+			key: 'outer.composite',
+			__extraMembers: [innerComposite],
+		});
+		const out = flattenStackMembers([outerComposite]);
+		expect(out.map((m) => m.key)).toEqual(['outer.composite', 'inner.composite', 'inner.leaf']);
+	});
+
+	it('lifted siblings participate in buildDepGraph + downstream closure', () => {
+		// End-to-end: a composite that lifts an inner image tag and
+		// declares it in __upstreamKeys should resolve the upstream edge
+		// against the lifted sibling. Without the flatten, the lifted
+		// sibling wouldn't be in the graph and `buildDepGraph` would
+		// drop the upstream reference as dangling.
+		const upstreamImage = fakeMember({ key: 'walrus.image.upstream' });
+		const composite = fakeMember({
+			key: 'walrusLocalCluster',
+			__extraMembers: [upstreamImage],
+			__upstreamKeys: ['walrus.image.upstream'],
+		});
+		const flat = flattenStackMembers([composite]);
+		const graph = buildDepGraph(flat);
+		// The composite's upstream edge resolves; the image is a leaf.
+		expect(graph.get('walrusLocalCluster')?.upstreamKeys).toEqual(['walrus.image.upstream']);
+		expect(graph.get('walrus.image.upstream')?.upstreamKeys).toEqual([]);
+		// Downstream closure: editing the image cascades to the composite.
+		const closure = computeDownstreamClosure(graph);
+		expect(Array.from(closure.get('walrus.image.upstream') ?? [])).toEqual(['walrusLocalCluster']);
+	});
+
+	it('returns a leaf member unchanged (no __extraMembers)', () => {
+		const leaf = fakeMember({ key: 'sui' });
+		expect(flattenStackMembers([leaf]).map((m) => m.key)).toEqual(['sui']);
+	});
+
+	it('preserves member ordering for non-composite siblings', () => {
+		// A flat stack of three leaves should round-trip identically —
+		// flatten is the identity on a stack with no __extraMembers.
+		const stack = [
+			fakeMember({ key: 'sui' }),
+			fakeMember({ key: 'postgres' }),
+			fakeMember({ key: 'walrus' }),
+		];
+		expect(flattenStackMembers(stack).map((m) => m.key)).toEqual(['sui', 'postgres', 'walrus']);
 	});
 });

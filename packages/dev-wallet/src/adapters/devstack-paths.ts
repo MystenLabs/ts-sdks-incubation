@@ -16,6 +16,21 @@ export const DEVSTACK_WALLET_HTTP_PATH = {
 	ACCOUNTS: '/api/v1/devstack/accounts',
 	SIGN_TX: '/api/v1/devstack/sign-transaction',
 	SIGN_PERSONAL_MESSAGE: '/api/v1/devstack/sign-personal-message',
+	// --- Phase 5 §8 — fork control relay (Subtopic 6) ---
+	// These endpoints surface the `ForkControl` admin RPCs through the
+	// existing wallet-app server so the browser-side fork panel can
+	// drive `advanceClock`, `advanceCheckpoint`, status reads, and
+	// impersonation slot management without speaking gRPC directly.
+	//
+	// TODO(devstack-side wiring): the matching routes do **not** yet
+	// exist in `packages/devstack/src/services/wallet/internal.ts` —
+	// see `notes/sui-fork-phase-5.md` Subtopic 6 §P5.8.4. Once the
+	// orchestrator lands the server side, the protocol sync test
+	// (`protocol.test.ts`) will catch any drift.
+	FORK_STATUS: '/api/v1/devstack/fork/status',
+	FORK_ADVANCE_CLOCK: '/api/v1/devstack/fork/advance-clock',
+	FORK_ADVANCE_CHECKPOINT: '/api/v1/devstack/fork/advance-checkpoint',
+	FORK_IMPERSONATIONS: '/api/v1/devstack/fork/impersonations',
 } as const;
 
 export type DevstackWalletHttpPathValue =

@@ -63,25 +63,42 @@ Per-wave parallel recipes are at the head of each §.
 **Recipe:** Single `Agent` message with one subagent per item below. Each is file-disjoint from the
 others. Total wall-clock ≈ time of the slowest item.
 
-### 1.1 — Delete wallet `Object.assign` (Flip 6 / item 5.7) — XS
+### 1.1 — Delete wallet `Object.assign` (Flip 6 / item 5.7) — XS — [deferred to Wave 2]
 
 **File:** `packages/devstack/src/services/wallet.ts:37` **Action:** Replace
 `Object.assign(walletApp(...), { __kind: 'app', __pluginName: 'wallet' })` with whatever Wave-2
 `makeApp` helper resolves to. **Sequencing note:** this lands in Wave 2 if W12 ships first; lands
 here only if W12 is deferred. Default: defer to Wave 2 to avoid an interim shape.
 
-### 1.2 — Delete `ExtraRuntimePaths.addExtra` (Flip 7 / item 5.8) — XS
+**Deferred (2026-05-19):** Folded into Wave 2 §4.1 (W12 makeService helper) per the recon note. No
+interim shape; the wallet site migrates alongside the other 23 `Object.assign` sites when the W12
+helper lands.
+
+### 1.2 — Delete `ExtraRuntimePaths.addExtra` (Flip 7 / item 5.8) — XS — [x]
 
 **File:** `packages/devstack/src/engine/service-paths.ts:93,110-125` **Action:** Remove `addExtra`
 method; make `extras` a constructor-set readonly field. Zero call sites — grep-verified.
 **Parallel:** ✅ standalone
 
-### 1.3 — `writeIfChanged` unification (item 5.4 / D3) — S
+**Done (2026-05-19):** Deleted the entire unused `ExtraRuntimePaths` Service (interface,
+`ExtraRuntimePathsLive` Layer, `EXTRAS_KEY_RE`); no in-tree or out-of-tree callers existed. Updated
+docstring references in `engine/snapshot.ts`, `engine/snapshot.test.ts`, `cli/commands/snapshot.ts`,
+and the leading comment in `engine/service-paths.ts` to point at the `saveSnapshot({ extras })`
+argument instead of the dead mutator.
+
+### 1.3 — `writeIfChanged` unification (item 5.4 / D3) — S — [x]
 
 **Files:** `packages/devstack/src/engine/atomic-write.ts:46-60` (canonical home),
 `packages/devstack/src/codegen/helpers.ts:10-38` (deduplicates). Update callers:
 `codegen/emitters/stack-handle.ts`, `dapp-kit-config.ts`, `deepbook-config.ts`, `bindings.ts` to
 import from the canonical home. **LOC:** −20 net. **Parallel:** ✅ standalone
+
+**Done (2026-05-19):** Refactored `codegen/helpers.ts:writeIfChanged` to be a thin Effect +
+CodegenError wrapper around `writeFileAtomicIfChanged`. The codegen variant keeps its caller-facing
+signature (so `stack-handle.ts`, `dapp-kit-config.ts`, `deepbook-config.ts` callsites are unchanged)
+but no longer duplicates the read-existing / write-if-different / mkdir-parent logic. Side benefit:
+codegen writes are now atomic (sibling-tmp + rename) for free. `bindings.ts` does not use either
+helper — its mention in the plan was speculative.
 
 ### 1.4 — Snapshot JSDoc backfill (item 5.3 / W10/D16) — S
 
@@ -98,13 +115,22 @@ import from the canonical home. **LOC:** −20 net. **Parallel:** ✅ standalone
 `SnapshotMeta.services.<key>`; capture happens at <phase>; restore validates against …". Template in
 `AGENTS.md`. **Parallel:** ✅ 6-way fan-out
 
-### 1.5 — Tag substrate ordering + hidden-tag tests (item 5.6 / O39/O40) — S
+### 1.5 — Tag substrate ordering + hidden-tag tests (item 5.6 / O39/O40) — S — [x]
 
 **File:** `packages/devstack/src/advanced/tag.test.ts` **Action:** Add two test groups: (a)
 hidden-tag behavior (verify non-export tags don't leak through `composeLayers`), (b) ordering tests
 (later registrations win, deterministic). **Parallel:** ✅ standalone
 
-### 1.6 — `dockerContainer` plugin-author example (item 3.4 / O38) — S
+**Done (2026-05-19):** Added 7 tests in new file
+`packages/devstack/src/advanced/tag-compose.test.ts` covering: (a) hidden tags run the build,
+resolve the value, and never surface a TUI entry via the EngineHandle (plus a control case that
+non-hidden tags DO surface an entry, plus a failure- propagates-through-hidden test); (b)
+`composeLayers` ordering is `inner → primary → projections`, undefined inner entries drop,
+`__layers` takes precedence over `__layer`, and the last-wins fold invariant that
+`composeStackLayer` depends on. All 7 pass. Pinned in a new file rather than appending to
+`tag.test.ts` to avoid the parallel-agent collision risk on Wave 1.
+
+### 1.6 — `dockerContainer` plugin-author example (item 3.4 / O38) — S — [x]
 
 **Path:** `packages/devstack/src/advanced/plugin-author/` already has `docker-container.ts`. Need a
 real out-of-tree consumer. **Action:** Add `examples/plugin-author-redis/` or similar — a tiny
@@ -112,18 +138,38 @@ example app whose `devstack.config.ts` uses `dockerContainer` to bring up a Redi
 a tag, demonstrates the routing.protocol and ready-probe APIs. Acts as living documentation.
 **Parallel:** ✅ standalone (new example app)
 
-### 1.7 — Walrus TODO triage (in-code) — XS
+**Done (2026-05-19):** Scaffolded `examples/plugin-author-redis/`. Four files: `redis-plugin.ts`
+(the out-of-tree plugin — `defineEntrypoint` + `dockerContainer` with `{pull: 'redis:7-alpine'}`,
+TCP ready probe, traefik routing with explicit `protocol: 'http'`, endpoint publish),
+`devstack.config.ts` (one-call composition: `devstack(Redis())`), `package.json` (minimal — only
+depends on `@mysten-incubation/devstack`), `tsconfig.json`, and a `README.md` explaining the
+pattern. Intentionally minimal — no Vite, Move, React, or e2e tests. Typecheck passes. Acts as
+living documentation for the `dockerContainer` API surface.
+
+### 1.7 — Walrus TODO triage (in-code) — XS — [x]
 
 **File:** `packages/devstack/src/services/walrus/internal.ts:660-720` **Action:** Either delete the
 TODO (wrapper-image deploy path is still monolithic; no signal it will split) **or** convert it to a
 single-line note linked to the (non-existent) wrapper-image refactor plan. **Recommendation:**
 delete; re-introduce if the refactor materializes. **Parallel:** ✅ standalone
 
-### 1.8 — Surface verification: §11/§12 closure entries — XS
+**Done (2026-05-19):** Deleted the TODO inside `registerCommittee` (was at
+`services/walrus/internal.ts:688`). The surrounding "this phase is a typed no-op" comment already
+explains why the body is empty, so the TODO was redundant. The deferred-list row "Walrus internal
+TODO — Wrapper-image deploy path split" stays in §9 as the canonical follow-up trigger.
+
+### 1.8 — Surface verification: §11/§12 closure entries — XS — [x]
 
 **File:** `packages/devstack/notes/api-simplification.md` (final pass) **Action:** Mark Q1–Q6, Q8,
 Q9, Q10, Flips 1–5 as `SHIPPED (verified 2026-05-19)`. Q7 → links to §4.2 (Signer adoption). Flips
 6, 7 → links to §3.1, §3.2. **Parallel:** ✅ standalone (doc only)
+
+**Done (2026-05-19):** Marked all §11 open questions and §12 flips in
+`packages/devstack/notes/api-simplification.md`. Q1–Q6, Q8–Q10 now read
+`SHIPPED (verified 2026-05-19)` with code anchors where the api-simplification §8 already had them.
+Q7 reads `SCHEDULED — post-launch-sweep.md Wave 2 §4.2`. Flips 1, 3, 4, 5 marked `SHIPPED`; Flip 6
+marked `SCHEDULED in post-launch-sweep.md Wave 2 (§4.1 W12)`; Flip 7 marked `SHIPPED` (delivered by
+this wave's §1.2).
 
 **Wave 1 total:** 8 items, ≈8 file-disjoint subagents, ~50 LOC net deletes, 6 docstring additions, 1
 new example app, 2 test additions, ~2 hours wall.
@@ -136,7 +182,15 @@ new example app, 2 test additions, ~2 hours wall.
 out by service for the migration (M parallel subagents). Q7 (Signer) and O29 (Account funding) run
 alongside.
 
-### 2.1 — W12: `makeService()` / `makeApp()` / `makePlugin()` helper — M (centerpiece)
+### 2.1 — W12: `makeService()` / `makeApp()` / `makePlugin()` helper — M (centerpiece) — [x]
+
+**Done (2026-05-19):** Single HOF `makeService(pluginName, kind, impl)` landed in
+`packages/devstack/src/advanced/make-service.ts` (re-exported from `/advanced` barrel for
+out-of-tree plugins). Migrated all 24 sites across the 8 target services
+(`{dev,wallet,deepbook,sui,postgres,pyth,walrus,seal}.ts`); the deepbook file collapsed 8
+`Object.assign` boilerplate sites into single-line calls. 6 new unit tests in `make-service.test.ts`
+pin the stamp shape (mutating reference, preserved tag fields, all TagKind discriminators,
+equivalence with the literal `Object.assign` form). All 36 service unit tests pass unchanged.
 
 **Trigger:** 24 sites of `Object.assign(..., { __kind, __pluginName })` across `dev.ts`,
 `wallet.ts`, `deepbook.ts` (8 sites), `sui.ts`, `postgres.ts`, `pyth.ts`, `walrus.ts`, `seal.ts`.
@@ -177,7 +231,18 @@ preserved if any consumer relies on it; verify nothing does).
 
 **Parallel:** Sequential design pass, then 8-way fan-out migration.
 
-### 2.2 — Q7: Adopt `@mysten/sui` `Signer` interface on `Account` — M
+### 2.2 — Q7: Adopt `@mysten/sui` `Signer` interface on `Account` — M — [x]
+
+**Done (2026-05-19):** Re-exported `type DevstackSigner = Signer` from
+`packages/devstack/src/advanced/index.ts` (alongside the existing `'signer'`-kind branch of
+`AccountSpec` which already accepted a raw `@mysten/sui/cryptography` `Signer` per
+`account.ts:216`). Added Signer-conformance JSDoc on `Account` in `engine/shared.ts` making the
+structural mapping explicit (`sign{Transaction,PersonalMessage}` mirror Signer's surface; `scheme` ↔
+`getKeyScheme()`, `publicKey` ↔ `getPublicKey().toRawBytes()`, `address` ↔ `toSuiAddress()`). No
+literal `interface Account extends Signer` — Account's signing closures return
+`Effect<..., SignAndExecuteError>` rather than the SDK's `Promise<...>`, which makes class extension
+structurally impossible. Audited all 14 `signer:` parameter sites across the codebase: every one
+already types as `LayeredTag<any, Account, any, any>` — no ad-hoc signer shapes left to sweep.
 
 **Source:** `@mysten/sui/cryptography` `abstract class Signer` with required abstracts:
 `sign(bytes)`, `getKeyScheme()`, `getPublicKey()`. Derived: `signTransaction`,
@@ -200,7 +265,16 @@ import. Sweep all `signer:` parameter sites to type as `Signer` rather than ad-h
 **LOC:** ~+30 type adoption, −10 ad-hoc signer shapes ≈ +20 net. **Parallel:** Discovery sequential;
 migration ✅ standalone post-design.
 
-### 2.3 — O29: `Account({ funding })` accepts `Coin | LayeredTag` — S
+### 2.3 — O29: `Account({ funding })` accepts `Coin | LayeredTag` — S — [x]
+
+**Done (2026-05-19):** Widened `AccountFunding` in `services/account.ts` to a union:
+`Record<string, bigint> | ReadonlyArray<AccountFundingEntry>` where
+`AccountFundingEntry = { coin: { fullCoinType } | LayeredTag<...>, amount: bigint }`. The account
+body's funding loop normalizes both shapes through a new `resolveFundingCoinType(coin)` helper that
+uses `Context.isKey` to discriminate the LayeredTag form (yielded via `useSync` to read
+`fullCoinType` from the bound value) from the bare-Coin form (synchronous field read). 2 new tests
+in `account.test.ts` pin both branches; the existing Record-form test stays unchanged. All 13
+account unit tests pass.
 
 **File:** `packages/devstack/src/services/account.ts:263-273` **Current:**
 `AccountFunding = Record<string, bigint>` — string keys only. **Action:** Widen to
@@ -209,7 +283,17 @@ resolve `Coin`/`LayeredTag` refs to coin-type strings inside. **Coordinate:** wi
 lifecycle pin) — funding pull-through uses the auto-mounted faucet. **LOC:** ~+15. **Parallel:** ✅
 standalone
 
-### 2.4 — `dockerContainer` example consumes Wave-1 example — XS
+### 2.4 — `dockerContainer` example consumes Wave-1 example — XS — [x]
+
+**Done (2026-05-19):** Updated `examples/plugin-author-redis/redis-plugin.ts` to stamp plugin
+attribution via `makeService('redis', 'service', container)` after `dockerContainer(...)`. The
+dockerContainer primitive already sets `kind: 'service'` internally; `makeService` adds the
+`__pluginName: 'redis'` field so the TUI's `[redis]` chip + stable section color light up. The
+example typechecks (`pnpm typecheck` clean) and demonstrates the canonical out-of-tree pattern:
+import `makeService` from `@mysten-incubation/devstack/advanced`, build the inner tag with the
+plugin-author primitives (`dockerContainer` / `dockerImage` / `tag`), then wrap with
+`makeService(plugin, kind, impl)` rather than hand-rolling
+`Object.assign(impl, { __kind, __pluginName })`.
 
 **Trigger:** Wave 1 §3.6 lands the example app. Wave 2 verifies the example app uses the post-W12
 `makeService` shape (i.e., new plugin-author example demonstrates the new helper, not the old
@@ -232,26 +316,84 @@ sequence them. Everything else fans out.
 **Files:** `engine/network-facade.ts` (new), call sites in `services/sui.ts`, `services/walrus*.ts`,
 `services/seal*.ts`, `services/deepbook*.ts`. **Parallel:** ⚠️ engine-shared
 
-### 3.2 — `wrapDocker(toError, phase, msg?)` combinator (item 3.6 / D8) — S
+### 3.2 — `wrapDocker(toError, phase, msg?)` combinator (item 3.6 / D8) — S — [x]
 
 **Engine internal.** Today, ~12 sites re-wrap Docker errors with phase-specific TaggedErrors. One
 combinator + signature. **Files:** `engine/docker.ts` (new helper), sweep `services/*/internal.ts`.
 **Parallel:** ⚠️ engine-shared
 
-### 3.3 — `contentHash(input, {length})` unification (item 3.7 / D10) — S
+**Done (2026-05-19):** Landed `wrapDocker(makeError)` in
+`packages/devstack/src/engine/docker/wrap.ts`, re-exported from `engine/docker/index.ts` so
+`import * as Docker from '../engine/docker.js'` consumers see `Docker.wrapDocker`. Shape: the helper
+takes a factory `(cause: DockerError) => E` and returns a pipe-compatible combinator that does
+`Effect.catchTag('DockerError', cause => Effect.fail(makeError(cause)))`. The factory shape keeps
+the call site in control of which TaggedError class to construct
+
+- which dynamic fields (e.g. `component`, `marginAsset`, interpolated index) to fill — the helper
+  only collapses the catchTag plumbing. 4 unit tests in `wrap.test.ts` pin the contract (success
+  passthrough, failure swap, `cause` threading, open-coded equivalence). The 25-site call-site sweep
+  across `services/*/internal.ts` is deferred to a follow-up agent that owns those files; this
+  agent's scope was engine-layer only.
+
+### 3.3 — `contentHash(input, {length})` unification (item 3.7 / D10) — S — [x]
 
 **Engine internal.** Today, image-tag derivation and codegen fingerprinting use different
 content-hash shapes. Unify. **Files:** `engine/content-hash.ts` (new), call sites in
 `engine/image-build.ts`, `codegen/emitters/bindings.ts`. **Parallel:** ⚠️ engine-shared
 
-### 3.4 — Wallet protocol contract integration test (item 5.5) — M
+**Done (2026-05-19):** Landed `contentHash(input, {length})` + `createContentHasher()`/`digestHex()`
+streaming helpers in `packages/devstack/src/engine/content-hash.ts`. One-shot API accepts
+`string | Uint8Array | object` (objects flow through `JSON.stringify`; caller canonicalizes sort
+order). Streaming API wraps `crypto.createHash('sha256')` so tree-walks and multi- update
+fingerprints share the same algorithm + truncation knob. 11 unit tests in `content-hash.test.ts` pin
+the contract incl. open-coded equivalence
+(`createHash('sha256').update(...).digest('hex').slice(0, 16)` ≡ `contentHash(x, {length: 16})`).
+
+Migrated 11 sites across these files (all using the same sha256 + slice convention; digests match
+the previous open-coded form bit-for-bit so no cache-key drift):
+
+- `engine/sui-fork/meta.ts` (configHash, len 16) — pre-stringified to preserve canonical order
+- `engine/sui-fork.testkit.ts` (forkImageTag, len 12)
+- `engine/supervisor.ts` (watcher file hash, full)
+- `services/pyth/local-deploy.ts` (hashFeedSpecs, len 16)
+- `services/deepbook/margin.ts` (hashMarginConfig, len 16)
+- `services/deepbook/margin-seed.ts` (hashSeedAmounts, len 16)
+- `services/walrus/image.ts` (wrapper image input hash, len 12)
+- `services/package/internal.ts` (`hashMoveSources`, streaming, len 16)
+- `advanced/plugin-author/docker-image.ts` (treeHash streaming, len 12 + configHash len 12)
+- `advanced/plugin-author/docker-one-shot.ts` (cacheKey full; uses pre-stringify path because of the
+  bigint-safe `jsonReplacer`)
+- `codegen/emitters/bindings.ts` (computeFingerprint streaming, len 24)
+
+Sites NOT migrated (deferred for follow-up; ownership constraints on this agent):
+
+- `services/walrus/internal.ts:121` — `subnetForStack` returns a raw `Buffer` digest (not hex), uses
+  the streaming surface differently; helper would need a `digestBytes` variant.
+- `advanced/plugin-author/git-fetch.ts:155` — sha256 of `${repo}@${ref}`, slice 12. Forbidden file
+  for this agent. Trivial migration (`contentHash(...)`); 1-line follow-up.
+
+### 3.4 — Wallet protocol contract integration test (item 5.5) — M — [x]
 
 **File:** `services/wallet/protocol.integration.test.ts` (new) **Action:** Round-trip sample HTTP
 request/response shapes through both the devstack server (`@mysten/wallet`-protocol producer) and
 the dev-wallet client. Catches drift in either side. **Coordinate:** with W12 §4.1 (wallet.ts is a
 W12 site). **Parallel:** ✅ standalone
 
-### 3.5 — O22: Playwright export consolidation — M
+**Done (2026-05-19):** Landed `services/wallet/protocol.integration.test.ts` — 7 `it.effect` cases
+that stand up `walletApp(...)` under `Effect.scoped` (real-keypair–backed Account, stub SuiTag,
+isolated `DEVSTACK_ROUTER_DYNAMIC_DIR` tmpdir, OS-assigned ephemeral port) and exercise the full
+wire contract: (1) `parseDevstackToken` lifts the `#token=…` fragment off `pairUrl` and matches the
+32-hex on-disk shape; (2) `/health` round-trips 200 + `{ok: true}` on an allowed Origin; (3)
+`DevstackSignerAdapter.initialize()` hydrates `getAccounts()` via `/accounts` (browser-like Origin
+injected on a scoped `globalThis.fetch` shim, restored on scope close); (4) `/sign-transaction`
+returns a real Ed25519 signature that verifies under `@mysten/sui/verify`'s
+`verifyTransactionSignature` and re-derives the sender address; (5) `/sign-personal-message` ditto
+via `verifyPersonalMessageSignature`; (6) signing path without Origin fails-closed at 403 (C12
+curl-bypass guard); (7) signing path with a wrong bearer fails at 401 (constant-time compare
+reachability). `/accounts` body shape pinned (name/address/scheme/source/publicKey base64). All 7
+pass; typecheck clean.
+
+### 3.5 — O22: Playwright export consolidation — M — [x]
 
 **Trigger fired.** 6 example apps use `defineDevstackPlaywrightConfig`, `connectAs`, `test`,
 `expect` from `packages/devstack/src/playwright/`.
@@ -267,7 +409,20 @@ W12 site). **Parallel:** ✅ standalone
 
 **Parallel:** ✅ standalone (per-example subagents possible)
 
-### 3.6 — F18: Fork upstream-cache directory refcount/GC — M
+**Done (2026-05-19):** Audit found all 6 `playwright.config.ts` files already maximally shrunk to
+one-call `defineDevstackPlaywrightConfig()` (`private-content` carries the only override —
+`timeout: 900_000` for walrus/seal cold-start). Real spec-level duplication lived in
+`examples/arena/e2e/connect-four.spec.ts` (hand-rolled `loadManifest()` / `loadKey()` that
+re-implemented the on-disk path folklore: `.devstack/stacks/<stack>/manifest.json` +
+`runtime/accounts/<name>.key`). Extracted into `packages/devstack/src/playwright/artifacts.ts` as
+`loadStackManifest()` (returns the fully-typed v5 `Manifest`) and `loadStackKeypair(name)` (returns
+`Ed25519Keypair`). Both piggyback on the shared `discoverManifestPath()` ladder so the env-var /
+override / walk-up precedence stays in one place. Rewrote `index.ts` with a JSDoc-documented concern
+grouping (config / in-spec helpers / re-exports) so the de-facto public API is now explicit. Arena
+spec dropped from 148 to 121 LOC, untyped `RawManifest` gone. All 6 example apps typecheck clean; 24
+playwright module tests pass.
+
+### 3.6 — F18: Fork upstream-cache directory refcount/GC — M — [x]
 
 **Trigger fired** (Fork plan Phase 3+ done). **File:**
 `packages/devstack/src/engine/sui-fork/meta.ts:13` declares the cache as "shared, refcounted" but no
@@ -284,7 +439,18 @@ refcount/GC logic exists.
 **Recommendation:** (c) for now (manual + explicit); upgrade to (a) if the cache grows beyond pain
 threshold. **Parallel:** Design ⚠️ (decision needed first), implementation ✅ standalone.
 
-### 3.7 — P7 + W15: Wallet & Faucet lifecycle classification — S
+**Done (2026-05-19) — manual-only per §10.3 decision:** Updated the header comment in
+`packages/devstack/src/engine/sui-fork/meta.ts` to drop the "shared, refcounted upstream cache"
+claim (was a docs-only forward reference to refcount infra that never landed) and document the
+manual-only contract. The replacement note enumerates the existing CLI surface
+(`devstack fork cache prune --unreferenced`, `devstack wipe --also-upstream-cache`), the rationale
+for refusing refcount/age-based eviction (cycle-time bookkeeping cost vs. an unrealized pain
+threshold; caches are ~MB-scale per chainId and re-acquireable without data loss), and the trigger
+to revisit (real disk-pressure complaint). Zero code touched elsewhere — no refcount/eviction logic
+exists to remove. Per the §10.3 decision, the existing CLI knobs ARE the cache-GC contract; this
+item closes as doc-only.
+
+### 3.7 — P7 + W15: Wallet & Faucet lifecycle classification — S — [x]
 
 **Coordinate:** these are the same shape of fix.
 
@@ -293,6 +459,17 @@ threshold. **Parallel:** Design ⚠️ (decision needed first), implementation �
 - **W15 / faucet:** `services/faucet/index.ts` similarly unclassified. **Action:** Add `lifecycle`
   field or doc invariant comment per service; update tests to lock the classification. **Parallel:**
   ✅ standalone (different files)
+
+**Done 2026-05-19.** Added `**Lifecycle classification**` header blocks to both `services/wallet.ts`
+(ambient: no; singleton; long-lived host process; pairing token is long-lived via state-store,
+everything else per-cycle) and `services/faucet/index.ts` (ambient: yes via `fillDefaults`;
+in-memory only; per-cycle `Ref<Map>` strategy registry; no snapshot participation). New
+`services/faucet/index.test.ts` locks the classification with 5 unit tests: fresh `Ref<Map>` per
+layer build, register/list/requestCoin contract + override-shadowing, unknown-coinType failure
+shape, `Layer<FaucetTag, never, never>` shape (no state-store / identity deps), and concurrent
+disjoint registries. Existing `wallet.test.ts` finalizer/EADDRINUSE test already pins the wallet
+per-cycle invariants; no change there. `pnpm --filter @mysten-incubation/devstack typecheck` clean;
+15/15 wallet+faucet tests pass.
 
 **Wave 3 total:** 7 items, ~5 parallel subagents (engine items sequenced 1–2), ~+40 LOC net (mostly
 tests), ~3–4 hours wall.
@@ -347,7 +524,7 @@ standalone
 gRPC-default migration in place. **Parallel:** ✅ 4-way fan-out (one subagent per app — or run all
 in CI).
 
-### 4.6 — Coin UI follow-up: dev-wallet → generated `coins.ts` — M
+### 4.6 — Coin UI follow-up: dev-wallet → generated `coins.ts` — M — [x] 2026-05-19
 
 **Trigger:** coin plan Phase 5 deferred this to a UI perf follow-up. **Files:**
 `packages/dev-wallet/src/ui/dev-wallet-balances.ts`,
@@ -355,6 +532,15 @@ in CI).
 UI load with a single read of the generated `coins.ts` record (emitted by `BindingsEmitter` in coin
 Phase 5). **Coordinate:** with W12 §4.1 (dev-wallet may have its own \_\_kind sites). **Parallel:**
 ✅ standalone (different package)
+
+**Done 2026-05-19:** added a `coins` property (typed as a structural `CoinRecord` subset of the
+generated `coins.ts` shape) to `DevWalletBalances`, `DevWalletSigning`, `DevWalletSigningModal`,
+`DevWalletPanel`, `DevWalletStandalone`, and the `WalletController`. `mountDevWallet()` accepts a
+matching `coins` option. New helpers `indexCoinsByType` / `lookupCoinByType` in `ui/utils.ts` build
+a normalized `type → entry` lookup so the balances list and signing-modal coin-flow rows skip the
+per-coin `getCoinMetadata` RPC entirely for known types; unknown types still fall through to the
+network. Two browser tests in `tests/browser-ui.test.ts` cover both branches. dev-wallet remains
+structurally decoupled from the devstack package (consumers pass the generated record explicitly).
 
 **Wave 4 total:** 6 items. Docker sweeps sequential (~1.5 hours wall). UI/CI items parallel (~1 hour
 wall).

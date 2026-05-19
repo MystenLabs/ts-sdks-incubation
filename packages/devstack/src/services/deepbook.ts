@@ -12,6 +12,18 @@
 // public-surface name) Context.Service tags. Split along the capability
 // axis so future known-package factories can produce a strict subset
 // (`DeepbookCoreTag` only) without faking an admin cap.
+//
+// Snapshot participation (per AGENTS.md § "Snapshot participation") is
+// answered per dispatch branch:
+//   - **Local-deploy branch:** see `./deepbook/local-deploy.ts` for the
+//     authoritative section — the publish output (`packageId` +
+//     `adminCapId`) lives in the state-store, pool registry IDs are
+//     cached under `StateStoreKeys.deepbookPools(...)`, and the indexer /
+//     server sidecars persist their schemas + rows in the colocated
+//     `Postgres()` writable layer (see `services/postgres.ts`).
+//   - **Known-package branch:** nothing local to persist — the resolved
+//     package is on-chain at a public network. State on restore is just
+//     "whatever the upstream chain is at right now."
 
 import { Context, Effect, Schema } from 'effect';
 import {
@@ -54,6 +66,7 @@ export type {
 import { DeepbookError } from '../engine/errors.js';
 import { resolveNetwork } from '../engine/network.js';
 import { resolveDeploymentNetwork } from '../engine/known-deployments.js';
+import { makeService } from '../advanced/make-service.js';
 
 // -----------------------------------------------------------------------------
 // DeepbookCoreTag — read-side view
@@ -200,13 +213,16 @@ export interface DeepbookOptions {
 	 *  full surface. Ignored on testnet/mainnet — the canonical
 	 *  Deepbook deployment is already on chain there. */
 	readonly local?: Record<string, unknown>;
-	/** Override the canonical Deepbook registry for testnet/mainnet.
-	 *  Used when pinning to a private fork; most users leave this unset
-	 *  and let the factory wire to Mysten's public Deepbook. */
-	readonly override?: DeepbookKnownPackageOptions;
 	/** Override tag name. Defaults to `'deepbook'`. */
 	readonly name?: string;
 }
+
+// Plugin authors who need to pin a private Deepbook deployment can call
+// `deepbookKnownPackage({...})` directly from `/advanced` — the
+// canonical-only `Deepbook()` factory intentionally exposes no
+// `override:` surface (Wave 3 / §10.3): the canonical registry already
+// carries every field for `testnet` / `mainnet`, and zero examples or
+// tests ever set an override.
 
 /** Deepbook factory. Picks local-deploy on localnet and the canonical
  *  remote deployment on testnet/mainnet — single source of truth is
@@ -227,25 +243,19 @@ export const Deepbook = (opts: DeepbookOptions = {}) => {
 	if (network !== 'localnet') {
 		// `network` is one of `testnet | mainnet | *-fork`. Fork variants
 		// resolve to their upstream's `KnownNetwork` key via
-		// `resolveDeploymentNetwork`; live nets pass through.
+		// `resolveDeploymentNetwork`; live nets pass through. Plugin
+		// authors needing to pin a private deployment reach for
+		// `deepbookKnownPackage({...})` on `/advanced` directly.
 		const knownNetwork = resolveDeploymentNetwork(network);
-		const knownOpts: DeepbookKnownPackageOptions = {
-			...(knownNetwork !== undefined ? { network: knownNetwork } : {}),
-			...opts.override,
-		};
-		return Object.assign(deepbookKnownPackage(knownOpts), {
-			__kind: 'service' as const,
-			__pluginName: 'deepbook',
-		});
+		const knownOpts: DeepbookKnownPackageOptions =
+			knownNetwork !== undefined ? { network: knownNetwork } : {};
+		return makeService('deepbook', 'service', deepbookKnownPackage(knownOpts));
 	}
 	const localOpts = {
 		...(opts.name !== undefined ? { name: opts.name } : {}),
 		...opts.local,
 	} as Parameters<typeof deepbookLocalDeploy>[0];
-	return Object.assign(deepbookLocalDeploy(localOpts), {
-		__kind: 'service' as const,
-		__pluginName: 'deepbook',
-	});
+	return makeService('deepbook', 'service', deepbookLocalDeploy(localOpts));
 };
 
 /** Market-maker factory. Spawns a fiber that posts POST_ONLY orders on
@@ -254,10 +264,7 @@ export const Deepbook = (opts: DeepbookOptions = {}) => {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const DeepbookMarketMaker = (opts: any) =>
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	Object.assign((deepbookMarketMaker as any)(opts), {
-		__kind: 'action' as const,
-		__pluginName: 'deepbook',
-	});
+	makeService('deepbook', 'action', (deepbookMarketMaker as any)(opts));
 
 /** Mint DEEP from the locally-deployed deepbook package's `TreasuryCap`
  *  to a recipient. Reads `deepTreasuryId` from the deepbook tag's
@@ -265,19 +272,13 @@ export const DeepbookMarketMaker = (opts: any) =>
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const DeepbookMintDEEP = (opts: any) =>
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	Object.assign((deepbookMintDEEP as any)(opts), {
-		__kind: 'action' as const,
-		__pluginName: 'deepbook',
-	});
+	makeService('deepbook', 'action', (deepbookMintDEEP as any)(opts));
 
 /** Mint USDC from a caller-supplied `TreasuryCap`. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const DeepbookMintUSDC = (opts: any) =>
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	Object.assign((deepbookMintUSDC as any)(opts), {
-		__kind: 'action' as const,
-		__pluginName: 'deepbook',
-	});
+	makeService('deepbook', 'action', (deepbookMintUSDC as any)(opts));
 
 /** Vendor the deepbook + deepbook-sandbox Move sources into a
  *  `.devstack/vendor/deepbook/<ref>/` tree. Returns a Ref carrying the
@@ -285,30 +286,21 @@ export const DeepbookMintUSDC = (opts: any) =>
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const VendorDeepbook = (opts?: any) =>
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	Object.assign((deepbookVendor as any)(opts), {
-		__kind: 'action' as const,
-		__pluginName: 'deepbook',
-	});
+	makeService('deepbook', 'action', (deepbookVendor as any)(opts));
 
 /** DeepBook indexer container. Reads Sui checkpoints + writes events
  *  to Postgres. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const DeepbookIndexer = (opts: any) =>
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	Object.assign((deepbookIndexer as any)(opts), {
-		__kind: 'service' as const,
-		__pluginName: 'deepbook',
-	});
+	makeService('deepbook', 'service', (deepbookIndexer as any)(opts));
 
 /** DeepBook server container. Long-lived; serves the DeepBook REST API
  *  on `:9008` reading from the Postgres written to by `DeepbookIndexer`. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const DeepbookServer = (opts: any) =>
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	Object.assign((deepbookServer as any)(opts), {
-		__kind: 'service' as const,
-		__pluginName: 'deepbook',
-	});
+	makeService('deepbook', 'service', (deepbookServer as any)(opts));
 
 /** Publish the `deepbook_margin` + `margin_liquidation` Move packages,
  *  create one MarginPool per configured asset, and register each
@@ -317,20 +309,14 @@ export const DeepbookServer = (opts: any) =>
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const deepbookMarginAction = (opts: any) =>
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	Object.assign((deepbookMarginImpl as any)(opts), {
-		__kind: 'action' as const,
-		__pluginName: 'deepbook',
-	});
+	makeService('deepbook', 'action', (deepbookMarginImpl as any)(opts));
 
 /** Mint a SupplierCap + supply per-asset seed liquidity to each
  *  margin pool. Mirrors sandbox parity. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const deepbookMarginSeedAction = (opts: any) =>
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	Object.assign((deepbookMarginSeedImpl as any)(opts), {
-		__kind: 'action' as const,
-		__pluginName: 'deepbook',
-	});
+	makeService('deepbook', 'action', (deepbookMarginSeedImpl as any)(opts));
 
 /** DeepBook margin primitive — composite factory + `.seed` action.
  *

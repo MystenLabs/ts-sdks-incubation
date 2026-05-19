@@ -272,7 +272,7 @@ export const walletApp = (options: WalletAppOptions) => {
 				endpoint: { name: EndpointName.WALLET_APP, url },
 				localPort: port,
 			} satisfies WalletApp;
-		}).pipe(Effect.withSpan(`walletApp(${name})`)),
+		}).pipe(Effect.withSpan(`WalletApp(${name})`)),
 		{
 			kind: 'service',
 			plugin: 'wallet',
@@ -532,7 +532,7 @@ const handleSignTransaction = async (
 	try {
 		const result = await Effect.runPromiseWith(supervisorCtx)(
 			account.signTransaction(bytes).pipe(
-				Effect.withSpan('wallet.sign-transaction', {
+				Effect.withSpan('WalletSignTransaction', {
 					attributes: { 'account.name': account.name, 'account.address': account.address },
 				}),
 				Effect.annotateLogs({ walletRequestId: requestId }),
@@ -597,7 +597,7 @@ const handleSignPersonalMessage = async (
 	try {
 		const result = await Effect.runPromiseWith(supervisorCtx)(
 			account.signPersonalMessage(bytes).pipe(
-				Effect.withSpan('wallet.sign-personal-message', {
+				Effect.withSpan('WalletSignPersonalMessage', {
 					attributes: { 'account.name': account.name, 'account.address': account.address },
 				}),
 				Effect.annotateLogs({ walletRequestId: requestId }),

@@ -18,6 +18,7 @@
 import { Effect } from 'effect';
 import { hostProcess, type HostProcessOptions, type ReadyProbe } from './dev/internal.js';
 import type { LayeredTag } from '../advanced/tag.js';
+import { makeService } from '../advanced/make-service.js';
 import { EndpointName } from '../runtime/endpoint-names.js';
 
 export interface DevOptions<E = never, R = never> {
@@ -97,8 +98,11 @@ export const Dev = <E = never, R = never>(opts: DevOptions<E, R>) => {
 					},
 				}
 			: {}),
-		endpoint: { name: EndpointName.DEV_SERVER_FALLBACK, kind: 'dev-server' },
+		// Publish under the PRIMARY name — `frontend.dev-server`. The
+		// runtime grouper (`runtime/service.ts::groupApp`) reads PRIMARY
+		// only; an older FALLBACK alias (`dev-server`) is gone (Wave 6 §8.6).
+		endpoint: { name: EndpointName.DEV_SERVER_PRIMARY, kind: 'dev-server' },
 		traefik: { service: 'dev', entrypoint: 'vite' },
 	};
-	return Object.assign(hostProcess(hostOpts), { __kind: 'app' as const, __pluginName: 'dev' });
+	return makeService('dev', 'app', hostProcess(hostOpts));
 };

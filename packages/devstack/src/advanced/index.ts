@@ -43,6 +43,11 @@ export {
 	composeLayers,
 	setPhase,
 } from './tag.js';
+// `makeService(pluginName, kind, impl)` — stamps `__kind` +
+// `__pluginName` on a tag-shaped value. Replaces the in-tree
+// `Object.assign(impl, {__kind, __pluginName})` boilerplate; surfaced
+// here for out-of-tree plugins that mirror the same pattern.
+export { makeService } from './make-service.js';
 
 // Plugin-author entry. `devstack(...)` is the canonical surface; reach for
 // `defineDevstack` when you want to pre-build the Layer graph (custom
@@ -121,7 +126,9 @@ export {
 } from '../codegen/define-emitter.js';
 export { BindingsEmitter } from '../codegen/emitters/bindings.js';
 export { DappKitConfigEmitter } from '../codegen/emitters/dapp-kit-config.js';
+export { DeepbookConfigEmitter } from '../codegen/emitters/deepbook-config.js';
 export { StackHandleEmitter } from '../codegen/emitters/stack-handle.js';
+export { CodegenError } from '../codegen/errors.js';
 
 // ── 5. Faucet plugin-author surface ──
 // `Faucet(...)` is auto-mounted by `devstack(...)` — users don't call
@@ -133,10 +140,31 @@ export {
 	type FaucetOptions,
 	FaucetTag,
 	type FaucetStrategy,
+	FaucetRequestError,
 } from '../services/faucet/index.js';
 export { suiHttpStrategy } from '../services/faucet/strategies/sui-http.js';
 export { walExchangeStrategy } from '../services/faucet/strategies/wal-exchange.js';
 export { treasuryCapMintStrategy } from '../services/faucet/strategies/treasury-cap-mint.js';
+
+// `pythMid` — Ref helper that polls the on-chain Pyth `PriceInfoObject`
+// and exposes a Ref-shaped mid price for downstream consumers. Lives on
+// `/advanced` because the typical user reaches for it via the higher-
+// level `DeepbookMarketMaker` (which composes `pythMid` internally for
+// its quote source). Plugin authors building custom market-maker /
+// pricing surfaces wire it explicitly.
+export { pythMid, type PythMid, type PythMidOptions, type PythMidScale } from '../services/pyth.js';
+
+// `DevstackSigner` — re-exported alias for `@mysten/sui/cryptography`'s
+// `Signer` abstract class. Plugin authors writing factories that accept
+// a raw signer (HSM, remote signer, browser wallet under test) should
+// type the parameter as `DevstackSigner` so the surface stays consistent
+// with the SDK contract that `Account('alice', {kind: 'signer', signer})`
+// already accepts. The devstack `Account` resolves to a Signer-compatible
+// shape (same `sign{Transaction,PersonalMessage}` / `getKeyScheme` /
+// `getPublicKey` / `toSuiAddress` surface) but in the Effect idiom —
+// `Account.signTransaction(bytes)` returns `Effect<{signature, bytes}>`
+// rather than the SDK's `Promise<SignatureWithBytes>`.
+export type { Signer as DevstackSigner } from '@mysten/sui/cryptography';
 
 // ── 6. Low-level interface tag escape hatches ──
 // Yield from inside a plugin or a test body when you need the resolved

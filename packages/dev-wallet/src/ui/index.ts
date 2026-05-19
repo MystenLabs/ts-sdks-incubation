@@ -22,5 +22,8 @@ export { DevWalletDropdown } from './dev-wallet-dropdown.js';
 export { DevWalletNetworkBadge } from './dev-wallet-network-badge.js';
 /** @internal — not intended for direct use by consumers */
 export { DevWalletTabBar } from './dev-wallet-tab-bar.js';
+/** Phase 5 Subtopic 6 — fork-controls panel. Surfaced so apps that
+ *  build their own panel layout can mount it standalone. */
+export { DevWalletForkPanel } from './dev-wallet-fork-panel.js';
 
 export { mountDevWallet } from './mount.js';

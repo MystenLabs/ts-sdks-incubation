@@ -22,6 +22,7 @@ import * as path from 'node:path';
 import { Effect } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { generateFromPackageSummary } from '@mysten/codegen';
+import { createContentHasher, digestHex } from '../../engine/content-hash.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
 import { SuiBuildContainer } from '../../engine/sui-build-container.js';
 import { CodegenError } from '../errors.js';
@@ -330,7 +331,7 @@ type FingerprintResult =
 
 const computeFingerprint = (targets: ReadonlyArray<Target>): Effect.Effect<string | undefined> =>
 	Effect.gen(function* () {
-		const hash = crypto.createHash('sha256');
+		const hash = createContentHasher();
 		for (const t of targets) {
 			hash.update(`${t.name}\0${t.sourcePath}\0${t.mvrPlaceholder}\0`);
 			// Catch inside the Promise so we can name the underlying
@@ -360,7 +361,7 @@ const computeFingerprint = (targets: ReadonlyArray<Target>): Effect.Effect<strin
 			hash.update(String(result.mtime));
 			hash.update('\0');
 		}
-		return hash.digest('hex').slice(0, 24);
+		return digestHex(hash, { length: 24 });
 	});
 
 // Walk the source tree once and return the max mtime in ms across

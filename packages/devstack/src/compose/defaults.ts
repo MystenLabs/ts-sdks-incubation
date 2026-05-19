@@ -28,6 +28,14 @@ export const fillDefaults = (refs: ReadonlyArray<StackMember>): ReadonlyArray<St
 	const hasFaucet = refs.some((r) => ((r as { key?: string }).key ?? '').startsWith('faucet/'));
 	const out: Array<StackMember> = [...refs];
 	if (!hasSui) out.unshift(SuiFactory());
-	if (!hasFaucet) out.push(FaucetFactory() as unknown as StackMember);
+	if (!hasFaucet) {
+		// `hidden: true` because this Faucet is auto-included by devstack
+		// itself (the user didn't type it), so surfacing it as a TUI row
+		// is confusing — the user sees `[sui] faucet pending` and
+		// wonders what it is and why it's separate from the sui localnet
+		// row that already shows the faucet URL. Users who explicitly
+		// add `Faucet({...})` to their stack still get a visible row.
+		out.push(FaucetFactory({ hidden: true }) as unknown as StackMember);
+	}
 	return out;
 };

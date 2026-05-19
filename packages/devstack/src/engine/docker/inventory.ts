@@ -430,7 +430,7 @@ export const collectImageInventory = (): Effect.Effect<
 			inUse: inUse.has(img.id) || inUse.has(img.tag),
 		}));
 		return { labelled: images as ReadonlyArray<ImageRef>, unlabelledOrphans };
-	}).pipe(Effect.withSpan('inventory.collectImages'));
+	}).pipe(Effect.withSpan('InventoryCollectImages'));
 
 // Parse docker's human-readable size strings ("1.234GB", "12.4MB",
 // "0B"). Returns bytes. Decimal SI units (1KB = 1000B) match docker's
@@ -702,7 +702,7 @@ export const collectInventory = (
 			return a.stack < b.stack ? -1 : a.stack > b.stack ? 1 : 0;
 		});
 		return rows as ReadonlyArray<InventoryRow>;
-	}).pipe(Effect.withSpan('inventory.collect'));
+	}).pipe(Effect.withSpan('InventoryCollect'));
 
 // -----------------------------------------------------------------------------
 // Classification glue
@@ -880,7 +880,7 @@ export const collectRouterInfo = (): Effect.Effect<
 			activeBackends: lines.length,
 			apps: [...apps].sort() as ReadonlyArray<string>,
 		};
-	}).pipe(Effect.withSpan('inventory.collectRouter'));
+	}).pipe(Effect.withSpan('InventoryCollectRouter'));
 
 export const renderRouterRow = (info: RouterInfo): string => {
 	if (!info.present) {

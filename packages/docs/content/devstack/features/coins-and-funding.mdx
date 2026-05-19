@@ -18,46 +18,34 @@ by default today. Custom-token funding is mechanism-complete but registration-ma
 
 ## Declaring a coin on a Move package
 
-If your Move package defines a coin, declare it on the `Package` ref:
+Coins are **auto-discovered** from the Move source — every `coin::create_currency<W>(...)` in your
+package's `init` lights up automatically. No `coins:` field on `Package`:
 
 ```ts
 import { Account, devstack, Package } from '@mysten-incubation/devstack';
 
 const publisher = Account('publisher');
 
-const tokens = Package('tokens', './move/tokens', {
-	signer: publisher,
-	coins: [
-		{ name: 'gold', module: 'gold', type: 'GOLD', decimals: 9 },
-		{ name: 'usdc', module: 'usdc', type: 'USDC', decimals: 6 },
-	],
-});
+// Both GOLD and USDC are auto-discovered from the Move source on publish.
+const tokens = Package('tokens', './move/tokens', { signer: publisher });
 
 export default devstack(publisher, tokens);
 ```
 
-For each entry, devstack:
+For each `create_currency` call devstack:
 
 1. Auto-registers the coin in the `CoinRegistry` once `tokens` is published.
-2. Projects it into the manifest's `coins[]` namespace as `{ name, type, decimals, sdkCoin }`.
-3. Surfaces a `CoinTag`-shaped Ref you can yield to get the resolved `fullCoinType`
-   (`<packageId>::module::type`).
+2. Surfaces it on the resolved `Package` value as `pkg.coins[<symbol>]` carrying
+   `{ name, fullCoinType, decimals, sdkCoin, treasuryCapId?, metadataId?, symbol?, displayName?, iconUrl? }`.
+3. Auto-registers a TreasuryCap mint strategy on the implicit `Faucet()` so
+   `Account({ funding: { '<symbol>': amount } })` just works.
 
-The `coins:` shortcut is the right path for the common case. For coins published by a package you
-don't own (a vendored library, a known testnet token you only depend on), use `registerCoin(...)`
-instead:
+Address coins three ways from app config:
 
-```ts
-import { registerCoin } from '@mysten-incubation/devstack';
-
-const customCoin = registerCoin({
-	name: 'partner',
-	package: someOtherPackage,
-	module: 'partner_coin',
-	type: 'PARTNER',
-	decimals: 8,
-});
-```
+- `Coin('SYMBOL')` — registry lookup (case-insensitive).
+- `Coin.fromPackage(pkg, 'WITNESS')` — explicit per-package lookup; forces a dep edge on `pkg`.
+- `Coin('0x...::module::TYPE')` — bare on-chain coin type (live-net coins, vendored package coins).
+- `Coin.builtin('sui')` — hardcoded `0x2::sui::SUI`.
 
 ## Funding accounts
 
@@ -82,13 +70,13 @@ The supervisor dispatches each request through the `Faucet` service's per-coin s
 
 ## What's auto vs manual
 
-| Coin                             | Localnet                                          | Live network                                                                    |
-| -------------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `SUI`                            | **Auto** (via `Sui()`'s faucet)                   | **Auto** on testnet (faucet); manual on mainnet                                 |
-| `WAL`                            | **Auto** when `Walrus()` is in the stack          | Funding through devstack isn't supported on live networks — pre-fund externally |
-| User coin (`Package({ coins })`) | **Auto** when the publisher holds the TreasuryCap | Funding through devstack isn't supported on live networks — pre-fund externally |
-| User coin (`KnownPackage`)       | Manual — write a strategy                         | Manual — pre-fund externally                                                    |
-| Anything else                    | Manual — write a strategy                         | Manual                                                                          |
+| Coin                       | Localnet                                          | Live network                                                                    |
+| -------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `SUI`                      | **Auto** (via `Sui()`'s faucet)                   | **Auto** on testnet (faucet); manual on mainnet                                 |
+| `WAL`                      | **Auto** when `Walrus()` is in the stack          | Funding through devstack isn't supported on live networks — pre-fund externally |
+| User coin (`Package(...)`) | **Auto** when the publisher holds the TreasuryCap | Funding through devstack isn't supported on live networks — pre-fund externally |
+| User coin (`KnownPackage`) | Manual — write a strategy                         | Manual — pre-fund externally                                                    |
+| Anything else              | Manual — write a strategy                         | Manual                                                                          |
 
 The auto registrations:
 
@@ -97,10 +85,10 @@ The auto registrations:
   package resolves, using the first `seedAccounts` entry as the swap admin. If you don't declare any
   `seedAccounts`, no WAL strategy registers — you can still pass
   `Faucet({ strategies: [walExchangeStrategy({...})] })` yourself with a different signer.
-- **User coin** — `Package({ coins: [...] })`'s body registers a `treasuryCapMintStrategy` per coin
-  after capturing the TreasuryCap from the publish's `objectChanges`. The signer is the package's
-  publisher (who holds the cap). Coins from `KnownPackage(...)` don't go through this path because
-  we don't own the cap.
+- **User coin** — `Package(...)`'s coin auto-discovery pass registers a `treasuryCapMintStrategy`
+  per coin after capturing the TreasuryCap from the publish's `objectChanges`. The signer is the
+  package's publisher (who holds the cap). Coins from `KnownPackage(...)` don't go through this path
+  because we don't own the cap.
 
 `amount` semantics differ per strategy:
 
@@ -153,13 +141,13 @@ export default devstack(
 registry and runs the matching strategy.
 
 `Faucet({ strategies: [...] })` doesn't replace the auto-included strategies (SUI from `Sui()`, WAL
-from `Walrus()`, TreasuryCap mints from `Package({ coins })`); it appends to the registry alongside
-them.
+from `Walrus()`, TreasuryCap mints from `Package(...)` (with auto-discovered coins)); it appends to
+the registry alongside them.
 
 ## Manifest output
 
-For every coin declared via `Package({ coins })` or `registerCoin`, the manifest carries an entry
-under the top-level `coins` record (keyed by coin name):
+For every coin declared via `Package(...)` (with auto-discovered coins) or `registerCoin`, the
+manifest carries an entry under the top-level `coins` record (keyed by coin name):
 
 ```json
 {
@@ -182,7 +170,8 @@ to pool helpers without translation. Frontend code reads via `fromManifest(rawJs
 
 ## Reference
 
-- [Services reference — Package](../reference/services#package) — the `coins:` field options.
+- [Services reference — Package](../reference/services#packagename-source-opts) — the `Package`
+  options surface (no `coins:` field; coins are auto-discovered).
 - [Faucet reference](../reference/faucet) — the strategy registry and the `FaucetRequestError`
   taxonomy.
 - [Walrus, Seal, Deepbook](./services#walrus) — `seedAccounts:` on `Walrus({ local })` is the

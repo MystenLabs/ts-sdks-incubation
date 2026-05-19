@@ -12,7 +12,15 @@ import { CopyController } from './copy-controller.js';
 import { actionButtonStyles, sharedStyles } from './styles.js';
 import type { TransactionAnalysis } from './transaction-analyzer.js';
 import { analyzeTransaction } from './transaction-analyzer.js';
-import { emitEvent, formatAddress, formatCoinBalance, getCoinSymbol } from './utils.js';
+import type { CoinManifestEntry, CoinRecord } from './utils.js';
+import {
+	emitEvent,
+	formatAddress,
+	formatCoinBalance,
+	getCoinSymbol,
+	indexCoinsByType,
+	lookupCoinByType,
+} from './utils.js';
 
 const REQUEST_TYPE_LABELS: Record<PendingSigningRequest['type'], string> = {
 	'sign-personal-message': 'Sign Message',
@@ -285,6 +293,13 @@ export class DevWalletSigning extends LitElement {
 	@property({ attribute: false })
 	client: ClientWithCoreApi | null = null;
 
+	/** Optional pre-seeded coin metadata — pass the generated `coins`
+	 *  constant from devstack codegen to skip per-coin `getCoinMetadata`
+	 *  RPC fetches when rendering coin-flow estimates. Unknown coin types
+	 *  fall through to an RPC fetch as before. */
+	@property({ attribute: false })
+	coins: CoinRecord | null = null;
+
 	@state()
 	private _analysis: TransactionAnalysis | null = null;
 
@@ -297,8 +312,15 @@ export class DevWalletSigning extends LitElement {
 	#copy = new CopyController(this);
 	#analysisGeneration = 0;
 	#coinDecimalsCache = new Map<string, number>();
+	#coinSymbolCache = new Map<string, string>();
+	#coinIndex: ReadonlyMap<string, CoinManifestEntry> = new Map();
+	#lastCoinsRef: CoinRecord | null = null;
 
 	override willUpdate(changedProperties: Map<string, unknown>) {
+		if (changedProperties.has('coins') && this.coins !== this.#lastCoinsRef) {
+			this.#coinIndex = indexCoinsByType(this.coins);
+			this.#lastCoinsRef = this.coins;
+		}
 		if (changedProperties.has('request')) {
 			this._analysis = null;
 			this._analysisError = null;
@@ -320,26 +342,41 @@ export class DevWalletSigning extends LitElement {
 
 		if (result.kind === 'rich') {
 			this._analysis = result.analysis;
-			// Fetch coin metadata for all coin types in flows
-			if (this.client && result.analysis.coinFlows?.length) {
+			// Seed coin metadata for all coin types in flows. The generated
+			// `coins` record (when provided) short-circuits the per-coin
+			// `getCoinMetadata` RPC; only unknown coin types fall through to
+			// the network.
+			if (result.analysis.coinFlows?.length) {
 				const coinTypes = [...new Set(result.analysis.coinFlows.map((f) => f.coinType))];
-				await Promise.all(
-					coinTypes
-						.filter((ct) => !this.#coinDecimalsCache.has(ct))
-						.map(async (ct) => {
+				const unresolved: string[] = [];
+				for (const ct of coinTypes) {
+					if (this.#coinDecimalsCache.has(ct)) continue;
+					const seed = lookupCoinByType(this.#coinIndex, ct);
+					if (seed !== undefined) {
+						this.#coinDecimalsCache.set(ct, seed.decimals);
+						if (seed.symbol !== undefined) this.#coinSymbolCache.set(ct, seed.symbol);
+						continue;
+					}
+					unresolved.push(ct);
+				}
+				if (this.client && unresolved.length > 0) {
+					await Promise.all(
+						unresolved.map(async (ct) => {
 							try {
 								const { coinMetadata } = await this.client!.core.getCoinMetadata({
 									coinType: ct,
 								});
 								if (coinMetadata) {
 									this.#coinDecimalsCache.set(ct, coinMetadata.decimals);
+									if (coinMetadata.symbol) this.#coinSymbolCache.set(ct, coinMetadata.symbol);
 								}
 							} catch {
 								// leave uncached — will use 0 as fallback
 							}
 						}),
-				);
-				if (generation !== this.#analysisGeneration) return;
+					);
+					if (generation !== this.#analysisGeneration) return;
+				}
 				this.requestUpdate();
 			}
 		} else {
@@ -459,10 +496,11 @@ export class DevWalletSigning extends LitElement {
 			<div class="coin-flows">
 				${flows.map((flow) => {
 					const decimals = this.#coinDecimalsCache.get(flow.coinType) ?? 0;
+					const symbol = this.#coinSymbolCache.get(flow.coinType) ?? getCoinSymbol(flow.coinType);
 					const formatted = formatCoinBalance(flow.amount, decimals);
 					return html`
 						<div class="coin-flow-item">
-							<span class="coin-flow-type">${getCoinSymbol(flow.coinType)}</span>
+							<span class="coin-flow-type">${symbol}</span>
 							<span class="coin-flow-amount"> -${formatted} </span>
 						</div>
 					`;

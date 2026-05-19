@@ -105,7 +105,7 @@ export const deepbookKnownPackage = (opts: DeepbookKnownPackageOptions) => {
 				poolIds,
 				findPool,
 			} satisfies DeepbookCore;
-		}).pipe(Effect.withSpan('deepbookKnownPackage')),
+		}).pipe(Effect.withSpan('DeepbookKnownPackage')),
 		{
 			kind: 'service',
 			plugin: 'deepbook',

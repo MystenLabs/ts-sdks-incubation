@@ -8,8 +8,9 @@
 //   live nets: <appDir>/.devstack/networks/<network>/runtime/<service>/...
 //
 // `snapshot save` tars this entire directory (one .tar) plus
-// `state.json` plus any opt-in extras registered via `addExtra`. Restore
-// is the reverse, atomic. Combined with the writable-layer flip in
+// `state.json` plus any opt-in extras passed via the `extras: [...]`
+// argument to `saveSnapshot`. Restore is the reverse, atomic.
+// Combined with the writable-layer flip in
 // Phase 2 (chain state + indexer-db in the container layer), one
 // snapshot is a fully replayable artifact: containers via `docker
 // commit + save`, state via `state.json`, secrets / deploy outputs via
@@ -28,8 +29,8 @@
 // for state that should be invisible to TS tooling and lint configs.
 
 import { existsSync, mkdirSync } from 'node:fs';
-import { join, resolve as resolvePath } from 'node:path';
-import { Context, Effect, Layer, Ref, Schema } from 'effect';
+import { join } from 'node:path';
+import { Effect, Schema } from 'effect';
 import { resolveAppDir } from './resolve-app-dir.js';
 import { StateStoreConfig, type StateStoreConfigShape } from './state-store.js';
 
@@ -81,56 +82,6 @@ const resolveRuntimeRoot = (cfg: StateStoreConfigShape): string => {
 	}
 	return join(appDir, '.devstack', 'networks', cfg.network, RUNTIME_DIR_NAME);
 };
-
-/** Opt-in registry of additional host paths to include in snapshot save
- *  / restore. The vast majority of services should write under the
- *  canonical `runtime/<service>/` dir (use `servicePath(...)` below) and
- *  never touch this registry. Use only when a path is dictated by an
- *  upstream tool that doesn't let you redirect it. */
-export interface ExtraRuntimePathsShape {
-	/** Register an absolute path (file or directory) as a snapshot
-	 *  extra. `key` is the tarball name inside `<snapshot>/extras/`. */
-	readonly addExtra: (key: string, absolutePath: string) => Effect.Effect<void>;
-	/** Snapshot-read accessor — returns the current set of registered
-	 *  extras. Snapshot save reads this once at save time. */
-	readonly extras: Effect.Effect<ReadonlyArray<{ key: string; path: string }>>;
-}
-
-export class ExtraRuntimePaths extends Context.Service<ExtraRuntimePaths, ExtraRuntimePathsShape>()(
-	'@devstack/ExtraRuntimePaths',
-) {}
-
-const EXTRAS_KEY_RE = /^[a-z][a-z0-9-]{0,63}$/;
-
-export const ExtraRuntimePathsLive: Layer.Layer<ExtraRuntimePaths, never, never> = Layer.effect(
-	ExtraRuntimePaths,
-	Effect.gen(function* () {
-		const ref = yield* Ref.make<ReadonlyArray<{ key: string; path: string }>>([]);
-		return ExtraRuntimePaths.of({
-			addExtra: (key, absolutePath) =>
-				Effect.gen(function* () {
-					if (!EXTRAS_KEY_RE.test(key)) {
-						return yield* Effect.die(
-							new Error(
-								`ExtraRuntimePaths.addExtra: key '${key}' is invalid ` +
-									`(must match ${EXTRAS_KEY_RE.source})`,
-							),
-						);
-					}
-					if (!resolvePath(absolutePath).startsWith('/')) {
-						return yield* Effect.die(
-							new Error(`ExtraRuntimePaths.addExtra: '${absolutePath}' is not absolute`),
-						);
-					}
-					yield* Ref.update(ref, (current) => {
-						if (current.some((e) => e.key === key)) return current;
-						return [...current, { key, path: absolutePath }];
-					});
-				}),
-			extras: Ref.get(ref),
-		});
-	}),
-);
 
 /** Resolve a path under the canonical `runtime/<service>/` directory
  *  for the active stack. Lazily `mkdir -p`s the service subdirectory on

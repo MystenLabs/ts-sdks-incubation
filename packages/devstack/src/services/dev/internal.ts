@@ -361,7 +361,7 @@ export const hostProcess = <const Name extends string, E = never, R = never>(
 			}
 
 			return { pid: handle.pid as unknown as number, url } satisfies HostProcessHandle;
-		}).pipe(Effect.withSpan(`hostProcess(${options.name})`)),
+		}).pipe(Effect.withSpan(`HostProcess(${options.name})`)),
 		{
 			kind: 'service',
 			plugin: 'dev',

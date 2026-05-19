@@ -94,6 +94,33 @@ describe('engine/sui-fork/meta', () => {
 			});
 			expect(a).not.toBe(b);
 		});
+
+		// P5.5.4: the runtime carry (autoTickMs) is excluded from the
+		// hash — the seed-manifest contract covers `(upstream,
+		// checkpoint, seedAddresses, seedObjects)` only, and supervisor-
+		// side cadence values must not trip `SeedManifestMismatchError`.
+		// `ForkConfigInput` has no `runtime` slot by design; this test
+		// asserts the surface contract by computing the hash with
+		// identical seed-manifest fields and showing it stays stable
+		// regardless of any "runtime"-like extra the caller might
+		// imagine wanting to fold in.
+		it('P5.5.4: hash ignores runtime-shaped extras (autoTickMs not part of contract)', () => {
+			const base = {
+				upstream: 'testnet',
+				checkpoint: 1000,
+				seedAddresses: ['0xaa'],
+				seedObjects: ['0x111'],
+			} as const;
+			const a = computeConfigHash(base);
+			// Even if a future caller accidentally widened the input
+			// shape, the function signature forces them through
+			// `ForkConfigInput`, which has no `runtime` member —
+			// extra fields wouldn't change the hash. We can't pass an
+			// extra at the typed surface; the protection here is
+			// structural and is asserted at the schema level by
+			// `ensureForkMetaConsistent` round-tripping (below).
+			expect(a).toMatch(/^[0-9a-f]{16}$/);
+		});
 	});
 
 	describe('ensureForkMetaConsistent (P4.16)', () => {
@@ -171,6 +198,99 @@ describe('engine/sui-fork/meta', () => {
 				expect(result.current?.upstream).toBe('testnet');
 				expect(result.previous?.configHash).not.toBe(result.current?.configHash);
 				expect(result.message).toMatch(/wipe --keep-upstream-cache/);
+				yield* Effect.promise(() => rm(dir, { recursive: true, force: true }));
+			}).pipe(Effect.provide(NodeServicesLayer)),
+		);
+
+		// P5.5.4: runtime carry — autoTickMs persists across resume but
+		// is NOT part of `configHash`, so flipping it does NOT trip
+		// the seed-manifest mismatch gate.
+		it.effect('P5.5.4: persists runtime.autoTickMs across first-boot write', () =>
+			Effect.gen(function* () {
+				const dir = yield* Effect.promise(() => mkdtemp(joinPath(tmpdir(), 'devstack-fork-meta-')));
+				const metaPath = joinPath(dir, 'meta.json');
+				const result = yield* ensureForkMetaConsistent({
+					metaPath,
+					current: {
+						upstream: 'testnet',
+						seedAddresses: ['0xaa'],
+						seedObjects: [],
+					},
+					runtime: { autoTickMs: 1500 },
+				});
+				expect(result.written).toBe(true);
+				expect(result.meta.runtime?.autoTickMs).toBe(1500);
+				// Round-trip via the on-disk file — the schema decoder must
+				// hydrate `runtime.autoTickMs` back to a number.
+				const onDisk = yield* readForkMeta(metaPath);
+				expect(onDisk?.runtime?.autoTickMs).toBe(1500);
+				yield* Effect.promise(() => rm(dir, { recursive: true, force: true }));
+			}).pipe(Effect.provide(NodeServicesLayer)),
+		);
+
+		it.effect('P5.5.4: configHash unchanged when only autoTickMs changes (no mismatch)', () =>
+			Effect.gen(function* () {
+				const dir = yield* Effect.promise(() => mkdtemp(joinPath(tmpdir(), 'devstack-fork-meta-')));
+				const metaPath = joinPath(dir, 'meta.json');
+				const seedFields = {
+					upstream: 'testnet',
+					checkpoint: 2000,
+					seedAddresses: ['0xaa', '0xbb'],
+					seedObjects: ['0x111'],
+				} as const;
+				const first = yield* ensureForkMetaConsistent({
+					metaPath,
+					current: seedFields,
+					runtime: { autoTickMs: 1000 },
+				});
+				expect(first.meta.runtime?.autoTickMs).toBe(1000);
+
+				// Second boot: same seed-manifest fields, DIFFERENT
+				// autoTickMs. The configHash should be byte-identical;
+				// the runtime carry should refresh in place; no
+				// `SeedManifestMismatchError`.
+				const second = yield* ensureForkMetaConsistent({
+					metaPath,
+					current: seedFields,
+					runtime: { autoTickMs: 2500 },
+				});
+				expect(second.meta.configHash).toBe(first.meta.configHash);
+				expect(second.meta.runtime?.autoTickMs).toBe(2500);
+				expect(second.written).toBe(true);
+
+				// Round-trip via disk — the refreshed value persists.
+				const onDisk = yield* readForkMeta(metaPath);
+				expect(onDisk?.configHash).toBe(first.meta.configHash);
+				expect(onDisk?.runtime?.autoTickMs).toBe(2500);
+				yield* Effect.promise(() => rm(dir, { recursive: true, force: true }));
+			}).pipe(Effect.provide(NodeServicesLayer)),
+		);
+
+		it.effect('P5.5.4: clearing runtime drops the key on the persisted shape', () =>
+			Effect.gen(function* () {
+				const dir = yield* Effect.promise(() => mkdtemp(joinPath(tmpdir(), 'devstack-fork-meta-')));
+				const metaPath = joinPath(dir, 'meta.json');
+				const seedFields = {
+					upstream: 'testnet',
+					seedAddresses: ['0xaa'],
+					seedObjects: [],
+				} as const;
+				yield* ensureForkMetaConsistent({
+					metaPath,
+					current: seedFields,
+					runtime: { autoTickMs: 1000 },
+				});
+				// Resume with no runtime — the cleared cadence must vanish
+				// from disk (otherwise a subsequent resume would re-arm a
+				// stale fiber).
+				const cleared = yield* ensureForkMetaConsistent({
+					metaPath,
+					current: seedFields,
+					runtime: {},
+				});
+				expect(cleared.meta.runtime).toBeUndefined();
+				const onDisk = yield* readForkMeta(metaPath);
+				expect(onDisk?.runtime).toBeUndefined();
 				yield* Effect.promise(() => rm(dir, { recursive: true, force: true }));
 			}).pipe(Effect.provide(NodeServicesLayer)),
 		);

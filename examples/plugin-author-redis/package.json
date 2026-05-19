@@ -1,0 +1,23 @@
+{
+	"name": "@mysten-incubation/plugin-author-redis",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"dev": "devstack up",
+		"apply": "devstack apply",
+		"typecheck": "tsc -b --noEmit",
+		"stack": "devstack stack"
+	},
+	"dependencies": {
+		"@mysten-incubation/devstack": "workspace:*"
+	},
+	"devDependencies": {
+		"@mysten-incubation/tsconfig": "workspace:*",
+		"@types/node": "catalog:",
+		"typescript": "catalog:"
+	},
+	"engines": {
+		"node": ">=24"
+	}
+}

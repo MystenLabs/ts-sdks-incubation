@@ -29,7 +29,6 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-import * as crypto from 'node:crypto';
 import * as nodeFs from 'node:fs/promises';
 import * as nodePath from 'node:path';
 import {
@@ -52,9 +51,11 @@ import { minimatch } from 'minimatch';
 import {
 	buildDepGraph,
 	computeDownstreamClosure,
+	topoLevels,
 	type DepGraph,
 	type DownstreamClosure,
 } from './dep-graph.js';
+import { contentHash } from './content-hash.js';
 import { ClaimedContainers, dockerOrphanSweep, ensureRouter } from './docker.js';
 import { prettyError } from './pretty-error.js';
 import {
@@ -118,6 +119,30 @@ export interface StackMember {
 	// list — when present, we mergeAll those instead of just `__layer`
 	// so inner-tag service resolution doesn't ServiceNotFound at runtime.
 	readonly __layers?: ReadonlyArray<Layer.Layer<any, any, any>>;
+	/**
+	 * Phase D of `notes/parallel-graph-resolution.md` §6.4: composite
+	 * primitives lift their parallelizable inner stack members
+	 * (`upstreamImage`, `moveSource`, `sealImage`, `sourceFetch`) to
+	 * top-level so the topo scheduler can build them alongside disjoint
+	 * stack members (e.g. walrus's image build can run concurrent with
+	 * sui's boot).
+	 *
+	 * `defineDevstack` flattens `config.stack` to include these as
+	 * separate top-level members BEFORE running the duplicate-key guard,
+	 * dep-graph build, watch-set aggregation, or seed-entry collection —
+	 * i.e. the lifted siblings participate in the graph identically to
+	 * any other stack member. The composite that owns them no longer
+	 * folds them into its own `__layers`; their layers carry themselves
+	 * up via the topo scheduler's per-level `provideMerge`.
+	 *
+	 * Order semantics: extras come AFTER the parent member in the
+	 * flattened stack, so the composite (which references them via
+	 * `__upstreamKeys`) still appears later in input order. The duplicate
+	 * key guard then drops a duplicate lifted member that two composites
+	 * declared, which is the desired behaviour (first composite wins;
+	 * sibling references resolve to the same singleton).
+	 */
+	readonly __extraMembers?: ReadonlyArray<StackMember>;
 	// Runtime-set on every tag produced by `tag` (it's the
 	// Context.Service `key`). The type doesn't expose it on the public
 	// `StackMember` interface because callers may also pass hand-rolled
@@ -155,6 +180,19 @@ export interface StackMember {
 	 * in-tree names.
 	 */
 	readonly __pluginName?: string;
+	/**
+	 * Static upstream-dep declaration (Phase A of
+	 * `notes/parallel-graph-resolution.md`). The keys of other top-level
+	 * stack members this primitive's build body yields, or otherwise
+	 * depends on for ordering. Populated automatically by `provide` / `tag`
+	 * from `ProvideOptions.upstreamKeys`; absent for hand-rolled `Layer`
+	 * escape hatches (which are exempt from the compose-time invariant).
+	 *
+	 * `buildDepGraph` consumes this to compute the dep graph + downstream
+	 * closure used by selective restart; Phase B's topological scheduler
+	 * will consume it to lay out parallel build levels.
+	 */
+	readonly __upstreamKeys?: ReadonlyArray<string>;
 }
 
 export type { RendererKind };
@@ -509,7 +547,7 @@ const hashFileIfChanged = (
 				return { changed: true, reason: 'non-file (directory or special)' };
 			}
 			const content = await nodeFs.readFile(filePath);
-			const hash = crypto.createHash('sha256').update(content).digest('hex');
+			const hash = contentHash(content);
 			const prior = watchedFileHashes.get(filePath);
 			watchedFileHashes.set(filePath, hash);
 			if (prior === undefined) return { changed: true, reason: 'first sight' };
@@ -923,6 +961,43 @@ const resolveStackName = (configured: string | undefined): string =>
 	configured ?? process.env.DEVSTACK_STACK ?? 'main';
 
 /**
+ * Flatten composite primitives' `__extraMembers` siblings to top-level
+ * (Phase D of `notes/parallel-graph-resolution.md` §6.4). Composites
+ * declare lifted inner siblings via `__extraMembers`; this helper expands
+ * each member into `[member, ...__extraMembers]` so the topo scheduler,
+ * duplicate-key guard, dep-graph build, and watch-set aggregation all see
+ * the lifted siblings as first-class top-level members.
+ *
+ * Order semantics: extras come AFTER the parent member in the flattened
+ * output (matches the source-order semantics of `composeLayers({inner,
+ * primary, projections})`, where inner builds before primary even though
+ * inner is now lifted out and graph-visible). The duplicate-key guard
+ * downstream collapses two composites that lifted the same shared inner
+ * tag (e.g. two `Walrus({local: …})` instances sharing a single
+ * `gitFetch` sibling — first occurrence wins). Recursive flattening:
+ * an `__extraMembers` entry that itself declares `__extraMembers` is
+ * walked too, so a future deeper composition stays correct.
+ *
+ * Exported so the same flattening drives `composeStackLayer` AND the
+ * `defineDevstack` seed / watch / dep-graph passes; without one shared
+ * source of truth the two would drift on what counts as a stack member.
+ */
+export const flattenStackMembers = (
+	stack: ReadonlyArray<StackMember>,
+): ReadonlyArray<StackMember> => {
+	const out: StackMember[] = [];
+	const walk = (m: StackMember): void => {
+		out.push(m);
+		const extras = (m as { __extraMembers?: ReadonlyArray<StackMember> }).__extraMembers;
+		if (extras !== undefined) {
+			for (const extra of extras) walk(extra);
+		}
+	};
+	for (const m of stack) walk(m);
+	return out;
+};
+
+/**
  * Compose a user-supplied `stack` into the fully-resolved Devstack
  * Layer: every tag's `__layer(s)` merged together, then wrapped with
  * infrastructure (engine, registries, state store, identity, extras)
@@ -937,9 +1012,15 @@ const resolveStackName = (configured: string | undefined): string =>
  * invariant and identity validation stay in sync between paths.
  */
 export const composeStackLayer = (
-	stack: ReadonlyArray<StackMember>,
+	rawStack: ReadonlyArray<StackMember>,
 	opts: StackComposeOptions = {},
 ): Layer.Layer<unknown, unknown, never> => {
+	// Phase D — expand composites' `__extraMembers` to top-level. Each
+	// lifted sibling becomes its own dep-graph node so the topo scheduler
+	// can build it alongside disjoint members (walrus's `upstreamImage`
+	// runs in parallel with sui's boot, etc.). See `flattenStackMembers`
+	// for the order + dedupe semantics.
+	const stack = flattenStackMembers(rawStack);
 	// Duplicate-service guard. `Layer.mergeAll` lets later layers shadow
 	// earlier ones for the same Context tag, which silently turns
 	// `[suiLocalnet(), suiTestnet()]` into "whatever the last one is" —
@@ -950,50 +1031,208 @@ export const composeStackLayer = (
 	// flattened set would false-positive. We warn rather than fail because
 	// rare legitimate cases (e.g. two hand-rolled layers with the same
 	// key) might surface here.
+	//
+	// Phase D nuance: a composite that lifts a shared inner sibling
+	// (e.g. two `Walrus()` instances each contributing a `gitFetch` for
+	// the same upstream Move tree) would surface its lifted siblings
+	// twice after the flatten. That's expected — the duplicate guard
+	// collapses them with the first-wins semantics already documented
+	// for `composeStackLayer`'s topo path (keyedMembers.set keeps the
+	// first; subsequent identical keys are dropped). The console.warn
+	// below would be noise for that case; suppress when the duplicate
+	// matches across `__extraMembers` (an inner-tag dedupe rather than
+	// a user-stack collision).
+	// Track which keys came from RAW (user-authored) top-level members so
+	// a duplicate flagged by the user gets the warning. Lifted siblings
+	// (Phase D `__extraMembers`) are NOT user-authored — they appear via
+	// the flatten and dedupe silently via first-wins below.
+	const userAuthoredKeys = new Set<string>();
+	for (const member of rawStack) {
+		const key = (member as { key?: string }).key;
+		if (key !== undefined) userAuthoredKeys.add(key);
+	}
 	const seenKeys = new Set<string>();
 	for (const member of stack) {
 		const key = (member as { key?: string }).key;
 		if (key === undefined) continue;
 		if (seenKeys.has(key)) {
-			// Plain console.warn — we're inside synchronous layer assembly,
-			// outside any Effect/fiber context, so `Effect.logWarning` would
-			// require a `runSync` that bypasses the TUI's logger sink anyway.
-			console.warn(
-				`Devstack: duplicate service detected: ${key}. Last one wins. Composing two implementations of the same interface (e.g. both suiLocalnet() and suiTestnet()) is almost certainly a bug.`,
-			);
+			// Two user-authored top-level members collided — warn.
+			// Two lifted-sibling instances (e.g. two `Walrus()` sharing a
+			// common `gitFetch` upstream) collide silently — dedup is the
+			// whole point of the flatten.
+			if (userAuthoredKeys.has(key)) {
+				// Plain console.warn — we're inside synchronous layer assembly,
+				// outside any Effect/fiber context, so `Effect.logWarning` would
+				// require a `runSync` that bypasses the TUI's logger sink anyway.
+				console.warn(
+					`Devstack: duplicate service detected: ${key}. Last one wins. Composing two implementations of the same interface (e.g. both suiLocalnet() and suiTestnet()) is almost certainly a bug.`,
+				);
+			}
 		}
 		seenKeys.add(key);
 	}
 
-	// Prefer `__layers` (transitively-flattened) when a composite tag
-	// supplies it; fall back to the single `__layer` for tags built via
-	// the simple `tag(name, build)` shape or the hand-rolled `Sui`
-	// canonical pattern in `sui.ts`.
-	const stackLayers = stack.flatMap((m) => m.__layers ?? [m.__layer]);
-	// Fold the user stack with `provideMerge` so each layer can consume
-	// services produced by anything earlier in the stack. `Layer.mergeAll`
-	// builds siblings in parallel without wiring outputs to inputs — a
-	// later tag (e.g. `accountAlice` doing `yield* Sui`) would see Sui as
-	// an unsatisfied RIn even though `suiLocalnet()` sits next to it in
-	// the stack, and the merged layer would `ServiceNotFound` at build
-	// time. `provideMerge(self, that)` provides `that`'s outputs to `self`
-	// AND re-exports both, which is exactly the "each new layer can
-	// consume everything already accumulated" semantic we want. Reduction
-	// order is the stack's authoring order — users (and composite
-	// primitives' `__layers`) list providers before consumers, so we just
-	// fold left-to-right with `provideMerge(newLayer, acc)`.
-	// Accumulator widens to `Layer<any, any, any>` because each stack
-	// member's `__layer` declares its services through opaque tag
-	// identities — there's no precise type for "the heterogeneous union
-	// of all prior outputs". Contravariance on `ROut` means `Layer<never>`
-	// doesn't auto-widen, so we route the seed through `Layer.Any` (the
-	// canonical "some Layer" constraint type) and reduce from there.
-	// Drops the previous `as unknown as Layer<any,any,any>` round-trip.
+	// Phase A invariant (notes/parallel-graph-resolution.md §6.1):
+	// every keyed stack member declares its static upstream-dep set via
+	// `__upstreamKeys` (populated by `provide()` / `tag()` /
+	// plugin-author helpers from the `upstreamKeys` option). Hand-rolled
+	// `Layer` escape hatches — which carry no `key` — are exempt; they
+	// don't participate in the dep graph or selective restart anyway.
+	//
+	// Today this is a warning (and only when `DEVSTACK_WARN_MISSING_UPSTREAM`
+	// is set in the env), not a throw. The `composeStackLayer` fold still
+	// drives runtime ordering, so a primitive that forgot to declare
+	// `upstreamKeys` works correctly — but it appears as a leaf in
+	// `buildDepGraph`, dropping its downstream cascade. Phase B's
+	// topological scheduler upgrades the unset case to a hard error.
+	//
+	// One aggregate console line keeps the signal scannable: parallel
+	// agents migrating composites can `DEVSTACK_WARN_MISSING_UPSTREAM=1
+	// pnpm test` and read off the keys they still owe a declaration for.
+	if (process.env.DEVSTACK_WARN_MISSING_UPSTREAM !== undefined) {
+		const missing: string[] = [];
+		for (const member of stack) {
+			const key = (member as { key?: string }).key;
+			if (key === undefined) continue;
+			if ((member as { __upstreamKeys?: unknown }).__upstreamKeys === undefined) {
+				missing.push(key);
+			}
+		}
+		if (missing.length > 0) {
+			console.warn(
+				`Devstack: ${missing.length} stack member(s) missing __upstreamKeys ` +
+					`(declare via provide()/tag()'s upstreamKeys option): ${missing.join(', ')}. ` +
+					`Treated as graph leaves for now; Phase B's topological scheduler will require this.`,
+			);
+		}
+	}
+
+	// Phase B (notes/parallel-graph-resolution.md §3.2): topological-level
+	// scheduler. Replaces the previous `reduce(provideMerge)` fold so
+	// stack members with disjoint upstream-dep sets build IN PARALLEL.
+	//
+	// Three-step compose:
+	//   1. `buildDepGraph(stack)` enumerates the static dep graph from
+	//      each member's `__upstreamKeys` (populated by `provide()` /
+	//      `tag()` / plugin-author helpers in Phase A).
+	//   2. `topoLevels(graph)` partitions members into levels — level 0
+	//      holds every leaf (no upstream deps); level N holds members
+	//      whose upstreams resolve in levels < N.
+	//   3. Each level's members merge with `Layer.mergeAll` (parallel
+	//      sibling build via Effect's MemoMap); levels stack with
+	//      `Layer.provideMerge` so each level's outputs feed the next.
+	//
+	// Provider-before-consumer is preserved because a consumer's level
+	// strictly exceeds any of its providers' levels — `provideMerge`
+	// makes the lower-level outputs visible. Within a level,
+	// `Layer.mergeAll` builds siblings concurrently; Effect's MemoMap
+	// deduplicates cross-yields against the lower levels, so a
+	// composite's `yield* SuiTag` hits the cached Sui instance instead
+	// of forking a fresh build.
+	//
+	// Members that didn't declare `__upstreamKeys` show up as graph
+	// leaves; they merge into level 0 and rely on MemoMap to satisfy
+	// any unstated cross-deps. They lose the topo optimisation but
+	// remain functionally correct — the scheduler is a graceful upgrade
+	// over the fold. Composites are migrated to declare upstreams in
+	// later passes (sui has none; walrus / seal / deepbook list sui).
+	//
+	// Each stack member contributes its full `__layers` slice (inner →
+	// primary → projections) as an ordered group. The `composeLayers`
+	// ordering inside a composite is preserved by folding
+	// `provideMerge` within the group; the outer level emits the
+	// composite as a single unit that builds in parallel with its
+	// siblings.
+	const depGraph = buildDepGraph(stack);
+	const levels = topoLevels(depGraph);
+
+	// Index members by `key` so the topo emission (which lists keys)
+	// resolves back to the original `StackMember`. Members lacking
+	// `key` (hand-rolled `Layer` escape hatches) skip the topo graph
+	// and merge in unconditionally at level 0; they don't declare
+	// deps, can't be a dep target, and must still ship their layers.
+	const keyedMembers = new Map<string, StackMember>();
+	const unkeyedMembers: StackMember[] = [];
+	for (const member of stack) {
+		const key = (member as { key?: string }).key;
+		if (key !== undefined && !keyedMembers.has(key)) {
+			keyedMembers.set(key, member);
+		} else if (key === undefined) {
+			unkeyedMembers.push(member);
+		}
+		// Duplicate keys: the duplicate guard above already warned;
+		// `buildDepGraph` keeps the first occurrence too, so the
+		// trailing duplicate is dropped here. The fold previously
+		// included it, but `Layer.mergeAll`'s last-wins semantics make
+		// that a footgun — dropping is the principled choice.
+	}
+
+	// Flatten a single member into its constituent layers preserving
+	// the `composeLayers` ordering (inner → primary → projections).
+	// Folded with `provideMerge` so intra-composite providers see their
+	// consumers' build inputs — same shape as the previous outer fold,
+	// scoped to the composite.
+	const memberLayer = (m: StackMember): Layer.Layer<any, any, any> => {
+		const slice = m.__layers ?? [m.__layer];
+		return slice.reduce<Layer.Layer<any, any, any>>(
+			(acc, layer) => Layer.provideMerge(layer, acc),
+			Layer.empty as unknown as Layer.Layer<any, any, any>,
+		);
+	};
+
+	// Per-level layer: `mergeAll` the keyed members (they share a level
+	// by construction — no inter-level edges by topo invariant, so
+	// `mergeAll` is safe). A 0- or 1-member level skips `mergeAll`'s
+	// non-empty constraint and threading overhead.
+	const buildLevelLayer = (members: ReadonlyArray<StackMember>): Layer.Layer<any, any, any> => {
+		const layers = members.map(memberLayer);
+		if (layers.length === 0) return Layer.empty as unknown as Layer.Layer<any, any, any>;
+		if (layers.length === 1) return layers[0]!;
+		// `Layer.mergeAll(...siblings)` is the parallel-build seam.
+		// Effect's MemoMap deduplicates yields across siblings AND
+		// against any lower-level layer provided via `provideMerge`, so
+		// two composites that both `yield* SuiTag` (sui at a lower
+		// level) hit the same cached Sui instance.
+		return Layer.mergeAll(layers[0]!, ...(layers.slice(1) as Array<Layer.Layer<any, any, any>>));
+	};
+
+	const levelLayers: ReadonlyArray<Layer.Layer<any, any, any>> = levels.map((level) =>
+		buildLevelLayer(
+			level.flatMap((key) => {
+				const m = keyedMembers.get(key);
+				return m === undefined ? [] : [m];
+			}),
+		),
+	);
+
+	// Un-keyed hand-rolled `Layer` escape hatches don't participate in
+	// the dep graph (no `key` → no node), but their services still need
+	// to be visible to downstream consumers. Provide them as an
+	// AMBIENT base ring under every level: `provideMerge` folds them in
+	// front so their outputs feed any keyed level above. Provider-
+	// before-consumer is preserved by the input order — un-keyed
+	// members listed earlier in `config.stack` build first.
+	//
+	// Folding the un-keyed bucket internally with `provideMerge` covers
+	// the case where two hand-rolled layers depend on each other (one
+	// provides a service the next yields).
+	const unkeyedBase = unkeyedMembers
+		.map(memberLayer)
+		.reduce<
+			Layer.Layer<any, any, any>
+		>((acc, layer) => Layer.provideMerge(layer, acc), Layer.empty as unknown as Layer.Layer<any, any, any>);
+
+	// Stack the levels with `provideMerge` so each level's outputs are
+	// visible to the next. Order: un-keyed base ring first (visible to
+	// every level), then level 0 (leaves), then subsequent levels —
+	// each consuming everything emitted below.
 	const seed: Layer.Any = Layer.empty;
-	const userLayer = stackLayers.reduce<Layer.Layer<any, any, any>>(
+	const levelsLayer = levelLayers.reduce<Layer.Layer<any, any, any>>(
 		(acc, layer) => Layer.provideMerge(layer, acc),
 		seed as Layer.Layer<any, any, any>,
 	);
+	const userLayer =
+		unkeyedMembers.length > 0 ? Layer.provideMerge(levelsLayer, unkeyedBase) : levelsLayer;
 
 	// Per-devstack state-store + identity. Built via the shared
 	// `buildBaseInfra` helper so this path stays consistent with
@@ -1061,6 +1300,15 @@ export const defineDevstack = (
 		? { stack: input }
 		: (input as DevstackConfig);
 
+	// Phase D — flatten composites' `__extraMembers` once at the top so
+	// every downstream pass (`composeStackLayer`, seed pass, watch-set
+	// aggregation, dep-graph build) sees the same canonical stack with
+	// lifted siblings as first-class top-level members. Building the
+	// flatten here (rather than each pass re-running it) keeps the
+	// duplicate-key handling consistent across surfaces and avoids
+	// O(N) re-flattens per hot-restart cycle.
+	const flatStack = flattenStackMembers(config.stack);
+
 	const fullLayer = composeStackLayer(config.stack, {
 		stackName: config.stackName,
 		network: config.network,
@@ -1095,7 +1343,7 @@ export const defineDevstack = (
 		readonly kind?: TagKind;
 		readonly title?: string;
 		readonly plugin?: string;
-	}> = config.stack.flatMap((m, i) => {
+	}> = flatStack.flatMap((m, i) => {
 		// Hidden tags (e.g. `gitFetch`) opt out of the dashboard entirely —
 		// see `ProvideOptions.hidden`. Skipping the seed keeps the row from
 		// flashing during the pending → acquiring → ready transition; the
@@ -1138,12 +1386,10 @@ export const defineDevstack = (
 	const hasGlobMeta = (s: string): boolean => /[*?[\]{}]/.test(s);
 	const rawWatchPatterns: ReadonlyArray<string> = [
 		...(config.watch ?? []),
-		...config.stack.flatMap(
-			(m) => (m as { __watchPaths?: ReadonlyArray<string> }).__watchPaths ?? [],
-		),
+		...flatStack.flatMap((m) => (m as { __watchPaths?: ReadonlyArray<string> }).__watchPaths ?? []),
 	];
 	const watchFilter = compileWatchFilter(rawWatchPatterns);
-	const watchOwners: ReadonlyArray<WatchOwner> = config.stack.flatMap((m, i) => {
+	const watchOwners: ReadonlyArray<WatchOwner> = flatStack.flatMap((m, i) => {
 		const paths = (m as { __watchPaths?: ReadonlyArray<string> }).__watchPaths ?? [];
 		if (paths.length === 0) return [];
 		const key = (m as { key?: string }).key ?? `stack[${i}]`;
@@ -1163,16 +1409,21 @@ export const defineDevstack = (
 				.map((p) => (nodePath.isAbsolute(p) ? p : nodePath.resolve(process.cwd(), p))),
 		),
 	);
-	// Static dep graph (Phase 1 of selective-restart). Built once per
-	// supervisor lifetime — `config.stack` is static across hot-restart
-	// cycles, so the graph (and its closure) is too. Phase 2 wires the
-	// closure into the watch fiber so the diagnostic + TUI surface (P5)
-	// enumerates the downstream cascade and warns on heavy-infra entries;
-	// Phase 3 wires it into `engine.invalidateSubset` for targeted
-	// invalidation. `depGraph` itself is kept around for Phase 3's
-	// per-primitive scope re-acquire logic, which keys on the upstream
-	// edges to decide which primitives the watch-fire must invalidate.
-	const depGraph: DepGraph = buildDepGraph(config.stack);
+	// Static dep graph. Built once per supervisor lifetime — `config.stack`
+	// is static across hot-restart cycles, so the graph (and its closure)
+	// is too. The watch fiber consumes `downstreamClosure` via
+	// `formatRestartCascade(matched, downstreamClosure)` → unions
+	// `{owner.key} ∪ closure.get(owner.key)` into the affected set that
+	// drives `engine.markSelectiveRestart` + `engine.invalidateSubset`
+	// (selective-restart cascade — Phase F of
+	// `notes/parallel-graph-resolution.md` §6.6). The wiring is purely
+	// data-driven: with composites + plugin-author primitives populating
+	// `__upstreamKeys` (Phases A/B) and composites lifting their inner
+	// parallelizable siblings to top-level via `__extraMembers` (Phase D),
+	// the closure now reaches the real consumer set. Editing a `.move`
+	// file watched by `publishMove(hello)` invalidates `Codegen()` and
+	// `Dev()` too instead of just `publishMove`.
+	const depGraph: DepGraph = buildDepGraph(flatStack);
 	const downstreamClosure: DownstreamClosure = computeDownstreamClosure(depGraph);
 	void depGraph;
 	// `hotRestart` only governs FILE-WATCH-driven restarts. User-driven
@@ -1557,6 +1808,90 @@ export const defineDevstack = (
 			const bootstrapCtx = yield* Layer.buildWithMemoMap(bootstrapLayer, memoMap, longLived);
 			const engine: EngineShape = Context.get(bootstrapCtx, EngineHandle);
 			const registry = Context.get(bootstrapCtx, Registry);
+
+			// Hard-kill on second Ctrl-C / second SIGTERM. NodeRuntime.runMain
+			// installs a single SIGINT/SIGTERM handler that interrupts the
+			// fiber once; subsequent signals are no-ops at the Effect level
+			// (`fiber.interruptUnsafe` is idempotent). On a slow stack —
+			// sui-localnet's 30s grace + the few seconds of cascade
+			// orchestration — an impatient user who hits Ctrl-C again
+			// reasonably expects "stop NOW, don't keep waiting". This handler
+			// shadows the supervisor's normal teardown: the first signal
+			// kicks off the parallel scope-close path (sui SIGTERM → 30s
+			// grace → SIGKILL), and a SECOND signal short-circuits to a
+			// direct `docker kill` of every container we own — labelled by
+			// `devstack.app=<app> devstack.stack=<stack>` so we don't clip
+			// a sibling stack — followed by `process.exit(130)` (130 =
+			// 128 + SIGINT, the Unix convention for "exited because of
+			// signal 2").
+			//
+			// `spawnSync` is the right tool here even though it blocks the
+			// event loop: this code path is only reached on EXPLICIT
+			// abandonment, so latency in the order of seconds is fine, and
+			// we genuinely want the kill subprocess to complete before
+			// process.exit fires (otherwise we orphan containers exactly
+			// when the user is asking us NOT to).
+			const installHardKillHandler = Effect.sync(() => {
+				let signalCount = 0;
+				const onSecondSignal = (sig: NodeJS.Signals) => {
+					signalCount += 1;
+					if (signalCount < 2) return;
+					try {
+						// Enumerate every container our identity owns, then
+						// SIGKILL them via docker. Label-based filtering keeps
+						// the blast radius scoped to this `pnpm dev` even if
+						// a sibling stack is running concurrently. Both ops
+						// are short — `docker ps -q` is local-only, `docker
+						// kill` returns once the daemon has dispatched
+						// SIGKILL to the runtime (it does NOT wait for the
+						// container's PID to reap), so this whole sequence
+						// finishes in O(100ms) for a healthy daemon.
+						const cp = require('node:child_process') as typeof import('node:child_process');
+						const lsRes = cp.spawnSync(
+							'docker',
+							[
+								'ps',
+								'-q',
+								'--filter',
+								`label=devstack.app=${headerApp}`,
+								'--filter',
+								`label=devstack.stack=${headerStack}`,
+							],
+							{ encoding: 'utf8' },
+						);
+						const ids = (lsRes.stdout ?? '')
+							.split('\n')
+							.map((s) => s.trim())
+							.filter((s) => s.length > 0);
+						if (ids.length > 0) {
+							cp.spawnSync('docker', ['kill', ...ids], { stdio: 'ignore' });
+						}
+						process.stderr.write(
+							`\ndevstack: force-killed ${ids.length} container(s) on second ${sig} — exiting.\n`,
+						);
+					} catch {
+						// Best-effort: even if `docker ps` / `docker kill`
+						// throws, we still want to exit. Swallow and fall
+						// through to the exit below.
+					}
+					// 130 = 128 + SIGINT (Unix convention for "process exited
+					// because of signal 2"). Same for SIGTERM via 143, but
+					// 130 is the more common user-facing value and any
+					// non-zero is sufficient for shell exit-status checks.
+					process.exit(130);
+				};
+				const onSig = (sig: NodeJS.Signals) => onSecondSignal(sig);
+				const onSigint = () => onSig('SIGINT');
+				const onSigterm = () => onSig('SIGTERM');
+				process.on('SIGINT', onSigint);
+				process.on('SIGTERM', onSigterm);
+				return () => {
+					process.off('SIGINT', onSigint);
+					process.off('SIGTERM', onSigterm);
+				};
+			});
+			const removeHardKillHandler = yield* installHardKillHandler;
+			yield* Effect.addFinalizer(() => Effect.sync(() => removeHardKillHandler()));
 
 			// Registry announce + clearPid finalizer — both belong on the
 			// long-lived scope so a `pnpm dev` whose lock survived a

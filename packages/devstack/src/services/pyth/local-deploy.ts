@@ -28,7 +28,7 @@ import {
 	addPriceInfo,
 	type PythPriceFeedId,
 	type PythPriceInfoSpec,
-} from './internal.js';
+} from './shared.js';
 
 // State-store key prefix for pyth-package moved to
 // `engine/state-store-keys.ts`. Canonical builder:
@@ -145,7 +145,7 @@ export const pythLocalDeploy = <const Name extends string = 'pyth'>(
 
 			const pkg = yield* Effect.gen(function* () {
 				return yield* publish;
-			}).pipe(Effect.withSpan('pyth.publish'));
+			}).pipe(Effect.withSpan('PythPublish'));
 
 			const packageId = pkg.packageId;
 			const pythStateId = pkg.captured?.pythStateId as string | undefined;
@@ -320,7 +320,7 @@ export const pythLocalDeploy = <const Name extends string = 'pyth'>(
 				findPriceInfoByLabel,
 			} satisfies Pyth;
 		}).pipe(
-			Effect.withSpan(`pythLocalDeploy(${name})`),
+			Effect.withSpan(`PythLocalDeploy(${name})`),
 			Effect.catchTag('PythError', Effect.fail),
 			Effect.catch((cause: unknown) =>
 				Effect.fail(

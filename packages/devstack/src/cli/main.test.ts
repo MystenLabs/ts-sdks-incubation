@@ -33,6 +33,7 @@ describe('CLI surface', () => {
 			'fork',
 			'doctor',
 			'manifest',
+			'graph',
 			'version',
 		];
 		const got = collectSubcommandNames(rootCommand);

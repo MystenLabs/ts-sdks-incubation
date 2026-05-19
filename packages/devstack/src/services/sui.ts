@@ -11,8 +11,32 @@
 // `suiNetworkName` helper used by walrus + seal container-joining
 // primitives, and the `faucetReadyProbe` that gates funds-transferable
 // readiness on localnet.
+//
+// Snapshot participation (per AGENTS.md § "Snapshot participation"):
+//   - **What this service persists:** the localnet validator's RocksDB
+//     state at `/root/.sui` (container writable layer captured by
+//     `docker commit` on snapshot save), the colocated indexer-postgres
+//     writable layer at `/pgdata` (off the inherited VOLUME so it rides
+//     the commit), and — for `sui-fork` variants only — the per-fork
+//     data dir + `meta.json` config-hash sentinel under
+//     `runtime/sui-fork/<stack>/`. `publishSuiState` registers
+//     `chainId` + RPC URLs into the per-stack sui state registry; on
+//     restore these are re-published by the warm-resume path so the
+//     manifest is identical pre/post snapshot.
+//   - **What re-derives from on-chain state on apply:** nothing — chain
+//     state survives via the container retag; the validator just resumes
+//     from its checkpointed RocksDB. The faucet's per-account funding
+//     ledger is reconstructed lazily on the first `requestFunds` call.
+//   - **What is intentionally lost on snapshot restore:** account
+//     balances *not* yet on chain at the snapshot point (anything mid-tx
+//     during save), the in-memory mempool, faucet rate-limit windows,
+//     and the indexer's WAL position relative to the validator (the
+//     indexer catches up from the last checkpoint on resume).
+//   - For testnet/mainnet/custom-RPC variants there is no container, so
+//     this section is vacuous: nothing is persisted, everything is the
+//     upstream chain.
 
-import { Context, Effect, Layer, Ref as EffectRef, Schedule, Schema } from 'effect';
+import { Context, Effect, Layer, Ref as EffectRef, Schedule, Schema, type Stream } from 'effect';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 import * as Docker from '../engine/docker.js';
 import { routerEntrypoint } from '../engine/docker/router.js';
@@ -30,12 +54,24 @@ import {
 	type DockerContainerImage,
 } from '../advanced/plugin-author/index.js';
 import { provide, setPhase, type LayeredTag } from '../advanced/tag.js';
+import { makeService } from '../advanced/make-service.js';
 import type { StackMember } from '../engine/supervisor.js';
 import { ForkUnsupportedError, SuiError } from '../engine/errors.js';
 import { resolveNetwork, type SuiNetwork } from '../engine/network.js';
 import { EndpointName } from '../runtime/endpoint-names.js';
 import { acquireForkDataLock } from '../engine/sui-fork/file-lock.js';
-import { ensureForkMetaConsistent, resolveForkMetaPath } from '../engine/sui-fork/meta.js';
+import {
+	type AutoTickOption,
+	type ForkCheckpointEvent,
+	resolveResumeAutoTickIntervalMs,
+	runAutoTickClock,
+	subscribeCheckpointsWithFallback,
+} from '../engine/sui-fork/control.js';
+import {
+	ensureForkMetaConsistent,
+	readForkMeta,
+	resolveForkMetaPath,
+} from '../engine/sui-fork/meta.js';
 import { collectKnownPackageSeedObjects } from './known-package.js';
 import { executeImpersonated } from './sui/impersonate.js';
 import { join as pathJoin } from 'node:path';
@@ -255,12 +291,26 @@ export interface ForkControl {
 	 *  no `Sui({fork:{seed:{addresses}}})` — auto-funding then fails
 	 *  with a typed error pointing at the workaround. */
 	readonly seedAddresses: ReadonlyArray<string>;
+	/** Cadence (ms) the supervisor's scope-bound auto-tick fiber is
+	 *  calling `advanceClock` with. `undefined` when
+	 *  `Sui({fork:{autoTick}})` is unset / `false`. Surfaced here so the
+	 *  dev-wallet relay (and any operator-facing observer) can report
+	 *  "auto-tick active (1000ms)" without re-parsing the user's options.
+	 *  Phase 5 Subtopic 3 (P5.5). */
+	readonly autoTickMs?: number;
 	/** Fetch the current `ForkStatus`. */
 	readonly status: () => Effect.Effect<ForkStatus, SuiError>;
 	/** Advance the fork's clock by `durationMs` (default 1 ms). */
 	readonly advanceClock: (durationMs?: number) => Effect.Effect<ForkAdvanceClockResult, SuiError>;
 	/** Seal pending txs into a new checkpoint. */
 	readonly advanceCheckpoint: () => Effect.Effect<ForkAdvanceCheckpointResult, SuiError>;
+	/** Subscribe to the fork's checkpoint stream. Emits one event per
+	 *  new checkpoint; falls back to polling on subscription stream
+	 *  error per R4. Replaces the polling-only path consumers used in
+	 *  Phase 4. Phase 5 Subtopic 7 (P5.10). The returned stream is
+	 *  scope-bound — drop the stream (Effect's normal scope teardown)
+	 *  to close the underlying gRPC connection. */
+	readonly subscribeCheckpoints: () => Stream.Stream<ForkCheckpointEvent, SuiError>;
 	/**
 	 * Submit a transaction with an empty signature list, executing it
 	 * AS `sender` via `sui-fork`'s impersonation branch. Thin wrapper
@@ -413,7 +463,7 @@ const makeWaitForTransactionsReadyForFaucet = (faucetUrl: string): Effect.Effect
 						cause,
 					}),
 		),
-		Effect.withSpan('sui.waitForTransactionsReady'),
+		Effect.withSpan('SuiWaitForTransactionsReady'),
 	);
 
 const buildWaitForTransactionsReady = (
@@ -514,7 +564,7 @@ const awaitIndexerDbReady = (containerId: string) => {
 					}),
 				),
 		}),
-		Effect.withSpan('sui.indexer-ready'),
+		Effect.withSpan('SuiIndexerReady'),
 	);
 };
 
@@ -620,6 +670,32 @@ export interface SuiForkOptions {
 	 *  serial upstream GraphQL fetches to warm system state (R10), and
 	 *  120s is sometimes not enough on a slow connection. */
 	readonly readyTimeoutMs?: number;
+	/** Auto-tick the on-chain clock at a wall-clock cadence. Phase 5
+	 *  Subtopic 3 (P5.5) — move-side logic that gates on
+	 *  `clock::timestamp_ms()` (auctions, vesting, time-window
+	 *  vaults) is painful to develop against a fork because the clock
+	 *  only advances on explicit `advanceClock` RPC calls. Setting
+	 *  this option spawns a scope-bound supervisor fiber that fires
+	 *  `ForkControl.advanceClock(intervalMs)` on a
+	 *  `Schedule.spaced(intervalMs)` cadence.
+	 *
+	 *  Shape:
+	 *    `autoTick: true`               → 1000 ms cadence (default)
+	 *    `autoTick: { intervalMs: N }`  → custom cadence (positive ms)
+	 *    `autoTick: false` / undefined  → no auto-tick (the default)
+	 *
+	 *  Contract: the cadence is WALL-CLOCK, not real chain time. Two
+	 *  ticks may overlap a manual `ForkControl.advanceClock` call —
+	 *  the fork serializes them internally, but the resulting clock
+	 *  reading is "best effort current wall-clock", not a precise
+	 *  monotonic counter.
+	 *
+	 *  Failure policy: a single advance-clock RPC failure (e.g. mid-
+	 *  restart, transient gRPC blip) is logged at WARN and the next
+	 *  tick continues. We deliberately do NOT propagate the failure
+	 *  into the surrounding scope: an auto-tick blip should not tear
+	 *  the whole stack down. See R9 in `notes/sui-fork-integration.md`. */
+	readonly autoTick?: AutoTickOption;
 }
 
 export interface SuiOptions {
@@ -631,7 +707,14 @@ export interface SuiOptions {
 	 *  pinned forks, air-gapped mirrors). Fork variants (`'mainnet-fork'`,
 	 *  `'testnet-fork'`, `'devnet-fork'`) start a `sui-fork` container
 	 *  anchored at the wrapped upstream — pass `fork` for seed inputs +
-	 *  checkpoint pinning. */
+	 *  checkpoint pinning.
+	 *
+	 *  Grandfathered exception to AGENTS.md's `kind:` discriminator
+	 *  convention (synthesis F-03; review-followups §10.5 settled
+	 *  2026-05-19): `network:` doubles as the network-selector input
+	 *  *and* the resolved-network output on `Sui.network`. Renaming to
+	 *  `kind:` would break a published API for marginal type-safety
+	 *  gain, so the legacy shape stays. New services adopt `kind:`. */
 	readonly network?:
 		| 'localnet'
 		| 'testnet'
@@ -897,14 +980,34 @@ const buildLocalnet = (options: SuiLocalnetOptions): StackMember => {
 			...(ports !== undefined ? { ports } : {}),
 			network: networkName,
 			networkAlias: SUI_LOCALNET_NETWORK_ALIAS,
-			// Sui's validator + faucet need >10s (docker's default grace) to
-			// flush consensus state on `docker stop`. Without this they get
-			// SIGKILL'd (exit 137) and the next `up` cycle has to re-warm
-			// validator state — surfacing as 5–10s of "awaiting chain
-			// funds-transferable" and a handful of faucet 5xx retries that
-			// look like a slow startup to the user. 30s lets the validator
-			// finalize its current checkpoint cleanly so the next resume is
-			// effectively instant.
+			// Sui-localnet exit 137 ("UNCLEAN PRIOR SHUTDOWN" alert on the
+			// next `up`) is currently unavoidable when running with
+			// `--with-faucet`. Upstream bug, traced through:
+			//   - sui/src/sui_commands.rs:1287 — `tokio::signal::ctrl_c()`
+			//     is in the post-setup health-check loop.
+			//   - sui-faucet/src/server.rs:129 — `start_faucet` ends with
+			//     `axum::serve(...).await?` which BLOCKS forever.
+			//   - With `--with-faucet`, `start_faucet().await?` is the last
+			//     awaited call before the loop, so `ctrl_c()` is never
+			//     polled and the SIGINT handler is never registered.
+			//   - Verified empirically: `/proc/1/status` SigCgt =
+			//     0x100000440 (no SIGINT/SIGTERM bits) with `--with-faucet`;
+			//     `kill -INT 1` inside the container is a no-op.
+			//     `start` without `--with-faucet` registers SIGINT
+			//     (SigCgt = 0x100000442) and exits 0 in <1s.
+			//
+			// So no signal works as PID 1 — only SIGKILL terminates the
+			// validator. `stopGraceSeconds: 30` is the wait before docker
+			// falls back to SIGKILL; the validator runs to that ceiling
+			// and exits 137 every shutdown. RocksDB's WAL has kept this
+			// recoverable in practice (e2e suites pass across SIGTERM →
+			// resume → e2e), but the alert keeps firing.
+			//
+			// (Infrastructure for `stopSignal` lives in
+			// `engine/docker/core.ts` / `plugin-author/docker-container.ts`
+			// for primitives whose binary actually traps a specific signal
+			// — useful for future plugins and for the sui-fork path. Just
+			// not applicable here.)
 			stopGraceSeconds: 30,
 			routing: [
 				{
@@ -973,7 +1076,7 @@ const buildLocalnet = (options: SuiLocalnetOptions): StackMember => {
 			catch: (cause) => new Error(`rpc: ${stringifyCause(cause)}`),
 		}).pipe(
 			Effect.tap(() => markSeen('rpc')),
-			Effect.withSpan('sui.probe.rpc'),
+			Effect.withSpan('SuiProbeRpc'),
 		);
 		// Cheap socket-level liveness check. We deliberately do NOT POST
 		// `/v2/gas` here — that path actually transfers SUI from the
@@ -988,7 +1091,7 @@ const buildLocalnet = (options: SuiLocalnetOptions): StackMember => {
 			catch: (cause) => new Error(`faucet: ${stringifyCause(cause)}`),
 		}).pipe(
 			Effect.tap(() => markSeen('faucet')),
-			Effect.withSpan('sui.probe.faucet'),
+			Effect.withSpan('SuiProbeFaucet'),
 		);
 		const graphqlProbe = Effect.tryPromise({
 			try: () =>
@@ -1002,7 +1105,7 @@ const buildLocalnet = (options: SuiLocalnetOptions): StackMember => {
 			catch: (cause) => new Error(`graphql: ${stringifyCause(cause)}`),
 		}).pipe(
 			Effect.tap(() => markSeen('graphql')),
-			Effect.withSpan('sui.probe.graphql'),
+			Effect.withSpan('SuiProbeGraphql'),
 		);
 		yield* Effect.all([rpcProbe, faucetProbe, graphqlProbe], {
 			concurrency: 'unbounded',
@@ -1101,6 +1204,15 @@ const buildLocalnet = (options: SuiLocalnetOptions): StackMember => {
 				...(endpoints.length > 1 ? { endpoints } : { primary: s.rpc.host }),
 			};
 		},
+		// Phase B (notes/parallel-graph-resolution.md §3.1): the sui
+		// builders are leaves from the stack graph's perspective. The body
+		// yields `Identity` (a Context.Service satisfied by InfraLive at
+		// run time, not a stack member) and the two sibling LayeredTags
+		// `localnetImage` / `indexerDbImage` — but those siblings are
+		// folded into the same composite via `__layers` and don't enter
+		// `__upstreamKeys` (mirrors `services/walrus/local-cluster.ts`,
+		// which treats `upstreamImage` / `moveSource` the same way).
+		upstreamKeys: [],
 	});
 	// Surface sibling image layers alongside our own. Both the indexer-db
 	// postgres image and the sui localnet image flow through `dockerImage`
@@ -1204,6 +1316,9 @@ const buildTestnet = (options: SuiTestnetOptions): StackMember => {
 				...(endpoints.length > 1 ? { endpoints } : { primary: s.rpc.host }),
 			};
 		},
+		// Phase B: live-net handle, pure RPC wrapper — no in-stack
+		// upstreams (no LayeredTag yields, no sibling image layers).
+		upstreamKeys: [],
 	});
 };
 
@@ -1249,6 +1364,9 @@ const buildMainnet = (options: SuiMainnetOptions): StackMember => {
 				...(endpoints.length > 1 ? { endpoints } : { primary: s.rpc.host }),
 			};
 		},
+		// Phase B: mainnet handle, pure RPC wrapper — no in-stack
+		// upstreams.
+		upstreamKeys: [],
 	});
 };
 
@@ -1302,6 +1420,9 @@ const buildCustom = (options: SuiCustomOptions): StackMember => {
 		plugin: 'sui',
 		displayTitle: `sui.${options.network ?? 'custom'}`,
 		display: (s) => ({ title: `sui.${s.network}`, primary: s.rpc.host }),
+		// Phase B: custom-RPC handle. The caller supplies bare URLs and we
+		// wrap them — no LayeredTag yields, no sibling image layers.
+		upstreamKeys: [],
 	});
 };
 
@@ -1379,6 +1500,7 @@ const buildForkControl = (
 	upstream: 'mainnet' | 'testnet' | 'devnet',
 	forkedAtCheckpoint: number,
 	seedAddresses: ReadonlyArray<string>,
+	autoTickMs: number | undefined,
 ): ForkControl => {
 	const status = (): Effect.Effect<ForkStatus, SuiError> =>
 		Effect.tryPromise({
@@ -1396,7 +1518,7 @@ const buildForkControl = (
 				timestampMs: Number(resp.timestampMs),
 				forkedAtCheckpoint: Number(resp.forkedAtCheckpoint),
 			})),
-			Effect.withSpan('sui.fork.status'),
+			Effect.withSpan('SuiForkStatus'),
 		);
 
 	const advanceClock = (durationMs?: number): Effect.Effect<ForkAdvanceClockResult, SuiError> =>
@@ -1416,7 +1538,7 @@ const buildForkControl = (
 				timestampMs: Number(resp.timestampMs),
 				txDigest: resp.txDigest,
 			})),
-			Effect.withSpan('sui.fork.advanceClock', {
+			Effect.withSpan('SuiForkAdvanceClock', {
 				attributes: { 'fork.durationMs': durationMs ?? 1 },
 			}),
 		);
@@ -1435,20 +1557,30 @@ const buildForkControl = (
 				checkpointSequenceNumber: Number(resp.checkpointSequenceNumber),
 				timestampMs: Number(resp.timestampMs),
 			})),
-			Effect.withSpan('sui.fork.advanceCheckpoint'),
+			Effect.withSpan('SuiForkAdvanceCheckpoint'),
 		);
 
 	const impersonate: ForkControl['impersonate'] = (sender, tx, opts) =>
 		executeImpersonated(client, sender, tx, opts);
 
+	// Subscription wire model — Phase 5 Subtopic 7 (P5.10). The factory
+	// returns a fresh Stream each call so two consumers (CLI `--follow`
+	// + dev-wallet panel) each get their own gRPC subscription and the
+	// underlying connection ties to their own scope. The fallback path
+	// is baked in: subscription error → polling at 2s.
+	const subscribeCheckpoints: ForkControl['subscribeCheckpoints'] = () =>
+		subscribeCheckpointsWithFallback(client);
+
 	return {
 		upstream,
 		forkedAtCheckpoint,
 		seedAddresses,
+		...(autoTickMs !== undefined ? { autoTickMs } : {}),
 		status,
 		advanceClock,
 		advanceCheckpoint,
 		impersonate,
+		subscribeCheckpoints,
 	};
 };
 
@@ -1539,6 +1671,19 @@ const buildFork = (
 				: [...new Set([...(options.seed?.objects ?? []), ...knownPackageSeedObjs])];
 		const metaPath = resolveForkMetaPath(identity.stack, appDir);
 		yield* setPhase('checking fork meta');
+		// Peek at the on-disk meta first so we can fold any persisted
+		// `runtime.autoTickMs` (P5.5.4) into the fresh-option precedence
+		// before we re-write the meta file below. `ensureForkMetaConsistent`
+		// also reads the meta internally; the cost of this second read
+		// is a single fs.stat + JSON.parse, well below the docker / RPC
+		// budget the supervisor's about to spend.
+		const savedMeta = yield* readForkMeta(metaPath);
+		const autoTickMs = resolveResumeAutoTickIntervalMs({
+			...(options.autoTick !== undefined ? { option: options.autoTick } : {}),
+			...(savedMeta?.runtime?.autoTickMs !== undefined
+				? { savedAutoTickMs: savedMeta.runtime.autoTickMs }
+				: {}),
+		});
 		yield* ensureForkMetaConsistent({
 			metaPath,
 			current: {
@@ -1547,6 +1692,9 @@ const buildFork = (
 				seedAddresses: seedAddrsRaw,
 				seedObjects: seedObjsRaw,
 			},
+			// Persist the resolved cadence — runtime carry, excluded from
+			// `configHash` (see `engine/sui-fork/meta.ts` runtime carry note).
+			runtime: { ...(autoTickMs !== undefined ? { autoTickMs } : {}) },
 		}).pipe(Effect.catchTag('SeedManifestMismatchError', (cause) => Effect.fail(cause)));
 
 		// Resolve image — `forkImage` is always defined now and produces
@@ -1710,7 +1858,22 @@ const buildFork = (
 		// consumer (`Account`, `Package`, dapp-kit codegen at runtime)
 		// reads through this single guarded handle.
 		const client = forkGuard(baseClient);
-		const fork = buildForkControl(client, upstream, forkedAtCheckpoint, seedAddrs);
+
+		// Phase 5 Subtopic 3 (P5.5) — auto-tick clock. The supervisor's
+		// scope binds the fiber, so a wipe / restart / Ctrl-C tears the
+		// fiber down alongside the container. `autoTickMs` was resolved
+		// above (folding the on-disk `runtime.autoTickMs` carry per
+		// P5.5.4 in as a fallback when the caller didn't re-pass
+		// `autoTick`); `undefined` means auto-tick stays off. We log
+		// ONCE at acquire (no per-tick chatter — the WARN-on-failure
+		// path in `runAutoTickClock` covers anomalies).
+		if (autoTickMs !== undefined) {
+			yield* setPhase(`starting auto-tick clock (${autoTickMs}ms)`);
+			yield* runAutoTickClock({ client, intervalMs: autoTickMs });
+			yield* Effect.logInfo(`sui-fork: auto-tick active (${autoTickMs}ms)`);
+		}
+
+		const fork = buildForkControl(client, upstream, forkedAtCheckpoint, seedAddrs, autoTickMs);
 
 		// `waitForTransactionsReady` is a no-op on fork mode — there's
 		// no faucet, and the fork is funds-transferable as soon as
@@ -1748,6 +1911,12 @@ const buildFork = (
 				...(endpoints.length > 1 ? { endpoints } : { primary: s.rpc.host }),
 			};
 		},
+		// Phase B: the fork builder yields `Identity` (a Context.Service)
+		// and the sibling `forkImage` LayeredTag. The sibling is folded
+		// into `__layers` (mirrors how walrus treats `upstreamImage`) and
+		// doesn't enter `__upstreamKeys` — the fork variant is a leaf from
+		// the stack graph's perspective.
+		upstreamKeys: [],
 	});
 
 	// Surface the fork image layer alongside the service tag — mirrors
@@ -1808,8 +1977,5 @@ export const Sui = (opts: SuiOptions = {}): LayeredTag<'@devstack/SuiTag', Sui> 
 	} else {
 		member = buildLocalnet(opts.localnet ?? {});
 	}
-	return Object.assign(member, {
-		__kind: 'service' as const,
-		__pluginName: 'sui',
-	}) as unknown as LayeredTag<'@devstack/SuiTag', Sui>;
+	return makeService('sui', 'service', member) as unknown as LayeredTag<'@devstack/SuiTag', Sui>;
 };

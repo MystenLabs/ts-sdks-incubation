@@ -15,7 +15,7 @@ export {
 	type PythLocalDeployOptions,
 	type PythLocalDeployFeedSpec,
 } from './local-deploy.js';
-export { pythKnownPackage, type PythKnownPackageOptions } from './known-package.js';
+export { pythKnownPackage, type PythKnownPackageOptions } from './known-deployment.js';
 export {
 	PythPusher,
 	type PythPusherHandle,
@@ -30,4 +30,4 @@ export {
 	USDC_PRICE_FEED_ID,
 	type PythPriceFeedId,
 	type PythPriceInfoSpec,
-} from './internal.js';
+} from './shared.js';

@@ -209,6 +209,23 @@ export interface DockerRunOptions {
 	 */
 	readonly stopGraceSeconds?: number;
 	/**
+	 * Signal `docker stop` sends to PID 1 of the container. Defaults to
+	 * SIGTERM (docker's default). Override when the wrapped binary only
+	 * traps a different signal — `sui start` for example only handles
+	 * SIGINT (`tokio::signal::ctrl_c()` registers a SIGINT handler, no
+	 * SIGTERM listener), so it ignores SIGTERM and gets SIGKILL'd at the
+	 * grace timeout regardless of how generous `stopGraceSeconds` is.
+	 * Verified via `docker logs <sui-container>`: no "Received Ctrl+C,
+	 * shutting down..." message before the SIGKILL, the validator
+	 * happily keeps proposing checkpoints right up until exit 137. Switch
+	 * such workloads to `stopSignal: 'SIGINT'` and the validator
+	 * shuts down cleanly within ~1s — no more "UNCLEAN PRIOR SHUTDOWN"
+	 * alert on the next `up`.
+	 *
+	 * Maps to `docker stop --signal <SIG>`.
+	 */
+	readonly stopSignal?: string;
+	/**
 	 * Engine tag-key the stop finalizer should update during teardown.
 	 * When set, the finalizer fires `engine.markStopping(key)` before
 	 * `docker stop` runs and `engine.markStopped(key)` once `docker stop`
@@ -438,15 +455,22 @@ export const run = (
 						if (engineForFinalizer !== undefined && tagKey) {
 							yield* engineForFinalizer.markStopping(tagKey).pipe(Effect.ignore);
 						}
+						// Compose `docker stop` argv. `--signal` overrides the
+						// default SIGTERM when the container's PID 1 only
+						// traps a different signal (e.g. sui's `start`
+						// command only listens for SIGINT). `--time` sets
+						// docker's grace before the daemon falls back to
+						// SIGKILL.
+						const dockerStopArgs: Array<string> = ['stop'];
+						if (opts.stopSignal !== undefined) {
+							dockerStopArgs.push('--signal', opts.stopSignal);
+						}
+						if (opts.stopGraceSeconds !== undefined) {
+							dockerStopArgs.push('--time', String(opts.stopGraceSeconds));
+						}
+						dockerStopArgs.push(id);
 						yield* spawner
-							.exitCode(
-								ChildProcess.make(
-									'docker',
-									opts.stopGraceSeconds !== undefined
-										? ['stop', '--time', String(opts.stopGraceSeconds), id]
-										: ['stop', id],
-								),
-							)
+							.exitCode(ChildProcess.make('docker', dockerStopArgs))
 							.pipe(Effect.ignore);
 						// `markStopped` AFTER docker confirms the container exited
 						// (even on a `--time` SIGKILL fallback — the row reflects

@@ -132,7 +132,7 @@ const deepbook = Deepbook({
 		pools: [
 			{
 				name: 'usdc-sui',
-				base: usdc, // CoinTag from `Package({ coins })`
+				base: usdc, // CoinTag auto-discovered from `Package(...)`
 				quote: 'SUI', // or a Move-type string
 				tickSize: 1n,
 				lotSize: 1_000n,
@@ -201,8 +201,8 @@ the package. The shape your code consumes (`WalrusProxyTag.aggregatorUrl`,
 `SealKeyServerTag.objectId`, …) is identical whether the underlying source is your localnet cluster
 or the public network.
 
-For pinning to a private fork or a non-canonical deployment, each factory accepts an `override:`
-field with explicit ids — see the service reference.
+For pinning to a private fork or a non-canonical deployment, use `KnownPackage(...)` directly
+against the relevant package ids — there's no `override:` field on the composite factories today.
 
 For ad-hoc third-party packages, use `KnownPackage(...)` directly:
 

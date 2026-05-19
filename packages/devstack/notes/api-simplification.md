@@ -835,20 +835,23 @@ Most overlap with W/N/D series. Unique items:
 
 ---
 
-## §11 Open questions — all DECIDED (2026-05-18)
+## §11 Open questions — all DECIDED (2026-05-18) / SHIPPED (verified 2026-05-19)
 
-| #   | Topic                            | Decision                                               | Where in plan |
-| --- | -------------------------------- | ------------------------------------------------------ | ------------- |
-| Q1  | SnapshotMeta `services` typing   | TS interface via declaration merging                   | Phase 5.2     |
-| Q2  | dockerContainer API shape        | Integrated single call                                 | Phase 3.1     |
-| Q3  | Wallet `options.name`            | Singleton — drop the param                             | Phase 2.3     |
-| Q4  | `pickCreatedByTypeIncludes` fate | Collapse with siblings (Flip 5)                        | Phase 1.6     |
-| Q5  | dockerContainer parametricity    | `LayeredTag<Name, Handle>`                             | Phase 3.1     |
-| Q6  | `acquireFileLock` consolidation  | Extract now                                            | Phase 4.4     |
-| Q7  | Signer shape                     | Standardize on `LayeredTag<any, Account>`              | Phase 6.9     |
-| Q8  | Image source narrowing           | `string` → `{pull: string}`                            | Phase 3.8     |
-| Q9  | `waitForBalanceUpdate`           | Delete                                                 | Phase 1.5b    |
-| Q10 | Coin plan coordination           | Phase 1 deletes types only; function waits for coin P3 | Phase 1.2     |
+All §11 questions are verified shipped in `post-launch-sweep.md` §8 "Confirmed shipped" except Q7
+(Signer adoption), which is scheduled in `post-launch-sweep.md` Wave 2 §4.2.
+
+| #   | Topic                            | Decision                                               | Status                                                                           |
+| --- | -------------------------------- | ------------------------------------------------------ | -------------------------------------------------------------------------------- |
+| Q1  | SnapshotMeta `services` typing   | TS interface via declaration merging                   | SHIPPED (verified 2026-05-19) — `engine/snapshot.ts:133`                         |
+| Q2  | dockerContainer API shape        | Integrated single call                                 | SHIPPED (verified 2026-05-19) — `advanced/plugin-author/docker-container.ts:497` |
+| Q3  | Wallet `options.name`            | Singleton — drop the param                             | SHIPPED (verified 2026-05-19)                                                    |
+| Q4  | `pickCreatedByTypeIncludes` fate | Collapse with siblings (Flip 5)                        | SHIPPED (verified 2026-05-19) — `engine/sui-helpers.ts:84-91`                    |
+| Q5  | dockerContainer parametricity    | `LayeredTag<Name, Handle>`                             | SHIPPED (verified 2026-05-19)                                                    |
+| Q6  | `acquireFileLock` consolidation  | Extract now                                            | SHIPPED (verified 2026-05-19) — `engine/file-lock.ts`                            |
+| Q7  | Signer shape                     | Standardize on `LayeredTag<any, Account>`              | SCHEDULED — `post-launch-sweep.md` Wave 2 §4.2                                   |
+| Q8  | Image source narrowing           | `string` → `{pull: string}`                            | SHIPPED (verified 2026-05-19)                                                    |
+| Q9  | `waitForBalanceUpdate`           | Delete                                                 | SHIPPED (verified 2026-05-19)                                                    |
+| Q10 | Coin plan coordination           | Phase 1 deletes types only; function waits for coin P3 | SHIPPED (verified 2026-05-19) — coin plan complete, decision moot                |
 
 ---
 
@@ -857,9 +860,9 @@ Most overlap with W/N/D series. Unique items:
 Each flip is "my recommendation differs from the review's verdict." You decide each one before the
 relevant phase commits.
 
-### Flip 1 — `defineRegistry<T>()` extraction (W2/D2, Phase 4.2) — DECIDED: ACT (2026-05-18)
+### Flip 1 — `defineRegistry<T>()` extraction (W2/D2, Phase 4.2) — SHIPPED (verified 2026-05-19)
 
-Extract `defineRegistry<TName, TRecord>()`. -140 LOC net. See Phase 4.2.
+Extract `defineRegistry<TName, TRecord>()`. -140 LOC net. Lives in `engine/define-registry.ts`.
 
 ### Flip 2 — `groupX` projections become derived (D5, Phase 4.3)
 
@@ -873,7 +876,7 @@ free.
 
 → DECIDE: [STAY | ACT | depends on 4.1]
 
-### Flip 3 — Fork `runtime` derived from network (W17) — DECIDED: ACT (2026-05-18)
+### Flip 3 — Fork `runtime` derived from network (W17) — SHIPPED (verified 2026-05-19)
 
 Pick network-string as source of truth. `runtime` becomes a computed property on the `Sui`
 interface:
@@ -897,25 +900,29 @@ DappKitConfigEmitter) read it the same way. No external API change.
 
 → Coordinate edit to fork plan Phase 1 D1 before fork lands its runtime-option work.
 
-### Flip 4 — Plan ordering — DECIDED: ACT (visible-first, 2026-05-18)
+### Flip 4 — Plan ordering — SHIPPED (verified 2026-05-19)
 
 Phase 1 / 3 / 4 / 6 land first (visible to users + plugin authors). Phase 5 (substrate) lands in
 parallel but is required before deepbook Phase 2 + fork Phase 2 (those plans depend on SnapshotMeta
 bucket + StateStoreKeys being in place).
 
-### Flip 5 — `pickCreatedByType*` collapse — DECIDED: ACT (2026-05-18)
+### Flip 5 — `pickCreatedByType*` collapse — SHIPPED (verified 2026-05-19)
 
 Collapse 3 named pickers into one `pickCreatedByType(changes, {suffix?, includes?, prefix?, all?})`
-at `/advanced`. See Phase 1.6.
+at `/advanced`. Lives in `engine/sui-helpers.ts:84-91`.
 
-### Flip 6 — Wallet `Object.assign` mutation — DECIDED: ACT (2026-05-18)
+### Flip 6 — Wallet `Object.assign` mutation — SCHEDULED in `post-launch-sweep.md` Wave 2 (§4.1 W12)
 
-Replace `services/wallet.ts:35` `Object.assign(walletApp(...), {__kind: 'app'})` with
-`provide(WalletAppTag, ...)`. See Phase 5.7.
+Replace `services/wallet.ts:37` `Object.assign(walletApp(...), {__kind: 'app'})` with the
+`makeService(name, kind, impl)` helper landing in `post-launch-sweep.md` Wave 2 §4.1. Folded into
+the broader W12 migration (24 `Object.assign` sites across `dev.ts`, `wallet.ts`, `deepbook.ts`,
+`sui.ts`, `postgres.ts`, `pyth.ts`, `walrus.ts`, `seal.ts`).
 
-### Flip 7 — `ExtraRuntimePaths.addExtra` — DECIDED: delete (2026-05-18)
+### Flip 7 — `ExtraRuntimePaths.addExtra` — SHIPPED (verified 2026-05-19)
 
-Delete the mutator; `extras` becomes a readonly constructor-set field. See Phase 5.8.
+Deleted the entire unused `ExtraRuntimePaths` Service (no callers in-tree or out). `extras` are now
+passed inline at `saveSnapshot({ extras: [...] })` time. Landed in `post-launch-sweep.md` Wave 1
+§1.2.
 
 ---
 

@@ -10,7 +10,7 @@ import { provide } from '../../advanced/tag.js';
 import { knownDeployments, type KnownNetwork } from '../../engine/known-deployments.js';
 import { publishPythState } from '../../engine/registries.js';
 import { PythTag, type PythPriceInfo, type Pyth } from './tag.js';
-import type { PythPriceFeedId } from './internal.js';
+import type { PythPriceFeedId } from './shared.js';
 
 export interface PythKnownPackageOptions {
 	/** Sui network whose Pyth deployment to read from. */
@@ -77,7 +77,7 @@ export const pythKnownPackage = (opts: PythKnownPackageOptions) => {
 				findPriceInfo: (feed) => derived.find((p) => p.feedId === feed),
 				findPriceInfoByLabel: (label) => derived.find((p) => p.label === label),
 			} satisfies Pyth;
-		}).pipe(Effect.withSpan('pythKnownPackage')),
+		}).pipe(Effect.withSpan('PythKnownPackage')),
 		{
 			kind: 'service',
 			plugin: 'pyth',

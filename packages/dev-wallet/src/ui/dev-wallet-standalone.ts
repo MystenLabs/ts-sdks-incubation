@@ -6,6 +6,7 @@ import { customElement, property } from 'lit/decorators.js';
 
 import type { DevWallet } from '../wallet/dev-wallet.js';
 import { connectDialogStyles, sharedStyles } from './styles.js';
+import type { CoinRecord } from './utils.js';
 import { WalletController } from './wallet-controller.js';
 
 @customElement('dev-wallet-standalone')
@@ -90,6 +91,12 @@ export class DevWalletStandalone extends LitElement {
 	@property({ type: String })
 	bookmarkletOrigin = '';
 
+	/** Optional pre-seeded coin metadata. Pass the generated `coins`
+	 *  constant from devstack codegen to skip per-coin RPC fetches in the
+	 *  balances list and signing modal. */
+	@property({ attribute: false })
+	coins: CoinRecord | null = null;
+
 	#ctrl = new WalletController(this);
 
 	override willUpdate(changedProperties: Map<string, unknown>) {
@@ -98,6 +105,9 @@ export class DevWalletStandalone extends LitElement {
 		}
 		if (changedProperties.has('bookmarkletOrigin')) {
 			this.#ctrl.bookmarkletOrigin = this.bookmarkletOrigin;
+		}
+		if (changedProperties.has('coins')) {
+			this.#ctrl.coins = this.coins;
 		}
 	}
 

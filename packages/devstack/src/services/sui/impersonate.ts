@@ -187,7 +187,7 @@ export const executeImpersonated = (
 		}
 		return result;
 	}).pipe(
-		Effect.withSpan('sui.fork.impersonate', {
+		Effect.withSpan('SuiForkImpersonate', {
 			attributes: {
 				'fork.sender': sender,
 				'fork.gasBudget': String(opts?.gasBudget ?? DEFAULT_FORK_GAS_BUDGET),

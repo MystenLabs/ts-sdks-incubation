@@ -8,15 +8,16 @@
 // `StateStore` cache key, so a no-op rebuild reuses the previously
 // published `packageId` and downstream caches stay warm.
 
-import { Effect, FileSystem, Option, Schedule } from 'effect';
+import { Effect, FileSystem, Schedule } from 'effect';
+import { ChildProcessSpawner } from 'effect/unstable/process';
 import * as path from 'node:path';
-import * as crypto from 'node:crypto';
 import { Transaction } from '@mysten/sui/transactions';
 import { tag, setPhase, type LayeredTag } from '../../advanced/tag.js';
-import { SuiTag } from '../sui.js';
+import { SuiTag, type Sui } from '../sui.js';
 import { buildMove, scrubCachedMoveLocks } from '../../engine/sui-cli.js';
+import { createContentHasher, digestHex } from '../../engine/content-hash.js';
 import { publishCoin, publishPackage } from '../../engine/registries.js';
-import { StateStore } from '../../engine/state-store.js';
+import { withCache } from '../../engine/cache.js';
 import { PublishError } from '../../engine/errors.js';
 import type { LocalPackage } from '../package.js';
 import { toSdkCoin } from '../package.js';
@@ -43,7 +44,7 @@ import { fetchCoinMetadataMany, type OnchainCoinMetadata } from '../coin/loader.
 export const hashMoveSources = (sourcePath: string) =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem;
-		const hash = crypto.createHash('sha256');
+		const hash = createContentHasher();
 		const walk = (dir: string): Effect.Effect<void, PublishError, FileSystem.FileSystem> =>
 			Effect.gen(function* () {
 				const entries = (yield* fs.readDirectory(dir)).slice().sort();
@@ -91,13 +92,13 @@ export const hashMoveSources = (sourcePath: string) =>
 		// state-store entries written by older devstack versions; HIGH-C1
 		// only widens the INPUT set (now includes Move.lock) without
 		// changing the hash width.
-		const digest = hash.digest('hex').slice(0, 16);
+		const digest = digestHex(hash, { length: 16 });
 		yield* Effect.annotateCurrentSpan({
 			'publishMove.sourcePath': sourcePath,
 			'publishMove.sourceHash': digest,
 		});
 		return digest;
-	}).pipe(Effect.withSpan('publishMove.hash-sources'));
+	}).pipe(Effect.withSpan('PublishMoveHashSources'));
 
 // `PublishedCoin` is the runtime shape every entry of `pkg.coins[<key>]`
 // satisfies. `name` is the registry key (the discovered symbol, or
@@ -191,8 +192,18 @@ export interface PublishMoveOptions<Name extends string, TCaptured> {
 	 * containing `Move.toml`). Resolved relative to `process.cwd()`;
 	 * pass an absolute path when you can to avoid surprises under
 	 * `pnpm dev` invocations from a non-package directory.
+	 *
+	 * Accepts either a literal string (factory-time-known path, the
+	 * common case) or an `Effect.Effect<string>` (runtime-resolved
+	 * path, e.g. the result of a `gitFetch` factory tag's `.path`
+	 * field). The Effect form is what lets seal's gitFetch fallback
+	 * round-trip through `publishMove` instead of duplicating the
+	 * publish flow inline — see §5.6 of
+	 * `notes/parallel-graph-resolution.md`. Runtime-resolved paths
+	 * still participate in the `(sourceHash, chainId)` cache key the
+	 * same way literal paths do.
 	 */
-	readonly path: string;
+	readonly path: string | Effect.Effect<string, never, any>;
 	/**
 	 * Account that signs the publish transaction and ends up holding
 	 * the resulting `UpgradeCap`. The tag is yielded for ordering, so
@@ -262,6 +273,212 @@ const registerMintStrategies = (
 		}
 	});
 
+// Fresh-publish body — runs only when `withCache` decides we need to
+// re-derive (cache miss or verify-fail). Split out so the `publishMove`
+// body stays compact; everything that fires inside this Effect is a
+// real side effect (move-locks scrub → buildMove → signAndExecute →
+// fullnode ready-probe → coin discovery → metadata fetch).
+const produceFreshPackage = <const Name extends string, TCaptured>(args: {
+	readonly options: PublishMoveOptions<Name, TCaptured>;
+	readonly sui: Sui;
+	readonly signer: Account;
+	readonly sourcePath: string;
+	readonly mvrPlaceholder: string;
+}): Effect.Effect<
+	Package<TCaptured>,
+	PublishError,
+	FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner
+> =>
+	Effect.gen(function* () {
+		const { options, sui, signer, sourcePath } = args;
+
+		// Strip `[env.testnet]` / `[env.mainnet]` sections from cached
+		// `~/.move/git/**/Move.lock` files before building. Without
+		// this the sui-cli resolver short-circuits vendored deps
+		// (e.g. deepbook's `token`) to their testnet/mainnet ids,
+		// which don't exist on a fresh localnet. See
+		// `scrubCachedMoveLocks` for details.
+		yield* scrubCachedMoveLocks(sourcePath).pipe(
+			Effect.catchTag('SuiCliError', (cause) =>
+				Effect.fail(
+					new PublishError({
+						phase: 'scrub',
+						message: `publishMove(${options.name}): scrub failed`,
+						cause,
+					}),
+				),
+			),
+		);
+
+		yield* setPhase('building move');
+		// `buildMove` shells out to the host `sui` CLI (or one
+		// embedded in the localnet image, dispatched via docker
+		// exec). Either way the CLI itself dials the chain — use
+		// the host URL form; the container alias is only valid
+		// from inside containers attached to the per-stack sui
+		// network.
+		const { modules, dependencies } = yield* buildMove({
+			path: sourcePath,
+			rpcUrl: sui.rpc.host,
+			faucetUrl: sui.faucet?.host,
+		}).pipe(
+			Effect.catchTag('SuiCliError', (cause) =>
+				Effect.fail(
+					new PublishError({
+						phase: 'build',
+						message: `publishMove(${options.name}): build failed`,
+						cause,
+					}),
+				),
+			),
+		);
+
+		yield* setPhase('publishing');
+		const t = new Transaction();
+		const [upgradeCap] = t.publish({ modules: [...modules], dependencies: [...dependencies] });
+		t.transferObjects([upgradeCap], signer.address);
+
+		const result = yield* signer.signAndExecute(t).pipe(
+			Effect.catchTag('SignAndExecuteError', (cause) =>
+				Effect.fail(
+					new PublishError({
+						phase: 'publish-tx',
+						message: `publishMove(${options.name}): publish tx failed`,
+						cause,
+					}),
+				),
+			),
+		);
+
+		yield* setPhase('capturing');
+		const published = result.objectChanges.find(
+			(c): c is Extract<SuiObjectChange, { type: 'published' }> => c.type === 'published',
+		);
+		if (published === undefined) {
+			return yield* Effect.fail(
+				new PublishError({
+					phase: 'parse',
+					message: `publishMove(${options.name}): no 'published' change in result`,
+				}),
+			);
+		}
+		const packageId = published.packageId;
+
+		// Wait for the fullnode to ingest the publish checkpoint before
+		// returning. Without this, downstream `tx` primitives that
+		// `signAndExecute` against the freshly-published package can
+		// fail with `Dependent package not found on-chain` — the publish
+		// tx digest is committed but the indexer hasn't propagated yet.
+		// Poll `getObject(packageId)` until it returns; back off
+		// exponentially up to 10s total.
+		yield* Effect.tryPromise({
+			try: () => sui.client.core.getObject({ objectId: packageId }),
+			// Phase -1 (gRPC migration): the gRPC `client.core.getObject(
+			// {objectId})` throws when the fullnode hasn't ingested the
+			// publish checkpoint yet, instead of the JSON-RPC tagged
+			// `{error: 'notExists', data: undefined}` payload. The
+			// surrounding retry/timeout pipeline below handles the
+			// failure case identically to the old "tagged-error" branch
+			// — surface as a typed PublishError so the produce body's
+			// error channel stays narrow.
+			catch: (cause) =>
+				new PublishError({
+					phase: 'parse',
+					message: `publishMove(${options.name}): package not yet on-chain`,
+					cause,
+				}),
+		}).pipe(
+			Effect.retry(Schedule.spaced('200 millis')),
+			Effect.timeoutOrElse({
+				duration: '10 seconds',
+				orElse: () =>
+					Effect.fail(
+						new PublishError({
+							phase: 'parse',
+							message: `publishMove(${options.name}): publish tx succeeded but package ${packageId} did not become queryable within 10s`,
+						}),
+					),
+			}),
+		);
+
+		const upgradeCapId = pickCreatedByType(result.objectChanges, {
+			suffix: UPGRADE_CAP_TYPE_SUFFIX,
+		});
+
+		const captured = options.capture ? options.capture(result.objectChanges) : undefined;
+
+		// Coin auto-discovery is the single source. Every coin the
+		// publish receipt creates surfaces as a `PublishedCoin` entry
+		// keyed by the on-chain CoinMetadata symbol (when present) or
+		// the witness type name (when the publish didn't follow the
+		// standard `coin::create_currency` pattern).
+		const discovered = discoverCoinsFromPublish(result.objectChanges, signer.address);
+
+		// Fetch CoinMetadata for every discovered coin. One concurrent
+		// RPC batch; on transient failure individual entries degrade to
+		// "no metadata" and the publishMove pipeline keeps going.
+		const allCoinTypes = discovered.map((d) => d.coinType);
+		const metadataByType: ReadonlyMap<string, OnchainCoinMetadata> =
+			allCoinTypes.length > 0 ? yield* fetchCoinMetadataMany(sui.client, allCoinTypes) : new Map();
+
+		const coins = {} as Record<string, PublishedCoin>;
+		for (const disc of discovered) {
+			const md = metadataByType.get(disc.coinType);
+			// Symbol-keyed naming: prefer the on-chain CoinMetadata
+			// symbol; fall back to the coin's witness type name when
+			// the publish didn't emit a CoinMetadata. Either form is
+			// addressable through `Coin('SYMBOL')` (case-insensitive
+			// lookup against both the symbol and the witness).
+			const key = md?.symbol !== undefined && md.symbol.length > 0 ? md.symbol : disc.witnessName;
+			// Decimals authority: on-chain RPC value; falls back to 0
+			// when the coin didn't emit a CoinMetadata (rare custom
+			// init bypassing `coin::create_currency`).
+			const decimals = md?.decimals ?? 0;
+			const coin: PublishedCoin = {
+				name: key,
+				module: disc.moduleName,
+				type: disc.witnessName,
+				decimals,
+				fullCoinType: disc.coinType,
+				sdkCoin: toSdkCoin({ fullCoinType: disc.coinType, decimals }),
+				packageId,
+				...(disc.treasuryCapId !== undefined ? { treasuryCapId: disc.treasuryCapId } : {}),
+				...(disc.treasuryCapOwner !== undefined ? { treasuryCapOwner: disc.treasuryCapOwner } : {}),
+				publisherOwnsCap: disc.publisherOwnsCap,
+				...(disc.metadataId !== undefined ? { metadataId: disc.metadataId } : {}),
+				...(md?.symbol !== undefined && md.symbol.length > 0 ? { symbol: md.symbol } : {}),
+				...(md?.name !== undefined && md.name.length > 0 ? { displayName: md.name } : {}),
+				...(md?.iconUrl !== undefined ? { iconUrl: md.iconUrl } : {}),
+			};
+			// Collision guard: two coins in one package publishing the
+			// same on-chain symbol. Discovery sorts deterministically
+			// by coinType so the second occurrence is dropped with a
+			// warning — this is a Move-source bug the developer
+			// should fix (each coin's CoinMetadata symbol should be
+			// unique within a package).
+			if (coins[key] !== undefined) {
+				yield* Effect.logWarning(
+					`publishMove(${options.name}): coin key collision on '${key}' (existing: ${coins[key].fullCoinType}, ` +
+						`incoming: ${coin.fullCoinType}) — keeping the first. Each coin's CoinMetadata ` +
+						`symbol should be unique within a package.`,
+				);
+				continue;
+			}
+			coins[key] = coin;
+		}
+
+		const fresh: Package<TCaptured> = {
+			name: options.name,
+			packageId,
+			upgradeCapId,
+			captured: captured as TCaptured,
+			coins,
+			sourcePath,
+			mvrPlaceholder: args.mvrPlaceholder,
+		};
+		return fresh;
+	});
+
 export const publishMove = <const Name extends string, TCaptured = undefined>(
 	options: PublishMoveOptions<Name, TCaptured>,
 ) =>
@@ -270,17 +487,14 @@ export const publishMove = <const Name extends string, TCaptured = undefined>(
 		Effect.gen(function* () {
 			const signer = yield* options.signer;
 			const sui = yield* SuiTag;
-			const state = yield* StateStore;
 
-			// Content-hash the Move source tree and probe the StateStore
-			// cache before doing any work. The key folds in the chain
-			// identifier so a regenesis of the underlying chain naturally
-			// misses the cache (the previously published packageId no
-			// longer exists). On a hit we skip scrub + build + publish
-			// entirely and reuse the prior `Package` — keeps downstream
-			// caches (e.g. layers keyed on `packageId`) stable across
-			// no-op rebuilds. v3 does the same with its input-hash fold
-			// in `packages/devstack/src/helpers/publish-move.ts`.
+			// Resolve the source path. Phase C §5.6 widens `options.path`
+			// to accept either a literal string or an `Effect.Effect<string>`
+			// so a runtime-resolved gitFetch result can feed directly
+			// through `publishMove` without the seal-inline duplication.
+			const sourcePath: string =
+				typeof options.path === 'string' ? options.path : yield* options.path;
+
 			// MVR (Move Registry) names accept only `[a-z0-9-]+` after the
 			// scope prefix — underscores fail dapp-kit's `validateOverrides`
 			// at runtime. Sanitize the package name into a valid MVR slug so
@@ -306,279 +520,98 @@ export const publishMove = <const Name extends string, TCaptured = undefined>(
 				return s;
 			})();
 			const mvrPlaceholder = options.mvrPlaceholder ?? `@local/${mvrSlug}`;
-			const sourceHash = yield* hashMoveSources(options.path);
-			const cacheKey = `publishMove/v2/${options.name}/${sourceHash}/${sui.chainId}`;
-			const cached = yield* state.get<Package<TCaptured>>(cacheKey);
-			if (Option.isSome(cached)) {
-				yield* Effect.logInfo(
-					`publishMove(${options.name}): cache hit — chainId=${sui.chainId} sourceHash=${sourceHash} packageId=${cached.value.packageId}`,
-				);
-				yield* Effect.annotateCurrentSpan({
-					'publishMove.cache': 'hit',
-					'publishMove.packageId': cached.value.packageId,
-					'publishMove.sourceHash': sourceHash,
-				});
-				// Re-attach host-local fields (sourcePath, mvrPlaceholder) to
-				// the cached payload — they're host-specific so we don't
-				// persist them, but downstream primitives (bindings) need
-				// them on the yielded shape.
-				const hit: Package<TCaptured> = {
-					...cached.value,
-					sourcePath: options.path,
-					mvrPlaceholder,
-				};
-				// Re-register on every run — registries live in-memory per
-				// engine invocation and a cache hit must still surface the
-				// package + coins to downstream consumers (mvr resolver,
-				// status command, etc.).
-				yield* publishPackage({
-					name: options.name,
-					packageId: hit.packageId,
-					upgradeCapId: hit.upgradeCapId,
-					mvrPlaceholder,
-					captured: hit.captured as Record<string, unknown> | undefined,
-				});
-				for (const coin of Object.values(hit.coins) as ReadonlyArray<PublishedCoin>) {
-					yield* publishCoin({
-						name: coin.name,
-						type: coin.fullCoinType,
-						decimals: coin.decimals,
-						sdkCoin: coin.sdkCoin,
-						...(coin.symbol !== undefined ? { symbol: coin.symbol } : {}),
-						...(coin.displayName !== undefined ? { displayName: coin.displayName } : {}),
-						...(coin.iconUrl !== undefined ? { iconUrl: coin.iconUrl } : {}),
-						...(coin.treasuryCapId !== undefined ? { treasuryCapId: coin.treasuryCapId } : {}),
-						...(coin.metadataId !== undefined ? { metadataId: coin.metadataId } : {}),
-						...(coin.packageId !== undefined ? { packageId: coin.packageId } : {}),
+
+			// Re-register registries (PackageRegistry + CoinRegistry +
+			// Faucet mint strategies). Runs on every cycle regardless of
+			// cache hit/miss — registries live in-memory per engine
+			// invocation, so a cache hit MUST still surface the package +
+			// coins to downstream consumers (MVR resolver, status command,
+			// etc.). Pulled out into a helper so both withCache branches
+			// stay readable.
+			const registerAll = (pkg: Package<TCaptured>) =>
+				Effect.gen(function* () {
+					yield* publishPackage({
+						name: options.name,
+						packageId: pkg.packageId,
+						upgradeCapId: pkg.upgradeCapId,
+						mvrPlaceholder,
+						captured: pkg.captured as Record<string, unknown> | undefined,
 					});
-				}
-				yield* registerMintStrategies(signer, Object.values(hit.coins));
-				return hit;
-			}
-			yield* Effect.annotateCurrentSpan({
-				'publishMove.cache': 'miss',
-				'publishMove.sourceHash': sourceHash,
-			});
+					for (const coin of Object.values(pkg.coins) as ReadonlyArray<PublishedCoin>) {
+						yield* publishCoin({
+							name: coin.name,
+							type: coin.fullCoinType,
+							decimals: coin.decimals,
+							sdkCoin: coin.sdkCoin,
+							...(coin.symbol !== undefined ? { symbol: coin.symbol } : {}),
+							...(coin.displayName !== undefined ? { displayName: coin.displayName } : {}),
+							...(coin.iconUrl !== undefined ? { iconUrl: coin.iconUrl } : {}),
+							...(coin.treasuryCapId !== undefined ? { treasuryCapId: coin.treasuryCapId } : {}),
+							...(coin.metadataId !== undefined ? { metadataId: coin.metadataId } : {}),
+							...(coin.packageId !== undefined ? { packageId: coin.packageId } : {}),
+						});
+					}
+					yield* registerMintStrategies(signer, Object.values(pkg.coins));
+				});
 
-			// Strip `[env.testnet]` / `[env.mainnet]` sections from cached
-			// `~/.move/git/**/Move.lock` files before building. Without
-			// this the sui-cli resolver short-circuits vendored deps
-			// (e.g. deepbook's `token`) to their testnet/mainnet ids,
-			// which don't exist on a fresh localnet. See
-			// `scrubCachedMoveLocks` for details.
-			yield* scrubCachedMoveLocks(options.path).pipe(
-				Effect.catchTag('SuiCliError', (cause) =>
-					Effect.fail(
-						new PublishError({
-							phase: 'scrub',
-							message: `publishMove(${options.name}): scrub failed`,
-							cause,
-						}),
-					),
-				),
-			);
-
-			yield* setPhase('building move');
-			// `buildMove` shells out to the host `sui` CLI (or one
-			// embedded in the localnet image, dispatched via docker
-			// exec). Either way the CLI itself dials the chain — use
-			// the host URL form; the container alias is only valid
-			// from inside containers attached to the per-stack sui
-			// network.
-			const { modules, dependencies } = yield* buildMove({
-				path: options.path,
-				rpcUrl: sui.rpc.host,
-				faucetUrl: sui.faucet?.host,
-			}).pipe(
-				Effect.catchTag('SuiCliError', (cause) =>
-					Effect.fail(
-						new PublishError({
-							phase: 'build',
-							message: `publishMove(${options.name}): build failed`,
-							cause,
-						}),
-					),
-				),
-			);
-
-			yield* setPhase('publishing');
-			const t = new Transaction();
-			const [upgradeCap] = t.publish({ modules: [...modules], dependencies: [...dependencies] });
-			t.transferObjects([upgradeCap], signer.address);
-
-			const result = yield* signer.signAndExecute(t).pipe(
-				Effect.catchTag('SignAndExecuteError', (cause) =>
-					Effect.fail(
-						new PublishError({
-							phase: 'publish-tx',
-							message: `publishMove(${options.name}): publish tx failed`,
-							cause,
-						}),
-					),
-				),
-			);
-
-			yield* setPhase('capturing');
-			const published = result.objectChanges.find(
-				(c): c is Extract<SuiObjectChange, { type: 'published' }> => c.type === 'published',
-			);
-			if (published === undefined) {
-				return yield* Effect.fail(
-					new PublishError({
-						phase: 'parse',
-						message: `publishMove(${options.name}): no 'published' change in result`,
+			// `withCache(spec)` carries the cache discipline + verify probe.
+			// On a hit the cached `Package<TCaptured>` is re-validated by
+			// probing the on-chain package; a missing/inaccessible package
+			// invalidates the cache and falls through to a fresh publish.
+			// On a miss the produce body runs (scrub → build → publish →
+			// discover coins) and the result is persisted.
+			//
+			// `keyOverride` pins the legacy `publishMove/v2/${name}/${sourceHash}/${chainId}`
+			// key shape — out-of-tree consumers (tests, snapshot tooling)
+			// reference this exact string. A future v-bump migrates the
+			// callsite to `withCache`'s canonical
+			// `${namespace}/${chainId}/${inputsHash}` layout.
+			const sourceHash = yield* hashMoveSources(sourcePath);
+			const cached = yield* withCache({
+				namespace: `publishMove/v2/${options.name}`,
+				chainId: sui.chainId,
+				inputs: Effect.succeed({ sourceHash, signer: signer.address }),
+				keyOverride: `publishMove/v2/${options.name}/${sourceHash}/${sui.chainId}`,
+				// §4.2 verify probe: confirm the cached packageId still
+				// resolves on chain. A regenesis flips `sui.chainId` and
+				// misses the cache outright; a partial state-store wipe or
+				// snapshot mismatch surfaces here as a verify-fail and the
+				// next produce republishes cleanly. The probe lives behind
+				// `Effect.orElseSucceed(undefined)` so transient RPC
+				// failures don't fail the boot — they over-derive on the
+				// next cycle, which is the cheaper failure mode.
+				verify: (pkg) =>
+					Effect.gen(function* () {
+						const probe = yield* SuiTag;
+						return yield* Effect.tryPromise({
+							try: () => probe.client.core.getObject({ objectId: pkg.packageId }),
+							catch: (cause) => cause,
+						}).pipe(
+							Effect.as(pkg as Package<TCaptured> | undefined),
+							Effect.orElseSucceed(() => undefined as Package<TCaptured> | undefined),
+						);
 					}),
-				);
-			}
-			const packageId = published.packageId;
-
-			// Wait for the fullnode to ingest the publish checkpoint before
-			// returning. Without this, downstream `tx` primitives that
-			// `signAndExecute` against the freshly-published package can
-			// fail with `Dependent package not found on-chain` — the publish
-			// tx digest is committed but the indexer hasn't propagated yet.
-			// Poll `getObject(packageId)` until it returns; back off
-			// exponentially up to 10s total.
-			yield* Effect.gen(function* () {
-				// Phase -1 (gRPC migration): the gRPC `client.core.getObject(
-				// {objectId})` throws when the fullnode hasn't ingested the
-				// publish checkpoint yet, instead of the JSON-RPC tagged
-				// `{error: 'notExists', data: undefined}` payload. The
-				// surrounding retry/timeout pipeline below already handles
-				// the failure case identically to the old "tagged-error"
-				// branch, so we just let `tryPromise` capture the throw.
-				yield* Effect.tryPromise({
-					try: () => sui.client.core.getObject({ objectId: packageId }),
-					catch: (cause) => new Error(`package not yet on-chain: ${String(cause)}`),
-				});
-			}).pipe(
-				Effect.retry(Schedule.spaced('200 millis')),
-				Effect.timeoutOrElse({
-					duration: '10 seconds',
-					orElse: () =>
-						Effect.fail(
-							new PublishError({
-								phase: 'parse',
-								message: `publishMove(${options.name}): publish tx succeeded but package ${packageId} did not become queryable within 10s`,
-							}),
-						),
+				produce: produceFreshPackage<Name, TCaptured>({
+					options,
+					sui,
+					signer,
+					sourcePath,
+					mvrPlaceholder,
 				}),
-			);
-
-			const upgradeCapId = pickCreatedByType(result.objectChanges, {
-				suffix: UPGRADE_CAP_TYPE_SUFFIX,
 			});
 
-			const captured = options.capture ? options.capture(result.objectChanges) : undefined;
-
-			// Coin auto-discovery is the single source. Every coin the
-			// publish receipt creates surfaces as a `PublishedCoin` entry
-			// keyed by the on-chain CoinMetadata symbol (when present) or
-			// the witness type name (when the publish didn't follow the
-			// standard `coin::create_currency` pattern).
-			const discovered = discoverCoinsFromPublish(result.objectChanges, signer.address);
-
-			// Fetch CoinMetadata for every discovered coin. One concurrent
-			// RPC batch; on transient failure individual entries degrade to
-			// "no metadata" and the publishMove pipeline keeps going.
-			const allCoinTypes = discovered.map((d) => d.coinType);
-			const metadataByType: ReadonlyMap<string, OnchainCoinMetadata> =
-				allCoinTypes.length > 0
-					? yield* fetchCoinMetadataMany(sui.client, allCoinTypes)
-					: new Map();
-
-			const coins = {} as Record<string, PublishedCoin>;
-			for (const disc of discovered) {
-				const md = metadataByType.get(disc.coinType);
-				// Symbol-keyed naming: prefer the on-chain CoinMetadata
-				// symbol; fall back to the coin's witness type name when
-				// the publish didn't emit a CoinMetadata. Either form is
-				// addressable through `Coin('SYMBOL')` (case-insensitive
-				// lookup against both the symbol and the witness).
-				const key = md?.symbol !== undefined && md.symbol.length > 0 ? md.symbol : disc.witnessName;
-				// Decimals authority: on-chain RPC value; falls back to 0
-				// when the coin didn't emit a CoinMetadata (rare custom
-				// init bypassing `coin::create_currency`).
-				const decimals = md?.decimals ?? 0;
-				const coin: PublishedCoin = {
-					name: key,
-					module: disc.moduleName,
-					type: disc.witnessName,
-					decimals,
-					fullCoinType: disc.coinType,
-					sdkCoin: toSdkCoin({ fullCoinType: disc.coinType, decimals }),
-					packageId,
-					...(disc.treasuryCapId !== undefined ? { treasuryCapId: disc.treasuryCapId } : {}),
-					...(disc.treasuryCapOwner !== undefined
-						? { treasuryCapOwner: disc.treasuryCapOwner }
-						: {}),
-					publisherOwnsCap: disc.publisherOwnsCap,
-					...(disc.metadataId !== undefined ? { metadataId: disc.metadataId } : {}),
-					...(md?.symbol !== undefined && md.symbol.length > 0 ? { symbol: md.symbol } : {}),
-					...(md?.name !== undefined && md.name.length > 0 ? { displayName: md.name } : {}),
-					...(md?.iconUrl !== undefined ? { iconUrl: md.iconUrl } : {}),
-				};
-				// Collision guard: two coins in one package publishing the
-				// same on-chain symbol. Discovery sorts deterministically
-				// by coinType so the second occurrence is dropped with a
-				// warning — this is a Move-source bug the developer
-				// should fix (each coin's CoinMetadata symbol should be
-				// unique within a package).
-				if (coins[key] !== undefined) {
-					yield* Effect.logWarning(
-						`publishMove(${options.name}): coin key collision on '${key}' (existing: ${coins[key].fullCoinType}, ` +
-							`incoming: ${coin.fullCoinType}) — keeping the first. Each coin's CoinMetadata ` +
-							`symbol should be unique within a package.`,
-					);
-					continue;
-				}
-				coins[key] = coin;
-			}
-
-			yield* publishPackage({
-				name: options.name,
-				packageId,
-				upgradeCapId,
-				mvrPlaceholder,
-				captured: captured as Record<string, unknown> | undefined,
-			});
-
-			for (const coin of Object.values(coins)) {
-				yield* publishCoin({
-					name: coin.name,
-					type: coin.fullCoinType,
-					decimals: coin.decimals,
-					sdkCoin: coin.sdkCoin,
-					...(coin.symbol !== undefined ? { symbol: coin.symbol } : {}),
-					...(coin.displayName !== undefined ? { displayName: coin.displayName } : {}),
-					...(coin.iconUrl !== undefined ? { iconUrl: coin.iconUrl } : {}),
-					...(coin.treasuryCapId !== undefined ? { treasuryCapId: coin.treasuryCapId } : {}),
-					...(coin.metadataId !== undefined ? { metadataId: coin.metadataId } : {}),
-					...(coin.packageId !== undefined ? { packageId: coin.packageId } : {}),
-				});
-			}
-			yield* registerMintStrategies(signer, Object.values(coins));
-
-			const result_: Package<TCaptured> = {
-				name: options.name,
-				packageId,
-				upgradeCapId,
-				captured: captured as TCaptured,
-				coins,
-				sourcePath: options.path,
+			// Re-attach host-local fields (sourcePath, mvrPlaceholder) to
+			// the cached payload — they're host-specific so we don't
+			// persist them, but downstream primitives (bindings) need them
+			// on the yielded shape.
+			const pkg: Package<TCaptured> = {
+				...cached,
+				sourcePath,
 				mvrPlaceholder,
 			};
-
-			// Cache against the source-hash + chainId key so the next
-			// build of the same tree against the same chain reuses this
-			// packageId. Downstream layers key off `packageId`, so a
-			// stable hit here cascades into stable layer hashes. `sourcePath`
-			// + `mvrPlaceholder` are re-attached on cache hits (above),
-			// not persisted — they're host-local and can change.
-			yield* state.put(cacheKey, result_);
-
-			return result_;
-		}).pipe(Effect.withSpan(`publishMove(${options.name})`)),
+			yield* registerAll(pkg);
+			return pkg;
+		}).pipe(Effect.withSpan(`PublishMove(${options.name})`)),
 		{
 			kind: 'action',
 			plugin: 'move',
@@ -591,7 +624,15 @@ export const publishMove = <const Name extends string, TCaptured = undefined>(
 			// so generated TS picks up the new ABI without manual steps.
 			// Today this is whole-stack restart — selective per-primitive
 			// tear-down is tracked under the G2a hot-restart follow-up.
-			watch: [options.path],
+			//
+			// `watch` is a factory-time list, so we only auto-watch when
+			// `options.path` is a literal string. Runtime-resolved paths
+			// (the Effect branch, used by seal's gitFetch fallback) point
+			// at vendored upstream sources under
+			// `<appDir>/.devstack/git-cache/...`. Those don't need a
+			// filesystem watcher — the gitFetch primitive itself owns
+			// re-fetching on git-ref bumps.
+			...(typeof options.path === 'string' ? { watch: [options.path] } : {}),
 			// Full packageId in `primary` so users can copy-paste it; the
 			// dashboard wraps overflow rather than truncate with `…`. The
 			// upgrade-cap is dropped from extras (full id would crowd the

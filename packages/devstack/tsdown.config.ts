@@ -17,6 +17,7 @@ const main = defineConfig({
 	sourcemap: true,
 	copy: [
 		{ from: 'seal-image/Dockerfile', to: 'dist/seal-image' },
+		{ from: 'seal-image/entrypoint.sh', to: 'dist/seal-image' },
 		{ from: 'sui-image/Dockerfile', to: 'dist/sui-image' },
 		{ from: 'sui-image/entrypoint.sh', to: 'dist/sui-image' },
 		{ from: 'walrus-image/upstream.Dockerfile', to: 'dist/walrus-image' },

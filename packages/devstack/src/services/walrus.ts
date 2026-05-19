@@ -21,7 +21,15 @@ import {
 import { WalrusError } from '../engine/errors.js';
 import { resolveNetwork } from '../engine/network.js';
 import { resolveDeploymentNetwork } from '../engine/known-deployments.js';
+import { makeService } from '../advanced/make-service.js';
 import type { StackMember } from '../engine/supervisor.js';
+
+// Plugin authors who need to pin a private Walrus deployment can call
+// `walrusKnownDeployment({...})` directly from `/advanced` — the
+// canonical-only `Walrus()` factory intentionally exposes no `override:`
+// surface (Wave 3 / §10.3): the canonical registry already carries every
+// field for `testnet` / `mainnet`, and zero examples or tests ever set
+// an override.
 
 // -----------------------------------------------------------------------------
 // WalrusNetworkTag — on-chain identifiers
@@ -210,11 +218,6 @@ export interface WalrusOptions {
 	 *  testnet/mainnet (the canonical Walrus deployment is already
 	 *  running). */
 	readonly local?: WalrusLocalClusterOptions;
-	/** Override the canonical Walrus registry for testnet/mainnet. Used
-	 *  when pinning to a private deployment or a non-canonical
-	 *  packageId. Most users leave this unset and let the factory wire
-	 *  to the public Walrus network. */
-	readonly override?: WalrusKnownDeploymentOptions;
 }
 
 /** Walrus factory. Picks the local-cluster path on localnet and the
@@ -235,13 +238,13 @@ export const Walrus = (opts: WalrusOptions = {}): StackMember => {
 	if (network !== 'localnet') {
 		// `network` is one of `testnet | mainnet | *-fork`. Fork variants
 		// resolve to their upstream's `KnownNetwork` key via
-		// `resolveDeploymentNetwork`; live nets pass through.
+		// `resolveDeploymentNetwork`; live nets pass through. Plugin
+		// authors needing to pin a private deployment reach for
+		// `walrusKnownDeployment({...})` on `/advanced` directly.
 		const knownNetwork = resolveDeploymentNetwork(network);
-		const knownOpts: WalrusKnownDeploymentOptions = {
-			...(knownNetwork !== undefined ? { network: knownNetwork } : {}),
-			...opts.override,
-		};
-		return Object.assign(walrusKnownDeployment(knownOpts), { __kind: 'service' as const });
+		const knownOpts: WalrusKnownDeploymentOptions =
+			knownNetwork !== undefined ? { network: knownNetwork } : {};
+		return makeService('walrus', 'service', walrusKnownDeployment(knownOpts));
 	}
-	return Object.assign(walrusLocalCluster(opts.local ?? {}), { __kind: 'service' as const });
+	return makeService('walrus', 'service', walrusLocalCluster(opts.local ?? {}));
 };

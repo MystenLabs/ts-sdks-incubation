@@ -21,8 +21,7 @@ import { runDockerContainer } from '../../advanced/plugin-author/docker-containe
 import { Identity } from '../../engine/identity.js';
 import { DeepbookServerError } from '../../engine/errors.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
-import { publishDeepbookServerState, publishEndpoint } from '../../engine/registries.js';
-import { EndpointName } from '../../runtime/endpoint-names.js';
+import { publishDeepbookServerState } from '../../engine/registries.js';
 import { DEFAULT_DEEPBOOK_MOVE_VERSION, getDeepbookImages } from './images.js';
 import type { DeepbookCore } from '../deepbook.js';
 import type { Postgres } from '../postgres.js';
@@ -240,16 +239,12 @@ export const DeepbookServer = <const Name extends string = 'deepbook-server'>(
 			const restUrl = `http://${restHostname}:${restRouterInfo.port}/`;
 			const metricsUrl = `http://${metricsHostname}:${metricsRouterInfo.port}/metrics`;
 
-			yield* publishEndpoint({
-				name: EndpointName.DEEPBOOK_SERVER_REST,
-				url: restUrl,
-				kind: 'rpc',
-			});
-			yield* publishEndpoint({
-				name: EndpointName.DEEPBOOK_SERVER_METRICS,
-				url: metricsUrl,
-				kind: 'rpc',
-			});
+			// URL ownership: the server's REST + metrics URLs are
+			// published only into the per-service state registry below.
+			// `runtime/service.ts::groupDeepbook` reads them from there
+			// to surface `services.deepbook.server.{rest,metrics}` in the
+			// manifest; no flat-endpoint declarations exist (Wave-2
+			// dual-write fix).
 
 			yield* publishDeepbookServerState({
 				name,

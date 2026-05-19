@@ -8,7 +8,8 @@ import { describe, expect, it } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { findConfigUp } from './loaders.js';
+import { ConfigLoadError } from '../engine/errors.js';
+import { findConfigUp, requireLaunchEffect, requireLayer } from './loaders.js';
 
 const fixture = (): string => mkdtempSync(join(tmpdir(), 'devstack-loaders-'));
 
@@ -72,5 +73,44 @@ describe('findConfigUp', () => {
 		expect(findConfigUp(join(root, 'a'))).toBe(join(root, 'a', 'devstack.config.mts'));
 		expect(findConfigUp(join(root, 'b'))).toBe(join(root, 'b', 'devstack.config.mjs'));
 		expect(findConfigUp(join(root, 'c'))).toBe(join(root, 'c', 'devstack.config.js'));
+	});
+});
+
+describe('requireLaunchEffect / requireLayer typed-throws', () => {
+	const CONFIG_PATH = '/abs/path/to/devstack.config.ts';
+
+	it('requireLaunchEffect throws ConfigLoadError when module has no default export', () => {
+		try {
+			requireLaunchEffect(CONFIG_PATH, {});
+			throw new Error('expected requireLaunchEffect to throw');
+		} catch (err) {
+			expect(err).toBeInstanceOf(ConfigLoadError);
+			const typed = err as ConfigLoadError;
+			expect(typed._tag).toBe('ConfigLoadError');
+			expect(typed.phase).toBe('validate');
+			expect(typed.configPath).toBe(CONFIG_PATH);
+		}
+	});
+
+	it('requireLaunchEffect throws ConfigLoadError when default export lacks launchEffect', () => {
+		try {
+			requireLaunchEffect(CONFIG_PATH, { default: { layer: {} } });
+			throw new Error('expected requireLaunchEffect to throw');
+		} catch (err) {
+			expect(err).toBeInstanceOf(ConfigLoadError);
+			expect((err as ConfigLoadError).phase).toBe('validate');
+		}
+	});
+
+	it('requireLayer throws ConfigLoadError when default export lacks layer', () => {
+		try {
+			requireLayer(CONFIG_PATH, { default: {} });
+			throw new Error('expected requireLayer to throw');
+		} catch (err) {
+			expect(err).toBeInstanceOf(ConfigLoadError);
+			const typed = err as ConfigLoadError;
+			expect(typed._tag).toBe('ConfigLoadError');
+			expect(typed.phase).toBe('validate');
+		}
 	});
 });

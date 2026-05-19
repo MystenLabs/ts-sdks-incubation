@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import { Transaction } from '@mysten/sui/transactions';
 import { PYTH_FEED_IDS } from '../../../test-setup/fixtures/pyth/feeds.js';
-import { addPriceInfo, type PythPriceInfoSpec } from './internal.js';
+import { addPriceInfo, type PythPriceInfoSpec } from './shared.js';
 import { STATE_KEY_PYTH_PREFIX_INTERNAL } from './local-deploy.js';
 
 describe('pythLocalDeploy tx-builder shape (P1.T1)', () => {

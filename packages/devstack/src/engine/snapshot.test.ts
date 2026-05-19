@@ -16,8 +16,9 @@
 //      because that's what holds for the seal master-key (0o600) and
 //      the account keystore (0o600).
 //
-//   3. Extras tar round-trip — opt-in absolute paths registered via
-//      `addExtra` are tarred + extracted to their original location.
+//   3. Extras tar round-trip — opt-in absolute paths passed via the
+//      `extras: [...]` arg to `saveSnapshot` are tarred + extracted to
+//      their original location.
 //
 //   4. List + meta surface — `list()` reads back the meta with stack/
 //      network/createdAt; malformed meta is silently skipped (a
@@ -303,6 +304,59 @@ describe('snapshot() / restore() — runtime/ tar round-trip', () => {
 			expect(
 				readFileSync(join(runtimeDir, 'walrus', 'main', 'deploy', 'deploy'), 'utf8'),
 			).toContain('walrusPackageId: 0xabc');
+		}).pipe(Effect.provide(NodeServicesLayer)),
+	);
+
+	it.effect('walrus deploy outputs (multiple instances) ride the runtime tar verbatim', () =>
+		Effect.gen(function* () {
+			// Phase C §5.2 invariant: every `Walrus({name})` instance's
+			// `runtime/walrus/<name>/deploy/` directory MUST be inside
+			// the runtime tar so the state-store gate + on-disk
+			// outputs always travel together. Two walrus instances in
+			// the same stack ('main' + 'alt') exercise the
+			// per-instance subdir; per-file mode bits are pinned too
+			// because the storage-node private keys land at 0o600.
+			const fs = yield* Effect.promise(() => import('node:fs/promises'));
+			const runtimeDir = join(stateDir, 'runtime');
+			for (const inst of ['main', 'alt']) {
+				yield* Effect.promise(() =>
+					fs.mkdir(join(runtimeDir, 'walrus', inst, 'deploy'), { recursive: true }),
+				);
+				writeFile(
+					join(runtimeDir, 'walrus', inst, 'deploy', 'deploy'),
+					`walrusPackageId: 0x${inst}\nsystemObject: 0xsys-${inst}`,
+				);
+				writeFile(
+					join(runtimeDir, 'walrus', inst, 'deploy', 'node-0.key'),
+					`PRIVATE_KEY=${inst}`,
+					0o600,
+				);
+			}
+
+			yield* snapshot({
+				id: 'walrus-multi',
+				dir: join(stateDir, 'snapshots'),
+				app: 'test-app',
+				stack: 'main',
+				containers: [],
+			});
+
+			// Wipe the live runtime + restore from snapshot.
+			rmSync(runtimeDir, { recursive: true, force: true });
+			const result = yield* restore({
+				id: 'walrus-multi',
+				dir: join(stateDir, 'snapshots'),
+				stack: 'main',
+			});
+			expect(result.runtimeRestored).toBe(true);
+
+			for (const inst of ['main', 'alt']) {
+				const deployFile = join(runtimeDir, 'walrus', inst, 'deploy', 'deploy');
+				expect(readFileSync(deployFile, 'utf8')).toContain(`walrusPackageId: 0x${inst}`);
+				const nodeKey = join(runtimeDir, 'walrus', inst, 'deploy', 'node-0.key');
+				expect(readFileSync(nodeKey, 'utf8')).toBe(`PRIVATE_KEY=${inst}`);
+				expect(statSync(nodeKey).mode & 0o777).toBe(0o600);
+			}
 		}).pipe(Effect.provide(NodeServicesLayer)),
 	);
 

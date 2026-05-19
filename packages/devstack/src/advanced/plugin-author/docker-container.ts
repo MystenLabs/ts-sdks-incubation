@@ -350,6 +350,18 @@ export interface DockerContainerOptions {
 	 */
 	readonly stopGraceSeconds?: number;
 	/**
+	 * Signal `docker stop` sends to PID 1 (maps to `docker stop --signal
+	 * <SIG>`). Defaults to docker's SIGTERM. Override for binaries that
+	 * only trap a non-default signal — e.g. `sui start` registers a
+	 * SIGINT handler via `tokio::signal::ctrl_c()` but has no SIGTERM
+	 * listener, so docker stop's default SIGTERM is silently ignored and
+	 * the container hits its grace timeout → SIGKILL (exit 137 + the
+	 * "UNCLEAN PRIOR SHUTDOWN" alert on next boot). Setting
+	 * `stopSignal: 'SIGINT'` for such workloads lets them shut down
+	 * cleanly within ~1s.
+	 */
+	readonly stopSignal?: string;
+	/**
 	 * Engine tag-key the stop finalizer should update during teardown.
 	 * Plumbed into `Docker.run` so the per-row TUI status flips
 	 * `ready → stopping → stopped` as docker confirms each container
@@ -517,6 +529,11 @@ export const dockerContainer = <const Name extends string>(
 		// themselves; `dockerContainer` doesn't double-stamp the build
 		// layer in that case.
 		extraLayers: imageTag !== undefined ? imageTag.__layers : [],
+		// Phase A dep-graph wiring: the container yields its inner image
+		// tag inside the build body (`yield* imageTag`), so the image is
+		// a direct upstream. Declared empty when the caller passed
+		// `{tag}` — they own the upstream surfacing themselves.
+		upstreamKeys: imageTag !== undefined ? [imageTag.key] : [],
 		display: (s) => ({
 			title: name,
 			...(s.url !== undefined ? { primary: s.url } : { primary: s.image }),
@@ -731,6 +748,7 @@ const buildContainerInternals = <Name extends string>(
 			...(options.stopGraceSeconds !== undefined
 				? { stopGraceSeconds: options.stopGraceSeconds }
 				: {}),
+			...(options.stopSignal !== undefined ? { stopSignal: options.stopSignal } : {}),
 			// engineTagKey for per-row teardown progress. Default to the
 			// ambient `CurrentTagKey` (set by `withEngineLifecycle` when
 			// the enclosing LayeredTag's build runs) so multi-container
@@ -801,7 +819,7 @@ const buildContainerInternals = <Name extends string>(
 			hostPorts: { ...runResult.hostPorts },
 			reused: runResult.reused,
 		} satisfies DockerContainerHandle;
-	}).pipe(Effect.withSpan(`dockerContainer(${name})`));
+	}).pipe(Effect.withSpan(`DockerContainer(${name})`));
 
 	return {
 		imageTag: imageTag as unknown as LayeredTag<string, DockerImage, any, DockerError> | undefined,

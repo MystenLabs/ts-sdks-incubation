@@ -38,6 +38,7 @@
 
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { ManifestDiscoveryError } from '../engine/errors.js';
 
 export interface DiscoverManifestPathOptions {
 	/** Caller-supplied override path. Bypasses the walk-up but is itself
@@ -75,10 +76,13 @@ export function discoverManifestPath(opts: DiscoverManifestPathOptions = {}): st
 		const resolved = resolve(envOverride);
 		if (existsSync(resolved)) return resolved;
 		if (opts.required === true) {
-			throw new Error(
-				`devstack: DEVSTACK_MANIFEST_PATH points at ${resolved}, but no file exists there. ` +
+			throw new ManifestDiscoveryError({
+				phase: 'walk-up',
+				path: resolved,
+				message:
+					`devstack: DEVSTACK_MANIFEST_PATH points at ${resolved}, but no file exists there. ` +
 					`Unset the env var or write the manifest first (run \`devstack up\`).`,
-			);
+			});
 		}
 		return undefined;
 	}
@@ -86,10 +90,13 @@ export function discoverManifestPath(opts: DiscoverManifestPathOptions = {}): st
 		const resolved = resolve(opts.override);
 		if (existsSync(resolved)) return resolved;
 		if (opts.required === true) {
-			throw new Error(
-				`devstack: explicit manifest path ${resolved} does not exist. ` +
+			throw new ManifestDiscoveryError({
+				phase: 'walk-up',
+				path: resolved,
+				message:
+					`devstack: explicit manifest path ${resolved} does not exist. ` +
 					`Write the manifest first (run \`devstack up\`).`,
-			);
+			});
 		}
 		return undefined;
 	}
@@ -112,12 +119,15 @@ export function discoverManifestPath(opts: DiscoverManifestPathOptions = {}): st
 	}
 	if (opts.required === true) {
 		const expected = resolve(startDir, stateDir, 'stacks', stack, 'manifest.json');
-		throw new Error(
-			`devstack: no manifest.json found walking up from ${startDir} ` +
+		throw new ManifestDiscoveryError({
+			phase: 'required-missing',
+			path: expected,
+			message:
+				`devstack: no manifest.json found walking up from ${startDir} ` +
 				`(looked for ${stateDir}/stacks/${stack}/manifest.json at each level). ` +
 				`Run \`devstack up\` (or \`devstack apply\`) — it writes the manifest to ` +
 				`${expected}.`,
-		);
+		});
 	}
 	return undefined;
 }

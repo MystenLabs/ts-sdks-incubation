@@ -8,7 +8,7 @@
 //      `snapshot()` which `docker commit + save`s each into the
 //      snapshot dir.
 //   3. The engine also tars the canonical `runtime/<service>/...` dir
-//      and any opt-in extras registered via `ServicePaths.addExtra`.
+//      and any opt-in extras passed to `saveSnapshot({ extras })`.
 //   4. `state.json` is copied verbatim.
 //
 // Snapshot ids are timestamp-based (UTC, second resolution); an

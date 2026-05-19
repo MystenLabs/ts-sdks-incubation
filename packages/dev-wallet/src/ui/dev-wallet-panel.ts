@@ -4,8 +4,10 @@
 import { css, html, LitElement, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 
+import type { ForkRelay } from '../adapters/fork-relay.js';
 import type { DevWallet } from '../wallet/dev-wallet.js';
 import { connectDialogStyles, sharedStyles } from './styles.js';
+import type { CoinRecord } from './utils.js';
 import { WalletController } from './wallet-controller.js';
 
 @customElement('dev-wallet-panel')
@@ -113,6 +115,26 @@ export class DevWalletPanel extends LitElement {
 	@property({ attribute: false })
 	wallet: DevWallet | null = null;
 
+	/** Optional pre-seeded coin metadata. Pass the generated `coins`
+	 *  constant from devstack codegen (`src/generated/coins.ts`) to skip
+	 *  per-coin RPC fetches in the balances list and signing modal. */
+	@property({ attribute: false })
+	coins: CoinRecord | null = null;
+
+	/** Phase 5 Subtopic 6 — fork admin relay. When set, the panel
+	 *  surfaces a "Fork" tab that drives advance-clock,
+	 *  advance-checkpoint, and impersonation slot management against
+	 *  the devstack wallet-app server. Construct from the manifest
+	 *  with `createForkRelayFromManifest(manifest)`. */
+	@property({ attribute: false })
+	forkRelay: ForkRelay | null = null;
+
+	/** Optional upstream label (`'mainnet'`, `'testnet'`, …) sourced
+	 *  from `meta.upstream` on the manifest. Falls back to inferring
+	 *  from the active network literal when not provided. */
+	@property({ type: String })
+	forkUpstream = '';
+
 	@state()
 	private _isOpen = false;
 
@@ -122,6 +144,15 @@ export class DevWalletPanel extends LitElement {
 	override willUpdate(changedProperties: Map<string, unknown>) {
 		if (changedProperties.has('wallet')) {
 			this.#ctrl.wallet = this.wallet;
+		}
+		if (changedProperties.has('coins')) {
+			this.#ctrl.coins = this.coins;
+		}
+		if (changedProperties.has('forkRelay')) {
+			this.#ctrl.forkRelay = this.forkRelay;
+		}
+		if (changedProperties.has('forkUpstream')) {
+			this.#ctrl.forkUpstream = this.forkUpstream;
 		}
 	}
 

@@ -4,8 +4,12 @@
 // (no Docker, no supervisor).
 //
 // The fork incompatibility is structural: the local cluster's storage
-// nodes dial the chain via GraphQL + JSON-RPC, neither of which
-// sui-fork exposes (D5 in `notes/sui-fork-integration.md`).
+// nodes dial the chain via JSON-RPC (upstream walrus's `DualClient` —
+// `crates/walrus-sui/src/client/dual_client.rs` — wraps both JSON-RPC
+// and gRPC clients but still has ~12 load-bearing JSON-RPC callsites at
+// `devnet-v1.48.0`), which sui-fork does not expose (D5 in
+// `notes/sui-fork-integration.md`). Full audit:
+// `notes/sui-fork-phase-5-walrus-seal-audit.md` §1.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { walrusLocalCluster } from './walrus/local-cluster.js';

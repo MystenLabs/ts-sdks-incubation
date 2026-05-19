@@ -2,9 +2,11 @@ import { Schema } from 'effect';
 
 import {
 	AccountPhases,
+	ConfigLoadPhases,
 	DeepbookIndexerPhases,
 	DeepbookPhases,
 	DeepbookServerPhases,
+	ManifestDiscoveryPhases,
 	ManifestPhases,
 	PostgresPhases,
 	PublishPhases,
@@ -223,6 +225,57 @@ export class ManifestError extends Schema.TaggedErrorClass<ManifestError>()('Man
 	// `phase` names the manifest lifecycle step that failed. Closed set
 	// in `engine/phases.ts` (`ManifestPhases`).
 	phase: Schema.Literals(ManifestPhases),
+	message: Schema.String,
+	cause: Schema.optional(Schema.Defect),
+}) {}
+
+/**
+ * Raised by `runtime/discover-manifest.ts` when the on-disk
+ * `manifest.json` walk-up cannot resolve to a real file AND the caller
+ * passed `{ required: true }`. The two reachable phases are documented
+ * in `engine/phases.ts::ManifestDiscoveryPhases`; both carry an
+ * actionable "run `devstack up`" recipe in the message.
+ *
+ * `path` carries the most-specific candidate path the helper considered
+ * (the env-var value, the explicit override, or the absolute walk-up
+ * tail) so pretty-error and CLI reporters can render a structured hint
+ * without re-deriving it.
+ */
+export class ManifestDiscoveryError extends Schema.TaggedErrorClass<ManifestDiscoveryError>()(
+	'ManifestDiscoveryError',
+	{
+		phase: Schema.Literals(ManifestDiscoveryPhases),
+		// `path` carries the candidate path the walk-up considered
+		// (the env-var value, override, or terminal walk-up target).
+		// Optional only to keep the constructor ergonomic when a caller
+		// has no useful path to surface.
+		path: Schema.optional(Schema.String),
+		message: Schema.String,
+		cause: Schema.optional(Schema.Defect),
+	},
+) {}
+
+/**
+ * Raised by `cli/loaders.ts` when the user's `devstack.config.{ts,js,...}`
+ * fails to satisfy the shape a subcommand needs. Today the two reachable
+ * cases are `devstack up` (needs `.launchEffect`) and `devstack apply`
+ * (needs `.layer`); both surface as `phase: 'validate'`. `'load'`,
+ * `'missing-default-export'`, and `'invoke'` are reserved for future
+ * migration of the other untyped throws in this module.
+ *
+ * `configPath` is the resolved absolute path the loader was working
+ * with; pretty-error reporters use it to render a path-shaped error so
+ * the user can jump straight to the failing config.
+ *
+ * `expected` carries a one-line description of the shape the loader was
+ * looking for (e.g. `"DevstackHandle (from devstack(...) or
+ * defineDevstack)"`); kept structured so a future TUI / pretty-error
+ * branch can render a richer diff.
+ */
+export class ConfigLoadError extends Schema.TaggedErrorClass<ConfigLoadError>()('ConfigLoadError', {
+	phase: Schema.Literals(ConfigLoadPhases),
+	configPath: Schema.optional(Schema.String),
+	expected: Schema.optional(Schema.String),
 	message: Schema.String,
 	cause: Schema.optional(Schema.Defect),
 }) {}

@@ -135,4 +135,44 @@ describe('discoverManifestPath', () => {
 		writeFileSync(stackPath, '{}');
 		expect(discoverManifestPath({ cwd: tmp, stateDir })).toBe(stackPath);
 	});
+
+	// Nested-project layout — two `.devstack/stacks/main/manifest.json`
+	// files exist, one in an outer project and one in a nested inner
+	// project. The walk-up algorithm climbs parent-by-parent from `cwd`
+	// and returns the FIRST hit, which means "closest wins": a `cwd`
+	// inside the inner project resolves to the inner manifest, while a
+	// `cwd` that's inside the outer project but outside the inner one
+	// resolves to the outer manifest. Documented as a known limitation
+	// in `round1/13-runtime-manifest.md § 4.10`; users that need to
+	// reach across nesting can use `DEVSTACK_MANIFEST_PATH` or
+	// `override:`.
+	describe('nested-project walk-up', () => {
+		const setupNestedLayout = () => {
+			const outerManifest = join(tmp, '.devstack', 'stacks', 'main', 'manifest.json');
+			mkdirSync(join(tmp, '.devstack', 'stacks', 'main'), { recursive: true });
+			writeFileSync(outerManifest, '{"outer": true}');
+			const innerRoot = join(tmp, 'apps', 'nested');
+			const innerManifest = join(innerRoot, '.devstack', 'stacks', 'main', 'manifest.json');
+			mkdirSync(join(innerRoot, '.devstack', 'stacks', 'main'), { recursive: true });
+			writeFileSync(innerManifest, '{"inner": true}');
+			return { outerManifest, innerRoot, innerManifest };
+		};
+
+		it('returns the inner manifest when cwd is inside the inner project (closest wins)', () => {
+			const { innerRoot, innerManifest } = setupNestedLayout();
+			const nestedCwd = join(innerRoot, 'src', 'feature');
+			mkdirSync(nestedCwd, { recursive: true });
+			expect(discoverManifestPath({ cwd: nestedCwd })).toBe(innerManifest);
+		});
+
+		it('returns the outer manifest when cwd is inside the outer project but outside the inner one', () => {
+			const { outerManifest } = setupNestedLayout();
+			// cwd is a sibling of the inner project — still under the
+			// outer root, but the walk-up never traverses into the inner
+			// `apps/nested/` subtree.
+			const siblingCwd = join(tmp, 'apps', 'other');
+			mkdirSync(siblingCwd, { recursive: true });
+			expect(discoverManifestPath({ cwd: siblingCwd })).toBe(outerManifest);
+		});
+	});
 });

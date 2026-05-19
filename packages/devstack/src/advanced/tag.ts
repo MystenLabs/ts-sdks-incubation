@@ -37,6 +37,8 @@
 
 import { Cause, Context, Effect, Layer, Scope } from 'effect';
 import { EngineHandle } from '../engine/engine.js';
+import { Identity } from '../engine/identity.js';
+import { annotateDevstackContext } from '../engine/observability.js';
 import { prettyError } from '../engine/pretty-error.js';
 
 // Per-build "what tag am I inside" reference. `withEngineLifecycle`
@@ -148,6 +150,33 @@ export interface ProvideOptions<A> {
 	 */
 	readonly hidden?: boolean;
 	/**
+	 * Static upstream-dep declaration: the keys of OTHER stack members
+	 * this primitive's build body yields (or otherwise depends on for
+	 * ordering). Populated automatically from plugin-author primitives'
+	 * `dependsOn:` arrays; composite primitives (walrus / seal / deepbook)
+	 * declare it explicitly because their inner tags are scheduled the
+	 * same way as top-level members.
+	 *
+	 * Accepts either a `LayeredTag` (its `.key` is read) or a bare string
+	 * (the tag's key directly). The substrate flattens this list at
+	 * factory time and stamps the result onto `StackMember.__upstreamKeys`
+	 * — the field `buildDepGraph` (engine/dep-graph.ts) reads to compute
+	 * the dep graph + downstream-closure for selective restart, and that
+	 * Phase B's topological scheduler will read to lay out parallel
+	 * build levels.
+	 *
+	 * For Phase A this field is data-only: the existing `composeStackLayer`
+	 * fold still drives runtime ordering. Phase B replaces the fold with
+	 * a topo-level scheduler that consults this declaration as the source
+	 * of truth.
+	 *
+	 * Unknown / dangling references (a key not present in the stack) are
+	 * tolerated by `buildDepGraph` and dropped — see `dep-graph.ts` for
+	 * the rationale (a primitive's `dependsOn:` may mention a service the
+	 * user didn't include in this particular stack composition).
+	 */
+	readonly upstreamKeys?: ReadonlyArray<LayeredTag<any, any, any, any> | string>;
+	/**
 	 * `.gitignore`-style patterns describing what should trigger a
 	 * hot-restart of the devstack. Aggregated by `defineDevstack` alongside
 	 * the top-level `config.watch`, then matched against fs events with
@@ -221,6 +250,17 @@ export interface LayeredTag<Name extends string, A, R = never, E = never> extend
 	readonly __pluginName?: string;
 	/** When `true`, the tag does not surface as a TUI row. See `ProvideOptions.hidden`. */
 	readonly __hidden?: boolean;
+	/**
+	 * Static upstream-dep declaration (Phase A of
+	 * `notes/parallel-graph-resolution.md`). Resolved at factory time
+	 * from `ProvideOptions.upstreamKeys` — either a `LayeredTag`
+	 * (the field reads its `.key`) or a bare string. `buildDepGraph`
+	 * consumes this; Phase B's topological scheduler will too. Absence
+	 * is treated as "this is a leaf / hand-rolled escape hatch" — the
+	 * graph builder simply gets an empty upstream set, and the
+	 * compose-time invariant warns but does not throw.
+	 */
+	readonly __upstreamKeys?: ReadonlyArray<string>;
 	/** Unique-symbol brand identifying this object as a devstack stack
 	 *  member. Stamped by `provide` / `tag`; checked at runtime by
 	 *  variadic entry points (`devstack(...)`) to discriminate a LayeredTag
@@ -266,6 +306,7 @@ const withEngineLifecycle = <A, E, R>(
 		readonly display?: (shape: A) => TuiDisplay;
 		readonly displayTitle?: string;
 		readonly hidden?: boolean;
+		readonly plugin?: string;
 	},
 ): Effect.Effect<A, E, R> =>
 	Effect.gen(function* () {
@@ -278,6 +319,22 @@ const withEngineLifecycle = <A, E, R>(
 		// devstack (engine absent — standalone tests).
 		const primitiveScope = yield* Effect.scope;
 		const engineOpt = yield* Effect.serviceOption(EngineHandle);
+		// Stamp the three universal context annotations
+		// (`service.name`, `devstack.stack`, `devstack.app`) onto the
+		// ambient span so every primitive's `Effect.withSpan(...)` block
+		// below is correlated within one supervisor cycle. The helper
+		// requires `Identity`, which the supervisor's layer graph always
+		// provides — so we gate on its presence (via `serviceOption`) and
+		// pipe the resolved identity in to keep standalone-test builds
+		// (which don't provide Identity) a noop without inflating the R
+		// channel of the surrounding effect.
+		const identityOpt = yield* Effect.serviceOption(Identity);
+		const serviceLabel = classification.plugin ?? name;
+		if (identityOpt._tag === 'Some') {
+			yield* annotateDevstackContext(serviceLabel).pipe(
+				Effect.provideService(Identity, identityOpt.value),
+			);
+		}
 		if (engineOpt._tag === 'None') {
 			// Still pin CurrentTagKey so `setPhase` calls inside the body
 			// land on the no-engine branch without crashing on a missing
@@ -350,6 +407,35 @@ const summarizeCauseForLog = (cause: Cause.Cause<unknown>): string => prettyErro
 type AnyTagClass = Context.Key<any, any> & { readonly key: string };
 
 /**
+ * Resolve `ProvideOptions.upstreamKeys` to a flat list of string keys.
+ * Accepts:
+ *   - A `LayeredTag` (any-typed; we read its `.key`).
+ *   - A bare string (treated as a tag key directly).
+ *   - `undefined` entries (dropped; lets composite callers express
+ *     conditional inclusion without a separate `push` loop).
+ *
+ * Returns an empty array when `upstreamKeys` is unset. Duplicates are
+ * dropped — order-preserving — so two composites pulling in the same
+ * inner tag don't produce a duplicate edge in `buildDepGraph`.
+ */
+export const resolveUpstreamKeys = (
+	upstreamKeys: ReadonlyArray<LayeredTag<any, any, any, any> | string | undefined> | undefined,
+): ReadonlyArray<string> => {
+	if (upstreamKeys === undefined) return [];
+	const out: string[] = [];
+	const seen = new Set<string>();
+	for (const entry of upstreamKeys) {
+		if (entry === undefined) continue;
+		const key = typeof entry === 'string' ? entry : entry.key;
+		if (typeof key !== 'string' || key.length === 0) continue;
+		if (seen.has(key)) continue;
+		seen.add(key);
+		out.push(key);
+	}
+	return out;
+};
+
+/**
  * Bind a build Effect to an externally-defined Context.Service class —
  * the primary primitive for implementing a shared interface.
  *
@@ -381,6 +467,7 @@ export const provide = <T extends AnyTagClass, A, E = never, R = never>(
 	readonly __watchPaths?: ReadonlyArray<string>;
 	readonly __pluginName?: string;
 	readonly __hidden?: boolean;
+	readonly __upstreamKeys?: ReadonlyArray<string>;
 } => {
 	const wrapped = withEngineLifecycle(TagClass.key, build, options);
 	// `Layer.effect`'s key is `Context.Key<I, S>`. The `as any` here is
@@ -398,6 +485,7 @@ export const provide = <T extends AnyTagClass, A, E = never, R = never>(
 		__watchPaths?: ReadonlyArray<string>;
 		__pluginName?: string;
 		__hidden?: boolean;
+		__upstreamKeys?: ReadonlyArray<string>;
 		[DevstackTagBrand]: true;
 	} = { __layer: layer, key: TagClass.key, [DevstackTagBrand]: true as const };
 	if (options.kind !== undefined) extras.__kind = options.kind;
@@ -407,6 +495,14 @@ export const provide = <T extends AnyTagClass, A, E = never, R = never>(
 	}
 	if (options.plugin !== undefined) extras.__pluginName = options.plugin;
 	if (options.hidden === true) extras.__hidden = true;
+	if (options.upstreamKeys !== undefined) {
+		// Always stamp — even an empty array — so the compose-time
+		// invariant in `composeStackLayer` can distinguish "primitive
+		// has no upstreams" from "primitive forgot to declare". Composites
+		// pass `upstreamKeys: []` when the primitive is genuinely a leaf
+		// (e.g. `Sui()` has no in-stack upstream deps).
+		extras.__upstreamKeys = resolveUpstreamKeys(options.upstreamKeys);
+	}
 	// Mutate the canonical class so it doubles as a yieldable StackMember.
 	return Object.assign(TagClass, extras) as unknown as T & typeof extras;
 };
@@ -442,8 +538,9 @@ export const tag = <const Name extends string, A, E = never, R = never>(
 		...(options.watch !== undefined ? { watch: options.watch } : {}),
 		...(options.plugin !== undefined ? { plugin: options.plugin } : {}),
 		...(options.hidden === true ? { hidden: true } : {}),
+		...(options.upstreamKeys !== undefined ? { upstreamKeys: options.upstreamKeys } : {}),
 	};
-	const { __layer, key } = provide(T, build, provideOpts);
+	const { __layer, key, __upstreamKeys } = provide(T, build, provideOpts);
 	// Order matters: `composeStackLayer` folds left-to-right with
 	// `provideMerge(layer, acc)`, so each layer consumes services from
 	// the accumulated acc. Providers must come BEFORE consumers. Inner
@@ -467,6 +564,7 @@ export const tag = <const Name extends string, A, E = never, R = never>(
 		__watchPaths?: ReadonlyArray<string>;
 		__pluginName?: string;
 		__hidden?: boolean;
+		__upstreamKeys?: ReadonlyArray<string>;
 		[DevstackTagBrand]: true;
 	} = {
 		__layer,
@@ -481,6 +579,7 @@ export const tag = <const Name extends string, A, E = never, R = never>(
 	}
 	if (options.plugin !== undefined) extras.__pluginName = options.plugin;
 	if (options.hidden === true) extras.__hidden = true;
+	if (__upstreamKeys !== undefined) extras.__upstreamKeys = __upstreamKeys;
 	return Object.assign(T, extras) as unknown as LayeredTag<Name, A, Exclude<R, Scope.Scope>, E>;
 };
 

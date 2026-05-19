@@ -74,11 +74,6 @@ export {
 	type PackageRecord,
 } from '../../engine/registries.js';
 
-// Cache — thin facade over the internal StateStore for plugin authors
-// that need to memoize expensive setup work (e.g. dockerOneShot keygen).
-// Pluging authors should NOT import StateStore directly.
-export { cacheGet, cachePut, cacheRemove } from '../../engine/cache.js';
-
 // Router entrypoint registry — plugin authors that surface a new
 // traefik entrypoint port (e.g. a Prometheus-metrics-only endpoint)
 // register it via `defineEntrypoint(...)` from their module top

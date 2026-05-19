@@ -68,23 +68,24 @@ const ALLOWED_TRANSPORTS: ReadonlyArray<string> = ['https://', 'http://', 'git:/
 
 const validateRepoUrl = (repo: string): void => {
 	if (repo.length === 0) {
-		throw new Error('gitFetch: repo must not be empty');
+		throw new GitFetchError({ message: 'gitFetch: repo must not be empty' });
 	}
 	if (repo.startsWith('-')) {
 		// `git clone -<flag> ...` would parse this as a flag instead of
 		// a positional arg, even with `--` separators in some envs.
-		throw new Error(
-			`gitFetch: repo '${repo}' starts with '-' (rejected to avoid CLI flag injection)`,
-		);
+		throw new GitFetchError({
+			message: `gitFetch: repo '${repo}' starts with '-' (rejected to avoid CLI flag injection)`,
+		});
 	}
 	if (SCP_STYLE_REPO_RE.test(repo)) return;
 	for (const transport of ALLOWED_TRANSPORTS) {
 		if (repo.startsWith(transport)) return;
 	}
-	throw new Error(
-		`gitFetch: repo '${repo}' uses a disallowed transport. ` +
+	throw new GitFetchError({
+		message:
+			`gitFetch: repo '${repo}' uses a disallowed transport. ` +
 			`Allowed: https://, http://, git://, ssh://, or git@host:owner/repo.git.`,
-	);
+	});
 };
 
 // Defense-in-depth ref validator. git would reject these at clone time
@@ -97,22 +98,25 @@ const validateRepoUrl = (repo: string): void => {
 const VALID_REF_CHARS = /^[A-Za-z0-9_/.@+\-=:]+$/;
 const validateRef = (ref: string): void => {
 	if (ref.length === 0) {
-		throw new Error('gitFetch: ref must not be empty');
+		throw new GitFetchError({ message: 'gitFetch: ref must not be empty' });
 	}
 	if (ref.startsWith('-')) {
-		throw new Error(
-			`gitFetch: ref '${ref}' starts with '-' (rejected to avoid CLI flag injection)`,
-		);
+		throw new GitFetchError({
+			message: `gitFetch: ref '${ref}' starts with '-' (rejected to avoid CLI flag injection)`,
+		});
 	}
 	if (!VALID_REF_CHARS.test(ref)) {
-		throw new Error(
-			`gitFetch: ref '${ref}' contains characters outside the allowed set ` +
+		throw new GitFetchError({
+			message:
+				`gitFetch: ref '${ref}' contains characters outside the allowed set ` +
 				`(alphanumeric, _ / . @ + - = :). Git would reject this anyway; flagging at ` +
 				`factory-construction time so the stack trace points at the user config.`,
-		);
+		});
 	}
 	if (ref.includes('@@')) {
-		throw new Error(`gitFetch: ref '${ref}' contains '@@' (typo for '@'?)`);
+		throw new GitFetchError({
+			message: `gitFetch: ref '${ref}' contains '@@' (typo for '@'?)`,
+		});
 	}
 };
 
@@ -261,7 +265,7 @@ export const gitFetch = <const Name extends string>(options: GitFetchOptions<Nam
 			}
 
 			return { path: finalPath, ref: options.ref, sha } satisfies GitFetched;
-		}).pipe(Effect.withSpan(`gitFetch(${options.name})`)),
+		}).pipe(Effect.withSpan(`GitFetch(${options.name})`)),
 		{
 			// Hidden from the TUI: the clone is a cache-warming detail whose
 			// only useful artifact (the local path) is consumed by the parent
@@ -270,6 +274,11 @@ export const gitFetch = <const Name extends string>(options: GitFetchOptions<Nam
 			// hash, and a failure here propagates through the consumer's
 			// own failure row.
 			hidden: true,
+			// Leaf in the dep graph — `gitFetch` reads external git +
+			// filesystem; it has no in-stack upstream tags. Explicit empty
+			// satisfies the Phase A compose-time invariant ("declared no
+			// upstreams" vs "forgot to declare").
+			upstreamKeys: [],
 		},
 	);
 };

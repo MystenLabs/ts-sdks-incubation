@@ -68,7 +68,7 @@ describe('playwright web-server helpers', () => {
 	describe('webServer()', () => {
 		it('resolves dev-server URL from manifest + stamps PLAYWRIGHT=1 + 10s SIGTERM', () => {
 			writeFileSync(manifestPath, JSON.stringify(v5Manifest({ devUrl: 'http://dev.test:5175' })));
-			const cfg = single(webServer({ endpoint: 'dev-server' }));
+			const cfg = single(webServer({ endpoint: EndpointName.DEV_SERVER_PRIMARY }));
 			expect(cfg.url).toBe('http://dev.test:5175');
 			expect(cfg.command).toBe('pnpm dev');
 			expect(cfg.timeout).toBe(120_000);
@@ -96,7 +96,7 @@ describe('playwright web-server helpers', () => {
 			// Conventional: `<service>.<app>.localhost:<port>`. App is the
 			// devstack package's own package.json name (we run inside its
 			// cwd), service is `dev`, port is 5175.
-			expect(single(webServer({ endpoint: 'dev-server' })).url).toMatch(
+			expect(single(webServer({ endpoint: EndpointName.DEV_SERVER_PRIMARY })).url).toMatch(
 				/^http:\/\/dev\.[a-zA-Z0-9-]+\.localhost:5175$/,
 			);
 		});
@@ -104,7 +104,7 @@ describe('playwright web-server helpers', () => {
 		it('cold-start fallback honors DEVSTACK_STACK by prefixing the host', () => {
 			process.env.DEVSTACK_STACK = 'feature-x';
 			// Non-main stack name lands as the leading host label.
-			expect(single(webServer({ endpoint: 'dev-server' })).url).toMatch(
+			expect(single(webServer({ endpoint: EndpointName.DEV_SERVER_PRIMARY })).url).toMatch(
 				/^http:\/\/feature-x\.dev\.[a-zA-Z0-9-]+\.localhost:5175$/,
 			);
 		});
@@ -133,7 +133,7 @@ describe('playwright web-server helpers', () => {
 			writeFileSync(manifestPath, JSON.stringify(v5Manifest({ devUrl: 'http://dev.test:5175' })));
 			const cfg = single(
 				webServer({
-					endpoint: 'dev-server',
+					endpoint: EndpointName.DEV_SERVER_PRIMARY,
 					command: 'npm run dev',
 					timeout: 60_000,
 					extend: { name: 'my-server' },
@@ -156,7 +156,7 @@ describe('playwright web-server helpers', () => {
 
 		it('mirrors webServer cold-start fallback when no manifest exists', () => {
 			process.env.DEVSTACK_STACK = 'main';
-			expect(baseURL({ endpoint: 'dev-server' })).toMatch(
+			expect(baseURL({ endpoint: EndpointName.DEV_SERVER_PRIMARY })).toMatch(
 				/^http:\/\/dev\.[a-zA-Z0-9-]+\.localhost:5175$/,
 			);
 		});
@@ -176,7 +176,9 @@ describe('playwright web-server helpers', () => {
 			process.env.DEVSTACK_STACK = 'main';
 			try {
 				process.chdir(appDir);
-				expect(baseURL({ endpoint: 'dev-server' })).toBe('http://dev.my-app.localhost:5175');
+				expect(baseURL({ endpoint: EndpointName.DEV_SERVER_PRIMARY })).toBe(
+					'http://dev.my-app.localhost:5175',
+				);
 			} finally {
 				process.chdir(priorCwd);
 				rmSync(appDir, { recursive: true, force: true });

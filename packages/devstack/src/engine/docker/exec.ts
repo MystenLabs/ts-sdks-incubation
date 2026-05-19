@@ -76,6 +76,35 @@ export const pauseContainer = (
 		);
 	}).pipe(Effect.withSpan('Docker.pauseContainer'));
 
+/**
+ * `docker rm -f` a container by name. Best-effort — silently swallows
+ * the "container not found" case (rc != 0 with no matching container).
+ *
+ * Used by primitives that need to FORCE-recreate a container with stale
+ * writable-layer state, where `Docker.run`'s normal reuse-if-image-matches
+ * adoption path would otherwise keep the container alive. Concrete
+ * example: when a chainId change invalidates a downstream primitive's
+ * on-disk RocksDB (walrus storage nodes hold checkpoint state in their
+ * writable layer; if sui's chain is regenesised and walrus's container is
+ * adopted, walrus crashes with "Current store has a checkpoint that is
+ * greater than latest network checkpoint"). Calling this BEFORE
+ * `Docker.run` ensures `inspectContainer` returns null and the fresh
+ * branch fires.
+ *
+ * NOT for cycle-teardown — long-lived primitives register a `docker stop`
+ * finalizer on their layer scope and let the scope-close cascade handle
+ * shutdown. This helper is for invalidation paths where the supervisor
+ * explicitly KNOWS the container's state has to go.
+ */
+export const removeContainerByName = (
+	name: string,
+): Effect.Effect<void, never, ChildProcessSpawner.ChildProcessSpawner> =>
+	Effect.gen(function* () {
+		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+		yield* Effect.annotateCurrentSpan({ 'docker.op': 'rm', 'docker.name': name });
+		yield* spawner.exitCode(ChildProcess.make('docker', ['rm', '-f', name])).pipe(Effect.ignore);
+	}).pipe(Effect.withSpan('Docker.removeContainerByName'));
+
 export const unpauseContainer = (
 	containerId: string,
 ): Effect.Effect<void, DockerError, ChildProcessSpawner.ChildProcessSpawner> =>

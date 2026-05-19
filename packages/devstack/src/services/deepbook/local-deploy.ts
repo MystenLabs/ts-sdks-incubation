@@ -282,7 +282,7 @@ export const deepbookLocalDeploy = <
 
 			const pkg = yield* Effect.gen(function* () {
 				return yield* publish;
-			}).pipe(Effect.withSpan('deepbook.publish'));
+			}).pipe(Effect.withSpan('DeepbookPublish'));
 
 			const packageId = pkg.packageId;
 			const registryId = pkg.captured?.registryId;
@@ -507,7 +507,7 @@ export const deepbookLocalDeploy = <
 							})),
 						};
 						yield* state.put(cacheKey, toCache);
-					}).pipe(Effect.withSpan('deepbook.create-pools'));
+					}).pipe(Effect.withSpan('DeepbookCreatePools'));
 				}
 			}
 
@@ -561,7 +561,7 @@ export const deepbookLocalDeploy = <
 				packageIds,
 			} satisfies DeepbookLocalDeployShape<PoolsRecord<TPools>>;
 		}).pipe(
-			Effect.withSpan(`deepbookLocalDeploy(${name})`),
+			Effect.withSpan(`DeepbookLocalDeploy(${name})`),
 			Effect.catchTag('DeepbookError', Effect.fail),
 			Effect.catch((cause: unknown) =>
 				Effect.fail(

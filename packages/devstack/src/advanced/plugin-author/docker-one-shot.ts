@@ -1,8 +1,8 @@
 import { Effect, Option } from 'effect';
-import * as crypto from 'node:crypto';
-import { cacheGet, cachePut } from '../../engine/cache.js';
+import { contentHash } from '../../engine/content-hash.js';
 import * as Docker from '../../engine/docker.js';
 import { DockerError } from '../../engine/errors.js';
+import { StateStore } from '../../engine/state-store.js';
 import { StateStoreKeys } from '../../engine/state-store-keys.js';
 import { tag, type LayeredTag } from '../tag.js';
 
@@ -44,6 +44,25 @@ export interface DockerOneShotOptions<Name extends string, E, R> {
 const jsonReplacer = (_key: string, value: unknown) =>
 	typeof value === 'bigint' ? { __bigint: value.toString() } : value;
 
+/**
+ * Run a Docker container to completion as a one-shot action. Caches the
+ * stdout/stderr/exit-code keyed by a content hash of the run-relevant
+ * inputs (image, args, env, mounts, network, caller-supplied `inputs`)
+ * so re-running an unchanged spec is a noop after the first success.
+ *
+ * **Public escape hatch for plugin authors.** Zero in-tree callers as
+ * of Wave 6.8 — `dockerImage`, `gitFetch`, and `hostScript` cover the
+ * common shapes (build-an-image / clone-a-repo / spawn-a-host-process);
+ * this primitive is the "I need to run a one-off container action and
+ * capture its output" hatch.
+ *
+ * **Sunset 2026-11-19.** Six months from Wave 6.8 (`packages/devstack/notes/review-followups.md`
+ * §8.8 + §10.4). If no in-tree or out-of-tree caller appears by the
+ * sunset date, this primitive will be re-evaluated for removal. Out-of-tree
+ * plugin authors using `dockerOneShot` should track this note and file
+ * an issue against the devstack repo with their use case so the sunset
+ * can be cancelled.
+ */
 export const dockerOneShot = <const Name extends string, E = never, R = never>(
 	options: DockerOneShotOptions<Name, E, R>,
 ) =>
@@ -64,30 +83,31 @@ export const dockerOneShot = <const Name extends string, E = never, R = never>(
 			//    keygen invalidates downstream public keys, etc.), so we stash
 			//    a result keyed by the hash of all run-relevant inputs. If the
 			//    hash matches, skip Docker entirely and return the prior result.
-			const cacheKey = crypto
-				.createHash('sha256')
-				.update(
-					JSON.stringify(
-						{
-							name: options.name,
-							image: options.image,
-							entrypoint: options.entrypoint,
-							args: options.args,
-							env: resolvedEnv,
-							mounts: options.mounts,
-							network: options.network,
-							inputs: options.inputs,
-						},
-						jsonReplacer,
-					),
-				)
-				.digest('hex');
+			// Pre-stringify with the bigint-safe replacer; pass the result as
+			// a string to `contentHash` since its object overload uses plain
+			// JSON.stringify and would throw on bigint values in `inputs`.
+			const cacheKey = contentHash(
+				JSON.stringify(
+					{
+						name: options.name,
+						image: options.image,
+						entrypoint: options.entrypoint,
+						args: options.args,
+						env: resolvedEnv,
+						mounts: options.mounts,
+						network: options.network,
+						inputs: options.inputs,
+					},
+					jsonReplacer,
+				),
+			);
 			const stateKey = StateStoreKeys.dockerOneShot({
 				name: options.name,
 				inputsHash: cacheKey,
 			});
 
-			const cached = yield* cacheGet<DockerOneShotResult>(stateKey);
+			const store = yield* StateStore;
+			const cached = yield* store.get<DockerOneShotResult>(stateKey);
 			if (Option.isSome(cached)) {
 				return { ...cached.value, cached: true } satisfies DockerOneShotResult;
 			}
@@ -124,9 +144,9 @@ export const dockerOneShot = <const Name extends string, E = never, R = never>(
 				stderr: result.stderr,
 				cached: false,
 			};
-			yield* cachePut(stateKey, out);
+			yield* store.put(stateKey, out);
 			return out;
-		}).pipe(Effect.withSpan(`dockerOneShot(${options.name})`)),
+		}).pipe(Effect.withSpan(`DockerOneShot(${options.name})`)),
 		{
 			kind: 'action',
 			displayTitle: options.name,
@@ -134,5 +154,12 @@ export const dockerOneShot = <const Name extends string, E = never, R = never>(
 				title: options.name,
 				primary: `exit ${s.exitCode}${s.cached ? ' (cached)' : ''}`,
 			}),
+			// Forward `dependsOn:` into the dep graph as `__upstreamKeys`.
+			// Phase A wires the data substrate; today the inline
+			// `yield* tag` prelude (above) still drives runtime ordering
+			// via `composeStackLayer`'s `provideMerge` fold. Phase B's
+			// topological scheduler will read this declaration and
+			// retire the inline yields.
+			upstreamKeys: options.dependsOn ?? [],
 		},
 	);

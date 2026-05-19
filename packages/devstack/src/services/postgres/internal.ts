@@ -57,7 +57,7 @@ export const awaitPostgresReady = (
 					}),
 				),
 		}),
-		Effect.withSpan('postgres.ready'),
+		Effect.withSpan('PostgresReady'),
 	);
 };
 
@@ -115,4 +115,4 @@ export const ensureDatabase = (
 				}),
 			);
 		}
-	}).pipe(Effect.withSpan('postgres.createdb'));
+	}).pipe(Effect.withSpan('PostgresCreatedb'));

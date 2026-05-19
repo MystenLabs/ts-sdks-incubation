@@ -68,7 +68,6 @@ export {
 	type PythOptions,
 	PythTag,
 	PythPusher,
-	pythMid,
 	SUI_PRICE_FEED_ID,
 	DEEP_PRICE_FEED_ID,
 	USDC_PRICE_FEED_ID,
@@ -147,9 +146,11 @@ export {
 // callbacks and Effect-native consumers.
 export {
 	AccountError,
+	ConfigLoadError,
 	DeepbookError,
 	DockerError,
 	HostProcessError,
+	ManifestDiscoveryError,
 	ManifestError,
 	PublishError,
 	SealError,

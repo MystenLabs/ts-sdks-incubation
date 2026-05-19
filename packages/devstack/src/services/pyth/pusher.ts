@@ -27,7 +27,7 @@ import {
 	DEFAULT_PUSHER_REFRESH_MS,
 	hexToBytes,
 	type PythPriceFeedId,
-} from './internal.js';
+} from './shared.js';
 
 // State-store key prefix for pyth-pusher moved to
 // `engine/state-store-keys.ts`. Canonical builder:

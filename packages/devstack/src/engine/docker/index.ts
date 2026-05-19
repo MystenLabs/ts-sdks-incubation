@@ -45,6 +45,7 @@ export {
 	pauseContainer,
 	unpauseContainer,
 	inspectContainerRunning,
+	removeContainerByName,
 	restartContainer,
 	runOneShot,
 	type DockerCommitResult,
@@ -54,6 +55,7 @@ export {
 export { networkCreate, networkConnect } from './network.js';
 export { awaitContainerReady, dockerLogsTail, dockerWait, followLogs } from './logs.js';
 export { ClaimedContainers, dockerOrphanSweep } from './sweep.js';
+export { wrapDocker } from './wrap.js';
 export {
 	ensureRouter,
 	ROUTER_NETWORK,

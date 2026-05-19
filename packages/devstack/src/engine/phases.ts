@@ -168,3 +168,43 @@ export type WalletAppPhase = (typeof WalletAppPhases)[number];
 
 export const ManifestPhases = ['write'] as const;
 export type ManifestPhase = (typeof ManifestPhases)[number];
+
+// `ManifestDiscoveryError.phase` — closed set for the on-disk
+// `manifest.json` discovery walk-up in `runtime/discover-manifest.ts`.
+// Three throw-sites today:
+//   `walk-up`            — env-var path or override path resolves but is
+//                          missing on disk (raised only when
+//                          `{ required: true }` is passed).
+//   `required-missing`   — no candidate exists at or above cwd; the
+//                          terminal "run `devstack up`" guidance.
+//
+// We do not currently distinguish `parse` / `validate` phases — readers
+// (`status`, codegen, playwright config) do their own parsing once the
+// path is in hand. The closed set covers every reachable throw point in
+// `discoverManifestPath`.
+export const ManifestDiscoveryPhases = ['walk-up', 'required-missing'] as const;
+export type ManifestDiscoveryPhase = (typeof ManifestDiscoveryPhases)[number];
+
+// `ConfigLoadError.phase` — closed set for `cli/loaders.ts` user-config
+// load failures. Phases mirror the linear pipeline:
+//   `load`                    — dynamic import threw / file missing.
+//                               Surfaced via `wrapCause` today; reserved
+//                               for the future when we lift the bare
+//                               `Error` thrown by the existsSync miss
+//                               into a typed value.
+//   `validate`                — module loaded but its default export
+//                               doesn't satisfy the expected shape
+//                               (`launchEffect` missing / `layer`
+//                               missing).
+//   `missing-default-export`  — module loaded but lacks a default export
+//                               entirely. Today this collapses into
+//                               `validate`; carried as a distinct phase
+//                               so future error rendering can show a
+//                               more-specific hint.
+//   `invoke`                  — caller-supplied `validate(...)` callback
+//                               threw a non-`ConfigLoadError` value;
+//                               carried so the top-level `tapCause`
+//                               reporter can distinguish a user-config
+//                               type mismatch from an in-loader bug.
+export const ConfigLoadPhases = ['load', 'validate', 'missing-default-export', 'invoke'] as const;
+export type ConfigLoadPhase = (typeof ConfigLoadPhases)[number];

@@ -47,7 +47,7 @@ The two axes that vary by env are orthogonal:
   No code changes — `pnpm start` runs against localnet,
   `DEVSTACK_NETWORK=testnet pnpm start` runs against testnet. The
   same `Sui()` call returns the right handle.
-- **Account source.** `Account(name, { from: ... })`'s discriminator
+- **Account source.** `Account(name, { kind: ... })`'s discriminator
   binds the same `alice` Ref to different signer sources by env:
   `ephemeral-funded` (fresh keypair, faucet-funded, persisted under
   `.devstack/`) for dev, `env` (load `ALICE_PRIVATE_KEY` from the

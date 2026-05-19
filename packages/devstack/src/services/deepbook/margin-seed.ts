@@ -292,7 +292,7 @@ export const deepbookMarginSeed = <const Name extends string = 'deepbook-margin-
 				seededAmounts,
 			} satisfies DeepbookMarginSeedResult;
 		}).pipe(
-			Effect.withSpan(`deepbookMarginSeed(${name})`),
+			Effect.withSpan(`DeepbookMarginSeed(${name})`),
 			Effect.catchTag('DeepbookError', Effect.fail),
 			Effect.catch((cause: unknown) =>
 				Effect.fail(

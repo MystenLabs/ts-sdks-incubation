@@ -34,12 +34,16 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-import { Console, Effect, FileSystem, Option, Path } from 'effect';
+import { Console, Effect, FileSystem, Option, Path, Stream } from 'effect';
 import { Argument, Command, Flag } from 'effect/unstable/cli';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { promises as nodeFs } from 'node:fs';
 import { join as joinPath } from 'node:path';
 import { Registry } from '../../engine/registry.js';
+import {
+	subscribeCheckpointsWithFallback,
+	type ForkCheckpointEvent,
+} from '../../engine/sui-fork/control.js';
 import {
 	computeConfigHash,
 	readForkMeta,
@@ -156,13 +160,22 @@ const makeForkClient = (ctx: ForkRuntimeContext): SuiGrpcClient =>
 // `fork status`
 // ---------------------------------------------------------------------------
 
+const followFlag = Flag.boolean('follow').pipe(
+	Flag.withDescription(
+		'Stream `SubscribeCheckpoints` events instead of one-shot. ' +
+			'Falls back to polling on stream error (R4 per Phase 5 §9).',
+	),
+	Flag.withDefault(false),
+);
+
 const statusCommand = Command.make(
 	'status',
 	{
 		stack: stackFlag,
 		json: jsonFlag,
+		follow: followFlag,
 	},
-	({ stack, json }) =>
+	({ stack, json, follow }) =>
 		Effect.gen(function* () {
 			const fs = yield* FileSystem.FileSystem;
 			const path = yield* Path.Path;
@@ -192,20 +205,47 @@ const statusCommand = Command.make(
 			};
 			if (json) {
 				yield* Console.log(JSON.stringify(body));
-				return;
+			} else {
+				yield* Console.log(`fork status (stack='${ctx.stack}', upstream=${ctx.upstream}):`);
+				if (ctx.chainId !== undefined) {
+					yield* Console.log(`  chainId:                  ${ctx.chainId}`);
+				}
+				yield* Console.log(`  rpc:                      ${ctx.rpcUrl}`);
+				yield* Console.log(`  forkedAtCheckpoint:       ${body.forkedAtCheckpoint}`);
+				yield* Console.log(`  checkpointSequenceNumber: ${body.checkpointSequenceNumber}`);
+				yield* Console.log(`  epoch:                    ${body.epoch}`);
+				yield* Console.log(`  clockMs:                  ${body.timestampMs}`);
 			}
-			yield* Console.log(`fork status (stack='${ctx.stack}', upstream=${ctx.upstream}):`);
-			if (ctx.chainId !== undefined) {
-				yield* Console.log(`  chainId:                  ${ctx.chainId}`);
-			}
-			yield* Console.log(`  rpc:                      ${ctx.rpcUrl}`);
-			yield* Console.log(`  forkedAtCheckpoint:       ${body.forkedAtCheckpoint}`);
-			yield* Console.log(`  checkpointSequenceNumber: ${body.checkpointSequenceNumber}`);
-			yield* Console.log(`  epoch:                    ${body.epoch}`);
-			yield* Console.log(`  clockMs:                  ${body.timestampMs}`);
+			if (!follow) return;
+
+			// `--follow` consumes the subscription stream until the
+			// scope tears down (Ctrl-C) or the upstream completes.
+			// Phase 5 P5.10.4 — the printer formats each event
+			// alongside its source so the operator can tell when the
+			// stream silently downgraded to polling.
+			yield* Console.log(
+				json
+					? ''
+					: `following checkpoint stream (Ctrl-C to stop, source=subscription→poll on error)…`,
+			);
+			yield* subscribeCheckpointsWithFallback(client).pipe(
+				Stream.runForEach((event: ForkCheckpointEvent) =>
+					json
+						? Console.log(JSON.stringify(event))
+						: Console.log(
+								`  [${new Date(event.receivedAtMs).toISOString()}] checkpoint=${event.cursor} (${event.source})`,
+							),
+				),
+				Effect.catch((cause) =>
+					failAlreadyReported(`fork status --follow: ${cause.message ?? String(cause)}`),
+				),
+			);
 		}),
 ).pipe(
-	Command.withDescription("Print the running fork stack's `ForkingService.GetStatus` response"),
+	Command.withDescription(
+		"Print the running fork stack's `ForkingService.GetStatus` response. " +
+			'Pass `--follow` to stream checkpoint events instead of one-shot.',
+	),
 );
 
 // ---------------------------------------------------------------------------

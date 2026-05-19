@@ -1,8 +1,8 @@
 // The faucet client has three failure shapes it has to detect:
 //
-//   1. fetch rejected (ECONNREFUSED / DNS / TLS) → FaucetError
-//   2. HTTP non-2xx                              → FaucetError
-//   3. HTTP 200 with body `status: { Failure }`  → FaucetError
+//   1. fetch rejected (ECONNREFUSED / DNS / TLS) → SuiHttpFaucetError
+//   2. HTTP non-2xx                              → SuiHttpFaucetError
+//   3. HTTP 200 with body `status: { Failure }`  → SuiHttpFaucetError
 //
 // The body-Failure case is the load-bearing one — during sui-localnet
 // warm-up the faucet HTTP socket binds before the underlying tx
@@ -16,7 +16,7 @@
 
 import { Cause, Effect, Exit, Option } from 'effect';
 import { afterEach, beforeEach, describe, expect, it } from '@effect/vitest';
-import { FaucetError, requestFunds, requestFundsOnce } from './faucet.js';
+import { SuiHttpFaucetError, requestFunds, requestFundsOnce } from './faucet.js';
 
 // Track the original fetch so each test can restore it cleanly even
 // when an assertion throws partway through.
@@ -34,20 +34,22 @@ afterEach(() => {
 	globalThis.fetch = originalFetch;
 });
 
-// Pull a FaucetError out of an Exit.Failure regardless of where it
+// Pull a SuiHttpFaucetError out of an Exit.Failure regardless of where it
 // lands in the Cause tree (same shape `accounts.test.ts` uses).
-const extractFaucetError = (exit: Exit.Exit<unknown, unknown>): FaucetError | undefined => {
+const extractSuiHttpFaucetError = (
+	exit: Exit.Exit<unknown, unknown>,
+): SuiHttpFaucetError | undefined => {
 	if (!Exit.isFailure(exit)) return undefined;
 	const cause = (exit as unknown as { cause: Cause.Cause<unknown> }).cause;
 	const opt = Cause.findErrorOption(cause);
 	if (Option.isNone(opt)) return undefined;
-	return opt.value instanceof FaucetError ? opt.value : undefined;
+	return opt.value instanceof SuiHttpFaucetError ? opt.value : undefined;
 };
 
 const OPTS = { faucetUrl: 'http://localhost:9123', address: '0xabc' };
 
 describe('requestFundsOnce', () => {
-	it.effect('treats a 200 body-level `status: { Failure }` as a FaucetError', () =>
+	it.effect('treats a 200 body-level `status: { Failure }` as a SuiHttpFaucetError', () =>
 		Effect.gen(function* () {
 			installFetch(
 				(async () =>
@@ -63,8 +65,8 @@ describe('requestFundsOnce', () => {
 			);
 			const exit = yield* requestFundsOnce(OPTS).pipe(Effect.exit);
 			expect(Exit.isFailure(exit)).toBe(true);
-			const err = extractFaucetError(exit);
-			expect(err).toBeInstanceOf(FaucetError);
+			const err = extractSuiHttpFaucetError(exit);
+			expect(err).toBeInstanceOf(SuiHttpFaucetError);
 			expect(err?.message).toMatch(/Failure/);
 			// The inner Internal payload should make it through for
 			// debuggability.
@@ -91,15 +93,15 @@ describe('requestFundsOnce', () => {
 		}),
 	);
 
-	it.effect('surfaces fetch rejection (network error) as a FaucetError', () =>
+	it.effect('surfaces fetch rejection (network error) as a SuiHttpFaucetError', () =>
 		Effect.gen(function* () {
 			installFetch((async () => {
 				throw new Error('ECONNREFUSED 127.0.0.1:9123');
 			}) as typeof fetch);
 			const exit = yield* requestFundsOnce(OPTS).pipe(Effect.exit);
 			expect(Exit.isFailure(exit)).toBe(true);
-			const err = extractFaucetError(exit);
-			expect(err).toBeInstanceOf(FaucetError);
+			const err = extractSuiHttpFaucetError(exit);
+			expect(err).toBeInstanceOf(SuiHttpFaucetError);
 			// Stable user-facing prefix from `Effect.tryPromise`'s catch.
 			expect(err?.message).toBe('faucet request failed');
 			expect(err?.url).toBe(OPTS.faucetUrl);
@@ -107,7 +109,7 @@ describe('requestFundsOnce', () => {
 		}),
 	);
 
-	it.effect('non-OK HTTP status maps to FaucetError carrying status text', () =>
+	it.effect('non-OK HTTP status maps to SuiHttpFaucetError carrying status text', () =>
 		// Documents the third failure branch — the 503 / 500 path that
 		// fires while the upstream sui-faucet binary is still binding
 		// its socket. Also serves as a regression guard against anyone
@@ -122,8 +124,8 @@ describe('requestFundsOnce', () => {
 			);
 			const exit = yield* requestFundsOnce(OPTS).pipe(Effect.exit);
 			expect(Exit.isFailure(exit)).toBe(true);
-			const err = extractFaucetError(exit);
-			expect(err).toBeInstanceOf(FaucetError);
+			const err = extractSuiHttpFaucetError(exit);
+			expect(err).toBeInstanceOf(SuiHttpFaucetError);
 			expect(err?.message).toContain('503');
 		}),
 	);
@@ -144,7 +146,7 @@ describe('requestFunds — configurable retry budget', () => {
 		'maxAttempts override bounds the retry schedule (fail-fast against a broken faucet)',
 		() =>
 			// With a tiny `maxAttempts` and `initialDelayMs`, a perpetually
-			// failing fetch should surface a FaucetError quickly rather than
+			// failing fetch should surface a SuiHttpFaucetError quickly rather than
 			// hammering the default 40-attempt schedule. The wall-clock
 			// timeout is held well above the schedule's max delay so the
 			// failure path under test is "schedule exhausted", not "wall
@@ -194,8 +196,8 @@ describe('requestFunds — configurable retry budget', () => {
 				initialDelayMs: 200,
 			}).pipe(Effect.exit);
 			expect(Exit.isFailure(exit)).toBe(true);
-			const err = extractFaucetError(exit);
-			expect(err).toBeInstanceOf(FaucetError);
+			const err = extractSuiHttpFaucetError(exit);
+			expect(err).toBeInstanceOf(SuiHttpFaucetError);
 			expect(err?.message).toContain('100ms');
 		}),
 	);

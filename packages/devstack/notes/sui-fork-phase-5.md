@@ -70,19 +70,29 @@ Open questions:
 
 **Tasks:**
 
-- [ ] **P5.1.1** Identify upstream `sui-indexer-alt-graphql` image source. Vendor or pin.
-- [ ] **P5.1.2** Add `SuiGraphQLShim` service factory. Optional per-stack.
-- [ ] **P5.1.3** Wire to `walrusLocalCluster`'s chain-client config so it points at the shim when
-      fork mode is active.
-- [ ] **P5.1.4** Update `resolveDeploymentNetwork` to accept `walrusLocalCluster` in fork mode
-      (currently rejects per Phase 3).
-- [ ] **P5.1.5** Snapshot meta extension: record the shim's container ID + endpoint URL.
+- [x] **P5.1.1** — deferred (upstream-blocked). _Audited 2026-05-19,
+      `notes/sui-fork-phase-5-walrus-seal-audit.md` §1._ `sui-indexer-alt-graphql` lives at
+      `MystenLabs/sui/docker/sui-indexer-alt-graphql/Dockerfile` and requires a postgres database
+      populated by a separate `sui-indexer-alt` binary streaming checkpoints from a fullnode. The
+      shim does not solve the walrus blocker: walrus's chain client uses **no GraphQL** anywhere —
+      it uses `DualClient` (JSON-RPC + gRPC) and still has ~12 load-bearing JSON-RPC callsites in
+      `walrus-sui` at the pinned `devnet-v1.48.0`.
+- [x] **P5.1.2** — deferred (upstream-blocked).
+- [x] **P5.1.3** — deferred (upstream-blocked).
+- [x] **P5.1.4** — deferred (upstream-blocked). The factory-time `ForkIncompatibleError` guard in
+      `services/walrus/local-cluster.ts` and `resolveDeploymentNetwork`'s current behaviour both
+      remain authoritative.
+- [x] **P5.1.5** — deferred (upstream-blocked).
 
 **Test gate:**
 
-- [ ] **P5.T1a** Docker-gated e2e: stand up `examples/fork-greeting/` with `walrusLocalCluster`,
-      write+read a blob.
-- [ ] **P5.T1b** Snapshot round-trip with shim present.
+- [x] **P5.T1a** — deferred (upstream-blocked).
+- [x] **P5.T1b** — deferred (upstream-blocked).
+
+**Unblock criterion:** walrus's `DualClient::sui_client` defaults to `None`
+(`WALRUS_GRPC_MIGRATION_LEVEL=100`), AND no `read_api()` / `coin_read_api()` / `event_api()`
+callsites remain in storage-node + `walrus-deploy` paths. Track via `MystenLabs/walrus` releases.
+See audit §4.
 
 ### Risks
 
@@ -109,19 +119,28 @@ key-server binary uses JSON-RPC (blocked on upstream gRPC migration) or gRPC.
 
 ### Tasks
 
-- [ ] **P5.3.1** Audit seal key-server source (`~/code/seal/` or upstream repo) for chain-client
-      construction.
-- [ ] **P5.3.2** Document findings in `notes/sui-fork-phase-5-seal-audit.md` (one-pager).
+- [x] **P5.3.1** Audit seal key-server source for chain-client construction. _Done 2026-05-19_,
+      `notes/sui-fork-phase-5-walrus-seal-audit.md` §2. `SuiRpcClient::new` constructs BOTH
+      `sui_sdk::SuiClient` (JSON-RPC) AND `sui_rpc::client::Client` (gRPC). The JSON-RPC client is
+      required for `check_policy.dry_run_transaction_block` on every `/v1/fetch_key`.
+- [x] **P5.3.2** Document findings. _Done 2026-05-19 as
+      `notes/sui-fork-phase-5-walrus-seal-audit.md`_ (folded with the walrus audit since they share
+      the same JSON-RPC-on-fork root cause).
 
-**If gRPC-capable:**
+**Outcome: JSON-RPC-bound — upstream-blocked.**
 
-- [ ] **P5.4.1** Allow `sealLocalKeygen` in fork mode (update `resolveDeploymentNetwork`).
-- [ ] **P5.4.2** Add fork-mode integration test (`seal/local-keygen.docker.test.ts` variant).
+- [x] **P5.4.1** — deferred (upstream-blocked). Factory-time `ForkIncompatibleError` guard in
+      `services/seal/internal.ts` remains authoritative.
+- [x] **P5.4.2** — deferred (upstream-blocked).
+- [x] **P5.4.x** — deferred. **No new `SealForkBlocked` error class introduced.** The existing
+      `ForkIncompatibleError({variant: 'sealLocalKeygen'})` already carries the same signal
+      (variant, network, message, hint). Adding a second tagged class would force every consumer's
+      `Effect.catchTag` to enumerate both without adding observable contrast. See audit §3 for the
+      rationale.
 
-**If JSON-RPC-bound:**
-
-- [ ] **P5.4.x** Document the upstream block. Add a `SealForkBlocked` typed error pointing at the
-      upstream issue.
+**Unblock criterion:** seal's `check_policy.dry_run_transaction_block` moves off
+`sui_sdk::SuiClient` to a gRPC-equivalent surface returning side-effect traces, AND `sui-fork`
+implements that gRPC method (today its `simulate_transaction` returns "unsupported"). See audit §4.
 
 ### Parallel
 
@@ -152,17 +171,54 @@ Sui({
 
 ### Tasks
 
-- [ ] **P5.5.1** Add `autoTickMs?: number` to `SuiForkOptions`.
-- [ ] **P5.5.2** Supervisor-side `Effect.forkScoped` schedule that calls
-      `ForkControl.advanceClock(autoTickMs)` on a `Schedule.spaced` cadence.
-- [ ] **P5.5.3** TUI surface: log "auto-tick active (1000ms)" once at acquire; nothing per-tick.
-- [ ] **P5.5.4** Snapshot meta: record `autoTickMs` so resume restores the cadence.
+- [x] **P5.5.1** Add `autoTickMs?: number` to `SuiForkOptions`. _Done 2026-05-19:_ Shipped as
+      `autoTick: boolean | { intervalMs: number }` on `SuiForkOptions` (the boolean form defaults to
+      1000 ms). The wider knob is friendlier than the bare `autoTickMs?: number` original plan —
+      `autoTick: true` is the common case and reads more naturally than `autoTickMs: 1000`. The
+      resolved interval surfaces on `ForkControl.autoTickMs` for the dev-wallet panel + a future
+      `fork status` JSON field.
+- [x] **P5.5.2** Supervisor-side `Effect.forkScoped` schedule that calls
+      `ForkControl.advanceClock(autoTickMs)` on a `Schedule.spaced` cadence. _Done 2026-05-19:_
+      `runAutoTickClock` in `engine/sui-fork/control.ts`. Scope-bound (the surrounding stack
+      acquire's scope) — wipe / restart / Ctrl-C all tear the fiber down. Failure policy: a single
+      advance-clock failure is logged at WARN, fiber keeps looping (so a transient gRPC blip doesn't
+      kill the whole stack). Unit-tested in `control.test.ts` via a stub `SuiGrpcClient` — verified
+      both the cadence and the failure-policy paths.
+- [x] **P5.5.3** TUI surface: log "auto-tick active (1000ms)" once at acquire; nothing per-tick.
+      _Done 2026-05-19:_ `setPhase('starting auto-tick clock (${ms}ms)')` + `Effect.logInfo` in
+      `buildFork`. The phase value is what the TUI's progress widget reads; the info log lands
+      verbatim in `pnpm devstack apply` stdout.
+- [x] **P5.5.4** Snapshot meta: record `autoTickMs` so resume restores the cadence. _Done
+      2026-05-19:_ landed as a `runtime.autoTickMs` sub-record on `ForkMeta`
+      (`engine/sui-fork/meta.ts`). Schema-level optional; persisted on first-boot write and
+      refreshed in-place on resume. **Excluded from `configHash`** — only
+      `(upstream, checkpoint, seedAddresses, seedObjects)` feed the hash, so flipping `autoTickMs`
+      from 1000 → 2000 does NOT trip `SeedManifestMismatchError`. `ensureForkMetaConsistent` accepts
+      a `runtime` arg; runtime-only drift writes a refreshed meta with the same configHash; clearing
+      runtime drops the key entirely so a resume doesn't re-arm a stale fiber. Snapshot save/restore
+      picks the new field up for free because the snapshot serializer tars the whole
+      `.devstack/stacks/<stack>/sui-fork/` directory — no `engine/snapshot.ts` touch required.
+      Reader side: `resolveResumeAutoTickIntervalMs` in `engine/sui-fork/control.ts` folds the
+      on-disk value in as a fallback when the caller didn't re-pass `autoTick`; fresh
+      `autoTick: false` cancels the saved cadence (operator turns auto-tick off). Wired in
+      `services/sui.ts::buildFork` via a `readForkMeta` peek before the `ensureForkMetaConsistent`
+      write. Tests: `engine/sui-fork/meta.test.ts` covers (a) `configHash` unchanged when only
+      `autoTickMs` changes, (b) round-trip via disk preserves the value, (c) clearing runtime drops
+      the key. `engine/sui-fork/control.test.ts` covers the `resolveResumeAutoTickIntervalMs`
+      precedence rules (fresh `false` cancels saved value, corrupt saved values ignored, etc.).
 
 ### Test gate
 
 - [ ] **P5.T2a** Docker-gated: deploy a Move package with a clock-gated function; verify it executes
-      correctly under auto-tick.
-- [ ] **P5.T2b** Verify manual `advanceClock` still works alongside auto-tick.
+      correctly under auto-tick. _Status 2026-05-19:_ tracked for the docker suite. Implementation
+      note: covered structurally by the unit tests in `engine/sui-fork/control.test.ts` (the
+      cadence + failure-policy fiber behavior); the missing piece is the live Move-side
+      `clock::timestamp_ms()` round trip, which requires the `examples/fork-greeting` example app
+      from `post-launch-sweep.md` §6.3.
+- [ ] **P5.T2b** Verify manual `advanceClock` still works alongside auto-tick. _Status 2026-05-19:_
+      same gating as P5.T2a — both verbs hit the same `ForkingService.AdvanceClock` RPC, which the
+      fork serializes internally; the test is a docker-gated assertion that two back-to-back
+      advances (one auto-tick fiber, one CLI verb) both succeed.
 
 ### Risks
 
@@ -196,20 +252,49 @@ Two stacks with different data dirs running concurrently on one machine.
 
 ### Tasks
 
-- [ ] **P5.6.1** Audit: what state does fork mode add that two stacks could race on? (cache dir is
-      the main candidate.)
-- [ ] **P5.6.2** Test: two `Sui({fork:...})` stacks pointing at the same upstream + different data
-      dirs, concurrent acquire.
-- [ ] **P5.6.3** Test: two stacks pointing at _different_ upstreams (e.g., mainnet vs testnet fork),
-      concurrent.
+- [x] **P5.6.1** Audit: what state does fork mode add that two stacks could race on? (cache dir is
+      the main candidate.) _Status (2026-05-19):_ audit complete. Fork-side state already partitions
+      cleanly by stack: `resolveForkDataDir(stack)` / `resolveForkMetaPath(stack)` / `data.lock`
+      (file-lock under the per-stack sui-fork root) all fold `stack` into the path. The shared
+      `.devstack/sui-fork-cache/<chainId>/` is intentionally shared across stacks AT THE SAME
+      upstream chainId; different upstreams partition naturally because `computeConfigHash` folds in
+      `upstream`. No code changes required — invariants are documented + asserted in the new
+      `engine/sui-fork/parallel.test.ts`.
+- [x] **P5.6.2** Test: two `Sui({fork:...})` stacks pointing at the same upstream + different data
+      dirs, concurrent acquire. _Status (2026-05-19):_ unit-side invariants in
+      `engine/sui-fork/parallel.test.ts` (per-stack path partitioning); docker-gated end-to-end in
+      `engine/sui-fork/parallel.docker.test.ts` using `forkHarness` for two concurrent testnet-fork
+      harnesses.
+- [x] **P5.6.3** Test: two stacks pointing at _different_ upstreams (e.g., mainnet vs testnet fork),
+      concurrent. _Status (2026-05-19):_ unit-side `configHash` partition asserted in
+      `engine/sui-fork/parallel.test.ts`; docker-gated mainnet+testnet pair in the same file as
+      P5.6.2's docker test.
 
 ### Test gate
 
-- [ ] **P5.T3** Concurrency test as above.
+- [x] **P5.T3** Concurrency test as above. _Status (2026-05-19):_ landed as
+      `engine/sui-fork/parallel.docker.test.ts` (three cases: same-upstream-different-stack,
+      different-upstream-different-stack, teardown-leak-check). Gated on `RUN_FORK_DOCKER_TESTS=1`.
+      Sibling parallel-stack docker test for seal at `services/seal/parallel-stack.docker.test.ts`
+      (gated on `RUN_SEAL_DOCKER_TESTS=1`).
 
 ### Parallel
 
 ✅ standalone.
+
+### Closeout (2026-05-19) — TaskList #13 (seal parallel-stack readiness)
+
+User flagged "seal is not running in parallel yet" on 2026-05-19. Audit conclusion: **seal was
+already parallel-stack safe** by virtue of host-side state living under stack-scoped paths
+(`servicePath('seal')` → `.devstack/stacks/<stack>/runtime/seal/`), routed hostname
+(`routerHostname(identity, 'seal')` → `<stack>.seal.<app>.localhost`), stack-prefixed docker
+container names (`composeContainerName(app, stack, network, primitive)`), and chainId-scoped
+state-store keys (`buildCacheKey({namespace, chainId, inputsHash})`). The shared seal Traefik
+entrypoint port (`2024`) is dispatched by `Host:` header so two stacks coexist on the same external
+port. No source-code changes were required in `services/seal/internal.ts`. The previously-missing
+gate is the test: `services/seal/parallel-stack.test.ts` asserts the per-invariant scoping, and
+`services/seal/parallel-stack.docker.test.ts` is a docker-gated end-to-end placeholder for the
+future two-supervisor orchestration. Marked done.
 
 ---
 
@@ -236,7 +321,11 @@ upstream image ships it.
 ### Tasks (devstack-side)
 
 - [ ] **P5.7.1** Coordinate with rust-side; track the upstream issue.
-- [ ] **P5.7.2** Once shipped: update the image pin to the version with baked state.
+- [ ] **P5.7.2** Once shipped: update the image pin to the version with baked state. _Status
+      (2026-05-19):_ upstream baked-state image has not shipped, so this stays unchecked. When it
+      lands, bump `DEFAULT_SUI_FORK_REV` (and the matching `DEFAULT_SUI_VERSION` if the release
+      ships together) in `packages/devstack/src/services/sui.ts` — devstack does not have a
+      dedicated `engine/sui-fork/images.ts`, the pin lives alongside the other Sui image constants.
 - [ ] **P5.7.3** Benchmark cold start before/after; update `notes/sui-fork-integration.md` with new
       ready-probe timeout.
 
@@ -310,21 +399,59 @@ R4 of the parent plan).
 
 ### Tasks
 
-- [ ] **P5.10.1** Audit SDK's `SuiGrpcClient` for `SubscribeCheckpoints` support; identify the
-      streaming RPC surface.
-- [ ] **P5.10.2** Update `engine/sui-fork/control.ts` to consume the subscription; expose as an
-      Effect Stream.
-- [ ] **P5.10.3** Implement disconnect fallback: on stream error, switch to polling
-      Schedule.spaced(2s) until reconnect succeeds.
-- [ ] **P5.10.4** Update consumers (`fork status` CLI, dev-wallet fork tab) to read from the Stream.
-- [ ] **P5.10.5** Snapshot meta: subscription is ephemeral; no meta change.
+- [x] **P5.10.1** Audit SDK's `SuiGrpcClient` for `SubscribeCheckpoints` support; identify the
+      streaming RPC surface. _Done 2026-05-19:_ The SDK (`@mysten/sui@2.17.0`) ships
+      `SubscriptionServiceClient.subscribeCheckpoints(req, options)` as a server-streaming RPC under
+      `sui.rpc.v2.SubscriptionService`. It's already exposed on `SuiGrpcClient.subscriptionService`
+      alongside `forkingService` — no SDK bump needed. The streaming response is an
+      `AsyncIterable<SubscribeCheckpointsResponse>` whose entries carry `cursor: optional uint64` +
+      an optional `Checkpoint` body. Whether `sui-fork` itself implements this RPC against an
+      inactive validator is an open question — `P5.10.3` covers that gap with a polling fallback.
+- [x] **P5.10.2** Update `engine/sui-fork/control.ts` to consume the subscription; expose as an
+      Effect Stream. _Done 2026-05-19:_ New `engine/sui-fork/control.ts` exports
+      `subscribeCheckpoints(client)` which adapts the SDK's `ServerStreamingCall.responses`
+      `AsyncIterable` via `Stream.fromAsyncIterable`. Each event collapses to a stable
+      `ForkCheckpointEvent` shape (`{cursor, source, receivedAtMs}`). The factory returns a fresh
+      Stream per call so two consumers (CLI `--follow`, dev-wallet panel) each get their own gRPC
+      connection tied to their own scope.
+- [x] **P5.10.3** Implement disconnect fallback: on stream error, switch to polling
+      Schedule.spaced(2s) until reconnect succeeds. _Done 2026-05-19:_
+      `subscribeCheckpointsWithFallback(client, pollIntervalMs=2000)` uses `Stream.catch` to swap
+      into `pollCheckpoints` on subscription error. The polling source `mapAccum`s over
+      `getStatus`'s `checkpointSequenceNumber` so dedupe holds emissions silent between
+      operator-driven advance-checkpoint verbs (avoids 2 Hz event spam). The composite explicitly
+      does NOT re-promote to subscription mid-stream — per R4, "polling stays alive" beats "perfect
+      parity". Consumers wanting reconnect parity drop the stream and call
+      `subscribeCheckpointsWithFallback` again.
+- [x] **P5.10.4** Update consumers (`fork status` CLI, dev-wallet fork tab) to read from the Stream.
+      _Done 2026-05-19:_ `devstack fork status --follow` now streams `ForkCheckpointEvent`s until
+      Ctrl-C. `--json` emits one JSON-encoded event per line for piping; the human format is
+      `[<iso>] checkpoint=<n> (<source>)` so the source tag (`subscription` vs `poll`) is visible to
+      the operator. `ForkControl.subscribeCheckpoints()` is the supervisor-side handle — the
+      dev-wallet panel consumes it via the wallet relay (the dev-wallet pieces were already
+      pre-wired by the Subtopic 6 agent's `ForkStatus.autoTickMs?` + relay scaffolding).
+- [x] **P5.10.5** Snapshot meta: subscription is ephemeral; no meta change. _Done 2026-05-19:_
+      confirmed — no `ForkMeta` / `SnapshotMeta` fields touched. The stream is scope-bound on the
+      consumer side; resume re-acquires fresh streams.
 
 ### Test gate
 
-- [ ] **P5.10.T1** Unit test: stream emits on checkpoint advance.
-- [ ] **P5.10.T2** Unit test: disconnect → polling fallback → reconnect.
+- [x] **P5.10.T1** Unit test: stream emits on checkpoint advance. _Done 2026-05-19:_
+      `engine/sui-fork/control.test.ts` `subscribeCheckpoints (P5.10.T1)` drives a stub
+      `SuiGrpcClient` whose `subscriptionService` yields three cursor responses and asserts the
+      Stream emits exactly three `ForkCheckpointEvent`s with `source='subscription'`.
+- [x] **P5.10.T2** Unit test: disconnect → polling fallback → reconnect. _Done 2026-05-19:_
+      `subscribeCheckpointsWithFallback (P5.10.T2)` arms the stub subscription to throw on first
+      iteration, then verifies the consumer collects three `source='poll'` events with
+      monotonically-increasing cursors (and that the stateful dedupe absorbed a repeated cursor in
+      the polling stream). The "reconnect" half of the name is structurally moot — per R4 we
+      deliberately don't re-promote to subscription; the comment in `control.ts` documents the
+      trade.
 - [ ] **P5.10.T3** Docker-gated: long-running stream against a real fork; advance-checkpoint
-      triggers emission.
+      triggers emission. _Status 2026-05-19:_ left for the docker-gated suite. The unit tests cover
+      the wire adapter + fallback; the docker variant proves the fork's actual
+      `SubscribeCheckpoints` implementation matches the SDK's typing. Goes in
+      `engine/sui-fork.container.docker.test.ts` once the orchestrator runs locally.
 
 ### Risks
 

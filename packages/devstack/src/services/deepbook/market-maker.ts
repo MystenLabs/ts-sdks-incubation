@@ -411,7 +411,7 @@ export const deepbookMarketMaker = <const Name extends string>(
 							.pipe(Effect.ignore);
 					}
 				}
-			}).pipe(Effect.withSpan('deepbookMarketMaker.tick'));
+			}).pipe(Effect.withSpan('DeepbookMarketMakerTick'));
 
 			// Transient failures (a single bad tx, a temporarily-unreachable
 			// RPC) shouldn't kill the maker — log + continue on the next
@@ -443,7 +443,7 @@ export const deepbookMarketMaker = <const Name extends string>(
 
 			return { pid: 0 } satisfies DeepbookMarketMakerHandle;
 		}).pipe(
-			Effect.withSpan(`deepbookMarketMaker(${options.name})`),
+			Effect.withSpan(`DeepbookMarketMaker(${options.name})`),
 			Effect.catchTag('DeepbookError', Effect.fail),
 			Effect.catch((cause: unknown) =>
 				Effect.fail(

@@ -33,6 +33,25 @@ export interface HostScriptOptions<Name extends string, E, R> {
 const DEFAULT_HOST_SCRIPT_TIMEOUT_MS = 600_000;
 const DEFAULT_HOST_SCRIPT_GRACE_PERIOD_MS = 5_000;
 
+/**
+ * Spawn a host process to completion. Captures stdout (string) + exit
+ * code; honors a `timeoutMs` budget with SIGTERM-then-SIGKILL escalation
+ * via the spawner's `killSignal` / `forceKillAfter` shape.
+ *
+ * **Public escape hatch for plugin authors.** Zero in-tree callers as
+ * of Wave 6.8 — `Dev()` covers the long-running dev-server case via
+ * the internal `hostProcess` primitive; this `hostScript` is the
+ * "I need to run a short host-side script as part of stack acquisition"
+ * hatch (build steps, codegen invocations, side-effect actions that
+ * don't fit a container).
+ *
+ * **Sunset 2026-11-19.** Six months from Wave 6.8 (`packages/devstack/notes/review-followups.md`
+ * §8.8 + §10.4). If no in-tree or out-of-tree caller appears by the
+ * sunset date, this primitive will be re-evaluated for removal.
+ * Out-of-tree plugin authors using `hostScript` should track this note
+ * and file an issue against the devstack repo with their use case so
+ * the sunset can be cancelled.
+ */
 export const hostScript = <const Name extends string, E = never, R = never>(
 	options: HostScriptOptions<Name, E, R>,
 ) =>
@@ -104,10 +123,17 @@ export const hostScript = <const Name extends string, E = never, R = never>(
 			);
 
 			return { exitCode, stdout } satisfies HostScriptResult;
-		}).pipe(Effect.withSpan(`hostScript(${options.name})`)),
+		}).pipe(Effect.withSpan(`HostScript(${options.name})`)),
 		{
 			kind: 'action',
 			displayTitle: options.name,
 			display: (s) => ({ title: options.name, primary: `exit ${s.exitCode}` }),
+			// Forward `dependsOn:` into the dep graph as `__upstreamKeys`.
+			// Phase A wires the data substrate; today the inline
+			// `yield* tag` prelude (above) still drives runtime ordering
+			// via `composeStackLayer`'s `provideMerge` fold. Phase B's
+			// topological scheduler will read this declaration and
+			// retire the inline yields.
+			upstreamKeys: options.dependsOn ?? [],
 		},
 	);

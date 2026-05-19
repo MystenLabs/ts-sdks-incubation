@@ -30,7 +30,7 @@ const indent = (s: string, prefix: string): string =>
 // Identifies a value as one of our `Schema.TaggedErrorClass` instances.
 // We rely on `_tag` rather than `instanceof` to stay decoupled from the
 // concrete classes in `primitives/errors.ts` (and the handful of tagged
-// errors that live elsewhere — StateStoreLockedError, FaucetError, etc.).
+// errors that live elsewhere — StateStoreLockedError, SuiHttpFaucetError, etc.).
 interface TaggedErrorLike {
 	readonly _tag: string;
 	readonly message?: unknown;

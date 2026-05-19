@@ -250,7 +250,18 @@ const makeMockSuiOk = (
 		runtime: 'bundled',
 	});
 
-const makeMockSuiMissingObject = (chainId: string): Layer.Layer<SuiTag> =>
+/** Mock Sui whose `getObject` succeeds for every objectId EXCEPT the
+ *  ones listed in `missingIds`. Used by the "stale pool object" test to
+ *  invalidate just the pools entry while leaving publishMove's verify
+ *  probe (which independently checks the cached packageId per Phase C
+ *  §4.2) on the happy path. Without the discriminator, the
+ *  publishMove cache invalidation would fire FIRST and the dying
+ *  signer would surface from the publish phase, not from the
+ *  create-pools phase the test intends to exercise. */
+const makeMockSuiMissingObject = (
+	chainId: string,
+	missingIds: ReadonlySet<string>,
+): Layer.Layer<SuiTag> =>
 	Layer.succeed(SuiTag, {
 		network: 'localnet',
 		rpc: { host: 'http://localhost:9000' },
@@ -258,8 +269,11 @@ const makeMockSuiMissingObject = (chainId: string): Layer.Layer<SuiTag> =>
 		faucet: undefined,
 		client: {
 			core: {
-				getObject: async (_args: { objectId: string }) => {
-					throw new Error('object not found');
+				getObject: async (args: { objectId: string }) => {
+					if (missingIds.has(args.objectId)) {
+						throw new Error('object not found');
+					}
+					return { object: { objectId: args.objectId } as unknown };
 				},
 			},
 		} as unknown as Sui['client'],
@@ -521,13 +535,18 @@ describe('deepbookLocalDeploy — create-pools resume cache', () => {
 			});
 
 			// Same support shape as the happy-path test, but the Sui mock
-			// rejects every `getObject` call. The cache is still warmed —
+			// reports the stale pool object as missing while still letting
+			// publishMove's verify probe of the cached packageId succeed.
+			// Per Phase C §4.2 both layers have independent verify probes;
+			// without the discriminator the publishMove invalidation would
+			// fire first and short-circuit the test's create-pools
+			// invalidation path. The cache is still warmed —
 			// verification then fails, the entry is invalidated, and the
 			// dying signer's `Effect.die` fires from the `create-pools` tx
 			// (proving the invalidation path actually re-enters tx work).
 			const supportLayer = Layer.mergeAll(
 				CacheBaseLayer,
-				makeMockSuiMissingObject(chainId),
+				makeMockSuiMissingObject(chainId, new Set([stalePoolId])),
 				Layer.provideMerge(
 					Layer.provide(StateStoreLive, mockStateConfig(tmpdir)),
 					NodeFileSystemLayer,

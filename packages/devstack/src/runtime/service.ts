@@ -195,9 +195,11 @@ const groupPyth = (state: PythStateRecord | undefined): PythManifest | undefined
 
 const groupPostgres = (state: PostgresStateRecord | undefined): PostgresManifest | undefined => {
 	if (state === undefined) return undefined;
-	// Strip credentials before serializing — `url` carries the password.
-	// Manifest readers (consumer apps, codegen) get the endpoint host +
-	// alias + db list; the password stays in-memory only.
+	// `state.endpoint` is guaranteed plain (no credentials) by the
+	// registry-shape contract — the password lives in `state.password`,
+	// which the grouper intentionally never copies into the manifest.
+	// Surfacing the password is impossible by construction here, not by
+	// a per-call strip step.
 	return {
 		user: state.user,
 		endpoint: { url: state.endpoint },
@@ -211,9 +213,7 @@ const groupApp = (
 	endpoints: ReadonlyArray<FlatEndpoint>,
 	extras: Record<string, unknown>,
 ): AppManifest => {
-	const dev =
-		endpoints.find((e) => e.name === EndpointName.DEV_SERVER_PRIMARY) ??
-		endpoints.find((e) => e.name === EndpointName.DEV_SERVER_FALLBACK);
+	const dev = endpoints.find((e) => e.name === EndpointName.DEV_SERVER_PRIMARY);
 	const wallet = endpoints.find((e) => e.name === EndpointName.WALLET_APP);
 	return {
 		extras,

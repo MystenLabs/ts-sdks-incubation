@@ -37,7 +37,7 @@ The CLI sets `DEVSTACK_NETWORK` before importing the config, so every factory ca
 ```ts
 import { Account, devstack, Package, Seal, Sui, Walrus } from '@mysten-incubation/devstack';
 
-const alice = Account('alice', { from: 'env', key: 'ALICE_PRIVATE_KEY' });
+const alice = Account('alice', { kind: 'env', key: 'ALICE_PRIVATE_KEY' });
 
 const hello = Package('hello', './move/hello', { signer: alice });
 
@@ -71,7 +71,7 @@ const isLive = process.env.DEVSTACK_NETWORK && process.env.DEVSTACK_NETWORK !== 
 
 const alice = Account(
 	'alice',
-	isLive ? { from: 'env', key: 'ALICE_PRIVATE_KEY' } : { from: 'ephemeral-funded' },
+	isLive ? { kind: 'env', key: 'ALICE_PRIVATE_KEY' } : { kind: 'ephemeral-funded' },
 );
 ```
 

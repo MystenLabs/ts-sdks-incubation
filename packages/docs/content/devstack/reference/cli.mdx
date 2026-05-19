@@ -192,6 +192,64 @@ that created them is gone.
 `prune` is the right tool for "I've cleaned up several repos and want my docker volumes back";
 `wipe` is the right tool for "I want to nuke this one stack's state right now".
 
+## `devstack graph`
+
+Print the static dependency graph for the stack configured in `./devstack.config.ts` without
+acquiring any layers. Useful for previewing what `up` will build and for documenting the stack.
+
+````bash
+devstack graph                          # text (default) — one line per topological level
+devstack graph --format mermaid         # Mermaid flowchart (drop into a ```mermaid block)
+devstack graph --format dot             # Graphviz DOT (pipe through `dot -Tsvg | open`)
+devstack graph --downstream <key>       # strictly-downstream closure of one primitive
+````
+
+The graph reflects what `composeStackLayer` actually builds — composite primitives' lifted siblings
+(walrus's upstream image, seal's image-build, etc.) appear as their own nodes. Levels are
+topological: siblings within a level have no edge to each other and the supervisor builds them
+concurrently via Effect's MemoMap.
+
+`--downstream <key>` answers "what restarts when I edit this?" without standing up the supervisor —
+membership comes from the strict-downstream closure on the graph.
+
+## `devstack manifest`
+
+Read-only inspection of the on-disk manifest. Default looks for `.devstack/manifest.json`; pass a
+positional path to point at a different file. `--json` prints the raw manifest body for piping into
+`jq`; the default is a human-readable summary.
+
+```bash
+devstack manifest                                       # default: .devstack/manifest.json (summary)
+devstack manifest .devstack/stacks/feature-x/manifest.json
+devstack manifest --json                                # raw JSON
+```
+
+Use `discoverManifestPath()` from `@mysten-incubation/devstack/runtime` (the same helper the CLI
+calls) for programmatic access.
+
+## `devstack fork`
+
+Subcommands for inspecting and driving a `sui-fork` (testnet-fork) stack. Available only while a
+fork-mode `Sui({ network: 'testnet-fork', fork: { … } })` stack is up.
+
+```bash
+devstack fork status                                # one-shot ForkingService.GetStatus
+devstack fork status --json                         # JSON body
+devstack fork status --follow                       # stream SubscribeCheckpoints events
+                                                    #   (falls back to polling on stream error)
+devstack fork advance-clock <ms>                    # advance the fork's clock
+devstack fork advance-checkpoint                    # produce a new checkpoint manually
+```
+
+`--follow` consumes the `SubscribeCheckpoints` gRPC stream until Ctrl-C tears down the scope. Each
+event prints `[<wallclock>] checkpoint=<cursor> (<source>)` where `source` is `subscription` when
+streaming and `poll` after a fallback — the printer surfaces the transition so the operator can tell
+when the upstream silently downgraded.
+
+`autoTick:` on `Sui({ fork })` is the config-side counterpart: pass `fork: { autoTick: true }` (or
+`{ autoTick: { intervalMs: 500 } }`) to advance the clock on a cadence without `fork advance-clock`
+calls. See the `examples/fork-greeting/` example for a worked harness.
+
 ## Environment variables
 
 - `DEVSTACK_NETWORK` — target Sui network (`localnet | testnet | mainnet`). The CLI `--network` flag

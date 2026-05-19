@@ -7,6 +7,16 @@
 // Renderers under `tui/` (ink components, plain text renderer) import
 // these types as inputs. The reverse — engine importing tui/ — would
 // invert the dependency.
+//
+// **Internal-only.** None of the types in this module are exported from
+// the root barrel or from `/advanced`. They're plumbing between the
+// engine and the in-tree renderers; plugin authors writing a custom
+// renderer would land alongside `tui/*` rather than reach for these
+// types from outside. The decision to keep this surface internal was
+// settled in Wave 6.4 (`packages/devstack/notes/review-followups.md`
+// §8.4 + §10.7): no example reaches for them, and promoting them to a
+// public subpath would expose engine state machine internals that we
+// reserve the right to refactor without a SemVer hop.
 
 /**
  * Per-tag lifecycle status.
@@ -105,6 +115,23 @@ export interface TuiState {
 	readonly endpoints: ReadonlyArray<TuiEndpoint>;
 	readonly logs: ReadonlyArray<TuiLog>;
 	readonly header: TuiHeader;
+	/**
+	 * Static dep-tree preview, one entry per topological level. Each entry
+	 * holds the human-friendly titles (`__displayTitle ?? key`) of the
+	 * members that build at that level — siblings within a level can
+	 * build concurrently under the topo scheduler
+	 * (`engine/dep-graph.ts::topoLevels`). Renderers may surface this as
+	 * a banner on startup to telegraph the build plan ("level 0: sui;
+	 * level 1: walrus, seal; level 2: dev").
+	 *
+	 * Phase G of `notes/parallel-graph-resolution.md` §6.7 — populated
+	 * once at supervisor compose time (the graph is static across
+	 * hot-restart cycles) and stays constant for the supervisor's
+	 * lifetime. Absent on standalone test runs that bypass
+	 * `defineDevstack`; renderers should treat `undefined` as "no
+	 * dep-tree to show."
+	 */
+	readonly depTreeLevels?: ReadonlyArray<ReadonlyArray<string>>;
 }
 
 export interface TuiDimensions {

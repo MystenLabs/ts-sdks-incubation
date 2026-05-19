@@ -16,6 +16,7 @@ import {
 	computeDownstreamClosure,
 	DepGraphError,
 	reachableConsumers,
+	topoLevels,
 	type DepGraphMember,
 } from './dep-graph.js';
 
@@ -161,6 +162,83 @@ describe('computeDownstreamClosure', () => {
 	});
 });
 
+describe('topoLevels', () => {
+	it('emits leaves at level 0 and consumers at higher levels', () => {
+		// fixture: sui ← package ← codegen ← dev. Each level holds exactly one
+		// node because the chain is linear.
+		const graph = buildDepGraph(fixtureStack);
+		const levels = topoLevels(graph);
+		expect(levels).toEqual([['sui'], ['package'], ['codegen'], ['dev']]);
+	});
+
+	it('groups independent siblings into the same level', () => {
+		// Two independent chains share level structure: both leaves at
+		// level 0, both consumers at level 1.
+		const stack: ReadonlyArray<DepGraphMember> = [
+			{ key: 'a1' },
+			{ key: 'b1' },
+			{ key: 'a2', __upstreamKeys: ['a1'] },
+			{ key: 'b2', __upstreamKeys: ['b1'] },
+		];
+		const graph = buildDepGraph(stack);
+		const levels = topoLevels(graph);
+		expect(levels).toEqual([
+			['a1', 'b1'],
+			['a2', 'b2'],
+		]);
+	});
+
+	it('handles a diamond (consumer waits for both upstreams)', () => {
+		// sui ← {walrus, seal} ← dev. Walrus and seal are siblings at
+		// level 1, dev sits at level 2.
+		const stack: ReadonlyArray<DepGraphMember> = [
+			{ key: 'sui' },
+			{ key: 'walrus', __upstreamKeys: ['sui'] },
+			{ key: 'seal', __upstreamKeys: ['sui'] },
+			{ key: 'dev', __upstreamKeys: ['walrus', 'seal'] },
+		];
+		const graph = buildDepGraph(stack);
+		const levels = topoLevels(graph);
+		expect(levels).toEqual([['sui'], ['walrus', 'seal'], ['dev']]);
+	});
+
+	it('preserves input order within a level (stable per-level emission)', () => {
+		// Three leaves declared in a specific order — the per-level
+		// emission must respect that order so the TUI surfaces siblings
+		// in the user's authored sequence.
+		const stack: ReadonlyArray<DepGraphMember> = [
+			{ key: 'gamma' },
+			{ key: 'alpha' },
+			{ key: 'beta' },
+		];
+		const graph = buildDepGraph(stack);
+		const levels = topoLevels(graph);
+		expect(levels).toEqual([['gamma', 'alpha', 'beta']]);
+	});
+
+	it('returns an empty array for an empty graph', () => {
+		const graph = buildDepGraph([]);
+		expect(topoLevels(graph)).toEqual([]);
+	});
+
+	it('treats undeclared upstreams as leaves (missing __upstreamKeys)', () => {
+		// A primitive that omits `__upstreamKeys` ends up with an empty
+		// upstream set (see buildDepGraph). Phase B's scheduler treats
+		// these as leaves; if they actually yield* a service from a
+		// non-leaf, Effect's MemoMap still resolves the dep via the
+		// surrounding `Layer.mergeAll` — they just lose the topo
+		// optimisation. The invariant: the level emission doesn't choke.
+		const stack: ReadonlyArray<DepGraphMember> = [
+			{ key: 'a' }, // no __upstreamKeys → leaf
+			{ key: 'b' }, // ditto
+			{ key: 'c', __upstreamKeys: ['a'] },
+		];
+		const graph = buildDepGraph(stack);
+		const levels = topoLevels(graph);
+		expect(levels).toEqual([['a', 'b'], ['c']]);
+	});
+});
+
 describe('reachableConsumers', () => {
 	it('returns the strictly-downstream set for a known owner', () => {
 		const graph = buildDepGraph(fixtureStack);
@@ -174,5 +252,135 @@ describe('reachableConsumers', () => {
 		const closure = computeDownstreamClosure(graph);
 		const set = reachableConsumers(closure, 'unknown.key');
 		expect(set.size).toBe(0);
+	});
+});
+
+// -----------------------------------------------------------------------------
+// Phase A — `provide()` / `tag()` / plugin-author helpers populate
+// `__upstreamKeys` from the `upstreamKeys` option
+// -----------------------------------------------------------------------------
+//
+// These tests close the data-substrate gap §2.2 calls out: no primitive
+// populated `__upstreamKeys`. The substrate now resolves
+// `LayeredTag | string` entries to their `.key` and stamps the result
+// onto the returned stack member. `buildDepGraph` then sees a real graph.
+
+describe('Phase A: __upstreamKeys population at factory time', () => {
+	it('tag() resolves LayeredTag entries to their .key', async () => {
+		const { tag } = await import('../advanced/tag.js');
+		const { Effect } = await import('effect');
+		const a = tag('a', Effect.succeed(1), { upstreamKeys: [] });
+		const b = tag('b', Effect.succeed(2), { upstreamKeys: [a] });
+		expect(a.__upstreamKeys).toEqual([]);
+		expect(b.__upstreamKeys).toEqual(['a']);
+	});
+
+	it('tag() accepts bare-string upstream keys (forward-declared deps)', async () => {
+		const { tag } = await import('../advanced/tag.js');
+		const { Effect } = await import('effect');
+		const m = tag('m', Effect.succeed(1), {
+			upstreamKeys: ['@devstack/SuiTag', '@devstack/FaucetTag'],
+		});
+		expect(m.__upstreamKeys).toEqual(['@devstack/SuiTag', '@devstack/FaucetTag']);
+	});
+
+	it('tag() dedupes upstream keys (composite + bare-string overlap)', async () => {
+		const { tag } = await import('../advanced/tag.js');
+		const { Effect } = await import('effect');
+		const sui = tag('@devstack/SuiTag' as const, Effect.succeed(1), { upstreamKeys: [] });
+		const m = tag('m', Effect.succeed(1), { upstreamKeys: [sui, '@devstack/SuiTag', sui] });
+		expect(m.__upstreamKeys).toEqual(['@devstack/SuiTag']);
+	});
+
+	it('hostScript auto-derives __upstreamKeys from dependsOn', async () => {
+		const { hostScript } = await import('../advanced/plugin-author/host-script.js');
+		const { tag } = await import('../advanced/tag.js');
+		const { Effect } = await import('effect');
+		const upstream = tag('up', Effect.succeed('x'), { upstreamKeys: [] });
+		const hs = hostScript({
+			name: 'hs',
+			command: 'true',
+			dependsOn: [upstream],
+		});
+		expect(hs.__upstreamKeys).toEqual(['up']);
+	});
+
+	it('hostScript declares empty __upstreamKeys when no dependsOn is set', async () => {
+		const { hostScript } = await import('../advanced/plugin-author/host-script.js');
+		const hs = hostScript({ name: 'hs', command: 'true' });
+		expect(hs.__upstreamKeys).toEqual([]);
+	});
+
+	it('dockerOneShot auto-derives __upstreamKeys from dependsOn', async () => {
+		const { dockerOneShot } = await import('../advanced/plugin-author/docker-one-shot.js');
+		const { tag } = await import('../advanced/tag.js');
+		const { Effect } = await import('effect');
+		const a = tag('a', Effect.succeed(1), { upstreamKeys: [] });
+		const b = tag('b', Effect.succeed(2), { upstreamKeys: [] });
+		const job = dockerOneShot({
+			name: 'job',
+			image: 'busybox:1.36',
+			dependsOn: [a, b],
+		});
+		expect(job.__upstreamKeys).toEqual(['a', 'b']);
+	});
+
+	it('dockerOneShot declares empty __upstreamKeys when no dependsOn is set', async () => {
+		const { dockerOneShot } = await import('../advanced/plugin-author/docker-one-shot.js');
+		const job = dockerOneShot({ name: 'job', image: 'busybox:1.36' });
+		expect(job.__upstreamKeys).toEqual([]);
+	});
+
+	it('dockerContainer declares its inner image tag as an upstream', async () => {
+		const { dockerContainer } = await import('../advanced/plugin-author/docker-container.js');
+		const t = dockerContainer('svc', { image: { pull: 'busybox:1.36' } });
+		// `dockerContainer` creates a sibling `dockerImage` tag named
+		// `<name>.image` and surfaces it as an upstream. The container's
+		// `yield* imageTag` inside the build body is the actual edge.
+		expect(t.__upstreamKeys).toEqual(['svc.image']);
+	});
+
+	it('dockerContainer with {tag: ...} surfaces no inner image upstream', async () => {
+		const { dockerContainer } = await import('../advanced/plugin-author/docker-container.js');
+		// `{tag}` means a sibling `dockerImage(...)` already materialized
+		// the image; the caller owns the upstream wiring themselves so
+		// `dockerContainer` declares no inner-image upstream.
+		const t = dockerContainer('svc', { image: { tag: 'devstack-svc:abc' } as never });
+		expect(t.__upstreamKeys).toEqual([]);
+	});
+
+	it('gitFetch declares no upstream keys (leaf primitive)', async () => {
+		const { gitFetch } = await import('../advanced/plugin-author/git-fetch.js');
+		const g = gitFetch({ name: 'src', repo: 'https://example.com/r.git', ref: 'v1' });
+		expect(g.__upstreamKeys).toEqual([]);
+	});
+
+	it('dockerImage declares no upstream keys (leaf primitive)', async () => {
+		const { dockerImage } = await import('../advanced/plugin-author/docker-image.js');
+		const img = dockerImage({ name: 'i', pull: 'busybox:1.36' });
+		expect(img.__upstreamKeys).toEqual([]);
+	});
+
+	it('buildDepGraph + computeDownstreamClosure read the populated field', async () => {
+		// End-to-end check: tag() + plugin-author helpers populate the
+		// field, and `buildDepGraph` consumes it as expected.
+		const { tag } = await import('../advanced/tag.js');
+		const { hostScript } = await import('../advanced/plugin-author/host-script.js');
+		const { Effect } = await import('effect');
+
+		const sui = tag('@devstack/SuiTag' as const, Effect.succeed({}), { upstreamKeys: [] });
+		const faucet = tag('@devstack/FaucetTag' as const, Effect.succeed({}), { upstreamKeys: [sui] });
+		const job = hostScript({ name: 'seed', command: 'true', dependsOn: [sui, faucet] });
+
+		const stack = [sui, faucet, job];
+		const graph = buildDepGraph(stack);
+		expect(graph.get('@devstack/SuiTag')?.upstreamKeys).toEqual([]);
+		expect(graph.get('@devstack/FaucetTag')?.upstreamKeys).toEqual(['@devstack/SuiTag']);
+		expect(graph.get('seed')?.upstreamKeys).toEqual(['@devstack/SuiTag', '@devstack/FaucetTag']);
+
+		const closure = computeDownstreamClosure(graph);
+		expect(closure.get('@devstack/SuiTag')).toEqual(new Set(['@devstack/FaucetTag', 'seed']));
+		expect(closure.get('@devstack/FaucetTag')).toEqual(new Set(['seed']));
+		expect(closure.get('seed')).toEqual(new Set());
 	});
 });

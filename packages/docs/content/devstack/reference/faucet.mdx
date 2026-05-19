@@ -59,9 +59,9 @@ exchange returns. `0n` falls back to `defaultPaymentMist`.
 
 ### `treasuryCapMintStrategy`
 
-Wraps `0x2::coin::mint_and_transfer` against a held TreasuryCap. Auto-registered by
-`Package({ coins })`'s publish step for each declared coin (one strategy per coin, signer = the
-package's publisher).
+Wraps `0x2::coin::mint_and_transfer` against a held TreasuryCap. Auto-registered by `Package(...)`'s
+publish step for each coin discovered by the auto-discovery pass (one strategy per coin, signer =
+the package's publisher).
 
 ```ts
 import { treasuryCapMintStrategy } from '@mysten-incubation/devstack/advanced';

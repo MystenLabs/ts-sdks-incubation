@@ -16,7 +16,7 @@ import { SuiTag } from '../sui.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
 import { PythError } from '../../engine/errors.js';
 import { type Pyth } from './tag.js';
-import type { PythPriceFeedId } from './internal.js';
+import type { PythPriceFeedId } from './shared.js';
 
 export interface PythMidScale {
 	/** Number of decimal places the resulting price should carry. */
@@ -207,7 +207,7 @@ export const pythMid = <const Name extends string = 'pythMid'>(opts: PythMidOpti
 			};
 			const readEffect = Ref.get(ref);
 			return { read, readEffect } satisfies PythMid;
-		}).pipe(Effect.withSpan(`pythMid(${name})`)),
+		}).pipe(Effect.withSpan(`PythMid(${name})`)),
 		{
 			kind: 'service',
 			plugin: 'pyth',

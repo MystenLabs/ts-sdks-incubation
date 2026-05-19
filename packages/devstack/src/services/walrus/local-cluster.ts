@@ -25,10 +25,12 @@ import {
 	type WalrusProxy,
 } from '../walrus.js';
 import { dockerImage, gitFetch } from '../../advanced/plugin-author/index.js';
-import { composeLayers, type LayeredTag } from '../../advanced/tag.js';
+import { type LayeredTag } from '../../advanced/tag.js';
 import { ForkIncompatibleError, WalrusError } from '../../engine/errors.js';
 import { resolveNetwork } from '../../engine/network.js';
 import type { Account } from '../../engine/shared.js';
+import { SuiTag } from '../sui.js';
+import { resolveUpstreamKeys } from '../../advanced/tag.js';
 import {
 	acquireLocalCluster,
 	DEFAULT_EPOCH_DURATION,
@@ -84,12 +86,20 @@ export const walrusLocalCluster = <const Name extends string = 'walrus'>(
 	const readyTimeoutMs = options.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
 	const seedPaymentMist = options.seedPaymentMist ?? DEFAULT_SEED_WAL_PAYMENT_MIST;
 
-	// D5 / Phase 3 P3.5: walrusLocalCluster needs GraphQL + JSON-RPC,
-	// neither of which sui-fork exposes today. Composing this variant on
-	// a fork stack would let the supervisor partway through image build
-	// before the cluster's storage nodes fail to dial the chain — fail
-	// fast at factory time instead so the structured error names the
-	// known-deployment alternative.
+	// D5 / Phase 3 P3.5: walrusLocalCluster needs JSON-RPC against the
+	// wrapped chain, which sui-fork does not expose. Phase 5 P5.1 audit
+	// (finalised 2026-05-19, `notes/sui-fork-phase-5-walrus-seal-audit.md`
+	// §1) confirmed that upstream walrus's `DualClient`
+	// (`crates/walrus-sui/src/client/dual_client.rs`) still has ~12
+	// load-bearing JSON-RPC callsites on `read_api()` / `coin_read_api()` /
+	// `event_api()` — the gRPC migration is in-flight, not complete. The
+	// original plan's "GraphQL shim" framing doesn't match the upstream
+	// surface (walrus uses no GraphQL anywhere), so the unblock is
+	// upstream-tracked rather than devstack-implementable. Composing this
+	// variant on a fork stack would let the supervisor partway through
+	// image build before the cluster's storage nodes fail to dial the
+	// chain — fail fast at factory time instead so the structured error
+	// names the known-deployment alternative.
 	const resolvedNetwork = resolveNetwork();
 	if (resolvedNetwork.endsWith('-fork')) {
 		throw new ForkIncompatibleError({
@@ -97,7 +107,7 @@ export const walrusLocalCluster = <const Name extends string = 'walrus'>(
 			network: resolvedNetwork,
 			message:
 				`walrusLocalCluster is incompatible with fork mode (${resolvedNetwork}) — ` +
-				`the local cluster's storage nodes need GraphQL + JSON-RPC against the wrapped ` +
+				`the local cluster's storage nodes need JSON-RPC against the wrapped ` +
 				`chain, which sui-fork does not expose. Use \`Walrus()\` (which auto-routes to ` +
 				`the known-deployment branch in fork mode) or \`walrusKnownDeployment({network})\` ` +
 				`directly, pointing at the wrapped upstream.`,
@@ -291,21 +301,52 @@ export const walrusLocalCluster = <const Name extends string = 'walrus'>(
 		any
 	>;
 
-	// `composeLayers` lays out `inner → primary → projections` so the
-	// fold in `composeStackLayer` finds each layer's deps already
-	// satisfied. `combinedLayer` yields `moveSource` and `upstreamImage`
-	// inside its body, so it goes after them as `primary`. No projections
-	// here — the four interface tags resolve from a single
-	// `Layer.effectContext`.
+	// Phase D (notes/parallel-graph-resolution.md §6.4): the inner sibling
+	// tags `upstreamImage` and `moveSource` are LIFTED to top-level so the
+	// topo scheduler can build walrus's cargo image alongside sui's boot
+	// and walrus's Move-source gitFetch alongside seal's source fetch.
+	// Pre-Phase-D the cluster's `composeLayers({inner, primary})` folded
+	// the inner tags into the composite's `__layers` slice, which meant
+	// they only started building once the composite's level was reached
+	// — sui + walrus serialised in practice.
+	//
+	// The lift is invisible to the composite's body: `yield* upstreamImage`
+	// / `yield* moveSource` still extract their respective shapes via
+	// Effect's MemoMap. The inner tags now declare themselves as their
+	// own dep-graph nodes (level 0 leaves with no upstream); the composite
+	// declares them in `__upstreamKeys` so the topo scheduler puts them
+	// at a strictly lower level than walrus's main acquire body.
+	//
+	// `__layers` no longer contains the inner tags — only the primary
+	// `combinedLayer`. The lifted siblings are surfaced via
+	// `__extraMembers`, which `flattenStackMembers` (in supervisor.ts)
+	// expands to top-level entries during compose.
+	//
+	// `SuiTag` is the canonical Context.Service class, not a LayeredTag,
+	// so we reach for its `.key` directly. Seed account tags are
+	// `LayeredTag`s; `resolveUpstreamKeys` handles either shape. Inner
+	// sibling tags enter the upstream list by their string keys so the
+	// composite waits for them at the topo scheduler's level boundary.
+	const innerSiblings: ReadonlyArray<LayeredTag<any, any, any, any>> =
+		moveSource !== undefined
+			? [upstreamImage as LayeredTag<any, any, any, any>, moveSource]
+			: [upstreamImage as LayeredTag<any, any, any, any>];
+	const __upstreamKeys = resolveUpstreamKeys([SuiTag.key, ...seedAccountTags, ...innerSiblings]);
 	return {
 		__layer: combinedLayer,
-		__layers: composeLayers({
-			inner: [upstreamImage, moveSource],
-			primary: combinedLayer,
-		}),
+		// `__layers` carries ONLY the primary now. The inner sibling
+		// layers ride up as separate top-level members via
+		// `__extraMembers` below. Without this slimming, the composite
+		// would double-build its inner tags (once at its own level, once
+		// at level 0 via the lift) — Effect's MemoMap would dedupe at
+		// runtime but the topo scheduler would still account for them
+		// twice in level emission.
+		__layers: [combinedLayer],
+		__extraMembers: innerSiblings as unknown as ReadonlyArray<StackMember>,
 		key: LOCAL_CLUSTER_KEY,
 		__kind: 'service' as const,
 		__pluginName: 'walrus',
 		__displayTitle: 'walrus.cluster',
+		__upstreamKeys,
 	};
 };

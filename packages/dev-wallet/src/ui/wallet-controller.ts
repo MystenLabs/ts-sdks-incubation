@@ -6,6 +6,7 @@ import type { ReadonlyWalletAccount } from '@mysten/wallet-standard';
 import { html, nothing } from 'lit';
 import type { ReactiveController, ReactiveControllerHost } from 'lit';
 
+import type { ForkRelay } from '../adapters/fork-relay.js';
 import { getNetworkFromChain } from '../wallet/constants.js';
 import type {
 	DevWallet,
@@ -15,12 +16,15 @@ import type {
 import './dev-wallet-account-selector.js';
 import './dev-wallet-balances.js';
 import './dev-wallet-connect.js';
+import './dev-wallet-fork-panel.js';
 import './dev-wallet-network-badge.js';
 import './dev-wallet-objects.js';
 import './dev-wallet-settings.js';
 import './dev-wallet-signing-modal.js';
 import type { TabId } from './dev-wallet-tab-bar.js';
 import './dev-wallet-tab-bar.js';
+import type { CoinRecord } from './utils.js';
+import { isForkNetwork } from './utils.js';
 
 /**
  * Lit Reactive Controller that encapsulates all shared wallet management logic
@@ -38,6 +42,20 @@ export class WalletController implements ReactiveController {
 	pendingRequest: PendingSigningRequest | null = null;
 	pendingConnect: PendingConnectRequest | null = null;
 	bookmarkletOrigin = '';
+	/** Pre-seeded coin metadata (typically the generated `coins` constant from
+	 *  devstack codegen). Forwarded to `<dev-wallet-balances>` and the
+	 *  signing modal so they can skip per-coin RPC waterfalls. */
+	coins: CoinRecord | null = null;
+	/** Phase 5 Subtopic 6 — when set, the controller surfaces a Fork
+	 *  tab and binds it to this relay. The hosting custom element
+	 *  (`dev-wallet-panel`) constructs the relay from the manifest's
+	 *  wallet endpoint and pipes it through as a property. */
+	forkRelay: ForkRelay | null = null;
+	/** Upstream label (`'mainnet'`, etc.) sourced from the manifest. Used
+	 *  by the fork panel banner and by `renderTabBar` to decide whether
+	 *  to render the Fork tab. Falls back to inferring from the active
+	 *  network literal (`'*-fork'`) when not provided. */
+	forkUpstream = '';
 
 	#wallet: DevWallet | null = null;
 	#unsubscribeEvents: (() => void) | null = null;
@@ -210,6 +228,7 @@ export class WalletController implements ReactiveController {
 								exportparts="balance-list, loading: balances-loading, error-message: balances-error-message, empty-state: balances-empty-state"
 								.address=${this.activeAddress}
 								.client=${this.getActiveClient()}
+								.coins=${this.coins}
 							></dev-wallet-balances>
 						</div>
 					`
@@ -242,11 +261,59 @@ export class WalletController implements ReactiveController {
 		`;
 	}
 
+	renderForkTab() {
+		// Defence-in-depth: the tab itself is hidden unless `#isForkMode`
+		// returns true, but render-time we re-check so direct
+		// `activeTab = 'fork'` writes don't end up rendering the panel
+		// against a bundled-mode stack.
+		if (!this.#isForkMode()) return nothing;
+		return html`
+			<dev-wallet-fork-panel
+				exportparts="
+					fork-banner,
+					status-grid,
+					status-checkpoint,
+					status-clock,
+					status-clock-iso,
+					status-auto-tick,
+					status-loading,
+					status-error,
+					status-empty,
+					advance-clock-input,
+					advance-clock-button,
+					advance-checkpoint-input,
+					advance-checkpoint-button,
+					action-error,
+					slot-list,
+					slot-item,
+					slot-item-active,
+					slot-toggle,
+					slots-empty,
+					slots-error,
+					empty-state
+				"
+				.relay=${this.forkRelay}
+				.upstream=${this.#resolveUpstreamLabel()}
+				@fork-impersonation-changed=${(e: CustomEvent) => this.handleForkImpersonationChanged(e)}
+			></dev-wallet-fork-panel>
+		`;
+	}
+
 	renderTabContent() {
 		if (this.activeTab === 'assets') return this.renderAssetsTab();
 		if (this.activeTab === 'objects') return this.renderObjectsTab();
+		if (this.activeTab === 'fork') return this.renderForkTab();
 		if (this.activeTab === 'settings') return this.renderSettingsTab();
 		return nothing;
+	}
+
+	handleForkImpersonationChanged(_e: CustomEvent): void {
+		// Slot changes can affect the impersonation banner in the signing
+		// modal (Phase 4 P4.19), so request a re-render. The actual flag
+		// flip happens in the signing-modal's own derivation from
+		// `account.source`, which the devstack adapter updates when the
+		// server-side toggle resolves.
+		this.host.requestUpdate();
 	}
 
 	renderSigningModal() {
@@ -257,6 +324,7 @@ export class WalletController implements ReactiveController {
 				exportparts="signing-approve-button, signing-reject-button, signing-request-type, signing-empty-state, signing-error-message, signing-footer, dialog: signing-dialog"
 				.request=${this.pendingRequest}
 				.client=${this.getActiveClient()}
+				.coins=${this.coins}
 				.walletName=${this.#wallet?.name ?? 'Dev Wallet'}
 				@approve=${() => this.handleApprove()}
 				@reject=${() => this.handleReject()}
@@ -309,9 +377,32 @@ export class WalletController implements ReactiveController {
 			<dev-wallet-tab-bar
 				exportparts="tab-bar, tab"
 				.active=${this.activeTab}
+				.showFork=${this.#isForkMode()}
 				@tab-changed=${(e: CustomEvent) => this.handleTabChanged(e)}
 			></dev-wallet-tab-bar>
 		`;
+	}
+
+	/** Phase 5 Subtopic 6 (P5.8.5) — the Fork tab + panel render only
+	 *  when the active stack is in fork mode. Two signals satisfy that:
+	 *    1. The host passed in a `ForkRelay` (built from the manifest's
+	 *       wallet endpoint — devstack only constructs one when
+	 *       `meta.runtime === 'forked'`).
+	 *    2. The active network literal ends in `-fork` (catch-all for
+	 *       when the relay is wired but the user switched to a
+	 *       non-fork network from the badge dropdown).
+	 *  Both signals must agree — otherwise the tab is hidden. */
+	#isForkMode(): boolean {
+		if (this.forkRelay === null) return false;
+		const active = this.#wallet?.activeNetwork;
+		if (!active) return false;
+		return isForkNetwork(active);
+	}
+
+	#resolveUpstreamLabel(): string {
+		if (this.forkUpstream !== '') return this.forkUpstream;
+		const active = this.#wallet?.activeNetwork ?? '';
+		return active.endsWith('-fork') ? active.replace(/-fork$/, '') : '';
 	}
 
 	// ── Subscriptions ───────────────────────────────────────────────────────

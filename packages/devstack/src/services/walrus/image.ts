@@ -9,10 +9,10 @@
 //
 // Span: `walrus.image` (preserved from the monolithic revision).
 
-import { createHash } from 'node:crypto';
 import { Effect } from 'effect';
 import { ChildProcessSpawner } from 'effect/unstable/process';
 import * as Docker from '../../engine/docker.js';
+import { contentHash } from '../../engine/content-hash.js';
 import { WalrusError } from '../../engine/errors.js';
 
 // Build the wrapper image that layers a matching sui binary + the
@@ -39,7 +39,7 @@ export const buildWrapperImage = (args: {
 			dockerfile: 'wrapper.Dockerfile',
 			buildArgs: { BASE_IMAGE: args.baseImage, SUI_VERSION: args.suiVersion },
 		};
-		const hash = createHash('sha256').update(JSON.stringify(inputs)).digest('hex').slice(0, 12);
+		const hash = contentHash(inputs, { length: 12 });
 		const tag = `devstack-${args.name}.image:${hash}`;
 		const result = yield* Docker.build({
 			context: args.context,

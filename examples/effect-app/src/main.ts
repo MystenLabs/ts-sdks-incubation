@@ -16,7 +16,14 @@ import { Account, devstack, Sui } from '@mysten-incubation/devstack';
 
 const isProduction = process.env.NODE_ENV === 'production';
 
-export const alice = isProduction
+// Explicit type annotation needed to avoid TS2742: the inferred type of
+// `Account(...)` references an internal `engine/shared` symbol that
+// isn't exported from `@mysten-incubation/devstack`, so consumers can't
+// name it without a deep import. `ReturnType<typeof Account<'alice'>>`
+// preserves the `'alice'` literal in the resulting `LayeredTag` (a
+// bare `ReturnType<typeof Account>` would widen the name to `string`
+// and break invariant `__layer` matching downstream).
+export const alice: ReturnType<typeof Account<'alice'>> = isProduction
 	? Account('alice', { kind: 'env', key: 'ALICE_PRIVATE_KEY' })
 	: Account('alice', { kind: 'ephemeral-funded' });
 

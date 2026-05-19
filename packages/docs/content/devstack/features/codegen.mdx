@@ -238,5 +238,6 @@ const internalHelper = Package('internal-helper', './move/internal', {
 
 - [Codegen reference](../reference/codegen) — every option, the `CodegenContext` / `CodegenPackage`
   shapes, and the `CodegenError` taxonomy.
-- [Services reference — Package](../reference/services#package) — the `capture:` and `coins:` fields
-  that downstream emitters consume.
+- [Services reference — Package](../reference/services#packagename-source-opts) — `Package` returns
+  `captured` (admin caps via `PackageWithCapture`) and `coins` (auto-discovered) that downstream
+  emitters consume.

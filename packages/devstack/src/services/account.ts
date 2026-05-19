@@ -37,7 +37,7 @@
 import * as nodeFs from 'node:fs/promises';
 import * as nodeOs from 'node:os';
 import * as nodePath from 'node:path';
-import { Effect, FileSystem, Schedule, Schema } from 'effect';
+import { Context, Effect, FileSystem, Schedule, Schema } from 'effect';
 import {
 	decodeSuiPrivateKey,
 	encodeSuiPrivateKey,
@@ -244,6 +244,22 @@ export type AccountSource =
 	  };
 
 /**
+ * Resolved-coin entry for the array-form `AccountFunding`. The `coin`
+ * field accepts either a bare `Coin` value (carries `fullCoinType`
+ * directly), or a `LayeredTag<...>` yielding one — the Account body
+ * yields the tag to extract the coin type before dispatching to the
+ * faucet. Using a `LayeredTag` ref ties funding to the coin's own
+ * acquisition order: a coin published mid-stack is funded after its
+ * `Package(...)` ref resolves, not before.
+ */
+export interface AccountFundingEntry {
+	readonly coin:
+		| { readonly fullCoinType: string }
+		| LayeredTag<any, { readonly fullCoinType: string }, any, any>;
+	readonly amount: bigint;
+}
+
+/**
  * Optional cross-cutting funding spec. After the keypair is resolved
  * (whichever `kind:` branch ran), the Account body iterates these
  * entries and dispatches each to the ambient `Faucet` service's
@@ -257,10 +273,47 @@ export type AccountSource =
  *     a project-specific stablecoin, …);
  *   - Topping up a `kind: 'env'` / `'keystore'` account at boot.
  *
- * Keys are coin discriminators — short names for built-ins (`'SUI'`,
- * `'WAL'`) or fully-qualified Move types for user coins.
+ * Two shapes:
+ *   - **Record form**: `{ SUI: 100_000_000n, WAL: 5_000_000_000n }`. Keys
+ *     are coin discriminators — short names for built-ins (`'SUI'`,
+ *     `'WAL'`) or fully-qualified Move types for user coins.
+ *   - **Array form**: `[{coin: usdc, amount: 1_000n}]`. Each entry's
+ *     `coin` is a `Coin` value (e.g. `Coin.builtin('sui')`) or a
+ *     `LayeredTag<...>` yielding one — the type string is resolved at
+ *     funding time by reading `fullCoinType` from the (yielded) value.
+ *     Use this form when the coin's identity comes from a downstream
+ *     `Package(...)` ref whose published type isn't a string literal
+ *     known at config time.
  */
-export type AccountFunding = Record<string, bigint>;
+export type AccountFunding = Record<string, bigint> | ReadonlyArray<AccountFundingEntry>;
+
+/** Type guard for the array form of `AccountFunding`. */
+const isFundingArray = (f: AccountFunding): f is ReadonlyArray<AccountFundingEntry> =>
+	Array.isArray(f);
+
+/** Resolve an `AccountFundingEntry.coin` to its `fullCoinType` string.
+ *  The LayeredTag form is yielded against the ambient context (resolves
+ *  through `composeStackLayer`'s graph); the bare-Coin form's field is
+ *  read synchronously. `Context.isKey` discriminates the two — a
+ *  LayeredTag carries the `ServiceTypeId` brand, a plain Coin value
+ *  does not. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const resolveFundingCoinType = (
+	coin: AccountFundingEntry['coin'],
+): Effect.Effect<string, never, any> => {
+	if (Context.isKey(coin)) {
+		// LayeredTag form — use the Service key's own `useSync` accessor to
+		// retrieve the bound value from the ambient context. `useSync`
+		// returns an Effect (so it composes cleanly into `Effect.all`)
+		// and doesn't depend on `Symbol.iterator` plumbing.
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		return (coin as unknown as Context.Service<any, { readonly fullCoinType: string }>).useSync(
+			(s) => s.fullCoinType,
+		);
+	}
+	// Bare-Coin form: `fullCoinType` is present synchronously.
+	return Effect.succeed((coin as { readonly fullCoinType: string }).fullCoinType);
+};
 
 /**
  * Per-account spec accepted by `Account(name, opts?)`. Discriminated by
@@ -324,8 +377,15 @@ export const Account = <const N extends string>(
 	const kindOmitted = opts === undefined || !('kind' in opts);
 	// Cross-cutting funding spec. Independent of the `kind:` branch —
 	// dispatched through `Faucet.requestCoin` after the keypair resolves.
+	// Default to the Record form (empty) so the "no funding" path remains
+	// a single `Object.keys(...).length === 0` check.
 	const funding: AccountFunding =
 		opts !== undefined && 'funding' in opts && opts.funding !== undefined ? opts.funding : {};
+	// Pre-compute "is there any funding at all?" so the body's funding
+	// loop short-circuits cheaply for both shapes.
+	const fundingIsEmpty = isFundingArray(funding)
+		? funding.length === 0
+		: Object.keys(funding).length === 0;
 
 	const accountTag = tag(
 		`account/${name}` as const,
@@ -469,7 +529,7 @@ export const Account = <const N extends string>(
 							? { maxAttempts: source.faucetMaxAttempts }
 							: {}),
 					}).pipe(
-						Effect.catchTag('FaucetError', (cause) =>
+						Effect.catchTag('SuiHttpFaucetError', (cause) =>
 							Effect.fail(
 								new AccountError({
 									phase: 'fund',
@@ -489,11 +549,26 @@ export const Account = <const N extends string>(
 			// silently a noop. Non-empty `funding` with no Faucet is treated
 			// as a noop rather than a failure to keep test ergonomics from
 			// regressing.
-			if (Object.keys(funding).length > 0) {
+			if (!fundingIsEmpty) {
 				const faucetOpt = yield* Effect.serviceOption(FaucetTag);
 				if (faucetOpt._tag === 'Some') {
 					const faucet = faucetOpt.value;
-					for (const [coinType, amount] of Object.entries(funding)) {
+					// Normalize both funding shapes to a single
+					// `[coinType, amount]` iteration. The array form resolves
+					// each entry's `coin` ref via `yield* coinTag` (LayeredTag
+					// form) or reads `.fullCoinType` directly (bare-Coin
+					// form). The Record form's keys are already coinType
+					// strings.
+					const entries: ReadonlyArray<readonly [string, bigint]> = isFundingArray(funding)
+						? yield* Effect.all(
+								funding.map((e) =>
+									resolveFundingCoinType(e.coin).pipe(
+										Effect.map((coinType): readonly [string, bigint] => [coinType, e.amount]),
+									),
+								),
+							)
+						: Object.entries(funding);
+					for (const [coinType, amount] of entries) {
 						yield* setPhase(`funding ${coinType}`);
 						yield* faucet.requestCoin(coinType, address, amount).pipe(
 							Effect.catchTag('FaucetRequestError', (cause) =>
@@ -709,6 +784,25 @@ export const Account = <const N extends string>(
 			// into faucet UIs, explorers, and tx scripts. The dashboard
 			// wraps overflow rather than truncate.
 			display: (s) => ({ title: `accounts.${s.name}`, primary: s.address }),
+			// Phase B (notes/parallel-graph-resolution.md §3.1): declare
+			// the in-stack upstreams the body yields so the topological-
+			// level scheduler in `composeStackLayer` puts accounts strictly
+			// after `Sui` + any coin tags referenced by funding-array
+			// entries. `Leasing` is a Context.Service satisfied by
+			// InfraLive at run time (not a stack member), so it's NOT in
+			// the upstream list; `FaucetTag` is consumed via
+			// `Effect.serviceOption` (an optional fold satisfied by the
+			// stack's Faucet primitive when present) and likewise stays
+			// out of the strict-ordering list. Coin entries from the
+			// funding-array form enter the list when they're `LayeredTag`
+			// refs (Context.isKey === true); the bare-Coin shape carries
+			// no key and resolves synchronously.
+			upstreamKeys: [
+				SuiTag.key,
+				...(isFundingArray(funding)
+					? funding.flatMap((e) => (Context.isKey(e.coin) ? [e.coin.key as string] : []))
+					: []),
+			],
 		},
 	);
 	// Stamp `__kind` so the engine-level kind aligns with the TUI section

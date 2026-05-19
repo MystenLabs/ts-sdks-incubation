@@ -22,6 +22,7 @@ import { resolveNetwork } from '../engine/network.js';
 import { resolveDeploymentNetwork } from '../engine/known-deployments.js';
 import type { Account } from '../engine/shared.js';
 import type { LayeredTag } from '../advanced/tag.js';
+import { makeService } from '../advanced/make-service.js';
 import type { StackMember } from '../engine/supervisor.js';
 
 // -----------------------------------------------------------------------------
@@ -150,14 +151,16 @@ export interface SealOptions {
 	/** Pass-through extras for the local-keygen path. Ignored when the
 	 *  resolved network is testnet/mainnet. */
 	readonly local?: Omit<SealLocalKeygenOptions<string>, 'name' | 'signer'>;
-	/** Override the canonical key-server registry for testnet/mainnet.
-	 *  Used when pinning to a private fork or a non-canonical deployment;
-	 *  most users leave this unset and let the factory wire to
-	 *  Mysten's public Seal deployment. */
-	readonly override?: SealKnownKeyServerOptions;
 	/** Override tag name. Defaults to `'seal'`. */
 	readonly name?: string;
 }
+
+// Plugin authors who need to pin a private Seal key-server registry can
+// call `sealKnownKeyServer({...})` directly from `/advanced` — the
+// canonical-only `Seal()` factory intentionally exposes no `override:`
+// surface (Wave 3 / §10.3): the canonical registry already carries every
+// field for `testnet` / `mainnet`, and zero examples or tests ever set
+// an override.
 
 /** Seal factory. Picks local-keygen on localnet and the canonical
  *  remote key server on testnet/mainnet — single source of truth is
@@ -177,14 +180,13 @@ export const Seal = (opts: SealOptions = {}): StackMember => {
 	if (network !== 'localnet') {
 		// `network` is one of `testnet | mainnet | *-fork`. Fork variants
 		// resolve to their upstream's `KnownNetwork` key via
-		// `resolveDeploymentNetwork`; live nets pass through.
+		// `resolveDeploymentNetwork`; live nets pass through. Plugin
+		// authors needing to pin a private deployment reach for
+		// `sealKnownKeyServer({...})` on `/advanced` directly.
 		const knownNetwork = resolveDeploymentNetwork(network);
-		// Remote path: wire to canonical (or user-overridden) deployment.
-		const knownOpts: SealKnownKeyServerOptions = {
-			...(knownNetwork !== undefined ? { network: knownNetwork } : {}),
-			...opts.override,
-		};
-		return Object.assign(sealKnownKeyServer(knownOpts), { __kind: 'service' as const });
+		const knownOpts: SealKnownKeyServerOptions =
+			knownNetwork !== undefined ? { network: knownNetwork } : {};
+		return makeService('seal', 'service', sealKnownKeyServer(knownOpts));
 	}
 	// Local path: spin up our own key server. Signer publishes the Seal
 	// Move package and pays the registration tx.
@@ -200,5 +202,5 @@ export const Seal = (opts: SealOptions = {}): StackMember => {
 		...(opts.name !== undefined ? { name: opts.name } : {}),
 		...opts.local,
 	};
-	return Object.assign(sealLocalKeygen(localOpts), { __kind: 'service' as const });
+	return makeService('seal', 'service', sealLocalKeygen(localOpts));
 };

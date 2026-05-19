@@ -18,13 +18,13 @@
 // every assertion to the test that uses it. Each test sets its own
 // timeout (typical 60-180s).
 
-import { createHash } from 'node:crypto';
 import { Effect, Scope } from 'effect';
 import { ChildProcessSpawner } from 'effect/unstable/process';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import * as fs from 'node:fs';
+import { contentHash } from './content-hash.js';
 import * as Docker from './docker.js';
 import { SuiError } from './errors.js';
 import { Identity, type IdentityShape } from './identity.js';
@@ -73,11 +73,13 @@ const dockerContext = new URL('../../sui-fork-image/', import.meta.url).pathname
 // going through its layer dance — the testkit doesn't need the
 // supervisor's reactive layer wiring, just a stable tag string.
 const forkImageTag = (): string => {
-	const cfg = JSON.stringify({
-		dockerfile: 'Dockerfile',
-		buildArgs: { SUI_REV: TEST_SUI_FORK_REV },
-	});
-	const hash = createHash('sha256').update(cfg).digest('hex').slice(0, 12);
+	const hash = contentHash(
+		{
+			dockerfile: 'Dockerfile',
+			buildArgs: { SUI_REV: TEST_SUI_FORK_REV },
+		},
+		{ length: 12 },
+	);
 	return `devstack-sui.fork.image-test:${hash}`;
 };
 

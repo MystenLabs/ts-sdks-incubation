@@ -33,13 +33,18 @@ A single named account.
 ```ts
 Account('alice'); // ephemeral-funded
 Account('alice', { funding: { SUI: 1_000_000_000n, WAL: 50n } }); // multi-coin funding
-Account('ci', { from: 'env', key: 'ALICE_PRIVATE_KEY' });
-Account('mike', { from: 'keystore', alias: 'mike' });
-Account('test', { from: 'inline', privateKey: 'suiprivkey1...' });
-Account('hsm', { from: 'signer', signer: myHardwareSigner });
+Account('ci', { kind: 'env', key: 'ALICE_PRIVATE_KEY' });
+Account('mike', { kind: 'keystore', alias: 'mike' });
+Account('test', { kind: 'inline', privateKey: 'suiprivkey1...' });
+Account('hsm', { kind: 'signer', signer: myHardwareSigner });
 ```
 
-Source discriminators:
+`Account({ funding })` accepts either a record keyed by symbol / fully-qualified Move type
+(`{ SUI: 1_000_000_000n }`) or an array form for ordering control —
+`{ funding: [{ SUI: 1n }, { '0x...::usdc::USDC': 1n }] }` and any `LayeredTag<…, Coin, …>` or
+bare-Coin in the array slot.
+
+Source discriminators (`kind:`):
 
 - `'ephemeral-funded'` (default) — generate a fresh ed25519 keypair, persist it under
   `.devstack/stacks/<stack>/.keys/<name>.key`, and request faucet funding.
@@ -61,26 +66,43 @@ Publish a Move package from a local source tree.
 const hello = Package('hello', './move/hello', {
 	signer: alice,
 	mvr: '@local/hello', // optional; defaults to `@local/<slug>`
-	capture: {
-		// optional declarative form
-		adminCap: 'hello::admin::AdminCap',
-		registry: 'hello::store::Registry',
-	},
-	coins: [{ name: 'gold', module: 'gold', type: 'GOLD', decimals: 9 }],
 	codegen: true, // default; `false` excludes from Codegen
 });
 ```
 
-Yields `LocalPackage`: `{ name, packageId, upgradeCapId, sourcePath, mvrPlaceholder, captured }`.
+Yields `LocalPackage`:
+`{ name, packageId, upgradeCapId, coins, captured, sourcePath, mvrPlaceholder }`.
 
-`captured` is whatever the `capture` callback returned (declarative form: `Record<key, objectId>`;
-callback form: whatever you return).
+**No `capture:` or `coins:` fields on `Package`.** Coin auto-discovery is implicit: every
+`coin::create_currency<W>(...)` in the package's `init` surfaces as `pkg.coins[<symbol>]` carrying
+`{ name, fullCoinType, decimals, sdkCoin, treasuryCapId?, metadataId?, symbol?, displayName?, iconUrl? }`,
+and each coin auto-registers a TreasuryCap mint strategy on the implicit `Faucet()`. The
+`UpgradeCap` is auto-captured into `pkg.upgradeCapId`.
+
+To extract non-coin object ids (admin caps, registries, DAO objects), reach for `PackageWithCapture`
+on `/advanced`:
+
+```ts
+import { PackageWithCapture } from '@mysten-incubation/devstack/advanced';
+
+const dao = PackageWithCapture('dao', './move/dao', {
+	signer: publisher,
+	capture: {
+		adminCapId: '::dao::AdminCap',
+		registryId: '::dao::Registry',
+	},
+});
+// Resolved: dao.captured.{adminCapId, registryId}
+```
+
+Coin auto-discovery still runs alongside `PackageWithCapture`; the `capture` lambda only adds
+non-coin ids to `pkg.captured`.
 
 ## `registerCoin(opts)`
 
-Register a coin against an already-published `Package` ref. Use when a `Package`'s `coins:` shortcut
-doesn't fit — most often when the publishing package is owned by someone else (a vendored library, a
-known testnet token) or when you need a separate `CoinTag`-shaped Ref to compose against.
+Register a coin against an already-published `Package` ref. Use when coin auto-discovery doesn't fit
+— most often when the publishing package is owned by someone else (a vendored library, a known
+testnet token) or when you need a separate `CoinTag`-shaped Ref to compose against.
 
 ```ts
 import { registerCoin } from '@mysten-incubation/devstack';
@@ -95,8 +117,8 @@ const partner = registerCoin({
 ```
 
 Yields a `CoinTag`-shaped Ref that resolves to `{ name, type, decimals, sdkCoin }` after the
-referenced package publishes. Threads into the manifest's `coins` record the same way
-`Package({ coins })` does, and the resulting Ref is yieldable as a `quote:` / `base:` value on
+referenced package publishes. Threads into the manifest's `coins` record the same way `Package(...)`
+does, and the resulting Ref is yieldable as a `quote:` / `base:` value on
 `Deepbook({ local: { pools } })` pool specs.
 
 ## `KnownPackage(name, opts)`
@@ -151,12 +173,15 @@ Mysten's canonical remote deployment.
 ```ts
 Walrus();                                   // local cluster on localnet, canonical remote otherwise
 Walrus({ local: { nodeCount: 4 } });        // tune the local cluster (ignored on live nets)
-Walrus({ override: { packageId, ... } });   // pin a non-canonical deployment on live nets
 
 Seal({ signer: alice });                    // signer used only on localnet
 Deepbook({ local: { signer, ... } });       // local-deploy fields used only on localnet
 DeepbookMarketMaker({ pools: [...] });      // continuous liquidity (any network)
 ```
+
+There's no `override:` field on the composite factories today. Canonical deployments come from the
+in-tree `knownDeployments` registry; for pinning a private fork, reach for `KnownPackage(...)`
+explicitly (or fork `knownDeployments` itself if you're authoring a custom factory).
 
 Yield the narrow inner tags directly when you only need a slice — `yield* WalrusNodesTag`,
 `yield* SealKeyServerTag`, `yield* DeepbookCoreTag`. The admin-side tags (`WalrusAdminTag`,
@@ -206,8 +231,8 @@ Faucet({ strategies: [partnerStrategy] });
 
 User-supplied strategies append to the registry alongside the auto-registered ones
 (`suiHttpStrategy` from `Sui()`, `walExchangeStrategy` from `Walrus({ local })`,
-`treasuryCapMintStrategy` per `Package({ coins })`). See the [Faucet reference](./faucet) for
-built-in strategies, `defineStrategy`, and the `FaucetRequestError` taxonomy.
+`treasuryCapMintStrategy` per `Package(...)`). See the [Faucet reference](./faucet) for built-in
+strategies, `defineStrategy`, and the `FaucetRequestError` taxonomy.
 
 ## `Codegen(opts)`
 

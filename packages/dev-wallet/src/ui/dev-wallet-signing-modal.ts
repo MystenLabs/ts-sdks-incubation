@@ -7,6 +7,7 @@ import { customElement, property } from 'lit/decorators.js';
 
 import type { PendingSigningRequest } from '../wallet/dev-wallet.js';
 import { sharedStyles } from './styles.js';
+import type { CoinRecord } from './utils.js';
 import { emitEvent } from './utils.js';
 import './dev-wallet-signing.js';
 
@@ -91,6 +92,11 @@ export class DevWalletSigningModal extends LitElement {
 	@property({ attribute: false })
 	client: ClientWithCoreApi | null = null;
 
+	/** Pre-seeded coin metadata forwarded to `<dev-wallet-signing>`. See
+	 *  the matching property on `DevWalletSigning` for details. */
+	@property({ attribute: false })
+	coins: CoinRecord | null = null;
+
 	@property({ type: String })
 	walletName = 'Dev Wallet';
 
@@ -133,6 +139,7 @@ export class DevWalletSigningModal extends LitElement {
 						exportparts="approve-button: signing-approve-button, reject-button: signing-reject-button, request-type: signing-request-type, empty-state: signing-empty-state, error-message: signing-error-message, footer: signing-footer"
 						.request=${this.request}
 						.client=${this.client}
+						.coins=${this.coins}
 						@approve=${this.#handleApprove}
 						@reject=${this.#handleReject}
 					></dev-wallet-signing>

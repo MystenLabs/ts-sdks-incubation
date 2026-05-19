@@ -18,20 +18,34 @@ import { Effect, Ref, Schedule, Schema } from 'effect';
 // Errors
 // -----------------------------------------------------------------------------
 
-export class FaucetError extends Schema.TaggedErrorClass<FaucetError>()('FaucetError', {
-	url: Schema.String,
-	address: Schema.String,
-	message: Schema.String,
-	// HTTP analog of the docker/sui stderr/stdout/exitCode shape. `stderr`
-	// carries the response body (or surrounding error text), `exitCode`
-	// the HTTP status code. `stdout` isn't generally useful for HTTP but
-	// kept here so pretty-error.ts can render the same uniform block for
-	// every subprocess/HTTP-wrapping tagged error.
-	stderr: Schema.optional(Schema.String),
-	stdout: Schema.optional(Schema.String),
-	exitCode: Schema.optional(Schema.Number),
-	cause: Schema.optional(Schema.Defect),
-}) {}
+/**
+ * Tagged error raised by the engine-internal sui-faucet HTTP client
+ * (`requestFunds` / `requestFundsOnce`). Distinct from the user-facing
+ * `FaucetRequestError` in `services/faucet/index.ts`: this is the wire-
+ * level transport error a strategy author would wrap, not the unified
+ * strategy-failure error exposed at the package boundary.
+ *
+ * @internal — wrapped by `Account()`'s funding path into the public
+ * `AccountError` (`phase: 'fund'`) before it surfaces; not part of the
+ * user-facing error catalog.
+ */
+export class SuiHttpFaucetError extends Schema.TaggedErrorClass<SuiHttpFaucetError>()(
+	'SuiHttpFaucetError',
+	{
+		url: Schema.String,
+		address: Schema.String,
+		message: Schema.String,
+		// HTTP analog of the docker/sui stderr/stdout/exitCode shape. `stderr`
+		// carries the response body (or surrounding error text), `exitCode`
+		// the HTTP status code. `stdout` isn't generally useful for HTTP but
+		// kept here so pretty-error.ts can render the same uniform block for
+		// every subprocess/HTTP-wrapping tagged error.
+		stderr: Schema.optional(Schema.String),
+		stdout: Schema.optional(Schema.String),
+		exitCode: Schema.optional(Schema.Number),
+		cause: Schema.optional(Schema.Defect),
+	},
+) {}
 
 // -----------------------------------------------------------------------------
 // Public API
@@ -85,7 +99,7 @@ const FAUCET_FETCH_TIMEOUT_MS = 5_000;
 export const requestFundsOnce = (opts: {
 	faucetUrl: string;
 	address: string;
-}): Effect.Effect<void, FaucetError> =>
+}): Effect.Effect<void, SuiHttpFaucetError> =>
 	Effect.gen(function* () {
 		const endpoint = `${opts.faucetUrl}/v2/gas`;
 		const response = yield* Effect.tryPromise({
@@ -99,7 +113,7 @@ export const requestFundsOnce = (opts: {
 					signal: AbortSignal.timeout(FAUCET_FETCH_TIMEOUT_MS),
 				}),
 			catch: (cause) =>
-				new FaucetError({
+				new SuiHttpFaucetError({
 					url: opts.faucetUrl,
 					address: opts.address,
 					message: 'faucet request failed',
@@ -121,7 +135,7 @@ export const requestFundsOnce = (opts: {
 				catch: () => undefined,
 			}).pipe(Effect.orElseSucceed(() => undefined as string | undefined));
 			return yield* Effect.fail(
-				new FaucetError({
+				new SuiHttpFaucetError({
 					url: opts.faucetUrl,
 					address: opts.address,
 					message: `faucet returned ${response.status} ${response.statusText}`,
@@ -140,7 +154,7 @@ export const requestFundsOnce = (opts: {
 		const body = (yield* Effect.tryPromise({
 			try: () => response.json() as Promise<unknown>,
 			catch: (cause) =>
-				new FaucetError({
+				new SuiHttpFaucetError({
 					url: opts.faucetUrl,
 					address: opts.address,
 					message: 'faucet response was not valid JSON',
@@ -151,7 +165,7 @@ export const requestFundsOnce = (opts: {
 		if (typeof status === 'object' && status !== null && 'Failure' in status) {
 			const failurePayload = JSON.stringify((status as { Failure: unknown }).Failure);
 			return yield* Effect.fail(
-				new FaucetError({
+				new SuiHttpFaucetError({
 					url: opts.faucetUrl,
 					address: opts.address,
 					message: `faucet response status: Failure (${failurePayload})`,
@@ -171,7 +185,7 @@ export const requestFunds = (opts: {
 	 * (attempt N)" in their TUI row so a slow cold-start doesn't look
 	 * like a hang. Optional — callers that don't care can omit it.
 	 */
-	onAttempt?: (attempt: number, error: FaucetError) => Effect.Effect<void>;
+	onAttempt?: (attempt: number, error: SuiHttpFaucetError) => Effect.Effect<void>;
 	/**
 	 * Wall-clock budget for the whole funding request, including all
 	 * retries. Defaults to 90_000 (90s) — sized for a cold sui-localnet
@@ -193,7 +207,7 @@ export const requestFunds = (opts: {
 	 * 500ms.
 	 */
 	initialDelayMs?: number;
-}): Effect.Effect<void, FaucetError> =>
+}): Effect.Effect<void, SuiHttpFaucetError> =>
 	Effect.gen(function* () {
 		const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 		const maxAttempts = opts.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
@@ -208,7 +222,7 @@ export const requestFunds = (opts: {
 		});
 
 		const attempts = yield* Ref.make(0);
-		const lastError = yield* Ref.make<FaucetError | undefined>(undefined);
+		const lastError = yield* Ref.make<SuiHttpFaucetError | undefined>(undefined);
 		const wrapped = requestFundsOnce(opts).pipe(
 			Effect.tapError((err) =>
 				Effect.gen(function* () {
@@ -230,7 +244,7 @@ export const requestFunds = (opts: {
 						const n = yield* Ref.get(attempts);
 						const last = yield* Ref.get(lastError);
 						return yield* Effect.fail(
-							new FaucetError({
+							new SuiHttpFaucetError({
 								url: opts.faucetUrl,
 								address: opts.address,
 								message:

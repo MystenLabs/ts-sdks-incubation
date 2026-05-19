@@ -13,6 +13,18 @@
 //      paths into one directory; the snapshot tars it as a single
 //      tarball.
 //
+//      **Load-bearing invariant** (Phase C §5.2 of
+//      `notes/parallel-graph-resolution.md`): the walrus deploy outputs
+//      at `runtime/walrus/<name>/deploy/` MUST ride this tar. The
+//      directory holds the storage-node private keys + per-node config
+//      that `walrus-deploy` wrote; without them, a state-store entry
+//      that says "walrus is already deployed" can't be honored on
+//      resume (the storage-node mount step reads from this dir).
+//      `acquireLocalCluster`'s verify probe detects the absence and
+//      invalidates the cache entry, but the cleaner outcome is for
+//      both pieces to travel together — which is what this single
+//      `runtime/` tar capture achieves by construction.
+//
 //   3. Container images — for every container in `opts.containers` we
 //      `docker commit devstack-snap:<id>-<name>` + `docker save` the
 //      resulting image into `containers/<name>.tar`. Phase 2 of the
@@ -341,7 +353,7 @@ const preCleanupApp = (
 			yield* spawner.exitCode(ChildProcess.make('docker', ['rm', '-f', id])).pipe(Effect.ignore);
 		}
 	}).pipe(
-		Effect.withSpan('snapshot.preCleanupApp', {
+		Effect.withSpan('SnapshotPreCleanupApp', {
 			attributes: { 'snapshot.app': app, 'snapshot.stack': stack },
 		}),
 	);
@@ -368,8 +380,8 @@ export const snapshot = (opts: {
 	 *  at the cost of needing the next `up` to rebuild chain state). */
 	containers?: ReadonlyArray<{ id: string; name: string }>;
 	/** Opt-in extras: absolute paths that live outside `runtime/` but
-	 *  should still ride the snapshot. Registered via
-	 *  `ServicePaths.addExtra(...)` from a plugin's boot Effect. */
+	 *  should still ride the snapshot. Callers pass the list here at
+	 *  `saveSnapshot` time — there is no in-Effect mutator registry. */
 	extras?: ReadonlyArray<{ key: string; path: string }>;
 	/** Skip the runtime/ tarball. False by default. Set true for a
 	 *  pure container-only snapshot — rare, but useful when the runtime
@@ -510,8 +522,8 @@ export const snapshot = (opts: {
 			}
 		}
 
-		// 4. Extras — opt-in absolute paths registered via
-		// `ServicePaths.addExtra`. Each becomes a single tar in
+		// 4. Extras — opt-in absolute paths passed by the caller in
+		// `opts.extras`. Each becomes a single tar in
 		// `<snapshot>/extras/<key>.tar` whose archive is rooted at
 		// the parent of the path so extract restores the full
 		// absolute path verbatim. (Captured this way rather than
@@ -562,7 +574,7 @@ export const snapshot = (opts: {
 			.pipe(Effect.mapError(wrapError(`failed to write ${metaDst}`)));
 
 		return { path: target, containerTars, runtimeTar, extrasTars };
-	}).pipe(Effect.withSpan('snapshot.create', { attributes: { 'snapshot.id': opts.id } }));
+	}).pipe(Effect.withSpan('SnapshotCreate', { attributes: { 'snapshot.id': opts.id } }));
 
 // -----------------------------------------------------------------------------
 // restore()
@@ -752,7 +764,7 @@ export const restore = (opts: {
 		}
 
 		return { loadedImages, runtimeRestored, extrasRestored };
-	}).pipe(Effect.withSpan('snapshot.restore', { attributes: { 'snapshot.id': opts.id } }));
+	}).pipe(Effect.withSpan('SnapshotRestore', { attributes: { 'snapshot.id': opts.id } }));
 
 // -----------------------------------------------------------------------------
 // list()
@@ -847,4 +859,4 @@ export const list = (opts?: {
 
 		results.sort((a, b) => a.createdAt - b.createdAt);
 		return results;
-	}).pipe(Effect.withSpan('snapshot.list'));
+	}).pipe(Effect.withSpan('SnapshotList'));

@@ -34,6 +34,7 @@ import { existsSync } from 'node:fs';
 import { dirname, isAbsolute, join as joinPath, resolve as resolvePath } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Effect, Layer } from 'effect';
+import { ConfigLoadError } from '../engine/errors.js';
 import { prettyError } from '../engine/pretty-error.js';
 import type { RunOverrides } from '../engine/supervisor.js';
 
@@ -57,10 +58,14 @@ export const requireLaunchEffect = (configPath: string, mod: unknown): DevstackL
 		| Partial<DevstackLaunchable>
 		| undefined;
 	if (!d || typeof d.launchEffect !== 'function') {
-		throw new Error(
-			`${configPath} must default-export a DevstackHandle ` +
+		throw new ConfigLoadError({
+			phase: 'validate',
+			configPath,
+			expected: 'DevstackHandle (from devstack(...) or defineDevstack)',
+			message:
+				`${configPath} must default-export a DevstackHandle ` +
 				`(from devstack(...) or defineDevstack)`,
-		);
+		});
 	}
 	return d as DevstackLaunchable;
 };
@@ -77,10 +82,14 @@ export const requireLayer = (configPath: string, mod: unknown): DevstackLayered 
 		| Partial<DevstackLayered>
 		| undefined;
 	if (!d || typeof d.layer === 'undefined') {
-		throw new Error(
-			`${configPath} must default-export a DevstackHandle ` +
+		throw new ConfigLoadError({
+			phase: 'validate',
+			configPath,
+			expected: 'DevstackHandle (from devstack(...) or defineDevstack)',
+			message:
+				`${configPath} must default-export a DevstackHandle ` +
 				`(from devstack(...) or defineDevstack)`,
-		);
+		});
 	}
 	return d as DevstackLayered;
 };
@@ -136,11 +145,14 @@ export const loadConfigModule = <T>(
 		if (absolute === null) {
 			const attempted = resolvePath(process.cwd(), configPath);
 			return yield* Effect.fail(
-				new Error(
-					`config not found at ${attempted} ` +
+				new ConfigLoadError({
+					phase: 'load',
+					configPath: attempted,
+					message:
+						`config not found at ${attempted} ` +
 						`(resolved from \`${configPath}\` against cwd ${process.cwd()}; ` +
 						`also walked up to the nearest package.json)`,
-				),
+				}),
 			);
 		}
 
@@ -148,7 +160,7 @@ export const loadConfigModule = <T>(
 		const mod = yield* Effect.tryPromise({
 			try: () => import(url) as Promise<unknown>,
 			catch: (cause) => wrapCause(`failed to load ${configPath}`, cause),
-		}).pipe(Effect.withSpan('cli.loadConfig', { attributes: { configPath: absolute } }));
+		}).pipe(Effect.withSpan('CliLoadConfig', { attributes: { configPath: absolute } }));
 
 		return yield* Effect.try({
 			try: () => validate(absolute, mod),

@@ -27,7 +27,7 @@
 
 import { createHash } from 'node:crypto';
 import * as nodeFs from 'node:fs/promises';
-import { Effect, Option } from 'effect';
+import { Effect } from 'effect';
 import { Transaction } from '@mysten/sui/transactions';
 import { type WalrusAdmin } from '../walrus.js';
 import * as Docker from '../../engine/docker.js';
@@ -37,7 +37,7 @@ import { publishEndpoint, publishPackage, publishWalrusState } from '../../engin
 import { EndpointName } from '../../runtime/endpoint-names.js';
 import { servicePath } from '../../engine/service-paths.js';
 import { StateStore } from '../../engine/state-store.js';
-import { StateStoreKeys } from '../../engine/state-store-keys.js';
+import { withCache } from '../../engine/cache.js';
 import { type LayeredTag } from '../../advanced/tag.js';
 import { WalrusError } from '../../engine/errors.js';
 import type { Account } from '../../engine/shared.js';
@@ -241,7 +241,6 @@ export const acquireLocalCluster = (args: {
 		//    client for register, exchange-discovery, seed-accounts.
 		// -------------------------------------------------------------
 		const sui = yield* SuiTag;
-		const state = yield* StateStore;
 		const identity = yield* Identity;
 		const { subnet: walrusSubnet, prefix: walrusSubnetPrefix } = subnetForStack(
 			identity.app,
@@ -327,25 +326,17 @@ export const acquireLocalCluster = (args: {
 		});
 
 		// -------------------------------------------------------------
-		// 2. Deploy contracts. Cache key folds in `sui.chainId` only —
-		//    no per-stack proxy port any more, since the Traefik router
-		//    binds 9185 once on the host and routes by `Host:` header
-		//    to the per-stack backend. A regenesis still flips
-		//    `chainId` and misses the cache.
+		// 2. Deploy contracts via `withCache`. Cache key folds in
+		//    `sui.chainId` so a regenesis misses cleanly. Phase C §4.2
+		//    adds a `verify` probe over both the system object AND the
+		//    staking object — either missing on chain invalidates the
+		//    cache and we re-deploy.
+		//
+		//    Output dir lives at `runtime/walrus/<name>/deploy/` so the
+		//    snapshot tar captures it alongside the state-store entry.
+		//    The pair must round-trip together — see §5.2 of
+		//    `notes/parallel-graph-resolution.md`.
 		// -------------------------------------------------------------
-		const deployStateKey = StateStoreKeys.walrusDeployOutput({ chainId: sui.chainId });
-		const cached = yield* state.get<CachedDeployState>(deployStateKey);
-		// Output dir is keyed by `(identity.app, identity.stack,
-		// identity.network, args.name)` so two parallel stacks of the
-		// Walrus deploy outputs live under `runtime/walrus/<name>/deploy/`
-		// (per-walrus-instance subdir so multiple `Walrus(...)` refs in
-		// the same stack don't collide). Phase 3 of the snapshot redesign
-		// moved this off the pre-existing `.devstack/walrus/<stack>/<name>`
-		// layout so `snapshot save` captures it as part of the canonical
-		// runtime tarball; the network-aware suffix is no longer needed
-		// because `servicePath` already scopes by network (localnet ->
-		// `.devstack/stacks/<stack>/runtime/...`, live nets ->
-		// `.devstack/networks/<network>/runtime/...`).
 		const outputDir = yield* servicePath('walrus', args.name, 'deploy');
 
 		// Per-stack sui docker network — only meaningful when the sui
@@ -362,85 +353,124 @@ export const acquireLocalCluster = (args: {
 				? (sui.rpc.containerNetworks?.[0] ?? suiNetworkName(identity))
 				: undefined;
 
-		let deploy: DeployState;
-		if (Option.isSome(cached)) {
-			// State-store gate present → this stack has previously deployed
-			// walrus against the current chainId. Trust the cache AND the
-			// host-side `outputDir` contents (node configs + private keys
-			// that `walrus-deploy` wrote on the original deploy). The
-			// snapshot save/restore pipeline tars `runtime/walrus/<name>/`
-			// so a restored stack lands here with both the state-store
-			// gate AND the directory contents — the storage-node phase
-			// downstream mounts `outputDir` and reads them.
-			//
-			// **Crash detector:** if the gate is present but the directory
-			// is missing or empty, we've hit one of:
-			//   - a manual `rm -rf` of `.devstack/stacks/<stack>/runtime/`
-			//   - a corrupted snapshot extract
-			//   - a partial migration from a pre-Phase-3 layout
-			// Re-deploying on top of a chain that already has registered
-			// nodes (under previously-minted keys) would mint NEW keys
-			// and break the committee. Fail loudly so the user knows to
-			// restore from a complete snapshot or `wipe` and start fresh.
-			const deployFile = `${outputDir}/deploy`;
-			const deployFileExists = yield* Effect.tryPromise({
-				try: () => nodeFs.access(deployFile).then(() => true),
-				catch: () => false,
-			}).pipe(Effect.orElseSucceed(() => false));
-			if (deployFileExists !== true) {
-				return yield* Effect.fail(
-					new WalrusError({
-						phase: 'deploy',
-						message:
-							`walrus(${args.name}): state-store says walrus is already deployed ` +
-							`against chainId=${sui.chainId}, but the host-side deploy outputs at ` +
-							`${outputDir} are missing or empty. This typically means a partial ` +
-							`snapshot restore or a manual delete of the runtime/ dir. Either ` +
-							`restore from a complete snapshot (one captured with this chain ` +
-							`state still live) or run \`devstack wipe --yes\` to discard the ` +
-							`stale state-store entry and start fresh.`,
-					}),
-				);
-			}
-			yield* Effect.annotateCurrentSpan({
-				'walrus.deploy.cache': 'hit',
-				'walrus.packageId': cached.value.walrusPackageId,
-			});
-			deploy = { outputDir, ...cached.value };
-		} else {
-			yield* args.pushPhase('deploying contracts');
-			deploy = yield* deployContracts({
-				name: args.name,
-				image,
-				rpc: sui.rpc,
-				faucet: sui.faucet,
-				suiNetwork: suiNet,
-				nodeCount: args.nodeCount,
-				shards: args.shards,
-				epochDuration: args.epochDuration,
-				containerApiPort: args.containerApiPort,
-				routerEntrypointPort: ROUTER_WALRUS_PORT,
-				identity,
-				outputDir,
-				subnetPrefix: walrusSubnetPrefix,
-			});
-			const toCache: CachedDeployState = {
-				walrusPackageId: deploy.walrusPackageId,
-				systemObject: deploy.systemObject,
-				stakingObject: deploy.stakingObject,
-				...(deploy.upgradeManagerObject !== undefined
-					? { upgradeManagerObject: deploy.upgradeManagerObject }
-					: {}),
-				...(deploy.treasuryObject !== undefined ? { treasuryObject: deploy.treasuryObject } : {}),
-				...(deploy.exchangeObject !== undefined ? { exchangeObject: deploy.exchangeObject } : {}),
-			};
-			yield* state.put(deployStateKey, toCache);
-			yield* Effect.annotateCurrentSpan({
-				'walrus.deploy.cache': 'miss',
-				'walrus.packageId': deploy.walrusPackageId,
-				'walrus.systemObject': deploy.systemObject,
-			});
-		}
+		const cachedDeploy = yield* withCache({
+			namespace: 'walrus/deploy-output/v3',
+			chainId: sui.chainId,
+			inputs: Effect.succeed({ name: args.name }),
+			// §4.2 verify probe. Two failure modes invalidate:
+			//   1. The recorded systemObject is missing on chain
+			//      (regenesis without state-store wipe, e.g. a docker
+			//      volume reset around a stale `.devstack/`).
+			//   2. The recorded stakingObject is missing on chain
+			//      (same cause). Both probes must pass; either failure
+			//      invalidates the cache.
+			//   3. The local `deploy` outputs file is missing
+			//      (manual `rm -rf` of runtime/, pre-Phase-3 snapshot
+			//      restore). Without the outputs, the storage-node
+			//      mount in step 4 would point at an empty dir. Per
+			//      §5.2 of the plan: re-deploying on top of a chain
+			//      that already has registered nodes mints NEW keys
+			//      and breaks the committee, but a clean re-deploy
+			//      on a chain whose systemObject ALSO went away IS
+			//      safe (case `else` in deployContracts below cleans
+			//      up the prior storage-node containers).
+			verify: (cached: CachedDeployState) =>
+				Effect.gen(function* () {
+					const deployFile = `${outputDir}/deploy`;
+					const deployFileExists = yield* Effect.tryPromise({
+						try: () => nodeFs.access(deployFile).then(() => true),
+						catch: () => false,
+					}).pipe(Effect.orElseSucceed(() => false));
+					if (deployFileExists !== true) {
+						yield* Effect.logWarning(
+							`walrus(${args.name}): state-store gate present but ${deployFile} missing — ` +
+								`invalidating cache and re-deploying. Likely a partial snapshot restore ` +
+								`or manual delete of runtime/. The next deploy mints fresh storage-node ` +
+								`keys; ensure the previous on-chain committee object is also gone.`,
+						);
+						return undefined;
+					}
+					const systemOk = yield* probeWalrusObject(sui.client, cached.systemObject);
+					if (!systemOk) {
+						yield* Effect.logWarning(
+							`walrus(${args.name}): cached systemObject ${cached.systemObject} not found ` +
+								`on chain — invalidating deploy cache and re-deploying.`,
+						);
+						return undefined;
+					}
+					const stakingOk = yield* probeWalrusObject(sui.client, cached.stakingObject);
+					if (!stakingOk) {
+						yield* Effect.logWarning(
+							`walrus(${args.name}): cached stakingObject ${cached.stakingObject} not found ` +
+								`on chain — invalidating deploy cache and re-deploying.`,
+						);
+						return undefined;
+					}
+					return cached;
+				}),
+			produce: Effect.gen(function* () {
+				// Cache miss means either: (a) first run for this stack,
+				// or (b) `sui.chainId` changed, or (c) verify probe
+				// invalidated the entry. Case (a) has no pre-existing
+				// walrus-node containers to worry about; (b) + (c) are
+				// the ones that break if we let `Docker.run`'s adopt-
+				// if-image-matches path keep the existing storage-node
+				// containers — their writable layer holds RocksDB
+				// synced against the OLD chain's checkpoint sequence,
+				// and walrus's own integrity check trips on first
+				// start ("Current store has a checkpoint that is
+				// greater than latest network checkpoint!").
+				//
+				// We can't recover that RocksDB; we have to drop it.
+				// `docker rm -f` against the predicted container names
+				// blows the writable layer away so the post-deploy
+				// `Docker.run` lands on the fresh-create branch.
+				//
+				// Best-effort: case (a) has no containers, so each rm
+				// is a no-op the helper silently ignores.
+				for (let i = 0; i < args.nodeCount; i++) {
+					const fullName = Docker.composeContainerName(
+						identity.app,
+						identity.stack,
+						identity.network,
+						`walrus-${args.name}-node-${i}`,
+					);
+					yield* Docker.removeContainerByName(fullName);
+				}
+				yield* args.pushPhase('deploying contracts');
+				const fresh = yield* deployContracts({
+					name: args.name,
+					image,
+					rpc: sui.rpc,
+					faucet: sui.faucet,
+					suiNetwork: suiNet,
+					nodeCount: args.nodeCount,
+					shards: args.shards,
+					epochDuration: args.epochDuration,
+					containerApiPort: args.containerApiPort,
+					routerEntrypointPort: ROUTER_WALRUS_PORT,
+					identity,
+					outputDir,
+					subnetPrefix: walrusSubnetPrefix,
+				});
+				const toCache: CachedDeployState = {
+					walrusPackageId: fresh.walrusPackageId,
+					systemObject: fresh.systemObject,
+					stakingObject: fresh.stakingObject,
+					...(fresh.upgradeManagerObject !== undefined
+						? { upgradeManagerObject: fresh.upgradeManagerObject }
+						: {}),
+					...(fresh.treasuryObject !== undefined ? { treasuryObject: fresh.treasuryObject } : {}),
+					...(fresh.exchangeObject !== undefined ? { exchangeObject: fresh.exchangeObject } : {}),
+				};
+				return toCache;
+			}),
+		});
+		const deploy: DeployState = { outputDir, ...cachedDeploy };
+		yield* Effect.annotateCurrentSpan({
+			'walrus.packageId': deploy.walrusPackageId,
+			'walrus.systemObject': deploy.systemObject,
+		});
 
 		// -------------------------------------------------------------
 		// 3. Register storage nodes on chain — folded into the deploy
@@ -451,6 +481,7 @@ export const acquireLocalCluster = (args: {
 			signer: seedAccounts[0],
 			deploy,
 			nodeCount: args.nodeCount,
+			chainId: sui.chainId,
 		});
 
 		// -------------------------------------------------------------
@@ -666,26 +697,50 @@ export const makeAdminShape = (args: {
 // one binary call. So the explicit "register" phase here is a typed
 // no-op span — present so future infrastructure (per-node
 // re-registration after a deploy bump, e.g.) has an obvious place to
-// land. Kept co-located with the orchestrator because the body is one
-// `annotateCurrentSpan` call and the TODO is part of the orchestrator's
-// phase narrative.
+// land.
+//
+// Phase C §5.4: wrapped in `withCache` so the future per-node
+// re-registration fill-in is a body edit, not a structural change.
+// The current `produce` body annotates the span + returns `null`; the
+// verify probe matches the deploy-output verify — re-running the
+// register Move call after a regenesis is harmless but should be
+// re-triggered (today the deploy one-shot's own re-run handles it).
 const registerCommittee = (args: {
 	signer: Account | undefined;
 	deploy: DeployState;
 	nodeCount: number;
-}): Effect.Effect<void, WalrusError> =>
+	chainId: string;
+}): Effect.Effect<void, WalrusError, StateStore> =>
 	Effect.fn('walrus.register')(function* () {
-		// Surface the publisher's address as a span attribute when one
-		// was passed — handy when debugging "why didn't this account
-		// get registered" mismatches against the deploy outputs.
-		if (args.signer !== undefined) {
-			yield* Effect.annotateCurrentSpan({
-				'walrus.publisher': args.signer.address,
-				'walrus.nodeCount': args.nodeCount,
-				'walrus.packageId': args.deploy.walrusPackageId,
-			});
-		}
-		// TODO: per-node `walrus::system::register_storage_node` moveCall fan-out when the wrapper image's deploy path is split across publish + register.
+		yield* withCache({
+			namespace: 'walrus/register-committee/v1',
+			chainId: args.chainId,
+			inputs: Effect.succeed({
+				packageId: args.deploy.walrusPackageId,
+				systemObject: args.deploy.systemObject,
+				nodeCount: args.nodeCount,
+			}),
+			// No on-chain object to probe yet — registerCommittee is a
+			// typed no-op so verify is `Effect.succeed(cached)`. When the
+			// future per-node re-registration lands, swap this for a
+			// `getObject(node.registrationId)` probe that matches the
+			// deploy-output discipline above.
+			verify: (cached: null) => Effect.succeed(cached),
+			produce: Effect.gen(function* () {
+				// Surface the publisher's address as a span attribute
+				// when one was passed — handy when debugging "why didn't
+				// this account get registered" mismatches against the
+				// deploy outputs.
+				if (args.signer !== undefined) {
+					yield* Effect.annotateCurrentSpan({
+						'walrus.publisher': args.signer.address,
+						'walrus.nodeCount': args.nodeCount,
+						'walrus.packageId': args.deploy.walrusPackageId,
+					});
+				}
+				return null;
+			}),
+		});
 	})();
 
 // -----------------------------------------------------------------------------
@@ -727,56 +782,41 @@ const swapSuiForWalCached = (args: {
 }): Effect.Effect<void, WalrusError, SuiTag | StateStore> =>
 	Effect.gen(function* () {
 		const sui = yield* SuiTag;
-		const state = yield* StateStore;
-		const cacheKey = StateStoreKeys.walrusSeedWal({
-			chainId: sui.chainId,
-			exchangeObjectId: args.exchange.objectId,
-			accountAddress: args.account.address,
+		yield* Effect.annotateCurrentSpan({
+			'walrus.seed.account': args.account.name,
+			'walrus.seed.address': args.account.address,
 		});
-		const cached = yield* state.get<CachedSeedWalSwap>(cacheKey);
-
-		if (Option.isSome(cached)) {
-			// Verify the recorded swap still shows up on chain as WAL
-			// balance. A wiped volume or external balance drain
-			// invalidates the cache; otherwise we trust the prior swap.
-			const walType = args.exchange.walType;
-			const ok = yield* probeWalBalance({
-				address: args.account.address,
-				walType,
-			}).pipe(Effect.orElseSucceed(() => 0n));
-			if (ok >= SEED_WAL_BALANCE_FLOOR_FROST) {
-				yield* Effect.annotateCurrentSpan({
-					'walrus.seed.cache': 'hit',
-					'walrus.seed.account': args.account.name,
-					'walrus.seed.address': args.account.address,
-					'walrus.seed.balance': ok.toString(),
-				});
-				return;
-			}
-			yield* Effect.annotateCurrentSpan({
-				'walrus.seed.cache': 'stale',
-				'walrus.seed.account': args.account.name,
-				'walrus.seed.balance': ok.toString(),
-			});
-			yield* state.remove(cacheKey).pipe(Effect.ignore);
-		} else {
-			yield* Effect.annotateCurrentSpan({
-				'walrus.seed.cache': 'miss',
-				'walrus.seed.account': args.account.name,
-			});
-		}
-
-		const digest = yield* swapSuiForWal(args.account, args.exchange, args.paymentMist);
-		const toCache: CachedSeedWalSwap = {
-			digest,
-			paymentMist: args.paymentMist.toString(),
-			seededAt: new Date().toISOString(),
-		};
-		// Best-effort cache write — the swap has settled on chain
-		// regardless. Falling back to re-swap on the next cycle is a
-		// minor inefficiency, not a correctness bug. Catches any
-		// state-store IO defect.
-		yield* state.put(cacheKey, toCache).pipe(Effect.ignore);
+		// `withCache` discipline — Phase C §4.2. Verify probes the
+		// account's on-chain WAL balance against the floor; either a
+		// wiped volume or an external balance drain invalidates the
+		// cached swap and the next produce re-swaps.
+		yield* withCache({
+			namespace: 'walrus/seed-wal/v1',
+			chainId: sui.chainId,
+			inputs: Effect.succeed({
+				exchangeObjectId: args.exchange.objectId,
+				accountAddress: args.account.address,
+			}),
+			verify: (cached: CachedSeedWalSwap) =>
+				Effect.gen(function* () {
+					const balance = yield* probeWalBalance({
+						address: args.account.address,
+						walType: args.exchange.walType,
+					}).pipe(Effect.orElseSucceed(() => 0n));
+					yield* Effect.annotateCurrentSpan({
+						'walrus.seed.balance': balance.toString(),
+					});
+					return balance >= SEED_WAL_BALANCE_FLOOR_FROST ? cached : undefined;
+				}),
+			produce: Effect.gen(function* () {
+				const digest = yield* swapSuiForWal(args.account, args.exchange, args.paymentMist);
+				return {
+					digest,
+					paymentMist: args.paymentMist.toString(),
+					seededAt: new Date().toISOString(),
+				} satisfies CachedSeedWalSwap;
+			}),
+		});
 		void args.walrusPackageId;
 	});
 
@@ -872,7 +912,7 @@ const swapSuiForWal = (
 				? (result as { digest: string }).digest
 				: '';
 		return digest;
-	}).pipe(Effect.withSpan(`walrus.seed-accounts.${account.name}`));
+	}).pipe(Effect.withSpan(`WalrusSeedAccounts(${account.name})`));
 
 // -----------------------------------------------------------------------------
 // Helpers
@@ -882,3 +922,32 @@ const swapSuiForWal = (
 // `Sui.faucet?.container` directly — no `localhost →
 // host.docker.internal` rewrite needed, because containers now reach
 // sui via the per-stack docker network's `sui-localnet` DNS alias.
+
+/** Probe whether `objectId` resolves on chain. Returns `true` on
+ *  successful `getObject`; `false` on any failure (object missing, RPC
+ *  transient, network down). Used by the walrus deploy + register
+ *  withCache verify probes (§4.2 of `notes/parallel-graph-resolution.md`)
+ *  so a stale cache entry — chain regenesis, snapshot mismatch — gets
+ *  invalidated cleanly instead of feeding downstream consumers an
+ *  unresolvable system/staking id.
+ *
+ *  Conservatively falls back to `false` on any failure: over-deriving
+ *  on the next produce cycle is cheaper than booting against a broken
+ *  cache entry. */
+const probeWalrusObject = (
+	// `Sui['client']` typed loosely (the SDK class isn't re-exported from
+	// this module's import surface). The probe only touches
+	// `client.core.getObject({objectId})` which is part of the stable
+	// gRPC surface.
+	client: {
+		readonly core: { readonly getObject: (args: { objectId: string }) => Promise<unknown> };
+	},
+	objectId: string,
+): Effect.Effect<boolean> =>
+	Effect.tryPromise({
+		try: () => client.core.getObject({ objectId }),
+		catch: (cause) => cause,
+	}).pipe(
+		Effect.as(true),
+		Effect.orElseSucceed(() => false),
+	);

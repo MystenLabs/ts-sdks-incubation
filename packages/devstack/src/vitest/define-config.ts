@@ -18,9 +18,9 @@ export interface DevstackVitestConfigOptions {
  * `.turbo/`, `node_modules` excludes, and `passWithNoTests: true` so
  * codegen-derived stacks without unit tests yet don't fail CI.
  *
- * For chain-mode integration tests against a real devstack, bind the
- * composed layer to `@effect/vitest`'s `it.layer(...)` via the
- * `withDevstack` helper exported from this same subpath.
+ * For chain-mode integration tests against a real devstack, build the
+ * devstack handle and pass `handle.layer` to `@effect/vitest`'s
+ * `it.layer(...)` directly — no thin wrapper is shipped.
  */
 export function defineDevstackVitestConfig(
 	options: DevstackVitestConfigOptions = {},

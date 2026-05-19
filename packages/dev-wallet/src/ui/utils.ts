@@ -31,6 +31,59 @@ export function getCoinSymbol(coinType: string): string {
 	}
 }
 
+/**
+ * Subset of the generated `coins.ts` entry shape that the UI needs for
+ * formatting and labelling. Matches the manifest `CoinEntry` shape emitted
+ * by `StackHandleEmitter` (`coins.ts`) so consumers can pass the generated
+ * `coins` record directly. Kept structurally-typed (no devstack import —
+ * dev-wallet must not depend on the devstack package).
+ */
+export interface CoinManifestEntry {
+	readonly type: string;
+	readonly decimals: number;
+	readonly symbol?: string;
+	readonly displayName?: string;
+	readonly iconUrl?: string;
+}
+
+/** A record keyed by coin name (e.g. `'mUSDC'`) mapping to entry metadata.
+ *  Pass the generated `coins` constant — `<DevWalletPanel coins={coins} />`
+ *  — to pre-seed UI metadata and skip per-coin RPC fetches on UI load. */
+export type CoinRecord = Readonly<Record<string, CoinManifestEntry>>;
+
+/** Build a fast `coinType → entry` lookup from the name-keyed generated
+ *  record. Normalizes coin-type strings so callers can hit it with either
+ *  the short (`0x2::sui::SUI`) or fully-padded form. */
+export function indexCoinsByType(
+	coins: CoinRecord | null | undefined,
+): ReadonlyMap<string, CoinManifestEntry> {
+	const map = new Map<string, CoinManifestEntry>();
+	if (!coins) return map;
+	for (const entry of Object.values(coins)) {
+		try {
+			map.set(normalizeStructTag(entry.type), entry);
+		} catch {
+			map.set(entry.type, entry);
+		}
+	}
+	return map;
+}
+
+/** Look up a coin's metadata by its on-chain type string. Both the input
+ *  `coinType` and the index entries are matched on their normalized form
+ *  so callers don't have to canonicalize. Returns `undefined` for unknown
+ *  coins — the caller decides whether to fall back to an RPC fetch. */
+export function lookupCoinByType(
+	index: ReadonlyMap<string, CoinManifestEntry>,
+	coinType: string,
+): CoinManifestEntry | undefined {
+	try {
+		return index.get(normalizeStructTag(coinType));
+	} catch {
+		return index.get(coinType);
+	}
+}
+
 /** Check if a type string is a Coin wrapper (0x2::coin::Coin<...>) */
 export function isCoinType(type: string): boolean {
 	try {

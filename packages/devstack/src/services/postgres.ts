@@ -12,14 +12,34 @@
 // cache at `postgres/databases/v1/<stack>/<name>/<dbHash>` records
 // the ensured list so a no-op cycle short-circuits the probe entirely.
 //
-// **Snapshot participation**: persists the writable layer (`/pgdata`),
-// re-derives nothing on restore, intentionally loses in-flight
-// connections + WAL position relative to chain.
+// Snapshot participation (per AGENTS.md § "Snapshot participation"):
+//   - **What this service persists:** the entire writable container
+//     layer at `/pgdata` — schema, rows, roles, and the on-disk WAL —
+//     captured by `docker commit` on snapshot save. (The vendored
+//     `postgres-image/Dockerfile` relocates PGDATA off the upstream
+//     VOLUME explicitly so the writable layer carries it.) The
+//     state-store entry at `postgres/databases/v1/<stack>/<name>/<dbHash>`
+//     records the set of ensured databases so the `CREATE DATABASE`
+//     idempotency probe short-circuits on resume. `publishPostgresState`
+//     publishes the plain endpoint (no password) into the postgres state
+//     registry; the credentialed URL is constructed on-demand from the
+//     sibling password field (per Wave 2 / §10.2 Option B).
+//   - **What re-derives from on-chain state on apply:** nothing — postgres
+//     is generic infrastructure with no chain dependency. Consumer
+//     services (e.g. the deepbook indexer) do re-derive their schemas /
+//     replay positions from chain state, but that's their concern, not
+//     postgres's.
+//   - **What is intentionally lost on snapshot restore:** in-flight
+//     client connections, prepared-statement caches, the
+//     query-plan cache, and the WAL position relative to chain
+//     (downstream consumers like the deepbook indexer resync from their
+//     own checkpoint on resume).
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { Effect } from 'effect';
 import { tag, provide, setPhase } from '../advanced/tag.js';
+import { makeService } from '../advanced/make-service.js';
 import { Context } from 'effect';
 import * as Docker from '../engine/docker/index.js';
 import { runDockerContainer } from '../advanced/plugin-author/docker-container.js';
@@ -220,21 +240,28 @@ export const Postgres = <const Name extends string = 'postgres'>(
 				yield* ensureDatabase(containerHandle.containerId, user, databases[i]!);
 			}
 
-			const endpoint = `postgres://${user}:${password}@${networkAlias}:5432`;
-			const url = (db: string): string => `${endpoint}/${db}`;
+			// Two URL shapes — the in-process service surface keeps the
+			// credentialed URL (consumers like the DeepBook indexer build
+			// `DATABASE_URL` from it). The state registry + endpoint
+			// registry get the plain (no-credentials) URL; password lives
+			// alongside it in the state record only, never on the
+			// flat-endpoint registry or manifest.
+			const credentialedEndpoint = `postgres://${user}:${password}@${networkAlias}:5432`;
+			const plainEndpoint = `postgres://${networkAlias}:5432`;
+			const url = (db: string): string => `${credentialedEndpoint}/${db}`;
 			const containerNetworks: ReadonlyArray<string> = [networkName, ...(opts.extraNetworks ?? [])];
 
 			yield* publishEndpoint({
 				name: EndpointName.POSTGRES,
-				url: endpoint,
+				url: plainEndpoint,
 				kind: opts.hostPort !== undefined ? 'rpc' : 'internal',
 			});
 
 			yield* publishPostgresState({
 				name,
 				user,
-				url: url(databases[0]!),
-				endpoint,
+				password,
+				endpoint: plainEndpoint,
 				containerNetwork: networkName,
 				networkAlias,
 				databases,
@@ -245,7 +272,7 @@ export const Postgres = <const Name extends string = 'postgres'>(
 				user,
 				password,
 				databases,
-				endpoint,
+				endpoint: credentialedEndpoint,
 				containerNetworks,
 				networkAlias,
 				url,
@@ -284,9 +311,11 @@ export const Postgres = <const Name extends string = 'postgres'>(
 	).__layer;
 
 	const __layers = [...composite.__layers, tagLayer];
-	return Object.assign(composite, {
-		__layers,
-		__kind: 'service' as const,
-		__pluginName: 'postgres',
-	});
+	// Stamp the projection-layer-extended `__layers` array onto the
+	// composite first, then re-assert the plugin/kind discriminators via
+	// `makeService`. The inner `tag(...)` call already set both fields via
+	// its `kind` / `plugin` options; the second stamp keeps parity with
+	// the other migrated services and stays idempotent.
+	Object.assign(composite, { __layers });
+	return makeService('postgres', 'service', composite);
 };

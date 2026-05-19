@@ -1,12 +1,14 @@
 import type { PlaywrightTestConfig } from '@playwright/test';
 import { devices } from '@playwright/test';
+import { EndpointName } from '../runtime/endpoint-names.js';
 import { baseURL, webServer, type WebServerOptions } from './web-server.js';
 
 export interface DevstackPlaywrightConfigOptions {
 	/** Manifest endpoint name to wire as both `webServer.url` and
-	 *  `use.baseURL`. Default `'dev-server'`. Must match the endpoint
-	 *  name your `Dev(...)` primitive registers (or a conventional
-	 *  short name like `'wallet-app'`). */
+	 *  `use.baseURL`. Default `'frontend.dev-server'` (matches the
+	 *  endpoint name `Dev()` publishes). Must match the endpoint name
+	 *  your `Dev(...)` primitive registers (or a conventional short
+	 *  name like `'wallet-app'`). */
 	readonly endpoint?: string;
 	/** webServer startup timeout in ms. Default `300_000` (300s) covers
 	 *  sui-localnet bring-up + publish + vite spawn. Bump to ~`900_000`
@@ -40,7 +42,7 @@ export interface DevstackPlaywrightConfigOptions {
 export function defineDevstackPlaywrightConfig(
 	options: DevstackPlaywrightConfigOptions = {},
 ): PlaywrightTestConfig {
-	const endpoint = options.endpoint ?? 'dev-server';
+	const endpoint = options.endpoint ?? EndpointName.DEV_SERVER_PRIMARY;
 	const timeout = options.timeout ?? 300_000;
 	const extend = options.extend ?? {};
 

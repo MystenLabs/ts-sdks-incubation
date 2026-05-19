@@ -252,7 +252,7 @@ export const vendorDeepbook = (opts: VendorDeepbookOptions = {}) => {
 			};
 
 			return result;
-		}).pipe(Effect.withSpan(`vendorDeepbook(${name})`)),
+		}).pipe(Effect.withSpan(`VendorDeepbook(${name})`)),
 		{
 			kind: 'action' as const,
 			displayTitle: `vendor.${name}`,
