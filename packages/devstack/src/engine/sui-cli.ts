@@ -254,12 +254,12 @@ export const buildMove = (
 //     content-addressed git-deps cache (`~/.move/git/<repo>@<sha>/…`)
 //     persists across builds. Without this, every fresh `--rm` container
 //     re-fetches the edition-2024 auto-deps (Sui, MoveStdlib, Bridge,
-//     DeepBook, SuiSystem) from GitHub — the dominant per-publish cost
-//     a v4 user notices vs v3. The cache is SHA-keyed and append-only,
-//     so concurrent readers/writers across containers are safe.
+//     DeepBook, SuiSystem) from GitHub — the dominant per-publish cost.
+//     The cache is SHA-keyed and append-only, so concurrent readers /
+//     writers across containers are safe.
 //
 // Trade-offs:
-//   - `build/` outputs leak back to the host's source dir (same as v3
+//   - `build/` outputs leak back to the host's source dir (same as
 //     host-CLI mode). Within an app, two stacks (e.g.
 //     `DEVSTACK_STACK=main` and `DEVSTACK_STACK=test`) building the
 //     SAME source path concurrently can race on `build/`. The
@@ -424,7 +424,7 @@ const cliEnv = (opts: { rpcUrl: string; faucetUrl?: string }): Record<string, st
 
 // `sui move build --json` writes pure JSON to stdout, but other
 // subcommands occasionally emit progress lines first. Find the last
-// `{`-terminated chunk and parse that — same trick the v3 port uses.
+// `{`-terminated chunk and parse that.
 // Exported indirectly via `buildMove`; kept module-private otherwise.
 const extractTrailingJson = (text: string): string => {
 	const trimmed = text.trim();
@@ -541,7 +541,6 @@ const parseJson = <T>(text: string, phase: SuiCliError['phase']): Effect.Effect<
 // exist. With the entries stripped, `--with-unpublished-dependencies`
 // correctly inlines the dep's bytecode.
 //
-// Ported from v3 `packages/devstack/src/helpers/publish-via-cli.ts`.
 // The `packagePath` argument is retained for API symmetry with the
 // caller (and a future per-package narrowing); the cache is keyed by
 // `<repo>@<rev>` so scrubbing it globally is safe and idempotent.
@@ -646,8 +645,8 @@ const stripPinnedSectionsFromMoveLock = (
 		// Scrub the package's own Move.lock.
 		yield* scrubLockFileIfPresent(fs, path.join(packagePath, 'Move.lock'));
 		// Scrub `~/.move/git/<rev>/<subdir>/Move.lock` — sui-cli's
-		// cache of git-fetched Move deps. v3's `scrubCachedMoveLocks`
-		// targeted this path explicitly because deepbook's `token`
+		// cache of git-fetched Move deps. We target this path because
+		// deepbook's `token`
 		// dep pins testnet's published id (`0x36dbef…`) into its
 		// lockfile, which then gets embedded into the deepbook
 		// bytecode on publish and fails on localnet.
@@ -718,9 +717,9 @@ export const stripPinnedSections = (source: string): string => {
 		const trimmed = line.trimStart();
 		if (trimmed.startsWith('[')) {
 			const header = trimmed.replace(/\s+/g, '');
-			// Skip both v4-style `[pinned.<env>.<pkg>]` sections AND the
-			// legacy `[env]` / `[env.<name>]` sections v3's
-			// `scrubCachedMoveLocks` targeted. Either one can carry
+			// Skip both newer `[pinned.<env>.<pkg>]` sections AND the
+			// older `[env]` / `[env.<name>]` sections — both upstream
+			// sui-CLI lockfile shapes. Either one can carry
 			// `published-at`/`original-id` entries that pin a transitive
 			// dep to a specific net's id, which then ends up baked into
 			// the publish's bytecode.

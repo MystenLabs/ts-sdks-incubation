@@ -175,9 +175,8 @@ describe('snapshot() / restore() — state-only round-trip', () => {
 			expect(target!.services).toBeDefined();
 			expect(target!.services!.sui).toEqual({ chainId: '0xchain-A' });
 
-			// The on-disk meta.json must NOT carry the legacy flat
-			// `chainId` / `upstream` / `forkedAtCheckpoint` fields — Phase 5.2
-			// of the api-simplification plan removed them.
+			// The on-disk meta.json carries per-service fields under
+			// `services.<name>` (not as top-level fields).
 			const metaRaw = JSON.parse(
 				readFileSync(join(stateDir, 'snapshots', 'with-services', 'meta.json'), 'utf8'),
 			);
@@ -185,7 +184,6 @@ describe('snapshot() / restore() — state-only round-trip', () => {
 			expect(metaRaw.upstream).toBeUndefined();
 			expect(metaRaw.forkedAtCheckpoint).toBeUndefined();
 			expect(metaRaw.services).toEqual({ sui: { chainId: '0xchain-A' } });
-			expect(metaRaw.version).toBe(4);
 		}).pipe(Effect.provide(NodeServicesLayer)),
 	);
 
@@ -213,36 +211,6 @@ describe('snapshot() / restore() — state-only round-trip', () => {
 		}).pipe(Effect.provide(NodeServicesLayer)),
 	);
 
-	it.effect('list() skips a meta.json with a legacy v3 version', () =>
-		Effect.gen(function* () {
-			// Phase 5.2 of the api-simplification plan is break-and-replace:
-			// the v3 schema is rejected outright (no fallback decoder).
-			// `readMeta` swallows the decode error and returns undefined,
-			// so `list()` silently skips the entry. Operators on the
-			// upgrade path see "no snapshots" and re-take from the
-			// running stack instead of restoring stale state.
-			const stalePath = join(stateDir, 'snapshots', 'legacy-v3');
-			yield* Effect.promise(async () => {
-				const fs = await import('node:fs/promises');
-				await fs.mkdir(stalePath, { recursive: true });
-				await fs.writeFile(
-					join(stalePath, 'meta.json'),
-					JSON.stringify({
-						version: 3,
-						createdAt: 1,
-						stack: 'main',
-						app: 'test-app',
-						network: 'localnet',
-						runtimeIncluded: false,
-						chainId: '0xstale',
-					}),
-				);
-			});
-
-			const entries = yield* list({ dir: join(stateDir, 'snapshots') });
-			expect(entries.find((e) => e.id === 'legacy-v3')).toBeUndefined();
-		}).pipe(Effect.provide(NodeServicesLayer)),
-	);
 });
 
 describe('snapshot() / restore() — runtime/ tar round-trip', () => {

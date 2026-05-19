@@ -37,9 +37,8 @@ import {
 	type DeepbookPoolSpec,
 } from './internal.js';
 
-// State-store key for the cached create-pools output moved to
-// `engine/state-store-keys.ts` as part of Phase 5.1 of
-// `notes/api-simplification.md`. Canonical builder:
+// State-store key for the cached create-pools output lives in
+// `engine/state-store-keys.ts`. Canonical builder:
 // `StateStoreKeys.deepbookPools({chainId, packageId, poolsHash})`.
 // The full key still folds in `Sui.chainId` (regenesis ⇒ miss),
 // the deepbook `packageId` (republish ⇒ miss), and a hash of the
@@ -127,8 +126,8 @@ export interface DeepbookLocalDeployOptions<
 }
 
 // Local-deploy carries the rich per-pool record (tick/lot/min) so the
-// composite tag can satisfy `yield* db` for legacy consumers projecting
-// pools into manifest extras. The interface `DeepbookCoreTag` itself only
+// composite tag can satisfy `yield* db` for consumers projecting pools
+// into manifest extras. The interface `DeepbookCoreTag` itself only
 // surfaces poolIds + findPool.
 export interface DeepbookLocalDeployShape<
 	TPools extends Record<string, DeepbookPool> = Record<string, DeepbookPool>,
@@ -305,7 +304,7 @@ export const deepbookLocalDeploy = <
 			}
 
 			// One batched tx — `init_balance_manager_map` + N `create_pool_admin`
-			// calls (matches v3). Skipped entirely when no pools were requested.
+			// calls. Skipped entirely when no pools were requested.
 			//
 			// Resume idempotency: `pool::create_pool_admin` calls
 			// `registry::register_pool`, which aborts (function 13) on a
@@ -611,10 +610,10 @@ export const deepbookLocalDeploy = <
 					...(poolCount > 0 ? { extras: [`${poolCount} pool${poolCount === 1 ? '' : 's'}`] } : {}),
 				};
 			},
-			// Phase B (notes/parallel-graph-resolution.md §3.2): the body
-			// iterates `options.dependsOn`, yields SuiTag, the signer
-			// Account ref, and the inner publishMove tag. Lift them all
-			// into upstreams so the topo scheduler places this composite
+			// The body iterates `options.dependsOn`, yields SuiTag, the
+			// signer Account ref, and the inner publishMove tag. Lift
+			// them all into upstreams so the topo scheduler places this
+			// composite
 			// strictly after its providers — otherwise it lands in level
 			// 0 and yields fail with "Service not found".
 			//
@@ -787,7 +786,7 @@ export const deepbookLocalDeploy = <
 	];
 
 	// Hybrid return — usable as a StackMember inside `defineDevstack`
-	// AND yieldable as the composite tag for legacy `yield* db` consumers
+	// AND yieldable as the composite tag for `yield* db` consumers
 	// that read the rich `.pools` record.
 	return Object.assign(composite, { __layers });
 };

@@ -88,8 +88,7 @@ export class SeedManifestMismatchError extends Schema.TaggedErrorClass<SeedManif
 
 /**
  * Raised when a plugin variant that requires capabilities `sui-fork`
- * doesn't provide is composed against a fork-mode `Sui()` (D5
- * mitigation; Phase 3 P3.5).
+ * doesn't provide is composed against a fork-mode `Sui()`.
  *
  * Today the local-cluster variants of Walrus + Seal need full JSON-RPC,
  * a live Sui chain client baked into their binaries, and (for Walrus)
@@ -105,9 +104,9 @@ export class SeedManifestMismatchError extends Schema.TaggedErrorClass<SeedManif
  * known-deployment alternative (`Walrus()` / `Seal()` on fork mode
  * auto-pick that path).
  *
- * Phase 5 (D5 follow-up) explores putting a GraphQL indexer in front of
- * the fork to unlock the local-cluster paths; once that lands, this
- * error becomes the structured signal that the user is composing an
+ * A future GraphQL indexer in front of the fork could unlock the
+ * local-cluster paths; once that lands, this error becomes the
+ * structured signal that the user is composing an
  * older, non-shimmed variant.
  */
 export class ForkIncompatibleError extends Schema.TaggedErrorClass<ForkIncompatibleError>()(
@@ -348,7 +347,7 @@ export class DeepbookError extends Schema.TaggedErrorClass<DeepbookError>()('Dee
 	// `pool` names the deepbook pool the failure was for. Optional —
 	// publish/setup phases that aren't pool-scoped leave it unset.
 	pool: Schema.optional(Schema.String),
-	// Phase 4 — margin extensions. `marginAsset` names the margin pool's
+	// Margin extensions. `marginAsset` names the margin pool's
 	// asset (e.g. `'USDC'`, `'SUI'`) when a margin-side failure is
 	// asset-scoped (`new_coin_type_data_from_currency`, `create_margin_pool`).
 	// `feed` carries the Pyth feed hex id when a margin failure resolves

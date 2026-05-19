@@ -2,7 +2,7 @@
 // liquidity to each margin pool. Mirrors sandbox parity
 // (`~/code/deepbook-sandbox/sandbox/scripts/utils/pool.ts:459-584`).
 //
-// State-store cache at `deepbook/margin-seed/v1/<chainId>/<marginPackageId>/<signer>/<amountsHash>`
+// State-store cache at `deepbook/margin-seed/<chainId>/<marginPackageId>/<signer>/<amountsHash>`
 // records `{digest, supplierCapId, seededAmounts}` so a resume short-
 // circuits the supply tx. Best-effort verification on resume — we
 // re-fetch the SupplierCap by id and ensure it still exists owned by
@@ -312,9 +312,9 @@ export const deepbookMarginSeed = <const Name extends string = 'deepbook-margin-
 				primary: s.supplierCapId,
 				extras: [`${s.seededAmounts.length} pool${s.seededAmounts.length === 1 ? '' : 's'}`],
 			}),
-			// Phase B (notes/parallel-graph-resolution.md §3.2): the body
-			// yields SuiTag, the signer Account ref, and the margin
-			// composite, plus iterates `dependsOn`. Lift them so the topo
+			// The body yields SuiTag, the signer Account ref, and the
+			// margin composite, plus iterates `dependsOn`. Lift them so
+			// the topo
 			// scheduler places this composite strictly after all providers.
 			upstreamKeys: [
 				SuiTag.key,

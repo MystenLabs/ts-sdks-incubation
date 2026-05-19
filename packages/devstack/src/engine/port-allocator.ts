@@ -147,7 +147,7 @@ export const PortAllocatorLive: Layer.Layer<PortAllocator> = Layer.effect(
 						catch: () => new PortAllocatorError({ preferred, message: `probe failed for ${port}` }),
 					}).pipe(Effect.orElseSucceed(() => false));
 					if (!free) continue;
-					// Phase 1 (in-process CAS): atomically reserve in the
+					// Step 1 (in-process CAS): atomically reserve in the
 					// held set. MUST run before the cross-process file
 					// lock — otherwise two concurrent fibers in this
 					// process both claim the same file lock, the loser's
@@ -161,7 +161,7 @@ export const PortAllocatorLive: Layer.Layer<PortAllocator> = Layer.effect(
 						return [true, next] as const;
 					});
 					if (!claimed) continue;
-					// Phase 2 (cross-process file lock): only one
+					// Step 2 (cross-process file lock): only one
 					// supervisor host-wide can own `<port>.lock`. If a
 					// sibling process holds it, roll back the in-memory
 					// reservation and scan forward.

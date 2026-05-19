@@ -59,7 +59,7 @@ export interface WalrusLocalClusterOptions<Name extends string = 'walrus'> {
 	/** Sui release whose binary the wrapper image bakes for the deploy
 	 *  script's admin-wallet bootstrap. Default `devnet-v1.71.0`. */
 	readonly suiVersion?: string;
-	/** Container API port each storage node binds. Default 9185 (v3 default). */
+	/** Container API port each storage node binds. Default 9185. */
 	readonly containerApiPort?: number;
 	/** Shards distributed across the committee. Must be >= nodeCount. */
 	readonly shards?: number;
@@ -86,10 +86,8 @@ export const walrusLocalCluster = <const Name extends string = 'walrus'>(
 	const readyTimeoutMs = options.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
 	const seedPaymentMist = options.seedPaymentMist ?? DEFAULT_SEED_WAL_PAYMENT_MIST;
 
-	// D5 / Phase 3 P3.5: walrusLocalCluster needs JSON-RPC against the
-	// wrapped chain, which sui-fork does not expose. Phase 5 P5.1 audit
-	// (finalised 2026-05-19, `notes/sui-fork-phase-5-walrus-seal-audit.md`
-	// §1) confirmed that upstream walrus's `DualClient`
+	// walrusLocalCluster needs JSON-RPC against the wrapped chain, which
+	// sui-fork does not expose. Upstream walrus's `DualClient`
 	// (`crates/walrus-sui/src/client/dual_client.rs`) still has ~12
 	// load-bearing JSON-RPC callsites on `read_api()` / `coin_read_api()` /
 	// `event_api()` — the gRPC migration is in-flight, not complete. The
@@ -168,10 +166,10 @@ export const walrusLocalCluster = <const Name extends string = 'walrus'>(
 
 	// Single acquire-and-project Effect. Runs the full boot once, then
 	// returns a Context populated with all four interface keys plus the
-	// legacy `Walrus` aggregate so a single `Layer.effectContext` covers
-	// every consumer shape downstream code might reach for.
+	// `Walrus` aggregate so a single `Layer.effectContext` covers every
+	// consumer shape downstream code might reach for.
 	//
-	// Lifecycle (Phase 2 of selective-restart): the ambient `Scope.Scope`
+	// Lifecycle: the ambient `Scope.Scope`
 	// is this composite tag's own primitive scope — Effect's MemoMap
 	// forks one scope per Layer.effect. Docker.run finalizers inside
 	// `acquireLocalCluster` (storage nodes, nginx proxy, deploy one-shot,
@@ -301,9 +299,9 @@ export const walrusLocalCluster = <const Name extends string = 'walrus'>(
 		any
 	>;
 
-	// Phase D (notes/parallel-graph-resolution.md §6.4): the inner sibling
-	// tags `upstreamImage` and `moveSource` are LIFTED to top-level so the
-	// topo scheduler can build walrus's cargo image alongside sui's boot
+	// The inner sibling tags `upstreamImage` and `moveSource` are
+	// LIFTED to top-level so the topo scheduler can build walrus's
+	// cargo image alongside sui's boot
 	// and walrus's Move-source gitFetch alongside seal's source fetch.
 	// Pre-Phase-D the cluster's `composeLayers({inner, primary})` folded
 	// the inner tags into the composite's `__layers` slice, which meant

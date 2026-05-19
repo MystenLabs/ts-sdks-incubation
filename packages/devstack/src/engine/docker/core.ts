@@ -398,10 +398,9 @@ export const run = (
 		// Reuse-if-healthy: when an existing container with this name is
 		// already running the SAME image, skip recreation and adopt it.
 		// Sui localnet etc. are expensive to bring up (fresh genesis →
-		// NEW chain id → publishMove cache miss → NEW packageId). After
-		// the per-primitive-scope refactor (Phase 2 of selective-restart),
-		// the ambient `scope` IS the calling primitive's own layer scope
-		// — created once by Effect's MemoMap and reused across cycles as
+		// NEW chain id → publishMove cache miss → NEW packageId). The
+		// ambient `scope` IS the calling primitive's own layer scope —
+		// created once by Effect's MemoMap and reused across cycles as
 		// long as the primitive isn't in a selectively-invalidated set.
 		// `r` (full rebuild) cascades through the supervisor's outer
 		// scope, releasing every primitive's resources in dep order;
@@ -1445,8 +1444,8 @@ const ensureLabeledVolume = (
 // Long-running stateful containers (sui localnet, indexer-db, walrus nodes)
 // MUST go through the `docker stop` finalizer registered at the top of
 // `Docker.run` so their writable layer survives the next `up`. Chain
-// state lives in the writable layer (Phase 2 of the snapshot redesign
-// dropped the named volumes that previously held it), so `rm -f` on those
+// state lives in the writable layer (no named volumes hold it), so
+// `rm -f` on those
 // containers would force a fresh genesis on resume and break the
 // `docker commit`-based snapshot capture surface.
 //

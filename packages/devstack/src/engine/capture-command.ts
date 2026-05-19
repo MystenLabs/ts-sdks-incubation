@@ -1,20 +1,10 @@
-// Shared subprocess spawn → drain → exit-code helper. Audit finding E2.
+// Shared subprocess spawn → drain → exit-code helper.
 //
-// Before this module, `engine/docker/core.ts::runCapturing`,
-// `engine/sui-cli.ts::runWithCapture`, and `engine/snapshot.ts::runTar`
-// each carried their own copy of "spawn the command, drain stdout +
-// stderr + exitCode concurrently, map any spawner error into a domain
-// error". The three implementations also each carried their own
-// truncation policy (1024 / 600 / 500 bytes), their own `decodeStream`
-// helper, and their own error-mapping shape — meaning a fix to one
-// (e.g. "empty stderr should render as `(empty)`") had to be remembered
-// in three places.
-//
-// This module owns the actual subprocess plumbing exactly once. The
-// three legacy wrappers now collapse to a single `Effect.mapError`
-// call each: the public `DockerError` / `SuiCliError` / `SnapshotError`
-// envelopes are unchanged, but their implementations route through
-// `captureCommand`.
+// Owns the actual subprocess plumbing exactly once. `engine/docker/
+// core.ts::runCapturing`, `engine/sui-cli.ts::runWithCapture`, and
+// `engine/snapshot.ts::runTar` each route through `captureCommand` and
+// just `Effect.mapError` into their public `DockerError` / `SuiCliError`
+// / `SnapshotError` envelope.
 //
 // Design notes:
 //   - Returns a `CaptureResult` for both zero AND non-zero exits; the
@@ -27,8 +17,8 @@
 //     the spawner's raw cause, and a snapshot of any captured stderr
 //     so downstream error envelopes have something useful to render.
 //     stderr is bounded by `stderrTruncate` (default 500 bytes — the
-//     legacy snapshot/sui-cli policy, which is the tightest of the
-//     three and the most common one for a TUI row).
+//     tightest of the historical policies and the most common one for
+//     a TUI row).
 //   - `captureCommandOrFail` is the "or-fail-on-non-zero-exit" variant
 //     used by docker's `runCapturingOrFail` and equivalent — the
 //     non-zero-exit case becomes a CaptureError with `exitCode` set.
@@ -97,9 +87,8 @@ export interface CaptureOptions {
 	/**
 	 * Maximum stderr bytes preserved on a captured-error path. Past the
 	 * limit, the surplus is dropped and `…[truncated]` is appended.
-	 * Default 500 (matches the legacy snapshot/sui-cli policy — the
-	 * narrowest of the three, and the one a TUI row can realistically
-	 * render). Set to `Infinity` to opt out of truncation entirely.
+	 * Default 500 — narrow enough for a TUI row to realistically render.
+	 * Set to `Infinity` to opt out of truncation entirely.
 	 */
 	readonly stderrTruncate?: number;
 	/**

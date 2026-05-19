@@ -34,9 +34,8 @@ export interface KnownPackageOptions {
 	 * `Sui({fork:{seed:{objects: [...]}}})` so the fork pre-fetches
 	 * them on first boot — without this, the fork's per-read GraphQL
 	 * dial-out would either error or silently degrade to
-	 * `ObjectNotFound` (R2). On non-fork stacks (live nets, localnet)
-	 * this field is ignored. Phase 3 P3.7 of
-	 * `notes/sui-fork-integration.md`.
+	 * `ObjectNotFound`. On non-fork stacks (live nets, localnet) this
+	 * field is ignored.
 	 */
 	readonly seedObjects?: ReadonlyArray<string>;
 }
@@ -96,7 +95,7 @@ export const KnownPackage = <const N extends string>(name: N, opts: KnownPackage
 	return tag(
 		`package/${name}` as const,
 		Effect.gen(function* () {
-			// Publish to the registry so the v4 manifest emitter picks it
+			// Publish to the registry so the manifest emitter picks it
 			// up alongside `Package(...)` entries. Without this, downstream
 			// readers (dapp-kit, frontend bindings imports) would only see
 			// locally-deployed packages.

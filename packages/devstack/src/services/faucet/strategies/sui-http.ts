@@ -1,7 +1,5 @@
-// SUI HTTP faucet strategy. Wraps the existing `engine/faucet.ts`
-// `requestFunds` so the new strategy registry surfaces it as a
-// `FaucetStrategy`. Honors the same retry budget defaults the legacy
-// path used.
+// SUI HTTP faucet strategy. Wraps `engine/faucet.ts`'s `requestFunds`
+// so the strategy registry surfaces it as a `FaucetStrategy`.
 //
 // `amount` is ignored — the localnet faucet ignores the requested
 // amount today (it funds a fixed amount per request). We accept the

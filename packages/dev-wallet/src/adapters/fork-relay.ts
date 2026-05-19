@@ -271,10 +271,10 @@ export class ForkRelay {
 
 export { ForkRelayHttpError };
 
-/** Narrow v4-shape input mirroring `DevstackAdapterManifest` —
- *  enough to discover the wallet endpoint + fork-mode flag without
- *  pulling in the full devstack `Manifest` type (no reverse
- *  dependency edge, same reasoning as `devstack-adapter.ts`). */
+/** Narrow input mirroring `DevstackAdapterManifest` — enough to
+ *  discover the wallet endpoint + fork-mode flag without pulling in
+ *  the full devstack `Manifest` type (no reverse dependency edge,
+ *  same reasoning as `devstack-adapter.ts`). */
 export interface ForkRelayManifest {
 	readonly app?: {
 		readonly wallet?: {

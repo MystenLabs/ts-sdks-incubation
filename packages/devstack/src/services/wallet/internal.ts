@@ -89,7 +89,7 @@ export const walletApp = (options: WalletAppOptions) => {
 			// Resolve each account tag — both for ordering (so accounts have been
 			// funded/registered before the wallet server is callable) and so we
 			// can wire the resolved Account values into the sign handler. Key by
-			// address (v3 endpoints look accounts up by address, not by name).
+			// address — the sign endpoints look accounts up by address, not name.
 			const accountsByAddress = new Map<string, Account>();
 			for (const acc of options.accounts) {
 				const account = yield* acc;
@@ -123,8 +123,8 @@ export const walletApp = (options: WalletAppOptions) => {
 			// configured via `--add-host` behaves the same way. Override
 			// via `bindAddress: '0.0.0.0'` for devcontainers / WSL where
 			// the browser lives on a different network interface; the
-			// CSRF defense (mandatory Origin header on signing endpoints,
-			// Phase 8 / C12) does the actual heavy lifting either way.
+			// CSRF defense (mandatory Origin header on signing endpoints)
+			// does the actual heavy lifting either way.
 			const bindAddress = options.bindAddress ?? '127.0.0.1';
 			// Auto-derive the routed dev-server origin from Identity so
 			// non-`main` stacks don't have to enumerate
@@ -283,12 +283,11 @@ export const walletApp = (options: WalletAppOptions) => {
 			// still in the manifest under `app.wallet.pairUrl` for
 			// programmatic consumers.
 			display: (s) => ({ title: 'wallet', primary: redactToken(s.pairUrl) }),
-			// Phase B (notes/parallel-graph-resolution.md §3.2): the body
-			// yields `SuiTag` then iterates `options.accounts`, yielding
-			// each Account ref to resolve its address+signer. Lift both
-			// into upstreams so the topological scheduler places the
-			// wallet strictly after Sui + all account members — otherwise
-			// the wallet lands in level 0 and fails with
+			// The body yields `SuiTag` then iterates `options.accounts`,
+			// yielding each Account ref to resolve its address+signer.
+			// Lift both into upstreams so the topological scheduler places
+			// the wallet strictly after Sui + all account members —
+			// otherwise the wallet lands in level 0 and fails with
 			// "Service not found: account/<name>" on the first account
 			// yield.
 			upstreamKeys: [SuiTag.key, ...options.accounts],
@@ -296,15 +295,11 @@ export const walletApp = (options: WalletAppOptions) => {
 	);
 };
 
-const redactToken = (pairUrl: string): string => {
-	// Match either fragment (post-C13) or query (legacy / external) forms.
-	return pairUrl
-		.replace(/#token=[^&]+/i, '#token=<redacted>')
-		.replace(/[?&]token=[^&]+/i, (m) => `${m[0]}token=<redacted>`);
-};
+const redactToken = (pairUrl: string): string =>
+	pairUrl.replace(/#token=[^&]+/i, '#token=<redacted>');
 
 // Start a minimal HTTP server backing the dev-wallet DevstackSignerAdapter.
-// Endpoints mirror the v3 wallet-app server:
+// Endpoints:
 //   GET  /api/v1/devstack/health              → { ok: true }             (auth-gated)
 //   GET  /api/v1/devstack/accounts            → { accounts: [...] }      (auth-gated)
 //   POST /api/v1/devstack/sign-transaction    → { suiSignature, txBytes }(auth-gated)
@@ -488,11 +483,9 @@ const handleAccounts = (
 		address: a.address,
 		scheme: a.scheme,
 		publicKey: Buffer.from(a.publicKey).toString('base64'),
-		// Phase 4 P4.18 — propagate the `source` discriminator to the
-		// browser-side wallet adapter so the accounts panel can render
-		// an "(impersonation)" badge on fork-mode impersonation slots.
-		// Optional + default `'real'` for backward compat with older
-		// `Account` interface consumers.
+		// Propagate the `source` discriminator to the browser-side wallet
+		// adapter so the accounts panel can render an "(impersonation)"
+		// badge on fork-mode impersonation slots. Defaults to `'real'`.
 		source: a.source ?? 'real',
 	}));
 	sendJson(res, 200, { accounts });

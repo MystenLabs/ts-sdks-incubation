@@ -125,8 +125,8 @@ export interface DeepbookIndexerStateRecord {
 	readonly networkAlias: string;
 }
 
-// Phase 3 — DeepBook server state. Captures both the REST URL (the
-// primary consumer-facing endpoint that the codegen emitter projects)
+// DeepBook server state. Captures both the REST URL (the primary
+// consumer-facing endpoint that the codegen emitter projects)
 // and the Prometheus metrics URL (matches the indexer's shape). The
 // server is stateless against the writable layer; everything it serves
 // is read on demand from the postgres + chain RPC pair, so the record
@@ -140,7 +140,7 @@ export interface DeepbookServerStateRecord {
 	readonly networkAlias: string;
 }
 
-// Phase 4 — DeepBook margin state. Captures the published margin +
+// DeepBook margin state. Captures the published margin +
 // liquidation package ids, the MarginRegistry + MaintainerCap shared
 // objects created by the margin Move source, and the per-asset
 // MarginPool object ids the factory creates as part of its single

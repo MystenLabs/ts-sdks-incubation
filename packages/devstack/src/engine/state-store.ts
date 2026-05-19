@@ -3,14 +3,14 @@
 // on every put/remove. Survives across runs so plugin state (published
 // package IDs, etc.) doesn't need re-publishing on every dev cycle.
 //
-// Path scoping (mirrors v3 `packages/devstack/src/persistence/paths.ts`):
+// Path scoping:
 //   - localnet:                       <appDir>/.devstack/stacks/<stack>/state.json
 //   - testnet / mainnet / devnet / …: <appDir>/.devstack/networks/<network>.json
 //
 //   appDir = process.env.DEVSTACK_APP_DIR ?? process.cwd()
 //
-// `DEVSTACK_STATE_DIR` env still wins as a legacy escape hatch — the
-// file lives at `${DEVSTACK_STATE_DIR}/state.json` ignoring stack/network.
+// `DEVSTACK_STATE_DIR` env wins as an explicit override — the file
+// lives at `${DEVSTACK_STATE_DIR}/state.json` ignoring stack/network.
 //
 // Multi-process safety:
 //   - Writes are atomic: write `state.json.tmp.<pid>.<time>.<rand>` then rename.
@@ -24,13 +24,12 @@
 //   - Lock release on Scope finalizer (only if `instanceId` still matches).
 //   - PID liveness check is portable: on Windows we use `tasklist` to detect
 //     existence but skip the start-time match (PID reuse on Windows is
-//     a known v1 trade-off); on POSIX we use `ps -o lstart=`. `EPERM` from
+//     accepted); on POSIX we use `ps -o lstart=`. `EPERM` from
 //     `process.kill(pid, 0)` is treated as alive (cross-user processes).
 //
 // Schema versioning:
-//   Persisted shape is `{version: 1, data: {...}}`. Legacy files (no
-//   `version` key) are auto-migrated by rewrapping. Higher versions fail
-//   loudly with a migration-needed error.
+//   Persisted shape is `{version: 1, data: {...}}`. Higher versions
+//   fail loudly with a migration-needed error.
 
 import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
@@ -59,7 +58,7 @@ export class StateStore extends Context.Service<StateStore, StateStoreShape>()(
 export interface StateStoreConfigShape {
 	readonly stack: string;
 	readonly network: SuiNetwork;
-	/** When set, overrides path scoping (legacy `DEVSTACK_STATE_DIR` behavior). */
+	/** When set, overrides path scoping (matches `DEVSTACK_STATE_DIR`). */
 	readonly stateDir?: string;
 }
 
@@ -117,8 +116,8 @@ interface ResolvedPaths {
 }
 
 const resolvePaths = (cfg: StateStoreConfigShape): ResolvedPaths => {
-	// Legacy escape hatch — explicit override wins. The historical layout
-	// is `${stateDir}/state.json` regardless of stack/network.
+	// Explicit override wins — the file lives at `${stateDir}/state.json`
+	// regardless of stack/network.
 	const envOverride = process.env.DEVSTACK_STATE_DIR;
 	if (envOverride !== undefined && envOverride.length > 0) {
 		return {
@@ -403,7 +402,6 @@ export const StateStoreLive: Layer.Layer<
 
 		// Read existing state if file exists, else start empty.
 		// Schema-version check fails loudly for newer-than-current versions.
-		// Legacy (un-versioned) files are auto-migrated by rewrapping.
 		// All other read errors (IO, malformed JSON) collapse to an empty
 		// map so a corrupt cache never blocks the dev stack from starting.
 		const empty: Record<string, unknown> = {};
@@ -419,16 +417,6 @@ export const StateStoreLive: Layer.Layer<
 											try: () => JSON.parse(txt, jsonBigintReviver) as unknown,
 											catch: (cause) => cause,
 										}).pipe(Effect.orElseSucceed(() => empty as unknown));
-
-										// Legacy: bare record, no `version` wrapper. Treat as v1
-										// payload and rewrap on next write.
-										if (
-											parsed !== null &&
-											typeof parsed === 'object' &&
-											!('version' in (parsed as object))
-										) {
-											return parsed as Record<string, unknown>;
-										}
 
 										if (
 											parsed !== null &&

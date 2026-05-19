@@ -300,7 +300,7 @@ export const Postgres = <const Name extends string = 'postgres'>(
 				primary: s.endpoint,
 				extras: [`${s.databases.length} db${s.databases.length === 1 ? '' : 's'}`],
 			}),
-			// Phase B (notes/parallel-graph-resolution.md §3.2): postgres
+			// Postgres
 			// is a leaf — its body reads Context.Services (Identity,
 			// Docker, etc.) satisfied by InfraLive, not any stack-member
 			// tag. Declare an empty upstream set so the scheduler treats

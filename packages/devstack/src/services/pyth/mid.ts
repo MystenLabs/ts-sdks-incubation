@@ -216,9 +216,9 @@ export const pythMid = <const Name extends string = 'pythMid'>(opts: PythMidOpti
 				title: `pyth.mid.${name}`,
 				primary: s.read().toString(),
 			}),
-			// Phase B (notes/parallel-graph-resolution.md §3.2): yields
-			// SuiTag, the pyth composite, and iterates `dependsOn`. Lift
-			// them so the topo scheduler places this primitive strictly
+			// Yields SuiTag, the pyth composite, and iterates `dependsOn`.
+			// Lift them so the topo scheduler places this primitive
+			// strictly
 			// after every provider.
 			upstreamKeys: [SuiTag.key, opts.pyth, ...(opts.dependsOn ?? [])],
 		},

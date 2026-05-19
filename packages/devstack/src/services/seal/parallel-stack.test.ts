@@ -120,17 +120,17 @@ describe('services/seal parallel-stack invariants', () => {
 	describe('state-store cache keys', () => {
 		it('two stacks with different chainIds get distinct seal/bls-keypair cache keys', () => {
 			// `services/seal/internal.ts` derives the BLS-keypair cache key
-			// via `buildCacheKey({namespace: 'seal/bls-keypair/v1', chainId,
+			// via `buildCacheKey({namespace: 'seal/bls-keypair', chainId,
 			// inputsHash})`. ChainId is per-stack (each stack runs its own
 			// localnet / fork); a name-collision under the same key would
 			// silently make one stack adopt the other's keypair.
 			const keyA = buildCacheKey({
-				namespace: 'seal/bls-keypair/v1',
+				namespace: 'seal/bls-keypair',
 				chainId: 'chainA',
 				inputsHash: 'abc',
 			});
 			const keyB = buildCacheKey({
-				namespace: 'seal/bls-keypair/v1',
+				namespace: 'seal/bls-keypair',
 				chainId: 'chainB',
 				inputsHash: 'abc',
 			});
@@ -144,12 +144,12 @@ describe('services/seal parallel-stack invariants', () => {
 			// keeps it parallel-safe across stacks WITHOUT making it
 			// non-deterministic within a stack.
 			const k1 = buildCacheKey({
-				namespace: 'seal/bls-keypair/v1',
+				namespace: 'seal/bls-keypair',
 				chainId: 'chainA',
 				inputsHash: 'abc',
 			});
 			const k2 = buildCacheKey({
-				namespace: 'seal/bls-keypair/v1',
+				namespace: 'seal/bls-keypair',
 				chainId: 'chainA',
 				inputsHash: 'abc',
 			});

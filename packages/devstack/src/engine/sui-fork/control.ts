@@ -6,24 +6,21 @@
 // Two responsibilities, file-disjoint from the rest of the sui-fork
 // engine bits so the supervisor's call site stays a one-liner each:
 //
-//   - `resolveAutoTickIntervalMs` + `runAutoTickClock` —
-//     Phase 5 Subtopic 3 (P5.5). Translates the public
-//     `SuiForkOptions.autoTick` knob (`boolean | { intervalMs: number }`)
-//     into a wall-clock interval and forks a scope-bound fiber that
-//     calls `ForkControl.advanceClock(intervalMs)` on a
+//   - `resolveAutoTickIntervalMs` + `runAutoTickClock` — translates the
+//     public `SuiForkOptions.autoTick` knob (`boolean | { intervalMs:
+//     number }`) into a wall-clock interval and forks a scope-bound
+//     fiber that calls `ForkControl.advanceClock(intervalMs)` on a
 //     `Schedule.spaced(intervalMs)` cadence. The fiber dies cleanly on
 //     scope teardown (the surrounding stack acquire's scope), so wipe /
 //     restart / Ctrl-C all stop the tick without orphaning anything.
 //
 //   - `subscribeCheckpoints` + `subscribeCheckpointsWithFallback` —
-//     Phase 5 Subtopic 7 (P5.10). Wraps the SDK's
-//     `SubscriptionServiceClient.subscribeCheckpoints` server-streaming
-//     RPC in an `Effect.Stream`. The fallback variant catches stream
-//     errors (the fork may not implement the subscription RPC, the
-//     connection may drop, etc.) and switches to a polling
-//     `Schedule.spaced(2s)` loop over `forkingService.GetStatus` until
-//     the next consumer-driven retry — that's the R4 mitigation in the
-//     parent plan.
+//     wraps the SDK's `SubscriptionServiceClient.subscribeCheckpoints`
+//     server-streaming RPC in an `Effect.Stream`. The fallback variant
+//     catches stream errors (the fork may not implement the
+//     subscription RPC, the connection may drop, etc.) and switches to
+//     a polling `Schedule.spaced(2s)` loop over
+//     `forkingService.GetStatus` until the next consumer-driven retry.
 //
 // Why these live in `engine/sui-fork/` and not `services/sui.ts`: the
 // helpers know about the SDK's wire shape (`SuiGrpcClient`,
@@ -39,12 +36,11 @@ import { SuiError } from '../errors.js';
 import { stringifyCause } from '../stringify-cause.js';
 
 // -----------------------------------------------------------------------------
-// Phase 5 Subtopic 3 — auto-tick clock
+// Auto-tick clock
 // -----------------------------------------------------------------------------
 
 /** Default cadence when the caller passes `autoTick: true` without an
- *  explicit interval. 1s mirrors the plan's P5.5 example
- *  (`autoTickMs: 1000`) and keeps clock-gated Move logic moving without
+ *  explicit interval. 1s keeps clock-gated Move logic moving without
  *  flooding the fork with consensus-commit-prologue txs. */
 export const DEFAULT_AUTO_TICK_INTERVAL_MS = 1000;
 
@@ -76,7 +72,7 @@ export const resolveAutoTickIntervalMs = (option?: AutoTickOption): number | und
 
 /**
  * Resume-aware variant — folds an on-disk `ForkMeta.runtime.autoTickMs`
- * (Phase 5 P5.5.4) in as a fallback when the caller did NOT pass a
+ * in as a fallback when the caller did NOT pass a
  * fresh `autoTick` option. Precedence:
  *
  *   1. Fresh option present (any of `true` / `false` / `{intervalMs}`)
@@ -151,7 +147,7 @@ export const runAutoTickClock = (args: {
 	});
 
 // -----------------------------------------------------------------------------
-// Phase 5 Subtopic 7 — subscriptions
+// Subscriptions
 // -----------------------------------------------------------------------------
 
 /** Stable wire shape emitted on every checkpoint event. Mirrors the
@@ -236,8 +232,7 @@ export const pollCheckpoints = (
 	// `mapAccum` carries a `lastCursor` state across emissions so we
 	// only surface a `ForkCheckpointEvent` when the local sequence
 	// actually advances. Polling the fork's status at 2s cadence is
-	// chatty by design (matches the dev-wallet panel's pre-Phase-5
-	// poll loop); the dedupe keeps the consumer-side event stream
+	// chatty by design; the dedupe keeps the consumer-side event stream
 	// quiet between operator-driven advance-checkpoint verbs.
 	return Stream.fromEffectSchedule(tick, Schedule.spaced(pollIntervalMs)).pipe(
 		Stream.mapAccum(

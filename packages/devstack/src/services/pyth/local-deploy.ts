@@ -1,11 +1,9 @@
 // `pythLocalDeploy(opts)` — publish a vendored Pyth Move package +
 // create one `PriceInfoObject` per requested feed. State-store cache at
-// `pyth/package/v1/<chainId>/<pythPackageId>/<feedsHash>` short-circuits
+// `pyth/package/<chainId>/<pythPackageId>/<feedsHash>` short-circuits
 // the create-feeds tx on resume; cache hits verify each PriceInfoObject's
 // objectType matches `<pythPackageId>::price_info::PriceInfoObject`
 // before trusting.
-//
-// Mirrors `~/code/deepbook-sandbox/sandbox/scripts/utils/oracle.ts:61-156`.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -35,7 +33,7 @@ import {
 // `StateStoreKeys.pythPackage({chainId, packageId, feedsHash})`. The
 // prefix is also re-exported below as `STATE_KEY_PYTH_PREFIX_INTERNAL`
 // for the pyth tests that lock the on-disk shape.
-const STATE_KEY_PYTH_PREFIX = 'pyth/package/v1';
+const STATE_KEY_PYTH_PREFIX = 'pyth/package';
 
 interface CachedPythPriceInfo {
 	readonly feedId: PythPriceFeedId;
@@ -358,9 +356,9 @@ export const pythLocalDeploy = <const Name extends string = 'pyth'>(
 				primary: s.packageId,
 				extras: [`${s.priceInfos.length} feed${s.priceInfos.length === 1 ? '' : 's'}`],
 			}),
-			// Phase B (notes/parallel-graph-resolution.md §3.2): yields
-			// SuiTag, the signer Account ref, the publishMove tag, and
-			// iterates `dependsOn`. Lift them all into upstreams. When
+			// Yields SuiTag, the signer Account ref, the publishMove tag,
+			// and iterates `dependsOn`. Lift them all into upstreams.
+			// When
 			// `opts.vendor` is set, the publishMove `path:` Effect yields
 			// the vendor tag too — lift it so the topo scheduler orders
 			// the vendor build before the publish runs.

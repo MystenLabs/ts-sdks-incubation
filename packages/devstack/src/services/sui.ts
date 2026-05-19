@@ -6,8 +6,8 @@
 // fullnodes; `network: { rpc, faucet? }` is the escape hatch for custom
 // RPCs (corporate fullnodes, pinned forks, air-gapped mirrors).
 //
-// This file also carries the canonical `SuiTag` Context.Service tag
-// (Phase 4), the `SuiNetwork` literal alias used across the engine, the
+// This file also carries the canonical `SuiTag` Context.Service tag,
+// the `SuiNetwork` literal alias used across the engine, the
 // `suiNetworkName` helper used by walrus + seal container-joining
 // primitives, and the `faucetReadyProbe` that gates funds-transferable
 // readiness on localnet.
@@ -107,10 +107,10 @@ const FORK_GRPC_PORT = 9000;
 // builder cargo-builds from. Bump in lockstep with sui-fork crate API
 // changes — fold the bump + a refreshed `TEST_TESTNET_CHECKPOINT` in
 // the same commit so test gates run against the bumped binary. As of
-// 2026-05-18 this is `259b947bf5e7e8b9b9f3...` (Phase 1 pin); the
-// vendored image is content-addressed so a bump rebuilds the layer.
-// Resolved 2026-05-18 from `MystenLabs/sui` main: includes the latest
-// sui-fork commits as of Phase 1 — `259b947bf5 [sui-fork] add back
+// 2026-05-18 this is `259b947bf5e7e8b9b9f3...`; the vendored image is
+// content-addressed so a bump rebuilds the layer. Resolved 2026-05-18
+// from `MystenLabs/sui` main: includes the latest sui-fork commits
+// — `259b947bf5 [sui-fork] add back
 // ConsensusAddressOwner support for owned objects and seeding (#26635)`.
 const DEFAULT_SUI_FORK_REV = '259b947bf5b07cded7481c0c1f5e88470939c930';
 const SUI_FORK_NETWORK_ALIAS = 'sui-fork';
@@ -122,7 +122,7 @@ const SUI_FORK_NETWORK_ALIAS = 'sui-fork';
 // no host port mapping.
 //
 // The image is built from `packages/devstack/images/postgres/Dockerfile`
-// (Phase 2.2 of the snapshot redesign) — upstream postgres declares
+// — upstream postgres declares
 // `VOLUME /var/lib/postgresql/data`, which docker excludes from
 // `docker commit`. The vendored Dockerfile relocates PGDATA to
 // `/pgdata` (off the inherited VOLUME) so the indexer's schema + rows
@@ -295,8 +295,7 @@ export interface ForkControl {
 	 *  calling `advanceClock` with. `undefined` when
 	 *  `Sui({fork:{autoTick}})` is unset / `false`. Surfaced here so the
 	 *  dev-wallet relay (and any operator-facing observer) can report
-	 *  "auto-tick active (1000ms)" without re-parsing the user's options.
-	 *  Phase 5 Subtopic 3 (P5.5). */
+	 *  "auto-tick active (1000ms)" without re-parsing the user's options. */
 	readonly autoTickMs?: number;
 	/** Fetch the current `ForkStatus`. */
 	readonly status: () => Effect.Effect<ForkStatus, SuiError>;
@@ -306,9 +305,8 @@ export interface ForkControl {
 	readonly advanceCheckpoint: () => Effect.Effect<ForkAdvanceCheckpointResult, SuiError>;
 	/** Subscribe to the fork's checkpoint stream. Emits one event per
 	 *  new checkpoint; falls back to polling on subscription stream
-	 *  error per R4. Replaces the polling-only path consumers used in
-	 *  Phase 4. Phase 5 Subtopic 7 (P5.10). The returned stream is
-	 *  scope-bound — drop the stream (Effect's normal scope teardown)
+	 *  error. The returned stream is scope-bound — drop the stream
+	 *  (Effect's normal scope teardown)
 	 *  to close the underlying gRPC connection. */
 	readonly subscribeCheckpoints: () => Stream.Stream<ForkCheckpointEvent, SuiError>;
 	/**
@@ -321,7 +319,7 @@ export interface ForkControl {
 	 *
 	 * Use cases:
 	 *   - Fund a fresh ephemeral account from a seeded sender during
-	 *     stack acquire (Phase 2 auto-promotion path).
+	 *     stack acquire (auto-promotion path).
 	 *   - One-off scripts that want to execute a Move call as an
 	 *     arbitrary address (e.g. a treasury cap holder).
 	 */
@@ -333,9 +331,7 @@ export interface ForkControl {
 }
 
 /** Canonical Sui service tag. Named `SuiTag` (not `Sui`) so the factory
- *  `Sui(opts?)` in this file can take the public-surface name. The
- *  Context key (`'@devstack/SuiTag'`) is unchanged, so any layer keyed
- *  against the legacy `Sui` class identity continues to resolve. */
+ *  `Sui(opts?)` in this file can take the public-surface name. */
 export class SuiTag extends Context.Service<SuiTag, Sui>()('@devstack/SuiTag') {}
 
 /** Runtime-validation mirror of `Endpoint`. Used by `SuiSchema`. */
@@ -574,7 +570,7 @@ const awaitIndexerDbReady = (containerId: string) => {
 
 /** Localnet-specific knobs. Pass via `Sui({ localnet: {...} })`. */
 export interface SuiLocalnetOptions {
-	/** Pre-built image reference. Accepts the unified Phase 3.8
+	/** Pre-built image reference. Accepts the unified
 	 *  `DockerContainerImage` shape: `{pull: 'org/sui:tag'}` for a
 	 *  registry image (e.g. an air-gapped GHCR mirror) or
 	 *  `{build: {context, dockerfile, buildArgs}}` for a local
@@ -634,7 +630,7 @@ export interface SuiCustomOptions {
  * `'mainnet'` etc.) and passed to `sui-fork start --network`.
  */
 export interface SuiForkOptions {
-	/** Pre-built image reference. Accepts the unified Phase 3.8
+	/** Pre-built image reference. Accepts the unified
 	 *  `DockerContainerImage` shape: `{pull: 'org/sui-fork:tag'}` for a
 	 *  registry image (e.g. a GHCR mirror) or
 	 *  `{build: {context, dockerfile, buildArgs}}` for a local Dockerfile
@@ -654,7 +650,7 @@ export interface SuiForkOptions {
 	 *  fork's local index (so `listOwnedObjects` works for them), and
 	 *  arbitrary object IDs to pre-fetch (so reads against them hit the
 	 *  local index instead of the upstream GraphQL). `addresses` is the
-	 *  primary knob for Phase 2's impersonation funding pattern. */
+	 *  primary knob for the impersonation funding pattern. */
 	readonly seed?: {
 		readonly addresses?: ReadonlyArray<string>;
 		readonly objects?: ReadonlyArray<string>;
@@ -670,9 +666,9 @@ export interface SuiForkOptions {
 	 *  serial upstream GraphQL fetches to warm system state (R10), and
 	 *  120s is sometimes not enough on a slow connection. */
 	readonly readyTimeoutMs?: number;
-	/** Auto-tick the on-chain clock at a wall-clock cadence. Phase 5
-	 *  Subtopic 3 (P5.5) — move-side logic that gates on
-	 *  `clock::timestamp_ms()` (auctions, vesting, time-window
+	/** Auto-tick the on-chain clock at a wall-clock cadence. Move-side
+	 *  logic that gates on `clock::timestamp_ms()` (auctions, vesting,
+	 *  time-window
 	 *  vaults) is painful to develop against a fork because the clock
 	 *  only advances on explicit `advanceClock` RPC calls. Setting
 	 *  this option spawns a scope-bound supervisor fiber that fires
@@ -712,9 +708,8 @@ export interface SuiOptions {
 	 *  Grandfathered exception to AGENTS.md's `kind:` discriminator
 	 *  convention (synthesis F-03; review-followups §10.5 settled
 	 *  2026-05-19): `network:` doubles as the network-selector input
-	 *  *and* the resolved-network output on `Sui.network`. Renaming to
-	 *  `kind:` would break a published API for marginal type-safety
-	 *  gain, so the legacy shape stays. New services adopt `kind:`. */
+	 *  *and* the resolved-network output on `Sui.network`. New services
+	 *  adopt `kind:`. */
 	readonly network?:
 		| 'localnet'
 		| 'testnet'
@@ -904,9 +899,8 @@ const buildLocalnet = (options: SuiLocalnetOptions): StackMember => {
 		// state (schema + rows) lives in the writable layer at `/pgdata`
 		// (the vendored Dockerfile relocates PGDATA off the upstream
 		// VOLUME, so `docker commit` captures it for snapshots). Cycle
-		// teardown via `docker stop` keeps the layer for the next `up` to
-		// resume. Old per-(app, stack) named volumes from the pre-Phase-2
-		// layout are swept by `devstack wipe`.
+		// teardown via `docker stop` keeps the layer for the next `up`
+		// to resume.
 		//
 		// `runDockerContainer({tag})` consumes the image tag the sibling
 		// `indexerDbImage` already materialized at factory time (see
@@ -950,8 +944,8 @@ const buildLocalnet = (options: SuiLocalnetOptions): StackMember => {
 		yield* awaitIndexerDbReady(indexerDb.containerId);
 
 		// Chain state lives in the writable layer at `/root/.sui`.
-		// Pre-Phase 2 this was a named volume (`devstack-<app>-sui-data`)
-		// so `docker rm` would preserve state — but volumes are excluded
+		// Earlier iterations used a named volume (`devstack-<app>-sui-data`)
+		// to preserve state across `docker rm`, but volumes are excluded
 		// from `docker commit`, breaking the snapshot capture surface.
 		// Now: `docker stop` on cycle teardown keeps the writable layer
 		// for the next `up` to resume via the reuse-if-image-matches probe
@@ -1215,7 +1209,7 @@ const buildLocalnet = (options: SuiLocalnetOptions): StackMember => {
 				...(endpoints.length > 1 ? { endpoints } : { primary: s.rpc.host }),
 			};
 		},
-		// Phase B (notes/parallel-graph-resolution.md §3.1): the sui
+		// The sui
 		// builders are leaves from the stack graph's perspective. The body
 		// yields `Identity` (a Context.Service satisfied by InfraLive at
 		// run time, not a stack member) and the two sibling LayeredTags
@@ -1327,7 +1321,7 @@ const buildTestnet = (options: SuiTestnetOptions): StackMember => {
 				...(endpoints.length > 1 ? { endpoints } : { primary: s.rpc.host }),
 			};
 		},
-		// Phase B: live-net handle, pure RPC wrapper — no in-stack
+		// Live-net handle, pure RPC wrapper — no in-stack
 		// upstreams (no LayeredTag yields, no sibling image layers).
 		upstreamKeys: [],
 	});
@@ -1375,7 +1369,7 @@ const buildMainnet = (options: SuiMainnetOptions): StackMember => {
 				...(endpoints.length > 1 ? { endpoints } : { primary: s.rpc.host }),
 			};
 		},
-		// Phase B: mainnet handle, pure RPC wrapper — no in-stack
+		// Mainnet handle, pure RPC wrapper — no in-stack
 		// upstreams.
 		upstreamKeys: [],
 	});
@@ -1431,7 +1425,7 @@ const buildCustom = (options: SuiCustomOptions): StackMember => {
 		plugin: 'sui',
 		displayTitle: `sui.${options.network ?? 'custom'}`,
 		display: (s) => ({ title: `sui.${s.network}`, primary: s.rpc.host }),
-		// Phase B: custom-RPC handle. The caller supplies bare URLs and we
+		// Custom-RPC handle. The caller supplies bare URLs and we
 		// wrap them — no LayeredTag yields, no sibling image layers.
 		upstreamKeys: [],
 	});
@@ -1574,9 +1568,9 @@ const buildForkControl = (
 	const impersonate: ForkControl['impersonate'] = (sender, tx, opts) =>
 		executeImpersonated(client, sender, tx, opts);
 
-	// Subscription wire model — Phase 5 Subtopic 7 (P5.10). The factory
-	// returns a fresh Stream each call so two consumers (CLI `--follow`
-	// + dev-wallet panel) each get their own gRPC subscription and the
+	// Subscription wire model. The factory returns a fresh Stream each
+	// call so two consumers (CLI `--follow` + dev-wallet panel) each
+	// get their own gRPC subscription and the
 	// underlying connection ties to their own scope. The fallback path
 	// is baked in: subscription error → polling at 2s.
 	const subscribeCheckpoints: ForkControl['subscribeCheckpoints'] = () =>
@@ -1659,14 +1653,14 @@ const buildFork = (
 		yield* setPhase('acquiring data-dir lock');
 		yield* acquireForkDataLock(lockPath);
 
-		// Meta consistency gate (R6 mitigation; Phase 4 P4.16). Compares
+		// Meta consistency gate. Compares
 		// the current `SuiForkOptions` against the on-disk meta.json so a
 		// config drift surfaces with an actionable
 		// `SeedManifestMismatchError` BEFORE we hand the data dir to
 		// sui-fork — whose own write-once seed manifest check (R6) fails
 		// later with a non-actionable Rust panic message.
 		const seedAddrsRaw = options.seed?.addresses ?? [];
-		// Phase 3 P3.7: union the user-supplied seed objects with any
+		// Union the user-supplied seed objects with any
 		// `KnownPackage(..., {seedObjects})` accumulated at composition
 		// time. Order doesn't matter — `acquire` runs strictly AFTER all
 		// factories have evaluated — and the dedupe via `Set` absorbs
@@ -1715,9 +1709,9 @@ const buildFork = (
 		const image = (yield* forkImage).tag;
 
 		// Per-stack docker network so the fork's `sui-fork` DNS alias
-		// resolves from peer containers (deepbook indexer etc. in
-		// Phase 3+). Also lets two stacks of the same app run forks
-		// concurrently without colliding on the in-container port.
+		// resolves from peer containers (deepbook indexer etc.). Also
+		// lets two stacks of the same app run forks concurrently
+		// without colliding on the in-container port.
 		const networkName = suiForkNetworkName(identity);
 		yield* Docker.networkCreate(networkName).pipe(
 			Effect.catchTag('DockerError', (cause) =>
@@ -1870,9 +1864,9 @@ const buildFork = (
 		// reads through this single guarded handle.
 		const client = forkGuard(baseClient);
 
-		// Phase 5 Subtopic 3 (P5.5) — auto-tick clock. The supervisor's
-		// scope binds the fiber, so a wipe / restart / Ctrl-C tears the
-		// fiber down alongside the container. `autoTickMs` was resolved
+		// Auto-tick clock. The supervisor's scope binds the fiber, so a
+		// wipe / restart / Ctrl-C tears the fiber down alongside the
+		// container. `autoTickMs` was resolved
 		// above (folding the on-disk `runtime.autoTickMs` carry per
 		// P5.5.4 in as a fallback when the caller didn't re-pass
 		// `autoTick`); `undefined` means auto-tick stays off. We log
@@ -1922,7 +1916,7 @@ const buildFork = (
 				...(endpoints.length > 1 ? { endpoints } : { primary: s.rpc.host }),
 			};
 		},
-		// Phase B: the fork builder yields `Identity` (a Context.Service)
+		// The fork builder yields `Identity` (a Context.Service)
 		// and the sibling `forkImage` LayeredTag. The sibling is folded
 		// into `__layers` (mirrors how walrus treats `upstreamImage`) and
 		// doesn't enter `__upstreamKeys` — the fork variant is a leaf from
@@ -1932,8 +1926,7 @@ const buildFork = (
 
 	// Surface the fork image layer alongside the service tag — mirrors
 	// `buildLocalnet`'s `__layers` shape so the supervisor schedules the
-	// image build before the service body. `forkImage` is always defined
-	// post-Phase 3.8.
+	// image build before the service body. `forkImage` is always defined.
 	const baseLayers: ReadonlyArray<Layer.Layer<any, any, any>> = [
 		...forkImage.__layers,
 		tag.__layer,

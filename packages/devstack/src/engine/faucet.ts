@@ -212,10 +212,9 @@ export const requestFunds = (opts: {
 		const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 		const maxAttempts = opts.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
 		const initialDelayMs = opts.initialDelayMs ?? DEFAULT_INITIAL_DELAY_MS;
-		// `faucetUrl` is the BASE (e.g. `http://localhost:9123`). The v2
-		// gas path is appended by `requestFundsOnce` — matches v3's
-		// `accounts.ts:440` convention so callers (and any externally
-		// supplied faucet URL) only deal in bases.
+		// `faucetUrl` is the BASE (e.g. `http://localhost:9123`). The
+		// `/v2/gas` path is appended by `requestFundsOnce` so callers
+		// (and any externally supplied faucet URL) only deal in bases.
 		yield* Effect.annotateCurrentSpan({
 			'faucet.url': opts.faucetUrl,
 			'faucet.address': opts.address,

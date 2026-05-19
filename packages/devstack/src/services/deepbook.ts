@@ -231,7 +231,7 @@ export interface DeepbookOptions {
  *  deployed package id + pool map. Pair with {@link DeepbookMarketMaker}
  *  when continuous liquidity is needed.
  *
- *  Fork mode (Phase 3, D5): when the resolved network is a `*-fork`
+ *  Fork mode: when the resolved network is a `*-fork`
  *  variant, routes to `deepbookKnownPackage` against the WRAPPED
  *  upstream (e.g. `'mainnet-fork'` → `deepbookKnownPackage({network:
  *  'mainnet'})`). The fork serves the upstream's real deepbook package

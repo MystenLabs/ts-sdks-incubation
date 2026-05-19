@@ -161,14 +161,7 @@ export interface ProvideOptions<A> {
 	 * (the tag's key directly). The substrate flattens this list at
 	 * factory time and stamps the result onto `StackMember.__upstreamKeys`
 	 * — the field `buildDepGraph` (engine/dep-graph.ts) reads to compute
-	 * the dep graph + downstream-closure for selective restart, and that
-	 * Phase B's topological scheduler will read to lay out parallel
-	 * build levels.
-	 *
-	 * For Phase A this field is data-only: the existing `composeStackLayer`
-	 * fold still drives runtime ordering. Phase B replaces the fold with
-	 * a topo-level scheduler that consults this declaration as the source
-	 * of truth.
+	 * the dep graph + downstream-closure for selective restart.
 	 *
 	 * Unknown / dangling references (a key not present in the stack) are
 	 * tolerated by `buildDepGraph` and dropped — see `dep-graph.ts` for
@@ -251,14 +244,12 @@ export interface LayeredTag<Name extends string, A, R = never, E = never> extend
 	/** When `true`, the tag does not surface as a TUI row. See `ProvideOptions.hidden`. */
 	readonly __hidden?: boolean;
 	/**
-	 * Static upstream-dep declaration (Phase A of
-	 * `notes/parallel-graph-resolution.md`). Resolved at factory time
-	 * from `ProvideOptions.upstreamKeys` — either a `LayeredTag`
-	 * (the field reads its `.key`) or a bare string. `buildDepGraph`
-	 * consumes this; Phase B's topological scheduler will too. Absence
-	 * is treated as "this is a leaf / hand-rolled escape hatch" — the
-	 * graph builder simply gets an empty upstream set, and the
-	 * compose-time invariant warns but does not throw.
+	 * Static upstream-dep declaration. Resolved at factory time from
+	 * `ProvideOptions.upstreamKeys` — either a `LayeredTag` (the field
+	 * reads its `.key`) or a bare string. `buildDepGraph` consumes
+	 * this. Absence is treated as "this is a leaf / hand-rolled escape
+	 * hatch" — the graph builder simply gets an empty upstream set, and
+	 * the compose-time invariant warns but does not throw.
 	 */
 	readonly __upstreamKeys?: ReadonlyArray<string>;
 	/** Unique-symbol brand identifying this object as a devstack stack
@@ -281,12 +272,12 @@ export interface LayeredTag<Name extends string, A, R = never, E = never> extend
  * who add `Effect.withSpan('<tag>.<phase>')` inside `build` — the engine
  * doesn't peek at spans yet (Wave 10+).
  *
- * Per-primitive scope (Phase 2 of selective-restart): every Layer built
- * by `Layer.effect(TagClass, build)` already gets its own scope via
- * Effect's MemoMap (see `memoMapBuild` in `effect/Layer.ts`). The wrap
- * captures that ambient scope and registers it with the engine so the
- * supervisor can close just one primitive's resources on a watch-fire
- * (Phase 3's `engine.invalidateSubset`). Resources allocated by the
+ * Per-primitive scope: every Layer built by `Layer.effect(TagClass,
+ * build)` already gets its own scope via Effect's MemoMap (see
+ * `memoMapBuild` in `effect/Layer.ts`). The wrap captures that ambient
+ * scope and registers it with the engine so the supervisor can close
+ * just one primitive's resources on a watch-fire
+ * (`engine.invalidateSubset`). Resources allocated by the
  * build body (containers via `Docker.run`, files via `Effect.acquireRelease`,
  * …) attach to this scope automatically — there is no per-primitive
  * lifecycle escape hatch anymore; every primitive's resources stay
@@ -313,8 +304,8 @@ const withEngineLifecycle = <A, E, R>(
 		// The ambient `Scope` here is the per-primitive layer scope that
 		// `memoMapBuild` forked off the supervisor scope. Capturing it
 		// lets the engine close just this one primitive's resources when
-		// Phase 3's `engine.invalidateSubset` fires for `name` — its
-		// finalizers (container `docker stop`, files, etc.) release
+		// `engine.invalidateSubset` fires for `name` — its finalizers
+		// (container `docker stop`, files, etc.) release
 		// without touching siblings. Registration is a noop outside a
 		// devstack (engine absent — standalone tests).
 		const primitiveScope = yield* Effect.scope;

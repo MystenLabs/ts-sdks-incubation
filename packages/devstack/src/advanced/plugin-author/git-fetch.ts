@@ -188,9 +188,9 @@ export const gitFetch = <const Name extends string>(options: GitFetchOptions<Nam
 				//    checkout if the ref is a sha or the host rejects
 				//    shallow.
 				//
-				// Phase G: GC sibling refHash dirs under the same `parentDir`
-				// before cloning. A moving branch ref (`ref: 'main'`) cuts a
-				// new refHash on every upstream advance — without GC each new
+				// GC sibling refHash dirs under the same `parentDir` before
+				// cloning. A moving branch ref (`ref: 'main'`) cuts a new
+				// refHash on every upstream advance — without GC each new
 				// fetch leaves the prior clone parked under `<parentDir>/<old-hash>`
 				// forever. Bound the cache to "one entry per (repo, name)" by
 				// removing any sibling that's not us. Best-effort: a failure
@@ -275,9 +275,9 @@ export const gitFetch = <const Name extends string>(options: GitFetchOptions<Nam
 			// own failure row.
 			hidden: true,
 			// Leaf in the dep graph — `gitFetch` reads external git +
-			// filesystem; it has no in-stack upstream tags. Explicit empty
-			// satisfies the Phase A compose-time invariant ("declared no
-			// upstreams" vs "forgot to declare").
+			// filesystem; it has no in-stack upstream tags. Explicit
+			// empty distinguishes "declared no upstreams" from "forgot
+			// to declare".
 			upstreamKeys: [],
 		},
 	);

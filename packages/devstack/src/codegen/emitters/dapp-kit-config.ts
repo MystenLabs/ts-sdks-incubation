@@ -193,7 +193,7 @@ export const DappKitConfigEmitter = (opts: DappKitConfigEmitterOptions = {}): Em
 					.flatMap((p) => (p.mvr !== undefined ? [[p.mvr, p.id] as const] : []))
 					.sort(([a], [b]) => a.localeCompare(b));
 
-				// Phase 3 P3.6 — fork-mode translation. The manifest's
+				// Fork-mode translation. The manifest's
 				// `services.sui.network` carries the unstripped devstack
 				// network literal (e.g. `'mainnet-fork'`). dapp-kit needs
 				// the stripped form (`'mainnet'`) so `getChainIdentifier`

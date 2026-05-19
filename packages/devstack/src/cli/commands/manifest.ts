@@ -9,7 +9,7 @@
 // `DEVSTACK_MANIFEST_PATH` env var, `DEVSTACK_STACK`, and walk-up from cwd
 // are all honored — matching how the runtime / playwright fixtures find
 // the same file. The supervisor writes to
-// `<stateDir>/stacks/<stack>/manifest.json`, never the legacy flat path.
+// `<stateDir>/stacks/<stack>/manifest.json`.
 
 import { Console, Effect, Option } from 'effect';
 import { Argument, Command, Flag } from 'effect/unstable/cli';
@@ -52,10 +52,8 @@ export const manifestCommand = Command.make(
 					const coins = Object.entries(m.coins);
 					const extras = m.app.extras;
 
-					// Endpoints: walk the typed services + app block. Same surface
-					// as the prior implementation's flat `endpoints[]` table — we
-					// project here from the typed v5 shape so a future schema
-					// change doesn't drift this rendering.
+					// Endpoints: walk the typed services + app block, projecting
+					// to a flat name/url/kind table for the rendering below.
 					const printedEps: Array<{ name: string; url: string; kind?: string }> = [];
 					if (m.services.sui !== undefined) {
 						printedEps.push({ name: 'sui-rpc', url: m.services.sui.rpc.url });

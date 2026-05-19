@@ -170,7 +170,7 @@ describe('state-store path precedence', () => {
 		}),
 	);
 
-	it.effect('DEVSTACK_STATE_DIR legacy escape hatch wins over everything', () =>
+	it.effect('DEVSTACK_STATE_DIR override wins over stack/network scoping', () =>
 		Effect.gen(function* () {
 			process.env.DEVSTACK_STATE_DIR = '/legacy';
 			process.env.DEVSTACK_APP_DIR = '/should-be-ignored';

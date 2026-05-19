@@ -1,17 +1,15 @@
 // `devstack stack <sub>` — per-app stack management.
 //
-// V3 parity port. A stack is a named, isolated set of state under
+// A stack is a named, isolated set of state under
 // `.devstack/stacks/<name>/`. The active stack name lives in
 // `.devstack/active` (single line, no trailing newline normalization).
 //
-// V4 caveat: the current state-store (`internal/state-store.ts`) writes a
-// flat `.devstack/state.json` regardless of stack name. The stack
-// subcommands lay down the per-stack directory structure that a future
-// stack-aware state store will consume, plus the `active` file the engine
-// will eventually read. Until that wiring lands, `stack new`/`use` are
-// effectively no-ops for the running engine — but they keep the CLI surface
-// stable so apps can opt in to multi-stack flows as soon as the runtime
-// supports them.
+// The state-store (`internal/state-store.ts`) currently writes a flat
+// `.devstack/state.json` regardless of stack name. The stack subcommands
+// lay down the per-stack directory structure plus the `active` file the
+// engine will eventually read. Until that wiring lands, `stack new`/`use`
+// are effectively no-ops for the running engine — but they keep the CLI
+// surface stable so apps can opt in to multi-stack flows.
 
 import { Console, Effect, FileSystem, Option, Path } from 'effect';
 import { Argument, Command, Flag } from 'effect/unstable/cli';
@@ -115,8 +113,8 @@ const newCommand = Command.make(
 		}),
 ).pipe(Command.withDescription('Create the per-stack state directory (idempotent)'));
 
-// `devstack stack use <name>` — write `<DEVSTACK_STATE_DIR>/active`. mkdir-p's the
-// target dir on the way through, mirroring v3.
+// `devstack stack use <name>` — write `<DEVSTACK_STATE_DIR>/active`.
+// mkdir-p's the target dir on the way through.
 const useCommand = Command.make(
 	'use',
 	{ name: Argument.string('name').pipe(Argument.withDescription('Stack to mark active')) },
@@ -144,12 +142,11 @@ const useCommand = Command.make(
 // the container's writable layer survives so a follow-up `devstack up`
 // resumes via the reuse-if-image-matches probe in `engine/docker/core.ts`
 // (~1s warm start). This invariant is load-bearing for snapshots — chain
-// state now lives in the writable layer (Phase 2.1 + Phase 2.2 of the
-// snapshot redesign dropped the named volumes that previously held it),
-// so anything that `docker rm` here would lose that state and force a
+// state lives in the writable layer (no named volumes hold it), so
+// anything that `docker rm` here would lose that state and force a
 // genesis rebuild.
 //
-// `--force` opts into the legacy destructive behavior (`docker rm -f`).
+// `--force` opts into destructive behavior (`docker rm -f`).
 // Use that only when you specifically want to throw the writable layer
 // away — typically right before `devstack wipe`, or in CI scripts that
 // preserve named volumes but rebuild from scratch on every run.
@@ -237,12 +234,12 @@ const dropCommand = Command.make(
 // `force=false` (default): `docker stop` — preserves the writable layer
 // so a follow-up `devstack up` adopts the existing container via the
 // reuse-if-image-matches probe (~1s resume). This is what the snapshot
-// design depends on: chain state lives in the writable layer (Phase 2),
-// so `docker rm` here would force a fresh genesis on next boot.
+// design depends on: chain state lives in the writable layer, so
+// `docker rm` here would force a fresh genesis on next boot.
 //
 // `force=true`: `docker rm -f` — destroys the container including its
-// writable layer. Equivalent to the pre-Phase 2 behavior of `stack down`.
-// Use only when starting from a clean container is the goal.
+// writable layer. Use only when starting from a clean container is the
+// goal.
 const takeDownContainers = (spawner: Spawner, stack: string, force: boolean) =>
 	Effect.gen(function* () {
 		const lsCmd = ChildProcess.make('docker', [

@@ -32,7 +32,7 @@ import {
 // State-store key prefix for pyth-pusher moved to
 // `engine/state-store-keys.ts`. Canonical builder:
 // `StateStoreKeys.pythPusher({chainId, packageId, signerAddress})`.
-const STATE_KEY_PUSHER_PREFIX = 'pyth/pusher/v1';
+const STATE_KEY_PUSHER_PREFIX = 'pyth/pusher';
 
 interface CachedPusher {
 	readonly lastDigest: string;
@@ -319,9 +319,8 @@ export const PythPusher = <const Name extends string>(opts: PythPusherOptions<Na
 				title: `pyth.pusher.${opts.name}`,
 				primary: `${opts.refreshMs ?? DEFAULT_PUSHER_REFRESH_MS}ms`,
 			}),
-			// Phase B (notes/parallel-graph-resolution.md §3.2): yields
-			// SuiTag, the signer Account ref, the pyth composite, and
-			// iterates `dependsOn`. Lift them all into upstreams.
+			// Yields SuiTag, the signer Account ref, the pyth composite,
+			// and iterates `dependsOn`. Lift them all into upstreams.
 			upstreamKeys: [
 				SuiTag.key,
 				opts.signer,

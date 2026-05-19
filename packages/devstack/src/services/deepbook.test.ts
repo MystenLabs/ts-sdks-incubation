@@ -160,13 +160,15 @@ describe('deepbookKnownPackage', () => {
 // never reached and the tag yields the cached pool shape. If the cache
 // regresses, the die surfaces as a defect and `Exit.isFailure` flips.
 //
-// The publishMove cache key is `publishMove/v2/<name>/<sourceHash>/<chainId>`;
-// `sourceHash` is the first 16 hex chars of sha256 over (sorted)
-// `<relpath>\0<content>\0` records for every `.move` + `Move.toml` file
-// under the source dir. With a single `Move.toml` fixture the hash is
-// `sha256('Move.toml\0' + content + '\0')`. Mirrored inline below so a
-// regression in publishMove's hash algorithm reads as a hash-mismatch
-// here, not a silent cache-miss.
+// The publishMove cache key is
+// `publishMove/<name>/<chainId>/<inputsHash>`, where `inputsHash` is the
+// first 16 hex chars of sha256 over the canonical-JSON of `{sourceHash,
+// signer}`. `sourceHash` is the first 16 hex chars of sha256 over
+// (sorted) `<relpath>\0<content>\0` records for every `.move` +
+// `Move.toml` file under the source dir. With a single `Move.toml`
+// fixture the source hash is `sha256('Move.toml\0' + content + '\0')`.
+// Mirrored inline below so a regression in either hash algorithm reads
+// as a hash-mismatch here, not a silent cache-miss.
 // -----------------------------------------------------------------------------
 
 const computePublishMoveSourceHash = (relpath: string, content: string): string => {
@@ -174,6 +176,17 @@ const computePublishMoveSourceHash = (relpath: string, content: string): string 
 	h.update(`${relpath}\0`);
 	h.update(content);
 	h.update('\0');
+	return h.digest('hex').slice(0, 16);
+};
+
+// Mirror `engine/cache.ts`'s canonical `inputsHash` derivation —
+// `contentHash(JSON.stringify({sourceHash, signer}), {length: 16})`
+// (JSON.stringify uses `jsonBigintReplacer` but neither field carries
+// bigints here, so a plain stringify matches).
+const computePublishMoveInputsHash = (sourceHash: string, signerAddress: string): string => {
+	const inputs = { sourceHash, signer: signerAddress };
+	const h = nodeCrypto.createHash('sha256');
+	h.update(JSON.stringify(inputs));
 	return h.digest('hex').slice(0, 16);
 };
 
@@ -364,7 +377,8 @@ describe('deepbookLocalDeploy — create-pools resume cache', () => {
 			}).pipe(Effect.orDie);
 
 			const sourceHash = computePublishMoveSourceHash('Move.toml', moveTomlContent);
-			const publishMoveKey = `publishMove/v2/deepbook.publish/${sourceHash}/${chainId}`;
+			const inputsHash = computePublishMoveInputsHash(sourceHash, '0xCAFE');
+			const publishMoveKey = `publishMove/deepbook.publish/${chainId}/${inputsHash}`;
 
 			// Pool spec — match `deepbookLocalDeploy`'s `specs` shape so the
 			// resolvedSpecs sent into `hashPoolSpecs` round-trip to the same
@@ -382,7 +396,7 @@ describe('deepbookLocalDeploy — create-pools resume cache', () => {
 				stable: false,
 			};
 			const poolsHash = computePoolsHash([poolSpec]);
-			const poolsKey = `deepbook/pools/v1/${chainId}/${fakePackageId}/${poolsHash}`;
+			const poolsKey = `deepbook/pools/${chainId}/${fakePackageId}/${poolsHash}`;
 
 			// Build a `Ref` of type Account by yielding through
 			// `tag` — its `__layer` provides the tag identity. The body
@@ -510,7 +524,8 @@ describe('deepbookLocalDeploy — create-pools resume cache', () => {
 			}).pipe(Effect.orDie);
 
 			const sourceHash = computePublishMoveSourceHash('Move.toml', moveTomlContent);
-			const publishMoveKey = `publishMove/v2/deepbook.publish/${sourceHash}/${chainId}`;
+			const inputsHash = computePublishMoveInputsHash(sourceHash, '0xCAFE');
+			const publishMoveKey = `publishMove/deepbook.publish/${chainId}/${inputsHash}`;
 			const baseType = '0x2::sui::SUI';
 			const quoteType = `${fakePackageId}::usdc::USDC`;
 			const poolSpec = {
@@ -524,7 +539,7 @@ describe('deepbookLocalDeploy — create-pools resume cache', () => {
 				stable: false,
 			};
 			const poolsHash = computePoolsHash([poolSpec]);
-			const poolsKey = `deepbook/pools/v1/${chainId}/${fakePackageId}/${poolsHash}`;
+			const poolsKey = `deepbook/pools/${chainId}/${fakePackageId}/${poolsHash}`;
 
 			const signerTag = makeDyingSigner('0xCAFE');
 			const member = deepbookLocalDeploy({

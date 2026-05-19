@@ -1,5 +1,5 @@
-// `devstack graph` — print the static dep graph for the configured stack
-// (Phase G of `notes/parallel-graph-resolution.md` §6.7). Three formats:
+// `devstack graph` — print the static dep graph for the configured
+// stack. Three formats:
 //
 //   - `text` (default) — one line per topological level; siblings on the
 //     same level separated by `, `. Mirrors what the TUI dep-tree shows
@@ -16,9 +16,9 @@
 //      to find one, matching `up` / `apply`).
 //   2. Pull `.config.stack` off the resolved DevstackHandle.
 //   3. Flatten composites' `__extraMembers` so the printed graph
-//      reflects what `composeStackLayer` actually composes — without the
-//      flatten, walrus's lifted `upstreamImage` / `moveSource` siblings
-//      (Phase D) wouldn't appear as their own nodes.
+//      reflects what `composeStackLayer` actually composes — without
+//      the flatten, walrus's lifted `upstreamImage` / `moveSource`
+//      siblings wouldn't appear as their own nodes.
 //   4. Build the dep graph + topological levels via
 //      `buildDepGraph` / `topoLevels`.
 //   5. Render to the requested format.
@@ -68,7 +68,7 @@ const displayTitle = (m: StackMember | undefined, key: string): string =>
 
 /** Render the graph as a per-level text summary (one line per
  *  topological level, sibling keys comma-separated). Exported for
- *  unit tests + the TUI dep-tree (Phase G §6.7) — they format identically. */
+ *  unit tests + the TUI dep-tree — they format identically. */
 export const renderText = (
 	graph: DepGraph,
 	levels: ReadonlyArray<ReadonlyArray<string>>,
@@ -161,8 +161,8 @@ export const graphCommand = Command.make(
 			const resolved = Option.getOrElse(configPath, () => './devstack.config.ts');
 			const handle = yield* loadConfigModule(resolved, requireConfig);
 
-			// Flatten composites' `__extraMembers` (Phase D) so the
-			// graph reflects what `composeStackLayer` builds — without
+			// Flatten composites' `__extraMembers` so the graph reflects
+			// what `composeStackLayer` builds — without
 			// this, lifted siblings (walrus's `upstreamImage`, seal's
 			// `sealImage`, …) would be invisible.
 			const flatStack = flattenStackMembers(handle.config.stack);

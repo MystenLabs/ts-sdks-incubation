@@ -109,8 +109,8 @@ export const build = (
 		// to the CLI's CWD, not the build context — passing the bare name
 		// `'Dockerfile'` from a CWD that doesn't contain one fails with
 		// `failed to read dockerfile: open Dockerfile: no such file or
-		// directory` even though the file lives inside `context`. v3's
-		// runner did the same resolve; we mirror it here.
+		// directory` even though the file lives inside `context`. Resolve
+		// to an absolute path here.
 		if (opts.dockerfile !== undefined) {
 			const dfAbs = isAbsolute(opts.dockerfile)
 				? opts.dockerfile

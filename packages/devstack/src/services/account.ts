@@ -233,8 +233,7 @@ export type AccountSource =
 			 * fork has it in its owned-object index via `--object`
 			 * seeds). The auto-promotion in `Account()` builds this
 			 * branch implicitly when the user passes a bare `Account('alice')`
-			 * against a fork-mode stack with seed addresses configured —
-			 * see Phase 2 of `notes/sui-fork-integration.md`.
+			 * against a fork-mode stack with seed addresses configured.
 			 */
 			readonly kind: 'impersonate';
 			/** The address to execute as. Must appear in the fork's
@@ -593,15 +592,15 @@ export const Account = <const N extends string>(
 			// the permit for the lifetime of the work effect and releases
 			// it automatically on success, failure, or interrupt.
 			//
-			// Phase -1 (gRPC migration): the underlying wire call is the
+			// The underlying wire call is the
 			// gRPC `transactionExecutionService.executeTransaction` via
 			// `client.core.executeTransaction`. We mirror the dev-wallet
 			// pattern: build the tx to BCS bytes, sign once, submit. The
 			// SDK's `SuiGrpcClient.signAndExecuteTransaction` does exactly
 			// this internally (see core.ts::signAndExecuteTransaction); we
 			// inline it here so the retry/wait/typed-error pipeline stays
-			// in one place. `objectChanges` / legacy effects fields are
-			// folded back into the devstack-internal `TxResult` shape by
+			// in one place. `objectChanges` / effects fields are folded
+			// back into the devstack-internal `TxResult` shape by
 			// `mapGrpcTxResult` so callers downstream of `Account()` see
 			// no surface change.
 			// Branch for impersonation accounts — no signer needed, the
@@ -764,8 +763,8 @@ export const Account = <const N extends string>(
 				address,
 				publicKey: signer.getPublicKey().toRawBytes(),
 				scheme,
-				// Phase 4 P4.18 — surface the source discriminator so the
-				// wallet server's `handleAccounts` can render an
+				// Surface the source discriminator so the wallet server's
+				// `handleAccounts` can render an
 				// "(impersonation)" label on the accounts panel without
 				// re-routing through the account spec. `'impersonate'`
 				// means we hold NO keys; everything else is a real
@@ -784,7 +783,7 @@ export const Account = <const N extends string>(
 			// into faucet UIs, explorers, and tx scripts. The dashboard
 			// wraps overflow rather than truncate.
 			display: (s) => ({ title: `accounts.${s.name}`, primary: s.address }),
-			// Phase B (notes/parallel-graph-resolution.md §3.1): declare
+			// Declare
 			// the in-stack upstreams the body yields so the topological-
 			// level scheduler in `composeStackLayer` puts accounts strictly
 			// after `Sui` + any coin tags referenced by funding-array
@@ -944,8 +943,7 @@ const fundEphemeralOnFork = (input: {
 					message:
 						`Account: '${name}' on fork mode requires at least one seed address. ` +
 						`Configure via Sui({fork: {seed: {addresses: ['0x...']}}}) so devstack can ` +
-						`impersonate a funded sender to transfer SUI to the new ephemeral account. ` +
-						`See Phase 2 of notes/sui-fork-integration.md (OD1) for the canonical pattern.`,
+						`impersonate a funded sender to transfer SUI to the new ephemeral account.`,
 				}),
 			);
 		}
@@ -982,8 +980,8 @@ const fundEphemeralOnFork = (input: {
 
 // Persist the bech32 secret key under `runtime/accounts/<name>.key`
 // (mode 0o600, dir 0o700) so warm starts keep a stable address. The
-// canonical `runtime/` dir (Phase 3 of the snapshot redesign) means
-// `snapshot save` tars these keys verbatim and restore puts them back
+// canonical `runtime/` dir means `snapshot save` tars these keys
+// verbatim and restore puts them back
 // at the same path on the target machine.
 const acquireEphemeral = (
 	name: string,
@@ -1270,15 +1268,14 @@ const bestEffortChmod = (
 	);
 
 // -----------------------------------------------------------------------------
-// gRPC → devstack TxResult adapter (Phase -1)
+// gRPC → devstack TxResult adapter
 // -----------------------------------------------------------------------------
 
-// Synthesize the legacy `SuiObjectChange[]` shape from a gRPC
-// `Transaction` envelope. Pre-Phase-1, JSON-RPC returned `objectChanges`
-// directly; gRPC returns the lower-level `effects.changedObjects[]`
-// keyed by `idOperation` + `outputState`, plus a `objectTypes` map of
-// objectId → moveType. We fold both into the narrow union devstack
-// consumers expect:
+// Synthesize the devstack-internal `SuiObjectChange[]` shape from a
+// gRPC `Transaction` envelope. gRPC returns the lower-level
+// `effects.changedObjects[]` keyed by `idOperation` + `outputState`,
+// plus an `objectTypes` map of objectId → moveType. We fold both into
+// the narrow union devstack consumers expect:
 //
 //   - `idOperation === 'Created'`           → `{type: 'created'}`
 //   - `idOperation === 'Deleted'`           → `{type: 'deleted'}`

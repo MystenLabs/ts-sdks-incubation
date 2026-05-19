@@ -1,22 +1,11 @@
 // `ChainProbe` — typed accessor surface over the `@mysten/sui` client's
 // raw `client.core.*` responses.
 //
-// Phase A of `notes/integration-contract-redesign.md`. The existing
-// verify probes in `services/{deepbook,pyth,walrus,seal,coin,...}` each
-// reach for `sui.client.core.getObject(...)` and cast the response
-// shape locally. Three sites today read three different field paths:
-//
-//   - deepbook/local-deploy.ts:380 — `res.object.type`        (correct)
-//   - deepbook/margin.ts:473       — `res.objectType`         (wrong)
-//   - pyth/local-deploy.ts:170     — `res.objectType`         (wrong)
-//
-// Bugs B1, B5, B7, B9, B10 in the redesign doc all collapse into one
-// once verify probes go through ChainProbe — the Schema-validated
-// shape can't return `{type: undefined}` in production while tests pass
-// against an alternative shape.
-//
-// Phase A only delivers the substrate. No primitive yet routes through
-// this service; Phase B+ migrations adopt it.
+// The verify probes in `services/{deepbook,pyth,walrus,seal,coin,...}`
+// each reach for `sui.client.core.getObject(...)` and need to read
+// fields like `objectType` consistently. ChainProbe Schema-validates
+// the response shape so callers can't silently drift on a renamed
+// field path.
 
 import { Context, Effect, Layer, Schema } from 'effect';
 import { SuiTag } from '../services/sui.js';
@@ -128,8 +117,8 @@ export class ProbeError extends Schema.TaggedErrorClass<ProbeError>()('ProbeErro
 
 /**
  * Typed accessor surface over the Sui SDK. Every verify probe in
- * `services/**` SHOULD go through this once Phase B-C migrations land —
- * the Schema-validated shape catches SDK drift at the boundary instead
+ * `services/**` SHOULD go through this — the Schema-validated shape
+ * catches SDK drift at the boundary instead
  * of letting a `{type: undefined}` silently fall through into a probe's
  * comparison logic.
  *

@@ -1,7 +1,7 @@
 // `DeepbookServer(opts)` — long-running Rust container that serves the
-// DeepBook REST API on port 9008, reading from the Postgres started in
-// Phase 2 (which the Phase-2 indexer writes events into). Mirrors the
-// deepbook-sandbox docker-compose server service
+// DeepBook REST API on port 9008, reading from Postgres (which the
+// indexer writes events into). Mirrors the deepbook-sandbox docker-
+// compose server service
 // (`~/code/deepbook-sandbox/sandbox/docker-compose.yml:195-228`).
 //
 // Joins two networks: the Postgres `containerNetwork` (for `DATABASE_URL`)
@@ -67,7 +67,7 @@ export class DeepbookServerTag extends Context.Service<DeepbookServerTag, Deepbo
 
 // Minimal margin-shape requirement — keeps the server's option types
 // independent of the margin factory's own export so wiring stays
-// add-only. The margin factory's `DeepbookMargin` interface (Phase 4)
+// add-only. The margin factory's `DeepbookMargin` interface
 // is a superset of this.
 interface MarginRefShape {
 	readonly packageId: string;
@@ -285,9 +285,9 @@ export const DeepbookServer = <const Name extends string = 'deepbook-server'>(
 				primary: s.rest,
 				extras: [s.metrics],
 			}),
-			// Phase B (notes/parallel-graph-resolution.md §3.2): yields
-			// `opts.postgres`, `opts.sui`, `opts.deepbook`, and optionally
-			// `opts.margin` + `opts.dependsOn`. Lift all of them into the
+			// Yields `opts.postgres`, `opts.sui`, `opts.deepbook`, and
+			// optionally `opts.margin` + `opts.dependsOn`. Lift all of
+			// them into the
 			// upstream-deps list so the topo scheduler places the server
 			// strictly after its providers.
 			upstreamKeys: [

@@ -1,5 +1,5 @@
-// `containerPrimitive(spec)` — Phase A substrate for race-safe long-
-// running container management.
+// `containerPrimitive(spec)` — substrate for race-safe long-running
+// container management.
 //
 // Subsumes the `inspect → adopt/start/recreate/run` pattern every
 // long-running container primitive reimplements (walrus storage nodes,
@@ -7,13 +7,6 @@
 // serialises that pattern through a per-container-name `Semaphore` so
 // two concurrent `apply` cycles or vitest workers can't TOCTOU on the
 // `docker rm` / `docker run` window.
-//
-// Phase A delivers the helper. Phase B+ migrates existing primitives:
-//
-//   - `engine/sui-build-container.ts` (B6: TOCTOU race today).
-//   - `services/walrus/internal.ts` storage nodes (B12).
-//   - `services/seal/internal.ts` key-server (B12).
-//   - `services/deepbook/*` indexer/server.
 //
 // Internally we DO NOT rewrite the `Docker.run` body — that helper
 // already handles adopt-if-image-matches, resume, recreate-on-image-
@@ -149,8 +142,6 @@ export interface ContainerPrimitiveSpec<
  * serialisation, which is exactly a `Semaphore(1)` keyed on the
  * resolved container name.
  *
- * Phase A delivers the helper. Phase B+ migrates sui-build-container,
- * walrus storage nodes, seal key-server, deepbook indexer/server.
  */
 export const containerPrimitive = <
 	const Name extends string,

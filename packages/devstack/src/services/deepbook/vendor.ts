@@ -279,9 +279,9 @@ export const vendorDeepbook = (opts: VendorDeepbookOptions = {}) => {
 				primary: s.ref,
 				extras: [s.root],
 			}),
-			// Phase B (notes/parallel-graph-resolution.md §3.2 + §6.4): the
-			// inner sibling gitFetch tags (deepbookFetch + sandboxFetch)
-			// are LIFTED to top-level members via `__extraMembers` below,
+			// The inner sibling gitFetch tags (deepbookFetch +
+			// sandboxFetch) are LIFTED to top-level members via
+			// `__extraMembers` below,
 			// so the topo scheduler treats them as their own dep-graph
 			// nodes (level 0 leaves) and can build them in parallel with
 			// other gitFetches in the stack. The composite declares them

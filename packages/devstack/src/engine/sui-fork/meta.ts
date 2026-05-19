@@ -1,7 +1,7 @@
 // Per-stack fork meta.json — config-hash gate that mirrors `sui-fork`'s
-// write-once seed-manifest contract (R6 mitigation).
+// write-once seed-manifest contract.
 //
-// Path layout (Phase 4 P4.15):
+// Path layout:
 //
 //   .devstack/
 //   ├── stacks/<stack>/
@@ -44,7 +44,7 @@
 // budget is a supervisor concern that doesn't affect what's already
 // been persisted in the data dir.
 //
-// Runtime carry (Phase 5 P5.5.4): the `runtime` sub-record holds
+// Runtime carry: the `runtime` sub-record holds
 // values that should *persist across resume* but are deliberately
 // NOT part of the seed-manifest contract — changing them does not
 // invalidate the on-disk data dir. The canonical example is
@@ -94,8 +94,8 @@ export const ForkMeta = Schema.Struct({
 	 *  *Excluded from `configHash`* — see `computeConfigHash` below. */
 	runtime: Schema.optional(
 		Schema.Struct({
-			/** Auto-tick cadence in ms (Phase 5 Subtopic 3 / P5.5.4).
-			 *  Written at first-boot acquire when `Sui({fork:{autoTick}})`
+			/** Auto-tick cadence in ms. Written at first-boot acquire
+			 *  when `Sui({fork:{autoTick}})`
 			 *  resolves to a positive interval; read back on resume when
 			 *  the caller did NOT re-pass `autoTick` so the cadence
 			 *  survives `devstack up` cycles. */

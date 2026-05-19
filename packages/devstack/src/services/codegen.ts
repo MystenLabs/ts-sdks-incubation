@@ -321,9 +321,9 @@ export const Codegen = (opts: CodegenOptions = {}) => {
 			// without this; the negation here covers users who override
 			// `output:` to a different basename.)
 			watch: [`!${path.isAbsolute(output) ? output : path.resolve(process.cwd(), output)}/**`],
-			// Phase B (notes/parallel-graph-resolution.md §3.2): the body
-			// iterates `packageRefs`, yielding each Package ref to read
-			// its packageId + coin shape. Lift them into upstreams so the
+			// The body iterates `packageRefs`, yielding each Package ref
+			// to read its packageId + coin shape. Lift them into
+			// upstreams so the
 			// topological scheduler places codegen strictly after every
 			// referenced package's publish — otherwise it lands in level
 			// 0 and the first `yield* ref` fails with

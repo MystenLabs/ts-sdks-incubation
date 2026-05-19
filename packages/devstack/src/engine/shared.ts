@@ -96,14 +96,12 @@ export interface TxResult {
 	readonly balanceChanges: ReadonlyArray<BalanceChange> | undefined;
 }
 
-/** Balance-change projection. Stable across gRPC SDK versions.
+/** Balance-change projection. Stable across SDK versions.
  *
- *  Phase -1 (gRPC migration): the gRPC SDK's `BalanceChange` carries
- *  `address` (the affected account's Sui address) where the legacy
- *  JSON-RPC shape used `owner` with the full `ObjectOwner` discriminated
- *  union. gRPC normalizes coin-balance ownership to an address (coins
- *  are always address-owned, never shared or immutable), so the
- *  projection here folds to a plain address string. */
+ *  The gRPC SDK's `BalanceChange` carries `address` (the affected
+ *  account's Sui address). Coin-balance ownership is always
+ *  address-owned (never shared or immutable), so the projection folds
+ *  to a plain address string. */
 export interface BalanceChange {
 	readonly address: string;
 	readonly coinType: string;
@@ -149,11 +147,11 @@ export interface Account {
 	// `signer.getKeyScheme().toLowerCase()` in services/account.ts.
 	readonly scheme: 'ed25519' | 'secp256k1' | 'secp256r1';
 	/**
-	 * Where the account's signing material comes from. Optional —
-	 * pre-Phase-4 callers don't set it. The wallet server's
-	 * `handleAccounts` surfaces it to the browser-side adapter so the
+	 * Where the account's signing material comes from. Optional. The
+	 * wallet server's `handleAccounts` surfaces it to the browser-side
+	 * adapter so the
 	 * accounts panel can render an "(impersonation)" label on
-	 * fork-mode accounts (Phase 4 P4.18). `'impersonate'` means devstack
+	 * fork-mode accounts. `'impersonate'` means devstack
 	 * holds NO keys for this address — every signing request routes
 	 * through `executeImpersonated` instead.
 	 */

@@ -94,7 +94,7 @@ export const statusCommand = Command.make(
 			const state = yield* tryReadJson(stateFile());
 			const manifest = yield* tryReadManifest();
 
-			// Phase 4 P4.9 — surface the per-stack `sui-fork/meta.json`
+			// Surface the per-stack `sui-fork/meta.json`
 			// fields under a dedicated `chain:` section so operators
 			// can read the fork's upstream + checkpoint + configHash
 			// without booting any layers. The block stays absent for

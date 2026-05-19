@@ -124,12 +124,11 @@ export interface TuiState {
 	 * a banner on startup to telegraph the build plan ("level 0: sui;
 	 * level 1: walrus, seal; level 2: dev").
 	 *
-	 * Phase G of `notes/parallel-graph-resolution.md` §6.7 — populated
-	 * once at supervisor compose time (the graph is static across
-	 * hot-restart cycles) and stays constant for the supervisor's
-	 * lifetime. Absent on standalone test runs that bypass
-	 * `defineDevstack`; renderers should treat `undefined` as "no
-	 * dep-tree to show."
+	 * Populated once at supervisor compose time (the graph is static
+	 * across hot-restart cycles) and stays constant for the
+	 * supervisor's lifetime. Absent on standalone test runs that
+	 * bypass `defineDevstack`; renderers should treat `undefined` as
+	 * "no dep-tree to show."
 	 */
 	readonly depTreeLevels?: ReadonlyArray<ReadonlyArray<string>>;
 }

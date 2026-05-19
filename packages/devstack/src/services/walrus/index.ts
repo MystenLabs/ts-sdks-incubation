@@ -1,7 +1,5 @@
-// Walrus storage-node primitives — Effect v4 multi-impl port.
-//
-// Phase 6b carved the legacy v3 composite into two factories that produce
-// the same narrow interface vocabulary:
+// Walrus storage-node primitives. Two factories that produce the same
+// narrow interface vocabulary:
 //
 //   - `walrusLocalCluster(opts)`   — full local boot. Builds the
 //     wrapper image, deploys contracts on local sui, registers nodes,
@@ -14,10 +12,9 @@
 //     `WalrusAdminTag` — we never have admin power over a network we
 //     didn't boot.
 //
-// The legacy `Walrus` composite tag is gone — yield the narrow tags
-// directly. The on-disk `manifest.packages.walrus` aggregate is still
-// derived from the same acquired state, but it's not surfaced via a
-// Context.Service tag any more.
+// Consumers yield the narrow tags directly. The on-disk
+// `manifest.packages.walrus` aggregate is still derived from the same
+// acquired state.
 
 export { walrusLocalCluster, type WalrusLocalClusterOptions } from './local-cluster.js';
 export { walrusKnownDeployment, type WalrusKnownDeploymentOptions } from './known-deployment.js';

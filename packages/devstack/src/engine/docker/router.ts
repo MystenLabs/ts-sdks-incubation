@@ -101,8 +101,8 @@ export interface RouterEntrypoint {
 // -----------------------------------------------------------------------------
 //
 // In-tree services pre-register their entrypoints at module init via the
-// `defineEntrypoint` calls below; out-of-tree plugin authors (Phase 3 of the
-// API-simplification plan: `dockerContainer`) call `defineEntrypoint` from
+// `defineEntrypoint` calls below; out-of-tree plugin authors using
+// `dockerContainer` call `defineEntrypoint` from
 // their own module top-level so their entrypoint is present before
 // `ensureRouter` runs.
 //
@@ -194,11 +194,11 @@ defineEntrypoint({ name: 'walrus', port: 9185 });
 defineEntrypoint({ name: 'seal', port: 2024 });
 defineEntrypoint({ name: 'wallet', port: 5180 });
 defineEntrypoint({ name: 'vite', port: 5175 });
-// Phase 2 — DeepBook indexer Prometheus metrics endpoint. The Rust
-// indexer binary exposes /metrics on port 9184 (sandbox parity).
+// DeepBook indexer Prometheus metrics endpoint. The Rust indexer
+// binary exposes /metrics on port 9184.
 defineEntrypoint({ name: 'deepbook-indexer-metrics', port: 9184 });
-// Phase 3 — DeepBook server REST API + Prometheus metrics. The Rust
-// server binary exposes the REST API on 9008 (sandbox parity) and
+// DeepBook server REST API + Prometheus metrics. The Rust server
+// binary exposes the REST API on 9008 and
 // /metrics on 9186 — picked because 9184 is owned by the indexer's
 // metrics and 9185 is owned by walrus's storage REST. (The plan
 // originally proposed 9185 for the server metrics, but walrus already
@@ -240,9 +240,8 @@ export const ensureRouter: Effect.Effect<
 
 	// 2a. Singleton CORS middleware — load before any backend that
 	//     references it. Walrus storage nodes don't emit CORS headers
-	//     themselves (v3 setup relied on an nginx walrus-proxy that
-	//     we deleted in favor of traefik), so browser-side fetches
-	//     get blocked by same-origin without this middleware.
+	//     themselves, so browser-side fetches get blocked by same-
+	//     origin without this middleware.
 	yield* writeCorsMiddleware();
 
 	// 3. Container — probe → adopt|resume|recreate|fresh.
@@ -441,8 +440,7 @@ export interface FileProviderEntry {
 	 * (`Access-Control-Allow-Origin: *`, etc.) to upstream responses.
 	 *
 	 * Walrus storage nodes need this: their REST API doesn't emit CORS
-	 * headers, and the v3 setup relied on the now-deleted nginx walrus-
-	 * proxy to inject them. Browser-side fetches to
+	 * headers, so browser-side fetches to
 	 * `walrus-node-N.<app>.localhost:9185/v1/blobs/…` get blocked by
 	 * the browser's same-origin policy without this.
 	 *

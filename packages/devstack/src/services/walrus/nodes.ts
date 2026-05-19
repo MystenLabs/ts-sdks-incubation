@@ -88,11 +88,9 @@ export const startStorageNodes = (args: {
 	engineTagKey: string;
 }) =>
 	Effect.fn('walrus.nodes')(function* () {
-		// HIGH-V4: boot all N storage nodes in parallel instead of
-		// serially. A 4-node committee previously paid `N × perNode`
-		// wall-clock for the ready probe loop; running the
-		// docker-run + network-attach + ready-probe per node as a
-		// single Effect inside `Effect.all({concurrency: 'unbounded'})`
+		// Boot all N storage nodes in parallel. Running docker-run +
+		// network-attach + ready-probe per node as a single Effect
+		// inside `Effect.all({concurrency: 'unbounded'})`
 		// brings cold cluster boot down to ~max(perNode). Each node's
 		// pipeline is independent (separate container name, IP, ready
 		// probe); the result order is preserved by `Effect.all` on an
@@ -157,10 +155,9 @@ export const startStorageNodes = (args: {
 							entrypoint: 'walrus',
 							servicePort: args.containerApiPort,
 							// Walrus storage-node REST API doesn't emit CORS
-							// headers. v3 setup relied on the now-deleted
-							// nginx walrus-proxy to inject them; here, route
-							// through the global `devstack-cors` middleware
-							// so browser-side blob fetches from vite work.
+							// headers; route through the global `devstack-cors`
+							// middleware so browser-side blob fetches from vite
+							// work.
 							cors: true,
 						},
 					],

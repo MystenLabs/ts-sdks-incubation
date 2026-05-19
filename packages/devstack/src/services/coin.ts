@@ -385,9 +385,7 @@ export const Coin: CoinFactory = Object.assign(coinByIdentifier, {
 // State-store key prefix for cached mint results. Folds in chainId (so
 // regenesis misses), the treasuryCap id (so a republish under a new
 // TreasuryCap misses), the recipient address, and the amount string.
-// Versioned so future shape bumps invalidate cleanly. New artifact, new
-// key: existing v1 entries that never existed are not a concern.
-const STATE_KEY_COIN_MINT_PREFIX = 'coin/mint/v1';
+const STATE_KEY_COIN_MINT_PREFIX = 'coin/mint';
 
 /** Resolved reference shape for either a TreasuryCap or a coin type. The
  *  `fromPackage` form yields the upstream package tag at mint time and

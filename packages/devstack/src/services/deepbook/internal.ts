@@ -27,7 +27,7 @@ export const COIN_REGISTRY_OBJECT_ID = '0xc';
 export const DEEPBOOK_REGISTRY_TYPE_SUFFIX = '::registry::Registry';
 export const DEEPBOOK_ADMIN_CAP_TYPE_SUFFIX = '::registry::DeepbookAdminCap';
 
-// Phase 4 — type-suffix constants used by the margin factory to extract
+// Margin — type-suffix constants used by the margin factory to extract
 // captured object ids from publish receipts. Follow the same convention
 // as the deepbook constants above: `<pkg>::<module>::<TypeName>`.
 export const MARGIN_REGISTRY_TYPE_SUFFIX = '::margin_registry::MarginRegistry';
@@ -234,8 +234,8 @@ export const calculateGridLevels = (input: GridLevelInput): GridLevels => {
 // -----------------------------------------------------------------------------
 
 // Sum required base/quote deposits across pools, then issue one
-// `balance_manager::deposit<T>` per coin type. v3's `useGasCoin: true`
-// trick on SUI deposits is preserved — without it the SDK's coin
+// `balance_manager::deposit<T>` per coin type. The `useGasCoin: true`
+// trick on SUI deposits — without it the SDK's coin
 // resolver consumes every owned SUI coin as a deposit source and the
 // gas-coin selector fails with "No valid gas coins found".
 export function depositPreDeposits(args: DepositArgs): void {

@@ -147,9 +147,8 @@ const KEY_TYPE_BONEH_FRANKLIN_BLS12381 = 0;
 const DEFAULT_SEAL_REPO = 'https://github.com/MystenLabs/seal';
 const DEFAULT_SEAL_MOVE_SUBDIR = 'move/seal';
 
-// State-store keys for seal moved to `engine/state-store-keys.ts` as
-// part of Phase 5.1 of `notes/api-simplification.md`. Canonical
-// builders: `StateStoreKeys.sealBlsKeypair({chainId})` and
+// State-store keys for seal live in `engine/state-store-keys.ts`.
+// Canonical builders: `StateStoreKeys.sealBlsKeypair({chainId})` and
 // `StateStoreKeys.sealKeyServerId({chainId})`. The chainId fold-in
 // is preserved so a regenesis of the underlying chain misses the
 // cache and forces a fresh keypair + on-chain registration.
@@ -162,7 +161,7 @@ interface PersistedBlsKeypair {
 }
 
 // -----------------------------------------------------------------------------
-// Combined shape (legacy `Seal` type)
+// Combined Seal shape
 // -----------------------------------------------------------------------------
 
 // Aggregate shape carried by the projection back into `manifest.packages`
@@ -238,15 +237,14 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 	const readyTimeoutMs = options.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
 	const keyServerName = options.keyServerName ?? 'devstack-local';
 
-	// D5 / Phase 3 P3.5: sealLocalKeygen runs the key-server binary which
-	// dials the chain via a baked-in client. Fork mode doesn't expose the
-	// surfaces the binary expects: upstream `SuiRpcClient` (see
+	// sealLocalKeygen runs the key-server binary which dials the chain
+	// via a baked-in client. Fork mode doesn't expose the surfaces the
+	// binary expects: upstream `SuiRpcClient` (see
 	// `crates/key-server/src/sui_rpc_client.rs`) carries BOTH an
 	// `sui_sdk::SuiClient` (JSON-RPC) and a `sui_rpc::client::Client`
 	// (gRPC); `check_policy.dry_run_transaction_block` is JSON-RPC-bound
-	// and the fork's own `simulate_transaction` returns "unsupported"
-	// (R3 of `notes/sui-fork-integration.md`). Phase 5 P5.3 audit
-	// finalised 2026-05-19 — see
+	// and the fork's own `simulate_transaction` returns "unsupported".
+	// See
 	// `notes/sui-fork-phase-5-walrus-seal-audit.md` §2. Refuse composition
 	// at factory time so failures are actionable.
 	const resolvedNetwork = resolveNetwork();
@@ -282,7 +280,7 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 
 	// Source resolution: caller-provided path wins; otherwise we plug in
 	// a `gitFetch` factory tag whose runtime result feeds into
-	// `publishMove` via the runtime-Effect `path` form (Phase C §5.6).
+	// `publishMove` via the runtime-Effect `path` form.
 	// Two flows used to live here: a `publishMove` factory tag for the
 	// `movePackagePath` branch, and an `publishSealMoveInline` body that
 	// duplicated the publish flow for the gitFetch branch. The inline
@@ -372,12 +370,12 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 			length: 16,
 		});
 		const blsKeypairKey = buildCacheKey({
-			namespace: 'seal/bls-keypair/v1',
+			namespace: 'seal/bls-keypair',
 			chainId: sui.chainId,
 			inputsHash: nameInputsHash,
 		});
 		const keyServerIdKey = buildCacheKey({
-			namespace: 'seal/key-server-id/v1',
+			namespace: 'seal/key-server-id',
 			chainId: sui.chainId,
 			inputsHash: nameInputsHash,
 		});
@@ -430,7 +428,7 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 		//    regenesis hole.
 		yield* setPhase('generating master key');
 		const { masterKey, publicKey } = yield* withCache({
-			namespace: 'seal/bls-keypair/v1',
+			namespace: 'seal/bls-keypair',
 			chainId: sui.chainId,
 			inputs: Effect.succeed({ name }),
 			verify: (cachedKeypair: PersistedBlsKeypair) =>
@@ -487,9 +485,8 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 		}).pipe(Effect.withSpan('SealKeygen'));
 
 		// 4. Publish the seal Move package. Always goes through
-		//    `publishMove` — Phase C of the parallel-graph rework killed
-		//    the inline-publish fallback so the gitFetch-vendored path
-		//    inherits the same cache discipline as the caller-supplied
+		//    `publishMove` so the gitFetch-vendored path inherits the
+		//    same cache discipline as the caller-supplied
 		//    `movePackagePath` branch. When `movePackagePath` is unset,
 		//    `publishMove`'s `path` field carries an `Effect.Effect<string>`
 		//    that resolves the gitFetch's `.path` at acquire time.
@@ -512,7 +509,7 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 		//    deleted between the two withCache calls (vanishingly rare,
 		//    but cheap to guard).
 		const keyServerObjectId = yield* withCache({
-			namespace: 'seal/key-server-id/v1',
+			namespace: 'seal/key-server-id',
 			chainId: sui.chainId,
 			inputs: Effect.succeed({ name }),
 			verify: (cachedId: string) =>
@@ -983,9 +980,9 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 	// per interface tag. The two projection layers below are trivial
 	// value extractions, not lifecycle-tracked.
 	//
-	// Phase B (notes/parallel-graph-resolution.md §3.1): declare every
-	// upstream this composite yields inside `acquire`, so the
-	// topological-level scheduler in `composeStackLayer` puts seal at
+	// Declare every upstream this composite yields inside `acquire`,
+	// so the topological-level scheduler in `composeStackLayer` puts
+	// seal at
 	// the right level (strictly after sui + signer + inner image / source
 	// / publish tags + any explicit dependsOn edges). Inner sibling tags
 	// — `sealImage`, `sourceFetch`, `publish` — also enter the upstream
@@ -995,9 +992,8 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 	// dropped by `resolveUpstreamKeys`.
 	// `SuiTag` is the canonical Context.Service class, not a LayeredTag,
 	// so reach for its `key` directly. Inner sibling tags feed in via
-	// their `.key` strings. `publish` is unconditional now (Phase C
-	// killed the inline-publish branch); `sourceFetch` is still
-	// conditional on whether the caller vendored a Move path.
+	// their `.key` strings. `publish` is unconditional; `sourceFetch`
+	// is still conditional on whether the caller vendored a Move path.
 	const upstreamKeys: Array<LayeredTag<any, any, any, any> | string> = [
 		SuiTag.key,
 		options.signer,
@@ -1030,9 +1026,9 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 		}),
 	);
 
-	// Phase D (notes/parallel-graph-resolution.md §6.4): the inner sibling
-	// tags `sealImage` and `sourceFetch` are LIFTED to top-level via
-	// `__extraMembers` so the topo scheduler can build seal's image
+	// The inner sibling tags `sealImage` and `sourceFetch` are LIFTED
+	// to top-level via `__extraMembers` so the topo scheduler can build
+	// seal's image
 	// alongside sui's boot and seal's Move-source gitFetch alongside
 	// walrus's source fetch. `publish` stays inner: it carries a runtime
 	// dependency on `sourceFetch.path` via its `path: Effect.Effect<string>`

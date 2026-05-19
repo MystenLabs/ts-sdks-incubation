@@ -170,8 +170,7 @@ export const dockerImage = <const Name extends string>(options: DockerImageOptio
 			display: (s) => ({ title: `image.${options.name}`, primary: s.tag }),
 			// Leaf in the dep graph — `dockerImage` reads the docker daemon
 			// directly; it has no in-stack upstream tags. Explicit empty
-			// satisfies the Phase A compose-time invariant ("declared no
-			// upstreams" vs "forgot to declare").
+			// distinguishes "declared no upstreams" from "forgot to declare".
 			upstreamKeys: [],
 		},
 	);

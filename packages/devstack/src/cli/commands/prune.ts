@@ -119,7 +119,7 @@ const includeRouterFlag = Flag.boolean('include-router').pipe(
 	Flag.withDefault(false),
 );
 
-// Phase 4 P4.7 — global cleanup of `.devstack/sui-fork-cache/<chainId>/`
+// Global cleanup of `.devstack/sui-fork-cache/<chainId>/`
 // directories whose chainId is no longer referenced by any active fork
 // stack. Distinct from `wipe --also-upstream-cache` (which clears the
 // cache wholesale for ONE stack's wipe); this scans referenced chain

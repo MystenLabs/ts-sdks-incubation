@@ -116,11 +116,11 @@ export const applyCommand = Command.make(
 			// raw cause so the top-level `tapCause` doesn't double-print.
 			const reportAndRethrow = (cause: unknown) =>
 				Effect.gen(function* () {
-					// Typed catch for SeedManifestMismatchError — Phase 4
-					// P4.10. The supervisor's fork-acquire path can't
-					// silently fall back when the on-disk meta disagrees
-					// with the current config (R6 mitigation), so we
-					// render an actionable wipe-and-retry recipe BEFORE
+					// Typed catch for SeedManifestMismatchError. The
+					// supervisor's fork-acquire path can't silently fall
+					// back when the on-disk meta disagrees with the current
+					// config, so we render an actionable wipe-and-retry
+					// recipe BEFORE
 					// the generic pretty-error rendering. JSON mode
 					// includes the same structured fields under
 					// `error.seedManifestMismatch` so CI consumers can

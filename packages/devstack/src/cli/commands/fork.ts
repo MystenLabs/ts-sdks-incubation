@@ -129,7 +129,7 @@ const makeForkClient = (ctx: ForkRuntimeContext): SuiGrpcClient =>
 const followFlag = Flag.boolean('follow').pipe(
 	Flag.withDescription(
 		'Stream `SubscribeCheckpoints` events instead of one-shot. ' +
-			'Falls back to polling on stream error (R4 per Phase 5 §9).',
+			'Falls back to polling on stream error.',
 	),
 	Flag.withDefault(false),
 );
@@ -186,8 +186,8 @@ const statusCommand = Command.make(
 
 			// `--follow` consumes the subscription stream until the
 			// scope tears down (Ctrl-C) or the upstream completes.
-			// Phase 5 P5.10.4 — the printer formats each event
-			// alongside its source so the operator can tell when the
+			// The printer formats each event alongside its source so
+			// the operator can tell when the
 			// stream silently downgraded to polling.
 			yield* Console.log(
 				json
@@ -695,8 +695,7 @@ const collectCacheEntries = async (
 /** Walk every per-stack meta.json under `.devstack/stacks/* /sui-fork/`
  *  collecting the set of referenced chain ids. For now we approximate
  *  the chainId from the meta's upstream (mainnet → mainnet's real chain
- *  id) since meta.json doesn't carry chainId directly — the supervisor
- *  could populate it but that's a Phase 4 enhancement. We use the
+ *  id) since meta.json doesn't carry chainId directly. We use the
  *  meta's `upstream` as the cache key for the heuristic. */
 const collectReferencedChainIds = async (stateRoot: string): Promise<ReadonlySet<string>> => {
 	const stacksDir = joinPath(stateRoot, 'stacks');

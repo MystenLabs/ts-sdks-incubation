@@ -75,8 +75,8 @@ export {
 	DEEP_PRICE_FEED_ID,
 	USDC_PRICE_FEED_ID,
 } from './services/index.js';
-// Phase 4-5 deepbook surface — exposed from the root barrel so the
-// reference example app (`examples/deepbook-full`) can `import
+// Deepbook surface — exposed from the root barrel so the reference
+// example app (`examples/deepbook-full`) can `import
 // { DeepbookMargin, DeepbookIndexer, DeepbookServer, VendorDeepbook, ... }`
 // without dipping into `/services`.
 export {

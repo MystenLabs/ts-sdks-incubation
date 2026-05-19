@@ -90,9 +90,9 @@ describe('calculateGridLevels (bps strategy)', () => {
 });
 
 describe('state-store key shape', () => {
-	it('uses v2 prefix to allow optional perPool segment (P0.6)', () => {
+	it('uses deepbook/market-maker/balance-manager prefix', () => {
 		expect(STATE_KEY_BALANCE_MANAGER_PREFIX_INTERNAL).toBe(
-			'deepbook/market-maker/balance-manager/v2',
+			'deepbook/market-maker/balance-manager',
 		);
 	});
 
@@ -101,7 +101,7 @@ describe('state-store key shape', () => {
 		// assert the join produces the expected canonical shape.
 		const baseKey = `${STATE_KEY_BALANCE_MANAGER_PREFIX_INTERNAL}/CHAIN/PKG/SIGNER`;
 		const poolKey = `${baseKey}/sui_usdc`;
-		expect(poolKey).toBe('deepbook/market-maker/balance-manager/v2/CHAIN/PKG/SIGNER/sui_usdc');
+		expect(poolKey).toBe('deepbook/market-maker/balance-manager/CHAIN/PKG/SIGNER/sui_usdc');
 	});
 });
 

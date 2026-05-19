@@ -1,7 +1,7 @@
 // `devstack snapshot <save|restore|list|delete>` — wraps
 // `internal/snapshot.ts` with a thin CLI surface.
 //
-// Save flow (Phase 3.6 of the snapshot redesign):
+// Save flow:
 //   1. Resolve active stack via `.devstack/active` (or `--stack <name>`).
 //   2. Enumerate containers labelled `devstack.stack=<stack>` via
 //      `docker ps`. Their `{id, name}` tuples feed into the engine
@@ -87,11 +87,10 @@ const findMatch = (
 // Label-filter enumerate of containers for THIS (app, stack) — INCLUDING
 // stopped ones (`-a`). Both labels are required: filtering on stack
 // alone would clobber sibling apps' containers when multiple examples
-// in the same monorepo use the default `stack=main` (same mistake the
-// pre-Phase-2 `wipe` command had — see `cli/commands/wipe.ts` for the
-// canonical pattern).
+// in the same monorepo use the default `stack=main` (see
+// `cli/commands/wipe.ts` for the canonical pattern).
 //
-// After `devstack apply` exits, the `docker stop` finalizer Phase 2.3
+// After `devstack apply` exits, the `docker stop` finalizer in
 // registered leaves the containers stopped but still on disk with a
 // complete writable layer; `docker commit` works against either state,
 // so the snapshot pipeline picks up both running (Ctrl-C-during-`up`
@@ -152,9 +151,9 @@ const appFlag = Flag.string('app').pipe(
 const resolveAppName = (override: Option.Option<string>): string =>
 	Option.getOrElse(override, () => deriveAppName(resolveAppDir()));
 
-// Threshold above which `--include-fork-data` flips OFF by default
-// (Phase 4 P4.8). 1GB is the canonical break-even — below it, capturing
-// the fork data is essentially free (snapshot is tar-compressed and
+// Threshold above which `--include-fork-data` flips OFF by default.
+// 1GB is the canonical break-even — below it, capturing the fork data
+// is essentially free (snapshot is tar-compressed and
 // `docker commit` already captures the writable layer where chain
 // state lives). Above it, the snapshot artifact balloons faster than
 // the rebuild cost saved, so we opt out by default with a printed hint.
@@ -191,8 +190,8 @@ const saveCommand = Command.make(
 			),
 			Flag.withDefault(true),
 		),
-		// Phase 4 P4.8 — gate the per-stack `sui-fork/data/` capture.
-		// Three-state: explicit on (`--include-fork-data`), explicit off
+		// Gate the per-stack `sui-fork/data/` capture. Three-state:
+		// explicit on (`--include-fork-data`), explicit off
 		// (`--no-include-fork-data`), or auto-by-threshold (default,
 		// `--include-fork-data` flips false above 1GB with a printed
 		// hint). Mirrors `--include-images`'s default-on / opt-out shape.
@@ -349,8 +348,7 @@ const listCommand = Command.make('list', {}, () =>
 			return;
 		}
 		yield* Console.log(`snapshots in ${dir}:`);
-		// List newest-first — matches v3's UX and matches typical
-		// `git log`-style chronology.
+		// List newest-first — `git log`-style chronology.
 		for (let i = entries.length - 1; i >= 0; i--) {
 			const entry = entries[i]!;
 			const when = new Date(entry.createdAt).toISOString();

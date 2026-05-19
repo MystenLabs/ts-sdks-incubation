@@ -36,7 +36,7 @@ import {
 // BalanceManager — the closure state in the previous fiber went away
 // with the scope. Old BalanceManagers orphaned + held locked funds, and
 // the audit caught it.
-const STATE_KEY_BALANCE_MANAGER_PREFIX = 'deepbook/market-maker/balance-manager/v2';
+const STATE_KEY_BALANCE_MANAGER_PREFIX = 'deepbook/market-maker/balance-manager';
 
 interface CachedBalanceManager {
 	readonly balanceManagerId: string;
@@ -557,9 +557,9 @@ export const deepbookMarketMaker = <const Name extends string>(
 				title: `deepbook.${options.name}`,
 				primary: `${options.pools.length} pool${options.pools.length === 1 ? '' : 's'}`,
 			}),
-			// Phase B (notes/parallel-graph-resolution.md §3.2): the body
-			// yields SuiTag, `options.signer`, and `DeepbookCoreTag`
-			// (a Context.Service, not a stack-member key — so it stays
+			// The body yields SuiTag, `options.signer`, and
+			// `DeepbookCoreTag` (a Context.Service, not a stack-member
+			// key — so it stays
 			// off the upstream list and is satisfied via the un-keyed
 			// composite interface layer). Iterates `options.dependsOn`
 			// for ordering. `resolveCoinRef` may `yield*` a coin tag
@@ -578,7 +578,7 @@ export const deepbookMarketMaker = <const Name extends string>(
 		},
 	);
 
-// Export the bps state-store key prefix so tests can assert key shape
-// changes between v1 and v2 without re-deriving the string. Kept off the
-// public API surface — internal cache contract.
+// Export the state-store key prefix so tests can assert the key shape
+// without re-deriving the string. Kept off the public API surface —
+// internal cache contract.
 export const STATE_KEY_BALANCE_MANAGER_PREFIX_INTERNAL = STATE_KEY_BALANCE_MANAGER_PREFIX;

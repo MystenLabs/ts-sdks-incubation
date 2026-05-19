@@ -75,8 +75,8 @@ export interface ActionOptions<Name extends string, R, E = unknown> {
  *  the underlying chain naturally misses the cache (the cached
  *  objectChanges reference object ids that no longer exist). When set,
  *  the on-chain side effects of this action are assumed to persist
- *  across cycle teardown — Phase 2 of the snapshot redesign puts chain
- *  state in the writable layer (preserved by `docker stop`, captured by
+ *  across cycle teardown — chain state lives in the writable layer
+ *  (preserved by `docker stop`, captured by
  *  `docker commit`), so cached results stay valid across `r` / Ctrl-C
  *  but NOT across `devstack stack down --force` or `wipe` (which discard
  *  the layer). A stale cached result against a freshly-genesised chain
@@ -194,7 +194,7 @@ export const Action = <const Name extends string, R = never, E = unknown>(
 						}
 					: {}),
 			}),
-			// Phase B (notes/parallel-graph-resolution.md §3.2): the body
+			// The body
 			// yields `opts.signer` (Account ref) plus every `opts.needs`
 			// ref for ordering. SuiTag is also yielded on the cache-key
 			// path. Lift all of them into upstreams so the topological

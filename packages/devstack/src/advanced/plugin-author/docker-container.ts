@@ -40,8 +40,7 @@
 // Lifecycle: every container's `docker stop` finalizer attaches to
 // the calling primitive's own layer scope. `r` (full rebuild) cascades
 // finalize through every primitive in dep order; selective watch-fires
-// (Phase 3 of selective-restart) release ONLY the affected primitives
-// via `engine.invalidateSubset`.
+// release ONLY the affected primitives via `engine.invalidateSubset`.
 
 import { Effect } from 'effect';
 import * as Docker from '../../engine/docker.js';
@@ -70,9 +69,7 @@ import { dockerImage, type DockerImage } from './docker-image.js';
  * Bare-string `'postgres:15'` is INTENTIONALLY not a member of this
  * union. Plugin authors must spell out the intent — pull vs build —
  * so the same option doesn't mean both "GHCR tag" and "local image
- * built earlier" at different callsites. Phase 3.8 of the
- * api-simplification plan made this break-and-replace across every
- * in-tree image consumer.
+ * built earlier" at different callsites.
  */
 export type DockerContainerImage =
 	| { readonly pull: string }
@@ -542,9 +539,9 @@ export const dockerContainer = <const Name extends string>(
 		// themselves; `dockerContainer` doesn't double-stamp the build
 		// layer in that case.
 		extraLayers: imageTag !== undefined ? imageTag.__layers : [],
-		// Phase A dep-graph wiring: the container yields its inner image
-		// tag inside the build body (`yield* imageTag`), so the image is
-		// a direct upstream. Declared empty when the caller passed
+		// Dep-graph wiring: the container yields its inner image tag
+		// inside the build body (`yield* imageTag`), so the image is a
+		// direct upstream. Declared empty when the caller passed
 		// `{tag}` — they own the upstream surfacing themselves.
 		upstreamKeys: imageTag !== undefined ? [imageTag.key] : [],
 		display: (s) => ({

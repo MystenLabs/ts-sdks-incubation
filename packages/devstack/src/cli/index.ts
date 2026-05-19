@@ -5,15 +5,16 @@
 // `DevstackHandle` (from `defineDevstack`), and hands control to its `run()` method which
 // blocks on Layer.launch until SIGINT/SIGTERM.
 //
-// `apply`, `status`, `snapshot`, `wipe`, `stack`, `doctor`, `manifest` are
-// the v3-port reconcile / introspect / snapshot / teardown / multi-stack /
+// `apply`, `status`, `snapshot`, `wipe`, `stack`, `doctor`, `manifest`
+// are the reconcile / introspect / snapshot / teardown / multi-stack /
 // preflight / manifest-dump verbs — each lives in `./commands/<verb>.ts`.
 // `version` is defined inline (one-liner).
 //
-// Built on `effect/unstable/cli`. NOTE: this module is still unstable in v4
-// beta — the surface (Argument/Flag/Command vs the older Args/Options names)
-// is liable to shift before stabilization. Verify against
-// `repos/effect-v4/packages/effect/src/unstable/cli/` if anything drifts.
+// Built on `effect/unstable/cli`. NOTE: this module is still unstable
+// in v4 beta — the surface (Argument/Flag/Command vs the older
+// Args/Options names) is liable to shift before stabilization. Verify
+// against `repos/effect-v4/packages/effect/src/unstable/cli/` if
+// anything drifts.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

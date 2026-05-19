@@ -98,9 +98,7 @@ export const resolveStackFromEnv = (override: string | undefined): string => {
  *  Mirrors `engine/sui-fork/meta.ts:resolveForkDataDir` but lives here so
  *  CLI subcommands (`devstack fork status`, `devstack fork cache list`,
  *  doctor's fork-data-dir size check) can resolve without depending on
- *  the engine surface.
- *
- *  Phase 4 P4.3 / P4.15 path layout. */
+ *  the engine surface. */
 export const resolveForkDataDir = (args: { readonly stack: string }): string => {
 	const stateRoot = resolveStateDir({ override: Option.none() });
 	return nodePath.join(stateRoot, 'stacks', args.stack, 'sui-fork', 'data');

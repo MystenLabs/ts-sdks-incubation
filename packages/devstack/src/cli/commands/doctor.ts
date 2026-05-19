@@ -1,6 +1,6 @@
 // `devstack doctor` — preflight checks + inventory.
 //
-// V3 parity port. Two-section report, none of which mutate state:
+// Two-section report, none of which mutate state:
 //
 //   - Pre-flight checks: docker daemon, sui CLI, common host ports.
 //   - Inventory: every (app, stack) bucket of devstack-labelled docker
@@ -9,10 +9,9 @@
 //     `docker volume ls` filtered on `label=devstack.app`, and walks
 //     `<cwd>/.devstack/` for state.
 //
-// We use a fixed port set (9000, 9123, 9125, 5180) per the v4 port plan —
-// the v3 version walked the prior snapshot for allocated ports, but v4's
-// state-store doesn't yet record per-snapshot port leases in a shape the
-// CLI can read without booting the engine.
+// Uses a fixed port set (9000, 9123, 9125, 5180) — the state-store
+// doesn't record per-snapshot port leases in a shape the CLI can read
+// without booting the engine.
 //
 // Doesn't construct an engine. Safe to run any time. Exits 0 unless docker
 // is unreachable.
@@ -173,7 +172,7 @@ const checkPort = (port: number): Effect.Effect<Check> =>
 	});
 
 // ---------------------------------------------------------------------------
-// Phase 4 fork-specific doctor checks
+// Fork-specific doctor checks
 // ---------------------------------------------------------------------------
 
 /** Best-effort discovery of every fork-mode stack on disk. Walks
@@ -514,10 +513,6 @@ const findStaleLocks = (
 		const netsDir = joinPath(devstackDir, 'networks');
 		const netLocks = yield* listLockFiles(fs, netsDir);
 		for (const p of netLocks) candidates.push(p);
-		// Legacy flat lock: `.devstack/state.json.lock`.
-		const flatLock = joinPath(devstackDir, 'state.json.lock');
-		const flatExists = yield* fs.exists(flatLock).pipe(Effect.orElseSucceed(() => false));
-		if (flatExists) candidates.push(flatLock);
 
 		const out: Array<StaleLock> = [];
 		for (const path of candidates) {
@@ -741,7 +736,7 @@ export const doctorCommand = Command.make(
 								detail: `removed ${removedMoveGitLocks.length} stale git lock${removedMoveGitLocks.length === 1 ? '' : 's'}`,
 							};
 
-			// Phase 4 fork-specific checks. Each is a no-op when no fork
+			// Fork-specific checks. Each is a no-op when no fork
 			// stacks are present on disk; otherwise:
 			//   - P4.11 — `sui-fork --version` shell-out (informational
 			//     unless the host has a local build).

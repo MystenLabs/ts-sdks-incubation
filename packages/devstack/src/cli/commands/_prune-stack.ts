@@ -238,7 +238,7 @@ const removeDevstackImages = (spawner: Spawner): Effect.Effect<ReadonlyArray<str
  * Remove every image carrying the `devstack.image=true` label that no
  * surviving container references. Used by `prune --include-images` as
  * the global-image-cleanup pass (kept distinct from
- * `removeDevstackImages` which matched on the legacy `devstack-*`
+ * `removeDevstackImages` which matches on the `devstack-*`
  * repo-name glob).
  *
  * Skips in-use images silently: `docker rmi` against a referenced
@@ -299,7 +299,7 @@ export const removeLabelledImagesNotInUse = (): Effect.Effect<
 // Two layouts: per-stack (<stateDir>/stacks/<stack>/) and flat
 // (<stateDir>/state.json). Best-effort: missing paths are silent.
 //
-// Extras-aware traversal (Phase 4 P4.6): the shared upstream cache
+// Extras-aware traversal: the shared upstream cache
 // `<stateDir>/sui-fork-cache/` lives at the state-root level, NOT under
 // `stacks/<stack>/`, so it's already out of scope for this function.
 // Per-stack `sui-fork/` (data dir + meta.json + seed-manifest.json +

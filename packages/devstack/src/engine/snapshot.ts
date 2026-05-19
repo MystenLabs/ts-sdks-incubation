@@ -9,17 +9,14 @@
 //   2. `runtime/` directory — the canonical service-owned state dir
 //      (`runtime/accounts/<name>.key`, `runtime/wallet/token`,
 //      `runtime/seal/master-key.env`, `runtime/walrus/<name>/deploy/`,
-//      …). Phase 3 of the snapshot redesign collected these scattered
-//      paths into one directory; the snapshot tars it as a single
-//      tarball.
+//      …). The snapshot tars this as a single tarball.
 //
-//      **Load-bearing invariant** (Phase C §5.2 of
-//      `notes/parallel-graph-resolution.md`): the walrus deploy outputs
-//      at `runtime/walrus/<name>/deploy/` MUST ride this tar. The
-//      directory holds the storage-node private keys + per-node config
-//      that `walrus-deploy` wrote; without them, a state-store entry
-//      that says "walrus is already deployed" can't be honored on
-//      resume (the storage-node mount step reads from this dir).
+//      **Load-bearing invariant**: the walrus deploy outputs at
+//      `runtime/walrus/<name>/deploy/` MUST ride this tar. The directory
+//      holds the storage-node private keys + per-node config that
+//      `walrus-deploy` wrote; without them, a state-store entry that
+//      says "walrus is already deployed" can't be honored on resume
+//      (the storage-node mount step reads from this dir).
 //      `acquireLocalCluster`'s verify probe detects the absence and
 //      invalidates the cache entry, but the cleaner outcome is for
 //      both pieces to travel together — which is what this single
@@ -27,10 +24,10 @@
 //
 //   3. Container images — for every container in `opts.containers` we
 //      `docker commit devstack-snap:<id>-<name>` + `docker save` the
-//      resulting image into `containers/<name>.tar`. Phase 2 of the
-//      redesign put chain state in the writable layer (RocksDB at
-//      `/root/.sui`, postgres at `/pgdata`), so the committed image
-//      contains everything the localnet + indexer need to resume.
+//      resulting image into `containers/<name>.tar`. Chain state lives
+//      in the writable layer (RocksDB at `/root/.sui`, postgres at
+//      `/pgdata`), so the committed image contains everything the
+//      localnet + indexer need to resume.
 //
 // Optional extras (`opts.extras`): an opt-in registry of additional
 // host paths that don't fit under `runtime/<service>/` (typically
@@ -69,11 +66,6 @@ const CONTAINERS_DIR_NAME = 'containers';
 const EXTRAS_DIR_NAME = 'extras';
 const DEFAULT_SNAPSHOTS_DIR = `${STATE_DIR}/snapshots`;
 
-// Snapshot meta schema version. Closed literal — older versions are
-// rejected outright (Phase 5.2 of `notes/api-simplification.md` made
-// this break-and-replace: no v3 fallback decoder, the loader fails on
-// any version that isn't current).
-//
 // `app` at top-level and `originalImage` per container are both
 // load-bearing: without `originalImage`, restore can't retag the
 // loaded snapshot image back to the supervisor's content-addressed
@@ -81,11 +73,9 @@ const DEFAULT_SNAPSHOTS_DIR = `${STATE_DIR}/snapshots`;
 // match but image mismatch and recreates from a fresh base image,
 // running a brand-new genesis (chain state lost).
 //
-// v4 (current): moved per-service fields (`chainId`, fork upstream /
-// checkpoint) off the flat top-level into a typed `services` bucket
-// extended via TypeScript declaration merging — see
-// `SnapshotMetaServices` below. v3-shaped files are not parseable.
-const META_VERSION = 4 as const;
+// Per-service fields (`chainId`, fork upstream / checkpoint) live in a
+// typed `services` bucket extended via TypeScript declaration merging
+// — see `SnapshotMetaServices` below.
 
 export class SnapshotError extends Schema.TaggedErrorClass<SnapshotError>()('SnapshotError', {
 	message: Schema.String,
@@ -149,7 +139,6 @@ export interface SnapshotMetaServices {
 const ServicesBucketSchema = Schema.Record(Schema.String, Schema.Unknown);
 
 const SnapshotMeta = Schema.Struct({
-	version: Schema.Literal(META_VERSION),
 	createdAt: Schema.Number,
 	stack: Schema.String,
 	/** Devstack app identity at save time. Needed at restore time to
@@ -591,7 +580,6 @@ export const snapshot = (opts: {
 				? buildServicesBucket(opts.services)
 				: undefined;
 		const meta: SnapshotMeta = {
-			version: META_VERSION,
 			createdAt: Date.now(),
 			stack,
 			app: opts.app,
@@ -698,7 +686,7 @@ export const restore = (opts: {
 		// goes through `fresh` and uses the snapshot's content. Best-
 		// effort: docker daemon down, no matching containers, or
 		// permission errors don't fail the restore. Skipped when meta
-		// is unreadable (the only legitimate case post-v3).
+		// is unreadable.
 		if (meta !== undefined) {
 			yield* preCleanupApp(spawner, meta.app, meta.stack).pipe(Effect.ignore);
 		}

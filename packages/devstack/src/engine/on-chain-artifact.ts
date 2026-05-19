@@ -1,48 +1,28 @@
-// `onChainArtifact(spec)` — Phase A substrate for the unified
-// publish-cache-verify-register shape every on-chain primitive
-// reimplements today.
+// `onChainArtifact(spec)` — substrate for the unified
+// publish-cache-verify-register shape on-chain primitives use.
 //
 // Subsumes (in one helper):
 //
-//   1. `withCache(spec)` discipline (already factored).
-//   2. The `register` step that runs on EVERY cycle, hit AND miss,
-//      after the value is resolved (publishMove's `registerAll` is the
-//      reference impl — every other primitive should pattern-match it).
+//   1. `withCache(spec)` discipline.
+//   2. A `register` step that runs on EVERY cycle, hit AND miss, after
+//      the value is resolved.
 //   3. The `tag(name, build, options)` wiring — name, kind, plugin,
 //      displayTitle, hidden, watch.
 //
-// The contract is documented in `notes/integration-contract-redesign.md`
-// §3.1. Phase A only delivers the helper; Phase B+ migrates existing
-// services to use it. The reference adoption (publishMove → 663 →
-// ~340 LoC) is Phase B.
-//
-// Design choice — `upstream` as a typed record
-// --
-// The redesign plan's §3 strawman expressed upstream as an array of
-// LayeredTags + a runtime tracer that compared declared vs actual
-// yields. We use a **record** here (`Record<Alias,
-// LayeredTag<...>>`) so that:
+// The `upstream` record is a typed `Record<Alias, LayeredTag<...>>` so
+// that:
 //
 //   - The `inputs` / `verify` / `produce` / `register` callbacks
 //     receive the resolved upstream values as a typed `deps` argument.
 //     A primitive's body literally cannot consume a service that isn't
-//     in `upstream` — the missing-upstream bug class (B11 in the plan)
-//     becomes a compile-time error, not a runtime trace.
-//   - The dep declaration IS the dep graph. No second source of truth
-//     to drift; the resulting LayeredTag's `__upstreamKeys` is
-//     auto-flattened from the record's values.
-//   - No `yield* X` inside the spec body, no runtime iterator
-//     instrumentation, no env-gated strict mode. The build's R channel
-//     is `never` (everything is explicit), so the helper-internal
+//     in `upstream` — the missing-upstream bug class becomes a
+//     compile-time error.
+//   - The dep declaration IS the dep graph. The resulting LayeredTag's
+//     `__upstreamKeys` is auto-flattened from the record's values.
+//   - No `yield* X` inside the spec body. The build's R channel is
+//     `never` (everything is explicit), so the helper-internal
 //     `withCache` / `ChainProbe` machinery are the only services that
-//     need to be in scope at acquire time — which the supervisor
-//     already provides via `InfraLive`.
-//
-// This is a more invasive surface than the plan's array form. We
-// believe it's the right tradeoff: the bug class becomes
-// type-unrepresentable, and Phase B+ migrations get a cleaner body
-// shape (no `const sui = yield* SuiTag` boilerplate at the top of
-// every primitive).
+//     need to be in scope at acquire time.
 
 import { Effect } from 'effect';
 import { withCache } from './cache.js';
@@ -137,11 +117,8 @@ export interface OnChainArtifactSpec<
 	// ── Cache discipline ──
 	/** Static identifier of the producing primitive — folds into the
 	 *  cache key alongside `chainId`. Convention:
-	 *  `'<service>/<artifact>/v<N>'`, e.g. `'publishMove/v3'`. */
+	 *  `'<service>/<artifact>'`, e.g. `'publishMove'`. */
 	readonly namespace: string;
-	/** Optional legacy cache key — see `CacheSpec.keyOverride`. Use
-	 *  during migration to preserve a pre-substrate on-disk shape. */
-	readonly keyOverride?: string;
 	/** Human label for cache log messages. Defaults to `namespace`. */
 	readonly label?: string;
 
@@ -202,10 +179,7 @@ export interface OnChainArtifactSpec<
  *
  *   `${namespace}/${chainId}/${contentHash(canonical(inputs))}`
  *
- * `chainId` is resolved at acquire time from `SuiTag.chainId`. Callers
- * that need a chain-independent cache (rare for `onChainArtifact` —
- * the artifact-on-chain definition implies a chain context) pass
- * `keyOverride` to bypass the canonical derivation.
+ * `chainId` is resolved at acquire time from `SuiTag.chainId`.
  */
 export const onChainArtifact = <
 	const Name extends string,
@@ -217,10 +191,9 @@ export const onChainArtifact = <
 >(
 	spec: OnChainArtifactSpec<Name, U, T, EVerify, EProduce, ERegister>,
 ): LayeredTag<Name, T, never, EVerify | EProduce | ERegister | UpstreamE<U>> => {
-	// Resolve the upstream bundle once at acquire time. The topological
-	// scheduler reads `__upstreamKeys` (auto-flattened from the record
-	// below) to lay out the parallel build levels — the order of these
-	// yields doesn't affect that.
+	// Resolve the upstream bundle once at acquire time. The order of
+	// these yields doesn't affect the dep graph (`__upstreamKeys` is
+	// auto-flattened from the record below).
 	// Note: `yield* dep` adds the tag's identity to the R channel and its
 	// E to the error channel. `tag()`'s `Layer.effect` wrap ties off the
 	// identities via the supervisor's layer graph, leaving the final
@@ -246,7 +219,6 @@ export const onChainArtifact = <
 			namespace: spec.namespace,
 			chainId: sui.chainId,
 			inputs: spec.inputs(deps),
-			...(spec.keyOverride !== undefined ? { keyOverride: spec.keyOverride } : {}),
 			...(spec.label !== undefined ? { label: spec.label } : {}),
 			verify: (cached: T) => spec.verify({ cached, chain, deps }),
 			produce: spec.produce(deps),

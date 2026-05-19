@@ -266,35 +266,28 @@ export class DevstackSignerAdapter extends BaseSignerAdapter {
 /**
  * Pull the bearer token off a paired URL produced by the `walletApp()`
  * plugin. Returns `null` if the input is undefined, malformed, or
- * carries a `<redacted>` placeholder (post-Phase-E the manifest's
- * pairUrl carries the redacted form; the real token lives in a
- * sibling 0o600 file the consumer reads separately).
+ * carries a `<redacted>` placeholder (the manifest's pairUrl carries
+ * the redacted form; the real token lives in a sibling 0o600 file the
+ * consumer reads separately).
  *
- * Accepts BOTH the legacy `?token=…` query form (pre-Phase-8) and
- * the fragment `#token=…` form (post-Phase-8) so older state
- * manifests still pair on this code path.
+ * The token rides in the URL fragment as `#token=<hex>`.
  */
 export function parseDevstackToken(pairedUrl: string | undefined): string | null {
 	if (pairedUrl === undefined) return null;
 	try {
 		const url = new URL(pairedUrl);
-		// Fragment form: `#token=<hex>` (post-Phase-8).
 		const hash = url.hash; // e.g. "#token=abcd"
-		if (hash.length > 1) {
-			const params = new URLSearchParams(hash.slice(1));
-			const fromHash = params.get('token');
-			if (fromHash !== null && fromHash !== '<redacted>') return fromHash;
-		}
-		// Query form: `?token=<hex>` (legacy).
-		const fromQuery = url.searchParams.get('token');
-		if (fromQuery !== null && fromQuery !== '<redacted>') return fromQuery;
-		return null;
+		if (hash.length <= 1) return null;
+		const params = new URLSearchParams(hash.slice(1));
+		const token = params.get('token');
+		if (token === null || token === '<redacted>') return null;
+		return token;
 	} catch {
 		return null;
 	}
 }
 
-/** Narrow v4-shape input — the only field the adapter consumes is
+/** Narrow input — the only field the adapter consumes is
  *  `app.wallet.{url, pairUrl}`. Codegen emits exactly this shape so
  *  generated `dapp-kit-config.ts` doesn't have to fabricate placeholder
  *  manifest fields (`stack.app`, `coins`, etc.) just to satisfy the
@@ -316,7 +309,7 @@ export interface DevstackAdapterManifest {
  * present (no `Wallet(...)` in the stack, or it hasn't come up yet).
  *
  * The wallet entry's `pairUrl` carries the `#token=…` fragment used to
- * extract the bearer token. The full v4 `Manifest` shape from
+ * extract the bearer token. The full `Manifest` shape from
  * `@mysten-incubation/devstack` is structurally compatible with
  * {@link DevstackAdapterManifest}, so
  * `createDevstackAdapterFromManifest(devstackManifest)` typechecks

@@ -527,6 +527,60 @@ work beyond the migration itself):
   `chain.lookupArtifact` call. No bolt-on `stateStore.remove(other_key)`
   side effect inside a verify hidden behind `Effect.gen`.
 
+### 6.x Restart-survival lessons (2026-05-19 audit)
+
+Three warm-restart bugs landed as edge fixes in commit `aa3d510c`.
+Each maps to a design discipline the substrate MUST encode so the bug
+class is structurally absent in migrated primitives.
+
+**RS1 — `inputs` callbacks must canonicalise build-output mutations.**
+`hashMoveSources` byte-hashed `Move.lock`, but `sui move build`
+mutates the `[pinned.<env>.*]` blocks on every build. Result: pre-
+build hash ≠ post-build hash → every warm restart was a cache miss
+even though chain state was preserved.
+
+  Substrate fix: the `inputs: ({ deps }) => Effect<Record<string,
+  unknown>>` contract treats inputs as **source-authored content
+  only**. Build-output, generation-timestamps, and any byte the
+  primitive itself writes back into the source tree MUST be
+  canonicalised away before the `Record` is returned. Document this
+  in the `onChainArtifact` JSDoc + lint candidate: refuse `inputs`
+  bodies that reference a `Move.lock`-style file without an explicit
+  `strip*` helper.
+
+**RS2 — `verify` should probe via stable identifiers, not derived
+shapes.** `walrus/seed-wal` synthesised a coin-type string
+(`${walrusPackageId}::wal::WAL`) and asked for the holder's balance.
+The synthesised type was wrong (the wal coin lives in a separate
+package whose id was never captured) → verify always returned 0 →
+verify-fail every restart.
+
+  Substrate fix: `ChainProbe`'s recommended verify call is
+  `chain.getTransaction(digest)` or `chain.getObject(objectId)` — both
+  consume stable identifiers the produce body already returned. Add a
+  cautionary § in the `ChainProbe` JSDoc: probes that synthesise
+  identifiers from package ids + module names + type tags are an
+  anti-pattern. Prefer "did the side effect's receipt still resolve"
+  over "does the derived shape match what we expected".
+
+**RS3 — orphan/sweep helpers must read exit codes.**
+`docker network rm` returned exit-1 (in-use) but the sweep counted
+every attempt as success via `Effect.map(() => true)`. The user saw
+"swept 2 orphan(s)" every cycle even on cold start.
+
+  Substrate fix: ship a shared `runOk(spawner, cmd): Effect<boolean,
+  never>` helper that maps exit-code correctly. The
+  `containerPrimitive` doesn't have this issue today (it uses
+  `decideRunAction` which inspects exit codes), but the sweep lives
+  outside `containerPrimitive`. Either lift orphan sweeping into the
+  containerPrimitive scope's finalizer pass OR centralise the
+  spawn-and-check pattern via `runOk` so future call sites can't
+  re-create the bug.
+
+**Bonus**: each of these three was reachable on every restart of a
+working stack — silent footguns the substrate must prevent at the
+contract level, not just patch at the call site.
+
 ## 7. Migration phases
 
 ### Phase A — substrate (no migrations) — ~3 days, low risk

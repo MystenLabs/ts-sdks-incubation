@@ -1,8 +1,7 @@
 // Canonical per-stack runtime directory + opt-in extras registry.
 //
-// Phase 3 of the snapshot redesign collapses every service's
-// scattered host-side persisted state into one directory under the
-// stack root:
+// Every service's host-side persisted state lives in one directory
+// under the stack root:
 //
 //   localnet:  <appDir>/.devstack/stacks/<stack>/runtime/<service>/...
 //   live nets: <appDir>/.devstack/networks/<network>/runtime/<service>/...
@@ -10,11 +9,10 @@
 // `snapshot save` tars this entire directory (one .tar) plus
 // `state.json` plus any opt-in extras passed via the `extras: [...]`
 // argument to `saveSnapshot`. Restore is the reverse, atomic.
-// Combined with the writable-layer flip in
-// Phase 2 (chain state + indexer-db in the container layer), one
-// snapshot is a fully replayable artifact: containers via `docker
-// commit + save`, state via `state.json`, secrets / deploy outputs via
-// `runtime/`.
+// Combined with the writable-layer model (chain state + indexer-db in
+// the container layer), one snapshot is a fully replayable artifact:
+// containers via `docker commit + save`, state via `state.json`,
+// secrets / deploy outputs via `runtime/`.
 //
 // Why a dedicated `runtime/` subdir vs. just the stack root: keeps
 // engine-internal files (`state.json`, `state.json.lock`, `active`) out
@@ -60,7 +58,7 @@ const requireValidServiceName = (service: string): void => {
 
 /** Compute the canonical runtime root for the active stack/network.
  *  Mirrors the path scoping in `engine/state-store.ts:resolvePaths`:
- *  legacy `DEVSTACK_STATE_DIR` overrides everything, then explicit
+ *  `DEVSTACK_STATE_DIR` overrides everything, then explicit
  *  `cfg.stateDir`, then network-aware (`stacks/<stack>` for localnet,
  *  `networks/<network>` for live nets). */
 const resolveRuntimeRoot = (cfg: StateStoreConfigShape): string => {

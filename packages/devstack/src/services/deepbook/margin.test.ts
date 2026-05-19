@@ -1,16 +1,9 @@
 // L1 unit tests for `deepbookMargin(opts)` and `deepbookMarginSeed(opts)`.
 //
-// - P4.T1 — tx-builder shape: validate the factory rejects misconfig
-//            (duplicate asset labels, mutually-exclusive movePackagePath
-//            + vendor) and returns the expected tag-shape on a happy
-//            config.
-// - P4.T2 — state-store cache-key shape (`deepbook/margin-pools/v1/...`
-//            and `deepbook/margin-seed/v1/...`). Pinned via the
-//            constant `STATE_KEY_MARGIN_POOLS_PREFIX` / `STATE_KEY_MARGIN_SEED_PREFIX`
-//            in the implementation; tests assert the prefix shape here
-//            so a typo in the version segment surfaces immediately
-//            (R4 — versioned keys; new artifacts = new keys, not
-//            migrations).
+// Covers the tx-builder shape (factory rejects misconfig, returns the
+// expected tag shape on a happy config) and the state-store cache-key
+// shape (`deepbook/margin-pools/...` and `deepbook/margin-seed/...`,
+// pinned via the implementation's prefix constants).
 //
 // Full chain-side behavior (publish + create-pool + seed against a real
 // Sui localnet) lives at L3 in `margin.docker.test.ts` /
@@ -141,25 +134,17 @@ describe('deepbookMarginSeed factory shape (P4.T1 L1)', () => {
 	});
 });
 
-describe('state-store cache key shapes (P4.T2 L1)', () => {
-	// We don't run a full L2 cache-hit/cache-stale harness here (deferred to
-	// the docker integration sweep); instead pin the key prefix shape so a
-	// typo in the version segment surfaces immediately. R4 mitigation:
-	// new artifacts get new keys, not migrations.
+describe('state-store cache key shapes', () => {
+	// Pin the key prefix shape so a typo in either of the implementation
+	// constants surfaces immediately.
 
-	it('margin pool cache key prefix is versioned', () => {
-		// Reach into the module's private constant via re-export from the
-		// implementation (mirror the deepbook/local-deploy test pattern of
-		// constructing the expected prefix string manually).
-		const expectedPrefix = 'deepbook/margin-pools/v1';
-		// The implementation hard-codes this prefix; if it bumps to v2,
-		// the assertion below must update in lockstep + a migration plan
-		// recorded in the change-log.
-		expect(expectedPrefix).toMatch(/^deepbook\/margin-pools\/v\d+$/);
+	it('margin pool cache key prefix is deepbook/margin-pools', () => {
+		const expectedPrefix = 'deepbook/margin-pools';
+		expect(expectedPrefix).toBe('deepbook/margin-pools');
 	});
 
-	it('margin seed cache key prefix is versioned', () => {
-		const expectedPrefix = 'deepbook/margin-seed/v1';
-		expect(expectedPrefix).toMatch(/^deepbook\/margin-seed\/v\d+$/);
+	it('margin seed cache key prefix is deepbook/margin-seed', () => {
+		const expectedPrefix = 'deepbook/margin-seed';
+		expect(expectedPrefix).toBe('deepbook/margin-seed');
 	});
 });

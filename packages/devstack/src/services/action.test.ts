@@ -185,9 +185,9 @@ describe('Action — cache miss', () => {
 
 			expect(buildRuns).toBe(1);
 			expect(signCalls).toHaveLength(1);
-			// Persisted under `tx/v1/<name>/<chainId>/<address>/<userKey>`.
+			// Persisted under `tx/<name>/<chainId>/<address>/<userKey>`.
 			expect(state.puts).toHaveLength(1);
-			expect(state.puts[0]!.key).toBe(`tx/v1/do-thing/mock-chain-A/${signer.address}/k1`);
+			expect(state.puts[0]!.key).toBe(`tx/do-thing/mock-chain-A/${signer.address}/k1`);
 			expect((state.puts[0]!.value as TxResult).digest).toBe(result.digest);
 		}),
 	);
@@ -292,7 +292,7 @@ describe('Action — cache hit', () => {
 				],
 				balanceChanges: undefined,
 			};
-			state.seed(`tx/v1/cached-stale/mock-chain-A/${signer.address}/stable`, cached);
+			state.seed(`tx/cached-stale/mock-chain-A/${signer.address}/stable`, cached);
 
 			const sui = mockSuiLayer({
 				getObject: () => {
@@ -307,7 +307,7 @@ describe('Action — cache hit', () => {
 			expect(buildRuns).toBe(1);
 			expect(signCalls).toHaveLength(1);
 			// Evict + re-persist.
-			expect(state.removes).toContain(`tx/v1/cached-stale/mock-chain-A/${signer.address}/stable`);
+			expect(state.removes).toContain(`tx/cached-stale/mock-chain-A/${signer.address}/stable`);
 			expect(state.puts).toHaveLength(1);
 		}),
 	);
@@ -331,8 +331,8 @@ describe('Action — cache key invalidation', () => {
 
 			expect(signCalls).toHaveLength(2);
 			expect(state.puts).toHaveLength(2);
-			expect(state.puts[0]!.key).toBe(`tx/v1/k/mock-chain-A/${signer.address}/v1`);
-			expect(state.puts[1]!.key).toBe(`tx/v1/k/mock-chain-A/${signer.address}/v2`);
+			expect(state.puts[0]!.key).toBe(`tx/k/mock-chain-A/${signer.address}/v1`);
+			expect(state.puts[1]!.key).toBe(`tx/k/mock-chain-A/${signer.address}/v2`);
 		}),
 	);
 
@@ -366,8 +366,8 @@ describe('Action — cache key invalidation', () => {
 
 			expect(signCalls).toHaveLength(2);
 			expect(state.puts.map((p) => p.key)).toEqual([
-				`tx/v1/regen/chain-A/${signer.address}/same`,
-				`tx/v1/regen/chain-B/${signer.address}/same`,
+				`tx/regen/chain-A/${signer.address}/same`,
+				`tx/regen/chain-B/${signer.address}/same`,
 			]);
 		}),
 	);
@@ -398,7 +398,7 @@ describe('Action — cacheKey as Effect', () => {
 
 			expect(yield* Ref.get(counter)).toBe(1);
 			expect(state.puts).toHaveLength(1);
-			expect(state.puts[0]!.key).toBe(`tx/v1/eff-key/mock-chain-A/${signer.address}/eff-derived`);
+			expect(state.puts[0]!.key).toBe(`tx/eff-key/mock-chain-A/${signer.address}/eff-derived`);
 		}),
 	);
 

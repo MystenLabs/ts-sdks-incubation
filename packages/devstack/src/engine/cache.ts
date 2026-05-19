@@ -5,17 +5,10 @@
 //   2. Cache key generation — namespace + chainId + canonical-JSON hash
 //      of the per-primitive inputs.
 //   3. Span annotations for cache hit / miss / verify-fail.
-//   4. The mandatory `verify` probe (§4.2 of
-//      `notes/parallel-graph-resolution.md`) — every cache-hit value is
-//      re-validated against the underlying chain or filesystem before we
-//      trust it. A missing on-chain object invalidates the entry and the
-//      next `produce` re-creates it.
-//
-// Before `withCache`, every primitive reimplemented this slightly
-// differently (seal inline twice, walrus once, package once, seed-wal
-// with its own probe). After Phase C, all four sites read identically.
-//
-// See `notes/parallel-graph-resolution.md` §4.1 + §4.2 for the contract.
+//   4. The mandatory `verify` probe — every cache-hit value is re-
+//      validated against the underlying chain or filesystem before we
+//      trust it. A missing on-chain object invalidates the entry and
+//      the next `produce` re-creates it.
 
 import { Effect, Option } from 'effect';
 import { contentHash } from './content-hash.js';
@@ -31,8 +24,6 @@ import { jsonBigintReplacer } from './json-bigint.js';
  * artifact in `StateStore` (publishMove, seal keygen, seal register,
  * walrus deploy, walrus seedWal, …) declares a `CacheSpec` and passes
  * it to {@link withCache}.
- *
- * The shape is documented in `notes/parallel-graph-resolution.md` §4.1.
  */
 export interface CacheSpec<
 	T,
@@ -45,8 +36,8 @@ export interface CacheSpec<
 > {
 	/** Static identifier of the producing primitive — folds into the
 	 *  cache key alongside `chainId` so two unrelated primitives never
-	 *  collide. Convention: `'<service>/<artifact>/v<N>'`, e.g.
-	 *  `'publishMove/v3'` or `'walrus/deploy-output/v3'`. */
+	 *  collide. Convention: `'<service>/<artifact>'`, e.g.
+	 *  `'publishMove'` or `'walrus/deploy-output'`. */
 	readonly namespace: string;
 
 	/** Chain identifier the cached artifact is bound to. A regenesis flips
@@ -65,22 +56,8 @@ export interface CacheSpec<
 	 * Wrapped in `Effect.Effect` so callers can resolve runtime values
 	 * (e.g. a `hashMoveSources(path)` result) at cache-key derivation
 	 * time without an outer `Effect.gen`.
-	 *
-	 * Ignored when `keyOverride` is set — legacy callsites that need to
-	 * preserve a pre-Phase-C state-store key shape opt out of the
-	 * canonical derivation by providing their key directly.
 	 */
 	readonly inputs: Effect.Effect<Record<string, unknown>, EInputs, RInputs>;
-
-	/**
-	 * Optional fully-formed cache key. When set, `withCache` writes to
-	 * exactly this key and ignores `namespace` / `chainId` / `inputs`
-	 * for key-derivation purposes (they're still surfaced as span
-	 * attributes for observability). Used by primitives whose legacy
-	 * state-store entries are referenced by tests or out-of-tree
-	 * consumers and can't be silently relocated.
-	 */
-	readonly keyOverride?: string;
 
 	/** Human-readable label for log messages. Emitted as
 	 *  `${label}: cache hit | cache miss | cache verify-fail` so users
@@ -92,8 +69,8 @@ export interface CacheSpec<
 	 * Probe the chain (or filesystem) to verify the cached value is
 	 * still valid. Returns the cached value on success, `undefined` to
 	 * invalidate. A bare `Effect.succeed(cached)` opts the primitive
-	 * out of verification — discouraged; the §4.2 contract says every
-	 * primitive that produces on-chain state has a `verify` probe.
+	 * out of verification — discouraged; every primitive that produces
+	 * on-chain state should have a `verify` probe.
 	 *
 	 * Errors raised here are treated as "verify could not be performed"
 	 * — they invalidate the entry by mapping to `undefined` (over-
@@ -144,13 +121,11 @@ export const withCache = <
 		const state = yield* StateStore;
 		const inputs = yield* spec.inputs;
 		const inputsHash = contentHash(JSON.stringify(inputs, jsonBigintReplacer), { length: 16 });
-		const key =
-			spec.keyOverride ??
-			buildCacheKey({
-				namespace: spec.namespace,
-				chainId: spec.chainId,
-				inputsHash,
-			});
+		const key = buildCacheKey({
+			namespace: spec.namespace,
+			chainId: spec.chainId,
+			inputsHash,
+		});
 		yield* Effect.annotateCurrentSpan({
 			'cache.namespace': spec.namespace,
 			'cache.key': key,
@@ -187,15 +162,11 @@ export const withCache = <
 
 /**
  * Build the canonical cache key. Exported for callsites that need to
- * pre-compute the key (e.g. for instrumentation or for the
- * `state-store-keys.ts` typed builders that wrap legacy callers).
+ * pre-compute the key (e.g. for instrumentation).
  *
  * Layout:
  *   - `<namespace>/<chainId>/<inputsHash>` when `chainId` is non-empty
  *   - `<namespace>/<inputsHash>` when `chainId` is empty
- *
- * Both forms preserve the `<service>/<artifact>/v<N>` prefix convention
- * documented in `engine/state-store-keys.ts`.
  */
 export const buildCacheKey = (args: {
 	readonly namespace: string;

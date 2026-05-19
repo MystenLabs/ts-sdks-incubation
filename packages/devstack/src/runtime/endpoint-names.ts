@@ -86,7 +86,7 @@ const walrus_publisher = defineEndpoint({
 	publishedBy: 'Walrus()',
 });
 
-// Phase 2 — Postgres
+// Postgres
 const postgres = defineEndpoint({
 	name: 'postgres',
 	manifestField: { path: 'services.postgres.endpoint' },

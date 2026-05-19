@@ -129,11 +129,6 @@ export const hostScript = <const Name extends string, E = never, R = never>(
 			displayTitle: options.name,
 			display: (s) => ({ title: options.name, primary: `exit ${s.exitCode}` }),
 			// Forward `dependsOn:` into the dep graph as `__upstreamKeys`.
-			// Phase A wires the data substrate; today the inline
-			// `yield* tag` prelude (above) still drives runtime ordering
-			// via `composeStackLayer`'s `provideMerge` fold. Phase B's
-			// topological scheduler will read this declaration and
-			// retire the inline yields.
 			upstreamKeys: options.dependsOn ?? [],
 		},
 	);

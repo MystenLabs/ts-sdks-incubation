@@ -24,9 +24,8 @@
 //      losing one entry is small (the losing supervisor will re-upsert
 //      itself on the next iteration of its own loop).
 //
-// Schema-versioned. v1 is the only shape today; a future bump migrates
-// in-place from inside `read`. Higher-than-current versions fail loudly
-// (the user has a newer devstack on the same machine).
+// Schema-versioned. Higher-than-current versions fail loudly (the user
+// has a newer devstack on the same machine).
 //
 // All registry I/O is **best-effort** from the supervisor's POV: a
 // failed write must NEVER block stack boot or teardown. Callers wrap
@@ -43,8 +42,8 @@ import { isPidAlive } from './process-liveness.js';
 // Widen to match `SuiNetwork`'s fork variants — registry entries cross
 // process boundaries (`devstack doctor`/`prune` read the file long
 // after the supervisor exits) so the on-disk shape needs to capture
-// the variant string verbatim. `'custom'` stays for legacy v3 entries
-// and the suiCustom escape hatch.
+// the variant string verbatim. `'custom'` is the suiCustom escape
+// hatch.
 export type RegistryNetwork =
 	| 'localnet'
 	| 'testnet'

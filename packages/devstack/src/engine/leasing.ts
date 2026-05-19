@@ -2,8 +2,8 @@
 // same on-chain address to sign transactions, they fight over the gas
 // coin (each tx mutates the active gas-coin object's version; concurrent
 // txs from one address fail with `BalanceInsufficient` or
-// `LockedSharedObject` errors). v3's `leasing/signer-pool.ts` serialized
-// signer use per-address; this is the Effect-v4 equivalent.
+// `LockedSharedObject` errors). This module serializes signer use
+// per-address.
 //
 // Concurrency is intentionally split from the signer interface — the
 // signer service stays pure ("here is how you sign"), and primitives

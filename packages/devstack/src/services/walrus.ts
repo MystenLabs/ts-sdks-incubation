@@ -226,7 +226,7 @@ export interface WalrusOptions {
  *  `devstack({ network })`). Returns a LayeredTag carrying the network +
  *  proxy contracts.
  *
- *  Fork mode (Phase 3, D5): when the resolved network is a `*-fork`
+ *  Fork mode: when the resolved network is a `*-fork`
  *  variant, routes to `walrusKnownDeployment` against the WRAPPED
  *  upstream's real Walrus deployment. The local-cluster path requires
  *  GraphQL + JSON-RPC against the chain (which sui-fork does not

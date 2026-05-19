@@ -15,11 +15,7 @@
 //   - network labels:   `devstack.app=<app>` / `devstack.stack=<stack>`
 //   - volume labels:    `devstack.app=<app>` / `devstack.stack=<stack>`
 //
-// State dirs live under `<DEVSTACK_APP_DIR or cwd>/.devstack/stacks/<stack>/`
-// (per-stack) or `<dir>/.devstack/state.json` (flat legacy). The flat
-// layout has no stack dimension on disk — we attribute it to the
-// caller's current `stack` (typically `main`) so the inventory line is
-// still actionable.
+// State dirs live under `<DEVSTACK_APP_DIR or cwd>/.devstack/stacks/<stack>/`.
 
 import { Effect, FileSystem } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
@@ -474,16 +470,13 @@ export const formatBytes = (n: number): string => {
 	return `${formatted} ${units[i]}`;
 };
 
-// Walk every plausible `<root>/.devstack/stacks/<name>` directory and
-// every flat `<root>/.devstack/state.json`. Callers pass the roots to
-// probe (typically `<DEVSTACK_APP_DIR or cwd>`).
+// Walk every `<root>/.devstack/stacks/<name>` directory. Callers pass
+// the roots to probe (typically `<DEVSTACK_APP_DIR or cwd>`).
 //
-// State-dir attribution is best-effort: we can't tell from disk alone
-// which `<app>` a flat `state.json` belongs to — the file holds the
-// data but not the identity. `collectInventory` matches by stack name
-// against the docker-label-derived (app, stack) buckets and only
-// surfaces state-dir entries for buckets that already have at least
-// one container/volume/network on this host.
+// `collectInventory` matches by stack name against the docker-label-
+// derived (app, stack) buckets and only surfaces state-dir entries
+// for buckets that already have at least one container/volume/network
+// on this host.
 export interface StateLocation {
 	readonly stack: string;
 	readonly dir: string;
@@ -518,21 +511,6 @@ export const enumerateStateLocations = (
 					const lockPath = joinPath(stackDir, 'state.json.lock');
 					const pid = yield* readLockPid(fs, lockPath);
 					out.push({ stack: entry, dir: stackDir, pid });
-				}
-			}
-			// Flat fallback. The pre-stacks-layout state.json has no
-			// per-stack dimension on disk — attribute it to `main`,
-			// matching how the rest of the toolchain treats unspecified
-			// stack names.
-			const flat = joinPath(devstackDir, 'state.json');
-			const flatExists = yield* fs.exists(flat).pipe(Effect.orElseSucceed(() => false));
-			if (flatExists) {
-				const lockPath = joinPath(devstackDir, 'state.json.lock');
-				const pid = yield* readLockPid(fs, lockPath);
-				// Avoid double-emitting if a per-stack `main` already
-				// covered this directory.
-				if (!out.some((s) => s.stack === 'main' && s.dir === joinPath(stacksRoot, 'main'))) {
-					out.push({ stack: 'main', dir: devstackDir, pid });
 				}
 			}
 		}

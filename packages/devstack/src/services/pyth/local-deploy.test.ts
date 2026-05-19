@@ -70,9 +70,9 @@ describe('pythLocalDeploy tx-builder shape (P1.T1)', () => {
 	});
 });
 
-describe('pythLocalDeploy state-store key shape (P1.T2)', () => {
-	it('uses v1 prefix folded with chainId + packageId + feedsHash', () => {
-		expect(STATE_KEY_PYTH_PREFIX_INTERNAL).toBe('pyth/package/v1');
+describe('pythLocalDeploy state-store key shape', () => {
+	it('uses pyth/package prefix folded with chainId + packageId + feedsHash', () => {
+		expect(STATE_KEY_PYTH_PREFIX_INTERNAL).toBe('pyth/package');
 	});
 });
 

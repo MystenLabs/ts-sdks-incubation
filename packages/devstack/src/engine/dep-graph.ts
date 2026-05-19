@@ -8,11 +8,9 @@
 // transitive downstream consumers — every other primitive keeps its
 // scope, its resources, and its TUI row state.
 //
-// Phase 1 of `notes/selective-restart.md`. Phase 2 wires the
-// `DownstreamClosure` into per-primitive scopes; Phase 3 wires it into
-// `engine.invalidateSubset`. This module does NOT mutate engine state,
-// run any Effect, or open any scope — it's a synchronous compose-time
-// pass that emits the static graph once per supervisor lifetime.
+// This module does NOT mutate engine state, run any Effect, or open
+// any scope — it's a synchronous compose-time pass that emits the
+// static graph once per supervisor lifetime.
 //
 // Why not introspect `Layer.requirements`?
 // ---
@@ -29,8 +27,7 @@
 // declare deps end up with an empty `upstreamKeys` set, which means
 // they appear as leaves in the graph; selective restart still works
 // (a watch-fire on their own `__watchPaths` invalidates just them),
-// it just can't compute downstream cascades for them yet. Phase 2/3
-// populate `__upstreamKeys` on the rest of the primitives.
+// it just can't compute downstream cascades for them.
 
 import { Schema } from 'effect';
 
@@ -70,8 +67,8 @@ export type DepGraph = ReadonlyMap<string, PrimitiveNode>;
  * For each primitive `K`, the transitive set of primitives that
  * (re-)acquire when `K` invalidates — STRICTLY DOWNSTREAM. The owner
  * `K` itself is NOT in the set; callers union `{K} ∪ closure.get(K)` to
- * build the full affected set (Phase 3's `engine.invalidateSubset`
- * call site does exactly this).
+ * build the full affected set (the `engine.invalidateSubset` call site
+ * does exactly this).
  *
  * Strictly-downstream semantics line up with the Phase-5 log-line
  * format `"(N downstream: <names>)"` — `N` is the count of TRANSITIVE
@@ -98,8 +95,7 @@ export type DownstreamClosure = ReadonlyMap<string, ReadonlySet<string>>;
  * `__upstreamKeys` is the new field this phase introduces. Plugin-
  * author primitives that already accept a `dependsOn:` array surface
  * it transparently here; primitives that don't declare deps yet
- * appear as leaves (empty `upstreamKeys`). Phase 2 / 3 populate it
- * on the rest of the in-tree primitives.
+ * appear as leaves (empty `upstreamKeys`).
  */
 export interface DepGraphMember {
 	readonly key?: string;
@@ -288,9 +284,9 @@ export const reachableConsumers = (
 /**
  * Group dep-graph nodes into topological levels: level 0 holds every
  * node with no upstream edges (leaves); level N holds every node whose
- * upstream set is fully contained in levels < N. The Phase B
- * scheduler folds these into `Layer.provideMerge(Layer.mergeAll(level), acc)`
- * so siblings in the same level build in parallel and each level's
+ * upstream set is fully contained in levels < N. The scheduler folds
+ * these into `Layer.provideMerge(Layer.mergeAll(level), acc)` so
+ * siblings in the same level build in parallel and each level's
  * outputs are visible to subsequent levels.
  *
  * Properties:

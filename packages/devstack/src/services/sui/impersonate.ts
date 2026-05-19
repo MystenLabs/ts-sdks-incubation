@@ -17,7 +17,7 @@
 // signatures: []})` directly. The fork's executor recognizes the
 // empty-signatures sentinel and runs the impersonation branch.
 //
-// Phase 2 of the sui-fork integration plan plumbs this through:
+// The integration plumbs through:
 //   - `Account({kind: 'impersonate', sender})` → returns a no-op signer
 //     whose `address` is `sender`; the account's `signAndExecute`
 //     branches into `executeImpersonated`.

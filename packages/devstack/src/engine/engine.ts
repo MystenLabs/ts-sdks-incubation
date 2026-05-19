@@ -180,8 +180,8 @@ export interface EngineHandleShape {
 	 * supervisor can close it selectively. Called once per primitive
 	 * at the top of `withEngineLifecycle`; subsequent calls for the
 	 * same key overwrite (the watcher fiber may rebuild a primitive
-	 * mid-cycle via Phase 3's `engine.invalidateSubset`, at which
-	 * point Effect's MemoMap forks a fresh scope and re-registers).
+	 * mid-cycle via `engine.invalidateSubset`, at which point Effect's
+	 * MemoMap forks a fresh scope and re-registers).
 	 *
 	 * Internal — exposed on `EngineHandle` because the `withEngineLifecycle`
 	 * wrap lives inside `provide` (which doesn't have a separate
@@ -196,13 +196,12 @@ export interface EngineHandleShape {
 	 * background fibers). Silently no-ops when `key` isn't registered
 	 * (e.g. the primitive failed before `registerPrimitiveScope` ran).
 	 *
-	 * Used by Phase 3's `engine.invalidateSubset` to release just the
-	 * affected primitives without touching siblings. The `r` user
-	 * gesture closes the supervisor's outer scope, which cascades
-	 * through every primitive's scope automatically — `r` does NOT
-	 * call this method.
+	 * Used by `engine.invalidateSubset` to release just the affected
+	 * primitives without touching siblings. The `r` user gesture closes
+	 * the supervisor's outer scope, which cascades through every
+	 * primitive's scope automatically — `r` does NOT call this method.
 	 *
-	 * Internal — Phase 3 wires this to `invalidateSubset`. Not part of
+	 * Internal — wired by `invalidateSubset`. Not part of
 	 * the public/advanced surface.
 	 */
 	readonly closePrimitiveScope: (key: string) => Effect.Effect<void>;
@@ -611,20 +610,20 @@ export const EngineLive: Layer.Layer<EngineHandle> = Layer.effect(
 		// worrying about double-press or signal handler overlap.
 		const requestShutdown = Deferred.done(shutdownSignal, Exit.void).pipe(Effect.asVoid);
 
-		// Per-primitive scope registry — Phase 2 of selective-restart.
-		// `withEngineLifecycle` (in `advanced/tag.ts`) calls
-		// `registerPrimitiveScope(name, primitiveScope)` at the top of
-		// every build so the supervisor knows where each primitive's
-		// finalizers live; Phase 3's `engine.invalidateSubset` calls
-		// `closePrimitiveScope(key)` to release just the affected
-		// primitives without touching siblings.
+		// Per-primitive scope registry. `withEngineLifecycle` (in
+		// `advanced/tag.ts`) calls `registerPrimitiveScope(name,
+		// primitiveScope)` at the top of every build so the supervisor
+		// knows where each primitive's finalizers live;
+		// `engine.invalidateSubset` calls `closePrimitiveScope(key)` to
+		// release just the affected primitives without touching
+		// siblings.
 		//
 		// The map's lifetime is the engine's lifetime — `EngineLive`'s
 		// build runs on the outer launch scope, so the map persists
 		// across `r` hot-restart cycles. Entries removed on
 		// `closePrimitiveScope`; re-population happens automatically
-		// because the next consumer's `yield*` re-enters the layer build
-		// (forced by Phase 3's shadow-cache eviction).
+		// because the next consumer's `yield*` re-enters the layer
+		// build (forced by the shadow-cache eviction).
 		const primitiveScopes = yield* Ref.make<ReadonlyMap<string, Scope.Scope>>(new Map());
 		const registerPrimitiveScope = (key: string, scope: Scope.Scope): Effect.Effect<void> =>
 			Effect.gen(function* () {
@@ -669,7 +668,7 @@ export const EngineLive: Layer.Layer<EngineHandle> = Layer.effect(
 				yield* Scope.close(scope, Exit.void);
 			});
 
-		// Shadow cache — Phase 3 of selective-restart.
+		// Shadow cache.
 		//
 		// What this is: a parallel `Map<tagKey, unknown>` mirroring Effect's
 		// MemoMap entries by tag identity. Eviction operates on this map ONLY

@@ -41,8 +41,8 @@ export type SuiNetwork =
 
 /** Subset of `SuiNetwork` that `resolveNetwork()` can return — the
  *  three live-net + localnet identifiers users can set via the
- *  `DEVSTACK_NETWORK` env var, plus the three fork variants (which
- *  Phase 3 wires the plugin facades to detect). The CLI `--network`
+ *  `DEVSTACK_NETWORK` env var, plus the three fork variants. The CLI
+ *  `--network`
  *  flag is narrower today (only the three base networks); fork
  *  variants reach this resolver via the env var being set directly
  *  (e.g. inside a `devstack.config.ts` shim) or via `Sui({network})`
@@ -95,7 +95,7 @@ export const resolveNetwork = (): ResolvedNetwork => {
 
 /** Whether a string is a recognized `SuiNetwork` literal. Exported for
  *  callers that need to validate a free-form network value (e.g. the
- *  CLI's `--network` flag for Phase 4). */
+ *  CLI's `--network` flag). */
 export const isKnownNetwork = (value: string): value is SuiNetwork =>
 	(KNOWN_NETWORKS as ReadonlyArray<string>).includes(value);
 

@@ -1,8 +1,8 @@
 // `devstack wipe` — tear down the current (app, stack).
 //
-// V3 parity port. Four responsibilities, all delegated to the shared
-// `pruneStack` helper so `devstack prune` can reuse the same docker
-// label-filter logic for cross-stack cleanup:
+// Four responsibilities, all delegated to the shared `pruneStack` helper
+// so `devstack prune` can reuse the same docker label-filter logic for
+// cross-stack cleanup:
 //
 //   1. Kill any docker containers belonging to this `<app, stack>` pair.
 //      `Docker.run` stamps every container with
@@ -22,9 +22,7 @@
 //      `ensureLabeledVolume` in `internal/docker/core.ts`). Without this
 //      pass named volumes (RocksDB stores, postgres data, walrus blobs)
 //      pile up at ~100MB per run.
-//   4. Remove the per-stack state dir under `.devstack/stacks/<stack>/`,
-//      or the legacy flat `.devstack/state.json` if no per-stack layout
-//      exists.
+//   4. Remove the per-stack state dir under `.devstack/stacks/<stack>/`.
 //
 // Refuses to run without `--yes` so a stray shell-history invocation
 // doesn't wipe a developer's stack. For cross-app cleanup (or an
@@ -91,10 +89,10 @@ const imagesFlag = Flag.boolean('images').pipe(
 	Flag.withDefault(false),
 );
 
-// Phase 4 P4.5 — keep the shared `.devstack/sui-fork-cache/` intact by
-// default. Wiping a fork stack should leave the warmed upstream state
-// (object 0x5 + dynamic fields + every fetched object) so the next
-// `apply` doesn't pay the cold-start GraphQL warming cost again. Pass
+// Keep the shared `.devstack/sui-fork-cache/` intact by default. Wiping
+// a fork stack should leave the warmed upstream state (object 0x5 +
+// dynamic fields + every fetched object) so the next `apply` doesn't
+// pay the cold-start GraphQL warming cost again. Pass
 // `--also-upstream-cache` for a full reset.
 //
 // Mutually exclusive in spirit with `--keep-upstream-cache`, but for

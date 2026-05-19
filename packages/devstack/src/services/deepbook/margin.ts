@@ -5,9 +5,9 @@
 // `~/code/deepbook-sandbox/sandbox/scripts/utils/pool.ts:298-457`).
 //
 // **Snapshot participation**: per-cycle action; persists only state-
-// store caches (`deepbook/margin-pools/v1/...`); no own filesystem
-// state. Cache verifies each `MarginPool<T>` objectType on resume and
-// invalidates on mismatch (R11 + R5 mitigations).
+// store caches (`deepbook/margin-pools/...`); no own filesystem state.
+// Cache verifies each `MarginPool<T>` objectType on resume and
+// invalidates on mismatch.
 //
 // **Pyth is a typecheck-enforced dep (D5)**: the factory's option type
 // declares `pyth: LayeredTag<...PythTag...>` non-optional. Margin
@@ -912,10 +912,10 @@ export const deepbookMargin = <const Name extends string = 'deepbook-margin'>(
 				primary: s.packageId,
 				extras: [`${s.marginPools.length} pool${s.marginPools.length === 1 ? '' : 's'}`],
 			}),
-			// Phase B (notes/parallel-graph-resolution.md §3.2): the body
-			// yields SuiTag, the signer Account ref, pyth, deepbook, the
-			// two publishMove tags, and iterates `dependsOn`. Lift them
-			// all so the topo scheduler places this composite strictly
+			// The body yields SuiTag, the signer Account ref, pyth,
+			// deepbook, the two publishMove tags, and iterates
+			// `dependsOn`. Lift them all so the topo scheduler places
+			// this composite strictly
 			// after every provider.
 			upstreamKeys: [
 				SuiTag.key,

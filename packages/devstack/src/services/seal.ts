@@ -168,7 +168,7 @@ export interface SealOptions {
  *  `devstack({ network })`). Returns a LayeredTag carrying
  *  `SealKeyServerTag`.
  *
- *  Fork mode (Phase 3, D5): when the resolved network is a `*-fork`
+ *  Fork mode: when the resolved network is a `*-fork`
  *  variant, routes to `sealKnownKeyServer` against the WRAPPED
  *  upstream's published key server. The local-keygen path requires a
  *  full chain client inside the key-server binary (JSON-RPC bound),

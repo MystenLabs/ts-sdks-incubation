@@ -15,9 +15,9 @@
 //
 // `defineDevstack` provides this via `Layer.succeed(Identity, {...})` —
 // `app` is derived from `<cwd>/package.json#name` (scope-stripped) with
-// `basename(cwd)` as the fallback, matching v3's `cli/env.ts`
-// `resolveAppName` behavior. `stack` echoes `DevstackConfig.stackName`
-// (default `'main'`); `network` echoes `DevstackConfig.network`
+// `basename(cwd)` as the fallback. `stack` echoes
+// `DevstackConfig.stackName` (default `'main'`); `network` echoes
+// `DevstackConfig.network`
 // (default `'localnet'`). The `network` dimension keeps
 // `<app, stack>=<arena, main>` against testnet from colliding on
 // docker container/volume/network names with the same pair against
@@ -92,7 +92,7 @@ export const deriveAppName = (appDir: string = process.cwd()): string => {
 	const fromPkg = readPackageName(appDir);
 	const candidate = fromPkg ?? basename(appDir);
 	// Strip any leading non-alphanumeric (e.g. `_template`) so the value
-	// survives docker's `--label` parser and v3's container-name validator.
+	// survives docker's `--label` parser and container-name validation.
 	return candidate.replace(/^[^a-zA-Z0-9]+/, '') || 'devstack-app';
 };
 

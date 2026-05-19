@@ -527,7 +527,7 @@ describe('walletApp ↔ DevstackSignerAdapter HTTP protocol', () => {
 					expect(entry.address).toBe(acct.account.address);
 					expect(entry.scheme).toBe('ed25519');
 					// `source` defaults to `'real'` for non-impersonation
-					// accounts (Phase 4 P4.18).
+					// accounts.
 					expect(entry.source).toBe('real');
 					// publicKey is base64 of the raw 32 bytes for ed25519.
 					expect(fromBase64(entry.publicKey)).toEqual(acct.account.publicKey);
