@@ -2,7 +2,7 @@
 # `dockerImage` runner (content-addressed builds — same Dockerfile +
 # build args produce the same tag).
 #
-# Unlike `../sui-image/Dockerfile` (which downloads a prebuilt release
+# Unlike `../sui/Dockerfile` (which downloads a prebuilt release
 # tarball for `sui start`), this image builds the `sui-fork` binary
 # from source at a pinned `MystenLabs/sui` commit because:
 #   - No published `sui-fork` release tarballs exist yet.
@@ -77,7 +77,7 @@ LABEL devstack.sui-fork.rev=${SUI_REV}
 #     for warming + miss-fetches; without CAs every fetch fails.
 #   - `gawk` — required by `engine/sui-cli.ts:containerBuildCmd`'s
 #     Move.lock scrub (uses `gawk -i inplace`, a gawk-only extension).
-#     Mirrors the corresponding apt line in `../sui-image/Dockerfile`.
+#     Mirrors the corresponding apt line in `../sui/Dockerfile`.
 #   - `curl` — useful for in-container debugging + future ready-probe
 #     side-channels.
 RUN apt-get update \

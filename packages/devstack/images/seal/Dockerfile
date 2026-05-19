@@ -57,7 +57,7 @@ RUN chmod +x /usr/local/bin/devstack-seal-entrypoint.sh
 # traps docker's SIGTERM and forwards SIGINT to the key-server as a
 # non-PID-1 child. See `entrypoint.sh` for the rationale (workaround
 # for seal's missing tokio signal handler — same shape as the
-# sui-image entrypoint). The keygen step overrides the entrypoint
+# images/sui entrypoint). The keygen step overrides the entrypoint
 # via `docker run --entrypoint seal-cli ... genkey` so this wrapper
 # only ever wraps the long-running key-server container.
 ENTRYPOINT ["/usr/local/bin/devstack-seal-entrypoint.sh"]
