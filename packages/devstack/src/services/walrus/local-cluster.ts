@@ -151,7 +151,7 @@ export const walrusLocalCluster = <const Name extends string = 'walrus'>(
 	// because its `BASE_IMAGE` build-arg depends on the upstream's
 	// runtime-resolved content-addressed tag, which only exists after
 	// the upstream tag's body has run.
-	const dockerContext = new URL('../../../walrus-image/', import.meta.url).pathname;
+	const dockerContext = new URL('../../../images/walrus/', import.meta.url).pathname;
 	const upstreamImage = dockerImage({
 		name: `${name}.image.upstream` as const,
 		build: {

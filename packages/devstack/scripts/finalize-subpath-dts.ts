@@ -17,7 +17,7 @@ const pkgRoot = join(__dirname, '..');
 const tmpRoot = join(pkgRoot, 'dist', '.dts-subpaths-tmp');
 const distRoot = join(pkgRoot, 'dist');
 
-const SUBPATHS = ['dapp-kit', 'vitest', 'playwright', 'vite'] as const;
+const SUBPATHS = ['vitest', 'playwright', 'vite'] as const;
 
 async function walk(dir: string): Promise<string[]> {
 	const out: string[] = [];

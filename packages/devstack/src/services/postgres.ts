@@ -2,7 +2,7 @@
 //
 // Lifecycle: long-lived container started via the `dockerContainer`
 // plugin-author primitive. State (schema + rows) lives in the writable
-// layer at `/pgdata` — the vendored `postgres-image/Dockerfile`
+// layer at `/pgdata` — the vendored `images/postgres/Dockerfile`
 // relocates PGDATA off the upstream VOLUME so `docker commit` captures
 // it for snapshots (mirrors sui's indexer-db pattern).
 //
@@ -16,7 +16,7 @@
 //   - **What this service persists:** the entire writable container
 //     layer at `/pgdata` — schema, rows, roles, and the on-disk WAL —
 //     captured by `docker commit` on snapshot save. (The vendored
-//     `postgres-image/Dockerfile` relocates PGDATA off the upstream
+//     `images/postgres/Dockerfile` relocates PGDATA off the upstream
 //     VOLUME explicitly so the writable layer carries it.) The
 //     state-store entry at `postgres/databases/v1/<stack>/<name>/<dbHash>`
 //     records the set of ensured databases so the `CREATE DATABASE`
@@ -115,11 +115,11 @@ export const Postgres = <const Name extends string = 'postgres'>(
 		throw new TypeError('Postgres: `databases` must be non-empty');
 	}
 
-	// Reuse the vendored postgres-image (PGDATA-relocated). Snapshots
+	// Reuse the vendored images/postgres/ (PGDATA-relocated). Snapshots
 	// ride correctly only against this image; the upstream postgres
 	// image's VOLUME directive excludes /var/lib/postgresql/data from
 	// `docker commit`.
-	const dockerContext = new URL('../../postgres-image/', import.meta.url).pathname;
+	const dockerContext = new URL('../../images/postgres/', import.meta.url).pathname;
 	const pgImageSource = {
 		build: {
 			context: dockerContext,

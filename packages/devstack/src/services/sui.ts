@@ -80,7 +80,7 @@ import { join as pathJoin } from 'node:path';
 // Constants
 // -----------------------------------------------------------------------------
 
-/** Pinned upstream Sui release. The `sui-image/` Dockerfile downloads
+/** Pinned upstream Sui release. The `images/sui/` Dockerfile downloads
  *  the matching `ubuntu-aarch64` / `ubuntu-x86_64` tarball at build time
  *  so the resulting image runs natively on the host architecture —
  *  `mysten/sui-tools` ships amd64 only, which forces Rosetta emulation
@@ -103,7 +103,7 @@ const LOCAL_GRAPHQL_PORT = 9125;
 // URL goes through the `sui-grpc` traefik entrypoint on port 50051.
 const FORK_GRPC_PORT = 9000;
 
-// Pinned `MystenLabs/sui` commit the vendored `sui-fork-image/`
+// Pinned `MystenLabs/sui` commit the vendored `images/sui-fork/`
 // builder cargo-builds from. Bump in lockstep with sui-fork crate API
 // changes — fold the bump + a refreshed `TEST_TESTNET_CHECKPOINT` in
 // the same commit so test gates run against the bumped binary. As of
@@ -121,7 +121,7 @@ const SUI_FORK_NETWORK_ALIAS = 'sui-fork';
 // network. Only the sui process talks to it (via the in-network alias);
 // no host port mapping.
 //
-// The image is built from `packages/devstack/postgres-image/Dockerfile`
+// The image is built from `packages/devstack/images/postgres/Dockerfile`
 // (Phase 2.2 of the snapshot redesign) — upstream postgres declares
 // `VOLUME /var/lib/postgresql/data`, which docker excludes from
 // `docker commit`. The vendored Dockerfile relocates PGDATA to
@@ -578,9 +578,9 @@ export interface SuiLocalnetOptions {
 	 *  `DockerContainerImage` shape: `{pull: 'org/sui:tag'}` for a
 	 *  registry image (e.g. an air-gapped GHCR mirror) or
 	 *  `{build: {context, dockerfile, buildArgs}}` for a local
-	 *  Dockerfile build that overrides the vendored `sui-image/`
+	 *  Dockerfile build that overrides the vendored `images/sui/`
 	 *  context. When set, `version` is ignored and the vendored
-	 *  `sui-image/` build is skipped.
+	 *  `images/sui/` build is skipped.
 	 *
 	 *  Bare-string image references (`image: 'mysten/sui:latest'`) are
 	 *  intentionally rejected at the type level — every callsite must
@@ -588,7 +588,7 @@ export interface SuiLocalnetOptions {
 	 *  different sites. */
 	readonly image?: DockerContainerImage;
 	/** Sui release tag passed as `SUI_VERSION` to the vendored
-	 *  `sui-image/` Dockerfile. */
+	 *  `images/sui/` Dockerfile. */
 	readonly version?: string;
 	/** Pre-existing RPC base. When set, the localnet branch skips the
 	 *  container body and just wraps an externally-managed localnet. */
@@ -638,8 +638,8 @@ export interface SuiForkOptions {
 	 *  `DockerContainerImage` shape: `{pull: 'org/sui-fork:tag'}` for a
 	 *  registry image (e.g. a GHCR mirror) or
 	 *  `{build: {context, dockerfile, buildArgs}}` for a local Dockerfile
-	 *  build that overrides the vendored `sui-fork-image/` context.
-	 *  When set, `version` / the vendored `sui-fork-image/` build are
+	 *  build that overrides the vendored `images/sui-fork/` context.
+	 *  When set, `version` / the vendored `images/sui-fork/` build are
 	 *  skipped. Bare-string image references are rejected at the type
 	 *  level — see `SuiLocalnetOptions.image` for the rationale. */
 	readonly image?: DockerContainerImage;
@@ -745,7 +745,7 @@ const buildLocalnet = (options: SuiLocalnetOptions): StackMember => {
 
 	// Sibling tag for the localnet image. Three paths:
 	//
-	//   - `options.image === undefined`        → vendored `sui-image/` build.
+	//   - `options.image === undefined`        → vendored `images/sui/` build.
 	//   - `options.image = {build: {…}}`       → caller-supplied build context.
 	//   - `options.image = {pull: 'org/sui:t'}` → caller-pinned registry tag.
 	//
@@ -755,7 +755,7 @@ const buildLocalnet = (options: SuiLocalnetOptions): StackMember => {
 	// inputs hit the docker cache. The `pull` branch hands the upstream
 	// tag through unchanged so a later snapshot/restore retag finds the
 	// expected name.
-	const dockerContext = new URL('../../sui-image/', import.meta.url).pathname;
+	const dockerContext = new URL('../../images/sui/', import.meta.url).pathname;
 	const localnetImage =
 		options.image === undefined
 			? dockerImage({
@@ -771,13 +771,13 @@ const buildLocalnet = (options: SuiLocalnetOptions): StackMember => {
 				: dockerImage({ name: 'sui.image', pull: options.image.pull });
 
 	// Sibling tag for the indexer-db postgres image. Vendored Dockerfile
-	// in `postgres-image/` overrides `PGDATA` to `/pgdata` so the writable
+	// in `images/postgres/` overrides `PGDATA` to `/pgdata` so the writable
 	// layer captures the indexer schema + row data (the upstream
 	// `postgres:*` image declares VOLUME on the default PGDATA, which
 	// `docker commit` excludes). Built lazily — only when the sui
 	// primitive actually starts an indexer (i.e. always, today; the
 	// option to skip the indexer entirely is a future-proofing path).
-	const indexerDbContext = new URL('../../postgres-image/', import.meta.url).pathname;
+	const indexerDbContext = new URL('../../images/postgres/', import.meta.url).pathname;
 	const indexerDbImage = dockerImage({
 		name: 'sui.indexer-db.image',
 		build: {
@@ -1618,10 +1618,10 @@ const buildFork = (
 	const rev = options.version ?? DEFAULT_SUI_FORK_REV;
 
 	// `forkImage` resolves the image regardless of which `DockerContainerImage`
-	// branch the caller supplied: undefined → vendored `sui-fork-image/`
+	// branch the caller supplied: undefined → vendored `images/sui-fork/`
 	// build; `{build: …}` → caller-supplied context; `{pull: …}` →
 	// registry tag handed through unchanged.
-	const dockerContext = new URL('../../sui-fork-image/', import.meta.url).pathname;
+	const dockerContext = new URL('../../images/sui-fork/', import.meta.url).pathname;
 	const forkImage =
 		options.image === undefined
 			? dockerImage({
@@ -1940,9 +1940,9 @@ const buildFork = (
 	];
 
 	// Also expose `SuiBuildImage` so `publishMove` `docker exec`s into
-	// THIS image for `sui move build`. The `sui-fork-image/` Dockerfile
+	// THIS image for `sui move build`. The `images/sui-fork/` Dockerfile
 	// ships the real `sui` binary alongside `sui-fork`, so move builds
-	// work without a separate `sui-image` build.
+	// work without a separate `images/sui/` build.
 	const buildImageLayer = Layer.effect(
 		SuiBuildImage,
 		Effect.gen(function* () {

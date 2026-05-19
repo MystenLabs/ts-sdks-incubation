@@ -248,3 +248,14 @@ export const Walrus = (opts: WalrusOptions = {}): StackMember => {
 	}
 	return makeService('walrus', 'service', walrusLocalCluster(opts.local ?? {}));
 };
+
+// `localnetWalrusOptions(args)` — pure-function helper that builds the
+// `packageConfig` + `storageNodeUrlScheme: 'http'` fields for
+// `new WalrusClient(...)` against a devstack-booted walrus. Browser
+// code in example apps sources the ids from the generated `captured.ts`
+// and passes them in directly.
+export {
+	localnetWalrusOptions,
+	type LocalnetWalrusOptions,
+	type LocalnetWalrusInputs,
+} from './walrus/options.js';

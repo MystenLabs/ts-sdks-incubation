@@ -29,7 +29,7 @@
 //
 // The recipe currently does the gitFetch + tree materialization +
 // Move.toml patch in-process via `node:fs`. A future `dockerOneShot`
-// variant can run inside `sui-image` if hermetic-builds are required.
+// variant can run inside `images/sui` if hermetic-builds are required.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

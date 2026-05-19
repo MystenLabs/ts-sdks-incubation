@@ -24,10 +24,6 @@
 			"types": "./dist/index.d.mts",
 			"import": "./dist/index.mjs"
 		},
-		"./dapp-kit": {
-			"types": "./dist/dapp-kit/index.d.mts",
-			"import": "./dist/dapp-kit/index.mjs"
-		},
 		"./advanced": {
 			"types": "./dist/advanced/index.d.mts",
 			"import": "./dist/advanced/index.mjs"

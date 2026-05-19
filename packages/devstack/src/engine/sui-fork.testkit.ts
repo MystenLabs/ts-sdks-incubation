@@ -67,7 +67,7 @@ export const TEST_TESTNET_CHECKPOINT = 50_000_000;
 const TEST_SUI_FORK_REV = '259b947bf5b07cded7481c0c1f5e88470939c930';
 const FORK_GRPC_PORT = 9000;
 
-const dockerContext = new URL('../../sui-fork-image/', import.meta.url).pathname;
+const dockerContext = new URL('../../images/sui-fork/', import.meta.url).pathname;
 
 // Content-addressed tag mirroring `dockerImage()`'s convention without
 // going through its layer dance — the testkit doesn't need the

@@ -200,7 +200,7 @@ const dockerStart = (spawner: Spawner, name: string): Effect.Effect<DockerStartR
 // Bring up a sleeping container with the bind-mounts we want. Uses
 // `sleep infinity` as the entrypoint so the container stays alive until
 // we `docker rm -f` it on stack teardown. `--entrypoint` is intentional
-// override of whatever the sui-image declares (`sui genesis` in the
+// override of whatever the images/sui image declares (`sui genesis` in the
 // localnet flavor) — we want a quiet idle process, not the localnet
 // bootstrap chatter.
 // Result tag mirrors `DockerStartResult` so the caller can detect a name
@@ -519,7 +519,7 @@ const runBuildInside = (
 	// against a bind-mounted source tree, would have followed any
 	// symlink target on the host filesystem.
 	const scrubRoot = `${containerPath}/..`;
-	// Explicit `gawk` (not `awk`) — the sui-image's default awk is
+	// Explicit `gawk` (not `awk`) — the images/sui image's default awk is
 	// mawk which doesn't support `-i inplace`. `[ -d /root/.move/git ]`
 	// also scrubs the dep cache so freshly-downloaded testnet-pinned
 	// upstream Move.locks don't trip the env-mismatch check.

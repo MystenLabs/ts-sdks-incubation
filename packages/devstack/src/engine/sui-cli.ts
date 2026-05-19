@@ -36,7 +36,7 @@ import { prettyError } from './pretty-error.js';
 import { SuiBuildContainer, withMoveBuildLock } from './sui-build-container.js';
 
 // Optional sui-tools image reference. When `suiLocalnet` builds its
-// vendored `sui-image/` it provides the resulting tag here so `buildMove`
+// vendored `images/sui/` it provides the resulting tag here so `buildMove`
 // can run `sui move build` INSIDE that image (matching the localnet's
 // exact sui version) instead of on the host. The host's `sui` CLI may be
 // newer than the pinned localnet release and reject flags the older
@@ -240,7 +240,7 @@ export const buildMove = (
 // -----------------------------------------------------------------------------
 
 // Compose the argv for an in-container `sui move build`. The vendored
-// sui-image's default entrypoint runs `sui genesis` first (sets up a
+// images/sui's default entrypoint runs `sui genesis` first (sets up a
 // localnet config) before exec'ing `sui "$@"`. For a one-shot move
 // build we don't need genesis — override the entrypoint to call `sui`
 // directly so stderr contains only build output, not genesis init logs.
@@ -300,7 +300,7 @@ const containerBuildCmd = (imageTag: string, hostPath: string): ChildProcess.Com
 	//
 	// Explicit `gawk` (not `awk`) because Ubuntu's default `awk` is
 	// mawk, which doesn't support the `-i inplace` flag — the
-	// `sui-image/Dockerfile` adds gawk via apt for this reason. A real-
+	// `images/sui/Dockerfile` adds gawk via apt for this reason. A real-
 	// Docker round-trip test (`engine/snapshot.docker.test.ts`) caught
 	// this; the publishMove state-store cache hit path masked it on
 	// every warm-start dev run.

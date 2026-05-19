@@ -82,13 +82,13 @@ export function defineDevstackViteConfig(options: DevstackViteConfigOptions = {}
 
 	return defineConfig({
 		plugins: [react(), tailwindcss(), ...extraPlugins, ...(extend.plugins ?? [])],
-		// `createDevstackDappKit` from `@mysten-incubation/devstack/dapp-kit`
-		// is async (lazy-loads the panels module so `mountUI: false` bundles
-		// drop ~30KB of devstack panels). Apps `await` it at module top
-		// level in `dapp-kit.ts`, which requires top-level await — bump
-		// the build target accordingly. `optimizeDeps` mirrors the build
-		// target so Vite's dev-mode pre-bundle (esbuild, defaults to
-		// `es2020`) also accepts top-level await in dependency code.
+		// Pin a modern ES target. Devstack's example apps and the codegen
+		// emitters (notably `DappKitConfigEmitter` for `src/dapp-kit.ts`)
+		// freely use ES2022 features (class fields, top-level await in
+		// transitive deps); the upstream `@mysten/dapp-kit-*` peers also
+		// ship with ES2022 builds. `optimizeDeps` mirrors the build target
+		// so Vite's dev-mode pre-bundle (esbuild, defaults to `es2020`)
+		// stays consistent with the production build.
 		build: { target: 'es2022', ...extend.build },
 		optimizeDeps: {
 			esbuildOptions: { target: 'es2022', ...extend.optimizeDeps?.esbuildOptions },

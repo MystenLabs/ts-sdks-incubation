@@ -46,6 +46,7 @@ const PUBLIC_EXPORTS = [
 	'Sui',
 	'Wallet',
 	'Walrus',
+	'localnetWalrusOptions',
 	// Manifest wire-protocol surface
 	'WalletHttpPath',
 	// Helpers

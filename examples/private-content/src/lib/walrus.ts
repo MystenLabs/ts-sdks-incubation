@@ -5,7 +5,7 @@
 // `localnetWalrusOptions` from the spread and configure
 // `WalrusClient` against the real network.
 
-import { localnetWalrusOptions } from '@mysten-incubation/devstack/dapp-kit';
+import { localnetWalrusOptions } from '@mysten-incubation/devstack';
 import type { ClientWithCoreApi } from '@mysten/sui/client';
 import type { Signer } from '@mysten/sui/cryptography';
 import { WalrusClient } from '@mysten/walrus';

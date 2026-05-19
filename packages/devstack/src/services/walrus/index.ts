@@ -21,3 +21,13 @@
 
 export { walrusLocalCluster, type WalrusLocalClusterOptions } from './local-cluster.js';
 export { walrusKnownDeployment, type WalrusKnownDeploymentOptions } from './known-deployment.js';
+// `localnetWalrusOptions(args)` — pure-function helper that builds the
+// `packageConfig` + `storageNodeUrlScheme: 'http'` fields for
+// `new WalrusClient(...)` against a devstack-booted walrus. Browser
+// code in example apps sources the ids from generated `captured.ts`
+// and passes them in directly.
+export {
+	localnetWalrusOptions,
+	type LocalnetWalrusOptions,
+	type LocalnetWalrusInputs,
+} from './options.js';

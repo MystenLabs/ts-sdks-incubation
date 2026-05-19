@@ -51,6 +51,9 @@ export {
 	WalrusProxyTag,
 	type WalrusAdmin,
 	WalrusAdminTag,
+	localnetWalrusOptions,
+	type LocalnetWalrusOptions,
+	type LocalnetWalrusInputs,
 } from './walrus.js';
 export {
 	Deepbook,

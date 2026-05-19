@@ -186,7 +186,7 @@ export interface SealLocalKeygenOptions<Name extends string> {
 	readonly signer: LayeredTag<any, Account, any, any>;
 	/** Skip the local image build and use a pre-built key-server image
 	 *  tag instead. When unset (the default) we build from the vendored
-	 *  Dockerfile under `packages/devstack/seal-image/`, fetching
+	 *  Dockerfile under `packages/devstack/images/seal/`, fetching
 	 *  the platform-specific binaries from the seal GitHub release at
 	 *  `version`. */
 	readonly image?: string;
@@ -265,7 +265,7 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 
 	// Sibling tags. Image: caller-supplied `options.image` wins (pure
 	// pull of a pre-built tag), otherwise we build from the vendored
-	// Dockerfile under `packages/devstack/seal-image/`. The
+	// Dockerfile under `packages/devstack/images/seal/`. The
 	// Dockerfile fetches the platform-specific `seal-cli` + `key-server`
 	// binaries from the seal GitHub release — no Rust compile.
 	const sealImage =
@@ -274,7 +274,7 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 			: dockerImage({
 					name: `${name}.image` as const,
 					build: {
-						context: new URL('../../seal-image/', import.meta.url).pathname,
+						context: new URL('../../images/seal/', import.meta.url).pathname,
 						dockerfile: 'Dockerfile',
 						buildArgs: { SEAL_VERSION: version },
 					},
@@ -406,7 +406,7 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 
 		// 2. Ensure the key-server image is present. Builds from the
 		//    vendored Dockerfile under `packages/devstack/
-		//    seal-image/` when no `options.image` is supplied; pulls
+		//    images/seal/` when no `options.image` is supplied; pulls
 		//    the caller-supplied tag otherwise.
 		yield* setPhase('building image');
 		const resolvedImage = yield* Effect.gen(function* () {

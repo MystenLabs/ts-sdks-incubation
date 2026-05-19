@@ -62,7 +62,7 @@ $ grep -rln "graphql\|GraphQL" .../walrus.move-source/.../crates/
 # (only doc/notebook files; no source files use GraphQL)
 ```
 
-The `walrus-deploy` one-shot inside the wrapper image (`packages/devstack/walrus-image/Dockerfile`)
+The `walrus-deploy` one-shot inside the wrapper image (`packages/devstack/images/walrus/wrapper.Dockerfile`)
 and every storage-node binary inherit `DualClient`, so the JSON-RPC surface is required from the
 first container boot.
 
