@@ -5,17 +5,13 @@
 import { Console, Effect, FileSystem } from 'effect';
 import { Command, Flag } from 'effect/unstable/cli';
 import { resolve as resolvePath } from 'node:path';
+import { ManifestDiscoveryError, ManifestShapeError } from '../../engine/errors.js';
 import { readForkMeta } from '../../engine/sui-fork/meta.js';
-import { discoverManifestPath } from '../../runtime/discover-manifest.js';
+import { readStackContext, type StackContext } from '../../runtime/read-stack-context.js';
 import { resolveForkMetaPath, resolveStackFromEnv, stateDir } from '../stack-resolution.js';
 
-// Action-time env reads — see manifest.ts for the rationale.
+// Action-time env read — see manifest.ts for the rationale.
 const stateFile = (): string => `${stateDir()}/stacks/${resolveStackFromEnv(undefined)}/state.json`;
-// Walks up via discoverManifestPath so `devstack status` works from any
-// subdir; falls back to the conventional stack-scoped path so the human
-// "(missing)" branch still prints a useful absolute path.
-const manifestFile = (): string =>
-	discoverManifestPath() ?? `${stateDir()}/stacks/${resolveStackFromEnv(undefined)}/manifest.json`;
 
 interface ParsedFile {
 	readonly path: string;
@@ -46,6 +42,48 @@ const tryReadJson = (filePath: string): Effect.Effect<ParsedFile, never, FileSys
 		}
 	});
 
+interface ManifestSlot {
+	readonly path: string;
+	readonly exists: boolean;
+	readonly ctx?: StackContext;
+	readonly parseError?: string;
+}
+
+/** Read the manifest tolerantly via the shared reader — surfaces
+ *  decode failures as `parseError` instead of propagating, so the
+ *  status command still prints something useful for a stale or absent
+ *  manifest. */
+const tryReadManifest = (): Effect.Effect<ManifestSlot> => {
+	const fallbackPath = `${stateDir()}/stacks/${resolveStackFromEnv(undefined)}/manifest.json`;
+	const absoluteFallback = resolvePath(process.cwd(), fallbackPath);
+	return readStackContext().pipe(
+		Effect.map(
+			(ctx): ManifestSlot => ({
+				path: ctx.manifestPath,
+				exists: true,
+				ctx,
+			}),
+		),
+		Effect.catchTag(
+			'ManifestDiscoveryError',
+			(_cause: ManifestDiscoveryError): Effect.Effect<ManifestSlot> =>
+				Effect.succeed({ path: absoluteFallback, exists: false }),
+		),
+		Effect.catchTag(
+			'ManifestShapeError',
+			(cause: ManifestShapeError): Effect.Effect<ManifestSlot> =>
+				Effect.succeed({
+					path: cause.path,
+					exists: true,
+					parseError:
+						cause.phase === 'parse'
+							? `failed to parse JSON: ${String(cause.cause ?? cause.message)}`
+							: cause.message,
+				}),
+		),
+	);
+};
+
 export const statusCommand = Command.make(
 	'status',
 	{
@@ -54,7 +92,7 @@ export const statusCommand = Command.make(
 	({ json }) =>
 		Effect.gen(function* () {
 			const state = yield* tryReadJson(stateFile());
-			const manifest = yield* tryReadJson(manifestFile());
+			const manifest = yield* tryReadManifest();
 
 			// Phase 4 P4.9 — surface the per-stack `sui-fork/meta.json`
 			// fields under a dedicated `chain:` section so operators
@@ -72,11 +110,7 @@ export const statusCommand = Command.make(
 			// pinned it). `lastCheckpoint` / `clockMs` are dynamic
 			// runtime values — sourced live via `devstack fork status`,
 			// not from disk — so this section omits them.
-			const manifestSui = (
-				manifest.content as
-					| { services?: { sui?: { network?: string; chainId?: string } } }
-					| undefined
-			)?.services?.sui;
+			const manifestSui = manifest.ctx?.sui;
 			const chainBlock =
 				manifestSui !== undefined || forkMeta !== undefined
 					? {
@@ -107,7 +141,7 @@ export const statusCommand = Command.make(
 						manifest: {
 							path: manifest.path,
 							exists: manifest.exists,
-							...(manifest.content !== undefined ? { content: manifest.content } : {}),
+							...(manifest.ctx !== undefined ? { content: manifest.ctx.manifest } : {}),
 							...(manifest.parseError !== undefined ? { error: manifest.parseError } : {}),
 						},
 						...(chainBlock !== undefined ? { chain: chainBlock } : {}),
@@ -159,34 +193,45 @@ export const statusCommand = Command.make(
 				}
 			}
 
-			const manifestContent = manifest.content as
-				| {
-						packages?: ReadonlyArray<{ name: string; packageId: string }>;
-						endpoints?: ReadonlyArray<{ name: string; url: string; kind?: string }>;
-						accounts?: ReadonlyArray<{ name: string; address: string }>;
-				  }
-				| undefined;
-			if (manifestContent !== undefined) {
-				const pkgs = manifestContent.packages ?? [];
-				const eps = manifestContent.endpoints ?? [];
-				const accts = manifestContent.accounts ?? [];
-				if (eps.length > 0) {
+			if (manifest.ctx !== undefined) {
+				// Project endpoints out of the typed v5 manifest. Mirrors the
+				// flat-array shape the prior `endpoints[]` projection rendered.
+				const m = manifest.ctx.manifest;
+				const printedEps: Array<{ name: string; url: string }> = [];
+				if (m.services.sui !== undefined) {
+					printedEps.push({ name: 'sui-rpc', url: m.services.sui.rpc.url });
+					if (m.services.sui.faucet !== undefined)
+						printedEps.push({ name: 'sui-faucet', url: m.services.sui.faucet.url });
+					if (m.services.sui.graphql !== undefined)
+						printedEps.push({ name: 'sui-graphql', url: m.services.sui.graphql.url });
+				}
+				if (m.services.seal !== undefined)
+					printedEps.push({ name: 'seal-key-server', url: m.services.seal.keyServer.url });
+				if (m.services.walrus !== undefined) {
+					printedEps.push({ name: 'walrus-aggregator', url: m.services.walrus.aggregator.url });
+					printedEps.push({ name: 'walrus-publisher', url: m.services.walrus.publisher.url });
+				}
+				if (m.app.dev !== undefined)
+					printedEps.push({ name: 'frontend.dev-server', url: m.app.dev.url });
+				if (m.app.wallet !== undefined) printedEps.push({ name: 'wallet-app', url: m.app.wallet.url });
+				if (printedEps.length > 0) {
 					yield* Console.log(`  endpoints:`);
-					for (const ep of eps) {
-						const kind = ep.kind ? ` [${ep.kind}]` : '';
-						yield* Console.log(`    ${ep.name}${kind}: ${ep.url}`);
+					for (const ep of printedEps) {
+						yield* Console.log(`    ${ep.name}: ${ep.url}`);
 					}
 				}
+				const pkgs = Object.entries(m.packages);
 				if (pkgs.length > 0) {
 					yield* Console.log(`  packages:`);
-					for (const pkg of pkgs) {
-						yield* Console.log(`    ${pkg.name}: ${pkg.packageId}`);
+					for (const [name, pkg] of pkgs) {
+						yield* Console.log(`    ${name}: ${pkg.id}`);
 					}
 				}
+				const accts = Object.entries(m.accounts);
 				if (accts.length > 0) {
 					yield* Console.log(`  accounts:`);
-					for (const acct of accts) {
-						yield* Console.log(`    ${acct.name}: ${acct.address}`);
+					for (const [name, acct] of accts) {
+						yield* Console.log(`    ${name}: ${acct.address}`);
 					}
 				}
 			}

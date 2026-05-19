@@ -50,7 +50,7 @@ import {
 	resolveForkMetaPath as resolveEngineForkMetaPath,
 } from '../../engine/sui-fork/meta.js';
 import { formatBytes } from '../../engine/docker/inventory.js';
-import { discoverManifestPath } from '../../runtime/discover-manifest.js';
+import { readStackContext } from '../../runtime/read-stack-context.js';
 import { failAlreadyReported } from '../already-reported.js';
 import { resolveForkCacheRoot, resolveForkMetaPath, resolveStack } from '../stack-resolution.js';
 
@@ -77,33 +77,6 @@ interface ForkRuntimeContext {
 	readonly chainId?: string;
 }
 
-const readManifestSuiBlock = async (
-	manifestPath: string,
-): Promise<
-	| {
-			network: string;
-			chainId?: string;
-			rpcUrl: string;
-	  }
-	| undefined
-> => {
-	try {
-		const raw = await nodeFs.readFile(manifestPath, 'utf8');
-		const parsed = JSON.parse(raw) as {
-			services?: { sui?: { network?: string; chainId?: string; rpc?: { url?: string } } };
-		};
-		const sui = parsed.services?.sui;
-		if (sui?.rpc?.url === undefined || sui.network === undefined) return undefined;
-		return {
-			network: sui.network,
-			...(sui.chainId !== undefined ? { chainId: sui.chainId } : {}),
-			rpcUrl: sui.rpc.url,
-		};
-	} catch {
-		return undefined;
-	}
-};
-
 const networkToUpstream = (network: string): 'mainnet' | 'testnet' | 'devnet' | undefined => {
 	if (network === 'mainnet-fork' || network === 'mainnet') return 'mainnet';
 	if (network === 'testnet-fork' || network === 'testnet') return 'testnet';
@@ -112,14 +85,11 @@ const networkToUpstream = (network: string): 'mainnet' | 'testnet' | 'devnet' | 
 };
 
 const resolveForkRuntimeCtx = (stack: string) =>
-	Effect.tryPromise({
-		try: async (): Promise<ForkRuntimeContext> => {
-			const manifestPath =
-				discoverManifestPath({ stack }) ??
-				joinPath(process.cwd(), '.devstack', 'stacks', stack, 'manifest.json');
-			const sui = await readManifestSuiBlock(manifestPath);
+	readStackContext({ stack }).pipe(
+		Effect.flatMap((ctx) => {
+			const sui = ctx.sui;
 			if (sui === undefined) {
-				throw new Error(
+				return failAlreadyReported(
 					`devstack fork: no fork stack found for stack='${stack}'. Looked for ` +
 						`a manifest.json under .devstack/stacks/${stack}/ with services.sui.rpc.url set. ` +
 						`Run \`devstack apply\` (or \`devstack up\`) first.`,
@@ -127,27 +97,23 @@ const resolveForkRuntimeCtx = (stack: string) =>
 			}
 			const upstream = networkToUpstream(sui.network);
 			if (upstream === undefined) {
-				throw new Error(
+				return failAlreadyReported(
 					`devstack fork: manifest's services.sui.network='${sui.network}' is not a fork ` +
 						`variant. The fork subcommands only work on \`mainnet-fork\` / \`testnet-fork\` / ` +
 						`\`devnet-fork\` stacks.`,
 				);
 			}
-			return {
+			return Effect.succeed<ForkRuntimeContext>({
 				stack,
-				rpcUrl: sui.rpcUrl,
+				rpcUrl: sui.rpc.url,
 				upstream,
 				...(sui.chainId !== undefined ? { chainId: sui.chainId } : {}),
-			};
-		},
-		catch: (cause) => new Error(String(cause)),
-	}).pipe(
-		Effect.catch((cause: Error) =>
-			Effect.gen(function* () {
-				yield* failAlreadyReported(cause.message);
-				return undefined as never;
-			}),
-		),
+			});
+		}),
+		Effect.catchTags({
+			ManifestDiscoveryError: (cause) => failAlreadyReported(cause.message),
+			ManifestShapeError: (cause) => failAlreadyReported(cause.message),
+		}),
 	);
 
 /** Build a `SuiGrpcClient` against the running fork's RPC URL. The

@@ -152,6 +152,7 @@ export {
 	HostProcessError,
 	ManifestDiscoveryError,
 	ManifestError,
+	ManifestShapeError,
 	PublishError,
 	SealError,
 	SuiError,

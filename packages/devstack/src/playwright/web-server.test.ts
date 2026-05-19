@@ -137,8 +137,13 @@ describe('playwright web-server helpers', () => {
 				accounts: {},
 			};
 			writeFileSync(manifestPath, JSON.stringify(v3Manifest));
+			// E19: the explicit shape-guard branch was replaced by
+			// `Schema.decodeUnknown(ManifestV5)` in `readStackContextSync`.
+			// The error surface is now a typed `ManifestShapeError` with a
+			// `does not match the v5 schema` message that still carries the
+			// `RECOVERY: ...` recipe.
 			expect(() => webServer({ endpoint: EndpointName.DEV_SERVER_PRIMARY })).toThrow(
-				/unrecognized shape.*RECOVERY.*devstack up/s,
+				/v5 schema.*RECOVERY.*devstack apply/s,
 			);
 			// Crucially does NOT throw the unhelpful native
 			// `Cannot read properties of undefined` NPE.
@@ -150,7 +155,7 @@ describe('playwright web-server helpers', () => {
 		it('throws on a manifest with `services` but missing `app`', () => {
 			// Partial-shape guard: a manifest with `services` but no `app`
 			// would also NPE later (`manifest.app.dev` / `manifest.app.wallet`).
-			// The same regenerate recipe applies.
+			// The same regenerate recipe applies — Schema decode rejects.
 			const partial = {
 				version: 5,
 				stack: { name: 'main', network: 'localnet', app: 'test-app' },
@@ -162,7 +167,7 @@ describe('playwright web-server helpers', () => {
 			};
 			writeFileSync(manifestPath, JSON.stringify(partial));
 			expect(() => webServer({ endpoint: EndpointName.SUI_RPC })).toThrow(
-				/unrecognized shape.*RECOVERY/s,
+				/v5 schema.*RECOVERY/s,
 			);
 		});
 

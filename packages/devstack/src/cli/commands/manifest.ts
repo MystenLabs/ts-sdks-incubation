@@ -11,27 +11,11 @@
 // the same file. The supervisor writes to
 // `<stateDir>/stacks/<stack>/manifest.json`, never the legacy flat path.
 
-import { Console, Effect, FileSystem, Option } from 'effect';
+import { Console, Effect, Option } from 'effect';
 import { Argument, Command, Flag } from 'effect/unstable/cli';
-import { resolve as resolvePath } from 'node:path';
-import { discoverManifestPath } from '../../runtime/discover-manifest.js';
+import { promises as nodeFs } from 'node:fs';
+import { readStackContext } from '../../runtime/read-stack-context.js';
 import { failAlreadyReported } from '../already-reported.js';
-import { resolveStackFromEnv, stateDir } from '../stack-resolution.js';
-
-// Read env at action-time so a test that sets it via `process.env` after
-// module-load (or a `.env` loader, or a fixture shell wrapper) sees the
-// override. Resolving once at module-eval freezes whatever was set at the
-// moment the CLI was imported.
-const defaultManifestPath = (): string =>
-	discoverManifestPath() ?? `${stateDir()}/stacks/${resolveStackFromEnv(undefined)}/manifest.json`;
-
-interface ManifestSummary {
-	readonly packages?: ReadonlyArray<{ name: string; packageId: string }>;
-	readonly endpoints?: ReadonlyArray<{ name: string; url: string; kind?: string }>;
-	readonly accounts?: ReadonlyArray<{ name: string; address: string }>;
-	readonly coins?: ReadonlyArray<{ name: string; type: string; decimals: number }>;
-	readonly extras?: Record<string, unknown>;
-}
 
 export const manifestCommand = Command.make(
 	'manifest',
@@ -42,91 +26,106 @@ export const manifestCommand = Command.make(
 		),
 	},
 	({ path, json }) =>
-		Effect.gen(function* () {
-			const fs = yield* FileSystem.FileSystem;
-			const filePath = Option.getOrElse(path, defaultManifestPath);
-			const absolute = resolvePath(process.cwd(), filePath);
+		readStackContext({ manifestPath: Option.getOrUndefined(path) }).pipe(
+			Effect.flatMap((ctx) =>
+				Effect.gen(function* () {
+					if (json) {
+						// Emit the raw file body unchanged (preserves byte-for-byte
+						// what's on disk — `--json` is a scripting surface).
+						const raw = yield* Effect.tryPromise({
+							try: () => nodeFs.readFile(ctx.manifestPath, 'utf8'),
+							catch: (cause) =>
+								new Error(`failed to read ${ctx.manifestPath}: ${String(cause)}`),
+						});
+						yield* Console.log(raw.trimEnd());
+						return;
+					}
 
-			const exists = yield* fs.exists(filePath).pipe(Effect.orElseSucceed(() => false));
-			if (!exists) {
-				return yield* failAlreadyReported(
-					`manifest not found at ${absolute}\n` +
-						`  run \`devstack apply\` or \`devstack up\` to write it`,
-				);
-			}
+					yield* Console.log(`devstack manifest`);
+					yield* Console.log(`  path: ${ctx.manifestPath}`);
 
-			const raw = yield* fs.readFileString(filePath).pipe(
-				Effect.mapError((cause) => {
-					const err = new Error(`failed to read ${absolute}: ${String(cause)}`);
-					(err as Error & { cause?: unknown }).cause = cause;
-					return err;
+					const m = ctx.manifest;
+					const eps = Object.entries(m.services).flatMap(([_svc, _block]) => [] as never[]);
+					void eps; // structured rendering below
+					const pkgs = Object.entries(m.packages);
+					const accts = Object.entries(m.accounts);
+					const coins = Object.entries(m.coins);
+					const extras = m.app.extras;
+
+					// Endpoints: walk the typed services + app block. Same surface
+					// as the prior implementation's flat `endpoints[]` table — we
+					// project here from the typed v5 shape so a future schema
+					// change doesn't drift this rendering.
+					const printedEps: Array<{ name: string; url: string; kind?: string }> = [];
+					if (m.services.sui !== undefined) {
+						printedEps.push({ name: 'sui-rpc', url: m.services.sui.rpc.url });
+						if (m.services.sui.faucet !== undefined)
+							printedEps.push({ name: 'sui-faucet', url: m.services.sui.faucet.url });
+						if (m.services.sui.graphql !== undefined)
+							printedEps.push({ name: 'sui-graphql', url: m.services.sui.graphql.url });
+					}
+					if (m.services.seal !== undefined)
+						printedEps.push({ name: 'seal-key-server', url: m.services.seal.keyServer.url });
+					if (m.services.walrus !== undefined) {
+						printedEps.push({
+							name: 'walrus-aggregator',
+							url: m.services.walrus.aggregator.url,
+						});
+						printedEps.push({ name: 'walrus-publisher', url: m.services.walrus.publisher.url });
+					}
+					if (m.app.dev !== undefined)
+						printedEps.push({ name: 'frontend.dev-server', url: m.app.dev.url });
+					if (m.app.wallet !== undefined)
+						printedEps.push({ name: 'wallet-app', url: m.app.wallet.url });
+
+					if (printedEps.length > 0) {
+						yield* Console.log(`  endpoints:`);
+						for (const ep of printedEps) {
+							yield* Console.log(`    ${ep.name}: ${ep.url}`);
+						}
+					}
+					if (pkgs.length > 0) {
+						yield* Console.log(`  packages:`);
+						for (const [name, pkg] of pkgs) {
+							yield* Console.log(`    ${name}: ${pkg.id}`);
+						}
+					}
+					if (accts.length > 0) {
+						yield* Console.log(`  accounts:`);
+						for (const [name, acct] of accts) {
+							yield* Console.log(`    ${name}: ${acct.address}`);
+						}
+					}
+					if (coins.length > 0) {
+						yield* Console.log(`  coins:`);
+						for (const [name, coin] of coins) {
+							yield* Console.log(`    ${name}: ${coin.type} (${coin.decimals} decimals)`);
+						}
+					}
+					const extraKeys = Object.keys(extras);
+					if (extraKeys.length > 0) {
+						yield* Console.log(
+							`  extras: ${extraKeys.length} key${extraKeys.length === 1 ? '' : 's'}`,
+						);
+						for (const key of extraKeys) {
+							yield* Console.log(`    ${key}`);
+						}
+					}
+
+					const empty =
+						pkgs.length === 0 &&
+						printedEps.length === 0 &&
+						accts.length === 0 &&
+						coins.length === 0 &&
+						extraKeys.length === 0;
+					if (empty) {
+						yield* Console.log(`  (empty)`);
+					}
 				}),
-			);
-
-			if (json) {
-				yield* Console.log(raw.trimEnd());
-				return;
-			}
-
-			let parsed: ManifestSummary;
-			try {
-				parsed = JSON.parse(raw) as ManifestSummary;
-			} catch (cause) {
-				return yield* failAlreadyReported(
-					`failed to parse manifest at ${absolute}: ${String(cause)}`,
-				);
-			}
-
-			yield* Console.log(`devstack manifest`);
-			yield* Console.log(`  path: ${absolute}`);
-
-			const pkgs = parsed.packages ?? [];
-			const eps = parsed.endpoints ?? [];
-			const accts = parsed.accounts ?? [];
-			const coins = parsed.coins ?? [];
-			const extras = parsed.extras ?? {};
-
-			if (eps.length > 0) {
-				yield* Console.log(`  endpoints:`);
-				for (const ep of eps) {
-					const kind = ep.kind ? ` [${ep.kind}]` : '';
-					yield* Console.log(`    ${ep.name}${kind}: ${ep.url}`);
-				}
-			}
-			if (pkgs.length > 0) {
-				yield* Console.log(`  packages:`);
-				for (const pkg of pkgs) {
-					yield* Console.log(`    ${pkg.name}: ${pkg.packageId}`);
-				}
-			}
-			if (accts.length > 0) {
-				yield* Console.log(`  accounts:`);
-				for (const acct of accts) {
-					yield* Console.log(`    ${acct.name}: ${acct.address}`);
-				}
-			}
-			if (coins.length > 0) {
-				yield* Console.log(`  coins:`);
-				for (const coin of coins) {
-					yield* Console.log(`    ${coin.name}: ${coin.type} (${coin.decimals} decimals)`);
-				}
-			}
-			const extraKeys = Object.keys(extras);
-			if (extraKeys.length > 0) {
-				yield* Console.log(`  extras: ${extraKeys.length} key${extraKeys.length === 1 ? '' : 's'}`);
-				for (const key of extraKeys) {
-					yield* Console.log(`    ${key}`);
-				}
-			}
-
-			const empty =
-				pkgs.length === 0 &&
-				eps.length === 0 &&
-				accts.length === 0 &&
-				coins.length === 0 &&
-				extraKeys.length === 0;
-			if (empty) {
-				yield* Console.log(`  (empty)`);
-			}
-		}),
+			),
+			Effect.catchTags({
+				ManifestDiscoveryError: (cause) => failAlreadyReported(cause.message),
+				ManifestShapeError: (cause) => failAlreadyReported(cause.message),
+			}),
+		),
 ).pipe(Command.withDescription('Print the current `.devstack/manifest.json`'));
