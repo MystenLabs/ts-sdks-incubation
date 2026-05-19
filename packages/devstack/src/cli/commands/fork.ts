@@ -48,11 +48,7 @@ import {
 import { formatBytes } from '../../engine/docker/inventory.js';
 import { discoverManifestPath } from '../../runtime/discover-manifest.js';
 import { failAlreadyReported } from '../already-reported.js';
-import {
-	resolveForkCacheRoot,
-	resolveForkMetaPath,
-	resolveStack,
-} from '../stack-resolution.js';
+import { resolveForkCacheRoot, resolveForkMetaPath, resolveStack } from '../stack-resolution.js';
 
 const stackFlag = Flag.string('stack').pipe(
 	Flag.withDescription('Stack to target (default: active stack, or "main")'),
@@ -208,7 +204,9 @@ const statusCommand = Command.make(
 			yield* Console.log(`  epoch:                    ${body.epoch}`);
 			yield* Console.log(`  clockMs:                  ${body.timestampMs}`);
 		}),
-).pipe(Command.withDescription('Print the running fork stack\'s `ForkingService.GetStatus` response'));
+).pipe(
+	Command.withDescription("Print the running fork stack's `ForkingService.GetStatus` response"),
+);
 
 // ---------------------------------------------------------------------------
 // `fork advance-clock <durationMs>`
@@ -238,8 +236,7 @@ const advanceClockCommand = Command.make(
 			const client = makeForkClient(ctx);
 			const resp = yield* Effect.tryPromise({
 				try: () =>
-					client.forkingService.advanceClock({ durationMs: BigInt(parsedDuration) })
-						.response,
+					client.forkingService.advanceClock({ durationMs: BigInt(parsedDuration) }).response,
 				catch: (cause) => new Error(`fork advance-clock: AdvanceClock failed — ${String(cause)}`),
 			}).pipe(
 				Effect.catch((cause) =>
@@ -264,7 +261,7 @@ const advanceClockCommand = Command.make(
 					`(consensus-commit-prologue tx=${body.txDigest})`,
 			);
 		}),
-).pipe(Command.withDescription('Advance the fork\'s on-chain clock by N milliseconds'));
+).pipe(Command.withDescription("Advance the fork's on-chain clock by N milliseconds"));
 
 // ---------------------------------------------------------------------------
 // `fork advance-checkpoint [--count N]`
@@ -391,7 +388,9 @@ const replayToCommand = Command.make(
 				const resp = yield* Effect.tryPromise({
 					try: () => client.forkingService.advanceCheckpoint({}).response,
 					catch: (cause) =>
-						new Error(`fork replay-to: AdvanceCheckpoint failed at ${current}/${parsedTarget} — ${String(cause)}`),
+						new Error(
+							`fork replay-to: AdvanceCheckpoint failed at ${current}/${parsedTarget} — ${String(cause)}`,
+						),
 				}).pipe(
 					Effect.catch((cause) =>
 						Effect.gen(function* () {
@@ -482,7 +481,7 @@ const seedListCommand = Command.make(
 				for (const o of meta.seedObjects) yield* Console.log(`    ${o}`);
 			}
 		}),
-).pipe(Command.withDescription('Print the on-disk meta.json\'s seed addresses + objects'));
+).pipe(Command.withDescription("Print the on-disk meta.json's seed addresses + objects"));
 
 // ---------------------------------------------------------------------------
 // `fork seed diff`
@@ -693,9 +692,7 @@ const collectCacheEntries = async (
  *  id) since meta.json doesn't carry chainId directly — the supervisor
  *  could populate it but that's a Phase 4 enhancement. We use the
  *  meta's `upstream` as the cache key for the heuristic. */
-const collectReferencedChainIds = async (
-	stateRoot: string,
-): Promise<ReadonlySet<string>> => {
+const collectReferencedChainIds = async (stateRoot: string): Promise<ReadonlySet<string>> => {
 	const stacksDir = joinPath(stateRoot, 'stacks');
 	const out = new Set<string>();
 	let stacks: ReadonlyArray<string>;
@@ -724,42 +721,43 @@ const collectReferencedChainIds = async (
 	return out;
 };
 
-const cacheListCommand = Command.make(
-	'list',
-	{ json: jsonFlag },
-	({ json }) =>
-		Effect.gen(function* () {
-			const cacheRoot = resolveForkCacheRoot();
-			const stateRoot = joinPath(cacheRoot, '..');
-			const referenced = yield* Effect.promise(() => collectReferencedChainIds(stateRoot));
-			const entries = yield* Effect.promise(() => collectCacheEntries(cacheRoot, referenced));
-			const body = {
-				cacheRoot,
-				entries: entries.map((e) => ({
-					chainId: e.chainId,
-					path: e.path,
-					bytes: e.bytes,
-					referenced: e.referenced,
-				})),
-			};
-			if (json) {
-				yield* Console.log(JSON.stringify(body));
-				return;
-			}
-			yield* Console.log(`fork cache list (${cacheRoot}):`);
-			if (entries.length === 0) {
-				yield* Console.log(`  (empty)`);
-				return;
-			}
-			for (const e of entries) {
-				const marker = e.referenced ? '*' : ' ';
-				yield* Console.log(
-					`  ${marker} ${e.chainId.padEnd(40)} ${formatBytes(e.bytes).padStart(8)} (${e.path})`,
-				);
-			}
-			yield* Console.log(`(* = referenced by an active fork stack)`);
-		}),
-).pipe(Command.withDescription('List entries under .devstack/sui-fork-cache/ with size + reference status'));
+const cacheListCommand = Command.make('list', { json: jsonFlag }, ({ json }) =>
+	Effect.gen(function* () {
+		const cacheRoot = resolveForkCacheRoot();
+		const stateRoot = joinPath(cacheRoot, '..');
+		const referenced = yield* Effect.promise(() => collectReferencedChainIds(stateRoot));
+		const entries = yield* Effect.promise(() => collectCacheEntries(cacheRoot, referenced));
+		const body = {
+			cacheRoot,
+			entries: entries.map((e) => ({
+				chainId: e.chainId,
+				path: e.path,
+				bytes: e.bytes,
+				referenced: e.referenced,
+			})),
+		};
+		if (json) {
+			yield* Console.log(JSON.stringify(body));
+			return;
+		}
+		yield* Console.log(`fork cache list (${cacheRoot}):`);
+		if (entries.length === 0) {
+			yield* Console.log(`  (empty)`);
+			return;
+		}
+		for (const e of entries) {
+			const marker = e.referenced ? '*' : ' ';
+			yield* Console.log(
+				`  ${marker} ${e.chainId.padEnd(40)} ${formatBytes(e.bytes).padStart(8)} (${e.path})`,
+			);
+		}
+		yield* Console.log(`(* = referenced by an active fork stack)`);
+	}),
+).pipe(
+	Command.withDescription(
+		'List entries under .devstack/sui-fork-cache/ with size + reference status',
+	),
+);
 
 // ---------------------------------------------------------------------------
 // `fork cache prune --unreferenced`
@@ -850,7 +848,9 @@ const cacheCommand = Command.make('cache').pipe(
 // ---------------------------------------------------------------------------
 
 export const forkCommand = Command.make('fork').pipe(
-	Command.withDescription('Inspect + drive `sui-fork`-backed stacks (status, advance-*, seed, cache)'),
+	Command.withDescription(
+		'Inspect + drive `sui-fork`-backed stacks (status, advance-*, seed, cache)',
+	),
 	Command.withSubcommands([
 		statusCommand,
 		advanceClockCommand,

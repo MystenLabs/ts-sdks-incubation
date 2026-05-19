@@ -23,9 +23,6 @@ export {
 // `WalletHttpPath`; kept duplicated to avoid closing a workspace cycle.
 // Surfaced so the devstack sync test can import it and assert the
 // pair stays in lock-step.
-export {
-	DEVSTACK_WALLET_HTTP_PATH,
-	type DevstackWalletHttpPathValue,
-} from './devstack-paths.js';
+export { DEVSTACK_WALLET_HTTP_PATH, type DevstackWalletHttpPathValue } from './devstack-paths.js';
 export { WebCryptoSignerAdapter } from './webcrypto-adapter.js';
 export { PasskeySignerAdapter } from './passkey-adapter.js';

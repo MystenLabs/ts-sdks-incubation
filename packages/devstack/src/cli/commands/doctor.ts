@@ -188,10 +188,7 @@ interface ForkStackEntry {
 	readonly configHash: string;
 }
 
-const discoverForkStacks = (
-	fs: FileSystem.FileSystem,
-	stateDirPath: string,
-) =>
+const discoverForkStacks = (fs: FileSystem.FileSystem, stateDirPath: string) =>
 	Effect.gen(function* () {
 		const stacksDir = joinPath(stateDirPath, 'stacks');
 		const entries = yield* fs
@@ -222,10 +219,7 @@ const discoverForkStacks = (
 // devstack-vendored `sui-fork` (lives inside the per-stack docker
 // image), so a missing host binary is expected — the check is more
 // useful for users who built sui-fork locally and put it on PATH.
-const checkSuiForkBinary = (
-	spawner: Spawner,
-	required: boolean,
-): Effect.Effect<Check> =>
+const checkSuiForkBinary = (spawner: Spawner, required: boolean): Effect.Effect<Check> =>
 	Effect.gen(function* () {
 		const cmd = ChildProcess.make('sui-fork', ['--version']);
 		const out = yield* spawner.string(cmd).pipe(
@@ -274,9 +268,7 @@ const upstreamGraphqlHost = (upstream: string): string => {
 	return `fullnode.${upstream}.sui.io`;
 };
 
-const checkUpstreamGraphql = (
-	upstreams: ReadonlyArray<string>,
-): Effect.Effect<Check> =>
+const checkUpstreamGraphql = (upstreams: ReadonlyArray<string>): Effect.Effect<Check> =>
 	Effect.gen(function* () {
 		if (upstreams.length === 0) {
 			return {
@@ -318,9 +310,7 @@ const checkUpstreamGraphql = (
 // from inside doctor, so this surfaces corruption / tampering rather
 // than runtime-vs-config drift. Drift detection runs at `apply` time
 // (`ensureForkMetaConsistent`).
-const checkSeedManifests = (
-	stacks: ReadonlyArray<ForkStackEntry>,
-): Effect.Effect<Check> => {
+const checkSeedManifests = (stacks: ReadonlyArray<ForkStackEntry>): Effect.Effect<Check> => {
 	if (stacks.length === 0) {
 		return Effect.succeed({
 			name: 'fork seed manifest',
@@ -364,9 +354,7 @@ const checkSeedManifests = (
 // state for the fork's lifetime); we surface the size so operators can
 // compare against the 1GB threshold that flips `--include-fork-data`
 // off in `snapshot save`.
-const checkForkDataSizes = async (
-	stacks: ReadonlyArray<ForkStackEntry>,
-): Promise<Check> => {
+const checkForkDataSizes = async (stacks: ReadonlyArray<ForkStackEntry>): Promise<Check> => {
 	if (stacks.length === 0) {
 		return {
 			name: 'fork data dir size',

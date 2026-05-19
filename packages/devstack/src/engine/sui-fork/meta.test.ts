@@ -19,11 +19,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join as joinPath } from 'node:path';
 import { SeedManifestMismatchError } from '../errors.js';
-import {
-	computeConfigHash,
-	ensureForkMetaConsistent,
-	readForkMeta,
-} from './meta.js';
+import { computeConfigHash, ensureForkMetaConsistent, readForkMeta } from './meta.js';
 
 describe('engine/sui-fork/meta', () => {
 	describe('computeConfigHash (P4.15)', () => {
@@ -145,42 +141,38 @@ describe('engine/sui-fork/meta', () => {
 			}).pipe(Effect.provide(NodeServicesLayer)),
 		);
 
-		it.effect(
-			'P4.T5 raises SeedManifestMismatchError when configHash changes',
-			() =>
-				Effect.gen(function* () {
-					const dir = yield* Effect.promise(() =>
-						mkdtemp(joinPath(tmpdir(), 'devstack-fork-meta-')),
-					);
-					const metaPath = joinPath(dir, 'meta.json');
-					yield* ensureForkMetaConsistent({
-						metaPath,
-						current: {
-							upstream: 'testnet',
-							checkpoint: 1000,
-							seedAddresses: ['0xaa'],
-							seedObjects: [],
-						},
-					});
-					// Second boot with a different seed address set — must
-					// raise the typed error.
-					const result = yield* ensureForkMetaConsistent({
-						metaPath,
-						current: {
-							upstream: 'testnet',
-							checkpoint: 1000,
-							seedAddresses: ['0xaa', '0xcc'],
-							seedObjects: [],
-						},
-					}).pipe(Effect.flip);
-					expect(result).toBeInstanceOf(SeedManifestMismatchError);
-					expect(result.metaPath).toBe(metaPath);
-					expect(result.previous?.upstream).toBe('testnet');
-					expect(result.current?.upstream).toBe('testnet');
-					expect(result.previous?.configHash).not.toBe(result.current?.configHash);
-					expect(result.message).toMatch(/wipe --keep-upstream-cache/);
-					yield* Effect.promise(() => rm(dir, { recursive: true, force: true }));
-				}).pipe(Effect.provide(NodeServicesLayer)),
+		it.effect('P4.T5 raises SeedManifestMismatchError when configHash changes', () =>
+			Effect.gen(function* () {
+				const dir = yield* Effect.promise(() => mkdtemp(joinPath(tmpdir(), 'devstack-fork-meta-')));
+				const metaPath = joinPath(dir, 'meta.json');
+				yield* ensureForkMetaConsistent({
+					metaPath,
+					current: {
+						upstream: 'testnet',
+						checkpoint: 1000,
+						seedAddresses: ['0xaa'],
+						seedObjects: [],
+					},
+				});
+				// Second boot with a different seed address set — must
+				// raise the typed error.
+				const result = yield* ensureForkMetaConsistent({
+					metaPath,
+					current: {
+						upstream: 'testnet',
+						checkpoint: 1000,
+						seedAddresses: ['0xaa', '0xcc'],
+						seedObjects: [],
+					},
+				}).pipe(Effect.flip);
+				expect(result).toBeInstanceOf(SeedManifestMismatchError);
+				expect(result.metaPath).toBe(metaPath);
+				expect(result.previous?.upstream).toBe('testnet');
+				expect(result.current?.upstream).toBe('testnet');
+				expect(result.previous?.configHash).not.toBe(result.current?.configHash);
+				expect(result.message).toMatch(/wipe --keep-upstream-cache/);
+				yield* Effect.promise(() => rm(dir, { recursive: true, force: true }));
+			}).pipe(Effect.provide(NodeServicesLayer)),
 		);
 
 		it.effect('treats corrupt meta.json as first boot', () =>

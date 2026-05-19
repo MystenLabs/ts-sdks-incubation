@@ -177,9 +177,7 @@ const owner = (key: string, title: string, absolutePath = '/abs/dummy'): WatchOw
 describe('formatRestartCascade — Phase 5 diagnostic surface', () => {
 	it('enumerates downstream consumers when the closure is provided', () => {
 		// `publish.vault` is owner; `codegen` + `dev` depend on it transitively.
-		const closure: DownstreamClosure = new Map([
-			['publish.vault', new Set(['codegen', 'dev'])],
-		]);
+		const closure: DownstreamClosure = new Map([['publish.vault', new Set(['codegen', 'dev'])]]);
 		const { message, affected } = formatRestartCascade(
 			[owner('publish.vault', 'publish.vault')],
 			closure,
@@ -209,9 +207,7 @@ describe('formatRestartCascade — Phase 5 diagnostic surface', () => {
 		// the operator sees the cost up-front so the decision to roll
 		// forward (or Ctrl-C + edit) is informed. The plan explicitly bans
 		// an opt-out flag for this surface.
-		const closure: DownstreamClosure = new Map([
-			['publish.vault', new Set(['@devstack/SuiTag'])],
-		]);
+		const closure: DownstreamClosure = new Map([['publish.vault', new Set(['@devstack/SuiTag'])]]);
 		const { message, affected } = formatRestartCascade(
 			[owner('publish.vault', 'publish.vault')],
 			closure,
@@ -225,13 +221,8 @@ describe('formatRestartCascade — Phase 5 diagnostic surface', () => {
 	it('skips the reboot-cost warning when no heavy infra is in the affected set', () => {
 		// `codegen` and `dev` are per-cycle artifacts — no container teardown
 		// cost worth surfacing. The diagnostic stays terse.
-		const closure: DownstreamClosure = new Map([
-			['publish.vault', new Set(['codegen', 'dev'])],
-		]);
-		const { message } = formatRestartCascade(
-			[owner('publish.vault', 'publish.vault')],
-			closure,
-		);
+		const closure: DownstreamClosure = new Map([['publish.vault', new Set(['codegen', 'dev'])]]);
+		const { message } = formatRestartCascade([owner('publish.vault', 'publish.vault')], closure);
 		expect(message).not.toContain('affected:');
 		expect(message).not.toContain('reboot expected');
 	});
@@ -265,10 +256,7 @@ describe('formatRestartCascade — Phase 5 diagnostic surface', () => {
 				]),
 			],
 		]);
-		const { message } = formatRestartCascade(
-			[owner('publish.vault', 'publish.vault')],
-			closure,
-		);
+		const { message } = formatRestartCascade([owner('publish.vault', 'publish.vault')], closure);
 		expect(message).toContain('Walrus');
 		expect(message).toContain('Seal');
 		// Seal only renders once in the WARNING section even though both

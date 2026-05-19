@@ -82,7 +82,9 @@ export interface PostgresOptions<Name extends string> {
 
 const stackPassword = (stackId: string): string => `pg-${stackId.replace(/[^a-zA-Z0-9]/g, '')}`;
 
-export const Postgres = <const Name extends string = 'postgres'>(opts: PostgresOptions<Name> = {}) => {
+export const Postgres = <const Name extends string = 'postgres'>(
+	opts: PostgresOptions<Name> = {},
+) => {
 	const name = (opts.name ?? 'postgres') as Name;
 	const version = opts.version ?? DEFAULT_VERSION;
 	const user = opts.user ?? DEFAULT_USER;
@@ -141,9 +143,7 @@ export const Postgres = <const Name extends string = 'postgres'>(opts: PostgresO
 				network: networkName,
 				networkAlias,
 				...(ports !== undefined ? { ports } : {}),
-				...(opts.extraNetworks !== undefined
-					? { extraNetworks: opts.extraNetworks }
-					: {}),
+				...(opts.extraNetworks !== undefined ? { extraNetworks: opts.extraNetworks } : {}),
 			};
 		},
 		pgImageSource,
@@ -211,12 +211,7 @@ export const Postgres = <const Name extends string = 'postgres'>(opts: PostgresO
 			);
 
 			yield* setPhase('awaiting ready');
-			yield* awaitPostgresReady(
-				containerHandle.containerId,
-				user,
-				databases[0]!,
-				readyTimeoutMs,
-			);
+			yield* awaitPostgresReady(containerHandle.containerId, user, databases[0]!, readyTimeoutMs);
 
 			// Ensure each requested database exists. First entry was already
 			// created by the upstream image's entrypoint (POSTGRES_DB).
@@ -227,10 +222,7 @@ export const Postgres = <const Name extends string = 'postgres'>(opts: PostgresO
 
 			const endpoint = `postgres://${user}:${password}@${networkAlias}:5432`;
 			const url = (db: string): string => `${endpoint}/${db}`;
-			const containerNetworks: ReadonlyArray<string> = [
-				networkName,
-				...(opts.extraNetworks ?? []),
-			];
+			const containerNetworks: ReadonlyArray<string> = [networkName, ...(opts.extraNetworks ?? [])];
 
 			yield* publishEndpoint({
 				name: EndpointName.POSTGRES,
@@ -292,5 +284,9 @@ export const Postgres = <const Name extends string = 'postgres'>(opts: PostgresO
 	).__layer;
 
 	const __layers = [...composite.__layers, tagLayer];
-	return Object.assign(composite, { __layers, __kind: 'service' as const, __pluginName: 'postgres' });
+	return Object.assign(composite, {
+		__layers,
+		__kind: 'service' as const,
+		__pluginName: 'postgres',
+	});
 };

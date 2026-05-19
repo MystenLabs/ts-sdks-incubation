@@ -111,9 +111,7 @@ export const captured = ${body} as const;
 `;
 };
 
-const renderCoins = (
-	coins: Record<string, Record<string, unknown>>,
-): string => {
+const renderCoins = (coins: Record<string, Record<string, unknown>>): string => {
 	const entries = Object.entries(coins).sort(([a], [b]) => a.localeCompare(b));
 	const body =
 		entries.length === 0

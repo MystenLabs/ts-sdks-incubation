@@ -101,8 +101,7 @@ export const pythMid = <const Name extends string = 'pythMid'>(opts: PythMidOpti
 					}),
 				);
 			}
-			const quoteInfo =
-				opts.quote !== undefined ? pyth.findPriceInfo(opts.quote) : undefined;
+			const quoteInfo = opts.quote !== undefined ? pyth.findPriceInfo(opts.quote) : undefined;
 			if (opts.quote !== undefined && quoteInfo === undefined) {
 				return yield* Effect.fail(
 					new PythError({
@@ -116,7 +115,12 @@ export const pythMid = <const Name extends string = 'pythMid'>(opts: PythMidOpti
 			const readObjectPrice = (
 				objectId: string,
 			): Effect.Effect<
-				{ readonly priceMag: bigint; readonly priceNeg: boolean; readonly expoMag: bigint; readonly expoNeg: boolean },
+				{
+					readonly priceMag: bigint;
+					readonly priceNeg: boolean;
+					readonly expoMag: bigint;
+					readonly expoNeg: boolean;
+				},
 				PythError
 			> =>
 				Effect.tryPromise({

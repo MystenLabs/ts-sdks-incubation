@@ -63,9 +63,7 @@ export const DEFAULT_PREDEPOSIT_MULTIPLIER = 100n;
 // isn't assignable to `LayeredTag<any, { fullCoinType: string }, any,
 // any>`. The pool spec's coin slots accept any tag (`AnyCoinTag`);
 // the `fullCoinType` field is read structurally inside the body.
-export type DeepbookCoinRef =
-	| string
-	| LayeredTag<any, { readonly fullCoinType: string }, any, any>;
+export type DeepbookCoinRef = string | LayeredTag<any, { readonly fullCoinType: string }, any, any>;
 
 export type AnyCoinTag = LayeredTag<any, any, any, any>;
 

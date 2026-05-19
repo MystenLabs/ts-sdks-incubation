@@ -279,10 +279,7 @@ export const deepbookMarketMaker = <const Name extends string>(
 											typeof spec.sizePerLevel === 'function'
 												? spec.sizePerLevel()
 												: spec.sizePerLevel,
-										midPrice:
-											typeof spec.midPrice === 'function'
-												? spec.midPrice()
-												: spec.midPrice,
+										midPrice: typeof spec.midPrice === 'function' ? spec.midPrice() : spec.midPrice,
 										preDeposit: spec.preDeposit,
 									},
 								},

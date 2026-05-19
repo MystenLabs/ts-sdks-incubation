@@ -101,7 +101,7 @@ const imagesFlag = Flag.boolean('images').pipe(
 const alsoUpstreamCacheFlag = Flag.boolean('also-upstream-cache').pipe(
 	Flag.withDescription(
 		'Also remove `.devstack/sui-fork-cache/` — the shared warmed upstream cache that survives ' +
-			'a normal wipe so the next fork-mode `apply` doesn\'t re-warm system state.',
+			"a normal wipe so the next fork-mode `apply` doesn't re-warm system state.",
 	),
 	Flag.withDefault(false),
 );

@@ -36,7 +36,11 @@ export {
 	type DeepbookMintDEEPOptions,
 	type DeepbookMintUSDCOptions,
 } from './mint.js';
-export { vendorDeepbook, type VendorDeepbookOptions, type VendoredDeepbookSources } from './vendor.js';
+export {
+	vendorDeepbook,
+	type VendorDeepbookOptions,
+	type VendoredDeepbookSources,
+} from './vendor.js';
 export {
 	DeepbookIndexer,
 	DeepbookIndexerTag,

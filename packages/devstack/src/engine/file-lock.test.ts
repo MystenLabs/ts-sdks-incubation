@@ -124,7 +124,7 @@ describe('file-lock — tryClaimLockSync / releaseLockSync', () => {
 		}
 	});
 
-	it("release with mismatched instanceId leaves the on-disk lock alone", () => {
+	it('release with mismatched instanceId leaves the on-disk lock alone', () => {
 		const result = tryClaimLockSync(path);
 		expect(result.ok).toBe(true);
 		// Forge a different body (different instanceId).

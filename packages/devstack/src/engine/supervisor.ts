@@ -792,9 +792,7 @@ const watchPathFiber = (
 			Stream.filter((event) => {
 				// fs.watch emits filenames relative to the watch root; join
 				// before passing to the absolute-path filter.
-				const abs = nodePath.isAbsolute(event.path)
-					? event.path
-					: nodePath.join(path, event.path);
+				const abs = nodePath.isAbsolute(event.path) ? event.path : nodePath.join(path, event.path);
 				return watchFilter(abs);
 			}),
 		);

@@ -325,9 +325,7 @@ describe('dev-wallet-accounts component', () => {
 		container.appendChild(el);
 		await waitForUpdate(el);
 
-		const addBtn = el.shadowRoot!.querySelector(
-			'[part="add-button"]',
-		) as HTMLButtonElement | null;
+		const addBtn = el.shadowRoot!.querySelector('[part="add-button"]') as HTMLButtonElement | null;
 		expect(addBtn).not.toBeNull();
 		expect(addBtn!.disabled).toBe(true);
 		expect(addBtn!.textContent).toContain('+ Add');
@@ -412,7 +410,10 @@ describe('dev-wallet-signing-modal fork footnote (Phase 4 P4.T12)', () => {
 		el.request = {
 			id: 'req-1',
 			features: ['sui:signTransaction'],
-			payload: { type: 'sui:signTransaction', input: { transaction: { toJSON: async () => '{}' } } },
+			payload: {
+				type: 'sui:signTransaction',
+				input: { transaction: { toJSON: async () => '{}' } },
+			},
 		} as unknown as DevWalletSigningModal['request'];
 		container.appendChild(el);
 		await waitForUpdate(el);
@@ -428,7 +429,10 @@ describe('dev-wallet-signing-modal fork footnote (Phase 4 P4.T12)', () => {
 		el.request = {
 			id: 'req-1',
 			features: ['sui:signTransaction'],
-			payload: { type: 'sui:signTransaction', input: { transaction: { toJSON: async () => '{}' } } },
+			payload: {
+				type: 'sui:signTransaction',
+				input: { transaction: { toJSON: async () => '{}' } },
+			},
 		} as unknown as DevWalletSigningModal['request'];
 		container.appendChild(el);
 		await waitForUpdate(el);

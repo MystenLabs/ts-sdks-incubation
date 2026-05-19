@@ -181,7 +181,6 @@ describe('EngineHandle restart signaling — Queue.dropping semantics', () => {
 	);
 });
 
-
 describe('EngineHandle.markFailed root-cause extraction', () => {
 	it.effect('walks the cause chain to the innermost message for the row summary', () =>
 		// The outer wrapper's message is the same generic preamble for every
@@ -260,10 +259,7 @@ describe('EngineHandle selective-restart surface — Phase 3', () => {
 		Effect.gen(function* () {
 			const scope = yield* Scope.make();
 			const finalizedRef = yield* Ref.make(false);
-			yield* Scope.addFinalizer(
-				scope,
-				Ref.set(finalizedRef, true),
-			);
+			yield* Scope.addFinalizer(scope, Ref.set(finalizedRef, true));
 			yield* engine.registerPrimitiveScope(key, scope);
 			return { scope, finalizedRef };
 		});

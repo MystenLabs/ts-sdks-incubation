@@ -420,65 +420,65 @@ export const Account = <const N extends string>(
 							}),
 						);
 					}
-				// Host-side faucet — runs in the supervisor process, not inside a container.
-				const faucetUrl = sui.faucet.host;
-				// Before the first faucet POST, ask the Sui primitive to
-				// confirm the chain is actually funds-transferable. The
-				// supervisor's Sui-ready gate is socket-level only — the
-				// faucet HTTP server is bound but the underlying validator
-				// may still be mid-genesis, in which case `/v2/gas` returns
-				// 200 OK with body `{status: {Failure: ...}}`. The retry
-				// budget in `requestFunds` already absorbs this race for a
-				// single account, but each parallel account would otherwise
-				// spend its own retry budget rediscovering the same fact;
-				// centralizing the wait at `sui` (the primitive memoizes via
-				// `Effect.cached`) lets every ephemeral-funded account
-				// share one cached resolution.
-				yield* setPhase('awaiting chain funds-transferable');
-				yield* sui.waitForTransactionsReady().pipe(
-					Effect.catchTag('SuiError', (cause) =>
-						Effect.fail(
-							new AccountError({
-								phase: 'fund',
-								message: `Account: '${name}' aborted before funding — chain never became funds-transferable: ${cause.message}`,
-								cause,
-							}),
+					// Host-side faucet — runs in the supervisor process, not inside a container.
+					const faucetUrl = sui.faucet.host;
+					// Before the first faucet POST, ask the Sui primitive to
+					// confirm the chain is actually funds-transferable. The
+					// supervisor's Sui-ready gate is socket-level only — the
+					// faucet HTTP server is bound but the underlying validator
+					// may still be mid-genesis, in which case `/v2/gas` returns
+					// 200 OK with body `{status: {Failure: ...}}`. The retry
+					// budget in `requestFunds` already absorbs this race for a
+					// single account, but each parallel account would otherwise
+					// spend its own retry budget rediscovering the same fact;
+					// centralizing the wait at `sui` (the primitive memoizes via
+					// `Effect.cached`) lets every ephemeral-funded account
+					// share one cached resolution.
+					yield* setPhase('awaiting chain funds-transferable');
+					yield* sui.waitForTransactionsReady().pipe(
+						Effect.catchTag('SuiError', (cause) =>
+							Effect.fail(
+								new AccountError({
+									phase: 'fund',
+									message: `Account: '${name}' aborted before funding — chain never became funds-transferable: ${cause.message}`,
+									cause,
+								}),
+							),
 						),
-					),
-				);
-				yield* setPhase('requesting funds');
-				yield* requestFunds({
-					faucetUrl,
-					address,
-					// Surface retry progress so a slow cold-start (sui-faucet
-					// binary still warming up, returning 503 or body-level
-					// `Failure` for the first ~30s after genesis) doesn't
-					// look like a hang in the TUI. `setPhase` mutates the
-					// row's status text — the dashboard re-renders within
-					// one tick.
-					onAttempt: (attempt, err) =>
-						setPhase(
-							`requesting funds (attempt ${attempt}, last: ${err.message.replace(/\n.*$/s, '')})`,
+					);
+					yield* setPhase('requesting funds');
+					yield* requestFunds({
+						faucetUrl,
+						address,
+						// Surface retry progress so a slow cold-start (sui-faucet
+						// binary still warming up, returning 503 or body-level
+						// `Failure` for the first ~30s after genesis) doesn't
+						// look like a hang in the TUI. `setPhase` mutates the
+						// row's status text — the dashboard re-renders within
+						// one tick.
+						onAttempt: (attempt, err) =>
+							setPhase(
+								`requesting funds (attempt ${attempt}, last: ${err.message.replace(/\n.*$/s, '')})`,
+							),
+						// Pass through the per-account retry-budget overrides
+						// when present. `requestFunds` falls back to its own
+						// defaults (90s / 40 attempts) when these are undefined,
+						// so the unset path matches today's behavior exactly.
+						...(source.faucetTimeoutMs !== undefined ? { timeoutMs: source.faucetTimeoutMs } : {}),
+						...(source.faucetMaxAttempts !== undefined
+							? { maxAttempts: source.faucetMaxAttempts }
+							: {}),
+					}).pipe(
+						Effect.catchTag('FaucetError', (cause) =>
+							Effect.fail(
+								new AccountError({
+									phase: 'fund',
+									message: `Account: failed to fund '${name}' via ${faucetUrl}`,
+									cause,
+								}),
+							),
 						),
-					// Pass through the per-account retry-budget overrides
-					// when present. `requestFunds` falls back to its own
-					// defaults (90s / 40 attempts) when these are undefined,
-					// so the unset path matches today's behavior exactly.
-					...(source.faucetTimeoutMs !== undefined ? { timeoutMs: source.faucetTimeoutMs } : {}),
-					...(source.faucetMaxAttempts !== undefined
-						? { maxAttempts: source.faucetMaxAttempts }
-						: {}),
-				}).pipe(
-					Effect.catchTag('FaucetError', (cause) =>
-						Effect.fail(
-							new AccountError({
-								phase: 'fund',
-								message: `Account: failed to fund '${name}' via ${faucetUrl}`,
-								cause,
-							}),
-						),
-					),
-				);
+					);
 				} // end faucet-funded path (sui.runtime !== 'forked')
 			}
 
@@ -550,7 +550,12 @@ export const Account = <const N extends string>(
 							} satisfies SignAndExecuteError);
 						}
 						const result = yield* sui.fork
-							.impersonate(address, transaction as unknown as Parameters<NonNullable<typeof sui.fork>['impersonate']>[1])
+							.impersonate(
+								address,
+								transaction as unknown as Parameters<
+									NonNullable<typeof sui.fork>['impersonate']
+								>[1],
+							)
 							.pipe(
 								Effect.mapError(
 									(cause): SignAndExecuteError => ({
@@ -630,8 +635,7 @@ export const Account = <const N extends string>(
 								return Effect.fail({
 									_tag: 'SignAndExecuteError' as const,
 									message:
-										inner.status.error?.message ??
-										`Account: unknown tx failure for '${name}'`,
+										inner.status.error?.message ?? `Account: unknown tx failure for '${name}'`,
 								});
 							}
 							// Block until the RPC's indexer has the tx's
@@ -1227,10 +1231,7 @@ const deriveObjectChanges = (
 			});
 		} else if (change.idOperation === 'Deleted') {
 			out.push({ type: 'deleted', objectId: change.objectId, objectType });
-		} else if (
-			change.idOperation === 'None' &&
-			change.outputState === 'ObjectWrite'
-		) {
+		} else if (change.idOperation === 'None' && change.outputState === 'ObjectWrite') {
 			out.push({
 				type: 'mutated',
 				objectId: change.objectId,
@@ -1260,14 +1261,9 @@ const mapGrpcTxResult = (
 	effects: {
 		status: {
 			status: inner.status.success ? 'success' : 'failure',
-			...(inner.status.error?.message !== undefined
-				? { error: inner.status.error.message }
-				: {}),
+			...(inner.status.error?.message !== undefined ? { error: inner.status.error.message } : {}),
 		},
 	},
-	objectChanges: deriveObjectChanges(
-		inner.effects?.changedObjects ?? [],
-		inner.objectTypes,
-	),
+	objectChanges: deriveObjectChanges(inner.effects?.changedObjects ?? [], inner.objectTypes),
 	balanceChanges: mapBalanceChanges(inner.balanceChanges),
 });

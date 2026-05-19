@@ -24,13 +24,7 @@
  * confirms the exit, instead of staring at a static "N" for the whole
  * teardown window.
  */
-export type TagStatus =
-	| 'pending'
-	| 'acquiring'
-	| 'ready'
-	| 'failed'
-	| 'stopping'
-	| 'stopped';
+export type TagStatus = 'pending' | 'acquiring' | 'ready' | 'failed' | 'stopping' | 'stopped';
 
 export type TuiEntryKind = 'service' | 'package' | 'account' | 'action' | 'app' | 'other';
 

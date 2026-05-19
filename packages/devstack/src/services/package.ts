@@ -198,11 +198,7 @@ export interface PackageOptions {
  *  `PackageWithCapture` on `/advanced` — that factory accepts a
  *  `capture(changes)` lambda for unusual cases (DAO patterns, custom
  *  init that creates non-standard shared objects). */
-export const Package = <const N extends string>(
-	name: N,
-	path: string,
-	opts: PackageOptions,
-) => {
+export const Package = <const N extends string>(name: N, path: string, opts: PackageOptions) => {
 	const publishOpts: PublishMoveOptions<N, undefined> = {
 		name,
 		path,
@@ -240,7 +236,7 @@ export type CaptureSpec<TCaptured> =
  *  (`includes` filter); callback form passes through. */
 const compileCapture = <TCaptured>(
 	spec: CaptureSpec<TCaptured>,
-): (changes: ReadonlyArray<SuiObjectChange>) => TCaptured => {
+): ((changes: ReadonlyArray<SuiObjectChange>) => TCaptured) => {
 	if (typeof spec === 'function') return spec;
 	return (changes) => {
 		const out: Record<string, string | undefined> = {};

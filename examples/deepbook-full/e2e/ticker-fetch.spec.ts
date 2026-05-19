@@ -4,7 +4,9 @@
 
 import { expect, test } from '@mysten-incubation/devstack/playwright';
 
-test('ticker page renders per-pool rows with numeric lastPrice + bestBid + bestAsk', async ({ page }) => {
+test('ticker page renders per-pool rows with numeric lastPrice + bestBid + bestAsk', async ({
+	page,
+}) => {
 	await page.goto('/');
 
 	// Wait for the maker to produce orders and the indexer to ingest +

@@ -23,10 +23,7 @@ import { stringifyCause } from '../../engine/stringify-cause.js';
 import { DeepbookError } from '../../engine/errors.js';
 import type { Account } from '../../engine/shared.js';
 import type { DeepbookMargin } from './margin.js';
-import {
-	MARGIN_SUPPLIER_CAP_TYPE_SUFFIX,
-	SUI_CLOCK_OBJECT_ID,
-} from './internal.js';
+import { MARGIN_SUPPLIER_CAP_TYPE_SUFFIX, SUI_CLOCK_OBJECT_ID } from './internal.js';
 
 // State-store key prefix for margin-seed moved to
 // `engine/state-store-keys.ts`. Canonical builder:

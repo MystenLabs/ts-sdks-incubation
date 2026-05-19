@@ -83,7 +83,12 @@ export {
 	DEEP_PRICE_FEED_ID,
 	USDC_PRICE_FEED_ID,
 } from './pyth.js';
-export { Postgres, PostgresTag, type PostgresOptions, type Postgres as PostgresShape } from './postgres.js';
+export {
+	Postgres,
+	PostgresTag,
+	type PostgresOptions,
+	type Postgres as PostgresShape,
+} from './postgres.js';
 export type {
 	PythOptions,
 	PythShape,

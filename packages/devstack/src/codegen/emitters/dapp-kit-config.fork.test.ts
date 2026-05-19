@@ -108,7 +108,9 @@ describe('Phase 3 P3.T8 — DappKitConfigEmitter fork-network translation', () =
 			// derived from it) sees `'mainnet'`.
 			expect(body).toContain('networks: [network] as [typeof network]');
 		}).pipe(
-			Effect.provide(Layer.mergeAll(RegistriesLive, IdentityFor('mainnet-fork'), ExtrasLive(undefined))),
+			Effect.provide(
+				Layer.mergeAll(RegistriesLive, IdentityFor('mainnet-fork'), ExtrasLive(undefined)),
+			),
 		),
 	);
 
@@ -122,7 +124,9 @@ describe('Phase 3 P3.T8 — DappKitConfigEmitter fork-network translation', () =
 			expect(body).toContain('export const devstackNetwork = "testnet-fork" as const');
 			expect(body).toContain('export const runtime = "forked" as const');
 		}).pipe(
-			Effect.provide(Layer.mergeAll(RegistriesLive, IdentityFor('testnet-fork'), ExtrasLive(undefined))),
+			Effect.provide(
+				Layer.mergeAll(RegistriesLive, IdentityFor('testnet-fork'), ExtrasLive(undefined)),
+			),
 		),
 	);
 
@@ -136,7 +140,9 @@ describe('Phase 3 P3.T8 — DappKitConfigEmitter fork-network translation', () =
 			expect(body).toContain('export const devstackNetwork = "devnet-fork" as const');
 			expect(body).toContain('export const runtime = "forked" as const');
 		}).pipe(
-			Effect.provide(Layer.mergeAll(RegistriesLive, IdentityFor('devnet-fork'), ExtrasLive(undefined))),
+			Effect.provide(
+				Layer.mergeAll(RegistriesLive, IdentityFor('devnet-fork'), ExtrasLive(undefined)),
+			),
 		),
 	);
 

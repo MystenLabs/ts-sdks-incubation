@@ -12,7 +12,10 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 export interface PgClient {
-	readonly query: <T = unknown>(sql: string, params?: ReadonlyArray<unknown>) => Promise<{
+	readonly query: <T = unknown>(
+		sql: string,
+		params?: ReadonlyArray<unknown>,
+	) => Promise<{
 		readonly rows: ReadonlyArray<T>;
 		readonly rowCount: number | null;
 	}>;

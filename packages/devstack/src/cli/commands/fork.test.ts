@@ -27,9 +27,7 @@ describe('cli/commands/fork', () => {
 	describe('manifest discovery + upstream derivation (P4.T1 wiring)', () => {
 		it.effect('reads services.sui from a manifest and derives the upstream', () =>
 			Effect.gen(function* () {
-				const root = yield* Effect.promise(() =>
-					mkdtemp(joinPath(tmpdir(), 'devstack-fork-cli-')),
-				);
+				const root = yield* Effect.promise(() => mkdtemp(joinPath(tmpdir(), 'devstack-fork-cli-')));
 				const stateDir = joinPath(root, '.devstack');
 				const stackDir = joinPath(stateDir, 'stacks', 'main');
 				yield* Effect.promise(() => mkdir(stackDir, { recursive: true }));
@@ -85,9 +83,7 @@ describe('cli/commands/fork', () => {
 	describe('collectReferencedChainIds (P4.T4 + cache list)', () => {
 		it.effect('walks per-stack meta.json files and folds upstream + chainId into the set', () =>
 			Effect.gen(function* () {
-				const root = yield* Effect.promise(() =>
-					mkdtemp(joinPath(tmpdir(), 'devstack-fork-cli-')),
-				);
+				const root = yield* Effect.promise(() => mkdtemp(joinPath(tmpdir(), 'devstack-fork-cli-')));
 				const stateDir = joinPath(root, '.devstack');
 				const oneDir = joinPath(stateDir, 'stacks', 'one', 'sui-fork');
 				const twoDir = joinPath(stateDir, 'stacks', 'two', 'sui-fork');
@@ -98,7 +94,11 @@ describe('cli/commands/fork', () => {
 					createdAt: 0,
 					upstream: 'testnet',
 					chainId: '4c78adac',
-					configHash: computeConfigHash({ upstream: 'testnet', seedAddresses: [], seedObjects: [] }),
+					configHash: computeConfigHash({
+						upstream: 'testnet',
+						seedAddresses: [],
+						seedObjects: [],
+					}),
 					seedAddresses: [] as string[],
 					seedObjects: [] as string[],
 				};
@@ -106,7 +106,11 @@ describe('cli/commands/fork', () => {
 					version: 1,
 					createdAt: 0,
 					upstream: 'mainnet',
-					configHash: computeConfigHash({ upstream: 'mainnet', seedAddresses: [], seedObjects: [] }),
+					configHash: computeConfigHash({
+						upstream: 'mainnet',
+						seedAddresses: [],
+						seedObjects: [],
+					}),
 					seedAddresses: [] as string[],
 					seedObjects: [] as string[],
 				};
@@ -135,7 +139,9 @@ describe('cli/commands/fork', () => {
 				);
 				const cacheRoot = joinPath(root, 'sui-fork-cache');
 				yield* Effect.promise(() => mkdir(joinPath(cacheRoot, 'testnet'), { recursive: true }));
-				yield* Effect.promise(() => mkdir(joinPath(cacheRoot, 'orphan-chain'), { recursive: true }));
+				yield* Effect.promise(() =>
+					mkdir(joinPath(cacheRoot, 'orphan-chain'), { recursive: true }),
+				);
 				yield* Effect.promise(() =>
 					writeFile(joinPath(cacheRoot, 'testnet', 'sample.bin'), Buffer.from('hello')),
 				);

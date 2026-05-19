@@ -30,10 +30,30 @@ export interface CreatedObjectEntry {
  *  - `prefix` — Move type starts with the given string. The natural
  *    fit for "every TreasuryCap published in this tx" sweeps. */
 export type PickCreatedByTypeFilter =
-	| { readonly suffix: string; readonly includes?: never; readonly prefix?: never; readonly all?: false }
-	| { readonly includes: string; readonly suffix?: never; readonly prefix?: never; readonly all?: false }
-	| { readonly prefix: string; readonly suffix?: never; readonly includes?: never; readonly all?: false }
-	| { readonly prefix: string; readonly suffix?: never; readonly includes?: never; readonly all: true };
+	| {
+			readonly suffix: string;
+			readonly includes?: never;
+			readonly prefix?: never;
+			readonly all?: false;
+	  }
+	| {
+			readonly includes: string;
+			readonly suffix?: never;
+			readonly prefix?: never;
+			readonly all?: false;
+	  }
+	| {
+			readonly prefix: string;
+			readonly suffix?: never;
+			readonly includes?: never;
+			readonly all?: false;
+	  }
+	| {
+			readonly prefix: string;
+			readonly suffix?: never;
+			readonly includes?: never;
+			readonly all: true;
+	  };
 
 /** Return type of `pickCreatedByType` — `string | undefined` for
  *  first-match, `ReadonlyArray<CreatedObjectEntry>` for `all: true`. */
@@ -90,7 +110,8 @@ export function pickCreatedByType(
 	filter: PickCreatedByTypeFilter,
 ): string | undefined | ReadonlyArray<CreatedObjectEntry> {
 	const matches = (objectType: string): boolean => {
-		if ('suffix' in filter && filter.suffix !== undefined) return objectType.endsWith(filter.suffix);
+		if ('suffix' in filter && filter.suffix !== undefined)
+			return objectType.endsWith(filter.suffix);
 		if ('includes' in filter && filter.includes !== undefined)
 			return objectType.includes(filter.includes);
 		// `prefix` form (with or without `all`).

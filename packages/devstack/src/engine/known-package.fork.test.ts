@@ -79,8 +79,12 @@ describe('Phase 3 P3.T1 — KnownPackage + fork-aware deployment lookup', () => 
 
 			const collected = collectKnownPackageSeedObjects();
 			expect(collected).toHaveLength(2);
-			expect(collected).toContain('0x2134d52768ea07e8c43570ef975eb3e4c27a39fa6396bef985b5abc58d03ddd2');
-			expect(collected).toContain('0x10b9d30c28448939ce6c4d6c6e0ffce4a7f8a4ada8248bdad09ef8b70e4a3904');
+			expect(collected).toContain(
+				'0x2134d52768ea07e8c43570ef975eb3e4c27a39fa6396bef985b5abc58d03ddd2',
+			);
+			expect(collected).toContain(
+				'0x10b9d30c28448939ce6c4d6c6e0ffce4a7f8a4ada8248bdad09ef8b70e4a3904',
+			);
 		});
 
 		it('deduplicates seedObjects across multiple KnownPackage declarations', () => {

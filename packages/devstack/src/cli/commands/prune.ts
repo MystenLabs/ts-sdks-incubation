@@ -338,10 +338,7 @@ const maybePruneForkCache = (
 				const stacks = await nodeFs.readdir(stacksDir);
 				for (const stack of stacks) {
 					try {
-						const meta = await nodeFs.readFile(
-							`${stacksDir}/${stack}/sui-fork/meta.json`,
-							'utf8',
-						);
+						const meta = await nodeFs.readFile(`${stacksDir}/${stack}/sui-fork/meta.json`, 'utf8');
 						const parsed = JSON.parse(meta) as { upstream?: string; chainId?: string };
 						if (parsed.chainId !== undefined) out.add(parsed.chainId);
 						if (parsed.upstream !== undefined) out.add(parsed.upstream);

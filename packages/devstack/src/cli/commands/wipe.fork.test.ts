@@ -22,9 +22,7 @@ import {
 describe('cli/commands/wipe fork-cache invariants', () => {
 	it.effect('resolveForkCacheRoot lives at <state>/sui-fork-cache (NOT inside stacks/)', () =>
 		Effect.gen(function* () {
-			const root = yield* Effect.promise(() =>
-				mkdtemp(joinPath(tmpdir(), 'devstack-wipe-fork-')),
-			);
+			const root = yield* Effect.promise(() => mkdtemp(joinPath(tmpdir(), 'devstack-wipe-fork-')));
 			const stateDir = joinPath(root, '.devstack');
 			const prevState = process.env.DEVSTACK_STATE_DIR;
 			const prevAppDir = process.env.DEVSTACK_APP_DIR;
@@ -79,32 +77,34 @@ describe('cli/commands/wipe fork-cache invariants', () => {
 			}).pipe(Effect.provide(NodeServicesLayer)),
 	);
 
-	it.effect('P4.T8 invariant: --also-upstream-cache removes BOTH the per-stack dir AND the cache', () =>
-		Effect.gen(function* () {
-			const root = yield* Effect.promise(() =>
-				mkdtemp(joinPath(tmpdir(), 'devstack-wipe-fork-')),
-			);
-			const stateDir = joinPath(root, '.devstack');
-			const stackForkDir = joinPath(stateDir, 'stacks', 'main', 'sui-fork');
-			const cacheRoot = joinPath(stateDir, 'sui-fork-cache');
-			yield* Effect.promise(() => mkdir(stackForkDir, { recursive: true }));
-			yield* Effect.promise(() => mkdir(joinPath(cacheRoot, 'testnet'), { recursive: true }));
-			yield* Effect.promise(() => writeFile(joinPath(cacheRoot, 'testnet', 'a.bin'), 'x'));
-			// Simulate the `--also-upstream-cache` pass.
-			yield* Effect.promise(() =>
-				rm(joinPath(stateDir, 'stacks', 'main'), { recursive: true, force: true }),
-			);
-			yield* Effect.promise(() => rm(cacheRoot, { recursive: true, force: true }));
-			const cacheMissing = yield* Effect.promise(async () => {
-				try {
-					await access(joinPath(cacheRoot, 'testnet', 'a.bin'));
-					return false;
-				} catch {
-					return true;
-				}
-			});
-			expect(cacheMissing).toBe(true);
-			yield* Effect.promise(() => rm(root, { recursive: true, force: true }));
-		}).pipe(Effect.provide(NodeServicesLayer)),
+	it.effect(
+		'P4.T8 invariant: --also-upstream-cache removes BOTH the per-stack dir AND the cache',
+		() =>
+			Effect.gen(function* () {
+				const root = yield* Effect.promise(() =>
+					mkdtemp(joinPath(tmpdir(), 'devstack-wipe-fork-')),
+				);
+				const stateDir = joinPath(root, '.devstack');
+				const stackForkDir = joinPath(stateDir, 'stacks', 'main', 'sui-fork');
+				const cacheRoot = joinPath(stateDir, 'sui-fork-cache');
+				yield* Effect.promise(() => mkdir(stackForkDir, { recursive: true }));
+				yield* Effect.promise(() => mkdir(joinPath(cacheRoot, 'testnet'), { recursive: true }));
+				yield* Effect.promise(() => writeFile(joinPath(cacheRoot, 'testnet', 'a.bin'), 'x'));
+				// Simulate the `--also-upstream-cache` pass.
+				yield* Effect.promise(() =>
+					rm(joinPath(stateDir, 'stacks', 'main'), { recursive: true, force: true }),
+				);
+				yield* Effect.promise(() => rm(cacheRoot, { recursive: true, force: true }));
+				const cacheMissing = yield* Effect.promise(async () => {
+					try {
+						await access(joinPath(cacheRoot, 'testnet', 'a.bin'));
+						return false;
+					} catch {
+						return true;
+					}
+				});
+				expect(cacheMissing).toBe(true);
+				yield* Effect.promise(() => rm(root, { recursive: true, force: true }));
+			}).pipe(Effect.provide(NodeServicesLayer)),
 	);
 });

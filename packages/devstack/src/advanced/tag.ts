@@ -575,4 +575,3 @@ export const composeLayers = (
 	opts.primary,
 	...(opts.projections ?? []),
 ];
-

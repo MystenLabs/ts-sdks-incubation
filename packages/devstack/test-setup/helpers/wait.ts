@@ -30,7 +30,9 @@ export const waitForPostgresQuery = async <T>(
 		if (predicate(result.rows)) return;
 		await new Promise((resolve) => setTimeout(resolve, intervalMs));
 	}
-	throw new Error(`waitForPostgresQuery: predicate did not match within ${timeoutMs}ms (sql=${sql})`);
+	throw new Error(
+		`waitForPostgresQuery: predicate did not match within ${timeoutMs}ms (sql=${sql})`,
+	);
 };
 
 /**

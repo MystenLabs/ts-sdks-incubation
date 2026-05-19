@@ -138,7 +138,10 @@ const groupWalrus = (
 	const agg = endpoints.find((e) => e.name === EndpointName.WALRUS_AGGREGATOR);
 	const pub = endpoints.find((e) => e.name === EndpointName.WALRUS_PUBLISHER);
 	if (agg === undefined || pub === undefined) return undefined;
-	const base: WalrusManifest = { aggregator: toEndpointEntry(agg), publisher: toEndpointEntry(pub) };
+	const base: WalrusManifest = {
+		aggregator: toEndpointEntry(agg),
+		publisher: toEndpointEntry(pub),
+	};
 	return state !== undefined ? { ...base, systemObjectId: state.systemObjectId } : base;
 };
 
@@ -372,4 +375,3 @@ export const gatherManifest = (
 			app,
 		};
 	});
-

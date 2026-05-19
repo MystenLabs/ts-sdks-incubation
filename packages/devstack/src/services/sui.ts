@@ -1402,9 +1402,9 @@ const buildForkControl = (
 	const advanceClock = (durationMs?: number): Effect.Effect<ForkAdvanceClockResult, SuiError> =>
 		Effect.tryPromise({
 			try: () =>
-				client.forkingService.advanceClock({
-					...(durationMs !== undefined ? { durationMs: BigInt(durationMs) } : {}),
-				}).response,
+				client.forkingService.advanceClock(
+					durationMs !== undefined ? { durationMs: BigInt(durationMs) } : {},
+				).response,
 			catch: (cause) =>
 				new SuiError({
 					phase: 'fork-advance-clock',
@@ -1547,9 +1547,7 @@ const buildFork = (
 				seedAddresses: seedAddrsRaw,
 				seedObjects: seedObjsRaw,
 			},
-		}).pipe(
-			Effect.catchTag('SeedManifestMismatchError', (cause) => Effect.fail(cause)),
-		);
+		}).pipe(Effect.catchTag('SeedManifestMismatchError', (cause) => Effect.fail(cause)));
 
 		// Resolve image — `forkImage` is always defined now and produces
 		// the right tag for whichever branch of `DockerContainerImage`
@@ -1810,8 +1808,8 @@ export const Sui = (opts: SuiOptions = {}): LayeredTag<'@devstack/SuiTag', Sui> 
 	} else {
 		member = buildLocalnet(opts.localnet ?? {});
 	}
-	return Object.assign(member, { __kind: 'service' as const, __pluginName: 'sui' }) as unknown as LayeredTag<
-		'@devstack/SuiTag',
-		Sui
-	>;
+	return Object.assign(member, {
+		__kind: 'service' as const,
+		__pluginName: 'sui',
+	}) as unknown as LayeredTag<'@devstack/SuiTag', Sui>;
 };

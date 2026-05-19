@@ -398,9 +398,7 @@ export const run = (
 		// hit None and silently no-op, leaving the TUI rows static during
 		// teardown).
 		const engineOptForFinalizer =
-			opts.engineTagKey !== undefined
-				? yield* Effect.serviceOption(EngineHandle)
-				: undefined;
+			opts.engineTagKey !== undefined ? yield* Effect.serviceOption(EngineHandle) : undefined;
 		const engineForFinalizer =
 			engineOptForFinalizer !== undefined && engineOptForFinalizer._tag === 'Some'
 				? engineOptForFinalizer.value
@@ -795,8 +793,7 @@ export const normalizeLogLine = (
 				readonly fields?: { readonly message?: unknown };
 			};
 			const lvl = typeof parsed.level === 'string' ? parsed.level.toLowerCase() : undefined;
-			const msg =
-				typeof parsed.fields?.message === 'string' ? parsed.fields.message : undefined;
+			const msg = typeof parsed.fields?.message === 'string' ? parsed.fields.message : undefined;
 			if (lvl !== undefined && msg !== undefined) {
 				return { level: levelOrDefault(lvl, defaultLevel), line: msg };
 			}
@@ -1045,12 +1042,7 @@ const inspectContainer = (
 		const line = captured.stdout.trim();
 		const parts = line.split('|');
 		if (parts.length !== 4) return null;
-		const [runningStr, image, containerId, exitCodeStr] = parts as [
-			string,
-			string,
-			string,
-			string,
-		];
+		const [runningStr, image, containerId, exitCodeStr] = parts as [string, string, string, string];
 		if (image.length === 0 || containerId.length === 0) return null;
 		const exitCodeParsed = Number.parseInt(exitCodeStr, 10);
 		const lastExitCode = Number.isFinite(exitCodeParsed) ? exitCodeParsed : undefined;
@@ -1259,10 +1251,7 @@ const materializeRouterEntries = (
 			connectResult !== null &&
 			connectResult.exitCode !== 0 &&
 			/already exists in network/i.test(connectResult.stderr);
-		if (
-			connectResult === null ||
-			(connectResult.exitCode !== 0 && !alreadyAttached)
-		) {
+		if (connectResult === null || (connectResult.exitCode !== 0 && !alreadyAttached)) {
 			const detail =
 				connectResult === null
 					? 'failed to spawn'

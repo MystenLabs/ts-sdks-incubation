@@ -17,8 +17,9 @@ export function Mint({ self }: { self: string }) {
 		invalidateKeys: [['balance']],
 	});
 
-	const deepbookPkg = (packages as Record<string, { id: string; captured?: Record<string, unknown> }>)
-		.deepbook;
+	const deepbookPkg = (
+		packages as Record<string, { id: string; captured?: Record<string, unknown> }>
+	).deepbook;
 	const deepTreasuryId = deepbookConfig.packageIds.DEEP_TREASURY_ID;
 	const deepCoinType = deepbookConfig.coins.DEEP?.type;
 

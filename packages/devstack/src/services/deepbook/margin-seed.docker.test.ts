@@ -10,8 +10,7 @@
 import { describe, it } from 'vitest';
 import { DOCKER_OK, stampSkipNoticeIfMissing } from '../../../test-setup/docker/probe.js';
 
-const RUN_INTEGRATION =
-	DOCKER_OK && process.env.DEVSTACK_INTEGRATION_TESTS === '1';
+const RUN_INTEGRATION = DOCKER_OK && process.env.DEVSTACK_INTEGRATION_TESTS === '1';
 
 stampSkipNoticeIfMissing('deepbookMarginSeed L3 docker');
 

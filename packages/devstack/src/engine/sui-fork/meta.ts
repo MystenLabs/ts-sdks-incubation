@@ -143,7 +143,11 @@ export const writeForkMeta = (metaPath: string, meta: ForkMeta): Effect.Effect<v
 export const ensureForkMetaConsistent = (args: {
 	readonly metaPath: string;
 	readonly current: ForkConfigInput;
-}): Effect.Effect<{ written: boolean; meta: ForkMeta }, SeedManifestMismatchError, FileSystem.FileSystem> =>
+}): Effect.Effect<
+	{ written: boolean; meta: ForkMeta },
+	SeedManifestMismatchError,
+	FileSystem.FileSystem
+> =>
 	Effect.gen(function* () {
 		const existing = yield* readForkMeta(args.metaPath);
 		const currentHash = computeConfigHash(args.current);
@@ -169,7 +173,9 @@ export const ensureForkMetaConsistent = (args: {
 					},
 					current: {
 						upstream: args.current.upstream,
-						...(args.current.checkpoint !== undefined ? { checkpoint: args.current.checkpoint } : {}),
+						...(args.current.checkpoint !== undefined
+							? { checkpoint: args.current.checkpoint }
+							: {}),
 						configHash: currentHash,
 					},
 				}),

@@ -40,16 +40,11 @@ const RUN_INTEGRATION = DOCKER_OK && process.env.DEVSTACK_INTEGRATION_TESTS === 
 
 stampSkipNoticeIfMissing('snapshot-deepbook L4');
 
-describe.skipIf(!RUN_INTEGRATION)(
-	'snapshot/restore — full deepbook stack (P5.T10)',
-	() => {
-		it.todo(
-			'apply → save → wipe → restore: deepbook-config.ts regenerated identical content',
-		);
-		it.todo('on-chain deepbook package + pool ids unchanged after restore');
-		it.todo('pyth PriceInfoObject ids unchanged after restore');
-		it.todo('indexer last-checkpoint cursor preserved in Postgres after restore');
-		it.todo('server /ticker shows the same per-pool lastPrice after restore');
-		it.todo('margin pool ids + supplier-cap balance unchanged after restore');
-	},
-);
+describe.skipIf(!RUN_INTEGRATION)('snapshot/restore — full deepbook stack (P5.T10)', () => {
+	it.todo('apply → save → wipe → restore: deepbook-config.ts regenerated identical content');
+	it.todo('on-chain deepbook package + pool ids unchanged after restore');
+	it.todo('pyth PriceInfoObject ids unchanged after restore');
+	it.todo('indexer last-checkpoint cursor preserved in Postgres after restore');
+	it.todo('server /ticker shows the same per-pool lastPrice after restore');
+	it.todo('margin pool ids + supplier-cap balance unchanged after restore');
+});

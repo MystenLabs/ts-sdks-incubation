@@ -50,9 +50,7 @@ describe('cli/commands/doctor fork checks (P4.T9)', () => {
 				seedAddresses,
 				seedObjects,
 			};
-			yield* Effect.promise(() =>
-				writeFile(joinPath(stackDir, 'meta.json'), JSON.stringify(meta)),
-			);
+			yield* Effect.promise(() => writeFile(joinPath(stackDir, 'meta.json'), JSON.stringify(meta)));
 			// Recompute and assert: doctor's `checkSeedManifests` reads
 			// the persisted fields and re-runs `computeConfigHash`; the
 			// values must match for the check to pass.
@@ -86,9 +84,7 @@ describe('cli/commands/doctor fork checks (P4.T9)', () => {
 				seedAddresses,
 				seedObjects: [] as string[],
 			};
-			yield* Effect.promise(() =>
-				writeFile(joinPath(stackDir, 'meta.json'), JSON.stringify(meta)),
-			);
+			yield* Effect.promise(() => writeFile(joinPath(stackDir, 'meta.json'), JSON.stringify(meta)));
 			const recomputed = computeConfigHash({
 				upstream: 'testnet',
 				seedAddresses,

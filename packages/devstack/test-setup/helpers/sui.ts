@@ -50,7 +50,8 @@ export const getObject = async (
 		result?: { data?: GetObjectResult; error?: unknown };
 		error?: unknown;
 	};
-	if (body.error !== undefined) throw new Error(`getObject(${objectId}): ${JSON.stringify(body.error)}`);
+	if (body.error !== undefined)
+		throw new Error(`getObject(${objectId}): ${JSON.stringify(body.error)}`);
 	if (body.result?.data === undefined) throw new Error(`getObject(${objectId}): no data`);
 	return body.result.data;
 };

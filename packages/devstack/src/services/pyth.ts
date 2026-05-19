@@ -61,7 +61,10 @@ export const Pyth = (opts: PythOptions = {}) => {
 					`Pass an explicit \`packageId\` + optional \`pythStateId\` / \`wormholeStateId\`.`,
 			);
 		}
-		return Object.assign(pythKnownPackage(opts.override), { __kind: 'service' as const, __pluginName: 'pyth' });
+		return Object.assign(pythKnownPackage(opts.override), {
+			__kind: 'service' as const,
+			__pluginName: 'pyth',
+		});
 	}
 	if (opts.local === undefined) {
 		throw new Error(
@@ -72,5 +75,8 @@ export const Pyth = (opts: PythOptions = {}) => {
 		...(opts.name !== undefined ? { name: opts.name } : {}),
 		...opts.local,
 	} as Parameters<typeof pythLocalDeploy>[0];
-	return Object.assign(pythLocalDeploy(localOpts), { __kind: 'service' as const, __pluginName: 'pyth' });
+	return Object.assign(pythLocalDeploy(localOpts), {
+		__kind: 'service' as const,
+		__pluginName: 'pyth',
+	});
 };

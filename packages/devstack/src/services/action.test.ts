@@ -95,7 +95,7 @@ const makeMockSigner = (address: string): { signer: Account; signCalls: Array<un
 	const signCalls: Array<unknown> = [];
 	const txResult: TxResult = {
 		digest: 'mock-digest-' + Math.random().toString(36).slice(2, 8),
-		effects: undefined,
+		effects: { status: { status: 'success' } },
 		objectChanges: [
 			{
 				type: 'created',
@@ -278,7 +278,7 @@ describe('Action — cache hit', () => {
 			// evicted.
 			const cached: TxResult = {
 				digest: 'stale-digest',
-				effects: undefined,
+				effects: { status: { status: 'success' } },
 				objectChanges: [
 					{
 						type: 'created',

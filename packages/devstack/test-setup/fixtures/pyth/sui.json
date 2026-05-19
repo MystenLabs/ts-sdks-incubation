@@ -1,23 +1,23 @@
 {
-  "binary": {
-    "encoding": "hex",
-    "data": ["test-fixture-not-real-vaa"]
-  },
-  "parsed": [
-    {
-      "id": "23d7315113f5b1d3ba7a83604c44b94d79f4fd69af77f804fc7f920a6dc65744",
-      "price": {
-        "price": "350000000",
-        "expo": -8,
-        "publish_time": 1715000000,
-        "conf": "100000"
-      },
-      "ema_price": {
-        "price": "350000000",
-        "expo": -8,
-        "publish_time": 1715000000,
-        "conf": "100000"
-      }
-    }
-  ]
+	"binary": {
+		"encoding": "hex",
+		"data": ["test-fixture-not-real-vaa"]
+	},
+	"parsed": [
+		{
+			"id": "23d7315113f5b1d3ba7a83604c44b94d79f4fd69af77f804fc7f920a6dc65744",
+			"price": {
+				"price": "350000000",
+				"expo": -8,
+				"publish_time": 1715000000,
+				"conf": "100000"
+			},
+			"ema_price": {
+				"price": "350000000",
+				"expo": -8,
+				"publish_time": 1715000000,
+				"conf": "100000"
+			}
+		}
+	]
 }

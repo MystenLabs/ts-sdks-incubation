@@ -9,10 +9,7 @@
 
 import { readFileSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
-import {
-	type ConventionalRoute,
-	listEndpointDeclarations,
-} from '../engine/define-endpoint.js';
+import { type ConventionalRoute, listEndpointDeclarations } from '../engine/define-endpoint.js';
 // Side-effect import: registering the endpoint declarations populates
 // `listEndpointDeclarations()`. The conventional-route table reads that
 // registry, so it must run AFTER endpoint-names.ts has executed at

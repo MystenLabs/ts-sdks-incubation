@@ -42,7 +42,9 @@ describe('mintFromTreasury tx-builder shape', () => {
 			};
 		};
 		expect(moveCall.$kind).toBe('MoveCall');
-		expect(moveCall.MoveCall?.package).toBe('0x0000000000000000000000000000000000000000000000000000000000000002');
+		expect(moveCall.MoveCall?.package).toBe(
+			'0x0000000000000000000000000000000000000000000000000000000000000002',
+		);
 		expect(moveCall.MoveCall?.module).toBe('coin');
 		expect(moveCall.MoveCall?.function).toBe('mint_and_transfer');
 		expect(moveCall.MoveCall?.typeArguments).toEqual([fullCoinType]);

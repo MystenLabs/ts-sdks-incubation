@@ -25,10 +25,7 @@ import { tag, provide, setPhase, type LayeredTag } from '../../advanced/tag.js';
 import { SuiTag } from '../sui.js';
 import { publishMove } from '../package/internal.js';
 import { pickCreatedByType } from '../../engine/sui-helpers.js';
-import {
-	publishDeepbookMarginState,
-	publishPackage,
-} from '../../engine/registries.js';
+import { publishDeepbookMarginState, publishPackage } from '../../engine/registries.js';
 import { StateStore } from '../../engine/state-store.js';
 import { StateStoreKeys } from '../../engine/state-store-keys.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
@@ -195,10 +192,9 @@ export interface DeepbookMargin {
 	readonly findMarginPool: (label: string) => DeepbookMarginPool | undefined;
 }
 
-export class DeepbookMarginTag extends Context.Service<
-	DeepbookMarginTag,
-	DeepbookMargin
->()('@devstack/DeepbookMarginTag') {}
+export class DeepbookMarginTag extends Context.Service<DeepbookMarginTag, DeepbookMargin>()(
+	'@devstack/DeepbookMarginTag',
+) {}
 
 export interface DeepbookMarginOptions<Name extends string> {
 	readonly name?: Name;
@@ -275,9 +271,7 @@ const hashMarginConfig = (
 				scalar: a.scalar,
 				supplyCap: a.supplyCap,
 			})),
-		pools: pools
-			.slice()
-			.sort((a, b) => (a.pool < b.pool ? -1 : a.pool > b.pool ? 1 : 0)),
+		pools: pools.slice().sort((a, b) => (a.pool < b.pool ? -1 : a.pool > b.pool ? 1 : 0)),
 		maxAgeSeconds: maxAgeSeconds.toString(),
 	};
 	return crypto.createHash('sha256').update(JSON.stringify(canonical)).digest('hex').slice(0, 16);
@@ -288,8 +282,7 @@ const hashMarginConfig = (
 // same to keep arithmetic identical to the on-chain assertions.
 const toFloatScalar = (value: number): bigint => BigInt(Math.round(value * FLOAT_SCALAR));
 
-const toAssetScalar = (value: number, scalar: number): bigint =>
-	BigInt(Math.round(value * scalar));
+const toAssetScalar = (value: number, scalar: number): bigint => BigInt(Math.round(value * scalar));
 
 export const deepbookMargin = <const Name extends string = 'deepbook-margin'>(
 	options: DeepbookMarginOptions<Name>,
@@ -299,10 +292,7 @@ export const deepbookMargin = <const Name extends string = 'deepbook-margin'>(
 
 	// Validate source-of-truth invariants up front: mutual exclusion
 	// between `movePackagePath` and `vendor` for each Move package.
-	if (
-		options.margin.movePackagePath !== undefined &&
-		options.margin.vendor !== undefined
-	) {
+	if (options.margin.movePackagePath !== undefined && options.margin.vendor !== undefined) {
 		throw new TypeError(
 			`deepbookMargin: \`margin.movePackagePath\` and \`margin.vendor\` are mutually exclusive`,
 		);
@@ -544,9 +534,7 @@ export const deepbookMargin = <const Name extends string = 'deepbook-margin'>(
 			});
 			const cached = yield* state.get<CachedMargin>(cacheKey);
 
-			const verifyCached = (
-				payload: CachedMargin,
-			): Effect.Effect<boolean, never> =>
+			const verifyCached = (payload: CachedMargin): Effect.Effect<boolean, never> =>
 				Effect.gen(function* () {
 					for (const pool of payload.marginPools) {
 						const fetched = yield* Effect.tryPromise({
@@ -667,11 +655,7 @@ export const deepbookMargin = <const Name extends string = 'deepbook-margin'>(
 				// 1) mint_maintainer_cap → captured for later moveCalls
 				const maintainerCap = tx.moveCall({
 					target: `${packageId}::margin_registry::mint_maintainer_cap`,
-					arguments: [
-						tx.object(registryId),
-						tx.object(adminCapId),
-						tx.object(SUI_CLOCK_OBJECT_ID),
-					],
+					arguments: [tx.object(registryId), tx.object(adminCapId), tx.object(SUI_CLOCK_OBJECT_ID)],
 				});
 
 				// 2) per-asset CoinTypeData (Pyth-config inputs). The
@@ -891,8 +875,7 @@ export const deepbookMargin = <const Name extends string = 'deepbook-margin'>(
 			});
 
 			const byLabel = new Map(marginPools.map((p) => [p.label, p] as const));
-			const findMarginPool = (label: string): DeepbookMarginPool | undefined =>
-				byLabel.get(label);
+			const findMarginPool = (label: string): DeepbookMarginPool | undefined => byLabel.get(label);
 
 			return {
 				packageId,

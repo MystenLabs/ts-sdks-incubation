@@ -187,12 +187,9 @@ const resolveBySymbol = (
  *  `CoinValue`. The `R` channel carries `CoinRegistry` (for symbol
  *  resolution) and `SuiTag` (for bare-coin-type metadata lookup). */
 export type CoinFactory = {
-	(identifier: string): LayeredTag<
-		string,
-		CoinValue,
-		CoinRegistry | SuiTag,
-		CoinNotFoundError | CoinAmbiguousError
-	>;
+	(
+		identifier: string,
+	): LayeredTag<string, CoinValue, CoinRegistry | SuiTag, CoinNotFoundError | CoinAmbiguousError>;
 	readonly fromPackage: <P extends { readonly coins: Record<string, unknown> }>(
 		pkg: LayeredTag<any, P, any, any>,
 		witness: string,
@@ -244,11 +241,7 @@ const coinByIdentifier = (identifier: string) =>
 			yield* setPhase('resolving');
 			if (hit.kind === 'not-found') {
 				const known = Array.from(
-					new Set(
-						records.flatMap((r) =>
-							r.symbol !== undefined ? [r.symbol, r.name] : [r.name],
-						),
-					),
+					new Set(records.flatMap((r) => (r.symbol !== undefined ? [r.symbol, r.name] : [r.name]))),
 				).sort();
 				return yield* Effect.fail(
 					new CoinNotFoundError({
@@ -344,15 +337,11 @@ const coinFromPackage = <P extends { readonly coins: Record<string, unknown> }>(
 /** `Coin.builtin(name)` body — returns a hardcoded canonical record. No
  *  yield, no registry, no RPC. */
 const coinBuiltin = (name: BuiltinCoinName) =>
-	tag(
-		`coin/builtin/${name}` as const,
-		Effect.succeed(BUILTIN_COINS[name] as CoinValue),
-		{
-			kind: 'action',
-			displayTitle: `coin.${name}`,
-			display: (s) => ({ title: `coin.${s.name}`, primary: s.fullCoinType }),
-		},
-	);
+	tag(`coin/builtin/${name}` as const, Effect.succeed(BUILTIN_COINS[name] as CoinValue), {
+		kind: 'action',
+		displayTitle: `coin.${name}`,
+		display: (s) => ({ title: `coin.${s.name}`, primary: s.fullCoinType }),
+	});
 
 /** The `Coin` factory family. See module header for usage. */
 export const Coin: CoinFactory = Object.assign(coinByIdentifier, {
@@ -377,7 +366,12 @@ const STATE_KEY_COIN_MINT_PREFIX = 'coin/mint/v1';
 export type TreasuryCapRef =
 	| string
 	| {
-			readonly fromPackage: LayeredTag<any, { readonly captured?: Record<string, unknown> }, any, any>;
+			readonly fromPackage: LayeredTag<
+				any,
+				{ readonly captured?: Record<string, unknown> },
+				any,
+				any
+			>;
 			readonly capturedField: string;
 	  };
 

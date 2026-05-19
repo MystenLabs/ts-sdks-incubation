@@ -19,7 +19,7 @@ const fixtureError = () =>
 			'fork meta at /tmp/devstack/stacks/main/sui-fork/meta.json disagrees with the current ' +
 			'Sui({fork:{…}}) configuration. The on-disk data dir was seeded with a different ' +
 			'upstream / checkpoint / seed set, and re-booting against the current config would ' +
-			'silently diverge from sui-fork\'s write-once seed manifest. Resolve by running ' +
+			"silently diverge from sui-fork's write-once seed manifest. Resolve by running " +
 			'`devstack wipe --keep-upstream-cache && devstack apply` to wipe the per-stack fork ' +
 			'state.',
 		previous: { upstream: 'testnet', checkpoint: 50_000_000, configHash: 'aaaaaaaaaaaaaaaa' },

@@ -118,20 +118,16 @@ describe('defineEntrypoint / routerEntrypoint registry', () => {
 	it('defineEntrypoint is idempotent on identical (name, port, defaultProtocol)', () => {
 		// Calling twice with the same payload must not throw — supports
 		// hot-restart of an out-of-tree plugin that re-imports its module.
-		expect(() =>
-			defineEntrypoint({ name: 'custom-test-idempotent', port: 18001 }),
-		).not.toThrow();
-		expect(() =>
-			defineEntrypoint({ name: 'custom-test-idempotent', port: 18001 }),
-		).not.toThrow();
+		expect(() => defineEntrypoint({ name: 'custom-test-idempotent', port: 18001 })).not.toThrow();
+		expect(() => defineEntrypoint({ name: 'custom-test-idempotent', port: 18001 })).not.toThrow();
 		expect(routerEntrypoint('custom-test-idempotent')?.port).toBe(18001);
 	});
 
 	it('defineEntrypoint rejects a conflicting (name, different port)', () => {
 		defineEntrypoint({ name: 'custom-test-conflict', port: 18002 });
-		expect(() =>
-			defineEntrypoint({ name: 'custom-test-conflict', port: 18003 }),
-		).toThrowError(/conflicts with prior registration/);
+		expect(() => defineEntrypoint({ name: 'custom-test-conflict', port: 18003 })).toThrowError(
+			/conflicts with prior registration/,
+		);
 	});
 
 	it('listEntrypoints includes every registered entrypoint', () => {

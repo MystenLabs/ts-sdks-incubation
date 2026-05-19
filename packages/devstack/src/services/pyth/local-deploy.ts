@@ -16,11 +16,7 @@ import { tag, provide, type LayeredTag } from '../../advanced/tag.js';
 import { SuiTag } from '../sui.js';
 import { publishMove } from '../package/internal.js';
 import { pickCreatedByType } from '../../engine/sui-helpers.js';
-import {
-	publishPackage,
-	publishPythState,
-	type PythStateRecord,
-} from '../../engine/registries.js';
+import { publishPackage, publishPythState, type PythStateRecord } from '../../engine/registries.js';
 import { StateStore } from '../../engine/state-store.js';
 import { StateStoreKeys } from '../../engine/state-store-keys.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
@@ -102,7 +98,9 @@ export const pythLocalDeploy = <const Name extends string = 'pyth'>(
 	const name = (opts.name ?? 'pyth') as Name;
 
 	if (opts.movePackagePath !== undefined && opts.vendor !== undefined) {
-		throw new TypeError(`pythLocalDeploy: \`movePackagePath\` and \`vendor\` are mutually exclusive`);
+		throw new TypeError(
+			`pythLocalDeploy: \`movePackagePath\` and \`vendor\` are mutually exclusive`,
+		);
 	}
 	if (opts.feeds.length === 0) {
 		throw new TypeError(`pythLocalDeploy: \`feeds\` must be non-empty`);

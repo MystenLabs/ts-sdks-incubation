@@ -5,7 +5,7 @@
 // manifest emitter so the on-disk `.devstack/manifest.json` lands as a
 // scoped side effect of acquiring the stack.
 
-import { Effect, Layer, Ref, type Scope } from 'effect';
+import { Effect, Ref, type Scope } from 'effect';
 import {
 	defineDevstack,
 	type DevstackHandle,

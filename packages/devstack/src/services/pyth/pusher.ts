@@ -279,9 +279,7 @@ export const PythPusher = <const Name extends string>(opts: PythPusherOptions<Na
 			// Forgive transient failures — schedule keeps ticking.
 			const loopOnce = tickOnce.pipe(
 				Effect.catch((cause: unknown) =>
-					Effect.logWarning(
-						`PythPusher(${opts.name}): tick failed: ${stringifyCause(cause)}`,
-					),
+					Effect.logWarning(`PythPusher(${opts.name}): tick failed: ${stringifyCause(cause)}`),
 				),
 			);
 

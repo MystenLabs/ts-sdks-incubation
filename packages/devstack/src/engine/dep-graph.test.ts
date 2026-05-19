@@ -67,9 +67,7 @@ describe('buildDepGraph', () => {
 		// stack composition (e.g. a plugin's `dependsOn:` mentions a
 		// service the user didn't include). The reference is filtered
 		// out rather than turning into a graph that has phantom edges.
-		const stack: ReadonlyArray<DepGraphMember> = [
-			{ key: 'foo', __upstreamKeys: ['ghost'] },
-		];
+		const stack: ReadonlyArray<DepGraphMember> = [{ key: 'foo', __upstreamKeys: ['ghost'] }];
 		const graph = buildDepGraph(stack);
 		expect(graph.get('foo')?.upstreamKeys).toEqual([]);
 	});

@@ -112,66 +112,57 @@ const readManifest = (manifestPath: string): ManifestShape => {
 	return JSON.parse(raw) as ManifestShape;
 };
 
-describe.skipIf(!SHOULD_RUN)(
-	'coin discovery against real Docker (examples/wallet)',
-	() => {
-		const STACK = `test-coin-disc-${randomBytes(4).toString('hex')}`;
-		const env: NodeJS.ProcessEnv = {
-			...process.env,
-			DEVSTACK_STACK: STACK,
-		};
-		const manifestPath = resolvePath(
-			WALLET_DIR,
-			'.devstack',
-			'stacks',
-			STACK,
-			'manifest.json',
-		);
+describe.skipIf(!SHOULD_RUN)('coin discovery against real Docker (examples/wallet)', () => {
+	const STACK = `test-coin-disc-${randomBytes(4).toString('hex')}`;
+	const env: NodeJS.ProcessEnv = {
+		...process.env,
+		DEVSTACK_STACK: STACK,
+	};
+	const manifestPath = resolvePath(WALLET_DIR, '.devstack', 'stacks', STACK, 'manifest.json');
 
-		it(
-			'CoinMetadataLoader returns symbol + decimals matching the Move source',
-			async () => {
-				try {
-					const apply = await runCli(WALLET_DIR, env, ['apply']);
-					expect(apply.exitCode, `apply failed:\n${apply.stderr}`).toBe(0);
+	it(
+		'CoinMetadataLoader returns symbol + decimals matching the Move source',
+		async () => {
+			try {
+				const apply = await runCli(WALLET_DIR, env, ['apply']);
+				expect(apply.exitCode, `apply failed:\n${apply.stderr}`).toBe(0);
 
-					const manifest = readManifest(manifestPath);
-					const rpcUrl = manifest.services?.sui?.rpc?.url;
-					expect(rpcUrl, 'no sui rpc URL in manifest').toBeTruthy();
-					const usdc = manifest.packages?.mock_usdc?.id;
-					const weth = manifest.packages?.mock_weth?.id;
-					expect(usdc, 'no mock_usdc packageId in manifest').toBeTruthy();
-					expect(weth, 'no mock_weth packageId in manifest').toBeTruthy();
+				const manifest = readManifest(manifestPath);
+				const rpcUrl = manifest.services?.sui?.rpc?.url;
+				expect(rpcUrl, 'no sui rpc URL in manifest').toBeTruthy();
+				const usdc = manifest.packages?.mock_usdc?.id;
+				const weth = manifest.packages?.mock_weth?.id;
+				expect(usdc, 'no mock_usdc packageId in manifest').toBeTruthy();
+				expect(weth, 'no mock_weth packageId in manifest').toBeTruthy();
 
-					// Construct a fresh gRPC client against the running localnet
-					// and exercise `getCoinMetadata` for both published coins.
-					// This is the upstream half of `CoinMetadataLoader`; in
-					// Phase 1 we'll switch to instantiating the loader inside a
-					// proper Effect runtime, but for Phase 0 we just confirm
-					// the raw RPC payload matches the Move source so the
-					// loader's projection is testable in isolation.
-					const client = new SuiGrpcClient({
-						baseUrl: rpcUrl as string,
-						network: 'localnet',
-					});
-					const usdcType = `${usdc as string}::mock_usdc::MOCK_USDC`;
-					const wethType = `${weth as string}::mock_weth::MOCK_WETH`;
-					const [usdcRes, wethRes] = await Promise.all([
-						client.core.getCoinMetadata({ coinType: usdcType }),
-						client.core.getCoinMetadata({ coinType: wethType }),
-					]);
-					expect(usdcRes.coinMetadata?.symbol).toBe('mUSDC');
-					expect(usdcRes.coinMetadata?.decimals).toBe(6);
-					expect(wethRes.coinMetadata?.symbol).toBe('mWETH');
-					expect(wethRes.coinMetadata?.decimals).toBe(8);
-				} finally {
-					await runCli(WALLET_DIR, env, ['wipe', '--yes']).catch(() => undefined);
-				}
-			},
-			TEST_TIMEOUT_MS,
-		);
-	},
-);
+				// Construct a fresh gRPC client against the running localnet
+				// and exercise `getCoinMetadata` for both published coins.
+				// This is the upstream half of `CoinMetadataLoader`; in
+				// Phase 1 we'll switch to instantiating the loader inside a
+				// proper Effect runtime, but for Phase 0 we just confirm
+				// the raw RPC payload matches the Move source so the
+				// loader's projection is testable in isolation.
+				const client = new SuiGrpcClient({
+					baseUrl: rpcUrl as string,
+					network: 'localnet',
+				});
+				const usdcType = `${usdc as string}::mock_usdc::MOCK_USDC`;
+				const wethType = `${weth as string}::mock_weth::MOCK_WETH`;
+				const [usdcRes, wethRes] = await Promise.all([
+					client.core.getCoinMetadata({ coinType: usdcType }),
+					client.core.getCoinMetadata({ coinType: wethType }),
+				]);
+				expect(usdcRes.coinMetadata?.symbol).toBe('mUSDC');
+				expect(usdcRes.coinMetadata?.decimals).toBe(6);
+				expect(wethRes.coinMetadata?.symbol).toBe('mWETH');
+				expect(wethRes.coinMetadata?.decimals).toBe(8);
+			} finally {
+				await runCli(WALLET_DIR, env, ['wipe', '--yes']).catch(() => undefined);
+			}
+		},
+		TEST_TIMEOUT_MS,
+	);
+});
 
 if (!DOCKER_OK) {
 	// eslint-disable-next-line no-console

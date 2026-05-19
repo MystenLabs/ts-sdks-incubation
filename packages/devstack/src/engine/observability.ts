@@ -21,9 +21,7 @@ import { Identity } from './identity.js';
  *  inside any `Effect.withSpan(...)` block that runs under the
  *  supervisor's layer graph; the annotations help correlate spans
  *  across services within one cycle. */
-export const annotateDevstackContext = (
-	service: string,
-): Effect.Effect<void, never, Identity> =>
+export const annotateDevstackContext = (service: string): Effect.Effect<void, never, Identity> =>
 	Effect.gen(function* () {
 		const identity = yield* Identity;
 		yield* Effect.annotateCurrentSpan({

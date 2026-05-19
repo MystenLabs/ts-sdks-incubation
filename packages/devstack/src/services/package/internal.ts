@@ -495,8 +495,7 @@ export const publishMove = <const Name extends string, TCaptured = undefined>(
 				// the publish didn't emit a CoinMetadata. Either form is
 				// addressable through `Coin('SYMBOL')` (case-insensitive
 				// lookup against both the symbol and the witness).
-				const key =
-					md?.symbol !== undefined && md.symbol.length > 0 ? md.symbol : disc.witnessName;
+				const key = md?.symbol !== undefined && md.symbol.length > 0 ? md.symbol : disc.witnessName;
 				// Decimals authority: on-chain RPC value; falls back to 0
 				// when the coin didn't emit a CoinMetadata (rare custom
 				// init bypassing `coin::create_currency`).
@@ -515,12 +514,8 @@ export const publishMove = <const Name extends string, TCaptured = undefined>(
 						: {}),
 					publisherOwnsCap: disc.publisherOwnsCap,
 					...(disc.metadataId !== undefined ? { metadataId: disc.metadataId } : {}),
-					...(md?.symbol !== undefined && md.symbol.length > 0
-						? { symbol: md.symbol }
-						: {}),
-					...(md?.name !== undefined && md.name.length > 0
-						? { displayName: md.name }
-						: {}),
+					...(md?.symbol !== undefined && md.symbol.length > 0 ? { symbol: md.symbol } : {}),
+					...(md?.name !== undefined && md.name.length > 0 ? { displayName: md.name } : {}),
 					...(md?.iconUrl !== undefined ? { iconUrl: md.iconUrl } : {}),
 				};
 				// Collision guard: two coins in one package publishing the

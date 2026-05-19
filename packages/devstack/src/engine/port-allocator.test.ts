@@ -434,9 +434,9 @@ describe('PortAllocator.allocate — in-process race guard', () => {
 			// would race with that release and could ENOENT.
 			const readLockPid = (port: number) =>
 				(
-					JSON.parse(
-						fs.readFileSync(path.join(dir as string, `${port}.lock`), 'utf8').trim(),
-					) as { pid: number }
+					JSON.parse(fs.readFileSync(path.join(dir as string, `${port}.lock`), 'utf8').trim()) as {
+						pid: number;
+					}
 				).pid;
 			expect(readLockPid(a)).toBe(process.pid);
 			expect(readLockPid(b)).toBe(process.pid);

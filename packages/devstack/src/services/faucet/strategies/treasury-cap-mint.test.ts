@@ -34,7 +34,12 @@ describe('treasuryCapMintStrategy', () => {
 				Effect.sync(() => {
 					expect(tx).toBeInstanceOf(Transaction);
 					invoked = true;
-					return { digest: 'd', effects: undefined, objectChanges: [], balanceChanges: undefined };
+					return {
+						digest: 'd',
+						effects: { status: { status: 'success' } },
+						objectChanges: [],
+						balanceChanges: undefined,
+					};
 				}),
 			);
 			const strategy = treasuryCapMintStrategy({
@@ -55,7 +60,12 @@ describe('treasuryCapMintStrategy', () => {
 			const signer = stubAccount(() =>
 				Effect.sync(() => {
 					invoked = true;
-					return { digest: 'd', effects: undefined, objectChanges: [], balanceChanges: undefined };
+					return {
+						digest: 'd',
+						effects: { status: { status: 'success' } },
+						objectChanges: [],
+						balanceChanges: undefined,
+					};
 				}),
 			);
 			const strategy = treasuryCapMintStrategy({

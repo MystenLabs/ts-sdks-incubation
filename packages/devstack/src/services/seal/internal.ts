@@ -620,9 +620,7 @@ export const sealLocalKeygen = <const Name extends string = 'seal'>(
 				RUST_LOG: 'info',
 			},
 			envFiles: [masterKeyEnvFile],
-			mounts: [
-				{ source: configPath, target: '/etc/seal/key-server-config.yaml' },
-			],
+			mounts: [{ source: configPath, target: '/etc/seal/key-server-config.yaml' }],
 			...(suiNet !== undefined ? { network: suiNet } : {}),
 			// Single router entry for the key-server. The on-chain
 			// `KeyServer.url` registered above MUST match this hostname:port

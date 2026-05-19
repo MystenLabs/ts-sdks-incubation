@@ -412,9 +412,7 @@ export const Codegen = (opts: CodegenOptions = {}) => {
 			// DEFAULT_WATCH_EXCLUDES, so the default `./src/generated` works
 			// without this; the negation here covers users who override
 			// `output:` to a different basename.)
-			watch: [
-				`!${path.isAbsolute(output) ? output : path.resolve(process.cwd(), output)}/**`,
-			],
+			watch: [`!${path.isAbsolute(output) ? output : path.resolve(process.cwd(), output)}/**`],
 		},
 	);
 };

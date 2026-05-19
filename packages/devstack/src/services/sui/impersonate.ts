@@ -94,8 +94,9 @@ export const executeImpersonated = (
 		tx.setSender(sender);
 		const gasBudget = opts?.gasBudget ?? DEFAULT_FORK_GAS_BUDGET;
 		try {
-			const txData = (tx as unknown as { getData?: () => { gasData?: { budget?: unknown } } })
-				.getData?.();
+			const txData = (
+				tx as unknown as { getData?: () => { gasData?: { budget?: unknown } } }
+			).getData?.();
 			const budgetAlreadySet =
 				txData?.gasData?.budget !== undefined && txData.gasData.budget !== null;
 			if (!budgetAlreadySet) {
@@ -144,7 +145,10 @@ export const executeImpersonated = (
 		// `executeTransaction` returns either `{Transaction}` or
 		// `{FailedTransaction}` — surface success/failure uniformly.
 		const env = response as unknown as {
-			Transaction?: { digest?: string; status?: { success?: boolean; error?: { message?: string } } };
+			Transaction?: {
+				digest?: string;
+				status?: { success?: boolean; error?: { message?: string } };
+			};
 			FailedTransaction?: {
 				digest?: string;
 				status?: { success?: boolean; error?: { message?: string } };
@@ -184,6 +188,9 @@ export const executeImpersonated = (
 		return result;
 	}).pipe(
 		Effect.withSpan('sui.fork.impersonate', {
-			attributes: { 'fork.sender': sender, 'fork.gasBudget': String(opts?.gasBudget ?? DEFAULT_FORK_GAS_BUDGET) },
+			attributes: {
+				'fork.sender': sender,
+				'fork.gasBudget': String(opts?.gasBudget ?? DEFAULT_FORK_GAS_BUDGET),
+			},
 		}),
 	);

@@ -9,7 +9,7 @@
 import { describe, expect, it } from '@effect/vitest';
 import { Effect } from 'effect';
 import { layer as NodeServicesLayer } from '@effect/platform-node/NodeServices';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join as joinPath } from 'node:path';
 import { resolveForkDataDir } from '../stack-resolution.js';

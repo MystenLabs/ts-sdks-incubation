@@ -139,10 +139,9 @@ export class DevWalletSigningModal extends LitElement {
 				</div>
 				${this.impersonation
 					? html`<div class="fork-footnote" part="fork-footnote">
-							<strong>Fork-only:</strong> this account is in
-							<em>impersonation</em> mode. The fork accepts the transaction with an
-							empty signature (no real private key signs it), so it would be
-							rejected by mainnet / testnet / devnet validators.
+							<strong>Fork-only:</strong> this account is in <em>impersonation</em> mode. The fork
+							accepts the transaction with an empty signature (no real private key signs it), so it
+							would be rejected by mainnet / testnet / devnet validators.
 						</div>`
 					: nothing}
 			</dialog>

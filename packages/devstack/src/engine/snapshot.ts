@@ -178,7 +178,7 @@ export type SnapshotMetaServicesShape = Partial<SnapshotMetaServices>;
  */
 export const buildServicesBucket = (
 	entries: Partial<SnapshotMetaServices>,
-): Record<string, unknown> => ({ ...entries } as Record<string, unknown>);
+): Record<string, unknown> => ({ ...entries }) as Record<string, unknown>;
 
 /**
  * Read a typed slice off a parsed `SnapshotMeta.services` bucket. Returns

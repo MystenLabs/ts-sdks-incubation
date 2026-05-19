@@ -25,9 +25,7 @@ const SUI_TAG_KEY = '@devstack/SuiTag';
  *  refs the user passed plus any synthesized defaults. */
 export const fillDefaults = (refs: ReadonlyArray<StackMember>): ReadonlyArray<StackMember> => {
 	const hasSui = refs.some((r) => (r as { key?: string }).key === SUI_TAG_KEY);
-	const hasFaucet = refs.some((r) =>
-		((r as { key?: string }).key ?? '').startsWith('faucet/'),
-	);
+	const hasFaucet = refs.some((r) => ((r as { key?: string }).key ?? '').startsWith('faucet/'));
 	const out: Array<StackMember> = [...refs];
 	if (!hasSui) out.unshift(SuiFactory());
 	if (!hasFaucet) out.push(FaucetFactory() as unknown as StackMember);

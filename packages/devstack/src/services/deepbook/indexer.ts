@@ -21,15 +21,9 @@ import { runDockerContainer } from '../../advanced/plugin-author/docker-containe
 import { Identity } from '../../engine/identity.js';
 import { DeepbookIndexerError } from '../../engine/errors.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
-import {
-	publishDeepbookIndexerState,
-	publishEndpoint,
-} from '../../engine/registries.js';
+import { publishDeepbookIndexerState, publishEndpoint } from '../../engine/registries.js';
 import { EndpointName } from '../../runtime/endpoint-names.js';
-import {
-	DEFAULT_DEEPBOOK_MOVE_VERSION,
-	getDeepbookImages,
-} from './images.js';
+import { DEFAULT_DEEPBOOK_MOVE_VERSION, getDeepbookImages } from './images.js';
 import type { DeepbookCore } from '../deepbook.js';
 import type { DeepbookMargin } from './margin.js';
 import type { Postgres } from '../postgres.js';
@@ -50,10 +44,9 @@ export interface DeepbookIndexer {
 	readonly networkAlias: string;
 }
 
-export class DeepbookIndexerTag extends Context.Service<
-	DeepbookIndexerTag,
-	DeepbookIndexer
->()('@devstack/DeepbookIndexerTag') {}
+export class DeepbookIndexerTag extends Context.Service<DeepbookIndexerTag, DeepbookIndexer>()(
+	'@devstack/DeepbookIndexerTag',
+) {}
 
 export interface DeepbookIndexerOptions<Name extends string> {
 	readonly name?: Name;
@@ -253,5 +246,9 @@ export const DeepbookIndexer = <const Name extends string = 'deepbook-indexer'>(
 	).__layer;
 
 	const __layers = [...composite.__layers, tagLayer];
-	return Object.assign(composite, { __layers, __kind: 'service' as const, __pluginName: 'deepbook' });
+	return Object.assign(composite, {
+		__layers,
+		__kind: 'service' as const,
+		__pluginName: 'deepbook',
+	});
 };

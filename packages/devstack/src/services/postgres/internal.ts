@@ -19,12 +19,7 @@ export const awaitPostgresReady = (
 	timeoutMs: number = 30_000,
 ): Effect.Effect<void, PostgresError, any> => {
 	const attempt: Effect.Effect<void, PostgresError, any> = Effect.gen(function* () {
-		const result = yield* Docker.exec(containerId, 'pg_isready', [
-			'-U',
-			user,
-			'-d',
-			database,
-		]).pipe(
+		const result = yield* Docker.exec(containerId, 'pg_isready', ['-U', user, '-d', database]).pipe(
 			Effect.catchTag('DockerError', (cause) =>
 				Effect.fail(
 					new PostgresError({

@@ -141,8 +141,8 @@ was unlinked on scope close, which would have made restore unable to start the k
 5. Boot again. Re-read the manifest's pool ids, indexer + server URLs, margin pool ids, and pyth
    state. **Assert: identical IDs** (state-store cache hit → no re-publish, no re-create on chain).
    The order book and minted DEEP balance from step 3 must also be preserved (chain state survived
-   the snapshot cycle). The codegen-emitted `src/generated/deepbook-config.ts` must be byte-identical
-   to the pre-snapshot version (P5.T10 in the plan).
+   the snapshot cycle). The codegen-emitted `src/generated/deepbook-config.ts` must be
+   byte-identical to the pre-snapshot version (P5.T10 in the plan).
 
 ---
 

@@ -98,9 +98,7 @@ export type DockerContainerImage =
  * plugin author can't accidentally pass a non-existent tag and
  * trigger a confusing `Docker.run` error far from the typo.
  */
-export type DockerContainerImageInternal =
-	| DockerContainerImage
-	| { readonly tag: string };
+export type DockerContainerImageInternal = DockerContainerImage | { readonly tag: string };
 
 // -----------------------------------------------------------------------------
 // Mount + routing shapes
@@ -523,12 +521,7 @@ export const dockerContainer = <const Name extends string>(
 			title: name,
 			...(s.url !== undefined ? { primary: s.url } : { primary: s.image }),
 		}),
-	}) as unknown as LayeredTag<
-		Name,
-		DockerContainerHandle,
-		any,
-		DockerError | ReadyProbeError
-	>;
+	}) as unknown as LayeredTag<Name, DockerContainerHandle, any, DockerError | ReadyProbeError>;
 };
 
 /**
@@ -585,9 +578,7 @@ const buildContainerInternals = <Name extends string>(
 	const imageSource: StaticImage = optsIsBuilder
 		? (staticImage ??
 			(() => {
-				throw new TypeError(
-					`dockerContainer('${name}'): builder-form options require staticImage`,
-				);
+				throw new TypeError(`dockerContainer('${name}'): builder-form options require staticImage`);
 			})())
 		: optionsInput.image;
 
@@ -669,8 +660,7 @@ const buildContainerInternals = <Name extends string>(
 			const routeName = route.name ?? name;
 			const hostnameName = route.hostnameName ?? routeName;
 			const hostname = routerHostname(identity, hostnameName);
-			const protocol =
-				route.protocol ?? entrypointInfo.defaultProtocol ?? 'http';
+			const protocol = route.protocol ?? entrypointInfo.defaultProtocol ?? 'http';
 			routingLabels.push({
 				id: routerId(identity, routeName),
 				hostname,
@@ -731,17 +721,13 @@ const buildContainerInternals = <Name extends string>(
 			...(options.ports !== undefined ? { ports: options.ports } : {}),
 			...(options.bindAddress !== undefined ? { bindAddress: options.bindAddress } : {}),
 			...(options.network !== undefined ? { network: options.network } : {}),
-			...(options.networkAlias !== undefined
-				? { networkAlias: options.networkAlias }
-				: {}),
+			...(options.networkAlias !== undefined ? { networkAlias: options.networkAlias } : {}),
 			...(options.ip !== undefined ? { ip: options.ip } : {}),
 			...(options.hostname !== undefined ? { hostname: options.hostname } : {}),
 			...(options.addHosts !== undefined ? { addHosts: options.addHosts } : {}),
 			...(mounts !== undefined ? { mounts } : {}),
 			...(routingLabels.length > 0 ? { traefik: routingLabels } : {}),
-			...(options.onOutputLine !== undefined
-				? { onOutputLine: options.onOutputLine }
-				: {}),
+			...(options.onOutputLine !== undefined ? { onOutputLine: options.onOutputLine } : {}),
 			...(options.stopGraceSeconds !== undefined
 				? { stopGraceSeconds: options.stopGraceSeconds }
 				: {}),
@@ -818,9 +804,7 @@ const buildContainerInternals = <Name extends string>(
 	}).pipe(Effect.withSpan(`dockerContainer(${name})`));
 
 	return {
-		imageTag: imageTag as unknown as
-			| LayeredTag<string, DockerImage, any, DockerError>
-			| undefined,
+		imageTag: imageTag as unknown as LayeredTag<string, DockerImage, any, DockerError> | undefined,
 		build,
 	};
 };

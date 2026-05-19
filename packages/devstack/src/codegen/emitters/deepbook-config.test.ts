@@ -213,39 +213,41 @@ describe('DeepbookConfigEmitter', () => {
 
 	// P5.T2 — Fully-seeded registries: Pyth state, Margin, and a margin
 	// pool with USDC + SUI. Output exercises every emitter branch.
-	it.effect('emits margin + Pyth blocks when DeepbookMarginStateRegistry + PythStateRegistry seeded', () =>
-		Effect.gen(function* () {
-			yield* seedBaseStack;
-			yield* seedPyth;
-			yield* seedMargin;
-			yield* DeepbookConfigEmitter().emit(ctx());
+	it.effect(
+		'emits margin + Pyth blocks when DeepbookMarginStateRegistry + PythStateRegistry seeded',
+		() =>
+			Effect.gen(function* () {
+				yield* seedBaseStack;
+				yield* seedPyth;
+				yield* seedMargin;
+				yield* DeepbookConfigEmitter().emit(ctx());
 
-			const filePath = joinPath(outputDir, 'deepbook-config.ts');
-			const body = readFileSync(filePath, 'utf-8');
+				const filePath = joinPath(outputDir, 'deepbook-config.ts');
+				const body = readFileSync(filePath, 'utf-8');
 
-			// Margin package ids fold into `packageIds`.
-			expect(body).toContain(`MARGIN_PACKAGE_ID: ${JSON.stringify(MARGIN_PKG)}`);
-			expect(body).toContain(`MARGIN_REGISTRY_ID: ${JSON.stringify(MARGIN_REG)}`);
-			expect(body).toContain(`LIQUIDATION_PACKAGE_ID: ${JSON.stringify(LIQ_PKG)}`);
+				// Margin package ids fold into `packageIds`.
+				expect(body).toContain(`MARGIN_PACKAGE_ID: ${JSON.stringify(MARGIN_PKG)}`);
+				expect(body).toContain(`MARGIN_REGISTRY_ID: ${JSON.stringify(MARGIN_REG)}`);
+				expect(body).toContain(`LIQUIDATION_PACKAGE_ID: ${JSON.stringify(LIQ_PKG)}`);
 
-			// SUI coin gains feed + priceInfoObjectId from PythStateRegistry.
-			expect(body).toContain(`feed: ${JSON.stringify(PYTH_SUI_FEED)}`);
-			expect(body).toContain(`priceInfoObjectId: ${JSON.stringify(PYTH_SUI_PIO)}`);
+				// SUI coin gains feed + priceInfoObjectId from PythStateRegistry.
+				expect(body).toContain(`feed: ${JSON.stringify(PYTH_SUI_FEED)}`);
+				expect(body).toContain(`priceInfoObjectId: ${JSON.stringify(PYTH_SUI_PIO)}`);
 
-			// DEEP coin gains feed + priceInfoObjectId.
-			expect(body).toContain(`feed: ${JSON.stringify(PYTH_DEEP_FEED)}`);
-			expect(body).toContain(`priceInfoObjectId: ${JSON.stringify(PYTH_DEEP_PIO)}`);
+				// DEEP coin gains feed + priceInfoObjectId.
+				expect(body).toContain(`feed: ${JSON.stringify(PYTH_DEEP_FEED)}`);
+				expect(body).toContain(`priceInfoObjectId: ${JSON.stringify(PYTH_DEEP_PIO)}`);
 
-			// Margin pool projection: SUI symbol-keyed with margin-pool id +
-			// the asset type.
-			expect(body).toContain(`address: ${JSON.stringify(MARGIN_POOL_SUI)}`);
-			expect(body).toContain('"SUI":');
+				// Margin pool projection: SUI symbol-keyed with margin-pool id +
+				// the asset type.
+				expect(body).toContain(`address: ${JSON.stringify(MARGIN_POOL_SUI)}`);
+				expect(body).toContain('"SUI":');
 
-			// Pyth block at the bottom of the config.
-			expect(body).toContain('pyth: {');
-			expect(body).toContain('pythStateId: "0xfeed1111"');
-			expect(body).toContain('wormholeStateId: "0xfeed2222"');
-		}).pipe(Effect.provide(Layer.mergeAll(RegistriesLive, IdentityLive, ExtrasLive(undefined)))),
+				// Pyth block at the bottom of the config.
+				expect(body).toContain('pyth: {');
+				expect(body).toContain('pythStateId: "0xfeed1111"');
+				expect(body).toContain('wormholeStateId: "0xfeed2222"');
+			}).pipe(Effect.provide(Layer.mergeAll(RegistriesLive, IdentityLive, ExtrasLive(undefined)))),
 	);
 
 	// P5.T3 — Cold-boot path: no services.deepbook in manifest. Emitter

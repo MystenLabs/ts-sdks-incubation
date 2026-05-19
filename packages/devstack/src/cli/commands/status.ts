@@ -72,9 +72,11 @@ export const statusCommand = Command.make(
 			// pinned it). `lastCheckpoint` / `clockMs` are dynamic
 			// runtime values — sourced live via `devstack fork status`,
 			// not from disk — so this section omits them.
-			const manifestSui = (manifest.content as
-				| { services?: { sui?: { network?: string; chainId?: string } } }
-				| undefined)?.services?.sui;
+			const manifestSui = (
+				manifest.content as
+					| { services?: { sui?: { network?: string; chainId?: string } } }
+					| undefined
+			)?.services?.sui;
 			const chainBlock =
 				manifestSui !== undefined || forkMeta !== undefined
 					? {
@@ -83,9 +85,7 @@ export const statusCommand = Command.make(
 							...(forkMeta !== undefined
 								? {
 										upstream: forkMeta.upstream,
-										...(forkMeta.checkpoint !== undefined
-											? { forkedAt: forkMeta.checkpoint }
-											: {}),
+										...(forkMeta.checkpoint !== undefined ? { forkedAt: forkMeta.checkpoint } : {}),
 										configHash: forkMeta.configHash,
 										seedAddresses: forkMeta.seedAddresses,
 										seedObjects: forkMeta.seedObjects,

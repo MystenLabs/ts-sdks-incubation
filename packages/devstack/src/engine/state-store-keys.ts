@@ -152,8 +152,7 @@ export const StateStoreKeys = {
 		readonly chainId: string;
 		readonly packageId: string;
 		readonly configHash: string;
-	}): string =>
-		`deepbook/margin-pools/v1/${input.chainId}/${input.packageId}/${input.configHash}`,
+	}): string => `deepbook/margin-pools/v1/${input.chainId}/${input.packageId}/${input.configHash}`,
 
 	/**
 	 * DeepBook margin seed inventory — per-account funding deposits
@@ -165,8 +164,7 @@ export const StateStoreKeys = {
 		readonly chainId: string;
 		readonly packageId: string;
 		readonly trailing: string;
-	}): string =>
-		`deepbook/margin-seed/v1/${input.chainId}/${input.packageId}/${input.trailing}`,
+	}): string => `deepbook/margin-seed/v1/${input.chainId}/${input.packageId}/${input.trailing}`,
 
 	/**
 	 * DeepBook market-maker balance manager id, keyed by core

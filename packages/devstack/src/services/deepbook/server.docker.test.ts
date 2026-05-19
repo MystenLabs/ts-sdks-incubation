@@ -25,16 +25,13 @@
 import { describe, it } from 'vitest';
 import { DOCKER_OK, stampSkipNoticeIfMissing } from '../../../test-setup/docker/probe.js';
 
-const RUN_INTEGRATION =
-	DOCKER_OK && process.env.DEVSTACK_INTEGRATION_TESTS === '1';
+const RUN_INTEGRATION = DOCKER_OK && process.env.DEVSTACK_INTEGRATION_TESTS === '1';
 
 stampSkipNoticeIfMissing('DeepbookServer L3 docker');
 
 describe.skipIf(!RUN_INTEGRATION)('DeepbookServer — real-Docker fixture', () => {
 	// P3.T1 — REST `/ticker` 200 + numeric lastPrice/bestBid/bestAsk.
-	it.todo(
-		'serves /ticker with numeric lastPrice/bestBid/bestAsk after 3 orders + 1 fill',
-	);
+	it.todo('serves /ticker with numeric lastPrice/bestBid/bestAsk after 3 orders + 1 fill');
 	// P3.T2 — snapshot/restore stability: /ticker per-pool lastPrice
 	//          unchanged across save → wipe → restore.
 	it.todo('survives snapshot/restore with unchanged per-pool lastPrice');

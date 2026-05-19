@@ -479,10 +479,7 @@ const truncateForError = (text: string): string => {
 };
 
 // Parse JSON inside an Effect so decoding failures map to `SuiCliError`.
-const parseJson = <T>(
-	text: string,
-	phase: SuiCliError['phase'],
-): Effect.Effect<T, SuiCliError> =>
+const parseJson = <T>(text: string, phase: SuiCliError['phase']): Effect.Effect<T, SuiCliError> =>
 	Effect.try({
 		try: () => JSON.parse(text) as T,
 		catch: suiCliError(phase),

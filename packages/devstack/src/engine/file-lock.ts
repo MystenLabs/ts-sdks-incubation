@@ -41,7 +41,10 @@ export interface LockBody extends LockHolder {
 /** Compute the running process's lock body. `instanceId` is freshly
  *  generated per call so two concurrent reclaimers on the same pid can
  *  prove ownership independently. */
-export const ownLockBody = (opts?: { withInstanceId?: boolean; withAcquiredAt?: boolean }): LockBody => {
+export const ownLockBody = (opts?: {
+	withInstanceId?: boolean;
+	withAcquiredAt?: boolean;
+}): LockBody => {
 	const base: LockBody = {
 		pid: process.pid,
 		startedAt: processStartTime(process.pid) ?? '',

@@ -78,13 +78,11 @@ describe('state-store key shape', () => {
 		);
 	});
 
-	it("perPool variant appends pool name as final segment", () => {
+	it('perPool variant appends pool name as final segment', () => {
 		// The maker constructs `${baseKey}/${poolName}` for perPool;
 		// assert the join produces the expected canonical shape.
 		const baseKey = `${STATE_KEY_BALANCE_MANAGER_PREFIX_INTERNAL}/CHAIN/PKG/SIGNER`;
 		const poolKey = `${baseKey}/sui_usdc`;
-		expect(poolKey).toBe(
-			'deepbook/market-maker/balance-manager/v2/CHAIN/PKG/SIGNER/sui_usdc',
-		);
+		expect(poolKey).toBe('deepbook/market-maker/balance-manager/v2/CHAIN/PKG/SIGNER/sui_usdc');
 	});
 });

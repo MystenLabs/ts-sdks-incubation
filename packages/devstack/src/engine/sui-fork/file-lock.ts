@@ -18,11 +18,7 @@
 
 import { Effect, Scope } from 'effect';
 import { SuiError } from '../errors.js';
-import {
-	type LockBody,
-	releaseLockSync,
-	tryClaimLockSync,
-} from '../file-lock.js';
+import { type LockBody, releaseLockSync, tryClaimLockSync } from '../file-lock.js';
 
 /** Acquire a `sui-fork` data-dir file lock, scoped to the current
  *  Effect scope. Fails fast with a `SuiError({phase: 'fork-lock'})`

@@ -18,7 +18,14 @@ async function fetchTicker(restUrl: string): Promise<ReadonlyArray<TickerEntry>>
 	if (!res.ok) throw new Error(`/ticker returned ${res.status}`);
 	const body = (await res.json()) as Record<
 		string,
-		{ last_price?: number | string; best_bid?: number | string; best_ask?: number | string; lastPrice?: number | string; bestBid?: number | string; bestAsk?: number | string }
+		{
+			last_price?: number | string;
+			best_bid?: number | string;
+			best_ask?: number | string;
+			lastPrice?: number | string;
+			bestBid?: number | string;
+			bestAsk?: number | string;
+		}
 	>;
 	return Object.entries(body).map(([pool, row]) => ({
 		pool,
@@ -62,7 +69,11 @@ export function Ticker() {
 						{Object.keys(deepbookConfig.pools).map((pool) => {
 							const row = rows.find((r) => r.pool === pool);
 							return (
-								<tr key={pool} data-testid={`ticker-row-${pool}`} className="border-t border-neutral-200 dark:border-neutral-800">
+								<tr
+									key={pool}
+									data-testid={`ticker-row-${pool}`}
+									className="border-t border-neutral-200 dark:border-neutral-800"
+								>
 									<td className="py-2 font-mono">{pool}</td>
 									<td className="py-2 text-right font-mono" data-testid={`ticker-${pool}-last`}>
 										{row?.lastPrice ?? '—'}

@@ -185,7 +185,6 @@ export const forkHarness = (
 	};
 
 	return Effect.gen(function* () {
-
 		// Per-test data dir mounted into the container so we can inspect
 		// + cleanup the on-disk fork state from the host side without
 		// shelling into the container. `tmpdir`-style path so a forced

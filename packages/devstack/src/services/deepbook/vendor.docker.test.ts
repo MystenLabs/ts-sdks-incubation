@@ -25,8 +25,7 @@ const TEST_TIMEOUT_MS = 360_000; // 6 min — cold clone can be slow
 // real outbound git network access (clone from github.com) and
 // materializes ~30MB of Move source. Default-skip so `pnpm test` stays
 // fast; opt in via `DEVSTACK_INTEGRATION_TESTS=1`.
-const RUN_INTEGRATION =
-	DOCKER_OK && process.env.DEVSTACK_INTEGRATION_TESTS === '1';
+const RUN_INTEGRATION = DOCKER_OK && process.env.DEVSTACK_INTEGRATION_TESTS === '1';
 
 describe.skipIf(!RUN_INTEGRATION)('vendorDeepbook — real-Docker fixture', () => {
 	it(
@@ -42,7 +41,11 @@ describe.skipIf(!RUN_INTEGRATION)('vendorDeepbook — real-Docker fixture', () =
 				// Build via Layer.build so all internal layers are wired without
 				// per-layer `Effect.provide` plumbing in the test.
 				const layerList = (vendor.__layers ?? []) as ReadonlyArray<Layer.Layer<any, any, any>>;
-				let composedLayer: Layer.Layer<any, any, any> = NodeServicesLayer as Layer.Layer<any, any, any>;
+				let composedLayer: Layer.Layer<any, any, any> = NodeServicesLayer as Layer.Layer<
+					any,
+					any,
+					any
+				>;
 				for (const l of layerList) {
 					composedLayer = Layer.mergeAll(composedLayer, l);
 				}
@@ -75,7 +78,10 @@ describe.skipIf(!RUN_INTEGRATION)('vendorDeepbook — real-Docker fixture', () =
 
 				// Verify the local-path rewrite for `deepbook_margin`, which
 				// declares deps on `token`, `deepbook`, and `pyth`.
-				const marginToml = readFileSync(path.join(result.root, 'deepbook_margin', 'Move.toml'), 'utf8');
+				const marginToml = readFileSync(
+					path.join(result.root, 'deepbook_margin', 'Move.toml'),
+					'utf8',
+				);
 				expect(marginToml).toContain('local = "../token"');
 				expect(marginToml).toContain('local = "../deepbook"');
 				expect(marginToml).toContain('local = "../pyth"');

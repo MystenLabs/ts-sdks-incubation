@@ -40,9 +40,11 @@ const STUB_CHAIN_ID = 'test-chain-id';
 
 const stubChainIdFetch = (): (() => void) => {
 	const originalCtor = SuiGrpcClient.prototype.constructor;
-	const originalGetChainId = (SuiGrpcClient.prototype as unknown as {
-		core?: { getChainIdentifier?: unknown };
-	}).core?.getChainIdentifier;
+	const originalGetChainId = (
+		SuiGrpcClient.prototype as unknown as {
+			core?: { getChainIdentifier?: unknown };
+		}
+	).core?.getChainIdentifier;
 	void originalCtor;
 	void originalGetChainId;
 	// Patch every SuiGrpcClient instance's `core.getChainIdentifier`

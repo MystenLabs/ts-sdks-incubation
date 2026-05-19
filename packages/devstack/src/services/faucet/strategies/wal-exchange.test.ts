@@ -38,7 +38,7 @@ describe('walExchangeStrategy', () => {
 						txInvoked = true;
 						return {
 							digest: 'digest-x',
-							effects: undefined,
+							effects: { status: { status: 'success' as const } },
 							objectChanges: [],
 							balanceChanges: undefined,
 						};
@@ -64,7 +64,7 @@ describe('walExchangeStrategy', () => {
 					txInvoked = true;
 					return {
 						digest: 'digest-y',
-						effects: undefined,
+						effects: { status: { status: 'success' as const } },
 						objectChanges: [],
 						balanceChanges: undefined,
 					};

@@ -648,9 +648,7 @@ describe('App', () => {
 			await Effect.runPromise(engine.markAcquiring(k));
 			await Effect.runPromise(engine.markReady(k, { title: k }));
 		}
-		await Effect.runPromise(
-			engine.markSelectiveRestart(new Set(['publish.vault', 'codegen'])),
-		);
+		await Effect.runPromise(engine.markSelectiveRestart(new Set(['publish.vault', 'codegen'])));
 		// Move the affected rows to `acquiring`; Sui should NOT be touched
 		// because it's outside the affected set.
 		await Effect.runPromise(engine.markAcquiring('publish.vault'));
@@ -688,9 +686,7 @@ describe('App', () => {
 		// fails closed, not noisy.
 		const engine = await buildEngine();
 		await Effect.runPromise(engine.seedTags([{ key: 'publish.vault', kind: 'action' }]));
-		await Effect.runPromise(
-			engine.markSelectiveRestart(new Set(['publish.vault', 'ghost.key'])),
-		);
+		await Effect.runPromise(engine.markSelectiveRestart(new Set(['publish.vault', 'ghost.key'])));
 		const state = await Effect.runPromise(Ref.get(engine.tuiState));
 		expect(state.entries).toHaveLength(1);
 		expect(state.entries[0]?.key).toBe('publish.vault');

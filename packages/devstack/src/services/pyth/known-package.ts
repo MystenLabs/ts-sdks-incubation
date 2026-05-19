@@ -66,9 +66,7 @@ export const pythKnownPackage = (opts: PythKnownPackageOptions) => {
 				packageId,
 				...(pythStateId !== undefined ? { pythStateId } : {}),
 				...(wormholeStateId !== undefined ? { wormholeStateId } : {}),
-				priceInfoObjectIds: Object.fromEntries(
-					derived.map((p) => [p.feedId, p.priceInfoObjectId]),
-				),
+				priceInfoObjectIds: Object.fromEntries(derived.map((p) => [p.feedId, p.priceInfoObjectId])),
 				feeds: Object.fromEntries(derived.map((p) => [p.label, p.feedId])),
 			});
 			return {

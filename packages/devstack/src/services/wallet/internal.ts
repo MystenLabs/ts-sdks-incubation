@@ -352,9 +352,9 @@ const startHttpServer = (
 				walletPath: req.url ?? '',
 			};
 			const runLog = (eff: Effect.Effect<void>): void => {
-				Effect.runPromiseWith(supervisorCtx)(
-					eff.pipe(Effect.annotateLogs(baseAnnotations)),
-				).catch(() => {});
+				Effect.runPromiseWith(supervisorCtx)(eff.pipe(Effect.annotateLogs(baseAnnotations))).catch(
+					() => {},
+				);
 			};
 			// Exit hook: `res.end` always fires `finish`, including for
 			// the early-return forbidden-origin / bad-bearer / 404 paths
@@ -454,13 +454,7 @@ const startHttpServer = (
 					return;
 				}
 				if (req.method === 'POST' && req.url === WalletHttpPath.SIGN_PERSONAL_MESSAGE) {
-					void handleSignPersonalMessage(
-						req,
-						res,
-						accountsByAddress,
-						supervisorCtx,
-						requestId,
-					);
+					void handleSignPersonalMessage(req, res, accountsByAddress, supervisorCtx, requestId);
 					return;
 				}
 				res.writeHead(404, { 'content-type': 'application/json' });

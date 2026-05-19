@@ -29,11 +29,7 @@
 
 import { Context, Effect, Layer, Ref, Scope } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
-import {
-	buildDepGraph,
-	computeDownstreamClosure,
-	type DownstreamClosure,
-} from './dep-graph.js';
+import { buildDepGraph, computeDownstreamClosure, type DownstreamClosure } from './dep-graph.js';
 import { EngineHandle, EngineLive, type EngineHandleShape } from './engine.js';
 
 type Acquires = {
@@ -41,10 +37,7 @@ type Acquires = {
 	readonly finalizers: Ref.Ref<ReadonlyMap<string, number>>;
 };
 
-const bump = (
-	ref: Ref.Ref<ReadonlyMap<string, number>>,
-	key: string,
-): Effect.Effect<void> =>
+const bump = (ref: Ref.Ref<ReadonlyMap<string, number>>, key: string): Effect.Effect<void> =>
 	Ref.update(ref, (m) => {
 		const next = new Map(m);
 		next.set(key, (m.get(key) ?? 0) + 1);

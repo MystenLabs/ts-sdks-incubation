@@ -68,8 +68,8 @@ function DisconnectedView() {
 		<div className="rounded-xl border border-dashed border-neutral-300 dark:border-neutral-700 px-5 py-6 text-center">
 			<p className="text-sm text-neutral-600 dark:text-neutral-300">
 				Click <strong>Connect Wallet</strong> in the top-right and pick a{' '}
-				<span className="font-mono">Dev: alice</span> /{' '}
-				<span className="font-mono">Dev: bob</span> wallet to start interacting.
+				<span className="font-mono">Dev: alice</span> / <span className="font-mono">Dev: bob</span>{' '}
+				wallet to start interacting.
 			</p>
 		</div>
 	);

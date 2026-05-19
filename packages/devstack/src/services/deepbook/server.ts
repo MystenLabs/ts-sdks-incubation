@@ -21,15 +21,9 @@ import { runDockerContainer } from '../../advanced/plugin-author/docker-containe
 import { Identity } from '../../engine/identity.js';
 import { DeepbookServerError } from '../../engine/errors.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
-import {
-	publishDeepbookServerState,
-	publishEndpoint,
-} from '../../engine/registries.js';
+import { publishDeepbookServerState, publishEndpoint } from '../../engine/registries.js';
 import { EndpointName } from '../../runtime/endpoint-names.js';
-import {
-	DEFAULT_DEEPBOOK_MOVE_VERSION,
-	getDeepbookImages,
-} from './images.js';
+import { DEFAULT_DEEPBOOK_MOVE_VERSION, getDeepbookImages } from './images.js';
 import type { DeepbookCore } from '../deepbook.js';
 import type { Postgres } from '../postgres.js';
 import type { Sui } from '../sui.js';
@@ -68,10 +62,9 @@ export interface DeepbookServer {
 	readonly networkAlias: string;
 }
 
-export class DeepbookServerTag extends Context.Service<
-	DeepbookServerTag,
-	DeepbookServer
->()('@devstack/DeepbookServerTag') {}
+export class DeepbookServerTag extends Context.Service<DeepbookServerTag, DeepbookServer>()(
+	'@devstack/DeepbookServerTag',
+) {}
 
 // Minimal margin-shape requirement — keeps the server's option types
 // independent of the margin factory's own export so wiring stays
@@ -115,8 +108,7 @@ export const DeepbookServer = <const Name extends string = 'deepbook-server'>(
 	const name = (opts.name ?? 'deepbook-server') as Name;
 	const moveVersion = opts.moveVersion ?? DEFAULT_DEEPBOOK_MOVE_VERSION;
 	const databaseName = opts.databaseName ?? 'deepbook';
-	const dbStatementTimeoutMs =
-		opts.dbStatementTimeoutMs ?? DEFAULT_DB_STATEMENT_TIMEOUT_MS;
+	const dbStatementTimeoutMs = opts.dbStatementTimeoutMs ?? DEFAULT_DB_STATEMENT_TIMEOUT_MS;
 
 	const image = opts.image ?? getDeepbookImages(moveVersion).server;
 
@@ -309,5 +301,9 @@ export const DeepbookServer = <const Name extends string = 'deepbook-server'>(
 	).__layer;
 
 	const __layers = [...composite.__layers, tagLayer];
-	return Object.assign(composite, { __layers, __kind: 'service' as const, __pluginName: 'deepbook' });
+	return Object.assign(composite, {
+		__layers,
+		__kind: 'service' as const,
+		__pluginName: 'deepbook',
+	});
 };

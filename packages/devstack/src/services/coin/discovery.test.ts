@@ -12,21 +12,15 @@ import { discoverCoinsFromPublish } from './discovery.js';
 // sui-helpers.ts rejects non-hex characters in the address slot —
 // fixtures with `0xpkgusdc...` etc. would parse as malformed). All chars
 // here are in `[0-9a-f]`.
-const PUBLISHER =
-	'0xaabbccddeeff00112233445566778899aabbccddeeff00112233445566778899';
-const OTHER_OWNER =
-	'0xa110ce5511445566778899aabbccddeeff00112233445566778899aabbccddee';
+const PUBLISHER = '0xaabbccddeeff00112233445566778899aabbccddeeff00112233445566778899';
+const OTHER_OWNER = '0xa110ce5511445566778899aabbccddeeff00112233445566778899aabbccddee';
 
 const MOCK_USDC_TYPE =
 	'0xabc1111111111111111111111111111111111111111111111111111111111111::mock_usdc::MOCK_USDC';
 const MOCK_WETH_TYPE =
 	'0xdeff111111111111111111111111111111111111111111111111111111111111::mock_weth::MOCK_WETH';
 
-const created = (
-	objectId: string,
-	objectType: string,
-	owner?: string,
-): SuiObjectChange => ({
+const created = (objectId: string, objectType: string, owner?: string): SuiObjectChange => ({
 	type: 'created',
 	objectId,
 	objectType,
@@ -148,11 +142,7 @@ describe('discoverCoinsFromPublish', () => {
 	it('ignores TreasuryCap with nested generics (refuses to guess)', () => {
 		const changes = [
 			published('0xpkg'),
-			created(
-				'0xexotic',
-				'0x2::coin::TreasuryCap<0xfoo::a::A<0xbar::b::B>>',
-				PUBLISHER,
-			),
+			created('0xexotic', '0x2::coin::TreasuryCap<0xfoo::a::A<0xbar::b::B>>', PUBLISHER),
 		];
 		const out = discoverCoinsFromPublish(changes, PUBLISHER);
 		expect(out).toEqual([]);

@@ -6,11 +6,7 @@ import { describe, expect, it } from '@effect/vitest';
 import type { SuiObjectChange } from './shared.js';
 import { parseCoinTypeFromGeneric, pickCreatedByType } from './sui-helpers.js';
 
-const created = (
-	objectId: string,
-	objectType: string,
-	owner?: string,
-): SuiObjectChange =>
+const created = (objectId: string, objectType: string, owner?: string): SuiObjectChange =>
 	({
 		type: 'created',
 		objectId,
@@ -102,9 +98,9 @@ describe('pickCreatedByType — prefix filter (all: true)', () => {
 
 	it('returns empty array on no match', () => {
 		const changes = [created('0xfoo', '0xabc::game::Lobby')];
-		expect(
-			pickCreatedByType(changes, { prefix: '0x2::coin::TreasuryCap<', all: true }),
-		).toEqual([]);
+		expect(pickCreatedByType(changes, { prefix: '0x2::coin::TreasuryCap<', all: true })).toEqual(
+			[],
+		);
 	});
 });
 
@@ -129,27 +125,19 @@ describe('parseCoinTypeFromGeneric', () => {
 
 	it('handles leading-zero addresses', () => {
 		expect(
-			parseCoinTypeFromGeneric(
-				'0x2::coin::TreasuryCap<0x0::sui::SUI>',
-				'0x2::coin::TreasuryCap',
-			),
+			parseCoinTypeFromGeneric('0x2::coin::TreasuryCap<0x0::sui::SUI>', '0x2::coin::TreasuryCap'),
 		).toBe('0x0::sui::SUI');
 		expect(
 			parseCoinTypeFromGeneric(
 				'0x2::coin::TreasuryCap<0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI>',
 				'0x2::coin::TreasuryCap',
 			),
-		).toBe(
-			'0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI',
-		);
+		).toBe('0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI');
 	});
 
 	it('returns undefined for wrong wrapper', () => {
 		expect(
-			parseCoinTypeFromGeneric(
-				'0x2::coin::CoinMetadata<0xabc::mod::T>',
-				'0x2::coin::TreasuryCap',
-			),
+			parseCoinTypeFromGeneric('0x2::coin::CoinMetadata<0xabc::mod::T>', '0x2::coin::TreasuryCap'),
 		).toBeUndefined();
 	});
 
@@ -179,17 +167,11 @@ describe('parseCoinTypeFromGeneric', () => {
 		).toBeUndefined();
 		expect(
 			// missing closing `>`
-			parseCoinTypeFromGeneric(
-				'0x2::coin::TreasuryCap<0xabc::mod::T',
-				'0x2::coin::TreasuryCap',
-			),
+			parseCoinTypeFromGeneric('0x2::coin::TreasuryCap<0xabc::mod::T', '0x2::coin::TreasuryCap'),
 		).toBeUndefined();
 		expect(
 			// missing opening `<` — falls past the wrapper-head check
-			parseCoinTypeFromGeneric(
-				'0x2::coin::TreasuryCap0xabc::mod::T>',
-				'0x2::coin::TreasuryCap',
-			),
+			parseCoinTypeFromGeneric('0x2::coin::TreasuryCap0xabc::mod::T>', '0x2::coin::TreasuryCap'),
 		).toBeUndefined();
 	});
 });

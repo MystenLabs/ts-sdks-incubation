@@ -15,10 +15,7 @@ import { deepbookConfig } from '../generated/deepbook-config.js';
  */
 let cached: { suiClient: ClientWithCoreApi; sender: string; client: DeepBookClient } | null = null;
 
-export function getDeepBookClient(
-	suiClient: ClientWithCoreApi,
-	sender: string,
-): DeepBookClient {
+export function getDeepBookClient(suiClient: ClientWithCoreApi, sender: string): DeepBookClient {
 	if (cached !== null && cached.suiClient === suiClient && cached.sender === sender) {
 		return cached.client;
 	}

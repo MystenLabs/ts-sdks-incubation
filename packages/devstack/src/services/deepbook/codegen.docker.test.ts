@@ -29,12 +29,7 @@ const RUN_INTEGRATION = DOCKER_OK && process.env.DEVSTACK_INTEGRATION_TESTS === 
 
 stampSkipNoticeIfMissing('DeepbookConfigEmitter L3 docker');
 
-describe.skipIf(!RUN_INTEGRATION)(
-	'DeepbookConfigEmitter — real-Docker fixture (P5.T4)',
-	() => {
-		it.todo('emits deepbook-config.ts whose DEEPBOOK_PACKAGE_ID matches on-chain state');
-		it.todo(
-			'consumer config `import { deepbookConfig }` compiles cleanly under `pnpm tsc --noEmit`',
-		);
-	},
-);
+describe.skipIf(!RUN_INTEGRATION)('DeepbookConfigEmitter — real-Docker fixture (P5.T4)', () => {
+	it.todo('emits deepbook-config.ts whose DEEPBOOK_PACKAGE_ID matches on-chain state');
+	it.todo('consumer config `import { deepbookConfig }` compiles cleanly under `pnpm tsc --noEmit`');
+});

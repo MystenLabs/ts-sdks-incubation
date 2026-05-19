@@ -27,10 +27,7 @@ import * as path from 'node:path';
 import { describe, it, expect } from 'vitest';
 
 const PKG_ROOT = path.resolve(__dirname, '../../../');
-const FIXTURE = path.join(
-	PKG_ROOT,
-	'test-setup/fixtures/margin/no-pyth.fixture.ts',
-);
+const FIXTURE = path.join(PKG_ROOT, 'test-setup/fixtures/margin/no-pyth.fixture.ts');
 
 const tscBin = path.join(PKG_ROOT, 'node_modules/.bin/tsc');
 

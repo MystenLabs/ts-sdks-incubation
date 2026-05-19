@@ -96,10 +96,7 @@ const patchMoveToml = async (
 			`\\[dependencies\\.${depName}\\]\\s*\\n(?:[ \\t]*(?:git|subdir|rev|local|version)[ \\t]*=.*\\n)+`,
 			'g',
 		);
-		content = content.replace(
-			tableRe,
-			`[dependencies.${depName}]\nlocal = "${relativePath}"\n`,
-		);
+		content = content.replace(tableRe, `[dependencies.${depName}]\nlocal = "${relativePath}"\n`);
 		// Inline `X = { git = "...", ... }` form:
 		const inlineRe = new RegExp(`^${depName}[ \\t]*=[ \\t]*\\{[^}]*\\}`, 'gm');
 		content = content.replace(inlineRe, `${depName} = { local = "${relativePath}" }`);
@@ -182,8 +179,7 @@ export const vendorDeepbook = (opts: VendorDeepbookOptions = {}) => {
 			const sandboxSrc = yield* sandboxFetch;
 
 			const stateDir = process.env.DEVSTACK_STATE_DIR ?? '.devstack';
-			const outDir =
-				opts.outDir ?? nodePath.resolve(stateDir, 'vendor', 'deepbook', ref);
+			const outDir = opts.outDir ?? nodePath.resolve(stateDir, 'vendor', 'deepbook', ref);
 
 			yield* Effect.annotateCurrentSpan({
 				'vendorDeepbook.outDir': outDir,

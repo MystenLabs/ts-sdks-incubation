@@ -233,13 +233,19 @@ export const Deepbook = (opts: DeepbookOptions = {}) => {
 			...(knownNetwork !== undefined ? { network: knownNetwork } : {}),
 			...opts.override,
 		};
-		return Object.assign(deepbookKnownPackage(knownOpts), { __kind: 'service' as const, __pluginName: 'deepbook' });
+		return Object.assign(deepbookKnownPackage(knownOpts), {
+			__kind: 'service' as const,
+			__pluginName: 'deepbook',
+		});
 	}
 	const localOpts = {
 		...(opts.name !== undefined ? { name: opts.name } : {}),
 		...opts.local,
 	} as Parameters<typeof deepbookLocalDeploy>[0];
-	return Object.assign(deepbookLocalDeploy(localOpts), { __kind: 'service' as const, __pluginName: 'deepbook' });
+	return Object.assign(deepbookLocalDeploy(localOpts), {
+		__kind: 'service' as const,
+		__pluginName: 'deepbook',
+	});
 };
 
 /** Market-maker factory. Spawns a fiber that posts POST_ONLY orders on
@@ -248,7 +254,10 @@ export const Deepbook = (opts: DeepbookOptions = {}) => {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const DeepbookMarketMaker = (opts: any) =>
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	Object.assign((deepbookMarketMaker as any)(opts), { __kind: 'action' as const, __pluginName: 'deepbook' });
+	Object.assign((deepbookMarketMaker as any)(opts), {
+		__kind: 'action' as const,
+		__pluginName: 'deepbook',
+	});
 
 /** Mint DEEP from the locally-deployed deepbook package's `TreasuryCap`
  *  to a recipient. Reads `deepTreasuryId` from the deepbook tag's
@@ -256,13 +265,19 @@ export const DeepbookMarketMaker = (opts: any) =>
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const DeepbookMintDEEP = (opts: any) =>
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	Object.assign((deepbookMintDEEP as any)(opts), { __kind: 'action' as const, __pluginName: 'deepbook' });
+	Object.assign((deepbookMintDEEP as any)(opts), {
+		__kind: 'action' as const,
+		__pluginName: 'deepbook',
+	});
 
 /** Mint USDC from a caller-supplied `TreasuryCap`. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const DeepbookMintUSDC = (opts: any) =>
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	Object.assign((deepbookMintUSDC as any)(opts), { __kind: 'action' as const, __pluginName: 'deepbook' });
+	Object.assign((deepbookMintUSDC as any)(opts), {
+		__kind: 'action' as const,
+		__pluginName: 'deepbook',
+	});
 
 /** Vendor the deepbook + deepbook-sandbox Move sources into a
  *  `.devstack/vendor/deepbook/<ref>/` tree. Returns a Ref carrying the
@@ -270,21 +285,30 @@ export const DeepbookMintUSDC = (opts: any) =>
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const VendorDeepbook = (opts?: any) =>
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	Object.assign((deepbookVendor as any)(opts), { __kind: 'action' as const, __pluginName: 'deepbook' });
+	Object.assign((deepbookVendor as any)(opts), {
+		__kind: 'action' as const,
+		__pluginName: 'deepbook',
+	});
 
 /** DeepBook indexer container. Reads Sui checkpoints + writes events
  *  to Postgres. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const DeepbookIndexer = (opts: any) =>
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	Object.assign((deepbookIndexer as any)(opts), { __kind: 'service' as const, __pluginName: 'deepbook' });
+	Object.assign((deepbookIndexer as any)(opts), {
+		__kind: 'service' as const,
+		__pluginName: 'deepbook',
+	});
 
 /** DeepBook server container. Long-lived; serves the DeepBook REST API
  *  on `:9008` reading from the Postgres written to by `DeepbookIndexer`. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const DeepbookServer = (opts: any) =>
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	Object.assign((deepbookServer as any)(opts), { __kind: 'service' as const, __pluginName: 'deepbook' });
+	Object.assign((deepbookServer as any)(opts), {
+		__kind: 'service' as const,
+		__pluginName: 'deepbook',
+	});
 
 /** Publish the `deepbook_margin` + `margin_liquidation` Move packages,
  *  create one MarginPool per configured asset, and register each
@@ -293,14 +317,20 @@ export const DeepbookServer = (opts: any) =>
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const deepbookMarginAction = (opts: any) =>
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	Object.assign((deepbookMarginImpl as any)(opts), { __kind: 'action' as const, __pluginName: 'deepbook' });
+	Object.assign((deepbookMarginImpl as any)(opts), {
+		__kind: 'action' as const,
+		__pluginName: 'deepbook',
+	});
 
 /** Mint a SupplierCap + supply per-asset seed liquidity to each
  *  margin pool. Mirrors sandbox parity. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const deepbookMarginSeedAction = (opts: any) =>
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	Object.assign((deepbookMarginSeedImpl as any)(opts), { __kind: 'action' as const, __pluginName: 'deepbook' });
+	Object.assign((deepbookMarginSeedImpl as any)(opts), {
+		__kind: 'action' as const,
+		__pluginName: 'deepbook',
+	});
 
 /** DeepBook margin primitive — composite factory + `.seed` action.
  *

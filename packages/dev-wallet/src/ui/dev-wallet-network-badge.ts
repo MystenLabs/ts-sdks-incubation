@@ -108,8 +108,7 @@ export class DevWalletNetworkBadge extends LitElement {
 					@click=${() => (this._open = !this._open)}
 				>
 					<span class="dot" style="background: ${color}"></span>
-					${baseLabel}
-					${fork ? html`<span class="fork-tag">fork</span>` : ''}
+					${baseLabel} ${fork ? html`<span class="fork-tag">fork</span>` : ''}
 					<svg
 						class="chevron"
 						viewBox="0 0 24 24"

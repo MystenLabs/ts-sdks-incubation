@@ -110,9 +110,7 @@ const SPAWNER_LAYER = NodeServicesLayer;
 					const before = yield* Effect.tryPromise(
 						() => h.client.forkingService.getStatus({}).response,
 					);
-					yield* Effect.tryPromise(
-						() => h.client.forkingService.advanceCheckpoint({}).response,
-					);
+					yield* Effect.tryPromise(() => h.client.forkingService.advanceCheckpoint({}).response);
 					const after = yield* Effect.tryPromise(
 						() => h.client.forkingService.getStatus({}).response,
 					);

@@ -44,7 +44,10 @@ export const DEEPBOOK_IMAGES: Record<
 /** Resolve the indexer + server images for a given Move version at the
  *  current host's architecture. Throws if no entry exists for the version
  *  (consumer must pin a known version OR provide their own image refs). */
-export const getDeepbookImages = (moveVersion: string, arch: NodeJS.Architecture = process.arch as NodeJS.Architecture): DeepbookImagePair => {
+export const getDeepbookImages = (
+	moveVersion: string,
+	arch: NodeJS.Architecture = process.arch as NodeJS.Architecture,
+): DeepbookImagePair => {
 	const entry = DEEPBOOK_IMAGES[moveVersion];
 	if (entry === undefined) {
 		throw new Error(

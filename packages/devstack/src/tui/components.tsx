@@ -848,8 +848,8 @@ function LogLine({ log }: { readonly log: TuiLog }): React.ReactElement {
 				<Box>
 					<Text dimColor>{indent}</Text>
 					<Text dimColor>
-						… {hiddenLineCount} more line{hiddenLineCount === 1 ? '' : 's'} suppressed
-						(check `docker logs` for full output)
+						… {hiddenLineCount} more line{hiddenLineCount === 1 ? '' : 's'} suppressed (check
+						`docker logs` for full output)
 					</Text>
 				</Box>
 			) : null}
@@ -873,9 +873,7 @@ function Footer({
 		// in 'stopping' state still has work in flight; 'stopped' means
 		// docker returned. Both are excluded from the count.
 		const pending = entries.filter(
-			(e) =>
-				e.status === 'ready' &&
-				(e.kind === 'service' || e.kind === 'package'),
+			(e) => e.status === 'ready' && (e.kind === 'service' || e.kind === 'package'),
 		);
 		// De-dupe the plugin list — multi-row plugins (e.g. walrus has 4
 		// storage-node rows, sui has localnet + faucet rows) would otherwise

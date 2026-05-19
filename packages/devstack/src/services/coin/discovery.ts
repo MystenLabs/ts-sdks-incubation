@@ -101,10 +101,7 @@ export const discoverCoinsFromPublish = (
 	// fold would lose the ordering invariant (publish receipts don't
 	// guarantee cap-before-metadata), and re-keying by coin type
 	// already gives O(1) cross-reference.
-	const capByType = new Map<
-		string,
-		{ readonly objectId: string; readonly owner?: string }
-	>();
+	const capByType = new Map<string, { readonly objectId: string; readonly owner?: string }>();
 	const metaByType = new Map<string, string>();
 
 	for (const entry of pickCreatedByType(changes, { prefix: TREASURY_CAP_PREFIX, all: true })) {

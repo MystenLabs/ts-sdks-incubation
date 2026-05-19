@@ -46,12 +46,16 @@ const renderSeedMismatchRecipe = (err: SeedManifestMismatchError): string => {
 		`  on-disk meta:  ${err.metaPath}`,
 	];
 	if (err.previous !== undefined && err.current !== undefined) {
-		lines.push(`  previous:      upstream=${err.previous.upstream ?? '<missing>'}` +
-			(err.previous.checkpoint !== undefined ? `, checkpoint=${err.previous.checkpoint}` : '') +
-			(err.previous.configHash !== undefined ? `, hash=${err.previous.configHash}` : ''));
-		lines.push(`  current:       upstream=${err.current.upstream ?? '<missing>'}` +
-			(err.current.checkpoint !== undefined ? `, checkpoint=${err.current.checkpoint}` : '') +
-			(err.current.configHash !== undefined ? `, hash=${err.current.configHash}` : ''));
+		lines.push(
+			`  previous:      upstream=${err.previous.upstream ?? '<missing>'}` +
+				(err.previous.checkpoint !== undefined ? `, checkpoint=${err.previous.checkpoint}` : '') +
+				(err.previous.configHash !== undefined ? `, hash=${err.previous.configHash}` : ''),
+		);
+		lines.push(
+			`  current:       upstream=${err.current.upstream ?? '<missing>'}` +
+				(err.current.checkpoint !== undefined ? `, checkpoint=${err.current.checkpoint}` : '') +
+				(err.current.configHash !== undefined ? `, hash=${err.current.configHash}` : ''),
+		);
 	}
 	lines.push(``);
 	lines.push(`  To resolve, wipe the per-stack fork state while keeping the shared`);
@@ -117,8 +121,7 @@ export const applyCommand = Command.make(
 												...(seedMismatch.current !== undefined
 													? { current: seedMismatch.current }
 													: {}),
-												recipe:
-													'devstack wipe --keep-upstream-cache --yes && devstack apply',
+												recipe: 'devstack wipe --keep-upstream-cache --yes && devstack apply',
 											},
 										}
 									: {}),

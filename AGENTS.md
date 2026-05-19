@@ -141,7 +141,7 @@ Three layers of guidance, in order:
   less than a duplicate. If two callsites already do the same thing inline,
   extract before adding a third.
 - **Structured errors with identity context.** Errors crossing a module
-  boundary identify *which named thing* they're about (account name, package
+  boundary identify _which named thing_ they're about (account name, package
   name, etc.) so the catcher doesn't have to parse the message. The concrete
   shape (tagged classes, exception subclasses, …) is up to each package's
   AGENTS.md.

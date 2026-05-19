@@ -188,10 +188,7 @@ export interface EngineHandleShape {
 	 * supervisor channel), but callers outside the wrap shouldn't poke
 	 * at this surface.
 	 */
-	readonly registerPrimitiveScope: (
-		key: string,
-		scope: Scope.Scope,
-	) => Effect.Effect<void>;
+	readonly registerPrimitiveScope: (key: string, scope: Scope.Scope) => Effect.Effect<void>;
 	/**
 	 * Close the recorded primitive scope for `key` and drop the entry.
 	 * Runs every finalizer the primitive's build attached to its

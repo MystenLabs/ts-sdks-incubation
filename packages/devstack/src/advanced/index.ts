@@ -68,10 +68,7 @@ export * from './plugin-author/index.js';
 // suffix, includes, and prefix variants — pass exactly one filter
 // (default: first match; pass `all: true` with `prefix:` to enumerate).
 export { pickCreatedByType } from '../engine/sui-helpers.js';
-export type {
-	PickCreatedByTypeFilter,
-	PickCreatedByTypeResult,
-} from '../engine/sui-helpers.js';
+export type { PickCreatedByTypeFilter, PickCreatedByTypeResult } from '../engine/sui-helpers.js';
 
 // `PackageWithCapture` — variant of `Package(...)` for plugin authors
 // who need to extract object ids from the publish receipt beyond the

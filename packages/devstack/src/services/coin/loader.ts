@@ -114,9 +114,7 @@ export const fetchCoinMetadataOnce = (
 				name: md.name,
 				symbol: md.symbol,
 				description: md.description,
-				...(typeof md.iconUrl === 'string' && md.iconUrl.length > 0
-					? { iconUrl: md.iconUrl }
-					: {}),
+				...(typeof md.iconUrl === 'string' && md.iconUrl.length > 0 ? { iconUrl: md.iconUrl } : {}),
 			};
 			return Option.some(projected);
 		}),

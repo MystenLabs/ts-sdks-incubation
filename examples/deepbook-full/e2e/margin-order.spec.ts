@@ -4,7 +4,9 @@
 
 import { connectAs, expect, selectAccount, test } from '@mysten-incubation/devstack/playwright';
 
-test('alice places a limit buy on sui_usdc; tx submits + ticker reflects the new bid', async ({ page }) => {
+test('alice places a limit buy on sui_usdc; tx submits + ticker reflects the new bid', async ({
+	page,
+}) => {
 	await connectAs(page, 'alice');
 
 	const tradingCard = page.locator('section').filter({ hasText: /^Trading/ });
