@@ -354,7 +354,14 @@ LoC of new substrate; net **−2 400 LoC**. See §5 for the per-area math.
 
 ### 2.8 Test harness
 
-#### E32. `playwright/web-server.ts::resolveEndpoint` is dead-ended on a fallback
+#### E32. `playwright/web-server.ts::resolveEndpoint` cold-start fallback is correctness-fragile
+
+> Title corrected 2026-05-19 — the fallback is NOT dead; it's the normal cold-start
+> path (playwright.config.ts loads before the supervisor writes the manifest).
+> Removal would break every example's Playwright run. Tracked redesign is an
+> opt-in `webServer({ fallback: 'conventional' | 'fail' })` switch (~+5 LoC) so
+> CI can opt into fail-fast while local-dev keeps the convenient cold-start.
+
 
 |               |                                                                                                                                                                                                                                                                                                                                        |
 | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
