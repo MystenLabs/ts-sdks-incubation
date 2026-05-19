@@ -1290,6 +1290,32 @@ export const defineDevstack = (
 				const supervisorAmbient = yield* Effect.scope;
 				const supervisorScope = yield* Scope.fork(supervisorAmbient, 'parallel');
 
+				// Race the close of every per-primitive scope alongside the
+				// Layer.buildWithMemoMap cleanup cascade. Without this, the
+				// nested `Layer.provideMerge` chain produces a deeply-nested
+				// tree of *sequential* `fromBuild` scopes — supervisorScope
+				// has just ONE direct finalizer (close of the outermost
+				// fromBuild scope), so its 'parallel' strategy has nothing to
+				// parallelize and docker-stop finalizers fire one primitive
+				// at a time in LIFO order (seal 15s → walrus 20s → sui 30s in
+				// the private-content stack, ~65s of serial waits).
+				//
+				// Registering `invalidateAll` as a sibling finalizer on
+				// supervisorScope means BOTH fire when supervisorScope closes
+				// — and supervisorScope's 'parallel' strategy now actually
+				// runs them concurrently. `invalidateAll` walks every
+				// registered primitive scope in `Effect.all({ concurrency:
+				// 'unbounded' })`, so each primitive's `docker stop` finalizer
+				// fires from a sibling fiber. The Layer-build cascade still
+				// runs in parallel with it, but every scope it reaches is
+				// already Closed (idempotent) so the cascade collapses to a
+				// fast no-op. Net effect: shutdown is ~max(grace) ≈ 30s for
+				// the private-content stack instead of ~sum(grace) ≈ 65s,
+				// AND sui-localnet gets its full 30s grace timer from T=0
+				// (no more SIGKILL exit-137 "dirty shutdown" alert on the
+				// next `up`).
+				yield* Scope.addFinalizer(supervisorScope, engine.invalidateAll);
+
 				// Per-cycle claim set: every container `Docker.run` either adopts
 				// (reuse-if-healthy hit) or creates is appended here. After the
 				// layer build completes (below), `dockerOrphanSweep` removes any
@@ -1385,13 +1411,12 @@ export const defineDevstack = (
 				// healthy containers from sibling stacks) AND the CI
 				// fast-fail (a user `q` is not a stack failure). Return
 				// cleanly so the launch loop exits and the outer
-				// `Effect.scoped` tears down accumulated finalizers.
-				// `invalidateAll` first so partial-build primitives' docker
-				// stops fire concurrently — see the q-race exit below for
-				// the rationale.
+				// `Effect.scoped` tears down accumulated finalizers — the
+				// `supervisorScope` finalizer (above) fires `invalidateAll`
+				// concurrently with the layer-build cascade so any partial
+				// docker stops still run in parallel.
 				if (buildOutcome === 'interrupted') {
 					yield* engine.setBuildStatus('shutting-down');
-					yield* engine.invalidateAll;
 					return false;
 				}
 
@@ -1470,21 +1495,11 @@ export const defineDevstack = (
 				);
 				if (reason === 'shutdown') {
 					yield* engine.setBuildStatus('shutting-down');
-					// Concurrently close every registered primitive scope so
-					// each container's `docker stop` finalizer fires in
-					// parallel. Without this, the outer `Effect.scoped`
-					// cascade would close primitives via the user-stack's
-					// `Layer.provideMerge` chain — and that chain is a
-					// nested tree of sequential fromBuild scopes, so docker
-					// stops would fire one primitive at a time in LIFO
-					// order (seal 15s → walrus 20s → sui 30s ≈ 65s of
-					// serial waits in the worst case). `invalidateAll`
-					// bypasses the cascade: every primitive's per-Layer
-					// scope is closed concurrently, the slow `docker stop`s
-					// run as one parallel batch (~max(grace) ≈ 30s), and the
-					// later cascade is a no-op against already-Closed
-					// scopes.
-					yield* engine.invalidateAll;
+					// `Effect.scoped` will close the per-cycle scope on return,
+					// which cascades into supervisorScope's close (parallel
+					// strategy). The `invalidateAll` finalizer registered above
+					// fires concurrently with the Layer-build cascade, so every
+					// primitive's `docker stop` runs in one parallel batch.
 					return false;
 				}
 				yield* engine.setBuildStatus('restarting');
@@ -1663,19 +1678,14 @@ export const defineDevstack = (
 							message: SHUTDOWN_LOG_MESSAGE,
 						});
 						yield* rendererFlush;
-						// Concurrently close every registered primitive scope
-						// (matches the q-race exit in `runOnce`). The outer
-						// scope cascade would close them sequentially via the
-						// `Layer.provideMerge` chain, blocking each `docker
-						// stop` finalizer on the previous one's grace window.
-						// Closing here in parallel makes Ctrl-C tear the stack
-						// down in ~max(grace) instead of ~sum(grace), and Sui
-						// in particular gets its full 30s grace timer from
-						// T=0 rather than waiting on seal+walrus first (which
-						// was causing sui-localnet to SIGKILL at exit 137 —
-						// the "dirty shutdown" alert that surfaced on the
-						// next `up`).
-						yield* engine.invalidateAll;
+						// Parallel `invalidateAll` is wired through
+						// `supervisorScope`'s finalizer inside `runOnce` (see
+						// `Scope.addFinalizer(supervisorScope, …)` above) so
+						// it fires concurrently with the layer-build cascade.
+						// We DON'T call it again here — by the time this
+						// onInterrupt runs, `runOnce`'s `Effect.scoped`
+						// cascade has already started and the finalizer is
+						// firing in parallel with it.
 					}),
 				),
 			);

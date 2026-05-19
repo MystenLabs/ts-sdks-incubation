@@ -65,13 +65,18 @@ const HAS_DEEPBOOK_VENDOR = existsSync(
 );
 const SHOULD_RUN = DOCKER_OK && HAS_DEEPBOOK_VENDOR;
 
+// Invoke the built CLI directly via node — see the matching comment in
+// `engine/snapshot.docker.test.ts`. Avoids depending on pnpm's bin
+// symlink that may not exist if `dist/` was built after install.
+const CLI_PATH = resolvePath(__dirname, '../../../dist/cli/main.mjs');
+
 const runCli = async (
 	cwd: string,
 	env: NodeJS.ProcessEnv,
 	args: ReadonlyArray<string>,
 ): Promise<CliResult> =>
 	new Promise((resolve) => {
-		const child = spawn('pnpm', ['devstack', ...args], {
+		const child = spawn(process.execPath, [CLI_PATH, ...args], {
 			cwd,
 			env,
 			stdio: ['ignore', 'pipe', 'pipe'],

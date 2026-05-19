@@ -718,9 +718,6 @@ export const EngineLive: Layer.Layer<EngineHandle> = Layer.effect(
 		const invalidateSubset = (keys: ReadonlySet<string>): Effect.Effect<void> =>
 			Effect.gen(function* () {
 				if (keys.size === 0) return;
-				yield* Effect.logInfo(
-					`[shutdown-debug] invalidateSubset start keys=${Array.from(keys).join(',')}`,
-				);
 				// Per key: evict the shadow-cache entry BEFORE closing the
 				// scope — symmetric with `closePrimitiveScope`'s "drop before
 				// close", so a re-acquire concurrent with teardown sees
@@ -760,9 +757,7 @@ export const EngineLive: Layer.Layer<EngineHandle> = Layer.effect(
 		const invalidateAll: Effect.Effect<void> = Effect.gen(function* () {
 			const scopes = yield* Ref.get(primitiveScopes);
 			const keys = new Set(scopes.keys());
-			yield* Effect.logInfo(`[shutdown-debug] invalidateAll firing for ${keys.size} primitives`);
 			yield* invalidateSubset(keys);
-			yield* Effect.logInfo(`[shutdown-debug] invalidateAll complete`);
 		});
 
 		return {

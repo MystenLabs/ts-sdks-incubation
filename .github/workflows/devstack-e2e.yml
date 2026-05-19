@@ -65,9 +65,17 @@ jobs:
       - name: Build devstack
         run: pnpm turbo build --filter @mysten-incubation/devstack
 
+      # Invoke the built CLI directly via node so this step doesn't
+      # depend on pnpm having created the `devstack` bin symlink in
+      # `examples/<example>/node_modules/.bin/`. pnpm skips bin creation
+      # (with a WARN) when the target file doesn't exist at install time,
+      # which is exactly our case: `dist/cli/main.mjs` is built AFTER
+      # `pnpm install --frozen-lockfile`. Going through node sidesteps
+      # the bin-symlink lookup entirely. Matches the strategy used by the
+      # `runCli` helper in `snapshot.docker.test.ts`.
       - name: Apply stack (boot + write state + tear down)
         working-directory: examples/${{ matrix.example }}
-        run: pnpm devstack apply
+        run: node ../../packages/devstack/dist/cli/main.mjs apply
 
       - name: Capture snapshot
         working-directory: examples/${{ matrix.example }}
@@ -75,7 +83,7 @@ jobs:
         # containers stopped with their writable layer intact. The
         # snapshot CLI uses `docker ps -a` so stopped containers are
         # still committed + saved into the snapshot bundle.
-        run: pnpm devstack snapshot save baseline
+        run: node ../../packages/devstack/dist/cli/main.mjs snapshot save baseline
 
       - name: Show snapshot contents (debug)
         working-directory: examples/${{ matrix.example }}
@@ -128,8 +136,9 @@ jobs:
         # original paths (preserving mode bits — 0o600 keys + token),
         # and `docker load`s every committed container image. The next
         # `up` adopts them via the reuse-if-image-matches probe in
-        # `Docker.run`.
-        run: pnpm devstack snapshot restore baseline
+        # `Docker.run`. Direct-node invocation: see comment on the seed
+        # job's apply step for the bin-symlink rationale.
+        run: node ../../packages/devstack/dist/cli/main.mjs snapshot restore baseline
 
       - name: Install playwright browsers
         run: pnpm --filter @mysten-incubation/${{ matrix.example }} exec playwright install --with-deps chromium

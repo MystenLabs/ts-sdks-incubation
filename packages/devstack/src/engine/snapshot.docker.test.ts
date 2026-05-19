@@ -45,6 +45,12 @@ import { resolve as resolvePath } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const ARENA_DIR = resolvePath(__dirname, '../../../../examples/arena');
+// Invoke the built CLI directly via node so the test doesn't depend on
+// pnpm having created the `devstack` bin symlink in `examples/arena/
+// node_modules/.bin/` — that symlink isn't created when `dist/cli/main.mjs`
+// doesn't exist at `pnpm install --frozen-lockfile` time (pnpm warns and
+// skips). Going through node sidesteps that resolution entirely.
+const CLI_PATH = resolvePath(__dirname, '../../dist/cli/main.mjs');
 const TEST_TIMEOUT_MS = 300_000; // 5 min — apply on a cold cache can be slow
 
 interface CliResult {
@@ -73,7 +79,7 @@ const runCli = async (
 	args: ReadonlyArray<string>,
 ): Promise<CliResult> => {
 	return new Promise((resolve) => {
-		const child = spawn('pnpm', ['devstack', ...args], {
+		const child = spawn(process.execPath, [CLI_PATH, ...args], {
 			cwd,
 			env,
 			stdio: ['ignore', 'pipe', 'pipe'],
