@@ -1009,6 +1009,17 @@ const buildLocalnet = (options: SuiLocalnetOptions): StackMember => {
 			// — useful for future plugins and for the sui-fork path. Just
 			// not applicable here.)
 			stopGraceSeconds: 30,
+			// Opt out of the UNCLEAN_PRIOR_SHUTDOWN auto-recreate. The
+			// `--with-faucet` SIGINT-handler-blocked trace above means
+			// the validator ALWAYS exits 137 on cycle teardown; RocksDB's
+			// WAL replays cleanly so chain state survives. Without this,
+			// `decideRunAction` would recreate the container on every
+			// `pnpm dev`, nuking the writable layer (where `/root/.sui`
+			// lives — see comment ~50 lines above) and defeating warm
+			// resume entirely. Other primitives whose 137 indicates a
+			// REAL unclean shutdown (deepbook, walrus) leave this unset
+			// so the default auto-recreate behavior protects them.
+			expectedExitCodes: [137],
 			routing: [
 				{
 					name: 'sui',

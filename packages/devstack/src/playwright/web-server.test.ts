@@ -116,6 +116,56 @@ describe('playwright web-server helpers', () => {
 			);
 		});
 
+		// Stale-manifest guard. The v3 manifest used a flat
+		// `endpoints[]` array and had no `services` key; v4+ groups by
+		// service (`services.sui.rpc.url`, etc.). If a v3 manifest from
+		// an older devstack release sits on disk, the nested projection
+		// in `resolveEndpoint` previously NPE'd with
+		// `Cannot read properties of undefined (reading 'sui')`. We must
+		// surface a clear "regenerate" recipe instead — never NPE.
+		it('throws a clear error on a stale v3-shape manifest (no top-level `services`)', () => {
+			// v3 shape: top-level `endpoints[]` array, no `services` /
+			// `app` keys. Real v3 manifests carried more fields, but the
+			// load-bearing thing is the missing top-level discriminator.
+			const v3Manifest = {
+				version: 3,
+				endpoints: [
+					{ name: 'sui-rpc', url: 'http://sui.test:9000' },
+					{ name: 'dev-server', url: 'http://dev.test:5175' },
+				],
+				packages: {},
+				accounts: {},
+			};
+			writeFileSync(manifestPath, JSON.stringify(v3Manifest));
+			expect(() => webServer({ endpoint: EndpointName.DEV_SERVER_PRIMARY })).toThrow(
+				/unrecognized shape.*RECOVERY.*devstack up/s,
+			);
+			// Crucially does NOT throw the unhelpful native
+			// `Cannot read properties of undefined` NPE.
+			expect(() => webServer({ endpoint: EndpointName.DEV_SERVER_PRIMARY })).not.toThrow(
+				/Cannot read properties of undefined/,
+			);
+		});
+
+		it('throws on a manifest with `services` but missing `app`', () => {
+			// Partial-shape guard: a manifest with `services` but no `app`
+			// would also NPE later (`manifest.app.dev` / `manifest.app.wallet`).
+			// The same regenerate recipe applies.
+			const partial = {
+				version: 5,
+				stack: { name: 'main', network: 'localnet', app: 'test-app' },
+				services: { sui: { network: 'localnet', rpc: { url: 'http://sui.test:9000' } } },
+				packages: {},
+				accounts: {},
+				coins: {},
+				// `app` deliberately omitted
+			};
+			writeFileSync(manifestPath, JSON.stringify(partial));
+			expect(() => webServer({ endpoint: EndpointName.SUI_RPC })).toThrow(
+				/unrecognized shape.*RECOVERY/s,
+			);
+		});
+
 		it('throws on cold-start when the endpoint has no conventional fallback', () => {
 			// Clear DEVSTACK_MANIFEST_PATH so discover walks up from cwd —
 			// we're inside packages/devstack so it won't find a real manifest

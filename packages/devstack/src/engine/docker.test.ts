@@ -506,6 +506,110 @@ describe('decideRunAction', () => {
 			existingId: EXISTING_CONTAINER_ID,
 		});
 	});
+
+	// UNCLEAN_PRIOR_SHUTDOWN — exit 137 means docker's stop-grace expired
+	// before the workload finished flushing state. For stateful services
+	// that stamp registry / package ids into the chain (sui validator,
+	// deepbook init) adopting / resuming the wedged container would let
+	// a downstream re-publish conflict with the half-written prior state.
+	// `decideRunAction` must force `recreate` so the chain returns to a
+	// known state — overrides BOTH the running→adopt path and the
+	// stopped→resume path.
+	it('returns `recreate` for a stopped container whose prior run ended in SIGKILL (exit 137)', () => {
+		const inspected = {
+			running: false,
+			image: IMAGE,
+			containerId: EXISTING_CONTAINER_ID,
+			lastExitCode: 137,
+		};
+		expect(decideRunAction(inspected, IMAGE)).toEqual({
+			kind: 'recreate',
+			existingId: EXISTING_CONTAINER_ID,
+		});
+	});
+
+	it('returns `recreate` for a running container that previously exited via SIGKILL (exit 137)', () => {
+		// Edge: a container can be "running" again (manual `docker start`
+		// after a SIGKILL) but still carry `lastExitCode === 137` from the
+		// prior run. We still recreate — the on-disk state inconsistency
+		// the kill produced doesn't heal just because the container came
+		// back up.
+		const inspected = {
+			running: true,
+			image: IMAGE,
+			containerId: EXISTING_CONTAINER_ID,
+			lastExitCode: 137,
+		};
+		expect(decideRunAction(inspected, IMAGE)).toEqual({
+			kind: 'recreate',
+			existingId: EXISTING_CONTAINER_ID,
+		});
+	});
+
+	it('returns `resume` (not `recreate`) for a stopped container that exited cleanly (exit 0)', () => {
+		// Sanity: a clean prior shutdown still goes through the resume
+		// path — the 137-sentinel branch must not over-trigger for
+		// exit-0 / exit-1 / any other code.
+		const inspected = {
+			running: false,
+			image: IMAGE,
+			containerId: EXISTING_CONTAINER_ID,
+			lastExitCode: 0,
+		};
+		expect(decideRunAction(inspected, IMAGE)).toEqual({
+			kind: 'resume',
+			containerId: EXISTING_CONTAINER_ID,
+		});
+	});
+
+	it('honors `expectedExitCodes: [137]` and resumes a stopped container that exited 137', () => {
+		// Opt-out for sui-localnet: `sui start --with-faucet` blocks
+		// before its SIGINT handler registers, so PID 1 never traps any
+		// signal and the validator ALWAYS exits 137 on cycle teardown
+		// by design. RocksDB's WAL replays cleanly on resume, so chain
+		// state survives. Without the opt-out, every `pnpm dev` would
+		// nuke chain state by recreating the container — defeating
+		// warm resume entirely.
+		const inspected = {
+			running: false,
+			image: IMAGE,
+			containerId: EXISTING_CONTAINER_ID,
+			lastExitCode: 137,
+		};
+		expect(decideRunAction(inspected, IMAGE, [137])).toEqual({
+			kind: 'resume',
+			containerId: EXISTING_CONTAINER_ID,
+		});
+	});
+
+	it('honors `expectedExitCodes: [137]` and adopts a running container whose previous run exited 137', () => {
+		const inspected = {
+			running: true,
+			image: IMAGE,
+			containerId: EXISTING_CONTAINER_ID,
+			lastExitCode: 137,
+		};
+		expect(decideRunAction(inspected, IMAGE, [137])).toEqual({
+			kind: 'adopt',
+			containerId: EXISTING_CONTAINER_ID,
+		});
+	});
+
+	it('still recreates on image mismatch even when 137 is in `expectedExitCodes`', () => {
+		// Defense-in-depth: the opt-out covers ONLY the unclean-shutdown
+		// branch. An image mismatch still wins (we can't run the new image
+		// in the old container) — recreate, not resume.
+		const inspected = {
+			running: false,
+			image: OTHER_IMAGE,
+			containerId: EXISTING_CONTAINER_ID,
+			lastExitCode: 137,
+		};
+		expect(decideRunAction(inspected, IMAGE, [137])).toEqual({
+			kind: 'recreate',
+			existingId: EXISTING_CONTAINER_ID,
+		});
+	});
 });
 
 // -----------------------------------------------------------------------------

@@ -373,6 +373,19 @@ export interface DockerContainerOptions {
 	 */
 	readonly engineTagKey?: string;
 	/**
+	 * Exit codes from the container's PREVIOUS run that should be
+	 * treated as a clean shutdown for the adopt / resume decision.
+	 * Default (unset): exit 137 (SIGKILL) is treated as an unclean
+	 * prior shutdown, and the next run auto-recreates the container so
+	 * a half-flushed state can't conflict with downstream re-publishes
+	 * (deepbook re-init, walrus rebuild). Set when the wrapped binary
+	 * exits a non-zero code BY DESIGN AND has a workload-internal
+	 * recovery path that keeps on-disk state consistent — sui-localnet
+	 * is the canonical case; see `services/sui.ts` for the upstream
+	 * `--with-faucet` SIGINT-handler-blocked trace.
+	 */
+	readonly expectedExitCodes?: ReadonlyArray<number>;
+	/**
 	 * Traefik routing — single route or array of routes. When set,
 	 * joins the container to the shared `devstack-router` network and
 	 * writes one file-provider YAML per route so each entrypoint's
@@ -749,6 +762,9 @@ const buildContainerInternals = <Name extends string>(
 				? { stopGraceSeconds: options.stopGraceSeconds }
 				: {}),
 			...(options.stopSignal !== undefined ? { stopSignal: options.stopSignal } : {}),
+			...(options.expectedExitCodes !== undefined
+				? { expectedExitCodes: options.expectedExitCodes }
+				: {}),
 			// engineTagKey for per-row teardown progress. Default to the
 			// ambient `CurrentTagKey` (set by `withEngineLifecycle` when
 			// the enclosing LayeredTag's build runs) so multi-container

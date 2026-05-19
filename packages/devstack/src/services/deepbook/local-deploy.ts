@@ -362,11 +362,24 @@ export const deepbookLocalDeploy = <
 				const verifyCached = (payload: CachedDeepbookPools): Effect.Effect<boolean, never> =>
 					Effect.gen(function* () {
 						for (const p of payload.pools) {
+							// `sui.client.core.getObject` returns `{ object: { type, ... } }`
+							// (per `@mysten/sui`'s `GetObjectResponse`). The previous
+							// cast read `.objectType` off the response root, which is
+							// `undefined` at runtime against the real SDK — making
+							// every cache check fall through to "objects missing" and
+							// re-firing the create-pools tx on resume (whose
+							// `register_pool` then aborts with code 1 since the
+							// (base,quote) pair is still registered on chain). The
+							// internal test mocks happened to surface `objectType`
+							// at the root so unit coverage masked the bug; see
+							// `deepbook.test.ts` `makeMockSuiOk`.
 							const fetched = yield* Effect.tryPromise({
 								try: () => sui.client.core.getObject({ objectId: p.poolId }),
 								catch: (cause) => cause,
 							}).pipe(
-								Effect.map((res) => res as unknown as { objectType?: unknown }),
+								Effect.map(
+									(res) => res as unknown as { object?: { type?: unknown } },
+								),
 								Effect.orElseSucceed(() => undefined),
 							);
 							if (fetched === undefined) return false;
@@ -380,7 +393,7 @@ export const deepbookLocalDeploy = <
 							// poolsHash collision). Mismatch invalidates.
 							const expectedType = `${packageId}::pool::Pool<${p.base}, ${p.quote}>`;
 							const actualType =
-								typeof fetched.objectType === 'string' ? fetched.objectType : undefined;
+								typeof fetched.object?.type === 'string' ? fetched.object.type : undefined;
 							if (actualType === undefined || !moveTypeEquals(actualType, expectedType))
 								return false;
 						}

@@ -237,6 +237,32 @@ export interface DockerRunOptions {
 	 * finalizer behaves as before — just stop the container silently.
 	 */
 	readonly engineTagKey?: string;
+	/**
+	 * Exit codes from the container's PREVIOUS run that should be treated
+	 * as a clean (recoverable) shutdown for the adopt / resume decision
+	 * — and so NOT trigger the UNCLEAN_PRIOR_SHUTDOWN auto-recreate. By
+	 * default, `decideRunAction` treats exit 137 (SIGKILL) as unclean
+	 * and forces `recreate` to put the chain registry / package ids back
+	 * in a known state. That's the right policy for most stateful
+	 * services (deepbook re-init, walrus storage rebuild) where a
+	 * partial flush leaves the next cycle's chain operations in conflict
+	 * with the half-written prior state.
+	 *
+	 * The escape hatch is sui-localnet: `sui start --with-faucet`
+	 * blocks before its SIGINT handler registers, so PID 1 only
+	 * responds to SIGKILL and the validator ALWAYS exits 137 on
+	 * cycle teardown by design (see `services/sui.ts` for the upstream
+	 * trace). RocksDB's WAL has kept this recoverable in practice, so
+	 * the sui primitive passes `expectedExitCodes: [137]` to keep the
+	 * warm-resume / ~1s start path instead of paying for a cold genesis
+	 * + chain-id rotation every restart.
+	 *
+	 * Note: an "expected" exit code only affects the unclean-shutdown
+	 * branch in `decideRunAction`. It does NOT mask the actual
+	 * `lastExitCode` from `inspect`; loggers / spans still see the raw
+	 * value.
+	 */
+	readonly expectedExitCodes?: ReadonlyArray<number>;
 }
 
 export interface DockerRunResult {
@@ -490,7 +516,7 @@ export const run = (
 		// held by something else), at which point the fallback MUST NOT
 		// reuse the caller's stale port preferences.
 		const inspected = yield* inspectContainer(spawner, name);
-		let action = decideRunAction(inspected, opts.image);
+		let action = decideRunAction(inspected, opts.image, opts.expectedExitCodes);
 
 		if (action.kind === 'adopt') {
 			yield* Effect.logInfo(`devstack: reusing running container '${name}'`);
@@ -540,35 +566,11 @@ export const run = (
 
 		if (action.kind === 'resume') {
 			yield* Effect.logInfo(`devstack: resuming stopped container '${name}'`);
-			// Unclean-shutdown alert. If the container's previous run ended
-			// in SIGKILL (exit 137), docker's stop-grace expired before the
-			// workload could clean up. For stateful services — particularly
-			// Sui (the validator's RocksDB checkpoint store) — this can
-			// leave the on-disk state inconsistent in a way the next start
-			// can't recover from: the validator appears healthy at the
-			// socket level (RPC + faucet bind) but rejects every transfer
-			// tx with `{Failure: Internal}`, leading to a ~2-minute timeout
-			// chain (90s funds-transferable wait + 90s faucet retry budget)
-			// before failing with a generic-looking error several screens
-			// later.
-			//
-			// Logged at ERROR severity so the user sees it loudly in the
-			// log panel as the cycle starts. We do NOT auto-recreate: many
-			// workloads (Postgres WAL replay, walrus RocksDB rebuild) DO
-			// recover cleanly from 137, and force-recreating would
-			// needlessly nuke chain state. The supervisor proceeds with
-			// the resume; downstream probe errors reference this alert so
-			// the user has a clear path to "I should wipe".
-			if (inspected !== null && inspected.lastExitCode === 137) {
-				yield* Effect.logError(
-					`! UNCLEAN PRIOR SHUTDOWN: '${name}' was force-killed (exit 137) before it ` +
-						`finished writing state to disk. ` +
-						`SYMPTOM: services start (sockets bind, ready-probes pass) but their ` +
-						`operations fail persistently — typically Sui's faucet returns ` +
-						`"Failure: Internal" for every transfer attempt and accounts can't fund. ` +
-						`RECOVERY: pnpm exec devstack wipe --yes && pnpm exec devstack up`,
-				);
-			}
+			// Note: the SIGKILL/exit-137 unclean-shutdown branch never lands
+			// here — `decideRunAction` short-circuits an unclean prior
+			// shutdown to `recreate` so we put the chain back in a known
+			// state rather than adopt half-written state. The
+			// auto-recreate banner is logged in the recreate path below.
 			// Capture exit code + stderr — `docker start` can fail for
 			// real reasons (port already in use on the host, the image's
 			// tag was pruned out from under it, runtime config drift).
@@ -618,6 +620,27 @@ export const run = (
 			}
 		}
 
+		// UNCLEAN_PRIOR_SHUTDOWN banner. `decideRunAction` returns
+		// `recreate` (not `adopt` / `resume`) when the inspected container's
+		// previous run ended in SIGKILL (exit 137) — docker's stop-grace
+		// expired before the workload could flush state. For stateful
+		// services that stamp registry ids / package ids into the chain
+		// (sui validator, deepbook init) adopting the wedged container
+		// would let a downstream re-publish conflict with the half-written
+		// prior state. We log loudly here so the user sees WHY their
+		// container got recreated instead of resumed; the alternative —
+		// silently nuking on-disk state — has been worse in practice. The
+		// `lastExitCode === 137` branch is checked against the original
+		// `inspected` because `action.existingId` carries no exit-code.
+		if (action.kind === 'recreate' && inspected !== null && inspected.lastExitCode === 137) {
+			yield* Effect.logError(
+				`! UNCLEAN PRIOR SHUTDOWN: '${name}' was force-killed (exit 137) before it ` +
+					`finished writing state to disk. AUTO-RECREATING: removing the stale container ` +
+					`and starting fresh so the chain registry / package ids return to a known state. ` +
+					`If on-disk state matters (named volumes, RocksDB stores), this preserves them — ` +
+					`only the container metadata is replaced.`,
+			);
+		}
 		// `recreate` and `fresh` both end up here. Port-arg selection:
 		//
 		//   - `fresh` (no prior container): honor the caller's
@@ -625,6 +648,10 @@ export const run = (
 		//   - `recreate` from an image-mismatch eviction (decision-time):
 		//     same — the caller's ports are still authoritative; the old
 		//     container is gone so there's nothing to conflict with.
+		//   - `recreate` from an unclean-prior-shutdown eviction
+		//     (`lastExitCode === 137`): same — the caller's ports are
+		//     still authoritative; the previous container is about to be
+		//     `docker rm`-ed and there's nothing held on the host.
 		//   - `recreate` from a resume-fallback promotion where stderr
 		//     indicated a port conflict (something else holds the host
 		//     port now): drop `opts.ports` and pass
@@ -948,17 +975,46 @@ export type RunAction =
  * Pure decision: which of the four `RunAction` kinds describes what
  * `Docker.run` should do for this `(inspected, requestedImage)` pair?
  *
- *   - `inspected === null`                 → `fresh`
- *   - same image, running                  → `adopt`
- *   - same image, stopped                  → `resume`
- *   - different image (running or stopped) → `recreate`
+ *   - `inspected === null`                          → `fresh`
+ *   - prior run ended in SIGKILL (exit 137)         → `recreate`
+ *   - same image, running                           → `adopt`
+ *   - same image, stopped                           → `resume`
+ *   - different image (running or stopped)          → `recreate`
+ *
+ * UNCLEAN_PRIOR_SHUTDOWN takes precedence over adopt/resume. Exit 137
+ * means docker's stop-grace expired before the workload could flush
+ * state. For stateful services that depend on a cross-container chain
+ * registry (deepbook registry-id stamped into a prior package publish,
+ * walrus storage rebuild) this leaves the on-disk state inconsistent in
+ * a way the next start can't recover from: the next `devstack up`
+ * adopts / resumes the wedged container, then a downstream re-publish
+ * (deepbook re-init) conflicts with the half-written prior state.
+ * Forcing a fresh container at this layer puts the chain back in a
+ * known state — the trade-off is one extra cold-start, which the user
+ * has already accepted by force-killing in the first place.
+ *
+ * `expectedExitCodes` is the opt-out for primitives that exit 137 by
+ * design AND have a workload-internal recovery path that keeps on-disk
+ * state consistent. Sui-localnet is the canonical case: `sui start
+ * --with-faucet` blocks before its SIGINT handler registers, so PID 1
+ * never traps any signal and the validator ALWAYS exits 137 on every
+ * cycle teardown; RocksDB's WAL replays cleanly on resume. Without the
+ * opt-out, every `pnpm dev` would nuke chain state by recreating the
+ * container — defeating warm resume entirely.
  */
 export const decideRunAction = (
 	inspected: InspectResult | null,
 	requestedImage: string,
+	expectedExitCodes: ReadonlyArray<number> = [],
 ): RunAction => {
 	if (inspected === null) return { kind: 'fresh' };
 	if (inspected.image !== requestedImage) {
+		return { kind: 'recreate', existingId: inspected.containerId };
+	}
+	// UNCLEAN_PRIOR_SHUTDOWN — overrides adopt/resume. Skip when the
+	// caller has declared the exit code expected (sui-localnet's
+	// by-design 137 from `--with-faucet`).
+	if (inspected.lastExitCode === 137 && !expectedExitCodes.includes(inspected.lastExitCode)) {
 		return { kind: 'recreate', existingId: inspected.containerId };
 	}
 	if (inspected.running) return { kind: 'adopt', containerId: inspected.containerId };

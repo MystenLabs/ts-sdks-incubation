@@ -224,6 +224,13 @@ const mkTmpDir = (label: string) =>
 // (where the chain object is gone) is covered by the second
 // `it.effect` below.
 //
+// Mirrors `@mysten/sui`'s real `GetObjectResponse` shape — the object's
+// Move type is exposed via the nested `object.type` field, NOT a
+// top-level `objectType`. Returning the type at the wrong level was
+// the root cause of the resume-time MoveAbort: `verifyCached` read
+// `.objectType`, always saw `undefined`, and invalidated the cache on
+// every resume.
+//
 // `objectTypeFor(objectId)` returns the matching `Pool<base, quote>`
 // type so verifyCached's post-HIGH-C4 objectType assertion succeeds.
 // Defaults to `${packageId}::pool::Pool<0x2::sui::SUI,
@@ -241,8 +248,10 @@ const makeMockSuiOk = (
 		client: {
 			core: {
 				getObject: async (_args: { objectId: string }) => ({
-					object: { objectId: _args.objectId } as unknown,
-					objectType: objectTypeFor?.(_args.objectId),
+					object: {
+						objectId: _args.objectId,
+						type: objectTypeFor?.(_args.objectId),
+					} as unknown,
 				}),
 			},
 		} as unknown as Sui['client'],

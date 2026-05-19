@@ -134,6 +134,29 @@ function resolveEndpoint(
 	// fields (gas budgets, on-chain numeric scalars), wire the
 	// `jsonBigintReviver` from `engine/json-bigint.ts` here.
 	const manifest = JSON.parse(raw) as Manifest;
+	// Stale-manifest guard. The v3 manifest used a flat `endpoints[]`
+	// array and had no `services` key; v4+ groups by service
+	// (`services.sui.rpc.url`, etc.). If a v3 (or otherwise pre-v4)
+	// manifest sits on disk from an older devstack release, the nested
+	// projection below NPEs with `Cannot read properties of undefined
+	// (reading 'sui')`. Catch the missing-discriminator case here and
+	// surface a typed error pointing the user at the regenerate recipe
+	// — never NPE, never silently fall through to "endpoint not found".
+	if (
+		manifest === null ||
+		typeof manifest !== 'object' ||
+		(manifest as { services?: unknown }).services === undefined ||
+		typeof (manifest as { services?: unknown }).services !== 'object' ||
+		(manifest as { app?: unknown }).app === undefined
+	) {
+		throw new Error(
+			`[devstack/playwright] manifest at ${manifestPath} is in an unrecognized shape ` +
+				`(missing top-level \`services\` and/or \`app\`). This usually means a stale ` +
+				`pre-v4 manifest from an older devstack release is on disk. ` +
+				`RECOVERY: \`rm -rf .devstack/manifest.json .devstack/stacks/*/manifest.json && devstack up\` ` +
+				`to regenerate.`,
+		);
+	}
 	// Project the v4 manifest's nested endpoints into a flat
 	// `{name → url}` lookup so callers reach for canonical short names
 	// like `dev-server`, `sui-rpc`, `wallet-app`. The mapping mirrors
