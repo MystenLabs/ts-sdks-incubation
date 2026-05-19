@@ -82,6 +82,12 @@ export interface CacheSpec<
 	 */
 	readonly keyOverride?: string;
 
+	/** Human-readable label for log messages. Emitted as
+	 *  `${label}: cache hit | cache miss | cache verify-fail` so users
+	 *  can see what re-ran and what was reused. Optional — defaults to
+	 *  `namespace` if not provided. */
+	readonly label?: string;
+
 	/**
 	 * Probe the chain (or filesystem) to verify the cached value is
 	 * still valid. Returns the cached value on success, `undefined` to
@@ -150,20 +156,24 @@ export const withCache = <
 			'cache.key': key,
 		});
 
+		const label = spec.label ?? spec.namespace;
 		const cached = yield* state.get<T>(key);
 		if (Option.isSome(cached)) {
 			const verified = yield* spec.verify(cached.value);
 			if (verified !== undefined) {
 				yield* Effect.annotateCurrentSpan({ 'cache.outcome': 'hit' });
+				yield* Effect.logInfo(`${label}: cache hit`);
 				return verified;
 			}
 			yield* Effect.annotateCurrentSpan({ 'cache.outcome': 'verify-fail' });
+			yield* Effect.logInfo(`${label}: cache verify-fail`);
 			// Eviction. Best-effort — a state-store IO defect mustn't
 			// fail the primitive; we'll just over-produce on the next
 			// cycle.
 			yield* state.remove(key).pipe(Effect.ignore);
 		} else {
 			yield* Effect.annotateCurrentSpan({ 'cache.outcome': 'miss' });
+			yield* Effect.logInfo(`${label}: cache miss`);
 		}
 
 		const fresh = yield* spec.produce;

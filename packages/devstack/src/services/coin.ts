@@ -280,6 +280,11 @@ const coinByIdentifier = (identifier: string) =>
 			kind: 'action',
 			displayTitle: `coin.${identifier}`,
 			display: (s) => ({ title: `coin.${s.name}`, primary: s.fullCoinType }),
+			// PGR: bare-coin-type branch yields SuiTag; symbol-path branch
+			// reads CoinRegistry (a Context.Service, not a stack-graph
+			// node, so it's invisible to the topo scheduler). Declaring
+			// SuiTag is enough to pin the edge.
+			upstreamKeys: [SuiTag.key],
 		},
 	);
 
@@ -331,6 +336,8 @@ const coinFromPackage = <P extends { readonly coins: Record<string, unknown> }>(
 			kind: 'action',
 			displayTitle: `coin.${witness}`,
 			display: (s) => ({ title: `coin.${s.name}`, primary: s.fullCoinType }),
+			// PGR: yields the publishing package first to force the edge.
+			upstreamKeys: [pkg],
 		},
 	);
 
@@ -341,6 +348,8 @@ const coinBuiltin = (name: BuiltinCoinName) =>
 		kind: 'action',
 		displayTitle: `coin.${name}`,
 		display: (s) => ({ title: `coin.${s.name}`, primary: s.fullCoinType }),
+		// PGR: builtin coins are pure constants — true leaves.
+		upstreamKeys: [],
 	});
 
 /** The `Coin` factory family. See module header for usage. */

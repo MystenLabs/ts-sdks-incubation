@@ -569,6 +569,7 @@ export const publishMove = <const Name extends string, TCaptured = undefined>(
 			const sourceHash = yield* hashMoveSources(sourcePath);
 			const cached = yield* withCache({
 				namespace: `publishMove/v2/${options.name}`,
+				label: `publishMove(${options.name})`,
 				chainId: sui.chainId,
 				inputs: Effect.succeed({ sourceHash, signer: signer.address }),
 				keyOverride: `publishMove/v2/${options.name}/${sourceHash}/${sui.chainId}`,
