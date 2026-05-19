@@ -45,7 +45,16 @@ const bob = Account('bob');
 // `token`, `deepbook`, `pyth`, `usdc`, `deepbook_margin`, `margin_liquidation`.
 // `gitFetch` caches the clones under `~/.devstack-cache/git-fetch/<hash>/`
 // so subsequent stacks reuse the same vendor tree.
-const vendor = VendorDeepbook({ ref: 'v7.0.0' });
+//
+// Repo override: the upstream Move source was renamed
+// `MystenLabs/deepbook` → `MystenLabs/deepbookv3`; the legacy URL now
+// 404s and the plugin's built-in default still points at the old name
+// (kept for backward-compat with pinned stacks that have local caches).
+// We pin the canonical URL here so a fresh CI checkout resolves.
+const vendor = VendorDeepbook({
+	ref: 'v7.0.0',
+	deepbookRepo: 'https://github.com/MystenLabs/deepbookv3',
+});
 
 // Long-lived Postgres container backing the indexer + server. Two
 // logical databases: `deepbook` (the indexer's primary write target,

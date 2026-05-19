@@ -8,7 +8,7 @@
 // Six packages, two source repos:
 //
 //   - `token`, `deepbook`, `deepbook_margin`, `margin_liquidation` —
-//     vendored from `MystenLabs/deepbook` (via the sandbox's
+//     vendored from `MystenLabs/deepbookv3` (via the sandbox's
 //     `external/deepbook` submodule mirror).
 //   - `pyth`, `usdc` — vendored from `MystenLabs/deepbook-sandbox`'s
 //     `packages/` directory.
@@ -44,7 +44,10 @@ import { stringifyCause } from '../../engine/stringify-cause.js';
 // Default upstream repos. Pinned ref `'main'` lets the cache invalidate
 // on every supervisor cycle when on a moving branch; tag refs cache
 // indefinitely.
-const DEFAULT_DEEPBOOK_REPO = 'https://github.com/MystenLabs/deepbook';
+// Upstream renamed `MystenLabs/deepbook` → `MystenLabs/deepbookv3` —
+// pinning to the canonical live repo so default `VendorDeepbook()`
+// calls keep working.
+const DEFAULT_DEEPBOOK_REPO = 'https://github.com/MystenLabs/deepbookv3';
 const DEFAULT_SANDBOX_REPO = 'https://github.com/MystenLabs/deepbook-sandbox';
 
 export interface VendoredDeepbookSources {
@@ -64,7 +67,7 @@ export interface VendorDeepbookOptions {
 	readonly name?: string;
 	/** Git ref (tag, branch, sha) to clone. Defaults to `'main'`. */
 	readonly ref?: string;
-	/** Override the deepbook upstream repo. Defaults to MystenLabs/deepbook. */
+	/** Override the deepbook upstream repo. Defaults to MystenLabs/deepbookv3. */
 	readonly deepbookRepo?: string;
 	/** Override the sandbox upstream repo. Defaults to MystenLabs/deepbook-sandbox. */
 	readonly sandboxRepo?: string;
