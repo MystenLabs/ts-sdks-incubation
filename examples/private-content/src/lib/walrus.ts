@@ -5,7 +5,12 @@
 // `localnetWalrusOptions` from the spread and configure
 // `WalrusClient` against the real network.
 
-import { localnetWalrusOptions } from '@mysten-incubation/devstack';
+// Import from the `/browser` subpath: the main `@mysten-incubation/devstack`
+// barrel pulls in node-only modules (engine/identity uses `node:path` +
+// `node:fs`), and Vite's externalized-node-module proxy throws on every
+// property access at module init — page blanks, no React render. The
+// `/browser` subpath re-exports only pure helpers.
+import { localnetWalrusOptions } from '@mysten-incubation/devstack/browser';
 import type { ClientWithCoreApi } from '@mysten/sui/client';
 import type { Signer } from '@mysten/sui/cryptography';
 import { WalrusClient } from '@mysten/walrus';

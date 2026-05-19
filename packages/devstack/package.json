@@ -39,6 +39,10 @@
 		"./vite": {
 			"types": "./dist/vite/index.d.mts",
 			"import": "./dist/vite/index.mjs"
+		},
+		"./browser": {
+			"types": "./dist/browser/index.d.mts",
+			"import": "./dist/browser/index.mjs"
 		}
 	},
 	"sideEffects": false,

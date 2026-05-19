@@ -74,4 +74,34 @@ const fixtures = defineConfig({
 	sourcemap: true,
 });
 
-export default [main, fixtures];
+// Browser-safe subpath build. Targets the browser so any accidental
+// `node:*` import surfaces as a build error here instead of a silent
+// "Module externalized for browser compatibility" page-blank at runtime
+// in apps that import via Vite. Keep the entry's downstream graph
+// strictly pure (no engine/, no compose/, no manifest-emit, no docker
+// shims) — see `src/browser/index.ts`'s header for what belongs here.
+//
+// `entry` uses a `{outName: srcPath}` form so the file lands at
+// `dist/browser/index.mjs` regardless of where tsdown would otherwise
+// stem-strip a single-entry path. `unbundle: false` is required —
+// otherwise rolldown emits a chunk file referencing
+// `services/walrus/options.mjs` which doesn't exist under the
+// browser-build's tree, and the subpath import 404s at runtime.
+const browser = defineConfig({
+	entry: { 'browser/index': 'src/browser/index.ts' },
+	format: 'esm',
+	dts: true,
+	outDir: 'dist',
+	unbundle: false,
+	treeshake: true,
+	platform: 'browser',
+	target: 'es2022',
+	sourcemap: true,
+	// Match the main/fixtures passes' `.mjs` extension so the package's
+	// `./browser` export (which points at `./dist/browser/index.mjs`)
+	// actually resolves. Without this rolldown defaults to `.js` and the
+	// subpath 404s.
+	outputOptions: { entryFileNames: '[name].mjs' },
+});
+
+export default [main, fixtures, browser];
