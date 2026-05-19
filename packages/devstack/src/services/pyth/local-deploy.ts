@@ -106,11 +106,27 @@ export const pythLocalDeploy = <const Name extends string = 'pyth'>(
 		throw new TypeError(`pythLocalDeploy: \`feeds\` must be non-empty`);
 	}
 
-	const publish =
+	// publishMove accepts either a literal path or an `Effect<string>`
+	// that resolves it at acquire time. The vendor path threads through
+	// the latter — yield the vendor tag inside the path effect, read the
+	// resolved `.pyth` subpath. Folds into the publishMove cache key the
+	// same way a literal path would (the resolved path participates in
+	// `sourceHash` / `chainId`).
+	const publishPath: string | Effect.Effect<string, never, any> | undefined =
 		opts.movePackagePath !== undefined
+			? opts.movePackagePath
+			: opts.vendor !== undefined
+				? Effect.gen(function* () {
+						const vendor = yield* opts.vendor!;
+						return vendor.pyth;
+					})
+				: undefined;
+
+	const publish =
+		publishPath !== undefined
 			? publishMove({
 					name: `${name}.publish` as const,
-					path: opts.movePackagePath,
+					path: publishPath,
 					signer: opts.signer,
 					capture: (changes) => {
 						const pythStateId = pickCreatedByType(changes, { suffix: PYTH_STATE_TYPE_SUFFIX });
@@ -137,8 +153,8 @@ export const pythLocalDeploy = <const Name extends string = 'pyth'>(
 					new PythError({
 						phase: 'publish',
 						message:
-							`pythLocalDeploy(${name}): \`movePackagePath\` is required ` +
-							`(vendor runtime flow deferred to a later phase).`,
+							`pythLocalDeploy(${name}): either \`movePackagePath\` or \`vendor\` ` +
+							`is required to publish the Pyth Move package.`,
 					}),
 				);
 			}
@@ -344,11 +360,15 @@ export const pythLocalDeploy = <const Name extends string = 'pyth'>(
 			}),
 			// Phase B (notes/parallel-graph-resolution.md §3.2): yields
 			// SuiTag, the signer Account ref, the publishMove tag, and
-			// iterates `dependsOn`. Lift them all into upstreams.
+			// iterates `dependsOn`. Lift them all into upstreams. When
+			// `opts.vendor` is set, the publishMove `path:` Effect yields
+			// the vendor tag too — lift it so the topo scheduler orders
+			// the vendor build before the publish runs.
 			upstreamKeys: [
 				SuiTag.key,
 				opts.signer,
 				...(publish !== undefined ? [publish] : []),
+				...(opts.vendor !== undefined ? [opts.vendor] : []),
 				...(opts.dependsOn ?? []),
 			],
 		},

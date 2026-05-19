@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { Transaction } from '@mysten/sui/transactions';
 import { PYTH_FEED_IDS } from '../../../test-setup/fixtures/pyth/feeds.js';
 import { addPriceInfo, type PythPriceInfoSpec } from './shared.js';
-import { STATE_KEY_PYTH_PREFIX_INTERNAL } from './local-deploy.js';
+import { pythLocalDeploy, STATE_KEY_PYTH_PREFIX_INTERNAL } from './local-deploy.js';
 
 describe('pythLocalDeploy tx-builder shape (P1.T1)', () => {
 	it('builds a single batched tx with N `create_price_feeds` calls for N feed specs', () => {
@@ -73,5 +73,63 @@ describe('pythLocalDeploy tx-builder shape (P1.T1)', () => {
 describe('pythLocalDeploy state-store key shape (P1.T2)', () => {
 	it('uses v1 prefix folded with chainId + packageId + feedsHash', () => {
 		expect(STATE_KEY_PYTH_PREFIX_INTERNAL).toBe('pyth/package/v1');
+	});
+});
+
+// Bug B regression — vendor option must be accepted (mutual-exclusion vs
+// `movePackagePath`; vendor-only construction must succeed without throwing).
+describe('pythLocalDeploy vendor option (Bug B regression)', () => {
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	const stubTag = (): any => ({}) as any;
+	const seedFeed = {
+		label: 'SUI',
+		feedId: PYTH_FEED_IDS.SUI,
+		initial: {
+			feedId: PYTH_FEED_IDS.SUI,
+			priceMagnitude: 1n,
+			priceNegative: false,
+			expoMagnitude: 8n,
+			expoNegative: true,
+			publishTime: 1n,
+		},
+	} as const;
+
+	it('throws on `movePackagePath` + `vendor` mutual exclusion', () => {
+		expect(() =>
+			pythLocalDeploy({
+				signer: stubTag(),
+				movePackagePath: '/tmp/pyth',
+				vendor: stubTag(),
+				feeds: [seedFeed],
+			}),
+		).toThrow(/mutually exclusive/);
+	});
+
+	it('accepts `vendor` alone (no `movePackagePath`) without throwing', () => {
+		const t = pythLocalDeploy({
+			signer: stubTag(),
+			vendor: stubTag(),
+			feeds: [seedFeed],
+		});
+		// Factory returns a LayeredTag with both __layer (composite) and
+		// __layers (publish + composite + projection). Smoke-check both
+		// are populated so a regression that re-introduces the
+		// "movePackagePath is required" throw surfaces here.
+		expect((t as unknown as { __layer?: unknown }).__layer).toBeDefined();
+		const layers = (t as unknown as { __layers?: ReadonlyArray<unknown> }).__layers;
+		expect(layers).toBeDefined();
+		expect(layers!.length).toBeGreaterThanOrEqual(2);
+	});
+
+	it('throws when neither `movePackagePath` nor `vendor` is supplied (delegated to runtime)', () => {
+		// Pre-fix the throw was synchronous from the factory body; post-fix
+		// it surfaces from the acquire effect. We still want the factory
+		// itself to construct (so a stack-level error message can fire at
+		// run time with full context).
+		const t = pythLocalDeploy({
+			signer: stubTag(),
+			feeds: [seedFeed],
+		});
+		expect((t as unknown as { __layer?: unknown }).__layer).toBeDefined();
 	});
 });

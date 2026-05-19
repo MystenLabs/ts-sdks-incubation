@@ -233,7 +233,54 @@ export const deepbookMarketMaker = <const Name extends string>(
 					levelSpacingBps: strategy.levelSpacingBps ?? 100,
 				});
 
-			const tickOnce = Effect.gen(function* () {
+			// Per-tick cancel for pools with a cached/reused BalanceManager.
+			// Run as a STANDALONE transaction (separate from the place tx).
+			//
+			// Why split? `cancel_all_orders` -> `process_cancel` -> `vault.settle_balance_manager`
+			// can abort the *entire* tx with `EBalanceManagerBalanceTooLow`
+			// (abort code 3 in `balance_manager::withdraw_with_proof`) when
+			// the account's `owed` side is non-zero (epoch-rolled volumes,
+			// rebate accounting, etc.) and the BM lacks the matching balance.
+			// On a `pnpm dev` resume that surfaced as: cache-hit pulls the
+			// previously-minted BM, the tick tries to cancel stale orders
+			// from the prior boot, the abort kills the whole tick (cancel +
+			// proof + place), the initial-tick startup gate fails, the
+			// supervisor errors out.
+			//
+			// Splitting makes the cancel best-effort: a stuck cancel just
+			// leaves the prior boot's POST_ONLY orders on the book (they're
+			// at the same grid offsets we'd re-post anyway). Placement still
+			// proceeds and the maker stays live.
+			const cancelStaleOrders = Effect.gen(function* () {
+				const reused = quotedPools.filter(({ spec }) => balanceManagerIds.has(spec.name));
+				if (reused.length === 0) return;
+
+				const t = new Transaction();
+				t.setGasBudget(2_000_000_000n);
+
+				for (const { spec, pool } of reused) {
+					const bm = t.object(balanceManagerIds.get(spec.name)!);
+					const proof = t.moveCall({
+						target: `${core.packageId}::balance_manager::generate_proof_as_owner`,
+						arguments: [bm],
+					});
+					t.moveCall({
+						target: `${core.packageId}::pool::cancel_all_orders`,
+						typeArguments: [pool.baseType, pool.quoteType],
+						arguments: [t.object(pool.poolId), bm, proof, t.object(SUI_CLOCK_OBJECT_ID)],
+					});
+				}
+
+				yield* signer.signAndExecute(t).pipe(
+					Effect.catch((cause: unknown) =>
+						Effect.logWarning(
+							`deepbookMarketMaker(${options.name}): cancel-stale tx failed (continuing with place tx): ${stringifyCause(cause)}`,
+						),
+					),
+				);
+			}).pipe(Effect.withSpan('DeepbookMarketMakerCancel'));
+
+			const placeOrders = Effect.gen(function* () {
 				const t = new Transaction();
 				t.setGasBudget(2_000_000_000n);
 
@@ -304,15 +351,6 @@ export const deepbookMarketMaker = <const Name extends string>(
 				for (const { spec, pool } of quotedPools) {
 					const bm = bmArgs.get(spec.name)!;
 					const proof = proofArgs.get(spec.name)!;
-					const wasCreated = newlyCreated.has(spec.name);
-
-					if (!wasCreated) {
-						t.moveCall({
-							target: `${core.packageId}::pool::cancel_all_orders`,
-							typeArguments: [pool.baseType, pool.quoteType],
-							arguments: [t.object(pool.poolId), bm, proof, t.object(SUI_CLOCK_OBJECT_ID)],
-						});
-					}
 
 					// C9: re-resolve the dynamic fields each tick.
 					const mid = typeof spec.midPrice === 'function' ? spec.midPrice() : spec.midPrice;
@@ -412,6 +450,62 @@ export const deepbookMarketMaker = <const Name extends string>(
 							.pipe(Effect.ignore);
 					}
 				}
+			}).pipe(Effect.withSpan('DeepbookMarketMakerPlace'));
+
+			// Detect the resume-time `EBalanceManagerBalanceTooLow` MoveAbort
+			// (code 3 in `balance_manager::withdraw_with_proof`). The Move
+			// abort surfaces as a `SignAndExecuteError` whose message contains
+			// the package-qualified function string + abort code. We match the
+			// stable substring rather than the function-id encoding so a future
+			// SDK that reformats the error message still triggers the recovery.
+			//
+			// When this fires after a `cancel_all_orders` ran cleanly, the BM
+			// is in an inconsistent state for this stack's purposes (likely
+			// fees/locked-balance ledger drift between snapshots): we can't
+			// withdraw enough to lock a fresh order. The pragmatic dev-loop
+			// recovery is to drop the cached BMs, mint fresh ones, and let the
+			// next tick re-deposit + re-place from scratch. Locked funds on
+			// the old BM stay on chain (no economic loss on a dev localnet —
+			// `wipe` recycles state). Real-network market-making is out of
+			// scope for `deepbookMarketMaker` (no rebalancer, no inventory
+			// strategy, no slippage controls) so this trade-off is unsurprising.
+			const isBalanceTooLowAbort = (cause: unknown): boolean => {
+				const msg = stringifyCause(cause);
+				return (
+					msg.includes('balance_manager::withdraw_with_proof') && msg.includes('abort code: 3')
+				);
+			};
+
+			const recreateBalanceManagers = Effect.gen(function* () {
+				for (const { spec } of quotedPools) {
+					if (balanceManagerIds.has(spec.name)) {
+						yield* Effect.logInfo(
+							`deepbookMarketMaker(${options.name}): invalidating cached BalanceManager for ${spec.name} (BalanceTooLow on resume — will re-mint with fresh inventory)`,
+						);
+						balanceManagerIds.delete(spec.name);
+						yield* state.remove(cacheKeyFor(spec.name)).pipe(Effect.ignore);
+					}
+				}
+			});
+
+			const tickOnce = Effect.gen(function* () {
+				yield* cancelStaleOrders;
+				yield* placeOrders.pipe(
+					// If the place tx hits the dev-resume BalanceTooLow abort,
+					// drop the cached BMs and retry place — `newlyCreated` will
+					// then mint fresh BMs with pre-deposits. Only the initial
+					// resume tick can trip this (steady-state ticks have a
+					// just-cancelled BM with its full deposit).
+					Effect.catchTag('DeepbookError', (err) => {
+						if (!isBalanceTooLowAbort(err.cause)) {
+							return Effect.fail(err);
+						}
+						return Effect.gen(function* () {
+							yield* recreateBalanceManagers;
+							yield* placeOrders;
+						});
+					}),
+				);
 			}).pipe(Effect.withSpan('DeepbookMarketMakerTick'));
 
 			// Transient failures (a single bad tx, a temporarily-unreachable

@@ -203,16 +203,29 @@ export const deepbookLocalDeploy = <
 	// scoped acquire to chain its package id + captured registry/admin-cap
 	// ids forward into the create-pool transactions. Built lazily so the
 	// producer fails at start (not at module-eval) when neither
-	// `movePackagePath` nor `vendor` is supplied. When `vendor` is the
-	// source, the path is read from the resolved vendor Ref at acquire
-	// time (see body below); the publish tag construction needs a path
-	// up-front, so we use a sentinel `.<vendor>` placeholder that the
-	// dynamic vendor branch shortcuts.
-	const publish =
+	// `movePackagePath` nor `vendor` is supplied.
+	//
+	// `publishMove` accepts either a literal path or an `Effect<string>`
+	// that resolves it at acquire time. The vendor option threads through
+	// the latter: yield the vendor tag inside the path effect and read
+	// `(yield* vendor).deepbook` as the Move package path. The resolved
+	// path participates in publishMove's `(sourceHash, chainId)` cache
+	// key the same way a literal path would.
+	const publishPath: string | Effect.Effect<string, never, any> | undefined =
 		options.movePackagePath !== undefined
+			? options.movePackagePath
+			: options.vendor !== undefined
+				? Effect.gen(function* () {
+						const vendor = yield* options.vendor!;
+						return vendor.deepbook;
+					})
+				: undefined;
+
+	const publish =
+		publishPath !== undefined
 			? publishMove({
 					name: `${name}.publish` as const,
-					path: options.movePackagePath,
+					path: publishPath,
 					signer: options.signer,
 					capture: (changes) => {
 						const registryId = pickCreatedByType(changes, {
@@ -261,22 +274,14 @@ export const deepbookLocalDeploy = <
 			yield* Effect.annotateCurrentSpan({ 'sui.chainId': sui.chainId });
 
 			if (publish === undefined) {
-				// `vendor` option support is wired (type-level + option
-				// validation) in Phase 0; the runtime wiring through
-				// publishMove is deferred to Phase 4 when the wallet
-				// migration would consume it. Today, callers should keep
-				// using `movePackagePath` until the vendor flow lands.
 				return yield* Effect.fail(
 					new DeepbookError({
 						phase: 'publish',
 						message:
 							`deepbookLocalDeploy(${name}): either \`movePackagePath\` or \`vendor\` ` +
 							`is required to publish the deepbook-v3 Move package. ` +
-							(options.vendor !== undefined
-								? `(\`vendor\` runtime flow is deferred to Phase 4; use \`movePackagePath\` ` +
-									`with the materialized vendor.deepbook directory.)`
-								: 'Vendor the source (e.g. via `gitFetch` or `vendorDeepbook(...)`) ' +
-									'and pass the directory path.'),
+							'Vendor the source (e.g. via `gitFetch` or `vendorDeepbook(...)`) ' +
+							'and pass the directory path.',
 					}),
 				);
 			}
@@ -616,10 +621,15 @@ export const deepbookLocalDeploy = <
 			// Each pool's `base`/`quote` may be a `LayeredTag` (e.g.
 			// `Coin.fromPackage(usdc, 'MOCK_USDC')`) that the body yields
 			// via `resolveCoinRef`. Lift those tags into upstreams too.
+			//
+			// When `opts.vendor` is set, the inner publishMove's `path:`
+			// Effect yields the vendor tag — lift it so the topo
+			// scheduler orders the vendor build before the publish runs.
 			upstreamKeys: [
 				SuiTag.key,
 				options.signer,
 				...(publish !== undefined ? [publish] : []),
+				...(options.vendor !== undefined ? [options.vendor] : []),
 				...specs.flatMap((s) =>
 					[s.base, s.quote].filter((c): c is AnyCoinTag => typeof c !== 'string'),
 				),
