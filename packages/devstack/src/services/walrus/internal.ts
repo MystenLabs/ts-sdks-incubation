@@ -38,6 +38,7 @@ import { EndpointName } from '../../runtime/endpoint-names.js';
 import { servicePath } from '../../engine/service-paths.js';
 import { StateStore } from '../../engine/state-store.js';
 import { withCache } from '../../engine/cache.js';
+import { ChainProbe } from '../../engine/chain-probe.js';
 import { type LayeredTag } from '../../advanced/tag.js';
 import { WalrusError } from '../../engine/errors.js';
 import type { Account } from '../../engine/shared.js';
@@ -228,8 +229,12 @@ export const acquireLocalCluster = (args: {
 		// -------------------------------------------------------------
 		// 0. Yield Sui — pins the dependency edge + gives us rpcUrl /
 		//    client for register, exchange-discovery, seed-accounts.
+		//    ChainProbe is in the same scope (folded into Sui's layer
+		//    ring) and supplies the typed verify accessor for the
+		//    deploy cache block below.
 		// -------------------------------------------------------------
 		const sui = yield* SuiTag;
+		const chain = yield* ChainProbe;
 		const identity = yield* Identity;
 		const { subnet: walrusSubnet, prefix: walrusSubnetPrefix } = subnetForStack(
 			identity.app,
@@ -379,19 +384,29 @@ export const acquireLocalCluster = (args: {
 						);
 						return undefined;
 					}
-					const systemOk = yield* probeWalrusObject(sui.client, cached.systemObject);
-					if (!systemOk) {
+					// Multi-object resolution rolls through
+					// `chain.objectsMatchTypes` with a permissive matcher: we
+					// don't statically know the system/staking Move types
+					// (upstream walrus emits them under the deploy-time
+					// `walrusPackageId`, which is itself part of the cached
+					// blob we're verifying). The substrate's typed accessor
+					// still wins the B9 bug-class collapse — a single helper
+					// expresses "every id resolves" instead of the previous
+					// per-id loop, and the SDK response shape parse lives
+					// inside `ChainProbeLive` so a `{type: undefined}` drift
+					// can't silently slip through to either probe.
+					const ok = yield* chain.objectsMatchTypes(
+						[
+							{ objectId: cached.systemObject, expectedType: '' },
+							{ objectId: cached.stakingObject, expectedType: '' },
+						],
+						() => true,
+					);
+					if (!ok) {
 						yield* Effect.logWarning(
-							`walrus(${args.name}): cached systemObject ${cached.systemObject} not found ` +
-								`on chain — invalidating deploy cache and re-deploying.`,
-						);
-						return undefined;
-					}
-					const stakingOk = yield* probeWalrusObject(sui.client, cached.stakingObject);
-					if (!stakingOk) {
-						yield* Effect.logWarning(
-							`walrus(${args.name}): cached stakingObject ${cached.stakingObject} not found ` +
-								`on chain — invalidating deploy cache and re-deploying.`,
+							`walrus(${args.name}): cached systemObject (${cached.systemObject}) or ` +
+								`stakingObject (${cached.stakingObject}) not found on chain — ` +
+								`invalidating deploy cache and re-deploying.`,
 						);
 						return undefined;
 					}
@@ -749,7 +764,7 @@ const seedWalForAccounts = (args: {
 	exchange: ExchangeState;
 	paymentMist: bigint;
 	walrusPackageId: string;
-}): Effect.Effect<void, WalrusError, SuiTag | StateStore> =>
+}): Effect.Effect<void, WalrusError, SuiTag | StateStore | ChainProbe> =>
 	Effect.fn('walrus.seed-accounts')(function* () {
 		for (const account of args.accounts) {
 			yield* swapSuiForWalCached({
@@ -766,27 +781,29 @@ const swapSuiForWalCached = (args: {
 	exchange: ExchangeState;
 	paymentMist: bigint;
 	walrusPackageId: string;
-}): Effect.Effect<void, WalrusError, SuiTag | StateStore> =>
+}): Effect.Effect<void, WalrusError, SuiTag | StateStore | ChainProbe> =>
 	Effect.gen(function* () {
 		const sui = yield* SuiTag;
+		const chain = yield* ChainProbe;
 		yield* Effect.annotateCurrentSpan({
 			'walrus.seed.account': args.account.name,
 			'walrus.seed.address': args.account.address,
 		});
 		// `withCache` discipline — verify confirms the cached swap
-		// transaction still resolves on chain. Probing the seed account's
-		// WAL balance was tried first but is fragile: the on-chain WAL
-		// coin type lives in a SEPARATE `wal` package from the `walrus`
-		// system package (the upstream `walrus-deploy` tool publishes
-		// 4 packages, but only the `walrus` system id is captured in
-		// the deploy output). Reconstructing `${walrusPackageId}::wal::WAL`
-		// gave a non-existent coin type, so listCoins always returned
-		// zero balance and verify-fail fired on every warm restart.
-		// Probing the digest sidesteps the walType-derivation issue
-		// entirely: a regenesis flips chainId (already in the cache key)
-		// and the cached digest also no longer resolves; either way we
-		// re-swap. The trade-off is we no longer catch a manually-drained
-		// balance — acceptable in dev, and the re-swap cost is small.
+		// transaction still resolves on chain via `ChainProbe.getTransaction`
+		// (RS2: probe stable identifiers, not derived shapes). Probing the
+		// seed account's WAL balance was tried first but is fragile: the
+		// on-chain WAL coin type lives in a SEPARATE `wal` package from
+		// the `walrus` system package (the upstream `walrus-deploy` tool
+		// publishes 4 packages, but only the `walrus` system id is captured
+		// in the deploy output). Reconstructing `${walrusPackageId}::wal::WAL`
+		// gave a non-existent coin type, so listCoins always returned zero
+		// balance and verify-fail fired on every warm restart. Probing the
+		// digest sidesteps the walType-derivation issue entirely: a
+		// regenesis flips chainId (already in the cache key) and the cached
+		// digest also no longer resolves; either way we re-swap. The
+		// trade-off is we no longer catch a manually-drained balance —
+		// acceptable in dev, and the re-swap cost is small.
 		yield* withCache({
 			namespace: 'walrus/seed-wal',
 			chainId: sui.chainId,
@@ -796,7 +813,8 @@ const swapSuiForWalCached = (args: {
 			}),
 			verify: (cached: CachedSeedWalSwap) =>
 				Effect.gen(function* () {
-					const exists = yield* probeTxDigest(cached.digest);
+					const tx = yield* chain.getTransaction(cached.digest);
+					const exists = tx !== undefined;
 					yield* Effect.annotateCurrentSpan({
 						'walrus.seed.digest': cached.digest,
 						'walrus.seed.digestExists': exists,
@@ -813,34 +831,6 @@ const swapSuiForWalCached = (args: {
 			}),
 		});
 		void args.walrusPackageId;
-	});
-
-// Probe whether a transaction digest still resolves on chain. Returns
-// `true` when the cached swap tx is found, `false` on any error
-// (regenesis dropped the tx, transient RPC hiccup). Cheap — one gRPC
-// roundtrip — and stable across resumes because the chainId in the
-// cache key already gates regenesis cases; the digest probe just
-// belt-and-braces verifies the same chain still carries the tx.
-const probeTxDigest = (digest: string): Effect.Effect<boolean, never, SuiTag> =>
-	Effect.gen(function* () {
-		const sui = yield* SuiTag;
-		// Defensive: test mocks may satisfy `Sui` with a minimal `client`
-		// (`.core` only) or omit `getTransaction`. Treat absence the same
-		// way an RPC error would — return `false` so verify-fail triggers
-		// a safe re-swap.
-		const core = (sui.client as unknown as { readonly core?: unknown }).core;
-		const getTransaction = (core as { readonly getTransaction?: unknown } | undefined)
-			?.getTransaction;
-		if (typeof getTransaction !== 'function') {
-			return false;
-		}
-		return yield* Effect.tryPromise({
-			try: () => sui.client.core.getTransaction({ digest }),
-			catch: (cause) => cause,
-		}).pipe(
-			Effect.as(true),
-			Effect.orElseSucceed(() => false),
-		);
 	});
 
 const swapSuiForWal = (
@@ -894,32 +884,10 @@ const swapSuiForWal = (
 // `Sui.faucet?.container` directly — no `localhost →
 // host.docker.internal` rewrite needed, because containers now reach
 // sui via the per-stack docker network's `sui-localnet` DNS alias.
-
-/** Probe whether `objectId` resolves on chain. Returns `true` on
- *  successful `getObject`; `false` on any failure (object missing, RPC
- *  transient, network down). Used by the walrus deploy + register
- *  withCache verify probes (§4.2 of `notes/parallel-graph-resolution.md`)
- *  so a stale cache entry — chain regenesis, snapshot mismatch — gets
- *  invalidated cleanly instead of feeding downstream consumers an
- *  unresolvable system/staking id.
- *
- *  Conservatively falls back to `false` on any failure: over-deriving
- *  on the next produce cycle is cheaper than booting against a broken
- *  cache entry. */
-const probeWalrusObject = (
-	// `Sui['client']` typed loosely (the SDK class isn't re-exported from
-	// this module's import surface). The probe only touches
-	// `client.core.getObject({objectId})` which is part of the stable
-	// gRPC surface.
-	client: {
-		readonly core: { readonly getObject: (args: { objectId: string }) => Promise<unknown> };
-	},
-	objectId: string,
-): Effect.Effect<boolean> =>
-	Effect.tryPromise({
-		try: () => client.core.getObject({ objectId }),
-		catch: (cause) => cause,
-	}).pipe(
-		Effect.as(true),
-		Effect.orElseSucceed(() => false),
-	);
+//
+// The previous `probeWalrusObject(client, objectId)` and `probeTxDigest`
+// helpers were retired in favour of `ChainProbe.objectsMatchTypes` (deploy
+// verify) and `ChainProbe.getTransaction` (seed-wal verify). The
+// Schema-validated typed accessors collapse bug class B9 / B1: every verify
+// site reads the SDK response through one parser instead of the previously
+// per-site `as unknown as {object?: {type?: unknown}}` casts.
