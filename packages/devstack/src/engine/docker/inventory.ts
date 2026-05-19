@@ -871,3 +871,93 @@ export const renderRouterRow = (info: RouterInfo): string => {
 			: `${info.activeBackends} backend${info.activeBackends === 1 ? '' : 's'} across ${info.apps.length} app${info.apps.length === 1 ? '' : 's'}`;
 	return `  ${ROUTER_CONTAINER}  —  ${stateWord}, ${usedBy}`;
 };
+
+// -----------------------------------------------------------------------------
+// Best-effort by-label removal — `removeDockerByLabel`
+// -----------------------------------------------------------------------------
+//
+// `wipe` and `prune` need to "tear down everything labelled
+// devstack.app=<app>,devstack.stack=<stack>" for each of container /
+// network / volume. Pre-CC-6 these were three near-verbatim copies
+// living in `cli/commands/_prune-stack.ts`. The walk is identical
+// modulo the docker subcommand:
+//
+//   container: `docker ps -aq` + `docker rm -f <id>`
+//   network:   `docker network ls -q` + `docker network rm <id>`
+//   volume:    `docker volume ls -q` + `docker volume rm <name>`
+//
+// All three are best-effort: a failure on one id (e.g. a network with
+// a stray endpoint we couldn't kill) doesn't abort the rest. The
+// returned array carries only the ids/names that actually removed.
+
+export type DockerLabelKind = 'container' | 'network' | 'volume';
+
+interface KindSpec {
+	readonly lsArgs: ReadonlyArray<string>;
+	readonly rmArgs: (id: string) => ReadonlyArray<string>;
+}
+
+const kindSpec = (kind: DockerLabelKind): KindSpec => {
+	switch (kind) {
+		case 'container':
+			return {
+				lsArgs: ['ps', '-aq'],
+				rmArgs: (id) => ['rm', '-f', id],
+			};
+		case 'network':
+			return {
+				lsArgs: ['network', 'ls', '-q'],
+				rmArgs: (id) => ['network', 'rm', id],
+			};
+		case 'volume':
+			return {
+				lsArgs: ['volume', 'ls', '-q'],
+				rmArgs: (name) => ['volume', 'rm', name],
+			};
+	}
+};
+
+/**
+ * List + remove every docker resource of `kind` carrying the
+ * `devstack.app=<app>` and `devstack.stack=<stack>` labels. Returns
+ * the ids/names that successfully removed; failures are silently
+ * elided so a single stuck resource doesn't block the rest of the
+ * teardown.
+ *
+ * Order across kinds matters at the call-site: containers must be
+ * removed before networks (docker rejects `network rm` against a
+ * network with attached endpoints) and before volumes (docker
+ * rejects `volume rm` against a volume mounted into a live
+ * container).
+ */
+export const removeDockerByLabel = (
+	spawner: Spawner,
+	kind: DockerLabelKind,
+	app: string,
+	stack: string,
+): Effect.Effect<ReadonlyArray<string>> =>
+	Effect.gen(function* () {
+		const spec = kindSpec(kind);
+		const lsCmd = ChildProcess.make('docker', [
+			...spec.lsArgs,
+			'--filter',
+			`label=${DockerLabel.APP}=${app}`,
+			'--filter',
+			`label=${DockerLabel.STACK}=${stack}`,
+		]);
+		const idsText = yield* spawner.string(lsCmd).pipe(Effect.orElseSucceed(() => ''));
+		const ids = idsText
+			.split('\n')
+			.map((s) => s.trim())
+			.filter((s) => s.length > 0);
+		const removed: Array<string> = [];
+		for (const id of ids) {
+			const rmCmd = ChildProcess.make('docker', [...spec.rmArgs(id)]);
+			const ok = yield* spawner.string(rmCmd).pipe(
+				Effect.map(() => true),
+				Effect.orElseSucceed(() => false),
+			);
+			if (ok) removed.push(id);
+		}
+		return removed as ReadonlyArray<string>;
+	});

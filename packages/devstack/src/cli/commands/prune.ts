@@ -44,6 +44,7 @@ import {
 } from '../../engine/docker/inventory.js';
 import { ROUTER_CONTAINER, ROUTER_NETWORK } from '../../engine/docker/router.js';
 import { Registry } from '../../engine/registry.js';
+import { collectReferencedChainIds } from '../../engine/sui-fork/cache-inventory.js';
 import { AlreadyReportedError, failAlreadyReported } from '../already-reported.js';
 import { emitEnvelope, jsonModeEnabled, successEnvelope } from '../envelope.js';
 import { resolveForkCacheRoot } from '../stack-resolution.js';
@@ -324,6 +325,9 @@ const runBulkMode = (input: {
 // `.devstack/stacks/<stack>/sui-fork/meta.json`'s recorded chainId +
 // upstream (the upstream literal doubles as a fallback cache key for
 // meta.json files written before chainId was persisted there).
+//
+// The referenced-set walk is shared with `fork cache list/prune`; see
+// `engine/sui-fork/cache-inventory.ts` (CC-8).
 const maybePruneForkCache = (
 	enabled: boolean,
 	dryRun: boolean,
@@ -332,26 +336,7 @@ const maybePruneForkCache = (
 		if (!enabled) return;
 		const cacheRoot = resolveForkCacheRoot();
 		const stateRoot = cacheRoot.replace(/\/sui-fork-cache$/, '');
-		const referenced = yield* Effect.promise(async () => {
-			const out = new Set<string>();
-			try {
-				const stacksDir = `${stateRoot}/stacks`;
-				const stacks = await nodeFs.readdir(stacksDir);
-				for (const stack of stacks) {
-					try {
-						const meta = await nodeFs.readFile(`${stacksDir}/${stack}/sui-fork/meta.json`, 'utf8');
-						const parsed = JSON.parse(meta) as { upstream?: string; chainId?: string };
-						if (parsed.chainId !== undefined) out.add(parsed.chainId);
-						if (parsed.upstream !== undefined) out.add(parsed.upstream);
-					} catch {
-						// best-effort
-					}
-				}
-			} catch {
-				// no stacks dir; referenced stays empty
-			}
-			return out;
-		});
+		const referenced = yield* Effect.promise(() => collectReferencedChainIds(stateRoot));
 		const entries = yield* Effect.promise(async () => {
 			try {
 				return await nodeFs.readdir(cacheRoot);

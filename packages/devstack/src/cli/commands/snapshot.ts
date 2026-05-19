@@ -18,7 +18,6 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-import { promises as nodeFs } from 'node:fs';
 import { join as joinPath } from 'node:path';
 import { Console, Effect, FileSystem, Option, Path } from 'effect';
 import { Argument, Command, Flag } from 'effect/unstable/cli';
@@ -40,6 +39,7 @@ import {
 	stateDir,
 } from '../stack-resolution.js';
 import { DockerLabel } from '../../engine/identity.js';
+import { safeDirSize } from '../../engine/fs-utils.js';
 import { list as listSnapshots, restore, snapshot } from '../../engine/snapshot.js';
 
 // Action-time reads of DEVSTACK_STATE_DIR — see manifest.ts for the
@@ -167,23 +167,6 @@ const appFlag = Flag.string('app').pipe(
 // state lives). Above it, the snapshot artifact balloons faster than
 // the rebuild cost saved, so we opt out by default with a printed hint.
 const FORK_DATA_DEFAULT_INCLUDE_THRESHOLD = 1 * 1024 * 1024 * 1024;
-
-const safeDirSize = async (root: string): Promise<number> => {
-	try {
-		const stat = await nodeFs.stat(root);
-		if (stat.isDirectory()) {
-			let total = 0;
-			const entries = await nodeFs.readdir(root);
-			for (const entry of entries) {
-				total += await safeDirSize(joinPath(root, entry));
-			}
-			return total;
-		}
-		return stat.size;
-	} catch {
-		return 0;
-	}
-};
 
 const saveCommand = Command.make(
 	'save',

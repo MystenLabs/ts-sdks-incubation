@@ -21,7 +21,6 @@ import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { Command, Flag } from 'effect/unstable/cli';
 import { createServer, Socket } from 'node:net';
 import * as nodeFsSync from 'node:fs';
-import { promises as nodeFs } from 'node:fs';
 import {
 	collectInventory,
 	formatBytes,
@@ -29,6 +28,7 @@ import {
 	renderTotals,
 	totalsFor,
 } from '../../engine/docker/inventory.js';
+import { safeDirSize } from '../../engine/fs-utils.js';
 import { isHolderLive } from '../../engine/process-liveness.js';
 import * as nodePath from 'node:path';
 import * as nodeOs from 'node:os';
@@ -375,7 +375,7 @@ const checkForkDataSizes = async (stacks: ReadonlyArray<ForkStackEntry>): Promis
 	}
 	const rows: Array<string> = [];
 	for (const s of stacks) {
-		const bytes = await safeDataDirSize(s.dataDir);
+		const bytes = await safeDirSize(s.dataDir);
 		rows.push(`${s.stack}=${formatBytes(bytes)}`);
 	}
 	return {
@@ -384,23 +384,6 @@ const checkForkDataSizes = async (stacks: ReadonlyArray<ForkStackEntry>): Promis
 		required: false,
 		detail: rows.join(', '),
 	};
-};
-
-const safeDataDirSize = async (root: string): Promise<number> => {
-	try {
-		const stat = await nodeFs.stat(root);
-		if (stat.isDirectory()) {
-			let total = 0;
-			const entries = await nodeFs.readdir(root);
-			for (const entry of entries) {
-				total += await safeDataDirSize(joinPath(root, entry));
-			}
-			return total;
-		}
-		return stat.size;
-	} catch {
-		return 0;
-	}
 };
 
 const renderCheck = (c: Check): string => {

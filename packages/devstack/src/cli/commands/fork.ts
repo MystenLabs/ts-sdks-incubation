@@ -48,6 +48,10 @@ import {
 	readForkMeta,
 	resolveForkMetaPath as resolveEngineForkMetaPath,
 } from '../../engine/sui-fork/meta.js';
+import {
+	collectCacheEntries,
+	collectReferencedChainIds,
+} from '../../engine/sui-fork/cache-inventory.js';
 import { formatBytes } from '../../engine/docker/inventory.js';
 import { readStackContext } from '../../runtime/read-stack-context.js';
 import { AlreadyReportedError, failAlreadyReported } from '../already-reported.js';
@@ -758,90 +762,9 @@ const seedCommand = Command.make('seed').pipe(
 // ---------------------------------------------------------------------------
 // `fork cache list`
 // ---------------------------------------------------------------------------
-
-interface CacheEntry {
-	readonly chainId: string;
-	readonly path: string;
-	readonly bytes: number;
-	readonly referenced: boolean;
-}
-
-const safeStatSize = async (path: string): Promise<number> => {
-	try {
-		const stat = await nodeFs.stat(path);
-		if (stat.isDirectory()) {
-			let total = 0;
-			const entries = await nodeFs.readdir(path);
-			for (const entry of entries) {
-				total += await safeStatSize(joinPath(path, entry));
-			}
-			return total;
-		}
-		return stat.size;
-	} catch {
-		return 0;
-	}
-};
-
-const collectCacheEntries = async (
-	cacheRoot: string,
-	referencedChainIds: ReadonlySet<string>,
-): Promise<ReadonlyArray<CacheEntry>> => {
-	let entries: ReadonlyArray<string>;
-	try {
-		entries = await nodeFs.readdir(cacheRoot);
-	} catch {
-		return [];
-	}
-	const out: Array<CacheEntry> = [];
-	for (const entry of entries) {
-		const full = joinPath(cacheRoot, entry);
-		const stat = await nodeFs.stat(full).catch(() => undefined);
-		if (stat === undefined || !stat.isDirectory()) continue;
-		const bytes = await safeStatSize(full);
-		out.push({
-			chainId: entry,
-			path: full,
-			bytes,
-			referenced: referencedChainIds.has(entry),
-		});
-	}
-	return out;
-};
-
-/** Walk every per-stack meta.json under `.devstack/stacks/* /sui-fork/`
- *  collecting the set of referenced chain ids. For now we approximate
- *  the chainId from the meta's upstream (mainnet → mainnet's real chain
- *  id) since meta.json doesn't carry chainId directly. We use the
- *  meta's `upstream` as the cache key for the heuristic. */
-const collectReferencedChainIds = async (stateRoot: string): Promise<ReadonlySet<string>> => {
-	const stacksDir = joinPath(stateRoot, 'stacks');
-	const out = new Set<string>();
-	let stacks: ReadonlyArray<string>;
-	try {
-		stacks = await nodeFs.readdir(stacksDir);
-	} catch {
-		return out;
-	}
-	for (const stack of stacks) {
-		const metaPath = joinPath(stacksDir, stack, 'sui-fork', 'meta.json');
-		try {
-			const raw = await nodeFs.readFile(metaPath, 'utf8');
-			const parsed = JSON.parse(raw) as {
-				upstream?: string;
-				chainId?: string;
-			};
-			if (parsed.chainId !== undefined) out.add(parsed.chainId);
-			// Also fold the upstream name in as a fallback so a cache
-			// dir keyed by `'mainnet'` is treated as referenced even
-			// when chainId wasn't recorded.
-			if (parsed.upstream !== undefined) out.add(parsed.upstream);
-		} catch {
-			// best-effort
-		}
-	}
-	return out;
-};
+// Cache-entry shape + walks moved to
+// `engine/sui-fork/cache-inventory.ts`. CC-8 — `prune.ts:maybePruneForkCache`
+// reuses the same helpers.
 
 const cacheListCommand = Command.make('list', { json: jsonFlag }, ({ json }) =>
 	Effect.gen(function* () {

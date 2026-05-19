@@ -13,7 +13,7 @@
 import { Effect, FileSystem, Option, Schema } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { join as joinPath } from 'node:path';
-import { DockerLabel } from '../../engine/identity.js';
+import { removeDockerByLabel } from '../../engine/docker/inventory.js';
 import { isHolderLive } from '../../engine/process-liveness.js';
 import { Registry, type RegistryNetwork } from '../../engine/registry.js';
 import { resolveStateDir } from '../stack-resolution.js';
@@ -112,102 +112,10 @@ export interface PruneStackResult {
 	readonly removedImages: ReadonlyArray<string>;
 }
 
-// `docker ps -aq --filter label=devstack.app=<app> --filter
-// label=devstack.stack=<stack>` then `docker rm -f` each.
-const killDevstackContainers = (
-	spawner: Spawner,
-	app: string,
-	stack: string,
-): Effect.Effect<ReadonlyArray<string>> =>
-	Effect.gen(function* () {
-		const lsCmd = ChildProcess.make('docker', [
-			'ps',
-			'-aq',
-			'--filter',
-			`label=${DockerLabel.APP}=${app}`,
-			'--filter',
-			`label=${DockerLabel.STACK}=${stack}`,
-		]);
-		const idsText = yield* spawner.string(lsCmd).pipe(Effect.orElseSucceed(() => ''));
-		const ids = idsText
-			.split('\n')
-			.map((s) => s.trim())
-			.filter((s) => s.length > 0);
-		const killed: Array<string> = [];
-		for (const id of ids) {
-			const rmCmd = ChildProcess.make('docker', ['rm', '-f', id]);
-			const ok = yield* spawner.string(rmCmd).pipe(
-				Effect.map(() => true),
-				Effect.orElseSucceed(() => false),
-			);
-			if (ok) killed.push(id);
-		}
-		return killed as ReadonlyArray<string>;
-	});
-
-const removeDevstackNetworks = (
-	spawner: Spawner,
-	app: string,
-	stack: string,
-): Effect.Effect<ReadonlyArray<string>> =>
-	Effect.gen(function* () {
-		const lsCmd = ChildProcess.make('docker', [
-			'network',
-			'ls',
-			'-q',
-			'--filter',
-			`label=${DockerLabel.APP}=${app}`,
-			'--filter',
-			`label=${DockerLabel.STACK}=${stack}`,
-		]);
-		const idsText = yield* spawner.string(lsCmd).pipe(Effect.orElseSucceed(() => ''));
-		const ids = idsText
-			.split('\n')
-			.map((s) => s.trim())
-			.filter((s) => s.length > 0);
-		const removed: Array<string> = [];
-		for (const id of ids) {
-			const rmCmd = ChildProcess.make('docker', ['network', 'rm', id]);
-			const ok = yield* spawner.string(rmCmd).pipe(
-				Effect.map(() => true),
-				Effect.orElseSucceed(() => false),
-			);
-			if (ok) removed.push(id);
-		}
-		return removed as ReadonlyArray<string>;
-	});
-
-const removeDevstackVolumes = (
-	spawner: Spawner,
-	app: string,
-	stack: string,
-): Effect.Effect<ReadonlyArray<string>> =>
-	Effect.gen(function* () {
-		const lsCmd = ChildProcess.make('docker', [
-			'volume',
-			'ls',
-			'-q',
-			'--filter',
-			`label=${DockerLabel.APP}=${app}`,
-			'--filter',
-			`label=${DockerLabel.STACK}=${stack}`,
-		]);
-		const namesText = yield* spawner.string(lsCmd).pipe(Effect.orElseSucceed(() => ''));
-		const names = namesText
-			.split('\n')
-			.map((s) => s.trim())
-			.filter((s) => s.length > 0);
-		const removed: Array<string> = [];
-		for (const n of names) {
-			const rmCmd = ChildProcess.make('docker', ['volume', 'rm', n]);
-			const ok = yield* spawner.string(rmCmd).pipe(
-				Effect.map(() => true),
-				Effect.orElseSucceed(() => false),
-			);
-			if (ok) removed.push(n);
-		}
-		return removed as ReadonlyArray<string>;
-	});
+// The three per-(app, stack) docker-ls + iterate-and-rm loops live in
+// `engine/docker/inventory.ts:removeDockerByLabel` now (CC-6). Image
+// removal stays inline below because it matches on a repo-name glob
+// rather than the app/stack labels.
 
 const removeDevstackImages = (spawner: Spawner): Effect.Effect<ReadonlyArray<string>> =>
 	Effect.gen(function* () {
@@ -389,12 +297,17 @@ export const pruneStack = (
 		let removedNetworks: ReadonlyArray<string> = [];
 		let removedVolumes: ReadonlyArray<string> = [];
 		if (options.noStop !== true) {
-			killedContainers = yield* killDevstackContainers(spawner, options.app, options.stack);
+			killedContainers = yield* removeDockerByLabel(
+				spawner,
+				'container',
+				options.app,
+				options.stack,
+			);
 			// Network + volume removal must wait for the kill pass: docker
 			// rejects `network rm` / `volume rm` against live endpoints /
 			// mounts.
-			removedNetworks = yield* removeDevstackNetworks(spawner, options.app, options.stack);
-			removedVolumes = yield* removeDevstackVolumes(spawner, options.app, options.stack);
+			removedNetworks = yield* removeDockerByLabel(spawner, 'network', options.app, options.stack);
+			removedVolumes = yield* removeDockerByLabel(spawner, 'volume', options.app, options.stack);
 		}
 
 		const fromStateDir = yield* removeStateOnDisk(
