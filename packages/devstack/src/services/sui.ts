@@ -48,6 +48,7 @@ import { resolveAppDir } from '../engine/resolve-app-dir.js';
 import { routerHostname } from '../engine/router-hostname.js';
 import { SuiBuildImage } from '../engine/sui-cli.js';
 import { SuiBuildContainerLive } from '../engine/sui-build-container.js';
+import { ChainProbeLive } from '../engine/chain-probe.js';
 import {
 	dockerImage,
 	runDockerContainer,
@@ -1981,5 +1982,14 @@ export const Sui = (opts: SuiOptions = {}): LayeredTag<'@devstack/SuiTag', Sui> 
 	} else {
 		member = buildLocalnet(opts.localnet ?? {});
 	}
+	// Fold `ChainProbeLive` into the resulting member's layer ring. It
+	// depends on the SuiTag this very member provides, so layering it
+	// alongside means every `onChainArtifact` (which `yield* ChainProbe`
+	// in its build body) finds the probe at acquire time without each
+	// primitive having to wire it itself. Tests that want a deterministic
+	// probe `Effect.provide(Layer.succeed(ChainProbe, mock))` at outer
+	// scope.
+	const existingLayers = (member as { readonly __layers?: ReadonlyArray<unknown> }).__layers ?? [];
+	(member as { __layers: ReadonlyArray<unknown> }).__layers = [...existingLayers, ChainProbeLive];
 	return makeService('sui', 'service', member) as unknown as LayeredTag<'@devstack/SuiTag', Sui>;
 };

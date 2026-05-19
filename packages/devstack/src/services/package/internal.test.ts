@@ -212,20 +212,22 @@ describe('hashMoveSources', () => {
 	);
 });
 
-// publishMove folds chainId into the canonical `withCache` key so a
-// regenesis MUST miss the cache (`${namespace}/${chainId}/${inputsHash}`
-// derived in `engine/cache.ts`). We pin the chainId-distinguishes-keys
-// contract here.
+// publishMove folds chainId into the canonical `onChainArtifact` cache
+// key so a regenesis MUST miss the cache (`${namespace}/${chainId}/
+// ${inputsHash}` derived in `engine/cache.ts`). The namespace is the
+// bare `'publishMove'` literal (per the versioning-shim sweep) — the
+// per-package distinction comes from the `inputsHash` (which folds in
+// `signer.address` + `sourceHash`), not from a `${name}` segment in the
+// key path. We pin the chainId-distinguishes-keys contract here.
 describe('publishMove cacheKey shape (chainId fold)', () => {
 	it('encodes chainId so distinct chains never share a cache slot', () => {
-		const name = 'demo';
 		const inputsHash = 'abcdef0123456789';
-		const keyA = `publishMove/${name}/chain-A/${inputsHash}`;
-		const keyB = `publishMove/${name}/chain-B/${inputsHash}`;
+		const keyA = `publishMove/chain-A/${inputsHash}`;
+		const keyB = `publishMove/chain-B/${inputsHash}`;
 		expect(keyA).not.toBe(keyB);
 		// Both encode the same inputs — proving chainId is what makes
 		// them distinct.
-		expect(keyA.startsWith(`publishMove/${name}/chain-A/`)).toBe(true);
-		expect(keyB.startsWith(`publishMove/${name}/chain-B/`)).toBe(true);
+		expect(keyA.startsWith(`publishMove/chain-A/`)).toBe(true);
+		expect(keyB.startsWith(`publishMove/chain-B/`)).toBe(true);
 	});
 });

@@ -79,9 +79,14 @@ export interface OnChainArtifactSpec<
 	Name extends string,
 	U extends Record<string, LayeredTag<any, any, any, any> | undefined>,
 	T,
+	EInputs = never,
+	RInputs = never,
 	EVerify = never,
+	RVerify = never,
 	EProduce = never,
+	RProduce = never,
 	ERegister = never,
+	RRegister = never,
 > {
 	// ── Tag identity ──
 	/** Tag identity key — same as `tag(name, ...)`'s `name` param. */
@@ -129,7 +134,7 @@ export interface OnChainArtifactSpec<
 	 * resolved upstream record is passed in so the inputs can include
 	 * e.g. `pkg.packageId` from a sibling `publishMove`.
 	 */
-	readonly inputs: (deps: Resolved<U>) => Effect.Effect<Record<string, unknown>>;
+	readonly inputs: (deps: Resolved<U>) => Effect.Effect<Record<string, unknown>, EInputs, RInputs>;
 
 	/**
 	 * Probe the chain to verify the cached value. Receives the cached
@@ -143,10 +148,10 @@ export interface OnChainArtifactSpec<
 		readonly cached: T;
 		readonly chain: typeof ChainProbe.Service;
 		readonly deps: Resolved<U>;
-	}) => Effect.Effect<T | undefined, EVerify>;
+	}) => Effect.Effect<T | undefined, EVerify, RVerify>;
 
 	/** Produce a fresh value on cache miss / verify-fail. */
-	readonly produce: (deps: Resolved<U>) => Effect.Effect<T, EProduce>;
+	readonly produce: (deps: Resolved<U>) => Effect.Effect<T, EProduce, RProduce>;
 
 	// ── Register step ──
 	/**
@@ -161,7 +166,7 @@ export interface OnChainArtifactSpec<
 	readonly register?: (args: {
 		readonly value: T;
 		readonly deps: Resolved<U>;
-	}) => Effect.Effect<void, ERegister>;
+	}) => Effect.Effect<void, ERegister, RRegister>;
 }
 
 // -----------------------------------------------------------------------------
@@ -185,12 +190,34 @@ export const onChainArtifact = <
 	const Name extends string,
 	U extends Record<string, LayeredTag<any, any, any, any> | undefined>,
 	T,
+	EInputs = never,
+	RInputs = never,
 	EVerify = never,
+	RVerify = never,
 	EProduce = never,
+	RProduce = never,
 	ERegister = never,
+	RRegister = never,
 >(
-	spec: OnChainArtifactSpec<Name, U, T, EVerify, EProduce, ERegister>,
-): LayeredTag<Name, T, never, EVerify | EProduce | ERegister | UpstreamE<U>> => {
+	spec: OnChainArtifactSpec<
+		Name,
+		U,
+		T,
+		EInputs,
+		RInputs,
+		EVerify,
+		RVerify,
+		EProduce,
+		RProduce,
+		ERegister,
+		RRegister
+	>,
+): LayeredTag<
+	Name,
+	T,
+	never,
+	EInputs | EVerify | EProduce | ERegister | UpstreamE<U>
+> => {
 	// Resolve the upstream bundle once at acquire time. The order of
 	// these yields doesn't affect the dep graph (`__upstreamKeys` is
 	// auto-flattened from the record below).
@@ -227,7 +254,7 @@ export const onChainArtifact = <
 			yield* spec.register({ value, deps });
 		}
 		return value;
-	}) as Effect.Effect<T, EVerify | EProduce | ERegister | UpstreamE<U>>;
+	}) as Effect.Effect<T, EInputs | EVerify | EProduce | ERegister | UpstreamE<U>>;
 
 	// Auto-flatten the upstream record into the existing `upstreamKeys:`
 	// field on `tag()`. Conditional `undefined` entries are filtered
@@ -241,6 +268,12 @@ export const onChainArtifact = <
 	// own build. Without this, `yield* dep` inside the build body would
 	// fail with "Service not found" because the upstream tag's Layer
 	// wouldn't be in the graph when our `Layer.effect(...)` runs.
+	//
+	// `ChainProbe` itself is NOT surfaced here — it's a Sui sibling and
+	// `Sui()` folds `ChainProbeLive` into its own `__layers` so every
+	// stack with a Sui already has it in scope. Tests that want a custom
+	// `ChainProbe` `Layer.succeed(ChainProbe, mockProbe)` it externally,
+	// shadowing the Sui-provided default at outer scope.
 	const extraLayers = upstreamTags.flatMap((u) => u.__layers ?? []);
 
 	const tagOptions = {
@@ -260,6 +293,6 @@ export const onChainArtifact = <
 		Name,
 		T,
 		never,
-		EVerify | EProduce | ERegister | UpstreamE<U>
+		EInputs | EVerify | EProduce | ERegister | UpstreamE<U>
 	>;
 };

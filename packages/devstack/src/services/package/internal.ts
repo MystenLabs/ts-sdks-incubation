@@ -12,12 +12,12 @@ import { Effect, FileSystem, Schedule } from 'effect';
 import { ChildProcessSpawner } from 'effect/unstable/process';
 import * as path from 'node:path';
 import { Transaction } from '@mysten/sui/transactions';
-import { tag, setPhase, type LayeredTag } from '../../advanced/tag.js';
+import { setPhase, type LayeredTag } from '../../advanced/tag.js';
 import { SuiTag, type Sui } from '../sui.js';
 import { buildMove, scrubCachedMoveLocks, stripPinnedSections } from '../../engine/sui-cli.js';
 import { createContentHasher, digestHex } from '../../engine/content-hash.js';
 import { publishCoin, publishPackage } from '../../engine/registries.js';
-import { withCache } from '../../engine/cache.js';
+import { onChainArtifact } from '../../engine/on-chain-artifact.js';
 import { PublishError } from '../../engine/errors.js';
 import type { LocalPackage } from '../package.js';
 import { toSdkCoin } from '../package.js';
@@ -279,11 +279,12 @@ const registerMintStrategies = (
 		}
 	});
 
-// Fresh-publish body — runs only when `withCache` decides we need to
-// re-derive (cache miss or verify-fail). Split out so the `publishMove`
-// body stays compact; everything that fires inside this Effect is a
-// real side effect (move-locks scrub → buildMove → signAndExecute →
-// fullnode ready-probe → coin discovery → metadata fetch).
+// Fresh-publish body — runs only when the substrate's cache layer
+// decides we need to re-derive (cache miss or verify-fail). Split out
+// so the `publishMove` body stays compact; everything that fires inside
+// this Effect is a real side effect (move-locks scrub → buildMove →
+// signAndExecute → fullnode ready-probe → coin discovery → metadata
+// fetch).
 const produceFreshPackage = <const Name extends string, TCaptured>(args: {
 	readonly options: PublishMoveOptions<Name, TCaptured>;
 	readonly sui: Sui;
@@ -485,178 +486,169 @@ const produceFreshPackage = <const Name extends string, TCaptured>(args: {
 		return fresh;
 	});
 
+// MVR (Move Registry) names accept only `[a-z0-9-]+` after the scope
+// prefix — underscores fail dapp-kit's `validateOverrides` at runtime.
+// Sanitize the package name into a valid MVR slug so `connect_four`
+// becomes `connect-four`. Callers can still pin an exact
+// `mvrPlaceholder` via options.
+//
+// Refinements:
+//   - Collapse runs of `-` so `foo__bar` doesn't become `foo--bar`.
+//   - Strip leading/trailing `-` so `_foo_` doesn't become `-foo-`.
+//   - Prepend `pkg-` when the slug starts with a digit (npm scope rules
+//     + MVR convention treat digit-leading names as suspicious).
+//   - Fall back to `pkg` when the slug collapses to empty (a name
+//     consisting only of separators like `___`).
+const mvrSlugify = (name: string): string => {
+	let s = name
+		.toLowerCase()
+		.replace(/[^a-z0-9-]+/g, '-')
+		.replace(/-+/g, '-')
+		.replace(/^-+|-+$/g, '');
+	if (s.length === 0) s = 'pkg';
+	if (/^[0-9]/.test(s)) s = `pkg-${s}`;
+	return s;
+};
+
 export const publishMove = <const Name extends string, TCaptured = undefined>(
 	options: PublishMoveOptions<Name, TCaptured>,
-) =>
-	tag(
-		options.name,
-		Effect.gen(function* () {
-			const signer = yield* options.signer;
-			const sui = yield* SuiTag;
+) => {
+	const mvrPlaceholder = options.mvrPlaceholder ?? `@local/${mvrSlugify(options.name)}`;
 
-			// Resolve the source path. `options.path` is widened
-			// to accept either a literal string or an `Effect.Effect<string>`
-			// so a runtime-resolved gitFetch result can feed directly
-			// through `publishMove` without the seal-inline duplication.
-			const sourcePath: string =
-				typeof options.path === 'string' ? options.path : yield* options.path;
+	type PkgT = Package<TCaptured>;
+	return onChainArtifact({
+		name: options.name,
+		kind: 'action',
+		plugin: 'move',
+		displayTitle: `publish.${options.name}`,
+		// Auto-watch the Move source tree. An edit to a `.move` file
+		// (or `Move.toml`) under `options.path` triggers a hot-restart;
+		// the existing `hashMoveSources` cache fold ensures only a real
+		// content change makes the next publish actually republish.
+		// `bindings` consumers re-acquire as part of the same restart so
+		// generated TS picks up the new ABI without manual steps.
+		// Today this is whole-stack restart — selective per-primitive
+		// tear-down is tracked under the G2a hot-restart follow-up.
+		//
+		// `watch` is a factory-time list, so we only auto-watch when
+		// `options.path` is a literal string. Runtime-resolved paths
+		// (the Effect branch, used by seal's gitFetch fallback) point at
+		// vendored upstream sources under
+		// `<appDir>/.devstack/git-cache/...`. Those don't need a
+		// filesystem watcher — the gitFetch primitive itself owns
+		// re-fetching on git-ref bumps.
+		...(typeof options.path === 'string' ? { watch: [options.path] } : {}),
+		// Full packageId in `primary` so users can copy-paste it; the
+		// dashboard wraps overflow rather than truncate with `…`. The
+		// upgrade-cap is dropped from extras (full id would crowd the
+		// row); users can find it in `manifest.json`.
+		display: (s: PkgT) => {
+			const extras: Array<string> = [];
+			const coinCount = Object.keys(s.coins).length;
+			if (coinCount > 0) extras.push(`${coinCount} coin${coinCount === 1 ? '' : 's'}`);
+			return {
+				title: `publish.${s.name}`,
+				primary: s.packageId,
+				...(extras.length > 0 ? { extras } : {}),
+			};
+		},
 
-			// MVR (Move Registry) names accept only `[a-z0-9-]+` after the
-			// scope prefix — underscores fail dapp-kit's `validateOverrides`
-			// at runtime. Sanitize the package name into a valid MVR slug so
-			// `connect_four` becomes `connect-four`. Callers can still pin
-			// an exact `mvrPlaceholder` via options.
-			//
-			// Refinements:
-			//   - Collapse runs of `-` so `foo__bar` doesn't become `foo--bar`.
-			//   - Strip leading/trailing `-` so `_foo_` doesn't become `-foo-`.
-			//   - Prepend `pkg-` when the slug starts with a digit (npm scope
-			//     rules + MVR convention treat digit-leading names as
-			//     suspicious).
-			//   - Fall back to `pkg` when the slug collapses to empty (a name
-			//     consisting only of separators like `___`).
-			const mvrSlug = (() => {
-				let s = options.name
-					.toLowerCase()
-					.replace(/[^a-z0-9-]+/g, '-')
-					.replace(/-+/g, '-')
-					.replace(/^-+|-+$/g, '');
-				if (s.length === 0) s = 'pkg';
-				if (/^[0-9]/.test(s)) s = `pkg-${s}`;
-				return s;
-			})();
-			const mvrPlaceholder = options.mvrPlaceholder ?? `@local/${mvrSlug}`;
+		// The signer account MUST be lifted into upstreams so the
+		// topological scheduler places `publishMove` strictly after its
+		// account. Without this, both land in level 0 and the resolved-
+		// upstream `yield* options.signer` fails with "Service not found:
+		// account/<name>" because the account's layer hasn't been built
+		// into the current level yet. `SuiTag` is implicit — the
+		// substrate yields it itself for `chainId` resolution.
+		upstream: { signer: options.signer },
 
-			// Re-register registries (PackageRegistry + CoinRegistry +
-			// Faucet mint strategies). Runs on every cycle regardless of
-			// cache hit/miss — registries live in-memory per engine
-			// invocation, so a cache hit MUST still surface the package +
-			// coins to downstream consumers (MVR resolver, status command,
-			// etc.). Pulled out into a helper so both withCache branches
-			// stay readable.
-			const registerAll = (pkg: Package<TCaptured>) =>
-				Effect.gen(function* () {
-					yield* publishPackage({
-						name: options.name,
-						packageId: pkg.packageId,
-						upgradeCapId: pkg.upgradeCapId,
-						mvrPlaceholder,
-						captured: pkg.captured as Record<string, unknown> | undefined,
-					});
-					for (const coin of Object.values(pkg.coins) as ReadonlyArray<PublishedCoin>) {
-						yield* publishCoin({
-							name: coin.name,
-							type: coin.fullCoinType,
-							decimals: coin.decimals,
-							sdkCoin: coin.sdkCoin,
-							...(coin.symbol !== undefined ? { symbol: coin.symbol } : {}),
-							...(coin.displayName !== undefined ? { displayName: coin.displayName } : {}),
-							...(coin.iconUrl !== undefined ? { iconUrl: coin.iconUrl } : {}),
-							...(coin.treasuryCapId !== undefined ? { treasuryCapId: coin.treasuryCapId } : {}),
-							...(coin.metadataId !== undefined ? { metadataId: coin.metadataId } : {}),
-							...(coin.packageId !== undefined ? { packageId: coin.packageId } : {}),
-						});
-					}
-					yield* registerMintStrategies(signer, Object.values(pkg.coins));
-				});
+		namespace: 'publishMove',
+		label: `publishMove(${options.name})`,
 
-			// `withCache(spec)` carries the cache discipline + verify probe.
-			// On a hit the cached `Package<TCaptured>` is re-validated by
-			// probing the on-chain package; a missing/inaccessible package
-			// invalidates the cache and falls through to a fresh publish.
-			// On a miss the produce body runs (scrub → build → publish →
-			// discover coins) and the result is persisted.
-			const sourceHash = yield* hashMoveSources(sourcePath);
-			const cached = yield* withCache({
-				namespace: `publishMove/${options.name}`,
-				label: `publishMove(${options.name})`,
-				chainId: sui.chainId,
-				inputs: Effect.succeed({ sourceHash, signer: signer.address }),
-				// §4.2 verify probe: confirm the cached packageId still
-				// resolves on chain. A regenesis flips `sui.chainId` and
-				// misses the cache outright; a partial state-store wipe or
-				// snapshot mismatch surfaces here as a verify-fail and the
-				// next produce republishes cleanly. The probe lives behind
-				// `Effect.orElseSucceed(undefined)` so transient RPC
-				// failures don't fail the boot — they over-derive on the
-				// next cycle, which is the cheaper failure mode.
-				verify: (pkg) =>
-					Effect.gen(function* () {
-						const probe = yield* SuiTag;
-						return yield* Effect.tryPromise({
-							try: () => probe.client.core.getObject({ objectId: pkg.packageId }),
-							catch: (cause) => cause,
-						}).pipe(
-							Effect.as(pkg as Package<TCaptured> | undefined),
-							Effect.orElseSucceed(() => undefined as Package<TCaptured> | undefined),
-						);
-					}),
-				produce: produceFreshPackage<Name, TCaptured>({
+		// Canonical hashable inputs. `hashMoveSources` strips
+		// `[pinned.<env>.*]` / `[env.<env>.*]` blocks from `Move.lock`
+		// before hashing — those are build OUTPUT, not source, and would
+		// otherwise miss the cache on every warm restart (lesson RS1).
+		inputs: ({ signer }) =>
+			Effect.gen(function* () {
+				const sourcePath: string =
+					typeof options.path === 'string' ? options.path : yield* options.path;
+				const sourceHash = yield* hashMoveSources(sourcePath);
+				return { sourceHash, signer: signer.address };
+			}),
+
+		// §4.2 verify probe: confirm the cached packageId still resolves
+		// on chain via `ChainProbe.getObject` (substrate-provided, Schema-
+		// validated). A regenesis flips `sui.chainId` and misses the
+		// cache outright; a partial state-store wipe or snapshot mismatch
+		// surfaces here as a verify-fail and the next produce republishes
+		// cleanly. The probe is lenient (`Effect.orElseSucceed` baked into
+		// `ChainProbeLive.getObject`) so transient RPC failures don't fail
+		// the boot — they over-derive on the next cycle, the cheaper
+		// failure mode. Probes a STABLE identifier (`packageId` from the
+		// produce body) per RS2.
+		verify: ({ cached, chain }) =>
+			chain.getObject(cached.packageId).pipe(Effect.map((o) => (o !== undefined ? cached : undefined))),
+
+		// Fresh-publish body — runs on cache miss / verify-fail. The
+		// `produceFreshPackage` helper re-resolves the source path (cheap
+		// — `options.path` is either a literal string or a memoised
+		// Effect) so the body keeps its existing args shape.
+		produce: ({ signer }) =>
+			Effect.gen(function* () {
+				const sui = yield* SuiTag;
+				const sourcePath: string =
+					typeof options.path === 'string' ? options.path : yield* options.path;
+				return yield* produceFreshPackage<Name, TCaptured>({
 					options,
 					sui,
 					signer,
 					sourcePath,
 					mvrPlaceholder,
-				}),
-			});
+				});
+			}),
 
-			// Re-attach host-local fields (sourcePath, mvrPlaceholder) to
-			// the cached payload — they're host-specific so we don't
-			// persist them, but downstream primitives (bindings) need them
-			// on the yielded shape.
-			const pkg: Package<TCaptured> = {
-				...cached,
-				sourcePath,
-				mvrPlaceholder,
-			};
-			yield* registerAll(pkg);
-			return pkg;
-		}).pipe(Effect.withSpan(`PublishMove(${options.name})`)),
-		{
-			kind: 'action',
-			plugin: 'move',
-			displayTitle: `publish.${options.name}`,
-			// The body yields `options.signer` (an Account ref) and
-			// `SuiTag`. SuiTag is a composite already in the dep graph;
-			// the signer account MUST be lifted into upstreams so the
-			// topological scheduler places `publishMove` strictly after
-			// its account. Without this, both land in level 0 and the
-			// `yield* options.signer`
-			// fails with "Service not found: account/<name>" because the
-			// account's layer hasn't been built into the current level
-			// yet. SuiTag is also listed so a stack with the testnet/fork
-			// variant (different upstreamKeys) still orders correctly.
-			upstreamKeys: [SuiTag.key, options.signer],
-			// Auto-watch the Move source tree. An edit to a `.move` file
-			// (or `Move.toml`) under `options.path` triggers a hot-restart;
-			// the existing `hashMoveSources` cache fold ensures only a real
-			// content change makes the next publish actually republish.
-			// `bindings` consumers re-acquire as part of the same restart
-			// so generated TS picks up the new ABI without manual steps.
-			// Today this is whole-stack restart — selective per-primitive
-			// tear-down is tracked under the G2a hot-restart follow-up.
-			//
-			// `watch` is a factory-time list, so we only auto-watch when
-			// `options.path` is a literal string. Runtime-resolved paths
-			// (the Effect branch, used by seal's gitFetch fallback) point
-			// at vendored upstream sources under
-			// `<appDir>/.devstack/git-cache/...`. Those don't need a
-			// filesystem watcher — the gitFetch primitive itself owns
-			// re-fetching on git-ref bumps.
-			...(typeof options.path === 'string' ? { watch: [options.path] } : {}),
-			// Full packageId in `primary` so users can copy-paste it; the
-			// dashboard wraps overflow rather than truncate with `…`. The
-			// upgrade-cap is dropped from extras (full id would crowd the
-			// row); users can find it in `manifest.json`.
-			display: (s) => {
-				const extras: Array<string> = [];
-				const coinCount = Object.keys(s.coins).length;
-				if (coinCount > 0) extras.push(`${coinCount} coin${coinCount === 1 ? '' : 's'}`);
-				return {
-					title: `publish.${s.name}`,
-					primary: s.packageId,
-					...(extras.length > 0 ? { extras } : {}),
-				};
-			},
-		},
-	);
+		// Re-attach host-local fields (sourcePath, mvrPlaceholder) to
+		// the resolved payload, then surface to PackageRegistry +
+		// CoinRegistry + Faucet mint strategies. Runs on EVERY cycle
+		// (hit AND miss) per RS1 — registries live in-memory per engine
+		// invocation, so a cache hit MUST still surface the package +
+		// coins to downstream consumers (MVR resolver, status command,
+		// etc.). The substrate guarantees this — see
+		// `OnChainArtifactSpec.register`'s JSDoc.
+		register: ({ value: pkg, deps: { signer } }) =>
+			Effect.gen(function* () {
+				// Mutate the host-local fields onto the resolved package.
+				// We can't easily return a different value from `register`
+				// without changing the substrate contract, so we mutate in
+				// place — `pkg` is the exact reference downstream
+				// consumers see.
+				(pkg as { sourcePath: string }).sourcePath =
+					typeof options.path === 'string' ? options.path : yield* options.path;
+				(pkg as { mvrPlaceholder: string }).mvrPlaceholder = mvrPlaceholder;
+
+				yield* publishPackage({
+					name: options.name,
+					packageId: pkg.packageId,
+					upgradeCapId: pkg.upgradeCapId,
+					mvrPlaceholder,
+					captured: pkg.captured as Record<string, unknown> | undefined,
+				});
+				for (const coin of Object.values(pkg.coins) as ReadonlyArray<PublishedCoin>) {
+					yield* publishCoin({
+						name: coin.name,
+						type: coin.fullCoinType,
+						decimals: coin.decimals,
+						sdkCoin: coin.sdkCoin,
+						...(coin.symbol !== undefined ? { symbol: coin.symbol } : {}),
+						...(coin.displayName !== undefined ? { displayName: coin.displayName } : {}),
+						...(coin.iconUrl !== undefined ? { iconUrl: coin.iconUrl } : {}),
+						...(coin.treasuryCapId !== undefined ? { treasuryCapId: coin.treasuryCapId } : {}),
+						...(coin.metadataId !== undefined ? { metadataId: coin.metadataId } : {}),
+						...(coin.packageId !== undefined ? { packageId: coin.packageId } : {}),
+					});
+				}
+				yield* registerMintStrategies(signer, Object.values(pkg.coins));
+			}),
+	});
+};

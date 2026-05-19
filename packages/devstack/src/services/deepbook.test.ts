@@ -28,6 +28,7 @@ import {
 	PackageRegistryLive,
 } from '../engine/registries.js';
 import { StateStore, StateStoreConfig, StateStoreLive } from '../engine/state-store.js';
+import { ChainProbeLive } from '../engine/chain-probe.js';
 import { DeepbookAdminTag, DeepbookCoreTag, type DeepbookCore } from './deepbook.js';
 import { SuiTag, type Sui } from './sui.js';
 import type { Account, SignAndExecuteError } from '../engine/shared.js';
@@ -260,10 +261,20 @@ const makeMockSuiOk = (
 		faucet: undefined,
 		client: {
 			core: {
+				// Shape mirrors what `ChainProbe`'s Schema validator
+				// expects: `{object: {objectId, type, version, owner}}`.
+				// `version` + `owner` are required by the schema even
+				// though deepbook's hand-rolled verify probe only reads
+				// `objectType`. The probe is lenient (returns undefined
+				// on schema failure) so omitting them would silently make
+				// `publishMove`'s ChainProbe verify always return
+				// undefined → cache miss every cycle.
 				getObject: async (_args: { objectId: string }) => ({
 					object: {
 						objectId: _args.objectId,
-						type: objectTypeFor?.(_args.objectId),
+						type: objectTypeFor?.(_args.objectId) ?? '0x2::package::UpgradeCap',
+						version: '1',
+						owner: { $kind: 'Immutable' as const, Immutable: true as const },
 					} as unknown,
 				}),
 			},
@@ -295,7 +306,20 @@ const makeMockSuiMissingObject = (
 					if (missingIds.has(args.objectId)) {
 						throw new Error('object not found');
 					}
-					return { object: { objectId: args.objectId } as unknown };
+					// Return a shape that satisfies ChainProbe's Schema
+					// (`type` / `version` / `owner` required) — without
+					// these fields the schema validator fails and the
+					// publishMove ChainProbe verify always returns
+					// undefined, masking the deepbook-side invalidation
+					// path this test is trying to exercise.
+					return {
+						object: {
+							objectId: args.objectId,
+							type: '0x2::package::UpgradeCap',
+							version: '1',
+							owner: { $kind: 'Immutable' as const, Immutable: true as const },
+						} as unknown,
+					};
 				},
 			},
 		} as unknown as Sui['client'],
@@ -378,7 +402,7 @@ describe('deepbookLocalDeploy — create-pools resume cache', () => {
 
 			const sourceHash = computePublishMoveSourceHash('Move.toml', moveTomlContent);
 			const inputsHash = computePublishMoveInputsHash(sourceHash, '0xCAFE');
-			const publishMoveKey = `publishMove/deepbook.publish/${chainId}/${inputsHash}`;
+			const publishMoveKey = `publishMove/${chainId}/${inputsHash}`;
 
 			// Pool spec — match `deepbookLocalDeploy`'s `specs` shape so the
 			// resolvedSpecs sent into `hashPoolSpecs` round-trip to the same
@@ -420,9 +444,15 @@ describe('deepbookLocalDeploy — create-pools resume cache', () => {
 			});
 
 			const expectedPoolType = `${fakePackageId}::pool::Pool<${baseType}, ${quoteType}>`;
+			const suiMockLayer = makeMockSuiOk(chainId, () => expectedPoolType);
 			const supportLayer = Layer.mergeAll(
 				CacheBaseLayer,
-				makeMockSuiOk(chainId, () => expectedPoolType),
+				suiMockLayer,
+				// `publishMove` (via `onChainArtifact`) yields `ChainProbe`
+				// in its verify body — wire `ChainProbeLive` on top of the
+				// mock SuiTag so the probe resolves the same canned shape
+				// `makeMockSuiOk` provides.
+				Layer.provide(ChainProbeLive, suiMockLayer),
 				Layer.provideMerge(
 					Layer.provide(StateStoreLive, mockStateConfig(tmpdir)),
 					NodeFileSystemLayer,
@@ -525,7 +555,7 @@ describe('deepbookLocalDeploy — create-pools resume cache', () => {
 
 			const sourceHash = computePublishMoveSourceHash('Move.toml', moveTomlContent);
 			const inputsHash = computePublishMoveInputsHash(sourceHash, '0xCAFE');
-			const publishMoveKey = `publishMove/deepbook.publish/${chainId}/${inputsHash}`;
+			const publishMoveKey = `publishMove/${chainId}/${inputsHash}`;
 			const baseType = '0x2::sui::SUI';
 			const quoteType = `${fakePackageId}::usdc::USDC`;
 			const poolSpec = {
@@ -568,9 +598,16 @@ describe('deepbookLocalDeploy — create-pools resume cache', () => {
 			// verification then fails, the entry is invalidated, and the
 			// dying signer's `Effect.die` fires from the `create-pools` tx
 			// (proving the invalidation path actually re-enters tx work).
+			const suiMockLayer = makeMockSuiMissingObject(chainId, new Set([stalePoolId]));
 			const supportLayer = Layer.mergeAll(
 				CacheBaseLayer,
-				makeMockSuiMissingObject(chainId, new Set([stalePoolId])),
+				suiMockLayer,
+				// `publishMove`'s `onChainArtifact` verify probe yields
+				// `ChainProbe` — provide a `ChainProbeLive` backed by the
+				// same SuiTag mock so the publishMove cache hits while
+				// the create-pools verify (which independently checks the
+				// stale pool id via `client.core.getObject`) invalidates.
+				Layer.provide(ChainProbeLive, suiMockLayer),
 				Layer.provideMerge(
 					Layer.provide(StateStoreLive, mockStateConfig(tmpdir)),
 					NodeFileSystemLayer,
