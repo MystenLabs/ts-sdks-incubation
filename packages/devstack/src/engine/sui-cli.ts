@@ -33,7 +33,7 @@ import { captureCommand, type CaptureError } from './capture-command.js';
 import { inheritedHostEnv } from './safe-env.js';
 import { SuiCliPhases } from './phases.js';
 import { prettyError } from './pretty-error.js';
-import { SuiBuildContainer } from './sui-build-container.js';
+import { SuiBuildContainer, withMoveBuildLock } from './sui-build-container.js';
 
 // Optional sui-tools image reference. When `suiLocalnet` builds its
 // vendored `sui-image/` it provides the resulting tag here so `buildMove`
@@ -166,14 +166,28 @@ export const buildMove = (
 		//   1. exec — long-lived per-stack container, `docker exec` (fastest)
 		//   2. container — fresh `docker run --rm` (Stage 1 fallback)
 		//   3. host — host-installed `sui` CLI (no image available)
-		const captured =
+		//
+		// All three paths mutate `~/.move/git/<repo>/.git/` (sparse-checkout
+		// + index locks) to fetch upstream Move deps. Two concurrent
+		// `publishMove`s — e.g. `seal.publish` + `vault` in the
+		// `private-content` example — race git's per-repo locks and fail
+		// with "Another git process seems to be running". Hold a host-wide
+		// O_EXCL advisory lock keyed on `~/.move` across just the build
+		// spawn; the rest of the publish flow (sui client publish, etc.)
+		// is unaffected. The lock lives in `sui-build-container.ts` because
+		// that's where the moveHome path is derived for the bind-mount;
+		// applying it here covers paths 1+2+3 from one site instead of just
+		// path 1 (which the original landing site missed).
+		const moveHome = path.join(os.homedir(), '.move');
+		const buildSpawn =
 			containerReachable && containerOpt._tag === 'Some'
-				? yield* containerOpt.value.runBuild(opts.path)
-				: yield* runWithCapture(
+				? containerOpt.value.runBuild(opts.path)
+				: runWithCapture(
 						spawner,
 						image !== undefined ? containerBuildCmd(image.tag, opts.path) : hostBuildCmd(opts),
 						'sui move build',
 					);
+		const captured = yield* withMoveBuildLock(moveHome, buildSpawn);
 
 		// Non-zero exit ALWAYS fails before the JSON parse — a build that
 		// errored out gives us its stderr verbatim instead of the opaque

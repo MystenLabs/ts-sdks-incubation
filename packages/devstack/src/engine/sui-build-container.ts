@@ -475,7 +475,15 @@ const releaseMoveBuildLock = (handle: MoveBuildLockHandle): Effect.Effect<void> 
 // `acquireRelease` guarantees the lock is freed on success, failure, or
 // interruption — including SIGINT teardown. The lock spans ONLY the
 // passed effect; container startup + summary calls remain unsynchronized.
-const withMoveBuildLock = <A, E>(
+//
+// Exported so `engine/sui-cli.ts::buildMove` can apply the lock at the
+// single host-wide funnel: every `sui move build` (host CLI, fresh
+// `docker run --rm`, AND `docker exec` into SuiBuildContainer) shares
+// `~/.move/git/<repo>/.git/` and must be serialized against itself.
+// Wrapping only `SuiBuildContainer.runBuild` here would miss the two
+// other code paths in `buildMove`; the per-build-container wrap was
+// removed when this hoist landed.
+export const withMoveBuildLock = <A, E>(
 	moveHome: string,
 	body: Effect.Effect<A, E>,
 ): Effect.Effect<A, E | SuiCliError> =>
@@ -635,13 +643,13 @@ export const SuiBuildContainerLive = Layer.effect(
 						}),
 					);
 				}
-				// Bug D — `sui move build` mutates `~/.move/git/<repo>/.git/`
-				// (sparse-checkout.lock, index.lock). Two concurrent builds
-				// against the same `~/.move` race git's per-repo locks.
-				// Hold a cross-process advisory lock keyed on `moveHome`
-				// across just this step; the rest of the layer lifecycle
-				// (acquire, summary) stays unsynchronized.
-				return withMoveBuildLock(moveHome, runBuildInside(spawner, containerName, containerPath));
+				// `sui move build` serialization (`~/.move/git/` race; see
+				// `withMoveBuildLock` header) is applied at the
+				// `engine/sui-cli.ts::buildMove` funnel so all three build
+				// paths (host CLI, `docker run --rm`, this `docker exec`)
+				// share one host-wide lock. Wrapping here would double-
+				// acquire whenever `buildMove` routes to this branch.
+				return runBuildInside(spawner, containerName, containerPath);
 			},
 			runSummary: (hostPath: string) => {
 				const containerPath = toContainerPath(appDir, hostPath);

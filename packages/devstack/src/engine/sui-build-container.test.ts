@@ -533,31 +533,21 @@ describe('SuiBuildContainer.runBuild', () => {
 		}),
 	);
 
-	it.effect('Bug D: two concurrent runBuild calls serialize through the cross-process move-build lock', () =>
+	it.effect('two sequential runBuild calls both succeed (lock released between)', () =>
 		Effect.gen(function* () {
-			// The lock is keyed on `moveHome` (= ~/.move in production)
-			// AND held only for the docker-exec build step. We can't
-			// inspect the host-level lock file from a single process
-			// reliably (Effect's fiber scheduler interleaves), but we
-			// can assert the user-visible contract: two concurrent
-			// runBuild calls both succeed, and the docker exec invocations
-			// happen one-at-a-time per the queued recorder (the second
-			// exec only fires after the first one's response landed).
-			//
-			// Rather than asserting strict serialization timing (flaky
-			// under CI scheduling), this test exercises the happy path —
-			// that wrapping with acquireUseRelease doesn't break a single
-			// build or two sequential ones, and that the lock releases
-			// even on failure (so a future build can claim it). The
-			// behavioral contract is exercised structurally in production
-			// by the docker.test suite.
+			// `SuiBuildContainer.runBuild` no longer holds the move-build
+			// lock itself — the lock was hoisted to
+			// `engine/sui-cli.ts::buildMove` so it covers all three build
+			// paths (host CLI, fresh `docker run --rm`, `docker exec` via
+			// this container). This test asserts the unwrapped surface
+			// still produces two clean exec invocations back-to-back; the
+			// host-wide serialization contract is exercised by the
+			// `buildMove concurrent funnel` test in `sui-cli.test.ts`.
 			const recorder: Array<SpawnRecord> = [];
 			const hostPath = join(process.cwd(), 'move/pkg-a');
 			yield* Effect.gen(function* () {
 				const svc = yield* SuiBuildContainer;
 				yield* svc.runBuild(hostPath);
-				// Second build immediately after first — the lock must
-				// have been released by the first runBuild's finalizer.
 				yield* svc.runBuild(hostPath);
 			}).pipe(
 				Effect.provide(SuiBuildContainerLive),

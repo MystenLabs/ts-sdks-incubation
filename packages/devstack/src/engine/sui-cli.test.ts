@@ -10,7 +10,9 @@
 // `move build`.
 
 import { describe, expect, it } from '@effect/vitest';
-import { shellQuote, stripPinnedSections } from './sui-cli.js';
+import { Effect, FileSystem, Layer, Sink, Stream } from 'effect';
+import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
+import { buildMove, shellQuote, stripPinnedSections, SuiBuildImage } from './sui-cli.js';
 
 describe('stripPinnedSections', () => {
 	it('strips v4-flat [pinned.<env>.<pkg>] sections', () => {
@@ -215,4 +217,103 @@ describe('shellQuote', () => {
 		// drop the slot. The wrap `''` is the POSIX way to say so.
 		expect(shellQuote('')).toBe(`''`);
 	});
+});
+
+// -----------------------------------------------------------------------------
+// buildMove — cross-process move-build lock funnel
+// -----------------------------------------------------------------------------
+//
+// `sui move build` mutates `~/.move/git/<repo>/.git/` (sparse-checkout.lock,
+// index.lock). Two concurrent invocations against the same host race those
+// per-repo git locks and fail with "Another git process seems to be running".
+// The original landing of `withMoveBuildLock` wrapped only the
+// SuiBuildContainer.runBuild branch — which left the `docker run --rm` and
+// host-CLI fallbacks (the two other code paths inside `buildMove`)
+// unsynchronized, so e.g. `seal.publish` + `vault` in the `private-content`
+// example still raced when neither path went through SuiBuildContainer.
+//
+// The fix hoisted the lock to `buildMove` itself so all three paths share
+// one host-wide O_EXCL lock keyed on `~/.move`. This test exercises that
+// invariant: two concurrent `buildMove` calls must spawn their `sui move
+// build` invocations one-at-a-time, NOT in parallel.
+
+describe('buildMove — concurrent funnel serialization', () => {
+	// `it.live` opts out of `it.effect`'s TestClock — both the fake
+	// spawner's `Effect.sleep(BUILD_DELAY_MS)` AND the lock-acquire
+	// retry loop's `Effect.sleep` would freeze under TestClock, so we
+	// run against the real wall-clock here.
+	it.live('two concurrent buildMove calls serialize their build spawns', () =>
+		Effect.gen(function* () {
+			interface SpawnTrace {
+				readonly startedAtMs: number;
+				readonly finishedAtMs: number;
+				readonly args: ReadonlyArray<string>;
+			}
+			const traces: Array<SpawnTrace> = [];
+			const BUILD_DELAY_MS = 50;
+
+			// Fake docker spawner. Every spawn records its start
+			// timestamp at the moment the spawner is invoked, then the
+			// exitCode Effect sleeps for BUILD_DELAY_MS before logging
+			// the finish timestamp. Two concurrent calls with no lock
+			// would land their startedAtMs within a few ms of each
+			// other; with the host-wide lock the second startedAtMs
+			// must land at-or-after the first finishedAtMs.
+			const spawn = (command: ChildProcess.Command) => {
+				if (command._tag !== 'StandardCommand') {
+					return Effect.die(new Error('unexpected non-standard command'));
+				}
+				const args = [...command.args];
+				const startedAtMs = Date.now();
+				const encoder = new TextEncoder();
+				const stdoutJson = '{"modules":["AA=="],"dependencies":[]}\n';
+				const handle = ChildProcessSpawner.makeHandle({
+					pid: ChildProcessSpawner.ProcessId(9001),
+					exitCode: Effect.sleep(`${BUILD_DELAY_MS} millis`).pipe(
+						Effect.tap(() =>
+							Effect.sync(() => {
+								traces.push({ startedAtMs, finishedAtMs: Date.now(), args });
+							}),
+						),
+						Effect.map(() => ChildProcessSpawner.ExitCode(0)),
+					),
+					isRunning: Effect.succeed(false),
+					kill: () => Effect.void,
+					stdin: Sink.drain as never,
+					stdout: Stream.succeed(encoder.encode(stdoutJson)),
+					stderr: Stream.empty,
+					all: Stream.succeed(encoder.encode(stdoutJson)),
+					getInputFd: () => Sink.drain as never,
+					getOutputFd: () => Stream.empty,
+					unref: Effect.succeed(Effect.void),
+				});
+				return Effect.succeed(handle);
+			};
+			const spawnerLayer = Layer.succeed(
+				ChildProcessSpawner.ChildProcessSpawner,
+				ChildProcessSpawner.make(spawn),
+			);
+
+			// `SuiBuildImage` present so the host-CLI scrub branch is
+			// skipped (would otherwise hit a real FS). No
+			// SuiBuildContainer service provided — canExec is false and
+			// buildMove routes to the fresh `docker run --rm` branch,
+			// which used to be unlocked.
+			const imageLayer = Layer.succeed(SuiBuildImage, { tag: 'devstack/sui:test' });
+			const fsLayer = FileSystem.layerNoop({});
+
+			yield* Effect.all(
+				[
+					buildMove({ path: '/tmp/pkg-a', rpcUrl: 'http://localhost:9000' }),
+					buildMove({ path: '/tmp/pkg-b', rpcUrl: 'http://localhost:9000' }),
+				],
+				{ concurrency: 'unbounded' },
+			).pipe(Effect.provide(spawnerLayer), Effect.provide(imageLayer), Effect.provide(fsLayer));
+
+			expect(traces.length).toBe(2);
+			const sorted = [...traces].sort((a, b) => a.startedAtMs - b.startedAtMs);
+			const [first, second] = sorted;
+			expect(second!.startedAtMs).toBeGreaterThanOrEqual(first!.finishedAtMs);
+		}),
+	);
 });
