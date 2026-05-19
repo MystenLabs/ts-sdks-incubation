@@ -237,6 +237,224 @@ export const sectionHeaderStyles = css`
 	}
 `;
 
+/** `<dialog>` chrome shared by new-account / accounts confirm-remove / signing-modal. */
+export const dialogStyles = css`
+	dialog:not([open]),
+	.confirm-dialog:not([open]) {
+		display: none;
+	}
+
+	dialog,
+	.confirm-dialog {
+		max-width: calc(100vw - 32px);
+		border-radius: var(--dev-wallet-radius-xl);
+		background: var(--dev-wallet-background);
+		border: 1px solid var(--dev-wallet-border);
+		box-shadow: var(--dev-wallet-shadow-lg);
+		display: flex;
+		flex-direction: column;
+		color: inherit;
+	}
+
+	dialog::backdrop,
+	.confirm-dialog::backdrop {
+		background: color-mix(in oklab, oklch(0 0 0) 50%, transparent);
+	}
+
+	.dialog-title {
+		font-size: 16px;
+		font-weight: var(--dev-wallet-font-weight-semibold);
+		color: var(--dev-wallet-foreground);
+		margin-bottom: 16px;
+	}
+`;
+
+/** Flex-row card with secondary bg + border + active highlight. */
+export const cardItemStyles = css`
+	.network-item,
+	.account-item,
+	.slot-item,
+	.import-item {
+		display: flex;
+		align-items: center;
+		border-radius: var(--dev-wallet-radius-sm);
+		border: 1px solid var(--dev-wallet-border);
+		background: var(--dev-wallet-secondary);
+	}
+
+	.network-item.active,
+	.account-item.active,
+	.slot-item.active,
+	.import-item.selected {
+		border-color: var(--dev-wallet-primary);
+	}
+`;
+
+/** Vertical flex container with a 4px gap (override gap per-list). */
+export const listContainerStyles = css`
+	.network-list,
+	.account-list,
+	.slot-list,
+	.import-list,
+	.commands-list,
+	.coin-flows {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+`;
+
+/** Text-input with focus-highlight and reset chrome. */
+export const formInputStyles = css`
+	.form-input,
+	.field-input,
+	.action-input,
+	.network-url-input,
+	.edit-label-input {
+		outline: none;
+		box-sizing: border-box;
+		font-family: inherit;
+		color: var(--dev-wallet-foreground);
+		width: 100%;
+	}
+
+	.form-input:focus,
+	.field-input:focus,
+	.action-input:focus {
+		border-color: var(--dev-wallet-primary);
+	}
+
+	.form-input::placeholder,
+	.field-input::placeholder,
+	.action-input::placeholder {
+		color: var(--dev-wallet-muted-foreground);
+	}
+`;
+
+/** Click-to-copy cursor / hover-tint / `.copied` positive-color states. */
+export const copyableTextStyles = css`
+	.account-address,
+	.detail-value.copyable-addr {
+		cursor: pointer;
+		border-radius: var(--dev-wallet-radius-2xs);
+		transition: background 0.15s;
+	}
+
+	.account-address:hover,
+	.detail-value.copyable-addr:hover {
+		background: color-mix(in oklab, var(--dev-wallet-primary) 15%, transparent);
+	}
+
+	.account-address.copied,
+	.detail-value.copied {
+		color: var(--dev-wallet-positive);
+	}
+`;
+
+/** Truncated monospace text — every muted address span in the wallet UI. */
+export const monoTruncateStyles = css`
+	.account-address,
+	.import-item-address,
+	.slot-address,
+	.network-url,
+	.command-detail,
+	.command-arg {
+		font-family: var(--dev-wallet-font-mono);
+		color: var(--dev-wallet-muted-foreground);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.confirm-account-address {
+		font-family: var(--dev-wallet-font-mono);
+		color: var(--dev-wallet-muted-foreground);
+	}
+`;
+
+/** Small square icon button used for inline edit / delete actions. */
+export const iconButtonStyles = css`
+	.btn-icon,
+	.edit-label-btn,
+	.delete-btn {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		border-radius: var(--dev-wallet-radius-xs);
+		color: var(--dev-wallet-muted-foreground);
+	}
+
+	.btn-icon:hover,
+	.edit-label-btn:hover {
+		background: var(--dev-wallet-border);
+		color: var(--dev-wallet-foreground);
+	}
+`;
+
+/** Tiny uppercase pill — every status / scheme / network badge. */
+export const badgeStyles = css`
+	.network-active-badge,
+	.account-badge,
+	.import-item-badge,
+	.slot-toggle {
+		font-size: 10px;
+		font-weight: var(--dev-wallet-font-weight-medium);
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+		white-space: nowrap;
+	}
+`;
+
+/** Uppercase muted label headings (`.section-label`, `.status-label`, `.field-label`). */
+export const subLabelStyles = css`
+	.section-label,
+	.status-label {
+		font-size: 11px;
+		font-weight: var(--dev-wallet-font-weight-semibold);
+		color: var(--dev-wallet-muted-foreground);
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+	}
+
+	.field-label {
+		display: block;
+		font-size: 12px;
+		font-weight: var(--dev-wallet-font-weight-medium);
+		color: var(--dev-wallet-muted-foreground);
+		margin-bottom: 4px;
+	}
+
+	.section-label-error {
+		color: var(--dev-wallet-destructive);
+	}
+`;
+
+/** Inline single-line destructive error message. */
+export const inlineErrorStyles = css`
+	.error,
+	.inline-error,
+	.confirm-error {
+		color: var(--dev-wallet-destructive);
+		font-size: 12px;
+		word-break: break-word;
+	}
+`;
+
+/** Circular initial-avatar shared by accounts list + account-selector. */
+export const avatarStyles = css`
+	.account-avatar,
+	.avatar {
+		border-radius: 50%;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		font-weight: var(--dev-wallet-font-weight-semibold);
+		color: var(--dev-wallet-primary-foreground);
+		background: var(--dev-wallet-primary);
+		flex-shrink: 0;
+	}
+`;
+
 const reducedMotionStyles = css`
 	@media (prefers-reduced-motion: reduce) {
 		*,
@@ -249,4 +467,10 @@ const reducedMotionStyles = css`
 	}
 `;
 
-export const sharedStyles = [resetStyles, themeStyles, reducedMotionStyles];
+const hostBlockStyles = css`
+	:host {
+		display: block;
+	}
+`;
+
+export const sharedStyles = [resetStyles, themeStyles, reducedMotionStyles, hostBlockStyles];

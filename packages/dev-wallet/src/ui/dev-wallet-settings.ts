@@ -7,7 +7,17 @@ import { customElement, property, state } from 'lit/decorators.js';
 
 import type { DevWallet } from '../wallet/dev-wallet.js';
 import type { SignerAdapter } from '../types.js';
-import { sectionHeaderStyles, sharedStyles } from './styles.js';
+import {
+	badgeStyles,
+	cardItemStyles,
+	formInputStyles,
+	iconButtonStyles,
+	inlineErrorStyles,
+	listContainerStyles,
+	monoTruncateStyles,
+	sectionHeaderStyles,
+	sharedStyles,
+} from './styles.js';
 import { emitEvent, formatAddress, getErrorMessage, NETWORK_COLORS } from './utils.js';
 import './dev-wallet-accounts.js';
 
@@ -16,11 +26,14 @@ export class DevWalletSettings extends LitElement {
 	static override styles = [
 		sharedStyles,
 		sectionHeaderStyles,
+		cardItemStyles,
+		listContainerStyles,
+		formInputStyles,
+		iconButtonStyles,
+		badgeStyles,
+		inlineErrorStyles,
+		monoTruncateStyles,
 		css`
-			:host {
-				display: block;
-			}
-
 			.section {
 				margin-bottom: 20px;
 			}
@@ -29,24 +42,9 @@ export class DevWalletSettings extends LitElement {
 				margin-bottom: 0;
 			}
 
-			.network-list {
-				display: flex;
-				flex-direction: column;
-				gap: 4px;
-			}
-
 			.network-item {
-				display: flex;
-				align-items: center;
 				gap: 8px;
 				padding: 8px 12px;
-				border-radius: var(--dev-wallet-radius-sm);
-				border: 1px solid var(--dev-wallet-border);
-				background: var(--dev-wallet-secondary);
-			}
-
-			.network-item.active {
-				border-color: var(--dev-wallet-primary);
 			}
 
 			.network-dot {
@@ -60,7 +58,6 @@ export class DevWalletSettings extends LitElement {
 				flex: 1;
 				font-size: 13px;
 				font-weight: var(--dev-wallet-font-weight-medium);
-				color: var(--dev-wallet-foreground);
 			}
 
 			.network-info {
@@ -70,24 +67,15 @@ export class DevWalletSettings extends LitElement {
 
 			.network-url {
 				font-size: 10px;
-				color: var(--dev-wallet-muted-foreground);
-				font-family: var(--dev-wallet-font-mono);
-				overflow: hidden;
-				text-overflow: ellipsis;
-				white-space: nowrap;
 			}
 
 			.network-url-input {
-				width: 100%;
 				padding: 3px 6px;
 				border-radius: var(--dev-wallet-radius-xs);
 				border: 1px solid var(--dev-wallet-primary);
 				background: var(--dev-wallet-background);
-				color: var(--dev-wallet-foreground);
 				font-size: 10px;
 				font-family: var(--dev-wallet-font-mono);
-				outline: none;
-				box-sizing: border-box;
 			}
 
 			.network-actions {
@@ -99,17 +87,7 @@ export class DevWalletSettings extends LitElement {
 			.btn-icon {
 				width: 22px;
 				height: 22px;
-				display: flex;
-				align-items: center;
-				justify-content: center;
-				border-radius: var(--dev-wallet-radius-xs);
 				font-size: 11px;
-				color: var(--dev-wallet-muted-foreground);
-			}
-
-			.btn-icon:hover {
-				background: var(--dev-wallet-border);
-				color: var(--dev-wallet-foreground);
 			}
 
 			.btn-icon-danger:hover {
@@ -117,13 +95,12 @@ export class DevWalletSettings extends LitElement {
 			}
 
 			.network-active-badge {
-				font-size: 9px;
 				padding: 1px 5px;
 				border-radius: var(--dev-wallet-radius-2xs);
 				background: color-mix(in oklab, var(--dev-wallet-primary) 15%, transparent);
 				color: var(--dev-wallet-primary);
 				font-weight: var(--dev-wallet-font-weight-semibold);
-				text-transform: uppercase;
+				letter-spacing: 0.3px;
 			}
 
 			.add-network-form {
@@ -138,24 +115,11 @@ export class DevWalletSettings extends LitElement {
 			}
 
 			.form-input {
-				width: 100%;
 				padding: 6px 8px;
 				border-radius: var(--dev-wallet-radius-xs);
 				border: 1px solid var(--dev-wallet-input);
 				background: var(--dev-wallet-background);
-				color: var(--dev-wallet-foreground);
 				font-size: 12px;
-				font-family: inherit;
-				outline: none;
-				box-sizing: border-box;
-			}
-
-			.form-input:focus {
-				border-color: var(--dev-wallet-primary);
-			}
-
-			.form-input::placeholder {
-				color: var(--dev-wallet-muted-foreground);
 			}
 
 			.form-actions {
@@ -236,7 +200,6 @@ export class DevWalletSettings extends LitElement {
 
 			.error {
 				font-size: 11px;
-				color: var(--dev-wallet-destructive);
 				margin-top: 4px;
 			}
 

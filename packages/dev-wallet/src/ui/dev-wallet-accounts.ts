@@ -7,7 +7,21 @@ import { customElement, property, state } from 'lit/decorators.js';
 
 import type { SignerAdapter } from '../types.js';
 import { CopyController } from './copy-controller.js';
-import { actionButtonStyles, sectionHeaderStyles, sharedStyles } from './styles.js';
+import {
+	actionButtonStyles,
+	avatarStyles,
+	badgeStyles,
+	cardItemStyles,
+	copyableTextStyles,
+	dialogStyles,
+	formInputStyles,
+	iconButtonStyles,
+	inlineErrorStyles,
+	listContainerStyles,
+	monoTruncateStyles,
+	sectionHeaderStyles,
+	sharedStyles,
+} from './styles.js';
 import {
 	emitEvent,
 	findAdapterForAddress,
@@ -23,11 +37,17 @@ export class DevWalletAccounts extends LitElement {
 		sharedStyles,
 		sectionHeaderStyles,
 		actionButtonStyles,
+		cardItemStyles,
+		listContainerStyles,
+		copyableTextStyles,
+		monoTruncateStyles,
+		iconButtonStyles,
+		inlineErrorStyles,
+		badgeStyles,
+		avatarStyles,
+		dialogStyles,
+		formInputStyles,
 		css`
-			:host {
-				display: block;
-			}
-
 			.accounts-header {
 				display: flex;
 				justify-content: space-between;
@@ -50,20 +70,9 @@ export class DevWalletAccounts extends LitElement {
 				background: color-mix(in oklab, var(--dev-wallet-primary) 15%, transparent);
 			}
 
-			.account-list {
-				display: flex;
-				flex-direction: column;
-				gap: 4px;
-			}
-
 			.account-item {
-				display: flex;
-				align-items: center;
 				gap: 10px;
 				padding: 10px 12px;
-				border-radius: var(--dev-wallet-radius-sm);
-				border: 1px solid var(--dev-wallet-border);
-				background: var(--dev-wallet-secondary);
 				width: 100%;
 				text-align: left;
 			}
@@ -73,22 +82,13 @@ export class DevWalletAccounts extends LitElement {
 			}
 
 			.account-item.active {
-				border-color: var(--dev-wallet-primary);
 				background: color-mix(in oklab, var(--dev-wallet-primary) 10%, var(--dev-wallet-secondary));
 			}
 
 			.account-avatar {
 				width: 32px;
 				height: 32px;
-				border-radius: 50%;
-				background: var(--dev-wallet-primary);
-				display: flex;
-				align-items: center;
-				justify-content: center;
 				font-size: 14px;
-				font-weight: var(--dev-wallet-font-weight-semibold);
-				color: var(--dev-wallet-primary-foreground);
-				flex-shrink: 0;
 			}
 
 			.account-info {
@@ -99,28 +99,11 @@ export class DevWalletAccounts extends LitElement {
 			.account-label {
 				font-size: 14px;
 				font-weight: var(--dev-wallet-font-weight-medium);
-				color: var(--dev-wallet-foreground);
 			}
 
 			.account-address {
 				font-size: 12px;
-				color: var(--dev-wallet-muted-foreground);
-				font-family: var(--dev-wallet-font-mono);
-				overflow: hidden;
-				text-overflow: ellipsis;
-				white-space: nowrap;
-				cursor: pointer;
-				border-radius: var(--dev-wallet-radius-2xs);
 				padding: 1px 2px;
-				transition: background 0.15s;
-			}
-
-			.account-address:hover {
-				background: color-mix(in oklab, var(--dev-wallet-primary) 15%, transparent);
-			}
-
-			.account-address.copied {
-				color: var(--dev-wallet-positive);
 			}
 
 			.account-label-row {
@@ -129,67 +112,21 @@ export class DevWalletAccounts extends LitElement {
 				gap: 4px;
 			}
 
-			.edit-label-btn {
-				width: 18px;
-				height: 18px;
-				display: inline-flex;
-				align-items: center;
-				justify-content: center;
-				border-radius: var(--dev-wallet-radius-2xs);
-				font-size: 11px;
-				color: var(--dev-wallet-muted-foreground);
-				opacity: 0;
-				transition: opacity 0.15s;
-			}
-
-			.account-item:hover .edit-label-btn {
-				opacity: 1;
-			}
-
-			.edit-label-btn:hover {
-				background: var(--dev-wallet-border);
-				color: var(--dev-wallet-foreground);
-			}
-
-			.edit-label-input {
-				padding: 2px 6px;
-				border-radius: var(--dev-wallet-radius-2xs);
-				border: 1px solid var(--dev-wallet-primary);
-				background: var(--dev-wallet-background);
-				color: var(--dev-wallet-foreground);
-				font-size: 13px;
-				font-family: inherit;
-				outline: none;
-				width: 100%;
-			}
-
-			.account-badge {
-				font-size: 10px;
-				padding: 1px 6px;
-				border-radius: var(--dev-wallet-radius-xs);
-				background: var(--dev-wallet-secondary);
-				border: 1px solid var(--dev-wallet-border);
-				color: var(--dev-wallet-muted-foreground);
-				font-weight: var(--dev-wallet-font-weight-medium);
-				text-transform: uppercase;
-				letter-spacing: 0.3px;
-				white-space: nowrap;
-			}
-
+			.edit-label-btn,
 			.delete-btn {
 				width: 18px;
 				height: 18px;
-				display: inline-flex;
-				align-items: center;
-				justify-content: center;
 				border-radius: var(--dev-wallet-radius-2xs);
 				font-size: 11px;
-				color: var(--dev-wallet-muted-foreground);
 				opacity: 0;
 				transition: opacity 0.15s;
+			}
+
+			.delete-btn {
 				flex-shrink: 0;
 			}
 
+			.account-item:hover .edit-label-btn,
 			.account-item:hover .delete-btn {
 				opacity: 1;
 			}
@@ -199,32 +136,26 @@ export class DevWalletAccounts extends LitElement {
 				color: var(--dev-wallet-destructive);
 			}
 
-			.confirm-dialog:not([open]) {
-				display: none;
+			.edit-label-input {
+				padding: 2px 6px;
+				border-radius: var(--dev-wallet-radius-2xs);
+				border: 1px solid var(--dev-wallet-primary);
+				background: var(--dev-wallet-background);
+				font-size: 13px;
+			}
+
+			.account-badge {
+				padding: 1px 6px;
+				border-radius: var(--dev-wallet-radius-xs);
+				background: var(--dev-wallet-secondary);
+				border: 1px solid var(--dev-wallet-border);
+				color: var(--dev-wallet-muted-foreground);
+				letter-spacing: 0.3px;
 			}
 
 			.confirm-dialog {
 				width: 300px;
-				max-width: calc(100vw - 32px);
-				border-radius: var(--dev-wallet-radius-xl);
-				background: var(--dev-wallet-background);
-				border: 1px solid var(--dev-wallet-border);
-				box-shadow: var(--dev-wallet-shadow-lg);
 				padding: 20px;
-				display: flex;
-				flex-direction: column;
-				color: inherit;
-			}
-
-			.confirm-dialog::backdrop {
-				background: color-mix(in oklab, oklch(0 0 0) 50%, transparent);
-			}
-
-			.confirm-title {
-				font-size: 16px;
-				font-weight: var(--dev-wallet-font-weight-semibold);
-				color: var(--dev-wallet-foreground);
-				margin-bottom: 12px;
 			}
 
 			.confirm-body {
@@ -250,8 +181,6 @@ export class DevWalletAccounts extends LitElement {
 
 			.confirm-account-address {
 				font-size: 11px;
-				color: var(--dev-wallet-muted-foreground);
-				font-family: var(--dev-wallet-font-mono);
 			}
 
 			.confirm-actions {
@@ -260,8 +189,6 @@ export class DevWalletAccounts extends LitElement {
 			}
 
 			.confirm-error {
-				color: var(--dev-wallet-destructive);
-				font-size: 12px;
 				margin-bottom: 8px;
 			}
 
@@ -570,7 +497,7 @@ export class DevWalletAccounts extends LitElement {
 					this.#cancelDelete();
 				}}
 			>
-				<div class="confirm-title">Remove Account</div>
+				<div class="dialog-title">Remove Account</div>
 				<div class="confirm-body">
 					${imported
 						? 'This will remove the imported account from your wallet. You can re-import it later.'

@@ -13,7 +13,18 @@ import { css, html, LitElement, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 
 import type { ForkImpersonationSlot, ForkRelay, ForkStatus } from '../adapters/fork-relay.js';
-import { actionButtonStyles, sectionHeaderStyles, sharedStyles, stateStyles } from './styles.js';
+import {
+	actionButtonStyles,
+	cardItemStyles,
+	formInputStyles,
+	inlineErrorStyles,
+	listContainerStyles,
+	monoTruncateStyles,
+	sectionHeaderStyles,
+	subLabelStyles,
+	sharedStyles,
+	stateStyles,
+} from './styles.js';
 import { formatAddress, getErrorMessage } from './utils.js';
 
 /** Default polling cadence for `GetStatus`. Slow on purpose — the panel
@@ -28,11 +39,13 @@ export class DevWalletForkPanel extends LitElement {
 		sectionHeaderStyles,
 		actionButtonStyles,
 		stateStyles,
+		cardItemStyles,
+		listContainerStyles,
+		formInputStyles,
+		inlineErrorStyles,
+		monoTruncateStyles,
+		subLabelStyles,
 		css`
-			:host {
-				display: block;
-			}
-
 			.section {
 				margin-bottom: 18px;
 			}
@@ -54,11 +67,8 @@ export class DevWalletForkPanel extends LitElement {
 			}
 
 			.status-label {
-				color: var(--dev-wallet-muted-foreground);
-				font-weight: var(--dev-wallet-font-weight-medium);
-				text-transform: uppercase;
-				letter-spacing: 0.5px;
 				font-size: 10px;
+				font-weight: var(--dev-wallet-font-weight-medium);
 				align-self: center;
 			}
 
@@ -87,12 +97,6 @@ export class DevWalletForkPanel extends LitElement {
 				border-radius: var(--dev-wallet-radius-sm);
 				border: 1px solid var(--dev-wallet-border);
 				background: var(--dev-wallet-background);
-				color: var(--dev-wallet-foreground);
-				outline: none;
-			}
-
-			.action-input:focus {
-				border-color: var(--dev-wallet-primary);
 			}
 
 			.btn-action {
@@ -116,23 +120,12 @@ export class DevWalletForkPanel extends LitElement {
 			}
 
 			.slot-list {
-				display: flex;
-				flex-direction: column;
 				gap: 6px;
 			}
 
 			.slot-item {
-				display: flex;
-				align-items: center;
 				gap: 8px;
 				padding: 8px 10px;
-				border-radius: var(--dev-wallet-radius-sm);
-				border: 1px solid var(--dev-wallet-border);
-				background: var(--dev-wallet-secondary);
-			}
-
-			.slot-item.active {
-				border-color: var(--dev-wallet-primary);
 			}
 
 			.slot-meta {
@@ -154,20 +147,15 @@ export class DevWalletForkPanel extends LitElement {
 
 			.slot-address {
 				font-size: 10px;
-				font-family: var(--dev-wallet-font-mono);
-				color: var(--dev-wallet-muted-foreground);
 			}
 
 			.slot-toggle {
-				font-size: 10px;
 				padding: 4px 10px;
 				border-radius: var(--dev-wallet-radius-xs);
 				background: var(--dev-wallet-background);
 				border: 1px solid var(--dev-wallet-border);
 				color: var(--dev-wallet-muted-foreground);
 				font-weight: var(--dev-wallet-font-weight-semibold);
-				text-transform: uppercase;
-				letter-spacing: 0.5px;
 			}
 
 			.slot-toggle.on {
@@ -209,10 +197,8 @@ export class DevWalletForkPanel extends LitElement {
 			}
 
 			.inline-error {
-				color: var(--dev-wallet-destructive);
 				font-size: 11px;
 				margin-top: 6px;
-				word-break: break-word;
 			}
 		`,
 	];

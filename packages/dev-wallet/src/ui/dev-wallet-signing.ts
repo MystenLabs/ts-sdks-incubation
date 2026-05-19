@@ -9,7 +9,14 @@ import { customElement, property, state } from 'lit/decorators.js';
 
 import type { PendingSigningRequest } from '../wallet/dev-wallet.js';
 import { CopyController } from './copy-controller.js';
-import { actionButtonStyles, sharedStyles } from './styles.js';
+import {
+	actionButtonStyles,
+	copyableTextStyles,
+	listContainerStyles,
+	monoTruncateStyles,
+	sharedStyles,
+	subLabelStyles,
+} from './styles.js';
 import type { TransactionAnalysis } from './transaction-analyzer.js';
 import { analyzeTransaction } from './transaction-analyzer.js';
 import type { CoinManifestEntry, CoinRecord } from './utils.js';
@@ -33,6 +40,10 @@ export class DevWalletSigning extends LitElement {
 	static override styles = [
 		sharedStyles,
 		actionButtonStyles,
+		copyableTextStyles,
+		listContainerStyles,
+		monoTruncateStyles,
+		subLabelStyles,
 		css`
 			:host {
 				display: flex;
@@ -117,18 +128,7 @@ export class DevWalletSigning extends LitElement {
 			}
 
 			.detail-value.copyable-addr {
-				cursor: pointer;
-				border-radius: var(--dev-wallet-radius-2xs);
 				padding: 1px 3px;
-				transition: background 0.15s;
-			}
-
-			.detail-value.copyable-addr:hover {
-				background: color-mix(in oklab, var(--dev-wallet-primary) 15%, transparent);
-			}
-
-			.detail-value.copied {
-				color: var(--dev-wallet-positive);
 			}
 
 			.detail-secondary {
@@ -150,18 +150,10 @@ export class DevWalletSigning extends LitElement {
 			}
 
 			.section-label {
-				font-size: 11px;
-				font-weight: var(--dev-wallet-font-weight-semibold);
-				color: var(--dev-wallet-muted-foreground);
-				text-transform: uppercase;
-				letter-spacing: 0.5px;
 				margin: 12px 0 6px;
 			}
 
 			.coin-flows {
-				display: flex;
-				flex-direction: column;
-				gap: 4px;
 				margin-bottom: 4px;
 			}
 
@@ -185,12 +177,6 @@ export class DevWalletSigning extends LitElement {
 				color: var(--dev-wallet-destructive);
 			}
 
-			.commands-list {
-				display: flex;
-				flex-direction: column;
-				gap: 4px;
-			}
-
 			.command-item {
 				padding: 8px;
 				border-radius: var(--dev-wallet-radius-xs);
@@ -205,12 +191,7 @@ export class DevWalletSigning extends LitElement {
 			}
 
 			.command-detail {
-				color: var(--dev-wallet-muted-foreground);
-				font-family: var(--dev-wallet-font-mono);
 				font-size: 11px;
-				overflow: hidden;
-				text-overflow: ellipsis;
-				white-space: nowrap;
 			}
 
 			.command-args {
@@ -221,12 +202,7 @@ export class DevWalletSigning extends LitElement {
 
 			.command-arg {
 				font-size: 11px;
-				color: var(--dev-wallet-muted-foreground);
-				font-family: var(--dev-wallet-font-mono);
 				padding: 1px 0;
-				overflow: hidden;
-				text-overflow: ellipsis;
-				white-space: nowrap;
 			}
 
 			.arg-access {
@@ -258,10 +234,6 @@ export class DevWalletSigning extends LitElement {
 				color: var(--dev-wallet-destructive);
 				font-size: 12px;
 				word-break: break-word;
-			}
-
-			.section-label-error {
-				color: var(--dev-wallet-destructive);
 			}
 
 			.error-title {
