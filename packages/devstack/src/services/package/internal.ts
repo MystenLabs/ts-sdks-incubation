@@ -14,7 +14,7 @@ import * as path from 'node:path';
 import { Transaction } from '@mysten/sui/transactions';
 import { tag, setPhase, type LayeredTag } from '../../advanced/tag.js';
 import { SuiTag, type Sui } from '../sui.js';
-import { buildMove, scrubCachedMoveLocks } from '../../engine/sui-cli.js';
+import { buildMove, scrubCachedMoveLocks, stripPinnedSections } from '../../engine/sui-cli.js';
 import { createContentHasher, digestHex } from '../../engine/content-hash.js';
 import { publishCoin, publishPackage } from '../../engine/registries.js';
 import { withCache } from '../../engine/cache.js';
@@ -58,21 +58,31 @@ export const hashMoveSources = (sourcePath: string) =>
 						stat.type === 'File' &&
 						(name.endsWith('.move') ||
 							name === 'Move.toml' ||
-							// HIGH-C1: include Move.lock in the digest. The
-							// lockfile carries resolved dependency package ids
-							// (git pins, on-chain addresses) — a dependency
-							// upgrade or relocation is invisible to a hash
-							// that only walks `.move` + `Move.toml`, leaving
-							// the package's bytecode addressing the wrong
-							// upstream. Hashing the lockfile makes the cache
-							// key honest about every input that affects the
-							// resulting package id.
+							// Include Move.lock in the digest so a dependency
+							// upgrade (different git rev, relocated pin)
+							// invalidates the cache. We feed the file through
+							// `stripPinnedSections` first to drop the
+							// `[pinned.<env>.*]` / `[env.<env>.*]` blocks
+							// that `sui move build` (re)writes on every
+							// invocation: those blocks are build OUTPUT
+							// — including their byte-content in the hash
+							// makes the FIRST warm restart after a cold
+							// publish miss the cache spuriously, because
+							// `hashMoveSources` runs BEFORE the build but
+							// the cached value was written AFTER. Stripping
+							// keeps the cache key honest about source-tree
+							// inputs while ignoring transient build artifacts.
 							name === 'Move.lock')
 					) {
 						const rel = path.relative(sourcePath, full);
-						const content = yield* fs.readFile(full);
 						hash.update(rel + '\0');
-						hash.update(content);
+						if (name === 'Move.lock') {
+							const text = yield* fs.readFileString(full, 'utf8');
+							hash.update(stripPinnedSections(text));
+						} else {
+							const content = yield* fs.readFile(full);
+							hash.update(content);
+						}
 						hash.update('\0');
 					}
 				}
@@ -88,10 +98,6 @@ export const hashMoveSources = (sourcePath: string) =>
 				),
 			);
 		yield* walk(sourcePath);
-		// Stays at 16 hex chars to preserve compatibility with the
-		// state-store entries written by older devstack versions; HIGH-C1
-		// only widens the INPUT set (now includes Move.lock) without
-		// changing the hash width.
 		const digest = digestHex(hash, { length: 16 });
 		yield* Effect.annotateCurrentSpan({
 			'publishMove.sourcePath': sourcePath,
@@ -214,8 +220,8 @@ export interface PublishMoveOptions<Name extends string, TCaptured> {
 	 * Optional override for the Move-Resolved-Reference placeholder
 	 * (the `[addresses]` table key in `Move.toml`). Defaults to `name`.
 	 * Set when the package's `Move.toml` declares its own address under
-	 * a key that differs from the tag name (e.g. legacy code shipped
-	 * before MVR conventions).
+	 * a key that differs from the tag name (e.g. code that predates
+	 * MVR conventions).
 	 */
 	readonly mvrPlaceholder?: string;
 	/**
@@ -373,7 +379,7 @@ const produceFreshPackage = <const Name extends string, TCaptured>(args: {
 		// exponentially up to 10s total.
 		yield* Effect.tryPromise({
 			try: () => sui.client.core.getObject({ objectId: packageId }),
-			// Phase -1 (gRPC migration): the gRPC `client.core.getObject(
+			// The gRPC `client.core.getObject(
 			// {objectId})` throws when the fullnode hasn't ingested the
 			// publish checkpoint yet, instead of the JSON-RPC tagged
 			// `{error: 'notExists', data: undefined}` payload. The
@@ -488,7 +494,7 @@ export const publishMove = <const Name extends string, TCaptured = undefined>(
 			const signer = yield* options.signer;
 			const sui = yield* SuiTag;
 
-			// Resolve the source path. Phase C §5.6 widens `options.path`
+			// Resolve the source path. `options.path` is widened
 			// to accept either a literal string or an `Effect.Effect<string>`
 			// so a runtime-resolved gitFetch result can feed directly
 			// through `publishMove` without the seal-inline duplication.
@@ -501,7 +507,7 @@ export const publishMove = <const Name extends string, TCaptured = undefined>(
 			// `connect_four` becomes `connect-four`. Callers can still pin
 			// an exact `mvrPlaceholder` via options.
 			//
-			// Phase D refinements:
+			// Refinements:
 			//   - Collapse runs of `-` so `foo__bar` doesn't become `foo--bar`.
 			//   - Strip leading/trailing `-` so `_foo_` doesn't become `-foo-`.
 			//   - Prepend `pkg-` when the slug starts with a digit (npm scope
@@ -560,19 +566,12 @@ export const publishMove = <const Name extends string, TCaptured = undefined>(
 			// invalidates the cache and falls through to a fresh publish.
 			// On a miss the produce body runs (scrub → build → publish →
 			// discover coins) and the result is persisted.
-			//
-			// `keyOverride` pins the legacy `publishMove/v2/${name}/${sourceHash}/${chainId}`
-			// key shape — out-of-tree consumers (tests, snapshot tooling)
-			// reference this exact string. A future v-bump migrates the
-			// callsite to `withCache`'s canonical
-			// `${namespace}/${chainId}/${inputsHash}` layout.
 			const sourceHash = yield* hashMoveSources(sourcePath);
 			const cached = yield* withCache({
-				namespace: `publishMove/v2/${options.name}`,
+				namespace: `publishMove/${options.name}`,
 				label: `publishMove(${options.name})`,
 				chainId: sui.chainId,
 				inputs: Effect.succeed({ sourceHash, signer: signer.address }),
-				keyOverride: `publishMove/v2/${options.name}/${sourceHash}/${sui.chainId}`,
 				// §4.2 verify probe: confirm the cached packageId still
 				// resolves on chain. A regenesis flips `sui.chainId` and
 				// misses the cache outright; a partial state-store wipe or
@@ -617,12 +616,12 @@ export const publishMove = <const Name extends string, TCaptured = undefined>(
 			kind: 'action',
 			plugin: 'move',
 			displayTitle: `publish.${options.name}`,
-			// Phase B (notes/parallel-graph-resolution.md §3.2): the body
-			// yields `options.signer` (an Account ref) and `SuiTag`. SuiTag
-			// is a composite already in the dep graph; the signer account
-			// MUST be lifted into upstreams so the topological scheduler
-			// places `publishMove` strictly after its account. Without
-			// this, both land in level 0 and the `yield* options.signer`
+			// The body yields `options.signer` (an Account ref) and
+			// `SuiTag`. SuiTag is a composite already in the dep graph;
+			// the signer account MUST be lifted into upstreams so the
+			// topological scheduler places `publishMove` strictly after
+			// its account. Without this, both land in level 0 and the
+			// `yield* options.signer`
 			// fails with "Service not found: account/<name>" because the
 			// account's layer hasn't been built into the current level
 			// yet. SuiTag is also listed so a stack with the testnet/fork

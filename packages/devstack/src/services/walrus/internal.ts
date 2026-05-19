@@ -126,20 +126,10 @@ export const subnetForStack = (
 	return { subnet: `${prefix}.0/24`, prefix };
 };
 
-// State-store key prefixes for walrus moved to `engine/state-store-keys.ts`
-// as part of Phase 5.1 of `notes/api-simplification.md`. The canonical
-// builders are `StateStoreKeys.walrusDeployOutput({chainId})` and
-// `StateStoreKeys.walrusSeedWal({chainId, exchangeObjectId, accountAddress})`.
-// Bumping the `v<N>` segment (e.g. when the router migration retired the
-// v2 walrus-deploy shape) is now a one-line edit in `state-store-keys.ts`.
-
-// Minimum WAL balance (in FROST, WAL's smallest unit) we accept as
-// proof the cached swap actually settled. Set well below
-// `DEFAULT_SEED_WAL_PAYMENT_MIST` (0.5 SUI of WAL at 1:1 exchange rate)
-// with slop for the gas-coin split. The exact exchange rate is
-// configurable in `wal_exchange`, so this is a heuristic lower bound,
-// not an invariant — undershoot triggers a re-swap which is harmless.
-const SEED_WAL_BALANCE_FLOOR_FROST = 400_000_000n;
+// State-store key prefixes for walrus live in `engine/state-store-keys.ts`.
+// The canonical builders are `StateStoreKeys.walrusDeployOutput({chainId})`
+// and `StateStoreKeys.walrusSeedWal({chainId, exchangeObjectId,
+// accountAddress})`.
 
 interface CachedSeedWalSwap {
 	readonly digest: string;
@@ -148,7 +138,7 @@ interface CachedSeedWalSwap {
 }
 
 // -----------------------------------------------------------------------------
-// Phase shapes — internal
+// Acquisition step shapes — internal
 // -----------------------------------------------------------------------------
 
 export interface DeployState {
@@ -176,7 +166,6 @@ interface CachedDeployState {
 export interface ExchangeState {
 	readonly objectId: string;
 	readonly packageId: string;
-	readonly walType: string;
 }
 
 export interface NodeState {
@@ -270,7 +259,7 @@ export const acquireLocalCluster = (args: {
 		yield* Effect.annotateCurrentSpan({ 'walrus.movePackagePath': movePackagePath });
 
 		// -------------------------------------------------------------
-		// 1. Image — two-stage build mirroring v3:
+		// 1. Image — two-stage build:
 		//      a) upstream (cargo build of walrus binaries + contracts)
 		//      b) wrapper (sui binary + deploy.sh + run.sh on top)
 		// -------------------------------------------------------------
@@ -327,8 +316,8 @@ export const acquireLocalCluster = (args: {
 
 		// -------------------------------------------------------------
 		// 2. Deploy contracts via `withCache`. Cache key folds in
-		//    `sui.chainId` so a regenesis misses cleanly. Phase C §4.2
-		//    adds a `verify` probe over both the system object AND the
+		//    `sui.chainId` so a regenesis misses cleanly. A `verify`
+		//    probe over both the system object AND the
 		//    staking object — either missing on chain invalidates the
 		//    cache and we re-deploy.
 		//
@@ -354,7 +343,7 @@ export const acquireLocalCluster = (args: {
 				: undefined;
 
 		const cachedDeploy = yield* withCache({
-			namespace: 'walrus/deploy-output/v3',
+			namespace: 'walrus/deploy-output',
 			chainId: sui.chainId,
 			inputs: Effect.succeed({ name: args.name }),
 			// §4.2 verify probe. Two failure modes invalidate:
@@ -365,13 +354,13 @@ export const acquireLocalCluster = (args: {
 			//      (same cause). Both probes must pass; either failure
 			//      invalidates the cache.
 			//   3. The local `deploy` outputs file is missing
-			//      (manual `rm -rf` of runtime/, pre-Phase-3 snapshot
+			//      (manual `rm -rf` of runtime/, partial snapshot
 			//      restore). Without the outputs, the storage-node
-			//      mount in step 4 would point at an empty dir. Per
-			//      §5.2 of the plan: re-deploying on top of a chain
-			//      that already has registered nodes mints NEW keys
-			//      and breaks the committee, but a clean re-deploy
-			//      on a chain whose systemObject ALSO went away IS
+			//      mount in step 4 would point at an empty dir.
+			//      Re-deploying on top of a chain that already has
+			//      registered nodes mints NEW keys and breaks the
+			//      committee, but a clean re-deploy on a chain whose
+			//      systemObject ALSO went away IS
 			//      safe (case `else` in deployContracts below cleans
 			//      up the prior storage-node containers).
 			verify: (cached: CachedDeployState) =>
@@ -524,15 +513,14 @@ export const acquireLocalCluster = (args: {
 		// 5. Exchange object — resolve the wal_exchange package id by
 		//    reading the exchange object's `.type` on chain.
 		// -------------------------------------------------------------
-		// Phase -1 (gRPC migration): reuse the supervisor's `Sui.client`
-		// rather than instantiating a fresh JSON-RPC client. The two are
+		// Reuse the supervisor's `Sui.client` rather than instantiating
+		// a fresh client. The two are
 		// equivalent on the wire (same RPC port) but the seam violation
 		// kept independent client state — content addressing, MVR
 		// overrides, the protobuf transport — that diverged from the
 		// rest of devstack the moment any of those grew configuration.
 		const exchange = yield* resolveExchange({
 			client: sui.client,
-			walrusPackageId: deploy.walrusPackageId,
 			exchangeObject: deploy.exchangeObject,
 		});
 
@@ -689,17 +677,17 @@ export const makeAdminShape = (args: {
 });
 
 // -----------------------------------------------------------------------------
-// Phase 3: register
+// Register
 // -----------------------------------------------------------------------------
 
-// v3's `walrus-deploy deploy-system-contract` (invoked inside the
-// deploy script) handles both publishing AND on-chain registration in
+// `walrus-deploy deploy-system-contract` (invoked inside the deploy
+// script) handles both publishing AND on-chain registration in
 // one binary call. So the explicit "register" phase here is a typed
 // no-op span — present so future infrastructure (per-node
 // re-registration after a deploy bump, e.g.) has an obvious place to
 // land.
 //
-// Phase C §5.4: wrapped in `withCache` so the future per-node
+// Wrapped in `withCache` so the future per-node
 // re-registration fill-in is a body edit, not a structural change.
 // The current `produce` body annotates the span + returns `null`; the
 // verify probe matches the deploy-output verify — re-running the
@@ -744,7 +732,7 @@ const registerCommittee = (args: {
 	})();
 
 // -----------------------------------------------------------------------------
-// Phase 7: seed accounts
+// Seed accounts
 // -----------------------------------------------------------------------------
 
 // Kept co-located with the orchestrator + `makeAdminShape` because the
@@ -753,10 +741,9 @@ const registerCommittee = (args: {
 // Resume idempotency: every supervisor cycle previously re-ran the swap
 // → each seed account accumulated +0.5 WAL per restart. We cache the
 // swap result keyed by `(chainId, exchange.objectId, account.address)`
-// and skip on a cache hit whose recorded balance still resolves above
-// `SEED_WAL_BALANCE_FLOOR_FROST`. Cache writes are best-effort — a
-// state-store write failure must not fail the primitive (the swap has
-// already settled on chain).
+// and skip on a cache hit whose recorded tx digest still resolves on
+// chain. Cache writes are best-effort — a state-store write failure
+// must not fail the primitive (the swap has already settled on chain).
 const seedWalForAccounts = (args: {
 	accounts: ReadonlyArray<Account>;
 	exchange: ExchangeState;
@@ -786,12 +773,22 @@ const swapSuiForWalCached = (args: {
 			'walrus.seed.account': args.account.name,
 			'walrus.seed.address': args.account.address,
 		});
-		// `withCache` discipline — Phase C §4.2. Verify probes the
-		// account's on-chain WAL balance against the floor; either a
-		// wiped volume or an external balance drain invalidates the
-		// cached swap and the next produce re-swaps.
+		// `withCache` discipline — verify confirms the cached swap
+		// transaction still resolves on chain. Probing the seed account's
+		// WAL balance was tried first but is fragile: the on-chain WAL
+		// coin type lives in a SEPARATE `wal` package from the `walrus`
+		// system package (the upstream `walrus-deploy` tool publishes
+		// 4 packages, but only the `walrus` system id is captured in
+		// the deploy output). Reconstructing `${walrusPackageId}::wal::WAL`
+		// gave a non-existent coin type, so listCoins always returned
+		// zero balance and verify-fail fired on every warm restart.
+		// Probing the digest sidesteps the walType-derivation issue
+		// entirely: a regenesis flips chainId (already in the cache key)
+		// and the cached digest also no longer resolves; either way we
+		// re-swap. The trade-off is we no longer catch a manually-drained
+		// balance — acceptable in dev, and the re-swap cost is small.
 		yield* withCache({
-			namespace: 'walrus/seed-wal/v1',
+			namespace: 'walrus/seed-wal',
 			chainId: sui.chainId,
 			inputs: Effect.succeed({
 				exchangeObjectId: args.exchange.objectId,
@@ -799,14 +796,12 @@ const swapSuiForWalCached = (args: {
 			}),
 			verify: (cached: CachedSeedWalSwap) =>
 				Effect.gen(function* () {
-					const balance = yield* probeWalBalance({
-						address: args.account.address,
-						walType: args.exchange.walType,
-					}).pipe(Effect.orElseSucceed(() => 0n));
+					const exists = yield* probeTxDigest(cached.digest);
 					yield* Effect.annotateCurrentSpan({
-						'walrus.seed.balance': balance.toString(),
+						'walrus.seed.digest': cached.digest,
+						'walrus.seed.digestExists': exists,
 					});
-					return balance >= SEED_WAL_BALANCE_FLOOR_FROST ? cached : undefined;
+					return exists ? cached : undefined;
 				}),
 			produce: Effect.gen(function* () {
 				const digest = yield* swapSuiForWal(args.account, args.exchange, args.paymentMist);
@@ -820,55 +815,32 @@ const swapSuiForWalCached = (args: {
 		void args.walrusPackageId;
 	});
 
-// Read a single account's WAL balance via `client.core.listCoins` and
-// sum across the returned page(s). Returns 0 on any error so the
-// cache-verify path falls through to a re-swap cleanly (better to
-// over-seed than under-seed). Phase -1 (gRPC migration): the sui-fork
-// upstream `todo!()`s `getBalance` (mitigated by Phase 1's adapter
-// guard), and the gRPC `getBalance` shape changed materially; summing
-// `listCoins` is the lowest-common-denominator path that works on
-// both localnet and fork modes. Single-page (default limit) is
-// sufficient: any seed-funded address has fewer than ~50 WAL coin
-// objects in practice.
-const probeWalBalance = (args: {
-	address: string;
-	walType: string;
-}): Effect.Effect<bigint, WalrusError, SuiTag> =>
+// Probe whether a transaction digest still resolves on chain. Returns
+// `true` when the cached swap tx is found, `false` on any error
+// (regenesis dropped the tx, transient RPC hiccup). Cheap — one gRPC
+// roundtrip — and stable across resumes because the chainId in the
+// cache key already gates regenesis cases; the digest probe just
+// belt-and-braces verifies the same chain still carries the tx.
+const probeTxDigest = (digest: string): Effect.Effect<boolean, never, SuiTag> =>
 	Effect.gen(function* () {
 		const sui = yield* SuiTag;
 		// Defensive: test mocks may satisfy `Sui` with a minimal `client`
-		// (`.core` only) or no `listCoins` at all. Treat the absence the
-		// same way the old `getBalance` cast did — re-seed (returning
-		// 0 here) is the safer default.
+		// (`.core` only) or omit `getTransaction`. Treat absence the same
+		// way an RPC error would — return `false` so verify-fail triggers
+		// a safe re-swap.
 		const core = (sui.client as unknown as { readonly core?: unknown }).core;
-		const listCoins = (core as { readonly listCoins?: unknown } | undefined)?.listCoins;
-		if (typeof listCoins !== 'function') {
-			return 0n;
+		const getTransaction = (core as { readonly getTransaction?: unknown } | undefined)
+			?.getTransaction;
+		if (typeof getTransaction !== 'function') {
+			return false;
 		}
-		const response = yield* Effect.tryPromise({
-			try: () =>
-				sui.client.core.listCoins({
-					owner: args.address,
-					coinType: args.walType,
-				}),
-			catch: (cause) =>
-				new WalrusError({
-					phase: 'seed',
-					message: `walrus.seed: balance probe failed for ${args.address}`,
-					cause,
-				}),
-		});
-		let sum = 0n;
-		for (const coin of response.objects) {
-			try {
-				sum += BigInt(coin.balance);
-			} catch {
-				// Skip an unparseable balance string rather than fail the
-				// whole probe — over-seeding on a glitched coin row is
-				// the safer fallback.
-			}
-		}
-		return sum;
+		return yield* Effect.tryPromise({
+			try: () => sui.client.core.getTransaction({ digest }),
+			catch: (cause) => cause,
+		}).pipe(
+			Effect.as(true),
+			Effect.orElseSucceed(() => false),
+		);
 	});
 
 const swapSuiForWal = (

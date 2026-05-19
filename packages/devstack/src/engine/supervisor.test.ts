@@ -1,19 +1,19 @@
-// Coverage for the file-watcher filter (`compileWatchFilter` + the back-compat
-// `isIgnoredWatchPath` shim) and the always-on `DEFAULT_WATCH_EXCLUDES`.
+// Coverage for the file-watcher filter (`compileWatchFilter`) and the
+// always-on `DEFAULT_WATCH_EXCLUDES`.
 //
-// Why this matters: the Stage-2 build container bind-mounts the host source
-// dir and lets `sui move build` rewrite `Move.lock`, populate `build/`, and
-// write under `package_summaries/` on every publish. Those file-change events
-// flow through `fs.watch` and would trigger a full hot-restart cycle if not
-// filtered — the restart would re-run the same publish that just produced the
-// change, looping indefinitely on a single edit. Same story for `Codegen`'s
-// atomic rename to `src/generated/` each cycle.
+// Why this matters: the build container bind-mounts the host source
+// dir and lets `sui move build` rewrite `Move.lock`, populate `build/`,
+// and write under `package_summaries/` on every publish. Those events
+// flow through `fs.watch` and would trigger a full hot-restart cycle if
+// not filtered — the restart would re-run the same publish that just
+// produced the change, looping indefinitely on a single edit. Same
+// story for `Codegen`'s atomic rename to `src/generated/` each cycle.
 //
-// The watch filter is the defensive boundary: the moment a new build-side
-// artifact starts leaking into a watched tree, the symptom is "restart fires
-// after every publish" — extending `DEFAULT_WATCH_EXCLUDES` or having the
-// owning primitive declare a `!`-negation in its `watch:` array should be the
-// fix.
+// The watch filter is the defensive boundary: the moment a new
+// build-side artifact starts leaking into a watched tree, the symptom
+// is "restart fires after every publish" — extending
+// `DEFAULT_WATCH_EXCLUDES` or having the owning primitive declare a
+// `!`-negation in its `watch:` array should be the fix.
 
 import * as nodePath from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -21,7 +21,6 @@ import {
 	compileWatchFilter,
 	flattenStackMembers,
 	formatRestartCascade,
-	isIgnoredWatchPath,
 	type DownstreamClosure,
 	type StackMember,
 	type WatchOwner,
@@ -29,72 +28,6 @@ import {
 import { buildDepGraph, computeDownstreamClosure } from './dep-graph.js';
 
 const abs = (rel: string): string => nodePath.resolve(process.cwd(), rel);
-
-describe('isIgnoredWatchPath — back-compat default-excludes check', () => {
-	it('ignores Move.lock — rewritten by sui move build on every invocation', () => {
-		expect(isIgnoredWatchPath('move/mock_usdc/Move.lock')).toBe(true);
-		expect(isIgnoredWatchPath('/abs/path/Move.lock')).toBe(true);
-	});
-
-	it('ignores Move.lock.new — the awk scrub stages this before atomic rename', () => {
-		expect(isIgnoredWatchPath('move/mock_usdc/Move.lock.new')).toBe(true);
-	});
-
-	it('ignores `build/` — sui move build output dir, regenerated every run', () => {
-		expect(isIgnoredWatchPath('move/mock_usdc/build/x.mv')).toBe(true);
-		expect(isIgnoredWatchPath('move/mock_usdc/build/bytecode_modules/foo.mv')).toBe(true);
-	});
-
-	it('ignores `package_summaries/` — sui move build rewrites address_mapping.json there each run', () => {
-		// Without this, `publishMove`'s `watch: [options.path]` declaration loops:
-		// publish → writes package_summaries/address_mapping.json → fs.watch fires →
-		// hot-restart → republish → loop.
-		expect(isIgnoredWatchPath('move/vault/package_summaries/address_mapping.json')).toBe(true);
-		expect(isIgnoredWatchPath('move/vault/package_summaries/root_package_metadata.json')).toBe(
-			true,
-		);
-		expect(isIgnoredWatchPath('move/vault/package_summaries/sui/something.json')).toBe(true);
-	});
-
-	it('ignores `.devstack/` — devstack state dir (snapshots, state-store, locks)', () => {
-		expect(isIgnoredWatchPath('.devstack/stacks/default/state.json')).toBe(true);
-		expect(isIgnoredWatchPath('.devstack/snapshot/snapshot.json')).toBe(true);
-	});
-
-	it('ignores `generated/` — Codegen atomic-renames staging → generated each cycle', () => {
-		// `Codegen({})` defaults to `./src/generated`; if a watched path is an
-		// ancestor, the atomic rename surfaces as an fs event → hot-restart →
-		// re-codegen → loop.
-		expect(isIgnoredWatchPath('src/generated/dapp-kit/foo.ts')).toBe(true);
-		expect(isIgnoredWatchPath('src/generated/bindings/vault/vault.ts')).toBe(true);
-	});
-
-	it('ignores node_modules and .git anywhere in the path', () => {
-		expect(isIgnoredWatchPath('move/mock_usdc/node_modules/pkg/index.js')).toBe(true);
-		expect(isIgnoredWatchPath('repo/.git/HEAD')).toBe(true);
-	});
-
-	it('ignores editor swap / backup files (.swp, .swx, ~ suffix)', () => {
-		expect(isIgnoredWatchPath('move/mock_usdc/sources/.foo.move.swp')).toBe(true);
-		expect(isIgnoredWatchPath('move/mock_usdc/sources/foo.move~')).toBe(true);
-	});
-
-	it('does NOT ignore actual Move source — `.move` files are the change we want to react to', () => {
-		expect(isIgnoredWatchPath('move/mock_usdc/sources/mock_usdc.move')).toBe(false);
-		expect(isIgnoredWatchPath('/abs/path/sources/foo.move')).toBe(false);
-	});
-
-	it('does NOT ignore Move.toml — user-authored manifest, real edits trigger republish', () => {
-		expect(isIgnoredWatchPath('move/mock_usdc/Move.toml')).toBe(false);
-	});
-
-	it('does NOT ignore arbitrary files that happen to share a prefix', () => {
-		// `Move.locked.txt` is not Move.lock; the glob is anchored on `Move.lock`.
-		expect(isIgnoredWatchPath('move/mock_usdc/Move.locked.txt')).toBe(false);
-		// `build-config.json` is not under a `build/` directory.
-		expect(isIgnoredWatchPath('move/mock_usdc/build-config.json')).toBe(false);
-	});
-});
 
 describe('compileWatchFilter — gitignore-style include + negation', () => {
 	it('positive bare path: matches the dir itself AND descendants', () => {

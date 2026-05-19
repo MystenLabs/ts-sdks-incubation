@@ -87,7 +87,7 @@ describe('hashMoveSources', () => {
 		}).pipe(Effect.provide(NodeFileSystemLayer)),
 	);
 
-	it.effect('editing Move.lock changes the digest (HIGH-C1 — dep pin awareness)', () =>
+	it.effect('editing Move.lock changes the digest (dep pin awareness)', () =>
 		Effect.gen(function* () {
 			// Move.lock carries resolved dep ids — an upstream upgrade is
 			// invisible without lock-file hashing, which would leave the
@@ -97,6 +97,32 @@ describe('hashMoveSources', () => {
 			const after = yield* hashMoveSources(root);
 			expect(after).not.toBe(before);
 		}).pipe(Effect.provide(NodeFileSystemLayer)),
+	);
+
+	it.effect(
+		'Move.lock [pinned.<env>.*] / [env.<env>.*] sections do not affect the digest',
+		() =>
+			Effect.gen(function* () {
+				// `sui move build` rewrites these sections on every invocation,
+				// so hashing them verbatim would invalidate the publishMove
+				// cache on the first warm restart after a cold publish — the
+				// hash is derived BEFORE the build but the cached value was
+				// written AFTER. Strip them before hashing.
+				const before = yield* hashMoveSources(root);
+				writeFile(
+					root,
+					'Move.lock',
+					'[move]\nversion = 3\n\n' +
+						'[pinned.testnet.MoveStdlib]\n' +
+						'source = { git = "https://github.com/MystenLabs/sui.git", subdir = "x", rev = "abc" }\n' +
+						'manifest_digest = "AABBCC"\n' +
+						'deps = {}\n\n' +
+						'[env.testnet.demo]\n' +
+						'published-at = "0x1"\n',
+				);
+				const after = yield* hashMoveSources(root);
+				expect(after).toBe(before);
+			}).pipe(Effect.provide(NodeFileSystemLayer)),
 	);
 
 	it.effect('adding a new .move file changes the digest', () =>
@@ -188,21 +214,20 @@ describe('hashMoveSources', () => {
 	);
 });
 
-// publishMove folds chainId into the StateStore cache key directly:
-//   cacheKey = `publishMove/v2/${name}/${sourceHash}/${chainId}`
-// (see services/package/internal.ts ~line 304). We pin that contract
-// shape here so a future refactor that drops chainId from the key would
-// fail this test — a regenesis MUST miss the cache.
+// publishMove folds chainId into the canonical `withCache` key so a
+// regenesis MUST miss the cache (`${namespace}/${chainId}/${inputsHash}`
+// derived in `engine/cache.ts`). We pin the chainId-distinguishes-keys
+// contract here.
 describe('publishMove cacheKey shape (chainId fold)', () => {
-	it('encodes sourceHash + chainId so distinct chains never share a cache slot', () => {
+	it('encodes chainId so distinct chains never share a cache slot', () => {
 		const name = 'demo';
-		const sourceHash = 'abcdef0123456789';
-		const keyA = `publishMove/v2/${name}/${sourceHash}/chain-A`;
-		const keyB = `publishMove/v2/${name}/${sourceHash}/chain-B`;
+		const inputsHash = 'abcdef0123456789';
+		const keyA = `publishMove/${name}/chain-A/${inputsHash}`;
+		const keyB = `publishMove/${name}/chain-B/${inputsHash}`;
 		expect(keyA).not.toBe(keyB);
-		// Both encode the same source — proving the chainId is what makes
-		// them distinct (not e.g. an accidental name suffix).
-		expect(keyA.startsWith(`publishMove/v2/${name}/${sourceHash}/`)).toBe(true);
-		expect(keyB.startsWith(`publishMove/v2/${name}/${sourceHash}/`)).toBe(true);
+		// Both encode the same inputs — proving chainId is what makes
+		// them distinct.
+		expect(keyA.startsWith(`publishMove/${name}/chain-A/`)).toBe(true);
+		expect(keyB.startsWith(`publishMove/${name}/chain-B/`)).toBe(true);
 	});
 });

@@ -104,9 +104,7 @@ const SHUTDOWN_LOG_MESSAGE =
 	'Shutting down. Sui and other background services stay warm for a fast next start. Run `pnpm exec devstack wipe --yes` to clear all local state.';
 
 // Structural shape of a stack member — anything carrying `__layer` (or
-// a flattened `__layers` for composites). Once Phase 3b finishes
-// inlining primitives, every entry in `config.stack` is a substrate
-// `Ref<...>` and this alias collapses; for now it survives because the
+// a flattened `__layers` for composites). This survives because the
 // primitives' hand-rolled returns (`walrusLocalCluster`, `sealLocalKeygen`,
 // …) carry `{__layer, __layers, key}` directly without going through
 // `tag`/`provide`, so they don't satisfy `Ref`'s
@@ -121,8 +119,7 @@ export interface StackMember {
 	// so inner-tag service resolution doesn't ServiceNotFound at runtime.
 	readonly __layers?: ReadonlyArray<Layer.Layer<any, any, any>>;
 	/**
-	 * Phase D of `notes/parallel-graph-resolution.md` §6.4: composite
-	 * primitives lift their parallelizable inner stack members
+	 * Composite primitives lift their parallelizable inner stack members
 	 * (`upstreamImage`, `moveSource`, `sealImage`, `sourceFetch`) to
 	 * top-level so the topo scheduler can build them alongside disjoint
 	 * stack members (e.g. walrus's image build can run concurrent with
@@ -182,16 +179,16 @@ export interface StackMember {
 	 */
 	readonly __pluginName?: string;
 	/**
-	 * Static upstream-dep declaration (Phase A of
-	 * `notes/parallel-graph-resolution.md`). The keys of other top-level
+	 * Static upstream-dep declaration. The keys of other top-level
 	 * stack members this primitive's build body yields, or otherwise
-	 * depends on for ordering. Populated automatically by `provide` / `tag`
-	 * from `ProvideOptions.upstreamKeys`; absent for hand-rolled `Layer`
-	 * escape hatches (which are exempt from the compose-time invariant).
+	 * depends on for ordering. Populated automatically by `provide` /
+	 * `tag` from `ProvideOptions.upstreamKeys`; absent for hand-rolled
+	 * `Layer` escape hatches (which are exempt from the compose-time
+	 * invariant).
 	 *
-	 * `buildDepGraph` consumes this to compute the dep graph + downstream
-	 * closure used by selective restart; Phase B's topological scheduler
-	 * will consume it to lay out parallel build levels.
+	 * `buildDepGraph` consumes this to compute the dep graph +
+	 * downstream closure used by selective restart, and the
+	 * topological scheduler uses it to lay out parallel build levels.
 	 */
 	readonly __upstreamKeys?: ReadonlyArray<string>;
 }
@@ -372,8 +369,8 @@ const InfraLiveCore = Layer.provideMerge(
 // Shared infra recipe — config-derived StateStore + Identity layers used
 // by BOTH `composeBootstrapLayer` and `composeStackLayer`. Centralised so
 // the two call sites can't drift; in particular the `validateIdentity`
-// guard (Phase D — rejects `..`, `/`, shell-meaningful characters in
-// app/stack names before they flow into docker labels / filesystem
+// guard (rejects `..`, `/`, shell-meaningful characters in app/stack
+// names before they flow into docker labels / filesystem
 // paths) fires identically on both paths.
 //
 // `Layer.provideMerge` (not `provide`) on `StateStoreLive` re-exports
@@ -573,7 +570,7 @@ export interface WatchOwner {
 	readonly absolutePath: string;
 }
 
-// `DownstreamClosure` (transitive-downstream closure from Phase 1's
+// `DownstreamClosure` (transitive-downstream closure from the
 // dep-graph derivation) is imported from `engine/dep-graph.ts` above
 // and re-exported here so the Phase-5 diagnostic surface (which
 // originally landed against a forward-declared placeholder) and its
@@ -620,7 +617,7 @@ const heavyInfraWarnings = (affected: ReadonlySet<string>): ReadonlyArray<string
 //   "file change at <path> (kind=…, <reason>) — owned by <titles>
 //      — restarting (N downstream: <names>) [affected: <heavy-infra warn>]"
 //
-// `downstreamClosure === undefined` (Phase 1 not yet wired) collapses the
+// `downstreamClosure === undefined` (no dep-graph available) collapses the
 // cascade enumeration to just the owners, preserving today's log shape
 // modulo wording. P2 lands the real graph and the cascade enumeration
 // goes live without touching this helper.
@@ -790,22 +787,6 @@ export const compileWatchFilter = (
 	};
 };
 
-/**
- * Back-compat shim for the old basename-only filter. Returns true when the
- * path matches one of {@link DEFAULT_WATCH_EXCLUDES} — used by the few call
- * sites that just want to know "is this noise?" without the full positive-set
- * machinery (notably the existing supervisor.test.ts coverage).
- *
- * New call sites should use {@link compileWatchFilter} so they get the
- * positive-set semantics too.
- */
-export const isIgnoredWatchPath = (absOrRelPath: string): boolean => {
-	const abs = nodePath.isAbsolute(absOrRelPath)
-		? absOrRelPath
-		: nodePath.resolve(process.cwd(), absOrRelPath);
-	return DEFAULT_WATCH_EXCLUDES.some((p) => minimatch(abs, p, { dot: true }));
-};
-
 // File-watcher fiber. When `hotRestart` is on, events are debounced 250ms
 // and the trailing edge signals the engine; coalescing avoids tearing the
 // stack down once per character of a multi-keystroke save. Otherwise we
@@ -859,7 +840,7 @@ const watchPathFiber = (
 							// dim-animation signal, and `invalidateSubset`
 							// can't disagree about which primitives are in
 							// scope. The helper takes the
-							// `downstreamClosure` from Phase 1 and unions
+							// `downstreamClosure` and unions
 							// `{owner.key} ∪ downstream[owner.key]` across
 							// every matched owner; the resulting `affected`
 							// set is the input to both the TUI signal and
@@ -962,9 +943,9 @@ const resolveStackName = (configured: string | undefined): string =>
 	configured ?? process.env.DEVSTACK_STACK ?? 'main';
 
 /**
- * Flatten composite primitives' `__extraMembers` siblings to top-level
- * (Phase D of `notes/parallel-graph-resolution.md` §6.4). Composites
- * declare lifted inner siblings via `__extraMembers`; this helper expands
+ * Flatten composite primitives' `__extraMembers` siblings to top-level.
+ * Composites declare lifted inner siblings via `__extraMembers`; this
+ * helper expands
  * each member into `[member, ...__extraMembers]` so the topo scheduler,
  * duplicate-key guard, dep-graph build, and watch-set aggregation all see
  * the lifted siblings as first-class top-level members.
@@ -1016,8 +997,8 @@ export const composeStackLayer = (
 	rawStack: ReadonlyArray<StackMember>,
 	opts: StackComposeOptions = {},
 ): Layer.Layer<unknown, unknown, never> => {
-	// Phase D — expand composites' `__extraMembers` to top-level. Each
-	// lifted sibling becomes its own dep-graph node so the topo scheduler
+	// Expand composites' `__extraMembers` to top-level. Each lifted
+	// sibling becomes its own dep-graph node so the topo scheduler
 	// can build it alongside disjoint members (walrus's `upstreamImage`
 	// runs in parallel with sui's boot, etc.). See `flattenStackMembers`
 	// for the order + dedupe semantics.
@@ -1033,7 +1014,7 @@ export const composeStackLayer = (
 	// rare legitimate cases (e.g. two hand-rolled layers with the same
 	// key) might surface here.
 	//
-	// Phase D nuance: a composite that lifts a shared inner sibling
+	// Shared-lift nuance: a composite that lifts a shared inner sibling
 	// (e.g. two `Walrus()` instances each contributing a `gitFetch` for
 	// the same upstream Move tree) would surface its lifted siblings
 	// twice after the flatten. That's expected — the duplicate guard
@@ -1045,8 +1026,8 @@ export const composeStackLayer = (
 	// a user-stack collision).
 	// Track which keys came from RAW (user-authored) top-level members so
 	// a duplicate flagged by the user gets the warning. Lifted siblings
-	// (Phase D `__extraMembers`) are NOT user-authored — they appear via
-	// the flatten and dedupe silently via first-wins below.
+	// (`__extraMembers`) are NOT user-authored — they appear via the
+	// flatten and dedupe silently via first-wins below.
 	const userAuthoredKeys = new Set<string>();
 	for (const member of rawStack) {
 		const key = (member as { key?: string }).key;
@@ -1073,19 +1054,18 @@ export const composeStackLayer = (
 		seenKeys.add(key);
 	}
 
-	// Phase A invariant (notes/parallel-graph-resolution.md §6.1):
-	// every keyed stack member declares its static upstream-dep set via
-	// `__upstreamKeys` (populated by `provide()` / `tag()` /
-	// plugin-author helpers from the `upstreamKeys` option). Hand-rolled
-	// `Layer` escape hatches — which carry no `key` — are exempt; they
+	// Compose-time invariant: every keyed stack member declares its
+	// static upstream-dep set via `__upstreamKeys` (populated by
+	// `provide()` / `tag()` / plugin-author helpers from the
+	// `upstreamKeys` option). Hand-rolled `Layer` escape hatches —
+	// which carry no `key` — are exempt; they
 	// don't participate in the dep graph or selective restart anyway.
 	//
 	// Today this is a warning (and only when `DEVSTACK_WARN_MISSING_UPSTREAM`
-	// is set in the env), not a throw. The `composeStackLayer` fold still
-	// drives runtime ordering, so a primitive that forgot to declare
-	// `upstreamKeys` works correctly — but it appears as a leaf in
-	// `buildDepGraph`, dropping its downstream cascade. Phase B's
-	// topological scheduler upgrades the unset case to a hard error.
+	// is set in the env), not a throw. The `composeStackLayer` fold
+	// still drives runtime ordering, so a primitive that forgot to
+	// declare `upstreamKeys` works correctly — but it appears as a leaf
+	// in `buildDepGraph`, dropping its downstream cascade.
 	//
 	// One aggregate console line keeps the signal scannable: parallel
 	// agents migrating composites can `DEVSTACK_WARN_MISSING_UPSTREAM=1
@@ -1103,19 +1083,18 @@ export const composeStackLayer = (
 			console.warn(
 				`Devstack: ${missing.length} stack member(s) missing __upstreamKeys ` +
 					`(declare via provide()/tag()'s upstreamKeys option): ${missing.join(', ')}. ` +
-					`Treated as graph leaves for now; Phase B's topological scheduler will require this.`,
+					`Treated as graph leaves.`,
 			);
 		}
 	}
 
-	// Phase B (notes/parallel-graph-resolution.md §3.2): topological-level
-	// scheduler. Replaces the previous `reduce(provideMerge)` fold so
-	// stack members with disjoint upstream-dep sets build IN PARALLEL.
+	// Topological-level scheduler. Stack members with disjoint
+	// upstream-dep sets build IN PARALLEL.
 	//
 	// Three-step compose:
 	//   1. `buildDepGraph(stack)` enumerates the static dep graph from
 	//      each member's `__upstreamKeys` (populated by `provide()` /
-	//      `tag()` / plugin-author helpers in Phase A).
+	//      `tag()` / plugin-author helpers).
 	//   2. `topoLevels(graph)` partitions members into levels — level 0
 	//      holds every leaf (no upstream deps); level N holds members
 	//      whose upstreams resolve in levels < N.
@@ -1301,8 +1280,8 @@ export const defineDevstack = (
 		? { stack: input }
 		: (input as DevstackConfig);
 
-	// Phase D — flatten composites' `__extraMembers` once at the top so
-	// every downstream pass (`composeStackLayer`, seed pass, watch-set
+	// Flatten composites' `__extraMembers` once at the top so every
+	// downstream pass (`composeStackLayer`, seed pass, watch-set
 	// aggregation, dep-graph build) sees the same canonical stack with
 	// lifted siblings as first-class top-level members. Building the
 	// flatten here (rather than each pass re-running it) keeps the
@@ -1416,12 +1395,11 @@ export const defineDevstack = (
 	// `formatRestartCascade(matched, downstreamClosure)` → unions
 	// `{owner.key} ∪ closure.get(owner.key)` into the affected set that
 	// drives `engine.markSelectiveRestart` + `engine.invalidateSubset`
-	// (selective-restart cascade — Phase F of
-	// `notes/parallel-graph-resolution.md` §6.6). The wiring is purely
-	// data-driven: with composites + plugin-author primitives populating
-	// `__upstreamKeys` (Phases A/B) and composites lifting their inner
-	// parallelizable siblings to top-level via `__extraMembers` (Phase D),
-	// the closure now reaches the real consumer set. Editing a `.move`
+	// (selective-restart cascade). The wiring is data-driven: with
+	// composites + plugin-author primitives populating
+	// `__upstreamKeys` and composites lifting their inner
+	// parallelizable siblings to top-level via `__extraMembers`,
+	// the closure reaches the real consumer set. Editing a `.move`
 	// file watched by `publishMove(hello)` invalidates `Codegen()` and
 	// `Dev()` too instead of just `publishMove`.
 	const depGraph: DepGraph = buildDepGraph(flatStack);
@@ -1501,8 +1479,8 @@ export const defineDevstack = (
 		//
 		// `r` (full rebuild) closes `supervisorScope`, cascading finalize
 		// to every primitive in finalize order. Selective watch-fires
-		// (Phase 3 of selective-restart) release ONLY the primitives in
-		// the affected closure via `engine.invalidateSubset`, leaving
+		// release ONLY the primitives in the affected closure via
+		// `engine.invalidateSubset`, leaving
 		// siblings and bootstrap services untouched. Bootstrap services
 		// (engine, StateStore, watchers) are stable across cycles because
 		// they live on `longLived`, not on the per-cycle scope.
@@ -1513,7 +1491,7 @@ export const defineDevstack = (
 			// through `engine.appendLog` and lands in the TUI log panel.
 			// Previously this layer was scoped only to `Layer.buildWithMemoMap`
 			// (line ~1178 below) so calls outside the build (notably the
-			// orphan-sweep `swept N orphan container(s)` line) fell through
+			// orphan-sweep `swept N orphan docker resource(s)` line) fell through
 			// to Effect's default logger and printed to stderr in the
 			// `[HH:MM:SS.mmm] INFO (#1): …` format, breaking the TUI layout.
 			const loggerLayer = rendererFactory.loggerLayer(engine);
@@ -1587,9 +1565,9 @@ export const defineDevstack = (
 					cycle,
 				});
 
-				// Watch-driven selective restart (Phase 3) handles its
-				// attribution inline at the watch fiber — the watch fiber
-				// logs the cascade message and calls `invalidateSubset`
+				// Watch-driven selective restart handles its attribution
+				// inline at the watch fiber — the watch fiber logs the
+				// cascade message and calls `invalidateSubset`
 				// directly, without going through the full cycle restart.
 				// User-driven `r` / SIGUSR2 land here on the next cycle but
 				// carry no attribution by design (the user gesture is
@@ -1675,8 +1653,8 @@ export const defineDevstack = (
 				// layer build — i.e. containers whose primitives were dropped
 				// from the config, or that were left behind by a crashed prior
 				// process. Restricted to cycle 1 so a watch-fire's targeted
-				// invalidation (Phase 3) doesn't sweep a primitive that wasn't
-				// in the invalidated set but also wasn't claimed this cycle.
+				// invalidation doesn't sweep a primitive that wasn't in the
+				// invalidated set but also wasn't claimed this cycle.
 				// Best-effort throughout.
 				//
 				// CRITICAL: only sweep on successful build. A failed build
@@ -1694,7 +1672,7 @@ export const defineDevstack = (
 					);
 					if (swept.length > 0) {
 						yield* Effect.logInfo(
-							`devstack: swept ${swept.length} orphan container(s) from prior run of ${sweepApp}/${sweepStack}/${sweepNetwork}`,
+							`devstack: swept ${swept.length} orphan docker resource(s) from prior run of ${sweepApp}/${sweepStack}/${sweepNetwork}`,
 						);
 					}
 				}
@@ -1771,11 +1749,11 @@ export const defineDevstack = (
 			// the state.json.lock + re-mounted watcher fibers +
 			// re-installed the SIGUSR2 handler, plus the StateStore lock
 			// briefly released between cycles and let a sibling supervisor
-			// in. Per Phase 2 of selective-restart, user-stack primitives
-			// build against the per-cycle supervisorScope (each Layer's
-			// own scope forked by Effect's MemoMap) — `r` cascades through
-			// every primitive in the stack; selective watch-fires release
-			// only the affected primitives' scopes.
+			// in. User-stack primitives build against the per-cycle
+			// supervisorScope (each Layer's own scope forked by Effect's
+			// MemoMap) — `r` cascades through every primitive in the
+			// stack; selective watch-fires release only the affected
+			// primitives' scopes.
 			// Fork a parallel-finalizer child of the ambient (runMain) scope.
 			// Effect's default `Scope` runs finalizers SEQUENTIALLY at
 			// teardown — with 6+ long-lived containers each carrying a
@@ -1951,11 +1929,11 @@ export const defineDevstack = (
 			// no handler and the process would die from the default action.
 			yield* installSignalRestart('SIGUSR2', engine);
 			if (watchRoots.length > 0) {
-				// Wire the static downstream closure (computed once at compose
-				// time from the dep graph in Phase 1) into every watch fiber.
-				// Lights up the cascade enumeration in `formatRestartCascade`
-				// (Phase 5) and the heavy-infra reboot-cost warning. Phase 3
-				// uses the same closure to drive `engine.invalidateSubset`.
+				// Wire the static downstream closure (computed once at
+				// compose time from the dep graph) into every watch fiber.
+				// Lights up the cascade enumeration in
+				// `formatRestartCascade` and the heavy-infra reboot-cost
+				// warning, and drives `engine.invalidateSubset`.
 				for (const root of watchRoots) {
 					yield* watchPathFiber(
 						root,

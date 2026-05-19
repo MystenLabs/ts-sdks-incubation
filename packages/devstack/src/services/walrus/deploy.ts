@@ -1,13 +1,13 @@
-// Walrus phases 2 + 5 — contract deploy + exchange-object discovery.
+// Walrus contract deploy + exchange-object discovery.
 //
 // `deployContracts` runs the upstream walrus-deploy one-shot against
 // the local sui chain (publishes the Move package, registers the
 // initial committee, optionally creates a wal_exchange) and parses
 // the on-disk `deploy` summary the script writes.
 //
-// `parseDeployFile` mirrors v3's parser byte-for-byte — the upstream
-// walrus-deploy tool writes `key: value` newline-separated pairs with
-// `None` sentinels for absent optional fields.
+// `parseDeployFile` reads the upstream walrus-deploy tool's
+// `key: value` newline-separated output, with `None` sentinels for
+// absent optional fields.
 //
 // `resolveExchange` reads the exchange object's `.type` on chain to
 // recover the `wal_exchange` package id — the deploy summary only
@@ -65,7 +65,7 @@ const makeOutputLineSink = (label: string): Effect.Effect<Docker.OutputLineCallb
 	});
 
 // -----------------------------------------------------------------------------
-// Phase 2: deploy
+// Deploy
 // -----------------------------------------------------------------------------
 
 export const deployContracts = (args: {
@@ -124,9 +124,7 @@ export const deployContracts = (args: {
 
 		// Carve out a host directory for the deploy outputs. Bind-mounted
 		// into the deploy one-shot (rw) and the storage node containers
-		// (ro). Lives under `<cwd>/.devstack/walrus/<name>/deploy` rather
-		// than v3's per-stack path — devstack has no env-aware
-		// path helper yet.
+		// (ro). Lives under `<cwd>/.devstack/walrus/<name>/deploy`.
 		const outputDir = args.outputDir;
 		yield* fs.makeDirectory(outputDir, { recursive: true }).pipe(
 			Effect.catch((cause: unknown) =>
@@ -175,8 +173,8 @@ export const deployContracts = (args: {
 			(_, i) => `${args.subnetPrefix}.${WALRUS_NODE_IP_BASE + i}`,
 		).join(' ');
 
-		// v3's deploy-walrus.sh expects these env vars exactly. The
-		// public image likely lacks the script — see the deploy result
+		// The vendored deploy-walrus.sh expects these env vars exactly.
+		// The public image likely lacks the script — see the deploy result
 		// check below for the fallback path.
 		//
 		// `WALRUS_REST_API_PORT` is passed to `walrus-deploy` as
@@ -251,9 +249,9 @@ export const deployContracts = (args: {
 			);
 		}
 
-		// v3 reads `<outputDir>/deploy` (a plain `key: value` file). We
-		// reproduce its parser inline so the only host-side dependency
-		// is whatever the deploy script wrote.
+		// Reads `<outputDir>/deploy` — a plain `key: value` file written
+		// by the deploy one-shot. Parsed inline so the only host-side
+		// dependency is whatever the deploy script produced.
 		const deployFile = `${outputDir}/deploy`;
 		const text = yield* fs.readFileString(deployFile).pipe(
 			Effect.catch((cause: unknown) =>
@@ -269,9 +267,9 @@ export const deployContracts = (args: {
 		return yield* parseDeployFile(outputDir, text);
 	})();
 
-// `parseDeployFile` mirrors v3's `parseDeployFile` byte-for-byte (the
-// upstream walrus-deploy tool writes `key: value` newline-separated
-// pairs with `None` sentinels for absent optional fields).
+// `parseDeployFile` reads the upstream walrus-deploy tool's output —
+// `key: value` newline-separated pairs with `None` sentinels for absent
+// optional fields.
 const parseDeployFile = (
 	outputDir: string,
 	text: string,
@@ -314,17 +312,15 @@ const parseDeployFile = (
 	});
 
 // -----------------------------------------------------------------------------
-// Phase 5: exchange
+// Exchange
 // -----------------------------------------------------------------------------
 
 export const resolveExchange = (args: {
 	/** Supervisor's `Sui.client`. Plumbed through from the walrus
 	 *  primitive instead of constructing a fresh `SuiGrpcClient` here so
 	 *  there's one chain-talking client per stack (same transport, same
-	 *  MVR overrides, same cache state). Phase -1 (gRPC migration)
-	 *  collapses the previous independent-`SuiJsonRpcClient` seam. */
+	 *  MVR overrides, same cache state). */
 	client: SuiGrpcClient;
-	walrusPackageId: string;
 	exchangeObject: string | undefined;
 }): Effect.Effect<ExchangeState | undefined, WalrusError> =>
 	Effect.fn('walrus.exchange')(function* () {
@@ -382,6 +378,5 @@ export const resolveExchange = (args: {
 		return {
 			objectId: args.exchangeObject,
 			packageId,
-			walType: `${args.walrusPackageId}::wal::WAL`,
 		};
 	})();

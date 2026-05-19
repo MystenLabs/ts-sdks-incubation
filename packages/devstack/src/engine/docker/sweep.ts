@@ -108,7 +108,7 @@ export const dockerOrphanSweep = (
 			})();
 			if (isClaimed) continue;
 			const ok = yield* spawner.exitCode(ChildProcess.make('docker', ['rm', '-f', id])).pipe(
-				Effect.map(() => true),
+				Effect.map((code) => code === 0),
 				Effect.orElseSucceed(() => false),
 			);
 			if (ok) removed.push(id);
@@ -143,7 +143,7 @@ export const dockerOrphanSweep = (
 			.filter((s) => s.length > 0);
 		for (const id of netIds) {
 			const ok = yield* spawner.exitCode(ChildProcess.make('docker', ['network', 'rm', id])).pipe(
-				Effect.map(() => true),
+				Effect.map((code) => code === 0),
 				Effect.orElseSucceed(() => false),
 			);
 			if (ok) removed.push(id);
