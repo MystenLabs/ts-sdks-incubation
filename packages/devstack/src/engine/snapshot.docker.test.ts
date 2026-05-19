@@ -99,11 +99,16 @@ const runCli = async (
 };
 
 // `arena`'s state.json packs publishMove entries keyed by
-// `publishMove/<name>/<chainId>/<inputsHash>`. The packageId is the same
-// value across cycles as long as the chain identity (and therefore the
-// publish tx digest cache) is preserved. We assert EXACT equality
-// post-restore; that's what proves chain state ride-through.
+// `publishMove/<chainId>/<inputsHash>` (the canonical onChainArtifact
+// cache key — see `engine/on-chain-artifact.ts` JSDoc). The package
+// `name` ('connect_four') lives in the cached VALUE, not the key, so
+// we filter on the namespace prefix and disambiguate by `value.name`.
+// The packageId is the same value across cycles as long as the chain
+// identity (and therefore the publish tx digest cache) is preserved.
+// We assert EXACT equality post-restore; that's what proves chain
+// state ride-through.
 interface ConnectFourPublish {
+	readonly name: string;
 	readonly packageId: string;
 }
 
@@ -112,8 +117,9 @@ const readPackageIds = (stateFile: string): ReadonlyArray<string> => {
 	const parsed = JSON.parse(raw) as { data?: Record<string, unknown> };
 	const ids: Array<string> = [];
 	for (const [key, value] of Object.entries(parsed.data ?? {})) {
-		if (!key.startsWith('publishMove/connect_four/')) continue;
+		if (!key.startsWith('publishMove/')) continue;
 		const v = value as Partial<ConnectFourPublish>;
+		if (v.name !== 'connect_four') continue;
 		if (typeof v.packageId === 'string') ids.push(v.packageId);
 	}
 	return ids;
