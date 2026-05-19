@@ -17,7 +17,7 @@ import { services } from '../generated/services.js';
 
 const managedCoin = packages.managed_coin;
 const packageId = managedCoin?.id ?? '0x0';
-const studio = (coins as Record<string, Record<string, string | undefined> | undefined>).STUDIO;
+const studio = coins.STUDIO;
 
 export const deployment = {
 	rpcUrl: services.sui?.rpc.url ?? '',

@@ -32,11 +32,14 @@
 // `devstack prune` instead — same teardown logic, broader scope.
 
 import { promises as nodeFs } from 'node:fs';
+import * as nodeOs from 'node:os';
+import * as nodePath from 'node:path';
 import { Console, Effect, Option } from 'effect';
 import { Command, Flag } from 'effect/unstable/cli';
 import { deriveAppName } from '../../engine/identity.js';
 import { failAlreadyReported } from '../already-reported.js';
 import { resolveAppDir, resolveForkCacheRoot, resolveStackFromEnv } from '../stack-resolution.js';
+import { sweepStaleGitLocks } from '../../engine/sui-build-container.js';
 import { pruneStack } from './_prune-stack.js';
 
 // Default reads `DEVSTACK_STACK` at action time (NOT at module load —
@@ -168,6 +171,19 @@ export const wipeCommand = Command.make(
 				if (removed) removedCachePath = cacheRoot;
 			}
 
+			// Sweep stale `~/.move/git/<repo>/.git/*.lock` files. wipe is
+			// already destructive so removing 0-byte leftovers from a
+			// previously SIGKILL'd `sui move build` is safe and removes a
+			// recurring failure mode (next `apply` fails with "Unable to
+			// create index.lock: File exists" — see
+			// `engine/sui-build-container.ts::sweepStaleGitLocks`).
+			// Runs unconditionally because (a) the locks have a 60s age
+			// threshold so a real in-flight git op is never touched, and
+			// (b) we don't want users to have to remember a separate flag
+			// to recover from the most common publish-failure mode.
+			const moveHome = nodePath.join(nodeOs.homedir(), '.move');
+			const removedMoveGitLocks = yield* sweepStaleGitLocks(moveHome);
+
 			// Single summary line — the prior per-id `console.log` spam
 			// scaled badly when a wipe across a busy app removed dozens of
 			// containers / volumes. Counts are what the operator actually
@@ -189,6 +205,11 @@ export const wipeCommand = Command.make(
 			}
 			if (removedCachePath !== undefined) {
 				parts.push(`removed upstream cache ${removedCachePath}`);
+			}
+			if (removedMoveGitLocks.length > 0) {
+				parts.push(
+					`cleared ${removedMoveGitLocks.length} stale move-git lock${removedMoveGitLocks.length === 1 ? '' : 's'}`,
+				);
 			}
 			yield* Console.log(
 				`devstack wipe (app=${resolvedApp}, stack=${resolvedStack}): ${parts.join(', ')}.`,

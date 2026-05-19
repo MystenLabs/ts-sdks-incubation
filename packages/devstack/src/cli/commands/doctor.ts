@@ -21,6 +21,7 @@ import { Console, Effect, FileSystem } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { Command, Flag } from 'effect/unstable/cli';
 import { createServer, Socket } from 'node:net';
+import * as nodeFsSync from 'node:fs';
 import { promises as nodeFs } from 'node:fs';
 import {
 	collectInventory,
@@ -30,9 +31,12 @@ import {
 	totalsFor,
 } from '../../engine/docker/inventory.js';
 import { isHolderLive } from '../../engine/process-liveness.js';
+import * as nodePath from 'node:path';
+import * as nodeOs from 'node:os';
 import { join as joinPath } from 'node:path';
 import { computeConfigHash, readForkMeta } from '../../engine/sui-fork/meta.js';
 import { resolveStateDir } from '../stack-resolution.js';
+import { sweepStaleGitLocks } from '../../engine/sui-build-container.js';
 
 type Spawner = ReturnType<typeof ChildProcessSpawner.make>;
 
@@ -570,10 +574,71 @@ const removeStaleLocks = (
 		return removed as ReadonlyArray<string>;
 	});
 
+// Walk `<moveHome>/git/<repo>/.git/` for git-owned `*.lock` files
+// (`index.lock`, `sparse-checkout.lock`, etc.) older than the same
+// 60s safety window `sweepStaleGitLocks` uses. Read-only — returns
+// the absolute paths so the report rendering can show them and the
+// `--clean-locks` branch can hand them off to `sweepStaleGitLocks`
+// for removal under the same lock-key the engine uses at build time.
+//
+// Kept module-local because doctor is the only caller; the engine
+// invokes `sweepStaleGitLocks` directly inside `withMoveBuildLock`.
+const STALE_GIT_LOCK_AGE_MS = 60_000;
+const GIT_LOCK_BASENAMES: ReadonlyArray<string> = [
+	'index.lock',
+	'HEAD.lock',
+	'config.lock',
+	'shallow.lock',
+	'packed-refs.lock',
+];
+const GIT_INFO_LOCK_BASENAMES: ReadonlyArray<string> = ['sparse-checkout.lock'];
+
+const listStaleMoveGitLocks = (moveHome: string): ReadonlyArray<string> => {
+	const out: Array<string> = [];
+	const root = nodePath.join(moveHome, 'git');
+	let entries: ReadonlyArray<string>;
+	try {
+		entries = nodeFsSync.readdirSync(root);
+	} catch {
+		return out;
+	}
+	const now = Date.now();
+	const ifStale = (p: string): boolean => {
+		try {
+			const st = nodeFsSync.statSync(p);
+			return st.isFile() && now - st.mtimeMs >= STALE_GIT_LOCK_AGE_MS;
+		} catch {
+			return false;
+		}
+	};
+	for (const entry of entries) {
+		const full = nodePath.join(root, entry);
+		// sui-cli per-repo lock sentinels (`.<repo>.lock` at the `git/`
+		// root). Mirror the sweep — stale ones surface here so the
+		// operator sees the same view the engine acts on at build time.
+		if (entry.startsWith('.') && entry.endsWith('.lock')) {
+			if (ifStale(full)) out.push(full);
+			continue;
+		}
+		// git's own per-op locks inside `<repo>/.git/`.
+		const gitDir = nodePath.join(full, '.git');
+		for (const name of GIT_LOCK_BASENAMES) {
+			const p = nodePath.join(gitDir, name);
+			if (ifStale(p)) out.push(p);
+		}
+		const infoDir = nodePath.join(gitDir, 'info');
+		for (const name of GIT_INFO_LOCK_BASENAMES) {
+			const p = nodePath.join(infoDir, name);
+			if (ifStale(p)) out.push(p);
+		}
+	}
+	return out as ReadonlyArray<string>;
+};
+
 const cleanLocksFlag = Flag.boolean('clean-locks').pipe(
 	Flag.withDescription(
-		'Remove dead state-store lock files (default: report only). Required ' +
-			'before doctor will mutate disk state under .devstack/.',
+		'Remove dead state-store lock files AND stale `~/.move/git/<repo>/.git/*.lock` ' +
+			'files left by crashed `sui move build` runs (default: report only).',
 	),
 	Flag.withDefault(false),
 );
@@ -638,6 +703,44 @@ export const doctorCommand = Command.make(
 										: `removed ${removedLocks.length}/${staleLocks.length} stale lock${staleLocks.length === 1 ? '' : 's'} (rest still held or filesystem error)`,
 							};
 
+			// Stale `~/.move/git/<repo>/.git/*.lock` files from a previous
+			// crashed `sui move build` run. These block the NEXT `sui move
+			// build` with `fatal: Unable to create '<repo>/.git/index.lock':
+			// File exists` even when nothing is actually racing — the
+			// 0-byte lock just survives the SIGKILL'd parent. The engine
+			// sweeps these inside `withMoveBuildLock`, but doctor surfaces
+			// them so an operator can see the state without booting the
+			// engine. Cleaned under `--clean-locks` (same opt-in as the
+			// state-store sweep above).
+			const moveHome = nodePath.join(nodeOs.homedir(), '.move');
+			const staleMoveGitLocks = listStaleMoveGitLocks(moveHome);
+			const removedMoveGitLocks = cleanLocks
+				? yield* sweepStaleGitLocks(moveHome)
+				: ([] as ReadonlyArray<string>);
+			const moveGitLockCheck: Check =
+				staleMoveGitLocks.length === 0
+					? {
+							name: 'Move git-dep locks',
+							ok: true,
+							required: false,
+							detail: 'no stale git locks under ~/.move/git/',
+						}
+					: !cleanLocks
+						? {
+								name: 'Move git-dep locks',
+								ok: false,
+								required: false,
+								detail:
+									`${staleMoveGitLocks.length} stale git lock${staleMoveGitLocks.length === 1 ? '' : 's'} under ~/.move/git/ ` +
+									`— re-run with --clean-locks to remove (these block \`sui move build\`)`,
+							}
+						: {
+								name: 'Move git-dep locks',
+								ok: true,
+								required: false,
+								detail: `removed ${removedMoveGitLocks.length} stale git lock${removedMoveGitLocks.length === 1 ? '' : 's'}`,
+							};
+
 			// Phase 4 fork-specific checks. Each is a no-op when no fork
 			// stacks are present on disk; otherwise:
 			//   - P4.11 — `sui-fork --version` shell-out (informational
@@ -656,6 +759,7 @@ export const doctorCommand = Command.make(
 				docker,
 				sui,
 				lockCheck,
+				moveGitLockCheck,
 				...ports,
 				suiForkCheck,
 				graphqlCheck,
@@ -674,6 +778,13 @@ export const doctorCommand = Command.make(
 					const pidLabel = lock.pid !== undefined ? `pid ${lock.pid}` : 'unreadable holder';
 					const ageLabel = lock.acquiredAt !== undefined ? `, acquired ${lock.acquiredAt}` : '';
 					yield* Console.log(`      └─ ${lock.path} (${pidLabel}${ageLabel})`);
+				}
+			}
+			// Detail lines for each cleaned move-git lock so the operator
+			// can verify exactly what was removed.
+			if (removedMoveGitLocks.length > 0) {
+				for (const p of removedMoveGitLocks) {
+					yield* Console.log(`      └─ ${p}`);
 				}
 			}
 

@@ -14,6 +14,8 @@
 import { Effect, Layer, Sink, Stream } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { describe, expect, it } from '@effect/vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
 import { join } from 'node:path';
 import { Identity } from './identity.js';
 import { SuiBuildImage } from './sui-cli.js';
@@ -21,6 +23,7 @@ import {
 	SuiBuildContainer,
 	SuiBuildContainerLive,
 	containerNameFor,
+	sweepStaleGitLocks,
 	toContainerPath,
 } from './sui-build-container.js';
 
@@ -88,6 +91,116 @@ describe('toContainerPath', () => {
 		const out = toContainerPath('/Users/me/app', '/Users/me/app');
 		expect(out).toBe('/host');
 	});
+});
+
+// -----------------------------------------------------------------------------
+// sweepStaleGitLocks — stale-`.git/*.lock` reclamation
+// -----------------------------------------------------------------------------
+//
+// `withMoveBuildLock` runs `sweepStaleGitLocks` after acquiring the
+// cross-process lock so leftovers from a SIGKILL'd previous build don't
+// block the next `sui move build` with `fatal: Unable to create
+// '<repo>/.git/index.lock': File exists`. The sweep must:
+//
+//   1. Remove `.git/index.lock` / `sparse-checkout.lock` / etc. when
+//      their mtime is older than the safety window.
+//   2. LEAVE young lock files alone (a real in-flight git op).
+//   3. Ignore dot-prefixed entries at the `git/` root (sui-cli's own
+//      per-repo locks, NOT git's).
+//   4. Tolerate missing dirs / unreadable entries silently.
+
+describe('sweepStaleGitLocks', () => {
+	const tmpRoot = (): string =>
+		fs.mkdtempSync(join(os.tmpdir(), 'devstack-sweep-stale-git-locks-'));
+
+	it('removes stale `.git/index.lock` and `info/sparse-checkout.lock` whose mtime exceeds the safety window', () =>
+		Effect.gen(function* () {
+			const moveHome = tmpRoot();
+			const gitDir = join(moveHome, 'git', 'https___example_git', '.git');
+			fs.mkdirSync(join(gitDir, 'info'), { recursive: true });
+			const stale = [
+				join(gitDir, 'index.lock'),
+				join(gitDir, 'HEAD.lock'),
+				join(gitDir, 'config.lock'),
+				join(gitDir, 'shallow.lock'),
+				join(gitDir, 'packed-refs.lock'),
+				join(gitDir, 'info', 'sparse-checkout.lock'),
+			];
+			const ancient = new Date(Date.now() - 5 * 60 * 1000); // 5min ago
+			for (const p of stale) {
+				fs.writeFileSync(p, '');
+				fs.utimesSync(p, ancient, ancient);
+			}
+			const removed = yield* sweepStaleGitLocks(moveHome);
+			expect([...removed].sort()).toEqual([...stale].sort());
+			for (const p of stale) {
+				expect(fs.existsSync(p)).toBe(false);
+			}
+			fs.rmSync(moveHome, { recursive: true, force: true });
+		}).pipe(Effect.runPromise));
+
+	it('leaves fresh lock files alone (real in-flight git op)', () =>
+		Effect.gen(function* () {
+			const moveHome = tmpRoot();
+			const gitDir = join(moveHome, 'git', 'https___example_git', '.git');
+			fs.mkdirSync(gitDir, { recursive: true });
+			const fresh = join(gitDir, 'index.lock');
+			fs.writeFileSync(fresh, '');
+			// utimes default = "now"; no override.
+			const removed = yield* sweepStaleGitLocks(moveHome);
+			expect(removed).toEqual([]);
+			expect(fs.existsSync(fresh)).toBe(true);
+			fs.rmSync(moveHome, { recursive: true, force: true });
+		}).pipe(Effect.runPromise));
+
+	it('removes stale sui-cli per-repo lock sentinels (`.<repo>.lock` at the `git/` root)', () =>
+		Effect.gen(function* () {
+			// `~/.move/git/.<repo>.lock` is sui-cli's own per-repo locking
+			// layer. A crashed sui-cli leaves these as 0-byte sentinels
+			// and the next build refuses to touch the repo. Same 60s
+			// safety window — fresh ones from a live sui-cli are spared.
+			const moveHome = tmpRoot();
+			const root = join(moveHome, 'git');
+			fs.mkdirSync(root, { recursive: true });
+			const staleSentinel = join(root, '.cdb4ee2.lock');
+			const freshSentinel = join(root, '.https___sui.lock');
+			fs.writeFileSync(staleSentinel, '');
+			fs.writeFileSync(freshSentinel, '');
+			const ancient = new Date(Date.now() - 5 * 60 * 1000);
+			fs.utimesSync(staleSentinel, ancient, ancient);
+			// freshSentinel keeps "now" mtime — should be spared.
+			const removed = yield* sweepStaleGitLocks(moveHome);
+			expect(removed).toEqual([staleSentinel]);
+			expect(fs.existsSync(staleSentinel)).toBe(false);
+			expect(fs.existsSync(freshSentinel)).toBe(true);
+			fs.rmSync(moveHome, { recursive: true, force: true });
+		}).pipe(Effect.runPromise));
+
+	it('leaves non-`.lock` dotfiles at the `git/` root untouched', () =>
+		Effect.gen(function* () {
+			// A stray `.DS_Store` or similar is not a lock file and the
+			// sweep must not remove it even if its mtime is old.
+			const moveHome = tmpRoot();
+			const root = join(moveHome, 'git');
+			fs.mkdirSync(root, { recursive: true });
+			const dsStore = join(root, '.DS_Store');
+			fs.writeFileSync(dsStore, '');
+			const ancient = new Date(Date.now() - 5 * 60 * 1000);
+			fs.utimesSync(dsStore, ancient, ancient);
+			const removed = yield* sweepStaleGitLocks(moveHome);
+			expect(removed).toEqual([]);
+			expect(fs.existsSync(dsStore)).toBe(true);
+			fs.rmSync(moveHome, { recursive: true, force: true });
+		}).pipe(Effect.runPromise));
+
+	it('returns empty when `<moveHome>/git/` does not exist', () =>
+		Effect.gen(function* () {
+			const moveHome = tmpRoot();
+			// `<moveHome>/git/` deliberately not created.
+			const removed = yield* sweepStaleGitLocks(moveHome);
+			expect(removed).toEqual([]);
+			fs.rmSync(moveHome, { recursive: true, force: true });
+		}).pipe(Effect.runPromise));
 });
 
 // -----------------------------------------------------------------------------

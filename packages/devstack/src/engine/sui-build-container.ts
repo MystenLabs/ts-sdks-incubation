@@ -483,11 +483,151 @@ const releaseMoveBuildLock = (handle: MoveBuildLockHandle): Effect.Effect<void> 
 // Wrapping only `SuiBuildContainer.runBuild` here would miss the two
 // other code paths in `buildMove`; the per-build-container wrap was
 // removed when this hoist landed.
+//
+// Stale-git-lock sweep: a previous run that was SIGKILL'd or crashed
+// mid-`git sparse-checkout add` leaves a 0-byte
+// `~/.move/git/<repo>/.git/index.lock` (or `sparse-checkout.lock`,
+// `HEAD.lock`, `config.lock`, `shallow.lock`) on disk. The next build
+// — even an otherwise-uncontended one — fails with
+//   fatal: Unable to create '/root/.move/git/<repo>/.git/index.lock':
+//   File exists. Another git process seems to be running in this
+//   repository ...
+// because git can't reclaim its own lock without a `--force` it doesn't
+// expose. Our O_EXCL `~/.devstack/locks/sui-move-build-*.lock` makes
+// no claim about git's internal locks; it only guarantees we're the
+// only devstack process touching `~/.move/git/` right now. So while we
+// hold it, sweep any git lock file whose mtime is older than a safety
+// window (no live git process could possibly still be using it).
+//
+// We sweep BEFORE the body runs, after acquiring our lock — this
+// ensures no peer devstack can be in the middle of a git op when we
+// look. The age threshold defends against the (extremely-unlikely)
+// case where a host-side `git` invocation outside devstack is mid-
+// operation in `~/.move/git/`; 60s is well above any normal git
+// op's runtime against a sparse-checkout dep cache.
 export const withMoveBuildLock = <A, E>(
 	moveHome: string,
 	body: Effect.Effect<A, E>,
 ): Effect.Effect<A, E | SuiCliError> =>
-	Effect.acquireUseRelease(acquireMoveBuildLock(moveHome), () => body, releaseMoveBuildLock);
+	Effect.acquireUseRelease(
+		acquireMoveBuildLock(moveHome),
+		() =>
+			Effect.gen(function* () {
+				yield* sweepStaleGitLocks(moveHome);
+				return yield* body;
+			}),
+		releaseMoveBuildLock,
+	);
+
+// File names git creates as its own per-op locks. Each is a 0-byte
+// sentinel that git unlinks when its operation completes; a crash
+// leaves it behind and blocks the next op against the same repo.
+const GIT_LOCK_NAMES: ReadonlyArray<string> = [
+	'index.lock',
+	'HEAD.lock',
+	'config.lock',
+	'shallow.lock',
+	'packed-refs.lock',
+];
+
+// Lock files inside `<repo>/.git/info/` (sparse-checkout writes its
+// lock here, not at the .git root).
+const GIT_INFO_LOCK_NAMES: ReadonlyArray<string> = ['sparse-checkout.lock'];
+
+// Age threshold below which we conservatively assume a real git
+// process might still be running. 60s is well above any normal git op
+// against a sparse-checkout dep cache (sui-cli's git fetches take
+// seconds, not minutes).
+const STALE_GIT_LOCK_AGE_MS = 60_000;
+
+/**
+ * Walk `<moveHome>/git/` and remove stale lock files left by previous
+ * SIGKILL'd or crashed `sui move build` runs.
+ *
+ * Two flavors are swept (both gated on a 60s mtime safety window so a
+ * real in-flight operation is never disturbed):
+ *
+ *  - `.<repo>.lock` at the `git/` root — sui-cli's own per-repo lock
+ *    sentinel (created by its rust-side `flock` wrapper around git ops).
+ *  - `<repo>/.git/{index,HEAD,config,shallow,packed-refs}.lock` and
+ *    `<repo>/.git/info/sparse-checkout.lock` — git's internal per-op
+ *    lock files. A previous crash mid-`git sparse-checkout add` is the
+ *    most common offender; the 0-byte index.lock survives the parent
+ *    sui-cli process and the next build trips on "Unable to create
+ *    '.git/index.lock': File exists. Another git process seems to be
+ *    running ...".
+ *
+ * Used inside `withMoveBuildLock` so the sweep runs while we hold the
+ * cross-process devstack lock — no peer can be racing into a git op
+ * while we look. Best-effort: missing dirs, unreadable entries, and
+ * unlink races all surface as silent no-ops (the build itself will
+ * still fail loudly if a stale lock survives).
+ *
+ * Exported so `cli/commands/doctor.ts` + `cli/commands/wipe.ts` can
+ * call it directly (doctor reports them, `--clean-locks` removes;
+ * wipe sweeps unconditionally as part of its destructive cleanup).
+ */
+export const sweepStaleGitLocks = (
+	moveHome: string,
+): Effect.Effect<ReadonlyArray<string>> =>
+	Effect.sync(() => {
+		const removed: Array<string> = [];
+		const root = path.join(moveHome, 'git');
+		let entries: ReadonlyArray<string>;
+		try {
+			entries = fs.readdirSync(root);
+		} catch {
+			return removed;
+		}
+		const now = Date.now();
+		for (const entry of entries) {
+			const fullEntry = path.join(root, entry);
+			// sui-cli per-repo locks (`.<repo>.lock`) live at the `git/`
+			// root as 0-byte sentinel files. A crashed sui-cli leaves
+			// them behind and the next sui-cli invocation refuses to
+			// touch the repo. Same 60s safety window as git's own locks.
+			if (entry.startsWith('.') && entry.endsWith('.lock')) {
+				if (maybeRemoveStaleLock(fullEntry, now)) {
+					removed.push(fullEntry);
+				}
+				continue;
+			}
+			// Real per-repo dirs: walk `<repo>/.git/` for git's own
+			// per-op lock files. Anything else under the entry (regular
+			// files, dotfiles that aren't `.lock`) is intentionally
+			// untouched.
+			const gitDir = path.join(fullEntry, '.git');
+			for (const name of GIT_LOCK_NAMES) {
+				if (maybeRemoveStaleLock(path.join(gitDir, name), now)) {
+					removed.push(path.join(gitDir, name));
+				}
+			}
+			const infoDir = path.join(gitDir, 'info');
+			for (const name of GIT_INFO_LOCK_NAMES) {
+				if (maybeRemoveStaleLock(path.join(infoDir, name), now)) {
+					removed.push(path.join(infoDir, name));
+				}
+			}
+		}
+		return removed as ReadonlyArray<string>;
+	});
+
+const maybeRemoveStaleLock = (lockPath: string, nowMs: number): boolean => {
+	let st: fs.Stats;
+	try {
+		st = fs.statSync(lockPath);
+	} catch {
+		return false;
+	}
+	if (!st.isFile()) return false;
+	if (nowMs - st.mtimeMs < STALE_GIT_LOCK_AGE_MS) return false;
+	try {
+		fs.unlinkSync(lockPath);
+		return true;
+	} catch {
+		return false;
+	}
+};
 
 // Run a `sui move build` inside the container against `/host/<rel>`.
 // The Move.lock scrub is scoped to the package's subtree (so we don't

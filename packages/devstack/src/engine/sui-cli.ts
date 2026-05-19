@@ -204,7 +204,10 @@ export const buildMove = (
 			return yield* Effect.fail(
 				new SuiCliError({
 					phase: 'sui move build',
-					message: formatCliFailure('sui move build', captured),
+					message: appendStaleGitLockHint(
+						formatCliFailure('sui move build', captured),
+						captured.stderr,
+					),
 					stdout: captured.stdout,
 					stderr: captured.stderr,
 					exitCode: captured.exitCode,
@@ -481,6 +484,34 @@ const formatCliFailure = (op: string, captured: SuiCliCapture): string => {
 };
 
 const MAX_ERROR_DETAIL = 600;
+
+// When sui-cli's git layer trips on a stale `.git/index.lock` (or
+// `sparse-checkout.lock`, etc.) inside `~/.move/git/<repo>/.git/`,
+// the symptom is verbatim:
+//
+//   fatal: Unable to create '<path>/.git/index.lock': File exists.
+//   Another git process seems to be running in this repository ...
+//
+// `withMoveBuildLock` now sweeps these before each build, but a fresh
+// crash inside the same process won't be cleaned up on the next attempt
+// (the sweep only runs at acquire time, not after the spawn failed).
+// Append a recipe hint so the next CLI message points at recovery
+// instead of leaving the user to guess. Detection by stderr substring
+// — git's error wording is stable; sui-cli passes git stderr through
+// verbatim.
+const STALE_GIT_LOCK_MARKER = '.git/index.lock';
+const STALE_GIT_LOCK_RECIPE =
+	'\n\nHint: stale `.git/index.lock` from a previous crashed run blocks `sui move build`. ' +
+	'Run `pnpm devstack doctor --clean-locks` to clear stale locks under `~/.move/git/`, ' +
+	'or remove the offending file by hand (`rm ~/.move/git/<repo>/.git/index.lock`). ' +
+	'Then retry.';
+
+const appendStaleGitLockHint = (message: string, stderr: string): string => {
+	if (!stderr.includes(STALE_GIT_LOCK_MARKER) && !/index\.lock'?: File exists/.test(stderr)) {
+		return message;
+	}
+	return `${message}${STALE_GIT_LOCK_RECIPE}`;
+};
 
 const truncateForError = (text: string): string => {
 	const collapsed = text.replace(/\r/g, '').trim();
