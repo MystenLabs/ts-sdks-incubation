@@ -50,7 +50,7 @@ import {
 } from '../../engine/sui-fork/meta.js';
 import { formatBytes } from '../../engine/docker/inventory.js';
 import { readStackContext } from '../../runtime/read-stack-context.js';
-import { failAlreadyReported } from '../already-reported.js';
+import { AlreadyReportedError, failAlreadyReported } from '../already-reported.js';
 import { emitEnvelope, jsonModeEnabled, successEnvelope } from '../envelope.js';
 import { EX_SEED_MISMATCH } from '../exit-codes.js';
 import { resolveForkCacheRoot, resolveForkMetaPath, resolveStack } from '../stack-resolution.js';
@@ -123,6 +123,28 @@ const resolveForkRuntimeCtx = (stack: string) =>
 const makeForkClient = (ctx: ForkRuntimeContext): SuiGrpcClient =>
 	new SuiGrpcClient({ baseUrl: ctx.rpcUrl, network: ctx.upstream });
 
+/** Run a `ForkingService` admin RPC, formatting any rejection as a
+ *  `<label> failed — <cause>` message and re-raising as
+ *  `AlreadyReportedError`. Every `fork <sub>` command body that talks to
+ *  the fork's gRPC admin surface uses this — the alternative is the
+ *  five-line `Effect.tryPromise → Effect.catch → failAlreadyReported`
+ *  chain repeated at every call site. */
+const wrapForkRpc = <T>(
+	label: string,
+	fn: () => Promise<T>,
+): Effect.Effect<T, AlreadyReportedError> =>
+	Effect.tryPromise({
+		try: fn,
+		catch: (cause) => new Error(`${label} failed — ${String(cause)}`),
+	}).pipe(
+		Effect.catch((cause) =>
+			Effect.gen(function* () {
+				yield* failAlreadyReported(cause.message);
+				return undefined as never;
+			}),
+		),
+	);
+
 // ---------------------------------------------------------------------------
 // `fork status`
 // ---------------------------------------------------------------------------
@@ -151,16 +173,8 @@ const statusCommand = Command.make(
 			const resolved = yield* resolveStack(fs, path, stack);
 			const ctx = yield* resolveForkRuntimeCtx(resolved);
 			const client = makeForkClient(ctx);
-			const status = yield* Effect.tryPromise({
-				try: () => client.forkingService.getStatus({}).response,
-				catch: (cause) => new Error(`fork status: GetStatus failed — ${String(cause)}`),
-			}).pipe(
-				Effect.catch((cause) =>
-					Effect.gen(function* () {
-						yield* failAlreadyReported(cause.message);
-						return undefined as never;
-					}),
-				),
+			const status = yield* wrapForkRpc('fork status: GetStatus', () =>
+				client.forkingService.getStatus({}).response,
 			);
 			const body = {
 				stack: ctx.stack,
@@ -276,17 +290,9 @@ const advanceClockCommand = Command.make(
 				return;
 			}
 			const client = makeForkClient(ctx);
-			const resp = yield* Effect.tryPromise({
-				try: () =>
-					client.forkingService.advanceClock({ durationMs: BigInt(parsedDuration) }).response,
-				catch: (cause) => new Error(`fork advance-clock: AdvanceClock failed — ${String(cause)}`),
-			}).pipe(
-				Effect.catch((cause) =>
-					Effect.gen(function* () {
-						yield* failAlreadyReported(cause.message);
-						return undefined as never;
-					}),
-				),
+			const resp = yield* wrapForkRpc(
+				'fork advance-clock: AdvanceClock',
+				() => client.forkingService.advanceClock({ durationMs: BigInt(parsedDuration) }).response,
 			);
 			const body = {
 				stack: ctx.stack,
@@ -367,17 +373,9 @@ const advanceCheckpointCommand = Command.make(
 			const client = makeForkClient(ctx);
 			const advances: Array<{ checkpointSequenceNumber: number; timestampMs: number }> = [];
 			for (let i = 0; i < parsedCount; i++) {
-				const resp = yield* Effect.tryPromise({
-					try: () => client.forkingService.advanceCheckpoint({}).response,
-					catch: (cause) =>
-						new Error(`fork advance-checkpoint: AdvanceCheckpoint failed — ${String(cause)}`),
-				}).pipe(
-					Effect.catch((cause) =>
-						Effect.gen(function* () {
-							yield* failAlreadyReported(cause.message);
-							return undefined as never;
-						}),
-					),
+				const resp = yield* wrapForkRpc(
+					'fork advance-checkpoint: AdvanceCheckpoint',
+					() => client.forkingService.advanceCheckpoint({}).response,
 				);
 				advances.push({
 					checkpointSequenceNumber: Number(resp.checkpointSequenceNumber),
@@ -436,16 +434,8 @@ const replayToCommand = Command.make(
 			}
 			const ctx = yield* resolveForkRuntimeCtx(resolved);
 			const client = makeForkClient(ctx);
-			const initial = yield* Effect.tryPromise({
-				try: () => client.forkingService.getStatus({}).response,
-				catch: (cause) => new Error(`fork replay-to: GetStatus failed — ${String(cause)}`),
-			}).pipe(
-				Effect.catch((cause) =>
-					Effect.gen(function* () {
-						yield* failAlreadyReported(cause.message);
-						return undefined as never;
-					}),
-				),
+			const initial = yield* wrapForkRpc('fork replay-to: GetStatus', () =>
+				client.forkingService.getStatus({}).response,
 			);
 			let current = Number(initial.checkpointSequenceNumber);
 			if (current >= parsedTarget) {
@@ -474,19 +464,9 @@ const replayToCommand = Command.make(
 			}
 			let advanced = 0;
 			while (current < parsedTarget) {
-				const resp = yield* Effect.tryPromise({
-					try: () => client.forkingService.advanceCheckpoint({}).response,
-					catch: (cause) =>
-						new Error(
-							`fork replay-to: AdvanceCheckpoint failed at ${current}/${parsedTarget} — ${String(cause)}`,
-						),
-				}).pipe(
-					Effect.catch((cause) =>
-						Effect.gen(function* () {
-							yield* failAlreadyReported(cause.message);
-							return undefined as never;
-						}),
-					),
+				const resp = yield* wrapForkRpc(
+					`fork replay-to: AdvanceCheckpoint at ${current}/${parsedTarget}`,
+					() => client.forkingService.advanceCheckpoint({}).response,
 				);
 				current = Number(resp.checkpointSequenceNumber);
 				advanced += 1;

@@ -25,11 +25,10 @@ import { Argument, Command, Flag } from 'effect/unstable/cli';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { randomBytes } from 'node:crypto';
 import { wrapCause } from '../loaders.js';
-import { failAlreadyReported } from '../already-reported.js';
 import { promptConfirm } from '../cli-prompt.js';
 import {
 	emitEnvelope,
-	errorEnvelope,
+	failWithEnvelope,
 	jsonModeEnabled,
 	successEnvelope,
 } from '../envelope.js';
@@ -368,7 +367,7 @@ const restoreCommand = Command.make(
 			const dir = defaultSnapshotsDir();
 			const entries = yield* listSnapshots({ dir });
 			if (entries.length === 0) {
-				const envelope = errorEnvelope({
+				return yield* failWithEnvelope({
 					command: 'snapshot.restore',
 					error: {
 						code: 'SNAPSHOT_NOT_FOUND',
@@ -376,9 +375,8 @@ const restoreCommand = Command.make(
 						message: `no snapshots in ${dir}`,
 					},
 					elapsedMs: Date.now() - startedAt,
+					json: useJson,
 				});
-				if (useJson) yield* emitEnvelope(envelope);
-				return yield* failAlreadyReported(envelope.error!.message);
 			}
 
 			// Default: newest entry (entries are sorted ascending by
@@ -389,7 +387,7 @@ const restoreCommand = Command.make(
 			});
 
 			if (target.ambiguous) {
-				const envelope = errorEnvelope({
+				return yield* failWithEnvelope({
 					command: 'snapshot.restore',
 					error: {
 						code: 'AMBIGUOUS_REF',
@@ -399,12 +397,11 @@ const restoreCommand = Command.make(
 						hint: 'devstack snapshot list',
 					},
 					elapsedMs: Date.now() - startedAt,
+					json: useJson,
 				});
-				if (useJson) yield* emitEnvelope(envelope);
-				return yield* failAlreadyReported(envelope.error!.message);
 			}
 			if (target.match === undefined) {
-				const envelope = errorEnvelope({
+				return yield* failWithEnvelope({
 					command: 'snapshot.restore',
 					error: {
 						code: 'SNAPSHOT_NOT_FOUND',
@@ -412,9 +409,8 @@ const restoreCommand = Command.make(
 						message: `no snapshot matching '${Option.getOrElse(ref, () => '')}'`,
 					},
 					elapsedMs: Date.now() - startedAt,
+					json: useJson,
 				});
-				if (useJson) yield* emitEnvelope(envelope);
-				return yield* failAlreadyReported(envelope.error!.message);
 			}
 
 			// Resolve target stack: explicit `--stack` > meta-recorded
@@ -568,7 +564,7 @@ const deleteCommand = Command.make(
 			const entries = yield* listSnapshots({ dir: snapshotsDir });
 			const target = findMatch(entries, ref);
 			if (target.ambiguous) {
-				const envelope = errorEnvelope({
+				return yield* failWithEnvelope({
 					command: 'snapshot.delete',
 					error: {
 						code: 'AMBIGUOUS_REF',
@@ -577,12 +573,11 @@ const deleteCommand = Command.make(
 						hint: 'devstack snapshot list',
 					},
 					elapsedMs: Date.now() - startedAt,
+					json: useJson,
 				});
-				if (useJson) yield* emitEnvelope(envelope);
-				return yield* failAlreadyReported(envelope.error!.message);
 			}
 			if (target.match === undefined) {
-				const envelope = errorEnvelope({
+				return yield* failWithEnvelope({
 					command: 'snapshot.delete',
 					error: {
 						code: 'SNAPSHOT_NOT_FOUND',
@@ -590,9 +585,8 @@ const deleteCommand = Command.make(
 						message: `no snapshot matching '${ref}'`,
 					},
 					elapsedMs: Date.now() - startedAt,
+					json: useJson,
 				});
-				if (useJson) yield* emitEnvelope(envelope);
-				return yield* failAlreadyReported(envelope.error!.message);
 			}
 			const targetDir = path.join(snapshotsDir, target.match.id);
 
@@ -624,7 +618,7 @@ const deleteCommand = Command.make(
 				noInput,
 			});
 			if (outcome.kind === 'non-interactive') {
-				const envelope = errorEnvelope({
+				return yield* failWithEnvelope({
 					command: 'snapshot.delete',
 					error: {
 						code:
@@ -634,12 +628,11 @@ const deleteCommand = Command.make(
 						hint: `devstack snapshot delete ${ref} --yes`,
 					},
 					elapsedMs: Date.now() - startedAt,
+					json: useJson,
 				});
-				if (useJson) yield* emitEnvelope(envelope);
-				return yield* failAlreadyReported(envelope.error!.message);
 			}
 			if (outcome.kind === 'cancelled' || outcome.kind === 'declined') {
-				const envelope = errorEnvelope({
+				return yield* failWithEnvelope({
 					command: 'snapshot.delete',
 					error: {
 						code: outcome.kind === 'cancelled' ? 'CANCELLED' : 'DECLINED',
@@ -647,13 +640,11 @@ const deleteCommand = Command.make(
 						message: `devstack snapshot delete: ${outcome.kind} by operator`,
 					},
 					elapsedMs: Date.now() - startedAt,
-				});
-				if (useJson) yield* emitEnvelope(envelope);
-				else
-					yield* Console.log(
+					json: useJson,
+					humanFallback: Console.log(
 						`devstack snapshot delete: ${outcome.kind} by operator — no changes made`,
-					);
-				return yield* failAlreadyReported(envelope.error!.message);
+					),
+				});
 			}
 
 			yield* fs

@@ -21,6 +21,7 @@
 //     prompting.
 
 import { Console, Effect } from 'effect';
+import { AlreadyReportedError, failAlreadyReported } from './already-reported.js';
 import { type ExitCode } from './exit-codes.js';
 
 /** Stable envelope shape version. Bump on breaking changes. */
@@ -113,3 +114,38 @@ export const inputDisabled = (input: { readonly noInput: boolean }): boolean => 
 	if (env === '1' || env === 'true') return true;
 	return false;
 };
+
+/** Collapse the canonical "build error envelope → emit it under --json
+ *  (or print a human-readable fallback) → raise `AlreadyReportedError`"
+ *  trio that every CLI subcommand otherwise spells out by hand. The
+ *  envelope shape is preserved exactly; the only output difference under
+ *  `--json` is that callers no longer need to repeat the `if (useJson)`
+ *  branch and the `failAlreadyReported(envelope.error!.message)` follow-up.
+ *
+ *  When `json` is false and `humanFallback` is supplied it runs before
+ *  the failure (e.g. to emit a "cancelled by operator — no changes made"
+ *  line on stdout) so subcommands can keep their existing human output. */
+export const failWithEnvelope = (input: {
+	readonly command: string;
+	readonly error: EnvelopeError;
+	readonly elapsedMs: number;
+	readonly dryRun?: boolean;
+	readonly hints?: ReadonlyArray<string>;
+	readonly json: boolean;
+	readonly humanFallback?: Effect.Effect<void>;
+}): Effect.Effect<never, AlreadyReportedError> =>
+	Effect.gen(function* () {
+		const envelope = errorEnvelope({
+			command: input.command,
+			error: input.error,
+			elapsedMs: input.elapsedMs,
+			...(input.dryRun !== undefined ? { dryRun: input.dryRun } : {}),
+			...(input.hints !== undefined ? { hints: input.hints } : {}),
+		});
+		if (input.json) {
+			yield* emitEnvelope(envelope);
+		} else if (input.humanFallback !== undefined) {
+			yield* input.humanFallback;
+		}
+		return yield* failAlreadyReported(envelope.error!.message);
+	});

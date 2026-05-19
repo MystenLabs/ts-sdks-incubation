@@ -36,9 +36,8 @@ import * as nodePath from 'node:path';
 import { Console, Effect } from 'effect';
 import { Command, Flag } from 'effect/unstable/cli';
 import { sweepStaleGitLocks } from '../../engine/sui-build-container.js';
-import { failAlreadyReported } from '../already-reported.js';
 import { promptConfirm, promptTypeToConfirm } from '../cli-prompt.js';
-import { emitEnvelope, errorEnvelope, jsonModeEnabled, successEnvelope } from '../envelope.js';
+import { emitEnvelope, failWithEnvelope, jsonModeEnabled, successEnvelope } from '../envelope.js';
 import { EX_USAGE, EX_CONFIRM_REQUIRED } from '../exit-codes.js';
 import { resolveAppName, resolveForkCacheRoot, resolveStackFromEnv } from '../stack-resolution.js';
 import { pruneStack } from './_prune-stack.js';
@@ -199,7 +198,7 @@ export const wipeCommand = Command.make(
 			const useJson = jsonModeEnabled(json);
 
 			if (alsoUpstreamCache && keepUpstreamCache) {
-				const envelope = errorEnvelope({
+				return yield* failWithEnvelope({
 					command: COMMAND_NAME,
 					error: {
 						code: 'MUTUALLY_EXCLUSIVE_FLAGS',
@@ -208,11 +207,8 @@ export const wipeCommand = Command.make(
 							'devstack wipe: --also-upstream-cache and --keep-upstream-cache are mutually exclusive',
 					},
 					elapsedMs: Date.now() - startedAt,
+					json: useJson,
 				});
-				if (useJson) {
-					yield* emitEnvelope(envelope);
-				}
-				return yield* failAlreadyReported(envelope.error!.message);
 			}
 
 			const resolvedApp = resolveAppName(app);
@@ -284,7 +280,7 @@ export const wipeCommand = Command.make(
 
 			if (outcome.kind === 'non-interactive') {
 				const code = outcome.exitCode;
-				const envelope = errorEnvelope({
+				return yield* failWithEnvelope({
 					command: COMMAND_NAME,
 					error: {
 						code: code === EX_CONFIRM_REQUIRED ? 'CONFIRM_REQUIRED' : 'CONFIRM_UNSUPPORTED',
@@ -293,14 +289,11 @@ export const wipeCommand = Command.make(
 						hint: 'devstack wipe --yes',
 					},
 					elapsedMs: Date.now() - startedAt,
+					json: useJson,
 				});
-				if (useJson) {
-					yield* emitEnvelope(envelope);
-				}
-				return yield* failAlreadyReported(envelope.error!.message);
 			}
 			if (outcome.kind === 'cancelled' || outcome.kind === 'declined') {
-				const envelope = errorEnvelope({
+				return yield* failWithEnvelope({
 					command: COMMAND_NAME,
 					error: {
 						code: outcome.kind === 'cancelled' ? 'CANCELLED' : 'DECLINED',
@@ -308,13 +301,11 @@ export const wipeCommand = Command.make(
 						message: `devstack wipe: ${outcome.kind} by operator`,
 					},
 					elapsedMs: Date.now() - startedAt,
+					json: useJson,
+					humanFallback: Console.log(
+						`devstack wipe: ${outcome.kind} by operator — no changes made`,
+					),
 				});
-				if (useJson) {
-					yield* emitEnvelope(envelope);
-				} else {
-					yield* Console.log(`devstack wipe: ${outcome.kind} by operator — no changes made`);
-				}
-				return yield* failAlreadyReported(envelope.error!.message);
 			}
 
 			const result = yield* pruneStack({
