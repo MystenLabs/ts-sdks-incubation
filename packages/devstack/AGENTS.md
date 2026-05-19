@@ -409,14 +409,35 @@ Three reporting patterns; the rule is whichever you pick, don't double-print:
 Stack resolution always goes through `cli/stack-resolution.ts` — no inline
 flag-vs-env-vs-active-file precedence chains.
 
+### Exit codes + `--schema --json` (Phase A)
+
+Phase A landed a sysexits-style exit-code table plus an introspection global flag. There is no
+separate user-facing doc — these are the documentation surface:
+
+- `cli/exit-codes.ts` declares every code the CLI may emit. The sysexits block (`EX_OK=0`,
+  `EX_GENERIC=1`, `EX_USAGE=64`, `EX_DATAERR=65`, `EX_NOINPUT=66`, `EX_UNAVAILABLE=69`,
+  `EX_CANTCREAT=73`, `EX_TEMPFAIL=75`, `EX_CONFIG=78`) follows BSD `sysexits.h`; the devstack-domain
+  block (`EX_SUPERVISOR_LIVE=40`, `EX_SNAPSHOT_NOT_FOUND=41`, `EX_SEED_MISMATCH=42`,
+  `EX_CONFIRM_REQUIRED=43`) covers operator-actionable invariants.
+- Commands surface the chosen code on `error.exitCode` inside the canonical envelope (see
+  `cli/envelope.ts`). The top-level teardown still maps any non-success to process exit 1 today —
+  Phase B threads the codes through the reporter so the OS exit matches the envelope.
+- `devstack --schema --json` walks the live `rootCommand` tree and emits every verb, every flag, and
+  the full exit-code table as one JSON document. Agents calling devstack should hit this once at
+  session start instead of scraping `--help`; the schema emitter lives in `cli/schema-emit.ts`.
+
+When you add a code, append it to `ALL_EXIT_CODES` and extend `exitCodeName` / `exitCodeDescription`
+— the schema emitter and `--schema --json` consumers pick it up automatically.
+
 ### Underscore-prefixed files (`_*.ts`)
 
 A file in `cli/commands/` whose basename starts with `_` is a **helper module, not a registered
-command**. Today the only example is `cli/commands/_prune-stack.ts`, which factors out the
-container/volume sweep used by `down`, `wipe`, and `reset`. The underscore signals to the reader
-(and to future tooling that walks the commands directory) that the module isn't wired into the
-top-level command registry in `cli/index.ts` — it exists only to be imported by sibling commands. If
-you add another such helper, keep the same `_` prefix so the convention stays grep-able.
+command**. Today the examples are `cli/commands/_prune-stack.ts` (the container/volume sweep used
+by `wipe` and `prune`) and `cli/commands/_prune-ui.tsx` (the Ink picker `prune` renders when
+launched without flags). The underscore signals to the reader (and to future tooling that walks the
+commands directory) that the module isn't wired into the top-level command registry in
+`cli/index.ts` — it exists only to be imported by sibling commands. If you add another such
+helper, keep the same `_` prefix so the convention stays grep-able.
 
 ## Codegen contract
 

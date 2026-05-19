@@ -22,10 +22,10 @@ Each plugin has a documented runbook below. The shape is the same for every one:
 1. Bring up the example app (`pnpm dev` in `examples/<app>`).
 2. Drive some side-effect that produces persistent state (transfer, blob, pool, etc.) and record the
    observable.
-3. `pnpm devstack snapshot save <label>` in the example dir.
+3. `pnpm devstack snapshot save --label <label>` in the example dir.
 4. Tear down: `Ctrl-C` the supervisor, then `pnpm devstack wipe --yes` to discard the writable
    layer + named volumes.
-5. `pnpm devstack snapshot restore <label>`.
+5. `pnpm devstack snapshot restore <label>` (restore takes the id or label as a positional).
 6. Bring the example back up. Assert the observable from step 2 is identical (same balance, same
    blob contents, same pool ids, same addresses).
 
@@ -51,7 +51,7 @@ broken — open a bug pointing at the specific runbook step.
    curl -s http://localhost:9000 -H 'content-type: application/json' \
      -d '{"jsonrpc":"2.0","id":1,"method":"suix_getBalance","params":["0xalice..."]}'
    ```
-3. `pnpm devstack snapshot save sui-checkpoint`.
+3. `pnpm devstack snapshot save --label sui-checkpoint`.
 4. `Ctrl-C` the supervisor. `pnpm devstack wipe --yes`.
 5. `pnpm devstack snapshot restore sui-checkpoint`.
 6. `pnpm dev` again. Re-run the balance query. **Assert: identical balance.** The chainId in the
@@ -77,7 +77,7 @@ captured an empty writable layer. After this runbook, the writable-layer flip +
    Record the blob id.
 3. Snapshot:
    ```
-   pnpm devstack snapshot save walrus-checkpoint
+   pnpm devstack snapshot save --label walrus-checkpoint
    ```
 4. Tear down + wipe (`Ctrl-C`, then `pnpm devstack wipe --yes`).
 5. Restore + boot:
@@ -107,7 +107,7 @@ detector; this runbook also exercises the happy path.
      | jq '.result.data.content.fields.publicKey'
    ```
 3. Encrypt + decrypt a payload via the example UI. Record both halves.
-4. `snapshot save seal-checkpoint`. Tear down + wipe. Restore.
+4. `snapshot save --label seal-checkpoint`. Tear down + wipe. Restore.
 5. Boot again. Verify:
    - `cat .devstack/stacks/main/runtime/seal/master-key.env` matches the value from before (file
      owned by current user, mode 0o600).
@@ -137,7 +137,7 @@ was unlinked on scope close, which would have made restore unable to start the k
    ```
 3. Place a limit order via the Trading UI. Read the order book through `/ticker` to confirm the
    order landed. Mint 100 DEEP via the Mint UI; record alice's DEEP balance.
-4. `snapshot save deepbook-full-checkpoint`. Tear down + wipe. Restore.
+4. `snapshot save --label deepbook-full-checkpoint`. Tear down + wipe. Restore.
 5. Boot again. Re-read the manifest's pool ids, indexer + server URLs, margin pool ids, and pyth
    state. **Assert: identical IDs** (state-store cache hit → no re-publish, no re-create on chain).
    The order book and minted DEEP balance from step 3 must also be preserved (chain state survived

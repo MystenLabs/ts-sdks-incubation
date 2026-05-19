@@ -42,7 +42,7 @@ Expected:
 - `curl -v http://redis.plugin-author-redis.localhost:16379` opens a
   TCP connection (Redis isn't HTTP, so curl gets a protocol mismatch,
   but the connection itself proves the routing wired up).
-- `redis-cli -p <host port from `devstack stack`> ping` returns `PONG`.
+- `redis-cli -p <host port from `devstack manifest --json`> ping` returns `PONG`.
 
 ## What this is NOT
 
