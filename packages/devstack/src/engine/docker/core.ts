@@ -17,6 +17,11 @@ import {
 	type RouterLabel,
 } from './router.js';
 import { Stream } from 'effect';
+import {
+	captureCommand,
+	type CaptureError,
+	decodeStream as decodeStreamShared,
+} from '../capture-command.js';
 
 // -----------------------------------------------------------------------------
 // Errors
@@ -1478,36 +1483,30 @@ const removeContainerIfExists = (
 // stderr to a Stream that was never drained.
 export const captureStreams = runCapturing;
 
-// Underlying impl shared by every docker wrapper. Spawns `cmd`, concurrently
-// drains stdout + stderr, and resolves with all three pieces. Any error from
-// the spawner itself (e.g. ENOENT for docker) becomes a `DockerError` with
-// `cause` set — the caller decides whether `exitCode !== 0` is also fatal
-// (it is for `run`/`pull`/`build`/`commit`/`save`; `exec` surfaces it
-// verbatim so retry-on-nonzero callers like `awaitIndexerDbReady` can see
+// Wraps `engine/capture-command.ts::captureCommand` into a docker-flavored
+// envelope. Any error from the spawner itself (e.g. ENOENT for docker) becomes
+// a `DockerError` with `cause` set — the caller decides whether `exitCode !== 0`
+// is also fatal (it is for `run`/`pull`/`build`/`commit`/`save`; `exec` surfaces
+// it verbatim so retry-on-nonzero callers like `awaitIndexerDbReady` can see
 // pg_isready's exit codes).
+//
+// Pre-E2 each subprocess capture site (`docker/core.ts`, `sui-cli.ts`,
+// `snapshot.ts`) had its own copy of spawn + drain + exitCode; this is the
+// docker-side wrapper around the unified helper.
 export function runCapturing(
 	spawner: Spawner,
 	cmd: ChildProcess.Command,
 	op: string,
 ): Effect.Effect<DockerExecResult, DockerError> {
-	return Effect.scoped(
-		Effect.gen(function* () {
-			const handle = yield* spawner.spawn(cmd).pipe(Effect.mapError(dockerError(op)));
-			const [stdoutText, stderrText, code] = yield* Effect.all(
-				[
-					decodeStream(handle.stdout).pipe(Effect.mapError(dockerError(op))),
-					decodeStream(handle.stderr).pipe(Effect.mapError(dockerError(op))),
-					handle.exitCode.pipe(Effect.mapError(dockerError(op))),
-				],
-				{ concurrency: 'unbounded' },
-			);
-			return {
-				exitCode: code as number,
-				stdout: stdoutText,
-				stderr: stderrText,
-			};
-		}),
-	);
+	return captureCommand(spawner, cmd, {
+		op,
+		// Preserve docker's legacy 1KB stream policy for the `cause`-attached
+		// snapshot in the error envelope. The captured RESULT (success path)
+		// is not truncated — callers (`docker inspect` JSON, `docker run`
+		// container-id read) need full stdout.
+		stdoutTruncate: Infinity,
+		stderrTruncate: Infinity,
+	}).pipe(Effect.mapError(captureToDockerError(op)));
 }
 
 // `runCapturing` variant that auto-fails when `exitCode !== 0`. Used by
@@ -1535,11 +1534,26 @@ export const runCapturingOrFail = (
 		return captured.stdout;
 	});
 
-// Drain a byte stream to a UTF-8 string. The spawner's `string` helper only
-// covers stdout; we need both stdout and stderr for the `exec` shape, so
-// drain each via Stream → mkString.
-export const decodeStream = <E>(stream: Stream.Stream<Uint8Array, E>): Effect.Effect<string, E> =>
-	Stream.mkString(Stream.decodeText(stream));
+// Map `CaptureError` (spawn-only failure mode) into a `DockerError`
+// stamped with the docker op so downstream pretty-error rendering shows
+// "docker run failed: ENOENT (docker)" instead of an opaque CaptureError.
+const captureToDockerError =
+	(op: string) =>
+	(err: CaptureError): DockerError =>
+		new DockerError({
+			phase: op,
+			message: op,
+			...(err.exitCode !== undefined ? { exitCode: err.exitCode } : {}),
+			stdout: truncate(err.stdout),
+			stderr: truncate(err.stderr),
+			cause: err.cause,
+		});
+
+// Drain a byte stream to a UTF-8 string. Re-exported from the shared
+// `engine/capture-command.ts` so per-line / streaming docker paths in
+// `engine/docker/exec.ts` (which can't use `captureCommand`'s "both
+// streams at once" shape) keep one definition.
+export const decodeStream = decodeStreamShared;
 
 // -----------------------------------------------------------------------------
 // Per-line output sink

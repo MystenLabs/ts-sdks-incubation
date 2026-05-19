@@ -52,8 +52,9 @@
 // reuse-if-image-matches probe in `Docker.run` — no manual restart of
 // individual containers is needed.
 
-import { Effect, FileSystem, Path, Schema, Stream } from 'effect';
+import { Effect, FileSystem, Path, Schema } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
+import { captureCommand, type CaptureError } from './capture-command.js';
 import * as Docker from './docker.js';
 import { DockerLabel } from './identity.js';
 import { resolveAppDir } from './resolve-app-dir.js';
@@ -221,9 +222,6 @@ const wrapDockerError =
 			cause,
 		});
 
-const wrapSpawnError = (op: string) => (cause: unknown) =>
-	new SnapshotError({ message: `${op} failed`, cause });
-
 // -----------------------------------------------------------------------------
 // Path resolution — mirrors `engine/state-store.ts:resolvePaths` +
 // `engine/service-paths.ts:resolveRuntimeRoot` so the snapshot pipeline
@@ -274,16 +272,13 @@ const resolveStackPaths = (stack: string, network: string, pathSvc: Path.Path): 
 // is undebuggable post-mortem — the actual reason (EACCES on a
 // container-written file, source file vanished mid-archive, output
 // path unwritable, …) lives on stderr and is the only signal tar
-// gives. Truncated to `TAR_STDERR_TRUNC` to keep error messages
-// readable; the full stderr is still attached as the SnapshotError
-// `cause` for log-grepping. Pattern matches `runWithCapture` in
-// `sui-cli.ts`.
+// gives. Truncated to keep error messages readable; the full stderr
+// is still attached as the SnapshotError `cause` for log-grepping.
+// Subprocess capture is delegated to `engine/capture-command.ts`
+// (audit finding E2).
 // -----------------------------------------------------------------------------
 
 const TAR_STDERR_TRUNC = 500;
-
-const decodeStream = (stream: Stream.Stream<Uint8Array, unknown>): Effect.Effect<string, unknown> =>
-	Stream.mkString(Stream.decodeText(stream));
 
 const truncateStderr = (text: string): string => {
 	const trimmed = text.replace(/\r/g, '').trim();
@@ -292,31 +287,39 @@ const truncateStderr = (text: string): string => {
 	return `${trimmed.slice(0, TAR_STDERR_TRUNC - 1)}…`;
 };
 
+const captureToSnapshotError =
+	(op: string) =>
+	(err: CaptureError): SnapshotError =>
+		new SnapshotError({
+			message: `${op} failed`,
+			cause: err.cause ?? err,
+		});
+
 const runTar = (
 	spawner: ReturnType<typeof ChildProcessSpawner.make>,
 	cmd: ChildProcess.Command,
 	op: string,
 ): Effect.Effect<void, SnapshotError> =>
-	Effect.scoped(
-		Effect.gen(function* () {
-			const handle = yield* spawner.spawn(cmd).pipe(Effect.mapError(wrapSpawnError(op)));
-			const [stderr, exitCode] = yield* Effect.all(
-				[
-					decodeStream(handle.stderr).pipe(Effect.mapError(wrapSpawnError(`${op} (stderr)`))),
-					handle.exitCode.pipe(Effect.mapError(wrapSpawnError(`${op} (wait)`))),
-				],
-				{ concurrency: 'unbounded' },
+	Effect.gen(function* () {
+		// `stderrTruncate: Infinity` so `truncateStderr` below applies the
+		// snapshot-specific elision policy (`'(no stderr)'` placeholder
+		// when empty, single-char `…` ellipsis, no `[truncated]` suffix)
+		// instead of `captureCommand`'s generic policy. Stdout from tar
+		// is uninteresting (the archive bytes ride into the `-f <file>`
+		// arg, not pipe) so default `Infinity` stays.
+		const captured = yield* captureCommand(spawner, cmd, {
+			op,
+			stderrTruncate: Infinity,
+		}).pipe(Effect.mapError(captureToSnapshotError(op)));
+		if (captured.exitCode !== 0) {
+			return yield* Effect.fail(
+				new SnapshotError({
+					message: `${op} exited ${captured.exitCode}: ${truncateStderr(captured.stderr)}`,
+					cause: captured.stderr.length > 0 ? captured.stderr : undefined,
+				}),
 			);
-			if (exitCode !== 0) {
-				return yield* Effect.fail(
-					new SnapshotError({
-						message: `${op} exited ${exitCode}: ${truncateStderr(stderr)}`,
-						cause: stderr.length > 0 ? stderr : undefined,
-					}),
-				);
-			}
-		}),
-	);
+		}
+	});
 
 const tarCreate = (
 	spawner: ReturnType<typeof ChildProcessSpawner.make>,

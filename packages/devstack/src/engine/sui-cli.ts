@@ -27,8 +27,9 @@
 
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { Context, Effect, FileSystem, Schema, Stream } from 'effect';
+import { Context, Effect, FileSystem, Schema } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
+import { captureCommand, type CaptureError } from './capture-command.js';
 import { inheritedHostEnv } from './safe-env.js';
 import { SuiCliPhases } from './phases.js';
 import { prettyError } from './pretty-error.js';
@@ -429,33 +430,32 @@ export interface SuiCliCapture {
 	readonly stderr: string;
 }
 
-// Spawn `cmd`, drain stdout + stderr + exit code concurrently. The
+// Spawn `cmd`, drain stdout + stderr + exit code concurrently. Routes
+// through the shared `engine/capture-command.ts::captureCommand` (audit
+// finding E2) and maps the raw `CaptureError` into the sui-flavored
+// envelope so failure rendering still groups under `SuiCliError`. The
 // spawner's `.string(...)` helper only captures stdout, which loses the
 // reason a failing `sui move build` failed (compile errors, missing
-// deps, host-vs-localnet version skew, etc. land on stderr). Mapped
-// errors carry the same `op` prefix that downstream callers stamp.
+// deps, host-vs-localnet version skew, etc. land on stderr). The `op`
+// prefix downstream callers stamp rides through unchanged.
 export type Spawner = ReturnType<typeof ChildProcessSpawner.make>;
+
+const captureToSuiCliError =
+	(phase: SuiCliError['phase']) =>
+	(err: CaptureError): SuiCliError =>
+		// CaptureError only carries a `cause` on a spawn-side failure
+		// (ENOENT, fork limit). `runWithCapture` never opts into the
+		// `captureCommandOrFail` non-zero-exit promotion, so `cause` is
+		// always defined here — but be defensive in case that changes.
+		suiCliError(phase)(err.cause ?? err);
 
 export const runWithCapture = (
 	spawner: Spawner,
 	cmd: ChildProcess.Command,
 	op: SuiCliError['phase'],
 ): Effect.Effect<SuiCliCapture, SuiCliError> =>
-	Effect.scoped(
-		Effect.gen(function* () {
-			const handle = yield* spawner.spawn(cmd).pipe(Effect.mapError(suiCliError(op)));
-			const decode = <E>(stream: Stream.Stream<Uint8Array, E>) =>
-				Stream.mkString(Stream.decodeText(stream));
-			const [stdout, stderr, exitCode] = yield* Effect.all(
-				[
-					decode(handle.stdout).pipe(Effect.mapError(suiCliError(op))),
-					decode(handle.stderr).pipe(Effect.mapError(suiCliError(op))),
-					handle.exitCode.pipe(Effect.mapError(suiCliError(op))),
-				],
-				{ concurrency: 'unbounded' },
-			);
-			return { exitCode: exitCode as number, stdout, stderr };
-		}),
+	captureCommand(spawner, cmd, { op, stdoutTruncate: Infinity, stderrTruncate: Infinity }).pipe(
+		Effect.mapError(captureToSuiCliError(op)),
 	);
 
 // Build the user-facing failure message for a non-zero CLI exit.
