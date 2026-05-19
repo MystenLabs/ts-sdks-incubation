@@ -467,13 +467,17 @@ export const deepbookMarketMaker = <const Name extends string>(
 			// (a Context.Service, not a stack-member key — so it stays
 			// off the upstream list and is satisfied via the un-keyed
 			// composite interface layer). Iterates `options.dependsOn`
-			// for ordering. Coin refs go through `resolveCoinRef` which
-			// `yield*`s a CoinTag — also a Context.Service, not a stack
-			// member, so it's satisfied through the global CoinRegistry
-			// rather than topology ordering. Lift what IS a stack member.
+			// for ordering. `resolveCoinRef` may `yield*` a coin tag
+			// (a `LayeredTag`, e.g. `Coin.fromPackage(usdc, 'MOCK_USDC')`)
+			// — lift those into upstreams too, otherwise the maker lands
+			// in level 0 ahead of the publishing package and fails with
+			// "Service not found: coin/fromPackage/<W>".
 			upstreamKeys: [
 				SuiTag.key,
 				options.signer,
+				...options.pools.flatMap((p) =>
+					[p.base, p.quote].filter((c): c is AnyCoinTag => typeof c !== 'string'),
+				),
 				...(options.dependsOn ?? []),
 			],
 		},

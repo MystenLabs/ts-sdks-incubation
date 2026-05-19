@@ -923,6 +923,9 @@ export const deepbookMargin = <const Name extends string = 'deepbook-margin'>(
 				options.deepbook,
 				...(marginPublish !== undefined ? [marginPublish] : []),
 				...(liquidationPublish !== undefined ? [liquidationPublish] : []),
+				...options.assets.flatMap((a) =>
+					typeof a.coinType !== 'string' ? [a.coinType] : [],
+				),
 				...(options.dependsOn ?? []),
 			],
 		},

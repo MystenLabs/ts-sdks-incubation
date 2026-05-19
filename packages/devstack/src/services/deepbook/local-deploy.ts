@@ -32,6 +32,7 @@ import {
 	SUI_CLOCK_OBJECT_ID,
 	makeFindPool,
 	resolveCoinRef,
+	type AnyCoinTag,
 	type DeepbookPool,
 	type DeepbookPoolSpec,
 } from './internal.js';
@@ -597,10 +598,17 @@ export const deepbookLocalDeploy = <
 			// into upstreams so the topo scheduler places this composite
 			// strictly after its providers — otherwise it lands in level
 			// 0 and yields fail with "Service not found".
+			//
+			// Each pool's `base`/`quote` may be a `LayeredTag` (e.g.
+			// `Coin.fromPackage(usdc, 'MOCK_USDC')`) that the body yields
+			// via `resolveCoinRef`. Lift those tags into upstreams too.
 			upstreamKeys: [
 				SuiTag.key,
 				options.signer,
 				...(publish !== undefined ? [publish] : []),
+				...specs.flatMap((s) =>
+					[s.base, s.quote].filter((c): c is AnyCoinTag => typeof c !== 'string'),
+				),
 				...(options.dependsOn ?? []),
 			],
 		},
