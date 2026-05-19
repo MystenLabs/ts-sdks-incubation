@@ -324,7 +324,7 @@ export const publishMove = <Name, TCaptured>(options: PublishMoveOptions<Name, T
     plugin: 'move',
     displayTitle: `publish.${options.name}`,
     display: (s) => ({ title: `publish.${s.name}`, primary: s.packageId, ... }),
-    namespace: `publishMove/v3`,
+    namespace: 'publishMove',
     upstream: [SuiTag, options.signer],
     inputs: Effect.gen(function* () {
       const sourcePath = typeof options.path === 'string' ? options.path : yield* options.path;
@@ -358,7 +358,7 @@ export const deepbookLocalDeploy = <TPools, Name>(options) => {
     name: options.name ?? 'deepbook',
     kind: 'action',
     plugin: 'deepbook',
-    namespace: 'deepbook/pools/v4',
+    namespace: 'deepbook/pools',
     upstream: [SuiTag, options.signer, publish, ...resolvedCoinTags, ...(options.dependsOn ?? [])],
     inputs: Effect.gen(function* () {
       const pkg = yield* publish!;
@@ -407,11 +407,11 @@ case below.
 const keypair = onChainArtifact({
   name: `${name}.keypair`,
   hidden: true,
-  namespace: 'seal/bls-keypair/v1',
+  namespace: 'seal/bls-keypair',
   upstream: [SuiTag, sealImage],
   inputs: Effect.succeed({ name }),
   verify: (cached, chain) => Effect.gen(function* () {
-    const ksId = yield* chain.lookupArtifact('seal/key-server-id/v1', { chainId, name });
+    const ksId = yield* chain.lookupArtifact('seal/key-server-id', { chainId, name });
     if (ksId === undefined) return cached; // never registered yet
     return (yield* chain.getObject(ksId)) !== undefined ? cached : undefined;
   }),
@@ -421,7 +421,7 @@ const keypair = onChainArtifact({
 
 const keyServer = onChainArtifact({
   name: `${name}.keyServer`,
-  namespace: 'seal/key-server-id/v1',
+  namespace: 'seal/key-server-id',
   upstream: [SuiTag, options.signer, keypair, publish],
   inputs: Effect.gen(function* () {
     const kp = yield* keypair;
@@ -645,24 +645,20 @@ to mirror the `listCoins`-sum fallback that `services/walrus/internal.ts`
 already implements (`probeWalBalance` at 833-872). Plan: encode the
 fallback inside `ChainProbeLive` so primitives never see it.
 
-### 8.5 Cache version bumps during migration
+### 8.5 Cache shape migration
 
-Several primitives include the cache-key version in their namespace
-(`publishMove/v2`, `walrus/deploy-output/v3`, etc.). A migration that
-swaps from a hand-rolled cache to `onChainArtifact` and keeps the same
-namespace would inherit the existing on-disk entries — saves users a
-warm-restart penalty post-upgrade. But the canonical layout
-(`<ns>/<chainId>/<inputsHash>`) differs from some hand-rolled keys
-(e.g. `deepbookLocalDeploy`'s `<ns>/<chainId>/<packageId>/<poolsHash>`).
-For the latter, we can either:
+**Obsoleted by the 2026-05-19 versioning-shim sweep.** Devstack is
+unreleased; the previous version-bump bookkeeping (`publishMove/v2`,
+`walrus/deploy-output/v3`, etc.) is gone, the `keyOverride` escape
+hatch is gone from `withCache` / `onChainArtifact`, and the canonical
+cache key shape is fixed at `<namespace>/<chainId>/<inputsHash>`. New
+primitives just declare a bare namespace string (`'publishMove'`,
+`'deepbook/pools'`, `'seal/bls-keypair'`) — no vN segments anywhere.
 
-- bump the namespace version (`v3 → v4`, force one warm-restart-miss
-  on first upgrade — cheap);
-- or pass `keyOverride` to preserve the legacy shape exactly (the
-  substrate already supports this via `withCache`).
-
-Recommendation: bump the namespace version where the shape differs.
-Document the one-cycle re-derivation cost in CHANGELOG.md.
+Migration to `onChainArtifact` therefore inherits zero legacy state-
+store entries; first warm restart after rollout re-derives every
+cache and persists under the canonical shape. Operators are expected
+to `rm -rf .devstack/` post-merge or accept the one-cycle re-build.
 
 ### 8.6 Should `Action` migrate?
 
