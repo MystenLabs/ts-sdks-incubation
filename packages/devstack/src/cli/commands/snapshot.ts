@@ -26,6 +26,14 @@ import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { randomBytes } from 'node:crypto';
 import { wrapCause } from '../loaders.js';
 import { failAlreadyReported } from '../already-reported.js';
+import { promptConfirm } from '../cli-prompt.js';
+import {
+	emitEnvelope,
+	errorEnvelope,
+	jsonModeEnabled,
+	successEnvelope,
+} from '../envelope.js';
+import { EX_SNAPSHOT_NOT_FOUND, EX_USAGE, EX_CONFIRM_REQUIRED } from '../exit-codes.js';
 import { resolveAppDir, resolveForkDataDir, resolveStack, stateDir } from '../stack-resolution.js';
 import { deriveAppName, DockerLabel } from '../../engine/identity.js';
 import { list as listSnapshots, restore, snapshot } from '../../engine/snapshot.js';
@@ -203,9 +211,19 @@ const saveCommand = Command.make(
 			),
 			Flag.optional,
 		),
+		json: Flag.boolean('json').pipe(
+			Flag.withDescription('Emit a machine-readable envelope to stdout'),
+			Flag.withDefault(false),
+		),
+		dryRun: Flag.boolean('dry-run').pipe(
+			Flag.withDescription('Resolve the plan and exit without writing the snapshot'),
+			Flag.withDefault(false),
+		),
 	},
-	({ label, stack, app, includeImages, includeForkData }) =>
+	({ label, stack, app, includeImages, includeForkData, json, dryRun }) =>
 		Effect.gen(function* () {
+			const startedAt = Date.now();
+			const useJson = jsonModeEnabled(json);
 			const fs = yield* FileSystem.FileSystem;
 			const path = yield* Path.Path;
 			const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -246,9 +264,41 @@ const saveCommand = Command.make(
 				extras.push({ key: 'sui-fork-data', path: forkDataDir });
 			}
 
-			yield* Console.log(
-				`saving snapshot ${id} (app=${resolvedApp}, stack=${resolvedStack}, ${containers.length} container${containers.length === 1 ? '' : 's'})`,
-			);
+			if (dryRun) {
+				const data = {
+					id,
+					path: joinPath(dir, id),
+					app: resolvedApp,
+					stack: resolvedStack,
+					wouldCapture: {
+						containers: containers.map((c) => c.name),
+						extras: extras.map((e) => e.key),
+						includeImages,
+						includeForkData: includeForkDataResolved === true,
+					},
+				};
+				if (useJson) {
+					yield* emitEnvelope(
+						successEnvelope({
+							command: 'snapshot.save',
+							data,
+							elapsedMs: Date.now() - startedAt,
+							dryRun: true,
+						}),
+					);
+				} else {
+					yield* Console.log(
+						`would save snapshot ${id} (app=${resolvedApp}, stack=${resolvedStack}, ${containers.length} container${containers.length === 1 ? '' : 's'}, ${extras.length} extra${extras.length === 1 ? '' : 's'}) — dry run`,
+					);
+				}
+				return;
+			}
+
+			if (!useJson) {
+				yield* Console.log(
+					`saving snapshot ${id} (app=${resolvedApp}, stack=${resolvedStack}, ${containers.length} container${containers.length === 1 ? '' : 's'})`,
+				);
+			}
 			const result = yield* snapshot({
 				id,
 				dir,
@@ -257,6 +307,24 @@ const saveCommand = Command.make(
 				containers,
 				...(extras.length > 0 ? { extras } : {}),
 			});
+			if (useJson) {
+				yield* emitEnvelope(
+					successEnvelope({
+						command: 'snapshot.save',
+						data: {
+							id,
+							path: result.path,
+							app: resolvedApp,
+							stack: resolvedStack,
+							runtimeTar: result.runtimeTar,
+							containerTars: result.containerTars.length,
+							extrasTars: result.extrasTars.length,
+						},
+						elapsedMs: Date.now() - startedAt,
+					}),
+				);
+				return;
+			}
 			yield* Console.log(`saved snapshot ${id}`);
 			yield* Console.log(`  → ${result.path}`);
 			if (result.runtimeTar !== undefined) {
@@ -280,15 +348,35 @@ const restoreCommand = Command.make(
 	{
 		ref: Argument.string('id-or-label').pipe(Argument.optional),
 		stack: stackFlag,
+		json: Flag.boolean('json').pipe(
+			Flag.withDescription('Emit a machine-readable envelope to stdout'),
+			Flag.withDefault(false),
+		),
+		dryRun: Flag.boolean('dry-run').pipe(
+			Flag.withDescription('Resolve the target snapshot and exit without mutating disk'),
+			Flag.withDefault(false),
+		),
 	},
-	({ ref, stack }) =>
+	({ ref, stack, json, dryRun }) =>
 		Effect.gen(function* () {
+			const startedAt = Date.now();
+			const useJson = jsonModeEnabled(json);
 			const fs = yield* FileSystem.FileSystem;
 			const path = yield* Path.Path;
 			const dir = defaultSnapshotsDir();
 			const entries = yield* listSnapshots({ dir });
 			if (entries.length === 0) {
-				return yield* failAlreadyReported(`no snapshots in ${dir}`);
+				const envelope = errorEnvelope({
+					command: 'snapshot.restore',
+					error: {
+						code: 'SNAPSHOT_NOT_FOUND',
+						exitCode: EX_SNAPSHOT_NOT_FOUND,
+						message: `no snapshots in ${dir}`,
+					},
+					elapsedMs: Date.now() - startedAt,
+				});
+				if (useJson) yield* emitEnvelope(envelope);
+				return yield* failAlreadyReported(envelope.error!.message);
 			}
 
 			// Default: newest entry (entries are sorted ascending by
@@ -299,14 +387,32 @@ const restoreCommand = Command.make(
 			});
 
 			if (target.ambiguous) {
-				return yield* failAlreadyReported(
-					`snapshot reference is ambiguous; pass the full id (use \`devstack snapshot list\`)`,
-				);
+				const envelope = errorEnvelope({
+					command: 'snapshot.restore',
+					error: {
+						code: 'AMBIGUOUS_REF',
+						exitCode: EX_USAGE,
+						message:
+							'snapshot reference is ambiguous; pass the full id (use `devstack snapshot list`)',
+						hint: 'devstack snapshot list',
+					},
+					elapsedMs: Date.now() - startedAt,
+				});
+				if (useJson) yield* emitEnvelope(envelope);
+				return yield* failAlreadyReported(envelope.error!.message);
 			}
 			if (target.match === undefined) {
-				return yield* failAlreadyReported(
-					`no snapshot matching '${Option.getOrElse(ref, () => '')}'`,
-				);
+				const envelope = errorEnvelope({
+					command: 'snapshot.restore',
+					error: {
+						code: 'SNAPSHOT_NOT_FOUND',
+						exitCode: EX_SNAPSHOT_NOT_FOUND,
+						message: `no snapshot matching '${Option.getOrElse(ref, () => '')}'`,
+					},
+					elapsedMs: Date.now() - startedAt,
+				});
+				if (useJson) yield* emitEnvelope(envelope);
+				return yield* failAlreadyReported(envelope.error!.message);
 			}
 
 			// Resolve target stack: explicit `--stack` > meta-recorded
@@ -316,7 +422,31 @@ const restoreCommand = Command.make(
 			// but emits a warning.
 			const resolvedStack = yield* resolveStack(fs, path, stack);
 			const metaStack = target.match.stack;
-			if (metaStack !== undefined && metaStack !== resolvedStack) {
+			if (dryRun) {
+				const data = {
+					id: target.match.id,
+					path: joinPath(dir, target.match.id),
+					targetStack: resolvedStack,
+					...(metaStack !== undefined ? { savedForStack: metaStack } : {}),
+					crossStack: metaStack !== undefined && metaStack !== resolvedStack,
+				};
+				if (useJson) {
+					yield* emitEnvelope(
+						successEnvelope({
+							command: 'snapshot.restore',
+							data,
+							elapsedMs: Date.now() - startedAt,
+							dryRun: true,
+						}),
+					);
+				} else {
+					yield* Console.log(
+						`would restore snapshot ${target.match.id} into stack '${resolvedStack}'${data.crossStack ? ` (cross-stack from '${metaStack}')` : ''} — dry run`,
+					);
+				}
+				return;
+			}
+			if (metaStack !== undefined && metaStack !== resolvedStack && !useJson) {
 				yield* Console.error(
 					`warning: snapshot was saved for stack '${metaStack}' but restoring into '${resolvedStack}'`,
 				);
@@ -326,6 +456,22 @@ const restoreCommand = Command.make(
 				dir,
 				stack: resolvedStack,
 			});
+			if (useJson) {
+				yield* emitEnvelope(
+					successEnvelope({
+						command: 'snapshot.restore',
+						data: {
+							id: target.match.id,
+							targetStack: resolvedStack,
+							runtimeRestored: result.runtimeRestored,
+							loadedImages: result.loadedImages,
+							extrasRestored: result.extrasRestored,
+						},
+						elapsedMs: Date.now() - startedAt,
+					}),
+				);
+				return;
+			}
 			yield* Console.log(`restored snapshot ${target.match.id} into stack '${resolvedStack}'`);
 			if (result.runtimeRestored) {
 				yield* Console.log(`  runtime/ extracted`);
@@ -339,52 +485,188 @@ const restoreCommand = Command.make(
 		}),
 ).pipe(Command.withDescription('Restore state.json + runtime/ + container images from a snapshot'));
 
-const listCommand = Command.make('list', {}, () =>
-	Effect.gen(function* () {
-		const dir = defaultSnapshotsDir();
-		const entries = yield* listSnapshots({ dir });
-		if (entries.length === 0) {
-			yield* Console.log(`no snapshots in ${dir}`);
-			return;
-		}
-		yield* Console.log(`snapshots in ${dir}:`);
-		// List newest-first — `git log`-style chronology.
-		for (let i = entries.length - 1; i >= 0; i--) {
-			const entry = entries[i]!;
-			const when = new Date(entry.createdAt).toISOString();
-			const meta =
-				entry.stack !== undefined
-					? `  [stack=${entry.stack}${entry.network !== undefined ? `, network=${entry.network}` : ''}]`
-					: '';
-			yield* Console.log(`  ${entry.id}  (${when})${meta}`);
-		}
-	}),
+const listCommand = Command.make(
+	'list',
+	{
+		json: Flag.boolean('json').pipe(
+			Flag.withDescription('Emit a machine-readable envelope to stdout'),
+			Flag.withDefault(false),
+		),
+	},
+	({ json }) =>
+		Effect.gen(function* () {
+			const startedAt = Date.now();
+			const useJson = jsonModeEnabled(json);
+			const dir = defaultSnapshotsDir();
+			const entries = yield* listSnapshots({ dir });
+			if (useJson) {
+				yield* emitEnvelope(
+					successEnvelope({
+						command: 'snapshot.list',
+						data: {
+							dir,
+							entries: entries.map((e) => ({
+								id: e.id,
+								createdAt: e.createdAt,
+								stack: e.stack,
+								network: e.network,
+							})),
+						},
+						elapsedMs: Date.now() - startedAt,
+					}),
+				);
+				return;
+			}
+			if (entries.length === 0) {
+				yield* Console.log(`no snapshots in ${dir}`);
+				return;
+			}
+			yield* Console.log(`snapshots in ${dir}:`);
+			// List newest-first — `git log`-style chronology.
+			for (let i = entries.length - 1; i >= 0; i--) {
+				const entry = entries[i]!;
+				const when = new Date(entry.createdAt).toISOString();
+				const meta =
+					entry.stack !== undefined
+						? `  [stack=${entry.stack}${entry.network !== undefined ? `, network=${entry.network}` : ''}]`
+						: '';
+				yield* Console.log(`  ${entry.id}  (${when})${meta}`);
+			}
+		}),
 ).pipe(Command.withDescription('List available snapshots'));
 
 const deleteCommand = Command.make(
 	'delete',
 	{
 		ref: Argument.string('id-or-label'),
+		yes: Flag.boolean('yes').pipe(
+			Flag.withDescription('Bypass the confirmation prompt (CI / non-interactive)'),
+			Flag.withDefault(false),
+		),
+		json: Flag.boolean('json').pipe(
+			Flag.withDescription('Emit a machine-readable envelope to stdout'),
+			Flag.withDefault(false),
+		),
+		dryRun: Flag.boolean('dry-run').pipe(
+			Flag.withDescription('Resolve the target snapshot and exit without removing it'),
+			Flag.withDefault(false),
+		),
+		noInput: Flag.boolean('no-input').pipe(
+			Flag.withDescription('Fail rather than prompt (CI / piped stdin)'),
+			Flag.withDefault(false),
+		),
 	},
-	({ ref }) =>
+	({ ref, yes, json, dryRun, noInput }) =>
 		Effect.gen(function* () {
+			const startedAt = Date.now();
+			const useJson = jsonModeEnabled(json);
 			const fs = yield* FileSystem.FileSystem;
 			const path = yield* Path.Path;
 			const snapshotsDir = defaultSnapshotsDir();
 			const entries = yield* listSnapshots({ dir: snapshotsDir });
 			const target = findMatch(entries, ref);
 			if (target.ambiguous) {
-				return yield* failAlreadyReported(
-					`snapshot reference '${ref}' is ambiguous; pass the full id`,
-				);
+				const envelope = errorEnvelope({
+					command: 'snapshot.delete',
+					error: {
+						code: 'AMBIGUOUS_REF',
+						exitCode: EX_USAGE,
+						message: `snapshot reference '${ref}' is ambiguous; pass the full id`,
+						hint: 'devstack snapshot list',
+					},
+					elapsedMs: Date.now() - startedAt,
+				});
+				if (useJson) yield* emitEnvelope(envelope);
+				return yield* failAlreadyReported(envelope.error!.message);
 			}
 			if (target.match === undefined) {
-				return yield* failAlreadyReported(`no snapshot matching '${ref}'`);
+				const envelope = errorEnvelope({
+					command: 'snapshot.delete',
+					error: {
+						code: 'SNAPSHOT_NOT_FOUND',
+						exitCode: EX_SNAPSHOT_NOT_FOUND,
+						message: `no snapshot matching '${ref}'`,
+					},
+					elapsedMs: Date.now() - startedAt,
+				});
+				if (useJson) yield* emitEnvelope(envelope);
+				return yield* failAlreadyReported(envelope.error!.message);
 			}
 			const targetDir = path.join(snapshotsDir, target.match.id);
+
+			if (dryRun) {
+				if (useJson) {
+					yield* emitEnvelope(
+						successEnvelope({
+							command: 'snapshot.delete',
+							data: {
+								wouldDelete: {
+									id: target.match.id,
+									path: targetDir,
+								},
+							},
+							elapsedMs: Date.now() - startedAt,
+							dryRun: true,
+						}),
+					);
+				} else {
+					yield* Console.log(`would delete snapshot ${target.match.id} (${targetDir}) — dry run`);
+				}
+				return;
+			}
+
+			const outcome = yield* promptConfirm({
+				message: `Delete snapshot '${target.match.id}'?`,
+				preview: [`id:   ${target.match.id}`, `path: ${targetDir}`],
+				yes,
+				noInput,
+			});
+			if (outcome.kind === 'non-interactive') {
+				const envelope = errorEnvelope({
+					command: 'snapshot.delete',
+					error: {
+						code:
+							outcome.exitCode === EX_CONFIRM_REQUIRED ? 'CONFIRM_REQUIRED' : 'CONFIRM_UNSUPPORTED',
+						exitCode: outcome.exitCode,
+						message: `devstack snapshot delete: ${outcome.reason}. Pass --yes to bypass.`,
+						hint: `devstack snapshot delete ${ref} --yes`,
+					},
+					elapsedMs: Date.now() - startedAt,
+				});
+				if (useJson) yield* emitEnvelope(envelope);
+				return yield* failAlreadyReported(envelope.error!.message);
+			}
+			if (outcome.kind === 'cancelled' || outcome.kind === 'declined') {
+				const envelope = errorEnvelope({
+					command: 'snapshot.delete',
+					error: {
+						code: outcome.kind === 'cancelled' ? 'CANCELLED' : 'DECLINED',
+						exitCode: EX_USAGE,
+						message: `devstack snapshot delete: ${outcome.kind} by operator`,
+					},
+					elapsedMs: Date.now() - startedAt,
+				});
+				if (useJson) yield* emitEnvelope(envelope);
+				else
+					yield* Console.log(
+						`devstack snapshot delete: ${outcome.kind} by operator — no changes made`,
+					);
+				return yield* failAlreadyReported(envelope.error!.message);
+			}
+
 			yield* fs
 				.remove(targetDir, { recursive: true, force: true })
 				.pipe(Effect.mapError((cause) => wrapCause(`failed to remove ${targetDir}`, cause)));
+			if (useJson) {
+				yield* emitEnvelope(
+					successEnvelope({
+						command: 'snapshot.delete',
+						data: { id: target.match.id, path: targetDir },
+						elapsedMs: Date.now() - startedAt,
+					}),
+				);
+				return;
+			}
 			yield* Console.log(`deleted snapshot ${target.match.id}`);
 		}),
 ).pipe(Command.withDescription('Delete a snapshot directory'));

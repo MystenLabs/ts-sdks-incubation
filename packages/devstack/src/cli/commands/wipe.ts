@@ -24,10 +24,11 @@
 //      pile up at ~100MB per run.
 //   4. Remove the per-stack state dir under `.devstack/stacks/<stack>/`.
 //
-// Refuses to run without `--yes` so a stray shell-history invocation
-// doesn't wipe a developer's stack. For cross-app cleanup (or an
-// interactive selection across every stack on the machine) reach for
-// `devstack prune` instead — same teardown logic, broader scope.
+// Phase A (`notes/cli-redesign.md` §6) — prompt by default on TTY,
+// `--yes` bypasses, `--no-input` fails. `--also-upstream-cache` triggers
+// the Tier 2 type-to-confirm phrase guard. `--dry-run` emits a preview
+// envelope and exits 0. Every code path emits the canonical envelope
+// under `--json`.
 
 import { promises as nodeFs } from 'node:fs';
 import * as nodeOs from 'node:os';
@@ -35,9 +36,12 @@ import * as nodePath from 'node:path';
 import { Console, Effect, Option } from 'effect';
 import { Command, Flag } from 'effect/unstable/cli';
 import { deriveAppName } from '../../engine/identity.js';
-import { failAlreadyReported } from '../already-reported.js';
-import { resolveAppDir, resolveForkCacheRoot, resolveStackFromEnv } from '../stack-resolution.js';
 import { sweepStaleGitLocks } from '../../engine/sui-build-container.js';
+import { failAlreadyReported } from '../already-reported.js';
+import { promptConfirm, promptTypeToConfirm } from '../cli-prompt.js';
+import { emitEnvelope, errorEnvelope, jsonModeEnabled, successEnvelope } from '../envelope.js';
+import { EX_USAGE, EX_CONFIRM_REQUIRED } from '../exit-codes.js';
+import { resolveAppDir, resolveForkCacheRoot, resolveStackFromEnv } from '../stack-resolution.js';
 import { pruneStack } from './_prune-stack.js';
 
 // Default reads `DEVSTACK_STACK` at action time (NOT at module load —
@@ -70,7 +74,9 @@ const resolveAppName = (override: Option.Option<string>): string =>
 	Option.getOrElse(override, () => deriveAppName(resolveAppDir()));
 
 const yesFlag = Flag.boolean('yes').pipe(
-	Flag.withDescription('Required. Confirms the wipe.'),
+	Flag.withDescription(
+		'Bypass the confirmation prompt (CI / non-interactive). Equivalent to typing the stack name when used with --also-upstream-cache.',
+	),
 	Flag.withDefault(false),
 );
 
@@ -102,7 +108,8 @@ const imagesFlag = Flag.boolean('images').pipe(
 const alsoUpstreamCacheFlag = Flag.boolean('also-upstream-cache').pipe(
 	Flag.withDescription(
 		'Also remove `.devstack/sui-fork-cache/` — the shared warmed upstream cache that survives ' +
-			"a normal wipe so the next fork-mode `apply` doesn't re-warm system state.",
+			"a normal wipe so the next fork-mode `apply` doesn't re-warm system state. Severity tier 2: " +
+			'requires typing the stack name to confirm interactively.',
 	),
 	Flag.withDefault(false),
 );
@@ -116,6 +123,53 @@ const keepUpstreamCacheFlag = Flag.boolean('keep-upstream-cache').pipe(
 	Flag.withDefault(false),
 );
 
+const jsonFlag = Flag.boolean('json').pipe(
+	Flag.withDescription('Emit a machine-readable envelope to stdout instead of human-readable lines'),
+	Flag.withDefault(false),
+);
+
+const dryRunFlag = Flag.boolean('dry-run').pipe(
+	Flag.withDescription(
+		'Print what would be removed and exit 0; no docker / disk mutation. Compatible with --json.',
+	),
+	Flag.withDefault(false),
+);
+
+const noInputFlag = Flag.boolean('no-input').pipe(
+	Flag.withDescription('Fail rather than prompt (CI / piped stdin). Equivalent to DEVSTACK_NO_INPUT=1.'),
+	Flag.withDefault(false),
+);
+
+const COMMAND_NAME = 'wipe' as const;
+
+interface WipePlan {
+	readonly app: string;
+	readonly stack: string;
+	readonly stateDir: string;
+	readonly upstreamCachePath?: string;
+	readonly includeImages: boolean;
+	readonly keepSnapshots: boolean;
+	readonly noStop: boolean;
+}
+
+const renderPreview = (plan: WipePlan): ReadonlyArray<string> => {
+	const lines: Array<string> = [
+		`app:    ${plan.app}`,
+		`stack:  ${plan.stack}`,
+		`state:  ${plan.stateDir}`,
+	];
+	if (plan.upstreamCachePath !== undefined) {
+		lines.push(`upstream cache: ${plan.upstreamCachePath} (REMOVED — tier 2)`);
+	} else {
+		lines.push(`upstream cache: PRESERVED`);
+	}
+	lines.push(`docker containers + networks + volumes labelled devstack.app=${plan.app} stack=${plan.stack}`);
+	if (plan.includeImages) lines.push(`docker images labelled devstack.image=true (no live container)`);
+	if (plan.keepSnapshots) lines.push(`snapshots/ PRESERVED (--keep-snapshots)`);
+	if (plan.noStop) lines.push(`docker kill pass SKIPPED (--no-stop)`);
+	return lines;
+};
+
 export const wipeCommand = Command.make(
 	'wipe',
 	{
@@ -127,22 +181,146 @@ export const wipeCommand = Command.make(
 		images: imagesFlag,
 		alsoUpstreamCache: alsoUpstreamCacheFlag,
 		keepUpstreamCache: keepUpstreamCacheFlag,
+		json: jsonFlag,
+		dryRun: dryRunFlag,
+		noInput: noInputFlag,
 	},
-	({ stack, app, yes, keepSnapshots, noStop, images, alsoUpstreamCache, keepUpstreamCache }) =>
+	({
+		stack,
+		app,
+		yes,
+		keepSnapshots,
+		noStop,
+		images,
+		alsoUpstreamCache,
+		keepUpstreamCache,
+		json,
+		dryRun,
+		noInput,
+	}) =>
 		Effect.gen(function* () {
-			if (!yes) {
-				return yield* failAlreadyReported(
-					'devstack wipe: --yes is required (refusing to wipe without explicit confirmation)',
-				);
-			}
+			const startedAt = Date.now();
+			const useJson = jsonModeEnabled(json);
+
 			if (alsoUpstreamCache && keepUpstreamCache) {
-				return yield* failAlreadyReported(
-					'devstack wipe: --also-upstream-cache and --keep-upstream-cache are mutually exclusive',
-				);
+				const envelope = errorEnvelope({
+					command: COMMAND_NAME,
+					error: {
+						code: 'MUTUALLY_EXCLUSIVE_FLAGS',
+						exitCode: EX_USAGE,
+						message:
+							'devstack wipe: --also-upstream-cache and --keep-upstream-cache are mutually exclusive',
+					},
+					elapsedMs: Date.now() - startedAt,
+				});
+				if (useJson) {
+					yield* emitEnvelope(envelope);
+				}
+				return yield* failAlreadyReported(envelope.error!.message);
 			}
 
 			const resolvedApp = resolveAppName(app);
 			const resolvedStack = resolveStackFlag(stack);
+			const stateDirPath = `${process.env.DEVSTACK_STATE_DIR ?? '.devstack'}/stacks/${resolvedStack}`;
+			const upstreamCachePath = alsoUpstreamCache ? resolveForkCacheRoot() : undefined;
+			const plan: WipePlan = {
+				app: resolvedApp,
+				stack: resolvedStack,
+				stateDir: stateDirPath,
+				...(upstreamCachePath !== undefined ? { upstreamCachePath } : {}),
+				includeImages: images,
+				keepSnapshots,
+				noStop,
+			};
+
+			// Dry-run short-circuits BEFORE prompting. The point of
+			// `--dry-run` is to surface a preview without any side effects
+			// — that includes the interactive prompt.
+			if (dryRun) {
+				const dryEnvelope = successEnvelope({
+					command: COMMAND_NAME,
+					data: {
+						app: resolvedApp,
+						stack: resolvedStack,
+						wouldRemove: {
+							stateDir: stateDirPath,
+							...(upstreamCachePath !== undefined ? { upstreamCache: upstreamCachePath } : {}),
+							dockerContainers: `labelled devstack.app=${resolvedApp},devstack.stack=${resolvedStack}`,
+							dockerNetworks: `labelled devstack.app=${resolvedApp},devstack.stack=${resolvedStack}`,
+							dockerVolumes: `labelled devstack.app=${resolvedApp},devstack.stack=${resolvedStack}`,
+							...(images ? { dockerImages: 'labelled devstack.image=true, no live container' } : {}),
+						},
+					},
+					elapsedMs: Date.now() - startedAt,
+					dryRun: true,
+				});
+				if (useJson) {
+					yield* emitEnvelope(dryEnvelope);
+				} else {
+					yield* Console.log(
+						`devstack wipe (dry-run, app=${resolvedApp}, stack=${resolvedStack}):`,
+					);
+					for (const line of renderPreview(plan)) {
+						yield* Console.log(`  ${line}`);
+					}
+				}
+				return;
+			}
+
+			// Severity-graded confirmation. Tier 2 (`--also-upstream-cache`)
+			// makes the operator type the stack name; tier 1 is a plain
+			// confirm. `--yes` bypasses both; `--no-input` fails both.
+			const preview = renderPreview(plan);
+			const outcome = alsoUpstreamCache
+				? yield* promptTypeToConfirm({
+						preview,
+						phrase: resolvedStack,
+						message: `Type the stack name '${resolvedStack}' to confirm wipe + upstream cache removal`,
+						yes,
+						noInput,
+					})
+				: yield* promptConfirm({
+						message: `Wipe stack '${resolvedStack}' for app '${resolvedApp}'?`,
+						preview,
+						yes,
+						noInput,
+					});
+
+			if (outcome.kind === 'non-interactive') {
+				const code = outcome.exitCode;
+				const envelope = errorEnvelope({
+					command: COMMAND_NAME,
+					error: {
+						code: code === EX_CONFIRM_REQUIRED ? 'CONFIRM_REQUIRED' : 'CONFIRM_UNSUPPORTED',
+						exitCode: code,
+						message: `devstack wipe: ${outcome.reason}. Pass --yes to bypass.`,
+						hint: 'devstack wipe --yes',
+					},
+					elapsedMs: Date.now() - startedAt,
+				});
+				if (useJson) {
+					yield* emitEnvelope(envelope);
+				}
+				return yield* failAlreadyReported(envelope.error!.message);
+			}
+			if (outcome.kind === 'cancelled' || outcome.kind === 'declined') {
+				const envelope = errorEnvelope({
+					command: COMMAND_NAME,
+					error: {
+						code: outcome.kind === 'cancelled' ? 'CANCELLED' : 'DECLINED',
+						exitCode: EX_USAGE,
+						message: `devstack wipe: ${outcome.kind} by operator`,
+					},
+					elapsedMs: Date.now() - startedAt,
+				});
+				if (useJson) {
+					yield* emitEnvelope(envelope);
+				} else {
+					yield* Console.log(`devstack wipe: ${outcome.kind} by operator — no changes made`);
+				}
+				return yield* failAlreadyReported(envelope.error!.message);
+			}
+
 			const result = yield* pruneStack({
 				app: resolvedApp,
 				stack: resolvedStack,
@@ -182,15 +360,35 @@ export const wipeCommand = Command.make(
 			const moveHome = nodePath.join(nodeOs.homedir(), '.move');
 			const removedMoveGitLocks = yield* sweepStaleGitLocks(moveHome);
 
-			// Single summary line — the prior per-id `console.log` spam
-			// scaled badly when a wipe across a busy app removed dozens of
-			// containers / volumes. Counts are what the operator actually
-			// needs to know ("did wipe find anything?"); the per-id detail
-			// is recoverable from `docker ps -a` history if needed.
 			const killed = result.killedContainers.length;
 			const networks = result.removedNetworks.length;
 			const volumes = result.removedVolumes.length;
 			const stateFiles = result.removedStatePaths.length;
+
+			if (useJson) {
+				const successPayload = {
+					app: resolvedApp,
+					stack: resolvedStack,
+					killedContainers: killed,
+					removedNetworks: networks,
+					removedVolumes: volumes,
+					removedStatePaths: stateFiles,
+					...(images ? { removedImages: result.removedImages.length } : {}),
+					...(removedCachePath !== undefined ? { removedUpstreamCache: removedCachePath } : {}),
+					...(removedMoveGitLocks.length > 0
+						? { removedMoveGitLocks: removedMoveGitLocks.length }
+						: {}),
+				};
+				yield* emitEnvelope(
+					successEnvelope({
+						command: COMMAND_NAME,
+						data: successPayload,
+						elapsedMs: Date.now() - startedAt,
+					}),
+				);
+				return;
+			}
+
 			const parts: Array<string> = [
 				`stopped ${killed} container${killed === 1 ? '' : 's'}`,
 				`removed ${networks} network${networks === 1 ? '' : 's'}`,
@@ -215,6 +413,6 @@ export const wipeCommand = Command.make(
 		}),
 ).pipe(
 	Command.withDescription(
-		'Tear down the current stack: kill devstack-* containers + networks + volumes and remove on-disk state. Requires --yes.',
+		'Tear down the current stack: kill devstack-* containers + networks + volumes and remove on-disk state. Prompts on TTY (use --yes to skip).',
 	),
 );

@@ -129,9 +129,7 @@ export function pickCreatedByType(
 		// concern — gRPC long-form vs. user short-form. Defensive
 		// fallback to literal `startsWith` covers prefixes that don't
 		// carry an address segment (rare in practice).
-		return (
-			moveTypeStartsWith(objectType, filter.prefix) || objectType.startsWith(filter.prefix)
-		);
+		return moveTypeStartsWith(objectType, filter.prefix) || objectType.startsWith(filter.prefix);
 	};
 
 	if (filter.all === true) {

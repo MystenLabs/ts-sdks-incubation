@@ -10,10 +10,7 @@
 
 import { Effect, Ref, Semaphore } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
-import {
-	containerPrimitive,
-	_resetContainerLocksForTest,
-} from './container-primitive.js';
+import { containerPrimitive, _resetContainerLocksForTest } from './container-primitive.js';
 import { tag, type LayeredTag } from '../advanced/tag.js';
 
 describe('containerPrimitive (tag shape)', () => {

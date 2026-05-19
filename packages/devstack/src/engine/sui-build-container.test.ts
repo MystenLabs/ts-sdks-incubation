@@ -228,6 +228,12 @@ interface InspectResponse {
 }
 
 const FAKE_RUN_STDOUT = 'abcdef0123\n';
+// `--format` format is now `Running|Image|Id|ExitCode` — the four-field
+// shape the shared `engine/docker/ensure-container.ts::ensureContainer`
+// helper parses (audit finding E1). Synthesize a placeholder id +
+// exit-code-0 for the running / stopped-clean variants the tests
+// exercise.
+const FAKE_EXISTING_ID = 'abc123def456abc123def456abc123def456';
 
 const makeFakeSpawner = (recorder: Array<SpawnRecord>, inspect: InspectResponse | null) => {
 	const respondTo = (
@@ -236,7 +242,20 @@ const makeFakeSpawner = (recorder: Array<SpawnRecord>, inspect: InspectResponse 
 		if (args[0] === 'inspect') {
 			if (inspect === null) return { stdout: '', stderr: 'No such object\n', exitCode: 1 };
 			return {
-				stdout: `${inspect.running}|${inspect.image}\n`,
+				stdout: `${inspect.running}|${inspect.image}|${FAKE_EXISTING_ID}|0\n`,
+				stderr: '',
+				exitCode: 0,
+			};
+		}
+		// The shared `ensureContainer` helper does a `docker ps -a -q
+		// --filter name=^/<name>$` lookup on the recreate path to find
+		// containers to rm — return the existing id when an inspect
+		// response is set (i.e. a container DOES exist with that name)
+		// so the recreate path actually fires the rm. Return empty on
+		// the null case so the fresh path doesn't try to rm.
+		if (args[0] === 'ps') {
+			return {
+				stdout: inspect === null ? '' : `${FAKE_EXISTING_ID}\n`,
 				stderr: '',
 				exitCode: 0,
 			};
@@ -364,7 +383,14 @@ describe('SuiBuildContainerLive — adopt-or-create', () => {
 				Effect.provide(identityLayer),
 				Effect.scoped,
 			);
-			expect(recorder.some((r) => r.args[0] === 'start' && r.args[1] === EXPECTED_NAME)).toBe(true);
+			// The shared `ensureContainer` helper passes the container ID
+			// to `docker start` (matching Docker.run's pre-E1 behavior);
+			// the pre-E1 sui-build code passed the container name. Both
+			// are accepted by docker — assert by ID, which is what the
+			// helper reads back from the inspect probe.
+			expect(recorder.some((r) => r.args[0] === 'start' && r.args[1] === FAKE_EXISTING_ID)).toBe(
+				true,
+			);
 			expect(recorder.some((r) => r.args[0] === 'run')).toBe(false);
 			// Only `rm` allowed is the finalizer-emitted one at scope
 			// close. Pre-run rm would mean we mistook the stopped image
@@ -484,131 +510,157 @@ const makeProgrammableSpawner = (
 };
 
 describe('SuiBuildContainerLive — race recovery', () => {
-	it.effect('Bug C: falls back to fresh `docker run -d` when `docker start` reports container missing', () =>
-		Effect.gen(function* () {
-			// Inspect observes a stopped container with the matching image,
-			// so the layer calls `docker start`. Between observation and
-			// start, a prior run's finalizer rm'd the container — `docker
-			// start` exits 1 with "No such container: <name>". The layer
-			// must fall back to `docker run -d` rather than failing the
-			// whole acquire.
-			const recorder: Array<SpawnRecord> = [];
-			yield* Effect.gen(function* () {
-				yield* SuiBuildContainer;
-			}).pipe(
-				Effect.provide(SuiBuildContainerLive),
-				Effect.provide(
-					makeProgrammableSpawner(recorder, {
-						inspect: [{ stdout: `false|devstack/sui:1.71.0\n`, exitCode: 0 }],
-						start: [
-							{
-								stderr: `Error response from daemon: No such container: ${EXPECTED_NAME}\n`,
-								exitCode: 1,
-							},
-						],
-					}),
-				),
-				Effect.provide(imageLayer),
-				Effect.provide(identityLayer),
-				Effect.scoped,
-			);
-			const startIdx = recorder.findIndex((r) => r.args[0] === 'start');
-			const runIdx = recorder.findIndex((r) => r.args[0] === 'run');
-			expect(startIdx).toBeGreaterThanOrEqual(0);
-			expect(runIdx).toBeGreaterThan(startIdx);
-		}),
+	it.effect(
+		'Bug C: falls back to fresh `docker run -d` when `docker start` reports container missing',
+		() =>
+			Effect.gen(function* () {
+				// Inspect observes a stopped container with the matching image,
+				// so the layer calls `docker start`. Between observation and
+				// start, a prior run's finalizer rm'd the container — `docker
+				// start` exits 1 with "No such container: <name>". The layer
+				// must fall back to `docker run -d` rather than failing the
+				// whole acquire.
+				const recorder: Array<SpawnRecord> = [];
+				yield* Effect.gen(function* () {
+					yield* SuiBuildContainer;
+				}).pipe(
+					Effect.provide(SuiBuildContainerLive),
+					Effect.provide(
+						makeProgrammableSpawner(recorder, {
+							inspect: [
+								{ stdout: `false|devstack/sui:1.71.0|${FAKE_EXISTING_ID}|0\n`, exitCode: 0 },
+							],
+							start: [
+								{
+									stderr: `Error response from daemon: No such container: ${EXPECTED_NAME}\n`,
+									exitCode: 1,
+								},
+							],
+						}),
+					),
+					Effect.provide(imageLayer),
+					Effect.provide(identityLayer),
+					Effect.scoped,
+				);
+				const startIdx = recorder.findIndex((r) => r.args[0] === 'start');
+				const runIdx = recorder.findIndex((r) => r.args[0] === 'run');
+				expect(startIdx).toBeGreaterThanOrEqual(0);
+				expect(runIdx).toBeGreaterThan(startIdx);
+			}),
 	);
 
-	it.effect('Bug C: an unrelated `docker start` failure surfaces as a typed error (no silent fallback)', () =>
-		Effect.gen(function* () {
-			// `docker start` exit 1 with a NON-"no such container" stderr
-			// (e.g. daemon connection refused). The layer must NOT silently
-			// recreate the container — that would mask a daemon outage.
-			const recorder: Array<SpawnRecord> = [];
-			const exit = yield* Effect.gen(function* () {
-				yield* SuiBuildContainer;
-			}).pipe(
-				Effect.provide(SuiBuildContainerLive),
-				Effect.provide(
-					makeProgrammableSpawner(recorder, {
-						inspect: [{ stdout: `false|devstack/sui:1.71.0\n`, exitCode: 0 }],
-						start: [
-							{ stderr: `Cannot connect to the Docker daemon at unix:///var/run/docker.sock.\n`, exitCode: 1 },
-						],
-					}),
-				),
-				Effect.provide(imageLayer),
-				Effect.provide(identityLayer),
-				Effect.scoped,
-				Effect.exit,
-			);
-			expect(exit._tag).toBe('Failure');
-			// No `docker run` should have fired — the daemon-down stderr
-			// is not the "vanished container" race we recover from.
-			expect(recorder.some((r) => r.args[0] === 'run')).toBe(false);
-		}),
+	it.effect(
+		'Bug C: an unrelated `docker start` failure surfaces as a typed error (no silent fallback)',
+		() =>
+			Effect.gen(function* () {
+				// `docker start` exit 1 with a NON-"no such container" stderr
+				// (e.g. daemon connection refused). The layer must NOT silently
+				// recreate the container — that would mask a daemon outage.
+				const recorder: Array<SpawnRecord> = [];
+				const exit = yield* Effect.gen(function* () {
+					yield* SuiBuildContainer;
+				}).pipe(
+					Effect.provide(SuiBuildContainerLive),
+					Effect.provide(
+						makeProgrammableSpawner(recorder, {
+							inspect: [
+								{ stdout: `false|devstack/sui:1.71.0|${FAKE_EXISTING_ID}|0\n`, exitCode: 0 },
+							],
+							start: [
+								{
+									stderr: `Cannot connect to the Docker daemon at unix:///var/run/docker.sock.\n`,
+									exitCode: 1,
+								},
+							],
+						}),
+					),
+					Effect.provide(imageLayer),
+					Effect.provide(identityLayer),
+					Effect.scoped,
+					Effect.exit,
+				);
+				expect(exit._tag).toBe('Failure');
+				// No `docker run` should have fired — the daemon-down stderr
+				// is not the "vanished container" race we recover from.
+				expect(recorder.some((r) => r.args[0] === 'run')).toBe(false);
+			}),
 	);
 
-	it.effect('Bug H: falls back to `docker start` when `docker run -d` reports a name collision', () =>
-		Effect.gen(function* () {
-			// Two parallel `up` invocations against the same app race the
-			// fresh-create. Our inspect saw nothing → we issue `docker run
-			// -d`. The peer beat us and the daemon returns exit 125 with
-			// "Conflict. The container name '...' is already in use by
-			// container '...'". The layer adopts via `docker start`.
-			const recorder: Array<SpawnRecord> = [];
-			yield* Effect.gen(function* () {
-				yield* SuiBuildContainer;
-			}).pipe(
-				Effect.provide(SuiBuildContainerLive),
-				Effect.provide(
-					makeProgrammableSpawner(recorder, {
-						// inspect returns "no such container" (default fall-through)
-						run: [
-							{
-								stderr: `docker: Error response from daemon: Conflict. The container name "/${EXPECTED_NAME}" is already in use by container "abc123".`,
-								exitCode: 125,
-							},
-						],
-						// start succeeds on the fallback (default fall-through ok = exit 0)
-					}),
-				),
-				Effect.provide(imageLayer),
-				Effect.provide(identityLayer),
-				Effect.scoped,
-			);
-			const runIdx = recorder.findIndex((r) => r.args[0] === 'run');
-			const startIdx = recorder.findIndex((r) => r.args[0] === 'start');
-			expect(runIdx).toBeGreaterThanOrEqual(0);
-			expect(startIdx).toBeGreaterThan(runIdx);
-		}),
+	it.effect(
+		'Bug H: falls back to `docker start` when `docker run -d` reports a name collision',
+		() =>
+			Effect.gen(function* () {
+				// Two parallel `up` invocations against the same app race the
+				// fresh-create. Our inspect saw nothing → we issue `docker run
+				// -d`. The peer beat us and the daemon returns exit 125 with
+				// "Conflict. The container name '...' is already in use by
+				// container '...'". The layer adopts via `docker start`.
+				const recorder: Array<SpawnRecord> = [];
+				yield* Effect.gen(function* () {
+					yield* SuiBuildContainer;
+				}).pipe(
+					Effect.provide(SuiBuildContainerLive),
+					Effect.provide(
+						makeProgrammableSpawner(recorder, {
+							// First inspect: returns "no such container" so the
+							// helper takes the fresh path. Second inspect: AFTER
+							// the collision-recovery `docker start` succeeds the
+							// helper re-inspects by name to read the adopted
+							// id; return the peer's container.
+							inspect: [
+								{ stdout: '', stderr: 'No such object\n', exitCode: 1 },
+								{
+									stdout: `true|devstack/sui:1.71.0|${FAKE_EXISTING_ID}|0\n`,
+									exitCode: 0,
+								},
+							],
+							run: [
+								{
+									stderr: `docker: Error response from daemon: Conflict. The container name "/${EXPECTED_NAME}" is already in use by container "abc123".`,
+									exitCode: 125,
+								},
+							],
+							// start succeeds on the fallback (default fall-through ok = exit 0)
+						}),
+					),
+					Effect.provide(imageLayer),
+					Effect.provide(identityLayer),
+					Effect.scoped,
+				);
+				const runIdx = recorder.findIndex((r) => r.args[0] === 'run');
+				const startIdx = recorder.findIndex((r) => r.args[0] === 'start');
+				expect(runIdx).toBeGreaterThanOrEqual(0);
+				expect(startIdx).toBeGreaterThan(runIdx);
+			}),
 	);
 
-	it.effect('Bug H: unrelated `docker run` failures (non-125, non-conflict) still surface as typed errors', () =>
-		Effect.gen(function* () {
-			// Generic daemon failure (e.g. image pull error). Must NOT be
-			// masked as a collision — the user needs the real diagnostic.
-			const recorder: Array<SpawnRecord> = [];
-			const exit = yield* Effect.gen(function* () {
-				yield* SuiBuildContainer;
-			}).pipe(
-				Effect.provide(SuiBuildContainerLive),
-				Effect.provide(
-					makeProgrammableSpawner(recorder, {
-						run: [
-							{ stderr: `docker: Error response from daemon: pull access denied.`, exitCode: 1 },
-						],
-					}),
-				),
-				Effect.provide(imageLayer),
-				Effect.provide(identityLayer),
-				Effect.scoped,
-				Effect.exit,
-			);
-			expect(exit._tag).toBe('Failure');
-			// No fallback `docker start` should have been attempted.
-			expect(recorder.some((r) => r.args[0] === 'start')).toBe(false);
-		}),
+	it.effect(
+		'Bug H: unrelated `docker run` failures (non-125, non-conflict) still surface as typed errors',
+		() =>
+			Effect.gen(function* () {
+				// Generic daemon failure (e.g. image pull error). Must NOT be
+				// masked as a collision — the user needs the real diagnostic.
+				const recorder: Array<SpawnRecord> = [];
+				const exit = yield* Effect.gen(function* () {
+					yield* SuiBuildContainer;
+				}).pipe(
+					Effect.provide(SuiBuildContainerLive),
+					Effect.provide(
+						makeProgrammableSpawner(recorder, {
+							run: [
+								{ stderr: `docker: Error response from daemon: pull access denied.`, exitCode: 1 },
+							],
+						}),
+					),
+					Effect.provide(imageLayer),
+					Effect.provide(identityLayer),
+					Effect.scoped,
+					Effect.exit,
+				);
+				expect(exit._tag).toBe('Failure');
+				// No fallback `docker start` should have been attempted.
+				expect(recorder.some((r) => r.args[0] === 'start')).toBe(false);
+			}),
 	);
 });
 

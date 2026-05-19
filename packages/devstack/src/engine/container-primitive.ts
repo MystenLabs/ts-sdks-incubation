@@ -160,7 +160,7 @@ export const containerPrimitive = <
 				continue;
 			}
 			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			out[alias] = yield* (dep as unknown as Effect.Effect<unknown, any, any>);
+			out[alias] = yield* dep as unknown as Effect.Effect<unknown, any, any>;
 		}
 		return out as Resolved<U>;
 	});
@@ -203,9 +203,7 @@ export const containerPrimitive = <
 				: runDockerContainer(spec.name, { ...runOpts, image: spec.image }).effect;
 
 		const raw = yield* lock.withPermits(1)(containerEff);
-		return spec.handle !== undefined
-			? spec.handle({ raw, deps })
-			: (raw as unknown as Handle);
+		return spec.handle !== undefined ? spec.handle({ raw, deps }) : (raw as unknown as Handle);
 	}) as Effect.Effect<Handle, DockerError | ReadyProbeError | UpstreamE<U>>;
 
 	// Auto-flatten the upstream record into `upstreamKeys:` AND surface

@@ -54,6 +54,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { Context, Effect, Layer, Scope } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
+import { ensureContainer } from './docker/ensure-container.js';
+import { DockerError } from './errors.js';
 import { Identity } from './identity.js';
 import { isHolderLive } from './process-liveness.js';
 import { ownLockBody, parseLockBody, releaseLockSync, serializeLockBody } from './file-lock.js';
@@ -120,37 +122,11 @@ export class SuiBuildContainer extends Context.Service<SuiBuildContainer, SuiBui
 export const containerNameFor = (identity: { app: string; stack?: string }): string =>
 	`devstack-${identity.app}-build`;
 
-interface InspectResult {
-	readonly running: boolean;
-	readonly image: string;
-}
-
-// Read the container's current state. Returns `null` if no container
-// by that name exists. Mirrors the inspect helper in `docker/core.ts`
-// but kept module-local — coupling the two would force core.ts to
-// take a hard dep on this module (or vice versa).
-const inspectContainer = (
-	spawner: Spawner,
-	name: string,
-): Effect.Effect<InspectResult | null, never> =>
-	Effect.gen(function* () {
-		const cmd = ChildProcess.make('docker', [
-			'inspect',
-			'--format',
-			'{{.State.Running}}|{{.Config.Image}}',
-			name,
-		]);
-		const captured = yield* runWithCapture(spawner, cmd, 'docker inspect (build container)').pipe(
-			Effect.orElseSucceed(() => null),
-		);
-		if (captured === null || captured.exitCode !== 0) return null;
-		const parts = captured.stdout.trim().split('|');
-		if (parts.length !== 2) return null;
-		const [runningStr, image] = parts as [string, string];
-		if (image.length === 0) return null;
-		return { running: runningStr === 'true', image };
-	});
-
+// `docker rm -f` finalizer registered at the SuiBuildContainer layer's
+// scope teardown. The build container has no on-disk state worth
+// preserving (sleeper process, bind-mounts only); full removal at
+// teardown keeps the host clean and ensures the next `pnpm dev` cycle
+// sees a clean slate if the image was bumped.
 const dockerRm = (spawner: Spawner, name: string): Effect.Effect<void, never> =>
 	Effect.gen(function* () {
 		yield* runWithCapture(
@@ -160,184 +136,120 @@ const dockerRm = (spawner: Spawner, name: string): Effect.Effect<void, never> =>
 		).pipe(Effect.ignore);
 	});
 
-// Result tag distinguishes "started ok" from "container vanished between
-// inspect and start" so the caller can decide whether to fall back to a
-// fresh create (Bug C — TOCTOU between `inspectContainer` and
-// `dockerStart` when a previous run's finalizer rm'd the container after
-// we observed it). Other non-zero exits surface as `SuiCliError` so we
-// don't silently mask unrelated daemon failures.
-type DockerStartResult = 'started' | 'missing';
-
-const dockerStart = (spawner: Spawner, name: string): Effect.Effect<DockerStartResult, SuiCliError> =>
-	Effect.gen(function* () {
-		const captured = yield* runWithCapture(
-			spawner,
-			ChildProcess.make('docker', ['start', name]),
-			'docker start (build container)',
-		);
-		if (captured.exitCode !== 0) {
-			// `docker start` reports a vanished container as exit 1 with
-			// `Error response from daemon: No such container: <name>` on
-			// stderr. Treat that as a recoverable race (Bug C) — the
-			// caller falls back to `dockerRunDetached`. Any other failure
-			// mode (daemon unreachable, perms, etc.) escalates.
-			if (/No such container/i.test(captured.stderr)) {
-				return 'missing';
-			}
-			return yield* Effect.fail(
-				new SuiCliError({
-					phase: 'docker start (build container)',
-					message: `failed to start build container '${name}': ${captured.stderr.trim() || captured.stdout.trim()}`,
-					stdout: captured.stdout,
-					stderr: captured.stderr,
-					exitCode: captured.exitCode,
-				}),
-			);
-		}
-		return 'started';
-	});
-
-// Bring up a sleeping container with the bind-mounts we want. Uses
-// `sleep infinity` as the entrypoint so the container stays alive until
-// we `docker rm -f` it on stack teardown. `--entrypoint` is intentional
-// override of whatever the images/sui image declares (`sui genesis` in the
-// localnet flavor) — we want a quiet idle process, not the localnet
-// bootstrap chatter.
-// Result tag mirrors `DockerStartResult` so the caller can detect a name
-// collision (Bug H — two parallel `up` invocations against the same app
-// both race to `docker run -d --name devstack-<app>-build`; one wins,
-// the other gets exit 125 + `Conflict. The container name "<name>" is
-// already in use`). The fallback is to `docker start` the existing
-// container — which is the same adoption flow `ensureContainer` already
-// handles for the stopped-but-present branch.
-type DockerRunResult = 'created' | 'name-collision';
-
-const dockerRunDetached = (
+// Adopt-or-create the build container. Delegates the entire
+// adopt/resume/recreate/fresh state machine — plus TOCTOU recovery (Bug
+// C) and name-collision recovery (Bug H) — to the shared
+// `engine/docker/ensure-container.ts::ensureContainer` primitive. We
+// just provide the `run` callback that spawns the sleeper container
+// with our bind-mounts, and map the helper's DockerError envelope to
+// SuiCliError so the build-error path renders uniformly.
+//
+// Pre-E1 this module hand-rolled its own state machine; the shared
+// helper unifies it with `Docker.run`'s lifecycle (audit finding E1),
+// removing the parallel TOCTOU + collision recovery code paths.
+const ensureBuildContainer = (
 	spawner: Spawner,
 	name: string,
 	imageTag: string,
 	appDir: string,
 	moveHome: string,
-): Effect.Effect<DockerRunResult, SuiCliError> =>
-	Effect.gen(function* () {
-		const args = [
-			'run',
-			'-d',
-			'--name',
-			name,
-			'-v',
-			`${appDir}:/host`,
-			'-v',
-			`${moveHome}:/root/.move`,
-			'--entrypoint',
-			'sleep',
-			imageTag,
-			'infinity',
-		];
-		const captured = yield* runWithCapture(
-			spawner,
-			ChildProcess.make('docker', args),
-			'docker run -d (build container)',
-		);
-		if (captured.exitCode !== 0) {
-			// Bug H — a peer supervisor for the same `app` raced us to
-			// the same container name. docker returns exit 125 with
-			// `Conflict. The container name "<name>" is already in use
-			// by container "<id>".`. Hand back a recoverable tag so the
-			// caller can adopt the peer's container via `docker start`.
-			if (captured.exitCode === 125 && /already in use/i.test(captured.stderr)) {
-				return 'name-collision';
-			}
-			return yield* Effect.fail(
+): Effect.Effect<void, SuiCliError, ChildProcessSpawner.ChildProcessSpawner> =>
+	ensureContainer({
+		name,
+		image: imageTag,
+		run: (ctx) =>
+			Effect.gen(function* () {
+				// Sui-build-container's lifecycle is strict-by-design — any
+				// `docker start` failure other than the TOCTOU "no such
+				// container" race should surface loudly rather than silently
+				// recreating. The pre-E1 behavior was "fail on daemon
+				// outage, fail on perms issues, only fall back on the
+				// vanished-container race". The helper's default
+				// `recreate-on-resume-failed` policy is right for the
+				// long-running stateful containers Docker.run wraps, but
+				// the build container has no state to defend AND the
+				// strict failure surface is useful for diagnosing daemon
+				// issues at acquire time. Reject the promotion here so the
+				// outer `mapError` converts the failure into a SuiCliError
+				// carrying the original docker stderr.
+				if (ctx.reason === 'recreate' && ctx.recreateReason === 'resume-failed') {
+					return yield* Effect.fail(
+						new DockerError({
+							phase: 'docker start',
+							message:
+								`failed to start build container '${name}': ` +
+								`${ctx.resumeFailureStderr?.trim() ?? 'unknown error'}`,
+							...(ctx.resumeFailureStderr !== undefined
+								? { stderr: ctx.resumeFailureStderr }
+								: {}),
+						}),
+					);
+				}
+				const args = [
+					'run',
+					'-d',
+					'--name',
+					name,
+					'-v',
+					`${appDir}:/host`,
+					'-v',
+					`${moveHome}:/root/.move`,
+					'--entrypoint',
+					'sleep',
+					imageTag,
+					'infinity',
+				];
+				// `runWithCapture` returns `SuiCliCapture` — but the helper's
+				// `run` callback signature is `Effect<string, DockerError>`,
+				// so we surface failures via DockerError here. The outer
+				// `mapError` below maps any DockerError thrown through the
+				// helper (including from the helper's internal `docker
+				// inspect` / `docker start` / `docker rm` paths) back into
+				// SuiCliError so downstream error rendering stays uniform.
+				const captured = yield* runWithCapture(
+					spawner,
+					ChildProcess.make('docker', args),
+					'docker run -d (build container)',
+				).pipe(
+					Effect.mapError(
+						(err) =>
+							new DockerError({
+								phase: 'docker run',
+								message: err.message,
+								...(err.stdout !== undefined ? { stdout: err.stdout } : {}),
+								...(err.stderr !== undefined ? { stderr: err.stderr } : {}),
+								...(err.exitCode !== undefined ? { exitCode: err.exitCode } : {}),
+							}),
+					),
+				);
+				if (captured.exitCode !== 0 || captured.stdout.trim().length === 0) {
+					return yield* Effect.fail(
+						new DockerError({
+							phase: 'docker run',
+							message:
+								`failed to start build container '${name}': ` +
+								`${captured.stderr.trim() || captured.stdout.trim()}`,
+							stdout: captured.stdout,
+							stderr: captured.stderr,
+							exitCode: captured.exitCode,
+						}),
+					);
+				}
+				return captured.stdout.trim();
+			}),
+	}).pipe(
+		Effect.asVoid,
+		Effect.mapError(
+			(err) =>
 				new SuiCliError({
 					phase: 'docker run -d (build container)',
-					message: `failed to start build container '${name}': ${captured.stderr.trim() || captured.stdout.trim()}`,
-					stdout: captured.stdout,
-					stderr: captured.stderr,
-					exitCode: captured.exitCode,
+					message: `failed to ensure build container '${name}': ${err.message}`,
+					...(err.stdout !== undefined ? { stdout: err.stdout } : {}),
+					...(err.stderr !== undefined ? { stderr: err.stderr } : {}),
+					...(err.exitCode !== undefined ? { exitCode: err.exitCode } : {}),
 				}),
-			);
-		}
-		return 'created';
-	});
-
-// Adopt-or-create the container. Three paths:
-//   1. No container by that name → create fresh.
-//   2. Container exists with the correct image:
-//      a. running → adopt as-is.
-//      b. stopped → `docker start` (leftover from a non-clean exit).
-//   3. Container exists with a DIFFERENT image (e.g. user bumped
-//      suiVersion) → rm -f and recreate so the build matches the
-//      localnet's exact sui binary.
-//
-// Two race paths get explicit recovery:
-//   - Bug C: a previous run's finalizer can `docker rm -f` the container
-//     between our `inspectContainer` and our `dockerStart`. `dockerStart`
-//     returns `'missing'` and we fall through to a fresh create.
-//   - Bug H: a peer supervisor for the same `app` may have raced us to
-//     the fresh create. `dockerRunDetached` returns `'name-collision'`
-//     and we adopt the peer's container via `dockerStart`.
-const ensureContainer = (
-	spawner: Spawner,
-	name: string,
-	imageTag: string,
-	appDir: string,
-	moveHome: string,
-): Effect.Effect<void, SuiCliError> =>
-	Effect.gen(function* () {
-		const current = yield* inspectContainer(spawner, name);
-		if (current === null) {
-			yield* createWithCollisionFallback(spawner, name, imageTag, appDir, moveHome);
-			return;
-		}
-		if (current.image !== imageTag) {
-			yield* dockerRm(spawner, name);
-			yield* createWithCollisionFallback(spawner, name, imageTag, appDir, moveHome);
-			return;
-		}
-		if (!current.running) {
-			const startResult = yield* dockerStart(spawner, name);
-			if (startResult === 'missing') {
-				// Bug C — finalizer rm'd between inspect and start. Fall
-				// through to a fresh create (which itself handles the
-				// peer-collision race via the collision fallback).
-				yield* createWithCollisionFallback(spawner, name, imageTag, appDir, moveHome);
-			}
-		}
-	});
-
-// Helper: run `docker run -d`, and if a parallel supervisor beat us to
-// the same name (Bug H), adopt the peer's container via `docker start`.
-// One-shot fallback: a second collision (or a missing container on the
-// start fallback) would indicate something is racing destructively, so
-// we propagate the original-style typed error rather than loop.
-const createWithCollisionFallback = (
-	spawner: Spawner,
-	name: string,
-	imageTag: string,
-	appDir: string,
-	moveHome: string,
-): Effect.Effect<void, SuiCliError> =>
-	Effect.gen(function* () {
-		const runResult = yield* dockerRunDetached(spawner, name, imageTag, appDir, moveHome);
-		if (runResult === 'name-collision') {
-			const startResult = yield* dockerStart(spawner, name);
-			if (startResult === 'missing') {
-				// Peer's container was removed between our `run` collision
-				// and our adopting `start`. Don't loop; surface a typed
-				// failure so the operator can investigate the racy peer.
-				return yield* Effect.fail(
-					new SuiCliError({
-						phase: 'docker start (build container)',
-						message:
-							`build container '${name}' vanished during collision-recovery start. ` +
-							`A peer supervisor likely created it then removed it concurrently. ` +
-							`Retry; if persistent, stop other devstack invocations against this app.`,
-					}),
-				);
-			}
-		}
-	});
+		),
+	);
 
 // -----------------------------------------------------------------------------
 // Cross-process move-build lock (Bug D)
@@ -392,9 +304,7 @@ interface MoveBuildLockHandle {
 // Async (Effect.sleep) so other fibers can run while we wait. Lock body
 // includes the standard `{pid, startedAt, host, instanceId}` so a peer
 // reclaimer can prove ownership via `releaseLockSync`'s instanceId check.
-const acquireMoveBuildLock = (
-	moveHome: string,
-): Effect.Effect<MoveBuildLockHandle, SuiCliError> =>
+const acquireMoveBuildLock = (moveHome: string): Effect.Effect<MoveBuildLockHandle, SuiCliError> =>
 	Effect.gen(function* () {
 		const lockPath = moveBuildLockPath(moveHome);
 		try {
@@ -567,9 +477,7 @@ const STALE_GIT_LOCK_AGE_MS = 60_000;
  * call it directly (doctor reports them, `--clean-locks` removes;
  * wipe sweeps unconditionally as part of its destructive cleanup).
  */
-export const sweepStaleGitLocks = (
-	moveHome: string,
-): Effect.Effect<ReadonlyArray<string>> =>
+export const sweepStaleGitLocks = (moveHome: string): Effect.Effect<ReadonlyArray<string>> =>
 	Effect.sync(() => {
 		const removed: Array<string> = [];
 		const root = path.join(moveHome, 'git');
@@ -760,7 +668,7 @@ export const SuiBuildContainerLive = Layer.effect(
 		const moveHome = path.join(os.homedir(), '.move');
 		const containerName = containerNameFor(identity);
 
-		yield* ensureContainer(spawner, containerName, image.tag, appDir, moveHome);
+		yield* ensureBuildContainer(spawner, containerName, image.tag, appDir, moveHome);
 
 		// `docker rm -f` is best-effort: a failure here (e.g. daemon
 		// went away mid-shutdown) shouldn't fail the supervisor's

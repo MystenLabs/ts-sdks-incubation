@@ -91,9 +91,7 @@ describe('calculateGridLevels (bps strategy)', () => {
 
 describe('state-store key shape', () => {
 	it('uses deepbook/market-maker/balance-manager prefix', () => {
-		expect(STATE_KEY_BALANCE_MANAGER_PREFIX_INTERNAL).toBe(
-			'deepbook/market-maker/balance-manager',
-		);
+		expect(STATE_KEY_BALANCE_MANAGER_PREFIX_INTERNAL).toBe('deepbook/market-maker/balance-manager');
 	});
 
 	it('perPool variant appends pool name as final segment', () => {

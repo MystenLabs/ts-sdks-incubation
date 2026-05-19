@@ -148,9 +148,7 @@ const isOptions = (x: unknown): x is DevstackComposeOptions => {
  *       manifest in level 0 and the extras yield throws
  *       "Service not found: <ref>".
  */
-const manifestRef = (
-	siblingKeys: ReadonlyArray<string>,
-): StackMember => {
+const manifestRef = (siblingKeys: ReadonlyArray<string>): StackMember => {
 	const body: Effect.Effect<
 		Manifest,
 		ManifestError,
@@ -246,14 +244,12 @@ export function devstack(
 	for (const m of flat) {
 		const key = (m as { key?: string }).key;
 		if (key === undefined || !key.startsWith('codegen/')) continue;
-		const existing =
-			(m as { __upstreamKeys?: ReadonlyArray<string> }).__upstreamKeys ?? [];
+		const existing = (m as { __upstreamKeys?: ReadonlyArray<string> }).__upstreamKeys ?? [];
 		const additions: string[] = [];
 		for (const sib of flat) {
 			const sibKey = (sib as { key?: string }).key;
 			if (sibKey === undefined || sibKey === key) continue;
-			const sibUpstream =
-				(sib as { __upstreamKeys?: ReadonlyArray<string> }).__upstreamKeys ?? [];
+			const sibUpstream = (sib as { __upstreamKeys?: ReadonlyArray<string> }).__upstreamKeys ?? [];
 			if (sibUpstream.includes(key)) continue; // cycle would form
 			additions.push(sibKey);
 		}

@@ -137,8 +137,7 @@ describe('pickCreatedByType — prefix filter (all: true)', () => {
 		// full long-form for every address in the type. `suffix`
 		// canonicalizes via `normalizeStructTag` so the two halves meet
 		// in the middle.
-		const longBase =
-			'0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI';
+		const longBase = '0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI';
 		const longQuote =
 			'0x0000000000000000000000000000000000000000000000000000000000000abc::mock_usdc::MOCK_USDC';
 		const longPool = `0x0000000000000000000000000000000000000000000000000000000000000def::pool::Pool<${longBase}, ${longQuote}>`;
@@ -211,7 +210,9 @@ describe('parseCoinTypeFromGeneric', () => {
 				'0x0000000000000000000000000000000000000000000000000000000000000002::coin::CoinMetadata<0x0000000000000000000000000000000000000000000000000000000000000abc::mock_usdc::MOCK_USDC>',
 				'0x2::coin::CoinMetadata',
 			),
-		).toBe('0x0000000000000000000000000000000000000000000000000000000000000abc::mock_usdc::MOCK_USDC');
+		).toBe(
+			'0x0000000000000000000000000000000000000000000000000000000000000abc::mock_usdc::MOCK_USDC',
+		);
 	});
 
 	it('returns undefined for wrong wrapper', () => {

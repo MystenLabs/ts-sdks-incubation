@@ -206,7 +206,7 @@ export const onChainArtifact = <
 				continue;
 			}
 			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			out[alias] = yield* (dep as unknown as Effect.Effect<unknown, any, any>);
+			out[alias] = yield* dep as unknown as Effect.Effect<unknown, any, any>;
 		}
 		return out as Resolved<U>;
 	});

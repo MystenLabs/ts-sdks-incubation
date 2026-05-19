@@ -16,6 +16,8 @@ import { SeedManifestMismatchError } from '../../engine/errors.js';
 import { causeToJson, prettyError } from '../../engine/pretty-error.js';
 import { bootstrapRouterFor } from '../../engine/router-bootstrap.js';
 import { AlreadyReportedError } from '../already-reported.js';
+import { emitEnvelope, errorEnvelope, jsonModeEnabled, successEnvelope } from '../envelope.js';
+import { EX_DATAERR } from '../exit-codes.js';
 import { applyNetworkOverride, networkFlag } from '../flags.js';
 import { loadConfigModule, requireLayer } from '../loaders.js';
 
@@ -72,13 +74,40 @@ export const applyCommand = Command.make(
 	{
 		configPath: Argument.string('config-path').pipe(Argument.optional),
 		json: Flag.boolean('json'),
+		dryRun: Flag.boolean('dry-run').pipe(
+			Flag.withDescription(
+				'Resolve the config and report the planned configPath/manifest path; do not build any layers.',
+			),
+			Flag.withDefault(false),
+		),
 		network: networkFlag,
 	},
-	({ configPath, json, network }) =>
+	({ configPath, json, dryRun, network }) =>
 		Effect.gen(function* () {
+			const startedAt = Date.now();
+			const useJson = jsonModeEnabled(json);
 			applyNetworkOverride(network);
 			const resolved = Option.getOrElse(configPath, () => './devstack.config.ts');
 			const devstack = yield* loadConfigModule(resolved, requireLayer);
+
+			if (dryRun) {
+				if (useJson) {
+					yield* emitEnvelope(
+						successEnvelope({
+							command: 'apply',
+							data: {
+								configPath: resolved,
+								wouldApply: { configPath: resolved },
+							},
+							elapsedMs: Date.now() - startedAt,
+							dryRun: true,
+						}),
+					);
+				} else {
+					yield* Console.log(`apply dry-run: would reconcile ${resolved} (no layers built)`);
+				}
+				return;
+			}
 
 			// Bring up the shared traefik router BEFORE building the user
 			// stack. On a fresh CI runner (no prior `devstack up` on this
@@ -123,31 +152,45 @@ export const applyCommand = Command.make(
 					// recipe BEFORE
 					// the generic pretty-error rendering. JSON mode
 					// includes the same structured fields under
-					// `error.seedManifestMismatch` so CI consumers can
-					// programmatically distinguish this failure mode
-					// from a network blip or docker hiccup.
+					// `error.context.seedManifestMismatch` (canonical
+					// envelope) so CI consumers can programmatically
+					// distinguish this failure mode from a network blip
+					// or docker hiccup.
 					const seedMismatch = findSeedManifestMismatch(cause);
-					if (json) {
-						yield* Console.log(
-							JSON.stringify({
-								ok: false,
+					if (useJson) {
+						const seedContext =
+							seedMismatch !== undefined
+								? {
+										metaPath: seedMismatch.metaPath,
+										...(seedMismatch.previous !== undefined
+											? { previous: seedMismatch.previous }
+											: {}),
+										...(seedMismatch.current !== undefined
+											? { current: seedMismatch.current }
+											: {}),
+									}
+								: undefined;
+						yield* emitEnvelope(
+							errorEnvelope({
 								command: 'apply',
-								configPath: resolved,
-								error: causeToJson(cause),
-								...(seedMismatch !== undefined
-									? {
-											seedManifestMismatch: {
-												metaPath: seedMismatch.metaPath,
-												...(seedMismatch.previous !== undefined
-													? { previous: seedMismatch.previous }
-													: {}),
-												...(seedMismatch.current !== undefined
-													? { current: seedMismatch.current }
-													: {}),
+								error: {
+									code:
+										seedMismatch !== undefined ? 'SEED_MANIFEST_MISMATCH' : 'APPLY_FAILED',
+									exitCode: EX_DATAERR,
+									message:
+										seedMismatch !== undefined
+											? 'fork seed manifest mismatch — on-disk meta differs from current config'
+											: 'apply failed',
+									...(seedMismatch !== undefined
+										? {
+												hint: 'devstack wipe --keep-upstream-cache --yes && devstack apply',
 												recipe: 'devstack wipe --keep-upstream-cache --yes && devstack apply',
-											},
-										}
-									: {}),
+												context: { configPath: resolved, seedManifestMismatch: seedContext },
+											}
+										: { context: { configPath: resolved } }),
+									cause: causeToJson(cause),
+								},
+								elapsedMs: Date.now() - startedAt,
 							}),
 						);
 					} else if (seedMismatch !== undefined) {
@@ -160,12 +203,12 @@ export const applyCommand = Command.make(
 
 			yield* buildEffect.pipe(Effect.catch(reportAndRethrow));
 
-			if (json) {
-				yield* Console.log(
-					JSON.stringify({
-						ok: true,
+			if (useJson) {
+				yield* emitEnvelope(
+					successEnvelope({
 						command: 'apply',
-						configPath: resolved,
+						data: { configPath: resolved },
+						elapsedMs: Date.now() - startedAt,
 					}),
 				);
 			} else {

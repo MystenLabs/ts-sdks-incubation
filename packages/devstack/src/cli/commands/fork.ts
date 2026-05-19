@@ -52,6 +52,8 @@ import {
 import { formatBytes } from '../../engine/docker/inventory.js';
 import { readStackContext } from '../../runtime/read-stack-context.js';
 import { failAlreadyReported } from '../already-reported.js';
+import { emitEnvelope, jsonModeEnabled, successEnvelope } from '../envelope.js';
+import { EX_SEED_MISMATCH } from '../exit-codes.js';
 import { resolveForkCacheRoot, resolveForkMetaPath, resolveStack } from '../stack-resolution.js';
 
 const stackFlag = Flag.string('stack').pipe(
@@ -143,6 +145,8 @@ const statusCommand = Command.make(
 	},
 	({ stack, json, follow }) =>
 		Effect.gen(function* () {
+			const startedAt = Date.now();
+			const useJson = jsonModeEnabled(json);
 			const fs = yield* FileSystem.FileSystem;
 			const path = yield* Path.Path;
 			const resolved = yield* resolveStack(fs, path, stack);
@@ -169,8 +173,14 @@ const statusCommand = Command.make(
 				epoch: Number(status.epoch),
 				timestampMs: Number(status.timestampMs),
 			};
-			if (json) {
-				yield* Console.log(JSON.stringify(body));
+			if (useJson) {
+				yield* emitEnvelope(
+					successEnvelope({
+						command: 'fork.status',
+						data: body,
+						elapsedMs: Date.now() - startedAt,
+					}),
+				);
 			} else {
 				yield* Console.log(`fork status (stack='${ctx.stack}', upstream=${ctx.upstream}):`);
 				if (ctx.chainId !== undefined) {
@@ -186,17 +196,17 @@ const statusCommand = Command.make(
 
 			// `--follow` consumes the subscription stream until the
 			// scope tears down (Ctrl-C) or the upstream completes.
-			// The printer formats each event alongside its source so
-			// the operator can tell when the
-			// stream silently downgraded to polling.
+			// Each event still emits as its own JSON line under --json
+			// for backward compatibility — wrapping the stream of
+			// events in a single envelope would defeat the point.
 			yield* Console.log(
-				json
+				useJson
 					? ''
 					: `following checkpoint stream (Ctrl-C to stop, source=subscription→poll on error)…`,
 			);
 			yield* subscribeCheckpointsWithFallback(client).pipe(
 				Stream.runForEach((event: ForkCheckpointEvent) =>
-					json
+					useJson
 						? Console.log(JSON.stringify(event))
 						: Console.log(
 								`  [${new Date(event.receivedAtMs).toISOString()}] checkpoint=${event.cursor} (${event.source})`,
@@ -226,9 +236,15 @@ const advanceClockCommand = Command.make(
 		),
 		stack: stackFlag,
 		json: jsonFlag,
+		dryRun: Flag.boolean('dry-run').pipe(
+			Flag.withDescription('Resolve the target and exit without invoking AdvanceClock'),
+			Flag.withDefault(false),
+		),
 	},
-	({ duration, stack, json }) =>
+	({ duration, stack, json, dryRun }) =>
 		Effect.gen(function* () {
+			const startedAt = Date.now();
+			const useJson = jsonModeEnabled(json);
 			const fs = yield* FileSystem.FileSystem;
 			const path = yield* Path.Path;
 			const resolved = yield* resolveStack(fs, path, stack);
@@ -239,6 +255,27 @@ const advanceClockCommand = Command.make(
 				);
 			}
 			const ctx = yield* resolveForkRuntimeCtx(resolved);
+			if (dryRun) {
+				if (useJson) {
+					yield* emitEnvelope(
+						successEnvelope({
+							command: 'fork.advance-clock',
+							data: {
+								stack: ctx.stack,
+								wouldAdvanceMs: parsedDuration,
+								rpcUrl: ctx.rpcUrl,
+							},
+							elapsedMs: Date.now() - startedAt,
+							dryRun: true,
+						}),
+					);
+				} else {
+					yield* Console.log(
+						`would advance clock by ${parsedDuration}ms against ${ctx.rpcUrl} — dry run`,
+					);
+				}
+				return;
+			}
 			const client = makeForkClient(ctx);
 			const resp = yield* Effect.tryPromise({
 				try: () =>
@@ -258,8 +295,14 @@ const advanceClockCommand = Command.make(
 				newTimestampMs: Number(resp.timestampMs),
 				txDigest: resp.txDigest,
 			};
-			if (json) {
-				yield* Console.log(JSON.stringify(body));
+			if (useJson) {
+				yield* emitEnvelope(
+					successEnvelope({
+						command: 'fork.advance-clock',
+						data: body,
+						elapsedMs: Date.now() - startedAt,
+					}),
+				);
 				return;
 			}
 			yield* Console.log(
@@ -282,9 +325,15 @@ const advanceCheckpointCommand = Command.make(
 		),
 		stack: stackFlag,
 		json: jsonFlag,
+		dryRun: Flag.boolean('dry-run').pipe(
+			Flag.withDescription('Resolve the target and exit without sealing checkpoints'),
+			Flag.withDefault(false),
+		),
 	},
-	({ count, stack, json }) =>
+	({ count, stack, json, dryRun }) =>
 		Effect.gen(function* () {
+			const startedAt = Date.now();
+			const useJson = jsonModeEnabled(json);
 			const fs = yield* FileSystem.FileSystem;
 			const path = yield* Path.Path;
 			const resolved = yield* resolveStack(fs, path, stack);
@@ -295,6 +344,27 @@ const advanceCheckpointCommand = Command.make(
 				);
 			}
 			const ctx = yield* resolveForkRuntimeCtx(resolved);
+			if (dryRun) {
+				if (useJson) {
+					yield* emitEnvelope(
+						successEnvelope({
+							command: 'fork.advance-checkpoint',
+							data: {
+								stack: ctx.stack,
+								wouldAdvanceCount: parsedCount,
+								rpcUrl: ctx.rpcUrl,
+							},
+							elapsedMs: Date.now() - startedAt,
+							dryRun: true,
+						}),
+					);
+				} else {
+					yield* Console.log(
+						`would advance ${parsedCount} checkpoint${parsedCount === 1 ? '' : 's'} against ${ctx.rpcUrl} — dry run`,
+					);
+				}
+				return;
+			}
 			const client = makeForkClient(ctx);
 			const advances: Array<{ checkpointSequenceNumber: number; timestampMs: number }> = [];
 			for (let i = 0; i < parsedCount; i++) {
@@ -322,8 +392,14 @@ const advanceCheckpointCommand = Command.make(
 				latestCheckpoint:
 					advances.length > 0 ? advances[advances.length - 1]!.checkpointSequenceNumber : undefined,
 			};
-			if (json) {
-				yield* Console.log(JSON.stringify(body));
+			if (useJson) {
+				yield* emitEnvelope(
+					successEnvelope({
+						command: 'fork.advance-checkpoint',
+						data: body,
+						elapsedMs: Date.now() - startedAt,
+					}),
+				);
 				return;
 			}
 			yield* Console.log(
@@ -348,6 +424,8 @@ const replayToCommand = Command.make(
 	},
 	({ target, stack, json }) =>
 		Effect.gen(function* () {
+			const startedAt = Date.now();
+			const useJson = jsonModeEnabled(json);
 			const fs = yield* FileSystem.FileSystem;
 			const path = yield* Path.Path;
 			const resolved = yield* resolveStack(fs, path, stack);
@@ -380,8 +458,14 @@ const replayToCommand = Command.make(
 					advanced: 0,
 					noop: true,
 				};
-				if (json) {
-					yield* Console.log(JSON.stringify(body));
+				if (useJson) {
+					yield* emitEnvelope(
+						successEnvelope({
+							command: 'fork.replay-to',
+							data: body,
+							elapsedMs: Date.now() - startedAt,
+						}),
+					);
 					return;
 				}
 				yield* Console.log(
@@ -416,8 +500,14 @@ const replayToCommand = Command.make(
 				advanced,
 				noop: false,
 			};
-			if (json) {
-				yield* Console.log(JSON.stringify(body));
+			if (useJson) {
+				yield* emitEnvelope(
+					successEnvelope({
+						command: 'fork.replay-to',
+						data: body,
+						elapsedMs: Date.now() - startedAt,
+					}),
+				);
 				return;
 			}
 			yield* Console.log(
@@ -443,6 +533,8 @@ const seedListCommand = Command.make(
 	},
 	({ stack, json }) =>
 		Effect.gen(function* () {
+			const startedAt = Date.now();
+			const useJson = jsonModeEnabled(json);
 			const fs = yield* FileSystem.FileSystem;
 			const path = yield* Path.Path;
 			const resolved = yield* resolveStack(fs, path, stack);
@@ -463,8 +555,14 @@ const seedListCommand = Command.make(
 				seedAddresses: meta.seedAddresses,
 				seedObjects: meta.seedObjects,
 			};
-			if (json) {
-				yield* Console.log(JSON.stringify(body));
+			if (useJson) {
+				yield* emitEnvelope(
+					successEnvelope({
+						command: 'fork.seed.list',
+						data: body,
+						elapsedMs: Date.now() - startedAt,
+					}),
+				);
 				return;
 			}
 			yield* Console.log(`fork seed list (stack='${resolved}'):`);
@@ -524,9 +622,17 @@ const seedDiffCommand = Command.make(
 		),
 		stack: stackFlag,
 		json: jsonFlag,
+		dryRun: Flag.boolean('dry-run').pipe(
+			Flag.withDescription(
+				'Same as a normal verify but never returns a non-zero exit even on mismatch (compare-only)',
+			),
+			Flag.withDefault(false),
+		),
 	},
-	({ upstream, checkpoint, addresses, objects, stack, json }) =>
+	({ upstream, checkpoint, addresses, objects, stack, json, dryRun }) =>
 		Effect.gen(function* () {
+			const startedAt = Date.now();
+			const useJson = jsonModeEnabled(json);
 			const fs = yield* FileSystem.FileSystem;
 			const path = yield* Path.Path;
 			const resolved = yield* resolveStack(fs, path, stack);
@@ -550,8 +656,15 @@ const seedDiffCommand = Command.make(
 					configHash: meta.configHash,
 					mode: 'print-only',
 				};
-				if (json) {
-					yield* Console.log(JSON.stringify(body));
+				if (useJson) {
+					yield* emitEnvelope(
+						successEnvelope({
+							command: 'fork.seed.diff',
+							data: body,
+							elapsedMs: Date.now() - startedAt,
+							...(dryRun ? { dryRun: true } : {}),
+						}),
+					);
 				} else {
 					yield* Console.log(`fork seed diff: on-disk configHash=${meta.configHash}`);
 					yield* Console.log(`(pass --upstream/--checkpoint/--addresses/--objects to compare)`);
@@ -608,8 +721,33 @@ const seedDiffCommand = Command.make(
 					seedObjects: [...parsedObjects].map((s) => s.toLowerCase()).sort(),
 				},
 			};
-			if (json) {
-				yield* Console.log(JSON.stringify(body));
+			if (useJson) {
+				if (match || dryRun) {
+					yield* emitEnvelope(
+						successEnvelope({
+							command: 'fork.seed.diff',
+							data: body,
+							elapsedMs: Date.now() - startedAt,
+							...(dryRun ? { dryRun: true } : {}),
+						}),
+					);
+				} else {
+					// Mismatch outside dry-run — emit error envelope with
+					// the dedicated EX_SEED_MISMATCH exit code so CI can
+					// gate on this specific failure mode.
+					yield* emitEnvelope({
+						schemaVersion: 1,
+						ok: false,
+						command: 'fork.seed.diff',
+						error: {
+							code: 'SEED_MISMATCH',
+							exitCode: EX_SEED_MISMATCH,
+							message: 'fork seed diff: configurations differ',
+							context: { diff: body },
+						},
+						elapsedMs: Date.now() - startedAt,
+					});
+				}
 			} else if (match) {
 				yield* Console.log(`fork seed diff: match (configHash=${meta.configHash})`);
 			} else {
@@ -623,7 +761,7 @@ const seedDiffCommand = Command.make(
 					`  proposed addresses (${body.proposed.seedAddresses.length}): ${body.proposed.seedAddresses.join(', ') || '(none)'}`,
 				);
 			}
-			if (!match) {
+			if (!match && !dryRun) {
 				return yield* failAlreadyReported('fork seed diff: configurations differ');
 			}
 		}),
@@ -728,6 +866,8 @@ const collectReferencedChainIds = async (stateRoot: string): Promise<ReadonlySet
 
 const cacheListCommand = Command.make('list', { json: jsonFlag }, ({ json }) =>
 	Effect.gen(function* () {
+		const startedAt = Date.now();
+		const useJson = jsonModeEnabled(json);
 		const cacheRoot = resolveForkCacheRoot();
 		const stateRoot = joinPath(cacheRoot, '..');
 		const referenced = yield* Effect.promise(() => collectReferencedChainIds(stateRoot));
@@ -741,8 +881,14 @@ const cacheListCommand = Command.make('list', { json: jsonFlag }, ({ json }) =>
 				referenced: e.referenced,
 			})),
 		};
-		if (json) {
-			yield* Console.log(JSON.stringify(body));
+		if (useJson) {
+			yield* emitEnvelope(
+				successEnvelope({
+					command: 'fork.cache.list',
+					data: body,
+					elapsedMs: Date.now() - startedAt,
+				}),
+			);
 			return;
 		}
 		yield* Console.log(`fork cache list (${cacheRoot}):`);
@@ -787,6 +933,8 @@ const cachePruneCommand = Command.make(
 	},
 	({ unreferenced, yes, dryRun, json }) =>
 		Effect.gen(function* () {
+			const startedAt = Date.now();
+			const useJson = jsonModeEnabled(json);
 			if (!unreferenced) {
 				return yield* failAlreadyReported(
 					'fork cache prune: pass --unreferenced (other modes are reserved for future work)',
@@ -804,8 +952,15 @@ const cachePruneCommand = Command.make(
 			const targets = entries.filter((e) => !e.referenced);
 			if (targets.length === 0) {
 				const empty = { cacheRoot, removed: [] as Array<string>, kept: entries.length };
-				if (json) {
-					yield* Console.log(JSON.stringify(empty));
+				if (useJson) {
+					yield* emitEnvelope(
+						successEnvelope({
+							command: 'fork.cache.prune',
+							data: empty,
+							elapsedMs: Date.now() - startedAt,
+							...(dryRun ? { dryRun: true } : {}),
+						}),
+					);
 				} else {
 					yield* Console.log(`fork cache prune: nothing to remove (kept ${empty.kept} entries)`);
 				}
@@ -813,9 +968,14 @@ const cachePruneCommand = Command.make(
 			}
 			const removed: Array<string> = [];
 			if (dryRun) {
-				if (json) {
-					yield* Console.log(
-						JSON.stringify({ cacheRoot, dryRun: true, wouldRemove: targets.map((t) => t.path) }),
+				if (useJson) {
+					yield* emitEnvelope(
+						successEnvelope({
+							command: 'fork.cache.prune',
+							data: { cacheRoot, wouldRemove: targets.map((t) => t.path) },
+							elapsedMs: Date.now() - startedAt,
+							dryRun: true,
+						}),
 					);
 				} else {
 					for (const t of targets) {
@@ -828,8 +988,14 @@ const cachePruneCommand = Command.make(
 				yield* Effect.promise(() => nodeFs.rm(t.path, { recursive: true, force: true }));
 				removed.push(t.path);
 			}
-			if (json) {
-				yield* Console.log(JSON.stringify({ cacheRoot, removed }));
+			if (useJson) {
+				yield* emitEnvelope(
+					successEnvelope({
+						command: 'fork.cache.prune',
+						data: { cacheRoot, removed },
+						elapsedMs: Date.now() - startedAt,
+					}),
+				);
 			} else {
 				yield* Console.log(
 					`fork cache prune: removed ${removed.length} unreferenced ` +

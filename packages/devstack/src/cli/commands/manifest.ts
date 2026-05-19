@@ -13,9 +13,9 @@
 
 import { Console, Effect, Option } from 'effect';
 import { Argument, Command, Flag } from 'effect/unstable/cli';
-import { promises as nodeFs } from 'node:fs';
 import { readStackContext } from '../../runtime/read-stack-context.js';
 import { failAlreadyReported } from '../already-reported.js';
+import { emitEnvelope, jsonModeEnabled, successEnvelope } from '../envelope.js';
 
 export const manifestCommand = Command.make(
 	'manifest',
@@ -29,15 +29,24 @@ export const manifestCommand = Command.make(
 		readStackContext({ manifestPath: Option.getOrUndefined(path) }).pipe(
 			Effect.flatMap((ctx) =>
 				Effect.gen(function* () {
-					if (json) {
-						// Emit the raw file body unchanged (preserves byte-for-byte
-						// what's on disk — `--json` is a scripting surface).
-						const raw = yield* Effect.tryPromise({
-							try: () => nodeFs.readFile(ctx.manifestPath, 'utf8'),
-							catch: (cause) =>
-								new Error(`failed to read ${ctx.manifestPath}: ${String(cause)}`),
-						});
-						yield* Console.log(raw.trimEnd());
+					const startedAt = Date.now();
+					const useJson = jsonModeEnabled(json);
+					if (useJson) {
+						// Wrap the parsed manifest in the canonical envelope.
+						// Pre-Phase A, `manifest --json` emitted the raw bytes;
+						// the data field now carries the parsed manifest
+						// (typed via Schema in readStackContext) plus the path,
+						// matching every other envelope-aware command.
+						yield* emitEnvelope(
+							successEnvelope({
+								command: 'manifest',
+								data: {
+									path: ctx.manifestPath,
+									manifest: ctx.manifest,
+								},
+								elapsedMs: Date.now() - startedAt,
+							}),
+						);
 						return;
 					}
 

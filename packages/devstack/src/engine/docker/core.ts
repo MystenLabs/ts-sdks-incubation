@@ -22,6 +22,7 @@ import {
 	type CaptureError,
 	decodeStream as decodeStreamShared,
 } from '../capture-command.js';
+import { ensureContainer, type RunContext } from './ensure-container.js';
 
 // -----------------------------------------------------------------------------
 // Errors
@@ -513,190 +514,6 @@ export const run = (
 				),
 			);
 
-		// Decide what to do based on the inspect probe — pure function,
-		// see `decideRunAction` below. The dispatcher executes the
-		// action; the resume branch can promote itself to `recreate`
-		// when `docker start` fails (e.g. the original host port is now
-		// held by something else), at which point the fallback MUST NOT
-		// reuse the caller's stale port preferences.
-		const inspected = yield* inspectContainer(spawner, name);
-		let action = decideRunAction(inspected, opts.image, opts.expectedExitCodes);
-
-		if (action.kind === 'adopt') {
-			yield* Effect.logInfo(`devstack: reusing running container '${name}'`);
-			yield* Effect.annotateCurrentSpan({
-				'docker.op': 'run',
-				'docker.name': name,
-				'docker.reused': true,
-				'docker.resumed': false,
-			});
-			yield* claim(action.containerId);
-			// Reattach to the router network + materialize file-provider
-			// YAMLs. Reattach is idempotent on already-attached, and the
-			// YAML overwrite picks up the current IP if the daemon
-			// assigned a different one across a docker restart.
-			yield* materializeRouterEntries(spawner, action.containerId, opts.traefik, reuseScope);
-			// Finalizer: stop (don't remove) so the container's on-disk
-			// state survives until the next pnpm dev resumes it. `devstack
-			// wipe` is the only way to remove containers + volumes.
-			yield* stopFinalizer(action.containerId);
-			// Stream this container's combined output into the
-			// supervisor's log channel for as long as the reuseScope is
-			// alive. No-op when the caller didn't supply a sink.
-			yield* attachLogFollower(spawner, action.containerId, name, opts.onOutputLine, reuseScope);
-			// Read the container's actual host-port bindings — `docker
-			// start` honors the original `docker run -p` mappings, not
-			// the caller's freshly-allocated `opts.ports`. Callers that
-			// publish URLs to the manifest (sui-localnet) MUST use the
-			// returned `hostPorts`, not their pre-resume allocator
-			// guesses, or the ready-probe hits a port the container
-			// isn't actually bound to and times out.
-			const hostPorts = yield* inspectHostPorts(spawner, action.containerId);
-			return { containerId: action.containerId, name, reused: true, hostPorts };
-		}
-
-		// Set when the resume path promotes itself to `recreate`
-		// SPECIFICALLY because the host port we asked for is held by
-		// something else. ONLY in that case do we want to drop the
-		// caller's `opts.ports` and let docker auto-allocate. For every
-		// other resume failure (OCI runtime errors, image-pull glitches,
-		// transient daemon hiccups) the original ports are still the
-		// right ones, and re-allocating breaks any caller that already
-		// published URLs at primitive-init time (e.g. seal-key-server
-		// captures `http://localhost:2024` into its endpoint and never
-		// re-reads — recreating on an ephemeral port leaves the
-		// supervisor probing a port the container isn't bound to).
-		let resumePortConflict = false;
-
-		if (action.kind === 'resume') {
-			yield* Effect.logInfo(`devstack: resuming stopped container '${name}'`);
-			// Note: the SIGKILL/exit-137 unclean-shutdown branch never lands
-			// here — `decideRunAction` short-circuits an unclean prior
-			// shutdown to `recreate` so we put the chain back in a known
-			// state rather than adopt half-written state. The
-			// auto-recreate banner is logged in the recreate path below.
-			// Capture exit code + stderr — `docker start` can fail for
-			// real reasons (port already in use on the host, the image's
-			// tag was pruned out from under it, runtime config drift).
-			// The earlier code looked at the exitCode and ignored
-			// non-zero values, so a silent start-failure put the
-			// supervisor into "container exists but isn't actually
-			// running" territory and every downstream ready-probe timed
-			// out blind.
-			const startResult = yield* runCapturing(
-				spawner,
-				ChildProcess.make('docker', ['start', action.containerId]),
-				'docker start',
-			).pipe(Effect.catchTag('DockerError', () => Effect.succeed(null)));
-			if (startResult === null || startResult.exitCode !== 0) {
-				const stderr = startResult?.stderr ?? '';
-				resumePortConflict = isPortConflictStderr(stderr);
-				yield* Effect.logWarning(
-					`devstack: docker start '${name}' failed (` +
-						`exit=${startResult?.exitCode ?? 'spawn-error'}, ` +
-						`stderr=${stderr.trim().slice(0, 200)})` +
-						(resumePortConflict
-							? ' — port conflict detected, falling back to remove + fresh run with re-allocated ports'
-							: ' — falling back to remove + fresh run with the original ports'),
-				);
-				// Promote to `recreate`: the existing container is the
-				// one we just failed to start, so we know its id; the
-				// dispatcher's recreate branch will rm it and re-run.
-				// Whether the fresh run reuses the caller's host ports
-				// or asks docker to auto-allocate is decided below via
-				// `resumePortConflict` — most resume failures (OCI
-				// runtime errors, transient daemon issues) are NOT port
-				// problems and recreating on the same port works.
-				action = { kind: 'recreate', existingId: action.containerId };
-			} else {
-				yield* Effect.annotateCurrentSpan({
-					'docker.op': 'run',
-					'docker.name': name,
-					'docker.reused': true,
-					'docker.resumed': true,
-				});
-				yield* claim(action.containerId);
-				yield* materializeRouterEntries(spawner, action.containerId, opts.traefik, reuseScope);
-				yield* stopFinalizer(action.containerId);
-				yield* attachLogFollower(spawner, action.containerId, name, opts.onOutputLine, reuseScope);
-				const hostPorts = yield* inspectHostPorts(spawner, action.containerId);
-				return { containerId: action.containerId, name, reused: true, hostPorts };
-			}
-		}
-
-		// UNCLEAN_PRIOR_SHUTDOWN banner. `decideRunAction` returns
-		// `recreate` (not `adopt` / `resume`) when the inspected container's
-		// previous run ended in SIGKILL (exit 137) — docker's stop-grace
-		// expired before the workload could flush state. For stateful
-		// services that stamp registry ids / package ids into the chain
-		// (sui validator, deepbook init) adopting the wedged container
-		// would let a downstream re-publish conflict with the half-written
-		// prior state. We log loudly here so the user sees WHY their
-		// container got recreated instead of resumed; the alternative —
-		// silently nuking on-disk state — has been worse in practice. The
-		// `lastExitCode === 137` branch is checked against the original
-		// `inspected` because `action.existingId` carries no exit-code.
-		if (action.kind === 'recreate' && inspected !== null && inspected.lastExitCode === 137) {
-			yield* Effect.logError(
-				`! UNCLEAN PRIOR SHUTDOWN: '${name}' was force-killed (exit 137) before it ` +
-					`finished writing state to disk. AUTO-RECREATING: removing the stale container ` +
-					`and starting fresh so the chain registry / package ids return to a known state. ` +
-					`If on-disk state matters (named volumes, RocksDB stores), this preserves them — ` +
-					`only the container metadata is replaced.`,
-			);
-		}
-		// `recreate` and `fresh` both end up here. Port-arg selection:
-		//
-		//   - `fresh` (no prior container): honor the caller's
-		//     `opts.ports` exactly.
-		//   - `recreate` from an image-mismatch eviction (decision-time):
-		//     same — the caller's ports are still authoritative; the old
-		//     container is gone so there's nothing to conflict with.
-		//   - `recreate` from an unclean-prior-shutdown eviction
-		//     (`lastExitCode === 137`): same — the caller's ports are
-		//     still authoritative; the previous container is about to be
-		//     `docker rm`-ed and there's nothing held on the host.
-		//   - `recreate` from a resume-fallback promotion where stderr
-		//     indicated a port conflict (something else holds the host
-		//     port now): drop `opts.ports` and pass
-		//     `-p <bind>::<container>` so docker auto-allocates an
-		//     ephemeral host port. Read it back via `inspectHostPorts`.
-		//
-		//     For every other failure class (OCI runtime error, missing
-		//     image layer, daemon hiccup) the caller's ports are still
-		//     correct and re-allocating would silently move the endpoint
-		//     out from under callers that already published URLs at
-		//     primitive-init time.
-		const useAutoAllocate = resumePortConflict;
-		const portArgs = useAutoAllocate ? portArgsAuto() : portArgsFor({ ...opts.ports });
-		const args = buildRunArgs({
-			detach,
-			name,
-			labels,
-			hostname: opts.hostname,
-			network: opts.network,
-			ip: opts.ip,
-			networkAlias: opts.networkAlias,
-			addHosts,
-			portArgs,
-			envFiles: opts.envFiles,
-			env: opts.env,
-			mounts: opts.mounts,
-			image: opts.image,
-			imageArgs: opts.args,
-		});
-
-		// Per-primitive orphan sweep. A prior process killed mid-cycle
-		// (SIGKILL, panic) can leave a same-named container lying
-		// around; docker rejects `run --name` collisions, so without
-		// this step every restart after a hard crash fails immediately.
-		// Force-remove is safer than reuse here — the inspect probe
-		// above already claimed the reuse path when health + image
-		// matched, so anything reaching this point is
-		// known-incompatible. Best-effort: a failure here just falls
-		// through and lets `docker run` surface the real reason.
-		yield* removeContainerIfExists(spawner, name).pipe(Effect.ignore);
-
 		// Pre-create named volumes with devstack labels so `devstack
 		// wipe` can enumerate + remove them via
 		// `docker volume ls --filter label=devstack.stack=<stack>`.
@@ -706,86 +523,218 @@ export const run = (
 		// every run leaks ~100MB of RocksDB / postgres / walrus state.
 		// Bind mounts (host string contains '/') are user-owned host
 		// paths and must NOT be pre-created; skip them.
+		//
+		// Done up-front (not inside the `run` callback) so the labels are
+		// in place even on the adopt / resume paths where the callback
+		// never fires — a previously-leaked unlabeled volume gets
+		// re-stamped on the next cycle. Best-effort: a failure here
+		// shouldn't gate adoption / resume; `docker run`'s lazy-create
+		// at the next fresh path will surface the real error.
 		for (const { host } of opts.mounts ?? []) {
 			if (host.includes('/')) continue;
 			yield* ensureLabeledVolume(spawner, host, identity.app, identity.stack).pipe(Effect.ignore);
 		}
 
-		const cmd = ChildProcess.make('docker', args);
-		yield* Effect.annotateCurrentSpan({
-			'docker.op': 'run',
-			'docker.name': name,
-			'docker.recreate': resumePortConflict,
-			'docker.recreate.portStrategy': useAutoAllocate ? 'auto' : 'caller',
+		// Delegate the adopt / resume / recreate / fresh state machine
+		// to the shared primitive (`engine/docker/ensure-container.ts`).
+		// Everything below the helper call — router file-provider
+		// materialization, scope-bound stop finalizer, log follower,
+		// host-port readback — is Docker.run-specific post-processing
+		// applied uniformly to all paths.
+		const ensured = yield* ensureContainer({
+			name,
+			image: opts.image,
+			...(opts.expectedExitCodes !== undefined
+				? { expectedExitCodes: opts.expectedExitCodes }
+				: {}),
+			onAdopt: (id: string) =>
+				Effect.gen(function* () {
+					yield* Effect.logInfo(`devstack: reusing running container '${name}'`);
+					yield* Effect.annotateCurrentSpan({
+						'docker.op': 'run',
+						'docker.name': name,
+						'docker.reused': true,
+						'docker.resumed': false,
+					});
+					return id;
+				}).pipe(Effect.asVoid),
+			onResume: (id: string) =>
+				Effect.gen(function* () {
+					yield* Effect.logInfo(`devstack: resuming stopped container '${name}'`);
+					yield* Effect.annotateCurrentSpan({
+						'docker.op': 'run',
+						'docker.name': name,
+						'docker.reused': true,
+						'docker.resumed': true,
+					});
+					return id;
+				}).pipe(Effect.asVoid),
+			onRecreate: (reason) =>
+				Effect.gen(function* () {
+					// UNCLEAN_PRIOR_SHUTDOWN banner. `decideRunAction`
+					// returns `recreate` (not `adopt` / `resume`) when
+					// the inspected container's previous run ended in
+					// SIGKILL (exit 137) — docker's stop-grace expired
+					// before the workload could flush state. For
+					// stateful services that stamp registry ids /
+					// package ids into the chain (sui validator,
+					// deepbook init) adopting the wedged container
+					// would let a downstream re-publish conflict with
+					// the half-written prior state. Log loudly so the
+					// user sees WHY their container got recreated
+					// instead of resumed.
+					if (reason === 'unclean-shutdown') {
+						yield* Effect.logError(
+							`! UNCLEAN PRIOR SHUTDOWN: '${name}' was force-killed (exit 137) before it ` +
+								`finished writing state to disk. AUTO-RECREATING: removing the stale container ` +
+								`and starting fresh so the chain registry / package ids return to a known state. ` +
+								`If on-disk state matters (named volumes, RocksDB stores), this preserves them — ` +
+								`only the container metadata is replaced.`,
+						);
+					}
+				}),
+			// Caller-owned `docker run` argv assembly. The helper has
+			// already done the `docker rm -f` on the recreate path
+			// before this fires. Port-arg selection follows the same
+			// rules as before E1:
+			//
+			//   - `fresh` (no prior container): honor caller's
+			//     `opts.ports` exactly.
+			//   - `recreate` for image-mismatch / unclean-shutdown: same
+			//     — caller's ports are still authoritative; the old
+			//     container is gone so there's nothing to conflict
+			//     with.
+			//   - `recreate` from a resume-fallback promotion where
+			//     stderr indicated a port conflict (something else
+			//     holds the host port now): drop `opts.ports` and pass
+			//     `-p <bind>::<container>` so docker auto-allocates.
+			//     Read back via `inspectHostPorts` after the run.
+			//
+			// For every other resume-failure class (OCI runtime error,
+			// missing image layer, daemon hiccup) the caller's ports
+			// are still correct and re-allocating would silently move
+			// the endpoint out from under callers that already
+			// published URLs at primitive-init time.
+			run: (ctx: RunContext) =>
+				Effect.gen(function* () {
+					const useAutoAllocate =
+						ctx.reason === 'recreate' &&
+						ctx.recreateReason === 'resume-failed' &&
+						ctx.resumeFailureStderr !== undefined &&
+						isPortConflictStderr(ctx.resumeFailureStderr);
+					if (
+						ctx.reason === 'recreate' &&
+						ctx.recreateReason === 'resume-failed' &&
+						!useAutoAllocate
+					) {
+						// Log the no-port-conflict branch so operators can see
+						// the resume-fallback chose to keep the caller's
+						// original ports rather than re-allocate.
+						yield* Effect.logInfo(
+							`devstack: docker start '${name}' fallback — falling back to remove + ` +
+								`fresh run with the original ports`,
+						);
+					} else if (useAutoAllocate) {
+						yield* Effect.logInfo(
+							`devstack: docker start '${name}' fallback — port conflict detected, ` +
+								`falling back to remove + fresh run with re-allocated ports`,
+						);
+					}
+					const portArgs = useAutoAllocate ? portArgsAuto() : portArgsFor({ ...opts.ports });
+					const args = buildRunArgs({
+						detach,
+						name,
+						labels,
+						hostname: opts.hostname,
+						network: opts.network,
+						ip: opts.ip,
+						networkAlias: opts.networkAlias,
+						addHosts,
+						portArgs,
+						envFiles: opts.envFiles,
+						env: opts.env,
+						mounts: opts.mounts,
+						image: opts.image,
+						imageArgs: opts.args,
+					});
+					yield* Effect.annotateCurrentSpan({
+						'docker.op': 'run',
+						'docker.name': name,
+						'docker.recreate': ctx.reason === 'recreate',
+						'docker.recreate.portStrategy': useAutoAllocate ? 'auto' : 'caller',
+					});
+					const captured = yield* runCapturing(
+						spawner,
+						ChildProcess.make('docker', args),
+						'docker run',
+					);
+					const newId = captured.stdout.trim();
+					if (captured.exitCode !== 0 || newId.length === 0) {
+						return yield* Effect.fail(
+							new DockerError({
+								phase: 'docker run',
+								message: summarize(
+									'docker run',
+									captured.exitCode,
+									captured.stdout,
+									captured.stderr,
+									`name=${name}`,
+								),
+								stdout: truncate(captured.stdout),
+								stderr: truncate(captured.stderr),
+								exitCode: captured.exitCode,
+							}),
+						);
+					}
+					return newId;
+				}),
 		});
 
-		const captured = yield* runCapturing(spawner, cmd, 'docker run');
-		const containerId = captured.stdout.trim();
-		if (captured.exitCode !== 0 || containerId.length === 0) {
-			return yield* Effect.fail(
-				new DockerError({
-					phase: 'docker run',
-					message: summarize(
-						'docker run',
-						captured.exitCode,
-						captured.stdout,
-						captured.stderr,
-						`name=${name}`,
-					),
-					stdout: truncate(captured.stdout),
-					stderr: truncate(captured.stderr),
-					exitCode: captured.exitCode,
-				}),
-			);
-		}
-
-		// Multi-network attach for traefik exposure + file-provider
-		// YAML materialization. Backends keep their per-stack network
-		// as primary (for in-network DNS aliases / IP pins) and join
-		// the shared `devstack-router` network so traefik can reach
-		// them. After the network attach, the supervisor resolves the
-		// container's router-network IP and writes one
-		// `~/.devstack/traefik/dynamic/<id>.yml` per RouterLabel. We
-		// can't use traefik's docker provider here: it watches
-		// container events and would capture the per-stack IP on the
-		// first event, BEFORE `docker network connect` adds the
-		// router-network IP — every request would then 404 against a
-		// network traefik can't reach.
+		const containerId = ensured.containerId;
+		// Router file-provider materialization. Backends keep their
+		// per-stack network as primary (for in-network DNS aliases /
+		// IP pins) and join the shared `devstack-router` network so
+		// traefik can reach them. After the network attach, the
+		// supervisor resolves the container's router-network IP and
+		// writes one `~/.devstack/traefik/dynamic/<id>.yml` per
+		// RouterLabel.
+		//
+		// Idempotent on already-attached (adopt path) — the YAML
+		// overwrite picks up the current IP if the daemon assigned a
+		// different one across a docker restart.
 		yield* materializeRouterEntries(spawner, containerId, opts.traefik, reuseScope);
-
-		// Best-effort `docker stop` on scope close. We deliberately
-		// stop instead of remove so the container's on-disk state
-		// (named volumes, RocksDB stores, deploy outputs, …) survives
-		// to the next `pnpm dev`, where the reuse path above resumes
-		// it with `docker start` in ~1s. Full teardown is the job of
-		// `devstack wipe` (which removes via the label-based sweep).
-		//
-		// Tolerate failure here because the container may have already
-		// exited / been removed by `--rm` or a competing teardown.
-		// `Effect.uninterruptible` is essential: scope teardown fires
-		// under fiber interruption (SIGINT path), and without it the
-		// stop subprocess gets killed mid-flight, leaving the
-		// container in an indeterminate state.
-		//
-		// Registered on the primitive's own layer scope — `r` cascades
-		// through the supervisor's outer scope to every primitive, but
-		// targeted watch-fires only release the affected primitives'
-		// scopes; see the reuse-if-healthy comment above.
 		yield* claim(containerId);
+		// `docker stop` finalizer on scope close. We deliberately stop
+		// instead of remove so the container's on-disk state (named
+		// volumes, RocksDB stores, deploy outputs, …) survives to the
+		// next `pnpm dev`. Full teardown is the job of `devstack wipe`.
+		// Registered on the primitive's own layer scope — `r` cascades
+		// through the supervisor's outer scope; targeted watch-fires
+		// only release the affected primitives' scopes.
 		yield* stopFinalizer(containerId);
-		// Stream this fresh container's combined output through the
-		// supervisor's sink (when supplied) until the reuseScope closes.
+		// Stream this container's combined output through the
+		// supervisor's sink (when supplied) until reuseScope closes.
+		// No-op when `opts.onOutputLine` is undefined.
 		yield* attachLogFollower(spawner, containerId, name, opts.onOutputLine, reuseScope);
 
 		// Host-port report:
-		//   - auto-allocate recreate: docker chose an ephemeral host port,
-		//     read the actual binding back via `inspect`.
-		//   - normal `fresh`/`recreate`: caller's `opts.ports` were
-		//     honored exactly.
-		const hostPorts: Record<number, number> = useAutoAllocate
-			? yield* inspectHostPorts(spawner, containerId)
-			: { ...opts.ports };
-		return { containerId, name, reused: false, hostPorts };
+		//   - reused (adopt / resume): inspect actual bindings — `docker
+		//     start` honors the ORIGINAL `docker run -p` mappings, not
+		//     the caller's freshly-allocated `opts.ports`.
+		//   - fresh / recreate (caller ports): inspect returns the same
+		//     bindings as `opts.ports`. We could short-circuit to
+		//     `opts.ports` here, but inspecting is cheap and uniform.
+		//   - recreate w/ auto-allocate (resume-failed + port-conflict
+		//     stderr): docker chose ephemeral ports, MUST read them
+		//     back from inspect.
+		//
+		// `inspectHostPorts` falls back gracefully when both views
+		// (runtime, config) are empty — use the caller's `opts.ports`
+		// in that case as belt-and-suspenders.
+		const inspectedPorts = yield* inspectHostPorts(spawner, containerId);
+		const hostPorts: Record<number, number> =
+			Object.keys(inspectedPorts).length > 0 ? inspectedPorts : { ...opts.ports };
+		return { containerId, name, reused: ensured.reused, hostPorts };
 	}).pipe(Effect.withSpan('Docker.run'));
 
 // Spawn `docker logs --follow --since <epoch-secs> <id>` and pump every
@@ -937,93 +886,15 @@ const attachLogFollower = (
 	}).pipe(Effect.catchCause(() => Effect.void));
 
 // -----------------------------------------------------------------------------
-// State machine — pure decision for `Docker.run`
+// State machine — pure decision (re-exported from `ensure-container.ts`)
 // -----------------------------------------------------------------------------
-
-/**
- * Shape passed into `decideRunAction`: what `docker inspect` told us
- * about a container with the requested name. Exported so tests can
- * construct one without indirecting through `inspectContainer`.
- */
-export interface InspectResult {
-	readonly running: boolean;
-	readonly image: string;
-	readonly containerId: string;
-	/** Exit code from the container's previous run, when known. `137` ==
-	 *  SIGKILL — usually because docker's `stop --time` grace expired
-	 *  before the workload could clean up. Stateful containers (validators,
-	 *  databases) that hit this can come back wedged; surfaced so the
-	 *  adopt/resume path can warn the user proactively instead of letting
-	 *  them discover it 2+ minutes later when downstream probes exhaust
-	 *  their retry budgets. `undefined` for a never-run container or
-	 *  when the inspect format can't be parsed. */
-	readonly lastExitCode?: number;
-}
-
-/**
- * What `Docker.run` should do given the result of an `inspect` probe
- * and the caller's requested image. Five logical states across the
- * inspect × image-match × running-state matrix collapse into four
- * action kinds; the fifth ("resume tried, `docker start` failed") is
- * a runtime PROMOTION done by the dispatcher: it constructs
- * `{ kind: 'recreate', existingId }` after the failed start and
- * continues. That keeps this function pure and easy to unit-test.
- */
-export type RunAction =
-	| { readonly kind: 'adopt'; readonly containerId: string }
-	| { readonly kind: 'resume'; readonly containerId: string }
-	| { readonly kind: 'recreate'; readonly existingId?: string }
-	| { readonly kind: 'fresh' };
-
-/**
- * Pure decision: which of the four `RunAction` kinds describes what
- * `Docker.run` should do for this `(inspected, requestedImage)` pair?
- *
- *   - `inspected === null`                          → `fresh`
- *   - prior run ended in SIGKILL (exit 137)         → `recreate`
- *   - same image, running                           → `adopt`
- *   - same image, stopped                           → `resume`
- *   - different image (running or stopped)          → `recreate`
- *
- * UNCLEAN_PRIOR_SHUTDOWN takes precedence over adopt/resume. Exit 137
- * means docker's stop-grace expired before the workload could flush
- * state. For stateful services that depend on a cross-container chain
- * registry (deepbook registry-id stamped into a prior package publish,
- * walrus storage rebuild) this leaves the on-disk state inconsistent in
- * a way the next start can't recover from: the next `devstack up`
- * adopts / resumes the wedged container, then a downstream re-publish
- * (deepbook re-init) conflicts with the half-written prior state.
- * Forcing a fresh container at this layer puts the chain back in a
- * known state — the trade-off is one extra cold-start, which the user
- * has already accepted by force-killing in the first place.
- *
- * `expectedExitCodes` is the opt-out for primitives that exit 137 by
- * design AND have a workload-internal recovery path that keeps on-disk
- * state consistent. Sui-localnet is the canonical case: `sui start
- * --with-faucet` blocks before its SIGINT handler registers, so PID 1
- * never traps any signal and the validator ALWAYS exits 137 on every
- * cycle teardown; RocksDB's WAL replays cleanly on resume. Without the
- * opt-out, every `pnpm dev` would nuke chain state by recreating the
- * container — defeating warm resume entirely.
- */
-export const decideRunAction = (
-	inspected: InspectResult | null,
-	requestedImage: string,
-	expectedExitCodes: ReadonlyArray<number> = [],
-): RunAction => {
-	if (inspected === null) return { kind: 'fresh' };
-	if (inspected.image !== requestedImage) {
-		return { kind: 'recreate', existingId: inspected.containerId };
-	}
-	// UNCLEAN_PRIOR_SHUTDOWN — overrides adopt/resume. Skip when the
-	// caller has declared the exit code expected (sui-localnet's
-	// by-design 137 from `--with-faucet`).
-	if (inspected.lastExitCode === 137 && !expectedExitCodes.includes(inspected.lastExitCode)) {
-		return { kind: 'recreate', existingId: inspected.containerId };
-	}
-	if (inspected.running) return { kind: 'adopt', containerId: inspected.containerId };
-	return { kind: 'resume', containerId: inspected.containerId };
-};
+//
+// `decideRunAction` + `InspectResult` live in `engine/docker/ensure-container.ts`
+// as part of the shared adopt/resume/recreate/fresh primitive (audit
+// finding E1). Re-exported here so existing imports of
+// `engine/docker/core.ts::decideRunAction` keep working — `Docker.run` itself
+// delegates the entire state machine to `ensureContainer`.
+export { decideRunAction, type InspectResult, type RunAction } from './ensure-container.js';
 
 interface BuildRunArgsInput {
 	readonly detach: boolean;
@@ -1091,52 +962,6 @@ export interface DockerExecResult {
 	readonly stdout: string;
 	readonly stderr: string;
 }
-
-// Inspect a container by exact name and return its running-state +
-// image + id, or `null` if no container by that name exists. Used by
-// `Docker.run`'s reuse-if-healthy path to decide whether to adopt an
-// existing container (running AND same image) or fall through to the
-// remove-and-recreate path. The format string asks for all three
-// fields in one shot so we avoid a second round-trip when only one
-// matters; `docker inspect` returns exit code 1 with a `No such
-// object` error on stderr when the container doesn't exist — we treat
-// that uniformly as `null` so callers can branch on existence with one
-// check. Result type is `InspectResult` so `decideRunAction` can match
-// against it directly.
-const inspectContainer = (
-	spawner: Spawner,
-	name: string,
-): Effect.Effect<InspectResult | null, never> =>
-	Effect.gen(function* () {
-		// `.State.ExitCode` is meaningful both for stopped containers (the
-		// exit code of their last run) and for running containers (0 until
-		// they exit again). We include it so the adopt/resume path can
-		// detect a prior SIGKILL (`137`) and surface a wedge warning
-		// before downstream probes exhaust their retry budgets.
-		const cmd = ChildProcess.make('docker', [
-			'inspect',
-			'--format',
-			'{{.State.Running}}|{{.Config.Image}}|{{.Id}}|{{.State.ExitCode}}',
-			name,
-		]);
-		const captured = yield* runCapturing(spawner, cmd, 'docker inspect').pipe(
-			Effect.catchTag('DockerError', () => Effect.succeed(null)),
-		);
-		if (captured === null || captured.exitCode !== 0) return null;
-		const line = captured.stdout.trim();
-		const parts = line.split('|');
-		if (parts.length !== 4) return null;
-		const [runningStr, image, containerId, exitCodeStr] = parts as [string, string, string, string];
-		if (image.length === 0 || containerId.length === 0) return null;
-		const exitCodeParsed = Number.parseInt(exitCodeStr, 10);
-		const lastExitCode = Number.isFinite(exitCodeParsed) ? exitCodeParsed : undefined;
-		return {
-			running: runningStr === 'true',
-			image,
-			containerId,
-			...(lastExitCode !== undefined ? { lastExitCode } : {}),
-		};
-	});
 
 // Read the host-port bindings of an existing container as
 // `{ [hostPort]: containerPort }`. Used on resume to figure out which
@@ -1434,8 +1259,9 @@ const ensureLabeledVolume = (
 
 // INVARIANT — `docker rm -f` is reserved for paths where the container's
 // writable layer is intentionally being discarded:
-//   - `removeContainerIfExists` (below): name-collision cleanup after a
-//     hard crash. The stale container is unadoptable by definition.
+//   - `engine/docker/ensure-container.ts`: name-collision cleanup on the
+//     recreate path (image-mismatch / unclean-shutdown / resume-failed).
+//     The stale container is unadoptable by definition.
 //   - `engine/docker/sweep.ts`: `devstack wipe` / `prune` — user explicitly
 //     opted in via `--yes`.
 //   - `engine/docker/router.ts`: traefik router — no useful state.
@@ -1445,36 +1271,8 @@ const ensureLabeledVolume = (
 // MUST go through the `docker stop` finalizer registered at the top of
 // `Docker.run` so their writable layer survives the next `up`. Chain
 // state lives in the writable layer (no named volumes hold it), so
-// `rm -f` on those
-// containers would force a fresh genesis on resume and break the
-// `docker commit`-based snapshot capture surface.
-//
-// Force-remove a container by exact name if one exists. Returns `true` if
-// docker reported a match, `false` otherwise. Used by `Docker.run` so a
-// stale container from a crashed prior run doesn't make every restart
-// fail with `Conflict. The container name "..." is already in use`.
-const removeContainerIfExists = (
-	spawner: Spawner,
-	name: string,
-): Effect.Effect<boolean, DockerError> =>
-	Effect.gen(function* () {
-		// `^/<name>$` anchors the docker filter regex so a substring match
-		// against an unrelated container can't trigger an rm.
-		const lsCmd = ChildProcess.make('docker', ['ps', '-a', '-q', '--filter', `name=^/${name}$`]);
-		const ls = yield* runCapturing(spawner, lsCmd, 'docker ps');
-		const ids = ls.stdout
-			.split('\n')
-			.map((s) => s.trim())
-			.filter((s) => s.length > 0);
-		if (ids.length === 0) return false;
-		yield* Effect.logWarning(
-			`devstack: removing stale container '${name}' from a prior run (id=${ids.join(',')})`,
-		);
-		for (const id of ids) {
-			yield* spawner.exitCode(ChildProcess.make('docker', ['rm', '-f', id])).pipe(Effect.ignore);
-		}
-		return true;
-	});
+// `rm -f` on those containers would force a fresh genesis on resume and
+// break the `docker commit`-based snapshot capture surface.
 
 // Spawn a command and concurrently collect stdout / stderr / exit code into a
 // uniform shape. Used by `exec` and `runOneShot` so the parent agent can read

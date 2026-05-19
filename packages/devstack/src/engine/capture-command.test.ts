@@ -68,7 +68,9 @@ class FakeSpawnFailure extends Error {
 // concrete type.
 const failingSpawnerLayer = () => {
 	const spawn = ((_command: ChildProcess.Command) =>
-		Effect.fail(new FakeSpawnFailure())) as unknown as ChildProcessSpawner.ChildProcessSpawner['Service']['spawn'];
+		Effect.fail(
+			new FakeSpawnFailure(),
+		)) as unknown as ChildProcessSpawner.ChildProcessSpawner['Service']['spawn'];
 	return Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, ChildProcessSpawner.make(spawn));
 };
 
@@ -76,17 +78,13 @@ describe('captureCommand', () => {
 	it.effect('returns the captured streams verbatim on a zero-exit run', () =>
 		Effect.gen(function* () {
 			const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-			const result = yield* captureCommand(
-				spawner,
-				ChildProcess.make('echo', ['hello']),
-				{ op: 'echo' },
-			);
+			const result = yield* captureCommand(spawner, ChildProcess.make('echo', ['hello']), {
+				op: 'echo',
+			});
 			expect(result.exitCode).toBe(0);
 			expect(result.stdout).toBe('hello world\n');
 			expect(result.stderr).toBe('');
-		}).pipe(
-			Effect.provide(makeSpawnerLayer({ stdout: 'hello world\n', stderr: '', exitCode: 0 })),
-		),
+		}).pipe(Effect.provide(makeSpawnerLayer({ stdout: 'hello world\n', stderr: '', exitCode: 0 }))),
 	);
 
 	it.effect('does NOT auto-fail on a non-zero exit (caller branches on result.exitCode)', () =>
@@ -123,9 +121,7 @@ describe('captureCommand', () => {
 			// First 500 chars survive unchanged.
 			expect(result.stderr.slice(0, 500)).toBe(longStderr.slice(0, 500));
 		}).pipe(
-			Effect.provide(
-				makeSpawnerLayer({ stdout: '', stderr: 'x'.repeat(1500), exitCode: 2 }),
-			),
+			Effect.provide(makeSpawnerLayer({ stdout: '', stderr: 'x'.repeat(1500), exitCode: 2 })),
 		),
 	);
 
@@ -139,29 +135,23 @@ describe('captureCommand', () => {
 			});
 			expect(result.stderr).toBe(longStderr);
 		}).pipe(
-			Effect.provide(
-				makeSpawnerLayer({ stdout: '', stderr: 'x'.repeat(2000), exitCode: 0 }),
-			),
+			Effect.provide(makeSpawnerLayer({ stdout: '', stderr: 'x'.repeat(2000), exitCode: 0 })),
 		),
 	);
 
-	it.effect(
-		'spawn failure becomes a CaptureError with empty streams + the spawner cause',
-		() =>
-			Effect.gen(function* () {
-				const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-				const result = yield* captureCommand(
-					spawner,
-					ChildProcess.make('docker', ['ps']),
-					{ op: 'docker ps' },
-				).pipe(Effect.flip);
-				expect(result).toBeInstanceOf(CaptureError);
-				expect(result.op).toBe('docker ps');
-				expect(result.stdout).toBe('');
-				expect(result.stderr).toBe('');
-				expect(result.exitCode).toBeUndefined();
-				expect(result.cause).toBeInstanceOf(FakeSpawnFailure);
-			}).pipe(Effect.provide(failingSpawnerLayer())),
+	it.effect('spawn failure becomes a CaptureError with empty streams + the spawner cause', () =>
+		Effect.gen(function* () {
+			const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+			const result = yield* captureCommand(spawner, ChildProcess.make('docker', ['ps']), {
+				op: 'docker ps',
+			}).pipe(Effect.flip);
+			expect(result).toBeInstanceOf(CaptureError);
+			expect(result.op).toBe('docker ps');
+			expect(result.stdout).toBe('');
+			expect(result.stderr).toBe('');
+			expect(result.exitCode).toBeUndefined();
+			expect(result.cause).toBeInstanceOf(FakeSpawnFailure);
+		}).pipe(Effect.provide(failingSpawnerLayer())),
 	);
 
 	it.effect('falls back to `cmd.command` for `op` when no override is provided', () =>
@@ -179,20 +169,16 @@ describe('captureCommandOrFail', () => {
 	it.effect('promotes a non-zero exit into a CaptureError carrying the streams', () =>
 		Effect.gen(function* () {
 			const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-			const result = yield* captureCommandOrFail(
-				spawner,
-				ChildProcess.make('docker', ['build']),
-				{ op: 'docker build' },
-			).pipe(Effect.flip);
+			const result = yield* captureCommandOrFail(spawner, ChildProcess.make('docker', ['build']), {
+				op: 'docker build',
+			}).pipe(Effect.flip);
 			expect(result).toBeInstanceOf(CaptureError);
 			expect(result.op).toBe('docker build');
 			expect(result.exitCode).toBe(1);
 			expect(result.stderr).toBe('Error: missing tag\n');
 			expect(result.cause).toBeUndefined();
 		}).pipe(
-			Effect.provide(
-				makeSpawnerLayer({ stdout: '', stderr: 'Error: missing tag\n', exitCode: 1 }),
-			),
+			Effect.provide(makeSpawnerLayer({ stdout: '', stderr: 'Error: missing tag\n', exitCode: 1 })),
 		),
 	);
 

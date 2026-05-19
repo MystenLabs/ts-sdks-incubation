@@ -552,8 +552,7 @@ export const deepbookMargin = <const Name extends string = 'deepbook-margin'>(
 						const expectedType = `${packageId}::margin_pool::MarginPool<${pool.coinType}>`;
 						const actualType =
 							typeof fetched.objectType === 'string' ? fetched.objectType : undefined;
-						if (actualType === undefined || !moveTypeEquals(actualType, expectedType))
-							return false;
+						if (actualType === undefined || !moveTypeEquals(actualType, expectedType)) return false;
 					}
 					return true;
 				});
@@ -924,9 +923,7 @@ export const deepbookMargin = <const Name extends string = 'deepbook-margin'>(
 				options.deepbook,
 				...(marginPublish !== undefined ? [marginPublish] : []),
 				...(liquidationPublish !== undefined ? [liquidationPublish] : []),
-				...options.assets.flatMap((a) =>
-					typeof a.coinType !== 'string' ? [a.coinType] : [],
-				),
+				...options.assets.flatMap((a) => (typeof a.coinType !== 'string' ? [a.coinType] : [])),
 				...(options.dependsOn ?? []),
 			],
 		},

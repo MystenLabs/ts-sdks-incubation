@@ -45,6 +45,7 @@ import {
 import { ROUTER_CONTAINER, ROUTER_NETWORK } from '../../engine/docker/router.js';
 import { Registry } from '../../engine/registry.js';
 import { AlreadyReportedError, failAlreadyReported } from '../already-reported.js';
+import { emitEnvelope, jsonModeEnabled, successEnvelope } from '../envelope.js';
 import { resolveForkCacheRoot } from '../stack-resolution.js';
 import { pruneStack, removeLabelledImagesNotInUse, type PruneStackResult } from './_prune-stack.js';
 import { PruneApp } from './_prune-ui.js';
@@ -482,9 +483,15 @@ export const pruneCommand = Command.make(
 		dryRun: dryRunFlag,
 		includeRouter: includeRouterFlag,
 		includeForkCache: includeForkCacheFlag,
+		json: Flag.boolean('json').pipe(
+			Flag.withDescription('Emit a machine-readable envelope to stdout (suppresses human output)'),
+			Flag.withDefault(false),
+		),
 	},
 	(args) =>
 		Effect.gen(function* () {
+			const startedAt = Date.now();
+			const useJson = jsonModeEnabled(args.json);
 			const mode = yield* resolveMode({
 				list: args.list,
 				target: args.target,
@@ -501,6 +508,29 @@ export const pruneCommand = Command.make(
 			const rows = appFilter !== undefined ? allRows.filter((r) => r.app === appFilter) : allRows;
 
 			if (mode.kind === 'list') {
+				if (useJson) {
+					yield* emitEnvelope(
+						successEnvelope({
+							command: 'prune',
+							data: {
+								mode: 'list',
+								rows: rows.map((r) => ({
+									app: r.app,
+									stack: r.stack,
+									classification: r.classification,
+									containers: r.containers.length,
+									networks: r.networks.length,
+									volumes: r.volumes.length,
+									stateDirs: r.stateDirs,
+									runningPid: r.runningPid,
+								})),
+								totals: totalsFor(rows),
+							},
+							elapsedMs: Date.now() - startedAt,
+						}),
+					);
+					return;
+				}
 				yield* printInventory(rows);
 				return;
 			}

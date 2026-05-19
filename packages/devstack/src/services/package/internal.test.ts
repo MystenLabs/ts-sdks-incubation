@@ -99,30 +99,28 @@ describe('hashMoveSources', () => {
 		}).pipe(Effect.provide(NodeFileSystemLayer)),
 	);
 
-	it.effect(
-		'Move.lock [pinned.<env>.*] / [env.<env>.*] sections do not affect the digest',
-		() =>
-			Effect.gen(function* () {
-				// `sui move build` rewrites these sections on every invocation,
-				// so hashing them verbatim would invalidate the publishMove
-				// cache on the first warm restart after a cold publish — the
-				// hash is derived BEFORE the build but the cached value was
-				// written AFTER. Strip them before hashing.
-				const before = yield* hashMoveSources(root);
-				writeFile(
-					root,
-					'Move.lock',
-					'[move]\nversion = 3\n\n' +
-						'[pinned.testnet.MoveStdlib]\n' +
-						'source = { git = "https://github.com/MystenLabs/sui.git", subdir = "x", rev = "abc" }\n' +
-						'manifest_digest = "AABBCC"\n' +
-						'deps = {}\n\n' +
-						'[env.testnet.demo]\n' +
-						'published-at = "0x1"\n',
-				);
-				const after = yield* hashMoveSources(root);
-				expect(after).toBe(before);
-			}).pipe(Effect.provide(NodeFileSystemLayer)),
+	it.effect('Move.lock [pinned.<env>.*] / [env.<env>.*] sections do not affect the digest', () =>
+		Effect.gen(function* () {
+			// `sui move build` rewrites these sections on every invocation,
+			// so hashing them verbatim would invalidate the publishMove
+			// cache on the first warm restart after a cold publish — the
+			// hash is derived BEFORE the build but the cached value was
+			// written AFTER. Strip them before hashing.
+			const before = yield* hashMoveSources(root);
+			writeFile(
+				root,
+				'Move.lock',
+				'[move]\nversion = 3\n\n' +
+					'[pinned.testnet.MoveStdlib]\n' +
+					'source = { git = "https://github.com/MystenLabs/sui.git", subdir = "x", rev = "abc" }\n' +
+					'manifest_digest = "AABBCC"\n' +
+					'deps = {}\n\n' +
+					'[env.testnet.demo]\n' +
+					'published-at = "0x1"\n',
+			);
+			const after = yield* hashMoveSources(root);
+			expect(after).toBe(before);
+		}).pipe(Effect.provide(NodeFileSystemLayer)),
 	);
 
 	it.effect('adding a new .move file changes the digest', () =>

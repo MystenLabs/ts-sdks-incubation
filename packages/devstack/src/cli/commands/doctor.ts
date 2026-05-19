@@ -34,6 +34,13 @@ import * as nodePath from 'node:path';
 import * as nodeOs from 'node:os';
 import { join as joinPath } from 'node:path';
 import { computeConfigHash, readForkMeta } from '../../engine/sui-fork/meta.js';
+import {
+	emitEnvelope,
+	errorEnvelope,
+	jsonModeEnabled,
+	successEnvelope,
+} from '../envelope.js';
+import { EX_UNAVAILABLE } from '../exit-codes.js';
 import { resolveStateDir } from '../stack-resolution.js';
 import { sweepStaleGitLocks } from '../../engine/sui-build-container.js';
 
@@ -648,9 +655,18 @@ const stateDirOverrideFlag = Flag.string('state-dir').pipe(
 
 export const doctorCommand = Command.make(
 	'doctor',
-	{ cleanLocks: cleanLocksFlag, stateDirOverride: stateDirOverrideFlag },
-	({ cleanLocks, stateDirOverride }) =>
+	{
+		cleanLocks: cleanLocksFlag,
+		stateDirOverride: stateDirOverrideFlag,
+		json: Flag.boolean('json').pipe(
+			Flag.withDescription('Emit a machine-readable envelope with checks + inventory rows'),
+			Flag.withDefault(false),
+		),
+	},
+	({ cleanLocks, stateDirOverride, json }) =>
 		Effect.gen(function* () {
+			const startedAt = Date.now();
+			const useJson = jsonModeEnabled(json);
 			const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 			const fs = yield* FileSystem.FileSystem;
 			const docker = yield* checkDocker(spawner);
@@ -761,6 +777,58 @@ export const doctorCommand = Command.make(
 				seedCheck,
 				dataSizeCheck,
 			];
+
+			// `--json` short-circuits the human-readable rendering. We
+			// still want the failing-required-check exit semantics, so
+			// emit the envelope first, then either return clean (success)
+			// or fall through to the failure path below.
+			if (useJson) {
+				const rows = docker.ok ? yield* collectInventory() : [];
+				const failedRequiredJ = all.filter((c) => c.required && !c.ok);
+				if (failedRequiredJ.length > 0) {
+					yield* emitEnvelope(
+						errorEnvelope({
+							command: 'doctor',
+							error: {
+								code: 'PREFLIGHT_FAILED',
+								exitCode: EX_UNAVAILABLE,
+								message: `${failedRequiredJ.length} required check${failedRequiredJ.length === 1 ? '' : 's'} failed`,
+								context: {
+									failed: failedRequiredJ.map((c) => ({ name: c.name, detail: c.detail })),
+								},
+							},
+							elapsedMs: Date.now() - startedAt,
+						}),
+					);
+					return yield* Effect.fail(new Error('doctor: required checks failed'));
+				}
+				yield* emitEnvelope(
+					successEnvelope({
+						command: 'doctor',
+						data: {
+							checks: all.map((c) => ({
+								name: c.name,
+								ok: c.ok,
+								required: c.required,
+								detail: c.detail,
+							})),
+							inventory: rows.map((r) => ({
+								app: r.app,
+								stack: r.stack,
+								classification: r.classification,
+								containers: r.containers.length,
+								networks: r.networks.length,
+								volumes: r.volumes.length,
+								stateDirs: r.stateDirs,
+								runningPid: r.runningPid,
+							})),
+						},
+						elapsedMs: Date.now() - startedAt,
+					}),
+				);
+				return;
+			}
+
 			yield* Console.log('Checks');
 			for (const c of all) {
 				yield* Console.log(renderCheck(c));

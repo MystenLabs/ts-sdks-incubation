@@ -316,12 +316,7 @@ export const deepbookMarginSeed = <const Name extends string = 'deepbook-margin-
 			// margin composite, plus iterates `dependsOn`. Lift them so
 			// the topo
 			// scheduler places this composite strictly after all providers.
-			upstreamKeys: [
-				SuiTag.key,
-				options.signer,
-				options.margin,
-				...(options.dependsOn ?? []),
-			],
+			upstreamKeys: [SuiTag.key, options.signer, options.margin, ...(options.dependsOn ?? [])],
 		},
 	);
 

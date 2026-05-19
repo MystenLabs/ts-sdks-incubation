@@ -3,8 +3,8 @@
 ## Status (2026-05-19)
 
 Audit is the authoritative source for Subtopic 1 + Subtopic 2 deferral. No state change since
-initial publication — both primitives stay upstream-blocked. Re-open when the unblock criteria in
-§4 fire.
+initial publication — both primitives stay upstream-blocked. Re-open when the unblock criteria in §4
+fire.
 
 **Status:** Audit (2026-05-19). Closes `sui-fork-phase-5.md` Subtopic 1 (P5.1) and Subtopic 2 (P5.3)
 with a shared finding: both primitives are **upstream-blocked on the same JSON-RPC dependency**, so
@@ -62,9 +62,9 @@ $ grep -rln "graphql\|GraphQL" .../walrus.move-source/.../crates/
 # (only doc/notebook files; no source files use GraphQL)
 ```
 
-The `walrus-deploy` one-shot inside the wrapper image (`packages/devstack/images/walrus/wrapper.Dockerfile`)
-and every storage-node binary inherit `DualClient`, so the JSON-RPC surface is required from the
-first container boot.
+The `walrus-deploy` one-shot inside the wrapper image
+(`packages/devstack/images/walrus/wrapper.Dockerfile`) and every storage-node binary inherit
+`DualClient`, so the JSON-RPC surface is required from the first container boot.
 
 **Conclusion:** A GraphQL endpoint in front of the fork does not unblock `walrusLocalCluster`. The
 only unblock paths are:

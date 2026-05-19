@@ -10,11 +10,17 @@
 import { readFileSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
 import { type ConventionalRoute, listEndpointDeclarations } from '../engine/define-endpoint.js';
-// Side-effect import: registering the endpoint declarations populates
-// `listEndpointDeclarations()`. The conventional-route table reads that
-// registry, so it must run AFTER endpoint-names.ts has executed at
-// module-init time.
-import './endpoint-names.js';
+// Value import — pulls in `EndpointName` so the module's `defineEndpoint(...)`
+// side effects populate the registry that `listEndpointDeclarations()` reads
+// below. A bare `import './endpoint-names.js'` looked unused to rolldown's
+// tree-shaker and got stripped from the fixtures-pass dist output, leaving
+// `CONVENTIONAL_ROUTES` empty at module-init when playwright loaded the
+// config — the conventional-URL fallback returned `undefined` and tests
+// failed with "endpoint 'frontend.dev-server' has no conventional URL
+// fallback". The reference inside the IIFE below anchors the value-import
+// so neither TypeScript's import elider nor rolldown's tree-shaker can
+// drop it.
+import { EndpointName } from './endpoint-names.js';
 
 /** Endpoint → (router-service-name, traefik entrypoint port) mapping.
  *  Derived from `defineEndpoint(...)` declarations — each entry that
@@ -22,6 +28,13 @@ import './endpoint-names.js';
  *  when the manifest doesn't exist yet so `webServer({ endpoint })` can
  *  still produce a URL for playwright's config-load step. */
 export const CONVENTIONAL_ROUTES: Record<string, ConventionalRoute> = (() => {
+	// Reference `EndpointName` so the value-import above anchors the
+	// `endpoint-names.ts` module-init side effects (see the import-site
+	// comment). Cheap sanity assertion: SUI_RPC is one of the names every
+	// devstack publishes, so its absence means the registry never ran.
+	if (EndpointName.SUI_RPC === undefined) {
+		throw new Error('[devstack] endpoint-names registry failed to initialize');
+	}
 	const out: Record<string, ConventionalRoute> = {};
 	for (const d of listEndpointDeclarations()) {
 		if (d.conventional !== undefined) {

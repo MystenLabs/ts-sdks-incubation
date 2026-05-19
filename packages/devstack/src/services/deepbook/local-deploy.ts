@@ -381,9 +381,7 @@ export const deepbookLocalDeploy = <
 								try: () => sui.client.core.getObject({ objectId: p.poolId }),
 								catch: (cause) => cause,
 							}).pipe(
-								Effect.map(
-									(res) => res as unknown as { object?: { type?: unknown } },
-								),
+								Effect.map((res) => res as unknown as { object?: { type?: unknown } }),
 								Effect.orElseSucceed(() => undefined),
 							);
 							if (fetched === undefined) return false;
@@ -530,11 +528,30 @@ export const deepbookLocalDeploy = <
 				}
 			}
 
+			// Re-register the composite package under `name` (the deepbook
+			// service name) so codegen emitters can look it up at
+			// `data.packages[name]`. The publishMove sub-tag already
+			// registers under `${name}.publish` with the FULL captured
+			// shape (registryId + adminCapId + deepTreasuryId); we forward
+			// ALL three here so emitters that ask `data.packages.deepbook`
+			// (vs `data.packages.deepbook.publish`) see the same shape.
+			// Forgetting to pass `deepTreasuryId` here was the cause of
+			// `DeepbookConfigEmitter: skipping emit — ...
+			// packages.deepbook.captured.deepTreasuryId is missing` —
+			// emit-time it was missing so the file never landed and
+			// `src/lib/deployment.ts` died on `import { deepbookConfig }
+			// from '../generated/deepbook-config.js'`.
 			yield* publishPackage({
 				name,
 				packageId,
 				upgradeCapId: pkg.upgradeCapId,
-				captured: { registryId, adminCapId },
+				captured: {
+					registryId,
+					adminCapId,
+					...(pkg.captured?.deepTreasuryId !== undefined
+						? { deepTreasuryId: pkg.captured.deepTreasuryId as string }
+						: {}),
+				},
 			});
 
 			yield* publishDeepbookState({

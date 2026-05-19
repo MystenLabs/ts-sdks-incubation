@@ -66,7 +66,10 @@ describe('playwright web-server helpers', () => {
 
 	describe('webServer()', () => {
 		it('resolves dev-server URL from manifest + stamps PLAYWRIGHT=1 + 10s SIGTERM', () => {
-			writeFileSync(manifestPath, JSON.stringify(wellFormedManifest({ devUrl: 'http://dev.test:5175' })));
+			writeFileSync(
+				manifestPath,
+				JSON.stringify(wellFormedManifest({ devUrl: 'http://dev.test:5175' })),
+			);
 			const cfg = single(webServer({ endpoint: EndpointName.DEV_SERVER_PRIMARY }));
 			expect(cfg.url).toBe('http://dev.test:5175');
 			expect(cfg.command).toBe('pnpm dev');
@@ -109,7 +112,10 @@ describe('playwright web-server helpers', () => {
 		});
 
 		it('throws when the endpoint is not in the manifest', () => {
-			writeFileSync(manifestPath, JSON.stringify(wellFormedManifest({ devUrl: 'http://dev.test:5175' })));
+			writeFileSync(
+				manifestPath,
+				JSON.stringify(wellFormedManifest({ devUrl: 'http://dev.test:5175' })),
+			);
 			expect(() => webServer({ endpoint: EndpointName.WALLET_APP })).toThrow(
 				/no endpoint 'wallet-app'/,
 			);
@@ -176,7 +182,10 @@ describe('playwright web-server helpers', () => {
 		});
 
 		it('respects opts.command / opts.timeout / opts.extend', () => {
-			writeFileSync(manifestPath, JSON.stringify(wellFormedManifest({ devUrl: 'http://dev.test:5175' })));
+			writeFileSync(
+				manifestPath,
+				JSON.stringify(wellFormedManifest({ devUrl: 'http://dev.test:5175' })),
+			);
 			const cfg = single(
 				webServer({
 					endpoint: EndpointName.DEV_SERVER_PRIMARY,

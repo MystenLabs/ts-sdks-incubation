@@ -321,12 +321,7 @@ export const PythPusher = <const Name extends string>(opts: PythPusherOptions<Na
 			}),
 			// Yields SuiTag, the signer Account ref, the pyth composite,
 			// and iterates `dependsOn`. Lift them all into upstreams.
-			upstreamKeys: [
-				SuiTag.key,
-				opts.signer,
-				opts.pyth,
-				...(opts.dependsOn ?? []),
-			],
+			upstreamKeys: [SuiTag.key, opts.signer, opts.pyth, ...(opts.dependsOn ?? [])],
 		},
 	);
 

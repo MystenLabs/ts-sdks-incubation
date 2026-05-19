@@ -210,7 +210,6 @@ describe('snapshot() / restore() — state-only round-trip', () => {
 			expect(result.message).toContain('0xchain-B');
 		}).pipe(Effect.provide(NodeServicesLayer)),
 	);
-
 });
 
 describe('snapshot() / restore() — runtime/ tar round-trip', () => {

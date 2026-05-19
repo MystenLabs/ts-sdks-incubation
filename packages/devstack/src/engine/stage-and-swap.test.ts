@@ -83,17 +83,13 @@ describe('stageAndSwap', () => {
 
 			expect(readFileSync(join(target, 'new.txt'), 'utf-8')).toBe('new');
 
-			const backups = readdirSync(dirname(target)).filter((e) =>
-				e.startsWith('out.backup-'),
-			);
+			const backups = readdirSync(dirname(target)).filter((e) => e.startsWith('out.backup-'));
 			expect(backups).toHaveLength(1);
 			// Backup carries the pre-swap contents verbatim.
 			expect(readFileSync(join(dirname(target), backups[0]!, 'old.txt'), 'utf-8')).toBe('old');
 
 			// No staging dir leftover.
-			const stagings = readdirSync(dirname(target)).filter((e) =>
-				e.startsWith('out.staging-'),
-			);
+			const stagings = readdirSync(dirname(target)).filter((e) => e.startsWith('out.staging-'));
 			expect(stagings).toEqual([]);
 		}),
 	);
@@ -179,23 +175,21 @@ describe('stageAndSwap', () => {
 		}),
 	);
 
-	it.effect(
-		'absent pre-existing target: success creates target, no rollback needed',
-		() =>
-			Effect.gen(function* () {
-				// `target` doesn't exist yet — must NOT touch any backup,
-				// must just promote the staging dir into place.
-				yield* stageAndSwap({
-					target,
-					stage: (staging) =>
-						Effect.promise(async () => {
-							await fs.writeFile(join(staging, 'fresh.txt'), 'fresh', 'utf-8');
-						}),
-				});
+	it.effect('absent pre-existing target: success creates target, no rollback needed', () =>
+		Effect.gen(function* () {
+			// `target` doesn't exist yet — must NOT touch any backup,
+			// must just promote the staging dir into place.
+			yield* stageAndSwap({
+				target,
+				stage: (staging) =>
+					Effect.promise(async () => {
+						await fs.writeFile(join(staging, 'fresh.txt'), 'fresh', 'utf-8');
+					}),
+			});
 
-				expect(readFileSync(join(target, 'fresh.txt'), 'utf-8')).toBe('fresh');
-				expect(stagedSiblings()).toEqual([]);
-			}),
+			expect(readFileSync(join(target, 'fresh.txt'), 'utf-8')).toBe('fresh');
+			expect(stagedSiblings()).toEqual([]);
+		}),
 	);
 
 	it('StageAndSwapError is a tagged error with op + target diagnostic fields', () => {

@@ -19,7 +19,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as Docker from './docker.js';
-import { decideRunAction, inspectContainerIp } from './docker/core.js';
+import { inspectContainerIp } from './docker/core.js';
 import { Identity } from './identity.js';
 
 interface SpawnRecord {
@@ -463,154 +463,11 @@ describe('inspectContainerIp', () => {
 	);
 });
 
-// -----------------------------------------------------------------------------
-// `decideRunAction` — pure five-state matrix for `Docker.run`
-// -----------------------------------------------------------------------------
-
-describe('decideRunAction', () => {
-	const IMAGE = 'mystenlabs/sui-tools:1.0.0';
-	const OTHER_IMAGE = 'mystenlabs/sui-tools:2.0.0';
-
-	it('returns `fresh` when no container by that name exists', () => {
-		expect(decideRunAction(null, IMAGE)).toEqual({ kind: 'fresh' });
-	});
-
-	it('returns `adopt` for a running container with the matching image', () => {
-		const inspected = { running: true, image: IMAGE, containerId: EXISTING_CONTAINER_ID };
-		expect(decideRunAction(inspected, IMAGE)).toEqual({
-			kind: 'adopt',
-			containerId: EXISTING_CONTAINER_ID,
-		});
-	});
-
-	it('returns `resume` for a stopped container with the matching image', () => {
-		const inspected = { running: false, image: IMAGE, containerId: EXISTING_CONTAINER_ID };
-		expect(decideRunAction(inspected, IMAGE)).toEqual({
-			kind: 'resume',
-			containerId: EXISTING_CONTAINER_ID,
-		});
-	});
-
-	it('returns `recreate` for a running container with a DIFFERENT image', () => {
-		const inspected = { running: true, image: OTHER_IMAGE, containerId: EXISTING_CONTAINER_ID };
-		expect(decideRunAction(inspected, IMAGE)).toEqual({
-			kind: 'recreate',
-			existingId: EXISTING_CONTAINER_ID,
-		});
-	});
-
-	it('returns `recreate` for a stopped container with a DIFFERENT image', () => {
-		const inspected = { running: false, image: OTHER_IMAGE, containerId: EXISTING_CONTAINER_ID };
-		expect(decideRunAction(inspected, IMAGE)).toEqual({
-			kind: 'recreate',
-			existingId: EXISTING_CONTAINER_ID,
-		});
-	});
-
-	// UNCLEAN_PRIOR_SHUTDOWN — exit 137 means docker's stop-grace expired
-	// before the workload finished flushing state. For stateful services
-	// that stamp registry / package ids into the chain (sui validator,
-	// deepbook init) adopting / resuming the wedged container would let
-	// a downstream re-publish conflict with the half-written prior state.
-	// `decideRunAction` must force `recreate` so the chain returns to a
-	// known state — overrides BOTH the running→adopt path and the
-	// stopped→resume path.
-	it('returns `recreate` for a stopped container whose prior run ended in SIGKILL (exit 137)', () => {
-		const inspected = {
-			running: false,
-			image: IMAGE,
-			containerId: EXISTING_CONTAINER_ID,
-			lastExitCode: 137,
-		};
-		expect(decideRunAction(inspected, IMAGE)).toEqual({
-			kind: 'recreate',
-			existingId: EXISTING_CONTAINER_ID,
-		});
-	});
-
-	it('returns `recreate` for a running container that previously exited via SIGKILL (exit 137)', () => {
-		// Edge: a container can be "running" again (manual `docker start`
-		// after a SIGKILL) but still carry `lastExitCode === 137` from the
-		// prior run. We still recreate — the on-disk state inconsistency
-		// the kill produced doesn't heal just because the container came
-		// back up.
-		const inspected = {
-			running: true,
-			image: IMAGE,
-			containerId: EXISTING_CONTAINER_ID,
-			lastExitCode: 137,
-		};
-		expect(decideRunAction(inspected, IMAGE)).toEqual({
-			kind: 'recreate',
-			existingId: EXISTING_CONTAINER_ID,
-		});
-	});
-
-	it('returns `resume` (not `recreate`) for a stopped container that exited cleanly (exit 0)', () => {
-		// Sanity: a clean prior shutdown still goes through the resume
-		// path — the 137-sentinel branch must not over-trigger for
-		// exit-0 / exit-1 / any other code.
-		const inspected = {
-			running: false,
-			image: IMAGE,
-			containerId: EXISTING_CONTAINER_ID,
-			lastExitCode: 0,
-		};
-		expect(decideRunAction(inspected, IMAGE)).toEqual({
-			kind: 'resume',
-			containerId: EXISTING_CONTAINER_ID,
-		});
-	});
-
-	it('honors `expectedExitCodes: [137]` and resumes a stopped container that exited 137', () => {
-		// Opt-out for sui-localnet: `sui start --with-faucet` blocks
-		// before its SIGINT handler registers, so PID 1 never traps any
-		// signal and the validator ALWAYS exits 137 on cycle teardown
-		// by design. RocksDB's WAL replays cleanly on resume, so chain
-		// state survives. Without the opt-out, every `pnpm dev` would
-		// nuke chain state by recreating the container — defeating
-		// warm resume entirely.
-		const inspected = {
-			running: false,
-			image: IMAGE,
-			containerId: EXISTING_CONTAINER_ID,
-			lastExitCode: 137,
-		};
-		expect(decideRunAction(inspected, IMAGE, [137])).toEqual({
-			kind: 'resume',
-			containerId: EXISTING_CONTAINER_ID,
-		});
-	});
-
-	it('honors `expectedExitCodes: [137]` and adopts a running container whose previous run exited 137', () => {
-		const inspected = {
-			running: true,
-			image: IMAGE,
-			containerId: EXISTING_CONTAINER_ID,
-			lastExitCode: 137,
-		};
-		expect(decideRunAction(inspected, IMAGE, [137])).toEqual({
-			kind: 'adopt',
-			containerId: EXISTING_CONTAINER_ID,
-		});
-	});
-
-	it('still recreates on image mismatch even when 137 is in `expectedExitCodes`', () => {
-		// Defense-in-depth: the opt-out covers ONLY the unclean-shutdown
-		// branch. An image mismatch still wins (we can't run the new image
-		// in the old container) — recreate, not resume.
-		const inspected = {
-			running: false,
-			image: OTHER_IMAGE,
-			containerId: EXISTING_CONTAINER_ID,
-			lastExitCode: 137,
-		};
-		expect(decideRunAction(inspected, IMAGE, [137])).toEqual({
-			kind: 'recreate',
-			existingId: EXISTING_CONTAINER_ID,
-		});
-	});
-});
+// `decideRunAction` matrix coverage now lives in
+// `engine/docker/ensure-container.test.ts` (audit finding E1 — the pure
+// decision moved to the shared adopt/resume/recreate/fresh primitive
+// alongside the new `RecreateReason` discriminator). Re-exported here
+// from `./docker/core.js` for source-compat with downstream imports.
 
 // -----------------------------------------------------------------------------
 // `Docker.run` resume-fallback — promotes `resume` to `recreate` when

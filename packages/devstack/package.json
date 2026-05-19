@@ -52,6 +52,7 @@
 		"test:watch": "vitest"
 	},
 	"dependencies": {
+		"@clack/prompts": "^1.4.0",
 		"@effect/platform-node": "catalog:",
 		"@mysten/codegen": "catalog:",
 		"@mysten/sui": "catalog:",

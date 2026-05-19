@@ -33,6 +33,7 @@ import {
 } from '../../engine/dep-graph.js';
 import { flattenStackMembers, type StackMember } from '../../engine/supervisor.js';
 import { failAlreadyReported } from '../already-reported.js';
+import { emitEnvelope, jsonModeEnabled, successEnvelope } from '../envelope.js';
 import { loadConfigModule } from '../loaders.js';
 import type { DevstackConfig } from '../../engine/supervisor.js';
 
@@ -155,9 +156,17 @@ export const graphCommand = Command.make(
 			),
 			Flag.optional,
 		),
+		json: Flag.boolean('json').pipe(
+			Flag.withDescription(
+				'Emit a machine-readable envelope with the graph nodes + edges (overrides --format)',
+			),
+			Flag.withDefault(false),
+		),
 	},
-	({ configPath, format, downstream }) =>
+	({ configPath, format, downstream, json }) =>
 		Effect.gen(function* () {
+			const startedAt = Date.now();
+			const useJson = jsonModeEnabled(json);
 			const resolved = Option.getOrElse(configPath, () => './devstack.config.ts');
 			const handle = yield* loadConfigModule(resolved, requireConfig);
 
@@ -188,6 +197,23 @@ export const graphCommand = Command.make(
 							`Known keys: ${Array.from(graph.keys()).join(', ')}`,
 					);
 				}
+				if (useJson) {
+					yield* emitEnvelope(
+						successEnvelope({
+							command: 'graph',
+							data: {
+								mode: 'downstream',
+								key: downstreamKey,
+								consumers: Array.from(downstreamSet).map((k) => ({
+									key: k,
+									title: displayTitle(memberByKey.get(k), k),
+								})),
+							},
+							elapsedMs: Date.now() - startedAt,
+						}),
+					);
+					return;
+				}
 				yield* Console.log(
 					`downstream of ${displayTitle(memberByKey.get(downstreamKey), downstreamKey)} ` +
 						`(${downstreamSet.size} consumer${downstreamSet.size === 1 ? '' : 's'}):`,
@@ -203,6 +229,41 @@ export const graphCommand = Command.make(
 				return yield* failAlreadyReported(
 					`devstack graph: unknown format '${formatStr}' (legal: text, mermaid, dot)`,
 				);
+			}
+
+			if (useJson) {
+				const levels = topoLevels(graph);
+				const nodes: Array<{ key: string; title: string; level: number }> = [];
+				const levelByKey = new Map<string, number>();
+				for (let i = 0; i < levels.length; i++) {
+					for (const k of levels[i]!) levelByKey.set(k, i);
+				}
+				for (const [key] of graph) {
+					nodes.push({
+						key,
+						title: displayTitle(memberByKey.get(key), key),
+						level: levelByKey.get(key) ?? 0,
+					});
+				}
+				const edges: Array<{ from: string; to: string }> = [];
+				for (const [key, node] of graph) {
+					for (const up of node.upstreamKeys) {
+						edges.push({ from: up, to: key });
+					}
+				}
+				yield* emitEnvelope(
+					successEnvelope({
+						command: 'graph',
+						data: {
+							size: graph.size,
+							levels: levels.length,
+							nodes,
+							edges,
+						},
+						elapsedMs: Date.now() - startedAt,
+					}),
+				);
+				return;
 			}
 
 			if (formatStr === 'mermaid') {

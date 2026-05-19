@@ -78,7 +78,9 @@ const runArtifact = <Name extends string, T, R, E>(
 	provide: (e: Effect.Effect<T, E, R>) => Effect.Effect<T, E, never>,
 ): Effect.Effect<T, E, never> => {
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	const layers = (artifact.__layers ?? [artifact.__layer]) as ReadonlyArray<Layer.Layer<any, any, any>>;
+	const layers = (artifact.__layers ?? [artifact.__layer]) as ReadonlyArray<
+		Layer.Layer<any, any, any>
+	>;
 	// Fold layers left-to-right: each new layer provides services to all
 	// layers that come after it. Same shape as `composeStackLayer` uses.
 	const [head, ...tail] = layers;
@@ -163,8 +165,7 @@ describe('onChainArtifact (substrate composition)', () => {
 				upstream: {},
 				inputs: () => Effect.succeed({ x: 1 }),
 				verify: ({ cached }) => Effect.succeed(cached),
-				produce: () =>
-					Ref.update(produceRuns, (n) => n + 1).pipe(Effect.as({ value: 999 })),
+				produce: () => Ref.update(produceRuns, (n) => n + 1).pipe(Effect.as({ value: 999 })),
 				register: ({ value }) =>
 					Ref.update(registerCalls, (xs) => [...xs, value as { value: number }]),
 			});
@@ -208,8 +209,7 @@ describe('onChainArtifact (substrate composition)', () => {
 				upstream: {},
 				inputs: () => Effect.succeed({ x: 1 }),
 				verify: () => Effect.succeed(undefined),
-				produce: () =>
-					Ref.update(produceRuns, (n) => n + 1).pipe(Effect.as({ value: 99 })),
+				produce: () => Ref.update(produceRuns, (n) => n + 1).pipe(Effect.as({ value: 99 })),
 				register: ({ value }) =>
 					Ref.update(registerCalls, (xs) => [...xs, value as { value: number }]),
 			});
@@ -264,9 +264,7 @@ describe('onChainArtifact (substrate composition)', () => {
 					}),
 				verify: ({ cached }) => Effect.succeed(cached),
 				produce: (deps) =>
-					Ref.set(observedProduce, deps).pipe(
-						Effect.as({ result: `for-${deps.pkg.packageId}` }),
-					),
+					Ref.set(observedProduce, deps).pipe(Effect.as({ result: `for-${deps.pkg.packageId}` })),
 				register: ({ deps }) => Ref.set(observedRegister, deps),
 			});
 

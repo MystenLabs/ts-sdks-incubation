@@ -19,12 +19,13 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { Cause, Effect, Option } from 'effect';
-import { Argument, Command } from 'effect/unstable/cli';
+import { Argument, Command, Flag, GlobalFlag } from 'effect/unstable/cli';
 import type { RendererKind, RunOverrides } from '../engine/supervisor.js';
 import { prettyError } from '../engine/pretty-error.js';
 import { causeHasAlreadyReported } from './already-reported.js';
 import { applyNetworkOverride, networkFlag, rendererFlag } from './flags.js';
 import { loadConfigModule, requireLaunchEffect } from './loaders.js';
+import { renderSchema } from './schema-emit.js';
 import { applyCommand } from './commands/apply.js';
 import { doctorCommand } from './commands/doctor.js';
 import { forkCommand } from './commands/fork.js';
@@ -71,6 +72,26 @@ const versionCommand = Command.make('version', {}, () =>
 	}),
 ).pipe(Command.withDescription('Print the devstack package version'));
 
+// `--schema --json` action global flag. Phase A introspection surface
+// per `notes/cli-redesign.md` §4.8 — agents call this once to
+// autodiscover every verb, every flag, and every exit code without
+// scraping `--help`. `--json` MUST accompany `--schema`; we keep the
+// payload as one canonical JSON document on stdout so callers can
+// `JSON.parse(stdout)` directly.
+const SchemaFlag = GlobalFlag.action({
+	flag: Flag.boolean('schema').pipe(
+		Flag.withDescription(
+			'Print the full command tree + flag set + exit codes as JSON, then exit (combine with --json)',
+		),
+	),
+	run: (value, { command, version }) =>
+		Effect.gen(function* () {
+			if (!value) return;
+			// eslint-disable-next-line no-console
+			console.log(renderSchema({ root: command, version }));
+		}),
+});
+
 /**
  * Composed root command tree. Exported so smoke tests can walk the
  * subcommand list and assert the CLI surface against a fixed expectation.
@@ -91,6 +112,7 @@ export const rootCommand = Command.make('devstack').pipe(
 		graphCommand,
 		versionCommand,
 	]),
+	Command.withGlobalFlags([SchemaFlag]),
 );
 
 /**

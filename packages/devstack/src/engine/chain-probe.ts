@@ -212,9 +212,7 @@ export const ChainProbeLive: Layer.Layer<ChainProbe, never, SuiTag> = Layer.effe
 	Effect.gen(function* () {
 		const sui = yield* SuiTag;
 
-		const getObjectStrict = (
-			objectId: string,
-		): Effect.Effect<ObjectInfo | undefined, ProbeError> =>
+		const getObjectStrict = (objectId: string): Effect.Effect<ObjectInfo | undefined, ProbeError> =>
 			Effect.gen(function* () {
 				const raw: unknown = yield* Effect.tryPromise({
 					try: () => sui.client.core.getObject({ objectId }),

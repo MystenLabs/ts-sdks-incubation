@@ -191,9 +191,7 @@ export const stageAndSwap = <E, R>(
 						// `target` is missing and we surface the original
 						// promote error.
 						if (targetExists) {
-							yield* Effect.promise(() =>
-								fs.rename(backupDir, target).catch(() => undefined),
-							);
+							yield* Effect.promise(() => fs.rename(backupDir, target).catch(() => undefined));
 						}
 						yield* Effect.promise(() =>
 							fs.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined),

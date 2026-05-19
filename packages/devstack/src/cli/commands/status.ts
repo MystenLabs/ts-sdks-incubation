@@ -8,6 +8,7 @@ import { resolve as resolvePath } from 'node:path';
 import { ManifestDiscoveryError, ManifestShapeError } from '../../engine/errors.js';
 import { readForkMeta } from '../../engine/sui-fork/meta.js';
 import { readStackContext, type StackContext } from '../../runtime/read-stack-context.js';
+import { emitEnvelope, jsonModeEnabled, successEnvelope } from '../envelope.js';
 import { resolveForkMetaPath, resolveStackFromEnv, stateDir } from '../stack-resolution.js';
 
 // Action-time env read — see manifest.ts for the rationale.
@@ -91,6 +92,8 @@ export const statusCommand = Command.make(
 	},
 	({ json }) =>
 		Effect.gen(function* () {
+			const startedAt = Date.now();
+			const useJson = jsonModeEnabled(json);
 			const state = yield* tryReadJson(stateFile());
 			const manifest = yield* tryReadManifest();
 
@@ -128,23 +131,26 @@ export const statusCommand = Command.make(
 						}
 					: undefined;
 
-			if (json) {
-				yield* Console.log(
-					JSON.stringify({
+			if (useJson) {
+				yield* emitEnvelope(
+					successEnvelope({
 						command: 'status',
-						state: {
-							path: state.path,
-							exists: state.exists,
-							...(state.content !== undefined ? { content: state.content } : {}),
-							...(state.parseError !== undefined ? { error: state.parseError } : {}),
+						data: {
+							state: {
+								path: state.path,
+								exists: state.exists,
+								...(state.content !== undefined ? { content: state.content } : {}),
+								...(state.parseError !== undefined ? { error: state.parseError } : {}),
+							},
+							manifest: {
+								path: manifest.path,
+								exists: manifest.exists,
+								...(manifest.ctx !== undefined ? { content: manifest.ctx.manifest } : {}),
+								...(manifest.parseError !== undefined ? { error: manifest.parseError } : {}),
+							},
+							...(chainBlock !== undefined ? { chain: chainBlock } : {}),
 						},
-						manifest: {
-							path: manifest.path,
-							exists: manifest.exists,
-							...(manifest.ctx !== undefined ? { content: manifest.ctx.manifest } : {}),
-							...(manifest.parseError !== undefined ? { error: manifest.parseError } : {}),
-						},
-						...(chainBlock !== undefined ? { chain: chainBlock } : {}),
+						elapsedMs: Date.now() - startedAt,
 					}),
 				);
 				return;

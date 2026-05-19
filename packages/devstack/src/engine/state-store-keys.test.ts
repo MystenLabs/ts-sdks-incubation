@@ -70,9 +70,7 @@ describe('StateStoreKeys — canonical key shapes', () => {
 	});
 
 	it('sealBlsKeypair: seal/bls-keypair/<chainId>', () => {
-		expect(StateStoreKeys.sealBlsKeypair({ chainId: '0xchain' })).toBe(
-			'seal/bls-keypair/0xchain',
-		);
+		expect(StateStoreKeys.sealBlsKeypair({ chainId: '0xchain' })).toBe('seal/bls-keypair/0xchain');
 	});
 
 	it('sealKeyServerId: seal/key-server-id/<chainId>', () => {

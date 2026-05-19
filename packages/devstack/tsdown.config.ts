@@ -17,12 +17,21 @@ import { defineConfig } from 'tsdown';
 // externalizes engine modules — without this entry the main pass would
 // drop `listEndpointDeclarations` and the fixtures build would emit a
 // broken cross-config import.
+//
+// `src/runtime/read-stack-context.ts` is listed for the same reason:
+// `playwright/web-server.ts` (fixtures pass) imports `readStackContextSync`
+// from it, but the main pass's tree-shaker only sees the
+// `readStackContext` (Effect) export consumed by CLI commands. Without
+// this anchor entry the sync export gets dropped and the fixtures
+// output emits a broken `import { readStackContextSync }` from the
+// main pass's lean re-emit.
 const main = defineConfig({
 	entry: [
 		'src/index.ts',
 		'src/cli/main.ts',
 		'src/advanced/index.ts',
 		'src/runtime/conventional-routes.ts',
+		'src/runtime/read-stack-context.ts',
 	],
 	format: 'esm',
 	dts: true,

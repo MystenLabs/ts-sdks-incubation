@@ -271,13 +271,15 @@ export const deepbookMarketMaker = <const Name extends string>(
 					});
 				}
 
-				yield* signer.signAndExecute(t).pipe(
-					Effect.catch((cause: unknown) =>
-						Effect.logWarning(
-							`deepbookMarketMaker(${options.name}): cancel-stale tx failed (continuing with place tx): ${stringifyCause(cause)}`,
+				yield* signer
+					.signAndExecute(t)
+					.pipe(
+						Effect.catch((cause: unknown) =>
+							Effect.logWarning(
+								`deepbookMarketMaker(${options.name}): cancel-stale tx failed (continuing with place tx): ${stringifyCause(cause)}`,
+							),
 						),
-					),
-				);
+					);
 			}).pipe(Effect.withSpan('DeepbookMarketMakerCancel'));
 
 			const placeOrders = Effect.gen(function* () {

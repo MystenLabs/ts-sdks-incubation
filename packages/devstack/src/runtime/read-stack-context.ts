@@ -21,10 +21,7 @@ import { Effect, Schema } from 'effect';
 import { readFileSync } from 'node:fs';
 import { promises as nodeFs } from 'node:fs';
 import { ManifestDiscoveryError, ManifestShapeError } from '../engine/errors.js';
-import {
-	type DiscoverManifestPathOptions,
-	discoverManifestPath,
-} from './discover-manifest.js';
+import { type DiscoverManifestPathOptions, discoverManifestPath } from './discover-manifest.js';
 import { EndpointName } from './endpoint-names.js';
 import {
 	type AppManifest,

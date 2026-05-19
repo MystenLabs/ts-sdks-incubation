@@ -16,9 +16,7 @@ import { SuiTag, type Sui } from '../services/sui.js';
 // without an actual gRPC client.
 // -----------------------------------------------------------------------------
 
-const makeFakeSui = (
-	getObject: (input: { objectId: string }) => Promise<unknown>,
-): Sui =>
+const makeFakeSui = (getObject: (input: { objectId: string }) => Promise<unknown>): Sui =>
 	({
 		network: 'localnet',
 		rpc: { host: 'http://127.0.0.1:9000' },
@@ -183,9 +181,7 @@ describe('ChainProbe.objectsMatchTypes (helper composition)', () => {
 	// substrate's helper composition without indirecting through the
 	// underlying SDK shape parser — already covered by the suite above.
 
-	const stubProbe = (
-		objectsById: Record<string, string | undefined>,
-	): Layer.Layer<ChainProbe> =>
+	const stubProbe = (objectsById: Record<string, string | undefined>): Layer.Layer<ChainProbe> =>
 		Layer.succeed(ChainProbe, {
 			getObject: (id) =>
 				Effect.succeed(
