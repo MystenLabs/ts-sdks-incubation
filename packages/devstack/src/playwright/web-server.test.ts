@@ -19,12 +19,11 @@ import { baseURL, webServer } from './web-server.js';
 type SingleServer = Extract<ReturnType<typeof webServer>, { command?: string }>;
 const single = (cfg: ReturnType<typeof webServer>): SingleServer => cfg as SingleServer;
 
-const v5Manifest = (overrides?: {
+const wellFormedManifest = (overrides?: {
 	devUrl?: string;
 	walletUrl?: string;
 	suiRpcUrl?: string;
 }): unknown => ({
-	version: 5,
 	stack: { name: 'main', network: 'localnet', app: 'test-app' },
 	services: {
 		sui: {
@@ -67,7 +66,7 @@ describe('playwright web-server helpers', () => {
 
 	describe('webServer()', () => {
 		it('resolves dev-server URL from manifest + stamps PLAYWRIGHT=1 + 10s SIGTERM', () => {
-			writeFileSync(manifestPath, JSON.stringify(v5Manifest({ devUrl: 'http://dev.test:5175' })));
+			writeFileSync(manifestPath, JSON.stringify(wellFormedManifest({ devUrl: 'http://dev.test:5175' })));
 			const cfg = single(webServer({ endpoint: EndpointName.DEV_SERVER_PRIMARY }));
 			expect(cfg.url).toBe('http://dev.test:5175');
 			expect(cfg.command).toBe('pnpm dev');
@@ -81,7 +80,7 @@ describe('playwright web-server helpers', () => {
 		it('resolves sui-rpc URL via the nested services.sui.rpc projection', () => {
 			writeFileSync(
 				manifestPath,
-				JSON.stringify(v5Manifest({ suiRpcUrl: 'http://sui.test:9000' })),
+				JSON.stringify(wellFormedManifest({ suiRpcUrl: 'http://sui.test:9000' })),
 			);
 			expect(single(webServer({ endpoint: EndpointName.SUI_RPC })).url).toBe(
 				'http://sui.test:9000',
@@ -110,25 +109,19 @@ describe('playwright web-server helpers', () => {
 		});
 
 		it('throws when the endpoint is not in the manifest', () => {
-			writeFileSync(manifestPath, JSON.stringify(v5Manifest({ devUrl: 'http://dev.test:5175' })));
+			writeFileSync(manifestPath, JSON.stringify(wellFormedManifest({ devUrl: 'http://dev.test:5175' })));
 			expect(() => webServer({ endpoint: EndpointName.WALLET_APP })).toThrow(
 				/no endpoint 'wallet-app'/,
 			);
 		});
 
-		// Stale-manifest guard. The v3 manifest used a flat
-		// `endpoints[]` array and had no `services` key; v4+ groups by
-		// service (`services.sui.rpc.url`, etc.). If a v3 manifest from
-		// an older devstack release sits on disk, the nested projection
-		// in `resolveEndpoint` previously NPE'd with
-		// `Cannot read properties of undefined (reading 'sui')`. We must
-		// surface a clear "regenerate" recipe instead — never NPE.
-		it('throws a clear error on a stale v3-shape manifest (no top-level `services`)', () => {
-			// v3 shape: top-level `endpoints[]` array, no `services` /
-			// `app` keys. Real v3 manifests carried more fields, but the
-			// load-bearing thing is the missing top-level discriminator.
-			const v3Manifest = {
-				version: 3,
+		// Malformed-manifest guard. If a manifest with the wrong top-
+		// level shape sits on disk, the nested projection in
+		// `resolveEndpoint` would NPE with `Cannot read properties of
+		// undefined (reading 'sui')`. We surface a clear "regenerate"
+		// recipe instead — never NPE.
+		it('throws a clear error on a malformed manifest (no top-level `services`)', () => {
+			const malformed = {
 				endpoints: [
 					{ name: 'sui-rpc', url: 'http://sui.test:9000' },
 					{ name: 'dev-server', url: 'http://dev.test:5175' },
@@ -136,14 +129,13 @@ describe('playwright web-server helpers', () => {
 				packages: {},
 				accounts: {},
 			};
-			writeFileSync(manifestPath, JSON.stringify(v3Manifest));
-			// E19: the explicit shape-guard branch was replaced by
-			// `Schema.decodeUnknown(ManifestV5)` in `readStackContextSync`.
-			// The error surface is now a typed `ManifestShapeError` with a
-			// `does not match the v5 schema` message that still carries the
-			// `RECOVERY: ...` recipe.
+			writeFileSync(manifestPath, JSON.stringify(malformed));
+			// `Schema.decodeUnknown(Manifest)` in `readStackContextSync`
+			// surfaces a typed `ManifestShapeError` with a
+			// `does not match the manifest schema` message that carries
+			// the `RECOVERY: ...` recipe.
 			expect(() => webServer({ endpoint: EndpointName.DEV_SERVER_PRIMARY })).toThrow(
-				/v5 schema.*RECOVERY.*devstack apply/s,
+				/manifest schema.*RECOVERY.*devstack apply/s,
 			);
 			// Crucially does NOT throw the unhelpful native
 			// `Cannot read properties of undefined` NPE.
@@ -157,7 +149,6 @@ describe('playwright web-server helpers', () => {
 			// would also NPE later (`manifest.app.dev` / `manifest.app.wallet`).
 			// The same regenerate recipe applies — Schema decode rejects.
 			const partial = {
-				version: 5,
 				stack: { name: 'main', network: 'localnet', app: 'test-app' },
 				services: { sui: { network: 'localnet', rpc: { url: 'http://sui.test:9000' } } },
 				packages: {},
@@ -167,7 +158,7 @@ describe('playwright web-server helpers', () => {
 			};
 			writeFileSync(manifestPath, JSON.stringify(partial));
 			expect(() => webServer({ endpoint: EndpointName.SUI_RPC })).toThrow(
-				/v5 schema.*RECOVERY/s,
+				/manifest schema.*RECOVERY/s,
 			);
 		});
 
@@ -185,7 +176,7 @@ describe('playwright web-server helpers', () => {
 		});
 
 		it('respects opts.command / opts.timeout / opts.extend', () => {
-			writeFileSync(manifestPath, JSON.stringify(v5Manifest({ devUrl: 'http://dev.test:5175' })));
+			writeFileSync(manifestPath, JSON.stringify(wellFormedManifest({ devUrl: 'http://dev.test:5175' })));
 			const cfg = single(
 				webServer({
 					endpoint: EndpointName.DEV_SERVER_PRIMARY,
@@ -204,7 +195,7 @@ describe('playwright web-server helpers', () => {
 		it('returns the bare URL string for the named endpoint', () => {
 			writeFileSync(
 				manifestPath,
-				JSON.stringify(v5Manifest({ walletUrl: 'http://wallet.test:5180' })),
+				JSON.stringify(wellFormedManifest({ walletUrl: 'http://wallet.test:5180' })),
 			);
 			expect(baseURL({ endpoint: EndpointName.WALLET_APP })).toBe('http://wallet.test:5180');
 		});

@@ -51,12 +51,9 @@ const RegistriesLive = Layer.mergeAll(
 	SealStateRegistryLive,
 	WalrusStateRegistryLive,
 	DeepbookStateRegistryLive,
-	// Phase-1-era addition (concurrent-track) — gatherManifest now reads
-	// PythState/PostgresState/DeepbookIndexerState. Tests provide empty
-	// Live layers so the manifest emit doesn't blow up on a missing
-	// service. Phase-3/4 — `gatherManifest` now also reads
-	// DeepbookServerState + DeepbookMarginState; tests provide their
-	// empty Live layers for the same reason.
+	// `gatherManifest` reads every per-service registry; tests provide
+	// empty Live layers for the optional services so the manifest emit
+	// doesn't blow up on a missing service.
 	PythStateRegistryLive,
 	PostgresStateRegistryLive,
 	DeepbookIndexerStateRegistryLive,
@@ -75,7 +72,7 @@ describe('emitManifest', () => {
 
 	const outputPath = (): string => joinPath(outputDir, 'manifest.json');
 
-	it.effect('eager-writes a v5 manifest on acquire (consumers can read immediately)', () =>
+	it.effect('eager-writes a well-formed manifest on acquire (consumers can read immediately)', () =>
 		Effect.gen(function* () {
 			// Seed registries with a minimal sui-rpc + alice account.
 			const eps = yield* EndpointRegistry;
@@ -85,15 +82,14 @@ describe('emitManifest', () => {
 
 			yield* emitManifest({ output: outputPath() });
 
-			// File exists immediately after acquire; content matches v5 shape.
+			// File exists immediately after acquire; content matches the
+			// expected shape.
 			const body = readFileSync(outputPath(), 'utf-8');
 			const parsed = JSON.parse(body) as {
-				version: number;
 				stack: { name: string; network: string; app: string };
 				services?: { sui?: { rpc?: { url: string } } };
 				accounts: Record<string, { address: string }>;
 			};
-			expect(parsed.version).toBe(5);
 			expect(parsed.stack).toEqual({ name: 'main', network: 'localnet', app: 'test-app' });
 			expect(parsed.services?.sui?.rpc?.url).toBe('http://sui.test:9000');
 			expect(parsed.accounts['alice']).toEqual({ address: '0x1' });
@@ -162,7 +158,8 @@ describe('emitManifest', () => {
 		Effect.gen(function* () {
 			const custom = joinPath(outputDir, 'custom', 'manifest.json');
 			yield* emitManifest({ output: custom });
-			expect(readFileSync(custom, 'utf-8')).toContain('"version": 5');
+			// File exists at the custom path.
+			expect(readFileSync(custom, 'utf-8')).toContain('"stack"');
 		}).pipe(
 			Effect.scoped,
 			Effect.provide(Layer.mergeAll(RegistriesLive, IdentityLive, ExtrasLive(undefined))),

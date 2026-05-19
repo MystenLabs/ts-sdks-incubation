@@ -223,7 +223,7 @@ const groupApp = (
 };
 
 // -----------------------------------------------------------------------------
-// gatherManifest — read registries + Identity, return v5 Manifest shape
+// gatherManifest — read registries + Identity, return Manifest shape
 // -----------------------------------------------------------------------------
 
 /** Read every devstack registry and build the `Manifest` shape. Pure
@@ -366,7 +366,6 @@ export const gatherManifest = (
 		const app = groupApp(endpoints, extras);
 
 		return {
-			version: 5 as const,
 			stack: { name: identity.stack, network: identity.network, app: identity.app },
 			services,
 			packages,

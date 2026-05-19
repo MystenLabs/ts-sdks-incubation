@@ -1,9 +1,6 @@
 // Effect-flavored thin wrapper around the `sui` CLI for Move package
 // publishing.
 //
-// Ported from `packages/devstack/src/helpers/publish-via-cli.ts` (v3) and
-// adapted to Effect v4:
-//
 //   - Subprocess work goes through `effect/unstable/process`'s
 //     `ChildProcessSpawner` (Node binding provided upstream by
 //     `NodeChildProcessSpawner`).
@@ -16,8 +13,8 @@
 //      by the intended keypair. The caller is responsible for making
 //      sure the secret is already present in the sui-cli keystore.
 //   2. `sui client publish --skip-fetch-latest-git-deps --json …` runs
-//      the build + publish in one shot and writes a
-//      `SuiTransactionBlockResponse` to stdout.
+//      the build + publish in one shot and writes a transaction-block
+//      response to stdout.
 //   3. Parse, extract the package id from the `published` object change,
 //      and the upgrade-cap id from the `created` change whose objectType
 //      ends with `0x2::package::UpgradeCap`.

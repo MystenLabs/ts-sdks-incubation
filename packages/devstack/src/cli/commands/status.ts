@@ -194,8 +194,8 @@ export const statusCommand = Command.make(
 			}
 
 			if (manifest.ctx !== undefined) {
-				// Project endpoints out of the typed v5 manifest. Mirrors the
-				// flat-array shape the prior `endpoints[]` projection rendered.
+				// Project endpoints out of the typed manifest as a flat array
+				// for the table render below.
 				const m = manifest.ctx.manifest;
 				const printedEps: Array<{ name: string; url: string }> = [];
 				if (m.services.sui !== undefined) {

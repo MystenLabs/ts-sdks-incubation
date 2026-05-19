@@ -258,23 +258,20 @@ export class ManifestDiscoveryError extends Schema.TaggedErrorClass<ManifestDisc
 /**
  * Raised by `runtime/read-stack-context.ts` when the on-disk
  * `manifest.json` is found and JSON-parseable but does NOT match the
- * v5 `ManifestV5` schema — typically because a pre-v4 manifest is left
- * over from an older devstack release (missing `services` / `app` /
- * `version` discriminators). `cause` carries the underlying
- * `Schema.SchemaError` (for `phase: 'shape'`) or the `SyntaxError`
- * from `JSON.parse` (for `phase: 'parse'`).
+ * `Manifest` schema (missing required `services` / `app` fields).
+ * `cause` carries the underlying `Schema.SchemaError` (for
+ * `phase: 'shape'`) or the `SyntaxError` from `JSON.parse` (for
+ * `phase: 'parse'`).
  *
  * Surfacing this at the boundary (instead of NPEing downstream when the
  * playwright reader does `manifest.services.sui.rpc.url`) lets the CLI
- * print an actionable "your manifest is stale — regenerate via `devstack
- * apply`" recipe.
+ * print an actionable "regenerate via `devstack apply`" recipe.
  */
 export class ManifestShapeError extends Schema.TaggedErrorClass<ManifestShapeError>()(
 	'ManifestShapeError',
 	{
 		/** `parse` — the file existed but `JSON.parse` failed (corrupt
-		 *  body). `shape` — JSON parsed but the v5 Schema rejected it
-		 *  (stale pre-v4 layout). */
+		 *  body). `shape` — JSON parsed but the Schema rejected it. */
 		phase: Schema.Literals(['parse', 'shape']),
 		/** Absolute path of the manifest the reader was decoding. */
 		path: Schema.String,

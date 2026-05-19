@@ -11,9 +11,8 @@ export interface WebServerOptions {
 	/** Manifest endpoint name to use as the dev server URL (e.g. `'frontend.dev-server'`). */
 	endpoint: string;
 	/** Path to the manifest JSON sidecar. Default: walk up from cwd
-	 * looking for `.devstack/manifest.json` (v4 default), falling back
-	 * to `.devstack/stacks/<stack>/manifest.json` where `<stack>` is
-	 * `process.env.DEVSTACK_STACK ?? 'main'`. */
+	 * looking for `.devstack/stacks/<stack>/manifest.json` where
+	 * `<stack>` is `process.env.DEVSTACK_STACK ?? 'main'`. */
 	manifestPath?: string;
 	/** Command to launch the dev server. Default `pnpm dev`. */
 	command?: string;
@@ -99,7 +98,7 @@ function resolveEndpoint(
 	// supervisor wires (same `<stack>.<service>.<app>.localhost` +
 	// traefik entrypoint port).
 	//
-	// Any OTHER error (`ManifestShapeError` — stale pre-v4 layout) is
+	// Any OTHER error (`ManifestShapeError` — malformed shape) is
 	// re-thrown verbatim because its `message` already carries an
 	// actionable "regenerate via …" recipe.
 	let ctx;

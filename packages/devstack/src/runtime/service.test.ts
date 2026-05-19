@@ -1,6 +1,6 @@
 // Integration test for `gatherManifest`. Stands up the registries +
 // Identity, publishes a representative set of records, runs
-// `gatherManifest()` and asserts the v5 shape comes back as expected.
+// `gatherManifest()` and asserts the manifest shape comes back as expected.
 
 import { Effect, Layer } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
@@ -94,12 +94,11 @@ const RegistriesLive = Layer.mergeAll(
 );
 
 describe('gatherManifest', () => {
-	it.effect('builds a v5 snapshot from seeded registries', () =>
+	it.effect('builds a snapshot from seeded registries', () =>
 		Effect.gen(function* () {
 			yield* seedAll;
 			const ds = yield* gatherManifest();
 
-			expect(ds.version).toBe(5);
 			expect(ds.stack).toEqual({ name: 'main', network: 'localnet', app: 'svc-test' });
 
 			expect(ds.services.sui?.rpc.url).toBe('http://sui.svc-test.localhost:9000');

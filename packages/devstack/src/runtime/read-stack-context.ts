@@ -1,20 +1,14 @@
 // Unified manifest reader + projection — consolidates the four hand-rolled
-// "discover manifest → JSON.parse → assert v5 shape → walk services / app"
-// snippets that previously lived in:
+// "discover manifest → JSON.parse → walk services / app" snippets used by:
 //
 //   - `cli/commands/fork.ts`        (`readManifestSuiBlock`)
 //   - `cli/commands/status.ts`      (`tryReadJson` + ad-hoc sui projection)
 //   - `cli/commands/manifest.ts`    (inline `JSON.parse`)
-//   - `playwright/web-server.ts`    (`resolveEndpoint`, with a v3 shape guard
-//                                    that NPE'd before commit 26140c67)
+//   - `playwright/web-server.ts`    (`resolveEndpoint`)
 //
-// Each callsite re-derived the same nested-endpoint lookup table. When the
-// v5 schema landed the playwright reader carried v3 fallback code that
-// drifted; the explicit shape guard in 26140c67 worked around symptoms
-// rather than the root cause. This module fixes that by Schema-decoding
-// the parsed body against `ManifestV5` — a shape mismatch raises a typed
-// `ManifestShapeError` at the boundary instead of NPEing in downstream
-// projections.
+// Schema-decode the parsed body against `Manifest` — a shape mismatch
+// raises a typed `ManifestShapeError` at the boundary instead of NPEing
+// in downstream projections.
 //
 // Two surfaces:
 //   - `readStackContext(opts?)`     — Effect (the four CLI callsites use this)
@@ -35,8 +29,7 @@ import { EndpointName } from './endpoint-names.js';
 import {
 	type AppManifest,
 	type EndpointEntry,
-	type Manifest,
-	ManifestV5,
+	Manifest,
 	type SealManifest,
 	type ServicesManifest,
 	type StackIdentity,
@@ -48,7 +41,7 @@ import {
 // Public types
 // ---------------------------------------------------------------------------
 
-/** Read-only projection over the v5 manifest. Field shape mirrors the
+/** Read-only projection over the manifest. Field shape mirrors the
  *  manifest's `services` / `app` blocks but pre-walks the optional
  *  nesting so callers don't repeat the `manifest.services?.sui?.rpc?.url`
  *  cascade. Use `endpoint(name)` to resolve a flat endpoint name (e.g.
@@ -59,7 +52,7 @@ export interface StackContext {
 	/** Absolute path to the on-disk `manifest.json` the projection
 	 *  derived from. */
 	readonly manifestPath: string;
-	/** The fully-decoded v5 manifest. Schema-validated at the boundary —
+	/** The fully-decoded manifest. Schema-validated at the boundary —
 	 *  no shape drift past this point. */
 	readonly manifest: Manifest;
 	/** `services.sui` block (when published) — for the fork CLI's gRPC
@@ -71,10 +64,10 @@ export interface StackContext {
 	/** `app.dev` / `app.wallet` — the two well-known app endpoints. */
 	readonly dev: EndpointEntry | undefined;
 	readonly wallet: EndpointEntry | undefined;
-	/** Whole `services` block (raw v5 shape) for callers that need a
-	 *  service the convenience projection didn't surface. */
+	/** Whole `services` block for callers that need a service the
+	 *  convenience projection didn't surface. */
 	readonly services: ServicesManifest;
-	/** Whole `app` block (raw v5 shape). */
+	/** Whole `app` block. */
 	readonly app: AppManifest;
 	/** Resolve a flat endpoint name to its URL. Mirrors the lookup table
 	 *  that previously lived inline in `playwright/web-server.ts`. Returns
@@ -95,12 +88,12 @@ export interface ReadStackContextOptions extends DiscoverManifestPathOptions {
 // Core projection + decode (shared by both sync and Effect surfaces)
 // ---------------------------------------------------------------------------
 
-const decodeManifest = Schema.decodeUnknownSync(ManifestV5);
+const decodeManifest = Schema.decodeUnknownSync(Manifest);
 
 /** Project the decoded manifest into a `StackContext`. Pulls the
  *  convenience slices and wires the `endpoint()` lookup. */
 const project = (manifest: Manifest, manifestPath: string): StackContext => {
-	// Build the flat endpoint table from the typed v5 manifest. Mirrors
+	// Build the flat endpoint table from the typed manifest. Mirrors
 	// `runtime/endpoint-names.ts`'s `defineEndpoint(...)` declarations —
 	// keep them in sync when adding a new well-known endpoint.
 	const flat: Record<string, EndpointEntry> = {};
@@ -140,11 +133,11 @@ const project = (manifest: Manifest, manifestPath: string): StackContext => {
 
 /** Parse + Schema-decode the raw manifest body. Surfaces parse vs decode
  *  failures as distinct `ManifestShapeError` phases so the caller can
- *  print a precise recovery hint (stale pre-v4 layout vs corrupt JSON). */
+ *  print a precise recovery hint (corrupt JSON vs shape mismatch). */
 const parseAndDecode = (raw: string, manifestPath: string): Manifest => {
 	let parsed: unknown;
 	try {
-		// v5 manifest is all-strings (no bigint scalars). If a future
+		// Manifest is all-strings (no bigint scalars). If a future
 		// schema folds bigint fields, wire `jsonBigintReviver` here.
 		parsed = JSON.parse(raw);
 	} catch (cause) {
@@ -165,9 +158,8 @@ const parseAndDecode = (raw: string, manifestPath: string): Manifest => {
 			phase: 'shape',
 			path: manifestPath,
 			message:
-				`[devstack] manifest at ${manifestPath} does not match the v5 schema ` +
-				`(stale pre-v4 layout or hand-edited shape — missing top-level \`version\` / ` +
-				`\`services\` / \`app\` discriminators). ` +
+				`[devstack] manifest at ${manifestPath} does not match the manifest schema ` +
+				`(hand-edited shape — missing required \`services\` / \`app\` fields). ` +
 				`RECOVERY: \`rm -rf .devstack/manifest.json .devstack/stacks/*/manifest.json && devstack apply\` ` +
 				`to regenerate.`,
 			cause,

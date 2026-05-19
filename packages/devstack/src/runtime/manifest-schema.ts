@@ -1,4 +1,4 @@
-// Manifest v5 schema — single source of truth for the on-disk
+// Manifest schema — single source of truth for the on-disk
 // `.devstack/manifest.json` shape and every typed reader.
 //
 // The shape is organised as records keyed by name and sections grouped
@@ -67,20 +67,20 @@ export const DeepbookIndexerManifest = Schema.Struct({
 });
 export type DeepbookIndexerManifest = typeof DeepbookIndexerManifest.Type;
 
-// Phase 3 — DeepBook server. The REST endpoint (`rest`) is the
-// consumer-facing surface (codegen-emitted into deepbook-config); the
-// metrics endpoint mirrors the indexer's Prometheus shape.
+// DeepBook server. The REST endpoint (`rest`) is the consumer-facing
+// surface (codegen-emitted into deepbook-config); the metrics endpoint
+// mirrors the indexer's Prometheus shape.
 export const DeepbookServerManifest = Schema.Struct({
 	rest: EndpointEntry,
 	metrics: EndpointEntry,
 });
 export type DeepbookServerManifest = typeof DeepbookServerManifest.Type;
 
-// Phase 4 — DeepBook margin. Captures the published margin +
-// liquidation package ids, the MarginRegistry shared object, and the
-// per-asset MarginPool object ids. `registeredPools` enumerates the
-// deepbook pool ids the margin registry was told about (parity with
-// sandbox's `register_deepbook_pool` calls).
+// DeepBook margin. Captures the published margin + liquidation package
+// ids, the MarginRegistry shared object, and the per-asset MarginPool
+// object ids. `registeredPools` enumerates the deepbook pool ids the
+// margin registry was told about (parity with sandbox's
+// `register_deepbook_pool` calls).
 export const DeepbookMarginPoolEntry = Schema.Struct({
 	label: Schema.String,
 	assetType: Schema.String,
@@ -215,14 +215,13 @@ export const StackIdentity = Schema.Struct({
 export type StackIdentity = typeof StackIdentity.Type;
 
 // -----------------------------------------------------------------------------
-// Top-level Manifest v5
+// Top-level Manifest
 // -----------------------------------------------------------------------------
 
-/** The v5 manifest schema. The on-disk shape of `.devstack/manifest.json`
+/** The manifest schema. The on-disk shape of `.devstack/manifest.json`
  *  written by `runtime/manifest-emit.ts` and consumed by codegen
  *  emitters via `gatherManifest()`. */
-export const ManifestV5 = Schema.Struct({
-	version: Schema.Literal(5),
+export const Manifest = Schema.Struct({
 	stack: StackIdentity,
 	services: ServicesManifest,
 	packages: Schema.Record(Schema.String, PackageEntry),
@@ -231,6 +230,6 @@ export const ManifestV5 = Schema.Struct({
 	app: AppManifest,
 });
 
-/** The fully-typed manifest (v5). Use this as the type for any code that
+/** The fully-typed manifest. Use this as the type for any code that
  *  consumes a parsed manifest. */
-export type Manifest = typeof ManifestV5.Type;
+export type Manifest = typeof Manifest.Type;

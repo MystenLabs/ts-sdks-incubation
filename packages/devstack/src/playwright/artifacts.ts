@@ -47,7 +47,7 @@ export interface LoadStackManifestOptions {
 
 /**
  * Locate + parse the devstack manifest for the active stack. Returns
- * the fully-typed v5 `Manifest` shape so specs can navigate
+ * the fully-typed `Manifest` shape so specs can navigate
  * `manifest.services.sui.rpc.url`, `manifest.packages.<name>.id`,
  * `manifest.accounts.<name>.address`, `manifest.app.extras.<key>` with
  * full IDE help.

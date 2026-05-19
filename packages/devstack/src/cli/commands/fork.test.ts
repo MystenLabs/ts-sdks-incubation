@@ -32,7 +32,6 @@ describe('cli/commands/fork', () => {
 				const stackDir = joinPath(stateDir, 'stacks', 'main');
 				yield* Effect.promise(() => mkdir(stackDir, { recursive: true }));
 				const manifest = {
-					version: 5,
 					stack: { name: 'main', network: 'testnet-fork', app: 'fixture' },
 					services: {
 						sui: {

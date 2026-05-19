@@ -1,15 +1,14 @@
 // Tests for `readStackContext` / `readStackContextSync` — the unified
-// manifest reader + projection introduced by stack-simplification-audit
-// finding E19. Three reachable outcomes are exercised:
+// manifest reader + projection. Three reachable outcomes are exercised:
 //
-//   1. v5 happy path — manifest exists, parses, decodes against
-//      `ManifestV5`, projection surfaces the convenience slices (sui,
-//      dev, wallet, endpoint(name)).
-//   2. v3-shaped input (missing `services` / `app` discriminators) —
+//   1. Happy path — manifest exists, parses, decodes against the
+//      `Manifest` schema, projection surfaces the convenience slices
+//      (sui, dev, wallet, endpoint(name)).
+//   2. Malformed input (missing required `services` / `app` fields) —
 //      throws `ManifestShapeError` with `phase: 'shape'` instead of
 //      NPEing downstream.
 //   3. Missing file — throws `ManifestDiscoveryError` so callers can
-//      distinguish "no manifest" from "manifest is stale".
+//      distinguish "no manifest" from "manifest is malformed".
 
 import { Effect, Exit } from 'effect';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -20,10 +19,9 @@ import { ManifestDiscoveryError, ManifestShapeError } from '../engine/errors.js'
 import type { Manifest } from './manifest-schema.js';
 import { readStackContext, readStackContextSync } from './read-stack-context.js';
 
-// Minimal v5 manifest fixture — just enough fields to satisfy
-// `ManifestV5` and exercise the projection (sui rpc, dev, wallet).
-const v5Manifest = (): Manifest => ({
-	version: 5,
+// Minimal manifest fixture — just enough fields to satisfy the
+// `Manifest` schema and exercise the projection (sui rpc, dev, wallet).
+const wellFormedManifest = (): Manifest => ({
 	stack: { name: 'main', network: 'localnet', app: 'test-app' },
 	services: {
 		sui: {
@@ -82,12 +80,12 @@ describe('readStackContext (E19)', () => {
 	});
 
 	// ────────────────────────────────────────────────────────────────────
-	// v5 happy path
+	// Well-formed manifest
 	// ────────────────────────────────────────────────────────────────────
 
-	describe('v5 happy path', () => {
+	describe('well-formed manifest', () => {
 		it('readStackContextSync — projects sui, dev, wallet, endpoint(name)', () => {
-			const manifestPath = writeManifestAt(tmp, 'main', v5Manifest());
+			const manifestPath = writeManifestAt(tmp, 'main', wellFormedManifest());
 			const ctx = readStackContextSync({ manifestPath });
 			expect(ctx.manifestPath).toBe(manifestPath);
 			expect(ctx.stack).toEqual({ name: 'main', network: 'localnet', app: 'test-app' });
@@ -105,14 +103,14 @@ describe('readStackContext (E19)', () => {
 		});
 
 		it('readStackContext (Effect) — same projection via the Effect surface', async () => {
-			const manifestPath = writeManifestAt(tmp, 'main', v5Manifest());
+			const manifestPath = writeManifestAt(tmp, 'main', wellFormedManifest());
 			const ctx = await Effect.runPromise(readStackContext({ manifestPath }));
 			expect(ctx.endpoint('sui-rpc')?.url).toBe('http://sui.test-app.localhost:9000');
 			expect(ctx.sui?.faucet?.url).toBe('http://faucet.test-app.localhost:9123');
 		});
 
 		it('walks up from a nested cwd via DEVSTACK_STATE_DIR + DEVSTACK_STACK', () => {
-			const manifestPath = writeManifestAt(tmp, 'main', v5Manifest());
+			const manifestPath = writeManifestAt(tmp, 'main', wellFormedManifest());
 			// Use override:cwd to anchor the walk-up.
 			const nested = join(tmp, 'apps', 'nested');
 			mkdirSync(nested, { recursive: true });
@@ -122,17 +120,17 @@ describe('readStackContext (E19)', () => {
 	});
 
 	// ────────────────────────────────────────────────────────────────────
-	// v3-shaped input throws ManifestShapeError
+	// Malformed manifest throws ManifestShapeError
 	// ────────────────────────────────────────────────────────────────────
 
-	describe('stale / malformed manifest', () => {
-		it('readStackContextSync — v3 shape (flat endpoints[], no services / app) throws ManifestShapeError', () => {
-			const v3 = {
+	describe('malformed manifest', () => {
+		it('readStackContextSync — wrong shape (flat endpoints[], no services / app) throws ManifestShapeError', () => {
+			const malformed = {
 				endpoints: [{ name: 'sui-rpc', url: 'http://localhost:9000' }],
 				packages: [],
 				accounts: [],
 			};
-			const manifestPath = writeManifestAt(tmp, 'main', v3);
+			const manifestPath = writeManifestAt(tmp, 'main', malformed);
 			try {
 				readStackContextSync({ manifestPath });
 				throw new Error('expected throw');
@@ -141,14 +139,14 @@ describe('readStackContext (E19)', () => {
 				const e = err as ManifestShapeError;
 				expect(e.phase).toBe('shape');
 				expect(e.path).toBe(manifestPath);
-				expect(e.message).toMatch(/v5 schema/);
+				expect(e.message).toMatch(/manifest schema/);
 				// Schema error carried through `cause:` so pretty-error can
 				// surface the offending field path.
 				expect(e.cause).toBeDefined();
 			}
 		});
 
-		it('readStackContext (Effect) — v3 shape fails with ManifestShapeError on the failure channel', async () => {
+		it('readStackContext (Effect) — wrong shape fails with ManifestShapeError on the failure channel', async () => {
 			const manifestPath = writeManifestAt(tmp, 'main', { endpoints: [] });
 			const exit = await Effect.runPromiseExit(readStackContext({ manifestPath }));
 			expect(Exit.isFailure(exit)).toBe(true);

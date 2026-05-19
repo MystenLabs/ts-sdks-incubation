@@ -1,17 +1,14 @@
 // Shared types used by every primitive.
 //
-// Phase -1 (gRPC-default migration): types here are the devstack-internal
-// projection. We deliberately do NOT re-export gRPC's `Transaction`
-// envelope from `@mysten/sui/grpc` — that shape is wire-level and
-// changes between SDK versions. Instead, we keep a stable
-// internal `SuiObjectChange` shape that mirrors the small subset of
-// `objectChanges` semantics primitives actually consume (`type`,
-// `objectId`, `objectType`, `packageId`). `account.ts` maps the gRPC
-// `TransactionResult` into a `TxResult` carrying this stable shape on
-// every signAndExecute.
+// We deliberately do NOT re-export gRPC's `Transaction` envelope from
+// `@mysten/sui/grpc` — that shape is wire-level and changes between
+// SDK versions. Instead, we keep a stable internal `SuiObjectChange`
+// shape that mirrors the small subset of `objectChanges` semantics
+// primitives actually consume (`type`, `objectId`, `objectType`,
+// `packageId`). `account.ts` maps the gRPC `TransactionResult` into a
+// `TxResult` carrying this stable shape on every signAndExecute.
 
 import type { Transaction } from '@mysten/sui/transactions';
-import type { SuiClientTypes } from '@mysten/sui/client';
 import type { Effect } from 'effect';
 
 export type { Transaction };
@@ -177,17 +174,3 @@ export interface Account {
 		messageBytes: Uint8Array,
 	): Effect.Effect<{ signature: string; bytes: string }, SignAndExecuteError>;
 }
-
-/**
- * Compatibility re-export for primitives that used to import
- * `SuiTransactionBlockResponse` from `engine/shared`. Phase -1 makes
- * this an alias for the gRPC `Transaction` shape; downstream callers
- * that still depend on the legacy field names migrate as part of their
- * own phases. Kept as an explicit alias rather than removed outright so
- * `engine/snapshot.ts`'s structural references compile against gRPC.
- */
-export type SuiTransactionBlockResponse = SuiClientTypes.Transaction<{
-	readonly effects: true;
-	readonly balanceChanges: true;
-	readonly objectTypes: true;
-}>;

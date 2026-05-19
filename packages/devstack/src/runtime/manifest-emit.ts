@@ -20,17 +20,17 @@ import {
 import { jsonBigintReplacer } from '../engine/json-bigint.js';
 import { writeFileAtomicIfChanged } from '../engine/atomic-write.js';
 import { ManifestError } from '../engine/errors.js';
-import { ManifestV5, type Manifest } from './manifest-schema.js';
+import { Manifest } from './manifest-schema.js';
 import { gatherManifest } from './service.js';
 
-/** Encode the v5 manifest through `Schema.encodeUnknownSync(ManifestV5)`
+/** Encode the manifest through `Schema.encodeUnknownSync(Manifest)`
  *  before serializing. This is a load-bearing guard: a bug in
  *  `gatherManifest` (or any future emitter feeding it) that produces a
  *  shape mismatch with the schema fails HERE at write time, surfacing
  *  the offending field path in the ParseError — instead of silently
  *  writing JSON that downstream consumers then crash on at read time,
  *  far from the bug's origin. */
-const encodeManifest = Schema.encodeUnknownSync(ManifestV5);
+const encodeManifest = Schema.encodeUnknownSync(Manifest);
 
 export interface EmitManifestOptions {
 	/** Override the on-disk path. Defaults to
