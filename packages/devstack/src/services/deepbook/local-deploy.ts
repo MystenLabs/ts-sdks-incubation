@@ -2,20 +2,33 @@
 // create the requested whitelisted pools. Provides all three interface
 // tags (`DeepbookCoreTag`, `DeepbookAdminTag`, `DeepbookMarketMaker`) because
 // the local deploy owns the admin cap and can mint a BalanceManager.
+//
+// Migrated to the canonical `onChainArtifact` substrate per
+// `notes/integration-contract-redesign.md` §4.2. The cache key resolves
+// to `deepbook/pools/<chainId>/<contentHash({packageId, signer, poolsHash})>`,
+// the verify probe goes through the typed `ChainProbe.objectsMatchTypes`
+// accessor (Schema-validated SDK response shape), and `register` runs on
+// every cycle so PackageRegistry + DeepbookStateRegistry stay populated
+// on resume.
+//
+// Two-tag pattern: `CachedDeepbookPools` is the lean, JSON-roundtrippable
+// payload that lives in `StateStore`. `DeepbookLocalDeployShape` is the
+// richer consumer-facing shape (a `Map<string, string>` of pool ids, the
+// `findPool` closure, the `packageIds` derived view); those derived
+// fields are attached in `register` so the cache-hit and cache-miss
+// paths converge on the same observable shape — mirrors `publishMove`'s
+// host-local-field-mutation pattern.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import * as crypto from 'node:crypto';
-import { Effect, Layer, Option } from 'effect';
+import { Effect, Layer } from 'effect';
 import { Transaction } from '@mysten/sui/transactions';
-import { tag, provide, type LayeredTag } from '../../advanced/tag.js';
-import { SuiTag } from '../sui.js';
-import { publishMove } from '../package/internal.js';
+import { provide, type LayeredTag } from '../../advanced/tag.js';
+import { publishMove, type Package } from '../package/internal.js';
 import { moveTypeEquals, moveTypeStartsWith, pickCreatedByType } from '../../engine/sui-helpers.js';
 import { publishDeepbookState, publishPackage } from '../../engine/registries.js';
-import { StateStore } from '../../engine/state-store.js';
-import { StateStoreKeys } from '../../engine/state-store-keys.js';
-import { stringifyCause } from '../../engine/stringify-cause.js';
+import { onChainArtifact } from '../../engine/on-chain-artifact.js';
 import { DeepbookError } from '../../engine/errors.js';
 import {
 	DeepbookAdminTag,
@@ -37,24 +50,27 @@ import {
 	type DeepbookPoolSpec,
 } from './internal.js';
 
-// State-store key for the cached create-pools output lives in
-// `engine/state-store-keys.ts`. Canonical builder:
-// `StateStoreKeys.deepbookPools({chainId, packageId, poolsHash})`.
-// The full key still folds in `Sui.chainId` (regenesis ⇒ miss),
-// the deepbook `packageId` (republish ⇒ miss), and a hash of the
-// requested pool specs (reconfigure ⇒ miss). Without this cache,
-// `pool::create_pool_admin` aborts in `registry::register_pool`
-// on every resume because (base, quote) was already registered by
-// the previous boot — chain state survives `pnpm dev` restarts but the
-// primitive didn't know it.
+// State-store namespace for the cached create-pools output. The
+// `onChainArtifact` substrate folds `chainId` and the hashed `inputs`
+// (`{packageId, signer, poolsHash}`) into the full cache key:
+//
+//   `deepbook/pools/<chainId>/<contentHash({packageId, signer, poolsHash})>`
+//
+// Per §8.5 of the redesign the namespace stays bare — no version
+// segment. `chainId` (regenesis ⇒ miss), `packageId` (republish ⇒ miss),
+// and `poolsHash` (reconfigure ⇒ miss) all fold into the inputs hash.
+// Without this cache, `pool::create_pool_admin` aborts in
+// `registry::register_pool` on every resume because (base, quote) was
+// already registered by the previous boot — chain state survives
+// `pnpm dev` restarts but the primitive didn't know it.
+const DEEPBOOK_POOLS_NAMESPACE = 'deepbook/pools';
 
-// Subset of `DeepbookPool` we persist into `StateStore`. Echoes the
-// runtime pool record verbatim — the captured `poolId` is the load-
-// bearing piece (it's what `register_pool` would re-mint), the
-// `tick/lot/min` fields go in because consumers (`market-maker`,
-// `findPool`'s table) read them off the cached pool record on resume.
-// `bigint` round-trips through `state-store` via the BigInt-tagging
-// JSON reviver/replacer.
+// Subset of `DeepbookPool` we persist into `StateStore`. The captured
+// `poolId` is the load-bearing piece (it's what `register_pool` would
+// re-mint), the `tick/lot/min` fields go in because consumers
+// (`market-maker`, `findPool`'s table) read them off the cached pool
+// record on resume. `bigint` round-trips through `state-store` via the
+// BigInt-tagging JSON reviver/replacer.
 interface CachedDeepbookPool {
 	readonly name: string;
 	readonly poolId: string;
@@ -65,7 +81,14 @@ interface CachedDeepbookPool {
 	readonly minSize: bigint;
 }
 
+// Lean cached payload — JSON-roundtrippable. The consumer-facing
+// `DeepbookLocalDeployShape` adds derived fields (poolIds Map,
+// findPool closure, packageIds) in `register`, see below.
 interface CachedDeepbookPools {
+	readonly packageId: string;
+	readonly registryId: string;
+	readonly adminCapId: string;
+	readonly deepTreasuryId: string | undefined;
 	readonly pools: ReadonlyArray<CachedDeepbookPool>;
 }
 
@@ -138,6 +161,66 @@ export interface DeepbookLocalDeployShape<
 
 type PoolsRecord<T extends ReadonlyArray<DeepbookPoolSpec>> = {
 	readonly [K in T[number]['name']]: DeepbookPool;
+};
+
+// Build the SDK-aligned `packageIds` view from a resolved deepbook
+// payload. Same logic on hit + miss; lifted out so both paths converge.
+const buildPackageIds = (input: {
+	readonly packageId: string;
+	readonly registryId: string;
+	readonly deepTreasuryId: string | undefined;
+}): DeepbookCore['packageIds'] => ({
+	DEEPBOOK_PACKAGE_ID: input.packageId,
+	REGISTRY_ID: input.registryId,
+	// SDK-aligned view. `DEEP_TREASURY_ID` is the locally-minted DEEP
+	// token's `TreasuryCap` — the vendored deepbook-v3 Move source
+	// declares the `deep::DEEP` coin, so the publish tx creates a
+	// `TreasuryCap<{pkg}::deep::DEEP>` that we capture via the
+	// `publishMove({capture})` callback. Falls back to `''` if the
+	// vendored source ever drops the DEEP module (we don't fail loudly
+	// because consumers that don't need DEEP fees on localnet shouldn't
+	// be forced to vendor a specific Move version).
+	DEEP_TREASURY_ID: input.deepTreasuryId ?? '',
+	MARGIN_PACKAGE_ID: undefined,
+	MARGIN_REGISTRY_ID: undefined,
+	LIQUIDATION_PACKAGE_ID: undefined,
+});
+
+// Build the per-pool Map<name → poolId> from a cached payload. Same
+// logic on hit + miss.
+const buildPoolIds = (
+	pools: ReadonlyArray<CachedDeepbookPool>,
+): ReadonlyMap<string, string> => new Map(pools.map((p) => [p.name, p.poolId]));
+
+// Lift a cached payload's pool array back into the rich
+// `Record<name, DeepbookPool>` shape that consumers read off
+// `.pools`. Same logic on hit + miss.
+const buildPoolsRecord = (
+	pools: ReadonlyArray<CachedDeepbookPool>,
+): Record<string, DeepbookPool> => {
+	const out: Record<string, DeepbookPool> = {};
+	for (const p of pools) {
+		out[p.name] = {
+			name: p.name,
+			poolId: p.poolId,
+			base: p.base,
+			quote: p.quote,
+			tickSize: p.tickSize,
+			lotSize: p.lotSize,
+			minSize: p.minSize,
+		};
+	}
+	return out;
+};
+
+// Captured shape from publishMove's `capture` callback. Pulled out so
+// the upstream record carries an explicit type — `publishMove` returns
+// `Package<unknown>` otherwise and the produce/register bodies have to
+// cast.
+type DeepbookCapture = {
+	readonly registryId: string | undefined;
+	readonly adminCapId: string | undefined;
+	readonly deepTreasuryId: string | undefined;
 };
 
 /**
@@ -222,11 +305,11 @@ export const deepbookLocalDeploy = <
 
 	const publish =
 		publishPath !== undefined
-			? publishMove({
+			? (publishMove({
 					name: `${name}.publish` as const,
 					path: publishPath,
 					signer: options.signer,
-					capture: (changes) => {
+					capture: (changes): DeepbookCapture => {
 						const registryId = pickCreatedByType(changes, {
 							suffix: DEEPBOOK_REGISTRY_TYPE_SUFFIX,
 						});
@@ -250,419 +333,372 @@ export const deepbookLocalDeploy = <
 						)?.objectId;
 						return { registryId, adminCapId, deepTreasuryId };
 					},
-				})
+				}) as LayeredTag<any, Package<DeepbookCapture>, any, any>)
 			: undefined;
 
-	// Composite acquire — does the publish + pool creation once, surfaces
-	// the rich shape. The three interface layers below all depend on this
-	// composite tag, so Layer.build dedupes the acquire (single publish
-	// regardless of how many interface tags are yielded downstream).
-	const composite = tag(
+	// Fold the optional `dependsOn` array into the upstream record under
+	// generated aliases. The substrate auto-flattens `upstream` into
+	// `__upstreamKeys`, so a single typed record IS the dep graph (per
+	// the redesign's §3.1 "the dep declaration IS the dep graph"). Pool-
+	// spec coin tags get a stable `pool<i>_base`/`pool<i>_quote` slot for
+	// the same reason: every yield the body performs is in the record.
+	const dependsOnRecord: Record<string, LayeredTag<any, any, any, any>> = {};
+	(options.dependsOn ?? []).forEach((dep, i) => {
+		dependsOnRecord[`dep_${i}`] = dep;
+	});
+	const coinTagRecord: Record<string, LayeredTag<any, any, any, any>> = {};
+	specs.forEach((s, i) => {
+		if (typeof s.base !== 'string') {
+			coinTagRecord[`pool${i}_base`] = s.base as AnyCoinTag;
+		}
+		if (typeof s.quote !== 'string') {
+			coinTagRecord[`pool${i}_quote`] = s.quote as AnyCoinTag;
+		}
+	});
+
+	// Composite primitive — onChainArtifact wires inputs/verify/produce/
+	// register through the substrate. Layer.build dedupes the acquire
+	// (single publish + create-pools regardless of how many interface
+	// tags downstream `yield*` it). The lean `CachedDeepbookPools`
+	// payload is what hits StateStore; the rich `DeepbookLocalDeployShape`
+	// is materialised in `register` and is what downstream consumers
+	// see when they `yield* composite`.
+	const composite = onChainArtifact({
 		name,
-		Effect.gen(function* () {
-			for (const tag of options.dependsOn ?? []) {
-				yield* tag;
-			}
-			const sui = yield* SuiTag;
-			const signer = yield* options.signer;
-			const state = yield* StateStore;
+		kind: 'action' as const,
+		plugin: 'deepbook',
+		displayTitle: `publish.${name}`,
+		// The body iterates `options.dependsOn`, yields SuiTag, the
+		// signer Account ref, and the inner publishMove tag. The upstream
+		// record holds every yieldable; the substrate auto-flattens it
+		// into __upstreamKeys so the topo scheduler places this composite
+		// strictly after its providers. (`SuiTag` is implicit — the
+		// substrate yields it itself for `chainId` resolution.)
+		//
+		// Each pool's `base`/`quote` may be a `LayeredTag` (e.g.
+		// `Coin.fromPackage(usdc, 'MOCK_USDC')`) that the produce body
+		// yields via `resolveCoinRef`. Lift those tags into upstreams via
+		// `coinTagRecord` so the topo scheduler orders them strictly
+		// before this primitive.
+		//
+		// When `opts.vendor` is set, the inner publishMove's `path:`
+		// Effect yields the vendor tag — lift it so the topo scheduler
+		// orders the vendor build before the publish runs.
+		upstream: {
+			signer: options.signer,
+			publish,
+			...(options.vendor !== undefined ? { vendor: options.vendor } : {}),
+			...dependsOnRecord,
+			...coinTagRecord,
+		},
 
-			// Surface the chain identifier as a span attribute. A regenesis
-			// of the underlying chain flips `sui.chainId`; downstream cache
-			// keys fold it in so they naturally miss.
-			yield* Effect.annotateCurrentSpan({ 'sui.chainId': sui.chainId });
+		namespace: DEEPBOOK_POOLS_NAMESPACE,
+		label: `deepbookLocalDeploy(${name})`,
 
-			if (publish === undefined) {
-				return yield* Effect.fail(
-					new DeepbookError({
-						phase: 'publish',
-						message:
-							`deepbookLocalDeploy(${name}): either \`movePackagePath\` or \`vendor\` ` +
-							`is required to publish the deepbook-v3 Move package. ` +
-							'Vendor the source (e.g. via `gitFetch` or `vendorDeepbook(...)`) ' +
-							'and pass the directory path.',
-					}),
-				);
-			}
+		display: (s: CachedDeepbookPools) => {
+			const poolCount = s.pools.length;
+			return {
+				title: `publish.${name}`,
+				primary: s.packageId,
+				...(poolCount > 0 ? { extras: [`${poolCount} pool${poolCount === 1 ? '' : 's'}`] } : {}),
+			};
+		},
 
-			const pkg = yield* Effect.gen(function* () {
-				return yield* publish;
-			}).pipe(Effect.withSpan('DeepbookPublish'));
-
-			const packageId = pkg.packageId;
-			const registryId = pkg.captured?.registryId;
-			const adminCapId = pkg.captured?.adminCapId;
-			if (registryId === undefined || adminCapId === undefined) {
-				return yield* Effect.fail(
-					new DeepbookError({
-						phase: 'publish',
-						message:
-							`deepbookLocalDeploy(${name}): publish did not surface registryId/adminCapId — ` +
-							'expected the deepbook-v3 source at `movePackagePath` to create them in init',
-					}),
-				);
-			}
-
-			// One batched tx — `init_balance_manager_map` + N `create_pool_admin`
-			// calls. Skipped entirely when no pools were requested.
-			//
-			// Resume idempotency: `pool::create_pool_admin` calls
-			// `registry::register_pool`, which aborts (function 13) on a
-			// duplicate (base, quote) pair. The chain state, named volumes,
-			// and packageId all survive `pnpm dev` restarts, but the
-			// primitive didn't know — so a second boot died here. Cache the
-			// captured pool object ids under (chainId, packageId,
-			// poolsHash) and reuse them on resume.
-			const pools = {} as Record<string, DeepbookPool>;
-			if (specs.length > 0) {
-				const resolvedSpecs: ReadonlyArray<{
-					readonly spec: DeepbookPoolSpec;
-					readonly base: string;
-					readonly quote: string;
-				}> = yield* Effect.gen(function* () {
-					const out: Array<{
-						readonly spec: DeepbookPoolSpec;
-						readonly base: string;
-						readonly quote: string;
-					}> = [];
-					for (const spec of specs) {
+		// Canonical hashable inputs. `packageId` is the resolved
+		// publishMove output, `signer` is the resolved Account address,
+		// `poolsHash` folds the requested pool specs (sorted, bigints →
+		// decimal strings) so reconfiguring the pool set misses. A
+		// `publish === undefined` config (no `movePackagePath` AND no
+		// `vendor`) surfaces here as a clean DeepbookError — the factory
+		// body itself must construct successfully (per the existing
+		// "delegated to runtime" test contract) but the build fails at
+		// acquire time.
+		inputs: ({ publish: pkg, signer }) =>
+			Effect.gen(function* () {
+				if (pkg === undefined) {
+					return yield* Effect.fail(
+						new DeepbookError({
+							phase: 'publish',
+							message:
+								`deepbookLocalDeploy(${name}): either \`movePackagePath\` or \`vendor\` ` +
+								`is required to publish the deepbook-v3 Move package. ` +
+								'Vendor the source (e.g. via `gitFetch` or `vendorDeepbook(...)`) ' +
+								'and pass the directory path.',
+						}),
+					);
+				}
+				const resolvedSpecs = yield* Effect.forEach(specs, (spec) =>
+					Effect.gen(function* () {
 						const base = yield* resolveCoinRef(spec.base);
 						const quote = yield* resolveCoinRef(spec.quote);
-						out.push({ spec, base, quote });
-					}
-					return out;
-				});
-
-				const poolsHash = hashPoolSpecs(
-					resolvedSpecs.map(({ spec, base, quote }) => ({
-						name: spec.name,
-						base,
-						quote,
-						tickSize: spec.tickSize,
-						lotSize: spec.lotSize,
-						minSize: spec.minSize,
-						whitelisted: spec.whitelisted ?? true,
-						stable: spec.stable ?? false,
-					})),
-				);
-				const cacheKey = StateStoreKeys.deepbookPools({
-					chainId: sui.chainId,
-					packageId,
-					poolsHash,
-				});
-				const cached = yield* state.get<CachedDeepbookPools>(cacheKey);
-
-				// Best-effort verification — confirm each cached pool object
-				// is still resolvable on chain before trusting the cache.
-				// Covers the pathological case where the state-store file
-				// survived but the chain got wiped externally (manual
-				// `docker volume rm`, container snapshot mismatch, etc.).
-				// Any verification failure falls through to a re-create.
-				// Mirrors publishMove's "chainId fold is the primary
-				// invalidator, secondary verify is defense-in-depth"
-				// pattern, but here we actually probe — the cost of a
-				// second create-pools-abort on resume is the entire
-				// reason this cache exists.
-				const verifyCached = (payload: CachedDeepbookPools): Effect.Effect<boolean, never> =>
-					Effect.gen(function* () {
-						for (const p of payload.pools) {
-							// `sui.client.core.getObject` returns `{ object: { type, ... } }`
-							// (per `@mysten/sui`'s `GetObjectResponse`). The previous
-							// cast read `.objectType` off the response root, which is
-							// `undefined` at runtime against the real SDK — making
-							// every cache check fall through to "objects missing" and
-							// re-firing the create-pools tx on resume (whose
-							// `register_pool` then aborts with code 1 since the
-							// (base,quote) pair is still registered on chain). The
-							// internal test mocks happened to surface `objectType`
-							// at the root so unit coverage masked the bug; see
-							// `deepbook.test.ts` `makeMockSuiOk`.
-							const fetched = yield* Effect.tryPromise({
-								try: () => sui.client.core.getObject({ objectId: p.poolId }),
-								catch: (cause) => cause,
-							}).pipe(
-								Effect.map((res) => res as unknown as { object?: { type?: unknown } }),
-								Effect.orElseSucceed(() => undefined),
-							);
-							if (fetched === undefined) return false;
-							// HIGH-C4: assert the resolved object's `objectType`
-							// matches `<packageId>::pool::Pool<base, quote>` for
-							// THIS spec. Pre-fix the existence check alone would
-							// pass for an unrelated pool object that happened to
-							// be at the cached id (e.g. a regenesis that reused
-							// the address space, or the cache having been
-							// written for a different coin pair under the same
-							// poolsHash collision). Mismatch invalidates.
-							const expectedType = `${packageId}::pool::Pool<${p.base}, ${p.quote}>`;
-							const actualType =
-								typeof fetched.object?.type === 'string' ? fetched.object.type : undefined;
-							if (actualType === undefined || !moveTypeEquals(actualType, expectedType))
-								return false;
-						}
-						return true;
-					});
-
-				let resumed = false;
-				if (Option.isSome(cached)) {
-					const verified = yield* verifyCached(cached.value);
-					if (verified) {
-						yield* Effect.logInfo(
-							`deepbookLocalDeploy(${name}): cache hit — chainId=${sui.chainId} ` +
-								`packageId=${packageId} poolsHash=${poolsHash} ` +
-								`(${cached.value.pools.length} pool${cached.value.pools.length === 1 ? '' : 's'}, verified)`,
-						);
-						yield* Effect.annotateCurrentSpan({
-							'deepbook.pools.cache': 'hit',
-							'deepbook.pools.count': cached.value.pools.length,
-							'deepbook.pools.hash': poolsHash,
-						});
-						for (const p of cached.value.pools) {
-							pools[p.name] = {
-								name: p.name,
-								poolId: p.poolId,
-								base: p.base,
-								quote: p.quote,
-								tickSize: p.tickSize,
-								lotSize: p.lotSize,
-								minSize: p.minSize,
-							};
-						}
-						resumed = true;
-					} else {
-						yield* Effect.logInfo(
-							`deepbookLocalDeploy(${name}): cache hit but pool objects missing on chain — ` +
-								`invalidating and re-creating (chainId=${sui.chainId} packageId=${packageId})`,
-						);
-						yield* Effect.annotateCurrentSpan({
-							'deepbook.pools.cache': 'stale',
-							'deepbook.pools.hash': poolsHash,
-						});
-						yield* state.remove(cacheKey);
-					}
-				}
-
-				if (!resumed) {
-					yield* Effect.annotateCurrentSpan({
-						'deepbook.pools.cache': Option.isNone(cached) ? 'miss' : 'invalidated',
-						'deepbook.pools.hash': poolsHash,
-					});
-					yield* Effect.gen(function* () {
-						const t = new Transaction();
-						t.setGasBudget(500_000_000n);
-
-						t.moveCall({
-							target: `${packageId}::registry::init_balance_manager_map`,
-							arguments: [t.object(registryId), t.object(adminCapId)],
-						});
-
-						for (const { spec, base, quote } of resolvedSpecs) {
-							t.moveCall({
-								target: `${packageId}::pool::create_pool_admin`,
-								typeArguments: [base, quote],
-								arguments: [
-									t.object(registryId),
-									t.pure.u64(spec.tickSize),
-									t.pure.u64(spec.lotSize),
-									t.pure.u64(spec.minSize),
-									t.pure.bool(spec.whitelisted ?? true),
-									t.pure.bool(spec.stable ?? false),
-									t.object(adminCapId),
-								],
-							});
-						}
-
-						const result = yield* signer.signAndExecute(t).pipe(
-							Effect.mapError(
-								(cause) =>
-									new DeepbookError({
-										phase: 'create-pools',
-										message: `deepbookLocalDeploy(${name}): create-pools tx failed: ${cause.message}`,
-										cause,
-									}),
-							),
-						);
-
-						// Exact-string match against the expected `Pool<base, quote>`
-						// objectType keeps multi-pool tx output deterministic.
-						for (const { spec, base, quote } of resolvedSpecs) {
-							const expected = `${packageId}::pool::Pool<${base}, ${quote}>`;
-							const poolId = pickCreatedByType(result.objectChanges, { suffix: expected });
-							if (poolId === undefined) {
-								return yield* Effect.fail(
-									new DeepbookError({
-										phase: 'create-pools',
-										message:
-											`deepbookLocalDeploy(${name}): pool '${spec.name}' missing from objectChanges ` +
-											`(expected type ${expected})`,
-									}),
-								);
-							}
-							pools[spec.name] = {
-								name: spec.name,
-								poolId,
-								base,
-								quote,
-								tickSize: spec.tickSize,
-								lotSize: spec.lotSize,
-								minSize: spec.minSize,
-							};
-						}
-
-						// Persist the captured pool ids so the next supervisor
-						// cycle short-circuits the create-pools tx. Write
-						// happens AFTER capture so a mid-flight failure
-						// doesn't poison the cache with half-created pools.
-						const toCache: CachedDeepbookPools = {
-							pools: Object.values(pools).map((p) => ({
-								name: p.name,
-								poolId: p.poolId,
-								base: p.base,
-								quote: p.quote,
-								tickSize: p.tickSize,
-								lotSize: p.lotSize,
-								minSize: p.minSize,
-							})),
+						return {
+							name: spec.name,
+							base,
+							quote,
+							tickSize: spec.tickSize,
+							lotSize: spec.lotSize,
+							minSize: spec.minSize,
+							whitelisted: spec.whitelisted ?? true,
+							stable: spec.stable ?? false,
 						};
-						yield* state.put(cacheKey, toCache);
-					}).pipe(Effect.withSpan('DeepbookCreatePools'));
-				}
-			}
+					}),
+				);
+				const poolsHash = hashPoolSpecs(resolvedSpecs);
+				return {
+					packageId: pkg.packageId,
+					signer: signer.address,
+					poolsHash,
+				};
+			}),
 
-			// Re-register the composite package under `name` (the deepbook
-			// service name) so codegen emitters can look it up at
-			// `data.packages[name]`. The publishMove sub-tag already
-			// registers under `${name}.publish` with the FULL captured
-			// shape (registryId + adminCapId + deepTreasuryId); we forward
-			// ALL three here so emitters that ask `data.packages.deepbook`
-			// (vs `data.packages.deepbook.publish`) see the same shape.
-			// Forgetting to pass `deepTreasuryId` here was the cause of
-			// `DeepbookConfigEmitter: skipping emit — ...
-			// packages.deepbook.captured.deepTreasuryId is missing` —
-			// emit-time it was missing so the file never landed and
-			// `src/lib/deployment.ts` died on `import { deepbookConfig }
-			// from '../generated/deepbook-config.js'`.
-			yield* publishPackage({
-				name,
-				packageId,
-				upgradeCapId: pkg.upgradeCapId,
-				captured: {
+		// §4.2 verify probe: every cached pool object id must still
+		// resolve on chain AND its `type` must match
+		// `<packageId>::pool::Pool<base, quote>`. `ChainProbe.objectsMatchTypes`
+		// does the schema-validated read; transient RPC failures surface
+		// as `false` (and the cache invalidates). Per RS2 we probe STABLE
+		// identifiers — the pool ids came straight from the produce body's
+		// objectChanges.
+		//
+		// Pre-substrate the verify probe read `.objectType` off the SDK
+		// response root, which is `undefined` at runtime against the real
+		// SDK — making every cache check fall through to "objects missing"
+		// and re-firing the create-pools tx on resume (whose `register_pool`
+		// then aborts because (base,quote) is still registered on chain).
+		// ChainProbe's Schema-validated `objectsMatchTypes` makes that
+		// bug class structurally impossible (B1).
+		verify: ({ cached, chain }) =>
+			chain
+				.objectsMatchTypes(
+					cached.pools.map((p) => ({
+						objectId: p.poolId,
+						expectedType: `${cached.packageId}::pool::Pool<${p.base}, ${p.quote}>`,
+					})),
+					moveTypeEquals,
+				)
+				.pipe(Effect.map((ok) => (ok ? cached : undefined))),
+
+		// Fresh-create body — runs on cache miss / verify-fail. Resolves
+		// the publish package (guaranteed non-undefined: `inputs` already
+		// failed for the no-publish case before the cache look-up), then
+		// runs the batched `init_balance_manager_map` + N
+		// `create_pool_admin` transaction.
+		produce: ({ publish: pkg, signer }) =>
+			Effect.gen(function* () {
+				if (pkg === undefined) {
+					// Unreachable in practice — `inputs` fails first. Kept
+					// for type narrowing.
+					return yield* Effect.fail(
+						new DeepbookError({
+							phase: 'publish',
+							message: `deepbookLocalDeploy(${name}): publish is required`,
+						}),
+					);
+				}
+				const packageId = pkg.packageId;
+				const registryId = pkg.captured?.registryId;
+				const adminCapId = pkg.captured?.adminCapId;
+				if (registryId === undefined || adminCapId === undefined) {
+					return yield* Effect.fail(
+						new DeepbookError({
+							phase: 'publish',
+							message:
+								`deepbookLocalDeploy(${name}): publish did not surface registryId/adminCapId — ` +
+								'expected the deepbook-v3 source at `movePackagePath` to create them in init',
+						}),
+					);
+				}
+
+				// Re-resolve coin tags inside the produce body too. We
+				// already did this once in `inputs` to derive `poolsHash`,
+				// but the closure form `Effect.forEach` is cheap and keeps
+				// the substrate's "inputs/produce don't share state"
+				// invariant honest.
+				const resolvedSpecs = yield* Effect.forEach(specs, (spec) =>
+					Effect.gen(function* () {
+						const base = yield* resolveCoinRef(spec.base);
+						const quote = yield* resolveCoinRef(spec.quote);
+						return { spec, base, quote };
+					}),
+				);
+
+				const poolsArr: Array<CachedDeepbookPool> = [];
+
+				// One batched tx — `init_balance_manager_map` + N
+				// `create_pool_admin` calls. Skipped entirely when no
+				// pools were requested.
+				if (resolvedSpecs.length > 0) {
+					const t = new Transaction();
+					t.setGasBudget(500_000_000n);
+
+					t.moveCall({
+						target: `${packageId}::registry::init_balance_manager_map`,
+						arguments: [t.object(registryId), t.object(adminCapId)],
+					});
+
+					for (const { spec, base, quote } of resolvedSpecs) {
+						t.moveCall({
+							target: `${packageId}::pool::create_pool_admin`,
+							typeArguments: [base, quote],
+							arguments: [
+								t.object(registryId),
+								t.pure.u64(spec.tickSize),
+								t.pure.u64(spec.lotSize),
+								t.pure.u64(spec.minSize),
+								t.pure.bool(spec.whitelisted ?? true),
+								t.pure.bool(spec.stable ?? false),
+								t.object(adminCapId),
+							],
+						});
+					}
+
+					const result = yield* signer.signAndExecute(t).pipe(
+						Effect.mapError(
+							(cause) =>
+								new DeepbookError({
+									phase: 'create-pools',
+									message: `deepbookLocalDeploy(${name}): create-pools tx failed: ${cause.message}`,
+									cause,
+								}),
+						),
+					);
+
+					// Exact-string match against the expected `Pool<base, quote>`
+					// objectType keeps multi-pool tx output deterministic.
+					for (const { spec, base, quote } of resolvedSpecs) {
+						const expected = `${packageId}::pool::Pool<${base}, ${quote}>`;
+						const poolId = pickCreatedByType(result.objectChanges, { suffix: expected });
+						if (poolId === undefined) {
+							return yield* Effect.fail(
+								new DeepbookError({
+									phase: 'create-pools',
+									message:
+										`deepbookLocalDeploy(${name}): pool '${spec.name}' missing from objectChanges ` +
+										`(expected type ${expected})`,
+								}),
+							);
+						}
+						poolsArr.push({
+							name: spec.name,
+							poolId,
+							base,
+							quote,
+							tickSize: spec.tickSize,
+							lotSize: spec.lotSize,
+							minSize: spec.minSize,
+						});
+					}
+				}
+
+				const fresh: CachedDeepbookPools = {
+					packageId,
 					registryId,
 					adminCapId,
-					...(pkg.captured?.deepTreasuryId !== undefined
-						? { deepTreasuryId: pkg.captured.deepTreasuryId as string }
-						: {}),
-				},
-			});
-
-			yield* publishDeepbookState({
-				name,
-				packageId,
-				registryId,
-				pools: Object.fromEntries(
-					Object.values(pools).map((p) => [
-						p.name,
-						{ poolId: p.poolId, baseType: p.base, quoteType: p.quote },
-					]),
-				),
-			});
-
-			const poolIds = new Map<string, string>(Object.values(pools).map((p) => [p.name, p.poolId]));
-			const findPool = makeFindPool(name, pools);
-
-			// SDK-aligned view. `DEEP_TREASURY_ID` is the locally-minted DEEP
-			// token's `TreasuryCap` — the vendored deepbook-v3 Move source
-			// declares the `deep::DEEP` coin, so the publish tx creates a
-			// `TreasuryCap<{pkg}::deep::DEEP>` that we capture via the
-			// `publishMove({capture})` callback above. Falls back to `''` if
-			// the vendored source ever drops the DEEP module (we don't fail
-			// loudly because consumers that don't need DEEP fees on localnet
-			// shouldn't be forced to vendor a specific Move version).
-			const deepTreasuryId = (pkg.captured?.deepTreasuryId as string | undefined) ?? '';
-			const packageIds = {
-				DEEPBOOK_PACKAGE_ID: packageId,
-				REGISTRY_ID: registryId,
-				DEEP_TREASURY_ID: deepTreasuryId,
-				MARGIN_PACKAGE_ID: undefined,
-				MARGIN_REGISTRY_ID: undefined,
-				LIQUIDATION_PACKAGE_ID: undefined,
-			} satisfies DeepbookCore['packageIds'];
-
-			return {
-				packageId,
-				registryId,
-				adminCapId,
-				pools: pools as unknown as PoolsRecord<TPools>,
-				poolIds,
-				findPool,
-				packageIds,
-			} satisfies DeepbookLocalDeployShape<PoolsRecord<TPools>>;
-		}).pipe(
-			Effect.withSpan(`DeepbookLocalDeploy(${name})`),
-			Effect.catchTag('DeepbookError', Effect.fail),
-			Effect.catch((cause: unknown) =>
-				Effect.fail(
-					new DeepbookError({
-						phase: 'deepbook',
-						message: `deepbookLocalDeploy(${name}): ${stringifyCause(cause)}`,
-						cause,
-					}),
-				),
-			),
-		),
-		// Publish tag's layer must flow into the parent's `__layers` so
-		// defineDevstack picks it up alongside the composite + interface
-		// layers below. The composite is the user-facing "deploy +
-		// configure once" step, so we render it under Actions even though
-		// it shares its life with the long-running stack.
-		{
-			...(publish !== undefined ? { extraLayers: [publish.__layer] } : {}),
-			kind: 'action' as const,
-			plugin: 'deepbook',
-			displayTitle: `publish.${name}`,
-			display: (s: DeepbookLocalDeployShape) => {
-				const poolCount = Object.keys(s.pools).length;
-				return {
-					title: `publish.${name}`,
-					primary: s.packageId,
-					...(poolCount > 0 ? { extras: [`${poolCount} pool${poolCount === 1 ? '' : 's'}`] } : {}),
+					deepTreasuryId: pkg.captured?.deepTreasuryId,
+					pools: poolsArr,
 				};
-			},
-			// The body iterates `options.dependsOn`, yields SuiTag, the
-			// signer Account ref, and the inner publishMove tag. Lift
-			// them all into upstreams so the topo scheduler places this
-			// composite
-			// strictly after its providers — otherwise it lands in level
-			// 0 and yields fail with "Service not found".
-			//
-			// Each pool's `base`/`quote` may be a `LayeredTag` (e.g.
-			// `Coin.fromPackage(usdc, 'MOCK_USDC')`) that the body yields
-			// via `resolveCoinRef`. Lift those tags into upstreams too.
-			//
-			// When `opts.vendor` is set, the inner publishMove's `path:`
-			// Effect yields the vendor tag — lift it so the topo
-			// scheduler orders the vendor build before the publish runs.
-			upstreamKeys: [
-				SuiTag.key,
-				options.signer,
-				...(publish !== undefined ? [publish] : []),
-				...(options.vendor !== undefined ? [options.vendor] : []),
-				...specs.flatMap((s) =>
-					[s.base, s.quote].filter((c): c is AnyCoinTag => typeof c !== 'string'),
-				),
-				...(options.dependsOn ?? []),
-			],
-		},
-	);
+				return fresh;
+			}),
+
+		// `register` runs on EVERY cycle (hit AND miss) AFTER the value
+		// resolves but BEFORE downstream consumers see it. Two roles:
+		//
+		//   1. Re-attach the rich `DeepbookLocalDeployShape` fields
+		//      (`pools` record, `poolIds` Map, `findPool` closure,
+		//      `packageIds` view). The cached payload is plain data so it
+		//      JSON-roundtrips cleanly; the consumer-facing shape carries
+		//      closures + Maps. We mutate in place because the substrate
+		//      returns `value` after `register` runs (per `onChainArtifact`'s
+		//      contract), so this is the single point where the cache-hit
+		//      and cache-miss paths converge on the same observable shape
+		//      — matches `publishMove`'s host-local-field-mutation pattern.
+		//   2. Re-publish to PackageRegistry + DeepbookStateRegistry so
+		//      resume + cold start are observably identical from the
+		//      consumer side (registries live in-memory per supervisor
+		//      cycle).
+		register: ({ value, deps: { publish: pkg } }) =>
+			Effect.gen(function* () {
+				const poolsRecord = buildPoolsRecord(value.pools);
+				const poolIds = buildPoolIds(value.pools);
+				const findPool = makeFindPool(name, poolsRecord);
+				const packageIds = buildPackageIds({
+					packageId: value.packageId,
+					registryId: value.registryId,
+					deepTreasuryId: value.deepTreasuryId,
+				});
+
+				// Mutate the rich shape onto the resolved value. The
+				// `DeepbookLocalDeployShape` type is what consumers
+				// expect from `yield* composite`; we attach all of its
+				// derived fields here so hit + miss paths converge.
+				const rich = value as unknown as {
+					pools: Record<string, DeepbookPool>;
+					poolIds: ReadonlyMap<string, string>;
+					findPool: DeepbookCore['findPool'];
+					packageIds: DeepbookCore['packageIds'];
+					registryId: string;
+					adminCapId: string;
+				};
+				rich.pools = poolsRecord;
+				rich.poolIds = poolIds;
+				rich.findPool = findPool;
+				rich.packageIds = packageIds;
+
+				// Re-register the composite package under `name` (the
+				// deepbook service name) so codegen emitters can look it
+				// up at `data.packages[name]`. The publishMove sub-tag
+				// already registers under `${name}.publish` with the FULL
+				// captured shape (registryId + adminCapId + deepTreasuryId);
+				// we forward ALL three here so emitters that ask
+				// `data.packages.deepbook` (vs `data.packages.deepbook.publish`)
+				// see the same shape. Forgetting to pass `deepTreasuryId`
+				// here was the cause of `DeepbookConfigEmitter: skipping
+				// emit — ... packages.deepbook.captured.deepTreasuryId is
+				// missing` — emit-time it was missing so the file never
+				// landed and `src/lib/deployment.ts` died on
+				// `import { deepbookConfig } from '../generated/deepbook-config.js'`.
+				yield* publishPackage({
+					name,
+					packageId: value.packageId,
+					upgradeCapId: pkg?.upgradeCapId,
+					captured: {
+						registryId: value.registryId,
+						adminCapId: value.adminCapId,
+						...(value.deepTreasuryId !== undefined
+							? { deepTreasuryId: value.deepTreasuryId }
+							: {}),
+					},
+				});
+
+				yield* publishDeepbookState({
+					name,
+					packageId: value.packageId,
+					registryId: value.registryId,
+					pools: Object.fromEntries(
+						value.pools.map((p) => [
+							p.name,
+							{ poolId: p.poolId, baseType: p.base, quoteType: p.quote },
+						]),
+					),
+				});
+			}),
+	});
 
 	// The three interface layers all depend on the composite tag. Each
 	// derives its slice of the rich shape and binds it to the canonical
 	// Context key. Stacking the local-deploy member satisfies every
 	// downstream consumer of `DeepbookCoreTag` / `DeepbookAdminTag` /
 	// `DeepbookMarketMaker` from a single config entry.
+	//
+	// The composite resolves to the lean `CachedDeepbookPools` payload
+	// with the rich `DeepbookLocalDeployShape` fields mutated on via
+	// `register`. The interface layers cast to the rich type — see the
+	// comment above `register`'s field mutation block.
+	type CompositeResolved = CachedDeepbookPools & DeepbookLocalDeployShape;
+
 	const coreLayer = provide(
 		DeepbookCoreTag,
 		Effect.gen(function* () {
-			const db = yield* composite;
+			const db = (yield* composite) as unknown as CompositeResolved;
 			return {
 				packageId: db.packageId,
 				registryId: db.registryId,
@@ -684,7 +720,7 @@ export const deepbookLocalDeploy = <
 	const marketMakerLayer = provide(
 		DeepbookMarketMakerTag,
 		Effect.gen(function* () {
-			const db = yield* composite;
+			const db = (yield* composite) as unknown as CompositeResolved;
 			const signer = yield* options.signer;
 
 			// Lazy BalanceManager: minted on first `tickPool` call so
@@ -795,6 +831,11 @@ export const deepbookLocalDeploy = <
 		}),
 	).__layer;
 
+	// `SuiTag` is yielded inside `register` (transitively, via the substrate)
+	// + `marketMakerLayer` (via `signer.signAndExecute`). The composite's
+	// __layers already includes everything onChainArtifact stitched in
+	// (the publish sibling's layers via `extraLayers`, plus the
+	// composite's own Layer.effect). Stack the interface layers on top.
 	const __layers: ReadonlyArray<Layer.Layer<any, any, any>> = [
 		...composite.__layers,
 		coreLayer,
@@ -804,6 +845,17 @@ export const deepbookLocalDeploy = <
 
 	// Hybrid return — usable as a StackMember inside `defineDevstack`
 	// AND yieldable as the composite tag for `yield* db` consumers
-	// that read the rich `.pools` record.
-	return Object.assign(composite, { __layers });
+	// that read the rich `.pools` record. The composite's resolved value
+	// has the rich `DeepbookLocalDeployShape` fields mutated on via
+	// `register`; the cast bridges the substrate's `CachedDeepbookPools`
+	// generic param to the user-visible shape.
+	return Object.assign(
+		composite as unknown as LayeredTag<
+			Name,
+			DeepbookLocalDeployShape<PoolsRecord<TPools>>,
+			never,
+			any
+		>,
+		{ __layers },
+	);
 };

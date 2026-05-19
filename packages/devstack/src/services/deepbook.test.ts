@@ -226,6 +226,28 @@ const computePoolsHash = (
 		.slice(0, 16);
 };
 
+// Mirror `engine/cache.ts`'s canonical `inputsHash` derivation for
+// `deepbookLocalDeploy` post-`onChainArtifact` migration. The substrate
+// cache key resolves to
+//   `deepbook/pools/<chainId>/<contentHash({packageId, signer, poolsHash})>`
+// (`namespace: 'deepbook/pools'` + the substrate's auto-folded chainId).
+// `contentHash(JSON.stringify(inputs, jsonBigintReplacer), {length: 16})`
+// — neither field carries bigints here so a plain stringify matches.
+//
+// Exported (named) so other test files that hand-craft cache fixtures
+// for `deepbookLocalDeploy` resume scenarios can import the helper
+// instead of re-deriving the algorithm.
+export const computeDeepbookPoolsInputsHash = (
+	packageId: string,
+	signerAddress: string,
+	poolsHash: string,
+): string => {
+	const inputs = { packageId, signer: signerAddress, poolsHash };
+	const h = nodeCrypto.createHash('sha256');
+	h.update(JSON.stringify(inputs));
+	return h.digest('hex').slice(0, 16);
+};
+
 const mkTmpDir = (label: string) =>
 	Effect.tryPromise({
 		try: () => nodeFs.mkdtemp(nodePath.join(nodeOs.tmpdir(), `devstack-deepbook-${label}-`)),
@@ -420,7 +442,15 @@ describe('deepbookLocalDeploy — create-pools resume cache', () => {
 				stable: false,
 			};
 			const poolsHash = computePoolsHash([poolSpec]);
-			const poolsKey = `deepbook/pools/${chainId}/${fakePackageId}/${poolsHash}`;
+			// Post-onChainArtifact migration: the cache key is
+			//   `deepbook/pools/<chainId>/<contentHash({packageId, signer, poolsHash})>`
+			// rather than the old `deepbook/pools/<chainId>/<packageId>/<poolsHash>`.
+			const deepbookInputsHash = computeDeepbookPoolsInputsHash(
+				fakePackageId,
+				'0xCAFE',
+				poolsHash,
+			);
+			const poolsKey = `deepbook/pools/${chainId}/${deepbookInputsHash}`;
 
 			// Build a `Ref` of type Account by yielding through
 			// `tag` — its `__layer` provides the tag identity. The body
@@ -464,6 +494,12 @@ describe('deepbookLocalDeploy — create-pools resume cache', () => {
 			// in-memory Ref AND persists to disk; the deepbookLocalDeploy
 			// composite yield below picks up the values via the same Live
 			// layer instance (Layer is memoized within a single build).
+			//
+			// The deepbook payload is the lean `CachedDeepbookPools` shape
+			// (post-migration): flat `{packageId, registryId, adminCapId,
+			// deepTreasuryId, pools[]}`. The rich `DeepbookLocalDeployShape`
+			// fields (poolIds Map, findPool, packageIds) are attached in
+			// `register` on hit — so the cached payload stays JSON-clean.
 			yield* Effect.gen(function* () {
 				const state = yield* StateStore;
 				yield* state.put(publishMoveKey, {
@@ -479,6 +515,10 @@ describe('deepbookLocalDeploy — create-pools resume cache', () => {
 					mvrPlaceholder: '@local/deepbook-publish',
 				});
 				yield* state.put(poolsKey, {
+					packageId: fakePackageId,
+					registryId: '0xREG',
+					adminCapId: '0xADMIN',
+					deepTreasuryId: undefined,
 					pools: [
 						{
 							name: 'sui_usdc',
@@ -569,7 +609,12 @@ describe('deepbookLocalDeploy — create-pools resume cache', () => {
 				stable: false,
 			};
 			const poolsHash = computePoolsHash([poolSpec]);
-			const poolsKey = `deepbook/pools/${chainId}/${fakePackageId}/${poolsHash}`;
+			const deepbookInputsHash = computeDeepbookPoolsInputsHash(
+				fakePackageId,
+				'0xCAFE',
+				poolsHash,
+			);
+			const poolsKey = `deepbook/pools/${chainId}/${deepbookInputsHash}`;
 
 			const signerTag = makeDyingSigner('0xCAFE');
 			const member = deepbookLocalDeploy({
@@ -627,6 +672,10 @@ describe('deepbookLocalDeploy — create-pools resume cache', () => {
 					mvrPlaceholder: '@local/deepbook-publish',
 				});
 				yield* state.put(poolsKey, {
+					packageId: fakePackageId,
+					registryId: '0xREG',
+					adminCapId: '0xADMIN',
+					deepTreasuryId: undefined,
 					pools: [
 						{
 							name: 'sui_usdc',
