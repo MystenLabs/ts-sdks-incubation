@@ -11,7 +11,9 @@
 //     vendored from `MystenLabs/deepbookv3` (via the sandbox's
 //     `external/deepbook` submodule mirror).
 //   - `pyth`, `usdc` — vendored from `MystenLabs/deepbook-sandbox`'s
-//     `packages/` directory.
+//     `sandbox/packages/` directory. (The sandbox repo restructured —
+//     top-level `packages/` now holds only the `create-deepbook-sandbox`
+//     CLI scaffold; the Move packages relocated under `sandbox/packages/`.)
 //
 // We materialize each package into a per-(ref) tree so callers can pass
 // `vendor.<name>` directly to `publishMove({ path })`. The Move.toml
@@ -123,9 +125,11 @@ const PACKAGE_PATHS = {
 	deepbook: { repoKey: 'deepbook', subdir: 'packages/deepbook' },
 	deepbook_margin: { repoKey: 'deepbook', subdir: 'packages/deepbook_margin' },
 	margin_liquidation: { repoKey: 'deepbook', subdir: 'packages/margin_liquidation' },
-	// Inside the sandbox repo
-	pyth: { repoKey: 'sandbox', subdir: 'packages/pyth' },
-	usdc: { repoKey: 'sandbox', subdir: 'packages/usdc' },
+	// Inside the sandbox repo. Upstream moved these from `packages/` to
+	// `sandbox/packages/` (the top-level `packages/` dir is now reserved
+	// for the `create-deepbook-sandbox` CLI scaffold).
+	pyth: { repoKey: 'sandbox', subdir: 'sandbox/packages/pyth' },
+	usdc: { repoKey: 'sandbox', subdir: 'sandbox/packages/usdc' },
 } as const;
 
 type PackageName = keyof typeof PACKAGE_PATHS;
