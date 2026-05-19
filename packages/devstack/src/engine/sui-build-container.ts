@@ -48,11 +48,15 @@
 //     still race on the bind-mounted `build/`. Same trade-off Stage 1
 //     accepted; not introduced by this layer.
 
+import { createHash } from 'node:crypto';
+import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { Context, Effect, Layer, Scope } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { Identity } from './identity.js';
+import { isHolderLive } from './process-liveness.js';
+import { ownLockBody, parseLockBody, releaseLockSync, serializeLockBody } from './file-lock.js';
 import { resolveAppDir } from './resolve-app-dir.js';
 import {
 	runWithCapture,
@@ -156,7 +160,15 @@ const dockerRm = (spawner: Spawner, name: string): Effect.Effect<void, never> =>
 		).pipe(Effect.ignore);
 	});
 
-const dockerStart = (spawner: Spawner, name: string): Effect.Effect<void, SuiCliError> =>
+// Result tag distinguishes "started ok" from "container vanished between
+// inspect and start" so the caller can decide whether to fall back to a
+// fresh create (Bug C — TOCTOU between `inspectContainer` and
+// `dockerStart` when a previous run's finalizer rm'd the container after
+// we observed it). Other non-zero exits surface as `SuiCliError` so we
+// don't silently mask unrelated daemon failures.
+type DockerStartResult = 'started' | 'missing';
+
+const dockerStart = (spawner: Spawner, name: string): Effect.Effect<DockerStartResult, SuiCliError> =>
 	Effect.gen(function* () {
 		const captured = yield* runWithCapture(
 			spawner,
@@ -164,6 +176,14 @@ const dockerStart = (spawner: Spawner, name: string): Effect.Effect<void, SuiCli
 			'docker start (build container)',
 		);
 		if (captured.exitCode !== 0) {
+			// `docker start` reports a vanished container as exit 1 with
+			// `Error response from daemon: No such container: <name>` on
+			// stderr. Treat that as a recoverable race (Bug C) — the
+			// caller falls back to `dockerRunDetached`. Any other failure
+			// mode (daemon unreachable, perms, etc.) escalates.
+			if (/No such container/i.test(captured.stderr)) {
+				return 'missing';
+			}
 			return yield* Effect.fail(
 				new SuiCliError({
 					phase: 'docker start (build container)',
@@ -174,6 +194,7 @@ const dockerStart = (spawner: Spawner, name: string): Effect.Effect<void, SuiCli
 				}),
 			);
 		}
+		return 'started';
 	});
 
 // Bring up a sleeping container with the bind-mounts we want. Uses
@@ -182,13 +203,22 @@ const dockerStart = (spawner: Spawner, name: string): Effect.Effect<void, SuiCli
 // override of whatever the sui-image declares (`sui genesis` in the
 // localnet flavor) — we want a quiet idle process, not the localnet
 // bootstrap chatter.
+// Result tag mirrors `DockerStartResult` so the caller can detect a name
+// collision (Bug H — two parallel `up` invocations against the same app
+// both race to `docker run -d --name devstack-<app>-build`; one wins,
+// the other gets exit 125 + `Conflict. The container name "<name>" is
+// already in use`). The fallback is to `docker start` the existing
+// container — which is the same adoption flow `ensureContainer` already
+// handles for the stopped-but-present branch.
+type DockerRunResult = 'created' | 'name-collision';
+
 const dockerRunDetached = (
 	spawner: Spawner,
 	name: string,
 	imageTag: string,
 	appDir: string,
 	moveHome: string,
-): Effect.Effect<void, SuiCliError> =>
+): Effect.Effect<DockerRunResult, SuiCliError> =>
 	Effect.gen(function* () {
 		const args = [
 			'run',
@@ -210,6 +240,14 @@ const dockerRunDetached = (
 			'docker run -d (build container)',
 		);
 		if (captured.exitCode !== 0) {
+			// Bug H — a peer supervisor for the same `app` raced us to
+			// the same container name. docker returns exit 125 with
+			// `Conflict. The container name "<name>" is already in use
+			// by container "<id>".`. Hand back a recoverable tag so the
+			// caller can adopt the peer's container via `docker start`.
+			if (captured.exitCode === 125 && /already in use/i.test(captured.stderr)) {
+				return 'name-collision';
+			}
 			return yield* Effect.fail(
 				new SuiCliError({
 					phase: 'docker run -d (build container)',
@@ -220,6 +258,7 @@ const dockerRunDetached = (
 				}),
 			);
 		}
+		return 'created';
 	});
 
 // Adopt-or-create the container. Three paths:
@@ -230,6 +269,14 @@ const dockerRunDetached = (
 //   3. Container exists with a DIFFERENT image (e.g. user bumped
 //      suiVersion) → rm -f and recreate so the build matches the
 //      localnet's exact sui binary.
+//
+// Two race paths get explicit recovery:
+//   - Bug C: a previous run's finalizer can `docker rm -f` the container
+//     between our `inspectContainer` and our `dockerStart`. `dockerStart`
+//     returns `'missing'` and we fall through to a fresh create.
+//   - Bug H: a peer supervisor for the same `app` may have raced us to
+//     the fresh create. `dockerRunDetached` returns `'name-collision'`
+//     and we adopt the peer's container via `dockerStart`.
 const ensureContainer = (
 	spawner: Spawner,
 	name: string,
@@ -240,18 +287,199 @@ const ensureContainer = (
 	Effect.gen(function* () {
 		const current = yield* inspectContainer(spawner, name);
 		if (current === null) {
-			yield* dockerRunDetached(spawner, name, imageTag, appDir, moveHome);
+			yield* createWithCollisionFallback(spawner, name, imageTag, appDir, moveHome);
 			return;
 		}
 		if (current.image !== imageTag) {
 			yield* dockerRm(spawner, name);
-			yield* dockerRunDetached(spawner, name, imageTag, appDir, moveHome);
+			yield* createWithCollisionFallback(spawner, name, imageTag, appDir, moveHome);
 			return;
 		}
 		if (!current.running) {
-			yield* dockerStart(spawner, name);
+			const startResult = yield* dockerStart(spawner, name);
+			if (startResult === 'missing') {
+				// Bug C — finalizer rm'd between inspect and start. Fall
+				// through to a fresh create (which itself handles the
+				// peer-collision race via the collision fallback).
+				yield* createWithCollisionFallback(spawner, name, imageTag, appDir, moveHome);
+			}
 		}
 	});
+
+// Helper: run `docker run -d`, and if a parallel supervisor beat us to
+// the same name (Bug H), adopt the peer's container via `docker start`.
+// One-shot fallback: a second collision (or a missing container on the
+// start fallback) would indicate something is racing destructively, so
+// we propagate the original-style typed error rather than loop.
+const createWithCollisionFallback = (
+	spawner: Spawner,
+	name: string,
+	imageTag: string,
+	appDir: string,
+	moveHome: string,
+): Effect.Effect<void, SuiCliError> =>
+	Effect.gen(function* () {
+		const runResult = yield* dockerRunDetached(spawner, name, imageTag, appDir, moveHome);
+		if (runResult === 'name-collision') {
+			const startResult = yield* dockerStart(spawner, name);
+			if (startResult === 'missing') {
+				// Peer's container was removed between our `run` collision
+				// and our adopting `start`. Don't loop; surface a typed
+				// failure so the operator can investigate the racy peer.
+				return yield* Effect.fail(
+					new SuiCliError({
+						phase: 'docker start (build container)',
+						message:
+							`build container '${name}' vanished during collision-recovery start. ` +
+							`A peer supervisor likely created it then removed it concurrently. ` +
+							`Retry; if persistent, stop other devstack invocations against this app.`,
+					}),
+				);
+			}
+		}
+	});
+
+// -----------------------------------------------------------------------------
+// Cross-process move-build lock (Bug D)
+//
+// `sui move build` mutates `~/.move/git/<repo>/.git/` to pull or update
+// upstream Move-package git dependencies — specifically the per-repo
+// `.git/info/sparse-checkout.lock` and `.git/index.lock`. When two
+// parallel devstack apps run a build concurrently against the SAME host,
+// they share `~/.move/git/<repo>/`; git's own locks are per-process and
+// the two builds race for them, surfacing as cryptic "Another git
+// process seems to be running" errors that fail the build non-
+// deterministically.
+//
+// We hold a coarse cross-process advisory lock (O_EXCL on a file under
+// `~/.devstack/locks/`) ONLY across the `sui move build` invocation —
+// not across stack acquire, not across docker exec startup, not across
+// summary calls — so single-app workflows pay no extra cost and the
+// container-lifecycle path stays unsynchronized.
+//
+// Acquire policy:
+//   - O_EXCL create with stale-PID reclaim (via `tryClaimLockSync` /
+//     `file-lock.ts`'s shared body codec).
+//   - Bounded retry-with-backoff up to `MOVE_BUILD_LOCK_TIMEOUT_MS`.
+//     Most builds hold the lock for seconds; a 5min ceiling absorbs
+//     cold-cache git fetches without hanging CI.
+//   - On timeout, fail with a typed SuiCliError that names the lock
+//     path so the user can `rm` it manually if a stale lock from a
+//     hard-killed peer survives our reclaim heuristic.
+// -----------------------------------------------------------------------------
+
+const MOVE_BUILD_LOCK_TIMEOUT_MS = 5 * 60 * 1000;
+const MOVE_BUILD_LOCK_BASE_BACKOFF_MS = 100;
+const MOVE_BUILD_LOCK_MAX_BACKOFF_MS = 2_000;
+
+// Lock-key derivation: `~/.move` itself is the shared resource (every
+// build mutates `<moveHome>/git/`). Hash the absolute moveHome path so
+// two parallel devstacks pointing at the same `~/.move` agree on the
+// lock file name across processes, while a developer with a non-default
+// MOVE_HOME (e.g. a vendored ~/.move via env var) gets its own lock.
+const moveBuildLockPath = (moveHome: string): string => {
+	const repoHash = createHash('sha1').update(path.resolve(moveHome)).digest('hex').slice(0, 16);
+	return path.join(os.homedir(), '.devstack', 'locks', `sui-move-build-${repoHash}.lock`);
+};
+
+interface MoveBuildLockHandle {
+	readonly lockPath: string;
+	readonly instanceId: string;
+}
+
+// Sync claim with retry-on-EEXIST. Tagged result mirrors `tryClaimLockSync`
+// but loops with jittered backoff up to `MOVE_BUILD_LOCK_TIMEOUT_MS`.
+// Async (Effect.sleep) so other fibers can run while we wait. Lock body
+// includes the standard `{pid, startedAt, host, instanceId}` so a peer
+// reclaimer can prove ownership via `releaseLockSync`'s instanceId check.
+const acquireMoveBuildLock = (
+	moveHome: string,
+): Effect.Effect<MoveBuildLockHandle, SuiCliError> =>
+	Effect.gen(function* () {
+		const lockPath = moveBuildLockPath(moveHome);
+		try {
+			fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+		} catch {
+			// best-effort; writeFileSync below surfaces the real error
+		}
+		const deadline = Date.now() + MOVE_BUILD_LOCK_TIMEOUT_MS;
+		let attempt = 0;
+		let lastHolder: ReturnType<typeof parseLockBody> | undefined;
+		while (true) {
+			const body = ownLockBody({ withInstanceId: true, withAcquiredAt: true });
+			try {
+				fs.writeFileSync(lockPath, serializeLockBody(body), { flag: 'wx' });
+				return { lockPath, instanceId: body.instanceId! };
+			} catch (err) {
+				if ((err as NodeJS.ErrnoException).code !== 'EEXIST') {
+					return yield* Effect.fail(
+						new SuiCliError({
+							phase: 'sui move build',
+							message: `failed to claim move-build lock at ${lockPath}: ${(err as Error).message}`,
+							cause: err,
+						}),
+					);
+				}
+			}
+			// EEXIST — inspect holder. Reclaim if dead/unparseable.
+			let raw: string | undefined;
+			try {
+				raw = fs.readFileSync(lockPath, 'utf8');
+			} catch {
+				// vanished between EEXIST and read — retry the O_EXCL on next loop tick
+			}
+			const holder = raw !== undefined ? parseLockBody(raw) : undefined;
+			lastHolder = holder;
+			if (holder === undefined || !isHolderLive(holder)) {
+				// Stale — unlink (best-effort; O_EXCL on the next loop is the
+				// canonical "did we win?" signal).
+				try {
+					fs.unlinkSync(lockPath);
+				} catch {
+					// ENOENT means a peer beat us; loop and retry
+				}
+				continue;
+			}
+			if (Date.now() >= deadline) {
+				return yield* Effect.fail(
+					new SuiCliError({
+						phase: 'sui move build',
+						message:
+							`timed out after ${MOVE_BUILD_LOCK_TIMEOUT_MS / 1000}s waiting for move-build lock ${lockPath}. ` +
+							`Held by pid=${lastHolder?.pid} host=${lastHolder?.host}. ` +
+							`If that process is gone, remove the lock file: rm ${lockPath}`,
+					}),
+				);
+			}
+			const nominal = Math.min(
+				MOVE_BUILD_LOCK_MAX_BACKOFF_MS,
+				MOVE_BUILD_LOCK_BASE_BACKOFF_MS * 2 ** attempt,
+			);
+			const jittered = nominal * (0.5 + Math.random());
+			yield* Effect.sleep(`${Math.floor(jittered)} millis`);
+			attempt++;
+		}
+	});
+
+const releaseMoveBuildLock = (handle: MoveBuildLockHandle): Effect.Effect<void> =>
+	Effect.sync(() => {
+		releaseLockSync(handle.lockPath, {
+			pid: process.pid,
+			startedAt: '',
+			host: '',
+			instanceId: handle.instanceId,
+		});
+	});
+
+// Wrap an effect with cross-process move-build lock around its execution.
+// `acquireRelease` guarantees the lock is freed on success, failure, or
+// interruption — including SIGINT teardown. The lock spans ONLY the
+// passed effect; container startup + summary calls remain unsynchronized.
+const withMoveBuildLock = <A, E>(
+	moveHome: string,
+	body: Effect.Effect<A, E>,
+): Effect.Effect<A, E | SuiCliError> =>
+	Effect.acquireUseRelease(acquireMoveBuildLock(moveHome), () => body, releaseMoveBuildLock);
 
 // Run a `sui move build` inside the container against `/host/<rel>`.
 // The Move.lock scrub is scoped to the package's subtree (so we don't
@@ -407,7 +635,13 @@ export const SuiBuildContainerLive = Layer.effect(
 						}),
 					);
 				}
-				return runBuildInside(spawner, containerName, containerPath);
+				// Bug D — `sui move build` mutates `~/.move/git/<repo>/.git/`
+				// (sparse-checkout.lock, index.lock). Two concurrent builds
+				// against the same `~/.move` race git's per-repo locks.
+				// Hold a cross-process advisory lock keyed on `moveHome`
+				// across just this step; the rest of the layer lifecycle
+				// (acquire, summary) stays unsynchronized.
+				return withMoveBuildLock(moveHome, runBuildInside(spawner, containerName, containerPath));
 			},
 			runSummary: (hostPath: string) => {
 				const containerPath = toContainerPath(appDir, hostPath);

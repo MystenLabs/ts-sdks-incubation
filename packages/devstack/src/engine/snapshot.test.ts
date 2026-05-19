@@ -36,7 +36,15 @@
 //     the CLI's id format (timestamp + random suffix + optional label)
 //     makes collisions practically impossible.
 
-import { mkdtempSync, rmSync, chmodSync, writeFileSync, statSync, readFileSync } from 'node:fs';
+import {
+	mkdtempSync,
+	rmSync,
+	chmodSync,
+	writeFileSync,
+	statSync,
+	readFileSync,
+	existsSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Effect, Layer, Sink, Stream } from 'effect';
@@ -400,6 +408,54 @@ describe('snapshot() / restore() — runtime/ tar round-trip', () => {
 			});
 			expect(r.runtimeRestored).toBe(false);
 			expect(r.loadedImages.length).toBe(0);
+		}).pipe(Effect.provide(NodeServicesLayer)),
+	);
+
+	// Bug B regression — restoring snap-A after snap-B was taken must
+	// not leave files that only existed in snap-B (or were never in any
+	// snapshot but landed between save and restore). Pre-fix, the
+	// untar overlaid onto whatever was in `runtimeDir`, so orphan files
+	// survived the restore and the user's "rollback" silently kept
+	// stale state from the wrong point in time.
+	it.effect('restore() clears stale files in runtime/ that were not in the snapshot', () =>
+		Effect.gen(function* () {
+			const fs = yield* Effect.promise(() => import('node:fs/promises'));
+			const runtimeDir = join(stateDir, 'runtime');
+			yield* Effect.promise(() => fs.mkdir(join(runtimeDir, 'accounts'), { recursive: true }));
+			writeFile(join(runtimeDir, 'accounts', 'alice.key'), 'suiprivkey1...');
+
+			// Take snap-A with only alice.key.
+			yield* snapshot({
+				id: 'snap-A',
+				dir: join(stateDir, 'snapshots'),
+				app: 'test-app',
+				stack: 'main',
+				containers: [],
+			});
+
+			// Simulate work-after-snapshot: a bob.key + a stray dir get
+			// created in the live runtime dir. Without the wipe these
+			// would survive the snap-A restore and corrupt the rolled-
+			// back stack.
+			writeFile(join(runtimeDir, 'accounts', 'bob.key'), 'suiprivkey2...');
+			yield* Effect.promise(() => fs.mkdir(join(runtimeDir, 'stray-service'), { recursive: true }));
+			writeFile(join(runtimeDir, 'stray-service', 'data.json'), '{"orphan":true}');
+
+			const result = yield* restore({
+				id: 'snap-A',
+				dir: join(stateDir, 'snapshots'),
+				stack: 'main',
+			});
+			expect(result.runtimeRestored).toBe(true);
+
+			// alice.key — the snapshot's payload — survives.
+			expect(readFileSync(join(runtimeDir, 'accounts', 'alice.key'), 'utf8')).toBe(
+				'suiprivkey1...',
+			);
+			// bob.key — written AFTER snap-A — must be gone.
+			expect(existsSync(join(runtimeDir, 'accounts', 'bob.key'))).toBe(false);
+			// Whole stray-service/ subtree — also gone.
+			expect(existsSync(join(runtimeDir, 'stray-service'))).toBe(false);
 		}).pipe(Effect.provide(NodeServicesLayer)),
 	);
 });

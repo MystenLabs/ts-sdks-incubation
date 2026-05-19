@@ -245,29 +245,37 @@ export const hostProcess = <const Name extends string, E = never, R = never>(
 			// briefly uninterruptible. Real usage tears down via SIGINT
 			// (closes pipes synchronously) or after the child exits,
 			// so we haven't hit it outside synthetic short-lived tests.
+			// Always drain stdout/stderr in the background — without a
+			// consumer, the child's pipes fill up (default OS pipe buffer
+			// ~64KB) and block the child on its next write. Vite's
+			// dep-prebundle pass and any chatty dev-server emit enough to
+			// hit this and stall before the HTTP ready probe can see a
+			// listener. When the caller supplies `onOutputLine`, each
+			// line is forwarded to it; otherwise lines are discarded.
+			//
+			// Ordering subtlety: the spawner's `spawn` already registered
+			// a kill-child finalizer on this scope. Finalizers run LIFO,
+			// so anything we add AFTER runs first. We register a
+			// `handle.kill` finalizer here so the child dies BEFORE the
+			// spawner's own kill finalizer runs — closing stdout/stderr
+			// pipes early and letting the forked drainer fibers' Stream
+			// consumers settle naturally on EOF. Without this, the
+			// drainer fibers parked on a still-open pipe receive an
+			// interrupt but can't observe it (no yield point while
+			// waiting for next chunk), and scope teardown hangs.
 			const onOutputLine = options.onOutputLine;
-			if (onOutputLine !== undefined) {
+			const noopSink: OutputLineCallback = () => Effect.void;
+			const sink = onOutputLine ?? noopSink;
+			{
 				const scope = yield* Effect.scope;
-				// IMPORTANT ordering subtlety: the spawner's `spawn`
-				// already registered a kill-child finalizer on this
-				// scope. Finalizers run LIFO, so anything we add AFTER
-				// runs first. We register a `handle.kill` finalizer
-				// here so the child dies BEFORE the spawner's own kill
-				// finalizer runs — closing stdout/stderr pipes early
-				// and letting the forked drainer fibers' Stream
-				// consumers settle naturally on EOF. Without this, the
-				// drainer fibers parked on a still-open pipe receive
-				// an interrupt but can't observe it (no yield point
-				// while waiting for next chunk), and scope teardown
-				// hangs.
 				yield* addScopeFinalizer(scope, Effect.uninterruptible(handle.kill().pipe(Effect.ignore)));
 				if (resolvedReadyProbe?.kind !== 'log') {
-					yield* drainLinesWithCallback(Stream.orDie(handle.stdout), 'info', onOutputLine).pipe(
+					yield* drainLinesWithCallback(Stream.orDie(handle.stdout), 'info', sink).pipe(
 						Effect.ignore,
 						Effect.forkIn(scope),
 					);
 				}
-				yield* drainLinesWithCallback(Stream.orDie(handle.stderr), 'warn', onOutputLine).pipe(
+				yield* drainLinesWithCallback(Stream.orDie(handle.stderr), 'warn', sink).pipe(
 					Effect.ignore,
 					Effect.forkIn(scope),
 				);

@@ -5,8 +5,22 @@ import { defineConfig } from 'tsdown';
 // into matching `dist/` paths so primitives resolve them via
 // `new URL('../../<asset>/', import.meta.url)` in both source and built
 // outputs.
+// `src/runtime/conventional-routes.ts` is listed as an explicit entry —
+// not because consumers import it directly from `dist`, but to anchor it
+// inside the main build pass so its dependency on
+// `listEndpointDeclarations` (from `src/engine/define-endpoint.ts`) is
+// visible to tree-shaking. The fixtures build below also imports
+// `conventional-routes` (via `playwright/web-server.ts`), but that pass
+// externalizes engine modules — without this entry the main pass would
+// drop `listEndpointDeclarations` and the fixtures build would emit a
+// broken cross-config import.
 const main = defineConfig({
-	entry: ['src/index.ts', 'src/cli/main.ts', 'src/advanced/index.ts'],
+	entry: [
+		'src/index.ts',
+		'src/cli/main.ts',
+		'src/advanced/index.ts',
+		'src/runtime/conventional-routes.ts',
+	],
 	format: 'esm',
 	dts: true,
 	outDir: 'dist',

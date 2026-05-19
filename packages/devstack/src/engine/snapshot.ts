@@ -714,13 +714,22 @@ export const restore = (opts: {
 				.pipe(Effect.mapError(wrapError(`failed to copy ${stateSrc} -> ${stackPaths.stateFile}`)));
 		}
 
-		// 2. runtime/ — untar back into place. mkdir-p the destination
-		// first so a clean stack with no prior runtime dir works.
+		// 2. runtime/ — untar back into place. Wipe the destination first
+		// (then mkdir-p) so files written AFTER the snapshot was taken
+		// don't persist as orphans overlaid on the restored tree. Without
+		// this, a file created between snap-A and snap-B would survive a
+		// restore of snap-A — `tar -xf` only writes the entries inside
+		// the archive, it does not delete extras already present in the
+		// destination. mkdir-p after the wipe handles a clean stack with
+		// no prior runtime dir.
 		let runtimeRestored = false;
 		const hasRuntimeTar = yield* fs
 			.exists(runtimeTarSrc)
 			.pipe(Effect.mapError(wrapError(`failed to stat ${runtimeTarSrc}`)));
 		if (hasRuntimeTar) {
+			yield* fs
+				.remove(stackPaths.runtimeDir, { recursive: true, force: true })
+				.pipe(Effect.mapError(wrapError(`failed to clear ${stackPaths.runtimeDir}`)));
 			yield* fs
 				.makeDirectory(stackPaths.runtimeDir, { recursive: true })
 				.pipe(Effect.mapError(wrapError(`failed to create ${stackPaths.runtimeDir}`)));
