@@ -290,7 +290,13 @@ const coinByIdentifier = (identifier: string) =>
 
 /** `Coin.fromPackage(pkg, witness)` body — yields the package first (so
  *  the dependency edge is forced), then reads `pkg.coins[witness]`. The
- *  lookup is case-insensitive. */
+ *  lookup is case-insensitive against three keyings: the registry key
+ *  (the `Record<string, …>` index, which the auto-discovery pass sets
+ *  to the on-chain CoinMetadata `symbol`), the entry's CoinMetadata
+ *  `symbol` field directly, and the entry's `type` field (the Move
+ *  witness struct name from `coin::create_currency<W>`). The trifecta
+ *  covers users who pass the symbol (`'mUSDC'`), the witness
+ *  (`'MOCK_USDC'`), or the registry key (`'musdc'`) interchangeably. */
 const coinFromPackage = <P extends { readonly coins: Record<string, unknown> }>(
 	pkg: LayeredTag<any, P, any, any>,
 	witness: string,
@@ -299,16 +305,30 @@ const coinFromPackage = <P extends { readonly coins: Record<string, unknown> }>(
 		`coin/fromPackage/${witness}` as const,
 		Effect.gen(function* () {
 			const resolved = yield* pkg;
-			const coins = resolved.coins as Record<string, CoinValue | undefined>;
-			// Lookup is case-insensitive against the available keys so the
-			// user can pass either the registry name (`'musdc'`) or the
-			// canonical symbol (`'MUSDC'`) the discovery pass extracted from
-			// CoinMetadata.
+			const coins = resolved.coins as Record<
+				string,
+				(CoinValue & { readonly type?: string; readonly symbol?: string }) | undefined
+			>;
 			const lower = witness.toLowerCase();
 			let hit: CoinValue | undefined = coins[witness];
 			if (hit === undefined) {
 				for (const [k, v] of Object.entries(coins)) {
-					if (k.toLowerCase() === lower && v !== undefined) {
+					if (v === undefined) continue;
+					if (k.toLowerCase() === lower) {
+						hit = v;
+						break;
+					}
+					if (v.symbol !== undefined && v.symbol.toLowerCase() === lower) {
+						hit = v;
+						break;
+					}
+					// `PublishedCoin.type` carries the witness name (the
+					// Move struct from `coin::create_currency<W>`, e.g.
+					// `'MOCK_USDC'`). Matching against it lets callers
+					// who think in Move-source terms find the right entry
+					// even when the registry key is the on-chain symbol.
+					const entryType = (v as { readonly type?: string }).type;
+					if (entryType !== undefined && entryType.toLowerCase() === lower) {
 						hit = v;
 						break;
 					}

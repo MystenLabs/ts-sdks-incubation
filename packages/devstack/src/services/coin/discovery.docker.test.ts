@@ -34,7 +34,6 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve as resolvePath } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { SuiGrpcClient } from '@mysten/sui/grpc';
 
 const WALLET_DIR = resolvePath(__dirname, '../../../../../examples/wallet');
 const TEST_TIMEOUT_MS = 300_000;
@@ -98,6 +97,11 @@ interface ManifestPackage {
 	readonly id: string;
 }
 
+interface ManifestCoin {
+	readonly symbol?: string;
+	readonly decimals: number;
+}
+
 interface ManifestShape {
 	readonly services?: {
 		readonly sui?: {
@@ -105,6 +109,7 @@ interface ManifestShape {
 		};
 	};
 	readonly packages?: Record<string, ManifestPackage>;
+	readonly coins?: Record<string, ManifestCoin>;
 }
 
 const readManifest = (manifestPath: string): ManifestShape => {
@@ -128,34 +133,25 @@ describe.skipIf(!SHOULD_RUN)('coin discovery against real Docker (examples/walle
 				expect(apply.exitCode, `apply failed:\n${apply.stderr}`).toBe(0);
 
 				const manifest = readManifest(manifestPath);
-				const rpcUrl = manifest.services?.sui?.rpc?.url;
-				expect(rpcUrl, 'no sui rpc URL in manifest').toBeTruthy();
 				const usdc = manifest.packages?.mock_usdc?.id;
 				const weth = manifest.packages?.mock_weth?.id;
 				expect(usdc, 'no mock_usdc packageId in manifest').toBeTruthy();
 				expect(weth, 'no mock_weth packageId in manifest').toBeTruthy();
 
-				// Construct a fresh gRPC client against the running localnet
-				// and exercise `getCoinMetadata` for both published coins.
-				// This is the upstream half of `CoinMetadataLoader`; in
-				// Phase 1 we'll switch to instantiating the loader inside a
-				// proper Effect runtime, but for Phase 0 we just confirm
-				// the raw RPC payload matches the Move source so the
-				// loader's projection is testable in isolation.
-				const client = new SuiGrpcClient({
-					baseUrl: rpcUrl as string,
-					network: 'localnet',
-				});
-				const usdcType = `${usdc as string}::mock_usdc::MOCK_USDC`;
-				const wethType = `${weth as string}::mock_weth::MOCK_WETH`;
-				const [usdcRes, wethRes] = await Promise.all([
-					client.core.getCoinMetadata({ coinType: usdcType }),
-					client.core.getCoinMetadata({ coinType: wethType }),
-				]);
-				expect(usdcRes.coinMetadata?.symbol).toBe('mUSDC');
-				expect(usdcRes.coinMetadata?.decimals).toBe(6);
-				expect(wethRes.coinMetadata?.symbol).toBe('mWETH');
-				expect(wethRes.coinMetadata?.decimals).toBe(8);
+				// Assert against the manifest's `coins` block. The discovery
+				// pass inside `publishMove` calls `client.core.getCoinMetadata`
+				// during publish and persists the result into the manifest
+				// alongside the witness/symbol/decimals. By the time `apply`
+				// has exited (Effect.scoped → all finalizers fired), the
+				// sui-localnet container is stopped, so a post-apply gRPC
+				// query would hit a dead port. The manifest record is the
+				// durable proof that the upstream getCoinMetadata + the
+				// loader projection produced the right shape — if it's
+				// here, the RPC returned what the Move source declared.
+				expect(manifest.coins?.mUSDC?.symbol).toBe('mUSDC');
+				expect(manifest.coins?.mUSDC?.decimals).toBe(6);
+				expect(manifest.coins?.mWETH?.symbol).toBe('mWETH');
+				expect(manifest.coins?.mWETH?.decimals).toBe(8);
 			} finally {
 				await runCli(WALLET_DIR, env, ['wipe', '--yes']).catch(() => undefined);
 			}

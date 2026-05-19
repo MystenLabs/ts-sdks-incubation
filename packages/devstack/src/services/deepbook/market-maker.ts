@@ -11,6 +11,7 @@ import { tag, type LayeredTag } from '../../advanced/tag.js';
 import { SuiTag } from '../sui.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
 import { StateStore } from '../../engine/state-store.js';
+import { moveTypeEquals } from '../../engine/sui-helpers.js';
 import { DeepbookError } from '../../engine/errors.js';
 import { DeepbookCoreTag, type DeepbookPoolRef } from '../deepbook.js';
 import type { Account } from '../../engine/shared.js';
@@ -381,7 +382,7 @@ export const deepbookMarketMaker = <const Name extends string>(
 								c.type === 'created' &&
 								'objectType' in c &&
 								typeof c.objectType === 'string' &&
-								c.objectType === bmType,
+								moveTypeEquals(c.objectType, bmType),
 						)
 						.map((c) => c.objectId);
 

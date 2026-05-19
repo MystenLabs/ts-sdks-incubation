@@ -102,6 +102,63 @@ describe('pickCreatedByType — prefix filter (all: true)', () => {
 			[],
 		);
 	});
+
+	it('prefix filter matches gRPC-normalized long-form addresses', () => {
+		// gRPC normalizes the outer address segment to the 64-zero-padded
+		// long form (`0x0000…0002`); user-authored prefixes still use the
+		// short form (`0x2::coin::TreasuryCap<`). The matcher
+		// canonicalizes the address bytes so both transports' object-type
+		// shapes match the same prefix constant. Regression test for the
+		// "pkg.coins = {}" diagnostic — without this canonicalization
+		// every gRPC-mediated publish discovers zero coins.
+		const changes = [
+			created(
+				'0xtcap',
+				'0x0000000000000000000000000000000000000000000000000000000000000002::coin::TreasuryCap<0xabc::mock_usdc::MOCK_USDC>',
+				'0xpublisher',
+			),
+		];
+		expect(pickCreatedByType(changes, { prefix: '0x2::coin::TreasuryCap<' })).toBe('0xtcap');
+		expect(pickCreatedByType(changes, { prefix: '0x2::coin::TreasuryCap<', all: true })).toEqual([
+			{
+				objectId: '0xtcap',
+				objectType:
+					'0x0000000000000000000000000000000000000000000000000000000000000002::coin::TreasuryCap<0xabc::mock_usdc::MOCK_USDC>',
+				owner: '0xpublisher',
+			},
+		]);
+	});
+
+	it('suffix filter matches gRPC-normalized full Move types', () => {
+		// `${packageId}::pool::Pool<0x2::sui::SUI, 0xPKG::mock::MOCK>` is
+		// the canonical example: callers (deepbook local-deploy) build
+		// the suffix from a freshly-known packageId + the bare coin
+		// types they have on hand, both in short form. gRPC returns the
+		// full long-form for every address in the type. `suffix`
+		// canonicalizes via `normalizeStructTag` so the two halves meet
+		// in the middle.
+		const longBase =
+			'0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI';
+		const longQuote =
+			'0x0000000000000000000000000000000000000000000000000000000000000abc::mock_usdc::MOCK_USDC';
+		const longPool = `0x0000000000000000000000000000000000000000000000000000000000000def::pool::Pool<${longBase}, ${longQuote}>`;
+		const shortSuffix = '0xdef::pool::Pool<0x2::sui::SUI, 0xabc::mock_usdc::MOCK_USDC>';
+		const changes = [created('0xpool', longPool)];
+		expect(pickCreatedByType(changes, { suffix: shortSuffix })).toBe('0xpool');
+	});
+
+	it('includes filter matches gRPC-normalized inner generic', () => {
+		// `mintFromTreasury` uses `pickCreatedByType(..., {includes:
+		// '0x2::coin::Coin<${fullCoinType}>'})` to find the minted Coin
+		// object. gRPC returns `0x0000…0002::coin::Coin<...>`, so the
+		// matcher must canonicalize via `normalizeStructTag` to
+		// recognize the equivalence.
+		const longCoin =
+			'0x0000000000000000000000000000000000000000000000000000000000000002::coin::Coin<0x0000000000000000000000000000000000000000000000000000000000000abc::mock_usdc::MOCK_USDC>';
+		const shortIncludes = '0x2::coin::Coin<0xabc::mock_usdc::MOCK_USDC>';
+		const changes = [created('0xcoin', longCoin, '0xrecipient')];
+		expect(pickCreatedByType(changes, { includes: shortIncludes })).toBe('0xcoin');
+	});
 });
 
 describe('parseCoinTypeFromGeneric', () => {
@@ -133,6 +190,28 @@ describe('parseCoinTypeFromGeneric', () => {
 				'0x2::coin::TreasuryCap',
 			),
 		).toBe('0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI');
+	});
+
+	it('matches gRPC-normalized outer address (`0x000…0002` vs `0x2`)', () => {
+		// gRPC normalizes every address in the `objectType` returned by
+		// `executeTransaction`/`getTransaction` to the 64-zero-padded
+		// long form. JSON-RPC and user-authored wrapper constants use
+		// the short form. The matcher canonicalizes both sides so the
+		// publish-discovery pass works regardless of which transport
+		// the publish receipt came back through. This is the regression
+		// test for the "pkg.coins = {}" diagnostic.
+		expect(
+			parseCoinTypeFromGeneric(
+				'0x0000000000000000000000000000000000000000000000000000000000000002::coin::TreasuryCap<0xabc::mock_usdc::MOCK_USDC>',
+				'0x2::coin::TreasuryCap',
+			),
+		).toBe('0xabc::mock_usdc::MOCK_USDC');
+		expect(
+			parseCoinTypeFromGeneric(
+				'0x0000000000000000000000000000000000000000000000000000000000000002::coin::CoinMetadata<0x0000000000000000000000000000000000000000000000000000000000000abc::mock_usdc::MOCK_USDC>',
+				'0x2::coin::CoinMetadata',
+			),
+		).toBe('0x0000000000000000000000000000000000000000000000000000000000000abc::mock_usdc::MOCK_USDC');
 	});
 
 	it('returns undefined for wrong wrapper', () => {

@@ -15,7 +15,7 @@ import { Transaction } from '@mysten/sui/transactions';
 import { tag, provide, type LayeredTag } from '../../advanced/tag.js';
 import { SuiTag } from '../sui.js';
 import { publishMove } from '../package/internal.js';
-import { pickCreatedByType } from '../../engine/sui-helpers.js';
+import { moveTypeEquals, pickCreatedByType } from '../../engine/sui-helpers.js';
 import { publishPackage, publishPythState, type PythStateRecord } from '../../engine/registries.js';
 import { StateStore } from '../../engine/state-store.js';
 import { StateStoreKeys } from '../../engine/state-store-keys.js';
@@ -249,7 +249,7 @@ export const pythLocalDeploy = <const Name extends string = 'pyth'>(
 							c.type === 'created' &&
 							'objectType' in c &&
 							typeof c.objectType === 'string' &&
-							c.objectType === expectedType,
+							moveTypeEquals(c.objectType, expectedType),
 					)
 					.map((c) => c.objectId);
 				if (createdIds.length < opts.feeds.length) {

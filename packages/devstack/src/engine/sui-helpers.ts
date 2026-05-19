@@ -2,6 +2,7 @@
 // across example configs. Lives under `engine/` so user configs and
 // internal services reach the same picker through the `/advanced` barrel.
 
+import { normalizeStructTag } from '@mysten/sui/utils';
 import type { SuiObjectChange } from './shared.js';
 
 /** A `created` object change projected for downstream consumers that
@@ -110,12 +111,27 @@ export function pickCreatedByType(
 	filter: PickCreatedByTypeFilter,
 ): string | undefined | ReadonlyArray<CreatedObjectEntry> {
 	const matches = (objectType: string): boolean => {
-		if ('suffix' in filter && filter.suffix !== undefined)
-			return objectType.endsWith(filter.suffix);
-		if ('includes' in filter && filter.includes !== undefined)
-			return objectType.includes(filter.includes);
-		// `prefix` form (with or without `all`).
-		return objectType.startsWith(filter.prefix);
+		if ('suffix' in filter && filter.suffix !== undefined) {
+			if (objectType.endsWith(filter.suffix)) return true;
+			return moveTypeEndsWith(objectType, filter.suffix);
+		}
+		if ('includes' in filter && filter.includes !== undefined) {
+			// gRPC normalizes addresses in `objectType` to the
+			// 64-zero-padded long form; user-authored substrings often
+			// use the short form (e.g. `'0x2::coin::Coin<...>'`). Try
+			// the literal substring first (cheap, covers
+			// address-segment-free patterns like `'::game::Lobby'`),
+			// then fall back to address-form-agnostic matching.
+			if (objectType.includes(filter.includes)) return true;
+			return moveTypeIncludes(objectType, filter.includes);
+		}
+		// `prefix` form (with or without `all`). Same canonicalization
+		// concern — gRPC long-form vs. user short-form. Defensive
+		// fallback to literal `startsWith` covers prefixes that don't
+		// carry an address segment (rare in practice).
+		return (
+			moveTypeStartsWith(objectType, filter.prefix) || objectType.startsWith(filter.prefix)
+		);
 	};
 
 	if (filter.all === true) {
@@ -159,6 +175,109 @@ export function pickCreatedByType(
 // `[A-Za-z0-9_]*`).
 const COIN_TYPE_RE = /^0x[0-9a-fA-F]+::[A-Za-z_][A-Za-z0-9_]*::[A-Za-z_][A-Za-z0-9_]*$/;
 
+/** Strip leading `0x` and any leading-zero padding so two equivalent
+ *  Sui address forms (`0x2` vs `0x0000…0002`, both representing the
+ *  same on-chain address) compare equal as canonical-bytes lowercase
+ *  hex. gRPC normalizes every address in `objectType` to the
+ *  64-zero-padded long form; JSON-RPC and most user-authored constants
+ *  use the short stripped form. Comparing via this canonicalization
+ *  keeps every consumer (`pickCreatedByType`, `parseCoinTypeFromGeneric`,
+ *  the coin auto-discovery prefixes) address-form-agnostic. */
+const canonicalAddress = (address: string): string => {
+	const lower = address.toLowerCase();
+	const bare = lower.startsWith('0x') ? lower.slice(2) : lower;
+	const trimmed = bare.replace(/^0+/, '');
+	return trimmed.length === 0 ? '0' : trimmed;
+};
+
+/** Compare two Move-type strings (`0xADDR::module::Type[...]`) by
+ *  canonicalizing the leading `0xADDR` segment on both sides. Returns
+ *  the rest of `actual` after the matching address+`::` (i.e. the
+ *  position immediately after the address prefix), or `undefined` when
+ *  the addresses don't match or the input is malformed. The remainder
+ *  is intentionally returned so callers can chain further structural
+ *  checks (e.g. `::coin::TreasuryCap<...>`) without re-parsing. */
+const stripMatchingAddressPrefix = (actual: string, expected: string): string | undefined => {
+	const sep = '::';
+	const aSepIdx = actual.indexOf(sep);
+	const eSepIdx = expected.indexOf(sep);
+	if (aSepIdx === -1 || eSepIdx === -1) return undefined;
+	const aAddr = actual.slice(0, aSepIdx);
+	const eAddr = expected.slice(0, eSepIdx);
+	if (canonicalAddress(aAddr) !== canonicalAddress(eAddr)) return undefined;
+	const aRest = actual.slice(aSepIdx);
+	const eRest = expected.slice(eSepIdx);
+	return aRest.startsWith(eRest) ? aRest.slice(eRest.length) : undefined;
+};
+
+/** Address-form-agnostic `startsWith`-equivalent over a Move type
+ *  prefix. Both `objectType` and `expectedPrefix` carry an address
+ *  segment (`0xADDR::module::...`); the comparison canonicalizes the
+ *  address bytes so `0x2::coin::TreasuryCap<` matches an `objectType`
+ *  of `0x0000…0002::coin::TreasuryCap<...>` and vice versa.
+ *
+ *  Used by `pickCreatedByType` (when given a `prefix:` filter) and by
+ *  the coin auto-discovery pass so the matcher behaves identically
+ *  against JSON-RPC short-form objectTypes and gRPC long-form
+ *  objectTypes. */
+export const moveTypeStartsWith = (objectType: string, expectedPrefix: string): boolean =>
+	stripMatchingAddressPrefix(objectType, expectedPrefix) !== undefined;
+
+/** Address-form-agnostic `includes`-equivalent. Canonicalizes both
+ *  sides via the SDK's `normalizeStructTag` (which expands every
+ *  address segment to the 64-zero-padded long form) before substring
+ *  matching, so a user-authored substring like
+ *  `'0x2::coin::Coin<0x...::mock_usdc::MOCK_USDC>'` matches against a
+ *  gRPC `objectType` of
+ *  `'0x0000…0002::coin::Coin<0x0000…ABC::mock_usdc::MOCK_USDC>'`.
+ *
+ *  Falls back gracefully (`false`) when either side isn't a valid
+ *  struct tag — caller already tried literal `String.includes` so
+ *  malformed input doesn't need a second answer here. */
+const moveTypeIncludes = (objectType: string, expectedSubstring: string): boolean => {
+	try {
+		const canonical = normalizeStructTag(objectType);
+		const canonicalNeedle = normalizeStructTag(expectedSubstring);
+		return canonical.includes(canonicalNeedle);
+	} catch {
+		return false;
+	}
+};
+
+/** Address-form-agnostic `endsWith`-equivalent. Same canonicalization
+ *  trick as {@link moveTypeIncludes} — `normalizeStructTag` both sides
+ *  before comparing. Used by `pickCreatedByType`'s `suffix:` filter
+ *  for callsites that build the suffix from a known full type (e.g.
+ *  `${packageId}::pool::Pool<${base}, ${quote}>` in deepbook
+ *  local-deploy). Falls back to literal `endsWith` first so
+ *  `'::game::Lobby'`-style address-free suffixes don't need to parse
+ *  as struct tags. */
+const moveTypeEndsWith = (objectType: string, expectedSuffix: string): boolean => {
+	try {
+		const canonical = normalizeStructTag(objectType);
+		const canonicalNeedle = normalizeStructTag(expectedSuffix);
+		return canonical.endsWith(canonicalNeedle);
+	} catch {
+		return false;
+	}
+};
+
+/** Address-form-agnostic Move-type equality. Canonicalizes both via
+ *  the SDK's `normalizeStructTag` (expanding short addresses like
+ *  `0x2` to the 64-zero-padded long form, and applying the same
+ *  recursively to every type-parameter address) before string
+ *  comparison. Returns `false` for inputs that fail to parse as a
+ *  struct tag — callers can defensively check `actual === expected`
+ *  first if they want the strict-equality fallback. */
+export const moveTypeEquals = (actual: string, expected: string): boolean => {
+	if (actual === expected) return true;
+	try {
+		return normalizeStructTag(actual) === normalizeStructTag(expected);
+	} catch {
+		return false;
+	}
+};
+
 /**
  * Parse the inner coin type out of a wrapper like
  * `0x2::coin::TreasuryCap<0x...::module::Witness>` or
@@ -180,10 +299,16 @@ export const parseCoinTypeFromGeneric = (
 	objectType: string,
 	wrapper: '0x2::coin::TreasuryCap' | '0x2::coin::CoinMetadata',
 ): string | undefined => {
-	const head = `${wrapper}<`;
-	if (!objectType.startsWith(head)) return undefined;
-	if (!objectType.endsWith('>')) return undefined;
-	const inner = objectType.slice(head.length, -1);
+	// Address-form-agnostic prefix strip. gRPC publish receipts normalize
+	// every address segment to the 64-zero-padded long form
+	// (`0x0000…0002::coin::TreasuryCap<...>`); JSON-RPC and the wrapper
+	// constants here use the short form (`0x2::coin::TreasuryCap`).
+	// Matching the address-bytes canonically keeps both forms working.
+	const afterWrapper = stripMatchingAddressPrefix(objectType, wrapper);
+	if (afterWrapper === undefined) return undefined;
+	if (!afterWrapper.startsWith('<')) return undefined;
+	if (!afterWrapper.endsWith('>')) return undefined;
+	const inner = afterWrapper.slice(1, -1);
 	if (inner.length === 0) return undefined;
 	// Reject nested generics — discovery only handles bare coin
 	// witnesses. A `<` inside `inner` means there's another generic

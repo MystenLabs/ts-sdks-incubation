@@ -11,7 +11,7 @@ import { Transaction } from '@mysten/sui/transactions';
 import { tag, provide, type LayeredTag } from '../../advanced/tag.js';
 import { SuiTag } from '../sui.js';
 import { publishMove } from '../package/internal.js';
-import { pickCreatedByType } from '../../engine/sui-helpers.js';
+import { moveTypeEquals, moveTypeStartsWith, pickCreatedByType } from '../../engine/sui-helpers.js';
 import { publishDeepbookState, publishPackage } from '../../engine/registries.js';
 import { StateStore } from '../../engine/state-store.js';
 import { StateStoreKeys } from '../../engine/state-store-keys.js';
@@ -233,7 +233,7 @@ export const deepbookLocalDeploy = <
 								c.type === 'created' &&
 								'objectType' in c &&
 								typeof c.objectType === 'string' &&
-								c.objectType.startsWith('0x2::coin::TreasuryCap<') &&
+								moveTypeStartsWith(c.objectType, '0x2::coin::TreasuryCap<') &&
 								c.objectType.endsWith('::deep::DEEP>'),
 						)?.objectId;
 						return { registryId, adminCapId, deepTreasuryId };
@@ -381,7 +381,8 @@ export const deepbookLocalDeploy = <
 							const expectedType = `${packageId}::pool::Pool<${p.base}, ${p.quote}>`;
 							const actualType =
 								typeof fetched.objectType === 'string' ? fetched.objectType : undefined;
-							if (actualType !== expectedType) return false;
+							if (actualType === undefined || !moveTypeEquals(actualType, expectedType))
+								return false;
 						}
 						return true;
 					});

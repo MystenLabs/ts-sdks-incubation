@@ -23,7 +23,7 @@ import { fromHex } from '@mysten/sui/utils';
 import { tag, provide, setPhase, type LayeredTag } from '../../advanced/tag.js';
 import { SuiTag } from '../sui.js';
 import { publishMove } from '../package/internal.js';
-import { pickCreatedByType } from '../../engine/sui-helpers.js';
+import { moveTypeEquals, pickCreatedByType } from '../../engine/sui-helpers.js';
 import { publishDeepbookMarginState, publishPackage } from '../../engine/registries.js';
 import { StateStore } from '../../engine/state-store.js';
 import { StateStoreKeys } from '../../engine/state-store-keys.js';
@@ -552,7 +552,8 @@ export const deepbookMargin = <const Name extends string = 'deepbook-margin'>(
 						const expectedType = `${packageId}::margin_pool::MarginPool<${pool.coinType}>`;
 						const actualType =
 							typeof fetched.objectType === 'string' ? fetched.objectType : undefined;
-						if (actualType !== expectedType) return false;
+						if (actualType === undefined || !moveTypeEquals(actualType, expectedType))
+							return false;
 					}
 					return true;
 				});
