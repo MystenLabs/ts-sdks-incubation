@@ -52,7 +52,7 @@
 // reuse-if-image-matches probe in `Docker.run` — no manual restart of
 // individual containers is needed.
 
-import { Effect, FileSystem, Path, Schema } from 'effect';
+import { Effect, FileSystem, Path, Schema, Stream } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import * as Docker from './docker.js';
 import { DockerLabel } from './identity.js';
@@ -267,54 +267,83 @@ const resolveStackPaths = (stack: string, network: string, pathSvc: Path.Path): 
 // preserve mode bits + symlinks without pulling in a Node tar library
 // (which would add ~50KB to the bundle for a single capability we use
 // in two places).
+//
+// Both `tarCreate` and `tarExtract` capture stderr alongside the exit
+// code so a non-zero exit surfaces tar's own diagnostic into the
+// SnapshotError message. Without this, a CI failure like "tar exited 2"
+// is undebuggable post-mortem — the actual reason (EACCES on a
+// container-written file, source file vanished mid-archive, output
+// path unwritable, …) lives on stderr and is the only signal tar
+// gives. Truncated to `TAR_STDERR_TRUNC` to keep error messages
+// readable; the full stderr is still attached as the SnapshotError
+// `cause` for log-grepping. Pattern matches `runWithCapture` in
+// `sui-cli.ts`.
 // -----------------------------------------------------------------------------
+
+const TAR_STDERR_TRUNC = 500;
+
+const decodeStream = (stream: Stream.Stream<Uint8Array, unknown>): Effect.Effect<string, unknown> =>
+	Stream.mkString(Stream.decodeText(stream));
+
+const truncateStderr = (text: string): string => {
+	const trimmed = text.replace(/\r/g, '').trim();
+	if (trimmed.length === 0) return '(no stderr)';
+	if (trimmed.length <= TAR_STDERR_TRUNC) return trimmed;
+	return `${trimmed.slice(0, TAR_STDERR_TRUNC - 1)}…`;
+};
+
+const runTar = (
+	spawner: ReturnType<typeof ChildProcessSpawner.make>,
+	cmd: ChildProcess.Command,
+	op: string,
+): Effect.Effect<void, SnapshotError> =>
+	Effect.scoped(
+		Effect.gen(function* () {
+			const handle = yield* spawner.spawn(cmd).pipe(Effect.mapError(wrapSpawnError(op)));
+			const [stderr, exitCode] = yield* Effect.all(
+				[
+					decodeStream(handle.stderr).pipe(Effect.mapError(wrapSpawnError(`${op} (stderr)`))),
+					handle.exitCode.pipe(Effect.mapError(wrapSpawnError(`${op} (wait)`))),
+				],
+				{ concurrency: 'unbounded' },
+			);
+			if (exitCode !== 0) {
+				return yield* Effect.fail(
+					new SnapshotError({
+						message: `${op} exited ${exitCode}: ${truncateStderr(stderr)}`,
+						cause: stderr.length > 0 ? stderr : undefined,
+					}),
+				);
+			}
+		}),
+	);
 
 const tarCreate = (
 	spawner: ReturnType<typeof ChildProcessSpawner.make>,
 	srcDir: string,
 	tarPath: string,
-): Effect.Effect<void, SnapshotError> =>
-	Effect.gen(function* () {
-		// `-C srcDir .` makes the archive entries relative to `srcDir`'s
-		// children, so untarring at a different absolute path on restore
-		// puts files at the right offsets without leading-slash stripping.
-		const cmd = ChildProcess.make('tar', ['-cf', tarPath, '-C', srcDir, '.']);
-		const exitCode = yield* spawner
-			.exitCode(cmd)
-			.pipe(Effect.mapError(wrapSpawnError(`tar -cf ${tarPath}`)));
-		if (exitCode !== 0) {
-			return yield* Effect.fail(
-				new SnapshotError({
-					message: `tar -cf ${tarPath} exited ${exitCode}`,
-				}),
-			);
-		}
-	});
+): Effect.Effect<void, SnapshotError> => {
+	// `-C srcDir .` makes the archive entries relative to `srcDir`'s
+	// children, so untarring at a different absolute path on restore
+	// puts files at the right offsets without leading-slash stripping.
+	const cmd = ChildProcess.make('tar', ['-cf', tarPath, '-C', srcDir, '.']);
+	return runTar(spawner, cmd, `tar -cf ${tarPath}`);
+};
 
 const tarExtract = (
 	spawner: ReturnType<typeof ChildProcessSpawner.make>,
 	tarPath: string,
 	dstDir: string,
-): Effect.Effect<void, SnapshotError> =>
-	Effect.gen(function* () {
-		// `--no-same-owner` so a restore running as a different UID
-		// than the save (e.g. CI runner ≠ developer's local user)
-		// doesn't fail with EPERM on chown. The files end up owned by
-		// whoever ran restore — fine for devstack's use case where the
-		// runtime/ contents are scoped to the current shell session.
-		// Supported by both GNU tar and BSD tar.
-		const cmd = ChildProcess.make('tar', ['-xf', tarPath, '-C', dstDir, '--no-same-owner']);
-		const exitCode = yield* spawner
-			.exitCode(cmd)
-			.pipe(Effect.mapError(wrapSpawnError(`tar -xf ${tarPath}`)));
-		if (exitCode !== 0) {
-			return yield* Effect.fail(
-				new SnapshotError({
-					message: `tar -xf ${tarPath} exited ${exitCode}`,
-				}),
-			);
-		}
-	});
+): Effect.Effect<void, SnapshotError> => {
+	// `--no-same-owner` so a restore running as a different UID
+	// than the save (e.g. CI runner ≠ developer's local user)
+	// doesn't fail with EPERM on chown. The files end up owned by
+	// whoever ran restore — fine for devstack's use case where the
+	// runtime/ contents are scoped to the current shell session.
+	// Supported by both GNU tar and BSD tar.
+	const cmd = ChildProcess.make('tar', ['-xf', tarPath, '-C', dstDir, '--no-same-owner']);
+	return runTar(spawner, cmd, `tar -xf ${tarPath}`);
+};
 
 // -----------------------------------------------------------------------------
 // preCleanupApp — `docker rm -f` containers matching (app, stack).

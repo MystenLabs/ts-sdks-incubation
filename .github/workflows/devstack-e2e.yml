@@ -77,6 +77,25 @@ jobs:
         working-directory: examples/${{ matrix.example }}
         run: node ../../packages/devstack/dist/cli/main.mjs apply
 
+      # `apply` boots service containers that bind-mount host paths under
+      # `.devstack/stacks/<stack>/runtime/` (walrus deploy outputs,
+      # walrus storage-node state, seal master-key, etc.). Anything the
+      # container writes lands on the host owned by root:root (the
+      # container's UID), and walrus storage-node private keys / seal
+      # master-key files are mode 0600. On the GHA runner — uid 1001
+      # (`runner`) — those files are unreadable, so the snapshot save's
+      # `tar -cf` of `runtime/` exits 2 with EACCES. Re-own the tree to
+      # the runner before tarring. We have passwordless sudo on
+      # `ubuntu-latest`; `id -u`/`-g` works regardless of the runner's
+      # default user. No-op when `.devstack/stacks` doesn't exist
+      # (state-only stacks with no runtime tree).
+      - name: Reown runtime/ to runner uid (CI permissions fix)
+        working-directory: examples/${{ matrix.example }}
+        run: |
+          if [ -d .devstack/stacks ]; then
+            sudo chown -R "$(id -u):$(id -g)" .devstack/stacks
+          fi
+
       - name: Capture snapshot
         working-directory: examples/${{ matrix.example }}
         # `apply` exits after Layer.build's scope closes, leaving the
