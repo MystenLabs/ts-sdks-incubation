@@ -509,12 +509,20 @@ export const StateStoreLive: Layer.Layer<
 		// encrypted home dir) surfaces in tracing as an attributable hot
 		// path. `get` is in-memory only — no span.
 		return {
+			// Defensive: clone on both put and get so callers can't accidentally
+			// mutate the in-memory map by holding a ref. The deepbook resume
+			// bug (services/deepbook/local-deploy.ts:638-649 register mutates
+			// `value.pools = poolsRecord` after put) corrupted the persisted
+			// state for ~weeks before this guard. Cost is one structuredClone
+			// per state op — negligible against the surrounding effects.
 			get: <T>(key: string) =>
 				Ref.get(ref).pipe(
-					Effect.map((m) => (m.has(key) ? Option.some(m.get(key) as T) : Option.none<T>())),
+					Effect.map((m) =>
+						m.has(key) ? Option.some(structuredClone(m.get(key)) as T) : Option.none<T>(),
+					),
 				),
 			put: <T>(key: string, value: T) =>
-				Ref.update(ref, (m) => new Map(m).set(key, value))
+				Ref.update(ref, (m) => new Map(m).set(key, structuredClone(value)))
 					.pipe(Effect.andThen(persistAndWarn))
 					.pipe(Effect.withSpan('StateStore.put', { attributes: { 'state.key': key } })),
 			remove: (key: string) =>
