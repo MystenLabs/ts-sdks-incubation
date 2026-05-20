@@ -255,6 +255,7 @@ export const Walrus = (opts: WalrusOptions = {}): StackMember => {
 // code in example apps sources the ids from the generated `captured.ts`
 // and passes them in directly.
 export {
+	getWalrusCaptured,
 	localnetWalrusOptions,
 	type LocalnetWalrusOptions,
 	type LocalnetWalrusInputs,

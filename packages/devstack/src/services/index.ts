@@ -51,6 +51,7 @@ export {
 	WalrusProxyTag,
 	type WalrusAdmin,
 	WalrusAdminTag,
+	getWalrusCaptured,
 	localnetWalrusOptions,
 	type LocalnetWalrusOptions,
 	type LocalnetWalrusInputs,

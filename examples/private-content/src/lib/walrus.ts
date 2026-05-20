@@ -10,7 +10,7 @@
 // `node:fs`), and Vite's externalized-node-module proxy throws on every
 // property access at module init — page blanks, no React render. The
 // `/browser` subpath re-exports only pure helpers.
-import { localnetWalrusOptions } from '@mysten-incubation/devstack/browser';
+import { getWalrusCaptured, localnetWalrusOptions } from '@mysten-incubation/devstack/browser';
 import type { ClientWithCoreApi } from '@mysten/sui/client';
 import type { Signer } from '@mysten/sui/cryptography';
 import { WalrusClient } from '@mysten/walrus';
@@ -21,23 +21,7 @@ import walrusWasmUrl from '@mysten/walrus-wasm/web/walrus_wasm_bg.wasm?url';
 
 import { captured } from '../generated/captured.js';
 
-const walrusCaptured = (
-	captured as Record<string, { systemObject?: string; stakingObject?: string } | undefined>
-)['walrus.walrus'];
-if (
-	walrusCaptured === undefined ||
-	walrusCaptured.systemObject === undefined ||
-	walrusCaptured.stakingObject === undefined
-) {
-	throw new Error(
-		'walrus not deployed yet — `captured["walrus.walrus"]` is missing systemObject/stakingObject. ' +
-			'Has the supervisor finished bringing walrus up?',
-	);
-}
-const walrusOpts = localnetWalrusOptions({
-	systemObjectId: walrusCaptured.systemObject,
-	stakingPoolId: walrusCaptured.stakingObject,
-});
+const walrusOpts = localnetWalrusOptions(getWalrusCaptured(captured));
 
 const DEFAULT_EPOCHS = 1;
 

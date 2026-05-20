@@ -20,6 +20,7 @@
 // build: it must NOT contain any `import "node:*"` lines.
 
 export {
+	getWalrusCaptured,
 	localnetWalrusOptions,
 	type LocalnetWalrusOptions,
 	type LocalnetWalrusInputs,
