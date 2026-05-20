@@ -37,7 +37,7 @@
 
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve as resolvePath } from 'node:path';
 // Plain vitest, not @effect/vitest — this test is a multi-step async
 // orchestration that shells out to the CLI; an Effect-flavored wrapper
@@ -72,6 +72,18 @@ const dockerAvailable = (): boolean => {
 };
 
 const DOCKER_OK = dockerAvailable();
+
+// The test spawns the built CLI; if `dist/cli/main.mjs` is missing the
+// test would fail with a cryptic ENOENT. Skip with a clear hint instead
+// so `pnpm test` from a fresh checkout points at `pnpm build` rather
+// than dropping into the spawn-error stack trace.
+const DIST_OK = existsSync(CLI_PATH);
+if (DOCKER_OK && !DIST_OK) {
+	// eslint-disable-next-line no-console
+	console.warn(
+		`[snapshot.docker.test] skipped — ${CLI_PATH} missing. Run \`pnpm --filter @mysten-incubation/devstack build\` first.`,
+	);
+}
 
 const runCli = async (
 	cwd: string,
@@ -125,7 +137,7 @@ const readPackageIds = (stateFile: string): ReadonlyArray<string> => {
 	return ids;
 };
 
-describe.skipIf(!DOCKER_OK)('snapshot end-to-end against real Docker (examples/arena)', () => {
+describe.skipIf(!DOCKER_OK || !DIST_OK)('snapshot end-to-end against real Docker (examples/arena)', () => {
 	// Unique per test invocation. Survives parallel vitest workers,
 	// the developer's interactive `main` stack, and previous runs of
 	// this same test that may not have torn down cleanly. The 8-hex
