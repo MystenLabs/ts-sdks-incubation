@@ -23,9 +23,9 @@ import {
 	SuiBuildContainer,
 	SuiBuildContainerLive,
 	containerNameFor,
-	sweepStaleGitLocks,
 	toContainerPath,
 } from './sui-build-container.js';
+import { sweepStaleGitLocks } from './move-build-lock.js';
 
 // -----------------------------------------------------------------------------
 // Pure helpers

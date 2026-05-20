@@ -22,7 +22,6 @@
 // `buildMove` is a thin sibling used by tests / dry-runs that only need
 // the compiled bytecode (no publish tx).
 
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { Context, Effect, FileSystem, Schema } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
@@ -30,7 +29,8 @@ import { captureCommand, type CaptureError } from './capture-command.js';
 import { inheritedHostEnv } from './safe-env.js';
 import { SuiCliPhases } from './phases.js';
 import { prettyError } from './pretty-error.js';
-import { SuiBuildContainer, withMoveBuildLock } from './sui-build-container.js';
+import { defaultMoveHome, withMoveBuildLock } from './move-build-lock.js';
+import { SuiBuildContainer } from './sui-build-container.js';
 
 // Optional sui-tools image reference. When `suiLocalnet` builds its
 // vendored `images/sui/` it provides the resulting tag here so `buildMove`
@@ -175,7 +175,7 @@ export const buildMove = (
 		// that's where the moveHome path is derived for the bind-mount;
 		// applying it here covers paths 1+2+3 from one site instead of just
 		// path 1 (which the original landing site missed).
-		const moveHome = path.join(os.homedir(), '.move');
+		const moveHome = defaultMoveHome();
 		const buildSpawn =
 			containerReachable && containerOpt._tag === 'Some'
 				? containerOpt.value.runBuild(opts.path)
@@ -355,7 +355,7 @@ const containerBuildCmd = (imageTag: string, hostPath: string): ChildProcess.Com
 		// the full bytecode regardless.
 		`exec sui move build --path /workspace/${shellQuote(pkgName)} -e testnet --no-tree-shaking --dump-bytecode-as-base64 --with-unpublished-dependencies`,
 	].join('; ');
-	const moveHome = path.join(os.homedir(), '.move');
+	const moveHome = defaultMoveHome();
 	const dockerArgs = [
 		'run',
 		'--rm',
@@ -553,7 +553,7 @@ export const scrubCachedMoveLocks = (
 ): Effect.Effect<void, SuiCliError, FileSystem.FileSystem> =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem;
-		const root = path.join(os.homedir(), '.move', 'git');
+		const root = path.join(defaultMoveHome(), 'git');
 
 		const rootExists = yield* fs.exists(root).pipe(Effect.orElseSucceed(() => false));
 		if (!rootExists) {
@@ -650,7 +650,7 @@ const stripPinnedSectionsFromMoveLock = (
 		// dep pins testnet's published id (`0x36dbef…`) into its
 		// lockfile, which then gets embedded into the deepbook
 		// bytecode on publish and fails on localnet.
-		yield* scrubLockFilesUnder(fs, path.join(os.homedir(), '.move', 'git')).pipe(Effect.ignore);
+		yield* scrubLockFilesUnder(fs, path.join(defaultMoveHome(), 'git')).pipe(Effect.ignore);
 		// Walk for sibling vendored-imports lockfiles. Stop at the first
 		// `.devstack/imports` we find on the way up so we cover the
 		// example's full Move tree without recursing into the workspace

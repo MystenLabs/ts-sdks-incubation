@@ -35,7 +35,7 @@ import * as nodeOs from 'node:os';
 import * as nodePath from 'node:path';
 import { Console, Effect } from 'effect';
 import { Command, Flag } from 'effect/unstable/cli';
-import { sweepStaleGitLocks } from '../../engine/sui-build-container.js';
+import { sweepStaleGitLocks } from '../../engine/move-build-lock.js';
 import { promptConfirm, promptTypeToConfirm } from '../cli-prompt.js';
 import { emitEnvelope, failWithEnvelope, jsonModeEnabled, successEnvelope } from '../envelope.js';
 import { EX_USAGE, EX_CONFIRM_REQUIRED } from '../exit-codes.js';
