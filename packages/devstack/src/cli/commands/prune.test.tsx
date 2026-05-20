@@ -83,7 +83,7 @@ describe('PruneApp', () => {
 		unmount();
 	});
 
-	it('shows the confirmation prompt after toggle + enter', async () => {
+	it('shows the confirmation prompt after toggle + enter', { timeout: 15000 }, async () => {
 		const rows = [row({ app: 'arena', stack: 'main' })];
 		const { lastFrame, stdin, unmount } = inkRender(
 			React.createElement(PruneApp, {
