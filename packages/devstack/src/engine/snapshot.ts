@@ -51,9 +51,10 @@
 
 import { Effect, FileSystem, Path, Schema } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
-import { captureCommand, type CaptureError } from './capture-command.js';
+import { captureCommand } from './capture-command.js';
 import * as Docker from './docker.js';
 import { DockerLabel } from './identity.js';
+import { SnapshotPhases } from './phases.js';
 import { resolveAppDir } from './resolve-app-dir.js';
 import { RUNTIME_DIR_NAME } from './service-paths.js';
 
@@ -78,9 +79,57 @@ const DEFAULT_SNAPSHOTS_DIR = `${STATE_DIR}/snapshots`;
 // — see `SnapshotMetaServices` below.
 
 export class SnapshotError extends Schema.TaggedErrorClass<SnapshotError>()('SnapshotError', {
+	// `phase` discriminates which step of the save/restore pipeline
+	// failed. Closed set in `engine/phases.ts::SnapshotPhases`. AGENTS.md
+	// makes phase the canonical "which step" field so pretty-error's
+	// `summarizeCause` can bucket failures without parsing message text
+	// (E7 / E14).
+	phase: Schema.Literals(SnapshotPhases),
 	message: Schema.String,
 	cause: Schema.optional(Schema.Defect),
 }) {}
+
+// One funnel for all snapshot failures. Replaces the three pre-E7
+// `wrap*Error` helpers (`wrapError`, `wrapDockerError`,
+// `captureToSnapshotError`) with a single phase-stamped envelope. The
+// helper accepts any cause shape — unknown filesystem errors,
+// DockerError, or CaptureError — and rolls the source error's own
+// message into the SnapshotError message so log-grepping by the inner
+// `phase` (docker / tar) still works.
+const snapshotError =
+	(phase: SnapshotError['phase'], context?: string) =>
+	(cause: unknown): SnapshotError => {
+		const ctxPart = context !== undefined ? `${context}: ` : '';
+		// DockerError carries its own inner phase + message; surface both
+		// so the snapshot message reads e.g.
+		//   "snapshot[container-commit] failed to commit container sui:
+		//    docker commit failed — image already exists".
+		if (cause instanceof Docker.DockerError) {
+			return new SnapshotError({
+				phase,
+				message: `${ctxPart}${cause.phase} failed — ${cause.message}`,
+				cause,
+			});
+		}
+		// CaptureError (engine/capture-command.ts) wraps its own cause —
+		// unwrap so the SnapshotError's cause is the underlying defect,
+		// not the capture-helper envelope.
+		const captureLike = cause as { _tag?: string; cause?: unknown };
+		if (captureLike?._tag === 'CaptureError') {
+			return new SnapshotError({
+				phase,
+				message: `${ctxPart}failed`,
+				cause: captureLike.cause ?? cause,
+			});
+		}
+		// Unknown errors — filesystem failures (ENOENT, EACCES) and the
+		// like. Carry the raw cause so prettyError walks it.
+		return new SnapshotError({
+			phase,
+			message: ctxPart.length > 0 ? ctxPart.replace(/: $/, '') : 'failed',
+			cause,
+		});
+	};
 
 const ContainerEntry = Schema.Struct({
 	id: Schema.String,
@@ -198,18 +247,6 @@ export const readServiceMeta = <K extends keyof SnapshotMetaServices>(
 	return slice as SnapshotMetaServices[K] | undefined;
 };
 
-const wrapError = (message: string) => (cause: unknown) => new SnapshotError({ message, cause });
-
-// Funnel DockerError → SnapshotError so callers only need to handle one tag.
-// The docker op name is preserved in the message so failures are still
-// debuggable from logs.
-const wrapDockerError =
-	(context: string) =>
-	(cause: Docker.DockerError): SnapshotError =>
-		new SnapshotError({
-			message: `${context}: ${cause.phase} failed — ${cause.message}`,
-			cause,
-		});
 
 // -----------------------------------------------------------------------------
 // Path resolution — mirrors `engine/state-store.ts:resolvePaths` +
@@ -276,17 +313,10 @@ const truncateStderr = (text: string): string => {
 	return `${trimmed.slice(0, TAR_STDERR_TRUNC - 1)}…`;
 };
 
-const captureToSnapshotError =
-	(op: string) =>
-	(err: CaptureError): SnapshotError =>
-		new SnapshotError({
-			message: `${op} failed`,
-			cause: err.cause ?? err,
-		});
-
 const runTar = (
 	spawner: ReturnType<typeof ChildProcessSpawner.make>,
 	cmd: ChildProcess.Command,
+	phase: SnapshotError['phase'],
 	op: string,
 ): Effect.Effect<void, SnapshotError> =>
 	Effect.gen(function* () {
@@ -299,10 +329,11 @@ const runTar = (
 		const captured = yield* captureCommand(spawner, cmd, {
 			op,
 			stderrTruncate: Infinity,
-		}).pipe(Effect.mapError(captureToSnapshotError(op)));
+		}).pipe(Effect.mapError(snapshotError(phase, op)));
 		if (captured.exitCode !== 0) {
 			return yield* Effect.fail(
 				new SnapshotError({
+					phase,
 					message: `${op} exited ${captured.exitCode}: ${truncateStderr(captured.stderr)}`,
 					cause: captured.stderr.length > 0 ? captured.stderr : undefined,
 				}),
@@ -314,18 +345,20 @@ const tarCreate = (
 	spawner: ReturnType<typeof ChildProcessSpawner.make>,
 	srcDir: string,
 	tarPath: string,
+	phase: SnapshotError['phase'],
 ): Effect.Effect<void, SnapshotError> => {
 	// `-C srcDir .` makes the archive entries relative to `srcDir`'s
 	// children, so untarring at a different absolute path on restore
 	// puts files at the right offsets without leading-slash stripping.
 	const cmd = ChildProcess.make('tar', ['-cf', tarPath, '-C', srcDir, '.']);
-	return runTar(spawner, cmd, `tar -cf ${tarPath}`);
+	return runTar(spawner, cmd, phase, `tar -cf ${tarPath}`);
 };
 
 const tarExtract = (
 	spawner: ReturnType<typeof ChildProcessSpawner.make>,
 	tarPath: string,
 	dstDir: string,
+	phase: SnapshotError['phase'],
 ): Effect.Effect<void, SnapshotError> => {
 	// `--no-same-owner` so a restore running as a different UID
 	// than the save (e.g. CI runner ≠ developer's local user)
@@ -334,7 +367,7 @@ const tarExtract = (
 	// runtime/ contents are scoped to the current shell session.
 	// Supported by both GNU tar and BSD tar.
 	const cmd = ChildProcess.make('tar', ['-xf', tarPath, '-C', dstDir, '--no-same-owner']);
-	return runTar(spawner, cmd, `tar -xf ${tarPath}`);
+	return runTar(spawner, cmd, phase, `tar -xf ${tarPath}`);
 };
 
 // -----------------------------------------------------------------------------
@@ -447,7 +480,7 @@ export const snapshot = (opts: {
 
 		yield* fs
 			.makeDirectory(target, { recursive: true })
-			.pipe(Effect.mapError(wrapError(`failed to create snapshot dir ${target}`)));
+			.pipe(Effect.mapError(snapshotError('create-dir', `failed to create snapshot dir ${target}`)));
 
 		// 1. state.json — preserves the cached state-store entries
 		// (package IDs, port leases, seal BLS keypair cache, walrus
@@ -455,11 +488,15 @@ export const snapshot = (opts: {
 		// time has no state.json yet, and that's fine.
 		const hasState = yield* fs
 			.exists(stackPaths.stateFile)
-			.pipe(Effect.mapError(wrapError(`failed to stat ${stackPaths.stateFile}`)));
+			.pipe(Effect.mapError(snapshotError('state-copy', `failed to stat ${stackPaths.stateFile}`)));
 		if (hasState) {
 			yield* fs
 				.copyFile(stackPaths.stateFile, stateDst)
-				.pipe(Effect.mapError(wrapError(`failed to copy ${stackPaths.stateFile} -> ${stateDst}`)));
+				.pipe(
+					Effect.mapError(
+						snapshotError('state-copy', `failed to copy ${stackPaths.stateFile} -> ${stateDst}`),
+					),
+				);
 		}
 
 		// 2. runtime/ — tar the canonical service-owned state dir.
@@ -471,9 +508,11 @@ export const snapshot = (opts: {
 		if (opts.skipRuntime !== true) {
 			const hasRuntime = yield* fs
 				.exists(stackPaths.runtimeDir)
-				.pipe(Effect.mapError(wrapError(`failed to stat ${stackPaths.runtimeDir}`)));
+				.pipe(
+					Effect.mapError(snapshotError('runtime-tar', `failed to stat ${stackPaths.runtimeDir}`)),
+				);
 			if (hasRuntime) {
-				yield* tarCreate(spawner, stackPaths.runtimeDir, runtimeTarDst);
+				yield* tarCreate(spawner, stackPaths.runtimeDir, runtimeTarDst, 'runtime-tar');
 				runtimeTar = runtimeTarDst;
 			}
 		}
@@ -495,7 +534,7 @@ export const snapshot = (opts: {
 		if (containers.length > 0) {
 			yield* fs
 				.makeDirectory(containersDir, { recursive: true })
-				.pipe(Effect.mapError(wrapError(`failed to create ${containersDir}`)));
+				.pipe(Effect.mapError(snapshotError('container-commit', `failed to create ${containersDir}`)));
 			for (const container of containers) {
 				const imageName = `devstack-snap:${opts.id}-${container.name}`;
 				const tarPath = path.join(containersDir, `${container.name}.tar`);
@@ -503,6 +542,7 @@ export const snapshot = (opts: {
 				if (originalImage === undefined) {
 					return yield* Effect.fail(
 						new SnapshotError({
+							phase: 'container-inspect',
 							message: `failed to inspect container ${container.name} (${container.id}): docker reported no image tag`,
 						}),
 					);
@@ -519,11 +559,15 @@ export const snapshot = (opts: {
 				// failure of the commit.
 				const isRunning = yield* Docker.inspectContainerRunning(container.id);
 				const commit = Docker.commitContainer(container.id, imageName).pipe(
-					Effect.mapError(wrapDockerError(`failed to commit container ${container.name}`)),
+					Effect.mapError(
+						snapshotError('container-commit', `failed to commit container ${container.name}`),
+					),
 				);
 				if (isRunning === true) {
 					yield* Docker.pauseContainer(container.id).pipe(
-						Effect.mapError(wrapDockerError(`failed to pause container ${container.name}`)),
+						Effect.mapError(
+							snapshotError('container-pause', `failed to pause container ${container.name}`),
+						),
 					);
 					yield* commit.pipe(
 						Effect.ensuring(Docker.unpauseContainer(container.id).pipe(Effect.ignore)),
@@ -532,7 +576,7 @@ export const snapshot = (opts: {
 					yield* commit;
 				}
 				yield* Docker.saveImage(imageName, tarPath).pipe(
-					Effect.mapError(wrapDockerError(`failed to save image ${imageName}`)),
+					Effect.mapError(snapshotError('container-save', `failed to save image ${imageName}`)),
 				);
 				containerTars.push(tarPath);
 				containerEntries.push({
@@ -554,19 +598,19 @@ export const snapshot = (opts: {
 		if (extras.length > 0) {
 			yield* fs
 				.makeDirectory(extrasDir, { recursive: true })
-				.pipe(Effect.mapError(wrapError(`failed to create ${extrasDir}`)));
+				.pipe(Effect.mapError(snapshotError('extras-dir', `failed to create ${extrasDir}`)));
 			for (const extra of extras) {
 				const tarPath = path.join(extrasDir, `${extra.key}.tar`);
 				const exists = yield* fs
 					.exists(extra.path)
-					.pipe(Effect.mapError(wrapError(`failed to stat ${extra.path}`)));
+					.pipe(Effect.mapError(snapshotError('extras-stat', `failed to stat ${extra.path}`)));
 				if (!exists) {
 					// Skip missing extras rather than failing — a plugin
 					// might register an extra whose path is only populated
 					// after a specific code path runs.
 					continue;
 				}
-				yield* tarCreate(spawner, extra.path, tarPath);
+				yield* tarCreate(spawner, extra.path, tarPath, 'extras-tar');
 				extrasTars.push(tarPath);
 			}
 		}
@@ -591,7 +635,7 @@ export const snapshot = (opts: {
 		};
 		yield* fs
 			.writeFileString(metaDst, JSON.stringify(meta, null, 2))
-			.pipe(Effect.mapError(wrapError(`failed to write ${metaDst}`)));
+			.pipe(Effect.mapError(snapshotError('meta-write', `failed to write ${metaDst}`)));
 
 		return { path: target, containerTars, runtimeTar, extrasTars };
 	}).pipe(Effect.withSpan('SnapshotCreate', { attributes: { 'snapshot.id': opts.id } }));
@@ -640,9 +684,12 @@ export const restore = (opts: {
 
 		const exists = yield* fs
 			.exists(source)
-			.pipe(Effect.mapError(wrapError(`failed to stat ${source}`)));
+			.pipe(Effect.mapError(snapshotError('source-stat', `failed to stat ${source}`)));
 		if (!exists) {
-			return yield* new SnapshotError({ message: `snapshot ${opts.id} not found at ${source}` });
+			return yield* new SnapshotError({
+				phase: 'not-found',
+				message: `snapshot ${opts.id} not found at ${source}`,
+			});
 		}
 
 		// Read meta once — used by the pre-cleanup pass (app+stack
@@ -668,6 +715,7 @@ export const restore = (opts: {
 				sui.chainId !== opts.expectedChainId
 			) {
 				return yield* new SnapshotError({
+					phase: 'chainId-mismatch',
 					message:
 						`snapshot ${opts.id} chainId mismatch: meta=${sui.chainId} ` +
 						`current=${opts.expectedChainId}. Refusing restore — the snapshot was ` +
@@ -694,15 +742,22 @@ export const restore = (opts: {
 		// 1. state.json — copy back over the live state-store file.
 		const hasState = yield* fs
 			.exists(stateSrc)
-			.pipe(Effect.mapError(wrapError(`failed to stat ${stateSrc}`)));
+			.pipe(Effect.mapError(snapshotError('state-restore', `failed to stat ${stateSrc}`)));
 		if (hasState) {
 			const stateDir = path.dirname(stackPaths.stateFile);
 			yield* fs
 				.makeDirectory(stateDir, { recursive: true })
-				.pipe(Effect.mapError(wrapError(`failed to create ${stateDir}`)));
+				.pipe(Effect.mapError(snapshotError('state-restore', `failed to create ${stateDir}`)));
 			yield* fs
 				.copyFile(stateSrc, stackPaths.stateFile)
-				.pipe(Effect.mapError(wrapError(`failed to copy ${stateSrc} -> ${stackPaths.stateFile}`)));
+				.pipe(
+					Effect.mapError(
+						snapshotError(
+							'state-restore',
+							`failed to copy ${stateSrc} -> ${stackPaths.stateFile}`,
+						),
+					),
+				);
 		}
 
 		// 2. runtime/ — untar back into place. Wipe the destination first
@@ -716,15 +771,25 @@ export const restore = (opts: {
 		let runtimeRestored = false;
 		const hasRuntimeTar = yield* fs
 			.exists(runtimeTarSrc)
-			.pipe(Effect.mapError(wrapError(`failed to stat ${runtimeTarSrc}`)));
+			.pipe(
+				Effect.mapError(snapshotError('runtime-extract', `failed to stat ${runtimeTarSrc}`)),
+			);
 		if (hasRuntimeTar) {
 			yield* fs
 				.remove(stackPaths.runtimeDir, { recursive: true, force: true })
-				.pipe(Effect.mapError(wrapError(`failed to clear ${stackPaths.runtimeDir}`)));
+				.pipe(
+					Effect.mapError(
+						snapshotError('runtime-extract', `failed to clear ${stackPaths.runtimeDir}`),
+					),
+				);
 			yield* fs
 				.makeDirectory(stackPaths.runtimeDir, { recursive: true })
-				.pipe(Effect.mapError(wrapError(`failed to create ${stackPaths.runtimeDir}`)));
-			yield* tarExtract(spawner, runtimeTarSrc, stackPaths.runtimeDir);
+				.pipe(
+					Effect.mapError(
+						snapshotError('runtime-extract', `failed to create ${stackPaths.runtimeDir}`),
+					),
+				);
+			yield* tarExtract(spawner, runtimeTarSrc, stackPaths.runtimeDir, 'runtime-extract');
 			runtimeRestored = true;
 		}
 
@@ -738,11 +803,11 @@ export const restore = (opts: {
 		const loadedImages: Array<string> = [];
 		const hasContainersDir = yield* fs
 			.exists(containersDir)
-			.pipe(Effect.mapError(wrapError(`failed to stat ${containersDir}`)));
+			.pipe(Effect.mapError(snapshotError('container-load', `failed to stat ${containersDir}`)));
 		if (hasContainersDir) {
 			const entries = yield* fs
 				.readDirectory(containersDir)
-				.pipe(Effect.mapError(wrapError(`failed to read ${containersDir}`)));
+				.pipe(Effect.mapError(snapshotError('container-load', `failed to read ${containersDir}`)));
 			// Index meta.containers by `name` so we can look up
 			// `originalImage` per tarball without a quadratic search.
 			const byName = new Map<string, string>();
@@ -753,7 +818,9 @@ export const restore = (opts: {
 				if (!entry.endsWith('.tar')) continue;
 				const tarPath = path.join(containersDir, entry);
 				const { tag } = yield* Docker.loadImage(tarPath).pipe(
-					Effect.mapError(wrapDockerError(`failed to load image from ${tarPath}`)),
+					Effect.mapError(
+						snapshotError('container-load', `failed to load image from ${tarPath}`),
+					),
 				);
 				loadedImages.push(tag);
 				// Retag to originalImage so the supervisor's next
@@ -763,7 +830,9 @@ export const restore = (opts: {
 				const originalImage = byName.get(containerName);
 				if (originalImage !== undefined) {
 					yield* Docker.tagImage(tag, originalImage).pipe(
-						Effect.mapError(wrapDockerError(`failed to retag ${tag} -> ${originalImage}`)),
+						Effect.mapError(
+							snapshotError('container-retag', `failed to retag ${tag} -> ${originalImage}`),
+						),
 					);
 				}
 			}
@@ -775,19 +844,21 @@ export const restore = (opts: {
 		const extrasRestored: Array<string> = [];
 		const hasExtrasDir = yield* fs
 			.exists(extrasDir)
-			.pipe(Effect.mapError(wrapError(`failed to stat ${extrasDir}`)));
+			.pipe(Effect.mapError(snapshotError('extras-extract', `failed to stat ${extrasDir}`)));
 		if (hasExtrasDir) {
 			const extrasMeta = meta?.extras ?? [];
 			for (const extra of extrasMeta) {
 				const tarPath = path.join(extrasDir, `${extra.key}.tar`);
 				const tarExists = yield* fs
 					.exists(tarPath)
-					.pipe(Effect.mapError(wrapError(`failed to stat ${tarPath}`)));
+					.pipe(Effect.mapError(snapshotError('extras-extract', `failed to stat ${tarPath}`)));
 				if (!tarExists) continue;
 				yield* fs
 					.makeDirectory(extra.path, { recursive: true })
-					.pipe(Effect.mapError(wrapError(`failed to create ${extra.path}`)));
-				yield* tarExtract(spawner, tarPath, extra.path);
+					.pipe(
+						Effect.mapError(snapshotError('extras-extract', `failed to create ${extra.path}`)),
+					);
+				yield* tarExtract(spawner, tarPath, extra.path, 'extras-extract');
 				extrasRestored.push(extra.key);
 			}
 		}
@@ -858,12 +929,12 @@ export const list = (opts?: {
 
 		const exists = yield* fs
 			.exists(snapshotsDir)
-			.pipe(Effect.mapError(wrapError(`failed to stat ${snapshotsDir}`)));
+			.pipe(Effect.mapError(snapshotError('list-stat', `failed to stat ${snapshotsDir}`)));
 		if (!exists) return [] as const;
 
 		const entries = yield* fs
 			.readDirectory(snapshotsDir)
-			.pipe(Effect.mapError(wrapError(`failed to read ${snapshotsDir}`)));
+			.pipe(Effect.mapError(snapshotError('list-read', `failed to read ${snapshotsDir}`)));
 
 		const results: Array<{
 			id: string;

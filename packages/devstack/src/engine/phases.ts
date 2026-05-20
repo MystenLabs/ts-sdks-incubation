@@ -208,3 +208,37 @@ export type ManifestDiscoveryPhase = (typeof ManifestDiscoveryPhases)[number];
 //                               type mismatch from an in-loader bug.
 export const ConfigLoadPhases = ['load', 'validate', 'missing-default-export', 'invoke'] as const;
 export type ConfigLoadPhase = (typeof ConfigLoadPhases)[number];
+
+// `SnapshotError.phase` — closed set for `engine/snapshot.ts`. Each
+// phase names a step in the snapshot save / restore pipeline; the per-
+// site context (target path, container name, …) rides on `message`.
+// Audit finding E7 collapses three `wrap*Error` helpers into one
+// `snapshotError(phase, context?)` that stamps the phase as a
+// discriminator pretty-error + summarizeCause can bucket on.
+export const SnapshotPhases = [
+	// Save pipeline
+	'create-dir',
+	'state-copy',
+	'runtime-tar',
+	'container-inspect',
+	'container-commit',
+	'container-pause',
+	'container-save',
+	'extras-dir',
+	'extras-stat',
+	'extras-tar',
+	'meta-write',
+	// Restore pipeline
+	'source-stat',
+	'not-found',
+	'chainId-mismatch',
+	'state-restore',
+	'runtime-extract',
+	'container-load',
+	'container-retag',
+	'extras-extract',
+	// List
+	'list-stat',
+	'list-read',
+] as const;
+export type SnapshotPhase = (typeof SnapshotPhases)[number];
