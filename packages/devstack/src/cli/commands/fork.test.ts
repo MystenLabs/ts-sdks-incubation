@@ -21,7 +21,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join as joinPath } from 'node:path';
 import { computeConfigHash } from '../../engine/sui-fork/meta.js';
-import { _internal } from './fork.js';
+import { _internal } from './fork/index.js';
 
 describe('cli/commands/fork', () => {
 	describe('manifest discovery + upstream derivation (P4.T1 wiring)', () => {

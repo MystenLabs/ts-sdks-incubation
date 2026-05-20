@@ -28,7 +28,7 @@ import { loadConfigModule, requireLaunchEffect } from './loaders.js';
 import { renderSchema } from './schema-emit.js';
 import { applyCommand } from './commands/apply.js';
 import { doctorCommand } from './commands/doctor/index.js';
-import { forkCommand } from './commands/fork.js';
+import { forkCommand } from './commands/fork/index.js';
 import { graphCommand } from './commands/graph.js';
 import { manifestCommand } from './commands/manifest.js';
 import { pruneCommand } from './commands/prune.js';

@@ -1,7 +1,7 @@
 // Unified manifest reader + projection — consolidates the four hand-rolled
 // "discover manifest → JSON.parse → walk services / app" snippets used by:
 //
-//   - `cli/commands/fork.ts`        (`readManifestSuiBlock`)
+//   - `cli/commands/fork/`          (`readManifestSuiBlock`)
 //   - `cli/commands/status.ts`      (`tryReadJson` + ad-hoc sui projection)
 //   - `cli/commands/manifest.ts`    (inline `JSON.parse`)
 //   - `playwright/web-server.ts`    (`resolveEndpoint`)
