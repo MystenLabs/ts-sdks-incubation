@@ -30,6 +30,7 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { Effect, Schema } from 'effect';
+import { pathExists } from './fs-utils.js';
 import { stringifyCause } from './stringify-cause.js';
 
 /** Failure modes surfaced by {@link stageAndSwap}. Carries the
@@ -137,17 +138,7 @@ export const stageAndSwap = <E, R>(
 
 		// (3) move existing target aside if present. Use `fs.access` over
 		// `fs.stat` so we don't pay for a stat we don't need.
-		const targetExists = yield* Effect.tryPromise({
-			try: async () => {
-				try {
-					await fs.access(target);
-					return true;
-				} catch {
-					return false;
-				}
-			},
-			catch: () => false,
-		}).pipe(Effect.orElseSucceed(() => false));
+		const targetExists = yield* Effect.promise(() => pathExists(target));
 
 		if (targetExists) {
 			yield* Effect.tryPromise({

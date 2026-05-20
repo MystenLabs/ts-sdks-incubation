@@ -22,6 +22,7 @@ import { Effect } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 import { generateFromPackageSummary } from '@mysten/codegen';
 import { createContentHasher, digestHex } from '../../engine/content-hash.js';
+import { pathExists } from '../../engine/fs-utils.js';
 import { stageAndSwap, StageAndSwapError } from '../../engine/stage-and-swap.js';
 import { stringifyCause } from '../../engine/stringify-cause.js';
 import { SuiBuildContainer } from '../../engine/sui-build-container.js';
@@ -206,12 +207,7 @@ const runEmit = (
 							// error message below points at the codegen layer
 							// instead of the access syscall.
 							const expected = path.join(staging, t.name);
-							const wrote = yield* Effect.promise(() =>
-								fs.access(expected).then(
-									() => true,
-									() => false,
-								),
-							);
+							const wrote = yield* Effect.promise(() => pathExists(expected));
 							if (!wrote) {
 								return yield* Effect.fail(
 									new CodegenError({

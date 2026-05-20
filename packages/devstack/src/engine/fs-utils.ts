@@ -8,6 +8,37 @@ import { promises as nodeFs } from 'node:fs';
 import { join as joinPath } from 'node:path';
 
 /**
+ * Read a file and return its contents, or `undefined` if the file is
+ * missing / unreadable. Centralises the `fs.readFile` + `catch → undefined`
+ * idiom that previously lived in 3+ callsites (audit finding E60).
+ */
+export const readFileOrUndefined = async (
+	path: string,
+	encoding: BufferEncoding = 'utf-8',
+): Promise<string | undefined> => {
+	try {
+		return await nodeFs.readFile(path, encoding);
+	} catch {
+		return undefined;
+	}
+};
+
+/**
+ * Best-effort path-existence probe. Returns `true` when `fs.access`
+ * succeeds, `false` for any error (missing path, EACCES, EPERM…).
+ * Centralises the `fs.access(path).then(true, false)` pattern that
+ * previously lived in 3+ callsites (audit finding E60).
+ */
+export const pathExists = async (path: string): Promise<boolean> => {
+	try {
+		await nodeFs.access(path);
+		return true;
+	} catch {
+		return false;
+	}
+};
+
+/**
  * Recursively sum the size in bytes of `root`. Returns `0` for
  * missing paths, stat failures, or empty directories. Used by:
  *

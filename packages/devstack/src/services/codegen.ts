@@ -32,7 +32,6 @@
 //
 // User emitters drop in alongside via `defineEmitter({ name, emit })`.
 
-import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { Effect } from 'effect';
 import { tag, setPhase, type LayeredTag } from '../advanced/tag.js';
@@ -44,6 +43,7 @@ import { StackHandleEmitter } from '../codegen/emitters/stack-handle.js';
 import { CodegenError } from '../codegen/errors.js';
 import { fsOp } from '../codegen/helpers.js';
 import { displayPath } from '../engine/display-path.js';
+import { readFileOrUndefined } from '../engine/fs-utils.js';
 import { stageAndSwap, StageAndSwapError } from '../engine/stage-and-swap.js';
 import { writeFileAtomic } from '../engine/atomic-write.js';
 import type { Package, LocalPackage } from './package.js';
@@ -59,13 +59,7 @@ extras.ts
  *  customized `.gitignore` across the rename — otherwise the swap would
  *  promote staging (no `.gitignore`) and destroy the user's edits. */
 const readExistingGitignore = (outputDir: string): Effect.Effect<string | undefined> =>
-	Effect.promise(async () => {
-		try {
-			return await fs.readFile(path.join(outputDir, '.gitignore'), 'utf-8');
-		} catch {
-			return undefined;
-		}
-	});
+	Effect.promise(() => readFileOrUndefined(path.join(outputDir, '.gitignore')));
 
 /** Write `<outputDir>/.gitignore`. When `existing` is supplied the
  *  caller has already established the user's pre-existing content
@@ -173,6 +167,26 @@ export const Codegen = (opts: CodegenOptions = {}) => {
 		DeepbookConfigEmitter(),
 	];
 	const output = opts.output ?? DEFAULT_CODEGEN_OUTPUT;
+
+	// Compose-time duplicate-emitter check (audit finding E62). Each
+	// emitter conventionally writes under `<outputDir>/<emitter.name>/`;
+	// two emitters with the same `name` would clobber each other (and
+	// which one wins depends on iteration order, which is fragile).
+	// Throwing here surfaces the conflict in the user's `Codegen({...})`
+	// call stack at config-load time rather than as a downstream missing-
+	// file error during the next supervisor cycle.
+	const seenEmitterNames = new Set<string>();
+	for (const emitter of emitters) {
+		if (seenEmitterNames.has(emitter.name)) {
+			throw new Error(
+				`Codegen('${name}'): duplicate emitter name '${emitter.name}'. ` +
+					`Each emitter writes under <outputDir>/<emitter.name>/; two ` +
+					`emitters with the same name would clobber each other.`,
+			);
+		}
+		seenEmitterNames.add(emitter.name);
+	}
+
 	return tag(
 		`codegen/${name}` as const,
 		Effect.gen(function* () {
@@ -199,30 +213,10 @@ export const Codegen = (opts: CodegenOptions = {}) => {
 				resolved.push(toCodegenPackage(pkg));
 			}
 
-			// Collision detection: each emitter conventionally writes
-			// under `<outputDir>/<emitter.name>/`. Two emitters with the
-			// same `name` would clobber each other's output (and which
-			// one wins depends on iteration order, which is fragile).
-			// Fail loudly at acquire time so the conflict surfaces with
-			// the user's `Codegen({ emitters: [...] })` site in the
-			// stack trace, not as a mysterious missing-file error
-			// during a downstream consumer's TS build.
-			const emitterNamesSeen = new Set<string>();
-			for (const emitter of emitters) {
-				if (emitterNamesSeen.has(emitter.name)) {
-					return yield* Effect.fail(
-						new CodegenError({
-							emitter: emitter.name,
-							phase: 'generate',
-							message:
-								`Codegen('${name}'): duplicate emitter name '${emitter.name}'. ` +
-								`Each emitter writes under <outputDir>/<emitter.name>/; two ` +
-								`emitters with the same name would clobber each other.`,
-						}),
-					);
-				}
-				emitterNamesSeen.add(emitter.name);
-			}
+			// Duplicate-emitter detection happens at compose-time above
+			// (audit finding E62) so a conflict surfaces in the user's
+			// `Codegen({ emitters: [...] })` call rather than as a runtime
+			// CodegenError mid-cycle.
 
 			yield* Effect.annotateCurrentSpan({
 				'codegen.output': outputDir,
