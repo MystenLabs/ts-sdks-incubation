@@ -27,7 +27,7 @@ import { applyNetworkOverride, networkFlag, rendererFlag } from './flags.js';
 import { loadConfigModule, requireLaunchEffect } from './loaders.js';
 import { renderSchema } from './schema-emit.js';
 import { applyCommand } from './commands/apply.js';
-import { doctorCommand } from './commands/doctor.js';
+import { doctorCommand } from './commands/doctor/index.js';
 import { forkCommand } from './commands/fork.js';
 import { graphCommand } from './commands/graph.js';
 import { manifestCommand } from './commands/manifest.js';
