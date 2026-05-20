@@ -10,6 +10,7 @@ import { readForkMeta } from '../../engine/sui-fork/meta.js';
 import { readStackContext, type StackContext } from '../../runtime/read-stack-context.js';
 import { emitEnvelope, jsonModeEnabled, successEnvelope } from '../envelope.js';
 import { resolveForkMetaPath, resolveStackFromEnv, stateDir } from '../stack-resolution.js';
+import { renderManifestBody } from './_manifest-render.js';
 
 // Action-time env read — see manifest.ts for the rationale.
 const stateFile = (): string => `${stateDir()}/stacks/${resolveStackFromEnv(undefined)}/state.json`;
@@ -200,45 +201,13 @@ export const statusCommand = Command.make(
 			}
 
 			if (manifest.ctx !== undefined) {
-				// Project endpoints out of the typed manifest as a flat array
-				// for the table render below.
-				const m = manifest.ctx.manifest;
-				const printedEps: Array<{ name: string; url: string }> = [];
-				if (m.services.sui !== undefined) {
-					printedEps.push({ name: 'sui-rpc', url: m.services.sui.rpc.url });
-					if (m.services.sui.faucet !== undefined)
-						printedEps.push({ name: 'sui-faucet', url: m.services.sui.faucet.url });
-					if (m.services.sui.graphql !== undefined)
-						printedEps.push({ name: 'sui-graphql', url: m.services.sui.graphql.url });
-				}
-				if (m.services.seal !== undefined)
-					printedEps.push({ name: 'seal-key-server', url: m.services.seal.keyServer.url });
-				if (m.services.walrus !== undefined) {
-					printedEps.push({ name: 'walrus-aggregator', url: m.services.walrus.aggregator.url });
-					printedEps.push({ name: 'walrus-publisher', url: m.services.walrus.publisher.url });
-				}
-				if (m.app.dev !== undefined)
-					printedEps.push({ name: 'frontend.dev-server', url: m.app.dev.url });
-				if (m.app.wallet !== undefined) printedEps.push({ name: 'wallet-app', url: m.app.wallet.url });
-				if (printedEps.length > 0) {
-					yield* Console.log(`  endpoints:`);
-					for (const ep of printedEps) {
-						yield* Console.log(`    ${ep.name}: ${ep.url}`);
-					}
-				}
-				const pkgs = Object.entries(m.packages);
-				if (pkgs.length > 0) {
-					yield* Console.log(`  packages:`);
-					for (const [name, pkg] of pkgs) {
-						yield* Console.log(`    ${name}: ${pkg.id}`);
-					}
-				}
-				const accts = Object.entries(m.accounts);
-				if (accts.length > 0) {
-					yield* Console.log(`  accounts:`);
-					for (const [name, acct] of accts) {
-						yield* Console.log(`    ${name}: ${acct.address}`);
-					}
+				// Defer to the shared renderer so endpoints / packages /
+				// accounts stay bit-for-bit aligned with `devstack manifest`.
+				// `status` historically omits the coins + extras blocks
+				// the `manifest` command prints.
+				const bodyLines = renderManifestBody(manifest.ctx.manifest);
+				for (const line of bodyLines) {
+					yield* Console.log(line);
 				}
 			}
 		}),

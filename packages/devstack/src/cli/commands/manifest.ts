@@ -1,7 +1,8 @@
 // `devstack manifest` — print the current devstack manifest.json.
 // Default: human-readable summary (endpoints / packages / accounts / coins
-// / extras), mirroring the `status` command's shape. `--json` emits the
-// raw JSON unchanged. `--path` overrides the discovered path.
+// / extras), mirroring the `status` command's shape via the shared
+// `renderManifestBody` helper. `--json` emits the canonical envelope
+// wrapping the parsed manifest. `--path` overrides the discovered path.
 //
 // Read-only — does NOT build any layers, so it's safe against a live stack.
 //
@@ -16,6 +17,7 @@ import { Argument, Command, Flag } from 'effect/unstable/cli';
 import { readStackContext } from '../../runtime/read-stack-context.js';
 import { failAlreadyReported } from '../already-reported.js';
 import { emitEnvelope, jsonModeEnabled, successEnvelope } from '../envelope.js';
+import { renderManifestBody } from './_manifest-render.js';
 
 export const manifestCommand = Command.make(
 	'manifest',
@@ -53,77 +55,11 @@ export const manifestCommand = Command.make(
 					yield* Console.log(`devstack manifest`);
 					yield* Console.log(`  path: ${ctx.manifestPath}`);
 
-					const m = ctx.manifest;
-					const pkgs = Object.entries(m.packages);
-					const accts = Object.entries(m.accounts);
-					const coins = Object.entries(m.coins);
-					const extras = m.app.extras;
-
-					// Endpoints: walk the typed services + app block, projecting
-					// to a flat name/url/kind table for the rendering below.
-					const printedEps: Array<{ name: string; url: string; kind?: string }> = [];
-					if (m.services.sui !== undefined) {
-						printedEps.push({ name: 'sui-rpc', url: m.services.sui.rpc.url });
-						if (m.services.sui.faucet !== undefined)
-							printedEps.push({ name: 'sui-faucet', url: m.services.sui.faucet.url });
-						if (m.services.sui.graphql !== undefined)
-							printedEps.push({ name: 'sui-graphql', url: m.services.sui.graphql.url });
+					const bodyLines = renderManifestBody(ctx.manifest, true);
+					for (const line of bodyLines) {
+						yield* Console.log(line);
 					}
-					if (m.services.seal !== undefined)
-						printedEps.push({ name: 'seal-key-server', url: m.services.seal.keyServer.url });
-					if (m.services.walrus !== undefined) {
-						printedEps.push({
-							name: 'walrus-aggregator',
-							url: m.services.walrus.aggregator.url,
-						});
-						printedEps.push({ name: 'walrus-publisher', url: m.services.walrus.publisher.url });
-					}
-					if (m.app.dev !== undefined)
-						printedEps.push({ name: 'frontend.dev-server', url: m.app.dev.url });
-					if (m.app.wallet !== undefined)
-						printedEps.push({ name: 'wallet-app', url: m.app.wallet.url });
-
-					if (printedEps.length > 0) {
-						yield* Console.log(`  endpoints:`);
-						for (const ep of printedEps) {
-							yield* Console.log(`    ${ep.name}: ${ep.url}`);
-						}
-					}
-					if (pkgs.length > 0) {
-						yield* Console.log(`  packages:`);
-						for (const [name, pkg] of pkgs) {
-							yield* Console.log(`    ${name}: ${pkg.id}`);
-						}
-					}
-					if (accts.length > 0) {
-						yield* Console.log(`  accounts:`);
-						for (const [name, acct] of accts) {
-							yield* Console.log(`    ${name}: ${acct.address}`);
-						}
-					}
-					if (coins.length > 0) {
-						yield* Console.log(`  coins:`);
-						for (const [name, coin] of coins) {
-							yield* Console.log(`    ${name}: ${coin.type} (${coin.decimals} decimals)`);
-						}
-					}
-					const extraKeys = Object.keys(extras);
-					if (extraKeys.length > 0) {
-						yield* Console.log(
-							`  extras: ${extraKeys.length} key${extraKeys.length === 1 ? '' : 's'}`,
-						);
-						for (const key of extraKeys) {
-							yield* Console.log(`    ${key}`);
-						}
-					}
-
-					const empty =
-						pkgs.length === 0 &&
-						printedEps.length === 0 &&
-						accts.length === 0 &&
-						coins.length === 0 &&
-						extraKeys.length === 0;
-					if (empty) {
+					if (bodyLines.length === 0) {
 						yield* Console.log(`  (empty)`);
 					}
 				}),
