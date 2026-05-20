@@ -29,7 +29,7 @@ const CliPlatform = Layer.provideMerge(RegistryLive, NodeServicesLayer);
 // shutdown — `pnpm` reads any non-zero as a failure regardless of
 // signal semantics. Real failures (non-interrupted causes) exit 1; the
 // error itself was already rendered by `cli/index.ts`'s `tapCause`.
-runMain(cli.pipe(Effect.provide(CliPlatform)), {
+runMain(cli.pipe(Effect.provide(CliPlatform)) as Effect.Effect<void, unknown, never>, {
 	disableErrorReporting: true,
 	teardown: (exit, onExit) => {
 		if (Exit.isSuccess(exit)) {

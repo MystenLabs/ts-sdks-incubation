@@ -13,7 +13,7 @@ import { Effect, FileSystem } from 'effect';
 import * as nodeFsSync from 'node:fs';
 import * as nodePath from 'node:path';
 import { join as joinPath } from 'node:path';
-import { sweepStaleGitLocks } from '../../../engine/sui-build-container.js';
+import { sweepStaleGitLocks } from '../../../engine/move-build-lock.js';
 import { isHolderLive } from '../../../engine/process-liveness.js';
 import type { Check } from './_check.js';
 
