@@ -438,6 +438,7 @@ LoC of new substrate; net **−2 400 LoC**. See §5 for the per-area math.
 | **Redesign**  | A `defineDevstackError(name, fields)` helper that stamps `cause: Schema.optional(Schema.Defect)` automatically. Removes 11 lines × 1 = 11 LoC, but more importantly enforces the convention. |
 | **LoC Δ**     | ~−10.                                                                                                                                                                                        |
 | **Bug class** | None — convention enforcement.                                                                                                                                                               |
+| **Status**    | DEFERRED 2026-05-19. Wrapping `Schema.TaggedErrorClass<T>()(name, fields)` in a helper trades the class-identity-as-`T` typing for an ergonomic factory; doable but requires extensive surgery to keep `instanceof X` and the typing-from-class-identity machinery happy. Net savings are 11 × 1 LoC against meaningful API risk on the tagged-error backbone every primitive depends on. |
 
 #### E39. Two `_tag` discriminator patterns: `Schema.TaggedErrorClass` vs `Data.TaggedError`
 
@@ -604,6 +605,7 @@ listed inline below their parent.
 | **Redesign**  | Add an optional `onLine?: OutputLineCallback` parameter on `captureCommand`; collapse `runOneShot`'s drain branch onto it.                                                                                                                                                                                         |
 | **LoC Δ**     | **−40 LoC**.                                                                                                                                                                                                                                                                                                       |
 | **Bug class** | Subsumed under E2's canonicality win — one less drain-loop to keep in sync.                                                                                                                                                                                                                                        |
+| **Status**    | DEFERRED 2026-05-19. `runOneShot` carries TERM-then-KILL escalation + scope-tied finalizers that `captureCommand`'s "both-streams-at-once" path doesn't model. Folding the per-line callback into `captureCommand` AND retaining the TERM-escalation lifecycle is a bigger refactor than the headline LoC suggests; better landed as part of a deliberate spawn-discipline pass. |
 
 #### E43. Three truncate-with-ellipsis policies + `RENDER_FIELD_TRUNC`
 
@@ -614,6 +616,7 @@ listed inline below their parent.
 | **Redesign**  | One shared `truncateWithEllipsis(s, maxBytes)` helper in `engine/pretty-error.ts` next to `RENDER_FIELD_TRUNC`. All four sites consume it.                                                                                                                                                                               |
 | **LoC Δ**     | **−15 LoC**.                                                                                                                                                                                                                                                                                                             |
 | **Bug class** | Hygiene; removes a "log says cut at 500 bytes, pretty-error truncated again at 8192" overlap.                                                                                                                                                                                                                            |
+| **Status**    | DEFERRED 2026-05-19. The three policies are genuinely different (`TAR_STDERR_TRUNC=500` + `(no stderr)` placeholder, `MAX_ERROR_DETAIL=600` + `(empty)` placeholder, `RENDER_FIELD_TRUNC=8192` + `[truncated]` suffix). A parameterised helper would absorb the trim+slice but each site retains its own placeholder/suffix policy; net LoC saving is ~0 once the helper signature carries enough options to express every variant. |
 
 #### E44. `SuiCliError` loses captured stdout/stderr/exitCode on most wrap-sites
 
@@ -624,6 +627,7 @@ listed inline below their parent.
 | **Redesign**  | Thread `CaptureError.{stdout, stderr, exitCode}` directly into `SuiCliError` on every wrap.                                                                                                                                                                                                                                                                                                                                                                                     |
 | **LoC Δ**     | **+10 LoC** (correctness fix — a deliberate positive delta).                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | **Bug class** | "publishMove ENOENT prints no captured stderr" — the user sees a bare `SuiCliError: <empty>` row instead of the dump that's already in memory.                                                                                                                                                                                                                                                                                                                                  |
+| **Status**    | OBSOLETE 2026-05-19. The `SuiCliError` shape already carries optional `stdout/stderr/exitCode` fields and the only two `new SuiCliError(...)` construction sites (both in `buildMove`) already thread the captured streams in. The `suiCliError` factory at `:74-91` handles ENOENT/spawn-side failures where no streams exist. No publishMove-style site that drops context remains in the current tree. |
 
 #### E45. `engine/docker/core.ts::captureStreams` is a dead alias
 
@@ -633,6 +637,7 @@ listed inline below their parent.
 | **Evidence**  | One-line alias for `runCapturing`. After E1 / E30 land, the entire surface can just be `Docker.runCapturing`. Surfaced by `a4b7b549b38f87757` and `ae20228b` (also listed as point under E2). |
 | **LoC Δ**     | **−2 LoC**.                                                                                                                                                                                   |
 | **Bug class** | Dead-weight; remove.                                                                                                                                                                          |
+| **Status**    | DONE 2026-05-19. Alias deleted from `engine/docker/core.ts`; `engine/docker/exec.ts` now calls `runCapturing` directly. |
 
 E2 sub-bullet (refinement, no new finding): `runtime/manifest-emit.ts:33`
 `Schema.encodeUnknownSync(ManifestV5)` runs on every emit; pair with E17 to drop the redundant
@@ -649,6 +654,7 @@ win). Surfaced by `af2c4ccf54b120fd8`.
 | **Evidence**  | Several callers (`publishMove`, `walrus`) compute `keyOverride` from runtime values (sourceHash, chainId) and have to do `const sourceHash = yield* hashMoveSources(...)` BEFORE the `withCache` call just to plumb it. Letting `keyOverride` be an Effect would lift the work into `withCache`. Surfaced by `a0cc212cdab3369dd` (Phase A) and the `5c3f2357` commit. |
 | **LoC Δ**     | **−25 LoC** across 5 callsites.                                                                                                                                                                                                                                                                                                                                       |
 | **Bug class** | Hygiene; reduces "I had to materialize this string at the wrong layer" plumbing.                                                                                                                                                                                                                                                                                      |
+| **Status**    | OBSOLETE 2026-05-19. The current `CacheSpec.inputs` field is already typed as `Effect.Effect<Record<string, unknown>, EInputs, RInputs>` (`engine/cache.ts:60`), and callers like `publishMove` yield runtime values inside that Effect. The `keyOverride` shape the audit referenced does not exist in the current `withCache` surface. |
 
 #### E47. `inspectContainer` is private, needed by `containerPrimitive` diagnostics
 
@@ -658,6 +664,7 @@ win). Surfaced by `af2c4ccf54b120fd8`.
 | **Evidence**  | Phase B will want to call it from `containerPrimitive` for diagnostic ("we just adopted vs created") logging. Currently the only access is the indirect `Docker.run` call. Exporting it lets `containerPrimitive` surface the action via `setPhase('adopted' \| 'started' \| 'recreated' \| 'fresh')`. Surfaced by `a0cc212cdab3369dd`. |
 | **LoC Δ**     | **0 LoC** (export only).                                                                                                                                                                                                                                                                                                                |
 | **Bug class** | Sequencing: lands during/after E1.                                                                                                                                                                                                                                                                                                      |
+| **Status**    | OBSOLETE 2026-05-19. The function the audit named (`inspectContainer`) does not exist in the current tree; the docker core exports `inspectContainerIp` for the router IP discovery path and the adoption-vs-create lifecycle landed inside `ensureContainer` (E1) without needing a separate diagnostic API. |
 
 #### E48. `resolveUpstreamKeys` accepts string variant nobody uses
 
@@ -667,6 +674,7 @@ win). Surfaced by `af2c4ccf54b120fd8`.
 | **Evidence**  | `resolveUpstreamKeys` accepts `LayeredTag \| string \| undefined`. The string variant is rarely used in practice (every callsite checked passes LayeredTags). Restricting to `LayeredTag \| undefined` would catch a class of typos — `upstreamKeys: ['mispelled-tag-name']` silently becomes a dangling reference. Surfaced by `a0cc212cdab3369dd`. |
 | **LoC Δ**     | **0 LoC** (narrowing only).                                                                                                                                                                                                                                                                                                                          |
 | **Bug class** | Type narrowing turns runtime-silent typos into compile-time errors.                                                                                                                                                                                                                                                                                  |
+| **Status**    | DEFERRED 2026-05-19. The string variant IS used today: `compose/devstack.ts:170` passes `siblingKeys: ReadonlyArray<string>` and `docker-container.ts:558` passes `[imageTag.key]`. Narrowing would require routing both through a LayeredTag-or-key adapter — moderate refactor for a typo-prevention win, deferable until the compose-time sibling-key path is restructured (related to E63). |
 
 #### E49. ChainProbe migration targets in walrus + deepbook verify loops
 
@@ -676,6 +684,7 @@ win). Surfaced by `af2c4ccf54b120fd8`.
 | **Evidence**  | Walrus deploy verify currently casts through `as { object?: { type?: string } }`. Three identical loops across deepbook + walrus + pyth will collapse to one `chain.objectsMatchTypes([...], moveTypeEquals)` call. Phase B migration target. Surfaced by `a0cc212cdab3369dd` (Phase A) and the `5c3f2357` commit. |
 | **LoC Δ**     | **−180 LoC** (−20 walrus + −40 × 3 deepbook/walrus/pyth verify loops).                                                                                                                                                                                                                                             |
 | **Bug class** | Boundary-validated chain reads replace silent shape-drift on `client.core.getObject`. Sister of B1/B5/B7 elimination.                                                                                                                                                                                              |
+| **Status**    | DONE 2026-05-19 — landed in `a0ab4293` (walrus verify migrated to `ChainProbe`). |
 
 #### E50. `Layer.build` test helper for LayeredTag composition
 
@@ -686,6 +695,7 @@ win). Surfaced by `af2c4ccf54b120fd8`.
 | **Redesign**  | Shared `buildLayeredTag(tag): Effect<Resolved, ..., never>` helper.                                                                                                                                    |
 | **LoC Δ**     | **+15 LoC** new helper, **−20 LoC** across suites. Net **−5 LoC**.                                                                                                                                     |
 | **Bug class** | Test infrastructure consistency; not directly a runtime win.                                                                                                                                           |
+| **Status**    | DEFERRED 2026-05-19. Phase B/C onChainArtifact migrations have already landed (`a0ab4293`, `cf88d7f6`, `19f89bba`) without needing this helper — `runArtifact` in `on-chain-artifact.test.ts` continues to inline the fold and no second suite has surfaced. Re-evaluate if a third suite duplicates the pattern. |
 
 #### E51. Extract `withMoveBuildLock` + helpers into `engine/move-build-lock.ts`
 
@@ -695,6 +705,7 @@ win). Surfaced by `af2c4ccf54b120fd8`.
 | **Evidence**  | The lock helpers (`acquireMoveBuildLock`, `releaseMoveBuildLock`, `withMoveBuildLock`, `moveBuildLockPath`, `defaultMoveHome`) are a self-contained concern unrelated to the SuiBuildContainer service. Moving them to a dedicated module would let `sui-cli.ts` import without the cycle-via-SuiBuildContainer and shrink `sui-build-container.ts` by ~110 LoC. Surfaced by `af2748b70343aafcd` and the `5c3f2357` move-build-agent section. |
 | **LoC Δ**     | **−110 LoC** out of `sui-build-container.ts` (move-and-tighten).                                                                                                                                                                                                                                                                                                                                                                              |
 | **Bug class** | Reduces import cycle risk; one less giant file (E41-adjacent).                                                                                                                                                                                                                                                                                                                                                                                |
+| **Status**    | DONE 2026-05-19 — landed in `259e62fe` (`engine/move-build-lock.ts` extracted). |
 
 #### E52. "Bug D" identifier sweep + stale Move-build race comment
 
@@ -705,6 +716,7 @@ win). Surfaced by `af2c4ccf54b120fd8`.
 | **Redesign**  | Update comment, sweep references (`git grep "Bug D"`).                                                                                                                                                                                                                                                 |
 | **LoC Δ**     | **0 LoC** (rewording).                                                                                                                                                                                                                                                                                 |
 | **Bug class** | Doc drift.                                                                                                                                                                                                                                                                                             |
+| **Status**    | DONE 2026-05-19. `git grep "Bug D"` against `packages/devstack/src/` returns zero matches — the identifier was swept incidentally during the E51 extraction and the surrounding `5c3f2357` move-build pass. |
 
 E7 sub-bullet (refinement): `engine/snapshot.ts:212-223` `wrapError` + `wrapDockerError` indirection
 still surrounds 29 `.pipe(Effect.mapError(wrapError(...)))` sites — already covered by E7, but
@@ -721,6 +733,7 @@ still surrounds 29 `.pipe(Effect.mapError(wrapError(...)))` sites — already co
 | **Redesign**  | Add helper (≈20 LoC). Drops if-cascades in three places.                                                                                                                                                                                                                         |
 | **LoC Δ**     | **−80 LoC** net.                                                                                                                                                                                                                                                                 |
 | **Bug class** | Drift: today `endpoint-names.ts` declares the path, three consumers re-encode it. Adding a new endpoint requires four edits; this collapses to one.                                                                                                                              |
+| **Status**    | DEFERRED 2026-05-19. The if-cascade walks in `read-stack-context.ts::project`, `runtime/service.ts::groupSui`, and `cli/commands/status.ts` carry per-call shape narrowing that a generic `lookupByManifestPath` would lose without an additional Schema-decode step per call. Worth a focused pass paired with E16-follow-up (endpointProjectionTable), not as a standalone helper. |
 
 E16 sub-bullet (refinement): `runtime/service.ts:81 manifestLeafUnder` ALSO walks the same
 well-known endpoint set as `read-stack-context.ts::project`. After E16 lands, both can share one
@@ -745,6 +758,7 @@ and accept re-encoded output (~−10 LoC, optional trade-off). Surfaced by `af2c
 | **Redesign**  | Migrate `--format` to `Flag.choice`; drop inline error message.                                                                                                                                                                                                                                      |
 | **LoC Δ**     | **−5 LoC**.                                                                                                                                                                                                                                                                                          |
 | **Bug class** | Hygiene; brings graph in line with the rest of the CLI.                                                                                                                                                                                                                                              |
+| **Status**    | DONE — `cli/commands/graph.ts:141` already uses `Flag.choice('format', ['text', 'mermaid', 'dot'] as const)`. The audit captured a stale state of the file. |
 
 #### E55. `cli/commands/wipe.ts` flag surface drift
 
@@ -755,6 +769,7 @@ and accept re-encoded output (~−10 LoC, optional trade-off). Surfaced by `af2c
 | **Redesign**  | Either remove `--no-stop` or rename to `--state-only` and make it actually skip the volume refuse-check. Drop `--keep-upstream-cache`.                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | **LoC Δ**     | **−10 LoC**.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | **Bug class** | "Sleeper bug — never causes the test suite to fail but quietly leaves resources behind."                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| **Status**    | DEFERRED 2026-05-19. CLI flag surface changes for `wipe` are explicitly part of the deferred CLI Phase B rename pass (`wipe → reset`, etc.); landing flag drops out of order would either invalidate the recipe in `SeedManifestMismatchError` or churn the surface twice. Re-evaluate when Phase B runs. |
 
 #### E56. `cli/commands/prune.ts:76-80 --interactive` is dead
 
@@ -765,6 +780,7 @@ and accept re-encoded output (~−10 LoC, optional trade-off). Surfaced by `af2c
 | **Redesign**  | Remove or repurpose.                                                                                                                                                |
 | **LoC Δ**     | **−5 LoC**.                                                                                                                                                         |
 | **Bug class** | Dead surface.                                                                                                                                                       |
+| **Status**    | DONE 2026-05-19. Flag + the `interactive: boolean` field on `resolveMode`'s input + the description sweep landed in `6035e710`. |
 
 #### E57. `cli/commands/snapshot.ts:62-85` silent multi-mode ref lookup
 
@@ -775,6 +791,7 @@ and accept re-encoded output (~−10 LoC, optional trade-off). Surfaced by `af2c
 | **Redesign**  | Document in `--help`, OR split into `--id`/`--label`/`--prefix`.                                                                                              |
 | **LoC Δ**     | **0 LoC** (doc fix) or **+10 LoC** (split).                                                                                                                   |
 | **Bug class** | UX surprise; users with prefix-collision against a label hit a silent wrong-match.                                                                            |
+| **Status**    | DEFERRED 2026-05-19. UX redesign of the `ref` positional belongs with the broader CLI Phase B surface pass; an inline `--help` blurb is a band-aid that the rename pass will rewrite anyway. |
 
 #### E58. `cli/commands/_prune-stack.ts` should live in `engine/`
 
@@ -785,6 +802,7 @@ and accept re-encoded output (~−10 LoC, optional trade-off). Surfaced by `af2c
 | **Redesign**  | Move to `engine/prune.ts`; CLI command becomes a thin shell.                                                                                                                                                                                     |
 | **LoC Δ**     | **−15 LoC** in import-graph cleanup.                                                                                                                                                                                                             |
 | **Bug class** | Engine and CLI share one prune primitive — eliminates the "what does 'pruned' mean in tests?" ambiguity.                                                                                                                                         |
+| **Status**    | DEFERRED 2026-05-19. The 352-LoC file's `resolveStateDir` import is at `cli/stack-resolution.ts`, not engine; relocating the file forces an additional split of `stack-resolution.ts` (CLI-only flag-resolution still lives there). The headline `−15 LoC` doesn't reflect that ripple. Worth doing during a deliberate stack-resolution cleanup pass. |
 
 #### E59. `cli/index.ts:18` file-scope `no-explicit-any` disable
 
@@ -794,6 +812,7 @@ and accept re-encoded output (~−10 LoC, optional trade-off). Surfaced by `af2c
 | **Evidence**  | Could be tightened with the new envelope-emitter signature post-E20. Surfaced by `a604c14bae7144331`.                    |
 | **LoC Δ**     | **0 LoC** (cosmetic).                                                                                                    |
 | **Bug class** | None; cleans up the file.                                                                                                |
+| **Status**    | DONE 2026-05-19. Verified no `any` remains in `cli/index.ts`; eslint-disable removed in `6035e710`. |
 
 E19 sub-bullet (refinement, status.ts state.json): `cli/commands/status.ts` `tryReadJson` for
 `state.json` still hand-rolls the "exists? read? parse?" cascade my new reader handles for the
@@ -822,6 +841,7 @@ fail-fast. Est **+5 LoC** for the option, removes the silent-mismatch failure mo
 | **Redesign**  | Shared `readFileOrUndefined(path)` + `pathExists(path)` helpers.                                                                                                                        |
 | **LoC Δ**     | **−30 LoC** across three sites.                                                                                                                                                         |
 | **Bug class** | Hygiene; reduces "is this ENOENT mapping correct here?" review surface.                                                                                                                 |
+| **Status**    | DONE 2026-05-19. Helpers added to `engine/fs-utils.ts`; `services/codegen.ts::readExistingGitignore`, `codegen/emitters/bindings.ts::wrote` probe, and `engine/stage-and-swap.ts::targetExists` all migrated. Net source delta ~−15 LoC against the audit's `−30` headline (the three call-sites averaged 5 lines each, not 10). |
 
 #### E61. `bindings.ts:142-144` hard-codes `outputDir/bindings`; emitters should declare `targetDir`
 
@@ -832,6 +852,7 @@ fail-fast. Est **+5 LoC** for the option, removes the silent-mismatch failure mo
 | **Redesign**  | `defineEmitter` carries `targetDir`. Callers drop the manual `path.join`.                                                                                                                                                                                                                 |
 | **LoC Δ**     | **−10 LoC** across all four built-in emitters.                                                                                                                                                                                                                                            |
 | **Bug class** | Drift: one emitter's path differs from the others.                                                                                                                                                                                                                                        |
+| **Status**    | OBSOLETE 2026-05-19. Only `BindingsEmitter` writes under a per-emitter subdir (`<outputDir>/<pkg-name>/`, not `<outputDir>/bindings/`). `StackHandleEmitter`, `DappKitConfigEmitter`, and `DeepbookConfigEmitter` all write files directly into `outputDir` (e.g. `accounts.ts`, `dapp-kit-config.ts`). The audit's "all four emitters share this pattern" premise doesn't match the current emitter set. |
 
 #### E62. Compose-time duplicate-emitter check (currently runtime)
 
@@ -841,6 +862,7 @@ fail-fast. Est **+5 LoC** for the option, removes the silent-mismatch failure mo
 | **Evidence**  | Currently a runtime guard — but the LayeredTag for `Codegen({...})` knows its emitter set at compose time. Could become a compose-time invariant asserted at `tag(...)` build. Surfaced by `ab1e79746a6b76e44` and the `c1dc4264` commit. |
 | **LoC Δ**     | **−16 LoC**.                                                                                                                                                                                                                              |
 | **Bug class** | "User notices duplicate emitter at first cycle instead of at type-check."                                                                                                                                                                 |
+| **Status**    | DONE 2026-05-19. Check lifted from the Effect body to a synchronous `throw` in the `Codegen({...})` factory. Conflicts now surface in the user's call stack at config-load time. |
 
 E24 sub-bullet (refinement, ENOENT catchTag): `engine/stage-and-swap.ts:140-150` `targetExists`
 access-probe duplicates what `fs.rename(stagingDir, target)` would surface as ENOENT — could just
@@ -868,6 +890,7 @@ walk should fold into `stage` Effect's pre-step (cache-key from `withCache`). Su
 | **Redesign**  | New supervisor knob: `runAfter: 'all-siblings' \| TagSpec[]`.                                                                                                                                                                                                                                                                                                                                                                                     |
 | **LoC Δ**     | **−25 LoC** in `compose/devstack.ts` + small engine addition.                                                                                                                                                                                                                                                                                                                                                                                     |
 | **Bug class** | "Forgot to add a new sibling to manifestRef.upstream → manifest fires before that sibling's state lands" — silent ordering bug.                                                                                                                                                                                                                                                                                                                   |
+| **Status**    | DEFERRED 2026-05-19. Requires a new supervisor scheduling primitive (`runAfter: 'all-siblings'`); landing it interacts with the dep-graph + scheduler, both of which are sensitive to recent restart-survival fixes. Worth promoting to its own focused plan rather than batching with audit cleanup. |
 
 #### E64. `compose/devstack.ts isOptions` test gap + comment drift
 
@@ -877,6 +900,7 @@ walk should fold into `stage` Effect's pre-step (cache-key from `withCache`). Su
 | **Evidence**  | Discriminator depends on `DevstackTagBrand` symbol being present. The test at `compose/devstack.test.ts:46-54` already documents a sharp edge ("a faked ref carrying `__layer`" passes); but the bool-expression at `:124` correctly checks the brand. The test fakes only `__layer` and not the brand, so it's testing that NON-branded objects pass through — which is the opposite of robust. Worth a 2-line fix in the test. Surfaced by `a44f7b364824adc63`. |
 | **LoC Δ**     | **+2 LoC** in test.                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | **Bug class** | Test asserts the wrong invariant; correct it.                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| **Status**    | DONE 2026-05-19. Test now stamps the `DevstackTagBrand` symbol on its fake ref, pinning the actual brand-checking branch of `isOptions` rather than the opposite. Landed in `fcfaafd2`. |
 
 #### E65. dapp-kit-stale doc-comments + tsconfig-subpaths workaround re-check
 
@@ -887,6 +911,7 @@ walk should fold into `stage` Effect's pre-step (cache-key from `withCache`). Su
 | **Redesign**  | (1) Sweep stale comments. (2) Re-check the postcss-types workaround now that dapp-kit is gone. (3) Collapse `LocalnetWalrusOptions`/`Inputs` once example apps read from the manifest directly.                                                                                                                                                                                                                                       |
 | **LoC Δ**     | **−10 LoC** (comments) **+ up to −80 LoC** (if workaround can go) **+ −30 LoC** (walrus options collapse). Net **~−120 LoC** if everything lands.                                                                                                                                                                                                                                                                                     |
 | **Bug class** | Doc rot — references that no longer exist mislead future readers.                                                                                                                                                                                                                                                                                                                                                                     |
+| **Status**    | PARTIAL 2026-05-19. (1) Stale `createDevstackDappKit` comment in `src/vite/index.ts` and the `@mysten/dapp-kit-react` mention in `tsdown.config.ts` swept (landed in `fcfaafd2`). (2) postcss-types workaround re-check DEFERRED — needs an empirical `dts: true` build attempt that can't run in this validation pass. (3) `LocalnetWalrusOptions`/`Inputs` collapse OBSOLETE: the two interfaces are intentionally distinct (input shape vs the `{packageConfig, storageNodeUrlScheme}` output shape `WalrusClient` consumes); merging them would push the `packageConfig` wrapping onto every caller. The re-export at `services/walrus.ts` is also intentional (consumer import path stability). |
 
 #### E66. Example apps duplicate `walrusCaptured` lookup cast
 
@@ -897,6 +922,7 @@ walk should fold into `stage` Effect's pre-step (cache-key from `withCache`). Su
 | **Redesign**  | Export `getWalrusCaptured(captured)` (or sibling helpers per service) from `@mysten-incubation/devstack`.                                                                                                                                                                                      |
 | **LoC Δ**     | **−15 LoC per example × N apps** (~−45 LoC).                                                                                                                                                                                                                                                   |
 | **Bug class** | "Example app's typed cast goes stale on schema change."                                                                                                                                                                                                                                        |
+| **Status**    | DONE 2026-05-19 — helper landed in `1ee8e6bd` and consuming example apps migrated. |
 
 ### 2.17 Image dirs follow-ups (post `adf77bb` consolidation)
 
@@ -909,6 +935,7 @@ walk should fold into `stage` Effect's pre-step (cache-key from `withCache`). Su
 | **Redesign**  | One helper near the image-dirs root.                                                                                                                                                              |
 | **LoC Δ**     | **−6 LoC** marginal (3 lines saved, +5 for helper).                                                                                                                                               |
 | **Bug class** | Drift if image-dirs layout shifts again.                                                                                                                                                          |
+| **Status**    | DEFERRED 2026-05-19. The audit's own "worth doing if a 4th occurrence shows up" gate fires correctly here — current count is 3 (`new URL('../../images/<svc>/', import.meta.url)`), the post-consolidation shape is now `images/<svc>/` not `<svc>-image/`, and grepping is easier with the literal form. Revisit on a 4th occurrence. |
 
 #### E68. tsdown.config + `clean: true` for stale dist subdirs
 
@@ -919,6 +946,7 @@ walk should fold into `stage` Effect's pre-step (cache-key from `withCache`). Su
 | **Redesign**  | (1) Add `clean: true` to the build config. (2) Collapse the 8 per-file copies to 3 directory entries.                                                                                                                                                                        |
 | **LoC Δ**     | **−5 LoC** in config.                                                                                                                                                                                                                                                        |
 | **Bug class** | Stale published artifacts shipping with old image layout.                                                                                                                                                                                                                    |
+| **Status**    | PARTIAL 2026-05-19. (1) `clean: true` added to the main tsdown config (landed in `fcfaafd2`). (2) The 8 per-file copies the audit referenced are already collapsed to a single `images/**/*` glob entry; the audit captured a stale shape. |
 
 #### E69. `dockerImageRuntimeBuildArgs` variant absorbs walrus image wrapper
 
@@ -929,6 +957,7 @@ walk should fold into `stage` Effect's pre-step (cache-key from `withCache`). Su
 | **Redesign**  | Extend `dockerImage(...)` with a runtime-buildArg variant.                                                                                                                                                                                    |
 | **LoC Δ**     | **−20 to −30 LoC**.                                                                                                                                                                                                                           |
 | **Bug class** | Two implementations of content-addressed image tagging.                                                                                                                                                                                       |
+| **Status**    | DEFERRED 2026-05-19. Extending `dockerImage(...)` to thread runtime-resolved build args needs a new factory variant + content-hash-at-runtime semantics that interact with `withCache` invariants. Worth promoting to its own focused plan rather than batching with audit cleanup. |
 
 ### 2.18 Cross-cutting follow-ups
 
@@ -948,6 +977,7 @@ LoC** + convention enforcement). Surfaced by `af2c4ccf54b120fd8` and `87f4e70f` 
 | **Redesign**  | Move to `notes/done/` or delete.                                                                                                 |
 | **LoC Δ**     | **0 LoC** (no code impact).                                                                                                      |
 | **Bug class** | Doc rot.                                                                                                                         |
+| **Status**    | DONE 2026-05-19. Per the user-mandated "delete completed plans" policy (`feedback_completed_plans_should_be_deleted.md`), shipped plans live in git history rather than under `notes/done/`. `dirs-dapp-kit-compose-audit.md` (the audit named example) is now redundant given the E65 sweep + dapp-kit fold-in landed; deleting in the same commit as this status update. |
 
 ### Top-5 reranking note
 
