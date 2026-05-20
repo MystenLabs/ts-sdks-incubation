@@ -2,8 +2,9 @@
 // canonical wiring every example app needs:
 //
 //   - React + Tailwind plugins
-//   - `es2022` build/optimize target (top-level await for the async
-//     `createDevstackDappKit` factory)
+//   - `es2022` build/optimize target — example apps and the codegen
+//     emitters (`DappKitConfigEmitter`) freely use ES2022 features
+//     (class fields, top-level await in transitive deps)
 //   - Per-stack manifest aliasing so concurrent stacks (e.g. `pnpm dev`
 //     vs `DEVSTACK_STACK=test playwright test`) each resolve their own
 //     `.devstack/stacks/<stack>/manifest.json` file

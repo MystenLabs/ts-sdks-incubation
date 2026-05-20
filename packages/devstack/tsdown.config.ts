@@ -41,18 +41,21 @@ const main = defineConfig({
 	platform: 'node',
 	target: 'node22',
 	sourcemap: true,
+	// Clear stale per-service dist dirs from the pre-`adf77bb` layout
+	// (`dist/seal-image/`, `dist/sui-image/`, `dist/walrus-image/`) so a
+	// publish never ships fossil image artifacts. Audit finding E68.
+	clean: true,
 	copy: [{ from: 'images/**/*', to: 'dist/images', flatten: false }],
 });
 
 // Test-fixture + vite-config subpaths. `dts: false` here because
 // rolldown-plugin-dts chokes on @effect/vitest's transitive postcss
-// types when bundling (and on @mysten/dapp-kit-react's postcss types
-// transitively pulled in via the vite plugin's peers): it emits
-// `Export 'AcceptedPlugin' is not defined` while parsing postcss's
-// own d.mts. We sidestep the bundler by emitting these subpaths' dts
-// with a separate `tsc --emitDeclarationOnly` step driven by
-// `tsconfig.subpaths.json` (see the `build:dts-subpaths` script in
-// package.json).
+// types when bundling (also pulled in by the vite plugin's peers): it
+// emits `Export 'AcceptedPlugin' is not defined` while parsing
+// postcss's own d.mts. We sidestep the bundler by emitting these
+// subpaths' dts with a separate `tsc --emitDeclarationOnly` step
+// driven by `tsconfig.subpaths.json` (see the `build:dts-subpaths`
+// script in package.json).
 //
 // **Re-investigate periodically:** check the rolldown-plugin-dts
 // release notes on every quarterly dependency bump. When the postcss

@@ -43,12 +43,21 @@ describe('devstack(...) composition', () => {
 		expect(handle.layer).toBeDefined();
 	});
 
-	it('treats an object with `__layer` as a ref even when it shares option-shaped keys', () => {
-		// Fake ref shaped like an options object but carrying the
-		// `__layer` brand. `isOptions` must skip this and pass it
-		// through to the stack-member flatten path.
+	it('treats an object carrying the DevstackTagBrand as a ref even when it shares option-shaped keys', () => {
+		// `isOptions` discriminates a Ref from a plain options object by
+		// the `DevstackTagBrand` symbol stamped on every Ref by `tag()`.
+		// A ref-shaped object carrying ONLY a `__layer` field (no brand)
+		// would historically slip through as options — pin the
+		// brand-checking branch by asserting a properly-branded fake
+		// flows down the StackMember path.
 		const alice = Account('alice');
-		const fakeRef = { __layer: alice.__layer, renderer: 'silent' };
+		const brand = Symbol.for('@devstack/tag-brand');
+		const fakeRef = {
+			__layer: alice.__layer,
+			key: 'fake/ref',
+			renderer: 'silent',
+			[brand]: true,
+		};
 		const handle = devstack(alice, fakeRef as unknown as typeof alice);
 		expect(handle.layer).toBeDefined();
 	});
