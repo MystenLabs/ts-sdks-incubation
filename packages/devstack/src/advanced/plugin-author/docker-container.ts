@@ -531,6 +531,18 @@ export const dockerContainer = <const Name extends string>(
 	// `composeStackLayer` builds the image before the container tag.
 	// `extraLayers` does the same job as `composeLayers` would for a
 	// single inner tag.
+	//
+	// Post-E30: `containerPrimitive(spec)` (engine/container-primitive.ts)
+	// is the canonical race-safe shape for new code (adds per-name
+	// `Semaphore(1)` serialisation on top of the same substrate).
+	// `dockerContainer` stays as the simpler historical surface because
+	// (a) it surfaces the image-build sub-tag as a `__upstreamKey` (the
+	// dep-graph relies on this edge for selective-restart), which the
+	// generic `containerPrimitive` doesn't, and (b) it accepts a
+	// builder-form `(identity) => options` that `containerPrimitive`'s
+	// deps-only `run(deps)` can't surface. Both call into the same
+	// `buildContainerInternals` factory below — the fold the audit
+	// described already happened there.
 	return tag(name, build, {
 		kind: 'service',
 		displayTitle: name,
