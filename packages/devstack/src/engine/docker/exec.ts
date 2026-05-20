@@ -8,13 +8,13 @@ import { addFinalizer } from 'effect/Scope';
 import { DockerError } from '../../engine/errors.js';
 import { Identity } from '../identity.js';
 import {
-	captureStreams,
 	composeContainerName,
 	decodeStream,
 	dockerError,
 	drainLinesWithCallback,
 	generateContainerName,
 	normalizeLogLine,
+	runCapturing,
 	runCapturingOrFail,
 	type DockerExecResult,
 	type OutputLineCallback,
@@ -42,7 +42,7 @@ export const exec = (
 		yield* Effect.annotateCurrentSpan({ 'docker.container': containerId, 'docker.cmd': command });
 
 		const cmd = ChildProcess.make('docker', ['exec', containerId, command, ...args]);
-		return yield* captureStreams(spawner, cmd, 'docker exec');
+		return yield* runCapturing(spawner, cmd, 'docker exec');
 	}).pipe(Effect.withSpan('Docker.exec'));
 
 // -----------------------------------------------------------------------------

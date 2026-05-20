@@ -16,8 +16,6 @@
 // against `repos/effect-v4/packages/effect/src/unstable/cli/` if
 // anything drifts.
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
-
 import { Cause, Effect, Option } from 'effect';
 import { Argument, Command, Flag, GlobalFlag } from 'effect/unstable/cli';
 import type { RendererKind, RunOverrides } from '../engine/supervisor.js';

@@ -1275,12 +1275,6 @@ const ensureLabeledVolume = (
 // `rm -f` on those containers would force a fresh genesis on resume and
 // break the `docker commit`-based snapshot capture surface.
 
-// Spawn a command and concurrently collect stdout / stderr / exit code into a
-// uniform shape. Used by `exec` and `runOneShot` so the parent agent can read
-// command output and decide what to do on a non-zero exit code without losing
-// stderr to a Stream that was never drained.
-export const captureStreams = runCapturing;
-
 // Wraps `engine/capture-command.ts::captureCommand` into a docker-flavored
 // envelope. Any error from the spawner itself (e.g. ENOENT for docker) becomes
 // a `DockerError` with `cause` set — the caller decides whether `exitCode !== 0`

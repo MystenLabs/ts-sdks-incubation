@@ -8,7 +8,7 @@
 //                                   `doctor`'s Inventory section but
 //                                   without the preflight checks. Safe
 //                                   in scripts.
-//   --interactive (default)         Ink-based picker. Toggle stacks,
+//   (default, no flags)             Ink-based picker. Toggle stacks,
 //                                   confirm, then prune. Refuses to run
 //                                   on a non-TTY stdin so CI doesn't
 //                                   hang waiting for keys.
@@ -72,11 +72,6 @@ const allOrphansFlag = Flag.boolean('all-orphans').pipe(
 	Flag.withDescription(
 		'Remove every stack whose supervisor is not running (use with care; requires --yes)',
 	),
-	Flag.withDefault(false),
-);
-
-const interactiveFlag = Flag.boolean('interactive').pipe(
-	Flag.withDescription('Force the Ink picker even if other flags would imply non-interactive'),
 	Flag.withDefault(false),
 );
 
@@ -155,7 +150,6 @@ const resolveMode = (input: {
 	readonly target: Option.Option<string>;
 	readonly repoGone: boolean;
 	readonly allOrphans: boolean;
-	readonly interactive: boolean;
 }): Effect.Effect<Mode, AlreadyReportedError> =>
 	Effect.gen(function* () {
 		if (input.list) return { kind: 'list' } as const;
@@ -459,7 +453,6 @@ export const pruneCommand = Command.make(
 		yes: yesFlag,
 		list: listFlag,
 		allOrphans: allOrphansFlag,
-		interactive: interactiveFlag,
 		keepSnapshots: keepSnapshotsFlag,
 		images: imagesFlag,
 		includeImages: includeImagesFlag,
@@ -482,7 +475,6 @@ export const pruneCommand = Command.make(
 				target: args.target,
 				repoGone: args.repoGone,
 				allOrphans: args.allOrphans,
-				interactive: args.interactive,
 			});
 
 			const allRows = yield* collectInventory();
@@ -613,6 +605,6 @@ export const pruneCommand = Command.make(
 		}),
 ).pipe(
 	Command.withDescription(
-		'Inventory + interactive cross-stack cleanup. `--list` to print, `--interactive` to pick, `<app>/<stack> --yes` to target, `--repo-gone --yes` to clean every stack whose repo is gone, `--all-orphans --yes` to nuke every idle stack.',
+		'Inventory + interactive cross-stack cleanup. `--list` to print, `<app>/<stack> --yes` to target, `--repo-gone --yes` to clean every stack whose repo is gone, `--all-orphans --yes` to nuke every idle stack.',
 	),
 );
