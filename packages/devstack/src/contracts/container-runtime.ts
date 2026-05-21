@@ -51,6 +51,11 @@ export interface EnsureContainerSpec {
 	readonly recreate: RecreatePolicy;
 	readonly env?: Readonly<Record<string, string>>;
 	readonly ports?: ReadonlyArray<ContainerPortPublish>;
+	/** Grace window, in seconds, used by the scope finalizer before
+	 *  Docker escalates container stop to SIGKILL. Stateful containers
+	 *  with RocksDB/WAL-backed data should request enough time to flush
+	 *  cleanly; the runtime default is 10 seconds. */
+	readonly stopGraceSeconds?: number;
 	/** How published host ports participate in existing-container
 	 *  reconciliation. Default `exact` treats a binding mismatch as
 	 *  config drift. `adopt-existing` lets a same-name, image-matching

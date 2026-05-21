@@ -13,11 +13,12 @@
 //      with host port-publishing for RPC (preferred 9000) and faucet
 //      (preferred 9123). Defaults go through the PortBroker so
 //      parallel stacks reassign instead of colliding.
-//      RecreatePolicy stays `on-config-change` so the writable layer
-//      (chain state at `/root/.sui`) survives across stop/start cycles
-//      regardless of how the prior cycle ended; the image's entrypoint
-//      now forwards SIGINT to a non-PID-1 sui child so clean shutdown
-//      (RocksDB checkpoint drain → exit 0/130) is the normal case.
+//      RecreatePolicy is `on-failure` so the writable layer (chain
+//      state at `/root/.sui`) survives clean stop/start cycles, but an
+//      unclean SIGKILL/137 exit recreates instead of resuming a suspect
+//      RocksDB/checkpoint state. The image's entrypoint forwards SIGINT
+//      to a non-PID-1 sui child so clean shutdown (RocksDB checkpoint
+//      drain → exit 0/130) is the normal case.
 //   3. Three-budget ready probe — RPC `getChainIdentifier` + faucet
 //      `GET /` socket liveness. Per-fetch deadline + outer deadline.
 //   4. Fetch chain id from the now-responsive client (bounded timeout).
@@ -100,6 +101,7 @@ export const DEFAULT_HOST_RPC_PORT = 9000;
 export const DEFAULT_HOST_FAUCET_PORT = 9123;
 const DOCKER_PUBLISH_HOST = '0.0.0.0' as const;
 export const MAX_DOCKER_PUBLISH_PORT_RETRIES = 3;
+export const LOCAL_VALIDATOR_STOP_GRACE_SECONDS = 30;
 
 /** Per-fetch deadline for the ready-probe HTTP calls. Without it a
  *  hung fetch would block the outer ready deadline with no signal
@@ -342,15 +344,14 @@ const ensureLocalValidatorContainerAttempt = (
 			name: params.containerName,
 			image: params.image,
 			labels: params.labels,
-			// `on-config-change` keeps the writable layer (chain state
-			// at `/root/.sui`) across stop/start cycles so warm-resume
-			// keeps the deployed packages + minted coins + state. The
-			// image's entrypoint forwards SIGINT to a non-PID-1 sui
-			// child so clean shutdown (exit 0 / 130 with RocksDB
-			// checkpoint drain) is the normal case — see entrypoint
-			// header for the upstream signal-handler bug it works
-			// around.
-			recreate: 'on-config-change',
+			// Keep the writable layer only after clean exits. If Docker
+			// escalates a previous stop to SIGKILL (137), resume can hang
+			// in RocksDB/checkpoint recovery with no RPC/faucet probes.
+			// `on-failure` routes that stale layer to recreate while still
+			// warm-resuming normal exit 0 / 130 stops. The longer grace
+			// gives the entrypoint's SIGINT forwarding time to drain.
+			recreate: 'on-failure',
+			stopGraceSeconds: LOCAL_VALIDATOR_STOP_GRACE_SECONDS,
 			ports: params.ports,
 			portBindingReconciliation: params.reconciliation,
 		})

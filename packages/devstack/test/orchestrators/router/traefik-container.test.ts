@@ -73,7 +73,16 @@ const writeDocker = (root: string, lines: ReadonlyArray<string>): { bin: string;
 	const log = join(root, 'docker.log');
 	writeFileSync(
 		bin,
-		['#!/bin/sh', `printf '%s\\n' "$*" >> ${JSON.stringify(log)}`, ...lines].join('\n'),
+		[
+			'#!/bin/sh',
+			`printf '%s\\n' "$*" >> ${JSON.stringify(log)}`,
+			'CONTAINER_INSPECT=0',
+			'if [ "$1" = "container" ] && [ "$2" = "inspect" ]; then',
+			'  CONTAINER_INSPECT=1',
+			'  shift',
+			'fi',
+			...lines,
+		].join('\n'),
 	);
 	chmodSync(bin, 0o755);
 	return { bin, log };
@@ -272,8 +281,68 @@ describe('bootstrap dispatch bind mount adoption', () => {
 				const lines = readFileSync(log, 'utf8').trim().split('\n');
 				expect(lines).toEqual([
 					`network inspect ${profile.networkName}`,
-					`inspect ${profile.containerName}`,
+					`container inspect ${profile.containerName}`,
 				]);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}),
+	);
+
+	it.effect('docker-backed boot creates fresh when only the same-name router network exists', () =>
+		Effect.gen(function* () {
+			const root = mkdtempSync(join(tmpdir(), 'router-inspect-network-collision-test-'));
+			try {
+				const entrypoints: ReadonlyArray<Entrypoint> = [
+					{ name: 'wallet-app', port: 6173, protocol: 'http' },
+				];
+				const { bin, log } = writeDocker(root, [
+					'if [ "$1" = "network" ] && [ "$2" = "inspect" ]; then',
+					`  printf '%s\\n' ${JSON.stringify(matchingRouterNetworkJson())}`,
+					'  exit 0',
+					'fi',
+					'if [ "$CONTAINER_INSPECT" = "1" ]; then',
+					`  echo "Error: No such container: ${profile.containerName}" >&2`,
+					'  exit 1',
+					'fi',
+					'if [ "$1" = "inspect" ]; then',
+					`  printf '%s\\n' ${JSON.stringify(matchingRouterNetworkJson())}`,
+					'  exit 0',
+					'fi',
+					'if [ "$1" = "run" ]; then',
+					'  printf "router-created-id\\n"',
+					'  exit 0',
+					'fi',
+					'if [ "$1" = "rm" ] || [ "$1" = "start" ]; then',
+					'  echo "unexpected mutation" >&2',
+					'  exit 1',
+					'fi',
+					'exit 1',
+					'',
+				]);
+
+				const report = yield* bootstrap({
+					image: 'traefik:v3.5',
+					entrypoints,
+					profile,
+					protectedRouteLeaseIds: [],
+				}).pipe(
+					Effect.provide(layerTraefikContainerOpsDocker),
+					Effect.provide(fakeDockerLayer(bin)),
+				);
+
+				expect(report).toEqual({
+					decision: 'recreate-fresh',
+					containerId: 'router-created-id',
+					networkId: 'network-id',
+					imageMatches: true,
+				});
+				const lines = readFileSync(log, 'utf8').trim().split('\n');
+				expect(lines[0]).toBe(`network inspect ${profile.networkName}`);
+				expect(lines[1]).toBe(`container inspect ${profile.containerName}`);
+				expect(
+					lines.some((line) => line.startsWith(`run -d --name ${profile.containerName}`)),
+				).toBe(true);
 			} finally {
 				rmSync(root, { recursive: true, force: true });
 			}
@@ -325,7 +394,7 @@ describe('bootstrap dispatch bind mount adoption', () => {
 				const lines = readFileSync(log, 'utf8').trim().split('\n');
 				expect(lines).toEqual([
 					`network inspect ${profile.networkName}`,
-					`inspect ${profile.containerName}`,
+					`container inspect ${profile.containerName}`,
 				]);
 			} finally {
 				rmSync(root, { recursive: true, force: true });

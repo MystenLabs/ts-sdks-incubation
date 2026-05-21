@@ -23,6 +23,7 @@ import {
 	DEFAULT_HOST_FAUCET_PORT,
 	DEFAULT_HOST_RPC_PORT,
 	ensureLocalValidatorContainer,
+	LOCAL_VALIDATOR_STOP_GRACE_SECONDS,
 	MAX_DOCKER_PUBLISH_PORT_RETRIES,
 	resolvePublishedPortMapping,
 	resolvePortMapping,
@@ -170,6 +171,39 @@ describe('Sui local port mapping', () => {
 			existing[0]!.ports,
 		);
 	});
+
+	it.effect('keeps clean validator state but recreates after unclean shutdowns', () =>
+		Effect.scoped(
+			Effect.gen(function* () {
+				const specs: EnsureContainerSpec[] = [];
+				const broker = fakeBroker((opts) => (opts.kind === 'rpc' ? 51000 : 50000));
+				const runtime = unusedRuntime((spec) => {
+					specs.push(spec);
+					return Effect.succeed({
+						id: 'container-id',
+						name: spec.name,
+						imageName: spec.image.tag ?? spec.image.digest,
+						status: 'running',
+						ips: [],
+						ports: spec.ports,
+					});
+				});
+
+				yield* ensureLocalValidatorContainer(
+					runtime,
+					broker,
+					{ digest: 'sha256:sui', tag: 'sui:local' },
+					{ app: appName('wallet'), stack: stackName('wallet'), plugin: 'sui', role: 'validator' },
+					'devstack-wallet-wallet-sui-validator',
+					{ mode: 'local' },
+				);
+
+				expect(specs).toHaveLength(1);
+				expect(specs[0]?.recreate).toBe('on-failure');
+				expect(specs[0]?.stopGraceSeconds).toBe(LOCAL_VALIDATOR_STOP_GRACE_SECONDS);
+			}),
+		),
+	);
 
 	it.effect('explicit opts.ports are exact and do not call the broker', () =>
 		Effect.scoped(

@@ -191,7 +191,16 @@ const writeDocker = (root: string, lines: ReadonlyArray<string>): { bin: string;
 	const log = join(root, 'docker.log');
 	writeFileSync(
 		bin,
-		['#!/bin/sh', `printf '%s\\n' "$*" >> ${JSON.stringify(log)}`, ...lines].join('\n'),
+		[
+			'#!/bin/sh',
+			`printf '%s\\n' "$*" >> ${JSON.stringify(log)}`,
+			'CONTAINER_INSPECT=0',
+			'if [ "$1" = "container" ] && [ "$2" = "inspect" ]; then',
+			'  CONTAINER_INSPECT=1',
+			'  shift',
+			'fi',
+			...lines,
+		].join('\n'),
 	);
 	chmodSync(bin, 0o755);
 	return { bin, log };
@@ -305,6 +314,36 @@ describe('docker inspect ownership boundary', () => {
 				);
 
 				expect(facts).toBe(null);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}),
+	);
+
+	it.effect('does not decode a same-name Docker network as a container', () =>
+		Effect.gen(function* () {
+			const root = mkdtempSync(join(tmpdir(), 'docker-inspect-type-specific-test-'));
+			try {
+				const { bin, log } = writeDocker(root, [
+					'if [ "$CONTAINER_INSPECT" = "1" ]; then',
+					'  echo "Error: No such container: devstack-owned" >&2',
+					'  exit 1',
+					'fi',
+					'if [ "$1" = "inspect" ]; then',
+					'  printf "%s\\n" \'[{"Id":"network-id","Name":"devstack-owned","Labels":{"devstack.managed":"true","devstack.network":"true"}}]\'',
+					'  exit 0',
+					'fi',
+					'exit 0',
+					'',
+				]);
+
+				const facts = yield* inspectContainer('devstack-owned').pipe(
+					Effect.provide(fakeDockerLayer(bin)),
+				);
+
+				expect(facts).toBe(null);
+				const lines = readFileSync(log, 'utf8').trim().split('\n');
+				expect(lines).toEqual(['container inspect devstack-owned']);
 			} finally {
 				rmSync(root, { recursive: true, force: true });
 			}
@@ -490,7 +529,7 @@ describe('same-name Docker resource ownership', () => {
 
 				expectErrorTag(exit, 'ForeignDockerResource');
 				const lines = readFileSync(log, 'utf8').trim().split('\n');
-				expect(lines).toEqual(['inspect devstack-owned']);
+				expect(lines).toEqual(['container inspect devstack-owned']);
 			} finally {
 				rmSync(root, { recursive: true, force: true });
 			}
@@ -986,8 +1025,53 @@ describe('container lifecycle mutation policy', () => {
 
 				expect(handle.id).toBe('created-id');
 				const lines = readFileSync(log, 'utf8').trim().split('\n');
-				expect(lines[0]).toBe('inspect devstack-owned');
+				expect(lines[0]).toBe('container inspect devstack-owned');
 				expect(lines.some((line) => line.startsWith('run -d --name devstack-owned'))).toBe(true);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}),
+	);
+
+	it.effect('uses per-spec stop grace when the scope finalizer stops a live container', () =>
+		Effect.gen(function* () {
+			const root = mkdtempSync(join(tmpdir(), 'docker-stop-grace-test-'));
+			try {
+				const stackRoot = join(root, 'stack');
+				mkdirSync(stackRoot, { recursive: true });
+				const created = join(root, 'created');
+				const { bin, log } = writeDocker(root, [
+					'if [ "$1" = "inspect" ]; then',
+					`  if [ ! -f ${JSON.stringify(created)} ]; then`,
+					'    echo "Error: No such container: devstack-owned" >&2',
+					'    exit 1',
+					'  fi',
+					`  printf '%s\\n' ${JSON.stringify(inspectJson({ id: 'created-id' }))}`,
+					'  exit 0',
+					'fi',
+					'if [ "$1" = "run" ]; then',
+					`  touch ${JSON.stringify(created)}`,
+					'  printf "created-id\\n"',
+					'  exit 0',
+					'fi',
+					'if [ "$1" = "stop" ]; then exit 0; fi',
+					'exit 0',
+					'',
+				]);
+
+				const handle = yield* Effect.scoped(
+					Effect.gen(function* () {
+						const perNameLock = yield* Ref.make<PerNameLockState>(new Map());
+						return yield* ensureContainer(spec({ stopGraceSeconds: 30 }), {
+							cycle: 1,
+							perNameLock,
+						});
+					}),
+				).pipe(Effect.provide(Layer.mergeAll(fakeDockerLayer(bin), stackPathsLayer(stackRoot))));
+
+				expect(handle.id).toBe('created-id');
+				const lines = readFileSync(log, 'utf8').trim().split('\n');
+				expect(lines).toContain('stop --time 30 devstack-owned');
 			} finally {
 				rmSync(root, { recursive: true, force: true });
 			}
@@ -1031,7 +1115,7 @@ describe('container lifecycle mutation policy', () => {
 					| undefined;
 				expect(error?.reason).toBe('foreign-resource');
 				const lines = readFileSync(log, 'utf8').trim().split('\n');
-				expect(lines).toEqual(['inspect devstack-owned']);
+				expect(lines).toEqual(['container inspect devstack-owned']);
 			} finally {
 				rmSync(root, { recursive: true, force: true });
 			}

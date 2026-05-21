@@ -117,6 +117,34 @@ Acceptance evidence:
 
 Closed evidence:
 
+- 2026-05-21 Worker Docker Inspect Config: CI Devstack E2E commit `e3afcd74`, job
+  `Seed snapshot · private-content`, failed router boot while decoding inspect JSON for
+  `devstack-router-c3ec4a78102c` because the object returned by ambiguous `docker inspect <name>`
+  had no top-level `Config` (`/tmp/devstack-private-content-e3afcd74.log`, lines 1202-1230). Because
+  router profiles use the same stable name for the singleton container and its shared network, the
+  container probe now calls `docker container inspect <name>` so a same-name network is not decoded
+  as container lifecycle evidence. The container schema still requires top-level `Config` with
+  `Config.Image` and `NetworkSettings` for actual container inspect output; optional labels and
+  command are read only when present, so missing `Config` remains a typed decode failure instead of
+  proving image, ownership, or command facts. Targeted validation:
+  `pnpm --filter @mysten-incubation/devstack exec vitest run test/runtime/docker/ownership-lifecycle.test.ts test/orchestrators/router/traefik-container.test.ts`,
+  `pnpm --filter @mysten-incubation/devstack typecheck`, changed-file `prettier -c`, changed-file
+  `oxlint`, and `git diff --check`.
+- 2026-05-21 CI Sui Local Warm Resume: commit `e3afcd74`, job `Lint, Build, and Test`, failed during
+  `pnpm turbo test` while `examples/wallet` re-ran its build task after the earlier
+  `pnpm turbo build` had already applied the same wallet stack successfully. Evidence from
+  `/tmp/devstack-turborepo-e3afcd74.log`: the first wallet apply reached `sui#0` ready
+  (`[12:00:23.010]` → `[12:01:31.611]`) and completed package/coin/action seeding; the later
+  test-phase wallet build started `sui#0` acquire at `[12:02:05.010]` and timed out at
+  `[12:03:07.460]` with `Last-seen probes=[]`. The root cause was Sui local mode preserving the
+  validator writable layer with `recreate: on-config-change` while the Docker runtime gave the
+  validator only the generic 10s stop grace. If Docker escalated the prior stop to SIGKILL/137, the
+  next warm resume could block before RPC/faucet ever accepted probes. Sui local validators now
+  request 30s stop grace and use `recreate: on-failure`, preserving clean exit 0/130 state while
+  recreating unclean exit 137 state. Targeted validation:
+  `pnpm --filter @mysten-incubation/devstack exec vitest run test/plugins/sui/local-ports.test.ts test/runtime/docker/ownership-lifecycle.test.ts`,
+  `pnpm --filter @mysten-incubation/devstack typecheck`, changed-file `prettier -c`, changed-file
+  `oxlint`, and `git diff --check`.
 - 2026-05-21 Worker Docker Inspect State: CI Devstack E2E commit `e47bc5e4`, job
   `Seed snapshot · private-content`, failed router boot while decoding container inspect JSON for
   `devstack-router-c3ec4a78102c` because Docker omitted the top-level `State` field. Container

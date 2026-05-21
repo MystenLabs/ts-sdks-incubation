@@ -10,10 +10,11 @@
 //   §1  Name-atomic create — `docker create --name <stable>` collision
 //       triggers `docker start <name>` adopt-fallback (single shot;
 //       second collision = typed failure, no infinite loop).
-//   §2  Label-driven inventory — we use `docker inspect <name>` for
-//       the single-container probe path (cheaper than label-filtered
-//       `ps`), but the labels are still STAMPED on create so sweep
-//       can find us by labels later.
+//   §2  Label-driven inventory — we use `docker container inspect <name>`
+//       for the single-container probe path (cheaper than label-filtered
+//       `ps`, and type-specific when container/network names collide), but
+//       the labels are still STAMPED on create so sweep can find us by
+//       labels later.
 //   §5  Async network-connect — `network.ts::waitForIp` is called
 //       after attach and before we declare ready.
 //   §9  RecreatePolicy enum routed in — `never` refuses to recreate;
@@ -69,7 +70,7 @@ export type InspectLifecycleState =
 	| { readonly kind: 'stopped'; readonly exitCode: number }
 	| { readonly kind: 'unknown' };
 
-/** What `docker inspect <name>` told us. Lifecycle facts are explicit:
+/** What `docker container inspect <name>` told us. Lifecycle facts are explicit:
  *  Docker may omit `State`, and absence means we cannot prove running,
  *  paused, or stopped state. */
 export interface InspectFacts {
@@ -294,7 +295,7 @@ const readLifecycleState = (
 };
 
 // -----------------------------------------------------------------------------
-// Inspect — `docker inspect <name>`
+// Inspect — `docker container inspect <name>`
 // -----------------------------------------------------------------------------
 
 const InspectSchema = Schema.Struct({
@@ -328,15 +329,15 @@ export const inspectContainer = (
 	name: string,
 ): Effect.Effect<InspectFacts | null, DockerRuntimeError, DockerHost | DockerSpawner> =>
 	Effect.gen(function* () {
-		const res = yield* dockerRunOk('inspect', [name]).pipe(
-			Effect.mapError(wrapGeneric('docker.inspect')),
+		const res = yield* dockerRunOk('container', ['inspect', name]).pipe(
+			Effect.mapError(wrapGeneric('docker.container.inspect')),
 		);
 		if (res.exitCode !== 0) {
 			if (isNoSuchContainerStderr(res.stderr)) return null;
 			if (isDaemonUnreachableStderr(res.stderr)) {
 				return yield* Effect.fail(
 					new DaemonUnreachable({
-						op: 'docker.inspect',
+						op: 'docker.container.inspect',
 						detail: 'docker daemon unreachable',
 					}),
 				);
@@ -918,7 +919,7 @@ export const ensureContainer = (
 					Effect.catch(() => Effect.succeed(null)),
 				);
 				if (current?.id === id) {
-					yield* stopWithGrace(spec.name, 10);
+					yield* stopWithGrace(spec.name, spec.stopGraceSeconds ?? 10);
 				}
 				yield* removeClaim(
 					{ stackLockFile: paths.stackLockFile, rosterFile: paths.rosterFile },
