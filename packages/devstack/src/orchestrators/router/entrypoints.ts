@@ -42,9 +42,10 @@ export interface Entrypoint {
 	readonly protocol: 'http' | 'h2c' | 'tcp';
 }
 
-/** Registry shape. Closed map from name → entrypoint; the orchestrator
- *  freezes this at boot and reads it for the Traefik `--entrypoints.*`
- *  CLI flags. */
+/** Registry shape. Closed map from declared name → canonical listener.
+ *  HTTP-family declarations may share a port; Traefik still needs one
+ *  listener name for that port, so aliases resolve to the first
+ *  registered listener. */
 export interface EntrypointRegistryShape {
 	readonly byName: (name: string) => Effect.Effect<Entrypoint, UnknownEntrypoint>;
 	readonly all: () => ReadonlyArray<Entrypoint>;
@@ -55,18 +56,28 @@ export class EntrypointRegistry extends Context.Service<
 	EntrypointRegistryShape
 >()('@devstack-rewrite/orchestrators/router/EntrypointRegistry') {}
 
+const entrypointFamily = (protocol: Entrypoint['protocol']): 'http' | 'tcp' =>
+	protocol === 'tcp' ? 'tcp' : 'http';
+
 /** Build a registry from a literal seed. Idempotent on identical
  *  `(name, port, protocol)` triples; throws synchronously on conflict
  *  per architecture invariant #6. The reason this is synchronous
  *  rather than yielded: registration is module-load wiring, not a
  *  runtime effect — the failure mode is "two callers wired the same
- *  name to different ports", which is a build-time bug. */
+ *  name to different ports", which is a build-time bug.
+ *
+ *  Traefik cannot bind multiple entrypoints to the same container port.
+ *  For HTTP-family aliases on one port, keep every declared name
+ *  lookupable but resolve those aliases to the first listener registered
+ *  for the port. */
 export const makeEntrypointRegistry = (
 	seed: ReadonlyArray<Entrypoint>,
 ): EntrypointRegistryShape => {
-	const map = new Map<string, Entrypoint>();
+	const declaredByName = new Map<string, Entrypoint>();
+	const lookupByName = new Map<string, Entrypoint>();
+	const listenerByPort = new Map<number, Entrypoint>();
 	for (const e of seed) {
-		const existing = map.get(e.name);
+		const existing = declaredByName.get(e.name);
 		if (existing) {
 			if (existing.port === e.port && existing.protocol === e.protocol) continue;
 			throw new EntrypointConflict({
@@ -75,21 +86,40 @@ export const makeEntrypointRegistry = (
 				attempted: { port: e.port, protocol: e.protocol },
 			});
 		}
-		map.set(e.name, e);
+		declaredByName.set(e.name, e);
+
+		const listener = listenerByPort.get(e.port);
+		if (listener) {
+			const listenerFamily = entrypointFamily(listener.protocol);
+			const attemptedFamily = entrypointFamily(e.protocol);
+			if (listenerFamily === 'tcp' || listenerFamily !== attemptedFamily) {
+				throw new EntrypointConflict({
+					name: e.name,
+					existing: { port: listener.port, protocol: listener.protocol },
+					attempted: { port: e.port, protocol: e.protocol },
+				});
+			}
+			lookupByName.set(e.name, listener);
+			continue;
+		}
+
+		listenerByPort.set(e.port, e);
+		lookupByName.set(e.name, e);
 	}
-	const frozen: ReadonlyArray<Entrypoint> = Array.from(map.values());
+	const frozenListeners: ReadonlyArray<Entrypoint> = Array.from(listenerByPort.values());
+	const knownNames = Array.from(declaredByName.keys());
 	return {
 		byName: (name) => {
-			const hit = map.get(name);
+			const hit = lookupByName.get(name);
 			if (hit) return Effect.succeed(hit);
 			return Effect.fail(
 				new UnknownEntrypoint({
 					name,
-					known: frozen.map((e) => e.name),
+					known: knownNames,
 				}),
 			);
 		},
-		all: () => frozen,
+		all: () => frozenListeners,
 	};
 };
 
@@ -113,11 +143,10 @@ export const layerEntrypointRegistry = (
 export const DEFAULT_ENTRYPOINTS: ReadonlyArray<Entrypoint> = [
 	// Wallet host-process server.
 	{ name: 'wallet-app', port: 6173, protocol: 'http' },
-	// Walrus cluster — N node entrypoints plus aliases. The router
-	// orchestrator iterates Routable decls; the entrypoints below
-	// cover all-aliases (aggregator/publisher) which collapse onto a
-	// shared host port. Per-node distinct hostnames mean a SINGLE host
-	// port can serve N nodes via Host-header dispatch.
+	// Walrus cluster — N node entrypoint aliases plus aggregator/publisher.
+	// The registry canonicalizes these to one Traefik listener on 9185;
+	// per-node distinct hostnames let that single listener fan out via
+	// Host-header dispatch.
 	{ name: 'walrus-node-0', port: 9185, protocol: 'http' },
 	{ name: 'walrus-node-1', port: 9185, protocol: 'http' },
 	{ name: 'walrus-node-2', port: 9185, protocol: 'http' },

@@ -154,6 +154,16 @@ export const uniqueSortedEntrypointPorts = (
 ): ReadonlyArray<number> =>
 	[...new Set(entrypoints.map((entrypoint) => entrypoint.port))].sort((a, b) => a - b);
 
+const traefikListenerEntrypoints = (
+	entrypoints: ReadonlyArray<Entrypoint>,
+): ReadonlyArray<Entrypoint> => {
+	const byPort = new Map<number, Entrypoint>();
+	for (const entrypoint of entrypoints) {
+		if (!byPort.has(entrypoint.port)) byPort.set(entrypoint.port, entrypoint);
+	}
+	return Array.from(byPort.values());
+};
+
 export const traefikExpectedPortBindings = (
 	entrypoints: ReadonlyArray<Entrypoint>,
 ): ReadonlyArray<string> =>
@@ -169,7 +179,7 @@ export const traefikExpectedCommand = (
 	'--providers.file.watch=true',
 	'--api.dashboard=false',
 	'--log.level=INFO',
-	...entrypoints.map(
+	...traefikListenerEntrypoints(entrypoints).map(
 		(entrypoint) => `--entrypoints.${entrypoint.name}.address=:${entrypoint.port}`,
 	),
 ];

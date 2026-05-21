@@ -699,7 +699,7 @@ export const layerRouterService: Layer.Layer<
 						? `tcp://127.0.0.1:${resolved.entrypointPort}`
 						: `http://${resolved.hostname}:${resolved.entrypointPort}`;
 				return {
-					endpointName: resolved.entrypointName,
+					endpointName: decl.endpointName,
 					hostname: resolved.hostname,
 					entrypointPort: resolved.entrypointPort,
 					url,

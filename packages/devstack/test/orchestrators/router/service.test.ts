@@ -73,6 +73,7 @@ const walletApiDispatch = { compositeKey: 'wallet.my-app.main', role: 'api' };
 
 const registryLayer = layerEntrypointRegistry([
 	{ name: 'wallet-app', port: 6173, protocol: 'http' },
+	{ name: 'walrus-node-0', port: 9185, protocol: 'http' },
 	{ name: 'walrus-aggregator', port: 9185, protocol: 'http' },
 	{ name: 'postgres-tcp', port: 5432, protocol: 'tcp' },
 ]);
@@ -453,10 +454,12 @@ describe('RouterService.contributeRoute', () => {
 						wireProtocol: 'http',
 					});
 					expect(endpoint.url).toBe('http://aggregator.my-app.localhost:9185');
+					expect(endpoint.endpointName).toBe('walrus-aggregator');
 					const files = readdirSync(dir).filter((name) => name.startsWith('10-'));
 					expect(files).toHaveLength(1);
 					const body = readFileSync(join(dir, files[0]!), 'utf8');
 					expect(body).toContain('Host(`aggregator.my-app.localhost`)');
+					expect(body).toContain('entryPoints: ["walrus-node-0"]');
 					expect(body).toContain('- url: "http://172.20.0.5:8080"');
 				}).pipe(Effect.provide(makeStackLayer(profile))),
 			);

@@ -69,13 +69,76 @@ describe('makeEntrypointRegistry', () => {
 		}),
 	);
 
+	it.effect('keeps HTTP aliases lookupable while exposing one listener per port', () =>
+		Effect.gen(function* () {
+			const reg = makeEntrypointRegistry([
+				{ name: 'walrus-node-0', port: 9185, protocol: 'http' },
+				{ name: 'walrus-node-1', port: 9185, protocol: 'http' },
+				{ name: 'walrus-aggregator', port: 9185, protocol: 'http' },
+			]);
+
+			expect(reg.all()).toEqual([{ name: 'walrus-node-0', port: 9185, protocol: 'http' }]);
+			const alias = yield* reg.byName('walrus-aggregator');
+			expect(alias).toEqual({ name: 'walrus-node-0', port: 9185, protocol: 'http' });
+
+			const err = yield* reg.byName('not-there').pipe(Effect.flip);
+			expect(err.known).toContain('walrus-aggregator');
+		}),
+	);
+
+	it('throws synchronously when one port mixes HTTP and TCP families', () => {
+		let thrown: unknown;
+		try {
+			makeEntrypointRegistry([
+				{ name: 'http-api', port: 8080, protocol: 'http' },
+				{ name: 'raw-api', port: 8080, protocol: 'tcp' },
+			]);
+		} catch (e) {
+			thrown = e;
+		}
+		expect(thrown).toBeDefined();
+		const err = thrown as {
+			_tag: string;
+			name: string;
+			existing: { protocol: string };
+			attempted: { protocol: string };
+		};
+		expect(err._tag).toBe('EntrypointConflict');
+		expect(err.name).toBe('raw-api');
+		expect(err.existing.protocol).toBe('http');
+		expect(err.attempted.protocol).toBe('tcp');
+	});
+
+	it('throws synchronously when two TCP entrypoints share one port', () => {
+		let thrown: unknown;
+		try {
+			makeEntrypointRegistry([
+				{ name: 'postgres-primary', port: 5432, protocol: 'tcp' },
+				{ name: 'postgres-replica', port: 5432, protocol: 'tcp' },
+			]);
+		} catch (e) {
+			thrown = e;
+		}
+		expect(thrown).toBeDefined();
+		const err = thrown as {
+			_tag: string;
+			name: string;
+			existing: { port: number; protocol: string };
+			attempted: { port: number; protocol: string };
+		};
+		expect(err._tag).toBe('EntrypointConflict');
+		expect(err.name).toBe('postgres-replica');
+		expect(err.existing).toEqual({ port: 5432, protocol: 'tcp' });
+		expect(err.attempted).toEqual({ port: 5432, protocol: 'tcp' });
+	});
+
 	it('DEFAULT_ENTRYPOINTS includes the in-tree plugin endpoints', () => {
 		const reg = makeEntrypointRegistry(DEFAULT_ENTRYPOINTS);
-		const names = new Set(reg.all().map((e) => e.name));
 		// Every in-tree plugin's Routable.endpointName must be registered.
 		for (const name of [
 			'wallet-app',
 			'walrus-node-0',
+			'walrus-node-1',
 			'walrus-aggregator',
 			'walrus-publisher',
 			'seal-key-server',
@@ -83,8 +146,9 @@ describe('makeEntrypointRegistry', () => {
 			'deepbook-server-metrics',
 			'deepbook-indexer-metrics',
 		]) {
-			expect(names.has(name)).toBe(true);
+			expect(Effect.runSync(reg.byName(name))).toBeDefined();
 		}
+		expect(reg.all().filter((entrypoint) => entrypoint.port === 9185)).toHaveLength(1);
 	});
 
 	it('DEFAULT_ENTRYPOINTS carries TCP entries for postgres and redis', () => {

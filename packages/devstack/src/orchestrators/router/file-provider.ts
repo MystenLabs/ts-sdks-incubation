@@ -284,7 +284,7 @@ export const renderRouteYaml = (route: ResolvedRoute, lease: RouteLeaseMetadata)
 };
 
 const renderHttpRouteYaml = (route: ResolvedRoute, lease: RouteLeaseMetadata): string => {
-	const middlewares = route.cors ? `        middlewares: ["${CORS_MIDDLEWARE_NAME}"]\n` : '';
+	const middlewares = route.cors ? `      middlewares: ["${CORS_MIDDLEWARE_NAME}"]\n` : '';
 	const schemeHint =
 		route.wireProtocol === 'h2c'
 			? `        # h2c upstream — gRPC-friendly cleartext HTTP/2.\n`

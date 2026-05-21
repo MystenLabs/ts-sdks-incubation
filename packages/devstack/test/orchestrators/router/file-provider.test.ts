@@ -264,6 +264,13 @@ describe('renderRouteYaml', () => {
 	it('references the shared CORS middleware when cors:true (invariant #9)', () => {
 		const yaml = renderRouteYaml(route, lease);
 		expect(yaml).toContain(CORS_MIDDLEWARE_NAME);
+		expect(yaml).toContain(
+			[
+				`      service: "${route.dispatchFileId}-svc"`,
+				`      middlewares: ["${CORS_MIDDLEWARE_NAME}"]`,
+				`  services:`,
+			].join('\n'),
+		);
 	});
 
 	it('omits the middleware reference when cors:false', () => {

@@ -238,6 +238,20 @@ describe('bootstrap dispatch bind mount adoption', () => {
 		}),
 	);
 
+	it('renders one Traefik listener for entrypoint aliases that share a port', () => {
+		const entrypoints: ReadonlyArray<Entrypoint> = [
+			{ name: 'walrus-node-0', port: 9185, protocol: 'http' },
+			{ name: 'walrus-node-1', port: 9185, protocol: 'http' },
+			{ name: 'walrus-aggregator', port: 9185, protocol: 'http' },
+		];
+
+		const command = traefikExpectedCommand(entrypoints);
+		expect(command).toContain('--entrypoints.walrus-node-0.address=:9185');
+		expect(command).not.toContain('--entrypoints.walrus-node-1.address=:9185');
+		expect(command).not.toContain('--entrypoints.walrus-aggregator.address=:9185');
+		expect(traefikExpectedPortBindings(entrypoints)).toEqual(['9185/tcp=127.0.0.1:9185']);
+	});
+
 	it.effect('docker-backed boot adopts a matching router when inspect omits top-level Image', () =>
 		Effect.gen(function* () {
 			const root = mkdtempSync(join(tmpdir(), 'router-inspect-no-top-image-test-'));
