@@ -73,9 +73,16 @@ export class StrategyNotFoundError extends Schema.TaggedErrorClass<StrategyNotFo
  *    - `bind-probe-failed`: the OS-level bind probe surfaced an error
  *                          OTHER than `EADDRINUSE` (e.g. EACCES on a
  *                          privileged port, EPERM under jail). Caller
- *                          should fall back to user opt-in / docs. */
+ *                          should fall back to user opt-in / docs.
+ *    - `reservation-failed`: the runtime-root scoped port reservation
+ *                            file could not be created/read/reclaimed. */
 export class PortBrokerError extends Schema.TaggedErrorClass<PortBrokerError>()('PortBrokerError', {
-	reason: Schema.Literals(['no-free-port', 'preferred-busy', 'bind-probe-failed']),
+	reason: Schema.Literals([
+		'no-free-port',
+		'preferred-busy',
+		'bind-probe-failed',
+		'reservation-failed',
+	]),
 	detail: Schema.String,
 	cause: Schema.optional(Schema.Defect),
 }) {}

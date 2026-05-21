@@ -9,12 +9,16 @@
 //   1. Tracks in-process allocations in a `Ref<Map<port, Holder>>` so
 //      two sibling plugins in the same stack don't both pick the same
 //      port between bind-probe and `server.listen`.
-//   2. Verifies kernel-level availability by binding a transient
+//   2. Claims a runtime-root scoped port reservation file before the
+//      bind probe. This closes the cross-process probe→listen race:
+//      two independent `devstack apply` processes sharing a state dir
+//      cannot both choose the same candidate while neither real server
+//      is listening yet.
+//   3. Verifies kernel-level availability by binding a transient
 //      `net.Server` on the candidate port and closing it.
-//      The OS's `EADDRINUSE` is the cross-process collision check —
-//      another devstack on the same machine that holds the port
-//      surfaces here as a probe failure and the broker moves on.
-//   3. Releases on scope close. The broker hands back a `release`
+//      The OS's `EADDRINUSE` remains the final collision check for
+//      non-devstack processes and stale reservation gaps.
+//   4. Releases on scope close. The broker hands back a `release`
 //      Effect AND installs a scope finalizer; the architecture's
 //      "scope-local, never module-level" invariant is honoured by
 //      construction (the Layer is scope-local, the entries die with
@@ -25,23 +29,27 @@
 // `start` up to `start + window` (and from `preferredPort` if
 // supplied) until a probe succeeds.
 //
-// Cross-process safety: kernel bind-probe + the stack-scoped supervisor
-// lock (`stackLockFile`) — two parallel devstacks on the same machine
-// CAN both call the broker concurrently because each runs its own
-// in-process `Ref`; the bind-probe is the cross-process check. Per the
-// architecture §6 parallel-stacks story, the file-locked stack-scope
-// upstream of the broker keeps two acquires of the SAME stack
-// serialized; the broker itself only needs to defend in-process
-// collisions.
+// Cross-process safety: the reservation file is scoped to the runtime
+// root, not the stack root, because host ports are machine-global. The
+// stack-scoped supervisor lock serializes acquires of the SAME stack;
+// these reservation files serialize host-port choices across DIFFERENT
+// stacks and apps that share a state dir.
 
-import { Context, Effect, Layer, Ref, Scope } from 'effect';
+import { randomUUID } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import {
 	createServer as createNetServer,
 	type AddressInfo,
 	type Server as NetServer,
 } from 'node:net';
+import { dirname, join } from 'node:path';
 
+import { Context, Effect, Layer, Ref, Schema, Scope } from 'effect';
+
+import { RosterHolderSchema, type RosterHolder } from '../../cross-process.ts';
+import { checkHolderLiveness, ownHolder } from '../cross-process/liveness.ts';
 import { PortBrokerError } from '../errors.ts';
+import { RuntimeRoot } from '../paths.ts';
 
 // ----------------------------------------------------------------------
 // Public shape
@@ -60,7 +68,9 @@ import { PortBrokerError } from '../errors.ts';
  *  more than enough for any realistic in-process devstack, and the
  *  forward-scan only ever crosses a window boundary if EVERY port in
  *  the window is taken (effectively never on dev machines). */
-export type PortKind = 'wallet' | 'http' | 'rpc' | 'misc';
+const PORT_KINDS = ['wallet', 'http', 'rpc', 'misc'] as const;
+
+export type PortKind = (typeof PORT_KINDS)[number];
 
 /** Host interface used by the transient bind probe. Callers binding a
  *  real server on loopback should use the default. Callers that hand
@@ -125,7 +135,9 @@ export interface PortBroker {
 	/**
 	 * Allocate a port for `kind`. The returned port is exclusive within
 	 * THIS process (the broker's `Ref` map) and best-effort-exclusive
-	 * across processes (kernel bind-probe on `probeHost`).
+	 * across devstack processes that share a runtime root (port
+	 * reservation file), then verified against the kernel bind table
+	 * on `probeHost`.
 	 *
 	 * Scope-bound release: the broker installs a finalizer on the
 	 * surrounding scope; callers can additionally invoke
@@ -138,6 +150,7 @@ export interface PortBroker {
 	 *     probe-pass candidate.
 	 *   - `bind-probe-failed` — non-EADDRINUSE error from the OS bind
 	 *     probe (EACCES on a privileged port etc.).
+	 *   - `reservation-failed` — port reservation file IO failed.
 	 */
 	readonly allocate: (
 		opts: AllocateOptions,
@@ -159,6 +172,139 @@ interface Holder {
 
 type State = ReadonlyMap<number, Holder>;
 
+const PORT_RESERVATION_VERSION = 1 as const;
+
+const PortReservationDocSchema = Schema.Struct({
+	version: Schema.Literal(PORT_RESERVATION_VERSION),
+	port: Schema.Number,
+	kind: Schema.Literals(PORT_KINDS),
+	ownerId: Schema.String,
+	holder: RosterHolderSchema,
+});
+
+type PortReservationDoc = Schema.Schema.Type<typeof PortReservationDocSchema>;
+
+interface PortReservation {
+	readonly path: string;
+	readonly ownerId: string;
+	readonly release: Effect.Effect<void>;
+}
+
+type ReservationAttempt =
+	| { readonly _tag: 'acquired'; readonly reservation: PortReservation }
+	| { readonly _tag: 'busy' }
+	| { readonly _tag: 'failed'; readonly detail: string; readonly cause: unknown };
+
+type ReservationWriteAttempt =
+	| { readonly _tag: 'written' }
+	| { readonly _tag: 'race' }
+	| { readonly _tag: 'exists'; readonly doc: PortReservationDoc | null }
+	| { readonly _tag: 'failed'; readonly cause: unknown };
+
+const portReservationPath = (root: string, port: number): string =>
+	join(root, 'port-locks', `${port}.json`);
+
+const parseReservationDoc = (raw: string): PortReservationDoc | null => {
+	try {
+		const parsed = JSON.parse(raw) as unknown;
+		return Schema.decodeUnknownSync(PortReservationDocSchema)(parsed);
+	} catch {
+		return null;
+	}
+};
+
+const tryWriteReservationSync = (
+	path: string,
+	doc: PortReservationDoc,
+): ReservationWriteAttempt => {
+	try {
+		mkdirSync(dirname(path), { recursive: true });
+		writeFileSync(path, `${JSON.stringify(doc)}\n`, { flag: 'wx', mode: 0o600 });
+		return { _tag: 'written' };
+	} catch (cause) {
+		const code = (cause as NodeJS.ErrnoException).code;
+		if (code !== 'EEXIST') return { _tag: 'failed', cause };
+		if (!existsSync(path)) return { _tag: 'race' };
+		try {
+			return { _tag: 'exists', doc: parseReservationDoc(readFileSync(path, 'utf8')) };
+		} catch {
+			return { _tag: 'exists', doc: null };
+		}
+	}
+};
+
+const unlinkReservationIfOwnerSync = (path: string, ownerId: string): void => {
+	try {
+		const doc = parseReservationDoc(readFileSync(path, 'utf8'));
+		if (doc?.ownerId === ownerId) {
+			unlinkSync(path);
+		}
+	} catch {
+		// Missing or unreadable: release is best-effort. A peer never
+		// reclaims unreadable reservations; it simply skips that port.
+	}
+};
+
+const reclaimReservationIfOwnerSync = (path: string, ownerId: string): boolean => {
+	try {
+		const doc = parseReservationDoc(readFileSync(path, 'utf8'));
+		if (doc?.ownerId !== ownerId) return false;
+		unlinkSync(path);
+		return true;
+	} catch {
+		return false;
+	}
+};
+
+const acquirePortReservation = (
+	root: string,
+	port: number,
+	kind: PortKind,
+): Effect.Effect<ReservationAttempt> =>
+	Effect.gen(function* () {
+		const path = portReservationPath(root, port);
+		const ownerId = `${process.pid}-${randomUUID().slice(0, 8)}`;
+		const holder: RosterHolder = ownHolder();
+		const doc: PortReservationDoc = {
+			version: PORT_RESERVATION_VERSION,
+			port,
+			kind,
+			ownerId,
+			holder,
+		};
+
+		while (true) {
+			const attempt = tryWriteReservationSync(path, doc);
+			if (attempt._tag === 'written') {
+				return {
+					_tag: 'acquired',
+					reservation: {
+						path,
+						ownerId,
+						release: Effect.sync(() => unlinkReservationIfOwnerSync(path, ownerId)),
+					},
+				} as const;
+			}
+			if (attempt._tag === 'race') continue;
+			if (attempt._tag === 'failed') {
+				return {
+					_tag: 'failed',
+					detail: `port reservation ${path} could not be written`,
+					cause: attempt.cause,
+				} as const;
+			}
+			if (attempt.doc === null) return { _tag: 'busy' } as const;
+
+			const liveness = yield* checkHolderLiveness(attempt.doc.holder).pipe(
+				Effect.catch(() => Effect.succeed('alive' as const)),
+			);
+			if (liveness === 'alive') return { _tag: 'busy' } as const;
+			if (!reclaimReservationIfOwnerSync(path, attempt.doc.ownerId)) {
+				return { _tag: 'busy' } as const;
+			}
+		}
+	});
+
 // ----------------------------------------------------------------------
 // Service tag + Layer
 // ----------------------------------------------------------------------
@@ -173,12 +319,14 @@ export class PortBrokerService extends Context.Service<PortBrokerService, PortBr
  * The broker's state lives in a `Ref` captured by the Layer's
  * `Effect.gen`; closing the Layer's scope drops every allocation.
  * Parallel stacks each get their own broker (Layer-driven), and they
- * coordinate cross-process via the kernel's bind table — never via
- * shared in-process state.
+ * coordinate cross-process via runtime-root reservation files plus the
+ * kernel's bind table — never via shared in-process state.
  */
-export const layerPortBroker: Layer.Layer<PortBrokerService> = Layer.effect(
+export const layerPortBroker: Layer.Layer<PortBrokerService, never, RuntimeRoot> = Layer.effect(
 	PortBrokerService,
 	Effect.gen(function* () {
+		const runtimeRoot = yield* RuntimeRoot;
+		const reservationRoot = runtimeRoot.root;
 		const state = yield* Ref.make<State>(new Map());
 
 		const tryReserve = (port: number, kind: PortKind, owner: string): Effect.Effect<boolean> =>
@@ -222,33 +370,73 @@ export const layerPortBroker: Layer.Layer<PortBrokerService> = Layer.effect(
 					// port, drop our reservation and FALL THROUGH to the
 					// kind-window scan — the caller's preferred was a HINT
 					// for cross-process collisions.
-					const ok = yield* probePort(opts.preferredPort, probeHost);
-					if (ok._tag === 'ok') {
-						return yield* finishAllocation(opts.preferredPort, opts.kind, drop);
-					}
-					yield* drop(opts.preferredPort);
-					if (ok._tag === 'probe-failed') {
+					const reservation = yield* acquirePortReservation(
+						reservationRoot,
+						opts.preferredPort,
+						opts.kind,
+					);
+					if (reservation._tag === 'busy') {
+						yield* drop(opts.preferredPort);
+					} else if (reservation._tag === 'failed') {
+						yield* drop(opts.preferredPort);
 						return yield* Effect.fail(
 							new PortBrokerError({
-								reason: 'bind-probe-failed',
-								detail:
-									`bind probe on preferred port ${opts.preferredPort} ` +
-									`(${opts.kind}, host=${probeHost}) failed with non-EADDRINUSE error`,
-								cause: ok.cause,
+								reason: 'reservation-failed',
+								detail: reservation.detail,
+								cause: reservation.cause,
 							}),
 						);
+					} else {
+						const ok = yield* probePort(opts.preferredPort, probeHost);
+						if (ok._tag === 'ok') {
+							return yield* finishAllocation(
+								opts.preferredPort,
+								opts.kind,
+								drop,
+								reservation.reservation,
+							);
+						}
+						yield* reservation.reservation.release;
+						yield* drop(opts.preferredPort);
+						if (ok._tag === 'probe-failed') {
+							return yield* Effect.fail(
+								new PortBrokerError({
+									reason: 'bind-probe-failed',
+									detail:
+										`bind probe on preferred port ${opts.preferredPort} ` +
+										`(${opts.kind}, host=${probeHost}) failed with non-EADDRINUSE error`,
+									cause: ok.cause,
+								}),
+							);
+						}
+						// `ok._tag === 'in-use'` — fall through to scan.
 					}
-					// `ok._tag === 'in-use'` — fall through to scan.
 				}
 
 				// 2. Forward-scan the kind window.
 				for (let p = range.start; p < range.start + range.window; p++) {
 					const reserved = yield* tryReserve(p, opts.kind, owner);
 					if (!reserved) continue;
+					const reservation = yield* acquirePortReservation(reservationRoot, p, opts.kind);
+					if (reservation._tag === 'busy') {
+						yield* drop(p);
+						continue;
+					}
+					if (reservation._tag === 'failed') {
+						yield* drop(p);
+						return yield* Effect.fail(
+							new PortBrokerError({
+								reason: 'reservation-failed',
+								detail: reservation.detail,
+								cause: reservation.cause,
+							}),
+						);
+					}
 					const ok = yield* probePort(p, probeHost);
 					if (ok._tag === 'ok') {
-						return yield* finishAllocation(p, opts.kind, drop);
+						return yield* finishAllocation(p, opts.kind, drop, reservation.reservation);
 					}
+					yield* reservation.reservation.release;
 					yield* drop(p);
 					if (ok._tag === 'probe-failed') {
 						// A privileged port (EACCES) in the middle of the
@@ -289,12 +477,16 @@ export const layerPortBroker: Layer.Layer<PortBrokerService> = Layer.effect(
 			port: number,
 			kind: PortKind,
 			dropFn: (p: number) => Effect.Effect<void>,
+			reservation: PortReservation,
 		): Effect.Effect<AllocatedPort, never, Scope.Scope> =>
 			Effect.gen(function* () {
 				// Scope finalizer — drops the entry when the surrounding
 				// scope closes. Uninterruptible so a Ctrl-C double-tap
 				// doesn't leave the entry dangling in the broker's Ref.
-				yield* Effect.addFinalizer(() => dropFn(port).pipe(Effect.uninterruptible));
+				const release = Effect.all([dropFn(port), reservation.release], {
+					discard: true,
+				});
+				yield* Effect.addFinalizer(() => release.pipe(Effect.uninterruptible));
 				yield* Effect.annotateCurrentSpan({
 					'portBroker.port': port,
 					'portBroker.kind': kind,
@@ -303,7 +495,7 @@ export const layerPortBroker: Layer.Layer<PortBrokerService> = Layer.effect(
 				return {
 					port,
 					kind,
-					release: dropFn(port),
+					release,
 				} satisfies AllocatedPort;
 			});
 
@@ -333,10 +525,9 @@ type ProbeResult =
  * default host publish semantics and catching ports occupied on any
  * local interface.
  *
- * Race window: between the probe-close and the caller's real
- * `listen`, another process could grab the port. Acceptable on dev
- * machines (rare; the real `listen` will surface EADDRINUSE clearly).
- * The in-process Ref blocks the more-likely sibling-plugin race.
+ * Race window: between the probe-close and the caller's real `listen`,
+ * a non-devstack process could still grab the port. Devstack peers are
+ * blocked by the reservation file until the allocation scope releases.
  */
 const probePort = (port: number, host: PortProbeHost): Effect.Effect<ProbeResult> =>
 	Effect.callback<ProbeResult>((resume) => {
