@@ -88,7 +88,10 @@ const dockerPortBindingsFor = (
 			.map((port) => [`${port}/tcp`, [{ HostIp: '127.0.0.1', HostPort: String(port) }]]),
 	);
 
-const matchingDockerInspectJson = (entrypoints: ReadonlyArray<Entrypoint>): string => {
+const matchingDockerInspectJson = (
+	entrypoints: ReadonlyArray<Entrypoint>,
+	options: { readonly includeHostConfig?: boolean } = {},
+): string => {
 	const ports = dockerPortBindingsFor(entrypoints);
 	return JSON.stringify([
 		{
@@ -100,7 +103,7 @@ const matchingDockerInspectJson = (entrypoints: ReadonlyArray<Entrypoint>): stri
 					RW: false,
 				},
 			],
-			HostConfig: { PortBindings: ports },
+			...(options.includeHostConfig === false ? {} : { HostConfig: { PortBindings: ports } }),
 			State: { Running: true, Paused: false, ExitCode: 0 },
 			Config: {
 				Image: 'traefik:v3.5',
@@ -238,6 +241,59 @@ describe('bootstrap dispatch bind mount adoption', () => {
 					'fi',
 					'if [ "$1" = "inspect" ]; then',
 					`  printf '%s\\n' ${JSON.stringify(matchingDockerInspectJson(entrypoints))}`,
+					'  exit 0',
+					'fi',
+					'if [ "$1" = "run" ] || [ "$1" = "rm" ] || [ "$1" = "start" ]; then',
+					'  echo "unexpected mutation" >&2',
+					'  exit 1',
+					'fi',
+					'exit 1',
+					'',
+				]);
+
+				const report = yield* bootstrap({
+					image: 'traefik:v3.5',
+					entrypoints,
+					profile,
+					protectedRouteLeaseIds: [],
+				}).pipe(
+					Effect.provide(layerTraefikContainerOpsDocker),
+					Effect.provide(fakeDockerLayer(bin)),
+				);
+
+				expect(report).toEqual({
+					decision: 'adopt',
+					containerId: 'router-id',
+					networkId: 'network-id',
+					imageMatches: true,
+				});
+				const lines = readFileSync(log, 'utf8').trim().split('\n');
+				expect(lines).toEqual([
+					`network inspect ${profile.networkName}`,
+					`inspect ${profile.containerName}`,
+				]);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}),
+	);
+
+	it.effect('docker-backed boot adopts a matching router when inspect omits HostConfig', () =>
+		Effect.gen(function* () {
+			const root = mkdtempSync(join(tmpdir(), 'router-inspect-no-host-config-test-'));
+			try {
+				const entrypoints: ReadonlyArray<Entrypoint> = [
+					{ name: 'wallet-app', port: 6173, protocol: 'http' },
+				];
+				const { bin, log } = writeDocker(root, [
+					'if [ "$1" = "network" ] && [ "$2" = "inspect" ]; then',
+					`  printf '%s\\n' ${JSON.stringify(matchingRouterNetworkJson())}`,
+					'  exit 0',
+					'fi',
+					'if [ "$1" = "inspect" ]; then',
+					`  printf '%s\\n' ${JSON.stringify(
+						matchingDockerInspectJson(entrypoints, { includeHostConfig: false }),
+					)}`,
 					'  exit 0',
 					'fi',
 					'if [ "$1" = "run" ] || [ "$1" = "rm" ] || [ "$1" = "start" ]; then',

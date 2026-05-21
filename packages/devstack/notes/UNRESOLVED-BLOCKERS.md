@@ -117,6 +117,15 @@ Acceptance evidence:
 
 Closed evidence:
 
+- 2026-05-21 Worker Russell: CI Devstack E2E commit `e4250a8e`, job
+  `Seed snapshot · private-content`, failed router boot while decoding container inspect JSON for
+  `devstack-router-e744de605339` because Docker omitted the top-level `HostConfig` field. Container
+  inspect now accepts absent top-level `HostConfig` and falls back to `NetworkSettings.Ports` for
+  published-port facts while still requiring `Config.Image`, `State`, and `NetworkSettings`.
+  Targeted validation:
+  `pnpm --filter @mysten-incubation/devstack exec vitest run test/runtime/docker/ownership-lifecycle.test.ts`,
+  `pnpm --filter @mysten-incubation/devstack exec vitest run test/orchestrators/router/traefik-container.test.ts`,
+  and `pnpm --filter @mysten-incubation/devstack typecheck`.
 - 2026-05-21 Worker M: CI Devstack E2E run 26222137331 / job 77159570006 failed router boot while
   decoding container inspect JSON that omitted Docker's unused top-level `Image` field. The
   container inspect schema now accepts that field as optional but still requires `Config.Image`,

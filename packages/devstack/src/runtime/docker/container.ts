@@ -275,9 +275,11 @@ const InspectSchema = Schema.Struct({
 	Id: Schema.String,
 	Image: Schema.optional(Schema.String),
 	Mounts: Schema.optional(Schema.Unknown),
-	HostConfig: Schema.Struct({
-		PortBindings: Schema.Unknown,
-	}),
+	HostConfig: Schema.optional(
+		Schema.Struct({
+			PortBindings: Schema.Unknown,
+		}),
+	),
 	State: Schema.Struct({
 		Running: Schema.Boolean,
 		Paused: Schema.Boolean,
@@ -332,8 +334,11 @@ export const inspectContainer = (
 				);
 			}
 			const decoded = Schema.decodeUnknownSync(InspectSchema)(arr[0]);
-			const ports = readPublishedPorts(decoded.HostConfig.PortBindings);
 			const effectivePorts = readPublishedPorts(decoded.NetworkSettings.Ports);
+			const ports =
+				decoded.HostConfig === undefined
+					? effectivePorts
+					: readPublishedPorts(decoded.HostConfig.PortBindings);
 			const mounts = readMounts(decoded.Mounts);
 			const command = readStringArray(decoded.Config.Cmd);
 			const labels = readLabels(decoded.Config.Labels);

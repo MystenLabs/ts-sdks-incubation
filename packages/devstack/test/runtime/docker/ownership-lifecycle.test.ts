@@ -77,13 +77,16 @@ const inspectJson = (
 		readonly effectivePorts?: unknown;
 		readonly includeTopLevelImage?: boolean;
 		readonly includeConfigImage?: boolean;
+		readonly includeHostConfig?: boolean;
 	} = {},
 ): string =>
 	JSON.stringify([
 		{
 			Id: overrides.id ?? 'container-id',
 			...(overrides.includeTopLevelImage === false ? {} : { Image: 'sha256:desired' }),
-			HostConfig: { PortBindings: overrides.portBindings ?? {} },
+			...(overrides.includeHostConfig === false
+				? {}
+				: { HostConfig: { PortBindings: overrides.portBindings ?? {} } }),
 			State: {
 				Running: overrides.running ?? true,
 				Paused: overrides.paused ?? false,
@@ -320,6 +323,37 @@ describe('docker inspect ownership boundary', () => {
 				);
 
 				expect(facts?.image).toBe('img:desired');
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}),
+	);
+
+	it.effect('uses NetworkSettings.Ports when Docker inspect omits top-level HostConfig', () =>
+		Effect.gen(function* () {
+			const root = mkdtempSync(join(tmpdir(), 'docker-inspect-no-host-config-test-'));
+			try {
+				const publishedPorts = portBindings(51001, 50001);
+				const { bin } = writeDocker(root, [
+					'if [ "$1" = "inspect" ]; then',
+					`  printf '%s\\n' ${JSON.stringify(
+						inspectJson({
+							includeHostConfig: false,
+							effectivePorts: publishedPorts,
+						}),
+					)}`,
+					'  exit 0',
+					'fi',
+					'exit 0',
+					'',
+				]);
+
+				const facts = yield* inspectContainer('devstack-owned').pipe(
+					Effect.provide(fakeDockerLayer(bin)),
+				);
+
+				expect(facts?.portBindings).toEqual(['9000/tcp=0.0.0.0:51001', '9123/tcp=0.0.0.0:50001']);
+				expect(facts?.effectivePortBindings).toEqual(facts?.portBindings);
 			} finally {
 				rmSync(root, { recursive: true, force: true });
 			}
