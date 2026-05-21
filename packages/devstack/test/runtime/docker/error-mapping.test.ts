@@ -1,11 +1,10 @@
-// Contract-projection test for the three new image-op typed errors.
+// Contract-projection tests for Docker typed errors.
 //
 // Architecture: the contract surface (`ContainerRuntimeError`) is a
-// narrow closed-enum reason; the typed envelopes (`ImageSaveFailed`,
-// `ImageLoadFailed`, `ImageTagFailed`) carry detail for advanced
-// consumers. `toContractError` MUST surface a distinct reason for
-// each new op so cascade-formatter / CLI envelopes don't conflate
-// "save failed" with "load failed".
+// narrow closed-enum reason; the typed envelopes carry detail for
+// advanced consumers. `toContractError` MUST surface a distinct reason
+// for each actionable op so cascade-formatter / CLI envelopes don't
+// conflate unrelated Docker failures.
 
 import { describe, expect, it } from 'vitest';
 
@@ -14,12 +13,13 @@ import {
 	ImageLoadFailed,
 	ImageSaveFailed,
 	ImageTagFailed,
+	NetworkAddressPoolExhausted,
 } from '../../../src/runtime/docker/errors.ts';
 import { toContractError } from '../../../src/runtime/docker/errors.ts';
-import { wrapCreateError } from '../../../src/runtime/docker/wrap.ts';
+import { wrapCreateError, wrapNetworkError } from '../../../src/runtime/docker/wrap.ts';
 import { CaptureError } from '../../../src/substrate/runtime/observability/subprocess-capture.ts';
 
-describe('toContractError — new image ops', () => {
+describe('toContractError — Docker operation mappings', () => {
 	it('ImageSaveFailed → image-save-failed', () => {
 		const err = new ImageSaveFailed({
 			ref: 'foo:1',
@@ -77,6 +77,19 @@ describe('toContractError — new image ops', () => {
 		expect(projected.detail).toContain('port is already allocated');
 	});
 
+	it('NetworkAddressPoolExhausted → actionable network-address-pool-exhausted', () => {
+		const err = new NetworkAddressPoolExhausted({
+			network: 'devstack-private-content-main-walrus-walrus-net',
+			stderr: 'Error response from daemon: all predefined address pools have been fully subnetted',
+			hint: 'Remove stale networks with docker network prune or choose an explicit subnet/gateway.',
+		});
+		const projected = toContractError(err);
+		expect(projected.reason).toBe('network-address-pool-exhausted');
+		expect(projected.detail).toContain('devstack-private-content-main-walrus-walrus-net');
+		expect(projected.detail).toContain('docker network prune');
+		expect(projected.detail).toContain('subnet/gateway');
+	});
+
 	it('wrapCreateError classifies Docker publish port conflicts distinctly from name collisions', () => {
 		const err = wrapCreateError('devstack-wallet-wallet-sui-validator')(
 			new CaptureError({
@@ -87,6 +100,22 @@ describe('toContractError — new image ops', () => {
 			}),
 		);
 		expect(err._tag).toBe('ContainerPortPublishConflict');
+	});
+
+	it('wrapNetworkError classifies exhausted predefined Docker bridge pools distinctly', () => {
+		const err = wrapNetworkError(
+			'create',
+			'devstack-private-content-main-walrus-walrus-net',
+		)(
+			new CaptureError({
+				op: 'docker.network.create',
+				stdout: '',
+				stderr:
+					'Error response from daemon: all predefined address pools have been fully subnetted',
+				exitCode: 1,
+			}),
+		);
+		expect(err._tag).toBe('NetworkAddressPoolExhausted');
 	});
 });
 
@@ -105,5 +134,14 @@ describe('typed error round-trip', () => {
 	it('ImageTagFailed has _tag', () => {
 		const err = new ImageTagFailed({ src: 's', dst: 'd', stderr: '' });
 		expect(err._tag).toBe('ImageTagFailed');
+	});
+
+	it('NetworkAddressPoolExhausted has _tag', () => {
+		const err = new NetworkAddressPoolExhausted({
+			network: 'n',
+			stderr: 'all predefined address pools have been fully subnetted',
+			hint: 'h',
+		});
+		expect(err._tag).toBe('NetworkAddressPoolExhausted');
 	});
 });

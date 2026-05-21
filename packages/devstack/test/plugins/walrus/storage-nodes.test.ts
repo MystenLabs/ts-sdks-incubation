@@ -6,6 +6,10 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+	deriveWalrusSubnetPrefix,
+	walrusNetworkCreateSpec,
+} from '../../../src/plugins/walrus/index.ts';
+import {
 	WALRUS_NODE_IP_BASE,
 	WALRUS_ROUTER_PORT,
 	buildWalrusNetworkName,
@@ -39,6 +43,49 @@ describe('buildWalrusNetworkName', () => {
 		expect(buildWalrusNetworkName('private-content', 'seed-snapshot', 'walrus')).toBe(
 			'devstack-private-content-seed-snapshot-walrus-walrus-net',
 		);
+	});
+});
+
+describe('walrus network addressing', () => {
+	it('derives a stable subnet prefix from the Walrus network identity', () => {
+		const identity = { app: 'private-content', stack: 'main', walrusName: 'walrus' };
+		const first = deriveWalrusSubnetPrefix(identity);
+		const second = deriveWalrusSubnetPrefix(identity);
+
+		expect(first).toBe(second);
+		expect(first).toMatch(/^10\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.\d+$/);
+	});
+
+	it('derives different prefixes for different app/stack/walrus identities', () => {
+		const prefixes = new Set([
+			deriveWalrusSubnetPrefix({ app: 'private-content', stack: 'main', walrusName: 'walrus' }),
+			deriveWalrusSubnetPrefix({
+				app: 'private-content',
+				stack: 'feature-a',
+				walrusName: 'walrus',
+			}),
+			deriveWalrusSubnetPrefix({ app: 'private-content', stack: 'main', walrusName: 'archive' }),
+			deriveWalrusSubnetPrefix({ app: 'other-app', stack: 'main', walrusName: 'walrus' }),
+		]);
+
+		expect(prefixes.size).toBe(4);
+	});
+
+	it('requests the explicit Docker subnet matching the derived listening IP prefix', () => {
+		const identity = { app: 'private-content', stack: 'main', walrusName: 'walrus' };
+		const prefix = deriveWalrusSubnetPrefix(identity);
+		const spec = walrusNetworkCreateSpec(
+			{
+				name: buildWalrusNetworkName(identity.app, identity.stack, identity.walrusName),
+				app: identity.app,
+				stack: identity.stack,
+			},
+			prefix,
+		);
+
+		expect(spec.subnet).toBe(`${prefix}.0/24`);
+		expect(spec.gateway).toBe(`${prefix}.1`);
+		expect(`${prefix}.${WALRUS_NODE_IP_BASE}`).toMatch(/^10\.\d+\.\d+\.10$/);
 	});
 });
 

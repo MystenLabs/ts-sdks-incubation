@@ -23,6 +23,7 @@ import {
 	type DockerRuntimeError,
 	ImageNotFound,
 	ImagePullFailed,
+	NetworkAddressPoolExhausted,
 	NetworkOperationFailed,
 	VolumeOperationFailed,
 } from './errors.ts';
@@ -56,6 +57,11 @@ export const isNoSuchContainerStderr = (stderr: string): boolean =>
 /** Network attach idempotency — "already exists in network" is success. */
 export const isAlreadyInNetworkStderr = (stderr: string): boolean =>
 	/already exists in network/i.test(stderr) || /endpoint with name .* already exists/i.test(stderr);
+
+/** Docker bridge IPAM exhaustion. This is a stale-network / missing
+ *  explicit-subnet policy failure, not a daemon reachability failure. */
+export const isNetworkAddressPoolExhaustedStderr = (stderr: string): boolean =>
+	/all predefined address pools have been fully subnetted/i.test(stderr);
 
 /** Image not found — pull or inspect against an unknown ref. */
 export const isImageNotFoundStderr = (stderr: string): boolean =>
@@ -149,6 +155,13 @@ export const wrapNetworkError =
 	(err: CaptureError): DockerRuntimeError => {
 		const d = checkDaemon(err);
 		if (d) return d;
+		if (op === 'create' && isNetworkAddressPoolExhaustedStderr(err.stderr)) {
+			return new NetworkAddressPoolExhausted({
+				network,
+				stderr: err.stderr,
+				hint: 'Docker exhausted its predefined bridge address pools. Remove stale devstack networks with wipe/prune (for example `docker network prune`) or request an explicit non-overlapping subnet/gateway.',
+			});
+		}
 		return new NetworkOperationFailed({ op, network, stderr: err.stderr });
 	};
 

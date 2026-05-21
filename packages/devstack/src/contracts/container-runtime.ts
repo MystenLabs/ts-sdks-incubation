@@ -159,6 +159,12 @@ export interface EnsureNetworkSpec {
 	readonly name: string;
 	readonly app: string;
 	readonly stack: string;
+	/** Optional IPAM subnet (`10.42.7.0/24`) for callers that own
+	 *  deterministic in-network addresses and must not consume Docker's
+	 *  default bridge address pools. */
+	readonly subnet?: string;
+	/** Optional gateway inside `subnet` (`10.42.7.1`). */
+	readonly gateway?: string;
 }
 
 /** The substrate-facing runtime adapter. Implementation lives in
@@ -312,6 +318,7 @@ export interface ContainerRuntimeError {
 		| 'container-replace-failed'
 		| 'name-collision'
 		| 'publish-port-conflict'
+		| 'network-address-pool-exhausted'
 		| 'ip-readback-timeout'
 		| 'ready-probe-failed'
 		| 'recreate-refused'

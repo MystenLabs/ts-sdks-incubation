@@ -190,7 +190,12 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 		const ensureNetworkContractImpl = (
 			spec: EnsureNetworkSpec,
 		): Effect.Effect<string, ContainerRuntimeError> =>
-			ensureNetworkImpl(spec.name, { app: spec.app, stack: spec.stack }).pipe(
+			ensureNetworkImpl(spec.name, {
+				app: spec.app,
+				stack: spec.stack,
+				...(spec.subnet === undefined ? {} : { subnet: spec.subnet }),
+				...(spec.gateway === undefined ? {} : { gateway: spec.gateway }),
+			}).pipe(
 				mapToContractError,
 				Effect.provide(baseCtx),
 				Effect.withSpan('runtime.docker.contract.ensureNetwork'),

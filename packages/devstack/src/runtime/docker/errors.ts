@@ -122,6 +122,16 @@ export class NetworkOperationFailed extends Data.TaggedError('NetworkOperationFa
 	readonly stderr: string;
 }> {}
 
+/** `docker network create` exhausted Docker's default bridge IPAM
+ *  pools. This is not a daemon reachability failure; stale long-lived
+ *  networks or missing explicit subnet/gateway policy are the usual
+ *  causes. */
+export class NetworkAddressPoolExhausted extends Data.TaggedError('NetworkAddressPoolExhausted')<{
+	readonly network: string;
+	readonly stderr: string;
+	readonly hint: string;
+}> {}
+
 /** Container's IP on a secondary network was not allocated within the
  *  bounded poll budget. Architecture § Async network-connect. */
 export class NetworkIpReadbackTimeout extends Data.TaggedError('NetworkIpReadbackTimeout')<{
@@ -207,6 +217,7 @@ export type DockerRuntimeError =
 	| DockerInspectDecodeFailed
 	| ForeignDockerResource
 	| NetworkOperationFailed
+	| NetworkAddressPoolExhausted
 	| NetworkIpReadbackTimeout
 	| VolumeOperationFailed
 	| RecreateRefused
@@ -291,6 +302,12 @@ export const toContractError = (err: DockerRuntimeError): ContainerRuntimeError 
 				_tag: 'ContainerRuntimeError',
 				reason: 'daemon-unreachable',
 				detail: `network ${err.op} ${err.network}: ${err.stderr}`,
+			};
+		case 'NetworkAddressPoolExhausted':
+			return {
+				_tag: 'ContainerRuntimeError',
+				reason: 'network-address-pool-exhausted',
+				detail: `network create ${err.network}: ${err.hint} stderr=${err.stderr}`,
 			};
 		case 'NetworkIpReadbackTimeout':
 			return {

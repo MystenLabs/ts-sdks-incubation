@@ -25,6 +25,7 @@ import { describe, expect, it } from '@effect/vitest';
 import type {
 	ContainerHandle,
 	ContainerRuntime,
+	EnsureNetworkSpec,
 	ExecOptions,
 	ImageRef,
 	LoadedImageBundle,
@@ -155,6 +156,30 @@ describe('ContainerRuntime contract surface', () => {
 			};
 			const r = yield* stubRuntime.runOneShot(spec);
 			expect(r.exitCode).toBe(0);
+		}),
+	);
+
+	it.effect('ensureNetwork carries optional subnet and gateway policy', () =>
+		Effect.gen(function* () {
+			const spec: EnsureNetworkSpec = {
+				name: 'devstack-private-content-main-walrus-walrus-net',
+				app: 'private-content',
+				stack: 'main',
+				subnet: '10.42.7.0/24',
+				gateway: '10.42.7.1',
+			};
+			let captured: EnsureNetworkSpec | undefined;
+			const runtime: ContainerRuntime = {
+				...stubRuntime,
+				ensureNetwork: (next) => {
+					captured = next;
+					return Effect.succeed('net-stub');
+				},
+			};
+
+			yield* runtime.ensureNetwork(spec);
+
+			expect(captured).toEqual(spec);
 		}),
 	);
 

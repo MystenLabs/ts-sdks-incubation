@@ -49,6 +49,7 @@ import { defineModeNamespace } from '../../api/mode-narrowed-factory.ts';
 import { defineNodePlugin } from '../../api/define-plugin.ts';
 import { defineTag } from '../../api/tag.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
+import type { ContainerRuntime, EnsureNetworkSpec } from '../../contracts/container-runtime.ts';
 import type { RoutableDecl } from '../../contracts/routable.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
@@ -132,6 +133,50 @@ export interface WalrusResolved {
 
 /** Walrus plugin tag. */
 export const WalrusTag = defineTag<'walrus', WalrusResolved>('walrus', 'walrus');
+
+export interface WalrusNetworkIdentity {
+	readonly app: string;
+	readonly stack: string;
+	readonly walrusName: string;
+}
+
+/** Walrus deploy records storage-node listening IPs under this /24.
+ *  Docker network create requests the matching subnet explicitly, with
+ *  the prefix derived from the Walrus network identity so parallel
+ *  stacks don't all claim the same Docker IPAM range. */
+export const deriveWalrusSubnetPrefix = (identity: WalrusNetworkIdentity): string => {
+	const key = `${identity.app}\0${identity.stack}\0${identity.walrusName}`;
+	let hash = 0x811c9dc5;
+	for (let i = 0; i < key.length; i += 1) {
+		hash ^= key.charCodeAt(i);
+		hash = Math.imul(hash, 0x01000193) >>> 0;
+	}
+	const bucket = hash % (64 * 256);
+	const secondOctet = 64 + Math.floor(bucket / 256);
+	const thirdOctet = bucket % 256;
+	return `10.${secondOctet}.${thirdOctet}`;
+};
+
+export const walrusNetworkCreateSpec = <Spec extends EnsureNetworkSpec>(
+	spec: Spec,
+	subnetPrefix: string,
+): Spec & Required<Pick<EnsureNetworkSpec, 'subnet' | 'gateway'>> => ({
+	...spec,
+	subnet: `${subnetPrefix}.0/24`,
+	gateway: `${subnetPrefix}.1`,
+});
+
+const withWalrusNetworkAddressing = (
+	runtime: ContainerRuntime,
+	walrusNetworkName: string,
+	subnetPrefix: string,
+): ContainerRuntime => ({
+	...runtime,
+	ensureNetwork: (spec) =>
+		runtime.ensureNetwork(
+			spec.name === walrusNetworkName ? walrusNetworkCreateSpec(spec, subnetPrefix) : spec,
+		),
+});
 
 // ---------------------------------------------------------------------------
 // Default option resolution (env-driven)
@@ -300,6 +345,16 @@ const buildLocalPlugin = <const Accounts extends ReadonlyArray<WalrusAccountMemb
 					identity.stack,
 					resolved.name,
 				);
+				const walrusSubnetPrefix = deriveWalrusSubnetPrefix({
+					app: identity.app,
+					stack: identity.stack,
+					walrusName: resolved.name,
+				});
+				const walrusRuntime = withWalrusNetworkAddressing(
+					runtime,
+					walrusNetworkName,
+					walrusSubnetPrefix,
+				);
 				const suiRpcUrlInNetwork = sui.hostGateway.rpcUrl;
 				// sui-faucet v2 endpoint — `/v2/gas` is the supported path
 				// on devnet-v1.71.0+ (the binary still answers `/v1/gas`
@@ -318,7 +373,7 @@ const buildLocalPlugin = <const Accounts extends ReadonlyArray<WalrusAccountMemb
 				const mode: WalrusMode = { mode: 'local', opts: resolved };
 				const boot = yield* bootWalrusService(
 					{
-						runtime,
+						runtime: walrusRuntime,
 						publisher,
 						probe,
 						suiSdk: sui.sdk,
@@ -327,7 +382,7 @@ const buildLocalPlugin = <const Accounts extends ReadonlyArray<WalrusAccountMemb
 						walrusFaucetUrlInNetwork,
 						app: identity.app,
 						stack: identity.stack,
-						subnetPrefix: '10.42.7',
+						subnetPrefix: walrusSubnetPrefix,
 						walrusNetworkName,
 						// Walrus has no `sui-net` to attach to (sui binds
 						// host ports). Reuse the walrus network so the
