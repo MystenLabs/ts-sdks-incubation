@@ -30,7 +30,18 @@ import { existsSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute, resolve as resolvePath } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { Cause, Effect, Exit, Fiber, FileSystem, Layer, Logger, Queue, Stream } from 'effect';
+import {
+	Cause,
+	Effect,
+	Exit,
+	Fiber,
+	FileSystem,
+	Layer,
+	Logger,
+	Queue,
+	Stream,
+	SubscriptionRef,
+} from 'effect';
 
 import { appName, chainId, stackName } from '../substrate/brand.ts';
 import type { Identity } from '../substrate/identity.ts';
@@ -43,6 +54,7 @@ import {
 	readProjectionSnapshot,
 	type SupervisedStack,
 	type SupervisorCommandHandler,
+	writeProjectionSnapshot,
 } from '../substrate/runtime/index.ts';
 import { buildSubstrateLayers, superviseStackEffect } from '../substrate/runtime/run.ts';
 import {
@@ -517,6 +529,8 @@ const runApplyLive = (
 					lifetime: 'one-shot',
 				},
 			);
+			const stackPaths = yield* StackPathsService;
+			yield* writeProjectionSnapshot(stackPaths.stackRoot, yield* SubscriptionRef.get(state));
 		});
 
 		yield* program.pipe(
@@ -698,6 +712,8 @@ const runSnapshotDirect = (
 						),
 				},
 			);
+			const stackPaths = yield* StackPathsService;
+			yield* writeProjectionSnapshot(stackPaths.stackRoot, yield* SubscriptionRef.get(state));
 		});
 
 		yield* program.pipe(

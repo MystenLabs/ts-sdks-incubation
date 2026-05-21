@@ -26,7 +26,12 @@ import {
 	FormatterRegistryService,
 	layerFormatterRegistry,
 } from '../observability/formatter-registry.ts';
-import { CapabilitySinksService, layerCapabilitySinks, type CapabilitySink } from './service.ts';
+import {
+	CapabilitySinksService,
+	layerCapabilitySinks,
+	type CapabilitySink,
+	type HarvestContext,
+} from './service.ts';
 
 // -----------------------------------------------------------------------------
 // Orchestrator-supplied capability-decl handlers
@@ -46,26 +51,32 @@ export interface OrchestratorSinks {
 	readonly snapshotable?: (
 		pluginKey: PluginKey,
 		decl: SnapshotableDecl,
+		ctx: HarvestContext,
 	) => Effect.Effect<void, never, Scope.Scope>;
 	readonly routable?: (
 		pluginKey: PluginKey,
 		decl: RoutableDecl,
+		ctx: HarvestContext,
 	) => Effect.Effect<void, never, Scope.Scope>;
 	readonly codegenable?: (
 		pluginKey: PluginKey,
 		decl: CodegenableDecl<unknown, string>,
+		ctx: HarvestContext,
 	) => Effect.Effect<void, never, Scope.Scope>;
 	readonly strategy?: (
 		pluginKey: PluginKey,
 		decl: StrategyContributorDecl<string, unknown>,
+		ctx: HarvestContext,
 	) => Effect.Effect<void, never, Scope.Scope>;
 	readonly liveness?: (
 		pluginKey: PluginKey,
 		decl: LifenessClassifierDecl,
+		ctx: HarvestContext,
 	) => Effect.Effect<void, never, Scope.Scope>;
 	readonly composite?: (
 		pluginKey: PluginKey,
 		decl: CompositePrimitiveDecl,
+		ctx: HarvestContext,
 	) => Effect.Effect<void, never, Scope.Scope>;
 }
 
@@ -91,31 +102,31 @@ const buildDefaultSinks = (
 	push<'snapshotable', SnapshotableDecl>({
 		kind: 'snapshotable',
 		accept: (decl, ctx) =>
-			orchestrator.snapshotable ? orchestrator.snapshotable(ctx.pluginKey, decl) : Effect.void,
+			orchestrator.snapshotable ? orchestrator.snapshotable(ctx.pluginKey, decl, ctx) : Effect.void,
 	});
 
 	push<'routable', RoutableDecl>({
 		kind: 'routable',
 		accept: (decl, ctx) =>
-			orchestrator.routable ? orchestrator.routable(ctx.pluginKey, decl) : Effect.void,
+			orchestrator.routable ? orchestrator.routable(ctx.pluginKey, decl, ctx) : Effect.void,
 	});
 
 	push<'codegenable', CodegenableDecl<unknown, string>>({
 		kind: 'codegenable',
 		accept: (decl, ctx) =>
-			orchestrator.codegenable ? orchestrator.codegenable(ctx.pluginKey, decl) : Effect.void,
+			orchestrator.codegenable ? orchestrator.codegenable(ctx.pluginKey, decl, ctx) : Effect.void,
 	});
 
 	push<'strategy-contributor', StrategyContributorDecl<string, unknown>>({
 		kind: 'strategy-contributor',
 		accept: (decl, ctx) =>
-			orchestrator.strategy ? orchestrator.strategy(ctx.pluginKey, decl) : Effect.void,
+			orchestrator.strategy ? orchestrator.strategy(ctx.pluginKey, decl, ctx) : Effect.void,
 	});
 
 	push<'liveness-classifier', LifenessClassifierDecl>({
 		kind: 'liveness-classifier',
 		accept: (decl, ctx) =>
-			orchestrator.liveness ? orchestrator.liveness(ctx.pluginKey, decl) : Effect.void,
+			orchestrator.liveness ? orchestrator.liveness(ctx.pluginKey, decl, ctx) : Effect.void,
 	});
 
 	push<'composite-primitive', CompositePrimitiveDecl>({
@@ -125,7 +136,7 @@ const buildDefaultSinks = (
 		// Sink still exists so `dispatch` doesn't fail on composite
 		// decls; orchestrators wanting to observe composites override.
 		accept: (decl, ctx) =>
-			orchestrator.composite ? orchestrator.composite(ctx.pluginKey, decl) : Effect.void,
+			orchestrator.composite ? orchestrator.composite(ctx.pluginKey, decl, ctx) : Effect.void,
 	});
 
 	push<'error-contribution', PluginErrorContribution>({

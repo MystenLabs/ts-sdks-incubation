@@ -39,6 +39,7 @@ const fakeIdentity: Identity = {
 const ctxFor = (key: string): HarvestContext => ({
 	pluginKey: pluginKey(key),
 	identity: fakeIdentity,
+	publish: () => Effect.void,
 });
 
 const snapDecl: SnapshotableDecl = {

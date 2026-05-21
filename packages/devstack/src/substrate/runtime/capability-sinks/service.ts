@@ -18,6 +18,7 @@ import { Context, Data, Effect, Layer, Ref, Scope } from 'effect';
 
 import type { CapabilityDecl } from '../../../contracts/capability-decl.ts';
 import type { PluginKey } from '../../brand.ts';
+import type { EngineEvent } from '../../events.ts';
 import type { Identity } from '../../identity.ts';
 import type { PluginErrorContribution } from '../../plugin.ts';
 
@@ -52,12 +53,16 @@ export type ContributionKind =
 
 /** Context the harvest loop supplies to each sink invocation. Carries
  *  the plugin's key + identity so sinks can attribute their work
- *  without naming the plugin. The plugin scope is exposed via
- *  `Scope.Scope` in the sink's R-channel — sinks `addFinalizer` lands
- *  on the plugin's scope so registrations reap on plugin teardown. */
+ *  without naming the plugin. `publish` is the supervisor-owned event
+ *  path, so sink-emitted events keep the same ordering/projection
+ *  semantics as lifecycle/log/error events. The plugin scope is
+ *  exposed via `Scope.Scope` in the sink's R-channel — sinks
+ *  `addFinalizer` lands on the plugin's scope so registrations reap
+ *  on plugin teardown. */
 export interface HarvestContext {
 	readonly pluginKey: PluginKey;
 	readonly identity: Identity;
+	readonly publish: (event: EngineEvent) => Effect.Effect<void, never, never>;
 }
 
 // -----------------------------------------------------------------------------

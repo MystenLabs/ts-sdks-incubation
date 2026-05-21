@@ -39,7 +39,8 @@ import {
 	type RouterProfile,
 } from './router/profile.ts';
 import { layerSnapshotOrchestrator, SnapshotOrchestratorService } from './snapshot/index.ts';
-import type { PluginKey } from '../substrate/brand.ts';
+import { endpointKey, type PluginKey } from '../substrate/brand.ts';
+import type { EngineEvent } from '../substrate/events.ts';
 import {
 	buildEnvelope,
 	CURRENT_MANIFEST_VERSION,
@@ -75,6 +76,7 @@ export interface CapabilityDeliveryObservers {
 	readonly routable?: (
 		pluginKey: PluginKey,
 		endpoint: EndpointUrl,
+		event: Extract<EngineEvent, { readonly tag: 'endpoint.registered' }>,
 	) => Effect.Effect<void, never, Scope.Scope>;
 	readonly codegenable?: (
 		pluginKey: PluginKey,
@@ -132,6 +134,22 @@ export const bootRouterOrchestrator: Effect.Effect<void, never, RouterService> =
 	},
 );
 
+export const endpointEventFromRoutable = (
+	pluginKey: PluginKey,
+	endpoint: EndpointUrl,
+	registeredAt = Date.now(),
+): Extract<EngineEvent, { readonly tag: 'endpoint.registered' }> => ({
+	tag: 'endpoint.registered',
+	endpoint: {
+		endpointKey: endpointKey(`${pluginKey}:${endpoint.endpointName}`),
+		name: endpoint.endpointName,
+		url: endpoint.url,
+		displayUrl: null,
+		wireProtocol: endpoint.wireProtocol,
+		registeredAt,
+	},
+});
+
 export const buildProductionOrchestratorSinks = (
 	observers: CapabilityDeliveryObservers = {},
 ): Effect.Effect<
@@ -146,12 +164,19 @@ export const buildProductionOrchestratorSinks = (
 		return {
 			snapshotable: (pluginKey, decl) => snapshot.registerParticipant(pluginKey, decl),
 			liveness: (pluginKey, decl) => snapshot.registerClassifier(pluginKey, decl),
-			routable: (pluginKey, decl) =>
+			routable: (pluginKey, decl, ctx) =>
 				router.boot().pipe(
 					Effect.andThen(router.contributeRoute(decl)),
-					Effect.flatMap((endpoint) =>
-						observers.routable ? observers.routable(pluginKey, endpoint) : Effect.void,
-					),
+					Effect.flatMap((endpoint) => {
+						const event = endpointEventFromRoutable(pluginKey, endpoint);
+						return ctx.publish(event).pipe(
+							Effect.andThen(
+								observers.routable
+									? observers.routable(pluginKey, endpoint, event)
+									: Effect.void,
+							),
+						);
+					}),
 					Effect.orDie,
 				),
 			codegenable: (pluginKey, decl) =>

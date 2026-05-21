@@ -371,9 +371,15 @@ const dispatchContributions = (
 	identity: Identity,
 	pluginScope: Scope.Scope,
 	sinks: CapabilitySinksShape,
+	ref: SubscriptionRef.SubscriptionRef<SubscribableState>,
+	hub: Queue.Enqueue<EngineEvent>,
 ): Effect.Effect<void, never, never> =>
 	Effect.gen(function* () {
-		const harvestCtx: HarvestContext = { pluginKey, identity };
+		const harvestCtx: HarvestContext = {
+			pluginKey,
+			identity,
+			publish: (event) => publish(ref, hub, event),
+		};
 
 		const items: ReadonlyArray<AnyContribution> = [
 			...capabilities.map<AnyContribution>((decl) => ({
@@ -568,6 +574,8 @@ const acquireNode = (
 					identity,
 					entry.scope,
 					sinks,
+					ref,
+					hub,
 				);
 			}
 			// `markReady` populates the synchronous resolved-value map AND
