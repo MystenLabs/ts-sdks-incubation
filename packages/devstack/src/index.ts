@@ -69,6 +69,8 @@ export type {
 	ContainerRuntime,
 	ContainerRuntimeError,
 	ImageRef,
+	LoadedImageBundle,
+	TaggedImageRef,
 } from './contracts/container-runtime.ts';
 export { ContainerRuntimeService } from './runtime/docker/service.ts';
 export type { CompositePrimitiveDecl } from './contracts/composite-primitive.ts';

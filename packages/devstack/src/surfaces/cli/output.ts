@@ -15,7 +15,10 @@
 import { Effect } from 'effect';
 import type { Cause } from 'effect';
 
-import { formatCause } from '../../substrate/runtime/observability/cascade-formatter.ts';
+import {
+	formatCause,
+	formatValue,
+} from '../../substrate/runtime/observability/cascade-formatter.ts';
 import {
 	type Envelope,
 	failureEnvelope,
@@ -171,6 +174,8 @@ export const emitFailure = (
 			summary: summaryFor(params.error),
 			hint: hintFor(params.error),
 			cause: params.cause,
+			errorCause:
+				'cause' in params.error ? (params.error as { readonly cause?: unknown }).cause : undefined,
 			dryRun: params.dryRun,
 		});
 		yield* io.setExitCode(exitCode);
@@ -183,17 +188,19 @@ interface RenderFailureParams {
 	readonly summary: string;
 	readonly hint?: string;
 	readonly cause?: Cause.Cause<unknown>;
+	readonly errorCause?: unknown;
 	readonly dryRun?: boolean;
 }
 
 const renderFailure = (io: CliIO, mode: OutputMode, p: RenderFailureParams): Effect.Effect<void> =>
 	Effect.gen(function* () {
-		const chain =
+		const rawChain =
 			p.cause !== undefined
 				? formatCause(p.cause)
-						.split('\n')
-						.filter((l) => l.length > 0)
-				: undefined;
+				: p.errorCause !== undefined
+					? formatValue(p.errorCause)
+					: undefined;
+		const chain = rawChain?.split('\n').filter((l) => l.length > 0);
 
 		if (mode === 'json') {
 			const fp: FailureParams = {

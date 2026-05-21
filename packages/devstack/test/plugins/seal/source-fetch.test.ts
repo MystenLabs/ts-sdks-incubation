@@ -48,6 +48,7 @@ const makeRuntimeStub = (
 		saveImage: () => Effect.die('saveImage not used'),
 		loadImage: () => Effect.die('loadImage not used'),
 		tagImage: () => Effect.die('tagImage not used'),
+		removeImage: () => Effect.die('removeImage not used'),
 		unpause: () => Effect.die('unpause not used'),
 		stop: () => Effect.die('stop not used'),
 		sweepOrphans: () => Effect.die('sweepOrphans not used'),

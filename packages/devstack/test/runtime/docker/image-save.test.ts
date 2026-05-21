@@ -10,7 +10,7 @@ import { Effect, Exit, Layer, Stream } from 'effect';
 import { ChildProcessSpawner } from 'effect/unstable/process/ChildProcessSpawner';
 
 import { DockerHost, DockerSpawner, layerDockerHost } from '../../../src/runtime/docker/client.ts';
-import { saveImage, tagImage } from '../../../src/runtime/docker/image.ts';
+import { saveImage, saveImages, tagImage } from '../../../src/runtime/docker/image.ts';
 
 const layerDockerSpawnerFromNode: Layer.Layer<DockerSpawner, never, ChildProcessSpawner> =
 	Layer.effect(
@@ -102,6 +102,51 @@ describe('saveImage', () => {
 				expect(readFileSync(log, 'utf8')).toBe(
 					'save devstack-snapshot:owned-temp\nimage rm devstack-snapshot:owned-temp\n',
 				);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}),
+	);
+
+	it.effect('saves multiple refs in one docker save invocation and cleans up temp tags', () =>
+		Effect.gen(function* () {
+			const root = mkdtempSync(join(tmpdir(), 'docker-save-test-'));
+			try {
+				const bin = join(root, 'docker');
+				const log = join(root, 'docker.log');
+				writeFileSync(
+					bin,
+					[
+						'#!/bin/sh',
+						`printf '%s\\n' "$*" >> ${JSON.stringify(log)}`,
+						'if [ "$1" = "save" ]; then',
+						'  printf "image-bytes"',
+						'  exit 0',
+						'fi',
+						'if [ "$1" = "image" ] && [ "$2" = "rm" ]; then',
+						'  exit 0',
+						'fi',
+						'exit 0',
+						'',
+					].join('\n'),
+				);
+				chmodSync(bin, 0o755);
+
+				const chunks = yield* Stream.runCollect(
+					saveImages(['devstack-snapshot:a', 'devstack-snapshot:b'], {
+						removeAfterSave: true,
+					}),
+				).pipe(Effect.provide(fakeDockerLayer(bin)));
+
+				expect(Buffer.concat(Array.from(chunks, (chunk) => Buffer.from(chunk))).toString()).toBe(
+					'image-bytes',
+				);
+				const logLines = readFileSync(log, 'utf8').trimEnd().split('\n');
+				expect(logLines[0]).toBe('save devstack-snapshot:a devstack-snapshot:b');
+				expect(logLines.slice(1).sort()).toEqual([
+					'image rm devstack-snapshot:a',
+					'image rm devstack-snapshot:b',
+				]);
 			} finally {
 				rmSync(root, { recursive: true, force: true });
 			}

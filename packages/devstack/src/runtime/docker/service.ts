@@ -21,9 +21,11 @@ import type {
 	ExecOptions,
 	ExecResult,
 	ImageRef,
+	LoadedImageBundle,
 	OneShotSpec,
 	SaveImageOptions,
 	TagImageOptions,
+	TaggedImageRef,
 } from '../../contracts/container-runtime.ts';
 import type { ContainerLabelTuple } from '../../contracts/snapshotable.ts';
 import { chainId, contentHash } from '../../substrate/brand.ts';
@@ -47,7 +49,9 @@ import {
 	loadImage as loadImageImpl,
 	pull as pullImageImpl,
 	refOf,
+	removeImage as removeImageImpl,
 	saveImage as saveImageStream,
+	saveImages as saveImagesStream,
 	tagImage as tagImageImpl,
 } from './image.ts';
 import { listContainers } from './inventory.ts';
@@ -265,7 +269,7 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 
 		const pauseAndCommitImpl = (
 			handle: ContainerHandle,
-		): Effect.Effect<ImageRef, ContainerRuntimeError> =>
+		): Effect.Effect<TaggedImageRef, ContainerRuntimeError> =>
 			Effect.gen(function* () {
 				yield* assertContainerHandleOwned(handle);
 				if (handle.status === 'running') {
@@ -274,7 +278,7 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 				}
 				const tag = snapshotTempTag(handle.name);
 				const digest = yield* commit(handle.name, tag);
-				return refOf(digest, tag);
+				return { digest, tag };
 			}).pipe(
 				mapToContractError,
 				Effect.provide(baseCtx),
@@ -388,10 +392,20 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 				Stream.provideContext(baseCtx),
 			);
 		};
+		const saveImagesImpl = (
+			refs: ReadonlyArray<ImageRef>,
+			opts?: SaveImageOptions,
+		): Stream.Stream<Uint8Array, ContainerRuntimeError> => {
+			const resolved = refs.map((ref) => ref.tag ?? ref.digest);
+			return saveImagesStream(resolved, opts).pipe(
+				Stream.mapError(toContractError),
+				Stream.provideContext(baseCtx),
+			);
+		};
 
 		const loadImageContractImpl = (
 			tar: Stream.Stream<Uint8Array, unknown>,
-		): Effect.Effect<ImageRef, ContainerRuntimeError> =>
+		): Effect.Effect<LoadedImageBundle, ContainerRuntimeError> =>
 			loadImageImpl(tar).pipe(
 				mapToContractError,
 				Effect.provide(baseCtx),
@@ -408,6 +422,15 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 				mapToContractError,
 				Effect.provide(baseCtx),
 				Effect.withSpan('runtime.docker.contract.tagImage'),
+			);
+		};
+
+		const removeImageContractImpl = (ref: ImageRef): Effect.Effect<void, ContainerRuntimeError> => {
+			const resolved = ref.tag ?? ref.digest;
+			return removeImageImpl(resolved).pipe(
+				mapToContractError,
+				Effect.provide(baseCtx),
+				Effect.withSpan('runtime.docker.contract.removeImage'),
 			);
 		};
 
@@ -449,8 +472,10 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 			followLogs: followLogsImpl,
 			pauseAndCommit: pauseAndCommitImpl,
 			saveImage: saveImageImpl,
+			saveImages: saveImagesImpl,
 			loadImage: loadImageContractImpl,
 			tagImage: tagImageContractImpl,
+			removeImage: removeImageContractImpl,
 			unpause: unpauseImpl,
 			stop: stopImpl,
 			sweepOrphans: sweepOrphansImpl,

@@ -17,13 +17,17 @@
 // label tuple the participant declared; subtrees via the relative
 // paths the participant declared.
 
-import { Effect, FileSystem, Schema, Stream } from 'effect';
+import { Effect, Exit, FileSystem, Schema, Stream } from 'effect';
 
-import type { ContainerRuntime, ContainerHandle } from '../../contracts/container-runtime.ts';
+import type {
+	ContainerRuntime,
+	ContainerHandle,
+	TaggedImageRef,
+} from '../../contracts/container-runtime.ts';
 import type { ContainerLabelTuple, SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import { tarHostTree as streamHostTreeTar } from '../../substrate/runtime/host-tree-tar/index.ts';
 import {
-	containerImagePath,
+	containerImagesBundlePath,
 	contributionPath,
 	SnapshotLayout,
 	type CapturedContainer,
@@ -53,6 +57,7 @@ export class CapturePhaseError extends Schema.TaggedErrorClass<CapturePhaseError
 			'enumerate-containers',
 			'quiesce',
 			'commit',
+			'save-images',
 			'tar-subtree',
 			'tar-host-tree',
 			'read-state',
@@ -113,7 +118,11 @@ interface QuiescedContainer {
 
 interface PlannedContainerCapture extends QuiescedContainer {
 	readonly participant: SnapshotParticipant;
-	readonly tarPath: string;
+}
+
+interface CommittedContainerCapture {
+	readonly captured: CapturedContainer;
+	readonly imageRef: TaggedImageRef;
 }
 
 const validateSnapshotPathSegment = (
@@ -157,17 +166,18 @@ const detectContainerArtifactCollisions = (
 	Effect.gen(function* () {
 		const seen = new Map<string, PlannedContainerCapture>();
 		for (const candidate of planned) {
-			const previous = seen.get(candidate.tarPath);
+			const key = `${candidate.labels.plugin}/${candidate.labels.role}`;
+			const previous = seen.get(key);
 			if (previous !== undefined) {
 				return yield* Effect.fail(
 					new CapturePhaseError({
 						phase: 'commit',
 						plugin: candidate.participant.plugin,
-						detail: `duplicate managed container snapshot artifact path ${candidate.tarPath} for ${previous.handle.name} and ${candidate.handle.name}`,
+						detail: `duplicate managed container snapshot identity ${key} for ${previous.handle.name} and ${candidate.handle.name}`,
 					}),
 				);
 			}
-			seen.set(candidate.tarPath, candidate);
+			seen.set(key, candidate);
 		}
 	});
 
@@ -229,21 +239,15 @@ const quiesceParticipant = (
 		return containers;
 	}).pipe(Effect.withSpan('orchestrator.snapshot.capture.quiesce'));
 
-/**
- * Commit one container's writable layer and stream the resulting
- * image tar into the snapshot artifact without buffering image bytes
- * in memory.
- */
-const commitContainerToTar = (
+/** Commit one container's writable layer to a temporary snapshot image tag. */
+const commitContainerToImage = (
 	handle: ContainerHandle,
 	labels: ContainerLabelTuple,
-	artifactTarPath: string,
-	tarDest: string,
 	runtime: ContainerRuntime,
 	participant: SnapshotParticipant,
-): Effect.Effect<CapturedContainer, CapturePhaseError, FileSystem.FileSystem> =>
+	registerCommittedRef: (ref: TaggedImageRef) => Effect.Effect<void>,
+): Effect.Effect<CommittedContainerCapture, CapturePhaseError> =>
 	Effect.gen(function* () {
-		const fs = yield* FileSystem.FileSystem;
 		// pause+commit produces the image; the orchestrator does NOT
 		// unpause here — `runCapture` owns the unpause-on-all-paths
 		// finalizer.
@@ -254,25 +258,78 @@ const commitContainerToTar = (
 					failPhase('commit', `pauseAndCommit failed for ${handle.name}`, participant.plugin),
 				),
 			);
+		const snapshotTag = imageRef.tag;
+		yield* registerCommittedRef(imageRef);
+		if (!isRestorableContainerImageName(snapshotTag)) {
+			return yield* Effect.fail(
+				new CapturePhaseError({
+					phase: 'commit',
+					plugin: participant.plugin,
+					detail: `committed image for ${handle.name} did not receive a restorable snapshot tag`,
+				}),
+			);
+		}
+		return {
+			captured: {
+				plugin: labels.plugin,
+				role: labels.role,
+				imageName: handle.imageName,
+				snapshotTag,
+				tarPath: containerImagesBundlePath(),
+			},
+			imageRef,
+		};
+	}).pipe(Effect.withSpan('orchestrator.snapshot.capture.commit'));
+
+const saveCommittedImages = (
+	committed: ReadonlyArray<CommittedContainerCapture>,
+	stagingDir: string,
+	runtime: ContainerRuntime,
+): Effect.Effect<void, CapturePhaseError, FileSystem.FileSystem> =>
+	Effect.gen(function* () {
+		if (committed.length === 0) return;
+		const fs = yield* FileSystem.FileSystem;
+		const tarPath = containerImagesBundlePath();
+		const tarDest = `${stagingDir}/${tarPath}`;
+		yield* fs
+			.makeDirectory(`${stagingDir}/${SnapshotLayout.containersDir}`, { recursive: true })
+			.pipe(Effect.catch(failPhase('save-images', `mkdir containers dir failed`)));
 		yield* Stream.run(
-			runtime.saveImage(imageRef, { removeAfterSave: true }),
+			runtime.saveImages(
+				committed.map((entry) => entry.imageRef),
+				{ removeAfterSave: true },
+			),
 			fs.sink(tarDest),
 		).pipe(
 			Effect.catch(
 				failPhase(
-					'commit',
-					`save image ${imageRef.tag ?? imageRef.digest} to ${tarDest} failed`,
-					participant.plugin,
+					'save-images',
+					`save ${committed.length} committed container images to ${tarDest} failed`,
 				),
 			),
 		);
-		return {
-			plugin: labels.plugin,
-			role: labels.role,
-			imageName: handle.imageName,
-			tarPath: artifactTarPath,
-		};
-	}).pipe(Effect.withSpan('orchestrator.snapshot.capture.commit'));
+	}).pipe(Effect.withSpan('orchestrator.snapshot.capture.save-images'));
+
+const cleanupCommittedRefs = (
+	runtime: ContainerRuntime,
+	refs: ReadonlyArray<TaggedImageRef>,
+): Effect.Effect<void> =>
+	Effect.forEach(
+		refs,
+		(ref) =>
+			runtime
+				.removeImage(ref)
+				.pipe(
+					Effect.catch((cause) =>
+						Effect.logWarning(
+							`remove committed snapshot image ${ref.tag} failed during capture cleanup: ${String(
+								cause,
+							)}`,
+						),
+					),
+				),
+		{ concurrency: 'unbounded' },
+	).pipe(Effect.asVoid);
 
 const isSafeSubtreePath = (relPath: string): boolean =>
 	relPath !== '' &&
@@ -407,50 +464,42 @@ export const runCapture = (
 					).pipe(Effect.asVoid),
 				);
 				const plannedContainers: PlannedContainerCapture[] = [];
+				const committedRefs: TaggedImageRef[] = [];
+				yield* Effect.addFinalizer((exit) =>
+					Exit.isFailure(exit) ? cleanupCommittedRefs(inputs.runtime, committedRefs) : Effect.void,
+				);
 				for (const participant of inputs.participants) {
 					const containers = yield* quiesceParticipant(participant, inputs.runtime);
 					for (const { handle, labels, unpauseAfterCapture } of containers) {
 						yield* validateCapturedContainer(handle, labels, participant);
-						const tarPath = containerImagePath(labels.plugin, labels.role);
 						plannedContainers.push({
 							handle,
 							labels,
 							unpauseAfterCapture,
 							participant,
-							tarPath,
 						});
 					}
 				}
 				yield* detectContainerArtifactCollisions(plannedContainers);
-				for (const {
-					handle,
-					labels,
-					unpauseAfterCapture,
-					participant,
-					tarPath,
-				} of plannedContainers) {
-					const tarDest = `${inputs.stagingDir}/${tarPath}`;
-					yield* fs
-						.makeDirectory(
-							`${inputs.stagingDir}/${SnapshotLayout.containersDir}/${labels.plugin}`,
-							{ recursive: true },
-						)
-						.pipe(
-							Effect.catch(failPhase('commit', `mkdir containers dir failed`, participant.plugin)),
-						);
+				const committedContainers: CommittedContainerCapture[] = [];
+				for (const { handle, labels, unpauseAfterCapture, participant } of plannedContainers) {
 					if (unpauseAfterCapture) {
 						paused.push(handle);
 					}
-					const captured = yield* commitContainerToTar(
+					const committed = yield* commitContainerToImage(
 						handle,
 						labels,
-						tarPath,
-						tarDest,
 						inputs.runtime,
 						participant,
+						(ref) =>
+							Effect.sync(() => {
+								committedRefs.push(ref);
+							}),
 					);
-					capturedContainers.push(captured);
+					committedContainers.push(committed);
+					capturedContainers.push(committed.captured);
 				}
+				yield* saveCommittedImages(committedContainers, inputs.stagingDir, inputs.runtime);
 			}),
 		);
 

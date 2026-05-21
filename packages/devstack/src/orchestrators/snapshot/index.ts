@@ -64,6 +64,7 @@ export {
 // Descriptor types
 export {
 	containerImagePath,
+	containerImagesBundlePath,
 	contributionPath,
 	IdentitySliceSchema,
 	IntegrityFileSchema,

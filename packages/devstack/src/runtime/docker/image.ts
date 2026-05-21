@@ -28,10 +28,16 @@ import { Effect, Fiber, Stream } from 'effect';
 
 import type { ChainId, ContentHash } from '../../substrate/brand.ts';
 import { CacheService } from '../../substrate/runtime/cache/index.ts';
-import type { ImageRef } from '../../contracts/container-runtime.ts';
+import type { ImageRef, LoadedImageBundle } from '../../contracts/container-runtime.ts';
 import { DockerHost, DockerSpawner, dockerCommand, dockerRun, dockerRunOk } from './client.ts';
 import type { DockerRuntimeError } from './errors.ts';
-import { ImageLoadFailed, ImageNotFound, ImageSaveFailed, ImageTagFailed } from './errors.ts';
+import {
+	ImageLoadFailed,
+	ImageNotFound,
+	ImageRemoveFailed,
+	ImageSaveFailed,
+	ImageTagFailed,
+} from './errors.ts';
 import { isImageNotFoundStderr, wrapBuildError, wrapGeneric, wrapPullError } from './wrap.ts';
 
 // -----------------------------------------------------------------------------
@@ -200,6 +206,26 @@ export const tagImage = (
 		}
 	}).pipe(Effect.withSpan('runtime.docker.image.tag'));
 
+const isMissingImageStderr = (stderr: string): boolean =>
+	/no such image|not found|reference does not exist/i.test(stderr);
+
+export const removeImage = (
+	ref: string,
+): Effect.Effect<void, DockerRuntimeError, DockerHost | DockerSpawner> =>
+	Effect.gen(function* () {
+		const res = yield* dockerRunOk('image', ['rm', '-f', ref]).pipe(
+			Effect.mapError(wrapGeneric('docker.image.rm')),
+		);
+		if (res.exitCode === 0 || isMissingImageStderr(res.stderr)) return;
+		return yield* Effect.fail(
+			new ImageRemoveFailed({
+				ref,
+				stderr: res.stderr,
+				exitCode: res.exitCode,
+			}),
+		);
+	}).pipe(Effect.withSpan('runtime.docker.image.remove'));
+
 // -----------------------------------------------------------------------------
 // Save (image → tar stream)
 // -----------------------------------------------------------------------------
@@ -208,23 +234,35 @@ export const tagImage = (
  *  stays streaming so large images never materialise in memory; stderr
  *  and exit are drained concurrently so a missing image cannot look
  *  like a successful empty tar. */
-export const saveImage = (
-	ref: string,
+export const saveImages = (
+	refs: ReadonlyArray<string>,
 	opts: SaveImageOptions = {},
 ): Stream.Stream<Uint8Array, DockerRuntimeError, DockerHost | DockerSpawner> => {
 	const mapSpawnError = (cause: unknown): DockerRuntimeError =>
-		new ImageSaveFailed({ ref, detail: 'docker save spawn failed', cause });
+		new ImageSaveFailed({
+			ref: refs.join(' '),
+			detail:
+				refs.length === 0 ? 'docker save called with no image refs' : 'docker save spawn failed',
+			cause,
+		});
+	if (refs.length === 0) {
+		return Stream.fail(mapSpawnError(new Error('empty docker save ref list')));
+	}
 	return Stream.unwrap(
 		Effect.gen(function* () {
 			const host = yield* DockerHost;
 			const spawner = yield* DockerSpawner;
-			const cmd = dockerCommand(host, 'save', [ref]);
+			const cmd = dockerCommand(host, 'save', refs);
 			const handle = yield* spawner.spawn(cmd).pipe(Effect.mapError(mapSpawnError));
 			const stderrFiber = yield* Effect.forkChild(
 				Stream.mkString(Stream.decodeText(handle.stderr)).pipe(
 					Effect.mapError(
 						(cause): DockerRuntimeError =>
-							new ImageSaveFailed({ ref, detail: 'docker save stderr drain failed', cause }),
+							new ImageSaveFailed({
+								ref: refs.join(' '),
+								detail: 'docker save stderr drain failed',
+								cause,
+							}),
 					),
 				),
 			);
@@ -232,7 +270,11 @@ export const saveImage = (
 				handle.exitCode.pipe(
 					Effect.mapError(
 						(cause): DockerRuntimeError =>
-							new ImageSaveFailed({ ref, detail: 'docker save exit failed', cause }),
+							new ImageSaveFailed({
+								ref: refs.join(' '),
+								detail: 'docker save exit failed',
+								cause,
+							}),
 					),
 				),
 			);
@@ -244,7 +286,7 @@ export const saveImage = (
 				if (exitCode !== 0) {
 					return yield* Effect.fail(
 						new ImageSaveFailed({
-							ref,
+							ref: refs.join(' '),
 							detail: `docker save exited ${exitCode}${
 								stderrText.length > 0 ? `: ${stderrText}` : ''
 							}`,
@@ -252,7 +294,12 @@ export const saveImage = (
 					);
 				}
 			});
-			const cleanupTag = opts.removeAfterSave === true ? cleanupSnapshotTempTag(ref) : Effect.void;
+			const cleanupTag =
+				opts.removeAfterSave === true
+					? Effect.forEach(refs, cleanupSnapshotTempTag, { concurrency: 'unbounded' }).pipe(
+							Effect.asVoid,
+						)
+					: Effect.void;
 			const cleanup = Effect.all(
 				[cleanupTag, Fiber.interrupt(stderrFiber), Fiber.interrupt(exitFiber)],
 				{ concurrency: 'unbounded' },
@@ -260,7 +307,11 @@ export const saveImage = (
 			return handle.stdout.pipe(
 				Stream.mapError(
 					(cause): DockerRuntimeError =>
-						new ImageSaveFailed({ ref, detail: 'docker save stdout pipe failed', cause }),
+						new ImageSaveFailed({
+							ref: refs.join(' '),
+							detail: 'docker save stdout pipe failed',
+							cause,
+						}),
 				),
 				Stream.onEnd(checkExit),
 				Stream.ensuring(cleanup),
@@ -269,36 +320,51 @@ export const saveImage = (
 	);
 };
 
+export const saveImage = (
+	ref: string,
+	opts: SaveImageOptions = {},
+): Stream.Stream<Uint8Array, DockerRuntimeError, DockerHost | DockerSpawner> =>
+	saveImages([ref], opts);
+
 // -----------------------------------------------------------------------------
 // Load (tar stream → image)
 // -----------------------------------------------------------------------------
 
-/** Parse a `docker load` stdout line to extract the loaded image ref.
+/** Parse `docker load` stdout lines to extract the loaded image refs.
  *  Docker's output is one of:
  *   - `Loaded image: <tag>`
  *   - `Loaded image ID: sha256:<digest>`
- *  We prefer a tagged form when present (the snapshot restore aliases
- *  the loaded image back to its original tag immediately after).
  *  Exported for direct testing without a docker dependency. */
-export const parseLoadedRef = (stdout: string): { tag?: string; digest?: string } | null => {
-	const taggedMatch = /Loaded image: (\S+)/.exec(stdout);
-	if (taggedMatch && taggedMatch[1]) return { tag: taggedMatch[1] };
-	const digestMatch = /Loaded image ID: (sha256:\S+)/.exec(stdout);
-	if (digestMatch && digestMatch[1]) return { digest: digestMatch[1] };
-	return null;
+export const parseLoadedRefs = (
+	stdout: string,
+): ReadonlyArray<{ readonly tag?: string; readonly digest?: string }> => {
+	const refs: Array<{ tag?: string; digest?: string }> = [];
+	for (const rawLine of stdout.split(/\r?\n/)) {
+		const line = rawLine.trim();
+		const taggedMatch = /^Loaded image: (\S+)$/.exec(line);
+		if (taggedMatch?.[1]) {
+			refs.push({ tag: taggedMatch[1] });
+			continue;
+		}
+		const digestMatch = /^Loaded image ID: (sha256:\S+)$/.exec(line);
+		if (digestMatch?.[1]) {
+			refs.push({ digest: digestMatch[1] });
+		}
+	}
+	return refs;
 };
 
-/** `docker load < <tar-stream>`. Returns the freshly-loaded image's
- *  ref (parsed from stdout). Symmetric with `saveImage`. Upstream
- *  stream errors (e.g. file-read failures from a snapshot tar) are
- *  projected to `ImageLoadFailed` so callers see one shape.
+/** `docker load < <tar-stream>`. Returns every freshly-loaded ref
+ *  Docker reported on stdout. Symmetric with `saveImage`/`saveImages`.
+ *  Upstream stream errors (e.g. file-read failures from a snapshot
+ *  tar) are projected to `ImageLoadFailed` so callers see one shape.
  *
  *  Stdin lifetime: the supplied stream is fed in via the spawner's
  *  `stdin` sink under the same scope as the spawn itself; both close
  *  when the child exits. */
 export const loadImage = (
 	tar: Stream.Stream<Uint8Array, unknown>,
-): Effect.Effect<ImageRef, DockerRuntimeError, DockerHost | DockerSpawner> =>
+): Effect.Effect<LoadedImageBundle, DockerRuntimeError, DockerHost | DockerSpawner> =>
 	Effect.gen(function* () {
 		const host = yield* DockerHost;
 		const spawner = yield* DockerSpawner;
@@ -310,7 +376,7 @@ export const loadImage = (
 				const handle = yield* spawner.spawn(cmd).pipe(Effect.mapError(mapSpawnError));
 				// Concurrently:
 				//  - pump the supplied tar into stdin
-				//  - drain stdout (the "Loaded image: …" line)
+				//  - drain stdout (the "Loaded image: …" lines)
 				//  - drain stderr
 				//  - wait for exit
 				const writeStdin = Stream.run(tar, handle.stdin).pipe(
@@ -349,29 +415,35 @@ export const loadImage = (
 						}),
 					);
 				}
-				const parsed = parseLoadedRef(stdoutText);
-				if (parsed === null) {
+				const parsed = parseLoadedRefs(stdoutText);
+				if (parsed.length === 0) {
 					return yield* Effect.fail(
 						new ImageLoadFailed({
-							detail: 'docker load succeeded but no Loaded image line found',
+							detail: 'docker load succeeded but no Loaded image lines found',
 							stderr: stdoutText,
 						}),
 					);
 				}
-				// Resolve the on-host digest. If load reported a digest line
-				// directly, accept it; otherwise inspect the tag.
-				if (parsed.digest !== undefined) {
-					return refOf(parsed.digest, parsed.tag);
-				}
-				const digest = yield* imageExists(parsed.tag!);
-				if (digest === null) {
-					return yield* Effect.fail(
-						new ImageLoadFailed({
-							detail: `loaded image '${parsed.tag}' not visible to inspect`,
+				const refs = yield* Effect.forEach(
+					parsed,
+					(ref) =>
+						Effect.gen(function* () {
+							if (ref.digest !== undefined) {
+								return refOf(ref.digest, ref.tag);
+							}
+							const digest = yield* imageExists(ref.tag!);
+							if (digest === null) {
+								return yield* Effect.fail(
+									new ImageLoadFailed({
+										detail: `loaded image '${ref.tag}' not visible to inspect`,
+									}),
+								);
+							}
+							return refOf(digest, ref.tag);
 						}),
-					);
-				}
-				return refOf(digest, parsed.tag);
+					{ concurrency: 'unbounded' },
+				);
+				return { refs };
 			}),
 		);
 	}).pipe(Effect.withSpan('runtime.docker.image.load'));

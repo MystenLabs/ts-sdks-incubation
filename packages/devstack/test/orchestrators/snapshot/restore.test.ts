@@ -21,7 +21,7 @@ import {
 	SNAPSHOT_CONTRIBUTION_VERSION,
 	SNAPSHOT_META_VERSION,
 	SnapshotLayout,
-	containerImagePath,
+	containerImagesBundlePath,
 	contributionPath,
 	snapshotIdFromString,
 	writeArtifactIntegrity,
@@ -69,6 +69,57 @@ const writeArtifact = (root: string, meta: SnapshotMetadata): string => {
 	return artifactDir;
 };
 
+const imageBundlePath = containerImagesBundlePath();
+
+const capturedContainer = (
+	overrides: Partial<SnapshotMetadata['containers'][number]> = {},
+): SnapshotMetadata['containers'][number] => ({
+	plugin: 'postgres',
+	role: 'db',
+	imageName: 'devstack-build:postgres-original',
+	snapshotTag: 'devstack-snapshot:postgres-db',
+	tarPath: imageBundlePath,
+	...overrides,
+});
+
+const tarEntry = (entryPath: string, content: Uint8Array): Buffer => {
+	const header = Buffer.alloc(512);
+	header.write(entryPath, 0, 'utf8');
+	header.write('0000644\0', 100, 'ascii');
+	header.write('0000000\0', 108, 'ascii');
+	header.write('0000000\0', 116, 'ascii');
+	header.write(content.length.toString(8).padStart(11, '0') + '\0', 124, 'ascii');
+	header.write('00000000000\0', 136, 'ascii');
+	header[156] = '0'.charCodeAt(0);
+	const padding = Buffer.alloc((512 - (content.length % 512)) % 512);
+	return Buffer.concat([header, Buffer.from(content), padding]);
+};
+
+const dockerSaveBundleTar = (repoTags: ReadonlyArray<string>): Buffer =>
+	Buffer.concat([
+		tarEntry(
+			'manifest.json',
+			Buffer.from(
+				JSON.stringify([
+					{
+						Config: 'config.json',
+						RepoTags: repoTags,
+						Layers: [],
+					},
+				]),
+			),
+		),
+		Buffer.alloc(1024),
+	]);
+
+const writeImageBundle = (
+	artifactDir: string,
+	repoTags: ReadonlyArray<string> = ['devstack-snapshot:postgres-db'],
+) => {
+	mkdirSync(join(artifactDir, SnapshotLayout.containersDir), { recursive: true });
+	writeFileSync(join(artifactDir, imageBundlePath), dockerSaveBundleTar(repoTags));
+};
+
 const tarWithSingleEntry = (entryPath: string): Buffer => {
 	const header = Buffer.alloc(512);
 	header.write(entryPath, 0, 'utf8');
@@ -87,9 +138,11 @@ const runtimeStub = (
 			readonly opts: TagImageOptions | undefined;
 		}>;
 		readonly loadedRef?: ImageRef;
+		readonly loadedRefs?: ReadonlyArray<ImageRef>;
 		readonly loadError?: ContainerRuntimeError;
 		readonly tagError?: ContainerRuntimeError;
 		readonly tagErrorFor?: (newTag: string) => ContainerRuntimeError | undefined;
+		readonly removeImageCalls?: Array<ImageRef>;
 		readonly events?: Array<string>;
 	} = {},
 ): ContainerRuntime => ({
@@ -102,6 +155,7 @@ const runtimeStub = (
 	followLogs: () => Stream.empty,
 	pauseAndCommit: () => Effect.die('pauseAndCommit not used'),
 	saveImage: () => Stream.empty,
+	saveImages: () => Stream.empty,
 	loadImage: (tar) =>
 		Stream.runCollect(tar).pipe(
 			Effect.mapError(
@@ -118,7 +172,18 @@ const runtimeStub = (
 				opts.events?.push('load');
 				return opts.loadError !== undefined
 					? Effect.fail(opts.loadError)
-					: Effect.succeed(opts.loadedRef ?? { digest: 'sha256:loaded' });
+					: Effect.succeed({
+							refs: opts.loadedRefs ?? [
+								opts.loadedRef ?? {
+									digest: 'sha256:loaded-postgres-db',
+									tag: 'devstack-snapshot:postgres-db',
+								},
+								{
+									digest: 'sha256:loaded-postgres-worker',
+									tag: 'devstack-snapshot:postgres-worker',
+								},
+							],
+						});
 			}),
 		),
 	tagImage: (src, newTag, tagOpts) =>
@@ -129,6 +194,11 @@ const runtimeStub = (
 			if (tagError !== undefined) {
 				return yield* Effect.fail(tagError);
 			}
+		}),
+	removeImage: (ref) =>
+		Effect.sync(() => {
+			opts.events?.push(`remove-image:${ref.tag ?? ref.digest}`);
+			opts.removeImageCalls?.push(ref);
 		}),
 	unpause: () => Effect.die('unpause not used'),
 	stop: () => Effect.die('stop not used'),
@@ -185,12 +255,10 @@ describe('snapshot restore safety', () => {
 					const foreignMeta = metadata({
 						[field]: `${runtimeIdentity[field]}-foreign`,
 						containers: [
-							{
+							capturedContainer({
 								plugin: 'postgres#0',
-								role: 'db',
 								imageName: 'postgres:test',
-								tarPath: 'containers/postgres#0/db.tar',
-							},
+							}),
 						],
 					});
 					const exit = yield* runRestoreExit(
@@ -226,22 +294,16 @@ describe('snapshot restore safety', () => {
 			const root = freshRoot();
 			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
 			try {
-				const tarPath = containerImagePath('postgres#0', 'db');
 				const meta = metadata({
 					containers: [
-						{
+						capturedContainer({
 							plugin: 'postgres#0',
-							role: 'db',
 							imageName: 'postgres:test',
-							tarPath,
-						},
+						}),
 					],
 				});
 				const artifactDir = writeArtifact(root, meta);
-				mkdirSync(join(artifactDir, SnapshotLayout.containersDir, 'postgres#0'), {
-					recursive: true,
-				});
-				writeFileSync(join(artifactDir, tarPath), Buffer.from([1, 2, 3]));
+				writeImageBundle(artifactDir);
 				const exit = yield* runRestoreExit(root, meta, runtimeIdentity, sweepCalls).pipe(
 					Effect.provide(NodeFileSystem.layer),
 				);
@@ -268,12 +330,9 @@ describe('snapshot restore safety', () => {
 			try {
 				const meta = metadata({
 					containers: [
-						{
-							plugin: 'postgres',
-							role: 'db',
+						capturedContainer({
 							imageName: 'postgres:test',
-							tarPath: containerImagePath('postgres', 'db'),
-						},
+						}),
 					],
 				});
 				const exit = yield* runRestoreExit(root, meta, runtimeIdentity, sweepCalls).pipe(
@@ -301,23 +360,16 @@ describe('snapshot restore safety', () => {
 			const root = freshRoot();
 			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
 			try {
-				const tarPath = containerImagePath('postgres', 'db');
 				const meta = metadata({
 					containers: [
-						{
-							plugin: 'postgres',
-							role: 'db',
+						capturedContainer({
 							imageName: 'postgres:test',
-							tarPath,
-						},
+						}),
 					],
 					participants: ['postgres'],
 				});
 				const artifactDir = writeArtifact(root, meta);
-				mkdirSync(join(artifactDir, SnapshotLayout.containersDir, 'postgres'), {
-					recursive: true,
-				});
-				writeFileSync(join(artifactDir, tarPath), Buffer.from([1, 2, 3]));
+				writeImageBundle(artifactDir);
 
 				const exit = yield* runRestoreExit(root, meta, runtimeIdentity, sweepCalls).pipe(
 					Effect.provide(NodeFileSystem.layer),
@@ -696,28 +748,17 @@ describe('snapshot restore safety', () => {
 		{ timeout: 10_000 },
 	);
 
-	it.effect('does not run restore cleanup when docker load fails for a readable image tar', () =>
+	it.effect('does not run restore cleanup when docker load fails for a readable image bundle', () =>
 		Effect.gen(function* () {
 			const root = freshRoot();
 			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
 			const events: string[] = [];
 			try {
-				const tarPath = containerImagePath('postgres', 'db');
 				const meta = metadata({
-					containers: [
-						{
-							plugin: 'postgres',
-							role: 'db',
-							imageName: 'devstack-build:postgres-original',
-							tarPath,
-						},
-					],
+					containers: [capturedContainer()],
 				});
 				const artifactDir = writeArtifact(root, meta);
-				mkdirSync(join(artifactDir, SnapshotLayout.containersDir, 'postgres'), {
-					recursive: true,
-				});
-				writeFileSync(join(artifactDir, tarPath), Buffer.from([1, 2, 3]));
+				writeImageBundle(artifactDir);
 				const runtime = runtimeStub(sweepCalls, {
 					events,
 					loadError: {
@@ -748,28 +789,137 @@ describe('snapshot restore safety', () => {
 		}),
 	);
 
+	it.effect('refuses a Docker save bundle missing metadata snapshot tags before docker load', () =>
+		Effect.gen(function* () {
+			const root = freshRoot();
+			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+			const events: string[] = [];
+			try {
+				const meta = metadata({
+					containers: [capturedContainer()],
+				});
+				const artifactDir = writeArtifact(root, meta);
+				writeImageBundle(artifactDir, ['devstack-snapshot:other']);
+				const runtime = runtimeStub(sweepCalls, { events });
+
+				const exit = yield* runRestoreExit(root, meta, runtimeIdentity, sweepCalls, runtime).pipe(
+					Effect.provide(NodeFileSystem.layer),
+				);
+
+				expect(Exit.isFailure(exit)).toBe(true);
+				const error = Exit.findErrorOption(exit);
+				expect(error._tag).toBe('Some');
+				if (error._tag === 'Some') {
+					expect(error.value).toBeInstanceOf(RestorePhaseError);
+					if (error.value._tag === 'SnapshotRestorePhaseError') {
+						expect(error.value.phase).toBe('load-image');
+						expect(error.value.detail).toContain('devstack-snapshot:postgres-db');
+					}
+				}
+				expect(events).toEqual([]);
+				expect(sweepCalls).toEqual([]);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}),
+	);
+
+	it.effect('refuses unexpected Docker save bundle tags before docker load', () =>
+		Effect.gen(function* () {
+			const root = freshRoot();
+			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+			const events: string[] = [];
+			try {
+				const meta = metadata({
+					containers: [capturedContainer()],
+				});
+				const artifactDir = writeArtifact(root, meta);
+				writeImageBundle(artifactDir, ['devstack-snapshot:postgres-db', 'devstack-snapshot:extra']);
+				const runtime = runtimeStub(sweepCalls, { events });
+
+				const exit = yield* runRestoreExit(root, meta, runtimeIdentity, sweepCalls, runtime).pipe(
+					Effect.provide(NodeFileSystem.layer),
+				);
+
+				expect(Exit.isFailure(exit)).toBe(true);
+				const error = Exit.findErrorOption(exit);
+				expect(error._tag).toBe('Some');
+				if (error._tag === 'Some') {
+					expect(error.value).toBeInstanceOf(RestorePhaseError);
+					if (error.value._tag === 'SnapshotRestorePhaseError') {
+						expect(error.value.phase).toBe('load-image');
+						expect(error.value.detail).toContain('devstack-snapshot:extra');
+					}
+				}
+				expect(events).toEqual([]);
+				expect(sweepCalls).toEqual([]);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}),
+	);
+
+	it.effect('refuses duplicate snapshot tags before loading image bundles', () =>
+		Effect.gen(function* () {
+			const root = freshRoot();
+			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+			const events: string[] = [];
+			try {
+				const meta = metadata({
+					containers: [
+						capturedContainer({
+							role: 'db',
+							imageName: 'devstack-build:postgres-db',
+							snapshotTag: 'devstack-snapshot:duplicate',
+						}),
+						capturedContainer({
+							role: 'worker',
+							imageName: 'devstack-build:postgres-worker',
+							snapshotTag: 'devstack-snapshot:duplicate',
+						}),
+					],
+				});
+				const artifactDir = writeArtifact(root, meta);
+				writeImageBundle(artifactDir);
+
+				const exit = yield* runRestoreExit(
+					root,
+					meta,
+					runtimeIdentity,
+					sweepCalls,
+					runtimeStub(sweepCalls, { events }),
+				).pipe(Effect.provide(NodeFileSystem.layer));
+
+				expect(Exit.isFailure(exit)).toBe(true);
+				const error = Exit.findErrorOption(exit);
+				expect(error._tag).toBe('Some');
+				if (error._tag === 'Some') {
+					expect(error.value).toBeInstanceOf(RestorePhaseError);
+					if (error.value._tag === 'SnapshotRestorePhaseError') {
+						expect(error.value.phase).toBe('preflight');
+						expect(error.value.detail).toContain('duplicate container snapshotTag');
+					}
+				}
+				expect(events).toEqual([]);
+				expect(sweepCalls).toEqual([]);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}),
+	);
+
 	it.effect('verifies artifact integrity before loading images or replacing containers', () =>
 		Effect.gen(function* () {
 			const root = freshRoot();
 			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
 			const events: string[] = [];
 			try {
-				const tarPath = containerImagePath('postgres', 'db');
 				const meta = metadata({
-					containers: [
-						{
-							plugin: 'postgres',
-							role: 'db',
-							imageName: 'devstack-build:postgres-original',
-							tarPath,
-						},
-					],
+					containers: [capturedContainer()],
 				});
 				const artifactDir = writeArtifact(root, meta);
-				mkdirSync(join(artifactDir, SnapshotLayout.containersDir, 'postgres'), {
-					recursive: true,
-				});
-				const imageTarPath = join(artifactDir, tarPath);
+				writeImageBundle(artifactDir);
+				const imageTarPath = join(artifactDir, imageBundlePath);
 				writeFileSync(imageTarPath, Buffer.from([1, 2, 3]));
 				yield* writeArtifactIntegrity(artifactDir).pipe(Effect.provide(NodeFileSystem.layer));
 				writeFileSync(imageTarPath, Buffer.from([9, 9, 9]));
@@ -804,31 +954,26 @@ describe('snapshot restore safety', () => {
 		}),
 	);
 
-	it.effect('does not run restore cleanup when restored image staging tag fails', () =>
+	it.effect('cleans restore-staging image refs when a staging tag fails', () =>
 		Effect.gen(function* () {
 			const root = freshRoot();
 			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
 			const events: string[] = [];
+			const removeImageCalls: ImageRef[] = [];
 			try {
-				const tarPath = containerImagePath('postgres', 'db');
 				const imageName = 'devstack-build:postgres-original';
 				const meta = metadata({
 					containers: [
-						{
-							plugin: 'postgres',
-							role: 'db',
+						capturedContainer({
 							imageName,
-							tarPath,
-						},
+						}),
 					],
 				});
 				const artifactDir = writeArtifact(root, meta);
-				mkdirSync(join(artifactDir, SnapshotLayout.containersDir, 'postgres'), {
-					recursive: true,
-				});
-				writeFileSync(join(artifactDir, tarPath), Buffer.from([1, 2, 3]));
+				writeImageBundle(artifactDir);
 				const runtime = runtimeStub(sweepCalls, {
 					events,
+					removeImageCalls,
 					tagError: {
 						_tag: 'ContainerRuntimeError',
 						reason: 'image-tag-failed',
@@ -849,9 +994,106 @@ describe('snapshot restore safety', () => {
 						expect(error.value.phase).toBe('retag-image');
 					}
 				}
-				expect(events).toHaveLength(2);
+				expect(events).toHaveLength(3);
 				expect(events[0]).toBe('load');
 				expect(events[1]?.startsWith('tag:devstack-snapshot:restore-')).toBe(true);
+				expect(events[2]).toBe(`remove-image:${events[1]!.slice('tag:'.length)}`);
+				expect(removeImageCalls).toEqual([
+					{
+						digest: 'sha256:loaded-postgres-db',
+						tag: events[1]!.slice('tag:'.length),
+					},
+				]);
+				expect(sweepCalls).toEqual([]);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}),
+	);
+
+	it.effect('cleans earlier restore-staging refs when a later staging tag fails', () =>
+		Effect.gen(function* () {
+			const root = freshRoot();
+			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+			const events: string[] = [];
+			const removeImageCalls: ImageRef[] = [];
+			let stagingTagAttempts = 0;
+			try {
+				const meta = metadata({
+					containers: [
+						capturedContainer({
+							role: 'db',
+							imageName: 'devstack-build:postgres-db',
+							snapshotTag: 'devstack-snapshot:postgres-db',
+						}),
+						capturedContainer({
+							role: 'worker',
+							imageName: 'devstack-build:postgres-worker',
+							snapshotTag: 'devstack-snapshot:postgres-worker',
+						}),
+					],
+				});
+				const artifactDir = writeArtifact(root, meta);
+				writeImageBundle(artifactDir, [
+					'devstack-snapshot:postgres-db',
+					'devstack-snapshot:postgres-worker',
+				]);
+				const runtime = runtimeStub(sweepCalls, {
+					events,
+					removeImageCalls,
+					tagErrorFor: (newTag) => {
+						if (!newTag.startsWith('devstack-snapshot:restore-')) return undefined;
+						stagingTagAttempts += 1;
+						return stagingTagAttempts === 2
+							? {
+									_tag: 'ContainerRuntimeError',
+									reason: 'image-tag-failed',
+									detail: 'second staging tag refused',
+								}
+							: undefined;
+					},
+				});
+
+				const exit = yield* runRestoreExit(root, meta, runtimeIdentity, sweepCalls, runtime).pipe(
+					Effect.provide(NodeFileSystem.layer),
+				);
+
+				expect(Exit.isFailure(exit)).toBe(true);
+				const error = Exit.findErrorOption(exit);
+				expect(error._tag).toBe('Some');
+				if (error._tag === 'Some') {
+					expect(error.value).toBeInstanceOf(RestorePhaseError);
+					if (error.value._tag === 'SnapshotRestorePhaseError') {
+						expect(error.value.phase).toBe('retag-image');
+					}
+				}
+				const stagingTags = events
+					.filter((event) => event.startsWith('tag:devstack-snapshot:restore-'))
+					.map((event) => event.slice('tag:'.length));
+				expect(stagingTags).toHaveLength(2);
+				const removeImageEvents = events.filter((event) => event.startsWith('remove-image:'));
+				expect(removeImageEvents).toHaveLength(2);
+				expect(removeImageEvents).toEqual(
+					expect.arrayContaining([
+						`remove-image:${stagingTags[0]}`,
+						`remove-image:${stagingTags[1]}`,
+					]),
+				);
+				expect(removeImageCalls).toHaveLength(2);
+				expect(removeImageCalls).toEqual(
+					expect.arrayContaining([
+						{
+							digest: 'sha256:loaded-postgres-db',
+							tag: stagingTags[0],
+						},
+						{
+							digest: 'sha256:loaded-postgres-worker',
+							tag: stagingTags[1],
+						},
+					]),
+				);
+				expect(events).not.toContain('tag:devstack-build:postgres-db');
+				expect(events).not.toContain('tag:devstack-build:postgres-worker');
 				expect(sweepCalls).toEqual([]);
 			} finally {
 				rmSync(root, { recursive: true, force: true });
@@ -864,26 +1106,20 @@ describe('snapshot restore safety', () => {
 			const root = freshRoot();
 			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
 			const events: string[] = [];
+			const removeImageCalls: ImageRef[] = [];
 			try {
 				const stackRoot = join(root, 'runtime-stack');
 				const backupPath = join(root, 'runtime-stack.bak');
-				const tarPath = containerImagePath('postgres', 'db');
 				const imageName = 'devstack-build:postgres-original';
 				const meta = metadata({
 					containers: [
-						{
-							plugin: 'postgres',
-							role: 'db',
+						capturedContainer({
 							imageName,
-							tarPath,
-						},
+						}),
 					],
 				});
 				const artifactDir = writeArtifact(root, meta);
-				mkdirSync(join(artifactDir, SnapshotLayout.containersDir, 'postgres'), {
-					recursive: true,
-				});
-				writeFileSync(join(artifactDir, tarPath), Buffer.from([1, 2, 3]));
+				writeImageBundle(artifactDir);
 				mkdirSync(stackRoot, { recursive: true });
 				writeFileSync(join(stackRoot, 'live-state'), 'old');
 				mkdirSync(backupPath, { recursive: true });
@@ -898,15 +1134,22 @@ describe('snapshot restore safety', () => {
 						runtimeStagingPath: join(root, 'runtime-stack.staging'),
 						runtimeBackupPath: backupPath,
 						participants: [],
-						runtime: runtimeStub(sweepCalls, { events }),
+						runtime: runtimeStub(sweepCalls, { events, removeImageCalls }),
 						runtimeIdentity,
 					}),
 				).pipe(Effect.provide(NodeFileSystem.layer));
 
 				expect(Exit.isFailure(exit)).toBe(true);
-				expect(events).toHaveLength(2);
+				expect(events).toHaveLength(3);
 				expect(events[0]).toBe('load');
 				expect(events[1]?.startsWith('tag:devstack-snapshot:restore-')).toBe(true);
+				expect(events[2]).toBe(`remove-image:${events[1]!.slice('tag:'.length)}`);
+				expect(removeImageCalls).toEqual([
+					{
+						digest: 'sha256:loaded-postgres-db',
+						tag: events[1]!.slice('tag:'.length),
+					},
+				]);
 				expect(events).not.toContain(`tag:${imageName}`);
 				expect(sweepCalls).toEqual([]);
 				expect(readFileSync(join(stackRoot, 'live-state'), 'utf8')).toBe('old');
@@ -924,23 +1167,16 @@ describe('snapshot restore safety', () => {
 			const events: string[] = [];
 			try {
 				const stackRoot = join(root, 'runtime-stack');
-				const tarPath = containerImagePath('postgres', 'db');
 				const imageName = 'devstack-build:postgres-original';
 				const meta = metadata({
 					containers: [
-						{
-							plugin: 'postgres',
-							role: 'db',
+						capturedContainer({
 							imageName,
-							tarPath,
-						},
+						}),
 					],
 				});
 				const artifactDir = writeArtifact(root, meta);
-				mkdirSync(join(artifactDir, SnapshotLayout.containersDir, 'postgres'), {
-					recursive: true,
-				});
-				writeFileSync(join(artifactDir, tarPath), Buffer.from([1, 2, 3]));
+				writeImageBundle(artifactDir);
 				const finalTagError: ContainerRuntimeError = {
 					_tag: 'ContainerRuntimeError',
 					reason: 'image-tag-failed',
@@ -1003,7 +1239,6 @@ describe('snapshot restore safety', () => {
 			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
 			const events: string[] = [];
 			try {
-				const tarPath = containerImagePath('postgres', 'db');
 				const imageName = 'devstack-build:postgres-original';
 				const meta = metadata({
 					hostTreeIncluded: true,
@@ -1016,19 +1251,13 @@ describe('snapshot restore safety', () => {
 						},
 					],
 					containers: [
-						{
-							plugin: 'postgres',
-							role: 'db',
+						capturedContainer({
 							imageName,
-							tarPath,
-						},
+						}),
 					],
 				});
 				const artifactDir = writeArtifact(root, meta);
-				mkdirSync(join(artifactDir, SnapshotLayout.containersDir, 'postgres'), {
-					recursive: true,
-				});
-				writeFileSync(join(artifactDir, tarPath), Buffer.from([1, 2, 3]));
+				writeImageBundle(artifactDir);
 				writeFileSync(join(artifactDir, SnapshotLayout.hostTreeTar), Buffer.from('not-a-tar'));
 				const runtime = runtimeStub(sweepCalls, { events });
 
@@ -1054,7 +1283,7 @@ describe('snapshot restore safety', () => {
 	);
 
 	it.effect(
-		'loads the saved image tar and tags the loaded image under the recorded image ref',
+		'loads the saved image bundle and tags the recorded snapshot image under the original ref',
 		() =>
 			Effect.gen(function* () {
 				const root = freshRoot();
@@ -1067,27 +1296,18 @@ describe('snapshot restore safety', () => {
 				}> = [];
 				const events: string[] = [];
 				try {
-					const tarPath = containerImagePath('postgres', 'db');
 					const meta = metadata({
 						containers: [
-							{
-								plugin: 'postgres',
-								role: 'db',
+							capturedContainer({
 								imageName: 'devstack-build:postgres-original',
-								tarPath,
-							},
+							}),
 						],
 					});
 					const artifactDir = writeArtifact(root, meta);
-					mkdirSync(join(artifactDir, SnapshotLayout.containersDir, 'postgres'), {
-						recursive: true,
-					});
-					writeFileSync(join(artifactDir, tarPath), Buffer.from([1, 2, 3]));
-					const loadedRef: ImageRef = { digest: 'sha256:loaded', tag: 'loaded:temp' };
+					writeImageBundle(artifactDir);
 					const runtime = runtimeStub(sweepCalls, {
 						loadBytes,
 						tagCalls,
-						loadedRef,
 						events,
 					});
 
@@ -1110,16 +1330,20 @@ describe('snapshot restore safety', () => {
 							role: 'db',
 						},
 					]);
-					expect(loadBytes).toEqual([1, 2, 3]);
+					expect(loadBytes.length).toBeGreaterThan(0);
+					expect(Buffer.from(loadBytes).toString('utf8')).toContain('manifest.json');
 					expect(tagCalls).toEqual([
 						{
-							src: loadedRef,
+							src: {
+								digest: 'sha256:loaded-postgres-db',
+								tag: 'devstack-snapshot:postgres-db',
+							},
 							newTag: events[1]!.slice('tag:'.length),
 							opts: { removeSourceAfterTag: true },
 						},
 						{
 							src: {
-								digest: loadedRef.digest,
+								digest: 'sha256:loaded-postgres-db',
 								tag: events[1]!.slice('tag:'.length),
 							},
 							newTag: 'devstack-build:postgres-original',
@@ -1131,5 +1355,65 @@ describe('snapshot restore safety', () => {
 					rmSync(root, { recursive: true, force: true });
 				}
 			}),
+	);
+
+	it.effect('loads a shared image bundle once for multiple captured containers', () =>
+		Effect.gen(function* () {
+			const root = freshRoot();
+			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+			const events: string[] = [];
+			try {
+				const meta = metadata({
+					containers: [
+						capturedContainer({
+							role: 'db',
+							imageName: 'devstack-build:postgres-db',
+							snapshotTag: 'devstack-snapshot:postgres-db',
+						}),
+						capturedContainer({
+							role: 'worker',
+							imageName: 'devstack-build:postgres-worker',
+							snapshotTag: 'devstack-snapshot:postgres-worker',
+						}),
+					],
+				});
+				const artifactDir = writeArtifact(root, meta);
+				writeImageBundle(artifactDir, [
+					'devstack-snapshot:postgres-db',
+					'devstack-snapshot:postgres-worker',
+				]);
+				const exit = yield* runRestoreExit(
+					root,
+					meta,
+					runtimeIdentity,
+					sweepCalls,
+					runtimeStub(sweepCalls, { events }),
+				).pipe(Effect.provide(NodeFileSystem.layer));
+
+				expect(Exit.isSuccess(exit)).toBe(true);
+				expect(events.filter((event) => event === 'load')).toHaveLength(1);
+				expect(
+					events.filter((event) => event.startsWith('tag:devstack-snapshot:restore-')),
+				).toHaveLength(2);
+				expect(events).toContain('tag:devstack-build:postgres-db');
+				expect(events).toContain('tag:devstack-build:postgres-worker');
+				expect(sweepCalls).toEqual([
+					{
+						app: runtimeIdentity.app,
+						stack: runtimeIdentity.stack,
+						plugin: 'postgres',
+						role: 'db',
+					},
+					{
+						app: runtimeIdentity.app,
+						stack: runtimeIdentity.stack,
+						plugin: 'postgres',
+						role: 'worker',
+					},
+				]);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}),
 	);
 });

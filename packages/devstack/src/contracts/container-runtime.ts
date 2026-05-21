@@ -22,6 +22,14 @@ export interface ImageRef {
 	readonly tag?: string;
 }
 
+export interface TaggedImageRef extends ImageRef {
+	readonly tag: string;
+}
+
+export interface LoadedImageBundle {
+	readonly refs: ReadonlyArray<ImageRef>;
+}
+
 export interface SaveImageOptions {
 	readonly removeAfterSave?: boolean;
 }
@@ -206,7 +214,7 @@ export interface ContainerRuntime {
 	 *  containers are already quiescent and are committed as-is. */
 	readonly pauseAndCommit: (
 		handle: ContainerHandle,
-	) => Effect.Effect<ImageRef, ContainerRuntimeError>;
+	) => Effect.Effect<TaggedImageRef, ContainerRuntimeError>;
 
 	/** Stream an image's bytes as if produced by `docker save <ref>`.
 	 *  Used by the snapshot orchestrator to persist committed images to
@@ -217,13 +225,20 @@ export interface ContainerRuntime {
 		opts?: SaveImageOptions,
 	) => Stream.Stream<Uint8Array, ContainerRuntimeError>;
 
-	/** Load an image from a `docker save`-shaped tar stream. Returns
-	 *  the resolved `ImageRef` of the freshly-imported image. Symmetric
-	 *  with `saveImage`. Upstream stream errors are projected to
-	 *  `image-load-failed`. */
+	/** Stream a deduplicated `docker save <ref...>` bundle. Snapshot
+	 *  capture uses this for multi-container stacks so shared base layers
+	 *  are written once per snapshot instead of once per container. */
+	readonly saveImages: (
+		refs: ReadonlyArray<ImageRef>,
+		opts?: SaveImageOptions,
+	) => Stream.Stream<Uint8Array, ContainerRuntimeError>;
+
+	/** Load one `docker save`-shaped tar stream. Returns the refs Docker
+	 *  reported loading from that stream so restore can prove expected
+	 *  snapshot tags came from the artifact before it retags them. */
 	readonly loadImage: (
 		tar: Stream.Stream<Uint8Array, unknown>,
-	) => Effect.Effect<ImageRef, ContainerRuntimeError>;
+	) => Effect.Effect<LoadedImageBundle, ContainerRuntimeError>;
 
 	/** Move/copy a tag onto a source image. After this returns,
 	 *  `<newTag>` resolves to the same image as `src`. Used by snapshot
@@ -234,6 +249,12 @@ export interface ContainerRuntime {
 		newTag: string,
 		opts?: TagImageOptions,
 	) => Effect.Effect<void, ContainerRuntimeError>;
+
+	/** Remove one image ref/tag. Snapshot capture uses this only for
+	 *  committed temp tags when capture fails before `saveImages` takes
+	 *  ownership of cleanup via `removeAfterSave`. Missing refs are
+	 *  treated as already-cleaned. */
+	readonly removeImage: (ref: ImageRef) => Effect.Effect<void, ContainerRuntimeError>;
 
 	readonly unpause: (handle: ContainerHandle) => Effect.Effect<void, ContainerRuntimeError>;
 

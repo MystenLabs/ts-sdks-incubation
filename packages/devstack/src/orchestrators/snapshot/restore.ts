@@ -21,7 +21,7 @@
 
 import { randomUUID } from 'node:crypto';
 
-import { Effect, FileSystem, Schema, Stream } from 'effect';
+import { Effect, Exit, FileSystem, Schema, Stream } from 'effect';
 
 import type { ContainerRuntime, ImageRef } from '../../contracts/container-runtime.ts';
 import {
@@ -31,6 +31,7 @@ import {
 } from '../../substrate/runtime/host-tree-tar/index.ts';
 import {
 	ContributionDocSchema,
+	containerImagesBundlePath,
 	contributionPath,
 	SnapshotLayout,
 	SnapshotMetadataSchema,
@@ -38,7 +39,6 @@ import {
 	type CapturedContainer,
 	type IdentitySlice,
 	type SnapshotMetadata,
-	containerImagePath,
 	isRestorableContainerImageName,
 	isSafeSnapshotPathSegment,
 	isSafeSnapshotRelativePath,
@@ -279,6 +279,239 @@ interface StagedContainerImage {
 	readonly stagedImageTag: string;
 }
 
+const loadedBundleTags = (bundle: { readonly refs: ReadonlyArray<ImageRef> }): Set<string> => {
+	const tags = new Set<string>();
+	for (const ref of bundle.refs) {
+		if (ref.tag !== undefined) tags.add(ref.tag);
+	}
+	return tags;
+};
+
+const TAR_BLOCK_SIZE = 512;
+const MAX_DOCKER_SAVE_MANIFEST_BYTES = 1024 * 1024;
+
+const bytesToString = (bytes: Uint8Array): string => {
+	const nul = bytes.indexOf(0);
+	const end = nul === -1 ? bytes.length : nul;
+	return Buffer.from(bytes.subarray(0, end)).toString('utf8');
+};
+
+const concatBytes = (a: Uint8Array, b: Uint8Array): Uint8Array => {
+	if (a.length === 0) return b;
+	if (b.length === 0) return a;
+	const out = new Uint8Array(a.length + b.length);
+	out.set(a, 0);
+	out.set(b, a.length);
+	return out;
+};
+
+const consumeBytes = (buffer: Uint8Array, count: number): Uint8Array => buffer.subarray(count);
+
+const isZeroBlock = (block: Uint8Array): boolean => block.every((byte) => byte === 0);
+
+const parseTarSize = (header: Uint8Array): number | null => {
+	const raw = bytesToString(header.subarray(124, 136)).trim();
+	if (raw === '') return 0;
+	if (!/^[0-7]+$/.test(raw)) return null;
+	const parsed = Number.parseInt(raw, 8);
+	return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+};
+
+const tarPathFromHeader = (header: Uint8Array): string => {
+	const name = bytesToString(header.subarray(0, 100));
+	const prefix = bytesToString(header.subarray(345, 500));
+	return prefix === '' ? name : `${prefix}/${name}`;
+};
+
+interface DockerSaveManifestTarState {
+	buffer: Uint8Array;
+	skipRemaining: number;
+	manifestBytes: Uint8Array | null;
+	content: {
+		readonly size: number;
+		readonly paddedSize: number;
+		readonly chunks: Array<Uint8Array>;
+		readonly contentBytesRead: number;
+		readonly totalBytesRead: number;
+	} | null;
+}
+
+const failDockerManifest = (detail: string): RestorePhaseError =>
+	new RestorePhaseError({ phase: 'load-image', detail });
+
+const processDockerSaveManifestChunk = (
+	state: DockerSaveManifestTarState,
+	chunk: Uint8Array,
+): { readonly done: boolean; readonly error?: RestorePhaseError } => {
+	state.buffer = concatBytes(state.buffer, chunk);
+	while (state.buffer.length > 0) {
+		if (state.content !== null) {
+			const content = state.content;
+			const remaining = content.paddedSize - content.totalBytesRead;
+			const take = Math.min(remaining, state.buffer.length);
+			const contentTake = Math.max(0, Math.min(take, content.size - content.contentBytesRead));
+			if (contentTake > 0) {
+				content.chunks.push(state.buffer.subarray(0, contentTake));
+			}
+			state.content = {
+				...content,
+				contentBytesRead: content.contentBytesRead + contentTake,
+				totalBytesRead: content.totalBytesRead + take,
+			};
+			state.buffer = consumeBytes(state.buffer, take);
+			if (state.content.totalBytesRead === state.content.paddedSize) {
+				const completed = state.content;
+				state.content = null;
+				state.manifestBytes =
+					completed.chunks.length === 1
+						? completed.chunks[0]!
+						: Buffer.concat(completed.chunks.map((entry) => Buffer.from(entry)));
+				return { done: true };
+			}
+			continue;
+		}
+		if (state.skipRemaining > 0) {
+			const take = Math.min(state.skipRemaining, state.buffer.length);
+			state.skipRemaining -= take;
+			state.buffer = consumeBytes(state.buffer, take);
+			continue;
+		}
+		if (state.buffer.length < TAR_BLOCK_SIZE) return { done: false };
+		const header = state.buffer.subarray(0, TAR_BLOCK_SIZE);
+		state.buffer = consumeBytes(state.buffer, TAR_BLOCK_SIZE);
+		if (isZeroBlock(header)) continue;
+		const size = parseTarSize(header);
+		if (size === null) {
+			return { done: false, error: failDockerManifest('docker save bundle has invalid tar size') };
+		}
+		const paddedSize = Math.ceil(size / TAR_BLOCK_SIZE) * TAR_BLOCK_SIZE;
+		if (tarPathFromHeader(header) === 'manifest.json') {
+			if (size > MAX_DOCKER_SAVE_MANIFEST_BYTES) {
+				return {
+					done: false,
+					error: failDockerManifest('docker save manifest.json is too large'),
+				};
+			}
+			if (size === 0) {
+				state.manifestBytes = new Uint8Array(0);
+				return { done: true };
+			}
+			state.content = {
+				size,
+				paddedSize,
+				chunks: [],
+				contentBytesRead: 0,
+				totalBytesRead: 0,
+			};
+			continue;
+		}
+		state.skipRemaining = paddedSize;
+	}
+	return { done: false };
+};
+
+const parseDockerSaveManifestTags = (
+	bytes: Uint8Array,
+	tarPath: string,
+): Effect.Effect<ReadonlySet<string>, RestorePhaseError> =>
+	Effect.gen(function* () {
+		const raw = yield* Effect.try({
+			try: () => JSON.parse(Buffer.from(bytes).toString('utf8')) as unknown,
+			catch: (cause) =>
+				new RestorePhaseError({
+					phase: 'load-image',
+					detail: `docker save manifest.json in ${tarPath} is not valid JSON`,
+					cause,
+				}),
+		});
+		if (!Array.isArray(raw)) {
+			return yield* Effect.fail(
+				failDockerManifest(`docker save manifest.json in ${tarPath} is not an array`),
+			);
+		}
+		const tags = new Set<string>();
+		for (const [index, entry] of raw.entries()) {
+			if (typeof entry !== 'object' || entry === null) {
+				return yield* Effect.fail(
+					failDockerManifest(`docker save manifest entry ${index} in ${tarPath} is not an object`),
+				);
+			}
+			const repoTags = (entry as { readonly RepoTags?: unknown }).RepoTags;
+			if (repoTags === undefined || repoTags === null) continue;
+			if (!Array.isArray(repoTags)) {
+				return yield* Effect.fail(
+					failDockerManifest(
+						`docker save manifest entry ${index} in ${tarPath} has non-array RepoTags`,
+					),
+				);
+			}
+			for (const tag of repoTags) {
+				if (typeof tag !== 'string' || !isRestorableContainerImageName(tag)) {
+					return yield* Effect.fail(
+						failDockerManifest(
+							`docker save manifest entry ${index} in ${tarPath} has invalid RepoTag ${String(
+								tag,
+							)}`,
+						),
+					);
+				}
+				if (tags.has(tag)) {
+					return yield* Effect.fail(
+						failDockerManifest(`docker save manifest in ${tarPath} repeats RepoTag ${tag}`),
+					);
+				}
+				tags.add(tag);
+			}
+		}
+		return tags;
+	});
+
+const readDockerSaveManifestTags = (
+	fullTarPath: string,
+	tarPath: string,
+): Effect.Effect<ReadonlySet<string>, RestorePhaseError, FileSystem.FileSystem> =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem;
+		const state: DockerSaveManifestTarState = {
+			buffer: new Uint8Array(0),
+			skipRemaining: 0,
+			manifestBytes: null,
+			content: null,
+		};
+		yield* Stream.runForEachWhile(fs.stream(fullTarPath), (chunk) => {
+			const result = processDockerSaveManifestChunk(state, chunk);
+			if (result.error !== undefined) return Effect.fail(result.error);
+			return Effect.succeed(!result.done);
+		}).pipe(
+			Effect.catch(failPhase('load-image', `read docker save manifest from ${fullTarPath} failed`)),
+		);
+		if (state.manifestBytes === null) {
+			return yield* Effect.fail(
+				failDockerManifest(`docker save bundle ${tarPath} does not contain manifest.json`),
+			);
+		}
+		return yield* parseDockerSaveManifestTags(state.manifestBytes, tarPath);
+	});
+
+const verifyDockerSaveManifestTags = (
+	tarPath: string,
+	actualTags: ReadonlySet<string>,
+	expectedSnapshotTags: ReadonlyArray<string>,
+): Effect.Effect<void, RestorePhaseError> => {
+	const expected = new Set(expectedSnapshotTags);
+	const missing = [...expected].filter((tag) => !actualTags.has(tag));
+	const unexpected = [...actualTags].filter((tag) => !expected.has(tag));
+	if (missing.length === 0 && unexpected.length === 0) return Effect.void;
+	const parts: string[] = [];
+	if (missing.length > 0) parts.push(`missing: ${missing.join(', ')}`);
+	if (unexpected.length > 0) parts.push(`unexpected: ${unexpected.join(', ')}`);
+	return Effect.fail(
+		failDockerManifest(
+			`docker save bundle ${tarPath} tags do not match snapshot metadata (${parts.join('; ')})`,
+		),
+	);
+};
+
 const mintRestoreStagingTag = (): string =>
 	`devstack-snapshot:restore-${randomUUID().replaceAll('-', '').slice(0, 24)}`;
 
@@ -378,11 +611,11 @@ const preflightCapturedContainer = (
 				captured.plugin,
 			);
 		}
-		const expectedTarPath = containerImagePath(captured.plugin, captured.role);
+		const expectedTarPath = containerImagesBundlePath();
 		if (captured.tarPath !== expectedTarPath) {
 			return yield* failRestore(
 				'preflight',
-				`container image tar path ${captured.tarPath} does not match canonical ${expectedTarPath}`,
+				`container image tar path ${captured.tarPath} does not match canonical bundle ${expectedTarPath}`,
 				captured.plugin,
 			);
 		}
@@ -390,6 +623,13 @@ const preflightCapturedContainer = (
 			return yield* failRestore(
 				'preflight',
 				`container imageName is not a restorable Docker tag destination: ${captured.imageName}`,
+				captured.plugin,
+			);
+		}
+		if (!isRestorableContainerImageName(captured.snapshotTag)) {
+			return yield* failRestore(
+				'preflight',
+				`container snapshotTag is not a restorable Docker tag source: ${captured.snapshotTag}`,
 				captured.plugin,
 			);
 		}
@@ -452,8 +692,18 @@ const preflightArtifact = (
 ): Effect.Effect<void, RestorePhaseError, FileSystem.FileSystem> =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem;
+		const seenSnapshotTags = new Map<string, CapturedContainer>();
 		for (const captured of meta.containers) {
 			yield* preflightCapturedContainer(captured, artifactDir);
+			const previous = seenSnapshotTags.get(captured.snapshotTag);
+			if (previous !== undefined) {
+				return yield* failRestore(
+					'preflight',
+					`duplicate container snapshotTag ${captured.snapshotTag} for ${previous.plugin}/${previous.role} and ${captured.plugin}/${captured.role}`,
+					captured.plugin,
+				);
+			}
+			seenSnapshotTags.set(captured.snapshotTag, captured);
 		}
 		for (const pluginKey of meta.participants) {
 			yield* preflightContributionDoc(pluginKey, artifactDir);
@@ -489,49 +739,118 @@ const preflightArtifact = (
 // Image load + staged re-tag.
 // -----------------------------------------------------------------------------
 
-const loadAndStageImage = (
-	captured: CapturedContainer,
+const loadImageBundle = (
+	tarPath: string,
 	artifactDir: string,
 	runtime: ContainerRuntime,
-): Effect.Effect<StagedContainerImage, RestorePhaseError, FileSystem.FileSystem> =>
+	expectedSnapshotTags: ReadonlyArray<string>,
+): Effect.Effect<ReadonlyMap<string, ImageRef>, RestorePhaseError, FileSystem.FileSystem> =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem;
-		const tarPath = `${artifactDir}/${captured.tarPath}`;
-		const exists = yield* fs.exists(tarPath).pipe(Effect.catch(() => Effect.succeed(false)));
+		const fullTarPath = `${artifactDir}/${tarPath}`;
+		const exists = yield* fs.exists(fullTarPath).pipe(Effect.catch(() => Effect.succeed(false)));
 		if (!exists) {
 			return yield* Effect.fail(
 				new RestorePhaseError({
 					phase: 'load-image',
-					plugin: captured.plugin,
-					detail: `container image tar absent at ${tarPath}`,
+					detail: `container image bundle absent at ${fullTarPath}`,
 				}),
 			);
 		}
+		const manifestTags = yield* readDockerSaveManifestTags(fullTarPath, tarPath);
+		yield* verifyDockerSaveManifestTags(tarPath, manifestTags, expectedSnapshotTags);
 		const loaded = yield* runtime
-			.loadImage(fs.stream(tarPath))
+			.loadImage(fs.stream(fullTarPath))
 			.pipe(
 				Effect.catch(
-					failPhase('load-image', `load container image from ${tarPath} failed`, captured.plugin),
+					failPhase('load-image', `load container image bundle from ${fullTarPath} failed`),
 				),
 			);
+		const loadedTags = loadedBundleTags(loaded);
+		const missing = expectedSnapshotTags.filter((tag) => !loadedTags.has(tag));
+		if (missing.length > 0) {
+			return yield* failRestore(
+				'load-image',
+				`container image bundle ${tarPath} did not load expected snapshot tags: ${missing.join(', ')}`,
+			);
+		}
+		const refsByTag = new Map<string, ImageRef>();
+		for (const ref of loaded.refs) {
+			if (ref.tag === undefined || !expectedSnapshotTags.includes(ref.tag)) continue;
+			if (refsByTag.has(ref.tag)) {
+				return yield* failRestore(
+					'load-image',
+					`container image bundle ${tarPath} loaded duplicate snapshot tag ${ref.tag}`,
+				);
+			}
+			refsByTag.set(ref.tag, ref);
+		}
+		return refsByTag;
+	}).pipe(Effect.withSpan('orchestrator.snapshot.restore.load-image-bundle'));
+
+const expectedSnapshotTagsByBundle = (
+	containers: ReadonlyArray<CapturedContainer>,
+): ReadonlyMap<string, ReadonlyArray<string>> => {
+	const byBundle = new Map<string, string[]>();
+	for (const captured of containers) {
+		const tags = byBundle.get(captured.tarPath);
+		if (tags === undefined) {
+			byBundle.set(captured.tarPath, [captured.snapshotTag]);
+		} else {
+			tags.push(captured.snapshotTag);
+		}
+	}
+	return byBundle;
+};
+
+const stageLoadedImage = (
+	captured: CapturedContainer,
+	loadedRef: ImageRef,
+	runtime: ContainerRuntime,
+	registerStagedImage: (image: StagedContainerImage) => Effect.Effect<void>,
+): Effect.Effect<StagedContainerImage, RestorePhaseError> =>
+	Effect.gen(function* () {
 		const stagedImageTag = mintRestoreStagingTag();
+		const stagedImage: StagedContainerImage = {
+			captured,
+			stagedRef: { digest: loadedRef.digest, tag: stagedImageTag },
+			stagedImageTag,
+		};
+		yield* registerStagedImage(stagedImage);
 		yield* runtime
-			.tagImage(loaded, stagedImageTag, { removeSourceAfterTag: true })
+			.tagImage(loadedRef, stagedImageTag, { removeSourceAfterTag: true })
 			.pipe(
 				Effect.catch(
 					failPhase(
 						'retag-image',
-						`tag restored image ${loaded.tag ?? loaded.digest} as staging ref ${stagedImageTag} failed`,
+						`tag restored image ${captured.snapshotTag} as staging ref ${stagedImageTag} failed`,
 						captured.plugin,
 					),
 				),
 			);
-		return {
-			captured,
-			stagedRef: { digest: loaded.digest, tag: stagedImageTag },
-			stagedImageTag,
-		};
+		return stagedImage;
 	}).pipe(Effect.withSpan('orchestrator.snapshot.restore.stage-image'));
+
+const cleanupRestoreStagingImages = (
+	runtime: ContainerRuntime,
+	images: ReadonlyArray<StagedContainerImage>,
+): Effect.Effect<void> =>
+	Effect.forEach(
+		images,
+		(image) =>
+			runtime
+				.removeImage(image.stagedRef)
+				.pipe(
+					Effect.catch((cause) =>
+						Effect.logWarning(
+							`remove restore staging image ${image.stagedImageTag} failed during restore cleanup: ${String(
+								cause,
+							)}`,
+						),
+					),
+				),
+		{ concurrency: 'unbounded' },
+	).pipe(Effect.asVoid);
 
 const promoteStagedImages = (
 	images: ReadonlyArray<StagedContainerImage>,
@@ -625,7 +944,7 @@ export interface RestoreInputs {
  *      - Untar host-tree into staging.
  *      - Copy state.json into staging.
  *      - Re-read contribution docs.
- *      - Load committed images under restore-staging Docker refs.
+ *      - Load image bundles and stage verified snapshot tags.
  *      - Write a restore-pending marker into the staged root.
  *   5. Atomic swap staging → runtime root, preserving live command /
  *      event channel files and other explicit runtime-control files.
@@ -681,67 +1000,108 @@ export const runRestore = (
 		yield* preflightArtifact(meta, inputs.artifactDir);
 
 		// 4. Stage filesystem content and non-destructive Docker image
-		//    refs; atomic swap on success.
-		const stagedImages = yield* stageAndSwap({
-			targetPath: inputs.runtimeStackRoot,
-			stagingPath: inputs.runtimeStagingPath,
-			backupPath: inputs.runtimeBackupPath,
-			preserveFromTarget: LIVE_RESTORE_PRESERVED_PATHS,
-			publishLockPath: runtimeControlLockPathForStackRoot(inputs.runtimeStackRoot),
-			build: Effect.gen(function* () {
+		//    refs; atomic swap on success. Until `stageAndSwap`
+		//    succeeds, the restore-pending marker is only in staging, so
+		//    restore owns cleanup for any Docker staging refs it minted.
+		const stagedImages = yield* Effect.scoped(
+			Effect.gen(function* () {
 				const stagedImages: StagedContainerImage[] = [];
-				// 4a. Untar host-tree into staging.
-				if (meta.hostTreeIncluded) {
-					yield* restoreHostTree(inputs.artifactDir, inputs.runtimeStagingPath);
-				}
-				// 4b. Copy state.json into staging.
-				const fs = yield* FileSystem.FileSystem;
-				const srcState = `${inputs.artifactDir}/${SnapshotLayout.stateFile}`;
-				const stateExists = yield* fs
-					.exists(srcState)
-					.pipe(Effect.catch(() => Effect.succeed(false)));
-				if (stateExists) {
-					const stateDoc = yield* readSnapshotStateDocument(srcState).pipe(
-						Effect.catch(failPhase('read-state', `state.json failed schema validation`)),
-					);
-					yield* writeSnapshotStateDocument(
-						`${inputs.runtimeStagingPath}/${SnapshotLayout.stateFile}`,
-						stateDoc,
-					).pipe(Effect.catch(failPhase('expand-state', `write state.json failed`)));
-				}
-				// 4c. Read each contribution doc — the participants'
-				//      post-restore hooks may want this; we surface it
-				//      via the participant's own state-store reads after
-				//      the swap lands.
-				for (const pluginKey of meta.participants) {
-					const path = `${inputs.artifactDir}/${contributionPath(pluginKey)}`;
-					const exists = yield* fs.exists(path).pipe(Effect.catch(() => Effect.succeed(false)));
-					if (!exists) {
-						return yield* Effect.fail(
-							new RestorePhaseError({
-								phase: 'read-contribution',
-								plugin: pluginKey,
-								detail: `contribution doc absent at ${path}`,
-							}),
-						);
-					}
-				}
-				// 4d. Load + tag committed images under restore-staging
-				//     refs only after all artifact expansion/copy work
-				//     has succeeded. The live container image refs are
-				//     not touched until after filesystem publish.
-				for (const captured of meta.containers) {
-					stagedImages.push(yield* loadAndStageImage(captured, inputs.artifactDir, inputs.runtime));
-				}
-				yield* writeRestorePendingMarker({
-					runtimeRoot: inputs.runtimeStagingPath,
-					meta,
-					artifactDir: inputs.artifactDir,
-					stagedImages,
+				let recoveryHandoffComplete = false;
+				yield* Effect.addFinalizer((exit) =>
+					Exit.isFailure(exit) && !recoveryHandoffComplete
+						? cleanupRestoreStagingImages(inputs.runtime, stagedImages)
+						: Effect.void,
+				);
+				const swappedImages = yield* stageAndSwap({
+					targetPath: inputs.runtimeStackRoot,
+					stagingPath: inputs.runtimeStagingPath,
+					backupPath: inputs.runtimeBackupPath,
+					preserveFromTarget: LIVE_RESTORE_PRESERVED_PATHS,
+					publishLockPath: runtimeControlLockPathForStackRoot(inputs.runtimeStackRoot),
+					build: Effect.gen(function* () {
+						// 4a. Untar host-tree into staging.
+						if (meta.hostTreeIncluded) {
+							yield* restoreHostTree(inputs.artifactDir, inputs.runtimeStagingPath);
+						}
+						// 4b. Copy state.json into staging.
+						const fs = yield* FileSystem.FileSystem;
+						const srcState = `${inputs.artifactDir}/${SnapshotLayout.stateFile}`;
+						const stateExists = yield* fs
+							.exists(srcState)
+							.pipe(Effect.catch(() => Effect.succeed(false)));
+						if (stateExists) {
+							const stateDoc = yield* readSnapshotStateDocument(srcState).pipe(
+								Effect.catch(failPhase('read-state', `state.json failed schema validation`)),
+							);
+							yield* writeSnapshotStateDocument(
+								`${inputs.runtimeStagingPath}/${SnapshotLayout.stateFile}`,
+								stateDoc,
+							).pipe(Effect.catch(failPhase('expand-state', `write state.json failed`)));
+						}
+						// 4c. Read each contribution doc — the participants'
+						//      post-restore hooks may want this; we surface it
+						//      via the participant's own state-store reads after
+						//      the swap lands.
+						for (const pluginKey of meta.participants) {
+							const path = `${inputs.artifactDir}/${contributionPath(pluginKey)}`;
+							const exists = yield* fs.exists(path).pipe(Effect.catch(() => Effect.succeed(false)));
+							if (!exists) {
+								return yield* Effect.fail(
+									new RestorePhaseError({
+										phase: 'read-contribution',
+										plugin: pluginKey,
+										detail: `contribution doc absent at ${path}`,
+									}),
+								);
+							}
+						}
+						// 4d. Load + tag committed images under restore-staging
+						//     refs only after all artifact expansion/copy work
+						//     has succeeded. The Docker save manifest must match
+						//     snapshot metadata exactly before docker load mutates
+						//     the daemon; loaded refs then supply the real digest
+						//     used for staging tags.
+						const expectedTagsByBundle = expectedSnapshotTagsByBundle(meta.containers);
+						const loadedRefsBySnapshotTag = new Map<string, ImageRef>();
+						for (const [tarPath, expectedTags] of expectedTagsByBundle) {
+							const loadedRefs = yield* loadImageBundle(
+								tarPath,
+								inputs.artifactDir,
+								inputs.runtime,
+								expectedTags,
+							);
+							for (const [tag, ref] of loadedRefs) {
+								loadedRefsBySnapshotTag.set(tag, ref);
+							}
+						}
+						for (const captured of meta.containers) {
+							const loadedRef = loadedRefsBySnapshotTag.get(captured.snapshotTag);
+							if (loadedRef === undefined) {
+								return yield* failRestore(
+									'load-image',
+									`container image bundle did not return loaded ref for ${captured.snapshotTag}`,
+									captured.plugin,
+								);
+							}
+							yield* stageLoadedImage(captured, loadedRef, inputs.runtime, (image) =>
+								Effect.sync(() => {
+									stagedImages.push(image);
+								}),
+							);
+						}
+						yield* writeRestorePendingMarker({
+							runtimeRoot: inputs.runtimeStagingPath,
+							meta,
+							artifactDir: inputs.artifactDir,
+							stagedImages,
+						});
+						return stagedImages;
+					}),
 				});
-				return stagedImages;
+				recoveryHandoffComplete = true;
+				return swappedImages;
 			}),
-		});
+		);
 
 		// 5. Docker finalization happens after filesystem publish. If
 		//    promotion or removal fails, the restored root still carries

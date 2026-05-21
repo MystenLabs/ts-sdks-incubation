@@ -7,7 +7,9 @@
 //   - The new methods exist on the interface (type-level check).
 //   - Their return shapes are the documented narrow envelope:
 //       saveImage → Stream<Uint8Array, ContainerRuntimeError>
-//       loadImage → Effect<ImageRef, ContainerRuntimeError>
+//       saveImages → Stream<Uint8Array, ContainerRuntimeError>
+//       pauseAndCommit → Effect<TaggedImageRef, ContainerRuntimeError>
+//       loadImage → Effect<LoadedImageBundle, ContainerRuntimeError>
 //       tagImage  → Effect<void, ContainerRuntimeError>
 //       pullImage → Effect<ImageRef, ContainerRuntimeError>
 //       removeManaged* → Effect<number, ContainerRuntimeError>
@@ -25,7 +27,9 @@ import type {
 	ContainerRuntime,
 	ExecOptions,
 	ImageRef,
+	LoadedImageBundle,
 	OneShotSpec,
+	TaggedImageRef,
 } from '../../../src/contracts/container-runtime.ts';
 
 // Construct a stub ContainerRuntime that exercises every method
@@ -48,10 +52,19 @@ const stubRuntime: ContainerRuntime = {
 	runOneShot: () => Effect.succeed({ exitCode: 0, stdout: '', stderr: '' }),
 	inspectByLabels: () => Effect.succeed([]),
 	followLogs: () => Stream.empty,
-	pauseAndCommit: () => Effect.succeed<ImageRef>({ digest: 'sha256:committed' }),
+	pauseAndCommit: () =>
+		Effect.succeed<TaggedImageRef>({
+			digest: 'sha256:committed',
+			tag: 'devstack-snapshot:committed',
+		}),
 	saveImage: () => Stream.empty,
-	loadImage: () => Effect.succeed<ImageRef>({ digest: 'sha256:loaded' }),
+	saveImages: () => Stream.empty,
+	loadImage: () =>
+		Effect.succeed<LoadedImageBundle>({
+			refs: [{ digest: 'sha256:loaded', tag: 'devstack-snapshot:loaded' }],
+		}),
 	tagImage: () => Effect.void,
+	removeImage: () => Effect.void,
 	unpause: () => Effect.void,
 	stop: () => Effect.void,
 	sweepOrphans: () => Effect.succeed(0),
@@ -83,8 +96,19 @@ describe('ContainerRuntime contract surface', () => {
 	it.effect('loadImage accepts a Stream<Uint8Array, unknown>', () =>
 		Effect.gen(function* () {
 			const tar = Stream.make(new Uint8Array([1, 2, 3]));
-			const ref = yield* stubRuntime.loadImage(tar);
-			expect(ref.digest).toBe('sha256:loaded');
+			const bundle = yield* stubRuntime.loadImage(tar);
+			expect(bundle.refs).toEqual([{ digest: 'sha256:loaded', tag: 'devstack-snapshot:loaded' }]);
+		}),
+	);
+
+	it.effect('saveImages is required for deduplicated snapshot bundles', () =>
+		Effect.gen(function* () {
+			const refs: ReadonlyArray<TaggedImageRef> = [
+				{ digest: 'sha256:a', tag: 'devstack-snapshot:a' },
+				{ digest: 'sha256:b', tag: 'devstack-snapshot:b' },
+			];
+			const out = yield* Stream.runCollect(stubRuntime.saveImages(refs));
+			expect(out).toEqual([]);
 		}),
 	);
 
@@ -92,6 +116,12 @@ describe('ContainerRuntime contract surface', () => {
 		Effect.gen(function* () {
 			yield* stubRuntime.tagImage({ digest: 'sha256:abc' }, 'my-restored:latest');
 			// no return; succeeded.
+		}),
+	);
+
+	it.effect('removeImage returns Effect<void, ContainerRuntimeError>', () =>
+		Effect.gen(function* () {
+			yield* stubRuntime.removeImage({ digest: 'sha256:abc', tag: 'devstack-snapshot:abc' });
 		}),
 	);
 

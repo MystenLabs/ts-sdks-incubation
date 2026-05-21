@@ -280,6 +280,33 @@ describe('dispatch', () => {
 		expect(env.error.summary).not.toContain('snapshot capture publish failed');
 	});
 
+	it('snapshot save renders the publisher failure cause chain', async () => {
+		const { deps, read } = await makeHarness();
+		const depsWithSnapshotFailure: CliDeps = {
+			...deps,
+			snapshot: {
+				...deps.snapshot,
+				publisher: {
+					publish: () =>
+						Effect.fail({
+							_tag: 'SnapshotCapturePhaseError',
+							phase: 'save-images',
+							detail: 'no space left on device',
+						}),
+				},
+			},
+		};
+		await run(['--json', 'snapshot', 'save', 'baseline'], depsWithSnapshotFailure, {
+			io: read().io,
+		});
+		const h = read();
+		expect(h.exitCode).toBe(70);
+		const env = JSON.parse(h.stdout[0]!);
+		expect(env.error.summary).toBe('snapshot capture publish failed');
+		expect(env.error.chain.join('\n')).toContain('SnapshotCapturePhaseError (save-images)');
+		expect(env.error.chain.join('\n')).toContain('no space left on device');
+	});
+
 	it('snapshot list keeps the artifact directory id canonical when metadata id differs', async () => {
 		const { deps, read } = await makeHarness();
 		const catalog = makeSnapshotCatalog();

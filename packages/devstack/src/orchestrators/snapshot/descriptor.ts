@@ -12,8 +12,8 @@
 //   meta.json              — versioned metadata record, schema-decoded
 //   state.json             — copy of the stack's scalar state-store
 //   host-tree.tar          — tar of subtrees declared by participants
-//   containers/<plugin>/<role>.tar
-//                          — one committed image per managed container
+//   containers/images.tar  — deduplicated Docker save bundle for all
+//                            committed managed-container images
 //   contributions/<encoded-plugin>.json
 //                          — one typed metadata slice per participant
 //   integrity.json         — hashes over the above for resume / probe
@@ -112,6 +112,9 @@ export const containerImagePath = (plugin: string, role: string): string =>
 		plugin,
 	)}/${snapshotPathSegment('role', role)}.tar`;
 
+/** Canonical sub-path for the deduplicated managed-container image bundle. */
+export const containerImagesBundlePath = (): string => `${SnapshotLayout.containersDir}/images.tar`;
+
 /** Canonical sub-path for one participant's typed metadata slice. */
 export const contributionPath = (plugin: string): string =>
 	`${SnapshotLayout.contributionsDir}/${encodedSnapshotPathSegment(plugin)}.json`;
@@ -130,7 +133,11 @@ export const CapturedContainerSchema = Schema.Struct({
 	 *  container — must be re-tagged on restore so the supervisor's
 	 *  reuse-if-name-and-image-match probe adopts the restored image. */
 	imageName: Schema.String,
-	/** Sub-path of the committed image tar inside the artifact. */
+	/** Temporary tag assigned to this committed container image inside
+	 *  the Docker save bundle. Restore loads the bundle once, then
+	 *  re-tags this source to `imageName`. */
+	snapshotTag: Schema.String,
+	/** Sub-path of the committed image bundle inside the artifact. */
 	tarPath: Schema.String,
 });
 export type CapturedContainer = Schema.Schema.Type<typeof CapturedContainerSchema>;
@@ -181,7 +188,7 @@ export type ContributionDoc = Schema.Schema.Type<typeof ContributionDocSchema>;
 
 /** Schema version of the metadata record. Bumped when the on-disk
  *  shape changes in a way that earlier readers cannot ignore. */
-export const SNAPSHOT_META_VERSION = 2 as const;
+export const SNAPSHOT_META_VERSION = 3 as const;
 
 /** Top-level metadata record. Architecture § Snapshot — single canonical
  *  metadata; "metadata absent = do not trust this directory". */
