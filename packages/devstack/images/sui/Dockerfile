@@ -1,16 +1,17 @@
-# devstack-next sui-localnet image. Vendored Dockerfile fed to the
-# `dockerImage` runner (content-addressed builds — same Dockerfile +
-# build args produce the same tag).
+# Sui validator image for the rewrite's local-mode boot. Vendored
+# Dockerfile fed to `ContainerRuntime.ensureImage` (content-addressed
+# builds — same Dockerfile + build args produce the same image digest).
 #
-# Multi-arch: downloads the matching Sui release tarball at build time
-# (`ubuntu-aarch64` on arm64 hosts, `ubuntu-x86_64` on amd64). We don't
-# use `mysten/sui-tools` because it only ships amd64; Apple Silicon
-# would emulate via Rosetta and `sui start` genesis would take minutes
-# instead of seconds.
+# Multi-arch: the upstream `mysten/sui-tools` image ships amd64 only,
+# so on Apple Silicon it runs under Rosetta and `sui start` genesis
+# stretches from ~10 s to several minutes. We download the matching
+# `ubuntu-aarch64` / `ubuntu-x86_64` release tarball at build time
+# instead so the resulting image runs natively on the host.
 #
-# ubuntu:24.04 — the Sui release tarballs are linked against glibc
-# 2.38+, so debian:bookworm (glibc 2.36) fails with a GLIBC_2.38-missing
-# error.
+# `ubuntu:24.04` — the Sui release tarballs are linked against
+# glibc 2.38+; debian:bookworm (glibc 2.36) fails at runtime with a
+# GLIBC_2.38-missing error.
+
 FROM ubuntu:24.04
 
 ARG SUI_VERSION
@@ -18,26 +19,24 @@ ARG TARGETARCH
 
 RUN apt-get update \
 	&& apt-get install -y --no-install-recommends \
-		ca-certificates curl git gawk \
+		ca-certificates curl gawk git \
 	&& rm -rf /var/lib/apt/lists/*
-# gawk is required by the in-container Move.lock scrub
-# (`engine/sui-cli.ts:containerBuildCmd` uses `gawk -i inplace`, a gawk-
-# only extension that Ubuntu's default mawk doesn't support). Without
-# this, builds that miss the publishMove state-store cache fail with
-# `awk: not an option: -i`. The cache hit path masked the problem on
-# warm-start, but a fresh apply or snapshot-restore-then-publish always
-# tripped it.
 
-# Sui release-tarball fetch. NOTE: a near-identical block lives in
-# `../walrus/wrapper.Dockerfile` (sui-fetch stage). The two are
-# intentionally NOT extracted to a shared base — destinations differ
-# (`/usr/local/bin/` here vs `/sui-bin/sui` there) and `dockerImage`'s
-# content-addressed hash walks the whole build context, so widening
-# context to a sibling `_base/` dir would couple unrelated images'
-# cache keys. Version bumps happen via `DEFAULT_SUI_VERSION` in
-# `src/services/sui.ts` + `src/services/walrus/internal.ts`, NOT here.
-# If you edit the curl/tar logic below, mirror the change in
-# `../walrus/wrapper.Dockerfile`.
+# Why `gawk` + `git`:
+#   - `gawk` — the in-container Move.lock scrub uses `gawk -i inplace`
+#     (the `-i` inplace mode is gawk-only; mawk doesn't support it).
+#     Without this, the package plugin's `containerScrubShellScript`
+#     fails inside `sui move build` with `find: 'gawk': No such
+#     file or directory` (host scrub may have already run, but the
+#     in-container path still invokes gawk).
+#   - `git` — Move's dep resolver invokes `git fetch` against vendored
+#     `[dependencies]` blocks (`{ git = "..." }`). Without git on PATH,
+#     `sui move build` aborts with a dep-fetch error before reaching
+#     the bytecode pass.
+
+# Sui release-tarball fetch. The TARGETARCH branch picks the
+# native-architecture asset name and unpacks `sui` (and siblings,
+# including `sui-faucet`) into `/usr/local/bin/`.
 RUN set -eux; \
 	case "$TARGETARCH" in \
 		arm64) SUI_PLATFORM=ubuntu-aarch64 ;; \
@@ -52,11 +51,13 @@ RUN set -eux; \
 	rm -rf /tmp/sui.tgz /tmp/sui-unpack; \
 	sui --version
 
-COPY entrypoint.sh /usr/local/bin/devstack-entrypoint.sh
+COPY _shared/signal-forward.sh /usr/local/lib/devstack/signal-forward.sh
+COPY sui/entrypoint.sh /usr/local/bin/devstack-entrypoint.sh
 RUN chmod +x /usr/local/bin/devstack-entrypoint.sh
 
 ENV RUST_LOG=info,sui=info
 
+# RPC (9000) and faucet (9123). Local-mode boot probes both.
 EXPOSE 9000 9123
 
 ENTRYPOINT ["/usr/local/bin/devstack-entrypoint.sh"]

@@ -1,19 +1,14 @@
 // Demo devstack config consuming the local `./redis-plugin.ts`.
 //
-// `pnpm dev` from this directory brings up:
-//   - The Redis container declared in `redis-plugin.ts`
-//   - The shared traefik router, exposing `redis.plugin-author-redis.localhost`
-//   - The standard devstack TUI showing the `redis` row alongside any
-//     other services
-//
-// The Redis tag is `LayeredTag<'redis', DockerContainerHandle>`, so any
-// downstream tag in this stack can `yield* Redis` to get the URL.
+// Plugin-author-symmetry reference: the user-surface (this file) is
+// identical to how a built-in plugin would be consumed — single root
+// barrel import, lowercase factory, member-by-value composition.
 
-import { devstack } from '@mysten-incubation/devstack';
-import { Redis } from './redis-plugin.js';
+import { defineDevstack, type AnyMember, type Stack } from '@mysten-incubation/devstack';
+import { redis } from './redis-plugin.ts';
 
-// Defaults are fine — pick `{maxMemory: '128mb'}` or override `name`
-// when you need a per-stack distinct container alias.
-const redis = Redis();
+const stack: Stack<ReadonlyArray<AnyMember>> = defineDevstack(redis({ route: true }), {
+	stackName: 'plugin-author-redis',
+});
 
-export default devstack(redis);
+export default stack;

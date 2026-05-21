@@ -1,15 +1,18 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 //
-// Browser-side relay for sui-fork admin RPCs. The devstack wallet-app
-// server proxies a curated subset of `ForkControl`'s gRPC surface
+// Browser-side relay for sui-fork admin RPCs. A compatible devstack
+// wallet endpoint can proxy a curated subset of the fork-control surface
 // (status read, advance-clock, advance-checkpoint, impersonation slot
 // list) over HTTP so the fork panel does not have to ship a gRPC
-// client into the browser bundle. Path contract lives in
-// `devstack-paths.ts`; a sync test on the devstack side asserts both
-// copies stay in lock-step.
+// client into the browser bundle.
 
-import { DEVSTACK_WALLET_HTTP_PATH } from './devstack-paths.js';
+export const FORK_RELAY_HTTP_PATH = {
+	STATUS: '/api/v1/devstack/fork/status',
+	ADVANCE_CLOCK: '/api/v1/devstack/fork/advance-clock',
+	ADVANCE_CHECKPOINT: '/api/v1/devstack/fork/advance-checkpoint',
+	IMPERSONATIONS: '/api/v1/devstack/fork/impersonations',
+} as const;
 
 /** Snapshot of the fork's current head state.
  *
@@ -108,7 +111,7 @@ export class ForkRelay {
 	}
 
 	async getStatus(): Promise<ForkRelayResult<ForkStatus>> {
-		return this.#request('GET', DEVSTACK_WALLET_HTTP_PATH.FORK_STATUS, undefined, (body) => {
+		return this.#request('GET', FORK_RELAY_HTTP_PATH.STATUS, undefined, (body) => {
 			if (!isForkStatusBody(body)) {
 				throw new Error('Malformed fork status response');
 			}
@@ -130,7 +133,7 @@ export class ForkRelay {
 		}
 		return this.#request(
 			'POST',
-			DEVSTACK_WALLET_HTTP_PATH.FORK_ADVANCE_CLOCK,
+			FORK_RELAY_HTTP_PATH.ADVANCE_CLOCK,
 			{ durationMs },
 			(body) => {
 				if (!isForkStatusBody(body)) {
@@ -155,7 +158,7 @@ export class ForkRelay {
 		}
 		return this.#request(
 			'POST',
-			DEVSTACK_WALLET_HTTP_PATH.FORK_ADVANCE_CHECKPOINT,
+			FORK_RELAY_HTTP_PATH.ADVANCE_CHECKPOINT,
 			{ count },
 			(body) => {
 				if (!isForkStatusBody(body)) {
@@ -174,7 +177,7 @@ export class ForkRelay {
 	async listImpersonations(): Promise<ForkRelayResult<ForkImpersonationSlot[]>> {
 		return this.#request(
 			'GET',
-			DEVSTACK_WALLET_HTTP_PATH.FORK_IMPERSONATIONS,
+			FORK_RELAY_HTTP_PATH.IMPERSONATIONS,
 			undefined,
 			(body) => {
 				if (!isImpersonationsBody(body)) {
@@ -198,7 +201,7 @@ export class ForkRelay {
 	): Promise<ForkRelayResult<ForkImpersonationSlot[]>> {
 		return this.#request(
 			'POST',
-			DEVSTACK_WALLET_HTTP_PATH.FORK_IMPERSONATIONS,
+			FORK_RELAY_HTTP_PATH.IMPERSONATIONS,
 			{ address, active },
 			(body) => {
 				if (!isImpersonationsBody(body)) {

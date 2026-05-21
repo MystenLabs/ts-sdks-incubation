@@ -1,58 +1,22 @@
-// Minimal Effect program consuming devstack services via the
-// LayeredTag API.
+// Minimal Effect program for effect-app.
 //
-// The same `program` runs against a freshly-spun localnet in dev and a
-// remote testnet RPC in prod. Network is selected via the
-// `DEVSTACK_NETWORK` env var (or the `devstack --network <kind>` CLI
-// flag) — `Sui()` reads it at construction time, so the same
-// `Sui()` call resolves to whichever network is active. Only the
-// `kind:` parameter on `Account(...)` flips on env, because account
-// sources are intrinsically environment-shaped (ephemeral keypair vs
-// env-supplied key).
+// The body that yields the resolved `SuiClient` + `AccountValue` and
+// runs the program against a real (dev) or remote-RPC (prod) stack
+// is BLOCKED on the `Stack` runnable handle (api.run-stack /
+// `runStack(stack)`). Once that primitive lands, this file becomes:
+//
+//     import { runStack } from '@mysten-incubation/devstack/runtime';
+//     runMain(program.pipe(Effect.provide(runStack(stack).layer)));
+//
+// Today's stub-path proves the config typechecks + composes.
 
 import { Effect } from 'effect';
 import { runMain } from '@effect/platform-node/NodeRuntime';
-import { Account, devstack, Sui } from '@mysten-incubation/devstack';
 
-const isProduction = process.env.NODE_ENV === 'production';
+import stack from '../devstack.config.ts';
 
-// Explicit type annotation needed to avoid TS2742: the inferred type of
-// `Account(...)` references an internal `engine/shared` symbol that
-// isn't exported from `@mysten-incubation/devstack`, so consumers can't
-// name it without a deep import. `ReturnType<typeof Account<'alice'>>`
-// preserves the `'alice'` literal in the resulting `LayeredTag` (a
-// bare `ReturnType<typeof Account>` would widen the name to `string`
-// and break invariant `__layer` matching downstream).
-export const alice: ReturnType<typeof Account<'alice'>> = isProduction
-	? Account('alice', { kind: 'env', key: 'ALICE_PRIVATE_KEY' })
-	: Account('alice', { kind: 'ephemeral-funded' });
-
-export const sui = Sui();
-
-/**
- * Pure connect-and-print program. Depends on the local `sui` + `alice`
- * Refs — a unit test can stub both via `Effect.provide` without spinning
- * up a real localnet.
- */
-export const program = Effect.gen(function* () {
-	const s = yield* sui;
-	const a = yield* alice;
-	yield* Effect.log(`connected to sui ${s.network} at ${s.rpc.host}`);
-	yield* Effect.log(`chain id: ${s.chainId}`);
-	yield* Effect.log(`alice: ${a.address}`);
-});
-
-const stack = devstack(sui, alice);
-
-// Only run when invoked as a script (e.g. `tsx src/main.ts`). Without
-// this guard, importing the module from a vitest test would also boot
-// a real sui-localnet inside the test process.
 if (import.meta.url === `file://${process.argv[1]}`) {
-	// `Effect.provide(stack.layer)` removes all requirements from the
-	// program; the resulting `R = never` is what `runMain` accepts. The
-	// cast is required because v3 program types widen R to `any` (via the
-	// v3-style `PluginTag<any, ...>` cross-refs in the Account factory)
-	// and `any - unknown` resolves to `any` rather than `never` in TS.
-	// Functionally identical to v3's `runMain(...pipe(Effect.provide(...)))`.
-	runMain(program.pipe(Effect.provide(stack.layer)) as Effect.Effect<void, never, never>);
+	runMain(
+		Effect.log(`effect-app composed (stack: ${stack.options.stackName ?? '<inferred>'})`),
+	);
 }

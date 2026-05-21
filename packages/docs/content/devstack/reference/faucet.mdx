@@ -1,141 +1,60 @@
 ---
-title: Faucet
-description: Per-coin funding strategies for Account funding.
+title: Faucet Reference
+description: Current faucet dispatcher and strategy helpers.
 ---
 
-The `Faucet` service centralizes coin funding through pluggable per-coin **strategies**.
-`Account({ funding })` dispatches each declared coin through
-`Faucet.requestCoin(coinType, address, amount)`.
+The root exports include:
 
-For the task-shaped intro to funding (how to declare it on an account, what comes built-in), see
-[accounts and wallet](../features/accounts-and-wallet#multi-coin-funding).
+- `faucet`
+- `FaucetTag`
+- `defineFaucetStrategy`
+- `faucetCapabilityKey`
+- `suiLocalStrategy`
+- `suiLiveStrategy`
+- `requestFundsOnce`
+- `requestFundsWithRetry`
 
-`devstack(...)` auto-includes a `Faucet()` Ref. Its body best-effort yields `SuiTag` to register the
-built-in SUI HTTP strategy when `sui.faucet` is reachable, then registers any caller-supplied
-strategies.
-
-## Built-in strategies
-
-All built-in strategy factories are exported from `@mysten-incubation/devstack/advanced` alongside
-the `defineStrategy` and `FaucetRequestError` primitives.
-
-### `suiHttpStrategy`
-
-Wraps the localnet/testnet faucet's HTTP API. Auto-registered by `Sui()`'s body when `sui.faucet` is
-reachable.
+Use `faucet()` when you need a dispatcher member or custom chain strategies.
 
 ```ts
-import { suiHttpStrategy } from '@mysten-incubation/devstack/advanced';
+import { defineDevstack, faucet, suiLiveStrategy } from '@mysten-incubation/devstack';
 
-Faucet({
-	strategies: [suiHttpStrategy({ faucetUrl: 'http://localhost:9123' })],
-});
-```
-
-`amount` is currently ignored — the localnet faucet funds a fixed amount per request. The parameter
-is accepted for forward compat with server-side amount handling.
-
-### `walExchangeStrategy`
-
-Swaps SUI → WAL via the walrus exchange Move package. Auto-registered by `Walrus({ local })`'s body
-when at least one `seedAccounts` entry is declared (the first one becomes the swap admin).
-
-```ts
-import { walExchangeStrategy } from '@mysten-incubation/devstack/advanced';
-
-Faucet({
+const customFaucet = faucet({
 	strategies: [
-		walExchangeStrategy({
-			exchange: { objectId: '0x…', packageId: '0x…' },
-			signer: someSuiFundedAccount,
-			defaultPaymentMist: 500_000_000n,
-		}),
+		{
+			chainId: 'sui:testnet',
+			strategy: suiLiveStrategy({ network: 'testnet' }),
+		},
 	],
 });
+
+export default defineDevstack(customFaucet);
 ```
 
-`amount` is interpreted as **SUI MIST to spend** on the swap; the output WAL is whatever the
-exchange returns. `0n` falls back to `defaultPaymentMist`.
-
-### `treasuryCapMintStrategy`
-
-Wraps `0x2::coin::mint_and_transfer` against a held TreasuryCap. Auto-registered by `Package(...)`'s
-publish step for each coin discovered by the auto-discovery pass (one strategy per coin, signer =
-the package's publisher).
+Plugin authors can contribute a strategy through capabilities:
 
 ```ts
-import { treasuryCapMintStrategy } from '@mysten-incubation/devstack/advanced';
+import { capabilities, defineFaucetStrategy } from '@mysten-incubation/devstack';
 
-Faucet({
-	strategies: [
-		treasuryCapMintStrategy({
-			coinType: '0xpkg::usdc::USDC',
-			treasuryCapId: '0x…',
-			signer: capHolder,
-		}),
-	],
+const strategyDecl = defineFaucetStrategy({
+	chainId: 'sui:custom',
+	strategy: {
+		request: ({ address, amount }) => myFundingEffect(address, amount),
+	},
+});
+
+const caps = capabilities(strategyDecl);
+```
+
+Accounts use funding entries with direct coin members:
+
+```ts
+const gas = coin.builtin('sui');
+const alice = account('alice', {
+	funding: [{ coin: gas, amount: 1_000_000_000n }],
 });
 ```
 
-`amount` is the target balance in the coin's smallest unit (`u64`). `0n` is a no-op.
-
-## Writing your own strategy
-
-`defineStrategy({ coinType, request })` is the contract:
-
-```ts
-import { Effect } from 'effect';
-import { defineStrategy, FaucetRequestError } from '@mysten-incubation/devstack/advanced';
-import { Faucet } from '@mysten-incubation/devstack';
-
-const customStrategy = defineStrategy({
-	coinType: '0xpkg::custom::TOKEN',
-	request: ({ address, amount }) =>
-		Effect.gen(function* () {
-			// Call your own backend, swap from another coin, etc.
-			// ...
-		}).pipe(
-			Effect.mapError(
-				(cause) =>
-					new FaucetRequestError({
-						coinType: '0xpkg::custom::TOKEN',
-						address,
-						amount,
-						message: `custom funding failed: ${String(cause)}`,
-						cause,
-					}),
-			),
-		),
-});
-
-// Drop into devstack:
-devstack(
-	Sui(),
-	Faucet({ strategies: [customStrategy] }),
-	Account('alice', { funding: { '0xpkg::custom::TOKEN': 100n } }),
-);
-```
-
-`coinType` strings are the dispatch key. Short names (`'SUI'`, `'WAL'`) for built-ins;
-fully-qualified Move types for user coins.
-
-`Faucet({ strategies: [...] })` replaces the auto-included Faucet ref. The built-in SUI / WAL /
-TreasuryCap-mint strategies still register from their own primitives' bodies (Sui, Walrus, Package);
-your strategies append to the registry alongside them.
-
-## Errors
-
-`FaucetRequestError` carries the per-call context:
-
-```ts
-class FaucetRequestError extends Data.TaggedError('FaucetRequestError')<{
-	readonly coinType: string;
-	readonly address: string;
-	readonly amount: bigint;
-	readonly message: string;
-	readonly cause?: unknown;
-}> {}
-```
-
-When raised inside `Account({ funding })`, the supervisor wraps it as
-`AccountError({ phase: 'fund', … })` so per-account error handling stays uniform.
+If no strategy exists for a cross-coin funding entry, that entry is skipped. Default ephemeral SUI
+funding is stricter and surfaces an acquire error when the active chain has no registered SUI
+strategy.

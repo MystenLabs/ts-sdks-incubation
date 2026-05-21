@@ -3,7 +3,6 @@ import { ConnectButton } from '@mysten/dapp-kit-react/ui';
 
 import { Balances } from './components/Balances.js';
 import { SendForm } from './components/SendForm.js';
-import { SwapForm } from './components/SwapForm.js';
 import { deployment, isDeployed } from './lib/deployment.js';
 import { labelFor, shortAddress } from './lib/format.js';
 
@@ -16,7 +15,9 @@ export function App() {
 					<div className="w-8 h-8 rounded-lg bg-gradient-to-br from-emerald-400 to-violet-500" />
 					<div>
 						<h1 className="text-base font-semibold leading-tight">Wallet</h1>
-						<p className="text-xs text-neutral-500 leading-tight">Sui dev-examples · localnet</p>
+						<p className="text-xs text-neutral-500 leading-tight">
+							Sui dev-examples · devstack track
+						</p>
 					</div>
 				</div>
 				<ConnectButton />
@@ -40,7 +41,7 @@ function NotDeployed() {
 			<p className="text-neutral-600 dark:text-neutral-400 max-w-md mx-auto">
 				Run{' '}
 				<code className="px-1.5 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800 font-mono text-sm">
-					pnpm localnet:up
+					pnpm dev
 				</code>{' '}
 				to start the local Sui network and fund alice / bob / carol.
 			</p>
@@ -86,7 +87,6 @@ function ConnectedView({ address }: { address: string }) {
 				</div>
 			</div>
 			<SendForm self={address} />
-			<SwapForm self={address} />
 		</>
 	);
 }

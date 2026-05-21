@@ -1,264 +1,62 @@
 ---
-title: CLI
-description: devstack command-line entrypoints.
+title: CLI Reference
+description: Current devstack command surface.
 ---
 
-The `devstack` binary ships with the package. `pnpm dev` in a scaffolded app runs `devstack up`
-under the hood.
+The package bin is `devstack`.
 
-## `devstack up`
+Global flags include `--json`, `--app <name>`, `--stack <name>`, `--state-dir <path>`,
+`--config <path>`, `--network <name>`, `--renderer tui|plain|silent`, `--dry-run`, `--yes`,
+`--no-input`, `--verbose`, `--schema`, `--version`, and `--help`.
 
-Boot the stack described by `./devstack.config.ts` and run until interrupted.
-
-```bash
-devstack up                            # default — interactive TUI, localnet
-devstack up --network testnet          # same config, testnet (no docker)
-devstack up --network mainnet          # same config, mainnet
-devstack up --renderer plain           # one-line-per-event stream (CI, piped output)
-devstack up --renderer silent          # no output
-DEVSTACK_STACK=test devstack up        # per-stack state (parallel-safe)
-```
-
-`--network` is the canonical way to flip a config between localnet, testnet, and mainnet. It sets
-`DEVSTACK_NETWORK` before importing the config so every network-aware factory (`Sui`, `Seal`,
-`Walrus`, `Deepbook`) resolves to the same target. See [live networks](../features/live-networks)
-for the runtime model.
-
-The supervisor:
-
-1. Acquires every Ref in the config's stack in dependency order.
-2. Writes `.devstack/manifest.json` (or `.devstack/stacks/<stack>/manifest.json` for non-default
-   stacks) on every state change.
-3. Watches paths declared via `provide(..., {watch})` plus `config.watch` and hot-restarts the
-   affected primitives.
-4. Holds containers open on a long-lived scope so press-`r` full-restart keeps `sui.localnet` and
-   similar reusable containers alive across cycles.
-
-TUI keybindings:
-
-- `r` — full restart.
-- `R` — full restart (alias).
-- `q` — graceful shutdown.
-- Ctrl-C — graceful shutdown (also catches signals from outside the TUI).
-
-## `devstack apply`
-
-Acquire the stack once, emit the manifest, and exit immediately. Use for non-interactive contexts
-(CI seeding, build pipelines) that just need the side effects.
+## Core commands
 
 ```bash
-devstack apply                         # one-shot reconcile on localnet
-devstack apply --network testnet       # one-shot reconcile against testnet
-DEVSTACK_STACK=ci devstack apply
-```
-
-The supervisor still tears down its scope on exit; reusable containers on `longLivedScope` stay
-alive so the next `apply` (or `up`) adopts them.
-
-## `devstack stack`
-
-Manage per-stack state.
-
-```bash
-devstack stack list                          # what stacks exist under .devstack/stacks/
-devstack stack new <name>                    # create the per-stack state dir
-devstack stack new <name> --set-active       # also write .devstack/active
-devstack stack use <name>                    # mark `<name>` as active (writes .devstack/active)
-devstack stack down [<name>]                 # stop containers; KEEP on-disk state (default: active stack)
-devstack stack down [<name>] --force         # `docker rm -f` instead of stop — destroys writable layer
-devstack stack drop <name> --yes             # remove .devstack/stacks/<name>/ (no docker)
-```
-
-`stack down` is non-destructive by default: it `docker stop`s every container labelled
-`devstack.stack=<name>` (or active / `'main'` if no name given) so the writable layer survives and
-the next `devstack up` resumes via the reuse-if-image-matches probe (~1s warm start). On-disk state
-under `.devstack/stacks/<name>/` is preserved either way.
-
-`--force` opts into the legacy destructive behavior (`docker rm -f`), throwing the writable layer
-away — chain state and indexer DB are lost, so the next `up` rebuilds from genesis. Use only when a
-clean container is the goal (right before `devstack wipe`, or in CI scripts that intentionally start
-from scratch).
-
-`stack drop` removes only the on-disk state dir — pair with `stack down` first if you also want the
-containers and volumes gone, or use `devstack wipe` for both in one step.
-
-State lives under `.devstack/stacks/<stack>/` (or `.devstack/networks/<network>.json` for
-live-network runs).
-
-## `devstack snapshot`
-
-Capture and restore labeled snapshots of the per-stack `state.json`. Useful for rewinding a flaky
-e2e run, sharing a chain state with a teammate, or checkpointing before a migration.
-
-```bash
-devstack snapshot save                          # auto id: 20260515T160230-<rand>
-devstack snapshot save --label before-migration # adds label suffix
-devstack snapshot save --no-include-images      # state-only; skip docker commit + save
-devstack snapshot save --stack feature-x        # snapshot a specific stack (default: active stack)
-devstack snapshot list                          # newest-first
-devstack snapshot restore                       # default: newest snapshot
-devstack snapshot restore before-migration      # match by label / prefix
-devstack snapshot restore --stack feature-x     # restore into a specific stack
-devstack snapshot delete <id-or-label>          # remove a snapshot dir
-```
-
-`--include-images` is on by default — `save` `docker commit + save`s each container labelled
-`devstack.stack=<stack>` into the snapshot dir. Pass `--no-include-images` for a state-only snapshot
-(smaller, but the next `up` rebuilds chain state from genesis).
-
-`--stack <name>` overrides the active-stack default for both `save` and `restore`. Both also honor
-`DEVSTACK_STACK`.
-
-Snapshots live under `.devstack/snapshots/<id>/`. By default they capture only `state.json` (a fast
-file copy); container tarballs are an opt-in. **Restore before running `devstack up`** — the
-supervisor reads `state.json` at boot, so an in-flight supervisor won't see a mid-session restore.
-
-See [State and snapshots](../features/state-and-snapshots) for the task-shaped story: what each
-snapshot actually captures, when to reach for them, and how they interact with chain state.
-
-## `devstack wipe`
-
-Tear down the current stack: kill every container + network + volume labelled `<app, stack>`, and
-remove the on-disk state. Requires `--yes`.
-
-```bash
-devstack wipe --yes                    # default app + active stack
-devstack wipe --stack ci-job-42 --yes
-devstack wipe --yes --keep-snapshots   # spare .devstack/stacks/<stack>/snapshots/
-devstack wipe --yes --no-stop          # only on-disk state; leave docker alone
-devstack wipe --yes --images           # also remove devstack-* image tags
-```
-
-`wipe` is **per-stack scoped** by docker labels — running it against one stack does not touch a
-sibling stack on a different app. For a host-wide cleanup across stacks you've forgotten about, use
-`devstack prune`.
-
-## `devstack doctor`
-
-Diagnostic checks for common setup issues — docker daemon health, sui binary version, port
-availability, lockfile staleness — followed by an inventory of every devstack-labelled docker
-resource on the host.
-
-```bash
+devstack up
+devstack down
+devstack apply
+devstack status
+devstack logs <plugin>
+devstack exec -- <command> [args...]
 devstack doctor
+devstack config
+devstack codegen
 ```
 
-Each check shows one of three symbols:
+`up` stays attached to the supervisor. `apply` boots, reconciles, emits generated files, and exits.
+Peer commands such as `down`, `logs`, and `snapshot` communicate with the running supervisor through
+the stack command/event files.
 
-- `✓` — pass.
-- `✗` — required check failed; doctor exits non-zero.
-- `!` — informational warning (sui CLI absent, port already bound, partial lock cleanup); doesn't
-  fail the run.
-
-### Stale state-store lock cleanup
-
-Every running supervisor holds an O_EXCL lock at `.devstack/stacks/{stack}/state.json.lock` (or
-`.devstack/networks/{network}.lock`). A SIGKILL, host power-cycle, or Docker Desktop hang can leave
-the lock behind with a dead pid inside; the next `pnpm dev` then fails with a misleading
-`stack 'main' is already running (pid 12345)` message.
-
-`doctor` walks `{DEVSTACK_APP_DIR}/.devstack/` (defaults to `{cwd}/.devstack/`), reads the holder
-pid from each `*.lock`, and removes any lock whose pid is dead or whose body is unreadable. Live
-locks are never touched — a live holder is by definition not stale. Removed locks are listed in the
-report with their pid and `acquiredAt` timestamp so the cleanup is auditable.
-
-## `devstack prune`
-
-Cross-stack cleanup. Reads `~/.devstack/registry.json` to find every stack ever booted on this host,
-then offers an interactive picker (or non-interactive flag modes). **Refuses to prune any stack with
-a live supervisor** — checked via the per-stack lock file's pid.
+## Stack commands
 
 ```bash
-devstack prune                         # interactive picker (default)
-devstack prune --list                  # print inventory and exit (scriptable, no mutation)
-devstack prune <app>/<stack> --yes     # target one stack non-interactively
-devstack prune --all-orphans --yes     # remove every stack without a live supervisor
-devstack prune --repo-gone --yes       # remove every stack whose repo is no longer on disk
-devstack prune --app <name> --yes      # narrow any of the above to one app's stacks
-devstack prune --dry-run               # show what would happen; never mutate
+devstack stack list
+devstack stack new <name>
+devstack stack use <name>
+devstack stack drop <name>
+devstack stack drop-fork <name>
 ```
 
-Mutating modes accept these refinements:
-
-- `--keep-snapshots` — leave `snapshots/` directories intact (default removes them).
-- `--images` — also `docker rmi` `devstack-*` image tags whose containers are gone.
-- `--include-images` — even more aggressive image removal across all matched stacks.
-- `--include-router` — also stop the shared `devstack-traefik` router (skip otherwise).
-- `--interactive` — force the Ink picker even if other flags would imply non-interactive.
-
-The host-wide registry persists `lastSeen` per stack so `prune` finds stale ones even after the repo
-that created them is gone.
-
-`prune` is the right tool for "I've cleaned up several repos and want my docker volumes back";
-`wipe` is the right tool for "I want to nuke this one stack's state right now".
-
-## `devstack graph`
-
-Print the static dependency graph for the stack configured in `./devstack.config.ts` without
-acquiring any layers. Useful for previewing what `up` will build and for documenting the stack.
-
-````bash
-devstack graph                          # text (default) — one line per topological level
-devstack graph --format mermaid         # Mermaid flowchart (drop into a ```mermaid block)
-devstack graph --format dot             # Graphviz DOT (pipe through `dot -Tsvg | open`)
-devstack graph --downstream <key>       # strictly-downstream closure of one primitive
-````
-
-The graph reflects what `composeStackLayer` actually builds — composite primitives' lifted siblings
-(walrus's upstream image, seal's image-build, etc.) appear as their own nodes. Levels are
-topological: siblings within a level have no edge to each other and the supervisor builds them
-concurrently via Effect's MemoMap.
-
-`--downstream <key>` answers "what restarts when I edit this?" without standing up the supervisor —
-membership comes from the strict-downstream closure on the graph.
-
-## `devstack manifest`
-
-Read-only inspection of the on-disk manifest. Default looks for `.devstack/manifest.json`; pass a
-positional path to point at a different file. `--json` prints the raw manifest body for piping into
-`jq`; the default is a human-readable summary.
+## Snapshot commands
 
 ```bash
-devstack manifest                                       # default: .devstack/manifest.json (summary)
-devstack manifest .devstack/stacks/feature-x/manifest.json
-devstack manifest --json                                # raw JSON
+devstack snapshot save [--label <label>]
+devstack snapshot restore <id-or-label>
+devstack snapshot list
+devstack snapshot delete <id-or-label>
 ```
 
-Use `discoverManifestPath()` from `@mysten-incubation/devstack/runtime` (the same helper the CLI
-calls) for programmatic access.
+Snapshot support is stack-scoped and identity-guarded. See
+[state and snapshots](../features/state-and-snapshots).
 
-## `devstack fork`
-
-Subcommands for inspecting and driving a `sui-fork` (testnet-fork) stack. Available only while a
-fork-mode `Sui({ network: 'testnet-fork', fork: { … } })` stack is up.
+## Fork commands
 
 ```bash
-devstack fork status                                # one-shot ForkingService.GetStatus
-devstack fork status --json                         # JSON body
-devstack fork status --follow                       # stream SubscribeCheckpoints events
-                                                    #   (falls back to polling on stream error)
-devstack fork advance-clock <ms>                    # advance the fork's clock
-devstack fork advance-checkpoint                    # produce a new checkpoint manually
+devstack fork status
+devstack fork advance --ms <milliseconds>
+devstack fork seed
+devstack fork replay
+devstack fork cache
 ```
 
-`--follow` consumes the `SubscribeCheckpoints` gRPC stream until Ctrl-C tears down the scope. Each
-event prints `[<wallclock>] checkpoint=<cursor> (<source>)` where `source` is `subscription` when
-streaming and `poll` after a fallback — the printer surfaces the transition so the operator can tell
-when the upstream silently downgraded.
-
-`autoTick:` on `Sui({ fork })` is the config-side counterpart: pass `fork: { autoTick: true }` (or
-`{ autoTick: { intervalMs: 500 } }`) to advance the clock on a cadence without `fork advance-clock`
-calls. See the `examples/fork-greeting/` example for a worked harness.
-
-## Environment variables
-
-- `DEVSTACK_NETWORK` — target Sui network (`localnet | testnet | mainnet`). The CLI `--network` flag
-  sets this automatically; tooling that doesn't go through the CLI (vitest, ad-hoc `tsx` scripts)
-  can set it directly. Every factory in the config reads it at construction time. Defaults to
-  `localnet`.
-- `DEVSTACK_STACK` — override `config.stackName` for this invocation. Layers under
-  `.devstack/stacks/<stack>/`.
-- `DEVSTACK_APP_DIR` — pin the working directory the supervisor treats as the repo root. Default is
-  `process.cwd()`.
-- `DEVSTACK_NO_ROUTER` — skip the shared Traefik router boot. Useful for tests that don't go through
-  docker, or as an emergency switch if `*.localhost` resolution is misbehaving.
+Use `--schema --json` to print the command tree consumed by automation.

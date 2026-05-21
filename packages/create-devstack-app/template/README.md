@@ -1,40 +1,22 @@
-# Devstack template
+# Devstack App
 
-The minimal-but-real starting point for a new devstack-backed Sui app.
+A minimal Sui app scaffolded with `@mysten-incubation/create-devstack-app`.
 
-```
-_template/
-├── devstack.config.ts        # Refs: accounts, packages, actions, wallet, dev
-├── package.json              # dev/build/test/e2e scripts
-├── playwright.config.ts      # webServer({ endpoint: 'dev-server' }) from devstack/playwright
-├── tsconfig.json             # composite refs to app + node
-├── tsconfig.app.json         # extends @mysten-incubation/tsconfig/react
-├── tsconfig.node.json        # for vite/vitest/playwright configs
-├── vite.config.ts            # vite + devstack vite plugin + tailwind
-├── vitest.config.ts          # stock vitest + withDevstack fixture
-├── index.html
-├── e2e/mint.spec.ts          # connect-and-mint flow
-├── move/hello/               # one Move package with one entry function
-└── src/
-    ├── App.tsx               # Card + ConnectButton + mint button
-    ├── main.tsx              # <DAppKitProvider> wiring
-    ├── dapp-kit.ts           # createDAppKit({ ...devstackDappKitConfig })
-    ├── index.css             # tailwind import + theme
-    └── vite-env.d.ts         # /// <reference types="vite/client" />
+## Commands
+
+```bash
+pnpm dev       # apply the stack, generate app bindings, and start Vite
+pnpm build     # apply the stack, typecheck, and build the app
+pnpm test      # typecheck and run unit tests
+pnpm test:e2e  # run the Playwright mint flow
 ```
 
-## Stand up a new app from this template
+## Project Shape
 
-1. Copy the directory: `cp -r examples/_template examples/<your-app>`.
-2. Replace `_template` with your app name in `package.json` and
-   `devstack.config.ts`.
-3. Pick non-conflicting port hints in `devstack.config.ts` and
-   `vite.config.ts` (other examples occupy 9000-9999 + 5173-5176; the
-   per-stack port allocator handles collisions at runtime, but pinned
-   preferences are kinder to operators).
-4. Rename `move/hello/` to your package name and update the address in
-   `move/<pkg>/Move.toml`.
-5. `pnpm install` then `pnpm dev`.
+- `devstack.config.ts` defines the local Sui stack, accounts, Move package, and dev wallet.
+- `move/hello/` contains the example Move package.
+- `src/dapp-kit.ts` wires dApp Kit to the generated devstack config.
+- `src/App.tsx` connects the wallet and calls `hello::mint`.
 
-For a guided scaffold, run
-`pnpm create @mysten-incubation/devstack-app <your-app>` instead.
+`devstack apply` writes runtime state under `.devstack/` and generated app bindings under
+`src/generated/`; both are ignored because they are regenerated for each checkout.

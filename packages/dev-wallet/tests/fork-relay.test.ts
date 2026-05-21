@@ -7,8 +7,11 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createForkRelayFromManifest, ForkRelay } from '../src/adapters/fork-relay.js';
-import { DEVSTACK_WALLET_HTTP_PATH } from '../src/adapters/devstack-paths.js';
+import {
+	createForkRelayFromManifest,
+	FORK_RELAY_HTTP_PATH,
+	ForkRelay,
+} from '../src/adapters/fork-relay.js';
 
 const ORIGIN = 'http://127.0.0.1:9420';
 
@@ -55,7 +58,7 @@ describe('ForkRelay.getStatus', () => {
 			expect(result.value.upstream).toBe('mainnet');
 		}
 		expect(fetchSpy).toHaveBeenCalledWith(
-			`${ORIGIN}${DEVSTACK_WALLET_HTTP_PATH.FORK_STATUS}`,
+			`${ORIGIN}${FORK_RELAY_HTTP_PATH.STATUS}`,
 			expect.objectContaining({
 				method: 'GET',
 				headers: expect.objectContaining({
@@ -123,7 +126,7 @@ describe('ForkRelay.advanceClock', () => {
 		const result = await relay.advanceClock(60_000);
 		expect(result.ok).toBe(true);
 		expect(fetchSpy).toHaveBeenCalledWith(
-			`${ORIGIN}${DEVSTACK_WALLET_HTTP_PATH.FORK_ADVANCE_CLOCK}`,
+			`${ORIGIN}${FORK_RELAY_HTTP_PATH.ADVANCE_CLOCK}`,
 			expect.objectContaining({
 				method: 'POST',
 				body: JSON.stringify({ durationMs: 60_000 }),
@@ -150,7 +153,7 @@ describe('ForkRelay.advanceCheckpoint', () => {
 		const result = await relay.advanceCheckpoint(3);
 		expect(result.ok).toBe(true);
 		expect(fetchSpy).toHaveBeenCalledWith(
-			`${ORIGIN}${DEVSTACK_WALLET_HTTP_PATH.FORK_ADVANCE_CHECKPOINT}`,
+			`${ORIGIN}${FORK_RELAY_HTTP_PATH.ADVANCE_CHECKPOINT}`,
 			expect.objectContaining({
 				method: 'POST',
 				body: JSON.stringify({ count: 3 }),
@@ -204,7 +207,7 @@ describe('ForkRelay impersonations', () => {
 		const result = await relay.setImpersonation('0xaa', true);
 		expect(result.ok).toBe(true);
 		expect(fetchSpy).toHaveBeenCalledWith(
-			`${ORIGIN}${DEVSTACK_WALLET_HTTP_PATH.FORK_IMPERSONATIONS}`,
+			`${ORIGIN}${FORK_RELAY_HTTP_PATH.IMPERSONATIONS}`,
 			expect.objectContaining({
 				method: 'POST',
 				body: JSON.stringify({ address: '0xaa', active: true }),

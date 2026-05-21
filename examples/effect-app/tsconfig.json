@@ -7,8 +7,9 @@
 		"verbatimModuleSyntax": true,
 		"moduleResolution": "bundler",
 		"module": "ESNext",
+		"allowImportingTsExtensions": true,
 		"noUncheckedIndexedAccess": false
 	},
-	"include": ["src/**/*"],
+	"include": ["src/**/*", "devstack.config.ts"],
 	"exclude": ["dist", "node_modules"]
 }

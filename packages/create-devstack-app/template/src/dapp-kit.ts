@@ -1,12 +1,38 @@
 // User-owned dapp-kit wiring. Spreads the generated devstack config
-// (RPC URL + MVR overrides + burner-wallet adapter) into
+// (RPC URL + MVR overrides + dev-wallet adapter) into
 // `createDAppKit`. Add app-specific overrides on top of the spread.
 
 import { createDAppKit } from '@mysten/dapp-kit-react';
-import { devstackDappKitConfig } from './generated/dapp-kit-config.js';
+import { devWalletInitializer } from '@mysten-incubation/dev-wallet';
+import { DevstackSignerAdapter, parseDevstackToken } from '@mysten-incubation/dev-wallet/adapters';
+import { SuiGrpcClient } from '@mysten/sui/grpc';
+import { dappKitConfig } from './generated/dapp-kit/config.js';
+import { suiNetwork } from './generated/sui/network.js';
+
+const devstackNetwork = dappKitConfig.chain;
 
 export const dAppKit = createDAppKit({
-	...devstackDappKitConfig,
+	networks: [devstackNetwork],
+	defaultNetwork: devstackNetwork,
+	createClient() {
+		return new SuiGrpcClient({
+			network: devstackNetwork,
+			baseUrl: suiNetwork.rpcUrl,
+		});
+	},
+	walletInitializers: [
+		devWalletInitializer({
+			adapters: [
+				new DevstackSignerAdapter({
+					serverOrigin: dappKitConfig.walletUrl,
+					token: parseDevstackToken(dappKitConfig.pairUrl),
+					name: 'Devstack',
+				}),
+			],
+			autoConnect: true,
+			createInitialAccount: false,
+		}),
+	],
 });
 
 // Expose the kit on globalThis so the playwright `connectAs` helper

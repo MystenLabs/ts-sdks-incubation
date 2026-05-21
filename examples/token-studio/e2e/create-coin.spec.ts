@@ -1,9 +1,12 @@
-import { connectAs, expect, selectAccount, test } from '@mysten-incubation/devstack/playwright';
+import { expect, test } from '@playwright/test';
+import { connectAs, selectAccount } from '@mysten-incubation/devstack/playwright';
 
 /**
  * Happy-path: alice (TreasuryCap holder) mints STUDIO to bob and the digest
  * surfaces in the UI. Real Vite dev server, real Sui localnet, real
  * wallet-standard adapter — no mocks.
+ *
+ * NOTE: deferred until the supervisor supports this full browser flow.
  */
 
 test.describe.configure({ mode: 'serial' });

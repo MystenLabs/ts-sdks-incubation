@@ -1,161 +1,55 @@
 ---
 title: Plugins
-description:
-  Any docker-backed service, host process, or one-shot transaction can join the stack as a Ref.
+description: Current plugin-author entry points.
 ---
 
-A "plugin" in devstack is just a function that returns a Ref. There is no plugin registry, no
-manifest format, no API to opt into. Write a function that takes options, builds an Effect body,
-wraps it with `tag(...)` or `provide(...)`, and you have a plugin.
-
-This is the same surface the built-in factories (`Sui`, `Walrus`, `Account`, `Dev`, …) use
-internally. Reading their source is the fastest way to ground the patterns below in real code.
-
-## A vendored Move dependency
-
-A common need is depending on a Move package that isn't on a known network — pinned to a git ref,
-built once, then handed to `Package` or used as a publish dependency. `gitFetch` + `dockerOneShot`
-cover both halves, both with content-hash caching across cycles:
+A plugin is a function that returns a stack member. The root package exports the authoring helpers;
+the `contracts` and `substrate` subpaths expose the same lower-level vocabulary for isolated
+imports.
 
 ```ts
-// my-app/devstack/vendored.ts
 import { Effect } from 'effect';
-import { tag, gitFetch, dockerOneShot, setPhase } from '@mysten-incubation/devstack/advanced';
+import {
+	capabilities,
+	defineNodePlugin,
+	defineTag,
+	type CodegenableDecl,
+} from '@mysten-incubation/devstack';
 
-export interface VendoredMoveShape {
-	readonly sourcePath: string;
-	readonly buildOutput: string;
+interface KeyValueResolved {
+	readonly url: string;
 }
 
-export const VendoredMove = () =>
-	tag(
-		'vendored-move',
-		Effect.gen(function* () {
-			yield* setPhase('fetching');
-			const fetched = yield* gitFetch({
-				name: 'vendored-move-src',
-				repo: 'https://github.com/example/move-lib.git',
-				ref: 'v1.2.3',
-				subdirectory: 'packages/lib',
-			});
+const keyValueTag = defineTag<'kv', KeyValueResolved>('kv', 'kv');
 
-			yield* setPhase('building');
-			const build = yield* dockerOneShot({
-				name: 'vendored-move-build',
-				image: 'mysten/sui:1.71.0',
-				mounts: [{ host: fetched.path, container: '/work' }],
-				args: ['move', 'build', '--path', '/work'],
-				captureStdout: true,
-			});
-
-			return {
-				sourcePath: fetched.path,
-				buildOutput: build.stdout,
-			} satisfies VendoredMoveShape;
-		}),
-		{
-			kind: 'action',
-			displayTitle: 'vendored-move',
-			display: (s) => ({ title: 'vendored-move', primary: s.sourcePath }),
+export const keyValue = () =>
+	defineNodePlugin({
+		provides: keyValueTag,
+		consumes: [] as const,
+		kind: 'leaf-long-running',
+		rebootCost: 'cheap',
+		acquire: () => Effect.succeed({ url: 'http://127.0.0.1:6379' }),
+		capabilities: (resolved) => {
+			const codegen: CodegenableDecl<KeyValueResolved, 'kv'> = {
+				kind: 'codegenable',
+				emitterName: 'kv',
+				outputPath: 'kv.ts',
+				emit: () => Effect.succeed({ kv: resolved }),
+			};
+			return capabilities(codegen);
 		},
-	);
+	});
 ```
 
-Drop it into your stack:
+Compose the plugin like any built-in factory:
 
 ```ts
-import { Account, devstack } from '@mysten-incubation/devstack';
-import { VendoredMove } from './devstack/vendored.js';
+import { defineDevstack } from '@mysten-incubation/devstack';
+import { keyValue } from './devstack/key-value.js';
 
-export default devstack(Account('alice'), VendoredMove());
+export default defineDevstack(keyValue());
 ```
 
-Both `gitFetch` and `dockerOneShot` cache their work by content hash — the second `pnpm dev` against
-an unchanged `ref:` skips the clone and the build entirely. A change to either inputs invalidates
-and re-runs only what's affected.
-
-## Anatomy
-
-A plugin function does three things:
-
-1. **Yield the dependencies it needs.** `yield* SuiTag` if it joins the sui docker network.
-   `yield* alice` if it signs as that account. The supervisor uses those yields to order
-   acquisition.
-2. **Acquire its own resources.** Reach for `dockerImage`, `dockerOneShot`, `gitFetch`, or
-   `hostScript` from the `/advanced` subpath — or roll your own Effect that returns the shape you
-   want.
-3. **Return the resolved shape.** Whatever value `yield* myThing` should produce.
-
-The `tag(...)` wrap takes care of engine lifecycle (`pending` → `acquiring` → `ready`), the TUI
-projection (`kind` / `displayTitle` / `display`), and optional file-watch declarations
-(`watch: [...]`).
-
-For a custom long-running docker service (a Redis sidecar, your own indexer, a mock external API)
-there's no generic helper today — read the source of `Sui()`, `Walrus()`, or `Dev()` for the bare
-pattern that wraps `Docker.run` directly inside a `tag(...)` body.
-
-## When to use `provide`
-
-If your factory is one of several implementations of a single interface (e.g.
-`MyRedis({ mode: 'sentinel' })` and `MyRedis({ mode: 'cluster' })` both yielding the same
-`RedisTag`), use `provide(RedisTag, body, opts)` inside each branch:
-
-```ts
-export const MyRedis = (opts: MyRedisOptions = {}) => {
-  if (opts.mode === 'sentinel') return provide(RedisTag, sentinelBody, ...);
-  if (opts.mode === 'cluster')  return provide(RedisTag, clusterBody,  ...);
-  return provide(RedisTag, soloBody, ...);
-};
-```
-
-`provide` mutates the tag class so it doubles as a yieldable Ref — `yield* RedisTag` resolves the
-class itself. See [refs-and-tags](../internals/refs-and-tags) for the substrate.
-
-## Composite plugins
-
-If your plugin produces multiple shapes (a database + an admin API + a backup process), use
-`composeTag(name, body, innerTags)` to surface inner Refs alongside the outer one. The Seal and
-Walrus implementations are the canonical examples — read their source for the pattern.
-
-## Watching paths
-
-Declare any path your plugin reads from disk via `{ watch }`:
-
-```ts
-return tag('config', body, {
-	kind: 'service',
-	watch: ['./config.toml'],
-});
-```
-
-When `./config.toml` changes, the supervisor logs
-`file change at ./config.toml — owned by config — restarting`, the plugin's child scope tears down,
-and the next cycle re-acquires it. Sibling Refs stay alive.
-
-The watcher ignores transient build artifacts before debouncing — `Move.lock`, `build/`,
-`node_modules/`, `.git/`, `.DS_Store`, editor swap files (`*.swp`, `*.swx`, `*~`), and the
-`Move.lock.new` rename target the in-container scrub stages. So a Move build's own writes don't loop
-the supervisor, and editor saves don't trigger phantom restarts.
-
-## Hiding internal-only Refs
-
-For cache-warming or dependency-fetch primitives whose existence as a TUI row adds clutter without
-surfacing actionable state (e.g. `gitFetch` of an upstream Move source you only consume), pass
-`hidden: true`:
-
-```ts
-return tag('upstream-cache', body, { kind: 'service', hidden: true });
-```
-
-The Ref still acquires, the value still resolves, and `yield*` works as normal — only the TUI row is
-suppressed. Failures inside a hidden Ref still propagate to the consumer's failure path so
-user-visible errors aren't lost.
-
-## Reference
-
-- [Internals — refs-and-tags](../internals/refs-and-tags) — `tag` vs `provide`, composite Refs, the
-  substrate model.
-- [Advanced reference](../reference/advanced) — every primitive under `/advanced`: docker helpers,
-  host processes, git fetch.
-- [Internals — lifecycle](../internals/lifecycle) — supervisor scopes and what hot-restart actually
-  does.
+Use direct member references for cross-plugin dependencies. For example, if a plugin needs an
+account, accept the `account('name')` member and project its provided tag into the plugin's
+`consumes` tuple.

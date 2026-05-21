@@ -1,7 +1,7 @@
 {
 	"name": "@mysten-incubation/devstack",
 	"version": "0.0.0",
-	"description": "Hermetic local Sui development stack — composes localnet + Walrus + Seal + DeepBook + your Move packages as Effect Layers, with a TUI runner and the same primitives reachable as embeddable services.",
+	"description": "Next-generation Sui devstack package.",
 	"keywords": ["sui", "devstack", "effect", "developer-experience"],
 	"license": "Apache-2.0",
 	"repository": {
@@ -24,58 +24,72 @@
 			"types": "./dist/index.d.mts",
 			"import": "./dist/index.mjs"
 		},
-		"./advanced": {
-			"types": "./dist/advanced/index.d.mts",
-			"import": "./dist/advanced/index.mjs"
+		"./contracts": {
+			"types": "./dist/contracts/index.d.mts",
+			"import": "./dist/contracts/index.mjs"
 		},
-		"./vitest": {
-			"types": "./dist/vitest/index.d.mts",
-			"import": "./dist/vitest/index.mjs"
-		},
-		"./playwright": {
-			"types": "./dist/playwright/index.d.mts",
-			"import": "./dist/playwright/index.mjs"
+		"./substrate": {
+			"types": "./dist/substrate/index.d.mts",
+			"import": "./dist/substrate/index.mjs"
 		},
 		"./vite": {
-			"types": "./dist/vite/index.d.mts",
-			"import": "./dist/vite/index.mjs"
+			"types": "./dist/build-integrations/vite/index.d.mts",
+			"import": "./dist/build-integrations/vite/index.mjs"
+		},
+		"./vitest": {
+			"types": "./dist/build-integrations/vitest/index.d.mts",
+			"import": "./dist/build-integrations/vitest/index.mjs"
+		},
+		"./vitest/setup": {
+			"types": "./dist/build-integrations/vitest/setup.d.mts",
+			"import": "./dist/build-integrations/vitest/setup.mjs"
+		},
+		"./playwright": {
+			"types": "./dist/build-integrations/playwright/index.d.mts",
+			"import": "./dist/build-integrations/playwright/index.mjs"
 		},
 		"./browser": {
-			"types": "./dist/browser/index.d.mts",
-			"import": "./dist/browser/index.mjs"
+			"types": "./dist/build-integrations/browser/index.d.mts",
+			"import": "./dist/build-integrations/browser/index.mjs"
+		},
+		"./browser/setup": {
+			"types": "./dist/build-integrations/browser/setup.d.mts",
+			"import": "./dist/build-integrations/browser/setup.mjs"
+		},
+		"./runtime": {
+			"types": "./dist/build-integrations/runtime/index.d.mts",
+			"import": "./dist/build-integrations/runtime/index.mjs"
 		}
 	},
 	"sideEffects": false,
-	"files": ["dist", "src", "LICENSE"],
+	"files": [
+		"src",
+		"dist",
+		"images",
+		"!src/generated",
+		"!src/samples",
+		"!dist/samples",
+		"!dist/node_modules"
+	],
 	"scripts": {
-		"build": "tsdown && pnpm build:dts-subpaths",
-		"build:dts-subpaths": "tsc -p tsconfig.subpaths.json && node --experimental-strip-types scripts/finalize-subpath-dts.ts",
-		"build:watch": "tsdown --watch",
+		"build": "tsdown",
 		"typecheck": "tsc --noEmit",
 		"test": "vitest run",
-		"test:watch": "vitest"
+		"test:e2e": "DEVSTACK_RUN_E2E=1 vitest run"
 	},
 	"dependencies": {
-		"@clack/prompts": "^1.4.0",
+		"effect": "catalog:",
 		"@effect/platform-node": "catalog:",
 		"@mysten/codegen": "catalog:",
 		"@mysten/sui": "catalog:",
-		"effect": "catalog:",
 		"ink": "^7.0.0",
-		"minimatch": "^10.2.5",
 		"react": "catalog:"
 	},
 	"devDependencies": {
 		"@effect/vitest": "catalog:",
-		"@mysten-incubation/dev-wallet": "workspace:*",
 		"@mysten-incubation/tsconfig": "workspace:*",
-		"@mysten/dapp-kit-core": "catalog:",
-		"@mysten/dapp-kit-react": "catalog:",
-		"@playwright/test": "catalog:",
-		"@tailwindcss/vite": "catalog:",
 		"@types/node": "catalog:",
 		"@types/react": "catalog:",
-		"@vitejs/plugin-react": "catalog:",
 		"ink-testing-library": "^4.0.0",
 		"tsdown": "^0.21.10",
 		"typescript": "catalog:",
@@ -83,39 +97,14 @@
 		"vitest": "^4.1.6"
 	},
 	"peerDependencies": {
-		"@effect/vitest": "catalog:",
-		"@mysten-incubation/dev-wallet": "workspace:*",
-		"@mysten/dapp-kit-core": "catalog:",
-		"@mysten/dapp-kit-react": "catalog:",
-		"@mysten/sui": "catalog:",
-		"@playwright/test": "catalog:",
-		"@tailwindcss/vite": "catalog:",
-		"@vitejs/plugin-react": "catalog:",
-		"vite": "catalog:"
+		"vite": "catalog:",
+		"vitest": "^4.1.6"
 	},
 	"peerDependenciesMeta": {
-		"@effect/vitest": {
-			"optional": true
-		},
-		"@mysten-incubation/dev-wallet": {
-			"optional": true
-		},
-		"@mysten/dapp-kit-core": {
-			"optional": true
-		},
-		"@mysten/dapp-kit-react": {
-			"optional": true
-		},
-		"@playwright/test": {
-			"optional": true
-		},
-		"@tailwindcss/vite": {
-			"optional": true
-		},
-		"@vitejs/plugin-react": {
-			"optional": true
-		},
 		"vite": {
+			"optional": true
+		},
+		"vitest": {
 			"optional": true
 		}
 	}

@@ -1,6 +1,6 @@
 {
 	"root": true,
 	"title": "Devstack",
-	"description": "A development toolkit for Sui apps — local stack, packages, accounts, codegen, dev wallet, tests, and live-network promotion from one config.",
+	"description": "A development toolkit for Sui apps: local stack, packages, accounts, generated files, dev wallet, tests, and live-network promotion from one config.",
 	"pages": ["index", "quickstart", "features", "reference", "internals"]
 }

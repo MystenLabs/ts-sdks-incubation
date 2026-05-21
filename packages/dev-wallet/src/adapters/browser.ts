@@ -19,10 +19,8 @@ export {
 	type DevstackSignerAdapterOptions,
 	type DevstackAdapterManifest,
 } from './devstack-adapter.js';
-// Wire-level HTTP path contract — mirror of devstack's
-// `WalletHttpPath`; kept duplicated to avoid closing a workspace cycle.
-// Surfaced so the devstack sync test can import it and assert the
-// pair stays in lock-step.
+// Wire-level HTTP path contract mirrored from devstack's wallet plugin;
+// kept duplicated to avoid closing a workspace cycle.
 export { DEVSTACK_WALLET_HTTP_PATH, type DevstackWalletHttpPathValue } from './devstack-paths.js';
 export {
 	ForkRelay,

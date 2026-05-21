@@ -4,9 +4,11 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
+		"devstack:build": "pnpm --filter @mysten-incubation/devstack build",
+		"apply": "pnpm run devstack:build && DEVSTACK_APP=effect-app node ../../packages/devstack/dist/cli/main.mjs apply",
 		"start": "tsx src/main.ts",
 		"typecheck": "tsc --noEmit",
-		"test": "vitest run",
+		"test": "pnpm run typecheck",
 		"clean": "rm -rf dist .turbo node_modules/.tmp"
 	},
 	"dependencies": {
@@ -18,8 +20,7 @@
 		"@mysten-incubation/tsconfig": "workspace:*",
 		"@types/node": "catalog:",
 		"tsx": "catalog:",
-		"typescript": "catalog:",
-		"vitest": "catalog:"
+		"typescript": "catalog:"
 	},
 	"engines": {
 		"node": ">=24"

@@ -9,9 +9,9 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export interface ScaffoldOptions {
-	/** App name. Used as the directory name and as the `app:` field
-	 *  in the generated `devstack.config.ts`. Must match
-	 *  `/^[a-z][a-z0-9-]*$/` — lowercase, dash-separated, starts with
+	/** App name. Used as the directory name, package name, `DEVSTACK_APP`,
+	 *  and the generated `stackName`. Must match `/^[a-z][a-z0-9-]*$/` —
+	 *  lowercase, dash-separated, starts with
 	 *  a letter, no underscores (the `_template` underscore is reserved
 	 *  for the template itself; user apps don't use it). */
 	name: string;
@@ -143,24 +143,38 @@ function shouldSkip(path: string): boolean {
 }
 
 function rewriteName(appDir: string, name: string): void {
-	// `devstack(...refs)` derives the app name from `package.json#name`, so
-	// rewriting only that field propagates the new name through every CLI
-	// command, manifest emission, and docker label automatically.
 	for (const file of walk(appDir)) {
 		const rel = file.slice(appDir.length + 1);
 		if (rel === 'package.json') {
 			rewritePackageJson(file, name);
+		} else if (rel === 'devstack.config.ts') {
+			rewriteDevstackConfig(file, name);
 		}
 	}
 }
 
 function rewritePackageJson(path: string, name: string): void {
 	const raw = readFileSync(path, 'utf8');
-	const json = JSON.parse(raw) as { name?: string; version?: string; private?: boolean };
+	const json = JSON.parse(raw) as {
+		name?: string;
+		version?: string;
+		private?: boolean;
+		scripts?: Record<string, string>;
+	};
 	json.name = name;
 	json.private = true;
 	if (json.version === undefined) json.version = '0.0.0';
+	if (json.scripts !== undefined) {
+		for (const [script, command] of Object.entries(json.scripts)) {
+			json.scripts[script] = command.replaceAll('DEVSTACK_APP=_template', `DEVSTACK_APP=${name}`);
+		}
+	}
 	writeFileSync(path, `${JSON.stringify(json, null, '\t')}\n`);
+}
+
+function rewriteDevstackConfig(path: string, name: string): void {
+	const raw = readFileSync(path, 'utf8');
+	writeFileSync(path, raw.replace("stackName: '_template'", `stackName: '${name}'`));
 }
 
 function* walk(dir: string): IterableIterator<string> {

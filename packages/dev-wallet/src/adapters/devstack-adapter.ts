@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Devstack signer adapter — exposes accounts resolved by `devstack up`'s
-// `walletApp()` plugin to dApp Kit, signing transactions over HTTP so
+// `wallet()` plugin to dApp Kit, signing transactions over HTTP so
 // private keys never enter the frontend bundle. Mirrors RemoteCliAdapter's
 // out-of-process model; the difference is the source of accounts (devstack
 // resolved signers vs `sui keytool list`) and the endpoint paths.
@@ -61,7 +61,7 @@ function publicKeyForScheme(base64: string, scheme: SignatureScheme | string): P
 /**
  * Signer that delegates transaction signing to the devstack wallet-app
  * over HTTP. Mirrors {@link CliProxySigner} but talks to the
- * `walletApp()` plugin's endpoints under `/api/v1/devstack/*`.
+ * `wallet()` plugin's endpoints under `/api/v1/devstack/*`.
  */
 export class DevstackProxySigner extends Signer {
 	#address: string;
@@ -109,12 +109,13 @@ export class DevstackProxySigner extends Signer {
 		if (this.#authToken !== null) {
 			headers['Authorization'] = `Bearer ${this.#authToken}`;
 		}
-		const res = await fetch(`${this.#serverOrigin}${DEVSTACK_WALLET_HTTP_PATH.SIGN_TX}`, {
+		const requestBytes = toBase64(bytes);
+		const res = await fetch(`${this.#serverOrigin}${DEVSTACK_WALLET_HTTP_PATH.SIGN_TRANSACTION}`, {
 			method: 'POST',
 			headers,
 			body: JSON.stringify({
 				address: this.#address,
-				txBytes: toBase64(bytes),
+				bytes: requestBytes,
 			}),
 		});
 		if (!res.ok) {
@@ -124,13 +125,19 @@ export class DevstackProxySigner extends Signer {
 				`Devstack signing failed: ${typeof message === 'string' ? message : res.statusText}`,
 			);
 		}
-		const { suiSignature } = (await res.json()) as { suiSignature?: string };
-		if (typeof suiSignature !== 'string' || suiSignature.length === 0) {
+		const { bytes: responseBytes, signature } = (await res.json()) as {
+			bytes?: string;
+			signature?: string;
+		};
+		if (typeof responseBytes !== 'string' || responseBytes.length === 0) {
+			throw new Error('Devstack signing failed: server returned invalid signed bytes');
+		}
+		if (typeof signature !== 'string' || signature.length === 0) {
 			throw new Error('Devstack signing failed: server returned invalid signature');
 		}
 		return {
-			bytes: toBase64(bytes),
-			signature: suiSignature,
+			bytes: responseBytes,
+			signature,
 		};
 	}
 
@@ -146,7 +153,7 @@ export class DevstackProxySigner extends Signer {
 				headers,
 				body: JSON.stringify({
 					address: this.#address,
-					messageBytes: toBase64(bytes),
+					bytes: toBase64(bytes),
 				}),
 			},
 		);
@@ -159,11 +166,19 @@ export class DevstackProxySigner extends Signer {
 				}`,
 			);
 		}
-		const { signature } = (await res.json()) as { signature?: string };
+		const { bytes: responseBytes, signature } = (await res.json()) as {
+			bytes?: string;
+			signature?: string;
+		};
+		if (typeof responseBytes !== 'string' || responseBytes.length === 0) {
+			throw new Error(
+				'Devstack personal-message signing failed: server returned invalid signed bytes',
+			);
+		}
 		if (typeof signature !== 'string' || signature.length === 0) {
 			throw new Error('Devstack personal-message signing failed: server returned no signature');
 		}
-		return { bytes: toBase64(bytes), signature };
+		return { bytes: responseBytes, signature };
 	}
 }
 
@@ -182,7 +197,7 @@ export interface DevstackSignerAdapterOptions {
  * {@link SignerAdapter} that surfaces every account resolved by `devstack up`
  * (including `cliSigner`/`envSigner`/`generatedKeypair` slots) without
  * shipping their private keys into the frontend bundle. All signing happens
- * server-side via the `walletApp()` plugin.
+ * server-side via the `wallet()` plugin.
  *
  * The simplest construction uses devstack's generated `dapp-kit-config.ts`,
  * which bakes the wallet adapter wiring at codegen time — apps spread
@@ -264,7 +279,7 @@ export class DevstackSignerAdapter extends BaseSignerAdapter {
 }
 
 /**
- * Pull the bearer token off a paired URL produced by the `walletApp()`
+ * Pull the bearer token off a paired URL produced by the `wallet()`
  * plugin. Returns `null` if the input is undefined, malformed, or
  * carries a `<redacted>` placeholder (the manifest's pairUrl carries
  * the redacted form; the real token lives in a sibling 0o600 file the
@@ -306,7 +321,7 @@ export interface DevstackAdapterManifest {
 /**
  * Convenience: read the wallet-app endpoint off a devstack manifest and
  * build a configured adapter, or return `null` when the entry isn't
- * present (no `Wallet(...)` in the stack, or it hasn't come up yet).
+ * present (no `wallet(...)` in the stack, or it hasn't come up yet).
  *
  * The wallet entry's `pairUrl` carries the `#token=…` fragment used to
  * extract the bearer token. The full `Manifest` shape from

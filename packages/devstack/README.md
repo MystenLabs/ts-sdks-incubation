@@ -1,98 +1,65 @@
 # @mysten-incubation/devstack
 
-Hermetic local Sui development stack. Composes a Sui localnet + Walrus + Seal +
-DeepBook + your Move packages as Effect Layers, with a TUI runner and the same
-primitives reachable as embeddable services.
+> **Current-state warning (2026-05-21):** this package is not release-ready. For current handoff,
+> blocker status, and orchestration instructions, start with `notes/README.md`,
+> `notes/CURRENT-HANDOFF.md`, and `notes/UNRESOLVED-BLOCKERS.md`. Historical notes/reviews were
+> migrated into those compact files and deleted.
 
-> Status: unreleased / incubation. APIs and CLI surface may change.
+The next-generation devstack substrate: type-system, user-facing API surface, runtime,
+orchestrators, and plugins.
 
-## Quickstart
+This directory is the canonical `@mysten-incubation/devstack` package after the package-directory
+cutover. The example, docs, CI, and install-smoke follow-up work remains tracked in the blocker
+ledger.
 
-In a project that defines a `devstack.config.ts`:
+## Scope
 
-```sh
-pnpm dev
+This package contains:
+
+- The nine capability contracts as TypeScript interfaces.
+- The substrate primitives (lifecycle, plugin shape, manifest envelope, renderer projection,
+  state-store, cross-process roster protocol, typed events/commands, OnChainArtifactPublisher,
+  lifted-sibling, cache).
+- The user-facing API: `defineDevstack` (flat-variadic + callback forms), plugin authoring helpers,
+  tag/provide primitives, the typed capability builder, and substrate-minted witnesses.
+- L2 plugins (sui, walrus, seal, deepbook, postgres, account, wallet, package, coin, faucet,
+  action).
+- Orchestrators (snapshot, router, codegen) and surfaces (CLI, TUI).
+- Internal/sample plugins used for development experiments. These are not release surface unless the
+  blocker ledger explicitly clears them.
+
+For agents/orchestrators picking up this work, start with `notes/README.md`; the rolling blocker
+ledger lives at `notes/UNRESOLVED-BLOCKERS.md`. The compact first-read set there is enough to begin a
+clean orchestration session. Optional reference notes are `notes/api-surface-design.md`,
+`notes/phase-f-manual-scenarios.md`, and `notes/pr7-cutover-plan.md`.
+
+## Boundary
+
+Plugin authors and engine implementers import from this package. **Apps do not.** Apps consume
+codegen output emitted via the `Codegenable` contract; the engine, contracts, and substrate
+primitives are not reachable from L5 example code. This is enforced at lint time and observable here
+through the absence of any app-shaped entry point.
+
+## Layout
+
+```
+src/
+  substrate/      lifecycle SM, NodePlugin shape, manifest, projection,
+                  state-store, cross-process protocol, typed events
+  contracts/      the nine capability contracts
+  primitives/     on-chain-artifact publisher, lifted-sibling, cache
+  api/            defineDevstack (both forms), defineNodePlugin,
+                  defineCapabilities (typed builder), tag/provide,
+                  defineWitness
+  plugins/        L2 plugins (sui, walrus, seal, deepbook, postgres,
+                  account, wallet, package, coin, faucet, action)
+  orchestrators/  snapshot, router, codegen
+  surfaces/       CLI + TUI
+  samples/        trivial leaf + composite (Walrus-shaped) plugins
 ```
 
-This runs `devstack up` under the hood — boots every service in the config,
-mounts Move package sources, publishes them, runs codegen, and renders a TUI
-with each primitive's lifecycle phase. Ctrl-C shuts down cleanly.
+## Effect v4
 
-A minimal config:
-
-```ts
-// devstack.config.ts
-import { defineDevstack, Sui } from '@mysten-incubation/devstack';
-
-export default defineDevstack({
-  stack: [
-    Sui({}),
-  ],
-});
-```
-
-See `examples/` in the monorepo root for runnable apps (`arena`, `wallet`,
-`private-content`, `deepbook-full`, `token-studio`, `effect-app`,
-`fork-greeting`, `plugin-author-redis`).
-
-## CLI surface
-
-| Verb                       | Purpose                                                       |
-|----------------------------|---------------------------------------------------------------|
-| `up`                       | Boot + render TUI. Default when `pnpm dev` runs.              |
-| `apply`                    | Boot, write manifest, exit. Non-interactive (CI / agents).    |
-| `status`                   | Print resolved manifest for the current stack.                |
-| `manifest`                 | Print/emit the full manifest envelope.                        |
-| `snapshot save/restore/list/delete` | Capture or restore chain-state + container layer.    |
-| `wipe`                     | Tear down a stack's containers, networks, volumes, state.     |
-| `prune`                    | Sweep stale stacks across apps.                               |
-| `stack list/new/use/down/drop` | Manage named stacks (parallel-stack workflows).           |
-| `fork status/advance-*/replay-to/seed/cache` | Fork-mode controls.                         |
-| `doctor`                   | Environment + lock + port checks.                             |
-| `graph`                    | Render the dep-graph (text/mermaid/dot).                      |
-| `version`                  | Print version. `--schema --json` dumps the CLI schema.        |
-
-Global flags every command honors:
-
-- `--json` — JSON envelope on stdout (success or `{ ok: false, error: {...} }`)
-- `--no-input` — Disable interactive prompts; emit `CONFIRM_REQUIRED` envelope instead
-- `--dry-run` — Plan only, no mutations (where applicable)
-- `--yes` — Bypass interactive prompts (where applicable)
-- `--schema --json` — Discovery surface for tools / agents
-
-Exit codes follow sysexits conventions (0/1/64/65/69/73/75/78 +
-domain 40-43). See `cli/exit-codes.ts`.
-
-## Subpath exports
-
-- `@mysten-incubation/devstack` — services (`Sui`, `Walrus`, `Seal`, `Deepbook`,
-  `Postgres`, `Pyth`, `Faucet`, `Account`, `Package`, `Wallet`, `Action`, …) and `defineDevstack`
-- `@mysten-incubation/devstack/advanced` — plugin-author primitives
-  (`dockerContainer`, `containerPrimitive`, `dockerImage`, `gitFetch`,
-  `LayeredTag`, `provide`, `tag`, `composeLayers`, …)
-- `@mysten-incubation/devstack/vitest` — `defineDevstackVitestConfig`
-- `@mysten-incubation/devstack/playwright` — `webServer({ ... })` for
-  `playwright.config.ts`
-- `@mysten-incubation/devstack/vite` — `devstackVitePlugin`
-
-## Development
-
-```sh
-pnpm --filter @mysten-incubation/devstack build
-pnpm --filter @mysten-incubation/devstack typecheck
-pnpm --filter @mysten-incubation/devstack test
-```
-
-Docker tests (snapshot lifecycle on real Docker) require `pnpm build` first so
-the CLI binary exists at `dist/cli/main.mjs`. They skip with a hint when `dist/`
-is missing.
-
-## See also
-
-- `AGENTS.md` — load-bearing conventions for contributors (and agents)
-- `notes/integration-contract-redesign.md` — substrate plan (Phase A+B+C)
-- `notes/stack-simplification-audit.md` — E1–E70 finding catalog
-- `notes/cli-redesign.md` — CLI design proposal (Phase A shipped)
-- `notes/STATE-2026-05-19.md` + `notes/SESSION-CLOSEOUT-2026-05-19.md` — current state snapshot
-- `notes/verification-2026-05-19.md` — lifecycle + snapshot + parallel-stack test report
-- `notes/v2-requirements/` — per-subsystem rewrite-reference specs
+This package targets Effect v4 beta (catalog pin). The substrate uses `Scope`, `Layer`, `Context`,
+`Effect.gen`, and `Schema` for runtime contracts; the user-facing surface (factory configs, manifest
+reads, codegen output) carries no Effect types.

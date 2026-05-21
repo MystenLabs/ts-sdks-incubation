@@ -11,8 +11,7 @@ prototype packages breaks freely as we iterate; pin nothing from outside this mo
 | Package                                                                  | Description                                                                                              | Status                                                                                                                            |
 | ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
 | [`@mysten-incubation/dev-wallet`](packages/dev-wallet)                   | Modular dev wallet for Sui dApp development and testing                                                  | [![npm](https://img.shields.io/npm/v/@mysten-incubation/dev-wallet)](https://www.npmjs.com/package/@mysten-incubation/dev-wallet) |
-| [`@mysten-incubation/devstack-rewrite`](packages/devstack-rewrite)       | Ground-up Effect v4 rewrite of devstack (active dev focus; will replace `packages/devstack/` at cutover) | Prototype — actively developed                                                                                                    |
-| [`@mysten-incubation/devstack`](packages/devstack)                       | Original devstack package — spec source for the rewrite; new work goes into `devstack-rewrite/`          | Prototype — frozen pending cutover                                                                                                |
+| [`@mysten-incubation/devstack`](packages/devstack)                       | Effect v4 devstack for local Sui app development, seeded services, codegen, and product tests             | Prototype — actively developed                                                                                                    |
 | [`@mysten-incubation/create-devstack-app`](packages/create-devstack-app) | Scaffolder for new devstack-backed apps                                                                  | Prototype — not published to npm                                                                                                  |
 
 ## Examples
@@ -20,25 +19,22 @@ prototype packages breaks freely as we iterate; pin nothing from outside this mo
 Worked example apps live under [`examples/`](examples). Each example brings up its own
 local stack via the devstack CLI, publishes Move packages, and serves a Vite frontend.
 
-The repo currently carries paired example sets — `<name>/` against the original devstack
-and `<name>-rewrite/` against the rewrite. The rewrite set is the one to read for
-current API shape. See [`examples/README.md`](examples/README.md) for the curated tour.
+See [`examples/README.md`](examples/README.md) for the curated tour.
 
 Fastest way in:
 
 ```bash
-pnpm --filter @mysten-incubation/hello-world-rewrite dev
+pnpm --filter @mysten-incubation/wallet dev
 ```
 
 ## Documentation
 
 https://ts-sdks-incubation.vercel.app
 
-For contributors working on the devstack rewrite, the living docs are:
+For contributors working on devstack, the living docs are:
 
-- [`packages/devstack-rewrite/notes/orchestrator-guide.md`](packages/devstack-rewrite/notes/orchestrator-guide.md) — single entry point covering project status, locked decisions, and how work is dispatched.
-- [`packages/devstack-rewrite/STYLE_GUIDE.md`](packages/devstack-rewrite/STYLE_GUIDE.md) — code-level patterns and explicit bans (Effect v4 idioms, tagged errors, atomic writes, span vocabulary, etc.).
-- [`packages/devstack-rewrite/ARCHITECTURE.md`](packages/devstack-rewrite/ARCHITECTURE.md) — layer / capability-contract boundaries; the answer to "is this the right place for X?".
+- [`packages/devstack/STYLE_GUIDE.md`](packages/devstack/STYLE_GUIDE.md) — code-level patterns and explicit bans (Effect v4 idioms, tagged errors, atomic writes, span vocabulary, etc.).
+- [`packages/devstack/ARCHITECTURE.md`](packages/devstack/ARCHITECTURE.md) — layer / capability-contract boundaries; the answer to "is this the right place for X?".
 
 ## Getting Started
 

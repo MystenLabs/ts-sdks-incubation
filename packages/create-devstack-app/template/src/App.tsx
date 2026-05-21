@@ -6,9 +6,9 @@ import { useMutation, useQueryClient, type UseMutationResult } from '@tanstack/r
 import { useState } from 'react';
 import { packages } from './generated/packages.js';
 
-// Codegen runs before Dev (`needs: [..., codegen]`), so this file
-// existing implies hello is published — no `isDeployed` guard needed.
-const helloPackageId = packages.hello.id;
+// `devstack apply` emits this generated package metadata after hello is
+// published, so no deployment guard is needed here.
+const helloPackageId = packages.hello.packageId;
 
 interface UseSignAndExecuteOptions {
 	invalidateKeys?: ReadonlyArray<readonly unknown[]>;
@@ -116,7 +116,7 @@ export function App() {
 				<Card title="Greeting" subtitle="Calls hello::mint with the connected account as sender">
 					<div className="space-y-3">
 						<p className="text-xs text-neutral-500">
-							Package:{' '}
+							Move package:{' '}
 							<span className="font-mono break-all" data-testid="package-id">
 								{helloPackageId}
 							</span>

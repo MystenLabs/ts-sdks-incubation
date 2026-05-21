@@ -1,63 +1,43 @@
-// Minimal devstack config in the v4 Ref-based API.
+// Minimal devstack config template.
 //
-// Each user concept (account, package, action, wallet, dev server) is a
-// typed Ref returned by a single-call factory. Cross-references are
-// values (`signer: alice`), not strings. `devstack(...)` auto-fills the
-// sui localnet provider and emits the manifest sidecar.
+// Two accounts + a local Move package. The package's `publisher`
+// threads the account member directly (Direct Member Ref). The
+// substrate orders alice's keypair + funding strictly before the
+// publish tx via the package's `consumes:` edge.
 
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Effect } from 'effect';
+
 import {
-	Account,
-	Action,
-	Codegen,
-	Dev,
-	devstack,
-	Package,
-	Wallet,
+	defineDevstack,
+	sui,
+	account,
+	localPackage,
+	type AnyMember,
+	type Stack,
+	wallet,
 } from '@mysten-incubation/devstack';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const HELLO_DIR = resolve(HERE, 'move/hello');
+const DEV_ORIGIN = 'http://127.0.0.1:5179';
 
-const alice = Account('alice');
-const bob = Account('bob');
+const alice = account('alice');
+const bob = account('bob');
 
-const hello = Package('hello', HELLO_DIR, { signer: alice });
-
-const mintGreeting = Action('mint-greeting', {
-	signer: alice,
-	needs: [hello],
-	build: (t) =>
-		Effect.gen(function* () {
-			const pkg = yield* hello;
-			t.moveCall({
-				target: `${pkg.packageId}::hello::mint`,
-				arguments: [t.pure.vector('u8', Array.from(new TextEncoder().encode('hello, sui')))],
-			});
-		}),
+const hello = localPackage('hello', {
+	sourcePath: resolve(HERE, 'move/hello'),
+	publisher: alice,
 });
 
-const wallet = Wallet({
-	accounts: [alice, bob],
-	allowedOrigins: ['http://localhost:5179'],
-});
+const stack: Stack<ReadonlyArray<AnyMember>> = defineDevstack(
+	sui(),
+	alice,
+	bob,
+	hello,
+	wallet({ accounts: [alice, bob], allowedOrigins: [DEV_ORIGIN] }),
+	{
+		stackName: '_template',
+	},
+);
 
-// Emit Move bindings + typed stack handles (accounts/services/extras/
-// captured) + dapp-kit config into `src/generated/`. Defaults wire
-// the three built-in emitters; pass `emitters: [...]` to customize.
-const codegen = Codegen({ packages: [hello] });
-
-// User app dev server — pinned to the port Playwright's webServer config
-// uses. Sits in the APP section of the TUI and surfaces as `app.dev` in
-// the on-disk `manifest.json`. `needs: [..., codegen]` makes vite wait
-// for the first codegen pass before serving.
-const dev = Dev({
-	command: 'pnpm',
-	args: ['exec', 'vite', '--port', '{port}'],
-	port: 5179,
-	needs: [hello, wallet, codegen],
-});
-
-export default devstack(alice, bob, hello, mintGreeting, wallet, codegen, dev);
+export default stack;

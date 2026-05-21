@@ -1,109 +1,36 @@
 ---
 title: Lifecycle
-description:
-  How the supervisor acquires, watches, and tears down Refs. Read this when debugging acquisition
-  order or writing a plugin that needs to survive restarts.
+description: How the current runtime boots and stops a stack.
 ---
 
-`devstack(...)` returns a `DevstackHandle`. Calling its `run()` / `runMain()` / `launchEffect()`
-boots the supervisor, which manages every Ref's lifecycle.
+`defineDevstack(...)` is synchronous. It builds a static stack handle and performs composition-time
+checks. The runtime path starts when a surface consumes that handle.
 
-This page is the load-bearing model for plugin authors and for anyone debugging why a Ref isn't
-acquiring in the order they expected.
+Runtime surfaces:
 
-## Phases
+- `devstack up` starts a supervisor and stays attached.
+- `devstack apply` starts the same supervisor path in one-shot mode.
+- `runStack(stack, opts)` embeds the supervisor in another TypeScript program.
 
-Every Ref moves through:
+```ts
+import { Effect } from 'effect';
+import { account, defineDevstack, runStack } from '@mysten-incubation/devstack';
 
-```
-pending → acquiring → ready | failed
-```
+const stack = defineDevstack(account('alice'), { stackName: 'embedded' });
+const handle = runStack(stack, {
+	runtimeRoot: '.devstack',
+	identity: { app: 'demo', stack: 'embedded' },
+});
 
-The TUI renders this in real time. `acquiring` rows narrate sub-phases via `setPhase(...)` calls
-inside the body — `"building image"`, `"genesis"`, `"requesting funds"`. `ready` rows surface the
-Ref-supplied `display(value)` projection (URL, packageId, address). `failed` rows show the short
-error in the row plus the full cause walk in the log tail.
-
-## Scopes
-
-The supervisor creates three nested scopes:
-
-```
-supervisorScope ── lives for the entire `runMain` lifetime
-  │
-  ├── infraCtx       — registries, engine, state-store, identity,
-  │                    platform services. Built once, survives
-  │                    per-Ref failures and full-stack restarts.
-  │
-  ├── childScope[A]  — Ref A. Per-Ref scope; closes on A's failure
-  ├── childScope[B]  — or on a full restart. Siblings stay alive
-  ├── childScope[C]  — when one Ref fails.
-  ├── …
-  │
-  └── longLivedScope — `Docker.run`'s adoptable containers register
-                       `docker rm -f` finalizers here so press-`r`
-                       full-restart leaves them running and the next
-                       cycle adopts them (stable chain id, stable
-                       package id).
+await Effect.runPromise(handle.start);
+await Effect.runPromise(handle.stop);
+await Effect.runPromise(handle.awaitShutdown);
 ```
 
-Per-Ref failure tears down only that Ref's child scope. Siblings keep running. Press `r` and the
-failed Ref's body re-runs.
+Boot order is derived from `consumes` edges. Members that need Sui can cause `defineDevstack` to
+auto-mount a default `sui()` when none is provided. `wallet({ accounts: 'all' })` is expanded after
+the full member list is known, so it consumes every account member in the final stack.
 
-Ctrl-C tears down the supervisor scope, which cascades through every child scope's finalizer in
-reverse acquisition order.
-
-## Hot restart
-
-The supervisor watches paths declared via every Ref's `provide(..., { watch })` or
-`tag(..., { watch })` plus `config.watch`. Watcher events are debounced 250ms. When the trailing
-edge fires:
-
-1. The watcher fiber logs which Ref owns the changed path — e.g.
-   `file change at ./move/hello/sources/foo.move (owned by packages.hello) — restarting`.
-2. The current cycle's supervisor scope tears down (closing every `childScope`).
-3. The launch loop returns from `runOnce` and re-enters with a new cycle number.
-4. The cycle starts over with the same `infraCtx` (memoized) and fresh `childScope`s per Ref.
-
-Long-lived docker containers registered on `longLivedScope` survive the cycle teardown; the next
-cycle's `Docker.run` adopts them if they're still healthy. Chain id stays stable, `publishMove` hits
-its state-store cache, packageIds don't move.
-
-The Move build container (`devstack-<app>-<stack>-build`) is one of those long-lived adoptees. The
-first build pulls the pinned `sui` image and starts the container; every subsequent build hits a
-single `docker exec` that reuses the same container's `~/.move` cache. A press-`r` restart leaves
-the container alive, so the next cycle's `move build` runs against a warm sui-cli, not a
-freshly-pulled image.
-
-## Hand-rolled run
-
-Three entry points sit at different levels of abstraction:
-
-- **`devstack(...).run()`** — Promise-returning. Resolves on clean shutdown. Use from a CLI
-  entrypoint or a test fixture.
-- **`devstack(...).runMain()`** — Same but uses `@effect/platform-node`'s `runMain` so SIGINT
-  propagates to scope finalizers correctly. Best for production CLI use (the `devstack` binary uses
-  this).
-- **`devstack(...).launchEffect()`** — Raw launch Effect; lets a caller `yield*` it inside an outer
-  NodeRuntime so SIGINT propagation reaches the launch loop's finalizers without nesting runtimes.
-- **`devstack(...).layer`** — The composed `Layer.Layer` for Effect-native consumers that want to
-  build their own runtime.
-
-For test fixtures, the `vitest` and `playwright` subpaths wrap these in fixture/helper shapes so
-your test code stays declarative — see [vitest](../features/testing-vitest) and
-[playwright](../features/testing-playwright).
-
-## Multi-stack isolation
-
-Every container, every state file, and every manifest path is keyed on the `<app, stack, network>`
-triple. Two stacks on the same host get separate containers, separate state, separate manifests — no
-collision. The `DEVSTACK_STACK` env var overrides the stack name per invocation; the network comes
-from the resolved `Sui(...)` Ref.
-
-## Where to go next
-
-- [Refs and tags](./refs-and-tags) — the substrate the supervisor manages.
-- [Advanced reference](../reference/advanced) — the docker, host, and git primitives plugin authors
-  compose against.
-- [CLI reference](../reference/cli) — `devstack up`, `apply`, and what each subcommand does to the
-  lifecycle.
+The supervisor publishes typed events, maintains a live projection, writes the manifest, emits
+generated files, and serves command-channel requests from peer CLI commands. Shutdown requests flow
+through the same command channel and then run scope finalizers.

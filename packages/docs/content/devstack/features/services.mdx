@@ -1,225 +1,90 @@
 ---
-title: Walrus, Seal, and Deepbook
-description:
-  Composite Refs that boot the upstream infra locally and re-target the same shape against known
-  network deployments.
+title: Services
+description: Walrus, Seal, DeepBook, and known on-chain dependencies.
 ---
 
-Apps that build on Walrus, Seal, or Deepbook face a chicken-and-egg problem during dev: those
-services depend on Sui, you depend on them, and getting a coherent set running locally — with the
-right admin caps, the right pools, the right key server registration — is hours of yak-shaving
-before you can write any app code.
-
-Devstack ships three composite Refs that boot each system's local cluster end-to-end and surface the
-same shape against a known testnet / mainnet deployment when you switch networks.
+The root package exports current service factories in lowercase. Compose only the behavior the
+options actually support.
 
 ## Walrus
 
-```ts
-import { Walrus } from '@mysten-incubation/devstack';
-
-Walrus(); // localnet cluster (or canonical testnet/mainnet under --network)
-Walrus({ local: { nodeCount: 4, seedAccounts: [alice, bob] } }); // tune the local cluster
-```
-
-The same `Walrus()` call boots a local cluster on localnet and wires to Mysten's canonical Walrus
-deployment on testnet / mainnet — the network is set by `DEVSTACK_NETWORK` / `--network` (see
-[live networks](./live-networks)).
-
-The local cluster brings up:
-
-- A storage committee (4 nodes by default).
-- A walrus proxy (aggregator + publisher).
-- WAL seeding for the listed accounts via the walrus exchange contract.
-
-Yield narrow interface tags for slices:
+Local mode starts a local cluster. Use `seedAccounts` when you want the WAL swap/admin path wired.
 
 ```ts
-import { Effect } from 'effect';
-import { WalrusNodesTag, WalrusProxyTag } from '@mysten-incubation/devstack';
-// Admin-side tags are localnet-only, so they live under /advanced.
-import { WalrusAdminTag } from '@mysten-incubation/devstack/advanced';
+import { defineDevstack, account, sui, walrus } from '@mysten-incubation/devstack';
 
-const uploadBlob = Effect.gen(function* () {
-	const proxy = yield* WalrusProxyTag; // aggregator + publisher URLs
-	// ... use proxy.aggregatorUrl ...
-});
+const admin = account('admin');
+
+export default defineDevstack(
+	sui(),
+	admin,
+	walrus({
+		local: {
+			nodeCount: 1,
+			shards: 4,
+			seedAccounts: [admin],
+		},
+	}),
+);
 ```
 
-The frontend reads the walrus publisher / aggregator URLs from the generated `services.walrus`
-handle and the walrus package's captured system + staking object ids from
-`captured["walrus.walrus"]`. Pass them to `localnetWalrusOptions(...)` from
-`@mysten-incubation/devstack/dapp-kit` to build a `WalrusClient`. See
-[the private-content example](https://github.com/mysten-labs/ts-sdks-incubation/tree/main/examples/private-content/src/lib/walrus.ts)
-for the wiring.
+Known mode requires explicit on-chain ids and an explicit node list. Network shortcuts only provide
+URL defaults where the package has them.
 
 ## Seal
 
-```ts
-import { Seal } from '@mysten-incubation/devstack';
-
-Seal({ signer: publisher }); // local key server on localnet, canonical remote elsewhere
-Seal(); // testnet/mainnet only — no signer needed
-```
-
-`signer:` is only used on localnet (where the factory publishes the Seal Move package and pays the
-registration tx). On testnet/mainnet the factory wires to Mysten's canonical key server and
-`signer:` is ignored. Pass it anyway if the same config runs against both — the flag flips
-automatically.
-
-The local key server:
-
-- Generates a keypair on first boot, persists it across restarts.
-- Pays the on-chain registration tx as `signer`.
-- Exposes its `objectId` + `keyServerUrl` via `SealKeyServerTag`.
-
-To project those values into the manifest (so the frontend can wire `SealClient` + `SessionKey`
-against the local server), surface them in `extras`:
+Local keygen mode requires a signer account:
 
 ```ts
-import { Effect } from 'effect';
-import { devstack, SealKeyServerTag } from '@mysten-incubation/devstack';
+import { defineDevstack, account, seal } from '@mysten-incubation/devstack';
 
-export default devstack(publisher, seal, /* ... */, {
-  extras: Effect.gen(function* () {
-    const ks = yield* SealKeyServerTag;
-    return { sealKeyServer: { objectId: ks.objectId, url: ks.keyServerUrl } };
-  }),
-});
-```
+const publisher = account('publisher');
 
-## Deepbook
-
-```ts
-import { Deepbook, DeepbookMarketMaker } from '@mysten-incubation/devstack';
-
-Deepbook({
-	local: {
+export default defineDevstack(
+	publisher,
+	seal({
+		mode: 'local-keygen',
 		signer: publisher,
-		movePackagePath: './vendor/deepbook-v3',
-		pools: [
-			/* ... */
-		],
-	},
-});
-Deepbook(); // testnet/mainnet only — canonical deployment
+	}),
+);
 ```
 
-`local:` options are only used on localnet. On testnet/mainnet the factory wires to Mysten's
-canonical Deepbook deployment. Pass `local:` anyway if the same config runs against both — the flag
-flips automatically.
+Live and fork-known modes reference existing key servers and do not expose a local manager.
 
-The local-deploy path:
+## DeepBook
 
-- Publishes a vendored `deepbook-v3` Move package using your signer (you supply `signer:` in the
-  local options).
-- Creates the pools you declare. Whitelisted by default (disables DEEP fees) so localnet tests run
-  without holding DEEP.
-- Surfaces `DeepbookCoreTag` (packageId, registry id, `findPool`) and — under `/advanced` —
-  `DeepbookAdminTag` (admin cap).
-- Caches the deploy across restarts as long as the dependency set (vendored source + pool specs)
-  hasn't moved.
-
-Declaring pools:
+Local mode is a wrapper around explicit local deployment ids and requires a publisher. Known mode
+requires `packageId` and `registryId`.
 
 ```ts
-import { Deepbook } from '@mysten-incubation/devstack';
+import { defineDevstack, account, deepbook } from '@mysten-incubation/devstack';
 
-const deepbook = Deepbook({
-	local: {
-		signer: publisher,
-		movePackagePath: './vendor/deepbook-v3', // checked-in vendored source
-		pools: [
-			{
-				name: 'usdc-sui',
-				base: usdc, // CoinTag auto-discovered from `Package(...)`
-				quote: 'SUI', // or a Move-type string
-				tickSize: 1n,
-				lotSize: 1_000n,
-				minSize: 10_000n,
-			},
-		],
-	},
-});
+const publisher = account('publisher');
+
+export default defineDevstack(
+	publisher,
+	deepbook({
+		mode: 'known',
+		packageId: '0x...',
+		registryId: '0x...',
+	}),
+);
 ```
 
-`base` and `quote` accept either a fully-qualified Move-type string (`'0xpkg::mod::COIN'`) or a
-CoinTag Ref. Tag form pins the coin's publish as a dependency edge in the layer graph, so the pool
-isn't created until the underlying coin Move package is published.
+The current DeepBook surface does not claim local pool creation, Pyth, margin, or market-maker
+behavior unless those fields are present in the resolved value.
 
-### Market making
+## Known on-chain dependencies
 
-`DeepbookMarketMaker` is a long-running Action that posts POST_ONLY grid orders on the pools you
-name. It runs as an in-process Effect fiber refreshed on a cadence (10s by default).
+Use `knownPackage(name, { packageId })` for fixed deployed modules:
 
 ```ts
-const maker = DeepbookMarketMaker({
-	name: 'maker',
-	signer: marketMakerAccount,
-	pools: [
-		{
-			name: 'usdc-sui',
-			base: usdc,
-			quote: 'SUI',
-			tickSize: 1n,
-			midPrice: 1_000n,
-			sizePerLevel: 100_000n,
-		},
-	],
-	levels: 3, // levels per side; default 3 → 6 orders / pool / tick
-	tickSpacing: 1, // levels are 1 × tickSize apart
-	refreshMs: 10_000, // cancel + repost every 10 s
+import { defineDevstack, knownPackage } from '@mysten-incubation/devstack';
+
+const registry = knownPackage('registry', {
+	packageId: '0x...',
+	mvrPlaceholder: '@demo/registry',
 });
 
-export default devstack(publisher, marketMakerAccount, deepbook, maker /* ... */);
+export default defineDevstack(registry);
 ```
-
-The maker uses `DeepbookCoreTag` so it works against either the local-deploy or the known-deployment
-Deepbook.
-
-### Frontend wiring
-
-`DeepbookCoreTag` projects the deployed `packageId` and pool ids into the manifest under
-`services.deepbook`, which `StackHandleEmitter` surfaces as the generated `services` handle:
-
-```ts
-import { DeepBookClient } from '@mysten/deepbook-v3';
-import { services } from './generated/services.js';
-
-const client = new DeepBookClient({
-	client: suiClient,
-	address: currentAccount.address,
-	packageIds: services.deepbook?.packageIds,
-});
-```
-
-## Canonical remote deployments
-
-When the resolved network is testnet or mainnet, each composite Ref wires to Mysten's canonical
-deployment automatically — packageIds, registry ids, and proxy URLs come from a registry baked into
-the package. The shape your code consumes (`WalrusProxyTag.aggregatorUrl`,
-`SealKeyServerTag.objectId`, …) is identical whether the underlying source is your localnet cluster
-or the public network.
-
-For pinning to a private fork or a non-canonical deployment, use `KnownPackage(...)` directly
-against the relevant package ids — there's no `override:` field on the composite factories today.
-
-For ad-hoc third-party packages, use `KnownPackage(...)` directly:
-
-```ts
-import { KnownPackage } from '@mysten-incubation/devstack';
-
-const customAmm = KnownPackage('amm', {
-	packageId: '0xabc...',
-	mvrPlaceholder: '@mvr/amm',
-});
-```
-
-See [live networks](./live-networks) for the promotion pattern.
-
-## Reference
-
-- [Services reference — Walrus / Seal / Deepbook](../reference/services#walrus-seal-deepbook) —
-  every option and the inner tag shapes.
-- [Advanced reference](../reference/advanced) — `composeTag`, `dockerImage`, `gitFetch`, and the
-  other plugin-author primitives the composites are built on.

@@ -1,8 +1,9 @@
 name: Devstack E2E
 
-# End-to-end smoke for the snapshot save → wipe → restore loop, matching
-# the runbook A documented in
-# `packages/devstack/test-setup/snapshot-smoke/README.md`.
+# Product e2e coverage for the devstack package and worked example apps.
+# The workflow proves that representative examples can apply their stack,
+# capture a restorable snapshot, and run browser tests from that restored
+# state. It also shards the package's Docker-backed integration tests.
 #
 # Two-stage matrix:
 #
@@ -10,30 +11,21 @@ name: Devstack E2E
 #             (one-shot reconcile + manifest write), takes a snapshot
 #             with `pnpm devstack snapshot save`, uploads the snapshot
 #             directory as a build artifact. The snapshot contains the
-#             full writable layer of every container (Phase 2 of the
-#             snapshot redesign: chain state + indexer DB in the
-#             writable layer, captured by `docker commit + save`) plus
-#             the canonical `runtime/` dir (account keys, wallet token,
-#             seal master-key, walrus deploy outputs).
+#             full writable layer of every container plus the canonical
+#             runtime directory for account keys, wallet pairing state,
+#             seal keys, and service deployment outputs.
 #
 #   2. e2e:   matrix of (example × shard). Downloads the artifact,
 #             extracts to `.devstack/snapshots/`, runs `devstack
 #             snapshot restore baseline`, then runs the example app's
 #             playwright suite against the restored stack.
-#
-# v3 used `snapshot save --push <registry>` + `snapshot restore --pull`
-# for cross-job container image sharing. v4 inlines container tarballs
-# inside the snapshot bundle so a single artifact upload is sufficient —
-# the bundle is fully self-contained. Future Phase 6 may re-add the
-# registry path for the cross-machine case (sharing snapshots between
-# developers), at which point the seed job could additionally push.
 
 on:
   pull_request:
   push:
     branches: [main]
 
-# Permissions: read-only, no GHCR push required for v4 inline-bundle path.
+# Permissions: read-only; snapshots move between jobs as workflow artifacts.
 permissions:
   contents: read
 
@@ -44,12 +36,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Phase 4.3 started with the sui-only example (`arena`) plus
-        # the walrus-bearing example (`private-content`). Phase 5 of
-        # the deepbook plugin expansion adds `deepbook-full` — the
-        # reference app exercising vendor + Postgres + Pyth + Indexer
-        # + Server + Margin + bps-grid maker. Runbook D in the snapshot
-        # smoke playbook.
+        # Representative product apps: a Sui-only app, a Walrus/Seal app,
+        # and the heavier DeepBook app with Postgres, Pyth, indexer,
+        # server, margin, and maker services.
         example: [arena, private-content, deepbook-full]
     steps:
       - name: Checkout
@@ -71,8 +60,7 @@ jobs:
       # (with a WARN) when the target file doesn't exist at install time,
       # which is exactly our case: `dist/cli/main.mjs` is built AFTER
       # `pnpm install --frozen-lockfile`. Going through node sidesteps
-      # the bin-symlink lookup entirely. Matches the strategy used by the
-      # `runCli` helper in `snapshot.docker.test.ts`.
+      # the bin-symlink lookup entirely.
       - name: Apply stack (boot + write state + tear down)
         working-directory: examples/${{ matrix.example }}
         run: node ../../packages/devstack/dist/cli/main.mjs apply
@@ -98,10 +86,10 @@ jobs:
 
       - name: Capture snapshot
         working-directory: examples/${{ matrix.example }}
-        # `apply` exits after Layer.build's scope closes, leaving the
+        # `apply` exits after the supervisor scope closes, leaving the
         # containers stopped with their writable layer intact. The
-        # snapshot CLI uses `docker ps -a` so stopped containers are
-        # still committed + saved into the snapshot bundle.
+        # snapshot CLI captures stopped containers into the snapshot
+        # bundle so the e2e job can restore the same state.
         run: node ../../packages/devstack/dist/cli/main.mjs snapshot save baseline
 
       - name: Show snapshot contents (debug)
@@ -151,12 +139,10 @@ jobs:
 
       - name: Restore snapshot
         working-directory: examples/${{ matrix.example }}
-        # Brings `state.json` back into place, untars `runtime/` to its
-        # original paths (preserving mode bits — 0o600 keys + token),
-        # and `docker load`s every committed container image. The next
-        # `up` adopts them via the reuse-if-image-matches probe in
-        # `Docker.run`. Direct-node invocation: see comment on the seed
-        # job's apply step for the bin-symlink rationale.
+        # Brings the saved stack state and runtime files back into place
+        # and loads every committed container image. Direct-node
+        # invocation: see the seed job's apply step for the bin-symlink
+        # rationale.
         run: node ../../packages/devstack/dist/cli/main.mjs snapshot restore baseline
 
       - name: Install playwright browsers
@@ -181,13 +167,10 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-  # P5.17 — Docker integration shards. Runs the L3 `*.docker.test.ts`
-  # suite (Postgres + Pyth + Indexer + Server + Margin + bps-grid maker
-  # + vendor) gated behind `DEVSTACK_INTEGRATION_TESTS=1`. Sharded 4-way
-  # on `ubuntu-latest-large` so the heaviest tests (image pulls +
-  # container boot) parallelize cleanly. Pre-pulls `postgres:16-alpine`
-  # + the deepbook indexer + server images at start to keep the per-shard
-  # critical path under the 30-min timeout.
+  # Docker integration shards. Runs the package's `*.docker.test.ts`
+  # product tests gated behind `DEVSTACK_INTEGRATION_TESTS=1`. Sharded
+  # 4-way on `ubuntu-latest-large` so image pulls and container boot
+  # parallelize cleanly.
   docker-integration:
     name: Docker integration · shard ${{ matrix.shard }}/4
     runs-on: ubuntu-latest-large
@@ -214,8 +197,8 @@ jobs:
         run: |
           docker pull postgres:16-alpine || true
           # Deepbook indexer + server images come from the pairing table
-          # at `services/deepbook/images.ts`. Best-effort pull so the
-          # first L3 test that uses them doesn't pay the cold-pull cost
+          # in the devstack package. Best-effort pull so the first test
+          # that uses them doesn't pay the cold-pull cost
           # against the shard's 30-min budget.
           docker pull mysten/deepbook-indexer:v7.0.0 || true
           docker pull mysten/deepbook-server:v7.0.0 || true
@@ -225,8 +208,8 @@ jobs:
         env:
           DEVSTACK_INTEGRATION_TESTS: '1'
         # Run only `*.docker.test.ts` files; vitest's `--shard` distributes
-        # them across 4 workers. The full L3 suite covers Postgres + Pyth
-        # + Indexer + Server + Margin + maker + vendor + codegen.
+        # them across 4 workers. The suite covers Postgres, Pyth, indexer,
+        # server, margin, maker, vendor, and codegen behavior.
         run: pnpm vitest run --testNamePattern docker --shard ${{ matrix.shard }}/4
 
       - name: Upload failure artifacts
@@ -234,9 +217,8 @@ jobs:
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # pin@v4.6.0
         with:
           name: docker-integration-shard-${{ matrix.shard }}-failure
-          # P5.18 — capture container state + manifests + state.json
-          # files reachable on the runner so the failure is reproducible
-          # from the artifact alone.
+          # Capture container state plus manifests/state files reachable
+          # on the runner so failures are reproducible from the artifact.
           path: |
             packages/devstack/test-results/
             packages/devstack/.devstack/

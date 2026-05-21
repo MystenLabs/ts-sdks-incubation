@@ -1,8 +1,8 @@
 #!/bin/sh
-# devstack seal-key-server entrypoint wrapper.
+# devstack-rewrite seal-key-server entrypoint wrapper.
 #
 # Same workaround as sui-localnet for the same upstream-bug class:
-# seal's `key-server` binary (`seal/crates/key-server/src/server.rs:1207`'s
+# seal's `key-server` binary (`seal/crates/key-server/src/server.rs`'s
 # `#[tokio::main] async fn main`) installs NO signal handler — `main`
 # is just `tokio::select! { server_result = axum::serve(...), monitor_result = monitor_handle }`,
 # with no `tokio::signal::ctrl_c()` polled on either branch. So running
@@ -22,29 +22,43 @@
 # restart), so signal-induced termination is safe — the next start
 # reads MASTER_KEY from env again and recomputes everything.
 #
-# The keygen path (`docker run --entrypoint seal-cli ... genkey`)
-# bypasses this entrypoint entirely via `--entrypoint` override, so
-# the wrapping only affects the long-running key-server container.
+# Master-key staging: the plugin bind-mounts a 0o600 env-file at
+# /etc/seal/master-key.env containing `MASTER_KEY=<hex>`. We source
+# it BEFORE exec'ing the key-server so the secret lands in the
+# child's environment, NEVER in `docker inspect` / host process
+# env. Distilled-doc invariant #3.
+#
+# The keygen path (`runOneShot({ entrypoint: 'seal-cli', argv: ['genkey'] })`)
+# bypasses this entrypoint entirely via the runtime's --entrypoint
+# override, so the wrapping only affects the long-running key-server
+# container.
+#
+# The trap + wait-loop lives in `/usr/local/lib/devstack/signal-forward.sh`,
+# vendored from `images/_shared/signal-forward.sh` at build time —
+# the sui entrypoint sources the same file.
+
 set -eu
+
+# shellcheck disable=SC1091
+. /usr/local/lib/devstack/signal-forward.sh
+
+# Source the master-key env-file if it's present at the well-known
+# bind-mount path. `set -a` exports every VAR=value pair to the
+# child process environment. Idempotent: if the file is absent,
+# we fall through with no error (the binary will fail with its own
+# typed message, which is the right level of detail for callers).
+if [ -r /etc/seal/master-key.env ]; then
+	set -a
+	# shellcheck disable=SC1091
+	. /etc/seal/master-key.env
+	set +a
+fi
 
 /usr/local/bin/key-server "$@" &
 KS_PID=$!
+register_signal_forward "$KS_PID"
 
-# Forward docker's SIGTERM (and a passthrough SIGINT) to the
-# key-server child. Trap fires on shell signal delivery; default
-# action for the child's SIGINT is terminate, so the child dies.
-forward_int() {
-	kill -INT "$KS_PID" 2>/dev/null || true
-}
-trap forward_int INT TERM
-
-# Wait loop. `wait` in dash returns 128+signum when interrupted by a
-# trapped signal even if the child is still alive — so re-check
-# `kill -0` and loop until the child PID is truly gone.
 KS_EXIT=0
-while kill -0 "$KS_PID" 2>/dev/null; do
-	wait "$KS_PID"
-	KS_EXIT=$?
-done
+wait_for_child "$KS_PID" || KS_EXIT=$?
 
 exit "$KS_EXIT"

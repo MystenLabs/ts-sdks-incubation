@@ -65,12 +65,15 @@ cpSync(SRC, DST, {
 });
 
 resolveTemplateDeps(DST, REPO_ROOT);
+applyTemplateCutoverFixups(DST);
+writeTemplateSupportFiles(DST);
 
 process.stdout.write(`synced ${SRC} → ${DST}\n`);
 
 interface PkgJson {
 	name?: string;
 	version?: string;
+	scripts?: Record<string, string>;
 	dependencies?: Record<string, string>;
 	devDependencies?: Record<string, string>;
 }
@@ -113,7 +116,29 @@ function resolveTemplateDeps(templateDir: string, repoRoot: string): void {
 		}
 	}
 
+	rewriteTemplateScripts(json);
 	writeFileSync(pkgPath, `${JSON.stringify(json, null, '\t')}\n`);
+}
+
+function rewriteTemplateScripts(json: PkgJson): void {
+	const scripts = json.scripts;
+	if (scripts === undefined) {
+		throw new Error('sync-template: template/package.json is missing a scripts block.');
+	}
+
+	const scaffoldedScripts: Record<string, string> = {
+		'devstack:apply': 'DEVSTACK_APP=_template devstack apply',
+		apply: 'pnpm run devstack:apply',
+		dev: 'pnpm run devstack:apply && DEVSTACK_APP=_template vite --host 127.0.0.1',
+		build: 'pnpm run devstack:apply && DEVSTACK_APP=_template tsc -b && DEVSTACK_APP=_template vite build',
+		preview: scripts.preview ?? 'vite preview',
+		typecheck: 'pnpm run devstack:apply && tsc -b --noEmit',
+		test: scripts.test ?? 'pnpm run typecheck && vitest run',
+		'test:e2e': scripts['test:e2e'] ?? 'DEVSTACK_APP=_template playwright test',
+		clean: scripts.clean ?? 'rm -rf dist .turbo node_modules/.tmp',
+	};
+
+	json.scripts = scaffoldedScripts;
 }
 
 function collectWorkspaceVersions(repoRoot: string): Map<string, string> {
@@ -164,4 +189,100 @@ function stripQuotes(s: string): string {
 		return s.slice(1, -1);
 	}
 	return s;
+}
+
+function applyTemplateCutoverFixups(templateDir: string): void {
+	const oldGeneratedMetadataComment =
+		/\/\/ Codegen runs before Dev \(`needs: \[\.\.\., codegen\]`\), so this file\n\/\/ existing implies hello is published.*\nconst helloPackageId = packages\.hello\.packageId;/;
+	const oldPackageLabel = "Package:{' '}";
+	replaceInFile(join(templateDir, 'src', 'App.tsx'), [
+		[
+			oldGeneratedMetadataComment,
+			"// `devstack apply` emits this generated package metadata after hello is\n// published, so no deployment guard is needed here.\nconst helloPackageId = packages.hello.packageId;",
+		],
+		[oldPackageLabel, "Move package:{' '}"],
+	]);
+	replaceInFile(
+		join(templateDir, 'src', 'dapp-kit.ts'),
+		[['(RPC URL + MVR overrides + burner-wallet adapter)', '(RPC URL + MVR overrides + dev-wallet adapter)']],
+	);
+}
+
+function writeTemplateSupportFiles(templateDir: string): void {
+	writeFileSync(
+		join(templateDir, '.gitignore'),
+		`# Dependencies
+node_modules/
+
+# Build output
+dist/
+coverage/
+.turbo/
+*.tsbuildinfo
+*.log
+
+# Local environment
+.env
+.env.local
+.env.*.local
+*.local
+
+# Devstack runtime and generated app bindings
+.devstack/
+src/generated/
+
+# Move build artifacts
+move/**/build/
+move/**/package_summaries/
+*.mv
+
+# Playwright
+test-results/
+playwright-report/
+playwright/.cache/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+`,
+	);
+
+	writeFileSync(
+		join(templateDir, 'README.md'),
+		`# Devstack App
+
+A minimal Sui app scaffolded with \`@mysten-incubation/create-devstack-app\`.
+
+## Commands
+
+\`\`\`bash
+pnpm dev       # apply the stack, generate app bindings, and start Vite
+pnpm build     # apply the stack, typecheck, and build the app
+pnpm test      # typecheck and run unit tests
+pnpm test:e2e  # run the Playwright mint flow
+\`\`\`
+
+## Project Shape
+
+- \`devstack.config.ts\` defines the local Sui stack, accounts, Move package, and dev wallet.
+- \`move/hello/\` contains the example Move package.
+- \`src/dapp-kit.ts\` wires dApp Kit to the generated devstack config.
+- \`src/App.tsx\` connects the wallet and calls \`hello::mint\`.
+
+\`devstack apply\` writes runtime state under \`.devstack/\` and generated app bindings under
+\`src/generated/\`; both are ignored because they are regenerated for each checkout.
+`,
+	);
+}
+
+function replaceInFile(
+	path: string,
+	replacements: ReadonlyArray<readonly [string | RegExp, string]>,
+): void {
+	let text = readFileSync(path, 'utf8');
+	for (const [from, to] of replacements) {
+		text = text.replace(from, to);
+	}
+	writeFileSync(path, text);
 }

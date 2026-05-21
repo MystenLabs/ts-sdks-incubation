@@ -1,27 +1,32 @@
 # syntax=docker/dockerfile:1
-# devstack postgres image for the sui-indexer-db sidecar.
+# devstack-rewrite vendored postgres image.
 #
-# Why this exists: the upstream `postgres:*` image declares
-# `VOLUME /var/lib/postgresql/data`. That directive makes docker create
-# an ANONYMOUS volume there even when you don't pass `-v`, and writes to
-# that volume are excluded from `docker commit`. The result is that
-# `devstack snapshot save` would capture an empty container layer for
-# the indexer — every restore would land on a freshly-bootstrapped DB
-# with no rows.
+# Single load-bearing modification: relocate PGDATA off the upstream
+# `VOLUME /var/lib/postgresql/data` declaration.
 #
-# Fix: relocate PGDATA to a path WITHOUT the upstream VOLUME directive
-# so writes land in the container's writable layer, where `docker commit`
-# (and therefore `devstack snapshot save`) sees them. Postgres reads
-# PGDATA at startup; the upstream entrypoint creates and chowns the dir.
+# Why: `docker commit` (the mechanism the snapshot engine uses to
+# capture a stack's state) excludes paths declared as VOLUME in the
+# image. The upstream postgres image declares the data directory as a
+# VOLUME, which means docker auto-creates an anonymous volume there
+# even when `-v` is not passed. Writes to that volume are NOT in the
+# writable layer that `docker commit` captures — so a snapshot of a
+# vanilla `postgres:*` container would silently restore as an empty
+# database with no rows.
 #
-# Cycle teardown via `docker stop` (registered by Docker.run) preserves
-# the writable layer for the next `up` to resume — see the INVARIANT
-# block in `engine/docker/core.ts` near `removeContainerIfExists`.
+# Fix: set `PGDATA` to a path that has NO VOLUME directive in the
+# ancestry. `/pgdata` is arbitrary — anywhere outside the inherited
+# `/var/lib/postgresql/data` works. Writes land in the container's
+# writable layer where `docker commit` (and therefore the snapshot
+# engine) captures them.
+#
+# Distilled doc § Postgres-specific concerns / Invariants:
+#   "Vendored image must relocate `PGDATA` off the upstream `VOLUME`
+#    path — otherwise snapshot is silently empty."
+#
+# Default tag tracks `postgres:17-alpine` (one major bump up from v3's
+# `16-alpine`). Override via `--build-arg POSTGRES_VERSION=...`.
 
-ARG POSTGRES_VERSION=16-alpine
+ARG POSTGRES_VERSION=17-alpine
 FROM postgres:${POSTGRES_VERSION}
 
-# Move the data dir off the upstream VOLUME at /var/lib/postgresql/data
-# so the writable layer captures the indexer's schema + row data.
-# `/pgdata` is arbitrary — anywhere outside the inherited VOLUME works.
-ENV PGDATA=/pgdata
+ENV PGDATA=/var/lib/postgresql/data-devstack

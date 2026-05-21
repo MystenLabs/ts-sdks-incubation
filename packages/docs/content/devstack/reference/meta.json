@@ -1,4 +1,4 @@
 {
 	"title": "Reference",
-	"pages": ["services", "codegen", "faucet", "cli", "advanced"]
+	"pages": ["services", "faucet", "cli"]
 }

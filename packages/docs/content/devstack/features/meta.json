@@ -5,7 +5,6 @@
 		"accounts-and-wallet",
 		"coins-and-funding",
 		"codegen",
-		"dapp-kit",
 		"testing-vitest",
 		"testing-playwright",
 		"services",

@@ -1,121 +1,47 @@
 ---
-title: Accounts and the dev wallet
-description:
-  Named accounts with deterministic addresses, multi-coin funding, and a built-in dev wallet UI your
-  browser connects to.
+title: Accounts and wallet
+description: Named identities, funding, and the dev wallet.
 ---
 
-Building a multi-user dApp in dev usually means juggling keypairs by hand: generate a key, paste it
-somewhere, fund it, configure your browser wallet to use it, paste in a new RPC URL, copy the new
-address into your test fixtures. Multiply that by every account your app needs and you're spending
-more time on accounts than on the app.
-
-Devstack gives you accounts as first-class Refs. You declare them by name, devstack persists keys
-and funds them, and a built-in dev wallet UI exposes them to the browser so dapp-kit can connect
-without any extension setup.
-
-## Declaring accounts
+Use `account(name, opts?)` for every named identity. The bare form creates an ephemeral key and
+funds it with the default SUI amount on faucet-bearing local networks.
 
 ```ts
-import { Account } from '@mysten-incubation/devstack';
+import { account } from '@mysten-incubation/devstack';
 
-const publisher = Account('publisher');
-const alice = Account('alice');
-const bob = Account('bob');
-```
-
-`Account(name)` returns a Ref. Pass it as a `signer` to anything that signs (Package, Action,
-Wallet), and yield it inside an Effect to read the resolved
-`{ address, publicKey, scheme, signTransaction, signPersonalMessage, signAndExecute }`.
-
-Default behavior:
-
-- Generate a fresh ed25519 keypair on first boot.
-- Persist it under `.devstack/stacks/<stack>/.keys/<name>.key` so the same address resurfaces across
-  restarts.
-- Hit the localnet faucet to fund the account before marking the Ref ready.
-
-## Other key sources
-
-`Account(name, opts)` accepts a `kind:` discriminator that controls where the key comes from:
-
-```ts
-Account('mike', { kind: 'keystore', alias: 'mike' }); // ~/.sui/sui_config/sui.keystore
-Account('ci', { kind: 'env', key: 'ALICE_PRIVATE_KEY' }); // process.env[key]
-Account('demo', { kind: 'inline', privateKey: 'suiprivkey1...' }); // literal — tests/demos only
-Account('hsm', { kind: 'signer', signer: myHardwareSigner }); // any @mysten/sui Signer
-```
-
-The default `'ephemeral-funded'` source is the right choice for localnet. Switch to `'env'` or
-`'keystore'` when you promote to [live networks](./live-networks).
-
-## Multi-coin funding
-
-The optional `funding` field works on every source:
-
-```ts
-Account('alice', {
-	funding: {
-		SUI: 1_000_000_000n,
-		WAL: 50n,
-		'0xpkg::usdc::USDC': 1_000n,
-	},
+const alice = account('alice');
+const ci = account('ci', { kind: 'env', key: 'ALICE_PRIVATE_KEY' });
+const demo = account('demo', { kind: 'inline', privateKey: 'suiprivkey1...' });
+const local = account('local', {
+	kind: 'keystore',
+	path: '~/.sui/sui_config/sui.keystore',
+	aliasOrAddress: 'local',
 });
 ```
 
-Each entry is dispatched through the `Faucet` service's per-coin strategy registry. SUI works out of
-the box (via the localnet faucet), WAL works when `Walrus()` is in the stack (the walrus local
-cluster auto-registers a swap strategy), and any user coin discovered from a `Package(...)` publish
-works because the publish auto-registers a TreasuryCap mint strategy. Coins from `KnownPackage(...)`
-need a hand-written `defineStrategy`.
-
-See [Coins and funding](./coins-and-funding) for the full picture, including the auto/manual table
-and a worked example of writing your own strategy.
-
-## The dev wallet UI
-
-`Wallet({ accounts })` mounts a dev-only signing server with a UI that registers as a Wallet
-Standard wallet your dApp can connect to. No browser extension, no key paste, no MetaMask-style
-dance.
+Cross-coin funding uses direct coin members, not string records:
 
 ```ts
-import { Wallet } from '@mysten-incubation/devstack';
+import { account, coin } from '@mysten-incubation/devstack';
 
-const wallet = Wallet({
-	accounts: [publisher, alice, bob],
-	allowedOrigins: ['http://dev.my-app.localhost:5173'],
-});
-
-export default devstack(publisher, alice, bob, wallet /* ... */);
-```
-
-The dapp-kit connect modal shows a single **Dev Wallet** entry whose accounts list mirrors the
-`accounts` array. Click it, pick an account, and dapp-kit's `useCurrentAccount()` returns the right
-address.
-
-For Playwright tests, the same wallet is what `connectAs(page, 'alice')` drives — see
-[testing-playwright](./testing-playwright).
-
-## Yielding accounts inside Effects
-
-Inside an `Action.build` callback, a custom plugin, or any Effect running under the supervisor:
-
-```ts
-import { Effect } from 'effect';
-
-const seed = Effect.gen(function* () {
-	const a = yield* alice; // resolves to Account
-	console.log(a.address);
-	yield* a.signAndExecute(/* ... */);
+const suiCoin = coin.builtin('sui');
+const alice = account('alice', {
+	funding: [{ coin: suiCoin, amount: 2_000_000_000n }],
 });
 ```
 
-The `Account` carries `address`, `publicKey`, `scheme`, and the three signing methods:
-`signTransaction`, `signPersonalMessage`, and the high-level `signAndExecute` (which builds, signs,
-and executes in one call).
+Use `wallet()` or `wallet({ accounts })` to expose the dev wallet server and generated dapp-kit
+config:
 
-## Reference
+```ts
+import { defineDevstack, account, wallet } from '@mysten-incubation/devstack';
 
-- [Services reference — Account](../reference/services#account) — every option.
-- [Services reference — Wallet](../reference/services#wallet) — port, bind address, CORS.
-- [Faucet reference](../reference/faucet) — funding strategies and how to write your own.
+const alice = account('alice');
+const bob = account('bob');
+
+export default defineDevstack(alice, bob, wallet({ accounts: [alice, bob] }));
+```
+
+`wallet({ accounts: 'all' })` expands to every account member in the final `defineDevstack(...)`
+call. The wallet binds to `127.0.0.1` by default, stores its pairing token under the stack runtime
+root, and emits generated config at `src/generated/dapp-kit/config.ts`.

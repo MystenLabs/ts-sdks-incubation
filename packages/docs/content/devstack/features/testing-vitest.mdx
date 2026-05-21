@@ -1,105 +1,49 @@
 ---
 title: Vitest
-description:
-  Run unit tests against the same stack your dev session uses. Same Refs, same accounts, same
-  packageIds.
+description: Current Vitest config preset and setup helpers.
 ---
 
-Unit-testing a Sui app usually means choosing between two bad options. Mock the chain, in which case
-your tests can pass while the real RPC behavior changes underneath you. Or hand-wire a real localnet
-boot into your test setup, which makes tests slow, fragile, and hard to keep in sync with the dev
-config.
+Use the `vitest` subpath for node-mode unit and integration tests.
 
-`withDevstack` collapses that choice: the same devstack config that runs `pnpm dev` also runs
-`pnpm test`. Inside a test body, you `yield*` any Ref directly and get the live shape — same
-packageIds, same funded accounts, same endpoints.
+```ts title="vitest.config.ts"
+import { defineDevstackVitestConfig } from '@mysten-incubation/devstack/vitest';
 
-## Setup
-
-```ts
-// vitest.config.ts
-import { defineConfig } from 'vitest/config';
-
-export default defineConfig({
-	test: {
-		include: ['src/**/*.{test,spec}.ts?(x)'],
-		exclude: ['e2e/**', 'node_modules', 'dist'],
-	},
+export default defineDevstackVitestConfig({
+	threads: 'single',
+	testSetup: { requireDevstack: true },
 });
 ```
 
-No special vitest config. The devstack wiring is per-test-file.
+Current exports from `@mysten-incubation/devstack/vitest` include:
 
-## Writing a test
+- `defineDevstackVitestConfig`
+- `useDevstackTestSetup`
+- `runDevstackBeforeAll`
+- `runDevstackAfterAll`
+- `getStackContext`
+- `loadStackContext`
+- `resolveVitestEnv`
+
+Programmatic setup is useful when you own a shared setup file:
+
+```ts title="test/setup.ts"
+import { afterAll, beforeAll } from 'vitest';
+import { useDevstackTestSetup } from '@mysten-incubation/devstack/vitest';
+
+useDevstackTestSetup({ beforeAll, afterAll }, { requireDevstack: true });
+```
+
+Inside a test, read the captured manifest context:
 
 ```ts
-// src/lib/queries.test.ts
-import { Effect } from 'effect';
-import { expect } from 'vitest';
-import { withDevstack } from '@mysten-incubation/devstack/vitest';
-import stack, { alice, hello } from '../../devstack.config.js';
+import { expect, test } from 'vitest';
+import { getStackContext } from '@mysten-incubation/devstack/vitest';
 
-withDevstack(stack)('queries', (it) => {
-	it.effect('alice is funded and hello is published', () =>
-		Effect.gen(function* () {
-			const a = yield* alice;
-			const pkg = yield* hello;
-			expect(a.address).toMatch(/^0x/);
-			expect(pkg.packageId).toMatch(/^0x/);
-		}),
-	);
+test('has a wallet endpoint', () => {
+	const ctx = getStackContext();
+	expect(ctx?.manifest.endpoints.wallet?.url).toMatch(/^http/);
 });
 ```
 
-`withDevstack(stack)` returns a curried `(name, body)` that you call with the suite name and a
-closure over `@effect/vitest`'s `it`. Inside, `it.effect(...)` runs an Effect — `yield*` any Ref the
-devstack config declared, plus the narrow interface tags (`SealKeyServerTag`, `WalrusProxyTag`,
-`DeepbookCoreTag`, …) exported from the main package.
-
-For this pattern to work, re-export the Refs you want to yield from `devstack.config.ts` alongside
-the default `devstack(...)` handle:
-
-```ts
-// devstack.config.ts
-export const alice = Account('alice');
-export const hello = Package('hello', './move/hello', { signer: alice });
-export default devstack(alice, hello);
-```
-
-## What the stack looks like in tests
-
-Same Refs, same lifecycle, same manifest. The stack is built once per worker process (vitest's
-default isolation level), and the finalizers run when the worker shuts down.
-
-If your devstack carries an explicit `Wallet`, `Dev`, or `Codegen` Ref, those acquire too — usually
-fine for vitest, but if they take noticeable cold-boot time, gate the test-only config:
-
-```ts
-// devstack.test.config.ts
-import { Account, devstack, Package } from '@mysten-incubation/devstack';
-
-export const alice = Account('alice');
-export const hello = Package('hello', './move/hello', { signer: alice });
-
-export default devstack(alice, hello); // skip Wallet/Dev/Codegen
-```
-
-Then import the slim config from your tests, not the full one.
-
-## Parallel test files
-
-vitest can run multiple worker processes. Devstack labels every container with
-`<app, stack, network>`, so concurrent stacks coexist. By default, all workers in a single
-`pnpm test` invocation share the same stack name (defaults to `'main'`), which means they share the
-localnet, the same packages, the same accounts.
-
-If you want isolated per-file stacks (slower, more thorough), set `DEVSTACK_STACK` per worker —
-vitest's `poolOptions.threads.singleThread: true` plus a `process.env.DEVSTACK_STACK = workerId` in
-your setup file is the pattern.
-
-## Reference
-
-- `@effect/vitest`'s `it.effect`, `it.live`, `it.scoped` — `withDevstack` is a thin wrapper over
-  `it.layer`, so anything `@effect/vitest` documents applies.
-- [Lifecycle](../internals/lifecycle) — when stacks acquire and tear down across vitest's worker
-  lifecycle.
+The preset does not boot a supervisor by itself. Start one with `devstack up`, or run
+`devstack apply` before tests that only need generated files and a manifest.

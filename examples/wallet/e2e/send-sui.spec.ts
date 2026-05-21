@@ -1,4 +1,5 @@
-import { connectAs, expect, selectAccount, test } from '@mysten-incubation/devstack/playwright';
+import { expect, test } from '@playwright/test';
+import { connectAs, selectAccount } from '@mysten-incubation/devstack/playwright';
 
 /**
  * Real Vite dev server, real Sui localnet, real wallet-standard adapter — no mocks.
@@ -44,7 +45,7 @@ test('alice sends 100 mUSDC to bob; balances update', async ({ page }) => {
 	const bobInitial = (await bobCell.textContent()) ?? '';
 
 	const sendCard = page.locator('section').filter({ hasText: /^Send/ });
-	await selectAccount(sendCard.getByLabel(/^coin$/i), 'MUSDC');
+	await selectAccount(sendCard.getByLabel(/^coin$/i), 'mUSDC');
 	await selectAccount(sendCard.getByLabel(/recipient/i), 'bob');
 	await sendCard.getByLabel(/amount/i).fill('100');
 	await sendCard.getByRole('button', { name: /^Send$/ }).click();

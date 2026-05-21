@@ -1,38 +1,39 @@
-// Token-studio app — single managed coin with TreasuryCap-gated minting.
-// Alice doubles as publisher (holds the TreasuryCap so the UI's
-// "TreasuryCap holder" badge resolves).
-
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Account, Codegen, Dev, devstack, Package, Wallet } from '@mysten-incubation/devstack';
+
+import {
+	account,
+	coin,
+	defineDevstack,
+	localPackage,
+	sui,
+	type AnyMember,
+	type Stack,
+	wallet,
+} from '@mysten-incubation/devstack';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const MANAGED_COIN_DIR = resolve(HERE, 'move/managed_coin');
+const DEV_ORIGIN = 'http://127.0.0.1:5173';
 
-const alice = Account('alice');
-const bob = Account('bob');
-const carol = Account('carol');
+const alice = account('alice');
+const bob = account('bob');
+const carol = account('carol');
 
-// Coin auto-discovery surfaces the `STUDIO` coin under
-// `pkg.coins.STUDIO` (the symbol declared in the Move source's
-// `coin::create_currency` call). The TreasuryCap and CoinMetadata
-// object ids land on `pkg.coins.STUDIO.{treasuryCapId, metadataId}`;
-// the codegen-emitted `generated/coins.ts` (P5) projects the same
-// fields into a typed app-level record the frontend reads.
-const managedCoin = Package('managed_coin', MANAGED_COIN_DIR, { signer: alice });
-
-const wallet = Wallet({
-	accounts: [alice, bob, carol],
-	allowedOrigins: ['http://dev.token-studio.localhost:5175', 'http://localhost:5173'],
+const managedCoin = localPackage('managed_coin', {
+	sourcePath: resolve(HERE, 'move/managed_coin'),
+	publisher: alice,
 });
+const studioCoin = coin.fromPackage(managedCoin, 'MANAGED_COIN');
 
-const codegen = Codegen({ packages: [managedCoin] });
+const stack: Stack<ReadonlyArray<AnyMember>> = defineDevstack(
+	sui(),
+	alice,
+	bob,
+	carol,
+	managedCoin,
+	studioCoin,
+	wallet({ accounts: [alice, bob, carol], allowedOrigins: [DEV_ORIGIN] }),
+	{ stackName: 'token-studio' },
+);
 
-const dev = Dev({
-	command: 'pnpm',
-	args: ['exec', 'vite', '--host', '0.0.0.0', '--strictPort', '--port', '{port}'],
-	port: 5173,
-	needs: [managedCoin, wallet, codegen],
-});
-
-export default devstack(alice, bob, carol, managedCoin, wallet, codegen, dev);
+export default stack;

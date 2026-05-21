@@ -1,243 +1,59 @@
 ---
-title: Codegen
-description:
-  Move → TypeScript bindings, typed stack handles (accounts, services, extras, captured, packages),
-  and a partial dapp-kit config — all emitted under `./src/generated/` and always matching the
-  freshly-published state.
+title: Generated Outputs
+description: Current generated-file behavior.
 ---
 
-The packageId of every Move package you publish changes every time the chain regenerates. The
-TypeScript types your app uses to call that Move code have to match. The accounts, the service
-endpoints, the captured object ids all change at the same time. Stitching that together by hand —
-hard-coded ids, regen scripts, drift between Move and TS — is one of the biggest sources of friction
-in a Sui app.
+There is no root factory for generated output. The supervisor collects each member's codegenable
+capability and emits files during `devstack up`, `devstack apply`, or `devstack codegen`.
 
-Devstack runs codegen as a Ref. When a package republishes (or a service endpoint moves, or an
-extras Effect re-resolves), codegen re-emits. When you read the generated handles, the values and
-the on-chain state are guaranteed to agree.
+Default root:
 
-## What gets emitted
-
-`Codegen({ packages })` runs three built-in emitters by default and writes everything under
-`./src/generated/`:
-
-```
+```txt
 src/generated/
-  bindings/<pkg>/          ← Move → TS bindings (BindingsEmitter)
-  accounts.ts              ← `accounts.alice` typed map (StackHandleEmitter)
-  services.ts              ← `services.sui.rpc.url` typed handle (StackHandleEmitter)
-  extras.ts                ← typed literal of `devstack({ extras })` (StackHandleEmitter)
-  captured.ts              ← per-package captured ids (StackHandleEmitter)
-  packages.ts              ← raw package-id escape hatch (StackHandleEmitter)
-  dapp-kit-config.ts       ← partial DAppKit config (DappKitConfigEmitter)
 ```
 
-App code consumes those directly:
+Common outputs:
 
-```ts
-import { Lobby } from './generated/bindings/connect_four/game.js';
-import { accounts } from './generated/accounts.js';
-import { services } from './generated/services.js';
-import { extras } from './generated/extras.js';
-import { captured } from './generated/captured.js';
+```txt
+sui/network.ts
+accounts/<name>.ts
+coins/<symbol>.ts
+package/<placeholder>.ts
+dapp-kit/config.ts
+walrus/network.ts
+seal/<name>.ts
+deepbook/<name>.ts
+extras.ts
 ```
 
-No `import { manifest } from ...` — the raw manifest is a dev-only artifact that never enters your
-app's runtime. The handles are literal-typed (`as const`), so `accounts.alice` narrows to its exact
-string at every consumer.
-
-## Wiring it up
+Configure the root in the trailing options bag:
 
 ```ts
-import { Codegen } from '@mysten-incubation/devstack';
+import { defineDevstack, account } from '@mysten-incubation/devstack';
 
-const codegen = Codegen({ packages: [hello, world] });
+const alice = account('alice');
 
-const dev = Dev({
-	command: 'pnpm',
-	args: ['exec', 'vite'],
-	port: 5173,
-	// vite waits for the first codegen pass so `./generated/` exists
-	// when the dev server starts importing it.
-	needs: [hello, wallet, codegen],
-});
-
-export default devstack(/* ... */, codegen, dev);
-```
-
-`output` defaults to `./src/generated/` — a normal `src/`-typed dir picked up by TypeScript + Vite
-without extra wiring. Atomic dir swap means your dev server never sees a half-written tree
-mid-cycle.
-
-**Why `src/generated/` and not `.devstack/`?** The `.devstack/` dot-dir is reserved for
-non-importable runtime state (account keys, wallet tokens, walrus deploy outputs) and is
-deliberately invisible to TS tooling. Importable generated code belongs in a normal source dir. See
-[state and snapshots](./state-and-snapshots) for the full split.
-
-## Move bindings
-
-Bindings land at `./src/generated/bindings/<package-name>/`. `KnownPackage(...)` entries are
-silently skipped — the bindings emitter needs Move source.
-
-```ts
-import * as connectFour from './generated/bindings/connect_four/game.js';
-
-const tx = new Transaction();
-const lobby = connectFour.createLobby(tx);
-```
-
-## Typed stack handles
-
-`StackHandleEmitter` reads the live registries (the same source `gatherManifest()` uses) and emits
-five files of named, literal-typed handles. Apps reach for these by name instead of walking the raw
-manifest:
-
-```ts
-import { accounts } from './generated/accounts.js';
-import { services } from './generated/services.js';
-import { extras } from './generated/extras.js';
-import { captured } from './generated/captured.js';
-import { packages } from './generated/packages.js';
-
-// Display alice's address.
-console.log(accounts.alice);
-
-// Open an RPC client against the local sui node.
-const rpcUrl = services.sui?.rpc.url;
-
-// Read a user-defined extras value (typed literal).
-const openLobbyId = extras.openLobbyId;
-
-// Reach for a captured TreasuryCap to mint test funds.
-const treasuryCapId = captured.mock_usdc?.treasuryCapId;
-
-// Escape hatch for raw package ids (use MVR via dapp-kit when possible).
-const helloPackageId = packages.hello?.id;
-```
-
-`packages.ts` is the escape hatch — most app code should use MVR-prefixed targets like
-`tx.moveCall({ target: '@local/hello::hello::mint' })` and let dApp-Kit resolve the placeholder via
-the MVR overrides baked into the generated `devstackDappKitConfig`. Reach for the raw `id` only when
-MVR can't express the call (struct type strings, error labels).
-
-## App-defined `extras`
-
-`devstack({ extras })` is the user-controlled slot for values that need to surface in the manifest
-(and the generated `extras.ts` handle) but don't come from a built-in Ref. Pass a plain record, a
-sync function, or an Effect yielding a record — the supervisor evaluates it after every Ref resolves
-and splices the result into `app.extras` on the manifest.
-
-```ts
-export default devstack(/* ...refs */, openLobby, codegen, dev, {
-	extras: Effect.gen(function* () {
-		const r = yield* openLobby;
-		const openLobbyId = pickCreatedByType(r.objectChanges, { suffix: '::game::Lobby' });
-		return openLobbyId === undefined ? {} : { openLobbyId };
-	}),
+export default defineDevstack(alice, {
+	codegen: {
+		outputDir: 'src/generated',
+		stackSubdir: null,
+	},
+	extras: {
+		featureFlag: 'local-demo',
+	},
 });
 ```
 
-The returned record's keys land on the typed `extras` export from `./src/generated/extras.ts` —
-`extras.openLobbyId` narrows to the resolved string literal. Use this whenever a downstream consumer
-(the frontend, a playwright test, another emitter) needs a value projected from a `yield*`-able Ref:
-`SealKeyServerTag`, an `Action`'s `TxResult.objectChanges`, a `Deepbook` pool record, anything the
-manifest doesn't already expose.
-
-## Partial dapp-kit config
-
-`DappKitConfigEmitter` emits a `devstackDappKitConfig` value that the user-written `src/dapp-kit.ts`
-spreads into `createDAppKit`. The config carries the resolved network, an `SuiGrpcClient` factory
-with MVR overrides + RPC URL pre-baked, and the dev-wallet adapter wired to the resolved accounts.
+Generated files are normal source imports. Runtime state under `.devstack/` is not importable app
+code.
 
 ```ts
-// src/dapp-kit.ts (user-owned)
-import { createDAppKit } from '@mysten/dapp-kit-react';
-import { devstackDappKitConfig } from './generated/dapp-kit-config.js';
-
-export const dAppKit = createDAppKit({
-	...devstackDappKitConfig,
-	// app-specific overrides
-});
+import { suiNetwork } from './generated/sui/network.js';
+import { dappKitConfig } from './generated/dapp-kit/config.js';
 ```
 
-See [dapp-kit integration](./dapp-kit) for the full frontend wiring.
+To force a re-emit against a running supervisor:
 
-## Custom emitter sets
-
-To run a custom set of emitters, pass them explicitly. The built-ins live under
-`@mysten-incubation/devstack/advanced`:
-
-```ts
-import { Codegen } from '@mysten-incubation/devstack';
-import {
-	BindingsEmitter,
-	StackHandleEmitter,
-	DappKitConfigEmitter,
-} from '@mysten-incubation/devstack/advanced';
-
-Codegen({
-	packages: [hello, deepbookV3],
-	emitters: [
-		BindingsEmitter(),
-		StackHandleEmitter(),
-		DappKitConfigEmitter({ enableBurnerWallet: false }),
-	],
-});
+```bash
+devstack codegen
 ```
-
-## Writing your own emitter
-
-`defineEmitter({ name, emit })` is the contract. The `emit` callback receives a `CodegenContext`
-carrying every package's `{ name, packageId, mvrPlaceholder, sourcePath?, captured? }`. Filter on
-`sourcePath` if you need Move source; otherwise consume every entry.
-
-```ts
-import { Effect } from 'effect';
-import { Codegen } from '@mysten-incubation/devstack';
-import { defineEmitter, CodegenError } from '@mysten-incubation/devstack/advanced';
-import * as fs from 'node:fs/promises';
-import * as path from 'node:path';
-
-const VersionList = defineEmitter({
-	name: 'version-list',
-	emit: (ctx) =>
-		Effect.gen(function* () {
-			const out = path.join(ctx.outputDir, 'versions.txt');
-			const lines = ctx.packages.map((p) => `${p.name}: ${p.packageId}`).sort();
-			yield* Effect.tryPromise({
-				try: () => fs.writeFile(out, lines.join('\n') + '\n', 'utf-8'),
-				catch: (cause) =>
-					new CodegenError({
-						emitter: 'version-list',
-						phase: 'write',
-						message: `failed to write ${out}`,
-						cause,
-					}),
-			});
-		}),
-});
-
-Codegen({ packages: [hello], emitters: [BindingsEmitter(), VersionList] });
-```
-
-When you pass `emitters: [...]` explicitly the defaults DON'T apply — include `BindingsEmitter()`
-and the others you still want.
-
-## Per-package opt-out
-
-Skip a specific package from every `Codegen(...)` in the stack:
-
-```ts
-const internalHelper = Package('internal-helper', './move/internal', {
-	signer: publisher,
-	codegen: false,
-});
-```
-
-## Reference
-
-- [Codegen reference](../reference/codegen) — every option, the `CodegenContext` / `CodegenPackage`
-  shapes, and the `CodegenError` taxonomy.
-- [Services reference — Package](../reference/services#packagename-source-opts) — `Package` returns
-  `captured` (admin caps via `PackageWithCapture`) and `coins` (auto-discovered) that downstream
-  emitters consume.

@@ -1,9 +1,0 @@
-[package]
-name = "greeting"
-edition = "2024"
-version = "0.0.1"
-
-[dependencies]
-
-[addresses]
-greeting = "0x0"

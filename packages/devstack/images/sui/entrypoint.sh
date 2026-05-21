@@ -1,5 +1,5 @@
 #!/bin/sh
-# devstack-next sui-localnet entrypoint.
+# devstack-rewrite sui-localnet entrypoint.
 #
 # `sui start --force-regenesis` is ephemeral (in-memory genesis). To
 # preserve chain state across `docker stop` + `docker start`, we
@@ -9,8 +9,8 @@
 # state. Chain state lives in the container's writable layer — `docker
 # stop`/`start` preserves it; `docker rm` destroys it.
 #
-# Slow checkpoint pruning. The localnet's stock fullnode.yaml ships
-# with `num-epochs-to-retain: 0`, which prunes checkpoints aggressively
+# Slow checkpoint pruning. Localnet's stock fullnode.yaml ships with
+# `num-epochs-to-retain: 0`, which prunes checkpoints aggressively
 # (~10 minutes of retention on a fresh chain). Downstream consumers
 # that follow the chain sequentially (e.g. walrus storage nodes via
 # the v2 LedgerService `get_full_checkpoint` gRPC) get permanently
@@ -22,12 +22,14 @@
 # Signal forwarding (clean shutdown). `sui start --with-faucet` has an
 # upstream signal-handling bug: `sui_commands.rs:1278`'s
 # `start_faucet(app_state).await?` blocks on `axum::serve(...).await`
-# BEFORE the post-setup health-check loop installs `tokio::signal::
-# ctrl_c()`. So when sui runs with `--with-faucet`, no SIGINT handler
-# is ever registered (verified via `/proc/1/status` SigCgt =
-# 0x100000440 vs 0x100000442 without `--with-faucet`) and `docker
-# stop` falls back to SIGKILL → exit 137 + the next `up` cycle's
-# "UNCLEAN PRIOR SHUTDOWN" alert.
+# BEFORE the post-setup health-check loop installs
+# `tokio::signal::ctrl_c()`. So when sui runs with `--with-faucet`, no
+# SIGINT handler is ever registered (verified via `/proc/1/status`
+# SigCgt = 0x100000440 vs 0x100000442 without `--with-faucet`) and
+# `docker stop` falls back to SIGKILL → exit 137 → RocksDB checkpoint
+# drain never runs → next `up` resumes from an inconsistent checkpoint
+# (observable as walrus storage-node "checkpoint X is below
+# lowest-available" errors after restart cycles).
 #
 # Workaround until the upstream fix lands: strip `--with-faucet` from
 # sui's args and run the standalone `sui-faucet` binary as a sibling.
@@ -37,7 +39,15 @@
 # sui-faucet has no signal handler of its own but as a non-PID-1 child
 # the kernel applies SIGINT's default-action terminate, and the faucet
 # is stateless (re-derives everything from `~/.sui` on next start).
+#
+# The trap + wait-loop lives in `/usr/local/lib/devstack/signal-forward.sh`,
+# vendored from `images/_shared/signal-forward.sh` at build time —
+# the seal key-server entrypoint sources the same file.
+
 set -eu
+
+# shellcheck disable=SC1091
+. /usr/local/lib/devstack/signal-forward.sh
 
 mkdir -p /root/.sui
 
@@ -62,8 +72,8 @@ if [ -f "$FULLNODE_YAML" ]; then
 	fi
 fi
 
-# Strip `--with-faucet[=<addr>]` from sui's args and remember the
-# bind address. POSIX-sh argument shuffling: rebuild "$@" by collecting
+# Strip `--with-faucet[=<addr>]` from sui's args and remember the bind
+# address. POSIX-sh argument shuffling: rebuild "$@" by collecting
 # everything that isn't the faucet flag, capturing the addr if any.
 FAUCET_BIND=""
 SUI_ARGV=""
@@ -77,14 +87,14 @@ for arg in "$@"; do
 			FAUCET_BIND="${arg#--with-faucet=}"
 			;;
 		--with-faucet)
-			# Bare flag — use sui's documented default for the localnet
-			# faucet (0.0.0.0:9123). Devstack always passes the
-			# `=<addr>` form so this branch is belt-and-suspenders.
+			# Bare flag — use sui's documented localnet faucet default
+			# (0.0.0.0:9123). Devstack always passes the `=<addr>` form
+			# so this branch is belt-and-suspenders.
 			FAUCET_BIND="0.0.0.0:9123"
 			;;
 		*)
-			# Pack args into SUI_ARGV using newline as separator (POSIX-sh
-			# has no real arrays). Restored via IFS=$NL below.
+			# Pack into SUI_ARGV using newline as separator (POSIX-sh has
+			# no real arrays). Restored via IFS=$NL below.
 			if [ "$SUI_ARGV_COUNT" -eq 0 ]; then
 				SUI_ARGV="$arg"
 			else
@@ -108,6 +118,7 @@ IFS=$SAVED_IFS
 # signals; non-PID-1 children get them by default).
 sui "$@" &
 SUI_PID=$!
+register_signal_forward "$SUI_PID"
 
 # Start sui-faucet as a sibling, scoped to the requested bind addr.
 # The faucet reads ~/.sui via `sui_config_dir()` and shares the wallet
@@ -144,38 +155,16 @@ if [ -n "$FAUCET_BIND" ]; then
 	done
 	sui-faucet --host-ip "$FAUCET_HOST" --port "$FAUCET_PORT" &
 	FAUCET_PID=$!
+	register_signal_forward "$FAUCET_PID"
 fi
 
-# Forward docker's SIGTERM (and a passthrough SIGINT, in case a TTY
-# Ctrl-C reaches us) to both children as SIGINT — sui only honors
-# SIGINT, sui-faucet has no handler but takes SIGINT via the kernel's
-# default action.
-forward_int() {
-	# Best-effort: a child may have already exited.
-	kill -INT "$SUI_PID" 2>/dev/null || true
-	if [ -n "$FAUCET_PID" ]; then
-		kill -INT "$FAUCET_PID" 2>/dev/null || true
-	fi
-}
-trap forward_int INT TERM
-
-# Wait on sui — it's the primary. POSIX `wait <pid>` blocks until that
-# pid exits and returns its exit status, BUT in dash (the default
-# `/bin/sh` in ubuntu:24.04) a signal delivered to PID 1 causes `wait`
-# to return 128+signum even if the child is still alive — see man dash
-# § "WAIT". Loop until sui's PID is genuinely gone so we report sui's
-# real exit code (and the container actually waits for sui's
-# checkpoint flush + RocksDB drain before docker reaps it).
+# Wait on sui — it's the primary. The shared helper handles dash's
+# "wait returns 128+signum on trapped signal even if child still
+# alive" quirk so we report sui's real exit code (and the container
+# actually waits for sui's checkpoint flush + RocksDB drain before
+# docker reaps it).
 SUI_EXIT=0
-while kill -0 "$SUI_PID" 2>/dev/null; do
-	wait "$SUI_PID"
-	rc=$?
-	# Either sui exited (kill -0 will now fail and we exit the loop)
-	# or `wait` was interrupted by a trapped signal — in which case the
-	# trap already forwarded SIGINT to sui and we loop back to wait
-	# again.
-	SUI_EXIT=$rc
-done
+wait_for_child "$SUI_PID" || SUI_EXIT=$?
 
 # Tear down the faucet if it's still alive (e.g. sui exited on its
 # own without the trap firing). SIGKILL because faucet ignores SIGINT

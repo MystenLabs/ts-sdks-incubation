@@ -1,117 +1,249 @@
 // Example out-of-tree plugin: wrap a Redis Docker container as a
-// devstack service using the `/advanced/plugin-author` surface.
+// devstack service using the plugin-authoring surface.
 //
-// Acts as living documentation for the `dockerContainer(...)` primitive.
-// What it demonstrates:
+// Living documentation for the third-party plugin pattern. The plugin
+// author uses the SAME imports an app author uses — `defineNodePlugin`,
+// `defineTag`, `capabilities`, `RoutableDecl` all come from the single
+// root barrel (api-surface-design.md P2: plugin-author surface = user
+// surface).
 //
-//   - Image source: `{pull: 'redis:7-alpine'}` — the canonical "pull a
-//     registry image" shape.
-//   - Ready probe: TCP on the container's 6379 port so the tag doesn't
-//     resolve until the Redis server is accepting connections.
-//   - Routing: declare a custom `defineEntrypoint(...)` for redis at
-//     module load time, then point `dockerContainer`'s `routing` at it
-//     so the container surfaces as `redis.<app>.localhost` via the
-//     shared traefik router.
-//   - Endpoint publish: `endpoint: { name: 'REDIS', kind: 'internal' }`
-//     so the manifest / codegen / TUI see the resolved URL.
-//   - Tag shape: the factory returns a `LayeredTag<'redis', RedisHandle>`
-//     downstream consumers can `yield*` to get the connection URL.
-//
-// No in-tree devstack code references this file; it lives in the
-// example to exercise the plugin-author surface from an out-of-tree
-// callsite the same way a third-party plugin would.
+// PARALLEL-STACK NOTE. The TCP entrypoint binds ONE host port and
+// dispatches by entrypoint (TCP has no virtual hosts), so exactly one
+// stack on the host may set `route: true` at a time.
+
+import { Duration, Effect, Schedule } from 'effect';
 
 import {
-	defineEntrypoint,
-	dockerContainer,
-	makeService,
-	type DockerContainerHandle,
-	type LayeredTag,
-} from '@mysten-incubation/devstack/advanced';
-
-// Register the entrypoint at module load time so it's present before
-// the supervisor boots traefik. Picked 16379 to stay clear of in-tree
-// ports (9000-9999, 5173-5180, 50051). The default protocol is the
-// implicit `'http'` — Redis isn't HTTP, but the traefik route here is
-// only used for the dashboard hostname; in-cluster consumers dial the
-// container's docker DNS alias on the upstream port directly.
-defineEntrypoint({ name: 'redis', port: 16379 });
+	capabilities,
+	ContainerRuntimeService,
+	defineNodePlugin,
+	defineTag,
+	IdentityContext,
+	type ContainerHandle,
+	type ContainerRuntime,
+	type RoutableDecl,
+} from '@mysten-incubation/devstack';
 
 export interface RedisOptions {
 	/** Container memory cap. Defaults to 64MB — Redis is lean. */
 	readonly maxMemory?: string;
-	/** Override the container name surfaced in `docker ps`. */
+	/** Override the container name surfaced in `docker ps`. Folds into
+	 *  the per-instance tag id. */
 	readonly name?: string;
+	/** When true, contribute a TCP `RoutableDecl` so the shared Traefik
+	 *  router fronts this redis container on the `redis-tcp` entrypoint
+	 *  (host port 6379). One stack on the host may set this at a time
+	 *  (collision detection rejects the second). Default `false`. */
+	readonly route?: boolean;
+	/** Redis image tag. Defaults to `redis:7-alpine`. */
+	readonly image?: string;
+	/** Bounded readiness wait. Defaults to 30s. */
+	readonly readyTimeoutMs?: number;
 }
+
+/** Resolved handle. `endpoint` is the in-container dial string for
+ *  consumers that intentionally share a Docker network with Redis.
+ *  Host-side access is exposed through the optional TCP router route. */
+export interface RedisHandle {
+	readonly containerName: string;
+	readonly containerId: string;
+	readonly networkAlias: string;
+	readonly endpoint: string;
+	readonly port: number;
+}
+
+const makeRedisTag = <Name extends string>(name: Name) =>
+	defineTag<`redis/${Name}`, RedisHandle>(`redis/${name}` as `redis/${Name}`, 'redis');
+
+export const REDIS_TCP_ENDPOINT_NAME = 'redis-tcp' as const;
+const REDIS_PORT = 6379;
+const DEFAULT_REDIS_IMAGE = 'redis:7-alpine';
+const DEFAULT_READY_TIMEOUT_MS = 30_000;
+
+type RedisPhase = 'container-start' | 'ready';
+
+interface RedisPluginError {
+	readonly _tag: 'RedisPluginError';
+	readonly phase: RedisPhase;
+	readonly name: string;
+	readonly message: string;
+	readonly cause?: unknown;
+}
+
+const redisError = (
+	phase: RedisPhase,
+	name: string,
+	message: string,
+	cause?: unknown,
+): RedisPluginError => ({
+	_tag: 'RedisPluginError',
+	phase,
+	name,
+	message,
+	...(cause === undefined ? {} : { cause }),
+});
+
+const sanitizeDockerSegment = (value: string): string =>
+	value.replace(/[^a-zA-Z0-9_.-]/g, '-').replace(/^-+|-+$/g, '') || 'redis';
+
+const redisImageRef = (tag: string) => ({ digest: tag, tag });
+
+const awaitRedisReady = (
+	runtime: ContainerRuntime,
+	handle: ContainerHandle,
+	name: string,
+	timeoutMs: number,
+): Effect.Effect<void, RedisPluginError> =>
+	runtime.exec(handle, ['redis-cli', 'ping']).pipe(
+		Effect.flatMap((res) =>
+			res.exitCode === 0 && res.stdout.trim() === 'PONG'
+				? Effect.void
+				: Effect.fail(
+						redisError(
+							'ready',
+							name,
+							`redis '${name}' is not ready yet: exit=${res.exitCode}, stderr=${res.stderr}`,
+						),
+					),
+		),
+		Effect.catch((err) =>
+			err._tag === 'RedisPluginError'
+				? Effect.fail(err)
+				: Effect.fail(
+						redisError(
+							'ready',
+							name,
+							`redis '${name}' ready probe failed: ${err.reason}: ${err.detail}`,
+							err,
+						),
+					),
+		),
+		Effect.retry({ schedule: Schedule.spaced(Duration.millis(250)) }),
+		Effect.timeoutOrElse({
+			duration: Duration.millis(timeoutMs),
+			orElse: () =>
+				Effect.fail(
+					redisError('ready', name, `redis '${name}' did not become ready within ${timeoutMs}ms`),
+				),
+		}),
+	);
+
+const makeRedisRoutable = (parts: {
+	readonly app: string;
+	readonly stack: string;
+	readonly name: string;
+	readonly containerName: string;
+}): RoutableDecl => ({
+	kind: 'routable',
+	endpointName: REDIS_TCP_ENDPOINT_NAME,
+	dispatchId: {
+		compositeKey: `redis.${parts.app}.${parts.stack}.${parts.name}`,
+		role: parts.name,
+	},
+	upstream: {
+		type: 'container',
+		containerName: parts.containerName,
+		containerPort: REDIS_PORT,
+	},
+	wireProtocol: 'tcp',
+});
 
 /**
  * Bring up a Redis container as a devstack service.
  *
- * Returns a `LayeredTag<Name, DockerContainerHandle>` — `yield* Redis`
- * in any downstream tag's build to get the resolved handle (URL, image
- * id, container id).
+ * Returns a branded `StackMember` whose `provides` tag carries the
+ * resolved handle. Pass the member by value to any downstream
+ * consumer that needs the URL.
  *
  * @example
  * ```ts
- * import { devstack } from '@mysten-incubation/devstack';
- * import { Redis } from './redis-plugin.js';
+ * import { defineDevstack } from '@mysten-incubation/devstack';
+ * import { redis } from './redis-plugin.ts';
  *
- * const redis = Redis();
- * export default devstack(redis);
+ * export default defineDevstack(redis({ route: true }));
  * ```
  */
-export const Redis = (
-	opts: RedisOptions = {},
-): LayeredTag<'redis', DockerContainerHandle, any, any> => {
-	const name = (opts.name ?? 'redis') as 'redis';
-	const container = dockerContainer(name, {
-		image: { pull: 'redis:7-alpine' },
-		args: [
-			'redis-server',
-			'--save',
-			'',
-			'--appendonly',
-			'no',
-			'--maxmemory',
-			opts.maxMemory ?? '64mb',
-			'--maxmemory-policy',
-			'allkeys-lru',
-		],
-		// `routing` exposes the container through the shared traefik
-		// router so a host-side curl / dashboard lands on
-		// `redis.<app>.localhost`. In-cluster consumers (downstream
-		// plugins yielding this tag) still dial the upstream port via
-		// docker DNS, so the routing is purely for host-side
-		// observability — Redis itself doesn't speak HTTP.
-		routing: {
-			entrypoint: 'redis',
-			servicePort: 6379,
-			protocol: 'http',
+export const redis = <const Name extends string = 'redis'>(
+	opts: RedisOptions & { readonly name?: Name } = {},
+) => {
+	const name = (opts.name ?? 'redis') as Name;
+	const tag = makeRedisTag(name);
+
+	return defineNodePlugin({
+		provides: tag,
+		consumes: [] as const,
+		kind: 'leaf-long-running',
+		rebootCost: 'cheap',
+		acquire: () =>
+			Effect.gen(function* () {
+				const runtime = yield* ContainerRuntimeService;
+				const identity = yield* IdentityContext;
+				const dockerName = sanitizeDockerSegment(String(name));
+				const containerName = `${identity.app}-${identity.stack}-${dockerName}`;
+
+				const handle = yield* runtime
+					.ensureContainer({
+						name: containerName,
+						image: redisImageRef(opts.image ?? DEFAULT_REDIS_IMAGE),
+						labels: {
+							app: identity.app,
+							stack: identity.stack,
+							plugin: 'redis',
+							role: String(name),
+						},
+						recreate: 'on-config-change',
+						command: [
+							'redis-server',
+							'--save',
+							'',
+							'--appendonly',
+							'no',
+							'--maxmemory',
+							opts.maxMemory ?? '64mb',
+							'--maxmemory-policy',
+							'allkeys-lru',
+						],
+					})
+					.pipe(
+						Effect.catch((cause) =>
+							Effect.fail(
+								redisError(
+									'container-start',
+									String(name),
+									`failed to start redis container '${containerName}'`,
+									cause,
+								),
+							),
+						),
+					);
+
+				yield* awaitRedisReady(
+					runtime,
+					handle,
+					String(name),
+					opts.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS,
+				);
+
+				return {
+					containerName,
+					containerId: handle.id,
+					networkAlias: containerName,
+					endpoint: `redis://${containerName}:${REDIS_PORT}`,
+					port: REDIS_PORT,
+				} satisfies RedisHandle;
+			}),
+		errorContributions: [{ _tag: 'PluginErrorContribution', errorTags: ['RedisPluginError'] }],
+		capabilities: (resolved, acquireCtx) => {
+			const routable: RoutableDecl | null =
+				opts.route === true
+					? makeRedisRoutable({
+							app: acquireCtx.identity.app,
+							stack: acquireCtx.identity.stack,
+							name: String(name),
+							containerName: resolved.containerName,
+						})
+					: null;
+			return routable === null ? capabilities() : capabilities(routable);
 		},
-		// TCP ready-probe gates the tag's resolution until Redis is
-		// accepting connections on 6379. Without this the tag resolves
-		// as soon as `docker run` returns, which races
-		// `redis-server`'s `bind()`.
-		ready: { kind: 'tcp', port: 6379, timeoutMs: 30_000 },
-		// Publish into the EndpointRegistry so the manifest / codegen
-		// / TUI surface the resolved URL. Picked `'internal'` for the
-		// kind since Redis is dialed by sibling services, not by the
-		// browser.
-		endpoint: { name: 'REDIS', kind: 'internal' },
-		stopGraceSeconds: 5,
 	});
-	// Stamp the plugin attribution via the canonical `makeService` HOF.
-	// Out-of-tree plugins reach for `makeService(pluginName, kind, impl)`
-	// instead of hand-rolling `Object.assign(impl, { __kind, __pluginName })`
-	// — same runtime shape, but the helper documents intent and stays
-	// in lockstep with the in-tree factories (Sui, Wallet, …) the user
-	// already imports from the main barrel. `pluginName: 'redis'` drives
-	// the TUI's `[redis]` chip + a stable section color the user can
-	// learn ("blue = redis").
-	return makeService('redis', 'service', container) as LayeredTag<
-		'redis',
-		DockerContainerHandle,
-		any,
-		any
-	>;
 };

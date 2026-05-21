@@ -1,269 +1,80 @@
 ---
-title: Services
-description: Every built-in Ref factory.
+title: Service Reference
+description: Current root factories and options.
 ---
 
-Every factory below returns a [Ref](../internals/refs-and-tags). Pass them into `devstack(...)` to
-compose the stack.
+Import these from `@mysten-incubation/devstack`.
 
-For task-shaped guidance ("how do I run a dev server?", "how do I fund an account?"), start with a
-feature page like [local-dev](../features/local-dev) or
-[accounts-and-wallet](../features/accounts-and-wallet). This page is the API surface — every option,
-every shape, every default.
+## `defineDevstack(...members, options?)`
 
-## `Sui(opts?)`
+Variadic stack composer. The trailing options bag supports `stackName`, `network`, `watchPaths`,
+`stateDir`, `renderer`, `hotRestart`, `extras`, and `codegen`.
 
-The canonical sui factory. Defaults to localnet (vendored image with embedded faucet + indexer
-postgres + GraphQL).
+## `sui(opts?)`
 
-```ts
-Sui(); // localnet (default)
-Sui({ network: 'testnet' }); // public testnet RPC
-Sui({ network: 'mainnet' }); // public mainnet RPC
-Sui({ network: { rpc: 'https://example.com', faucet: 'https://example.com/faucet' } });
-Sui({ localnet: { rpcUrl: 'http://localhost:9000' } }); // wrap your own
-```
+Starts or references the active Sui network. Modes include local, live, fork, and external. When a
+member consumes Sui and none is provided, `defineDevstack` auto-mounts a default `sui()`.
 
-Yields `Sui`: `{ network, rpc, faucet?, graphql?, client, chainId, waitForTransactionsReady }`.
+## `account(name, opts?)`
 
-## `Account(name, opts?)`
+Creates a named identity. Variants: `ephemeral`, `keystore`, `env`, `inline`, `signer`, and
+`impersonate`. Cross-coin funding is `funding: [{ coin, amount }]`.
 
-A single named account.
+## `localPackage(name, opts)`
+
+Builds and publishes a local Move source tree.
 
 ```ts
-Account('alice'); // ephemeral-funded
-Account('alice', { funding: { SUI: 1_000_000_000n, WAL: 50n } }); // multi-coin funding
-Account('ci', { kind: 'env', key: 'ALICE_PRIVATE_KEY' });
-Account('mike', { kind: 'keystore', alias: 'mike' });
-Account('test', { kind: 'inline', privateKey: 'suiprivkey1...' });
-Account('hsm', { kind: 'signer', signer: myHardwareSigner });
-```
-
-`Account({ funding })` accepts either a record keyed by symbol / fully-qualified Move type
-(`{ SUI: 1_000_000_000n }`) or an array form for ordering control —
-`{ funding: [{ SUI: 1n }, { '0x...::usdc::USDC': 1n }] }` and any `LayeredTag<…, Coin, …>` or
-bare-Coin in the array slot.
-
-Source discriminators (`kind:`):
-
-- `'ephemeral-funded'` (default) — generate a fresh ed25519 keypair, persist it under
-  `.devstack/stacks/<stack>/.keys/<name>.key`, and request faucet funding.
-- `'keystore'` — read from `~/.sui/sui_config/sui.keystore`.
-- `'env'` — read a `suiprivkey1...` from `process.env[key]`.
-- `'inline'` — accept a literal `suiprivkey1...` string (tests/demos only).
-- `'signer'` — accept any `@mysten/sui/cryptography` `Signer` instance. HSMs, remote signers,
-  browser-connected wallets — devstack never asks for `getSecretKey()` on this branch.
-
-The optional `funding` field works on **any** source. CoinTag keys are short names for built-ins
-(`'SUI'`, `'WAL'`) or fully-qualified Move types for user coins. See [Faucet reference](./faucet)
-for the strategy registry that backs it.
-
-## `Package(name, source, opts)`
-
-Publish a Move package from a local source tree.
-
-```ts
-const hello = Package('hello', './move/hello', {
-	signer: alice,
-	mvr: '@local/hello', // optional; defaults to `@local/<slug>`
-	codegen: true, // default; `false` excludes from Codegen
+const publisher = account('publisher');
+const hello = localPackage('hello', {
+	sourcePath: './move/hello',
+	publisher,
+	capture: { objectId: '::hello::Hello' },
 });
 ```
 
-Yields `LocalPackage`:
-`{ name, packageId, upgradeCapId, coins, captured, sourcePath, mvrPlaceholder }`.
+Options include `sourcePath`, `publisher`, `resolveSourcePath`, `mvrPlaceholder`,
+`excludeFromCodegen`, and `capture`.
 
-**No `capture:` or `coins:` fields on `Package`.** Coin auto-discovery is implicit: every
-`coin::create_currency<W>(...)` in the package's `init` surfaces as `pkg.coins[<symbol>]` carrying
-`{ name, fullCoinType, decimals, sdkCoin, treasuryCapId?, metadataId?, symbol?, displayName?, iconUrl? }`,
-and each coin auto-registers a TreasuryCap mint strategy on the implicit `Faucet()`. The
-`UpgradeCap` is auto-captured into `pkg.upgradeCapId`.
+## `knownPackage(name, opts)`
 
-To extract non-coin object ids (admin caps, registries, DAO objects), reach for `PackageWithCapture`
-on `/advanced`:
+Verifies a fixed on-chain module by id. Options include `packageId`, `upgradeCapId`, and
+`mvrPlaceholder`.
 
-```ts
-import { PackageWithCapture } from '@mysten-incubation/devstack/advanced';
+## `coin`
 
-const dao = PackageWithCapture('dao', './move/dao', {
-	signer: publisher,
-	capture: {
-		adminCapId: '::dao::AdminCap',
-		registryId: '::dao::Registry',
-	},
-});
-// Resolved: dao.captured.{adminCapId, registryId}
-```
+Namespace forms: `coin.builtin('sui')`, `coin.fromPackage(member, witness)`, `coin.local(symbol)`,
+and `coin.known(fullCoinType)`.
 
-Coin auto-discovery still runs alongside `PackageWithCapture`; the `capture` lambda only adds
-non-coin ids to `pkg.captured`.
+## `wallet(opts?)`
 
-## `registerCoin(opts)`
+Starts the dev wallet HTTP server and emits generated dapp-kit config. Use `wallet()`,
+`wallet({ accounts: 'all' })`, or `wallet({ accounts: [alice, bob] })`.
 
-Register a coin against an already-published `Package` ref. Use when coin auto-discovery doesn't fit
-— most often when the publishing package is owned by someone else (a vendored library, a known
-testnet token) or when you need a separate `CoinTag`-shaped Ref to compose against.
+## `faucet(opts?)`
+
+Creates a faucet dispatcher and registers caller-supplied strategies. Most local SUI funding is
+handled by the Sui strategy registered for the active chain.
+
+## `action(name, opts)`
+
+Runs a one-shot on-chain effect after its consumed members are ready.
 
 ```ts
-import { registerCoin } from '@mysten-incubation/devstack';
-
-const partner = registerCoin({
-	name: 'partner',
-	package: partnerPkg, // any resolved `Package` ref
-	module: 'partner_coin',
-	type: 'PARTNER',
-	decimals: 8,
-});
-```
-
-Yields a `CoinTag`-shaped Ref that resolves to `{ name, type, decimals, sdkCoin }` after the
-referenced package publishes. Threads into the manifest's `coins` record the same way `Package(...)`
-does, and the resulting Ref is yieldable as a `quote:` / `base:` value on
-`Deepbook({ local: { pools } })` pool specs.
-
-## `KnownPackage(name, opts)`
-
-A `Package`-shaped Ref backed by a fixed on-chain id — for referencing testnet/mainnet packages
-without publishing.
-
-```ts
-const deepbookV3 = KnownPackage('deepbook', {
-	packageId: '0xdee...',
-	mvrPlaceholder: '@mvr/deepbook',
-});
-```
-
-Yields `Package` (no `sourcePath`/`captured`). `BindingsEmitter` skips entries without source;
-emitters that just need the id (`DappKitConfigEmitter`, `StackHandleEmitter`, custom emitters)
-consume it normally.
-
-## `Action(name, opts)`
-
-A one-shot transaction the supervisor runs once per chain.
-
-```ts
-const seedAlice = Action('seed-alice', {
-	signer: alice,
-	needs: [hello],
-	cacheKey: Effect.gen(function* () {
-		const pkg = yield* hello;
-		return `seed/${pkg.packageId}`;
-	}),
-	build: (t) =>
-		Effect.gen(function* () {
-			const pkg = yield* hello;
-			t.moveCall({
-				target: `${pkg.packageId}::store::seed`,
-				arguments: [t.pure.u64(100n)],
-			});
+const open = action('open-lobby', {
+	consumes: [publisher, hello] as const,
+	body: (ctx) =>
+		ctx.signAndExecute(ctx.use(publisher), (tx) => {
+			const pkg = ctx.use(hello);
+			tx.moveCall({ target: `${pkg.packageId}::hello::open` });
 		}),
 });
 ```
 
-`cacheKey` folds in `sui.chainId + signer.address` automatically, so a fresh genesis naturally
-misses the cache. Omit `cacheKey` to fire on every cycle (rare — usually a bug).
+## `walrus`, `seal`, `deepbook`
 
-## `Walrus(opts?)`, `Seal(opts?)`, `Deepbook(opts?)`
+Composite service factories. See [services](../features/services) for current mode caveats.
 
-Composite Refs that surface four narrow interfaces apiece. Each factory inspects `DEVSTACK_NETWORK`
-(set by the CLI `--network` flag, the `devstack({ network })` config option, or the env var
-directly) and branches: on localnet it boots a full local cluster; on testnet/mainnet it wires to
-Mysten's canonical remote deployment.
+## `runStack(stack, opts?)`
 
-```ts
-Walrus();                                   // local cluster on localnet, canonical remote otherwise
-Walrus({ local: { nodeCount: 4 } });        // tune the local cluster (ignored on live nets)
-
-Seal({ signer: alice });                    // signer used only on localnet
-Deepbook({ local: { signer, ... } });       // local-deploy fields used only on localnet
-DeepbookMarketMaker({ pools: [...] });      // continuous liquidity (any network)
-```
-
-There's no `override:` field on the composite factories today. Canonical deployments come from the
-in-tree `knownDeployments` registry; for pinning a private fork, reach for `KnownPackage(...)`
-explicitly (or fork `knownDeployments` itself if you're authoring a custom factory).
-
-Yield the narrow inner tags directly when you only need a slice — `yield* WalrusNodesTag`,
-`yield* SealKeyServerTag`, `yield* DeepbookCoreTag`. The admin-side tags (`WalrusAdminTag`,
-`SealKeyManagerTag`, `DeepbookAdminTag`) only exist on localnet — yielding them from code that may
-run against testnet/mainnet will fail at acquire time.
-
-## `Dev(opts)`
-
-Run a long-running host process — usually a Vite dev server.
-
-```ts
-Dev({
-	command: 'vite',
-	args: ['--port', '5173'],
-	port: 5173, // preferred host port
-	ready: { kind: 'http', path: '/', expectedStatus: 200 },
-	needs: [hello, bindings], // hold start until ready
-});
-```
-
-Surfaces a routed `http://dev.<app>.localhost` URL alongside the host port. The manifest's
-`app.dev.url` carries it; Playwright's `webServer` config reads from there.
-
-## `Wallet(opts)`
-
-The dev-only signing-server UI. Opt-in; `devstack(...)` does not auto-mount it.
-
-```ts
-Wallet({ accounts: [alice, bob] });
-```
-
-Exposes a localhost HTTP API that signs transactions with the resolved accounts' keypairs. Allowed
-origins, port, and bind address are configurable.
-
-## `Faucet(opts?)`
-
-The per-coin funding-strategy registry that backs `Account({ funding })`. `devstack(...)`
-auto-mounts a `Faucet()` Ref — explicit `Faucet({ strategies: [...] })` is only needed when you want
-to register additional strategies (a `KnownPackage` coin, a partner faucet, a custom AMM bridge).
-
-```ts
-import { Faucet } from '@mysten-incubation/devstack';
-import { partnerStrategy } from './strategies/partner.js';
-
-Faucet({ strategies: [partnerStrategy] });
-```
-
-User-supplied strategies append to the registry alongside the auto-registered ones
-(`suiHttpStrategy` from `Sui()`, `walExchangeStrategy` from `Walrus({ local })`,
-`treasuryCapMintStrategy` per `Package(...)`). See the [Faucet reference](./faucet) for built-in
-strategies, `defineStrategy`, and the `FaucetRequestError` taxonomy.
-
-## `Codegen(opts)`
-
-The code-emit Ref. With no `emitters` field, defaults to all three built-in emitters —
-`BindingsEmitter` (Move → TS bindings), `StackHandleEmitter` (typed
-`accounts`/`services`/`extras`/`captured`/`packages` handles), and `DappKitConfigEmitter`
-(`devstackDappKitConfig` partial). Override `emitters` to swap per-emitter options or add custom
-emitters.
-
-```ts
-// Default: all three built-ins + ./src/generated/ output.
-Codegen({ packages: [hello, world] });
-
-// Explicit: customise per-emitter options. Built-ins live under /advanced.
-import {
-	BindingsEmitter,
-	StackHandleEmitter,
-	DappKitConfigEmitter,
-} from '@mysten-incubation/devstack/advanced';
-
-Codegen({
-	packages: [hello, deepbookV3],
-	emitters: [
-		BindingsEmitter(),
-		StackHandleEmitter(),
-		DappKitConfigEmitter({ enableBurnerWallet: false }),
-	],
-});
-```
-
-`output` is optional and defaults to `./src/generated/`. Override only when you need a non-standard
-path (rare).
-
-See [Codegen reference](./codegen) for the emitter plug-in interface and the full output layout.
+Programmatic runtime embedding. Returns `{ start, stop, awaitShutdown, events, state }`.
