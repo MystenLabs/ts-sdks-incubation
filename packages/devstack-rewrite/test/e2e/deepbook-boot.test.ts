@@ -7,6 +7,11 @@
 // compiles, validates (no `__MissingProvidersError`), and the resulting
 // Stack handle exposes a `deepbook/<name>` provided tag id.
 //
+// Unsupported local sub-features such as pools, Pyth, margin, server,
+// indexer, and market-maker are intentionally absent from the public
+// local options until they have real acquire behavior. The type-level
+// refusals live in `test/plugins/deepbook/type-refusal.test-d.ts`.
+//
 // This is NOT a docker-driven boot — that lives in the (future)
 // `deepbook-real-boot.test.ts` once the Move-publish substrate path
 // lands. The deepbook acquire body today short-circuits to a
@@ -43,25 +48,16 @@ describe('deepbook + sui.local() composes via defineDevstack', () => {
 		expect(ids).toContain('deepbook/main');
 	});
 
-	it('local mode pools spec threads through unchanged', () => {
+	it('local mode threads the publisher account ref through consumes', () => {
 		const publisher = account('publisher');
 		const dex = deepbook({
 			mode: 'local',
 			publisher,
 			name: 'arena',
-			pools: [
-				{
-					name: 'sui_usdc',
-					base: 'SUI',
-					quote: 'USDC',
-					tickSize: 1_000n,
-					lotSize: 100_000_000n,
-					minSize: 1_000_000_000n,
-				},
-			],
 		});
 		expect(dex.provides.id).toBe('deepbook/arena');
 		expect(dex.kind).toBe('composite');
+		expect(dex.consumes.map((tag) => tag.id)).toEqual(['sui', 'account/publisher']);
 	});
 
 	it('known mode wraps a canonical deployment', () => {

@@ -44,6 +44,7 @@ describe('discoverIdentity', () => {
 		writeFileSync(join(root, 'package.json'), JSON.stringify({ name: '@scope/wallet-demo' }));
 		const ident = discoverIdentity({ cwd: child });
 		expect(ident.app).toBe('wallet-demo');
+		expect(ident.stack).toBe('main');
 	});
 
 	it('uses DEVSTACK_STACK when no stack option is passed', () => {

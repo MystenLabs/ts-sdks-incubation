@@ -30,6 +30,19 @@ export const _localKnown = deepbookFor.for(localNet).known({
 	registryId: '0xreg',
 });
 
+// --- Negative: local mode does not expose unsupported feature options ----
+// @ts-expect-error — local pools are not a public option until they acquire real behavior
+export const _localPoolsRefused = deepbookFor.for(localNet).local({ publisher, pools: [] });
+
+export const _localMarketMakerRefused = deepbookFor.for(localNet).local({
+	publisher,
+	// @ts-expect-error — market-maker cannot be configured while it has no real acquire path
+	marketMaker: {
+		signer: publisher,
+		strategy: { kind: 'bps', spreadBps: 10, levelSpacingBps: 100, levels: 3 },
+	},
+});
+
 // --- Positive: live mode allows .known -----------------------------------
 export const _liveKnown = deepbookFor.for(liveNet).known({
 	packageId: '0xpkg',

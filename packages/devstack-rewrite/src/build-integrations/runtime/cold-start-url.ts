@@ -17,6 +17,9 @@
 //     plugin).
 //   - `<app>` is the un-scoped app name (from cwd's `package.json` or
 //     an explicit override).
+//   - `<stack-prefix>` comes from an explicit stack, `DEVSTACK_STACK`,
+//     or the `main` default. Package metadata is not a stack selector
+//     for build integrations; it only supplies the app name.
 //   - `<stack-prefix>` is empty for the `main` stack and `<stack>.`
 //     otherwise. Matches the router's hostname-minting rule so
 //     conventional and post-manifest URLs converge.
@@ -36,6 +39,7 @@ import { readFileSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
 
 import { NoConventionalRouteError } from './errors.ts';
+import { resolveBuildIntegrationStack } from './discover.ts';
 
 /** One row of the conventional-route table. The supervisor's router
  *  plugin emits a `Map<endpointName, ConventionalRoute>` from its
@@ -58,7 +62,7 @@ export interface ColdStartUrlOptions {
 	 *  don't pass a table will always throw, which is the right
 	 *  behavior for "no router plugin = no fallback". */
 	readonly routes: ReadonlyMap<string, ConventionalRoute>;
-	/** Stack name. Defaults to `$DEVSTACK_STACK ?? 'main'`. */
+	/** Stack name. Defaults through `$DEVSTACK_STACK`, then `'main'`. */
 	readonly stack?: string;
 	/** App name (un-scoped). Defaults to reading `package.json` at
 	 *  `cwd` (with the `@scope/` prefix stripped) and finally to
@@ -136,8 +140,8 @@ export const coldStartUrl = (endpoint: string, opts: ColdStartUrlOptions): strin
 				`Check the endpoint name or write the manifest first via \`devstack up\`.`,
 		});
 	}
-	const stack = opts.stack ?? process.env.DEVSTACK_STACK ?? 'main';
 	const cwd = opts.cwd ?? process.cwd();
+	const stack = resolveBuildIntegrationStack(opts.stack);
 	const app = opts.app ?? readAppName(cwd) ?? basename(cwd);
 	return conventionalRouteUrl({
 		route,

@@ -1,10 +1,8 @@
 // Deepbook plugin — public user-facing types.
 //
-// Per `api-surface-design.md` §8 Example 5: the deepbook composite
-// accepts a pool list with symbolic `base` / `quote` strings, an
-// optional pyth feed list, an optional margin block, an optional
-// market-maker block. This file declares those shape types; the
-// composite factory in `index.ts` consumes them.
+// This file declares the DeepBook resolved-value and helper shapes.
+// The local factory in `index.ts` only accepts options that acquire
+// real behavior in the current implementation.
 //
 // Substrate-blindness rule: nothing here references a specific
 // account / coin / package member's resolved value — the references
@@ -38,8 +36,7 @@ export interface PythFeed {
 	readonly initialPrice: bigint;
 }
 
-/** Pyth options — what the user threads through `deepbook({pyth})`.
- *  `pusher` is an account MEMBER ref (direct ref, not magic string). */
+/** Pyth options. `pusher` is an account MEMBER ref, not a magic string. */
 export interface PythOptions {
 	readonly pusher: AccountMemberAlias;
 	readonly feeds: ReadonlyArray<PythFeed>;

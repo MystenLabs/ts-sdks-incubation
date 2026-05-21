@@ -1,17 +1,11 @@
-// Walrus registry publish — narrow tag fan-out with mode-based
-// asymmetric publishing.
+// Walrus registry publish — mode-based registry contribution shapes.
 //
 // Distilled-doc invariant (06-walrus.md §"Hard requirements" item
-// 14): `walrusKnownDeployment` MUST NOT publish the admin tag. Local
-// cluster publishes 4-of-4 tags (network + nodes + proxy + admin);
-// known publishes 3-of-4 (no admin) — and only when all three URLs
-// (`proxyUrl`, `aggregatorUrl`, `publisherUrl`) are present (item 15).
-//
-// Architecture (composite-primitive doc §AsymmetricTagFanout): the
-// mode-narrowed factory namespace handles the type-level asymmetry —
-// `walrusFor(net).local` exposes `WalrusAdminTag`, `walrusFor(net).known`
-// doesn't. This file is the *runtime* publishing layer for the
-// downstream registries:
+// 14): `walrusKnownDeployment` MUST NOT publish an admin handle. The
+// current public shape carries admin on `WalrusResolved.admin`: local
+// mode exposes a non-null admin value, and known mode sets it to null.
+// This file is the runtime publishing layer for the downstream
+// registries:
 //
 //   - WalrusStateRegistry  — `{name, systemObjectId}` entry. Local
 //                            uses `opts.name`; known uses the fixed
@@ -19,7 +13,7 @@
 //   - EndpointRegistry     — local publishes `walrus-aggregator` +
 //                            `walrus-publisher` + N × `walrus-node-<i>`.
 //                            Known publishes nothing (the URLs ride
-//                            on the WalrusProxyTag's resolved value).
+//                            on the WalrusResolved value).
 //   - PackageRegistry      — local only: `walrus.<name>` entry.
 //
 // Following the package plugin's pattern, contributions land via

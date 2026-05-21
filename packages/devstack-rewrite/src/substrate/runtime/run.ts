@@ -222,7 +222,7 @@ export const superviseStackEffect = <R = Scope.Scope>(
 					}
 					return;
 				}
-				const outcome = yield* Effect.race(
+				const outcome = yield* Effect.raceFirst(
 					startup.runInitialAcquire.pipe(Effect.as('booted' as const)),
 					handle.awaitShutdown.pipe(Effect.as('shutdown' as const)),
 				);

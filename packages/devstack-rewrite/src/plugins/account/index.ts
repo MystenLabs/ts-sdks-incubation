@@ -10,8 +10,8 @@
 //   account('alice')                                  // default ephemeral
 //   account('alice', { kind: 'ephemeral', name: 'alice', fund: 5_000_000_000n })
 //   account('alice', { kind: 'keystore', name: 'alice', path: '~/.sui/keystore', aliasOrAddress: 'alice' })
-//   account('alice', { kind: 'env',      name: 'alice', var: 'ALICE_PRIVATE_KEY' })
-//   account('alice', { kind: 'inline',   name: 'alice', secretKey: 'suiprivkey1...' })
+//   account('alice', { kind: 'env',      name: 'alice', key: 'ALICE_PRIVATE_KEY' })
+//   account('alice', { kind: 'inline',   name: 'alice', privateKey: 'suiprivkey1...' })
 //   account('alice', { kind: 'signer',   name: 'alice', signer: hardwareWallet })
 //   account('alice', { kind: 'impersonate', name: 'alice', address: '0xabc...' })
 //

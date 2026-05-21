@@ -38,4 +38,57 @@ describe('release surface static checks', () => {
 		expect(browserIndex).toContain('../runtime/browser.ts');
 		expect(browserIndex).not.toContain('../runtime/index.ts');
 	});
+
+	it('keeps root and substrate barrels on public vocabulary only', () => {
+		const root = readText('src/index.ts');
+		const substrate = readText('src/substrate/index.ts');
+
+		for (const leaked of [
+			'ContainerRuntimeService',
+			'IdentityContext',
+			'PluginErrorContribution',
+			'LifecycleFact',
+			'chainProbeFor',
+			'ERROR_TAGS',
+			'CoinRegistryService',
+			'coinRegistryLayer',
+			'discoverCoinsFromPublish',
+			'performMint',
+			'makeWalletRoutable',
+			'startHttpServer',
+			'makeWalletCodegen',
+			'makeSealManagerTag',
+			'sealManagerTagId',
+			'SealManagerTagId',
+		]) {
+			expect(root).not.toContain(leaked);
+			expect(substrate).not.toContain(leaked);
+		}
+
+		expect(root).toContain('type SealResolved');
+
+		expect(substrate).not.toMatch(/^export \* from/m);
+		for (const privateModule of [
+			'./cross-process.ts',
+			'./events.ts',
+			'./identity.ts',
+			'./projection.ts',
+			'./state-store.ts',
+		]) {
+			expect(substrate).not.toContain(privateModule);
+		}
+	});
+
+	it('pins build-integration manifest version to the writer version', () => {
+		const writer = readText('src/substrate/runtime/manifest/manifest.ts');
+		const reader = readText('src/build-integrations/runtime/read-stack-context.ts');
+
+		const writerVersion = writer.match(/CURRENT_MANIFEST_VERSION = (\d+) as const/);
+		const readerVersion = reader.match(/CONSUMER_MANIFEST_VERSION = (\d+) as const/);
+
+		expect(writerVersion?.[1]).toBeDefined();
+		expect(readerVersion?.[1]).toBe(writerVersion?.[1]);
+		expect(reader).toContain('ManifestEnvelopeSchema, type ManifestEnvelope');
+		expect(reader).toContain('../../substrate/manifest.ts');
+	});
 });

@@ -11,8 +11,11 @@
 //   2. `override` argument — caller-explicit path. Same precedence
 //      semantics as the env var, one rung lower.
 //   3. Walk up from `opts.cwd ?? process.cwd()`. At each directory,
-//      check `<stateDir>/stacks/<stack>/manifest.json`. The walk stops
-//      at the filesystem root.
+//      check `<stateDir>/stacks/<stack>/manifest.json`. Build
+//      integrations resolve `<stack>` from explicit option, then
+//      `DEVSTACK_STACK`, then `main`; package metadata is app identity,
+//      not an implicit manifest stack selector. The walk stops at the
+//      filesystem root.
 //
 // Stack-scoped ONLY. The supervisor writes to
 // `<stateDir>/stacks/<stack>/manifest.json` exclusively; a hit at a
@@ -29,6 +32,7 @@ import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
 import { ManifestDiscoveryError } from './errors.ts';
+import { DEFAULT_STACK_NAME } from '../../api/inference-network.ts';
 
 /** Default name of the supervisor's per-user state directory. Mirrors
  *  the L0 path resolver. Held here as a literal so the discover walk
@@ -36,8 +40,17 @@ import { ManifestDiscoveryError } from './errors.ts';
 export const DEFAULT_STATE_DIR = '.devstack';
 
 /** Default stack name when neither `opts.stack` nor `$DEVSTACK_STACK`
- *  is set. Mirrors the supervisor's `main` default. */
-export const DEFAULT_STACK = 'main';
+ *  yields a useful value. */
+export const DEFAULT_STACK = DEFAULT_STACK_NAME;
+
+export const resolveBuildIntegrationStack = (
+	explicit: string | undefined,
+	env: Readonly<Record<string, string | undefined>> = process.env,
+): string => {
+	const selected = explicit ?? env.DEVSTACK_STACK;
+	const trimmed = selected?.trim();
+	return trimmed !== undefined && trimmed.length > 0 ? trimmed : DEFAULT_STACK;
+};
 
 export interface DiscoverManifestPathOptions {
 	/** Caller-supplied override path. Bypasses the walk-up but is still
@@ -47,7 +60,7 @@ export interface DiscoverManifestPathOptions {
 	/** Starting directory for the walk-up. Defaults to
 	 *  `process.cwd()`. */
 	readonly cwd?: string;
-	/** Stack name. Defaults to `$DEVSTACK_STACK ?? 'main'`. */
+	/** Stack name. Defaults through `$DEVSTACK_STACK`, then `'main'`. */
 	readonly stack?: string;
 	/** State-dir name. Defaults to `$DEVSTACK_STATE_DIR ?? '.devstack'`.
 	 *  Absolute paths are honored — the walk-up degenerates into a
@@ -104,9 +117,9 @@ export function discoverManifestPath(opts: DiscoverManifestPathOptions = {}): st
 		}
 		return undefined;
 	}
-	const stack = opts.stack ?? env.DEVSTACK_STACK ?? DEFAULT_STACK;
-	const stateDir = opts.stateDir ?? env.DEVSTACK_STATE_DIR ?? DEFAULT_STATE_DIR;
 	const startDir = opts.cwd ?? process.cwd();
+	const stack = resolveBuildIntegrationStack(opts.stack, env);
+	const stateDir = opts.stateDir ?? env.DEVSTACK_STATE_DIR ?? DEFAULT_STATE_DIR;
 	let dir = resolve(startDir);
 	while (true) {
 		const candidate = join(dir, stateDir, 'stacks', stack, 'manifest.json');

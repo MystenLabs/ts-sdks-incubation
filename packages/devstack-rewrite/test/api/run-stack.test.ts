@@ -17,7 +17,7 @@
 //   4. Subscribing to `state.changes` BEFORE `start` observes the
 //      identity update emitted at boot.
 
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -121,6 +121,37 @@ describe('api/run-stack', () => {
 
 		await Effect.runPromise(handle.stop);
 		await Effect.runPromise(handle.awaitShutdown);
+	}, 30_000);
+
+	it('infers stack name from appRoot package metadata when no explicit stack is set', async () => {
+		const appRoot = mkdtempSync(join(tmpdir(), 'run-stack-infer-app-'));
+		writeFileSync(join(appRoot, 'package.json'), JSON.stringify({ name: '@org/inferred-stack' }));
+		const runtimeRoot = mkdtempSync(join(tmpdir(), 'run-stack-infer-state-'));
+		const priorStack = process.env.DEVSTACK_STACK;
+		try {
+			delete process.env.DEVSTACK_STACK;
+			const stack = defineDevstack(leaf);
+			const handle = runStack(stack, {
+				appRoot,
+				identity: { app: 'run-stack-infer', network: 'test:local' },
+				runtimeRoot,
+			});
+
+			try {
+				await Effect.runPromise(handle.start);
+
+				const snapshot = await Effect.runPromise(SubscriptionRef.get(handle.state));
+				expect(snapshot.identity.stack).toBe('inferred-stack');
+			} finally {
+				await Effect.runPromise(handle.stop);
+				await Effect.runPromise(handle.awaitShutdown);
+			}
+		} finally {
+			if (priorStack === undefined) delete process.env.DEVSTACK_STACK;
+			else process.env.DEVSTACK_STACK = priorStack;
+			rmSync(appRoot, { recursive: true, force: true });
+			rmSync(runtimeRoot, { recursive: true, force: true });
+		}
 	}, 30_000);
 
 	it('awaitShutdown without start is a no-op', async () => {

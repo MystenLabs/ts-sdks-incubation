@@ -1,4 +1,4 @@
-// File emission: stage-and-swap atomic write + idempotent no-touch.
+// File emission: per-file atomic write + idempotent no-touch.
 //
 // Distilled-doc § "No-touch on no change": when inputs are unchanged,
 // file mtimes do not move. This is load-bearing for dev-server HMR
@@ -12,10 +12,9 @@
 //   3. Otherwise atomic-write via the substrate's `atomicWriteFile`
 //      primitive: tempfile + fsync + rename. Apply mode.
 //
-// The orchestrator's outer stage-and-swap (one staging dir per cycle,
-// one rename promote — distilled-doc §"Atomic promotion") is layered
-// ABOVE this per-file primitive. Per-file no-touch defends the
-// staging dir's content; the outer rename promotes it to user-visible.
+// There is no cycle-level staging directory today. Each generated
+// file is promoted independently through the substrate atomic-write
+// primitive.
 
 import { Effect, FileSystem } from 'effect';
 

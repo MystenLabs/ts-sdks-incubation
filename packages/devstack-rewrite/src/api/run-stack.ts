@@ -51,14 +51,15 @@ import {
 } from '../orchestrators/runtime-composition.ts';
 import type { Stack } from './define-devstack.ts';
 import type { AnyMember } from '../substrate/plugin.ts';
+import { resolveStackName } from './inference-network.ts';
 
 // -----------------------------------------------------------------------------
 // Public types
 // -----------------------------------------------------------------------------
 
-/** Identity overrides for `runStack`. Each field falls back to env
- *  (`DEVSTACK_APP`, `DEVSTACK_STACK`, `DEVSTACK_NETWORK`) and then to a
- *  default that's reasonable for a single-process embedded run. */
+/** Identity overrides for `runStack`. Stack falls back through the
+ *  shared stack-name resolver (`DEVSTACK_STACK`, package metadata,
+ *  then `main`). */
 export interface RunStackIdentityOptions {
 	readonly app?: string;
 	readonly stack?: string;
@@ -119,10 +120,13 @@ export interface RunHandle {
 const resolveIdentity = (
 	stack: Stack<ReadonlyArray<AnyMember>>,
 	opts: RunStackIdentityOptions | undefined,
+	cwd: string,
 ): Identity => {
 	const app = opts?.app ?? process.env.DEVSTACK_APP ?? 'devstack';
-	const stackNameStr =
-		opts?.stack ?? stack.options.stackName ?? process.env.DEVSTACK_STACK ?? 'main';
+	const stackNameStr = resolveStackName({
+		explicit: opts?.stack ?? stack.options.stackName,
+		cwd,
+	});
 	const network = opts?.network ?? process.env.DEVSTACK_NETWORK ?? 'sui:local';
 	return {
 		app: appName(app),
@@ -170,9 +174,9 @@ export const runStack = (
 	stack: Stack<ReadonlyArray<AnyMember>>,
 	opts: RunStackOptions = {},
 ): RunHandle => {
-	const identity = resolveIdentity(stack, opts.identity);
 	const runtimeRoot = resolveRuntimeRoot(opts.runtimeRoot);
 	const appRoot = opts.appRoot ?? process.cwd();
+	const identity = resolveIdentity(stack, opts.identity, appRoot);
 	const codegen = opts.codegen ?? stack.options.codegen;
 
 	const supervisedStack = {

@@ -64,6 +64,7 @@ import type {
 	SuiLocalOptions,
 	SuiOptions,
 } from './mode/spec.ts';
+import { parseDevstackNetwork } from '../../api/inference-network.ts';
 
 // ---------------------------------------------------------------------------
 // Tag — the resolved value all consumers read
@@ -88,26 +89,14 @@ export const SuiTag = defineTag<'sui', SuiClient>('sui', 'sui');
 const resolveDefaultMode = (): SuiOptions => {
 	const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process
 		?.env?.DEVSTACK_NETWORK;
-	switch (env) {
-		case undefined:
-		case 'localnet':
+	const parsed = parseDevstackNetwork(env);
+	switch (parsed.mode) {
+		case 'local':
 			return { mode: 'local' };
-		case 'testnet':
-			return { mode: 'live', network: 'testnet' };
-		case 'mainnet':
-			return { mode: 'live', network: 'mainnet' };
-		case 'devnet':
-			return { mode: 'live', network: 'devnet' };
-		case 'mainnet-fork':
-			return { mode: 'fork', upstream: 'mainnet' };
-		case 'testnet-fork':
-			return { mode: 'fork', upstream: 'testnet' };
-		case 'devnet-fork':
-			return { mode: 'fork', upstream: 'devnet' };
-		default:
-			// Unknown env value falls through to local; the surface layer
-			// can promote this to an actionable error if needed.
-			return { mode: 'local' };
+		case 'live':
+			return { mode: 'live', network: parsed.network };
+		case 'fork':
+			return { mode: 'fork', upstream: parsed.upstream };
 	}
 };
 

@@ -17,9 +17,8 @@
 //   - sorts object keys (deterministic re-emit, distilled-doc
 //     invariant "Deterministic re-emit"),
 //   - quotes identifier-unsafe keys with double-quoted strings,
-//   - serialises bigints as quoted decimal strings (today's v3
-//     policy; distilled-doc open question §"Bigint serialization"
-//     defers a typed-wrapper alternative),
+//   - serialises bigints as quoted decimal strings for
+//     `BigInt(<string>)` consumers,
 //   - refuses functions / symbols / undefined / circular refs with a
 //     typed render error,
 //   - emits arrays and records as readonly literal forms.
@@ -78,7 +77,16 @@ export const renderFile = (input: RenderInput): string | CodegenRenderError => {
 	}
 	lines.push('');
 	if (input.imports && input.imports.length > 0) {
-		for (const imp of input.imports) lines.push(imp);
+		for (const imp of input.imports) {
+			if (isForbiddenGeneratedImport(imp)) {
+				return new CodegenRenderError({
+					emitterName: input.emitterName,
+					outputPath: input.outputPath,
+					detail: `generated files must not import devstack source: ${imp}`,
+				});
+			}
+			lines.push(imp);
+		}
 		lines.push('');
 	}
 	// Stable export order: keys lexicographically sorted.
@@ -131,10 +139,7 @@ const tryRender = (value: unknown, seen: Set<object>, depth = 1): string | Error
 	}
 	if (t === 'boolean') return String(value);
 	if (t === 'bigint') {
-		// Quoted decimal — v3 compatibility. Consumers parse back
-		// via `BigInt(<string>)`. Distilled-doc open question
-		// §"Bigint serialization" pending a typed wrapper.
-		return JSON.stringify(`${value}n`);
+		return JSON.stringify(value.toString());
 	}
 	if (t === 'function' || t === 'symbol') {
 		return new Error(`${t} is not serialisable`);
@@ -176,3 +181,9 @@ const tryRender = (value: unknown, seen: Set<object>, depth = 1): string | Error
 
 const IDENT_RE = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 const isIdentifier = (s: string): boolean => IDENT_RE.test(s);
+
+const isForbiddenGeneratedImport = (line: string): boolean =>
+	/\bfrom\s+["']@mysten-incubation\/devstack(?:-rewrite)?(?:\/|["'])/.test(line) ||
+	/\bimport\s*\(\s*["']@mysten-incubation\/devstack(?:-rewrite)?(?:\/|["'])/.test(line) ||
+	/\bfrom\s+["'][./][^"']*\/src\//.test(line) ||
+	/\bimport\s*\(\s*["'][./][^"']*\/src\//.test(line);

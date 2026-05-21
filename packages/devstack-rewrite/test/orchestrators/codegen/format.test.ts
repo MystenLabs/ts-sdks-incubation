@@ -2,7 +2,8 @@
 //
 // Covers: header banners, sensitive-file extra banner, identifier-
 // safe keys, deterministic key ordering, bigint serialisation,
-// circular-ref refusal, unsupported-value refusal, no-trailing-blank.
+// generated-import safety, circular-ref refusal, unsupported-value
+// refusal, no-trailing-blank.
 
 import { describe, expect, it } from '@effect/vitest';
 
@@ -69,14 +70,35 @@ describe('format/renderFile', () => {
 		expect(m).toBeLessThan(z);
 	});
 
-	it('serialises bigint as a quoted decimal-n string', () => {
+	it('serialises bigint as a quoted decimal string consumable by BigInt()', () => {
 		const out = renderFile({
 			emitterName: 'x',
 			outputPath: 'x.ts',
 			sensitive: false,
 			exports: { v: { big: 12345678901234567890n } },
 		}) as string;
-		expect(out).toContain('"12345678901234567890n"');
+		expect(out).toContain('"12345678901234567890"');
+		expect(BigInt('12345678901234567890')).toBe(12345678901234567890n);
+	});
+
+	it('refuses imports from devstack source or package exports in generated files', () => {
+		const fromPackage = renderFile({
+			emitterName: 'x',
+			outputPath: 'x.ts',
+			sensitive: false,
+			imports: ["import { readStackContext } from '@mysten-incubation/devstack/runtime';"],
+			exports: { v: 1 },
+		});
+		expect(fromPackage).toBeInstanceOf(CodegenRenderError);
+
+		const fromSource = renderFile({
+			emitterName: 'x',
+			outputPath: 'x.ts',
+			sensitive: false,
+			imports: ["import { x } from '../../src/substrate/runtime/manifest/index.ts';"],
+			exports: { v: 1 },
+		});
+		expect(fromSource).toBeInstanceOf(CodegenRenderError);
 	});
 
 	it('refuses circular references', () => {

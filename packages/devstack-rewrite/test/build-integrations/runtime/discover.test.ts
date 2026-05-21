@@ -98,6 +98,13 @@ describe('discoverManifestPath', () => {
 		expect(discoverManifestPath({ cwd: tmp })).toBe(path);
 	});
 
+	it('does not infer stack selection from package metadata when DEVSTACK_STACK is unset', () => {
+		const tmp = mkdtempSync(join(tmpdir(), 'devstack-discover-'));
+		writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: '@scope/wallet-demo' }));
+		const path = makeStackManifest(tmp, 'main');
+		expect(discoverManifestPath({ cwd: tmp })).toBe(path);
+	});
+
 	it('honors DEVSTACK_STATE_DIR for the state-dir override', () => {
 		const tmp = mkdtempSync(join(tmpdir(), 'devstack-discover-'));
 		const dir = join(tmp, '.devstack-alt', 'stacks', 'main');

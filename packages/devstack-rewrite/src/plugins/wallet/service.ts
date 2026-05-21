@@ -29,7 +29,7 @@ import type { FileSystem, Scope } from 'effect';
 
 import type { AccountValue } from '../account/service.ts';
 import type { DappKitConfigBindings } from './codegen.ts';
-import type { WalletBootError } from './errors.ts';
+import { walletBootError, type WalletBootError } from './errors.ts';
 import { resolveOriginPolicy } from './origin-policy.ts';
 import { acquirePairingToken, composePairUrl, tokenPath, type PairingToken } from './pairing.ts';
 import { startHttpServer, type WalletServerConfig, type WalletServerHandle } from './server.ts';
@@ -208,6 +208,16 @@ export const acquireWallet = (
 		yield* Effect.annotateCurrentSpan({
 			'wallet.accountCount': accounts.length,
 		});
+		if (accounts.length === 0) {
+			return yield* Effect.fail(
+				walletBootError({
+					phase: 'no-accounts',
+					message:
+						"wallet resolved zero accounts; add account('name') to the stack or pass accounts explicitly.",
+					hint: "`wallet()` and `wallet({ accounts: 'all' })` require at least one account member in the final stack.",
+				}),
+			);
+		}
 		const accountsByAddress = new Map<string, AccountValue>();
 		for (const acct of accounts) {
 			accountsByAddress.set(acct.address, acct);

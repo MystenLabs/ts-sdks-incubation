@@ -8,7 +8,7 @@
 //   - `walrus(opts?)`           — env-driven mode selection. Defaults
 //                                  to local; overridable via the typed
 //                                  `opts.local` pass-through.
-//   - `walrusFor(network)`      — mode-narrowed factory namespace
+//   - `walrusFor.for(network)`  — mode-narrowed factory namespace
 //                                  (architecture Tension 11). Returns
 //                                  `{ local: …, known: … }` narrowed
 //                                  to the network's mode. Crucially,
@@ -89,6 +89,7 @@ import { makeLocalRoutables } from './routable.ts';
 import { WALRUS_STATE_REGISTRY_KEY, type WalrusStateEntry } from './registry-publish.ts';
 import type { WalrusStorageNode } from './storage-nodes.ts';
 import { swapSuiForWal, type WalExchangeHandle, type WalSwapSdk } from './seed-wal.ts';
+import { parseDevstackNetwork } from '../../api/inference-network.ts';
 
 // ---------------------------------------------------------------------------
 // Tag — the resolved value all consumers read
@@ -155,29 +156,19 @@ type EnvMode =
 const resolveDefaultMode = (): EnvMode => {
 	const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process
 		?.env?.DEVSTACK_NETWORK;
-	switch (env) {
-		case undefined:
-		case 'localnet':
+	const parsed = parseDevstackNetwork(env);
+	switch (parsed.mode) {
+		case 'local':
 			return { mode: 'local' };
-		case 'testnet':
-			return { mode: 'known', network: 'testnet' };
-		case 'mainnet':
-			return { mode: 'known', network: 'mainnet' };
-		case 'devnet':
-			return { mode: 'known', network: 'devnet' };
-		case 'mainnet-fork':
-			return { mode: 'known', network: 'mainnet' };
-		case 'testnet-fork':
-			return { mode: 'known', network: 'testnet' };
-		case 'devnet-fork':
-			return { mode: 'known', network: 'devnet' };
-		default:
-			return { mode: 'local' };
+		case 'live':
+			return { mode: 'known', network: parsed.network };
+		case 'fork':
+			return { mode: 'known', network: parsed.upstream };
 	}
 };
 
 // ---------------------------------------------------------------------------
-// Plugin construction (internal — used by walrus() + walrusFor())
+// Plugin construction (internal — used by walrus() + walrusFor.for())
 // ---------------------------------------------------------------------------
 
 /** Walrus `consumes:` shape — Sui (hard upstream for ordering) plus
@@ -594,8 +585,8 @@ export const walrus = <
  *
  *  Usage:
  *      const network = { mode: 'local', chain: 'sui:localnet' } as const;
- *      walrusFor(network).local({...})    // OK
- *      walrusFor(network).known({...})    // type error: 'known' not in 'local' branch
+ *      walrusFor.for(network).local({...})    // OK
+ *      walrusFor.for(network).known({...})    // type error: 'known' not in 'local' branch
  *
  *  Critically, the fork branch exposes ONLY `.known` — calling
  *  `.local` on a fork-mode network is a **compile error** at the
@@ -613,7 +604,7 @@ export const walrusFor = defineModeNamespace({
 	},
 	fork: {
 		// `.local` is intentionally absent — calling
-		// `walrusFor(forkNetwork).local(...)` is a compile error.
+		// `walrusFor.for(forkNetwork).local(...)` is a compile error.
 		known: (opts: WalrusKnownDeploymentOptions) => buildKnownPlugin(opts),
 		// Defense-in-depth runtime refusal for callers that bypass
 		// the typed namespace (e.g. via dynamic dispatch). The

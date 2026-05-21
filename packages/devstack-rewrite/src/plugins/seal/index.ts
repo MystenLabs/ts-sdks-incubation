@@ -17,8 +17,8 @@
 // Public surface:
 //
 //   - `seal(opts?)`             — env-driven mode selection.
-//   - `sealFor(network).<mode>` — mode-narrowed factory namespace.
-//     Mode-narrowing makes `sealFor(forkNetwork).localKeygen(...)`
+//   - `sealFor.for(network).<mode>` — mode-narrowed factory namespace.
+//     Mode-narrowing makes `sealFor.for(forkNetwork).localKeygen(...)`
 //     a COMPILE-time refusal (architecture Tension 11 + type-prototype
 //     finding #4).
 //
@@ -67,14 +67,15 @@ import {
 	type LocalKeygenDeps,
 } from './mode/local-keygen.ts';
 import {
-	makeSealManagerTag,
 	makeSealTag,
 	type SealLocalKeygenResolved,
 	type SealKnownResolved,
+	type SealResolved,
 } from './registry-publish.ts';
 import { buildSealKeyServerPublicRoute, makeSealRoutable } from './routable.ts';
 import { makeKnownSnapshotable, makeLocalKeygenSnapshotable } from './snapshot.ts';
 import { bootSealService, type SealMode } from './service.ts';
+import { parseDevstackNetwork } from '../../api/inference-network.ts';
 
 // ---------------------------------------------------------------------------
 // Tag exports — distilled-doc §"TypeScript exports consumed elsewhere"
@@ -82,15 +83,13 @@ import { bootSealService, type SealMode } from './service.ts';
 
 export {
 	makeSealTag,
-	makeSealManagerTag,
 	sealTagId,
-	sealManagerTagId,
 	type SealKeyServer,
 	type SealKeyServerEntry,
+	type SealResolved,
 	type SealLocalKeygenResolved,
 	type SealKnownResolved,
 	type SealTagId,
-	type SealManagerTagId,
 } from './registry-publish.ts';
 export type { SealKeyManager } from './key-manager.ts';
 export { type SealError, type SealAnyError, SEAL_ERROR_TAGS } from './errors.ts';
@@ -195,11 +194,6 @@ const buildLocalKeygenPlugin = <SignerName extends string>(
 	// enforced one layer up by the type-narrowed `sealLocalKeygenStrict`
 	// + the typed `signer:` field on SealLocalKeygenOptions.
 	const resolved = resolveLocalKeygenOptions(opts, '<default-seal-version>');
-
-	void makeSealManagerTag(resolved.name); // mode-asymmetric: manager tag produced
-	// only by this branch — see distilled-doc invariant #15. The
-	// manager tag's actual provide site happens at the substrate
-	// layer when projecting the composite's aggregate value.
 
 	const tag = makeSealTag(resolved.name);
 
@@ -335,11 +329,12 @@ const buildLocalKeygenPlugin = <SignerName extends string>(
 
 				const boot = (yield* bootLocalKeygen(deps, resolved)) satisfies SealLocalKeygenResolved;
 
-				// Project the aggregate to the read-side shape. The
-				// admin (manager) tag is projected by a separate plugin
-				// row once the composite-projection layer pattern from
-				// architecture §10.3 is wired through the supervisor.
-				return boot.keyServer;
+				const resolvedValue: SealResolved = {
+					...boot.keyServer,
+					mode: 'local-keygen',
+					manager: boot.keyManager,
+				};
+				return resolvedValue;
 			}),
 		// Dynamic capability factory — receives the resolved
 		// `SealKeyServer` + acquire context. Stamps the REAL
@@ -398,7 +393,11 @@ const buildLivePlugin = (opts: SealLiveOptions) => {
 				const mode: SealMode = { mode: 'live', name, ...opts };
 				const publisher = yield* OnChainArtifactPublisherService;
 				const resolved = (yield* bootSealService(publisher, mode)) as SealKnownResolved;
-				return resolved.keyServer;
+				return {
+					...resolved.keyServer,
+					mode: 'live',
+					manager: null,
+				} satisfies SealResolved;
 			}),
 		capabilities: capabilities(snap, codegen),
 		errorContributions: [{ _tag: 'PluginErrorContribution', errorTags: SEAL_ERROR_TAGS }],
@@ -424,7 +423,11 @@ const buildForkKnownPlugin = (opts: SealForkKnownOptions) => {
 				const mode: SealMode = { mode: 'fork-known', name, ...opts };
 				const publisher = yield* OnChainArtifactPublisherService;
 				const resolved = (yield* bootSealService(publisher, mode)) as SealKnownResolved;
-				return resolved.keyServer;
+				return {
+					...resolved.keyServer,
+					mode: 'fork-known',
+					manager: null,
+				} satisfies SealResolved;
 			}),
 		capabilities: (resolvedKs) => {
 			const bindings: SealBindings = {
@@ -450,28 +453,18 @@ const buildForkKnownPlugin = (opts: SealForkKnownOptions) => {
 const resolveDefaultMode = (): Exclude<SealOptions, { readonly mode: 'local-keygen' }> => {
 	const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process
 		?.env?.DEVSTACK_NETWORK;
-	switch (env) {
-		case undefined:
-		case 'localnet':
+	const parsed = parseDevstackNetwork(env);
+	switch (parsed.mode) {
+		case 'local':
 			// Local-keygen requires a signer; the env-default path
 			// cannot satisfy that. Callers MUST pass opts on localnet.
 			throw new Error(
-				'seal: localnet mode requires opts.signer — pass { mode: "local-keygen", signer } or use sealFor(network).localKeygen({...}).',
+				'seal: localnet mode requires opts.signer — pass { mode: "local-keygen", signer } or use sealFor.for(network).localKeygen({...}).',
 			);
-		case 'testnet':
-			return { mode: 'live', network: 'testnet' };
-		case 'mainnet':
-			return { mode: 'live', network: 'mainnet' };
-		case 'devnet':
-			return { mode: 'live', network: 'devnet' };
-		case 'mainnet-fork':
-			return { mode: 'fork-known', upstream: 'mainnet' };
-		case 'testnet-fork':
-			return { mode: 'fork-known', upstream: 'testnet' };
-		case 'devnet-fork':
-			return { mode: 'fork-known', upstream: 'devnet' };
-		default:
-			throw new Error(`seal: unknown DEVSTACK_NETWORK=${env}`);
+		case 'live':
+			return { mode: 'live', network: parsed.network };
+		case 'fork':
+			return { mode: 'fork-known', upstream: parsed.upstream };
 	}
 };
 
@@ -500,12 +493,12 @@ export const seal = <SignerName extends string = string>(opts?: SealOptions<Sign
  *
  *  Usage:
  *      const local = { mode: 'local' } as const;
- *      sealFor(local).localKeygen({signer})    // OK
- *      sealFor(local).forkKnown(...)           // type error: not in 'local' branch
+ *      sealFor.for(local).localKeygen({signer})    // OK
+ *      sealFor.for(local).forkKnown(...)           // type error: not in 'local' branch
  *
  *      const fork = { mode: 'fork' } as const;
- *      sealFor(fork).forkKnown({upstream})     // OK
- *      sealFor(fork).localKeygen({signer})     // RUNTIME throws ForkIncompatibleError
+ *      sealFor.for(fork).forkKnown({upstream})     // OK
+ *      sealFor.for(fork).localKeygen({signer})     // type error: not in 'fork' branch
  *                                              // (distilled-doc invariant #8)
  *
  *  Distilled-doc invariant #8 (fork-localkeygen-refused): the
@@ -539,7 +532,7 @@ export const sealFor = defineModeNamespace({
 
 /** Direct local-keygen factory with explicit fork-network check.
  *
- *  The mode-narrowed namespace above makes `sealFor(forkNetwork)
+ *  The mode-narrowed namespace above makes `sealFor.for(forkNetwork)
  *  .localKeygen(...)` a TYPE-LEVEL refusal (the `fork` branch has
  *  no `localKeygen` key). Callers that bypass the type narrowing
  *  (e.g. by computing the network at runtime) can use this
@@ -556,7 +549,7 @@ export const sealLocalKeygenStrict = <SignerName extends string>(
 			variant: 'sealLocalKeygen',
 			network: network.chain,
 			message: `seal.localKeygen does not support fork networks. The seal key-server's chain client is JSON-RPC-bound; sui-fork only exposes gRPC for simulate_transaction.`,
-			hint: `Use sealFor({mode:'fork'}).forkKnown({upstream:'<mainnet|testnet|devnet>'}) — routes to the wrapped upstream's known-deployment key server.`,
+			hint: `Use sealFor.for({mode:'fork'}).forkKnown({upstream:'<mainnet|testnet|devnet>'}) — routes to the wrapped upstream's known-deployment key server.`,
 		});
 	}
 	return buildLocalKeygenPlugin(opts);

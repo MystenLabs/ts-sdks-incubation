@@ -152,6 +152,8 @@ export interface ContainerRuntime {
 		expected?: ImageRef,
 	) => Effect.Effect<ImageRef, ContainerRuntimeError>;
 
+	readonly pullImage?: (ref: string) => Effect.Effect<ImageRef, ContainerRuntimeError>;
+
 	/** Idempotently create a docker network. Returns the network's id.
 	 *  No-op (returns existing id) if the network already exists.
 	 *  Networks outlive container scopes — there is NO finalizer; the

@@ -15,12 +15,8 @@
 //      content the user adds between the `# user:` and `# /user:`
 //      markers is preserved verbatim across re-emits.
 //
-// The `.gitignore` is written OUTSIDE the stage-and-swap (distilled-
-// doc §"Re-emit timing window for the gitignore"). The window is
-// human-visible only — only git/humans read this file — and the
-// alternative (writing the gitignore inside staging) means a fresh
-// clone-and-run scenario sees no gitignore on first emit before the
-// swap completes. Outside the swap, it's always present.
+// The `.gitignore` is emitted with the same per-file atomic writer as
+// the rest of the codegen tree.
 
 import { Effect, FileSystem } from 'effect';
 

@@ -45,6 +45,7 @@ import { dockerExec, dockerRunOneShot } from './exec.ts';
 import {
 	ensureImageCached,
 	loadImage as loadImageImpl,
+	pull as pullImageImpl,
 	refOf,
 	saveImage as saveImageStream,
 	tagImage as tagImageImpl,
@@ -189,6 +190,14 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 				mapToContractError,
 				Effect.provide(baseCtx),
 				Effect.withSpan('runtime.docker.contract.ensureNetwork'),
+			);
+
+		const pullImageContractImpl = (ref: string): Effect.Effect<ImageRef, ContainerRuntimeError> =>
+			pullImageImpl(ref).pipe(
+				Effect.map((digest) => refOf(digest, ref)),
+				mapToContractError,
+				Effect.provide(baseCtx),
+				Effect.withSpan('runtime.docker.contract.pullImage'),
 			);
 
 		const ensureContainerImpl = (
@@ -430,6 +439,7 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 
 		return ContainerRuntimeService.of({
 			ensureImage,
+			pullImage: pullImageContractImpl,
 			ensureNetwork: ensureNetworkContractImpl,
 			ensureContainer: ensureContainerImpl,
 			exec: execImpl,

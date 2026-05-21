@@ -134,7 +134,7 @@ describe('cli apply Move bindings codegen', () => {
 					'--stack',
 					'main',
 					'--network',
-					'test:local',
+					'localnet',
 					'apply',
 				]);
 

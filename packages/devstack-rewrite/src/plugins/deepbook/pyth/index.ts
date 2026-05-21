@@ -1,8 +1,7 @@
 // Pyth — INTERNAL module under the deepbook composite (per memory
 // `project_pyth_inside_deepbook`).
 //
-// Pyth is NOT a top-level devstack plugin. It surfaces only as an
-// option block on `deepbook({pyth: {...}})` and as part of the
+// Pyth is NOT a top-level devstack plugin. It is part of the
 // deepbook resolved value (`resolved.pyth: PythHandle | null`).
 //
 // Why an internal module:

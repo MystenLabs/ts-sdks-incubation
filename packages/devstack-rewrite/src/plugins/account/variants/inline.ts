@@ -20,7 +20,7 @@ import type { AccountAcquireError } from '../errors.ts';
 
 export interface InlineVariantArgs {
 	readonly name: string;
-	readonly secretKey: string | Uint8Array;
+	readonly privateKey: string | Uint8Array;
 }
 
 /** Resolve the inline variant. String input takes the bech32 decode
@@ -28,8 +28,8 @@ export interface InlineVariantArgs {
 export const resolveInlineVariant = (
 	args: InlineVariantArgs,
 ): Effect.Effect<ResolvedKeypair, AccountAcquireError> => {
-	if (typeof args.secretKey === 'string') {
-		return decodeBech32Secret(args.secretKey, args.name, 'inline');
+	if (typeof args.privateKey === 'string') {
+		return decodeBech32Secret(args.privateKey, args.name, 'inline');
 	}
-	return resolvedKeypairFromEd25519Bytes(args.secretKey, args.name, 'inline');
+	return resolvedKeypairFromEd25519Bytes(args.privateKey, args.name, 'inline');
 };

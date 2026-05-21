@@ -4,16 +4,8 @@
 // walrus + seal). One supervisor row, many children:
 //
 //   - The Move-package publish (deepbook v3).
-//   - Per-pool creation (whitelisted pools).
-//   - Pyth internal module (`pyth/`) — publishes pyth/wormhole pkgs
-//     + initializes feed prices + optionally runs a pusher fiber.
-//     Pyth is folded INTO deepbook per memory
-//     `project_pyth_inside_deepbook` (not a top-level `pyth()`
-//     factory).
-//   - Optional margin module publish (separate Move package).
-//   - Optional indexer container (Rust binary writing to postgres).
-//   - Optional REST server container (Rust binary reading postgres).
-//   - Optional market-maker fiber (forked-scoped long-running grid).
+//   - Existing local deployments identified by explicit environment
+//     overrides.
 //
 // Mode discipline:
 //
@@ -30,11 +22,8 @@
 //
 //   Local mode:
 //     1. composite-primitive — one row + lifted siblings + inner pts.
-//     2. snapshotable        — `deepbook/<name>` subtree + managed
-//                              containers (indexer + server when on).
+//     2. snapshotable        — `deepbook/<name>` subtree.
 //     3. codegenable         — `deepbook-network` bindings.
-//     4. routable            — `deepbook-server` HTTP endpoint when
-//                              `server` is enabled.
 //
 //   Known mode:
 //     1. snapshotable        — identity guard only.
@@ -45,11 +34,11 @@
 import { Effect } from 'effect';
 
 import { capabilities } from '../../api/define-capabilities.ts';
+import { consumeMember } from '../../api/consume-members.ts';
 import { defineModeNamespace } from '../../api/mode-narrowed-factory.ts';
 import { defineNodePlugin } from '../../api/define-plugin.ts';
 import { defineTag } from '../../api/tag.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
-import type { RoutableDecl } from '../../contracts/routable.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import { SuiTag } from '../sui/index.ts';
 
@@ -63,18 +52,8 @@ import {
 	type DeepbookPluginError,
 } from './errors.ts';
 import { makeDeepbookCodegenable, type DeepbookBindings } from './codegen.ts';
-import { makeServerRoutable } from './routable.ts';
 import { makeKnownSnapshotable, makeLocalSnapshotable } from './snapshot.ts';
-import type {
-	AccountMemberAlias,
-	DeepbookMarginOptions,
-	DeepbookMarketMakerOptions,
-	DeepbookPool,
-	DeepbookPoolSpec,
-	PackageMemberAlias,
-	PythHandle,
-	PythOptions,
-} from './types.ts';
+import type { AccountMemberAlias, DeepbookPool, PythHandle } from './types.ts';
 
 // ---------------------------------------------------------------------------
 // Tag — the resolved value all consumers read
@@ -119,30 +98,11 @@ export interface DeepbookCommonOptions {
 }
 
 /** Local mode wraps an explicitly supplied local deployment. */
-export interface DeepbookLocalOptions extends DeepbookCommonOptions {
+export interface DeepbookLocalOptions<
+	Publisher extends AccountMemberAlias = AccountMemberAlias,
+> extends DeepbookCommonOptions {
 	/** Publisher account — Direct Member Ref (locked API decision). */
-	readonly publisher: AccountMemberAlias;
-	/** Optional source path retained for config parity. */
-	readonly movePackagePath?: string;
-	/** Pool specs require a real local deployment path at runtime. */
-	readonly pools?: ReadonlyArray<DeepbookPoolSpec>;
-	/** Pyth oracle wiring (folded INSIDE deepbook). Optional. */
-	readonly pyth?: PythOptions;
-	/** Margin module wiring. Optional. */
-	readonly margin?: DeepbookMarginOptions;
-	/** Postgres ref (for indexer + server). Direct member ref (typed
-	 *  loosely; the composite checks shape at acquire). */
-	readonly postgres?: unknown;
-	/** Indexer container — defaults off. */
-	readonly indexer?: boolean | { readonly image?: string };
-	/** Server container — defaults off. */
-	readonly server?: boolean | { readonly image?: string };
-	/** Market-maker fiber — defaults off. */
-	readonly marketMaker?: DeepbookMarketMakerOptions;
-	/** Per-coin overrides — coin members whose `provides` carries
-	 *  `coin:<SYMBOL>` literal tag ids. Direct member refs (locked
-	 *  API decision). */
-	readonly coins?: ReadonlyArray<PackageMemberAlias>;
+	readonly publisher: Publisher;
 }
 
 export interface DeepbookKnownOptions extends DeepbookCommonOptions {
@@ -153,8 +113,8 @@ export interface DeepbookKnownOptions extends DeepbookCommonOptions {
 	readonly chain?: string;
 }
 
-export type DeepbookOptions =
-	| ({ readonly mode: 'local' } & DeepbookLocalOptions)
+export type DeepbookOptions<Publisher extends AccountMemberAlias = AccountMemberAlias> =
+	| ({ readonly mode: 'local' } & DeepbookLocalOptions<Publisher>)
 	| ({ readonly mode: 'known' } & DeepbookKnownOptions);
 
 // ---------------------------------------------------------------------------
@@ -168,20 +128,6 @@ const LOCAL_DEPLOYMENT_ENV = [
 	'DEEPBOOK_PACKAGE_OVERRIDE_REGISTRY_ID',
 	'DEEPBOOK_PACKAGE_OVERRIDE_ADMIN_CAP_ID',
 ] as const;
-
-const unsupportedLocalFeatures = (opts: DeepbookLocalOptions): ReadonlyArray<string> => {
-	const features: string[] = [];
-	if (opts.movePackagePath !== undefined) features.push('movePackagePath');
-	if ((opts.pools ?? []).length > 0) features.push('pools');
-	if (opts.pyth !== undefined) features.push('pyth');
-	if (opts.margin !== undefined) features.push('margin');
-	if (opts.postgres !== undefined) features.push('postgres');
-	if (opts.indexer !== undefined && opts.indexer !== false) features.push('indexer');
-	if (opts.server !== undefined && opts.server !== false) features.push('server');
-	if (opts.marketMaker !== undefined) features.push('marketMaker');
-	if ((opts.coins ?? []).length > 0) features.push('coins');
-	return features;
-};
 
 const readRequiredLocalDeployment = (
 	env: Record<string, string | undefined> | undefined,
@@ -212,7 +158,9 @@ const readRequiredLocalDeployment = (
 	});
 };
 
-const buildLocalPlugin = (opts: DeepbookLocalOptions) => {
+const buildLocalPlugin = <const Publisher extends AccountMemberAlias>(
+	opts: DeepbookLocalOptions<Publisher>,
+) => {
 	const name = opts.name ?? DEFAULT_NAME;
 	if (!opts.publisher) {
 		// Synchronous factory-time refusal — mirrors walrus / seal
@@ -233,47 +181,24 @@ const buildLocalPlugin = (opts: DeepbookLocalOptions) => {
 		innerParticipants: [],
 	});
 
-	const indexerEnabled = opts.indexer !== undefined && opts.indexer !== false;
-	const serverEnabled = opts.server !== undefined && opts.server !== false;
+	const publisherMember = consumeMember(opts.publisher);
+	const consumesTuple = [SuiTag, publisherMember.consumesTag] as const;
 
 	return defineNodePlugin({
 		provides: tag,
-		// SuiTag is the hard upstream. Account / package / coin /
-		// postgres members the user passed are NOT in `consumes` here
-		// — the composite walks them directly via the StackMember
-		// references threaded in `opts.publisher` etc. The substrate's
-		// topological scheduler still orders them correctly because the
-		// `acquire` body yields the substrate's services; per-member
-		// resolution happens via the BuildContext.
-		consumes: [SuiTag] as const,
+		consumes: consumesTuple,
 		kind: 'composite',
 		rebootCost: 'heavy',
 		acquire: (ctx) =>
 			Effect.gen(function* () {
 				const sui = ctx.get(SuiTag);
+				const publisher = publisherMember.projectInScope(ctx);
 
 				yield* Effect.annotateCurrentSpan({
 					'deepbook.name': name,
 					'deepbook.chain': sui.chain,
-					'deepbook.poolsRequested': (opts.pools ?? []).length,
-					'deepbook.pythEnabled': opts.pyth !== undefined,
-					'deepbook.marginEnabled': opts.margin !== undefined,
-					'deepbook.indexerEnabled': indexerEnabled,
-					'deepbook.serverEnabled': serverEnabled,
-					'deepbook.marketMakerEnabled': opts.marketMaker !== undefined,
+					'deepbook.publisher': publisher.address,
 				});
-
-				const unsupported = unsupportedLocalFeatures(opts);
-				if (unsupported.length > 0) {
-					return yield* Effect.fail(
-						deepbookPluginError(
-							'publish',
-							`deepbook local mode cannot acquire release-facing ${unsupported.join(
-								', ',
-							)} behavior from the current runtime. Use deepbook({ mode: 'known', packageId, registryId }) for an existing deployment, or remove those options.`,
-						),
-					);
-				}
 
 				const env = (globalThis as { process?: { env?: Record<string, string | undefined> } })
 					.process?.env;
@@ -319,8 +244,8 @@ const buildLocalPlugin = (opts: DeepbookLocalOptions) => {
 				name,
 				app: acquireCtx.identity.app,
 				stack: acquireCtx.identity.stack,
-				indexerEnabled,
-				serverEnabled,
+				indexerEnabled: false,
+				serverEnabled: false,
 			});
 			const bindings: DeepbookBindings = {
 				name,
@@ -346,13 +271,6 @@ const buildLocalPlugin = (opts: DeepbookLocalOptions) => {
 			};
 			const codegen: CodegenableDecl<DeepbookBindings, 'deepbook-network'> =
 				makeDeepbookCodegenable(bindings);
-			if (serverEnabled) {
-				const routable: RoutableDecl = makeServerRoutable({
-					name,
-					containerName: `devstack-${acquireCtx.identity.app}-${acquireCtx.identity.stack}-deepbook-${name}-server`,
-				});
-				return capabilities(composite, snap, codegen, routable);
-			}
 			return capabilities(composite, snap, codegen);
 		},
 		errorContributions: [{ _tag: 'PluginErrorContribution', errorTags: DEEPBOOK_ERROR_TAGS }],
@@ -415,7 +333,9 @@ const buildKnownPlugin = (opts: DeepbookKnownOptions) => {
 // Default option resolution (env-driven)
 // ---------------------------------------------------------------------------
 
-const resolveDefaultMode = (opts?: DeepbookLocalOptions): DeepbookOptions => {
+const resolveDefaultMode = <const Publisher extends AccountMemberAlias>(
+	opts?: DeepbookLocalOptions<Publisher>,
+): DeepbookOptions<Publisher> => {
 	const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process
 		?.env?.DEVSTACK_NETWORK;
 	if (env === undefined || env === 'localnet') {
@@ -444,35 +364,52 @@ const resolveDefaultMode = (opts?: DeepbookLocalOptions): DeepbookOptions => {
 
 /** Env-driven factory. Defaults to local mode on localnet (requires
  *  `publisher`). Other modes route through `deepbookFor(network)`. */
-export const deepbookCore = (opts?: DeepbookLocalOptions | DeepbookOptions) => {
-	const resolved: DeepbookOptions =
+type DeepbookLocalMember<Publisher extends AccountMemberAlias> = ReturnType<
+	typeof buildLocalPlugin<Publisher>
+>;
+type DeepbookKnownMember = ReturnType<typeof buildKnownPlugin>;
+
+export function deepbookCore<const Publisher extends AccountMemberAlias>(
+	opts: { readonly mode: 'local' } & DeepbookLocalOptions<Publisher>,
+): DeepbookLocalMember<Publisher>;
+export function deepbookCore(
+	opts: { readonly mode: 'known' } & DeepbookKnownOptions,
+): DeepbookKnownMember;
+export function deepbookCore<const Publisher extends AccountMemberAlias>(
+	opts: DeepbookLocalOptions<Publisher>,
+): DeepbookLocalMember<Publisher>;
+export function deepbookCore<const Publisher extends AccountMemberAlias>(
+	opts?: DeepbookLocalOptions<Publisher> | DeepbookOptions<Publisher>,
+): DeepbookLocalMember<Publisher> | DeepbookKnownMember {
+	const resolved: DeepbookOptions<Publisher> =
 		opts !== undefined && 'mode' in opts
-			? (opts as DeepbookOptions)
-			: resolveDefaultMode(opts as DeepbookLocalOptions | undefined);
+			? (opts as DeepbookOptions<Publisher>)
+			: resolveDefaultMode(opts as DeepbookLocalOptions<Publisher> | undefined);
 	switch (resolved.mode) {
 		case 'local':
 			return buildLocalPlugin(resolved);
 		case 'known':
 			return buildKnownPlugin(resolved);
 	}
-};
+}
 
 /** Mode-narrowed factory namespace.
  *
  *  Usage:
  *      const local = { mode: 'local', chain: 'sui:localnet' } as const;
- *      deepbookFor(local).local({publisher, pools, ...})    // OK
+ *      deepbookFor(local).local({publisher})                // OK
  *      deepbookFor(local).known({...})                      // OK (always available)
  *
  *      const fork = { mode: 'fork', chain: 'sui:mainnet-fork', upstream: 'mainnet' } as const;
- *      deepbookFor(fork).local({publisher, ...})            // COMPILE ERROR
+ *      deepbookFor(fork).local({publisher})                 // COMPILE ERROR
  *
  *  The fork branch has NO `.local` entry — `deepbookFor(forkNetwork).local`
  *  is a compile-time refusal. Defense-in-depth runtime refusal via
  *  `forkIncompatibleError`. */
 export const deepbookFor = defineModeNamespace({
 	local: {
-		local: (opts: DeepbookLocalOptions) => buildLocalPlugin(opts),
+		local: <const Publisher extends AccountMemberAlias>(opts: DeepbookLocalOptions<Publisher>) =>
+			buildLocalPlugin(opts),
 		known: (opts: DeepbookKnownOptions) => buildKnownPlugin(opts),
 	},
 	live: {

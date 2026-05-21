@@ -69,6 +69,37 @@ const baseLayer = (root: string) =>
 	);
 
 describe('codegen.runEmitCycle', () => {
+	it.effect('evaluates each package emitter once while collecting bindings', () => {
+		const root = `/tmp/codegen-test-${Date.now()}-${Math.random()}`;
+		return Effect.gen(function* () {
+			const fs = yield* FileSystem.FileSystem;
+			let emits = 0;
+			const packageDecl: CodegenableDecl<unknown, string> = {
+				kind: 'codegenable',
+				emitterName: 'package',
+				outputPath: 'package/single.ts',
+				emit: () =>
+					Effect.sync(() => {
+						emits += 1;
+						return {
+							packageBindings: {
+								name: 'single',
+								packageId: '0x1',
+								mvrPlaceholder: '@local/single',
+								sourcePath: '/tmp/source/single',
+								excluded: false,
+							},
+						};
+					}),
+			};
+
+			const result = yield* runEmitCycle({ contributions: [packageDecl] });
+			expect(emits).toBe(1);
+			expect(result.bindings?.packagesEmitted).toEqual(['single']);
+			yield* fs.remove(root, { recursive: true, force: true }).pipe(Effect.ignore);
+		}).pipe(Effect.provide(baseLayer(root)));
+	});
+
 	it.effect('refuses duplicate output paths', () =>
 		Effect.gen(function* () {
 			const result = yield* runEmitCycle({
@@ -238,6 +269,7 @@ describe('codegen.runEmitCycle', () => {
 			expect(result.filesWritten.some((path) => path.endsWith('/coins.ts'))).toBe(true);
 			expect(result.filesWritten.some((path) => path.endsWith('/services.ts'))).toBe(true);
 			expect(result.filesWritten.some((path) => path.endsWith('/packages.ts'))).toBe(true);
+			expect(result.bindings?.packagesEmitted).toEqual([]);
 
 			const accountsModule = yield* Effect.promise(
 				() =>
@@ -257,10 +289,93 @@ describe('codegen.runEmitCycle', () => {
 						readonly services: { readonly sui: { readonly rpc: { readonly url: string } } };
 					}>,
 			);
+			const packagesModule = yield* Effect.promise(
+				() =>
+					import(`${pathToFileURL(`${root}/packages.ts`).href}?t=${Date.now()}`) as Promise<{
+						readonly packages: { readonly mock_usdc: { readonly packageId: string } };
+					}>,
+			);
 			expect(accountsModule.accounts.alice.address).toBe('0xabc');
 			expect(coinsModule.coins.mock_usdc.fullCoinType).toBe('0x1::mock_usdc::MOCK_USDC');
 			expect(servicesModule.services.sui.rpc.url).toBe('http://127.0.0.1:9000');
+			expect(packagesModule.packages.mock_usdc.packageId).toBe('0x1');
 			yield* fs.remove(root, { recursive: true, force: true }).pipe(Effect.ignore);
 		}).pipe(Effect.provide(baseLayer(root)));
 	});
+
+	it.effect(
+		'imports generated package pointer, aggregate, and Move binding modules without sui',
+		() => {
+			const root = `/tmp/codegen-test-${Date.now()}-${Math.random()}`;
+			return Effect.gen(function* () {
+				const fs = yield* FileSystem.FileSystem;
+				const result = yield* runEmitCycle({
+					contributions: [
+						fakeDecl({
+							emitterName: 'package',
+							outputPath: 'package/hello.ts',
+							exports: {
+								packageBindings: {
+									name: 'hello',
+									packageId: '0x123',
+									mvrPlaceholder: '@local/hello',
+									sourcePath: '/tmp/source/hello',
+									excluded: false,
+								},
+							},
+						}),
+					],
+				});
+				expect(result.bindings?.packagesEmitted).toEqual(['hello']);
+				expect(
+					result.bindings?.filesWritten.some((path) => path.endsWith('/bindings/hello/index.ts')),
+				).toBe(true);
+
+				const packageModule = yield* Effect.promise(
+					() =>
+						import(`${pathToFileURL(`${root}/package/hello.ts`).href}?t=${Date.now()}`) as Promise<{
+							readonly packageBindings: { readonly packageId: string };
+						}>,
+				);
+				const packagesModule = yield* Effect.promise(
+					() =>
+						import(`${pathToFileURL(`${root}/packages.ts`).href}?t=${Date.now()}`) as Promise<{
+							readonly packages: { readonly hello: { readonly mvrPlaceholder: string } };
+						}>,
+				);
+				const bindingsModule = yield* Effect.promise(
+					() =>
+						import(
+							`${pathToFileURL(`${root}/bindings/hello/index.ts`).href}?t=${Date.now()}`
+						) as Promise<{
+							readonly ID: string;
+						}>,
+				);
+
+				expect(packageModule.packageBindings.packageId).toBe('0x123');
+				expect(packagesModule.packages.hello.mvrPlaceholder).toBe('@local/hello');
+				expect(bindingsModule.ID).toBe('@local/hello');
+
+				const second = yield* runEmitCycle({
+					contributions: [
+						fakeDecl({
+							emitterName: 'package',
+							outputPath: 'package/hello.ts',
+							exports: {
+								packageBindings: {
+									name: 'hello',
+									packageId: '0x123',
+									mvrPlaceholder: '@local/hello',
+									sourcePath: '/tmp/source/hello',
+									excluded: false,
+								},
+							},
+						}),
+					],
+				});
+				expect(second.bindings?.filesWritten).toEqual([]);
+				yield* fs.remove(root, { recursive: true, force: true }).pipe(Effect.ignore);
+			}).pipe(Effect.provide(baseLayer(root)));
+		},
+	);
 });

@@ -22,7 +22,7 @@ export type SealMode =
 	| ({ readonly mode: 'live' } & LiveModeInputs)
 	| ({ readonly mode: 'fork-known' } & ForkKnownInputs);
 
-export type SealResolved = SealKnownResolved;
+export type SealKnownBootResult = SealKnownResolved;
 
 /** Dispatch on the known-mode discriminator. The publisher argument
  *  is unused by the known paths (no on-chain artifact produce); it's
@@ -30,7 +30,7 @@ export type SealResolved = SealKnownResolved;
 export const bootSealService = (
 	_publisher: OnChainArtifactPublisher,
 	opts: SealMode,
-): Effect.Effect<SealResolved, SealError | OnChainArtifactError, Scope.Scope> => {
+): Effect.Effect<SealKnownBootResult, SealError | OnChainArtifactError, Scope.Scope> => {
 	switch (opts.mode) {
 		case 'live':
 			return acquireLive(opts);

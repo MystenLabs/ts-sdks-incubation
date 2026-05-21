@@ -19,6 +19,10 @@
 // arguments collected in order. No clustering of short flags.
 
 import { CliUsageError } from './errors.ts';
+import {
+	DevstackNetworkParseError,
+	parseDevstackNetworkName,
+} from '../../api/inference-network.ts';
 
 // -----------------------------------------------------------------------------
 // Global flag definitions (shared across every verb)
@@ -45,11 +49,8 @@ export interface ConfirmPolicy {
  *
  *    explicit flag > env var > built-in default
  *
- *  Architecture invariant: stack-name resolution is `--stack >
- *  DEVSTACK_STACK > active-stack file > built-in default`. The
- *  active-stack-file lookup happens in the dispatcher (it needs IO),
- *  not here — `stack` may be `undefined` after parsing and is
- *  filled in later. */
+ *  Stack-name inference is shared with the API surface and happens
+ *  after parsing because it needs cwd/package metadata. */
 export interface GlobalFlags {
 	readonly outputMode: OutputMode;
 	readonly app: string | undefined;
@@ -111,6 +112,17 @@ const parseRendererMode = (value: string, source: string): CliRendererMode => {
 	}
 };
 
+const parseNetworkName = (value: string, source: string): string => {
+	try {
+		return parseDevstackNetworkName(value, source);
+	} catch (err) {
+		if (err instanceof DevstackNetworkParseError) {
+			throw new CliUsageError({ message: err.message });
+		}
+		throw err;
+	}
+};
+
 /** Parse argv into a `GlobalFlags` bundle and a rest tail. Throws
  *  `CliUsageError` on malformed input. Does not consult IO beyond
  *  `env` + `stdinIsTty` (both injected so tests can drive it). */
@@ -122,7 +134,8 @@ export const parseGlobalFlags = (argv: ReadonlyArray<string>, parseEnv: ParseEnv
 	let stack: string | undefined = env[ENV_VARS.STACK];
 	let stateDir: string | undefined = env[ENV_VARS.STATE_DIR];
 	let configPath: string | undefined = env[ENV_VARS.CONFIG_PATH];
-	let network: string | undefined = env[ENV_VARS.NETWORK];
+	let networkRaw: string | undefined = env[ENV_VARS.NETWORK];
+	let networkSource: string = ENV_VARS.NETWORK;
 	const envRenderer = env[ENV_VARS.RENDERER];
 	let renderer =
 		envRenderer === undefined ? undefined : parseRendererMode(envRenderer, ENV_VARS.RENDERER);
@@ -187,7 +200,8 @@ export const parseGlobalFlags = (argv: ReadonlyArray<string>, parseEnv: ParseEnv
 				configPath = popValue('config');
 				break;
 			case 'network':
-				network = popValue('network');
+				networkRaw = popValue('network');
+				networkSource = '--network';
 				break;
 			case 'renderer':
 				renderer = parseRendererMode(popValue('renderer'), '--renderer');
@@ -226,6 +240,8 @@ export const parseGlobalFlags = (argv: ReadonlyArray<string>, parseEnv: ParseEnv
 	// prompt-needing verb is the documented usage error in the
 	// architecture; the dispatcher decides per-verb whether to enforce.
 	// We surface the raw state here.
+	const network =
+		networkRaw === undefined ? undefined : parseNetworkName(networkRaw, networkSource);
 
 	return {
 		outputMode,

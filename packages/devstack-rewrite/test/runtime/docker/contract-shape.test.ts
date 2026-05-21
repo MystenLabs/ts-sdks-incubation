@@ -9,6 +9,7 @@
 //       saveImage → Stream<Uint8Array, ContainerRuntimeError>
 //       loadImage → Effect<ImageRef, ContainerRuntimeError>
 //       tagImage  → Effect<void, ContainerRuntimeError>
+//       pullImage → Effect<ImageRef, ContainerRuntimeError>
 //       removeManaged* → Effect<number, ContainerRuntimeError>
 //   - `exec` carries the optional `ExecOptions` knob.
 //
@@ -31,6 +32,7 @@ import type {
 // the wiring landed.
 const stubRuntime: ContainerRuntime = {
 	ensureImage: () => Effect.succeed<ImageRef>({ digest: 'sha256:stub' }),
+	pullImage: (ref) => Effect.succeed<ImageRef>({ digest: 'sha256:pulled', tag: ref }),
 	ensureNetwork: () => Effect.succeed('net-stub'),
 	ensureContainer: () =>
 		Effect.succeed<ContainerHandle>({
@@ -89,6 +91,13 @@ describe('ContainerRuntime contract surface', () => {
 		Effect.gen(function* () {
 			yield* stubRuntime.tagImage({ digest: 'sha256:abc' }, 'my-restored:latest');
 			// no return; succeeded.
+		}),
+	);
+
+	it.effect('pullImage returns the pulled ImageRef', () =>
+		Effect.gen(function* () {
+			const ref = yield* stubRuntime.pullImage!('mysten/sui:devnet');
+			expect(ref).toEqual({ digest: 'sha256:pulled', tag: 'mysten/sui:devnet' });
 		}),
 	);
 

@@ -10,11 +10,14 @@
 // The manifest-path discovery is owned by `runtime/discoverManifestPath`
 // (env + override + walk-up precedence, stack-scoped only). This module
 // composes that with package.json-driven app-name resolution so cold-
-// start (no manifest yet) still produces a usable triple.
+// start (no manifest yet) still produces a usable triple. Stack
+// selection stays explicit/env/main to match the supervisor-written
+// default path; package metadata identifies the app, not the stack.
 
 import { dirname, resolve } from 'node:path';
 
 import { discoverManifestPath, DEFAULT_STATE_DIR, readAppName } from '../runtime/index.ts';
+import { resolveBuildIntegrationStack } from '../runtime/discover.ts';
 import { ViteIdentityResolutionError } from './errors.ts';
 
 export interface ResolvedIdentity {
@@ -36,7 +39,8 @@ export interface DiscoverOptions {
 	readonly cwd?: string;
 	/** Explicit app name. Overrides env + package.json walk-up. */
 	readonly app?: string;
-	/** Explicit stack name. Overrides `DEVSTACK_STACK`. Defaults to 'main'. */
+	/** Explicit stack name. Overrides `DEVSTACK_STACK`; otherwise
+	 *  defaults to `main`. */
 	readonly stack?: string;
 	/** Explicit state-dir name. Overrides `DEVSTACK_STATE_DIR`. */
 	readonly stateDir?: string;
@@ -49,7 +53,7 @@ export interface DiscoverOptions {
  */
 export const discoverIdentity = (options: DiscoverOptions = {}): ResolvedIdentity => {
 	const cwd = options.cwd ?? process.cwd();
-	const stack = options.stack ?? process.env.DEVSTACK_STACK ?? 'main';
+	const stack = resolveBuildIntegrationStack(options.stack);
 	const stateDirName = options.stateDir ?? process.env.DEVSTACK_STATE_DIR ?? DEFAULT_STATE_DIR;
 
 	const discovered = discoverManifestPath({ cwd, stack, stateDir: stateDirName });

@@ -72,6 +72,7 @@ import { parseGlobalFlags } from '../surfaces/cli/flags.ts';
 import { makeTuiSurface } from '../surfaces/tui/index.ts';
 import { makeSnapshotReader } from './snapshot-reader.ts';
 import { makeQueueCommandPublisher, resolveUpRendererMode } from './up-lifecycle.ts';
+import { resolveStackName } from '../api/inference-network.ts';
 
 // -----------------------------------------------------------------------------
 // Config loader (default-export = Stack)
@@ -167,13 +168,14 @@ interface ResolvedIdentity {
 	readonly appRoot: string;
 }
 
-/** Resolve identity from flags + env. Stack is also inferred from
- *  `<appRoot>/.active` when neither flag nor env carries a value. */
+/** Resolve identity from flags + env. Stack falls through the shared
+ *  cwd/package metadata resolver before the final `main` default. */
 const resolveIdentity = (params: {
 	readonly app: string | undefined;
 	readonly stack: string | undefined;
 	readonly network: string | undefined;
 	readonly stateDir: string | undefined;
+	readonly cwd?: string;
 }): ResolvedIdentity => {
 	const app = params.app ?? process.env.DEVSTACK_APP ?? 'devstack';
 	const stateDir =
@@ -181,24 +183,10 @@ const resolveIdentity = (params: {
 		process.env.DEVSTACK_STATE_DIR ??
 		resolvePath(process.env.HOME ?? process.cwd(), '.devstack');
 	const appRoot = resolvePath(stateDir, app);
-	let stack = params.stack ?? process.env.DEVSTACK_STACK;
-	if (stack === undefined) {
-		const activeFile = resolvePath(appRoot, '.active');
-		if (existsSync(activeFile)) {
-			try {
-				// Inline read — cheap, sync, deterministic at boot. The
-				// node:fs sync read is the canonical "active stack" probe
-				// across both surfaces (CLI + TUI).
-				// eslint-disable-next-line @typescript-eslint/no-require-imports
-				const { readFileSync } = require('node:fs') as typeof import('node:fs');
-				const content = readFileSync(activeFile, 'utf8').trim();
-				if (content.length > 0) stack = content;
-			} catch {
-				// fall through to default
-			}
-		}
-	}
-	stack = stack ?? 'main';
+	const stack = resolveStackName({
+		explicit: params.stack,
+		cwd: params.cwd ?? process.cwd(),
+	});
 	const network = params.network ?? process.env.DEVSTACK_NETWORK ?? 'sui:local';
 	const stackRoot = resolvePath(appRoot, stack);
 	return {
@@ -562,14 +550,10 @@ export const runCli = async (
 	let preFlags;
 	try {
 		preFlags = parseGlobalFlags(argv, { env, stdinIsTty });
-	} catch {
-		// Let the dispatcher render the parse error in its own envelope.
-		preFlags = {
-			app: undefined,
-			stack: undefined,
-			network: undefined,
-			stateDir: undefined,
-		} as { app?: string; stack?: string; network?: string; stateDir?: string };
+	} catch (err) {
+		process.stderr.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
+		process.exitCode = 64;
+		return;
 	}
 	const identity = resolveIdentity({
 		app: preFlags.app,

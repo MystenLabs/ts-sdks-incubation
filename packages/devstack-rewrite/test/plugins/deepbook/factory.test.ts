@@ -22,6 +22,12 @@ describe('deepbook(opts) — primary factory', () => {
 		expect(member.kind).toBe('composite');
 	});
 
+	it('represents the publisher direct-value ref in consumes', () => {
+		const publisher = account('publisher');
+		const member = deepbook({ mode: 'local', publisher });
+		expect(member.consumes.map((tag) => tag.id)).toEqual(['sui', 'account/publisher']);
+	});
+
 	it('produces a leaf-one-shot for known mode', () => {
 		const member = deepbook({
 			mode: 'known',

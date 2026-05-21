@@ -35,7 +35,7 @@ const routes = new Map<string, ConventionalRoute>([
 
 describe('coldStartUrl', () => {
 	it('builds <service>.<app>.localhost for main stack', () => {
-		const url = coldStartUrl('sui-rpc', { routes, app: 'demo' });
+		const url = coldStartUrl('sui-rpc', { routes, app: 'demo', stack: 'main' });
 		expect(url).toBe('http://sui-rpc.demo.localhost:5174');
 	});
 
@@ -48,6 +48,13 @@ describe('coldStartUrl', () => {
 		process.env.DEVSTACK_STACK = 'feat';
 		const url = coldStartUrl('sui-rpc', { routes, app: 'demo' });
 		expect(url).toBe('http://feat.sui-rpc.demo.localhost:5174');
+	});
+
+	it('uses package metadata for app identity but keeps the default stack at main', () => {
+		const tmp = mkdtempSync(join(tmpdir(), 'devstack-cold-start-'));
+		writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: '@org/wallet-demo' }));
+		const url = coldStartUrl('sui-rpc', { routes, cwd: tmp });
+		expect(url).toBe('http://sui-rpc.wallet-demo.localhost:5174');
 	});
 
 	it('throws NoConventionalRouteError for unknown endpoint', () => {

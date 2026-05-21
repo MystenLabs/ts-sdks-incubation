@@ -28,13 +28,15 @@
  *                          persisted (ENOSPC, EROFS).
  *  - `bind-account`      : a consumed account tag failed to resolve at
  *                          acquire time (re-thrown with a wallet phase).
+ *  - `no-accounts`       : account inference resolved to an empty set.
  */
 export type WalletBootPhase =
 	| 'listen'
 	| 'allocate-port'
 	| 'read-token'
 	| 'write-token'
-	| 'bind-account';
+	| 'bind-account'
+	| 'no-accounts';
 
 /** Boot-time wallet error — raised by the plugin's acquire body. */
 export interface WalletBootError {

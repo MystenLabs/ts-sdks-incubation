@@ -88,13 +88,13 @@ export type AccountOptions =
 	| {
 			readonly kind: 'env';
 			readonly name: string;
-			readonly var: string;
+			readonly key: string;
 			readonly funding?: ReadonlyArray<CrossCuttingFundingEntry>;
 	  }
 	| {
 			readonly kind: 'inline';
 			readonly name: string;
-			readonly secretKey: string | Uint8Array;
+			readonly privateKey: string | Uint8Array;
 			readonly funding?: ReadonlyArray<CrossCuttingFundingEntry>;
 	  }
 	| {
@@ -254,12 +254,12 @@ const resolveVariant = (
 		case 'env':
 			return resolveEnvVariant({
 				name: opts.name,
-				varName: opts.var,
+				varName: opts.key,
 			});
 		case 'inline':
 			return resolveInlineVariant({
 				name: opts.name,
-				secretKey: opts.secretKey,
+				privateKey: opts.privateKey,
 			});
 		case 'signer':
 			return resolveSignerVariant({

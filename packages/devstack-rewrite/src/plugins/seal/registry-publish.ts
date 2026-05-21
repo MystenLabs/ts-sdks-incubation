@@ -1,22 +1,9 @@
-// Seal plugin — admin / known-deploy tag fan-out.
-//
-// Distilled-doc invariant: the local-keygen mode produces BOTH the
-// read-side handle (server configs + URL + object id) AND the
-// local-only admin handle (master-key envfile + rotate). The
-// known-deployment modes produce ONLY the read-side handle (we
-// don't own the master key for a remote deployment, so there's no
-// manager surface). Distilled-doc §Hard requirements #15.
-//
-// This file is the SINGLE OWNER of the tag fan-out. It declares
-// the two resolved shapes + the tag-id constructors, and exports a
-// helper to project a local-keygen-resolved state into either tag's
-// shape (so the lifecycle row's resolved value can be projected
-// downstream by either narrow tag).
+// Seal plugin — public resolved value.
 //
 // Tag ids:
 //
-//   - `seal:<name>`           — read-side tag (always produced).
-//   - `seal-manager:<name>`   — admin tag (local-keygen mode only).
+//   - `seal:<name>` — read-side key-server fields plus the local-only
+//                     manager handle when the stack owns the master key.
 //
 // The `<name>` suffix lets multiple seal instances coexist in a stack
 // without colliding on the tag registry (distilled doc §Pain Points
@@ -50,28 +37,22 @@ export interface SealKeyServer {
 	readonly objectId: string;
 }
 
+/** Public Seal resolved value. The key-server fields stay top-level
+ *  so the direct member ref is immediately SDK-ready; local-keygen
+ *  additionally exposes `manager`, while known deployments set it to
+ *  `null` because this stack does not own the master key. */
+export interface SealResolved extends SealKeyServer {
+	readonly mode: 'local-keygen' | 'live' | 'fork-known';
+	readonly manager: SealKeyManager | null;
+}
+
 /** Tag id constructor for the read-side handle. */
 export type SealTagId<Name extends string> = `seal:${Name}`;
 export const sealTagId = <Name extends string>(name: Name): SealTagId<Name> => `seal:${name}`;
 
 /** Construct the read-side tag. */
 export const makeSealTag = <Name extends string>(name: Name) =>
-	defineTag<SealTagId<Name>, SealKeyServer>(sealTagId(name), 'seal');
-
-// ---------------------------------------------------------------------------
-// Admin: SealKeyManager — local-keygen mode ONLY
-// ---------------------------------------------------------------------------
-
-/** Tag id constructor for the admin handle. The `seal-manager:`
- *  prefix is distinct from `seal:` so the substrate's tag registry
- *  can dedup the two cleanly. */
-export type SealManagerTagId<Name extends string> = `seal-manager:${Name}`;
-export const sealManagerTagId = <Name extends string>(name: Name): SealManagerTagId<Name> =>
-	`seal-manager:${name}`;
-
-/** Construct the admin tag. */
-export const makeSealManagerTag = <Name extends string>(name: Name) =>
-	defineTag<SealManagerTagId<Name>, SealKeyManager>(sealManagerTagId(name), 'seal');
+	defineTag<SealTagId<Name>, SealResolved>(sealTagId(name), 'seal');
 
 // ---------------------------------------------------------------------------
 // Projection helpers — narrow the composite's resolved value
@@ -89,14 +70,3 @@ export interface SealLocalKeygenResolved {
 export interface SealKnownResolved {
 	readonly keyServer: SealKeyServer;
 }
-
-/** Project the composite's aggregate to the read-side shape. */
-export const toKeyServerProjection = (
-	resolved: SealLocalKeygenResolved | SealKnownResolved,
-): SealKeyServer => resolved.keyServer;
-
-/** Project the composite's aggregate to the admin shape. Returns
- *  `null` for known-deployment modes (distilled-doc invariant #15). */
-export const toKeyManagerProjection = (
-	resolved: SealLocalKeygenResolved | SealKnownResolved,
-): SealKeyManager | null => ('keyManager' in resolved ? resolved.keyManager : null);

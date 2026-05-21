@@ -112,7 +112,7 @@ describe('cli/main', () => {
 				'--stack',
 				'main',
 				'--network',
-				'test:local',
+				'localnet',
 				'apply',
 			]);
 

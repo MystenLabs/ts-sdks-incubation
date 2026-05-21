@@ -114,9 +114,9 @@ export const WalletTag = defineTag<'wallet', WalletValue>('wallet', 'wallet');
  *     user-app's frontend bundle imports.
  *
  *  Distilled-doc invariant (15-wallet.md "Always explicit"): the
- *  composer NEVER auto-mounts the wallet. The user MUST call
- *  `wallet({ accounts: [alice, bob] })` and pass the result to
- *  `defineDevstack(...)`.
+ *  composer NEVER auto-mounts the wallet. The user calls `wallet()`,
+ *  `wallet({ accounts: 'all' })`, or `wallet({ accounts: [alice, bob] })`
+ *  and passes the result to `defineDevstack(...)`.
  *
  *  ### Security defaults
  *
@@ -145,8 +145,11 @@ export function wallet<const Accounts extends ReadonlyArray<WalletAccountMember>
 export function wallet(
 	opts: Omit<WalletOptions, 'accounts'> & { readonly accounts: typeof WALLET_ACCOUNTS_ALL },
 ): ReturnType<typeof makeWalletMember<readonly []>>;
-export function wallet(opts: WalletOptions): AnyMember {
-	if (opts.accounts === WALLET_ACCOUNTS_ALL) {
+export function wallet(): ReturnType<typeof makeWalletMember<readonly []>>;
+export function wallet(opts?: WalletOptions): AnyMember {
+	const resolvedOpts: WalletOptions =
+		opts ?? ({ accounts: WALLET_ACCOUNTS_ALL } satisfies WalletOptions);
+	if (resolvedOpts.accounts === WALLET_ACCOUNTS_ALL) {
 		// Deferred placeholder. `consumes` carries only `[SuiTag]` —
 		// the composer rewrites the member once it knows which account
 		// members are in the stack (api-surface-design §4 D6). Without
@@ -167,13 +170,13 @@ export function wallet(opts: WalletOptions): AnyMember {
 		// and trigger TS2742 "type cannot be named without a reference
 		// to ./node_modules/.../plugins/wallet" at every example's
 		// default export).
-		const placeholder = makeWalletMember(opts, [] as const);
+		const placeholder = makeWalletMember(resolvedOpts, [] as const);
 		const expander: WalletExpandAccountsAllExpander = (accountMembers) =>
-			makeWalletMember({ ...opts, accounts: accountMembers }, accountMembers);
+			makeWalletMember({ ...resolvedOpts, accounts: accountMembers }, accountMembers);
 		(placeholder as unknown as Record<symbol, unknown>)[WALLET_EXPAND_ACCOUNTS_ALL] = expander;
 		return placeholder;
 	}
-	return makeWalletMember(opts, opts.accounts);
+	return makeWalletMember(resolvedOpts, resolvedOpts.accounts);
 }
 
 function makeWalletMember<Accounts extends ReadonlyArray<WalletAccountMember>>(

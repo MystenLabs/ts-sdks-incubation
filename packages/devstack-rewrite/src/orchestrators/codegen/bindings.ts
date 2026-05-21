@@ -33,10 +33,11 @@ import { generateFromPackageSummary } from '@mysten/codegen';
 import { Context, Effect, FileSystem, Layer } from 'effect';
 import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 
-import type { PackageBindings } from '../../plugins/package/codegen.ts';
 import { capture } from '../../substrate/runtime/observability/subprocess-capture.ts';
 
+import { emitOne } from './emit.ts';
 import { CodegenBindingsFailed } from './errors.ts';
+import { NON_SENSITIVE_FILE_MODE } from './permissions.ts';
 
 // -----------------------------------------------------------------------------
 // Service seam — Move summary + codegen invocation
@@ -91,6 +92,14 @@ export class MoveCodegenService extends Context.Service<MoveCodegenService, Move
 // PackageBindings contributions.
 // -----------------------------------------------------------------------------
 
+export interface PackageBindings {
+	readonly name: string;
+	readonly packageId: string;
+	readonly mvrPlaceholder: string;
+	readonly sourcePath: string | null;
+	readonly excluded: boolean;
+}
+
 export interface EmitBindingsInput {
 	readonly bindingsDir: string;
 	readonly packages: ReadonlyArray<PackageBindings>;
@@ -119,7 +128,6 @@ export const emitBindings = (
 	FileSystem.FileSystem | MoveSummaryRunnerService | MoveCodegenService
 > =>
 	Effect.gen(function* () {
-		const fs = yield* FileSystem.FileSystem;
 		const runner = yield* MoveSummaryRunnerService;
 		const generator = yield* MoveCodegenService;
 		const importExtension = input.importExtension ?? '.ts';
@@ -181,14 +189,6 @@ export const emitBindings = (
 					}),
 				);
 			}
-			// Write each file under `bindingsDir/<relPath>`. The real
-			// `@mysten/codegen` generator emits shared `utils/` plus one
-			// subtree per package, so the generator returns paths already
-			// rooted at the bindings directory.
-			// delegate to the substrate's `atomicWriteFile` directly
-			// (idempotency is at the per-cycle outer swap, not here —
-			// the bindings emitter has a fingerprint cache layered
-			// above this for the unchanged-source path).
 			for (const f of files) {
 				if (f.relPath.includes('..') || f.relPath.startsWith('/')) {
 					return yield* Effect.fail(
@@ -201,7 +201,11 @@ export const emitBindings = (
 					);
 				}
 				const abs = joinPath(input.bindingsDir, f.relPath);
-				yield* writeBytes(fs, abs, f.content).pipe(
+				const outcome = yield* emitOne({
+					path: abs,
+					content: f.content,
+					mode: NON_SENSITIVE_FILE_MODE,
+				}).pipe(
 					Effect.mapError(
 						(cause) =>
 							new CodegenBindingsFailed({
@@ -212,7 +216,9 @@ export const emitBindings = (
 							}),
 					),
 				);
-				filesWritten.push(abs);
+				if (outcome.outcome !== 'unchanged') {
+					filesWritten.push(abs);
+				}
 			}
 			emitted.push(pkg.name);
 		}
@@ -384,18 +390,6 @@ export const layerMystenMoveCodegen: Layer.Layer<MoveCodegenService> = Layer.suc
 
 const joinPath = (...parts: ReadonlyArray<string>): string =>
 	parts.map((p, i) => (i === 0 ? p.replace(/\/+$/, '') : p.replace(/^\/+|\/+$/g, ''))).join('/');
-
-const writeBytes = (
-	fs: FileSystem.FileSystem,
-	path: string,
-	content: string,
-): Effect.Effect<void, unknown> =>
-	Effect.gen(function* () {
-		// Ensure parent dir exists. recursive idempotent.
-		const parent = path.slice(0, path.lastIndexOf('/'));
-		if (parent !== '') yield* fs.makeDirectory(parent, { recursive: true });
-		yield* fs.writeFileString(path, content);
-	});
 
 const parseSummaryStdout = (stdout: string): unknown => {
 	const trimmed = stdout.trim();

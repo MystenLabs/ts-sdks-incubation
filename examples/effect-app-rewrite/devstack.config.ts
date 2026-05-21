@@ -1,9 +1,16 @@
-import { defineDevstack, account } from '@mysten-incubation/devstack-rewrite';
+import {
+	defineDevstack,
+	account,
+	type AnyMember,
+	type Stack,
+} from '@mysten-incubation/devstack-rewrite';
 
 const isProduction = process.env.NODE_ENV === 'production';
 
-export const alice = isProduction
-	? account('alice', { kind: 'env', name: 'alice', var: 'ALICE_PRIVATE_KEY' })
+const alice = isProduction
+	? account('alice', { kind: 'env', name: 'alice', key: 'ALICE_PRIVATE_KEY' })
 	: account('alice');
 
-export default defineDevstack(alice);
+const stack: Stack<ReadonlyArray<AnyMember>> = defineDevstack(alice);
+
+export default stack;

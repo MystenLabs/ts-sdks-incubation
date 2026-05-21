@@ -121,12 +121,8 @@ Closed evidence:
 
 - Package metadata still says `@mysten-incubation/devstack-rewrite` and is private. Final cutover
   rename remains deferred.
-- Build integrations must finish delegating to the shared runtime manifest path, decode, cold-start
-  URL, and dapp-kit slot helpers. Path, slot, and low-risk cold-start formatting are now
-  consolidated; a final manifest/version constant audit remains.
-- Manifest schema/version constants must not diverge at cutover.
-- The root barrel and `./substrate` leak internals such as runtime services, identity internals,
-  registry/cache/mint helpers, wallet server helpers, and error-contribution machinery.
+- Install-from-tarball smoke still needs to import every exported subpath and boot a minimal stack
+  after the final package rename decision.
 
 Acceptance evidence:
 
@@ -151,26 +147,41 @@ Closed evidence:
 - 2026-05-21 Worker E: targeted checks passed:
   `pnpm --filter @mysten-incubation/devstack-rewrite exec vitest run test/build-integrations/release-surface.test.ts test/build-integrations/browser/config.test.ts test/build-integrations/vitest/config.test.ts test/build-integrations/playwright/stack-context.test.ts test/build-integrations/runtime/cold-start-url.test.ts test/build-integrations/vite/cold-start-url.test.ts`
   and targeted `prettier -c`/`oxlint` on touched files.
+- 2026-05-21 Worker Release Surface: root barrel and `./substrate` now exclude runtime service tags,
+  identity context internals, plugin error-contribution machinery, plugin error-tag arrays, coin
+  registry/cache/mint helpers, wallet HTTP/server helpers, and private engine protocol/state
+  modules. Targeted test: `test/build-integrations/release-surface.test.ts` / "keeps root and
+  substrate barrels on public vocabulary only".
+- 2026-05-21 Worker Release Surface: build-integration manifest version parity is pinned against the
+  substrate writer's `CURRENT_MANIFEST_VERSION`, and the runtime reader continues decoding through
+  the shared `ManifestEnvelopeSchema`. Targeted test:
+  `test/build-integrations/release-surface.test.ts` / "pins build-integration manifest version to
+  the writer version".
+- 2026-05-21 Worker Ledger Cleanup: build integrations now resolve the manifest stack as explicit
+  stack option, then `DEVSTACK_STACK`, then `main`; package metadata remains app identity only.
+  Manifest parity and adjacent discovery tests pass.
+- 2026-05-21 Worker Ledger Cleanup: browser-facing static node-import audit passed with no matches
+  in `src/build-integrations/browser` or `src/build-integrations/runtime/browser.ts`.
+- 2026-05-21 Worker Ledger Cleanup: old nested build-integration/sample specifier audit passed with
+  no matches.
+- 2026-05-21 Worker Ledger Cleanup: after build, pack audit passed with required image/setup files
+  present, `samples: 0`, `dist/node_modules: 0`, and `entries: 978`.
+- 2026-05-21 Worker Release Surface: package metadata/exports were re-audited; the final rename to
+  `@mysten-incubation/devstack` remains deferred because this branch still carries the
+  `@mysten-incubation/devstack-rewrite` package identity and matching example imports.
+- 2026-05-21 Worker Release Surface: targeted checks passed:
+  `pnpm --filter @mysten-incubation/devstack-rewrite exec tsc --noEmit --pretty false`,
+  `pnpm --filter @mysten-incubation/devstack-rewrite exec vitest run test/build-integrations/release-surface.test.ts test/build-integrations/manifest-path-parity.test.ts test/build-integrations/runtime/read-stack-context.test.ts test/build-integrations/vitest/config.test.ts test/build-integrations/browser/config.test.ts`,
+  `npm pack --dry-run --json`, and targeted `prettier` on touched release-surface files.
 
 ## P0: Public API ergonomics and unsupported options are not release-quality
 
-- Auto `sui()` is still required manually in configs that should infer it.
-- `stackName` inference from cwd/package metadata is still missing or needs acceptance evidence.
-- Wallet `accounts: 'all'` shorthand must work.
 - `extras`/manifest contribution seam must support values examples need to surface.
 - Cross-plugin references should be direct values, not strings or `.provides` ceremony.
 - Package/coin/action ergonomics must restore the intended surface: `PackageWithCapture`-style
   capture, `pkg.coins[...]`, `pickCreatedByType`, `coin.fromPackage(...)`, and
   `ctx.signAndExecute(account, build)`.
-- Walrus `seedAccounts` must work.
-- Account env/private-key variants must support effect-app prod paths.
-- Seal signer/key-server/server refs must use account/value refs, not `{ accountName: string }`
-  magic strings; key/server refs must be exported where examples need them.
 - DeepBook must expose real defaults/helpers for coins, margin defaults, and `marketMaker`.
-- Sui exposes `image.pull`, but local mode fails at runtime with "not yet wired".
-- Unknown `DEVSTACK_NETWORK` silently falls back to localnet.
-- DeepBook exposes local pools/Pyth/margin/postgres/indexer/server/market-maker/coins options that
-  are rejected or not real during acquire.
 
 Acceptance evidence:
 
@@ -180,22 +191,69 @@ Acceptance evidence:
 - The key examples compile without `as never`, placeholder strings, magic identity strings, or
   handwritten SDK boilerplate that belongs in the substrate/API.
 
-## P0: Codegen contracts are inconsistent
+Closed evidence:
 
-- Codegen comments promise staged atomic promotion, while files and Move bindings are written
-  directly under output paths.
-- Package emitters can run twice, once to collect bindings and again to render files.
-- Bigint formatting emits a string like `"123n"` while comments say consumers call
-  `BigInt(<string>)`.
-- Generated-import proof can skip when `sui` is unavailable, so the always-on gate is weak.
-- Build integrations and generated files must not pull devstack source into browser app bundles.
+- 2026-05-21 Worker Public API: `defineDevstack(account('alice'))` auto-mounts `sui()` for built-in
+  and plugin-author members that consume `SuiTag`, preserves explicit Sui members, and keeps the
+  auto-mounted member in the returned type/runtime tuple. Targeted test:
+  `test/api/define-devstack.test.ts`.
+- 2026-05-21 Worker Public API: stack names resolve by explicit option, `DEVSTACK_STACK`, nearest
+  package metadata, then `main`; unknown `DEVSTACK_NETWORK` values now throw
+  `DevstackNetworkParseError` instead of silently falling back. Targeted tests:
+  `test/api/inference-network.test.ts` and `test/plugins/network-defaults.test.ts`.
+- 2026-05-21 Worker Public API: wallet `accounts: 'all'` and bare `wallet()` expand against inferred
+  account members, respect auto-mounted Sui, and empty resolved accounts fail with a typed
+  `WalletBootError`. Targeted test: `test/plugins/wallet/accounts-all.test.ts`.
+- 2026-05-21 Worker Public API: account env and inline private-key variants use the final public
+  `key` / `privateKey` option names, and `examples/effect-app-rewrite/devstack.config.ts` now uses
+  `{ kind: 'env', key: 'ALICE_PRIVATE_KEY' }`.
+- 2026-05-21 Worker Public API: Sui local `image.pull` routes through the runtime pull path instead
+  of the unwired local branch. Targeted test: `test/plugins/sui/local-image.test.ts`.
+- 2026-05-21 Worker Public API: Walrus `local.seedAccounts` accepts direct account member refs and
+  threads each account tag through `consumes`; the private-content example boot shape uses
+  `walrus({ local: { seedAccounts: [publisher, alice, bob] } })`.
+- 2026-05-21 Worker Public API: Seal local-keygen signer is a direct account member ref, the
+  resolved value exposes key-server fields plus a manager slot through `SealResolved`, and
+  unsupported manager tag constructors stay out of the public/root barrels. Targeted tests:
+  `test/plugins/seal/public-refs.test.ts`, `test/plugins/seal/public-refs.test-d.ts`, and
+  `test/build-integrations/release-surface.test.ts`.
+- 2026-05-21 Worker Public API: DeepBook local mode exposes only real release behavior; unsupported
+  local pools and market-maker options are refused at the type boundary, convenience helpers that
+  cannot acquire real behavior are absent, and the e2e smoke no longer pretends pools prove boot.
+  Targeted tests: `test/plugins/deepbook/type-refusal.test-d.ts`,
+  `test/plugins/deepbook/factory.test.ts`, and `test/e2e/deepbook-boot.test.ts`.
+
+## P0: Codegen contracts are inconsistent
 
 Acceptance evidence:
 
-- Codegen emit is single-evaluation and atomic/idempotent, or the atomic claim is removed.
+- Codegen emit is single-evaluation and per-file atomic/idempotent; the false cycle-level staged
+  promotion claim is removed.
 - Bigint output is valid for the documented consumer API.
 - Generated code is imported/typechecked in an always-on test path.
 - Apps consume manifest/codegen/env/bridge only; app code does not import devstack engine modules.
+
+Closed evidence:
+
+- 2026-05-21 Worker Codegen: package emitters are evaluated once per cycle and the same emitted
+  record feeds package pointer rendering, aggregate package output, and Move binding collection.
+  Targeted test: `test/orchestrators/codegen/service.test.ts` / "evaluates each package emitter once
+  while collecting bindings".
+- 2026-05-21 Worker Codegen: Move bindings now write through the shared per-file atomic/idempotent
+  emitter, and unchanged binding files are reported as no-write on a second cycle. Targeted test:
+  `test/orchestrators/codegen/service.test.ts` / "imports generated package pointer, aggregate, and
+  Move binding modules without sui".
+- 2026-05-21 Worker Codegen: bigint rendering emits quoted decimal strings without an `n` suffix, so
+  `BigInt(<string>)` is valid. Targeted test: `test/orchestrators/codegen/format.test.ts`.
+- 2026-05-21 Worker Codegen: generated package pointer, aggregate package file, and generated Move
+  binding modules are imported in an always-on stubbed codegen test path that does not depend on a
+  host `sui` binary. Targeted test: `test/orchestrators/codegen/service.test.ts`.
+- 2026-05-21 Worker Codegen: generated-file rendering rejects imports from devstack package exports
+  or relative `src/` paths, keeping generated browser-consumed files from pulling devstack source
+  into app bundles. Targeted test: `test/orchestrators/codegen/format.test.ts`.
+- 2026-05-21 Worker Codegen: targeted checks passed:
+  `pnpm --filter @mysten-incubation/devstack-rewrite exec vitest run test/orchestrators/codegen/service.test.ts test/orchestrators/codegen/format.test.ts test/orchestrators/codegen/gitignore.test.ts test/orchestrators/codegen/permissions.test.ts`
+  and targeted `prettier -c` on touched codegen files.
 
 ## P1: Product evidence is too stub-heavy
 
@@ -279,6 +337,18 @@ Acceptance evidence:
 - Regenerate the lockfile after removing stale generated importers.
 - Exclude unrelated dev-wallet/changeset/old `examples/wallet` dirty files.
 - Do not create a giant checkpoint commit. Use the checkpoint sequence in `CURRENT-HANDOFF.md`.
+
+Closed evidence:
+
+- 2026-05-21 Worker Ledger Cleanup: after typecheck cleanup, these commands pass:
+  `pnpm --filter @mysten-incubation/devstack-rewrite typecheck`,
+  `pnpm --filter @mysten-incubation/example-effect-app-rewrite typecheck`, and
+  `pnpm --filter @mysten-incubation/example-deepbook-full-rewrite typecheck`.
+- 2026-05-21 Worker Ledger Cleanup: combined targeted test wave passes across 35 files / 217 tests
+  covering API inference/runStack, CLI flags, release surface/build integrations, codegen,
+  wallet/account/Sui, Seal/Walrus, DeepBook, and adjusted e2e smoke.
+- 2026-05-21 Worker Ledger Cleanup: package build passes:
+  `pnpm --filter @mysten-incubation/devstack-rewrite build`.
 
 ## Partially completed items that still need verification
 

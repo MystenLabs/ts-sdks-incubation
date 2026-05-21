@@ -110,8 +110,7 @@ export interface LocalModeBootResult {
  * outer composition layer); the body uses it to stamp the canonical
  * container label tuple so sweep / inventory are name-blind.
  *
- * Stubbed: the `{pull}` image branch (currently rejected with a typed
- * error). `{build}` and vendored-build branches are wired.
+ * `{pull}`, `{build}`, and vendored-build image branches are wired.
  */
 export const bootLocalMode = (
 	runtime: ContainerRuntime,
@@ -221,23 +220,32 @@ export const bootLocalMode = (
 // Image resolution — vendored Dockerfile build via `ContainerRuntime`
 // ---------------------------------------------------------------------------
 
-const resolveImage = (
+export const resolveImage = (
 	runtime: ContainerRuntime,
 	opts: SuiLocalOptions,
 ): Effect.Effect<ImageRef, SuiPluginError> =>
 	Effect.gen(function* () {
-		// `{pull}` branch is deferred — the contract's `ensureImage` only
-		// accepts a build context. Until the substrate exposes a pull verb
-		// on the contract, we surface a typed refusal so callers learn
-		// from the typed error rather than from a silent fallback.
 		if (opts.image && 'pull' in opts.image) {
-			return yield* Effect.fail(
-				suiPluginError(
-					'image-build',
-					`sui local mode: \`image: { pull }\` is not yet wired (got ${opts.image.pull}). ` +
-						`Use \`image: { build: { context } }\` or rely on the vendored Dockerfile.`,
-				),
-			);
+			const pullRef = opts.image.pull;
+			if (runtime.pullImage === undefined) {
+				return yield* Effect.fail(
+					suiPluginError(
+						'image-build',
+						`sui local mode cannot pull image '${pullRef}' because the configured container runtime does not expose image pulls.`,
+					),
+				);
+			}
+			return yield* runtime
+				.pullImage(pullRef)
+				.pipe(
+					Effect.mapError((cause) =>
+						suiPluginError(
+							'image-build',
+							`sui local mode failed to pull image '${pullRef}': ${cause.reason}: ${cause.detail}`,
+							cause,
+						),
+					),
+				);
 		}
 		const version = opts.version ?? DEFAULT_SUI_VERSION;
 		const buildCtx =

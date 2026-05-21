@@ -19,7 +19,9 @@
 //   5. The composer is a no-op (zero allocation) when no wallet
 //      placeholder is present.
 
+import { Effect, Exit, Option } from 'effect';
 import { describe, expect, it } from 'vitest';
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
 
 import { defineDevstack } from '../../../src/api/define-devstack.ts';
 import { account } from '../../../src/plugins/account/index.ts';
@@ -29,8 +31,18 @@ import {
 	WALLET_EXPAND_ACCOUNTS_ALL,
 	wallet,
 } from '../../../src/plugins/wallet/index.ts';
+import { acquireWallet, type WalletAcquireContext } from '../../../src/plugins/wallet/service.ts';
 
 describe('wallet({ accounts: "all" }) — D6 composer expansion', () => {
+	it('wallet() is shorthand for inferred nonempty accounts', () => {
+		const alice = account('alice');
+		const stack = defineDevstack(alice, wallet());
+
+		const walletMember = stack.members.find((m) => m.provides.id === 'wallet')!;
+		const consumesIds = walletMember.consumes.map((c) => c.id);
+		expect(consumesIds).toEqual(['sui', 'account/alice']);
+	});
+
 	it('placeholder member returned by the factory has only [SuiTag] in consumes', () => {
 		const placeholder = wallet({ accounts: WALLET_ACCOUNTS_ALL });
 
@@ -102,19 +114,41 @@ describe('wallet({ accounts: "all" }) — D6 composer expansion', () => {
 		expect(consumesIds).toContain('account/alice');
 	});
 
-	it('zero accounts in the stack produces an empty per-account fold (only [SuiTag])', () => {
-		// Edge case: user composes wallet({accounts:'all'}) into a stack
-		// with no account members. The composer expands against an
-		// empty account set — wallet's `consumes` becomes `[SuiTag]`
-		// alone, identical to the placeholder. This is the "empty
-		// wallet" shape (not generally useful, but the runtime should
-		// not crash on it).
+	it('empty all still composes to the placeholder dependency shape', () => {
 		const explicitSui = sui();
 		const stack = defineDevstack(explicitSui, wallet({ accounts: WALLET_ACCOUNTS_ALL }));
 
 		const walletMember = stack.members.find((m) => m.provides.id === 'wallet')!;
 		expect(walletMember.consumes).toHaveLength(1);
 		expect(walletMember.consumes[0]!.id).toBe('sui');
+	});
+
+	it('empty resolved accounts fail at acquire with a typed wallet boot error', async () => {
+		const ctx: WalletAcquireContext = {
+			app: 'app',
+			stack: 'main',
+			chain: 'chain',
+			stateRoot: '/tmp/devstack-wallet-empty',
+			vitePortForThisStack: null,
+			allocatePort: () => Effect.die('empty wallet should fail before allocating a port'),
+			resolveAccounts: () => Effect.succeed([]),
+			routerFrontedUrl: null,
+			supervisorCtx: undefined,
+		};
+
+		const exit = await Effect.runPromiseExit(
+			Effect.scoped(acquireWallet({ accounts: WALLET_ACCOUNTS_ALL }, ctx)).pipe(
+				Effect.provide(NodeFileSystem.layer),
+			),
+		);
+		expect(Exit.isFailure(exit)).toBe(true);
+		const err = Exit.findErrorOption(exit);
+		expect(Option.isSome(err)).toBe(true);
+		if (Option.isSome(err)) {
+			expect(err.value._tag).toBe('WalletBootError');
+			expect(err.value.phase).toBe('no-accounts');
+			expect(err.value.message).toContain('zero accounts');
+		}
 	});
 });
 

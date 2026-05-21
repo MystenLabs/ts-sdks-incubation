@@ -12,7 +12,7 @@
 //
 // Lifecycle (distilled-doc §"Lifecycle states"):
 //   - at-up:       per supervisor cycle, run all emitters serially,
-//                  stage-and-swap atomic promote.
+//                  with per-file atomic/idempotent writes.
 //   - on-change:   re-run as part of the new cycle when the
 //                  supervisor restarts.
 //   - on-demand:   same emit pipeline for snapshot resume.
@@ -26,11 +26,11 @@
 //   3. Run each emitter serially (distilled-doc § "Serial within a
 //      cycle"). Each emit returns a typed exports record.
 //   4. Render each exports record to a TS source string.
-//   5. Emit each file with stage-and-swap atomic write + per-file
-//      no-touch idempotency.
+//   5. Emit each file with an atomic write + per-file no-touch
+//      idempotency.
 //   6. Run the Move-bindings emitter against the collected
 //      `package`-emitted contributions.
-//   7. Write the `.gitignore` outside the swap.
+//   7. Write the `.gitignore`.
 //
 // What this module does NOT do:
 //   - Construct plugin-level resolved blobs (plugins pass them at
@@ -42,13 +42,13 @@
 import { Context, Effect, FileSystem, Layer, Order, Ref, Scope } from 'effect';
 
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
-import type { PackageBindings } from '../../plugins/package/codegen.ts';
 
 import {
 	emitBindings,
 	type EmitBindingsResult,
 	MoveCodegenService,
 	MoveSummaryRunnerService,
+	type PackageBindings,
 } from './bindings.ts';
 import { emitOne } from './emit.ts';
 import {
@@ -100,35 +100,12 @@ export const runEmitCycle = (
 	Effect.gen(function* () {
 		const paths = yield* CodegenPathsService;
 
-		// 1. Partition: bindings-eligible (`emitterName === 'package'`)
-		//    contributions go to the bindings emitter; the rest go to
-		//    the generic file emit path.
+		// 1. All contributions go through the generic file emit path.
+		//    Package outputs are collected for the bindings emitter
+		//    from the same single evaluated result used to render the
+		//    package pointer file.
 		const fileEmitters: Array<Codegenable> = [];
-		const packageContribs: Array<PackageBindings> = [];
 		for (const decl of input.contributions) {
-			if (decl.emitterName === 'package') {
-				// `package` contributions are consumed by the bindings
-				// emitter via the `PackageBindings` shape. We also emit
-				// a light pointer file (one per package) via the generic
-				// path so consumers can import the package id without
-				// pulling in the heavy bindings tree.
-				fileEmitters.push(decl);
-				const exported = yield* decl.emit().pipe(
-					Effect.mapError(
-						(cause) =>
-							new CodegenEmitFailed({
-								emitterName: decl.emitterName,
-								outputPath: decl.outputPath,
-								cause,
-							}),
-					),
-				);
-				const bindings = (exported as Record<string, unknown>)['packageBindings'];
-				if (isPackageBindings(bindings)) {
-					packageContribs.push(bindings);
-				}
-				continue;
-			}
 			fileEmitters.push(decl);
 		}
 
@@ -145,6 +122,7 @@ export const runEmitCycle = (
 		const filesUnchanged: Array<string> = [];
 		const filesChmod: Array<string> = [];
 		const aggregates = emptyAggregateBuckets();
+		const packageContribs: Array<PackageBindings> = [];
 		const sortedDecls = [...fileEmitters].sort(
 			Order.mapInput(Order.String, (d: Codegenable) => d.outputPath),
 		);
@@ -160,6 +138,12 @@ export const runEmitCycle = (
 				),
 			);
 			collectAggregateExport(aggregates, decl, exported);
+			if (decl.emitterName === 'package') {
+				const bindings = exported['packageBindings'];
+				if (isPackageBindings(bindings)) {
+					packageContribs.push(bindings);
+				}
+			}
 			const rendered = renderFile({
 				emitterName: decl.emitterName,
 				outputPath: decl.outputPath,
@@ -236,8 +220,7 @@ export const runEmitCycle = (
 			);
 		}
 
-		// 7. Gitignore — outside the swap. Sensitive paths get an
-		//    explicit mention.
+		// 7. Gitignore. Sensitive paths get an explicit mention.
 		const sensitivePaths = fileEmitters
 			.filter((d) => d.sensitive === true)
 			.map((d) => d.outputPath);
