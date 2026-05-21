@@ -66,6 +66,11 @@ describe('codegen Move summary runner', () => {
 							expect(spec.entrypoint).toBe('sh');
 							expect(spec.argv?.[1]).toContain('sui move summary');
 							expect(spec.argv?.[1]).toContain("/workspace/'hello'");
+							expect(spec.argv?.[1]).toContain('trap cleanup_summary EXIT');
+							expect(spec.argv?.[1]).toContain('chmod -R a+rwX /summary');
+							expect(spec.argv?.[1]).toContain(
+								`chown -R ${process.getuid?.() ?? 0}:${process.getgid?.() ?? 0} /summary`,
+							);
 							mkdirSync(join(summaryMount!.source, 'package_summaries', 'hello'), {
 								recursive: true,
 							});

@@ -338,6 +338,12 @@ Closed evidence:
 - 2026-05-21 Worker Codegen: targeted checks passed:
   `pnpm --filter @mysten-incubation/devstack-rewrite exec vitest run test/orchestrators/codegen/service.test.ts test/orchestrators/codegen/format.test.ts test/orchestrators/codegen/gitignore.test.ts test/orchestrators/codegen/permissions.test.ts`
   and targeted `prettier -c` on touched codegen files.
+- 2026-05-21 Worker Docker Summary: production Move summary codegen runs through the vendored Sui
+  CLI Docker image instead of host `sui`, and the one-shot command re-owns/chmods the mounted
+  summary scratch directory on container exit so CI can clean root-written package summary files.
+  Targeted test passed: `test/orchestrators/codegen/bindings.test.ts`; orchestrator validation
+  passed `pnpm turbo build --filter=@mysten-incubation/_template`, covering the previous
+  `EACCES: permission denied, unlink .../package_summaries/address_mapping.json` failure.
 
 ## P1: Product evidence is too stub-heavy
 

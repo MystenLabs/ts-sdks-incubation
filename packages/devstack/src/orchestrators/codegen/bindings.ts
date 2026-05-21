@@ -395,8 +395,15 @@ const runSummaryViaDocker = (
 				yield* ensureMoveHome(moveHome, input);
 				const packageRoot = dirname(input.sourcePath);
 				const packageDir = basename(input.sourcePath);
+				const hostUid = typeof process.getuid === 'function' ? process.getuid() : 0;
+				const hostGid = typeof process.getgid === 'function' ? process.getgid() : 0;
 				const command = [
 					'set -e',
+					'cleanup_summary() { status=$?; ' +
+						'chmod -R a+rwX /summary 2>/dev/null || true; ' +
+						`chown -R ${hostUid}:${hostGid} /summary 2>/dev/null || true; ` +
+						'exit "$status"; }',
+					'trap cleanup_summary EXIT',
 					'mkdir -p /summary/package_summaries',
 					`sui move summary --path /workspace/${shellQuote(packageDir)} ` +
 						'--install-dir /tmp/devstack-move-summary-install ' +
