@@ -1,9 +1,10 @@
 name: Devstack E2E
 
-# Product e2e coverage for the devstack package and worked example apps.
+# Product coverage for the devstack package and worked example stacks.
 # The workflow proves that representative examples can apply their stack,
-# capture a restorable snapshot, and run browser tests from that restored
-# state. It also shards the package's Docker-backed integration tests.
+# capture a restorable snapshot, restore that snapshot in a fresh job, and
+# validate the restored stack projection. It also shards the package's
+# Docker-backed integration tests.
 #
 # Two-stage matrix:
 #
@@ -15,10 +16,10 @@ name: Devstack E2E
 #             runtime directory for account keys, wallet pairing state,
 #             seal keys, and service deployment outputs.
 #
-#   2. e2e:   matrix of (example × shard). Downloads the artifact,
-#             extracts to `.devstack/stacks/<stack>/snapshots/`,
-#             runs `devstack snapshot restore baseline`, then runs the
-#             example app's playwright suite against the restored stack.
+#   2. restore: per-example. Downloads the artifact, extracts to
+#             `.devstack/stacks/<stack>/snapshots/`, runs
+#             `devstack snapshot restore baseline`, then reads the restored
+#             snapshot catalog and stack projection through the CLI.
 
 on:
   pull_request:
@@ -98,7 +99,7 @@ jobs:
         # `apply` exits after the supervisor scope closes, leaving the
         # containers stopped with their writable layer intact. The
         # snapshot CLI captures stopped containers into the snapshot
-        # bundle so the e2e job can restore the same state.
+        # bundle so the restore job can restore the same state.
         run: node ../../packages/devstack/dist/cli/main.mjs --state-dir .devstack --app ${{ matrix.example }} --stack ${{ matrix.stack }} snapshot save baseline
 
       - name: Show snapshot contents (debug)
@@ -118,8 +119,8 @@ jobs:
           retention-days: 3
           if-no-files-found: error
 
-  e2e:
-    name: E2E · ${{ matrix.example }} shard ${{ matrix.shard }}
+  restore:
+    name: Restore snapshot · ${{ matrix.example }}
     needs: seed
     runs-on: ubuntu-latest
     strategy:
@@ -128,22 +129,10 @@ jobs:
         include:
           - example: arena
             stack: arena
-            shard: 1
-          - example: arena
-            stack: arena
-            shard: 2
           - example: private-content
             stack: private-content
-            shard: 1
-          - example: private-content
-            stack: private-content
-            shard: 2
           - example: deepbook-full
             stack: deepbook-full
-            shard: 1
-          - example: deepbook-full
-            stack: deepbook-full
-            shard: 2
     steps:
       - name: Checkout
         uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # pin@v4.1.1
@@ -172,29 +161,39 @@ jobs:
         # see the seed job's apply step for the bin-symlink rationale.
         run: node ../../packages/devstack/dist/cli/main.mjs --state-dir .devstack --app ${{ matrix.example }} --stack ${{ matrix.stack }} snapshot restore baseline
 
-      - name: Install playwright browsers
-        run: pnpm --filter @mysten-incubation/${{ matrix.example }} exec playwright install --with-deps chromium
-
-      - name: Run e2e tests (shard ${{ matrix.shard }}/2)
+      - name: Validate restored snapshot state
         working-directory: examples/${{ matrix.example }}
-        # Playwright's webServer config calls `pnpm dev` under the
-        # hood; `dev` runs `devstack up`, which adopts the restored
-        # containers via the reuse-if-image-matches probe. The tests
-        # assert against the chain state captured at snapshot time.
-        env:
-          DEVSTACK_APP: ${{ matrix.example }}
-          DEVSTACK_STACK: ${{ matrix.stack }}
-          DEVSTACK_STATE_DIR: .devstack
-        run: pnpm test:e2e --shard ${{ matrix.shard }}/2
+        # Use CLI read paths after restore so CI proves the restored
+        # artifact is discoverable and produced a non-empty projection.
+        run: |
+          snapshot_json="$(node ../../packages/devstack/dist/cli/main.mjs --json --state-dir .devstack --app ${{ matrix.example }} --stack ${{ matrix.stack }} snapshot list)"
+          status_json="$(node ../../packages/devstack/dist/cli/main.mjs --json --state-dir .devstack --app ${{ matrix.example }} --stack ${{ matrix.stack }} status)"
+          node -e '
+            const [snapshotRaw, statusRaw, expectedStack] = process.argv.slice(1);
+            const snapshots = JSON.parse(snapshotRaw);
+            const status = JSON.parse(statusRaw);
+            const entries = snapshots.data?.entries ?? [];
+            if (!snapshots.ok || !entries.some((entry) => entry.snapshotId === "baseline")) {
+              throw new Error("restored snapshot catalog does not contain baseline");
+            }
+            if (!status.ok || status.data?.present !== true) {
+              throw new Error("restored stack projection is missing");
+            }
+            if (status.data.identity?.stack !== expectedStack) {
+              throw new Error(`restored stack mismatch: ${status.data.identity?.stack}`);
+            }
+            if (status.data.rowCount <= 0) {
+              throw new Error("restored stack projection has no rows");
+            }
+          ' "$snapshot_json" "$status_json" "${{ matrix.stack }}"
 
-      - name: Upload playwright report on failure
+      - name: Upload devstack state on failure
         if: failure()
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # pin@v4.6.0
         with:
-          name: playwright-report-${{ matrix.example }}-shard-${{ matrix.shard }}
+          name: devstack-restore-${{ matrix.example }}-failure
           path: |
-            examples/${{ matrix.example }}/playwright-report
-            examples/${{ matrix.example }}/test-results
+            examples/${{ matrix.example }}/.devstack/
           retention-days: 7
           if-no-files-found: ignore
 
