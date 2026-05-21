@@ -7,7 +7,11 @@ import { describe, expect, it } from '@effect/vitest';
 import { Effect, Exit, Option, Stream } from 'effect';
 
 import type { ContainerRuntime } from '../../../src/contracts/container-runtime.ts';
-import { parseDeployOutput, runDeployOneShot } from '../../../src/plugins/walrus/deploy.ts';
+import {
+	parseDeployOutput,
+	runDeployOneShot,
+	type DeployInputs,
+} from '../../../src/plugins/walrus/deploy.ts';
 import { chainId, contentHash } from '../../../src/substrate/brand.ts';
 
 const unusedRuntimeMethod = () => Effect.die('not used');
@@ -34,6 +38,34 @@ const oneShotRuntime = (runOneShot: ContainerRuntime['runOneShot']): ContainerRu
 	removeManagedNetworks: unusedRuntimeMethod,
 	removeManagedVolumes: unusedRuntimeMethod,
 });
+
+const deployInputs = (): DeployInputs => ({
+	walrusName: 'walrus',
+	chainId: chainId('sui:localnet'),
+	contentHash: contentHash('walrus-test'),
+	outputDirHostPath: '/tmp/devstack/walrus/deploy',
+	suiRpcUrlInNetwork: 'http://host.docker.internal:9123',
+	walrusFaucetUrlInNetwork: 'http://host.docker.internal:9123/v2/gas',
+	committeeSize: 4,
+	shards: 100,
+	epochDuration: '24h',
+	publicHostsCsv: 'a,b,c,d',
+	listeningIpsCsv: '10.0.0.10,10.0.0.11,10.0.0.12,10.0.0.13',
+	walrusImage: { digest: 'walrus:test' },
+	suiNetworkName: 'devstack-test-sui',
+});
+
+const hostBindMountOwnerForTest = (): string | undefined => {
+	const process = (
+		globalThis as {
+			process?: { getuid?: () => number; getgid?: () => number };
+		}
+	).process;
+	if (typeof process?.getuid !== 'function' || typeof process.getgid !== 'function') {
+		return undefined;
+	}
+	return `${process.getuid()}:${process.getgid()}`;
+};
 
 describe('parseDeployOutput', () => {
 	it('extracts package_id / system_object / staking_object from key:value lines', () => {
@@ -112,6 +144,29 @@ describe('parseDeployOutput', () => {
 		expect(out!.walrusPackageId).toBe('0xc1c1c1');
 	});
 
+	it.effect('passes host uid/gid so bind-mounted deploy output remains snapshot-readable', () =>
+		Effect.gen(function* () {
+			const expectedOwner = hostBindMountOwnerForTest();
+			const runtime = oneShotRuntime((spec) => {
+				expect(spec.env).toEqual(
+					expectedOwner === undefined ? undefined : { DEVSTACK_HOST_UID_GID: expectedOwner },
+				);
+				return Effect.succeed({
+					exitCode: 0,
+					stdout: [
+						'package_id: 0xabc111',
+						'system_object: 0xabc222',
+						'staking_object: 0xabc333',
+					].join('\n'),
+					stderr: '',
+				});
+			});
+
+			const state = yield* Effect.scoped(runDeployOneShot(runtime, deployInputs()));
+			expect(state.walrusPackageId).toBe('0xabc111');
+		}),
+	);
+
 	it.effect('reports missing walrus-deploy as a typed deploy failure with stderr context', () =>
 		Effect.gen(function* () {
 			const runtime = oneShotRuntime((spec) => {
@@ -125,21 +180,7 @@ describe('parseDeployOutput', () => {
 			});
 
 			const exit = yield* Effect.scoped(
-				runDeployOneShot(runtime, {
-					walrusName: 'walrus',
-					chainId: chainId('sui:localnet'),
-					contentHash: contentHash('walrus-test'),
-					outputDirHostPath: '/tmp/devstack/walrus/deploy',
-					suiRpcUrlInNetwork: 'http://host.docker.internal:9123',
-					walrusFaucetUrlInNetwork: 'http://host.docker.internal:9123/v2/gas',
-					committeeSize: 4,
-					shards: 100,
-					epochDuration: '24h',
-					publicHostsCsv: 'a,b,c,d',
-					listeningIpsCsv: '10.0.0.10,10.0.0.11,10.0.0.12,10.0.0.13',
-					walrusImage: { digest: 'walrus:test' },
-					suiNetworkName: 'devstack-test-sui',
-				}).pipe(Effect.exit),
+				runDeployOneShot(runtime, deployInputs()).pipe(Effect.exit),
 			);
 
 			expect(Exit.isFailure(exit)).toBe(true);

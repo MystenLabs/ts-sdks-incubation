@@ -93,6 +93,18 @@ export interface DeployInputs {
  *  + slow CI runners. */
 const DEPLOY_TIMEOUT_MS = 5 * 60_000;
 
+const hostBindMountOwner = (): string | undefined => {
+	const process = (
+		globalThis as {
+			process?: { getuid?: () => number; getgid?: () => number };
+		}
+	).process;
+	if (typeof process?.getuid !== 'function' || typeof process.getgid !== 'function') {
+		return undefined;
+	}
+	return `${process.getuid()}:${process.getgid()}`;
+};
+
 const excerpt = (label: string, value: string): string => {
 	const trimmed = value.trim();
 	if (trimmed.length === 0) return '';
@@ -175,6 +187,7 @@ export const runDeployOneShot = (
 	inputs: DeployInputs,
 ): Effect.Effect<CachedDeployState, WalrusPluginError, Scope.Scope> =>
 	Effect.gen(function* () {
+		const outputOwner = hostBindMountOwner();
 		const argv: ReadonlyArray<string> = [
 			'deploy',
 			'--output-dir',
@@ -205,6 +218,7 @@ export const runDeployOneShot = (
 						target: '/opt/walrus/outputs',
 					},
 				],
+				...(outputOwner === undefined ? {} : { env: { DEVSTACK_HOST_UID_GID: outputOwner } }),
 				network: inputs.suiNetworkName,
 				// Same `host-gateway` rationale as storage-nodes.ts —
 				// deploy one-shot dials sui's host-bound RPC + faucet via

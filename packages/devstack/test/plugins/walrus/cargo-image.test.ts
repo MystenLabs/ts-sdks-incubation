@@ -60,4 +60,14 @@ describe('walrusCargoImageSiblingKey', () => {
 		expect(dockerfile).toContain('for bin in walrus walrus-node walrus-deploy');
 		expect(dockerfile).toContain('missing required binary');
 	});
+
+	it('deploy script leaves only host-owned snapshotable output in the bind mount', () => {
+		const script = readFileSync(
+			new URL('../../../images/walrus/deploy-walrus.sh', import.meta.url),
+			'utf8',
+		);
+		expect(script).toContain('DEVSTACK_HOST_UID_GID');
+		expect(script).toContain('chown -R "$DEVSTACK_HOST_UID_GID" "$WORKING_DIR"');
+		expect(script).toContain('rm -rf "$HOME"');
+	});
 });

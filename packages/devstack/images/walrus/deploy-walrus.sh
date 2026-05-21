@@ -99,6 +99,13 @@ fi
 
 mkdir -p "$WORKING_DIR"
 
+fix_output_ownership() {
+	if [ -n "${DEVSTACK_HOST_UID_GID:-}" ]; then
+		chown -R "$DEVSTACK_HOST_UID_GID" "$WORKING_DIR" 2>/dev/null || true
+	fi
+}
+trap fix_output_ownership EXIT
+
 # Clean stale build artifacts + previous deploy outputs (fresh deploy each
 # cycle — the OCA cache-key drives "is this a re-run" decision).
 [ -d "$WALRUS_CONTRACT_DIR" ] && find "$WALRUS_CONTRACT_DIR" -name 'build' -type d -exec rm -rf {} + || true
@@ -218,3 +225,5 @@ done
 echo ""
 echo "==== deploy-walrus summary ===="
 cat "$WORKING_DIR/deploy"
+
+rm -rf "$HOME"
