@@ -1,0 +1,8 @@
+[package]
+name = "connect_four"
+edition = "2024"
+
+[dependencies]
+
+[addresses]
+connect_four = "0x0"
