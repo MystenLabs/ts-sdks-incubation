@@ -95,6 +95,10 @@ Evidence landed 2026-05-21:
 
 - Docker Desktop grouping labels were added, but manual visual verification remains open.
 - Docker image/build contexts must keep required runtime assets available after packing.
+- Native `linux/arm64` Walrus local-cluster image support remains unresolved: upstream Walrus
+  `ubuntu-aarch64` devnet assets appear to contain x86-64 binaries. The CI `linux/amd64` path is
+  covered by the deploy-capable release pin and binary preflight, but Apple Silicon/native arm64
+  local Walrus needs an explicit platform policy, upstream fixed asset, or source-build fallback.
 
 Acceptance evidence:
 
@@ -104,6 +108,8 @@ Acceptance evidence:
 - Docker Desktop shows stack grouping equivalent to the old implementation, with router singleton
   behavior intentionally handled.
 - `pnpm pack --dry-run` includes Dockerfile/image contexts needed by Sui/Postgres/Walrus/Seal.
+- Walrus local-cluster image behavior is verified on `linux/amd64` and native `linux/arm64`, or the
+  unsupported platform path fails early with a typed, actionable error.
 
 Closed evidence:
 
@@ -124,6 +130,10 @@ Closed evidence:
 - 2026-05-21 Worker E: package `files` now includes `images` and excludes samples from packed
   source/dist; `npm pack --dry-run --json` showed all Sui/Postgres/Walrus/Seal image context files
   and `samples: []`.
+- 2026-05-21 Walrus CI path: default Walrus release was bumped to `devnet-v1.49.0`; the Dockerfile
+  and deploy script preflight required `walrus`, `walrus-node`, `walrus-deploy`, and `sui`
+  binaries; deploy failures include stdout/stderr excerpts. Orchestrator validation built the
+  Walrus image on `linux/amd64`, covering the previous missing-`walrus-deploy` exit-127 failure.
 
 ## P0: Package/export/build-integration release surface is broken
 

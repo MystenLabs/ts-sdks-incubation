@@ -3,9 +3,35 @@
 // file and the plugin's `CachedDeployState` shape — any drift in the
 // upstream output format surfaces here.
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from '@effect/vitest';
+import { Effect, Exit, Option, Stream } from 'effect';
 
-import { parseDeployOutput } from '../../../src/plugins/walrus/deploy.ts';
+import type { ContainerRuntime } from '../../../src/contracts/container-runtime.ts';
+import { parseDeployOutput, runDeployOneShot } from '../../../src/plugins/walrus/deploy.ts';
+import { chainId, contentHash } from '../../../src/substrate/brand.ts';
+
+const unusedRuntimeMethod = () => Effect.die('not used');
+
+const oneShotRuntime = (runOneShot: ContainerRuntime['runOneShot']): ContainerRuntime => ({
+	ensureImage: unusedRuntimeMethod,
+	ensureNetwork: unusedRuntimeMethod,
+	ensureContainer: unusedRuntimeMethod,
+	exec: unusedRuntimeMethod,
+	runOneShot,
+	inspectByLabels: unusedRuntimeMethod,
+	followLogs: () => Stream.empty,
+	pauseAndCommit: unusedRuntimeMethod,
+	saveImage: () => Stream.empty,
+	loadImage: unusedRuntimeMethod,
+	tagImage: unusedRuntimeMethod,
+	unpause: unusedRuntimeMethod,
+	stop: unusedRuntimeMethod,
+	sweepOrphans: unusedRuntimeMethod,
+	removeManagedContainers: unusedRuntimeMethod,
+	removeManagedImages: unusedRuntimeMethod,
+	removeManagedNetworks: unusedRuntimeMethod,
+	removeManagedVolumes: unusedRuntimeMethod,
+});
 
 describe('parseDeployOutput', () => {
 	it('extracts package_id / system_object / staking_object from key:value lines', () => {
@@ -83,4 +109,47 @@ describe('parseDeployOutput', () => {
 		expect(out).not.toBeNull();
 		expect(out!.walrusPackageId).toBe('0xc1c1c1');
 	});
+
+	it.effect('reports missing walrus-deploy as a typed deploy failure with stderr context', () =>
+		Effect.gen(function* () {
+			const runtime = oneShotRuntime((spec) => {
+				expect(spec.argv?.[0]).toBe('deploy');
+				return Effect.succeed({
+					exitCode: 127,
+					stdout: '',
+					stderr:
+						'deploy-walrus: walrus-deploy binary is missing or not executable at /opt/walrus/bin/walrus-deploy',
+				});
+			});
+
+			const exit = yield* Effect.scoped(
+				runDeployOneShot(runtime, {
+					walrusName: 'walrus',
+					chainId: chainId('sui:localnet'),
+					contentHash: contentHash('walrus-test'),
+					outputDirHostPath: '/tmp/devstack/walrus/deploy',
+					suiRpcUrlInNetwork: 'http://host.docker.internal:9123',
+					walrusFaucetUrlInNetwork: 'http://host.docker.internal:9123/v2/gas',
+					committeeSize: 4,
+					shards: 100,
+					epochDuration: '24h',
+					publicHostsCsv: 'a,b,c,d',
+					listeningIpsCsv: '10.0.0.10,10.0.0.11,10.0.0.12,10.0.0.13',
+					walrusImage: { digest: 'walrus:test' },
+					suiNetworkName: 'devstack-test-sui',
+				}).pipe(Effect.exit),
+			);
+
+			expect(Exit.isFailure(exit)).toBe(true);
+			const error = Exit.findErrorOption(exit);
+			expect(Option.isSome(error)).toBe(true);
+			if (Option.isSome(error)) {
+				expect(error.value._tag).toBe('WalrusPluginError');
+				expect(error.value.phase).toBe('deploy');
+				expect(error.value.message).toContain('walrus deploy exited with code 127');
+				expect(error.value.message).toContain('exit 127 usually means');
+				expect(error.value.message).toContain('walrus-deploy binary is missing');
+			}
+		}),
+	);
 });

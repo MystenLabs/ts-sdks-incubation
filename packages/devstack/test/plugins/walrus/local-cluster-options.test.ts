@@ -6,6 +6,8 @@
 
 import { describe, expect, it } from 'vitest';
 
+import { DEFAULT_SUI_VERSION } from '../../../src/plugins/walrus/lifted-siblings/cargo-image.ts';
+import { DEFAULT_WALRUS_REF } from '../../../src/plugins/walrus/lifted-siblings/source-fetch.ts';
 import { resolveLocalClusterOptions } from '../../../src/plugins/walrus/mode/local-cluster.ts';
 
 describe('resolveLocalClusterOptions', () => {
@@ -14,7 +16,18 @@ describe('resolveLocalClusterOptions', () => {
 		expect(r.name).toBe('walrus');
 		expect(r.nodeCount).toBe(1);
 		expect(r.shards).toBe(100);
+		expect(r.version).toBe(DEFAULT_WALRUS_REF);
+		expect(r.suiVersion).toBe(DEFAULT_SUI_VERSION);
 		expect(r.epochDuration).toBe('24h');
+	});
+
+	it('preserves user-supplied release versions for image and source resolution', () => {
+		const r = resolveLocalClusterOptions({
+			version: 'devnet-v1.50.0',
+			suiVersion: 'devnet-v1.72.0',
+		});
+		expect(r.version).toBe('devnet-v1.50.0');
+		expect(r.suiVersion).toBe('devnet-v1.72.0');
 	});
 
 	it('throws synchronously on `nodeCount < 1` (distilled-doc invariant 11)', () => {

@@ -93,6 +93,31 @@ export interface DeployInputs {
  *  + slow CI runners. */
 const DEPLOY_TIMEOUT_MS = 5 * 60_000;
 
+const excerpt = (label: string, value: string): string => {
+	const trimmed = value.trim();
+	if (trimmed.length === 0) return '';
+	const max = 1_200;
+	const body = trimmed.length > max ? `${trimmed.slice(0, max)}...` : trimmed;
+	return ` ${label}=${JSON.stringify(body)}`;
+};
+
+const deployExitDetail = (
+	result: { readonly exitCode: number; readonly stdout: string; readonly stderr: string },
+	inputs: DeployInputs,
+): string => {
+	const missingCommandHint =
+		result.exitCode === 127
+			? ' exit 127 usually means the deploy image is missing walrus-deploy or an entrypoint command.'
+			: '';
+	return (
+		`walrus deploy exited with code ${result.exitCode}.` +
+		missingCommandHint +
+		` outputDir=${inputs.outputDirHostPath} committee=${inputs.committeeSize} shards=${inputs.shards}` +
+		excerpt('stdout', result.stdout) +
+		excerpt('stderr', result.stderr)
+	);
+};
+
 /** Parse the walrus deploy output into a `CachedDeployState`.
  *
  *  Expected output format (best-effort match against the v3 reference's
@@ -202,16 +227,11 @@ export const runDeployOneShot = (
 
 		if (result.exitCode !== 0) {
 			return yield* Effect.fail(
-				walrusPluginError(
-					'deploy',
-					`walrus deploy exited with code ${result.exitCode}. ` +
-						`outputDir=${inputs.outputDirHostPath} committee=${inputs.committeeSize} shards=${inputs.shards}`,
-					{
-						exitCode: result.exitCode,
-						stdout: result.stdout,
-						stderr: result.stderr,
-					},
-				),
+				walrusPluginError('deploy', deployExitDetail(result, inputs), {
+					exitCode: result.exitCode,
+					stdout: result.stdout,
+					stderr: result.stderr,
+				}),
 			);
 		}
 

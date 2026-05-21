@@ -69,8 +69,17 @@ import {
 	startStorageNodes,
 } from '../storage-nodes.ts';
 import { deployWalrusContracts, type CachedDeployState } from '../deploy.ts';
-import { resolveDefaultCargoImage } from '../lifted-siblings/cargo-image.ts';
-import { resolveDefaultWalrusSource } from '../lifted-siblings/source-fetch.ts';
+import {
+	DEFAULT_RUST_TOOLCHAIN,
+	DEFAULT_SUI_VERSION,
+	resolveCargoImage,
+} from '../lifted-siblings/cargo-image.ts';
+import {
+	DEFAULT_WALRUS_MOVE_SUBDIR,
+	DEFAULT_WALRUS_REF,
+	DEFAULT_WALRUS_REPO,
+	resolveWalrusSource,
+} from '../lifted-siblings/source-fetch.ts';
 import { makeWalFaucetStrategy, type WalFaucetStrategy } from '../faucet-strategy.ts';
 import { resolveWalExchange, type WalExchangeHandle, type WalSwapSdk } from '../seed-wal.ts';
 
@@ -115,7 +124,7 @@ export interface WalrusLocalClusterOptions<
 	 *  `>= nodeCount`. Default `100` (distilled-doc default block). */
 	readonly shards?: number;
 	/** Pinned walrus release — drives the lifted source-fetch +
-	 *  cargo-image siblings. Default `'devnet-v1.48.0'`. */
+	 *  cargo-image siblings. Default `'devnet-v1.49.0'`. */
 	readonly version?: string;
 	/** Sui release whose binary the wrapper image bakes (distilled-
 	 *  doc invariant 24). Default `'devnet-v1.71.0'`. */
@@ -212,8 +221,8 @@ export const resolveLocalClusterOptions = (
 		name: opts.name ?? 'walrus',
 		nodeCount,
 		shards,
-		version: opts.version ?? 'devnet-v1.48.0',
-		suiVersion: opts.suiVersion ?? 'devnet-v1.71.0',
+		version: opts.version ?? DEFAULT_WALRUS_REF,
+		suiVersion: opts.suiVersion ?? DEFAULT_SUI_VERSION,
 		containerApiPort: opts.containerApiPort ?? DEFAULT_CONTAINER_API_PORT,
 		epochDuration: opts.epochDuration ?? '24h',
 		readyTimeoutMs: opts.readyTimeoutMs ?? DEFAULT_NODE_READY_TIMEOUT_MS,
@@ -251,9 +260,9 @@ export interface LocalClusterDeps {
  *  projects onto the four tags.
  *
  *  Steps:
- *    - Image build — `resolveDefaultCargoImage` (lifted sibling).
+ *    - Image build — `resolveCargoImage` (lifted sibling).
  *      Honors `WALRUS_CARGO_IMAGE_OVERRIDE` for the pre-baked path.
- *    - Move source resolve — `resolveDefaultWalrusSource` (lifted
+ *    - Move source resolve — `resolveWalrusSource` (lifted
  *      sibling). Skipped when `opts.movePackagePath` is set.
  *    - Docker network ensure — `runtime.ensureNetwork(walrusNet)`.
  *      The sui network is owned by the sui plugin; we attach to it
@@ -284,7 +293,12 @@ export const bootLocalCluster = (
 		// ---- cargo image (lifted sibling) -----------------------
 		// The cargo image is content-addressed; the sibling's resolver
 		// owns the cache check + the registry-tag override fast path.
-		const walrusImage = yield* resolveDefaultCargoImage(deps.runtime);
+		const walrusImage = yield* resolveCargoImage(deps.runtime, {
+			walrusRepo: DEFAULT_WALRUS_REPO,
+			walrusRef: opts.version,
+			suiVersion: opts.suiVersion,
+			rustToolchain: DEFAULT_RUST_TOOLCHAIN,
+		});
 
 		// ---- move source (lifted sibling, conditional) ----------
 		// Source is only fetched when no user-pinned path is provided.
@@ -293,19 +307,20 @@ export const bootLocalCluster = (
 		// participates in the dedup dance — two `walrus()` instances
 		// pinned to the same ref share one source-fetch.
 		if (!opts.movePackagePath) {
-			yield* resolveDefaultWalrusSource().pipe(
+			yield* resolveWalrusSource({
+				repo: DEFAULT_WALRUS_REPO,
+				ref: opts.version,
+				subdir: DEFAULT_WALRUS_MOVE_SUBDIR,
+			}).pipe(
 				Effect.catch(
-					(err): Effect.Effect<unknown, WalrusPluginError> =>
+					(_err): Effect.Effect<unknown, WalrusPluginError> =>
 						// Source fetch is best-effort in the lifted-sibling
 						// model — the deploy one-shot today embeds its own
 						// Move package via the wrapper image. Until the OCA
 						// primitive accepts a per-call `movePackagePath`
 						// override, we degrade the source-fetch failure to a
 						// warning narration and continue.
-						Effect.gen(function* () {
-							void err;
-							return undefined;
-						}),
+						Effect.succeed(undefined),
 				),
 			);
 		}

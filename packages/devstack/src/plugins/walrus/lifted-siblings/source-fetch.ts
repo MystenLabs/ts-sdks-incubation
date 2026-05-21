@@ -41,7 +41,7 @@ export const DEFAULT_WALRUS_MOVE_SUBDIR = 'contracts/walrus' as const;
  *  `DEFAULT_WALRUS_MOVE_SUBDIR` MUST be bumped together (the cargo
  *  build and the Move package must agree on the on-chain types
  *  they emit). */
-export const DEFAULT_WALRUS_REF = 'devnet-v1.48.0' as const;
+export const DEFAULT_WALRUS_REF = 'devnet-v1.49.0' as const;
 
 /** Inputs to the source-fetch sibling. */
 export interface WalrusSourceFetchInputs<Ref extends string = string> {

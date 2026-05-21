@@ -88,6 +88,15 @@ WALRUS_DEPLOY_BIN="${WALRUS_DEPLOY_BIN:-/opt/walrus/bin/walrus-deploy}"
 WALRUS_CONTRACT_DIR="${WALRUS_CONTRACT_DIR:-/opt/walrus/contracts}"
 SUI_BIN="${SUI_BIN:-/root/sui_bin/sui}"
 
+if [ ! -x "$WALRUS_DEPLOY_BIN" ]; then
+	echo "deploy-walrus: walrus-deploy binary is missing or not executable at $WALRUS_DEPLOY_BIN" >&2
+	exit 127
+fi
+if [ ! -x "$SUI_BIN" ]; then
+	echo "deploy-walrus: sui binary is missing or not executable at $SUI_BIN" >&2
+	exit 127
+fi
+
 mkdir -p "$WORKING_DIR"
 
 # Clean stale build artifacts + previous deploy outputs (fresh deploy each

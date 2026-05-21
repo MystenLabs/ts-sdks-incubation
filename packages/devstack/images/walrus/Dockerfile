@@ -58,8 +58,17 @@ RUN set -eux; \
 	tar -xzf /tmp/walrus.tgz -C /tmp/walrus-unpack; \
 	find /tmp/walrus-unpack -maxdepth 2 -type f -executable -exec mv {} /opt/walrus/bin/ \; ; \
 	chmod +x /opt/walrus/bin/*; \
+	for bin in walrus walrus-node walrus-deploy; do \
+		test -x "/opt/walrus/bin/${bin}" || { \
+			echo "walrus release ${WALRUS_VERSION} missing required binary ${bin}" >&2; \
+			ls -la /opt/walrus/bin >&2; \
+			exit 1; \
+		}; \
+	done; \
 	rm -rf /tmp/walrus.tgz /tmp/walrus-unpack; \
-	/opt/walrus/bin/walrus --version
+	/opt/walrus/bin/walrus --version; \
+	/opt/walrus/bin/walrus-node --help >/dev/null; \
+	/opt/walrus/bin/walrus-deploy --help >/dev/null
 
 # Sui release-tarball fetch (same logic as ../sui/Dockerfile).
 RUN set -eux; \

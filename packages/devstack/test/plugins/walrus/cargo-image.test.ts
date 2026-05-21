@@ -4,6 +4,8 @@
 // the shape so the type-level conflict refusal stays sound after a
 // refactor.
 
+import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -44,5 +46,18 @@ describe('walrusCargoImageSiblingKey', () => {
 		expect(k.inputHash).toBe(
 			`${DEFAULT_WALRUS_REF}|${DEFAULT_SUI_VERSION}|${DEFAULT_RUST_TOOLCHAIN}`,
 		);
+	});
+
+	it('default release is pinned to a tarball that includes walrus-deploy', () => {
+		expect(DEFAULT_WALRUS_REF).toBe('devnet-v1.49.0');
+	});
+
+	it('vendored image fails during build if the release omits required binaries', () => {
+		const dockerfile = readFileSync(
+			new URL('../../../images/walrus/Dockerfile', import.meta.url),
+			'utf8',
+		);
+		expect(dockerfile).toContain('for bin in walrus walrus-node walrus-deploy');
+		expect(dockerfile).toContain('missing required binary');
 	});
 });
