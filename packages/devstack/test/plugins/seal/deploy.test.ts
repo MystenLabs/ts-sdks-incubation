@@ -1,6 +1,17 @@
-import { Effect, Exit, Option } from 'effect';
-import { describe, expect, it } from 'vitest';
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
+import { describe, expect, it } from '@effect/vitest';
+import { Effect, Exit, Option, Stream } from 'effect';
+
+import type { ChainProbe } from '../../../src/contracts/chain-probe.ts';
+import type {
+	ContainerRuntime,
+	ExecResult,
+	OneShotSpec,
+} from '../../../src/contracts/container-runtime.ts';
+import type { AccountValue } from '../../../src/plugins/account/service.ts';
 import {
 	buildSealPublishTransaction,
 	buildRegisterKeyServerMoveCall,
@@ -11,13 +22,15 @@ import {
 	pickCreatedKeyServerObjectId,
 	projectSealPublishReceipt,
 	projectRegisterKeyServerReceipt,
+	runSealPublishTransaction,
 	sealPackageInputsHash,
 	sealRegisterInputsHash,
 	type RegisterKeyServerTransactionInputs,
+	type SealObjectProbeKey,
 	type SealPublishTransactionBuilder,
 	type SealRegisterTransactionBuilder,
 } from '../../../src/plugins/seal/deploy.ts';
-import { contentHash } from '../../../src/substrate/brand.ts';
+import { chainId, contentHash } from '../../../src/substrate/brand.ts';
 
 const registerInputs: RegisterKeyServerTransactionInputs = {
 	keyServerUrl: 'http://seal.seal.app.localhost',
@@ -74,6 +87,45 @@ class FakeRegisterTx implements SealRegisterTransactionBuilder {
 		this.arguments.push(...input.arguments);
 	}
 }
+
+const unusedRuntimeMethod = () => Effect.die('not used');
+
+const oneShotRuntime = (runOneShot: ContainerRuntime['runOneShot']): ContainerRuntime => ({
+	ensureImage: unusedRuntimeMethod,
+	ensureNetwork: unusedRuntimeMethod,
+	ensureContainer: unusedRuntimeMethod,
+	exec: unusedRuntimeMethod,
+	runOneShot,
+	inspectByLabels: unusedRuntimeMethod,
+	followLogs: () => Stream.empty,
+	pauseAndCommit: unusedRuntimeMethod,
+	saveImage: () => Stream.empty,
+	loadImage: unusedRuntimeMethod,
+	tagImage: unusedRuntimeMethod,
+	unpause: unusedRuntimeMethod,
+	stop: unusedRuntimeMethod,
+	sweepOrphans: unusedRuntimeMethod,
+	removeManagedContainers: unusedRuntimeMethod,
+	removeManagedImages: unusedRuntimeMethod,
+	removeManagedNetworks: unusedRuntimeMethod,
+	removeManagedVolumes: unusedRuntimeMethod,
+});
+
+const signerNotReached: AccountValue = {
+	name: 'publisher',
+	address: '0xabc',
+	scheme: 'ed25519',
+	publicKey: new Uint8Array(),
+	source: 'real',
+	signAndExecute: () => Effect.die('not used'),
+	withTransactionSigner: () => Effect.die('not used'),
+	signTransaction: () => Effect.die('not used'),
+	signPersonalMessage: () => Effect.die('not used'),
+};
+
+const chainProbeNotReached: ChainProbe<SealObjectProbeKey> = {
+	get: () => Effect.die('not used'),
+};
 
 describe('seal deploy publish helpers', () => {
 	it('parses legacy publish stdout for historical stub coverage', () => {
@@ -176,6 +228,90 @@ describe('seal deploy publish helpers', () => {
 			sealPackageInputsHash(contentHash('source-a'), '0x1'),
 		);
 	});
+
+	it.effect('lets the container build scrub cached Seal source locks the host cannot write', () =>
+		Effect.gen(function* () {
+			const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'seal-deploy-')));
+			const previousHome = process.env.HOME;
+			const packageLock = join(
+				root,
+				'home',
+				'.cache',
+				'devstack-rewrite',
+				'seal-src',
+				'seal-v0.6.6',
+				'move',
+				'seal',
+				'Move.lock',
+			);
+			try {
+				const home = join(root, 'home');
+				const sourcePath = join(
+					home,
+					'.cache',
+					'devstack-rewrite',
+					'seal-src',
+					'seal-v0.6.6',
+					'move',
+					'seal',
+				);
+				process.env.HOME = home;
+				yield* Effect.promise(() => mkdir(join(sourcePath, 'sources'), { recursive: true }));
+				yield* Effect.promise(() =>
+					writeFile(join(sourcePath, 'Move.toml'), '[package]\nname = "seal"\n'),
+				);
+				yield* Effect.promise(() =>
+					writeFile(join(sourcePath, 'sources', 'seal.move'), 'module seal::seal {}\n'),
+				);
+				yield* Effect.promise(() =>
+					writeFile(
+						packageLock,
+						'[move]\nversion = 3\n[pinned.testnet.dep]\npublished-at = "0x1"\n',
+					),
+				);
+				yield* Effect.promise(() => chmod(packageLock, 0o444));
+
+				const capturedSpecs: OneShotSpec[] = [];
+				const runtime = oneShotRuntime((spec) =>
+					Effect.sync((): ExecResult => {
+						capturedSpecs.push(spec);
+						return { exitCode: 99, stdout: '', stderr: 'forced build failure' };
+					}),
+				);
+
+				const exit = yield* Effect.exit(
+					runSealPublishTransaction({
+						name: 'seal',
+						chain: chainId('localnet'),
+						movePackagePath: sourcePath,
+						signer: signerNotReached,
+						sdk: { client: {} },
+						runtime,
+						buildImage: { digest: 'sha256:sui' },
+						chainProbe: chainProbeNotReached,
+					}).pipe(Effect.scoped),
+				);
+
+				expect(capturedSpecs).toHaveLength(1);
+				const error = Exit.findErrorOption(exit);
+				expect(Option.isSome(error)).toBe(true);
+				if (Option.isSome(error)) {
+					expect(error.value._tag).toBe('SealError');
+					expect(error.value.phase).toBe('publish');
+					expect(error.value.message).toContain('docker run --rm sui move build exited 99');
+					expect(error.value.message).not.toContain('scrub host locks failed');
+				}
+			} finally {
+				if (previousHome === undefined) {
+					delete process.env.HOME;
+				} else {
+					process.env.HOME = previousHome;
+				}
+				yield* Effect.promise(() => chmod(packageLock, 0o644).catch(() => {}));
+				yield* Effect.promise(() => rm(root, { recursive: true, force: true }));
+			}
+		}),
+	);
 });
 
 describe('seal deploy register helpers', () => {
