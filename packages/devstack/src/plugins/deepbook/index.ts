@@ -105,13 +105,26 @@ export interface DeepbookLocalOptions<
 	readonly publisher: Publisher;
 }
 
-export interface DeepbookKnownOptions extends DeepbookCommonOptions {
-	/** Pre-deployed package id (canonical testnet/mainnet deepbook). */
-	readonly packageId: string;
-	readonly registryId: string;
+export type DeepbookKnownNetwork = 'mainnet' | 'testnet';
+
+interface DeepbookKnownCommonOptions extends DeepbookCommonOptions {
 	/** Optional chain id pin (defaults to the configured network). */
 	readonly chain?: string;
 }
+
+interface DeepbookKnownNetworkOptions extends DeepbookKnownCommonOptions {
+	readonly network: DeepbookKnownNetwork;
+	readonly packageId?: string;
+	readonly registryId?: string;
+}
+
+interface DeepbookKnownExplicitOptions extends DeepbookKnownCommonOptions {
+	readonly packageId: string;
+	readonly registryId: string;
+	readonly network?: DeepbookKnownNetwork;
+}
+
+export type DeepbookKnownOptions = DeepbookKnownNetworkOptions | DeepbookKnownExplicitOptions;
 
 export type DeepbookOptions<Publisher extends AccountMemberAlias = AccountMemberAlias> =
 	| ({ readonly mode: 'local' } & DeepbookLocalOptions<Publisher>)
@@ -122,6 +135,26 @@ export type DeepbookOptions<Publisher extends AccountMemberAlias = AccountMember
 // ---------------------------------------------------------------------------
 
 const DEFAULT_NAME = 'deepbook';
+
+const KNOWN_DEEPBOOK_DEPLOYMENTS: Record<
+	DeepbookKnownNetwork,
+	{
+		readonly chain: string;
+		readonly packageId: string;
+		readonly registryId: string;
+	}
+> = {
+	testnet: {
+		chain: 'sui:testnet',
+		packageId: '0x22be4cade64bf2d02412c7e8d0e8beea2f78828b948118d46735315409371a3c',
+		registryId: '0x7c256edbda983a2cd6f946655f4bf3f00a41043993781f8674a7046e8c0e11d1',
+	},
+	mainnet: {
+		chain: 'sui:mainnet',
+		packageId: '0xf48222c4e057fa468baf136bff8e12504209d43850c5778f76159292a96f621e',
+		registryId: '0xaf16199a2dff736e9f07a845f23c5da6df6f756eddb631aed9d24a93efc4549d',
+	},
+};
 
 const LOCAL_DEPLOYMENT_ENV = [
 	'DEEPBOOK_PACKAGE_OVERRIDE_PACKAGE_ID',
@@ -284,6 +317,16 @@ const buildLocalPlugin = <const Publisher extends AccountMemberAlias>(
 
 const buildKnownPlugin = (opts: DeepbookKnownOptions) => {
 	const name = opts.name ?? DEFAULT_NAME;
+	const known = opts.network ? KNOWN_DEEPBOOK_DEPLOYMENTS[opts.network] : null;
+	const packageId = opts.packageId ?? known?.packageId;
+	const registryId = opts.registryId ?? known?.registryId;
+	if (!packageId || !registryId) {
+		throw deepbookConfigError(
+			'packageId',
+			`deepbook({mode:'known', name:'${name}'}) requires packageId and registryId, or network:'mainnet'|'testnet'.`,
+			`Pass explicit ids or use deepbook({mode:'known', network:'testnet'}).`,
+		);
+	}
 	const tag = makeDeepbookTag(name);
 	const snap = makeKnownSnapshotable({ name });
 
@@ -297,9 +340,9 @@ const buildKnownPlugin = (opts: DeepbookKnownOptions) => {
 				const sui = ctx.get(SuiTag);
 				const resolved: DeepbookResolved = {
 					mode: 'known',
-					chain: opts.chain ?? sui.chain,
-					packageId: opts.packageId,
-					registryId: opts.registryId,
+					chain: opts.chain ?? known?.chain ?? sui.chain,
+					packageId,
+					registryId,
 					adminCapId: null,
 					pools: [],
 					pyth: null,

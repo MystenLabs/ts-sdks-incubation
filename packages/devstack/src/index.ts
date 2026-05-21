@@ -421,6 +421,7 @@ export {
 	type DeepbookCommonOptions,
 	type DeepbookLocalOptions,
 	type DeepbookKnownOptions,
+	type DeepbookKnownNetwork,
 	type DeepbookOptions,
 	type DeepbookBindings,
 	type DeepbookPoolBinding,

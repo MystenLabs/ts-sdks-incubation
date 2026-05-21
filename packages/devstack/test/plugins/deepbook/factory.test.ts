@@ -2,12 +2,14 @@
 // surface (`deepbook(...)`, `deepbookFor(...)`) so regressions
 // surface here, not in the e2e harness.
 
-import { describe, expect, it } from 'vitest';
+import { Effect } from 'effect';
+import { describe, expect, it } from '@effect/vitest';
 
 import { account } from '../../../src/plugins/account/index.ts';
 import { deepbook, deepbookFor } from '../../../src/plugins/deepbook/index.ts';
-import * as publicRoot from '../../../src/index.ts';
+import { SuiTag } from '../../../src/plugins/sui/index.ts';
 import { chainId } from '../../../src/substrate/brand.ts';
+import * as publicRoot from '../../../src/index.ts';
 import { MEMBER_BRAND } from '../../../src/substrate/plugin.ts';
 
 describe('deepbook(opts) — primary factory', () => {
@@ -39,6 +41,47 @@ describe('deepbook(opts) — primary factory', () => {
 		expect(member.kind).toBe('leaf-one-shot');
 		expect(member.provides.id).toMatch(/^deepbook\//);
 	});
+
+	it('uses built-in known deployment ids when network is supplied', () => {
+		const member = deepbook({
+			mode: 'known',
+			network: 'testnet',
+		});
+		expect(member.kind).toBe('leaf-one-shot');
+		expect(member.provides.id).toBe('deepbook/deepbook');
+	});
+
+	it('refuses known mode without explicit ids or a known network', () => {
+		expect(() => deepbook({ mode: 'known' } as never)).toThrow(/packageId and registryId/);
+	});
+
+	it.effect('resolves built-in testnet known deployment ids', () =>
+		Effect.gen(function* () {
+			const member = deepbook({
+				mode: 'known',
+				network: 'testnet',
+			});
+			const ctx = {
+				get: (tag: typeof SuiTag) => {
+					expect(tag).toBe(SuiTag);
+					return { chain: chainId('sui:local') } as never;
+				},
+				use: () => {
+					throw new Error('unexpected ctx.use');
+				},
+			} as Parameters<typeof member.acquire>[0];
+
+			const resolved = yield* member.acquire(ctx);
+
+			expect(resolved).toMatchObject({
+				mode: 'known',
+				chain: 'sui:testnet',
+				packageId: '0x22be4cade64bf2d02412c7e8d0e8beea2f78828b948118d46735315409371a3c',
+				registryId: '0x7c256edbda983a2cd6f946655f4bf3f00a41043993781f8674a7046e8c0e11d1',
+				adminCapId: null,
+			});
+		}),
+	);
 
 	it('folds the instance name into the tag id', () => {
 		const member = deepbook({

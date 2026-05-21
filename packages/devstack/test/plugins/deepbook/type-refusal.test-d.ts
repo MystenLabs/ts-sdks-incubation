@@ -50,6 +50,9 @@ export const _localKnown = deepbookFor.for(localNet).known({
 	packageId: '0xpkg',
 	registryId: '0xreg',
 });
+export const _localKnownByNetwork = deepbookFor.for(localNet).known({
+	network: 'testnet',
+});
 
 // --- Negative: local mode does not expose unsupported feature options ----
 // @ts-expect-error — local pools are not a public option until they acquire real behavior
@@ -69,6 +72,9 @@ export const _liveKnown = deepbookFor.for(liveNet).known({
 	packageId: '0xpkg',
 	registryId: '0xreg',
 });
+export const _liveKnownByNetwork = deepbookFor.for(liveNet).known({
+	network: 'mainnet',
+});
 
 // --- Negative: live mode has no .local -----------------------------------
 // @ts-expect-error — `.local` doesn't exist on the live branch
@@ -78,6 +84,9 @@ export const _liveLocalRefused = deepbookFor.for(liveNet).local({ publisher });
 export const _forkKnown = deepbookFor.for(forkNet).known({
 	packageId: '0xpkg',
 	registryId: '0xreg',
+});
+export const _forkKnownByNetwork = deepbookFor.for(forkNet).known({
+	network: 'mainnet',
 });
 
 // --- Negative: fork mode has no .local ----------------------------------

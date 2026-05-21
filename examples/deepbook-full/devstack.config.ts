@@ -7,17 +7,15 @@ import {
 	type Stack,
 } from '@mysten-incubation/devstack';
 
-const publisher = account('publisher');
 const alice = account('alice');
 const bob = account('bob');
 
 const dex = deepbook({
-	mode: 'local',
-	publisher,
+	mode: 'known',
+	network: 'testnet',
 });
 
 const stack: Stack<ReadonlyArray<AnyMember>> = defineDevstack(
-	publisher,
 	alice,
 	bob,
 	dex,
