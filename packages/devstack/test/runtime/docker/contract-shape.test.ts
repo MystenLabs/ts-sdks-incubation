@@ -25,6 +25,7 @@ import type {
 	ContainerRuntime,
 	ExecOptions,
 	ImageRef,
+	OneShotSpec,
 } from '../../../src/contracts/container-runtime.ts';
 
 // Construct a stub ContainerRuntime that exercises every method
@@ -111,6 +112,18 @@ describe('ContainerRuntime contract surface', () => {
 				workdir: '/tmp',
 				env: { FOO: 'bar' },
 			});
+			expect(r.exitCode).toBe(0);
+		}),
+	);
+
+	it.effect('runOneShot carries an optional user for host bind-mount writers', () =>
+		Effect.gen(function* () {
+			const spec: OneShotSpec = {
+				image: { digest: 'alpine:3.20', tag: 'alpine:3.20' },
+				user: '1000:1000',
+				argv: ['id'],
+			};
+			const r = yield* stubRuntime.runOneShot(spec);
 			expect(r.exitCode).toBe(0);
 		}),
 	);

@@ -40,7 +40,7 @@
 // say "seal"; outside `src/plugins/seal/`, the substrate doesn't
 // know seal exists.
 
-import { Effect, FileSystem, type Scope } from 'effect';
+import { Effect, FileSystem, Path, type Scope } from 'effect';
 
 import type { ChainId } from '../../../substrate/brand.ts';
 import type { ChainProbe } from '../../../contracts/chain-probe.ts';
@@ -170,7 +170,7 @@ export const bootLocalKeygen = (
 ): Effect.Effect<
 	SealLocalKeygenResolved,
 	SealError | OnChainArtifactError,
-	Scope.Scope | FileSystem.FileSystem
+	Scope.Scope | FileSystem.FileSystem | Path.Path
 > =>
 	Effect.gen(function* () {
 		// ---- cargo image (lifted sibling) -----------------------
@@ -183,7 +183,7 @@ export const bootLocalKeygen = (
 		// Source is only fetched when no user-pinned path is provided.
 		const movePackagePath: string = opts.movePackagePath
 			? opts.movePackagePath
-			: yield* resolveDefaultSealSource().pipe(Effect.map((s) => s.path));
+			: yield* resolveDefaultSealSource(deps.runtime).pipe(Effect.map((s) => s.path));
 
 		// ---- keygen (BLS12-381 master + public) -----------------
 		// The keypair flows directly into the publish + register

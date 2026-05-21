@@ -117,6 +117,21 @@ Acceptance evidence:
 
 Closed evidence:
 
+- 2026-05-21 Worker Seal Source Fetch: CI Devstack E2E commit `6a624879`, job
+  `Seed snapshot · private-content`, reached Seal acquire and failed because
+  `plugins/seal/lifted-siblings/source-fetch.ts` still raised the documented
+  `git fetch not implemented` seam (`/tmp/devstack-private-content-6a624879.log`, around lines
+  1218-1224). Seal source resolution now preserves the existing `movePackagePath` and
+  `SEAL_MOVE_SOURCE_OVERRIDE` fast paths, then fills a per-host cache with a staged
+  `ContainerRuntime.runOneShot` `alpine/git` clone and returns the cached `move/seal` host path. A
+  follow-up review found the clone one-shot could leave root-owned cache files on Linux and cold
+  concurrent processes could race the final cache publish; the one-shot contract now carries a
+  narrow `user` option, Seal passes host `uid:gid` when Node exposes it, and the cache publish uses
+  a deterministic lock path beside the cache target. Targeted validation:
+  `pnpm --filter @mysten-incubation/devstack exec vitest run test/plugins/seal/source-fetch.test.ts test/plugins/seal/public-refs.test.ts`,
+  `pnpm --filter @mysten-incubation/devstack exec vitest run test/runtime/docker/one-shot.test.ts test/runtime/docker/contract-shape.test.ts`,
+  `pnpm --filter @mysten-incubation/devstack typecheck`, changed-file `prettier -c`, changed-file
+  `oxlint`, and `git diff --check`. Full private-content seed rerun remains for the orchestrator.
 - 2026-05-21 Worker Docker Inspect Config: CI Devstack E2E commit `e3afcd74`, job
   `Seed snapshot · private-content`, failed router boot while decoding inspect JSON for
   `devstack-router-c3ec4a78102c` because the object returned by ambiguous `docker inspect <name>`

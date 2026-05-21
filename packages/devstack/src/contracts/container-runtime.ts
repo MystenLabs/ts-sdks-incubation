@@ -102,6 +102,10 @@ export interface OneShotSpec {
 	}>;
 	readonly network?: string;
 	readonly entrypoint?: string;
+	/** Optional numeric or named user for `docker run --user`.
+	 *  Use for one-shots that write into host bind mounts so Linux
+	 *  Docker does not leave root-owned files behind. */
+	readonly user?: string;
 	/** Wall-clock timeout. After this the subprocess is killed; a
 	 *  belt-and-suspenders `rm -f` finalizer catches containers that
 	 *  outlived the foreground subprocess. */

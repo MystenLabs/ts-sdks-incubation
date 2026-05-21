@@ -96,6 +96,7 @@ export interface DockerOneShotOptions {
 	}>;
 	readonly network?: string;
 	readonly entrypoint?: string;
+	readonly user?: string;
 	readonly labels?: ReadonlyArray<string>;
 	/** `--add-host <host>:<ip>` entries. See contract docs. */
 	readonly extraHosts?: Readonly<Record<string, string>>;
@@ -127,6 +128,7 @@ export const dockerRunOneShot = (
 		args.push('--name', name);
 		if (opts.network) args.push('--network', opts.network);
 		if (opts.entrypoint) args.push('--entrypoint', opts.entrypoint);
+		if (opts.user) args.push('--user', opts.user);
 		if (opts.env) {
 			for (const [k, v] of Object.entries(opts.env)) {
 				args.push('--env', `${k}=${v}`);

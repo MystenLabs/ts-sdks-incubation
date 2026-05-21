@@ -421,6 +421,7 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 				mounts: spec.mounts,
 				network: spec.network,
 				entrypoint: spec.entrypoint,
+				user: spec.user,
 				timeoutMillis: spec.timeoutMillis,
 				extraHosts: spec.extraHosts,
 			}).pipe(

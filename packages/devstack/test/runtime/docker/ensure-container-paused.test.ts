@@ -128,7 +128,7 @@ describe('ensureContainer paused adoption', () => {
 					[
 						'#!/bin/sh',
 						`printf '%s\\n' "$*" >> ${JSON.stringify(log)}`,
-						'if [ "$1" = "inspect" ]; then',
+						'if [ "$1" = "container" ] && [ "$2" = "inspect" ]; then',
 						`  printf '%s\\n' ${JSON.stringify(inspectJson)}`,
 						'  exit 0',
 						'fi',
@@ -160,6 +160,7 @@ describe('ensureContainer paused adoption', () => {
 
 				const lines = readFileSync(log, 'utf8').trim().split('\n');
 				expect(handle.status).toBe('running');
+				expect(lines).toContain('container inspect devstack-paused');
 				expect(lines).toContain('unpause devstack-paused');
 				expect(lines.some((line) => line.startsWith('start '))).toBe(false);
 			} finally {
@@ -182,12 +183,12 @@ describe('snapshot pauseAndCommit', () => {
 				[
 					'#!/bin/sh',
 					`printf '%s\\n' "$*" >> ${JSON.stringify(log)}`,
-					'if [ "$1" = "inspect" ]; then',
-					'  if [ "$2" = "exited-container" ]; then',
+					'if [ "$1" = "container" ] && [ "$2" = "inspect" ]; then',
+					'  if [ "$3" = "exited-container" ]; then',
 					'    printf "%s\\n" \'[{"Id":"exited-id","Image":"image:before","HostConfig":{"PortBindings":{}},"State":{"Running":false,"Paused":false,"ExitCode":0},"Config":{"Image":"image:before","Labels":{"devstack.managed":"true","devstack.app":"app","devstack.stack":"main","devstack.plugin":"postgres","devstack.role":"db"}},"NetworkSettings":{"Networks":{}}}]\'',
 					'    exit 0',
 					'  fi',
-					'  if [ "$2" = "created-container" ]; then',
+					'  if [ "$3" = "created-container" ]; then',
 					'    printf "%s\\n" \'[{"Id":"created-id","Image":"image:before","HostConfig":{"PortBindings":{}},"State":{"Running":false,"Paused":false,"ExitCode":0},"Config":{"Image":"image:before","Labels":{"devstack.managed":"true","devstack.app":"app","devstack.stack":"main","devstack.plugin":"postgres","devstack.role":"db"}},"NetworkSettings":{"Networks":{}}}]\'',
 					'    exit 0',
 					'  fi',
@@ -242,9 +243,11 @@ describe('snapshot pauseAndCommit', () => {
 			expect(refs.map((ref) => ref.digest)).toEqual(['sha256:committed', 'sha256:committed']);
 			const lines = readFileSync(log, 'utf8').trim().split('\n');
 			expect(lines).toHaveLength(4);
+			expect(lines[0]).toBe('container inspect exited-container');
 			expect(lines[1]).toMatch(
 				/^commit exited-container devstack-snapshot:exited-container-[a-f0-9]{12}$/,
 			);
+			expect(lines[2]).toBe('container inspect created-container');
 			expect(lines[3]).toMatch(
 				/^commit created-container devstack-snapshot:created-container-[a-f0-9]{12}$/,
 			);
