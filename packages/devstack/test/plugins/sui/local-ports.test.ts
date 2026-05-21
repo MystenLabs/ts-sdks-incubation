@@ -17,6 +17,7 @@ import type {
 	AllocatedPort,
 	PortBroker,
 } from '../../../src/substrate/runtime/port-broker/index.ts';
+import { PortBrokerError } from '../../../src/substrate/runtime/port-broker/index.ts';
 import { appName, stackName } from '../../../src/substrate/brand.ts';
 import {
 	DEFAULT_HOST_FAUCET_PORT,
@@ -36,6 +37,31 @@ const fakeBroker = (allocate: (opts: AllocateOptions) => number): PortBroker => 
 			release: Effect.void,
 		} satisfies AllocatedPort),
 });
+
+const strictStatefulBroker = (): PortBroker => {
+	const held = new Set<number>();
+	return {
+		allocate: (opts) => {
+			const port = opts.preferredPort ?? (opts.kind === 'rpc' ? 51000 : 50000);
+			if (held.has(port)) {
+				return Effect.fail(
+					new PortBrokerError({
+						reason: 'preferred-busy',
+						detail: `preferred port ${port} (${opts.kind}) is already held by another allocation in this stack`,
+					}),
+				);
+			}
+			held.add(port);
+			return Effect.succeed({
+				port,
+				kind: opts.kind,
+				release: Effect.sync(() => {
+					held.delete(port);
+				}),
+			} satisfies AllocatedPort);
+		},
+	};
+};
 
 const publishPortConflict = (port: number): ContainerRuntimeError => ({
 	_tag: 'ContainerRuntimeError',
@@ -211,6 +237,53 @@ describe('Sui local port mapping', () => {
 					{ containerPort: 9123, hostPort: 50001, hostIp: '0.0.0.0' },
 				]);
 				expect(specs[0]?.portBindingReconciliation).toBe('adopt-existing');
+				expect(specs[1]?.ports).toEqual(result.ports);
+				expect(specs[1]?.portBindingReconciliation).toBe('exact');
+			}),
+		),
+	);
+
+	it.effect('releases abandoned default allocations before publish-conflict retry', () =>
+		Effect.scoped(
+			Effect.gen(function* () {
+				const calls: AllocateOptions[] = [];
+				const specs: EnsureContainerSpec[] = [];
+				const broker = strictStatefulBroker();
+				const recordingBroker: PortBroker = {
+					allocate: (opts) => {
+						calls.push(opts);
+						return broker.allocate(opts);
+					},
+				};
+				const runtime = unusedRuntime((spec) => {
+					specs.push(spec);
+					if (specs.length === 1) return Effect.fail(publishPortConflict(DEFAULT_HOST_RPC_PORT));
+					return Effect.succeed({
+						id: 'container-id',
+						name: spec.name,
+						imageName: spec.image.tag ?? spec.image.digest,
+						status: 'running',
+						ips: [],
+						ports: spec.ports,
+					});
+				});
+
+				const result = yield* ensureLocalValidatorContainer(
+					runtime,
+					recordingBroker,
+					{ digest: 'sha256:sui', tag: 'sui:local' },
+					{ app: appName('wallet'), stack: stackName('wallet'), plugin: 'sui', role: 'validator' },
+					'devstack-wallet-wallet-sui-validator',
+					{ mode: 'local' },
+				);
+
+				expect(result.ports).toEqual([
+					{ containerPort: 9000, hostPort: DEFAULT_HOST_RPC_PORT, hostIp: '0.0.0.0' },
+					{ containerPort: 9123, hostPort: DEFAULT_HOST_FAUCET_PORT, hostIp: '0.0.0.0' },
+				]);
+				expect(calls).toHaveLength(4);
+				expect(specs).toHaveLength(2);
+				expect(specs[0]?.ports).toEqual(result.ports);
 				expect(specs[1]?.ports).toEqual(result.ports);
 				expect(specs[1]?.portBindingReconciliation).toBe('exact');
 			}),

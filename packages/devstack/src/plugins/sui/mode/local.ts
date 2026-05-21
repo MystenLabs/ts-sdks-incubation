@@ -57,7 +57,11 @@ import type {
 } from '../../../contracts/container-runtime.ts';
 import type { ContainerLabelTuple } from '../../../contracts/snapshotable.ts';
 import type { Identity } from '../../../substrate/identity.ts';
-import type { PortBroker, PortKind } from '../../../substrate/runtime/port-broker/index.ts';
+import type {
+	AllocatedPort,
+	PortBroker,
+	PortKind,
+} from '../../../substrate/runtime/port-broker/index.ts';
 import { noopClockAdvancer } from '../auto-tick.ts';
 import { suiPluginError, type SuiPluginError } from '../errors.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
@@ -133,12 +137,12 @@ export const bootLocalMode = (
 			role: 'validator',
 		};
 		const containerName = `devstack-${identity.app}-${identity.stack}-sui-validator`;
-			const { handle, ports } = yield* ensureLocalValidatorContainer(
-				runtime,
-				portBroker,
-				image,
-				labels,
-				containerName,
+		const { handle, ports } = yield* ensureLocalValidatorContainer(
+			runtime,
+			portBroker,
+			image,
+			labels,
+			containerName,
 			opts,
 		);
 
@@ -262,6 +266,11 @@ interface LocalValidatorContainerResult {
 	readonly ports: ReadonlyArray<ContainerPortPublish>;
 }
 
+interface ResolvedPortMapping {
+	readonly ports: ReadonlyArray<ContainerPortPublish>;
+	readonly release: Effect.Effect<void>;
+}
+
 export const ensureLocalValidatorContainer = (
 	runtime: ContainerRuntime,
 	portBroker: PortBroker,
@@ -277,10 +286,10 @@ export const ensureLocalValidatorContainer = (
 				: undefined;
 		if (reusablePorts !== undefined) {
 			return yield* ensureLocalValidatorContainerAttempt({
-					runtime,
-					portBroker,
-					image,
-					labels,
+				runtime,
+				portBroker,
+				image,
+				labels,
 				containerName,
 				opts,
 				ports: reusablePorts,
@@ -289,10 +298,10 @@ export const ensureLocalValidatorContainer = (
 			});
 		}
 		return yield* ensureLocalValidatorContainerWithFreshPorts({
-				runtime,
-				portBroker,
-				image,
-				labels,
+			runtime,
+			portBroker,
+			image,
+			labels,
 			containerName,
 			opts,
 			attempt: 0,
@@ -316,13 +325,18 @@ const ensureLocalValidatorContainerWithFreshPorts = (
 	},
 ): Effect.Effect<LocalValidatorContainerResult, SuiPluginError, Scope.Scope> =>
 	Effect.gen(function* () {
-		const ports = yield* resolvePortMapping(params.portBroker, params.opts.ports);
-		return yield* ensureLocalValidatorContainerAttempt({ ...params, ports });
+		const mapping = yield* resolvePortMappingWithRelease(params.portBroker, params.opts.ports);
+		return yield* ensureLocalValidatorContainerAttempt({
+			...params,
+			ports: mapping.ports,
+			releasePorts: mapping.release,
+		});
 	});
 
 const ensureLocalValidatorContainerAttempt = (
 	params: EnsureLocalValidatorContainerBase & {
 		readonly ports: ReadonlyArray<ContainerPortPublish>;
+		readonly releasePorts?: Effect.Effect<void>;
 		readonly attempt: number;
 		readonly reconciliation: PortBindingReconciliation;
 	},
@@ -352,11 +366,15 @@ const ensureLocalValidatorContainerAttempt = (
 					cause.reason === 'publish-port-conflict' &&
 					params.attempt < MAX_DOCKER_PUBLISH_PORT_RETRIES
 				) {
-					return ensureLocalValidatorContainerWithFreshPorts({
-						...params,
-						attempt: params.attempt + 1,
-						reconciliation: 'exact',
-					});
+					return (params.releasePorts ?? Effect.void).pipe(
+						Effect.andThen(
+							ensureLocalValidatorContainerWithFreshPorts({
+								...params,
+								attempt: params.attempt + 1,
+								reconciliation: 'exact',
+							}),
+						),
+					);
 				}
 				return Effect.fail(
 					suiPluginError(
@@ -375,22 +393,37 @@ const ensureLocalValidatorContainerAttempt = (
 export const resolvePortMapping = (
 	portBroker: PortBroker,
 	override: Readonly<Record<number, number>> | undefined,
-): Effect.Effect<ReadonlyArray<ContainerPortPublish>, SuiPluginError, Scope.Scope> => {
+): Effect.Effect<ReadonlyArray<ContainerPortPublish>, SuiPluginError, Scope.Scope> =>
+	resolvePortMappingWithRelease(portBroker, override).pipe(Effect.map((mapping) => mapping.ports));
+
+const resolvePortMappingWithRelease = (
+	portBroker: PortBroker,
+	override: Readonly<Record<number, number>> | undefined,
+): Effect.Effect<ResolvedPortMapping, SuiPluginError, Scope.Scope> => {
 	const pick = (containerPort: number, fallback: number): number => {
 		if (!override) return fallback;
 		const hit = override[containerPort];
 		return typeof hit === 'number' ? hit : fallback;
 	};
 	if (override) {
-		return Effect.succeed([
-			portPublish(CONTAINER_RPC_PORT, pick(CONTAINER_RPC_PORT, DEFAULT_HOST_RPC_PORT)),
-			portPublish(CONTAINER_FAUCET_PORT, pick(CONTAINER_FAUCET_PORT, DEFAULT_HOST_FAUCET_PORT)),
-		]);
+		return Effect.succeed({
+			ports: [
+				portPublish(CONTAINER_RPC_PORT, pick(CONTAINER_RPC_PORT, DEFAULT_HOST_RPC_PORT)),
+				portPublish(CONTAINER_FAUCET_PORT, pick(CONTAINER_FAUCET_PORT, DEFAULT_HOST_FAUCET_PORT)),
+			],
+			release: Effect.void,
+		});
 	}
 	return Effect.gen(function* () {
 		const rpc = yield* allocatePort(portBroker, 'rpc', DEFAULT_HOST_RPC_PORT, 'rpc');
 		const faucet = yield* allocatePort(portBroker, 'http', DEFAULT_HOST_FAUCET_PORT, 'faucet');
-		return [portPublish(CONTAINER_RPC_PORT, rpc), portPublish(CONTAINER_FAUCET_PORT, faucet)];
+		return {
+			ports: [
+				portPublish(CONTAINER_RPC_PORT, rpc.port),
+				portPublish(CONTAINER_FAUCET_PORT, faucet.port),
+			],
+			release: Effect.all([rpc.release, faucet.release], { discard: true }),
+		};
 	});
 };
 
@@ -455,7 +488,7 @@ const allocatePort = (
 	kind: PortKind,
 	preferredPort: number,
 	label: 'rpc' | 'faucet',
-): Effect.Effect<number, SuiPluginError, Scope.Scope> =>
+): Effect.Effect<AllocatedPort, SuiPluginError, Scope.Scope> =>
 	portBroker
 		.allocate({
 			kind,
@@ -463,7 +496,6 @@ const allocatePort = (
 			probeHost: DOCKER_PUBLISH_HOST,
 		})
 		.pipe(
-			Effect.map((allocated) => allocated.port),
 			Effect.mapError((cause) =>
 				suiPluginError(
 					'port-allocate',
