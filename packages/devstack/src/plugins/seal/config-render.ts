@@ -57,10 +57,10 @@ export const renderSealKeyServerConfig = (inputs: SealKeyServerConfigInputs): st
 	const tsReq = inputs.tsSdkVersionRequirement ?? DEFAULT_TS_SDK_REQUIREMENT;
 	return [
 		'network: !Devnet',
-		`seal_package: "${inputs.sealPackageId}"`,
+		`  seal_package: "${inputs.sealPackageId}"`,
 		`node_url: "${inputs.nodeUrl}"`,
 		'server_mode: !Open',
-		`key_server_object_id: "${inputs.keyServerObjectId}"`,
+		`  key_server_object_id: "${inputs.keyServerObjectId}"`,
 		`ts_sdk_version_requirement: "${tsReq}"`,
 		'',
 	].join('\n');

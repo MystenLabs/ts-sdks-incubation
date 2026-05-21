@@ -271,12 +271,13 @@ export const startKeyServer = (
 		// binary finishes config + master-key load. Pre-boot we
 		// expect connection-refused → curl returns non-zero, retry.
 		const readyTimeout = Duration.millis(spec.readyTimeoutMs);
+		const directProbeUrl = `http://127.0.0.1:${spec.containerPort}/health`;
 		yield* runtime
 			.exec(handle, [
 				'sh',
 				'-c',
 				`(command -v curl >/dev/null 2>&1 && ` +
-					`curl -fsS -m 2 http://127.0.0.1:${spec.containerPort}/health >/dev/null) ` +
+					`curl -fsS -m 2 ${directProbeUrl} >/dev/null) ` +
 					`|| nc -z 127.0.0.1 ${spec.containerPort} ` +
 					`|| exit 1`,
 			])
@@ -315,7 +316,7 @@ export const startKeyServer = (
 								name,
 								message:
 									`seal key-server never became ready within ${Duration.toMillis(readyTimeout)}ms ` +
-									`(routedUrl=${spec.routedUrl})`,
+									`(directProbeUrl=${directProbeUrl}, routedUrl=${spec.routedUrl})`,
 							}),
 						),
 				}),

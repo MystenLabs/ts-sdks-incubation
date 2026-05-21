@@ -117,6 +117,18 @@ Acceptance evidence:
 
 Closed evidence:
 
+- 2026-05-21 Worker Seal Key-Server Config: CI Devstack E2E commit `bd8320dd`, job
+  `Seed snapshot · private-content`, reached Seal acquire and failed after the key-server readiness
+  deadline because the daemon never bound `/health` (`/tmp/devstack-private-content-bd8320dd.log`,
+  lines 1205-1212). The rendered `key-server-config.yaml` used the wrong upstream YAML shape:
+  `seal_package` and `key_server_object_id` were top-level fields, but the pinned `seal-v0.6.6`
+  key-server parses `network: !Devnet` with nested `seal_package` and `server_mode: !Open` with
+  nested `key_server_object_id`. The renderer now emits the nested shape, and the readiness timeout
+  names both the direct in-container `/health` probe URL and the routed public URL so future
+  failures distinguish daemon boot from router dispatch. Targeted validation:
+  `pnpm --filter @mysten-incubation/devstack exec vitest run test/plugins/seal/config-render.test.ts test/plugins/seal/key-server-spec.test.ts`,
+  `pnpm --filter @mysten-incubation/devstack typecheck`, changed-file `prettier -c`, changed-file
+  `oxlint`, and `git diff --check`.
 - 2026-05-21 Worker Seal Source Fetch: CI Devstack E2E commit `6a624879`, job
   `Seed snapshot · private-content`, reached Seal acquire and failed because
   `plugins/seal/lifted-siblings/source-fetch.ts` still raised the documented
