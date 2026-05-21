@@ -73,6 +73,7 @@
 	],
 	"scripts": {
 		"build": "tsdown",
+		"smoke:pack-consumer": "node scripts/packed-consumer-typecheck.mjs",
 		"typecheck": "tsc --noEmit",
 		"test": "vitest run",
 		"test:e2e": "DEVSTACK_RUN_E2E=1 vitest run"

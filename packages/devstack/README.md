@@ -29,8 +29,8 @@ This package contains:
   blocker ledger explicitly clears them.
 
 For agents/orchestrators picking up this work, start with `notes/README.md`; the rolling blocker
-ledger lives at `notes/UNRESOLVED-BLOCKERS.md`. The compact first-read set there is enough to begin a
-clean orchestration session. Optional reference notes are `notes/api-surface-design.md`,
+ledger lives at `notes/UNRESOLVED-BLOCKERS.md`. The compact first-read set there is enough to begin
+a clean orchestration session. Optional reference notes are `notes/api-surface-design.md`,
 `notes/phase-f-manual-scenarios.md`, and `notes/pr7-cutover-plan.md`.
 
 ## Boundary
@@ -61,5 +61,20 @@ src/
 ## Effect v4
 
 This package targets Effect v4 beta (catalog pin). The substrate uses `Scope`, `Layer`, `Context`,
-`Effect.gen`, and `Schema` for runtime contracts; the user-facing surface (factory configs, manifest
-reads, codegen output) carries no Effect types.
+`Effect.gen`, and `Schema` for runtime contracts. App-facing generated outputs avoid Effect types;
+plugin-author and engine surfaces intentionally expose them.
+
+### Strict consumer typechecking
+
+`skipLibCheck: false` is currently blocked by the published Effect v4 beta declarations: importing
+Effect types reaches `effect/dist/internal/schema/schema.d.ts`, which references the undeclared
+`SchemaErrorTypeId`. Until Effect publishes a fixed v4 beta, packed consumers must use
+`skipLibCheck: true`. The package-level smoke audit packs the package, installs it in a clean temp
+consumer, checks the installed CLI, checks ESM imports for the root, `/vite`, and `/runtime`
+exports, and verifies that consumer typechecking is blocked only by the known Effect declaration
+bug:
+
+```bash
+pnpm --filter @mysten-incubation/devstack build
+pnpm --filter @mysten-incubation/devstack smoke:pack-consumer
+```

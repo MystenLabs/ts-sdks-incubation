@@ -147,8 +147,8 @@ Closed evidence:
 
 - 2026-05-21 Package-directory cutover: generated/runtime outputs were removed before the move
   (`packages/devstack/{dist,node_modules,.turbo,.devstack}` and
-  `packages/devstack-rewrite/{dist,node_modules,.turbo,.devstack,src/generated}` where present);
-  old `notes/redesign`, `notes/v2-requirements`, `AGENTS.md`, and the snapshot smoke runbook were
+  `packages/devstack-rewrite/{dist,node_modules,.turbo,.devstack,src/generated}` where present); old
+  `notes/redesign`, `notes/v2-requirements`, `AGENTS.md`, and the snapshot smoke runbook were
   preserved under `packages/devstack/notes/`; the old package directory was deleted; the replacement
   implementation was moved to `packages/devstack`; `package.json` is now named
   `@mysten-incubation/devstack` with no `private` field.
@@ -216,6 +216,16 @@ Closed evidence:
   exports with `skipLibCheck: true`. Caveat: strict consumer `tsc` without `skipLibCheck` still
   fails inside third-party Effect/fast-check declarations before reporting package export errors;
   final package name/private and final install-from-tarball boot smoke remain open until cutover.
+- 2026-05-21 Strict Consumer Closure: clean tarball install, `npx devstack --help`, and ESM runtime
+  imports passed, but strict consumer `tsc` without `skipLibCheck` fails solely in
+  `effect@4.0.0-beta.65` at `dist/internal/schema/schema.d.ts(3,15)` because `SchemaErrorTypeId` is
+  referenced without a declaration. Published Effect v4 betas through `4.0.0-beta.70` still carry
+  the same declaration bug, and importing even `effect/Effect` or `effect/Cause` reaches it through
+  Effect's own declaration graph, so there is no safe dependency/catalog correction in this repo.
+  Until Effect publishes a fixed v4 beta, strict packed consumers need `skipLibCheck: true`. Focused
+  audit: `pnpm --filter @mysten-incubation/devstack smoke:pack-consumer`, which packs to a temp
+  directory, installs in a clean consumer, checks `npx devstack --help`, checks runtime ESM imports
+  for the root, `/vite`, and `/runtime` exports, and fails on any unexpected consumer type error.
 
 ## P0: Public API ergonomics and unsupported options are not release-quality
 
