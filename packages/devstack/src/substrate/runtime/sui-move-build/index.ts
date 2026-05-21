@@ -7,7 +7,7 @@
 // path so Move-publishing plugins do not import each other's internals.
 
 import { createHash } from 'node:crypto';
-import { lstat, readFile, readdir, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join, relative } from 'node:path';
 
@@ -349,6 +349,22 @@ const promoteNonZero = (
 			`stdout (tail): ${result.stdout.slice(-400) || '(empty)'}`,
 	});
 
+const ensureMoveHomeMountSource = (
+	moveHome: string,
+	sourcePath: string,
+	packageName: string,
+): Effect.Effect<void, MoveBuildError> =>
+	Effect.tryPromise({
+		try: () => mkdir(moveHome, { recursive: true }),
+		catch: (cause): MoveBuildError =>
+			moveBuildError('build', {
+				sourcePath,
+				packageName,
+				message: `failed to create Move cache mount source "${moveHome}"`,
+				cause,
+			}),
+	}).pipe(Effect.asVoid);
+
 const buildViaContainerExec = (
 	inputs: BuildInputs,
 	bc: MoveBuildContainer,
@@ -385,6 +401,7 @@ const buildViaOneShot = (
 		const pkgName = basename(inputs.sourcePath);
 		const inner = containerInnerScript(pkgName);
 		const moveHome = join(homedir(), '.move');
+		yield* ensureMoveHomeMountSource(moveHome, inputs.sourcePath, inputs.packageName);
 		const result = yield* runtime
 			.runOneShot({
 				image,

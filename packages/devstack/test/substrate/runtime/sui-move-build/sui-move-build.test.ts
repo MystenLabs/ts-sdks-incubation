@@ -1,15 +1,41 @@
+import { existsSync } from 'node:fs';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { Effect } from 'effect';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from '@effect/vitest';
+import { Effect, Stream } from 'effect';
 
+import type { ContainerRuntime, OneShotSpec } from '../../../../src/contracts/container-runtime.ts';
 import {
 	hashMoveSources,
 	parseBuildOutput,
+	runMoveBuild,
 	stripPinnedSections,
 } from '../../../../src/substrate/runtime/sui-move-build/index.ts';
+
+const unusedRuntimeMethod = () => Effect.die('not used');
+
+const oneShotRuntime = (runOneShot: ContainerRuntime['runOneShot']): ContainerRuntime => ({
+	ensureImage: unusedRuntimeMethod,
+	ensureNetwork: unusedRuntimeMethod,
+	ensureContainer: unusedRuntimeMethod,
+	exec: unusedRuntimeMethod,
+	runOneShot,
+	inspectByLabels: unusedRuntimeMethod,
+	followLogs: () => Stream.empty,
+	pauseAndCommit: unusedRuntimeMethod,
+	saveImage: () => Stream.empty,
+	loadImage: unusedRuntimeMethod,
+	tagImage: unusedRuntimeMethod,
+	unpause: unusedRuntimeMethod,
+	stop: unusedRuntimeMethod,
+	sweepOrphans: unusedRuntimeMethod,
+	removeManagedContainers: unusedRuntimeMethod,
+	removeManagedImages: unusedRuntimeMethod,
+	removeManagedNetworks: unusedRuntimeMethod,
+	removeManagedVolumes: unusedRuntimeMethod,
+});
 
 describe('sui-move-build helpers', () => {
 	it('strips pinned Move.lock sections idempotently', () => {
@@ -80,4 +106,53 @@ describe('sui-move-build helpers', () => {
 		expect(parsed.modules).toEqual([new Uint8Array([1, 2, 3])]);
 		expect(parsed.dependencies).toEqual(['0x1', '0x2']);
 	});
+
+	it.effect('creates the Move cache mount source before one-shot docker build', () =>
+		Effect.gen(function* () {
+			const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'devstack-move-home-')));
+			const previousHome = process.env.HOME;
+			try {
+				const home = join(root, 'home');
+				const sourcePath = join(root, 'vault');
+				yield* Effect.promise(() => mkdir(sourcePath, { recursive: true }));
+				process.env.HOME = home;
+
+				const capturedSpecs: OneShotSpec[] = [];
+				const runtime = oneShotRuntime((spec) =>
+					Effect.sync(() => {
+						capturedSpecs.push(spec);
+						const moveMount = spec.mounts?.find((mount) => mount.target === '/root/.move');
+						expect(moveMount?.source).toBe(join(home, '.move'));
+						expect(existsSync(join(home, '.move'))).toBe(true);
+						return {
+							exitCode: 0,
+							stdout: JSON.stringify({ modules: [], dependencies: [] }),
+							stderr: '',
+						};
+					}),
+				);
+
+				const result = yield* runMoveBuild({
+					sourcePath,
+					packageName: 'vault',
+					chainId: 'localnet',
+					runtime,
+					buildImage: { digest: 'sha256:sui' },
+				});
+
+				expect(result).toEqual({ modules: [], dependencies: [] });
+				expect(capturedSpecs[0]?.mounts).toContainEqual({
+					source: join(home, '.move'),
+					target: '/root/.move',
+				});
+			} finally {
+				if (previousHome === undefined) {
+					delete process.env.HOME;
+				} else {
+					process.env.HOME = previousHome;
+				}
+				yield* Effect.promise(() => rm(root, { recursive: true, force: true }));
+			}
+		}).pipe(Effect.scoped),
+	);
 });
