@@ -67,7 +67,8 @@ const commands = [
 			{
 				name: 'save',
 				summary: 'Capture a snapshot of the active stack.',
-				usage: 'devstack snapshot save [--label <label>]',
+				usage: 'devstack snapshot save [id] [--label <label>]',
+				arguments: ['id'],
 				options: [{ name: 'label', value: 'label', description: 'Human-readable snapshot label.' }],
 			},
 			{

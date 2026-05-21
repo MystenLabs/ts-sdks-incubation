@@ -17,7 +17,10 @@
 //      the cross-process command channel for peer CLIs), and dispatch.
 //      Effect runs as the outer Node fiber so SIGINT reaches Scope
 //      finalizers.
-//   4. Otherwise: build CHANNEL deps (publisher/subscriber backed by
+//   4. If verb is `snapshot save` and no supervisor is live: construct
+//      substrate Layers locally, boot one-shot so snapshot participants
+//      register, then capture through the same CLI dispatcher.
+//   5. Otherwise: build CHANNEL deps (publisher/subscriber backed by
 //      `<stackRoot>/{commands,events}.ndjson`) and dispatch.
 
 import { existsSync, realpathSync } from 'node:fs';
@@ -54,6 +57,7 @@ import {
 	makeChannelPublisher,
 	makeChannelSubscriber,
 	defaultProbes,
+	probeSupervisorPresence,
 	runNodeChildProcess,
 	type ChannelDepsContext,
 } from '../surfaces/cli/commands/index.ts';
@@ -266,7 +270,9 @@ const makeSnapshotCommandHandler = (params: {
 	return (cmd) => {
 		switch (cmd.tag) {
 			case 'snapshot.capture':
-				return provideFileSystem(params.snapshot.capture({ label: cmd.label })).pipe(
+				return provideFileSystem(
+					params.snapshot.capture({ id: cmd.snapshotId, label: cmd.label }),
+				).pipe(
 					Effect.map((meta) => [
 						{
 							tag: 'snapshot.captured',
@@ -525,6 +531,123 @@ const runApplyLive = (
 	}).pipe(Effect.catch(() => Effect.void));
 };
 
+/** `snapshot save` is valid in CI immediately after one-shot `apply`.
+ *  In that shape there is no live supervisor to receive a channel
+ *  command, so we boot a scoped one-shot stack, let the normal
+ *  capability sinks register snapshot participants, and route the CLI
+ *  command through a direct publisher that waits for capture. */
+const runSnapshotSaveDirect = (
+	argv: ReadonlyArray<string>,
+	flags: ReturnType<typeof parseGlobalFlags>,
+	identity: ResolvedIdentity,
+	stdinIsTty: boolean,
+): Effect.Effect<void> => {
+	const loader = makeConfigLoader();
+	return Effect.gen(function* () {
+		const loaded = yield* loader.load(flags.configPath).pipe(
+			Effect.matchEffect({
+				onFailure: (err) =>
+					Effect.gen(function* () {
+						process.stderr.write(`error: ${err.message}\n`);
+						process.exitCode = err._tag === 'CliConfigNotFoundError' ? 66 : 78;
+						return yield* Effect.fail('config-load-failed' as const);
+					}),
+				onSuccess: (v) => Effect.succeed(v),
+			}),
+		);
+		const stack = (loaded as LoadedConfig & { readonly stack: SupervisedStack }).stack;
+		const identityValue: Identity = {
+			app: appName(identity.app),
+			stack: stackName(stack.options.stackName ?? identity.stack),
+			chain: chainId(identity.network),
+		};
+		const appRoot = dirname(loaded.resolvedConfigPath);
+		const substrateLayers = layerProductionOrchestrators({
+			codegen: {
+				appRoot,
+				outputDir: stack.options.codegen?.outputDir,
+				stackSubdir: stack.options.codegen?.stackSubdir ?? null,
+			},
+		}).pipe(Layer.provideMerge(buildSubstrateLayers(identityValue, identity.runtimeRoot)));
+
+		const program = Effect.gen(function* () {
+			const state = yield* makeProjectionRef();
+			const snapshot = yield* SnapshotOrchestratorService;
+			const fs = yield* FileSystem.FileSystem;
+			const provideFileSystem = <A, E>(
+				effect: Effect.Effect<A, E, FileSystem.FileSystem>,
+			): Effect.Effect<A, E, never> =>
+				effect.pipe(Effect.provideService(FileSystem.FileSystem, fs));
+			const directPublisher: CommandPublisher = {
+				publish: (cmd) => {
+					switch (cmd.tag) {
+						case 'snapshot.capture':
+							return provideFileSystem(
+								snapshot.capture({ id: cmd.snapshotId, label: cmd.label }),
+							).pipe(Effect.asVoid);
+						default:
+							return Effect.die(`direct snapshot-save publisher cannot handle ${cmd.tag}`);
+					}
+				},
+			};
+			const orchestratorSinks = yield* buildProductionOrchestratorSinks();
+			const postAcquireHook = yield* buildProductionPostAcquireHook({
+				extras: stack.options.extras,
+			});
+			yield* superviseStackEffect(
+				{ _tag: 'Stack', members: stack.members, options: stack.options },
+				identityValue,
+				state,
+				{
+					orchestratorSinks,
+					postAcquireHook,
+					lifetime: 'one-shot',
+					withinScope: () =>
+						dispatch(
+							{
+								...buildChannelDeps(identity),
+								snapshot: {
+									publisher: directPublisher,
+									reader: makeSnapshotReader(identity),
+								},
+							},
+							{ argv, env: { ...process.env }, stdinIsTty },
+						),
+				},
+			);
+		});
+
+		yield* program.pipe(
+			Effect.provide(substrateLayers),
+			Effect.provide(Logger.layer([Logger.consolePretty()])),
+			Effect.matchCauseEffect({
+				onFailure: (cause) =>
+					Effect.sync(() => {
+						process.stderr.write(
+							`\nerror: snapshot save failed\n${Cause.pretty(cause as Cause.Cause<unknown>)}\n`,
+						);
+						process.exitCode = 1;
+					}),
+				onSuccess: () =>
+					Effect.sync(() => {
+						process.exitCode ??= 0;
+					}),
+			}),
+		);
+	}).pipe(Effect.catch(() => Effect.void));
+};
+
+const snapshotSubcommand = (flags: ReturnType<typeof parseGlobalFlags>): string | undefined => {
+	const verbIndex = flags.rest.findIndex((tok) => !tok.startsWith('-'));
+	if (verbIndex === -1 || flags.rest[verbIndex] !== 'snapshot') return undefined;
+	return flags.rest.slice(verbIndex + 1).find((tok) => !tok.startsWith('-'));
+};
+
+const hasLiveSupervisor = async (identity: ResolvedIdentity): Promise<boolean> => {
+	const exit = await Effect.runPromiseExit(probeSupervisorPresence(identity.rosterFile));
+	return Exit.isSuccess(exit) && exit.value.live;
+};
+
 // -----------------------------------------------------------------------------
 // Bin entry
 // -----------------------------------------------------------------------------
@@ -568,9 +691,9 @@ export const runCli = async (
 		stateDir: preFlags.stateDir,
 	});
 
-	// `up` and one-shot `apply` construct substrate Layers locally.
-	// Other verbs go through the standard dispatcher with channel-backed
-	// deps and target a live supervisor.
+	// `up`, one-shot `apply`, and offline `snapshot save` construct
+	// substrate Layers locally. Other verbs go through the standard
+	// dispatcher with channel-backed deps and target a live supervisor.
 	if ('rest' in preFlags && isMetaRequest(preFlags)) {
 		const deps = buildChannelDeps(identity);
 		await Effect.runPromise(
@@ -582,7 +705,11 @@ export const runCli = async (
 	const verb =
 		'rest' in preFlags ? preFlags.rest.find((tok) => !tok.startsWith('-')) : findVerb(argv);
 
-	if (verb === 'up' || verb === 'apply') {
+	if (
+		verb === 'up' ||
+		verb === 'apply' ||
+		(verb === 'snapshot' && snapshotSubcommand(preFlags) === 'save')
+	) {
 		// Parse via the same global flag parser the dispatcher uses, so
 		// `up` gets every flag — `--dry-run`, `--verbose`, `--state-dir`,
 		// `--json`, etc. — not just the four the old shim parser knew.
@@ -610,13 +737,22 @@ export const runCli = async (
 		if (flags.network !== undefined) {
 			process.env.DEVSTACK_NETWORK = flags.network;
 		}
+		if (verb === 'snapshot' && (await hasLiveSupervisor(identity))) {
+			const deps = buildChannelDeps(identity);
+			await Effect.runPromise(
+				dispatch(deps, { argv, env, stdinIsTty }) as Effect.Effect<void, never, never>,
+			);
+			return;
+		}
 		const program =
 			verb === 'up'
 				? runUpLive(flags.configPath, identity, {
 						renderer: flags.renderer,
 						stdoutIsTty: Boolean((process.stdout as { isTTY?: boolean }).isTTY),
 					})
-				: runApplyLive(flags.configPath, identity);
+				: verb === 'apply'
+					? runApplyLive(flags.configPath, identity)
+					: runSnapshotSaveDirect(argv, flags, identity, stdinIsTty);
 		const fiber = Effect.runFork(program);
 		const exit = await Effect.runPromise(
 			Fiber.await(fiber) as Effect.Effect<Exit.Exit<void, unknown>, never, never>,

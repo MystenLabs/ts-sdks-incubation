@@ -23,6 +23,7 @@ import {
 } from '../../../src/orchestrators/snapshot/index.ts';
 import type { EngineCommand } from '../../../src/substrate/events.ts';
 import { dispatch, type CliDeps } from '../../../src/surfaces/cli/index.ts';
+import { CliNoSupervisorError } from '../../../src/surfaces/cli/errors.ts';
 import type { CliIO } from '../../../src/surfaces/cli/output.ts';
 
 // --- IO + publisher harness -------------------------------------------------
@@ -239,6 +240,44 @@ describe('dispatch', () => {
 		expect(h.exitCode).toBe(0);
 		const env = JSON.parse(h.stdout[0]!);
 		expect(env.data.entries).toEqual([]);
+	});
+
+	it('snapshot save publishes an explicit snapshot id when one is provided', async () => {
+		const { deps, read } = await makeHarness();
+		await run(['--json', 'snapshot', 'save', 'baseline'], deps, { io: read().io });
+		const h = read();
+		expect(h.exitCode).toBe(0);
+		expect(h.published).toEqual([{ tag: 'snapshot.capture', snapshotId: 'baseline' }]);
+		const env = JSON.parse(h.stdout[0]!);
+		expect(env.data.snapshotId).toBe('baseline');
+	});
+
+	it('snapshot save preserves no-supervisor diagnostics from the publisher', async () => {
+		const { deps, read } = await makeHarness();
+		const depsWithNoSupervisor: CliDeps = {
+			...deps,
+			snapshot: {
+				...deps.snapshot,
+				publisher: {
+					publish: () =>
+						Effect.fail(
+							new CliNoSupervisorError({
+								app: 'devstack',
+								stack: 'deepbook-full',
+								hint: 'start the stack with `devstack up` first',
+							}),
+						),
+				},
+			},
+		};
+		await run(['--json', 'snapshot', 'save', 'baseline'], depsWithNoSupervisor, {
+			io: read().io,
+		});
+		const h = read();
+		expect(h.exitCode).toBe(69);
+		const env = JSON.parse(h.stdout[0]!);
+		expect(env.error.summary).toContain('no supervisor running for devstack/deepbook-full');
+		expect(env.error.summary).not.toContain('snapshot capture publish failed');
 	});
 
 	it('snapshot list keeps the artifact directory id canonical when metadata id differs', async () => {

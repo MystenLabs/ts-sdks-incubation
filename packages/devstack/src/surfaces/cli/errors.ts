@@ -113,6 +113,26 @@ export type CliError =
 	| CliInternalError
 	| CliAlreadyReportedError;
 
+export const isCliError = (value: unknown): value is CliError => {
+	if (typeof value !== 'object' || value === null) return false;
+	const tag = (value as { readonly _tag?: unknown })._tag;
+	switch (tag) {
+		case 'CliUsageError':
+		case 'CliConfigNotFoundError':
+		case 'CliConfigInvalidError':
+		case 'CliUnavailableError':
+		case 'CliSnapshotNotFoundError':
+		case 'CliConfirmRequiredError':
+		case 'CliSupervisorLiveError':
+		case 'CliNoSupervisorError':
+		case 'CliInternalError':
+		case 'CliAlreadyReportedError':
+			return true;
+		default:
+			return false;
+	}
+};
+
 /** Project a tagged error to its sysexit code. The dispatcher reads
  *  this to set `process.exitCode` — there is exactly one place in the
  *  surface where tag → numeric mapping happens. */

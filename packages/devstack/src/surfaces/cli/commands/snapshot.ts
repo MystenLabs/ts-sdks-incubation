@@ -17,8 +17,9 @@ import {
 	CliInternalError,
 	CliSnapshotNotFoundError,
 	CliUsageError,
+	isCliError,
 } from '../errors.ts';
-import { takeValueFlag } from '../flags.ts';
+import { takePositional, takeValueFlag } from '../flags.ts';
 import { emitSuccess } from '../output.ts';
 import type { CommandContext, CommandResult } from './index.ts';
 
@@ -77,20 +78,48 @@ const runSnapshotSave = (
 ): Effect.Effect<CommandResult, CliError> =>
 	Effect.gen(function* () {
 		const started = Date.now();
-		const { value: label } = takeValueFlag(rest, 'label');
+		const { value: label, tail: afterLabel } = takeValueFlag(rest, 'label');
+		const { head: snapshotId, tail: afterSnapshotId } = takePositional(afterLabel);
+		const extra = afterSnapshotId.find((tok) => !tok.startsWith('-'));
+		if (extra !== undefined) {
+			return yield* Effect.fail(
+				new CliUsageError({
+					message: `unexpected snapshot save argument: ${extra}`,
+					hint: 'try: snapshot save [id] [--label <label>]',
+				}),
+			);
+		}
 		yield* deps.publisher
-			.publish({ tag: 'snapshot.capture', label })
+			.publish({
+				tag: 'snapshot.capture',
+				...(snapshotId === undefined ? {} : { snapshotId }),
+				...(label === undefined ? {} : { label }),
+			})
 			.pipe(
 				Effect.catch((cause: unknown) =>
-					Effect.fail(new CliInternalError({ message: 'snapshot capture publish failed', cause })),
+					isCliError(cause)
+						? Effect.fail(cause)
+						: Effect.fail(
+								new CliInternalError({ message: 'snapshot capture publish failed', cause }),
+							),
 				),
 			);
 		yield* emitSuccess(ctx.io, ctx.flags.outputMode, {
 			command: 'snapshot save',
 			elapsedMs: Date.now() - started,
-			data: { published: 'snapshot.capture' as const, label: label ?? null },
+			data: {
+				published: 'snapshot.capture' as const,
+				snapshotId: snapshotId ?? null,
+				label: label ?? null,
+			},
 			humanLines: [
-				label ? `snapshot capture requested (label: ${label})` : 'snapshot capture requested',
+				snapshotId
+					? label
+						? `snapshot capture requested (id: ${snapshotId}, label: ${label})`
+						: `snapshot capture requested (id: ${snapshotId})`
+					: label
+						? `snapshot capture requested (label: ${label})`
+						: 'snapshot capture requested',
 			],
 		});
 		return { exitCode: 0 } as CommandResult;
