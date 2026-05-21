@@ -32,9 +32,8 @@ pnpm turbo build
 # Effect-TS code. `.repos/` is gitignored — never committed, never published.
 pnpm setup:repos
 
-# After a package rename (e.g. devstack-effect → devstack), node_modules/.bin shims
-# can stay pinned to the old name and surface as `Cannot find module
-# '@mysten-incubation/<old-name>/dist/cli/main.mjs'`. Refresh with:
+# If node_modules/.bin shims get out of sync after a workspace package rename,
+# refresh with:
 pnpm install --force
 
 # Build a specific package with dependencies
@@ -73,15 +72,20 @@ preparing for a release.
 
 - **packages/** - Published incubation packages and shared internal config
   - **dev-wallet/** - Development wallet for Sui dApp testing (Lit UI, multi-adapter, popup wallet)
-  - **devstack/** - Effect-Layer-based supervisor for fully-seeded Sui local development (localnet,
-    Walrus, Seal, DeepBook, Pyth, Move publish, codegen, dev wallet, dev server)
+  - **devstack-rewrite/** - Active ground-up rewrite of devstack on Effect v4: substrate +
+    plugins + orchestrators + surfaces + build integrations. New work goes here. See
+    `packages/devstack-rewrite/notes/orchestrator-guide.md` for the entry point.
+  - **devstack/** - Original devstack package — Effect-Layer-based supervisor for fully-seeded
+    Sui local development (localnet, Walrus, Seal, DeepBook, Pyth, Move publish, codegen, dev
+    wallet, dev server). Frozen pending cutover; kept as the spec source for the rewrite.
   - **create-devstack-app/** - Scaffolder for new devstack-backed apps
   - **docs/** - Documentation site (fumadocs + Next.js); content under `content/<package>/`
   - **tsconfig/** - Shared internal TypeScript configurations (not published)
 - **apps/** - First-party consumer apps (e.g. the hosted dev-wallet)
-- **examples/** - Worked example apps that exercise the packages end-to-end
-  - **\_template**, **arena**, **deepbook-full**, **effect-app**, **fork-greeting**,
-    **plugin-author-redis**, **private-content**, **token-studio**, **wallet**
+- **examples/** - Worked example apps that exercise the packages end-to-end. Paired sets
+  during the rewrite transition: `<name>/` against `packages/devstack/`, `<name>-rewrite/`
+  against `packages/devstack-rewrite/`. The rewrite set is the one to read for current API
+  shape; see `examples/README.md` for the curated tour.
 
 ### Documentation
 
@@ -128,12 +132,13 @@ Three layers of guidance, in order:
      to a single file/case, iterate on failures without re-running the whole
      suite, and read browser-test output. Use any time you invoke vitest — the
      idiomatic flags here are not the vitest defaults.
-2. **Package-specific style** — each package has its own `AGENTS.md` covering
-   its substrate, public-surface rules, and cookbooks. Currently:
-   [`packages/devstack/AGENTS.md`](packages/devstack/AGENTS.md). Read the one
-   for the package you're editing before opening a PR. Package-specific
-   AGENTS.md files name the further skills (e.g. `writing-effect`) that apply
-   inside that package.
+2. **Package-specific style** — each package has its own guidance covering
+   its substrate, public-surface rules, and cookbooks. For the active rewrite,
+   read [`packages/devstack-rewrite/STYLE_GUIDE.md`](packages/devstack-rewrite/STYLE_GUIDE.md)
+   and [`packages/devstack-rewrite/ARCHITECTURE.md`](packages/devstack-rewrite/ARCHITECTURE.md)
+   before opening a PR; the original devstack carries its own
+   [`packages/devstack/AGENTS.md`](packages/devstack/AGENTS.md). These docs name the
+   further skills (e.g. `writing-effect`) that apply inside that package.
 3. **Repo-wide habits** — the short list below. Anything more concrete belongs
    in a package AGENTS.md, not here.
 

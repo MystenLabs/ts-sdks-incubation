@@ -1,0 +1,254 @@
+// Action plugin — main acquire body.
+//
+// Architecture (16-action.md): an action is a ONE-SHOT on-chain effect
+// that runs once per (chain × content-hash), caches its receipt, and
+// re-fires when its discriminator changes (or the chain regenesises).
+//
+// Implementation: thin wrapper over `OnChainArtifactPublisher`. The
+// substrate handles the cache → verify → produce → register cycle; this
+// file composes the spec:
+//
+//   - namespace      = `action`
+//   - chain          = SuiTag's resolved `chain`
+//   - contentHash    = hash of (actionName, consumedTagIds[], dynamic
+//                      discriminator if any)
+//   - verifySchema   = `ActionReceiptSchema` — Schema-validated cached
+//                      shape so a corrupt entry surfaces as a miss
+//   - verify         = `chainProbe.get({kind:'transaction', digest},
+//                      VerifyTxShape, 'lenient')` — null on transient
+//                      or not-found, NOT raise.
+//   - produce        = user's `body(ctx)` Effect. Wraps any non-tagged
+//                      throw in `ActionError({phase:'sign'})`.
+//   - register       = no-op (Action declares no in-process registry —
+//                      mirrors v3 `services/action.ts:189-191` "Action
+//                      does NOT populate any in-process registries").
+//
+// Constraints honored:
+//
+//   - Cache key folds (name, chainId, consumedTagIds, discriminator?) —
+//     16-action.md invariant #1.
+//   - Dynamic discriminator re-runs on EVERY acquire — invariant #6.
+//   - Lenient verify probe — invariant #4.
+//   - signAndExecute failure routes via ActionError(phase: 'sign') —
+//     invariant #8 (mirroring v3's `PublishError({phase:'publish-tx'})`,
+//     but tagged separately so action consumers `catchTag('ActionError')`
+//     without clashing with package's tagged error).
+
+import { Effect, Schema, type Scope } from 'effect';
+
+import { contentHash as brandContentHash, type ChainId } from '../../substrate/brand.ts';
+import type {
+	OnChainArtifactError,
+	OnChainArtifactPublisher,
+} from '../../primitives/on-chain-artifact.ts';
+import type { ChainProbe } from '../../contracts/chain-probe.ts';
+import type { AnyTag } from '../../substrate/tag.ts';
+import type { SuiProbeKey } from '../sui/chain-probe.ts';
+import type { ActionBuildContext } from './build-context.ts';
+import { actionError, type ActionError } from './errors.ts';
+import {
+	composeDiscriminatorMaterial,
+	type DynamicDiscriminator,
+	type StaticDiscriminator,
+} from './discriminator.ts';
+
+/** Action receipt — the cached value. Minimal shape: digest is the
+ *  load-bearing identifier (drives verify probe + downstream
+ *  consumers); the change arrays are surfaced opaquely (typed
+ *  `unknown` here so the cache schema stays narrow) but the in-memory
+ *  shape produced by the `ctx.signAndExecute` helper is
+ *  `ActionObjectChange` (`{ kind: 'created' | 'mutated', objectId,
+ *  objectType?, outputState?, idOperation? }`). Consumers can cast or
+ *  use `findCreatedByType`-style helpers — mirrors v3's
+ *  `pickCreatedByType(r.objectChanges, ...)` pattern from
+ *  `examples/arena/devstack.config.ts`.
+ *
+ *  Distilled doc §"Capabilities PRODUCED" — the v3 Action's `TxResult`
+ *  carries `digest`, `effects`, `objectChanges`, `balanceChanges`. We
+ *  narrow to the columns that fit the cache + are actually used by
+ *  downstream consumers. */
+export interface ActionReceipt {
+	readonly digest: string;
+	readonly objectChanges?: ReadonlyArray<unknown>;
+	readonly balanceChanges?: ReadonlyArray<unknown>;
+}
+
+/** Schema for the cached `ActionReceipt`. `objectChanges` /
+ *  `balanceChanges` are `Unknown`-typed arrays — we don't enforce the
+ *  SDK's wide change-shape here because callers project these
+ *  manually (mirrors v3's `pickCreatedByType(r.objectChanges, ...)`
+ *  pattern from `examples/arena/devstack.config.ts`). */
+export const ActionReceiptSchema = Schema.Struct({
+	digest: Schema.String,
+	objectChanges: Schema.optional(Schema.Array(Schema.Unknown)),
+	balanceChanges: Schema.optional(Schema.Array(Schema.Unknown)),
+});
+
+/** Verify-probe shape — what `getTransaction(digest)` returns on
+ *  success. We don't decode the full transaction envelope; presence
+ *  of the digest field is the "exists" signal. The lenient probe
+ *  already coerces transient + not-found to null. */
+const VerifyTxShape = Schema.Struct({
+	digest: Schema.String,
+});
+
+/** Per-acquire inputs handed to `bootActionService`. The dynamic
+ *  discriminator is pre-resolved by `index.ts` — at this layer the
+ *  `staticDiscriminator` + optional `dynamicMaterial` string suffice. */
+export interface ActionAcquireInputs {
+	readonly actionName: string;
+	readonly chainId: ChainId;
+	readonly staticDiscriminator: StaticDiscriminator;
+	/** Resolved dynamic-discriminator material — already projected to
+	 *  a string at acquire-time by `index.ts` (the callback form
+	 *  receives the `ActionBuildContext` there). */
+	readonly dynamicMaterial: Effect.Effect<string | undefined, ActionError>;
+	/** The user's body Effect. Receives no parameter — it closes over
+	 *  upstream-tag values via the outer `acquire` scope. Returns the
+	 *  receipt of the on-chain effect; the plugin caches this. */
+	readonly body: Effect.Effect<ActionReceipt, ActionError, Scope.Scope>;
+}
+
+/** Resolve a `DynamicDiscriminator` against the action's
+ *  `ActionBuildContext`. Two input shapes (per `DynamicDiscriminator`);
+ *  both collapse onto `Effect<string | undefined, ActionError>`. */
+export const resolveDiscriminator = <Consumes extends ReadonlyArray<AnyTag>>(
+	actionName: string,
+	dynamic: DynamicDiscriminator<Consumes> | undefined,
+	ctx: ActionBuildContext<Consumes>,
+): Effect.Effect<string | undefined, ActionError> => {
+	if (dynamic === undefined) return Effect.succeed(undefined);
+	if (typeof dynamic === 'string') return Effect.succeed(dynamic);
+	return dynamic(ctx).pipe(
+		Effect.catch(
+			(cause): Effect.Effect<string, ActionError> =>
+				Effect.fail(
+					// If the user's discriminator Effect itself raises an
+					// ActionError, surface it verbatim. Otherwise wrap.
+					(cause as ActionError)._tag === 'ActionError'
+						? (cause as ActionError)
+						: actionError('discriminator', {
+								actionName,
+								message: `Action '${actionName}': discriminator Effect failed.`,
+								cause,
+							}),
+				),
+		),
+	);
+};
+
+/** Build the verify-probe Effect for a given cached digest. Lenient
+ *  mode coerces transient + not-found to null; the substrate then
+ *  re-produces on null. */
+const buildVerifyProbe = (
+	probe: ChainProbe<SuiProbeKey>,
+	cachedDigest: string,
+): Effect.Effect<typeof VerifyTxShape.Type | null, never> =>
+	probe.get({ kind: 'transaction', digest: cachedDigest }, VerifyTxShape, 'lenient').pipe(
+		// `decode-failed` on verify is stale shape — null so the
+		// substrate re-fires rather than carry forward a mismatch.
+		Effect.catch(() => Effect.succeed(null as typeof VerifyTxShape.Type | null)),
+	);
+
+/** Main acquire body. Composes the OnChainArtifactSpec for the action
+ *  and yields it to the publisher.
+ *
+ *  Returns the cached/produced `ActionReceipt`. Errors flow as
+ *  `ActionError | OnChainArtifactError` — the latter when the substrate
+ *  itself surfaces a produce-failure wrap. */
+export const bootActionService = (
+	publisher: OnChainArtifactPublisher,
+	probe: ChainProbe<SuiProbeKey>,
+	inputs: ActionAcquireInputs,
+): Effect.Effect<ActionReceipt, ActionError | OnChainArtifactError, Scope.Scope> =>
+	Effect.gen(function* () {
+		yield* Effect.annotateCurrentSpan({
+			'action.name': inputs.actionName,
+			'action.chain': inputs.chainId,
+		});
+
+		// --- Pull the pre-projected dynamic-discriminator material
+		// (every acquire — hit OR miss). The callback form's
+		// `(ctx) => Effect<string>` is invoked by `index.ts` before
+		// reaching here, so this layer sees only the resolved Effect.
+		const resolvedDynamic = yield* inputs.dynamicMaterial;
+
+		// --- Compose content-hash inputs
+		const material = composeDiscriminatorMaterial(inputs.staticDiscriminator, resolvedDynamic);
+		const inputsHash = brandContentHash(material);
+
+		// --- Submit the spec to the publisher.
+		//
+		// The OCA substrate decodes the cached `ActionReceipt` and
+		// passes it into `verify(cached)` — so the verify Effect can
+		// pull the digest off the cached payload directly. No
+		// in-process registry-hop required (mirrors the seam pattern
+		// the package plugin's mode-local TODO calls out).
+		const produced = yield* publisher.publish<ActionReceipt, typeof VerifyTxShape.Type>({
+			namespace: 'action',
+			chain: inputs.chainId,
+			contentHash: inputsHash,
+			verifySchema: VerifyTxShape,
+			verify: (cached) => buildVerifyProbe(probe, cached.digest),
+			produce: Effect.gen(function* () {
+				yield* Effect.annotateCurrentSpan({
+					'action.phase': 'building',
+				});
+				const receipt: ActionReceipt = yield* inputs.body.pipe(
+					Effect.catch(
+						(cause): Effect.Effect<ActionReceipt, ActionError> =>
+							Effect.fail(
+								(cause as ActionError)?._tag === 'ActionError'
+									? (cause as ActionError)
+									: actionError('sign', {
+											actionName: inputs.actionName,
+											message: `Action '${inputs.actionName}': body Effect failed.`,
+											cause,
+										}),
+							),
+					),
+				);
+				yield* Effect.annotateCurrentSpan({
+					'action.phase': 'parsing',
+					'action.digest': receipt.digest,
+				});
+				return receipt;
+			}).pipe(
+				Effect.mapError(
+					(err): OnChainArtifactError => ({
+						_tag: 'OnChainArtifactError',
+						reason: 'produce-failed',
+						detail: `action.${inputs.actionName} ${err.phase}: ${err.message}`,
+					}),
+				),
+			),
+			register: (_artifact) =>
+				// Action declares no in-process registry (mirrors v3's
+				// `services/action.ts:189-191` "Action does NOT populate
+				// any in-process registries"). The cached digest is now
+				// threaded directly via the OCA's `verify(cached)`
+				// parameter — no register-hop hint required.
+				Effect.void,
+		});
+
+		// The publisher returns `Produced | Verified`. Both shapes
+		// carry `digest`; the action's resolved value is the cached
+		// receipt (full `ActionReceipt` on produce/decoded-hit, or a
+		// projected `{digest}` on bare-verify-hit). Callers expect the
+		// wider shape — surface defensively.
+		if ('digest' in produced && typeof produced.digest === 'string') {
+			// Already-`ActionReceipt`-shaped. Cast through to recover
+			// the optional change arrays if present.
+			return produced as ActionReceipt;
+		}
+		// Defensive: unreachable under the current substrate (verify
+		// returns the bare `{digest}` shape; the substrate falls back
+		// to it ONLY when the cached payload failed to decode, which
+		// we treat as miss elsewhere). Surface a parse-phase error.
+		return yield* Effect.fail(
+			actionError('parse', {
+				actionName: inputs.actionName,
+				message: `Action '${inputs.actionName}': cached payload missing digest.`,
+			}),
+		);
+	});

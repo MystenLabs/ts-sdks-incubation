@@ -1,0 +1,266 @@
+// Codegen orchestrator — service-level tests.
+//
+// Exercises uniqueness validation (path collision + emitter
+// collision), the package-emitter exception, and the full cycle
+// against the real Node FileSystem with stubbed Move generators.
+
+import { describe, expect, it } from '@effect/vitest';
+import { Effect, Layer } from 'effect';
+import { FileSystem } from 'effect';
+import { pathToFileURL } from 'node:url';
+// Subpath imports — the barrel re-exports `NodeRedis` which transitively
+// requires `ioredis`, an optional peer not installed in this package.
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
+import * as NodePath from '@effect/platform-node/NodePath';
+
+import type { CodegenableDecl } from '../../../src/contracts/codegenable.ts';
+
+import {
+	MoveCodegenService,
+	MoveSummaryRunnerService,
+	stubMoveCodegen,
+	stubMoveSummaryRunner,
+} from '../../../src/orchestrators/codegen/bindings.ts';
+import {
+	CodegenEmitterCollision,
+	CodegenPathConflict,
+} from '../../../src/orchestrators/codegen/errors.ts';
+import { layerCodegenPaths, layerCodegenRoot } from '../../../src/orchestrators/codegen/paths.ts';
+import { runEmitCycle } from '../../../src/orchestrators/codegen/service.ts';
+
+// Helper — synthesise a Codegenable for tests.
+const fakeDecl = (parts: {
+	readonly emitterName: string;
+	readonly outputPath: string;
+	readonly sensitive?: boolean;
+	readonly exports: { readonly [key: string]: unknown };
+}): CodegenableDecl<unknown, string> => ({
+	kind: 'codegenable',
+	emitterName: parts.emitterName,
+	outputPath: parts.outputPath,
+	sensitive: parts.sensitive,
+	emit: () => Effect.succeed(parts.exports),
+});
+
+const stubMoveLayers = Layer.mergeAll(
+	Layer.succeed(MoveSummaryRunnerService)(
+		stubMoveSummaryRunner((sourcePath) => ({
+			packageName: sourcePath,
+			sourcePath,
+			summaryJson: {},
+		})),
+	),
+	Layer.succeed(MoveCodegenService)(
+		stubMoveCodegen((input) => [
+			{
+				relPath: `${input.packageName}/index.ts`,
+				content: `export const ID = "${input.mvrPlaceholder}";\n`,
+			},
+		]),
+	),
+);
+
+const nodePlatformLayer = Layer.mergeAll(NodeFileSystem.layer, NodePath.layer);
+
+const baseLayer = (root: string) =>
+	Layer.mergeAll(stubMoveLayers, layerCodegenPaths, nodePlatformLayer).pipe(
+		Layer.provide(layerCodegenRoot({ outputDir: root, stackSubdir: null })),
+		Layer.provide(nodePlatformLayer),
+	);
+
+describe('codegen.runEmitCycle', () => {
+	it.effect('refuses duplicate output paths', () =>
+		Effect.gen(function* () {
+			const result = yield* runEmitCycle({
+				contributions: [
+					fakeDecl({
+						emitterName: 'a',
+						outputPath: 'same.ts',
+						exports: { a: 1 },
+					}),
+					fakeDecl({
+						emitterName: 'b',
+						outputPath: 'same.ts',
+						exports: { b: 1 },
+					}),
+				],
+			}).pipe(Effect.flip);
+			expect(result).toBeInstanceOf(CodegenPathConflict);
+		}).pipe(Effect.provide(baseLayer('/tmp/codegen-test-1'))),
+	);
+
+	it.effect('refuses two non-package emitters with the same name', () =>
+		Effect.gen(function* () {
+			const result = yield* runEmitCycle({
+				contributions: [
+					fakeDecl({
+						emitterName: 'same-name',
+						outputPath: 'a.ts',
+						exports: { a: 1 },
+					}),
+					fakeDecl({
+						emitterName: 'same-name',
+						outputPath: 'b.ts',
+						exports: { b: 1 },
+					}),
+				],
+			}).pipe(Effect.flip);
+			expect(result).toBeInstanceOf(CodegenEmitterCollision);
+		}).pipe(Effect.provide(baseLayer('/tmp/codegen-test-2'))),
+	);
+
+	it.effect('allows multiple `package` emitters (per-Package exception)', () => {
+		const root = `/tmp/codegen-test-${Date.now()}-${Math.random()}`;
+		return Effect.gen(function* () {
+			const fs = yield* FileSystem.FileSystem;
+			const result = yield* runEmitCycle({
+				contributions: [
+					fakeDecl({
+						emitterName: 'package',
+						outputPath: 'package/p1.ts',
+						exports: {
+							packageBindings: {
+								name: 'p1',
+								packageId: '0xaa',
+								mvrPlaceholder: '@local/p1',
+								sourcePath: null,
+								excluded: true,
+							},
+						},
+					}),
+					fakeDecl({
+						emitterName: 'package',
+						outputPath: 'package/p2.ts',
+						exports: {
+							packageBindings: {
+								name: 'p2',
+								packageId: '0xbb',
+								mvrPlaceholder: '@local/p2',
+								sourcePath: null,
+								excluded: true,
+							},
+						},
+					}),
+				],
+			});
+			expect(result.filesWritten.length + result.filesUnchanged.length).toBeGreaterThan(0);
+			// Both packages have sourcePath=null → bindings emitter
+			// runs but skips both; emitted list is empty, skipped list
+			// holds both.
+			expect(result.bindings).not.toBeNull();
+			expect(result.bindings!.packagesEmitted).toEqual([]);
+			expect([...result.bindings!.packagesSkipped].sort()).toEqual(['p1', 'p2']);
+			yield* fs.remove(root, { recursive: true, force: true }).pipe(Effect.ignore);
+		}).pipe(Effect.provide(baseLayer(root)));
+	});
+
+	it.effect('emits idempotently — second cycle reports unchanged', () => {
+		const root = `/tmp/codegen-test-${Date.now()}-${Math.random()}`;
+		return Effect.gen(function* () {
+			const fs = yield* FileSystem.FileSystem;
+			const contributions = [
+				fakeDecl({
+					emitterName: 'sui-network',
+					outputPath: 'sui/network.ts',
+					exports: { suiNetwork: { chain: 'sui:local', rpcUrl: 'http://x' } },
+				}),
+			];
+			const r1 = yield* runEmitCycle({ contributions });
+			expect(r1.filesWritten.length).toBeGreaterThan(0);
+			const r2 = yield* runEmitCycle({ contributions });
+			// On second cycle, the file is on disk and content matches —
+			// emit reports unchanged.
+			expect(r2.filesWritten.length).toBe(0);
+			expect(r2.filesUnchanged.length).toBeGreaterThan(0);
+			yield* fs.remove(root, { recursive: true, force: true }).pipe(Effect.ignore);
+		}).pipe(Effect.provide(baseLayer(root)));
+	});
+
+	it.effect('emits aggregate app-facing accounts coins packages and services files', () => {
+		const root = `/tmp/codegen-test-${Date.now()}-${Math.random()}`;
+		return Effect.gen(function* () {
+			const fs = yield* FileSystem.FileSystem;
+			const result = yield* runEmitCycle({
+				contributions: [
+					fakeDecl({
+						emitterName: 'account/alice',
+						outputPath: 'accounts/alice.ts',
+						exports: {
+							alice: {
+								name: 'alice',
+								address: '0xabc',
+								scheme: 'ed25519',
+								source: 'real',
+							},
+						},
+					}),
+					fakeDecl({
+						emitterName: 'coin/mock_usdc',
+						outputPath: 'coins/mock_usdc.ts',
+						exports: {
+							mock_usdc: {
+								symbol: 'mock_usdc',
+								fullCoinType: '0x1::mock_usdc::MOCK_USDC',
+								decimals: 6,
+								source: 'registry',
+							},
+						},
+					}),
+					fakeDecl({
+						emitterName: 'sui-network',
+						outputPath: 'sui/network.ts',
+						exports: {
+							suiNetwork: {
+								chain: 'sui:local',
+								mode: 'local',
+								rpcUrl: 'http://127.0.0.1:9000',
+								faucetUrl: 'http://127.0.0.1:9123',
+								graphqlUrl: null,
+							},
+						},
+					}),
+					fakeDecl({
+						emitterName: 'package',
+						outputPath: 'package/mock-usdc.ts',
+						exports: {
+							packageBindings: {
+								name: 'mock_usdc',
+								packageId: '0x1',
+								mvrPlaceholder: 'mock-usdc',
+								sourcePath: null,
+								excluded: true,
+							},
+						},
+					}),
+				],
+			});
+			expect(result.filesWritten.some((path) => path.endsWith('/accounts.ts'))).toBe(true);
+			expect(result.filesWritten.some((path) => path.endsWith('/coins.ts'))).toBe(true);
+			expect(result.filesWritten.some((path) => path.endsWith('/services.ts'))).toBe(true);
+			expect(result.filesWritten.some((path) => path.endsWith('/packages.ts'))).toBe(true);
+
+			const accountsModule = yield* Effect.promise(
+				() =>
+					import(`${pathToFileURL(`${root}/accounts.ts`).href}?t=${Date.now()}`) as Promise<{
+						readonly accounts: { readonly alice: { readonly address: string } };
+					}>,
+			);
+			const coinsModule = yield* Effect.promise(
+				() =>
+					import(`${pathToFileURL(`${root}/coins.ts`).href}?t=${Date.now()}`) as Promise<{
+						readonly coins: { readonly mock_usdc: { readonly fullCoinType: string } };
+					}>,
+			);
+			const servicesModule = yield* Effect.promise(
+				() =>
+					import(`${pathToFileURL(`${root}/services.ts`).href}?t=${Date.now()}`) as Promise<{
+						readonly services: { readonly sui: { readonly rpc: { readonly url: string } } };
+					}>,
+			);
+			expect(accountsModule.accounts.alice.address).toBe('0xabc');
+			expect(coinsModule.coins.mock_usdc.fullCoinType).toBe('0x1::mock_usdc::MOCK_USDC');
+			expect(servicesModule.services.sui.rpc.url).toBe('http://127.0.0.1:9000');
+			yield* fs.remove(root, { recursive: true, force: true }).pipe(Effect.ignore);
+		}).pipe(Effect.provide(baseLayer(root)));
+	});
+});

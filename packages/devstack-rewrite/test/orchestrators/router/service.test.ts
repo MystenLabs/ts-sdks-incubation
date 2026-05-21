@@ -1,0 +1,607 @@
+// Router orchestrator end-to-end coverage against the stub Traefik
+// container layer.
+//
+// Architecture invariants under test:
+//   - boot() is idempotent (subsequent calls return the same report;
+//     architecture invariant #11 — once per supervisor lifetime).
+//   - contributeRoute() writes a per-backend dispatch file atomically
+//     into the dispatch directory and removes it on scope close.
+//   - The shared CORS middleware file lands at `00-shared-middlewares.yml`
+//     (lexicographic ordering invariant #9).
+//   - Per-backend files start with the `10-` prefix.
+//   - The orchestrator does NOT name services anywhere; the test fixture
+//     wires arbitrary Routables and the orchestrator handles them
+//     uniformly.
+
+// Subpath import — the barrel re-exports `NodeRedis` which transitively
+// requires `ioredis`, an optional peer not installed in this package.
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
+import { Effect, Layer, SubscriptionRef } from 'effect';
+import { describe, expect, it } from '@effect/vitest';
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { CORS_MIDDLEWARE_FILENAME } from '../../../src/orchestrators/router/cors.ts';
+import { layerEntrypointRegistry } from '../../../src/orchestrators/router/entrypoints.ts';
+import {
+	dispatchFilename,
+	renderRouteYaml,
+	ROUTER_ROUTE_LEASE_VERSION,
+	type RouteLeaseMetadata,
+	type ResolvedRoute,
+} from '../../../src/orchestrators/router/file-provider.ts';
+import { dispatchFileId } from '../../../src/orchestrators/router/hostname.ts';
+import type { RouterProfile } from '../../../src/orchestrators/router/profile.ts';
+import {
+	layerRouterConfigLiteral,
+	layerRouterService,
+	RouterService,
+	UpstreamResolverService,
+} from '../../../src/orchestrators/router/service.ts';
+import {
+	layerTraefikContainerOpsStub,
+	TraefikContainerOpsService,
+	type TraefikContainerOps,
+} from '../../../src/orchestrators/router/traefik-container.ts';
+import { appName, chainId, stackName } from '../../../src/substrate/brand.ts';
+import { ownHolder } from '../../../src/substrate/runtime/cross-process/liveness.ts';
+import { layerIdentity } from '../../../src/substrate/runtime/paths.ts';
+
+const makeTmpDir = (): string => mkdtempSync(join(tmpdir(), 'devstack-router-test-'));
+
+const upstreamsLayer = Layer.succeed(UpstreamResolverService)({
+	resolveContainer: (target) => Effect.succeed({ host: '172.20.0.5', port: target.containerPort }),
+	resolveHostLoopback: (target) => Effect.succeed({ host: '127.0.0.1', port: target.port }),
+});
+
+const unusedUpstreamsLayer = Layer.succeed(UpstreamResolverService)({
+	resolveContainer: () => Effect.die('disabled router direct mode must not resolve containers'),
+	resolveHostLoopback: () =>
+		Effect.die('disabled router direct mode must not resolve host-loopback'),
+});
+
+const identity = {
+	app: appName('my-app'),
+	stack: stackName('main'),
+	chain: chainId('sui:localnet'),
+};
+
+const identityLayer = layerIdentity(identity);
+
+const walletApiDispatch = { compositeKey: 'wallet.my-app.main', role: 'api' };
+
+const registryLayer = layerEntrypointRegistry([
+	{ name: 'wallet-app', port: 6173, protocol: 'http' },
+	{ name: 'walrus-aggregator', port: 9185, protocol: 'http' },
+	{ name: 'postgres-tcp', port: 5432, protocol: 'tcp' },
+]);
+
+const makeTestProfile = (dispatchDir: string): RouterProfile => ({
+	version: 1,
+	id: 'test-profile',
+	userId: 'test-user',
+	dockerContextId: 'test-docker',
+	stateDir: join(dispatchDir, '..'),
+	dispatchDir,
+	containerName: 'devstack-router-test',
+	networkName: 'devstack-router-test',
+	bootstrapLockFile: join(dispatchDir, '..', 'locks', 'bootstrap.lock'),
+	dispatchLockFile: join(dispatchDir, '..', 'locks', 'dispatch.lock'),
+});
+
+const makeLease = (profile: RouterProfile): RouteLeaseMetadata => ({
+	version: ROUTER_ROUTE_LEASE_VERSION,
+	routerProfileId: profile.id,
+	app: String(identity.app),
+	stack: String(identity.stack),
+	owner: ownHolder(),
+});
+
+const makeStackLayer = (profile: RouterProfile) =>
+	layerRouterService.pipe(
+		Layer.provideMerge(
+			Layer.mergeAll(
+				identityLayer,
+				registryLayer,
+				layerTraefikContainerOpsStub,
+				upstreamsLayer,
+				NodeFileSystem.layer,
+				layerRouterConfigLiteral({
+					disabled: false,
+					profile,
+					image: 'traefik:v3.5',
+				}),
+			),
+		),
+	);
+
+const makeDisabledStackLayer = (profile: RouterProfile) =>
+	layerRouterService.pipe(
+		Layer.provideMerge(
+			Layer.mergeAll(
+				identityLayer,
+				registryLayer,
+				layerTraefikContainerOpsStub,
+				unusedUpstreamsLayer,
+				NodeFileSystem.layer,
+				layerRouterConfigLiteral({
+					disabled: true,
+					profile,
+					image: 'traefik:v3.5',
+				}),
+			),
+		),
+	);
+
+const makeMismatchedTraefikLayer = (profile: RouterProfile) => {
+	const calls: string[] = [];
+	const ops: TraefikContainerOps = {
+		ensureNetwork: (name) => {
+			calls.push(`ensureNetwork:${name}`);
+			return Effect.succeed({ id: 'network-id' });
+		},
+		inspectContainer: (name) => {
+			calls.push(`inspect:${name}`);
+			return Effect.succeed({
+				id: 'existing-router',
+				running: true,
+				image: 'traefik:v3.5',
+				dispatchMount: null,
+				portBindings: [],
+				command: [],
+				networks: [],
+				labels: {},
+			});
+		},
+		createFresh: (args) => {
+			calls.push(`createFresh:${args.name}`);
+			return Effect.succeed({ id: 'created-router' });
+		},
+		resume: (name) => {
+			calls.push(`resume:${name}`);
+			return Effect.succeed({ id: 'resumed-router' });
+		},
+		forceRemove: (name) => {
+			calls.push(`forceRemove:${name}`);
+			return Effect.void;
+		},
+	};
+	const layer = layerRouterService.pipe(
+		Layer.provideMerge(
+			Layer.mergeAll(
+				identityLayer,
+				registryLayer,
+				Layer.succeed(TraefikContainerOpsService)(ops),
+				upstreamsLayer,
+				NodeFileSystem.layer,
+				layerRouterConfigLiteral({
+					disabled: false,
+					profile,
+					image: 'traefik:v3.5',
+				}),
+			),
+		),
+	);
+	return { calls, layer };
+};
+
+describe('RouterService.boot', () => {
+	it.effect('writes the shared CORS middleware before container start (invariant #9)', () =>
+		Effect.gen(function* () {
+			const dir = makeTmpDir();
+			const profile = makeTestProfile(dir);
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const router = yield* RouterService;
+					const report = yield* router.boot();
+					expect(report.decision).toBe('recreate-fresh'); // stub: inspect returns null
+					const files = readdirSync(dir);
+					expect(files).toContain(CORS_MIDDLEWARE_FILENAME);
+					const body = readFileSync(join(dir, CORS_MIDDLEWARE_FILENAME), 'utf8');
+					expect(body).toContain('devstack-cors');
+				}).pipe(Effect.provide(makeStackLayer(profile))),
+			);
+		}),
+	);
+
+	it.effect('boot() is idempotent — second call returns the cached report', () =>
+		Effect.gen(function* () {
+			const dir = makeTmpDir();
+			const profile = makeTestProfile(dir);
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const router = yield* RouterService;
+					const first = yield* router.boot();
+					const second = yield* router.boot();
+					expect(second).toBe(first);
+				}).pipe(Effect.provide(makeStackLayer(profile))),
+			);
+		}),
+	);
+
+	it.effect('disabled config short-circuits to opt-out without touching the filesystem', () =>
+		Effect.gen(function* () {
+			const dir = makeTmpDir();
+			const profile = makeTestProfile(dir);
+			const layer = layerRouterService.pipe(
+				Layer.provideMerge(
+					Layer.mergeAll(
+						identityLayer,
+						registryLayer,
+						layerTraefikContainerOpsStub,
+						upstreamsLayer,
+						NodeFileSystem.layer,
+						layerRouterConfigLiteral({ disabled: true, profile, image: 'x' }),
+					),
+				),
+			);
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const router = yield* RouterService;
+					const report = yield* router.boot();
+					expect(report.decision).toBe('opt-out');
+					expect(readdirSync(dir).length).toBe(0);
+				}).pipe(Effect.provide(layer)),
+			);
+		}),
+	);
+
+	it.effect(
+		'treats malformed dispatch files as protected leases before destructive bootstrap',
+		() =>
+			Effect.gen(function* () {
+				const dir = makeTmpDir();
+				const profile = makeTestProfile(dir);
+				writeFileSync(join(dir, dispatchFilename('malformed-live-route')), 'not a route');
+				const { calls, layer } = makeMismatchedTraefikLayer(profile);
+
+				yield* Effect.scoped(
+					Effect.gen(function* () {
+						const router = yield* RouterService;
+						const err = yield* router.boot().pipe(Effect.flip);
+						expect(err._tag).toBe('RouterBootFailed');
+						if (err._tag !== 'RouterBootFailed') throw new Error(`unexpected error: ${err._tag}`);
+						expect(err.detail).toContain('malformed-live-route');
+						expect(calls).toEqual([
+							`ensureNetwork:${profile.networkName}`,
+							`inspect:${profile.containerName}`,
+						]);
+					}).pipe(Effect.provide(layer)),
+				);
+			}),
+	);
+
+	it.effect('keeps valid dispatch files in destructive-bootstrap protection', () =>
+		Effect.gen(function* () {
+			const dir = makeTmpDir();
+			const profile = makeTestProfile(dir);
+			const route: ResolvedRoute = {
+				dispatchFileId: 'valid-live-route',
+				hostname: 'api.other-app.localhost',
+				entrypointName: 'wallet-app',
+				entrypointPort: 6173,
+				upstreamUrl: 'http://127.0.0.1:6173',
+				cors: false,
+				wireProtocol: 'http',
+			};
+			writeFileSync(
+				join(dir, dispatchFilename(route.dispatchFileId)),
+				renderRouteYaml(route, makeLease(profile)),
+			);
+			const { calls, layer } = makeMismatchedTraefikLayer(profile);
+
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const router = yield* RouterService;
+					const err = yield* router.boot().pipe(Effect.flip);
+					expect(err._tag).toBe('RouterBootFailed');
+					if (err._tag !== 'RouterBootFailed') throw new Error(`unexpected error: ${err._tag}`);
+					expect(err.detail).toContain(route.dispatchFileId);
+					expect(calls).toEqual([
+						`ensureNetwork:${profile.networkName}`,
+						`inspect:${profile.containerName}`,
+					]);
+				}).pipe(Effect.provide(layer)),
+			);
+		}),
+	);
+
+	it.effect('treats unknown lease-version route files as protected unknown-owner leases', () =>
+		Effect.gen(function* () {
+			const dir = makeTmpDir();
+			const profile = makeTestProfile(dir);
+			const route: ResolvedRoute = {
+				dispatchFileId: 'unknown-version-route',
+				hostname: 'api.other-app.localhost',
+				entrypointName: 'wallet-app',
+				entrypointPort: 6173,
+				upstreamUrl: 'http://127.0.0.1:6173',
+				cors: false,
+				wireProtocol: 'http',
+			};
+			const body = renderRouteYaml(route, makeLease(profile)).replace(
+				'# routeLeaseVersion: 1',
+				'# routeLeaseVersion: 999',
+			);
+			writeFileSync(join(dir, dispatchFilename(route.dispatchFileId)), body);
+			const { calls, layer } = makeMismatchedTraefikLayer(profile);
+
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const router = yield* RouterService;
+					const err = yield* router.boot().pipe(Effect.flip);
+					expect(err._tag).toBe('RouterBootFailed');
+					if (err._tag !== 'RouterBootFailed') throw new Error(`unexpected error: ${err._tag}`);
+					expect(err.detail).toContain(route.dispatchFileId);
+					expect(calls).toEqual([
+						`ensureNetwork:${profile.networkName}`,
+						`inspect:${profile.containerName}`,
+					]);
+				}).pipe(Effect.provide(layer)),
+			);
+		}),
+	);
+});
+
+describe('RouterService.contributeRoute', () => {
+	it.effect('disabled router rejects container upstreams instead of fabricating direct ports', () =>
+		Effect.gen(function* () {
+			const dir = makeTmpDir();
+			const profile = makeTestProfile(dir);
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const router = yield* RouterService;
+					const err = yield* router
+						.contributeRoute({
+							kind: 'routable',
+							endpointName: 'walrus-aggregator',
+							dispatchId: { compositeKey: 'walrus.my-app.main', role: 'aggregator' },
+							upstream: {
+								type: 'container',
+								containerName: 'walrus-c1',
+								containerPort: 8080,
+							},
+							cors: false,
+							wireProtocol: 'http',
+						})
+						.pipe(Effect.flip);
+					expect(err._tag).toBe('RouterDisabledRouteUnsupported');
+					if (err._tag !== 'RouterDisabledRouteUnsupported') {
+						throw new Error(`unexpected error: ${err._tag}`);
+					}
+					expect(err.endpointName).toBe('walrus-aggregator');
+					expect(err.upstreamKind).toBe('container');
+					expect(readdirSync(dir)).toEqual([]);
+				}).pipe(Effect.provide(makeDisabledStackLayer(profile))),
+			);
+		}),
+	);
+
+	it.effect('disabled router returns direct loopback URLs only for host-loopback upstreams', () =>
+		Effect.gen(function* () {
+			const dir = makeTmpDir();
+			const profile = makeTestProfile(dir);
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const router = yield* RouterService;
+					const endpoint = yield* router.contributeRoute({
+						kind: 'routable',
+						endpointName: 'wallet-app',
+						dispatchId: { compositeKey: 'wallet.my-app.main', role: 'api' },
+						upstream: { type: 'host-loopback', port: 49152 },
+						cors: true,
+						wireProtocol: 'http',
+					});
+
+					expect(endpoint.url).toBe('http://127.0.0.1:49152');
+					expect(endpoint.hostname).toBe('127.0.0.1');
+					expect(endpoint.entrypointPort).toBe(49152);
+					expect(readdirSync(dir)).toEqual([]);
+					const applied = yield* SubscriptionRef.get(router.applied);
+					expect(applied).toHaveLength(1);
+					expect(applied[0]?.upstreamUrl).toBe('http://127.0.0.1:49152');
+				}).pipe(Effect.provide(makeDisabledStackLayer(profile))),
+			);
+		}),
+	);
+
+	it.effect('writes a per-backend `10-…yml` file on contribution', () =>
+		Effect.gen(function* () {
+			const dir = makeTmpDir();
+			const profile = makeTestProfile(dir);
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const router = yield* RouterService;
+					yield* router.boot();
+					const url = yield* router.contributeRoute({
+						kind: 'routable',
+						endpointName: 'wallet-app',
+						dispatchId: { compositeKey: 'wallet.my-app.main', role: 'api' },
+						upstream: { type: 'host-loopback', port: 6173 },
+						cors: true,
+						wireProtocol: 'http',
+					});
+					expect(url.url).toBe('http://api.my-app.localhost:6173');
+					const fileId = yield* dispatchFileId({ identity, dispatch: walletApiDispatch });
+					const fname = dispatchFilename(fileId);
+					const body = readFileSync(join(dir, fname), 'utf8');
+					expect(body).toContain('Host(`api.my-app.localhost`)');
+				}).pipe(Effect.provide(makeStackLayer(profile))),
+			);
+		}),
+	);
+
+	it.effect('router-enabled container routes write dispatch files and return router URLs', () =>
+		Effect.gen(function* () {
+			const dir = makeTmpDir();
+			const profile = makeTestProfile(dir);
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const router = yield* RouterService;
+					yield* router.boot();
+					const endpoint = yield* router.contributeRoute({
+						kind: 'routable',
+						endpointName: 'walrus-aggregator',
+						dispatchId: { compositeKey: 'walrus.my-app.main', role: 'aggregator' },
+						upstream: {
+							type: 'container',
+							containerName: 'walrus-c1',
+							containerPort: 8080,
+						},
+						cors: false,
+						wireProtocol: 'http',
+					});
+					expect(endpoint.url).toBe('http://aggregator.my-app.localhost:9185');
+					const files = readdirSync(dir).filter((name) => name.startsWith('10-'));
+					expect(files).toHaveLength(1);
+					const body = readFileSync(join(dir, files[0]!), 'utf8');
+					expect(body).toContain('Host(`aggregator.my-app.localhost`)');
+					expect(body).toContain('- url: "http://172.20.0.5:8080"');
+				}).pipe(Effect.provide(makeStackLayer(profile))),
+			);
+		}),
+	);
+
+	it.effect('removes the dispatch file when the contributor scope closes', () =>
+		Effect.gen(function* () {
+			const dir = makeTmpDir();
+			const profile = makeTestProfile(dir);
+			const fileId = yield* dispatchFileId({ identity, dispatch: walletApiDispatch });
+			const fname = dispatchFilename(fileId);
+
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const router = yield* RouterService;
+					yield* router.boot();
+					// Inner scope: contribute, observe the file lands, then
+					// close the scope and confirm cleanup.
+					yield* Effect.scoped(
+						Effect.gen(function* () {
+							yield* router.contributeRoute({
+								kind: 'routable',
+								endpointName: 'wallet-app',
+								dispatchId: { compositeKey: 'wallet.my-app.main', role: 'api' },
+								upstream: { type: 'host-loopback', port: 6173 },
+								cors: true,
+								wireProtocol: 'http',
+							});
+							expect(readdirSync(dir)).toContain(fname);
+						}),
+					);
+					// After inner scope close.
+					expect(readdirSync(dir)).not.toContain(fname);
+				}).pipe(Effect.provide(makeStackLayer(profile))),
+			);
+		}),
+	);
+
+	it.effect('applied SubscriptionRef tracks adds + removes', () =>
+		Effect.gen(function* () {
+			const dir = makeTmpDir();
+			const profile = makeTestProfile(dir);
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const router = yield* RouterService;
+					yield* router.boot();
+					yield* Effect.scoped(
+						Effect.gen(function* () {
+							yield* router.contributeRoute({
+								kind: 'routable',
+								endpointName: 'wallet-app',
+								dispatchId: { compositeKey: 'wallet.my-app.main', role: 'api' },
+								upstream: { type: 'host-loopback', port: 6173 },
+								cors: true,
+								wireProtocol: 'http',
+							});
+							const snap = yield* SubscriptionRef.get(router.applied);
+							expect(snap.length).toBe(1);
+							expect(snap[0]?.hostname).toBe('api.my-app.localhost');
+						}),
+					);
+					const after = yield* SubscriptionRef.get(router.applied);
+					expect(after.length).toBe(0);
+				}).pipe(Effect.provide(makeStackLayer(profile))),
+			);
+		}),
+	);
+
+	it.effect('rejects two contributions that collide on (entrypoint, hostname) (invariant #7)', () =>
+		Effect.gen(function* () {
+			const dir = makeTmpDir();
+			const profile = makeTestProfile(dir);
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const router = yield* RouterService;
+					yield* router.boot();
+					yield* router.contributeRoute({
+						kind: 'routable',
+						endpointName: 'wallet-app',
+						dispatchId: { compositeKey: 'k1', role: 'api' },
+						upstream: { type: 'host-loopback', port: 6173 },
+						cors: false,
+					});
+					// Identical (entrypoint, role) under the same identity →
+					// same hostname → collision; different compositeKey
+					// means different dispatchFileId but the rule fires
+					// on the (hostname, entrypoint) pair.
+					const err = yield* router
+						.contributeRoute({
+							kind: 'routable',
+							endpointName: 'wallet-app',
+							dispatchId: { compositeKey: 'k2', role: 'api' },
+							upstream: { type: 'host-loopback', port: 6174 },
+							cors: false,
+						})
+						.pipe(Effect.flip);
+					expect(err._tag).toBe('RouteCollision');
+				}).pipe(Effect.provide(makeStackLayer(profile))),
+			);
+		}),
+	);
+
+	it.effect('rejects a TCP route when a foreign dispatch file already owns the entrypoint', () =>
+		Effect.gen(function* () {
+			const dir = makeTmpDir();
+			const profile = makeTestProfile(dir);
+			const foreignRoute: ResolvedRoute = {
+				dispatchFileId: 'foreign-postgres',
+				hostname: 'db.other-app.localhost',
+				entrypointName: 'postgres-tcp',
+				entrypointPort: 5432,
+				upstreamUrl: 'tcp://172.20.0.9:5432',
+				cors: false,
+				wireProtocol: 'tcp',
+			};
+			writeFileSync(
+				join(dir, dispatchFilename(foreignRoute.dispatchFileId)),
+				renderRouteYaml(foreignRoute, makeLease(profile)),
+			);
+
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const router = yield* RouterService;
+					yield* router.boot();
+					const err = yield* router
+						.contributeRoute({
+							kind: 'routable',
+							endpointName: 'postgres-tcp',
+							dispatchId: { compositeKey: 'postgres.my-app.main', role: 'db' },
+							upstream: {
+								type: 'container',
+								containerName: 'postgres-c1',
+								containerPort: 5432,
+							},
+							wireProtocol: 'tcp',
+						})
+						.pipe(Effect.flip);
+
+					expect(err._tag).toBe('RouteCollision');
+					if (err._tag !== 'RouteCollision') throw new Error(`unexpected error: ${err._tag}`);
+					expect(err.entrypoint).toBe('postgres-tcp');
+					expect(err.dispatchIds).toContain('foreign-postgres');
+				}).pipe(Effect.provide(makeStackLayer(profile))),
+			);
+		}),
+	);
+});

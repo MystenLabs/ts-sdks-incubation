@@ -1,0 +1,11 @@
+{
+	"extends": "@mysten-incubation/tsconfig/node.json",
+	"compilerOptions": {
+		"noEmit": true,
+		"verbatimModuleSyntax": true,
+		"moduleResolution": "bundler",
+		"module": "ESNext",
+		"allowImportingTsExtensions": true
+	},
+	"include": ["devstack.config.ts"]
+}

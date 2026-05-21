@@ -209,6 +209,73 @@ importers:
         specifier: 'catalog:'
         version: 2.1.9(@types/node@24.12.2)(happy-dom@20.8.4)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)
 
+  examples/_template-rewrite:
+    dependencies:
+      '@mysten-incubation/dev-wallet':
+        specifier: workspace:*
+        version: link:../../packages/dev-wallet
+      '@mysten-incubation/devstack-rewrite':
+        specifier: workspace:*
+        version: link:../../packages/devstack-rewrite
+      '@mysten/dapp-kit-core':
+        specifier: 'catalog:'
+        version: 1.3.0(@mysten/sui@2.17.0(typescript@5.9.3))(typescript@5.9.3)
+      '@mysten/dapp-kit-react':
+        specifier: 'catalog:'
+        version: 2.0.1(@mysten/sui@2.17.0(typescript@5.9.3))(@types/react@19.2.14)(react@19.2.5)(typescript@5.9.3)
+      '@mysten/sui':
+        specifier: ^2.17.0
+        version: 2.17.0(typescript@5.9.3)
+      '@mysten/wallet-standard':
+        specifier: 'catalog:'
+        version: 0.20.1(@mysten/sui@2.17.0(typescript@5.9.3))
+      '@tanstack/react-query':
+        specifier: 'catalog:'
+        version: 5.100.6(react@19.2.5)
+      effect:
+        specifier: 'catalog:'
+        version: 4.0.0-beta.65
+      react:
+        specifier: 'catalog:'
+        version: 19.2.5
+      react-dom:
+        specifier: 'catalog:'
+        version: 19.2.5(react@19.2.5)
+    devDependencies:
+      '@mysten-incubation/tsconfig':
+        specifier: workspace:*
+        version: link:../../packages/tsconfig
+      '@playwright/test':
+        specifier: 'catalog:'
+        version: 1.59.1
+      '@tailwindcss/vite':
+        specifier: 'catalog:'
+        version: 4.2.4(vite@7.3.3(@types/node@24.12.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4))
+      '@types/node':
+        specifier: 'catalog:'
+        version: 24.12.2
+      '@types/react':
+        specifier: 'catalog:'
+        version: 19.2.14
+      '@types/react-dom':
+        specifier: 'catalog:'
+        version: 19.2.3(@types/react@19.2.14)
+      '@vitejs/plugin-react':
+        specifier: 'catalog:'
+        version: 4.7.0(vite@7.3.3(@types/node@24.12.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4))
+      tailwindcss:
+        specifier: 'catalog:'
+        version: 4.2.4
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+      vite:
+        specifier: ^7.3.2
+        version: 7.3.3(@types/node@24.12.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)
+      vitest:
+        specifier: 'catalog:'
+        version: 2.1.9(@types/node@24.12.2)(happy-dom@20.8.4)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)
+
   examples/arena:
     dependencies:
       '@mysten-incubation/dev-wallet':
@@ -275,6 +342,28 @@ importers:
       vitest:
         specifier: 'catalog:'
         version: 2.1.9(@types/node@24.12.2)(happy-dom@20.8.4)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)
+
+  examples/arena-rewrite:
+    dependencies:
+      '@mysten-incubation/devstack-rewrite':
+        specifier: workspace:*
+        version: link:../../packages/devstack-rewrite
+      effect:
+        specifier: 'catalog:'
+        version: 4.0.0-beta.65
+    devDependencies:
+      '@mysten-incubation/tsconfig':
+        specifier: workspace:*
+        version: link:../../packages/tsconfig
+      '@types/node':
+        specifier: 'catalog:'
+        version: 24.12.2
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+      vite:
+        specifier: ^7.3.2
+        version: 7.3.3(@types/node@24.12.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)
 
   examples/deepbook-full:
     dependencies:
@@ -346,6 +435,25 @@ importers:
         specifier: 'catalog:'
         version: 2.1.9(@types/node@24.12.2)(happy-dom@20.8.4)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)
 
+  examples/deepbook-full-rewrite:
+    dependencies:
+      '@mysten-incubation/devstack-rewrite':
+        specifier: workspace:*
+        version: link:../../packages/devstack-rewrite
+      effect:
+        specifier: 'catalog:'
+        version: 4.0.0-beta.65
+    devDependencies:
+      '@mysten-incubation/tsconfig':
+        specifier: workspace:*
+        version: link:../../packages/tsconfig
+      '@types/node':
+        specifier: 'catalog:'
+        version: 24.12.2
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+
   examples/effect-app:
     dependencies:
       '@effect/platform-node':
@@ -373,6 +481,31 @@ importers:
       vitest:
         specifier: 'catalog:'
         version: 2.1.9(@types/node@24.12.2)(happy-dom@20.8.4)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)
+
+  examples/effect-app-rewrite:
+    dependencies:
+      '@effect/platform-node':
+        specifier: 'catalog:'
+        version: 4.0.0-beta.65(effect@4.0.0-beta.65)
+      '@mysten-incubation/devstack-rewrite':
+        specifier: workspace:*
+        version: link:../../packages/devstack-rewrite
+      effect:
+        specifier: 'catalog:'
+        version: 4.0.0-beta.65
+    devDependencies:
+      '@mysten-incubation/tsconfig':
+        specifier: workspace:*
+        version: link:../../packages/tsconfig
+      '@types/node':
+        specifier: 'catalog:'
+        version: 24.12.2
+      tsx:
+        specifier: 'catalog:'
+        version: 4.21.0
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
 
   examples/fork-greeting:
     dependencies:
@@ -441,11 +574,90 @@ importers:
         specifier: 'catalog:'
         version: 2.1.9(@types/node@24.12.2)(happy-dom@20.8.4)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)
 
+  examples/fork-greeting-rewrite:
+    dependencies:
+      '@mysten-incubation/devstack-rewrite':
+        specifier: workspace:*
+        version: link:../../packages/devstack-rewrite
+      effect:
+        specifier: 'catalog:'
+        version: 4.0.0-beta.65
+    devDependencies:
+      '@mysten-incubation/tsconfig':
+        specifier: workspace:*
+        version: link:../../packages/tsconfig
+      '@types/node':
+        specifier: 'catalog:'
+        version: 24.12.2
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+      vite:
+        specifier: ^7.3.2
+        version: 7.3.3(@types/node@24.12.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)
+
+  examples/hello-world-rewrite:
+    dependencies:
+      '@mysten-incubation/devstack-rewrite':
+        specifier: workspace:*
+        version: link:../../packages/devstack-rewrite
+      effect:
+        specifier: 'catalog:'
+        version: 4.0.0-beta.65
+    devDependencies:
+      '@mysten-incubation/tsconfig':
+        specifier: workspace:*
+        version: link:../../packages/tsconfig
+      '@types/node':
+        specifier: 'catalog:'
+        version: 24.12.2
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+
   examples/plugin-author-redis:
     dependencies:
       '@mysten-incubation/devstack':
         specifier: workspace:*
         version: link:../../packages/devstack
+    devDependencies:
+      '@mysten-incubation/tsconfig':
+        specifier: workspace:*
+        version: link:../../packages/tsconfig
+      '@types/node':
+        specifier: 'catalog:'
+        version: 24.12.2
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+
+  examples/plugin-author-redis-rewrite:
+    dependencies:
+      '@mysten-incubation/devstack-rewrite':
+        specifier: workspace:*
+        version: link:../../packages/devstack-rewrite
+      effect:
+        specifier: 'catalog:'
+        version: 4.0.0-beta.65
+    devDependencies:
+      '@mysten-incubation/tsconfig':
+        specifier: workspace:*
+        version: link:../../packages/tsconfig
+      '@types/node':
+        specifier: 'catalog:'
+        version: 24.12.2
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+
+  examples/postgres-mini-rewrite:
+    dependencies:
+      '@mysten-incubation/devstack-rewrite':
+        specifier: workspace:*
+        version: link:../../packages/devstack-rewrite
+      effect:
+        specifier: 'catalog:'
+        version: 4.0.0-beta.65
     devDependencies:
       '@mysten-incubation/tsconfig':
         specifier: workspace:*
@@ -533,6 +745,62 @@ importers:
         specifier: 'catalog:'
         version: 2.1.9(@types/node@24.12.2)(happy-dom@20.8.4)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)
 
+  examples/private-content-rewrite:
+    dependencies:
+      '@mysten-incubation/devstack-rewrite':
+        specifier: workspace:*
+        version: link:../../packages/devstack-rewrite
+      '@mysten/seal':
+        specifier: 'catalog:'
+        version: 1.1.1(@mysten/sui@2.17.0(typescript@5.9.3))
+      '@mysten/sui':
+        specifier: ^2.17.0
+        version: 2.17.0(typescript@5.9.3)
+      '@mysten/walrus':
+        specifier: ^1.1.7
+        version: 1.1.7(@mysten/sui@2.17.0(typescript@5.9.3))
+      effect:
+        specifier: 'catalog:'
+        version: 4.0.0-beta.65
+    devDependencies:
+      '@mysten-incubation/tsconfig':
+        specifier: workspace:*
+        version: link:../../packages/tsconfig
+      '@playwright/test':
+        specifier: 'catalog:'
+        version: 1.59.1
+      '@types/node':
+        specifier: 'catalog:'
+        version: 24.12.2
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+      vite:
+        specifier: ^7.3.2
+        version: 7.3.3(@types/node@24.12.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)
+      vitest:
+        specifier: 'catalog:'
+        version: 2.1.9(@types/node@24.12.2)(happy-dom@20.8.4)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)
+
+  examples/seal-mini-rewrite:
+    dependencies:
+      '@mysten-incubation/devstack-rewrite':
+        specifier: workspace:*
+        version: link:../../packages/devstack-rewrite
+      effect:
+        specifier: 'catalog:'
+        version: 4.0.0-beta.65
+    devDependencies:
+      '@mysten-incubation/tsconfig':
+        specifier: workspace:*
+        version: link:../../packages/tsconfig
+      '@types/node':
+        specifier: 'catalog:'
+        version: 24.12.2
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+
   examples/token-studio:
     dependencies:
       '@mysten-incubation/dev-wallet':
@@ -541,6 +809,73 @@ importers:
       '@mysten-incubation/devstack':
         specifier: workspace:*
         version: link:../../packages/devstack
+      '@mysten/dapp-kit-core':
+        specifier: 'catalog:'
+        version: 1.3.0(@mysten/sui@2.17.0(typescript@5.9.3))(typescript@5.9.3)
+      '@mysten/dapp-kit-react':
+        specifier: 'catalog:'
+        version: 2.0.1(@mysten/sui@2.17.0(typescript@5.9.3))(@types/react@19.2.14)(react@19.2.5)(typescript@5.9.3)
+      '@mysten/sui':
+        specifier: ^2.17.0
+        version: 2.17.0(typescript@5.9.3)
+      '@mysten/wallet-standard':
+        specifier: 'catalog:'
+        version: 0.20.1(@mysten/sui@2.17.0(typescript@5.9.3))
+      '@tanstack/react-query':
+        specifier: 'catalog:'
+        version: 5.100.6(react@19.2.5)
+      effect:
+        specifier: 'catalog:'
+        version: 4.0.0-beta.65
+      react:
+        specifier: 'catalog:'
+        version: 19.2.5
+      react-dom:
+        specifier: 'catalog:'
+        version: 19.2.5(react@19.2.5)
+    devDependencies:
+      '@mysten-incubation/tsconfig':
+        specifier: workspace:*
+        version: link:../../packages/tsconfig
+      '@playwright/test':
+        specifier: 'catalog:'
+        version: 1.59.1
+      '@tailwindcss/vite':
+        specifier: 'catalog:'
+        version: 4.2.4(vite@7.3.3(@types/node@24.12.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4))
+      '@types/node':
+        specifier: 'catalog:'
+        version: 24.12.2
+      '@types/react':
+        specifier: 'catalog:'
+        version: 19.2.14
+      '@types/react-dom':
+        specifier: 'catalog:'
+        version: 19.2.3(@types/react@19.2.14)
+      '@vitejs/plugin-react':
+        specifier: 'catalog:'
+        version: 4.7.0(vite@7.3.3(@types/node@24.12.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4))
+      tailwindcss:
+        specifier: 'catalog:'
+        version: 4.2.4
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+      vite:
+        specifier: ^7.3.2
+        version: 7.3.3(@types/node@24.12.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)
+      vitest:
+        specifier: 'catalog:'
+        version: 2.1.9(@types/node@24.12.2)(happy-dom@20.8.4)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)
+
+  examples/token-studio-rewrite:
+    dependencies:
+      '@mysten-incubation/dev-wallet':
+        specifier: workspace:*
+        version: link:../../packages/dev-wallet
+      '@mysten-incubation/devstack-rewrite':
+        specifier: workspace:*
+        version: link:../../packages/devstack-rewrite
       '@mysten/dapp-kit-core':
         specifier: 'catalog:'
         version: 1.3.0(@mysten/sui@2.17.0(typescript@5.9.3))(typescript@5.9.3)
@@ -669,6 +1004,92 @@ importers:
       vitest:
         specifier: 'catalog:'
         version: 2.1.9(@types/node@24.12.2)(happy-dom@20.8.4)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)
+
+  examples/wallet-rewrite:
+    dependencies:
+      '@mysten-incubation/dev-wallet':
+        specifier: workspace:*
+        version: link:../../packages/dev-wallet
+      '@mysten-incubation/devstack-rewrite':
+        specifier: workspace:*
+        version: link:../../packages/devstack-rewrite
+      '@mysten/dapp-kit-core':
+        specifier: 'catalog:'
+        version: 1.3.0(@mysten/sui@2.17.0(typescript@5.9.3))(typescript@5.9.3)
+      '@mysten/dapp-kit-react':
+        specifier: 'catalog:'
+        version: 2.0.1(@mysten/sui@2.17.0(typescript@5.9.3))(@types/react@19.2.14)(react@19.2.5)(typescript@5.9.3)
+      '@mysten/sui':
+        specifier: ^2.17.0
+        version: 2.17.0(typescript@5.9.3)
+      '@mysten/wallet-standard':
+        specifier: 'catalog:'
+        version: 0.20.1(@mysten/sui@2.17.0(typescript@5.9.3))
+      '@tanstack/react-query':
+        specifier: 'catalog:'
+        version: 5.100.6(react@19.2.5)
+      effect:
+        specifier: 'catalog:'
+        version: 4.0.0-beta.65
+      react:
+        specifier: 'catalog:'
+        version: 19.2.5
+      react-dom:
+        specifier: 'catalog:'
+        version: 19.2.5(react@19.2.5)
+    devDependencies:
+      '@mysten-incubation/tsconfig':
+        specifier: workspace:*
+        version: link:../../packages/tsconfig
+      '@playwright/test':
+        specifier: 'catalog:'
+        version: 1.59.1
+      '@tailwindcss/vite':
+        specifier: 'catalog:'
+        version: 4.2.4(vite@7.3.3(@types/node@24.12.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4))
+      '@types/node':
+        specifier: 'catalog:'
+        version: 24.12.2
+      '@types/react':
+        specifier: 'catalog:'
+        version: 19.2.14
+      '@types/react-dom':
+        specifier: 'catalog:'
+        version: 19.2.3(@types/react@19.2.14)
+      '@vitejs/plugin-react':
+        specifier: 'catalog:'
+        version: 4.7.0(vite@7.3.3(@types/node@24.12.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4))
+      tailwindcss:
+        specifier: 'catalog:'
+        version: 4.2.4
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+      vite:
+        specifier: ^7.3.2
+        version: 7.3.3(@types/node@24.12.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)
+      vitest:
+        specifier: 'catalog:'
+        version: 2.1.9(@types/node@24.12.2)(happy-dom@20.8.4)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)
+
+  examples/walrus-mini-rewrite:
+    dependencies:
+      '@mysten-incubation/devstack-rewrite':
+        specifier: workspace:*
+        version: link:../../packages/devstack-rewrite
+      effect:
+        specifier: 'catalog:'
+        version: 4.0.0-beta.65
+    devDependencies:
+      '@mysten-incubation/tsconfig':
+        specifier: workspace:*
+        version: link:../../packages/tsconfig
+      '@types/node':
+        specifier: 'catalog:'
+        version: 24.12.2
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
 
   packages/create-devstack-app:
     devDependencies:
@@ -873,6 +1294,57 @@ importers:
       vitest:
         specifier: ^4.1.6
         version: 4.1.6(@types/node@24.12.2)(@vitest/browser-playwright@4.1.6)(happy-dom@20.8.4)(vite@7.3.3(@types/node@24.12.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4))
+
+  packages/devstack-rewrite:
+    dependencies:
+      '@effect/platform-node':
+        specifier: 'catalog:'
+        version: 4.0.0-beta.65(effect@4.0.0-beta.65)
+      '@mysten/codegen':
+        specifier: 'catalog:'
+        version: 0.10.4
+      '@mysten/sui':
+        specifier: ^2.17.0
+        version: 2.17.0(typescript@5.9.3)
+      effect:
+        specifier: 'catalog:'
+        version: 4.0.0-beta.65
+      ink:
+        specifier: ^7.0.0
+        version: 7.0.1(@types/react@19.2.14)(react@19.2.5)
+      react:
+        specifier: 'catalog:'
+        version: 19.2.5
+    devDependencies:
+      '@effect/vitest':
+        specifier: 'catalog:'
+        version: 4.0.0-beta.65(effect@4.0.0-beta.65)(vitest@4.1.6)
+      '@mysten-incubation/tsconfig':
+        specifier: workspace:*
+        version: link:../tsconfig
+      '@types/node':
+        specifier: 'catalog:'
+        version: 24.12.2
+      '@types/react':
+        specifier: 'catalog:'
+        version: 19.2.14
+      ink-testing-library:
+        specifier: ^4.0.0
+        version: 4.0.0(@types/react@19.2.14)
+      tsdown:
+        specifier: ^0.21.10
+        version: 0.21.10(@arethetypeswrong/core@0.18.2)(typescript@5.9.3)
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+      vite:
+        specifier: ^7.3.2
+        version: 7.3.3(@types/node@24.12.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)
+      vitest:
+        specifier: ^4.1.6
+        version: 4.1.6(@types/node@24.12.2)(@vitest/browser-playwright@4.1.6)(happy-dom@20.8.4)(vite@7.3.3(@types/node@24.12.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4))
+
+  packages/devstack-rewrite/test/e2e/fixtures/seal-stub/build/seal_stub/debug_info/dependencies/Sui: {}
 
   packages/docs:
     dependencies:
@@ -6754,7 +7226,7 @@ snapshots:
 
   '@mysten/seal@1.1.1(@mysten/sui@2.17.0(typescript@5.9.3))':
     dependencies:
-      '@mysten/bcs': 2.0.3
+      '@mysten/bcs': 2.0.5
       '@mysten/sui': 2.17.0(typescript@5.9.3)
       '@noble/curves': 2.0.1
       '@noble/hashes': 2.0.1

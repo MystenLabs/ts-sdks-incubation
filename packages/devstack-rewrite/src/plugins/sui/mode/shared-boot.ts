@@ -1,0 +1,304 @@
+// Sui plugin — boot helpers shared across local / external / live modes.
+//
+// What lives here (and why):
+//
+//   - `fetchChainId(client, opts?)` — bounded chain-id probe. The
+//     only readiness sentinel for external + live; local treats it
+//     as the chain-id capture step after the multi-probe gate has
+//     succeeded.
+//   - `buildWaitForTransactionsReady(faucetUrl, opts?)` — memoised
+//     funds-ready gate for faucet-bearing networks. `Effect.cached`
+//     with a manual-invalidation surface (the distilled-doc
+//     opportunity called out in `mode/shared.ts`).
+//   - `noopWaitForTransactionsReady` — trivially-succeeding gate for
+//     faucet-less networks (live mainnet, fork).
+//   - `assembleSuiClient(...)` — collapses the boilerplate that
+//     local/external/live all repeat (sdk shim + chainProbe + the
+//     `fork: null` discriminator).
+//
+// Why not jam this into `mode/local.ts`: external + live can't
+// import from `local.ts` without dragging the container-runtime
+// import path along; the helpers below are wire-only and have NO
+// substrate-context dependencies.
+
+import { Duration, Effect, Ref, Schedule, type Scope } from 'effect';
+
+import type { SuiGrpcClient } from '@mysten/sui/grpc';
+
+import type { ChainProbe } from '../../../contracts/chain-probe.ts';
+import { chainId as brandChainId } from '../../../substrate/brand.ts';
+import { makeSuiChainProbe, type SuiSdkShim, type SuiProbeKey } from '../chain-probe.ts';
+import { suiPluginError, type SuiPluginError } from '../errors.ts';
+import type { ResolvedSuiNetwork } from '../network-resolver.ts';
+import { toDockerHostGatewayUrl, type SuiClient, type WaitForTransactionsReady } from './shared.ts';
+
+// ---------------------------------------------------------------------------
+// Chain-id fetch — bounded, typed-error
+// ---------------------------------------------------------------------------
+
+/** Default chain-id fetch timeout. The wire latency is the dominant
+ *  cost on real RPCs; 30 s is the documented ceiling. */
+export const DEFAULT_CHAIN_ID_TIMEOUT = Duration.seconds(30);
+
+/** Fetch the chain identifier off a constructed grpc client. The
+ *  result is the bare string that downstream cache layers fold into
+ *  their state-store keys. */
+export const fetchChainId = (
+	sdkClient: SuiGrpcClient,
+	opts?: { readonly timeout?: Duration.Duration; readonly span?: string },
+): Effect.Effect<string, SuiPluginError> => {
+	const timeout = opts?.timeout ?? DEFAULT_CHAIN_ID_TIMEOUT;
+	return Effect.tryPromise({
+		try: () => sdkClient.core.getChainIdentifier().then((r) => r.chainIdentifier),
+		catch: (cause): SuiPluginError =>
+			suiPluginError(
+				'chain-id-fetch',
+				`sui chain-id fetch failed: ${stringifyCause(cause)}`,
+				cause,
+			),
+	}).pipe(
+		Effect.timeoutOrElse({
+			duration: timeout,
+			orElse: (): Effect.Effect<string, SuiPluginError> =>
+				Effect.fail(
+					suiPluginError(
+						'chain-id-fetch',
+						`sui chain-id fetch did not respond within ${Duration.toMillis(timeout)}ms`,
+					),
+				),
+		}),
+		Effect.tap((id: string) => Effect.annotateCurrentSpan({ 'sui.chain': id })),
+		Effect.withSpan(opts?.span ?? 'devstack.plugin.sui.fetchChainId'),
+	);
+};
+
+// ---------------------------------------------------------------------------
+// waitForTransactionsReady — memoised, with manual invalidation
+// ---------------------------------------------------------------------------
+
+/** Per-attempt and total budget for the `waitForTransactionsReady`
+ *  retry loop. The 2 s spacing matches the upstream sui-faucet's
+ *  internal cadence; the 90 s ceiling matches the v3 service's
+ *  documented wall-clock. */
+const FUNDS_READY_RETRY_SPACING = Duration.seconds(2);
+const FUNDS_READY_TIMEOUT = Duration.seconds(90);
+
+/** Per-fetch deadline for the faucet probe POST. Bounded short so
+ *  the outer retry loop hammers quickly. */
+const PROBE_FETCH_TIMEOUT_MS = 3000;
+
+/** Probe recipient for the faucet funds-ready check. A literal
+ *  zero-balance address so the real call doesn't pollute caller wallets;
+ *  any well-formed address works. */
+const FAUCET_PROBE_RECIPIENT = '0x0000000000000000000000000000000000000000000000000000000000000001';
+
+/**
+ * Build the funds-transferable gate against a real HTTP faucet.
+ * Memoised — first successful resolution sticks for the scope; the
+ * manual `invalidate` surface clears the memo so long-running
+ * supervisors can re-probe without a full restart.
+ */
+export const buildWaitForTransactionsReady = (
+	faucetUrl: string,
+	opts?: {
+		readonly retrySpacing?: Duration.Duration;
+		readonly timeout?: Duration.Duration;
+	},
+): Effect.Effect<WaitForTransactionsReady, never, Scope.Scope> =>
+	Effect.gen(function* () {
+		const retrySpacing = opts?.retrySpacing ?? FUNDS_READY_RETRY_SPACING;
+		const timeout = opts?.timeout ?? FUNDS_READY_TIMEOUT;
+		const ref = yield* Ref.make<Effect.Effect<void, SuiPluginError> | null>(null);
+
+		const makeProbe = (): Effect.Effect<void, SuiPluginError> =>
+			faucetReadyProbe(faucetUrl).pipe(
+				Effect.retry(Schedule.spaced(retrySpacing)),
+				Effect.timeoutOrElse({
+					duration: timeout,
+					orElse: (): Effect.Effect<void, SuiPluginError> =>
+						Effect.fail(
+							suiPluginError(
+								'wait-funds-ready',
+								`sui faucet at ${faucetUrl} did not become funds-transferable within ` +
+									`${Duration.toMillis(timeout)}ms (still returning body-level Failure ` +
+									`or 5xx). Recovery: wipe stack state and re-up.`,
+							),
+						),
+				}),
+				Effect.mapError(
+					(cause): SuiPluginError =>
+						cause && typeof cause === 'object' && '_tag' in cause && cause._tag === 'SuiPluginError'
+							? (cause as SuiPluginError)
+							: suiPluginError(
+									'wait-funds-ready',
+									`sui faucet probe failed: ${stringifyCause(cause)}`,
+									cause,
+								),
+				),
+			);
+
+		const getOrInit: Effect.Effect<Effect.Effect<void, SuiPluginError>> = Effect.gen(function* () {
+			const existing = yield* Ref.get(ref);
+			if (existing !== null) return existing;
+			const cached = yield* Effect.cached(makeProbe());
+			yield* Ref.set(ref, cached);
+			return cached;
+		});
+
+		return {
+			wait: getOrInit.pipe(Effect.flatMap((eff) => eff)),
+			invalidate: Ref.set(ref, null),
+		};
+	});
+
+/** Trivially-succeeding gate. Used by faucet-less networks (live
+ *  mainnet, fork — fork funds via impersonation, not HTTP). */
+export const noopWaitForTransactionsReady: WaitForTransactionsReady = {
+	wait: Effect.void,
+	invalidate: Effect.void,
+};
+
+/**
+ * Probe the faucet's actual tx pipeline. A real `/v2/gas` POST that
+ * returns 200 OK with `status.Failure` indicates the HTTP server is
+ * bound but the validator isn't yet accepting funding txs — we retry
+ * until the body returns clean.
+ */
+const faucetReadyProbe = (faucetUrl: string): Effect.Effect<void, Error> =>
+	Effect.tryPromise({
+		try: async () => {
+			const response = await fetch(`${faucetUrl}/v2/gas`, {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({
+					FixedAmountRequest: { recipient: FAUCET_PROBE_RECIPIENT },
+				}),
+				signal: AbortSignal.timeout(PROBE_FETCH_TIMEOUT_MS),
+			});
+			if (!response.ok) throw new Error(`faucet HTTP ${response.status}`);
+			const body = (await response.json()) as { status?: unknown };
+			const status = body.status;
+			if (typeof status === 'object' && status !== null && 'Failure' in status) {
+				const failure = (status as { Failure: unknown }).Failure;
+				throw new Error(`faucet body: Failure ${JSON.stringify(failure)}`);
+			}
+		},
+		catch: (cause) => new Error(`faucet probe: ${stringifyCause(cause)}`),
+	});
+
+// ---------------------------------------------------------------------------
+// SuiClient assembly — collapses the per-mode boilerplate
+// ---------------------------------------------------------------------------
+
+/** Build the `SuiSdkShim` over a constructed grpc client.
+ *  Account/Coin/Wallet read through this seam, so we expose
+ *  `executeTransaction` + `waitForTransaction` in addition to the
+ *  read methods needed by the chain probe. */
+export const makeSdkShim = (sdkClient: SuiGrpcClient): SuiSdkShim => ({
+	core: {
+		getObject: (args) => sdkClient.core.getObject(args),
+		getTransaction: (args) => sdkClient.core.getTransaction(args),
+		// Extended surfaces — used by the account plugin's sign + execute
+		// closure. Local mode keeps the `sdkClient.executeTransaction` /
+		// `sdkClient.waitForTransaction` instance methods reachable on
+		// the shim so consumers don't have to know about the grpc client
+		// constructor. The SDK accepts a mutable `signatures: string[]`
+		// shape; the shim's readonly signature is widened with a copy at
+		// the boundary.
+		executeTransaction: (args) =>
+			sdkClient.executeTransaction({
+				transaction: args.transaction,
+				signatures: [...args.signatures],
+			}),
+		waitForTransaction: (args) =>
+			sdkClient.waitForTransaction({
+				digest: args.digest,
+				...(args.timeout !== undefined ? { timeout: args.timeout } : {}),
+			}),
+	},
+	// Opaque client passthrough — the Package plugin's publish-tx
+	// builder hands this to `Transaction.build({ client })`. The shim
+	// layer doesn't type-narrow it; downstream consumers cast at the
+	// `tx.build` call site (mirrors coin/mint.ts).
+	client: sdkClient,
+});
+
+/** Assemble a `SuiClient` from the per-mode building blocks. The
+ *  `fork: null` discriminator is invariant for non-fork modes; the
+ *  fork builder constructs its own client with the admin surface.
+ *
+ *  `chain` is accepted as a bare string and branded to `ChainId` at
+ *  this single boundary — every consumer downstream reads the
+ *  branded shape so capability-key constructors (`chainProbe…`,
+ *  `faucet…`) accept it without a cast. */
+export const assembleSuiClient = (parts: {
+	readonly sdkClient: SuiGrpcClient;
+	readonly chain: string;
+	readonly rpcUrl: string;
+	readonly faucetUrl?: string;
+	readonly graphqlUrl?: string;
+	readonly waitForTransactionsReady: WaitForTransactionsReady;
+	/** Image ref consumed by package's path (b) (`docker run --rm`)
+	 *  build path. `null` for modes that have no in-stack image
+	 *  (external + live). */
+	readonly buildImage?: import('../../../contracts/container-runtime.ts').ImageRef | null;
+}): {
+	readonly client: SuiClient;
+	readonly sdkShim: SuiSdkShim;
+	readonly chainProbe: ChainProbe<SuiProbeKey>;
+} => {
+	const sdkShim = makeSdkShim(parts.sdkClient);
+	const chainProbe = makeSuiChainProbe(sdkShim, parts.chain);
+	const client: SuiClient = {
+		sdk: sdkShim,
+		rpcUrl: parts.rpcUrl,
+		faucetUrl: parts.faucetUrl ?? null,
+		graphqlUrl: parts.graphqlUrl ?? null,
+		hostGateway: {
+			rpcUrl: toDockerHostGatewayUrl(parts.rpcUrl),
+			faucetUrl: parts.faucetUrl === undefined ? null : toDockerHostGatewayUrl(parts.faucetUrl),
+			graphqlUrl: parts.graphqlUrl === undefined ? null : toDockerHostGatewayUrl(parts.graphqlUrl),
+		},
+		chain: brandChainId(parts.chain),
+		waitForTransactionsReady: parts.waitForTransactionsReady,
+		chainProbe,
+		fork: null,
+		buildImage: parts.buildImage ?? null,
+	};
+	return { client, sdkShim, chainProbe };
+};
+
+/** Shape the resolved network record the boot builders all hand
+ *  back. The substrate-network mapping is uniform per mode. Brands
+ *  the raw chain string at this boundary so consumers downstream
+ *  (codegen, capabilities, walrus/seal deps) read a `ChainId` and
+ *  don't re-wrap. */
+export const makeResolvedNetwork = (parts: {
+	readonly mode: ResolvedSuiNetwork['mode'];
+	readonly chain: string;
+	readonly rpc: string;
+	readonly faucet?: string;
+	readonly graphql?: string;
+	readonly source: ResolvedSuiNetwork['source'];
+}): ResolvedSuiNetwork => ({
+	mode: parts.mode,
+	chain: brandChainId(parts.chain),
+	rpc: parts.rpc,
+	source: parts.source,
+	...(parts.faucet !== undefined ? { faucet: parts.faucet } : {}),
+	...(parts.graphql !== undefined ? { graphql: parts.graphql } : {}),
+});
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+const stringifyCause = (cause: unknown): string => {
+	if (cause instanceof Error) return cause.message;
+	if (typeof cause === 'string') return cause;
+	try {
+		return JSON.stringify(cause);
+	} catch {
+		return String(cause);
+	}
+};

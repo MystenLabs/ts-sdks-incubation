@@ -14,6 +14,7 @@
 		"lint": "pnpm run oxlint:check && pnpm run prettier:check",
 		"lint:fix": "pnpm run oxlint:fix && pnpm run prettier:fix",
 		"build": "turbo run build",
+		"typecheck": "turbo run typecheck",
 		"release": "pnpm turbo run build --filter \"./packages/*\" && pnpm changeset publish"
 	},
 	"packageManager": "pnpm@10.17.0",

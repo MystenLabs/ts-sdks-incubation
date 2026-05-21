@@ -1,0 +1,315 @@
+// Account plugin — LeaseBroker integration.
+//
+// The plugin formerly carried a local `address-lock.ts` per-key
+// semaphore registry. That has been lifted to the substrate's
+// `LeaseBrokerService`. These tests pin the migration's three
+// load-bearing invariants against the real broker layer:
+//
+//   1. Same-address concurrent sign calls SERIALIZE — the second
+//      call waits until the first call's per-call lease scope
+//      closes, never interleaves.
+//   2. Distinct-address concurrent sign calls run in PARALLEL —
+//      different lease keys do not coordinate.
+//   3. The lease is SCOPE-BOUND — once a sign call returns, its
+//      lease is released, so the broker's holders snapshot drops
+//      the entry and a subsequent call for the same address
+//      proceeds immediately.
+//
+// We exercise the migration via the `signer` variant: a stub
+// signer whose `signTransaction` awaits a test-controlled Promise
+// lets us observe lease ordering without a chain.
+
+import { Effect, Fiber } from 'effect';
+import { describe, expect, it } from '@effect/vitest';
+
+import {
+	LeaseBrokerService,
+	layerLeaseBroker,
+	leaseKey,
+} from '../../../src/substrate/runtime/lease-broker/index.ts';
+import { layerStrategyRegistry } from '../../../src/substrate/runtime/strategy-registry/index.ts';
+import { chainId } from '../../../src/substrate/brand.ts';
+import {
+	acquireAccount,
+	type AccountAcquireContext,
+	type AccountOptions,
+	type AccountValue,
+} from '../../../src/plugins/account/service.ts';
+import type { SuiSdkShim } from '../../../src/plugins/sui/chain-probe.ts';
+
+// ----------------------------------------------------------------------
+// Plain-Promise gate — lets the test runtime release a signer body
+// without nesting `Effect.runPromise` inside async stubs.
+// ----------------------------------------------------------------------
+
+interface Gate {
+	readonly wait: Promise<void>;
+	readonly release: () => void;
+}
+
+const makeGate = (): Gate => {
+	let release!: () => void;
+	const wait = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	return { wait, release };
+};
+
+// ----------------------------------------------------------------------
+// Test fixtures
+// ----------------------------------------------------------------------
+
+interface StubSigner {
+	readonly toSuiAddress: () => string;
+	readonly getKeyScheme: () => string;
+	readonly getPublicKey: () => { readonly toRawBytes: () => Uint8Array };
+	readonly signTransaction: (
+		tx: Uint8Array,
+	) => Promise<{ readonly bytes: string; readonly signature: string }>;
+	readonly signPersonalMessage: (
+		msg: Uint8Array,
+	) => Promise<{ readonly bytes: string; readonly signature: string }>;
+}
+
+/** Stub signer for a fixed address. `signTransaction` awaits a
+ *  caller-supplied gate so the test can observe lease ordering. */
+const makeStubSigner = (
+	address: string,
+	gate: Gate,
+	calls: Array<{ readonly address: string; readonly tag: string }>,
+	tag: string,
+): StubSigner => ({
+	toSuiAddress: () => address,
+	getKeyScheme: () => 'ed25519',
+	getPublicKey: () => ({ toRawBytes: () => new Uint8Array(32) }),
+	signTransaction: async () => {
+		calls.push({ address, tag: `${tag}:enter` });
+		await gate.wait;
+		calls.push({ address, tag: `${tag}:exit` });
+		return { bytes: 'b64-tx', signature: `sig:${tag}` };
+	},
+	signPersonalMessage: async () => ({
+		bytes: 'b64-msg',
+		signature: `sig:${tag}`,
+	}),
+});
+
+/** Minimal SuiSdkShim — the signer variant + no funding path doesn't
+ *  consult it; method bodies throw so any accidental read surfaces. */
+const stubSuiSdk = (): SuiSdkShim => ({
+	core: {
+		getObject: () => Promise.reject(new Error('stub getObject')),
+		getTransaction: () => Promise.reject(new Error('stub getTransaction')),
+		executeTransaction: () => Promise.reject(new Error('stub executeTransaction')),
+		waitForTransaction: () => Promise.reject(new Error('stub waitForTransaction')),
+	},
+	client: null,
+});
+
+const ctx: AccountAcquireContext = {
+	sui: { mode: 'local', chain: chainId('sui:localnet'), sdk: stubSuiSdk() },
+	runtimeRoot: '/tmp/devstack-rewrite-test',
+	app: 'test-app',
+	stack: 'test-stack',
+	emitAutoPromotionEvent: () => Effect.void,
+};
+
+const makeOpts = (name: string, signer: StubSigner): AccountOptions => ({
+	kind: 'signer',
+	name,
+	signer,
+	addressOverride: signer.toSuiAddress(),
+});
+
+/** Acquire an account against the real broker + strategy-registry
+ *  layers. The signer variant + no `funding` field means neither
+ *  faucet strategy nor SDK calls fire — the closures we exercise
+ *  are pure-lease + stub-signer. */
+const acquire = (
+	name: string,
+	signer: StubSigner,
+): Effect.Effect<AccountValue, never, LeaseBrokerService> =>
+	Effect.gen(function* () {
+		const value = yield* acquireAccount(makeOpts(name, signer), ctx).pipe(
+			Effect.provide(layerStrategyRegistry),
+			Effect.orDie,
+		);
+		return value;
+	});
+
+// ----------------------------------------------------------------------
+// Tests
+// ----------------------------------------------------------------------
+
+describe('account plugin — LeaseBrokerService integration', () => {
+	it.effect('concurrent same-address signTransaction calls serialize via the broker', () =>
+		Effect.gen(function* () {
+			const address = '0xabc';
+			const calls: Array<{ readonly address: string; readonly tag: string }> = [];
+
+			// Two test-controlled gates: each sign call waits on its
+			// own gate before returning. We release them in order;
+			// if the broker were not serializing, both calls would
+			// enter and both would observe the release of their own
+			// gate. Serialization means call #2 cannot ENTER until
+			// call #1 returns.
+			const gate1 = makeGate();
+			const gate2 = makeGate();
+
+			const signer = makeStubSigner(address, gate1, calls, 'first');
+			// Signer #2 reuses the same address (per-address
+			// serialization is keyed on `account:<address>`).
+			const signer2: StubSigner = {
+				...signer,
+				signTransaction: async () => {
+					calls.push({ address, tag: 'second:enter' });
+					await gate2.wait;
+					calls.push({ address, tag: 'second:exit' });
+					return { bytes: 'b64-tx', signature: 'sig:second' };
+				},
+			};
+
+			const a1 = yield* acquire('alice', signer);
+			const a2 = yield* acquire('alice2', signer2);
+
+			const fiber1 = yield* Effect.forkChild(a1.signTransaction(new Uint8Array([1])));
+			// Yield several times so fiber1's lease-acquire CAS lands
+			// and its `tryPromise` parks on gate1 before fiber2
+			// enqueues. Without TestClock this is the most direct
+			// way to pin enqueue order.
+			yield* Effect.yieldNow;
+			yield* Effect.yieldNow;
+			const fiber2 = yield* Effect.forkChild(a2.signTransaction(new Uint8Array([2])));
+			yield* Effect.yieldNow;
+			yield* Effect.yieldNow;
+
+			// At this point fiber1 is parked on gate1 INSIDE the
+			// lease; fiber2 is parked on the broker's per-key signal
+			// awaiting fiber1's lease release.
+			expect(calls).toEqual([{ address, tag: 'first:enter' }]);
+
+			// Release fiber1's signer gate — fiber1 returns, its
+			// lease scope closes, the broker promotes fiber2 to
+			// holder, fiber2 enters its signer body.
+			gate1.release();
+			yield* Fiber.join(fiber1);
+			yield* Effect.yieldNow;
+			yield* Effect.yieldNow;
+			expect(calls).toEqual([
+				{ address, tag: 'first:enter' },
+				{ address, tag: 'first:exit' },
+				{ address, tag: 'second:enter' },
+			]);
+
+			gate2.release();
+			yield* Fiber.join(fiber2);
+
+			expect(calls).toEqual([
+				{ address, tag: 'first:enter' },
+				{ address, tag: 'first:exit' },
+				{ address, tag: 'second:enter' },
+				{ address, tag: 'second:exit' },
+			]);
+		}).pipe(Effect.provide(layerLeaseBroker)),
+	);
+
+	it.effect('distinct-address signTransaction calls run in parallel (no false serialization)', () =>
+		Effect.gen(function* () {
+			const callsA: Array<{ readonly address: string; readonly tag: string }> = [];
+			const callsB: Array<{ readonly address: string; readonly tag: string }> = [];
+
+			const gateA = makeGate();
+			const gateB = makeGate();
+
+			const signerA = makeStubSigner('0xaaa', gateA, callsA, 'A');
+			const signerB = makeStubSigner('0xbbb', gateB, callsB, 'B');
+
+			const acctA = yield* acquire('alice', signerA);
+			const acctB = yield* acquire('bob', signerB);
+
+			const fiberA = yield* Effect.forkChild(acctA.signTransaction(new Uint8Array([1])));
+			const fiberB = yield* Effect.forkChild(acctB.signTransaction(new Uint8Array([2])));
+			yield* Effect.yieldNow;
+			yield* Effect.yieldNow;
+
+			// Both have entered their signer bodies — distinct lease
+			// keys do not coordinate.
+			expect(callsA).toEqual([{ address: '0xaaa', tag: 'A:enter' }]);
+			expect(callsB).toEqual([{ address: '0xbbb', tag: 'B:enter' }]);
+
+			// Release B FIRST — A is still parked on its own gate.
+			// If the broker were serializing across keys, B would
+			// not have been able to enter at all.
+			gateB.release();
+			yield* Fiber.join(fiberB);
+			expect(callsB).toEqual([
+				{ address: '0xbbb', tag: 'B:enter' },
+				{ address: '0xbbb', tag: 'B:exit' },
+			]);
+
+			gateA.release();
+			yield* Fiber.join(fiberA);
+			expect(callsA).toEqual([
+				{ address: '0xaaa', tag: 'A:enter' },
+				{ address: '0xaaa', tag: 'A:exit' },
+			]);
+		}).pipe(Effect.provide(layerLeaseBroker)),
+	);
+
+	it.effect('lease is scope-bound: a sign call releases its lease before returning', () =>
+		Effect.gen(function* () {
+			const address = '0xccc';
+			const calls: Array<{ readonly address: string; readonly tag: string }> = [];
+
+			// Already-resolved gate — the signer body never parks.
+			const openGate: Gate = { wait: Promise.resolve(), release: () => {} };
+			const signer = makeStubSigner(address, openGate, calls, 'once');
+			const acct = yield* acquire('carol', signer);
+
+			yield* acct.signTransaction(new Uint8Array([0]));
+
+			// After the closure returns, the broker should hold NO
+			// lease for this key — the per-call scope closed in the
+			// `Effect.scoped` wrapper.
+			const broker = yield* LeaseBrokerService;
+			const snapshot = yield* broker.holders();
+			expect(snapshot.has(leaseKey(`account:${address}`))).toBe(false);
+
+			// A second call on the same address proceeds immediately
+			// (no waiter parked behind a leaked lease).
+			yield* acct.signTransaction(new Uint8Array([1]));
+			expect(calls.map((c) => c.tag)).toEqual([
+				'once:enter',
+				'once:exit',
+				'once:enter',
+				'once:exit',
+			]);
+		}).pipe(Effect.provide(layerLeaseBroker)),
+	);
+
+	it.effect(
+		'broker key encoding uses the `account:<address>` convention with the account name as owner',
+		() =>
+			Effect.gen(function* () {
+				const address = '0xddd';
+				// Gate parks the signer body so the test can observe the
+				// in-flight lease before it releases.
+				const gate = makeGate();
+				const signer = makeStubSigner(address, gate, [], 'probe');
+				const acct = yield* acquire('dave', signer);
+
+				const broker = yield* LeaseBrokerService;
+				const fiber = yield* Effect.forkChild(acct.signTransaction(new Uint8Array([0])));
+				yield* Effect.yieldNow;
+				yield* Effect.yieldNow;
+				const snapshot = yield* broker.holders();
+				// Key shape + owner shape pin the plugin convention so
+				// cross-plugin consumers (renderer, debug logs) can
+				// identify the origin of a held lease.
+				expect(snapshot.get(leaseKey(`account:${address}`))).toBe('dave');
+
+				gate.release();
+				yield* Fiber.join(fiber);
+			}).pipe(Effect.provide(layerLeaseBroker)),
+	);
+});

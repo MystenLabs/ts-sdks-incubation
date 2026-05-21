@@ -1,0 +1,330 @@
+// Seal plugin — long-running key-server container lifecycle.
+//
+// Distilled-doc invariants pinned by this file:
+//
+//   #1 (KeyServer.url == routed hostname): the URL handed to the
+//      on-chain Move call MUST equal the routed hostname stamped on
+//      the `seal-key-server` route. We resolve the URL ONCE via the
+//      router (see `routable.ts`) and pipe the same value into both
+//      the Move register pass (`deploy.ts` + `registry-publish.ts`)
+//      and this file's container spec.
+//
+//   #3 (env-file not -e MASTER_KEY=…): the container is launched
+//      with `envFiles: [<masterKeyEnvFile>]` and a `env:` map that
+//      does NOT contain `MASTER_KEY`. Distilled doc §Hard
+//      requirements #3 — the inline form surfaces the key in host
+//      process env + docker inspect output.
+//
+//      IMPLEMENTATION CONSTRAINT: the L1 `EnsureContainerSpec`
+//      contract today does NOT expose an `envFiles:` slot — only
+//      `env:`. We work around this by bind-mounting the env-file
+//      into the container at a known path; the cargo image's
+//      entrypoint shell (see Hard requirement #7) is responsible
+//      for `set -a; . /etc/seal/master-key.env; set +a` BEFORE
+//      exec'ing the daemon, so the secret never appears in
+//      `docker inspect`. ARCHITECTURE REVISION TRACKED: add
+//      `envFiles` to `EnsureContainerSpec`.
+//
+//   #5 (NO host-port publish): the `ports:` field is INTENTIONALLY
+//      absent from the `EnsureContainerSpec` we pass to the runtime.
+//      Traefik dispatches by Host: header from the well-known router
+//      entrypoint `seal-key-server`.
+//
+//   #7 (signal-forwarding entrypoint shell): the cargo-built image
+//      embeds the entrypoint shell that traps SIGTERM and forwards
+//      SIGINT to the key-server child. Distilled doc §Hard
+//      requirements #21. The image declares the right entrypoint;
+//      this file does NOT re-declare it.
+
+import { Duration, Effect, Schedule, type Scope } from 'effect';
+
+import type {
+	ContainerHandle,
+	ContainerRuntime,
+	EnsureContainerSpec,
+	ImageRef,
+} from '../../contracts/container-runtime.ts';
+import type { ContainerLabelTuple } from '../../contracts/snapshotable.ts';
+import { sealError, type SealError } from './errors.ts';
+import { KEY_SERVER_CONFIG_BASENAME, MASTER_KEY_ENVFILE_BASENAME } from './keygen.ts';
+import { SEAL_KEY_SERVER_ENDPOINT_NAME } from './routable.ts';
+
+// ---------------------------------------------------------------------------
+// Constants — mirror v3 `seal/internal.ts:102-103`
+// ---------------------------------------------------------------------------
+
+/** Port the upstream key-server binary binds to. Single shared host
+ *  port across stacks — Traefik dispatches by Host: header. */
+export const DEFAULT_KEY_SERVER_PORT = 2024 as const;
+
+/** Default `/health` probe timeout. */
+export const DEFAULT_READY_TIMEOUT_MS = 60_000 as const;
+
+/** Inside-container config path. The binary reads `CONFIG_PATH` to
+ *  locate the rendered yaml. */
+export const INSIDE_CONFIG_PATH = '/etc/seal/key-server-config.yaml' as const;
+
+/** Inside-container master-key env-file path. The entrypoint shell
+ *  sources this before exec'ing the daemon (Hard requirement #3 +
+ *  #7). */
+export const INSIDE_MASTER_KEY_ENVFILE = '/etc/seal/master-key.env' as const;
+
+/** Container-side env defaults. NB: `MASTER_KEY` is NOT here — it
+ *  flows via the bind-mounted env-file sourced by the entrypoint
+ *  shell. Distilled-doc invariant #3. */
+export const CONTAINER_ENV: Readonly<Record<string, string>> = {
+	CONFIG_PATH: INSIDE_CONFIG_PATH,
+	MASTER_KEY_ENVFILE: INSIDE_MASTER_KEY_ENVFILE,
+	RUST_LOG: 'info',
+};
+
+export const HOST_GATEWAY_EXTRA_HOSTS: Readonly<Record<string, string>> = {
+	'host.docker.internal': 'host-gateway',
+};
+
+/** Per-probe interval inside the bounded retry. */
+const READY_PROBE_INTERVAL_MS = 500;
+
+// ---------------------------------------------------------------------------
+// Spec shape
+// ---------------------------------------------------------------------------
+
+/** The container spec produced for the long-running key-server. This
+ *  is the substrate-blind value the ContainerRuntime adapter
+ *  consumes. */
+export interface KeyServerContainerSpec {
+	/** Image ref from the lifted cargo-image sibling. */
+	readonly image: ImageRef;
+	/** Composed container name (substrate folds `<app>-<stack>-…`). */
+	readonly containerName: string;
+	/** Label tuple — drives the snapshot orchestrator's filter +
+	 *  `inspectByLabels`. */
+	readonly labels: ContainerLabelTuple;
+	/** Mount source on host — the rendered key-server-config.yaml. */
+	readonly configHostPath: string;
+	/** Env-file holding `MASTER_KEY=<hex>`. Mode-bit 0o600 inside
+	 *  0o700 parent. Distilled-doc invariant #2. Bind-mounted (see
+	 *  file header for the missing-envFiles workaround). */
+	readonly masterKeyEnvFileHostPath: string;
+	/** Inner docker network for sui DNS resolution. */
+	readonly network: string;
+	/** Router routing spec — Traefik file-provider stamped per
+	 *  container. Distilled-doc invariant #5 (no host-port publish). */
+	readonly routing: ReadonlyArray<{
+		readonly name: string;
+		readonly entrypoint: string;
+		readonly servicePort: number;
+	}>;
+	/** Routed URL — `<routedUrl>/health` is what the ready probe
+	 *  would hit if/when an HTTP probe contract lands. Today we use
+	 *  an exec-based probe (see `startKeyServer`). */
+	readonly routedUrl: string;
+	/** Timeout for the ready probe. */
+	readonly readyTimeoutMs: number;
+	/** Graceful stop deadline. Distilled-doc invariant #21 — the
+	 *  entrypoint shell needs ~15s to forward SIGINT cleanly. */
+	readonly stopGraceSeconds: number;
+	/** In-container port the daemon binds. */
+	readonly containerPort: number;
+}
+
+// ---------------------------------------------------------------------------
+// Spec builder
+// ---------------------------------------------------------------------------
+
+/** Inputs to assemble the container spec. */
+export interface KeyServerSpecInputs {
+	readonly name: string;
+	readonly image: ImageRef;
+	readonly containerName: string;
+	readonly labels: ContainerLabelTuple;
+	readonly suiNetwork: string;
+	readonly servicePath: string;
+	readonly routedHostname: string;
+	readonly routedUrl: string;
+	readonly readyTimeoutMs?: number;
+}
+
+/** Build the container spec. Distilled-doc invariants #1, #3, #5
+ *  encoded here:
+ *
+ *   - `routedUrl` is the SAME value the on-chain Move call registers.
+ *   - `env` is `CONTAINER_ENV` (no MASTER_KEY); `masterKeyEnvFileHostPath`
+ *     bind-mount carries the secret.
+ *   - `routing[]` lists the seal-key-server entrypoint; the spec returned has
+ *     NO `ports:` field (it's not modelled). */
+export const buildKeyServerSpec = (inputs: KeyServerSpecInputs): KeyServerContainerSpec => {
+	const masterKeyEnvFileHostPath = `${inputs.servicePath}/${MASTER_KEY_ENVFILE_BASENAME}`;
+	const configHostPath = `${inputs.servicePath}/${KEY_SERVER_CONFIG_BASENAME}`;
+	void inputs.routedHostname; // flows through routedUrl
+	return {
+		image: inputs.image,
+		containerName: inputs.containerName,
+		labels: inputs.labels,
+		configHostPath,
+		masterKeyEnvFileHostPath,
+		network: inputs.suiNetwork,
+		routing: [
+			{
+				name: SEAL_KEY_SERVER_ENDPOINT_NAME,
+				entrypoint: SEAL_KEY_SERVER_ENDPOINT_NAME,
+				servicePort: DEFAULT_KEY_SERVER_PORT,
+			},
+		],
+		routedUrl: inputs.routedUrl,
+		readyTimeoutMs: inputs.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS,
+		stopGraceSeconds: 15,
+		containerPort: DEFAULT_KEY_SERVER_PORT,
+	};
+};
+
+export const buildKeyServerEnsureContainerSpec = (
+	spec: KeyServerContainerSpec,
+): EnsureContainerSpec => ({
+	name: spec.containerName,
+	image: spec.image,
+	labels: spec.labels,
+	recreate: 'on-config-change',
+	// Distilled-doc invariant #3 — MASTER_KEY is NOT here.
+	// The bind-mounted env-file is sourced by the entrypoint
+	// shell BEFORE the daemon exec. See file header on the
+	// L1 `envFiles:` gap.
+	env: { ...CONTAINER_ENV },
+	networkAttach: [spec.network],
+	// Distilled-doc invariant #5 — `ports` intentionally absent.
+	extraHosts: HOST_GATEWAY_EXTRA_HOSTS,
+	mounts: [
+		{
+			source: spec.configHostPath,
+			target: INSIDE_CONFIG_PATH,
+			readonly: true,
+		},
+		{
+			source: spec.masterKeyEnvFileHostPath,
+			target: INSIDE_MASTER_KEY_ENVFILE,
+			readonly: true,
+		},
+	],
+});
+
+// ---------------------------------------------------------------------------
+// Start procedure — real ContainerRuntime wiring
+// ---------------------------------------------------------------------------
+
+/** Start the long-running key-server container.
+ *
+ *  Wiring:
+ *
+ *    1. `runtime.ensureContainer` — content-addressed image, label
+ *       tuple, recreate-on-config-change. Two bind mounts: the
+ *       rendered yaml (read-only) + the master-key env-file
+ *       (read-only). NO `ports:` — Traefik dispatches by Host:
+ *       header on the well-known `seal-key-server` entrypoint port.
+ *    2. In-container ready probe via `runtime.exec` — issues an
+ *       HTTP GET against `http://127.0.0.1:2024/health`. Bounded
+ *       retries until `readyTimeoutMs`. We shell out to `curl`
+ *       (present in the vendored `debian:bookworm-slim` base) +
+ *       fall back to `nc -z` for the stub image which doesn't
+ *       carry curl. Both probes hit the same socket; curl
+ *       additionally confirms the binary has parsed CONFIG_PATH
+ *       and is serving the upstream's `/health` route (returns
+ *       `{name,version,status:"up"}` once boot completes —
+ *       distilled-doc §"Container start + ready").
+ *
+ *  Stop semantics: scope-close runs `ensureContainer`'s finalizer
+ *  which calls `docker stop` with the substrate's default grace
+ *  (15s aligns with distilled-doc invariant #21 once the runtime
+ *  adapter accepts per-spec grace). */
+export const startKeyServer = (
+	runtime: ContainerRuntime,
+	spec: KeyServerContainerSpec,
+	name: string,
+): Effect.Effect<{ readonly containerName: string }, SealError, Scope.Scope> =>
+	Effect.gen(function* () {
+		const handle: ContainerHandle = yield* runtime
+			.ensureContainer(buildKeyServerEnsureContainerSpec(spec))
+			.pipe(
+				Effect.catch((cause) =>
+					Effect.fail(
+						sealError('container', {
+							name,
+							message: `seal key-server (name=${spec.containerName}) ensureContainer failed: ${cause.reason}: ${cause.detail}`,
+							cause,
+						}),
+					),
+				),
+			);
+
+		// Exec-based ready probe — distilled-doc §"Container start +
+		// ready". The vendored debian:bookworm-slim base ships
+		// `curl`; the e2e stub image (alpine) ships busybox `nc`. We
+		// probe with curl first (real `/health` round-trip — confirms
+		// the daemon parsed CONFIG_PATH AND bound the listener) and
+		// fall back to `nc -z` (TCP-only — confirms only the socket
+		// is listening). One of the two MUST succeed on a healthy
+		// container.
+		//
+		// `/health` returns `{name, version, status: "up"}` once the
+		// binary finishes config + master-key load. Pre-boot we
+		// expect connection-refused → curl returns non-zero, retry.
+		const readyTimeout = Duration.millis(spec.readyTimeoutMs);
+		yield* runtime
+			.exec(handle, [
+				'sh',
+				'-c',
+				`(command -v curl >/dev/null 2>&1 && ` +
+					`curl -fsS -m 2 http://127.0.0.1:${spec.containerPort}/health >/dev/null) ` +
+					`|| nc -z 127.0.0.1 ${spec.containerPort} ` +
+					`|| exit 1`,
+			])
+			.pipe(
+				Effect.flatMap((res) =>
+					res.exitCode === 0
+						? Effect.void
+						: Effect.fail(
+								sealError('ready', {
+									name,
+									message: `seal key-server not yet listening on :${spec.containerPort}`,
+									exitCode: res.exitCode,
+									stderr: res.stderr,
+								}),
+							),
+				),
+				Effect.catch((err) =>
+					err._tag === 'SealError'
+						? Effect.fail(err)
+						: Effect.fail(
+								sealError('ready', {
+									name,
+									message: `seal key-server ready-probe exec failed: ${err.reason}: ${err.detail}`,
+									cause: err,
+								}),
+							),
+				),
+				Effect.retry({
+					schedule: Schedule.spaced(Duration.millis(READY_PROBE_INTERVAL_MS)),
+				}),
+				Effect.timeoutOrElse({
+					duration: readyTimeout,
+					orElse: () =>
+						Effect.fail(
+							sealError('ready', {
+								name,
+								message:
+									`seal key-server never became ready within ${Duration.toMillis(readyTimeout)}ms ` +
+									`(routedUrl=${spec.routedUrl})`,
+							}),
+						),
+				}),
+			);
+
+		return { containerName: spec.containerName };
+	}).pipe(
+		Effect.withSpan('devstack.plugin.seal.keyServer.start', {
+			attributes: {
+				'seal.name': name,
+				'seal.containerName': spec.containerName,
+				'seal.routedUrl': spec.routedUrl,
+			},
+		}),
+	);

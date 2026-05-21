@@ -1,0 +1,17 @@
+# Minimal Move package fixture for the seal e2e stub.
+#
+# The seal plugin's local-keygen mode publishes this package and then
+# registers a KeyServer object through the canonical SDK Move target:
+# `<published package>::key_server::create_and_transfer_v2_independent_server`.
+# This fixture keeps that module/function shape without vendoring the
+# full upstream Seal sources.
+
+[package]
+name = "seal_stub"
+edition = "2024"
+version = "0.0.1"
+
+[dependencies]
+
+[addresses]
+seal_stub = "0x0"

@@ -1,0 +1,65 @@
+#!/bin/sh
+# seal-cli stub. Dispatches on argv[1] across current e2e modes plus
+# legacy parser-compatible modes:
+#
+#   - `genkey`                 → emit `Master key: 0x<hex>` +
+#                                 `Public key: 0x<hex>`; exit 0.
+#   - `publish ...`            → legacy: emit `package_id: 0x<hex>`.
+#   - `register-key-server ...` → legacy: emit
+#                                  `key_server_object_id: 0x<hex>`.
+#   - (no args / unknown)      → bind TCP on DEFAULT_KEY_SERVER_PORT
+#                                 (2024) and stay alive, so the
+#                                 key-server `nc -z 127.0.0.1 2024`
+#                                 ready probe succeeds.
+#
+# Current e2e boot uses this script for `genkey` and key-server mode.
+# SDK-backed publish/register runs through Sui against the Move source
+# in this fixture directory. Anything else is treated as
+# "long-lived key-server".
+
+set -eu
+
+mint_hex() {
+	# $1 = byte count. Emits lowercase hex, no newline.
+	od -An -N"$1" -tx1 /dev/urandom | tr -d ' \n'
+}
+
+mode="${1:-listen}"
+
+case "$mode" in
+	genkey)
+		# BLS12-381: master key is a 32-byte scalar; G1 public key is
+		# 48 bytes compressed. We mint pseudo-random bytes of the
+		# right widths so any caller that decodes the hex sees a
+		# plausibly-shaped keypair.
+		master="0x$(mint_hex 32)"
+		public="0x$(mint_hex 48)"
+		printf 'Master key: %s\n' "$master"
+		printf 'Public key: %s\n' "$public"
+		exit 0
+		;;
+	publish)
+		# Legacy compatibility for parser tests that still exercise
+		# `package_id: 0x<hex>` stdout.
+		pkg_id="0x$(mint_hex 32)"
+		printf 'package_id: %s\n' "$pkg_id"
+		exit 0
+		;;
+	register-key-server)
+		# Legacy compatibility for parser tests that still exercise
+		# `key_server_object_id: 0x<hex>` stdout.
+		ks_id="0x$(mint_hex 32)"
+		printf 'key_server_object_id: %s\n' "$ks_id"
+		exit 0
+		;;
+	*)
+		# Key-server mode. Bind TCP on 2024 and hold the listener.
+		# busybox `nc -l -p PORT -e CMD` accepts connections in a
+		# loop; `-e /bin/true` closes immediately — `nc -z` only
+		# cares about the TCP handshake.
+		port="${KEY_SERVER_PORT:-2024}"
+		while true; do
+			nc -l -p "$port" -e /bin/true >/dev/null 2>&1 || true
+		done
+		;;
+esac

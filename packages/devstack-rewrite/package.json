@@ -1,0 +1,90 @@
+{
+	"name": "@mysten-incubation/devstack-rewrite",
+	"version": "0.0.0",
+	"description": "Phase-3 type-system + API surface scaffold for the next-generation devstack substrate. Working name; renamed at cutover.",
+	"license": "Apache-2.0",
+	"private": true,
+	"type": "module",
+	"main": "./dist/index.mjs",
+	"types": "./src/index.ts",
+	"bin": {
+		"devstack": "./dist/cli/main.mjs"
+	},
+	"exports": {
+		".": {
+			"types": "./src/index.ts",
+			"import": "./dist/index.mjs"
+		},
+		"./contracts": {
+			"types": "./src/contracts/index.ts",
+			"import": "./dist/contracts/index.mjs"
+		},
+		"./substrate": {
+			"types": "./src/substrate/index.ts",
+			"import": "./dist/substrate/index.mjs"
+		},
+		"./samples": {
+			"types": "./src/samples/index.ts",
+			"import": "./dist/samples/index.mjs"
+		},
+		"./vite": {
+			"types": "./src/build-integrations/vite/index.ts",
+			"import": "./dist/build-integrations/vite/index.mjs"
+		},
+		"./vitest": {
+			"types": "./src/build-integrations/vitest/index.ts",
+			"import": "./dist/build-integrations/vitest/index.mjs"
+		},
+		"./vitest/setup": {
+			"types": "./src/build-integrations/vitest/setup.ts",
+			"import": "./dist/build-integrations/vitest/setup.mjs"
+		},
+		"./playwright": {
+			"types": "./src/build-integrations/playwright/index.ts",
+			"import": "./dist/build-integrations/playwright/index.mjs"
+		},
+		"./browser": {
+			"types": "./src/build-integrations/browser/index.ts",
+			"import": "./dist/build-integrations/browser/index.mjs"
+		},
+		"./runtime": {
+			"types": "./src/build-integrations/runtime/index.ts",
+			"import": "./dist/build-integrations/runtime/index.mjs"
+		}
+	},
+	"sideEffects": false,
+	"files": ["src", "dist"],
+	"scripts": {
+		"build": "tsdown",
+		"typecheck": "tsc --noEmit",
+		"test": "vitest run",
+		"test:e2e": "DEVSTACK_RUN_E2E=1 vitest run"
+	},
+	"dependencies": {
+		"effect": "catalog:",
+		"@effect/platform-node": "catalog:",
+		"@mysten/codegen": "catalog:",
+		"@mysten/sui": "catalog:",
+		"ink": "^7.0.0",
+		"react": "catalog:"
+	},
+	"devDependencies": {
+		"@effect/vitest": "catalog:",
+		"@mysten-incubation/tsconfig": "workspace:*",
+		"@types/node": "catalog:",
+		"@types/react": "catalog:",
+		"ink-testing-library": "^4.0.0",
+		"tsdown": "^0.21.10",
+		"typescript": "catalog:",
+		"vite": "catalog:",
+		"vitest": "^4.1.6"
+	},
+	"peerDependencies": {
+		"vite": "catalog:"
+	},
+	"peerDependenciesMeta": {
+		"vite": {
+			"optional": true
+		}
+	}
+}

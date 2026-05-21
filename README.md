@@ -8,31 +8,37 @@ prototype packages breaks freely as we iterate; pin nothing from outside this mo
 
 ## Packages
 
-| Package                                                                  | Description                                                                                                        | Status                                                                                                                            |
-| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
-| [`@mysten-incubation/dev-wallet`](packages/dev-wallet)                   | Modular dev wallet for Sui dApp development and testing                                                            | [![npm](https://img.shields.io/npm/v/@mysten-incubation/dev-wallet)](https://www.npmjs.com/package/@mysten-incubation/dev-wallet) |
-| [`@mysten-incubation/devstack`](packages/devstack)                       | Hermetic local Sui dev stack — localnet + Walrus + Seal + DeepBook + your Move packages, composed as Effect Layers | Prototype — actively developed                                                                                                    |
-| [`@mysten-incubation/create-devstack-app`](packages/create-devstack-app) | Scaffolder for new devstack-backed apps                                                                            | Prototype — not published to npm                                                                                                  |
+| Package                                                                  | Description                                                                                              | Status                                                                                                                            |
+| ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| [`@mysten-incubation/dev-wallet`](packages/dev-wallet)                   | Modular dev wallet for Sui dApp development and testing                                                  | [![npm](https://img.shields.io/npm/v/@mysten-incubation/dev-wallet)](https://www.npmjs.com/package/@mysten-incubation/dev-wallet) |
+| [`@mysten-incubation/devstack-rewrite`](packages/devstack-rewrite)       | Ground-up Effect v4 rewrite of devstack (active dev focus; will replace `packages/devstack/` at cutover) | Prototype — actively developed                                                                                                    |
+| [`@mysten-incubation/devstack`](packages/devstack)                       | Original devstack package — spec source for the rewrite; new work goes into `devstack-rewrite/`          | Prototype — frozen pending cutover                                                                                                |
+| [`@mysten-incubation/create-devstack-app`](packages/create-devstack-app) | Scaffolder for new devstack-backed apps                                                                  | Prototype — not published to npm                                                                                                  |
 
 ## Examples
 
-Worked example apps live under [`examples/`](examples). Each example brings up its own local stack via `pnpm localnet:up`, publishes Move packages, and serves a Vite frontend.
+Worked example apps live under [`examples/`](examples). Each example brings up its own
+local stack via the devstack CLI, publishes Move packages, and serves a Vite frontend.
 
-| Example                                               | Demonstrates                                                                              |
-| ----------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| [`_template`](examples/_template)                     | Minimal-but-real starting point. One Move package, one publish, one mint button.          |
-| [`arena`](examples/arena)                             | Shared-object Connect Four — matchmaking via `Lobby` objects, gameplay via shared `Game`. |
-| [`deepbook-full`](examples/deepbook-full)             | Full DeepBook v3 + margin + Pyth + Postgres indexer + market-maker stack.                 |
-| [`effect-app`](examples/effect-app)                   | Pure-Effect consumer: same `Effect.gen` program runs localnet (dev) and testnet (prod).   |
-| [`fork-greeting`](examples/fork-greeting)             | Minimal `Sui({network:'testnet-fork'})` harness — publish + impersonate + greeting board. |
-| [`plugin-author-redis`](examples/plugin-author-redis) | Out-of-tree plugin author: wraps `redis:7-alpine` as a devstack service via `/advanced`.  |
-| [`private-content`](examples/private-content)         | Walrus blob storage + Seal threshold-encryption + capability-gated decrypt.               |
-| [`token-studio`](examples/token-studio)               | Move `Coin` module, `TreasuryCap` management, mint / burn / transfer.                     |
-| [`wallet`](examples/wallet)                           | Multi-coin balances + send/receive, DeepBook v3 swap UI against locally-published pools.  |
+The repo currently carries paired example sets — `<name>/` against the original devstack
+and `<name>-rewrite/` against the rewrite. The rewrite set is the one to read for
+current API shape. See [`examples/README.md`](examples/README.md) for the curated tour.
+
+Fastest way in:
+
+```bash
+pnpm --filter @mysten-incubation/hello-world-rewrite dev
+```
 
 ## Documentation
 
 https://ts-sdks-incubation.vercel.app
+
+For contributors working on the devstack rewrite, the living docs are:
+
+- [`packages/devstack-rewrite/notes/orchestrator-guide.md`](packages/devstack-rewrite/notes/orchestrator-guide.md) — single entry point covering project status, locked decisions, and how work is dispatched.
+- [`packages/devstack-rewrite/STYLE_GUIDE.md`](packages/devstack-rewrite/STYLE_GUIDE.md) — code-level patterns and explicit bans (Effect v4 idioms, tagged errors, atomic writes, span vocabulary, etc.).
+- [`packages/devstack-rewrite/ARCHITECTURE.md`](packages/devstack-rewrite/ARCHITECTURE.md) — layer / capability-contract boundaries; the answer to "is this the right place for X?".
 
 ## Getting Started
 
@@ -77,7 +83,7 @@ for version management — run `pnpm changeset` to create one. Prototype package
 (devstack and friends) don't use changesets day-to-day; breaking changes go in directly
 without deprecation cycles.
 
-See [AGENTS.md](AGENTS.md) for detailed development guidance.
+See [AGENTS.md](AGENTS.md) for repo-wide development guidance.
 
 ## License
 

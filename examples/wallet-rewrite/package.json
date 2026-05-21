@@ -1,0 +1,46 @@
+{
+	"name": "@mysten-incubation/example-wallet-rewrite",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"devstack:build": "pnpm --filter @mysten-incubation/devstack-rewrite build",
+		"devstack:apply": "pnpm run devstack:build && pnpm run devstack:apply:built",
+		"devstack:apply:built": "DEVSTACK_APP=wallet-rewrite devstack apply",
+		"dev": "pnpm run devstack:apply && DEVSTACK_APP=wallet-rewrite vite --host 127.0.0.1",
+		"build": "pnpm run devstack:apply:built && DEVSTACK_APP=wallet-rewrite tsc -b && DEVSTACK_APP=wallet-rewrite vite build",
+		"preview": "vite preview",
+		"typecheck": "pnpm run devstack:apply && tsc -b --noEmit",
+		"test": "pnpm run typecheck && vitest run",
+		"test:e2e": "DEVSTACK_APP=wallet-rewrite playwright test",
+		"clean": "rm -rf dist .turbo node_modules/.tmp"
+	},
+	"dependencies": {
+		"@mysten-incubation/dev-wallet": "workspace:*",
+		"@mysten-incubation/devstack-rewrite": "workspace:*",
+		"@mysten/dapp-kit-core": "catalog:",
+		"@mysten/dapp-kit-react": "catalog:",
+		"@mysten/sui": "catalog:",
+		"@mysten/wallet-standard": "catalog:",
+		"@tanstack/react-query": "catalog:",
+		"effect": "catalog:",
+		"react": "catalog:",
+		"react-dom": "catalog:"
+	},
+	"devDependencies": {
+		"@mysten-incubation/tsconfig": "workspace:*",
+		"@playwright/test": "catalog:",
+		"@tailwindcss/vite": "catalog:",
+		"@types/node": "catalog:",
+		"@types/react": "catalog:",
+		"@types/react-dom": "catalog:",
+		"@vitejs/plugin-react": "catalog:",
+		"tailwindcss": "catalog:",
+		"typescript": "catalog:",
+		"vite": "catalog:",
+		"vitest": "catalog:"
+	},
+	"engines": {
+		"node": ">=24"
+	}
+}

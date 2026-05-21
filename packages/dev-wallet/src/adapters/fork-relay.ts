@@ -5,16 +5,9 @@
 // server proxies a curated subset of `ForkControl`'s gRPC surface
 // (status read, advance-clock, advance-checkpoint, impersonation slot
 // list) over HTTP so the fork panel does not have to ship a gRPC
-// client into the browser bundle.
-//
-// Phase 5 Subtopic 6 (`notes/sui-fork-phase-5.md` §8).
-//
-// TODO(devstack-side wiring): the matching routes do not yet exist in
-// `packages/devstack/src/services/wallet/internal.ts`. The orchestrator
-// is expected to land the server side in a follow-up commit;
-// `devstack-paths.ts` already enumerates the path contract so the sync
-// test (`packages/devstack/src/services/wallet/protocol.test.ts`) will
-// fail loudly once the server-side const-object adds the new keys.
+// client into the browser bundle. Path contract lives in
+// `devstack-paths.ts`; a sync test on the devstack side asserts both
+// copies stay in lock-step.
 
 import { DEVSTACK_WALLET_HTTP_PATH } from './devstack-paths.js';
 

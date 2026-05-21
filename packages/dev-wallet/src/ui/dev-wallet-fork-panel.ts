@@ -5,9 +5,6 @@
 // `runtime === 'forked'` mode and surfaces a curated slice of the
 // sui-fork admin API to the operator: status read, advance-clock,
 // advance-checkpoint, and impersonation slot toggles.
-//
-// Phase 5 Subtopic 6 (`packages/devstack/notes/sui-fork-phase-5.md`
-// §8 — tasks P5.8.1–5 and P5.9.1–3).
 
 import { css, html, LitElement, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
@@ -28,8 +25,7 @@ import {
 import { formatAddress, getErrorMessage } from './utils.js';
 
 /** Default polling cadence for `GetStatus`. Slow on purpose — the panel
- *  also refreshes after every action verb lands. Phase 5 Subtopic 7
- *  (subscriptions) replaces polling with a stream eventually. */
+ *  also refreshes after every action verb lands. */
 const STATUS_POLL_MS = 4000;
 
 @customElement('dev-wallet-fork-panel')

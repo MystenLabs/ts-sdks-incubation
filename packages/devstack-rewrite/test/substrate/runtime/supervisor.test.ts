@@ -1,0 +1,581 @@
+// Supervisor harvest-loop direct tests.
+//
+// The supervisor's harvest loop is exercised TRANSITIVELY via the
+// CapabilitySinks service tests + e2e boot suites. This file pins the
+// wiring contract directly: a minimal stack with mixed
+// `CapabilityDecl` kinds + `PluginErrorContribution`s is supervised
+// to ready, and we assert each contribution reached the matching
+// `OrchestratorSinks` callback at the supervisor boundary.
+//
+// Architecture invariants under test:
+//   1. The supervisor's post-acquire harvest walks `member.capabilities`
+//      AND `member.errorContributions`, routing each through
+//      `CapabilitySinksService.dispatch`.
+//   2. The substrate's default sinks adapt each capability `kind`
+//      literal to the corresponding optional `OrchestratorSinks`
+//      callback. Plugins emitting decls of different kinds dispatch
+//      to different callbacks.
+//   3. Dispatch occurs once per plugin after acquire succeeds — no
+//      duplicate calls; no calls for plugins that failed acquire.
+//   4. The supervisor stays name-blind: it walks the `kind` literal
+//      and dispatches structurally; the orchestrator callback bag is
+//      the ONE place orchestrator names land.
+
+import { Context, Deferred, Effect, Fiber, Layer, Queue, Ref, SubscriptionRef } from 'effect';
+import { describe, expect, it } from '@effect/vitest';
+
+import { defineNodePlugin } from '../../../src/api/define-plugin.ts';
+import { appName, chainId, stackName } from '../../../src/substrate/brand.ts';
+import { defineTag } from '../../../src/substrate/tag.ts';
+import type { Identity } from '../../../src/substrate/identity.ts';
+import {
+	CapabilitySinksService,
+	layerCapabilitySinksDefault,
+	makeProjectionRef,
+	startSupervisor,
+	supervise,
+	type CapabilitySink,
+	type OrchestratorSinks,
+	type SupervisedStack,
+} from '../../../src/substrate/runtime/index.ts';
+import type { PluginErrorContribution } from '../../../src/substrate/plugin.ts';
+import type { CodegenableDecl } from '../../../src/contracts/codegenable.ts';
+import type { CompositePrimitiveDecl } from '../../../src/contracts/composite-primitive.ts';
+import type { RoutableDecl } from '../../../src/contracts/routable.ts';
+import type { SnapshotableDecl } from '../../../src/contracts/snapshotable.ts';
+import type { StrategyContributorDecl } from '../../../src/contracts/strategy-contributor.ts';
+
+// -----------------------------------------------------------------------------
+// Fixtures
+// -----------------------------------------------------------------------------
+
+const identity: Identity = {
+	app: appName('supervisor-test-app'),
+	stack: stackName('main'),
+	chain: chainId('test:local'),
+};
+
+interface Captured {
+	readonly snapshotable: ReadonlyArray<{ readonly key: string; readonly subtree: string }>;
+	readonly routable: ReadonlyArray<{ readonly key: string; readonly endpoint: string }>;
+	readonly codegenable: ReadonlyArray<{ readonly key: string; readonly emitter: string }>;
+	readonly strategy: ReadonlyArray<{ readonly key: string; readonly capabilityKey: string }>;
+	readonly composite: ReadonlyArray<{ readonly key: string; readonly compositeKey: string }>;
+}
+
+const makeCapture = () =>
+	Effect.gen(function* () {
+		const ref = yield* Ref.make<Captured>({
+			snapshotable: [],
+			routable: [],
+			codegenable: [],
+			strategy: [],
+			composite: [],
+		});
+		const sinks: OrchestratorSinks = {
+			snapshotable: (key, decl) =>
+				Ref.update(ref, (c) => ({
+					...c,
+					snapshotable: [...c.snapshotable, { key: String(key), subtree: decl.subtrees[0] ?? '' }],
+				})),
+			routable: (key, decl) =>
+				Ref.update(ref, (c) => ({
+					...c,
+					routable: [...c.routable, { key: String(key), endpoint: decl.endpointName }],
+				})),
+			codegenable: (key, decl) =>
+				Ref.update(ref, (c) => ({
+					...c,
+					codegenable: [...c.codegenable, { key: String(key), emitter: decl.emitterName }],
+				})),
+			strategy: (key, decl) =>
+				Ref.update(ref, (c) => ({
+					...c,
+					strategy: [...c.strategy, { key: String(key), capabilityKey: decl.capabilityKey }],
+				})),
+			composite: (key, decl) =>
+				Ref.update(ref, (c) => ({
+					...c,
+					composite: [
+						...c.composite,
+						{ key: String(key), compositeKey: String(decl.compositeKey) },
+					],
+				})),
+		};
+		return { ref, sinks };
+	});
+
+// Each plugin provides a distinct tag (different `id` literal) and
+// declares a single capability `kind`. The supervisor's resolve-graph
+// happily acquires each in topological order; we set them all as
+// independent leaves so the test exercises the harvest path without
+// depending on cross-plugin wiring.
+const tagSnap = defineTag<'test:snap', { readonly v: 'snap' }>('test:snap', 'plug-snap');
+const tagRoute = defineTag<'test:route', { readonly v: 'route' }>('test:route', 'plug-route');
+const tagCodegen = defineTag<'test:codegen', { readonly v: 'codegen' }>(
+	'test:codegen',
+	'plug-codegen',
+);
+const tagStrat = defineTag<'test:strat', { readonly v: 'strat' }>('test:strat', 'plug-strat');
+const tagComposite = defineTag<'test:composite', { readonly v: 'composite' }>(
+	'test:composite',
+	'plug-composite',
+);
+const tagErrorOnly = defineTag<'test:errorOnly', { readonly v: 'err' }>(
+	'test:errorOnly',
+	'plug-error-only',
+);
+
+const snapDecl: SnapshotableDecl = {
+	kind: 'snapshotable',
+	subtrees: ['runtime/snap-subtree'],
+	missingTolerance: 'fine',
+};
+
+const routeDecl: RoutableDecl = {
+	kind: 'routable',
+	endpointName: 'demo-endpoint',
+	dispatchId: { compositeKey: 'demo', role: 'app' },
+	upstream: { type: 'host-loopback', port: 6173 },
+	wireProtocol: 'http',
+	cors: false,
+};
+
+const codegenDecl: CodegenableDecl<{ readonly hello: string }, 'demo-emitter'> = {
+	kind: 'codegenable',
+	emitterName: 'demo-emitter',
+	outputPath: 'demo/file.ts',
+	emit: () => Effect.succeed({ hello: 'world' }),
+};
+
+const strategyDecl: StrategyContributorDecl<'demo-strategy', { readonly run: 'ok' }> = {
+	kind: 'strategy-contributor',
+	capabilityKey: 'demo-strategy',
+	strategy: { run: 'ok' },
+	autoMounted: false,
+};
+
+const compositeDecl: CompositePrimitiveDecl = {
+	kind: 'composite-primitive',
+	compositeKey: 'plug-composite' as never,
+	liftedSiblings: [],
+	innerParticipants: [],
+};
+
+const errorContribAlpha: PluginErrorContribution = {
+	_tag: 'PluginErrorContribution',
+	errorTags: ['AlphaError'],
+	formatter: (value) => `<<alpha ${value._tag}>>`,
+};
+
+const errorContribBeta: PluginErrorContribution = {
+	_tag: 'PluginErrorContribution',
+	errorTags: ['BetaError', 'GammaError'],
+};
+
+// -----------------------------------------------------------------------------
+// Test plugins — one leaf per capability kind, plus one error-only plugin.
+// -----------------------------------------------------------------------------
+
+const pluginSnap = defineNodePlugin({
+	provides: tagSnap,
+	consumes: [] as const,
+	kind: 'leaf-long-running' as const,
+	acquire: () => Effect.succeed({ v: 'snap' as const }),
+	capabilities: [snapDecl] as const,
+});
+
+const pluginRoute = defineNodePlugin({
+	provides: tagRoute,
+	consumes: [] as const,
+	kind: 'leaf-long-running' as const,
+	acquire: () => Effect.succeed({ v: 'route' as const }),
+	capabilities: [routeDecl] as const,
+});
+
+const pluginCodegen = defineNodePlugin({
+	provides: tagCodegen,
+	consumes: [] as const,
+	kind: 'leaf-long-running' as const,
+	acquire: () => Effect.succeed({ v: 'codegen' as const }),
+	capabilities: [codegenDecl] as const,
+});
+
+const pluginStrat = defineNodePlugin({
+	provides: tagStrat,
+	consumes: [] as const,
+	kind: 'leaf-long-running' as const,
+	acquire: () => Effect.succeed({ v: 'strat' as const }),
+	capabilities: [strategyDecl] as const,
+});
+
+const pluginComposite = defineNodePlugin({
+	provides: tagComposite,
+	consumes: [] as const,
+	kind: 'composite' as const,
+	acquire: () => Effect.succeed({ v: 'composite' as const }),
+	capabilities: [compositeDecl] as const,
+	errorContributions: [errorContribAlpha],
+});
+
+const pluginErrorOnly = defineNodePlugin({
+	provides: tagErrorOnly,
+	consumes: [] as const,
+	kind: 'leaf-one-shot' as const,
+	acquire: () => Effect.succeed({ v: 'err' as const }),
+	errorContributions: [errorContribBeta],
+});
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+describe('supervisor harvest loop', () => {
+	it.effect('exposes pending and acquiring projection before initial acquire completes', () =>
+		Effect.gen(function* () {
+			const acquireStarted = yield* Deferred.make<void>();
+			const releaseAcquire = yield* Deferred.make<void>();
+			const acquiringEventSeen = yield* Deferred.make<void>();
+			const readyEventSeen = yield* Deferred.make<void>();
+			const eventOrder = yield* Ref.make<ReadonlyArray<string>>([]);
+
+			const tagSlow = defineTag<'test:slow', { readonly v: 'slow' }>('test:slow', 'plug-slow');
+			const pluginSlow = defineNodePlugin({
+				provides: tagSlow,
+				consumes: [] as const,
+				kind: 'leaf-long-running' as const,
+				acquire: () =>
+					Effect.gen(function* () {
+						yield* Deferred.succeed(acquireStarted, void 0).pipe(Effect.ignore);
+						yield* Deferred.await(releaseAcquire);
+						return { v: 'slow' as const };
+					}),
+			});
+			const stack: SupervisedStack = {
+				_tag: 'Stack',
+				members: [pluginSlow],
+				options: {},
+			};
+			const state = yield* makeProjectionRef();
+
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const startup = yield* startSupervisor(stack, identity, state);
+					const pending = yield* SubscriptionRef.get(state);
+					expect(pending.rows.find((r) => r.key === 'test:slow#0')?.status).toBe('pending');
+					yield* Effect.forkScoped(
+						Effect.gen(function* () {
+							while (true) {
+								const event = yield* Queue.take(startup.handle.events);
+								if (event.tag === 'lifecycle.statusChanged' && event.pluginKey === 'test:slow#0') {
+									yield* Ref.update(eventOrder, (current) => [...current, event.to]);
+									if (event.to === 'acquiring') {
+										yield* Deferred.succeed(acquiringEventSeen, void 0).pipe(Effect.ignore);
+									}
+									if (event.to === 'ready') {
+										yield* Deferred.succeed(readyEventSeen, void 0).pipe(Effect.ignore);
+									}
+								}
+							}
+						}),
+					);
+
+					const bootFiber = yield* Effect.forkScoped(startup.runInitialAcquire);
+					yield* Deferred.await(acquireStarted);
+					yield* Deferred.await(acquiringEventSeen);
+					const acquiring = yield* SubscriptionRef.get(state);
+					expect(acquiring.rows.find((r) => r.key === 'test:slow#0')?.status).toBe('acquiring');
+					yield* Deferred.succeed(releaseAcquire, void 0).pipe(Effect.ignore);
+					yield* Fiber.join(bootFiber);
+					yield* Deferred.await(readyEventSeen);
+
+					const running = yield* SubscriptionRef.get(state);
+					expect(running.rows.find((r) => r.key === 'test:slow#0')?.status).toBe('ready');
+					expect(running.cycle.phase).toBe('running');
+					expect(yield* Ref.get(eventOrder)).toEqual(['acquiring', 'ready']);
+
+					yield* Queue.offer(startup.handle.commands, { tag: 'shutdown.requested' });
+					for (let i = 0; i < 10; i++) {
+						const snapshot = yield* SubscriptionRef.get(state);
+						if (snapshot.cycle.phase === 'shutting-down') break;
+						yield* Effect.yieldNow;
+					}
+
+					const shuttingDown = yield* SubscriptionRef.get(state);
+					expect(shuttingDown.cycle.phase).toBe('shutting-down');
+				}),
+			);
+		}),
+	);
+
+	it.effect('dispatches each CapabilityDecl kind to its OrchestratorSinks slot', () =>
+		Effect.gen(function* () {
+			const { ref, sinks } = yield* makeCapture();
+			const stack: SupervisedStack = {
+				_tag: 'Stack',
+				members: [pluginSnap, pluginRoute, pluginCodegen, pluginStrat],
+				options: {},
+			};
+			const state = yield* makeProjectionRef();
+
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const handle = yield* supervise(stack, identity, state, Context.empty(), sinks);
+					for (const [key] of handle.graph.nodes) {
+						yield* handle.registry.awaitReady(key);
+					}
+				}),
+			);
+
+			const captured = yield* Ref.get(ref);
+			// Plugin keys are derived as `<tag.id>#<ordinal>` by the
+			// dep-graph resolver (see `lifecycle/dep-graph.ts:120`),
+			// where `<ordinal>` is the member's position in the stack
+			// tuple. Composite-primitive plugins use their `compositeKey`
+			// instead; non-composite plugins use the tag-derived form.
+			expect(captured.snapshotable).toEqual([
+				{ key: 'test:snap#0', subtree: 'runtime/snap-subtree' },
+			]);
+			expect(captured.routable).toEqual([{ key: 'test:route#1', endpoint: 'demo-endpoint' }]);
+			expect(captured.codegenable).toEqual([{ key: 'test:codegen#2', emitter: 'demo-emitter' }]);
+			expect(captured.strategy).toEqual([{ key: 'test:strat#3', capabilityKey: 'demo-strategy' }]);
+			expect(captured.composite).toEqual([]);
+		}),
+	);
+
+	it.effect('dispatches composite-primitive decls separately from leaves', () =>
+		Effect.gen(function* () {
+			const { ref, sinks } = yield* makeCapture();
+			const stack: SupervisedStack = {
+				_tag: 'Stack',
+				members: [pluginSnap, pluginComposite],
+				options: {},
+			};
+			const state = yield* makeProjectionRef();
+
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const handle = yield* supervise(stack, identity, state, Context.empty(), sinks);
+					for (const [key] of handle.graph.nodes) {
+						yield* handle.registry.awaitReady(key);
+					}
+				}),
+			);
+
+			const captured = yield* Ref.get(ref);
+			expect(captured.snapshotable).toEqual([
+				{ key: 'test:snap#0', subtree: 'runtime/snap-subtree' },
+			]);
+			// Composite plugins get their key from `decl.compositeKey`,
+			// not the tag-derived `<id>#<n>` form.
+			expect(captured.composite).toEqual([
+				{ key: 'plug-composite', compositeKey: 'plug-composite' },
+			]);
+		}),
+	);
+
+	it.effect('runs the harvest path for plugins that contribute only errorContributions', () =>
+		// The plugin emits NO capability decls — only a
+		// `PluginErrorContribution`. The supervisor's harvest must
+		// dispatch the error contribution to the substrate's
+		// `error-contribution` sink (which folds into the
+		// FormatterRegistry); no orchestrator-side callback fires for
+		// this kind because `OrchestratorSinks` carries no error slot.
+		// We assert the supervisor reached ready WITHOUT calling any
+		// capability-side callback — the harvest path completed cleanly.
+		Effect.gen(function* () {
+			const { ref, sinks } = yield* makeCapture();
+			const stack: SupervisedStack = {
+				_tag: 'Stack',
+				members: [pluginErrorOnly],
+				options: {},
+			};
+			const state = yield* makeProjectionRef();
+
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const handle = yield* supervise(stack, identity, state, Context.empty(), sinks);
+					for (const [key] of handle.graph.nodes) {
+						yield* handle.registry.awaitReady(key);
+					}
+				}),
+			);
+
+			const captured = yield* Ref.get(ref);
+			// Zero capability dispatches — only an error contribution.
+			expect(captured.snapshotable).toEqual([]);
+			expect(captured.routable).toEqual([]);
+			expect(captured.codegenable).toEqual([]);
+			expect(captured.strategy).toEqual([]);
+			expect(captured.composite).toEqual([]);
+
+			// The projection now lists the error-only plugin among rows
+			// (the supervisor declares rows for non-inner top-level
+			// plugins post-acquire). Pins that the harvest path
+			// completed without short-circuiting on the missing
+			// capability tuple.
+			const snap = yield* SubscriptionRef.get(state);
+			const rowKeys = snap.rows.map((r) => r.key);
+			expect(rowKeys).toContain('test:errorOnly#0');
+		}),
+	);
+
+	it.effect('dispatches each plugin exactly once per acquire', () =>
+		// Boot a stack with two plugins, each emitting one decl. We assert
+		// the orchestrator callback fires exactly once per plugin.
+		Effect.gen(function* () {
+			const { ref, sinks } = yield* makeCapture();
+			const stack: SupervisedStack = {
+				_tag: 'Stack',
+				members: [pluginSnap, pluginRoute],
+				options: {},
+			};
+			const state = yield* makeProjectionRef();
+
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const handle = yield* supervise(stack, identity, state, Context.empty(), sinks);
+					for (const [key] of handle.graph.nodes) {
+						yield* handle.registry.awaitReady(key);
+					}
+				}),
+			);
+
+			const captured = yield* Ref.get(ref);
+			expect(captured.snapshotable.length).toBe(1);
+			expect(captured.routable.length).toBe(1);
+		}),
+	);
+
+	it.effect(
+		'plugin-author Layer composition adds a custom-kind sink the supervisor harvests through',
+		() =>
+			// Demonstrates the plugin-author extension path (ARCHITECTURE.md §
+			// Plugin-author extension via Layer composition): a custom plugin
+			// emits a `CapabilityDecl` whose `kind` literal is not in the
+			// substrate's built-in vocabulary. The author composes a Layer
+			// that yields `CapabilitySinksService` and calls `registerSink`
+			// for that kind, layers it into `pluginContext` alongside the
+			// orchestrator-built default. The supervisor must harvest THROUGH
+			// the composed registry — i.e., the custom sink's accept body
+			// fires for the emitted decl.
+			//
+			// Before this fix: the supervisor called `Layer.build(
+			// layerCapabilitySinksDefault(sinks))` internally and harvested
+			// through its OWN instance, ignoring whatever the caller layered
+			// in. The plugin author's sink never fired.
+			Effect.gen(function* () {
+				interface CustomDecl {
+					readonly kind: 'plugin-author:custom';
+					readonly payload: string;
+				}
+				const tagCustom = defineTag<'test:custom', { readonly v: 'custom' }>(
+					'test:custom',
+					'plug-custom',
+				);
+				const customDecl: CustomDecl = {
+					kind: 'plugin-author:custom',
+					payload: 'extension-path-fired',
+				};
+				const pluginCustom = defineNodePlugin({
+					provides: tagCustom,
+					consumes: [] as const,
+					kind: 'leaf-long-running' as const,
+					acquire: () => Effect.succeed({ v: 'custom' as const }),
+					// Cast: the custom decl isn't part of the built-in
+					// CapabilityDecl union. The substrate dispatches
+					// structurally on `kind`, so the union is the default
+					// vocabulary, not a closed surface.
+					capabilities: [customDecl] as unknown as readonly never[],
+				});
+
+				const captured = yield* Ref.make<ReadonlyArray<string>>([]);
+
+				const customSink: CapabilitySink<'plugin-author:custom', CustomDecl> = {
+					kind: 'plugin-author:custom',
+					accept: (decl) => Ref.update(captured, (xs) => [...xs, decl.payload]),
+				};
+
+				// Plugin-author overlay: yields CapabilitySinksService from
+				// the underlying registry Layer, calls registerSink for the
+				// custom kind. `Layer.effectDiscard` runs the registration
+				// body once per Layer.build; the registerSink call
+				// `addFinalizer`s a scope-bound restore (see
+				// `capability-sinks/service.ts`) so the override reaps on
+				// supervisor shutdown.
+				const customOverlay = Layer.effectDiscard(
+					Effect.gen(function* () {
+						const sinks = yield* CapabilitySinksService;
+						yield* sinks.registerSink(customSink);
+					}),
+				);
+
+				// Compose: base default sinks (empty orchestrator bag for
+				// this test) + the plugin-author overlay. This is the layer
+				// the caller hands to the supervisor via pluginContext.
+				const sinksLayer = customOverlay.pipe(Layer.provideMerge(layerCapabilitySinksDefault({})));
+
+				const stack: SupervisedStack = {
+					_tag: 'Stack',
+					members: [pluginCustom],
+					options: {},
+				};
+				const state = yield* makeProjectionRef();
+
+				yield* Effect.scoped(
+					Effect.gen(function* () {
+						// Build the composed sinks layer on the surrounding
+						// (test) scope so the service instance survives
+						// across into the supervisor.
+						const sinksCtx = yield* Layer.build(sinksLayer);
+						const sinksService = Context.get(sinksCtx, CapabilitySinksService);
+						const pluginContext = Context.empty().pipe(
+							Context.add(CapabilitySinksService, sinksService),
+						) as Context.Context<never>;
+
+						const handle = yield* supervise(stack, identity, state, pluginContext);
+						for (const [key] of handle.graph.nodes) {
+							yield* handle.registry.awaitReady(key);
+						}
+					}),
+				);
+
+				const fired = yield* Ref.get(captured);
+				expect(fired).toEqual(['extension-path-fired']);
+			}),
+	);
+
+	it.effect('omitted OrchestratorSinks slots are no-ops without crashing dispatch', () =>
+		// The default OrchestratorSinks bag is `{}` — every slot
+		// undefined. The substrate's built-in sinks adapt absent slots
+		// to `Effect.void`, so the harvest path stays alive even when
+		// the orchestrator declines to handle a kind.
+		Effect.gen(function* () {
+			const stack: SupervisedStack = {
+				_tag: 'Stack',
+				members: [pluginSnap, pluginRoute, pluginCodegen, pluginStrat],
+				options: {},
+			};
+			const state = yield* makeProjectionRef();
+
+			// Read the projection INSIDE the supervisor's scope —
+			// otherwise the scope finalizer transitions every plugin
+			// `ready → stopping → stopped` before we inspect, and the
+			// status check no longer pins the post-acquire state.
+			const readyRows = yield* Effect.scoped(
+				Effect.gen(function* () {
+					const handle = yield* supervise(stack, identity, state);
+					for (const [key] of handle.graph.nodes) {
+						yield* handle.registry.awaitReady(key);
+					}
+					const snap = yield* SubscriptionRef.get(state);
+					return snap.rows.filter((r) => r.status === 'ready');
+				}),
+			);
+
+			expect(readyRows.map((r) => r.key).sort()).toEqual(
+				['test:codegen#2', 'test:route#1', 'test:snap#0', 'test:strat#3'].sort(),
+			);
+		}),
+	);
+});

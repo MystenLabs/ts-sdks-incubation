@@ -1,0 +1,23 @@
+{
+	"name": "@mysten-incubation/example-deepbook-full-rewrite",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"typecheck": "tsc -b --noEmit",
+		"test": "pnpm run typecheck",
+		"clean": "rm -rf dist .turbo node_modules/.tmp"
+	},
+	"dependencies": {
+		"@mysten-incubation/devstack-rewrite": "workspace:*",
+		"effect": "catalog:"
+	},
+	"devDependencies": {
+		"@mysten-incubation/tsconfig": "workspace:*",
+		"@types/node": "catalog:",
+		"typescript": "catalog:"
+	},
+	"engines": {
+		"node": ">=24"
+	}
+}

@@ -1,0 +1,57 @@
+// Build content-hash projection — never produces a leading `-`.
+//
+// Architecture rule: the derived docker tag (`devstack-build:<hex>`)
+// flows into `docker build -t <ref>`. Docker rejects refs that include
+// a leading `-` as "invalid reference format". `Hash.string` returns a
+// signed 32-bit int; the projection must coerce to unsigned before hex.
+//
+// Regression: prior code did `Hash.string(seed).toString(16)` which
+// yielded e.g. `-30fd6961` for a negative-signed seed and crashed
+// `docker build` at the build-tag site (task #71).
+
+import { describe, expect, it } from 'vitest';
+
+import { buildContentHash } from '../../../src/runtime/docker/service.ts';
+
+describe('buildContentHash — unsigned hex projection', () => {
+	it('never emits a leading minus for any context shape', () => {
+		// Sweep a wide input space so we cover the negative-int half of
+		// the 32-bit space. Hash.string's distribution makes this fast.
+		const seeds = [
+			'/tmp/foo',
+			'/Users/u/code/ts-sdks-incubation/examples/deepbook-full-rewrite/move/mock_usdc',
+			'/a',
+			'',
+			'context-path-with-very-long-suffix-' + 'x'.repeat(200),
+		];
+		for (const path of seeds) {
+			for (let i = 0; i < 256; i++) {
+				const hash = buildContentHash({
+					contextPath: `${path}/${i}`,
+					dockerfile: i % 2 === 0 ? 'Dockerfile' : 'Dockerfile.test',
+					buildArgs: { iter: String(i), kind: 'mock_usdc' },
+				});
+				expect(hash, `seed=${path}/${i}`).not.toMatch(/^-/);
+				expect(hash, `seed=${path}/${i}`).toMatch(/^[0-9a-f]+$/);
+			}
+		}
+	});
+
+	it('is stable across buildArgs key insertion order', () => {
+		const a = buildContentHash({
+			contextPath: '/tmp/ctx',
+			buildArgs: { a: '1', b: '2' },
+		});
+		const b = buildContentHash({
+			contextPath: '/tmp/ctx',
+			buildArgs: { b: '2', a: '1' },
+		});
+		expect(a).toBe(b);
+	});
+
+	it('differs when contextPath differs', () => {
+		const a = buildContentHash({ contextPath: '/tmp/a' });
+		const b = buildContentHash({ contextPath: '/tmp/b' });
+		expect(a).not.toBe(b);
+	});
+});
