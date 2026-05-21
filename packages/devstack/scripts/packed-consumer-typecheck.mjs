@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -44,6 +44,27 @@ const runtimeImportSmoke = [
 	"await import('@mysten-incubation/devstack/vite');",
 	"await import('@mysten-incubation/devstack/runtime');",
 ].join('\n');
+
+const stackContextSmoke = `
+import { readStackContext } from '@mysten-incubation/devstack/runtime';
+
+const ctx = readStackContext({ cwd: process.cwd(), env: {}, stack: 'main' });
+if (ctx.identity.app !== 'installed-consumer-smoke') {
+\tthrow new Error(\`expected app installed-consumer-smoke, got \${ctx.identity.app}\`);
+}
+if (ctx.identity.stack !== 'main') {
+\tthrow new Error(\`expected stack main, got \${ctx.identity.stack}\`);
+}
+if (ctx.identity.chain !== 'localnet') {
+\tthrow new Error(\`expected chain localnet, got \${ctx.identity.chain}\`);
+}
+`.trim();
+
+const assertFileExists = (path, label) => {
+	if (!existsSync(path)) {
+		throw new Error(`${label} was not written at ${path}`);
+	}
+};
 
 try {
 	run('pnpm', ['pack', '--pack-destination', tempRoot], { stdio: 'ignore' });
@@ -97,6 +118,32 @@ try {
 			'',
 		].join('\n'),
 	);
+	writeFileSync(
+		join(consumerRoot, 'devstack.config.ts'),
+		`
+import { writeFileSync } from 'node:fs';
+import { Effect } from 'effect';
+import { defineDevstack, defineNodePlugin, defineTag } from '@mysten-incubation/devstack';
+
+const InstalledConsumerSmokeTag = defineTag<
+\t'installed-consumer/smoke',
+\t{ readonly message: 'acquired' }
+>('installed-consumer/smoke', 'installed-consumer-smoke');
+
+const installedConsumerSmokePlugin = defineNodePlugin({
+\tprovides: InstalledConsumerSmokeTag,
+\tconsumes: [] as const,
+\tkind: 'leaf-long-running',
+\tacquire: () =>
+\t\tEffect.sync(() => {
+\t\t\twriteFileSync(new URL('./installed-consumer-smoke.marker', import.meta.url), 'acquired\\n');
+\t\t\treturn { message: 'acquired' } as const;
+\t\t}),
+});
+
+export default defineDevstack(installedConsumerSmokePlugin, { stackName: 'main' });
+`.trimStart(),
+	);
 
 	run('npm', ['install', join(tempRoot, tarball), 'typescript@5.9.3', 'vite@6.4.2'], {
 		cwd: consumerRoot,
@@ -113,6 +160,42 @@ try {
 		consumerRoot,
 	);
 	console.log('packed consumer runtime ESM import smoke passed');
+
+	runSmoke(
+		'packed consumer minimal boot smoke',
+		'npx',
+		[
+			'--offline',
+			'devstack',
+			'--config',
+			'./devstack.config.ts',
+			'--state-dir',
+			'.devstack',
+			'--app',
+			'installed-consumer-smoke',
+			'--stack',
+			'main',
+			'--network',
+			'localnet',
+			'apply',
+		],
+		consumerRoot,
+	);
+	assertFileExists(
+		join(consumerRoot, 'installed-consumer-smoke.marker'),
+		'packed consumer minimal boot marker',
+	);
+	assertFileExists(
+		join(consumerRoot, '.devstack', 'stacks', 'main', 'manifest.json'),
+		'packed consumer minimal boot manifest',
+	);
+	runSmoke(
+		'packed consumer stack context smoke',
+		'node',
+		['--input-type=module', '--eval', stackContextSmoke],
+		consumerRoot,
+	);
+	console.log('packed consumer minimal boot smoke passed');
 
 	const skipLibCheck = runTsc(consumerRoot, ['--skipLibCheck']);
 	if (skipLibCheck.status !== 0) {
