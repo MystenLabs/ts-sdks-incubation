@@ -20,11 +20,13 @@ import {
 	type EndpointUrl,
 } from '../../src/orchestrators/router/index.ts';
 import { appName, chainId, stackName } from '../../src/substrate/brand.ts';
+import { renderNetworkLabels } from '../../src/runtime/docker/index.ts';
 import { buildSubstrateLayers } from '../../src/substrate/runtime/run.ts';
 
 const SERVICE_IMAGE = 'busybox:1.36';
 const SERVICE_PORT = 8080;
 const ENTRYPOINT_NAME = 'router-real-http';
+const ROUTER_NETWORK_APP_LABEL = 'devstack-router';
 
 const docker = (args: ReadonlyArray<string>, timeout = 60_000): SpawnSyncReturns<string> =>
 	spawnSync('docker', [...args], { encoding: 'utf8', timeout });
@@ -98,6 +100,9 @@ const candidateSubnets = (): ReadonlyArray<string> => {
 
 const createRouterNetwork = (networkName: string): void => {
 	let lastStderr = '';
+	const labelArgs = renderNetworkLabels(networkName, ROUTER_NETWORK_APP_LABEL, networkName, {
+		composeUi: false,
+	}).flatMap((label) => ['--label', label]);
 	for (const subnet of candidateSubnets()) {
 		const res = docker([
 			'network',
@@ -106,14 +111,7 @@ const createRouterNetwork = (networkName: string): void => {
 			'bridge',
 			'--subnet',
 			subnet,
-			'--label',
-			'devstack.managed=true',
-			'--label',
-			'devstack.network=true',
-			'--label',
-			'devstack.app=router-real-traffic',
-			'--label',
-			'devstack.stack=e2e',
+			...labelArgs,
 			networkName,
 		]);
 		if (res.status === 0) return;
