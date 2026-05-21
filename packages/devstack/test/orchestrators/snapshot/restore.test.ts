@@ -112,12 +112,42 @@ const dockerSaveBundleTar = (repoTags: ReadonlyArray<string>): Buffer =>
 		Buffer.alloc(1024),
 	]);
 
+const dockerOciImageLayoutBundleTar = (repoTags: ReadonlyArray<string>): Buffer =>
+	Buffer.concat([
+		tarEntry(
+			'./index.json',
+			Buffer.from(
+				JSON.stringify({
+					schemaVersion: 2,
+					mediaType: 'application/vnd.oci.image.index.v1+json',
+					manifests: repoTags.map((tag, index) => ({
+						mediaType: 'application/vnd.oci.image.manifest.v1+json',
+						digest: `sha256:${String(index + 1).repeat(64)}`,
+						size: 401,
+						annotations: {
+							'io.containerd.image.name': `docker.io/library/${tag}`,
+							'org.opencontainers.image.ref.name': tag.slice(tag.indexOf(':') + 1),
+						},
+					})),
+				}),
+			),
+		),
+		tarEntry('./oci-layout', Buffer.from(JSON.stringify({ imageLayoutVersion: '1.0.0' }))),
+		Buffer.alloc(1024),
+	]);
+
 const writeImageBundle = (
 	artifactDir: string,
 	repoTags: ReadonlyArray<string> = ['devstack-snapshot:postgres-db'],
+	opts: { readonly format?: 'docker-legacy' | 'oci-layout' } = {},
 ) => {
 	mkdirSync(join(artifactDir, SnapshotLayout.containersDir), { recursive: true });
-	writeFileSync(join(artifactDir, imageBundlePath), dockerSaveBundleTar(repoTags));
+	writeFileSync(
+		join(artifactDir, imageBundlePath),
+		opts.format === 'oci-layout'
+			? dockerOciImageLayoutBundleTar(repoTags)
+			: dockerSaveBundleTar(repoTags),
+	);
 };
 
 const tarWithSingleEntry = (entryPath: string): Buffer => {
@@ -849,6 +879,66 @@ describe('snapshot restore safety', () => {
 					if (error.value._tag === 'SnapshotRestorePhaseError') {
 						expect(error.value.phase).toBe('load-image');
 						expect(error.value.detail).toContain('devstack-snapshot:extra');
+					}
+				}
+				expect(events).toEqual([]);
+				expect(sweepCalls).toEqual([]);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}),
+	);
+
+	it.effect('accepts an OCI image layout bundle without legacy Docker manifest', () =>
+		Effect.gen(function* () {
+			const root = freshRoot();
+			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+			const events: string[] = [];
+			try {
+				const meta = metadata({
+					containers: [capturedContainer()],
+				});
+				const artifactDir = writeArtifact(root, meta);
+				writeImageBundle(artifactDir, ['devstack-snapshot:postgres-db'], { format: 'oci-layout' });
+				const runtime = runtimeStub(sweepCalls, { events });
+
+				const exit = yield* runRestoreExit(root, meta, runtimeIdentity, sweepCalls, runtime).pipe(
+					Effect.provide(NodeFileSystem.layer),
+				);
+
+				expect(Exit.isSuccess(exit)).toBe(true);
+				expect(events[0]).toBe('load');
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}),
+	);
+
+	it.effect('refuses OCI image layout bundle tag mismatches before docker load', () =>
+		Effect.gen(function* () {
+			const root = freshRoot();
+			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+			const events: string[] = [];
+			try {
+				const meta = metadata({
+					containers: [capturedContainer()],
+				});
+				const artifactDir = writeArtifact(root, meta);
+				writeImageBundle(artifactDir, ['devstack-snapshot:other'], { format: 'oci-layout' });
+				const runtime = runtimeStub(sweepCalls, { events });
+
+				const exit = yield* runRestoreExit(root, meta, runtimeIdentity, sweepCalls, runtime).pipe(
+					Effect.provide(NodeFileSystem.layer),
+				);
+
+				expect(Exit.isFailure(exit)).toBe(true);
+				const error = Exit.findErrorOption(exit);
+				expect(error._tag).toBe('Some');
+				if (error._tag === 'Some') {
+					expect(error.value).toBeInstanceOf(RestorePhaseError);
+					if (error.value._tag === 'SnapshotRestorePhaseError') {
+						expect(error.value.phase).toBe('load-image');
+						expect(error.value.detail).toContain('devstack-snapshot:postgres-db');
 					}
 				}
 				expect(events).toEqual([]);

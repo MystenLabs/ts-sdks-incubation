@@ -323,11 +323,21 @@ const tarPathFromHeader = (header: Uint8Array): string => {
 	return prefix === '' ? name : `${prefix}/${name}`;
 };
 
-interface DockerSaveManifestTarState {
+const normalizedTarEntryPath = (path: string): string => {
+	let normalized = path;
+	while (normalized.startsWith('./')) normalized = normalized.slice(2);
+	return normalized;
+};
+
+type ImageBundleMetadataEntry = 'manifest.json' | 'index.json';
+
+interface DockerSaveMetadataTarState {
 	buffer: Uint8Array;
 	skipRemaining: number;
 	manifestBytes: Uint8Array | null;
+	indexBytes: Uint8Array | null;
 	content: {
+		readonly entry: ImageBundleMetadataEntry;
 		readonly size: number;
 		readonly paddedSize: number;
 		readonly chunks: Array<Uint8Array>;
@@ -339,8 +349,8 @@ interface DockerSaveManifestTarState {
 const failDockerManifest = (detail: string): RestorePhaseError =>
 	new RestorePhaseError({ phase: 'load-image', detail });
 
-const processDockerSaveManifestChunk = (
-	state: DockerSaveManifestTarState,
+const processDockerSaveMetadataChunk = (
+	state: DockerSaveMetadataTarState,
 	chunk: Uint8Array,
 ): { readonly done: boolean; readonly error?: RestorePhaseError } => {
 	state.buffer = concatBytes(state.buffer, chunk);
@@ -362,11 +372,15 @@ const processDockerSaveManifestChunk = (
 			if (state.content.totalBytesRead === state.content.paddedSize) {
 				const completed = state.content;
 				state.content = null;
-				state.manifestBytes =
+				const entryBytes =
 					completed.chunks.length === 1
 						? completed.chunks[0]!
 						: Buffer.concat(completed.chunks.map((entry) => Buffer.from(entry)));
-				return { done: true };
+				if (completed.entry === 'manifest.json') {
+					state.manifestBytes = entryBytes;
+					return { done: true };
+				}
+				state.indexBytes = entryBytes;
 			}
 			continue;
 		}
@@ -385,18 +399,24 @@ const processDockerSaveManifestChunk = (
 			return { done: false, error: failDockerManifest('docker save bundle has invalid tar size') };
 		}
 		const paddedSize = Math.ceil(size / TAR_BLOCK_SIZE) * TAR_BLOCK_SIZE;
-		if (tarPathFromHeader(header) === 'manifest.json') {
+		const entryPath = normalizedTarEntryPath(tarPathFromHeader(header));
+		if (entryPath === 'manifest.json' || entryPath === 'index.json') {
 			if (size > MAX_DOCKER_SAVE_MANIFEST_BYTES) {
 				return {
 					done: false,
-					error: failDockerManifest('docker save manifest.json is too large'),
+					error: failDockerManifest(`docker save ${entryPath} is too large`),
 				};
 			}
 			if (size === 0) {
-				state.manifestBytes = new Uint8Array(0);
-				return { done: true };
+				if (entryPath === 'manifest.json') {
+					state.manifestBytes = new Uint8Array(0);
+					return { done: true };
+				}
+				state.indexBytes = new Uint8Array(0);
+				continue;
 			}
 			state.content = {
+				entry: entryPath,
 				size,
 				paddedSize,
 				chunks: [],
@@ -466,34 +486,117 @@ const parseDockerSaveManifestTags = (
 		return tags;
 	});
 
-const readDockerSaveManifestTags = (
+const normalizeOciImageName = (value: string): string | null => {
+	const dockerLibraryPrefix = 'docker.io/library/';
+	if (value.startsWith(dockerLibraryPrefix)) {
+		const localName = value.slice(dockerLibraryPrefix.length);
+		if (localName.startsWith('devstack-snapshot:') && isRestorableContainerImageName(localName)) {
+			return localName;
+		}
+		return null;
+	}
+	if (value.startsWith('devstack-snapshot:') && isRestorableContainerImageName(value)) {
+		return value;
+	}
+	return null;
+};
+
+const parseOciImageLayoutIndexTags = (
+	bytes: Uint8Array,
+	tarPath: string,
+): Effect.Effect<ReadonlySet<string>, RestorePhaseError> =>
+	Effect.gen(function* () {
+		const raw = yield* Effect.try({
+			try: () => JSON.parse(Buffer.from(bytes).toString('utf8')) as unknown,
+			catch: (cause) =>
+				new RestorePhaseError({
+					phase: 'load-image',
+					detail: `docker save index.json in ${tarPath} is not valid JSON`,
+					cause,
+				}),
+		});
+		if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+			return yield* Effect.fail(
+				failDockerManifest(`docker save index.json in ${tarPath} is not an object`),
+			);
+		}
+		const manifests = (raw as { readonly manifests?: unknown }).manifests;
+		if (!Array.isArray(manifests)) {
+			return yield* Effect.fail(
+				failDockerManifest(`docker save index.json in ${tarPath} has non-array manifests`),
+			);
+		}
+		const tags = new Set<string>();
+		for (const [index, entry] of manifests.entries()) {
+			if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+				return yield* Effect.fail(
+					failDockerManifest(`docker save index manifest ${index} in ${tarPath} is not an object`),
+				);
+			}
+			const annotations = (entry as { readonly annotations?: unknown }).annotations;
+			if (annotations === undefined || annotations === null) continue;
+			if (typeof annotations !== 'object' || Array.isArray(annotations)) {
+				return yield* Effect.fail(
+					failDockerManifest(
+						`docker save index manifest ${index} in ${tarPath} has invalid annotations`,
+					),
+				);
+			}
+			const imageName = (annotations as { readonly ['io.containerd.image.name']?: unknown })[
+				'io.containerd.image.name'
+			];
+			const refName = (annotations as { readonly ['org.opencontainers.image.ref.name']?: unknown })[
+				'org.opencontainers.image.ref.name'
+			];
+			for (const value of [imageName, refName]) {
+				if (typeof value !== 'string') continue;
+				const tag = normalizeOciImageName(value);
+				if (tag === null) continue;
+				if (tags.has(tag)) {
+					return yield* Effect.fail(
+						failDockerManifest(`docker save index in ${tarPath} repeats RepoTag ${tag}`),
+					);
+				}
+				tags.add(tag);
+			}
+		}
+		return tags;
+	});
+
+const readDockerSaveBundleTags = (
 	fullTarPath: string,
 	tarPath: string,
 ): Effect.Effect<ReadonlySet<string>, RestorePhaseError, FileSystem.FileSystem> =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem;
-		const state: DockerSaveManifestTarState = {
+		const state: DockerSaveMetadataTarState = {
 			buffer: new Uint8Array(0),
 			skipRemaining: 0,
 			manifestBytes: null,
+			indexBytes: null,
 			content: null,
 		};
 		yield* Stream.runForEachWhile(fs.stream(fullTarPath), (chunk) => {
-			const result = processDockerSaveManifestChunk(state, chunk);
+			const result = processDockerSaveMetadataChunk(state, chunk);
 			if (result.error !== undefined) return Effect.fail(result.error);
 			return Effect.succeed(!result.done);
 		}).pipe(
-			Effect.catch(failPhase('load-image', `read docker save manifest from ${fullTarPath} failed`)),
+			Effect.catch(failPhase('load-image', `read docker save metadata from ${fullTarPath} failed`)),
 		);
-		if (state.manifestBytes === null) {
-			return yield* Effect.fail(
-				failDockerManifest(`docker save bundle ${tarPath} does not contain manifest.json`),
-			);
+		if (state.manifestBytes !== null) {
+			return yield* parseDockerSaveManifestTags(state.manifestBytes, tarPath);
 		}
-		return yield* parseDockerSaveManifestTags(state.manifestBytes, tarPath);
+		if (state.indexBytes !== null) {
+			return yield* parseOciImageLayoutIndexTags(state.indexBytes, tarPath);
+		}
+		return yield* Effect.fail(
+			failDockerManifest(
+				`docker save bundle ${tarPath} does not contain manifest.json or index.json`,
+			),
+		);
 	});
 
-const verifyDockerSaveManifestTags = (
+const verifyDockerSaveBundleTags = (
 	tarPath: string,
 	actualTags: ReadonlySet<string>,
 	expectedSnapshotTags: ReadonlyArray<string>,
@@ -757,8 +860,8 @@ const loadImageBundle = (
 				}),
 			);
 		}
-		const manifestTags = yield* readDockerSaveManifestTags(fullTarPath, tarPath);
-		yield* verifyDockerSaveManifestTags(tarPath, manifestTags, expectedSnapshotTags);
+		const bundleTags = yield* readDockerSaveBundleTags(fullTarPath, tarPath);
+		yield* verifyDockerSaveBundleTags(tarPath, bundleTags, expectedSnapshotTags);
 		const loaded = yield* runtime
 			.loadImage(fs.stream(fullTarPath))
 			.pipe(
