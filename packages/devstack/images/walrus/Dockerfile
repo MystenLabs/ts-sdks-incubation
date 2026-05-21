@@ -3,8 +3,9 @@
 # builds — same Dockerfile + build args produce the same image digest).
 #
 # Pattern mirrors `../sui/Dockerfile`: download the matching release
-# tarball at build time so the resulting image runs natively on the
-# host (no Rosetta emulation on Apple Silicon).
+# tarball at build time for linux/amd64. linux/arm64 is refused in the
+# resolver until upstream Walrus ubuntu-aarch64 assets are fixed or a
+# source-build fallback exists.
 #
 # Two binary sets baked in:
 #

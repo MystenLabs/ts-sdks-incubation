@@ -45,6 +45,40 @@ import { litSiblingKey, type LitSiblingKey } from '../../../substrate/lifted-sib
 import { walrusPluginError, type WalrusPluginError } from '../errors.ts';
 import { DEFAULT_WALRUS_REF, DEFAULT_WALRUS_REPO } from './source-fetch.ts';
 
+const WALRUS_CARGO_IMAGE_OVERRIDE_ENV = 'WALRUS_CARGO_IMAGE_OVERRIDE' as const;
+const DOCKER_DEFAULT_PLATFORM_ENV = 'DOCKER_DEFAULT_PLATFORM' as const;
+
+interface WalrusCargoImageHostProcess {
+	readonly arch?: string;
+	readonly env?: Record<string, string | undefined>;
+}
+
+const currentHostProcess = (): WalrusCargoImageHostProcess | undefined =>
+	(globalThis as { process?: WalrusCargoImageHostProcess }).process;
+
+const explicitDockerDefaultPlatform = (
+	env: Record<string, string | undefined> | undefined,
+): string | null => {
+	const platform = env?.[DOCKER_DEFAULT_PLATFORM_ENV]?.trim();
+	return platform && platform.length > 0 ? platform : null;
+};
+
+const isLinuxArm64WalrusImageTarget = (proc: WalrusCargoImageHostProcess | undefined): boolean => {
+	const explicitPlatform = explicitDockerDefaultPlatform(proc?.env);
+	if (explicitPlatform !== null) {
+		return explicitPlatform === 'linux/arm64' || explicitPlatform === 'linux/arm64/v8';
+	}
+	// Docker injects TARGETARCH from the target platform. With no explicit
+	// Docker platform, the vendored Ubuntu image follows the native host arch.
+	return proc?.arch === 'arm64';
+};
+
+const unsupportedLinuxArm64WalrusImageError = (): WalrusPluginError =>
+	walrusPluginError(
+		'image-build',
+		`native linux/arm64 Walrus local-cluster images are unsupported: upstream ubuntu-aarch64 devnet assets currently appear to contain x86-64 binaries. Set ${WALRUS_CARGO_IMAGE_OVERRIDE_ENV}=<image> to use a compatible prebuilt/source-built image, or use linux/amd64 until upstream assets are fixed or a source-build fallback is implemented.`,
+	);
+
 /** Distilled-doc invariant 24: the wrapper-baked sui binary must
  *  match the localnet image's sui release. Pinned here in lockstep
  *  with the walrus ref bump. */
@@ -113,13 +147,17 @@ export const resolveCargoImage = (
 	inputs: WalrusCargoImageInputs,
 ): Effect.Effect<WalrusCargoImageResolved, WalrusPluginError, Scope.Scope> =>
 	Effect.gen(function* () {
-		const override = (globalThis as { process?: { env?: Record<string, string | undefined> } })
-			.process?.env?.WALRUS_CARGO_IMAGE_OVERRIDE;
+		const hostProcess = currentHostProcess();
+		const override = hostProcess?.env?.[WALRUS_CARGO_IMAGE_OVERRIDE_ENV];
 		if (override && override.length > 0) {
 			// Trust-the-tag path. The digest is opaque (substrate's
 			// content-addressed cache will re-resolve via `docker inspect`
 			// when it materializes the image).
 			return { digest: override, tag: override };
+		}
+
+		if (isLinuxArm64WalrusImageTarget(hostProcess)) {
+			return yield* Effect.fail(unsupportedLinuxArm64WalrusImageError());
 		}
 
 		// Real build via the vendored Dockerfile.
