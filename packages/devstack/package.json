@@ -79,10 +79,10 @@
 		"test:e2e": "DEVSTACK_RUN_E2E=1 vitest run"
 	},
 	"dependencies": {
-		"effect": "catalog:",
 		"@effect/platform-node": "catalog:",
 		"@mysten/codegen": "catalog:",
 		"@mysten/sui": "catalog:",
+		"effect": "catalog:",
 		"ink": "^7.0.0",
 		"react": "catalog:"
 	},
