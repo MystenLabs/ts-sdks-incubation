@@ -131,22 +131,17 @@ export class ForkRelay {
 				error: `advanceClock: durationMs must be a positive integer (got ${durationMs})`,
 			};
 		}
-		return this.#request(
-			'POST',
-			FORK_RELAY_HTTP_PATH.ADVANCE_CLOCK,
-			{ durationMs },
-			(body) => {
-				if (!isForkStatusBody(body)) {
-					throw new Error('Malformed advance-clock response');
-				}
-				return {
-					checkpoint: BigInt(body.checkpoint),
-					clockMs: BigInt(body.clockMs),
-					autoTickMs: body.autoTickMs,
-					upstream: body.upstream,
-				};
-			},
-		);
+		return this.#request('POST', FORK_RELAY_HTTP_PATH.ADVANCE_CLOCK, { durationMs }, (body) => {
+			if (!isForkStatusBody(body)) {
+				throw new Error('Malformed advance-clock response');
+			}
+			return {
+				checkpoint: BigInt(body.checkpoint),
+				clockMs: BigInt(body.clockMs),
+				autoTickMs: body.autoTickMs,
+				upstream: body.upstream,
+			};
+		});
 	}
 
 	async advanceCheckpoint(count: number): Promise<ForkRelayResult<ForkStatus>> {
@@ -156,40 +151,30 @@ export class ForkRelay {
 				error: `advanceCheckpoint: count must be a positive integer (got ${count})`,
 			};
 		}
-		return this.#request(
-			'POST',
-			FORK_RELAY_HTTP_PATH.ADVANCE_CHECKPOINT,
-			{ count },
-			(body) => {
-				if (!isForkStatusBody(body)) {
-					throw new Error('Malformed advance-checkpoint response');
-				}
-				return {
-					checkpoint: BigInt(body.checkpoint),
-					clockMs: BigInt(body.clockMs),
-					autoTickMs: body.autoTickMs,
-					upstream: body.upstream,
-				};
-			},
-		);
+		return this.#request('POST', FORK_RELAY_HTTP_PATH.ADVANCE_CHECKPOINT, { count }, (body) => {
+			if (!isForkStatusBody(body)) {
+				throw new Error('Malformed advance-checkpoint response');
+			}
+			return {
+				checkpoint: BigInt(body.checkpoint),
+				clockMs: BigInt(body.clockMs),
+				autoTickMs: body.autoTickMs,
+				upstream: body.upstream,
+			};
+		});
 	}
 
 	async listImpersonations(): Promise<ForkRelayResult<ForkImpersonationSlot[]>> {
-		return this.#request(
-			'GET',
-			FORK_RELAY_HTTP_PATH.IMPERSONATIONS,
-			undefined,
-			(body) => {
-				if (!isImpersonationsBody(body)) {
-					throw new Error('Malformed impersonations response');
-				}
-				return body.slots.map((s) => ({
-					address: s.address,
-					label: s.label,
-					active: s.active,
-				}));
-			},
-		);
+		return this.#request('GET', FORK_RELAY_HTTP_PATH.IMPERSONATIONS, undefined, (body) => {
+			if (!isImpersonationsBody(body)) {
+				throw new Error('Malformed impersonations response');
+			}
+			return body.slots.map((s) => ({
+				address: s.address,
+				label: s.label,
+				active: s.active,
+			}));
+		});
 	}
 
 	/** Toggle the impersonation slot identified by `address`. The server
