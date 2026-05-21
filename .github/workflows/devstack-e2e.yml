@@ -3,7 +3,7 @@ name: Devstack E2E
 # Product coverage for the devstack package and worked example stacks.
 # The workflow proves that representative examples can apply their stack,
 # capture a restorable snapshot, restore that snapshot in a fresh job, and
-# validate the restored stack projection. It also shards the package's
+# validate restored runtime files/images. It also shards the package's
 # Docker-backed integration tests.
 #
 # Two-stage matrix:
@@ -19,7 +19,8 @@ name: Devstack E2E
 #   2. restore: per-example. Downloads the artifact, extracts to
 #             `.devstack/stacks/<stack>/snapshots/`, runs
 #             `devstack snapshot restore baseline`, then reads the restored
-#             snapshot catalog and stack projection through the CLI.
+#             snapshot catalog through the CLI and verifies restored runtime
+#             files/images.
 
 on:
   pull_request:
@@ -155,37 +156,81 @@ jobs:
 
       - name: Restore snapshot
         working-directory: examples/${{ matrix.example }}
-        # Brings the saved stack state and runtime files back into the
-        # resolved `.devstack/stacks/<stack>/snapshots/` directory and
-        # loads every committed container image. Direct-node invocation:
-        # see the seed job's apply step for the bin-symlink rationale.
+        # The artifact has already been downloaded under `snapshots/`;
+        # restore materializes runtime files into the stack root and
+        # loads every committed container image into Docker. Direct-node
+        # invocation: see the seed job's apply step for the bin-symlink
+        # rationale.
         run: node ../../packages/devstack/dist/cli/main.mjs --state-dir .devstack --app ${{ matrix.example }} --stack ${{ matrix.stack }} snapshot restore baseline
 
       - name: Validate restored snapshot state
         working-directory: examples/${{ matrix.example }}
-        # Use CLI read paths after restore so CI proves the restored
-        # artifact is discoverable and produced a non-empty projection.
+        # Use production CLI paths for restore/catalog/status, then inspect
+        # the restored runtime root and Docker image refs. `devstack status`
+        # reads projection.v1.json, which is a live-surface cache; offline
+        # restore currently materializes snapshot state, not a new projection.
         run: |
           snapshot_json="$(node ../../packages/devstack/dist/cli/main.mjs --json --state-dir .devstack --app ${{ matrix.example }} --stack ${{ matrix.stack }} snapshot list)"
           status_json="$(node ../../packages/devstack/dist/cli/main.mjs --json --state-dir .devstack --app ${{ matrix.example }} --stack ${{ matrix.stack }} status)"
           node -e '
-            const [snapshotRaw, statusRaw, expectedStack] = process.argv.slice(1);
+            const { execFileSync } = require("node:child_process");
+            const { existsSync, readFileSync } = require("node:fs");
+            const { join } = require("node:path");
+
+            const [snapshotRaw, statusRaw, expectedApp, expectedStack] = process.argv.slice(1);
             const snapshots = JSON.parse(snapshotRaw);
             const status = JSON.parse(statusRaw);
             const entries = snapshots.data?.entries ?? [];
             if (!snapshots.ok || !entries.some((entry) => entry.snapshotId === "baseline")) {
               throw new Error("restored snapshot catalog does not contain baseline");
             }
-            if (!status.ok || status.data?.present !== true) {
-              throw new Error("restored stack projection is missing");
+            if (!status.ok) {
+              throw new Error("status command failed after restore");
             }
-            if (status.data.identity?.stack !== expectedStack) {
-              throw new Error(`restored stack mismatch: ${status.data.identity?.stack}`);
+            if (status.data?.present === true && status.data.identity?.stack !== expectedStack) {
+              throw new Error(`restored status stack mismatch: ${status.data.identity?.stack}`);
             }
-            if (status.data.rowCount <= 0) {
-              throw new Error("restored stack projection has no rows");
+
+            const stackRoot = join(".devstack", "stacks", expectedStack);
+            const metaPath = join(stackRoot, "snapshots", "baseline", "meta.json");
+            const meta = JSON.parse(readFileSync(metaPath, "utf8"));
+            if (meta.app !== expectedApp) {
+              throw new Error(`restored snapshot app mismatch: ${meta.app}`);
             }
-          ' "$snapshot_json" "$status_json" "${{ matrix.stack }}"
+            if (meta.stack !== expectedStack) {
+              throw new Error(`restored snapshot stack mismatch: ${meta.stack}`);
+            }
+
+            const materialized = [];
+            const statePath = join(stackRoot, "state.json");
+            if (existsSync(statePath)) {
+              materialized.push(statePath);
+            }
+            for (const subtree of meta.subtrees ?? []) {
+              const relPath = String(subtree.relPath ?? "");
+              if (relPath.startsWith("/") || relPath.split(/[\\/]+/).includes("..")) {
+                throw new Error(`unsafe restored subtree path in metadata: ${relPath}`);
+              }
+              const subtreePath = join(stackRoot, relPath);
+              if (!existsSync(subtreePath)) {
+                throw new Error(`restored subtree is missing: ${relPath}`);
+              }
+              materialized.push(subtreePath);
+            }
+            for (const container of meta.containers ?? []) {
+              try {
+                execFileSync("docker", ["image", "inspect", container.imageName], {
+                  stdio: "ignore",
+                });
+              } catch (cause) {
+                throw new Error(`restored image is missing: ${container.imageName}`, { cause });
+              }
+              materialized.push(`image:${container.imageName}`);
+            }
+            if (materialized.length === 0) {
+              throw new Error("restored snapshot did not materialize state, subtrees, or images");
+            }
+          ' "$snapshot_json" "$status_json" "${{ matrix.example }}" "${{ matrix.stack }}"
 
       - name: Upload devstack state on failure
         if: failure()
@@ -196,6 +241,7 @@ jobs:
             examples/${{ matrix.example }}/.devstack/
           retention-days: 7
           if-no-files-found: ignore
+          include-hidden-files: true
 
   # Docker integration shards. Runs the package's `*.docker.test.ts`
   # product tests gated behind `DEVSTACK_INTEGRATION_TESTS=1`. Sharded
