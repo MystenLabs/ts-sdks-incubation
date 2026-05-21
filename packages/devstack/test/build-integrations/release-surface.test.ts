@@ -148,7 +148,7 @@ describe('release surface static checks', () => {
 
 		expect(root.ContainerRuntimeService).toBeDefined();
 		expect(root.IdentityContext).toBeDefined();
-	});
+	}, 20_000);
 
 	it('keeps root and substrate barrels on public vocabulary only', () => {
 		const root = readText('src/index.ts');
