@@ -131,9 +131,9 @@ Closed evidence:
   source/dist; `npm pack --dry-run --json` showed all Sui/Postgres/Walrus/Seal image context files
   and `samples: []`.
 - 2026-05-21 Walrus CI path: default Walrus release was bumped to `devnet-v1.49.0`; the Dockerfile
-  and deploy script preflight required `walrus`, `walrus-node`, `walrus-deploy`, and `sui`
-  binaries; deploy failures include stdout/stderr excerpts. Orchestrator validation built the
-  Walrus image on `linux/amd64`, covering the previous missing-`walrus-deploy` exit-127 failure.
+  and deploy script preflight required `walrus`, `walrus-node`, `walrus-deploy`, and `sui` binaries;
+  deploy failures include stdout/stderr excerpts. Orchestrator validation built the Walrus image on
+  `linux/amd64`, covering the previous missing-`walrus-deploy` exit-127 failure.
 
 ## P0: Package/export/build-integration release surface is broken
 
@@ -344,6 +344,10 @@ Closed evidence:
   Targeted test passed: `test/orchestrators/codegen/bindings.test.ts`; orchestrator validation
   passed `pnpm turbo build --filter=@mysten-incubation/_template`, covering the previous
   `EACCES: permission denied, unlink .../package_summaries/address_mapping.json` failure.
+- 2026-05-21 Worker Move Cache Scrub: host `scrubLocksHost` still fails on unreadable/unwritable
+  package-owned `Move.lock` files, but cached `~/.move/git/**/Move.lock` files are best-effort so
+  root-owned Docker cache entries do not break Docker-backed production builds before the container
+  scrub runs. Targeted test passed: `test/substrate/runtime/sui-move-build/sui-move-build.test.ts`.
 
 ## P1: Product evidence is too stub-heavy
 

@@ -272,6 +272,17 @@ const scrubOneLockFile = async (path: string): Promise<void> => {
 	await writeFile(path, scrubbed, 'utf8');
 };
 
+const scrubCachedLockFiles = async (root: string): Promise<void> => {
+	const cachedLocks = await findMoveLockFiles(root);
+	for (const f of cachedLocks) {
+		try {
+			await scrubOneLockFile(f);
+		} catch {
+			// The Docker build scrubs the mounted Move cache again from inside the container.
+		}
+	}
+};
+
 export const scrubLocksHost = (
 	sourcePath: string,
 	moveHomeRoot: string,
@@ -288,8 +299,7 @@ export const scrubLocksHost = (
 			} catch {
 				return;
 			}
-			const cachedLocks = await findMoveLockFiles(gitCache);
-			for (const f of cachedLocks) await scrubOneLockFile(f);
+			await scrubCachedLockFiles(gitCache);
 		},
 		catch: (cause): MoveBuildError =>
 			moveBuildError('scrub', {

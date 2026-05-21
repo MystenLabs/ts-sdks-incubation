@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -11,6 +11,7 @@ import {
 	hashMoveSources,
 	parseBuildOutput,
 	runMoveBuild,
+	scrubLocksHost,
 	stripPinnedSections,
 } from '../../../../src/substrate/runtime/sui-move-build/index.ts';
 
@@ -89,6 +90,57 @@ describe('sui-move-build helpers', () => {
 			const third = await Effect.runPromise(hashMoveSources(root));
 			expect(third).not.toBe(first);
 		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it('scrubs package locks while tolerating unwritable Move cache locks', async () => {
+		const root = await mkdtemp(join(tmpdir(), 'devstack-move-scrub-'));
+		const packageLock = join(root, 'package', 'Move.lock');
+		const cacheLock = join(root, 'move-home', 'git', 'dep', 'Move.lock');
+		try {
+			await mkdir(join(root, 'package'), { recursive: true });
+			await mkdir(join(root, 'move-home', 'git', 'dep'), { recursive: true });
+			const pinnedLock = '[move]\nversion = 3\n[pinned.testnet.dep]\npublished-at = "0x1"\n';
+			await writeFile(packageLock, pinnedLock);
+			await writeFile(cacheLock, pinnedLock);
+			await chmod(cacheLock, 0o444);
+
+			await Effect.runPromise(
+				scrubLocksHost(join(root, 'package'), join(root, 'move-home')).pipe(Effect.scoped),
+			);
+
+			expect(await readFile(packageLock, 'utf8')).toBe('[move]\nversion = 3');
+			expect(await readFile(cacheLock, 'utf8')).toBe(pinnedLock);
+		} finally {
+			await chmod(cacheLock, 0o644).catch(() => {});
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it('fails when a package Move.lock cannot be scrubbed', async () => {
+		const root = await mkdtemp(join(tmpdir(), 'devstack-move-scrub-'));
+		const packageLock = join(root, 'package', 'Move.lock');
+		try {
+			await mkdir(join(root, 'package'), { recursive: true });
+			await mkdir(join(root, 'move-home'), { recursive: true });
+			await writeFile(
+				packageLock,
+				'[move]\nversion = 3\n[pinned.testnet.dep]\npublished-at = "0x1"\n',
+			);
+			await chmod(packageLock, 0o444);
+
+			await expect(
+				Effect.runPromise(
+					scrubLocksHost(join(root, 'package'), join(root, 'move-home')).pipe(Effect.scoped),
+				),
+			).rejects.toMatchObject({
+				_tag: 'MoveBuildError',
+				phase: 'scrub',
+				sourcePath: join(root, 'package'),
+			});
+		} finally {
+			await chmod(packageLock, 0o644).catch(() => {});
 			await rm(root, { recursive: true, force: true });
 		}
 	});
