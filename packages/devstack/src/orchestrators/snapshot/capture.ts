@@ -41,6 +41,11 @@ import {
 	isSafeSnapshotPathSegment,
 	SNAPSHOT_CONTRIBUTION_VERSION,
 } from './descriptor.ts';
+import {
+	ImageBundleTagScanError,
+	readImageBundleTags,
+	verifyImageBundleTags,
+} from './image-bundle-tags.ts';
 import { writeArtifactIntegrity } from './integrity.ts';
 import { readSnapshotStateDocument, writeSnapshotStateDocument } from './state-document.ts';
 
@@ -109,6 +114,11 @@ const failPhase =
 	): ((cause: unknown) => Effect.Effect<never, CapturePhaseError>) =>
 	(cause) =>
 		Effect.fail(new CapturePhaseError({ phase, plugin, detail, cause }));
+
+const failImageBundleTagScan = (
+	cause: ImageBundleTagScanError,
+): Effect.Effect<never, CapturePhaseError> =>
+	Effect.fail(new CapturePhaseError({ phase: 'save-images', detail: cause.detail, cause }));
 
 interface QuiescedContainer {
 	readonly handle: ContainerHandle;
@@ -308,6 +318,14 @@ const saveCommittedImages = (
 				),
 			),
 		);
+		const savedTags = yield* readImageBundleTags(tarDest, tarPath).pipe(
+			Effect.catch(failImageBundleTagScan),
+		);
+		yield* verifyImageBundleTags(
+			tarPath,
+			savedTags,
+			committed.map((entry) => entry.captured.snapshotTag),
+		).pipe(Effect.catch(failImageBundleTagScan));
 	}).pipe(Effect.withSpan('orchestrator.snapshot.capture.save-images'));
 
 const cleanupCommittedRefs = (

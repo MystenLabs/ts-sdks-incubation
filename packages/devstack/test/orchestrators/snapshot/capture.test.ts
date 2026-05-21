@@ -23,6 +23,7 @@ import {
 	snapshotIdFromString,
 	type SnapshotParticipant,
 } from '../../../src/orchestrators/snapshot/index.ts';
+import { dockerSaveBundleTar, tarEntry } from './image-bundle-fixtures.ts';
 
 const freshRoot = (): string => mkdtempSync(join(tmpdir(), 'snapshot-capture-test-'));
 const imageBundlePath = containerImagesBundlePath();
@@ -96,7 +97,7 @@ const runtimeStub = (opts: {
 		opts.saveCalls.push(...refs);
 		return (
 			opts.saveImages?.(refs) ??
-			Stream.fromIterable(refs).pipe(Stream.flatMap((ref) => opts.saveImage(ref)))
+			Stream.make(dockerSaveBundleTar(refs.map((ref) => ref.tag ?? ref.digest)))
 		);
 	},
 	loadImage: () => Effect.die('loadImage not used'),
@@ -429,9 +430,10 @@ describe('snapshot capture container images', () => {
 						tarPath: imageBundlePath,
 					},
 				]);
-				expect(readFileSync(join(root, 'artifact', imageBundlePath), 'utf8')).toBe(
-					'tar:snapshot:validator-containertar:snapshot:postgres-container',
-				);
+				const savedBundleText = readFileSync(join(root, 'artifact', imageBundlePath), 'utf8');
+				expect(savedBundleText).toContain('manifest.json');
+				expect(savedBundleText).toContain('snapshot:validator-container');
+				expect(savedBundleText).toContain('snapshot:postgres-container');
 				expect(pauseCalls).toEqual(['validator-container', 'postgres-container']);
 				expect(saveCalls.map((ref) => ref.tag)).toEqual([
 					'snapshot:validator-container',
@@ -439,6 +441,172 @@ describe('snapshot capture container images', () => {
 				]);
 				expect(removeImageCalls).toEqual([]);
 				expect(unpauseCalls).toEqual(['validator-container', 'postgres-container']);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}),
+	);
+
+	it.effect('rejects an image bundle without Docker or OCI metadata before publish', () =>
+		Effect.gen(function* () {
+			const root = freshRoot();
+			const pauseCalls: string[] = [];
+			const saveCalls: ImageRef[] = [];
+			const removeImageCalls: ImageRef[] = [];
+			const unpauseCalls: string[] = [];
+			try {
+				const runtime = runtimeStub({
+					handlesByRole: {
+						validator: {
+							id: 'validator-id',
+							name: 'validator-container',
+							imageName: 'devstack-build:sui-validator',
+							status: 'running',
+							ips: [],
+						},
+					},
+					saveImage: (ref) => Stream.make(Buffer.from(`tar:${ref.tag ?? ref.digest}`)),
+					saveImages: () =>
+						Stream.make(
+							Buffer.concat([tarEntry('repositories', Buffer.from('{}')), Buffer.alloc(1024)]),
+						),
+					pauseCalls,
+					saveCalls,
+					removeImageCalls,
+					unpauseCalls,
+				});
+
+				mkdirSync(join(root, 'artifact'), { recursive: true });
+				const exit = yield* runCaptureExit(root, runtime, [participant(['validator'])]).pipe(
+					Effect.provide(NodeFileSystem.layer),
+				);
+
+				expect(Exit.isFailure(exit)).toBe(true);
+				const error = Exit.findErrorOption(exit);
+				expect(error._tag).toBe('Some');
+				if (error._tag === 'Some') {
+					expect(error.value).toBeInstanceOf(CapturePhaseError);
+					if (error.value._tag === 'SnapshotCapturePhaseError') {
+						expect(error.value.phase).toBe('save-images');
+						expect(error.value.detail).toContain('does not contain manifest.json or index.json');
+					}
+				}
+				expect(saveCalls.map((ref) => ref.tag)).toEqual(['snapshot:validator-container']);
+				expect(removeImageCalls).toEqual([
+					{ digest: 'sha256:validator-container', tag: 'snapshot:validator-container' },
+				]);
+				expect(unpauseCalls).toEqual(['validator-container']);
+				expect(existsSync(join(root, 'artifact', SnapshotLayout.metaFile))).toBe(false);
+				expect(existsSync(join(root, 'artifact', SnapshotLayout.integrityFile))).toBe(false);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}),
+	);
+
+	it.effect('rejects corrupt image bundle metadata before publish', () =>
+		Effect.gen(function* () {
+			const root = freshRoot();
+			const pauseCalls: string[] = [];
+			const saveCalls: ImageRef[] = [];
+			const removeImageCalls: ImageRef[] = [];
+			const unpauseCalls: string[] = [];
+			try {
+				const runtime = runtimeStub({
+					handlesByRole: {
+						validator: {
+							id: 'validator-id',
+							name: 'validator-container',
+							imageName: 'devstack-build:sui-validator',
+							status: 'running',
+							ips: [],
+						},
+					},
+					saveImage: (ref) => Stream.make(Buffer.from(`tar:${ref.tag ?? ref.digest}`)),
+					saveImages: () => Stream.make(tarEntry('manifest.json', Buffer.from('{not json'))),
+					pauseCalls,
+					saveCalls,
+					removeImageCalls,
+					unpauseCalls,
+				});
+
+				mkdirSync(join(root, 'artifact'), { recursive: true });
+				const exit = yield* runCaptureExit(root, runtime, [participant(['validator'])]).pipe(
+					Effect.provide(NodeFileSystem.layer),
+				);
+
+				expect(Exit.isFailure(exit)).toBe(true);
+				const error = Exit.findErrorOption(exit);
+				expect(error._tag).toBe('Some');
+				if (error._tag === 'Some') {
+					expect(error.value).toBeInstanceOf(CapturePhaseError);
+					if (error.value._tag === 'SnapshotCapturePhaseError') {
+						expect(error.value.phase).toBe('save-images');
+						expect(error.value.detail).toContain('manifest.json');
+					}
+				}
+				expect(saveCalls.map((ref) => ref.tag)).toEqual(['snapshot:validator-container']);
+				expect(removeImageCalls).toEqual([
+					{ digest: 'sha256:validator-container', tag: 'snapshot:validator-container' },
+				]);
+				expect(unpauseCalls).toEqual(['validator-container']);
+				expect(existsSync(join(root, 'artifact', SnapshotLayout.metaFile))).toBe(false);
+				expect(existsSync(join(root, 'artifact', SnapshotLayout.integrityFile))).toBe(false);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}),
+	);
+
+	it.effect('rejects saved image bundle tag mismatches before publish', () =>
+		Effect.gen(function* () {
+			const root = freshRoot();
+			const pauseCalls: string[] = [];
+			const saveCalls: ImageRef[] = [];
+			const removeImageCalls: ImageRef[] = [];
+			const unpauseCalls: string[] = [];
+			try {
+				const runtime = runtimeStub({
+					handlesByRole: {
+						validator: {
+							id: 'validator-id',
+							name: 'validator-container',
+							imageName: 'devstack-build:sui-validator',
+							status: 'running',
+							ips: [],
+						},
+					},
+					saveImage: (ref) => Stream.make(Buffer.from(`tar:${ref.tag ?? ref.digest}`)),
+					saveImages: () => Stream.make(dockerSaveBundleTar(['snapshot:other'])),
+					pauseCalls,
+					saveCalls,
+					removeImageCalls,
+					unpauseCalls,
+				});
+
+				mkdirSync(join(root, 'artifact'), { recursive: true });
+				const exit = yield* runCaptureExit(root, runtime, [participant(['validator'])]).pipe(
+					Effect.provide(NodeFileSystem.layer),
+				);
+
+				expect(Exit.isFailure(exit)).toBe(true);
+				const error = Exit.findErrorOption(exit);
+				expect(error._tag).toBe('Some');
+				if (error._tag === 'Some') {
+					expect(error.value).toBeInstanceOf(CapturePhaseError);
+					if (error.value._tag === 'SnapshotCapturePhaseError') {
+						expect(error.value.phase).toBe('save-images');
+						expect(error.value.detail).toContain('snapshot:validator-container');
+						expect(error.value.detail).toContain('snapshot:other');
+					}
+				}
+				expect(saveCalls.map((ref) => ref.tag)).toEqual(['snapshot:validator-container']);
+				expect(removeImageCalls).toEqual([
+					{ digest: 'sha256:validator-container', tag: 'snapshot:validator-container' },
+				]);
+				expect(unpauseCalls).toEqual(['validator-container']);
+				expect(existsSync(join(root, 'artifact', SnapshotLayout.metaFile))).toBe(false);
+				expect(existsSync(join(root, 'artifact', SnapshotLayout.integrityFile))).toBe(false);
 			} finally {
 				rmSync(root, { recursive: true, force: true });
 			}
@@ -645,6 +813,12 @@ describe('snapshot capture container images', () => {
 						},
 					},
 					saveImage: () =>
+						Stream.fail({
+							_tag: 'ContainerRuntimeError',
+							reason: 'image-save-failed',
+							detail: 'save failed',
+						}),
+					saveImages: () =>
 						Stream.fail({
 							_tag: 'ContainerRuntimeError',
 							reason: 'image-save-failed',
