@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import { Effect, Fiber, Schema, Stream } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
+import type { EngineCommand } from '../../../../src/substrate/events.ts';
 import {
 	commandChannelPaths,
 	CommandRecordSchema,
@@ -96,7 +97,13 @@ describe('command-channel', () => {
 						);
 						// Give the supervisor a tick to attach.
 						yield* Effect.sleep('30 millis');
-						const published = yield* publisher.publish({ tag: 'shutdown.requested' });
+						const command = {
+							tag: 'shutdown.hardKillRequested',
+							signal: 'SIGINT',
+							exitCode: 130,
+							at: 0,
+						} satisfies EngineCommand;
+						const published = yield* publisher.publish(command);
 						const reply = yield* publisher.awaitCompletion(published.id, {
 							timeoutMillis: 2000,
 						});
@@ -143,14 +150,21 @@ describe('command-channel', () => {
 					Effect.gen(function* () {
 						const publisher = yield* makeCommandChannelPublisher(paths);
 						yield* publisher.publish({ tag: 'shutdown.requested' });
+						yield* publisher.publish({
+							tag: 'shutdown.hardKillRequested',
+							signal: 'SIGTERM',
+							exitCode: 143,
+							at: 0,
+						});
 						yield* publisher.publish({ tag: 'apply.requested' });
 					}),
 				);
 				const decode = Schema.decodeUnknownSync(CommandRecordSchema);
 				const all = yield* readAllRecords<CommandRecord>(paths.commandsFile, (raw) => decode(raw));
-				expect(all).toHaveLength(2);
+				expect(all).toHaveLength(3);
 				expect((all[0]!.command as { tag: string }).tag).toBe('shutdown.requested');
-				expect((all[1]!.command as { tag: string }).tag).toBe('apply.requested');
+				expect((all[1]!.command as { tag: string }).tag).toBe('shutdown.hardKillRequested');
+				expect((all[2]!.command as { tag: string }).tag).toBe('apply.requested');
 			} finally {
 				rmSync(root, { recursive: true, force: true });
 			}

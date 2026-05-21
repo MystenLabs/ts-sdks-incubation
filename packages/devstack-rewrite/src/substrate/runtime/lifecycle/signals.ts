@@ -8,10 +8,11 @@
 //   - ONE handler per process. Registering twice is a programmer
 //     error.
 //   - Signals translate to `EngineCommand`s on the typed command stream
-//     (`shutdown.requested` for graceful, `stack.stop`+abort for hard).
-//   - Second SIGINT/SIGTERM escalates to abort: the in-flight teardown
-//     is interrupted, `process.exit(130)` (or 143 for SIGTERM)
-//     terminates immediately.
+//     (`shutdown.requested` for graceful, `shutdown.hardKillRequested`
+//     for hard).
+//   - Second SIGINT/SIGTERM escalates to abort: the hard-kill command
+//     is offered first, then `process.exit(130)` (or 143 for SIGTERM)
+//     is scheduled.
 //
 // The supervisor wires this fiber once at boot via `Effect.forkScoped`;
 // its scope is the supervisor's outer scope, so the handler unregisters
@@ -20,11 +21,11 @@
 
 import { Effect, Queue, Scope } from 'effect';
 
-import type { EngineCommand } from '../../events.ts';
+import type { EngineCommand, ShutdownSignal } from '../../events.ts';
 
 /** Signals the supervisor handles. SIGHUP intentionally omitted —
  *  reconfigure is a command-channel concern, not a signal one. */
-const HANDLED_SIGNALS = ['SIGINT', 'SIGTERM'] as const;
+const HANDLED_SIGNALS = ['SIGINT', 'SIGTERM'] as const satisfies ReadonlyArray<ShutdownSignal>;
 type HandledSignal = (typeof HANDLED_SIGNALS)[number];
 
 /** Map a signal to the exit code POSIX clients expect — 128 + N. */
@@ -37,9 +38,20 @@ const exitCodeForSignal = (signal: HandledSignal): number => {
 	}
 };
 
+export interface SignalHandlerOptions {
+	readonly scheduleExit?: (exitCode: number) => void;
+}
+
+const scheduleProcessExit = (exitCode: number): void => {
+	setImmediate(() => {
+		process.exit(exitCode);
+	});
+};
+
 /**
  * Install signal handlers that publish `shutdown.requested` (first
- * signal) and force-exit (second signal of the same kind).
+ * signal) and `shutdown.hardKillRequested` before scheduling process
+ * exit (second handled signal).
  *
  * Returns an Effect that runs forever in its Scope; the supervisor
  * forks it via `Effect.forkScoped`. Scope close unregisters the
@@ -48,13 +60,11 @@ const exitCodeForSignal = (signal: HandledSignal): number => {
  */
 export const installSignalHandler = (
 	commands: Queue.Enqueue<EngineCommand>,
+	options: SignalHandlerOptions = {},
 ): Effect.Effect<never, never, Scope.Scope> =>
 	Effect.gen(function* () {
-		// Per-signal toggle: first delivery → publish shutdown.requested;
-		// second delivery → process.exit. State lives on a Map keyed by
-		// signal so a stray SIGINT followed by a SIGTERM both arm
-		// independently.
-		const armed = new Map<HandledSignal, boolean>();
+		const scheduleExit = options.scheduleExit ?? scheduleProcessExit;
+		let shutdownRequested = false;
 
 		const handlers: Array<{
 			readonly signal: HandledSignal;
@@ -63,19 +73,21 @@ export const installSignalHandler = (
 
 		for (const signal of HANDLED_SIGNALS) {
 			const listener: NodeJS.SignalsListener = () => {
-				if (armed.get(signal) === true) {
-					// Second signal → escalate.
-					// Best-effort: tell the supervisor to abort BEFORE we exit
-					// so any cause-walker output reaches the user. The
-					// `process.exit` happens on the next tick so the runtime
-					// can drain the queue.
-					queueMicrotask(() => {
-						process.exit(exitCodeForSignal(signal));
-					});
+				const exitCode = exitCodeForSignal(signal);
+				if (shutdownRequested) {
+					const offerEffect = Queue.offer(commands, {
+						tag: 'shutdown.hardKillRequested',
+						signal,
+						exitCode,
+						at: Date.now(),
+					} satisfies EngineCommand).pipe(
+						Effect.andThen(Effect.sync(() => scheduleExit(exitCode))),
+					);
+					Effect.runFork(offerEffect);
 					return;
 				}
-				armed.set(signal, true);
-				process.exitCode ??= exitCodeForSignal(signal);
+				shutdownRequested = true;
+				process.exitCode ??= exitCode;
 				// Publish `shutdown.requested` — same shape regardless of
 				// which signal fired. The supervisor decides drain vs abort
 				// on its own loop.

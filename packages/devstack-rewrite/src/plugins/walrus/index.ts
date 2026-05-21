@@ -638,7 +638,6 @@ export {
 	WAL_FAUCET_STRATEGY_KEY,
 	type WalFaucetStrategy,
 	type WalFaucetRequest,
-	type WalSwapError,
 } from './faucet-strategy.ts';
 export {
 	WALRUS_STATE_REGISTRY_KEY,

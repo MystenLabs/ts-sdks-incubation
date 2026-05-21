@@ -8,13 +8,9 @@ notes were deleted after migration; this ledger is the current checklist.
 
 ## P0: CLI/TUI operator surface is not old-devstack quality
 
-- Add an explicit hard-kill path and make second-signal behavior testable. TUI-only blocker:
-  `EngineCommand` currently has graceful `shutdown.requested` and legacy `stack.stop`, but no
-  explicit hard-kill/abort command, no second-signal command, and no ack state for the renderer or
-  CLI channel to publish/assert. The existing signal handler exits the process on a second signal
-  without emitting a typed hard-kill command.
 - Re-evaluate the CLI library/design. Help now has a command tree, but subcommand help, standard CLI
-  behavior, and `up` integration still need a product-level acceptance pass against the live product.
+  behavior, and `up` integration still need a product-level acceptance pass against the live
+  product.
 - `up` intentionally remains split in the bin entry for outer-runtime/signal ownership; the split
   must stay verified.
 - Required verb parity includes `apply`, `wipe`, `stack`, `fork`, `doctor`, `status`, `logs`,
@@ -54,14 +50,14 @@ Evidence landed 2026-05-21:
 - Operator/API/extras wave targeted tests passed for CLI/TUI dispatch/rendering, including exec,
   help, command split, TUI event log, display derivation, input commands, plain rendering, and error
   panes.
-- Hard-kill remains open: the current write slice did not change the substrate `EngineCommand`
-  union/runtime ack protocol, so only the available graceful `q`/Ctrl-C path is tested in
-  `test/surfaces/tui/input-commands.test.ts`.
+- 2026-05-21 Worker Hard Kill: `EngineCommand` now includes `shutdown.hardKillRequested`; the L0
+  signal handler publishes it on the second handled SIGINT/SIGTERM before scheduling process exit;
+  the supervisor consumes it, flips shutdown state, and emits `shutdown.escalated` for
+  renderers/plain logs; the command-channel publisher and ack path round-trip the hard-kill tag.
+  Targeted tests passed:
+  `pnpm --filter @mysten-incubation/devstack-rewrite exec vitest run test/substrate/runtime/lifecycle/signals.test.ts test/substrate/runtime/supervisor.test.ts test/substrate/runtime/cross-process/command-channel.test.ts test/surfaces/tui/input-commands.test.ts test/surfaces/tui/plain-renderer.test.ts test/surfaces/tui/event-log.test.ts`.
 
 ## P0: Engine state, errors, and logs are not wired as a reliable product
-
-- Tagged-error style is split across plain interfaces, `Schema.TaggedErrorClass`, and
-  `Data.TaggedError`; unify or document the final subsystem rule before release.
 
 Acceptance evidence:
 
@@ -90,6 +86,10 @@ Evidence landed 2026-05-21:
   `test/substrate/runtime/projection/persisted.test.ts`.
 - Channel-backed `devstack logs` no longer uses a completed shutdown effect; the existing logs
   command NDJSON/envelope behavior remains covered by `test/surfaces/cli/commands/logs.test.ts`.
+- Tagged-error style now has a final subsystem rule in `STYLE_GUIDE.md` §2. `ARCHITECTURE.md`
+  narrows plain `Error` discipline to `build-integrations/runtime` synchronous readers, and the
+  orphan WAL swap public export was removed so Walrus exports stay aligned with `WalrusError` and
+  `WALRUS_ERROR_TAGS`.
 
 ## P0: Docker ownership and lifecycle safety
 
@@ -129,8 +129,22 @@ Closed evidence:
 
 - Package metadata still says `@mysten-incubation/devstack-rewrite` and is private. Final cutover
   rename remains deferred.
+- Cutover must leave exactly one publishable `@mysten-incubation/devstack` package under
+  `./packages/*`: preserve the load-bearing old notes first, delete old `packages/devstack`, then
+  move the rewrite into `packages/devstack` before removing `private`.
 - Install-from-tarball smoke still needs to import every exported subpath and boot a minimal stack
   after the final package rename decision.
+- Installed consumer type smoke must pass. The rewrite currently points export `types` at `src/*.ts`
+  while `tsdown` emits no `.d.mts`; either emit final declaration files or prove the published
+  source-type contract works from an external consumer.
+- Tarball contents must exclude generated source artifacts (`src/generated/**`) in addition to
+  samples and `dist/node_modules`.
+- Public runtime discovery must find the manifest written by the production `runStack` path in an
+  installed consumer. The preview smoke should call both `discoverManifestPath` and
+  `readStackContext` after a no-Docker minimal boot.
+- `.github/workflows/devstack-e2e.yml` still targets the old example/product-test shape. Before
+  cutover, update the matrix/scripts or add equivalent rewrite Playwright suites so CI exercises the
+  replacement package, not stale v3 assumptions.
 
 Acceptance evidence:
 
@@ -142,6 +156,9 @@ Acceptance evidence:
 
 Closed evidence:
 
+- 2026-05-21 Preview Publish Audit: `pkg-pr-new.yml` already builds and publishes `./packages/*`; no
+  workflow change is needed if cutover replaces old `packages/devstack` in place and leaves the
+  rewrite as the sole non-private `@mysten-incubation/devstack` package.
 - 2026-05-21 Worker E: `./samples` was removed from package exports and tsdown entries, and `files`
   excludes `src/samples`/`dist/samples`; `npm pack --dry-run --json` returned `samples: []`.
 - 2026-05-21 Worker E: Vitest/browser setup injection now uses flat public subpaths
@@ -251,9 +268,9 @@ Closed evidence:
 - 2026-05-21 Worker Ledger Finalize: direct cross-plugin references are closed for the known API
   wave surfaces: package/coin/action, Seal, Walrus, DeepBook, and stack extras now use direct public
   values or refuse unsupported options at the public boundary.
-- 2026-05-21 Worker Ledger Finalize: targeted operator/API/extras tests passed across package,
-  coin, action, DeepBook, manifest extras, build-integration runtime read context, and codegen
-  service coverage.
+- 2026-05-21 Worker Ledger Finalize: targeted operator/API/extras tests passed across package, coin,
+  action, DeepBook, manifest extras, build-integration runtime read context, and codegen service
+  coverage.
 
 ## P0: Codegen contracts are inconsistent
 
@@ -366,6 +383,9 @@ Acceptance evidence:
 ## Worktree and checkpoint blockers
 
 - Clean generated artifacts before staging.
+- Before the physical package/example cutover, clean ignored generated/runtime outputs under
+  `packages/devstack`, `packages/devstack-rewrite`, and `examples` so directory moves do not drag
+  `dist`, `.turbo`, `node_modules`, `.devstack`, or generated code through review.
 - Regenerate the lockfile after removing stale generated importers.
 - Exclude unrelated dev-wallet/changeset/old `examples/wallet` dirty files.
 - Do not create a giant checkpoint commit. Use the checkpoint sequence in `CURRENT-HANDOFF.md`.
@@ -378,14 +398,13 @@ Closed evidence:
   `pnpm --filter @mysten-incubation/example-deepbook-full-rewrite typecheck`.
 - 2026-05-21 Worker Ledger Finalize: package typecheck passes:
   `pnpm --filter @mysten-incubation/devstack-rewrite typecheck`.
-- 2026-05-21 Worker Ledger Finalize: changed-file formatting passes using Prettier on changed
-  files, and changed-file oxlint passes with 0 warnings / 0 errors.
+- 2026-05-21 Worker Ledger Finalize: changed-file formatting passes using Prettier on changed files,
+  and changed-file oxlint passes with 0 warnings / 0 errors.
 - 2026-05-21 Worker Ledger Finalize: targeted operator/API/extras wave tests pass across 17 files /
   95 tests covering CLI/TUI dispatch/rendering, package/coin/action, DeepBook, manifest extras,
   build-integration runtime read context, and codegen service.
 - 2026-05-21 Worker Ledger Finalize: example typechecks pass for
-  `@mysten-incubation/example-wallet-rewrite`,
-  `@mysten-incubation/example-token-studio-rewrite`,
+  `@mysten-incubation/example-wallet-rewrite`, `@mysten-incubation/example-token-studio-rewrite`,
   `@mysten-incubation/example-fork-greeting-rewrite`, and
   `@mysten-incubation/example-deepbook-full-rewrite`. Wallet and token-studio typecheck scripts run
   `devstack apply` and logged non-fatal `sui#0` acquire failures, so this is typecheck/config
@@ -397,12 +416,19 @@ Closed evidence:
   `pnpm --filter @mysten-incubation/devstack-rewrite build`.
 - 2026-05-21 Worker Ledger Finalize: package build passes:
   `pnpm --filter @mysten-incubation/devstack-rewrite build`.
+- 2026-05-21 Orchestrator Runtime/Error Checkpoint: package typecheck, package build, and full
+  package tests passed after the hard-kill/error-style wave:
+  `pnpm --filter @mysten-incubation/devstack-rewrite typecheck`,
+  `pnpm --filter @mysten-incubation/devstack-rewrite build`, and
+  `pnpm --filter @mysten-incubation/devstack-rewrite test` (126 files / 829 tests). Focused
+  hard-kill/stage-and-swap tests also passed across 7 files / 43 tests; changed-file Prettier,
+  changed-file oxlint, and `git diff --check` passed.
 
 ## Partially completed items that still need verification
 
 - Command-tree/help work landed, but standard CLI behavior and subcommand UX still need acceptance.
-- TUI renderer selection, log stream, grouping, endpoints, cause rendering, and `q` routing have
-  targeted tests, but manual live operator proof and hard-kill/second-signal behavior remain open.
+- TUI renderer selection, log stream, grouping, endpoints, cause rendering, `q` routing, and
+  hard-kill/second-signal behavior have targeted tests, but manual live operator proof remains open.
 - Startup pending display had partial early-handle work; verify against real startup and failure in
   manual product evidence.
 - Docker Desktop grouping labels were implemented, but visual verification remains open.

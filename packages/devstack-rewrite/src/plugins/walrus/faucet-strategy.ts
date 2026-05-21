@@ -38,20 +38,6 @@ export interface WalFaucetRequest {
 	readonly amount: bigint; // MIST (1 SUI = 10^9 MIST)
 }
 
-/** Per-strategy faucet error — mirrors the faucet plugin's open
- *  domain shape, narrowed to walrus's failure modes.
- *
- *  Distilled-doc §"Failure modes" — "Seed-WAL swap fails" surfaces
- *  as `WalrusError{phase: 'seed'}`. Here we carry a more specific
- *  faucet-domain tag so the faucet dispatcher can branch. */
-export interface WalSwapError {
-	readonly _tag: 'WalSwapError';
-	readonly address: string;
-	readonly amount: bigint;
-	readonly message: string;
-	readonly cause?: unknown;
-}
-
 /** Faucet strategy value — closed over the WAL exchange's object
  *  id + the admin signer at construction time. The dispatch site
  *  invokes `request(...)` and gets a typed `Effect<void, error>`. */

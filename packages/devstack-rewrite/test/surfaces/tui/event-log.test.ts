@@ -62,6 +62,22 @@ describe('event log derivation', () => {
 		expect(endpoint?.text).toContain('endpoint rpc: http://localhost:9000');
 	});
 
+	it('renders shutdown escalation as an operator warning', () => {
+		const line = eventLogLineFromEvent(
+			{
+				tag: 'shutdown.escalated',
+				signal: 'SIGINT',
+				exitCode: 130,
+				at: AT,
+			},
+			3,
+		);
+		expect(line).toMatchObject({
+			level: 'warn',
+			text: '20:11:32 shutdown escalated by SIGINT (exit 130)',
+		});
+	});
+
 	it('keeps the event log bounded', () => {
 		const lines = Array.from({ length: MAX_EVENT_LOG_LINES + 2 }, (_, idx) => ({
 			id: String(idx),

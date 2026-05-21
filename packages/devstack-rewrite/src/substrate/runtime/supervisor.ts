@@ -909,6 +909,22 @@ const handleCommand = (
 				});
 				return;
 			}
+			case 'shutdown.hardKillRequested': {
+				yield* publish(ref, hub, {
+					tag: 'shutdown.escalated',
+					signal: cmd.signal,
+					exitCode: cmd.exitCode,
+					at: cmd.at,
+				});
+				yield* setCyclePhase(ref, 'shutting-down');
+				yield* Ref.set(shutdownLatch, true);
+				yield* logger.log('supervisor', null, {
+					level: 'fatal',
+					message: `shutdown escalated by ${cmd.signal}`,
+					fields: { signal: cmd.signal, exitCode: cmd.exitCode },
+				});
+				return;
+			}
 			case 'stack.restart': {
 				const plan = planFullDrain(graph);
 				const restarted = yield* doSelectiveRestart(

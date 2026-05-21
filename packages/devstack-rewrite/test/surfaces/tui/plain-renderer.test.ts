@@ -97,6 +97,18 @@ describe('plain-renderer formatters', () => {
 		expect(line).toContain('target=sui');
 	});
 
+	it('formats shutdown.escalated with signal and exit code', () => {
+		const line = formatEventLine({
+			tag: 'shutdown.escalated',
+			signal: 'SIGTERM',
+			exitCode: 143,
+			at: STATIC_AT,
+		});
+		expect(line).toContain('shutdown.escalated');
+		expect(line).toContain('signal=SIGTERM');
+		expect(line).toContain('exitCode=143');
+	});
+
 	it('emits one line per heartbeat invocation', () => {
 		const out = formatHeartbeat(STATIC_AT, 'sui', 'pulling image', 'service');
 		expect(out.split('\n').length).toBe(1);

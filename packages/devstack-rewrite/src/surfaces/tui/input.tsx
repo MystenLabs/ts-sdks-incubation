@@ -13,7 +13,8 @@
 //   r | R                  -> 'stack.restart'
 //   ctrl-c                 -> 'shutdown.requested' (additionally, the
 //                             supervisor's signal handler counts the
-//                             second hit toward hard-kill — the
+//                             second handled SIGINT/SIGTERM as
+//                             'shutdown.hardKillRequested' — the
 //                             renderer does not own that logic)
 //   s | S                  -> 'snapshot.capture'
 //   up/down | j/k          -> local row focus movement

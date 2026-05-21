@@ -62,6 +62,12 @@ export const eventLogLineFromEvent = (event: EngineEvent, seq: number): EventLog
 				level: 'info',
 				text: `${time(at)} restart completed for ${targetLabel(event.target)}`,
 			};
+		case 'shutdown.escalated':
+			return {
+				id,
+				level: 'warn',
+				text: `${time(at)} shutdown escalated by ${event.signal} (exit ${event.exitCode})`,
+			};
 		case 'snapshot.captured':
 			return { id, level: 'info', text: `${time(at)} snapshot captured ${event.snapshotId}` };
 		case 'snapshot.restored':

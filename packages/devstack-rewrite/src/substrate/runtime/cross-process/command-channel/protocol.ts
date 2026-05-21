@@ -17,12 +17,13 @@
 // for an `event` carrying `correlatesTo: <same id>`).
 //
 // `EngineCommand` / `EngineEvent` payloads are NOT re-decoded on the
-// wire: they are typed unions at the type boundary, and round-trip
-// faithfully through JSON (closed string-tag-discriminated unions with
-// JSON-safe payloads). The channel validates the envelope (`protocol`,
-// `seq`, `id`, `correlatesTo`) and treats the inner payload as
-// `Schema.Unknown`. A future hardening pass can promote the inner
-// payloads to typed schemas without changing this file's contract.
+// wire: the publisher API accepts typed commands, and both payload
+// kinds round-trip faithfully through JSON (closed string-tag-
+// discriminated unions with JSON-safe payloads). The channel validates
+// the envelope (`protocol`, `seq`, `id`, `correlatesTo`) and treats
+// the inner payload as `Schema.Unknown`. A future hardening pass can
+// promote the inner payloads to typed schemas without changing this
+// file's contract.
 
 import { Schema } from 'effect';
 

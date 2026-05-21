@@ -102,19 +102,20 @@ When uncertain, defer to `.repos/effect-v4/` (cloned by `scripts/setup-repos.sh`
 
 ## 2. Tagged errors
 
-**TBD — pending cross-cutting unification decision.** Three styles exist today (cross-cutting review
-§"Error model"):
+There is no package-wide error-class unification planned. Match the style of the subsystem boundary
+that owns the value:
 
-1. Plain `interface { _tag: '...' }` + factory function — every L2 plugin.
-2. `Schema.TaggedErrorClass` — substrate + orchestrators.
-3. `Data.TaggedError` — runtime adapters + observability + CLI/TUI + build integrations.
+1. L2 plugins and public contracts use plain structural `_tag` interfaces plus factories for
+   plugin-author/public boundary values.
+2. Schema-bearing substrate/orchestrator failures use `Schema.TaggedErrorClass`.
+3. Runtime adapters, CLI/cross-process/observability, and per-integration L5 errors use
+   `Data.TaggedError`.
+4. `build-integrations/runtime` synchronous reader errors use plain `Error` subclasses; Vite,
+   Vitest, Playwright, and Browser integration-specific errors may use `Data.TaggedError`.
 
-Until the unification PR lands:
+Rules that apply across all four styles:
 
-- Do NOT introduce a fourth style.
-- Match the style of the **surrounding subsystem** when adding errors. New L2 plugin error? Plain
-  interface + factory. New orchestrator? `Schema.TaggedErrorClass`. New runtime adapter?
-  `Data.TaggedError`.
+- Do NOT introduce a fifth style.
 - `cause` field: prefer `Schema.optional(Schema.Defect)` where the style permits it (this is the
   v4-idiomatic shape and round-trips cleanly through the cascade formatter and CLI envelope).
   Plain-interface plugins use `cause?: unknown` — fine, but document.

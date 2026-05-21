@@ -188,6 +188,11 @@ const payloadFor = (event: EngineEvent): string => {
 			return kv({
 				target: event.target === 'stack' ? 'stack' : event.target.pluginKey,
 			});
+		case 'shutdown.escalated':
+			return kv({
+				signal: event.signal,
+				exitCode: event.exitCode,
+			});
 		case 'sibling.deduped':
 			return kv({
 				composite: event.composite,

@@ -310,6 +310,38 @@ describe('supervisor harvest loop', () => {
 		}),
 	);
 
+	it.effect('hard-kill command publishes shutdown escalation and flips shutdown state', () =>
+		Effect.gen(function* () {
+			const state = yield* makeProjectionRef();
+			const stack: SupervisedStack = { _tag: 'Stack', members: [], options: {} };
+			const at = Date.parse('2026-05-21T12:00:00.000Z');
+
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const startup = yield* startSupervisor(stack, identity, state);
+					yield* Queue.offer(startup.handle.commands, {
+						tag: 'shutdown.hardKillRequested',
+						signal: 'SIGINT',
+						exitCode: 130,
+						at,
+					});
+
+					const event = yield* Queue.take(startup.handle.events);
+					expect(event).toEqual({
+						tag: 'shutdown.escalated',
+						signal: 'SIGINT',
+						exitCode: 130,
+						at,
+					});
+					yield* startup.handle.awaitShutdown;
+				}),
+			);
+
+			const snap = yield* SubscriptionRef.get(state);
+			expect(snap.cycle.phase).toBe('shutting-down');
+		}),
+	);
+
 	it.effect('dispatches each CapabilityDecl kind to its OrchestratorSinks slot', () =>
 		Effect.gen(function* () {
 			const { ref, sinks } = yield* makeCapture();
@@ -597,7 +629,9 @@ describe('supervisor harvest loop', () => {
 				Effect.gen(function* () {
 					const loggerContext = yield* Layer.build(layerLogger);
 					const logger = Context.get(loggerContext, Logger);
-					const pluginContext = Context.empty().pipe(Context.add(Logger, logger)) as Context.Context<never>;
+					const pluginContext = Context.empty().pipe(
+						Context.add(Logger, logger),
+					) as Context.Context<never>;
 					const startup = yield* startSupervisor(stack, identity, state, pluginContext);
 					const eventFiber = yield* Effect.forkScoped(
 						Effect.gen(function* () {

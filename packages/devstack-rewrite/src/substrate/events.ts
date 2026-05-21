@@ -9,6 +9,8 @@ import type { EndpointKey, PluginKey } from './brand.ts';
 import type { LifecycleStatus, PhaseNarration } from './lifecycle.ts';
 import type { BuildEntry, Endpoint, StructuredError } from './projection.ts';
 
+export type ShutdownSignal = 'SIGINT' | 'SIGTERM';
+
 /** Typed lifecycle event stream. Architecture-enumerated categories. */
 export type EngineEvent =
 	| {
@@ -80,6 +82,12 @@ export type EngineEvent =
 			readonly at: number;
 	  }
 	| {
+			readonly tag: 'shutdown.escalated';
+			readonly signal: ShutdownSignal;
+			readonly exitCode: number;
+			readonly at: number;
+	  }
+	| {
 			readonly tag: 'sibling.deduped';
 			readonly composite: PluginKey;
 			readonly siblingKey: string;
@@ -116,6 +124,12 @@ export type EngineCommand =
 	| { readonly tag: 'prune.requested' }
 	| { readonly tag: 'advance-clock.requested'; readonly toMillis: number }
 	| { readonly tag: 'shutdown.requested' }
+	| {
+			readonly tag: 'shutdown.hardKillRequested';
+			readonly signal: ShutdownSignal;
+			readonly exitCode: number;
+			readonly at: number;
+	  }
 	| {
 			readonly tag: 'selective-restart.requested';
 			readonly pluginKey: PluginKey;

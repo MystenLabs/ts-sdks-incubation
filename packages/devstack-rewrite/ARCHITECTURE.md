@@ -303,9 +303,10 @@ as intentional.
 Other integrations MUST delegate. Today vite/vitest/playwright/browser each reimplement — release
 blocker; see STYLE_GUIDE §7 / Open slot O7.
 
-Build-integration errors use plain `Error` subclasses (NOT `Data.TaggedError`). Justified by header
-comment: "sync-blocking, apps use `try/catch`". Browser/setup.ts that imports `Data` from `effect`
-is flagged for cleanup.
+Only `build-integrations/runtime` synchronous reader errors use plain `Error` subclasses. They are
+sync-blocking app startup reads, so callers use plain `try` / `catch`. Per-integration Vite, Vitest,
+Playwright, and Browser errors may use `Data.TaggedError` for integration-specific failures; they
+still delegate manifest discovery/shape/cold-start behavior to `runtime/`.
 
 ---
 

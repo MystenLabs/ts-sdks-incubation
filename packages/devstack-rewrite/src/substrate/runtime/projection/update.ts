@@ -121,6 +121,11 @@ export const applyEvent = (state: SubscribableState, event: EngineEvent): Subscr
 			// revision per G2.)
 			return withTouched({});
 
+		case 'shutdown.escalated':
+			return withTouched({
+				cycle: { ...state.cycle, phase: 'shutting-down' },
+			});
+
 		case 'error.reported':
 			return withTouched({
 				errors: pushBounded(state.errors, event.error, MAX_ERRORS_KEPT),

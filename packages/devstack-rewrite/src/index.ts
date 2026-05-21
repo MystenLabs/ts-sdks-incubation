@@ -381,7 +381,6 @@ export {
 	type WalrusPhase,
 	type WalFaucetStrategy,
 	type WalFaucetRequest,
-	type WalSwapError,
 } from './plugins/walrus/index.ts';
 
 // --- Seal ---------------------------------------------------------------

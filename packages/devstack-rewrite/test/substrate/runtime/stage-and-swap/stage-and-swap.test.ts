@@ -149,7 +149,7 @@ describe('stageAndSwap', () => {
 				mkdirSync(target, { recursive: true });
 				const paths = commandChannelPaths(target);
 				const publisher = yield* makeCommandChannelPublisher(paths);
-				yield* publisher.publish({ tag: 'before.swap' });
+				yield* publisher.publish({ tag: 'stack.start' });
 
 				const staging = join(root, 'target.staging');
 				const backup = join(root, 'target.bak');
@@ -167,7 +167,9 @@ describe('stageAndSwap', () => {
 								Effect.sync(() => {
 									if (oldPath === target && newPath === backup) {
 										writerStarted = true;
-										writerPromise = Effect.runPromise(publisher.publish({ tag: 'during.swap' }));
+										writerPromise = Effect.runPromise(
+											publisher.publish({ tag: 'shutdown.requested' }),
+										);
 										writerPromise.then(
 											() => {
 												writerResolved = true;
@@ -201,10 +203,10 @@ describe('stageAndSwap', () => {
 				);
 
 				const commands = readFileSync(join(target, COMMAND_CHANNEL_COMMANDS_FILE_NAME), 'utf8');
-				expect(commands).toContain('"tag":"before.swap"');
-				expect(commands).toContain('"tag":"during.swap"');
-				expect(commands.indexOf('"tag":"before.swap"')).toBeLessThan(
-					commands.indexOf('"tag":"during.swap"'),
+				expect(commands).toContain('"tag":"stack.start"');
+				expect(commands).toContain('"tag":"shutdown.requested"');
+				expect(commands.indexOf('"tag":"stack.start"')).toBeLessThan(
+					commands.indexOf('"tag":"shutdown.requested"'),
 				);
 				expect(readFileSync(join(target, 'payload'), 'utf8')).toBe('new-content');
 				expect(existsSync(backup)).toBe(false);

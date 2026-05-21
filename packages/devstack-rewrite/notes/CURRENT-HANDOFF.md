@@ -11,17 +11,17 @@ principles and core architecture from `STYLE_GUIDE.md`, `ARCHITECTURE.md`, this 
 The design summary should make these points explicit:
 
 - L0 substrate is name-blind; plugin-domain facts live in L2 or higher.
-- L1 runtime adapters are replaceable backends; Docker is the reference implementation, not a
-  plugin policy layer.
+- L1 runtime adapters are replaceable backends; Docker is the reference implementation, not a plugin
+  policy layer.
 - L2 plugins and custom plugins use the same authoring surface; built-ins get no private powers.
 - L3 orchestrators walk capability declarations and own cross-plugin products such as router,
   snapshot, manifest, and codegen output.
 - L4 surfaces publish commands and subscribe to events/projection only; CLI, TUI, and library entry
   points are peer surfaces.
 - L5 build integrations and apps consume manifest, codegen, env, and typed bridge slots only.
-- The user API should be convention-heavy but direct: values not strings, one root barrel,
-  config declares intent, codegen carries resolved values, and adding a plugin should not move
-  existing lines.
+- The user API should be convention-heavy but direct: values not strings, one root barrel, config
+  declares intent, codegen carries resolved values, and adding a plugin should not move existing
+  lines.
 - This package is unreleased. Fix the surface directly; do not add shims, deprecations, or v2 paths.
 
 Only after that summary exists should the orchestrator choose phase order, assign bounded subagents,
@@ -29,20 +29,21 @@ and write acceptance criteria.
 
 ## Current status
 
-The rewrite is not release-ready. Treat the current implementation as untrusted until the blocker
-ledger is fixed and verified. The recent failures were orchestration failures: too many claims stayed
-in chat or deleted review files, no checkpoint commits were made, and acceptance criteria were not
-promoted into a durable blocker ledger.
+The rewrite is not release-ready. Treat the implementation as untrusted until the blocker ledger is
+fixed and verified. Release-readiness claims belong in `UNRESOLVED-BLOCKERS.md` with evidence, not
+only in chat.
 
-No checkpoint commits have been made. The working tree is broad and dirty:
+Checkpoint commits now exist on `integrate-devstack`:
 
-- 12 tracked dirty files. Rewrite/workspace-facing: `AGENTS.md`, `README.md`,
-  `examples/README.md`, `package.json`, `pnpm-lock.yaml`. Likely unrelated:
-  dev-wallet/comment/changeset cleanup and old `examples/wallet` Move.lock churn.
-- 733 untracked, unignored files, including the full `packages/devstack-rewrite/` package, 13
-  `examples/*-rewrite/` trees, and old devstack redesign/v2 requirements notes.
-- `pnpm --filter @mysten-incubation/devstack-rewrite typecheck` passed in the read-only inventory
-  audit. Full build/test gates were not run in that audit because they write artifacts.
+- `eb8625fb checkpoint(devstack-rewrite): preserve current rewrite state`
+- `f2f77904 fix(devstack-rewrite): close first P0 runtime blockers`
+- `c09662fe fix(devstack-rewrite): tighten public API and codegen contracts`
+- `efabe942 fix(devstack-rewrite): close operator and API ergonomics gaps`
+
+The active uncommitted wave is scoped to hard-kill/second-signal behavior, the final tagged-error
+subsystem rule, and the live blocker-ledger updates for preview/cutover findings. Do not start the
+physical `packages/devstack-rewrite` -> `packages/devstack` cutover until that wave is validated and
+committed.
 
 Generated artifacts and stale generated state must be cleaned before staging:
 
@@ -71,8 +72,8 @@ Generated artifacts and stale generated state must be cleaned before staging:
 
 ## Live check clusters
 
-Use these clusters as compact reminders of facts migrated from the historical plans and reviews.
-The blocker ledger owns the open/closed state.
+Use these clusters as compact reminders of facts migrated from the historical plans and reviews. The
+blocker ledger owns the open/closed state.
 
 ### API and ergonomics
 
@@ -175,11 +176,11 @@ area, and a final full build/test pass before calling the rewrite ready for cuto
 
 ## New orchestrator goal
 
-Bring `packages/devstack-rewrite` from the current untrusted, dirty prototype state to a
-reviewable, release-quality rewrite by making the design principles and architecture explicit,
-fixing the live blocker ledger, restoring old CLI/TUI operator parity where it matters, pruning and
-improving the public surface, proving Docker/codegen/snapshot behavior with production-path tests,
-cleaning generated artifacts, and landing progress in incremental verified checkpoints.
+Bring `packages/devstack-rewrite` from the current untrusted, dirty prototype state to a reviewable,
+release-quality rewrite by making the design principles and architecture explicit, fixing the live
+blocker ledger, restoring old CLI/TUI operator parity where it matters, pruning and improving the
+public surface, proving Docker/codegen/snapshot behavior with production-path tests, cleaning
+generated artifacts, and landing progress in incremental verified checkpoints.
 
 ## New orchestrator prompt
 

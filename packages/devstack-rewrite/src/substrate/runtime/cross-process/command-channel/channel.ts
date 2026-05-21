@@ -19,6 +19,7 @@ import { randomUUID } from 'node:crypto';
 
 import { Effect, Option, Ref, Schema, Stream, Scope } from 'effect';
 
+import type { EngineCommand } from '../../../events.ts';
 import { type CommandChannelError, appendRecord, ensureFile, tailRecords } from './file-channel.ts';
 import {
 	COMMAND_CHANNEL_PROTOCOL_VERSION,
@@ -62,7 +63,9 @@ export interface PublishedCommand {
  * need correlation (TUI-style fire-and-forget) skip the wait.
  */
 export interface CommandChannelPublisher {
-	readonly publish: (command: unknown) => Effect.Effect<PublishedCommand, CommandChannelError>;
+	readonly publish: (
+		command: EngineCommand,
+	) => Effect.Effect<PublishedCommand, CommandChannelError>;
 	readonly awaitCompletion: (
 		id: string,
 		options?: { readonly timeoutMillis?: number },
@@ -95,7 +98,9 @@ export const makeCommandChannelPublisher = (
 		const pid = process.pid;
 		const host = nodeHostname();
 
-		const publish = (command: unknown): Effect.Effect<PublishedCommand, CommandChannelError> =>
+		const publish = (
+			command: EngineCommand,
+		): Effect.Effect<PublishedCommand, CommandChannelError> =>
 			Effect.gen(function* () {
 				const seq = yield* nextSeq(state);
 				const id = `${pid}-${seq}-${randomUUID().slice(0, 8)}`;
