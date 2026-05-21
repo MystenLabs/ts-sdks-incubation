@@ -14,6 +14,7 @@ import { basename, dirname, join, relative } from 'node:path';
 import { Effect, Schema, type Scope } from 'effect';
 
 import type {
+	ContainerBuildContext,
 	ContainerRuntime,
 	ExecResult,
 	ImageRef,
@@ -21,6 +22,16 @@ import type {
 import { contentHash, type ChainId, type ContentHash } from '../../brand.ts';
 
 export type MoveBuildPhase = 'hash' | 'scrub' | 'build' | 'parse';
+
+export const DEFAULT_SUI_CLI_VERSION = 'devnet-v1.71.0';
+
+export const suiCliImageBuildContext = (
+	version = DEFAULT_SUI_CLI_VERSION,
+): ContainerBuildContext => ({
+	contextPath: new URL('../../../../images/', import.meta.url).pathname,
+	dockerfile: 'sui/Dockerfile',
+	buildArgs: { SUI_VERSION: version },
+});
 
 export class MoveBuildError extends Schema.TaggedErrorClass<MoveBuildError>()('MoveBuildError', {
 	phase: Schema.Literals(['hash', 'scrub', 'build', 'parse']),

@@ -9,7 +9,7 @@ import { Effect, FileSystem, Layer, Scope } from 'effect';
 import { isAbsolute, join, resolve } from 'node:path';
 
 import {
-	layerHostMoveSummaryRunner,
+	layerDockerMoveSummaryRunner,
 	layerMystenMoveCodegen,
 	MoveCodegenService,
 	MoveSummaryRunnerService,
@@ -120,7 +120,7 @@ export const layerProductionOrchestrators = (router: ProductionRouterOptions = {
 				}),
 			),
 		),
-		layerHostMoveSummaryRunner,
+		layerDockerMoveSummaryRunner,
 		layerMystenMoveCodegen,
 	);
 };

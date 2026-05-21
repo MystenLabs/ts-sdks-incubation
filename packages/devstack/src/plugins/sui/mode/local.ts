@@ -62,6 +62,10 @@ import type {
 	PortBroker,
 	PortKind,
 } from '../../../substrate/runtime/port-broker/index.ts';
+import {
+	DEFAULT_SUI_CLI_VERSION,
+	suiCliImageBuildContext,
+} from '../../../substrate/runtime/sui-move-build/index.ts';
 import { noopClockAdvancer } from '../auto-tick.ts';
 import { suiPluginError, type SuiPluginError } from '../errors.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
@@ -83,7 +87,7 @@ export const DEFAULT_LOCAL_READY_TIMEOUT = Duration.seconds(60);
  *  `images/sui/` Dockerfile. The build arg `SUI_VERSION` is threaded
  *  through to the release-tarball URL. Bump in lockstep with matching
  *  Walrus / Seal versions (else the Move package ABIs drift). */
-export const DEFAULT_SUI_VERSION = 'devnet-v1.71.0';
+export const DEFAULT_SUI_VERSION = DEFAULT_SUI_CLI_VERSION;
 
 // In-container ports the sui binary binds on. The contract publishes
 // host ports directly, no router indirection.
@@ -239,15 +243,7 @@ export const resolveImage = (
 						dockerfile: opts.image.build.dockerfile ?? 'Dockerfile',
 						buildArgs: { SUI_VERSION: version },
 					}
-				: {
-						// Context is `images/` (NOT `images/sui/`) so the
-						// Dockerfile can `COPY _shared/signal-forward.sh`
-						// from the shared snippet directory. The dockerfile
-						// path is relative to the context.
-						contextPath: new URL('../../../../images/', import.meta.url).pathname,
-						dockerfile: 'sui/Dockerfile',
-						buildArgs: { SUI_VERSION: version },
-					};
+				: suiCliImageBuildContext(version);
 		return yield* runtime
 			.ensureImage(buildCtx)
 			.pipe(
