@@ -6,6 +6,25 @@ This is the live blocker ledger. Do not remove an item until the fix is landed, 
 evidence is recorded, and any stale review/backlog entry is either updated or deleted. Historical
 notes were deleted after migration; this ledger is the current checklist.
 
+## Verified checkpoint: HEAD 2107c689 on integrate-devstack
+
+- 2026-05-21 HEAD `2107c68914e6a56d1cc9db83ae4ace62c404de09` on branch `integrate-devstack`; the
+  worktree was clean before this notes edit.
+- Regular Turborepo CI run `26240767950` passed: `pnpm audit`, lint, build, and test all succeeded.
+- Devstack E2E run `26240767660` passed end to end: Docker integration shards 1/4, 2/4, 3/4, and 4/4
+  succeeded; seed snapshot jobs for `arena`, `private-content`, and `deepbook-full` succeeded;
+  restore snapshot jobs for `arena`, `private-content`, and `deepbook-full` succeeded, including
+  `Validate restored snapshot state`.
+- Continuous Releases / `pkg.pr.new` run `26240767753` succeeded for `2107c689`.
+- Clean temp consumer smoke passed for the `pkg.pr.new` preview package at `2107c689` after
+  installing optional peers `vite@6.4.2`, `vitest@4.1.6`, and `typescript@5.9.3`: CLI help,
+  root/contracts/substrate/runtime/browser/playwright imports, browser import without mutating
+  `globalThis.__devstackDAppKit__`, and Vite/Vitest imports all passed.
+- Recent commits referenced by this checkpoint: `50aa2b90` validate snapshot image bundles on
+  capture, `ea94a0c3` allow slower release surface import, `3a22959a` scan late snapshot image
+  metadata, `d268d401` validate restored snapshots without browser harness, `da9d91a8` validate
+  restored snapshot artifacts, and `2107c689` use hosted Ubuntu for Docker shards.
+
 ## P0: CLI/TUI operator surface is not old-devstack quality
 
 - Re-evaluate the CLI library/design. Help now has a command tree, but subcommand help, standard CLI
@@ -57,7 +76,9 @@ Evidence landed 2026-05-21:
   Targeted tests passed:
   `pnpm --filter @mysten-incubation/devstack-rewrite exec vitest run test/substrate/runtime/lifecycle/signals.test.ts test/substrate/runtime/supervisor.test.ts test/substrate/runtime/cross-process/command-channel.test.ts test/surfaces/tui/input-commands.test.ts test/surfaces/tui/plain-renderer.test.ts test/surfaces/tui/event-log.test.ts`.
 
-## P0: Engine state, errors, and logs are not wired as a reliable product
+## P0: Engine state, errors, and logs are wired as a reliable product (closed at HEAD 2107c689)
+
+No unresolved blocker remains in this section for HEAD `2107c689`.
 
 Acceptance evidence:
 
@@ -90,11 +111,15 @@ Evidence landed 2026-05-21:
   narrows plain `Error` discipline to `build-integrations/runtime` synchronous readers, and the
   orphan WAL swap public export was removed so Walrus exports stay aligned with `WalrusError` and
   `WALRUS_ERROR_TAGS`.
+- 2026-05-21 HEAD `2107c689` closure: regular Turborepo CI run `26240767950` passed
+  audit/lint/build/test, and Devstack E2E run `26240767660` passed all Docker shards plus the
+  `arena`, `private-content`, and `deepbook-full` seed/restore lanes. This closes the section
+  because the targeted logger/projection/error/status/log evidence above remained green after the
+  package cutover and full CI/E2E exercised the integrated runtime state path.
 
 ## P0: Docker ownership and lifecycle safety
 
 - Docker Desktop grouping labels were added, but manual visual verification remains open.
-- Docker image/build contexts must keep required runtime assets available after packing.
 - Native `linux/arm64` Walrus local-cluster image support remains unresolved: upstream Walrus
   `ubuntu-aarch64` devnet assets appear to contain x86-64 binaries. The CI `linux/amd64` path is
   covered by the deploy-capable release pin and binary preflight, but Apple Silicon/native arm64
@@ -218,15 +243,20 @@ Closed evidence:
   and deploy script preflight required `walrus`, `walrus-node`, `walrus-deploy`, and `sui` binaries;
   deploy failures include stdout/stderr excerpts. Orchestrator validation built the Walrus image on
   `linux/amd64`, covering the previous missing-`walrus-deploy` exit-127 failure.
+- 2026-05-21 HEAD `2107c689` Docker CI closure: commit `2107c689` moved Docker shards to hosted
+  Ubuntu, and Devstack E2E run `26240767660` passed Docker integration shards 1/4, 2/4, 3/4, and
+  4/4. Together with the existing ownership/inspect/pack evidence above, this closes the CI
+  runner/shard and required runtime-asset portions for the `linux/amd64` lane. Docker Desktop visual
+  grouping, native `linux/arm64` Walrus policy/support, and stale long-lived Docker network
+  exhaustion policy remain open.
 
-## P0: Package/export/build-integration release surface is broken
+## P0: Package/export/build-integration release surface needs installed boot evidence
 
-- Workspace-level cutover validation remains open for examples, docs, CI, lockfile, and installer
-  smoke after the package-directory move.
-- Install-from-tarball smoke still needs to import every exported subpath and boot a minimal stack
-  after the package-directory move.
-- Devstack E2E now targets the replacement examples and stack-scoped snapshot artifacts, but the
-  latest full CI rerun must still prove the seed/e2e matrices green before this evidence is closed.
+- Clean installed-consumer minimal stack boot from the preview/tarball remains an explicit P0
+  blocker. The HEAD `2107c689` smoke closes the install/help/import/browser/Vite/Vitest portion, but
+  it did not record a minimal stack boot from that clean temp consumer.
+- Docs and example truth gaps remain tracked under P1 product/docs sections; no docs rewrite
+  evidence is claimed here.
 
 Acceptance evidence:
 
@@ -283,9 +313,10 @@ Closed evidence:
 - 2026-05-21 Worker Ledger Finalize: package build and checkpoint pack/browser/static audits pass:
   pack includes required image/setup files and excludes samples/dist-node_modules; browser-facing
   static node-import audit has no matches; old nested specifier audit has no matches.
-- 2026-05-21 Worker Release Surface: package metadata/exports were re-audited; the final rename to
-  `@mysten-incubation/devstack` remains deferred because this branch still carries the
-  `@mysten-incubation/devstack-rewrite` package identity and matching example imports.
+- 2026-05-21 Worker Release Surface: package metadata/exports were re-audited while this branch
+  still carried the `@mysten-incubation/devstack-rewrite` package identity and matching example
+  imports; the later package-directory cutover and HEAD `2107c689` closure below supersede that
+  deferred final-rename state.
 - 2026-05-21 Worker Release Surface: targeted checks passed:
   `pnpm --filter @mysten-incubation/devstack-rewrite exec tsc --noEmit --pretty false`,
   `pnpm --filter @mysten-incubation/devstack-rewrite exec vitest run test/build-integrations/release-surface.test.ts test/build-integrations/manifest-path-parity.test.ts test/build-integrations/runtime/read-stack-context.test.ts test/build-integrations/vitest/config.test.ts test/build-integrations/browser/config.test.ts`,
@@ -308,7 +339,9 @@ Closed evidence:
   and a temporary NodeNext consumer type-smoke importing every exported subpath through package
   exports with `skipLibCheck: true`. Caveat: strict consumer `tsc` without `skipLibCheck` still
   fails inside third-party Effect/fast-check declarations before reporting package export errors;
-  final package name/private and final install-from-tarball boot smoke remain open until cutover.
+  the later package-directory cutover and HEAD `2107c689` closure below supersede the package
+  name/private and install/import portions, while clean installed minimal stack boot remains open
+  above.
 - 2026-05-21 Strict Consumer Closure: clean tarball install, `npx devstack --help`, and ESM runtime
   imports passed, but strict consumer `tsc` without `skipLibCheck` fails solely in
   `effect@4.0.0-beta.65` at `dist/internal/schema/schema.d.ts(3,15)` because `SchemaErrorTypeId` is
@@ -326,9 +359,20 @@ Closed evidence:
 - 2026-05-21 Worker E2E Workflow: the Devstack E2E workflow carries explicit `example` and `stack`
   matrix fields, keeping working directories/artifact names on the example package while using the
   resolved stack name for `.devstack/stacks/<stack>/snapshots`. YAML parse and `git diff --check`
-  passed; full GitHub seed/e2e rerun remains required.
+  passed; the HEAD `2107c689` closure below records the full GitHub seed/e2e rerun.
+- 2026-05-21 HEAD `2107c689` release-surface CI/preview/install-import closure: regular Turborepo CI
+  run `26240767950` passed `pnpm audit`, lint, build, and test; Devstack E2E run `26240767660`
+  passed all Docker shards and the three seed/restore snapshot lanes; Continuous Releases /
+  `pkg.pr.new` run `26240767753` succeeded; and a clean temp consumer installed the preview package
+  with optional peers `vite@6.4.2`, `vitest@4.1.6`, and `typescript@5.9.3` and passed CLI help,
+  root/contracts/substrate/runtime/browser/playwright imports, browser import without mutating
+  `globalThis.__devstackDAppKit__`, and Vite/Vitest imports. This closes the stale full-CI, E2E,
+  preview publish, and install/import portions after the package-directory cutover while leaving the
+  installed minimal stack boot bullet above open.
 
-## P0: Public API ergonomics and unsupported options are not release-quality
+## P0: Public API ergonomics and unsupported options are release-quality (closed at HEAD 2107c689)
+
+No unresolved blocker remains in this section for HEAD `2107c689`.
 
 Acceptance evidence:
 
@@ -406,8 +450,16 @@ Closed evidence:
 - 2026-05-21 Worker Ledger Finalize: targeted operator/API/extras tests passed across package, coin,
   action, DeepBook, manifest extras, build-integration runtime read context, and codegen service
   coverage.
+- 2026-05-21 HEAD `2107c689` closure: regular Turborepo CI run `26240767950` passed
+  audit/lint/build/test, Devstack E2E run `26240767660` passed end to end, and the `pkg.pr.new`
+  clean temp consumer smoke imported the public root/contracts/substrate/runtime/ browser/playwright
+  surfaces plus Vite/Vitest integration surfaces. This closes the section because the prior targeted
+  API evidence stayed green through the final package identity/cutover and the installed preview
+  exposed the intended public subpaths without browser global side effects.
 
-## P0: Codegen contracts are inconsistent
+## P0: Codegen contracts are consistent (closed at HEAD 2107c689)
+
+No unresolved blocker remains in this section for HEAD `2107c689`.
 
 Acceptance evidence:
 
@@ -454,21 +506,27 @@ Closed evidence:
   strict. Targeted test passed: `test/substrate/runtime/sui-move-build/sui-move-build.test.ts`; an
   isolated arena proof ran `apply`, made `move/connect_four/Move.lock` read-only, then
   `snapshot save baseline` successfully captured.
+- 2026-05-21 HEAD `2107c689` closure: regular Turborepo CI run `26240767950` passed build and test,
+  and Devstack E2E run `26240767660` passed the Docker shards plus `arena`, `private-content`, and
+  `deepbook-full` seed/restore snapshot lanes. This closes the section because the targeted
+  single-evaluation, atomic emit, bigint rendering, generated import, and Docker-backed Move/codegen
+  evidence above remained green in the full branch validation.
 
 ## P1: Product evidence is too stub-heavy
 
 - Several e2e tests prove harness wiring or stub outputs rather than real product behavior.
 - Shared boot harness uses stub Traefik and stub Move codegen in places where product tests need the
   real orchestrators.
-- Private-content must prove encrypt -> Walrus store -> Walrus fetch -> decrypt.
-- DeepBook boot tests are not Docker-driven product evidence.
+- Private-content must prove encrypt -> Walrus store -> Walrus fetch -> decrypt as a remaining
+  behavior gap beyond the `2107c689` snapshot seed/restore validation.
 - Redis routable behavior is described but not proven through the routed path or collision path.
 - Docker-dependent tests can soft-skip with warnings, which weakens release evidence.
 - Wallet needs coin balance and endpoint reachability evidence.
 - Postgres needs DB existence, route, and snapshot evidence.
 - Effect-app needs dev/prod branch evidence.
 - Fork-greeting needs either fork-mode evidence or an explicit cutover deferral.
-- Walrus/Seal need restore/codegen evidence.
+- Walrus/Seal snapshot restore is covered for `private-content` at `2107c689`; behavior/codegen
+  proof beyond restored snapshot validation remains open.
 - Manual verification must cover parallel stacks per service: Sui, faucet, wallet, Walrus, Seal,
   DeepBook, Postgres, and plugin-author Redis.
 
@@ -479,12 +537,22 @@ Acceptance evidence:
 - Public examples have Playwright/product tests for their advertised behavior.
 - Manual scenario signoff is recorded only after P0 blockers are closed.
 
+Closed evidence:
+
+- 2026-05-21 HEAD `2107c689` product-gate evidence: Devstack E2E run `26240767660` passed Docker
+  integration shards 1/4, 2/4, 3/4, and 4/4, then passed seed and restore snapshot jobs for `arena`,
+  `private-content`, and `deepbook-full`, including `Validate restored snapshot state`. This closes
+  the stale "not Docker-driven" boot/snapshot evidence gap for those three stacks only. It does not
+  close private-content behavior beyond snapshot restoration, wallet, Postgres, effect-app,
+  fork-greeting, Redis routed/collision proof, Docker soft-skip policy, or manual parallel-stack
+  signoff.
+
 ## P1: Snapshot identity and restore behavior
 
 - Snapshot capture can merge conflicting identity keys by last-write-wins before restore-time
   conflict detection runs.
-- Wallet/Seal/Walrus snapshot coverage needs behavior roundtrips, not only declaration-shape tests.
-- Full save/restore command routing and non-empty capture/restore flows remain open.
+- Wallet/Seal/Walrus snapshot coverage still needs behavior roundtrips beyond restored
+  artifact/state validation, including wallet balance and encrypt/store/fetch/decrypt proof.
 - Snapshot start-time/PID identity must not use stub or zero values.
 
 Acceptance evidence:
@@ -492,6 +560,16 @@ Acceptance evidence:
 - Capture rejects conflicting identity contributions before artifact creation.
 - Product snapshot tests prove non-empty capture and restore for representative plugins.
 - Restore preserves plugin identity and state without cross-stack identity drift.
+
+Closed evidence:
+
+- 2026-05-21 Snapshot image/restore gate closure: commits `50aa2b90` and `3a22959a` added snapshot
+  image-bundle validation on capture and late image-metadata scanning; commits `d268d401` and
+  `da9d91a8` added restored snapshot state/artifact validation. At HEAD `2107c689`, Devstack E2E run
+  `26240767660` passed seed snapshot jobs for `arena`, `private-content`, and `deepbook-full`, and
+  restore snapshot jobs for all three stacks, including `Validate restored snapshot state`. This
+  closes image-bundle validation and command-routed non-empty seed/restore evidence for those
+  representative stacks. Identity conflict rejection and start-time/PID identity remain open above.
 
 ## P1: Architecture and layering cleanup
 
@@ -531,16 +609,19 @@ Acceptance evidence:
 - Release docs are rewritten against the current API or removed until accurate.
 - Public examples are either product-runnable and tested, or explicitly internal/experimental.
 
-## Worktree and checkpoint blockers
+## Worktree and checkpoint blockers (closed at HEAD 2107c689)
 
-- Clean generated artifacts before staging.
-- Package generated/runtime outputs were cleaned before the package-directory move; example-side
-  generated/runtime cleanup remains open for the workspace cutover.
-- Regenerate the lockfile after removing stale generated importers.
-- Exclude unrelated dev-wallet/changeset/old `examples/wallet` dirty files.
-- Do not create a giant checkpoint commit. Use the checkpoint sequence in `CURRENT-HANDOFF.md`.
+No unresolved worktree/checkpoint blocker remains for the code state verified at HEAD `2107c689`
+before this notes edit.
 
 Closed evidence:
+
+- 2026-05-21 HEAD `2107c689` closure: the orchestrator verified the worktree was clean before this
+  notes edit; regular Turborepo CI run `26240767950` passed `pnpm audit`, lint, build, and test;
+  Devstack E2E run `26240767660` passed end to end; and Continuous Releases / `pkg.pr.new` run
+  `26240767753` succeeded. This closes stale generated-artifact, lockfile/importer,
+  unrelated-dirty-file, and checkpoint-sequencing blockers for the current branch state; this change
+  is documentation-only.
 
 - 2026-05-21 Worker Ledger Cleanup: after typecheck cleanup, these commands pass:
   `pnpm --filter @mysten-incubation/devstack-rewrite typecheck`,
@@ -588,4 +669,6 @@ Closed evidence:
 - Docker Desktop grouping labels were implemented, but visual verification remains open.
 - Router/profile/traffic work has strong tests, but manual parallel-stack and bad-state checks
   remain open.
-- Snapshot ID/integrity/transaction staging work landed, but full product save/restore remains open.
+- Snapshot ID/integrity/transaction staging/image-restore gate work has green E2E evidence for
+  `arena`, `private-content`, and `deepbook-full`; identity conflict rejection, start-time/PID
+  identity, and behavior roundtrips beyond restored artifact/state validation remain open.
