@@ -23,12 +23,17 @@
 
 import { Effect, Fiber, Stream, SubscriptionRef } from 'effect';
 import type React from 'react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import type { EngineEvent } from '../../substrate/events.ts';
 import type { SubscribableState } from '../../substrate/projection.ts';
 import { Dashboard } from './dashboard.tsx';
-import { appendEventLogLine, eventLogLineFromEvent, type EventLogLine } from './event-log.ts';
+import {
+	appendEventLogLine,
+	eventLogLineFromEvent,
+	shutdownRequestedLine,
+	type EventLogLine,
+} from './event-log.ts';
 import { selectRowKey } from './display-derivation.ts';
 import { InputHandler, type CommandPublisher } from './input.tsx';
 
@@ -45,6 +50,8 @@ export const App = ({ stateRef, events, publish }: AppProps): React.JSX.Element 
 	const [state, setState] = useState<SubscribableState | null>(null);
 	const [eventLog, setEventLog] = useState<ReadonlyArray<EventLogLine>>([]);
 	const [selectedRowKey, setSelectedRowKey] = useState<string | null>(null);
+	const eventSeq = useRef(0);
+	const shutdownLogged = useRef(false);
 
 	useEffect(() => {
 		// Stream.runForEach pulls each new state from the
@@ -62,11 +69,10 @@ export const App = ({ stateRef, events, publish }: AppProps): React.JSX.Element 
 	}, [stateRef]);
 
 	useEffect(() => {
-		let seq = 0;
 		const fiber = Effect.runFork(
 			Stream.runForEach(events, (event) =>
 				Effect.sync(() => {
-					const line = eventLogLineFromEvent(event, seq++);
+					const line = eventLogLineFromEvent(event, eventSeq.current++);
 					setEventLog((prev) => appendEventLogLine(prev, line));
 				}),
 			),
@@ -75,6 +81,18 @@ export const App = ({ stateRef, events, publish }: AppProps): React.JSX.Element 
 			Effect.runFork(Fiber.interrupt(fiber));
 		};
 	}, [events]);
+
+	useEffect(() => {
+		if (state === null) return;
+		if (state.cycle.phase === 'shutting-down') {
+			if (shutdownLogged.current) return;
+			shutdownLogged.current = true;
+			const line = shutdownRequestedLine(Date.now(), eventSeq.current++);
+			setEventLog((prev) => appendEventLogLine(prev, line));
+			return;
+		}
+		shutdownLogged.current = false;
+	}, [state?.cycle.phase]);
 
 	useEffect(() => {
 		if (state === null) return;

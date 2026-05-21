@@ -6,6 +6,7 @@ import {
 	eventLogLineFromEvent,
 	type EventLogLine,
 	MAX_EVENT_LOG_LINES,
+	shutdownRequestedLine,
 } from '../../../src/surfaces/tui/event-log.ts';
 
 const AT = Date.parse('2026-05-19T20:11:32.001Z');
@@ -75,6 +76,13 @@ describe('event log derivation', () => {
 		expect(line).toMatchObject({
 			level: 'warn',
 			text: '20:11:32 shutdown escalated by SIGINT (exit 130)',
+		});
+	});
+
+	it('renders graceful shutdown as a static operator warning', () => {
+		expect(shutdownRequestedLine(AT, 4)).toMatchObject({
+			level: 'warn',
+			text: '20:11:32 shutdown requested',
 		});
 	});
 

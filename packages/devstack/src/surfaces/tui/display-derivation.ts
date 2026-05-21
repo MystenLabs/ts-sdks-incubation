@@ -98,6 +98,12 @@ export interface DisplaySection {
 	readonly rows: ReadonlyArray<DisplayRow>;
 }
 
+export interface EndpointGroup {
+	readonly key: string;
+	readonly label: string;
+	readonly endpoints: ReadonlyArray<Endpoint>;
+}
+
 // -----------------------------------------------------------------------------
 // Status → glyph / color / label
 // -----------------------------------------------------------------------------
@@ -355,6 +361,29 @@ export const groupRows = (
 		}));
 };
 
+export const groupEndpoints = (
+	rows: ReadonlyArray<Row>,
+	endpoints: ReadonlyArray<Endpoint>,
+): ReadonlyArray<EndpointGroup> => {
+	const groups = new Map<string, { label: string; endpoints: Array<Endpoint> }>();
+	for (const endpoint of endpoints) {
+		const owner = rows.find((row) => endpointsForRow(row, [endpoint]).length > 0);
+		const key = owner?.key ?? '<unassigned>';
+		const label =
+			owner === undefined
+				? 'Unassigned'
+				: endpointGroupLabel(labelForRow(owner.key, owner.kind), ownerForRow(owner.key));
+		const group = groups.get(key) ?? { label, endpoints: [] };
+		group.endpoints.push(endpoint);
+		groups.set(key, group);
+	}
+	return Array.from(groups.entries()).map(([key, group]) => ({
+		key,
+		label: group.label,
+		endpoints: group.endpoints,
+	}));
+};
+
 export const selectRowKey = (
 	rows: ReadonlyArray<Row>,
 	current: string | null,
@@ -470,6 +499,9 @@ const containsKeyPart = (key: string, parts: ReadonlyArray<string>): boolean => 
 
 const isSectionish = (token: string): boolean =>
 	containsKeyPart(token.toLowerCase(), ['service', 'package', 'account', 'action', 'app']);
+
+const endpointGroupLabel = (label: string, owner: string): string =>
+	label === owner ? label : `${label} (${owner})`;
 
 const truncate = (value: string, max: number): string =>
 	value.length <= max ? value : `${value.slice(0, max - 1)}…`;

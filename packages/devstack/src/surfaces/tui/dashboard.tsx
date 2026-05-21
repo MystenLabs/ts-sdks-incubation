@@ -123,7 +123,7 @@ export const Dashboard = ({
 
 			{/* Endpoints */}
 			<Box flexDirection="column" marginTop={1}>
-				<EndpointRenderer endpoints={endpoints} />
+				<EndpointRenderer endpoints={endpoints} rows={rows} />
 			</Box>
 
 			{/* Errors */}

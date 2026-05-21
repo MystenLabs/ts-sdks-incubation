@@ -9,7 +9,7 @@
 // mount Effect remains open until the user exits the ink app or the
 // supervisor finalizes the scope.
 
-import { Effect, Stream, SubscriptionRef } from 'effect';
+import { Effect, Scope, Stream, SubscriptionRef } from 'effect';
 import { render } from 'ink';
 
 import type { EngineCommand, EngineEvent } from '../../substrate/events.ts';
@@ -23,19 +23,29 @@ export interface MountInkAppInput {
 	readonly publishCommand: (command: EngineCommand) => void;
 }
 
-export const mountInkApp = (input: MountInkAppInput): Effect.Effect<void, RendererError> =>
+export const INK_RENDER_OPTIONS = {
+	exitOnCtrlC: false,
+	patchConsole: true,
+} as const;
+
+export const mountInkApp = (
+	input: MountInkAppInput,
+): Effect.Effect<void, RendererError, Scope.Scope> =>
 	Effect.gen(function* () {
 		const instance = yield* Effect.try({
 			try: () =>
 				render(
 					<App stateRef={input.stateRef} events={input.events} publish={input.publishCommand} />,
-					{
-						exitOnCtrlC: false,
-						patchConsole: false,
-					},
+					INK_RENDER_OPTIONS,
 				),
 			catch: (cause) => mountFailed(cause instanceof Error ? cause.message : String(cause)),
 		});
+
+		yield* Effect.addFinalizer(() =>
+			Effect.sync(() => {
+				instance.unmount();
+			}),
+		);
 
 		yield* Effect.tryPromise({
 			try: () => instance.waitUntilExit(),

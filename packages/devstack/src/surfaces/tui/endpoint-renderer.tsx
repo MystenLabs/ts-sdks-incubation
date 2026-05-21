@@ -10,25 +10,41 @@
 import { Box, Text } from 'ink';
 import type React from 'react';
 
-import type { Endpoint } from '../../substrate/projection.ts';
-import { endpointLine } from './display-derivation.ts';
+import type { Endpoint, Row } from '../../substrate/projection.ts';
+import { endpointLine, groupEndpoints } from './display-derivation.ts';
 
 export interface EndpointRendererProps {
 	readonly endpoints: ReadonlyArray<Endpoint>;
+	readonly rows?: ReadonlyArray<Row>;
 }
 
-export const EndpointRenderer = ({ endpoints }: EndpointRendererProps): React.JSX.Element => {
+export const EndpointRenderer = ({
+	endpoints,
+	rows = [],
+}: EndpointRendererProps): React.JSX.Element => {
 	if (endpoints.length === 0) {
 		return <Text color="gray">no endpoints registered</Text>;
 	}
+	const groups = rows.length > 0 ? groupEndpoints(rows, endpoints) : [];
 	return (
 		<Box flexDirection="column">
 			<Text bold>Endpoints</Text>
-			{endpoints.map((endpoint) => (
-				<Text key={endpoint.endpointKey} color="cyan">
-					{endpointLine(endpoint)}
-				</Text>
-			))}
+			{groups.length > 0
+				? groups.map((group) => (
+						<Box key={group.key} flexDirection="column">
+							<Text color="gray">{group.label}</Text>
+							{group.endpoints.map((endpoint) => (
+								<Text key={endpoint.endpointKey} color="cyan">
+									{endpointLine(endpoint)}
+								</Text>
+							))}
+						</Box>
+					))
+				: endpoints.map((endpoint) => (
+						<Text key={endpoint.endpointKey} color="cyan">
+							{endpointLine(endpoint)}
+						</Text>
+					))}
 		</Box>
 	);
 };

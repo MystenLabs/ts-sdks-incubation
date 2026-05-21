@@ -87,6 +87,12 @@ export const eventLogLineFromEvent = (event: EngineEvent, seq: number): EventLog
 	}
 };
 
+export const shutdownRequestedLine = (at: number, seq: number): EventLogLine => ({
+	id: `${at}-${seq}-shutdown.requested`,
+	level: 'warn',
+	text: `${time(at)} shutdown requested`,
+});
+
 export const appendEventLogLine = (
 	lines: ReadonlyArray<EventLogLine>,
 	next: EventLogLine | null,

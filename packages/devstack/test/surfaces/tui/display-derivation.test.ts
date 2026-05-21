@@ -21,6 +21,7 @@ import {
 	endpointsForRow,
 	endpointLine,
 	errorSummaryFor,
+	groupEndpoints,
 	groupRows,
 	kindGlyph,
 	kindLabel,
@@ -227,6 +228,33 @@ describe('display-derivation', () => {
 		it('selects endpoints owned by a row', () => {
 			const row = fakeRow({ key: pluginKey('sui'), endpoints: [endpoint.endpointKey] });
 			expect(endpointsForRow(row, [endpoint])).toEqual([endpoint]);
+		});
+
+		it('groups endpoint panel entries by owning row', () => {
+			const walletEndpoint = {
+				endpointKey: endpointKey('wallet#0:wallet-app'),
+				name: 'wallet-app',
+				url: 'http://wallet.demo.localhost:5175',
+				displayUrl: null,
+				wireProtocol: 'http',
+				registeredAt: 0,
+			};
+			const orphanEndpoint = {
+				endpointKey: endpointKey('external:metrics'),
+				name: 'metrics',
+				url: 'http://127.0.0.1:9100',
+				displayUrl: null,
+				wireProtocol: 'http',
+				registeredAt: 0,
+			};
+			const groups = groupEndpoints(
+				[fakeRow({ key: pluginKey('wallet#0'), kind: 'leaf-long-running' })],
+				[walletEndpoint, orphanEndpoint],
+			);
+
+			expect(groups.map((group) => group.label)).toEqual(['Wallet', 'Unassigned']);
+			expect(groups[0]?.endpoints).toEqual([walletEndpoint]);
+			expect(groups[1]?.endpoints).toEqual([orphanEndpoint]);
 		});
 
 		it('groups rows in operator scan order', () => {

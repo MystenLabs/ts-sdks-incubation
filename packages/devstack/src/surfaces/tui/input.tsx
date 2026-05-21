@@ -11,11 +11,12 @@
 //
 //   q | Q                  -> 'shutdown.requested'
 //   r | R                  -> 'stack.restart'
-//   ctrl-c                 -> 'shutdown.requested' (additionally, the
-//                             supervisor's signal handler counts the
-//                             second handled SIGINT/SIGTERM as
-//                             'shutdown.hardKillRequested' — the
-//                             renderer does not own that logic)
+//   ctrl-c                 -> first press 'shutdown.requested'; repeat
+//                             press escalates to
+//                             'shutdown.hardKillRequested'. Ink handles
+//                             Ctrl-C in-process when `exitOnCtrlC:
+//                             false`, so this mirrors the process-level
+//                             signal handler for TTY users.
 //   s | S                  -> 'snapshot.capture'
 //   up/down | j/k          -> local row focus movement
 //
@@ -24,6 +25,7 @@
 // handler.
 
 import { useInput } from 'ink';
+import { useRef } from 'react';
 
 import type { EngineCommand } from '../../substrate/events.ts';
 
@@ -45,13 +47,32 @@ export interface InputHandlerProps {
 	readonly disabled?: boolean;
 }
 
+export interface CommandForKeyOptions {
+	readonly shutdownAlreadyRequested?: boolean;
+	readonly now?: () => number;
+}
+
 /**
  * Renderless component — mounts `useInput` at the dashboard root.
  * Returns `null` so it composes inside layout boxes without taking
  * up space.
  */
-export const commandForKey = (input: string, ctrl: boolean): EngineCommand | null => {
-	if (ctrl && input === 'c') return { tag: 'shutdown.requested' };
+export const commandForKey = (
+	input: string,
+	ctrl: boolean,
+	options: CommandForKeyOptions = {},
+): EngineCommand | null => {
+	if (ctrl && input === 'c') {
+		if (options.shutdownAlreadyRequested === true) {
+			return {
+				tag: 'shutdown.hardKillRequested',
+				signal: 'SIGINT',
+				exitCode: 130,
+				at: options.now?.() ?? Date.now(),
+			};
+		}
+		return { tag: 'shutdown.requested' };
+	}
 	switch (input) {
 		case 'q':
 		case 'Q':
@@ -81,6 +102,7 @@ export const InputHandler = ({
 	onMoveSelection,
 	disabled = false,
 }: InputHandlerProps): null => {
+	const shutdownRequested = useRef(false);
 	useInput(
 		(input, key) => {
 			if (disabled) return;
@@ -89,8 +111,15 @@ export const InputHandler = ({
 				onMoveSelection?.(move);
 				return;
 			}
-			const command = commandForKey(input, key.ctrl);
-			if (command !== null) publish(command);
+			const command = commandForKey(input, key.ctrl, {
+				shutdownAlreadyRequested: shutdownRequested.current,
+			});
+			if (command !== null) {
+				if (command.tag === 'shutdown.requested' || command.tag === 'shutdown.hardKillRequested') {
+					shutdownRequested.current = true;
+				}
+				publish(command);
+			}
 		},
 		{ isActive: !disabled },
 	);

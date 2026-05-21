@@ -22,6 +22,14 @@ describe('input → EngineCommand mapping', () => {
 	it('ctrl-c publishes shutdown.requested', () => {
 		expect(commandForKey('c', true)).toEqual({ tag: 'shutdown.requested' });
 	});
+	it('repeated ctrl-c escalates to hard kill', () => {
+		expect(commandForKey('c', true, { shutdownAlreadyRequested: true, now: () => 123 })).toEqual({
+			tag: 'shutdown.hardKillRequested',
+			signal: 'SIGINT',
+			exitCode: 130,
+			at: 123,
+		});
+	});
 	it('r publishes stack.restart', () => {
 		expect(commandForKey('r', false)).toEqual({ tag: 'stack.restart' });
 		expect(commandForKey('R', false)).toEqual({ tag: 'stack.restart' });
