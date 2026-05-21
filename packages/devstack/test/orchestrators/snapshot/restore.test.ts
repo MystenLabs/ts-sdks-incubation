@@ -37,7 +37,7 @@ import {
 	type CommandRecord,
 	type EventRecord,
 } from '../../../src/substrate/runtime/cross-process/command-channel/index.ts';
-import { writeImageBundle } from './image-bundle-fixtures.ts';
+import { dockerSaveBundleTarWithLateMetadata, writeImageBundle } from './image-bundle-fixtures.ts';
 
 const freshRoot = (): string => mkdtempSync(join(tmpdir(), 'snapshot-restore-test-'));
 
@@ -746,6 +746,37 @@ describe('snapshot restore safety', () => {
 				}
 				expect(events).toEqual(['load']);
 				expect(sweepCalls).toEqual([]);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}),
+	);
+
+	it.effect('streams the full image bundle to docker load when metadata follows layer blobs', () =>
+		Effect.gen(function* () {
+			const root = freshRoot();
+			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+			const loadBytes: number[] = [];
+			try {
+				const meta = metadata({
+					containers: [capturedContainer()],
+				});
+				const artifactDir = writeArtifact(root, meta);
+				const bundle = dockerSaveBundleTarWithLateMetadata(['devstack-snapshot:postgres-db']);
+				mkdirSync(join(artifactDir, SnapshotLayout.containersDir), { recursive: true });
+				writeFileSync(join(artifactDir, imageBundlePath), bundle);
+
+				const exit = yield* runRestoreExit(
+					root,
+					meta,
+					runtimeIdentity,
+					sweepCalls,
+					runtimeStub(sweepCalls, { loadBytes }),
+				).pipe(Effect.provide(NodeFileSystem.layer));
+
+				expect(Exit.isSuccess(exit)).toBe(true);
+				expect(loadBytes).toHaveLength(bundle.length);
+				expect(Buffer.from(loadBytes).includes(Buffer.from('manifest.json'))).toBe(true);
 			} finally {
 				rmSync(root, { recursive: true, force: true });
 			}

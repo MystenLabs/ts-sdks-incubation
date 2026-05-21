@@ -23,7 +23,11 @@ import {
 	snapshotIdFromString,
 	type SnapshotParticipant,
 } from '../../../src/orchestrators/snapshot/index.ts';
-import { dockerSaveBundleTar, tarEntry } from './image-bundle-fixtures.ts';
+import {
+	dockerSaveBundleTar,
+	dockerSaveBundleTarWithLateMetadata,
+	tarEntry,
+} from './image-bundle-fixtures.ts';
 
 const freshRoot = (): string => mkdtempSync(join(tmpdir(), 'snapshot-capture-test-'));
 const imageBundlePath = containerImagesBundlePath();
@@ -441,6 +445,55 @@ describe('snapshot capture container images', () => {
 				]);
 				expect(removeImageCalls).toEqual([]);
 				expect(unpauseCalls).toEqual(['validator-container', 'postgres-container']);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}),
+	);
+
+	it.effect('accepts saved image bundle metadata after leading layer blobs before publish', () =>
+		Effect.gen(function* () {
+			const root = freshRoot();
+			const pauseCalls: string[] = [];
+			const saveCalls: ImageRef[] = [];
+			const removeImageCalls: ImageRef[] = [];
+			const unpauseCalls: string[] = [];
+			try {
+				const runtime = runtimeStub({
+					handlesByRole: {
+						validator: {
+							id: 'validator-id',
+							name: 'validator-container',
+							imageName: 'devstack-build:sui-validator',
+							status: 'running',
+							ips: [],
+						},
+					},
+					saveImage: (ref) => Stream.make(Buffer.from(`tar:${ref.tag ?? ref.digest}`)),
+					saveImages: (refs) =>
+						Stream.make(
+							dockerSaveBundleTarWithLateMetadata(refs.map((ref) => ref.tag ?? ref.digest)),
+						),
+					pauseCalls,
+					saveCalls,
+					removeImageCalls,
+					unpauseCalls,
+				});
+
+				mkdirSync(join(root, 'artifact'), { recursive: true });
+				const exit = yield* runCaptureExit(root, runtime, [participant(['validator'])]).pipe(
+					Effect.provide(NodeFileSystem.layer),
+				);
+
+				expect(Exit.isSuccess(exit)).toBe(true);
+				expect(saveCalls.map((ref) => ref.tag)).toEqual(['snapshot:validator-container']);
+				expect(removeImageCalls).toEqual([]);
+				expect(unpauseCalls).toEqual(['validator-container']);
+				expect(existsSync(join(root, 'artifact', SnapshotLayout.metaFile))).toBe(true);
+				expect(existsSync(join(root, 'artifact', SnapshotLayout.integrityFile))).toBe(true);
+				expect(readFileSync(join(root, 'artifact', imageBundlePath))).toHaveLength(
+					dockerSaveBundleTarWithLateMetadata(['snapshot:validator-container']).length,
+				);
 			} finally {
 				rmSync(root, { recursive: true, force: true });
 			}

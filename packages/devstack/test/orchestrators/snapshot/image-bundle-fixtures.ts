@@ -36,6 +36,12 @@ export const dockerSaveBundleTar = (repoTags: ReadonlyArray<string>): Buffer =>
 		Buffer.alloc(1024),
 	]);
 
+export const dockerSaveBundleTarWithLateMetadata = (repoTags: ReadonlyArray<string>): Buffer =>
+	Buffer.concat([
+		tarEntry(`blobs/sha256/${'a'.repeat(64)}`, Buffer.alloc(80 * 1024, 7)),
+		dockerSaveBundleTar(repoTags),
+	]);
+
 export const dockerOciImageLayoutBundleTar = (repoTags: ReadonlyArray<string>): Buffer =>
 	Buffer.concat([
 		tarEntry(

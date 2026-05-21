@@ -287,11 +287,13 @@ export const readImageBundleTags = (
 			indexBytes: null,
 			content: null,
 		};
-		yield* Stream.runForEachWhile(fs.stream(fullTarPath), (chunk) => {
-			const result = processDockerSaveMetadataChunk(state, chunk);
-			if (result.error !== undefined) return Effect.fail(result.error);
-			return Effect.succeed(!result.done);
-		}).pipe(
+		yield* fs.stream(fullTarPath).pipe(
+			Stream.takeUntilEffect((chunk) => {
+				const result = processDockerSaveMetadataChunk(state, chunk);
+				if (result.error !== undefined) return Effect.fail(result.error);
+				return Effect.succeed(result.done);
+			}),
+			Stream.runDrain,
 			Effect.catch((cause) =>
 				cause instanceof ImageBundleTagScanError
 					? Effect.fail(cause)
