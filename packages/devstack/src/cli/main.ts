@@ -168,9 +168,9 @@ interface ResolvedIdentity {
 	readonly stack: string;
 	readonly network: string;
 	readonly runtimeRoot: string;
+	readonly stacksRoot: string;
 	readonly stackRoot: string;
 	readonly rosterFile: string;
-	readonly appRoot: string;
 }
 
 /** Resolve identity from flags + env. Stack falls through the shared
@@ -187,21 +187,22 @@ const resolveIdentity = (params: {
 		params.stateDir ??
 		process.env.DEVSTACK_STATE_DIR ??
 		resolvePath(process.env.HOME ?? process.cwd(), '.devstack');
-	const appRoot = resolvePath(stateDir, app);
+	const runtimeRoot = resolvePath(stateDir);
+	const stacksRoot = resolvePath(runtimeRoot, 'stacks');
 	const stack = resolveStackName({
 		explicit: params.stack,
 		cwd: params.cwd ?? process.cwd(),
 	});
 	const network = params.network ?? process.env.DEVSTACK_NETWORK ?? 'sui:local';
-	const stackRoot = resolvePath(appRoot, stack);
+	const stackRoot = resolvePath(stacksRoot, stack);
 	return {
 		app,
 		stack,
 		network,
-		runtimeRoot: stateDir,
+		runtimeRoot,
+		stacksRoot,
 		stackRoot,
 		rosterFile: resolvePath(stackRoot, 'roster.json'),
-		appRoot,
 	};
 };
 
@@ -240,7 +241,7 @@ const buildChannelDeps = (identity: ResolvedIdentity): CliDeps => {
 		doctor: {
 			probes: defaultProbes({
 				stateDir: identity.runtimeRoot,
-				appRoot: identity.appRoot,
+				appRoot: identity.stacksRoot,
 			}),
 		},
 		codegen: { publisher },
@@ -248,7 +249,7 @@ const buildChannelDeps = (identity: ResolvedIdentity): CliDeps => {
 		apply: { publisher },
 		wipe: { publisher },
 		stack: {
-			resolveAppRoot: () => Effect.succeed(identity.appRoot),
+			resolveAppRoot: () => Effect.succeed(identity.stacksRoot),
 		},
 		fork: { publisher },
 	};

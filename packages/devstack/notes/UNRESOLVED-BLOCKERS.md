@@ -117,6 +117,12 @@ Acceptance evidence:
 
 Closed evidence:
 
+- 2026-05-21 Worker M: CI Devstack E2E run 26222137331 / job 77159570006 failed router boot while
+  decoding container inspect JSON that omitted Docker's unused top-level `Image` field. The
+  container inspect schema now accepts that field as optional but still requires `Config.Image`,
+  which lifecycle/router image matching actually consumes. Targeted tests:
+  `test/runtime/docker/ownership-lifecycle.test.ts` and
+  `test/orchestrators/router/traefik-container.test.ts`.
 - 2026-05-21 Worker F: container `inspect` now returns `null` only for not-found; daemon exits
   remain `DaemonUnreachable`, other non-notfound exits fail as `DockerInspectFailed`, and
   malformed/empty JSON fails as `DockerInspectDecodeFailed`. Targeted test:

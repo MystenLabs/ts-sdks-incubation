@@ -75,12 +75,14 @@ const inspectJson = (
 		readonly networks?: unknown;
 		readonly portBindings?: unknown;
 		readonly effectivePorts?: unknown;
+		readonly includeTopLevelImage?: boolean;
+		readonly includeConfigImage?: boolean;
 	} = {},
 ): string =>
 	JSON.stringify([
 		{
 			Id: overrides.id ?? 'container-id',
-			Image: 'sha256:desired',
+			...(overrides.includeTopLevelImage === false ? {} : { Image: 'sha256:desired' }),
 			HostConfig: { PortBindings: overrides.portBindings ?? {} },
 			State: {
 				Running: overrides.running ?? true,
@@ -88,7 +90,7 @@ const inspectJson = (
 				ExitCode: overrides.exitCode ?? 0,
 			},
 			Config: {
-				Image: 'img:desired',
+				...(overrides.includeConfigImage === false ? {} : { Image: 'img:desired' }),
 				Labels: overrides.labels ?? ownedDockerLabels,
 			},
 			NetworkSettings: {
@@ -298,6 +300,59 @@ describe('docker inspect ownership boundary', () => {
 				rmSync(root, { recursive: true, force: true });
 			}
 		}),
+	);
+
+	it.effect('uses Config.Image when Docker inspect omits the top-level Image field', () =>
+		Effect.gen(function* () {
+			const root = mkdtempSync(join(tmpdir(), 'docker-inspect-no-top-image-test-'));
+			try {
+				const { bin } = writeDocker(root, [
+					'if [ "$1" = "inspect" ]; then',
+					`  printf '%s\\n' ${JSON.stringify(inspectJson({ includeTopLevelImage: false }))}`,
+					'  exit 0',
+					'fi',
+					'exit 0',
+					'',
+				]);
+
+				const facts = yield* inspectContainer('devstack-owned').pipe(
+					Effect.provide(fakeDockerLayer(bin)),
+				);
+
+				expect(facts?.image).toBe('img:desired');
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}),
+	);
+
+	it.effect(
+		'fails inspect output that omits Config.Image because lifecycle decisions need it',
+		() =>
+			Effect.gen(function* () {
+				const root = mkdtempSync(join(tmpdir(), 'docker-inspect-no-config-image-test-'));
+				try {
+					const { bin } = writeDocker(root, [
+						'if [ "$1" = "inspect" ]; then',
+						`  printf '%s\\n' ${JSON.stringify(
+							inspectJson({ includeTopLevelImage: false, includeConfigImage: false }),
+						)}`,
+						'  exit 0',
+						'fi',
+						'exit 0',
+						'',
+					]);
+
+					const exit = yield* inspectContainer('devstack-owned').pipe(
+						Effect.provide(fakeDockerLayer(bin)),
+						Effect.exit,
+					);
+
+					expectErrorTag(exit, 'DockerInspectDecodeFailed');
+				} finally {
+					rmSync(root, { recursive: true, force: true });
+				}
+			}),
 	);
 });
 

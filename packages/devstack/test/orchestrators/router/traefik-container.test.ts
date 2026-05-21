@@ -1,9 +1,18 @@
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import * as NodeChildProcessSpawner from '@effect/platform-node/NodeChildProcessSpawner';
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
+import * as NodePath from '@effect/platform-node/NodePath';
 import { Effect, Layer } from 'effect';
+import { ChildProcessSpawner } from 'effect/unstable/process/ChildProcessSpawner';
 import { describe, expect, it } from '@effect/vitest';
 
 import {
 	ROUTER_PROFILE_LABEL,
 	TRAEFIK_DISPATCH_MOUNT_TARGET,
+	layerTraefikContainerOpsDocker,
 	routerProfileLabelsMatch,
 	traefikExpectedCommand,
 	traefikExpectedPortBindings,
@@ -12,7 +21,13 @@ import {
 	type InspectedTraefikContainer,
 	type TraefikContainerOps,
 } from '../../../src/orchestrators/router/traefik-container.ts';
-import { ComposeLabelKey, LabelKey } from '../../../src/runtime/docker/index.ts';
+import {
+	ComposeLabelKey,
+	DockerSpawner,
+	LabelKey,
+	layerDockerHost,
+	type DockerHost,
+} from '../../../src/runtime/docker/index.ts';
 import type { Entrypoint } from '../../../src/orchestrators/router/entrypoints.ts';
 import type { RouterProfile } from '../../../src/orchestrators/router/profile.ts';
 
@@ -32,6 +47,90 @@ const profile: RouterProfile = {
 const dispatchDir = profile.dispatchDir;
 
 type ExistingRouterContainer = InspectedTraefikContainer | null;
+
+const layerDockerSpawnerFromNode: Layer.Layer<DockerSpawner, never, ChildProcessSpawner> =
+	Layer.effect(
+		DockerSpawner,
+		Effect.gen(function* () {
+			return yield* ChildProcessSpawner;
+		}),
+	);
+
+const fakeDockerLayer = (bin: string): Layer.Layer<DockerHost | DockerSpawner> =>
+	Layer.merge(
+		layerDockerHost({ bin }),
+		layerDockerSpawnerFromNode.pipe(
+			Layer.provideMerge(
+				NodeChildProcessSpawner.layer.pipe(
+					Layer.provideMerge(Layer.mergeAll(NodeFileSystem.layer, NodePath.layer)),
+				),
+			),
+		),
+	);
+
+const writeDocker = (root: string, lines: ReadonlyArray<string>): { bin: string; log: string } => {
+	const bin = join(root, 'docker');
+	const log = join(root, 'docker.log');
+	writeFileSync(
+		bin,
+		['#!/bin/sh', `printf '%s\\n' "$*" >> ${JSON.stringify(log)}`, ...lines].join('\n'),
+	);
+	chmodSync(bin, 0o755);
+	return { bin, log };
+};
+
+const dockerPortBindingsFor = (
+	entrypoints: ReadonlyArray<Entrypoint>,
+): Record<string, ReadonlyArray<{ readonly HostIp: string; readonly HostPort: string }>> =>
+	Object.fromEntries(
+		[...new Set(entrypoints.map((entrypoint) => entrypoint.port))]
+			.sort((a, b) => a - b)
+			.map((port) => [`${port}/tcp`, [{ HostIp: '127.0.0.1', HostPort: String(port) }]]),
+	);
+
+const matchingDockerInspectJson = (entrypoints: ReadonlyArray<Entrypoint>): string => {
+	const ports = dockerPortBindingsFor(entrypoints);
+	return JSON.stringify([
+		{
+			Id: 'router-id',
+			Mounts: [
+				{
+					Source: dispatchDir,
+					Destination: TRAEFIK_DISPATCH_MOUNT_TARGET,
+					RW: false,
+				},
+			],
+			HostConfig: { PortBindings: ports },
+			State: { Running: true, Paused: false, ExitCode: 0 },
+			Config: {
+				Image: 'traefik:v3.5',
+				Cmd: traefikExpectedCommand(entrypoints),
+				Labels: {
+					[LabelKey.managed]: 'true',
+					[LabelKey.routerMarker]: 'true',
+					[ROUTER_PROFILE_LABEL]: profile.id,
+				},
+			},
+			NetworkSettings: {
+				Networks: { [profile.networkName]: { IPAddress: '172.20.0.2' } },
+				Ports: ports,
+			},
+		},
+	]);
+};
+
+const matchingRouterNetworkJson = (): string =>
+	JSON.stringify([
+		{
+			Id: 'network-id',
+			Labels: {
+				[LabelKey.managed]: 'true',
+				[LabelKey.networkMarker]: 'true',
+				[LabelKey.app]: 'devstack-router',
+				[LabelKey.stack]: profile.networkName,
+			},
+		},
+	]);
 
 const matchingExisting = (
 	entrypoints: ReadonlyArray<Entrypoint>,
@@ -122,6 +221,57 @@ describe('bootstrap dispatch bind mount adoption', () => {
 				`ensureNetwork:${profile.networkName}`,
 				`inspect:${profile.containerName}`,
 			]);
+		}),
+	);
+
+	it.effect('docker-backed boot adopts a matching router when inspect omits top-level Image', () =>
+		Effect.gen(function* () {
+			const root = mkdtempSync(join(tmpdir(), 'router-inspect-no-top-image-test-'));
+			try {
+				const entrypoints: ReadonlyArray<Entrypoint> = [
+					{ name: 'wallet-app', port: 6173, protocol: 'http' },
+				];
+				const { bin, log } = writeDocker(root, [
+					'if [ "$1" = "network" ] && [ "$2" = "inspect" ]; then',
+					`  printf '%s\\n' ${JSON.stringify(matchingRouterNetworkJson())}`,
+					'  exit 0',
+					'fi',
+					'if [ "$1" = "inspect" ]; then',
+					`  printf '%s\\n' ${JSON.stringify(matchingDockerInspectJson(entrypoints))}`,
+					'  exit 0',
+					'fi',
+					'if [ "$1" = "run" ] || [ "$1" = "rm" ] || [ "$1" = "start" ]; then',
+					'  echo "unexpected mutation" >&2',
+					'  exit 1',
+					'fi',
+					'exit 1',
+					'',
+				]);
+
+				const report = yield* bootstrap({
+					image: 'traefik:v3.5',
+					entrypoints,
+					profile,
+					protectedRouteLeaseIds: [],
+				}).pipe(
+					Effect.provide(layerTraefikContainerOpsDocker),
+					Effect.provide(fakeDockerLayer(bin)),
+				);
+
+				expect(report).toEqual({
+					decision: 'adopt',
+					containerId: 'router-id',
+					networkId: 'network-id',
+					imageMatches: true,
+				});
+				const lines = readFileSync(log, 'utf8').trim().split('\n');
+				expect(lines).toEqual([
+					`network inspect ${profile.networkName}`,
+					`inspect ${profile.containerName}`,
+				]);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
 		}),
 	);
 

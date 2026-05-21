@@ -1,10 +1,17 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { hostname as nodeHostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { Effect } from 'effect';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { runCli } from '../../src/cli/main.ts';
+import { SnapshotLayout, SNAPSHOT_META_VERSION } from '../../src/orchestrators/snapshot/index.ts';
+import type { SubscribableState } from '../../src/substrate/projection.ts';
+import { COMMAND_CHANNEL_COMMANDS_FILE_NAME } from '../../src/substrate/runtime/cross-process/index.ts';
+import { processStartTime } from '../../src/substrate/runtime/cross-process/liveness.ts';
+import { writeProjectionSnapshot } from '../../src/substrate/runtime/projection/index.ts';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const tempRoots: Array<string> = [];
@@ -57,6 +64,80 @@ export default defineDevstack(cliApplyCodegenPlugin, { stackName: 'main' });
 	);
 	return configPath;
 };
+
+const makeProjectionState = (params: {
+	readonly app: string;
+	readonly stack: string;
+	readonly network: string;
+}): SubscribableState => ({
+	identity: params,
+	cycle: { id: 1, startedAt: 123, phase: 'running' },
+	rows: [],
+	endpoints: [],
+	errors: [],
+	lastEvent: { seq: 1, at: 124 },
+	stackBuild: [],
+});
+
+const writeSnapshotMetadata = (stackRoot: string, snapshotId: string): void => {
+	const snapshotDir = join(stackRoot, 'snapshots', snapshotId);
+	mkdirSync(snapshotDir, { recursive: true });
+	writeFileSync(
+		join(snapshotDir, SnapshotLayout.metaFile),
+		JSON.stringify(
+			{
+				version: SNAPSHOT_META_VERSION,
+				id: snapshotId,
+				label: 'workflow-baseline',
+				createdAt: 1_700_000_000_000,
+				app: 'labeled-app',
+				stack: 'alpha',
+				network: 'sui:local',
+				hostTreeIncluded: false,
+				subtrees: [],
+				containers: [],
+				identity: {},
+				participants: [],
+			},
+			null,
+			2,
+		),
+	);
+};
+
+const writeLiveRoster = (stackRoot: string): void => {
+	mkdirSync(stackRoot, { recursive: true });
+	writeFileSync(
+		join(stackRoot, 'roster.json'),
+		JSON.stringify({
+			version: 1,
+			holders: [
+				{
+					pid: process.pid,
+					startTime: processStartTime(process.pid) ?? 0,
+					hostname: nodeHostname(),
+					claimedAt: Date.now(),
+					heartbeatAt: Date.now(),
+					intent: 'normal',
+				},
+			],
+		}),
+		'utf8',
+	);
+};
+
+const readCommandLog = (
+	stackRoot: string,
+): ReadonlyArray<{ readonly command: { readonly tag: string; readonly snapshotId?: string } }> =>
+	readFileSync(join(stackRoot, COMMAND_CHANNEL_COMMANDS_FILE_NAME), 'utf8')
+		.trim()
+		.split('\n')
+		.map(
+			(line) =>
+				JSON.parse(line) as {
+					readonly command: { readonly tag: string; readonly snapshotId?: string };
+				},
+		);
 
 const captureProcessWrite =
 	(bucket: Array<string>): typeof process.stdout.write =>
@@ -134,6 +215,197 @@ describe('cli/main', () => {
 			}
 		}
 	}, 60_000);
+
+	it('status reads persisted projection from the runtime stacks root', async () => {
+		const stateRoot = makeTempRoot('cli-status-state');
+		const stackRoot = join(stateRoot, 'stacks', 'alpha');
+		const previousExitCode = process.exitCode;
+		const stdout: Array<string> = [];
+		const stderr: Array<string> = [];
+		const stdoutSpy = vi
+			.spyOn(process.stdout, 'write')
+			.mockImplementation(captureProcessWrite(stdout));
+		const stderrSpy = vi
+			.spyOn(process.stderr, 'write')
+			.mockImplementation(captureProcessWrite(stderr));
+
+		try {
+			process.exitCode = undefined;
+			await Effect.runPromise(
+				writeProjectionSnapshot(
+					stackRoot,
+					makeProjectionState({
+						app: 'labeled-app',
+						stack: 'alpha',
+						network: 'sui:local',
+					}),
+				),
+			);
+
+			await runCli([
+				'--state-dir',
+				stateRoot,
+				'--app',
+				'labeled-app',
+				'--stack',
+				'alpha',
+				'--json',
+				'status',
+			]);
+
+			expect(process.exitCode).toBe(0);
+			expect(stderr.join('')).toBe('');
+			const envelope = JSON.parse(stdout.join('')) as {
+				readonly ok: true;
+				readonly data: { readonly present: boolean; readonly identity: unknown };
+			};
+			expect(envelope.data.present).toBe(true);
+			expect(envelope.data.identity).toEqual({
+				app: 'labeled-app',
+				stack: 'alpha',
+				network: 'sui:local',
+			});
+		} finally {
+			process.exitCode = previousExitCode;
+			stdoutSpy.mockRestore();
+			stderrSpy.mockRestore();
+		}
+	});
+
+	it('snapshot list reads snapshots from the runtime stacks root', async () => {
+		const stateRoot = makeTempRoot('cli-snapshot-state');
+		const stackRoot = join(stateRoot, 'stacks', 'alpha');
+		const previousExitCode = process.exitCode;
+		const stdout: Array<string> = [];
+		const stderr: Array<string> = [];
+		const stdoutSpy = vi
+			.spyOn(process.stdout, 'write')
+			.mockImplementation(captureProcessWrite(stdout));
+		const stderrSpy = vi
+			.spyOn(process.stderr, 'write')
+			.mockImplementation(captureProcessWrite(stderr));
+
+		try {
+			process.exitCode = undefined;
+			writeSnapshotMetadata(stackRoot, 'baseline');
+
+			await runCli([
+				'--state-dir',
+				stateRoot,
+				'--app',
+				'labeled-app',
+				'--stack',
+				'alpha',
+				'--json',
+				'snapshot',
+				'list',
+			]);
+
+			expect(process.exitCode).toBe(0);
+			expect(stderr.join('')).toBe('');
+			const envelope = JSON.parse(stdout.join('')) as {
+				readonly ok: true;
+				readonly data: { readonly entries: ReadonlyArray<{ readonly snapshotId: string }> };
+			};
+			expect(envelope.data.entries.map((entry) => entry.snapshotId)).toEqual(['baseline']);
+		} finally {
+			process.exitCode = previousExitCode;
+			stdoutSpy.mockRestore();
+			stderrSpy.mockRestore();
+		}
+	});
+
+	it('snapshot restore resolves and publishes through the runtime stacks root', async () => {
+		const stateRoot = makeTempRoot('cli-snapshot-restore-state');
+		const stackRoot = join(stateRoot, 'stacks', 'alpha');
+		const previousExitCode = process.exitCode;
+		const stdout: Array<string> = [];
+		const stderr: Array<string> = [];
+		const stdoutSpy = vi
+			.spyOn(process.stdout, 'write')
+			.mockImplementation(captureProcessWrite(stdout));
+		const stderrSpy = vi
+			.spyOn(process.stderr, 'write')
+			.mockImplementation(captureProcessWrite(stderr));
+
+		try {
+			process.exitCode = undefined;
+			writeSnapshotMetadata(stackRoot, 'baseline');
+			writeLiveRoster(stackRoot);
+
+			await runCli([
+				'--state-dir',
+				stateRoot,
+				'--app',
+				'labeled-app',
+				'--stack',
+				'alpha',
+				'--json',
+				'snapshot',
+				'restore',
+				'workflow-baseline',
+			]);
+
+			expect(process.exitCode).toBe(0);
+			expect(stderr.join('')).toBe('');
+			expect(
+				readCommandLog(stackRoot).map((record) => ({
+					tag: record.command.tag,
+					snapshotId: record.command.snapshotId,
+				})),
+			).toEqual([{ tag: 'snapshot.restore', snapshotId: 'baseline' }]);
+			expect(
+				existsSync(join(stateRoot, 'labeled-app', 'alpha', COMMAND_CHANNEL_COMMANDS_FILE_NAME)),
+			).toBe(false);
+		} finally {
+			process.exitCode = previousExitCode;
+			stdoutSpy.mockRestore();
+			stderrSpy.mockRestore();
+		}
+	});
+
+	it('down publishes to the command channel under the runtime stacks root', async () => {
+		const stateRoot = makeTempRoot('cli-down-state');
+		const stackRoot = join(stateRoot, 'stacks', 'alpha');
+		const previousExitCode = process.exitCode;
+		const stdout: Array<string> = [];
+		const stderr: Array<string> = [];
+		const stdoutSpy = vi
+			.spyOn(process.stdout, 'write')
+			.mockImplementation(captureProcessWrite(stdout));
+		const stderrSpy = vi
+			.spyOn(process.stderr, 'write')
+			.mockImplementation(captureProcessWrite(stderr));
+
+		try {
+			process.exitCode = undefined;
+			writeLiveRoster(stackRoot);
+
+			await runCli([
+				'--state-dir',
+				stateRoot,
+				'--app',
+				'labeled-app',
+				'--stack',
+				'alpha',
+				'--json',
+				'down',
+			]);
+
+			expect(process.exitCode).toBe(0);
+			expect(stderr.join('')).toBe('');
+			expect(readCommandLog(stackRoot).map((record) => record.command.tag)).toEqual([
+				'shutdown.requested',
+			]);
+			expect(
+				existsSync(join(stateRoot, 'labeled-app', 'alpha', COMMAND_CHANNEL_COMMANDS_FILE_NAME)),
+			).toBe(false);
+		} finally {
+			process.exitCode = previousExitCode;
+			stdoutSpy.mockRestore();
+			stderrSpy.mockRestore();
+		}
+	});
 
 	it('up help through runCli does not load config or start the live path', async () => {
 		const appRoot = makeTempRoot('cli-up-help-app');

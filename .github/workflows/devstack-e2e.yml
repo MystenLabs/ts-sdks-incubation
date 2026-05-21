@@ -72,7 +72,7 @@ jobs:
       # the bin-symlink lookup entirely.
       - name: Apply stack (boot + write state + tear down)
         working-directory: examples/${{ matrix.example }}
-        run: node ../../packages/devstack/dist/cli/main.mjs apply
+        run: node ../../packages/devstack/dist/cli/main.mjs --state-dir .devstack --app ${{ matrix.example }} --stack ${{ matrix.stack }} apply
 
       # `apply` boots service containers that bind-mount host paths under
       # `.devstack/stacks/<stack>/runtime/` (walrus deploy outputs,
@@ -99,7 +99,7 @@ jobs:
         # containers stopped with their writable layer intact. The
         # snapshot CLI captures stopped containers into the snapshot
         # bundle so the e2e job can restore the same state.
-        run: node ../../packages/devstack/dist/cli/main.mjs snapshot save baseline
+        run: node ../../packages/devstack/dist/cli/main.mjs --state-dir .devstack --app ${{ matrix.example }} --stack ${{ matrix.stack }} snapshot save baseline
 
       - name: Show snapshot contents (debug)
         working-directory: examples/${{ matrix.example }}
@@ -170,7 +170,7 @@ jobs:
         # resolved `.devstack/stacks/<stack>/snapshots/` directory and
         # loads every committed container image. Direct-node invocation:
         # see the seed job's apply step for the bin-symlink rationale.
-        run: node ../../packages/devstack/dist/cli/main.mjs snapshot restore baseline
+        run: node ../../packages/devstack/dist/cli/main.mjs --state-dir .devstack --app ${{ matrix.example }} --stack ${{ matrix.stack }} snapshot restore baseline
 
       - name: Install playwright browsers
         run: pnpm --filter @mysten-incubation/${{ matrix.example }} exec playwright install --with-deps chromium
@@ -181,6 +181,10 @@ jobs:
         # hood; `dev` runs `devstack up`, which adopts the restored
         # containers via the reuse-if-image-matches probe. The tests
         # assert against the chain state captured at snapshot time.
+        env:
+          DEVSTACK_APP: ${{ matrix.example }}
+          DEVSTACK_STACK: ${{ matrix.stack }}
+          DEVSTACK_STATE_DIR: .devstack
         run: pnpm test:e2e --shard ${{ matrix.shard }}/2
 
       - name: Upload playwright report on failure

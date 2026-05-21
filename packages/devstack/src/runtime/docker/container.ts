@@ -273,7 +273,7 @@ const readNetworks = (raw: unknown): ReadonlyArray<string> => {
 
 const InspectSchema = Schema.Struct({
 	Id: Schema.String,
-	Image: Schema.String,
+	Image: Schema.optional(Schema.String),
 	Mounts: Schema.optional(Schema.Unknown),
 	HostConfig: Schema.Struct({
 		PortBindings: Schema.Unknown,
@@ -343,9 +343,9 @@ export const inspectContainer = (
 				running: decoded.State.Running,
 				paused: decoded.State.Paused,
 				exitCode: decoded.State.ExitCode,
-				// The container's recorded image — `Config.Image` is the
-				// resolved-at-create image ref. The runtime's `Image`
-				// field is the digest; either works for the comparison.
+				// The container's recorded image. Docker may omit the
+				// top-level digest field, but lifecycle decisions need the
+				// create-time ref from Config.Image.
 				image: decoded.Config.Image,
 				mounts,
 				portBindings: canonicalPortBindings(ports),

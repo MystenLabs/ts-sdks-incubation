@@ -4,9 +4,9 @@
 // Architecture (distilled/20-cli.md § Multi-stack): each named stack
 // has its own runtime root subdirectory and its own roster /
 // container claims / snapshots. `stack list` enumerates the
-// directories under `<runtimeRoot>/<app>/`. `stack new` creates a
+// directories under `<runtimeRoot>/stacks/`. `stack new` creates a
 // fresh empty stack root. `stack use` writes the name to
-// `<runtimeRoot>/<app>/.active`. `stack drop` removes a stack's
+// `<runtimeRoot>/stacks/.active`. `stack drop` removes a stack's
 // state (refuses if a supervisor is live). `drop-fork` is the
 // fork-specific variant — drops a stack whose chain id is the fork
 // network, leaving local-network siblings alone.
@@ -36,8 +36,8 @@ export interface StackEntry {
 }
 
 export interface StackDeps {
-	/** Resolve the app's runtime root — typically `<DEVSTACK_STATE_DIR
-	 *  >/<app>` or `~/.devstack/<app>`. */
+	/** Resolve the stack collection root — typically
+	 *  `<DEVSTACK_STATE_DIR>/stacks` or `~/.devstack/stacks`. */
 	readonly resolveAppRoot: () => Effect.Effect<string>;
 }
 
