@@ -23,6 +23,9 @@ export default defineConfig({
 	outDir: 'dist',
 	unbundle: true,
 	treeshake: true,
+	deps: {
+		skipNodeModulesBundle: true,
+	},
 	platform: 'node',
 	target: 'node22',
 	sourcemap: true,

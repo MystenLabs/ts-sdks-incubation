@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const tempRoot = mkdtempSync(join(tmpdir(), 'devstack-pack-consumer.'));
 const keepTemp = process.env.DEVSTACK_KEEP_SMOKE === '1';
+const consumerConfigFile = 'installed-consumer.devstack.ts';
 
 const run = (command, args, options = {}) =>
 	execFileSync(command, args, {
@@ -103,7 +104,7 @@ try {
 					verbatimModuleSyntax: true,
 					types: [],
 				},
-				include: ['src/**/*.ts'],
+				include: ['src/**/*.ts', consumerConfigFile],
 			},
 			null,
 			2,
@@ -119,7 +120,7 @@ try {
 		].join('\n'),
 	);
 	writeFileSync(
-		join(consumerRoot, 'devstack.config.ts'),
+		join(consumerRoot, consumerConfigFile),
 		`
 import { writeFileSync } from 'node:fs';
 import { Effect } from 'effect';
@@ -145,10 +146,20 @@ export default defineDevstack(installedConsumerSmokePlugin, { stackName: 'main' 
 `.trimStart(),
 	);
 
-	run('npm', ['install', join(tempRoot, tarball), 'typescript@5.9.3', 'vite@6.4.2'], {
-		cwd: consumerRoot,
-		stdio: 'ignore',
-	});
+	run(
+		'npm',
+		[
+			'install',
+			join(tempRoot, tarball),
+			'effect@4.0.0-beta.65',
+			'typescript@5.9.3',
+			'vite@6.4.2',
+		],
+		{
+			cwd: consumerRoot,
+			stdio: 'ignore',
+		},
+	);
 
 	runSmoke('packed consumer CLI smoke', 'npx', ['--offline', 'devstack', '--help'], consumerRoot);
 	console.log('packed consumer CLI smoke passed');
@@ -167,8 +178,9 @@ export default defineDevstack(installedConsumerSmokePlugin, { stackName: 'main' 
 		[
 			'--offline',
 			'devstack',
+			'apply',
 			'--config',
-			'./devstack.config.ts',
+			`./${consumerConfigFile}`,
 			'--state-dir',
 			'.devstack',
 			'--app',
@@ -177,7 +189,6 @@ export default defineDevstack(installedConsumerSmokePlugin, { stackName: 'main' 
 			'main',
 			'--network',
 			'localnet',
-			'apply',
 		],
 		consumerRoot,
 	);

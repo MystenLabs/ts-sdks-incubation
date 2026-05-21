@@ -5,7 +5,7 @@
 
 import { spawn } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export interface ScaffoldOptions {
@@ -118,7 +118,10 @@ function copyTemplate(src: string, dst: string): void {
 		// Skip generated/build artifacts that may be present in a dev checkout
 		// of `examples/_template/` (the build script normally strips them, but
 		// belt-and-braces).
-		filter: (s) => !shouldSkip(s),
+		filter: (s) => {
+			const rel = relative(src, s);
+			return rel === '' || !shouldSkip(rel);
+		},
 	});
 }
 
