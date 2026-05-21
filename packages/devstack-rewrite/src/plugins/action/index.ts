@@ -11,8 +11,8 @@
 //   const openLobby = action('arena.openLobby', {
 //     consumes: [alice, connectFour] as const,
 //     body: (ctx) =>
-//       ctx.signAndExecute(ctx.get(alice.provides), (tx) => {
-//         const pkg = ctx.get(connectFour.provides);
+//       ctx.signAndExecute(ctx.use(alice), (tx) => {
+//         const pkg = ctx.use(connectFour);
 //         tx.moveCall({ target: `${pkg.packageId}::game::create_lobby` });
 //       }),
 //   });

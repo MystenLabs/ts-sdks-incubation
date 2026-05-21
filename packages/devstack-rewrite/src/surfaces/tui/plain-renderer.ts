@@ -14,8 +14,8 @@
 //   - EPIPE swallowed (pipe-safety invariant).
 //   - Pure formatting helpers exposed for tests; the Effect-shaped
 //     side is the `mount` function.
-//   - Heartbeat NOT implemented here yet — left as a Phase-4 wiring
-//     decision: heartbeat needs a clock, the architecture says it
+//   - Heartbeat formatting is pure here; scheduling belongs to the
+//     renderer mount path. The architecture says it
 //     "anchors on first sighting in acquiring; phase changes do NOT
 //     reset the clock; a late tick emits exactly one heartbeat (no
 //     backlog catch-up)". The seam is exposed via `formatHeartbeat`.
@@ -174,6 +174,7 @@ const payloadFor = (event: EngineEvent): string => {
 				key: event.error.pluginKey ?? '',
 				tag: event.error.tag,
 				summary: event.error.summary,
+				cause: event.error.chain.join(' | '),
 				severity: event.error.severity,
 			});
 		case 'build.statusChanged':

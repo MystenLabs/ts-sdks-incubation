@@ -190,4 +190,15 @@ describe('cli/main', () => {
 			stderrSpy.mockRestore();
 		}
 	});
+
+	it('exec through runCli mirrors the child exit code', async () => {
+		const previousExitCode = process.exitCode;
+		try {
+			process.exitCode = undefined;
+			await runCli(['exec', '--', process.execPath, '-e', 'process.exit(23)']);
+			expect(process.exitCode).toBe(23);
+		} finally {
+			process.exitCode = previousExitCode;
+		}
+	});
 });

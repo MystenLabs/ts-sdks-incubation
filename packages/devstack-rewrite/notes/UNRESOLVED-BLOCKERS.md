@@ -8,34 +8,22 @@ notes were deleted after migration; this ledger is the current checklist.
 
 ## P0: CLI/TUI operator surface is not old-devstack quality
 
-- Restore the old log-stream-above-status pattern. The rewrite currently focuses on row tails and
-  does not provide the same global stream above the main status area.
-- Show startup pending/acquiring work before Docker has fully booted. Startup failures must leave a
-  visible failed state, not a permanent `booting` state.
-- Surface Seal/private-content root causes with stderr/cause context in the TUI and plain renderer.
-- Group output intuitively by service/package/account/action/app, with friendly labels, primary
-  values, extras, endpoints, and plugin ownership. Opaque internal keys are not acceptable as the
-  main operator vocabulary.
-- Wire row focus/selection into details/log panes.
-- Add graceful `q`/quit behavior during startup and steady state.
 - Add an explicit hard-kill path and make second-signal behavior testable. TUI-only blocker:
-  `EngineCommand` currently has `shutdown.requested` but no explicit hard-kill or second-signal
-  command/ack state for the renderer to publish or assert against.
+  `EngineCommand` currently has graceful `shutdown.requested` and legacy `stack.stop`, but no
+  explicit hard-kill/abort command, no second-signal command, and no ack state for the renderer or
+  CLI channel to publish/assert. The existing signal handler exits the process on a second signal
+  without emitting a typed hard-kill command.
 - Re-evaluate the CLI library/design. Help now has a command tree, but subcommand help, standard CLI
-  behavior, and `up` integration still need a product-level acceptance pass.
-- `up` must route through the dispatcher or the parser split must be intentionally documented and
-  verified.
+  behavior, and `up` integration still need a product-level acceptance pass against the live product.
+- `up` intentionally remains split in the bin entry for outer-runtime/signal ownership; the split
+  must stay verified.
 - Required verb parity includes `apply`, `wipe`, `stack`, `fork`, `doctor`, `status`, `logs`,
   `snapshot save`, `snapshot restore`, `snapshot list`, `snapshot delete`, and shutdown/down flows.
-- `exec` must mirror the child exit code.
 
 Acceptance evidence:
 
-- A startup failure, including Seal/private-content failure, shows a failed state and useful cause.
-- Logs stream above the dashboard/status area.
-- Rows are grouped and labeled with endpoints/extras visible.
-- Row focus changes detail/log display.
-- `q` works during startup and shutdown.
+- Manual live-operator proof covers startup pending/acquiring work, failure state/cause visibility,
+  log stream placement, endpoint/extras grouping, row focus, and shutdown progress in the real TUI.
 - Hard kill is available and tested.
 - `devstack up --help`, subcommand help, `apply`, `wipe`, `stack`, `fork`, `doctor`, `status`,
   `logs`, `snapshot`, `exec`, and shutdown commands are production-real.
@@ -49,6 +37,26 @@ Evidence landed 2026-05-21:
   `test/surfaces/tui/display-derivation.test.ts`.
 - TUI input maps `q`/Ctrl-C to `shutdown.requested` even before the first projection frame, and
   up/down/j/k move local row focus. Targeted test: `test/surfaces/tui/input-commands.test.ts`.
+- CLI `exec` is exposed as a release verb, runs a child command through a surface-local runner, and
+  mirrors the child exit code through both dispatcher and bin-entry wiring. Targeted tests:
+  `test/surfaces/cli/dispatch.test.ts` / "exec mirrors the child exit code" and
+  `test/cli/main.test.ts` / "exec through runCli mirrors the child exit code".
+- Required CLI verb/subcommand help is generated from the command tree for `apply`, `wipe`, `stack`,
+  `fork`, `doctor`, `status`, `logs`, `snapshot save|restore|list|delete`, `exec`, and `down`.
+  Targeted test: `test/surfaces/cli/dispatch.test.ts` / "required release verbs and nested
+  subcommands have command-tree help".
+- The bin-entry `up` live path keeps its intentional dispatcher split covered: `up --help`
+  short-circuits through the shared parser without loading config or starting the live path.
+  Targeted tests: `test/surfaces/cli/dispatch.test.ts` and `test/cli/main.test.ts`.
+- Plain renderer and TUI error-pane formatting keep startup failure cause/stderr chains visible.
+  Targeted tests: `test/surfaces/tui/plain-renderer.test.ts` and
+  `test/surfaces/tui/error-pane.test.ts`.
+- Operator/API/extras wave targeted tests passed for CLI/TUI dispatch/rendering, including exec,
+  help, command split, TUI event log, display derivation, input commands, plain rendering, and error
+  panes.
+- Hard-kill remains open: the current write slice did not change the substrate `EngineCommand`
+  union/runtime ack protocol, so only the available graceful `q`/Ctrl-C path is tested in
+  `test/surfaces/tui/input-commands.test.ts`.
 
 ## P0: Engine state, errors, and logs are not wired as a reliable product
 
@@ -166,6 +174,9 @@ Closed evidence:
   no matches.
 - 2026-05-21 Worker Ledger Cleanup: after build, pack audit passed with required image/setup files
   present, `samples: 0`, `dist/node_modules: 0`, and `entries: 978`.
+- 2026-05-21 Worker Ledger Finalize: package build and checkpoint pack/browser/static audits pass:
+  pack includes required image/setup files and excludes samples/dist-node_modules; browser-facing
+  static node-import audit has no matches; old nested specifier audit has no matches.
 - 2026-05-21 Worker Release Surface: package metadata/exports were re-audited; the final rename to
   `@mysten-incubation/devstack` remains deferred because this branch still carries the
   `@mysten-incubation/devstack-rewrite` package identity and matching example imports.
@@ -176,13 +187,6 @@ Closed evidence:
 
 ## P0: Public API ergonomics and unsupported options are not release-quality
 
-- `extras`/manifest contribution seam must support values examples need to surface.
-- Cross-plugin references should be direct values, not strings or `.provides` ceremony.
-- Package/coin/action ergonomics must restore the intended surface: `PackageWithCapture`-style
-  capture, `pkg.coins[...]`, `pickCreatedByType`, `coin.fromPackage(...)`, and
-  `ctx.signAndExecute(account, build)`.
-- DeepBook must expose real defaults/helpers for coins, margin defaults, and `marketMaker`.
-
 Acceptance evidence:
 
 - Unsupported options are deleted from public types or implemented.
@@ -190,6 +194,7 @@ Acceptance evidence:
 - DeepBook public options only represent real behavior.
 - The key examples compile without `as never`, placeholder strings, magic identity strings, or
   handwritten SDK boilerplate that belongs in the substrate/API.
+- Cross-plugin references use direct values unless a remaining exact exception is documented here.
 
 Closed evidence:
 
@@ -218,10 +223,37 @@ Closed evidence:
   `test/plugins/seal/public-refs.test.ts`, `test/plugins/seal/public-refs.test-d.ts`, and
   `test/build-integrations/release-surface.test.ts`.
 - 2026-05-21 Worker Public API: DeepBook local mode exposes only real release behavior; unsupported
-  local pools and market-maker options are refused at the type boundary, convenience helpers that
-  cannot acquire real behavior are absent, and the e2e smoke no longer pretends pools prove boot.
+  local pools and market-maker options are refused at the type boundary, margin/Pyth/pool-spec and
+  market-maker helper exports that cannot acquire real behavior are absent from the root release
+  barrel, and the e2e smoke no longer pretends pools prove boot. Actual local pool creation, Pyth,
+  margin, and market-maker helpers are deferred as non-P0 until they have real acquire behavior.
   Targeted tests: `test/plugins/deepbook/type-refusal.test-d.ts`,
   `test/plugins/deepbook/factory.test.ts`, and `test/e2e/deepbook-boot.test.ts`.
+- 2026-05-21 Worker Package/Coin/Action Ergonomics: `localPackage` now supports declarative
+  `capture: { key: '::module::Type' }`, packages expose discovered publish-receipt coins through
+  `pkg.coins[...]`, the shared `pickCreatedByType` helper works for package publish changes and
+  action receipts, and the package-scoped coin factory is the final `coin.fromPackage(pkg, witness)`
+  name. `examples/fork-greeting-rewrite/devstack.config.ts`,
+  `examples/token-studio-rewrite/devstack.config.ts`, and
+  `examples/wallet-rewrite/devstack.config.ts` use the direct surfaces.
+- 2026-05-21 Worker Package/Coin/Action Ergonomics: focused compile/runtime evidence passed:
+  `pnpm --filter @mysten-incubation/devstack-rewrite exec vitest run test/plugins/package/capture.test.ts test/plugins/action/execute.test.ts test/plugins/coin/discovery.test.ts`,
+  `pnpm --filter @mysten-incubation/devstack-rewrite exec tsc --noEmit --pretty false --target ES2022 --module NodeNext --moduleResolution NodeNext --lib ES2022,DOM --types node --jsx react-jsx --strict --allowImportingTsExtensions --skipLibCheck test/plugins/package/public-ergonomics.test-d.ts`,
+  `pnpm --filter @mysten-incubation/devstack-rewrite exec tsc --noEmit --pretty false --target ES2022 --module NodeNext --moduleResolution NodeNext --lib ES2022,DOM --types node --jsx react-jsx --strict --allowImportingTsExtensions --skipLibCheck ../../examples/wallet-rewrite/devstack.config.ts ../../examples/token-studio-rewrite/devstack.config.ts ../../examples/fork-greeting-rewrite/devstack.config.ts`,
+  and targeted `oxlint` on touched package/coin/action/example files.
+- 2026-05-21 Worker Extras/Manifest Seam: stack-level `extras` now resolve after acquire through a
+  direct member-value context, write through the manifest envelope's `extras` slot, and emit
+  sensitive `extras.ts` through the normal codegen renderer. Targeted tests:
+  `test/substrate/manifest-extras.test.ts`,
+  `test/build-integrations/runtime/read-stack-context.test.ts`, and
+  `test/orchestrators/codegen/service.test.ts`; targeted typecheck:
+  `pnpm --filter @mysten-incubation/devstack-rewrite exec tsc --noEmit --pretty false`.
+- 2026-05-21 Worker Ledger Finalize: direct cross-plugin references are closed for the known API
+  wave surfaces: package/coin/action, Seal, Walrus, DeepBook, and stack extras now use direct public
+  values or refuse unsupported options at the public boundary.
+- 2026-05-21 Worker Ledger Finalize: targeted operator/API/extras tests passed across package,
+  coin, action, DeepBook, manifest extras, build-integration runtime read context, and codegen
+  service coverage.
 
 ## P0: Codegen contracts are inconsistent
 
@@ -344,18 +376,35 @@ Closed evidence:
   `pnpm --filter @mysten-incubation/devstack-rewrite typecheck`,
   `pnpm --filter @mysten-incubation/example-effect-app-rewrite typecheck`, and
   `pnpm --filter @mysten-incubation/example-deepbook-full-rewrite typecheck`.
+- 2026-05-21 Worker Ledger Finalize: package typecheck passes:
+  `pnpm --filter @mysten-incubation/devstack-rewrite typecheck`.
+- 2026-05-21 Worker Ledger Finalize: changed-file formatting passes using Prettier on changed
+  files, and changed-file oxlint passes with 0 warnings / 0 errors.
+- 2026-05-21 Worker Ledger Finalize: targeted operator/API/extras wave tests pass across 17 files /
+  95 tests covering CLI/TUI dispatch/rendering, package/coin/action, DeepBook, manifest extras,
+  build-integration runtime read context, and codegen service.
+- 2026-05-21 Worker Ledger Finalize: example typechecks pass for
+  `@mysten-incubation/example-wallet-rewrite`,
+  `@mysten-incubation/example-token-studio-rewrite`,
+  `@mysten-incubation/example-fork-greeting-rewrite`, and
+  `@mysten-incubation/example-deepbook-full-rewrite`. Wallet and token-studio typecheck scripts run
+  `devstack apply` and logged non-fatal `sui#0` acquire failures, so this is typecheck/config
+  evidence only, not product boot evidence.
 - 2026-05-21 Worker Ledger Cleanup: combined targeted test wave passes across 35 files / 217 tests
   covering API inference/runStack, CLI flags, release surface/build integrations, codegen,
   wallet/account/Sui, Seal/Walrus, DeepBook, and adjusted e2e smoke.
 - 2026-05-21 Worker Ledger Cleanup: package build passes:
   `pnpm --filter @mysten-incubation/devstack-rewrite build`.
+- 2026-05-21 Worker Ledger Finalize: package build passes:
+  `pnpm --filter @mysten-incubation/devstack-rewrite build`.
 
 ## Partially completed items that still need verification
 
 - Command-tree/help work landed, but standard CLI behavior and subcommand UX still need acceptance.
-- TUI renderer selection and `q` routing partially landed, but startup failure, logs, grouping,
-  endpoints, shutdown progress, row focus, and hard-kill are unresolved.
-- Startup pending display had partial early-handle work; verify against real startup and failure.
+- TUI renderer selection, log stream, grouping, endpoints, cause rendering, and `q` routing have
+  targeted tests, but manual live operator proof and hard-kill/second-signal behavior remain open.
+- Startup pending display had partial early-handle work; verify against real startup and failure in
+  manual product evidence.
 - Docker Desktop grouping labels were implemented, but visual verification remains open.
 - Router/profile/traffic work has strong tests, but manual parallel-stack and bad-state checks
   remain open.

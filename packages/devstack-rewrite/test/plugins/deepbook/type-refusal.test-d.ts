@@ -8,10 +8,31 @@
 // Lives under `test/plugins/deepbook/` per the mirror-src/ rule
 // (STYLE_GUIDE §3 / §9).
 
-import { account } from '../../../src/plugins/account/index.ts';
 import { deepbookFor } from '../../../src/plugins/deepbook/index.ts';
 import { chainId } from '../../../src/substrate/brand.ts';
+import type * as DB from '../../../src/plugins/deepbook/index.ts';
 import type { NetworkConfig } from '../../../src/substrate/network.ts';
+
+// --- Negative: unsupported helpers are not public DeepBook API -----------
+type DPV = typeof import('../../../src/plugins/deepbook/index.ts');
+
+// @ts-expect-error — local pool configuration is not public until it acquires real behavior
+export type _NoDeepbookPoolSpecOnDeepbookBarrel = DB.DeepbookPoolSpec;
+
+// @ts-expect-error — margin configuration/default helpers have no acquire path in this release
+export type _NoDeepbookMarginOptionsOnDeepbookBarrel = DB.DeepbookMarginOptions;
+
+// @ts-expect-error — market-maker configuration has no acquire path in this release
+export type _NoDeepbookMarketMakerOptionsOnDeepbookBarrel = DB.DeepbookMarketMakerOptions;
+
+// @ts-expect-error — Pyth configuration is internal to DeepBook until the composite wires it
+export type _NoPythOptionsOnDeepbookBarrel = DB.PythOptions;
+
+// @ts-expect-error — margin defaults are not exported without margin behavior
+export type _NoUsdcMarginDefaultsOnDeepbookBarrel = DPV['USDC_MARGIN_DEFAULTS'];
+
+// @ts-expect-error — margin defaults are not exported without margin behavior
+export type _NoDefaultPoolRiskConfigOnDeepbookBarrel = DPV['DEFAULT_POOL_RISK_CONFIG'];
 
 const localNet: NetworkConfig<'local'> = { mode: 'local', chain: chainId('sui:localnet') };
 const liveNet: NetworkConfig<'live'> = { mode: 'live', chain: chainId('sui:testnet') };
@@ -21,7 +42,7 @@ const forkNet: NetworkConfig<'fork'> = {
 	checkpoint: '1',
 };
 
-const publisher = account('publisher');
+declare const publisher: never;
 
 // --- Positive: local mode allows .local + .known ------------------------
 export const _localLocal = deepbookFor.for(localNet).local({ publisher });

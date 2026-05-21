@@ -30,7 +30,14 @@ export {
 	type SiblingScope,
 	type __SiblingHashConflictError,
 } from './lifted-sibling.ts';
-export { ManifestEnvelopeSchema, type EndpointEntry, type ManifestEnvelope } from './manifest.ts';
+export {
+	ManifestEnvelopeSchema,
+	type EndpointEntry,
+	type ManifestEnvelope,
+	type ManifestExtras,
+	type ManifestExtrasContext,
+	type ManifestExtrasInput,
+} from './manifest.ts';
 export type { DefaultNetwork, NetworkConfig, NetworkMode } from './network.ts';
 export type { DevstackOptions, OptionsLike } from './options.ts';
 export {

@@ -7,6 +7,8 @@ import {
 	defineDevstack,
 	localPackage,
 	sui,
+	type AnyMember,
+	type Stack,
 	wallet,
 } from '@mysten-incubation/devstack-rewrite';
 
@@ -21,9 +23,9 @@ const managedCoin = localPackage('managed_coin', {
 	sourcePath: resolve(HERE, 'move/managed_coin'),
 	publisher: alice,
 });
-const studioCoin = coin.witness(managedCoin, 'MANAGED_COIN');
+const studioCoin = coin.fromPackage(managedCoin, 'MANAGED_COIN');
 
-export default defineDevstack(
+const stack: Stack<ReadonlyArray<AnyMember>> = defineDevstack(
 	sui(),
 	alice,
 	bob,
@@ -33,3 +35,5 @@ export default defineDevstack(
 	wallet({ accounts: [alice, bob, carol], allowedOrigins: [DEV_ORIGIN] }),
 	{ stackName: 'token-studio-rewrite' },
 );
+
+export default stack;

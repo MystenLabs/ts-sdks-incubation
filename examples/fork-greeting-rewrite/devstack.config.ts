@@ -6,6 +6,8 @@ import {
 	defineDevstack,
 	localPackage,
 	sui,
+	type AnyMember,
+	type Stack,
 	wallet,
 } from '@mysten-incubation/devstack-rewrite';
 
@@ -18,9 +20,10 @@ const bob = account('bob');
 const greeting = localPackage('greeting', {
 	sourcePath: resolve(HERE, '..', 'fork-greeting', 'move', 'greeting'),
 	publisher,
+	capture: { boardId: '::board::Board' },
 });
 
-export default defineDevstack(
+const stack: Stack<ReadonlyArray<AnyMember>> = defineDevstack(
 	sui(),
 	publisher,
 	alice,
@@ -33,3 +36,5 @@ export default defineDevstack(
 	}),
 	{ stackName: 'fork-greeting-rewrite' },
 );
+
+export default stack;

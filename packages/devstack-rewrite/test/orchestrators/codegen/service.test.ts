@@ -21,6 +21,7 @@ import {
 	stubMoveCodegen,
 	stubMoveSummaryRunner,
 } from '../../../src/orchestrators/codegen/bindings.ts';
+import { makeExtrasCodegenable } from '../../../src/orchestrators/codegen/extras.ts';
 import {
 	CodegenEmitterCollision,
 	CodegenPathConflict,
@@ -263,12 +264,20 @@ describe('codegen.runEmitCycle', () => {
 							},
 						},
 					}),
+					makeExtrasCodegenable({
+						openLobbyId: '0xfeed',
+						sealKeyServer: {
+							objectId: '0xseal',
+							url: 'http://seal.localhost:5175',
+						},
+					}),
 				],
 			});
 			expect(result.filesWritten.some((path) => path.endsWith('/accounts.ts'))).toBe(true);
 			expect(result.filesWritten.some((path) => path.endsWith('/coins.ts'))).toBe(true);
 			expect(result.filesWritten.some((path) => path.endsWith('/services.ts'))).toBe(true);
 			expect(result.filesWritten.some((path) => path.endsWith('/packages.ts'))).toBe(true);
+			expect(result.filesWritten.some((path) => path.endsWith('/extras.ts'))).toBe(true);
 			expect(result.bindings?.packagesEmitted).toEqual([]);
 
 			const accountsModule = yield* Effect.promise(
@@ -295,10 +304,21 @@ describe('codegen.runEmitCycle', () => {
 						readonly packages: { readonly mock_usdc: { readonly packageId: string } };
 					}>,
 			);
+			const extrasModule = yield* Effect.promise(
+				() =>
+					import(`${pathToFileURL(`${root}/extras.ts`).href}?t=${Date.now()}`) as Promise<{
+						readonly extras: {
+							readonly openLobbyId: string;
+							readonly sealKeyServer: { readonly objectId: string; readonly url: string };
+						};
+					}>,
+			);
 			expect(accountsModule.accounts.alice.address).toBe('0xabc');
 			expect(coinsModule.coins.mock_usdc.fullCoinType).toBe('0x1::mock_usdc::MOCK_USDC');
 			expect(servicesModule.services.sui.rpc.url).toBe('http://127.0.0.1:9000');
 			expect(packagesModule.packages.mock_usdc.packageId).toBe('0x1');
+			expect(extrasModule.extras.openLobbyId).toBe('0xfeed');
+			expect(extrasModule.extras.sealKeyServer.objectId).toBe('0xseal');
 			yield* fs.remove(root, { recursive: true, force: true }).pipe(Effect.ignore);
 		}).pipe(Effect.provide(baseLayer(root)));
 	});

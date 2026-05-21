@@ -7,6 +7,7 @@
 // runtime `MEMBER_BRAND` check both find it.
 
 import type { NetworkConfig } from './network.ts';
+import type { ManifestExtrasInput } from './manifest.ts';
 import type { MemberBrand } from './plugin.ts';
 
 /** Trailing-options shape — all fields optional. Renderer choice
@@ -23,6 +24,7 @@ export interface DevstackOptions {
 	};
 	readonly hotRestart?: boolean;
 	readonly renderer?: 'tui' | 'plain' | 'silent';
+	readonly extras?: ManifestExtrasInput;
 }
 
 /** A type that excludes the member brand — only "pure options"

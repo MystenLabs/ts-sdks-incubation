@@ -33,6 +33,7 @@ interface Harness {
 	readonly stderr: ReadonlyArray<string>;
 	readonly exitCode: number | null;
 	readonly published: ReadonlyArray<EngineCommand>;
+	readonly childRuns: ReadonlyArray<ReadonlyArray<string>>;
 }
 
 const makeHarness = (): Promise<{
@@ -43,6 +44,7 @@ const makeHarness = (): Promise<{
 	const stderr: Array<string> = [];
 	let exitCode: number | null = null;
 	const published: Array<EngineCommand> = [];
+	const childRuns: Array<ReadonlyArray<string>> = [];
 
 	const io: CliIO = {
 		writeStdout: (line) => Effect.sync(() => void stdout.push(line)),
@@ -83,6 +85,13 @@ const makeHarness = (): Promise<{
 		},
 		prune: { publisher },
 		logs: { subscriber, shutdown: Effect.void },
+		exec: {
+			runChild: (argv) =>
+				Effect.sync(() => {
+					childRuns.push([...argv]);
+					return { exitCode: 17, signal: null };
+				}),
+		},
 		doctor: { probes: [] },
 		codegen: { publisher },
 		config: {
@@ -106,6 +115,7 @@ const makeHarness = (): Promise<{
 			stderr,
 			exitCode,
 			published,
+			childRuns,
 		}),
 	});
 };
@@ -183,14 +193,17 @@ describe('dispatch', () => {
 		expect(h.stderr).toHaveLength(0);
 	});
 
-	it('exec is not exposed as a release command', async () => {
+	it('exec mirrors the child exit code', async () => {
 		const { deps, read } = await makeHarness();
-		await run(['--json', 'exec', 'postgres', '--', 'psql'], deps, { io: read().io });
+		await run(['--json', 'exec', '--', 'node', '-e', 'process.exit(17)'], deps, {
+			io: read().io,
+		});
 		const h = read();
-		expect(h.exitCode).toBe(64);
+		expect(h.exitCode).toBe(17);
+		expect(h.childRuns).toEqual([['node', '-e', 'process.exit(17)']]);
 		const env = JSON.parse(h.stdout[0]!);
-		expect(env.error.code).toBe('USAGE');
-		expect(env.error.summary).toMatch(/unknown command: exec/);
+		expect(env.ok).toBe(true);
+		expect(env.data.exitCode).toBe(17);
 	});
 
 	it('down publishes shutdown.requested', async () => {
@@ -290,7 +303,7 @@ describe('dispatch', () => {
 		expect(h.exitCode).toBe(0);
 		const schema = JSON.parse(h.stdout[0]!);
 		expect(schema.verbs).toContain('up');
-		expect(schema.verbs).not.toContain('exec');
+		expect(schema.verbs).toContain('exec');
 		expect(schema.verbs).not.toContain('restart');
 		expect(
 			schema.commands.subcommands.find((c: { name: string }) => c.name === 'snapshot'),
@@ -356,6 +369,41 @@ describe('dispatch', () => {
 		expect(h.stdout[0]).toContain('save');
 		expect(h.stdout[1]).toContain('Usage: devstack snapshot restore <id-or-label>');
 		expect(h.published).toEqual([]);
+	});
+
+	it('required release verbs and nested subcommands have command-tree help', async () => {
+		const { deps, read } = await makeHarness();
+		const helpPaths = [
+			['apply'],
+			['wipe'],
+			['stack'],
+			['stack', 'drop'],
+			['fork'],
+			['fork', 'advance'],
+			['doctor'],
+			['status'],
+			['logs'],
+			['snapshot'],
+			['snapshot', 'save'],
+			['snapshot', 'restore'],
+			['snapshot', 'list'],
+			['snapshot', 'delete'],
+			['exec'],
+			['down'],
+		] as const;
+
+		for (const path of helpPaths) {
+			await run([...path, '--help'], deps, { io: read().io });
+		}
+
+		const h = read();
+		expect(h.exitCode).toBe(0);
+		expect(h.stdout).toHaveLength(helpPaths.length);
+		for (let i = 0; i < helpPaths.length; i += 1) {
+			expect(h.stdout[i]!).toContain(`Usage: devstack ${helpPaths[i]!.join(' ')}`);
+		}
+		expect(h.published).toEqual([]);
+		expect(h.childRuns).toEqual([]);
 	});
 
 	it('prune in non-TTY without --yes → CONFIRM_REQUIRED', async () => {

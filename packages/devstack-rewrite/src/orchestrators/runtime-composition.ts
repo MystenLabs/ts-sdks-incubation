@@ -6,7 +6,7 @@
 // the `OrchestratorSinks` bag and router boot step stay shared.
 
 import { Effect, FileSystem, Layer, Scope } from 'effect';
-import { isAbsolute, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 
 import {
 	layerHostMoveSummaryRunner,
@@ -20,6 +20,7 @@ import {
 	layerCodegenOrchestrator,
 	type Codegenable,
 } from './codegen/service.ts';
+import { makeExtrasCodegenable } from './codegen/extras.ts';
 import {
 	DEFAULT_ENTRYPOINTS,
 	DEFAULT_TRAEFIK_IMAGE,
@@ -39,8 +40,19 @@ import {
 } from './router/profile.ts';
 import { layerSnapshotOrchestrator, SnapshotOrchestratorService } from './snapshot/index.ts';
 import type { PluginKey } from '../substrate/brand.ts';
+import {
+	buildEnvelope,
+	CURRENT_MANIFEST_VERSION,
+	writeManifest,
+} from '../substrate/runtime/manifest/index.ts';
+import { readResolvedSync } from '../substrate/runtime/lifecycle/index.ts';
+import { resolveManifestExtras, type ManifestExtrasInput } from '../substrate/manifest.ts';
+import { StackPathsService } from '../substrate/runtime/paths.ts';
 import type { OrchestratorSinks } from '../substrate/runtime/capability-sinks/index.ts';
-import type { SupervisorPostAcquireHook } from '../substrate/runtime/supervisor.ts';
+import type {
+	SupervisorPostAcquireContext,
+	SupervisorPostAcquireHook,
+} from '../substrate/runtime/supervisor.ts';
 
 export interface ProductionCodegenOptions {
 	readonly appRoot?: string;
@@ -53,6 +65,10 @@ export interface ProductionRouterOptions {
 	readonly disabled?: boolean;
 	readonly image?: string;
 	readonly profile?: RouterProfile;
+}
+
+export interface ProductionPostAcquireOptions {
+	readonly extras?: ManifestExtrasInput;
 }
 
 export interface CapabilityDeliveryObservers {
@@ -149,7 +165,31 @@ export const buildProductionOrchestratorSinks = (
 		};
 	});
 
-export const buildProductionPostAcquireHook = (): Effect.Effect<
+const makeManifestExtrasContext = (ctx: SupervisorPostAcquireContext) => {
+	const tagIdToKey = new Map<string, PluginKey>();
+	for (const [key, node] of ctx.graph.nodes) {
+		tagIdToKey.set(node.member.provides.id, key);
+	}
+	const lookup = (tagId: string): unknown => {
+		const key = tagIdToKey.get(tagId);
+		if (key === undefined) {
+			throw new Error(`manifest extras requested unknown tag '${tagId}'`);
+		}
+		const resolved = readResolvedSync(ctx.registry, key);
+		if (resolved === undefined) {
+			throw new Error(`manifest extras requested unresolved tag '${tagId}'`);
+		}
+		return resolved;
+	};
+	return {
+		get: (tag: { readonly id: string }) => lookup(tag.id),
+		use: (member: { readonly provides: { readonly id: string } }) => lookup(member.provides.id),
+	};
+};
+
+export const buildProductionPostAcquireHook = (
+	options: ProductionPostAcquireOptions = {},
+): Effect.Effect<
 	SupervisorPostAcquireHook,
 	never,
 	| CodegenOrchestratorService
@@ -157,6 +197,7 @@ export const buildProductionPostAcquireHook = (): Effect.Effect<
 	| MoveSummaryRunnerService
 	| MoveCodegenService
 	| FileSystem.FileSystem
+	| StackPathsService
 > =>
 	Effect.gen(function* () {
 		const codegen = yield* CodegenOrchestratorService;
@@ -164,13 +205,37 @@ export const buildProductionPostAcquireHook = (): Effect.Effect<
 		const summaryRunner = yield* MoveSummaryRunnerService;
 		const moveCodegen = yield* MoveCodegenService;
 		const fs = yield* FileSystem.FileSystem;
-		return () =>
-			codegen.runCycle().pipe(
-				Effect.provideService(CodegenPathsService, paths),
-				Effect.provideService(MoveSummaryRunnerService, summaryRunner),
-				Effect.provideService(MoveCodegenService, moveCodegen),
-				Effect.provideService(FileSystem.FileSystem, fs),
-				Effect.map((result) => [
+		const stackPaths = yield* StackPathsService;
+		return (ctx) =>
+			Effect.gen(function* () {
+				const extras = yield* resolveManifestExtras(options.extras, makeManifestExtrasContext(ctx));
+				const envelope = yield* buildEnvelope({
+					identity: {
+						app: ctx.identity.app,
+						stack: ctx.identity.stack,
+						chain: ctx.identity.chain,
+					},
+					contributions: [],
+					extras,
+				});
+				const manifestPath = join(stackPaths.stackRoot, 'manifest.json');
+				yield* writeManifest(envelope, manifestPath).pipe(
+					Effect.provideService(FileSystem.FileSystem, fs),
+				);
+				const result = yield* codegen
+					.runCycle({ extraContributions: [makeExtrasCodegenable(extras)] })
+					.pipe(
+						Effect.provideService(CodegenPathsService, paths),
+						Effect.provideService(MoveSummaryRunnerService, summaryRunner),
+						Effect.provideService(MoveCodegenService, moveCodegen),
+						Effect.provideService(FileSystem.FileSystem, fs),
+					);
+				return [
+					{
+						tag: 'manifest.flushed' as const,
+						manifestVersion: CURRENT_MANIFEST_VERSION,
+						at: Date.now(),
+					},
 					{
 						tag: 'codegen.emitted' as const,
 						files: [
@@ -180,8 +245,8 @@ export const buildProductionPostAcquireHook = (): Effect.Effect<
 						],
 						at: Date.now(),
 					},
-				]),
-			);
+				];
+			});
 	});
 
 export type { EndpointUrl, ResolvedRoute };

@@ -40,6 +40,7 @@ import {
 	type ConfigDeps,
 	type DoctorDeps,
 	type DownDeps,
+	type ExecDeps,
 	type ForkDeps,
 	type LogsDeps,
 	type PruneDeps,
@@ -50,6 +51,7 @@ import {
 	runConfig,
 	runDoctor,
 	runDown,
+	runExec,
 	runFork,
 	runLogs,
 	runPrune,
@@ -82,6 +84,7 @@ export interface CliDeps {
 	readonly snapshot: SnapshotDeps;
 	readonly prune: PruneDeps;
 	readonly logs: LogsDeps;
+	readonly exec: ExecDeps;
 	readonly doctor: DoctorDeps;
 	readonly codegen: CodegenDeps;
 	readonly config: ConfigDeps;
@@ -159,7 +162,7 @@ export const dispatch = (deps: CliDeps, dispatchEnv: DispatchEnv): Effect.Effect
 				elapsedMs: 0,
 				error: new CliUsageError({
 					message: 'no command specified',
-					hint: 'try one of: up, down, status, snapshot, prune, doctor, logs, codegen, config, apply, wipe, stack, fork',
+					hint: 'try one of: up, down, status, snapshot, prune, logs, exec, doctor, codegen, config, apply, wipe, stack, fork',
 				}),
 			});
 			return;
@@ -226,6 +229,8 @@ const runVerb = (
 			return runPrune(deps.prune, ctx);
 		case 'logs':
 			return runLogs(deps.logs, ctx);
+		case 'exec':
+			return runExec(deps.exec, ctx);
 		case 'doctor':
 			return runDoctor(deps.doctor, ctx);
 		case 'codegen':

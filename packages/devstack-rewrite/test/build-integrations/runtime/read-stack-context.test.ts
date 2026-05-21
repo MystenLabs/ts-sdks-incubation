@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it } from '@effect/vitest';
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
+import { Effect } from 'effect';
 
 import {
 	ManifestDiscoveryError,
@@ -12,6 +14,7 @@ import {
 	readStackContext,
 	CONSUMER_MANIFEST_VERSION,
 } from '../../../src/build-integrations/runtime/index.ts';
+import { buildEnvelope, writeManifest } from '../../../src/substrate/runtime/manifest/index.ts';
 
 const makeManifestAt = (path: string, body: object): void => {
 	mkdirSync(join(path, '..'), { recursive: true });
@@ -51,6 +54,29 @@ describe('readStackContext (sync)', () => {
 		expect(rpc?.url).toBe('http://sui-rpc.demo.localhost:5174');
 		expect(rpc?.wireProtocol).toBe('http');
 	});
+
+	it.effect('round-trips app extras through the manifest writer and runtime reader', () =>
+		Effect.gen(function* () {
+			const tmp = mkdtempSync(join(tmpdir(), 'devstack-read-'));
+			const manifestPath = join(tmp, '.devstack', 'stacks', 'main', 'manifest.json');
+			const extras = {
+				openLobbyId: '0xfeed',
+				sealKeyServer: {
+					objectId: '0xseal',
+					url: 'http://seal.localhost:5175',
+				},
+			};
+			const envelope = yield* buildEnvelope({
+				identity: { app: 'demo', stack: 'main', chain: 'sui:local' },
+				contributions: [],
+				extras,
+			});
+			yield* writeManifest(envelope, manifestPath);
+
+			const ctx = readStackContext({ manifestPath });
+			expect(ctx.extras).toEqual(extras);
+		}).pipe(Effect.provide(NodeFileSystem.layer)),
+	);
 
 	it('walks up from a nested cwd to find the manifest', () => {
 		const tmp = mkdtempSync(join(tmpdir(), 'devstack-read-'));

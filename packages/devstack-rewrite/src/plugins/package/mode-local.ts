@@ -120,7 +120,7 @@ export interface LocalModeInputs {
 	readonly chainId: ChainId;
 	readonly publisherAddress: string;
 	readonly mvrOverride?: string;
-	readonly captureSpec?: (receipt: PublishReceipt) => Readonly<Record<string, string>>;
+	readonly capture?: (receipt: PublishReceipt) => Readonly<Record<string, string>>;
 	/** Publish executor — constructed per-acquire by the barrel from
 	 *  the resolved SuiClient + publisher account + ContainerRuntime
 	 *  (see `publish-executor.ts`). */
@@ -327,14 +327,14 @@ export const acquireLocal = (
 				// safe to swallow individual key failures (callback form
 				// is user code), but a callback throw bubbles up as a
 				// PublishError('parse') so the user catches the typo.
-				const captured: Readonly<Record<string, string>> = inputs.captureSpec
+				const captured: Readonly<Record<string, string>> = inputs.capture
 					? yield* Effect.try({
-							try: () => inputs.captureSpec!(receipt),
+							try: () => inputs.capture!(receipt),
 							catch: (cause): PublishError =>
 								publishError('parse', {
 									sourcePath: inputs.sourcePath,
 									packageName: inputs.packageName,
-									message: 'captureSpec callback threw',
+									message: 'capture callback threw',
 									cause,
 								}),
 						})

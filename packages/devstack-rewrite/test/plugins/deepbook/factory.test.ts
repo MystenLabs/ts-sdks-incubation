@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import { account } from '../../../src/plugins/account/index.ts';
 import { deepbook, deepbookFor } from '../../../src/plugins/deepbook/index.ts';
+import * as publicRoot from '../../../src/index.ts';
 import { chainId } from '../../../src/substrate/brand.ts';
 import { MEMBER_BRAND } from '../../../src/substrate/plugin.ts';
 
@@ -99,5 +100,19 @@ describe('deepbook unsupported convenience factories', () => {
 		expect(surface.marketMaker).toBeUndefined();
 		expect(surface.mintDEEP).toBeUndefined();
 		expect(surface.mintUSDC).toBeUndefined();
+	});
+
+	it('keeps unsupported helper values out of the package root barrel', () => {
+		for (const name of [
+			'USDC_MARGIN_DEFAULTS',
+			'SUI_MARGIN_DEFAULTS',
+			'DEFAULT_POOL_RISK_CONFIG',
+			'pythPriceFeedId',
+			'USDC_PRICE_FEED_ID',
+			'SUI_PRICE_FEED_ID',
+			'DEEP_PRICE_FEED_ID',
+		]) {
+			expect(Object.hasOwn(publicRoot, name)).toBe(false);
+		}
 	});
 });

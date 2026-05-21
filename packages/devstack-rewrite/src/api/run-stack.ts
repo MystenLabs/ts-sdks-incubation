@@ -205,7 +205,7 @@ export const runStack = (
 
 	const supervised = Effect.gen(function* () {
 		const orchestratorSinks = yield* buildProductionOrchestratorSinks();
-		const postAcquireHook = yield* buildProductionPostAcquireHook();
+		const postAcquireHook = yield* buildProductionPostAcquireHook({ extras: stack.options.extras });
 		yield* superviseStackEffect(supervisedStack, identity, state, {
 			orchestratorSinks,
 			postAcquireHook,

@@ -54,6 +54,7 @@ import {
 	makeChannelPublisher,
 	makeChannelSubscriber,
 	defaultProbes,
+	runNodeChildProcess,
 	type ChannelDepsContext,
 } from '../surfaces/cli/commands/index.ts';
 import type {
@@ -231,6 +232,7 @@ const buildChannelDeps = (identity: ResolvedIdentity): CliDeps => {
 		snapshot: { publisher, reader: makeSnapshotReader(identity) },
 		prune: { publisher },
 		logs: { subscriber, shutdown: Effect.never },
+		exec: { runChild: runNodeChildProcess },
 		doctor: {
 			probes: defaultProbes({
 				stateDir: identity.runtimeRoot,
@@ -357,7 +359,9 @@ const runUpLive = (
 			const fs = yield* FileSystem.FileSystem;
 			const snapshotCommandHandler = makeSnapshotCommandHandler({ snapshot, fs });
 			const orchestratorSinks = yield* buildProductionOrchestratorSinks();
-			const postAcquireHook = yield* buildProductionPostAcquireHook();
+			const postAcquireHook = yield* buildProductionPostAcquireHook({
+				extras: stack.options.extras,
+			});
 			yield* superviseStackEffect(
 				{ _tag: 'Stack', members: stack.members, options: stack.options },
 				identityValue,
@@ -486,7 +490,9 @@ const runApplyLive = (
 		const program = Effect.gen(function* () {
 			const state = yield* makeProjectionRef();
 			const orchestratorSinks = yield* buildProductionOrchestratorSinks();
-			const postAcquireHook = yield* buildProductionPostAcquireHook();
+			const postAcquireHook = yield* buildProductionPostAcquireHook({
+				extras: stack.options.extras,
+			});
 			yield* superviseStackEffect(
 				{ _tag: 'Stack', members: stack.members, options: stack.options },
 				identityValue,

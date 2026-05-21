@@ -21,7 +21,7 @@
 //   - The user supplies a `build(tx)` callback that populates the
 //     `Transaction` synchronously (moveCalls, transferObjects, etc.).
 //   - The user supplies the signing `account` (an `AccountValue` from
-//     `ctx.get(alice.provides)`); we sign-only with `signTransaction`
+//     `ctx.use(alice)`); we sign-only with `signTransaction`
 //     and drive the SDK's `executeTransaction` directly.
 //   - The helper returns an `ActionReceipt` projection: `{ digest,
 //     objectChanges }`. The `objectChanges` array is shaped uniformly so

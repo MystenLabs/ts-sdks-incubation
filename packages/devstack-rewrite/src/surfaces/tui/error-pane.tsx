@@ -40,7 +40,7 @@ const colorForSeverity = (severity: StructuredError['severity']): 'red' | 'yello
  * convenience); we feed it through `formatValue` for consistent
  * rendering.
  */
-const formatStructured = (error: StructuredError): string => {
+export const formatStructuredError = (error: StructuredError): string => {
 	const header = `[${error.tag}] ${error.summary}`;
 	if (error.chain.length === 0) return header;
 	// `chain` is the cause-walker's output (string lines). We render
@@ -62,7 +62,7 @@ export const ErrorPane = ({ errors, limit = 5 }: ErrorPaneProps): React.JSX.Elem
 			</Text>
 			{shown.map((error, idx) => (
 				<Box key={`${error.at}-${idx}`} flexDirection="column" marginBottom={1}>
-					<Text color={colorForSeverity(error.severity)}>{formatStructured(error)}</Text>
+					<Text color={colorForSeverity(error.severity)}>{formatStructuredError(error)}</Text>
 				</Box>
 			))}
 		</Box>

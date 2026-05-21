@@ -123,6 +123,11 @@ export {
 
 export type { NetworkConfig, NetworkMode, DefaultNetwork } from './substrate/network.ts';
 export type { DevstackOptions, OptionsLike } from './substrate/options.ts';
+export type {
+	ManifestExtras,
+	ManifestExtrasContext,
+	ManifestExtrasInput,
+} from './substrate/manifest.ts';
 
 // --- Branded primitives (constructor functions for plugin authors) ------
 
@@ -215,12 +220,18 @@ export {
 	knownPackage,
 	pkg,
 	packageTagId,
+	pickCreatedByType,
 	type LocalPackageOptions,
 	type KnownPackageOptions,
 	type LocalPackageResolved,
 	type KnownPackageResolved,
 	type PackageResolved,
 	type PackageTagId,
+	type PackageCapture,
+	type PackageCaptureCallback,
+	type PackageCaptureMap,
+	type PackageCoins,
+	type PickCreatedByTypeOptions,
 	type PublisherAccountMember,
 	type PublishReceipt,
 	type PublishObjectChange,
@@ -404,13 +415,6 @@ export {
 export {
 	deepbook,
 	deepbookFor,
-	DEEP_PRICE_FEED_ID,
-	DEFAULT_POOL_RISK_CONFIG,
-	pythPriceFeedId,
-	SUI_MARGIN_DEFAULTS,
-	SUI_PRICE_FEED_ID,
-	USDC_MARGIN_DEFAULTS,
-	USDC_PRICE_FEED_ID,
 	type DeepbookTagId,
 	type DeepbookResolved,
 	type DeepbookCommonOptions,
@@ -424,17 +428,7 @@ export {
 	type DeepbookConfigError,
 	type DeepbookPhase,
 	type AccountMemberAlias,
-	type DeepbookMarginAssetConfig,
-	type DeepbookMarginOptions,
-	type DeepbookMarginPoolRegistration,
-	type DeepbookMarginPoolRiskConfig,
-	type DeepbookMarketMakerOptions,
-	type DeepbookMarketMakerStrategy,
 	type DeepbookPool,
-	type DeepbookPoolSpec,
-	type PackageMemberAlias,
-	type PythFeed,
 	type PythHandle,
-	type PythOptions,
 	type PythPriceFeedId,
 } from './plugins/deepbook/index.ts';

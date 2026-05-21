@@ -190,11 +190,16 @@ export type SupervisorCommandHandler = (
 	cmd: EngineCommand,
 ) => Effect.Effect<ReadonlyArray<EngineEvent>, unknown, never>;
 
-export type SupervisorPostAcquireHook = () => Effect.Effect<
-	ReadonlyArray<EngineEvent>,
-	unknown,
-	never
->;
+export interface SupervisorPostAcquireContext {
+	readonly graph: ResolvedGraph;
+	readonly registry: PluginRegistry;
+	readonly identity: Identity;
+	readonly runtimeRoot: string;
+}
+
+export type SupervisorPostAcquireHook = (
+	ctx: SupervisorPostAcquireContext,
+) => Effect.Effect<ReadonlyArray<EngineEvent>, unknown, never>;
 
 // -----------------------------------------------------------------------------
 // Event publishing
@@ -844,7 +849,14 @@ const runPostAcquireHook = (
 ): Effect.Effect<void, SupervisorPostAcquireFailed, never> =>
 	Effect.gen(function* () {
 		if (deps.postAcquireHook === undefined) return;
-		const exit = yield* Effect.exit(deps.postAcquireHook());
+		const exit = yield* Effect.exit(
+			deps.postAcquireHook({
+				graph: deps.graph,
+				registry: deps.registry,
+				identity: deps.identity,
+				runtimeRoot: deps.runtimeRoot,
+			}),
+		);
 		if (Exit.isSuccess(exit)) {
 			for (const event of exit.value) {
 				yield* publish(deps.ref, deps.hub, event);

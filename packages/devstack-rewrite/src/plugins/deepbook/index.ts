@@ -293,7 +293,7 @@ const buildKnownPlugin = (opts: DeepbookKnownOptions) => {
 		kind: 'leaf-one-shot',
 		rebootCost: 'cheap',
 		acquire: (ctx) =>
-			Effect.gen(function* () {
+			Effect.sync(() => {
 				const sui = ctx.get(SuiTag);
 				const resolved: DeepbookResolved = {
 					mode: 'known',
@@ -439,28 +439,4 @@ export {
 	type DeepbookPhase,
 } from './errors.ts';
 export type { DeepbookBindings, DeepbookPoolBinding } from './codegen.ts';
-export type {
-	AccountMemberAlias,
-	DeepbookMarginAssetConfig,
-	DeepbookMarginOptions,
-	DeepbookMarginPoolRegistration,
-	DeepbookMarginPoolRiskConfig,
-	DeepbookMarketMakerOptions,
-	DeepbookMarketMakerStrategy,
-	DeepbookPool,
-	DeepbookPoolSpec,
-	PackageMemberAlias,
-	PythFeed,
-	PythHandle,
-	PythOptions,
-	PythPriceFeedId,
-} from './types.ts';
-export {
-	DEEP_PRICE_FEED_ID,
-	DEFAULT_POOL_RISK_CONFIG,
-	pythPriceFeedId,
-	SUI_MARGIN_DEFAULTS,
-	SUI_PRICE_FEED_ID,
-	USDC_MARGIN_DEFAULTS,
-	USDC_PRICE_FEED_ID,
-} from './types.ts';
+export type { AccountMemberAlias, DeepbookPool, PythHandle, PythPriceFeedId } from './types.ts';

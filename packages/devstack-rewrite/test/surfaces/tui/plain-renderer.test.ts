@@ -69,13 +69,14 @@ describe('plain-renderer formatters', () => {
 				pluginKey: pluginKey('seal'),
 				tag: 'BootError',
 				summary: 'docker exited 1',
-				chain: [],
+				chain: ['stderr: private content failed', 'exit code: 1'],
 				severity: 'error',
 			},
 		});
 		expect(line.startsWith(`2026-05-19T20:11:32.001Z ERROR`)).toBe(true);
 		expect(line).toContain('error.reported');
 		expect(line).toContain('tag=BootError');
+		expect(line).toContain('cause="stderr: private content failed | exit code: 1"');
 	});
 
 	it('formats restart.requested for stack-wide target', () => {

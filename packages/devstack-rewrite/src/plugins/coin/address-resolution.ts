@@ -12,7 +12,7 @@
 //      registry to carry tag identities, which is a layering
 //      violation; documented warning in `index.ts` instead.)
 //
-//   2. **Package-scoped witness** — `coin.witness(pkg, 'MOCK_USDC')`.
+//   2. **Package-scoped witness** — `coin.fromPackage(pkg, 'MOCK_USDC')`.
 //      Forces a dep edge on the publishing `Package`'s tag, then
 //      reads its publish receipt's discovered coins. Statically typed
 //      against local packages only (KnownPackages have no receipt).
@@ -121,7 +121,7 @@ export const resolveBySymbol = (
 			return yield* Effect.fail(
 				coinError('ambiguous', {
 					identifier: symbol,
-					message: `coin('${symbol}'): matched ${distinctTypes.size} distinct coin types — disambiguate via coin.witness(pkg, witness).`,
+					message: `coin('${symbol}'): matched ${distinctTypes.size} distinct coin types — disambiguate via coin.fromPackage(pkg, witness).`,
 					candidates: [...distinctTypes],
 				}),
 			);
@@ -151,7 +151,7 @@ export const resolveByWitness = (
 			return yield* Effect.fail(
 				coinError('not-found', {
 					identifier: `${packageName}::${witness}`,
-					message: `coin.witness('${packageName}', '${witness}'): witness not present in the package's discovered coins.`,
+					message: `coin.fromPackage('${packageName}', '${witness}'): witness not present in the package's discovered coins.`,
 					candidates,
 				}),
 			);

@@ -47,6 +47,7 @@ export {
 	type ProbeReport,
 } from './doctor.ts';
 export { runDown, type DownDeps } from './down.ts';
+export { runExec, runNodeChildProcess, type ExecDeps } from './exec.ts';
 export { runFork, type ForkDeps } from './fork.ts';
 export { runLogs, type LogsDeps } from './logs.ts';
 export { runPrune, type PruneDeps } from './prune.ts';

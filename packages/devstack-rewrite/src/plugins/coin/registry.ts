@@ -39,7 +39,7 @@ export interface CoinRecord {
 	/** Fully-qualified on-chain type — `0xPKG::module::Witness`. */
 	readonly type: string;
 	/** Lower-cased witness identifier (e.g. `mock_usdc`). Used for
-	 *  the `coin.witness(pkg, 'MOCK_USDC')` lookup. */
+	 *  the `coin.fromPackage(pkg, 'MOCK_USDC')` lookup. */
 	readonly witness: string;
 	/** Lower-cased module name. */
 	readonly moduleName: string;

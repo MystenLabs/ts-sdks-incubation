@@ -32,6 +32,7 @@ import { FileSystem } from 'effect';
 import type { EndpointKey, PluginKey } from '../../brand.ts';
 import {
 	type EndpointEntry,
+	type ManifestExtras,
 	type ManifestEnvelope,
 	ManifestEnvelopeSchema,
 } from '../../manifest.ts';
@@ -91,8 +92,8 @@ export interface PluginManifestContribution {
 	/** Endpoints owned by this plugin. The writer indexes these by
 	 *  `endpointKey` into the flat top-level lookup. */
 	readonly endpoints: ReadonlyArray<EndpointEntry>;
-	/** Optional opaque extras blob (e.g. a snapshot timestamp). */
-	readonly extras?: unknown;
+	/** Optional app-facing extras merged into the top-level extras slot. */
+	readonly extras?: ManifestExtras;
 }
 
 // -----------------------------------------------------------------------------
@@ -102,6 +103,7 @@ export interface PluginManifestContribution {
 export interface WriteManifestInput {
 	readonly identity: ManifestEnvelope['identity'];
 	readonly contributions: ReadonlyArray<PluginManifestContribution>;
+	readonly extras?: ManifestExtras;
 }
 
 /**
@@ -119,7 +121,7 @@ export const buildEnvelope = (
 	Effect.gen(function* () {
 		const services: Record<string, unknown> = {};
 		const endpoints: Record<string, EndpointEntry> = {};
-		const extras: Record<string, unknown> = {};
+		const extras: Record<string, unknown> = { ...input.extras };
 
 		for (const contribution of input.contributions) {
 			const key = contribution.pluginKey as string;
@@ -133,7 +135,20 @@ export const buildEnvelope = (
 				);
 			}
 			services[key] = contribution.services;
-			if (contribution.extras !== undefined) extras[key] = contribution.extras;
+			if (contribution.extras !== undefined) {
+				for (const [extraKey, extraValue] of Object.entries(contribution.extras)) {
+					if (extraKey in extras) {
+						return yield* Effect.fail(
+							new ManifestError({
+								reason: 'duplicate-contribution',
+								path: '(in-memory envelope)',
+								detail: `extras key ${extraKey} contributed twice`,
+							}),
+						);
+					}
+					extras[extraKey] = extraValue;
+				}
+			}
 			for (const ep of contribution.endpoints) {
 				const ek = ep.endpointKey as string;
 				if (ek in endpoints) {

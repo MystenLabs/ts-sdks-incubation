@@ -12,7 +12,7 @@
 // forms:
 //
 //   coin.local('mUSDC')                      // symbol → registry
-//   coin.witness(pkg, 'MOCK_USDC')           // package member → registry
+//   coin.fromPackage(pkg, 'MOCK_USDC')       // package member → registry
 //   coin.known('0x...::deep::DEEP')          // bare → live RPC
 //   coin.builtin('sui')                      // protocol-defined constant
 //
@@ -34,7 +34,7 @@
 // need the coin available BEFORE acquisition MUST include the
 // publishing `localPackage(...)` in their `needs:` list (or in the
 // `defineDevstack(...)` composition before the consumer). The
-// `coin.witness(pkg, ...)` form forces the edge explicitly via the
+// `coin.fromPackage(pkg, ...)` form forces the edge explicitly via the
 // `consumes` tuple — prefer it when the publisher is reachable.
 
 import { Effect } from 'effect';
@@ -186,7 +186,7 @@ export const local = <Sym extends string>(symbol: Sym) => {
 };
 
 // ---------------------------------------------------------------------------
-// Form 2: coin.witness(pkg, witness) — package-scoped registry lookup
+// Form 2: coin.fromPackage(pkg, witness) — package-scoped registry lookup
 // ---------------------------------------------------------------------------
 
 /** A user-supplied package member ref. The user passes the result of
@@ -218,7 +218,7 @@ export type PackageMember<Name extends string = string> = StackMember<
  *  / `knownPackage(...)`), not its `.provides` tag. The factory
  *  projects `.provides` internally; the resolved-value type is read
  *  via `ctx.use(member)` in the acquire body. */
-export const witness = <PkgName extends string, Wit extends string>(
+export const fromPackage = <PkgName extends string, Wit extends string>(
 	pkg: PackageMember<PkgName>,
 	witnessName: Wit,
 ) => {
@@ -354,7 +354,7 @@ export const builtin = <Name extends keyof typeof BUILTIN_COINS>(name: Name) => 
  *  entry. */
 export const coin = {
 	local,
-	witness,
+	fromPackage,
 	known,
 	builtin,
 } as const;
@@ -403,4 +403,4 @@ export { coinError, COIN_ERROR_TAGS } from './errors.ts';
 export const SYMBOL_FORM_NO_DEP_EDGE_WARNING =
 	`coin.local(symbol) does not auto-derive a dep edge on the publishing package.\n` +
 	`If the package isn't already composed BEFORE this coin, you'll see CoinError({phase: 'not-found'}).\n` +
-	`Prefer coin.witness(packageMember, witnessName) when the publisher is reachable.`;
+	`Prefer coin.fromPackage(packageMember, witnessName) when the publisher is reachable.`;

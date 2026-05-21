@@ -11,7 +11,6 @@
 // `project_devstack_api_design_locked_decisions`).
 
 import type { AccountValue } from '../account/index.ts';
-import type { ResolvedPackage } from '../package/index.ts';
 import type { CapabilityDecl } from '../../contracts/capability-decl.ts';
 import type { LiftedSiblingKey } from '../../substrate/lifted-sibling.ts';
 import type { StackMember } from '../../substrate/plugin.ts';
@@ -248,13 +247,6 @@ export interface DeepbookMarketMaker {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type AccountMemberAlias<Name extends string = string> = StackMember<
 	Tag<`account/${Name}`, AccountValue>,
-	ReadonlyArray<AnyTag>,
-	ReadonlyArray<CapabilityDecl>,
-	ReadonlyArray<LiftedSiblingKey>
->;
-
-export type PackageMemberAlias<Name extends string = string> = StackMember<
-	Tag<`package:${Name}`, ResolvedPackage>,
 	ReadonlyArray<AnyTag>,
 	ReadonlyArray<CapabilityDecl>,
 	ReadonlyArray<LiftedSiblingKey>

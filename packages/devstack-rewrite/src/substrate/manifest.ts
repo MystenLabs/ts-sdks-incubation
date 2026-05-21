@@ -11,7 +11,7 @@
 //   - the endpoint-declaration shape (decl emitted by Routable; the
 //     manifest writer at L3 walks them).
 
-import { Schema } from 'effect';
+import { Effect, Schema } from 'effect';
 
 import type { EndpointKey, PluginKey } from './brand.ts';
 
@@ -30,6 +30,46 @@ export interface ManifestEnvelope {
 	readonly endpoints: Readonly<Record<string, EndpointEntry>>;
 	readonly extras: Readonly<Record<string, unknown>>;
 }
+
+export type ManifestExtras = Readonly<Record<string, unknown>>;
+
+export interface ManifestExtrasContext {
+	readonly get: (tag: { readonly id: string }) => unknown;
+	readonly use: (member: { readonly provides: { readonly id: string } }) => unknown;
+}
+
+export type ManifestExtrasInput =
+	| ManifestExtras
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	| Effect.Effect<ManifestExtras, any, never>
+	| ((
+			ctx: ManifestExtrasContext,
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	  ) => ManifestExtras | Effect.Effect<ManifestExtras, any, never>);
+
+const isRecord = (value: unknown): value is ManifestExtras =>
+	typeof value === 'object' && value !== null && !Array.isArray(value);
+
+export const resolveManifestExtras = (
+	input: ManifestExtrasInput | undefined,
+	ctx: ManifestExtrasContext,
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+): Effect.Effect<ManifestExtras, Error, never> =>
+	Effect.gen(function* () {
+		if (input === undefined) return {};
+		const resolvedEffect = Effect.isEffect(input)
+			? input
+			: typeof input === 'function'
+				? Effect.sync(() => input(ctx)).pipe(
+						Effect.flatMap((value) => (Effect.isEffect(value) ? value : Effect.succeed(value))),
+					)
+				: Effect.succeed(input);
+		const resolved = yield* resolvedEffect;
+		if (!isRecord(resolved)) {
+			return yield* Effect.fail(new Error('manifest extras must resolve to a plain record'));
+		}
+		return resolved;
+	});
 
 /** Flat endpoint entry — the manifest's load-bearing surface for
  *  build integrations (Vite alias, Vitest preset). */

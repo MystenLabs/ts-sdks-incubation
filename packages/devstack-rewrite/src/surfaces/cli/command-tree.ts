@@ -102,6 +102,12 @@ const commands = [
 		options: [{ name: 'level', value: 'level', description: 'Filter by log level.' }],
 	},
 	{
+		name: 'exec',
+		summary: 'Run a child command and mirror its exit code.',
+		usage: 'devstack exec -- <command> [args...]',
+		arguments: ['command', 'args'],
+	},
+	{
 		name: 'doctor',
 		summary: 'Run health-check probes.',
 		usage: 'devstack doctor [--global-flags]',
