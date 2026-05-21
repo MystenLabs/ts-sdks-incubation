@@ -3,11 +3,18 @@ import { hostname as nodeHostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
 import { Effect } from 'effect';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { runCli } from '../../src/cli/main.ts';
-import { SnapshotLayout, SNAPSHOT_META_VERSION } from '../../src/orchestrators/snapshot/index.ts';
+import {
+	contributionPath,
+	SNAPSHOT_CONTRIBUTION_VERSION,
+	SnapshotLayout,
+	SNAPSHOT_META_VERSION,
+	writeArtifactIntegrity,
+} from '../../src/orchestrators/snapshot/index.ts';
 import type { SubscribableState } from '../../src/substrate/projection.ts';
 import { COMMAND_CHANNEL_COMMANDS_FILE_NAME } from '../../src/substrate/runtime/cross-process/index.ts';
 import { processStartTime } from '../../src/substrate/runtime/cross-process/liveness.ts';
@@ -65,6 +72,43 @@ export default defineDevstack(cliApplyCodegenPlugin, { stackName: 'main' });
 	return configPath;
 };
 
+const OFFLINE_RESTORE_PLUGIN_KEY = 'test/offline-restore#0';
+const OFFLINE_RESTORE_IDENTITY = JSON.stringify({ marker: 'offline-restore' });
+
+const writeOfflineRestoreConfig = (appRoot: string): string => {
+	const configPath = join(appRoot, 'devstack.config.ts');
+	writeFileSync(
+		configPath,
+		`
+import { Effect } from 'effect';
+import { capabilities, defineDevstack, defineNodePlugin, defineTag } from '@mysten-incubation/devstack';
+
+const OfflineRestoreTag = defineTag<'test/offline-restore', { readonly ready: true }>(
+\t'test/offline-restore',
+\t'test',
+);
+
+const offlineRestorePlugin = defineNodePlugin({
+\tprovides: OfflineRestoreTag,
+\tconsumes: [] as const,
+\tkind: 'leaf-long-running',
+\tacquire: () => Effect.succeed({ ready: true } as const),
+\tcapabilities: () =>
+\t\tcapabilities({
+\t\t\tkind: 'snapshotable',
+\t\t\tsubtrees: [],
+\t\t\tmanagedContainers: [],
+\t\t\tmissingTolerance: 'fine',
+\t\t\tpreRestore: Effect.succeed({ marker: 'offline-restore' }),
+\t\t}),
+});
+
+export default defineDevstack(offlineRestorePlugin, { stackName: 'alpha' });
+`.trimStart(),
+	);
+	return configPath;
+};
+
 const makeProjectionState = (params: {
 	readonly app: string;
 	readonly stack: string;
@@ -105,6 +149,50 @@ const writeSnapshotMetadata = (stackRoot: string, snapshotId: string): void => {
 	);
 };
 
+const writeRestorableSnapshotArtifact = async (
+	stackRoot: string,
+	snapshotId: string,
+): Promise<void> => {
+	const snapshotDir = join(stackRoot, 'snapshots', snapshotId);
+	mkdirSync(join(snapshotDir, SnapshotLayout.contributionsDir), { recursive: true });
+	writeFileSync(
+		join(snapshotDir, SnapshotLayout.metaFile),
+		JSON.stringify(
+			{
+				version: SNAPSHOT_META_VERSION,
+				id: snapshotId,
+				label: 'workflow-baseline',
+				createdAt: 1_700_000_000_000,
+				app: 'labeled-app',
+				stack: 'alpha',
+				network: 'sui:local',
+				hostTreeIncluded: false,
+				subtrees: [],
+				containers: [],
+				identity: { [OFFLINE_RESTORE_PLUGIN_KEY]: OFFLINE_RESTORE_IDENTITY },
+				participants: [OFFLINE_RESTORE_PLUGIN_KEY],
+			},
+			null,
+			2,
+		),
+	);
+	writeFileSync(
+		join(snapshotDir, contributionPath(OFFLINE_RESTORE_PLUGIN_KEY)),
+		JSON.stringify(
+			{
+				version: SNAPSHOT_CONTRIBUTION_VERSION,
+				plugin: OFFLINE_RESTORE_PLUGIN_KEY,
+				identity: { [OFFLINE_RESTORE_PLUGIN_KEY]: OFFLINE_RESTORE_IDENTITY },
+			},
+			null,
+			2,
+		),
+	);
+	await Effect.runPromise(
+		writeArtifactIntegrity(snapshotDir).pipe(Effect.provide(NodeFileSystem.layer)),
+	);
+};
+
 const writeLiveRoster = (stackRoot: string): void => {
 	mkdirSync(stackRoot, { recursive: true });
 	writeFileSync(
@@ -132,11 +220,14 @@ const readCommandLog = (
 	readFileSync(join(stackRoot, COMMAND_CHANNEL_COMMANDS_FILE_NAME), 'utf8')
 		.trim()
 		.split('\n')
-		.map(
-			(line) =>
-				JSON.parse(line) as {
-					readonly command: { readonly tag: string; readonly snapshotId?: string };
-				},
+		.flatMap((line) =>
+			line === ''
+				? []
+				: [
+						JSON.parse(line) as {
+							readonly command: { readonly tag: string; readonly snapshotId?: string };
+						},
+					],
 		);
 
 const captureProcessWrite =
@@ -253,8 +344,8 @@ describe('cli/main', () => {
 				'status',
 			]);
 
-			expect(process.exitCode).toBe(0);
 			expect(stderr.join('')).toBe('');
+			expect(process.exitCode).toBe(0);
 			const envelope = JSON.parse(stdout.join('')) as {
 				readonly ok: true;
 				readonly data: { readonly present: boolean; readonly identity: unknown };
@@ -301,8 +392,8 @@ describe('cli/main', () => {
 				'list',
 			]);
 
-			expect(process.exitCode).toBe(0);
 			expect(stderr.join('')).toBe('');
+			expect(process.exitCode).toBe(0);
 			const envelope = JSON.parse(stdout.join('')) as {
 				readonly ok: true;
 				readonly data: { readonly entries: ReadonlyArray<{ readonly snapshotId: string }> };
@@ -357,6 +448,65 @@ describe('cli/main', () => {
 			expect(
 				existsSync(join(stateRoot, 'labeled-app', 'alpha', COMMAND_CHANNEL_COMMANDS_FILE_NAME)),
 			).toBe(false);
+		} finally {
+			process.exitCode = previousExitCode;
+			stdoutSpy.mockRestore();
+			stderrSpy.mockRestore();
+		}
+	});
+
+	it('snapshot restore runs directly without a live roster', async () => {
+		const appRoot = makeTempRoot('cli-snapshot-direct-restore-app');
+		const stateRoot = makeTempRoot('cli-snapshot-direct-restore-state');
+		const stackRoot = join(stateRoot, 'stacks', 'alpha');
+		const configPath = writeOfflineRestoreConfig(appRoot);
+		const previousExitCode = process.exitCode;
+		const stdout: Array<string> = [];
+		const stderr: Array<string> = [];
+		const stdoutSpy = vi
+			.spyOn(process.stdout, 'write')
+			.mockImplementation(captureProcessWrite(stdout));
+		const stderrSpy = vi
+			.spyOn(process.stderr, 'write')
+			.mockImplementation(captureProcessWrite(stderr));
+
+		try {
+			process.exitCode = undefined;
+			await writeRestorableSnapshotArtifact(stackRoot, 'baseline');
+
+			await runCli([
+				'--config',
+				configPath,
+				'--state-dir',
+				stateRoot,
+				'--app',
+				'labeled-app',
+				'--stack',
+				'alpha',
+				'--json',
+				'snapshot',
+				'restore',
+				'baseline',
+			]);
+
+			expect(process.exitCode).toBe(0);
+			expect(stderr.join('')).toBe('');
+			const envelope = JSON.parse(stdout.join('')) as {
+				readonly ok: true;
+				readonly data: { readonly published: string; readonly snapshotId: string };
+			};
+			expect(envelope.data).toEqual({
+				published: 'snapshot.restore',
+				snapshotId: 'baseline',
+			});
+			const commandLogPath = join(stackRoot, COMMAND_CHANNEL_COMMANDS_FILE_NAME);
+			const commandLog = existsSync(commandLogPath) ? readCommandLog(stackRoot) : [];
+			expect(
+				commandLog.map((record) => ({
+					tag: record.command.tag,
+					snapshotId: record.command.snapshotId,
+				})),
+			).toEqual([]);
 		} finally {
 			process.exitCode = previousExitCode;
 			stdoutSpy.mockRestore();
