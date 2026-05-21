@@ -31,6 +31,7 @@ import { CacheService } from '../../substrate/runtime/cache/index.ts';
 import { StackPathsService } from '../../substrate/runtime/paths.ts';
 import { DockerHost, DockerSpawner } from './client.ts';
 import {
+	assertContainerHandleOwned,
 	commit,
 	ensureContainer,
 	inspectContainer,
@@ -215,6 +216,7 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 								(facts): ContainerHandle => ({
 									id: facts?.id ?? s.id,
 									name: s.name,
+									labels,
 									imageName: facts?.image ?? s.image,
 									status: (facts?.paused
 										? 'paused'
@@ -256,8 +258,10 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 			handle: ContainerHandle,
 		): Effect.Effect<ImageRef, ContainerRuntimeError> =>
 			Effect.gen(function* () {
+				yield* assertContainerHandleOwned(handle);
 				if (handle.status === 'running') {
 					yield* pause(handle.name);
+					yield* assertContainerHandleOwned(handle);
 				}
 				const tag = snapshotTempTag(handle.name);
 				const digest = yield* commit(handle.name, tag);
@@ -269,7 +273,10 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 			);
 
 		const unpauseImpl = (handle: ContainerHandle): Effect.Effect<void, ContainerRuntimeError> =>
-			unpause(handle.name).pipe(
+			Effect.gen(function* () {
+				yield* assertContainerHandleOwned(handle);
+				yield* unpause(handle.name);
+			}).pipe(
 				mapToContractError,
 				Effect.provide(baseCtx),
 				Effect.withSpan('runtime.docker.contract.unpause'),
@@ -280,7 +287,10 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 			grace: Duration.Duration,
 		): Effect.Effect<void, ContainerRuntimeError> => {
 			const seconds = Math.max(0, Math.ceil(Duration.toMillis(grace) / 1000));
-			return stopContainer(handle.name, seconds).pipe(
+			return Effect.gen(function* () {
+				yield* assertContainerHandleOwned(handle);
+				yield* stopContainer(handle.name, seconds);
+			}).pipe(
 				mapToContractError,
 				Effect.provide(baseCtx),
 				Effect.withSpan('runtime.docker.contract.stop'),
@@ -337,10 +347,13 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 			argv: ReadonlyArray<string>,
 			opts?: ExecOptions,
 		): Effect.Effect<ExecResult, ContainerRuntimeError> =>
-			dockerExec(handle.name, argv, {
-				user: opts?.user,
-				env: opts?.env,
-				workdir: opts?.workdir,
+			Effect.gen(function* () {
+				yield* assertContainerHandleOwned(handle);
+				return yield* dockerExec(handle.name, argv, {
+					user: opts?.user,
+					env: opts?.env,
+					workdir: opts?.workdir,
+				});
 			}).pipe(
 				// Contract surface: NEVER promote non-zero exit to failure
 				// here. The caller is the policy holder.

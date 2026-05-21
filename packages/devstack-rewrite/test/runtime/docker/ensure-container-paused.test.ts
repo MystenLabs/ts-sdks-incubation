@@ -107,7 +107,16 @@ describe('ensureContainer paused adoption', () => {
 					Image: 'sha256:desired',
 					HostConfig: { PortBindings: {} },
 					State: { Running: true, Paused: true, ExitCode: 0 },
-					Config: { Image: 'img:desired' },
+					Config: {
+						Image: 'img:desired',
+						Labels: {
+							'devstack.managed': 'true',
+							'devstack.app': 'app',
+							'devstack.stack': 'main',
+							'devstack.plugin': 'postgres',
+							'devstack.role': 'db',
+						},
+					},
 					NetworkSettings: { Networks: {} },
 				},
 			]);
@@ -169,6 +178,16 @@ describe('snapshot pauseAndCommit', () => {
 				[
 					'#!/bin/sh',
 					`printf '%s\\n' "$*" >> ${JSON.stringify(log)}`,
+					'if [ "$1" = "inspect" ]; then',
+					'  if [ "$2" = "exited-container" ]; then',
+					'    printf "%s\\n" \'[{"Id":"exited-id","Image":"image:before","HostConfig":{"PortBindings":{}},"State":{"Running":false,"Paused":false,"ExitCode":0},"Config":{"Image":"image:before","Labels":{"devstack.managed":"true","devstack.app":"app","devstack.stack":"main","devstack.plugin":"postgres","devstack.role":"db"}},"NetworkSettings":{"Networks":{}}}]\'',
+					'    exit 0',
+					'  fi',
+					'  if [ "$2" = "created-container" ]; then',
+					'    printf "%s\\n" \'[{"Id":"created-id","Image":"image:before","HostConfig":{"PortBindings":{}},"State":{"Running":false,"Paused":false,"ExitCode":0},"Config":{"Image":"image:before","Labels":{"devstack.managed":"true","devstack.app":"app","devstack.stack":"main","devstack.plugin":"postgres","devstack.role":"db"}},"NetworkSettings":{"Networks":{}}}]\'',
+					'    exit 0',
+					'  fi',
+					'fi',
 					'if [ "$1" = "commit" ]; then',
 					'  printf "sha256:committed\\n"',
 					'  exit 0',
@@ -189,6 +208,12 @@ describe('snapshot pauseAndCommit', () => {
 					const exited = yield* runtime.pauseAndCommit({
 						id: 'exited-id',
 						name: 'exited-container',
+						labels: {
+							app: 'app',
+							stack: 'main',
+							plugin: 'postgres',
+							role: 'db',
+						},
 						imageName: 'image:before',
 						status: 'exited',
 						ips: [],
@@ -196,6 +221,12 @@ describe('snapshot pauseAndCommit', () => {
 					const created = yield* runtime.pauseAndCommit({
 						id: 'created-id',
 						name: 'created-container',
+						labels: {
+							app: 'app',
+							stack: 'main',
+							plugin: 'postgres',
+							role: 'db',
+						},
 						imageName: 'image:before',
 						status: 'created',
 						ips: [],
@@ -206,11 +237,11 @@ describe('snapshot pauseAndCommit', () => {
 
 			expect(refs.map((ref) => ref.digest)).toEqual(['sha256:committed', 'sha256:committed']);
 			const lines = readFileSync(log, 'utf8').trim().split('\n');
-			expect(lines).toHaveLength(2);
-			expect(lines[0]).toMatch(
+			expect(lines).toHaveLength(4);
+			expect(lines[1]).toMatch(
 				/^commit exited-container devstack-snapshot:exited-container-[a-f0-9]{12}$/,
 			);
-			expect(lines[1]).toMatch(
+			expect(lines[3]).toMatch(
 				/^commit created-container devstack-snapshot:created-container-[a-f0-9]{12}$/,
 			);
 		} finally {

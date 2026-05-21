@@ -5,13 +5,117 @@
 // volumes that no inventory enumeration can find. Bind mounts pass
 // through unchanged (host-owned paths).
 
-import { Effect } from 'effect';
+import { Effect, Schema } from 'effect';
 
 import type { ContainerLabelTuple } from '../../contracts/snapshotable.ts';
 import { DockerHost, DockerSpawner, dockerRun, dockerRunOk } from './client.ts';
-import { VolumeOperationFailed, type DockerRuntimeError } from './errors.ts';
-import { renderVolumeLabels } from './labels.ts';
-import { wrapVolumeError } from './wrap.ts';
+import {
+	DockerInspectDecodeFailed,
+	DockerInspectFailed,
+	DaemonUnreachable,
+	type DockerRuntimeError,
+	ForeignDockerResource,
+	VolumeOperationFailed,
+} from './errors.ts';
+import {
+	expectedVolumeOwnershipLabels,
+	ownershipMismatchDetail,
+	renderVolumeLabels,
+} from './labels.ts';
+import { isDaemonUnreachableStderr, wrapVolumeError } from './wrap.ts';
+
+interface VolumeInspectFacts {
+	readonly name: string;
+	readonly labels: Readonly<Record<string, string>>;
+}
+
+const VolumeInspectSchema = Schema.Struct({
+	Name: Schema.String,
+	Labels: Schema.optional(Schema.Unknown),
+});
+
+const readLabels = (raw: unknown): Readonly<Record<string, string>> => {
+	if (raw === null || typeof raw !== 'object') return {};
+	const out: Record<string, string> = {};
+	for (const [key, value] of Object.entries(raw)) {
+		if (typeof value === 'string') out[key] = value;
+	}
+	return out;
+};
+
+const isNoSuchVolumeStderr = (stderr: string): boolean => /no such volume/i.test(stderr);
+
+const inspectVolume = (
+	name: string,
+): Effect.Effect<VolumeInspectFacts | null, DockerRuntimeError, DockerHost | DockerSpawner> =>
+	Effect.gen(function* () {
+		const res = yield* dockerRunOk('volume', ['inspect', name]).pipe(
+			Effect.mapError(wrapVolumeError('inspect', name)),
+		);
+		if (res.exitCode !== 0) {
+			if (isNoSuchVolumeStderr(res.stderr)) return null;
+			if (isDaemonUnreachableStderr(res.stderr)) {
+				return yield* Effect.fail(
+					new DaemonUnreachable({
+						op: 'docker.volume.inspect',
+						detail: 'docker daemon unreachable',
+					}),
+				);
+			}
+			return yield* Effect.fail(
+				new DockerInspectFailed({
+					resource: 'volume',
+					name,
+					stderr: res.stderr,
+					exitCode: res.exitCode,
+				}),
+			);
+		}
+		try {
+			const arr = JSON.parse(res.stdout) as unknown;
+			if (!Array.isArray(arr) || arr.length === 0) {
+				return yield* Effect.fail(
+					new DockerInspectDecodeFailed({
+						resource: 'volume',
+						name,
+						detail: 'inspect returned an empty result',
+					}),
+				);
+			}
+			const decoded = Schema.decodeUnknownSync(VolumeInspectSchema)(arr[0]);
+			return { name: decoded.Name, labels: readLabels(decoded.Labels) };
+		} catch (cause) {
+			return yield* Effect.fail(
+				new DockerInspectDecodeFailed({
+					resource: 'volume',
+					name,
+					detail: 'inspect returned malformed volume JSON',
+					cause,
+				}),
+			);
+		}
+	});
+
+const assertVolumeOwned = (
+	name: string,
+	facts: VolumeInspectFacts,
+	tuple: ContainerLabelTuple,
+): Effect.Effect<void, DockerRuntimeError> =>
+	Effect.gen(function* () {
+		const expected = expectedVolumeOwnershipLabels(tuple);
+		const mismatch = ownershipMismatchDetail(expected, facts.labels);
+		if (mismatch !== null) {
+			return yield* Effect.fail(
+				new ForeignDockerResource({
+					resource: 'volume',
+					name,
+					expected,
+					actual: facts.labels,
+					detail: mismatch,
+				}),
+			);
+		}
+	});
 
 /** Idempotent `docker volume create`. Stamps the canonical label set.
  *  Returns the volume name on success. */
@@ -20,12 +124,10 @@ export const ensureVolume = (
 	tuple: ContainerLabelTuple,
 ): Effect.Effect<string, DockerRuntimeError, DockerHost | DockerSpawner> =>
 	Effect.gen(function* () {
-		// Probe — if labelled volume exists we keep it.
-		const probe = yield* dockerRunOk('volume', ['inspect', '--format', '{{.Name}}', name]).pipe(
-			Effect.mapError(wrapVolumeError('inspect', name)),
-		);
-		if (probe.exitCode === 0) {
-			return probe.stdout.trim();
+		const probe = yield* inspectVolume(name);
+		if (probe !== null) {
+			yield* assertVolumeOwned(name, probe, tuple);
+			return probe.name;
 		}
 		const labelArgs = renderVolumeLabels(name, tuple).flatMap((l) => ['--label', l]);
 		yield* dockerRun('volume', ['create', ...labelArgs, name]).pipe(

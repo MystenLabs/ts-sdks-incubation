@@ -25,19 +25,26 @@ import { Effect, Fiber, Stream, SubscriptionRef } from 'effect';
 import type React from 'react';
 import { useEffect, useState } from 'react';
 
+import type { EngineEvent } from '../../substrate/events.ts';
 import type { SubscribableState } from '../../substrate/projection.ts';
 import { Dashboard } from './dashboard.tsx';
+import { appendEventLogLine, eventLogLineFromEvent, type EventLogLine } from './event-log.ts';
+import { selectRowKey } from './display-derivation.ts';
 import { InputHandler, type CommandPublisher } from './input.tsx';
 
 export interface AppProps {
 	/** The renderer-facing subscribable projection. */
 	readonly stateRef: SubscriptionRef.SubscriptionRef<SubscribableState>;
+	/** Live engine event stream. */
+	readonly events: Stream.Stream<EngineEvent, never>;
 	/** Typed command-publisher callback. */
 	readonly publish: CommandPublisher;
 }
 
-export const App = ({ stateRef, publish }: AppProps): React.JSX.Element => {
+export const App = ({ stateRef, events, publish }: AppProps): React.JSX.Element => {
 	const [state, setState] = useState<SubscribableState | null>(null);
+	const [eventLog, setEventLog] = useState<ReadonlyArray<EventLogLine>>([]);
+	const [selectedRowKey, setSelectedRowKey] = useState<string | null>(null);
 
 	useEffect(() => {
 		// Stream.runForEach pulls each new state from the
@@ -54,17 +61,47 @@ export const App = ({ stateRef, publish }: AppProps): React.JSX.Element => {
 		};
 	}, [stateRef]);
 
-	if (state === null) {
-		// SubscriptionRef.changes emits the current value, but
-		// useEffect runs after first render — show nothing on the
-		// very first frame.
-		return <></>;
-	}
+	useEffect(() => {
+		let seq = 0;
+		const fiber = Effect.runFork(
+			Stream.runForEach(events, (event) =>
+				Effect.sync(() => {
+					const line = eventLogLineFromEvent(event, seq++);
+					setEventLog((prev) => appendEventLogLine(prev, line));
+				}),
+			),
+		);
+		return () => {
+			Effect.runFork(Fiber.interrupt(fiber));
+		};
+	}, [events]);
+
+	useEffect(() => {
+		if (state === null) return;
+		if (state.rows.length === 0) {
+			setSelectedRowKey(null);
+			return;
+		}
+		setSelectedRowKey((current) =>
+			current !== null && state.rows.some((row) => row.key === current)
+				? current
+				: state.rows[0]!.key,
+		);
+	}, [state]);
+
+	const moveSelection = (delta: -1 | 1): void => {
+		if (state === null) return;
+		setSelectedRowKey((current) => selectRowKey(state.rows, current, delta));
+	};
 
 	return (
 		<>
-			<InputHandler publish={publish} />
-			<Dashboard state={state} />
+			<InputHandler publish={publish} onMoveSelection={moveSelection} />
+			{state === null ? (
+				<></>
+			) : (
+				<Dashboard state={state} eventLog={eventLog} selectedRowKey={selectedRowKey} />
+			)}
 		</>
 	);
 };

@@ -16,7 +16,7 @@
 // The shape mirrors `defineDevstackVitestConfig` so apps can swap from
 // node-mode to browser-mode without rewriting their config skeleton —
 // only the entry point (`@mysten-incubation/devstack/vitest` vs
-// `@mysten-incubation/devstack/build-integrations/browser`) changes.
+// `@mysten-incubation/devstack/browser`) changes.
 
 import { defineConfig, type ViteUserConfig } from 'vitest/config';
 
@@ -73,7 +73,7 @@ export interface DevstackBrowserConfigOptions {
  * a single call:
  *
  *   import { defineDevstackBrowserConfig }
- *     from '@mysten-incubation/devstack/build-integrations/browser';
+ *     from '@mysten-incubation/devstack/browser';
  *
  *   export default defineDevstackBrowserConfig();
  *
@@ -109,8 +109,8 @@ export function defineDevstackBrowserConfig(
 	const setupFiles = [
 		// Resolved relative to the consumer's `vitest.config.ts`; this
 		// preset ships the setup module at a stable subpath under
-		// `@mysten-incubation/devstack/build-integrations/browser/setup`.
-		'@mysten-incubation/devstack/build-integrations/browser/setup',
+		// `@mysten-incubation/devstack/browser/setup`.
+		'@mysten-incubation/devstack/browser/setup',
 		...(options.extraSetupFiles ?? []),
 	];
 

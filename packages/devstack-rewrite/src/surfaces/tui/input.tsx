@@ -16,8 +16,7 @@
 //                             second hit toward hard-kill — the
 //                             renderer does not own that logic)
 //   s | S                  -> 'snapshot.capture'
-//   (future) k             -> 'selective-restart.requested' (needs a
-//                             row-selection UI; out of scope for v1)
+//   up/down | j/k          -> local row focus movement
 //
 // Defensive: useInput is mounted at the dashboard root level, NOT in
 // per-row components, so a re-rendered row never re-registers a
@@ -38,6 +37,8 @@ export type CommandPublisher = (command: EngineCommand) => void;
 export interface InputHandlerProps {
 	/** Publish a typed EngineCommand. */
 	readonly publish: CommandPublisher;
+	/** Move local row focus without touching the engine. */
+	readonly onMoveSelection?: (delta: -1 | 1) => void;
 	/** Disable input handling (e.g. shutting-down state); defaults
 	 *  to false. */
 	readonly disabled?: boolean;
@@ -48,30 +49,47 @@ export interface InputHandlerProps {
  * Returns `null` so it composes inside layout boxes without taking
  * up space.
  */
-export const InputHandler = ({ publish, disabled = false }: InputHandlerProps): null => {
+export const commandForKey = (input: string, ctrl: boolean): EngineCommand | null => {
+	if (ctrl && input === 'c') return { tag: 'shutdown.requested' };
+	switch (input) {
+		case 'q':
+		case 'Q':
+			return { tag: 'shutdown.requested' };
+		case 'r':
+		case 'R':
+			return { tag: 'stack.restart' };
+		case 's':
+		case 'S':
+			return { tag: 'snapshot.capture' };
+		default:
+			return null;
+	}
+};
+
+export const selectionDeltaForKey = (
+	input: string,
+	key: { readonly upArrow?: boolean; readonly downArrow?: boolean },
+): -1 | 1 | null => {
+	if (key.upArrow === true || input === 'k' || input === 'K') return -1;
+	if (key.downArrow === true || input === 'j' || input === 'J') return 1;
+	return null;
+};
+
+export const InputHandler = ({
+	publish,
+	onMoveSelection,
+	disabled = false,
+}: InputHandlerProps): null => {
 	useInput(
 		(input, key) => {
 			if (disabled) return;
-			if (key.ctrl && input === 'c') {
-				publish({ tag: 'shutdown.requested' });
+			const move = selectionDeltaForKey(input, key);
+			if (move !== null) {
+				onMoveSelection?.(move);
 				return;
 			}
-			switch (input) {
-				case 'q':
-				case 'Q':
-					publish({ tag: 'shutdown.requested' });
-					return;
-				case 'r':
-				case 'R':
-					publish({ tag: 'stack.restart' });
-					return;
-				case 's':
-				case 'S':
-					publish({ tag: 'snapshot.capture' });
-					return;
-				default:
-					return;
-			}
+			const command = commandForKey(input, key.ctrl);
+			if (command !== null) publish(command);
 		},
 		{ isActive: !disabled },
 	);

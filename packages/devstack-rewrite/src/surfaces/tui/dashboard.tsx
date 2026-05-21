@@ -12,11 +12,14 @@ import { Box, Static, Text } from 'ink';
 import type React from 'react';
 
 import type { SubscribableState } from '../../substrate/projection.ts';
+import { DetailPane } from './detail-pane.tsx';
 import { EndpointRenderer } from './endpoint-renderer.tsx';
 import { ErrorPane } from './error-pane.tsx';
+import type { EventLogLine } from './event-log.ts';
 import { Heartbeat } from './heartbeat.tsx';
 import { LogPane } from './log-pane.tsx';
 import { RowRenderer } from './row-renderer.tsx';
+import { groupRows } from './display-derivation.ts';
 
 const phaseColor = (
 	phase: SubscribableState['cycle']['phase'],
@@ -36,15 +39,56 @@ const phaseColor = (
 
 export interface DashboardProps {
 	readonly state: SubscribableState;
+	readonly eventLog: ReadonlyArray<EventLogLine>;
+	readonly selectedRowKey: string | null;
 }
 
-export const Dashboard = ({ state }: DashboardProps): React.JSX.Element => {
+const logColor = (level: EventLogLine['level']): 'gray' | 'yellow' | 'red' => {
+	switch (level) {
+		case 'info':
+			return 'gray';
+		case 'warn':
+			return 'yellow';
+		case 'error':
+			return 'red';
+	}
+};
+
+export const Dashboard = ({
+	state,
+	eventLog,
+	selectedRowKey,
+}: DashboardProps): React.JSX.Element => {
 	const { identity, cycle, rows, endpoints, errors } = state;
-	const failedRow = rows.find((r) => r.status === 'failed');
-	const logRow = failedRow ?? rows.find((r) => r.status === 'acquiring');
+	const selectedRow =
+		rows.find((row) => row.key === selectedRowKey) ??
+		rows.find((row) => row.status === 'failed') ??
+		rows[0] ??
+		null;
+	const sections = groupRows(rows, endpoints);
 
 	return (
 		<Box flexDirection="column">
+			{eventLog.length > 0 && (
+				<Static items={[...eventLog]}>
+					{(entry) => (
+						<Text key={entry.id} color={logColor(entry.level)}>
+							{entry.text}
+						</Text>
+					)}
+				</Static>
+			)}
+
+			{state.stackBuild.length > 0 && (
+				<Static items={[...state.stackBuild]}>
+					{(entry, idx) => (
+						<Text key={idx} color="gray">
+							[build] {entry.pluginKey ?? '<stack>'} - {entry.phase} {entry.progress}
+						</Text>
+					)}
+				</Static>
+			)}
+
 			{/* Header — identity + cycle + heartbeat */}
 			<Box flexDirection="row" gap={2}>
 				<Text bold color="cyan">
@@ -56,25 +100,24 @@ export const Dashboard = ({ state }: DashboardProps): React.JSX.Element => {
 				<Heartbeat />
 			</Box>
 
-			{/* Build entries — engine-emitted progress lines for plugins
-			    currently in `acquiring`. Pinned above the dashboard via
-			    Ink's Static so they don't re-render. */}
-			{state.stackBuild.length > 0 && (
-				<Static items={[...state.stackBuild]}>
-					{(entry, idx) => (
-						<Text key={idx} color="gray">
-							[build] {entry.pluginKey ?? '<stack>'} — {entry.phase} {entry.progress}
-						</Text>
-					)}
-				</Static>
-			)}
-
 			{/* Rows */}
 			<Box flexDirection="column" marginTop={1}>
-				<Text bold>Plugins</Text>
+				<Text bold>Stack</Text>
 				{rows.length === 0 && <Text color="gray">no plugins declared</Text>}
-				{rows.map((row) => (
-					<RowRenderer key={row.key} row={row} />
+				{sections.map((section) => (
+					<Box key={section.key} flexDirection="column">
+						<Text bold color="gray">
+							{section.label}
+						</Text>
+						{section.rows.map(({ row }) => (
+							<RowRenderer
+								key={row.key}
+								row={row}
+								endpoints={endpoints}
+								selected={selectedRow?.key === row.key}
+							/>
+						))}
+					</Box>
 				))}
 			</Box>
 
@@ -88,17 +131,22 @@ export const Dashboard = ({ state }: DashboardProps): React.JSX.Element => {
 				<ErrorPane errors={errors} />
 			</Box>
 
-			{/* Log tail — shown for the failed row if one exists; else
-			    the first acquiring row's tail; else nothing. */}
-			{logRow && (
-				<Box flexDirection="column" marginTop={1}>
-					<LogPane row={logRow} />
-				</Box>
-			)}
+			<Box flexDirection="column" marginTop={1}>
+				<DetailPane row={selectedRow} endpoints={endpoints} />
+			</Box>
+
+			<Box flexDirection="column" marginTop={1}>
+				{selectedRow === null ? (
+					<Text color="gray">No logs selected</Text>
+				) : (
+					<LogPane row={selectedRow} />
+				)}
+			</Box>
 
 			{/* Footer — keymap hint */}
 			<Box flexDirection="row" gap={2} marginTop={1}>
 				<Text color="gray">[q] quit</Text>
+				<Text color="gray">[up/down] focus</Text>
 				<Text color="gray">[r] restart</Text>
 				<Text color="gray">[s] snapshot</Text>
 			</Box>

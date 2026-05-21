@@ -9,16 +9,17 @@
 // mount Effect remains open until the user exits the ink app or the
 // supervisor finalizes the scope.
 
-import { Effect, SubscriptionRef } from 'effect';
+import { Effect, Stream, SubscriptionRef } from 'effect';
 import { render } from 'ink';
 
-import type { EngineCommand } from '../../substrate/events.ts';
+import type { EngineCommand, EngineEvent } from '../../substrate/events.ts';
 import type { SubscribableState } from '../../substrate/projection.ts';
 import { App } from './app.tsx';
 import { mountFailed, type RendererError } from './errors.ts';
 
 export interface MountInkAppInput {
 	readonly stateRef: SubscriptionRef.SubscriptionRef<SubscribableState>;
+	readonly events: Stream.Stream<EngineEvent, never>;
 	readonly publishCommand: (command: EngineCommand) => void;
 }
 
@@ -26,10 +27,13 @@ export const mountInkApp = (input: MountInkAppInput): Effect.Effect<void, Render
 	Effect.gen(function* () {
 		const instance = yield* Effect.try({
 			try: () =>
-				render(<App stateRef={input.stateRef} publish={input.publishCommand} />, {
-					exitOnCtrlC: false,
-					patchConsole: false,
-				}),
+				render(
+					<App stateRef={input.stateRef} events={input.events} publish={input.publishCommand} />,
+					{
+						exitOnCtrlC: false,
+						patchConsole: false,
+					},
+				),
 			catch: (cause) => mountFailed(cause instanceof Error ? cause.message : String(cause)),
 		});
 

@@ -38,13 +38,21 @@ import {
 	ContainerCreateFailed,
 	ContainerNameCollisionUnrecoverable,
 	DaemonUnreachable,
+	DockerInspectDecodeFailed,
+	DockerInspectFailed,
 	type DockerRuntimeError,
+	ForeignDockerResource,
 	RecreateRefused,
 } from './errors.ts';
-import { renderContainerLabels } from './labels.ts';
-import { readIps, waitForIp } from './network.ts';
+import {
+	expectedContainerOwnershipLabels,
+	ownershipMismatchDetail,
+	renderContainerLabels,
+} from './labels.ts';
+import { connect, readIps, waitForIp } from './network.ts';
 import {
 	classifyExit,
+	isDaemonUnreachableStderr,
 	isNameCollisionStderr,
 	isNoSuchContainerStderr,
 	wrapCreateError,
@@ -292,14 +300,34 @@ export const inspectContainer = (
 		);
 		if (res.exitCode !== 0) {
 			if (isNoSuchContainerStderr(res.stderr)) return null;
-			// Other failure shape — propagate. We treat unknown failures
-			// as "no container" so the state machine moves forward to
-			// fresh; the create attempt will then surface the real error.
-			return null;
+			if (isDaemonUnreachableStderr(res.stderr)) {
+				return yield* Effect.fail(
+					new DaemonUnreachable({
+						op: 'docker.inspect',
+						detail: 'docker daemon unreachable',
+					}),
+				);
+			}
+			return yield* Effect.fail(
+				new DockerInspectFailed({
+					resource: 'container',
+					name,
+					stderr: res.stderr,
+					exitCode: res.exitCode,
+				}),
+			);
 		}
 		try {
 			const arr = JSON.parse(res.stdout) as unknown;
-			if (!Array.isArray(arr) || arr.length === 0) return null;
+			if (!Array.isArray(arr) || arr.length === 0) {
+				return yield* Effect.fail(
+					new DockerInspectDecodeFailed({
+						resource: 'container',
+						name,
+						detail: 'inspect returned an empty result',
+					}),
+				);
+			}
 			const decoded = Schema.decodeUnknownSync(InspectSchema)(arr[0]);
 			const ports = readPublishedPorts(decoded.HostConfig.PortBindings);
 			const mounts = readMounts(decoded.Mounts);
@@ -322,8 +350,15 @@ export const inspectContainer = (
 				labels,
 				networks,
 			};
-		} catch {
-			return null;
+		} catch (cause) {
+			return yield* Effect.fail(
+				new DockerInspectDecodeFailed({
+					resource: 'container',
+					name,
+					detail: 'inspect returned malformed container JSON',
+					cause,
+				}),
+			);
 		}
 	}).pipe(Effect.withSpan('runtime.docker.container.inspect'));
 
@@ -388,9 +423,11 @@ const handleOf = (
 	status: ContainerHandle['status'],
 	ips: ReadonlyArray<string>,
 	ports?: ReadonlyArray<ContainerPortPublish>,
+	labels?: EnsureContainerSpec['labels'],
 ): ContainerHandle => ({
 	id,
 	name,
+	...(labels !== undefined ? { labels } : {}),
 	imageName,
 	status,
 	ips,
@@ -413,13 +450,94 @@ const forceRemove = (
 		}
 	}).pipe(Effect.withSpan('runtime.docker.container.forceRemove'));
 
+const ownershipFailure = (
+	name: string,
+	expected: Readonly<Record<string, string>>,
+	actual: Readonly<Record<string, string>>,
+	detail: string,
+): ForeignDockerResource =>
+	new ForeignDockerResource({
+		resource: 'container',
+		name,
+		expected,
+		actual,
+		detail,
+	});
+
+const assertOwnedFacts = (
+	name: string,
+	facts: InspectFacts,
+	labels: EnsureContainerSpec['labels'],
+): Effect.Effect<void, DockerRuntimeError> =>
+	Effect.gen(function* () {
+		const expected = expectedContainerOwnershipLabels(labels);
+		const actual = facts.labels ?? {};
+		const mismatch = ownershipMismatchDetail(expected, actual);
+		if (mismatch !== null) {
+			return yield* Effect.fail(ownershipFailure(name, expected, actual, mismatch));
+		}
+	});
+
+export const assertContainerHandleOwned = (
+	handle: ContainerHandle,
+): Effect.Effect<void, DockerRuntimeError, DockerHost | DockerSpawner> =>
+	Effect.gen(function* () {
+		if (handle.labels === undefined) {
+			return yield* Effect.fail(
+				ownershipFailure(handle.name, {}, {}, 'container handle has no ownership labels'),
+			);
+		}
+		const facts = yield* inspectContainer(handle.name);
+		const expected = expectedContainerOwnershipLabels(handle.labels);
+		if (facts === null) {
+			return yield* Effect.fail(
+				ownershipFailure(handle.name, expected, {}, 'container is missing'),
+			);
+		}
+		if (facts.id !== handle.id) {
+			return yield* Effect.fail(
+				ownershipFailure(handle.name, expected, facts.labels ?? {}, `id changed to ${facts.id}`),
+			);
+		}
+		yield* assertOwnedFacts(handle.name, facts, handle.labels);
+	}).pipe(Effect.withSpan('runtime.docker.container.assertOwned'));
+
+const forceRemoveOwned = (
+	name: string,
+	id: string,
+	labels: EnsureContainerSpec['labels'],
+): Effect.Effect<void, DockerRuntimeError, DockerHost | DockerSpawner> =>
+	Effect.gen(function* () {
+		const current = yield* inspectContainer(name);
+		if (current === null) return;
+		if (current.id !== id) {
+			const expected = expectedContainerOwnershipLabels(labels);
+			return yield* Effect.fail(
+				ownershipFailure(name, expected, current.labels ?? {}, `id changed to ${current.id}`),
+			);
+		}
+		yield* assertOwnedFacts(name, current, labels);
+		yield* forceRemove(name);
+	});
+
 /** Single-shot start-and-adopt fallback after `docker create` exit-125
  *  with name-collision. Architecture §1 / G10 — one attempt; second
  *  collision is a typed failure. */
 const startAndAdopt = (
 	name: string,
+	labels: EnsureContainerSpec['labels'],
 ): Effect.Effect<string, DockerRuntimeError, DockerHost | DockerSpawner> =>
 	Effect.gen(function* () {
+		const beforeStart = yield* inspectContainer(name);
+		if (beforeStart === null) {
+			return yield* Effect.fail(
+				new ContainerNameCollisionUnrecoverable({
+					name,
+					detail: 'name collision but inspect found no container',
+				}),
+			);
+		}
+		yield* assertOwnedFacts(name, beforeStart, labels);
 		const res = yield* dockerRunOk('start', [name]).pipe(
 			Effect.mapError(wrapGeneric('docker.start')),
 		);
@@ -434,6 +552,7 @@ const startAndAdopt = (
 					}),
 				);
 			}
+			yield* assertOwnedFacts(name, facts, labels);
 			return facts.id;
 		}
 		if (isNoSuchContainerStderr(cls.stderr)) {
@@ -466,9 +585,39 @@ const freshCreate = (
 
 const resumeStart = (
 	name: string,
-): Effect.Effect<void, DockerRuntimeError, DockerHost | DockerSpawner> =>
+): Effect.Effect<
+	{ readonly ok: true } | { readonly ok: false; readonly stderr: string },
+	DockerRuntimeError,
+	DockerHost | DockerSpawner
+> =>
 	Effect.gen(function* () {
-		yield* dockerRun('start', [name]).pipe(Effect.mapError(wrapGeneric('docker.start')));
+		const res = yield* dockerRunOk('start', [name]).pipe(
+			Effect.mapError(wrapGeneric('docker.start')),
+		);
+		if (res.exitCode === 0) return { ok: true as const };
+		if (isDaemonUnreachableStderr(res.stderr)) {
+			return yield* Effect.fail(
+				new DaemonUnreachable({
+					op: 'docker.start',
+					detail: 'docker daemon unreachable',
+				}),
+			);
+		}
+		return { ok: false as const, stderr: res.stderr };
+	});
+
+const recreateAfterResumeFailure = (
+	id: string,
+	spec: EnsureContainerSpec,
+	deps: EnsureContainerDeps,
+): Effect.Effect<string, DockerRuntimeError, DockerHost | DockerSpawner> =>
+	Effect.gen(function* () {
+		const routed = routeRecreate({ kind: 'recreate', id, reason: 'resume-failed' }, spec.recreate);
+		if (routed.kind === 'refuse') {
+			return yield* Effect.fail(new RecreateRefused({ name: spec.name, reason: routed.reason }));
+		}
+		yield* forceRemoveOwned(spec.name, id, spec.labels);
+		return yield* createWithCollisionRecovery(spec, deps);
 	});
 
 const stopWithGrace = (
@@ -607,6 +756,9 @@ export const ensureContainer = (
 			() =>
 				Effect.gen(function* () {
 					const facts = yield* inspectContainer(spec.name);
+					if (facts !== null) {
+						yield* assertOwnedFacts(spec.name, facts, spec.labels);
+					}
 					const action = decideRunAction(
 						facts,
 						desiredImageRef,
@@ -618,16 +770,21 @@ export const ensureContainer = (
 				}),
 			() => releasePerNameLock(deps.perNameLock, spec.name),
 		);
+		yield* assertContainerHandleOwned({
+			id,
+			name: spec.name,
+			labels: spec.labels,
+			imageName: spec.image.tag ?? spec.image.digest,
+			status: 'running',
+			ips: [],
+		});
 
 		// Architecture §5 — secondary network attaches (any beyond the
 		// first, which is wired in via `--network` on create) must wait
 		// for IP allocation before we declare ready.
 		const secondaries = (spec.networkAttach ?? []).slice(1);
 		for (const net of secondaries) {
-			yield* dockerRunOk('network', ['connect', net, spec.name]).pipe(
-				Effect.mapError(wrapGeneric('docker.network.connect')),
-				Effect.asVoid,
-			);
+			yield* connect(spec.name, net);
 			yield* waitForIp(spec.name, net);
 		}
 
@@ -668,7 +825,15 @@ export const ensureContainer = (
 			}).pipe(Effect.uninterruptible),
 		);
 
-		return handleOf(id, spec.name, spec.image.tag ?? spec.image.digest, 'running', ips, ports);
+		return handleOf(
+			id,
+			spec.name,
+			spec.image.tag ?? spec.image.digest,
+			'running',
+			ips,
+			ports,
+			spec.labels,
+		);
 	}).pipe(Effect.withSpan('runtime.docker.container.ensure'));
 
 /** Apply the decided action. Recovers from name-collision via
@@ -683,20 +848,33 @@ const applyAction = (
 			case 'adopt':
 				return action.id;
 			case 'unpause-adopt':
+				yield* assertContainerHandleOwned({
+					id: action.id,
+					name: spec.name,
+					labels: spec.labels,
+					imageName: spec.image.tag ?? spec.image.digest,
+					status: 'paused',
+					ips: [],
+				});
 				yield* unpause(spec.name);
 				return action.id;
 			case 'resume': {
-				// TOCTOU: peer rm'd between inspect and start. The
-				// contract here is to promote to fresh; the outer loop
-				// reapplies the state machine. We rethrow as-is — the
-				// error union is already DockerRuntimeError.
-				yield* resumeStart(spec.name).pipe(
-					Effect.catch((err): Effect.Effect<never, DockerRuntimeError> => Effect.fail(err)),
-				);
+				yield* assertContainerHandleOwned({
+					id: action.id,
+					name: spec.name,
+					labels: spec.labels,
+					imageName: spec.image.tag ?? spec.image.digest,
+					status: 'exited',
+					ips: [],
+				});
+				const started = yield* resumeStart(spec.name);
+				if (!started.ok) {
+					return yield* recreateAfterResumeFailure(action.id, spec, deps);
+				}
 				return action.id;
 			}
 			case 'recreate': {
-				yield* forceRemove(spec.name);
+				yield* forceRemoveOwned(spec.name, action.id, spec.labels);
 				return yield* createWithCollisionRecovery(spec, deps);
 			}
 			case 'fresh':
@@ -713,12 +891,14 @@ const createWithCollisionRecovery = (
 	deps: EnsureContainerDeps,
 ): Effect.Effect<string, DockerRuntimeError, DockerHost | DockerSpawner> =>
 	freshCreate(spec, deps.cycle).pipe(
-		Effect.catchTag('ContainerNameCollisionUnrecoverable', () => startAndAdopt(spec.name)),
+		Effect.catchTag('ContainerNameCollisionUnrecoverable', () =>
+			startAndAdopt(spec.name, spec.labels),
+		),
 		// If the original create surfaced a typed `ContainerCreateFailed`
 		// where stderr was name-collision (sometimes the create variant
 		// surfaces with that), attempt the same start-and-adopt.
 		Effect.catchTag('ContainerCreateFailed', (err) =>
-			isNameCollisionStderr(err.stderr) ? startAndAdopt(spec.name) : Effect.fail(err),
+			isNameCollisionStderr(err.stderr) ? startAndAdopt(spec.name, spec.labels) : Effect.fail(err),
 		),
 	);
 

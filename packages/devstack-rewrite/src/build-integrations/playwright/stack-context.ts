@@ -13,9 +13,11 @@ import { readFileSync } from 'node:fs';
 
 import {
 	discoverManifestPath as runtimeDiscoverManifestPath,
+	coldStartUrl as runtimeColdStartUrl,
 	ManifestDiscoveryError,
 	ManifestShapeError,
 	readStackContext as readStackContextRuntime,
+	type ConventionalRoute,
 	type DiscoverManifestPathOptions,
 	type StackContext as RuntimeStackContext,
 } from '../runtime/index.ts';
@@ -36,9 +38,6 @@ export const PLAYWRIGHT_ENV = {
 	ROUTER_HOST_SUFFIX: 'DEVSTACK_ROUTER_HOST_SUFFIX',
 	ROUTER_PORT: 'DEVSTACK_ROUTER_PORT',
 } as const;
-
-/** Hostname suffix used by traefik for `*.localhost` resolution. */
-const DEFAULT_HOST_SUFFIX = '.localhost';
 
 export interface ResolveStackContextOptions {
 	/** Working directory to start the walk-up from. */
@@ -192,34 +191,49 @@ export const readManifestSync = (manifestPath: string): ManifestEnvelope => {
  * the manifest; the preset MUST be able to resolve a `baseURL`
  * without a manifest read.
  *
- * The conventional pattern is `<stack>.<endpointKey>${hostSuffix}:<port>`.
- * Known endpoint-key list is hard-coded here pending the router-plugin
- * emitting a typed `Map<endpointName, ConventionalRoute>` consumed by
- * `runtime/coldStartUrl` (see review § "Conventional-route table
- * source-of-truth").
+ * The route table shape matches `runtime/coldStartUrl`; Playwright
+ * only supplies its conventional endpoint hints while the shared
+ * runtime helper owns host formatting.
  */
 export const conventionalUrlFor = (
 	endpointKey: string,
-	opts: { readonly stack?: string; readonly hostSuffix?: string; readonly port?: number } = {},
+	opts: {
+		readonly stack?: string;
+		readonly hostSuffix?: string;
+		readonly port?: number;
+		readonly app?: string;
+		readonly cwd?: string;
+	} = {},
 ): string | null => {
 	const stack = opts.stack ?? 'main';
-	const hostSuffix = opts.hostSuffix ?? DEFAULT_HOST_SUFFIX;
 	const port = opts.port ?? Number.parseInt(process.env[PLAYWRIGHT_ENV.ROUTER_PORT] ?? '', 10);
 
 	if (!Number.isFinite(port) || port <= 0) return null;
 
-	const conventional = new Set<string>([
-		'app',
-		'sui-rpc',
-		'sui-faucet',
-		'walrus-aggregator',
-		'walrus-publisher',
-		'seal',
-		'wallet',
-	]);
-	if (!conventional.has(endpointKey)) return null;
+	const entries = [
+		['app', 'dev'],
+		['sui-rpc', 'sui-rpc'],
+		['sui-faucet', 'sui-faucet'],
+		['walrus-aggregator', 'walrus-aggregator'],
+		['walrus-publisher', 'walrus-publisher'],
+		['seal', 'seal'],
+		['wallet', 'wallet'],
+	] as const;
+	const routes = new Map<string, ConventionalRoute>(
+		entries.map(([key, service]): [string, ConventionalRoute] => [
+			key,
+			{ service, port, wireProtocol: 'http' },
+		]),
+	);
+	if (!routes.has(endpointKey)) return null;
 
-	return `http://${stack}.${endpointKey}${hostSuffix}:${port}`;
+	return runtimeColdStartUrl(endpointKey, {
+		routes,
+		stack,
+		...(opts.app !== undefined ? { app: opts.app } : {}),
+		...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
+		...(opts.hostSuffix !== undefined ? { hostSuffix: opts.hostSuffix } : {}),
+	});
 };
 
 // -----------------------------------------------------------------------------
@@ -357,6 +371,7 @@ export const resolveEndpointUrl = (
 	const stack = options.stack ?? env[PLAYWRIGHT_ENV.STACK] ?? 'main';
 	const fallback = conventionalUrlFor(endpointKey, {
 		stack,
+		...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
 		...(options.hostSuffix !== undefined
 			? { hostSuffix: options.hostSuffix }
 			: env[PLAYWRIGHT_ENV.ROUTER_HOST_SUFFIX] !== undefined

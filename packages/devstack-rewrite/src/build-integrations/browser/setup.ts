@@ -35,7 +35,7 @@
 // build time; this file reads that constant when present and falls
 // back to the conventional codegen output.
 
-import { type DAppKitSlot, writeDAppKitSlot } from '../runtime/index.ts';
+import { type DAppKitSlot, writeDAppKitSlot } from '../runtime/browser.ts';
 import { BrowserSetupConfigInvalidError, BrowserSetupConfigNotFoundError } from './errors.ts';
 
 /** Shape of the codegen-emitted dapp-kit config module. Kept minimal
@@ -87,7 +87,7 @@ export async function setupDevstackBrowserGlobals(path?: string): Promise<void> 
 	let mod: DAppKitConfigModule;
 	try {
 		mod = (await import(/* @vite-ignore */ resolved)) as DAppKitConfigModule;
-	} catch (_cause) {
+	} catch {
 		throw new BrowserSetupConfigNotFoundError({
 			message: `failed to import dapp-kit config at ${resolved}`,
 			searchedPath: resolved,

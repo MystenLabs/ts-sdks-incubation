@@ -61,7 +61,7 @@ describe('defineDevstackPlaywrightConfig', () => {
 				webServerTimeoutMs: 1,
 			});
 			expect(cfg.use.baseURL.startsWith('http://')).toBe(true);
-			expect(cfg.use.baseURL.includes('main.app.localhost')).toBe(true);
+			expect(cfg.use.baseURL.includes('dev.nonexistent-cwd-for-cold-start.localhost')).toBe(true);
 		} finally {
 			if (prior === undefined) delete process.env.DEVSTACK_ROUTER_PORT;
 			else process.env.DEVSTACK_ROUTER_PORT = prior;

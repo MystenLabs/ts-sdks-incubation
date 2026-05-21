@@ -1,7 +1,7 @@
 {
 	"name": "@mysten-incubation/devstack-rewrite",
 	"version": "0.0.0",
-	"description": "Phase-3 type-system + API surface scaffold for the next-generation devstack substrate. Working name; renamed at cutover.",
+	"description": "Preview build of the next-generation Sui devstack package.",
 	"license": "Apache-2.0",
 	"private": true,
 	"type": "module",
@@ -23,10 +23,6 @@
 			"types": "./src/substrate/index.ts",
 			"import": "./dist/substrate/index.mjs"
 		},
-		"./samples": {
-			"types": "./src/samples/index.ts",
-			"import": "./dist/samples/index.mjs"
-		},
 		"./vite": {
 			"types": "./src/build-integrations/vite/index.ts",
 			"import": "./dist/build-integrations/vite/index.mjs"
@@ -47,13 +43,17 @@
 			"types": "./src/build-integrations/browser/index.ts",
 			"import": "./dist/build-integrations/browser/index.mjs"
 		},
+		"./browser/setup": {
+			"types": "./src/build-integrations/browser/setup.ts",
+			"import": "./dist/build-integrations/browser/setup.mjs"
+		},
 		"./runtime": {
 			"types": "./src/build-integrations/runtime/index.ts",
 			"import": "./dist/build-integrations/runtime/index.mjs"
 		}
 	},
 	"sideEffects": false,
-	"files": ["src", "dist"],
+	"files": ["src", "dist", "images", "!src/samples", "!dist/samples", "!dist/node_modules"],
 	"scripts": {
 		"build": "tsdown",
 		"typecheck": "tsc --noEmit",
@@ -80,10 +80,14 @@
 		"vitest": "^4.1.6"
 	},
 	"peerDependencies": {
-		"vite": "catalog:"
+		"vite": "catalog:",
+		"vitest": "^4.1.6"
 	},
 	"peerDependenciesMeta": {
 		"vite": {
+			"optional": true
+		},
+		"vitest": {
 			"optional": true
 		}
 	}

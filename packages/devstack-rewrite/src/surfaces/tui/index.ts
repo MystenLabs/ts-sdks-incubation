@@ -112,15 +112,9 @@ const makeInkRenderer = (options: InkRendererOptions): Renderer => ({
 					),
 			});
 
-			// Drain the event stream alongside the React mount. The
-			// reducer in substrate/runtime/projection/update.ts is the
-			// real consumer of events; the surface drains so
-			// back-pressure stays bounded even if reducer wiring is
-			// elsewhere.
-			yield* Effect.forkScoped(Stream.runDrain(events));
-
 			yield* mountInkApp({
 				stateRef,
+				events,
 				publishCommand: options.publishCommand,
 			});
 		}),

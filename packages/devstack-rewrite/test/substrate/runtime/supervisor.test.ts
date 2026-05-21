@@ -30,7 +30,9 @@ import { defineTag } from '../../../src/substrate/tag.ts';
 import type { Identity } from '../../../src/substrate/identity.ts';
 import {
 	CapabilitySinksService,
+	Logger,
 	layerCapabilitySinksDefault,
+	layerLogger,
 	makeProjectionRef,
 	startSupervisor,
 	supervise,
@@ -576,6 +578,109 @@ describe('supervisor harvest loop', () => {
 			expect(readyRows.map((r) => r.key).sort()).toEqual(
 				['test:codegen#2', 'test:route#1', 'test:snap#0', 'test:strat#3'].sort(),
 			);
+		}),
+	);
+
+	it.effect('publishes logger lines as log.appended events and row log tails', () =>
+		Effect.gen(function* () {
+			const tagLog = defineTag<'test:log', { readonly v: 'log' }>('test:log', 'plug-log');
+			const pluginLog = defineNodePlugin({
+				provides: tagLog,
+				consumes: [] as const,
+				kind: 'leaf-long-running' as const,
+				acquire: () => Effect.succeed({ v: 'log' as const }),
+			});
+			const state = yield* makeProjectionRef();
+			const stack: SupervisedStack = { _tag: 'Stack', members: [pluginLog], options: {} };
+
+			const event = yield* Effect.scoped(
+				Effect.gen(function* () {
+					const loggerContext = yield* Layer.build(layerLogger);
+					const logger = Context.get(loggerContext, Logger);
+					const pluginContext = Context.empty().pipe(Context.add(Logger, logger)) as Context.Context<never>;
+					const startup = yield* startSupervisor(stack, identity, state, pluginContext);
+					const eventFiber = yield* Effect.forkScoped(
+						Effect.gen(function* () {
+							while (true) {
+								const next = yield* Queue.take(startup.handle.events);
+								if (
+									next.tag === 'log.appended' &&
+									next.pluginKey === 'test:log#0' &&
+									next.line === 'plugin acquire start'
+								) {
+									return next;
+								}
+							}
+						}),
+					);
+					yield* startup.runInitialAcquire;
+					return yield* Fiber.join(eventFiber);
+				}),
+			);
+
+			expect(event.level).toBe('info');
+			const snap = yield* SubscriptionRef.get(state);
+			const row = snap.rows.find((r) => r.key === 'test:log#0');
+			expect(row?.logTail.lines).toContain('plugin acquire start');
+		}),
+	);
+
+	it.effect('acquire failure publishes structured error and leaves a failed row', () =>
+		Effect.gen(function* () {
+			const tagFail = defineTag<'test:fail', { readonly v: 'fail' }>('test:fail', 'plug-fail');
+			const pluginFail = defineNodePlugin({
+				provides: tagFail,
+				consumes: [] as const,
+				kind: 'leaf-long-running' as const,
+				acquire: () => Effect.fail(new Error('boom from acquire')),
+			});
+			const state = yield* makeProjectionRef();
+			const stack: SupervisedStack = { _tag: 'Stack', members: [pluginFail], options: {} };
+
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					yield* supervise(stack, identity, state);
+				}),
+			);
+
+			const snap = yield* SubscriptionRef.get(state);
+			const row = snap.rows.find((r) => r.key === 'test:fail#0');
+			expect(row?.status).toBe('failed');
+			expect(row?.lastError?.pluginKey).toBe('test:fail#0');
+			expect(row?.lastError?.summary).toContain('boom from acquire');
+			expect(snap.errors.at(-1)?.pluginKey).toBe('test:fail#0');
+			expect(snap.cycle.phase).toBe('running');
+		}),
+	);
+
+	it.effect('capability factory failure reports a structured error instead of marking ready', () =>
+		Effect.gen(function* () {
+			const tagCaps = defineTag<'test:caps', { readonly v: 'caps' }>('test:caps', 'plug-caps');
+			const pluginCaps = defineNodePlugin({
+				provides: tagCaps,
+				consumes: [] as const,
+				kind: 'leaf-long-running' as const,
+				acquire: () => Effect.succeed({ v: 'caps' as const }),
+				capabilities: (() => {
+					throw new Error('capability boom');
+				}) as never,
+			});
+			const state = yield* makeProjectionRef();
+			const stack: SupervisedStack = { _tag: 'Stack', members: [pluginCaps], options: {} };
+
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					yield* supervise(stack, identity, state);
+				}),
+			);
+
+			const snap = yield* SubscriptionRef.get(state);
+			const row = snap.rows.find((r) => r.key === 'test:caps#0');
+			expect(row?.status).toBe('failed');
+			expect(row?.lastError?.tag).toBe('CapabilityFactoryFailed');
+			expect(row?.lastError?.pluginKey).toBe('test:caps#0');
+			expect(row?.lastError?.chain.join('\n')).toContain('capability boom');
+			expect(snap.cycle.phase).toBe('running');
 		}),
 	);
 });

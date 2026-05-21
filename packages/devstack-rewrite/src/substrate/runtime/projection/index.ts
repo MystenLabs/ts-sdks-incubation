@@ -6,3 +6,4 @@
 
 export * from './state-ref.ts';
 export * from './update.ts';
+export * from './persisted.ts';

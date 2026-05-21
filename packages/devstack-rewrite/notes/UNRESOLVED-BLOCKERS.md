@@ -18,14 +18,15 @@ notes were deleted after migration; this ledger is the current checklist.
   main operator vocabulary.
 - Wire row focus/selection into details/log panes.
 - Add graceful `q`/quit behavior during startup and steady state.
-- Add an explicit hard-kill path and make second-signal behavior testable.
-- Re-evaluate the CLI library/design. Help now has a command tree, but subcommand help, standard
-  CLI behavior, and `up` integration still need a product-level acceptance pass.
+- Add an explicit hard-kill path and make second-signal behavior testable. TUI-only blocker:
+  `EngineCommand` currently has `shutdown.requested` but no explicit hard-kill or second-signal
+  command/ack state for the renderer to publish or assert against.
+- Re-evaluate the CLI library/design. Help now has a command tree, but subcommand help, standard CLI
+  behavior, and `up` integration still need a product-level acceptance pass.
 - `up` must route through the dispatcher or the parser split must be intentionally documented and
   verified.
 - Required verb parity includes `apply`, `wipe`, `stack`, `fork`, `doctor`, `status`, `logs`,
   `snapshot save`, `snapshot restore`, `snapshot list`, `snapshot delete`, and shutdown/down flows.
-- `logs` needs a real stream contract, including NDJSON/envelope behavior for machine mode.
 - `exec` must mirror the child exit code.
 
 Acceptance evidence:
@@ -39,20 +40,18 @@ Acceptance evidence:
 - `devstack up --help`, subcommand help, `apply`, `wipe`, `stack`, `fork`, `doctor`, `status`,
   `logs`, `snapshot`, `exec`, and shutdown commands are production-real.
 
+Evidence landed 2026-05-21:
+
+- TUI renderer consumes the `EngineEvent` stream in Ink mode and renders bounded operator scrollback
+  above the dashboard/status region. Targeted test: `test/surfaces/tui/event-log.test.ts`.
+- TUI rows are grouped into service/package/account/action/app sections with friendly labels, owner
+  chips, inline endpoint/value details, and selected-row detail/log panes. Targeted test:
+  `test/surfaces/tui/display-derivation.test.ts`.
+- TUI input maps `q`/Ctrl-C to `shutdown.requested` even before the first projection frame, and
+  up/down/j/k move local row focus. Targeted test: `test/surfaces/tui/input-commands.test.ts`.
+
 ## P0: Engine state, errors, and logs are not wired as a reliable product
 
-- `log.appended` is effectively a ghost production event. The logger buffers/writes to Effect
-  logging, but production does not publish `EngineEvent` records for projection/TUI/CLI logs.
-- `devstack logs` can exit immediately because production channel deps wire shutdown to a completed
-  effect.
-- Acquire failures call registry failure/log paths but do not reliably publish structured
-  `error.reported` events.
-- Projection/state must surface errors; plugin failures cannot disappear into logs only.
-- Capability factory failures can be swallowed into empty capabilities while the plugin is marked
-  ready.
-- `devstack status` is advertised as current projection, but the production reader is hard-coded to
-  no state.
-- Startup failure can leave the cycle stuck in `booting`.
 - Tagged-error style is split across plain interfaces, `Schema.TaggedErrorClass`, and
   `Data.TaggedError`; unify or document the final subsystem rule before release.
 
@@ -64,41 +63,70 @@ Acceptance evidence:
 - Production `status` reads persisted/replayed real state or is removed until real.
 - Error tags are unique and catchable through the chosen public error style.
 
+Evidence landed 2026-05-21:
+
+- `layerLogger` is now part of the production substrate context; the supervisor wraps it so
+  plugin-attributed logger calls publish `log.appended` events to the projection and event hub.
+  Targeted test: `test/substrate/runtime/supervisor.test.ts` / "publishes logger lines as
+  log.appended events and row log tails".
+- Acquire failures now publish `error.reported` with the plugin key, set the row `failed`, attach
+  `lastError`, and settle the cycle out of `booting`. Targeted test:
+  `test/substrate/runtime/supervisor.test.ts` / "acquire failure publishes structured error and
+  leaves a failed row".
+- Dynamic capability factory throws now fail the plugin with `CapabilityFactoryFailed` instead of
+  silently returning empty capabilities and marking ready. Targeted test:
+  `test/substrate/runtime/supervisor.test.ts` / "capability factory failure reports a structured
+  error instead of marking ready".
+- Production `devstack up` persists the live projection to `projection.v1.json`; channel-backed
+  `devstack status` reads that snapshot instead of a hard-coded null reader. Targeted test:
+  `test/substrate/runtime/projection/persisted.test.ts`.
+- Channel-backed `devstack logs` no longer uses a completed shutdown effect; the existing logs
+  command NDJSON/envelope behavior remains covered by `test/surfaces/cli/commands/logs.test.ts`.
+
 ## P0: Docker ownership and lifecycle safety
 
-- Containers, networks, and volumes are stamped with labels but existing resources are reused by name
-  without verifying exact `devstack.*` ownership labels.
-- Foreign resources must not be adopted, stopped, or mutated just because their names/images/ports
-  match.
-- Docker inspect failures need to distinguish not-found from daemon/decode errors.
-- Resume failures must route through an explicit recreate/refuse policy instead of rethrowing.
 - Docker Desktop grouping labels were added, but manual visual verification remains open.
-- Docker image/build contexts and package `files` must keep required runtime assets available after
-  packing.
+- Docker image/build contexts must keep required runtime assets available after packing.
 
 Acceptance evidence:
 
-- Foreign-label containers/networks/volumes are refused or handled only under an explicit destructive
-  policy.
+- Foreign-label containers/networks/volumes are refused or handled only under an explicit
+  destructive policy.
 - Resume failure and malformed inspect output have tests.
 - Docker Desktop shows stack grouping equivalent to the old implementation, with router singleton
   behavior intentionally handled.
 - `pnpm pack --dry-run` includes Dockerfile/image contexts needed by Sui/Postgres/Walrus/Seal.
 
+Closed evidence:
+
+- 2026-05-21 Worker F: container `inspect` now returns `null` only for not-found; daemon exits
+  remain `DaemonUnreachable`, other non-notfound exits fail as `DockerInspectFailed`, and
+  malformed/empty JSON fails as `DockerInspectDecodeFailed`. Targeted test:
+  `test/runtime/docker/ownership-lifecycle.test.ts`.
+- 2026-05-21 Worker F: same-name containers, networks, and volumes must match exact expected
+  `devstack.*` ownership labels before reuse or mutation; handle-based
+  exec/pause/commit/unpause/stop re-inspect the current container id and labels before acting.
+  Targeted test: `test/runtime/docker/ownership-lifecycle.test.ts`.
+- 2026-05-21 Worker F: secondary network attach uses the runtime connect classifier, so Docker's
+  already-attached stderr is idempotent success while other connect failures remain typed. Targeted
+  test: `test/runtime/docker/ownership-lifecycle.test.ts`.
+- 2026-05-21 Worker F: stopped-container resume failures route through recreate policy; `never`
+  refuses with `resume-failed` instead of rethrowing the raw start failure. Targeted test:
+  `test/runtime/docker/ownership-lifecycle.test.ts`.
+- 2026-05-21 Worker E: package `files` now includes `images` and excludes samples from packed
+  source/dist; `npm pack --dry-run --json` showed all Sui/Postgres/Walrus/Seal image context files
+  and `samples: []`.
+
 ## P0: Package/export/build-integration release surface is broken
 
-- Package metadata still says `@mysten-incubation/devstack-rewrite`, is private, and has scaffold
-  wording.
-- Packed files omit `images/`, but Sui/Postgres/Walrus/Seal boot paths depend on Dockerfile contexts.
-- Vitest/browser build integrations inject old or wrong package specifiers.
-- `vitest` is imported by public subpaths but only listed as a dev dependency.
-- Browser subpath statically reaches runtime modules that import `node:fs`/`node:path`.
-- Build integrations must delegate to the shared runtime manifest path, decode, cold-start URL, and
-  dapp-kit slot helpers. Today path/version behavior drifts across vite/vitest/playwright/browser.
-- Manifest schema/version constants and setup-module specifiers must not diverge at cutover.
+- Package metadata still says `@mysten-incubation/devstack-rewrite` and is private. Final cutover
+  rename remains deferred.
+- Build integrations must finish delegating to the shared runtime manifest path, decode, cold-start
+  URL, and dapp-kit slot helpers. Path, slot, and low-risk cold-start formatting are now
+  consolidated; a final manifest/version constant audit remains.
+- Manifest schema/version constants must not diverge at cutover.
 - The root barrel and `./substrate` leak internals such as runtime services, identity internals,
   registry/cache/mint helpers, wallet server helpers, and error-contribution machinery.
-- `./samples` exports demonstration/scaffold plugins and should not be public release surface.
 
 Acceptance evidence:
 
@@ -107,6 +135,22 @@ Acceptance evidence:
 - Browser-facing subpaths are node-free by static import audit.
 - Root exports match the intended app/plugin-author vocabulary only.
 - Vite, Vitest, Playwright, and browser integrations all read the same manifest/version contract.
+
+Closed evidence:
+
+- 2026-05-21 Worker E: `./samples` was removed from package exports and tsdown entries, and `files`
+  excludes `src/samples`/`dist/samples`; `npm pack --dry-run --json` returned `samples: []`.
+- 2026-05-21 Worker E: Vitest/browser setup injection now uses flat public subpaths
+  `@mysten-incubation/devstack/vitest/setup` and `@mysten-incubation/devstack/browser/setup`;
+  package exports include `./vitest/setup` and `./browser/setup`.
+- 2026-05-21 Worker E: browser setup and browser barrel import the slot-only
+  `build-integrations/runtime/browser.ts` barrel, avoiding the node-backed runtime barrel for
+  browser-facing slot access.
+- 2026-05-21 Worker E: `vitest` is now an optional peer dependency for the public Vitest/browser
+  config subpaths.
+- 2026-05-21 Worker E: targeted checks passed:
+  `pnpm --filter @mysten-incubation/devstack-rewrite exec vitest run test/build-integrations/release-surface.test.ts test/build-integrations/browser/config.test.ts test/build-integrations/vitest/config.test.ts test/build-integrations/playwright/stack-context.test.ts test/build-integrations/runtime/cold-start-url.test.ts test/build-integrations/vite/cold-start-url.test.ts`
+  and targeted `prettier -c`/`oxlint` on touched files.
 
 ## P0: Public API ergonomics and unsupported options are not release-quality
 
@@ -219,8 +263,8 @@ Acceptance evidence:
 - Public docs still show old PascalCase API imports and old codegen/snapshot behavior.
 - Snapshot docs claim cross-stack restore is allowed while runtime identity guard rejects stack
   mismatches.
-- Examples mix public runnable apps, smoke/config examples, incomplete private-content, typecheck-only
-  DeepBook, and stale deferred Playwright text.
+- Examples mix public runnable apps, smoke/config examples, incomplete private-content,
+  typecheck-only DeepBook, and stale deferred Playwright text.
 - Example comments that explain "differences from v3" or future phase work must be removed or
   replaced by working API.
 

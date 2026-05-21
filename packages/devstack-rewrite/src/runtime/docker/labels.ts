@@ -59,6 +59,8 @@ export type ComposeLabelKey = (typeof ComposeLabelKey)[keyof typeof ComposeLabel
 
 export const COMPOSE_UI_VERSION = '2.0.0';
 
+export type ExpectedOwnershipLabels = Readonly<Record<string, string>>;
+
 const normalizeComposeSegment = (value: string): string => {
 	const normalized = value
 		.trim()
@@ -100,6 +102,51 @@ export const renderComposeVolumeLabels = (
 	`${ComposeLabelKey.version}=${COMPOSE_UI_VERSION}`,
 ];
 
+export const expectedContainerOwnershipLabels = (
+	tuple: ContainerLabelTuple,
+): ExpectedOwnershipLabels => ({
+	[LabelKey.managed]: 'true',
+	[LabelKey.app]: tuple.app,
+	[LabelKey.stack]: tuple.stack,
+	[LabelKey.plugin]: tuple.plugin,
+	[LabelKey.role]: tuple.role,
+});
+
+export const expectedNetworkOwnershipLabels = (
+	app: string,
+	stack: string,
+): ExpectedOwnershipLabels => ({
+	[LabelKey.managed]: 'true',
+	[LabelKey.networkMarker]: 'true',
+	[LabelKey.app]: app,
+	[LabelKey.stack]: stack,
+});
+
+export const expectedVolumeOwnershipLabels = (
+	tuple: ContainerLabelTuple,
+): ExpectedOwnershipLabels => ({
+	[LabelKey.managed]: 'true',
+	[LabelKey.volumeMarker]: 'true',
+	[LabelKey.app]: tuple.app,
+	[LabelKey.stack]: tuple.stack,
+	[LabelKey.plugin]: tuple.plugin,
+	[LabelKey.role]: tuple.role,
+});
+
+export const ownershipMismatchDetail = (
+	expected: ExpectedOwnershipLabels,
+	actual: Readonly<Record<string, string>>,
+): string | null => {
+	const mismatches: Array<string> = [];
+	for (const [key, expectedValue] of Object.entries(expected)) {
+		const actualValue = actual[key];
+		if (actualValue !== expectedValue) {
+			mismatches.push(`${key}: expected ${expectedValue}, found ${actualValue ?? '<missing>'}`);
+		}
+	}
+	return mismatches.length === 0 ? null : mismatches.join('; ');
+};
+
 /** Render a `ContainerLabelTuple` to docker `--label key=value` pairs.
  *  The cycle/managed labels are stamped at create time by `container.ts`. */
 export const renderContainerLabels = (
@@ -107,11 +154,9 @@ export const renderContainerLabels = (
 	cycle: number,
 ): ReadonlyArray<string> => {
 	const ownership = [
-		`${LabelKey.managed}=true`,
-		`${LabelKey.app}=${tuple.app}`,
-		`${LabelKey.stack}=${tuple.stack}`,
-		`${LabelKey.plugin}=${tuple.plugin}`,
-		`${LabelKey.role}=${tuple.role}`,
+		...Object.entries(expectedContainerOwnershipLabels(tuple)).map(
+			([key, value]) => `${key}=${value}`,
+		),
 		`${LabelKey.cycle}=${cycle}`,
 	];
 	return [...ownership, ...renderComposeContainerLabels(tuple)];
@@ -140,12 +185,9 @@ export const renderNetworkLabels = (
 	stack: string,
 	opts: { readonly composeUi?: boolean } = {},
 ): ReadonlyArray<string> => {
-	const ownership = [
-		`${LabelKey.managed}=true`,
-		`${LabelKey.networkMarker}=true`,
-		`${LabelKey.app}=${app}`,
-		`${LabelKey.stack}=${stack}`,
-	];
+	const ownership = Object.entries(expectedNetworkOwnershipLabels(app, stack)).map(
+		([key, value]) => `${key}=${value}`,
+	);
 	return opts.composeUi === false
 		? ownership
 		: [...ownership, ...renderComposeNetworkLabels(name, app, stack)];
@@ -157,13 +199,8 @@ export const renderVolumeLabels = (
 	name: string,
 	tuple: ContainerLabelTuple,
 ): ReadonlyArray<string> => {
-	const ownership = [
-		`${LabelKey.managed}=true`,
-		`${LabelKey.volumeMarker}=true`,
-		`${LabelKey.app}=${tuple.app}`,
-		`${LabelKey.stack}=${tuple.stack}`,
-		`${LabelKey.plugin}=${tuple.plugin}`,
-		`${LabelKey.role}=${tuple.role}`,
-	];
+	const ownership = Object.entries(expectedVolumeOwnershipLabels(tuple)).map(
+		([key, value]) => `${key}=${value}`,
+	);
 	return [...ownership, ...renderComposeVolumeLabels(name, tuple)];
 };

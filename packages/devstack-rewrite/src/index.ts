@@ -3,9 +3,8 @@
 // One root barrel for the whole user-facing + plugin-author vocabulary
 // (api-surface-design.md P5). Every plugin factory, every option type,
 // every plugin-author primitive flows through this file. Subpaths
-// (`/contracts`, `/substrate`, `/samples`, plus the L5 build-integration
-// subpaths) exist for tree-shaking + isolation, not as part of the
-// user vocabulary.
+// (`/contracts`, `/substrate`, plus the L5 build-integration subpaths)
+// exist for tree-shaking + isolation, not as part of the user vocabulary.
 
 // --- Composer surfaces --------------------------------------------------
 

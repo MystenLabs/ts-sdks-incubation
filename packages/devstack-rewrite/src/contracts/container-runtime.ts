@@ -109,6 +109,10 @@ export interface OneShotSpec {
 export interface ContainerHandle {
 	readonly id: string;
 	readonly name: string;
+	/** Exact ownership tuple stamped on the current Docker resource.
+	 *  Runtime operations that mutate by stable name use this to
+	 *  re-check the live labels before exec/pause/commit/unpause/stop. */
+	readonly labels?: ContainerLabelTuple;
 	/** Image ref Docker recorded at container creation time. This is
 	 *  the same string `ensureContainer` compares against on adoption,
 	 *  so snapshot restore must re-tag loaded images to this ref. */
@@ -271,6 +275,8 @@ export interface ContainerRuntimeError {
 		| 'image-save-failed'
 		| 'image-load-failed'
 		| 'image-tag-failed'
+		| 'docker-inspect-failed'
+		| 'foreign-resource'
 		| 'container-replace-failed'
 		| 'name-collision'
 		| 'ip-readback-timeout'

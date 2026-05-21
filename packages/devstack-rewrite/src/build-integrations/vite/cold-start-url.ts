@@ -19,6 +19,12 @@
 // architectural invariant (`distilled/23-build-integrations.md`
 // § "Edge cases: cold-start with no manifest").
 
+import {
+	conventionalRouteHost,
+	conventionalRouteUrl,
+	type ConventionalRoute,
+} from '../runtime/index.ts';
+
 // -----------------------------------------------------------------------------
 // Constants
 // -----------------------------------------------------------------------------
@@ -33,6 +39,12 @@ export const DEFAULT_ROUTER_PUBLIC_PORT = 5175;
  *  router emits routes for both shapes; this constant pins the
  *  dev-server one. */
 export const DEV_HOST_INFIX = 'dev';
+
+const DEV_SERVER_ROUTE: ConventionalRoute = {
+	service: DEV_HOST_INFIX,
+	port: DEFAULT_ROUTER_PUBLIC_PORT,
+	wireProtocol: 'http',
+};
 
 // -----------------------------------------------------------------------------
 // API
@@ -54,12 +66,14 @@ export interface ColdStartUrlInput {
  */
 export const coldStartUrl = (input: ColdStartUrlInput): string => {
 	const scheme = input.scheme ?? 'http';
-	const port = input.routerPort ?? DEFAULT_ROUTER_PUBLIC_PORT;
-	const host =
-		input.stack === 'main'
-			? `${DEV_HOST_INFIX}.${input.app}.localhost`
-			: `${input.stack}.${DEV_HOST_INFIX}.${input.app}.localhost`;
-	return `${scheme}://${host}:${port}/`;
+	return conventionalRouteUrl({
+		route: { ...DEV_SERVER_ROUTE, port: input.routerPort ?? DEFAULT_ROUTER_PUBLIC_PORT },
+		service: DEV_HOST_INFIX,
+		app: input.app,
+		stack: input.stack,
+		scheme,
+		trailingSlash: true,
+	});
 };
 
 /**
@@ -67,6 +81,8 @@ export const coldStartUrl = (input: ColdStartUrlInput): string => {
  * `server.allowedHosts` allowlist where the host is matched literally.
  */
 export const coldStartHost = (input: Omit<ColdStartUrlInput, 'routerPort' | 'scheme'>): string =>
-	input.stack === 'main'
-		? `${DEV_HOST_INFIX}.${input.app}.localhost`
-		: `${input.stack}.${DEV_HOST_INFIX}.${input.app}.localhost`;
+	conventionalRouteHost({
+		service: DEV_HOST_INFIX,
+		app: input.app,
+		stack: input.stack,
+	});

@@ -36,10 +36,14 @@ export type { ResolvedEndpoint, StackContext, StackIdentity } from './stack-cont
 export { EndpointRegistry } from './endpoint-registry.ts';
 export {
 	coldStartUrl,
+	conventionalRouteHost,
+	conventionalRouteUrl,
 	tryColdStartUrl,
 	readAppName,
 	type ColdStartUrlOptions,
 	type ConventionalRoute,
+	type ConventionalRouteHostInput,
+	type ConventionalRouteUrlInput,
 } from './cold-start-url.ts';
 export {
 	ManifestDiscoveryError,

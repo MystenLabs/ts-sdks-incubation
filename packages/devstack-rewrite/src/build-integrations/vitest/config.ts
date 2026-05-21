@@ -71,9 +71,9 @@ export interface DevstackVitestConfigOptions {
  *  via `test.setupFiles` when `opts.testSetup` is truthy. The literal
  *  string is the module's import specifier so vitest resolves it like
  *  any other npm package; an apps-level resolver finds it via the
- *  package's `./build-integrations/vitest/setup` subpath (added to
- *  package.json `exports` alongside the integration). */
-const DEVSTACK_SETUP_MODULE = '@mysten-incubation/devstack/build-integrations/vitest/setup';
+ *  package's `./vitest/setup` subpath (added to package.json
+ *  `exports` alongside the integration). */
+const DEVSTACK_SETUP_MODULE = '@mysten-incubation/devstack/vitest/setup';
 
 /** Runtime-root prefix the watcher MUST ignore — per architecture §
  *  Invariants → "No-restart on harmless changes". The 500ms manifest
@@ -90,7 +90,7 @@ const WATCH_IGNORED_PATTERNS = ['**/.devstack/**', '**/node_modules/**', '**/dis
  * `vitest.config.ts` to a single call:
  *
  *     import { defineDevstackVitestConfig }
- *       from '@mysten-incubation/devstack/build-integrations/vitest';
+ *       from '@mysten-incubation/devstack/vitest';
  *
  *     export default defineDevstackVitestConfig();
  *

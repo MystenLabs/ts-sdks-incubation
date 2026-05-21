@@ -62,6 +62,7 @@ import {
 } from './capability-sinks/index.ts';
 import {
 	Logger,
+	type LoggerShape,
 	withPluginSpan,
 	withStackSpan,
 	annotatePhase,
@@ -119,32 +120,68 @@ export class SupervisorPostAcquireFailed extends Data.TaggedError('SupervisorPos
 	readonly cause: Cause.Cause<unknown>;
 }> {}
 
-/** Subset of the `Logger` service surface the supervisor consumes.
- *  Keeps the supervisor decoupled from the full Logger module surface;
- *  also enables the no-op fallback when no Logger is provided. */
-interface LoggerLike {
-	readonly log: (
-		tag: string,
-		pluginKey: PluginKey | null,
-		payload: {
-			readonly level: 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
-			readonly message: string;
-			readonly fields?: Readonly<Record<string, unknown>>;
-		},
-	) => Effect.Effect<void>;
-}
+export class CapabilityFactoryFailed extends Data.TaggedError('CapabilityFactoryFailed')<{
+	readonly pluginKey: PluginKey;
+	readonly message: string;
+	readonly cause: unknown;
+}> {}
 
 /** Fallback used when the supervisor's `pluginContext` doesn't carry a
  *  Logger service. Swallows every line — the trade-off is that bare
  *  `supervise()` smoke tests stay log-free, while the wired CLI / e2e
  *  layer stack picks up the real Logger. */
-const noopLogger: LoggerLike = {
+const noopLogger: LoggerShape = {
 	log: () => Effect.void,
+	readTag: () => Effect.succeed({ lines: [], truncated: false }),
+	readAll: Effect.succeed(new Map()),
+	clearTag: () => Effect.void,
 };
+
+const projectionLevel = (
+	level: 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal',
+): Extract<EngineEvent, { tag: 'log.appended' }>['level'] => {
+	switch (level) {
+		case 'trace':
+		case 'debug':
+		case 'info':
+			return 'info';
+		case 'warn':
+			return 'warn';
+		case 'error':
+		case 'fatal':
+			return 'error';
+		default: {
+			const _exhaustive: never = level;
+			void _exhaustive;
+			return 'info';
+		}
+	}
+};
+
+const withEventPublishingLogger = (
+	base: LoggerShape,
+	ref: SubscriptionRef.SubscriptionRef<SubscribableState>,
+	hub: Queue.Enqueue<EngineEvent>,
+): LoggerShape => ({
+	...base,
+	log: (tag, pluginKey, payload) =>
+		Effect.gen(function* () {
+			yield* base.log(tag, pluginKey, payload);
+			if (pluginKey === null) return;
+			yield* publish(ref, hub, {
+				tag: 'log.appended',
+				pluginKey,
+				line: payload.message,
+				level: projectionLevel(payload.level),
+				at: Date.now(),
+			});
+		}),
+});
 
 export type SupervisorError =
 	| SupervisorBootError
 	| SupervisorPostAcquireFailed
+	| CapabilityFactoryFailed
 	| PluginAcquireFailed
 	| RestartTargetMissing
 	| UnknownDependency;
@@ -284,26 +321,27 @@ export type { OrchestratorSinks } from './capability-sinks/index.ts';
  * (`typeof === 'function'`).
  */
 const resolveCapabilities = (
+	pluginKey: PluginKey,
 	field:
 		| ReadonlyArray<CapabilityDecl>
 		| ((resolved: unknown, ctx: AcquireContext) => ReadonlyArray<CapabilityDecl>)
 		| undefined,
 	resolved: unknown,
 	acquireContext: AcquireContext,
-): ReadonlyArray<CapabilityDecl> => {
-	if (field === undefined) return [];
+): Effect.Effect<ReadonlyArray<CapabilityDecl>, CapabilityFactoryFailed> => {
+	if (field === undefined) return Effect.succeed([]);
 	if (typeof field === 'function') {
-		try {
-			return field(resolved, acquireContext);
-		} catch {
-			// Defensive: a throwing capability factory must not crash
-			// the supervisor — drop the decls and let the plugin still
-			// be marked ready. The acquire itself already succeeded;
-			// capability-emission is a side-channel.
-			return [];
-		}
+		return Effect.try({
+			try: () => field(resolved, acquireContext),
+			catch: (cause) =>
+				new CapabilityFactoryFailed({
+					pluginKey,
+					message: `capability factory failed for ${pluginKey}`,
+					cause,
+				}),
+		});
 	}
-	return field;
+	return Effect.succeed(field);
 };
 
 /**
@@ -386,9 +424,11 @@ const dispatchContributions = (
 const acquireNode = (
 	registry: PluginRegistry,
 	key: PluginKey,
+	ref: SubscriptionRef.SubscriptionRef<SubscribableState>,
+	hub: Queue.Enqueue<EngineEvent>,
 	pluginContext: Context.Context<never>,
 	sinks: CapabilitySinksShape,
-	logger: LoggerLike,
+	logger: LoggerShape,
 	identity: Identity,
 	runtimeRoot: string,
 ): Effect.Effect<void, never, never> =>
@@ -406,7 +446,19 @@ const acquireNode = (
 		// the cause walker carries the upstream's `PluginAcquireFailed`.
 		const upstreamWait = awaitUpstreams(registry, entry.node).pipe(
 			Effect.matchEffect({
-				onFailure: (cause) => registry.markFailed(key, cause).pipe(Effect.catch(() => Effect.void)),
+				onFailure: (cause) =>
+					Effect.gen(function* () {
+						yield* registry.markFailed(key, cause).pipe(Effect.catch(() => Effect.void));
+						yield* publish(ref, hub, {
+							tag: 'error.reported',
+							error: prettyErrorStructured(Cause.fail(cause), {
+								pluginKey: key,
+								severity: 'error',
+								at: Date.now(),
+							}),
+						});
+						return false as const;
+					}),
 				onSuccess: () => Effect.succeed(true as const),
 			}),
 		);
@@ -443,19 +495,23 @@ const acquireNode = (
 		const result = yield* Scope.provide(providedAcquire, entry.scope).pipe(
 			Effect.matchEffect({
 				onFailure: (cause) =>
-					registry.markFailed(key, cause).pipe(
-						Effect.catch(() => Effect.void),
-						Effect.as({ ok: false as const }),
-					),
+					Effect.gen(function* () {
+						yield* registry.markFailed(key, cause).pipe(Effect.catch(() => Effect.void));
+						yield* publish(ref, hub, {
+							tag: 'error.reported',
+							error: prettyErrorStructured(Cause.fail(cause), {
+								pluginKey: key,
+								severity: 'error',
+								at: Date.now(),
+							}),
+						});
+						return { ok: false as const };
+					}),
 				onSuccess: (value: unknown) =>
 					Effect.succeed({ ok: true as const, value: value as unknown }),
 			}),
 		);
 		if (result.ok) {
-			// `markReady` populates the synchronous resolved-value map AND
-			// resolves the deferred; downstream `BuildContext.get` reads
-			// from the former.
-			yield* registry.markReady(key, result.value).pipe(Effect.catch(() => Effect.void));
 			// Harvest contributions:
 			//   1. The plugin's `capabilities` tuple (or post-acquire
 			//      dynamic factory) — yields `CapabilityDecl`s.
@@ -469,14 +525,34 @@ const acquireNode = (
 				chain: identity.chain,
 				runtimeRoot,
 			};
-			const caps = resolveCapabilities(
-				entry.node.member.capabilities as
-					| ReadonlyArray<CapabilityDecl>
-					| ((r: unknown, c: AcquireContext) => ReadonlyArray<CapabilityDecl>)
-					| undefined,
-				result.value,
-				acquireContext,
+			const capsExit = yield* Effect.exit(
+				resolveCapabilities(
+					key,
+					entry.node.member.capabilities as
+						| ReadonlyArray<CapabilityDecl>
+						| ((r: unknown, c: AcquireContext) => ReadonlyArray<CapabilityDecl>)
+						| undefined,
+					result.value,
+					acquireContext,
+				),
 			);
+			if (Exit.isFailure(capsExit)) {
+				yield* registry.markFailed(key, capsExit.cause).pipe(Effect.catch(() => Effect.void));
+				yield* publish(ref, hub, {
+					tag: 'error.reported',
+					error: prettyErrorStructured(capsExit.cause, {
+						pluginKey: key,
+						severity: 'error',
+						at: Date.now(),
+					}),
+				});
+				yield* logger.log(`supervisor/${key}`, key, {
+					level: 'error',
+					message: 'plugin capability factory failed',
+				});
+				return;
+			}
+			const caps = capsExit.value;
 			const errorContributions = entry.node.member.errorContributions ?? [];
 			if (caps.length > 0 || errorContributions.length > 0) {
 				yield* dispatchContributions(
@@ -489,6 +565,10 @@ const acquireNode = (
 					sinks,
 				);
 			}
+			// `markReady` populates the synchronous resolved-value map AND
+			// resolves the deferred; downstream `BuildContext.get` reads
+			// from the former.
+			yield* registry.markReady(key, result.value).pipe(Effect.catch(() => Effect.void));
 			yield* logger.log(`supervisor/${key}`, key, {
 				level: 'info',
 				message: 'plugin ready',
@@ -520,9 +600,11 @@ const acquireNode = (
 const acquireLevel = (
 	registry: PluginRegistry,
 	keys: ReadonlyArray<PluginKey>,
+	ref: SubscriptionRef.SubscriptionRef<SubscribableState>,
+	hub: Queue.Enqueue<EngineEvent>,
 	pluginContext: Context.Context<never>,
 	sinks: CapabilitySinksShape,
-	logger: LoggerLike,
+	logger: LoggerShape,
 	identity: Identity,
 	runtimeRoot: string,
 ): Effect.Effect<void, never, never> =>
@@ -530,7 +612,7 @@ const acquireLevel = (
 		yield* Effect.annotateCurrentSpan({ 'devstack.level.size': keys.length });
 		yield* Effect.all(
 			keys.map((key) =>
-				acquireNode(registry, key, pluginContext, sinks, logger, identity, runtimeRoot),
+				acquireNode(registry, key, ref, hub, pluginContext, sinks, logger, identity, runtimeRoot),
 			),
 			{ concurrency: 'unbounded', discard: true },
 		);
@@ -539,16 +621,28 @@ const acquireLevel = (
 const acquireFullGraph = (
 	graph: ResolvedGraph,
 	registry: PluginRegistry,
+	ref: SubscriptionRef.SubscriptionRef<SubscribableState>,
+	hub: Queue.Enqueue<EngineEvent>,
 	pluginContext: Context.Context<never>,
 	sinks: CapabilitySinksShape,
-	logger: LoggerLike,
+	logger: LoggerShape,
 	identity: Identity,
 	runtimeRoot: string,
 ): Effect.Effect<void, never, never> =>
 	Effect.gen(function* () {
 		yield* annotateOp('acquireFullGraph');
 		for (const level of graph.levels) {
-			yield* acquireLevel(registry, level, pluginContext, sinks, logger, identity, runtimeRoot);
+			yield* acquireLevel(
+				registry,
+				level,
+				ref,
+				hub,
+				pluginContext,
+				sinks,
+				logger,
+				identity,
+				runtimeRoot,
+			);
 		}
 	}).pipe(Effect.withSpan('lifecycle.supervisor.acquireFullGraph'));
 
@@ -623,7 +717,7 @@ const doSelectiveRestart = (
 	roots: ReadonlySet<PluginKey>,
 	pluginContext: Context.Context<never>,
 	sinks: CapabilitySinksShape,
-	logger: LoggerLike,
+	logger: LoggerShape,
 	identity: Identity,
 	runtimeRoot: string,
 ): Effect.Effect<void, RestartTargetMissing> =>
@@ -657,7 +751,17 @@ const doSelectiveRestart = (
 		}
 		for (const level of sliceByLevel) {
 			if (level.length === 0) continue;
-			yield* acquireLevel(registry, level, pluginContext, sinks, logger, identity, runtimeRoot);
+			yield* acquireLevel(
+				registry,
+				level,
+				ref,
+				hub,
+				pluginContext,
+				sinks,
+				logger,
+				identity,
+				runtimeRoot,
+			);
 		}
 		for (const root of roots) {
 			yield* publish(ref, hub, {
@@ -681,7 +785,7 @@ interface CommandLoopDeps {
 	readonly shutdownLatch: Ref.Ref<boolean>;
 	readonly pluginContext: Context.Context<never>;
 	readonly sinks: CapabilitySinksShape;
-	readonly logger: LoggerLike;
+	readonly logger: LoggerShape;
 	readonly identity: Identity;
 	readonly runtimeRoot: string;
 	readonly commandHandler?: SupervisorCommandHandler;
@@ -984,9 +1088,9 @@ export const startSupervisor = (
 		// Optional Logger service — pull from the plugin context if the
 		// caller layered it in (CLI / e2e do). Bare smoke tests get the
 		// no-op fallback so they remain log-free.
-		const logger: LoggerLike = getOrDefault(pluginContext, Logger, noopLogger);
+		const baseLogger: LoggerShape = getOrDefault(pluginContext, Logger, noopLogger);
 
-		yield* logger.log('supervisor', null, {
+		yield* baseLogger.log('supervisor', null, {
 			level: 'info',
 			message: 'supervisor boot start',
 			fields: {
@@ -1027,6 +1131,10 @@ export const startSupervisor = (
 		const commands = yield* Queue.unbounded<EngineCommand>();
 		const shutdownLatch = yield* Ref.make(false);
 		const initialAcquireStarted = yield* Ref.make(false);
+		const logger = withEventPublishingLogger(baseLogger, state, hub);
+		const pluginRuntimeContext = pluginContext.pipe(
+			Context.add(Logger, Logger.of(logger)),
+		) as Context.Context<never>;
 
 		// Per-plugin scopes parent off the supervisor scope.
 		const supervisorScope = yield* Effect.scope;
@@ -1102,7 +1210,7 @@ export const startSupervisor = (
 		// the supervisor. Same surface a built-in (Logger, RuntimeRoot,
 		// ContainerRuntime, etc.) uses.
 		const sinksService = yield* getOrDefaultEffect(
-			pluginContext,
+			pluginRuntimeContext,
 			CapabilitySinksService,
 			Effect.gen(function* () {
 				return Context.get(
@@ -1124,7 +1232,7 @@ export const startSupervisor = (
 			hub,
 			commands,
 			shutdownLatch,
-			pluginContext,
+			pluginContext: pluginRuntimeContext,
 			sinks: sinksService,
 			logger,
 			identity,
@@ -1146,7 +1254,9 @@ export const startSupervisor = (
 			yield* acquireFullGraph(
 				graph,
 				registry,
-				pluginContext,
+				state,
+				hub,
+				pluginRuntimeContext,
 				sinksService,
 				logger,
 				identity,
@@ -1159,6 +1269,8 @@ export const startSupervisor = (
 				if (!(yield* Ref.get(shutdownLatch))) {
 					yield* setCyclePhase(state, 'running');
 				}
+			} else if (!(yield* Ref.get(shutdownLatch))) {
+				yield* setCyclePhase(state, 'running');
 			}
 		}).pipe(Effect.withSpan('lifecycle.supervisor.initialAcquire'));
 

@@ -22,10 +22,21 @@
 import { Effect, Schema } from 'effect';
 
 import { DockerHost, DockerSpawner, dockerRun, dockerRunOk } from './client.ts';
-import type { DockerRuntimeError } from './errors.ts';
-import { NetworkIpReadbackTimeout, NetworkOperationFailed } from './errors.ts';
-import { renderNetworkLabels } from './labels.ts';
-import { isAlreadyInNetworkStderr, wrapNetworkError } from './wrap.ts';
+import {
+	DockerInspectDecodeFailed,
+	DockerInspectFailed,
+	DaemonUnreachable,
+	type DockerRuntimeError,
+	ForeignDockerResource,
+	NetworkIpReadbackTimeout,
+	NetworkOperationFailed,
+} from './errors.ts';
+import {
+	expectedNetworkOwnershipLabels,
+	ownershipMismatchDetail,
+	renderNetworkLabels,
+} from './labels.ts';
+import { isAlreadyInNetworkStderr, isDaemonUnreachableStderr, wrapNetworkError } from './wrap.ts';
 
 /** The cross-host shared network name. Architecture-mandated single
  *  bridge per host. Callers can target other networks (per-stack) but
@@ -41,6 +52,100 @@ export interface EnsureNetworkOptions {
 	readonly composeUi?: boolean;
 }
 
+interface NetworkInspectFacts {
+	readonly id: string;
+	readonly labels: Readonly<Record<string, string>>;
+}
+
+const readLabels = (raw: unknown): Readonly<Record<string, string>> => {
+	if (raw === null || typeof raw !== 'object') return {};
+	const out: Record<string, string> = {};
+	for (const [key, value] of Object.entries(raw)) {
+		if (typeof value === 'string') out[key] = value;
+	}
+	return out;
+};
+
+const NetworkInspectSchema = Schema.Struct({
+	Id: Schema.String,
+	Labels: Schema.optional(Schema.Unknown),
+});
+
+const isNoSuchNetworkStderr = (stderr: string): boolean =>
+	/no such network|network .* not found|not found/i.test(stderr);
+
+const inspectNetwork = (
+	name: string,
+): Effect.Effect<NetworkInspectFacts | null, DockerRuntimeError, DockerHost | DockerSpawner> =>
+	Effect.gen(function* () {
+		const res = yield* dockerRunOk('network', ['inspect', name]).pipe(
+			Effect.mapError(wrapNetworkError('inspect', name)),
+		);
+		if (res.exitCode !== 0) {
+			if (isNoSuchNetworkStderr(res.stderr)) return null;
+			if (isDaemonUnreachableStderr(res.stderr)) {
+				return yield* Effect.fail(
+					new DaemonUnreachable({
+						op: 'docker.network.inspect',
+						detail: 'docker daemon unreachable',
+					}),
+				);
+			}
+			return yield* Effect.fail(
+				new DockerInspectFailed({
+					resource: 'network',
+					name,
+					stderr: res.stderr,
+					exitCode: res.exitCode,
+				}),
+			);
+		}
+		try {
+			const arr = JSON.parse(res.stdout) as unknown;
+			if (!Array.isArray(arr) || arr.length === 0) {
+				return yield* Effect.fail(
+					new DockerInspectDecodeFailed({
+						resource: 'network',
+						name,
+						detail: 'inspect returned an empty result',
+					}),
+				);
+			}
+			const decoded = Schema.decodeUnknownSync(NetworkInspectSchema)(arr[0]);
+			return { id: decoded.Id, labels: readLabels(decoded.Labels) };
+		} catch (cause) {
+			return yield* Effect.fail(
+				new DockerInspectDecodeFailed({
+					resource: 'network',
+					name,
+					detail: 'inspect returned malformed network JSON',
+					cause,
+				}),
+			);
+		}
+	});
+
+const assertNetworkOwned = (
+	name: string,
+	facts: NetworkInspectFacts,
+	opts: EnsureNetworkOptions,
+): Effect.Effect<void, DockerRuntimeError> =>
+	Effect.gen(function* () {
+		const expected = expectedNetworkOwnershipLabels(opts.app, opts.stack);
+		const mismatch = ownershipMismatchDetail(expected, facts.labels);
+		if (mismatch !== null) {
+			return yield* Effect.fail(
+				new ForeignDockerResource({
+					resource: 'network',
+					name,
+					expected,
+					actual: facts.labels,
+					detail: mismatch,
+				}),
+			);
+		}
+	});
+
 // -----------------------------------------------------------------------------
 // Create / inspect
 // -----------------------------------------------------------------------------
@@ -53,12 +158,10 @@ export const ensureNetwork = (
 	opts: EnsureNetworkOptions,
 ): Effect.Effect<string, DockerRuntimeError, DockerHost | DockerSpawner> =>
 	Effect.gen(function* () {
-		// Probe first — if the network exists we keep it.
-		const probe = yield* dockerRunOk('network', ['inspect', '--format', '{{.Id}}', name]).pipe(
-			Effect.mapError(wrapNetworkError('inspect', name)),
-		);
-		if (probe.exitCode === 0) {
-			return probe.stdout.trim();
+		const probe = yield* inspectNetwork(name);
+		if (probe !== null) {
+			yield* assertNetworkOwned(name, probe, opts);
+			return probe.id;
 		}
 		// Create with full label stamp.
 		const labelArgs = renderNetworkLabels(name, opts.app, opts.stack, {

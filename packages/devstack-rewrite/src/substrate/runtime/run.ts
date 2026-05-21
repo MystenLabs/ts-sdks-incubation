@@ -20,7 +20,7 @@
 // package plugins (cf. STYLE_GUIDE §10b — L2 wrapper-service around
 // `defineScopedRefMap`).
 
-import { Context, Effect, Layer, Logger, Scope, SubscriptionRef } from 'effect';
+import { Context, Effect, Layer, Logger as EffectLogger, Scope, SubscriptionRef } from 'effect';
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
 import * as NodePath from '@effect/platform-node/NodePath';
 import * as NodeChildProcessSpawner from '@effect/platform-node/NodeChildProcessSpawner';
@@ -53,6 +53,7 @@ import {
 	layerDockerHostDefault,
 } from '../../runtime/docker/index.ts';
 import { makeProjectionRef } from './projection/index.ts';
+import { Logger, layerLogger } from './observability/index.ts';
 import {
 	startSupervisor,
 	type OrchestratorSinks,
@@ -99,7 +100,10 @@ export const buildSubstrateLayers = (identity: Identity, runtimeRoot: string) =>
 	const withPortBroker = layerPortBroker.pipe(Layer.provideMerge(withPackageRegistry));
 	const withLeaseBroker = layerLeaseBroker.pipe(Layer.provideMerge(withPortBroker));
 	const withSpawnerAdapter = layerDockerSpawnerFromNode.pipe(Layer.provideMerge(withLeaseBroker));
-	return layerContainerRuntimeDocker.pipe(Layer.provideMerge(withSpawnerAdapter));
+	const withContainerRuntime = layerContainerRuntimeDocker.pipe(
+		Layer.provideMerge(withSpawnerAdapter),
+	);
+	return layerLogger.pipe(Layer.provideMerge(withContainerRuntime));
 };
 
 /** Build the opaque `Context.Context<never>` the supervisor hands to
@@ -121,6 +125,7 @@ const buildPluginContext = (): Effect.Effect<
 	| CoinRegistryService
 	| PortBrokerService
 	| LeaseBrokerService
+	| Logger
 > =>
 	Effect.gen(function* () {
 		const identityCtx = yield* IdentityContext;
@@ -134,6 +139,7 @@ const buildPluginContext = (): Effect.Effect<
 		const coinRegistry = yield* CoinRegistryService;
 		const portBroker = yield* PortBrokerService;
 		const leaseBroker = yield* LeaseBrokerService;
+		const logger = yield* Logger;
 
 		return Context.empty().pipe(
 			Context.add(IdentityContext, identityCtx),
@@ -147,6 +153,7 @@ const buildPluginContext = (): Effect.Effect<
 			Context.add(CoinRegistryService, coinRegistry),
 			Context.add(PortBrokerService, portBroker),
 			Context.add(LeaseBrokerService, leaseBroker),
+			Context.add(Logger, logger),
 		) as Context.Context<never>;
 	});
 
@@ -257,6 +264,6 @@ export const runStackEffect = (
 
 	return program.pipe(
 		Effect.provide(substrate),
-		Effect.provide(opts.loggerLayer ?? Logger.layer([])),
+		Effect.provide(opts.loggerLayer ?? EffectLogger.layer([])),
 	);
 };

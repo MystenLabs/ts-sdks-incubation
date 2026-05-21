@@ -33,6 +33,8 @@ import type { SubscribableState } from '../substrate/projection.ts';
 import { StackPathsService } from '../substrate/runtime/paths.ts';
 import {
 	makeProjectionRef,
+	persistProjectionChanges,
+	readProjectionSnapshot,
 	type SupervisedStack,
 	type SupervisorCommandHandler,
 } from '../substrate/runtime/index.ts';
@@ -214,8 +216,9 @@ const resolveIdentity = (params: {
 // Verb deps composition (channel-backed)
 // -----------------------------------------------------------------------------
 
-const emptyStatusReader = (): StatusReader => ({
-	readState: (_app, _stack) => Effect.succeed<SubscribableState | null>(null),
+const projectionStatusReader = (identity: ResolvedIdentity): StatusReader => ({
+	readState: (_app, _stack) =>
+		Effect.sync(() => readProjectionSnapshot(identity.stackRoot) as SubscribableState | null),
 });
 
 /** Build the deps bundle for non-`up` verbs. The publisher/subscriber
@@ -236,10 +239,10 @@ const buildChannelDeps = (identity: ResolvedIdentity): CliDeps => {
 	return {
 		up: { loader, publisher, subscriber, shutdown },
 		down: { publisher },
-		status: { reader: emptyStatusReader() },
+		status: { reader: projectionStatusReader(identity) },
 		snapshot: { publisher, reader: makeSnapshotReader(identity) },
 		prune: { publisher },
-		logs: { subscriber, shutdown: Effect.void },
+		logs: { subscriber, shutdown: Effect.never },
 		doctor: {
 			probes: defaultProbes({
 				stateDir: identity.runtimeRoot,
@@ -403,6 +406,9 @@ const runUpLive = (
 							// `events.ndjson` so peer logs/status tailers see
 							// the supervisor's emissions.
 							const stackPaths = yield* StackPathsService;
+							yield* Effect.forkScoped(
+								persistProjectionChanges(stackPaths.stackRoot, handle.state),
+							);
 							const channelPaths = commandChannelPaths(stackPaths.stackRoot);
 							const channel = yield* makeCommandChannelSubscriber(channelPaths, {
 								fromOffset: 'current',

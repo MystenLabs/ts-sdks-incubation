@@ -113,7 +113,7 @@ describe('defineDevstackVitestConfig', () => {
 describe('_internal', () => {
 	it('exposes the devstack setup module specifier as a constant', () => {
 		expect(_internal.DEVSTACK_SETUP_MODULE).toMatch(
-			/^@mysten-incubation\/devstack\/build-integrations\/vitest\/setup$/,
+			/^@mysten-incubation\/devstack\/vitest\/setup$/,
 		);
 	});
 

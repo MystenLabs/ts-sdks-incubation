@@ -68,6 +68,21 @@ export interface ColdStartUrlOptions {
 	/** Starting directory for the app-name lookup. Defaults to
 	 *  `process.cwd()`. */
 	readonly cwd?: string;
+	/** Host suffix owned by the router. Default: `.localhost`. */
+	readonly hostSuffix?: string;
+}
+
+export interface ConventionalRouteHostInput {
+	readonly service: string;
+	readonly app: string;
+	readonly stack: string;
+	readonly hostSuffix?: string;
+}
+
+export interface ConventionalRouteUrlInput extends ConventionalRouteHostInput {
+	readonly route: ConventionalRoute;
+	readonly scheme?: 'http' | 'https';
+	readonly trailingSlash?: boolean;
 }
 
 /** Read `name` out of `<dir>/package.json`, strip the `@scope/`
@@ -84,6 +99,20 @@ export const readAppName = (dir: string): string | undefined => {
 	} catch {
 		return undefined;
 	}
+};
+
+export const conventionalRouteHost = (input: ConventionalRouteHostInput): string => {
+	const hostSuffix = input.hostSuffix ?? '.localhost';
+	return input.stack === 'main'
+		? `${input.service}.${input.app}${hostSuffix}`
+		: `${input.stack}.${input.service}.${input.app}${hostSuffix}`;
+};
+
+export const conventionalRouteUrl = (input: ConventionalRouteUrlInput): string => {
+	const scheme = input.scheme ?? 'http';
+	const host = conventionalRouteHost(input);
+	const url = `${scheme}://${host}:${input.route.port}`;
+	return input.trailingSlash === true ? `${url}/` : url;
 };
 
 /**
@@ -110,12 +139,14 @@ export const coldStartUrl = (endpoint: string, opts: ColdStartUrlOptions): strin
 	const stack = opts.stack ?? process.env.DEVSTACK_STACK ?? 'main';
 	const cwd = opts.cwd ?? process.cwd();
 	const app = opts.app ?? readAppName(cwd) ?? basename(cwd);
-	const host =
-		stack === 'main'
-			? `${route.service}.${app}.localhost`
-			: `${stack}.${route.service}.${app}.localhost`;
-	const scheme = route.wireProtocol === 'h2c' ? 'http' : 'http';
-	return `${scheme}://${host}:${route.port}`;
+	return conventionalRouteUrl({
+		route,
+		service: route.service,
+		app,
+		stack,
+		...(opts.hostSuffix !== undefined ? { hostSuffix: opts.hostSuffix } : {}),
+		scheme: route.wireProtocol === 'h2c' ? 'http' : 'http',
+	});
 };
 
 /** `undefined`-on-miss variant. */

@@ -77,6 +77,36 @@ export class ContainerRemoveFailed extends Data.TaggedError('ContainerRemoveFail
 	readonly exitCode: number | undefined;
 }> {}
 
+export type DockerResourceKind = 'container' | 'network' | 'volume';
+
+/** Docker inspect failed for a reason other than "not found". */
+export class DockerInspectFailed extends Data.TaggedError('DockerInspectFailed')<{
+	readonly resource: DockerResourceKind;
+	readonly name: string;
+	readonly stderr: string;
+	readonly exitCode: number | undefined;
+}> {}
+
+/** Docker inspect returned malformed JSON or a shape outside the
+ *  runtime's expected schema. */
+export class DockerInspectDecodeFailed extends Data.TaggedError('DockerInspectDecodeFailed')<{
+	readonly resource: DockerResourceKind;
+	readonly name: string;
+	readonly detail: string;
+	readonly cause?: unknown;
+}> {}
+
+/** A same-name Docker resource exists but is not owned by the expected
+ *  devstack label tuple, so mutating it would cross stack/plugin
+ *  boundaries. */
+export class ForeignDockerResource extends Data.TaggedError('ForeignDockerResource')<{
+	readonly resource: DockerResourceKind;
+	readonly name: string;
+	readonly expected: Readonly<Record<string, string>>;
+	readonly actual: Readonly<Record<string, string>>;
+	readonly detail: string;
+}> {}
+
 /** `docker network connect` / `network create` failure that isn't the
  *  idempotent "already exists in network" case. */
 export class NetworkOperationFailed extends Data.TaggedError('NetworkOperationFailed')<{
@@ -160,6 +190,9 @@ export type DockerRuntimeError =
 	| ContainerNameCollisionUnrecoverable
 	| ContainerExited
 	| ContainerRemoveFailed
+	| DockerInspectFailed
+	| DockerInspectDecodeFailed
+	| ForeignDockerResource
 	| NetworkOperationFailed
 	| NetworkIpReadbackTimeout
 	| VolumeOperationFailed
@@ -215,6 +248,24 @@ export const toContractError = (err: DockerRuntimeError): ContainerRuntimeError 
 				_tag: 'ContainerRuntimeError',
 				reason: 'container-replace-failed',
 				detail: `${err.name}: ${err.stderr}`,
+			};
+		case 'DockerInspectFailed':
+			return {
+				_tag: 'ContainerRuntimeError',
+				reason: 'docker-inspect-failed',
+				detail: `${err.resource} ${err.name}: ${err.stderr}`,
+			};
+		case 'DockerInspectDecodeFailed':
+			return {
+				_tag: 'ContainerRuntimeError',
+				reason: 'docker-inspect-failed',
+				detail: `${err.resource} ${err.name}: ${err.detail}`,
+			};
+		case 'ForeignDockerResource':
+			return {
+				_tag: 'ContainerRuntimeError',
+				reason: 'foreign-resource',
+				detail: `${err.resource} ${err.name}: ${err.detail}`,
 			};
 		case 'NetworkOperationFailed':
 			return {

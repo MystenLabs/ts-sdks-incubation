@@ -127,8 +127,13 @@ describe('readStackContext', () => {
 
 describe('conventionalUrlFor', () => {
 	it('returns a known endpoint pattern URL when port is given', () => {
-		const url = conventionalUrlFor('sui-rpc', { stack: 'main', port: 80 });
-		expect(url).toBe('http://main.sui-rpc.localhost:80');
+		const url = conventionalUrlFor('sui-rpc', { stack: 'main', port: 80, app: 'wallet' });
+		expect(url).toBe('http://sui-rpc.wallet.localhost:80');
+	});
+
+	it('maps the app endpoint to the shared dev-server conventional route', () => {
+		const url = conventionalUrlFor('app', { stack: 'main', port: 80, app: 'wallet' });
+		expect(url).toBe('http://dev.wallet.localhost:80');
 	});
 
 	it('returns null for unknown endpoints', () => {
@@ -166,6 +171,6 @@ describe('resolveEndpointUrl', () => {
 			port: 80,
 		});
 		expect(resolved.source).toBe('conventional');
-		expect(resolved.url).toBe('http://main.app.localhost:80');
+		expect(resolved.url).toMatch(/^http:\/\/dev\.pw-stack-ctx-.*\.localhost:80$/);
 	});
 });

@@ -18,13 +18,18 @@ import type { LifecycleStatus, PluginKind } from '../../../src/substrate/lifecyc
 import type { Row, StructuredError } from '../../../src/substrate/projection.ts';
 import {
 	deriveDisplayCells,
+	endpointsForRow,
 	endpointLine,
 	errorSummaryFor,
+	groupRows,
 	kindGlyph,
 	kindLabel,
 	kindLabelColor,
 	labelForRow,
 	narrationFor,
+	ownerForRow,
+	sectionForRow,
+	selectRowKey,
 	statusColor,
 	statusGlyph,
 	statusLabel,
@@ -96,13 +101,47 @@ describe('display-derivation', () => {
 
 	describe('labelForRow', () => {
 		it('strips the devstack: prefix', () => {
-			expect(labelForRow('devstack:sui', 'leaf-long-running')).toBe('sui');
+			expect(labelForRow('devstack:sui', 'leaf-long-running')).toBe('Sui');
 		});
 		it('strips the app: prefix', () => {
-			expect(labelForRow('app:wallet', 'composite')).toBe('wallet');
+			expect(labelForRow('app:wallet', 'composite')).toBe('Wallet');
 		});
-		it('passes other keys through verbatim', () => {
-			expect(labelForRow('seal/composite/0', 'composite')).toBe('seal/composite/0');
+		it('removes internal prefixes and counters', () => {
+			expect(labelForRow('account/alice#0', 'leaf-one-shot')).toBe('Alice');
+			expect(labelForRow('seal/composite/0', 'composite')).toBe('Composite');
+		});
+	});
+
+	describe('ownerForRow / sectionForRow', () => {
+		it('derives plugin owner chips from row keys', () => {
+			expect(ownerForRow('account/alice#0')).toBe('Account');
+			expect(ownerForRow('sui.localnet')).toBe('Sui');
+		});
+		it('groups long-running and endpoint rows as services', () => {
+			expect(sectionForRow(fakeRow({ kind: 'leaf-long-running' }))).toBe('service');
+			expect(
+				sectionForRow(
+					fakeRow({
+						key: pluginKey('package/connect-four#0'),
+						kind: 'leaf-one-shot',
+						endpoints: [endpointKey('package/connect-four#0:docs')],
+					}),
+				),
+			).toBe('service');
+		});
+		it('groups one-shot rows by friendly domain', () => {
+			expect(
+				sectionForRow(fakeRow({ key: pluginKey('package/connect-four#0'), kind: 'leaf-one-shot' })),
+			).toBe('package');
+			expect(
+				sectionForRow(fakeRow({ key: pluginKey('account/alice#0'), kind: 'leaf-one-shot' })),
+			).toBe('account');
+			expect(
+				sectionForRow(fakeRow({ key: pluginKey('action/mint#0'), kind: 'leaf-one-shot' })),
+			).toBe('action');
+			expect(
+				sectionForRow(fakeRow({ key: pluginKey('app/frontend#0'), kind: 'leaf-one-shot' })),
+			).toBe('app');
 		});
 	});
 
@@ -175,6 +214,45 @@ describe('display-derivation', () => {
 		});
 	});
 
+	describe('row endpoints and grouping', () => {
+		const endpoint = {
+			endpointKey: endpointKey('sui:rpc'),
+			name: 'rpc',
+			url: 'http://localhost:9000',
+			displayUrl: null,
+			wireProtocol: 'http',
+			registeredAt: 0,
+		};
+
+		it('selects endpoints owned by a row', () => {
+			const row = fakeRow({ key: pluginKey('sui'), endpoints: [endpoint.endpointKey] });
+			expect(endpointsForRow(row, [endpoint])).toEqual([endpoint]);
+		});
+
+		it('groups rows in operator scan order', () => {
+			const sections = groupRows([
+				fakeRow({ key: pluginKey('action/mint#0'), kind: 'leaf-one-shot' }),
+				fakeRow({ key: pluginKey('account/alice#0'), kind: 'leaf-one-shot' }),
+				fakeRow({ key: pluginKey('sui'), kind: 'leaf-long-running' }),
+			]);
+			expect(sections.map((section) => section.key)).toEqual(['service', 'account', 'action']);
+		});
+	});
+
+	describe('selection', () => {
+		const rows = [
+			fakeRow({ key: pluginKey('sui') }),
+			fakeRow({ key: pluginKey('account/alice#0') }),
+			fakeRow({ key: pluginKey('action/mint#0') }),
+		];
+
+		it('moves focus cyclically', () => {
+			expect(selectRowKey(rows, null, 1)).toBe('sui');
+			expect(selectRowKey(rows, 'sui', 1)).toBe('account/alice#0');
+			expect(selectRowKey(rows, 'sui', -1)).toBe('action/mint#0');
+		});
+	});
+
 	describe('deriveDisplayCells', () => {
 		it('produces every cell from row.kind/status/phase/lastError', () => {
 			const row = fakeRow({
@@ -188,9 +266,11 @@ describe('display-derivation', () => {
 			expect(cells.statusLabel).toBe('acquiring');
 			expect(cells.kindGlyph).toBe(kindGlyph('leaf-long-running'));
 			expect(cells.kindLabel).toBe('service');
-			expect(cells.label).toBe('sui');
+			expect(cells.label).toBe('Sui');
 			expect(cells.narration).toBe('pulling image');
 			expect(cells.errorSummary).toBe('');
+			expect(cells.section).toBe('service');
+			expect(cells.owner).toBe('Sui');
 		});
 		it('renders error summary on failed row', () => {
 			const row = fakeRow({

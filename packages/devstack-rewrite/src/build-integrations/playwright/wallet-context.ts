@@ -33,7 +33,7 @@ import {
 } from './stack-context.ts';
 import { readStashedFixture } from './global-setup.ts';
 import { PlaywrightWalletAdapterError } from './errors.ts';
-import { DAPP_KIT_SLOT_KEY, type DAppKitSlot } from '../runtime/index.ts';
+import { DAPP_KIT_SLOT_KEY, type DAppKitSlot } from '../runtime/browser.ts';
 
 // -----------------------------------------------------------------------------
 // Structural Playwright `Page` shape — we keep `@playwright/test` an

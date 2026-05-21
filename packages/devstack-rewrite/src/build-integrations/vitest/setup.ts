@@ -138,7 +138,7 @@ export interface VitestLifecycleHooks {
  *
  *     import { beforeAll, afterAll } from 'vitest';
  *     import { useDevstackTestSetup }
- *       from '@mysten-incubation/devstack/build-integrations/vitest';
+ *       from '@mysten-incubation/devstack/vitest';
  *
  *     useDevstackTestSetup({ beforeAll, afterAll }, { requireDevstack: true });
  *

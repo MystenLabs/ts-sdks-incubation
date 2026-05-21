@@ -12,51 +12,37 @@ import { describe, expect, it } from 'vitest';
 
 import { pluginKey } from '../../../src/substrate/brand.ts';
 import type { EngineCommand } from '../../../src/substrate/events.ts';
-
-// Mirror of input.tsx's key map so the test is independent of the
-// React tree. If the table here diverges from input.tsx, both should
-// be updated together (the table is small and stable enough that
-// duplication is cheaper than an ink-headless harness).
-const keyToCommand = (input: string, ctrl: boolean): EngineCommand | null => {
-	if (ctrl && input === 'c') return { tag: 'shutdown.requested' };
-	switch (input) {
-		case 'q':
-		case 'Q':
-			return { tag: 'shutdown.requested' };
-		case 'r':
-		case 'R':
-			return { tag: 'stack.restart' };
-		case 's':
-		case 'S':
-			return { tag: 'snapshot.capture' };
-		default:
-			return null;
-	}
-};
+import { commandForKey, selectionDeltaForKey } from '../../../src/surfaces/tui/input.tsx';
 
 describe('input → EngineCommand mapping', () => {
 	it('q publishes shutdown.requested', () => {
-		expect(keyToCommand('q', false)).toEqual({ tag: 'shutdown.requested' });
-		expect(keyToCommand('Q', false)).toEqual({ tag: 'shutdown.requested' });
+		expect(commandForKey('q', false)).toEqual({ tag: 'shutdown.requested' });
+		expect(commandForKey('Q', false)).toEqual({ tag: 'shutdown.requested' });
 	});
 	it('ctrl-c publishes shutdown.requested', () => {
-		expect(keyToCommand('c', true)).toEqual({ tag: 'shutdown.requested' });
+		expect(commandForKey('c', true)).toEqual({ tag: 'shutdown.requested' });
 	});
 	it('r publishes stack.restart', () => {
-		expect(keyToCommand('r', false)).toEqual({ tag: 'stack.restart' });
-		expect(keyToCommand('R', false)).toEqual({ tag: 'stack.restart' });
+		expect(commandForKey('r', false)).toEqual({ tag: 'stack.restart' });
+		expect(commandForKey('R', false)).toEqual({ tag: 'stack.restart' });
 	});
 	it('s publishes snapshot.capture', () => {
-		expect(keyToCommand('s', false)).toEqual({ tag: 'snapshot.capture' });
+		expect(commandForKey('s', false)).toEqual({ tag: 'snapshot.capture' });
 	});
 	it('unmapped keys publish nothing', () => {
-		expect(keyToCommand('a', false)).toBeNull();
-		expect(keyToCommand('1', false)).toBeNull();
+		expect(commandForKey('a', false)).toBeNull();
+		expect(commandForKey('1', false)).toBeNull();
 	});
-	it('selective-restart command shape is well-typed (Phase-4 wiring)', () => {
+	it('focus keys move local row selection', () => {
+		expect(selectionDeltaForKey('j', {})).toBe(1);
+		expect(selectionDeltaForKey('k', {})).toBe(-1);
+		expect(selectionDeltaForKey('', { downArrow: true })).toBe(1);
+		expect(selectionDeltaForKey('', { upArrow: true })).toBe(-1);
+		expect(selectionDeltaForKey('x', {})).toBeNull();
+	});
+	it('selective-restart command shape is well-typed', () => {
 		// Compile-time check: the union accepts selective-restart with a
-		// branded pluginKey. The test is illustrative — input.tsx does
-		// not yet publish this command (needs row-selection UI).
+		// branded pluginKey. The current keymap keeps restart stack-wide.
 		const cmd: EngineCommand = {
 			tag: 'selective-restart.requested',
 			pluginKey: pluginKey('sui'),

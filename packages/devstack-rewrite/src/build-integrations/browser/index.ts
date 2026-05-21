@@ -1,5 +1,5 @@
 // Browser build integration — public surface for the
-// `@mysten-incubation/devstack/build-integrations/browser` subpath.
+// `@mysten-incubation/devstack/browser` subpath.
 //
 // Architecture (distilled/23-build-integrations.md § Browser):
 //   - A vitest browser-mode config preset that mirrors
@@ -15,11 +15,9 @@
 // whenever their unit tests need a real browser runtime (canvas, real
 // Web Crypto, wallet web-component dispatch, dApp Kit DOM rendering).
 //
-// Browser-bundle hygiene: nothing exported from this module pulls in
-// `node:*` modules at module init. The config builder lives in a
-// sibling file that is itself node-safe (vitest config) and is only
-// evaluated by the test runner, not the browser; the setup file is
-// browser-safe by construction.
+// Browser-bundle hygiene: slot exports come from the slot-only runtime
+// barrel. The config builder is evaluated by the test runner, not the
+// browser; the setup file is browser-safe by construction.
 
 export {
 	defineDevstackBrowserConfig,
@@ -31,7 +29,7 @@ export { setupDevstackBrowserGlobals, type DAppKitConfigModule } from './setup.t
 
 // Re-exports from the canonical `runtime/` substrate — the slot
 // contract is shared across vite, playwright, and browser-mode vitest.
-export { DAPP_KIT_SLOT_KEY, type DAppKitSlot } from '../runtime/index.ts';
+export { DAPP_KIT_SLOT_KEY, type DAppKitSlot } from '../runtime/browser.ts';
 
 export {
 	BrowserConfigOptionsError,

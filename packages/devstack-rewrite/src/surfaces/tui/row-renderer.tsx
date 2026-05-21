@@ -19,29 +19,39 @@
 import { Box, Text } from 'ink';
 import type React from 'react';
 
-import type { Row } from '../../substrate/projection.ts';
+import type { Endpoint, Row } from '../../substrate/projection.ts';
 import { deriveDisplayCells } from './display-derivation.ts';
 
 export interface RowRendererProps {
 	readonly row: Row;
+	readonly selected?: boolean;
 	readonly highlightSelectiveRestart?: boolean;
+	readonly endpoints?: ReadonlyArray<Endpoint>;
 }
 
 export const RowRenderer = ({
 	row,
+	selected = false,
 	highlightSelectiveRestart = false,
+	endpoints = [],
 }: RowRendererProps): React.JSX.Element => {
-	const cells = deriveDisplayCells(row);
+	const cells = deriveDisplayCells(row, endpoints);
 	const restartTint = highlightSelectiveRestart || row.selectiveRestartHighlight;
 
 	return (
 		<Box flexDirection="row" gap={1}>
+			<Text color={selected ? 'cyan' : 'gray'}>{selected ? '>' : ' '}</Text>
 			<Text color={cells.statusColor}>{cells.statusGlyph}</Text>
 			<Text color={cells.labelColor}>{cells.kindGlyph}</Text>
+			<Text color={cells.statusColor}>{cells.statusLabel}</Text>
+			<Text color={cells.labelColor}>[{cells.owner}]</Text>
 			<Text color={cells.labelColor} bold={restartTint} underline={restartTint}>
 				{cells.label}
 			</Text>
 			{cells.narration && <Text color="gray">{cells.narration}</Text>}
+			{cells.headline &&
+				cells.headline !== cells.narration &&
+				cells.headline !== cells.errorSummary && <Text color="cyan">{cells.headline}</Text>}
 			{cells.errorSummary && <Text color="red">{cells.errorSummary}</Text>}
 		</Box>
 	);
