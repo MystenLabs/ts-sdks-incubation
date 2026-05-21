@@ -117,12 +117,22 @@ Acceptance evidence:
 
 Closed evidence:
 
+- 2026-05-21 Worker Docker Inspect State: CI Devstack E2E commit `e47bc5e4`, job
+  `Seed snapshot · private-content`, failed router boot while decoding container inspect JSON for
+  `devstack-router-c3ec4a78102c` because Docker omitted the top-level `State` field. Container
+  inspect now accepts absent `State` as explicit unknown lifecycle evidence; the container lifecycle
+  state machine routes unknown state through `unknown-state` recreate/refuse policy instead of
+  adopt/resume, and router bootstrap recreates unknown-state singletons only when no protected route
+  leases are present. Targeted validation passed:
+  `pnpm --filter @mysten-incubation/devstack exec vitest run test/runtime/docker/ownership-lifecycle.test.ts`,
+  `pnpm --filter @mysten-incubation/devstack exec vitest run test/orchestrators/router/traefik-container.test.ts`,
+  changed-file `prettier -c`, changed-file `oxlint`, and `git diff --check`.
 - 2026-05-21 Worker Russell: CI Devstack E2E commit `e4250a8e`, job
   `Seed snapshot · private-content`, failed router boot while decoding container inspect JSON for
   `devstack-router-e744de605339` because Docker omitted the top-level `HostConfig` field. Container
   inspect now accepts absent top-level `HostConfig` and falls back to `NetworkSettings.Ports` for
-  published-port facts while still requiring `Config.Image`, `State`, and `NetworkSettings`.
-  Targeted validation:
+  published-port facts while still requiring `Config.Image` and `NetworkSettings`. Targeted
+  validation:
   `pnpm --filter @mysten-incubation/devstack exec vitest run test/runtime/docker/ownership-lifecycle.test.ts`,
   `pnpm --filter @mysten-incubation/devstack exec vitest run test/orchestrators/router/traefik-container.test.ts`,
   and `pnpm --filter @mysten-incubation/devstack typecheck`.
@@ -319,6 +329,15 @@ Closed evidence:
   `pnpm --filter @mysten-incubation/devstack-rewrite exec tsc --noEmit --pretty false --target ES2022 --module NodeNext --moduleResolution NodeNext --lib ES2022,DOM --types node --jsx react-jsx --strict --allowImportingTsExtensions --skipLibCheck test/plugins/package/public-ergonomics.test-d.ts`,
   `pnpm --filter @mysten-incubation/devstack-rewrite exec tsc --noEmit --pretty false --target ES2022 --module NodeNext --moduleResolution NodeNext --lib ES2022,DOM --types node --jsx react-jsx --strict --allowImportingTsExtensions --skipLibCheck ../../examples/wallet-rewrite/devstack.config.ts ../../examples/token-studio-rewrite/devstack.config.ts ../../examples/fork-greeting-rewrite/devstack.config.ts`,
   and targeted `oxlint` on touched package/coin/action/example files.
+- 2026-05-21 CI Package Publish Race: commit `e47bc5e4` failed `Lint, Build, and Test` during
+  `pnpm turbo test` while `examples/wallet` applied `mock_usdc` and `mock_weth` in the same acquire
+  level with the same publisher. The publish path now holds the publisher account critical section
+  across `Transaction.build({ client })`, sign, `executeTransaction`, and `waitForTransaction`; the
+  wait covers any execute envelope that carries a digest, including `$kind: 'FailedTransaction'`.
+  The same account-owned transaction scope is used by the shared Sui executor plus action/coin
+  transaction helpers. Follow-up review evidence:
+  `pnpm --filter @mysten-incubation/devstack exec vitest run test/plugins/account/lease-broker-integration.test.ts test/plugins/package/publish-executor.test.ts test/plugins/action/execute.test.ts test/substrate/runtime/sui-execute/sui-execute.test.ts`
+  and `pnpm --filter @mysten-incubation/devstack typecheck`.
 - 2026-05-21 Worker Extras/Manifest Seam: stack-level `extras` now resolve after acquire through a
   direct member-value context, write through the manifest envelope's `extras` slot, and emit
   sensitive `extras.ts` through the normal codegen renderer. Targeted tests:

@@ -14,23 +14,29 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { decideRunAction } from '../../../src/runtime/docker/container.ts';
+import { decideRunAction, type InspectFacts } from '../../../src/runtime/docker/container.ts';
 
-const factsRunning = (image: string) => ({
+const factsRunning = (image: string): InspectFacts => ({
 	id: 'c1',
+	lifecycle: { kind: 'running', exitCode: 0 },
 	running: true,
 	paused: false,
 	exitCode: 0,
 	image,
 });
 
-const factsPaused = (image: string) => ({
-	...factsRunning(image),
+const factsPaused = (image: string): InspectFacts => ({
+	id: 'c1',
+	lifecycle: { kind: 'paused', exitCode: 0 },
+	running: true,
 	paused: true,
+	exitCode: 0,
+	image,
 });
 
-const factsStopped = (image: string, exitCode: number) => ({
+const factsStopped = (image: string, exitCode: number): InspectFacts => ({
 	id: 'c1',
+	lifecycle: { kind: 'stopped', exitCode },
 	running: false,
 	paused: false,
 	exitCode,

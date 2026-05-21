@@ -52,9 +52,7 @@ export class ContainerCreateFailed extends Data.TaggedError('ContainerCreateFail
 }> {}
 
 /** `docker run -d -p ...` lost the probe-to-publish race. */
-export class ContainerPortPublishConflict extends Data.TaggedError(
-	'ContainerPortPublishConflict',
-)<{
+export class ContainerPortPublishConflict extends Data.TaggedError('ContainerPortPublishConflict')<{
 	readonly name: string;
 	readonly stderr: string;
 	readonly exitCode: number | undefined;
@@ -141,12 +139,17 @@ export class VolumeOperationFailed extends Data.TaggedError('VolumeOperationFail
 
 /** Recreate was refused — the caller's `RecreatePolicy` was `never`
  *  but the lifecycle state machine concluded recreate was required
- *  (image/config mismatch, unclean exit). Caller must explicitly opt
+ *  (image/config mismatch, unclean exit, unknown state). Caller must explicitly opt
  *  in to a recreate to proceed (architecture G1 — Move-build-
  *  container's no-auto-recreate case). */
 export class RecreateRefused extends Data.TaggedError('RecreateRefused')<{
 	readonly name: string;
-	readonly reason: 'image-mismatch' | 'config-mismatch' | 'unclean-shutdown' | 'resume-failed';
+	readonly reason:
+		| 'image-mismatch'
+		| 'config-mismatch'
+		| 'unclean-shutdown'
+		| 'resume-failed'
+		| 'unknown-state';
 }> {}
 
 /** Generic exec / one-shot failure when the caller asked us to

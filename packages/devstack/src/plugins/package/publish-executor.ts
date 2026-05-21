@@ -12,8 +12,9 @@
 //      path-(b)/path-(c) dispatcher in `build.ts`).
 //   2. Constructing a `Transaction.publish({modules, dependencies})`
 //      for `publishTx`, serialising via `tx.build({ client })`,
-//      handing the bytes to `account.signAndExecute(...)`, and
-//      projecting the response to a `PublishReceipt`.
+//      signing/executing inside the publisher account's transaction
+//      critical section, and projecting the response to a
+//      `PublishReceipt`.
 //   3. Wrapping `sdk.core.waitForTransaction({ digest })` for
 //      `waitForReady` — the SDK already retries / waits for index
 //      visibility internally.
@@ -123,57 +124,6 @@ export const makePublishExecutor = (inputs: PublishExecutorInputs): PublishExecu
 			});
 			tx.transferObjects([upgradeCapArg], inputs.account.address);
 
-			// Serialise. `Transaction.build({ client })` resolves gas
-			// budget + object versions through the SDK. Opaque-cast the
-			// client; the SDK validates the shape at runtime.
-			const txBytes = yield* Effect.tryPromise({
-				try: () =>
-					tx.build({
-						client: inputs.sdk.client as Parameters<typeof tx.build>[0] extends
-							| { client?: infer C }
-							| undefined
-							? C
-							: never,
-					}),
-				catch: (cause): PublishError =>
-					publishError('publish-tx', {
-						sourcePath,
-						packageName,
-						message:
-							`Transaction.build failed for package '${packageName}': ` +
-							(cause instanceof Error ? cause.message : String(cause)),
-						cause,
-					}),
-			});
-
-			// Sign with the publisher account. We deliberately use
-			// `signTransaction` (NOT `signAndExecute`) because the
-			// Account plugin's `executeTransaction` shim wraps the call
-			// without requesting `effects:true`, and we need the
-			// `effects.changedObjects` field to surface the published
-			// package id + upgrade cap. The account plugin remains the
-			// signer (per-address serialisation still applies via the
-			// `signTransaction` closure's `withAddressLock`); we just
-			// drive the SDK's execute path directly.
-			const signed = yield* inputs.account.signTransaction(txBytes).pipe(
-				Effect.mapError(
-					(cause): PublishError =>
-						publishError('publish-tx', {
-							sourcePath,
-							packageName,
-							message:
-								`account.signTransaction failed for publisher '${inputs.account.name}' ` +
-								`(address=${inputs.account.address}): ${cause.message}`,
-							cause,
-						}),
-				),
-			);
-
-			// Direct SDK executeTransaction with `effects: true`. The
-			// opaque `client` carries an `executeTransaction` accepting
-			// the wider option set. Cast at the boundary — this stays
-			// off the substrate type surface (mirrors the `tx.build`
-			// cast above).
 			const sdkClient = inputs.sdk.client as {
 				readonly executeTransaction: (args: {
 					readonly transaction: Uint8Array;
@@ -190,29 +140,94 @@ export const makePublishExecutor = (inputs: PublishExecutorInputs): PublishExecu
 				}) => Promise<unknown>;
 			};
 
-			const rawResult = yield* Effect.tryPromise({
-				try: () =>
-					sdkClient.executeTransaction({
-						transaction: txBytes,
-						signatures: [signed.signature],
-						// Include flags drive readMask paths in the SDK's
-						// `executeTransaction` (see grpc/core.mjs). Effects
-						// gives us `changedObjects` (PackageWrite + Created
-						// upgrade cap); objectTypes maps changed ids →
-						// fully-qualified type strings so the UpgradeCap is
-						// identifiable unambiguously.
-						include: { effects: true, objectTypes: true },
-					}),
-				catch: (cause): PublishError =>
-					publishError('publish-tx', {
-						sourcePath,
-						packageName,
-						message:
-							`executeTransaction failed for publisher '${inputs.account.name}': ` +
-							(cause instanceof Error ? cause.message : String(cause)),
-						cause,
-					}),
-			});
+			const rawResult = yield* inputs.account.withTransactionSigner((lockedSigner) =>
+				Effect.gen(function* () {
+					// Serialise while the account lease is held. `Transaction.build({ client })`
+					// resolves gas budget + object versions through the SDK, so this must
+					// serialize with signing and execution for same-address publishers.
+					const txBytes = yield* Effect.tryPromise({
+						try: () =>
+							tx.build({
+								client: inputs.sdk.client as Parameters<typeof tx.build>[0] extends
+									| { client?: infer C }
+									| undefined
+									? C
+									: never,
+							}),
+						catch: (cause): PublishError =>
+							publishError('publish-tx', {
+								sourcePath,
+								packageName,
+								message:
+									`Transaction.build failed for package '${packageName}': ` +
+									(cause instanceof Error ? cause.message : String(cause)),
+								cause,
+							}),
+					});
+
+					const signed = yield* lockedSigner.signTransaction(txBytes).pipe(
+						Effect.mapError(
+							(cause): PublishError =>
+								publishError('publish-tx', {
+									sourcePath,
+									packageName,
+									message:
+										`account.signTransaction failed for publisher '${inputs.account.name}' ` +
+										`(address=${inputs.account.address}): ${
+											cause instanceof Error ? cause.message : String(cause)
+										}`,
+									cause,
+								}),
+						),
+					);
+
+					const raw = yield* Effect.tryPromise({
+						try: () =>
+							sdkClient.executeTransaction({
+								transaction: txBytes,
+								signatures: [signed.signature],
+								// Include flags drive readMask paths in the SDK's
+								// `executeTransaction` (see grpc/core.mjs). Effects
+								// gives us `changedObjects` (PackageWrite + Created
+								// upgrade cap); objectTypes maps changed ids →
+								// fully-qualified type strings so the UpgradeCap is
+								// identifiable unambiguously.
+								include: { effects: true, objectTypes: true },
+							}),
+						catch: (cause): PublishError =>
+							publishError('publish-tx', {
+								sourcePath,
+								packageName,
+								message:
+									`executeTransaction failed for publisher '${inputs.account.name}': ` +
+									(cause instanceof Error ? cause.message : String(cause)),
+								cause,
+							}),
+					});
+
+					const envelope = raw as {
+						readonly Transaction?: { readonly digest?: string };
+						readonly FailedTransaction?: { readonly digest?: string };
+					};
+					const digest = envelope.Transaction?.digest ?? envelope.FailedTransaction?.digest;
+					if (digest !== undefined) {
+						yield* Effect.tryPromise({
+							try: () =>
+								sdkClient.waitForTransaction({
+									digest,
+								}),
+							catch: (cause): PublishError =>
+								publishError('publish-tx', {
+									sourcePath,
+									packageName,
+									message: `waitForTransaction(${digest}) failed`,
+									cause,
+								}),
+						});
+					}
+					return raw;
+				}),
+			);
 
 			// Project the SDK's `TransactionResult` envelope to the
 			// receipt shape. On `$kind: FailedTransaction` we raise a
@@ -298,27 +313,6 @@ export const makePublishExecutor = (inputs: PublishExecutorInputs): PublishExecu
 				...(upgradeCap?.objectId !== undefined ? { upgradeCapId: upgradeCap.objectId } : {}),
 				objectChanges,
 			};
-
-			// Post-submit finality wait. The Account plugin's
-			// `signAndExecute` handles this for the signAndExecute path;
-			// since we drove execute directly we need to do the same
-			// here. Failures here surface as publish-tx (network) so the
-			// next produce cycle re-runs cleanly.
-			if (published?.objectId) {
-				yield* Effect.tryPromise({
-					try: () =>
-						sdkClient.waitForTransaction({
-							digest: txOk.digest!,
-						}),
-					catch: (cause): PublishError =>
-						publishError('publish-tx', {
-							sourcePath,
-							packageName,
-							message: `waitForTransaction(${txOk.digest}) failed`,
-							cause,
-						}),
-				});
-			}
 
 			return receipt;
 		}).pipe(

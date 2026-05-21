@@ -36,8 +36,7 @@ import { coinError, type CoinError } from './errors.ts';
  *  We don't import `AccountValue` directly to avoid a layering cycle —
  *  the Account plugin imports nothing from coin, so coin re-publishes
  *  the structural shape. */
-export interface MintSigner {
-	readonly address: string;
+export interface MintTransactionSigner {
 	readonly signAndExecute: (tx: Uint8Array) => Effect.Effect<
 		{
 			readonly digest: string;
@@ -45,6 +44,13 @@ export interface MintSigner {
 		},
 		{ readonly _tag: 'AccountSignError'; readonly message: string }
 	>;
+}
+
+export interface MintSigner extends MintTransactionSigner {
+	readonly address: string;
+	readonly withTransactionSigner: <A, E, R>(
+		body: (signer: MintTransactionSigner) => Effect.Effect<A, E, R>,
+	) => Effect.Effect<A, E, R>;
 }
 
 /** Cached payload — the stable id verify re-confirms on every cycle.
@@ -101,7 +107,7 @@ export interface MintResult {
 /** Sui SDK shim for the verify probe + transaction build.
  *
  *  Narrowed-but-not-too-narrow: the produce body needs to serialize a
- *  `Transaction` to BCS bytes, which @mysten/sui's
+ *  `Transaction` to BCS bytes, which the Sui SDK's
  *  `Transaction.build({ client })` resolves via the client. We accept
  *  the full client opaquely (typed `unknown` here — the runtime check
  *  is "does `Transaction.build` accept it"). The barrel wires the
@@ -247,60 +253,63 @@ export const performMint = (
 						'coin.mint.amount': inputs.amount.toString(),
 					});
 
-					// 1. Build the Move tx — distilled-doc 13-coin.md
-					//    Invariant 9 pins the call shape:
-					//    `0x2::coin::mint_and_transfer<T>(cap, amount, recipient)`.
-					const tx = new Transaction();
-					if (inputs.gasBudget !== undefined) {
-						tx.setGasBudget(inputs.gasBudget);
-					}
-					tx.setSender(signer.address);
-					tx.moveCall({
-						target: '0x2::coin::mint_and_transfer',
-						typeArguments: [inputs.fullCoinType],
-						arguments: [
-							tx.object(inputs.treasuryCapId),
-							tx.pure.u64(inputs.amount),
-							tx.pure.address(inputs.recipient),
-						],
-					});
+					const result = yield* signer.withTransactionSigner((lockedSigner) =>
+						Effect.gen(function* () {
+							// 1. Build the Move tx — distilled-doc 13-coin.md
+							//    Invariant 9 pins the call shape:
+							//    `0x2::coin::mint_and_transfer<T>(cap, amount, recipient)`.
+							const tx = new Transaction();
+							if (inputs.gasBudget !== undefined) {
+								tx.setGasBudget(inputs.gasBudget);
+							}
+							tx.setSender(signer.address);
+							tx.moveCall({
+								target: '0x2::coin::mint_and_transfer',
+								typeArguments: [inputs.fullCoinType],
+								arguments: [
+									tx.object(inputs.treasuryCapId),
+									tx.pure.u64(inputs.amount),
+									tx.pure.address(inputs.recipient),
+								],
+							});
 
-					// 2. Serialize the tx to BCS bytes. `Transaction.build`
-					//    resolves gas + object-version placeholders via the
-					//    client. Failures here → produce-failed.
-					const txBytes = yield* Effect.tryPromise({
-						try: () =>
-							tx.build({
-								// The shim exposes the client opaquely; @mysten/sui
-								// validates the shape at runtime.
-								client: sdk.client as Parameters<typeof tx.build>[0] extends
-									| { client?: infer C }
-									| undefined
-									? C
-									: never,
-							}),
-						catch: (cause): OnChainArtifactError => ({
-							_tag: 'OnChainArtifactError',
-							reason: 'produce-failed',
-							detail:
-								`coin.mint(${inputs.fullCoinType}): Transaction.build failed — ` +
-								`${cause instanceof Error ? cause.message : String(cause)}`,
+							// 2. Serialize the tx to BCS bytes while the account lease
+							//    is held. `Transaction.build` resolves gas + object-version
+							//    placeholders via the client.
+							const txBytes = yield* Effect.tryPromise({
+								try: () =>
+									tx.build({
+										// The shim exposes the client opaquely; @mysten/sui
+										// validates the shape at runtime.
+										client: sdk.client as Parameters<typeof tx.build>[0] extends
+											| { client?: infer C }
+											| undefined
+											? C
+											: never,
+									}),
+								catch: (cause): OnChainArtifactError => ({
+									_tag: 'OnChainArtifactError',
+									reason: 'produce-failed',
+									detail:
+										`coin.mint(${inputs.fullCoinType}): Transaction.build failed — ` +
+										`${cause instanceof Error ? cause.message : String(cause)}`,
+								}),
+							});
+
+							// 3. Sign + execute via the Account-supplied signer. Map
+							//    `AccountSignError` → `OnChainArtifactError`. The
+							//    Account plugin's signer handles waitForTransaction internally.
+							return yield* lockedSigner.signAndExecute(txBytes).pipe(
+								Effect.mapError(
+									(cause): OnChainArtifactError => ({
+										_tag: 'OnChainArtifactError',
+										reason: 'produce-failed',
+										detail:
+											`coin.mint(${inputs.fullCoinType}): signAndExecute failed — ` + cause.message,
+									}),
+								),
+							);
 						}),
-					});
-
-					// 3. Sign + execute via the Account-supplied signer. Map
-					//    `AccountSignError` → `OnChainArtifactError`. The
-					//    Account plugin's signer handles per-address lease,
-					//    waitForTransaction, and bounded retry internally.
-					const result = yield* signer.signAndExecute(txBytes).pipe(
-						Effect.mapError(
-							(cause): OnChainArtifactError => ({
-								_tag: 'OnChainArtifactError',
-								reason: 'produce-failed',
-								detail:
-									`coin.mint(${inputs.fullCoinType}): signAndExecute failed — ` + cause.message,
-							}),
-						),
 					);
 
 					// 4. Find the minted `Coin<T>` in objectChanges via the

@@ -63,13 +63,21 @@ import {
 // State machine — pure decision (testable independently)
 // -----------------------------------------------------------------------------
 
-/** What `docker inspect <name>` told us. The `state` is the docker
- *  state string; we narrow into the lifecycle's input states below. */
+export type InspectLifecycleState =
+	| { readonly kind: 'running'; readonly exitCode: number }
+	| { readonly kind: 'paused'; readonly exitCode: number }
+	| { readonly kind: 'stopped'; readonly exitCode: number }
+	| { readonly kind: 'unknown' };
+
+/** What `docker inspect <name>` told us. Lifecycle facts are explicit:
+ *  Docker may omit `State`, and absence means we cannot prove running,
+ *  paused, or stopped state. */
 export interface InspectFacts {
 	readonly id: string;
+	readonly lifecycle: InspectLifecycleState;
 	readonly running: boolean;
 	readonly paused: boolean;
-	readonly exitCode: number;
+	readonly exitCode: number | null;
 	readonly image: string;
 	readonly mounts?: ReadonlyArray<InspectMount>;
 	readonly portBindings?: ReadonlyArray<string>;
@@ -100,7 +108,8 @@ export type RecreateReason =
 	| 'image-mismatch'
 	| 'config-mismatch'
 	| 'unclean-shutdown'
-	| 'resume-failed';
+	| 'resume-failed'
+	| 'unknown-state';
 
 /** Pure decision: given the inspect facts (or null = missing), the
  *  desired image + host port bindings, and the policy, what action
@@ -121,7 +130,10 @@ export const decideRunAction = (
 		portsMatch ||
 		(portBindingReconciliation === 'adopt-existing' &&
 			sameBindingContainerPorts(facts.portBindings ?? [], desiredPortBindings));
-	if (facts.paused) {
+	if (facts.lifecycle.kind === 'unknown') {
+		return routeRecreate({ kind: 'recreate', id: facts.id, reason: 'unknown-state' }, policy);
+	}
+	if (facts.lifecycle.kind === 'paused') {
 		return imageMatches && portsCompatible
 			? { kind: 'unpause-adopt', id: facts.id }
 			: routeRecreate(
@@ -133,7 +145,7 @@ export const decideRunAction = (
 					policy,
 				);
 	}
-	if (facts.running) {
+	if (facts.lifecycle.kind === 'running') {
 		return imageMatches && portsCompatible
 			? { kind: 'adopt', id: facts.id }
 			: routeRecreate(
@@ -145,7 +157,6 @@ export const decideRunAction = (
 					policy,
 				);
 	}
-	// Stopped
 	if (!imageMatches) {
 		// Image mismatch ALWAYS wins (architecture §11).
 		return routeRecreate({ kind: 'recreate', id: facts.id, reason: 'image-mismatch' }, policy);
@@ -153,7 +164,7 @@ export const decideRunAction = (
 	if (!portsCompatible) {
 		return routeRecreate({ kind: 'recreate', id: facts.id, reason: 'config-mismatch' }, policy);
 	}
-	if (facts.exitCode === 137) {
+	if (facts.lifecycle.exitCode === 137) {
 		// Unclean shutdown — see architecture §G1 / §13.
 		// `on-failure`: recreate. `never`: refuse. `on-config-change`:
 		// resume — caller wants stopped container kept until config
@@ -267,6 +278,21 @@ const readNetworks = (raw: unknown): ReadonlyArray<string> => {
 	return Object.keys(raw).sort();
 };
 
+const readLifecycleState = (
+	state:
+		| {
+				readonly Running: boolean;
+				readonly Paused: boolean;
+				readonly ExitCode: number;
+		  }
+		| undefined,
+): InspectLifecycleState => {
+	if (state === undefined) return { kind: 'unknown' };
+	if (state.Paused) return { kind: 'paused', exitCode: state.ExitCode };
+	if (state.Running) return { kind: 'running', exitCode: state.ExitCode };
+	return { kind: 'stopped', exitCode: state.ExitCode };
+};
+
 // -----------------------------------------------------------------------------
 // Inspect — `docker inspect <name>`
 // -----------------------------------------------------------------------------
@@ -280,11 +306,13 @@ const InspectSchema = Schema.Struct({
 			PortBindings: Schema.Unknown,
 		}),
 	),
-	State: Schema.Struct({
-		Running: Schema.Boolean,
-		Paused: Schema.Boolean,
-		ExitCode: Schema.Number,
-	}),
+	State: Schema.optional(
+		Schema.Struct({
+			Running: Schema.Boolean,
+			Paused: Schema.Boolean,
+			ExitCode: Schema.Number,
+		}),
+	),
 	Config: Schema.Struct({
 		Image: Schema.String,
 		Cmd: Schema.optional(Schema.Unknown),
@@ -334,6 +362,7 @@ export const inspectContainer = (
 				);
 			}
 			const decoded = Schema.decodeUnknownSync(InspectSchema)(arr[0]);
+			const lifecycle = readLifecycleState(decoded.State);
 			const effectivePorts = readPublishedPorts(decoded.NetworkSettings.Ports);
 			const ports =
 				decoded.HostConfig === undefined
@@ -345,9 +374,10 @@ export const inspectContainer = (
 			const networks = readNetworks(decoded.NetworkSettings.Networks);
 			return {
 				id: decoded.Id,
-				running: decoded.State.Running,
-				paused: decoded.State.Paused,
-				exitCode: decoded.State.ExitCode,
+				lifecycle,
+				running: lifecycle.kind === 'running' || lifecycle.kind === 'paused',
+				paused: lifecycle.kind === 'paused',
+				exitCode: lifecycle.kind === 'unknown' ? null : lifecycle.exitCode,
 				// The container's recorded image. Docker may omit the
 				// top-level digest field, but lifecycle decisions need the
 				// create-time ref from Config.Image.
@@ -489,6 +519,17 @@ const assertOwnedFacts = (
 		}
 	});
 
+const failUnknownCollisionLifecycle = (
+	name: string,
+	stage: 'before-start' | 'after-start',
+): Effect.Effect<never, DockerRuntimeError> =>
+	Effect.fail(
+		new ContainerNameCollisionUnrecoverable({
+			name,
+			detail: `name collision recovery refused unknown lifecycle state ${stage}`,
+		}),
+	);
+
 export const assertContainerHandleOwned = (
 	handle: ContainerHandle,
 ): Effect.Effect<void, DockerRuntimeError, DockerHost | DockerSpawner> =>
@@ -549,6 +590,9 @@ const startAndAdopt = (
 			);
 		}
 		yield* assertOwnedFacts(name, beforeStart, labels);
+		if (beforeStart.lifecycle.kind === 'unknown') {
+			return yield* failUnknownCollisionLifecycle(name, 'before-start');
+		}
 		const res = yield* dockerRunOk('start', [name]).pipe(
 			Effect.mapError(wrapGeneric('docker.start')),
 		);
@@ -564,6 +608,9 @@ const startAndAdopt = (
 				);
 			}
 			yield* assertOwnedFacts(name, facts, labels);
+			if (facts.lifecycle.kind === 'unknown') {
+				return yield* failUnknownCollisionLifecycle(name, 'after-start');
+			}
 			return facts.id;
 		}
 		if (isNoSuchContainerStderr(cls.stderr)) {
@@ -650,7 +697,7 @@ const ensureEffectivePublishedPorts = (
 	Effect.gen(function* () {
 		if ((spec.ports ?? []).length === 0) return id;
 		const facts = yield* inspectContainer(spec.name);
-		if (facts === null || facts.id !== id || !facts.running) return id;
+		if (facts === null || facts.id !== id || facts.lifecycle.kind !== 'running') return id;
 		yield* assertOwnedFacts(spec.name, facts, spec.labels);
 		if (effectivePortsCompatible(facts, spec)) return id;
 		const repairedId = yield* recreateAfterResumeFailure(id, spec, deps);
@@ -658,7 +705,7 @@ const ensureEffectivePublishedPorts = (
 		if (
 			repairedFacts !== null &&
 			repairedFacts.id === repairedId &&
-			repairedFacts.running &&
+			repairedFacts.lifecycle.kind === 'running' &&
 			effectivePortsCompatible(repairedFacts, spec)
 		) {
 			return repairedId;

@@ -20,6 +20,7 @@ import {
 	type DockerHost,
 } from '../../../src/runtime/docker/client.ts';
 import {
+	decideRunAction,
 	ensureContainer,
 	inspectContainer,
 	type PerNameLockState,
@@ -78,6 +79,7 @@ const inspectJson = (
 		readonly includeTopLevelImage?: boolean;
 		readonly includeConfigImage?: boolean;
 		readonly includeHostConfig?: boolean;
+		readonly includeState?: boolean;
 	} = {},
 ): string =>
 	JSON.stringify([
@@ -87,11 +89,15 @@ const inspectJson = (
 			...(overrides.includeHostConfig === false
 				? {}
 				: { HostConfig: { PortBindings: overrides.portBindings ?? {} } }),
-			State: {
-				Running: overrides.running ?? true,
-				Paused: overrides.paused ?? false,
-				ExitCode: overrides.exitCode ?? 0,
-			},
+			...(overrides.includeState === false
+				? {}
+				: {
+						State: {
+							Running: overrides.running ?? true,
+							Paused: overrides.paused ?? false,
+							ExitCode: overrides.exitCode ?? 0,
+						},
+					}),
 			Config: {
 				...(overrides.includeConfigImage === false ? {} : { Image: 'img:desired' }),
 				Labels: overrides.labels ?? ownedDockerLabels,
@@ -360,6 +366,43 @@ describe('docker inspect ownership boundary', () => {
 		}),
 	);
 
+	it.effect('records missing Docker inspect State as unknown lifecycle evidence', () =>
+		Effect.gen(function* () {
+			const root = mkdtempSync(join(tmpdir(), 'docker-inspect-no-state-test-'));
+			try {
+				const publishedPorts = portBindings(51001, 50001);
+				const { bin } = writeDocker(root, [
+					'if [ "$1" = "inspect" ]; then',
+					`  printf '%s\\n' ${JSON.stringify(
+						inspectJson({
+							includeTopLevelImage: false,
+							includeHostConfig: false,
+							includeState: false,
+							effectivePorts: publishedPorts,
+						}),
+					)}`,
+					'  exit 0',
+					'fi',
+					'exit 0',
+					'',
+				]);
+
+				const facts = yield* inspectContainer('devstack-owned').pipe(
+					Effect.provide(fakeDockerLayer(bin)),
+				);
+
+				expect(facts?.lifecycle).toEqual({ kind: 'unknown' });
+				expect(facts?.running).toBe(false);
+				expect(facts?.paused).toBe(false);
+				expect(facts?.exitCode).toBe(null);
+				expect(facts?.image).toBe('img:desired');
+				expect(facts?.portBindings).toEqual(['9000/tcp=0.0.0.0:51001', '9123/tcp=0.0.0.0:50001']);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}),
+	);
+
 	it.effect(
 		'fails inspect output that omits Config.Image because lifecycle decisions need it',
 		() =>
@@ -388,6 +431,35 @@ describe('docker inspect ownership boundary', () => {
 				}
 			}),
 	);
+});
+
+describe('container lifecycle decisions', () => {
+	it('recreates or refuses when inspect cannot prove lifecycle state', () => {
+		const facts = {
+			id: 'unknown-id',
+			lifecycle: { kind: 'unknown' },
+			running: false,
+			paused: false,
+			exitCode: null,
+			image: 'img:desired',
+			portBindings: [],
+		} as const;
+
+		expect(decideRunAction(facts, 'img:desired', 'on-failure')).toEqual({
+			kind: 'recreate',
+			id: 'unknown-id',
+			reason: 'unknown-state',
+		});
+		expect(decideRunAction(facts, 'img:desired', 'on-config-change')).toEqual({
+			kind: 'recreate',
+			id: 'unknown-id',
+			reason: 'unknown-state',
+		});
+		expect(decideRunAction(facts, 'img:desired', 'never')).toEqual({
+			kind: 'refuse',
+			reason: 'unknown-state',
+		});
+	});
 });
 
 describe('same-name Docker resource ownership', () => {
@@ -514,6 +586,116 @@ describe('same-name Docker resource ownership', () => {
 });
 
 describe('container lifecycle mutation policy', () => {
+	it.effect('recreates a matching container when inspect cannot prove its lifecycle state', () =>
+		Effect.gen(function* () {
+			const root = mkdtempSync(join(tmpdir(), 'docker-unknown-state-recreate-test-'));
+			try {
+				const stackRoot = join(root, 'stack');
+				mkdirSync(stackRoot, { recursive: true });
+				const created = join(root, 'created');
+				const { bin, log } = writeDocker(root, [
+					'if [ "$1" = "inspect" ]; then',
+					`  if [ -f ${JSON.stringify(created)} ]; then`,
+					`    printf '%s\\n' ${JSON.stringify(inspectJson({ id: 'created-id' }))}`,
+					'    exit 0',
+					'  fi',
+					`  printf '%s\\n' ${JSON.stringify(
+						inspectJson({ id: 'unknown-state-id', includeState: false }),
+					)}`,
+					'  exit 0',
+					'fi',
+					'if [ "$1" = "rm" ]; then exit 0; fi',
+					'if [ "$1" = "run" ]; then',
+					`  touch ${JSON.stringify(created)}`,
+					'  printf "created-id\\n"',
+					'  exit 0',
+					'fi',
+					'if [ "$1" = "start" ]; then',
+					'  echo "unexpected start" >&2',
+					'  exit 1',
+					'fi',
+					'if [ "$1" = "stop" ]; then exit 0; fi',
+					'exit 0',
+					'',
+				]);
+
+				const handle = yield* Effect.scoped(
+					Effect.gen(function* () {
+						const perNameLock = yield* Ref.make<PerNameLockState>(new Map());
+						return yield* ensureContainer(spec({ recreate: 'on-failure' }), {
+							cycle: 1,
+							perNameLock,
+						});
+					}),
+				).pipe(Effect.provide(Layer.mergeAll(fakeDockerLayer(bin), stackPathsLayer(stackRoot))));
+
+				expect(handle.id).toBe('created-id');
+				const lines = readFileSync(log, 'utf8').trim().split('\n');
+				expect(lines).toContain('rm -f devstack-owned');
+				expect(lines.some((line) => line.startsWith('run -d --name devstack-owned'))).toBe(true);
+				expect(lines.some((line) => line.startsWith('start '))).toBe(false);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}),
+	);
+
+	it.effect('refuses collision recovery when the remaining container lifecycle is unknown', () =>
+		Effect.gen(function* () {
+			const root = mkdtempSync(join(tmpdir(), 'docker-unknown-state-collision-test-'));
+			try {
+				const stackRoot = join(root, 'stack');
+				mkdirSync(stackRoot, { recursive: true });
+				const { bin, log } = writeDocker(root, [
+					'if [ "$1" = "inspect" ]; then',
+					`  printf '%s\\n' ${JSON.stringify(
+						inspectJson({ id: 'unknown-state-id', includeState: false }),
+					)}`,
+					'  exit 0',
+					'fi',
+					'if [ "$1" = "rm" ]; then',
+					'  echo "device or resource busy" >&2',
+					'  exit 1',
+					'fi',
+					'if [ "$1" = "run" ]; then',
+					'  echo "Conflict. The container name is already in use by container unknown-state-id" >&2',
+					'  exit 125',
+					'fi',
+					'if [ "$1" = "start" ]; then',
+					'  echo "unexpected start" >&2',
+					'  exit 0',
+					'fi',
+					'exit 0',
+					'',
+				]);
+
+				const exit = yield* Effect.scoped(
+					Effect.gen(function* () {
+						const perNameLock = yield* Ref.make<PerNameLockState>(new Map());
+						return yield* ensureContainer(spec({ recreate: 'on-failure' }), {
+							cycle: 1,
+							perNameLock,
+						});
+					}),
+				).pipe(
+					Effect.provide(Layer.mergeAll(fakeDockerLayer(bin), stackPathsLayer(stackRoot))),
+					Effect.exit,
+				);
+
+				const error = expectErrorTag(exit, 'ContainerNameCollisionUnrecoverable') as
+					| { readonly detail: string }
+					| undefined;
+				expect(error?.detail).toContain('unknown lifecycle state before-start');
+				const lines = readFileSync(log, 'utf8').trim().split('\n');
+				expect(lines).toContain('rm -f devstack-owned');
+				expect(lines.some((line) => line.startsWith('run -d --name devstack-owned'))).toBe(true);
+				expect(lines.some((line) => line.startsWith('start '))).toBe(false);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}),
+	);
+
 	it.effect('treats secondary network already-attached stderr as successful connect', () =>
 		Effect.gen(function* () {
 			const root = mkdtempSync(join(tmpdir(), 'docker-secondary-network-test-'));

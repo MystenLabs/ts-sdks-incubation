@@ -9,11 +9,9 @@
 // The same wiring lives in `plugins/package/publish-executor.ts` — both
 // sites cast the opaque `sdk.client` to call `executeTransaction({
 // include: { effects: true, objectTypes: true }})` so they recover
-// `changedObjects` + their fully-qualified types. The "real" surface
-// `account.signAndExecute(tx)` from the Account plugin does NOT pass
-// `include: { effects: true }`, so the resulting `TxResult.objectChanges`
-// is always empty — which is why action bodies CANNOT just compose the
-// account's surface; they need direct SDK access.
+// `changedObjects` + their fully-qualified types. Both run through the
+// Account plugin's transaction-signer scope so `Transaction.build`,
+// signing, execute, and finality wait serialize per address.
 //
 // What this helper extracts: the SDK-envelope projection + the
 // finality-wait. Per call sites:
@@ -21,7 +19,7 @@
 //   - The user supplies a `build(tx)` callback that populates the
 //     `Transaction` synchronously (moveCalls, transferObjects, etc.).
 //   - The user supplies the signing `account` (an `AccountValue` from
-//     `ctx.use(alice)`); we sign-only with `signTransaction`
+//     `ctx.use(alice)`); we sign with the locked transaction signer
 //     and drive the SDK's `executeTransaction` directly.
 //   - The helper returns an `ActionReceipt` projection: `{ digest,
 //     objectChanges }`. The `objectChanges` array is shaped uniformly so
@@ -112,11 +110,11 @@ interface RawExecuteEnvelope {
  *
  *  Allocates a fresh `Transaction`, sets the sender to the account's
  *  address, lets the caller populate it via the `build` callback,
- *  serialises via `Transaction.build({ client })`, signs via
- *  `account.signTransaction`, executes via the SDK's `executeTransaction`
- *  (with `include: { effects: true, objectTypes: true }` so the SDK
- *  surfaces `changedObjects` + types), waits for finality, and projects
- *  the envelope into an `ActionReceipt`.
+ *  serialises via `Transaction.build({ client })`, signs via the
+ *  account's transaction-signer scope, executes via the SDK's
+ *  `executeTransaction` (with `include: { effects: true, objectTypes:
+ *  true }` so the SDK surfaces `changedObjects` + types), waits for
+ *  finality, and projects the envelope into an `ActionReceipt`.
  *
  *  All failures surface as `ActionError`:
  *   - `build` callback throws  → `phase: 'sign'` (matches the existing
@@ -139,134 +137,153 @@ export const signAndExecute = (params: {
 }): Effect.Effect<ActionReceipt, ActionError, Scope.Scope> =>
 	Effect.gen(function* () {
 		const { actionName, sui, account, build } = params;
+		return yield* account.withTransactionSigner((lockedSigner) =>
+			Effect.gen(function* () {
+				// --- 1. Allocate + populate the Transaction ------------------
+				const tx = new Transaction();
+				tx.setSender(account.address);
+				yield* Effect.try({
+					try: () => build(tx),
+					catch: (cause): ActionError =>
+						actionError('sign', {
+							actionName,
+							message: `Action '${actionName}': build callback threw before serialisation.`,
+							cause,
+						}),
+				});
 
-		// --- 1. Allocate + populate the Transaction ------------------
-		const tx = new Transaction();
-		tx.setSender(account.address);
-		yield* Effect.try({
-			try: () => build(tx),
-			catch: (cause): ActionError =>
-				actionError('sign', {
-					actionName,
-					message: `Action '${actionName}': build callback threw before serialisation.`,
-					cause,
-				}),
-		});
+				// --- 2. Serialise via the SDK client -------------------------
+				const txBytes = yield* Effect.tryPromise({
+					try: () =>
+						tx.build({
+							client: sui.sdk.client as Parameters<typeof tx.build>[0] extends
+								| { client?: infer C }
+								| undefined
+								? C
+								: never,
+						}),
+					catch: (cause): ActionError =>
+						actionError('sign', {
+							actionName,
+							message: `Action '${actionName}': Transaction.build failed — ${
+								cause instanceof Error ? cause.message : String(cause)
+							}.`,
+							cause,
+						}),
+				});
 
-		// --- 2. Serialise via the SDK client -------------------------
-		const txBytes = yield* Effect.tryPromise({
-			try: () =>
-				tx.build({
-					client: sui.sdk.client as Parameters<typeof tx.build>[0] extends
-						| { client?: infer C }
-						| undefined
-						? C
-						: never,
-				}),
-			catch: (cause): ActionError =>
-				actionError('sign', {
-					actionName,
-					message: `Action '${actionName}': Transaction.build failed — ${
-						cause instanceof Error ? cause.message : String(cause)
-					}.`,
-					cause,
-				}),
-		});
+				// --- 3. Sign with the account -------------------------------
+				const signed = yield* lockedSigner.signTransaction(txBytes).pipe(
+					Effect.mapError(
+						(cause): ActionError =>
+							actionError('sign', {
+								actionName,
+								message:
+									`Action '${actionName}': account.signTransaction failed for ` +
+									`'${account.name}' (address=${account.address}): ${
+										cause instanceof Error ? cause.message : String(cause)
+									}`,
+								cause,
+							}),
+					),
+				);
 
-		// --- 3. Sign with the account -------------------------------
-		const signed = yield* account.signTransaction(txBytes).pipe(
-			Effect.mapError(
-				(cause): ActionError =>
-					actionError('sign', {
-						actionName,
-						message:
-							`Action '${actionName}': account.signTransaction failed for ` +
-							`'${account.name}' (address=${account.address}): ${cause.message}`,
-						cause,
-					}),
-			),
-		);
+				// --- 4. Execute via the SDK (with effects+objectTypes) ------
+				const sdkClient = sui.sdk.client as SdkExecuteClient;
+				const raw = yield* Effect.tryPromise({
+					try: () =>
+						sdkClient.executeTransaction({
+							transaction: txBytes,
+							signatures: [signed.signature],
+							include: { effects: true, objectTypes: true },
+						}),
+					catch: (cause): ActionError =>
+						actionError('sign', {
+							actionName,
+							message:
+								`Action '${actionName}': executeTransaction failed — ` +
+								(cause instanceof Error ? cause.message : String(cause)),
+							cause,
+						}),
+				});
 
-		// --- 4. Execute via the SDK (with effects+objectTypes) ------
-		const sdkClient = sui.sdk.client as SdkExecuteClient;
-		const raw = yield* Effect.tryPromise({
-			try: () =>
-				sdkClient.executeTransaction({
-					transaction: txBytes,
-					signatures: [signed.signature],
-					include: { effects: true, objectTypes: true },
-				}),
-			catch: (cause): ActionError =>
-				actionError('sign', {
-					actionName,
-					message:
-						`Action '${actionName}': executeTransaction failed — ` +
-						(cause instanceof Error ? cause.message : String(cause)),
-					cause,
-				}),
-		});
+				// --- 5. Project the envelope --------------------------------
+				const env = raw as RawExecuteEnvelope;
+				if (env.$kind === 'FailedTransaction') {
+					const failedDigest = env.FailedTransaction?.digest;
+					if (failedDigest !== undefined) {
+						yield* Effect.tryPromise({
+							try: () => sdkClient.waitForTransaction({ digest: failedDigest }),
+							catch: (cause): ActionError =>
+								actionError('sign', {
+									actionName,
+									message: `Action '${actionName}': waitForTransaction(${failedDigest}) failed.`,
+									cause,
+								}),
+						});
+					}
+					return yield* Effect.fail(
+						actionError('sign', {
+							actionName,
+							message:
+								`Action '${actionName}': FailedTransaction ` +
+								`(digest=${env.FailedTransaction?.digest ?? '<unknown>'}): ` +
+								`${env.FailedTransaction?.status?.error ?? '<no error>'}`,
+						}),
+					);
+				}
+				const txOk = env.Transaction;
+				if (txOk?.digest === undefined) {
+					return yield* Effect.fail(
+						actionError('parse', {
+							actionName,
+							message: `Action '${actionName}': executeTransaction returned no digest.`,
+						}),
+					);
+				}
 
-		// --- 5. Project the envelope --------------------------------
-		const env = raw as RawExecuteEnvelope;
-		if (env.$kind === 'FailedTransaction') {
-			return yield* Effect.fail(
-				actionError('sign', {
-					actionName,
-					message:
-						`Action '${actionName}': FailedTransaction ` +
-						`(digest=${env.FailedTransaction?.digest ?? '<unknown>'}): ` +
-						`${env.FailedTransaction?.status?.error ?? '<no error>'}`,
-				}),
-			);
-		}
-		const txOk = env.Transaction;
-		if (txOk?.digest === undefined) {
-			return yield* Effect.fail(
-				actionError('parse', {
-					actionName,
-					message: `Action '${actionName}': executeTransaction returned no digest.`,
-				}),
-			);
-		}
+				// --- 6. Wait for finality -----------------------------------
+				yield* Effect.tryPromise({
+					try: () => sdkClient.waitForTransaction({ digest: txOk.digest! }),
+					catch: (cause): ActionError =>
+						actionError('sign', {
+							actionName,
+							message: `Action '${actionName}': waitForTransaction(${txOk.digest}) failed.`,
+							cause,
+						}),
+				});
 
-		// --- 6. Wait for finality -----------------------------------
-		yield* Effect.tryPromise({
-			try: () => sdkClient.waitForTransaction({ digest: txOk.digest! }),
-			catch: (cause): ActionError =>
-				actionError('sign', {
-					actionName,
-					message: `Action '${actionName}': waitForTransaction(${txOk.digest}) failed.`,
-					cause,
-				}),
-		});
+				// --- 7. Project changedObjects into the receipt's objectChanges
+				const objectTypes = txOk.objectTypes ?? {};
+				const objectChanges: ReadonlyArray<ActionObjectChange> = (
+					txOk.effects?.changedObjects ?? []
+				)
+					.filter(
+						(c): c is { objectId: string; outputState?: string; idOperation?: string } =>
+							typeof c.objectId === 'string',
+					)
+					.map((c) => {
+						const objectType = objectTypes[c.objectId];
+						const entry: {
+							-readonly [K in keyof ActionObjectChange]: ActionObjectChange[K];
+						} = {
+							kind: c.idOperation === 'Created' ? 'created' : 'mutated',
+							objectId: c.objectId,
+						};
+						if (objectType !== undefined) entry.objectType = objectType;
+						if (c.outputState !== undefined) entry.outputState = c.outputState;
+						if (c.idOperation !== undefined) entry.idOperation = c.idOperation;
+						return entry;
+					});
 
-		// --- 7. Project changedObjects into the receipt's objectChanges
-		const objectTypes = txOk.objectTypes ?? {};
-		const objectChanges: ReadonlyArray<ActionObjectChange> = (txOk.effects?.changedObjects ?? [])
-			.filter(
-				(c): c is { objectId: string; outputState?: string; idOperation?: string } =>
-					typeof c.objectId === 'string',
-			)
-			.map((c) => {
-				const objectType = objectTypes[c.objectId];
-				const entry: {
-					-readonly [K in keyof ActionObjectChange]: ActionObjectChange[K];
-				} = {
-					kind: c.idOperation === 'Created' ? 'created' : 'mutated',
-					objectId: c.objectId,
+				const receipt: ActionReceipt = {
+					digest: txOk.digest,
+					objectChanges,
+					balanceChanges: [],
 				};
-				if (objectType !== undefined) entry.objectType = objectType;
-				if (c.outputState !== undefined) entry.outputState = c.outputState;
-				if (c.idOperation !== undefined) entry.idOperation = c.idOperation;
-				return entry;
-			});
-
-		const receipt: ActionReceipt = {
-			digest: txOk.digest,
-			objectChanges,
-			balanceChanges: [],
-		};
-		return receipt;
+				return receipt;
+			}),
+		);
 	}).pipe(
 		Effect.withSpan('devstack.plugin.action.signAndExecute', {
 			attributes: { 'action.name': params.actionName },

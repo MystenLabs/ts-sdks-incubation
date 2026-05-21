@@ -19,7 +19,7 @@
 // signer whose `signTransaction` awaits a test-controlled Promise
 // lets us observe lease ordering without a chain.
 
-import { Effect, Fiber } from 'effect';
+import { Effect, Exit, Fiber } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
 import {
@@ -210,6 +210,127 @@ describe('account plugin — LeaseBrokerService integration', () => {
 				{ address, tag: 'second:enter' },
 				{ address, tag: 'second:exit' },
 			]);
+		}).pipe(Effect.provide(layerLeaseBroker)),
+	);
+
+	it.effect('withTransactionSigner serializes build/sign/execute work for the address', () =>
+		Effect.gen(function* () {
+			const address = '0xdef';
+			const calls: Array<{ readonly address: string; readonly tag: string }> = [];
+			const openGate: Gate = { wait: Promise.resolve(), release: () => {} };
+			const bodyGate1 = makeGate();
+			const bodyGate2 = makeGate();
+
+			const signer1 = makeStubSigner(address, openGate, calls, 'first-sign');
+			const signer2 = makeStubSigner(address, openGate, calls, 'second-sign');
+			const a1 = yield* acquire('publisher-a', signer1);
+			const a2 = yield* acquire('publisher-b', signer2);
+
+			const fiber1 = yield* Effect.forkChild(
+				a1.withTransactionSigner((locked) =>
+					Effect.gen(function* () {
+						calls.push({ address, tag: 'first:build' });
+						yield* Effect.promise(() => bodyGate1.wait);
+						yield* locked.signTransaction(new Uint8Array([1]));
+						calls.push({ address, tag: 'first:execute' });
+					}),
+				),
+			);
+			yield* Effect.yieldNow;
+			yield* Effect.yieldNow;
+
+			const fiber2 = yield* Effect.forkChild(
+				a2.withTransactionSigner((locked) =>
+					Effect.gen(function* () {
+						calls.push({ address, tag: 'second:build' });
+						yield* Effect.promise(() => bodyGate2.wait);
+						yield* locked.signTransaction(new Uint8Array([2]));
+						calls.push({ address, tag: 'second:execute' });
+					}),
+				),
+			);
+			yield* Effect.yieldNow;
+			yield* Effect.yieldNow;
+
+			expect(calls).toEqual([{ address, tag: 'first:build' }]);
+
+			bodyGate1.release();
+			yield* Fiber.join(fiber1);
+			yield* Effect.yieldNow;
+			yield* Effect.yieldNow;
+			expect(calls).toEqual([
+				{ address, tag: 'first:build' },
+				{ address, tag: 'first-sign:enter' },
+				{ address, tag: 'first-sign:exit' },
+				{ address, tag: 'first:execute' },
+				{ address, tag: 'second:build' },
+			]);
+
+			bodyGate2.release();
+			yield* Fiber.join(fiber2);
+			expect(calls).toEqual([
+				{ address, tag: 'first:build' },
+				{ address, tag: 'first-sign:enter' },
+				{ address, tag: 'first-sign:exit' },
+				{ address, tag: 'first:execute' },
+				{ address, tag: 'second:build' },
+				{ address, tag: 'second-sign:enter' },
+				{ address, tag: 'second-sign:exit' },
+				{ address, tag: 'second:execute' },
+			]);
+		}).pipe(Effect.provide(layerLeaseBroker)),
+	);
+
+	it.effect('signAndExecute waits for a failed transaction digest before releasing the lease', () =>
+		Effect.gen(function* () {
+			const address = '0xfaded';
+			const waitGate = makeGate();
+			const openGate: Gate = { wait: Promise.resolve(), release: () => {} };
+			const signer = makeStubSigner(address, openGate, [], 'failed');
+			const waitCtx: AccountAcquireContext = {
+				...ctx,
+				sui: {
+					...ctx.sui,
+					sdk: {
+						core: {
+							getObject: () => Promise.reject(new Error('stub getObject')),
+							getTransaction: () => Promise.reject(new Error('stub getTransaction')),
+							executeTransaction: () =>
+								Promise.resolve({
+									$kind: 'FailedTransaction',
+									FailedTransaction: {
+										digest: 'failed-digest',
+										status: { error: 'MoveAbort' },
+									},
+								}),
+							waitForTransaction: async () => {
+								await waitGate.wait;
+							},
+						},
+						client: null,
+					},
+				},
+			};
+			const acct = yield* acquireAccount(makeOpts('eve', signer), waitCtx).pipe(
+				Effect.provide(layerStrategyRegistry),
+				Effect.orDie,
+			);
+			const broker = yield* LeaseBrokerService;
+
+			const fiber = yield* Effect.forkChild(Effect.exit(acct.signAndExecute(new Uint8Array([1]))));
+			yield* Effect.yieldNow;
+			yield* Effect.yieldNow;
+
+			const heldWhileWaiting = yield* broker.holders();
+			expect(heldWhileWaiting.get(leaseKey(`account:${address}`))).toBe('eve');
+
+			waitGate.release();
+			const exit = yield* Fiber.join(fiber);
+			expect(Exit.isFailure(exit)).toBe(true);
+			expect(JSON.stringify(exit)).toContain('failed-digest');
+
+			const afterWait = yield* broker.holders();
+			expect(afterWait.has(leaseKey(`account:${address}`))).toBe(false);
 		}).pipe(Effect.provide(layerLeaseBroker)),
 	);
 

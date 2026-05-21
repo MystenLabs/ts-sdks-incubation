@@ -209,6 +209,7 @@ export const makeSdkShim = (sdkClient: SuiGrpcClient): SuiSdkShim => ({
 			sdkClient.executeTransaction({
 				transaction: args.transaction,
 				signatures: [...args.signatures],
+				...(args.include !== undefined ? { include: args.include } : {}),
 			}),
 		waitForTransaction: (args) =>
 			sdkClient.waitForTransaction({

@@ -23,13 +23,14 @@
 // channels never mix.
 //
 // Per-address serialization (architecture invariant): concurrent
-// sign + execute calls for the same address MUST serialize. The
+// account-bound transactions for the same address MUST serialize
+// across build + sign + execute. `Transaction.build({ client })`
+// resolves gas/object versions, so taking the lease only while
+// signing still lets two callers build stale object references. The
 // substrate's `LeaseBrokerService` is the L0 primitive: each
-// sign / execute closure opens a fresh scope and yields the
-// lease keyed by `account:<address>`, ensuring at-most-one
-// in-flight tx per account. The broker handle is captured at
-// acquire time so the resolved `AccountValue` closures keep an
-// empty R-channel.
+// transaction scope opens a fresh lease keyed by `account:<address>`.
+// The public sign helpers are implemented in terms of that scope so
+// they keep the historical per-address behavior.
 
 import { Effect } from 'effect';
 
@@ -58,6 +59,7 @@ import { resolveImpersonateVariant } from './variants/impersonate.ts';
 import type { SuiSdkShim } from '../sui/chain-probe.ts';
 import type { StrategyRegistryService } from '../../substrate/runtime/strategy-registry/service.ts';
 import type { ChainId } from '../../substrate/brand.ts';
+import type { TransactionSignerScope } from '../../substrate/runtime/sui-execute/index.ts';
 import {
 	LeaseBrokerService,
 	type LeaseBroker,
@@ -147,8 +149,15 @@ export interface AccountValue {
 	 *
 	 *  For impersonation accounts, routes through Sui's fork
 	 *  admin `impersonate` surface; for real signers, routes
-	 *  through the SDK's `signAndExecuteTransaction`. */
+	 *  through the SDK's executeTransaction surface. */
 	readonly signAndExecute: (tx: Uint8Array) => Effect.Effect<TxResult, AccountSignError>;
+	/** Run a full account-bound transaction critical section.
+	 *  Callers that must serialize `Transaction.build({ client })`
+	 *  together with signing/execution use the signer passed to this
+	 *  callback; the callback runs while the per-address lease is held. */
+	readonly withTransactionSigner: <A, E, R>(
+		body: (signer: AccountTransactionSigner) => Effect.Effect<A, E, R>,
+	) => Effect.Effect<A, E, R>;
 	/** Sign-only — real signers honor this; impersonation accounts
 	 *  throw synchronously (see `variants/impersonate.ts`). */
 	readonly signTransaction: (
@@ -166,6 +175,10 @@ export interface TxResult {
 	readonly effects: unknown;
 	readonly objectChanges: ReadonlyArray<unknown>;
 	readonly balanceChanges: ReadonlyArray<unknown>;
+}
+
+export interface AccountTransactionSigner extends TransactionSignerScope<AccountSignError> {
+	readonly signAndExecute: AccountValue['signAndExecute'];
 }
 
 // -----------------------------------------------------------------------------
@@ -346,6 +359,7 @@ const projectTxResult = (
 		Transaction?: {
 			digest?: string;
 			effects?: unknown;
+			objectTypes?: Readonly<Record<string, string>>;
 			balanceChanges?: ReadonlyArray<unknown>;
 		};
 		FailedTransaction?: {
@@ -376,9 +390,69 @@ const projectTxResult = (
 	return Effect.succeed({
 		digest: tx.digest,
 		effects: tx.effects ?? null,
-		objectChanges: [],
+		objectChanges: projectObjectChanges(tx.effects, tx.objectTypes ?? {}),
 		balanceChanges: tx.balanceChanges ?? [],
 	});
+};
+
+const extractExecuteDigest = (raw: unknown): string | undefined => {
+	const r = raw as {
+		$kind?: 'Transaction' | 'FailedTransaction';
+		Transaction?: { readonly digest?: string };
+		FailedTransaction?: { readonly digest?: string };
+	};
+	return r.$kind === 'FailedTransaction' ? r.FailedTransaction?.digest : r.Transaction?.digest;
+};
+
+const projectObjectChanges = (
+	effects: unknown,
+	objectTypes: Readonly<Record<string, string>>,
+): ReadonlyArray<unknown> => {
+	const changedObjects =
+		typeof effects === 'object' && effects !== null && 'changedObjects' in effects
+			? (
+					effects as {
+						readonly changedObjects?: ReadonlyArray<{
+							readonly objectId?: string;
+							readonly outputState?: string;
+							readonly idOperation?: string;
+						}>;
+					}
+				).changedObjects
+			: undefined;
+	if (changedObjects === undefined) return [];
+	return changedObjects
+		.filter(
+			(
+				change,
+			): change is {
+				readonly objectId: string;
+				readonly outputState?: string;
+				readonly idOperation?: string;
+			} => typeof change.objectId === 'string',
+		)
+		.map((change) => {
+			const objectType = objectTypes[change.objectId];
+			const entry: {
+				type: 'published' | 'created' | 'mutated';
+				objectId: string;
+				objectType?: string;
+				outputState?: string;
+				idOperation?: string;
+			} = {
+				type:
+					change.outputState === 'PackageWrite'
+						? 'published'
+						: change.idOperation === 'Created'
+							? 'created'
+							: 'mutated',
+				objectId: change.objectId,
+			};
+			if (objectType !== undefined) entry.objectType = objectType;
+			if (change.outputState !== undefined) entry.outputState = change.outputState;
+			if (change.idOperation !== undefined) entry.idOperation = change.idOperation;
+			return entry;
+		});
 };
 
 interface BuildClosuresArgs {
@@ -391,7 +465,10 @@ interface BuildClosuresArgs {
 
 const buildClosures = (
 	args: BuildClosuresArgs,
-): Pick<AccountValue, 'signAndExecute' | 'signTransaction' | 'signPersonalMessage'> => {
+): Pick<
+	AccountValue,
+	'signAndExecute' | 'withTransactionSigner' | 'signTransaction' | 'signPersonalMessage'
+> => {
 	const { accountName, resolved, sui, broker, source } = args;
 
 	// Impersonation accounts MUST NOT sign — the synthetic signer's
@@ -419,6 +496,19 @@ const buildClosures = (
 						message: `Account '${accountName}': impersonation signAndExecute is not yet routed to the fork admin surface.`,
 					}),
 				),
+			withTransactionSigner: (body) =>
+				body({
+					signAndExecute: () =>
+						Effect.fail(
+							accountSignError({
+								phase: 'submit',
+								accountName,
+								address: resolved.address,
+								message: `Account '${accountName}': impersonation signAndExecute is not yet routed to the fork admin surface.`,
+							}),
+						),
+					signTransaction: refuse<{ readonly bytes: string; readonly signature: string }>,
+				}),
 			signTransaction: refuse<{ readonly bytes: string; readonly signature: string }>,
 			signPersonalMessage: refuse<{ readonly bytes: string; readonly signature: string }>,
 		};
@@ -429,13 +519,70 @@ const buildClosures = (
 	// SDK's `Signer` and the BYO `signer` declaration agree on it).
 	const signer = resolved.signer as Pick<Signer, 'signTransaction' | 'signPersonalMessage'>;
 
-	const signTransaction: AccountValue['signTransaction'] = (tx) =>
+	const unlockedSignTransaction: AccountTransactionSigner['signTransaction'] = (tx) =>
+		signWith(signer, tx, accountName, resolved.address);
+
+	const unlockedSignAndExecute: AccountTransactionSigner['signAndExecute'] = (tx) =>
+		Effect.gen(function* () {
+			const signed: SignatureWithBytes = yield* unlockedSignTransaction(tx);
+			const raw = yield* Effect.tryPromise({
+				try: () =>
+					sui.sdk.core.executeTransaction({
+						transaction: tx,
+						signatures: [signed.signature],
+						include: { effects: true, objectTypes: true },
+					}),
+				catch: (cause): AccountSignError =>
+					accountSignError({
+						phase: 'submit',
+						accountName,
+						address: resolved.address,
+						message: `Account '${accountName}': executeTransaction transport failed.`,
+						cause,
+					}),
+			});
+			const digest = extractExecuteDigest(raw);
+			if (digest !== undefined) {
+				yield* Effect.tryPromise({
+					try: () =>
+						sui.sdk.core.waitForTransaction({
+							digest,
+						}),
+					catch: (cause): AccountSignError =>
+						accountSignError({
+							phase: 'await-finality',
+							accountName,
+							address: resolved.address,
+							message: `Account '${accountName}': waitForTransaction(${digest}) failed.`,
+							cause,
+						}),
+				});
+			}
+			const result = yield* projectTxResult(raw, accountName, resolved.address);
+			return result;
+		});
+
+	const transactionSigner: AccountTransactionSigner = {
+		signTransaction: unlockedSignTransaction,
+		signAndExecute: unlockedSignAndExecute,
+	};
+
+	const withTransactionSigner: AccountValue['withTransactionSigner'] = (body) =>
 		withAddressLease(
 			broker,
 			accountName,
 			resolved.address,
-			signWith(signer, tx, accountName, resolved.address),
+			Effect.gen(function* () {
+				return yield* body(transactionSigner);
+			}),
 		).pipe(
+			Effect.withSpan('devstack.plugin.account.transactionSigner', {
+				attributes: { 'account.name': accountName, 'account.address': resolved.address },
+			}),
+		);
+
+	const signTransaction: AccountValue['signTransaction'] = (tx) =>
+		withTransactionSigner((locked) => locked.signTransaction(tx)).pipe(
 			Effect.withSpan('devstack.plugin.account.signTransaction', {
 				attributes: { 'account.name': accountName, 'account.address': resolved.address },
 			}),
@@ -454,60 +601,13 @@ const buildClosures = (
 		);
 
 	const signAndExecute: AccountValue['signAndExecute'] = (tx) =>
-		withAddressLease(
-			broker,
-			accountName,
-			resolved.address,
-			Effect.gen(function* () {
-				const signed: SignatureWithBytes = yield* signWith(
-					signer,
-					tx,
-					accountName,
-					resolved.address,
-				);
-				const raw = yield* Effect.tryPromise({
-					try: () =>
-						sui.sdk.core.executeTransaction({
-							transaction: tx,
-							signatures: [signed.signature],
-						}),
-					catch: (cause): AccountSignError =>
-						accountSignError({
-							phase: 'submit',
-							accountName,
-							address: resolved.address,
-							message: `Account '${accountName}': executeTransaction transport failed.`,
-							cause,
-						}),
-				});
-				const result = yield* projectTxResult(raw, accountName, resolved.address);
-				// Post-submit finality wait. The SDK's waitForTransaction
-				// polls until the transaction is durably written. We swallow
-				// transient errors here so the digest is still surfaced to
-				// the caller — the cached effects payload is best-effort.
-				yield* Effect.tryPromise({
-					try: () =>
-						sui.sdk.core.waitForTransaction({
-							digest: result.digest,
-						}),
-					catch: (cause): AccountSignError =>
-						accountSignError({
-							phase: 'await-finality',
-							accountName,
-							address: resolved.address,
-							message: `Account '${accountName}': waitForTransaction(${result.digest}) failed.`,
-							cause,
-						}),
-				});
-				return result;
-			}),
-		).pipe(
+		withTransactionSigner((locked) => locked.signAndExecute(tx)).pipe(
 			Effect.withSpan('devstack.plugin.account.signAndExecute', {
 				attributes: { 'account.name': accountName, 'account.address': resolved.address },
 			}),
 		);
 
-	return { signAndExecute, signTransaction, signPersonalMessage };
+	return { signAndExecute, withTransactionSigner, signTransaction, signPersonalMessage };
 };
 
 // -----------------------------------------------------------------------------

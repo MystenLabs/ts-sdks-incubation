@@ -104,6 +104,10 @@ export interface SuiSdkShim {
 		readonly executeTransaction: (args: {
 			readonly transaction: Uint8Array;
 			readonly signatures: ReadonlyArray<string>;
+			readonly include?: {
+				readonly effects?: boolean;
+				readonly objectTypes?: boolean;
+			};
 		}) => Promise<unknown>;
 		readonly waitForTransaction: (args: {
 			readonly digest: string;

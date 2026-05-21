@@ -72,7 +72,7 @@ export interface BootReport {
 
 export interface InspectedTraefikContainer {
 	readonly id: string;
-	readonly running: boolean;
+	readonly running: boolean | 'unknown';
 	readonly image: string;
 	readonly dispatchMount: {
 		readonly source: string;
@@ -283,10 +283,39 @@ export const bootstrap = (
 
 		const configMatches = routerSpecMatches(existing, inputs);
 
-		if (existing.running && configMatches) {
+		if (existing.running === true && configMatches) {
 			return {
 				decision: 'adopt' as const,
 				containerId: existing.id,
+				networkId: network.id,
+				imageMatches: true,
+			};
+		}
+
+		if (existing.running === 'unknown' && configMatches) {
+			if (inputs.protectedRouteLeaseIds.length > 0) {
+				return yield* Effect.fail(
+					new RouterBootFailed({
+						stage: 'ensure-container',
+						detail:
+							`router profile '${inputs.profile.id}' container '${inputs.profile.containerName}' ` +
+							`has unknown lifecycle state, and live or unknown route leases exist: ` +
+							inputs.protectedRouteLeaseIds.join(', '),
+					}),
+				);
+			}
+			yield* ops.forceRemove(inputs.profile.containerName);
+			const created = yield* ops.createFresh({
+				name: inputs.profile.containerName,
+				image: inputs.image,
+				network: inputs.profile.networkName,
+				routerProfileId: inputs.profile.id,
+				entrypoints: inputs.entrypoints,
+				dispatchDirHostPath: inputs.profile.dispatchDir,
+			});
+			return {
+				decision: 'recreate-fresh' as const,
+				containerId: created.id,
 				networkId: network.id,
 				imageMatches: true,
 			};
@@ -453,7 +482,7 @@ export const layerTraefikContainerOpsDocker: Layer.Layer<
 							? null
 							: {
 									id: facts.id,
-									running: facts.running,
+									running: facts.lifecycle.kind === 'unknown' ? 'unknown' : facts.running,
 									image: facts.image,
 									dispatchMount: (() => {
 										const mount = facts.mounts?.find(

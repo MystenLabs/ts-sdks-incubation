@@ -24,12 +24,12 @@ import { leaseKey, type LeaseBroker } from '../../substrate/runtime/lease-broker
  *  address) tuple deadlock. The broker has no concept of
  *  re-entrancy by design — per-address sequence-number semantics
  *  require at-most-one in-flight. */
-export const withAddressLease = <A, E>(
+export const withAddressLease = <A, E, R>(
 	broker: LeaseBroker,
 	accountName: string,
 	address: string,
-	effect: Effect.Effect<A, E>,
-): Effect.Effect<A, E> =>
+	effect: Effect.Effect<A, E, R>,
+): Effect.Effect<A, E, R> =>
 	Effect.scoped(
 		Effect.gen(function* () {
 			yield* broker.acquire(leaseKey(`account:${address}`), accountName);

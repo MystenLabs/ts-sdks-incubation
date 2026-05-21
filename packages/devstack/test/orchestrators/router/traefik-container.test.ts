@@ -90,7 +90,7 @@ const dockerPortBindingsFor = (
 
 const matchingDockerInspectJson = (
 	entrypoints: ReadonlyArray<Entrypoint>,
-	options: { readonly includeHostConfig?: boolean } = {},
+	options: { readonly includeHostConfig?: boolean; readonly includeState?: boolean } = {},
 ): string => {
 	const ports = dockerPortBindingsFor(entrypoints);
 	return JSON.stringify([
@@ -104,7 +104,9 @@ const matchingDockerInspectJson = (
 				},
 			],
 			...(options.includeHostConfig === false ? {} : { HostConfig: { PortBindings: ports } }),
-			State: { Running: true, Paused: false, ExitCode: 0 },
+			...(options.includeState === false
+				? {}
+				: { State: { Running: true, Paused: false, ExitCode: 0 } }),
 			Config: {
 				Image: 'traefik:v3.5',
 				Cmd: traefikExpectedCommand(entrypoints),
@@ -331,6 +333,68 @@ describe('bootstrap dispatch bind mount adoption', () => {
 		}),
 	);
 
+	it.effect('docker-backed boot recreates a matching router when inspect omits State', () =>
+		Effect.gen(function* () {
+			const root = mkdtempSync(join(tmpdir(), 'router-inspect-no-state-test-'));
+			try {
+				const entrypoints: ReadonlyArray<Entrypoint> = [
+					{ name: 'wallet-app', port: 6173, protocol: 'http' },
+				];
+				const { bin, log } = writeDocker(root, [
+					'if [ "$1" = "network" ] && [ "$2" = "inspect" ]; then',
+					`  printf '%s\\n' ${JSON.stringify(matchingRouterNetworkJson())}`,
+					'  exit 0',
+					'fi',
+					'if [ "$1" = "inspect" ]; then',
+					`  printf '%s\\n' ${JSON.stringify(
+						matchingDockerInspectJson(entrypoints, {
+							includeHostConfig: false,
+							includeState: false,
+						}),
+					)}`,
+					'  exit 0',
+					'fi',
+					'if [ "$1" = "rm" ]; then exit 0; fi',
+					'if [ "$1" = "run" ]; then',
+					'  printf "router-created-id\\n"',
+					'  exit 0',
+					'fi',
+					'if [ "$1" = "start" ]; then',
+					'  echo "unexpected start" >&2',
+					'  exit 1',
+					'fi',
+					'exit 1',
+					'',
+				]);
+
+				const report = yield* bootstrap({
+					image: 'traefik:v3.5',
+					entrypoints,
+					profile,
+					protectedRouteLeaseIds: [],
+				}).pipe(
+					Effect.provide(layerTraefikContainerOpsDocker),
+					Effect.provide(fakeDockerLayer(bin)),
+				);
+
+				expect(report).toEqual({
+					decision: 'recreate-fresh',
+					containerId: 'router-created-id',
+					networkId: 'network-id',
+					imageMatches: true,
+				});
+				const lines = readFileSync(log, 'utf8').trim().split('\n');
+				expect(lines).toContain(`rm -f ${profile.containerName}`);
+				expect(
+					lines.some((line) => line.startsWith(`run -d --name ${profile.containerName}`)),
+				).toBe(true);
+				expect(lines.some((line) => line.startsWith('start '))).toBe(false);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}),
+	);
+
 	it.effect('recreates a running singleton with a stale stack-scoped dispatch bind mount', () =>
 		Effect.gen(function* () {
 			const entrypoints: ReadonlyArray<Entrypoint> = [];
@@ -388,6 +452,33 @@ describe('bootstrap dispatch bind mount adoption', () => {
 				`inspect:${profile.containerName}`,
 			]);
 		}),
+	);
+
+	it.effect(
+		'refuses to reuse a matching singleton with unknown state while protected leases exist',
+		() =>
+			Effect.gen(function* () {
+				const entrypoints: ReadonlyArray<Entrypoint> = [];
+				const { calls, layer } = makeOps(
+					matchingExisting(entrypoints, {
+						running: 'unknown',
+					}),
+				);
+				const err = yield* bootstrap({
+					image: 'traefik:v3.5',
+					entrypoints,
+					profile,
+					protectedRouteLeaseIds: ['live-route'],
+				})
+					.pipe(Effect.provide(layer))
+					.pipe(Effect.flip);
+
+				expect(err._tag).toBe('RouterBootFailed');
+				expect(calls).toEqual([
+					`ensureNetwork:${profile.networkName}`,
+					`inspect:${profile.containerName}`,
+				]);
+			}),
 	);
 
 	it.effect('recreates an existing singleton when the dispatch bind mount is missing', () =>

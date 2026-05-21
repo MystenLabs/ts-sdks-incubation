@@ -6,13 +6,20 @@ import { describe, expect, it } from '@effect/vitest';
 import {
 	executeSuiTx,
 	SuiExecuteError,
+	type TransactionSignerScope,
 	type SuiExecuteClient,
 } from '../../../../src/substrate/runtime/sui-execute/index.ts';
+
+const stubSignTransaction = (_tx: Uint8Array) =>
+	Effect.succeed({ bytes: 'aa', signature: 'sig-1' });
 
 const stubSigner = {
 	name: 'alice',
 	address: '0xa11ce',
-	signTransaction: (_tx: Uint8Array) => Effect.succeed({ bytes: 'aa', signature: 'sig-1' }),
+	signTransaction: stubSignTransaction,
+	withTransactionSigner: <A, E, R>(
+		body: (signer: TransactionSignerScope) => Effect.Effect<A, E, R>,
+	) => body({ signTransaction: stubSignTransaction }),
 };
 
 const successfulClient = (params: {
@@ -97,6 +104,58 @@ describe('executeSuiTx', () => {
 				expect(text).toContain('MoveAbort');
 				void err;
 			}
+		}),
+	);
+
+	it.effect('FailedTransaction with digest waits before the transaction scope releases', () =>
+		Effect.gen(function* () {
+			const events: string[] = [];
+			const signer = {
+				name: 'alice',
+				address: '0xa11ce',
+				signTransaction: () => Effect.die('outer signer should not be used'),
+				withTransactionSigner: <A, E, R>(
+					body: (signer: TransactionSignerScope) => Effect.Effect<A, E, R>,
+				) =>
+					Effect.gen(function* () {
+						events.push('scope:enter');
+						return yield* body({
+							signTransaction: () =>
+								Effect.sync(() => {
+									events.push('sign');
+									return { bytes: 'aa', signature: 'sig-1' };
+								}),
+						});
+					}).pipe(Effect.ensuring(Effect.sync(() => events.push('scope:exit')))),
+			};
+			const client: SuiExecuteClient = {
+				executeTransaction: async () => {
+					events.push('execute');
+					return {
+						$kind: 'FailedTransaction',
+						FailedTransaction: {
+							digest: '0xbad',
+							status: { error: 'MoveAbort(...)' },
+						},
+					};
+				},
+				waitForTransaction: async () => {
+					events.push('wait');
+					expect(events).toEqual(['scope:enter', 'sign', 'execute', 'wait']);
+				},
+			};
+			const exit = yield* Effect.scoped(
+				Effect.exit(
+					executeSuiTx({
+						client,
+						signer,
+						build: async () => new Uint8Array(),
+					}),
+				),
+			);
+			expect(Exit.isFailure(exit)).toBe(true);
+			expect(JSON.stringify(exit)).toContain('failed-transaction');
+			expect(events).toEqual(['scope:enter', 'sign', 'execute', 'wait', 'scope:exit']);
 		}),
 	);
 

@@ -2,7 +2,11 @@ import { Effect, Schema, type Scope } from 'effect';
 import { Transaction } from '@mysten/sui/transactions';
 
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
-import { executeSuiTx, type SuiExecuteClient } from '../../substrate/runtime/sui-execute/index.ts';
+import {
+	executeSuiTx,
+	type ResolvedSigner,
+	type SuiExecuteClient,
+} from '../../substrate/runtime/sui-execute/index.ts';
 import { walrusPluginError, type WalrusPluginError } from './errors.ts';
 
 export interface WalExchangeHandle {
@@ -16,13 +20,7 @@ export interface WalSwapSdk {
 	readonly client: unknown;
 }
 
-export interface WalSwapSigner {
-	readonly name: string;
-	readonly address: string;
-	readonly signTransaction: (
-		tx: Uint8Array,
-	) => Effect.Effect<{ readonly bytes: string; readonly signature: string }, unknown>;
-}
+export type WalSwapSigner = ResolvedSigner;
 
 export interface WalSwapRequest {
 	readonly signer: WalSwapSigner;

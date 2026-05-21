@@ -89,6 +89,12 @@ export interface SuiExecuteClient {
  *  it via `Transaction.build({ client })`. */
 export type SerializedTxBuilder = () => Promise<Uint8Array>;
 
+export interface TransactionSignerScope<SignError = unknown> {
+	readonly signTransaction: (
+		tx: Uint8Array,
+	) => Effect.Effect<{ readonly bytes: string; readonly signature: string }, SignError>;
+}
+
 /** Resolved signer — narrow slice of `AccountValue` (see
  *  `on-chain-artifact/chain-operation.ts::ResolvedSigner`). */
 export interface ResolvedSigner {
@@ -97,6 +103,9 @@ export interface ResolvedSigner {
 	readonly signTransaction: (
 		tx: Uint8Array,
 	) => Effect.Effect<{ readonly bytes: string; readonly signature: string }, unknown>;
+	readonly withTransactionSigner: <A, E, R>(
+		body: (signer: TransactionSignerScope) => Effect.Effect<A, E, R>,
+	) => Effect.Effect<A, E, R>;
 }
 
 /** Flat per-object change record. Mirrors the union of fields that
@@ -149,7 +158,10 @@ interface RawExecuteEnvelope {
  *   - `client`: an opaque SDK client exposing `executeTransaction` +
  *     `waitForTransaction` (matches the cast in both existing
  *     duplicates).
- *   - `signer`: a `ResolvedSigner` slice.
+ *   - `signer`: a `ResolvedSigner` slice with an account-owned
+ *     transaction scope. The build/sign/execute/wait pipeline runs
+ *     inside that scope so gas/object-version resolution cannot race
+ *     another transaction from the same address.
  *   - `build`: a closure returning the serialised tx bytes (the
  *     caller constructed the `Transaction` and resolved gas via
  *     `tx.build({ client })`).
@@ -167,138 +179,157 @@ export const executeSuiTx = (params: {
 	readonly build: SerializedTxBuilder;
 	readonly awaitFinality?: boolean;
 }): Effect.Effect<ExecutedReceipt, SuiExecuteError, Scope.Scope> =>
-	Effect.gen(function* () {
-		const { client, signer, build } = params;
-		const awaitFinality = params.awaitFinality ?? true;
+	params.signer
+		.withTransactionSigner((lockedSigner) =>
+			Effect.gen(function* () {
+				const { client, signer, build } = params;
+				const awaitFinality = params.awaitFinality ?? true;
 
-		// 1. Serialise the transaction. Failures inside the build
-		//    closure (e.g. `Transaction.build({ client })` rejection)
-		//    surface as `phase: 'serialize'` so callers can attribute
-		//    them at the call site.
-		const txBytes = yield* Effect.tryPromise({
-			try: () => build(),
-			catch: (cause) =>
-				new SuiExecuteError({
-					phase: 'serialize',
-					signerName: signer.name,
-					signerAddress: signer.address,
-					message:
-						`Transaction.build failed for signer '${signer.name}' ` +
-						`(address=${signer.address}): ` +
-						(cause instanceof Error ? cause.message : String(cause)),
-					cause,
-				}),
-		});
+				// 1. Serialise the transaction. Failures inside the build
+				//    closure (e.g. `Transaction.build({ client })` rejection)
+				//    surface as `phase: 'serialize'` so callers can attribute
+				//    them at the call site.
+				const txBytes = yield* Effect.tryPromise({
+					try: () => build(),
+					catch: (cause) =>
+						new SuiExecuteError({
+							phase: 'serialize',
+							signerName: signer.name,
+							signerAddress: signer.address,
+							message:
+								`Transaction.build failed for signer '${signer.name}' ` +
+								`(address=${signer.address}): ` +
+								(cause instanceof Error ? cause.message : String(cause)),
+							cause,
+						}),
+				});
 
-		// 2. Sign with the resolved signer. The signer's own typed
-		//    error surfaces in `cause`; we collapse to `phase: 'sign'`
-		//    so the cascade-formatter can walk the cause chain.
-		const signed = yield* signer.signTransaction(txBytes).pipe(
-			Effect.mapError(
-				(cause) =>
-					new SuiExecuteError({
-						phase: 'sign',
-						signerName: signer.name,
-						signerAddress: signer.address,
-						message:
-							`signer.signTransaction failed for '${signer.name}' ` +
-							`(address=${signer.address}).`,
-						cause,
-					}),
-			),
+				// 2. Sign with the resolved signer. The signer's own typed
+				//    error surfaces in `cause`; we collapse to `phase: 'sign'`
+				//    so the cascade-formatter can walk the cause chain.
+				const signed = yield* lockedSigner.signTransaction(txBytes).pipe(
+					Effect.mapError(
+						(cause) =>
+							new SuiExecuteError({
+								phase: 'sign',
+								signerName: signer.name,
+								signerAddress: signer.address,
+								message:
+									`signer.signTransaction failed for '${signer.name}' ` +
+									`(address=${signer.address}).`,
+								cause,
+							}),
+					),
+				);
+
+				// 3. Execute via the SDK. We always request `effects: true` and
+				//    `objectTypes: true` because every existing caller needs
+				//    `changedObjects` + types to project to its domain shape.
+				const raw = yield* Effect.tryPromise({
+					try: () =>
+						client.executeTransaction({
+							transaction: txBytes,
+							signatures: [signed.signature],
+							include: { effects: true, objectTypes: true },
+						}),
+					catch: (cause) =>
+						new SuiExecuteError({
+							phase: 'execute',
+							signerName: signer.name,
+							signerAddress: signer.address,
+							message:
+								`executeTransaction rejected for signer '${signer.name}': ` +
+								(cause instanceof Error ? cause.message : String(cause)),
+							cause,
+						}),
+				});
+
+				// 4. Project the envelope. `$kind === 'FailedTransaction'`
+				//    surfaces as a discrete phase so callers can distinguish
+				//    transport failures from on-chain rejection.
+				const env = raw as RawExecuteEnvelope;
+				if (env.$kind === 'FailedTransaction') {
+					const failedDigest = env.FailedTransaction?.digest;
+					if (awaitFinality && failedDigest !== undefined) {
+						yield* Effect.tryPromise({
+							try: () => client.waitForTransaction({ digest: failedDigest }),
+							catch: (cause) =>
+								new SuiExecuteError({
+									phase: 'wait-for-finality',
+									signerName: signer.name,
+									signerAddress: signer.address,
+									digest: failedDigest,
+									message: `waitForTransaction(${failedDigest}) failed.`,
+									cause,
+								}),
+						});
+					}
+					return yield* Effect.fail(
+						new SuiExecuteError({
+							phase: 'failed-transaction',
+							signerName: signer.name,
+							signerAddress: signer.address,
+							digest: env.FailedTransaction?.digest,
+							message:
+								`executeTransaction returned FailedTransaction ` +
+								`(digest=${env.FailedTransaction?.digest ?? '<unknown>'}): ` +
+								(env.FailedTransaction?.status?.error ?? '<no error>'),
+						}),
+					);
+				}
+				const txOk = env.Transaction;
+				if (txOk?.digest === undefined) {
+					return yield* Effect.fail(
+						new SuiExecuteError({
+							phase: 'no-digest',
+							signerName: signer.name,
+							signerAddress: signer.address,
+							message: `executeTransaction returned no digest. Raw=${JSON.stringify(raw).slice(0, 300)}`,
+						}),
+					);
+				}
+
+				// 5. Wait for finality (opt-out — some callers wait separately).
+				if (awaitFinality) {
+					yield* Effect.tryPromise({
+						try: () => client.waitForTransaction({ digest: txOk.digest! }),
+						catch: (cause) =>
+							new SuiExecuteError({
+								phase: 'wait-for-finality',
+								signerName: signer.name,
+								signerAddress: signer.address,
+								digest: txOk.digest,
+								message: `waitForTransaction(${txOk.digest}) failed.`,
+								cause,
+							}),
+					});
+				}
+
+				// 6. Project changedObjects flat. Callers pick which entries
+				//    they care about (published / created / mutated / by-type
+				//    substring).
+				const objectTypes = txOk.objectTypes ?? {};
+				const objectChanges: Array<ExecutedObjectChange> = [];
+				for (const ch of txOk.effects?.changedObjects ?? []) {
+					if (typeof ch.objectId !== 'string') continue;
+					const objectType = objectTypes[ch.objectId];
+					const entry: { -readonly [K in keyof ExecutedObjectChange]: ExecutedObjectChange[K] } = {
+						objectId: ch.objectId,
+					};
+					if (objectType !== undefined) entry.objectType = objectType;
+					if (ch.outputState !== undefined) entry.outputState = ch.outputState;
+					if (ch.idOperation !== undefined) entry.idOperation = ch.idOperation;
+					objectChanges.push(entry);
+				}
+
+				return { digest: txOk.digest, objectChanges };
+			}),
+		)
+		.pipe(
+			Effect.withSpan('substrate.sui-execute', {
+				attributes: {
+					'sui-execute.signer': params.signer.name,
+					'sui-execute.address': params.signer.address,
+				},
+			}),
 		);
-
-		// 3. Execute via the SDK. We always request `effects: true` and
-		//    `objectTypes: true` because every existing caller needs
-		//    `changedObjects` + types to project to its domain shape.
-		const raw = yield* Effect.tryPromise({
-			try: () =>
-				client.executeTransaction({
-					transaction: txBytes,
-					signatures: [signed.signature],
-					include: { effects: true, objectTypes: true },
-				}),
-			catch: (cause) =>
-				new SuiExecuteError({
-					phase: 'execute',
-					signerName: signer.name,
-					signerAddress: signer.address,
-					message:
-						`executeTransaction rejected for signer '${signer.name}': ` +
-						(cause instanceof Error ? cause.message : String(cause)),
-					cause,
-				}),
-		});
-
-		// 4. Project the envelope. `$kind === 'FailedTransaction'`
-		//    surfaces as a discrete phase so callers can distinguish
-		//    transport failures from on-chain rejection.
-		const env = raw as RawExecuteEnvelope;
-		if (env.$kind === 'FailedTransaction') {
-			return yield* Effect.fail(
-				new SuiExecuteError({
-					phase: 'failed-transaction',
-					signerName: signer.name,
-					signerAddress: signer.address,
-					digest: env.FailedTransaction?.digest,
-					message:
-						`executeTransaction returned FailedTransaction ` +
-						`(digest=${env.FailedTransaction?.digest ?? '<unknown>'}): ` +
-						(env.FailedTransaction?.status?.error ?? '<no error>'),
-				}),
-			);
-		}
-		const txOk = env.Transaction;
-		if (txOk?.digest === undefined) {
-			return yield* Effect.fail(
-				new SuiExecuteError({
-					phase: 'no-digest',
-					signerName: signer.name,
-					signerAddress: signer.address,
-					message: `executeTransaction returned no digest. Raw=${JSON.stringify(raw).slice(0, 300)}`,
-				}),
-			);
-		}
-
-		// 5. Wait for finality (opt-out — some callers wait separately).
-		if (awaitFinality) {
-			yield* Effect.tryPromise({
-				try: () => client.waitForTransaction({ digest: txOk.digest! }),
-				catch: (cause) =>
-					new SuiExecuteError({
-						phase: 'wait-for-finality',
-						signerName: signer.name,
-						signerAddress: signer.address,
-						digest: txOk.digest,
-						message: `waitForTransaction(${txOk.digest}) failed.`,
-						cause,
-					}),
-			});
-		}
-
-		// 6. Project changedObjects flat. Callers pick which entries
-		//    they care about (published / created / mutated / by-type
-		//    substring).
-		const objectTypes = txOk.objectTypes ?? {};
-		const objectChanges: Array<ExecutedObjectChange> = [];
-		for (const ch of txOk.effects?.changedObjects ?? []) {
-			if (typeof ch.objectId !== 'string') continue;
-			const objectType = objectTypes[ch.objectId];
-			const entry: { -readonly [K in keyof ExecutedObjectChange]: ExecutedObjectChange[K] } = {
-				objectId: ch.objectId,
-			};
-			if (objectType !== undefined) entry.objectType = objectType;
-			if (ch.outputState !== undefined) entry.outputState = ch.outputState;
-			if (ch.idOperation !== undefined) entry.idOperation = ch.idOperation;
-			objectChanges.push(entry);
-		}
-
-		return { digest: txOk.digest, objectChanges };
-	}).pipe(
-		Effect.withSpan('substrate.sui-execute', {
-			attributes: {
-				'sui-execute.signer': params.signer.name,
-				'sui-execute.address': params.signer.address,
-			},
-		}),
-	);

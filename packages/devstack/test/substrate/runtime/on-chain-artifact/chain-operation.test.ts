@@ -6,6 +6,7 @@ import { describe, expect, it } from '@effect/vitest';
 import {
 	compileChainOperation,
 	type ChainOperation,
+	type ResolvedSigner,
 } from '../../../../src/substrate/runtime/on-chain-artifact/chain-operation.ts';
 
 interface Produced {
@@ -19,13 +20,21 @@ describe('compileChainOperation', () => {
 			let signerCalled = false;
 			let buildCalled = false;
 			let parseCalled = false;
-			const signer = {
+			const signer: ResolvedSigner = {
 				name: 'alice',
 				address: '0xa11ce',
 				signTransaction: () =>
 					Effect.sync(() => {
 						signerCalled = true;
 						return { bytes: 'b', signature: 's' };
+					}),
+				withTransactionSigner: (body) =>
+					body({
+						signTransaction: () =>
+							Effect.sync(() => {
+								signerCalled = true;
+								return { bytes: 'b', signature: 's' };
+							}),
 					}),
 			};
 			const op: ChainOperation<Produced> = {
@@ -91,6 +100,10 @@ describe('compileChainOperation', () => {
 					name: 'alice',
 					address: '0xa11ce',
 					signTransaction: () => Effect.succeed({ bytes: '', signature: '' }),
+					withTransactionSigner: (body) =>
+						body({
+							signTransaction: () => Effect.succeed({ bytes: '', signature: '' }),
+						}),
 				},
 				executor: () =>
 					Effect.fail({

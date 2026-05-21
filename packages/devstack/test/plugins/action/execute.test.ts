@@ -31,21 +31,41 @@ import { signAndExecute, type ActionObjectChange } from '../../../src/plugins/ac
 // touches.
 // ---------------------------------------------------------------------------
 
-const fakeAccount = (): AccountValue => ({
-	name: 'tester',
-	address: '0x1111111111111111111111111111111111111111111111111111111111111111',
-	scheme: 'ed25519',
-	publicKey: new Uint8Array(32),
-	source: 'real',
-	// Sign always returns a deterministic signature.
-	signTransaction: () =>
-		Effect.succeed({
-			bytes: 'fake-bytes',
-			signature: 'AAAA',
-		}),
-	signPersonalMessage: () => Effect.succeed({ bytes: 'fake-msg', signature: 'AAAA' }),
-	signAndExecute: () => Effect.die('signAndExecute unused by the action.signAndExecute helper'),
-});
+const fakeAccount = (events?: string[]): AccountValue => {
+	const signTransaction: AccountValue['signTransaction'] = () =>
+		Effect.sync(() => {
+			events?.push('sign');
+			return {
+				bytes: 'fake-bytes',
+				signature: 'AAAA',
+			};
+		});
+	const signAndExecute: AccountValue['signAndExecute'] = () =>
+		Effect.die('signAndExecute unused by the action.signAndExecute helper');
+	const withTransactionSigner: AccountValue['withTransactionSigner'] = (body) => {
+		if (events === undefined) return body({ signTransaction, signAndExecute });
+		return Effect.gen(function* () {
+			events.push('scope:enter');
+			return yield* body({ signTransaction, signAndExecute });
+		}).pipe(Effect.ensuring(Effect.sync(() => events.push('scope:exit'))));
+	};
+	return {
+		name: 'tester',
+		address: '0x1111111111111111111111111111111111111111111111111111111111111111',
+		scheme: 'ed25519',
+		publicKey: new Uint8Array(32),
+		source: 'real',
+		withTransactionSigner,
+		// Sign always returns a deterministic signature.
+		signTransaction,
+		signPersonalMessage: () =>
+			Effect.succeed({
+				bytes: 'fake-msg',
+				signature: 'AAAA',
+			}),
+		signAndExecute,
+	};
+};
 
 interface FakeSdkClientOpts {
 	readonly executeImpl?: (args: unknown) => Promise<unknown>;
@@ -221,6 +241,49 @@ describe('action signAndExecute helper', () => {
 		const err = (errOpt as Option.Some<{ phase?: string; message?: string }>).value;
 		expect(err.phase).toBe('sign');
 		expect(err.message?.includes('InsufficientGas')).toBe(true);
+	});
+
+	it('failed-tx with digest waits before the account transaction scope releases', async () => {
+		const events: string[] = [];
+		const account = fakeAccount(events);
+		const sui = makeFakeSui({
+			executeImpl: () => {
+				events.push('execute');
+				return Promise.resolve({
+					$kind: 'FailedTransaction',
+					FailedTransaction: {
+						digest: 'FAILED_DIGEST',
+						status: { error: 'MoveAbort' },
+					},
+				});
+			},
+			waitImpl: () => {
+				events.push('wait');
+				expect(events).toEqual(['scope:enter', 'sign', 'execute', 'wait']);
+				return Promise.resolve({});
+			},
+		});
+		const exit = await Effect.runPromiseExit(
+			Effect.scoped(
+				signAndExecute({
+					actionName: 'unit.failedTxWaits',
+					sui,
+					account,
+					build: (tx) => {
+						seedTx(tx);
+						tx.moveCall({
+							target: '0x0000000000000000000000000000000000000000000000000000000000000999::m::f',
+						});
+					},
+				}),
+			),
+		);
+		expect(Exit.isFailure(exit)).toBe(true);
+		const errOpt = Exit.findErrorOption(exit);
+		expect(Option.isSome(errOpt)).toBe(true);
+		const err = (errOpt as Option.Some<{ message?: string }>).value;
+		expect(err.message?.includes('MoveAbort')).toBe(true);
+		expect(events).toEqual(['scope:enter', 'sign', 'execute', 'wait', 'scope:exit']);
 	});
 
 	it('no-digest: surfaces ActionError(phase=parse)', async () => {
