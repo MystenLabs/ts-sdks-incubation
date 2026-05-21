@@ -74,6 +74,11 @@ export default defineDevstack(cliApplyCodegenPlugin, { stackName: 'main' });
 
 const OFFLINE_RESTORE_PLUGIN_KEY = 'test/offline-restore#0';
 const OFFLINE_RESTORE_IDENTITY = JSON.stringify({ marker: 'offline-restore' });
+const OFFLINE_RESTORE_SUI_PLUGIN_KEY = 'sui#0';
+const OFFLINE_RESTORE_SUI_SNAPSHOT_IDENTITY = JSON.stringify({
+	chain: 'snapshot-chain',
+	kind: 'sui-chain',
+});
 
 const writeOfflineRestoreConfig = (appRoot: string): string => {
 	const configPath = join(appRoot, 'devstack.config.ts');
@@ -104,6 +109,45 @@ const offlineRestorePlugin = defineNodePlugin({
 });
 
 export default defineDevstack(offlineRestorePlugin, { stackName: 'alpha' });
+`.trimStart(),
+	);
+	return configPath;
+};
+
+const writeOfflineRestoreSuiIdentityConfig = (appRoot: string, acquireMarker: string): string => {
+	const configPath = join(appRoot, 'devstack.config.ts');
+	writeFileSync(
+		configPath,
+		`
+import { writeFileSync } from 'node:fs';
+import { Effect } from 'effect';
+import { capabilities, defineDevstack, defineNodePlugin, defineTag } from '@mysten-incubation/devstack';
+
+const FakeSuiTag = defineTag<'sui', { readonly ready: true }>(
+\t'sui',
+\t'test',
+);
+
+const fakeSuiPlugin = defineNodePlugin({
+\tprovides: FakeSuiTag,
+\tconsumes: [] as const,
+\tkind: 'leaf-long-running',
+\tacquire: () =>
+\t\tEffect.sync(() => {
+\t\t\twriteFileSync(${JSON.stringify(acquireMarker)}, 'acquired');
+\t\t\treturn { ready: true } as const;
+\t\t}),
+\tcapabilities: () =>
+\t\tcapabilities({
+\t\t\tkind: 'snapshotable',
+\t\t\tsubtrees: [],
+\t\t\tmanagedContainers: [],
+\t\t\tmissingTolerance: 'fine',
+\t\t\tpreRestore: Effect.succeed({ kind: 'sui-chain', chain: 'fresh-live-chain' }),
+\t\t}),
+});
+
+export default defineDevstack(fakeSuiPlugin, { stackName: 'alpha' });
 `.trimStart(),
 	);
 	return configPath;
@@ -152,9 +196,13 @@ const writeSnapshotMetadata = (stackRoot: string, snapshotId: string): void => {
 const writeRestorableSnapshotArtifact = async (
 	stackRoot: string,
 	snapshotId: string,
+	identity: Readonly<Record<string, string>> = {
+		[OFFLINE_RESTORE_PLUGIN_KEY]: OFFLINE_RESTORE_IDENTITY,
+	},
 ): Promise<void> => {
 	const snapshotDir = join(stackRoot, 'snapshots', snapshotId);
 	mkdirSync(join(snapshotDir, SnapshotLayout.contributionsDir), { recursive: true });
+	const participants = Object.entries(identity);
 	writeFileSync(
 		join(snapshotDir, SnapshotLayout.metaFile),
 		JSON.stringify(
@@ -169,25 +217,27 @@ const writeRestorableSnapshotArtifact = async (
 				hostTreeIncluded: false,
 				subtrees: [],
 				containers: [],
-				identity: { [OFFLINE_RESTORE_PLUGIN_KEY]: OFFLINE_RESTORE_IDENTITY },
-				participants: [OFFLINE_RESTORE_PLUGIN_KEY],
+				identity,
+				participants: participants.map(([plugin]) => plugin),
 			},
 			null,
 			2,
 		),
 	);
-	writeFileSync(
-		join(snapshotDir, contributionPath(OFFLINE_RESTORE_PLUGIN_KEY)),
-		JSON.stringify(
-			{
-				version: SNAPSHOT_CONTRIBUTION_VERSION,
-				plugin: OFFLINE_RESTORE_PLUGIN_KEY,
-				identity: { [OFFLINE_RESTORE_PLUGIN_KEY]: OFFLINE_RESTORE_IDENTITY },
-			},
-			null,
-			2,
-		),
-	);
+	for (const [plugin, value] of participants) {
+		writeFileSync(
+			join(snapshotDir, contributionPath(plugin)),
+			JSON.stringify(
+				{
+					version: SNAPSHOT_CONTRIBUTION_VERSION,
+					plugin,
+					identity: { [plugin]: value },
+				},
+				null,
+				2,
+			),
+		);
+	}
 	await Effect.runPromise(
 		writeArtifactIntegrity(snapshotDir).pipe(Effect.provide(NodeFileSystem.layer)),
 	);
@@ -507,6 +557,61 @@ describe('cli/main', () => {
 					snapshotId: record.command.snapshotId,
 				})),
 			).toEqual([]);
+		} finally {
+			process.exitCode = previousExitCode;
+			stdoutSpy.mockRestore();
+			stderrSpy.mockRestore();
+		}
+	});
+
+	it('snapshot restore uses snapshot Sui identity before acquiring without a live roster', async () => {
+		const appRoot = makeTempRoot('cli-snapshot-direct-restore-sui-app');
+		const stateRoot = makeTempRoot('cli-snapshot-direct-restore-sui-state');
+		const stackRoot = join(stateRoot, 'stacks', 'alpha');
+		const acquireMarker = join(appRoot, 'sui-acquired');
+		const configPath = writeOfflineRestoreSuiIdentityConfig(appRoot, acquireMarker);
+		const previousExitCode = process.exitCode;
+		const stdout: Array<string> = [];
+		const stderr: Array<string> = [];
+		const stdoutSpy = vi
+			.spyOn(process.stdout, 'write')
+			.mockImplementation(captureProcessWrite(stdout));
+		const stderrSpy = vi
+			.spyOn(process.stderr, 'write')
+			.mockImplementation(captureProcessWrite(stderr));
+
+		try {
+			process.exitCode = undefined;
+			await writeRestorableSnapshotArtifact(stackRoot, 'baseline', {
+				[OFFLINE_RESTORE_SUI_PLUGIN_KEY]: OFFLINE_RESTORE_SUI_SNAPSHOT_IDENTITY,
+			});
+
+			await runCli([
+				'--config',
+				configPath,
+				'--state-dir',
+				stateRoot,
+				'--app',
+				'labeled-app',
+				'--stack',
+				'alpha',
+				'--json',
+				'snapshot',
+				'restore',
+				'baseline',
+			]);
+
+			expect(process.exitCode).toBe(0);
+			expect(stderr.join('')).toBe('');
+			expect(existsSync(acquireMarker)).toBe(false);
+			const envelope = JSON.parse(stdout.join('')) as {
+				readonly ok: true;
+				readonly data: { readonly published: string; readonly snapshotId: string };
+			};
+			expect(envelope.data).toEqual({
+				published: 'snapshot.restore',
+				snapshotId: 'baseline',
+			});
 		} finally {
 			process.exitCode = previousExitCode;
 			stdoutSpy.mockRestore();

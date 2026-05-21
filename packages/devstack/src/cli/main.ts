@@ -17,9 +17,12 @@
 //      the cross-process command channel for peer CLIs), and dispatch.
 //      Effect runs as the outer Node fiber so SIGINT reaches Scope
 //      finalizers.
-//   4. If verb is `snapshot save|restore` and no supervisor is live: construct
+//   4. If verb is `snapshot save` and no supervisor is live: construct
 //      substrate Layers locally, boot one-shot so snapshot participants
 //      register, then run the snapshot command through the same CLI dispatcher.
+//      If verb is `snapshot restore` and no supervisor is live: restore
+//      directly from the snapshot artifact before any stack acquire can
+//      mint fresh local state.
 //   5. Otherwise: build CHANNEL deps (publisher/subscriber backed by
 //      `<stackRoot>/{commands,events}.ndjson`) and dispatch.
 
@@ -66,7 +69,11 @@ import type {
 	EventSubscriber,
 } from '../surfaces/cli/commands/command-channel.ts';
 import type { LoadedConfig, ShutdownLatch } from '../surfaces/cli/commands/up.ts';
-import { SnapshotOrchestratorService } from '../orchestrators/snapshot/index.ts';
+import {
+	SnapshotOrchestratorService,
+	type RestoreParticipant,
+	type SnapshotMetadata,
+} from '../orchestrators/snapshot/index.ts';
 import {
 	buildProductionOrchestratorSinks,
 	buildProductionPostAcquireHook,
@@ -532,11 +539,19 @@ const runApplyLive = (
 	}).pipe(Effect.catch(() => Effect.void));
 };
 
+const snapshotIdentityParticipants = (meta: SnapshotMetadata): ReadonlyArray<RestoreParticipant> =>
+	Object.entries(meta.identity).map(([plugin, value]) => ({
+		plugin,
+		liveIdentity: Effect.succeed({ [plugin]: value }),
+	}));
+
 /** `snapshot save|restore` is valid in CI immediately around one-shot
  *  `apply`. In that shape there is no live supervisor to receive a
- *  channel command, so we boot a scoped one-shot stack, let the normal
- *  capability sinks register snapshot participants, and route the CLI
- *  command through a direct publisher that waits for the operation. */
+ *  channel command. Capture still needs a scoped one-shot stack so
+ *  snapshot participants can register from live resolved plugins.
+ *  Restore must not acquire the stack first: for local Sui snapshots,
+ *  the chain identity comes from the artifact being restored, not from
+ *  a newly booted localnet. */
 const runSnapshotDirect = (
 	argv: ReadonlyArray<string>,
 	flags: ReturnType<typeof parseGlobalFlags>,
@@ -545,6 +560,69 @@ const runSnapshotDirect = (
 ): Effect.Effect<void> => {
 	const loader = makeConfigLoader();
 	return Effect.gen(function* () {
+		if (snapshotSubcommand(flags) === 'restore') {
+			const identityValue: Identity = {
+				app: appName(identity.app),
+				stack: stackName(identity.stack),
+				chain: chainId(identity.network),
+			};
+			const substrateLayers = layerProductionOrchestrators().pipe(
+				Layer.provideMerge(buildSubstrateLayers(identityValue, identity.runtimeRoot)),
+			);
+			const program = Effect.gen(function* () {
+				const snapshot = yield* SnapshotOrchestratorService;
+				const fs = yield* FileSystem.FileSystem;
+				const provideFileSystem = <A, E>(
+					effect: Effect.Effect<A, E, FileSystem.FileSystem>,
+				): Effect.Effect<A, E, never> =>
+					effect.pipe(Effect.provideService(FileSystem.FileSystem, fs));
+				const directPublisher: CommandPublisher = {
+					publish: (cmd) => {
+						if (cmd.tag !== 'snapshot.restore') {
+							return Effect.die(`direct snapshot restore publisher cannot handle ${cmd.tag}`);
+						}
+						return provideFileSystem(
+							Effect.gen(function* () {
+								const entries = yield* snapshot.list;
+								const meta = entries.find((entry) => entry.id === cmd.snapshotId)?.metadata ?? null;
+								const participants = meta === null ? [] : snapshotIdentityParticipants(meta);
+								yield* snapshot.restore({ id: cmd.snapshotId, participants });
+							}),
+						);
+					},
+				};
+				yield* dispatch(
+					{
+						...buildChannelDeps(identity),
+						snapshot: {
+							publisher: directPublisher,
+							reader: makeSnapshotReader(identity),
+						},
+					},
+					{ argv, env: { ...process.env }, stdinIsTty },
+				);
+			});
+
+			yield* program.pipe(
+				Effect.provide(substrateLayers),
+				Effect.provide(Logger.layer([Logger.consolePretty()])),
+				Effect.matchCauseEffect({
+					onFailure: (cause) =>
+						Effect.sync(() => {
+							process.stderr.write(
+								`\nerror: snapshot restore failed\n${Cause.pretty(cause as Cause.Cause<unknown>)}\n`,
+							);
+							process.exitCode = 1;
+						}),
+					onSuccess: () =>
+						Effect.sync(() => {
+							process.exitCode ??= 0;
+						}),
+				}),
+			);
+			return;
+		}
+
 		const loaded = yield* loader.load(flags.configPath).pipe(
 			Effect.matchEffect({
 				onFailure: (err) =>
