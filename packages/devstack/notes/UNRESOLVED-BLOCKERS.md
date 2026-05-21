@@ -145,9 +145,8 @@ Closed evidence:
   smoke after the package-directory move.
 - Install-from-tarball smoke still needs to import every exported subpath and boot a minimal stack
   after the package-directory move.
-- `.github/workflows/devstack-e2e.yml` still targets the old example/product-test shape. Before
-  workspace cutover, update the matrix/scripts or add equivalent replacement Playwright suites so CI
-  exercises the replacement package, not stale v3 assumptions.
+- Devstack E2E now targets the replacement examples and stack-scoped snapshot artifacts, but the
+  latest full CI rerun must still prove the seed/e2e matrices green before this evidence is closed.
 
 Acceptance evidence:
 
@@ -240,6 +239,14 @@ Closed evidence:
   audit: `pnpm --filter @mysten-incubation/devstack smoke:pack-consumer`, which packs to a temp
   directory, installs in a clean consumer, checks `npx devstack --help`, checks runtime ESM imports
   for the root, `/vite`, and `/runtime` exports, and fails on any unexpected consumer type error.
+- 2026-05-21 Worker Browser Barrel: the public `./browser` barrel now re-exports
+  `setupDevstackBrowserGlobals` from side-effect-free `setup-globals.ts`; the top-level await that
+  loads generated dapp-kit config remains isolated to `./browser/setup`. Release-surface regression
+  imports `@mysten-incubation/devstack/browser` without setting `globalThis.__devstackDAppKit__`.
+- 2026-05-21 Worker E2E Workflow: the Devstack E2E workflow carries explicit `example` and `stack`
+  matrix fields, keeping working directories/artifact names on the example package while using the
+  resolved stack name for `.devstack/stacks/<stack>/snapshots`. YAML parse and `git diff --check`
+  passed; full GitHub seed/e2e rerun remains required.
 
 ## P0: Public API ergonomics and unsupported options are not release-quality
 

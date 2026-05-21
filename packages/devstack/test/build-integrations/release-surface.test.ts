@@ -118,16 +118,33 @@ describe('release surface static checks', () => {
 
 	it('browser setup reaches only the slot-only runtime barrel', () => {
 		const setup = readText('src/build-integrations/browser/setup.ts');
+		const setupGlobals = readText('src/build-integrations/browser/setup-globals.ts');
 		const browserIndex = readText('src/build-integrations/browser/index.ts');
 
-		expect(setup).toContain('../runtime/browser.ts');
+		expect(setupGlobals).toContain('../runtime/browser.ts');
+		expect(setupGlobals).not.toContain('../runtime/index.ts');
+		expect(setup).toContain('./setup-globals.ts');
 		expect(setup).not.toContain('../runtime/index.ts');
 		expect(browserIndex).toContain('../runtime/browser.ts');
 		expect(browserIndex).not.toContain('../runtime/index.ts');
+		expect(browserIndex).toContain('./setup-globals.ts');
+		expect(browserIndex).not.toContain('./setup.ts');
+	});
+
+	it('imports the public browser barrel without running browser setup', async () => {
+		Reflect.deleteProperty(globalThis, '__devstackDAppKit__');
+
+		const browserSpecifier: string = '@mysten-incubation/devstack/browser';
+		const browser = (await import(browserSpecifier)) as Record<string, unknown>;
+
+		expect(browser.defineDevstackBrowserConfig).toBeTypeOf('function');
+		expect(browser.setupDevstackBrowserGlobals).toBeTypeOf('function');
+		expect(Object.hasOwn(globalThis, '__devstackDAppKit__')).toBe(false);
 	});
 
 	it('exposes plugin-author runtime services from the root barrel', async () => {
-		const root = await import('../../src/index.ts');
+		const rootSpecifier: string = '@mysten-incubation/devstack';
+		const root = (await import(rootSpecifier)) as Record<string, unknown>;
 
 		expect(root.ContainerRuntimeService).toBeDefined();
 		expect(root.IdentityContext).toBeDefined();

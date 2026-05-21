@@ -16,7 +16,7 @@ name: Devstack E2E
 #             seal keys, and service deployment outputs.
 #
 #   2. e2e:   matrix of (example × shard). Downloads the artifact,
-#             extracts to `.devstack/stacks/<example>/snapshots/`,
+#             extracts to `.devstack/stacks/<stack>/snapshots/`,
 #             runs `devstack snapshot restore baseline`, then runs the
 #             example app's playwright suite against the restored stack.
 
@@ -39,10 +39,16 @@ jobs:
         # Representative product apps: a Sui-only app, a Walrus/Seal app,
         # and the heavier DeepBook app with Postgres, Pyth, indexer,
         # server, margin, and maker services.
-        # These names also match the resolved stack names: `arena`
-        # sets `stackName` explicitly; the others fall back to their
-        # unscoped package names.
-        example: [arena, private-content, deepbook-full]
+        # Stack dirs are the resolved devstack identity: `arena` sets
+        # `stackName` explicitly; the others fall back to their unscoped
+        # package names. Artifact names stay keyed by example package.
+        include:
+          - example: arena
+            stack: arena
+          - example: private-content
+            stack: private-content
+          - example: deepbook-full
+            stack: deepbook-full
     steps:
       - name: Checkout
         uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # pin@v4.1.1
@@ -98,7 +104,7 @@ jobs:
       - name: Show snapshot contents (debug)
         working-directory: examples/${{ matrix.example }}
         run: |
-          snapshot_dir=".devstack/stacks/${{ matrix.example }}/snapshots"
+          snapshot_dir=".devstack/stacks/${{ matrix.stack }}/snapshots"
           echo "--- ${snapshot_dir}/ tree ---"
           find "${snapshot_dir}" -maxdepth 4 -type f -exec ls -la {} +
           echo '--- meta.json ---'
@@ -108,7 +114,7 @@ jobs:
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # pin@v4.6.0
         with:
           name: devstack-snapshot-${{ matrix.example }}
-          path: examples/${{ matrix.example }}/.devstack/stacks/${{ matrix.example }}/snapshots
+          path: examples/${{ matrix.example }}/.devstack/stacks/${{ matrix.stack }}/snapshots
           retention-days: 3
           if-no-files-found: error
 
@@ -119,8 +125,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        example: [arena, private-content, deepbook-full]
-        shard: [1, 2]
+        include:
+          - example: arena
+            stack: arena
+            shard: 1
+          - example: arena
+            stack: arena
+            shard: 2
+          - example: private-content
+            stack: private-content
+            shard: 1
+          - example: private-content
+            stack: private-content
+            shard: 2
+          - example: deepbook-full
+            stack: deepbook-full
+            shard: 1
+          - example: deepbook-full
+            stack: deepbook-full
+            shard: 2
     steps:
       - name: Checkout
         uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # pin@v4.1.1
@@ -139,14 +162,14 @@ jobs:
         uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # pin@v4.1.9
         with:
           name: devstack-snapshot-${{ matrix.example }}
-          path: examples/${{ matrix.example }}/.devstack/stacks/${{ matrix.example }}/snapshots
+          path: examples/${{ matrix.example }}/.devstack/stacks/${{ matrix.stack }}/snapshots
 
       - name: Restore snapshot
         working-directory: examples/${{ matrix.example }}
-        # Brings the saved stack state and runtime files back into place
-        # and loads every committed container image. Direct-node
-        # invocation: see the seed job's apply step for the bin-symlink
-        # rationale.
+        # Brings the saved stack state and runtime files back into the
+        # resolved `.devstack/stacks/<stack>/snapshots/` directory and
+        # loads every committed container image. Direct-node invocation:
+        # see the seed job's apply step for the bin-symlink rationale.
         run: node ../../packages/devstack/dist/cli/main.mjs snapshot restore baseline
 
       - name: Install playwright browsers

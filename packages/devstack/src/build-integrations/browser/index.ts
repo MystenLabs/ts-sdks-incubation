@@ -17,7 +17,9 @@
 //
 // Browser-bundle hygiene: slot exports come from the slot-only runtime
 // barrel. The config builder is evaluated by the test runner, not the
-// browser; the setup file is browser-safe by construction.
+// browser; the setup file is browser-safe by construction and must not
+// be imported by this barrel because it intentionally executes setup at
+// module evaluation time.
 
 export {
 	defineDevstackBrowserConfig,
@@ -25,7 +27,7 @@ export {
 	type DevstackBrowserModeOptions,
 } from './config.ts';
 
-export { setupDevstackBrowserGlobals, type DAppKitConfigModule } from './setup.ts';
+export { setupDevstackBrowserGlobals, type DAppKitConfigModule } from './setup-globals.ts';
 
 // Re-exports from the canonical `runtime/` substrate — the slot
 // contract is shared across vite, playwright, and browser-mode vitest.
