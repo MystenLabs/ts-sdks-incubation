@@ -100,6 +100,9 @@ export const computePublicHostname = (app: string, stack: string, nodeIndex: num
 	return stack === 'main' ? base : `${stack}.${base}`;
 };
 
+export const buildWalrusNetworkName = (app: string, stack: string, walrusName: string): string =>
+	`devstack-${app}-${stack}-walrus-${walrusName}-net`;
+
 /** Per-node TCP ready-probe interval. */
 const NODE_READY_PROBE_INTERVAL_MS = 500;
 

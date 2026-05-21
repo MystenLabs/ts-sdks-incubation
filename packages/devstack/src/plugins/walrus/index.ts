@@ -87,7 +87,7 @@ import {
 import { makeSnapshotable, type WalrusSnapshotMode } from './snapshot.ts';
 import { makeLocalRoutables } from './routable.ts';
 import { WALRUS_STATE_REGISTRY_KEY, type WalrusStateEntry } from './registry-publish.ts';
-import type { WalrusStorageNode } from './storage-nodes.ts';
+import { buildWalrusNetworkName, type WalrusStorageNode } from './storage-nodes.ts';
 import { swapSuiForWal, type WalExchangeHandle, type WalSwapSdk } from './seed-wal.ts';
 import { parseDevstackNetwork } from '../../api/inference-network.ts';
 
@@ -289,13 +289,17 @@ const buildLocalPlugin = <const Accounts extends ReadonlyArray<WalrusAccountMemb
 				// host ports — no shared docker network needed.
 				//
 				// Architectural decision (B5): walrus owns its OWN docker
-				// network (`walrus-${name}-net`) for storage-node ↔ deploy
-				// connectivity; sui-side hops go through the host gateway.
+				// network for storage-node ↔ deploy connectivity; sui-side
+				// hops go through the host gateway.
 				// On Linux this requires Docker Desktop or the
 				// `host.docker.internal:host-gateway` runtime hint (the
 				// established devstack convention — see plugins/deepbook
 				// which uses the same pattern).
-				const walrusNetworkName = `walrus-${resolved.name}-net`;
+				const walrusNetworkName = buildWalrusNetworkName(
+					identity.app,
+					identity.stack,
+					resolved.name,
+				);
 				const suiRpcUrlInNetwork = sui.hostGateway.rpcUrl;
 				// sui-faucet v2 endpoint — `/v2/gas` is the supported path
 				// on devnet-v1.71.0+ (the binary still answers `/v1/gas`

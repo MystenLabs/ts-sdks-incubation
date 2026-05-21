@@ -83,6 +83,8 @@ export const PackageVerifyShape = Schema.Struct({
  * back to a typed `PublishError` phase enum.
  */
 export interface PublishExecutor {
+	readonly scrubsInsideContainer: boolean;
+
 	/** Build the Move source tree into `{ modules, dependencies }`.
 	 *  Dispatches between (a) per-app build container, (b) fresh
 	 *  `docker run --rm`, (c) host `sui` CLI. The produce body just
@@ -251,7 +253,9 @@ export const acquireLocal = (
 				// (re-exported through `build.ts` → from
 				// `../sui/move-lock-scrub.ts`) — NO duplicate.
 				yield* Effect.annotateCurrentSpan({ 'package.publish.phase': 'scrub' });
-				yield* scrubLocksHost(inputs.sourcePath, '~/.move');
+				yield* scrubLocksHost(inputs.sourcePath, '~/.move', {
+					packageLockFailures: inputs.executor.scrubsInsideContainer ? 'best-effort' : 'fatal',
+				});
 
 				// Produce 2/5 — build. Executor dispatches between (a)
 				// per-app build container, (b) `docker run --rm`, (c) host

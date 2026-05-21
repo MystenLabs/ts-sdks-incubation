@@ -16,9 +16,9 @@ name: Devstack E2E
 #             seal keys, and service deployment outputs.
 #
 #   2. e2e:   matrix of (example × shard). Downloads the artifact,
-#             extracts to `.devstack/snapshots/`, runs `devstack
-#             snapshot restore baseline`, then runs the example app's
-#             playwright suite against the restored stack.
+#             extracts to `.devstack/stacks/<example>/snapshots/`,
+#             runs `devstack snapshot restore baseline`, then runs the
+#             example app's playwright suite against the restored stack.
 
 on:
   pull_request:
@@ -39,6 +39,9 @@ jobs:
         # Representative product apps: a Sui-only app, a Walrus/Seal app,
         # and the heavier DeepBook app with Postgres, Pyth, indexer,
         # server, margin, and maker services.
+        # These names also match the resolved stack names: `arena`
+        # sets `stackName` explicitly; the others fall back to their
+        # unscoped package names.
         example: [arena, private-content, deepbook-full]
     steps:
       - name: Checkout
@@ -95,16 +98,17 @@ jobs:
       - name: Show snapshot contents (debug)
         working-directory: examples/${{ matrix.example }}
         run: |
-          echo '--- snapshots/ tree ---'
-          find .devstack/snapshots -maxdepth 4 -type f -exec ls -la {} +
+          snapshot_dir=".devstack/stacks/${{ matrix.example }}/snapshots"
+          echo "--- ${snapshot_dir}/ tree ---"
+          find "${snapshot_dir}" -maxdepth 4 -type f -exec ls -la {} +
           echo '--- meta.json ---'
-          find .devstack/snapshots -name meta.json -exec cat {} \;
+          find "${snapshot_dir}" -name meta.json -exec cat {} \;
 
       - name: Upload snapshot artifact
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # pin@v4.6.0
         with:
           name: devstack-snapshot-${{ matrix.example }}
-          path: examples/${{ matrix.example }}/.devstack/snapshots
+          path: examples/${{ matrix.example }}/.devstack/stacks/${{ matrix.example }}/snapshots
           retention-days: 3
           if-no-files-found: error
 
@@ -135,7 +139,7 @@ jobs:
         uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # pin@v4.1.9
         with:
           name: devstack-snapshot-${{ matrix.example }}
-          path: examples/${{ matrix.example }}/.devstack/snapshots
+          path: examples/${{ matrix.example }}/.devstack/stacks/${{ matrix.example }}/snapshots
 
       - name: Restore snapshot
         working-directory: examples/${{ matrix.example }}

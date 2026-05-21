@@ -76,6 +76,10 @@ export interface BuildOutput {
 	readonly dependencies: ReadonlyArray<string>;
 }
 
+export interface ScrubLocksHostOptions {
+	readonly packageLockFailures?: 'fatal' | 'best-effort';
+}
+
 export const stripPinnedSections = (source: string): string => {
 	const lines = source.split('\n');
 	const out: Array<string> = [];
@@ -286,11 +290,22 @@ const scrubCachedLockFiles = async (root: string): Promise<void> => {
 export const scrubLocksHost = (
 	sourcePath: string,
 	moveHomeRoot: string,
+	options: ScrubLocksHostOptions = {},
 ): Effect.Effect<void, MoveBuildError, Scope.Scope> =>
 	Effect.tryPromise({
 		try: async () => {
 			const ownLocks = await findMoveLockFiles(sourcePath);
-			for (const f of ownLocks) await scrubOneLockFile(f);
+			for (const f of ownLocks) {
+				if (options.packageLockFailures === 'best-effort') {
+					try {
+						await scrubOneLockFile(f);
+					} catch {
+						continue;
+					}
+				} else {
+					await scrubOneLockFile(f);
+				}
+			}
 
 			const moveHome = expandHome(moveHomeRoot);
 			const gitCache = join(moveHome, 'git');

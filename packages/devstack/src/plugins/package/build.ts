@@ -10,6 +10,7 @@ import {
 	scrubLocksHost as scrubLocksHostNeutral,
 	type BuildOutput,
 	type MoveBuildError,
+	type ScrubLocksHostOptions,
 	type MoveBuildContainer,
 } from '../../substrate/runtime/sui-move-build/index.ts';
 import type { ChainBuildContainer } from '../sui/chain-build-container.ts';
@@ -53,8 +54,9 @@ export const hashMoveSources = (sourcePath: string): Effect.Effect<ContentHash, 
 export const scrubLocksHost = (
 	sourcePath: string,
 	moveHomeRoot: string,
+	options?: ScrubLocksHostOptions,
 ): Effect.Effect<void, PublishError, Scope.Scope> =>
-	scrubLocksHostNeutral(sourcePath, moveHomeRoot).pipe(Effect.mapError(toPublishError));
+	scrubLocksHostNeutral(sourcePath, moveHomeRoot, options).pipe(Effect.mapError(toPublishError));
 
 export const runMoveBuild = (
 	inputs: BuildInputs,

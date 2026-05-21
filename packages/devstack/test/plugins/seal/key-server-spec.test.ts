@@ -25,6 +25,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+	buildSealNetworkName,
 	buildKeyServerEnsureContainerSpec,
 	buildKeyServerSpec,
 	CONTAINER_ENV,
@@ -52,6 +53,17 @@ const SAMPLE_INPUTS: KeyServerSpecInputs = {
 	routedHostname: 'seal.seal.app.localhost',
 	routedUrl: 'http://seal.seal.app.localhost',
 };
+
+describe('buildSealNetworkName', () => {
+	it('scopes the plugin network by app and stack', () => {
+		expect(buildSealNetworkName('private-content', 'main', 'seal')).toBe(
+			'devstack-private-content-main-seal-seal-net',
+		);
+		expect(buildSealNetworkName('private-content', 'seed-snapshot', 'seal')).toBe(
+			'devstack-private-content-seed-snapshot-seal-seal-net',
+		);
+	});
+});
 
 describe('buildKeyServerSpec — distilled-doc invariants', () => {
 	it('forwards routedUrl byte-for-byte (invariant #1)', () => {

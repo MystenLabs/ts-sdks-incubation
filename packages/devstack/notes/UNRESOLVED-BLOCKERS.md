@@ -99,6 +99,10 @@ Evidence landed 2026-05-21:
   `ubuntu-aarch64` devnet assets appear to contain x86-64 binaries. The CI `linux/amd64` path is
   covered by the deploy-capable release pin and binary preflight, but Apple Silicon/native arm64
   local Walrus needs an explicit platform policy, upstream fixed asset, or source-build fallback.
+- Long-lived Docker hosts can still block local private-content apply before deploy when stale
+  devstack networks exhaust Docker's predefined bridge address pools. Local repro after plugin
+  network scoping failed with `all predefined address pools have been fully subnetted`; this needs a
+  prune/wipe path or explicit network-subnet policy before relying on repeated local seed runs.
 
 Acceptance evidence:
 
@@ -348,6 +352,12 @@ Closed evidence:
   package-owned `Move.lock` files, but cached `~/.move/git/**/Move.lock` files are best-effort so
   root-owned Docker cache entries do not break Docker-backed production builds before the container
   scrub runs. Targeted test passed: `test/substrate/runtime/sui-move-build/sui-move-build.test.ts`.
+- 2026-05-21 Worker Snapshot Scrub: Docker-backed package publish now declares when the build path
+  scrubs inside the container, allowing host `scrubLocksHost` to treat package-owned `Move.lock`
+  rewrite failures as best-effort only for that container-backed path while keeping host-only builds
+  strict. Targeted test passed: `test/substrate/runtime/sui-move-build/sui-move-build.test.ts`; an
+  isolated arena proof ran `apply`, made `move/connect_four/Move.lock` read-only, then
+  `snapshot save baseline` successfully captured.
 
 ## P1: Product evidence is too stub-heavy
 

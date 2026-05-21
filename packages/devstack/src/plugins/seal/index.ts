@@ -60,7 +60,7 @@ import { defaultSealSourceSiblingKey } from './lifted-siblings/source-fetch.ts';
 import type { ForkUpstream } from './mode/fork-known.ts';
 import type { KnownNetwork } from './mode/live.ts';
 import { validateLiveInputs } from './mode/live.ts';
-import { DEFAULT_KEY_SERVER_PORT } from './key-server.ts';
+import { buildSealNetworkName, DEFAULT_KEY_SERVER_PORT } from './key-server.ts';
 import {
 	bootLocalKeygen,
 	resolveLocalKeygenOptions,
@@ -280,11 +280,10 @@ const buildLocalKeygenPlugin = <SignerName extends string>(
 				// process and does not need the container network.
 				//
 				// Architectural decision (B5): seal owns its OWN docker
-				// network (`seal-${name}-net`) for the key-server's
-				// network attachment; sui-side hops go through the host
-				// gateway. Mirrors walrus's pattern (see
-				// plugins/walrus/index.ts §B5).
-				const sealNetworkName = `seal-${resolved.name}-net`;
+				// network for the key-server's network attachment;
+				// sui-side hops go through the host gateway. Mirrors
+				// walrus's pattern (see plugins/walrus/index.ts §B5).
+				const sealNetworkName = buildSealNetworkName(identity.app, identity.stack, resolved.name);
 				const suiRpcUrlInNetwork = sui.hostGateway.rpcUrl;
 				const routed = buildSealKeyServerPublicRoute({
 					app: identity.app,

@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	WALRUS_NODE_IP_BASE,
 	WALRUS_ROUTER_PORT,
+	buildWalrusNetworkName,
 	computePublicHostname,
 } from '../../../src/plugins/walrus/storage-nodes.ts';
 
@@ -27,6 +28,17 @@ describe('computePublicHostname', () => {
 		const a = computePublicHostname('app', 'main', 0);
 		const b = computePublicHostname('app', 'main', 0);
 		expect(a).toBe(b);
+	});
+});
+
+describe('buildWalrusNetworkName', () => {
+	it('scopes the plugin network by app and stack', () => {
+		expect(buildWalrusNetworkName('private-content', 'main', 'walrus')).toBe(
+			'devstack-private-content-main-walrus-walrus-net',
+		);
+		expect(buildWalrusNetworkName('private-content', 'seed-snapshot', 'walrus')).toBe(
+			'devstack-private-content-seed-snapshot-walrus-walrus-net',
+		);
 	});
 });
 

@@ -82,6 +82,9 @@ export const HOST_GATEWAY_EXTRA_HOSTS: Readonly<Record<string, string>> = {
 	'host.docker.internal': 'host-gateway',
 };
 
+export const buildSealNetworkName = (app: string, stack: string, sealName: string): string =>
+	`devstack-${app}-${stack}-seal-${sealName}-net`;
+
 /** Per-probe interval inside the bounded retry. */
 const READY_PROBE_INTERVAL_MS = 500;
 

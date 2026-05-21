@@ -145,6 +145,29 @@ describe('sui-move-build helpers', () => {
 		}
 	});
 
+	it('tolerates unwritable package locks when container scrub will run later', async () => {
+		const root = await mkdtemp(join(tmpdir(), 'devstack-move-scrub-'));
+		const packageLock = join(root, 'package', 'Move.lock');
+		try {
+			await mkdir(join(root, 'package'), { recursive: true });
+			await mkdir(join(root, 'move-home'), { recursive: true });
+			const pinnedLock = '[move]\nversion = 3\n[pinned.testnet.dep]\npublished-at = "0x1"\n';
+			await writeFile(packageLock, pinnedLock);
+			await chmod(packageLock, 0o444);
+
+			await Effect.runPromise(
+				scrubLocksHost(join(root, 'package'), join(root, 'move-home'), {
+					packageLockFailures: 'best-effort',
+				}).pipe(Effect.scoped),
+			);
+
+			expect(await readFile(packageLock, 'utf8')).toBe(pinnedLock);
+		} finally {
+			await chmod(packageLock, 0o644).catch(() => {});
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
 	it('parses trailing sui move build JSON into bytecode modules', async () => {
 		const output = [
 			'Compiling dependencies...',

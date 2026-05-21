@@ -70,6 +70,8 @@ export interface PublishExecutorInputs {
  * methods are closures over the inputs; no per-call construction.
  */
 export const makePublishExecutor = (inputs: PublishExecutorInputs): PublishExecutor => ({
+	scrubsInsideContainer: inputs.runtime !== undefined && inputs.buildImage !== undefined,
+
 	// Build step — delegate to the Move-build dispatcher in `build.ts`.
 	build: ({
 		sourcePath,
