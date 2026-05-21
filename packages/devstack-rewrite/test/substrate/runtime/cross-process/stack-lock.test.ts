@@ -1,7 +1,7 @@
 // stack-lock — claim path must auto-mkdir parent directory.
 //
 // Regression: on a fresh boot under a fresh `mkdtempSync` runtime root,
-// the `<runtimeRoot>/<app>/<stack>/` directory does not exist yet. No
+// the `<runtimeRoot>/stacks/<stack>/` directory does not exist yet. No
 // L0 subsystem touches the disk until the first cross-process claim,
 // at which point `stack-lock.ts::tryAcquireSync` calls
 // `writeFileSync(stackLockFile, ..., { flag: 'wx' })`. Without the
@@ -37,10 +37,10 @@ describe('acquireStackLock', () => {
 		Effect.gen(function* () {
 			const root = freshRoot();
 			try {
-				// Path two levels deep — `<root>/app/stack/stack.lock`.
-				// `<root>/app/stack/` does NOT exist yet; the claim
+				// Path two levels deep — `<root>/stacks/stack/stack.lock`.
+				// `<root>/stacks/stack/` does NOT exist yet; the claim
 				// path must mkdir -p before the O_EXCL write.
-				const stackRoot = join(root, 'template', 'main');
+				const stackRoot = join(root, 'stacks', 'main');
 				const lockPath = join(stackRoot, 'stack.lock');
 				expect(existsSync(stackRoot)).toBe(false);
 
@@ -69,7 +69,7 @@ describe('acquireStackLock', () => {
 		Effect.gen(function* () {
 			const root = freshRoot();
 			try {
-				const stackRoot = join(root, 'template', 'main');
+				const stackRoot = join(root, 'stacks', 'main');
 				const paths = {
 					stackLockFile: join(stackRoot, 'stack.lock'),
 					rosterFile: join(stackRoot, 'roster.json'),
@@ -99,7 +99,7 @@ describe('acquireStackLock', () => {
 		Effect.gen(function* () {
 			const root = freshRoot();
 			try {
-				const stackRoot = join(root, 'template', 'main');
+				const stackRoot = join(root, 'stacks', 'main');
 				const lockPath = join(stackRoot, 'stack.lock');
 
 				yield* Effect.scoped(

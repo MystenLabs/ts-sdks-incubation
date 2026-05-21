@@ -1,7 +1,7 @@
 // Cross-process safety protocol.
 //
 // Architecture § Cross-process safety protocol. Three artifacts per
-// stack on disk under `~/.devstack/<app>/<stack>/`:
+// stack on disk under `<runtime-root>/stacks/<stack>/`:
 //
 //   - `stack.lock` — OS-advisory exclusive lock; short critical
 //     sections only.

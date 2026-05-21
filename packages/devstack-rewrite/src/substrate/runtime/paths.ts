@@ -3,15 +3,15 @@
 // Architecture § "What's collapsed" — three path resolvers
 // (state-store, service-paths, snapshot) consolidate to one. This is
 // the L0 helper every disk-touching subsystem reaches for; nothing
-// else in the runtime package may compose `<root>/<app>/<stack>/...`
+// else in the runtime package may compose `<root>/stacks/<stack>/...`
 // by hand.
 //
 // The resolver is a typed bundle: given an `Identity` and the
 // `RuntimeRoot`, it returns the closed set of paths the substrate
 // understands. Subsystems that need a sub-path inside one of those
 // (e.g. cache namespace + chain + content-hash) compose ON TOP of the
-// bundle's `cacheDir`, but they NEVER reach for `path.join(root, app,
-// stack)` themselves.
+// bundle's `cacheDir`, but they NEVER reach for
+// `path.join(root, 'stacks', stack)` themselves.
 
 import { Context, Effect, Layer, Path } from 'effect';
 
@@ -19,8 +19,8 @@ import type { Identity } from '../identity.ts';
 
 /**
  * Runtime root — the on-disk base under which every stack's state
- * lives. Defaults to `~/.devstack`, but is injectable so tests pin
- * to a tempdir and parallel-stack tests pin to per-test prefixes.
+ * lives. Defaults to `.devstack`, but is injectable so tests pin to
+ * a tempdir and parallel-stack tests pin to per-test prefixes.
  *
  * Held as a tagged service so the rest of the substrate can request
  * it without threading the string through every signature.
@@ -118,7 +118,7 @@ export const layerStackPaths: Layer.Layer<
 		const { root } = yield* RuntimeRoot;
 		const identity = yield* IdentityContext;
 		const path = yield* Path.Path;
-		const stackRoot = path.join(root, identity.app, identity.stack);
+		const stackRoot = path.join(root, 'stacks', identity.stack);
 		const cacheDir = path.join(stackRoot, 'cache');
 		const cacheNamespaceDir = (namespace: string): string => path.join(cacheDir, namespace);
 		const cacheChainDir = (namespace: string, chain: string): string =>

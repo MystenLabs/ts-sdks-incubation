@@ -6,54 +6,62 @@
 	"private": true,
 	"type": "module",
 	"main": "./dist/index.mjs",
-	"types": "./src/index.ts",
+	"types": "./dist/index.d.mts",
 	"bin": {
 		"devstack": "./dist/cli/main.mjs"
 	},
 	"exports": {
 		".": {
-			"types": "./src/index.ts",
+			"types": "./dist/index.d.mts",
 			"import": "./dist/index.mjs"
 		},
 		"./contracts": {
-			"types": "./src/contracts/index.ts",
+			"types": "./dist/contracts/index.d.mts",
 			"import": "./dist/contracts/index.mjs"
 		},
 		"./substrate": {
-			"types": "./src/substrate/index.ts",
+			"types": "./dist/substrate/index.d.mts",
 			"import": "./dist/substrate/index.mjs"
 		},
 		"./vite": {
-			"types": "./src/build-integrations/vite/index.ts",
+			"types": "./dist/build-integrations/vite/index.d.mts",
 			"import": "./dist/build-integrations/vite/index.mjs"
 		},
 		"./vitest": {
-			"types": "./src/build-integrations/vitest/index.ts",
+			"types": "./dist/build-integrations/vitest/index.d.mts",
 			"import": "./dist/build-integrations/vitest/index.mjs"
 		},
 		"./vitest/setup": {
-			"types": "./src/build-integrations/vitest/setup.ts",
+			"types": "./dist/build-integrations/vitest/setup.d.mts",
 			"import": "./dist/build-integrations/vitest/setup.mjs"
 		},
 		"./playwright": {
-			"types": "./src/build-integrations/playwright/index.ts",
+			"types": "./dist/build-integrations/playwright/index.d.mts",
 			"import": "./dist/build-integrations/playwright/index.mjs"
 		},
 		"./browser": {
-			"types": "./src/build-integrations/browser/index.ts",
+			"types": "./dist/build-integrations/browser/index.d.mts",
 			"import": "./dist/build-integrations/browser/index.mjs"
 		},
 		"./browser/setup": {
-			"types": "./src/build-integrations/browser/setup.ts",
+			"types": "./dist/build-integrations/browser/setup.d.mts",
 			"import": "./dist/build-integrations/browser/setup.mjs"
 		},
 		"./runtime": {
-			"types": "./src/build-integrations/runtime/index.ts",
+			"types": "./dist/build-integrations/runtime/index.d.mts",
 			"import": "./dist/build-integrations/runtime/index.mjs"
 		}
 	},
 	"sideEffects": false,
-	"files": ["src", "dist", "images", "!src/samples", "!dist/samples", "!dist/node_modules"],
+	"files": [
+		"src",
+		"dist",
+		"images",
+		"!src/generated",
+		"!src/samples",
+		"!dist/samples",
+		"!dist/node_modules"
+	],
 	"scripts": {
 		"build": "tsdown",
 		"typecheck": "tsc --noEmit",

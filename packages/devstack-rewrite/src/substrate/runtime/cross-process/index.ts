@@ -1,7 +1,7 @@
 // Cross-process protocol — barrel for the three on-disk artifacts.
 //
 // Architecture § Cross-process safety protocol. Three files under
-// `<runtime-root>/<app>/<stack>/`:
+// `<runtime-root>/stacks/<stack>/`:
 //
 //   - `stack.lock`              → stack-lock.ts
 //   - `roster.json`             → roster.ts (+ container-claims.json sibling)

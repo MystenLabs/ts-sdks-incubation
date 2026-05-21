@@ -1,6 +1,6 @@
 // State-store implementation.
 //
-// Per-stack JSON file at `<runtime-root>/<app>/<stack>/state.json`.
+// Per-stack JSON file at `<runtime-root>/stacks/<stack>/state.json`.
 // Plugin-keyed namespacing; tombstone-vs-missing distinction;
 // atomic-write on every mutation; cross-process safety via the
 // injected lock.

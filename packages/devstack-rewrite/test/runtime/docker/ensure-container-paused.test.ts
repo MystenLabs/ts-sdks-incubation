@@ -94,75 +94,79 @@ const dockerRuntimeLayer = (bin: string, stackRoot: string): Layer.Layer<Contain
 	);
 
 describe('ensureContainer paused adoption', () => {
-	it('unpauses a matching paused container before adopting it as running', async () => {
-		const root = mkdtempSync(join(tmpdir(), 'docker-ensure-paused-test-'));
-		try {
-			const bin = join(root, 'docker');
-			const log = join(root, 'docker.log');
-			const stackRoot = join(root, 'stack');
-			mkdirSync(stackRoot, { recursive: true });
-			const inspectJson = JSON.stringify([
-				{
-					Id: 'paused-id',
-					Image: 'sha256:desired',
-					HostConfig: { PortBindings: {} },
-					State: { Running: true, Paused: true, ExitCode: 0 },
-					Config: {
-						Image: 'img:desired',
-						Labels: {
-							'devstack.managed': 'true',
-							'devstack.app': 'app',
-							'devstack.stack': 'main',
-							'devstack.plugin': 'postgres',
-							'devstack.role': 'db',
+	it(
+		'unpauses a matching paused container before adopting it as running',
+		{ timeout: 10_000 },
+		async () => {
+			const root = mkdtempSync(join(tmpdir(), 'docker-ensure-paused-test-'));
+			try {
+				const bin = join(root, 'docker');
+				const log = join(root, 'docker.log');
+				const stackRoot = join(root, 'stack');
+				mkdirSync(stackRoot, { recursive: true });
+				const inspectJson = JSON.stringify([
+					{
+						Id: 'paused-id',
+						Image: 'sha256:desired',
+						HostConfig: { PortBindings: {} },
+						State: { Running: true, Paused: true, ExitCode: 0 },
+						Config: {
+							Image: 'img:desired',
+							Labels: {
+								'devstack.managed': 'true',
+								'devstack.app': 'app',
+								'devstack.stack': 'main',
+								'devstack.plugin': 'postgres',
+								'devstack.role': 'db',
+							},
 						},
+						NetworkSettings: { Networks: {} },
 					},
-					NetworkSettings: { Networks: {} },
-				},
-			]);
-			writeFileSync(
-				bin,
-				[
-					'#!/bin/sh',
-					`printf '%s\\n' "$*" >> ${JSON.stringify(log)}`,
-					'if [ "$1" = "inspect" ]; then',
-					`  printf '%s\\n' ${JSON.stringify(inspectJson)}`,
-					'  exit 0',
-					'fi',
-					'exit 0',
-					'',
-				].join('\n'),
-			);
-			chmodSync(bin, 0o755);
+				]);
+				writeFileSync(
+					bin,
+					[
+						'#!/bin/sh',
+						`printf '%s\\n' "$*" >> ${JSON.stringify(log)}`,
+						'if [ "$1" = "inspect" ]; then',
+						`  printf '%s\\n' ${JSON.stringify(inspectJson)}`,
+						'  exit 0',
+						'fi',
+						'exit 0',
+						'',
+					].join('\n'),
+				);
+				chmodSync(bin, 0o755);
 
-			const spec: EnsureContainerSpec = {
-				name: 'devstack-paused',
-				image: { digest: 'sha256:desired', tag: 'img:desired' },
-				labels: {
-					app: 'app',
-					stack: 'main',
-					plugin: 'postgres',
-					role: 'db',
-				},
-				recreate: 'on-failure',
-			};
-			const handle = await Effect.runPromise(
-				Effect.scoped(
-					Effect.gen(function* () {
-						const perNameLock = yield* Ref.make<PerNameLockState>(new Map());
-						return yield* ensureContainer(spec, { cycle: 1, perNameLock });
-					}),
-				).pipe(Effect.provide(Layer.mergeAll(fakeDockerLayer(bin), stackPathsLayer(stackRoot)))),
-			);
+				const spec: EnsureContainerSpec = {
+					name: 'devstack-paused',
+					image: { digest: 'sha256:desired', tag: 'img:desired' },
+					labels: {
+						app: 'app',
+						stack: 'main',
+						plugin: 'postgres',
+						role: 'db',
+					},
+					recreate: 'on-failure',
+				};
+				const handle = await Effect.runPromise(
+					Effect.scoped(
+						Effect.gen(function* () {
+							const perNameLock = yield* Ref.make<PerNameLockState>(new Map());
+							return yield* ensureContainer(spec, { cycle: 1, perNameLock });
+						}),
+					).pipe(Effect.provide(Layer.mergeAll(fakeDockerLayer(bin), stackPathsLayer(stackRoot)))),
+				);
 
-			const lines = readFileSync(log, 'utf8').trim().split('\n');
-			expect(handle.status).toBe('running');
-			expect(lines).toContain('unpause devstack-paused');
-			expect(lines.some((line) => line.startsWith('start '))).toBe(false);
-		} finally {
-			rmSync(root, { recursive: true, force: true });
-		}
-	});
+				const lines = readFileSync(log, 'utf8').trim().split('\n');
+				expect(handle.status).toBe('running');
+				expect(lines).toContain('unpause devstack-paused');
+				expect(lines.some((line) => line.startsWith('start '))).toBe(false);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		},
+	);
 });
 
 describe('snapshot pauseAndCommit', () => {

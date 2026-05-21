@@ -134,14 +134,6 @@ Closed evidence:
   move the rewrite into `packages/devstack` before removing `private`.
 - Install-from-tarball smoke still needs to import every exported subpath and boot a minimal stack
   after the final package rename decision.
-- Installed consumer type smoke must pass. The rewrite currently points export `types` at `src/*.ts`
-  while `tsdown` emits no `.d.mts`; either emit final declaration files or prove the published
-  source-type contract works from an external consumer.
-- Tarball contents must exclude generated source artifacts (`src/generated/**`) in addition to
-  samples and `dist/node_modules`.
-- Public runtime discovery must find the manifest written by the production `runStack` path in an
-  installed consumer. The preview smoke should call both `discoverManifestPath` and
-  `readStackContext` after a no-Docker minimal boot.
 - `.github/workflows/devstack-e2e.yml` still targets the old example/product-test shape. Before
   cutover, update the matrix/scripts or add equivalent rewrite Playwright suites so CI exercises the
   replacement package, not stale v3 assumptions.
@@ -201,6 +193,25 @@ Closed evidence:
   `pnpm --filter @mysten-incubation/devstack-rewrite exec tsc --noEmit --pretty false`,
   `pnpm --filter @mysten-incubation/devstack-rewrite exec vitest run test/build-integrations/release-surface.test.ts test/build-integrations/manifest-path-parity.test.ts test/build-integrations/runtime/read-stack-context.test.ts test/build-integrations/vitest/config.test.ts test/build-integrations/browser/config.test.ts`,
   `npm pack --dry-run --json`, and targeted `prettier` on touched release-surface files.
+- 2026-05-21 Worker Preview Manifest Discovery: `StackPathsService` now resolves stack roots as
+  `<runtimeRoot>/stacks/<stack>`, so production `runStack` writes the manifest at the same
+  stack-scoped location the public runtime resolver walks from an installed app root. The no-Docker
+  `runStack` smoke boots a leaf stack with `runtimeRoot = <appRoot>/.devstack`, then proves both
+  `discoverManifestPath({ cwd: appRoot, env: {}, stack: 'main' })` and `readStackContext(...)` find
+  and read `<appRoot>/.devstack/stacks/main/manifest.json`. Targeted check passed:
+  `pnpm --filter @mysten-incubation/devstack-rewrite exec vitest run test/api/run-stack.test.ts test/build-integrations/runtime/discover.test.ts test/build-integrations/runtime/read-stack-context.test.ts test/build-integrations/manifest-path-parity.test.ts`.
+- 2026-05-21 Worker Preview Install Metadata: `tsdown` now emits release declarations, package
+  `types` / `exports.*.types` point at `dist/**/*.d.mts`, and `files` excludes `src/generated` while
+  preserving `src`, `dist`, and Docker image contexts. `release-surface.test.ts` now pins every
+  exported subpath to matching built JS + declaration entries, verifies the CLI shebang stays out of
+  declarations, and runs `npm pack --dry-run --json` to prove image contexts are included while
+  `src/generated`, samples, and `dist/node_modules` are excluded. Focused checks passed:
+  `pnpm --filter @mysten-incubation/devstack-rewrite build`,
+  `pnpm --filter @mysten-incubation/devstack-rewrite exec vitest run test/build-integrations/release-surface.test.ts`,
+  and a temporary NodeNext consumer type-smoke importing every exported subpath through package
+  exports with `skipLibCheck: true`. Caveat: strict consumer `tsc` without `skipLibCheck` still
+  fails inside third-party Effect/fast-check declarations before reporting package export errors;
+  final package name/private and final install-from-tarball boot smoke remain open until cutover.
 
 ## P0: Public API ergonomics and unsupported options are not release-quality
 
@@ -423,6 +434,10 @@ Closed evidence:
   `pnpm --filter @mysten-incubation/devstack-rewrite test` (126 files / 829 tests). Focused
   hard-kill/stage-and-swap tests also passed across 7 files / 43 tests; changed-file Prettier,
   changed-file oxlint, and `git diff --check` passed.
+- 2026-05-21 Worker Full-Suite Timeout: the two isolation-green tests that exceeded Vitest's 5s
+  in-process default under full-suite load now carry explicit 10s test timeouts while keeping their
+  existing assertions and internal waits intact. Focused check passed:
+  `pnpm --filter @mysten-incubation/devstack-rewrite exec vitest run test/orchestrators/snapshot/restore.test.ts test/runtime/docker/ensure-container-paused.test.ts --bail=1`.
 
 ## Partially completed items that still need verification
 

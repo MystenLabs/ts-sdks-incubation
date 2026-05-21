@@ -19,7 +19,7 @@ export default defineConfig({
 		'src/cli/main.ts',
 	],
 	format: 'esm',
-	dts: false,
+	dts: true,
 	outDir: 'dist',
 	unbundle: true,
 	treeshake: true,
@@ -30,7 +30,7 @@ export default defineConfig({
 	// Shebang so `chmod +x dist/cli/main.mjs && ./dist/cli/main.mjs status`
 	// works without `node` prefix once the package is installed globally.
 	outputOptions: {
-		banner: '#!/usr/bin/env node',
+		banner: (chunk) => (chunk.fileName === 'cli/main.mjs' ? '#!/usr/bin/env node' : ''),
 		entryFileNames: '[name].mjs',
 	},
 });

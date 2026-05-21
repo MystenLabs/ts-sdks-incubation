@@ -611,86 +611,89 @@ describe('snapshot restore safety', () => {
 		}),
 	);
 
-	it.live('keeps command and event tails readable after a live restore swap', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-			try {
-				const stackRoot = join(root, 'runtime-stack');
-				const meta = metadata();
-				const artifactDir = writeArtifact(stackRoot, meta);
-				const paths = commandChannelPaths(stackRoot);
-				const preRestorePublisher = yield* makeCommandChannelPublisher(paths);
-				const preRestoreSubscriber = yield* makeCommandChannelSubscriber(paths);
-				yield* preRestorePublisher.publish({ tag: 'snapshot.restore', snapshotId: meta.id });
-				yield* preRestoreSubscriber.publishEvent({ tag: 'before.restore' });
+	it.live(
+		'keeps command and event tails readable after a live restore swap',
+		() =>
+			Effect.gen(function* () {
+				const root = freshRoot();
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+				try {
+					const stackRoot = join(root, 'runtime-stack');
+					const meta = metadata();
+					const artifactDir = writeArtifact(stackRoot, meta);
+					const paths = commandChannelPaths(stackRoot);
+					const preRestorePublisher = yield* makeCommandChannelPublisher(paths);
+					const preRestoreSubscriber = yield* makeCommandChannelSubscriber(paths);
+					yield* preRestorePublisher.publish({ tag: 'snapshot.restore', snapshotId: meta.id });
+					yield* preRestoreSubscriber.publishEvent({ tag: 'before.restore' });
 
-				const publisher = yield* makeCommandChannelPublisher(paths);
-				const subscriber = yield* makeCommandChannelSubscriber(paths, {
-					fromOffset: 'current',
-					pollMillis: 20,
-				});
-				const commands: CommandRecord[] = [];
-				const events: EventRecord[] = [];
-				const commandFiber = yield* Effect.forkChild(
-					subscriber.commands.pipe(
-						Stream.take(1),
-						Stream.runForEach((record) =>
-							Effect.sync(() => {
-								commands.push(record);
-							}),
+					const publisher = yield* makeCommandChannelPublisher(paths);
+					const subscriber = yield* makeCommandChannelSubscriber(paths, {
+						fromOffset: 'current',
+						pollMillis: 20,
+					});
+					const commands: CommandRecord[] = [];
+					const events: EventRecord[] = [];
+					const commandFiber = yield* Effect.forkChild(
+						subscriber.commands.pipe(
+							Stream.take(1),
+							Stream.runForEach((record) =>
+								Effect.sync(() => {
+									commands.push(record);
+								}),
+							),
 						),
-					),
-					{ startImmediately: true },
-				);
-				const eventFiber = yield* Effect.forkChild(
-					publisher.events.pipe(
-						Stream.take(1),
-						Stream.runForEach((record) =>
-							Effect.sync(() => {
-								events.push(record);
-							}),
+						{ startImmediately: true },
+					);
+					const eventFiber = yield* Effect.forkChild(
+						publisher.events.pipe(
+							Stream.take(1),
+							Stream.runForEach((record) =>
+								Effect.sync(() => {
+									events.push(record);
+								}),
+							),
 						),
-					),
-					{ startImmediately: true },
-				);
-				yield* Effect.sleep('30 millis');
-				yield* writeArtifactIntegrity(artifactDir).pipe(Effect.provide(NodeFileSystem.layer));
+						{ startImmediately: true },
+					);
+					yield* Effect.sleep('30 millis');
+					yield* writeArtifactIntegrity(artifactDir).pipe(Effect.provide(NodeFileSystem.layer));
 
-				const exit = yield* Effect.exit(
-					runRestore({
-						snapshotId: snapshotIdFromString(meta.id),
-						artifactDir,
-						runtimeStackRoot: stackRoot,
-						runtimeStagingPath: join(root, 'runtime-stack.staging'),
-						runtimeBackupPath: join(root, 'runtime-stack.bak'),
-						participants: [],
-						runtime: runtimeStub(sweepCalls),
-						runtimeIdentity,
-					}),
-				).pipe(Effect.provide(NodeFileSystem.layer));
-				expect(Exit.isSuccess(exit)).toBe(true);
+					const exit = yield* Effect.exit(
+						runRestore({
+							snapshotId: snapshotIdFromString(meta.id),
+							artifactDir,
+							runtimeStackRoot: stackRoot,
+							runtimeStagingPath: join(root, 'runtime-stack.staging'),
+							runtimeBackupPath: join(root, 'runtime-stack.bak'),
+							participants: [],
+							runtime: runtimeStub(sweepCalls),
+							runtimeIdentity,
+						}),
+					).pipe(Effect.provide(NodeFileSystem.layer));
+					expect(Exit.isSuccess(exit)).toBe(true);
 
-				yield* publisher.publish({ tag: 'shutdown.requested' });
-				yield* subscriber.publishEvent({ tag: 'after.restore' });
+					yield* publisher.publish({ tag: 'shutdown.requested' });
+					yield* subscriber.publishEvent({ tag: 'after.restore' });
 
-				const commandDone = yield* Fiber.await(commandFiber).pipe(
-					Effect.timeoutOption('2 seconds'),
-				);
-				const eventDone = yield* Fiber.await(eventFiber).pipe(Effect.timeoutOption('2 seconds'));
-				expect(commandDone._tag).toBe('Some');
-				expect(eventDone._tag).toBe('Some');
-				expect(commands).toHaveLength(1);
-				expect((commands[0]!.command as { tag: string }).tag).toBe('shutdown.requested');
-				expect(events).toHaveLength(1);
-				expect(events[0]!.kind).toBe('engine');
-				if (events[0]!.kind === 'engine') {
-					expect((events[0]!.event as { tag: string }).tag).toBe('after.restore');
+					const commandDone = yield* Fiber.await(commandFiber).pipe(
+						Effect.timeoutOption('2 seconds'),
+					);
+					const eventDone = yield* Fiber.await(eventFiber).pipe(Effect.timeoutOption('2 seconds'));
+					expect(commandDone._tag).toBe('Some');
+					expect(eventDone._tag).toBe('Some');
+					expect(commands).toHaveLength(1);
+					expect((commands[0]!.command as { tag: string }).tag).toBe('shutdown.requested');
+					expect(events).toHaveLength(1);
+					expect(events[0]!.kind).toBe('engine');
+					if (events[0]!.kind === 'engine') {
+						expect((events[0]!.event as { tag: string }).tag).toBe('after.restore');
+					}
+				} finally {
+					rmSync(root, { recursive: true, force: true });
 				}
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		{ timeout: 10_000 },
 	);
 
 	it.effect('does not run restore cleanup when docker load fails for a readable image tar', () =>

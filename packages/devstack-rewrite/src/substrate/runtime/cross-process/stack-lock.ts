@@ -100,7 +100,7 @@ const tryAcquireSync = (
 ): { readonly ok: true } | { readonly ok: false; readonly holder: RosterHolder | null } => {
 	const body = ownHolder();
 	// The lock's parent directory may not exist on first-claim of a
-	// fresh runtime root — devstack's `<runtimeRoot>/<app>/<stack>/` is
+	// fresh runtime root — devstack's `<runtimeRoot>/stacks/<stack>/` is
 	// the substrate's responsibility to bring into being, but no other
 	// L0 subsystem touches the disk until the first claim. `mkdir -p`
 	// here is idempotent and harmless on the warm path; it transforms

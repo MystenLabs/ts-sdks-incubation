@@ -34,6 +34,10 @@ import type { EngineEvent } from '../../src/substrate/events.ts';
 import { SupervisorPostAcquireFailed } from '../../src/substrate/runtime/supervisor.ts';
 import { defineTag } from '../../src/substrate/tag.ts';
 import { runStack } from '../../src/api/run-stack.ts';
+import {
+	discoverManifestPath,
+	readStackContext,
+} from '../../src/build-integrations/runtime/index.ts';
 
 // A trivial leaf plugin: provides one tag, consumes nothing, returns a
 // constant. Boot path: dep-graph → topological order [self] →
@@ -259,6 +263,40 @@ describe('api/run-stack', () => {
 			await Effect.runPromise(handle.awaitShutdown);
 			rmSync(appRoot, { recursive: true, force: true });
 			rmSync(runtimeRoot, { recursive: true, force: true });
+		}
+	}, 30_000);
+
+	it('writes the manifest at the public runtime discovery path', async () => {
+		const appRoot = mkdtempSync(join(tmpdir(), 'run-stack-preview-app-'));
+		const runtimeRoot = join(appRoot, '.devstack');
+		const stack = defineDevstack(leaf, { stackName: 'main' });
+		const handle = runStack(stack, {
+			appRoot,
+			identity: { app: 'preview-install', stack: 'main', network: 'test:local' },
+			runtimeRoot,
+		});
+
+		try {
+			await Effect.runPromise(handle.start);
+
+			const expectedManifestPath = join(runtimeRoot, 'stacks', 'main', 'manifest.json');
+			expect(existsSync(expectedManifestPath)).toBe(true);
+			expect(existsSync(join(runtimeRoot, 'preview-install', 'main', 'manifest.json'))).toBe(false);
+			expect(discoverManifestPath({ cwd: appRoot, env: {}, stack: 'main' })).toBe(
+				expectedManifestPath,
+			);
+
+			const ctx = readStackContext({ cwd: appRoot, env: {}, stack: 'main' });
+			expect(ctx.manifestPath).toBe(expectedManifestPath);
+			expect(ctx.identity).toEqual({
+				app: 'preview-install',
+				stack: 'main',
+				chain: 'test:local',
+			});
+		} finally {
+			await Effect.runPromise(handle.stop);
+			await Effect.runPromise(handle.awaitShutdown);
+			rmSync(appRoot, { recursive: true, force: true });
 		}
 	}, 30_000);
 
