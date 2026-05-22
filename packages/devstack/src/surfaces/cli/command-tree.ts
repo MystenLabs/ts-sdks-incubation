@@ -42,6 +42,12 @@ const confirmOptions = [
 	{ name: 'no-input', description: 'Forbid prompts.' },
 ] as const satisfies ReadonlyArray<CommandOption>;
 
+const globalMaintenanceOptions = [
+	{ name: 'json', description: 'Emit JSON envelope output.' },
+	{ name: 'state-dir', value: 'path', description: 'Override state directory.' },
+	{ name: 'verbose', description: 'Enable more verbose logging.' },
+] as const satisfies ReadonlyArray<CommandOption>;
+
 const commands = [
 	{
 		name: 'up',
@@ -165,7 +171,7 @@ const commands = [
 		sideEffects: 'destructive',
 		requiresDocker: true,
 		options: [
-			...identityOptions,
+			...globalMaintenanceOptions,
 			{ name: 'list', description: 'List resource groups without pruning.' },
 			{ name: 'all', description: 'Prune every idle non-shared resource group.' },
 			{ name: 'no-containers', description: 'Do not remove containers.' },

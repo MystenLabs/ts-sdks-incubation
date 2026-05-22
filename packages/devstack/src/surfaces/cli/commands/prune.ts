@@ -98,17 +98,6 @@ export const DEFAULT_PRUNE_RESOURCES: PruneResourceScope = {
 	images: false,
 };
 
-const EMPTY_TOTALS: PruneTotals = {
-	groups: 0,
-	liveGroups: 0,
-	sharedGroups: 0,
-	containers: 0,
-	runningContainers: 0,
-	networks: 0,
-	volumes: 0,
-	images: 0,
-};
-
 export const summarizePruneGroups = (groups: ReadonlyArray<PruneGroup>): PruneTotals => {
 	let liveGroups = 0;
 	let sharedGroups = 0;
@@ -151,23 +140,6 @@ export const summarizePruneGroupsForResources = (
 		volumes: resources.volumes ? totals.volumes : 0,
 		images: resources.images ? totals.images : 0,
 	};
-};
-
-const withTotals = (groups: ReadonlyArray<PruneGroup>): PruneInventory => ({
-	groups,
-	totals: groups.length === 0 ? EMPTY_TOTALS : summarizePruneGroups(groups),
-});
-
-const filterInventory = (
-	inventory: PruneInventory,
-	filters: { readonly app?: string; readonly stack?: string },
-): PruneInventory => {
-	const groups = inventory.groups.filter((group) => {
-		if (filters.app !== undefined && group.app !== filters.app) return false;
-		if (filters.stack !== undefined && group.stack !== filters.stack) return false;
-		return true;
-	});
-	return withTotals(groups);
 };
 
 export const hasPruneResources = (resources: PruneResourceScope): boolean =>
@@ -252,11 +224,7 @@ export const runPrune = (
 ): Effect.Effect<CommandResult, CliError> =>
 	Effect.gen(function* () {
 		const started = Date.now();
-		const loaded = yield* deps.inventory().pipe(Effect.catch(mapUnknownPruneError));
-		const inventory = filterInventory(loaded, {
-			app: ctx.flags.app,
-			stack: ctx.flags.stack,
-		});
+		const inventory = yield* deps.inventory().pipe(Effect.catch(mapUnknownPruneError));
 
 		if (options.mode === 'list') {
 			yield* emitSuccess(ctx.io, ctx.flags.outputMode, {

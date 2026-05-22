@@ -126,7 +126,10 @@ const makeHarness = (
 			reader: { readState: () => Effect.succeed(null) },
 		},
 		snapshot: {
-			reader: { list: () => Effect.succeed([]), resolve: () => Effect.succeed({ tag: 'not-found' }) },
+			reader: {
+				list: () => Effect.succeed([]),
+				resolve: () => Effect.succeed({ tag: 'not-found' }),
+			},
 			capture: (args) =>
 				Effect.sync(() => {
 					captures.push(args);
@@ -406,11 +409,9 @@ describe('dispatch', () => {
 
 	it('snapshot save invokes direct capture with command-scoped name', async () => {
 		const { deps, read } = makeHarness();
-		await run(
-			['snapshot', 'save', 'seeded', '--config', 'devstack.ci.ts', '--json'],
-			deps,
-			{ io: read().io },
-		);
+		await run(['snapshot', 'save', 'seeded', '--config', 'devstack.ci.ts', '--json'], deps, {
+			io: read().io,
+		});
 		const h = read();
 		expect(h.exitCode).toBe(0);
 		expect(h.captures).toEqual([{ name: 'seeded', configPath: 'devstack.ci.ts' }]);
@@ -537,9 +538,14 @@ describe('dispatch', () => {
 			},
 		};
 
-		await run(['snapshot', 'restore', 'friendly-name', '--json'], depsWithCatalog, {
-			io: read().io,
-		}, { stdinIsTty: false });
+		await run(
+			['snapshot', 'restore', 'friendly-name', '--json'],
+			depsWithCatalog,
+			{
+				io: read().io,
+			},
+			{ stdinIsTty: false },
+		);
 
 		const h = read();
 		expect(h.exitCode).toBe(43);
@@ -699,6 +705,29 @@ describe('dispatch', () => {
 		const payload = JSON.parse(h.stdout[0]!);
 		expect(payload.data.inventory.totals.groups).toBe(2);
 		expect(payload.data.inventory.groups[0].key).toBe('arena/main');
+	});
+
+	it('prune inventory is not scoped by active app or stack env defaults', async () => {
+		const { deps, read } = makeHarness();
+		await run(
+			['prune', '--list', '--json'],
+			deps,
+			{ io: read().io },
+			{
+				stdinIsTty: false,
+				env: {
+					DEVSTACK_APP: 'arena',
+					DEVSTACK_STACK: 'main',
+				},
+			},
+		);
+		const h = read();
+		expect(h.exitCode).toBe(0);
+		const payload = JSON.parse(h.stdout[0]!);
+		expect(payload.data.inventory.groups.map((group: { key: string }) => group.key)).toEqual([
+			'arena/main',
+			'wallet/main',
+		]);
 	});
 
 	it('wipe has the same destructive command-scoped contract', async () => {

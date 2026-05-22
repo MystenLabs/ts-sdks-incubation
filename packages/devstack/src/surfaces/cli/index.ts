@@ -176,7 +176,13 @@ interface ConfirmFlags extends IdentityFlags {
 	readonly noInput?: boolean;
 }
 
-interface PruneFlags extends DestructiveFlags {
+interface PruneFlags {
+	readonly json?: boolean;
+	readonly stateDir?: string;
+	readonly verbose?: boolean;
+	readonly dryRun?: boolean;
+	readonly yes?: boolean;
+	readonly noInput?: boolean;
 	readonly list?: boolean;
 	readonly all?: boolean;
 	readonly noContainers?: boolean;
@@ -228,6 +234,12 @@ const destructiveFlagParams = {
 	noInput: boolFlag('Forbid prompts'),
 } as const;
 
+const globalMaintenanceFlagParams = {
+	json: identityFlagParams.json,
+	stateDir: identityFlagParams.stateDir,
+	verbose: identityFlagParams.verbose,
+} as const;
+
 const confirmFlagParams = {
 	...identityFlagParams,
 	yes: boolFlag('Assume yes on prompts'),
@@ -235,7 +247,10 @@ const confirmFlagParams = {
 } as const;
 
 const pruneFlagParams = {
-	...destructiveFlagParams,
+	...globalMaintenanceFlagParams,
+	dryRun: destructiveFlagParams.dryRun,
+	yes: destructiveFlagParams.yes,
+	noInput: destructiveFlagParams.noInput,
 	list: boolFlag('List devstack-labelled Docker resources without pruning'),
 	all: boolFlag('Prune every idle non-shared resource group'),
 	noContainers: boolFlag('Do not remove containers'),
