@@ -55,6 +55,7 @@ const fakeAccount = (events?: string[]): AccountValue => {
 		scheme: 'ed25519',
 		publicKey: new Uint8Array(32),
 		source: 'real',
+		funding: { requested: [], applied: [] },
 		withTransactionSigner,
 		// Sign always returns a deterministic signature.
 		signTransaction,

@@ -109,6 +109,15 @@ export interface PluginRegistry {
 	) => Effect.Effect<void, UnknownDependency>;
 	/** Mark a plugin failed. */
 	readonly markFailed: (key: PluginKey, cause: unknown) => Effect.Effect<void, UnknownDependency>;
+	/** Prepare a previously torn-down entry for hot restart. Plugin
+	 *  scopes and ready gates are single-use: once a scope has been closed,
+	 *  any finalizer registered during a later acquire would run
+	 *  immediately, and an already-resolved ready gate would leak the old
+	 *  value to downstream consumers. */
+	readonly resetForRestart: (
+		key: PluginKey,
+		parentScope: Scope.Scope,
+	) => Effect.Effect<void, UnknownDependency>;
 	/** Await `ready` for `key`. Suspends until the plugin's `readyGate`
 	 *  resolves. The deferred's failure channel propagates a
 	 *  `PluginAcquireFailed` so the supervisor's outer error path picks
@@ -125,10 +134,11 @@ export const makeRegistry = (
 	entries: ReadonlyMap<PluginKey, PluginEntry>,
 	onTransition: (key: PluginKey, from: LifecycleStatus, to: LifecycleStatus) => Effect.Effect<void>,
 ): PluginRegistry => {
+	const mutableEntries = new Map(entries);
 	const resolved: ResolvedMap = new Map();
 
 	const getEntry = (key: PluginKey): Effect.Effect<PluginEntry, UnknownDependency> => {
-		const entry = entries.get(key);
+		const entry = mutableEntries.get(key);
 		if (entry === undefined) {
 			return Effect.fail(new UnknownDependency({ pluginKey: key, requestedResourceId: '' }));
 		}
@@ -136,7 +146,7 @@ export const makeRegistry = (
 	};
 
 	const reg: PluginRegistry & { __resolved: ResolvedMap } = {
-		entries,
+		entries: mutableEntries,
 		__resolved: resolved,
 		getStatus: (key) =>
 			Effect.gen(function* () {
@@ -184,10 +194,24 @@ export const makeRegistry = (
 			Effect.gen(function* () {
 				const entry = yield* getEntry(key);
 				const from = yield* Ref.get(entry.statusRef);
+				resolved.delete(key);
 				yield* assertTransition(from, 'failed');
 				yield* Ref.set(entry.statusRef, 'failed');
 				yield* onTransition(key, from, 'failed');
 				yield* Deferred.fail(entry.readyGate, new PluginAcquireFailed({ pluginKey: key, cause }));
+			}),
+		resetForRestart: (key, parentScope) =>
+			Effect.gen(function* () {
+				const entry = yield* getEntry(key);
+				resolved.delete(key);
+				const readyGate = yield* Deferred.make<ResolvedValue, PluginAcquireFailed>();
+				const scope = yield* Scope.fork(parentScope);
+				mutableEntries.set(key, {
+					node: entry.node,
+					statusRef: entry.statusRef,
+					readyGate,
+					scope,
+				});
 			}),
 		awaitReady: (key) =>
 			Effect.gen(function* () {

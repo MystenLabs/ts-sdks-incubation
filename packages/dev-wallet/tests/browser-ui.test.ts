@@ -900,8 +900,15 @@ describe('dev-wallet-panel component', { timeout: 60_000 }, () => {
 		await waitForUpdate(el);
 
 		// Signing modal should appear
-		const modal = el.shadowRoot!.querySelector('dev-wallet-signing-modal');
+		const modal = el.shadowRoot!.querySelector('dev-wallet-signing-modal') as DevWalletSigningModal;
 		expect(modal).not.toBeNull();
+		expect(el.shadowRoot!.querySelector('[part="sidebar"]')).toBeNull();
+		await waitForUpdate(modal);
+
+		const dialog = modal.shadowRoot!.querySelector('dialog') as HTMLDialogElement;
+		expect(getComputedStyle(modal).pointerEvents).toBe('auto');
+		expect(getComputedStyle(dialog).pointerEvents).toBe('auto');
+		expect(getComputedStyle(dialog, '::backdrop').backdropFilter).toBe('none');
 
 		// Clean up
 		await wallet.approveRequest();
@@ -975,9 +982,10 @@ describe('full UI signing flow', { timeout: 120_000 }, () => {
 			account: wallet.accounts[0],
 		});
 
-		// 2. Wait for the panel to auto-open and render signing modal
+		// 2. Wait for the signing modal to render without opening the drawer
 		await new Promise((resolve) => setTimeout(resolve, 100));
 		await waitForUpdate(el);
+		expect(el.shadowRoot!.querySelector('[part="sidebar"]')).toBeNull();
 
 		const modal = el.shadowRoot!.querySelector('dev-wallet-signing-modal') as DevWalletSigningModal;
 		expect(modal).not.toBeNull();

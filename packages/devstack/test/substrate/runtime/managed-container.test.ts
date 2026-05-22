@@ -20,6 +20,7 @@ const runtimeFromEnsure = (
 	runOneShot: () => Effect.die('unused'),
 	inspectByLabels: () => Effect.die('unused'),
 	followLogs: () => Stream.die('unused'),
+	pause: () => Effect.die('unused'),
 	pauseAndCommit: () => Effect.die('unused'),
 	saveImage: () => Stream.die('unused'),
 	saveImages: () => Stream.die('unused'),

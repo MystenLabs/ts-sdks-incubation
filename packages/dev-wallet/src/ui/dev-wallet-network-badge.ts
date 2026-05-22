@@ -21,15 +21,21 @@ export class DevWalletNetworkBadge extends LitElement {
 			.badge {
 				display: flex;
 				align-items: center;
-				gap: 4px;
-				padding: 3px 8px;
+				gap: 6px;
+				height: 26px;
+				padding: 0 8px;
 				border-radius: 999px;
-				font-size: 11px;
+				border: 1px solid var(--dev-wallet-border);
+				font-family: var(--dev-wallet-font-mono);
+				font-size: 10.5px;
 				font-weight: var(--dev-wallet-font-weight-medium);
-				color: var(--dev-wallet-foreground);
-				background: var(--dev-wallet-secondary);
+				color: var(--dev-wallet-text-2);
+				background: var(--dev-wallet-bg-3);
 				cursor: pointer;
-				transition: background 0.15s;
+				transition:
+					background 120ms,
+					border-color 120ms,
+					color 120ms;
 			}
 
 			/* Phase 4 P4.17 — amber stripe + fork label when the
@@ -56,7 +62,9 @@ export class DevWalletNetworkBadge extends LitElement {
 			}
 
 			.badge:hover {
-				background: var(--dev-wallet-border);
+				background: var(--dev-wallet-bg-4);
+				border-color: var(--dev-wallet-border-strong);
+				color: var(--dev-wallet-foreground);
 			}
 
 			.dot {

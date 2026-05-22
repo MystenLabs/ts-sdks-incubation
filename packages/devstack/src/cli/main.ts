@@ -55,6 +55,7 @@ import {
 	CliSupervisorLiveError,
 } from '../surfaces/cli/index.ts';
 import { defaultProbes, probeSupervisorPresence } from '../surfaces/cli/commands/index.ts';
+import { nodeConfirmPrompt } from '../surfaces/cli/commands/confirm-node.ts';
 import type { LoadedConfig } from '../surfaces/cli/commands/config-loader.ts';
 import {
 	SnapshotOrchestratorService,
@@ -75,7 +76,7 @@ import type { GlobalFlags } from '../surfaces/cli/flags.ts';
 import { makeTuiSurface } from '../surfaces/tui/index.ts';
 import { makeSnapshotReader } from './snapshot-reader.ts';
 import { makeQueueCommandPublisher, resolveUpRendererMode } from './up-lifecycle.ts';
-import { resolveStackName } from '../api/inference-network.ts';
+import { resolveAppName, resolveStackName } from '../api/inference-network.ts';
 import { readStackEngine, type Stack } from '../api/define-devstack.ts';
 import { makeDirectPruneDeps } from './prune-direct.ts';
 
@@ -181,8 +182,8 @@ interface ResolvedIdentity {
 	readonly rosterFile: string;
 }
 
-/** Resolve identity from flags + env. Stack falls through the shared
- *  cwd/package metadata resolver before the final `main` default. */
+/** Resolve identity from flags + env. App and stack fall through the
+ *  shared cwd/package metadata resolver before their defaults. */
 const resolveIdentity = (params: {
 	readonly app: string | undefined;
 	readonly stack: string | undefined;
@@ -190,7 +191,11 @@ const resolveIdentity = (params: {
 	readonly stateDir: string | undefined;
 	readonly cwd?: string;
 }): ResolvedIdentity => {
-	const app = params.app ?? process.env.DEVSTACK_APP ?? 'devstack';
+	const cwd = params.cwd ?? process.cwd();
+	const app = resolveAppName({
+		explicit: params.app,
+		cwd,
+	});
 	const stateDir =
 		params.stateDir ??
 		process.env.DEVSTACK_STATE_DIR ??
@@ -199,7 +204,7 @@ const resolveIdentity = (params: {
 	const stacksRoot = resolvePath(runtimeRoot, 'stacks');
 	const stack = resolveStackName({
 		explicit: params.stack,
-		cwd: params.cwd ?? process.cwd(),
+		cwd,
 	});
 	const network = params.network ?? process.env.DEVSTACK_NETWORK ?? 'sui:local';
 	const stackRoot = resolvePath(stacksRoot, stack);
@@ -253,6 +258,7 @@ const buildDirectDeps = (identity: ResolvedIdentity): CliDeps => {
 		config: { loader },
 		wipe: {
 			wipe: () => runWipeDirect(identity),
+			confirm: nodeConfirmPrompt,
 		},
 	};
 };
@@ -270,16 +276,35 @@ const makeSnapshotCommandHandler = (params: {
 	): Effect.Effect<A, E, never> =>
 		effect.pipe(Effect.provideService(FileSystem.FileSystem, params.fs));
 
-	return (cmd) => {
+	return (cmd, handlerCtx) => {
 		switch (cmd.tag) {
 			case 'snapshot.capture':
 				return provideFileSystem(
-					params.snapshot.capture({ id: cmd.snapshotId, label: cmd.label }),
+					params.snapshot.capture({
+						id: cmd.snapshotId,
+						label: cmd.name,
+						onProgress: (progress) =>
+							handlerCtx.publish({
+								tag: 'snapshot.captureProgress',
+								...(cmd.snapshotId === undefined ? {} : { snapshotId: cmd.snapshotId }),
+								...(cmd.name === undefined ? {} : { name: cmd.name }),
+								phase: progress.phase,
+								...(progress.detail === undefined ? {} : { detail: progress.detail }),
+								...(progress.pausedContainers === undefined
+									? {}
+									: { pausedContainers: progress.pausedContainers }),
+								...(progress.totalContainers === undefined
+									? {}
+									: { totalContainers: progress.totalContainers }),
+								at: Date.now(),
+							}),
+					}),
 				).pipe(
 					Effect.map((meta) => [
 						{
 							tag: 'snapshot.captured',
 							snapshotId: meta.id,
+							...(meta.label === null ? {} : { name: meta.label }),
 							at: Date.now(),
 						},
 					]),
@@ -583,8 +608,8 @@ const runSnapshotDeleteDirect = (
 
 const runSnapshotCaptureDirect = (
 	identity: ResolvedIdentity,
-	args: { readonly snapshotId?: string; readonly label?: string; readonly configPath?: string },
-): Effect.Effect<void, unknown> => {
+	args: { readonly snapshotId?: string; readonly name?: string; readonly configPath?: string },
+): Effect.Effect<{ readonly snapshotId: string; readonly name: string }, unknown> => {
 	const loader = makeConfigLoader();
 	return Effect.gen(function* () {
 		const loaded = yield* loader.load(args.configPath);
@@ -607,7 +632,8 @@ const runSnapshotCaptureDirect = (
 			const postAcquireHook = yield* buildProductionPostAcquireHook({
 				extras: stack.options.extras,
 			});
-			let captureExit: Exit.Exit<unknown, unknown> = Exit.succeed(undefined);
+			let captureExit: Exit.Exit<void, unknown> = Exit.succeed(undefined);
+			const capturedMeta: { current: SnapshotMetadata | null } = { current: null };
 			yield* superviseStackEffect(
 				{ _tag: 'Stack', members: stack.members, options: stack.options },
 				identityValue,
@@ -620,8 +646,14 @@ const runSnapshotCaptureDirect = (
 					withinScope: () =>
 						provideFileSystem(
 							fs,
-							snapshot.capture({ id: args.snapshotId, label: args.label }),
+							snapshot.capture({ id: args.snapshotId, label: args.name }),
 						).pipe(
+								Effect.tap((meta) =>
+									Effect.sync(() => {
+										capturedMeta.current = meta;
+									}),
+								),
+							Effect.asVoid,
 							Effect.exit,
 							Effect.tap((exit) =>
 								Effect.sync(() => {
@@ -635,8 +667,13 @@ const runSnapshotCaptureDirect = (
 			if (Exit.isFailure(captureExit)) {
 				yield* Effect.failCause(captureExit.cause);
 			}
+			if (capturedMeta.current === null) {
+				return yield* Effect.die('snapshot capture completed without metadata');
+			}
+			const meta = capturedMeta.current;
 			const stackPaths = yield* StackPathsService;
 			yield* writeProjectionSnapshot(stackPaths.stackRoot, yield* SubscriptionRef.get(state));
+			return { snapshotId: meta.id, name: meta.label ?? meta.id };
 		});
 
 		return yield* program.pipe(
@@ -651,6 +688,7 @@ const makeDirectSnapshotDeps = (identity: ResolvedIdentity): CliDeps['snapshot']
 	capture: (args) => runSnapshotCaptureDirect(identity, args),
 	restore: (snapshotId) => runSnapshotRestoreDirect(identity, snapshotId),
 	delete: (snapshotId) => runSnapshotDeleteDirect(identity, snapshotId),
+	confirm: nodeConfirmPrompt,
 });
 
 const runWipeDirect = (identity: ResolvedIdentity): Effect.Effect<void, unknown> =>
@@ -675,6 +713,7 @@ const identityInputsFromArgv = (
 	let stack = env.DEVSTACK_STACK;
 	let network = env.DEVSTACK_NETWORK;
 	let stateDir = env.DEVSTACK_STATE_DIR;
+	let configPath = env.DEVSTACK_CONFIG;
 	for (let i = 0; i < argv.length; i += 1) {
 		const token = argv[i]!;
 		const readValue = (name: string): string | undefined => {
@@ -686,8 +725,14 @@ const identityInputsFromArgv = (
 		stack = readValue('stack') ?? stack;
 		network = readValue('network') ?? network;
 		stateDir = readValue('state-dir') ?? stateDir;
+		configPath = readValue('config') ?? configPath;
 	}
-	return { app, stack, network, stateDir };
+	return { app, stack, network, stateDir, configPath };
+};
+
+const identityCwdFromConfig = (configPath: string | undefined): string => {
+	const resolved = resolveConfigPath(configPath);
+	return resolved === null ? process.cwd() : dirname(resolved);
 };
 
 // -----------------------------------------------------------------------------
@@ -705,9 +750,21 @@ export const runCli = async (
 		stack: identityInputs.stack,
 		network: identityInputs.network,
 		stateDir: identityInputs.stateDir,
+		cwd: identityCwdFromConfig(identityInputs.configPath),
 	});
 	const deps = buildDirectDeps(identity);
-	await Effect.runPromise(dispatch(deps, { argv, env, stdinIsTty }));
+	await Effect.runPromise(
+		dispatch(deps, {
+			argv,
+			env: {
+				...env,
+				DEVSTACK_APP: identity.app,
+				DEVSTACK_STACK: identity.stack,
+				DEVSTACK_STATE_DIR: identity.runtimeRoot,
+			},
+			stdinIsTty,
+		}),
+	);
 };
 
 const isMainEntrypoint = (): boolean => {

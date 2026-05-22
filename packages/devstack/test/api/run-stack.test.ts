@@ -117,17 +117,19 @@ describe('api/run-stack', () => {
 		await Effect.runPromise(handle.awaitShutdown);
 	}, 30_000);
 
-	it('infers stack name from appRoot package metadata when no explicit stack is set', async () => {
+	it('infers app and stack names from appRoot package metadata when not explicit', async () => {
 		const appRoot = mkdtempSync(join(tmpdir(), 'run-stack-infer-app-'));
-		writeFileSync(join(appRoot, 'package.json'), JSON.stringify({ name: '@org/inferred-stack' }));
+		writeFileSync(join(appRoot, 'package.json'), JSON.stringify({ name: '@org/inferred-app' }));
 		const runtimeRoot = mkdtempSync(join(tmpdir(), 'run-stack-infer-state-'));
+		const priorApp = process.env.DEVSTACK_APP;
 		const priorStack = process.env.DEVSTACK_STACK;
 		try {
+			delete process.env.DEVSTACK_APP;
 			delete process.env.DEVSTACK_STACK;
 			const stack = defineDevstack({ members: [leaf] });
 			const handle = runStack(stack, {
 				appRoot,
-				identity: { app: 'run-stack-infer', network: 'test:local' },
+				identity: { network: 'test:local' },
 				runtimeRoot,
 			});
 
@@ -135,12 +137,15 @@ describe('api/run-stack', () => {
 				await Effect.runPromise(handle.start);
 
 				const snapshot = await Effect.runPromise(SubscriptionRef.get(handle.state));
-				expect(snapshot.identity.stack).toBe('inferred-stack');
+				expect(snapshot.identity.app).toBe('inferred-app');
+				expect(snapshot.identity.stack).toBe('inferred-app');
 			} finally {
 				await Effect.runPromise(handle.stop);
 				await Effect.runPromise(handle.awaitShutdown);
 			}
 		} finally {
+			if (priorApp === undefined) delete process.env.DEVSTACK_APP;
+			else process.env.DEVSTACK_APP = priorApp;
 			if (priorStack === undefined) delete process.env.DEVSTACK_STACK;
 			else process.env.DEVSTACK_STACK = priorStack;
 			rmSync(appRoot, { recursive: true, force: true });

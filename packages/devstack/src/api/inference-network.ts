@@ -10,6 +10,13 @@ export interface StackNameResolutionOptions {
 	readonly defaultName?: string;
 }
 
+export interface AppNameResolutionOptions {
+	readonly explicit?: string;
+	readonly env?: Readonly<Record<string, string | undefined>>;
+	readonly cwd?: string;
+	readonly defaultName?: string;
+}
+
 const usefulName = (value: string | undefined): string | undefined => {
 	const trimmed = value?.trim();
 	if (trimmed === undefined || trimmed.length === 0) return undefined;
@@ -49,6 +56,17 @@ export const resolveStackName = (options: StackNameResolutionOptions = {}): stri
 	const fromPackage = inferPackageNameFromCwd(options.cwd);
 	if (fromPackage !== undefined) return fromPackage;
 	return options.defaultName ?? DEFAULT_STACK_NAME;
+};
+
+export const resolveAppName = (options: AppNameResolutionOptions = {}): string => {
+	const explicit = usefulName(options.explicit);
+	if (explicit !== undefined) return explicit;
+	const env = options.env ?? process.env;
+	const fromEnv = usefulName(env.DEVSTACK_APP);
+	if (fromEnv !== undefined) return fromEnv;
+	const fromPackage = inferPackageNameFromCwd(options.cwd);
+	if (fromPackage !== undefined) return fromPackage;
+	return options.defaultName ?? 'devstack';
 };
 
 export const ACTIVE_DEVSTACK_NETWORK_NAMES = ['localnet', 'testnet', 'mainnet', 'devnet'] as const;

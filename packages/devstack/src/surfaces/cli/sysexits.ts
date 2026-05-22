@@ -24,13 +24,14 @@ export const ExitCode = {
 	/** Devstack-domain: supervisor for the target stack is already live
 	 *  in another process. Destructive verbs refuse with this code. */
 	SUPERVISOR_LIVE: 40,
-	/** Devstack-domain: requested snapshot id / label not found. */
+	/** Devstack-domain: requested snapshot name / id not found. */
 	SNAPSHOT_NOT_FOUND: 41,
 	/** Devstack-domain: seed manifest mismatch between current chain
 	 *  identity and the snapshot/seed being restored. */
 	SEED_MISMATCH: 42,
 	/** Devstack-domain: destructive verb requires explicit confirm but
-	 *  `--no-input` / non-TTY / no `--yes` is in effect. */
+	 *  `--no-input` / non-TTY / no `--yes` is in effect, or the
+	 *  interactive prompt was declined. */
 	CONFIRM_REQUIRED: 43,
 	/** Bad usage (unknown flag, malformed args, mutually-exclusive
 	 *  flag pair, ambiguous reference). */
@@ -117,7 +118,7 @@ export const exitCodeTable: ReadonlyArray<ExitCodeEntry> = [
 	{
 		code: ExitCode.SNAPSHOT_NOT_FOUND,
 		name: 'SNAPSHOT_NOT_FOUND',
-		description: 'Devstack: requested snapshot id or label not found.',
+		description: 'Devstack: requested snapshot name or id not found.',
 	},
 	{
 		code: ExitCode.SEED_MISMATCH,
@@ -127,7 +128,7 @@ export const exitCodeTable: ReadonlyArray<ExitCodeEntry> = [
 	{
 		code: ExitCode.CONFIRM_REQUIRED,
 		name: 'CONFIRM_REQUIRED',
-		description: 'Devstack: destructive verb needs --yes but stdin/--no-input forbids prompting.',
+		description: 'Devstack: destructive verb needs confirmation or the prompt was declined.',
 	},
 	{ code: ExitCode.USAGE, name: 'USAGE', description: 'Bad command-line usage.' },
 	{ code: ExitCode.DATA_ERR, name: 'DATA_ERR', description: 'Input data malformed.' },

@@ -65,7 +65,7 @@ const FORK_ICON = html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor
 </svg>`;
 
 const BUILTIN_TABS: TabSpec[] = [
-	{ id: 'assets', label: 'Assets', icon: ASSETS_ICON },
+	{ id: 'assets', label: 'Home', icon: ASSETS_ICON },
 	{ id: 'objects', label: 'Objects', icon: OBJECTS_ICON },
 	{ id: 'settings', label: 'Settings', icon: SETTINGS_ICON },
 ];
@@ -73,7 +73,7 @@ const BUILTIN_TABS: TabSpec[] = [
 /** Built-in tabs plus the fork-controls tab. Returned when the host
  *  controller signals fork-mode availability via the `showFork` prop. */
 const TABS_WITH_FORK: TabSpec[] = [
-	{ id: 'assets', label: 'Assets', icon: ASSETS_ICON },
+	{ id: 'assets', label: 'Home', icon: ASSETS_ICON },
 	{ id: 'objects', label: 'Objects', icon: OBJECTS_ICON },
 	{ id: 'fork', label: 'Fork', icon: FORK_ICON },
 	{ id: 'settings', label: 'Settings', icon: SETTINGS_ICON },
@@ -86,43 +86,56 @@ export class DevWalletTabBar extends LitElement {
 		css`
 			:host {
 				display: block;
-				border-top: 1px solid var(--dev-wallet-border);
+				border-bottom: 1px solid var(--dev-wallet-border);
+				background: var(--dev-wallet-surface);
 			}
 
 			.tab-bar {
 				display: flex;
-				height: 40px;
+				align-items: stretch;
+				min-height: 38px;
 				overflow-x: auto;
+				padding: 0 6px;
 			}
 
 			.tab {
-				flex: 1;
-				min-width: 64px;
+				position: relative;
 				display: flex;
 				align-items: center;
 				justify-content: center;
-				gap: 4px;
-				font-size: 11px;
+				gap: 6px;
+				min-width: 0;
+				height: 38px;
+				padding: 0 14px;
+				font-size: 12px;
 				font-weight: var(--dev-wallet-font-weight-medium);
-				color: var(--dev-wallet-muted-foreground);
-				transition: color 0.15s;
-				border-top: 2px solid transparent;
+				color: var(--dev-wallet-text-2);
+				transition:
+					color 120ms,
+					background 120ms;
+				border-bottom: 2px solid transparent;
 				white-space: nowrap;
-				padding: 0 6px;
 			}
 
 			.tab:hover {
 				color: var(--dev-wallet-foreground);
+				background: var(--dev-wallet-bg-hover);
 			}
 
 			.tab[aria-selected='true'] {
-				color: var(--dev-wallet-primary);
-				border-top-color: var(--dev-wallet-primary);
+				color: var(--dev-wallet-foreground);
+				border-bottom-color: var(--dev-wallet-primary);
 			}
 
 			.tab svg {
-				width: 16px;
-				height: 16px;
+				width: 13px;
+				height: 13px;
+				flex-shrink: 0;
+			}
+
+			.tab:last-child {
+				margin-left: auto;
+				padding: 0 10px;
 			}
 		`,
 	];

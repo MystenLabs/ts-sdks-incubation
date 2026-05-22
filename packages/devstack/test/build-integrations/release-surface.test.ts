@@ -23,6 +23,9 @@ type PackDryRunEntry = {
 	files: Array<{ path: string }>;
 };
 
+const PACK_DRY_RUN_TIMEOUT_MS = 120_000;
+let cachedPackFiles: string[] | null = null;
+
 const readPackageJson = (): PackageJson => JSON.parse(readText('package.json')) as PackageJson;
 
 const exportedTargets = () => {
@@ -34,16 +37,19 @@ const exportedTargets = () => {
 };
 
 const packFiles = (): string[] => {
+	if (cachedPackFiles !== null) return cachedPackFiles;
 	const output = execFileSync('npm', ['pack', '--dry-run', '--json'], {
 		cwd: packageRoot,
 		encoding: 'utf8',
+		timeout: PACK_DRY_RUN_TIMEOUT_MS,
 	});
 	const parsed = JSON.parse(output) as PackDryRunEntry[];
 	const pack = parsed[0];
 	if (!pack) {
 		throw new Error('npm pack --dry-run --json returned no package entries');
 	}
-	return pack.files.map((file) => file.path);
+	cachedPackFiles = pack.files.map((file) => file.path);
+	return cachedPackFiles;
 };
 
 describe('release surface static checks', () => {
@@ -81,43 +87,51 @@ describe('release surface static checks', () => {
 		expect(readText('dist/cli/main.d.mts')).not.toMatch(/^#!/);
 	});
 
-	it('keeps declarations on public package specifiers', () => {
-		const badSpecifier =
-			/(?:node_modules\/(?:\.pnpm\/effect@[^/]+\/node_modules\/)?effect\/dist\/|effect\/[^"']+\.js|\.pnpm\/effect)/;
+	it(
+		'keeps declarations on public package specifiers',
+		() => {
+			const badSpecifier =
+				/(?:node_modules\/(?:\.pnpm\/effect@[^/]+\/node_modules\/)?effect\/dist\/|effect\/[^"']+\.js|\.pnpm\/effect)/;
 
-		for (const file of packFiles().filter((file) => file.endsWith('.d.mts'))) {
-			expect(readText(file), file).not.toMatch(badSpecifier);
-		}
-	}, 20_000);
+			for (const file of packFiles().filter((file) => file.endsWith('.d.mts'))) {
+				expect(readText(file), file).not.toMatch(badSpecifier);
+			}
+		},
+		PACK_DRY_RUN_TIMEOUT_MS,
+	);
 
-	it('pack dry-run includes runtime assets and excludes generated artifacts', () => {
-		const files = packFiles();
+	it(
+		'pack dry-run includes runtime assets and excludes generated artifacts',
+		() => {
+			const files = packFiles();
 
-		for (const imageFile of [
-			'images/_shared/signal-forward.sh',
-			'images/postgres/Dockerfile',
-			'images/seal/Dockerfile',
-			'images/seal/entrypoint.sh',
-			'images/sui/Dockerfile',
-			'images/sui/entrypoint.sh',
-			'images/walrus/Dockerfile',
-			'images/walrus/deploy-walrus.sh',
-			'images/walrus/run-walrus.sh',
-		]) {
-			expect(files).toContain(imageFile);
-		}
+			for (const imageFile of [
+				'images/_shared/signal-forward.sh',
+				'images/postgres/Dockerfile',
+				'images/seal/Dockerfile',
+				'images/seal/entrypoint.sh',
+				'images/sui/Dockerfile',
+				'images/sui/entrypoint.sh',
+				'images/walrus/Dockerfile',
+				'images/walrus/deploy-walrus.sh',
+				'images/walrus/run-walrus.sh',
+			]) {
+				expect(files).toContain(imageFile);
+			}
 
-		for (const { specifier, import: importPath, types } of exportedTargets()) {
-			expect(files, `${specifier} import`).toContain(importPath?.slice(2));
-			expect(files, `${specifier} types`).toContain(types?.slice(2));
-		}
+			for (const { specifier, import: importPath, types } of exportedTargets()) {
+				expect(files, `${specifier} import`).toContain(importPath?.slice(2));
+				expect(files, `${specifier} types`).toContain(types?.slice(2));
+			}
 
-		expect(files.some((file) => file.startsWith('src/'))).toBe(false);
-		expect(files.some((file) => file.startsWith('src/generated/'))).toBe(false);
-		expect(files.some((file) => file.startsWith('src/samples/'))).toBe(false);
-		expect(files.some((file) => file.startsWith('dist/samples/'))).toBe(false);
-		expect(files.some((file) => file.startsWith('dist/node_modules/'))).toBe(false);
-	}, 20_000);
+			expect(files.some((file) => file.startsWith('src/'))).toBe(false);
+			expect(files.some((file) => file.startsWith('src/generated/'))).toBe(false);
+			expect(files.some((file) => file.startsWith('src/samples/'))).toBe(false);
+			expect(files.some((file) => file.startsWith('dist/samples/'))).toBe(false);
+			expect(files.some((file) => file.startsWith('dist/node_modules/'))).toBe(false);
+		},
+		PACK_DRY_RUN_TIMEOUT_MS,
+	);
 
 	it('build entries match the public release surface', () => {
 		const config = readText('tsdown.config.ts');

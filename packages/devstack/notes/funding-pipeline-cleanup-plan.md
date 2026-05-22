@@ -41,20 +41,19 @@ Target shape:
   `packages/devstack/src/plugins/account/service.ts` and variant modules.
 - Internal acquire inputs can carry a normalized `name`, but callers cannot pass a conflicting name.
 
-### Funding has two public names for one idea
+### Funding uses one public list
 
 Current shape:
 
-- Default SUI funding uses `fund?: bigint` on ephemeral accounts.
-- Cross-coin funding uses `funding: [{ coin, amount }]`.
-- Docs teach `coin.builtin('sui')` plus `funding` for SUI top-ups, while bare ephemeral accounts use
-  `fund`.
+- Bare `account('alice')` still applies the default ephemeral SUI amount.
+- Explicit funding uses `funding: [{ coin, amount }]` for every coin.
+- SUI top-ups use `{ coin: 'sui', amount }` so callers do not need `coin.builtin('sui')` for the
+  normal faucet path.
 
-Target shape:
+Remaining target:
 
-- Rename the default SUI amount to an explicit `suiMist?: bigint` or `initialMist?: bigint`.
-- Keep custom funding as `funding`, but make the SUI shorthand the preferred path for SUI.
-- Do not require `coin.builtin('sui')` just to request the normal SUI faucet path.
+- Keep custom funding as `funding` and preserve the SUI shorthand as the documented SUI path.
+- Do not reintroduce a second public funding option for the default SUI amount.
 
 ### Faucet dispatcher is over-public for built-in use
 
@@ -139,8 +138,8 @@ Target shape:
 ## 3. Specific public API changes
 
 - Change `AccountOptions` so variants no longer accept `name`.
-- Rename `fund` to `initialMist` or `suiMist`; update `DEFAULT_EPHEMERAL_FUND_MIST` if the chosen
-  public name should match.
+- Keep explicit SUI funding under `funding: [{ coin: 'sui', amount }]`; the bare ephemeral form
+  keeps `DEFAULT_EPHEMERAL_FUND_MIST` as its internal default.
 - Delete root exports for `faucet`, `FaucetService`, `FaucetDispatcher`, `FaucetRequest`,
   `requestFundsOnce`, `requestFundsWithRetry`, and retry constants unless a first-party consumer
   remains after migration.
@@ -170,7 +169,7 @@ Target shape:
 ## 5. Built-in plugin/component migration steps
 
 1. Migrate account variant constructors and tests to no-inner-name options.
-2. Migrate all examples and docs from `fund` to the chosen SUI funding option.
+2. Keep examples and docs on the single `funding` list with the `{ coin: 'sui', amount }` shorthand.
 3. Replace any `coin.local(...)` first-party usage with `coin.fromPackage(...)` or
    `coin.known(...)`.
 4. Update wallet, token-studio, private-content, connect-four, and fork-greeting configs if
@@ -230,7 +229,7 @@ pnpm --filter @mysten-incubation/devstack smoke:pack-consumer
 Residue scans:
 
 ```bash
-rg -n "kind: '.*', name:|fund:" packages/devstack/src/plugins/account packages/docs/content/devstack examples
+rg -n "kind: '.*', name:|\\bfund\\?:" packages/devstack/src/plugins/account packages/docs/content/devstack examples
 rg -n "coin\\.local|SYMBOL_FORM_NO_DEP_EDGE_WARNING|pkg\\(" packages/devstack/src packages/docs/content/devstack examples
 rg -n "faucet\\(|FaucetDispatcher|requestFundsOnce|requestFundsWithRetry" packages/devstack/src packages/docs/content/devstack examples
 ```

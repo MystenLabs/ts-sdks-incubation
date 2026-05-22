@@ -73,6 +73,7 @@
 	"dependencies": {
 		"@effect/platform-node": "catalog:",
 		"@mysten/codegen": "catalog:",
+		"@mysten/deepbook-v3": "catalog:",
 		"@mysten/sui": "catalog:",
 		"@stricli/core": "catalog:",
 		"effect": "catalog:",

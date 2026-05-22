@@ -35,6 +35,7 @@ export type DeepbookPhase =
 	| 'indexer'
 	| 'server'
 	| 'market-maker'
+	| 'fund-deep'
 	| 'margin-publish'
 	| 'margin-seed'
 	| 'mint-deep'

@@ -47,8 +47,11 @@ import {
 	applyCrossCuttingFunding,
 	fundEphemeralDefault,
 	DEFAULT_EPHEMERAL_FUND_MIST,
-	type CrossCuttingFundingEntry,
+	SUI_FULL_COIN_TYPE,
+	type AccountFunding,
+	type AccountFundingResult,
 	type ProjectedFunding,
+	type ProjectedFundingEntry,
 } from './funding.ts';
 import { resolveEphemeralVariant } from './variants/ephemeral.ts';
 import { resolveKeystoreVariant } from './variants/keystore.ts';
@@ -73,31 +76,30 @@ import { withAddressLease } from './lease.ts';
 /** Account variant discriminated union. The user-facing factory
  *  takes one of these shapes (or omits `opts` entirely for the
  *  default ephemeral form). */
-export type AccountOptions =
+export type AccountOptions<Funding extends AccountFunding = AccountFunding> =
 	| {
 			readonly kind: 'ephemeral';
 			readonly name: string;
-			readonly fund?: bigint /* MIST */;
-			readonly funding?: ReadonlyArray<CrossCuttingFundingEntry>;
+			readonly funding?: Funding;
 	  }
 	| {
 			readonly kind: 'keystore';
 			readonly name: string;
 			readonly path: string;
 			readonly aliasOrAddress: string;
-			readonly funding?: ReadonlyArray<CrossCuttingFundingEntry>;
+			readonly funding?: Funding;
 	  }
 	| {
 			readonly kind: 'env';
 			readonly name: string;
 			readonly key: string;
-			readonly funding?: ReadonlyArray<CrossCuttingFundingEntry>;
+			readonly funding?: Funding;
 	  }
 	| {
 			readonly kind: 'inline';
 			readonly name: string;
 			readonly privateKey: string | Uint8Array;
-			readonly funding?: ReadonlyArray<CrossCuttingFundingEntry>;
+			readonly funding?: Funding;
 	  }
 	| {
 			readonly kind: 'signer';
@@ -114,13 +116,13 @@ export type AccountOptions =
 				) => Promise<{ readonly bytes: string; readonly signature: string }>;
 			};
 			readonly addressOverride?: string;
-			readonly funding?: ReadonlyArray<CrossCuttingFundingEntry>;
+			readonly funding?: Funding;
 	  }
 	| {
 			readonly kind: 'impersonate';
 			readonly name: string;
 			readonly address: string;
-			readonly funding?: ReadonlyArray<CrossCuttingFundingEntry>;
+			readonly funding?: Funding;
 	  };
 
 // -----------------------------------------------------------------------------
@@ -166,6 +168,7 @@ export interface AccountValue {
 	readonly signPersonalMessage: (
 		msg: Uint8Array,
 	) => Effect.Effect<{ readonly bytes: string; readonly signature: string }, AccountSignError>;
+	readonly funding: AccountFundingResult;
 }
 
 /** Submit result projection — kept narrow so downstream consumers
@@ -642,34 +645,34 @@ export const acquireAccount = (
 		//     FIFO queue) -------------------------------------------
 		const broker = yield* LeaseBrokerService;
 
-		// --- default funding (ephemeral only) ------------------------
-		if (opts.kind === 'ephemeral') {
+		const defaultFunding: ProjectedFundingEntry | null =
+			opts.kind === 'ephemeral' && opts.funding === undefined
+				? {
+						coin: 'SUI',
+						fullCoinType: SUI_FULL_COIN_TYPE,
+						amount: DEFAULT_EPHEMERAL_FUND_MIST,
+					}
+				: null;
+		const requestedFunding =
+			defaultFunding === null
+				? (ctx.projectedFunding ?? [])
+				: [defaultFunding, ...(ctx.projectedFunding ?? [])];
+		const appliedDefaultFunding: ProjectedFundingEntry[] = [];
+
+		// --- default funding (bare ephemeral only) -------------------
+		if (defaultFunding !== null) {
 			yield* fundEphemeralDefault({
 				accountName: opts.name,
 				address: resolved.address,
-				amountMist: opts.fund ?? DEFAULT_EPHEMERAL_FUND_MIST,
+				amountMist: defaultFunding.amount,
 				suiMode: ctx.sui.mode,
 				chainId: ctx.sui.chain,
 				emitAutoPromotionEvent: ctx.emitAutoPromotionEvent,
 				broker,
 			});
-		}
-
-		// --- cross-cutting funding (all variants) --------------------
-		//
-		// The barrel pre-projects each user-supplied `CoinMember` to
-		// `{fullCoinType, amount}` from resolved dependencies so this
-		// dispatch stays substrate-name-blind. Missing / empty `projectedFunding`
-		// is a no-op (matches the "Optional Faucet is a noop" invariant).
-		const projected = ctx.projectedFunding ?? [];
-		if (projected.length > 0) {
-			yield* applyCrossCuttingFunding({
-				accountName: opts.name,
-				address: resolved.address,
-				funding: projected,
-				chainId: ctx.sui.chain,
-				broker,
-			});
+			if (defaultFunding.amount > 0n) {
+				appliedDefaultFunding.push(defaultFunding);
+			}
 		}
 
 		const source: AccountValue['source'] = opts.kind === 'impersonate' ? 'impersonate' : 'real';
@@ -688,7 +691,41 @@ export const acquireAccount = (
 			scheme: resolved.scheme,
 			publicKey: resolved.publicKey,
 			source,
+			funding: {
+				requested: requestedFunding,
+				applied: appliedDefaultFunding,
+			},
 			...closures,
 		};
-		return value;
+
+		// --- cross-cutting funding (all variants) --------------------
+		//
+		// The barrel pre-projects each user-supplied `CoinMember` to
+		// `{fullCoinType, amount}` from resolved dependencies so this
+		// dispatch stays substrate-name-blind. The resolved account
+		// handle is passed so strategy providers without admin
+		// capabilities can sign account-owned funding swaps. Missing /
+		// empty `projectedFunding` is a no-op (matches the "Optional
+		// Faucet is a noop" invariant).
+		const projected = ctx.projectedFunding ?? [];
+		let appliedCrossCuttingFunding: ProjectedFunding = [];
+		if (projected.length > 0) {
+			appliedCrossCuttingFunding = yield* applyCrossCuttingFunding({
+				accountName: opts.name,
+				address: resolved.address,
+				variant: opts.kind,
+				account: value,
+				funding: projected,
+				chainId: ctx.sui.chain,
+				broker,
+			});
+		}
+
+		return {
+			...value,
+			funding: {
+				requested: requestedFunding,
+				applied: [...appliedDefaultFunding, ...appliedCrossCuttingFunding],
+			},
+		};
 	});

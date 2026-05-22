@@ -33,7 +33,7 @@ export const dAppKit = createDAppKit({
 			autoConnect: true,
 			autoApprove,
 			createInitialAccount: false,
-			mountUI: false,
+			mountUI: true,
 		}),
 	],
 });

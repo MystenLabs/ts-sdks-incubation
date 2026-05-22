@@ -42,6 +42,9 @@ const SKIP = new Set([
 	'.devstack',
 	'.turbo',
 	'generated',
+	'test-results',
+	'playwright-report',
+	'playwright',
 	'tsconfig.app.tsbuildinfo',
 	'tsconfig.node.tsbuildinfo',
 ]);
@@ -201,15 +204,15 @@ function rewriteTemplateScripts(json: PkgJson): void {
 	}
 
 	const scaffoldedScripts: Record<string, string> = {
-		'devstack:apply': 'DEVSTACK_APP=_template devstack apply',
+		'devstack:apply': 'DEVSTACK_APP=template devstack apply',
 		apply: 'pnpm run devstack:apply',
-		dev: 'pnpm run devstack:apply && DEVSTACK_APP=_template vite --host 127.0.0.1',
+		dev: 'DEVSTACK_APP=template devstack up',
 		build:
-			'pnpm run devstack:apply && DEVSTACK_APP=_template tsc -b && DEVSTACK_APP=_template vite build',
+			'pnpm run devstack:apply && DEVSTACK_APP=template tsc -b && DEVSTACK_APP=template vite build',
 		preview: scripts.preview ?? 'vite preview',
 		typecheck: 'pnpm run devstack:apply && tsc -b --noEmit',
 		test: scripts.test ?? 'pnpm run typecheck && vitest run',
-		'test:e2e': 'DEVSTACK_APP=_template playwright test',
+		'test:e2e': 'DEVSTACK_APP=template playwright test',
 		clean: scripts.clean ?? 'rm -rf dist .turbo node_modules/.tmp',
 	};
 
@@ -334,10 +337,10 @@ A minimal Sui app scaffolded with \`@mysten-incubation/create-devstack-app\`.
 ## Commands
 
 \`\`\`bash
-pnpm dev       # apply the stack, generate app bindings, and start Vite
+pnpm dev       # start the devstack supervisor and Vite app
 pnpm build     # apply the stack, typecheck, and build the app
 pnpm test      # typecheck and run unit tests
-pnpm test:e2e  # run the Playwright mint flow
+pnpm test:e2e  # start the stack and run the Playwright mint flow
 \`\`\`
 
 ## Project Shape

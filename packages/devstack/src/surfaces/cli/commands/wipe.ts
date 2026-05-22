@@ -5,7 +5,7 @@
 //
 // `wipe` is the recovery flow `apply` points users at on
 // `SeedManifestMismatchError`. It is tier-2 destructive (requires
-// `--yes` to skip the typed-confirm prompt) and refuses to run while
+// `--yes` or an interactive TTY confirmation) and refuses to run while
 // a supervisor is live for the target stack (writes to disk while
 // a peer is acquiring a container would race).
 //
@@ -15,28 +15,15 @@
 
 import { Effect } from 'effect';
 
-import { type CliError, CliConfirmRequiredError, CliInternalError, isCliError } from '../errors.ts';
+import { type CliError, CliInternalError, isCliError } from '../errors.ts';
 import { emitSuccess } from '../output.ts';
+import { confirmDestructive, type ConfirmPrompt } from './confirm.ts';
 import type { CommandContext, CommandResult } from './index.ts';
 
 export interface WipeDeps {
 	readonly wipe: () => Effect.Effect<void, unknown>;
+	readonly confirm: ConfirmPrompt;
 }
-
-const checkConfirm = (verb: string, ctx: CommandContext): Effect.Effect<void, CliError> => {
-	if (ctx.flags.dryRun) return Effect.void;
-	const { assumeYes, forbidPrompt, stdinIsTty } = ctx.flags.confirm;
-	if (assumeYes) return Effect.void;
-	if (forbidPrompt || !stdinIsTty) {
-		return Effect.fail(
-			new CliConfirmRequiredError({
-				verb,
-				hint: 'rerun with --yes (non-interactive) or in a TTY',
-			}),
-		);
-	}
-	return Effect.void;
-};
 
 export const runWipe = (
 	deps: WipeDeps,
@@ -44,7 +31,10 @@ export const runWipe = (
 ): Effect.Effect<CommandResult, CliError> =>
 	Effect.gen(function* () {
 		const started = Date.now();
-		yield* checkConfirm('wipe', ctx);
+		yield* confirmDestructive(deps.confirm, ctx, {
+			verb: 'wipe',
+			prompt: 'Wipe all devstack state for the selected stack?',
+		});
 		if (!ctx.flags.dryRun) {
 			yield* deps.wipe().pipe(
 				Effect.catch((cause: unknown) =>

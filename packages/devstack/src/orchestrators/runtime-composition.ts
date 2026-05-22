@@ -117,6 +117,9 @@ export const layerProductionOrchestrators = (router: ProductionRouterOptions = {
 						disabled: router.disabled ?? false,
 						profile,
 						image: router.image ?? DEFAULT_TRAEFIK_IMAGE,
+						routeReadinessProbe: {
+							enabled: router.disabled !== true,
+						},
 					}),
 				),
 			),

@@ -130,7 +130,7 @@ describe('acquireHostService', () => {
 		loggerLines.length = 0;
 		const child = new FakeChild();
 		const calls: SpawnCall[] = [];
-		const cwd = resolve('examples/wallet');
+		const cwd = resolve('examples/deepbook-trader');
 		const options = normalizeHostServiceOptions({
 			name: 'frontend',
 			command: 'pnpm',

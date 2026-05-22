@@ -105,7 +105,7 @@ export async function scaffold(opts: ScaffoldOptions): Promise<ScaffoldResult> {
 	log(`  cd ${opts.name}`);
 	if (!installed) log('  pnpm install');
 	log('  pnpm dev          # bring up localnet, publish hello, start vite');
-	log('  pnpm test:e2e     # run the connect-and-mint e2e spec');
+	log('  pnpm test:e2e     # start the stack and run the Playwright spec');
 	log('');
 
 	return { appDir, installed, gitInitialized };
@@ -131,6 +131,9 @@ const SKIP = new Set([
 	'.devstack',
 	'.turbo',
 	'generated',
+	'test-results',
+	'playwright-report',
+	'playwright',
 	'tsconfig.app.tsbuildinfo',
 	'tsconfig.node.tsbuildinfo',
 ]);
@@ -151,8 +154,8 @@ function rewriteName(appDir: string, name: string): void {
 		const rel = file.slice(appDir.length + 1);
 		if (rel === 'package.json') {
 			rewritePackageJson(file, name);
-		} else if (rel === 'devstack.config.ts') {
-			rewriteDevstackConfig(file, name);
+		} else if (rel === 'devstack.config.ts' || rel === 'playwright.config.ts') {
+			rewriteDevstackText(file, name);
 		}
 	}
 }
@@ -178,7 +181,7 @@ function rewritePackageJson(path: string, name: string): void {
 	writeFileSync(path, `${JSON.stringify(json, null, '\t')}\n`);
 }
 
-function rewriteDevstackConfig(path: string, name: string): void {
+function rewriteDevstackText(path: string, name: string): void {
 	const raw = readFileSync(path, 'utf8');
 	writeFileSync(
 		path,

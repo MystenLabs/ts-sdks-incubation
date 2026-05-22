@@ -12,10 +12,12 @@
 //
 //   2. **Cross-cutting funding** — declared per-account via
 //      `AccountOptions.funding`. Applies to every variant.
-//      Dispatched through the ambient Faucet's strategy registry.
-//      No strategy in scope for a given coin ⇒ silent noop
-//      (architecture-mandated test-ergonomics contract, distilled-doc
-//      invariant: "Optional Faucet is a noop, not an error").
+//      Dispatched through the ambient strategy registry. Missing
+//      strategy for non-SUI coins ⇒ silent noop (architecture-
+//      mandated test-ergonomics contract, distilled-doc invariant:
+//      "Optional Faucet is a noop, not an error"). Explicit SUI
+//      entries use the SUI faucet strategy and fail loudly when no
+//      faucet-bearing strategy exists.
 //
 // Distilled-doc invariant: per-address serialization — concurrent
 // funding requests for the same address MUST serialize. We share the
@@ -32,36 +34,65 @@ import {
 	faucetCapabilityFor,
 	StrategyRegistryService,
 } from '../../substrate/runtime/strategy-registry/index.ts';
-import type { ResourceRef } from '../../api/define-plugin.ts';
+import type { AnyResourceRef, ResourceRef } from '../../api/define-plugin.ts';
 import type { LeaseBroker } from '../../substrate/runtime/lease-broker/index.ts';
 import type { ChainId } from '../../substrate/brand.ts';
 import type { CoinResourceId, CoinValue } from '../coin/index.ts';
 
-import { accountAcquireError, type AccountAcquireError } from './errors.ts';
+import {
+	accountAcquireError,
+	type AccountAcquireError,
+	type AccountVariantKind,
+} from './errors.ts';
 import { withAddressLease } from './lease.ts';
+import type { AccountValue } from './service.ts';
 
 /** Direct resource ref shape for a coin upstream. The user passes the
- *  result of `coin.local(...)` / `coin.witness(...)` / `coin.known(...)`
- *  / `coin.builtin(...)` — NOT a bare string or discriminator. Generic
+ *  result of `coin.fromPackage(...)` / `coin.known(...)` /
+ *  `coin.builtin(...)` — NOT a bare string or discriminator. Generic
  *  over the literal symbol so the account's dependency tuple preserves
- *  each per-coin resource id (`coin:USDC`, `coin:WAL`, ...).
+ *  each per-coin resource id (`coin:managed_coin/managed_coin`,
+ *  `coin:wal`, ...).
  *
  *  Architecture (Direct Member Refs): cross-plugin references at the
  *  user-facing surface are plugin/resource refs directly — no opaque
  *  tag or string discriminator vocabulary. */
 export type CoinMember<Sym extends string = string> = ResourceRef<CoinResourceId<Sym>, CoinValue>;
 
+/** Optional dependency edge for the plugin that contributes the
+ *  funding strategy. Coin refs force the coin metadata edge; `via`
+ *  forces the strategy-provider edge (e.g. a known DeepBook
+ *  deployment that contributes `coinType:<DEEP>`). */
+export type CrossCuttingFundingProvider = AnyResourceRef | readonly AnyResourceRef[];
+
+/** Built-in SUI funding entry. This uses the same account funding
+ *  list as arbitrary coins but avoids requiring `coin.builtin('sui')`
+ *  for the normal SUI faucet path. */
+export interface SuiFundingEntry {
+	readonly coin: 'sui';
+	readonly amount: number | bigint;
+}
+
 /** A single cross-cutting funding entry. `coin` is a direct member ref
- *  (the value returned by `coin.local(...)` etc.) — the account plugin
+ *  (the value returned by `coin.fromPackage(...)` etc.) — the account plugin
  *  threads it through `dependsOn` so the substrate's dep graph forces
  *  the publishing / discovery edge to land before funding.
  *
  *  Distilled-doc invariant ("Strict upstream declaration"): coin
- *  references cited by Account must force a dep edge. */
+ *  references cited by Account must force a dep edge. `via` is the
+ *  same contract for the strategy contributor that can satisfy the
+ *  funding request. */
 export interface CrossCuttingFundingEntry<M extends CoinMember = CoinMember> {
 	readonly coin: M;
 	readonly amount: bigint;
+	readonly via?: CrossCuttingFundingProvider;
 }
+
+export type AccountFundingEntry<M extends CoinMember = CoinMember> =
+	| SuiFundingEntry
+	| CrossCuttingFundingEntry<M>;
+
+export type AccountFunding = ReadonlyArray<AccountFundingEntry>;
 
 /** Internal projected shape — the acquire body in `account/index.ts`
  *  receives each funding entry's resolved `CoinValue`, reads
@@ -70,11 +101,35 @@ export interface CrossCuttingFundingEntry<M extends CoinMember = CoinMember> {
  *  member refs — keeps the strategy dispatch logic
  *  substrate-name-blind. */
 export interface ProjectedFundingEntry {
+	readonly coin: string;
 	readonly fullCoinType: string;
 	readonly amount: bigint;
 }
 
 export type ProjectedFunding = ReadonlyArray<ProjectedFundingEntry>;
+
+export interface AccountFundingResult {
+	readonly requested: ProjectedFunding;
+	readonly applied: ProjectedFunding;
+}
+
+/** Request passed to account funding strategies. `amount` uses the
+ *  funded coin's smallest unit. The resolved account handle is present
+ *  so strategies without an admin signer can perform account-owned
+ *  swaps while still sharing the central funding dispatcher. */
+export interface AccountFundingRequest {
+	readonly address: string;
+	readonly amount: bigint;
+	readonly account: AccountValue;
+}
+
+export interface AccountFundingStrategy<E = unknown> {
+	readonly request: (req: AccountFundingRequest) => Effect.Effect<void, E>;
+	/** True when the strategy calls `account.withTransactionSigner`.
+	 *  The dispatcher must not acquire the same non-reentrant
+	 *  per-address lease outside the strategy. */
+	readonly usesAccountSigner?: boolean;
+}
 
 /** The canonical builtin SUI coin type. Used by the funding dispatch
  *  to route SUI entries to the faucet strategy (same key as the
@@ -224,6 +279,8 @@ export const fundEphemeralDefault = (
 export interface ApplyCrossCuttingFundingArgs {
 	readonly accountName: string;
 	readonly address: string;
+	readonly variant: AccountVariantKind;
+	readonly account: AccountValue;
 	readonly funding: ProjectedFunding;
 	readonly chainId: ChainId;
 	readonly broker: LeaseBroker;
@@ -234,29 +291,36 @@ export interface ApplyCrossCuttingFundingArgs {
  *  the address is known.
  *
  *  Distilled-doc invariant: "Optional Faucet is a noop, not an
- *  error". Absence of a registered strategy for a coin's capability
- *  key short-circuits silently (the entry is dropped). This lets a
- *  test author opt INTO cross-cutting funding without the stack
- *  having to know whether the surrounding network can satisfy it.
+ *  error". Absence of a registered strategy for a non-SUI coin's
+ *  capability key short-circuits silently (the entry is dropped).
+ *  Explicit SUI entries are stricter: they route through the active
+ *  chain's faucet strategy and fail loudly when none is registered.
+ *  This lets a test author opt INTO arbitrary-coin funding without
+ *  forcing every surrounding network to satisfy every custom coin.
  *
  *  Wiring: SUI entries (`fullCoinType === '0x2::sui::SUI'`) dispatch
  *  through `faucet:request:<chainId>` (same key as the default pass);
  *  other entries dispatch through `coinType:<fullCoinType>` keys
  *  contributed by the respective Coin/Walrus/Seal plugins.
  *
- *  Entries are processed SERIALLY (one wire call at a time per
- *  address) so the per-address lock and the on-chain sequence number
- *  agree at every step. */
+ *  Entries are processed serially. Strategies that use the resolved
+ *  account signer acquire the per-address lease internally; strategies
+ *  that do not are wrapped by this dispatcher. */
 export const applyCrossCuttingFunding = (
 	parts: ApplyCrossCuttingFundingArgs,
-): Effect.Effect<void, AccountAcquireError, StrategyRegistryService> =>
+): Effect.Effect<ProjectedFunding, AccountAcquireError, StrategyRegistryService> =>
 	Effect.gen(function* () {
 		if (parts.funding.length === 0) {
-			return;
+			return [];
 		}
 		const registry = yield* StrategyRegistryService;
+		const applied: ProjectedFundingEntry[] = [];
 
 		for (const entry of parts.funding) {
+			if (entry.amount <= 0n) {
+				continue;
+			}
+
 			// Resolve the capability key from the projected coin type.
 			//
 			// SUI (`0x2::sui::SUI`) → reuse the faucet-request key so the
@@ -271,52 +335,62 @@ export const applyCrossCuttingFunding = (
 			const isSui = entry.fullCoinType === SUI_FULL_COIN_TYPE;
 			const coinKey = `coinType:${entry.fullCoinType}` as const;
 			const lookup = isSui
-				? faucetCapabilityFor<FaucetStrategy>(parts.chainId)
-				: registry.get<typeof coinKey, FaucetStrategy>(coinKey);
+				? faucetCapabilityFor<AccountFundingStrategy>(parts.chainId)
+				: registry.get<typeof coinKey, AccountFundingStrategy>(coinKey);
 
-			// Architecture-distilled: optional-faucet-is-noop. If no
-			// strategy is registered for this coin, drop the entry
-			// silently. Wire calls only fire when something IS wired.
+			// Architecture-distilled: optional-faucet-is-noop for
+			// arbitrary coins. Explicit SUI entries are the normal gas
+			// faucet path, so missing strategy is actionable and loud.
 			const strategy = yield* lookup.pipe(
-				Effect.catchTag('StrategyNotFoundError', () =>
-					Effect.succeed(null as FaucetStrategy | null),
+				Effect.catchTag('StrategyNotFoundError', (err) =>
+					isSui
+						? Effect.fail(
+								accountAcquireError({
+									phase: 'fund-cross-cutting',
+									accountName: parts.accountName,
+									variant: parts.variant,
+									message:
+										`Account '${parts.accountName}': no SUI funding strategy registered ` +
+										`for chain '${parts.chainId}'. Registered keys: [${err.registeredKeys.join(', ')}].`,
+									cause: err,
+									hint: 'Ensure a sui() plugin with a faucet-bearing mode (local/live-testnet/live-devnet) is in the stack.',
+								}),
+							)
+						: Effect.succeed(null as AccountFundingStrategy | null),
 				),
 			);
 			if (strategy === null) {
 				continue;
 			}
 
-			const wrapCrossCuttingFailure = (cause: {
-				readonly _tag: 'FaucetUnreachable' | 'FaucetExhausted' | 'FaucetBodyError';
-			}) =>
-				Effect.fail(
-					accountAcquireError({
-						phase: 'fund-cross-cutting',
-						accountName: parts.accountName,
-						variant: 'ephemeral',
-						message:
-							`Account '${parts.accountName}': cross-cutting funding ` +
-							`failed for coin (key='${isSui ? `faucet:request:${parts.chainId}` : coinKey}') amount=${entry.amount} ` +
-							`(tag=${cause._tag}).`,
-						cause,
-						hint:
-							'Cross-cutting funding requires the matching strategy ' +
-							'to be registered at the time of acquire — check the ' +
-							'plugin that contributes this coin (Coin/Walrus/etc.).',
-					}),
-				);
-			yield* withAddressLease(
-				parts.broker,
-				parts.accountName,
-				parts.address,
-				strategy.request({ address: parts.address, amount: entry.amount }).pipe(
-					Effect.catchTags({
-						FaucetUnreachable: wrapCrossCuttingFailure,
-						FaucetExhausted: wrapCrossCuttingFailure,
-						FaucetBodyError: wrapCrossCuttingFailure,
-					}),
-				),
-			);
+			const key = isSui ? (`faucet:request:${parts.chainId}` as const) : coinKey;
+			const wrapCrossCuttingFailure = (cause: unknown): AccountAcquireError => {
+				const tag =
+					typeof cause === 'object' && cause !== null && '_tag' in cause
+						? String((cause as { readonly _tag?: unknown })._tag)
+						: 'unknown';
+				return accountAcquireError({
+					phase: 'fund-cross-cutting',
+					accountName: parts.accountName,
+					variant: parts.variant,
+					message:
+						`Account '${parts.accountName}': cross-cutting funding ` +
+						`failed for coin (key='${key}') amount=${entry.amount} ` +
+						`(tag=${tag}).`,
+					cause,
+					hint:
+						'Cross-cutting funding requires the matching strategy ' +
+						'to be registered at the time of acquire — check the ' +
+						'plugin that contributes this coin and any `via` dependency.',
+				});
+			};
+			const request = strategy
+				.request({ address: parts.address, amount: entry.amount, account: parts.account })
+				.pipe(Effect.mapError(wrapCrossCuttingFailure));
+			yield* strategy.usesAccountSigner === true
+				? request
+				: withAddressLease(parts.broker, parts.accountName, parts.address, request);
+			applied.push(entry);
 		}
 
 		yield* Effect.annotateCurrentSpan({
@@ -325,6 +399,7 @@ export const applyCrossCuttingFunding = (
 			'fund.cross-cutting.count': parts.funding.length,
 			'sui.chain': parts.chainId,
 		});
+		return applied;
 	}).pipe(
 		Effect.withSpan('devstack.plugin.account.applyCrossCuttingFunding', {
 			attributes: {

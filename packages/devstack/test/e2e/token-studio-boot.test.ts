@@ -85,7 +85,7 @@ describe('token-studio boots end-to-end', () => {
 			'sui#0',
 			'account/alice#1',
 			'package:managed_coin#2',
-			'coin:managed_coin#3',
+			'coin:managed_coin/managed_coin#3',
 			'account/bob#4',
 			'account/carol#5',
 			'wallet#6',

@@ -70,7 +70,7 @@ import {
 	DEFAULT_WALRUS_REF,
 	resolveCargoImage,
 } from '../bootstrap-assets/cargo-image.ts';
-import { makeWalFaucetStrategy, type WalFaucetStrategy } from '../faucet-strategy.ts';
+import { makeWalFaucetStrategy, walCoinType, type WalFaucetStrategy } from '../faucet-strategy.ts';
 import {
 	resolveWalExchange,
 	seedWalAccounts,
@@ -113,7 +113,8 @@ export interface WalrusLocalClusterOptions<
 	/** Walrus epoch length passed to `walrus-deploy --epoch-duration`.
 	 *  Default `'24h'`. */
 	readonly epochDuration?: string;
-	/** Per-node TCP ready-probe timeout (ms). Default 60_000. */
+	/** Per-node TCP ready-probe timeout (ms). Defaults to
+	 *  `DEFAULT_NODE_READY_TIMEOUT_MS`. */
 	readonly readyTimeoutMs?: number;
 	/** SUI MIST to spend per seed account on SUI → WAL swap. */
 	readonly seedPaymentMist?: bigint;
@@ -141,9 +142,10 @@ export interface LocalClusterBootResult {
 	readonly exchange: WalExchangeHandle | null;
 	/** WAL faucet strategy — present only when the local cluster has
 	 *  BOTH a non-empty exchange object AND at least one seed account.
-	 *  The barrel registers this onto the `coinType:WAL` strategy
-	 *  contributor decl. `null` otherwise. */
+	 *  The barrel registers this onto the `coinType:<fullCoinType>`
+	 *  strategy contributor decl. `null` otherwise. */
 	readonly walFaucetStrategy: WalFaucetStrategy | null;
+	readonly walCoinType: string | null;
 	/** Admin signer for the WAL exchange — the first entry of
 	 *  `seedAccounts` when supplied; `null` when no seed accounts
 	 *  were wired. The barrel projects this into `WalrusAdmin.seedWal`
@@ -376,7 +378,7 @@ export const bootLocalCluster = (
 
 		// ---- exchange resolution + WAL seed/faucet strategy ------
 		// Seed each configured account with WAL and register a
-		// `coinType:WAL` strategy that swaps SUI → WAL on demand iff BOTH:
+		// `coinType:<fullCoinType>` strategy that swaps SUI → WAL on demand iff BOTH:
 		//   - the deploy produced a WAL exchange object, AND
 		//   - at least one seed account was wired through opts.
 		// The first seed account doubles as the admin signer
@@ -403,6 +405,7 @@ export const bootLocalCluster = (
 						defaultPaymentMist: opts.seedPaymentMist,
 					})
 				: null;
+		const resolvedWalCoinType = walFaucetStrategy === null ? null : walCoinType(state.walrusPackageId);
 
 		return {
 			mode: 'local' as const,
@@ -414,6 +417,7 @@ export const bootLocalCluster = (
 			exchangeObjectId: state.exchangeObject,
 			exchange,
 			walFaucetStrategy,
+			walCoinType: resolvedWalCoinType,
 			adminSigner: adminSigner ?? null,
 		};
 	}).pipe(

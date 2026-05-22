@@ -169,6 +169,9 @@ const payloadFor = (event: EngineEvent): string => {
 				scheme: event.account.scheme ?? '',
 				source: event.account.source ?? '',
 				funding: event.account.funding.status,
+				fundingEntries: (event.account.funding.entries ?? [])
+					.map((entry) => `${entry.coin}:${entry.amount}:${entry.status}`)
+					.join(','),
 				requestedMist: event.account.funding.requestedMist ?? '',
 				balanceMist: event.account.funding.balanceMist ?? '',
 			});
@@ -220,6 +223,21 @@ const payloadFor = (event: EngineEvent): string => {
 				signal: event.signal,
 				exitCode: event.exitCode,
 			});
+		case 'snapshot.captureStarted':
+			return kv({ snapshotId: event.snapshotId, name: event.name });
+		case 'snapshot.captureProgress':
+			return kv({
+				snapshotId: event.snapshotId,
+				name: event.name,
+				phase: event.phase,
+				detail: event.detail,
+				paused: event.pausedContainers,
+				total: event.totalContainers,
+			});
+		case 'snapshot.captureSkipped':
+			return kv({ reason: event.reason });
+		case 'snapshot.captureFailed':
+			return kv({ snapshotId: event.snapshotId, name: event.name, summary: event.summary });
 		case 'snapshot.captured':
 		case 'snapshot.restored':
 			return kv({ snapshotId: event.snapshotId });

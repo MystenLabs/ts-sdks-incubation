@@ -29,11 +29,15 @@ interface Harness {
 	readonly applyRuns: ReadonlyArray<GlobalFlags>;
 	readonly captures: ReadonlyArray<{
 		readonly snapshotId?: string;
-		readonly label?: string;
+		readonly name?: string;
 		readonly configPath?: string;
 	}>;
 	readonly restores: ReadonlyArray<string>;
 	readonly deletes: ReadonlyArray<string>;
+	readonly confirmations: ReadonlyArray<{
+		readonly verb: string;
+		readonly prompt: string;
+	}>;
 	readonly pruneCalls: number;
 	readonly pruneDryRuns: number;
 	readonly pruneSelections: ReadonlyArray<{
@@ -49,9 +53,15 @@ interface Harness {
 	readonly wipeCalls: number;
 }
 
+interface HarnessOptions {
+	readonly confirmResponses?: ReadonlyArray<boolean>;
+}
+
 const tempRoots: Array<string> = [];
 
-const makeHarness = (): {
+const makeHarness = (
+	options: HarnessOptions = {},
+): {
 	deps: CliDeps;
 	read: () => Harness;
 } => {
@@ -62,11 +72,13 @@ const makeHarness = (): {
 	const applyRuns: Array<GlobalFlags> = [];
 	const captures: Array<{
 		snapshotId?: string;
-		label?: string;
+		name?: string;
 		configPath?: string;
 	}> = [];
 	const restores: Array<string> = [];
 	const deletes: Array<string> = [];
+	const confirmations: Array<{ readonly verb: string; readonly prompt: string }> = [];
+	const confirmResponses = [...(options.confirmResponses ?? [])];
 	let pruneCalls = 0;
 	let pruneDryRuns = 0;
 	const pruneSelections: Array<{
@@ -89,6 +101,11 @@ const makeHarness = (): {
 				exitCode = code;
 			}),
 	};
+	const confirm: CliDeps['wipe']['confirm'] = (input) =>
+		Effect.sync(() => {
+			confirmations.push(input);
+			return confirmResponses.shift() ?? false;
+		});
 
 	const deps: CliDeps = {
 		up: {
@@ -109,10 +126,14 @@ const makeHarness = (): {
 			reader: { readState: () => Effect.succeed(null) },
 		},
 		snapshot: {
-			reader: { list: () => Effect.succeed([]), resolve: () => Effect.succeed(null) },
+			reader: { list: () => Effect.succeed([]), resolve: () => Effect.succeed({ tag: 'not-found' }) },
 			capture: (args) =>
 				Effect.sync(() => {
 					captures.push(args);
+					return {
+						snapshotId: args.snapshotId ?? 'generated-snapshot-id',
+						name: args.name ?? 'manual-generated',
+					};
 				}),
 			restore: (snapshotId) =>
 				Effect.sync(() => {
@@ -122,6 +143,7 @@ const makeHarness = (): {
 				Effect.sync(() => {
 					deletes.push(snapshotId);
 				}),
+			confirm,
 		},
 		prune: {
 			inventory: () =>
@@ -201,6 +223,7 @@ const makeHarness = (): {
 				Effect.sync(() => {
 					wipeCalls += 1;
 				}),
+			confirm,
 		},
 	};
 
@@ -216,6 +239,7 @@ const makeHarness = (): {
 			captures,
 			restores,
 			deletes,
+			confirmations,
 			pruneCalls,
 			pruneDryRuns,
 			pruneSelections,
@@ -256,7 +280,7 @@ const makeSnapshotCatalog = () => {
 			{
 				version: SNAPSHOT_META_VERSION,
 				id: metadataId,
-				label: 'friendly-label',
+				label: 'friendly-name',
 				createdAt: 1_700_000_000_000,
 				app: 'app',
 				stack: 'main',
@@ -380,20 +404,18 @@ describe('dispatch', () => {
 		expect(env.data.entries).toEqual([]);
 	});
 
-	it('snapshot save invokes direct capture with command-scoped args', async () => {
+	it('snapshot save invokes direct capture with command-scoped name', async () => {
 		const { deps, read } = makeHarness();
 		await run(
-			['snapshot', 'save', 'baseline', '--label', 'seeded', '--config', 'devstack.ci.ts', '--json'],
+			['snapshot', 'save', 'seeded', '--config', 'devstack.ci.ts', '--json'],
 			deps,
 			{ io: read().io },
 		);
 		const h = read();
 		expect(h.exitCode).toBe(0);
-		expect(h.captures).toEqual([
-			{ snapshotId: 'baseline', label: 'seeded', configPath: 'devstack.ci.ts' },
-		]);
+		expect(h.captures).toEqual([{ name: 'seeded', configPath: 'devstack.ci.ts' }]);
 		const env = JSON.parse(h.stdout[0]!);
-		expect(env.data.snapshotId).toBe('baseline');
+		expect(env.data).toEqual({ snapshotId: 'generated-snapshot-id', name: 'seeded' });
 	});
 
 	it('snapshot save preserves typed direct failures', async () => {
@@ -406,7 +428,7 @@ describe('dispatch', () => {
 					Effect.fail(
 						new CliNoSupervisorError({
 							app: 'devstack',
-							stack: 'deepbook-full',
+							stack: 'deepbook-trader',
 							hint: 'start the stack with `devstack up` first',
 						}),
 					),
@@ -418,7 +440,7 @@ describe('dispatch', () => {
 		const h = read();
 		expect(h.exitCode).toBe(69);
 		const env = JSON.parse(h.stdout[0]!);
-		expect(env.error.summary).toContain('no supervisor running for devstack/deepbook-full');
+		expect(env.error.summary).toContain('no supervisor running for devstack/deepbook-trader');
 		expect(env.error.summary).not.toContain('snapshot capture failed');
 	});
 
@@ -439,7 +461,7 @@ describe('dispatch', () => {
 		expect(env.data.entries).toEqual([
 			{
 				snapshotId: catalog.snapshotId,
-				label: 'friendly-label',
+				name: 'friendly-name',
 				createdAt: 1_700_000_000_000,
 				size: null,
 			},
@@ -447,7 +469,7 @@ describe('dispatch', () => {
 		expect(JSON.stringify(env.data.entries)).not.toContain(catalog.metadataId);
 	});
 
-	it('snapshot restore and delete resolve labels to artifact directory ids', async () => {
+	it('snapshot restore and delete resolve names to artifact directory ids', async () => {
 		const { deps, read } = makeHarness();
 		const catalog = makeSnapshotCatalog();
 		const depsWithCatalog: CliDeps = {
@@ -457,10 +479,10 @@ describe('dispatch', () => {
 				reader: makeSnapshotReader({ stackRoot: catalog.stackRoot }),
 			},
 		};
-		await run(['snapshot', 'restore', 'friendly-label', '--json'], depsWithCatalog, {
+		await run(['snapshot', 'restore', 'friendly-name', '--yes', '--json'], depsWithCatalog, {
 			io: read().io,
 		});
-		await run(['snapshot', 'delete', 'friendly-label', '--json'], depsWithCatalog, {
+		await run(['snapshot', 'delete', 'friendly-name', '--yes', '--json'], depsWithCatalog, {
 			io: read().io,
 		});
 		const h = read();
@@ -469,6 +491,111 @@ describe('dispatch', () => {
 		expect(h.deletes).toEqual([catalog.snapshotId]);
 		expect(JSON.parse(h.stdout[0]!).data.snapshotId).toBe(catalog.snapshotId);
 		expect(JSON.parse(h.stdout[1]!).data.snapshotId).toBe(catalog.snapshotId);
+	});
+
+	it('snapshot restore and delete require confirmation before mutating', async () => {
+		const { deps, read } = makeHarness({ confirmResponses: [true, false] });
+		const catalog = makeSnapshotCatalog();
+		const depsWithCatalog: CliDeps = {
+			...deps,
+			snapshot: {
+				...deps.snapshot,
+				reader: makeSnapshotReader({ stackRoot: catalog.stackRoot }),
+			},
+		};
+
+		await run(['snapshot', 'restore', 'friendly-name', '--json'], depsWithCatalog, {
+			io: read().io,
+		});
+		await run(['snapshot', 'delete', 'friendly-name', '--json'], depsWithCatalog, {
+			io: read().io,
+		});
+
+		const h = read();
+		expect(h.exitCode).toBe(43);
+		expect(h.confirmations.map((prompt) => prompt.verb)).toEqual([
+			'snapshot restore',
+			'snapshot delete',
+		]);
+		expect(h.confirmations[0]?.prompt).toContain(catalog.snapshotId);
+		expect(h.restores).toEqual([catalog.snapshotId]);
+		expect(h.deletes).toEqual([]);
+		expect(JSON.parse(h.stdout[0]!).ok).toBe(true);
+		expect(JSON.parse(h.stdout[1]!).error.summary).toContain(
+			'snapshot delete confirmation declined',
+		);
+	});
+
+	it('snapshot restore and delete require --yes when prompts are unavailable', async () => {
+		const { deps, read } = makeHarness();
+		const catalog = makeSnapshotCatalog();
+		const depsWithCatalog: CliDeps = {
+			...deps,
+			snapshot: {
+				...deps.snapshot,
+				reader: makeSnapshotReader({ stackRoot: catalog.stackRoot }),
+			},
+		};
+
+		await run(['snapshot', 'restore', 'friendly-name', '--json'], depsWithCatalog, {
+			io: read().io,
+		}, { stdinIsTty: false });
+
+		const h = read();
+		expect(h.exitCode).toBe(43);
+		expect(h.confirmations).toEqual([]);
+		expect(h.restores).toEqual([]);
+		const env = JSON.parse(h.stdout[0]!);
+		expect(env.error.code).toBe('CONFIRM_REQUIRED');
+		expect(env.error.summary).toContain('snapshot restore requires confirmation');
+	});
+
+	it('snapshot restore refuses ambiguous names', async () => {
+		const { deps, read } = makeHarness();
+		const catalog = makeSnapshotCatalog();
+		const duplicateId = 'dir-duplicate';
+		const duplicateDir = join(catalog.stackRoot, 'snapshots', duplicateId);
+		mkdirSync(duplicateDir, { recursive: true });
+		writeFileSync(
+			join(duplicateDir, SnapshotLayout.metaFile),
+			JSON.stringify(
+				{
+					version: SNAPSHOT_META_VERSION,
+					id: duplicateId,
+					label: 'friendly-name',
+					createdAt: 1_700_000_001_000,
+					app: 'app',
+					stack: 'main',
+					network: 'sui:local',
+					hostTreeIncluded: false,
+					subtrees: [],
+					containers: [],
+					identity: {},
+					participants: [],
+				},
+				null,
+				2,
+			),
+		);
+		const depsWithCatalog: CliDeps = {
+			...deps,
+			snapshot: {
+				...deps.snapshot,
+				reader: makeSnapshotReader({ stackRoot: catalog.stackRoot }),
+			},
+		};
+
+		await run(['snapshot', 'restore', 'friendly-name', '--json'], depsWithCatalog, {
+			io: read().io,
+		});
+
+		const h = read();
+		expect(h.exitCode).toBe(64);
+		expect(h.restores).toEqual([]);
+		const env = JSON.parse(h.stdout[0]!);
+		expect(env.error.summary).toContain('snapshot reference is ambiguous: friendly-name');
+		expect(env.error.hint).toContain(catalog.snapshotId);
+		expect(env.error.hint).toContain(duplicateId);
 	});
 
 	it('schema emits the curated command set', async () => {
@@ -575,12 +702,25 @@ describe('dispatch', () => {
 	});
 
 	it('wipe has the same destructive command-scoped contract', async () => {
-		const { deps, read } = makeHarness();
+		const { deps, read } = makeHarness({ confirmResponses: [true] });
 		await run(['wipe', '--dry-run', '--json'], deps, { io: read().io }, { stdinIsTty: false });
+		await run(['wipe', '--json'], deps, { io: read().io });
 		await run(['wipe', '--yes', '--json'], deps, { io: read().io });
 		const h = read();
 		expect(h.exitCode).toBe(0);
 		expect(JSON.parse(h.stdout[0]!).dryRun).toBe(true);
-		expect(h.wipeCalls).toBe(1);
+		expect(h.confirmations.map((prompt) => prompt.verb)).toEqual(['wipe']);
+		expect(h.wipeCalls).toBe(2);
+	});
+
+	it('wipe requires --yes when prompts are unavailable', async () => {
+		const { deps, read } = makeHarness();
+		await run(['wipe', '--json'], deps, { io: read().io }, { stdinIsTty: false });
+		const h = read();
+		expect(h.exitCode).toBe(43);
+		expect(h.confirmations).toEqual([]);
+		expect(h.wipeCalls).toBe(0);
+		const env = JSON.parse(h.stdout[0]!);
+		expect(env.error.summary).toContain('wipe requires confirmation');
 	});
 });

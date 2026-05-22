@@ -55,20 +55,21 @@ Capture, restore, list, or delete stack snapshots.
 
 Lifecycle: offline. Side effects: write. Docker: yes. Options: none.
 
-### `devstack snapshot save [id] [--label <label>] [options]`
+### `devstack snapshot save [name] [options]`
 
 Capture a snapshot through a one-shot stack boot.
 
-Lifecycle: one-shot. Side effects: write. Docker: yes. Arguments: `id`. Options: `--json`,
+Lifecycle: one-shot. Side effects: write. Docker: yes. Arguments: `name`. Options: `--json`,
 `--app <name>`, `--stack <name>`, `--state-dir <path>`, `--verbose`, `--config <path>`,
-`--network <name>`, `--label <label>`.
+`--network <name>`, `--name <name>`.
 
-### `devstack snapshot restore <id-or-label> [options]`
+### `devstack snapshot restore <name-or-id> [options]`
 
-Restore a snapshot by id or label.
+Restore a snapshot by name or id.
 
-Lifecycle: offline. Side effects: destructive. Docker: yes. Arguments: `id-or-label`. Options:
-`--json`, `--app <name>`, `--stack <name>`, `--state-dir <path>`, `--verbose`.
+Lifecycle: offline. Side effects: destructive. Docker: yes. Arguments: `name-or-id`. Options:
+`--json`, `--app <name>`, `--stack <name>`, `--state-dir <path>`, `--verbose`, `--yes`,
+`--no-input`.
 
 ### `devstack snapshot list [options]`
 
@@ -77,12 +78,13 @@ List snapshots for the selected stack.
 Lifecycle: offline. Side effects: read. Docker: no. Options: `--json`, `--app <name>`,
 `--stack <name>`, `--state-dir <path>`, `--verbose`.
 
-### `devstack snapshot delete <id-or-label> [options]`
+### `devstack snapshot delete <name-or-id> [options]`
 
-Delete a snapshot by id or label.
+Delete a snapshot by name or id.
 
-Lifecycle: offline. Side effects: destructive. Docker: no. Arguments: `id-or-label`. Options:
-`--json`, `--app <name>`, `--stack <name>`, `--state-dir <path>`, `--verbose`.
+Lifecycle: offline. Side effects: destructive. Docker: no. Arguments: `name-or-id`. Options:
+`--json`, `--app <name>`, `--stack <name>`, `--state-dir <path>`, `--verbose`, `--yes`,
+`--no-input`.
 
 ### `devstack prune [--list | --dry-run | --all --yes] [options]`
 
@@ -128,15 +130,22 @@ and exit-code table consumed by automation.
 ## Snapshot commands
 
 ```bash
-devstack snapshot save [id] --label before-migration
+devstack snapshot save before-migration
 devstack snapshot list
-devstack snapshot restore <id-or-label>
-devstack snapshot delete <id-or-label>
+devstack snapshot restore <name-or-id>
+devstack snapshot delete <name-or-id>
 ```
 
-`snapshot save` performs a one-shot stack boot and can accept `--config <path>`. `snapshot restore`
-and `wipe` refuse to mutate state while an attached `devstack up` session is live. `snapshot list`
-and `snapshot delete` operate on the selected stack root.
+`snapshot save` performs a one-shot stack boot and can accept `--config <path>`. A name can be
+provided positionally or with `--name`; if omitted, devstack generates a `manual-...` name. Restore
+and delete resolve an exact snapshot id first, then a unique name.
+
+If you are already attached to `devstack up --renderer tui`, press `s` in the TUI instead of
+starting a second snapshot command. That shortcut is the attached-session snapshot flow; it is not
+available in `plain` or `silent` renderer mode. `snapshot restore`, `snapshot delete`, and `wipe`
+prompt for `y` in a TTY or require `--yes` when prompts are unavailable. `snapshot restore` and
+`wipe` refuse to mutate state while an attached `devstack up` session is live. `snapshot list` and
+`snapshot delete` operate on the selected stack root.
 
 ## Cleanup commands
 

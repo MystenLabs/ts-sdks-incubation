@@ -21,6 +21,7 @@ import {
 	contributionPath,
 	runCapture,
 	snapshotIdFromString,
+	type SnapshotCaptureProgress,
 	type SnapshotParticipant,
 } from '../../../src/orchestrators/snapshot/index.ts';
 import {
@@ -79,9 +80,12 @@ const runtimeStub = (opts: {
 		return Effect.succeed(Array.isArray(matched) ? matched : [matched]);
 	},
 	followLogs: () => Stream.empty,
+	pause: (handle) =>
+		Effect.sync(() => {
+			opts.pauseCalls.push(handle.name);
+		}),
 	pauseAndCommit: (handle) =>
 		Effect.gen(function* () {
-			opts.pauseCalls.push(handle.name);
 			const error = opts.commitErrorFor?.(handle);
 			if (error !== undefined) {
 				return yield* Effect.fail(error);
@@ -127,6 +131,7 @@ const runCaptureExit = (
 	runtime: ContainerRuntime,
 	participants: ReadonlyArray<SnapshotParticipant>,
 	labelValue: string | null = null,
+	onProgress?: (progress: SnapshotCaptureProgress) => Effect.Effect<void>,
 ) =>
 	Effect.exit(
 		runCapture({
@@ -140,6 +145,7 @@ const runCaptureExit = (
 			stateFilePath: join(root, 'runtime-stack', SnapshotLayout.stateFile),
 			participants,
 			runtime,
+			onProgress,
 		}),
 	);
 
@@ -445,6 +451,88 @@ describe('snapshot capture container images', () => {
 				]);
 				expect(removeImageCalls).toEqual([]);
 				expect(unpauseCalls).toEqual(['validator-container', 'postgres-container']);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}),
+	);
+
+	it.effect('keeps running containers paused through host-tree and contribution capture', () =>
+		Effect.gen(function* () {
+			const root = freshRoot();
+			const pauseCalls: string[] = [];
+			const saveCalls: ImageRef[] = [];
+			const unpauseCalls: string[] = [];
+			const progress: SnapshotCaptureProgress[] = [];
+			let contributionSawUnpauseCalls: ReadonlyArray<string> = [];
+			try {
+				const runtimeStackRoot = join(root, 'runtime-stack');
+				mkdirSync(join(root, 'artifact'), { recursive: true });
+				mkdirSync(join(runtimeStackRoot, 'stateful'), { recursive: true });
+				writeFileSync(join(runtimeStackRoot, 'stateful', 'marker.txt'), 'captured');
+				const runtime = runtimeStub({
+					handlesByRole: {
+						db: {
+							id: 'db-id',
+							name: 'db-container',
+							imageName: 'devstack-build:db',
+							status: 'running',
+							ips: [],
+						},
+						worker: {
+							id: 'worker-id',
+							name: 'worker-container',
+							imageName: 'devstack-build:worker',
+							status: 'running',
+							ips: [],
+						},
+					},
+					saveImage: (ref) => Stream.make(Buffer.from(`tar:${ref.tag ?? ref.digest}`)),
+					pauseCalls,
+					saveCalls,
+					unpauseCalls,
+				});
+				const statefulParticipant: SnapshotParticipant = {
+					...participant(['db', 'worker']),
+					decl: {
+						...participant(['db', 'worker']).decl,
+						subtrees: ['stateful'],
+					},
+					captureContribution: Effect.sync(() => {
+						contributionSawUnpauseCalls = [...unpauseCalls];
+						return { ok: true };
+					}),
+				};
+
+				const exit = yield* Effect.exit(
+					runCapture({
+						stagingDir: join(root, 'artifact'),
+						snapshotId: snapshotIdFromString('snap-images'),
+						label: null,
+						app: 'capture-app',
+						stack: 'main',
+						network: 'sui:local',
+						runtimeStackRoot,
+						stateFilePath: join(runtimeStackRoot, SnapshotLayout.stateFile),
+						participants: [statefulParticipant],
+						runtime,
+						onProgress: (next) =>
+							Effect.sync(() => {
+								progress.push(next);
+							}),
+					}),
+				).pipe(Effect.provide(NodeFileSystem.layer));
+
+				expect(Exit.isSuccess(exit)).toBe(true);
+				expect(pauseCalls).toEqual(['db-container', 'worker-container']);
+				expect(contributionSawUnpauseCalls).toEqual([]);
+				expect(unpauseCalls).toEqual(['db-container', 'worker-container']);
+				expect(progress.map((entry) => entry.phase)).toContain('paused');
+				expect(progress.map((entry) => entry.phase)).toContain('capturing-host-tree');
+				expect(progress.find((entry) => entry.phase === 'paused')).toMatchObject({
+					pausedContainers: 2,
+					totalContainers: 2,
+				});
 			} finally {
 				rmSync(root, { recursive: true, force: true });
 			}

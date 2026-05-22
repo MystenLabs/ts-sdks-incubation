@@ -390,7 +390,7 @@ describe('DevWallet signing flows against devnet', { timeout: 120_000 }, () => {
 			container.remove();
 		});
 
-		it('shows signing modal (not sidebar) when request arrives', async () => {
+		it('shows signing modal without opening the wallet drawer when request arrives', async () => {
 			await import('../src/ui/dev-wallet-panel.js');
 
 			const container = document.createElement('div');

@@ -48,15 +48,26 @@ export class CliUnavailableError extends Data.TaggedError('CliUnavailableError')
 	readonly hint?: string;
 }> {}
 
-/** Snapshot id/label not found. Carries the reference the caller
+/** Snapshot name/id not found. Carries the reference the caller
  *  used so the failure renderer can echo it back. */
 export class CliSnapshotNotFoundError extends Data.TaggedError('CliSnapshotNotFoundError')<{
 	readonly snapshotRef: string;
 }> {}
 
+export class CliSnapshotAmbiguousError extends Data.TaggedError('CliSnapshotAmbiguousError')<{
+	readonly snapshotRef: string;
+	readonly matches: ReadonlyArray<string>;
+}> {}
+
 /** Destructive verb refused because `--yes` was absent and prompting
  *  was forbidden (non-TTY stdin or `--no-input`). */
 export class CliConfirmRequiredError extends Data.TaggedError('CliConfirmRequiredError')<{
+	readonly verb: string;
+	readonly hint?: string;
+}> {}
+
+/** Destructive verb was prompted interactively and the user declined. */
+export class CliConfirmDeclinedError extends Data.TaggedError('CliConfirmDeclinedError')<{
 	readonly verb: string;
 	readonly hint?: string;
 }> {}
@@ -107,7 +118,9 @@ export type CliError =
 	| CliConfigInvalidError
 	| CliUnavailableError
 	| CliSnapshotNotFoundError
+	| CliSnapshotAmbiguousError
 	| CliConfirmRequiredError
+	| CliConfirmDeclinedError
 	| CliSupervisorLiveError
 	| CliNoSupervisorError
 	| CliInternalError
@@ -122,7 +135,9 @@ export const isCliError = (value: unknown): value is CliError => {
 		case 'CliConfigInvalidError':
 		case 'CliUnavailableError':
 		case 'CliSnapshotNotFoundError':
+		case 'CliSnapshotAmbiguousError':
 		case 'CliConfirmRequiredError':
+		case 'CliConfirmDeclinedError':
 		case 'CliSupervisorLiveError':
 		case 'CliNoSupervisorError':
 		case 'CliInternalError':
@@ -148,7 +163,10 @@ export const exitCodeFor = (error: CliError): ExitCode => {
 			return XC.UNAVAILABLE;
 		case 'CliSnapshotNotFoundError':
 			return XC.SNAPSHOT_NOT_FOUND;
+		case 'CliSnapshotAmbiguousError':
+			return XC.USAGE;
 		case 'CliConfirmRequiredError':
+		case 'CliConfirmDeclinedError':
 			return XC.CONFIRM_REQUIRED;
 		case 'CliSupervisorLiveError':
 			return XC.SUPERVISOR_LIVE;
@@ -180,8 +198,12 @@ export const summaryFor = (error: CliError): string => {
 			return `${error.service} unavailable: ${error.message}`;
 		case 'CliSnapshotNotFoundError':
 			return `snapshot not found: ${error.snapshotRef}`;
+		case 'CliSnapshotAmbiguousError':
+			return `snapshot reference is ambiguous: ${error.snapshotRef}`;
 		case 'CliConfirmRequiredError':
-			return `${error.verb} requires --yes (stdin is not a TTY or --no-input is set)`;
+			return `${error.verb} requires confirmation`;
+		case 'CliConfirmDeclinedError':
+			return `${error.verb} confirmation declined`;
 		case 'CliSupervisorLiveError':
 			return `supervisor live for ${error.app}/${error.stack}`;
 		case 'CliNoSupervisorError':
@@ -203,8 +225,11 @@ export const hintFor = (error: CliError): string | undefined => {
 	switch (error._tag) {
 		case 'CliUsageError':
 			return error.hint;
+		case 'CliSnapshotAmbiguousError':
+			return `use one of these ids instead: ${error.matches.join(', ')}`;
 		case 'CliUnavailableError':
 		case 'CliConfirmRequiredError':
+		case 'CliConfirmDeclinedError':
 		case 'CliSupervisorLiveError':
 		case 'CliNoSupervisorError':
 			return error.hint;

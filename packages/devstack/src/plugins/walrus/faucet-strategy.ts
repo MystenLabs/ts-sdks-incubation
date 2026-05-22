@@ -3,14 +3,15 @@
 // Distilled-doc reference (06-walrus.md §"Lifecycle phase 7a"):
 // when the local cluster has a non-empty `exchange` AND at least one
 // seed account, walrus registers a `walExchangeStrategy` on the
-// global faucet so any `account('alice', {funding: {WAL: ...}})`
-// request gets satisfied via SUI → WAL swap on chain.
+// global strategy registry so any
+// `account('alice', { funding: [{ coin: wal, amount }] })` request
+// gets satisfied via SUI → WAL swap on chain.
 //
 // Architecture (StrategyContributor §7): the faucet registry is
-// `capabilityKey: 'coinType:WAL'` (distilled-doc convention shared
-// with the faucet plugin's domain:discriminator pattern). The
-// dispatch site (the faucet plugin) doesn't import this strategy —
-// it looks it up by key.
+// `capabilityKey: 'coinType:<fullCoinType>'` (distilled-doc
+// convention shared with the faucet plugin's domain:discriminator
+// pattern). The dispatch site doesn't import this strategy — it
+// looks it up by key.
 //
 // Local-cluster mode only: the known-deployment branch has no
 // admin signer, so it cannot register a WAL strategy. (Architecture
@@ -28,9 +29,15 @@ import {
 	type WalSwapSigner,
 } from './seed-wal.ts';
 
-/** Capability key for the WAL faucet strategy. Conventional
- *  `coinType:WAL` shape per the faucet plugin's vocabulary. */
-export const WAL_FAUCET_STRATEGY_KEY = 'coinType:WAL' as const;
+/** Full local WAL coin type derived from the deployed Walrus package. */
+export const walCoinType = <PackageId extends string>(
+	packageId: PackageId,
+): `${PackageId}::wal::WAL` => `${packageId}::wal::WAL` as const;
+
+/** Capability key for the WAL faucet strategy. */
+export const walFaucetStrategyKey = <FullCoinType extends string>(
+	fullCoinType: FullCoinType,
+): `coinType:${FullCoinType}` => `coinType:${fullCoinType}` as const;
 
 /** Per-request shape — uniform across faucet strategies. */
 export interface WalFaucetRequest {
@@ -78,10 +85,11 @@ export const makeWalFaucetStrategy = (opts: WalFaucetStrategyOptions): WalFaucet
  *  dispatcher reads this key off the registry and dispatches WAL
  *  funding requests through it. */
 export const makeWalFaucetContribution = (
+	fullCoinType: string,
 	opts: WalFaucetStrategyOptions,
-): StrategyContributorDecl<typeof WAL_FAUCET_STRATEGY_KEY, WalFaucetStrategy> => ({
+): StrategyContributorDecl<ReturnType<typeof walFaucetStrategyKey>, WalFaucetStrategy> => ({
 	kind: 'strategy-contributor',
-	capabilityKey: WAL_FAUCET_STRATEGY_KEY,
+	capabilityKey: walFaucetStrategyKey(fullCoinType),
 	strategy: makeWalFaucetStrategy(opts),
 	autoMounted: true,
 });

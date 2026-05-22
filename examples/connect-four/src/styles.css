@@ -1,6 +1,8 @@
 :root {
 	font-family:
-		Inter,
+		Aptos,
+		'Avenir Next',
+		'Trebuchet MS',
 		ui-sans-serif,
 		system-ui,
 		-apple-system,
@@ -102,6 +104,132 @@ h1 {
 	font-weight: 750;
 }
 
+.match-flow {
+	margin: 0 0 14px;
+	padding: 14px;
+	border: 1px solid #c9d6d1;
+	border-radius: 8px;
+	background:
+		linear-gradient(135deg, rgb(20 92 73 / 10%), transparent 58%),
+		#fbfff9;
+}
+
+.flow-steps {
+	display: grid;
+	grid-template-columns: repeat(3, 1fr);
+	gap: 8px;
+	margin-bottom: 12px;
+}
+
+.flow-steps span {
+	display: grid;
+	min-height: 30px;
+	place-items: center;
+	border: 1px solid #d8dfd8;
+	border-radius: 999px;
+	color: #51635b;
+	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	font-size: 0.72rem;
+	font-weight: 800;
+	text-transform: uppercase;
+}
+
+.flow-steps span.active {
+	border-color: #145c49;
+	background: #145c49;
+	color: #fff;
+}
+
+.player-seats {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 12px;
+}
+
+.player-seat {
+	display: grid;
+	gap: 12px;
+	min-width: 0;
+	padding: 14px;
+	border: 1px solid #d9d3c7;
+	border-radius: 8px;
+	background: #fffaf1;
+}
+
+.player-seat.active {
+	border-color: #145c49;
+	box-shadow: 0 0 0 3px rgb(20 92 73 / 14%);
+}
+
+.player-seat.current {
+	background: #f7fff8;
+}
+
+.player-seat.complete:not(.active) {
+	border-color: #bfcfc8;
+}
+
+.seat-main {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	min-width: 0;
+}
+
+.piece-token {
+	display: grid;
+	place-items: center;
+	flex: 0 0 42px;
+	width: 42px;
+	height: 42px;
+	border-radius: 50%;
+	color: #fff;
+	font-weight: 900;
+	box-shadow: inset 0 4px 8px rgb(0 0 0 / 22%);
+}
+
+.piece-token.alice {
+	background: #d83b3b;
+}
+
+.piece-token.bob {
+	background: #f0c443;
+	color: #332600;
+}
+
+.seat-title-row {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+}
+
+.seat-title-row strong {
+	font-size: 1rem;
+}
+
+.signer-pill {
+	padding: 2px 7px;
+	border-radius: 999px;
+	background: #17201b;
+	color: #fff;
+	font-size: 0.68rem;
+	font-weight: 800;
+	text-transform: uppercase;
+}
+
+.seat-footer {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+	min-height: 40px;
+	color: #51635b;
+	font-size: 0.86rem;
+	font-weight: 760;
+}
+
 .meta {
 	margin: 4px 0 0;
 	color: #67746e;
@@ -177,6 +305,7 @@ h1 {
 
 .ghost-button,
 .primary-button,
+.seat-action,
 .column-buttons button {
 	min-height: 38px;
 	border: 1px solid #c9c2b7;
@@ -197,11 +326,35 @@ h1 {
 	font-weight: 750;
 }
 
+.seat-action {
+	padding: 0 12px;
+	background: #145c49;
+	color: #fff;
+	font-size: 0.86rem;
+	font-weight: 800;
+	white-space: nowrap;
+}
+
 .primary-button:disabled,
 .ghost-button:disabled,
+.seat-action:disabled,
 .column-buttons button:disabled {
 	cursor: not-allowed;
 	opacity: 0.45;
+}
+
+.move-banner {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	margin: 0 0 10px;
+	padding: 10px 12px;
+	border: 1px solid #c9c2b7;
+	border-radius: 8px;
+	background: #17201b;
+	color: #fff;
+	font-size: 0.95rem;
+	font-weight: 850;
 }
 
 .column-buttons {
@@ -212,7 +365,8 @@ h1 {
 }
 
 .column-buttons button:not(:disabled):hover,
-.ghost-button:hover {
+.ghost-button:hover,
+.seat-action:not(:disabled):hover {
 	border-color: #145c49;
 }
 
@@ -387,5 +541,22 @@ code,
 	.board {
 		gap: 7px;
 		padding: 10px;
+	}
+
+	.player-seats {
+		grid-template-columns: 1fr;
+	}
+
+	.flow-steps {
+		grid-template-columns: 1fr;
+	}
+
+	.seat-footer {
+		align-items: stretch;
+		flex-direction: column;
+	}
+
+	.seat-action {
+		width: 100%;
 	}
 }

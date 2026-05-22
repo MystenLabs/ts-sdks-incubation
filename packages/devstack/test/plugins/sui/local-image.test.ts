@@ -12,6 +12,7 @@ const unusedRuntime = (overrides: Partial<ContainerRuntime> = {}): ContainerRunt
 	runOneShot: () => Effect.die('runOneShot not used'),
 	inspectByLabels: () => Effect.die('inspectByLabels not used'),
 	followLogs: () => Stream.die('followLogs not used'),
+	pause: () => Effect.die('pause not used'),
 	pauseAndCommit: () => Effect.die('pauseAndCommit not used'),
 	saveImage: () => Stream.die('saveImage not used'),
 	saveImages: () => Stream.die('saveImages not used'),

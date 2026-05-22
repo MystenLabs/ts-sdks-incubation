@@ -19,6 +19,7 @@ import {
 	parseDispatchRouteFile,
 	parseDispatchRouteMetadata,
 	renderRouteYaml,
+	ROUTE_READINESS_HEADER,
 	ROUTER_ROUTE_LEASE_VERSION,
 	resolveRoute,
 	type RouteLeaseMetadata,
@@ -269,15 +270,22 @@ describe('renderRouteYaml', () => {
 		expect(yaml).toContain(
 			[
 				`      service: "${route.dispatchFileId}-svc"`,
-				`      middlewares: ["${CORS_MIDDLEWARE_NAME}"]`,
+				`      middlewares: ["${route.dispatchFileId}-route-ready", "${CORS_MIDDLEWARE_NAME}"]`,
+				`  middlewares:`,
+				`    ${route.dispatchFileId}-route-ready:`,
+				`      headers:`,
+				`        customResponseHeaders:`,
+				`          ${ROUTE_READINESS_HEADER}: "${route.dispatchFileId}"`,
 				`  services:`,
 			].join('\n'),
 		);
 	});
 
-	it('omits the middleware reference when cors:false', () => {
+	it('keeps the readiness middleware and omits only CORS when cors:false', () => {
 		const yaml = renderRouteYaml({ ...route, cors: false }, lease);
 		expect(yaml).not.toContain(CORS_MIDDLEWARE_NAME);
+		expect(yaml).toContain(`      middlewares: ["${route.dispatchFileId}-route-ready"]`);
+		expect(yaml).toContain(`${ROUTE_READINESS_HEADER}: "${route.dispatchFileId}"`);
 	});
 
 	it('is byte-stable on identical inputs (no-op rewrite friendly)', () => {

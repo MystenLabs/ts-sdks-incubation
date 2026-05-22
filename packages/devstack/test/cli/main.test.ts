@@ -18,7 +18,10 @@ import {
 import type { SubscribableState } from '../../src/substrate/projection.ts';
 import { COMMAND_CHANNEL_COMMANDS_FILE_NAME } from '../../src/substrate/runtime/cross-process/index.ts';
 import { processStartTime } from '../../src/substrate/runtime/cross-process/liveness.ts';
-import { writeProjectionSnapshot } from '../../src/substrate/runtime/projection/index.ts';
+import {
+	readProjectionSnapshot,
+	writeProjectionSnapshot,
+} from '../../src/substrate/runtime/projection/index.ts';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const tempRoots: Array<string> = [];
@@ -279,6 +282,86 @@ describe('cli/main', () => {
 		}
 	}, 60_000);
 
+	it('apply infers app and stack identity from the config package when omitted', async () => {
+		const appRoot = makeTempRoot('cli-identity-app');
+		const stateRoot = makeTempRoot('cli-identity-state');
+		writeFileSync(join(appRoot, 'package.json'), JSON.stringify({ name: '@org/inferred-cli-app' }));
+		const configPath = join(appRoot, 'devstack.config.ts');
+		writeFileSync(
+			configPath,
+			`
+import { Effect } from 'effect';
+import { codegenable } from '../src/api/define-capabilities.ts';
+import { defineDevstack } from '../src/api/define-devstack.ts';
+import { definePlugin } from '../src/api/define-plugin.ts';
+
+const cliApplyCodegenPlugin = definePlugin({
+\tid: 'test/cli-identity-codegen',
+\trole: 'service',
+\tstart: () => Effect.succeed({ message: 'from-cli-identity' } as const),
+\tcapabilities: ({ value }) => [
+\t\tcodegenable({
+\t\t\temitterName: 'cli-identity-proof',
+\t\t\toutputPath: 'cli-identity-proof.ts',
+\t\t\tsensitive: false,
+\t\t\temit: (ctx) =>
+\t\t\t\tEffect.sync(() => {
+\t\t\t\t\tctx.exportConst('cliIdentityProof', value);
+\t\t\t\t\treturn ctx.done();
+\t\t\t\t}),
+\t\t}),
+\t],
+});
+
+export default defineDevstack({ members: [cliApplyCodegenPlugin], stackName: 'main' });
+`.trimStart(),
+		);
+		const previousExitCode = process.exitCode;
+		const previousEnv = {
+			DEVSTACK_APP: process.env.DEVSTACK_APP,
+			DEVSTACK_STACK: process.env.DEVSTACK_STACK,
+			DEVSTACK_NETWORK: process.env.DEVSTACK_NETWORK,
+			DEVSTACK_STATE_DIR: process.env.DEVSTACK_STATE_DIR,
+			DEVSTACK_CONFIG: process.env.DEVSTACK_CONFIG,
+		};
+
+		try {
+			process.exitCode = undefined;
+			delete process.env.DEVSTACK_APP;
+			delete process.env.DEVSTACK_STACK;
+			delete process.env.DEVSTACK_NETWORK;
+			delete process.env.DEVSTACK_STATE_DIR;
+			delete process.env.DEVSTACK_CONFIG;
+
+			await runCli([
+				'apply',
+				'--config',
+				configPath,
+				'--state-dir',
+				stateRoot,
+				'--network',
+				'localnet',
+			]);
+
+			expect(process.exitCode).toBe(0);
+			const snapshot = readProjectionSnapshot(join(stateRoot, 'stacks', 'main'));
+			expect(snapshot?.identity).toEqual({
+				app: 'inferred-cli-app',
+				stack: 'main',
+				network: 'localnet',
+			});
+		} finally {
+			process.exitCode = previousExitCode;
+			for (const [key, value] of Object.entries(previousEnv)) {
+				if (value === undefined) {
+					delete process.env[key];
+				} else {
+					process.env[key] = value;
+				}
+			}
+		}
+	}, 60_000);
+
 	it('status reads persisted projection from the runtime stacks root', async () => {
 		const stateRoot = makeTempRoot('cli-status-state');
 		const stackRoot = join(stateRoot, 'stacks', 'alpha');
@@ -330,6 +413,59 @@ describe('cli/main', () => {
 			});
 		} finally {
 			process.exitCode = previousExitCode;
+			stdoutSpy.mockRestore();
+			stderrSpy.mockRestore();
+		}
+	});
+
+	it('status infers app and stack identity from the current package when omitted', async () => {
+		const appRoot = makeTempRoot('cli-status-inferred-app');
+		const stateRoot = makeTempRoot('cli-status-inferred-state');
+		writeFileSync(join(appRoot, 'package.json'), JSON.stringify({ name: '@org/connect-four' }));
+		const previousExitCode = process.exitCode;
+		const previousCwd = process.cwd();
+		const previousEnv = {
+			DEVSTACK_APP: process.env.DEVSTACK_APP,
+			DEVSTACK_STACK: process.env.DEVSTACK_STACK,
+			DEVSTACK_NETWORK: process.env.DEVSTACK_NETWORK,
+			DEVSTACK_STATE_DIR: process.env.DEVSTACK_STATE_DIR,
+			DEVSTACK_CONFIG: process.env.DEVSTACK_CONFIG,
+		};
+		const stdout: Array<string> = [];
+		const stderr: Array<string> = [];
+		const stdoutSpy = vi
+			.spyOn(process.stdout, 'write')
+			.mockImplementation(captureProcessWrite(stdout));
+		const stderrSpy = vi
+			.spyOn(process.stderr, 'write')
+			.mockImplementation(captureProcessWrite(stderr));
+
+		try {
+			process.exitCode = undefined;
+			delete process.env.DEVSTACK_APP;
+			delete process.env.DEVSTACK_STACK;
+			delete process.env.DEVSTACK_NETWORK;
+			delete process.env.DEVSTACK_STATE_DIR;
+			delete process.env.DEVSTACK_CONFIG;
+			process.chdir(appRoot);
+
+			await runCli(['status', '--state-dir', stateRoot]);
+
+			expect(stderr.join('')).toBe('');
+			expect(process.exitCode).toBe(0);
+			expect(stdout.join('')).toContain(
+				'status: no state present for connect-four / connect-four',
+			);
+		} finally {
+			process.chdir(previousCwd);
+			process.exitCode = previousExitCode;
+			for (const [key, value] of Object.entries(previousEnv)) {
+				if (value === undefined) {
+					delete process.env[key];
+				} else {
+					process.env[key] = value;
+				}
+			}
 			stdoutSpy.mockRestore();
 			stderrSpy.mockRestore();
 		}
@@ -400,6 +536,7 @@ describe('cli/main', () => {
 				'snapshot',
 				'restore',
 				'workflow-baseline',
+				'--yes',
 				'--state-dir',
 				stateRoot,
 				'--app',
@@ -448,6 +585,7 @@ describe('cli/main', () => {
 				'snapshot',
 				'restore',
 				'baseline',
+				'--yes',
 				'--state-dir',
 				stateRoot,
 				'--app',
@@ -461,9 +599,9 @@ describe('cli/main', () => {
 			expect(stderr.join('')).toBe('');
 			const envelope = JSON.parse(stdout.join('')) as {
 				readonly ok: true;
-				readonly data: { readonly snapshotId: string };
+				readonly data: { readonly snapshotId: string; readonly name: string | null };
 			};
-			expect(envelope.data).toEqual({ snapshotId: 'baseline' });
+			expect(envelope.data).toEqual({ snapshotId: 'baseline', name: 'workflow-baseline' });
 			const commandLogPath = join(stackRoot, COMMAND_CHANNEL_COMMANDS_FILE_NAME);
 			const commandLog = existsSync(commandLogPath) ? readCommandLog(stackRoot) : [];
 			expect(
@@ -504,6 +642,7 @@ describe('cli/main', () => {
 				'snapshot',
 				'restore',
 				'baseline',
+				'--yes',
 				'--state-dir',
 				stateRoot,
 				'--app',
@@ -518,9 +657,9 @@ describe('cli/main', () => {
 			expect(existsSync(acquireMarker)).toBe(false);
 			const envelope = JSON.parse(stdout.join('')) as {
 				readonly ok: true;
-				readonly data: { readonly snapshotId: string };
+				readonly data: { readonly snapshotId: string; readonly name: string | null };
 			};
-			expect(envelope.data).toEqual({ snapshotId: 'baseline' });
+			expect(envelope.data).toEqual({ snapshotId: 'baseline', name: 'workflow-baseline' });
 		} finally {
 			process.exitCode = previousExitCode;
 			stdoutSpy.mockRestore();

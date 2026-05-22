@@ -53,6 +53,7 @@ const stubRuntime: ContainerRuntime = {
 	runOneShot: () => Effect.succeed({ exitCode: 0, stdout: '', stderr: '' }),
 	inspectByLabels: () => Effect.succeed([]),
 	followLogs: () => Stream.empty,
+	pause: () => Effect.void,
 	pauseAndCommit: () =>
 		Effect.succeed<TaggedImageRef>({
 			digest: 'sha256:committed',

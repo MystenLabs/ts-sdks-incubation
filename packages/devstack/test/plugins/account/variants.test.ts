@@ -6,6 +6,11 @@ import { Effect, Exit, Option } from 'effect';
 import { describe, expect, it } from 'vitest';
 
 import { account } from '../../../src/plugins/account/index.ts';
+import { coin } from '../../../src/plugins/coin/index.ts';
+import {
+	DEEPBOOK_TESTNET_DEEP_COIN_TYPE,
+	deepbook,
+} from '../../../src/plugins/deepbook/index.ts';
 import { generateEd25519Keypair } from '../../../src/plugins/account/keypair.ts';
 import type { AccountValue } from '../../../src/plugins/account/service.ts';
 import { appName, chainId, stackName } from '../../../src/substrate/brand.ts';
@@ -20,6 +25,14 @@ const fakeResolvedAccount = {
 	scheme: 'ed25519',
 	publicKey: new Uint8Array(),
 	source: 'real',
+	funding: {
+		requested: [
+			{ coin: 'SUI', fullCoinType: '0x2::sui::SUI', amount: 1_000_000_000n },
+		],
+		applied: [
+			{ coin: 'SUI', fullCoinType: '0x2::sui::SUI', amount: 1_000_000_000n },
+		],
+	},
 	signAndExecute: null,
 	withTransactionSigner: null,
 	signTransaction: null,
@@ -36,11 +49,14 @@ const fakeAcquireContext: AcquireContext = {
 	runtimeRoot: '/tmp/devstack-account-test',
 };
 
-const registryFundingFor = (member: ReturnType<typeof account>) => {
+const registryFundingFor = (
+	member: ReturnType<typeof account>,
+	funding: AccountValue['funding'] = fakeResolvedAccount.funding,
+) => {
 	if (typeof member.capabilities !== 'function') {
 		throw new Error('expected account capabilities factory');
 	}
-	const decls = member.capabilities(fakeResolvedAccount, fakeAcquireContext);
+	const decls = member.capabilities({ ...fakeResolvedAccount, funding }, fakeAcquireContext);
 	const registry = decls.find(
 		(decl) =>
 			decl.kind === 'strategy-contributor' &&
@@ -114,27 +130,62 @@ describe('account env and private-key variant surface', () => {
 			status: 'funded',
 			balanceMist: null,
 			requestedMist: '1000000000',
+			entries: [
+				{
+					coin: 'SUI',
+					fullCoinType: '0x2::sui::SUI',
+					amount: '1000000000',
+					status: 'funded',
+				},
+			],
 		});
 	});
 
-	it('projects explicit zero default funding as skipped', () => {
+	it('projects explicit empty funding as skipped', () => {
 		expect(
-			registryFundingFor(account('alice', { kind: 'ephemeral', name: 'alice', fund: 0n })),
+			registryFundingFor(
+				account('alice', { kind: 'ephemeral', name: 'alice', funding: [] }),
+				{ requested: [], applied: [] },
+			),
 		).toEqual({
 			status: 'skipped',
 			balanceMist: null,
-			requestedMist: '0',
+			requestedMist: null,
+			entries: [],
 		});
 	});
 
 	it('projects non-ephemeral accounts without funding as skipped', () => {
 		expect(
-			registryFundingFor(account('alice', { kind: 'env', name: 'alice', key: 'ALICE_KEY' })),
+			registryFundingFor(
+				account('alice', { kind: 'env', name: 'alice', key: 'ALICE_KEY' }),
+				{ requested: [], applied: [] },
+			),
 		).toEqual({
 			status: 'skipped',
 			balanceMist: null,
 			requestedMist: null,
+			entries: [],
 		});
+	});
+
+	it('threads funding coin and strategy provider refs into dependencies', () => {
+		const deep = coin.known(DEEPBOOK_TESTNET_DEEP_COIN_TYPE);
+		const dex = deepbook({ mode: 'known', network: 'testnet' });
+		const member = account('alice', {
+			kind: 'ephemeral',
+			name: 'alice',
+			funding: [
+				{ coin: 'sui', amount: 1_000_000_000n },
+				{ coin: deep, amount: 15_000_000n, via: dex },
+			],
+		});
+
+		expect(member.dependsOn.map((dependency) => dependency.id)).toEqual([
+			'sui',
+			deep.id,
+			dex.id,
+		]);
 	});
 });
 

@@ -120,6 +120,21 @@ export class DispatchWriteFailed extends Schema.TaggedErrorClass<DispatchWriteFa
 	},
 ) {}
 
+/** The per-backend dispatch file was written, but the public router
+ *  entrypoint did not start serving that route within the readiness
+ *  budget. This catches Traefik file-provider reload races before the
+ *  endpoint is surfaced to users. */
+export class RouteReadinessProbeFailed extends Schema.TaggedErrorClass<RouteReadinessProbeFailed>()(
+	'RouteReadinessProbeFailed',
+	{
+		dispatchFileId: Schema.String,
+		url: Schema.String,
+		timeoutMs: Schema.Number,
+		detail: Schema.String,
+		cause: Schema.optional(Schema.Defect),
+	},
+) {}
+
 export type RouterError =
 	| UnknownEntrypoint
 	| EntrypointConflict
@@ -128,4 +143,5 @@ export type RouterError =
 	| UpstreamResolveTimeout
 	| RouterBootFailed
 	| RouterDisabledRouteUnsupported
-	| DispatchWriteFailed;
+	| DispatchWriteFailed
+	| RouteReadinessProbeFailed;

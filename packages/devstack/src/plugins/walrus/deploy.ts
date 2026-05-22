@@ -29,7 +29,7 @@
 //        `produce-failed` reason).
 
 import { Duration, Effect, Schema, type Scope } from 'effect';
-import { access } from 'node:fs/promises';
+import { access, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type { ContainerRuntime, ImageRef } from '../../contracts/container-runtime.ts';
@@ -123,6 +123,26 @@ export interface DeployInputs {
  *  observed wall-clock is 30-60s. 5-minute ceiling absorbs cold-cache
  *  + slow CI runners. */
 const DEPLOY_TIMEOUT_MS = 5 * 60_000;
+const DEPLOY_BIND_SOURCE_RETRY_ATTEMPTS = 10;
+const DEPLOY_BIND_SOURCE_RETRY_DELAY_MS = 500;
+
+const ensureDeployOutputDir = (inputs: DeployInputs): Effect.Effect<void, WalrusPluginError> =>
+	Effect.tryPromise({
+		try: async () => {
+			await mkdir(inputs.outputDirHostPath, { recursive: true });
+			await writeFile(
+				join(inputs.outputDirHostPath, '.devstack-bind-source'),
+				'devstack walrus bind source\n',
+				'utf8',
+			);
+		},
+		catch: (cause) =>
+			walrusPluginError(
+				'deploy',
+				`walrus deploy failed to prepare output directory ${inputs.outputDirHostPath}`,
+				{ cause },
+			),
+	});
 
 const hostBindMountOwner = (): string | undefined => {
 	const process = (
@@ -160,6 +180,14 @@ const deployExitDetail = (
 		excerpt('stderr', result.stderr)
 	);
 };
+
+const isBindSourceMissing = (result: {
+	readonly exitCode: number;
+	readonly stderr: string;
+}): boolean =>
+	result.exitCode === 125 &&
+	/bind source path does not exist/i.test(result.stderr) &&
+	/invalid mount config/i.test(result.stderr);
 
 /** Parse the walrus deploy output into a `CachedDeployState`.
  *
@@ -218,6 +246,8 @@ export const runDeployOneShot = (
 	inputs: DeployInputs,
 ): Effect.Effect<CachedDeployState, WalrusPluginError, Scope.Scope> =>
 	Effect.gen(function* () {
+		yield* ensureDeployOutputDir(inputs);
+
 		const outputOwner = hostBindMountOwner();
 		const argv: ReadonlyArray<string> = [
 			'deploy',
@@ -239,8 +269,8 @@ export const runDeployOneShot = (
 			inputs.listeningIpsCsv,
 		];
 
-		const result = yield* runtime
-			.runOneShot({
+		const runAttempt = () =>
+			runtime.runOneShot({
 				image: inputs.walrusImage,
 				argv,
 				mounts: [
@@ -257,8 +287,7 @@ export const runDeployOneShot = (
 				// explicit mapping; Docker Desktop is a no-op.
 				extraHosts: { 'host.docker.internal': 'host-gateway' },
 				timeoutMillis: DEPLOY_TIMEOUT_MS,
-			})
-			.pipe(
+			}).pipe(
 				Effect.catch((cause) =>
 					Effect.fail(
 						walrusPluginError(
@@ -269,6 +298,14 @@ export const runDeployOneShot = (
 					),
 				),
 			);
+
+		let result: { readonly exitCode: number; readonly stdout: string; readonly stderr: string };
+		for (let attempt = 0; ; attempt += 1) {
+			result = yield* runAttempt();
+			if (!isBindSourceMissing(result) || attempt >= DEPLOY_BIND_SOURCE_RETRY_ATTEMPTS) break;
+			yield* ensureDeployOutputDir(inputs);
+			yield* Effect.sleep(Duration.millis(DEPLOY_BIND_SOURCE_RETRY_DELAY_MS));
+		}
 
 		if (result.exitCode !== 0) {
 			return yield* Effect.fail(

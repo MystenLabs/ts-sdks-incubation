@@ -25,6 +25,7 @@ const oneShotRuntime = (runOneShot: ContainerRuntime['runOneShot']): ContainerRu
 	runOneShot,
 	inspectByLabels: unusedRuntimeMethod,
 	followLogs: () => Stream.empty,
+	pause: unusedRuntimeMethod,
 	pauseAndCommit: unusedRuntimeMethod,
 	saveImage: () => Stream.empty,
 	saveImages: () => Stream.empty,

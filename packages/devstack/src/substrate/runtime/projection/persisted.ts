@@ -56,6 +56,16 @@ const AccountProjectionSchema = Schema.Struct({
 		status: Schema.Literals(['pending', 'funded', 'skipped', 'failed', 'unknown']),
 		balanceMist: Schema.NullOr(Schema.String),
 		requestedMist: Schema.NullOr(Schema.String),
+		entries: Schema.optional(
+			Schema.Array(
+				Schema.Struct({
+					coin: Schema.String,
+					fullCoinType: Schema.String,
+					amount: Schema.String,
+					status: Schema.Literals(['funded', 'skipped']),
+				}),
+			),
+		),
 	}),
 	walletVisible: Schema.Boolean,
 	updatedAt: Schema.Number,

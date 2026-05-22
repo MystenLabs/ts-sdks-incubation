@@ -5,10 +5,10 @@ A minimal Sui app scaffolded with `@mysten-incubation/create-devstack-app`.
 ## Commands
 
 ```bash
-pnpm dev       # apply the stack, generate app bindings, and start Vite
+pnpm dev       # start the devstack supervisor and Vite app
 pnpm build     # apply the stack, typecheck, and build the app
 pnpm test      # typecheck and run unit tests
-pnpm test:e2e  # run the Playwright mint flow
+pnpm test:e2e  # start the stack and run the Playwright mint flow
 ```
 
 ## Project Shape

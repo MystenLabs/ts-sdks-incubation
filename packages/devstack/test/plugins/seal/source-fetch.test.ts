@@ -44,6 +44,7 @@ const makeRuntimeStub = (
 		runOneShot,
 		inspectByLabels: () => Effect.die('inspectByLabels not used'),
 		followLogs: () => Effect.die('followLogs not used'),
+		pause: () => Effect.die('pause not used'),
 		pauseAndCommit: () => Effect.die('pauseAndCommit not used'),
 		saveImage: () => Effect.die('saveImage not used'),
 		loadImage: () => Effect.die('loadImage not used'),

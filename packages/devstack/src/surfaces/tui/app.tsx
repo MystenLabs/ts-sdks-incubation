@@ -27,7 +27,7 @@ import { useEffect, useRef, useState } from 'react';
 
 import type { EngineEvent } from '../../substrate/events.ts';
 import type { SubscribableState } from '../../substrate/projection.ts';
-import { Dashboard } from './dashboard.tsx';
+import { Dashboard, type SnapshotStatus } from './dashboard.tsx';
 import {
 	appendEventLogLine,
 	eventLogLineFromEvent,
@@ -48,6 +48,8 @@ export interface AppProps {
 export const App = ({ stateRef, events, publish }: AppProps): React.JSX.Element => {
 	const [state, setState] = useState<SubscribableState | null>(null);
 	const [eventLog, setEventLog] = useState<ReadonlyArray<EventLogLine>>([]);
+	const [snapshotPromptValue, setSnapshotPromptValue] = useState<string | null>(null);
+	const [snapshotStatus, setSnapshotStatus] = useState<SnapshotStatus | null>(null);
 	const eventSeq = useRef(0);
 	const shutdownLogged = useRef(false);
 
@@ -72,6 +74,67 @@ export const App = ({ stateRef, events, publish }: AppProps): React.JSX.Element 
 				Effect.sync(() => {
 					const line = eventLogLineFromEvent(event, eventSeq.current++);
 					setEventLog((prev) => appendEventLogLine(prev, line));
+					switch (event.tag) {
+						case 'snapshot.captureStarted':
+							setSnapshotStatus({
+								tag: 'running',
+								phase: 'starting',
+								...(event.snapshotId === undefined ? {} : { snapshotId: event.snapshotId }),
+								...(event.name === undefined ? {} : { name: event.name }),
+								at: event.at,
+							});
+							break;
+						case 'snapshot.captureProgress':
+							setSnapshotStatus((prev) => ({
+								tag: 'running',
+								phase: event.phase,
+								...(event.snapshotId === undefined
+									? prev?.tag === 'running' && prev.snapshotId !== undefined
+										? { snapshotId: prev.snapshotId }
+										: {}
+									: { snapshotId: event.snapshotId }),
+								...(event.name === undefined
+									? prev?.tag === 'running' && prev.name !== undefined
+										? { name: prev.name }
+										: {}
+									: { name: event.name }),
+								...(event.detail === undefined ? {} : { detail: event.detail }),
+								...(event.pausedContainers === undefined
+									? {}
+									: { pausedContainers: event.pausedContainers }),
+								...(event.totalContainers === undefined
+									? {}
+									: { totalContainers: event.totalContainers }),
+								at: event.at,
+							}));
+							break;
+						case 'snapshot.captureSkipped':
+							setSnapshotStatus({
+								tag: 'skipped',
+								reason: event.reason,
+								at: event.at,
+							});
+							break;
+						case 'snapshot.captureFailed':
+							setSnapshotStatus({
+								tag: 'failed',
+								...(event.snapshotId === undefined ? {} : { snapshotId: event.snapshotId }),
+								...(event.name === undefined ? {} : { name: event.name }),
+								summary: event.summary,
+								at: event.at,
+							});
+							break;
+						case 'snapshot.captured':
+							setSnapshotStatus({
+								tag: 'captured',
+								snapshotId: event.snapshotId,
+								...(event.name === undefined ? {} : { name: event.name }),
+								at: event.at,
+							});
+							break;
+						default:
+							break;
+					}
 				}),
 			),
 		);
@@ -83,6 +146,8 @@ export const App = ({ stateRef, events, publish }: AppProps): React.JSX.Element 
 	useEffect(() => {
 		if (state === null) return;
 		if (state.cycle.phase === 'shutting-down') {
+			setSnapshotPromptValue(null);
+			setSnapshotStatus(null);
 			if (shutdownLogged.current) return;
 			shutdownLogged.current = true;
 			const line = shutdownRequestedLine(Date.now(), eventSeq.current++);
@@ -94,8 +159,21 @@ export const App = ({ stateRef, events, publish }: AppProps): React.JSX.Element 
 
 	return (
 		<>
-			<InputHandler publish={publish} />
-			{state === null ? <></> : <Dashboard state={state} eventLog={eventLog} />}
+			<InputHandler
+				publish={publish}
+				snapshotPromptValue={snapshotPromptValue}
+				onSnapshotPromptChange={setSnapshotPromptValue}
+			/>
+			{state === null ? (
+				<></>
+			) : (
+				<Dashboard
+					state={state}
+					eventLog={eventLog}
+					snapshotPromptValue={snapshotPromptValue}
+					snapshotStatus={snapshotStatus}
+				/>
+			)}
 		</>
 	);
 };

@@ -196,7 +196,7 @@ export const SnapshotMetadataSchema = Schema.Struct({
 	version: Schema.Literal(SNAPSHOT_META_VERSION),
 	/** Stable snapshot id (caller-supplied or substrate-minted). */
 	id: Schema.String,
-	/** User-facing label. It is never used as filesystem authority. */
+	/** User-facing name. It is never used as filesystem authority. */
 	label: Schema.NullOr(Schema.String),
 	createdAt: Schema.Number,
 	app: Schema.String,

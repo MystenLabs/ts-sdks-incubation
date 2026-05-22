@@ -33,6 +33,24 @@ const weth = localPackage('mock_weth', {
 const mUSDC = coin.fromPackage(usdc, 'MOCK_USDC');
 const mWETH = coin.fromPackage(weth, 'MOCK_WETH');
 
+const firstPackageWithSharedWitness = localPackage('first_coin_package', {
+	sourcePath: '/fixtures/first_coin_package',
+	publisher,
+});
+const secondPackageWithSharedWitness = localPackage('second_coin_package', {
+	sourcePath: '/fixtures/second_coin_package',
+	publisher,
+});
+const firstSharedWitnessCoin = coin.fromPackage(firstPackageWithSharedWitness, 'COIN');
+const secondSharedWitnessCoin = coin.fromPackage(secondPackageWithSharedWitness, 'COIN');
+
+export const _firstSharedWitnessCoinId: 'coin:first_coin_package/coin' = firstSharedWitnessCoin.id;
+export const _secondSharedWitnessCoinId: 'coin:second_coin_package/coin' =
+	secondSharedWitnessCoin.id;
+// @ts-expect-error same witness name in different packages must not collapse to one coin id
+export const _sharedWitnessCoinIdsDoNotCollapse: typeof firstSharedWitnessCoin.id =
+	secondSharedWitnessCoin.id;
+
 const seedTokens = action('wallet.seedTokens', {
 	dependsOn: { usdc, weth, mUSDC, mWETH, publisher, alice, bob },
 	body: (ctx, { usdc, weth, mUSDC, mWETH, publisher, alice, bob }) =>

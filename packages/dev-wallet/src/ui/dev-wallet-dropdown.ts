@@ -29,16 +29,18 @@ export class DevWalletDropdown extends LitElement {
 				position: absolute;
 				top: 100%;
 				left: 0;
-				margin-top: 4px;
+				margin-top: 6px;
 				min-width: 100%;
-				background: var(--dev-wallet-background);
-				border: 1px solid var(--dev-wallet-border);
-				border-radius: var(--dev-wallet-radius-md);
-				box-shadow: var(--dev-wallet-shadow-md);
+				background: var(--dev-wallet-bg-2);
+				border: 1px solid var(--dev-wallet-border-2);
+				border-radius: var(--dev-wallet-radius-lg);
+				box-shadow: var(--dev-wallet-shadow-lg);
 				z-index: 10;
 				overflow: hidden;
 				max-height: var(--dropdown-max-height, none);
 				overflow-y: auto;
+				padding: 4px;
+				animation: popin 120ms ease-out;
 			}
 
 			:host([full-width]) .popover {

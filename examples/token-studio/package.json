@@ -4,9 +4,9 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
-		"devstack:apply": "DEVSTACK_APP=token-studio devstack apply",
+		"devstack:apply": "DEVSTACK_APP=token-studio node ../../packages/devstack/dist/cli/main.mjs apply",
 		"apply": "pnpm run devstack:apply",
-		"dev": "DEVSTACK_APP=token-studio devstack up",
+		"dev": "DEVSTACK_APP=token-studio node ../../packages/devstack/dist/cli/main.mjs up",
 		"build": "pnpm run devstack:apply && DEVSTACK_APP=token-studio tsc -b && DEVSTACK_APP=token-studio vite build",
 		"preview": "vite preview",
 		"typecheck": "pnpm run devstack:apply && tsc -b --noEmit",

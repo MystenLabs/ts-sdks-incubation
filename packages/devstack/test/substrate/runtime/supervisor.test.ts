@@ -173,6 +173,14 @@ const accountStrategyDecl: StrategyContributorDecl<
 			readonly status: 'funded';
 			readonly balanceMist: null;
 			readonly requestedMist: '1000000000';
+			readonly entries: readonly [
+				{
+					readonly coin: 'SUI';
+					readonly fullCoinType: '0x2::sui::SUI';
+					readonly amount: '1000000000';
+					readonly status: 'funded';
+				},
+			];
 		};
 	}
 > = {
@@ -183,7 +191,19 @@ const accountStrategyDecl: StrategyContributorDecl<
 		address: '0xabc',
 		scheme: 'ed25519',
 		source: 'real',
-		funding: { status: 'funded', balanceMist: null, requestedMist: '1000000000' },
+		funding: {
+			status: 'funded',
+			balanceMist: null,
+			requestedMist: '1000000000',
+			entries: [
+				{
+					coin: 'SUI',
+					fullCoinType: '0x2::sui::SUI',
+					amount: '1000000000',
+					status: 'funded',
+				},
+			],
+		},
 	},
 	autoMounted: true,
 };
@@ -223,7 +243,19 @@ const accountProjectionDecl: ProjectionDecl = {
 			address: '0xabc',
 			scheme: 'ed25519',
 			source: 'real',
-			funding: { status: 'funded', balanceMist: null, requestedMist: '1000000000' },
+			funding: {
+				status: 'funded',
+				balanceMist: null,
+				requestedMist: '1000000000',
+				entries: [
+					{
+						coin: 'SUI',
+						fullCoinType: '0x2::sui::SUI',
+						amount: '1000000000',
+						status: 'funded',
+					},
+				],
+			},
 			walletVisible: false,
 			updatedAt: 1,
 		},
@@ -461,6 +493,185 @@ describe('supervisor harvest loop', () => {
 		}),
 	);
 
+	it.effect('snapshot capture does not block shutdown commands', () =>
+		Effect.gen(function* () {
+			const captureStarted = yield* Deferred.make<void>();
+			const releaseCapture = yield* Deferred.make<void>();
+			const calls = yield* Ref.make(0);
+			const state = yield* makeProjectionRef();
+			const stack: SupervisedStack = { _tag: 'Stack', members: [], options: {} };
+
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const startup = yield* startSupervisor(
+						stack,
+						identity,
+						state,
+						Context.empty(),
+						[],
+						(cmd) => {
+							if (cmd.tag !== 'snapshot.capture') return Effect.succeed([]);
+							return Effect.gen(function* () {
+								yield* Ref.update(calls, (n) => n + 1);
+								yield* Deferred.succeed(captureStarted, void 0).pipe(Effect.ignore);
+								yield* Deferred.await(releaseCapture);
+								return [
+									{
+										tag: 'snapshot.captured' as const,
+										snapshotId: 'held',
+										...(cmd.name === undefined ? {} : { name: cmd.name }),
+										at: 1,
+									},
+								];
+							});
+						},
+					);
+					yield* startup.runInitialAcquire;
+					yield* Queue.offer(startup.handle.commands, {
+						tag: 'snapshot.capture',
+						name: 'before-change',
+					});
+					yield* Deferred.await(captureStarted);
+					yield* Queue.offer(startup.handle.commands, { tag: 'shutdown.requested' });
+					for (let i = 0; i < 10; i++) {
+						const snapshot = yield* SubscriptionRef.get(state);
+						if (snapshot.cycle.phase === 'shutting-down') break;
+						yield* Effect.yieldNow;
+					}
+
+					const snap = yield* SubscriptionRef.get(state);
+					expect(snap.cycle.phase).toBe('shutting-down');
+					expect(yield* Ref.get(calls)).toBe(1);
+					yield* Deferred.succeed(releaseCapture, void 0).pipe(Effect.ignore);
+					yield* startup.handle.awaitShutdown;
+				}),
+			);
+		}),
+	);
+
+	it.effect('second snapshot keypress is skipped while capture is running', () =>
+		Effect.gen(function* () {
+			const captureStarted = yield* Deferred.make<void>();
+			const releaseCapture = yield* Deferred.make<void>();
+			const calls = yield* Ref.make(0);
+			const eventTags = yield* Ref.make<ReadonlyArray<string>>([]);
+			const state = yield* makeProjectionRef();
+			const stack: SupervisedStack = { _tag: 'Stack', members: [], options: {} };
+
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const startup = yield* startSupervisor(
+						stack,
+						identity,
+						state,
+						Context.empty(),
+						[],
+						(cmd) => {
+							if (cmd.tag !== 'snapshot.capture') return Effect.succeed([]);
+							return Effect.gen(function* () {
+								yield* Ref.update(calls, (n) => n + 1);
+								yield* Deferred.succeed(captureStarted, void 0).pipe(Effect.ignore);
+								yield* Deferred.await(releaseCapture);
+								return [
+									{
+										tag: 'snapshot.captured' as const,
+										snapshotId: 'held',
+										...(cmd.name === undefined ? {} : { name: cmd.name }),
+										at: 1,
+									},
+								];
+							});
+						},
+					);
+					yield* Effect.forkScoped(
+						Effect.gen(function* () {
+							while (true) {
+								const event = yield* Queue.take(startup.handle.events);
+								yield* Ref.update(eventTags, (tags) => [...tags, event.tag]);
+							}
+						}),
+					);
+
+					yield* startup.runInitialAcquire;
+					yield* Queue.offer(startup.handle.commands, {
+						tag: 'snapshot.capture',
+						name: 'first',
+					});
+					yield* Deferred.await(captureStarted);
+					yield* Queue.offer(startup.handle.commands, {
+						tag: 'snapshot.capture',
+						name: 'second',
+					});
+					for (let i = 0; i < 10; i++) {
+						const tags = yield* Ref.get(eventTags);
+						if (tags.includes('snapshot.captureSkipped')) break;
+						yield* Effect.yieldNow;
+					}
+
+					expect(yield* Ref.get(calls)).toBe(1);
+					expect(yield* Ref.get(eventTags)).toContain('snapshot.captureSkipped');
+					yield* Deferred.succeed(releaseCapture, void 0).pipe(Effect.ignore);
+					yield* Queue.offer(startup.handle.commands, { tag: 'shutdown.requested' });
+					yield* startup.handle.awaitShutdown;
+				}),
+			);
+		}),
+	);
+
+	it.effect('hot restart reacquires with a fresh scope and ready gate', () =>
+		Effect.gen(function* () {
+			const starts = yield* Ref.make(0);
+			const finalizers = yield* Ref.make(0);
+			const restartableKey = pluginKey('test:restartable#0');
+			const pluginRestartable = definePlugin({
+				id: 'test:restartable',
+				role: 'service' as const,
+				start: () =>
+					Effect.gen(function* () {
+						const run = yield* Ref.updateAndGet(starts, (n) => n + 1);
+						yield* Effect.addFinalizer(() => Ref.update(finalizers, (n) => n + 1));
+						return { run };
+					}),
+			});
+			const state = yield* makeProjectionRef();
+			const stack: SupervisedStack = { _tag: 'Stack', members: [pluginRestartable], options: {} };
+
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const startup = yield* startSupervisor(stack, identity, state);
+					yield* startup.runInitialAcquire;
+					const first = yield* startup.handle.registry.awaitReady(restartableKey);
+					expect((first as { readonly run: number }).run).toBe(1);
+					expect(yield* Ref.get(finalizers)).toBe(0);
+
+					yield* Queue.offer(startup.handle.commands, {
+						tag: 'selective-restart.requested',
+						pluginKey: restartableKey,
+					});
+					while (true) {
+						const event = yield* Queue.take(startup.handle.events);
+						if (
+							event.tag === 'restart.completed' &&
+							event.target !== 'stack' &&
+							event.target.pluginKey === restartableKey
+						) {
+							break;
+						}
+					}
+
+					const second = yield* startup.handle.registry.awaitReady(restartableKey);
+					expect((second as { readonly run: number }).run).toBe(2);
+					expect(yield* Ref.get(starts)).toBe(2);
+					expect(yield* Ref.get(finalizers)).toBe(1);
+					const snap = yield* SubscriptionRef.get(state);
+					expect(snap.rows.find((row) => row.key === restartableKey)?.status).toBe('ready');
+				}),
+			);
+
+			expect(yield* Ref.get(finalizers)).toBe(2);
+		}),
+	);
+
 	it.effect('dispatches each CapabilityDecl kind to its OrchestratorSinks slot', () =>
 		Effect.gen(function* () {
 			const { ref, sinks } = yield* makeCapture();
@@ -519,7 +730,7 @@ describe('supervisor harvest loop', () => {
 								address: null,
 								scheme: null,
 								source: null,
-								funding: { status: 'pending', balanceMist: null, requestedMist: null },
+								funding: { status: 'pending', balanceMist: null, requestedMist: null, entries: [] },
 								walletVisible: false,
 								updatedAt: expect.any(Number),
 							},
@@ -539,6 +750,14 @@ describe('supervisor harvest loop', () => {
 									status: 'funded',
 									balanceMist: null,
 									requestedMist: '1000000000',
+									entries: [
+										{
+											coin: 'SUI',
+											fullCoinType: '0x2::sui::SUI',
+											amount: '1000000000',
+											status: 'funded',
+										},
+									],
 								},
 								walletVisible: false,
 								updatedAt: expect.any(Number),

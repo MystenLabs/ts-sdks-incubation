@@ -12,10 +12,12 @@ import type { ChainId, PluginKey } from './brand.ts';
 import type { Identity } from './identity.ts';
 import type { PluginRole } from './lifecycle.ts';
 
-const resourceBrand: unique symbol = Symbol('devstack.resource');
-const pluginBrand: unique symbol = Symbol('devstack.plugin');
-const resourceValue: unique symbol = Symbol('devstack.resource.value');
-const dependencyInputBrand: unique symbol = Symbol('devstack.plugin.dependency-input');
+const resourceBrand: unique symbol = Symbol.for('devstack.resource') as never;
+const pluginBrand: unique symbol = Symbol.for('devstack.plugin') as never;
+const resourceValue: unique symbol = Symbol.for('devstack.resource.value') as never;
+const dependencyInputBrand: unique symbol = Symbol.for(
+	'devstack.plugin.dependency-input',
+) as never;
 
 export interface ResourceRef<Id extends string, Value = unknown> {
 	readonly id: Id;

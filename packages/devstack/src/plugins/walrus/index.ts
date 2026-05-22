@@ -25,10 +25,11 @@
 //     4. `strategy-contributor:walrus-state-registry`  — local entry.
 //     5. `strategy-contributor:endpoint-registry`      — N+2 entries.
 //     6. `strategy-contributor:package-registry`       — `walrus.<name>`.
-//     7. `strategy-contributor:coinType:WAL`           — WAL faucet
-//                                                         strategy
-//                                                         (when seed
-//                                                         accounts + exchange).
+//     7. `strategy-contributor:coinType:<WAL fullCoinType>`
+//                                                      — WAL faucet
+//                                                        strategy
+//                                                        (when seed
+//                                                        accounts + exchange).
 //
 //   Known mode (read-only deployment — NO admin):
 //     1. `snapshotable`        — identity-guard only; no subtrees.
@@ -38,7 +39,7 @@
 // Resource id: `'walrus'` (singular). The plugin's substrate-level
 // plugin key is the same string.
 
-import { Effect, FileSystem, Path } from 'effect';
+import { Effect, Path } from 'effect';
 
 import { defineModeNamespace } from '../../api/mode-narrowed-factory.ts';
 import { definePlugin, resource } from '../../api/define-plugin.ts';
@@ -61,7 +62,7 @@ import { chainProbeFor } from '../../substrate/runtime/strategy-registry/index.t
 import { makeCodegenable } from './codegen.ts';
 import { walrusPluginKey } from './plugin-key.ts';
 import { WALRUS_ERROR_TAGS, walrusPluginError } from './errors.ts';
-import { WAL_FAUCET_STRATEGY_KEY, type WalFaucetStrategy } from './faucet-strategy.ts';
+import { walFaucetStrategyKey, type WalFaucetStrategy } from './faucet-strategy.ts';
 import { bootWalrusService, refuseLocalClusterOnFork, type WalrusMode } from './service.ts';
 import {
 	resolveLocalClusterOptions,
@@ -118,6 +119,7 @@ export interface WalrusResolved {
 	/** Admin surface — `null` in known-deployment mode. */
 	readonly admin: WalrusAdmin | null;
 	readonly walFaucetStrategy: WalFaucetStrategy | null;
+	readonly walCoinType: string | null;
 }
 
 /** Walrus plugin resource. */
@@ -244,23 +246,19 @@ const buildLocalPlugin = <const Accounts extends ReadonlyArray<WalrusAccountMemb
 				const runtime = yield* ContainerRuntimeService;
 				const identity = yield* IdentityContext;
 				const stackPaths = yield* StackPathsService;
-				const fs = yield* FileSystem.FileSystem;
 				const path = yield* Path.Path;
 				const publisher = yield* ArtifactPublisherService;
 				const probe = yield* chainProbeFor<SuiProbeKey>(sui.chain);
 
 				// Resolve the deploy-output bind-mount source from the
-				// per-stack paths bundle. The dir must exist before the
-				// deploy one-shot's bind-mount; create it recursively.
+				// per-stack paths bundle. The deploy one-shot owns preparing
+				// the directory immediately before its Docker bind mount.
 				const deployHostMountPath = path.join(
 					stackPaths.stackRoot,
 					'walrus',
 					resolved.name,
 					'deploy',
 				);
-				yield* fs
-					.makeDirectory(deployHostMountPath, { recursive: true })
-					.pipe(Effect.catch(() => Effect.void));
 
 				// Cross-container DNS: walrus containers (deploy one-shot
 				// + N storage nodes) dial sui RPC + faucet via
@@ -348,6 +346,7 @@ const buildLocalPlugin = <const Accounts extends ReadonlyArray<WalrusAccountMemb
 					publisherUrl: boot.publisherUrl,
 					admin: makeAdminShape(boot.adminSigner, sui.sdk, boot.exchange),
 					walFaucetStrategy: boot.walFaucetStrategy,
+					walCoinType: boot.walCoinType,
 				};
 				return resolvedValue;
 			}),
@@ -391,6 +390,7 @@ const buildKnownPlugin = (opts: WalrusKnownDeploymentOptions) => {
 				// Distilled-doc invariant 14: NO admin tag in known mode.
 				admin: null,
 				walFaucetStrategy: null,
+				walCoinType: null,
 			} satisfies WalrusResolved),
 		capabilities: ({ value: resolvedValue, runtime: acquireCtx }) =>
 			makeKnownCapabilities({
@@ -439,15 +439,15 @@ const makeLocalCapabilities = (parts: {
 		autoMounted: true,
 	};
 	const walFaucetContribution =
-		resolved.walFaucetStrategy === null
+		resolved.walFaucetStrategy === null || resolved.walCoinType === null
 			? []
 			: [
 					{
 						kind: 'strategy-contributor',
-						capabilityKey: WAL_FAUCET_STRATEGY_KEY,
+						capabilityKey: walFaucetStrategyKey(resolved.walCoinType),
 						strategy: resolved.walFaucetStrategy,
 						autoMounted: true,
-					} satisfies StrategyContributorDecl<typeof WAL_FAUCET_STRATEGY_KEY, WalFaucetStrategy>,
+					} satisfies StrategyContributorDecl<ReturnType<typeof walFaucetStrategyKey>, WalFaucetStrategy>,
 				];
 	const routables = makeLocalRoutables({
 		app: acquireCtx.identity.app,
@@ -617,7 +617,8 @@ export type { WalrusError, WalrusPluginError, WalrusConfigError, WalrusPhase } f
 export type { ForkIncompatibleError as WalrusForkIncompatible } from './errors.ts';
 export { WALRUS_ERROR_TAGS } from './errors.ts';
 export {
-	WAL_FAUCET_STRATEGY_KEY,
+	walCoinType,
+	walFaucetStrategyKey,
 	type WalFaucetStrategy,
 	type WalFaucetRequest,
 } from './faucet-strategy.ts';

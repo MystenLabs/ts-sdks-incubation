@@ -47,6 +47,11 @@
 # plus sui-faucet as the unprivileged `devstack-sui` user. Build helper
 # containers override this entrypoint and still run as root.
 #
+# That embedded PostgreSQL can also leave `postmaster.pid` behind after
+# an ungraceful container exit or stale writable-layer reuse. PostgreSQL
+# treats that as an active server and aborts before GraphQL binds, so we
+# clear only provably-stale pid files before starting Sui.
+#
 # The trap + wait-loop lives in `/usr/local/lib/devstack/signal-forward.sh`,
 # vendored from `images/_shared/signal-forward.sh` at build time —
 # the seal key-server entrypoint sources the same file.
@@ -113,6 +118,28 @@ patch_pruning_config() {
 for config_file in "$SUI_HOME"/.sui/sui_config/*.yaml; do
 	patch_pruning_config "$config_file"
 done
+
+clear_stale_postgres_pid() {
+	indexer_dir="$SUI_HOME/.sui/sui_config/indexer"
+	pid_file="$indexer_dir/postmaster.pid"
+	[ -f "$pid_file" ] || return 0
+
+	pid="$(sed -n '1p' "$pid_file" 2>/dev/null || true)"
+	case "$pid" in
+		'' | *[!0-9]*)
+			rm -f "$pid_file"
+			return 0
+			;;
+	esac
+
+	if kill -0 "$pid" 2>/dev/null; then
+		return 0
+	fi
+
+	rm -f "$pid_file"
+}
+
+clear_stale_postgres_pid
 
 # Strip `--with-faucet[=<addr>]` from sui's args and remember the bind
 # address. POSIX-sh argument shuffling: rebuild "$@" by collecting

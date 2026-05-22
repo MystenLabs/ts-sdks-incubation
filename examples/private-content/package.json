@@ -4,9 +4,9 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
-		"devstack:apply": "DEVSTACK_APP=private-content devstack apply",
+		"devstack:apply": "DEVSTACK_APP=private-content node ../../packages/devstack/dist/cli/main.mjs apply",
 		"apply": "pnpm run devstack:apply",
-		"dev": "DEVSTACK_APP=private-content devstack up",
+		"dev": "DEVSTACK_APP=private-content node ../../packages/devstack/dist/cli/main.mjs up",
 		"build": "pnpm run devstack:apply && DEVSTACK_APP=private-content tsc -b && DEVSTACK_APP=private-content vite build",
 		"preview": "vite preview",
 		"typecheck": "pnpm run devstack:apply && tsc -b --noEmit",

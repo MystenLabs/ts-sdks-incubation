@@ -3,12 +3,13 @@
 // Architecture § Snapshot lifecycle (capture half):
 //
 //   Walk Snapshotable registry; group by plugin.
-//   For each plugin in dep-graph order:
-//     pause managed containers (unless stopped)
-//     tar host-tree subtrees with mode round-trip
+//   Validate the full capture set.
+//   Pause every running managed container (unless already stopped).
+//   While paused:
 //     docker commit + tag committed images
+//     tar host-tree subtrees with mode round-trip
 //     collect metadata slice
-//     unpause (always — success AND failure)
+//   Unpause (always — success AND failure)
 //   Stage everything in tempdir.
 //   Atomic rename → snapshot catalog entry.
 //
@@ -61,6 +62,7 @@ export class CapturePhaseError extends Schema.TaggedErrorClass<CapturePhaseError
 		phase: Schema.Literals([
 			'enumerate-containers',
 			'quiesce',
+			'pause',
 			'commit',
 			'save-images',
 			'tar-subtree',
@@ -102,6 +104,29 @@ export interface SnapshotParticipant {
 	readonly captureContribution: Effect.Effect<unknown>;
 }
 
+export type SnapshotCaptureProgressPhase =
+	| 'quiescing'
+	| 'pausing'
+	| 'paused'
+	| 'capturing-containers'
+	| 'saving-images'
+	| 'capturing-host-tree'
+	| 'saving-state'
+	| 'saving-contributions'
+	| 'writing-metadata'
+	| 'resuming';
+
+export interface SnapshotCaptureProgress {
+	readonly phase: SnapshotCaptureProgressPhase;
+	readonly detail?: string;
+	readonly pausedContainers?: number;
+	readonly totalContainers?: number;
+}
+
+export type SnapshotProgressReporter = (
+	progress: SnapshotCaptureProgress,
+) => Effect.Effect<void, never>;
+
 // -----------------------------------------------------------------------------
 // Staging — populate a directory; the caller wraps in stage-and-swap.
 // -----------------------------------------------------------------------------
@@ -128,6 +153,10 @@ interface QuiescedContainer {
 
 interface PlannedContainerCapture extends QuiescedContainer {
 	readonly participant: SnapshotParticipant;
+}
+
+interface ReadyContainerCapture extends PlannedContainerCapture {
+	readonly commitHandle: ContainerHandle;
 }
 
 interface CommittedContainerCapture {
@@ -432,6 +461,7 @@ export interface CaptureInputs {
 	readonly stateFilePath: string;
 	readonly participants: ReadonlyArray<SnapshotParticipant>;
 	readonly runtime: ContainerRuntime;
+	readonly onProgress?: SnapshotProgressReporter;
 }
 
 /**
@@ -457,35 +487,56 @@ export const runCapture = (
 			'devstack.snapshot.id': inputs.snapshotId,
 		});
 
-		// 1. Quiesce + commit each participant's containers under a
-		//    scoped finalizer so unpause runs on success AND failure.
-		//    Architecture § Invariants: "no orphaned paused containers".
-		const capturedContainers: CapturedContainer[] = [];
+		const report = (progress: SnapshotCaptureProgress): Effect.Effect<void, never> =>
+			inputs.onProgress?.(progress) ?? Effect.void;
 
-		yield* Effect.scoped(
+		return yield* Effect.scoped(
 			Effect.gen(function* () {
+				// 1. Quiesce every participant, validate the full capture
+				//    set, then pause all running managed containers before
+				//    any artifact is written. The pause finalizer covers the
+				//    entire capture pipeline so container commits, host-tree
+				//    tar, scalar state, and contribution metadata share one
+				//    consistent snapshot window.
+				const capturedContainers: CapturedContainer[] = [];
 				const paused: ContainerHandle[] = [];
 				yield* Effect.addFinalizer(() =>
-					Effect.forEach(
-						paused,
-						(handle) =>
-							inputs.runtime
-								.unpause(handle)
-								.pipe(
-									Effect.catch((cause) =>
-										Effect.logWarning(
-											`unpause(${handle.name}) failed during snapshot capture: ${String(cause)}`,
+					Effect.gen(function* () {
+						if (paused.length > 0) {
+							yield* report({
+								phase: 'resuming',
+								detail: `unpausing ${paused.length} container${paused.length === 1 ? '' : 's'}`,
+								pausedContainers: paused.length,
+								totalContainers: paused.length,
+							});
+						}
+						yield* Effect.forEach(
+							paused,
+							(handle) =>
+								inputs.runtime
+									.unpause(handle)
+									.pipe(
+										Effect.catch((cause) =>
+											Effect.logWarning(
+												`unpause(${handle.name}) failed during snapshot capture: ${String(cause)}`,
+											),
 										),
 									),
-								),
-						{ concurrency: 'unbounded' },
-					).pipe(Effect.asVoid),
+							{ concurrency: 'unbounded' },
+						);
+					}).pipe(Effect.asVoid),
 				);
 				const plannedContainers: PlannedContainerCapture[] = [];
 				const committedRefs: TaggedImageRef[] = [];
 				yield* Effect.addFinalizer((exit) =>
 					Exit.isFailure(exit) ? cleanupCommittedRefs(inputs.runtime, committedRefs) : Effect.void,
 				);
+				yield* report({
+					phase: 'quiescing',
+					detail: `checking ${inputs.participants.length} snapshot participant${
+						inputs.participants.length === 1 ? '' : 's'
+					}`,
+				});
 				for (const participant of inputs.participants) {
 					const containers = yield* quiesceParticipant(participant, inputs.runtime);
 					for (const { handle, labels, unpauseAfterCapture } of containers) {
@@ -499,13 +550,60 @@ export const runCapture = (
 					}
 				}
 				yield* detectContainerArtifactCollisions(plannedContainers);
-				const committedContainers: CommittedContainerCapture[] = [];
-				for (const { handle, labels, unpauseAfterCapture, participant } of plannedContainers) {
+				const runningContainers = plannedContainers.filter((entry) => entry.unpauseAfterCapture);
+				if (runningContainers.length > 0) {
+					yield* report({
+						phase: 'pausing',
+						detail: `pausing ${runningContainers.length} running container${
+							runningContainers.length === 1 ? '' : 's'
+						}`,
+						pausedContainers: 0,
+						totalContainers: runningContainers.length,
+					});
+				}
+				const readyContainers: ReadyContainerCapture[] = [];
+				for (const entry of plannedContainers) {
+					const { handle, unpauseAfterCapture } = entry;
 					if (unpauseAfterCapture) {
+						yield* inputs.runtime
+							.pause(handle)
+							.pipe(
+								Effect.catch(
+									failPhase('pause', `pause failed for ${handle.name}`, entry.participant.plugin),
+								),
+							);
 						paused.push(handle);
 					}
+					readyContainers.push({
+						...entry,
+						commitHandle: unpauseAfterCapture ? { ...handle, status: 'paused' as const } : handle,
+					});
+				}
+				if (runningContainers.length > 0) {
+					yield* report({
+						phase: 'paused',
+						detail: `stack paused for snapshot (${paused.length}/${runningContainers.length} containers)`,
+						pausedContainers: paused.length,
+						totalContainers: runningContainers.length,
+					});
+				}
+
+				// 2. Commit managed containers while the whole capture set
+				//    remains paused.
+				const committedContainers: CommittedContainerCapture[] = [];
+				if (readyContainers.length > 0) {
+					yield* report({
+						phase: 'capturing-containers',
+						detail: `committing ${readyContainers.length} container${
+							readyContainers.length === 1 ? '' : 's'
+						}`,
+						pausedContainers: paused.length,
+						totalContainers: runningContainers.length,
+					});
+				}
+				for (const { commitHandle, labels, participant } of readyContainers) {
 					const committed = yield* commitContainerToImage(
-						handle,
+						commitHandle,
 						labels,
 						inputs.runtime,
 						participant,
@@ -517,114 +615,150 @@ export const runCapture = (
 					committedContainers.push(committed);
 					capturedContainers.push(committed.captured);
 				}
+				if (committedContainers.length > 0) {
+					yield* report({
+						phase: 'saving-images',
+						detail: `saving ${committedContainers.length} committed image${
+							committedContainers.length === 1 ? '' : 's'
+						}`,
+						pausedContainers: paused.length,
+						totalContainers: runningContainers.length,
+					});
+				}
 				yield* saveCommittedImages(committedContainers, inputs.stagingDir, inputs.runtime);
+
+				// 3. Tar the host-tree subtrees declared by participants.
+				const declaredSubtrees: CapturedSubtree[] = inputs.participants.flatMap((p) =>
+					p.decl.subtrees.map((relPath) => ({
+						plugin: p.plugin,
+						relPath,
+						missingTolerance: p.decl.missingTolerance,
+						secretMaterial: p.decl.secretMaterial ?? false,
+					})),
+				);
+				const subtrees = yield* resolveCapturedSubtrees(declaredSubtrees, inputs.runtimeStackRoot);
+				const hostTreeIncluded = subtrees.length > 0;
+				if (hostTreeIncluded) {
+					yield* report({
+						phase: 'capturing-host-tree',
+						detail: `archiving ${subtrees.length} host subtree${subtrees.length === 1 ? '' : 's'}`,
+						pausedContainers: paused.length,
+						totalContainers: runningContainers.length,
+					});
+					yield* writeHostTreeTar(
+						inputs.runtimeStackRoot,
+						subtrees,
+						`${inputs.stagingDir}/${SnapshotLayout.hostTreeTar}`,
+					);
+				}
+
+				// 4. Copy the scalar state file (best-effort missing-OK —
+				//    empty stack on first-boot has no state.json yet).
+				const stateExists = yield* fs
+					.exists(inputs.stateFilePath)
+					.pipe(Effect.catch(() => Effect.succeed(false)));
+				if (stateExists) {
+					yield* report({
+						phase: 'saving-state',
+						detail: 'copying runtime state',
+						pausedContainers: paused.length,
+						totalContainers: runningContainers.length,
+					});
+					const stateDoc = yield* readSnapshotStateDocument(inputs.stateFilePath).pipe(
+						Effect.catch(failPhase('read-state', `state.json failed schema validation`)),
+					);
+					yield* writeSnapshotStateDocument(
+						`${inputs.stagingDir}/${SnapshotLayout.stateFile}`,
+						stateDoc,
+					).pipe(Effect.catch(failPhase('write-state', `write state.json failed`)));
+				}
+
+				// 5. Write per-participant contribution docs + collect identity.
+				yield* report({
+					phase: 'saving-contributions',
+					detail: `writing ${inputs.participants.length} contribution document${
+						inputs.participants.length === 1 ? '' : 's'
+					}`,
+					pausedContainers: paused.length,
+					totalContainers: runningContainers.length,
+				});
+				yield* fs
+					.makeDirectory(`${inputs.stagingDir}/${SnapshotLayout.contributionsDir}`, {
+						recursive: true,
+					})
+					.pipe(Effect.catch(failPhase('write-contribution', `mkdir contributions dir failed`)));
+				const identityMerged: Record<string, string> = {};
+				const participantKeys: string[] = [];
+				for (const participant of inputs.participants) {
+					const identity = yield* participant.captureIdentity;
+					for (const [k, v] of Object.entries(identity)) {
+						// Conflict-on-same-key handled by identity-guard's
+						// `mergeContributions` on the restore side; on capture we
+						// last-write-wins (typical: only one plugin contributes
+						// each key on capture).
+						identityMerged[k] = v;
+					}
+					const state = yield* participant.captureContribution;
+					const doc: ContributionDoc = {
+						version: SNAPSHOT_CONTRIBUTION_VERSION,
+						plugin: participant.plugin,
+						identity,
+						...(state === undefined
+							? {}
+							: {
+									opaqueState: {
+										encoding: 'json' as const,
+										value: state,
+									},
+								}),
+					};
+					yield* fs
+						.writeFileString(
+							`${inputs.stagingDir}/${contributionPath(participant.plugin)}`,
+							JSON.stringify(doc, null, 2),
+						)
+						.pipe(
+							Effect.catch(
+								failPhase('write-contribution', `write contribution doc failed`, participant.plugin),
+							),
+						);
+					participantKeys.push(participant.plugin);
+				}
+
+				// 6. Write meta.json, then integrity over the full artifact.
+				//    The caller publishes via stage-and-swap, so catalog
+				//    readers still never observe a half-written artifact.
+				yield* report({
+					phase: 'writing-metadata',
+					detail: 'finalizing snapshot artifact',
+					pausedContainers: paused.length,
+					totalContainers: runningContainers.length,
+				});
+				const meta: SnapshotMetadata = {
+					version: SNAPSHOT_META_VERSION,
+					id: inputs.snapshotId,
+					label: inputs.label,
+					createdAt: Date.now(),
+					app: inputs.app,
+					stack: inputs.stack,
+					network: inputs.network,
+					hostTreeIncluded,
+					subtrees,
+					containers: capturedContainers,
+					identity: identityMerged,
+					participants: participantKeys,
+				};
+				yield* fs
+					.writeFileString(
+						`${inputs.stagingDir}/${SnapshotLayout.metaFile}`,
+						JSON.stringify(meta, null, 2),
+					)
+					.pipe(Effect.catch(failPhase('write-meta', `write meta.json failed`)));
+				yield* writeArtifactIntegrity(inputs.stagingDir).pipe(
+					Effect.catch(failPhase('write-integrity', `write integrity.json failed`)),
+				);
+
+				return meta;
 			}),
 		);
-
-		// 2. Tar the host-tree subtrees declared by participants.
-		const declaredSubtrees: CapturedSubtree[] = inputs.participants.flatMap((p) =>
-			p.decl.subtrees.map((relPath) => ({
-				plugin: p.plugin,
-				relPath,
-				missingTolerance: p.decl.missingTolerance,
-				secretMaterial: p.decl.secretMaterial ?? false,
-			})),
-		);
-		const subtrees = yield* resolveCapturedSubtrees(declaredSubtrees, inputs.runtimeStackRoot);
-		const hostTreeIncluded = subtrees.length > 0;
-		if (hostTreeIncluded) {
-			yield* writeHostTreeTar(
-				inputs.runtimeStackRoot,
-				subtrees,
-				`${inputs.stagingDir}/${SnapshotLayout.hostTreeTar}`,
-			);
-		}
-
-		// 3. Copy the scalar state file (best-effort missing-OK — empty
-		//    stack on first-boot has no state.json yet).
-		const stateExists = yield* fs
-			.exists(inputs.stateFilePath)
-			.pipe(Effect.catch(() => Effect.succeed(false)));
-		if (stateExists) {
-			const stateDoc = yield* readSnapshotStateDocument(inputs.stateFilePath).pipe(
-				Effect.catch(failPhase('read-state', `state.json failed schema validation`)),
-			);
-			yield* writeSnapshotStateDocument(
-				`${inputs.stagingDir}/${SnapshotLayout.stateFile}`,
-				stateDoc,
-			).pipe(Effect.catch(failPhase('write-state', `write state.json failed`)));
-		}
-
-		// 4. Write per-participant contribution docs + collect identity.
-		yield* fs
-			.makeDirectory(`${inputs.stagingDir}/${SnapshotLayout.contributionsDir}`, {
-				recursive: true,
-			})
-			.pipe(Effect.catch(failPhase('write-contribution', `mkdir contributions dir failed`)));
-		const identityMerged: Record<string, string> = {};
-		const participantKeys: string[] = [];
-		for (const participant of inputs.participants) {
-			const identity = yield* participant.captureIdentity;
-			for (const [k, v] of Object.entries(identity)) {
-				// Conflict-on-same-key handled by identity-guard's
-				// `mergeContributions` on the restore side; on capture we
-				// last-write-wins (typical: only one plugin contributes
-				// each key on capture).
-				identityMerged[k] = v;
-			}
-			const state = yield* participant.captureContribution;
-			const doc: ContributionDoc = {
-				version: SNAPSHOT_CONTRIBUTION_VERSION,
-				plugin: participant.plugin,
-				identity,
-				...(state === undefined
-					? {}
-					: {
-							opaqueState: {
-								encoding: 'json' as const,
-								value: state,
-							},
-						}),
-			};
-			yield* fs
-				.writeFileString(
-					`${inputs.stagingDir}/${contributionPath(participant.plugin)}`,
-					JSON.stringify(doc, null, 2),
-				)
-				.pipe(
-					Effect.catch(
-						failPhase('write-contribution', `write contribution doc failed`, participant.plugin),
-					),
-				);
-			participantKeys.push(participant.plugin);
-		}
-
-		// 5. Write meta.json, then integrity over the full artifact.
-		//    The caller publishes via stage-and-swap, so catalog
-		//    readers still never observe a half-written artifact.
-		const meta: SnapshotMetadata = {
-			version: SNAPSHOT_META_VERSION,
-			id: inputs.snapshotId,
-			label: inputs.label,
-			createdAt: Date.now(),
-			app: inputs.app,
-			stack: inputs.stack,
-			network: inputs.network,
-			hostTreeIncluded,
-			subtrees,
-			containers: capturedContainers,
-			identity: identityMerged,
-			participants: participantKeys,
-		};
-		yield* fs
-			.writeFileString(
-				`${inputs.stagingDir}/${SnapshotLayout.metaFile}`,
-				JSON.stringify(meta, null, 2),
-			)
-			.pipe(Effect.catch(failPhase('write-meta', `write meta.json failed`)));
-		yield* writeArtifactIntegrity(inputs.stagingDir).pipe(
-			Effect.catch(failPhase('write-integrity', `write integrity.json failed`)),
-		);
-
-		return meta;
 	}).pipe(Effect.withSpan('orchestrator.snapshot.capture'));

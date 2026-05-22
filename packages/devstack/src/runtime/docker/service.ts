@@ -360,6 +360,16 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 				Effect.withSpan('runtime.docker.contract.pauseAndCommit'),
 			);
 
+		const pauseImpl = (handle: ContainerHandle): Effect.Effect<void, ContainerRuntimeError> =>
+			Effect.gen(function* () {
+				yield* assertContainerHandleOwned(handle);
+				yield* pause(handle.name);
+			}).pipe(
+				mapToContractError,
+				Effect.provide(baseCtx),
+				Effect.withSpan('runtime.docker.contract.pause'),
+			);
+
 		const unpauseImpl = (handle: ContainerHandle): Effect.Effect<void, ContainerRuntimeError> =>
 			Effect.gen(function* () {
 				yield* assertContainerHandleOwned(handle);
@@ -545,6 +555,7 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 			runOneShot: runOneShotImpl,
 			inspectByLabels,
 			followLogs: followLogsImpl,
+			pause: pauseImpl,
 			pauseAndCommit: pauseAndCommitImpl,
 			saveImage: saveImageImpl,
 			saveImages: saveImagesImpl,

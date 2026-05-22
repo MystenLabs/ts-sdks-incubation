@@ -71,6 +71,41 @@ export const eventLogLineFromEvent = (event: EngineEvent, seq: number): EventLog
 				scopeColor: 'white',
 				message: `shutdown hard-kill escalated by ${event.signal} (exit ${event.exitCode})`,
 			});
+		case 'snapshot.captureStarted':
+			return line({
+				id,
+				level: 'info',
+				at,
+				scope: 'Snapshot',
+				scopeColor: 'blueBright',
+				message:
+					event.name === undefined
+						? 'capture started'
+						: `capture started for ${event.name}`,
+			});
+		case 'snapshot.captureProgress':
+			return null;
+		case 'snapshot.captureSkipped':
+			return line({
+				id,
+				level: 'warn',
+				at,
+				scope: 'Snapshot',
+				scopeColor: 'blueBright',
+				message: 'capture already running',
+			});
+		case 'snapshot.captureFailed':
+			return line({
+				id,
+				level: 'error',
+				at,
+				scope: 'Snapshot',
+				scopeColor: 'blueBright',
+				message:
+					event.name === undefined
+						? `capture failed: ${event.summary}`
+						: `capture failed for ${event.name}: ${event.summary}`,
+			});
 		case 'snapshot.captured':
 			return line({
 				id,
@@ -78,7 +113,10 @@ export const eventLogLineFromEvent = (event: EngineEvent, seq: number): EventLog
 				at,
 				scope: 'Snapshot',
 				scopeColor: 'blueBright',
-				message: `captured ${event.snapshotId}`,
+				message:
+					event.name === undefined
+						? `captured ${event.snapshotId}`
+						: `captured ${event.name} (${event.snapshotId})`,
 			});
 		case 'snapshot.restored':
 			return line({

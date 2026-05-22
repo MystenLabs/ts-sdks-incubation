@@ -223,6 +223,10 @@ export interface ContainerRuntime {
 
 	readonly followLogs: (handle: ContainerHandle) => Stream.Stream<string, ContainerRuntimeError>;
 
+	/** Pause a running container. Snapshot capture uses this to establish
+	 *  one stack-wide quiescence window before any artifact is written. */
+	readonly pause: (handle: ContainerHandle) => Effect.Effect<void, ContainerRuntimeError>;
+
 	/** Commit a container's writable layer to a snapshot image. Running
 	 *  containers are paused first; paused, exited, and created
 	 *  containers are already quiescent and are committed as-is. */

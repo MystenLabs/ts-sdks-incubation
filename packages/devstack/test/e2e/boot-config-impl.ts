@@ -408,9 +408,7 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 				// fake upstream resolver, while using the same sink delivery
 				// path as production.
 				yield* bootRouterOrchestrator;
-				const builtInPluginContext = yield* extendBuiltInPluginContext(pluginContext).pipe(
-					Effect.provide(layerBuiltInPluginRuntime(orchestratorSinks)),
-				);
+				const builtInPluginContext = yield* extendBuiltInPluginContext(pluginContext);
 				const handle = yield* supervise(
 					{ _tag: 'Stack', members: stack.members, options: stack.options },
 					identity,
@@ -493,7 +491,7 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 					codegenRun,
 				} satisfies BootResult;
 			}),
-		);
+		).pipe(Effect.provide(layerBuiltInPluginRuntime(orchestratorSinks)));
 
 		return result;
 	});

@@ -22,11 +22,10 @@ const local = account('local', {
 Cross-coin funding uses direct coin members, not string records:
 
 ```ts
-import { account, coin } from '@mysten-incubation/devstack';
+import { account } from '@mysten-incubation/devstack';
 
-const suiCoin = coin.builtin('sui');
 const alice = account('alice', {
-	funding: [{ coin: suiCoin, amount: 2_000_000_000n }],
+	funding: [{ coin: 'sui', amount: 2_000_000_000n }],
 });
 ```
 

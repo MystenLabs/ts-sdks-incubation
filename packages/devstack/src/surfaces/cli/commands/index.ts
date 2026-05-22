@@ -3,7 +3,7 @@
 // Each verb file owns its own deps interface and `run*` entry point.
 // The dispatcher (`../index.ts`) composes the deps and routes argv to
 // the right `run*`. No verb imports another verb; cross-verb concerns
-// (confirm tier, snapshot label resolution) live in this barrel or
+// (confirm tier, snapshot name resolution) live in this barrel or
 // in dedicated sibling modules.
 
 import type { Effect } from 'effect';
@@ -71,6 +71,7 @@ export {
 } from './snapshot.ts';
 export { buildStatusPayload, runStatus, type StatusDeps, type StatusReader } from './status.ts';
 export { type ConfigLoader, type LoadedConfig } from './config-loader.ts';
+export { confirmDestructive, type ConfirmPrompt, type ConfirmPromptInput } from './confirm.ts';
 export { runWipe, type WipeDeps } from './wipe.ts';
 export { probeSupervisorPresence, type SupervisorPresence } from './supervisor-presence.ts';
 export {

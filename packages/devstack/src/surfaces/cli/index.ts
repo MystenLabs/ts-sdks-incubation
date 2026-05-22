@@ -171,6 +171,11 @@ interface DestructiveFlags extends IdentityFlags {
 	readonly noInput?: boolean;
 }
 
+interface ConfirmFlags extends IdentityFlags {
+	readonly yes?: boolean;
+	readonly noInput?: boolean;
+}
+
 interface PruneFlags extends DestructiveFlags {
 	readonly list?: boolean;
 	readonly all?: boolean;
@@ -181,7 +186,7 @@ interface PruneFlags extends DestructiveFlags {
 }
 
 interface SnapshotSaveFlags extends ConfigFlags {
-	readonly label?: string;
+	readonly name?: string;
 }
 
 const textParser = (input: string): string => input;
@@ -219,6 +224,12 @@ const configFlagParams = {
 const destructiveFlagParams = {
 	...identityFlagParams,
 	dryRun: boolFlag('Skip mutating effects'),
+	yes: boolFlag('Assume yes on prompts'),
+	noInput: boolFlag('Forbid prompts'),
+} as const;
+
+const confirmFlagParams = {
+	...identityFlagParams,
 	yes: boolFlag('Assume yes on prompts'),
 	noInput: boolFlag('Forbid prompts'),
 } as const;
@@ -464,16 +475,16 @@ const snapshotSaveCommand = buildCommand<
 	parameters: {
 		flags: {
 			...configFlagParams,
-			label: stringFlag('Human-readable snapshot label', 'label'),
+			name: stringFlag('Human-readable snapshot name', 'name'),
 		},
-		positional: { kind: 'tuple', parameters: [optionalPositional('id', 'snapshot id')] },
+		positional: { kind: 'tuple', parameters: [optionalPositional('name', 'snapshot name')] },
 	},
 	docs: { brief: 'Capture a snapshot' },
-	func: function (flags, snapshotId) {
+	func: function (flags, snapshotName) {
 		const rest = [
 			'save',
-			...(snapshotId === undefined ? [] : [snapshotId]),
-			...(flags.label === undefined ? [] : ['--label', flags.label]),
+			...(snapshotName === undefined ? [] : [snapshotName]),
+			...(flags.name === undefined ? [] : ['--name', flags.name]),
 		];
 		return runWithFlags(this, 'snapshot save', flags, rest, (global) =>
 			runSnapshot(this.deps.snapshot, { flags: global, io: this.io }),
@@ -481,12 +492,12 @@ const snapshotSaveCommand = buildCommand<
 	},
 });
 
-const snapshotRestoreCommand = buildCommand<IdentityFlags, [string], DevstackCliContext>({
+const snapshotRestoreCommand = buildCommand<ConfirmFlags, [string], DevstackCliContext>({
 	parameters: {
-		flags: identityFlagParams,
+		flags: confirmFlagParams,
 		positional: {
 			kind: 'tuple',
-			parameters: [requiredPositional('id-or-label', 'snapshot id or label')],
+			parameters: [requiredPositional('name-or-id', 'snapshot name or id')],
 		},
 	},
 	docs: { brief: 'Restore a snapshot' },
@@ -507,12 +518,12 @@ const snapshotListCommand = buildCommand<IdentityFlags, [], DevstackCliContext>(
 	},
 });
 
-const snapshotDeleteCommand = buildCommand<IdentityFlags, [string], DevstackCliContext>({
+const snapshotDeleteCommand = buildCommand<ConfirmFlags, [string], DevstackCliContext>({
 	parameters: {
-		flags: identityFlagParams,
+		flags: confirmFlagParams,
 		positional: {
 			kind: 'tuple',
-			parameters: [requiredPositional('id-or-label', 'snapshot id or label')],
+			parameters: [requiredPositional('name-or-id', 'snapshot name or id')],
 		},
 	},
 	docs: { brief: 'Delete a snapshot' },
@@ -686,6 +697,7 @@ export {
 	CliAlreadyReportedError,
 	CliConfigInvalidError,
 	CliConfigNotFoundError,
+	CliConfirmDeclinedError,
 	CliConfirmRequiredError,
 	CliInternalError,
 	CliSnapshotNotFoundError,

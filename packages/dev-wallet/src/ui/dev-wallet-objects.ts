@@ -31,27 +31,52 @@ export class DevWalletObjects extends LitElement {
 			}
 
 			.object-list {
-				display: flex;
-				flex-direction: column;
-				gap: 4px;
+				display: grid;
+				grid-template-columns: repeat(2, minmax(0, 1fr));
+				gap: 8px;
 			}
 
 			.object-item {
 				display: flex;
 				gap: 10px;
-				padding: 10px 12px;
-				border-radius: var(--dev-wallet-radius-sm);
+				padding: 10px;
+				border-radius: var(--dev-wallet-radius-lg);
 				border: 1px solid var(--dev-wallet-border);
-				background: var(--dev-wallet-secondary);
+				background: var(--dev-wallet-surface);
 				align-items: flex-start;
+				min-width: 0;
+				transition:
+					background 120ms,
+					border-color 120ms;
+			}
+
+			.object-item:hover {
+				background: var(--dev-wallet-bg-hover);
+				border-color: var(--dev-wallet-border-strong);
 			}
 
 			.object-thumb {
-				width: 40px;
-				height: 40px;
+				width: 28px;
+				height: 28px;
 				border-radius: var(--dev-wallet-radius-xs);
 				object-fit: cover;
 				flex-shrink: 0;
+			}
+
+			.object-fallback {
+				width: 28px;
+				height: 28px;
+				border-radius: var(--dev-wallet-radius-xs);
+				display: inline-flex;
+				align-items: center;
+				justify-content: center;
+				flex-shrink: 0;
+				background: linear-gradient(135deg, var(--dev-wallet-bg-4), var(--dev-wallet-bg-2));
+				border: 1px solid var(--dev-wallet-border);
+				color: var(--dev-wallet-primary);
+				font-family: var(--dev-wallet-font-mono);
+				font-size: 11px;
+				font-weight: var(--dev-wallet-font-weight-semibold);
 			}
 
 			.object-body {
@@ -69,9 +94,10 @@ export class DevWalletObjects extends LitElement {
 			}
 
 			.object-type {
-				font-size: 13px;
+				font-size: 11px;
 				font-weight: var(--dev-wallet-font-weight-medium);
 				color: var(--dev-wallet-foreground);
+				font-family: var(--dev-wallet-font-mono);
 				white-space: nowrap;
 				overflow: hidden;
 				text-overflow: ellipsis;
@@ -79,8 +105,10 @@ export class DevWalletObjects extends LitElement {
 
 			.object-type-badge {
 				font-size: 10px;
-				color: var(--dev-wallet-muted-foreground);
-				opacity: 0.8;
+				color: var(--dev-wallet-text-3);
+				overflow: hidden;
+				text-overflow: ellipsis;
+				white-space: nowrap;
 			}
 
 			.object-description {
@@ -92,15 +120,21 @@ export class DevWalletObjects extends LitElement {
 			}
 
 			.object-version {
-				font-size: 11px;
-				color: var(--dev-wallet-muted-foreground);
+				height: 16px;
+				padding: 0 5px;
+				border-radius: 999px;
+				border: 1px solid var(--dev-wallet-border);
+				background: var(--dev-wallet-bg-3);
+				font-family: var(--dev-wallet-font-mono);
+				font-size: 9px;
+				color: var(--dev-wallet-text-3);
 				flex-shrink: 0;
 			}
 
 			.object-id {
 				font-size: 11px;
 				font-family: var(--dev-wallet-font-mono);
-				color: var(--dev-wallet-muted-foreground);
+				color: var(--dev-wallet-text-3);
 				cursor: pointer;
 				border-radius: var(--dev-wallet-radius-2xs);
 				padding: 1px 2px;
@@ -119,13 +153,13 @@ export class DevWalletObjects extends LitElement {
 			.load-more {
 				margin-top: 8px;
 				width: 100%;
-				padding: 8px;
-				border-radius: var(--dev-wallet-radius-sm);
+				height: 30px;
+				border-radius: var(--dev-wallet-radius);
 				font-size: 12px;
 				font-weight: var(--dev-wallet-font-weight-medium);
 				color: var(--dev-wallet-primary);
 				background: transparent;
-				border: 1px solid var(--dev-wallet-border);
+				border: 1px solid var(--dev-wallet-border-2);
 				transition: background 0.15s;
 			}
 
@@ -136,6 +170,12 @@ export class DevWalletObjects extends LitElement {
 			.load-more:disabled {
 				opacity: 0.5;
 				cursor: default;
+			}
+
+			@media (max-width: 380px) {
+				.object-list {
+					grid-template-columns: 1fr;
+				}
 			}
 		`,
 	];
@@ -184,7 +224,7 @@ export class DevWalletObjects extends LitElement {
 		}
 
 		return html`
-			<h3 class="section-header">Objects</h3>
+			<h3 class="section-header">Owned Objects</h3>
 			${this._loading
 				? html`<div class="loading" part="loading" aria-live="polite">Loading...</div>`
 				: this._error
@@ -206,7 +246,7 @@ export class DevWalletObjects extends LitElement {
 															@error=${(e: Event) =>
 																((e.target as HTMLImageElement).style.display = 'none')}
 														/>`
-													: nothing}
+													: html`<span class="object-fallback">O</span>`}
 												<div class="object-body">
 													<div class="object-top">
 														<span class="object-type"> ${obj.displayName ?? obj.typeName} </span>

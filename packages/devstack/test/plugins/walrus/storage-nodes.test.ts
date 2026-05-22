@@ -9,7 +9,9 @@ import {
 	deriveWalrusSubnetPrefix,
 	walrusNetworkCreateSpec,
 } from '../../../src/plugins/walrus/index.ts';
+import { resolveLocalClusterOptions } from '../../../src/plugins/walrus/mode/local-cluster.ts';
 import {
+	DEFAULT_NODE_READY_TIMEOUT_MS,
 	WALRUS_NODE_IP_BASE,
 	WALRUS_ROUTER_PORT,
 	buildWalrusNetworkName,
@@ -96,5 +98,14 @@ describe('walrus storage-node constants', () => {
 
 	it('WALRUS_NODE_IP_BASE is 10 (pinned IPs start at <prefix>.10)', () => {
 		expect(WALRUS_NODE_IP_BASE).toBe(10);
+	});
+
+	it('defaults the ready timeout to the storage-node readiness budget', () => {
+		expect(DEFAULT_NODE_READY_TIMEOUT_MS).toBe(60_000);
+		expect(resolveLocalClusterOptions({}).readyTimeoutMs).toBe(DEFAULT_NODE_READY_TIMEOUT_MS);
+	});
+
+	it('allows callers to override the storage-node ready timeout centrally', () => {
+		expect(resolveLocalClusterOptions({ readyTimeoutMs: 45_000 }).readyTimeoutMs).toBe(45_000);
 	});
 });

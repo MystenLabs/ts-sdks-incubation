@@ -51,6 +51,14 @@ export interface AccountRegistryFunding {
 	readonly status: 'funded' | 'skipped' | 'unknown';
 	readonly balanceMist: string | null;
 	readonly requestedMist: string | null;
+	readonly entries?: ReadonlyArray<AccountRegistryFundingEntry>;
+}
+
+export interface AccountRegistryFundingEntry {
+	readonly coin: string;
+	readonly fullCoinType: string;
+	readonly amount: string;
+	readonly status: 'funded' | 'skipped';
 }
 
 /** Construct the strategy-contributor decl Account emits for one

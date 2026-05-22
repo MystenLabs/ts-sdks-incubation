@@ -291,7 +291,7 @@ describe('display-derivation', () => {
 			});
 		});
 
-		it('renders funded account requested mist when balance is not sampled', () => {
+		it('renders funded account funding entries', () => {
 			expect(
 				accountLine({
 					key: 'account/alice',
@@ -300,11 +300,29 @@ describe('display-derivation', () => {
 					address: '0xabc',
 					scheme: 'ed25519',
 					source: 'real',
-					funding: { status: 'funded', balanceMist: null, requestedMist: '1000000000' },
+					funding: {
+						status: 'funded',
+						balanceMist: null,
+						requestedMist: '1000000000',
+						entries: [
+							{
+								coin: 'SUI',
+								fullCoinType: '0x2::sui::SUI',
+								amount: '1000000000',
+								status: 'funded',
+							},
+							{
+								coin: 'DEEP',
+								fullCoinType: '0xdeep::deep::DEEP',
+								amount: '15000000',
+								status: 'funded',
+							},
+						],
+					},
 					walletVisible: false,
 					updatedAt: 0,
 				}),
-			).toBe('Alice  0xabc  ed25519  real  funded 1000000000');
+			).toBe('Alice  0xabc  ed25519  real  funded SUI:1000000000, DEEP:15000000');
 		});
 
 		it('keeps pending accounts visible before address resolution', () => {
@@ -437,7 +455,19 @@ describe('display-derivation', () => {
 				address: '0xabc',
 				scheme: 'ed25519',
 				source: 'real',
-				funding: { status: 'funded', balanceMist: null, requestedMist: '1000000000' },
+				funding: {
+					status: 'funded',
+					balanceMist: null,
+					requestedMist: '1000000000',
+					entries: [
+						{
+							coin: 'SUI',
+							fullCoinType: '0x2::sui::SUI',
+							amount: '1000000000',
+							status: 'funded',
+						},
+					],
+				},
 				walletVisible: true,
 				updatedAt: 0,
 			};

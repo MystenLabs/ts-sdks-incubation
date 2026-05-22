@@ -121,6 +121,10 @@ export const applyEvent = (state: SubscribableState, event: EngineEvent): Subscr
 		case 'strategy.unregistered':
 		case 'manifest.flushed':
 		case 'codegen.emitted':
+		case 'snapshot.captureStarted':
+		case 'snapshot.captureProgress':
+		case 'snapshot.captureSkipped':
+		case 'snapshot.captureFailed':
 		case 'snapshot.captured':
 		case 'snapshot.restored':
 			// Engine-internal events that don't carry a projection slice

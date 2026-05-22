@@ -18,7 +18,7 @@ The scaffolder:
 1. Copies the canonical
    [`examples/_template/`](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/examples/_template)
    directory into `<cwd>/<name>/`.
-2. Substitutes the app name into `package.json` and `devstack.config.ts`.
+2. Substitutes the app name into `package.json`, `devstack.config.ts`, and `playwright.config.ts`.
 3. Runs `pnpm install`.
 4. Runs `git init` + an initial commit.
 

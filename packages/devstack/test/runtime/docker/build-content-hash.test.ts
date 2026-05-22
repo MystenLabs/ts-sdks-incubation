@@ -22,7 +22,7 @@ describe('buildContentHash — unsigned hex projection', () => {
 		// the 32-bit space. Hash.string's distribution makes this fast.
 		const seeds = [
 			'/tmp/foo',
-			'/Users/u/code/ts-sdks-incubation/examples/deepbook-full/move/mock_usdc',
+			'/Users/u/code/ts-sdks-incubation/examples/deepbook-trader',
 			'/a',
 			'',
 			'context-path-with-very-long-suffix-' + 'x'.repeat(200),

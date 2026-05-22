@@ -1,6 +1,6 @@
 // Coin plugin — main acquire body.
 //
-// One-shot value resolution: the four address forms unify behind a
+// One-shot value resolution: the three address forms unify behind a
 // single `acquireCoin` Effect. The barrel (`index.ts`) constructs ONE
 // `CoinAcquireInputs` per declared coin instance and routes here.
 //
@@ -34,7 +34,6 @@ import {
 	BUILTIN_COINS,
 	resolveBuiltin,
 	resolveByBareType,
-	resolveBySymbol,
 	resolveByWitness,
 	type ResolvedCoin,
 } from './address-resolution.ts';
@@ -50,13 +49,13 @@ import {
 import type { CoinRegistry } from './registry.ts';
 
 /** Per-instance options threaded into the acquire body. One-of the
- *  four address forms. */
+ *  three address forms. */
 export type CoinAddressForm =
-	| { readonly kind: 'symbol'; readonly symbol: string }
 	| {
 			readonly kind: 'witness';
 			readonly publishingPackageName: string;
 			readonly witness: string;
+			readonly fundingSigner?: MintSigner;
 	  }
 	| { readonly kind: 'known'; readonly fullCoinType: string }
 	| { readonly kind: 'builtin'; readonly name: keyof typeof BUILTIN_COINS };
@@ -72,7 +71,7 @@ export interface CoinAcquireContext {
 	readonly publisher: ArtifactPublisher;
 }
 
-/** The tag's resolved value — the four address forms unified PLUS a
+/** The tag's resolved value — the three address forms unified PLUS a
  *  closure for the generic mint surface. */
 export interface CoinValue extends ResolvedCoin {
 	/** Generic mint. Requires the cap id (either resolved from the
@@ -83,6 +82,16 @@ export interface CoinValue extends ResolvedCoin {
 		signer: MintSigner,
 		opts: { readonly to: string; readonly amount: bigint; readonly treasuryCapId?: string },
 	) => Effect.Effect<MintResult, CoinError | ArtifactPublishError, Scope.Scope>;
+	/** Centralized funding strategy, present for local package coins
+	 *  whose publisher still owns the TreasuryCap. The coin barrel
+	 *  publishes it under `coinType:<fullCoinType>` so Account funding
+	 *  can mint arbitrary local coins without bespoke example actions. */
+	readonly fundingStrategy?: {
+		readonly request: (req: {
+			readonly address: string;
+			readonly amount: bigint;
+		}) => Effect.Effect<void, CoinError | ArtifactPublishError>;
+	};
 }
 
 /** Resolve a coin instance to the tag's resolved value. */
@@ -97,8 +106,6 @@ export const acquireCoin = (
 
 		const resolved: ResolvedCoin = yield* (() => {
 			switch (form.kind) {
-				case 'symbol':
-					return resolveBySymbol(ctx.registry, form.symbol);
 				case 'witness':
 					return resolveByWitness(ctx.registry, form.publishingPackageName, form.witness);
 				case 'known':
@@ -114,9 +121,7 @@ export const acquireCoin = (
 			'coin.source': resolved.source,
 		});
 
-		const value: CoinValue = {
-			...resolved,
-			mint: (signer, opts) => {
+		const mint: CoinValue['mint'] = (signer, opts) => {
 				const capId = opts.treasuryCapId ?? resolved.treasuryCapId;
 				if (capId === undefined) {
 					return Effect.fail(
@@ -133,7 +138,27 @@ export const acquireCoin = (
 					amount: opts.amount,
 				};
 				return performMint(ctx.publisher, ctx.chain, signer, ctx.sdk, inputs);
-			},
+			};
+		const fundingSigner = form.kind === 'witness' ? form.fundingSigner : undefined;
+		const fundingTreasuryCapId = resolved.treasuryCapId;
+		const fundingStrategy =
+			fundingSigner !== undefined &&
+			fundingTreasuryCapId !== undefined
+				? {
+						request: (req: { readonly address: string; readonly amount: bigint }) =>
+							Effect.scoped(
+								mint(fundingSigner, {
+									to: req.address,
+									amount: req.amount,
+									treasuryCapId: fundingTreasuryCapId,
+								}).pipe(Effect.asVoid),
+							),
+					}
+				: undefined;
+		const value: CoinValue = {
+			...resolved,
+			mint,
+			...(fundingStrategy === undefined ? {} : { fundingStrategy }),
 		};
 		return value;
 	});

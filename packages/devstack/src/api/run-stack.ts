@@ -55,15 +55,14 @@ import {
 } from '../runtime/built-in-plugin-layers.ts';
 import { readStackEngine, type Stack } from './define-devstack.ts';
 import type { AnyPlugin } from '../substrate/plugin.ts';
-import { resolveStackName } from './inference-network.ts';
+import { resolveAppName, resolveStackName } from './inference-network.ts';
 
 // -----------------------------------------------------------------------------
 // Public types
 // -----------------------------------------------------------------------------
 
-/** Identity overrides for `runStack`. Stack falls back through the
- *  shared stack-name resolver (`DEVSTACK_STACK`, package metadata,
- *  then `main`). */
+/** Identity overrides for `runStack`. App and stack fall back through
+ *  shared package metadata inference after their env overrides. */
 export interface RunStackIdentityOptions {
 	readonly app?: string;
 	readonly stack?: string;
@@ -126,7 +125,10 @@ const resolveIdentity = (
 	opts: RunStackIdentityOptions | undefined,
 	cwd: string,
 ): Identity => {
-	const app = opts?.app ?? process.env.DEVSTACK_APP ?? 'devstack';
+	const app = resolveAppName({
+		explicit: opts?.app,
+		cwd,
+	});
 	const stackNameStr = resolveStackName({
 		explicit: opts?.stack ?? stack.options.stackName,
 		cwd,

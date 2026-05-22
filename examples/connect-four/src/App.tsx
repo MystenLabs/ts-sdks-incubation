@@ -12,6 +12,7 @@ import {
 	play as buildPlay,
 } from './generated/bindings/connect_four/game.js';
 import { packages } from './generated/packages.js';
+import { selectDevstackAccount } from './dapp-kit.js';
 
 const COLS = 7;
 const ROWS = 6;
@@ -205,7 +206,12 @@ function hasTransaction(result: unknown): result is {
 
 function hasWaitForTransaction(
 	client: unknown,
-): client is { waitForTransaction: (a: { digest: string }) => Promise<unknown> } {
+): client is {
+	waitForTransaction: (a: {
+		readonly digest: string;
+		readonly include?: { readonly effects?: boolean };
+	}) => Promise<unknown>;
+} {
 	return (
 		typeof client === 'object' &&
 		client !== null &&
@@ -231,6 +237,11 @@ function createdObjectIdsFrom(transaction: {
 	return changedObjects.filter(isCreatedObject).map((change) => change.objectId);
 }
 
+function createdObjectIdsFromResult(result: unknown): readonly string[] {
+	if (!hasTransaction(result)) return [];
+	return createdObjectIdsFrom(result.Transaction);
+}
+
 function useSignAndExecute(): UseMutationResult<ExecutedTransaction, Error, Transaction> {
 	const dAppKit = useDAppKit();
 	const client = useCurrentClient();
@@ -241,15 +252,18 @@ function useSignAndExecute(): UseMutationResult<ExecutedTransaction, Error, Tran
 			if (!hasTransaction(result)) {
 				throw new Error('signAndExecuteTransaction: missing Transaction in result');
 			}
+			let createdObjectIds = createdObjectIdsFrom(result.Transaction);
+			if (hasWaitForTransaction(client) && result.Transaction.digest.length > 0) {
+				const finalResult = await client.waitForTransaction({
+					digest: result.Transaction.digest,
+					include: { effects: true },
+				});
+				if (createdObjectIds.length === 0) createdObjectIds = createdObjectIdsFromResult(finalResult);
+			}
 			return {
 				digest: result.Transaction.digest,
-				createdObjectIds: createdObjectIdsFrom(result.Transaction),
+				createdObjectIds,
 			};
-		},
-		onSuccess: async (tx) => {
-			if (hasWaitForTransaction(client) && tx.digest.length > 0) {
-				await client.waitForTransaction({ digest: tx.digest });
-			}
 		},
 	});
 }
@@ -262,6 +276,7 @@ export function App() {
 	const [gameId, setGameId] = useState<string | null>(null);
 	const [lastDigest, setLastDigest] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
+	const [activeFlow, setActiveFlow] = useState<string | null>(null);
 	const { mutateAsync, isPending } = useSignAndExecute();
 
 	const gameQuery = useQuery({
@@ -293,25 +308,35 @@ export function App() {
 	);
 	const filledCells = chainGame?.moves ?? 0;
 	const gameIsLoading = gameId !== null && (gameQuery.isLoading || chainGame === null);
-	const canMove =
-		gameId !== null && !gameIsLoading && !isPending && connectedPlayer === turn && winner === null;
+	const isBusy = isPending || activeFlow !== null;
+	const canMove = gameId !== null && !gameIsLoading && !isBusy && winner === null;
 	const canCreateLobby =
 		connectFourPackageId.length > 0 &&
 		lobbyId === null &&
 		gameId === null &&
-		connectedPlayer === 'alice' &&
-		!isPending;
+		!isBusy;
 	const canJoinLobby =
 		connectFourPackageId.length > 0 &&
 		lobbyId !== null &&
 		gameId === null &&
-		connectedPlayer === 'bob' &&
-		!isPending;
+		!isBusy;
+
+	async function runAs(player: Player, flow: string, submit: () => Promise<void>) {
+		setError(null);
+		setActiveFlow(flow);
+		try {
+			await selectDevstackAccount(player);
+			await submit();
+		} catch (e) {
+			setError((e as Error).message);
+		} finally {
+			setActiveFlow(null);
+		}
+	}
 
 	async function createLobby() {
 		if (!canCreateLobby) return;
-		setError(null);
-		try {
+		await runAs('alice', 'create-lobby', async () => {
 			const tx = new Transaction();
 			buildCreateLobby({ package: connectFourPackageId })(tx);
 			const result = await mutateAsync(tx);
@@ -321,15 +346,12 @@ export function App() {
 			}
 			setLobbyId(createdLobbyId);
 			setLastDigest(result.digest);
-		} catch (e) {
-			setError((e as Error).message);
-		}
+		});
 	}
 
 	async function joinLobby() {
 		if (!canJoinLobby || lobbyId === null) return;
-		setError(null);
-		try {
+		await runAs('bob', 'join-lobby', async () => {
 			const tx = new Transaction();
 			buildJoinLobby({ package: connectFourPackageId, arguments: { lobby: lobbyId } })(tx);
 			const result = await mutateAsync(tx);
@@ -340,23 +362,18 @@ export function App() {
 			setGameId(createdGameId);
 			setLobbyId(null);
 			setLastDigest(result.digest);
-		} catch (e) {
-			setError((e as Error).message);
-		}
+		});
 	}
 
 	async function playColumn(col: number) {
 		if (!canMove || gameId === null) return;
-		setError(null);
-		try {
+		await runAs(turn, `play-${col}`, async () => {
 			const tx = new Transaction();
 			buildPlay({ package: connectFourPackageId, arguments: { game: gameId, column: col } })(tx);
 			const result = await mutateAsync(tx);
 			setLastDigest(result.digest);
 			await gameQuery.refetch();
-		} catch (e) {
-			setError((e as Error).message);
-		}
+		});
 	}
 
 	function startNewGame() {
@@ -366,37 +383,44 @@ export function App() {
 		setError(null);
 	}
 
-	const chainAction =
-		lobbyId === null
-			? {
-					label: connectedPlayer === 'alice' ? 'Open lobby on-chain' : 'Switch to Alice',
-					run: createLobby,
-				}
-			: {
-					label: connectedPlayer === 'bob' ? 'Join as Bob on-chain' : 'Switch to Bob',
-					run: joinLobby,
-				};
-	const chainActionDisabled = lobbyId === null ? !canCreateLobby : !canJoinLobby;
-
 	const status = gameIsLoading
 		? 'Loading on-chain game'
 		: winner === 'draw'
 			? 'Draw'
 			: winner
 				? `${playerMeta[winner].label} connects four`
-				: connectedPlayer === null
-					? 'Connect Alice or Bob'
-					: gameId === null && lobbyId === null
-						? connectedPlayer === 'alice'
-							? 'Alice opens the lobby'
-							: 'Switch to Alice'
-						: gameId === null
-							? connectedPlayer === 'bob'
-								? 'Bob joins the lobby'
-								: 'Switch to Bob'
-							: connectedPlayer === turn
-								? `${playerMeta[turn].label} to move`
-								: `Switch to ${playerMeta[turn].label}`;
+				: gameId === null && lobbyId === null
+					? 'Open the table'
+					: gameId === null
+						? 'Seat Bob'
+						: `${playerMeta[turn].label} to move`;
+	const moveButtonLabel =
+		activeFlow?.startsWith('play-') === true ? 'Submitting move...' : `Drop as ${playerMeta[turn].label}`;
+	const gamePhase = gameId !== null ? 'playing' : lobbyId !== null ? 'joining' : 'opening';
+	const aliceStatus =
+		winner === 'alice'
+			? 'Winner'
+			: winner === 'draw'
+				? 'Draw'
+				: gameId !== null
+					? turn === 'alice'
+						? 'Turn'
+						: 'Waiting'
+					: lobbyId !== null
+						? 'Lobby open'
+						: 'Opens lobby';
+	const bobStatus =
+		winner === 'bob'
+			? 'Winner'
+			: winner === 'draw'
+				? 'Draw'
+				: gameId !== null
+					? turn === 'bob'
+						? 'Turn'
+						: 'Waiting'
+					: lobbyId !== null
+						? 'Joins lobby'
+						: 'Waiting';
 
 	return (
 		<div className="app-shell">
@@ -421,10 +445,55 @@ export function App() {
 							type="button"
 							className="ghost-button"
 							onClick={startNewGame}
-							disabled={isPending}
+							disabled={isBusy}
 						>
 							New game
 						</button>
+					</div>
+
+					<div className="match-flow" aria-label="Match setup">
+						<div className="flow-steps" aria-label="Game phase">
+							<span className={gamePhase === 'opening' ? 'active' : ''}>1 Open</span>
+							<span className={gamePhase === 'joining' ? 'active' : ''}>2 Join</span>
+							<span className={gamePhase === 'playing' ? 'active' : ''}>3 Play</span>
+						</div>
+
+						<div className="player-seats">
+							<PlayerSeat
+								name="alice"
+								status={aliceStatus}
+								address={accounts.alice?.address ?? ''}
+								current={connectedPlayer === 'alice'}
+								active={gameId !== null && winner === null && turn === 'alice'}
+								complete={lobbyId !== null || gameId !== null}
+								actionLabel={
+									lobbyId === null && gameId === null
+										? activeFlow === 'create-lobby'
+											? 'Opening...'
+											: 'Open as Alice'
+										: undefined
+								}
+								disabled={!canCreateLobby}
+								onAction={createLobby}
+							/>
+							<PlayerSeat
+								name="bob"
+								status={bobStatus}
+								address={accounts.bob?.address ?? ''}
+								current={connectedPlayer === 'bob'}
+								active={gameId !== null && winner === null && turn === 'bob'}
+								complete={gameId !== null}
+								actionLabel={
+									lobbyId !== null && gameId === null
+										? activeFlow === 'join-lobby'
+											? 'Joining...'
+											: 'Join as Bob'
+										: undefined
+								}
+								disabled={!canJoinLobby}
+								onAction={joinLobby}
+							/>
+						</div>
 					</div>
 
 					{winner !== null && (
@@ -443,6 +512,13 @@ export function App() {
 						</div>
 					)}
 
+					{gameId !== null && winner === null && (
+						<div className="move-banner" aria-live="polite">
+							<span className={`piece-dot ${turn}`} />
+							<span>{moveButtonLabel}</span>
+						</div>
+					)}
+
 					<div className="column-buttons" aria-label="Column selectors">
 						{Array.from({ length: COLS }, (_, col) => (
 							<button
@@ -450,7 +526,7 @@ export function App() {
 								type="button"
 								disabled={!canMove || board[0]![col] !== null}
 								onClick={() => void playColumn(col)}
-								aria-label={`Drop in column ${col + 1}`}
+								aria-label={`Drop ${playerMeta[turn].label} piece in column ${col + 1}`}
 							>
 								{col + 1}
 							</button>
@@ -483,7 +559,7 @@ export function App() {
 
 				<aside className="side-panel">
 					<div className="connect-card">
-						<p className="section-label">Wallet</p>
+						<p className="section-label">Current signer</p>
 						{account ? (
 							<div className="account-line">
 								<span>{connectedPlayer ? playerMeta[connectedPlayer].label : 'Publisher'}</span>
@@ -494,31 +570,8 @@ export function App() {
 						)}
 					</div>
 
-					<div className="players">
-						<PlayerRow
-							name="alice"
-							address={accounts.alice?.address ?? ''}
-							active={turn === 'alice' && gameId !== null}
-						/>
-						<PlayerRow
-							name="bob"
-							address={accounts.bob?.address ?? ''}
-							active={turn === 'bob' && gameId !== null}
-						/>
-					</div>
-
 					<div className="chain-card">
 						<p className="section-label">Chain</p>
-						{gameId === null && (
-							<button
-								type="button"
-								className="primary-button"
-								disabled={chainActionDisabled}
-								onClick={() => void chainAction.run()}
-							>
-								{isPending ? 'Submitting...' : account ? chainAction.label : 'Connect wallet'}
-							</button>
-						)}
 						<ObjectLine label="Package" value={connectFourPackageId} />
 						{lobbyId !== null && <ObjectLine label="Lobby" value={lobbyId} />}
 						{gameId !== null && <ObjectLine label="Game" value={gameId} />}
@@ -542,21 +595,61 @@ function ObjectLine({ label, value }: { readonly label: string; readonly value: 
 	);
 }
 
-function PlayerRow({
+function PlayerSeat({
 	name,
 	address,
+	status,
+	current,
 	active,
+	complete,
+	actionLabel,
+	disabled = false,
+	onAction,
 }: {
 	readonly name: Player;
 	readonly address: string;
+	readonly status: string;
+	readonly current: boolean;
 	readonly active: boolean;
+	readonly complete: boolean;
+	readonly actionLabel?: string;
+	readonly disabled?: boolean;
+	readonly onAction?: () => void;
 }) {
 	return (
-		<div className={`player-row ${active ? 'active' : ''}`}>
-			<span className={`piece-dot ${name}`} />
-			<div>
-				<strong>{playerMeta[name].label}</strong>
-				<code>{address.length > 0 ? shortAddress(address) : 'pending'}</code>
+		<div
+			className={[
+				'player-seat',
+				name,
+				active ? 'active' : '',
+				complete ? 'complete' : '',
+				current ? 'current' : '',
+			]
+				.filter(Boolean)
+				.join(' ')}
+		>
+			<div className="seat-main">
+				<span className={`piece-token ${name}`}>{playerMeta[name].piece}</span>
+				<div>
+					<div className="seat-title-row">
+						<strong>{playerMeta[name].label}</strong>
+						{current && <span className="signer-pill">selected</span>}
+					</div>
+					<code>{address.length > 0 ? shortAddress(address) : 'pending'}</code>
+				</div>
+			</div>
+			<div className="seat-footer">
+				<span>{status}</span>
+				{actionLabel !== undefined && (
+					<button
+						type="button"
+						className="seat-action"
+						disabled={disabled}
+						onClick={() => void onAction?.()}
+					>
+						{actionLabel}
+					</button>
+				)}
 			</div>
 		</div>
 	);

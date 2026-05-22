@@ -48,12 +48,10 @@ const caps = [strategyDecl];
 Accounts use funding entries with direct coin members:
 
 ```ts
-const gas = coin.builtin('sui');
 const alice = account('alice', {
-	funding: [{ coin: gas, amount: 1_000_000_000n }],
+	funding: [{ coin: 'sui', amount: 1_000_000_000n }],
 });
 ```
 
-If no strategy exists for a cross-coin funding entry, that entry is skipped. Default ephemeral SUI
-funding is stricter and surfaces an acquire error when the active chain has no registered SUI
-strategy.
+If no strategy exists for a non-SUI funding entry, that entry is skipped. SUI funding is stricter
+and surfaces an acquire error when the active chain has no registered SUI strategy.

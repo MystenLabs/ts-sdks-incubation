@@ -128,6 +128,12 @@ export interface LocalPackageResolved<Capture = undefined> extends Omit<
 > {
 	/** Captured object ids keyed by the user's `capture` option. */
 	readonly captured: CapturedPackageValues<Capture>;
+	/** Publisher account that signed this package. Kept on the live
+	 *  resource value so downstream local coin plugins can mint from
+	 *  publisher-owned TreasuryCaps through the centralized funding
+	 *  strategy path. It is intentionally not written to generated
+	 *  bindings or the package registry. */
+	readonly publisher: AccountValue;
 	/** Publish output — present after a fresh publish, null on
 	 *  cache hit (verify-only path). Consumers that need the
 	 *  output MUST tolerate null and fall back to chain reads via
@@ -318,6 +324,7 @@ const buildLocalPlugin = <
 				const projected: LocalPackageResolved<Capture> = {
 					...resolved,
 					captured: resolved.captured as CapturedPackageValues<Capture>,
+					publisher: publisherAccount,
 					publishResult: output,
 				};
 				return projected;

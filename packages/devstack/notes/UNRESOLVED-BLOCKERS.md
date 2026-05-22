@@ -205,8 +205,9 @@ Current evidence:
   Verification:
   `pnpm --filter @mysten-incubation/devstack exec vitest run test/orchestrators/snapshot/identity-guard.test.ts test/orchestrators/snapshot/restore.test.ts test/substrate/runtime/cross-process/snapshot-reservation.test.ts test/substrate/runtime/cross-process/roster.test.ts test/substrate/runtime/cross-process/stack-lock.test.ts test/surfaces/cli/commands/supervisor-presence.test.ts`
   (6 files / 45 tests).
-- Wallet product proof resolved on 2026-05-22: `pnpm --filter @mysten-incubation/wallet test:e2e`
-  passed both browser send flows against a real devstack stack.
+- The standalone wallet example was removed on 2026-05-22 after the curated wallet-backed
+  transaction demo moved to `examples/deepbook-trader`. The old send/balance app shell is
+  intentionally not carried forward.
 - Token-studio product proof resolved on 2026-05-22:
   `pnpm --filter @mysten-incubation/token-studio test:e2e` passed both browser mint/transfer flows
   against a real devstack stack.
@@ -221,14 +222,24 @@ Current evidence:
   classified by current evidence rather than the stale `ForeignDockerResource` defect.
 - Exported example/template `devstack.config.ts` declarations no longer infer internal package
   `dist` paths. `Stack` now has an erased public annotation form, and direct node-config checks
-  passed for `wallet`, `token-studio`, `private-content`, `deepbook-full`, `connect-four`,
-  `_template`, plus `example-fork-greeting` package typecheck.
+  previously passed for the then-current examples; the renamed DeepBook app now passes
+  `pnpm --filter @mysten-incubation/deepbook-trader typecheck`.
+- Public symbol-form coin lookup was removed on 2026-05-22. `coin.local(...)`,
+  `SYMBOL_FORM_NO_DEP_EDGE_WARNING`, the symbol `CoinAddressForm` branch, and the symbol resolver
+  are gone from live source/docs/dist. `coin.fromPackage(pkg, witness)` now keys graph resources by
+  package plus witness (`coin:<package>/<witness>`), while codegen can still export by display
+  symbol. A compile-only test pins same-witness package ids as distinct.
 
 ## Current evidence
 
-- `examples/README.md` now lists only `_template`, `deepbook-full`, `private-content`,
-  `token-studio`, and `wallet` as runnable apps. `connect-four` is listed as a stack/config target.
-  `fork-greeting` is marked coming soon.
+- `examples/README.md` now lists `_template`, `connect-four`, `deepbook-trader`,
+  `private-content`, and `token-studio` as runnable apps. `fork-greeting` is marked coming soon.
+- The release snapshot workflow now targets the current curated example directories:
+  `connect-four`, `private-content`, and `deepbook-trader`. Stale `arena`/`deepbook-full` workflow
+  entries are gone.
+- `examples/fork-greeting` is restored as a coming-soon config-only example. Its config uses
+  `sui({ mode: 'fork', upstream: 'testnet' })`, so it typechecks but runtime apply/dev fail through
+  the intentional fork-coming-soon path.
 - Stale e2e boot tests for deleted examples were removed. Remaining boot tests point at final
   directory names instead of `*-rewrite`.
 - `private-content-boot.test.ts` uses the test-owned
@@ -248,23 +259,42 @@ Current evidence:
 - Private-content boot passed after building devstack from the working tree:
   `DEVSTACK_RUN_E2E=1 pnpm --filter @mysten-incubation/devstack exec vitest run test/e2e/private-content-boot.test.ts test/e2e/deepbook-boot.test.ts`
   (2 files / 6 tests).
-- `deepbook-full` is now a real Vite/React browser app. It consumes generated `deepbook/deepbook`
-  bindings, renders the known testnet DeepBook package/registry/Pyth handles, and offers a market
-  console that queries DeepBook pool id, registration, mid price, vault balances, trade/book params,
-  order book ticks, and Pyth price-object age through `@mysten/deepbook-v3`.
-- DeepBook app checks passed: `pnpm --filter @mysten-incubation/deepbook-full typecheck`,
-  `pnpm --filter @mysten-incubation/deepbook-full build`,
-  `pnpm --filter @mysten-incubation/deepbook-full exec vitest run` (no test files by design; the
-  current repo resolves Vitest 2 against Vite 7 for examples), and
-  `pnpm --filter @mysten-incubation/deepbook-full test:e2e` (1 Chromium smoke).
+- `deepbook-trader` is now localnet-only for examples. It consumes generated account, Sui, wallet,
+  and local DEEP coin bindings, funds Alice with SUI plus local DEEP through the centralized funding
+  pipeline, and explicitly disables swaps until local DeepBook/Pyth/pool acquisition is first-class.
+- DeepBook trader checks passed: `pnpm --filter @mysten-incubation/deepbook-trader typecheck`,
+  `pnpm --filter @mysten-incubation/deepbook-trader build`,
+  `pnpm --filter @mysten-incubation/deepbook-trader test:e2e` (2 Chromium smokes), and
+  `pnpm --filter @mysten-incubation/devstack exec vitest run test/plugins/host-service/service.test.ts test/runtime/docker/build-content-hash.test.ts test/surfaces/cli/dispatch.test.ts`
+  (3 files / 35 tests).
+- Release workflow/fork/example verification passed on 2026-05-22:
+  `pnpm --filter @mysten-incubation/devstack typecheck`,
+  `pnpm --filter @mysten-incubation/devstack build`,
+  `pnpm --filter @mysten-incubation/example-fork-greeting typecheck`,
+  `pnpm --filter @mysten-incubation/devstack exec vitest run test/orchestrators/router/service.test.ts test/orchestrators/router/traefik-container.test.ts test/build-integrations/release-surface.test.ts test/surfaces/cli/docs-drift.test.ts test/surfaces/cli/dispatch.test.ts test/plugins/sui/fork-coming-soon.test.ts`
+  (6 files / 69 tests), plus direct node-config typechecks for `_template`, `connect-four`,
+  `deepbook-trader`, `private-content`, and `token-studio`.
+- `pnpm --filter @mysten-incubation/devstack smoke:pack-consumer` passed again after the
+  workflow/router/fork cleanup. It verified the packed CLI, runtime ESM import, removed subpaths,
+  minimal installed boot, and skip-lib-check consumer typecheck.
+- `pnpm --filter @mysten-incubation/docs build` passed after the CLI reference drift update.
+- Coin public-surface cleanup verification passed on 2026-05-22:
+  `pnpm --filter @mysten-incubation/devstack typecheck`,
+  `pnpm --filter @mysten-incubation/devstack build`,
+  `pnpm --filter @mysten-incubation/devstack exec vitest run test/api/define-devstack.test.ts test/plugins/coin/funding-strategy.test.ts test/plugins/coin/registry.test.ts test/plugins/coin/discovery.test.ts test/plugins/account/funding.test.ts test/plugins/account/variants.test.ts test/e2e/token-studio-boot.test.ts`
+  (6 files / 47 tests),
+  `pnpm --filter @mysten-incubation/docs build`, and
+  `pnpm --filter @mysten-incubation/devstack smoke:pack-consumer`. A residue scan over live
+  source, built dist, docs content, examples, and README found no `coin.local`,
+  `SYMBOL_FORM_NO_DEP_EDGE_WARNING`, `resolveBySymbol`, or symbol `CoinAddressForm` branch.
 - Devstack focused boot/plugin checks passed:
   `pnpm --filter @mysten-incubation/devstack exec vitest run test/plugins/deepbook/factory.test.ts`
   (1 file / 14 tests) and
   `pnpm --filter @mysten-incubation/devstack exec env DEVSTACK_RUN_E2E=1 vitest run test/e2e/deepbook-boot.test.ts test/e2e/private-content-boot.test.ts`
   (2 files / 6 tests).
 - Local Pyth publishing remains unwired and intentionally absent from the public local DeepBook
-  options until it has real acquire behavior; the shipped `deepbook-full` demo is explicitly a
-  known-deployment/testnet market console.
+  options until it has real acquire behavior; the shipped `deepbook-trader` demo must stay on
+  localnet and show the unavailable swap state instead of falling back to public testnet.
 - Seal now derives a deterministic per-stack Docker subnet and passes it to `ensureNetwork`,
   avoiding the local `network-address-pool-exhausted` failure seen at `seal:seal#6`.
 - DeepBook known deployments include Pyth state IDs for testnet/mainnet, and `deepbook-network`
@@ -282,7 +312,7 @@ Current evidence:
   `apply --renderer plain`, invalid `snapshot restore --config`, and removed `down --json`.
 - Package build passed after the CLI rewrite: `pnpm --filter @mysten-incubation/devstack build`.
 - Earlier working-tree checks also passed: `pnpm --filter @mysten-incubation/devstack build`,
-  `pnpm --filter @mysten-incubation/example-deepbook-full typecheck`, and
+  `pnpm --filter @mysten-incubation/deepbook-trader typecheck`, and
   `pnpm --filter @mysten-incubation/devstack exec vitest run test/plugins/seal/key-server-spec.test.ts test/plugins/walrus/storage-nodes.test.ts`.
 - Docker host was reachable locally on 2026-05-21: `docker info --format '{{.ServerVersion}}'`
   returned `29.4.0`.

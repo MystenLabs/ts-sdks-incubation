@@ -228,6 +228,7 @@ export class WalletController implements ReactiveController {
 								exportparts="balance-list, loading: balances-loading, error-message: balances-error-message, empty-state: balances-empty-state"
 								.address=${this.activeAddress}
 								.client=${this.getActiveClient()}
+								.network=${this.#wallet.activeNetwork}
 								.coins=${this.coins}
 							></dev-wallet-balances>
 						</div>
@@ -239,11 +240,17 @@ export class WalletController implements ReactiveController {
 	renderObjectsTab() {
 		return html`
 			${this.renderAccountSelector()}
-			<dev-wallet-objects
-				exportparts="object-list, loading: objects-loading, error-message: objects-error-message, empty-state: objects-empty-state, load-more-button"
-				.address=${this.activeAddress}
-				.client=${this.getActiveClient()}
-			></dev-wallet-objects>
+			${this.activeAddress && this.#wallet
+				? html`
+						<div class="section">
+							<dev-wallet-objects
+								exportparts="object-list, loading: objects-loading, error-message: objects-error-message, empty-state: objects-empty-state, load-more-button"
+								.address=${this.activeAddress}
+								.client=${this.getActiveClient()}
+							></dev-wallet-objects>
+						</div>
+					`
+				: nothing}
 		`;
 	}
 

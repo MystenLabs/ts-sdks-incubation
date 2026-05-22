@@ -116,6 +116,7 @@ const runtimeStub = (
 	runOneShot: () => Effect.die('runOneShot not used'),
 	inspectByLabels: () => Effect.die('inspectByLabels not used'),
 	followLogs: () => Stream.empty,
+	pause: () => Effect.die('pause not used'),
 	pauseAndCommit: () => Effect.die('pauseAndCommit not used'),
 	saveImage: () => Stream.empty,
 	saveImages: () => Stream.empty,

@@ -34,17 +34,58 @@ export class DevWalletSettings extends LitElement {
 		inlineErrorStyles,
 		monoTruncateStyles,
 		css`
+			:host {
+				display: block;
+				padding: 14px;
+			}
+
 			.section {
-				margin-bottom: 20px;
+				margin-bottom: 10px;
+				padding: 12px;
+				border: 1px solid var(--dev-wallet-border);
+				border-radius: var(--dev-wallet-radius-lg);
+				background: var(--dev-wallet-surface);
 			}
 
 			.section:last-child {
 				margin-bottom: 0;
 			}
 
+			.settings-summary {
+				display: grid;
+				grid-template-columns: repeat(3, minmax(0, 1fr));
+				gap: 8px;
+			}
+
+			.summary-cell {
+				min-width: 0;
+				padding: 10px;
+				border-radius: var(--dev-wallet-radius);
+				border: 1px solid var(--dev-wallet-border);
+				background: var(--dev-wallet-bg-0);
+			}
+
+			.summary-label {
+				font-family: var(--dev-wallet-font-mono);
+				font-size: 9.5px;
+				text-transform: uppercase;
+				letter-spacing: 0.12em;
+				color: var(--dev-wallet-text-3);
+			}
+
+			.summary-value {
+				margin-top: 5px;
+				font-size: 12px;
+				font-weight: var(--dev-wallet-font-weight-semibold);
+				color: var(--dev-wallet-foreground);
+				overflow: hidden;
+				text-overflow: ellipsis;
+				white-space: nowrap;
+			}
+
 			.network-item {
 				gap: 8px;
-				padding: 8px 12px;
+				padding: 9px 10px;
 			}
 
 			.network-dot {
@@ -58,6 +99,7 @@ export class DevWalletSettings extends LitElement {
 				flex: 1;
 				font-size: 13px;
 				font-weight: var(--dev-wallet-font-weight-medium);
+				font-family: var(--dev-wallet-font-mono);
 			}
 
 			.network-info {
@@ -95,12 +137,15 @@ export class DevWalletSettings extends LitElement {
 			}
 
 			.network-active-badge {
-				padding: 1px 5px;
-				border-radius: var(--dev-wallet-radius-2xs);
-				background: color-mix(in oklab, var(--dev-wallet-primary) 15%, transparent);
+				height: 16px;
+				display: inline-flex;
+				align-items: center;
+				padding: 0 5px;
+				border-radius: 999px;
+				border: 1px solid var(--dev-wallet-border-strong);
+				background: var(--dev-wallet-accent-fade);
 				color: var(--dev-wallet-primary);
 				font-weight: var(--dev-wallet-font-weight-semibold);
-				letter-spacing: 0.3px;
 			}
 
 			.add-network-form {
@@ -109,16 +154,16 @@ export class DevWalletSettings extends LitElement {
 				gap: 8px;
 				margin-top: 8px;
 				padding: 12px;
-				border-radius: var(--dev-wallet-radius-sm);
+				border-radius: var(--dev-wallet-radius-lg);
 				border: 1px dashed var(--dev-wallet-border);
-				background: var(--dev-wallet-secondary);
+				background: var(--dev-wallet-surface);
 			}
 
 			.form-input {
 				padding: 6px 8px;
-				border-radius: var(--dev-wallet-radius-xs);
+				border-radius: var(--dev-wallet-radius);
 				border: 1px solid var(--dev-wallet-input);
-				background: var(--dev-wallet-background);
+				background: var(--dev-wallet-bg-2);
 				font-size: 12px;
 			}
 
@@ -152,12 +197,16 @@ export class DevWalletSettings extends LitElement {
 			.btn-toggle {
 				font-size: 12px;
 				color: var(--dev-wallet-primary);
-				padding: 4px 0;
-				margin-top: 4px;
+				height: 30px;
+				padding: 0 10px;
+				margin-top: 8px;
+				border: 1px solid var(--dev-wallet-border);
+				border-radius: var(--dev-wallet-radius);
 			}
 
 			.btn-toggle:hover {
-				text-decoration: underline;
+				background: var(--dev-wallet-bg-hover);
+				border-color: var(--dev-wallet-border-strong);
 			}
 
 			.cli-section-column {
@@ -239,37 +288,73 @@ export class DevWalletSettings extends LitElement {
 			}
 
 			.console-snippet {
-				position: relative;
 				margin-top: 8px;
-				padding: 10px 12px;
-				border-radius: var(--dev-wallet-radius-sm);
-				background: var(--dev-wallet-secondary);
+				border-radius: var(--dev-wallet-radius);
+				background: var(--dev-wallet-bg-0);
 				border: 1px solid var(--dev-wallet-border);
+				overflow: hidden;
+			}
+
+			.console-snippet-header {
+				display: flex;
+				align-items: center;
+				justify-content: space-between;
+				gap: 8px;
+				padding: 7px 8px 7px 10px;
+				border-bottom: 1px solid var(--dev-wallet-border);
+				background: color-mix(in srgb, var(--dev-wallet-bg-1) 72%, transparent);
+			}
+
+			.console-snippet-label {
+				font-family: var(--dev-wallet-font-mono);
+				font-size: 9.5px;
+				font-weight: var(--dev-wallet-font-weight-medium);
+				letter-spacing: 0.12em;
+				text-transform: uppercase;
+				color: var(--dev-wallet-text-3);
+			}
+
+			.console-snippet-code {
+				margin: 0;
+				max-width: 100%;
+				padding: 10px 12px 12px;
+				overflow-x: auto;
 				font-family: var(--dev-wallet-font-mono);
 				font-size: 11px;
 				color: var(--dev-wallet-foreground);
 				line-height: 1.5;
 				white-space: pre-wrap;
-				word-break: break-all;
+				overflow-wrap: anywhere;
 				user-select: all;
 			}
 
 			.btn-copy {
-				position: absolute;
-				top: 6px;
-				right: 6px;
-				padding: 3px 8px;
+				display: inline-flex;
+				align-items: center;
+				justify-content: center;
+				min-width: 54px;
+				height: 24px;
+				padding: 0 8px;
 				border-radius: var(--dev-wallet-radius-xs);
-				background: var(--dev-wallet-border);
-				color: var(--dev-wallet-muted-foreground);
+				border: 1px solid var(--dev-wallet-border);
+				background: var(--dev-wallet-bg-2);
+				color: var(--dev-wallet-foreground);
 				font-size: 10px;
-				font-family: inherit;
+				font-weight: var(--dev-wallet-font-weight-medium);
 				cursor: pointer;
+				white-space: nowrap;
 			}
 
 			.btn-copy:hover {
-				background: var(--dev-wallet-input);
+				background: var(--dev-wallet-bg-hover);
+				border-color: var(--dev-wallet-border-strong);
 				color: var(--dev-wallet-foreground);
+			}
+
+			@media (max-width: 420px) {
+				.settings-summary {
+					grid-template-columns: 1fr;
+				}
 			}
 		`,
 	];
@@ -312,13 +397,36 @@ export class DevWalletSettings extends LitElement {
 
 	override render() {
 		return html`
+			<div class="section">${this.#renderSummary()}</div>
 			<div class="section">${this.#renderNetworks()}</div>
 			${this.#hasCliAdapter()
 				? html`<div class="section">${this.#renderCliSigner()}</div>`
 				: nothing}
 			<div class="section">${this.#renderAccounts()}</div>
-			<div class="section">${this.#renderBookmarklet()}</div>
-			<div class="section">${this.#renderAbout()}</div>
+			${this.bookmarkletOrigin
+				? html`<div class="section">${this.#renderBookmarklet()}</div>`
+				: nothing}
+		`;
+	}
+
+	#renderSummary() {
+		const activeNetwork = this.wallet?.activeNetwork ?? 'none';
+		return html`
+			<h3 class="section-header">Wallet</h3>
+			<div class="settings-summary">
+				<div class="summary-cell">
+					<div class="summary-label">Network</div>
+					<div class="summary-value">${activeNetwork}</div>
+				</div>
+				<div class="summary-cell">
+					<div class="summary-label">Accounts</div>
+					<div class="summary-value">${this.accounts.length}</div>
+				</div>
+				<div class="summary-cell">
+					<div class="summary-label">Adapters</div>
+					<div class="summary-value">${this.adapters.length}</div>
+				</div>
+			</div>
 		`;
 	}
 
@@ -551,10 +659,18 @@ export class DevWalletSettings extends LitElement {
 			</div>
 			<div class="about" style="margin-top: 12px">Or paste this in the browser console:</div>
 			<div class="console-snippet">
-				${consoleSnippet}
-				<button class="btn-copy" @click=${() => this.#copySnippet(consoleSnippet)}>
-					${this._copied ? 'Copied!' : 'Copy'}
-				</button>
+				<div class="console-snippet-header">
+					<span class="console-snippet-label">Console</span>
+					<button
+						class="btn-copy"
+						type="button"
+						aria-label="Copy console snippet"
+						@click=${() => this.#copySnippet(consoleSnippet)}
+					>
+						${this._copied ? 'Copied' : 'Copy'}
+					</button>
+				</div>
+				<pre class="console-snippet-code"><code>${consoleSnippet}</code></pre>
 			</div>
 			<div class="about" style="margin-top: 8px">
 				Or add this script to your page:<br />
@@ -570,20 +686,6 @@ export class DevWalletSettings extends LitElement {
 				this._copied = false;
 			}, 2000);
 		});
-	}
-
-	#renderAbout() {
-		return html`
-			<h3 class="section-header">About</h3>
-			<div class="about">
-				<strong>${this.wallet?.name ?? 'Dev Wallet'}</strong><br />
-				A development wallet for testing Sui dApps.<br />
-				${this.wallet
-					? html`${this.wallet.accounts.length} account(s) across ${this.wallet.adapters.length}
-						adapter(s)`
-					: nothing}
-			</div>
-		`;
 	}
 
 	#addNetwork() {

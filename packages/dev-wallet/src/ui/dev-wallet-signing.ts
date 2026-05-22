@@ -47,6 +47,7 @@ export class DevWalletSigning extends LitElement {
 		css`
 			:host {
 				display: flex;
+				flex: 1;
 				flex-direction: column;
 				overflow: hidden;
 				min-height: 0;
@@ -56,18 +57,20 @@ export class DevWalletSigning extends LitElement {
 				flex: 1;
 				overflow-y: auto;
 				padding: 16px;
+				background: var(--dev-wallet-bg-0);
 			}
 
 			.signing-footer {
 				padding: 12px 16px;
 				border-top: 1px solid var(--dev-wallet-border);
+				background: var(--dev-wallet-surface);
 			}
 
 			.signing-header {
 				display: flex;
 				align-items: center;
 				gap: 8px;
-				margin-bottom: 12px;
+				margin-bottom: 10px;
 			}
 
 			.signing-badge {
@@ -90,22 +93,31 @@ export class DevWalletSigning extends LitElement {
 			}
 
 			.signing-title {
-				font-size: 14px;
+				font-size: 12px;
 				font-weight: var(--dev-wallet-font-weight-semibold);
 				color: var(--dev-wallet-foreground);
 			}
 
 			.request-type {
-				font-size: 13px;
+				display: inline-flex;
+				align-items: center;
+				height: 22px;
+				padding: 0 8px;
+				border-radius: 999px;
+				border: 1px solid var(--dev-wallet-border-strong);
+				background: var(--dev-wallet-accent-fade);
+				font-family: var(--dev-wallet-font-mono);
+				font-size: 10.5px;
 				color: var(--dev-wallet-primary);
 				font-weight: var(--dev-wallet-font-weight-medium);
-				margin-bottom: 8px;
+				margin-bottom: 10px;
 			}
 
 			.request-detail {
 				display: flex;
 				justify-content: space-between;
-				padding: 6px 0;
+				gap: 12px;
+				padding: 8px 0;
 				font-size: 12px;
 				border-bottom: 1px solid var(--dev-wallet-border);
 			}
@@ -138,15 +150,17 @@ export class DevWalletSigning extends LitElement {
 
 			.request-data {
 				margin: 12px 0;
-				padding: 8px;
-				border-radius: var(--dev-wallet-radius-xs);
-				background: var(--dev-wallet-background);
+				padding: 10px 12px;
+				border-radius: var(--dev-wallet-radius);
+				border: 1px solid var(--dev-wallet-border);
+				background: var(--dev-wallet-bg-0);
 				font-family: var(--dev-wallet-font-mono);
-				font-size: 11px;
-				color: var(--dev-wallet-muted-foreground);
-				max-height: 80px;
+				font-size: 11.5px;
+				color: var(--dev-wallet-foreground);
+				max-height: 120px;
 				overflow-y: auto;
 				word-break: break-all;
+				line-height: 1.55;
 			}
 
 			.section-label {
@@ -161,9 +175,10 @@ export class DevWalletSigning extends LitElement {
 				display: flex;
 				justify-content: space-between;
 				align-items: center;
-				padding: 8px;
-				border-radius: var(--dev-wallet-radius-xs);
-				background: var(--dev-wallet-background);
+				padding: 8px 10px;
+				border-radius: var(--dev-wallet-radius);
+				border: 1px solid var(--dev-wallet-border);
+				background: var(--dev-wallet-surface);
 				font-size: 12px;
 			}
 
@@ -178,9 +193,10 @@ export class DevWalletSigning extends LitElement {
 			}
 
 			.command-item {
-				padding: 8px;
-				border-radius: var(--dev-wallet-radius-xs);
-				background: var(--dev-wallet-background);
+				padding: 10px;
+				border-radius: var(--dev-wallet-radius-lg);
+				border: 1px solid var(--dev-wallet-border);
+				background: var(--dev-wallet-surface);
 				font-size: 12px;
 			}
 
@@ -364,6 +380,7 @@ export class DevWalletSigning extends LitElement {
 		}
 
 		const typeLabel = REQUEST_TYPE_LABELS[this.request.type];
+		const account = this.request.account as PendingSigningRequest['account'] | undefined;
 
 		// For transactions: only allow approval after successful analysis
 		// For personal messages: always allow (no analysis needed)
@@ -379,36 +396,36 @@ export class DevWalletSigning extends LitElement {
 					<span class="signing-title">Approval Required</span>
 				</div>
 
-				<div class="request-type" part="request-type">${typeLabel}</div>
+				<div class="request-type" part="request-type">${typeLabel ?? 'Signing Request'}</div>
 
-				<div class="request-detail">
-					<span class="detail-label">Account</span>
-					<span
-						class="detail-value copyable-addr ${this.#copy.isCopied(this.request.account.address)
-							? 'copied'
-							: ''}"
-						title="Click to copy"
-						role="button"
-						tabindex="0"
-						aria-label="Copy account address"
-						@click=${() => this.#copy.copy(this.request!.account.address)}
-						@keydown=${(e: KeyboardEvent) => {
-							if (e.key === 'Enter' || e.key === ' ') {
-								e.preventDefault();
-								this.#copy.copy(this.request!.account.address);
-							}
-						}}
-					>
-						${this.#copy.isCopied(this.request.account.address)
-							? 'Copied!'
-							: this.request.account.label
-								? html`${this.request.account.label}
-										<span class="detail-secondary"
-											>${formatAddress(this.request.account.address)}</span
-										>`
-								: formatAddress(this.request.account.address)}
-					</span>
-				</div>
+				${account
+					? html`<div class="request-detail">
+							<span class="detail-label">Account</span>
+							<span
+								class="detail-value copyable-addr ${this.#copy.isCopied(account.address)
+									? 'copied'
+									: ''}"
+								title="Click to copy"
+								role="button"
+								tabindex="0"
+								aria-label="Copy account address"
+								@click=${() => this.#copy.copy(account.address)}
+								@keydown=${(e: KeyboardEvent) => {
+									if (e.key === 'Enter' || e.key === ' ') {
+										e.preventDefault();
+										this.#copy.copy(account.address);
+									}
+								}}
+							>
+								${this.#copy.isCopied(account.address)
+									? 'Copied!'
+									: account.label
+										? html`${account.label}
+												<span class="detail-secondary">${formatAddress(account.address)}</span>`
+										: formatAddress(account.address)}
+							</span>
+						</div>`
+					: nothing}
 				${isTransaction
 					? html`<div class="request-detail">
 							<span class="detail-label">Chain</span>

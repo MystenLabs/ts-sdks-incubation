@@ -12,21 +12,18 @@ be committed.
 | App                                    | What it shows                                                                                        | Command                                                |
 | -------------------------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
 | [`_template`](./_template)             | Minimal starting point with one Move package, one publish action, one mint button, and one e2e spec. | `pnpm --filter @mysten-incubation/_template dev`       |
-| [`deepbook-full`](./deepbook-full)     | DeepBook/Pyth market console over generated known-deployment bindings and live testnet market reads. | `pnpm --filter @mysten-incubation/deepbook-full dev`   |
+| [`connect-four`](./connect-four)       | On-chain Connect Four lobby, join, and move flow using managed accounts and dev wallet signing.      | `pnpm --filter @mysten-incubation/connect-four dev`    |
+| [`deepbook-trader`](./deepbook-trader) | Localnet DeepBook trader shell with dev-wallet connection, local SUI/DEEP funding, and disabled swaps until local DeepBook/Pyth are first-class. | `pnpm --filter @mysten-incubation/deepbook-trader dev` |
 | [`private-content`](./private-content) | Primary Sui + Walrus + Seal app: encrypted content grants, Walrus storage, and Seal decryption.      | `pnpm --filter @mysten-incubation/private-content dev` |
 | [`token-studio`](./token-studio)       | Single managed coin with TreasuryCap-gated mint, burn, and transfer flows.                           | `pnpm --filter @mysten-incubation/token-studio dev`    |
-| [`wallet`](./wallet)                   | Wallet app shell over funded accounts and mock coins.                                                | `pnpm --filter @mysten-incubation/wallet dev`          |
 
-The `dev` scripts run `devstack up` directly. Turbo builds workspace
+The `dev` scripts run the built workspace devstack CLI directly. Turbo builds workspace
 dependencies when needed, and devstack supervises the local services plus each
 browser app's Vite process. The first lifecycle run may build or pull local
 images; subsequent runs should reuse Docker cache.
-
-## Stack And Config Examples
-
-| Example                          | What it shows                     | Command                                               |
-| -------------------------------- | --------------------------------- | ----------------------------------------------------- |
-| [`connect-four`](./connect-four) | Connect Four stack config target. | `pnpm --filter @mysten-incubation/connect-four apply` |
+Each runnable app also has a `test:e2e` script backed by
+`@mysten-incubation/devstack/playwright`, so Playwright starts the app's stack
+through `pnpm dev` rather than requiring a separate `devstack up` session.
 
 ## Coming Soon
 

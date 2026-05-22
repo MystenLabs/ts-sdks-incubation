@@ -32,6 +32,7 @@ import type {
 	ArtifactPublisher,
 } from '../../primitives/artifact-publisher.ts';
 import { coinError, type CoinError } from './errors.ts';
+import { isSuiFrameworkObjectForCoin } from './type-strings.ts';
 
 /** Sign+execute surface narrowed from `AccountValue.signAndExecute`.
  *  We don't import `AccountValue` directly to avoid a layering cycle —
@@ -182,23 +183,24 @@ interface CreatedObjectChange {
 
 /** Find the minted `Coin<T>` in a result's objectChanges. Returns the
  *  objectId of the first `created` entry whose `objectType` matches
- *  `0x2::coin::Coin<${fullCoinType}>` (or its address-form-equivalent).
+ *  `0x2::coin::Coin<${fullCoinType}>` (or its address-normalized equivalent).
  *
  *  Returns `null` on no match — the caller maps that to a typed parse
  *  error.
  *
- *  Defensive substring match (mirrors devstack v4's `pickCreatedByType`
- *  with the `includes:` filter): gRPC normalizes addresses in
- *  `objectType` to the 64-zero-padded long form, but the canonical
- *  `0x2::coin::Coin<...>` prefix is short. We try the literal substring
- *  first (covers `'::coin::Coin<'` patterns); the long-form match falls
- *  through naturally since the substring is preserved across address
- *  normalization.  */
-const pickCreatedCoin = (changes: ReadonlyArray<unknown>, fullCoinType: string): string | null => {
-	const needle = `0x2::coin::Coin<${fullCoinType}>`;
+ *  The SDK can report the Sui framework address as compact `0x2` or
+ *  fully padded `0x000...0002`, so this uses the shared type-string
+ *  normalizer instead of substring matching. */
+export const pickCreatedCoin = (
+	changes: ReadonlyArray<unknown>,
+	fullCoinType: string,
+): string | null => {
 	for (const change of changes) {
 		if (!isCreatedObjectChange(change)) continue;
-		if (typeof change.objectType === 'string' && change.objectType.includes(needle)) {
+		if (
+			typeof change.objectType === 'string' &&
+			isSuiFrameworkObjectForCoin(change.objectType, 'Coin', fullCoinType)
+		) {
 			return change.objectId;
 		}
 	}

@@ -207,8 +207,13 @@ const noopStrategyRegistry: StrategyRegistry = {
 	register: () => Effect.void,
 };
 
+export interface SupervisorCommandHandlerContext {
+	readonly publish: (event: EngineEvent) => Effect.Effect<void, never, never>;
+}
+
 export type SupervisorCommandHandler = (
 	cmd: EngineCommand,
+	ctx: SupervisorCommandHandlerContext,
 ) => Effect.Effect<ReadonlyArray<EngineEvent>, unknown, never>;
 
 export interface SupervisorPostAcquireContext {
@@ -797,6 +802,7 @@ const doSelectiveRestart = (
 	logger: LoggerShape,
 	identity: Identity,
 	runtimeRoot: string,
+	parentScope: Scope.Scope,
 ): Effect.Effect<void, RestartTargetMissing> =>
 	Effect.gen(function* () {
 		const plan = yield* planRestart(graph, roots);
@@ -816,6 +822,7 @@ const doSelectiveRestart = (
 		// We need to mark slice nodes back to `pending` so the state
 		// machine accepts the `pending → acquiring` transition.
 		for (const key of plan.acquireOrder) {
+			yield* registry.resetForRestart(key, parentScope).pipe(Effect.catch(() => Effect.void));
 			yield* registry.transition(key, 'pending').pipe(Effect.catch(() => Effect.void));
 		}
 		// Re-bucket by level for parallel acquire within each level.
@@ -859,6 +866,8 @@ interface CommandLoopDeps {
 	readonly ref: SubscriptionRef.SubscriptionRef<SubscribableState>;
 	readonly hub: Queue.Enqueue<EngineEvent>;
 	readonly commands: Queue.Dequeue<EngineCommand>;
+	readonly snapshotCaptureTask: Ref.Ref<SnapshotCaptureTaskState>;
+	readonly snapshotCaptureSeq: Ref.Ref<number>;
 	readonly shutdownLatch: Ref.Ref<boolean>;
 	readonly shutdownComplete: Deferred.Deferred<void>;
 	readonly pluginContext: Context.Context<never>;
@@ -866,9 +875,20 @@ interface CommandLoopDeps {
 	readonly logger: LoggerShape;
 	readonly identity: Identity;
 	readonly runtimeRoot: string;
+	readonly parentScope: Scope.Scope;
 	readonly commandHandler?: SupervisorCommandHandler;
 	readonly postAcquireHook?: SupervisorPostAcquireHook;
 }
+
+type SnapshotCaptureTaskState =
+	| { readonly tag: 'idle' }
+	| { readonly tag: 'starting'; readonly token: number; readonly snapshotId: string | null }
+	| {
+			readonly tag: 'running';
+			readonly token: number;
+			readonly snapshotId: string | null;
+			readonly fiber: Fiber.Fiber<void, never>;
+	  };
 
 const runInjectedCommandHandler = (
 	deps: CommandLoopDeps,
@@ -876,12 +896,28 @@ const runInjectedCommandHandler = (
 ): Effect.Effect<void, never, never> =>
 	Effect.gen(function* () {
 		if (deps.commandHandler === undefined) return;
-		const exit = yield* Effect.exit(deps.commandHandler(cmd));
+		const publishFromHandler = (event: EngineEvent): Effect.Effect<void, never, never> =>
+			publish(deps.ref, deps.hub, event);
+		const exit = yield* Effect.exit(
+			deps.commandHandler(cmd, {
+				publish: publishFromHandler,
+			}),
+		);
 		if (Exit.isSuccess(exit)) {
 			for (const event of exit.value) {
 				yield* publish(deps.ref, deps.hub, event);
 			}
 			return;
+		}
+		if (Cause.hasInterruptsOnly(exit.cause)) return;
+		if (cmd.tag === 'snapshot.capture') {
+			yield* publish(deps.ref, deps.hub, {
+				tag: 'snapshot.captureFailed',
+				...(cmd.snapshotId === undefined ? {} : { snapshotId: cmd.snapshotId }),
+				...(cmd.name === undefined ? {} : { name: cmd.name }),
+				summary: Cause.pretty(exit.cause).split('\n')[0] ?? 'snapshot capture failed',
+				at: Date.now(),
+			});
 		}
 		yield* publish(deps.ref, deps.hub, {
 			tag: 'error.reported',
@@ -896,6 +932,78 @@ const runInjectedCommandHandler = (
 			message: `command handler failed for ${cmd.tag}`,
 		});
 	}).pipe(Effect.withSpan('lifecycle.supervisor.injectedCommandHandler'));
+
+const startBackgroundSnapshotCapture = (
+	deps: CommandLoopDeps,
+	cmd: Extract<EngineCommand, { readonly tag: 'snapshot.capture' }>,
+): Effect.Effect<void, never, never> =>
+	Effect.gen(function* () {
+		const token = yield* Ref.updateAndGet(deps.snapshotCaptureSeq, (n) => n + 1);
+		const started = yield* Ref.modify(deps.snapshotCaptureTask, (state) =>
+			state.tag === 'idle'
+				? [
+						true,
+						{
+							tag: 'starting' as const,
+							token,
+							snapshotId: cmd.snapshotId ?? null,
+						} satisfies SnapshotCaptureTaskState,
+					]
+				: [false, state],
+		);
+
+		if (!started) {
+			yield* publish(deps.ref, deps.hub, {
+				tag: 'snapshot.captureSkipped',
+				reason: 'already-running',
+				at: Date.now(),
+			});
+			return;
+		}
+
+		yield* publish(deps.ref, deps.hub, {
+			tag: 'snapshot.captureStarted',
+			...(cmd.snapshotId === undefined ? {} : { snapshotId: cmd.snapshotId }),
+			...(cmd.name === undefined ? {} : { name: cmd.name }),
+			at: Date.now(),
+		});
+
+		const fiber = yield* runInjectedCommandHandler(deps, cmd).pipe(
+				Effect.ensuring(
+					Ref.update(deps.snapshotCaptureTask, (state) =>
+						state.tag !== 'idle' && state.token === token
+							? ({ tag: 'idle' } satisfies SnapshotCaptureTaskState)
+							: state,
+					),
+				),
+				Effect.forkIn(deps.parentScope),
+			);
+
+		yield* Ref.update(deps.snapshotCaptureTask, (state) =>
+			state.tag === 'starting' && state.token === token
+				? {
+						tag: 'running',
+						token,
+						snapshotId: cmd.snapshotId ?? null,
+						fiber,
+					} satisfies SnapshotCaptureTaskState
+				: state,
+	);
+	}).pipe(Effect.withSpan('lifecycle.supervisor.backgroundSnapshotCapture'));
+
+const requestBackgroundSnapshotInterrupt = (
+	deps: Pick<CommandLoopDeps, 'snapshotCaptureTask'>,
+): Effect.Effect<void, never, never> =>
+	Effect.gen(function* () {
+		const fiber = yield* Ref.modify(deps.snapshotCaptureTask, (state) =>
+			state.tag === 'running' ? [state.fiber, { tag: 'idle' } as SnapshotCaptureTaskState] : [null, state],
+		);
+		if (fiber !== null) {
+			yield* Effect.sync(() => {
+				fiber.interruptUnsafe();
+			});
+		}
+	}).pipe(Effect.withSpan('lifecycle.supervisor.interruptSnapshotCapture'));
 
 const publishHookFailure = (
 	deps: CommandLoopDeps,
@@ -992,10 +1100,12 @@ const handleCommand = (
 			logger,
 			identity,
 			runtimeRoot,
+			parentScope,
 		} = deps;
 		switch (cmd.tag) {
 			case 'shutdown.requested':
 			case 'stack.stop': {
+				yield* requestBackgroundSnapshotInterrupt(deps);
 				yield* setCyclePhase(ref, 'shutting-down');
 				yield* Ref.set(shutdownLatch, true);
 				yield* logger.log('supervisor', null, {
@@ -1009,6 +1119,7 @@ const handleCommand = (
 				return;
 			}
 			case 'shutdown.hardKillRequested': {
+				yield* requestBackgroundSnapshotInterrupt(deps);
 				yield* publish(ref, hub, {
 					tag: 'shutdown.escalated',
 					signal: cmd.signal,
@@ -1038,6 +1149,7 @@ const handleCommand = (
 					logger,
 					identity,
 					runtimeRoot,
+					parentScope,
 				).pipe(
 					Effect.as(true),
 					Effect.catch(() => Effect.succeed(false)),
@@ -1059,6 +1171,7 @@ const handleCommand = (
 					logger,
 					identity,
 					runtimeRoot,
+					parentScope,
 				).pipe(
 					Effect.as(true),
 					Effect.catch(() => Effect.succeed(false)),
@@ -1084,6 +1197,7 @@ const handleCommand = (
 						logger,
 						identity,
 						runtimeRoot,
+						parentScope,
 					).pipe(
 						Effect.as(true),
 						Effect.catch(() => Effect.succeed(false)),
@@ -1108,6 +1222,8 @@ const handleCommand = (
 			// supervisor keeps one consumer of the command queue and only
 			// publishes the handler's typed events / errors.
 			case 'snapshot.capture':
+				yield* startBackgroundSnapshotCapture(deps, cmd);
+				return;
 			case 'snapshot.restore':
 			case 'snapshot.list':
 			case 'snapshot.delete':
@@ -1257,6 +1373,8 @@ export const startSupervisor = (
 		// Event hub + command channel.
 		const hub = yield* Queue.unbounded<EngineEvent>();
 		const commands = yield* Queue.unbounded<EngineCommand>();
+		const snapshotCaptureTask = yield* Ref.make<SnapshotCaptureTaskState>({ tag: 'idle' });
+		const snapshotCaptureSeq = yield* Ref.make(0);
 		const shutdownLatch = yield* Ref.make(false);
 		const shutdownComplete = yield* Deferred.make<void>();
 		const initialAcquireStarted = yield* Ref.make(false);
@@ -1354,6 +1472,8 @@ export const startSupervisor = (
 			ref: state,
 			hub,
 			commands,
+			snapshotCaptureTask,
+			snapshotCaptureSeq,
 			shutdownLatch,
 			shutdownComplete,
 			pluginContext: pluginRuntimeContext,
@@ -1361,6 +1481,7 @@ export const startSupervisor = (
 			logger,
 			identity,
 			runtimeRoot,
+			parentScope: supervisorScope,
 			commandHandler,
 			postAcquireHook,
 		};
@@ -1525,7 +1646,7 @@ const pendingAccountProjection = (
 		address: null,
 		scheme: null,
 		source: null,
-		funding: { status: 'pending', balanceMist: null, requestedMist: null },
+		funding: { status: 'pending', balanceMist: null, requestedMist: null, entries: [] },
 		walletVisible: false,
 		updatedAt,
 	};

@@ -259,6 +259,10 @@ describe('router real Docker traffic', () => {
 						disabled: false,
 						profile,
 						image: DEFAULT_TRAEFIK_IMAGE,
+						routeReadinessProbe: {
+							enabled: true,
+							timeoutMs: 15_000,
+						},
 					}),
 				),
 			),

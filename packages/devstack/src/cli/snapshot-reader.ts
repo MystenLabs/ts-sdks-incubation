@@ -8,7 +8,11 @@ import {
 	SnapshotMetadataSchema,
 	parseSnapshotId,
 } from '../orchestrators/snapshot/index.ts';
-import type { SnapshotEntry, SnapshotReader } from '../surfaces/cli/commands/snapshot.ts';
+import type {
+	SnapshotEntry,
+	SnapshotReader,
+	SnapshotResolveResult,
+} from '../surfaces/cli/commands/snapshot.ts';
 
 const decodeSnapshotMetadata = Schema.decodeUnknownSync(SnapshotMetadataSchema);
 
@@ -30,33 +34,33 @@ export const makeSnapshotReader = (identity: SnapshotReaderIdentity): SnapshotRe
 				const metaPath = resolvePath(dir, SnapshotLayout.metaFile);
 				if (!existsSync(metaPath)) {
 					return [
-						{
-							snapshotId: parsedEntryId,
-							label: null,
-							createdAt: fallbackCreatedAt,
-							size: null,
-						} satisfies SnapshotEntry,
+							{
+								snapshotId: parsedEntryId,
+								name: null,
+								createdAt: fallbackCreatedAt,
+								size: null,
+							} satisfies SnapshotEntry,
 					];
 				}
 				try {
 					const parsed = JSON.parse(readFileSync(metaPath, 'utf8')) as unknown;
 					const meta = decodeSnapshotMetadata(parsed);
 					return [
-						{
-							snapshotId: parsedEntryId,
-							label: meta.label,
-							createdAt: meta.createdAt,
-							size: null,
-						} satisfies SnapshotEntry,
+							{
+								snapshotId: parsedEntryId,
+								name: meta.label,
+								createdAt: meta.createdAt,
+								size: null,
+							} satisfies SnapshotEntry,
 					];
 				} catch {
 					return [
-						{
-							snapshotId: parsedEntryId,
-							label: null,
-							createdAt: fallbackCreatedAt,
-							size: null,
-						} satisfies SnapshotEntry,
+							{
+								snapshotId: parsedEntryId,
+								name: null,
+								createdAt: fallbackCreatedAt,
+								size: null,
+							} satisfies SnapshotEntry,
 					];
 				}
 			});
@@ -69,11 +73,16 @@ export const makeSnapshotReader = (identity: SnapshotReaderIdentity): SnapshotRe
 			}).pipe(Effect.orElseSucceed(() => [])),
 		resolve: (snapshotRef) =>
 			Effect.try({
-				try: () =>
-					readEntries().find(
-						(entry) => entry.snapshotId === snapshotRef || entry.label === snapshotRef,
-					) ?? null,
+				try: (): SnapshotResolveResult => {
+					const entries = readEntries();
+					const byId = entries.find((entry) => entry.snapshotId === snapshotRef);
+					if (byId !== undefined) return { tag: 'found', entry: byId };
+					const byName = entries.filter((entry) => entry.name === snapshotRef);
+					if (byName.length === 0) return { tag: 'not-found' };
+					if (byName.length === 1) return { tag: 'found', entry: byName[0]! };
+					return { tag: 'ambiguous', snapshotRef, matches: byName };
+				},
 				catch: (cause) => cause,
-			}).pipe(Effect.orElseSucceed(() => null)),
+			}).pipe(Effect.orElseSucceed((): SnapshotResolveResult => ({ tag: 'not-found' }))),
 	};
 };

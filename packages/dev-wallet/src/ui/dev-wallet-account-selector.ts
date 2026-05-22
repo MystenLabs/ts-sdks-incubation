@@ -32,17 +32,22 @@ export class DevWalletAccountSelector extends LitElement {
 			.active-account {
 				display: flex;
 				align-items: center;
-				gap: 8px;
+				gap: 10px;
 				width: 100%;
-				padding: 8px 10px;
-				border-radius: var(--dev-wallet-radius-md);
-				background: var(--dev-wallet-secondary);
+				min-height: 54px;
+				padding: 10px 12px;
+				border-radius: var(--dev-wallet-radius-lg);
+				border: 1px solid var(--dev-wallet-border);
+				background: var(--dev-wallet-surface);
 				cursor: pointer;
-				transition: background 0.15s;
+				transition:
+					background 120ms,
+					border-color 120ms;
 			}
 
 			.active-account:hover {
-				background: var(--dev-wallet-border);
+				background: var(--dev-wallet-bg-hover);
+				border-color: var(--dev-wallet-border-strong);
 			}
 
 			.avatar {
@@ -73,26 +78,36 @@ export class DevWalletAccountSelector extends LitElement {
 				text-overflow: ellipsis;
 			}
 
+			.account-label-row {
+				display: flex;
+				align-items: center;
+				gap: 6px;
+				min-width: 0;
+			}
+
 			.account-address {
 				font-size: 11px;
 				font-family: var(--dev-wallet-font-mono);
-				color: var(--dev-wallet-muted-foreground);
+				color: var(--dev-wallet-text-3);
 			}
 
 			.copy-btn {
-				width: 22px;
-				height: 22px;
+				width: 36px;
+				height: 54px;
 				display: flex;
 				align-items: center;
 				justify-content: center;
-				border-radius: var(--dev-wallet-radius-xs);
+				border-radius: var(--dev-wallet-radius);
+				border: 1px solid var(--dev-wallet-border);
+				background: transparent;
 				color: var(--dev-wallet-muted-foreground);
 				flex-shrink: 0;
 				font-size: 12px;
 			}
 
 			.copy-btn:hover {
-				background: var(--dev-wallet-border);
+				background: var(--dev-wallet-bg-hover);
+				border-color: var(--dev-wallet-border-strong);
 				color: var(--dev-wallet-foreground);
 			}
 
@@ -108,7 +123,8 @@ export class DevWalletAccountSelector extends LitElement {
 			}
 
 			.dropdown-item[aria-selected='true'] {
-				background: color-mix(in oklab, var(--dev-wallet-primary) 10%, transparent);
+				background: var(--dev-wallet-accent-fade);
+				border-color: var(--dev-wallet-border-strong);
 			}
 
 			.dropdown-item .avatar {
@@ -136,11 +152,16 @@ export class DevWalletAccountSelector extends LitElement {
 			}
 
 			.adapter-badge {
+				height: 16px;
+				display: inline-flex;
+				align-items: center;
+				padding: 0 5px;
+				border-radius: 999px;
+				border: 1px solid var(--dev-wallet-border);
+				background: var(--dev-wallet-bg-3);
+				color: var(--dev-wallet-text-3);
+				font-family: var(--dev-wallet-font-mono);
 				font-size: 9px;
-				padding: 1px 4px;
-				border-radius: var(--dev-wallet-radius-2xs);
-				background: var(--dev-wallet-secondary);
-				color: var(--dev-wallet-muted-foreground);
 				white-space: nowrap;
 			}
 
@@ -188,6 +209,7 @@ export class DevWalletAccountSelector extends LitElement {
 
 		const label = this.#getLabel(active);
 		const initial = (label[0] ?? '?').toUpperCase();
+		const activeAdapterName = this.#getAdapterName(active.address);
 
 		return html`
 			<div class="selector-row">
@@ -207,7 +229,12 @@ export class DevWalletAccountSelector extends LitElement {
 					>
 						<span class="avatar">${initial}</span>
 						<div class="account-info">
-							<div class="account-label">${label}</div>
+							<div class="account-label-row">
+								<div class="account-label">${label}</div>
+								${activeAdapterName
+									? html`<span class="adapter-badge">${activeAdapterName}</span>`
+									: nothing}
+							</div>
 							<div class="account-address">${formatAddress(active.address)}</div>
 						</div>
 						<svg

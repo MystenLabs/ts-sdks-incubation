@@ -30,8 +30,24 @@ export const resolveUpRendererMode = (input: ResolveUpRendererModeInput): Render
 		stdoutIsTty: input.stdoutIsTty,
 	});
 
+export interface QueueCommandPublisherOptions {
+	readonly scheduleHardExit?: (exitCode: number) => void;
+}
+
+const scheduleProcessExit = (exitCode: number): void => {
+	setImmediate(() => {
+		process.exit(exitCode);
+	});
+};
+
 export const makeQueueCommandPublisher =
-	(commands: Queue.Enqueue<EngineCommand>): ((command: EngineCommand) => void) =>
+	(
+		commands: Queue.Enqueue<EngineCommand>,
+		options: QueueCommandPublisherOptions = {},
+	): ((command: EngineCommand) => void) =>
 	(command) => {
+		if (command.tag === 'shutdown.hardKillRequested') {
+			(options.scheduleHardExit ?? scheduleProcessExit)(command.exitCode);
+		}
 		Effect.runFork(Queue.offer(commands, command));
 	};

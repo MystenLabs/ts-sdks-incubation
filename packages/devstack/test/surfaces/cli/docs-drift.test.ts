@@ -38,18 +38,28 @@ const sectionForUsage = (doc: string, usage: string): string => {
 	return next === -1 ? rest : rest.slice(0, next);
 };
 
+const METADATA_LABELS = ['Lifecycle', 'Side effects', 'Docker', 'Arguments', 'Options'] as const;
+
 const parseInlineCodeList = (section: string, label: string): ReadonlyArray<string> => {
-	const lines = section.split('\n').map((value) => value.trim());
-	const start = lines.findIndex((value) => value.startsWith(`${label}: `));
+	const body = section
+		.split('\n')
+		.map((value) => value.trim())
+		.join(' ');
+	const start = body.indexOf(`${label}: `);
 	if (start === -1) return [];
-	const chunks = [lines[start]!.slice(`${label}: `.length)];
-	for (const line of lines.slice(start + 1)) {
-		if (line.length === 0 || /^#{2,3} /.test(line) || /^[A-Z][A-Za-z ]+: /.test(line)) break;
-		chunks.push(line);
+	const valueStart = start + `${label}: `.length;
+	let valueEnd = body.length;
+	for (const metadataLabel of METADATA_LABELS) {
+		if (metadataLabel === label) continue;
+		const marker = ` ${metadataLabel}: `;
+		const index = body.indexOf(marker, valueStart);
+		if (index !== -1) {
+			valueEnd = Math.min(valueEnd, index);
+		}
 	}
-	const body = chunks.join(' ');
-	const values = [...body.matchAll(/`([^`]+)`/g)].map((match) => match[1]!);
-	return values.length > 0 ? values : body === 'none.' ? [] : [];
+	const value = body.slice(valueStart, valueEnd).trim();
+	const values = [...value.matchAll(/`([^`]+)`/g)].map((match) => match[1]!);
+	return values.length > 0 ? values : value === 'none.' ? [] : [];
 };
 
 describe('CLI reference docs', () => {

@@ -3,7 +3,7 @@
 // file and the plugin's `CachedDeployState` shape — any drift in the
 // upstream output format surfaces here.
 
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -36,6 +36,7 @@ const oneShotRuntime = (runOneShot: ContainerRuntime['runOneShot']): ContainerRu
 	runOneShot,
 	inspectByLabels: unusedRuntimeMethod,
 	followLogs: () => Stream.empty,
+	pause: unusedRuntimeMethod,
 	pauseAndCommit: unusedRuntimeMethod,
 	saveImage: () => Stream.empty,
 	saveImages: () => Stream.empty,
@@ -199,6 +200,42 @@ describe('parseDeployOutput', () => {
 
 			const state = yield* Effect.scoped(runDeployOneShot(runtime, deployInputs()));
 			expect(state.walrusPackageId).toBe('0xabc111');
+		}),
+	);
+
+	it.live('retries Docker Desktop bind-source visibility races', () =>
+		Effect.gen(function* () {
+			const outputDir = join(mkdtempSync(join(tmpdir(), 'devstack-walrus-bind-race-')), 'deploy');
+			let attempts = 0;
+			const runtime = oneShotRuntime(() => {
+				attempts += 1;
+				if (attempts === 1) {
+					return Effect.succeed({
+						exitCode: 125,
+						stdout: '',
+						stderr:
+							'docker: Error response from daemon: invalid mount config for type "bind": bind source path does not exist: /host_mnt/tmp/devstack/walrus/deploy',
+					});
+				}
+				return Effect.succeed({
+					exitCode: 0,
+					stdout: [
+						'package_id: 0xabc111',
+						'system_object: 0xabc222',
+						'staking_object: 0xabc333',
+					].join('\n'),
+					stderr: '',
+				});
+			});
+
+			const state = yield* Effect.scoped(runDeployOneShot(runtime, deployInputs(outputDir)));
+
+			expect(attempts).toBe(2);
+			expect(state.walrusPackageId).toBe('0xabc111');
+			expect(existsSync(join(outputDir, '.devstack-bind-source'))).toBe(true);
+			expect(readFileSync(join(outputDir, '.devstack-bind-source'), 'utf8')).toContain(
+				'devstack walrus bind source',
+			);
 		}),
 	);
 

@@ -5,37 +5,25 @@
 // modules itself — the Package plugin publishes; coin auto-discovery
 // (in `discovery.ts`) folds the publish output into the per-stack
 // `CoinRegistry`; this factory resolves user-supplied addresses
-// (symbol / witness / bare-type / builtin) against that registry plus
-// the live RPC.
+// (witness / bare-type / builtin) against that registry plus the live RPC.
 //
-// User-facing factory shape — FOUR variants mirroring the address
+// User-facing factory shape — three variants mirroring the address
 // forms:
 //
-//   coin.local('mUSDC')                      // symbol → registry
 //   coin.fromPackage(pkg, 'MOCK_USDC')       // package member → registry
 //   coin.known('0x...::deep::DEEP')          // bare → live RPC
 //   coin.builtin('sui')                      // protocol-defined constant
 //
 // (A `coin(identifier)` convenience entry is intentionally NOT
 // exposed — distilled-doc 13-coin.md Pain point #6 documents how the
-// "guess the form from the string" path is a footgun. The four-form
+// "guess the form from the string" path is a footgun. The three-form
 // surface forces the user to make the disambiguation explicit at the
 // call site.)
 //
-// Resource id: `'coin:<symbol>'` — one tag per declared coin instance, so
-// the substrate's compose-time dedup detects collisions cleanly (two
-// `coin.local('mUSDC')` calls in one stack → typed error at compose
-// time). Mirrors the Package plugin's per-instance resource identity.
-//
-// IMPORTANT (distilled-doc 13-coin.md Pain point #4): the SYMBOL
-// form (`coin.local('SYMBOL')`) does NOT auto-derive a dependency edge
-// on the publisher. The registry is a substrate-context lookup; the
-// type system can't see the producer→consumer edge. Consumers that
-// need the coin available BEFORE acquisition MUST include the
-// publishing `localPackage(...)` in their `after:` list (or in the
-// `defineDevstack(...)` composition before the consumer). The
-// `coin.fromPackage(pkg, ...)` form forces the edge explicitly via the
-// `dependsOn` tuple — prefer it when the publisher is reachable.
+// Resource id: `'coin:<package>/<witness>'` for package-scoped coins and
+// `'coin:<identifier>'` for known/builtin coins — one tag per declared
+// coin instance, so the substrate's compose-time dedup detects collisions
+// cleanly. Mirrors the Package plugin's per-instance resource identity.
 
 import { Effect } from 'effect';
 
@@ -47,6 +35,7 @@ import type { StrategyContributorDecl } from '../../contracts/strategy-contribut
 import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
 import { suiResource } from '../sui/index.ts';
 import type { SuiClient } from '../sui/index.ts';
+import type { AccountFundingStrategy } from '../account/funding.ts';
 
 import { makeCoinCodegen, type CoinBindings } from './codegen.ts';
 import { makeCoinSnapshotable } from './snapshot.ts';
@@ -59,8 +48,12 @@ import type { MintSdkShim } from './mint.ts';
 
 const coinErrorContributions = pluginErrorContributions(COIN_ERROR_TAGS);
 
+export const coinFundingCapabilityKey = <FullType extends string>(
+	fullCoinType: FullType,
+): `coinType:${FullType}` => `coinType:${fullCoinType}` as const;
+
 // ---------------------------------------------------------------------------
-// Resource — one per declared coin instance, keyed by symbol/witness/etc.
+// Resource — one per declared coin instance, keyed by explicit address form.
 // ---------------------------------------------------------------------------
 
 /** Resource id constructor. The symbolic name is part of the resource identity
@@ -68,6 +61,19 @@ const coinErrorContributions = pluginErrorContributions(COIN_ERROR_TAGS);
 export const coinResourceId = <Sym extends string>(symbol: Sym): `coin:${Sym}` => `coin:${symbol}`;
 
 export type CoinResourceId<Sym extends string> = `coin:${Sym}`;
+
+type PackageNameOf<Pkg extends PackageMember> = Pkg extends ResourceRef<
+	`package:${infer Name}`,
+	PackageMemberValue
+>
+	? Name
+	: string;
+
+type PackageCoinResourceKey<Pkg extends PackageMember, Wit extends string> =
+	`${PackageNameOf<Pkg>}/${Lowercase<Wit>}`;
+
+const packageNameFromMember = <Pkg extends PackageMember>(pkg: Pkg): PackageNameOf<Pkg> =>
+	pkg.id.slice('package:'.length) as PackageNameOf<Pkg>;
 
 // ---------------------------------------------------------------------------
 // SDK shim projection
@@ -138,42 +144,22 @@ const buildCapabilities = (symbol: string, resolved: CoinValue) => {
 		strategy: { symbol },
 		autoMounted: true,
 	};
-	return [snap, codegen, registryContribution] as const;
+	const fundingContribution =
+		resolved.fundingStrategy === undefined
+			? []
+			: [
+					{
+						kind: 'strategy-contributor',
+						capabilityKey: coinFundingCapabilityKey(resolved.fullCoinType),
+						strategy: resolved.fundingStrategy,
+						autoMounted: true,
+					} satisfies StrategyContributorDecl<`coinType:${string}`, AccountFundingStrategy>,
+				];
+	return [snap, codegen, registryContribution, ...fundingContribution] as const;
 };
 
 // ---------------------------------------------------------------------------
-// Form 1: coin.local(symbol) — registry lookup
-// ---------------------------------------------------------------------------
-
-/** Resolve a coin by symbol against the per-stack registry. NO dep
- *  edge on the publisher — see the file header for the rationale.
- *  Compose the publisher's `localPackage(...)` before this in the
- *  `defineDevstack(...)` member list. */
-export const local = <Sym extends string>(symbol: Sym) => {
-	const coinRef = resource<CoinResourceId<Sym>, CoinValue>(coinResourceId(symbol));
-	return definePlugin({
-		id: coinRef.id,
-		dependsOn: { sui: suiResource },
-		role: 'task',
-		start: ({ sui }) =>
-			Effect.gen(function* () {
-				const publisher = yield* ArtifactPublisherService;
-				const registry = yield* CoinRegistryService;
-				const form: CoinAddressForm = { kind: 'symbol', symbol };
-				return yield* acquireCoin(form, {
-					registry,
-					sdk: projectCoinSdk(sui),
-					chain: sui.chain,
-					publisher,
-				});
-			}),
-		errorContributions: coinErrorContributions,
-		capabilities: ({ value }) => buildCapabilities(symbol, value),
-	});
-};
-
-// ---------------------------------------------------------------------------
-// Form 2: coin.fromPackage(pkg, witness) — package-scoped registry lookup
+// Form 1: coin.fromPackage(pkg, witness) — package-scoped registry lookup
 // ---------------------------------------------------------------------------
 
 /** A user-supplied package ref. The user passes the result of
@@ -183,6 +169,7 @@ export const local = <Sym extends string>(symbol: Sym) => {
 export interface PackageMemberValue {
 	readonly name: string;
 	readonly packageId: string;
+	readonly publisher?: import('./mint.ts').MintSigner;
 }
 
 export type PackageMember<Name extends string = string> = ResourceRef<
@@ -194,9 +181,9 @@ export type PackageMember<Name extends string = string> = ResourceRef<
  *  a dep edge on the publishing package's resource — the substrate ensures
  *  the publish has completed before this resolves.
  *
- *  Symbol used for the resource id is the witness name (lower-cased) so
- *  two witness-form coins for different packages get distinct resource
- *  ids.
+ *  Resource identity includes both the package's symbolic name and the
+ *  witness name, so two packages can expose the same witness without
+ *  colliding in the substrate graph.
  *
  *  Pass the package MEMBER (the value returned by `localPackage(...)`
  *  / `knownPackage(...)`). The factory
@@ -206,9 +193,11 @@ export const fromPackage = <const Pkg extends PackageMember, Wit extends string>
 	pkg: Pkg,
 	witnessName: Wit,
 ) => {
+	const packageName = packageNameFromMember(pkg);
 	const symbol = witnessName.toLowerCase() as Lowercase<Wit>;
-	const coinRef = resource<CoinResourceId<Lowercase<Wit>>, CoinValue>(
-		coinResourceId(symbol) as CoinResourceId<Lowercase<Wit>>,
+	const resourceKey = `${packageName}/${symbol}` as PackageCoinResourceKey<Pkg, Wit>;
+	const coinRef = resource<CoinResourceId<typeof resourceKey>, CoinValue>(
+		coinResourceId(resourceKey),
 	);
 	return definePlugin({
 		id: coinRef.id,
@@ -222,6 +211,7 @@ export const fromPackage = <const Pkg extends PackageMember, Wit extends string>
 					kind: 'witness',
 					publishingPackageName: resolved.name,
 					witness: witnessName,
+					...(resolved.publisher === undefined ? {} : { fundingSigner: resolved.publisher }),
 				};
 				return yield* acquireCoin(form, {
 					registry,
@@ -236,7 +226,7 @@ export const fromPackage = <const Pkg extends PackageMember, Wit extends string>
 };
 
 // ---------------------------------------------------------------------------
-// Form 3: coin.known(fullCoinType) — bare on-chain type
+// Form 2: coin.known(fullCoinType) — bare on-chain type
 // ---------------------------------------------------------------------------
 
 /** Resolve a coin by bare on-chain type via `getCoinMetadata`.
@@ -275,7 +265,7 @@ export const known = <FullType extends string>(fullCoinType: FullType) => {
 };
 
 // ---------------------------------------------------------------------------
-// Form 4: coin.builtin('sui') — protocol-defined constant
+// Form 3: coin.builtin('sui') — protocol-defined constant
 // ---------------------------------------------------------------------------
 
 /** Resolve a protocol-defined builtin coin. Currently `'sui'` only —
@@ -309,11 +299,10 @@ export const builtin = <Name extends keyof typeof BUILTIN_COINS>(name: Name) => 
 // Public `coin` namespace
 // ---------------------------------------------------------------------------
 
-/** User-facing factory namespace. Four variants — see file header for
+/** User-facing factory namespace. Three variants — see file header for
  *  the rationale on not exposing a `coin(identifier)` form-guessing
  *  entry. */
 export const coin = {
-	local,
 	fromPackage,
 	known,
 	builtin,
@@ -356,11 +345,3 @@ export { performMint, MintedCoinVerifyShape, mintTxError, mintParseError } from 
 
 export type { CoinError, CoinPhase } from './errors.ts';
 export { coinError, COIN_ERROR_TAGS } from './errors.ts';
-
-// Surface the no-edge-warning constant for code generators / docs
-// consumers that want to render the footgun callout. Distilled-doc
-// 13-coin.md Pain point #4.
-export const SYMBOL_FORM_NO_DEP_EDGE_WARNING =
-	`coin.local(symbol) does not auto-derive a dep edge on the publishing package.\n` +
-	`If the package isn't already composed BEFORE this coin, you'll see CoinError({phase: 'not-found'}).\n` +
-	`Prefer coin.fromPackage(packageMember, witnessName) when the publisher is reachable.`;

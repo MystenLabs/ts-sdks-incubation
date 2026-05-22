@@ -570,6 +570,13 @@ export const accountCells = (account: AccountProjection): AccountCells => ({
 });
 
 const accountFundingLine = (funding: AccountProjection['funding']): string => {
+	const entries = funding.entries ?? [];
+	if (entries.length > 0) {
+		const rendered = entries
+			.map((entry) => `${entry.coin}:${entry.amount}${entry.status === 'skipped' ? ' skipped' : ''}`)
+			.join(', ');
+		return funding.status === 'funded' ? `funded ${rendered}` : `funding ${rendered}`;
+	}
 	switch (funding.status) {
 		case 'pending':
 			return funding.requestedMist === null

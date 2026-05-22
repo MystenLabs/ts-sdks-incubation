@@ -27,6 +27,7 @@ import { layerEntrypointRegistry } from '../../../src/orchestrators/router/entry
 import {
 	dispatchFilename,
 	renderRouteYaml,
+	ROUTE_READINESS_HEADER,
 	ROUTER_ROUTE_LEASE_VERSION,
 	type RouteLeaseMetadata,
 	type ResolvedRoute,
@@ -46,6 +47,7 @@ import {
 } from '../../../src/orchestrators/router/traefik-container.ts';
 import { appName, chainId, stackName } from '../../../src/substrate/brand.ts';
 import { ownHolder } from '../../../src/substrate/runtime/cross-process/liveness.ts';
+import type { HttpProbeFetch } from '../../../src/substrate/runtime/http-probe.ts';
 import { layerIdentity } from '../../../src/substrate/runtime/paths.ts';
 
 const makeTmpDir = (): string => mkdtempSync(join(tmpdir(), 'devstack-router-test-'));
@@ -112,6 +114,39 @@ const makeStackLayer = (profile: RouterProfile) =>
 					disabled: false,
 					profile,
 					image: 'traefik:v3.5',
+				}),
+			),
+		),
+	);
+
+const makeStackLayerWithRouteReadinessProbe = (
+	profile: RouterProfile,
+	fetch: HttpProbeFetch,
+	options: {
+		readonly timeoutMs?: number;
+		readonly intervalMs?: number;
+		readonly requestTimeoutMs?: number;
+	} = {},
+) =>
+	layerRouterService.pipe(
+		Layer.provideMerge(
+			Layer.mergeAll(
+				identityLayer,
+				registryLayer,
+				layerTraefikContainerOpsStub,
+				upstreamsLayer,
+				NodeFileSystem.layer,
+				layerRouterConfigLiteral({
+					disabled: false,
+					profile,
+					image: 'traefik:v3.5',
+					routeReadinessProbe: {
+						enabled: true,
+						timeoutMs: options.timeoutMs ?? 200,
+						intervalMs: options.intervalMs ?? 5,
+						requestTimeoutMs: options.requestTimeoutMs ?? 50,
+						fetch,
+					},
 				}),
 			),
 		),
@@ -462,6 +497,85 @@ describe('RouterService.contributeRoute', () => {
 					expect(body).toContain('entryPoints: ["walrus-node-0"]');
 					expect(body).toContain('- url: "http://172.20.0.5:8080"');
 				}).pipe(Effect.provide(makeStackLayer(profile))),
+			);
+		}),
+	);
+
+	it.live('waits for the public route readiness header before returning an HTTP endpoint', () =>
+		Effect.gen(function* () {
+			const dir = makeTmpDir();
+			const profile = makeTestProfile(dir);
+			const calls: string[] = [];
+			let readyHeader = '';
+			const fetch: HttpProbeFetch = async (input) => {
+				calls.push(String(input));
+				if (calls.length === 1) return new Response('gateway timeout', { status: 504 });
+				return new Response('ok', {
+					status: 200,
+					headers: { [ROUTE_READINESS_HEADER]: readyHeader },
+				});
+			};
+
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const router = yield* RouterService;
+					yield* router.boot();
+					readyHeader = yield* dispatchFileId({ identity, dispatch: walletApiDispatch });
+					const endpoint = yield* router.contributeRoute({
+						kind: 'routable',
+						endpointName: 'wallet-app',
+						dispatchId: walletApiDispatch,
+						upstream: { type: 'host-loopback', port: 6173 },
+						cors: true,
+						wireProtocol: 'http',
+					});
+
+					expect(endpoint.url).toBe('http://api.my-app.localhost:6173');
+					expect(calls).toEqual([
+						'http://api.my-app.localhost:6173',
+						'http://api.my-app.localhost:6173',
+					]);
+					const applied = yield* SubscriptionRef.get(router.applied);
+					expect(applied).toHaveLength(1);
+				}).pipe(Effect.provide(makeStackLayerWithRouteReadinessProbe(profile, fetch))),
+			);
+		}),
+	);
+
+	it.live('removes the dispatch file when public route readiness never arrives', () =>
+		Effect.gen(function* () {
+			const dir = makeTmpDir();
+			const profile = makeTestProfile(dir);
+			const fetch: HttpProbeFetch = async () => new Response('not routed', { status: 404 });
+
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const router = yield* RouterService;
+					yield* router.boot();
+					const err = yield* router
+						.contributeRoute({
+							kind: 'routable',
+							endpointName: 'wallet-app',
+							dispatchId: { serviceKey: 'wallet.my-app.main', role: 'api' },
+							upstream: { type: 'host-loopback', port: 6173 },
+							cors: true,
+							wireProtocol: 'http',
+						})
+						.pipe(Effect.flip);
+
+					expect(err._tag).toBe('RouteReadinessProbeFailed');
+					expect(readdirSync(dir).filter((name) => name.startsWith('10-'))).toEqual([]);
+					const applied = yield* SubscriptionRef.get(router.applied);
+					expect(applied).toHaveLength(0);
+				}).pipe(
+					Effect.provide(
+						makeStackLayerWithRouteReadinessProbe(profile, fetch, {
+							timeoutMs: 20,
+							intervalMs: 5,
+							requestTimeoutMs: 5,
+						}),
+					),
+				),
 			);
 		}),
 	);

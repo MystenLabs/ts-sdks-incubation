@@ -20,7 +20,10 @@ export {
 	CapturePhaseError,
 	runCapture,
 	type CaptureInputs,
+	type SnapshotCaptureProgress,
+	type SnapshotCaptureProgressPhase,
 	type SnapshotParticipant,
+	type SnapshotProgressReporter,
 } from './capture.ts';
 
 // Restore

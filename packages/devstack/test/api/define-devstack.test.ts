@@ -174,6 +174,29 @@ describe('defineDevstack — plugin entrypoint expansion', () => {
 		expect(consumer.dependsOn.map((resource) => resource.id)).toEqual(['test/repeated-upstream']);
 	});
 
+	it('stores dependency input under the global plugin metadata symbol', () => {
+		const upstream = definePlugin({
+			id: 'test/global-symbol-upstream',
+			role: 'service',
+			start: () => Effect.succeed({ ok: true } as const),
+		});
+		const consumer = definePlugin({
+			id: 'test/global-symbol-consumer',
+			dependsOn: [upstream],
+			role: 'service',
+			start: (deps) => Effect.succeed(deps),
+		});
+
+		expect(
+			(consumer as unknown as Record<symbol, unknown>)[
+				Symbol.for('devstack.plugin.dependency-input')
+			],
+		).toEqual([upstream]);
+		expect((consumer as unknown as Record<symbol, unknown>)[Symbol.for('devstack.plugin')]).toBe(
+			true,
+		);
+	});
+
 	it('throws on duplicate providers discovered through recursive dependencies', () => {
 		const first = definePlugin({
 			id: 'test/duplicate-provider',
@@ -284,7 +307,7 @@ describe('defineDevstack — plugin entrypoint expansion', () => {
 			'sui',
 			'account/publisher',
 			'package:demo',
-			'coin:demo',
+			'coin:demo/demo',
 			'host-service/app',
 		]);
 	});

@@ -117,7 +117,9 @@ Keep `UNRESOLVED-BLOCKERS.md` as the source of truth. These were the P0 release 
   `prune --dry-run --json` inventoried devstack-labeled networks, selected non-shared stale
   networks, and left shared router profile groups unselected by default. Unlabelled/foreign networks
   remain outside devstack's destructive scope by design.
-- Wallet browser proof: resolved 2026-05-22 with `pnpm --filter @mysten-incubation/wallet test:e2e`.
+- Wallet-backed browser proof: resolved 2026-05-22 through `examples/deepbook-trader`, which now
+  connects the dev wallet on localnet and shows SUI plus local DEEP funding. Real DeepBook swaps
+  remain blocked on local DeepBook/Pyth acquisition.
 - Token-studio browser proof: resolved 2026-05-22 with
   `pnpm --filter @mysten-incubation/token-studio test:e2e`.
 - Fork-greeting is no longer release-gated. Forking is marked as a coming-soon feature, and
@@ -192,10 +194,9 @@ pnpm --filter @mysten-incubation/devstack typecheck
 pnpm --filter @mysten-incubation/devstack build
 pnpm --filter @mysten-incubation/devstack exec vitest run
 pnpm --filter @mysten-incubation/devstack smoke:pack-consumer
-pnpm --filter @mysten-incubation/wallet exec tsc -p tsconfig.node.json --noEmit
 pnpm --filter @mysten-incubation/token-studio exec tsc -p tsconfig.node.json --noEmit
 pnpm --filter @mysten-incubation/private-content exec tsc -p tsconfig.node.json --noEmit
-pnpm --filter @mysten-incubation/deepbook-full exec tsc -p tsconfig.node.json --noEmit
+pnpm --filter @mysten-incubation/deepbook-trader exec tsc -p tsconfig.node.json --noEmit
 pnpm --filter @mysten-incubation/connect-four exec tsc -p tsconfig.node.json --noEmit
 pnpm --filter @mysten-incubation/_template exec tsc -p tsconfig.node.json --noEmit
 pnpm --filter @mysten-incubation/example-fork-greeting typecheck
@@ -208,9 +209,8 @@ Docker/product lanes:
 ```bash
 DEVSTACK_RUN_E2E=1 pnpm --filter @mysten-incubation/devstack test:e2e
 pnpm --filter @mysten-incubation/private-content test:e2e
-pnpm --filter @mysten-incubation/wallet test:e2e
 pnpm --filter @mysten-incubation/token-studio test:e2e
-pnpm --filter @mysten-incubation/deepbook-full test:e2e
+pnpm --filter @mysten-incubation/deepbook-trader test:e2e
 ```
 
 Manual release proof completed on 2026-05-22:

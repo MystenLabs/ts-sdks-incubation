@@ -1,9 +1,9 @@
 // Snapshot orchestrator service.
 //
 // Architecture § L3 § Snapshot orchestrator:
-//   "Collects all `Snapshotable` decls, applies pause-around-commit
-//   per participant, tars host subtrees with mode round-trip, commits
-//   container writable layers, threads a typed metadata record
+//   "Collects all `Snapshotable` decls, applies one capture-wide
+//   pause window for managed containers, tars host subtrees with mode
+//   round-trip, commits container writable layers, threads a typed metadata record
 //   (identity guard + per-participant slice), atomic stage-and-swap
 //   for restore, identity-guard fires before any destructive mutation."
 //
@@ -38,7 +38,12 @@ import {
 	type StackLockError,
 } from '../../substrate/runtime/cross-process/stack-lock.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
-import { runCapture, type CapturePhaseError, type SnapshotParticipant } from './capture.ts';
+import {
+	runCapture,
+	type CapturePhaseError,
+	type SnapshotParticipant,
+	type SnapshotProgressReporter,
+} from './capture.ts';
 import {
 	SnapshotLayout,
 	SnapshotMetadataSchema,
@@ -94,7 +99,7 @@ export class SnapshotBootError extends Schema.TaggedErrorClass<SnapshotBootError
 
 export class SnapshotIdError extends Schema.TaggedErrorClass<SnapshotIdError>()('SnapshotIdError', {
 	operation: Schema.Literals(['capture', 'restore', 'delete']),
-	field: Schema.Literals(['id', 'label']),
+	field: Schema.Literals(['id', 'name']),
 	value: Schema.String,
 	detail: Schema.String,
 }) {}
@@ -138,6 +143,7 @@ export interface SnapshotOrchestrator {
 		readonly id?: string;
 		readonly label?: string;
 		readonly participants?: ReadonlyArray<SnapshotParticipant>;
+		readonly onProgress?: SnapshotProgressReporter;
 	}) => Effect.Effect<SnapshotMetadata, SnapshotOrchestratorError, FileSystem.FileSystem>;
 
 	/** Restore from a previously-captured artifact id. Refuses on
@@ -198,6 +204,11 @@ const mintSnapshotId = (): SnapshotId => {
 	return id;
 };
 
+const mintSnapshotName = (): string => {
+	const stamp = new Date().toISOString().replaceAll('-', '').replaceAll(':', '').slice(0, 15);
+	return `manual-${stamp}-${randomUUID().replace(/-/g, '').slice(0, 4)}`;
+};
+
 const validateSnapshotId = (
 	operation: SnapshotIdError['operation'],
 	value: string,
@@ -215,22 +226,23 @@ const validateSnapshotId = (
 		: Effect.succeed(id);
 };
 
-const normalizeSnapshotLabel = (
+const normalizeSnapshotName = (
 	operation: SnapshotIdError['operation'],
-	label: string | undefined,
-): Effect.Effect<string | null, SnapshotIdError> => {
-	if (label === undefined) return Effect.succeed(null);
-	if (label.includes('\0') || label.length > 256) {
+	name: string | undefined,
+): Effect.Effect<string, SnapshotIdError> => {
+	if (name === undefined) return Effect.succeed(mintSnapshotName());
+	const normalized = name.trim();
+	if (normalized.length === 0 || normalized.includes('\0') || normalized.length > 128) {
 		return Effect.fail(
 			new SnapshotIdError({
 				operation,
-				field: 'label',
-				value: label,
-				detail: 'snapshot labels must be at most 256 characters and cannot contain NUL bytes',
+				field: 'name',
+				value: name,
+				detail: 'snapshot names must be 1-128 characters after trimming and cannot contain NUL bytes',
 			}),
 		);
 	}
-	return Effect.succeed(label.length === 0 ? null : label);
+	return Effect.succeed(normalized);
 };
 
 /** Read this process's canonical startTime stamp for the snapshot
@@ -364,11 +376,11 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 				Scope.Scope
 			>;
 
-		const capture: SnapshotOrchestrator['capture'] = ({ id, label, participants }) =>
+		const capture: SnapshotOrchestrator['capture'] = ({ id, label, participants, onProgress }) =>
 			Effect.gen(function* () {
 				const snapshotId =
 					id === undefined ? mintSnapshotId() : yield* validateSnapshotId('capture', id);
-				const snapshotLabel = yield* normalizeSnapshotLabel('capture', label);
+				const snapshotName = yield* normalizeSnapshotName('capture', label);
 				const effectiveParticipants =
 					participants ?? (yield* Ref.get(participantsRef)).map((e) => e.capture);
 				const artifactDir = `${paths.snapshotDir}/${snapshotId}`;
@@ -381,6 +393,31 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 				return yield* Effect.scoped(
 					Effect.gen(function* () {
 						yield* acquireReservation(paths.snapshotReservationFile, ownStartTime());
+						const fs = yield* FileSystem.FileSystem;
+						const targetExists = yield* fs
+							.exists(artifactDir)
+							.pipe(Effect.catch(() => Effect.succeed(false)));
+						if (targetExists) {
+							return yield* Effect.fail(
+								new SnapshotIdError({
+									operation: 'capture',
+									field: 'id',
+									value: snapshotId,
+									detail: 'snapshot id already exists',
+								}),
+							);
+						}
+						const existing = yield* list;
+						if (existing.some((entry) => entry.metadata?.label === snapshotName)) {
+							return yield* Effect.fail(
+								new SnapshotIdError({
+									operation: 'capture',
+									field: 'name',
+									value: snapshotName,
+									detail: 'snapshot name already exists',
+								}),
+							);
+						}
 
 						// Stage-and-swap publishes the artifact directory
 						// atomically — external watchers (and `list`)
@@ -392,7 +429,7 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 							build: runCapture({
 								stagingDir,
 								snapshotId,
-								label: snapshotLabel,
+								label: snapshotName,
 								app: identity.app,
 								stack: identity.stack,
 								network: identity.chain,
@@ -400,6 +437,7 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 								stateFilePath: paths.stateFile,
 								participants: effectiveParticipants,
 								runtime,
+								onProgress,
 							}),
 						});
 						return meta;

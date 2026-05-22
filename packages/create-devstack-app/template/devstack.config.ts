@@ -41,6 +41,9 @@ const app = hostService({
 	command: 'pnpm',
 	args: ['exec', 'vite', '--host', '127.0.0.1', '--strictPort', '--port', HOST_SERVICE_PORT_TOKEN],
 	cwd: HERE,
+	env: {
+		VITE_TEMPLATE_AUTO_APPROVE: '1',
+	},
 	port: DEV_PORT,
 	ready: { kind: 'http' },
 	after: [hello, devWallet] as const,

@@ -72,7 +72,19 @@ describe('plain-renderer formatters', () => {
 				address: '0xabc',
 				scheme: 'ed25519',
 				source: 'real',
-				funding: { status: 'funded', balanceMist: null, requestedMist: '1000000000' },
+				funding: {
+					status: 'funded',
+					balanceMist: null,
+					requestedMist: '1000000000',
+					entries: [
+						{
+							coin: 'SUI',
+							fullCoinType: '0x2::sui::SUI',
+							amount: '1000000000',
+							status: 'funded',
+						},
+					],
+				},
 				walletVisible: false,
 				updatedAt: STATIC_AT,
 			},
@@ -85,6 +97,7 @@ describe('plain-renderer formatters', () => {
 		expect(line).toContain('scheme=ed25519');
 		expect(line).toContain('source=real');
 		expect(line).toContain('funding=funded');
+		expect(line).toContain('fundingEntries=SUI:1000000000:funded');
 		expect(line).toContain('requestedMist=1000000000');
 	});
 

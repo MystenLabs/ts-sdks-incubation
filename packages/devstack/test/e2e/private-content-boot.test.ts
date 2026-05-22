@@ -205,8 +205,8 @@ describe('private-content boots end-to-end @e2e', () => {
 			'package:vault#2',
 			'account/alice#3',
 			'account/bob#4',
-			'walrus#5',
-			'seal:seal#6',
+			'walrus:walrus',
+			'seal:seal',
 			'wallet#7',
 			'host-service/app#8',
 		];
@@ -225,7 +225,7 @@ describe('private-content boots end-to-end @e2e', () => {
 		}
 
 		// Walrus resolved-value spot-check.
-		const walrus = result.resolvedValues.get('walrus#5') as
+		const walrus = result.resolvedValues.get('walrus:walrus') as
 			| {
 					readonly mode: 'local' | 'known';
 					readonly packageConfig: {
@@ -248,7 +248,7 @@ describe('private-content boots end-to-end @e2e', () => {
 		expect(walrus!.publisherUrl).toMatch(/^https?:\/\//);
 
 		// Seal resolved-value spot-check.
-		const seal = result.resolvedValues.get('seal:seal#6') as
+		const seal = result.resolvedValues.get('seal:seal') as
 			| {
 					readonly objectId: string;
 					readonly keyServerUrl: string;

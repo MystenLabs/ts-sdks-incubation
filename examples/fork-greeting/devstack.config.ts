@@ -14,13 +14,13 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const DEV_PORT = 5181;
 const ROUTER_DEV_ORIGIN = 'http://dev.fork-greeting.fork-greeting.localhost:5175' as const;
 
-const localnet = sui();
+const forkedNetwork = sui({ mode: 'fork', upstream: 'testnet' });
 const publisher = account('publisher');
 const alice = account('alice');
 const bob = account('bob');
 
 const greeting = localPackage('greeting', {
-	sourcePath: resolve(HERE, '..', 'fork-greeting', 'move', 'greeting'),
+	sourcePath: resolve(HERE, 'move', 'greeting'),
 	publisher,
 	capture: { boardId: '::board::Board' },
 });
@@ -31,7 +31,7 @@ const devWallet = wallet({
 	allowedOrigins: [ROUTER_DEV_ORIGIN, `http://localhost:${DEV_PORT}`],
 });
 const stack: Stack = defineDevstack({
-	members: [localnet, greeting, devWallet],
+	members: [forkedNetwork, greeting, devWallet],
 	stackName: 'fork-greeting',
 });
 

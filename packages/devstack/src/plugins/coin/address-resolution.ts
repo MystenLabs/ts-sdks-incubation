@@ -1,27 +1,19 @@
-// Coin address-resolution — the four user-facing forms unified.
+// Coin address-resolution — the three user-facing forms unified.
 //
 // Distilled-doc 13-coin.md §Configuration: the user-facing
-// `coin(...)` factory takes one of FOUR address forms. Each form
+// `coin(...)` factory takes one of three address forms. Each form
 // resolves to a `ResolvedCoin`:
 //
-//   1. **Symbol** — `coin.local('mUSDC')`. Registry lookup. NO dep
-//      edge on the publisher; the user is responsible for putting
-//      the publishing `localPackage(...)` in compose ordering.
-//      (Distilled-doc 13-coin.md Pain point #4: this is a footgun, but
-//      the alternative — auto-deriving a dep edge — requires the
-//      registry to carry resource identities, which is a layering
-//      violation; documented warning in `index.ts` instead.)
-//
-//   2. **Package-scoped witness** — `coin.fromPackage(pkg, 'MOCK_USDC')`.
+//   1. **Package-scoped witness** — `coin.fromPackage(pkg, 'MOCK_USDC')`.
 //      Forces a dependency edge on the publishing package resource, then
 //      reads its publish output's discovered coins. Statically typed
 //      against local packages only (KnownPackages have no output).
 //
-//   3. **Bare on-chain type** — `coin.known('0x...::DEEP::DEEP')`.
+//   2. **Bare on-chain type** — `coin.known('0x...::DEEP::DEEP')`.
 //      Bypasses the registry; calls `getCoinMetadata` against the
 //      resolved Sui client. Use for live-net coins (mainnet DEEP).
 //
-//   4. **Builtin SUI** — `coin.builtin('sui')`. Pure constant.
+//   3. **Builtin SUI** — `coin.builtin('sui')`. Pure constant.
 //      Resolves to `0x2::sui::SUI` with `decimals: 9` synchronously.
 //
 // Each form returns a `ResolvedCoin` carrying the same shape so
@@ -39,7 +31,7 @@ import {
 } from './metadata.ts';
 import type { CoinRecord, CoinRegistry } from './registry.ts';
 
-/** The Tag's resolved value. One uniform shape across all four
+/** The Tag's resolved value. One uniform shape across all three
  *  address forms — downstream consumers branch on `source` only if
  *  they care about provenance. */
 export interface ResolvedCoin {
@@ -78,11 +70,11 @@ export type BuiltinCoinName = keyof typeof BUILTIN_COINS;
 export const resolveBuiltin = (name: BuiltinCoinName): ResolvedCoin => BUILTIN_COINS[name];
 
 // -----------------------------------------------------------------------------
-// Form 1: symbol → registry
+// Registry record projection
 // -----------------------------------------------------------------------------
 
 /** Project a `CoinRecord` to the resolved-value shape. Shared across
- *  forms 1 + 2. */
+ *  registry-backed forms. */
 const projectRecord = (record: CoinRecord, source: 'registry'): ResolvedCoin => ({
 	fullCoinType: record.type,
 	decimals: record.decimals,
@@ -95,42 +87,8 @@ const projectRecord = (record: CoinRecord, source: 'registry'): ResolvedCoin => 
 	packageId: record.packageId,
 });
 
-/** Resolve a coin by symbol against the per-stack `CoinRegistry`. */
-export const resolveBySymbol = (
-	registry: CoinRegistry,
-	symbol: string,
-): Effect.Effect<ResolvedCoin, CoinError> =>
-	Effect.gen(function* () {
-		const matches = yield* registry.bySymbol(symbol);
-		if (matches.length === 0) {
-			const candidates = (yield* registry.list()).map((r) => r.symbol ?? r.witness);
-			return yield* Effect.fail(
-				coinError('not-found', {
-					identifier: symbol,
-					message: `coin('${symbol}'): no record matches in the per-stack registry.`,
-					candidates,
-				}),
-			);
-		}
-		// Distilled-doc 13-coin.md Invariant 5: case-insensitive but
-		// exact. Two records pointing at the same coin type are NOT
-		// ambiguous (the registry's "register-once-per-key-shape" pattern
-		// can index the same coin under both symbol and witness).
-		const distinctTypes = new Set(matches.map((m) => m.type));
-		if (distinctTypes.size > 1) {
-			return yield* Effect.fail(
-				coinError('ambiguous', {
-					identifier: symbol,
-					message: `coin('${symbol}'): matched ${distinctTypes.size} distinct coin types — disambiguate via coin.fromPackage(pkg, witness).`,
-					candidates: [...distinctTypes],
-				}),
-			);
-		}
-		return projectRecord(matches[0]!, 'registry');
-	});
-
 // -----------------------------------------------------------------------------
-// Form 2: package-scoped witness → registry
+// Form 1: package-scoped witness → registry
 // -----------------------------------------------------------------------------
 
 /** Resolve a coin by `(publishing package's symbolic name, witness)`.
@@ -160,7 +118,7 @@ export const resolveByWitness = (
 	});
 
 // -----------------------------------------------------------------------------
-// Form 3: bare on-chain type → live RPC
+// Form 2: bare on-chain type → live RPC
 // -----------------------------------------------------------------------------
 
 /** Resolve a coin by bare on-chain type. Calls `getCoinMetadata`

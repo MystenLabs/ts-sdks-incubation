@@ -12,7 +12,7 @@ import { describe, expect, it } from 'vitest';
 
 import { pluginKey } from '../../../src/substrate/brand.ts';
 import type { EngineCommand } from '../../../src/substrate/events.ts';
-import { commandForKey } from '../../../src/surfaces/tui/input.tsx';
+import { commandForKey, inputActionForKey } from '../../../src/surfaces/tui/input.tsx';
 
 describe('input → EngineCommand mapping', () => {
 	it('q publishes shutdown.requested', () => {
@@ -34,8 +34,43 @@ describe('input → EngineCommand mapping', () => {
 		expect(commandForKey('r', false)).toEqual({ tag: 'stack.restart' });
 		expect(commandForKey('R', false)).toEqual({ tag: 'stack.restart' });
 	});
-	it('s publishes snapshot.capture', () => {
-		expect(commandForKey('s', false)).toEqual({ tag: 'snapshot.capture' });
+	it('s opens the snapshot-name prompt', () => {
+		expect(inputActionForKey('s', { ctrl: false })).toEqual({ tag: 'snapshotPrompt.open' });
+		expect(inputActionForKey('S', { ctrl: false })).toEqual({ tag: 'snapshotPrompt.open' });
+		expect(commandForKey('s', false)).toBeNull();
+	});
+	it('snapshot prompt submits named captures', () => {
+		expect(
+			inputActionForKey('', { return: true }, { snapshotPromptValue: 'before-change' }),
+		).toEqual({
+			tag: 'publish',
+			command: { tag: 'snapshot.capture', name: 'before-change' },
+		});
+	});
+	it('snapshot prompt keeps generated names when submitted empty', () => {
+		expect(inputActionForKey('', { return: true }, { snapshotPromptValue: '   ' })).toEqual({
+			tag: 'publish',
+			command: { tag: 'snapshot.capture' },
+		});
+	});
+	it('snapshot prompt edits and cancels without publishing', () => {
+		expect(inputActionForKey('abc', {}, { snapshotPromptValue: '' })).toEqual({
+			tag: 'snapshotPrompt.update',
+			value: 'abc',
+		});
+		expect(inputActionForKey('', { backspace: true }, { snapshotPromptValue: 'abc' })).toEqual({
+			tag: 'snapshotPrompt.update',
+			value: 'ab',
+		});
+		expect(inputActionForKey('', { escape: true }, { snapshotPromptValue: 'abc' })).toEqual({
+			tag: 'snapshotPrompt.cancel',
+		});
+	});
+	it('ctrl-c still works while the snapshot prompt is active', () => {
+		expect(inputActionForKey('c', { ctrl: true }, { snapshotPromptValue: 'abc' })).toEqual({
+			tag: 'publish',
+			command: { tag: 'shutdown.requested' },
+		});
 	});
 	it('unmapped keys publish nothing', () => {
 		expect(commandForKey('a', false)).toBeNull();

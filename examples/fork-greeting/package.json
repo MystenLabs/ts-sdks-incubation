@@ -4,8 +4,8 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
-		"apply": "DEVSTACK_APP=fork-greeting devstack apply",
-		"dev": "DEVSTACK_APP=fork-greeting devstack up",
+		"apply": "DEVSTACK_APP=fork-greeting node ../../packages/devstack/dist/cli/main.mjs apply",
+		"dev": "DEVSTACK_APP=fork-greeting node ../../packages/devstack/dist/cli/main.mjs up",
 		"typecheck": "tsc -b --noEmit",
 		"test": "pnpm run typecheck",
 		"clean": "rm -rf .turbo node_modules/.tmp"

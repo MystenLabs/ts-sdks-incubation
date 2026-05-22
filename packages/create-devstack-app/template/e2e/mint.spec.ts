@@ -9,6 +9,7 @@ import { expect, test } from '@playwright/test';
 import { connectAs } from '@mysten-incubation/devstack/playwright';
 
 test('alice sends a greeting', async ({ page }) => {
+	await page.goto('/');
 	await connectAs(page, 'alice');
 
 	await expect(page.getByTestId('package-id')).not.toHaveText('0x0');

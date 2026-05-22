@@ -7,6 +7,8 @@ import { describe, expect, it } from '@effect/vitest';
 
 import { account } from '../../../src/plugins/account/index.ts';
 import {
+	DEEPBOOK_DEEP_FAUCET_STRATEGY_KEY,
+	DEEPBOOK_TESTNET_DEEP_COIN_TYPE,
 	deepbook,
 	deepbookFor,
 	type DeepbookResolved,
@@ -137,6 +139,38 @@ describe('deepbook(opts) — primary factory', () => {
 			stateId: TESTNET_PYTH.stateId,
 			wormholeStateId: TESTNET_PYTH.wormholeStateId,
 		});
+	});
+
+	it('contributes a testnet DEEP funding strategy for account funding', () => {
+		const member = deepbook({
+			mode: 'known',
+			network: 'testnet',
+		});
+		const resolved = Effect.runSync(
+			member.start([{ chain: chainId('sui:testnet'), sdk: { client: {} } } as never]) as Effect.Effect<
+				DeepbookResolved,
+				unknown,
+				never
+			>,
+		);
+		const caps =
+			typeof member.capabilities === 'function'
+				? member.capabilities(resolved, {} as never)
+				: member.capabilities;
+		const strategy = caps?.find(
+			(cap) =>
+				cap.kind === 'strategy-contributor' &&
+				cap.capabilityKey === DEEPBOOK_DEEP_FAUCET_STRATEGY_KEY,
+		);
+
+		expect(DEEPBOOK_DEEP_FAUCET_STRATEGY_KEY).toBe(
+			`coinType:${DEEPBOOK_TESTNET_DEEP_COIN_TYPE}`,
+		);
+		expect(strategy).toBeDefined();
+		expect(strategy?.kind).toBe('strategy-contributor');
+		if (strategy?.kind === 'strategy-contributor') {
+			expect(strategy.strategy.usesAccountSigner).toBe(true);
+		}
 	});
 
 	it('folds the instance name into the resource id', () => {

@@ -39,18 +39,17 @@ jobs:
       fail-fast: false
       matrix:
         # Representative product apps: a Sui-only app, a Walrus/Seal app,
-        # and the heavier DeepBook app with Postgres, Pyth, indexer,
-        # server, margin, and maker services.
-        # Stack dirs are the resolved devstack identity: `arena` sets
-        # `stackName` explicitly; the others fall back to their unscoped
-        # package names. Artifact names stay keyed by example package.
+        # and the DeepBook trader app. Stack dirs are the resolved
+        # devstack identity; example configs currently pin stackName to
+        # the unscoped package name, so artifact names stay keyed by
+        # example package.
         include:
-          - example: arena
-            stack: arena
+          - example: connect-four
+            stack: connect-four
           - example: private-content
             stack: private-content
-          - example: deepbook-full
-            stack: deepbook-full
+          - example: deepbook-trader
+            stack: deepbook-trader
     steps:
       - name: Checkout
         uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # pin@v4.1.1
@@ -128,12 +127,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - example: arena
-            stack: arena
+          - example: connect-four
+            stack: connect-four
           - example: private-content
             stack: private-content
-          - example: deepbook-full
-            stack: deepbook-full
+          - example: deepbook-trader
+            stack: deepbook-trader
     steps:
       - name: Checkout
         uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # pin@v4.1.1

@@ -146,6 +146,8 @@ describe('Dashboard', () => {
 		const { lastFrame, unmount } = render(
 			<Dashboard
 				state={state()}
+				snapshotPromptValue={null}
+				snapshotStatus={null}
 				eventLog={[
 					{
 						id: '1',
@@ -185,9 +187,6 @@ describe('Dashboard', () => {
 		expect(frame).toContain('Accounts');
 		expect(frame).toContain('Alice');
 		expect(frame).toContain('0xabc');
-		expect(frame).toContain('ed25519');
-		expect(frame).toContain('real');
-		expect(frame).toContain('funding unknown');
 		expect(frame).toContain('Packages');
 		expect(frame).toContain('Connect four');
 		expect(frame).toContain('0x123');
@@ -206,7 +205,12 @@ describe('Dashboard', () => {
 
 	it('stacks multiple service URLs without joining them into one clipped cell', () => {
 		const { lastFrame, unmount } = render(
-			<Dashboard state={stateWithMultipleServiceUrls()} eventLog={[]} />,
+			<Dashboard
+				state={stateWithMultipleServiceUrls()}
+				eventLog={[]}
+				snapshotPromptValue={null}
+				snapshotStatus={null}
+			/>,
 		);
 
 		const frame = lastFrame() ?? '';
@@ -221,6 +225,53 @@ describe('Dashboard', () => {
 		expect(compact).toContain('http://127.0.0.1:51001[h2c]');
 		expect(frame).not.toContain(' | faucet:');
 		expect(frame).not.toContain('priva…');
+
+		unmount();
+	});
+
+	it('renders the interactive snapshot prompt when active', () => {
+		const { lastFrame, unmount } = render(
+			<Dashboard
+				state={state()}
+				eventLog={[]}
+				snapshotPromptValue="before-change"
+				snapshotStatus={null}
+			/>,
+		);
+
+		const frame = lastFrame() ?? '';
+		expect(frame).toContain('Snapshot name:');
+		expect(frame).toContain('before-change');
+		expect(frame).toContain('Enter save Esc cancel');
+
+		unmount();
+	});
+
+	it('renders bottom snapshot progress with paused state', () => {
+		const { lastFrame, unmount } = render(
+			<Dashboard
+				state={state()}
+				eventLog={[]}
+				snapshotPromptValue={null}
+				snapshotStatus={{
+					tag: 'running',
+					phase: 'capturing-host-tree',
+					name: 'before-change',
+					pausedContainers: 2,
+					totalContainers: 2,
+					detail: 'archiving 1 host subtree',
+					at: AT,
+				}}
+			/>,
+		);
+
+		const frame = lastFrame() ?? '';
+		expect(frame).toContain('Snapshot:');
+		expect(frame).toContain('before-change');
+		expect(frame).toContain('capturing files');
+		expect(frame).toContain('stack paused');
+		expect(frame).toContain('2/2');
+		expect(frame).toContain('archiving 1 host subtree');
 
 		unmount();
 	});

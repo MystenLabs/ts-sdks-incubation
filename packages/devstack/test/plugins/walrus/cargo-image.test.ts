@@ -32,6 +32,7 @@ const makeRuntimeStub = (ensureImage: ContainerRuntime['ensureImage']): Containe
 	runOneShot: unusedRuntimeMethod,
 	inspectByLabels: unusedRuntimeMethod,
 	followLogs: () => Stream.empty,
+	pause: unusedRuntimeMethod,
 	pauseAndCommit: unusedRuntimeMethod,
 	saveImage: () => Stream.empty,
 	saveImages: () => Stream.empty,

@@ -21,14 +21,19 @@ export class DevWalletPopup extends LitElement {
 				justify-content: center;
 				min-height: 100vh;
 				padding: 20px;
+				background-color: var(--dev-wallet-bg-0);
+				background-image:
+					linear-gradient(var(--dev-wallet-border) 1px, transparent 1px),
+					linear-gradient(90deg, var(--dev-wallet-border) 1px, transparent 1px);
+				background-size: 32px 32px;
 			}
 
 			.popup-card {
-				width: 360px;
-				max-height: min(600px, 80vh);
+				width: 440px;
+				max-height: min(680px, 86vh);
 				border-radius: var(--dev-wallet-radius-xl);
-				background: var(--dev-wallet-background);
-				border: 1px solid var(--dev-wallet-border);
+				background: var(--dev-wallet-surface);
+				border: 1px solid var(--dev-wallet-border-2);
 				box-shadow: var(--dev-wallet-shadow-lg);
 				overflow: hidden;
 				display: flex;
@@ -39,12 +44,13 @@ export class DevWalletPopup extends LitElement {
 				display: flex;
 				justify-content: space-between;
 				align-items: center;
-				padding: 14px 16px;
+				padding: 12px 14px;
 				border-bottom: 1px solid var(--dev-wallet-border);
+				background: var(--dev-wallet-bg-1);
 			}
 
 			.popup-title {
-				font-size: 15px;
+				font-size: 13px;
 				font-weight: var(--dev-wallet-font-weight-semibold);
 				color: var(--dev-wallet-foreground);
 			}

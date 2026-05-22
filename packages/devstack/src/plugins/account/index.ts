@@ -8,7 +8,7 @@
 // User-facing factory shape:
 //
 //   account('alice')                                  // default ephemeral
-//   account('alice', { kind: 'ephemeral', name: 'alice', fund: 5_000_000_000n })
+//   account('alice', { kind: 'ephemeral', name: 'alice', funding: [{ coin: 'sui', amount: 5_000_000_000n }] })
 //   account('alice', { kind: 'keystore', name: 'alice', path: '~/.sui/keystore', aliasOrAddress: 'alice' })
 //   account('alice', { kind: 'env',      name: 'alice', key: 'ALICE_PRIVATE_KEY' })
 //   account('alice', { kind: 'inline',   name: 'alice', privateKey: 'suiprivkey1...' })
@@ -17,7 +17,7 @@
 //
 // **Bare-form default**: `account('alice')` is shorthand for
 //
-//   { kind: 'ephemeral', name: 'alice', fund: DEFAULT_EPHEMERAL_FUND_MIST }
+//   { kind: 'ephemeral', name: 'alice' } plus default SUI funding.
 //
 // Distilled-doc invariant (12-account.md "Make the bare-form auto-
 // promotion to fork-impersonate funding discoverable"): on fork-
@@ -40,7 +40,7 @@
 
 import { Effect } from 'effect';
 
-import { definePlugin, resource } from '../../api/define-plugin.ts';
+import { definePlugin, resource, type AnyResourceRef } from '../../api/define-plugin.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
@@ -49,8 +49,13 @@ import { suiResource } from '../sui/index.ts';
 import { makeAccountCodegen, type AccountBindings } from './codegen.ts';
 import { ACCOUNT_ERROR_TAGS } from './errors.ts';
 import {
-	DEFAULT_EPHEMERAL_FUND_MIST,
+	SUI_FULL_COIN_TYPE,
+	type AccountFunding,
+	type AccountFundingEntry,
+	type AccountFundingResult,
 	type CrossCuttingFundingEntry,
+	type CrossCuttingFundingProvider,
+	type CoinMember,
 	type ProjectedFundingEntry,
 } from './funding.ts';
 import {
@@ -101,16 +106,75 @@ const accountResource = <Name extends string>(name: Name) =>
  *  Distilled-doc invariant: the name is validated at the FACTORY
  *  boundary (not just at acquire time) so a typo surfaces
  *  immediately, not at runtime. */
-type FundingCoinMembers<Funding extends ReadonlyArray<CrossCuttingFundingEntry>> = {
-	readonly [K in keyof Funding]: Funding[K]['coin'];
+type FundingCoinDependencies<Entries extends readonly unknown[]> = Entries extends readonly [
+	infer Head,
+	...infer Tail,
+]
+	? Head extends { readonly coin: infer Coin }
+		? Coin extends CoinMember
+			? readonly [Coin, ...FundingCoinDependencies<Tail>]
+			: FundingCoinDependencies<Tail>
+		: FundingCoinDependencies<Tail>
+	: readonly [];
+
+type FundingProviderDependenciesFor<Provider> = Provider extends readonly AnyResourceRef[]
+	? Provider
+	: Provider extends AnyResourceRef
+		? readonly [Provider]
+		: readonly [];
+
+type FundingEntryProviderDependencies<Entry> = Entry extends { readonly coin: CoinMember }
+	? 'via' extends keyof Entry
+		? Entry extends { readonly via: infer Provider }
+			? FundingProviderDependenciesFor<Provider>
+			: readonly []
+		: readonly []
+	: readonly [];
+
+type FundingProviderDependencies<Entries extends readonly unknown[]> = Entries extends readonly [
+	infer Head,
+	...infer Tail,
+]
+	? readonly [...FundingEntryProviderDependencies<Head>, ...FundingProviderDependencies<Tail>]
+	: readonly [];
+
+type AccountDependencyMembers<Funding extends AccountFunding> = readonly [
+	typeof suiResource,
+	...FundingCoinDependencies<Funding>,
+	...FundingProviderDependencies<Funding>,
+];
+
+const isCoinFundingEntry = (entry: AccountFundingEntry): entry is CrossCuttingFundingEntry =>
+	typeof entry === 'object' && entry.coin !== 'sui';
+
+const fundingProviders = (
+	provider: CrossCuttingFundingProvider | undefined,
+): ReadonlyArray<AnyResourceRef> => {
+	if (provider === undefined) return [];
+	return Array.isArray(provider)
+		? (provider as ReadonlyArray<AnyResourceRef>)
+		: [provider as AnyResourceRef];
 };
 
-export const account = <
-	const N extends string,
-	const Funding extends ReadonlyArray<CrossCuttingFundingEntry> = readonly [],
->(
+const fundingAmountToBigInt = (amount: number | bigint): bigint => {
+	if (typeof amount === 'bigint') {
+		if (amount < 0n) {
+			throw new TypeError(`SUI funding amount must be a non-negative integer in MIST.`);
+		}
+		return amount;
+	}
+	if (!Number.isSafeInteger(amount) || amount < 0) {
+		throw new TypeError(`SUI funding amount must be a non-negative safe integer in MIST.`);
+	}
+	return BigInt(amount);
+};
+
+const coinLabelFor = (coin: { readonly fullCoinType: string; readonly symbol?: string }): string =>
+	coin.symbol ?? coin.fullCoinType.split('::').at(-1) ?? coin.fullCoinType;
+
+export const account = <const N extends string, const Funding extends AccountFunding = readonly []>(
 	name: N,
-	opts?: AccountOptions & { readonly funding?: Funding },
+	opts?: AccountOptions<Funding>,
 ) => {
 	// Normalize bare-form to ephemeral default. The user-facing
 	// `AccountOptions` union does not include "kind absent" — we
@@ -127,12 +191,18 @@ export const account = <
 	// the bare form / variants without funding). The tuple preserves
 	// plugin-valued refs when the caller passed coin plugins, so
 	// recursive stack composition can include those publishers.
-	const fundingEntries =
-		(opts?.funding as ReadonlyArray<CrossCuttingFundingEntry> | undefined) ?? [];
-	const fundingMembers = fundingEntries.map(
-		(e) => e.coin,
-	) as unknown as FundingCoinMembers<Funding>;
-	const dependencies = [suiResource, ...fundingMembers] as const;
+	const fundingEntries = (opts?.funding ?? []) as unknown as Funding;
+	const fundingEntryList = fundingEntries as AccountFunding;
+	const coinFundingEntries = fundingEntryList.filter(isCoinFundingEntry);
+	const fundingMembers = coinFundingEntries.map((e) => e.coin);
+	const strategyProviderMembers = coinFundingEntries.flatMap((entry) =>
+		fundingProviders(entry.via),
+	);
+	const dependencies = [
+		suiResource,
+		...fundingMembers,
+		...strategyProviderMembers,
+	] as unknown as AccountDependencyMembers<Funding>;
 
 	return definePlugin({
 		id: accountRef.id,
@@ -143,7 +213,14 @@ export const account = <
 		role: 'task',
 		start: (deps) =>
 			Effect.gen(function* () {
-				const [sui, ...resolvedCoinValues] = deps;
+				const [sui, ...resolvedDeps] = deps;
+				const resolvedCoinValues = resolvedDeps.slice(
+					0,
+					coinFundingEntries.length,
+				) as ReadonlyArray<{
+					readonly fullCoinType: string;
+					readonly symbol?: string;
+				}>;
 				// Identity + on-disk runtime root come from the
 				// supervisor-provided substrate context.
 				const identity = yield* IdentityContext;
@@ -152,11 +229,24 @@ export const account = <
 				// Project each funding dependency value to a
 				// `{fullCoinType, amount}` projection. Dependency order
 				// mirrors `fundingEntries`, after the hard Sui upstream.
-				const projectedFunding: ReadonlyArray<ProjectedFundingEntry> = fundingEntries.map(
-					(entry, i) => ({
-						fullCoinType: resolvedCoinValues[i]!.fullCoinType,
-						amount: entry.amount,
-					}),
+				let coinIndex = 0;
+				const projectedFunding: ReadonlyArray<ProjectedFundingEntry> = fundingEntryList.map(
+					(entry) => {
+						if (entry.coin === 'sui') {
+							return {
+								coin: 'SUI',
+								fullCoinType: SUI_FULL_COIN_TYPE,
+								amount: fundingAmountToBigInt(entry.amount),
+							};
+						}
+						const resolvedCoin = resolvedCoinValues[coinIndex]!;
+						coinIndex += 1;
+						return {
+							coin: coinLabelFor(resolvedCoin),
+							fullCoinType: resolvedCoin.fullCoinType,
+							amount: entry.amount,
+						};
+					},
 				);
 
 				const acquireCtx: AccountAcquireContext = {
@@ -194,7 +284,7 @@ export const account = <
 				address: resolved.address,
 				scheme: resolved.scheme,
 				source: resolved.source,
-				funding: fundingProjectionForOptions(opts2, fundingEntries),
+				funding: fundingProjectionForResult(resolved.funding),
 			};
 			const bindings: AccountBindings = {
 				name,
@@ -220,32 +310,33 @@ export const account = <
 	});
 };
 
-const fundingProjectionForOptions = (
-	opts: AccountOptions,
-	fundingEntries: ReadonlyArray<CrossCuttingFundingEntry>,
-): AccountRegistryFunding => {
-	if (opts.kind === 'ephemeral') {
-		const requestedMist = opts.fund ?? DEFAULT_EPHEMERAL_FUND_MIST;
-		if (requestedMist > 0n) {
-			return {
-				status: 'funded',
-				balanceMist: null,
-				requestedMist: requestedMist.toString(),
-			};
-		}
-		if (fundingEntries.length === 0) {
-			return {
-				status: 'skipped',
-				balanceMist: null,
-				requestedMist: requestedMist.toString(),
-			};
-		}
+const fundingProjectionForResult = (funding: AccountFundingResult): AccountRegistryFunding => {
+	if (funding.requested.length === 0) {
+		return { status: 'skipped', balanceMist: null, requestedMist: null, entries: [] };
 	}
-	if (fundingEntries.length === 0) {
-		return { status: 'skipped', balanceMist: null, requestedMist: null };
-	}
-	return { status: 'unknown', balanceMist: null, requestedMist: null };
+
+	const appliedKeys = new Set(funding.applied.map(fundingEntryKey));
+	const entries = funding.requested.map((entry) => ({
+		coin: entry.coin,
+		fullCoinType: entry.fullCoinType,
+		amount: entry.amount.toString(),
+		status: appliedKeys.has(fundingEntryKey(entry)) ? ('funded' as const) : ('skipped' as const),
+	}));
+	const requestedMist =
+		funding.requested
+			.find((entry) => entry.fullCoinType === SUI_FULL_COIN_TYPE)
+			?.amount.toString() ?? null;
+	const fundedCount = entries.filter((entry) => entry.status === 'funded').length;
+	return {
+		status: fundedCount === entries.length ? 'funded' : fundedCount === 0 ? 'skipped' : 'unknown',
+		balanceMist: null,
+		requestedMist,
+		entries,
+	};
 };
+
+const fundingEntryKey = (entry: ProjectedFundingEntry): string =>
+	`${entry.fullCoinType}:${entry.amount}`;
 
 // ---------------------------------------------------------------------------
 // Re-exports for advanced callers (Coin, Wallet, Package)
@@ -262,10 +353,17 @@ export type {
 } from './errors.ts';
 export { ACCOUNT_ERROR_TAGS } from './errors.ts';
 export type {
+	AccountFunding,
+	AccountFundingEntry,
+	AccountFundingResult,
+	AccountFundingRequest,
+	AccountFundingStrategy,
 	CoinMember,
 	CrossCuttingFundingEntry,
+	CrossCuttingFundingProvider,
 	ProjectedFunding,
 	ProjectedFundingEntry,
+	SuiFundingEntry,
 } from './funding.ts';
 export { DEFAULT_EPHEMERAL_FUND_MIST, SUI_FULL_COIN_TYPE } from './funding.ts';
 export type { AccountBindings } from './codegen.ts';

@@ -77,6 +77,12 @@ export interface AccountProjection {
 		readonly status: 'pending' | 'funded' | 'skipped' | 'failed' | 'unknown';
 		readonly balanceMist: string | null;
 		readonly requestedMist: string | null;
+		readonly entries?: ReadonlyArray<{
+			readonly coin: string;
+			readonly fullCoinType: string;
+			readonly amount: string;
+			readonly status: 'funded' | 'skipped';
+		}>;
 	};
 	readonly walletVisible: boolean;
 	readonly updatedAt: number;

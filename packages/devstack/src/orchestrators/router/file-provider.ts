@@ -60,6 +60,8 @@ import type { EntrypointRegistryShape } from './entrypoints.ts';
 import { RouteCollision, RouterValidationError, type UnknownEntrypoint } from './errors.ts';
 import { dispatchFileId, renderUrl, routerHostname } from './hostname.ts';
 
+export const ROUTE_READINESS_HEADER = 'X-Devstack-Route-Id';
+
 // ---------------------------------------------------------------------------
 // Resolved-route data structure
 // ---------------------------------------------------------------------------
@@ -283,8 +285,14 @@ export const renderRouteYaml = (route: ResolvedRoute, lease: RouteLeaseMetadata)
 	return renderHttpRouteYaml(route, lease);
 };
 
+const routeReadinessMiddlewareName = (route: ResolvedRoute): string =>
+	`${route.dispatchFileId}-route-ready`;
+
 const renderHttpRouteYaml = (route: ResolvedRoute, lease: RouteLeaseMetadata): string => {
-	const middlewares = route.cors ? `      middlewares: ["${CORS_MIDDLEWARE_NAME}"]\n` : '';
+	const middlewares = [
+		routeReadinessMiddlewareName(route),
+		...(route.cors ? [CORS_MIDDLEWARE_NAME] : []),
+	];
 	const schemeHint =
 		route.wireProtocol === 'h2c'
 			? `        # h2c upstream — gRPC-friendly cleartext HTTP/2.\n`
@@ -303,7 +311,12 @@ const renderHttpRouteYaml = (route: ResolvedRoute, lease: RouteLeaseMetadata): s
 		`      rule: "Host(\`${route.hostname}\`)"`,
 		`      entryPoints: ["${route.entrypointName}"]`,
 		`      service: "${route.dispatchFileId}-svc"`,
-		middlewares.length > 0 ? middlewares.trimEnd() : null,
+		`      middlewares: [${middlewares.map((name) => `"${name}"`).join(', ')}]`,
+		`  middlewares:`,
+		`    ${routeReadinessMiddlewareName(route)}:`,
+		`      headers:`,
+		`        customResponseHeaders:`,
+		`          ${ROUTE_READINESS_HEADER}: "${route.dispatchFileId}"`,
 		`  services:`,
 		`    ${route.dispatchFileId}-svc:`,
 		`      loadBalancer:`,

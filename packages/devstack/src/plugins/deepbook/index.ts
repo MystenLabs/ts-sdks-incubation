@@ -45,6 +45,11 @@ import {
 	type DeepbookPluginError,
 } from './errors.ts';
 import { makeDeepbookCodegenable, type DeepbookBindings } from './codegen.ts';
+import {
+	makeDeepbookDeepFundingContribution,
+	makeDeepbookDeepFundingStrategy,
+	type DeepbookDeepFundingStrategy,
+} from './faucet-strategy.ts';
 import { makeKnownSnapshotable, makeLocalSnapshotable } from './snapshot.ts';
 import type { AccountMemberAlias, DeepbookPool, PythHandle } from './types.ts';
 
@@ -79,6 +84,7 @@ export interface DeepbookResolved {
 	readonly serverUrl: string | null;
 	readonly indexerUrl: string | null;
 	readonly marketMakerRunning: boolean;
+	readonly deepFundingStrategy: DeepbookDeepFundingStrategy | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -243,6 +249,7 @@ const buildLocalPlugin = <const Publisher extends AccountMemberAlias>(
 					serverUrl: null,
 					indexerUrl: null,
 					marketMakerRunning: false,
+					deepFundingStrategy: null,
 				};
 				return resolved;
 			}).pipe(
@@ -329,9 +336,10 @@ const buildKnownPlugin = (opts: DeepbookKnownOptions) => {
 		start: (deps) =>
 			Effect.sync(() => {
 				const [sui] = deps;
+				const chain = opts.chain ?? known?.chain ?? sui.chain;
 				const resolved: DeepbookResolved = {
 					mode: 'known',
-					chain: opts.chain ?? known?.chain ?? sui.chain,
+					chain,
 					packageId,
 					registryId,
 					adminCapId: null,
@@ -341,6 +349,10 @@ const buildKnownPlugin = (opts: DeepbookKnownOptions) => {
 					serverUrl: null,
 					indexerUrl: null,
 					marketMakerRunning: false,
+					deepFundingStrategy:
+						opts.network === 'testnet' && String(chain) === 'sui:testnet'
+							? makeDeepbookDeepFundingStrategy({ suiSdk: sui.sdk })
+							: null,
 				};
 				return resolved;
 			}),
@@ -362,7 +374,11 @@ const buildKnownPlugin = (opts: DeepbookKnownOptions) => {
 				serverUrl: null,
 				indexerUrl: null,
 			};
-			return [snap, makeDeepbookCodegenable(bindings)] as const;
+			const deepFunding =
+				resolved.deepFundingStrategy === null
+					? []
+					: [makeDeepbookDeepFundingContribution(resolved.deepFundingStrategy)];
+			return [snap, makeDeepbookCodegenable(bindings), ...deepFunding] as const;
 		},
 		errorContributions: deepbookErrorContributions,
 	});
@@ -470,6 +486,14 @@ export const deepbook = deepbookCore;
 // ---------------------------------------------------------------------------
 
 export { deepbookPluginKey } from './plugin-key.ts';
+export {
+	DEEPBOOK_DEEP_FAUCET_STRATEGY_KEY,
+	DEEPBOOK_TESTNET_DEEP_COIN_TYPE,
+	makeDeepbookDeepFundingContribution,
+	makeDeepbookDeepFundingStrategy,
+	type DeepbookDeepFundingStrategy,
+	type DeepbookDeepFundingStrategyOptions,
+} from './faucet-strategy.ts';
 export {
 	DEEPBOOK_ERROR_TAGS,
 	type DeepbookError,

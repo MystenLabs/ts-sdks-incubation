@@ -4,6 +4,7 @@
 import type { ClientWithCoreApi } from '@mysten/sui/client';
 import type { WalletIcon } from '@mysten/wallet-standard';
 
+import type { DevWalletDockStyle } from '../ui/dev-wallet-panel.js';
 import type { SignerAdapter } from '../types.js';
 import { DevWallet, type AutoApprovePolicy } from './dev-wallet.js';
 
@@ -24,6 +25,8 @@ export interface DevWalletInitializerConfig {
 	createInitialAccount?: boolean;
 	/** Mount the floating wallet drawer UI. Defaults to false. */
 	mountUI?: boolean;
+	/** Floating dock presentation when `mountUI` is true. Defaults to `corner-pill`. */
+	dockStyle?: DevWalletDockStyle;
 	/** Container element for the UI drawer. Defaults to document.body. */
 	container?: HTMLElement;
 	/** Called with the DevWallet instance after creation. */
@@ -108,7 +111,10 @@ export function devWalletInitializer(config: DevWalletInitializerConfig): {
 			let unmountUI: (() => void) | undefined;
 			if (mountUI && typeof document !== 'undefined') {
 				const { mountDevWallet } = await import('../ui/mount.js');
-				unmountUI = mountDevWallet(wallet, { container: config.container });
+				unmountUI = mountDevWallet(wallet, {
+					container: config.container,
+					dockStyle: config.dockStyle,
+				});
 			}
 
 			const unregister = wallet.register();

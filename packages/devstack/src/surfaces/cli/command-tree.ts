@@ -36,6 +36,12 @@ const configOptions = [
 	{ name: 'network', value: 'name', description: 'Override network before config import.' },
 ] as const satisfies ReadonlyArray<CommandOption>;
 
+const confirmOptions = [
+	...identityOptions,
+	{ name: 'yes', description: 'Assume yes on prompts.' },
+	{ name: 'no-input', description: 'Forbid prompts.' },
+] as const satisfies ReadonlyArray<CommandOption>;
+
 const commands = [
 	{
 		name: 'up',
@@ -110,25 +116,25 @@ const commands = [
 			{
 				name: 'save',
 				summary: 'Capture a snapshot through a one-shot stack boot.',
-				usage: 'devstack snapshot save [id] [--label <label>] [options]',
+				usage: 'devstack snapshot save [name] [options]',
 				lifecycle: 'one-shot',
 				sideEffects: 'write',
 				requiresDocker: true,
-				arguments: ['id'],
+				arguments: ['name'],
 				options: [
 					...configOptions,
-					{ name: 'label', value: 'label', description: 'Human-readable snapshot label.' },
+					{ name: 'name', value: 'name', description: 'Human-readable snapshot name.' },
 				],
 			},
 			{
 				name: 'restore',
-				summary: 'Restore a snapshot by id or label.',
-				usage: 'devstack snapshot restore <id-or-label> [options]',
+				summary: 'Restore a snapshot by name or id.',
+				usage: 'devstack snapshot restore <name-or-id> [options]',
 				lifecycle: 'offline',
 				sideEffects: 'destructive',
 				requiresDocker: true,
-				arguments: ['id-or-label'],
-				options: identityOptions,
+				arguments: ['name-or-id'],
+				options: confirmOptions,
 			},
 			{
 				name: 'list',
@@ -141,13 +147,13 @@ const commands = [
 			},
 			{
 				name: 'delete',
-				summary: 'Delete a snapshot by id or label.',
-				usage: 'devstack snapshot delete <id-or-label> [options]',
+				summary: 'Delete a snapshot by name or id.',
+				usage: 'devstack snapshot delete <name-or-id> [options]',
 				lifecycle: 'offline',
 				sideEffects: 'destructive',
 				requiresDocker: false,
-				arguments: ['id-or-label'],
-				options: identityOptions,
+				arguments: ['name-or-id'],
+				options: confirmOptions,
 			},
 		],
 	},

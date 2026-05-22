@@ -16,12 +16,11 @@ const managed = localPackage('managed_coin', {
 	publisher,
 });
 
-const suiCoin = coin.builtin('sui');
 const managedCoin = coin.fromPackage(managed, 'MANAGED_COIN');
 
 const alice = account('alice', {
 	funding: [
-		{ coin: suiCoin, amount: 1_000_000_000n },
+		{ coin: 'sui', amount: 1_000_000_000n },
 		{ coin: managedCoin, amount: 1_000n },
 	],
 });
@@ -32,11 +31,11 @@ export default defineDevstack({ members: [localnet, alice] });
 Available forms:
 
 - `coin.builtin('sui')` uses the protocol SUI type.
-- `coin.fromPackage(member, witness)` adds a dependency edge on the publishing member.
-- `coin.local(symbol)` resolves by symbol from the per-stack registry. Compose the publishing member
-  before the consumer, because this form does not carry a direct edge.
+- `coin.fromPackage(member, witness)` adds a dependency edge on the publishing member. Local package
+  coins that keep the TreasuryCap with the publisher also contribute a centralized funding strategy,
+  so account funding can mint them without a bespoke seed action.
 - `coin.known(fullCoinType)` resolves an on-chain type through metadata reads.
 
 Funding is best-effort for custom strategies. Missing strategies are treated as a no-op for
-cross-coin funding entries, while default ephemeral SUI funding fails loudly if no faucet-bearing
+cross-coin funding entries, while explicit or default SUI funding fails loudly if no faucet-bearing
 strategy exists for the active chain.

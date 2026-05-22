@@ -44,11 +44,13 @@ import { atomicWriteFile } from '../../substrate/runtime/atomic-write.ts';
 import type { Identity } from '../../substrate/identity.ts';
 import { checkHolderLiveness, ownHolder } from '../../substrate/runtime/cross-process/liveness.ts';
 import { acquireStackLock } from '../../substrate/runtime/cross-process/stack-lock.ts';
+import { waitForHttpEndpoint, type HttpProbeFetch } from '../../substrate/runtime/http-probe.ts';
 import { IdentityContext } from '../../substrate/runtime/paths.ts';
 import { CORS_MIDDLEWARE_FILENAME, renderCorsMiddlewareYaml } from './cors.ts';
 import { EntrypointRegistry, type EntrypointRegistryShape } from './entrypoints.ts';
 import {
 	DispatchWriteFailed,
+	RouteReadinessProbeFailed,
 	RouterBootFailed,
 	RouterDisabledRouteUnsupported,
 	RouterValidationError,
@@ -67,12 +69,18 @@ import {
 	detectCollisions,
 	parseDispatchRouteFile,
 	renderRouteYaml,
+	ROUTE_READINESS_HEADER,
 	resolveRoute,
 	ROUTER_ROUTE_LEASE_VERSION,
 } from './file-provider.ts';
 import { dispatchFileId } from './hostname.ts';
 import type { RouterProfile } from './profile.ts';
 import { bootstrap, type BootReport, TraefikContainerOpsService } from './traefik-container.ts';
+
+// Router operations are shared across every stack using the same Docker context.
+// Router boot and dispatch writes can legitimately queue behind parallel example
+// runs in CI, so use a longer lease timeout than normal metadata mutations.
+const ROUTER_LOCK_TIMEOUT_MILLIS = 120_000;
 
 // ---------------------------------------------------------------------------
 // RouterConfig — orchestrator-level knobs
@@ -94,6 +102,18 @@ export interface RouterConfigShape {
 	readonly profile: RouterProfile;
 	/** Traefik image (tag or digest). */
 	readonly image: string;
+	/** Optional production gate that waits for Traefik to serve each
+	 *  public HTTP route before the endpoint is published. Tests that
+	 *  use the stub Traefik layer omit this. */
+	readonly routeReadinessProbe?: RouteReadinessProbeConfig;
+}
+
+export interface RouteReadinessProbeConfig {
+	readonly enabled: boolean;
+	readonly timeoutMs?: number;
+	readonly intervalMs?: number;
+	readonly requestTimeoutMs?: number;
+	readonly fetch?: HttpProbeFetch;
 }
 
 export class RouterConfig extends Context.Service<RouterConfig, RouterConfigShape>()(
@@ -369,6 +389,9 @@ const validateWireProtocolFamily = (
 };
 
 const directLoopbackHost = '127.0.0.1';
+const DEFAULT_ROUTE_READINESS_TIMEOUT_MS = 5_000;
+const DEFAULT_ROUTE_READINESS_INTERVAL_MS = 100;
+const DEFAULT_ROUTE_READINESS_REQUEST_TIMEOUT_MS = 750;
 
 const resolveDisabledDirectRoute = (
 	identity: Identity,
@@ -416,6 +439,65 @@ const resolveDisabledDirectRoute = (
 			wireProtocol,
 		};
 	});
+
+const endpointFromResolvedRoute = (decl: RoutableDecl, resolved: ResolvedRoute): EndpointUrl => {
+	const url =
+		resolved.wireProtocol === 'tcp'
+			? `tcp://127.0.0.1:${resolved.entrypointPort}`
+			: `http://${resolved.hostname}:${resolved.entrypointPort}`;
+	return {
+		endpointName: decl.endpointName,
+		hostname: resolved.hostname,
+		entrypointPort: resolved.entrypointPort,
+		url,
+		wireProtocol: resolved.wireProtocol,
+	};
+};
+
+const removeDispatchFile = (
+	fs: FileSystem.FileSystem,
+	profile: RouterProfile,
+	resolved: ResolvedRoute,
+): Effect.Effect<void> =>
+	fs
+		.remove(path.join(profile.dispatchDir, dispatchFilename(resolved.dispatchFileId)))
+		.pipe(Effect.ignore);
+
+const waitForPublicRouteReadiness = (
+	cfg: RouterConfigShape,
+	endpoint: EndpointUrl,
+	resolved: ResolvedRoute,
+): Effect.Effect<void, RouteReadinessProbeFailed> => {
+	const options = cfg.routeReadinessProbe;
+	if (options?.enabled !== true || cfg.disabled || resolved.wireProtocol === 'tcp') {
+		return Effect.void;
+	}
+	const timeoutMs = options.timeoutMs ?? DEFAULT_ROUTE_READINESS_TIMEOUT_MS;
+	const intervalMs = options.intervalMs ?? DEFAULT_ROUTE_READINESS_INTERVAL_MS;
+	const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_ROUTE_READINESS_REQUEST_TIMEOUT_MS;
+	return waitForHttpEndpoint({
+		endpoint: endpoint.url,
+		timeoutMs,
+		intervalMs,
+		requestTimeoutMs,
+		...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+		validate: (response) =>
+			response.headers.get(ROUTE_READINESS_HEADER) === resolved.dispatchFileId,
+	}).pipe(
+		Effect.mapError(
+			(cause): RouteReadinessProbeFailed =>
+				new RouteReadinessProbeFailed({
+					dispatchFileId: resolved.dispatchFileId,
+					url: endpoint.url,
+					timeoutMs,
+					detail:
+						`public router endpoint ${endpoint.url} did not serve route ` +
+						`${resolved.dispatchFileId} within ${timeoutMs}ms`,
+					cause,
+				}),
+		),
+	);
+};
 
 // ---------------------------------------------------------------------------
 // Layer — wire the orchestrator
@@ -471,19 +553,9 @@ export const layerRouterService: Layer.Layer<
 				}
 				const cached = yield* Ref.get(bootRef);
 				if (cached !== null) return cached;
-				const report = yield* Effect.scoped(
+				const protectedRouteLeaseIds = yield* Effect.scoped(
 					Effect.gen(function* () {
-						yield* acquireStackLock(profile.bootstrapLockFile).pipe(
-							Effect.mapError(
-								(cause): RouterBootFailed =>
-									new RouterBootFailed({
-										stage: 'ensure-container',
-										detail: `failed to acquire router bootstrap lock ${profile.bootstrapLockFile}`,
-										cause,
-									}),
-							),
-						);
-						yield* acquireStackLock(profile.dispatchLockFile).pipe(
+						yield* acquireStackLock(profile.dispatchLockFile, ROUTER_LOCK_TIMEOUT_MILLIS).pipe(
 							Effect.mapError(
 								(cause): RouterBootFailed =>
 									new RouterBootFailed({
@@ -493,11 +565,9 @@ export const layerRouterService: Layer.Layer<
 									}),
 							),
 						);
-						// Write the shared CORS middleware file BEFORE starting
-						// the container — architecture distilled-doc §"Shared
-						// CORS middleware" and invariant #9. The `00-` filename
-						// prefix means Traefik's lexicographic load order picks
-						// this up before any `10-*` per-backend file.
+						// Write the shared CORS middleware file before reading
+						// active dispatch routes so the later bootstrap phase can
+						// hold only the bootstrap lock.
 						yield* fs.makeDirectory(profile.dispatchDir, { recursive: true }).pipe(
 							Effect.mapError(
 								(cause): RouterBootFailed =>
@@ -552,14 +622,29 @@ export const layerRouterService: Layer.Layer<
 									}),
 							),
 						);
+						return [
+							...activeDispatchRoutes.map((route) => route.dispatchFileId),
+							...existingDispatchScan.unknownRouteFileIds,
+						];
+					}),
+				);
+				const report = yield* Effect.scoped(
+					Effect.gen(function* () {
+						yield* acquireStackLock(profile.bootstrapLockFile, ROUTER_LOCK_TIMEOUT_MILLIS).pipe(
+							Effect.mapError(
+								(cause): RouterBootFailed =>
+									new RouterBootFailed({
+										stage: 'ensure-container',
+										detail: `failed to acquire router bootstrap lock ${profile.bootstrapLockFile}`,
+										cause,
+									}),
+							),
+						);
 						return yield* bootstrap({
 							image: cfg.image,
 							entrypoints: registry.all(),
 							profile,
-							protectedRouteLeaseIds: [
-								...activeDispatchRoutes.map((route) => route.dispatchFileId),
-								...existingDispatchScan.unknownRouteFileIds,
-							],
+							protectedRouteLeaseIds,
 						}).pipe(Effect.provideService(TraefikContainerOpsService, traefikOps));
 					}),
 				);
@@ -577,7 +662,8 @@ export const layerRouterService: Layer.Layer<
 					? yield* resolveDisabledDirectRoute(identity, decl, registry)
 					: yield* resolveRoute(identity, decl, registry, upstreams);
 				const lease = makeRouteLease(profile, identity);
-				const publish = Effect.gen(function* () {
+				const endpoint = endpointFromResolvedRoute(decl, resolved);
+				const publishRouteFile = Effect.gen(function* () {
 					// Collision check against this process's applied set
 					// plus files already present in the shared dispatch
 					// directory. The dispatch lock makes the scan + write a
@@ -642,15 +728,14 @@ export const layerRouterService: Layer.Layer<
 							Effect.provideService(FileSystem.FileSystem, fs),
 						);
 					}
-					yield* SubscriptionRef.update(applied, (arr) => [...arr, resolved]);
 				});
 
 				if (cfg.disabled) {
-					yield* publish;
+					yield* publishRouteFile;
 				} else {
 					yield* Effect.scoped(
 						Effect.gen(function* () {
-							yield* acquireStackLock(profile.dispatchLockFile).pipe(
+							yield* acquireStackLock(profile.dispatchLockFile, ROUTER_LOCK_TIMEOUT_MILLIS).pipe(
 								Effect.mapError(
 									(cause): DispatchWriteFailed =>
 										new DispatchWriteFailed({
@@ -661,25 +746,41 @@ export const layerRouterService: Layer.Layer<
 										}),
 								),
 							);
-							yield* publish;
+							yield* publishRouteFile;
 						}),
 					);
 				}
+
+				yield* waitForPublicRouteReadiness(cfg, endpoint, resolved).pipe(
+					Effect.onError(() =>
+						cfg.disabled
+							? Effect.void
+							: Effect.scoped(
+									Effect.gen(function* () {
+										yield* acquireStackLock(
+											profile.dispatchLockFile,
+											ROUTER_LOCK_TIMEOUT_MILLIS,
+										).pipe(Effect.ignore);
+										yield* removeDispatchFile(fs, profile, resolved);
+									}),
+								),
+					),
+				);
+				yield* SubscriptionRef.update(applied, (arr) => [...arr, resolved]);
 
 				// Scope finalizer — remove the file + drop from applied
 				// when the caller's scope closes. Best-effort: "already
 				// gone" is fine per distilled-doc.
 				yield* Effect.addFinalizer(() =>
 					Effect.gen(function* () {
-						const filePath = path.join(
-							profile.dispatchDir,
-							dispatchFilename(resolved.dispatchFileId),
-						);
 						if (!cfg.disabled) {
 							yield* Effect.scoped(
 								Effect.gen(function* () {
-									yield* acquireStackLock(profile.dispatchLockFile);
-									yield* fs.remove(filePath).pipe(Effect.ignore);
+									yield* acquireStackLock(
+										profile.dispatchLockFile,
+										ROUTER_LOCK_TIMEOUT_MILLIS,
+									);
+									yield* removeDispatchFile(fs, profile, resolved);
 								}),
 							).pipe(Effect.ignore);
 						}
@@ -689,22 +790,7 @@ export const layerRouterService: Layer.Layer<
 					}),
 				);
 
-				// Router-enabled TCP routes point at the Traefik TCP
-				// entrypoint on localhost. Disabled direct routes already
-				// carry the concrete host-loopback port in `resolved`.
-				// HTTP routes surface either the router-minted hostname or
-				// direct 127.0.0.1 host depending on the resolution path.
-				const url =
-					resolved.wireProtocol === 'tcp'
-						? `tcp://127.0.0.1:${resolved.entrypointPort}`
-						: `http://${resolved.hostname}:${resolved.entrypointPort}`;
-				return {
-					endpointName: decl.endpointName,
-					hostname: resolved.hostname,
-					entrypointPort: resolved.entrypointPort,
-					url,
-					wireProtocol: resolved.wireProtocol,
-				};
+				return endpoint;
 			}).pipe(Effect.withSpan('orchestrator.router.contributeRoute'));
 
 		return RouterService.of({ boot, contributeRoute, applied });

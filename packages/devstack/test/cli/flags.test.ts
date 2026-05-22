@@ -28,10 +28,11 @@ const makeHarness = () => {
 		apply: { run: () => Effect.succeed({ exitCode: 0 }) },
 		status: { reader: { readState: () => Effect.succeed(null) } },
 		snapshot: {
-			reader: { list: () => Effect.succeed([]), resolve: () => Effect.succeed(null) },
-			capture: () => Effect.void,
+			reader: { list: () => Effect.succeed([]), resolve: () => Effect.succeed({ tag: 'not-found' }) },
+			capture: () => Effect.succeed({ snapshotId: 'snap-test', name: 'manual-test' }),
 			restore: () => Effect.void,
 			delete: () => Effect.void,
+			confirm: () => Effect.succeed(true),
 		},
 		prune: {
 			inventory: () =>
@@ -74,7 +75,7 @@ const makeHarness = () => {
 					} as never),
 			},
 		},
-		wipe: { wipe: () => Effect.void },
+		wipe: { wipe: () => Effect.void, confirm: () => Effect.succeed(true) },
 	};
 	return { deps, io, stdout, stderr, exitCode: () => exitCode, upRuns };
 };

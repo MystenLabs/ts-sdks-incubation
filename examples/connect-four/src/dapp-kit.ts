@@ -77,7 +77,7 @@ const findDevWalletAccount = async (accountName: string) => {
 	throw new Error(`Dev Wallet account "${accountName}" (${address}) was not registered`);
 };
 
-const selectAccount = async (accountName: string) => {
+export const selectDevstackAccount = async (accountName: string) => {
 	await withWalletStoreMounted(async () => {
 		const { wallet, account } = await findDevWalletAccount(accountName);
 		const connection = dAppKit.stores.$connection.get();
@@ -90,8 +90,8 @@ const selectAccount = async (accountName: string) => {
 };
 
 (
-	globalThis as { __devstackDAppKit__?: { selectAccount?: typeof selectAccount } }
-).__devstackDAppKit__ = { selectAccount };
+	globalThis as { __devstackDAppKit__?: { selectAccount?: typeof selectDevstackAccount } }
+).__devstackDAppKit__ = { selectAccount: selectDevstackAccount };
 
 declare module '@mysten/dapp-kit-react' {
 	interface Register {

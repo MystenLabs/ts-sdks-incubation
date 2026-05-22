@@ -25,37 +25,40 @@ export class DevWalletSigningModal extends LitElement {
 		css`
 			:host {
 				display: block;
+				pointer-events: auto;
 			}
 
 			dialog {
-				width: 360px;
+				width: 440px;
 				max-width: calc(100vw - 32px);
-				max-height: min(600px, 80vh);
+				max-height: min(680px, 86vh);
 				border-radius: var(--dev-wallet-radius-xl);
-				background: var(--dev-wallet-background);
-				border: 1px solid var(--dev-wallet-border);
+				background: var(--dev-wallet-surface);
+				border: 1px solid var(--dev-wallet-border-2);
 				box-shadow: var(--dev-wallet-shadow-lg);
 				overflow: hidden;
 				display: flex;
 				flex-direction: column;
 				padding: 0;
 				color: inherit;
+				pointer-events: auto;
 			}
 
 			dialog::backdrop {
-				background: color-mix(in oklab, oklch(0 0 0) 50%, transparent);
+				background: rgba(2, 6, 14, 0.55);
 			}
 
 			.modal-header {
 				display: flex;
 				justify-content: space-between;
 				align-items: center;
-				padding: 14px 16px;
+				padding: 12px 14px;
 				border-bottom: 1px solid var(--dev-wallet-border);
+				background: var(--dev-wallet-bg-1);
 			}
 
 			.modal-title {
-				font-size: 15px;
+				font-size: 13px;
 				font-weight: var(--dev-wallet-font-weight-semibold);
 				color: var(--dev-wallet-foreground);
 			}

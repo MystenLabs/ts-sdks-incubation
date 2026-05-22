@@ -5,6 +5,12 @@
 		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 		<title>Sui Dev Wallet</title>
 		<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+		<link rel="preconnect" href="https://fonts.googleapis.com" />
+		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+		<link
+			href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap"
+			rel="stylesheet"
+		/>
 		<style>
 			* {
 				margin: 0;
@@ -13,29 +19,22 @@
 			}
 			body {
 				font-family:
+					'Geist',
 					ui-sans-serif,
 					system-ui,
 					-apple-system,
 					BlinkMacSystemFont,
 					'Segoe UI',
-					Roboto,
-					'Helvetica Neue',
-					Arial,
 					sans-serif;
-				background: oklch(0.175 0.028 283);
-				color: oklch(0.91 0 0);
+				background: #05080f;
+				color: #e6eefb;
 				min-height: 100vh;
 			}
 			#app {
-				display: flex;
-				flex-direction: column;
-				align-items: center;
-				justify-content: center;
 				min-height: 100vh;
-				padding: 20px;
 			}
 			.loading {
-				color: oklch(0.62 0.04 280);
+				color: #94a6c2;
 				font-size: 14px;
 			}
 		</style>
