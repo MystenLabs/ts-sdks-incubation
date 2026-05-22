@@ -1,0 +1,68 @@
+{
+	"name": "@mysten-incubation/keyring-signer",
+	"version": "0.0.1",
+	"description": "Cross-platform Sui signer backed by the OS keyring (macOS Keychain, Linux libsecret, Windows Credential Manager)",
+	"license": "Apache-2.0",
+	"author": "Mysten Labs <build@mystenlabs.com>",
+	"type": "module",
+	"main": "./dist/index.mjs",
+	"types": "./dist/index.d.mts",
+	"engines": {
+		"node": ">=22"
+	},
+	"exports": {
+		".": {
+			"types": "./dist/index.d.mts",
+			"import": "./dist/index.mjs"
+		}
+	},
+	"files": [
+		"CHANGELOG.md",
+		"dist",
+		"docs",
+		"src"
+	],
+	"scripts": {
+		"clean": "rm -rf tsconfig.tsbuildinfo ./dist ./docs",
+		"build:docs": "tsx ../docs/scripts/build-docs.ts",
+		"build": "rm -rf dist && tsc --noEmit && tsdown",
+		"prettier:check": "prettier -c --ignore-unknown .",
+		"prettier:fix": "prettier -w --ignore-unknown .",
+		"oxlint:check": "oxlint .",
+		"oxlint:fix": "oxlint --fix",
+		"lint": "pnpm run oxlint:check && pnpm run prettier:check",
+		"lint:fix": "pnpm run oxlint:fix && pnpm run prettier:fix",
+		"test": "vitest run --config vitest.config.ts"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/MystenLabs/ts-sdks-incubation.git"
+	},
+	"bugs": {
+		"url": "https://github.com/MystenLabs/ts-sdks-incubation/issues"
+	},
+	"keywords": [
+		"sui",
+		"keyring",
+		"keychain",
+		"signer",
+		"keypair",
+		"webcrypto"
+	],
+	"homepage": "https://github.com/MystenLabs/ts-sdks-incubation/tree/main/packages/keyring-signer#readme",
+	"devDependencies": {
+		"@mysten/signers": "^1.0.1",
+		"@mysten/sui": "^2.9.1",
+		"@types/node": "^25.0.8",
+		"typescript": "^5.9.3",
+		"vitest": "^4.0.17"
+	},
+	"dependencies": {
+		"@napi-rs/keyring": "^1.2.0",
+		"@noble/curves": "^2.0.1"
+	},
+	"peerDependencies": {
+		"@mysten/signers": "^1.0.1",
+		"@mysten/sui": "^2.9.1"
+	}
+}
