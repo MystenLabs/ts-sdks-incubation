@@ -11,7 +11,7 @@ Keep cleanup work scoped, break wrong APIs directly, and do not add compatibilit
 The live blocker ledger remains `UNRESOLVED-BLOCKERS.md`. This file is the broader cleanup plan for
 getting from "refactor in progress" to "release candidate".
 
-## P0 release blockers
+## P0 release checklist
 
 ### 1. Finish the current public API refactor - completed
 
@@ -101,7 +101,7 @@ Completed scope:
 
 ### 5. Close product proof from the blocker ledger
 
-Keep `UNRESOLVED-BLOCKERS.md` as the source of truth, but these are release blockers:
+Keep `UNRESOLVED-BLOCKERS.md` as the source of truth. These were the P0 release gates:
 
 - `private-content` browser proof for encrypt -> Walrus store -> Walrus fetch -> Seal decrypt:
   resolved 2026-05-22.
@@ -129,11 +129,11 @@ Keep `UNRESOLVED-BLOCKERS.md` as the source of truth, but these are release bloc
   tests. The snapshot-reservation orphan sweep now forces the PID/start-time check through the
   same-host path so stale same-PID reservations are swept instead of being treated as foreign-host
   alive.
-- Local package-preview proof is resolved for tarballs: devstack pack-consumer boot passes,
-  `npm pack --dry-run --json` passes for devstack and create-devstack-app, and a create-devstack-app
-  tarball install/bin smoke generated a correctly rewritten app without generated artifacts. The
-  actual `pkg.pr.new` / `pkg.new` preview install remains open until the release branch is ready to
-  cut a preview.
+- Package-preview proof is resolved for both tarballs and the real preview-distribution path:
+  devstack pack-consumer boot passes, `npm pack --dry-run --json` passes for devstack and
+  create-devstack-app, a create-devstack-app tarball install/bin smoke generated a correctly
+  rewritten app without generated artifacts, and the actual `pkg.pr.new` PR workflow published
+  preview packages that were installed into a scaffolded temp app and booted with `devstack apply`.
 - The live TUI proof exposed and fixed the router-profile conflict caused by preferring daemon ID
   over Docker context identity. Router profiles now prefer stable context/host identity, so the CLI
   adopts the existing router singleton instead of creating a second fixed-port router profile when
@@ -213,7 +213,10 @@ pnpm --filter @mysten-incubation/token-studio test:e2e
 pnpm --filter @mysten-incubation/deepbook-full test:e2e
 ```
 
-Manual release proof still open:
+Manual release proof completed on 2026-05-22:
 
-- Run the actual `pkg.pr.new` / `pkg.new` preview flow.
-- Install/scaffold from the preview packages instead of local tarballs.
+- The actual `pkg.pr.new` PR workflow published preview packages for `create-devstack-app`,
+  `dev-wallet`, `devstack`, and `tsconfig`.
+- A temp app was scaffolded from the preview `create-devstack-app`, installed against the preview
+  devstack/dev-wallet/tsconfig packages, booted with `devstack apply`, verified its manifest, and
+  wiped clean.

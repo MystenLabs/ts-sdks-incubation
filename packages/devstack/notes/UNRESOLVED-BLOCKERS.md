@@ -21,7 +21,10 @@ archaeology.
 - This repo is still prototype-only. Break wrong APIs directly; do not add shims, deprecated
   exports, or parallel v2 surfaces.
 
-## Open P0 blockers
+## P0 release evidence
+
+No P0 release blockers are currently open. Keep this section as the release-readiness evidence
+ledger.
 
 ### Private-content browser proof - resolved 2026-05-22
 
@@ -141,13 +144,32 @@ Current evidence:
   devstack-labeled networks, selected 3 non-shared networks for dry-run removal, and left shared
   router profile groups unselected by default.
 
-### Final package preview proof
+### Final package preview proof - resolved 2026-05-22
 
-Local tarball proof is current, but the real preview-distribution path still needs one final manual
-pass after the release branch settles.
+Local tarball proof and the real preview-distribution path are both current.
 
 Current evidence:
 
+- The `pkg-pr-new` CLI refuses local publishing with
+  `Continuous Releases are only available in GitHub Actions`, so the actual preview proof was run
+  through the PR workflow.
+- The `Continuous Releases (pkg.pr.new)` PR workflow passed on 2026-05-22 for the release-readiness
+  branch. It ran `pnpm turbo build --filter "./packages/*"`, reran
+  `pnpm --filter @mysten-incubation/devstack smoke:pack-consumer`, and published preview packages
+  for `@mysten-incubation/create-devstack-app`, `@mysten-incubation/dev-wallet`,
+  `@mysten-incubation/devstack`, and `@mysten-incubation/tsconfig`.
+- A temp consumer installed the preview `@mysten-incubation/create-devstack-app`, ran the published
+  `create-devstack-app` bin with `preview-smoke --no-install --no-git`, then installed the
+  scaffolded app against the preview `@mysten-incubation/devstack`, `@mysten-incubation/dev-wallet`,
+  and `@mysten-incubation/tsconfig` packages from `pkg.pr.new`.
+- In that preview-installed scaffolded app, `pnpm exec devstack --help` found the preview CLI and
+  `DEVSTACK_APP=preview-smoke pnpm exec devstack apply --state-dir .devstack-preview --app preview-smoke --stack main --network localnet`
+  booted the stack. The generated manifest had `identity.app === "preview-smoke"` and
+  `identity.stack === "main"`, and the scaffolded Vite app reached ready.
+- The temp proof stack was wiped with
+  `devstack wipe --state-dir .devstack-preview --app preview-smoke --stack main --yes --json`,
+  returning `ok: true`; follow-up Docker checks found no `preview-smoke` containers, volumes, or
+  networks.
 - `pnpm --filter @mysten-incubation/devstack smoke:pack-consumer` packs devstack, installs the
   tarball into a clean temp consumer, verifies root/Vite/runtime imports, verifies removed subpaths
   stay unexported, boots a minimal installed stack, checks the manifest and stack context, and runs
@@ -161,12 +183,6 @@ Current evidence:
   published `create-devstack-app` bin with `--no-install --no-git`, verify the generated app name
   and `DEVSTACK_APP` scripts are rewritten, verify the router origin is rewritten, and verify
   `src/generated` is absent.
-
-Still open:
-
-- Run the actual `pkg.pr.new` / `pkg.new` preview flow.
-- Install/scaffold from the preview packages instead of local tarballs, then boot one minimal stack
-  from those preview packages.
 
 ## Resolved P1 blockers and release classifications
 
