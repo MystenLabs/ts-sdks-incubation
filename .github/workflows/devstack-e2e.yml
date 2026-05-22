@@ -160,7 +160,7 @@ jobs:
         # loads every committed container image into Docker. Direct-node
         # invocation: see the seed job's apply step for the bin-symlink
         # rationale.
-        run: node ../../packages/devstack/dist/cli/main.mjs snapshot restore baseline --state-dir .devstack --app ${{ matrix.example }} --stack ${{ matrix.stack }}
+        run: node ../../packages/devstack/dist/cli/main.mjs snapshot restore baseline --state-dir .devstack --app ${{ matrix.example }} --stack ${{ matrix.stack }} --yes
 
       - name: Validate restored snapshot state
         working-directory: examples/${{ matrix.example }}
