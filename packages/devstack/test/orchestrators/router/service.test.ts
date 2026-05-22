@@ -542,7 +542,11 @@ describe('RouterService.contributeRoute', () => {
 					]);
 					const applied = yield* SubscriptionRef.get(router.applied);
 					expect(applied).toHaveLength(1);
-				}).pipe(Effect.provide(makeStackLayerWithRouteReadinessProbe(profile, fetch))),
+				}).pipe(
+					Effect.provide(
+						makeStackLayerWithRouteReadinessProbe(profile, fetch, { timeoutMs: 2_000 }),
+					),
+				),
 			);
 		}),
 	);
