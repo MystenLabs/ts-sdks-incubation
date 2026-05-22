@@ -5,6 +5,8 @@
 import { Effect } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
+import { account } from '../../../src/plugins/account/index.ts';
+import { coin } from '../../../src/plugins/coin/index.ts';
 import {
 	DEEPBOOK_DEEP_FAUCET_STRATEGY_KEY,
 	DEEPBOOK_TESTNET_DEEP_COIN_TYPE,
@@ -12,12 +14,14 @@ import {
 	deepbookFor,
 	type DeepbookResolved,
 } from '../../../src/plugins/deepbook/index.ts';
+import { localPackage } from '../../../src/plugins/package/index.ts';
 import { chainId } from '../../../src/substrate/brand.ts';
 import * as publicRoot from '../../../src/index.ts';
 import { isPlugin } from '../../../src/substrate/plugin.ts';
 import type { CodegenEmitContext, CodegenEmitDone } from '../../../src/contracts/codegenable.ts';
 
 const TESTNET_PYTH = {
+	packageId: null,
 	stateId: '0x243759059f4c3111179da5878c12f68d612c21a8d54d85edc86164bb18be1c7c',
 	wormholeStateId: '0x31358d198147da50db32eda2562951d53973a0c0ad5ed738e9b17d88b213d790',
 	feeds: [],
@@ -27,6 +31,16 @@ const OVERRIDE_IDS = {
 	registryId: '0xoverride-reg',
 	adminCapId: '0xoverride-admin',
 } as const;
+
+const deepbookPackageFor = (publisher: ReturnType<typeof account>) =>
+	localPackage('deepbook_pkg', {
+		sourcePath: 'move/deepbook',
+		publisher,
+		capture: {
+			registryId: '::registry::Registry',
+			adminCapId: '::registry::DeepbookAdminCap',
+		},
+	});
 
 describe('deepbook(opts) — primary factory', () => {
 	it('refuses override mode without explicit deployment ids', () => {
@@ -40,9 +54,66 @@ describe('deepbook(opts) — primary factory', () => {
 		expect(member.role).toBe('task');
 	});
 
+	it('produces a branded plugin for local mode', () => {
+		const publisher = account('publisher');
+		const deepbookPackage = deepbookPackageFor(publisher);
+		const member = deepbook({
+			mode: 'local',
+			publisher,
+			package: deepbookPackage,
+			pools: [] as const,
+		});
+		expect(isPlugin(member)).toBe(true);
+		expect(member.id).toMatch(/^deepbook\//);
+		expect(member.role).toBe('task');
+	});
+
 	it('depends only on Sui for override mode', () => {
 		const member = deepbook({ mode: 'override', ...OVERRIDE_IDS });
 		expect(member.dependsOn.map((resource) => resource.id)).toEqual(['sui']);
+	});
+
+	it('represents the publisher direct-value ref in dependencies', () => {
+		const publisher = account('publisher');
+		const deepbookPackage = deepbookPackageFor(publisher);
+		const member = deepbook({
+			mode: 'local',
+			publisher,
+			package: deepbookPackage,
+			pools: [] as const,
+		});
+		expect(member.dependsOn.map((resource) => resource.id)).toEqual([
+			'sui',
+			'account/publisher',
+			'package:deepbook_pkg',
+		]);
+	});
+
+	it('threads local pool coin refs through dependencies', () => {
+		const publisher = account('publisher');
+		const deepbookPackage = deepbookPackageFor(publisher);
+		const suiCoin = coin.builtin('sui');
+		const member = deepbook({
+			mode: 'local',
+			publisher,
+			package: deepbookPackage,
+			pools: [
+				{
+					name: 'SUI_SUI',
+					base: { key: 'SUI', coin: suiCoin },
+					quote: { key: 'SUI_QUOTE', coin: suiCoin },
+					tickSize: 1_000n,
+					lotSize: 1_000n,
+					minSize: 1_000n,
+				},
+			],
+		});
+		expect(member.dependsOn.map((resource) => resource.id)).toEqual([
+			'sui',
+			'account/publisher',
+			'package:deepbook_pkg',
+			'coin:sui',
+		]);
 	});
 
 	it('produces a task for known mode', () => {
@@ -121,8 +192,10 @@ describe('deepbook(opts) — primary factory', () => {
 		const emitted: {
 			deepbookBindings?: {
 				readonly pyth: {
-					readonly stateId: string;
-					readonly wormholeStateId: string;
+					readonly packageId: string | null;
+					readonly stateId: string | null;
+					readonly wormholeStateId: string | null;
+					readonly feeds: ReadonlyArray<unknown>;
 				} | null;
 			};
 		} = {};
@@ -138,8 +211,10 @@ describe('deepbook(opts) — primary factory', () => {
 			}),
 		);
 		expect(emitted.deepbookBindings?.pyth).toEqual({
+			packageId: TESTNET_PYTH.packageId,
 			stateId: TESTNET_PYTH.stateId,
 			wormholeStateId: TESTNET_PYTH.wormholeStateId,
+			feeds: [],
 		});
 	});
 
@@ -184,24 +259,23 @@ describe('deepbook(opts) — primary factory', () => {
 });
 
 describe('deepbookFor(network) — mode-narrowed namespace', () => {
-	it('exposes `.override` on a local network', () => {
+	it('exposes `.local`, `.override`, and `.known` on a local network', () => {
 		const network = { mode: 'local' as const, chain: chainId('sui:localnet') };
 		const factories = deepbookFor(network);
+		expect(typeof factories.local).toBe('function');
 		expect(typeof factories.override).toBe('function');
 		expect(typeof factories.known).toBe('function');
 	});
 
-	it('exposes `.known` (only) on a live network', () => {
+	it('exposes `.known` only on a live network', () => {
 		const network = { mode: 'live' as const, chain: chainId('sui:testnet') };
 		const factories = deepbookFor(network);
 		expect(typeof factories.known).toBe('function');
-		// `factories.override` doesn't exist on this branch — accessing
-		// it would be a compile error. Runtime check: the property
-		// is undefined.
+		expect((factories as { local?: unknown }).local).toBeUndefined();
 		expect((factories as { override?: unknown }).override).toBeUndefined();
 	});
 
-	it('exposes `.known` and refuses `.override` on a fork network', () => {
+	it('exposes `.known` only on a fork network', () => {
 		const network = {
 			mode: 'fork' as const,
 			chain: chainId('sui:mainnet-fork'),
@@ -209,9 +283,7 @@ describe('deepbookFor(network) — mode-narrowed namespace', () => {
 		};
 		const factories = deepbookFor(network);
 		expect(typeof factories.known).toBe('function');
-		// Defense-in-depth runtime refusal — the type-level refusal
-		// is the primary mechanism (`.override` does not exist on the
-		// fork branch's typed surface).
+		expect((factories as { local?: unknown }).local).toBeUndefined();
 		expect((factories as { override?: unknown }).override).toBeUndefined();
 	});
 });
@@ -237,10 +309,6 @@ describe('deepbook unsupported convenience factories', () => {
 			'USDC_MARGIN_DEFAULTS',
 			'SUI_MARGIN_DEFAULTS',
 			'DEFAULT_POOL_RISK_CONFIG',
-			'pythPriceFeedId',
-			'USDC_PRICE_FEED_ID',
-			'SUI_PRICE_FEED_ID',
-			'DEEP_PRICE_FEED_ID',
 		]) {
 			expect(Object.hasOwn(publicRoot, name)).toBe(false);
 		}

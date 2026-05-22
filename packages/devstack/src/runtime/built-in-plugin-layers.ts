@@ -34,12 +34,15 @@ const publishResultSink = (
 		Effect.gen(function* () {
 			for (const discovered of discoverCoinsFromPublish(decl.output)) {
 				const record: CoinRecord = {
-					key: discovered.witness,
+					key: (discovered.symbol ?? discovered.witness).toLowerCase(),
 					type: discovered.fullCoinType,
 					witness: discovered.witness,
 					moduleName: discovered.moduleName,
-					decimals: 0,
-					...(discovered.treasuryCapId === undefined
+					decimals: discovered.decimals ?? 0,
+					...(discovered.symbol === undefined ? {} : { symbol: discovered.symbol }),
+					...(discovered.displayName === undefined ? {} : { displayName: discovered.displayName }),
+					...(discovered.iconUrl === undefined ? {} : { iconUrl: discovered.iconUrl }),
+					...(!discovered.publisherOwnsCap || discovered.treasuryCapId === undefined
 						? {}
 						: { treasuryCapId: discovered.treasuryCapId }),
 					...(discovered.metadataId === undefined ? {} : { metadataId: discovered.metadataId }),

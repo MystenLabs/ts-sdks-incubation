@@ -12,6 +12,7 @@ export interface PackagePublishObjectChange {
 	readonly objectId?: string;
 	readonly objectType?: string;
 	readonly owner?: unknown;
+	readonly json?: unknown;
 }
 
 export interface PickCreatedByTypeOptions {

@@ -284,6 +284,9 @@ importers:
       '@mysten/dapp-kit-react':
         specifier: 'catalog:'
         version: 2.0.1(@mysten/sui@2.17.0(typescript@5.9.3))(@types/react@19.2.14)(react@19.2.5)(typescript@5.9.3)
+      '@mysten/deepbook-v3':
+        specifier: 'catalog:'
+        version: 1.4.1(@mysten/sui@2.17.0(typescript@5.9.3))
       '@mysten/sui':
         specifier: ^2.17.0
         version: 2.17.0(typescript@5.9.3)

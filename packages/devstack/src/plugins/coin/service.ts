@@ -122,28 +122,27 @@ export const acquireCoin = (
 		});
 
 		const mint: CoinValue['mint'] = (signer, opts) => {
-				const capId = opts.treasuryCapId ?? resolved.treasuryCapId;
-				if (capId === undefined) {
-					return Effect.fail(
-						coinError('cap-missing', {
-							identifier: resolved.fullCoinType,
-							message: `coin('${resolved.fullCoinType}').mint(): no treasury cap available — pass opts.treasuryCapId or use a coin discovered with publisherOwnsCap=true.`,
-						}),
-					);
-				}
-				const inputs: MintInputs = {
-					fullCoinType: resolved.fullCoinType,
-					treasuryCapId: capId,
-					recipient: opts.to,
-					amount: opts.amount,
-				};
-				return performMint(ctx.publisher, ctx.chain, signer, ctx.sdk, inputs);
+			const capId = opts.treasuryCapId ?? resolved.treasuryCapId;
+			if (capId === undefined) {
+				return Effect.fail(
+					coinError('cap-missing', {
+						identifier: resolved.fullCoinType,
+						message: `coin('${resolved.fullCoinType}').mint(): no treasury cap available — pass opts.treasuryCapId or use a coin discovered with publisherOwnsCap=true.`,
+					}),
+				);
+			}
+			const inputs: MintInputs = {
+				fullCoinType: resolved.fullCoinType,
+				treasuryCapId: capId,
+				recipient: opts.to,
+				amount: opts.amount,
 			};
+			return performMint(ctx.publisher, ctx.chain, signer, ctx.sdk, inputs);
+		};
 		const fundingSigner = form.kind === 'witness' ? form.fundingSigner : undefined;
 		const fundingTreasuryCapId = resolved.treasuryCapId;
 		const fundingStrategy =
-			fundingSigner !== undefined &&
-			fundingTreasuryCapId !== undefined
+			fundingSigner !== undefined && fundingTreasuryCapId !== undefined
 				? {
 						request: (req: { readonly address: string; readonly amount: bigint }) =>
 							Effect.scoped(

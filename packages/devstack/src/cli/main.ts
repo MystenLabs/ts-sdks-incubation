@@ -781,8 +781,12 @@ const isMainEntrypoint = (): boolean => {
 };
 
 if (isMainEntrypoint()) {
-	runCli().catch((err) => {
-		process.stderr.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
-		process.exitCode = 1;
-	});
+	runCli()
+		.catch((err) => {
+			process.stderr.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
+			process.exitCode = 1;
+		})
+		.then(() => {
+			process.exit(process.exitCode ?? 0);
+		});
 }

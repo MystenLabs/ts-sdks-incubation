@@ -130,7 +130,7 @@ const runSnapshotSave = (
 						? Effect.fail(cause)
 						: isSnapshotInputError(cause)
 							? Effect.fail(snapshotInputCliError(cause))
-						: Effect.fail(new CliInternalError({ message: 'snapshot capture failed', cause })),
+							: Effect.fail(new CliInternalError({ message: 'snapshot capture failed', cause })),
 				),
 			);
 		yield* emitSuccess(ctx.io, ctx.flags.outputMode, {

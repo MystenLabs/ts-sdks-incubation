@@ -7,10 +7,7 @@ import { Effect, Exit, Option, type Scope } from 'effect';
 
 import { definePlugin } from '../../../src/api/define-plugin.ts';
 import { pluginKey } from '../../../src/substrate/brand.ts';
-import {
-	Logger,
-	type LoggerShape,
-} from '../../../src/substrate/runtime/observability/index.ts';
+import { Logger, type LoggerShape } from '../../../src/substrate/runtime/observability/index.ts';
 import { CurrentPluginKey } from '../../../src/substrate/runtime/current-plugin.ts';
 import {
 	PortBrokerService,
@@ -289,15 +286,19 @@ describe('acquireHostService', () => {
 
 		return Effect.scoped(
 			Effect.gen(function* () {
-				const start = member.start(undefined).pipe(
-					Effect.provideService(PortBrokerService, broker),
-					Effect.provideService(Logger, fakeLogger),
-					Effect.provideService(CurrentPluginKey, { key: pluginKey('host-service-test#0') }),
-					Effect.provide(layerPostAcquireTasks),
-				) as Effect.Effect<HostServiceValue, unknown, Scope.Scope>;
+				const start = member
+					.start(undefined)
+					.pipe(
+						Effect.provideService(PortBrokerService, broker),
+						Effect.provideService(Logger, fakeLogger),
+						Effect.provideService(CurrentPluginKey, { key: pluginKey('host-service-test#0') }),
+						Effect.provide(layerPostAcquireTasks),
+					) as Effect.Effect<HostServiceValue, unknown, Scope.Scope>;
 				const value = yield* start;
 				expect(value.url).toBe('http://127.0.0.1:6173');
-				yield* Effect.promise<void>(() => new Promise((resolveReady) => setTimeout(resolveReady, 0)));
+				yield* Effect.promise<void>(
+					() => new Promise((resolveReady) => setTimeout(resolveReady, 0)),
+				);
 				expect(loggerLines).toContainEqual({
 					message: 'ready',
 					pluginKey: 'host-service-test#0',

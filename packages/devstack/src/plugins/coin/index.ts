@@ -62,15 +62,13 @@ export const coinResourceId = <Sym extends string>(symbol: Sym): `coin:${Sym}` =
 
 export type CoinResourceId<Sym extends string> = `coin:${Sym}`;
 
-type PackageNameOf<Pkg extends PackageMember> = Pkg extends ResourceRef<
-	`package:${infer Name}`,
-	PackageMemberValue
->
-	? Name
-	: string;
+type PackageNameOf<Pkg extends PackageMember> =
+	Pkg extends ResourceRef<`package:${infer Name}`, PackageMemberValue> ? Name : string;
 
-type PackageCoinResourceKey<Pkg extends PackageMember, Wit extends string> =
-	`${PackageNameOf<Pkg>}/${Lowercase<Wit>}`;
+type PackageCoinResourceKey<
+	Pkg extends PackageMember,
+	Wit extends string,
+> = `${PackageNameOf<Pkg>}/${Lowercase<Wit>}`;
 
 const packageNameFromMember = <Pkg extends PackageMember>(pkg: Pkg): PackageNameOf<Pkg> =>
 	pkg.id.slice('package:'.length) as PackageNameOf<Pkg>;
@@ -114,7 +112,7 @@ const projectCoinSdk = (sui: SuiClient): MetadataSdkShim & MintSdkShim => {
 
 const buildCapabilities = (symbol: string, resolved: CoinValue) => {
 	const bindings: CoinBindings = {
-		symbol,
+		symbol: resolved.symbol ?? symbol,
 		fullCoinType: resolved.fullCoinType,
 		decimals: resolved.decimals,
 		source: resolved.source,

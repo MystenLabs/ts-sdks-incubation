@@ -15,9 +15,7 @@ import type { PluginRole } from './lifecycle.ts';
 const resourceBrand: unique symbol = Symbol.for('devstack.resource') as never;
 const pluginBrand: unique symbol = Symbol.for('devstack.plugin') as never;
 const resourceValue: unique symbol = Symbol.for('devstack.resource.value') as never;
-const dependencyInputBrand: unique symbol = Symbol.for(
-	'devstack.plugin.dependency-input',
-) as never;
+const dependencyInputBrand: unique symbol = Symbol.for('devstack.plugin.dependency-input') as never;
 
 export interface ResourceRef<Id extends string, Value = unknown> {
 	readonly id: Id;

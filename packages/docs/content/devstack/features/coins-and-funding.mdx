@@ -62,7 +62,11 @@ export default defineDevstack({ members: [localnet, app], stackName: 'main' });
 - `coin.builtin('sui')` uses the protocol SUI type, `0x2::sui::SUI`, with known decimals.
 - `coin.fromPackage(member, witness)` resolves a coin published by a `localPackage(...)` or
   `knownPackage(...)` member. It adds a dependency edge on the package member, so package publish
-  and discovery complete before account funding tries to use the coin.
+  and discovery complete before account funding tries to use the coin. Local package coins that keep
+  the TreasuryCap with the publisher also contribute a centralized funding strategy, so account
+  funding, DeepBook pool seeding, and other consumers can mint them without bespoke seed actions.
+  Generated bindings use the discovered `CoinMetadata` or `coin_registry::Currency` fields when the
+  package publishes them.
 - `coin.known(fullCoinType)` resolves an already-deployed on-chain type through metadata reads.
 
 ## Managed Coins

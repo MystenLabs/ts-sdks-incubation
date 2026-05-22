@@ -142,7 +142,7 @@ export interface LocalModeOutputs {
  * same source under a different signer correctly misses (Invariant
  * 4: "Signer MUST be an explicit upstream").
  */
-const LOCAL_PACKAGE_CACHE_SCHEMA_VERSION = 'v2';
+const LOCAL_PACKAGE_CACHE_SCHEMA_VERSION = 'v3';
 
 const combineInputsHash = (sourceHash: string, publisherAddress: string) =>
 	brandContentHash(
@@ -366,15 +366,26 @@ export const acquireLocal = (
 			// or `Verified` (`{ objectId, type }` from the verifySchema).
 			// On verify-hit we project to a synthesized entry; on produce
 			// we already have the full shape. The cache-hit path needs
-			// to thread through the cached mvrPlaceholder + captured
-			// fields — but those aren't in the verify schema. We reuse the
-			// prior in-process registry entry as a hint (mirrors the
-			// verify-hint plumbing above).
+			// to thread through the cached mvrPlaceholder + output. Recompute
+			// `captured` from the current capture spec when cached output is
+			// present so changing capture keys does not require a republish.
 			register: (artifact) =>
 				Effect.gen(function* () {
 					const entry: CachedPackageEntry =
 						'packageId' in artifact
-							? artifact
+							? {
+									...artifact,
+									captured:
+										inputs.capture !== undefined && artifact.output !== undefined
+											? (() => {
+													try {
+														return inputs.capture(artifact.output);
+													} catch {
+														return artifact.captured;
+													}
+												})()
+											: artifact.captured,
+								}
 							: {
 									// Verify-hit path: project from the bare
 									// `{ objectId, type }` probe shape using the

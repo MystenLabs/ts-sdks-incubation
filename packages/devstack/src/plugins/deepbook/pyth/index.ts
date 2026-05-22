@@ -1,31 +1,17 @@
-// Pyth — INTERNAL module under the DeepBook plugin (per memory
-// `project_pyth_inside_deepbook`).
+// Pyth — internal module under the DeepBook plugin.
 //
-// Pyth is NOT a top-level devstack plugin. It is part of the
-// deepbook resolved value (`resolved.pyth: PythHandle | null`).
-//
-// Why an internal module:
-//
-//   - The user-facing DeepBook plugin includes the Pyth oracle
-//     wiring as an implementation detail (price feeds drive the
-//     deepbook margin module's risk math + the market-maker's mid).
-//   - Promoting Pyth to a top-level plugin would split the feature
-//     and force users to compose two plugins for one capability.
-//   - A future external market-maker need MAY promote Pyth to a
-//     top-level plugin; until then it lives here. See memory
-//     `project_pyth_inside_deepbook`.
-//
-// This module exports:
-//   - The publish flow (`publishPythPackage`) — uses artifact publisher via the
-//     `sui-tx` ChainOperation variant, signed by `pyth.pusher`.
-//   - The price-init flow (`initPythFeeds`) — one `update_price_feed`
-//     Move call per declared feed.
-//   - A long-running pusher fiber that keeps prices fresh.
+// Local mode uses the DeepBook sandbox's mock Pyth package shape: publish a
+// local Move package with `pyth::create_price_feeds`, then create shared
+// `PriceInfoObject`s for the requested feeds. This is intentionally not a
+// top-level devstack plugin; DeepBook owns the oracle wiring it needs.
 
-import { Effect, type Scope } from 'effect';
+import { createHash } from 'node:crypto';
+
+import { Effect, Schema, type Scope } from 'effect';
+import { Transaction } from '@mysten/sui/transactions';
+import { fromBase64, fromHex, toHex } from '@mysten/sui/utils';
 
 import type { ArtifactPublisher } from '../../../primitives/artifact-publisher.ts';
-import { compileChainOperation } from '../../../substrate/runtime/artifact-publisher/index.ts';
 import type {
 	ResolvedSigner,
 	SuiExecuteClient,
@@ -34,87 +20,343 @@ import { executeSuiTx } from '../../../substrate/runtime/sui-execute/index.ts';
 import {
 	chainId as brandChainId,
 	contentHash as brandContentHash,
+	type ContentHash,
 } from '../../../substrate/brand.ts';
+import type { SuiSdkShim } from '../../sui/chain-probe.ts';
 import { deepbookPluginError, type DeepbookPluginError } from '../errors.ts';
-import type { PythFeed, PythHandle } from '../types.ts';
+import type { PythFeed, PythHandle, PythPriceFeedId } from '../types.ts';
 
-// ---------------------------------------------------------------------------
-// Resolved values
-// ---------------------------------------------------------------------------
-
-export interface PythPublishResult {
-	readonly stateId: string;
-	readonly wormholeStateId: string;
+export interface PythDeployment {
 	readonly packageId: string;
-	readonly priceInfoObjectsBySymbol: Readonly<Record<string, string>>;
 }
 
-// ---------------------------------------------------------------------------
-// Publish — via artifact publisher / sui-tx variant
-// ---------------------------------------------------------------------------
+interface CachedPythFeed {
+	readonly symbol: string;
+	readonly feedId: string;
+	readonly priceInfoObjectId: string;
+	readonly price: string;
+	readonly expo: number;
+}
 
-/** Publish the Pyth + Wormhole packages and initialize per-feed
- *  price-info objects. Signed by `pyth.pusher`. The artifact publisher primitive
- *  handles cache → verify → produce → register; on warm restart a
- *  prior publish is reused.
- *
- *  Produce is expressed as `compileChainOperation` with `_tag:
- *  'sui-tx'` so the `sui-execute` substrate helper owns the
- *  sign/execute/wait/parse round-trip. */
-export const publishPythPackage = (
-	publisher: ArtifactPublisher,
-	client: SuiExecuteClient,
-	chain: string,
+interface CachedPythHandle {
+	readonly packageId: string;
+	readonly feeds: ReadonlyArray<CachedPythFeed>;
+}
+
+const CachedPythFeedSchema = Schema.Struct({
+	symbol: Schema.String,
+	feedId: Schema.String,
+	priceInfoObjectId: Schema.String,
+	price: Schema.String,
+	expo: Schema.Number,
+});
+
+const CachedPythHandleSchema = Schema.Struct({
+	packageId: Schema.String,
+	feeds: Schema.Array(CachedPythFeedSchema),
+});
+
+const DEFAULT_EXPO = -8;
+const PYTH_GAS_BUDGET = 200_000_000;
+
+const stableContentHash = (input: string): ContentHash =>
+	brandContentHash(createHash('sha256').update(input).digest('hex'));
+
+const normalizeFeedId = (feedId: string): string => feedId.replace(/^0x/i, '').toLowerCase();
+
+const feedExpo = (feed: PythFeed): number => feed.expo ?? DEFAULT_EXPO;
+
+const toCachedFeed = (feed: PythFeed, priceInfoObjectId: string): CachedPythFeed => ({
+	symbol: feed.symbol,
+	feedId: normalizeFeedId(feed.feedId),
+	priceInfoObjectId,
+	price: feed.initialPrice.toString(),
+	expo: feedExpo(feed),
+});
+
+const fromCachedHandle = (cached: CachedPythHandle): PythHandle => ({
+	packageId: cached.packageId,
+	stateId: null,
+	wormholeStateId: null,
+	feeds: cached.feeds.map((feed) => ({
+		symbol: feed.symbol,
+		feedId: normalizeFeedId(feed.feedId) as PythPriceFeedId,
+		priceInfoObjectId: feed.priceInfoObjectId,
+		price: BigInt(feed.price),
+		expo: feed.expo,
+	})),
+});
+
+const pythInputsHash = (
+	pkg: PythDeployment,
 	signer: ResolvedSigner,
 	feeds: ReadonlyArray<PythFeed>,
-): Effect.Effect<PythPublishResult, DeepbookPluginError, Scope.Scope> =>
-	Effect.gen(function* () {
-		// Hash inputs: signer address + sorted feed-id list. Two runs
-		// with the same signer + feeds share a cache key; changing
-		// either invalidates.
-		const sortedFeedIds = [...feeds]
-			.map((f) => f.feedId)
-			.sort()
-			.join('|');
-		const contentHash = brandContentHash(`pyth|${signer.address}|${sortedFeedIds}`);
+) =>
+	stableContentHash(
+		[
+			'v1',
+			pkg.packageId,
+			signer.address,
+			...feeds
+				.map((feed) =>
+					[
+						feed.symbol,
+						normalizeFeedId(feed.feedId),
+						feed.initialPrice.toString(),
+						feedExpo(feed).toString(),
+						(feed.confidence ?? 0n).toString(),
+						(feed.emaPrice ?? feed.initialPrice).toString(),
+					].join('|'),
+				)
+				.sort(),
+		].join('||'),
+	);
 
-		const produced = yield* publisher
-			.publish<PythPublishResult, null>({
+const buildVerifyProbe = (
+	sdk: SuiSdkShim,
+	cached: CachedPythHandle,
+): Effect.Effect<CachedPythHandle | null, never> =>
+	Effect.gen(function* () {
+		for (const feed of cached.feeds) {
+			const raw = yield* Effect.tryPromise({
+				try: () => sdk.core.getObject({ objectId: feed.priceInfoObjectId }),
+				catch: () => null,
+			}).pipe(Effect.catch(() => Effect.succeed(null)));
+			if (raw === null || raw === undefined) return null;
+		}
+		return cached;
+	});
+
+type SuiTransactionBuildClient = Parameters<Transaction['build']>[0] extends
+	| { readonly client?: infer C }
+	| undefined
+	? C
+	: never;
+
+const transactionBuildClient = (sdk: SuiSdkShim): SuiTransactionBuildClient =>
+	sdk.client as SuiTransactionBuildClient;
+
+const addI64 = (tx: Transaction, packageId: string, value: bigint | number) => {
+	const raw = BigInt(value);
+	const negative = raw < 0n;
+	return tx.moveCall({
+		target: `${packageId}::i64::new`,
+		arguments: [tx.pure.u64(negative ? -raw : raw), tx.pure.bool(negative)],
+	});
+};
+
+const addPriceInfo = (tx: Transaction, packageId: string, feed: PythFeed, timestamp: bigint) => {
+	const price = tx.moveCall({
+		target: `${packageId}::price::new`,
+		arguments: [
+			addI64(tx, packageId, feed.initialPrice),
+			tx.pure.u64(feed.confidence ?? 0n),
+			addI64(tx, packageId, BigInt(feedExpo(feed))),
+			tx.pure.u64(timestamp),
+		],
+	});
+	const emaPrice = tx.moveCall({
+		target: `${packageId}::price::new`,
+		arguments: [
+			addI64(tx, packageId, feed.emaPrice ?? feed.initialPrice),
+			tx.pure.u64(feed.confidence ?? 0n),
+			addI64(tx, packageId, BigInt(feedExpo(feed))),
+			tx.pure.u64(timestamp),
+		],
+	});
+	const priceIdentifier = tx.moveCall({
+		target: `${packageId}::price_identifier::from_byte_vec`,
+		arguments: [tx.pure.vector('u8', Array.from(fromHex(normalizeFeedId(feed.feedId))))],
+	});
+	const priceFeed = tx.moveCall({
+		target: `${packageId}::price_feed::new`,
+		arguments: [priceIdentifier, price, emaPrice],
+	});
+	return tx.moveCall({
+		target: `${packageId}::price_info::new_price_info`,
+		arguments: [tx.pure.u64(timestamp), tx.pure.u64(timestamp), priceFeed],
+	});
+};
+
+const priceObjectClient = (
+	sdk: SuiSdkShim,
+): {
+	readonly getObjects: (args: {
+		readonly objectIds: ReadonlyArray<string>;
+		readonly include: { readonly json: boolean };
+	}) => Promise<{
+		readonly objects: ReadonlyArray<
+			| Error
+			| {
+					readonly objectId: string;
+					readonly json?: unknown;
+			  }
+		>;
+	}>;
+} =>
+	sdk.client as {
+		readonly getObjects: (args: {
+			readonly objectIds: ReadonlyArray<string>;
+			readonly include: { readonly json: boolean };
+		}) => Promise<{
+			readonly objects: ReadonlyArray<
+				| Error
+				| {
+						readonly objectId: string;
+						readonly json?: unknown;
+				  }
+			>;
+		}>;
+	};
+
+const feedIdBytesFromJson = (bytes: unknown): Uint8Array | null => {
+	if (typeof bytes === 'string' && bytes.length > 0) {
+		try {
+			return fromBase64(bytes);
+		} catch {
+			return null;
+		}
+	}
+	if (!Array.isArray(bytes) || bytes.length === 0) return null;
+	if (!bytes.every((byte): byte is number => Number.isInteger(byte) && byte >= 0 && byte <= 255)) {
+		return null;
+	}
+	return Uint8Array.from(bytes);
+};
+
+export const feedIdFromJson = (json: unknown): string | null => {
+	if (typeof json !== 'object' || json === null) return null;
+	const priceInfo = (json as { readonly price_info?: unknown }).price_info;
+	if (typeof priceInfo !== 'object' || priceInfo === null) return null;
+	const priceFeed = (priceInfo as { readonly price_feed?: unknown }).price_feed;
+	if (typeof priceFeed !== 'object' || priceFeed === null) return null;
+	const priceIdentifier = (priceFeed as { readonly price_identifier?: unknown }).price_identifier;
+	if (typeof priceIdentifier !== 'object' || priceIdentifier === null) return null;
+	const bytes = (priceIdentifier as { readonly bytes?: unknown }).bytes;
+	const decoded = feedIdBytesFromJson(bytes);
+	if (decoded === null) return null;
+	return normalizeFeedId(toHex(decoded));
+};
+
+const mapCreatedPriceObjects = async (
+	sdk: SuiSdkShim,
+	objectIds: ReadonlyArray<string>,
+): Promise<ReadonlyMap<string, string>> => {
+	const objects = await priceObjectClient(sdk).getObjects({
+		objectIds,
+		include: { json: true },
+	});
+	const result = new Map<string, string>();
+	for (const object of objects.objects) {
+		if (object instanceof Error) continue;
+		const feedId = feedIdFromJson(object.json);
+		if (feedId !== null) result.set(feedId, object.objectId);
+	}
+	return result;
+};
+
+const pickCreatedPriceInfoObjects = (
+	changes: ReadonlyArray<{
+		readonly objectId: string;
+		readonly objectType?: string;
+		readonly idOperation?: string;
+	}>,
+): ReadonlyArray<string> =>
+	changes
+		.filter(
+			(change) =>
+				change.idOperation === 'Created' &&
+				change.objectType?.includes('::price_info::PriceInfoObject') === true,
+		)
+		.map((change) => change.objectId);
+
+/** Create shared mock-Pyth PriceInfoObjects for local DeepBook feeds. */
+export const initLocalPythFeeds = (
+	publisher: ArtifactPublisher,
+	sdk: SuiSdkShim,
+	chain: string,
+	signer: ResolvedSigner,
+	pkg: PythDeployment,
+	feeds: ReadonlyArray<PythFeed>,
+): Effect.Effect<PythHandle | null, DeepbookPluginError, Scope.Scope> =>
+	Effect.gen(function* () {
+		if (feeds.length === 0) return null;
+
+		const cached = yield* publisher
+			.publish<CachedPythHandle, CachedPythHandle>({
 				namespace: 'deepbook/pyth',
 				chain: brandChainId(chain),
-				contentHash,
-				// Pyth state ids are immutable once published — verify is a
-				// pure "did the cache exist" check; we return `null` to keep
-				// the verified type slot unused (cache-hit fast path).
-				verifySchema: null as unknown as never,
-				verify: () => Effect.succeed(null),
-				produce: compileChainOperation<PythPublishResult>({
-					_tag: 'sui-tx',
-					build: (_tx) => {
-						void _tx;
-					},
-					signer,
-					executor: (s, b) =>
-						executeSuiTx({ client, signer: s, build: () => b(undefined as never) as never }).pipe(
-							Effect.mapError(
-								(cause) =>
-									({
-										_tag: 'ArtifactPublishError',
-										reason: 'produce-failed',
-										detail: cause.message,
-									}) as const,
-							),
-							// The executor's `SuiEffects` slot is `unknown`; we
-							// don't decode here — parse below.
-							Effect.map((receipt) => receipt as unknown),
+				contentHash: pythInputsHash(pkg, signer, feeds),
+				verifySchema: CachedPythHandleSchema,
+				verify: (entry) => buildVerifyProbe(sdk, entry),
+				produce: Effect.gen(function* () {
+					const receipt = yield* executeSuiTx({
+						client: sdk.client as SuiExecuteClient,
+						signer,
+						build: async () => {
+							const tx = new Transaction();
+							tx.setSender(signer.address);
+							tx.setGasBudget(PYTH_GAS_BUDGET);
+							const timestamp = 0n;
+							const priceInfos = feeds.map((feed) =>
+								addPriceInfo(tx, pkg.packageId, feed, timestamp),
+							);
+							tx.moveCall({
+								target: `${pkg.packageId}::pyth::create_price_feeds`,
+								arguments: [
+									tx.makeMoveVec({
+										type: `${pkg.packageId}::price_info::PriceInfo`,
+										elements: priceInfos,
+									}),
+								],
+							});
+							return tx.build({ client: transactionBuildClient(sdk) });
+						},
+					}).pipe(
+						Effect.mapError(
+							(err) =>
+								({
+									_tag: 'ArtifactPublishError',
+									reason: 'produce-failed',
+									detail: `pyth feed transaction failed: ${err.message}`,
+								}) as const,
 						),
-					parse: (_effects) =>
-						Effect.fail({
+					);
+
+					const created = pickCreatedPriceInfoObjects(receipt.objectChanges);
+					if (created.length !== feeds.length) {
+						return yield* Effect.fail({
 							_tag: 'ArtifactPublishError' as const,
 							reason: 'produce-failed' as const,
 							detail:
-								'pyth publish requires a Wormhole/Pyth deployment transaction. Use deepbook known mode with an existing oracle deployment.',
-						}),
+								`expected ${feeds.length} Pyth PriceInfoObject creations, got ${created.length} ` +
+								`(digest=${receipt.digest}).`,
+						});
+					}
+					const idsByFeed = yield* Effect.tryPromise({
+						try: () => mapCreatedPriceObjects(sdk, created),
+						catch: (cause) =>
+							({
+								_tag: 'ArtifactPublishError',
+								reason: 'produce-failed',
+								detail: `failed to read created Pyth PriceInfoObjects: ${
+									cause instanceof Error ? cause.message : String(cause)
+								}`,
+							}) as const,
+					});
+					const cachedFeeds: CachedPythFeed[] = [];
+					for (const feed of feeds) {
+						const priceInfoObjectId = idsByFeed.get(normalizeFeedId(feed.feedId));
+						if (priceInfoObjectId === undefined) {
+							return yield* Effect.fail({
+								_tag: 'ArtifactPublishError' as const,
+								reason: 'produce-failed' as const,
+								detail: `created Pyth PriceInfoObject for '${feed.symbol}' was not found by feed id.`,
+							});
+						}
+						cachedFeeds.push(toCachedFeed(feed, priceInfoObjectId));
+					}
+					return { packageId: pkg.packageId, feeds: cachedFeeds };
 				}),
 				register: () => Effect.void,
 			})
@@ -122,72 +364,23 @@ export const publishPythPackage = (
 				Effect.mapError(
 					(err): DeepbookPluginError =>
 						deepbookPluginError(
-							'pyth-publish',
+							'pyth-feed',
 							err._tag === 'ArtifactPublishError' ? err.detail : String(err),
 						),
 				),
 			);
 
-		return produced as PythPublishResult;
-	});
+		return fromCachedHandle(cached);
+	}).pipe(
+		Effect.withSpan('devstack.plugin.deepbook.pyth.initFeeds', {
+			attributes: {
+				'pyth.packageId': pkg.packageId,
+				'pyth.feed.count': feeds.length,
+			},
+		}),
+	);
 
-// ---------------------------------------------------------------------------
-// Init feeds — one `update_price_feed` Move call per declared feed
-// ---------------------------------------------------------------------------
-
-/** Initialize per-feed price-info objects by calling
- *  `pyth::update_single_price_feed` once per feed. Idempotent — the
- *  feed's price info object is created on first call and re-priced on
- *  subsequent calls. */
-export const initPythFeeds = (
-	_publisher: ArtifactPublisher,
-	_client: SuiExecuteClient,
-	_chain: string,
-	_signer: ResolvedSigner,
-	_pyth: PythPublishResult,
-	feeds: ReadonlyArray<PythFeed>,
-): Effect.Effect<PythHandle, DeepbookPluginError, Scope.Scope> =>
-	Effect.gen(function* () {
-		const resolvedFeeds: Array<PythHandle['feeds'][number]> = [];
-		for (const feed of feeds) {
-			const priceInfoObjectId = _pyth.priceInfoObjectsBySymbol[feed.symbol];
-			if (priceInfoObjectId === undefined || priceInfoObjectId === '') {
-				return yield* Effect.fail(
-					deepbookPluginError(
-						'pyth-feed',
-						`pyth feed ${feed.symbol} has no price info object in the published deployment.`,
-					),
-				);
-			}
-			resolvedFeeds.push({
-				symbol: feed.symbol,
-				feedId: feed.feedId,
-				priceInfoObjectId,
-			});
-		}
-		return {
-			stateId: _pyth.stateId,
-			wormholeStateId: _pyth.wormholeStateId,
-			feeds: resolvedFeeds,
-		} satisfies PythHandle;
-	});
-
-// ---------------------------------------------------------------------------
-// Pusher fiber — long-running background loop refreshing prices
-// ---------------------------------------------------------------------------
-
-/** Start the pusher fiber. Forked via `Effect.forkScoped` by the
- *  DeepBook acquire body so the fiber dies with the surrounding
- *  scope. */
-export const pushPythPrices = (
-	_pyth: PythHandle,
-	_intervalMillis: number,
-): Effect.Effect<void, never, Scope.Scope> =>
-	Effect.gen(function* () {
-		yield* Effect.never;
-	}).pipe(Effect.withSpan('devstack.plugin.deepbook.pyth.pusher'));
-
-// Re-export the public Pyth user surface (folded inside deepbook).
+// Compatibility exports for callers/tests that import the internal module.
 export type { PythFeed, PythHandle, PythOptions } from '../types.ts';
 export {
 	DEEP_PRICE_FEED_ID,

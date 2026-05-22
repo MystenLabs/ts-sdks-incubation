@@ -100,7 +100,13 @@ export const SuiGetObjectResponseSchema = Schema.Struct({
  *  Coin plugin's `MintSdkShim.client`). */
 export interface SuiSdkShim {
 	readonly core: {
-		readonly getObject: (args: { readonly objectId: string }) => Promise<unknown>;
+		readonly getObject: (args: {
+			readonly objectId: string;
+			readonly include?: {
+				readonly content?: boolean;
+				readonly json?: boolean;
+			};
+		}) => Promise<unknown>;
 		readonly getTransaction: (args: { readonly digest: string }) => Promise<unknown>;
 		readonly getBalance: (args: {
 			readonly owner: string;

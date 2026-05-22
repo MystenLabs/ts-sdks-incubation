@@ -49,8 +49,17 @@ export const fetchChainId = (
 	opts?: { readonly timeout?: Duration.Duration; readonly span?: string },
 ): Effect.Effect<string, SuiPluginError> => {
 	const timeout = opts?.timeout ?? DEFAULT_CHAIN_ID_TIMEOUT;
+	const timeoutMs = Duration.toMillis(timeout);
 	return Effect.tryPromise({
-		try: () => sdkClient.core.getChainIdentifier().then((r) => r.chainIdentifier),
+		try: (signal) =>
+			sdkClient.ledgerService
+				.getServiceInfo({}, { abort: signal, timeout: timeoutMs })
+				.response.then((response) => {
+					if (!response.chainId) {
+						throw new Error('Chain identifier not found in service info');
+					}
+					return response.chainId;
+				}),
 		catch: (cause): SuiPluginError =>
 			suiPluginError(
 				'chain-id-fetch',
@@ -64,7 +73,7 @@ export const fetchChainId = (
 				Effect.fail(
 					suiPluginError(
 						'chain-id-fetch',
-						`sui chain-id fetch did not respond within ${Duration.toMillis(timeout)}ms`,
+						`sui chain-id fetch did not respond within ${timeoutMs}ms`,
 					),
 				),
 		}),
@@ -168,6 +177,108 @@ export const noopWaitForTransactionsReady: WaitForTransactionsReady = {
 	invalidate: Effect.void,
 };
 
+const SUI_RPC_READ_TIMEOUT_MS = 10_000;
+
+const postJsonRpc = async <A>(
+	rpcUrl: string,
+	method: string,
+	params: ReadonlyArray<unknown>,
+): Promise<A> => {
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), SUI_RPC_READ_TIMEOUT_MS);
+	timeout.unref?.();
+	try {
+		const response = await fetch(rpcUrl, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+			signal: controller.signal,
+		});
+		if (!response.ok) throw new Error(`Sui RPC HTTP ${response.status}`);
+		const payload = (await response.json()) as {
+			readonly result?: A;
+			readonly error?: { readonly message?: string };
+		};
+		if (payload.error !== undefined) {
+			throw new Error(payload.error.message ?? JSON.stringify(payload.error));
+		}
+		if (payload.result === undefined) throw new Error(`Sui RPC ${method} returned no result`);
+		return payload.result;
+	} finally {
+		clearTimeout(timeout);
+	}
+};
+
+const normalizeJsonOwner = (owner: unknown): unknown => {
+	if (owner === 'Immutable') return { $kind: 'Immutable', Immutable: true };
+	if (typeof owner !== 'object' || owner === null) return { $kind: 'Unknown', Unknown: owner };
+	const record = owner as {
+		readonly AddressOwner?: unknown;
+		readonly ObjectOwner?: unknown;
+		readonly Shared?: {
+			readonly initial_shared_version?: unknown;
+			readonly initialSharedVersion?: unknown;
+		};
+		readonly ConsensusAddressOwner?: unknown;
+	};
+	if (typeof record.AddressOwner === 'string') {
+		return { $kind: 'AddressOwner', AddressOwner: record.AddressOwner };
+	}
+	if (record.ObjectOwner !== undefined) {
+		return { $kind: 'Parent', Parent: record.ObjectOwner };
+	}
+	if (record.Shared !== undefined) {
+		const initialSharedVersion =
+			record.Shared.initialSharedVersion ?? record.Shared.initial_shared_version;
+		return {
+			$kind: 'Shared',
+			Shared: { initialSharedVersion: String(initialSharedVersion) },
+		};
+	}
+	if (record.ConsensusAddressOwner !== undefined) {
+		return { $kind: 'ConsensusAddressOwner', ConsensusAddressOwner: record.ConsensusAddressOwner };
+	}
+	return { $kind: 'Unknown', Unknown: owner };
+};
+
+const getObjectViaJsonRpc = async (
+	rpcUrl: string,
+	args: {
+		readonly objectId: string;
+		readonly include?: {
+			readonly content?: boolean;
+			readonly json?: boolean;
+		};
+	},
+): Promise<unknown> => {
+	const showContent = args.include?.content === true || args.include?.json === true;
+	const result = await postJsonRpc<{
+		readonly data?: {
+			readonly objectId?: string;
+			readonly version?: string | number;
+			readonly type?: string;
+			readonly owner?: unknown;
+			readonly content?: {
+				readonly fields?: unknown;
+			};
+		};
+	}>('' + rpcUrl, 'sui_getObject', [
+		args.objectId,
+		{ showType: true, showOwner: true, showContent },
+	]);
+	const data = result.data;
+	if (data?.objectId === undefined) throw new Error(`object ${args.objectId} not found`);
+	const object = {
+		objectId: data.objectId,
+		version: String(data.version ?? ''),
+		type: data.type ?? 'unknown',
+		owner: normalizeJsonOwner(data.owner),
+		...(args.include?.json === true ? { json: data.content?.fields } : {}),
+		...(args.include?.content === true ? { content: data.content } : {}),
+	};
+	return { ...object, object };
+};
+
 // ---------------------------------------------------------------------------
 // SuiClient assembly — collapses the per-mode boilerplate
 // ---------------------------------------------------------------------------
@@ -176,9 +287,9 @@ export const noopWaitForTransactionsReady: WaitForTransactionsReady = {
  *  Account/Coin/Wallet read through this seam, so we expose
  *  `executeTransaction` + `waitForTransaction` in addition to the
  *  read methods needed by the chain probe. */
-export const makeSdkShim = (sdkClient: SuiGrpcClient): SuiSdkShim => ({
+export const makeSdkShim = (sdkClient: SuiGrpcClient, rpcUrl: string): SuiSdkShim => ({
 	core: {
-		getObject: (args) => sdkClient.core.getObject(args),
+		getObject: (args) => getObjectViaJsonRpc(rpcUrl, args),
 		getTransaction: (args) => sdkClient.core.getTransaction(args),
 		getBalance: (args) => sdkClient.core.getBalance(args),
 		// Extended surfaces — used by the account plugin's sign + execute
@@ -219,6 +330,7 @@ export const assembleSuiClient = (parts: {
 	readonly sdkClient: SuiGrpcClient;
 	readonly chain: string;
 	readonly rpcUrl: string;
+	readonly sdkRpcUrl?: string;
 	readonly faucetUrl?: string;
 	readonly fundingFaucetUrl?: string;
 	readonly graphqlUrl?: string;
@@ -236,7 +348,7 @@ export const assembleSuiClient = (parts: {
 	readonly sdkShim: SuiSdkShim;
 	readonly chainProbe: ChainProbe<SuiProbeKey>;
 } => {
-	const sdkShim = makeSdkShim(parts.sdkClient);
+	const sdkShim = makeSdkShim(parts.sdkClient, parts.sdkRpcUrl ?? parts.rpcUrl);
 	const chainProbe = makeSuiChainProbe(sdkShim, parts.chain);
 	const client: SuiClient = {
 		sdk: sdkShim,

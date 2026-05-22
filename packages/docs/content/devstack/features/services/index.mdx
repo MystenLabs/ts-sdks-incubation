@@ -92,6 +92,11 @@ soon. See [Seal](./seal).
 
 ## DeepBook
 
+Local mode publishes or consumes a local DeepBook package, can initialize local Pyth price feeds,
+creates requested pools, and seeds those pools through the same faucet/funding path used by
+accounts. Coins should come from `coin.builtin('sui')` or `coin.fromPackage(...)` so the pool,
+funding, and generated bindings all share one resolved coin record.
+
 Known mode wraps a canonical or explicitly supplied deployment. Override mode can wrap
 caller-supplied deployment ids, but it does not publish or manage DeepBook locally.
 
@@ -108,8 +113,11 @@ export default defineDevstack({
 });
 ```
 
-The current DeepBook surface does not claim local pool creation, Pyth, margin, or market-maker
-behavior unless those fields are present in the resolved value. See [DeepBook](./deepbook).
+The current DeepBook surface only claims local pool creation, Pyth, margin, or market-maker behavior
+when those fields are present in the resolved value. Known mode still requires explicit deployed ids
+such as `packageId` and `registryId`, or a supported network shortcut. Local Pyth feeds are
+generated into the DeepBook bindings so app and Playwright code can assert the feed ids and initial
+prices that the stack created. See [DeepBook](./deepbook).
 
 ## Known on-chain dependencies
 

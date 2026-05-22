@@ -34,33 +34,33 @@ export const makeSnapshotReader = (identity: SnapshotReaderIdentity): SnapshotRe
 				const metaPath = resolvePath(dir, SnapshotLayout.metaFile);
 				if (!existsSync(metaPath)) {
 					return [
-							{
-								snapshotId: parsedEntryId,
-								name: null,
-								createdAt: fallbackCreatedAt,
-								size: null,
-							} satisfies SnapshotEntry,
+						{
+							snapshotId: parsedEntryId,
+							name: null,
+							createdAt: fallbackCreatedAt,
+							size: null,
+						} satisfies SnapshotEntry,
 					];
 				}
 				try {
 					const parsed = JSON.parse(readFileSync(metaPath, 'utf8')) as unknown;
 					const meta = decodeSnapshotMetadata(parsed);
 					return [
-							{
-								snapshotId: parsedEntryId,
-								name: meta.label,
-								createdAt: meta.createdAt,
-								size: null,
-							} satisfies SnapshotEntry,
+						{
+							snapshotId: parsedEntryId,
+							name: meta.label,
+							createdAt: meta.createdAt,
+							size: null,
+						} satisfies SnapshotEntry,
 					];
 				} catch {
 					return [
-							{
-								snapshotId: parsedEntryId,
-								name: null,
-								createdAt: fallbackCreatedAt,
-								size: null,
-							} satisfies SnapshotEntry,
+						{
+							snapshotId: parsedEntryId,
+							name: null,
+							createdAt: fallbackCreatedAt,
+							size: null,
+						} satisfies SnapshotEntry,
 					];
 				}
 			});

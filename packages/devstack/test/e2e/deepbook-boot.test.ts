@@ -1,34 +1,15 @@
-// Deepbook override-mode plugin — minimal-boot smoke test.
+// DeepBook composition smoke tests.
 //
-// Pins the public-surface composition contract:
-//
-//   defineDevstack(suiPlugin, deepbook({mode:'override', packageId, registryId, adminCapId}))
-//
-// compiles, validates (no `__MissingProvidersError`), and the resulting
-// Stack handle exposes a `deepbook/<name>` resource id.
-
-// Unsupported sub-features such as pools, local Pyth publishing,
-// margin, server, indexer, and market-maker are intentionally absent
-// from the public override options until they have real acquire behavior.
-// Known deployments do surface the matching Pyth state handles; the
-// exact binding shape is pinned in `test/plugins/deepbook/factory.test.ts`.
-// The type-level refusals live in `test/plugins/deepbook/type-refusal.test-d.ts`.
-//
-// This is NOT a docker-driven boot — that lives in the (future)
-// `deepbook-real-boot.test.ts` once the Move-publish substrate path
-// lands. The deepbook acquire body today short-circuits to a
-// resolved value populated from explicit override ids. Boot via the
-// docker harness would still require the upstream Move + indexer +
-// server images.
-//
-// The substrate-name-blind composition is the load-bearing surface
-// — pin it here so the plugin's `dependsOn` tuple and the
-// per-account-member ordering don't silently drift.
+// These are intentionally not docker-driven boots. They pin the public
+// composition contract for all supported modes so dependsOn ordering and
+// mode-narrowing drift surface before app-level e2e tests run.
 
 import { describe, expect, it } from 'vitest';
 
 import { defineDevstack, readStackEngine } from '../../src/api/define-devstack.ts';
+import { account } from '../../src/plugins/account/index.ts';
 import { deepbook } from '../../src/plugins/deepbook/index.ts';
+import { localPackage } from '../../src/plugins/package/index.ts';
 import { sui } from '../../src/plugins/sui/index.ts';
 
 const override = {
@@ -37,6 +18,16 @@ const override = {
 	registryId: '0xreg',
 	adminCapId: '0xadmin',
 } as const;
+
+const deepbookPackageFor = (publisher: ReturnType<typeof account>) =>
+	localPackage('deepbook_pkg', {
+		sourcePath: 'move/deepbook',
+		publisher,
+		capture: {
+			registryId: '::registry::Registry',
+			adminCapId: '::registry::DeepbookAdminCap',
+		},
+	});
 
 describe('deepbook + sui.local() composes via defineDevstack', () => {
 	it('override mode composes with explicit deployment ids', () => {
@@ -62,6 +53,50 @@ describe('deepbook + sui.local() composes via defineDevstack', () => {
 		expect(dex.id).toBe('deepbook/arena');
 		expect(dex.role).toBe('task');
 		expect(dex.dependsOn.map((resource) => resource.id)).toEqual(['sui']);
+	});
+
+	it('local mode composes with publisher and package refs', () => {
+		const suiPlugin = sui();
+		const publisher = account('publisher');
+		const deepbookPackage = deepbookPackageFor(publisher);
+		const dex = deepbook({
+			mode: 'local',
+			publisher,
+			package: deepbookPackage,
+			pools: [] as const,
+			name: 'main',
+		});
+
+		const stack = defineDevstack({
+			members: [suiPlugin, publisher, deepbookPackage, dex],
+			stackName: 'deepbook-smoke',
+		});
+		expect(stack._tag).toBe('Stack');
+		expect(readStackEngine(stack).members.length).toBe(4);
+		const ids = readStackEngine(stack).members.map((m) => m.id);
+		expect(ids).toContain('sui');
+		expect(ids).toContain('account/publisher');
+		expect(ids).toContain('package:deepbook_pkg');
+		expect(ids).toContain('deepbook/main');
+	});
+
+	it('local mode threads the publisher account ref through dependencies', () => {
+		const publisher = account('publisher');
+		const deepbookPackage = deepbookPackageFor(publisher);
+		const dex = deepbook({
+			mode: 'local',
+			publisher,
+			package: deepbookPackage,
+			pools: [] as const,
+			name: 'arena',
+		});
+		expect(dex.id).toBe('deepbook/arena');
+		expect(dex.role).toBe('task');
+		expect(dex.dependsOn.map((resource) => resource.id)).toEqual([
+			'sui',
+			'account/publisher',
+			'package:deepbook_pkg',
+		]);
 	});
 
 	it('known mode wraps a canonical deployment', () => {

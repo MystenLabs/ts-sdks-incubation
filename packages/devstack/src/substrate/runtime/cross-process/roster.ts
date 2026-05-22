@@ -360,10 +360,7 @@ const EMPTY_CLAIMS: ContainerClaimDocument = { version: 1, claims: [] };
 
 const claimsPath = (rosterFile: string): string => `${dirname(rosterFile)}/container-claims.json`;
 
-const isContainerClaimLive = (
-	claim: ContainerClaim,
-	ownHost: string = nodeHostname(),
-): boolean => {
+const isContainerClaimLive = (claim: ContainerClaim, ownHost: string = nodeHostname()): boolean => {
 	if (claim.hostname !== ownHost) return true;
 	if (!isPidAlive(claim.pid)) return false;
 	if (claim.startTime === undefined) return true;
@@ -407,10 +404,7 @@ export const readClaims = (
  *  interrupted process that could not run its scope finalizer. */
 export const pruneStaleClaims = (
 	paths: RosterPaths,
-): Effect.Effect<
-	ContainerClaimDocument,
-	RosterError | import('./stack-lock.ts').StackLockError
-> =>
+): Effect.Effect<ContainerClaimDocument, RosterError | import('./stack-lock.ts').StackLockError> =>
 	withStackLock(
 		paths,
 		Effect.gen(function* () {

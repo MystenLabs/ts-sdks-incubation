@@ -14,13 +14,17 @@
 // the raw discovered shape here. The input is structural so Coin does
 // not import Package internals.
 
-import { pickSuiFrameworkInnerGeneric } from './type-strings.ts';
+import {
+	pickSuiFrameworkInnerGeneric,
+	pickSuiFrameworkInnerGenericFromModule,
+} from './type-strings.ts';
 
 export interface CoinDiscoveryObjectChange {
 	readonly type: 'created' | 'published' | 'mutated' | 'wrapped' | 'transferred';
 	readonly objectId?: string;
 	readonly objectType?: string;
 	readonly owner?: unknown;
+	readonly json?: unknown;
 }
 
 export interface CoinDiscoveryPublishOutput {
@@ -41,10 +45,22 @@ export interface DiscoveredCoin {
 	readonly treasuryCapId?: string;
 	readonly treasuryCapOwner?: string;
 	readonly metadataId?: string;
+	readonly decimals?: number;
+	readonly symbol?: string;
+	readonly displayName?: string;
+	readonly iconUrl?: string;
 	/** True when the cap is address-owned by the publisher at the
 	 *  end of the publish tx. Distilled-doc invariant: the faucet's
 	 *  treasury-cap-mint auto-registration is gated off this flag. */
 	readonly publisherOwnsCap: boolean;
+}
+
+interface DiscoveredMetadata {
+	readonly id: string;
+	readonly decimals?: number;
+	readonly symbol?: string;
+	readonly displayName?: string;
+	readonly iconUrl?: string;
 }
 
 /** Extract module + witness from `0xPKG::module::Witness`. */
@@ -75,6 +91,40 @@ const pickAddressOwner = (change: CoinDiscoveryObjectChange): string | undefined
 	return undefined;
 };
 
+const pickString = (json: Record<string, unknown>, key: string): string | undefined => {
+	const value = json[key];
+	return typeof value === 'string' && value.length > 0 ? value : undefined;
+};
+
+const pickNumber = (json: Record<string, unknown>, key: string): number | undefined => {
+	const value = json[key];
+	return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+};
+
+const pickMetadata = (change: CoinDiscoveryObjectChange): Omit<DiscoveredMetadata, 'id'> | null => {
+	const json = change.json;
+	if (json === null || typeof json !== 'object' || Array.isArray(json)) return null;
+	const record = json as Record<string, unknown>;
+	const decimals = pickNumber(record, 'decimals');
+	const symbol = pickString(record, 'symbol');
+	const displayName = pickString(record, 'name');
+	const iconUrl = pickString(record, 'iconUrl') ?? pickString(record, 'icon_url');
+	if (
+		decimals === undefined &&
+		symbol === undefined &&
+		displayName === undefined &&
+		iconUrl === undefined
+	) {
+		return null;
+	}
+	return {
+		...(decimals === undefined ? {} : { decimals }),
+		...(symbol === undefined ? {} : { symbol }),
+		...(displayName === undefined ? {} : { displayName }),
+		...(iconUrl === undefined ? {} : { iconUrl }),
+	};
+};
+
 /** Walk a publish output for coin pairs.
  *
  *  Sort ascending by fullCoinType — distilled-doc invariant 6 — so
@@ -91,7 +141,7 @@ export const discoverCoinsFromPublish = (
 	// build per-coin records" is harder to read when the two object
 	// types interleave in the output.
 	const caps = new Map<string, { readonly id: string; readonly owner: string | undefined }>();
-	const metadata = new Map<string, string>();
+	const metadata = new Map<string, DiscoveredMetadata>();
 
 	for (const change of output.objectChanges) {
 		if (change.type !== 'created') continue;
@@ -106,7 +156,22 @@ export const discoverCoinsFromPublish = (
 		}
 		const metaInner = pickSuiFrameworkInnerGeneric(change.objectType, 'CoinMetadata');
 		if (metaInner !== null && change.objectId !== undefined) {
-			metadata.set(metaInner, change.objectId);
+			metadata.set(metaInner, {
+				id: change.objectId,
+				...(pickMetadata(change) ?? {}),
+			});
+			continue;
+		}
+		const currencyInner = pickSuiFrameworkInnerGenericFromModule(
+			change.objectType,
+			'coin_registry',
+			'Currency',
+		);
+		if (currencyInner !== null && change.objectId !== undefined) {
+			metadata.set(currencyInner, {
+				id: change.objectId,
+				...(pickMetadata(change) ?? {}),
+			});
 		}
 	}
 
@@ -119,7 +184,7 @@ export const discoverCoinsFromPublish = (
 		const parts = splitCoinType(fullCoinType);
 		if (!parts) continue;
 		const cap = caps.get(fullCoinType);
-		const metaId = metadata.get(fullCoinType);
+		const meta = metadata.get(fullCoinType);
 		const publisherOwnsCap = cap !== undefined && cap.owner === publisher;
 		records.push({
 			fullCoinType,
@@ -127,7 +192,11 @@ export const discoverCoinsFromPublish = (
 			moduleName: parts.moduleName.toLowerCase(),
 			treasuryCapId: cap?.id,
 			treasuryCapOwner: cap?.owner,
-			metadataId: metaId,
+			metadataId: meta?.id,
+			...(meta?.decimals === undefined ? {} : { decimals: meta.decimals }),
+			...(meta?.symbol === undefined ? {} : { symbol: meta.symbol }),
+			...(meta?.displayName === undefined ? {} : { displayName: meta.displayName }),
+			...(meta?.iconUrl === undefined ? {} : { iconUrl: meta.iconUrl }),
 			publisherOwnsCap,
 		});
 	}

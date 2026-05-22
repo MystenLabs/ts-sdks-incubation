@@ -204,9 +204,7 @@ function hasTransaction(result: unknown): result is {
 	return isRecord(tx) && typeof tx.digest === 'string';
 }
 
-function hasWaitForTransaction(
-	client: unknown,
-): client is {
+function hasWaitForTransaction(client: unknown): client is {
 	waitForTransaction: (a: {
 		readonly digest: string;
 		readonly include?: { readonly effects?: boolean };
@@ -258,7 +256,8 @@ function useSignAndExecute(): UseMutationResult<ExecutedTransaction, Error, Tran
 					digest: result.Transaction.digest,
 					include: { effects: true },
 				});
-				if (createdObjectIds.length === 0) createdObjectIds = createdObjectIdsFromResult(finalResult);
+				if (createdObjectIds.length === 0)
+					createdObjectIds = createdObjectIdsFromResult(finalResult);
 			}
 			return {
 				digest: result.Transaction.digest,
@@ -295,7 +294,8 @@ export function App() {
 		() => (chainGame === null ? emptyBoard() : boardFromChain(chainGame.boardColumns)),
 		[chainGame],
 	);
-	const turn = chainGame === null ? 'alice' : (playerForGameAddress(chainGame, chainGame.turn) ?? 'alice');
+	const turn =
+		chainGame === null ? 'alice' : (playerForGameAddress(chainGame, chainGame.turn) ?? 'alice');
 	const winnerPlayer =
 		chainGame?.winner === undefined || chainGame.winner === null
 			? null
@@ -311,15 +311,9 @@ export function App() {
 	const isBusy = isPending || activeFlow !== null;
 	const canMove = gameId !== null && !gameIsLoading && !isBusy && winner === null;
 	const canCreateLobby =
-		connectFourPackageId.length > 0 &&
-		lobbyId === null &&
-		gameId === null &&
-		!isBusy;
+		connectFourPackageId.length > 0 && lobbyId === null && gameId === null && !isBusy;
 	const canJoinLobby =
-		connectFourPackageId.length > 0 &&
-		lobbyId !== null &&
-		gameId === null &&
-		!isBusy;
+		connectFourPackageId.length > 0 && lobbyId !== null && gameId === null && !isBusy;
 
 	async function runAs(player: Player, flow: string, submit: () => Promise<void>) {
 		setError(null);
@@ -395,7 +389,9 @@ export function App() {
 						? 'Seat Bob'
 						: `${playerMeta[turn].label} to move`;
 	const moveButtonLabel =
-		activeFlow?.startsWith('play-') === true ? 'Submitting move...' : `Drop as ${playerMeta[turn].label}`;
+		activeFlow?.startsWith('play-') === true
+			? 'Submitting move...'
+			: `Drop as ${playerMeta[turn].label}`;
 	const gamePhase = gameId !== null ? 'playing' : lobbyId !== null ? 'joining' : 'opening';
 	const aliceStatus =
 		winner === 'alice'
@@ -441,12 +437,7 @@ export function App() {
 							</p>
 							<p className="meta">{filledCells}/42 on-chain moves</p>
 						</div>
-						<button
-							type="button"
-							className="ghost-button"
-							onClick={startNewGame}
-							disabled={isBusy}
-						>
+						<button type="button" className="ghost-button" onClick={startNewGame} disabled={isBusy}>
 							New game
 						</button>
 					</div>
