@@ -14,7 +14,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { buildContentHash } from '../../../src/runtime/docker/service.ts';
+import {
+	buildContentHash,
+	normalizeDockerInfoPlatform,
+} from '../../../src/runtime/docker/service.ts';
 
 describe('buildContentHash — unsigned hex projection', () => {
 	it('never emits a leading minus for any context shape', () => {
@@ -62,6 +65,13 @@ describe('buildContentHash — unsigned hex projection', () => {
 		const native = buildContentHash({ contextPath: '/tmp/ctx' });
 		const amd64 = buildContentHash({ contextPath: '/tmp/ctx', platform: 'linux/amd64' });
 		expect(native).not.toBe(amd64);
+	});
+
+	it('normalizes Docker daemon architecture names before platform hashing', () => {
+		expect(normalizeDockerInfoPlatform('linux/aarch64\n')).toBe('linux/arm64');
+		expect(normalizeDockerInfoPlatform('linux/x86_64')).toBe('linux/amd64');
+		expect(normalizeDockerInfoPlatform('linux/amd64')).toBe('linux/amd64');
+		expect(normalizeDockerInfoPlatform('invalid')).toBeNull();
 	});
 
 	it('differs when a build-context file changes', () => {

@@ -37,7 +37,7 @@ const devWallet = wallet({
 });
 const app = hostService({
 	name: 'app',
-	script: `pnpm exec vite --host 127.0.0.1 --strictPort --port ${HOST_SERVICE_PORT_TOKEN}`,
+	script: `pnpm exec vite --host 0.0.0.0 --strictPort --port ${HOST_SERVICE_PORT_TOKEN}`,
 	cwd: HERE,
 	port: DEV_PORT,
 	ready: { kind: 'http' },

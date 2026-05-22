@@ -112,9 +112,10 @@ const walletErrorContributions = pluginErrorContributions(WALLET_ERROR_TAGS);
  *
  *  ### Security defaults
  *
- *   - `bindAddress: '127.0.0.1'` (HIGH-SEC1). Only the loopback is
- *     bound; sibling-machine devices on the LAN cannot reach the
- *     signing endpoints.
+ *   - `bindAddress: '0.0.0.0'`. The router runs in Docker, so on
+ *     native Linux it reaches this host process through the Docker
+ *     host-gateway address instead of host loopback. The published
+ *     wallet URL remains stack-scoped through the router.
  *
  *   - `allowLocalhostVite: false`. The bare `http://localhost:<vite>`
  *     form is OFF by default — opt-in for headless test runners /
@@ -256,11 +257,12 @@ function makeWalletMember<Accounts extends ReadonlyArray<WalletAccountMember>>(
 					chain: identity.chain,
 					stateRoot: paths.stackRoot,
 					vitePortForThisStack: null,
-					allocatePort: (preferred) =>
+					allocatePort: (preferred, probeHost) =>
 						portBroker
 							.allocate({
 								kind: 'wallet',
 								preferredPort: preferred,
+								...(probeHost === undefined ? {} : { probeHost }),
 							})
 							.pipe(
 								Effect.map((alloc) => alloc.port),

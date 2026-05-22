@@ -86,8 +86,10 @@ export interface WalletOptions<
 	/** Preferred host port. Substrate's port broker forward-scans if
 	 *  this is taken. Default: substrate-picked (no preference). */
 	readonly port?: number;
-	/** NIC the HTTP server binds. HIGH-SEC1: `'127.0.0.1'` by default.
-	 *  Override to `'0.0.0.0'` only for devcontainer / WSL setups. */
+	/** NIC the HTTP server binds. Defaults to `'0.0.0.0'` because the
+	 *  router runs in Docker and must reach the host process through the
+	 *  host-gateway address on native Linux. The public wallet URL remains
+	 *  router-fronted and stack-scoped. */
 	readonly bindAddress?: string;
 	/** Opt-in: allowlist the bare `http://localhost:<vite-port>` form.
 	 *  Off by default to close the cross-stack pairing risk (see
@@ -111,6 +113,16 @@ export interface WalletValue {
 	readonly server: WalletServerHandle;
 }
 
+const WALLET_DEFAULT_BIND_ADDRESS = '0.0.0.0' as const;
+const WALLET_DIRECT_URL_HOST = '127.0.0.1' as const;
+type WalletPortProbeHost = '127.0.0.1' | '0.0.0.0';
+
+const portProbeHostForBindAddress = (bindAddress: string): WalletPortProbeHost =>
+	bindAddress === WALLET_DEFAULT_BIND_ADDRESS ? '0.0.0.0' : '127.0.0.1';
+
+const directUrlHostForBindAddress = (bindAddress: string): string =>
+	bindAddress === WALLET_DEFAULT_BIND_ADDRESS ? WALLET_DIRECT_URL_HOST : bindAddress;
+
 // ----------------------------------------------------------------------
 // Per-acquire context — supplied by the barrel
 // ----------------------------------------------------------------------
@@ -133,6 +145,7 @@ export interface WalletAcquireContext {
 	 *  the port without yielding from a substrate Layer. */
 	readonly allocatePort: (
 		preferred?: number,
+		probeHost?: WalletPortProbeHost,
 	) => Effect.Effect<number, WalletBootError, Scope.Scope>;
 	/** Account value resolver — the barrel hands this in keyed off the
 	 *  BuildContext so the service body stays substrate-agnostic. */
@@ -166,7 +179,8 @@ export interface WalletAcquireContext {
  *   - Token in URL fragment only: `pairing.ts:composePairUrl`.
  *   - Token NEVER in log lines: handlers log only `bearerValid:
  *     boolean`.
- *   - Default bindAddress `'127.0.0.1'` (HIGH-SEC1): defaulted here.
+ *   - Default bindAddress `'0.0.0.0'`: required for the Docker router to
+ *     reach host-loopback services on native Linux.
  *   - Stack-scoped origin allowlist (no cross-stack pairing risk):
  *     `origin-policy.ts:resolveOriginPolicy`.
  */
@@ -206,8 +220,11 @@ export const acquireWallet = (
 			accountsByAddress.set(acct.address, acct);
 		}
 
-		// 2. Port allocation.
-		const port = yield* ctx.allocatePort(opts.port);
+		// 2. Port allocation. Probe the same host family the real
+		//    listener uses, otherwise a process bound on a non-loopback
+		//    interface could race the wallet's all-interface listen.
+		const bindAddress = opts.bindAddress ?? WALLET_DEFAULT_BIND_ADDRESS;
+		const port = yield* ctx.allocatePort(opts.port, portProbeHostForBindAddress(bindAddress));
 
 		// 3. Token mint or rehydrate. Lives at the stack-scoped state root
 		//    so warm-start + snapshot-restore preserve the existing
@@ -228,7 +245,6 @@ export const acquireWallet = (
 		// 5. Start the HTTP server. The dispatcher in `server.ts` owns
 		//    route matching + the constant-time bearer compare + the
 		//    JSON envelope contract.
-		const bindAddress = opts.bindAddress ?? '127.0.0.1';
 		const serverConfig: WalletServerConfig = {
 			bindAddress,
 			port,
@@ -242,7 +258,8 @@ export const acquireWallet = (
 		// 6. Compose URLs. Router-fronted form when available, loopback
 		//    fallback otherwise. The token rides ONLY the fragment — never
 		//    a query param — per C13.
-		const walletUrl = ctx.routerFrontedUrl ?? `http://${bindAddress}:${port}`;
+		const walletUrl =
+			ctx.routerFrontedUrl ?? `http://${directUrlHostForBindAddress(bindAddress)}:${port}`;
 		const pairUrl = composePairUrl(walletUrl, token);
 
 		const bindings: DappKitConfigBindings = {

@@ -33,7 +33,7 @@ import type { ContainerLabelTuple } from '../../contracts/snapshotable.ts';
 import { chainId, contentHash } from '../../substrate/brand.ts';
 import { CacheService } from '../../substrate/runtime/cache/index.ts';
 import { StackPathsService } from '../../substrate/runtime/paths.ts';
-import { DockerHost, DockerSpawner } from './client.ts';
+import { DockerHost, DockerSpawner, dockerRunOk } from './client.ts';
 import {
 	assertContainerHandleOwned,
 	commit,
@@ -220,6 +220,35 @@ export const buildContentHash = (ctx: ContainerBuildContext): string => {
 		.digest('hex');
 };
 
+const DOCKER_ARCH_ALIASES: Readonly<Record<string, string>> = {
+	aarch64: 'arm64',
+	arm64: 'arm64',
+	x86_64: 'amd64',
+	amd64: 'amd64',
+};
+
+export const normalizeDockerInfoPlatform = (raw: string): string | null => {
+	const trimmed = raw.trim();
+	const slash = trimmed.indexOf('/');
+	if (slash <= 0 || slash === trimmed.length - 1) return null;
+	const os = trimmed.slice(0, slash);
+	const arch = trimmed.slice(slash + 1);
+	const normalizedArch = DOCKER_ARCH_ALIASES[arch] ?? arch;
+	return `${os}/${normalizedArch}`;
+};
+
+const inferDockerBuildPlatform = (): Effect.Effect<
+	string | null,
+	never,
+	DockerHost | DockerSpawner
+> =>
+	dockerRunOk('info', ['--format', '{{.OSType}}/{{.Architecture}}']).pipe(
+		Effect.map((result) =>
+			result.exitCode === 0 ? normalizeDockerInfoPlatform(result.stdout) : null,
+		),
+		Effect.catch(() => Effect.succeed(null)),
+	);
+
 export const layerContainerRuntimeDocker: Layer.Layer<
 	ContainerRuntimeService,
 	never,
@@ -250,42 +279,51 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 		const ensureImage = (
 			ctx: ContainerBuildContext,
 			expected?: ImageRef,
-		): Effect.Effect<ImageRef, ContainerRuntimeError> => {
-			// Architecture §8: bring-your-own-image vs build is a closed sum.
-			// The contract accepts `ContainerBuildContext` (build path);
-			// pull is exposed via `image.ts::pull` directly to plugins
-			// that need it (not through this contract entry point).
-			//
-			// Content-addressed cache: namespace is the constant
-			// `runtime-docker-build` (one substrate-owned namespace);
-			// chain is `n/a` (build artifacts are chain-independent);
-			// contentHash is a hash of the build context's identifying
-			// fields. The caller-supplied `expected.tag`, when present,
-			// is honoured as the on-host tag; absent, we derive a tag
-			// from the content hash so two unrelated contexts cannot
-			// collide on the sanitized contextPath form.
-			const hash = buildContentHash(ctx);
-			const tag = expected?.tag ?? `devstack-build:${hash.slice(0, 16)}`;
-			return ensureImageCached(
-				{
-					contextPath: ctx.contextPath,
-					dockerfile: ctx.dockerfile,
-					platform: ctx.platform,
-					buildArgs: ctx.buildArgs,
-					tag,
-				},
-				{
-					namespace: 'runtime-docker-build',
-					chain: chainId('n/a'),
-					contentHash: contentHash(hash),
-				},
-			).pipe(
-				Effect.map((digest) => refOf(digest, tag)),
-				mapToContractError,
-				Effect.provide(baseCtx),
-				Effect.withSpan('runtime.docker.contract.ensureImage'),
-			);
-		};
+		): Effect.Effect<ImageRef, ContainerRuntimeError> =>
+			Effect.gen(function* () {
+				const inferredPlatform =
+					ctx.platform === undefined
+						? yield* inferDockerBuildPlatform().pipe(Effect.provide(baseCtx))
+						: null;
+				const effectiveCtx =
+					ctx.platform === undefined && inferredPlatform !== null
+						? { ...ctx, platform: inferredPlatform }
+						: ctx;
+				// Architecture §8: bring-your-own-image vs build is a closed sum.
+				// The contract accepts `ContainerBuildContext` (build path);
+				// pull is exposed via `image.ts::pull` directly to plugins
+				// that need it (not through this contract entry point).
+				//
+				// Content-addressed cache: namespace is the constant
+				// `runtime-docker-build` (one substrate-owned namespace);
+				// chain is `n/a` (build artifacts are chain-independent);
+				// contentHash is a hash of the build context's identifying
+				// fields. The caller-supplied `expected.tag`, when present,
+				// is honoured as the on-host tag; absent, we derive a tag
+				// from the content hash so two unrelated contexts cannot
+				// collide on the sanitized contextPath form.
+				const hash = buildContentHash(effectiveCtx);
+				const tag = expected?.tag ?? `devstack-build:${hash.slice(0, 16)}`;
+				return yield* ensureImageCached(
+					{
+						contextPath: effectiveCtx.contextPath,
+						dockerfile: effectiveCtx.dockerfile,
+						platform: effectiveCtx.platform,
+						buildArgs: effectiveCtx.buildArgs,
+						tag,
+					},
+					{
+						namespace: 'runtime-docker-build',
+						chain: chainId('n/a'),
+						contentHash: contentHash(hash),
+					},
+				).pipe(
+					Effect.map((digest) => refOf(digest, tag)),
+					mapToContractError,
+					Effect.provide(baseCtx),
+					Effect.withSpan('runtime.docker.contract.ensureImage'),
+				);
+			});
 
 		const ensureNetworkContractImpl = (
 			spec: EnsureNetworkSpec,

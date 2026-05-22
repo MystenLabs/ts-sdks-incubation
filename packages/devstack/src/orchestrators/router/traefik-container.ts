@@ -43,7 +43,7 @@ import type { RouterProfile } from './profile.ts';
 
 export const TRAEFIK_DISPATCH_MOUNT_TARGET = '/etc/traefik/dispatch';
 export const ROUTER_PROFILE_LABEL = LabelKey.routerProfile;
-export const ROUTER_CONTAINER_SPEC_VERSION = '2';
+export const ROUTER_CONTAINER_SPEC_VERSION = '3';
 export const HOST_GATEWAY_ALIAS = 'host.docker.internal:host-gateway';
 
 /** Default Traefik image. Tag, not digest — distilled-doc open

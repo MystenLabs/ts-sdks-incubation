@@ -63,7 +63,7 @@ import {
  *  acquire body builds this from its resolved inputs (port broker,
  *  origin policy, accounts map, token). */
 export interface WalletServerConfig {
-	readonly bindAddress: string; // default '127.0.0.1' (HIGH-SEC1)
+	readonly bindAddress: string;
 	readonly port: number;
 	readonly token: PairingToken;
 	readonly policy: OriginPolicy;

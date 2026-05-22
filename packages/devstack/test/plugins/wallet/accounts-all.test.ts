@@ -25,6 +25,7 @@ import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
 
 import { defineDevstack, readStackEngine } from '../../../src/api/define-devstack.ts';
 import { account } from '../../../src/plugins/account/index.ts';
+import type { AccountValue } from '../../../src/plugins/account/service.ts';
 import { sui } from '../../../src/plugins/sui/index.ts';
 import {
 	WALLET_ACCOUNTS_ALL,
@@ -32,6 +33,19 @@ import {
 	wallet,
 } from '../../../src/plugins/wallet/index.ts';
 import { acquireWallet, type WalletAcquireContext } from '../../../src/plugins/wallet/service.ts';
+
+const fakeAccount = {
+	name: 'alice',
+	address: '0xabc',
+	scheme: 'ed25519',
+	publicKey: new Uint8Array(),
+	source: 'real',
+	funding: { requested: [], applied: [] },
+	signAndExecute: () => Effect.die('not reached'),
+	withTransactionSigner: () => Effect.die('not reached'),
+	signTransaction: () => Effect.die('not reached'),
+	signPersonalMessage: () => Effect.die('not reached'),
+} as unknown as AccountValue;
 
 describe('wallet({ accounts: "all" }) — D6 composer expansion', () => {
 	it('wallet() is shorthand for inferred nonempty accounts', () => {
@@ -162,6 +176,60 @@ describe('wallet({ accounts: "all" }) — D6 composer expansion', () => {
 			expect(err.value.phase).toBe('no-accounts');
 			expect(err.value.message).toContain('zero accounts');
 		}
+	});
+
+	it('defaults to a container-reachable bind address for routed stacks', async () => {
+		const stateRoot = `/tmp/devstack-wallet-bind-${Date.now()}`;
+		let allocation: { readonly preferred?: number; readonly probeHost?: string } | null = null;
+		const ctx: WalletAcquireContext = {
+			app: 'app',
+			stack: 'main',
+			chain: 'chain',
+			stateRoot,
+			vitePortForThisStack: null,
+			allocatePort: (preferred, probeHost) => {
+				allocation = { preferred, probeHost };
+				return Effect.succeed(0);
+			},
+			resolveAccounts: () => Effect.succeed([fakeAccount]),
+			routerFrontedUrl: 'http://api.app.localhost:6173',
+			routedAppOrigin: null,
+			supervisorCtx: undefined,
+		};
+
+		const value = await Effect.runPromise(
+			Effect.scoped(acquireWallet({ accounts: WALLET_ACCOUNTS_ALL }, ctx)).pipe(
+				Effect.provide(NodeFileSystem.layer),
+			),
+		);
+
+		expect(allocation).toEqual({ preferred: undefined, probeHost: '0.0.0.0' });
+		expect(value.server.url).toBe('http://0.0.0.0:0');
+		expect(value.url).toBe('http://api.app.localhost:6173');
+	});
+
+	it('keeps direct fallback URLs loopback-readable when binding all interfaces', async () => {
+		const stateRoot = `/tmp/devstack-wallet-direct-${Date.now()}`;
+		const ctx: WalletAcquireContext = {
+			app: 'app',
+			stack: 'main',
+			chain: 'chain',
+			stateRoot,
+			vitePortForThisStack: null,
+			allocatePort: () => Effect.succeed(0),
+			resolveAccounts: () => Effect.succeed([fakeAccount]),
+			routerFrontedUrl: null,
+			routedAppOrigin: null,
+			supervisorCtx: undefined,
+		};
+
+		const value = await Effect.runPromise(
+			Effect.scoped(acquireWallet({ accounts: WALLET_ACCOUNTS_ALL }, ctx)).pipe(
+				Effect.provide(NodeFileSystem.layer),
+			),
+		);
+
+		expect(value.url).toBe('http://127.0.0.1:0');
 	});
 });
 
