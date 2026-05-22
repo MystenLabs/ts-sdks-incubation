@@ -1,5 +1,7 @@
 // Seal plugin — SDK-backed Move publish + on-chain KeyServer register.
 
+import { createHash } from 'node:crypto';
+
 import { Effect, Schema, type Scope } from 'effect';
 
 import {
@@ -298,9 +300,21 @@ export const sealRegisterInputsHash = (
 	inputs: RegisterKeyServerTransactionInputs,
 	signerAddress: string,
 ): ContentHash =>
+	// Keep the cache key path-safe and bounded. The raw material includes
+	// a routed URL plus a long BLS public key; using it directly made the
+	// best-effort cache write miss on normal restarts.
 	contentHash(
-		`seal-register|package=${inputs.sealPackageId}|url=${inputs.keyServerUrl}|` +
-			`name=${inputs.keyServerName}|publicKey=${inputs.publicKeyHex}|signer=${signerAddress}`,
+		`seal-register-v2|${createHash('sha256')
+			.update(
+				JSON.stringify({
+					packageId: inputs.sealPackageId,
+					keyServerUrl: inputs.keyServerUrl,
+					keyServerName: inputs.keyServerName,
+					publicKeyHex: inputs.publicKeyHex,
+					signerAddress,
+				}),
+			)
+			.digest('hex')}`,
 	);
 
 export const parseRegisterKeyServerOutput = (stdout: string): SealKeyServerCached | null => {

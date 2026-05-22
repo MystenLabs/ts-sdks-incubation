@@ -222,15 +222,17 @@ describe('seal deploy publish helpers', () => {
 	});
 
 	it('splits publish and register cache hashes by their real SDK inputs', () => {
+		const registerHash = sealRegisterInputsHash(registerInputs, '0x1');
+		expect(registerHash).toMatch(/^seal-register-v2\|[0-9a-f]{64}$/);
+		expect(registerHash).not.toContain('http://');
+		expect(registerHash).not.toContain('/');
 		expect(sealPackageInputsHash(contentHash('source-a'), '0x1')).not.toBe(
 			sealPackageInputsHash(contentHash('source-a'), '0x2'),
 		);
-		expect(sealRegisterInputsHash(registerInputs, '0x1')).not.toBe(
+		expect(registerHash).not.toBe(
 			sealRegisterInputsHash({ ...registerInputs, publicKeyHex: '0x0a0b0d' }, '0x1'),
 		);
-		expect(sealRegisterInputsHash(registerInputs, '0x1')).not.toBe(
-			sealPackageInputsHash(contentHash('source-a'), '0x1'),
-		);
+		expect(registerHash).not.toBe(sealPackageInputsHash(contentHash('source-a'), '0x1'));
 	});
 
 	it.effect('lets the container build scrub cached Seal source locks the host cannot write', () =>

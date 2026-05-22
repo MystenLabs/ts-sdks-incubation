@@ -1,4 +1,10 @@
-import { SealClient, type SealCompatibleClient, SessionKey } from '@mysten/seal';
+import {
+	EncryptedObject,
+	SealClient,
+	type KeyServerConfig,
+	type SealCompatibleClient,
+	SessionKey,
+} from '@mysten/seal';
 import { Transaction } from '@mysten/sui/transactions';
 
 import { dAppKit } from '../dapp-kit.js';
@@ -15,17 +21,28 @@ let cachedClientKey = '';
  * if the deployment changes (e.g., a fresh `pnpm dev` registers a new
  * KeyServer object id).
  */
-export function getSealClient(suiClient: SealCompatibleClient): SealClient {
+const serverConfigsCacheKey = (configs: ReadonlyArray<KeyServerConfig>) =>
+	configs
+		.map(
+			(config) =>
+				`${config.objectId}:${config.weight}:${config.aggregatorUrl ?? ''}:${config.apiKeyName ?? ''}`,
+		)
+		.join('|');
+
+export function getSealClient(
+	suiClient: SealCompatibleClient,
+	serverConfigs: ReadonlyArray<KeyServerConfig> = deployment.seal?.serverConfigs ?? [],
+): SealClient {
 	if (!deployment.seal) {
 		throw new Error(
 			'getSealClient: seal bindings are missing. Did `devstack apply` complete the seal bootstrap step?',
 		);
 	}
-	const key = `${deployment.seal.keyServerObjectId}|${deployment.rpcUrl}`;
+	const key = `${serverConfigsCacheKey(serverConfigs)}|${deployment.rpcUrl}`;
 	if (cachedClient && cachedClientKey === key) return cachedClient;
 	cachedClient = new SealClient({
 		suiClient,
-		serverConfigs: [...deployment.seal.serverConfigs],
+		serverConfigs: [...serverConfigs],
 		// Self-signed key server in Open mode — the SDK can't verify it
 		// against the on-chain registration without the public key
 		// matching what we generated locally; skipping verification is
@@ -34,6 +51,15 @@ export function getSealClient(suiClient: SealCompatibleClient): SealClient {
 	});
 	cachedClientKey = key;
 	return cachedClient;
+}
+
+export function serverConfigsForEncryptedObject(encrypted: Uint8Array): KeyServerConfig[] {
+	const parsed = EncryptedObject.parse(encrypted);
+	const weights = new Map<string, number>();
+	for (const [objectId] of parsed.services) {
+		weights.set(objectId, (weights.get(objectId) ?? 0) + 1);
+	}
+	return Array.from(weights.entries()).map(([objectId, weight]) => ({ objectId, weight }));
 }
 
 /**
@@ -82,7 +108,7 @@ export async function decryptForFile(opts: {
 	sealIdHex: string;
 	encrypted: Uint8Array;
 }): Promise<Uint8Array> {
-	const seal = getSealClient(opts.suiClient);
+	const seal = getSealClient(opts.suiClient, serverConfigsForEncryptedObject(opts.encrypted));
 	if (!deployment.vaultPackageId) throw new Error('decryptForFile: vault package not deployed');
 
 	const sessionKey = await SessionKey.create({

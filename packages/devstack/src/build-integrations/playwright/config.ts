@@ -45,7 +45,7 @@ export interface PlaywrightBaseConfigShape {
 	readonly forbidOnly: boolean;
 	readonly retries: number;
 	readonly workers: number;
-	readonly reporter: ReadonlyArray<readonly [string, Record<string, unknown>?]> | string;
+	readonly reporter: Array<[string] | [string, Record<string, unknown>]> | string;
 	readonly globalSetup?: string;
 	readonly globalTeardown?: string;
 }
@@ -182,12 +182,12 @@ export const devstackPlaywrightUse = (
 	baseURL: resolveDevstackPlaywrightBaseURL(options),
 	trace: options.trace ?? 'on-first-retry',
 	screenshot: options.screenshot ?? 'only-on-failure',
-	...(options.use ?? {}),
+	...options.use,
 });
 
 export const devstackPlaywrightProjects = (
 	options: DevstackPlaywrightProjectsOptions = {},
-): ReadonlyArray<PlaywrightProjectShape> => [
+): PlaywrightProjectShape[] => [
 	{
 		name: 'chromium',
 		use: { browserName: 'chromium' },
