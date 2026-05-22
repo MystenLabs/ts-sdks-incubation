@@ -1,8 +1,9 @@
 // Ink app root — the React tree mounted by `render()`.
 //
-// Subscribes to the `SubscriptionRef<SubscribableState>` from the
-// substrate's projection layer. The subscription is the SINGLE source
-// of frame updates: no polling loops, no setInterval-driven sampling.
+// Reads from the `SubscriptionRef<SubscribableState>` from the
+// substrate's projection layer. The initial render samples the current
+// value synchronously; subsequent frame updates come from the
+// subscription. No polling loops, no setInterval-driven sampling.
 // The heartbeat component spins on its own timer for liveness, but
 // it does NOT trigger dashboard re-renders for projection data.
 //
@@ -46,7 +47,9 @@ export interface AppProps {
 }
 
 export const App = ({ stateRef, events, publish }: AppProps): React.JSX.Element => {
-	const [state, setState] = useState<SubscribableState | null>(null);
+	const [state, setState] = useState<SubscribableState>(() =>
+		Effect.runSync(SubscriptionRef.get(stateRef)),
+	);
 	const [eventLog, setEventLog] = useState<ReadonlyArray<EventLogLine>>([]);
 	const [snapshotPromptValue, setSnapshotPromptValue] = useState<string | null>(null);
 	const [snapshotStatus, setSnapshotStatus] = useState<SnapshotStatus | null>(null);
@@ -144,7 +147,6 @@ export const App = ({ stateRef, events, publish }: AppProps): React.JSX.Element 
 	}, [events]);
 
 	useEffect(() => {
-		if (state === null) return;
 		if (state.cycle.phase === 'shutting-down') {
 			setSnapshotPromptValue(null);
 			setSnapshotStatus(null);
@@ -155,7 +157,7 @@ export const App = ({ stateRef, events, publish }: AppProps): React.JSX.Element 
 			return;
 		}
 		shutdownLogged.current = false;
-	}, [state?.cycle.phase]);
+	}, [state.cycle.phase]);
 
 	return (
 		<>
@@ -164,16 +166,12 @@ export const App = ({ stateRef, events, publish }: AppProps): React.JSX.Element 
 				snapshotPromptValue={snapshotPromptValue}
 				onSnapshotPromptChange={setSnapshotPromptValue}
 			/>
-			{state === null ? (
-				<></>
-			) : (
-				<Dashboard
-					state={state}
-					eventLog={eventLog}
-					snapshotPromptValue={snapshotPromptValue}
-					snapshotStatus={snapshotStatus}
-				/>
-			)}
+			<Dashboard
+				state={state}
+				eventLog={eventLog}
+				snapshotPromptValue={snapshotPromptValue}
+				snapshotStatus={snapshotStatus}
+			/>
 		</>
 	);
 };
