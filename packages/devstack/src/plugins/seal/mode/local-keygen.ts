@@ -165,6 +165,8 @@ export interface LocalKeygenDeps {
 interface PersistedLocalKeygenState {
 	readonly packageId: string;
 	readonly keyServerObjectId: string;
+	readonly nodeUrl: string;
+	readonly masterKey: string;
 	readonly masterKeyEnvFile: string;
 }
 
@@ -195,6 +197,47 @@ const readPersistedLocalKeygenState = (
 		return {
 			packageId: parsedConfig.sealPackageId,
 			keyServerObjectId: parsedConfig.keyServerObjectId,
+			nodeUrl: parsedConfig.nodeUrl,
+			masterKey,
+			masterKeyEnvFile,
+		};
+	});
+
+const sealConfigFingerprint = (parts: {
+	readonly packageId: string;
+	readonly keyServerObjectId: string;
+	readonly nodeUrl: string;
+}): string =>
+	[
+		`package=${parts.packageId}`,
+		`keyServer=${parts.keyServerObjectId}`,
+		`nodeUrl=${parts.nodeUrl}`,
+	].join('|');
+
+const refreshPersistedLocalKeygenState = (
+	deps: LocalKeygenDeps,
+	opts: ResolvedLocalKeygenOptions,
+	state: PersistedLocalKeygenState,
+): Effect.Effect<PersistedLocalKeygenState, SealError, FileSystem.FileSystem> =>
+	Effect.gen(function* () {
+		if (state.nodeUrl === deps.suiRpcUrlInNetwork) {
+			return state;
+		}
+
+		const yaml = renderSealKeyServerConfig({
+			sealPackageId: state.packageId,
+			nodeUrl: deps.suiRpcUrlInNetwork,
+			keyServerObjectId: state.keyServerObjectId,
+		});
+		const { masterKeyEnvFile } = yield* stageSealConfig(
+			yaml,
+			state.masterKey,
+			deps.servicePath,
+			opts.name,
+		);
+		return {
+			...state,
+			nodeUrl: deps.suiRpcUrlInNetwork,
 			masterKeyEnvFile,
 		};
 	});
@@ -213,6 +256,11 @@ const startLocalKeygenContainer = (
 			labels: deps.labels,
 			suiNetwork: deps.suiNetworkName,
 			servicePath: deps.servicePath,
+			configFingerprint: sealConfigFingerprint({
+				packageId: state.packageId,
+				keyServerObjectId: state.keyServerObjectId,
+				nodeUrl: deps.suiRpcUrlInNetwork,
+			}),
 			routedHostname: deps.routedHostname,
 			routedUrl: deps.routedUrl,
 			readyTimeoutMs: opts.readyTimeoutMs,
@@ -268,7 +316,8 @@ export const bootLocalKeygen = (
 
 		const persisted = yield* readPersistedLocalKeygenState(deps.servicePath);
 		if (persisted !== null) {
-			return yield* startLocalKeygenContainer(deps, opts, cargoImage, persisted);
+			const refreshed = yield* refreshPersistedLocalKeygenState(deps, opts, persisted);
+			return yield* startLocalKeygenContainer(deps, opts, cargoImage, refreshed);
 		}
 
 		// ---- move source resolve (bootstrap asset, conditional) --
@@ -332,6 +381,8 @@ export const bootLocalKeygen = (
 		return yield* startLocalKeygenContainer(deps, opts, cargoImage, {
 			packageId,
 			keyServerObjectId,
+			nodeUrl: deps.suiRpcUrlInNetwork,
+			masterKey: keypair.masterKey,
 			masterKeyEnvFile,
 		});
 	}).pipe(

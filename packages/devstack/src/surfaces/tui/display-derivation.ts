@@ -490,9 +490,8 @@ export const narrationFor = (phase: PhaseNarration | null, status: LifecycleStat
 const ERR_SUMMARY_TRUNC = 120;
 
 /**
- * Pure: `Row.lastError` → renderable in-row summary. The full cascade
- * is reachable via the error pane (which calls the L0 cascade
- * formatter); this summary is for the row itself.
+ * Pure: `Row.lastError` → renderable in-row summary. Keep it short;
+ * detailed error context belongs in the activity/log stream.
  */
 export const errorSummaryFor = (error: StructuredError | null): string => {
 	if (error === null) return '';
@@ -573,7 +572,9 @@ const accountFundingLine = (funding: AccountProjection['funding']): string => {
 	const entries = funding.entries ?? [];
 	if (entries.length > 0) {
 		const rendered = entries
-			.map((entry) => `${entry.coin}:${entry.amount}${entry.status === 'skipped' ? ' skipped' : ''}`)
+			.map(
+				(entry) => `${entry.coin}:${entry.amount}${entry.status === 'skipped' ? ' skipped' : ''}`,
+			)
 			.join(', ');
 		return funding.status === 'funded' ? `funded ${rendered}` : `funding ${rendered}`;
 	}

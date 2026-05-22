@@ -52,6 +52,7 @@ const SAMPLE_INPUTS: KeyServerSpecInputs = {
 	},
 	suiNetwork: 'seal-seal-net',
 	servicePath: '/tmp/devstack/runtime/seal/seal',
+	configFingerprint: 'package=0x7|keyServer=0xabc123|nodeUrl=http://host.docker.internal:9000',
 	routedHostname: 'seal.seal.app.localhost',
 	routedUrl: 'http://seal.seal.app.localhost',
 };
@@ -126,6 +127,9 @@ describe('buildKeyServerSpec — distilled-doc invariants', () => {
 		expect(ensureSpec.configHash).toContain(
 			'config=/devstack/runtime/seal/seal/key-server-config.yaml',
 		);
+		expect(ensureSpec.configHash).toContain(
+			'content=package=0x7|keyServer=0xabc123|nodeUrl=http://host.docker.internal:9000',
+		);
 		// Sanity: master-key envfile path the spec uses for the bind-
 		// mount source is under the servicePath dir (so the host file
 		// the entrypoint shell sources is the rendered one).
@@ -180,6 +184,18 @@ describe('buildKeyServerSpec — distilled-doc invariants', () => {
 				readonly: true,
 			},
 		]);
+	});
+
+	it('recreate fingerprint changes when the rendered Sui RPC URL changes', () => {
+		const first = buildKeyServerEnsureContainerSpec(buildKeyServerSpec(SAMPLE_INPUTS));
+		const second = buildKeyServerEnsureContainerSpec(
+			buildKeyServerSpec({
+				...SAMPLE_INPUTS,
+				configFingerprint:
+					'package=0x7|keyServer=0xabc123|nodeUrl=http://host.docker.internal:51001',
+			}),
+		);
+		expect(first.configHash).not.toBe(second.configHash);
 	});
 
 	it('signal-forwarding stop grace is 15s (invariant #7 — daemon needs SIGINT-forward window)', () => {

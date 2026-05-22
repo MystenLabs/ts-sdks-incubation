@@ -15,6 +15,7 @@ import {
 	SUI_FULL_COIN_TYPE,
 	type AccountFundingRequest,
 	type AccountFundingStrategy,
+	type FundingBalanceReader,
 	type ProjectedFundingEntry,
 } from '../../../src/plugins/account/funding.ts';
 import { withAddressLease } from '../../../src/plugins/account/lease.ts';
@@ -40,7 +41,10 @@ const fundingEntry = (overrides: Partial<ProjectedFundingEntry> = {}): Projected
 	...overrides,
 });
 
-const applyFunding = (funding: ReadonlyArray<ProjectedFundingEntry>) =>
+const applyFunding = (
+	funding: ReadonlyArray<ProjectedFundingEntry>,
+	balanceReader?: FundingBalanceReader,
+) =>
 	Effect.gen(function* () {
 		const broker = yield* LeaseBrokerService;
 		return yield* applyCrossCuttingFunding({
@@ -51,6 +55,7 @@ const applyFunding = (funding: ReadonlyArray<ProjectedFundingEntry>) =>
 			funding,
 			chainId: chainId('sui:localnet'),
 			broker,
+			...(balanceReader !== undefined ? { balanceReader } : {}),
 		});
 	});
 
@@ -126,6 +131,49 @@ describe('account cross-cutting funding dispatch', () => {
 				}),
 			),
 		),
+	);
+
+	it.effect('treats already-satisfied funding entries as applied without calling a strategy', () =>
+		withFundingLayers(
+			Effect.scoped(
+				Effect.gen(function* () {
+					const registry = yield* StrategyRegistryService;
+					let called = false;
+					yield* registry.register('coinType:0xfeed::wal::WAL', {
+						request: () => Effect.sync(() => void (called = true)),
+					} satisfies AccountFundingStrategy);
+
+					const applied = yield* applyFunding([fundingEntry()], {
+						readBalance: () => Effect.succeed(123n),
+					});
+
+					expect(applied).toEqual([fundingEntry()]);
+					expect(called).toBe(false);
+				}),
+			),
+		),
+	);
+
+	it.effect(
+		'does not require a faucet strategy when explicit SUI funding is already satisfied',
+		() =>
+			withFundingLayers(
+				Effect.scoped(
+					Effect.gen(function* () {
+						const sui = fundingEntry({
+							coin: 'SUI',
+							fullCoinType: SUI_FULL_COIN_TYPE,
+							amount: 1_000_000n,
+						});
+
+						const applied = yield* applyFunding([sui], {
+							readBalance: () => Effect.succeed(1_000_000n),
+						});
+
+						expect(applied).toEqual([sui]);
+					}),
+				),
+			),
 	);
 
 	it.effect('lets account-signer strategies own the per-address lease', () =>

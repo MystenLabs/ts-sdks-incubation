@@ -50,6 +50,7 @@ import {
 	SUI_FULL_COIN_TYPE,
 	type AccountFunding,
 	type AccountFundingResult,
+	type FundingBalanceReader,
 	type ProjectedFunding,
 	type ProjectedFundingEntry,
 } from './funding.ts';
@@ -242,6 +243,39 @@ export interface AccountAcquireContext {
 	 *  `fullCoinType` here. */
 	readonly projectedFunding?: ProjectedFunding;
 }
+
+const FUNDING_BALANCE_TIMEOUT_MS = 5_000;
+
+const makeFundingBalanceReader = (sdk: SuiSdkShim): FundingBalanceReader => ({
+	readBalance: ({ owner, coinType }) =>
+		Effect.promise(async () => {
+			try {
+				return balanceAmountFromSdkResponse(await sdk.core.getBalance({ owner, coinType }));
+			} catch {
+				return null;
+			}
+		}).pipe(
+			Effect.timeoutOrElse({
+				duration: `${FUNDING_BALANCE_TIMEOUT_MS} millis`,
+				orElse: () => Effect.succeed(null),
+			}),
+		),
+});
+
+const balanceAmountFromSdkResponse = (response: unknown): bigint | null => {
+	const outer =
+		typeof response === 'object' && response !== null && 'balance' in response
+			? (response as { readonly balance?: unknown }).balance
+			: response;
+	const value =
+		typeof outer === 'object' && outer !== null && 'balance' in outer
+			? (outer as { readonly balance?: unknown }).balance
+			: outer;
+	if (typeof value === 'bigint') return value;
+	if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
+	if (typeof value === 'string' && /^\d+$/.test(value)) return BigInt(value);
+	return null;
+};
 
 /** Dispatch on the variant discriminator. */
 const resolveVariant = (
@@ -641,6 +675,7 @@ export const acquireAccount = (
 		//     callers serialize through the substrate broker's per-key
 		//     FIFO queue) -------------------------------------------
 		const broker = yield* LeaseBrokerService;
+		const balanceReader = makeFundingBalanceReader(ctx.sui.sdk);
 
 		const defaultFunding: ProjectedFundingEntry | null =
 			opts.kind === 'ephemeral' && opts.funding === undefined
@@ -666,6 +701,7 @@ export const acquireAccount = (
 				chainId: ctx.sui.chain,
 				emitAutoPromotionEvent: ctx.emitAutoPromotionEvent,
 				broker,
+				balanceReader,
 			});
 			if (defaultFunding.amount > 0n) {
 				appliedDefaultFunding.push(defaultFunding);
@@ -715,6 +751,7 @@ export const acquireAccount = (
 				funding: projected,
 				chainId: ctx.sui.chain,
 				broker,
+				balanceReader,
 			});
 		}
 

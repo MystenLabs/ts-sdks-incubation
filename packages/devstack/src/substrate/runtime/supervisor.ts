@@ -475,14 +475,6 @@ const acquireNode = (
 				onFailure: (cause) =>
 					Effect.gen(function* () {
 						yield* registry.markFailed(key, cause).pipe(Effect.catch(() => Effect.void));
-						yield* publish(ref, hub, {
-							tag: 'error.reported',
-							error: prettyErrorStructured(Cause.fail(cause), {
-								pluginKey: key,
-								severity: 'error',
-								at: Date.now(),
-							}),
-						});
 						return false as const;
 					}),
 				onSuccess: () => Effect.succeed(true as const),
@@ -969,26 +961,26 @@ const startBackgroundSnapshotCapture = (
 		});
 
 		const fiber = yield* runInjectedCommandHandler(deps, cmd).pipe(
-				Effect.ensuring(
-					Ref.update(deps.snapshotCaptureTask, (state) =>
-						state.tag !== 'idle' && state.token === token
-							? ({ tag: 'idle' } satisfies SnapshotCaptureTaskState)
-							: state,
-					),
+			Effect.ensuring(
+				Ref.update(deps.snapshotCaptureTask, (state) =>
+					state.tag !== 'idle' && state.token === token
+						? ({ tag: 'idle' } satisfies SnapshotCaptureTaskState)
+						: state,
 				),
-				Effect.forkIn(deps.parentScope),
-			);
+			),
+			Effect.forkIn(deps.parentScope),
+		);
 
 		yield* Ref.update(deps.snapshotCaptureTask, (state) =>
 			state.tag === 'starting' && state.token === token
-				? {
+				? ({
 						tag: 'running',
 						token,
 						snapshotId: cmd.snapshotId ?? null,
 						fiber,
-					} satisfies SnapshotCaptureTaskState
+					} satisfies SnapshotCaptureTaskState)
 				: state,
-	);
+		);
 	}).pipe(Effect.withSpan('lifecycle.supervisor.backgroundSnapshotCapture'));
 
 const requestBackgroundSnapshotInterrupt = (
@@ -996,7 +988,9 @@ const requestBackgroundSnapshotInterrupt = (
 ): Effect.Effect<void, never, never> =>
 	Effect.gen(function* () {
 		const fiber = yield* Ref.modify(deps.snapshotCaptureTask, (state) =>
-			state.tag === 'running' ? [state.fiber, { tag: 'idle' } as SnapshotCaptureTaskState] : [null, state],
+			state.tag === 'running'
+				? [state.fiber, { tag: 'idle' } as SnapshotCaptureTaskState]
+				: [null, state],
 		);
 		if (fiber !== null) {
 			yield* Effect.sync(() => {

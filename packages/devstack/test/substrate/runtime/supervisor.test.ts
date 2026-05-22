@@ -1139,6 +1139,49 @@ describe('supervisor harvest loop', () => {
 		}),
 	);
 
+	it.effect(
+		'upstream acquire failure marks dependents failed without duplicating top-level errors',
+		() =>
+			Effect.gen(function* () {
+				const pluginFail = definePlugin({
+					id: 'test:root-fail',
+					role: 'service' as const,
+					start: () =>
+						Effect.fail(new Error('root acquire failed')) as Effect.Effect<
+							{ readonly v: 'fail' },
+							Error
+						>,
+				});
+				const pluginDependent = definePlugin({
+					id: 'test:dependent',
+					role: 'service' as const,
+					dependsOn: pluginFail,
+					start: () => Effect.succeed({ v: 'dependent' as const }),
+				});
+				const state = yield* makeProjectionRef();
+				const stack: SupervisedStack = {
+					_tag: 'Stack',
+					members: [pluginFail, pluginDependent],
+					options: {},
+				};
+
+				yield* Effect.scoped(
+					Effect.gen(function* () {
+						yield* supervise(stack, identity, state);
+					}),
+				);
+
+				const snap = yield* SubscriptionRef.get(state);
+				const rootRow = snap.rows.find((r) => r.key === 'test:root-fail#0');
+				const dependentRow = snap.rows.find((r) => r.key === 'test:dependent#1');
+				expect(rootRow?.status).toBe('failed');
+				expect(rootRow?.lastError?.summary).toContain('root acquire failed');
+				expect(dependentRow?.status).toBe('failed');
+				expect(dependentRow?.lastError).toBeNull();
+				expect(snap.errors.map((error) => error.pluginKey)).toEqual(['test:root-fail#0']);
+			}),
+	);
+
 	it.effect('capability factory failure reports a structured error instead of marking ready', () =>
 		Effect.gen(function* () {
 			const pluginCaps = definePlugin({

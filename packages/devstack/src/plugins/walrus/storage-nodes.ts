@@ -2,9 +2,8 @@
 //
 // Distilled-doc reference (06-walrus.md §"Capabilities CONSUMED" +
 // §"Lifecycle phase 4"): N storage-node containers, pinned IPs on a
-// per-stack /24 docker network, dual-homed onto the per-stack sui
-// network for faucet DNS. Each node carries one Traefik route via
-// the `Routable` capability; the router binds host port 9185 once
+// per-stack /24 docker network. Each node carries one Traefik route
+// via the `Routable` capability; the router binds host port 9185 once
 // globally and dispatches by `Host:` header.
 //
 // Substrate-side responsibilities:
@@ -23,7 +22,6 @@
 //   - The deploy one-shot — `deploy.ts`.
 
 import { Duration, Effect, Scope } from 'effect';
-import { basename, dirname, join } from 'node:path';
 
 import type {
 	ContainerHandle,
@@ -37,6 +35,7 @@ import {
 } from '../../substrate/runtime/probes.ts';
 import { setCurrentPluginPhase } from '../../substrate/runtime/current-plugin.ts';
 import { ensureManagedContainer } from '../../substrate/runtime/managed-container.ts';
+import { walrusDeployMountPaths } from './deploy-paths.ts';
 import { walrusPluginError, type WalrusPluginError } from './errors.ts';
 
 /** Default per-node grace window. Storage nodes maintain RocksDB-
@@ -82,7 +81,6 @@ export interface StorageNodesSpec {
 	readonly containerApiPort: number;
 	readonly walrusNetworkName: string;
 	readonly suiNetworkName: string;
-	readonly walrusFaucetUrl: string;
 	readonly deployHostMountPath: string;
 	/** Fingerprint of the deploy outputs mounted into each node. */
 	readonly deployConfigHash: string;
@@ -113,19 +111,17 @@ export const computePublicHostname = (app: string, stack: string, nodeIndex: num
 export const storageNodeConfigHash = (parts: {
 	readonly deployConfigHash: string;
 	readonly nodeIndex: number;
-	readonly deployParentHostPath: string;
+	readonly deploySourceHostPath: string;
 	readonly deployMountTarget: string;
 	readonly containerApiPort: number;
-	readonly walrusFaucetUrl: string;
 	readonly walrusNetworkName: string;
 	readonly suiNetworkName: string;
 }): string =>
 	[
 		parts.deployConfigHash,
 		`node=${parts.nodeIndex}`,
-		`mount=${parts.deployParentHostPath}->${parts.deployMountTarget}`,
+		`mount=${parts.deploySourceHostPath}->${parts.deployMountTarget}`,
 		`api=${parts.containerApiPort}`,
-		`faucet=${parts.walrusFaucetUrl}`,
 		`net=${parts.walrusNetworkName},${parts.suiNetworkName}`,
 	].join('|');
 
@@ -160,7 +156,9 @@ const NODE_READY_PROBE_INTERVAL_MS = 500;
  *      runtime adapter currently treats the first entry as the primary
  *      and post-attaches the rest; the per-node pinned IP only attaches
  *      to the primary. The dual-home is documented inline below and
- *      relies on that adapter behavior.
+ *      relies on that adapter behavior. Storage nodes do not request
+ *      faucet funds during boot; the secondary network is retained for
+ *      future Sui-side in-network calls.
  *    - Per-node `networkAlias` (`walrus-node-<i>.localhost`). The
  *      contract doesn't expose alias plumbing yet; peer containers dial by
  *      container name, which docker DNS publishes. The architecture
@@ -192,9 +190,7 @@ export const startStorageNodes = (
 
 		const stopGrace = Duration.seconds(spec.stopGraceSeconds ?? DEFAULT_NODE_STOP_GRACE_SECONDS);
 		const readyTimeout = Duration.millis(spec.readyTimeoutMs ?? DEFAULT_NODE_READY_TIMEOUT_MS);
-		const deployParentHostPath = dirname(spec.deployHostMountPath);
-		const deployMountTarget = '/opt/walrus/runtime';
-		const deployOutputDirInContainer = join(deployMountTarget, basename(spec.deployHostMountPath));
+		const deployMount = walrusDeployMountPaths(spec.deployHostMountPath, '/opt/walrus/runtime');
 
 		const indices = Array.from({ length: spec.nodeCount }, (_, i) => i);
 
@@ -221,21 +217,15 @@ export const startStorageNodes = (
 							configHash: storageNodeConfigHash({
 								deployConfigHash: spec.deployConfigHash,
 								nodeIndex: i,
-								deployParentHostPath,
-								deployMountTarget,
+								deploySourceHostPath: deployMount.sourceHostPath,
+								deployMountTarget: deployMount.mountTarget,
 								containerApiPort: spec.containerApiPort,
-								walrusFaucetUrl: spec.walrusFaucetUrl,
 								walrusNetworkName: spec.walrusNetworkName,
 								suiNetworkName: spec.suiNetworkName,
 							}),
 							env: {
 								HOSTNAME: nodeHostname,
-								DEPLOY_OUTPUT_DIR: deployOutputDirInContainer,
-								// Storage node dials the per-stack sui faucet
-								// over docker DNS. Resolves once dual-home is
-								// in place — see secondary-network attach
-								// caveat in the function header.
-								WALRUS_FAUCET_URL: spec.walrusFaucetUrl,
+								DEPLOY_OUTPUT_DIR: deployMount.outputDirInContainer,
 							},
 							// Primary network owns the pinned `--ip`; the
 							// secondary attach gives docker DNS for the sui
@@ -250,12 +240,12 @@ export const startStorageNodes = (
 							extraHosts: { 'host.docker.internal': 'host-gateway' },
 							mounts: [
 								{
-									// Mount the parent directory and point the
-									// entrypoint at the deploy child. Docker Desktop
-									// can reject freshly-created nested leaf bind
-									// sources even when a parent mount can see them.
-									source: deployParentHostPath,
-									target: deployMountTarget,
+									// Mount the stack root and point the entrypoint at
+									// the deploy child. Docker Desktop can reject
+									// freshly-created nested bind sources immediately
+									// after a wiped stack recreates them.
+									source: deployMount.sourceHostPath,
+									target: deployMount.mountTarget,
 									readonly: true,
 								},
 							],

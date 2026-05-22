@@ -4,20 +4,6 @@
 #
 # Required env (set by container env / docker):
 #   HOSTNAME              — provided by docker (matches `dryrun-node-N`).
-#   WALRUS_FAUCET_URL     — sui faucet URL reachable from this container.
-#                           Defaults to `http://host.docker.internal:9123/v2/gas`
-#                           (the current sui-faucet REST endpoint; sui's
-#                           legacy `/gas` and `/v1/gas` paths are kept by
-#                           the binary but `/v2/gas` is the supported one
-#                           per the sui-faucet v2 release). The walrus
-#                           plugin sets this env explicitly via
-#                           `walrusFaucetUrlInNetwork`; the default is the
-#                           fallback for direct `docker run` testing.
-#                           `host.docker.internal` resolves on every
-#                           platform because the walrus plugin passes
-#                           `--add-host host.docker.internal:host-gateway`
-#                           on container create (see
-#                           `runtime/docker/container.ts::createArgv`).
 set -euo pipefail
 
 mkdir -p /root/.sui/sui_config /var/walrus
@@ -61,34 +47,6 @@ EOF
 if [ -n "${EXCHANGE_OBJECT:-}" ]; then
 	echo "exchange_objects: [${EXCHANGE_OBJECT}]" >> /root/.config/walrus/client_config.yaml
 fi
-
-# Faucet + WAL exchange + balance check. `/v2/gas` is the sui-faucet v2
-# endpoint (the binary still answers `/v1/gas` and the legacy `/gas` but
-# v2 is what new versions ship with).
-FAUCET_URL="${WALRUS_FAUCET_URL:-http://host.docker.internal:9123/v2/gas}"
-
-# Wait for DNS to resolve (host.docker.internal can take a beat after
-# attach). Bounded to 30s.
-FAUCET_HOST=$(echo "$FAUCET_URL" | awk -F[/:] '{print $4}')
-echo "run-walrus: waiting for faucet host ${FAUCET_HOST}"
-for i in $(seq 1 30); do
-	if getent hosts "$FAUCET_HOST" >/dev/null 2>&1; then break; fi
-	if [ "$i" -eq 30 ]; then
-		echo "run-walrus: faucet host '$FAUCET_HOST' never resolved after 30s" >&2
-		exit 1
-	fi
-	sleep 1
-done
-
-echo "run-walrus: requesting SUI gas from ${FAUCET_URL}"
-sui client faucet --url "$FAUCET_URL"
-sleep 3
-if [ -n "${EXCHANGE_OBJECT:-}" ]; then
-	echo "run-walrus: requesting WAL from exchange ${EXCHANGE_OBJECT}"
-	walrus get-wal --amount 500000000000 || true
-fi
-echo "run-walrus: checking SUI balance"
-sui client balance || true
 
 # Launch walrus-node.
 echo "run-walrus: starting walrus-node on ${HOSTNAME}"

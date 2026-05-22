@@ -38,6 +38,7 @@ import type { AnyResourceRef, ResourceRef } from '../../api/define-plugin.ts';
 import type { LeaseBroker } from '../../substrate/runtime/lease-broker/index.ts';
 import type { ChainId } from '../../substrate/brand.ts';
 import type { CoinResourceId } from '../coin/index.ts';
+import { setCurrentPluginPhase } from '../../substrate/runtime/current-plugin.ts';
 
 import {
 	accountAcquireError,
@@ -139,6 +140,13 @@ export interface AccountFundingStrategy<E = unknown> {
 	readonly usesAccountSigner?: boolean;
 }
 
+export interface FundingBalanceReader {
+	readonly readBalance: (args: {
+		readonly owner: string;
+		readonly coinType: string;
+	}) => Effect.Effect<bigint | null>;
+}
+
 /** The canonical builtin SUI coin type. Used by the funding dispatch
  *  to route SUI entries to the faucet strategy (same key as the
  *  default-funding pass), and by everything that needs to detect
@@ -169,6 +177,7 @@ export interface FundEphemeralDefaultArgs {
 	 *  wire call and acquires the per-address lease so concurrent wire
 	 *  calls for the same address serialize at the chain boundary. */
 	readonly broker: LeaseBroker;
+	readonly balanceReader?: FundingBalanceReader;
 }
 
 /** Apply the default-funding pass for an ephemeral account.
@@ -196,6 +205,15 @@ export const fundEphemeralDefault = (
 		// as a no-op; doing the same here avoids a registry lookup +
 		// span emission for the legitimately-no-funding case.
 		if (parts.amountMist <= 0n) {
+			return;
+		}
+
+		yield* setCurrentPluginPhase('checking SUI funding');
+		const existingBalance = yield* readExistingBalance(parts.balanceReader, {
+			owner: parts.address,
+			coinType: SUI_FULL_COIN_TYPE,
+		});
+		if (existingBalance !== null && existingBalance >= parts.amountMist) {
 			return;
 		}
 
@@ -248,6 +266,7 @@ export const fundEphemeralDefault = (
 						'(FaucetExhausted), or the body returned Failure (FaucetBodyError).',
 				}),
 			);
+		yield* setCurrentPluginPhase('funding SUI');
 		yield* withAddressLease(
 			parts.broker,
 			parts.accountName,
@@ -292,6 +311,7 @@ export interface ApplyCrossCuttingFundingArgs {
 	readonly funding: ProjectedFunding;
 	readonly chainId: ChainId;
 	readonly broker: LeaseBroker;
+	readonly balanceReader?: FundingBalanceReader;
 }
 
 /** Apply the cross-cutting funding pass. Variant-agnostic — runs for
@@ -326,6 +346,16 @@ export const applyCrossCuttingFunding = (
 
 		for (const entry of parts.funding) {
 			if (entry.amount <= 0n) {
+				continue;
+			}
+
+			yield* setCurrentPluginPhase(`checking ${entry.coin} funding`);
+			const existingBalance = yield* readExistingBalance(parts.balanceReader, {
+				owner: parts.address,
+				coinType: entry.fullCoinType,
+			});
+			if (existingBalance !== null && existingBalance >= entry.amount) {
+				applied.push(entry);
 				continue;
 			}
 
@@ -395,6 +425,7 @@ export const applyCrossCuttingFunding = (
 			const request = strategy
 				.request({ address: parts.address, amount: entry.amount, account: parts.account })
 				.pipe(Effect.mapError(wrapCrossCuttingFailure));
+			yield* setCurrentPluginPhase(`funding ${entry.coin}`);
 			yield* strategy.usesAccountSigner === true
 				? request
 				: withAddressLease(parts.broker, parts.accountName, parts.address, request);
@@ -417,3 +448,12 @@ export const applyCrossCuttingFunding = (
 			},
 		}),
 	);
+
+const readExistingBalance = (
+	balanceReader: FundingBalanceReader | undefined,
+	args: {
+		readonly owner: string;
+		readonly coinType: string;
+	},
+): Effect.Effect<bigint | null> =>
+	balanceReader === undefined ? Effect.succeed(null) : balanceReader.readBalance(args);

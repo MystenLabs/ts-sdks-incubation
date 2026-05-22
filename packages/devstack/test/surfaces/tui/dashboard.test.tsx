@@ -141,6 +141,31 @@ const stateWithMultipleServiceUrls = (): SubscribableState => {
 	};
 };
 
+const stateWithStructuredError = (): SubscribableState => {
+	const base = state();
+	const error = {
+		at: AT,
+		pluginKey: pluginKey('sui#0'),
+		tag: 'BootError',
+		summary: 'root service failed',
+		chain: ['stderr: detailed failure that belongs in logs'],
+		severity: 'error' as const,
+	};
+	return {
+		...base,
+		rows: base.rows.map((row) =>
+			row.key === 'sui#0'
+				? {
+						...row,
+						status: 'failed',
+						lastError: error,
+					}
+				: row,
+		),
+		errors: [error],
+	};
+};
+
 describe('Dashboard', () => {
 	it('renders activity lines above grouped resource tables', () => {
 		const { lastFrame, unmount } = render(
@@ -225,6 +250,24 @@ describe('Dashboard', () => {
 		expect(compact).toContain('http://127.0.0.1:51001[h2c]');
 		expect(frame).not.toContain(' | faucet:');
 		expect(frame).not.toContain('priva…');
+
+		unmount();
+	});
+
+	it('keeps detailed error cascades out of the bottom dashboard', () => {
+		const { lastFrame, unmount } = render(
+			<Dashboard
+				state={stateWithStructuredError()}
+				eventLog={[]}
+				snapshotPromptValue={null}
+				snapshotStatus={null}
+			/>,
+		);
+
+		const frame = lastFrame() ?? '';
+		expect(frame).toContain('BootError: root service failed');
+		expect(frame).not.toContain('Errors');
+		expect(frame).not.toContain('stderr: detailed failure that belongs in logs');
 
 		unmount();
 	});

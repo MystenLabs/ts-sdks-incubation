@@ -30,7 +30,7 @@
 
 import { Duration, Effect, Schema, type Scope } from 'effect';
 import { access, mkdir, writeFile } from 'node:fs/promises';
-import { basename, dirname, join } from 'node:path';
+import { join } from 'node:path';
 
 import type { ContainerRuntime, ImageRef } from '../../contracts/container-runtime.ts';
 import type {
@@ -40,6 +40,7 @@ import type {
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
 import type { ChainId, ContentHash } from '../../substrate/brand.ts';
 import type { SuiProbeKey } from '../sui/chain-probe.ts';
+import { walrusDeployMountPaths } from './deploy-paths.ts';
 import { walrusPluginError, type WalrusPluginError } from './errors.ts';
 
 /** Cache-stored payload — what verify re-confirms on every cycle.
@@ -276,13 +277,11 @@ export const runDeployOneShot = (
 		yield* ensureDeployOutputDir(inputs);
 
 		const outputOwner = hostBindMountOwner();
-		const outputParentHostPath = dirname(inputs.outputDirHostPath);
-		const outputMountTarget = '/opt/walrus/runtime';
-		const outputDirInContainer = join(outputMountTarget, basename(inputs.outputDirHostPath));
+		const outputMount = walrusDeployMountPaths(inputs.outputDirHostPath, '/opt/walrus/runtime');
 		const argv: ReadonlyArray<string> = [
 			'deploy',
 			'--output-dir',
-			outputDirInContainer,
+			outputMount.outputDirInContainer,
 			'--committee-size',
 			String(inputs.committeeSize),
 			'--shards',
@@ -306,8 +305,8 @@ export const runDeployOneShot = (
 					argv,
 					mounts: [
 						{
-							source: outputParentHostPath,
-							target: outputMountTarget,
+							source: outputMount.sourceHostPath,
+							target: outputMount.mountTarget,
 						},
 					],
 					...(outputOwner === undefined ? {} : { env: { DEVSTACK_HOST_UID_GID: outputOwner } }),

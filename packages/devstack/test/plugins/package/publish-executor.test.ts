@@ -54,6 +54,7 @@ const stubSuiSdk = (): SuiSdkShim => ({
 	core: {
 		getObject: () => Promise.reject(new Error('stub getObject')),
 		getTransaction: () => Promise.reject(new Error('stub getTransaction')),
+		getBalance: () => Promise.reject(new Error('stub getBalance')),
 		executeTransaction: () => Promise.reject(new Error('stub executeTransaction')),
 		waitForTransaction: () => Promise.reject(new Error('stub waitForTransaction')),
 	},
@@ -131,6 +132,7 @@ const makePublishSdk = (
 		core: {
 			getObject: () => Promise.reject(new Error('stub getObject')),
 			getTransaction: () => Promise.reject(new Error('stub getTransaction')),
+			getBalance: () => Promise.reject(new Error('stub getBalance')),
 			executeTransaction: () => Promise.reject(new Error('stub executeTransaction')),
 			waitForTransaction: () => Promise.reject(new Error('stub waitForTransaction')),
 		},

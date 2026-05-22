@@ -1,5 +1,5 @@
 // Dashboard — composes the visible TUI: header, rows, endpoints,
-// errors, log tails, heartbeat.
+// log tails, heartbeat.
 //
 // Reads ONLY the typed projection (`SubscribableState`). Calls the
 // pure derivation helpers in `display-derivation.ts` for every visible
@@ -13,7 +13,6 @@ import type React from 'react';
 
 import type { SnapshotCaptureProgressPhase } from '../../substrate/events.ts';
 import type { SubscribableState } from '../../substrate/projection.ts';
-import { ErrorPane } from './error-pane.tsx';
 import type { EventLogLine } from './event-log.ts';
 import { Heartbeat } from './heartbeat.tsx';
 import { ResourceTables } from './resource-table.tsx';
@@ -194,7 +193,7 @@ export const Dashboard = ({
 	snapshotPromptValue,
 	snapshotStatus,
 }: DashboardProps): React.JSX.Element => {
-	const { identity, cycle, rows, endpoints, accounts, packages, errors } = state;
+	const { identity, cycle, rows, endpoints, accounts, packages } = state;
 	const summary = deriveDashboardSummary(state);
 
 	return (
@@ -237,11 +236,6 @@ export const Dashboard = ({
 
 			<Box flexDirection="column" marginTop={1}>
 				<ResourceTables rows={rows} endpoints={endpoints} accounts={accounts} packages={packages} />
-			</Box>
-
-			{/* Errors */}
-			<Box flexDirection="column" marginTop={1}>
-				<ErrorPane errors={errors} />
 			</Box>
 
 			{snapshotPromptValue !== null && (

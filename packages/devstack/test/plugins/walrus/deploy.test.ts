@@ -3,7 +3,7 @@
 // file and the plugin's `CachedDeployState` shape — any drift in the
 // upstream output format surfaces here.
 
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -52,7 +52,9 @@ const oneShotRuntime = (runOneShot: ContainerRuntime['runOneShot']): ContainerRu
 	removeManagedVolumes: unusedRuntimeMethod,
 });
 
-const deployInputs = (outputDirHostPath = '/tmp/devstack/walrus/deploy'): DeployInputs => ({
+const deployInputs = (
+	outputDirHostPath = '/tmp/devstack/stacks/main/walrus/walrus/deploy',
+): DeployInputs => ({
 	walrusName: 'walrus',
 	chainId: chainId('sui:localnet'),
 	contentHash: contentHash('walrus-test'),
@@ -69,6 +71,7 @@ const deployInputs = (outputDirHostPath = '/tmp/devstack/walrus/deploy'): Deploy
 });
 
 const writeDeployOutputFiles = (dir: string, state: CachedDeployState, nodeCount = 4) => {
+	mkdirSync(dir, { recursive: true });
 	writeFileSync(
 		join(dir, 'deploy'),
 		[
@@ -82,6 +85,13 @@ const writeDeployOutputFiles = (dir: string, state: CachedDeployState, nodeCount
 		writeFileSync(join(dir, `dryrun-node-${index}-sui.yaml`), 'sui config\n');
 		writeFileSync(join(dir, `dryrun-node-${index}.keystore`), '[]\n');
 	}
+};
+
+const tempDeployOutputDir = (prefix: string): string => {
+	const root = mkdtempSync(join(tmpdir(), prefix));
+	const outputDir = join(root, 'stacks', 'main', 'walrus', 'walrus', 'deploy');
+	mkdirSync(outputDir, { recursive: true });
+	return outputDir;
 };
 
 const cachedWalrusDeployState = (): CachedDeployState => ({
@@ -183,16 +193,16 @@ describe('parseDeployOutput', () => {
 	it.effect('passes host uid/gid so bind-mounted deploy output remains snapshot-readable', () =>
 		Effect.gen(function* () {
 			const expectedOwner = hostBindMountOwnerForTest();
-			const outputDir = '/tmp/devstack/walrus/deploy';
+			const outputDir = '/tmp/devstack/stacks/main/walrus/walrus/deploy';
 			const runtime = oneShotRuntime((spec) => {
 				expect(spec.argv?.slice(0, 3)).toEqual([
 					'deploy',
 					'--output-dir',
-					'/opt/walrus/runtime/deploy',
+					'/opt/walrus/runtime/walrus/walrus/deploy',
 				]);
 				expect(spec.mounts).toEqual([
 					{
-						source: '/tmp/devstack/walrus',
+						source: '/tmp/devstack/stacks/main',
 						target: '/opt/walrus/runtime',
 					},
 				]);
@@ -271,7 +281,7 @@ describe('parseDeployOutput', () => {
 
 	it.live('retries Docker Desktop bind-source visibility races', () =>
 		Effect.gen(function* () {
-			const outputDir = join(mkdtempSync(join(tmpdir(), 'devstack-walrus-bind-race-')), 'deploy');
+			const outputDir = tempDeployOutputDir('devstack-walrus-bind-race-');
 			let attempts = 0;
 			const runtime = oneShotRuntime(() => {
 				attempts += 1;
@@ -337,7 +347,7 @@ describe('parseDeployOutput', () => {
 	it.effect('verifies cached system and staking objects without re-running walrus-deploy', () =>
 		Effect.gen(function* () {
 			const cached = cachedWalrusDeployState();
-			const outputDir = mkdtempSync(join(tmpdir(), 'devstack-walrus-deploy-'));
+			const outputDir = tempDeployOutputDir('devstack-walrus-deploy-');
 			writeDeployOutputFiles(outputDir, cached);
 			const requestedObjects: string[] = [];
 			const sdk: SuiSdkShim = {
@@ -350,6 +360,7 @@ describe('parseDeployOutput', () => {
 						return { object: { objectId } };
 					},
 					getTransaction: async () => ({}),
+					getBalance: async () => ({}),
 					executeTransaction: async () => ({}),
 					waitForTransaction: async () => ({}),
 				},
@@ -382,7 +393,7 @@ describe('parseDeployOutput', () => {
 	it.effect('treats missing local deploy outputs as a cache miss', () =>
 		Effect.gen(function* () {
 			const cached = cachedWalrusDeployState();
-			const outputDir = mkdtempSync(join(tmpdir(), 'devstack-walrus-missing-deploy-'));
+			const outputDir = tempDeployOutputDir('devstack-walrus-missing-deploy-');
 			const requestedObjects: string[] = [];
 			const sdk: SuiSdkShim = {
 				core: {
@@ -391,6 +402,7 @@ describe('parseDeployOutput', () => {
 						return { object: { objectId } };
 					},
 					getTransaction: async () => ({}),
+					getBalance: async () => ({}),
 					executeTransaction: async () => ({}),
 					waitForTransaction: async () => ({}),
 				},

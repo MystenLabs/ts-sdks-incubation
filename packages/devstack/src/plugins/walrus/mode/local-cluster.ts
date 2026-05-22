@@ -310,7 +310,6 @@ export const bootLocalCluster = (
 			containerApiPort: opts.containerApiPort,
 			walrusNetworkName: deps.walrusNetworkName,
 			suiNetworkName: deps.suiNetworkName,
-			walrusFaucetUrl: deps.walrusFaucetUrlInNetwork,
 			deployHostMountPath: deps.deployHostMountPath,
 			deployConfigHash,
 			readyTimeoutMs: opts.readyTimeoutMs,

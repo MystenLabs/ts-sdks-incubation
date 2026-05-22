@@ -180,6 +180,7 @@ export const makeSdkShim = (sdkClient: SuiGrpcClient): SuiSdkShim => ({
 	core: {
 		getObject: (args) => sdkClient.core.getObject(args),
 		getTransaction: (args) => sdkClient.core.getTransaction(args),
+		getBalance: (args) => sdkClient.core.getBalance(args),
 		// Extended surfaces — used by the account plugin's sign + execute
 		// closure. Local mode keeps the `sdkClient.executeTransaction` /
 		// `sdkClient.waitForTransaction` instance methods reachable on

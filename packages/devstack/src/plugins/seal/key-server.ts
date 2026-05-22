@@ -154,6 +154,8 @@ export interface KeyServerContainerSpec {
 	readonly runtimeRootHostPath: string;
 	readonly configContainerPath: string;
 	readonly masterKeyEnvFileContainerPath: string;
+	/** Fingerprint of config contents that affect key-server boot. */
+	readonly configFingerprint: string;
 	/** Inner docker network for sui DNS resolution. */
 	readonly network: string;
 	/** Router routing spec — Traefik file-provider stamped per
@@ -188,6 +190,7 @@ export interface KeyServerSpecInputs {
 	readonly labels: ContainerLabelTuple;
 	readonly suiNetwork: string;
 	readonly servicePath: string;
+	readonly configFingerprint: string;
 	readonly routedHostname: string;
 	readonly routedUrl: string;
 	readonly readyTimeoutMs?: number;
@@ -218,6 +221,7 @@ export const buildKeyServerSpec = (inputs: KeyServerSpecInputs): KeyServerContai
 		runtimeRootHostPath,
 		configContainerPath,
 		masterKeyEnvFileContainerPath,
+		configFingerprint: inputs.configFingerprint,
 		network: inputs.suiNetwork,
 		routing: [
 			{
@@ -245,6 +249,7 @@ export const buildKeyServerEnsureContainerSpec = (
 		`runtime=${spec.runtimeRootHostPath}`,
 		`config=${spec.configContainerPath}`,
 		`master=${spec.masterKeyEnvFileContainerPath}`,
+		`content=${spec.configFingerprint}`,
 		`network=${spec.network}`,
 	].join('|'),
 	// Distilled-doc invariant #3 — MASTER_KEY is NOT here.

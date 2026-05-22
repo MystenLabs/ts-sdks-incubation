@@ -20,6 +20,9 @@ const sdkWithCore = (core: Partial<SuiSdkShim['core']>): SuiSdkShim => ({
 		getTransaction: async () => {
 			throw new Error('getTransaction not stubbed');
 		},
+		getBalance: async () => {
+			throw new Error('getBalance not stubbed');
+		},
 		executeTransaction: async () => ({}),
 		waitForTransaction: async () => ({}),
 		...core,

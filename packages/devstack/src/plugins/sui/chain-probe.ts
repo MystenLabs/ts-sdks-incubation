@@ -102,6 +102,10 @@ export interface SuiSdkShim {
 	readonly core: {
 		readonly getObject: (args: { readonly objectId: string }) => Promise<unknown>;
 		readonly getTransaction: (args: { readonly digest: string }) => Promise<unknown>;
+		readonly getBalance: (args: {
+			readonly owner: string;
+			readonly coinType?: string;
+		}) => Promise<unknown>;
 		readonly executeTransaction: (args: {
 			readonly transaction: Uint8Array;
 			readonly signatures: ReadonlyArray<string>;

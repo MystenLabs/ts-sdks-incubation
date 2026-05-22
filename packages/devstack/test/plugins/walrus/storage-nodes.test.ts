@@ -114,19 +114,18 @@ describe('walrus storage-node constants', () => {
 		const base = {
 			deployConfigHash: 'deploy-a',
 			nodeIndex: 0,
-			deployParentHostPath: '/runtime-a/walrus',
+			deploySourceHostPath: '/runtime-a',
 			deployMountTarget: '/opt/walrus/runtime',
 			containerApiPort: 9185,
-			walrusFaucetUrl: 'http://sui:9123',
 			walrusNetworkName: 'walrus-net',
 			suiNetworkName: 'sui-net',
 		};
 
 		expect(storageNodeConfigHash(base)).not.toBe(
-			storageNodeConfigHash({ ...base, deployParentHostPath: '/runtime-b/walrus' }),
+			storageNodeConfigHash({ ...base, deploySourceHostPath: '/runtime-b' }),
 		);
 		expect(storageNodeConfigHash(base)).not.toBe(
-			storageNodeConfigHash({ ...base, walrusFaucetUrl: 'http://other:9123' }),
+			storageNodeConfigHash({ ...base, suiNetworkName: 'other-sui-net' }),
 		);
 	});
 });
