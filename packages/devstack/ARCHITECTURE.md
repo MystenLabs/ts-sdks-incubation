@@ -215,8 +215,8 @@ call-site argument:
 
 - `__MissingProvidersError<Missing>` — names missing tag-id literal.
 
-Per PHASE-3-NOTES, this is the strongest part of the type system. Two `@ts-expect-error` directives
-in `examples-test/complex.ts` verify this on every typecheck.
+This is one of the strongest parts of the type system. Type-level coverage should keep illegal
+factory access failing at compile time.
 
 ---
 
@@ -274,9 +274,9 @@ same seams. No surface imports from `plugins/`, `orchestrators/`, or `runtime/do
 only non-projection import outside substrate is the cascade-formatter — and that is documented
 surface-shared.
 
-Today's bin entry (`cli/main.ts`) bypasses the dispatcher for the `up` verb — known issue per
-`notes/reviews/surfaces.md`. Either route `up` through the dispatcher OR document the parser split
-as intentional.
+The bin entry (`cli/main.ts`) keeps `up` as a live attached path and routes the rest of the public
+surface through direct/offline deps. If that parser split changes, update this section and the CLI
+dispatch tests in the same patch.
 
 ---
 
@@ -290,8 +290,9 @@ as intentional.
 - `ManifestDiscoveryError` / `ManifestShapeError` / `NoConventionalRouteError` (plain-class errors
   per build-integration's sync-API discipline)
 
-Other integrations MUST delegate. Today vite/vitest/playwright/browser each reimplement — release
-blocker; see STYLE_GUIDE §7 / Open slot O7.
+Other integrations MUST delegate. Vite, Vitest, Playwright, and Browser now use the shared runtime
+discovery/shape/cold-start primitives; keep new integration readers on that path instead of adding
+framework-local manifest discovery.
 
 Only `build-integrations/runtime` synchronous reader errors use plain `Error` subclasses. They are
 sync-blocking app startup reads, so callers use plain `try` / `catch`. Per-integration Vite, Vitest,
@@ -438,24 +439,22 @@ L5 build integrations— vite/vitest/playwright/browser presets. Apps consume on
 
 ---
 
-## Cutover gate — minimal viable
+## Release gate
 
-Per `notes/parity-matrix.md`, no row marked CLOSE may remain when cutover executes. Top 5 cutover
-blockers (priority order, from parity-matrix):
+`notes/UNRESOLVED-BLOCKERS.md` is the live release ledger. Historical parity rows have been retired;
+do not reopen old cutover lists without revalidating them against source.
 
-1. **`up`-time CLI verb wiring** — `cli/main.ts:makeLightDeps` returns buffered publishers; non-`up`
-   verbs dispatch but never reach a running supervisor.
-2. **`doctor` probes are empty** — env / ports / locks / fork probes must re-wire (currently
-   `probes: []`).
-3. ~~**`Stack` lacks a runnable handle**~~ — RESOLVED: `runStack(stack, opts?) → RunHandle` lands at
-   `src/api/run-stack.ts`; shared substrate-Layer composition at `src/substrate/runtime/run.ts`
-   consumed by CLI + library.
-4. **`Action.body` sugar regression** — connect-four hand-rolls 160 lines; need
-   `ctx.signAndExecute(account, build)` substrate helper.
-5. **`apply` + `stack {list,new,use,drop,drop-fork}` + `wipe` CLI verbs missing** — CI/multi-stack
-   flows.
+Current release-critical surfaces are wired directly:
 
-The package cannot ship while these CLOSE rows are open. WIN / PARITY / ACCEPT_GAP rows are fine.
+- `cli/main.ts#buildDirectDeps` provides direct `up`, `apply`, `status`, `snapshot`, `prune`,
+  `doctor`, `config`, and `wipe` deps for the public attached/direct CLI surface.
+- `doctor` uses `defaultProbes(...)`, including Docker, Sui CLI, state-dir, router profile, lock,
+  and fork-cache probes.
+- The Action plugin exposes `ctx.signAndExecute(account, build)`; connect-four exercises the helper
+  in its example config and e2e boot test.
+
+The package cannot ship while `UNRESOLVED-BLOCKERS.md` lists open P0 gates. Resolved or retired
+historical review notes do not create release gates by themselves.
 
 ---
 
@@ -463,11 +462,11 @@ The package cannot ship while these CLOSE rows are open. WIN / PARITY / ACCEPT_G
 
 Process for changing a load-bearing boundary:
 
-1. Find the rule's citation in `notes/reviews/*.md` or `notes/redesign/architecture.md`.
+1. Find the rule in this document or the live cleanup plan that owns the area.
 2. Open a PR that updates THIS doc with the new boundary + justification.
 3. Run the migration (lift code into / out of the affected layer; consolidate / split files; etc.).
 4. Update `STYLE_GUIDE.md` if the rule has a code-level pattern.
-5. Update `notes/parity-matrix.md` if the rule moves a row's verdict.
+5. Update `notes/UNRESOLVED-BLOCKERS.md` if the rule changes release readiness.
 
 DO NOT silently violate. DO NOT codify violations as "the new convention" without an explicit PR.
 
@@ -475,22 +474,7 @@ DO NOT silently violate. DO NOT codify violations as "the new convention" withou
 
 ## Citations
 
-The 6-layer model + 9 capability contracts come from `../devstack/notes/redesign/architecture.md`.
-Specific section anchors:
-
-- L0–L5 definitions: § "Layer model" (lines 49-291)
-- Component placement table: § "Component placement" (lines 294-340)
-- 11 capability contracts (9 declared today): § "Capability contracts (conceptual)" (lines 342-994)
-- Cross-process protocol: § "Cross-process safety protocol" (lines 1431-1610)
-- Tensions resolved: § "Tensions resolved" (lines 1871-2032) — especially Tension 11 (mode refusal
-  as type vs runtime).
-- Substrate violations + structural prevention: § "Substrate violations: structural prevention"
-  (lines 2033-2113).
-
-Specific implementation findings originally came from historical `notes/reviews/*` audits. Those
-files have since been retired; use `notes/UNRESOLVED-BLOCKERS.md` as the live release ledger and
-this document for current architectural invariants.
-
-- `notes/api-comparison.md` — sugar debt + S1-S12 fixes.
-- `notes/parity-matrix.md` — the cutover gate.
-- `PHASE-3-NOTES.md` — type-system findings (load-bearing for the validation machinery).
+This architecture was originally distilled from historical redesign, review, API comparison, parity,
+and phase notes. Those source notes have since been retired or replaced by focused cleanup plans.
+Use `notes/UNRESOLVED-BLOCKERS.md` as the live release ledger and this document for current
+architectural invariants.

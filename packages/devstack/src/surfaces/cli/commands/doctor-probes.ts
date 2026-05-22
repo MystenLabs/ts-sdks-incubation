@@ -1,10 +1,9 @@
 // Built-in doctor probes.
 //
-// Architecture (notes/parity-matrix.md top-5 cutover blockers): every
-// dev runs `doctor` first. v3 had env / ports / locks / fork probes.
-// This module owns the rewrite-side equivalents — each probe is a
-// thin, self-contained `Probe` value that the dispatcher composes into
-// the deps bundle.
+// Architecture: `doctor` owns cheap preflight checks for the public CLI
+// surface: env, ports, locks, Docker/Sui availability, router profile,
+// and fork cache state. Each probe is a thin, self-contained `Probe`
+// value that the dispatcher composes into the deps bundle.
 //
 // Probes follow a discipline:
 //   - Pure Effect — no implicit Layer dependencies. Probes shell out
