@@ -20,8 +20,9 @@ export const normalizeStructTypeAddress = (typeName: string): string | null => {
  *  The SDK may spell the framework address as `0x2` or fully padded
  *  `0x000...0002`; normalize before matching. Returns `null` if the
  *  inner generic itself carries angle brackets. */
-export const pickSuiFrameworkInnerGeneric = (
+export const pickSuiFrameworkInnerGenericFromModule = (
 	objectType: string,
+	moduleName: string,
 	wrapperName: string,
 ): string | null => {
 	if (!objectType.endsWith('>')) return null;
@@ -29,10 +30,10 @@ export const pickSuiFrameworkInnerGeneric = (
 	const secondSep = objectType.indexOf('::', firstSep + 2);
 	if (firstSep === -1 || secondSep === -1) return null;
 	const address = objectType.slice(0, firstSep);
-	const moduleName = objectType.slice(firstSep + 2, secondSep);
+	const actualModuleName = objectType.slice(firstSep + 2, secondSep);
 	const rest = objectType.slice(secondSep + 2);
 	if (normalizeSuiAddress(address) !== '0x2') return null;
-	if (moduleName !== 'coin') return null;
+	if (actualModuleName !== moduleName) return null;
 	const wrapperPrefix = `${wrapperName}<`;
 	if (!rest.startsWith(wrapperPrefix)) return null;
 	const inner = rest.slice(wrapperPrefix.length, -1);
@@ -40,6 +41,11 @@ export const pickSuiFrameworkInnerGeneric = (
 	if (normalizeStructTypeAddress(inner) === null) return null;
 	return inner;
 };
+
+export const pickSuiFrameworkInnerGeneric = (
+	objectType: string,
+	wrapperName: string,
+): string | null => pickSuiFrameworkInnerGenericFromModule(objectType, 'coin', wrapperName);
 
 export const isSuiFrameworkObjectForCoin = (
 	objectType: string,

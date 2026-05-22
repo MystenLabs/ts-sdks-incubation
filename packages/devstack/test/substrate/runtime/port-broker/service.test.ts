@@ -83,6 +83,33 @@ describe('PortBrokerService', () => {
 		);
 	});
 
+	it.effect('reassigns when a loopback listener occupies a Docker wildcard preferred port', () => {
+		const root = freshRoot();
+		return Effect.acquireUseRelease(
+			listenOnRandomPort('127.0.0.1'),
+			(server) =>
+				Effect.gen(function* () {
+					try {
+						const broker = yield* PortBrokerService;
+						const preferred = serverPort(server);
+						const allocated = yield* Effect.scoped(
+							broker.allocate({
+								kind: 'rpc',
+								preferredPort: preferred,
+								probeHost: '0.0.0.0',
+							}),
+						);
+
+						expect(allocated.port).not.toBe(preferred);
+						expect(allocated.kind).toBe('rpc');
+					} finally {
+						rmSync(root, { recursive: true, force: true });
+					}
+				}).pipe(Effect.provide(portBrokerLayer(root))),
+			closeServer,
+		);
+	});
+
 	it.effect('reassigns when a live peer reservation holds the preferred port', () => {
 		const root = freshRoot();
 

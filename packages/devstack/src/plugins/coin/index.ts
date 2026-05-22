@@ -114,7 +114,7 @@ const projectCoinSdk = (sui: SuiClient): MetadataSdkShim & MintSdkShim => {
 
 const buildCapabilities = (symbol: string, resolved: CoinValue) => {
 	const bindings: CoinBindings = {
-		symbol,
+		symbol: resolved.symbol ?? symbol,
 		fullCoinType: resolved.fullCoinType,
 		decimals: resolved.decimals,
 		source: resolved.source,

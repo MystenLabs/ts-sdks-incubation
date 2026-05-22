@@ -6,10 +6,11 @@ import {
 	devstackPlaywrightWebServer,
 } from '@mysten-incubation/devstack/playwright';
 
-const baseURL = 'http://127.0.0.1:5182';
 const env = {
 	VITE_DEEPBOOK_TRADER_AUTO_APPROVE: '1',
 };
+const stack = 'deepbook-trader' as const;
+const baseURL = 'http://dev.deepbook-trader.deepbook-trader.localhost:5175';
 
 export default defineConfig({
 	...devstackPlaywrightBaseConfig(),
@@ -17,6 +18,7 @@ export default defineConfig({
 	projects: devstackPlaywrightProjects(),
 	webServer: devstackPlaywrightWebServer({
 		baseURL,
+		stack,
 		env,
 	}),
 });

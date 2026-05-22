@@ -524,15 +524,27 @@ type ProbeResult =
  * already holds the port — that's our cross-process collision check.
  *
  * The default probe is loopback-only because the wallet binds
- * loopback. Docker-backed callers pass `0.0.0.0`, matching Docker's
- * default host publish semantics and catching ports occupied on any
- * local interface.
+ * loopback. Docker-backed callers pass `0.0.0.0`; on Docker Desktop,
+ * binding a transient Node server on `0.0.0.0` does not always reject
+ * ports already held on `127.0.0.1`, even though Docker's publish step
+ * will reject them. Wildcard probes therefore check loopback as well.
  *
  * Race window: between the probe-close and the caller's real `listen`,
  * a non-devstack process could still grab the port. Devstack peers are
  * blocked by the reservation file until the allocation scope releases.
  */
 const probePort = (port: number, host: PortProbeHost): Effect.Effect<ProbeResult> =>
+	host === '0.0.0.0'
+		? Effect.gen(function* () {
+				const loopback = yield* probeSinglePort(port, '127.0.0.1');
+				if (loopback._tag !== 'ok') return loopback;
+				return yield* probeSinglePort(port, host);
+			}).pipe(Effect.withSpan('substrate.portBroker.probe', { attributes: { host, port } }))
+		: probeSinglePort(port, host).pipe(
+				Effect.withSpan('substrate.portBroker.probe', { attributes: { host, port } }),
+			);
+
+const probeSinglePort = (port: number, host: PortProbeHost): Effect.Effect<ProbeResult> =>
 	Effect.callback<ProbeResult>((resume) => {
 		let settled = false;
 		let server: NetServer | null = null;
@@ -580,4 +592,4 @@ const probePort = (port: number, host: PortProbeHost): Effect.Effect<ProbeResult
 				/* defensive */
 			}
 		}
-	}).pipe(Effect.withSpan('substrate.portBroker.probe', { attributes: { host, port } }));
+	});

@@ -63,4 +63,44 @@ describe('plugins/coin/discovery', () => {
 
 		expect(discovered.map((coin) => coin.fullCoinType)).toEqual(['0xpkg::mock_weth::MOCK_WETH']);
 	});
+
+	it('uses hydrated coin registry Currency metadata and hydrated TreasuryCap owner', () => {
+		const discovered = discoverCoinsFromPublish(
+			baseOutput([
+				{
+					type: 'created',
+					objectId: '0xcap',
+					objectType: `${SUI_FRAMEWORK_PADDED}::coin::TreasuryCap<0xpkg::dusdc::DUSDC>`,
+					owner: { $kind: 'AddressOwner', AddressOwner: '0xpublisher' },
+				},
+				{
+					type: 'created',
+					objectId: '0xcurrency',
+					objectType: `${SUI_FRAMEWORK_PADDED}::coin_registry::Currency<0xpkg::dusdc::DUSDC>`,
+					json: {
+						decimals: 6,
+						symbol: 'DUSDC',
+						name: 'DeepBook USDC',
+						icon_url: 'https://cryptologos.cc/logos/usd-coin-usdc-logo.svg',
+					},
+				},
+			]),
+		);
+
+		expect(discovered).toEqual([
+			{
+				fullCoinType: '0xpkg::dusdc::DUSDC',
+				witness: 'dusdc',
+				moduleName: 'dusdc',
+				treasuryCapId: '0xcap',
+				treasuryCapOwner: '0xpublisher',
+				metadataId: '0xcurrency',
+				decimals: 6,
+				symbol: 'DUSDC',
+				displayName: 'DeepBook USDC',
+				iconUrl: 'https://cryptologos.cc/logos/usd-coin-usdc-logo.svg',
+				publisherOwnsCap: true,
+			},
+		]);
+	});
 });

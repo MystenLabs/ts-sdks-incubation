@@ -1,209 +1,923 @@
-// Deepbook plugin — publish + create-pools via artifact publisher `sui-tx` variant.
+// DeepBook local deployment helpers.
 //
-// This is the canonical example of a Move-SDK-based produce body
-// (architecture §10 / STYLE_GUIDE §11): the previous v3 deepbook
-// implementation made the mistake of going through a docker
-// one-shot here. Move publish via the Sui SDK is the right shape;
-// the `sui-tx` ChainOperation variant carries that pattern.
-//
-// Flow:
-//   1. Build Move package (out-of-scope here — passed in as
-//      pre-built modules).
-//   2. Publish via `Transaction.publish(...)` (sui-tx).
-//   3. Wait for index, parse `packageId` + admin cap.
-//   4. Create whitelisted pools (one `pool::create_pool_admin` call
-//      per pool spec).
-//
-// Steps 1-3 collapse into one artifact publisher `sui-tx` cycle; step 4 is a
-// follow-on `sui-tx` cycle keyed off the resolved `packageId`.
+// The package itself is published by the generic `localPackage(...)` plugin.
+// This module owns the DeepBook-specific follow-up transaction: initialize the
+// registry's BalanceManager map and create the requested admin pools.
 
-import { Effect, type Scope } from 'effect';
+import { createHash } from 'node:crypto';
 
-import { chainId as brandChainId, contentHash as brandContentHash } from '../../substrate/brand.ts';
-import type { ArtifactPublisher } from '../../primitives/artifact-publisher.ts';
-import { compileChainOperation } from '../../substrate/runtime/artifact-publisher/index.ts';
+import { Effect, Schema, type Scope } from 'effect';
+import { bcs } from '@mysten/sui/bcs';
+import { Transaction } from '@mysten/sui/transactions';
+import { normalizeStructTag, normalizeSuiAddress } from '@mysten/sui/utils';
+
+import {
+	chainId as brandChainId,
+	contentHash as brandContentHash,
+	type ContentHash,
+} from '../../substrate/brand.ts';
+import type {
+	ArtifactPublishError,
+	ArtifactPublisher,
+} from '../../primitives/artifact-publisher.ts';
+import type { SuiSdkShim } from '../sui/chain-probe.ts';
+import type { CoinValue } from '../coin/index.ts';
 import type {
 	ResolvedSigner,
+	SuiExecuteError,
 	SuiExecuteClient,
 } from '../../substrate/runtime/sui-execute/index.ts';
 import { executeSuiTx } from '../../substrate/runtime/sui-execute/index.ts';
 
 import { deepbookPluginError, type DeepbookPluginError } from './errors.ts';
-import type { DeepbookPool, DeepbookPoolSpec } from './types.ts';
+import type { DeepbookPhase } from './errors.ts';
+import type { DeepbookPool, DeepbookPoolSeedLiquidity } from './types.ts';
 
 // ---------------------------------------------------------------------------
-// Published artifact shape (cached payload)
+// Inputs / outputs
 // ---------------------------------------------------------------------------
 
-export interface DeepbookPublishResult {
+export interface DeepbookDeployment {
 	readonly packageId: string;
 	readonly registryId: string;
 	readonly adminCapId: string;
-	readonly deepTreasuryId: string | null;
+	readonly deepTreasuryId?: string | null;
+}
+
+type CoinFundingStrategy = NonNullable<CoinValue['fundingStrategy']>;
+
+export interface ResolvedDeepbookPoolSpec {
+	readonly name: string;
+	readonly base: string;
+	readonly quote: string;
+	readonly baseCoinType: string;
+	readonly quoteCoinType: string;
+	readonly baseFundingStrategy?: CoinFundingStrategy;
+	readonly quoteFundingStrategy?: CoinFundingStrategy;
+	readonly tickSize: bigint;
+	readonly lotSize: bigint;
+	readonly minSize: bigint;
+	readonly whitelisted: boolean;
+	readonly stablePool: boolean;
+	readonly seed?: DeepbookPoolSeedLiquidity;
 }
 
 export interface DeepbookPoolsResult {
 	readonly pools: ReadonlyArray<DeepbookPool>;
 }
 
-// ---------------------------------------------------------------------------
-// Coin resolver — passed in by the DeepBook plugin (the coin
-// registry knows which coin records back each pool's base/quote
-// symbol).
-// ---------------------------------------------------------------------------
-
-export interface CoinResolver {
-	readonly resolve: (
-		symbol: string,
-	) => Effect.Effect<{ readonly coinType: string }, DeepbookPluginError>;
+export interface DeepbookPoolSeedResult {
+	readonly poolName: string;
+	readonly balanceManagerId: string;
+	readonly digest: string;
 }
 
-// ---------------------------------------------------------------------------
-// Publish the deepbook v3 package
-// ---------------------------------------------------------------------------
+interface CachedDeepbookPool {
+	readonly name: string;
+	readonly poolId: string;
+	readonly base: string;
+	readonly quote: string;
+	readonly baseCoinType: string;
+	readonly quoteCoinType: string;
+	readonly tickSize: string;
+	readonly lotSize: string;
+	readonly minSize: string;
+}
 
-export const publishDeepbookPackage = (
-	publisher: ArtifactPublisher,
-	client: SuiExecuteClient,
-	chain: string,
+interface CachedDeepbookPoolsResult {
+	readonly pools: ReadonlyArray<CachedDeepbookPool>;
+}
+
+interface CachedDeepbookSeedResult {
+	readonly poolName: string;
+	readonly balanceManagerId: string;
+	readonly digest: string;
+}
+
+interface SimulateResult {
+	readonly commandResults?: ReadonlyArray<{
+		readonly returnValues?: ReadonlyArray<{
+			readonly bcs?: Uint8Array;
+		}>;
+	}>;
+}
+
+const CachedDeepbookPoolSchema = Schema.Struct({
+	name: Schema.String,
+	poolId: Schema.String,
+	base: Schema.String,
+	quote: Schema.String,
+	baseCoinType: Schema.String,
+	quoteCoinType: Schema.String,
+	tickSize: Schema.String,
+	lotSize: Schema.String,
+	minSize: Schema.String,
+});
+
+const CachedDeepbookPoolsSchema = Schema.Struct({
+	pools: Schema.Array(CachedDeepbookPoolSchema),
+});
+
+const CachedDeepbookSeedResultSchema = Schema.Struct({
+	poolName: Schema.String,
+	balanceManagerId: Schema.String,
+	digest: Schema.String,
+});
+
+const stableContentHash = (input: string): ContentHash =>
+	brandContentHash(createHash('sha256').update(input).digest('hex'));
+
+const fromCachedPools = (cached: CachedDeepbookPoolsResult): DeepbookPoolsResult => ({
+	pools: cached.pools.map((pool) => ({
+		name: pool.name,
+		poolId: pool.poolId,
+		base: pool.base,
+		quote: pool.quote,
+		baseCoinType: pool.baseCoinType,
+		quoteCoinType: pool.quoteCoinType,
+		tickSize: BigInt(pool.tickSize),
+		lotSize: BigInt(pool.lotSize),
+		minSize: BigInt(pool.minSize),
+	})),
+});
+
+const toCachedPool = (spec: ResolvedDeepbookPoolSpec, poolId: string): CachedDeepbookPool => ({
+	name: spec.name,
+	poolId,
+	base: spec.base,
+	quote: spec.quote,
+	baseCoinType: normalizeStructTag(spec.baseCoinType),
+	quoteCoinType: normalizeStructTag(spec.quoteCoinType),
+	tickSize: spec.tickSize.toString(),
+	lotSize: spec.lotSize.toString(),
+	minSize: spec.minSize.toString(),
+});
+
+const poolInputsHash = (
+	pkg: DeepbookDeployment,
 	signer: ResolvedSigner,
-	sourceHash: string,
-): Effect.Effect<DeepbookPublishResult, DeepbookPluginError, Scope.Scope> =>
+	pools: ReadonlyArray<ResolvedDeepbookPoolSpec>,
+) =>
+	stableContentHash(
+		[
+			'v1',
+			pkg.packageId,
+			pkg.registryId,
+			pkg.adminCapId,
+			signer.address,
+			...pools
+				.map((pool) =>
+					[
+						pool.name,
+						normalizeStructTag(pool.baseCoinType),
+						normalizeStructTag(pool.quoteCoinType),
+						pool.tickSize.toString(),
+						pool.lotSize.toString(),
+						pool.minSize.toString(),
+						String(pool.whitelisted),
+						String(pool.stablePool),
+					].join('|'),
+				)
+				.sort(),
+		].join('||'),
+	);
+
+const seedInputsHash = (
+	pkg: DeepbookDeployment,
+	signer: ResolvedSigner,
+	spec: ResolvedDeepbookPoolSpec,
+	pool: DeepbookPool,
+) =>
+	stableContentHash(
+		[
+			'v3',
+			pkg.packageId,
+			pkg.registryId,
+			signer.address,
+			spec.name,
+			pool.poolId,
+			normalizeStructTag(pool.baseCoinType),
+			normalizeStructTag(pool.quoteCoinType),
+			spec.seed?.baseAmount?.toString() ?? '0',
+			spec.seed?.quoteAmount?.toString() ?? '0',
+			...(spec.seed?.orders ?? []).map((order, index) =>
+				[
+					index,
+					order.side,
+					order.price.toString(),
+					order.quantity.toString(),
+					order.clientOrderId?.toString() ?? '',
+					String(order.payWithDeep ?? false),
+				].join('|'),
+			),
+		].join('||'),
+	);
+
+const buildVerifyProbe = (
+	sdk: SuiSdkShim,
+	cached: CachedDeepbookPoolsResult,
+): Effect.Effect<CachedDeepbookPoolsResult | null, never> =>
 	Effect.gen(function* () {
-		const contentHash = brandContentHash(`deepbook-pkg|${signer.address}|${sourceHash}`);
-
-		const produced = yield* publisher
-			.publish<DeepbookPublishResult, null>({
-				namespace: 'deepbook/package',
-				chain: brandChainId(chain),
-				contentHash,
-				verifySchema: null as unknown as never,
-				verify: () => Effect.succeed(null),
-				produce: compileChainOperation<DeepbookPublishResult>({
-					_tag: 'sui-tx',
-					build: (_tx) => {
-						void _tx;
-					},
-					signer,
-					executor: (s, b) =>
-						executeSuiTx({ client, signer: s, build: () => b(undefined as never) as never }).pipe(
-							Effect.mapError(
-								(cause) =>
-									({
-										_tag: 'ArtifactPublishError',
-										reason: 'produce-failed',
-										detail: cause.message,
-									}) as const,
-							),
-							Effect.map((r) => r as unknown),
-						),
-					parse: (_effects) =>
-						Effect.fail({
-							_tag: 'ArtifactPublishError' as const,
-							reason: 'produce-failed' as const,
-							detail:
-								'deepbook publish requires a Move package publish transaction. Use deepbook({ mode: "known", packageId, registryId }) for an existing deployment.',
-						}),
-				}),
-				register: () => Effect.void,
-			})
-			.pipe(
-				Effect.mapError(
-					(err): DeepbookPluginError =>
-						deepbookPluginError(
-							'publish',
-							err._tag === 'ArtifactPublishError' ? err.detail : String(err),
-						),
-				),
-			);
-
-		return produced as DeepbookPublishResult;
+		for (const pool of cached.pools) {
+			const raw = yield* Effect.tryPromise({
+				try: () => sdk.core.getObject({ objectId: pool.poolId }),
+				catch: () => null,
+			}).pipe(Effect.catch(() => Effect.succeed(null)));
+			if (raw === null || raw === undefined) return null;
+		}
+		return cached;
 	});
 
+const buildSeedVerifyProbe = (
+	sdk: SuiSdkShim,
+	cached: CachedDeepbookSeedResult,
+): Effect.Effect<CachedDeepbookSeedResult | null, never> =>
+	Effect.gen(function* () {
+		const raw = yield* Effect.tryPromise({
+			try: () => sdk.core.getObject({ objectId: cached.balanceManagerId }),
+			catch: () => null,
+		}).pipe(Effect.catch(() => Effect.succeed(null)));
+		if (raw === null || raw === undefined) return null;
+		return cached;
+	});
+
+const simulateClient = (
+	sdk: SuiSdkShim,
+): {
+	readonly core: {
+		readonly simulateTransaction: (args: {
+			readonly transaction: Transaction;
+			readonly include: { readonly commandResults: boolean; readonly effects: boolean };
+		}) => Promise<SimulateResult>;
+	};
+} =>
+	sdk.client as {
+		readonly core: {
+			readonly simulateTransaction: (args: {
+				readonly transaction: Transaction;
+				readonly include: { readonly commandResults: boolean; readonly effects: boolean };
+			}) => Promise<SimulateResult>;
+		};
+	};
+
+const findExistingPoolId = (
+	sdk: SuiSdkShim,
+	signer: ResolvedSigner,
+	pkg: DeepbookDeployment,
+	spec: ResolvedDeepbookPoolSpec,
+): Effect.Effect<string | null, never> =>
+	Effect.tryPromise({
+		try: async () => {
+			const tx = new Transaction();
+			tx.setSender(signer.address);
+			tx.moveCall({
+				target: `${pkg.packageId}::pool::get_pool_id_by_asset`,
+				typeArguments: [spec.baseCoinType, spec.quoteCoinType],
+				arguments: [tx.object(pkg.registryId)],
+			});
+			const result = await simulateClient(sdk).core.simulateTransaction({
+				transaction: tx,
+				include: { commandResults: true, effects: true },
+			});
+			const bytes = result.commandResults?.[0]?.returnValues?.[0]?.bcs;
+			if (bytes === undefined) return null;
+			return normalizeSuiAddress(bcs.Address.parse(bytes));
+		},
+		catch: () => null,
+	}).pipe(Effect.catch(() => Effect.succeed(null)));
+
+const findExistingPools = (
+	sdk: SuiSdkShim,
+	signer: ResolvedSigner,
+	pkg: DeepbookDeployment,
+	pools: ReadonlyArray<ResolvedDeepbookPoolSpec>,
+): Effect.Effect<ReadonlyMap<string, CachedDeepbookPool>, never> =>
+	Effect.gen(function* () {
+		const found = new Map<string, CachedDeepbookPool>();
+		for (const pool of pools) {
+			const poolId = yield* findExistingPoolId(sdk, signer, pkg, pool);
+			if (poolId !== null) {
+				found.set(pool.name, toCachedPool(pool, poolId));
+			}
+		}
+		return found;
+	});
+
+const pickCreatedPool = (
+	changes: ReadonlyArray<{
+		readonly objectId: string;
+		readonly objectType?: string;
+		readonly idOperation?: string;
+	}>,
+	spec: ResolvedDeepbookPoolSpec,
+): string | null => {
+	const base = normalizeStructTag(spec.baseCoinType);
+	const quote = normalizeStructTag(spec.quoteCoinType);
+	for (const change of changes) {
+		const type = change.objectType;
+		if (change.idOperation !== 'Created' || type === undefined) continue;
+		if (!type.includes('::pool::Pool<')) continue;
+		if (type.includes(base) && type.includes(quote)) {
+			return change.objectId;
+		}
+	}
+	return null;
+};
+
+const mapArtifactError = (phase: DeepbookPhase, err: ArtifactPublishError): DeepbookPluginError =>
+	deepbookPluginError(phase, err._tag === 'ArtifactPublishError' ? err.detail : String(err));
+
+type SuiTransactionBuildClient = Parameters<Transaction['build']>[0] extends
+	| { readonly client?: infer C }
+	| undefined
+	? C
+	: never;
+
+const transactionBuildClient = (sdk: SuiSdkShim): SuiTransactionBuildClient =>
+	sdk.client as SuiTransactionBuildClient;
+
+const ORDER_TYPE_POST_ONLY = 3;
+const SELF_MATCHING_CANCEL_TAKER = 1;
+const MAX_TIMESTAMP = 18_446_744_073_709_551_615n;
+const SUI_TYPE = normalizeStructTag('0x2::sui::SUI');
+const SEED_GAS_BUDGET = 500_000_000n;
+const LOCALNET_REFERENCE_GAS_PRICE = 1000n;
+const STALE_OBJECT_RETRY_DELAY_MS = 500;
+const STALE_OBJECT_MAX_RETRIES = 20;
+
+const decodeErrorMessage = (message: string) => {
+	try {
+		return decodeURIComponent(message);
+	} catch {
+		return message;
+	}
+};
+
+const isStaleObjectVersionError = (err: { readonly message: string }) => {
+	const message = decodeErrorMessage(err.message);
+	return (
+		message.includes('needs to be rebuilt because object') && message.includes('current version')
+	);
+};
+
+const executeSuiTxWithStaleObjectRetry = (
+	params: Parameters<typeof executeSuiTx>[0],
+	attempt = 0,
+): ReturnType<typeof executeSuiTx> =>
+	executeSuiTx(params).pipe(
+		Effect.catch((err: SuiExecuteError) =>
+			isStaleObjectVersionError(err) && attempt < STALE_OBJECT_MAX_RETRIES
+				? Effect.sleep(`${STALE_OBJECT_RETRY_DELAY_MS} millis`).pipe(
+						Effect.andThen(executeSuiTxWithStaleObjectRetry(params, attempt + 1)),
+					)
+				: Effect.fail(err),
+		),
+	);
+
 // ---------------------------------------------------------------------------
-// Create the whitelisted pools
+// Create whitelisted pools
 // ---------------------------------------------------------------------------
 
 export const createDeepbookPools = (
 	publisher: ArtifactPublisher,
-	client: SuiExecuteClient,
+	sdk: SuiSdkShim,
 	chain: string,
 	signer: ResolvedSigner,
-	pkg: DeepbookPublishResult,
-	pools: ReadonlyArray<DeepbookPoolSpec>,
-	coins: CoinResolver,
+	pkg: DeepbookDeployment,
+	pools: ReadonlyArray<ResolvedDeepbookPoolSpec>,
 ): Effect.Effect<DeepbookPoolsResult, DeepbookPluginError, Scope.Scope> =>
 	Effect.gen(function* () {
-		// Resolve each pool's base + quote coin types up front so a
-		// missing-coin failure surfaces deterministically before any
-		// tx work begins.
-		const resolved: Array<{
-			readonly spec: DeepbookPoolSpec;
-			readonly baseCoinType: string;
-			readonly quoteCoinType: string;
-		}> = [];
-		for (const spec of pools) {
-			const base = yield* coins.resolve(spec.base);
-			const quote = yield* coins.resolve(spec.quote);
-			resolved.push({ spec, baseCoinType: base.coinType, quoteCoinType: quote.coinType });
-		}
-
-		const poolsHash = resolved
-			.map(
-				({ spec, baseCoinType, quoteCoinType }) =>
-					`${spec.name}|${baseCoinType}|${quoteCoinType}|${spec.tickSize}|${spec.lotSize}|${spec.minSize}`,
-			)
-			.sort()
-			.join('||');
-
-		const contentHash = brandContentHash(
-			`deepbook-pools|${pkg.packageId}|${signer.address}|${poolsHash}`,
-		);
+		if (pools.length === 0) return { pools: [] };
 
 		const produced = yield* publisher
-			.publish<DeepbookPoolsResult, null>({
+			.publish<CachedDeepbookPoolsResult, CachedDeepbookPoolsResult>({
 				namespace: 'deepbook/pools',
 				chain: brandChainId(chain),
-				contentHash,
-				verifySchema: null as unknown as never,
-				verify: () => Effect.succeed(null),
-				produce: compileChainOperation<DeepbookPoolsResult>({
-					_tag: 'sui-tx',
-					build: (_tx) => {
-						void _tx;
-					},
-					signer,
-					executor: (s, b) =>
-						executeSuiTx({ client, signer: s, build: () => b(undefined as never) as never }).pipe(
+				contentHash: poolInputsHash(pkg, signer, pools),
+				verifySchema: CachedDeepbookPoolsSchema,
+				verify: (cached) => buildVerifyProbe(sdk, cached),
+				produce: Effect.gen(function* () {
+					const existingPools = yield* findExistingPools(sdk, signer, pkg, pools);
+					const missingPools = pools.filter((pool) => !existingPools.has(pool.name));
+
+					const cachedPools: CachedDeepbookPool[] = [];
+					if (missingPools.length > 0) {
+						const receipt = yield* executeSuiTx({
+							client: sdk.client as SuiExecuteClient,
+							signer,
+							build: async () => {
+								const tx = new Transaction();
+								tx.setSender(signer.address);
+								tx.setGasBudget(500_000_000);
+								tx.moveCall({
+									target: `${pkg.packageId}::registry::init_balance_manager_map`,
+									arguments: [tx.object(pkg.registryId), tx.object(pkg.adminCapId)],
+								});
+								for (const pool of missingPools) {
+									tx.moveCall({
+										target: `${pkg.packageId}::pool::create_pool_admin`,
+										typeArguments: [pool.baseCoinType, pool.quoteCoinType],
+										arguments: [
+											tx.object(pkg.registryId),
+											tx.pure.u64(pool.tickSize),
+											tx.pure.u64(pool.lotSize),
+											tx.pure.u64(pool.minSize),
+											tx.pure.bool(pool.whitelisted),
+											tx.pure.bool(pool.stablePool),
+											tx.object(pkg.adminCapId),
+										],
+									});
+								}
+								return tx.build({
+									client: transactionBuildClient(sdk),
+								});
+							},
+						}).pipe(
 							Effect.mapError(
-								(cause) =>
-									({
-										_tag: 'ArtifactPublishError',
-										reason: 'produce-failed',
-										detail: cause.message,
-									}) as const,
+								(err): ArtifactPublishError => ({
+									_tag: 'ArtifactPublishError',
+									reason: 'produce-failed',
+									detail: `deepbook pool transaction failed: ${err.message}`,
+								}),
 							),
-							Effect.map((r) => r as unknown),
-						),
-					parse: (_effects) =>
-						Effect.fail({
-							_tag: 'ArtifactPublishError' as const,
-							reason: 'produce-failed' as const,
-							detail:
-								'deepbook pool creation requires a DeepBook package deployment with pool admin rights. Use known mode for an existing deployment until local pool creation is implemented.',
-						}),
+						);
+
+						for (const pool of missingPools) {
+							const poolId = pickCreatedPool(receipt.objectChanges, pool);
+							if (poolId === null) {
+								return yield* Effect.fail({
+									_tag: 'ArtifactPublishError' as const,
+									reason: 'produce-failed' as const,
+									detail:
+										`deepbook pool '${pool.name}' not found in objectChanges ` +
+										`(digest=${receipt.digest}).`,
+								});
+							}
+							cachedPools.push(toCachedPool(pool, poolId));
+						}
+					}
+
+					return {
+						pools: pools
+							.map(
+								(pool) =>
+									existingPools.get(pool.name) ?? cachedPools.find((p) => p.name === pool.name),
+							)
+							.filter((pool): pool is CachedDeepbookPool => pool !== undefined),
+					} satisfies CachedDeepbookPoolsResult;
 				}),
 				register: () => Effect.void,
 			})
-			.pipe(
-				Effect.mapError(
-					(err): DeepbookPluginError =>
-						deepbookPluginError(
-							'create-pools',
-							err._tag === 'ArtifactPublishError' ? err.detail : String(err),
-						),
-				),
-			);
+			.pipe(Effect.mapError((err) => mapArtifactError('create-pools', err)));
 
-		return produced as DeepbookPoolsResult;
+		const producedPools = new Map(produced.pools.map((pool) => [pool.name, pool]));
+		const resolvedPools = pools.map((pool) => producedPools.get(pool.name));
+		if (resolvedPools.some((pool) => pool === undefined)) {
+			return yield* Effect.fail(
+				deepbookPluginError('create-pools', 'deepbook pool creation did not return every pool.'),
+			);
+		}
+
+		return fromCachedPools({
+			pools: resolvedPools.filter((pool): pool is CachedDeepbookPool => pool !== undefined),
+		});
+	}).pipe(
+		Effect.withSpan('devstack.plugin.deepbook.createPools', {
+			attributes: {
+				'deepbook.packageId': pkg.packageId,
+				'deepbook.pool.count': pools.length,
+			},
+		}),
+	);
+
+// ---------------------------------------------------------------------------
+// Seed local liquidity
+// ---------------------------------------------------------------------------
+
+const poolByName = (pools: ReadonlyArray<DeepbookPool>, name: string): DeepbookPool | undefined =>
+	pools.find((pool) => pool.name === name);
+
+const pickCreatedBalanceManager = (
+	changes: ReadonlyArray<{
+		readonly objectId: string;
+		readonly objectType?: string;
+		readonly idOperation?: string;
+	}>,
+): string | null => {
+	for (const change of changes) {
+		if (change.idOperation !== 'Created') continue;
+		if (change.objectType?.includes('::balance_manager::BalanceManager')) {
+			return change.objectId;
+		}
+	}
+	return null;
+};
+
+const depositIntoBalanceManager = (
+	tx: Transaction,
+	sdk: SuiSdkShim,
+	signer: ResolvedSigner,
+	pkg: DeepbookDeployment,
+	balanceManager: ReturnType<Transaction['moveCall']>,
+	coinType: string,
+	amount: bigint | undefined,
+) => {
+	if (amount === undefined || amount === 0n) return;
+	return splitOwnedCoinForBalance(tx, sdk, signer, coinType, amount).then((coin) => {
+		tx.moveCall({
+			target: `${pkg.packageId}::balance_manager::deposit`,
+			typeArguments: [coinType],
+			arguments: [balanceManager, coin],
+		});
 	});
+};
+
+const errorDetail = (err: unknown): string => {
+	if (err instanceof Error) return err.message;
+	if (typeof err === 'object' && err !== null) {
+		if ('message' in err && typeof err.message === 'string') return err.message;
+		if ('detail' in err && typeof err.detail === 'string') return err.detail;
+	}
+	return String(err);
+};
+
+const requestSeedFunding = (
+	strategy: CoinFundingStrategy | undefined,
+	signer: ResolvedSigner,
+	coinType: string,
+	amount: bigint | undefined,
+): Effect.Effect<void, ArtifactPublishError> => {
+	if (strategy === undefined || amount === undefined || amount === 0n) {
+		return Effect.void;
+	}
+	return strategy.request({ address: signer.address, amount }).pipe(
+		Effect.mapError(
+			(err): ArtifactPublishError => ({
+				_tag: 'ArtifactPublishError',
+				reason: 'produce-failed',
+				detail:
+					`deepbook seed funding failed for ${coinType} ` +
+					`to publisher '${signer.name}' amount=${amount}: ${errorDetail(err)}`,
+			}),
+		),
+	);
+};
+
+const coinListClient = (
+	sdk: SuiSdkShim,
+): {
+	readonly core: {
+		readonly listCoins: (args: {
+			readonly owner: string;
+			readonly coinType: string;
+			readonly cursor?: string | null;
+			readonly limit?: number;
+		}) => Promise<{
+			readonly objects: ReadonlyArray<{
+				readonly objectId: string;
+				readonly version: string | number;
+				readonly digest: string;
+				readonly balance: string | number | bigint;
+			}>;
+			readonly hasNextPage: boolean;
+			readonly cursor: string | null;
+		}>;
+	};
+} =>
+	sdk.client as {
+		readonly core: {
+			readonly listCoins: (args: {
+				readonly owner: string;
+				readonly coinType: string;
+				readonly cursor?: string | null;
+				readonly limit?: number;
+			}) => Promise<{
+				readonly objects: ReadonlyArray<{
+					readonly objectId: string;
+					readonly version: string | number;
+					readonly digest: string;
+					readonly balance: string | number | bigint;
+				}>;
+				readonly hasNextPage: boolean;
+				readonly cursor: string | null;
+			}>;
+		};
+	};
+
+const ledgerObjectClient = (
+	sdk: SuiSdkShim,
+): {
+	readonly ledgerService: {
+		readonly getObject: (args: {
+			readonly objectId: string;
+			readonly readMask?: { readonly paths: ReadonlyArray<string> };
+		}) => Promise<{
+			readonly response?: {
+				readonly object?: {
+					readonly objectId?: string;
+					readonly version?: string | number | bigint;
+					readonly digest?: string;
+				};
+			};
+		}>;
+	};
+} =>
+	sdk.client as {
+		readonly ledgerService: {
+			readonly getObject: (args: {
+				readonly objectId: string;
+				readonly readMask?: { readonly paths: ReadonlyArray<string> };
+			}) => Promise<{
+				readonly response?: {
+					readonly object?: {
+						readonly objectId?: string;
+						readonly version?: string | number | bigint;
+						readonly digest?: string;
+					};
+				};
+			}>;
+		};
+	};
+
+const currentLedgerObjectRef = async (
+	sdk: SuiSdkShim,
+	objectId: string,
+): Promise<{
+	readonly objectId: string;
+	readonly version: string | number;
+	readonly digest: string;
+}> => {
+	const raw = await ledgerObjectClient(sdk).ledgerService.getObject({
+		objectId,
+		readMask: { paths: ['object_id', 'version', 'digest'] },
+	});
+	const object = raw.response?.object;
+	if (
+		object === undefined ||
+		object.objectId === undefined ||
+		object.version === undefined ||
+		object.digest === undefined
+	) {
+		throw new Error(`object '${objectId}' was not found while resolving a DeepBook seed input.`);
+	}
+	return {
+		objectId: object.objectId,
+		version: object.version.toString(),
+		digest: object.digest,
+	};
+};
+
+const setExplicitSeedGasPayment = async (
+	tx: Transaction,
+	sdk: SuiSdkShim,
+	signer: ResolvedSigner,
+) => {
+	const page = await coinListClient(sdk).core.listCoins({
+		owner: signer.address,
+		coinType: SUI_TYPE,
+		limit: 1,
+	});
+	const gasCoin = page.objects[0];
+	if (gasCoin === undefined) {
+		throw new Error(`publisher '${signer.name}' has no SUI coin for DeepBook seed gas.`);
+	}
+	const gasRef = await currentLedgerObjectRef(sdk, gasCoin.objectId);
+	tx.setGasBudget(SEED_GAS_BUDGET);
+	tx.setGasPrice(LOCALNET_REFERENCE_GAS_PRICE);
+	tx.setGasPayment([gasRef]);
+};
+
+const sharedObject = async (
+	tx: Transaction,
+	sdk: SuiSdkShim,
+	objectId: string,
+	mutable: boolean,
+) => {
+	const raw = (await sdk.core.getObject({ objectId })) as {
+		readonly object?: {
+			readonly owner?: {
+				readonly Shared?: {
+					readonly initialSharedVersion?: string | number;
+				};
+			};
+		};
+	};
+	const initialSharedVersion = raw.object?.owner?.Shared?.initialSharedVersion;
+	if (initialSharedVersion === undefined) {
+		throw new Error(`DeepBook object '${objectId}' is not shared.`);
+	}
+	return tx.sharedObjectRef({
+		objectId,
+		initialSharedVersion,
+		mutable,
+	});
+};
+
+const splitOwnedCoinForBalance = async (
+	tx: Transaction,
+	sdk: SuiSdkShim,
+	signer: ResolvedSigner,
+	coinType: string,
+	amount: bigint,
+) => {
+	if (normalizeStructTag(coinType) === SUI_TYPE) {
+		const [coin] = tx.splitCoins(tx.gas, [tx.pure.u64(amount)]);
+		return coin;
+	}
+
+	const selected: Array<{
+		readonly objectId: string;
+		readonly version: string | number;
+		readonly digest: string;
+		readonly balance: string | number | bigint;
+	}> = [];
+	let selectedBalance = 0n;
+	let cursor: string | null = null;
+	do {
+		const page = await coinListClient(sdk).core.listCoins({
+			owner: signer.address,
+			coinType,
+			cursor,
+			limit: 50,
+		});
+		for (const coin of page.objects) {
+			selected.push(coin);
+			selectedBalance += BigInt(coin.balance);
+			if (selectedBalance >= amount) break;
+		}
+		cursor = page.cursor;
+		if (selectedBalance >= amount) break;
+		if (!page.hasNextPage) break;
+	} while (cursor !== null);
+
+	if (selectedBalance < amount || selected.length === 0) {
+		throw new Error(
+			`publisher '${signer.name}' has insufficient ${coinType} for DeepBook seed deposit: ` +
+				`required ${amount}, available ${selectedBalance}.`,
+		);
+	}
+
+	const firstSelected = selected[0];
+	if (firstSelected === undefined) {
+		throw new Error(
+			`publisher '${signer.name}' has no ${coinType} coins for DeepBook seed deposit.`,
+		);
+	}
+	const first = await currentLedgerObjectRef(sdk, firstSelected.objectId);
+	const rest = await Promise.all(
+		selected.slice(1).map((coin) => currentLedgerObjectRef(sdk, coin.objectId)),
+	);
+	const baseCoin = tx.objectRef(first);
+	if (rest.length > 0) {
+		tx.mergeCoins(
+			baseCoin,
+			rest.map((coin) => tx.objectRef(coin)),
+		);
+	}
+	if (selectedBalance === amount) return baseCoin;
+	const [coin] = tx.splitCoins(baseCoin, [tx.pure.u64(amount)]);
+	return coin;
+};
+
+export const seedDeepbookPools = (
+	publisher: ArtifactPublisher,
+	sdk: SuiSdkShim,
+	chain: string,
+	signer: ResolvedSigner,
+	pkg: DeepbookDeployment,
+	specs: ReadonlyArray<ResolvedDeepbookPoolSpec>,
+	pools: ReadonlyArray<DeepbookPool>,
+): Effect.Effect<ReadonlyArray<DeepbookPoolSeedResult>, DeepbookPluginError, Scope.Scope> =>
+	Effect.gen(function* () {
+		const seeded: DeepbookPoolSeedResult[] = [];
+		for (const spec of specs) {
+			const seed = spec.seed;
+			if (seed === undefined || seed.orders.length === 0) continue;
+			const pool = poolByName(pools, spec.name);
+			if (pool === undefined) {
+				return yield* Effect.fail(
+					deepbookPluginError('create-pools', `deepbook seed pool '${spec.name}' was not created.`),
+				);
+			}
+
+			const result = yield* publisher
+				.publish<CachedDeepbookSeedResult, CachedDeepbookSeedResult>({
+					namespace: `deepbook/seed/${spec.name}`,
+					chain: brandChainId(chain),
+					contentHash: seedInputsHash(pkg, signer, spec, pool),
+					verifySchema: CachedDeepbookSeedResultSchema,
+					verify: (cached) => buildSeedVerifyProbe(sdk, cached),
+					produce: Effect.gen(function* () {
+						yield* requestSeedFunding(
+							spec.baseFundingStrategy,
+							signer,
+							pool.baseCoinType,
+							seed.baseAmount,
+						);
+						yield* requestSeedFunding(
+							spec.quoteFundingStrategy,
+							signer,
+							pool.quoteCoinType,
+							seed.quoteAmount,
+						);
+
+						const receipt = yield* executeSuiTxWithStaleObjectRetry({
+							client: sdk.client as SuiExecuteClient,
+							signer,
+							build: async () => {
+								const tx = new Transaction();
+								tx.setSender(signer.address);
+								await setExplicitSeedGasPayment(tx, sdk, signer);
+								const registry = await sharedObject(tx, sdk, pkg.registryId, true);
+								const poolObject = await sharedObject(tx, sdk, pool.poolId, true);
+								const balanceManager = tx.moveCall({
+									target: `${pkg.packageId}::balance_manager::new`,
+									arguments: [],
+								});
+								tx.moveCall({
+									target: `${pkg.packageId}::balance_manager::register_balance_manager`,
+									arguments: [balanceManager, registry],
+								});
+								await depositIntoBalanceManager(
+									tx,
+									sdk,
+									signer,
+									pkg,
+									balanceManager,
+									pool.baseCoinType,
+									seed.baseAmount,
+								);
+								await depositIntoBalanceManager(
+									tx,
+									sdk,
+									signer,
+									pkg,
+									balanceManager,
+									pool.quoteCoinType,
+									seed.quoteAmount,
+								);
+
+								const tradeProof = tx.moveCall({
+									target: `${pkg.packageId}::balance_manager::generate_proof_as_owner`,
+									arguments: [balanceManager],
+								});
+								for (const [index, order] of seed.orders.entries()) {
+									tx.moveCall({
+										target: `${pkg.packageId}::pool::place_limit_order`,
+										typeArguments: [pool.baseCoinType, pool.quoteCoinType],
+										arguments: [
+											poolObject,
+											balanceManager,
+											tradeProof,
+											tx.pure.u64(order.clientOrderId ?? BigInt(index + 1)),
+											tx.pure.u8(ORDER_TYPE_POST_ONLY),
+											tx.pure.u8(SELF_MATCHING_CANCEL_TAKER),
+											tx.pure.u64(order.price),
+											tx.pure.u64(order.quantity),
+											tx.pure.bool(order.side === 'bid'),
+											tx.pure.bool(order.payWithDeep ?? false),
+											tx.pure.u64(MAX_TIMESTAMP),
+											tx.object.clock(),
+										],
+									});
+								}
+								tx.transferObjects([balanceManager], signer.address);
+								return tx.build({ client: transactionBuildClient(sdk) });
+							},
+						}).pipe(
+							Effect.mapError(
+								(err): ArtifactPublishError => ({
+									_tag: 'ArtifactPublishError',
+									reason: 'produce-failed',
+									detail: `deepbook seed transaction failed for pool '${spec.name}': ${err.message}`,
+								}),
+							),
+						);
+
+						const balanceManagerId = pickCreatedBalanceManager(receipt.objectChanges);
+						if (balanceManagerId === null) {
+							return yield* Effect.fail({
+								_tag: 'ArtifactPublishError' as const,
+								reason: 'produce-failed' as const,
+								detail:
+									`deepbook seed BalanceManager not found in objectChanges ` +
+									`(digest=${receipt.digest}).`,
+							});
+						}
+						return { poolName: spec.name, balanceManagerId, digest: receipt.digest };
+					}),
+					register: () => Effect.void,
+				})
+				.pipe(Effect.mapError((err) => mapArtifactError('create-pools', err)));
+
+			seeded.push(result);
+		}
+		return seeded;
+	}).pipe(
+		Effect.withSpan('devstack.plugin.deepbook.seedPools', {
+			attributes: {
+				'deepbook.packageId': pkg.packageId,
+				'deepbook.pool.count': specs.filter((spec) => spec.seed !== undefined).length,
+			},
+		}),
+	);

@@ -39,6 +39,64 @@ import { publishError, type PublishError } from './errors.ts';
 import type { PublishExecutor } from './mode-local.ts';
 import type { SuiSdkShim } from '../sui/chain-probe.ts';
 
+const shouldHydrateCreatedObject = (change: PackagePublishObjectChange): boolean =>
+	change.type === 'created' &&
+	change.objectId !== undefined &&
+	change.objectType !== undefined &&
+	(change.objectType.includes('::coin::TreasuryCap<') ||
+		change.objectType.includes('::coin::CoinMetadata<') ||
+		change.objectType.includes('::coin_registry::Currency<'));
+
+const projectObjectPayload = (raw: unknown): unknown => {
+	if (raw !== null && typeof raw === 'object' && 'object' in raw) {
+		return (raw as { readonly object?: unknown }).object;
+	}
+	return raw;
+};
+
+const projectHydratedObjectFields = (
+	raw: unknown,
+): Pick<PackagePublishObjectChange, 'owner' | 'json'> => {
+	const object = projectObjectPayload(raw);
+	if (object === null || typeof object !== 'object') return {};
+	const payload = object as { readonly owner?: unknown; readonly json?: unknown };
+	return {
+		...(payload.owner === undefined ? {} : { owner: payload.owner }),
+		...(payload.json === undefined ? {} : { json: payload.json }),
+	};
+};
+
+const hydrateCreatedObject = (
+	sdk: SuiSdkShim,
+	change: PackagePublishObjectChange,
+): Effect.Effect<PackagePublishObjectChange> => {
+	if (!shouldHydrateCreatedObject(change) || change.objectId === undefined) {
+		return Effect.succeed(change);
+	}
+	return Effect.tryPromise({
+		try: () =>
+			sdk.core.getObject({
+				objectId: change.objectId!,
+				include: { json: true },
+			}),
+		catch: () => null,
+	}).pipe(
+		Effect.map((raw) => ({
+			...change,
+			...(raw === null ? {} : projectHydratedObjectFields(raw)),
+		})),
+		Effect.catch(() => Effect.succeed(change)),
+	);
+};
+
+const hydrateCreatedObjects = (
+	sdk: SuiSdkShim,
+	changes: ReadonlyArray<PackagePublishObjectChange>,
+): Effect.Effect<ReadonlyArray<PackagePublishObjectChange>> =>
+	Effect.forEach(changes, (change) => hydrateCreatedObject(sdk, change), {
+		concurrency: 'unbounded',
+	});
+
 // ---------------------------------------------------------------------------
 // Per-acquire inputs threaded by the barrel
 // ---------------------------------------------------------------------------
@@ -305,13 +363,14 @@ export const makePublishExecutor = (inputs: PublishExecutorInputs): PublishExecu
 			const upgradeCap = objectChanges.find(
 				(c) => c.type === 'created' && (c.objectType?.endsWith('::package::UpgradeCap') ?? false),
 			);
+			const hydratedObjectChanges = yield* hydrateCreatedObjects(inputs.sdk, objectChanges);
 
 			const output: LocalPackagePublishOutput = {
 				digest: txOk.digest,
 				packageId: published?.objectId ?? '',
 				publisher: inputs.account.address,
 				...(upgradeCap?.objectId !== undefined ? { upgradeCapId: upgradeCap.objectId } : {}),
-				objectChanges,
+				objectChanges: hydratedObjectChanges,
 			};
 
 			return output;

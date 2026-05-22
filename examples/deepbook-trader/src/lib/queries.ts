@@ -84,6 +84,20 @@ export function useCoinBalance(address: string | undefined, coinType: string) {
 	});
 }
 
+export function useFirstCoinObject(address: string | undefined, coinType: string) {
+	const client = useCurrentClient();
+	return useQuery({
+		queryKey: ['coin-object', address, coinType],
+		queryFn: async () => {
+			if (!address) return null;
+			const result = await client.core.listCoins({ owner: address, coinType, limit: 1 });
+			return result.objects[0] ?? null;
+		},
+		enabled: !!address,
+		refetchInterval: BALANCE_POLL_MS,
+	});
+}
+
 export function useInvalidateTradeReads() {
 	const qc = useQueryClient();
 	return () => {

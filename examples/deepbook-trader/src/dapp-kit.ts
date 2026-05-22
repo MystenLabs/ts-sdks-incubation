@@ -40,7 +40,8 @@ export const dAppKit = createDAppKit({
 });
 
 const accountAddressByName: Record<string, string> = {
-	alice: accounts.alice.address,
+	publisher: accounts.publisher.address,
+	trader: accounts.trader.address,
 };
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));

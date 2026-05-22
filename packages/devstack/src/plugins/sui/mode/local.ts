@@ -65,7 +65,6 @@ import type {
 import { waitForHttpEndpoint } from '../../../substrate/runtime/http-probe.ts';
 import { setCurrentPluginPhase } from '../../../substrate/runtime/current-plugin.ts';
 import { ensureManagedContainer } from '../../../substrate/runtime/managed-container.ts';
-import { ProbeTimeoutError, waitForProbe } from '../../../substrate/runtime/probes.ts';
 import { renderUrl, routerHostname } from '../../../orchestrators/router/hostname.ts';
 import {
 	DEFAULT_SUI_CLI_VERSION,
@@ -75,8 +74,8 @@ import { noopClockAdvancer } from '../auto-tick.ts';
 import { suiPluginError, type SuiPluginError } from '../errors.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
 import {
-	SUI_FAUCET_ENDPOINT_NAME,
 	SUI_FAUCET_ENTRYPOINT_PORT,
+	SUI_FAUCET_ENDPOINT_NAME,
 	SUI_GRAPHQL_ENDPOINT_NAME,
 	SUI_GRAPHQL_ENTRYPOINT_PORT,
 	SUI_RPC_ENDPOINT_NAME,
@@ -188,14 +187,12 @@ export const bootLocalMode = (
 		);
 		const readyTimeout = opts.readyTimeout ?? DEFAULT_LOCAL_READY_TIMEOUT;
 
-		// Construct the SDK client up-front; the RPC probe reuses it for
-		// `getChainIdentifier` so the same transport gates downstream calls.
-		const sdkClient = new SuiGrpcClient({ baseUrl: directRpcUrl, network: 'localnet' });
-
 		yield* setCurrentPluginPhase('waiting for Sui RPC, faucet, and GraphQL');
-		yield* waitForReady(directFaucetUrl, directGraphqlUrl, sdkClient, readyTimeout).pipe(
+		yield* waitForReady(directRpcUrl, directFaucetUrl, directGraphqlUrl, readyTimeout).pipe(
 			Effect.annotateLogs({ 'sui.container': handle.name }),
 		);
+
+		const sdkClient = new SuiGrpcClient({ baseUrl: directRpcUrl, network: 'localnet' });
 
 		// ----- 4. Resolve chain id ------------------------------------------
 		yield* setCurrentPluginPhase('fetching Sui chain id');
@@ -217,6 +214,7 @@ export const bootLocalMode = (
 			sdkClient,
 			chain,
 			rpcUrl,
+			sdkRpcUrl: directRpcUrl,
 			faucetUrl,
 			fundingFaucetUrl: directFaucetUrl,
 			graphqlUrl,
@@ -570,38 +568,42 @@ const allocatePort = (
  *  the outer deadline; each probe has its own per-fetch deadline so a
  *  wedged endpoint surfaces by name. */
 const waitForReady = (
+	rpcUrl: string,
 	faucetUrl: string,
 	graphqlUrl: string,
-	sdkClient: SuiGrpcClient,
 	readyTimeout: Duration.Duration,
 ): Effect.Effect<void, SuiPluginError> =>
 	Effect.gen(function* () {
 		const readyTimeoutMs = Duration.toMillis(readyTimeout);
-		const rpcProbe: Effect.Effect<void, SuiPluginError> = waitForProbe({
-			label: 'sui.local.rpc',
+		const rpcProbe: Effect.Effect<void, SuiPluginError> = waitForHttpEndpoint({
+			endpoint: rpcUrl,
 			timeoutMs: readyTimeoutMs,
 			intervalMs: 1_000,
-			attemptTimeoutMs: PROBE_FETCH_TIMEOUT_MS,
-			probe: () =>
-				Effect.tryPromise({
-					try: () => sdkClient.core.getChainIdentifier(),
-					catch: (cause) => new Error(`rpc: ${stringifyCause(cause)}`),
-				}).pipe(Effect.as(true)),
+			requestTimeoutMs: PROBE_FETCH_TIMEOUT_MS,
+			requestInit: {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({
+					jsonrpc: '2.0',
+					id: 1,
+					method: 'sui_getLatestCheckpointSequenceNumber',
+					params: [],
+				}),
+			},
+			validate: async (response) => {
+				if (!response.ok) return false;
+				const body = (await response.json()) as { readonly result?: unknown };
+				return typeof body.result === 'string' || typeof body.result === 'number';
+			},
 		}).pipe(
 			Effect.mapError(
 				(cause): SuiPluginError =>
-					cause instanceof ProbeTimeoutError
-						? suiPluginError(
-								'rpc-probe',
-								`sui local mode: RPC did not become ready within ${readyTimeoutMs}ms. ` +
-									`Check that the validator container is healthy (\`docker logs\`).`,
-								cause.lastError ?? cause.lastNotReady ?? cause,
-							)
-						: suiPluginError(
-								'rpc-probe',
-								`sui local mode: RPC ready probe failed: ${stringifyCause(cause)}`,
-								cause,
-							),
+					suiPluginError(
+						'rpc-probe',
+						`sui local mode: RPC endpoint ${rpcUrl} did not become ready within ` +
+							`${readyTimeoutMs}ms: ${stringifyCause(cause)}`,
+						cause,
+					),
 			),
 			Effect.withSpan('devstack.plugin.sui.local.probe.rpc'),
 		);

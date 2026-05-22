@@ -16,8 +16,7 @@ import type { NetworkConfig } from '../../../src/substrate/network.ts';
 // --- Negative: unsupported helpers are not public DeepBook API -----------
 type DPV = typeof import('../../../src/plugins/deepbook/index.ts');
 
-// @ts-expect-error — local pool configuration is not public until it acquires real behavior
-export type _NoDeepbookPoolSpecOnDeepbookBarrel = DB.DeepbookPoolSpec;
+export type _DeepbookPoolSpecOnDeepbookBarrel = DB.DeepbookPoolSpec;
 
 // @ts-expect-error — margin configuration/default helpers have no acquire path in this release
 export type _NoDeepbookMarginOptionsOnDeepbookBarrel = DB.DeepbookMarginOptions;
@@ -25,8 +24,7 @@ export type _NoDeepbookMarginOptionsOnDeepbookBarrel = DB.DeepbookMarginOptions;
 // @ts-expect-error — market-maker configuration has no acquire path in this release
 export type _NoDeepbookMarketMakerOptionsOnDeepbookBarrel = DB.DeepbookMarketMakerOptions;
 
-// @ts-expect-error — Pyth configuration is internal to DeepBook until it has real acquire behavior
-export type _NoPythOptionsOnDeepbookBarrel = DB.PythOptions;
+export type _PythOptionsOnDeepbookBarrel = DB.PythOptions;
 
 // @ts-expect-error — margin defaults are not exported without margin behavior
 export type _NoUsdcMarginDefaultsOnDeepbookBarrel = DPV['USDC_MARGIN_DEFAULTS'];
@@ -42,7 +40,15 @@ const forkNet: NetworkConfig<'fork'> = {
 	checkpoint: '1',
 };
 
-// --- Positive: local mode allows .override + .known ---------------------
+declare const publisher: never;
+declare const deepbookPackage: never;
+
+// --- Positive: local mode allows .local + .override + .known -------------
+export const _localLocal = deepbookFor(localNet).local({
+	publisher,
+	package: deepbookPackage,
+	pools: [] as const,
+});
 export const _localOverride = deepbookFor(localNet).override({
 	packageId: '0xpkg',
 	registryId: '0xreg',
@@ -56,19 +62,34 @@ export const _localKnownByNetwork = deepbookFor(localNet).known({
 	network: 'testnet',
 });
 
-// --- Negative: override mode does not expose unsupported feature options -
+// --- Positive: local mode exposes local pool configuration ---------------
+export const _localPoolsAllowed = deepbookFor(localNet).local({
+	publisher,
+	package: deepbookPackage,
+	pools: [],
+});
+
+// --- Negative: override mode does not expose managed-local options -------
 export const _localPoolsRefused = deepbookFor(localNet).override({
 	packageId: '0xpkg',
 	registryId: '0xreg',
 	adminCapId: '0xadmin',
-	// @ts-expect-error — local pools are not a public option until they acquire real behavior
+	// @ts-expect-error — local pools belong to `.local`, not `.override`
 	pools: [],
 });
 
-export const _localMarketMakerRefused = deepbookFor(localNet).override({
+export const _localPythRefused = deepbookFor(localNet).override({
 	packageId: '0xpkg',
 	registryId: '0xreg',
 	adminCapId: '0xadmin',
+	// @ts-expect-error — local Pyth setup belongs to `.local`, not `.override`
+	pyth: {},
+});
+
+export const _localMarketMakerRefused = deepbookFor(localNet).local({
+	publisher,
+	package: deepbookPackage,
+	pools: [] as const,
 	// @ts-expect-error — market-maker cannot be configured while it has no real acquire path
 	marketMaker: {
 		strategy: { kind: 'bps', spreadBps: 10, levelSpacingBps: 100, levels: 3 },
@@ -84,7 +105,14 @@ export const _liveKnownByNetwork = deepbookFor(liveNet).known({
 	network: 'mainnet',
 });
 
-// --- Negative: live mode has no .override --------------------------------
+// --- Negative: live mode has no .local or .override ----------------------
+// @ts-expect-error — `.local` doesn't exist on the live branch
+export const _liveLocalRefused = deepbookFor(liveNet).local({
+	publisher,
+	package: deepbookPackage,
+	pools: [] as const,
+});
+
 // @ts-expect-error — `.override` doesn't exist on the live branch
 export const _liveOverrideRefused = deepbookFor(liveNet).override({
 	packageId: '0xpkg',
@@ -101,8 +129,15 @@ export const _forkKnownByNetwork = deepbookFor(forkNet).known({
 	network: 'mainnet',
 });
 
-// --- Negative: fork mode has no .override --------------------------------
-// @ts-expect-error — `.override` doesn't exist on the fork branch (mode refusal)
+// --- Negative: fork mode has no .local or .override ----------------------
+// @ts-expect-error — `.local` doesn't exist on the fork branch
+export const _forkLocalRefused = deepbookFor(forkNet).local({
+	publisher,
+	package: deepbookPackage,
+	pools: [] as const,
+});
+
+// @ts-expect-error — `.override` doesn't exist on the fork branch
 export const _forkOverrideRefused = deepbookFor(forkNet).override({
 	packageId: '0xpkg',
 	registryId: '0xreg',

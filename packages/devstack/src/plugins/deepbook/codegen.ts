@@ -10,6 +10,8 @@ import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 export interface DeepbookPoolBinding {
 	readonly name: string;
 	readonly poolId: string;
+	readonly base: string;
+	readonly quote: string;
 	readonly baseCoinType: string;
 	readonly quoteCoinType: string;
 }
@@ -20,10 +22,19 @@ export interface DeepbookBindings {
 	readonly packageId: string;
 	readonly registryId: string;
 	readonly adminCapId: string | null;
+	readonly deepTreasuryId: string | null;
 	readonly pools: ReadonlyArray<DeepbookPoolBinding>;
 	readonly pyth: {
-		readonly stateId: string;
-		readonly wormholeStateId: string;
+		readonly packageId: string | null;
+		readonly stateId: string | null;
+		readonly wormholeStateId: string | null;
+		readonly feeds: ReadonlyArray<{
+			readonly symbol: string;
+			readonly feedId: string;
+			readonly priceInfoObjectId: string;
+			readonly price: string;
+			readonly expo: number;
+		}>;
 	} | null;
 	readonly margin: {
 		readonly packageId: string;

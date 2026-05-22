@@ -220,7 +220,7 @@ export const emitBindings = (
 				const abs = joinPath(input.bindingsDir, f.relPath);
 				const outcome = yield* emitOne({
 					path: abs,
-					content: f.content,
+					content: stabilizeGeneratedBindingContent(f.content),
 					mode: NON_SENSITIVE_FILE_MODE,
 				}).pipe(
 					Effect.mapError(
@@ -580,6 +580,28 @@ const parseSummaryStdout = (stdout: string): unknown => {
 		return trimmed;
 	}
 };
+
+const generatedBcsFactoryPattern =
+	/export function ([A-Za-z_$][\w$]*)<((?:[^<>]|<[^<>]*>)+)>\((\.\.\.typeParameters: \[[\s\S]*?\n\])\) \{\n(\s*)return new (MoveStruct|MoveEnum|MoveTuple)\(/g;
+
+const bcsFactoryReturnType = (constructorName: string): string => {
+	if (constructorName === 'MoveEnum') {
+		return 'MoveEnum<any, string>';
+	}
+	if (constructorName === 'MoveTuple') {
+		return 'MoveTuple<any, string>';
+	}
+	return 'MoveStruct<any, string>';
+};
+
+const stabilizeGeneratedBindingContent = (content: string): string =>
+	content.replace(
+		generatedBcsFactoryPattern,
+		(_match, name, generics, parameters, indent, constructorName: string) =>
+			`export function ${name}<${generics}>(${parameters}): ${bcsFactoryReturnType(
+				constructorName,
+			)} {\n${indent}return new ${constructorName}(`,
+	);
 
 const collectGeneratedFiles = async (
 	root: string,

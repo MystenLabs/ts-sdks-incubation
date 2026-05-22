@@ -11,6 +11,8 @@
 // `project_devstack_api_design_locked_decisions`).
 
 import type { AccountValue } from '../account/index.ts';
+import type { CoinValue } from '../coin/index.ts';
+import type { LocalPackageResolved } from '../package/index.ts';
 import type { ResourceRef } from '../../api/define-plugin.ts';
 
 // ---------------------------------------------------------------------------
@@ -30,22 +32,36 @@ export interface PythFeed {
 	/** Initial price expressed in feed-native scale (Pyth conf is the
 	 *  signed-int representation; bigint avoids float precision drift). */
 	readonly initialPrice: bigint;
+	/** Feed exponent. Defaults to -8, matching the DeepBook sandbox. */
+	readonly expo?: number;
+	/** Optional confidence interval. Defaults to 0 for deterministic local feeds. */
+	readonly confidence?: bigint;
+	/** Optional EMA price. Defaults to `initialPrice`. */
+	readonly emaPrice?: bigint;
 }
 
-/** Pyth options. `pusher` is an account MEMBER ref, not a magic string. */
-export interface PythOptions {
-	readonly pusher: AccountMemberAlias;
+/** Pyth options. `package` and `pusher` are member refs, not magic strings. */
+export interface PythOptions<
+	Package extends PythPackageMember = PythPackageMember,
+	Pusher extends AccountMemberAlias = AccountMemberAlias,
+> {
+	readonly package: Package;
+	readonly pusher: Pusher;
 	readonly feeds: ReadonlyArray<PythFeed>;
 }
 
 /** Resolved Pyth handle exposed inside the deepbook resolved value. */
 export interface PythHandle {
-	readonly stateId: string;
-	readonly wormholeStateId: string;
+	/** Local sandbox Pyth has no Wormhole state; known deployments do. */
+	readonly packageId: string | null;
+	readonly stateId: string | null;
+	readonly wormholeStateId: string | null;
 	readonly feeds: ReadonlyArray<{
 		readonly symbol: string;
 		readonly feedId: PythPriceFeedId;
 		readonly priceInfoObjectId: string;
+		readonly price: bigint;
+		readonly expo: number;
 	}>;
 }
 
@@ -59,25 +75,64 @@ export const USDC_PRICE_FEED_ID: PythPriceFeedId = pythPriceFeedId(
 	'eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a',
 );
 export const DEEP_PRICE_FEED_ID: PythPriceFeedId = pythPriceFeedId(
-	'29bdd5248234e33bd93d3b81100b5fa32eaa5997843847e2c2cb16d7c6375802',
+	'29bdd5248234e33bd93d3b81100b5fa32eaa5997843847e2c2cb16d7c6d9f7ff',
 );
 
 // ---------------------------------------------------------------------------
 // Pool spec
 // ---------------------------------------------------------------------------
 
-/** Whitelisted pool to create at deploy time. `base` / `quote` are
- *  the coin symbols the DeepBook plugin resolves to coin records
- *  from user-supplied coin/package members. */
-export interface DeepbookPoolSpec {
+/** Coin handle used by local DeepBook pool specs. `key` is the SDK-facing
+ *  coin key (for example `DEEP` or `SUI`); `coin` is the devstack member ref
+ *  whose resolved value supplies the full Move coin type. */
+export interface DeepbookPoolCoin<Coin extends CoinMemberAlias = CoinMemberAlias> {
+	readonly key: string;
+	readonly coin: Coin;
+	/** SDK scalar for this coin. Defaults to the resolved coin decimals. */
+	readonly scalar?: number;
+	/** SDK address column. Defaults to the package id for package coins, or
+	 *  the address portion of the resolved full coin type. */
+	readonly address?: string;
+}
+
+/** Seed order placed after a local pool is created. Price and quantity use
+ *  DeepBook's on-chain units: `price` is quote-unit price and `quantity` is
+ *  base-asset quantity. */
+export interface DeepbookPoolSeedOrder {
+	readonly side: 'ask' | 'bid';
+	readonly price: bigint;
+	readonly quantity: bigint;
+	readonly clientOrderId?: bigint;
+	readonly payWithDeep?: boolean;
+}
+
+/** Optional local liquidity seed. Package coins with a generic funding
+ *  strategy are minted to the publisher before the seed transaction; otherwise
+ *  the publisher must already own the deposited coins. */
+export interface DeepbookPoolSeedLiquidity {
+	readonly baseAmount?: bigint;
+	readonly quoteAmount?: bigint;
+	readonly orders: ReadonlyArray<DeepbookPoolSeedOrder>;
+}
+
+/** Whitelisted pool to create at deploy time. `base` / `quote` are real coin
+ *  member refs so pool creation cannot race package/coin resolution. */
+export interface DeepbookPoolSpec<
+	Base extends CoinMemberAlias = CoinMemberAlias,
+	Quote extends CoinMemberAlias = CoinMemberAlias,
+> {
 	readonly name: string;
-	readonly base: string;
-	readonly quote: string;
+	readonly base: DeepbookPoolCoin<Base>;
+	readonly quote: DeepbookPoolCoin<Quote>;
 	readonly tickSize: bigint;
 	readonly lotSize: bigint;
 	readonly minSize: bigint;
 	/** Whitelisted? Defaults true for local deploy (no DEEP-burn). */
 	readonly whitelisted?: boolean;
+	/** Stable pool? Defaults false. */
+	readonly stablePool?: boolean;
+	/** Optional publisher-owned BalanceManager + seed orders for local demos. */
+	readonly seed?: DeepbookPoolSeedLiquidity;
 }
 
 /** A resolved pool record on chain. */
@@ -243,4 +298,21 @@ export interface DeepbookMarketMaker {
 export type AccountMemberAlias<Name extends string = string> = ResourceRef<
 	`account/${Name}`,
 	AccountValue
+>;
+
+/** Coin ref alias — the user passes `coin.fromPackage(...)`, `coin.known(...)`,
+ *  or `coin.builtin(...)`. */
+export type CoinMemberAlias<Name extends string = string> = ResourceRef<`coin:${Name}`, CoinValue>;
+
+/** Local package ref alias for the published DeepBook package. The package
+ *  should capture `registryId` and `adminCapId` from its publish output. */
+export type DeepbookPackageMember<Name extends string = string> = ResourceRef<
+	`package:${Name}`,
+	LocalPackageResolved
+>;
+
+/** Local package ref alias for the mock Pyth package used by local DeepBook. */
+export type PythPackageMember<Name extends string = string> = ResourceRef<
+	`package:${Name}`,
+	LocalPackageResolved
 >;

@@ -7,6 +7,7 @@
 import { describe, expect, it } from '@effect/vitest';
 import { Effect, Layer } from 'effect';
 import { FileSystem } from 'effect';
+import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 // Subpath imports — the barrel re-exports `NodeRedis` which transitively
 // requires `ioredis`, an optional peer not installed in this package.
@@ -78,6 +79,15 @@ const nodePlatformLayer = Layer.mergeAll(NodeFileSystem.layer, NodePath.layer);
 
 const baseLayer = (root: string) =>
 	Layer.mergeAll(stubMoveLayers, layerCodegenPaths, nodePlatformLayer).pipe(
+		Layer.provide(layerCodegenRoot({ outputDir: root, stackSubdir: null })),
+		Layer.provide(nodePlatformLayer),
+	);
+
+const baseLayerWithMove = (
+	root: string,
+	moveLayers: Layer.Layer<MoveCodegenService | MoveSummaryRunnerService>,
+) =>
+	Layer.mergeAll(moveLayers, layerCodegenPaths, nodePlatformLayer).pipe(
 		Layer.provide(layerCodegenRoot({ outputDir: root, stackSubdir: null })),
 		Layer.provide(nodePlatformLayer),
 	);
@@ -410,4 +420,59 @@ describe('codegen.runEmitCycle', () => {
 			}).pipe(Effect.provide(baseLayer(root)));
 		},
 	);
+
+	it.effect('adds portable return types to generic BCS factory bindings', () => {
+		const root = `/tmp/codegen-test-${Date.now()}-${Math.random()}`;
+		const moveLayers = Layer.mergeAll(
+			Layer.succeed(MoveSummaryRunnerService)(
+				stubMoveSummaryRunner((sourcePath) => ({
+					packageName: sourcePath,
+					sourcePath,
+					summaryJson: {},
+				})),
+			),
+			Layer.succeed(MoveCodegenService)(
+				stubMoveCodegen((input) => [
+					{
+						relPath: `${input.packageName}/vec_set.ts`,
+						content: `import { type BcsType, bcs } from '@mysten/sui/bcs';
+import { MoveStruct } from '../utils/index.ts';
+export function VecSet<K extends BcsType<any>>(...typeParameters: [
+    K
+]) {
+    return new MoveStruct({ name: '0x2::vec_set::VecSet', fields: {
+            contents: bcs.vector(typeParameters[0])
+        } });
+}
+`,
+					},
+				]),
+			),
+		);
+		return Effect.gen(function* () {
+			const fs = yield* FileSystem.FileSystem;
+			yield* runEmitCycle({
+				contributions: [
+					fakeDecl({
+						emitterName: 'package',
+						outputPath: 'package/hello.ts',
+						exports: {
+							packageBindings: {
+								name: 'hello',
+								packageId: '0x123',
+								mvrPlaceholder: '@local/hello',
+								sourcePath: '/tmp/source/hello',
+								excluded: false,
+							},
+						},
+					}),
+				],
+			});
+			const output = yield* Effect.promise(() =>
+				readFile(`${root}/bindings/hello/vec_set.ts`, 'utf8'),
+			);
+			expect(output).toContain(']): MoveStruct<any, string> {');
+			yield* fs.remove(root, { recursive: true, force: true }).pipe(Effect.ignore);
+		}).pipe(Effect.provide(baseLayerWithMove(root, moveLayers)));
+	});
 });
