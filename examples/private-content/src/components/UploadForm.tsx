@@ -20,9 +20,9 @@ export function UploadForm() {
 	// One signer per app session — wraps the currently-connected dapp-kit
 	// account so the walrus SDK can register + certify blobs on chain
 	// using the user's wallet, the same way it would on testnet/mainnet.
-	// `CurrentAccountSigner`'s constructor types `DAppKit<[]>`; our actual
-	// dAppKit has typed networks, so the structural shape is identical
-	// but TS sees the phantom type param mismatch — cast at the boundary.
+	// CurrentAccountSigner is not generic over the app's literal network
+	// tuple, so TS needs a boundary cast even though the runtime shape is
+	// the same dapp-kit object.
 	const walrusSigner = useMemo(
 		() =>
 			new CurrentAccountSigner(

@@ -8,8 +8,8 @@
 // round-trip through the container-claim ledger, no tempfile leaks
 // on success.
 
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { Effect } from 'effect';
@@ -18,6 +18,7 @@ import { describe, expect, it } from '@effect/vitest';
 import {
 	addClaim,
 	claim,
+	pruneStaleClaims,
 	readClaims,
 	release,
 	removeClaim,
@@ -146,6 +147,119 @@ describe('roster.addClaim / removeClaim (container-claim ledger)', () => {
 					yield* addClaim(paths, 'devstack-main-sui');
 					const doc = yield* readClaims(paths);
 					expect(doc.claims).toHaveLength(1);
+				} finally {
+					rmSync(root, { recursive: true, force: true });
+				}
+			}),
+		ROSTER_TEST_TIMEOUT_MS,
+	);
+
+	it.effect(
+		'addClaim prunes stale same-host claims before appending',
+		() =>
+			Effect.gen(function* () {
+				const root = freshRoot();
+				const paths = pathsFor(root);
+				try {
+					const claimsFile = join(root, 'app', 'main', 'container-claims.json');
+					yield* claim(paths);
+					writeFileSync(
+						claimsFile,
+						JSON.stringify({
+							version: 1,
+							claims: [
+								{
+									containerKey: 'devstack-main-sui',
+									pid: 0,
+									startTime: 1,
+									hostname: hostname(),
+									claimedAt: 1,
+								},
+							],
+						}),
+					);
+
+					yield* addClaim(paths, 'devstack-main-sui');
+
+					const doc = yield* readClaims(paths);
+					expect(doc.claims).toHaveLength(1);
+					expect(doc.claims[0]?.pid).toBe(process.pid);
+					expect(doc.claims[0]?.startTime).toEqual(expect.any(Number));
+				} finally {
+					rmSync(root, { recursive: true, force: true });
+				}
+			}),
+		ROSTER_TEST_TIMEOUT_MS,
+	);
+
+	it.effect(
+		'removeClaim ignores stale peers when computing last-claim release',
+		() =>
+			Effect.gen(function* () {
+				const root = freshRoot();
+				const paths = pathsFor(root);
+				try {
+					yield* claim(paths);
+					yield* addClaim(paths, 'devstack-main-sui');
+					const claimsFile = join(root, 'app', 'main', 'container-claims.json');
+					const current = yield* readClaims(paths);
+					writeFileSync(
+						claimsFile,
+						JSON.stringify({
+							version: 1,
+							claims: [
+								...current.claims,
+								{
+									containerKey: 'devstack-main-sui',
+									pid: 0,
+									startTime: 1,
+									hostname: hostname(),
+									claimedAt: 1,
+								},
+							],
+						}),
+					);
+
+					const result = yield* removeClaim(paths, 'devstack-main-sui');
+
+					expect(result.lastClaimReleased).toBe(true);
+					expect((yield* readClaims(paths)).claims).toEqual([]);
+				} finally {
+					rmSync(root, { recursive: true, force: true });
+				}
+			}),
+		ROSTER_TEST_TIMEOUT_MS,
+	);
+
+	it.effect(
+		'pruneStaleClaims keeps foreign-host claims conservative',
+		() =>
+			Effect.gen(function* () {
+				const root = freshRoot();
+				const paths = pathsFor(root);
+				try {
+					const claimsFile = join(root, 'app', 'main', 'container-claims.json');
+					yield* claim(paths);
+					writeFileSync(
+						claimsFile,
+						JSON.stringify({
+							version: 1,
+							claims: [
+								{
+									containerKey: 'devstack-main-sui',
+									pid: 0,
+									startTime: 1,
+									hostname: 'other-host',
+									claimedAt: 1,
+								},
+							],
+						}),
+					);
+
+					const doc = yield* pruneStaleClaims(paths);
+
+					expect(doc.claims).toHaveLength(1);
+					expect(doc.claims[0]?.hostname).toBe('other-host');
 				} finally {
 					rmSync(root, { recursive: true, force: true });
 				}

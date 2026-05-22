@@ -25,7 +25,7 @@ import { atomicWriteJsonSync } from '../atomic-write.ts';
 import { SpanAttr } from '../observability/spans.ts';
 import { decodeJsonText } from '../runtime-decode.ts';
 import { acquireStackLock } from './stack-lock.ts';
-import { checkHolderLiveness, ownHolder } from './liveness.ts';
+import { checkHolderLiveness, isPidAlive, ownHolder, processStartTime } from './liveness.ts';
 
 // -----------------------------------------------------------------------------
 // Errors
@@ -333,6 +333,7 @@ export const heartbeatFiber = (
 export interface ContainerClaim {
 	readonly containerKey: string;
 	readonly pid: number;
+	readonly startTime?: number;
 	readonly hostname: string;
 	readonly claimedAt: number;
 }
@@ -345,6 +346,7 @@ export interface ContainerClaimDocument {
 const ContainerClaimSchema = Schema.Struct({
 	containerKey: Schema.String,
 	pid: Schema.Number,
+	startTime: Schema.optional(Schema.Number),
 	hostname: Schema.String,
 	claimedAt: Schema.Number,
 });
@@ -357,6 +359,32 @@ const ContainerClaimDocumentSchema = Schema.Struct({
 const EMPTY_CLAIMS: ContainerClaimDocument = { version: 1, claims: [] };
 
 const claimsPath = (rosterFile: string): string => `${dirname(rosterFile)}/container-claims.json`;
+
+const isContainerClaimLive = (
+	claim: ContainerClaim,
+	ownHost: string = nodeHostname(),
+): boolean => {
+	if (claim.hostname !== ownHost) return true;
+	if (!isPidAlive(claim.pid)) return false;
+	if (claim.startTime === undefined) return true;
+	const probedStart = processStartTime(claim.pid);
+	if (probedStart === null) return true;
+	return probedStart === claim.startTime;
+};
+
+const liveContainerClaims = (doc: ContainerClaimDocument): ContainerClaimDocument => ({
+	version: 1,
+	claims: doc.claims.filter((claim) => isContainerClaimLive(claim)),
+});
+
+const writeClaims = (
+	path: string,
+	doc: ContainerClaimDocument,
+): Effect.Effect<void, RosterIoError> =>
+	Effect.try({
+		try: () => atomicWriteJsonSync(path, doc),
+		catch: (cause) => new RosterIoError({ path, cause }),
+	});
 
 /** Read the container-claim ledger. */
 export const readClaims = (
@@ -375,6 +403,29 @@ export const readClaims = (
 		});
 	}).pipe(Effect.withSpan('cross-process.roster.readClaims'));
 
+/** Prune stale same-host claims. This is the recovery path for an
+ *  interrupted process that could not run its scope finalizer. */
+export const pruneStaleClaims = (
+	paths: RosterPaths,
+): Effect.Effect<
+	ContainerClaimDocument,
+	RosterError | import('./stack-lock.ts').StackLockError
+> =>
+	withStackLock(
+		paths,
+		Effect.gen(function* () {
+			const path = claimsPath(paths.rosterFile);
+			const current = yield* readClaims(paths).pipe(
+				Effect.catchTag('RosterCorruptError', () => Effect.succeed(EMPTY_CLAIMS)),
+			);
+			const next = liveContainerClaims(current);
+			if (next.claims.length !== current.claims.length) {
+				yield* writeClaims(path, next);
+			}
+			return next;
+		}),
+	).pipe(Effect.withSpan('cross-process.roster.pruneStaleClaims'));
+
 /** Record that this process now claims `containerKey`. No-op if
  *  already claimed by this process. */
 export const addClaim = (
@@ -388,26 +439,32 @@ export const addClaim = (
 			const current = yield* readClaims(paths).pipe(
 				Effect.catchTag('RosterCorruptError', () => Effect.succeed(EMPTY_CLAIMS)),
 			);
+			const live = liveContainerClaims(current);
 			const ownPid = process.pid;
+			const ownStartTime = processStartTime(ownPid) ?? undefined;
 			const ownHost = nodeHostname();
 			if (
-				current.claims.some(
+				live.claims.some(
 					(c) => c.containerKey === containerKey && c.pid === ownPid && c.hostname === ownHost,
 				)
 			) {
+				if (live.claims.length !== current.claims.length) yield* writeClaims(path, live);
 				return;
 			}
 			const next: ContainerClaimDocument = {
 				version: 1,
 				claims: [
-					...current.claims,
-					{ containerKey, pid: ownPid, hostname: ownHost, claimedAt: Date.now() },
+					...live.claims,
+					{
+						containerKey,
+						pid: ownPid,
+						...(ownStartTime === undefined ? {} : { startTime: ownStartTime }),
+						hostname: ownHost,
+						claimedAt: Date.now(),
+					},
 				],
 			};
-			yield* Effect.try({
-				try: () => atomicWriteJsonSync(path, next),
-				catch: (cause) => new RosterIoError({ path, cause }),
-			});
+			yield* writeClaims(path, next);
 		}),
 	).pipe(Effect.withSpan('cross-process.roster.addClaim'));
 
@@ -432,17 +489,15 @@ export const removeClaim = (
 			const current = yield* readClaims(paths).pipe(
 				Effect.catchTag('RosterCorruptError', () => Effect.succeed(EMPTY_CLAIMS)),
 			);
+			const live = liveContainerClaims(current);
 			const ownPid = process.pid;
 			const ownHost = nodeHostname();
-			const remaining = current.claims.filter(
+			const remaining = live.claims.filter(
 				(c) => !(c.containerKey === containerKey && c.pid === ownPid && c.hostname === ownHost),
 			);
 			const stillClaimedByPeer = remaining.some((c) => c.containerKey === containerKey);
 			const next: ContainerClaimDocument = { version: 1, claims: remaining };
-			yield* Effect.try({
-				try: () => atomicWriteJsonSync(path, next),
-				catch: (cause) => new RosterIoError({ path, cause }),
-			});
+			yield* writeClaims(path, next);
 			return { lastClaimReleased: !stillClaimedByPeer };
 		}),
 	).pipe(Effect.withSpan('cross-process.roster.removeClaim'));
