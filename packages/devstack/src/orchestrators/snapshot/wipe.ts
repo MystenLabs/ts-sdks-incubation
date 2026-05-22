@@ -3,7 +3,7 @@
 // Architecture § Snapshot responsibilities:
 //   "Provide a wipe operation scoped to one `(app, stack)` that tears
 //   down containers, networks, volumes, and per-stack on-disk state,
-//   with snapshots and shared upstream caches surviving by default."
+//   with snapshots surviving by default."
 //
 // Label-scoped: enumeration uses partial `ContainerLabelTuple` filters
 // (just `{ app, stack }`); the orchestrator does NOT reach for plugin
@@ -27,7 +27,6 @@ export class WipePhaseError extends Schema.TaggedErrorClass<WipePhaseError>()(
 			'sweep-networks-volumes',
 			'remove-state',
 			'remove-runtime-tree',
-			'remove-cache',
 		]),
 		detail: Schema.String,
 		cause: Schema.optional(Schema.Defect),
@@ -50,12 +49,13 @@ export interface WipeInputs {
 	readonly labelMatch: Pick<ContainerLabelTuple, 'app' | 'stack'>;
 	readonly stackRoot: string;
 	readonly stateFilePath: string;
-	readonly cacheDir: string;
 	readonly runtime: ContainerRuntime;
 	/** Preserve the snapshot catalog (default behavior). When false,
 	 *  the catalog is removed alongside the runtime tree. */
 	readonly keepSnapshots?: boolean;
-	/** Preserve shared upstream caches (default behavior). */
+	/** Preserve stack-local artifact caches. Defaults to false; wipe
+	 *  should force on-chain artifacts to re-prove against the next
+	 *  chain instead of carrying local ids across a reset. */
 	readonly keepCache?: boolean;
 }
 
@@ -71,8 +71,7 @@ export interface WipeInputs {
  *   1. Force-remove managed containers by `{ app, stack }` labels.
  *   2. Remove managed networks and volumes by the same label filter.
  *   3. Remove state.json.
- *   4. Remove the runtime tree EXCEPT the snapshot catalog (and the
- *      cache, by default).
+ *   4. Remove the runtime tree EXCEPT the snapshot catalog by default.
  */
 export const runWipe = (
 	inputs: WipeInputs,
@@ -103,28 +102,22 @@ export const runWipe = (
 			.remove(inputs.stateFilePath, { force: true })
 			.pipe(Effect.catch(failPhase('remove-state', `remove state.json failed`)));
 
-		// 4. Remove the runtime tree — but PRESERVE snapshots + cache
-		//    by default. Strategy: enumerate the stack root and remove
-		//    each child whose name is neither `snapshots/` nor `cache/`
-		//    (when preserved).
+		// 4. Remove the runtime tree — but PRESERVE snapshots by default.
+		//    Strategy: enumerate the stack root and remove each child
+		//    whose name is not `snapshots/` (when preserved). Stack-local
+		//    artifact caches are state and are removed unless explicitly
+		//    requested otherwise.
 		const children = yield* fs
 			.readDirectory(inputs.stackRoot)
 			.pipe(Effect.catch(() => Effect.succeed([] as ReadonlyArray<string>)));
 		const keepSnapshots = inputs.keepSnapshots ?? true;
-		const keepCache = inputs.keepCache ?? true;
+		const keepCache = inputs.keepCache ?? false;
 		for (const name of children) {
 			if (keepSnapshots && name === 'snapshots') continue;
 			if (keepCache && name === 'cache') continue;
 			yield* fs
 				.remove(`${inputs.stackRoot}/${name}`, { recursive: true, force: true })
 				.pipe(Effect.catch(failPhase('remove-runtime-tree', `remove ${name} failed`)));
-		}
-
-		// 5. Cache (if not preserved).
-		if (!keepCache) {
-			yield* fs
-				.remove(inputs.cacheDir, { recursive: true, force: true })
-				.pipe(Effect.catch(failPhase('remove-cache', `remove cache dir failed`)));
 		}
 	}).pipe(Effect.withSpan('orchestrator.snapshot.wipe'));
 

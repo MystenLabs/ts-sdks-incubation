@@ -54,7 +54,7 @@ const runtimeStub = (events: string[]): ContainerRuntime => ({
 
 describe('snapshot cleanup orchestration', () => {
 	it.effect(
-		'wipe uses explicit managed-resource cleanup and preserves snapshots/cache by default',
+		'wipe uses explicit managed-resource cleanup and preserves only snapshots by default',
 		() =>
 			Effect.gen(function* () {
 				const root = freshRoot();
@@ -72,7 +72,6 @@ describe('snapshot cleanup orchestration', () => {
 						labelMatch: { app: 'app', stack: 'main' },
 						stackRoot,
 						stateFilePath,
-						cacheDir,
 						runtime: runtimeStub(events),
 					}).pipe(Effect.provide(NodeFileSystem.layer));
 
@@ -80,11 +79,39 @@ describe('snapshot cleanup orchestration', () => {
 					expect(existsSync(stateFilePath)).toBe(false);
 					expect(existsSync(join(stackRoot, 'work'))).toBe(false);
 					expect(existsSync(join(stackRoot, 'snapshots'))).toBe(true);
-					expect(existsSync(cacheDir)).toBe(true);
+					expect(existsSync(cacheDir)).toBe(false);
 				} finally {
 					rmSync(root, { recursive: true, force: true });
 				}
 			}),
+	);
+
+	it.effect('wipe can explicitly preserve stack-local cache', () =>
+		Effect.gen(function* () {
+			const root = freshRoot();
+			const events: string[] = [];
+			try {
+				const stackRoot = join(root, 'stack');
+				const stateFilePath = join(stackRoot, 'state.json');
+				const cacheDir = join(stackRoot, 'cache');
+				mkdirSync(cacheDir, { recursive: true });
+				writeFileSync(join(cacheDir, 'entry'), 'cache');
+				writeFileSync(stateFilePath, '{}');
+
+				yield* runWipe({
+					labelMatch: { app: 'app', stack: 'main' },
+					stackRoot,
+					stateFilePath,
+					runtime: runtimeStub(events),
+					keepCache: true,
+				}).pipe(Effect.provide(NodeFileSystem.layer));
+
+				expect(existsSync(join(cacheDir, 'entry'))).toBe(true);
+				expect(existsSync(stateFilePath)).toBe(false);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}),
 	);
 
 	it.effect('prune uses managed image cleanup rather than boot orphan sweep', () =>

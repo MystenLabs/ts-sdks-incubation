@@ -40,7 +40,7 @@
 // say "seal"; outside `src/plugins/seal/`, the substrate doesn't
 // know seal exists.
 
-import { Effect, FileSystem, Path, type Scope } from 'effect';
+import { Effect, FileSystem, Path, Schema, type Scope } from 'effect';
 
 import type { ChainId } from '../../../substrate/brand.ts';
 import type { ChainProbe } from '../../../contracts/chain-probe.ts';
@@ -53,7 +53,6 @@ import type {
 import type { AccountValue } from '../../account/service.ts';
 import {
 	parseMasterKeyEnvFile,
-	parseSealKeyServerConfig,
 	renderSealKeyServerConfig,
 	stageSealConfig,
 } from '../config-render.ts';
@@ -64,17 +63,13 @@ import {
 	type SealSuiSdk,
 } from '../deploy.ts';
 import { sealError, type SealError } from '../errors.ts';
-import {
-	KEY_SERVER_CONFIG_BASENAME,
-	MASTER_KEY_ENVFILE_BASENAME,
-	runSealKeygen,
-	type PersistedBlsKeypair,
-} from '../keygen.ts';
+import { MASTER_KEY_ENVFILE_BASENAME, runSealKeygen, type PersistedBlsKeypair } from '../keygen.ts';
 import { makeKeyManager, stubRotate } from '../key-manager.ts';
 import { buildKeyServerSpec, startKeyServer, type KeyServerContainerSpec } from '../key-server.ts';
 import type { SealKeyServerEntry, SealLocalKeygenResolved } from '../registry-publish.ts';
 import { resolveDefaultSealCargoImage } from '../bootstrap-assets/cargo-image.ts';
 import { resolveDefaultSealSource } from '../bootstrap-assets/source-fetch.ts';
+import { atomicWriteFile } from '../../../substrate/runtime/atomic-write.ts';
 
 // ---------------------------------------------------------------------------
 // Options (factory-time)
@@ -162,43 +157,91 @@ export interface LocalKeygenDeps {
 	readonly routedUrl: string;
 }
 
-interface PersistedLocalKeygenState {
-	readonly packageId: string;
-	readonly keyServerObjectId: string;
-	readonly nodeUrl: string;
+interface PersistedLocalKeygenKeyMaterial {
 	readonly masterKey: string;
+	readonly publicKey: string;
 	readonly masterKeyEnvFile: string;
 }
 
-const readPersistedLocalKeygenState = (
+interface PersistedLocalKeygenState extends PersistedLocalKeygenKeyMaterial {
+	readonly packageId: string;
+	readonly keyServerObjectId: string;
+}
+
+const LOCAL_KEYGEN_STATE_VERSION = 1;
+const LOCAL_KEYGEN_STATE_BASENAME = 'local-keygen-state.v1.json';
+
+const PersistedLocalKeygenMetadataSchema = Schema.Struct({
+	version: Schema.Literal(LOCAL_KEYGEN_STATE_VERSION),
+	publicKey: Schema.String,
+});
+
+type PersistedLocalKeygenMetadata = Schema.Schema.Type<typeof PersistedLocalKeygenMetadataSchema>;
+
+const localKeygenMetadataPath = (servicePath: string): string =>
+	`${servicePath}/${LOCAL_KEYGEN_STATE_BASENAME}`;
+
+const readPersistedLocalKeygenMetadata = (
 	servicePath: string,
-): Effect.Effect<PersistedLocalKeygenState | null, never, FileSystem.FileSystem> =>
+): Effect.Effect<PersistedLocalKeygenMetadata | null, never, FileSystem.FileSystem> =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem;
-		const configPath = `${servicePath}/${KEY_SERVER_CONFIG_BASENAME}`;
-		const masterKeyEnvFile = `${servicePath}/${MASTER_KEY_ENVFILE_BASENAME}`;
-		const [configExists, masterKeyExists] = yield* Effect.all([
-			fs.exists(configPath).pipe(Effect.catch(() => Effect.succeed(false))),
-			fs.exists(masterKeyEnvFile).pipe(Effect.catch(() => Effect.succeed(false))),
-		]);
-		if (!configExists || !masterKeyExists) return null;
-
-		const configBody = yield* fs
-			.readFileString(configPath)
+		const raw = yield* fs
+			.readFileString(localKeygenMetadataPath(servicePath))
 			.pipe(Effect.catch(() => Effect.succeed(null)));
+		if (raw === null) return null;
+		const parsed = yield* Effect.try({
+			try: () => JSON.parse(raw) as unknown,
+			catch: () => null,
+		}).pipe(Effect.catch(() => Effect.succeed(null)));
+		if (parsed === null) return null;
+		return yield* Schema.decodeUnknownEffect(PersistedLocalKeygenMetadataSchema)(parsed).pipe(
+			Effect.catch(() => Effect.succeed(null)),
+		);
+	});
+
+const stagePersistedLocalKeygenMetadata = (
+	servicePath: string,
+	name: string,
+	metadata: PersistedLocalKeygenMetadata,
+): Effect.Effect<void, SealError, FileSystem.FileSystem> =>
+	atomicWriteFile(
+		localKeygenMetadataPath(servicePath),
+		new TextEncoder().encode(`${JSON.stringify(metadata, null, 2)}\n`),
+		{
+			mode: 0o644,
+			parentMode: 0o700,
+		},
+	).pipe(
+		Effect.catch((cause) =>
+			Effect.fail(
+				sealError('config-render', {
+					name,
+					message: `seal.config-render: failed to write ${LOCAL_KEYGEN_STATE_BASENAME} (${cause.stage})`,
+					cause,
+				}),
+			),
+		),
+	);
+
+const readPersistedLocalKeygenState = (
+	servicePath: string,
+): Effect.Effect<PersistedLocalKeygenKeyMaterial | null, never, FileSystem.FileSystem> =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem;
+		const masterKeyEnvFile = `${servicePath}/${MASTER_KEY_ENVFILE_BASENAME}`;
 		const masterKeyBody = yield* fs
 			.readFileString(masterKeyEnvFile)
 			.pipe(Effect.catch(() => Effect.succeed(null)));
-		if (configBody === null || masterKeyBody === null) return null;
-		const parsedConfig = parseSealKeyServerConfig(configBody);
+		if (masterKeyBody === null) return null;
 		const masterKey = parseMasterKeyEnvFile(masterKeyBody);
-		if (parsedConfig === null || masterKey === null) return null;
+		if (masterKey === null) return null;
+		const metadata = yield* readPersistedLocalKeygenMetadata(servicePath);
+		if (metadata === null) return null;
 
 		return {
-			packageId: parsedConfig.sealPackageId,
-			keyServerObjectId: parsedConfig.keyServerObjectId,
-			nodeUrl: parsedConfig.nodeUrl,
 			masterKey,
+			publicKey: metadata.publicKey,
 			masterKeyEnvFile,
 		};
 	});
@@ -214,30 +257,82 @@ const sealConfigFingerprint = (parts: {
 		`nodeUrl=${parts.nodeUrl}`,
 	].join('|');
 
-const refreshPersistedLocalKeygenState = (
+const resolveMovePackagePath = (
 	deps: LocalKeygenDeps,
 	opts: ResolvedLocalKeygenOptions,
-	state: PersistedLocalKeygenState,
+): Effect.Effect<string, SealError, Scope.Scope | FileSystem.FileSystem | Path.Path> =>
+	opts.movePackagePath
+		? Effect.succeed(opts.movePackagePath)
+		: resolveDefaultSealSource(deps.runtime).pipe(Effect.map((s) => s.path));
+
+const ensureLocalKeygenArtifacts = (
+	deps: LocalKeygenDeps,
+	opts: ResolvedLocalKeygenOptions,
+	publicKey: string,
+): Effect.Effect<
+	{
+		readonly packageId: string;
+		readonly keyServerObjectId: string;
+	},
+	SealError | ArtifactPublishError,
+	Scope.Scope | FileSystem.FileSystem | Path.Path
+> =>
+	Effect.gen(function* () {
+		const movePackagePath = yield* resolveMovePackagePath(deps, opts);
+		const { packageId } = yield* publishSealPackage(deps.publisher, {
+			name: opts.name,
+			chain: deps.chain,
+			movePackagePath,
+			signer: deps.signer,
+			sdk: deps.sdk,
+			runtime: deps.runtime,
+			chainProbe: deps.chainProbe,
+			...(deps.buildImage !== undefined ? { buildImage: deps.buildImage } : {}),
+		});
+		const { objectId: keyServerObjectId } = yield* registerKeyServer(deps.publisher, {
+			name: opts.name,
+			chain: deps.chain,
+			keyServerUrl: deps.routedUrl,
+			sealPackageId: packageId,
+			publicKeyHex: publicKey,
+			keyServerName: opts.keyServerName,
+			signer: deps.signer,
+			sdk: deps.sdk,
+			chainProbe: deps.chainProbe,
+		});
+		return { packageId, keyServerObjectId };
+	});
+
+const stageResolvedLocalKeygenState = (
+	deps: LocalKeygenDeps,
+	opts: ResolvedLocalKeygenOptions,
+	artifacts: {
+		readonly packageId: string;
+		readonly keyServerObjectId: string;
+	},
+	keypair: Pick<PersistedBlsKeypair, 'masterKey' | 'publicKey'>,
 ): Effect.Effect<PersistedLocalKeygenState, SealError, FileSystem.FileSystem> =>
 	Effect.gen(function* () {
-		if (state.nodeUrl === deps.suiRpcUrlInNetwork) {
-			return state;
-		}
-
 		const yaml = renderSealKeyServerConfig({
-			sealPackageId: state.packageId,
+			sealPackageId: artifacts.packageId,
 			nodeUrl: deps.suiRpcUrlInNetwork,
-			keyServerObjectId: state.keyServerObjectId,
+			keyServerObjectId: artifacts.keyServerObjectId,
 		});
 		const { masterKeyEnvFile } = yield* stageSealConfig(
 			yaml,
-			state.masterKey,
+			keypair.masterKey,
 			deps.servicePath,
 			opts.name,
 		);
+		yield* stagePersistedLocalKeygenMetadata(deps.servicePath, opts.name, {
+			version: LOCAL_KEYGEN_STATE_VERSION,
+			publicKey: keypair.publicKey,
+		});
 		return {
-			...state,
-			nodeUrl: deps.suiRpcUrlInNetwork,
+			packageId: artifacts.packageId,
+			keyServerObjectId: artifacts.keyServerObjectId,
+			masterKey: keypair.masterKey,
+			publicKey: keypair.publicKey,
 			masterKeyEnvFile,
 		};
 	});
@@ -316,75 +411,25 @@ export const bootLocalKeygen = (
 
 		const persisted = yield* readPersistedLocalKeygenState(deps.servicePath);
 		if (persisted !== null) {
-			const refreshed = yield* refreshPersistedLocalKeygenState(deps, opts, persisted);
+			const artifacts = yield* ensureLocalKeygenArtifacts(deps, opts, persisted.publicKey);
+			const refreshed = yield* stageResolvedLocalKeygenState(deps, opts, artifacts, persisted);
 			return yield* startLocalKeygenContainer(deps, opts, cargoImage, refreshed);
 		}
 
-		// ---- move source resolve (bootstrap asset, conditional) --
-		// Source is only fetched when no user-pinned path is provided.
-		const movePackagePath: string = opts.movePackagePath
-			? opts.movePackagePath
-			: yield* resolveDefaultSealSource(deps.runtime).pipe(Effect.map((s) => s.path));
-
 		// ---- keygen (BLS12-381 master + public) -----------------
-		// The keypair flows directly into the publish + register
-		// passes rather than through the artifact publisher primitive — the publisher
-		// only sees the artifacts the keygen produces (packageId,
-		// keyServerObjectId).
+		// The keypair flows into publish + register inputs. The
+		// artifact publisher still owns the on-chain artifacts; this
+		// local state only persists key material.
 		const keypair: PersistedBlsKeypair = yield* runSealKeygen(deps.runtime, opts.name, cargoImage);
-
-		// ---- publish seal Move package --------------------------
-		const { packageId } = yield* publishSealPackage(deps.publisher, {
-			name: opts.name,
-			chain: deps.chain,
-			movePackagePath,
-			signer: deps.signer,
-			sdk: deps.sdk,
-			runtime: deps.runtime,
-			chainProbe: deps.chainProbe,
-			...(deps.buildImage !== undefined ? { buildImage: deps.buildImage } : {}),
-		});
-
-		// ---- register on-chain KeyServer ------------------------
-		// Distilled-doc invariant #1 — `routedUrl` is the SAME value
-		// the container's routing entry will be stamped with.
-		const { objectId: keyServerObjectId } = yield* registerKeyServer(deps.publisher, {
-			name: opts.name,
-			chain: deps.chain,
-			keyServerUrl: deps.routedUrl,
-			sealPackageId: packageId,
-			publicKeyHex: keypair.publicKey,
-			keyServerName: opts.keyServerName,
-			signer: deps.signer,
-			sdk: deps.sdk,
-			chainProbe: deps.chainProbe,
-		});
 
 		// ---- render config + stage master-key -------------------
 		// Distilled-doc invariant #19 — `network: !Devnet` is hardcoded
 		// by `renderSealKeyServerConfig`. Invariant #4 — `master-key.env`
 		// MUST NOT be unlinked on scope close. `stageSealConfig` does
 		// NOT register a finalizer.
-		const yaml = renderSealKeyServerConfig({
-			sealPackageId: packageId,
-			nodeUrl: deps.suiRpcUrlInNetwork,
-			keyServerObjectId,
-		});
-		const { configPath, masterKeyEnvFile } = yield* stageSealConfig(
-			yaml,
-			keypair.masterKey,
-			deps.servicePath,
-			opts.name,
-		);
-		void configPath; // referenced via servicePath assembly in the spec
-
-		return yield* startLocalKeygenContainer(deps, opts, cargoImage, {
-			packageId,
-			keyServerObjectId,
-			nodeUrl: deps.suiRpcUrlInNetwork,
-			masterKey: keypair.masterKey,
-			masterKeyEnvFile,
-		});
+		const artifacts = yield* ensureLocalKeygenArtifacts(deps, opts, keypair.publicKey);
+		const state = yield* stageResolvedLocalKeygenState(deps, opts, artifacts, keypair);
+		return yield* startLocalKeygenContainer(deps, opts, cargoImage, state);
 	}).pipe(
 		Effect.catchTag('ArtifactPublishError', (err) =>
 			Effect.fail(

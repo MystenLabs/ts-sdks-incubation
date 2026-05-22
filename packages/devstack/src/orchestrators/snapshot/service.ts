@@ -167,7 +167,8 @@ export interface SnapshotOrchestrator {
 	) => Effect.Effect<void, SnapshotOrchestratorError, FileSystem.FileSystem>;
 
 	/** Wipe the live (`app`, `stack`) footprint; preserves the
-	 *  snapshot catalog by default. */
+	 *  snapshot catalog by default. Stack-local artifact cache is
+	 *  removed unless `keepCache` is explicitly true. */
 	readonly wipe: (args: {
 		readonly keepSnapshots?: boolean;
 		readonly keepCache?: boolean;
@@ -238,7 +239,8 @@ const normalizeSnapshotName = (
 				operation,
 				field: 'name',
 				value: name,
-				detail: 'snapshot names must be 1-128 characters after trimming and cannot contain NUL bytes',
+				detail:
+					'snapshot names must be 1-128 characters after trimming and cannot contain NUL bytes',
 			}),
 		);
 	}
@@ -551,7 +553,6 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 							labelMatch: { app: identity.app, stack: identity.stack },
 							stackRoot: paths.stackRoot,
 							stateFilePath: paths.stateFile,
-							cacheDir: paths.cacheDir,
 							runtime,
 							keepSnapshots: args.keepSnapshots,
 							keepCache: args.keepCache,

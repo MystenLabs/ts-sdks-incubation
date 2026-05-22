@@ -2,7 +2,8 @@
 //
 // Distilled-doc §"What survives snapshot":
 //
-//   - `runtime/seal/master-key.env`      (0o600 — SECRET MATERIAL)
+//   - `runtime/seal/master-key.env`              (0o600 — SECRET MATERIAL)
+//   - `runtime/seal/local-keygen-state.v1.json`  (public key metadata)
 //   - `runtime/seal/key-server-config.yaml`
 //   - State-store entries (under runtime/state-store/, auto-captured
 //     by the substrate — we don't declare a subtree for those).
