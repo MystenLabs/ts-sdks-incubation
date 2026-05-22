@@ -9,6 +9,10 @@
 import { Effect } from 'effect';
 
 import {
+	ROUTER_CONTAINER_NAME_PREFIX,
+	ROUTER_SHARED_APP,
+} from '../../../orchestrators/router/cleanup.ts';
+import {
 	type CliError,
 	CliConfirmRequiredError,
 	CliInternalError,
@@ -154,12 +158,20 @@ export const groupResourceCountForResources = (
 	(resources.volumes ? group.volumes : 0) +
 	(resources.images ? group.images : 0);
 
+const isAutoPrunableSharedGroup = (group: PruneGroup): boolean =>
+	group.app === ROUTER_SHARED_APP && group.stack.startsWith(ROUTER_CONTAINER_NAME_PREFIX);
+
 export const defaultPruneSelection = (
 	inventory: PruneInventory,
 	resources: PruneResourceScope = DEFAULT_PRUNE_RESOURCES,
 ): ReadonlyArray<string> =>
 	inventory.groups
-		.filter((group) => !group.live && groupResourceCountForResources(group, resources) > 0)
+		.filter(
+			(group) =>
+				!group.live &&
+				(!group.shared || isAutoPrunableSharedGroup(group)) &&
+				groupResourceCountForResources(group, resources) > 0,
+		)
 		.map((group) => group.key);
 
 const requireBulkConfirm = (verb: string, ctx: CommandContext): Effect.Effect<void, CliError> => {
